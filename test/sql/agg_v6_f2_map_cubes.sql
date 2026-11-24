@@ -113,6 +113,16 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT kv.key, sum(kv.value::float8) FROM mi o, jsonb_each(o.c) kv GROUP BY 1'
 ]) q;
 
+-- Q-05b. A float sum with sift.agg_exact_float adds in the order of the rows, which the sums of a cube do not: it is scanned, and the counts and the extremes are not
+SET sift.agg_exact_float = on;
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, sum(kv.value::float8) FROM mc o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, avg(kv.value::float8) FROM mc o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, count(*), min(kv.value::float8), max(kv.value::float8) FROM mc o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::int4) FROM mi o, jsonb_each(o.c) kv GROUP BY 1'
+]) q;
+RESET sift.agg_exact_float;
+
 -- Q-06. Deletes: a granule with a dead row is read alone, the others are still answered from the cubes
 CREATE FUNCTION run_all() RETURNS TABLE (r text) LANGUAGE sql AS $$
 	SELECT same('SELECT kv.key, count(*), sum(kv.value::float8), min(kv.value::float8), max(kv.value::float8) FROM mc o, jsonb_each(o.metrics) kv GROUP BY 1')
@@ -144,6 +154,15 @@ SELECT * FROM run_all();
 ROLLBACK;
 VACUUM mc;
 SELECT * FROM run_all();
+
+-- Q-08b. Rows past the index are parts of their own, with cubes of their own, and maintenance joins the parts and the cubes of their members
+INSERT INTO mc SELECT i, i % 7, jsonb_build_object('m_total', i * 0.5, 'packaging', i % 5, 'late', i % 2) FROM generate_series(80001, 86000) i;
+VACUUM mc;
+SELECT * FROM run_all();
+SELECT sift.maintain('mc_col') IS NOT NULL AS maintained;
+VACUUM mc;
+SELECT * FROM run_all();
+SELECT same('SELECT kv.key, count(*), sum(kv.value::float8) FROM mc o, jsonb_each(o.metrics) kv WHERE kv.key IN (''late'', ''m_total'') GROUP BY 1') AS late_keys;
 
 -- Q-09. A value or a document the leaves cannot hold, in a granule the index was built with: a string, a number past the range of a float8, a JSON null, the text of NaN, an array, a scalar.
 -- The cube leaves the granule out and it is read; the answer, the error included, is the heap's. The other granules of the part are answered from their cubes.
@@ -182,8 +201,9 @@ DELETE FROM md WHERE id IN (100, 101);
 VACUUM md;
 SELECT * FROM mx_all('md');
 
--- Q-10. The plan and the counters: the node answers from the cubes, EXPLAIN (ANALYZE) names the granules, and with the pre-aggregates off the scan reads them all
+-- Q-10. The counters: EXPLAIN (ANALYZE) names the granules the cubes answered
 SELECT preagg_granules('SELECT kv.key, count(*), sum(kv.value::float8) FROM md o, jsonb_each(o.metrics) kv GROUP BY 1') > 0 AS cubes_answer;
-SET sift.agg_preagg = off;
-SELECT preagg_granules('SELECT kv.key, count(*), sum(kv.value::float8) FROM md o, jsonb_each(o.metrics) kv GROUP BY 1') AS cubes_off;
-RESET sift.agg_preagg;
+
+DROP FUNCTION same(text), answer(text), preagg_granules(text), run_all(), mx_all(regclass);
+DROP TABLE mc, mi, mb, md;
+DROP EXTENSION pg_sift;

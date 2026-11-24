@@ -565,6 +565,17 @@ begin_slab(SiftF2Pull *p)
 	MemoryContextSwitchTo(old);
 }
 
+/* Whether the sink of the spec answered the granule from what its part stores */
+static bool
+granule_answered(const SiftF2Pull *p)
+{
+	const SiftDvGran *dg = p->dv != NULL ? sift_dv_granule(p->dv, p->g) : NULL;
+
+	return p->spec.gran_sink != NULL &&
+		p->spec.gran_sink(p->spec.gran_arg, &(SiftF2GranOffer) {.rel = p->index,.part = p->part,.desc = p->pd,.schema = p->r->schema,.g = p->g,.gd = &p->dir[p->g],.dead = dg,.snap = p->snap,
+							.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g]),.px = p->px,.vis = SIFT_GVIS_HEAP});
+}
+
 /* the next granule, slab or part; false at the end of the index */
 static bool
 advance(SiftF2Pull *p)
@@ -573,7 +584,7 @@ advance(SiftF2Pull *p)
 	{
 		if (p->part != NULL && sift_f2_pull_prune_next(&p->prune, &p->g, &p->stats))
 		{
-			if (begin_granule(p))
+			if (!granule_answered(p) && begin_granule(p))
 				return true;
 			continue;
 		}

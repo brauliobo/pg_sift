@@ -300,6 +300,8 @@ bind_cube(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCube
 	const SiftColSchema *schema = o->schema;
 	int			score = cd->ndims;
 
+	if (cd->flags & SIFT_PCUBE_ELEMENTS)
+		return -1;
 	for (int i = 0; i < pa->spec->nkeys; i++)
 	{
 		const SiftPreaggDimKind kind = pa->key_text[i] ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64;
@@ -531,9 +533,8 @@ cell_passes(const PartBind *pb, const SiftPreaggCubeDesc *cd, const SiftF2GranOf
 
 /* ---- the rows of the granule ---- */
 
-/* Whether every row of the granule is known to the snapshot without a look at the row: the heap pages of a sift_col index are all-visible, the inserters of a sift_table are settled */
-static bool
-rows_known(SiftV6Preagg *pa, const SiftF2GranOffer *o)
+bool
+sift_v6_preagg_rows_known(SiftV6Vet *vet, const SiftF2GranOffer *o)
 {
 	const BlockNumber lo = (BlockNumber) (o->gd->tid_min >> 16),
 				hi = (BlockNumber) (o->gd->tid_max >> 16);
@@ -543,7 +544,7 @@ rows_known(SiftV6Preagg *pa, const SiftF2GranOffer *o)
 	if (o->gd->tid_max == 0 || hi < lo || (uint64) hi - lo + 1 > PA_VM_SPAN_MAX)
 		return false;
 	for (BlockNumber b = lo; b <= hi; b++)
-		if (!VM_ALL_VISIBLE(pa->vet->heap, b, &pa->vet->vmbuf))
+		if (!VM_ALL_VISIBLE(vet->heap, b, &vet->vmbuf))
 			return false;
 	return true;
 }
@@ -562,8 +563,8 @@ float_sum_acc(const SiftPreaggMeasure *pm)
 	return v6g_acc_of_f64_sum(pm->u.f.sum_hi, pm->u.f.sum_lo, pm->count_nonnull);
 }
 
-static void
-meas_acc(const SiftV6Agg *a, const SiftPreaggMeasure *pm, V6Acc *out)
+void
+sift_v6_preagg_meas_acc(const SiftV6Agg *a, const SiftPreaggMeasure *pm, V6Acc *out)
 {
 	const bool	is_float = sift_v6_class(a->arg.typid) == SV6C_F64;
 
@@ -602,7 +603,7 @@ cell_acc(const PartBind *pb, const SiftV6Spec *spec, const SiftPreaggCubeDesc *c
 				out[j].n = ((grp->dim_null_mask >> b->idx) & 1) ? 0 : grp->row_count;
 				break;
 			case ASRC_MEAS:
-				meas_acc(&spec->agg[j], sift_pag_measure(cd, grp, b->idx), &out[j]);
+				sift_v6_preagg_meas_acc(&spec->agg[j], sift_pag_measure(cd, grp, b->idx), &out[j]);
 				break;
 			case ASRC_DIST:
 				break;
@@ -826,7 +827,7 @@ sift_v6_preagg_try_granule(void *arg, const SiftF2GranOffer *o)
 		return false;
 	if ((!pb->bound || pb->gen != o->desc->part_gen) && !bind_part(pa, o))
 		return false;
-	if (!pb->usable || !preds_answerable(pb, o) || !rows_known(pa, o) || (ndead = sift_preagg_dead_rows(o, dead)) < 0)
+	if (!pb->usable || !preds_answerable(pb, o) || !sift_v6_preagg_rows_known(pa->vet, o) || (ndead = sift_preagg_dead_rows(o, dead)) < 0)
 		return false;
 	if (ndead > 0 && (pb->has_dist || pb->reads.float_sum != 0))
 		return false;

@@ -16,6 +16,7 @@
 #include "agg/v6/v6_acc.h"
 #include "agg/v6/v6_vet.h"
 #include "col/f2/f2_sink.h"
+#include "col/f2/preagg_v2.h"
 
 typedef struct SiftV6Preagg SiftV6Preagg;
 
@@ -26,5 +27,9 @@ extern bool sift_v6_preagg_try_granule(void *arg, const SiftF2GranOffer *offer);
 /* The groups the cells of the granules go into from now on: a participant of a parallel run folds into the state of the morsel it takes */
 extern void sift_v6_preagg_set_group(SiftV6Preagg *pa, SiftV6Group *g);
 extern void sift_v6_preagg_end(SiftV6Preagg *pa);
+/* Whether every row of the granule is known to the snapshot without a look at the row: the heap pages of a sift_col index are all-visible, the inserters of a sift_table are settled */
+extern bool sift_v6_preagg_rows_known(SiftV6Vet *vet, const SiftF2GranOffer *o);
+/* The state of the aggregate a from the measure of a cell */
+extern void sift_v6_preagg_meas_acc(const SiftV6Agg *a, const SiftPreaggMeasure *pm, V6Acc *out);
 
 #endif							/* SIFT_COL_F2_V6_PREAGG_H */

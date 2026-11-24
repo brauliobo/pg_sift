@@ -7,6 +7,7 @@
 #include "utils/memutils.h"
 
 #include "agg/agg.h"
+#include "agg/spec/spec.h"
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/vexpr_str.h"
@@ -63,6 +64,8 @@ agg_shape_ok(const SiftV6Agg *a)
 		return false;
 	if (a->kind == SV6_COUNT)
 		return a->arg.slot <= 1;
+	if (sift_agg_exact_float && cls == SV6C_F64 && (a->kind == SV6_SUM || a->kind == SV6_AVG))
+		return false;
 	return a->arg.slot == 1 && (a->kind == SV6_SUM || a->kind == SV6_AVG || a->kind == SV6_MIN || a->kind == SV6_MAX) && (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64);
 }
 

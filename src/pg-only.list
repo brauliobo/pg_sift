@@ -522,6 +522,8 @@ col/f2/preagg_v2.h
 col/f2/preagg_v2_read.c
 col/f2/f2_v6_preagg.c
 col/f2/f2_v6_preagg.h
+col/f2/f2_v6_map_preagg.c
+col/f2/f2_v6_map_preagg.h
 col/f2/rowbuf.c
 col/f2/rowbuf.h
 col/f2/rowbuf_cluster.c

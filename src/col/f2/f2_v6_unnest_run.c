@@ -28,6 +28,7 @@
 #include "agg/vexpr_str.h"
 #include "col/am.h"
 #include "col/f2/f2_sink_ext.h"
+#include "col/f2/f2_v6_map_preagg.h"
 #include "core/errctx.h"
 #include "core/memtrack.h"
 
@@ -747,6 +748,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	UnRun	   *u = &run;
 	SiftF2PullSpec ps;
 	SiftF2Pull *pull;
+	SiftV6MapPreagg *map;
 	const SiftF2ExtBatch *b;
 
 	u->spec = spec;
@@ -788,10 +790,15 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 		}
 	sift_v6_vet_begin(&u->vet, heap, snap, stats);
 	ps = pull_spec(u);
+	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats);
+	ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
+	ps.gran_arg = map;
 	pull = sift_f2_pull_begin(index, snap, &ps);
 	while ((b = sift_f2_pull_next(pull)) != NULL)
 		run_batch(u, b);
 	sift_f2_pull_end(pull);
+	if (map != NULL)
+		sift_v6_map_preagg_end(map);
 	sift_v6_pipe_finish(u->pipe);
 	sift_v6_vet_end(&u->vet);
 	if (u->estate != NULL)

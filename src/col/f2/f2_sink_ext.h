@@ -21,6 +21,7 @@
 #include "agg/vec.h"
 #include "agg/vexpr.h"
 #include "col/f2/f2.h"
+#include "col/f2/f2_sink.h"
 #include "col/granule/granule.h"
 
 #define SIFT_F2_PULL_MAX_COLS	SIFT_VEXPR_MAX_REGS
@@ -59,6 +60,9 @@ typedef struct SiftF2PullSpec
 	const SiftColPred *pred;
 	int			nelem_pred;
 	const SiftColPred *elem_pred;
+	/* A sink offered each granule of a part the predicates leave, before a byte of it is read (f2_sink.h): when it answers the granule from what the part stores it returns true and the pull skips it */
+	SiftF2GranSink gran_sink;
+	void	   *gran_arg;
 } SiftF2PullSpec;
 
 /*
