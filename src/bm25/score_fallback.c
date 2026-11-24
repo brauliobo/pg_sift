@@ -435,8 +435,8 @@ fb_begin(CustomScanState *node, EState *estate, int eflags)
 	fb->cl = palloc0(Max(fb->nclause, 1) * sizeof(FbClause));
 	for (int i = 0; i < fb->nclause; i++)
 		fb->cl[i] = (FbClause) {.doc = list_nth(docs, i), .query = list_nth(queries, i),
-								.any = list_nth_int(list_nth_node(List, cs->custom_private, 0), i),
-								.index = list_nth_oid(list_nth_node(List, cs->custom_private, 1), i)};
+								.any = list_nth_int(linitial(cs->custom_private), i),
+								.index = list_nth_oid(lsecond(cs->custom_private), i)};
 	init_cols(ss, cs);
 	for (int i = 0; i < ss->ncols; i++)
 		fb->need_max |= ss->col[i].kind == COL_MAX_SCORE;
