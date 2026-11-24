@@ -68,7 +68,7 @@ count_distinct(const SiftV6Spec *spec)
 	uint32		n = 0;
 
 	for (int j = 0; j < spec->naggs; j++)
-		n += spec->agg[j].kind == SV6_COUNT_DISTINCT;
+		n += sift_v6_kind_distinct(spec->agg[j].kind);
 	return n;
 }
 

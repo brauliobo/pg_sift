@@ -111,7 +111,7 @@ sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
 	int			heavy = 0;
 
 	for (int j = 0; p->spec.nkeys > 0 && j < p->spec.naggs; j++)
-		heavy += p->spec.agg[j].kind == SV6_COUNT_DISTINCT || p->spec.agg[j].kind == SV6_PCT_CONT;
+		heavy += sift_v6_kind_distinct(p->spec.agg[j].kind) || p->spec.agg[j].kind == SV6_PCT_CONT;
 	return input_rel->rows / sel * cpu_operator_cost * (1 + HEAVY_AGG_PAIR_FACTOR * heavy);
 }
 

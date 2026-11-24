@@ -28,9 +28,9 @@ sift_v6_par_dist_lean(const SiftV6Spec *spec)
 	bool		any = false;
 
 	for (int j = 0; j < spec->naggs; j++)
-		if (spec->agg[j].kind == SV6_COUNT_DISTINCT)
+		if (sift_v6_kind_distinct(spec->agg[j].kind))
 		{
-			if (!flat_kind(&spec->agg[j]))
+			if (spec->agg[j].kind != SV6_COUNT_DISTINCT || !flat_kind(&spec->agg[j]))
 				return false;
 			any = true;
 		}

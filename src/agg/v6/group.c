@@ -146,7 +146,7 @@ plain_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *
 		}
 		if (v->nan != NULL && sift_v6_agg_takes_nan(a))
 			acc->aux += v6acc_nan_rows(v, mk, bs->n_raw);
-		if (a->kind == SV6_COUNT_DISTINCT)
+		if (sift_v6_kind_distinct(a->kind))
 		{
 			v6g_dist_plain(g, set, j, bs->n_raw, mk, argvec);
 			continue;

@@ -150,7 +150,7 @@ compile_agg(ScopePlan *p, Aggref *a)
 	const Expr *arg;
 	int			m;
 
-	if (!sift_v6_agg_kind(a, &g.kind) || g.kind == SV6_COUNT_DISTINCT || p->spec.ncols == SCOPE_COLS_MAX)
+	if (!sift_v6_agg_kind(a, &g.kind) || sift_v6_kind_distinct(g.kind) || p->spec.ncols == SCOPE_COLS_MAX)
 		return false;
 	if (g.kind != SV6_COUNT_STAR)
 	{

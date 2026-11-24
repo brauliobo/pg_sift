@@ -423,7 +423,7 @@
 	  "the dictionary of the zstd compression of a part", \
 	  "a larger dictionary is not written; the part is compressed without it", "-", 0) \
 	X(par_dist, "SIFT_PAR_MAX_DIST", "agg/v6/v6_par.h", 32, "aggregates", \
-	  "count(DISTINCT) aggregates of one scan a parallel plan runs", \
+	  "count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) aggregates of one scan a parallel plan runs", \
 	  "the scan runs without parallel workers", "-", 0) \
 	X(first_cols, "SIFT_V6_FIRST_MAX_COLS", "agg/v6/v6_first.h", SIFT_V6_FIRST_MAX_COLS, "columns", \
 	  "ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them)", \

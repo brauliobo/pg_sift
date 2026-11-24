@@ -479,10 +479,11 @@ compile_agg_native(V6Plan *p, Aggref *a, const Aggref *shape)
 		const bool	two = g.kind == SV6_ARG_MAX || g.kind == SV6_ARG_MIN;
 
 		Expr	   *arg = list_length(a->args) > 0 ? sift_v6_plan_type_vars(p, ((TargetEntry *) linitial(a->args))->expr) : NULL;
-		const bool	score = !two && g.kind != SV6_COUNT_DISTINCT && sift_v6_score_col(p, arg, &g.arg);
+		const bool	score = !two && !sift_v6_kind_distinct(g.kind) && sift_v6_score_col(p, arg, &g.arg);
+		const bool	derived_ok = !two && !sift_v6_kind_valued(g.kind);
 
 		if (list_length(a->args) != (two ? 2 : 1) ||
-			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && (derived_col(p, arg, false, &g.arg) || sift_v6_pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))) ||
+			!(score || ((read_of(p, arg, !two, &g.arg) || (derived_ok && (derived_col(p, arg, false, &g.arg) || sift_v6_pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))) ||
 			sift_v6_col_class(&g.arg) == SV6C_DATUM)
 			return false;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_PG_EXPR && g.kind >= SV6_STDDEV_POP && g.kind <= SV6_VAR_SAMP)

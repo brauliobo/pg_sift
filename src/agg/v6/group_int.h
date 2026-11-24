@@ -103,8 +103,9 @@ struct SiftV6Group
 	uint32		stride;
 	uint32	   *off;
 	uint32		dist_off;
-	int			ndist;			/* COUNT(DISTINCT) aggregates */
+	int			ndist;			/* COUNT(DISTINCT), SUM(DISTINCT) and AVG(DISTINCT) aggregates */
 	int		   *dagg;			/* the aggregate of each of them */
+	uint32		dvalued;		/* bit k: the slot k is a DISTINCT sum or average, whose values the set hands to the group's state */
 	int		   *dslot;			/* the slot of each aggregate in a distinct set (-1 for the others) */
 	uint64		dist_budget;	/* of budget: what the distinct sets of all the sets of keys may hold; the groups have the rest */
 	uint64		budget;
@@ -205,6 +206,8 @@ v6g_acc_op(const SiftV6Agg *a)
 			return V6A_COUNT_PIECE;
 		case SV6_SUM:
 		case SV6_AVG:
+		case SV6_SUM_DISTINCT:
+		case SV6_AVG_DISTINCT:
 			return !f64 ? V6A_SUM_INT : sift_agg_exact_float ? V6A_SUM_F64_ROW : V6A_SUM_F64;
 		case SV6_MIN:
 			return f64 ? V6A_MIN_F64 : V6A_MIN_INT;

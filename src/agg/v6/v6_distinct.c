@@ -48,6 +48,9 @@ struct SiftDistinct
 	bool		finished;
 	SiftDistinctGroupEmit emit;	/* a grouped set: the keys are [plen][prefix][value] and the counts go to emit */
 	void	   *emit_arg;
+	uint32		value_slots;	/* the slots whose keys go to value_visit when the set is finished */
+	SiftDistinctVisit value_visit;
+	void	   *value_arg;
 	SiftDistinctStats st;
 };
 
@@ -410,6 +413,14 @@ sift_distinct_foreach(const SiftDistinct *d, SiftDistinctVisit visit, void *arg)
 }
 
 void
+sift_distinct_visit_values(SiftDistinct *d, uint32 slots, SiftDistinctVisit visit, void *arg)
+{
+	d->value_slots = slots;
+	d->value_visit = visit;
+	d->value_arg = arg;
+}
+
+void
 sift_distinct_foreach_hashed(const SiftDistinct *d, SiftDistinctVisitHashed visit, void *arg)
 {
 	for (uint32 i = 0; i < d->cap; i++)
@@ -525,6 +536,14 @@ dist_group_emit(SiftDistinct *d)
 	pfree(tab);
 }
 
+static void
+dist_visit_values(const SiftDistinct *d)
+{
+	for (uint32 k = 0; k < d->cap; k++)
+		if (d->tab[k].key != NULL && (d->value_slots >> d->tab[k].slot) & 1)
+			d->value_visit(d->value_arg, d->tab[k].slot, d->tab[k].key, d->tab[k].len);
+}
+
 void
 sift_distinct_finish(SiftDistinct *d)
 {
@@ -537,6 +556,8 @@ sift_distinct_finish(SiftDistinct *d)
 	d->finished = true;
 	if (d->emit != NULL)
 		dist_group_emit(d);
+	if (d->value_slots != 0)
+		dist_visit_values(d);
 	if (d->spill == NULL)
 		return;
 	dist_free_table(d);
@@ -555,6 +576,9 @@ sift_distinct_finish(SiftDistinct *d)
 		c = dist_new(d->cx, d->level + 1, d->budget, 0);
 		c->emit = d->emit;
 		c->emit_arg = d->emit_arg;
+		c->value_slots = d->value_slots;
+		c->value_visit = d->value_visit;
+		c->value_arg = d->value_arg;
 		while (sift_spill_get(d->spill, p, &tag, &buf, &bufcap, &len))
 		{
 			uint32		slot;

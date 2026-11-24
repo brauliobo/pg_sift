@@ -42,8 +42,31 @@ typedef enum SiftV6Kind
 	SV6_BOOL_AND,
 	SV6_PCT_CONT,				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 column): the values of the group in the arena of its text states (v6_pct.h) */
 	SV6_GEN_PG,					/* generic PostgreSQL aggregate (aggtransfn/aggcombinefn/aggfinalfn + optional DISTINCT/ORDER BY tuplesort) */
-	SV6_OSA						/* ordered-set / hypothetical-set aggregate (WITHIN GROUP: mode, percentile_disc/cont, rank/dense_rank/...) */
+	SV6_OSA,					/* ordered-set / hypothetical-set aggregate (WITHIN GROUP: mode, percentile_disc/cont, rank/dense_rank/...) */
+	SV6_SUM_DISTINCT,			/* sum(DISTINCT x) of an integer, numeric or float column: each distinct value of a group joins the sum of SV6_SUM once (group_dist.c) */
+	SV6_AVG_DISTINCT
 } SiftV6Kind;
+
+/* the aggregates whose values go through the exact set of v6_distinct.h */
+static inline bool
+sift_v6_kind_distinct(SiftV6Kind kind)
+{
+	return kind == SV6_COUNT_DISTINCT || kind == SV6_SUM_DISTINCT || kind == SV6_AVG_DISTINCT;
+}
+
+/* the ones that add the distinct values: the exact set hands each value to the group's sum (group_dist.c) instead of counting it */
+static inline bool
+sift_v6_kind_valued(SiftV6Kind kind)
+{
+	return kind == SV6_SUM_DISTINCT || kind == SV6_AVG_DISTINCT;
+}
+
+/* the aggregate whose state and result a DISTINCT sum or average has */
+static inline SiftV6Kind
+sift_v6_kind_base(SiftV6Kind kind)
+{
+	return kind == SV6_SUM_DISTINCT ? SV6_SUM : kind == SV6_AVG_DISTINCT ? SV6_AVG : kind;
+}
 
 #define SIFT_V6_MAX_KEYS	32
 #define SIFT_V6_MAX_DCOLS	8		/* the columns of a COUNT(DISTINCT (a, b, ..)) */
@@ -146,7 +169,8 @@ v6g_is_gen(const SiftV6Agg *a)
 static inline bool
 sift_v6_agg_takes_nan(const SiftV6Agg *a)
 {
-	return a->kind == SV6_COUNT || a->kind == SV6_SUM || a->kind == SV6_AVG || a->kind == SV6_MIN || a->kind == SV6_MAX || (a->kind == SV6_COUNT_DISTINCT && a->nxcols == 0);
+	return a->kind == SV6_COUNT || a->kind == SV6_SUM || a->kind == SV6_AVG || a->kind == SV6_MIN || a->kind == SV6_MAX || sift_v6_kind_valued(a->kind) ||
+		(a->kind == SV6_COUNT_DISTINCT && a->nxcols == 0);
 }
 
 /* The keys (indexes into SiftV6Spec.key) the arguments of a GROUPING() name */

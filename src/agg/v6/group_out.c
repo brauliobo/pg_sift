@@ -40,9 +40,9 @@ sum_f64_datum(const SiftV6Agg *a, const V6Acc *acc, bool *isnull)
 		ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("float8 sum over more than %lld rows", (long long) V6FSUM_MAX_ROWS)));
 	if (isinf(sum) && !sift_agg_exact_float && v6fsum_flags(acc) == 0)
 		float_overflow_error();
-	if (a->kind == SV6_SUM && a->arg.typid == FLOAT4OID)
+	if (sift_v6_kind_base(a->kind) == SV6_SUM && a->arg.typid == FLOAT4OID)
 		return Float4GetDatum((float4) sum);
-	return Float8GetDatum(a->kind == SV6_SUM ? sum : sum / (double) n);
+	return Float8GetDatum(sift_v6_kind_base(a->kind) == SV6_SUM ? sum : sum / (double) n);
 }
 
 static Datum
@@ -161,6 +161,8 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 			return Int64GetDatum(v6acc_count(a, acc));
 		case SV6_SUM:
 		case SV6_AVG:
+		case SV6_SUM_DISTINCT:
+		case SV6_AVG_DISTINCT:
 			if (sift_v6_class(a->arg.typid) == SV6C_F64)
 				return sum_f64_datum(a, acc, isnull);
 			if (v6acc_is_nan(a, acc))
@@ -168,7 +170,7 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 			*isnull = acc->n == 0;
 			if (acc->n == 0)
 				return (Datum) 0;
-			if (a->kind == SV6_AVG)
+			if (sift_v6_kind_base(a->kind) == SV6_AVG)
 				return DirectFunctionCall2(numeric_div, sift_v6_scaled_numeric(v6acc_i128(acc), a->arg.scale), NumericGetDatum(int64_to_numeric(acc->n)));
 			if (a->restype == INT8OID)
 			{
