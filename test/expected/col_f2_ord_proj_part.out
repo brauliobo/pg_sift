@@ -193,9 +193,10 @@ SELECT name, kind, state, rows FROM sift.projection_list() WHERE relation = 'rp_
 (1 row)
 
 -- the plan reads the projection (the first line of each EXPLAIN that names it) and the rows are those of the heap (the order by an expression the projection does not have)
-CREATE FUNCTION rp_b_prun(q text, h text, OUT rows bigint, OUT agree bool, OUT node text, OUT source text) LANGUAGE plpgsql AS $$
+CREATE FUNCTION rp_b_prun(q text, h text, OUT rows bigint, OUT agree bool, OUT node text, OUT source text, OUT index_only bool, OUT fetched bool) LANGUAGE plpgsql AS $$
 DECLARE line text; a record; b record;
 BEGIN
+	index_only := false; fetched := false;
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	PERFORM set_config('enable_seqscan', 'false', true);
@@ -203,6 +204,8 @@ BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
 		IF line ~ 'SiftProjSortScan' THEN node := 'SiftProjSortScan'; END IF;
 		IF line ~ '^ *Source: ' THEN source := btrim(substr(line, position('Source: ' IN line) + 8)); END IF;
+		IF line ~ '^ *Index Only: true' THEN index_only := true; END IF;
+		IF line ~ '^ *Heap Fetches: ' THEN fetched := substr(line, position('Heap Fetches: ' IN line) + 14)::bigint > 0; END IF;
 	END LOOP;
 	EXECUTE 'SELECT count(*), md5(string_agg(w::text, ''|'')) FROM (' || q || ') w' INTO a;
 	PERFORM set_config('enable_seqscan', 'true', true);
@@ -229,21 +232,50 @@ INSERT INTO rp_b_pq VALUES
  (11, 'SELECT id, k, v FROM rp_b_p WHERE k < 20000 AND v = 7 ORDER BY k, id LIMIT 25', 'SELECT id, k, v FROM rp_b_p WHERE k < 20000 AND v = 7 ORDER BY k + 0, id LIMIT 25'),
  (12, 'SELECT id, k FROM rp_b_p WHERE k IS NULL ORDER BY k, id LIMIT 30', 'SELECT id, k FROM rp_b_p WHERE k IS NULL ORDER BY k + 0, id LIMIT 30');
 SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq ORDER BY n;
- n  | rows | agree |       node       |   source   
-----+------+-------+------------------+------------
-  1 |   10 | t     | SiftProjSortScan | projection
-  2 | 1000 | t     | SiftProjSortScan | projection
-  3 |   20 | t     | SiftProjSortScan | projection
-  4 | 1500 | t     | SiftProjSortScan | projection
-  5 |    1 | t     | SiftProjSortScan | projection
-  6 |   10 | t     | SiftProjSortScan | projection
-  7 |  700 | t     | SiftProjSortScan | projection
-  8 |    1 | t     | SiftProjSortScan | projection
-  9 |    2 | t     | SiftProjSortScan | projection
- 10 |    3 | t     | SiftProjSortScan | projection
- 11 |   25 | t     | SiftProjSortScan | projection
- 12 |   30 | t     | SiftProjSortScan | projection
+ n  | rows | agree |       node       |   source   | index_only | fetched 
+----+------+-------+------------------+------------+------------+---------
+  1 |   10 | t     | SiftProjSortScan | projection | t          | t
+  2 | 1000 | t     | SiftProjSortScan | projection | t          | t
+  3 |   20 | t     | SiftProjSortScan | projection | t          | t
+  4 | 1500 | t     | SiftProjSortScan | projection | t          | t
+  5 |    1 | t     | SiftProjSortScan | projection | t          | f
+  6 |   10 | t     | SiftProjSortScan | projection | t          | t
+  7 |  700 | t     | SiftProjSortScan | projection | t          | t
+  8 |    1 | t     | SiftProjSortScan | projection | t          | f
+  9 |    2 | t     | SiftProjSortScan | projection | t          | f
+ 10 |    3 | t     | SiftProjSortScan | projection | t          | t
+ 11 |   25 | t     | SiftProjSortScan | projection | t          | t
+ 12 |   30 | t     | SiftProjSortScan | projection | t          | f
 (12 rows)
+
+-- the statement reads integer columns the projection keeps: the rows of pages the map of the relation says are all visible come from the cells (Heap Fetches counts the others, fetched says there were some); rows inserted
+-- since the vacuum are in pages it does not know, and the vacuum sets them
+INSERT INTO rp_b_p SELECT 30000 + i, -i, 1 FROM generate_series(1, 40) i;
+SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq WHERE n IN (1, 2, 5, 6) ORDER BY n;
+ n | rows | agree |       node       |   source   | index_only | fetched 
+---+------+-------+------------------+------------+------------+---------
+ 1 |   10 | t     | SiftProjSortScan | projection | t          | t
+ 2 | 1000 | t     | SiftProjSortScan | projection | t          | t
+ 5 |    1 | t     | SiftProjSortScan | projection | t          | t
+ 6 |   10 | t     | SiftProjSortScan | projection | t          | t
+(4 rows)
+
+VACUUM rp_b_p;
+SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq WHERE n IN (1, 2, 5, 6) ORDER BY n;
+ n | rows | agree |       node       |   source   | index_only | fetched 
+---+------+-------+------------------+------------+------------+---------
+ 1 |   10 | t     | SiftProjSortScan | projection | t          | f
+ 2 | 1000 | t     | SiftProjSortScan | projection | t          | f
+ 5 |    1 | t     | SiftProjSortScan | projection | t          | f
+ 6 |   10 | t     | SiftProjSortScan | projection | t          | f
+(4 rows)
+
+-- a qual only the row can decide is read from the relation, and so is every row of the statement
+SELECT (rp_b_prun('SELECT id, k FROM rp_b_p WHERE v + 1 = 8 ORDER BY k, id LIMIT 10', 'SELECT id, k FROM rp_b_p WHERE v + 1 = 8 ORDER BY k + 0, id LIMIT 10')).*;
+ rows | agree |       node       |   source   | index_only | fetched 
+------+-------+------------------+------------+------------+---------
+   10 | t     | SiftProjSortScan | projection | f          | f
+(1 row)
 
 -- rows deleted, updated and inserted since the parts were built (deletion vectors, pending deletes, the slab and the heap pages that changed)
 DELETE FROM rp_b_p WHERE id % 10 = 3;
@@ -251,17 +283,17 @@ UPDATE rp_b_p SET k = k + 100003 WHERE id % 10 = 4;
 UPDATE rp_b_p SET k = NULL WHERE id % 10 = 5;
 INSERT INTO rp_b_p SELECT 40000 + i, ((i::int8 * 31337) % 100003)::int, i % 50 FROM generate_series(1, 700) i;
 SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq WHERE n IN (1, 2, 4, 5, 6, 7, 10, 11, 12) ORDER BY n;
- n  | rows | agree |       node       |         source         
-----+------+-------+------------------+------------------------
-  1 |   10 | t     | SiftProjSortScan | relation, bounded sort
-  2 | 1000 | t     | SiftProjSortScan | relation, bounded sort
-  4 | 1500 | t     | SiftProjSortScan | relation, bounded sort
-  5 |    1 | t     | SiftProjSortScan | relation, bounded sort
-  6 |   10 | t     | SiftProjSortScan | relation, bounded sort
-  7 |  663 | t     | SiftProjSortScan | relation, bounded sort
- 10 | 1848 | t     | SiftProjSortScan | relation, bounded sort
- 11 |   25 | t     | SiftProjSortScan | relation, bounded sort
- 12 |   30 | t     | SiftProjSortScan | relation, bounded sort
+ n  | rows | agree |       node       |         source         | index_only | fetched 
+----+------+-------+------------------+------------------------+------------+---------
+  1 |   10 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+  2 | 1000 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+  4 | 1500 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+  5 |    1 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+  6 |   10 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+  7 |  663 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+ 10 | 1849 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+ 11 |   25 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+ 12 |   30 | t     | SiftProjSortScan | relation, bounded sort | t          | f
 (9 rows)
 
 -- a transaction's own changes, then rolled back
@@ -270,37 +302,37 @@ DELETE FROM rp_b_p WHERE id % 7 = 1;
 UPDATE rp_b_p SET k = 400000 - id WHERE id % 7 = 2;
 INSERT INTO rp_b_p SELECT 90000 + i, -1000 - i, 1 FROM generate_series(1, 60) i;
 SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq WHERE n IN (1, 5, 6) ORDER BY n;
- n | rows | agree |       node       |         source         
----+------+-------+------------------+------------------------
- 1 |   10 | t     | SiftProjSortScan | relation, bounded sort
- 5 |    1 | t     | SiftProjSortScan | relation, bounded sort
- 6 |   10 | t     | SiftProjSortScan | relation, bounded sort
+ n | rows | agree |       node       |         source         | index_only | fetched 
+---+------+-------+------------------+------------------------+------------+---------
+ 1 |   10 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+ 5 |    1 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+ 6 |   10 | t     | SiftProjSortScan | relation, bounded sort | t          | f
 (3 rows)
 
 ROLLBACK;
 SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq WHERE n IN (1, 5, 6) ORDER BY n;
- n | rows | agree |       node       |         source         
----+------+-------+------------------+------------------------
- 1 |   10 | t     | SiftProjSortScan | relation, bounded sort
- 5 |    1 | t     | SiftProjSortScan | relation, bounded sort
- 6 |   10 | t     | SiftProjSortScan | relation, bounded sort
+ n | rows | agree |       node       |         source         | index_only | fetched 
+---+------+-------+------------------+------------------------+------------+---------
+ 1 |   10 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+ 5 |    1 | t     | SiftProjSortScan | relation, bounded sort | t          | f
+ 6 |   10 | t     | SiftProjSortScan | relation, bounded sort | t          | f
 (3 rows)
 
 -- after a vacuum: the changed parts are rebuilt and the projection serves them again
 VACUUM rp_b_p;
 SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq WHERE n IN (1, 2, 3, 5, 6, 7, 9, 10, 11, 12) ORDER BY n;
- n  | rows | agree |       node       |   source   
-----+------+-------+------------------+------------
-  1 |   10 | t     | SiftProjSortScan | projection
-  2 | 1000 | t     | SiftProjSortScan | projection
-  3 |   20 | t     | SiftProjSortScan | projection
-  5 |    1 | t     | SiftProjSortScan | projection
-  6 |   10 | t     | SiftProjSortScan | projection
-  7 |  663 | t     | SiftProjSortScan | projection
-  9 |    2 | t     | SiftProjSortScan | projection
- 10 | 1848 | t     | SiftProjSortScan | projection
- 11 |   25 | t     | SiftProjSortScan | projection
- 12 |   30 | t     | SiftProjSortScan | projection
+ n  | rows | agree |       node       |   source   | index_only | fetched 
+----+------+-------+------------------+------------+------------+---------
+  1 |   10 | t     | SiftProjSortScan | projection | t          | f
+  2 | 1000 | t     | SiftProjSortScan | projection | t          | f
+  3 |   20 | t     | SiftProjSortScan | projection | t          | f
+  5 |    1 | t     | SiftProjSortScan | projection | t          | f
+  6 |   10 | t     | SiftProjSortScan | projection | t          | f
+  7 |  663 | t     | SiftProjSortScan | projection | t          | f
+  9 |    3 | t     | SiftProjSortScan | projection | t          | f
+ 10 | 1849 | t     | SiftProjSortScan | projection | t          | f
+ 11 |   25 | t     | SiftProjSortScan | projection | t          | f
+ 12 |   30 | t     | SiftProjSortScan | projection | t          | f
 (10 rows)
 
 DROP FUNCTION rp_b_run(text, bool), rp_b_check(text), rp_b_prun(text, text);

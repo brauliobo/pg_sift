@@ -116,9 +116,10 @@ ANALYZE rp_b_p;
 SELECT name, kind, state, rows FROM sift.projection_list() WHERE relation = 'rp_b_p_idx'::regclass;
 
 -- the plan reads the projection (the first line of each EXPLAIN that names it) and the rows are those of the heap (the order by an expression the projection does not have)
-CREATE FUNCTION rp_b_prun(q text, h text, OUT rows bigint, OUT agree bool, OUT node text, OUT source text) LANGUAGE plpgsql AS $$
+CREATE FUNCTION rp_b_prun(q text, h text, OUT rows bigint, OUT agree bool, OUT node text, OUT source text, OUT index_only bool, OUT fetched bool) LANGUAGE plpgsql AS $$
 DECLARE line text; a record; b record;
 BEGIN
+	index_only := false; fetched := false;
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	PERFORM set_config('enable_seqscan', 'false', true);
@@ -126,6 +127,8 @@ BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS OFF, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
 		IF line ~ 'SiftProjSortScan' THEN node := 'SiftProjSortScan'; END IF;
 		IF line ~ '^ *Source: ' THEN source := btrim(substr(line, position('Source: ' IN line) + 8)); END IF;
+		IF line ~ '^ *Index Only: true' THEN index_only := true; END IF;
+		IF line ~ '^ *Heap Fetches: ' THEN fetched := substr(line, position('Heap Fetches: ' IN line) + 14)::bigint > 0; END IF;
 	END LOOP;
 	EXECUTE 'SELECT count(*), md5(string_agg(w::text, ''|'')) FROM (' || q || ') w' INTO a;
 	PERFORM set_config('enable_seqscan', 'true', true);
@@ -153,6 +156,15 @@ INSERT INTO rp_b_pq VALUES
  (11, 'SELECT id, k, v FROM rp_b_p WHERE k < 20000 AND v = 7 ORDER BY k, id LIMIT 25', 'SELECT id, k, v FROM rp_b_p WHERE k < 20000 AND v = 7 ORDER BY k + 0, id LIMIT 25'),
  (12, 'SELECT id, k FROM rp_b_p WHERE k IS NULL ORDER BY k, id LIMIT 30', 'SELECT id, k FROM rp_b_p WHERE k IS NULL ORDER BY k + 0, id LIMIT 30');
 SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq ORDER BY n;
+
+-- the statement reads integer columns the projection keeps: the rows of pages the map of the relation says are all visible come from the cells (Heap Fetches counts the others, fetched says there were some); rows inserted
+-- since the vacuum are in pages it does not know, and the vacuum sets them
+INSERT INTO rp_b_p SELECT 30000 + i, -i, 1 FROM generate_series(1, 40) i;
+SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq WHERE n IN (1, 2, 5, 6) ORDER BY n;
+VACUUM rp_b_p;
+SELECT n, (rp_b_prun(q, h)).* FROM rp_b_pq WHERE n IN (1, 2, 5, 6) ORDER BY n;
+-- a qual only the row can decide is read from the relation, and so is every row of the statement
+SELECT (rp_b_prun('SELECT id, k FROM rp_b_p WHERE v + 1 = 8 ORDER BY k, id LIMIT 10', 'SELECT id, k FROM rp_b_p WHERE v + 1 = 8 ORDER BY k + 0, id LIMIT 10')).*;
 
 -- rows deleted, updated and inserted since the parts were built (deletion vectors, pending deletes, the slab and the heap pages that changed)
 DELETE FROM rp_b_p WHERE id % 10 = 3;
