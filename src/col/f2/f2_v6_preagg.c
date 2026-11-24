@@ -13,6 +13,7 @@
 #include "agg/agg.h"
 #include "col/f2/f2_v6_preagg.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_cube.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_pred.h"
 #include "col/f2/preagg_delta.h"
@@ -94,59 +95,13 @@ part_leaf(const SiftF2GranOffer *o, int leaf)
 	return o->phys == NULL ? leaf : o->phys[leaf];
 }
 
-static bool
-agg_shape_ok(const SiftV6Agg *a)
-{
-	const SiftV6Class cls = sift_v6_class(a->arg.typid);
-
-	if (a->fclause != 0 || a->nxcols != 0 || a->arg.derive > 0 || a->arg.src != SV6SRC_ATTR || a->arg.jleaf > 0)
-		return false;
-	switch (a->kind)
-	{
-		case SV6_COUNT_STAR:
-			return true;
-		case SV6_COUNT:
-			return a->arg.attno > 0;
-		case SV6_SUM:
-		case SV6_AVG:
-			return cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64;
-		case SV6_MIN:
-		case SV6_MAX:
-			return cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64;
-		case SV6_COUNT_DISTINCT:
-			return (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_TEXT) && a->arg.typid != NUMERICOID;
-		default:
-			return false;
-	}
-}
-
-static bool
-spec_ok(const SiftV6Spec *spec)
-{
-	if (spec->nsets != 0 || spec->nbins != 0 || spec->nderive != 0 || spec->nfilters != 0 || spec->nfuncs != 0 || spec->ext != NULL || spec->text_queries != NIL || spec->jsonqual != NIL ||
-		spec->vqual != NIL || spec->pgexpr != NIL || spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1)
-		return false;
-	for (int i = 0; i < spec->nkeys; i++)
-	{
-		const SiftV6Col *k = &spec->key[i];
-		const SiftV6Class cls = sift_v6_class(k->typid);
-
-		if (k->src != SV6SRC_ATTR || k->jleaf > 0 || k->derive > 0 || (cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_BOOL && cls != SV6C_TEXT) || k->typid == NUMERICOID)
-			return false;
-	}
-	for (int j = 0; j < spec->naggs; j++)
-		if (!agg_shape_ok(&spec->agg[j]))
-			return false;
-	return true;
-}
-
 SiftV6Preagg *
 sift_v6_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, const int *first, SiftV6Vet *vet, SiftV6ScanStats *stats)
 {
 	SiftV6Preagg *pa;
 	bool		dist = false;
 
-	if (!sift_agg_preagg || !spec_ok(spec))
+	if (!sift_agg_preagg || !sift_v6_spec_cubeable(spec))
 		return NULL;
 	pa = palloc0(sizeof(SiftV6Preagg));
 	pa->spec = spec;
