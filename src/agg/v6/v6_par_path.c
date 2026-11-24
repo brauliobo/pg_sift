@@ -18,7 +18,7 @@
 #include "catalog/pg_statistic.h"
 #include "utils/syscache.h"
 
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "agg/v6/v6_safety.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/group_int.h"

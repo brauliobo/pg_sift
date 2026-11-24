@@ -1,7 +1,7 @@
 /*
  * agg/v6_test.c - test-only SQL functions of the 2048-row engine, compiled only with SIFT_TESTING and registered by the pg_sift_test
  * extension: the salted hash table (agg/group/ht.c) against a sorted reference, with the growth and the radix scatter of a parallel
- * merge; the element mask of an array column (agg/array.c) against a per element loop; the cost of a path (agg/cost.c).
+ * merge; the element mask of an array column (agg/array.c) against a per element loop; the cost of a path (agg/v6/v6_cost_model.c).
  */
 #include "postgres.h"
 
@@ -9,7 +9,7 @@
 
 #include "funcapi.h"
 
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "agg/group/ht.h"
 #include "utils/builtins.h"
 

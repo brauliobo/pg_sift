@@ -1,10 +1,10 @@
 /*
- * agg/cost.h - the cost of a SiftAgg path from five inputs and the cost parameters of PostgreSQL itself (seq_page_cost,
+ * agg/v6/v6_cost_model.h - the cost of a SiftAgg path from five inputs and the cost parameters of PostgreSQL itself (seq_page_cost,
  * cpu_operator_cost, cpu_tuple_cost, parallel_setup_cost, parallel_tuple_cost): no constant fitted to a machine, so the price follows
  * the settings of the user.
  */
-#ifndef SIFT_AGG_COST_H
-#define SIFT_AGG_COST_H
+#ifndef SIFT_AGG_V6_COST_MODEL_H
+#define SIFT_AGG_V6_COST_MODEL_H
 
 #include "core/host.h"
 
@@ -50,4 +50,4 @@ extern void sift_agg_estimate_cost(const SiftCostInputs *in, double selectivity,
 extern int	sift_agg_choose_workers(const SiftCostInputs *in, double selectivity, bool is_preagg, bool is_streaming,
 									double fixed_cost, int max_workers, Cost *startup_out, Cost *total_out);
 
-#endif							/* SIFT_AGG_COST_H */
+#endif							/* SIFT_AGG_V6_COST_MODEL_H */

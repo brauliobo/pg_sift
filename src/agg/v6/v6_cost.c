@@ -10,7 +10,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "agg/v6/v6_cost.h"
 
 static void

@@ -12,7 +12,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "agg/hybrid.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_vexpr.h"

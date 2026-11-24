@@ -1,6 +1,6 @@
 /*
  * agg/v6/v6_par.h - the parallel SiftAggV6: two strategies over one scan and one transport, chosen by the planner from the estimated number of groups (no GUC: the constants below are those
- * of the cost model of agg/cost.h and of PostgreSQL's own settings).
+ * of the cost model of agg/v6/v6_cost_model.h and of PostgreSQL's own settings).
  *
  *   SV6P_TWO_STAGE            few groups: every participant aggregates its morsels into a table of its own; the first to finish keeps its table and the others hand it their groups as records; after one
  *                             barrier it merges them and emits the result. Workers return no tuple.
@@ -31,7 +31,7 @@
 #include "agg/v6/v6_acc.h"
 
 #define SIFT_V6_PAR_DSM_MAGIC		0x53365041U
-#define SIFT_PAR_TWO_STAGE_MAX_GROUPS	65536U		/* SIFT_DIRECT_MAX of agg/cost.h */
+#define SIFT_PAR_TWO_STAGE_MAX_GROUPS	65536U		/* SIFT_DIRECT_MAX of agg/v6/v6_cost_model.h */
 #define SIFT_PAR_TWO_STAGE_MERGE_RATIO	0.05		/* est_groups * workers at most this share of the rows: the merge is not the scan's tail */
 #define SIFT_PAR_MIN_ROWS			32768.0			/* under four granules the launch of a worker costs more than the scan */
 #define SIFT_PAR_MIN_GRANULES_PER_W	2U
@@ -76,7 +76,7 @@ typedef struct SiftV6ParInput
 	double		est_groups;			/* output groups of all the sets of keys, >= 1 */
 	double		state_bytes;		/* of one group: its key and accumulators */
 	double		hash_limit;			/* get_hash_memory_limit() */
-	/* the workers the cost model of agg/cost.h picks (0: the serial plan is cheaper) given the most the granules allow */
+	/* the workers the cost model of agg/v6/v6_cost_model.h picks (0: the serial plan is cheaper) given the most the granules allow */
 	int			(*cost_workers) (void *arg, int max_by_granules);
 	void	   *cost_arg;
 } SiftV6ParInput;

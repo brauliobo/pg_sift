@@ -12,7 +12,7 @@
 
 #include <math.h>
 
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_par_dist.h"
 #include "agg/v6/v6_par_pg.h"

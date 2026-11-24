@@ -4,7 +4,7 @@
  *
  * Serial when anything that makes a parallel plan unsafe or not worth its launch is true: sift.parallel_scan off, no workers, a relation that is not parallel safe, row security, a target or qual that is
  * not parallel safe, a float sum under sift.agg_exact_float (the order of the additions is the answer), fewer rows than four granules, fewer than two granules left by the zone maps. Otherwise the cost model
- * of agg/cost.h picks the number of workers (the granules left allow one worker for every SIFT_PAR_MIN_GRANULES_PER_W of them) and the groups pick the strategy.
+ * of agg/v6/v6_cost_model.h picks the number of workers (the granules left allow one worker for every SIFT_PAR_MIN_GRANULES_PER_W of them) and the groups pick the strategy.
  */
 #include "core/host.h"
 

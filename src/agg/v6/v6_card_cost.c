@@ -1,6 +1,6 @@
 /*
  * agg/v6/v6_cost.c - what the planner knows of a scan of an index of format major 2 from the statistics its parts folded (agg/v6/v6_card.h): the rows of the relation, the groups of its keys, and the
- * cost of the aggregate scan from the granules the clauses leave and the bytes of the columns it reads (agg/cost.h, the five inputs and the settings of PostgreSQL itself). The open of the index is
+ * cost of the aggregate scan from the granules the clauses leave and the bytes of the columns it reads (agg/v6/v6_cost_model.h, the five inputs and the settings of PostgreSQL itself). The open of the index is
  * not in it: every plan that reads the index pays it, so it does not tell them apart.
  */
 #include "postgres.h"
@@ -15,7 +15,7 @@
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "agg/v6/v6_safety.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_bqual.h"
@@ -259,7 +259,7 @@ spec_cols(const SiftV6Spec *spec, bool filter, Bitmapset **leaves)
 	return cols;
 }
 
-/* what a scan pays once before its rows: the open of the source and of each part it reads (agg/cost.h) */
+/* what a scan pays once before its rows: the open of the source and of each part it reads (agg/v6/v6_cost_model.h) */
 static double
 open_cost(double parts)
 {

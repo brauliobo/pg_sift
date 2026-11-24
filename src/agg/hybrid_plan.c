@@ -39,7 +39,7 @@
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 #include "col/am.h"
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "core/store_ops.h"
 #include "table/dispatch.h"
 #include "core/sift.h"

@@ -3,7 +3,7 @@
  * added.
  *
  * A sift_table has no statistics of its own, so the granules its quals leave come from the statistics of PostgreSQL (v6_card.h): the bytes of the columns the statement reads are decoded for the rows
- * of those granules, and the price is that of the aggregate scan of a sift_col (agg/cost.h), with the open of the table before the first row.
+ * of those granules, and the price is that of the aggregate scan of a sift_col (agg/v6/v6_cost_model.h), with the open of the table before the first row.
  */
 #ifndef SIFT_AGG_V6_COST_H
 #define SIFT_AGG_V6_COST_H

@@ -11,7 +11,7 @@
 
 #include "nodes/pathnodes.h"
 
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "agg/v6/v6_card_est.h"
 #include "agg/v6/v6.h"
 
@@ -47,7 +47,7 @@ extern void sift_v6_card_apply_rel(PlannerInfo *root, RelOptInfo *rel);
 extern double sift_v6_card_group_estimate(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, List *group_exprs, double rows);
 extern void sift_v6_agg_cost(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftV6Spec *spec, double groups, Cost *startup, Cost *total);
 
-/* The inputs of that cost (agg/cost.h) for a scan that spreads over workers: the bytes decoded, the share of the decoded rows that pass the quals, and the open the workers do not share */
+/* The inputs of that cost (agg/v6/v6_cost_model.h) for a scan that spreads over workers: the bytes decoded, the share of the decoded rows that pass the quals, and the open the workers do not share */
 typedef struct SiftV6AggPrice
 {
 	SiftCostInputs in;

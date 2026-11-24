@@ -31,8 +31,6 @@ agg/colsrc.h
 agg/colsrc/
 agg/combo/
 agg/combo_int.h
-agg/cost.c
-agg/cost.h
 agg/cost/
 agg/cte/
 agg/dense.c
@@ -217,6 +215,8 @@ agg/update/
 agg/update_int.h
 agg/v6/
 agg/v6/plan_kind.c
+agg/v6/v6_cost_model.c
+agg/v6/v6_cost_model.h
 agg/v6/store_ops_test.c
 agg/v6/v6_batch_source.c
 agg/v6/v6_open_scan.c
@@ -246,8 +246,6 @@ agg/wide.h
 agg/wide_nums.c
 agg/window.c
 agg/window_test.c
-core/zoneoff.c
-core/zoneoff.h
 bm25/am.h
 bm25/amscan.c
 bm25/analyze_index.c
@@ -975,6 +973,8 @@ core/worker.h
 core/writer.c
 core/xid_cache.c
 core/xid_cache.h
+core/zoneoff.c
+core/zoneoff.h
 table/
 table/v1/v1_tbl_ops.c
 table/v1/v1_tbl_ops.h

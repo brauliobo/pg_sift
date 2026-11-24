@@ -17,7 +17,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(REPO, 'scripts', 'fast-gate.sh')
 ENV = {k: v for k, v in os.environ.items() if k != 'CI'}
 
-STAR, CLICK, COEXIST, JSONB = 'src/agg/v6/v6_sip.c', 'src/agg/v6/v6_group_fast.c', 'src/agg/cost.c', 'src/col/shred.c'
+STAR, CLICK, COEXIST, JSONB = 'src/agg/v6/v6_sip.c', 'src/agg/v6/v6_group_fast.c', 'src/agg/v6/v6_cost_model.c', 'src/col/shred.c'
 COL, TABLE, BM25, GPU, SQL, SMOKE = 'src/col/codec_int.h', 'src/table/am.c', 'src/bm25/amscan.c', 'src/agg/gpu_cfg.h', 'sql/pg_sift--1.0.sql', 'src/new_thing.c'
 REGRESS = 'test/sql/agg_bucket.sql'
 AREAS = 'star clickbench coexist jsonb col table bm25 gpu sql smoke all'.split()

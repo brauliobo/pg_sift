@@ -21,7 +21,7 @@
 #include <math.h>
 
 #include "access/xact.h"
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 #include "agg/group/state.h"
 #include "agg/kern6.h"
 #include "agg/stream_exec.h"

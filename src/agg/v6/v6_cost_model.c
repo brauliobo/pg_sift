@@ -1,5 +1,5 @@
 /*
- * agg/cost.c - the five-input cost of a SiftAgg path (agg/cost.h).
+ * agg/v6/v6_cost_model.c - the five-input cost of a SiftAgg path (agg/v6/v6_cost_model.h).
  */
 #include "postgres.h"
 
@@ -7,7 +7,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 
-#include "agg/cost.h"
+#include "agg/v6/v6_cost_model.h"
 
 double
 sift_agg_cold_share(double pages)
