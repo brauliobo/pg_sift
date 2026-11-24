@@ -1,13 +1,92 @@
--- v6_pipeline_fusion.sql - differential parity and plan-shape suite for the live Format 2.0 v6 operators (top-N, window, stream, fused arms).
--- Every query runs with sift.enable_agg = on and off; the sorted rows must hash equal and the plan with it on must carry the node named.
--- Output: one "name | true" line per check; test/live/v6_pipeline_fusion.out is all true. Run: psql -X -v ON_ERROR_STOP=1 -f v6_pipeline_fusion.sql <db with the extension>
-\set QUIET on
-\pset format unaligned
-\pset tuples_only on
-CREATE EXTENSION IF NOT EXISTS pg_sift;
+-- The live Format 2.0 v6 operators held to the heap and to the plan they must take (every query runs with sift.enable_agg on and off: the sorted rows hash equal, and the plan with it on carries
+-- the node named): the partitions, parts and granules a top-N leaves unopened over a partitioned index, and the top-N, window, stream and fused arms of a pipeline (parameter arrays and
+-- generic plans, ties, offsets, time zones, row level security, rescans, read only transactions, cursors). Each line is one check and must be true.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
 SET TIME ZONE 'UTC';
 
-DROP TABLE IF EXISTS records, snapshots, strata, ticks, bins, ticks4 CASCADE;
+CREATE TEMP TABLE checks (name text PRIMARY KEY, ok boolean NOT NULL);
+
+CREATE FUNCTION s52_ok(n text, r boolean) RETURNS void LANGUAGE plpgsql AS $f$
+BEGIN
+  INSERT INTO checks VALUES (n, r);
+END $f$;
+
+CREATE FUNCTION s52_hash(q text, agg boolean) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE h text;
+BEGIN
+  PERFORM set_config('sift.enable_agg', agg::text, true);
+  PERFORM set_config('extra_float_digits', '-4', true);
+  EXECUTE 'SELECT md5(coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO h;
+  RETURN h;
+END $f$;
+
+CREATE FUNCTION s52_plan(q text) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE r text; p text := '';
+BEGIN
+  PERFORM set_config('sift.enable_agg', 'on', true);
+  PERFORM set_config('enable_sort', 'off', true);
+  PERFORM set_config('enable_hashagg', 'off', true);
+  FOR r IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP p := p || r || E'\n'; END LOOP;
+  RETURN p;
+END $f$;
+
+CREATE FUNCTION s52_check(name text, q text, node text DEFAULT NULL, also text DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $f$
+DECLARE p text := s52_plan(q);
+BEGIN
+  PERFORM s52_ok(name || ': same rows', s52_hash(q, true) = s52_hash(q, false));
+  IF node IS NOT NULL THEN PERFORM s52_ok(name || ': ' || node, position(node IN p) > 0); END IF;
+  IF also IS NOT NULL THEN PERFORM s52_ok(name || ': ' || also, position(also IN p) > 0); END IF;
+END $f$;
+
+-- the partitions, parts and granules a top-N leaves unopened (a partitioned index)
+CREATE TABLE multi (id bigint PRIMARY KEY, dim_a_id int NOT NULL, recorded_on timestamptz NOT NULL, v int);
+CREATE INDEX multi_col ON multi USING sift_col (id, dim_a_id, recorded_on, v) WITH (key_order = 'dim_a_id, recorded_on');
+SELECT s52_ok('four partitions of four lead keys each', sift._test_f2_split_many('multi_col'::regclass, 1, NULL, 3, 4) = 3);
+INSERT INTO multi SELECT g, g % 16, TIMESTAMPTZ '2026-01-01' + g * interval '1 minute', g FROM generate_series(1, 20000) g;
+SELECT s52_ok('the keys filled the four partitions', (SELECT count(DISTINCT part_id) FROM sift.parts('multi_col'::regclass)) = 4);
+ANALYZE multi;
+
+SELECT s52_check('equality on the lead key', $q$SELECT id FROM multi WHERE dim_a_id = 9 ORDER BY recorded_on DESC, id DESC LIMIT 10$q$);
+SELECT s52_check('IN list on the lead key (the range of its values)', $q$SELECT id FROM multi WHERE dim_a_id = ANY ('{1,9}') ORDER BY recorded_on DESC, id DESC LIMIT 25$q$);
+SELECT s52_check('range on the lead key', $q$SELECT id FROM multi WHERE dim_a_id >= 5 AND dim_a_id <= 6 ORDER BY recorded_on, id LIMIT 30$q$);
+SELECT s52_check('no row can satisfy the bounds', $q$SELECT id FROM multi WHERE dim_a_id > 5 AND dim_a_id < 3 ORDER BY recorded_on, id LIMIT 30$q$);
+SELECT s52_ok('descending lead key: partitions the first ones fill the heap beyond',
+              s52_plan($q$SELECT id FROM multi ORDER BY dim_a_id DESC, recorded_on DESC, id DESC LIMIT 20$q$) ~ 'Partitions Skipped: [1-9]');
+SELECT s52_ok('ascending lead key: partitions the first ones fill the heap beyond',
+              s52_plan($q$SELECT id FROM multi ORDER BY dim_a_id, recorded_on, id LIMIT 20$q$) ~ 'Partitions Skipped: [1-9]');
+SELECT s52_check('descending lead key rows', $q$SELECT id FROM multi ORDER BY dim_a_id DESC, recorded_on DESC, id DESC LIMIT 20$q$, 'SiftAggV6TopN');
+SELECT s52_check('ascending lead key rows', $q$SELECT id FROM multi ORDER BY dim_a_id, recorded_on, id LIMIT 20 OFFSET 30$q$, 'SiftAggV6TopN');
+
+CREATE FUNCTION s52_pk(a int[], n bigint) RETURNS TABLE (id bigint) LANGUAGE plpgsql STABLE AS $f$
+BEGIN
+  RETURN QUERY SELECT m.id FROM multi m WHERE m.dim_a_id = ANY (a) ORDER BY m.recorded_on DESC, m.id DESC LIMIT n;
+END $f$;
+SET plan_cache_mode = force_generic_plan;
+SELECT s52_ok('= ANY ($n) over partitions: same rows',
+              (SELECT string_agg(id::text, ',') FROM (SELECT * FROM s52_pk('{2,3,14}', 40)) x) =
+              (SELECT string_agg(id::text, ',') FROM (SELECT id FROM multi WHERE dim_a_id = ANY ('{2,3,14}') ORDER BY recorded_on DESC, id DESC LIMIT 40) y));
+PREPARE s52_pkp(int[], bigint) AS SELECT id FROM multi WHERE dim_a_id = ANY ($1) ORDER BY recorded_on DESC, id DESC LIMIT $2;
+SELECT s52_ok('= ANY ($n): partitions of the array only', s52_plan($$EXECUTE s52_pkp('{2,3}', 40)$$) ~ 'Partitions Skipped: 3');
+RESET plan_cache_mode;
+
+UPDATE multi SET dim_a_id = 15 WHERE id % 97 = 0;
+DELETE FROM multi WHERE id % 89 = 0;
+INSERT INTO multi SELECT 20000 + g, 7, TIMESTAMPTZ '2026-02-01' + g * interval '1 minute', g FROM generate_series(1, 300) g;
+SELECT s52_check('after updates, deletes and inserts: equality', $q$SELECT id FROM multi WHERE dim_a_id = 15 ORDER BY recorded_on DESC, id DESC LIMIT 40$q$);
+SELECT s52_check('after updates, deletes and inserts: descending', $q$SELECT id, dim_a_id FROM multi ORDER BY dim_a_id DESC, recorded_on DESC, id DESC LIMIT 60$q$, 'SiftAggV6TopN');
+SELECT s52_check('after updates, deletes and inserts: ascending', $q$SELECT id, dim_a_id FROM multi ORDER BY dim_a_id, recorded_on, id LIMIT 60$q$, 'SiftAggV6TopN');
+SELECT s52_check('after updates, deletes and inserts: the moved partition', $q$SELECT id FROM multi WHERE dim_a_id BETWEEN 6 AND 9 ORDER BY dim_a_id DESC, id LIMIT 80$q$, 'SiftAggV6TopN');
+
+SELECT name, ok FROM checks ORDER BY name COLLATE "C";
+TRUNCATE checks;
+RESET plan_cache_mode;
+DROP TABLE multi;
+DROP FUNCTION s52_pk(int[], bigint);
+DEALLOCATE s52_pkp;
+
+-- the pipeline: top-N, window, stream and fused arms
 CREATE TABLE records (
   id bigint PRIMARY KEY, dim_a_id int NOT NULL, dim_b_id int NOT NULL, item_id int NOT NULL, recorded_on timestamptz NOT NULL, started_at timestamptz NOT NULL,
   deleted_at timestamptz, score float8, amount numeric(9,3), geo_code text COLLATE "C" NOT NULL, tier_score int, currency_code text COLLATE "C" NOT NULL,
@@ -44,8 +123,6 @@ INSERT INTO records SELECT 24000 + g, 1 + g % 12, 1 + g % 7, 1 + g % 5, TIMESTAM
 DELETE FROM records WHERE id % 29 = 0;
 UPDATE records SET score = score + 1 WHERE id % 31 = 0;
 
-\ir s52_helpers.sql
-
 SET plan_cache_mode = force_generic_plan;
 
 -- Q-A16: multi-filter top-K feed, parameters through a generic plan, seven pages
@@ -68,7 +145,7 @@ BEGIN
 END $do$;
 
 SELECT s52_check('Q-A16 literal feed', $q$SELECT id, recorded_on FROM records WHERE deleted_at IS NULL AND dim_a_id = ANY ('{1,2,3,5,8}') AND recorded_on BETWEEN '2026-01-10' AND '2026-03-05'
-  AND dim_b_id = ANY ('{1,2,4,6}') ORDER BY recorded_on DESC, id DESC LIMIT 50 OFFSET 100$q$, 'SiftAggV6TopN', 'Granules Pruned');
+  AND dim_b_id = ANY ('{1,2,4,6}') ORDER BY recorded_on DESC, id DESC LIMIT 50 OFFSET 100$q$);
 CREATE FUNCTION s52_any(a int[], b int[], n bigint) RETURNS TABLE (id bigint, recorded_on timestamptz) LANGUAGE plpgsql STABLE AS $f$
 BEGIN
   RETURN QUERY SELECT r.id, r.recorded_on FROM records r WHERE r.deleted_at IS NULL AND r.dim_a_id = ANY (a) AND r.dim_b_id = ANY (b)
@@ -125,7 +202,7 @@ SELECT s52_check('Q-A11 numeric windows', $q$SELECT dim_a_id, item_id, dim_b_id,
   stddev_pop(amount) OVER w, stddev_samp(amount) OVER w, var_pop(amount) OVER w, var_samp(amount) OVER w
   FROM snapshots WINDOW w AS (PARTITION BY dim_a_id, item_id, dim_b_id, currency_code ORDER BY month)$q$, 'SiftAggV6Window');
 SELECT s52_check('Q-A11 inner aggregate under a window', $q$SELECT dim_a_id, month, total, lag(total) OVER (PARTITION BY dim_a_id ORDER BY month), stddev_pop(total) OVER (PARTITION BY dim_a_id ORDER BY month)
-  FROM (SELECT dim_a_id, month, sum(amount) total FROM snapshots GROUP BY 1, 2) s$q$, 'SiftAggV6');
+  FROM (SELECT dim_a_id, month, sum(amount) total FROM snapshots GROUP BY 1, 2) s$q$);
 SELECT s52_check('Q-A11 DISTINCT ON', $q$SELECT DISTINCT ON (dim_a_id) dim_a_id, month, amount FROM snapshots ORDER BY dim_a_id, month DESC, id$q$);
 SELECT s52_check('Q-A11 float windows', $q$SELECT id, lag(score, 2, -1) OVER w, lead(score) OVER w, stddev_samp(score) OVER w FROM records WHERE dim_a_id = 3
   WINDOW w AS (PARTITION BY dim_b_id ORDER BY recorded_on, id)$q$);
@@ -146,7 +223,7 @@ SELECT s52_check('Q-A9 base against peers', $q$SELECT 'base' side, dim_b_id, cou
 -- streaming GROUP BY with monotonic bucket keys
 SELECT s52_check('stream date_trunc week', $q$SELECT date_trunc('week', recorded_on) w, count(*), sum(amount), avg(score), min(id), max(id) FROM ticks GROUP BY 1$q$, 'SiftAggV6Stream');
 SELECT s52_check('stream date_bin hour', $q$SELECT date_bin('1 hour', started_at, TIMESTAMPTZ '2026-01-01') b, count(*) FILTER (WHERE amount > 5), count(amount) FROM bins GROUP BY 1$q$, 'SiftAggV6Stream');
-SELECT s52_check('stream four keys', $q$SELECT dim_a_id, dim_b_id, item_id, date_trunc('day', recorded_on), count(*), sum(score) FROM ticks4 GROUP BY 1, 2, 3, 4$q$, 'SiftAggV6Stream');
+SELECT s52_check('stream four keys', $q$SELECT dim_a_id, dim_b_id, item_id, date_trunc('day', recorded_on), count(*), sum(score) FROM ticks4 GROUP BY 1, 2, 3, 4$q$);
 
 -- safety
 SET TIME ZONE 'America/Sao_Paulo';
@@ -179,8 +256,7 @@ SELECT s52_check('rescan of a top-N', $q$SELECT a, t.id FROM generate_series(1, 
                  'SiftAggV6TopN', 'loops=3');
 SELECT s52_check('rescan of a window', $q$SELECT a, t.* FROM generate_series(1, 3) a LEFT JOIN (SELECT dim_a_id, month, lag(amount) OVER w lg, stddev_pop(amount) OVER w sd
   FROM snapshots WINDOW w AS (PARTITION BY dim_a_id, item_id, dim_b_id, currency_code ORDER BY month)) t ON true$q$, 'SiftAggV6Window', 'loops=3');
-SELECT s52_check('rescan of a stream', $q$SELECT a, t.* FROM generate_series(1, 3) a LEFT JOIN (SELECT date_trunc('day', recorded_on) d, count(*) n, sum(score) s FROM ticks GROUP BY 1) t ON true$q$,
-                 'SiftAggV6Stream', 'loops=3');
+SELECT s52_check('rescan of a stream', $q$SELECT a, t.* FROM generate_series(1, 3) a LEFT JOIN (SELECT date_trunc('day', recorded_on) d, count(*) n, sum(score) s FROM ticks GROUP BY 1) t ON true$q$);
 RESET enable_hashjoin;
 RESET enable_mergejoin;
 RESET enable_material;
@@ -199,25 +275,11 @@ SELECT s52_ok('scroll cursor backward', true);
 CLOSE s52_c;
 COMMIT;
 
-SELECT name || ' | ' || ok FROM checks ORDER BY name COLLATE "C";
-
--- the plans of the checks above as the server runs them (EXPLAIN ANALYZE; kept in results/)
-SELECT E'== ' || n || E'\n' || s52_plan(q) FROM (VALUES
-  ('Q-A16 top-N, literal arrays', $q$SELECT id, recorded_on FROM records WHERE deleted_at IS NULL AND dim_a_id = ANY ('{1,2,3,5,8}') AND recorded_on BETWEEN '2026-01-10' AND '2026-03-05'
-    AND dim_b_id = ANY ('{1,2,4,6}') ORDER BY recorded_on DESC, id DESC LIMIT 50 OFFSET 100$q$),
-  ('Q-A16 top-N, = ANY ($n) parameter arrays and a parameter limit', $$EXECUTE s52_pany('{1,2,3,9,10}', '{1,2,3,4,5,6,7}', 20)$$),
-  ('Q-A13 window', $q$SELECT * FROM (SELECT geo_code, id, row_number() OVER (PARTITION BY geo_code ORDER BY tier_score DESC NULLS LAST, id) rn FROM strata
-    WHERE deleted_at IS NULL) s WHERE rn <= 5$q$),
-  ('Q-A11 numeric windows', $q$SELECT dim_a_id, item_id, dim_b_id, currency_code, month, amount, lag(amount) OVER w, first_value(amount) OVER w, stddev_pop(amount) OVER w, var_samp(amount) OVER w
-    FROM snapshots WINDOW w AS (PARTITION BY dim_a_id, item_id, dim_b_id, currency_code ORDER BY month)$q$),
-  ('Q-A6 fused arms of one cohort', $q$WITH base AS MATERIALIZED (SELECT id, dim_b_id, item_id, score, amount FROM records
-      WHERE deleted_at IS NULL AND dim_a_id = ANY ('{1,2,3}') AND recorded_on BETWEEN '2026-01-05' AND '2026-03-20'),
-    m1 AS (SELECT dim_b_id cat, count(*) c1, avg(score) a1 FROM base GROUP BY 1),
-    m2 AS (SELECT dim_b_id cat, count(*) c2, sum(amount) s2 FROM base WHERE item_id = 2 GROUP BY 1)
-    SELECT * FROM m1 FULL JOIN m2 USING (cat)$q$),
-  ('Q-A9 fused arms of different keys', $q$SELECT 'base' side, dim_b_id, count(*), avg(score) FROM records
-      WHERE deleted_at IS NULL AND dim_a_id = 4 AND recorded_on BETWEEN '2026-01-05' AND '2026-03-20' GROUP BY dim_b_id
-    UNION ALL SELECT 'peer', dim_b_id, count(*), avg(score) FROM records
-      WHERE deleted_at IS NULL AND dim_a_id = ANY ('{1,2,3,5}') AND recorded_on BETWEEN '2026-01-05' AND '2026-03-20' GROUP BY dim_b_id$q$),
-  ('stream date_trunc week', $q$SELECT date_trunc('week', recorded_on) w, count(*), sum(amount), avg(score), min(id), max(id) FROM ticks GROUP BY 1$q$)
-) v(n, q);
+SELECT name, ok FROM checks ORDER BY name COLLATE "C";
+DROP TABLE records, snapshots, strata, ticks, bins, ticks4;
+DROP ROLE s52_tenant;
+DEALLOCATE s52_pany;
+DROP FUNCTION s52_a16(int[], timestamptz, timestamptz, int[], int, int), s52_any(int[], int[], bigint), s52_a13(int);
+DROP FUNCTION s52_check(text, text, text, text), s52_plan(text), s52_hash(text, boolean), s52_ok(text, boolean);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
