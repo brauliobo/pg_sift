@@ -469,7 +469,7 @@ joined_by_member(const ScopePlan *p, AttrNumber fk)
 			continue;
 		foreach_node(EquivalenceMember, em, ec->ec_members)
 		{
-			const Var  *v = (const Var *) em->em_expr;
+			const Var  *v = (const Var *) sift_v6_strip_relabel((Node *) em->em_expr);
 
 			if (!IsA(v, Var))
 				break;

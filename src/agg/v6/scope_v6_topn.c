@@ -49,7 +49,7 @@ owned_rows(SiftF2Scope *sc, int64 key, SiftScopeNewest *rows, int n)
 
 	sift_f2_scope_cells(sc, rows, n, &sc->member_leaf, 1, m);
 	for (int i = 0; i < n; i++)
-		if (!m[i].isnull && sc->entity.owns(sc->entity.arg, m[i].i, key))
+		if (sift_f2_scope_owns_cell(sc, &m[i], key))
 			rows[w++] = rows[i];
 	pfree(m);
 	return w;

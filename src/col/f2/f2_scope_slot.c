@@ -161,9 +161,13 @@ sift_f2s_slot_phys(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, int leaf)
 SiftZone
 sift_f2s_slot_zone(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, int leaf, uint32 g)
 {
-	SiftPart   *part = sift_f2s_slot_part(p, s);
-	int			phys = sift_f2s_slot_phys(p, s, leaf);
+	SiftPart   *part;
+	int			phys;
 
+	if (p->sc->mem != NULL && leaf == p->sc->member_leaf)
+		return (SiftZone) {.flags = SIFT_ZONE_NONE};
+	part = sift_f2s_slot_part(p, s);
+	phys = sift_f2s_slot_phys(p, s, leaf);
 	if (s->zones == NULL)
 	{
 		uint64		len;

@@ -294,6 +294,12 @@ view_refresh(SiftKeyStore *ks)
 	return snap;
 }
 
+uint64
+sift_keystore_ncodes(SiftKeyStore *ks)
+{
+	return ks->view->total;
+}
+
 const char *
 sift_keystore_string(SiftKeyStore *ks, uint32 code, uint32 *len)
 {

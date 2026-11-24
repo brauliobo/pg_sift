@@ -22,6 +22,7 @@
 #include "table/f2/f2_tbl.h"
 
 #include "col/f2/f2_scope_int.h"
+#include "col/f2/f2_scope_mem.h"
 
 /* The pairs are read when a granule that mixes members of other keys asks for them: a whole-key read of a clean summary never does */
 SiftF2ScopeParts *
@@ -160,7 +161,7 @@ decode_sel(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, 
 	sel = (RowSel) {at, at != NULL ? nat : gd.nrows};
 	*r = (SiftScopeRows) {.n = sel.n,.want_extra = want_extra};
 	if (need & SIFT_F2S_NEED_MEMBER)
-		r->member = col_ints(&v, sc->member_leaf, sel, &r->member_null);
+		r->member = sc->mem != NULL ? sift_f2s_mem_ints(sc->mem, &v, sc->member_leaf, sel.at, sel.n, &r->member_null) : col_ints(&v, sc->member_leaf, sel, &r->member_null);
 	if (sc->time_leaf >= 0 && (need & SIFT_F2S_NEED_TIME))
 		r->time = scaled_ints(&v, sc->time_leaf, sel, sc->time_unit, &r->time_null);
 	for (int q = 1; q < sc->nrings; q++)

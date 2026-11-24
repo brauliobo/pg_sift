@@ -111,6 +111,8 @@ extern uint32 sift_f2_scope_added_top(const SiftF2Scope *sc, int64 key, uint32 n
 
 /* The leaves[0 .. nleaves - 1] of the rows of the entity parts that rows (gidx, row_ord of a ring) name, as cells[k * nleaves + j]; a string is made in the current memory context */
 extern void sift_f2_scope_cells(SiftF2Scope *sc, const SiftScopeNewest *rows, int nrows, const int *leaves, int nleaves, SiftF2ScopeCell *cells);
+/* Does the key own the member a cell of the member leaf holds, under the pairs of the read */
+extern bool sift_f2_scope_owns_cell(SiftF2Scope *sc, const SiftF2ScopeCell *member, int64 key);
 /* The same for rows of sift_f2_scope_added_top */
 extern void sift_f2_scope_added_cells(SiftF2Scope *sc, const SiftF2ScopeAdded *rows, int nrows, const int *leaves, int nleaves, SiftF2ScopeCell *cells);
 

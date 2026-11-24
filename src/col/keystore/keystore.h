@@ -53,6 +53,9 @@ extern uint32 sift_keystore_intern(SiftKeyStore *ks, const SiftCDict *batch, con
 extern void sift_keystore_refresh(SiftKeyStore *ks);
 extern int64 sift_keystore_find_code(SiftKeyStore *ks, const char *s, uint32 len);
 
+/* The codes the view has: those of the runs it read, the codes 0 .. n - 1 */
+extern uint64 sift_keystore_ncodes(SiftKeyStore *ks);
+
 /* The string of a code, after reading the runs again when the view has fewer codes; valid until the store is read again */
 extern const char *sift_keystore_string(SiftKeyStore *ks, uint32 code, uint32 *len);
 

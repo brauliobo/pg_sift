@@ -404,6 +404,8 @@ col/f2/f2_scope_delta.c
 col/f2/f2_scope_ent.c
 col/f2/f2_scope_ent_batch.c
 col/f2/f2_scope_int.h
+col/f2/f2_scope_mem.c
+col/f2/f2_scope_mem.h
 col/f2/f2_scope_over.c
 col/f2/f2_scope_pack.c
 col/f2/f2_scope_pairs.c

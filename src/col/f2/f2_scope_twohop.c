@@ -12,6 +12,7 @@
 #include "executor/tuptable.h"
 
 #include "col/f2/f2_scope_int.h"
+#include "col/f2/f2_scope_mem.h"
 #include "col/scope.h"
 #include "core/memtrack.h"
 
@@ -150,7 +151,14 @@ check_pair_types(Relation rel, AttrNumber member, AttrNumber key, const char *wh
 
 	if (!sift_f2s_pair_types(TupleDescAttr(rel->rd_att, member - 1)->atttypid, tkey))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the pairs of scope \"%s\" are not integers or strings", what),
-						errhint("Format major 2 summarizes scopes whose member is an integer column and whose key is an integer, text, varchar or uuid column.")));
+						errhint("Format major 2 summarizes scopes whose member is an integer, text, varchar or uuid column and whose key is an integer, date, timestamp, timestamptz, text, varchar or uuid column.")));
+}
+
+static void
+collect(SiftKeyMap *m, bool on)
+{
+	if (m != NULL)
+		sift_keymap_collect(m, on);
 }
 
 SiftScopePairMap *
@@ -162,17 +170,20 @@ sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Sna
 	AttrNumber	m0,
 				k0;
 	const Oid	b0 = sift_scope_relation_index(heap, index, sc->spec, &rel, &m0, &k0);
+	SiftKeyMap *mm = sift_f2s_mem_map(sc->mem);
 	SiftScopePairMap *pm;
 
 	check_pair_types(rel, m0, k0, sc->spec->key_name);
 	sift_mem_init(&mem, "scope pairs", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 1, 1);
-	if (intern && km != NULL)
+	if (intern && (km != NULL || mm != NULL))
 	{
-		sift_keymap_collect(km, true);
-		scan_pairs(b0, rel, m0, NULL, k0, km, snap, &mem, NULL);
-		sift_keymap_collect(km, false);
+		collect(km, true);
+		collect(mm, true);
+		scan_pairs(b0, rel, m0, mm, k0, km, snap, &mem, NULL);
+		collect(km, false);
+		collect(mm, false);
 	}
-	scan_pairs(b0, rel, m0, NULL, k0, km, snap, &mem, &pairs);
+	scan_pairs(b0, rel, m0, mm, k0, km, snap, &mem, &pairs);
 	table_close(rel, NoLock);
 	if (sc->spec->joined != NULL)
 	{

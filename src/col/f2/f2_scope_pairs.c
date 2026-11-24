@@ -19,6 +19,7 @@
 #include "col/scope.h"
 
 #include "col/f2/f2_scope_int.h"
+#include "col/f2/f2_scope_mem.h"
 #include "core/cachebudget.h"
 #include "core/cmp.h"
 
@@ -123,7 +124,7 @@ sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, S
 		cache_drop();
 		loaded = sift_f2s_load_pairs(heap, index, sc, snap, km, false);
 		/* MEM[MEM-SCOPE-02]: cached pair map charged to the cache budget (room, then commit) */
-		if (!sift_cache_room(map_bytes(loaded)))
+		if (sift_f2s_mem_transient(sc->mem) || !sift_cache_room(map_bytes(loaded)))
 			return loaded;
 		cache.cx = sift_cache_create_context("sift cache scope pairs");
 		cache.pm = copy_map(loaded, cache.cx);
@@ -238,6 +239,7 @@ edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot 
 	const int	pa = index_position(ix, a),
 				pb = index_position(ix, b);
 	const bool	by_member = pa == 1;
+	SiftKeyMap *mm = sift_f2s_mem_map(sc->mem);
 	TupleTableSlot *slot = table_slot_create(prel, NULL);
 	IndexScanDesc scan = sift_index_beginscan(prel, ix, snap, by_member ? 1 : 2);
 	SiftScopeMemberKey *now = NULL;
@@ -249,7 +251,7 @@ edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot 
 		{
 			ScanKeyData sk[2];
 
-			sift_scope_key_eq_init(&sk[0], pa, ta, InvalidOid, sift_scope_key_datum(ta, NULL, changed[i]));
+			sift_scope_key_eq_init(&sk[0], pa, ta, TupleDescAttr(prel->rd_att, a - 1)->attcollation, sift_scope_key_datum(ta, mm, changed[i]));
 			if (by_member)
 			{
 				index_rescan(scan, sk, 1, NULL, 0);

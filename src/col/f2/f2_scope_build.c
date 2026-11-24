@@ -17,6 +17,7 @@
 #include "core/page_io.h"
 
 #include "col/f2/f2_scope_int.h"
+#include "col/f2/f2_scope_mem.h"
 
 /* The part a summary is kept in: one section, the object */
 static SiftManifestScopeRef
@@ -165,7 +166,10 @@ build_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg 
 
 	cfg.nrings = cfg.time_leaf >= 0 ? 1 : 0;
 	spec_init(rel, store, &cfg, snap, gen, &spec);
+	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, true);
 	pm = sift_f2s_load_pairs(heap, rel, &cfg, snap, sift_f2s_key_map(heap, rel, cfg.spec, true), true);
+	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, false);
+	spec.flags |= cfg.mem != NULL ? SIFT_SMETA_CODED_MEM : 0;
 	p = sift_f2s_parts_new(rel, store, heap, &cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr));
 	sift_f2s_parts_of_manifest(p, mr);
 	pick_rings(p, &cfg, store, &spec);
@@ -448,7 +452,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 	for (int j = 0; j < sift_scope_njournals(base->spec); j++)
 		memcpy(&stamp[j], old.hdr.stamps[j].raw, sizeof(SiftConnStamp));
 	known = sift_scope_vouch(rel, base->ord, stamp, snap) == SIFT_CONN_OK &&
-		sift_scope_changed(rel, base->ord, stamp, snap, REFRESH_MEMBERS_MAX, NULL, 0, NULL, &changed) == SIFT_CONN_OK;
+		sift_scope_changed(rel, base->ord, stamp, snap, REFRESH_MEMBERS_MAX, NULL, 0, NULL, &changed) == SIFT_CONN_OK && (changed.n == 0 || !sift_scope_member_text(rel, base->ord));
 	if (known && changed.n == 0 && diff.nretired == 0 && diff.nadded > 0 && diff.added_rows * 100 <= diff.kept_rows * SIFT_SCOPE_GROWTH_PCT)
 	{
 		sift_scope_meta_close(&old);
@@ -463,8 +467,10 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 	sift_f2s_cfg_rings_of(&cfg, store, &old);
 	gen = sift_manifest_new_gen(rel, 1);
 	spec_init(rel, store, &cfg, snap, gen, &spec);
-	spec.flags |= old.hdr.flags & SIFT_SMETA_CLUSTERED;
+	spec.flags |= old.hdr.flags & (SIFT_SMETA_CLUSTERED | SIFT_SMETA_CODED_MEM);
+	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, true);
 	pm = sift_f2s_load_pairs(heap, rel, &cfg, snap, sift_f2s_key_map(heap, rel, cfg.spec, true), true);
+	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, false);
 	p = refresh_parts(heap, rel, store, &cfg, snap, pm, mr, &old);
 	src = sift_f2s_source(p);
 	initStringInfo(&out);

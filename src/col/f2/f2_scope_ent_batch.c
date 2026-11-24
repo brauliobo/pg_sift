@@ -38,6 +38,7 @@ sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, SiftScopeSpan 
 {
 	SiftF2ScopeParts *p = arg;
 	uint16		ht[2 * BATCH_MAX] = {0};
+	const bool	coded = p->sc->mem != NULL;
 
 	SIFT_INVARIANT(n <= BATCH_MAX, "scope entity: a batch of %u members", n);
 	for (uint32 i = 0; i < n; i++)
@@ -61,9 +62,9 @@ sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, SiftScopeSpan 
 						ng;
 			MemoryContext old;
 
-			if ((z.flags & SIFT_ZONE_NONE) || !zone_meets_span(p, s, g, &span))
+			if ((!coded && (z.flags & SIFT_ZONE_NONE)) || !zone_meets_span(p, s, g, &span))
 				continue;
-			while (lo < hi)
+			while (!coded && lo < hi)
 			{
 				uint32		mid = lo + (hi - lo) / 2;
 
@@ -72,7 +73,7 @@ sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, SiftScopeSpan 
 				else
 					hi = mid;
 			}
-			if (lo == n || members[lo] > z.max)
+			if (!coded && (lo == n || members[lo] > z.max))
 				continue;
 			ng = sift_f2s_granule_excl(p, s, g, &gone);
 			MemoryContextReset(p->gcx);

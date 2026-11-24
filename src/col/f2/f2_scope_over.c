@@ -16,6 +16,7 @@
 #include "core/memtrack.h"
 
 #include "col/f2/f2_scope_int.h"
+#include "col/f2/f2_scope_mem.h"
 
 struct GoneGranule
 {
@@ -170,15 +171,18 @@ added_slab(struct SiftF2ScopeRowSet *a, SiftF2ScopeParts *p, const SiftRowBuf *r
 	const SiftF2ScopeCfg *sc = a->sc;
 
 	rowset_room(a, (uint32) rb->n);
+	if (sc->mem != NULL)
+		sift_f2s_mem_hold(sc->mem);
 	for (int r = 0; r < rb->n; r++)
 	{
 		const uint32 k = a->n;
+		int64		member;
 
 		if (!sift_vis_inserted_cached(&p->xc, rb->xmin[r], rb->cmin[r]) || (px != NULL && sift_pdel_idx_has(px, rb->tid[r])) ||
-			(p->excl_leaf >= 0 && !rb->isnull[p->excl_leaf][r]) || rb->isnull[sc->member_leaf][r] ||
-			(a->only_keys != NULL && !sift_f2s_owns_any(p, rb->i[sc->member_leaf][r], p->fkeys, p->nfkeys)))
+			(p->excl_leaf >= 0 && !rb->isnull[p->excl_leaf][r]) || !sift_f2s_mem_slab(sc, rb, r, &member) ||
+			(a->only_keys != NULL && !sift_f2s_owns_any(p, member, p->fkeys, p->nfkeys)))
 			continue;
-		a->member[k] = rb->i[sc->member_leaf][r];
+		a->member[k] = member;
 		a->src[k] = buf;
 		a->g[k] = 0;
 		a->row[k] = r;
@@ -201,6 +205,8 @@ added_slab(struct SiftF2ScopeRowSet *a, SiftF2ScopeParts *p, const SiftRowBuf *r
 		}
 		a->n++;
 	}
+	if (sc->mem != NULL)
+		sift_f2s_mem_release(sc->mem);
 }
 
 static void rowset_index(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a);
@@ -672,7 +678,7 @@ sift_f2s_overlay_open(SiftF2ScopeParts *p, const SiftManifestRead *mr, const Sif
 	p->px_built = palloc0(Max(mr->n, 1));
 	sift_xid_cache_init(&p->xc, p->snap);
 	add_unnamed_parts(p, mr, m);
-	p->settled_ok = cached != NULL && p->excl_leaf < 0 && sift_f2s_overlay_stamp(p, mr, &stamp);
+	p->settled_ok = cached != NULL && p->excl_leaf < 0 && p->sc->mem == NULL && sift_f2s_overlay_stamp(p, mr, &stamp);
 	if (p->settled_ok && (p->settled = sift_f2_scope_snap_find(cached, stamp)) != NULL)
 	{
 		slots_unseen_lazy(p, mr);

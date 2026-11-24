@@ -18,6 +18,7 @@ typedef struct SiftF2ScopeCfg
 {
 	int			ord;
 	const SiftScopeSpec *spec;
+	struct SiftF2Mem *mem;		/* the codes of a text, varchar or uuid member (f2_scope_mem.h), NULL for an integer member */
 	int			member_leaf;
 	int			time_leaf;
 	int64		time_unit;

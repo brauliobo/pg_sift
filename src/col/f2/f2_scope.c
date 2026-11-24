@@ -24,6 +24,7 @@
 #include "core/page_io.h"
 
 #include "col/f2/f2_scope_int.h"
+#include "col/f2/f2_scope_mem.h"
 
 bool
 sift_f2s_plain_leaf(const SiftColDef *d)
@@ -103,8 +104,10 @@ time_leaf_of(const SiftF2Store *store, int ord)
 }
 
 static bool
-member_ok(const SiftColDef *member)
+member_ok(const SiftF2Store *store, const SiftColDef *member)
 {
+	if (member->store == SIFT_COLS_STR)
+		return !sift_f2s_is_table(store) && sift_f2s_mem_leaf(member);
 	return member->store == SIFT_COLS_INT && !(member->flags & SIFT_COLD_CODED) && member->lanes <= 1 &&
 		(member->type == SIFT_COLT_INT2 || member->type == SIFT_COLT_INT4 || member->type == SIFT_COLT_INT8);
 }
@@ -112,7 +115,7 @@ member_ok(const SiftColDef *member)
 bool
 sift_f2s_supported(Relation rel, const SiftF2Store *store, int ord)
 {
-	return member_ok(member_def(store, ord));
+	return member_ok(store, member_def(store, ord));
 }
 
 bool
@@ -133,9 +136,9 @@ sift_f2s_cfg(Relation rel, const SiftF2Store *store, int ord, SiftF2ScopeCfg *sc
 	const SiftColDef *member = member_def(store, ord);
 	const char *kind = sift_f2s_is_table(store) ? "table" : "index";
 
-	if (!member_ok(member))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\" of %s \"%s\" has a member key that is not an integer column", sp->key_name, kind, RelationGetRelationName(rel)),
-						errhint("Declare the scope over an integer member column.")));
+	if (!member_ok(store, member))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\" of %s \"%s\" has a member key that is not an integer, text, varchar or uuid column", sp->key_name, kind, RelationGetRelationName(rel)),
+						errhint("Declare the scope over an integer member column, or a text, varchar or uuid one of an index.")));
 	*sc = (SiftF2ScopeCfg) {.ord = ord,.spec = sp,.member_leaf = member->id,.time_leaf = time_leaf_of(store, ord),.time_unit = 1};
 	if (sc->time_leaf >= 0 && store->schema->cols[sc->time_leaf].type == SIFT_COLT_DATE)
 		sc->time_unit = USECS_PER_DAY;
@@ -187,11 +190,11 @@ sift_f2_scope_reads_any(Relation rel, const int16 *leaves, int n)
 	return false;
 }
 
-/* The columns of a pair a summary of format major 2 is made of: an integer member, and a key that is an integer, a date, a timestamp or a timestamptz (its own word) or a text, varchar or uuid column (the code of its store) */
+/* The columns of a pair a summary of format major 2 is made of: a member that is an integer or a text, varchar or uuid column (the code of its store), and a key that is an integer, a date, a timestamp or a timestamptz (its own word) or a text, varchar or uuid column */
 bool
 sift_f2s_pair_types(Oid member, Oid key)
 {
-	return sift_f2s_int_type(member) && (sift_scope_word_type(key) || sift_keymap_type(key));
+	return (sift_f2s_int_type(member) || sift_keymap_type(member)) && (sift_scope_word_type(key) || sift_keymap_type(key));
 }
 
 SiftKeyMap *
@@ -307,6 +310,7 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	}
 	sift_f2s_cfg(rel, store, ord, cfg);
 	sift_f2s_cfg_rings_of(cfg, store, &sc->meta);
+	cfg->mem = sift_f2s_mem_open(heap, rel, store, cfg, false);
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	p = sift_f2s_parts_new(rel, store, heap, cfg, snap, NULL, sc->meta.hdr.nparts);
 	p->excl_leaf = excl_col > 0 ? store->att_first[excl_col] : -1;
@@ -359,7 +363,8 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	}
 	if (p->excl_leaf >= 0 && !sift_f2s_leaf_direct(p, p->excl_leaf))
 		return scope_abandon(cx, old, rel, heap);
-	if (live && !(sift_f2s_deltas_clear(rel, store, ord, &mr) && sift_f2s_pair_edits(rel, ord, &sc->meta, snap, keys, nkeys, km, &sc->changed, &sc->nchanged)))
+	if (live && !(sift_f2s_deltas_clear(rel, store, ord, &mr) && sift_f2s_pair_edits(rel, ord, &sc->meta, snap, keys, nkeys, km, &sc->changed, &sc->nchanged) &&
+				  sift_f2s_mem_translate(heap, rel, cfg, snap, km, &sc->changed, &sc->nchanged)))
 		return scope_abandon(cx, old, rel, heap);
 	p->pair_gen = live ? sift_f2_scope_cache_ref(plan, ord)->meta_gen : 0;
 	if (live && sc->nchanged > 0)
