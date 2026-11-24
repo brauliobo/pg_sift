@@ -12,7 +12,7 @@
 
 #include "agg/kern.h"
 #include "agg/sel.h"
-#include "col/v1/kern.h"
+#include "core/simd_kern.h"
 #include "agg/chunkfilter.h"
 #include "agg/topn.h"
 #include "agg/agg_int.h"

@@ -13,7 +13,7 @@
  */
 #include "postgres.h"
 
-#include "col/v1/kern.h"
+#include "core/simd_kern.h"
 #include "agg/agg_int.h"
 #include "agg/leaf_int.h"
 #include "agg/vnum.h"

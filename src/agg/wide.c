@@ -14,7 +14,7 @@
 #include "agg/combo_int.h"
 #include "agg/wide.h"
 #include "col/am.h"
-#include "col/v1/wide.h"
+#include "core/wide_datum.h"
 #include "core/hash.h"
 #include "core/damage.h"
 

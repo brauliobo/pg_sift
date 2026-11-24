@@ -7,7 +7,7 @@
 
 #include "port/pg_bitutils.h"
 
-#include "col/v1/kern.h"
+#include "core/simd_kern.h"
 #include "agg/group/int.h"
 
 /* the tuples of key ki whose value is NULL, as a bitmap in ex->knul (one pass without branches); false: none */
