@@ -95,6 +95,7 @@ survey(Relation rel, int *n)
 			MemoryContextSwitchTo(old);
 			MemoryContextReset(tmp);
 		}
+		pfree(parts);
 	}
 	qsort(cands, nc, sizeof(PackCand), cand_from_cmp);
 	for (int i = 0, j; i < nc; i = j)

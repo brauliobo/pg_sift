@@ -54,7 +54,7 @@ static void
 spec_init(Relation rel, const SiftF2Store *store, const SiftF2ScopeCfg *sc, Snapshot snap, uint64 gen, SiftScopeBuildSpec *spec)
 {
 	*spec = (SiftScopeBuildSpec) {.shape = sc->shape,.scope_ord = sc->ord,.member_leaf = sc->member_leaf,.time_leaf = sc->time_leaf,.ntopk_rings = sc->nrings,
-	.schema_hash = store->schema->hash,.mem_budget = Max((uint64) maintenance_work_mem * 1024 / 4, SIFT_SCOPE_BUILD_MEM_MIN),.meta_epoch = gen};
+	.schema_hash = store->schema->hash,.mem_budget = Max((uint64) sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4), SIFT_SCOPE_BUILD_MEM_MIN),.meta_epoch = gen};
 	memset(spec->extra_leaf, 0xFF, sizeof(spec->extra_leaf));
 	for (int q = 1; q < sc->nrings; q++)
 		spec->extra_leaf[q - 1] = (int16) sc->ring_leaf[q - 1];
@@ -293,6 +293,20 @@ typedef struct PartDiff
 /* A summary that lacks only a tenth of the rows or less waits: writing it again costs its whole size, and the next flush may bring the rest */
 #define SIFT_SCOPE_GROWTH_PCT	10
 
+/* The granules and the rows of a part, read from its header in a context that goes at once: the parts of a relation are not kept open together */
+static void
+part_shape(Relation rel, const SiftPartDesc *d, uint32 part_id, uint32 *ngranules, uint64 *nrows)
+{
+	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift scope part shape");
+	MemoryContext old = MemoryContextSwitchTo(scratch);
+	const SiftPart *part = sift_part_open_desc(rel, d, part_id);
+
+	*ngranules = part->hdr.ngranules;
+	*nrows = part->hdr.nrows;
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(scratch);
+}
+
 static void
 diff_parts(Relation rel, const SiftScopeMeta *old, const SiftManifestRead *mr, PartDiff *d)
 {
@@ -309,22 +323,25 @@ diff_parts(Relation rel, const SiftScopeMeta *old, const SiftManifestRead *mr, P
 
 		for (int j = 0; j < np; j++)
 		{
-			const SiftPart *part = sift_part_open_desc(rel, &parts[j], (uint32) mr->entries[k].part_id);
-			uint32		at;
+			uint32		ngranules,
+						at;
+			uint64		nrows;
 
-			if (part->hdr.ngranules == 0)
+			part_shape(rel, &parts[j], (uint32) mr->entries[k].part_id, &ngranules, &nrows);
+			if (ngranules == 0)
 				continue;
 			if (!sift_f2s_gen_map_find(&named, parts[j].part_gen, &at))
 			{
-				d->added[d->nadded++] = (SiftScopeNewPart) {parts[j].part_gen, part->hdr.ngranules};
-				d->added_rows += part->hdr.nrows;
+				d->added[d->nadded++] = (SiftScopeNewPart) {parts[j].part_gen, ngranules};
+				d->added_rows += nrows;
 			}
 			else
 			{
 				seen[at] = true;
-				d->kept_rows += part->hdr.nrows;
+				d->kept_rows += nrows;
 			}
 		}
+		pfree(parts);
 	}
 	for (uint32 e = 0; e < old->hdr.nparts; e++)
 		if (old->parts[e].part_gen != 0 && !seen[e])
@@ -357,17 +374,20 @@ refresh_parts(Relation heap, Relation rel, SiftF2Store *store, const SiftF2Scope
 
 		for (int j = 0; j < np; j++)
 		{
-			const SiftPart *part = sift_part_open_desc(rel, &parts[j], (uint32) mr->entries[k].part_id);
 			uint32		base = next,
+						ngranules,
 						at;
+			uint64		nrows;
 
-			if (part->hdr.ngranules == 0)
+			part_shape(rel, &parts[j], (uint32) mr->entries[k].part_id, &ngranules, &nrows);
+			if (ngranules == 0)
 				continue;
 			if (sift_f2s_gen_map_find(&named, parts[j].part_gen, &at))
 				base = old->parts[at].base_granule_idx;
-			next += base == next ? part->hdr.ngranules : 0;
-			(void) sift_f2s_parts_add(p, &parts[j], mr->entries[k].part_id, base, part->hdr.ngranules);
+			next += base == next ? ngranules : 0;
+			(void) sift_f2s_parts_add(p, &parts[j], mr->entries[k].part_id, base, ngranules);
 		}
+		pfree(parts);
 	}
 	qsort(p->s, p->n, sizeof(SiftF2ScopeSlot), slot_by_base);
 	return p;
