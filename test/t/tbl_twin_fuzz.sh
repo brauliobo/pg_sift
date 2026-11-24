@@ -12,7 +12,7 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 SEEDS=$(knob SIFT_SEEDS 1-3 2)
 SECS=$(knob SIFT_FUZZ_SECS 80 8)
 HOLD=$(knob SIFT_FUZZ_HOLD 0.5 1)
-FORMAT=${SIFT_TEST_FORMAT:-f2}
+FORMAT=${SIFT_TEST_FORMAT:-$([[ ${SIFT_FORMAT:-2} == 1 ]] && echo f1 || echo f2)}
 DDL=()
 case ${SIFT_FUZZ_DDL:-} in 1) DDL=(--ddl) ;; 0) DDL=(--no-ddl) ;; esac
 

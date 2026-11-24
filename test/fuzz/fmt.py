@@ -1,4 +1,4 @@
-"""The format contract of the fuzzers: --format f2|f1|release (SIFT_TEST_FORMAT, default f2).
+"""The format contract of the fuzzers: --format f2|f1|release (SIFT_TEST_FORMAT; default f1 when SIFT_FORMAT=1, else f2).
 
   f2       the test library, new indexes and tables in Format 2.0 (sift.test_create_format1 = off)
   f1       the test library, new indexes and tables in Format 1 (sift.test_create_format1 = on)
@@ -17,7 +17,7 @@ TESTING_PROBE = 'sift.test_create_format1'
 
 
 def add_argument(ap):
-    ap.add_argument('--format', choices=FORMATS, default=os.environ.get('SIFT_TEST_FORMAT') or 'f2',
+    ap.add_argument('--format', choices=FORMATS, default=os.environ.get('SIFT_TEST_FORMAT') or ('f1' if os.environ.get('SIFT_FORMAT') == '1' else 'f2'),
                     help='f2: Format 2.0 on the test library (default); f1: Format 1 on the test library; release: the release library')
 
 

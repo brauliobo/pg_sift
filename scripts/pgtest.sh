@@ -23,7 +23,7 @@
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters (SIFT_TAP_KEEP=1 keeps the data directories of a failed test)
 #   scripts/pgtest.sh ready      wait until the cluster accepts connections (recovery after a crashed backend)
 #   scripts/pgtest.sh clean      drop the databases a job left in the cluster (all but postgres and the test database), once it is ready
-#   scripts/pgtest.sh run CMD... CMD against a cluster of its own (SIFT_TEST_FORMAT, port SIFT_PORT + 1: the lane of scripts/ci.sh keeps SIFT_PORT), then the leak gate of stop
+#   scripts/pgtest.sh run CMD... CMD against a cluster of its own (SIFT_FORMAT, port SIFT_PORT + 1: the lane of scripts/ci.sh keeps SIFT_PORT), then the leak gate of stop
 #   scripts/pgtest.sh stop       stop the cluster
 #   scripts/pgtest.sh destroy    stop and remove $SIFT_TMP
 #   scripts/pgtest.sh clean-build  remove the build directories of this checkout (all flavors; SIFT_BUILD_DIR: that one); `destroy` keeps them, so that a restart rebuilds nothing
@@ -32,9 +32,7 @@
 #   scripts/pgtest.sh new-data DIR [wal]    a fresh data directory (the template copied, else initdb); wal: the default 16 MB WAL
 #                                           segments, for the tests whose point is WAL (always a real initdb)
 #
-# SIFT_TEST_FORMAT: f1 (default: the tests of format major 1 keep their indexes in it), f2 (SIFT_TESTING=1, sift.test_create_format1 = off: every CREATE INDEX and
-# sift_table builds Format 2.0, what the high-level suites run on) or release (the release library, SIFT_TESTING= empty: no sift.test_* setting is given to the server).
-#
+# SIFT_FORMAT=2|1 (default 2): the format the clusters create (1 sets sift.test_create_format1 = on; testing library only).
 # SIFT_TMP (default /tmp/sift-arch) and SIFT_PORT (56100-56299, default
 # 56100) let several jobs run clusters side by side; SIFT_ROOT (default
 # $SIFT_TMP/root) lets clusters in other SIFT_TMP directories share one install; TAP clusters use
@@ -76,12 +74,6 @@ PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 # the cluster is this one and no other: a default of the caller (a service, a database) must not send a client to the system PostgreSQL
 unset PGDATABASE PGSERVICE PGSERVICEFILE
 export PGHOST=$SOCK PGPORT=$PORT
-TEST_FORMAT=${SIFT_TEST_FORMAT:-f1}
-case $TEST_FORMAT in
-	f1|f2) ;;
-	release) SIFT_TESTING= ;;
-	*) echo "pgtest: SIFT_TEST_FORMAT must be f1, f2 or release, not '$TEST_FORMAT'" >&2; exit 1 ;;
-esac
 export SIFT_TESTING=${SIFT_TESTING-1}
 FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})}${SIFT_POINTER_OVERFLOW:++ptr} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)${VULKAN:+ vulkan} pg$PG_MAJOR"
 
@@ -140,9 +132,13 @@ install() {
 # The clusters run with the default sift.on_corruption (quarantine), so that every write of every test goes through the guard of the quarantine; a test that asserts a corruption error says SET sift.on_corruption = error
 # the build chooser (sift.col_build_source = auto) reads the index a REINDEX replaces and says so in a notice with the seconds it took: the clusters of the regression tests read the heap, as
 # before 5.1, so that no expected output carries those seconds; the tests of the chooser say SET sift.col_build_source = auto
-# CREATE INDEX builds format major 2: the tests keep the indexes they create in format major 1 (the testing build only); the tests of format major 2 say SET sift.test_create_format1 = off
-CREATE_FORMAT1=on; [[ $TEST_FORMAT != f2 ]] || CREATE_FORMAT1=off
-TREE_CONF="${SIFT_TESTING:+sift.col_build_source = heap$'\n'sift.test_scope_patch = on$'\n'sift.test_create_format1 = $CREATE_FORMAT1$'\n'sift.test_quiet_build_notice = on}"
+# SIFT_FORMAT picks the format CREATE INDEX and CREATE TABLE build: 2 (default, what a release builds) or 1 (the testing build only, sift.test_create_format1); the tests of format major 1
+# say SET sift.test_create_format1 = on themselves
+SIFT_FORMAT=${SIFT_FORMAT:-2}
+[[ $SIFT_FORMAT == [12] ]] || { echo "pgtest: SIFT_FORMAT must be 2 (default) or 1, not '$SIFT_FORMAT'" >&2; exit 1; }
+[[ $SIFT_FORMAT == 2 || -n $SIFT_TESTING ]] || { echo "pgtest: SIFT_FORMAT=1 needs the testing library (SIFT_TESTING=1): the release library has no sift.test_create_format1" >&2; exit 1; }
+TREE_CONF="${SIFT_TESTING:+sift.col_build_source = heap$'\n'sift.test_scope_patch = on$'\n'sift.test_quiet_build_notice = on}"
+[[ $SIFT_FORMAT == 2 ]] || TREE_CONF+=$'\n'"sift.test_create_format1 = on"
 # SIFT_MEMCENSUS=KB|on: every statement of every test that grows memory by KB (on: 1024) writes a SIFTMEM line to the server log
 [[ -z ${SIFT_TESTING:-} || -z ${SIFT_MEMCENSUS:-} ]] || TREE_CONF+=$'\n'"sift.test_memctx_census = $([[ $SIFT_MEMCENSUS == on ]] && echo 1024 || echo "$SIFT_MEMCENSUS")"
 tree_options() { local l; [[ -z $TREE_CONF ]] || while IFS= read -r l; do printf -- '-c %s ' "${l// = /=}"; done <<<"$TREE_CONF"; }

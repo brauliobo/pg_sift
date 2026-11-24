@@ -19,7 +19,7 @@
 #   scripts/fast-gate.sh --selftest
 #
 #   --format F     f2 (default): the testing library, every index and table Format 2.0; f1: the testing library, Format 1 indexes (the compat-f1 lane); release: the release library,
-#                  no sift.test_* setting and no sift._test_ function (what a user installs). SIFT_TEST_FORMAT of scripts/pgtest.sh, which starts each cluster
+#                  no sift.test_* setting and no sift._test_ function (what a user installs). SIFT_FORMAT of scripts/pgtest.sh, which starts each cluster
 #   --area AREA    the areas to run (star clickbench coexist jsonb col table bm25 gpu sql, smoke or all: the six stages). Default, and what CI runs: all
 #   --diff BASE    the paths of `git diff --name-only --no-renames BASE` (from the merge base, the working tree included) and the untracked files that scripts/areas.tsv maps
 #   --files PATH.. the paths named, for scripts and for scripts/test-fast-gate-select.py
@@ -369,11 +369,14 @@ lane_extensions() {
 		psql -X -qAt -d postgres -c 'CREATE EXTENSION pg_sift' -c 'CREATE EXTENSION pg_sift_test' >"$OUT/lane$1.ext.log" 2>&1
 	done
 }
+# export_format F: f2, f1 or release as the clusters of scripts/pgtest.sh (SIFT_FORMAT) and the harnesses (SIFT_TEST_FORMAT) read it
+export_format() { export SIFT_TEST_FORMAT=$1 SIFT_FORMAT=$([[ $1 == f1 ]] && echo 1 || echo 2); }
 # lane_run K: the cluster of the lane, its steps in order, the leak gate and, with --assert, the scan of its logs
 lane_run() {
 	local k=$1 i t rc=0 d
 	d=$(lane_tmp "$k")
-	export SIFT_TMP=$d SIFT_PORT=$(lane_port "$k") SIFT_FUZZ_OUT=$d/fuzz SIFT_TEST_FORMAT=${LANE_FMT[$k]:-$FORMAT}
+	export SIFT_TMP=$d SIFT_PORT=$(lane_port "$k") SIFT_FUZZ_OUT=$d/fuzz
+	export_format "${LANE_FMT[$k]:-$FORMAT}"
 	mkdir -p "$d" "$SIFT_FUZZ_OUT"
 	if [[ -z ${FAST_GATE_NO_CLUSTER:-} ]]; then
 		"$REPO/scripts/pgtest.sh" start >"$OUT/lane$k.start.log" 2>&1 || { echo "FAIL 0 the cluster did not start (lane$k.start.log)" >"$OUT/cluster-$k.res"; return 1; }
@@ -432,7 +435,8 @@ run_all() {
 }
 # the environment pgtest.sh and the harnesses read: the format, the library, the root
 pgtest_env() {
-	export SIFT_TEST_FORMAT=$FORMAT SIFT_ROOT=$ROOT SIFT_TESTING=1
+	export_format "$FORMAT"
+	export SIFT_ROOT=$ROOT SIFT_TESTING=1
 	[[ $FORMAT != release ]] || export SIFT_TESTING=
 	if [[ $ROOT != "$WORK/root" ]]; then export SIFT_PREBUILT_ROOT=$ROOT; else unset SIFT_PREBUILT_ROOT; fi
 	if [[ -n $ASSERT ]] && ! cassert; then

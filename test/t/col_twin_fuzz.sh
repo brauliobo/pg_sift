@@ -11,7 +11,7 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 SEEDS=$(knob SIFT_SEEDS 1-12 1-2)
 ROWS=$(knob SIFT_FUZZ_ROWS 30000 12000)
 STEPS=$(knob SIFT_FUZZ_STEPS 10 6)
-FORMAT=${SIFT_TEST_FORMAT:-f2}
+FORMAT=${SIFT_TEST_FORMAT:-$([[ ${SIFT_FORMAT:-2} == 1 ]] && echo f1 || echo f2)}
 
 node_init cf 5 "max_wal_size = 512MB
 shared_buffers = 128MB
