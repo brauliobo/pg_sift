@@ -19,7 +19,7 @@ CREATE FUNCTION blocks(q text) RETURNS int LANGUAGE sql AS $$
 	SELECT ((p->>'Shared Hit Blocks')::int + (p->>'Shared Read Blocks')::int) FROM plan_of(q) p
 $$;
 CREATE FUNCTION counter(q text, VARIADIC path text[]) RETURNS numeric LANGUAGE sql AS $$
-	SELECT coalesce((jsonb_path_query_first(p, 'strict $.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') #>> path)::numeric, -1) FROM plan_of(q) p
+	SELECT round(coalesce((jsonb_path_query_first(p, 'strict $.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') #>> path)::numeric, -1)) FROM plan_of(q) p
 $$;
 CREATE TABLE t2k (id int, g int, v int, s text, w text);
 INSERT INTO t2k SELECT i, i % 50, i % 1000, 'k' || i % 500, 'u' || i FROM generate_series(1, 2000) i;
@@ -57,7 +57,7 @@ END $$;
 SELECT 'every granule once' AS shape, (granules('SELECT w, count(*) FROM %s GROUP BY w')).*;
        shape        | scanned_small | scanned_big | pruned_zone_big | pruned_dict_big | rows_big 
 --------------------+---------------+-------------+-----------------+-----------------+----------
- every granule once |             1 |           8 |               0 |               0 | 16000.00
+ every granule once |             1 |           8 |               0 |               0 |    16000
 (1 row)
 
 -- the memory of a high-cardinality group grows with its groups (8 times the groups, no more than 8 times the memory), no spill, one group for each key, and the blocks grow no faster than the rows
@@ -71,25 +71,25 @@ END $$;
 SELECT 'one group for each key' AS shape, (memory('SELECT w, count(*) FROM %s GROUP BY w')).*;
          shape          | groups_small | groups_big | memory_linear | spills | blocks_linear 
 ------------------------+--------------+------------+---------------+--------+---------------
- one group for each key |      2000.00 |   16000.00 | t             |      0 | t
+ one group for each key |         2000 |      16000 | t             |      0 | t
 (1 row)
 
 SELECT 'count distinct of a dictionary column' AS shape, (memory('SELECT g, count(DISTINCT s) FROM %s GROUP BY g')).*;
                  shape                 | groups_small | groups_big | memory_linear | spills | blocks_linear 
 ---------------------------------------+--------------+------------+---------------+--------+---------------
- count distinct of a dictionary column |        50.00 |      50.00 | t             |      0 | t
+ count distinct of a dictionary column |           50 |         50 | t             |      0 | t
 (1 row)
 
 SELECT 'IN list on a dictionary column' AS shape, (memory('SELECT g, count(*) FROM %s WHERE s IN (''k1'', ''k2'', ''k3'', ''k4'') GROUP BY g')).*;
              shape              | groups_small | groups_big | memory_linear | spills | blocks_linear 
 --------------------------------+--------------+------------+---------------+--------+---------------
- IN list on a dictionary column |         4.00 |       4.00 | t             |      0 | t
+ IN list on a dictionary column |            4 |          4 | t             |      0 | t
 (1 row)
 
 SELECT 'a filter that keeps 1 row in 100' AS shape, (memory('SELECT g, count(*), sum(v) FROM %s WHERE v < 10 GROUP BY g')).*;
               shape               | groups_small | groups_big | memory_linear | spills | blocks_linear 
 ----------------------------------+--------------+------------+---------------+--------+---------------
- a filter that keeps 1 row in 100 |        10.00 |      10.00 | t             |      0 | t
+ a filter that keeps 1 row in 100 |           10 |         10 | t             |      0 | t
 (1 row)
 
 -- BM25: a top-k search reads a small share of the blocks of a table 8 times as large (the lazy tail and the bounds skip postings), and the counts of its matches are exact

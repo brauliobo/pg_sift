@@ -20,7 +20,7 @@ CREATE FUNCTION blocks(q text) RETURNS int LANGUAGE sql AS $$
 	SELECT ((p->>'Shared Hit Blocks')::int + (p->>'Shared Read Blocks')::int) FROM plan_of(q) p
 $$;
 CREATE FUNCTION counter(q text, VARIADIC path text[]) RETURNS numeric LANGUAGE sql AS $$
-	SELECT coalesce((jsonb_path_query_first(p, 'strict $.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') #>> path)::numeric, -1) FROM plan_of(q) p
+	SELECT round(coalesce((jsonb_path_query_first(p, 'strict $.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') #>> path)::numeric, -1)) FROM plan_of(q) p
 $$;
 
 CREATE TABLE t2k (id int, g int, v int, s text, w text);
