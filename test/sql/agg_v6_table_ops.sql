@@ -104,6 +104,21 @@ SELECT parity_ordered('SELECT k, date_trunc(''day'', at) AS d, count(*), sum(amo
 SELECT parity_ordered('SELECT k, count(*), count(amount) FILTER (WHERE grp = 3) FROM @S GROUP BY k HAVING count(*) > 1 ORDER BY k') AS stream_filter_and_having;
 SELECT parity_ordered('SELECT id, count(*), sum(grp) FROM @T WHERE k < 20 GROUP BY id ORDER BY id') AS stream_primary_key;
 
+-- the window functions and DISTINCT ON over the partitions of a table sorted by its key
+SELECT plan_has('SELECT id, k, row_number() OVER (PARTITION BY k ORDER BY at) FROM @S', 'Custom Scan (SiftAggV6Window)') AS window_served_by_agg_v6;
+SELECT plan_has('SELECT id, k, row_number() OVER (PARTITION BY k ORDER BY at) FROM @S', 'Table: os') AS window_reads_the_table;
+SELECT NOT plan_has('SELECT id, k, row_number() OVER (PARTITION BY k ORDER BY at) FROM @S', 'Index:') AS window_reads_no_index;
+SELECT parity('SELECT id, k, at, row_number() OVER (PARTITION BY k ORDER BY at, id) FROM @S') AS window_row_number;
+SELECT parity('SELECT id, k, rank() OVER (PARTITION BY k ORDER BY amount DESC NULLS LAST), dense_rank() OVER w FROM @S WINDOW w AS (PARTITION BY k ORDER BY amount DESC NULLS LAST)') AS window_ranks_of_ties_sorted_by_value;
+SELECT parity('SELECT id, k, sum(amount) OVER (PARTITION BY k ORDER BY at, id), count(*) OVER (PARTITION BY k ORDER BY at, id) FROM @S WHERE grp < 12') AS window_running_aggregates_and_quals;
+SELECT parity('SELECT id, k, lag(amount) OVER (PARTITION BY k ORDER BY at, id), lead(id, 2) OVER (PARTITION BY k ORDER BY at, id) FROM @S') AS window_lag_and_lead;
+SELECT parity('SELECT id, k, rn FROM (SELECT id, k, row_number() OVER (PARTITION BY k ORDER BY at, id) AS rn FROM @S) w WHERE rn <= 2') AS window_first_rows_of_each_partition;
+SELECT plan_has('SELECT DISTINCT ON (k) k, at FROM @S ORDER BY k, at', 'Custom Scan (SiftAggV6Window)') AS distinct_on_served_by_agg_v6;
+SELECT plan_has('SELECT DISTINCT ON (k) k, at FROM @S ORDER BY k, at', 'Table: os') AS distinct_on_reads_the_table;
+SELECT parity('SELECT DISTINCT ON (k) k, at, grp, id FROM @S WHERE id <= 40000 ORDER BY k, at') AS distinct_on_first_row;
+SELECT parity('SELECT DISTINCT ON (k) k, at FROM @S WHERE grp > 2 ORDER BY k, at DESC') AS distinct_on_last_row;
+SELECT parity('SELECT DISTINCT ON (id) id, grp FROM @T WHERE k < 50 ORDER BY id') AS distinct_on_primary_key;
+
 UPDATE ot SET k = (k + 1) % 400, grp = 3 WHERE id % 9 = 0;
 UPDATE oh SET k = (k + 1) % 400, grp = 3 WHERE id % 9 = 0;
 DELETE FROM ot WHERE id % 13 = 0;
@@ -112,6 +127,9 @@ UPDATE os SET grp = 3, amount = amount + 1 WHERE id % 9 = 0;
 UPDATE osh SET grp = 3, amount = amount + 1 WHERE id % 9 = 0;
 DELETE FROM os WHERE id % 13 = 0;
 DELETE FROM osh WHERE id % 13 = 0;
+SELECT parity('SELECT id, k, row_number() OVER (PARTITION BY k ORDER BY at, id), sum(amount) OVER (PARTITION BY k ORDER BY at, id) FROM @S') AS window_after_updates_and_deletes;
+SELECT parity('SELECT DISTINCT ON (k) k, at FROM @S ORDER BY k, at') AS distinct_on_after_updates_and_deletes;
+SELECT plan_has('SELECT id, k, row_number() OVER (PARTITION BY k ORDER BY at) FROM @S', 'Custom Scan (SiftAggV6Window)') AS window_served_after_updates_and_deletes;
 SELECT plan_has('SELECT k, count(*), sum(amount), min(grp) FROM @S GROUP BY k ORDER BY k', 'Custom Scan (SiftAggV6Stream)') AS stream_served_after_updates_and_deletes;
 SELECT parity_ordered('SELECT k, count(*), sum(amount), min(grp) FROM @S GROUP BY k ORDER BY k') AS stream_after_updates_and_deletes;
 SELECT parity_ordered('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 30') AS topn_after_updates_and_deletes;

@@ -45,7 +45,7 @@ extern void sift_agg_v6_window_upper_paths(PlannerInfo *root, UpperRelationKind 
 extern Plan *sift_agg_v6_window_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 
 /*
- * The spec of the plan's private list (indexoid, rti, mode, run condition function; partition Vars; order Vars; function nodes; run condition bound), its columns added to in; false when the engine
+ * The spec of the plan's private list (the oid of the source, rti, mode, run condition function, range frame, how the partitions are made, the source is a sift_table, order flags; partition Vars; order Vars; function nodes; run condition bound), its columns added to in; false when the engine
  * does not run it. The planner and the executor make the spec by this one function. params: the values of this execution, NULL when the plan is made (a parameter bound
  * is taken as 1 then).
  */

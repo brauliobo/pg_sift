@@ -6,9 +6,7 @@
 
 #include <stdalign.h>
 
-#include "access/genam.h"
 #include "catalog/pg_collation_d.h"
-#include "catalog/pg_namespace_d.h"
 #include "catalog/pg_type_d.h"
 #include "executor/executor.h"
 #include "nodes/makefuncs.h"
@@ -29,13 +27,14 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_window.h"
 #include "agg/v6/v6_win_carry.h"
+#include "agg/v6/v6_win_func.h"
 #include "agg/v6/v6_win_par.h"
 #include "agg/v6/v6_win_partsort.h"
 #include "agg/v6/v6_winx_glue.h"
 
 enum
 {
-	PRIV_INTS = 0,				/* indexoid, rti, mode, run condition function (-1: none), range frame, how the partitions are made (WIN_EXACT, WIN_PARTSORT, WIN_REGROUP), then per order key desc | nulls_first << 1 */
+	PRIV_INTS = 0,				/* the oid of the source, rti, mode, run condition function (-1: none), range frame, how the partitions are made (WIN_EXACT, WIN_PARTSORT, WIN_REGROUP), the source is a sift_table, then per order key desc | nulls_first << 1 */
 	PRIV_TLIST = 1,				/* the scan tlist: sift_v6_plan_scan reads it from here */
 	PRIV_PART = 2,
 	PRIV_ORD = 3,
@@ -55,12 +54,6 @@ static bool
 is_key_type(const SiftV6InCol *c)
 {
 	return c->type == SVEC_I32 || c->type == SVEC_I64;
-}
-
-static bool
-is_arg_type(const SiftV6InCol *c)
-{
-	return c->type == SVEC_I32 || c->type == SVEC_I64 || c->type == SVEC_F64;
 }
 
 static int
@@ -88,22 +81,7 @@ add_keys(SiftV6Input *in, const List *vars, int *slots, uint8 *n, bool partsort)
 	return true;
 }
 
-/* the integer an int2, int4, date, int8, timestamp or timestamptz Datum holds, and the Datum of such an integer */
-static int64
-datum_int(Oid typid, Datum d)
-{
-	switch (typid)
-	{
-		case INT2OID:
-			return DatumGetInt16(d);
-		case INT4OID:
-		case DATEOID:
-			return DatumGetInt32(d);
-		default:
-			return DatumGetInt64(d);
-	}
-}
-
+/* the Datum of an int2, int4, date, int8, timestamp or timestamptz integer */
 static Datum
 int_datum(Oid typid, int64 v)
 {
@@ -117,134 +95,6 @@ int_datum(Oid typid, int64 v)
 		default:
 			return Int64GetDatum(v);
 	}
-}
-
-static bool
-lag_value(const Node *n, Oid typid, SiftWinFuncSpec *fs)
-{
-	const Const *c = (const Const *) n;
-
-	if (!IsA(n, Const) || c->consttype != typid)
-		return false;
-	if (c->constisnull)
-		return true;
-	fs->has_default = true;
-	if (typid == FLOAT8OID)
-		fs->default_val.f = DatumGetFloat8(c->constvalue);
-	else
-		fs->default_val.i = datum_int(typid, c->constvalue);
-	return true;
-}
-
-/* the name of a window function of pg_catalog and the kind of the engine that runs it */
-static bool
-kind_of(const WindowFunc *wf, SiftWinFuncKind *kind)
-{
-	static const struct
-	{
-		const char *name;
-		SiftWinFuncKind kind;
-	}			kinds[] = {{"row_number", SWIN_ROW_NUMBER}, {"rank", SWIN_RANK}, {"dense_rank", SWIN_DENSE_RANK}, {"lag", SWIN_LAG}, {"lead", SWIN_LEAD},
-	{"first_value", SWIN_FIRST_VALUE}, {"count", SWIN_COUNT}, {"sum", SWIN_SUM}, {"avg", SWIN_AVG}, {"min", SWIN_MIN}, {"max", SWIN_MAX}};
-	const char *name;
-
-	if (get_func_namespace(wf->winfnoid) != PG_CATALOG_NAMESPACE || (name = get_func_name(wf->winfnoid)) == NULL)
-		return false;
-	for (int i = 0; i < lengthof(kinds); i++)
-		if (strcmp(name, kinds[i].name) == 0)
-			return (*kind = kinds[i].kind, true);
-	return false;
-}
-
-/* the type PostgreSQL gives the result of the function over an argument of type arg */
-static Oid
-result_type(SiftWinFuncKind kind, Oid arg)
-{
-	switch (kind)
-	{
-		case SWIN_ROW_NUMBER:
-		case SWIN_RANK:
-		case SWIN_DENSE_RANK:
-		case SWIN_COUNT_STAR:
-		case SWIN_COUNT:
-			return INT8OID;
-		case SWIN_SUM:
-			return arg == INT2OID || arg == INT4OID ? INT8OID : arg == INT8OID ? NUMERICOID : FLOAT8OID;
-		case SWIN_AVG:
-			return arg == FLOAT8OID ? FLOAT8OID : NUMERICOID;
-		default:
-			return arg;
-	}
-}
-
-/* the argument types of a function: numbers for all of them, and for the functions that only compare or hand back a value a date or a timestamp too (an integer here) */
-static bool
-arg_type_ok(SiftWinFuncKind kind, Oid typid)
-{
-	switch (typid)
-	{
-		case INT2OID:
-		case INT4OID:
-		case INT8OID:
-		case FLOAT8OID:
-			return true;
-		case DATEOID:
-		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
-			return kind != SWIN_SUM && kind != SWIN_AVG;
-		default:
-			return kind == SWIN_COUNT;
-	}
-}
-
-static bool
-func_spec(SiftV6Input *in, const WindowFunc *wf, bool range, SiftV6WindowSpec *s, int f)
-{
-	SiftWinFuncSpec *fs = &s->win.funcs[f];
-	const int	nargs = list_length(wf->args);
-	SiftWinFuncKind kind;
-	const bool	takes_arg = nargs > 0 && !wf->winstar;
-
-	*fs = (SiftWinFuncSpec) {0};
-	s->arg_slot[f] = -1;
-	if (wf->aggfilter != NULL || !kind_of(wf, &kind))
-		return false;
-	if (kind == SWIN_COUNT && wf->winstar)
-		kind = SWIN_COUNT_STAR;
-	fs->kind = kind;
-	if (takes_arg)
-	{
-		const Node *a = linitial(wf->args);
-		int			slot;
-
-		if (!IsA(a, Var) || (slot = sift_v6_input_add_var(in, (Var *) a)) < 0 || !is_arg_type(&in->col[slot]))
-			return false;
-		s->arg_slot[f] = slot;
-		s->arg_typid[f] = in->col[slot].typid;
-		fs->arg_type = in->col[slot].type;
-		if (!arg_type_ok(kind, in->col[slot].typid))
-			return false;
-	}
-	if (kind >= SWIN_COUNT_STAR)
-		fs->range_frame = range;
-	if (kind == SWIN_LAG || kind == SWIN_LEAD)
-	{
-		const Const *off = nargs > 1 ? lsecond(wf->args) : NULL;
-
-		fs->offset = 1;
-		if (nargs > 1 && (!IsA(off, Const) || off->constisnull || off->consttype != INT4OID || DatumGetInt32(off->constvalue) < 0 ||
-						  DatumGetInt32(off->constvalue) > SIFT_WIN_MAX_OFFSET))
-			return false;
-		if (nargs > 1)
-			fs->offset = (uint32) DatumGetInt32(off->constvalue);
-		if (nargs > 2 && !lag_value(lthird(wf->args), s->arg_typid[f], fs))
-			return false;
-	}
-	if ((takes_arg != (kind != SWIN_ROW_NUMBER && kind != SWIN_RANK && kind != SWIN_DENSE_RANK && kind != SWIN_COUNT_STAR)) ||
-		(kind != SWIN_LAG && kind != SWIN_LEAD && nargs > 1) || nargs > 3)
-		return false;
-	s->res_typid[f] = result_type(kind, s->arg_typid[f]);
-	return wf->wintype == s->res_typid[f];
 }
 
 /* The bound of the run condition of this execution: rn <= K, or rn < K + 1 */
@@ -276,7 +126,7 @@ ps_order(const List *ints, SiftV6WindowSpec *out)
 	if (!out->partsort)
 		return;
 	for (int j = 0; j < out->win.n_ord; j++)
-		out->ps.ord[j] = (SiftWinPsKey) {.slot = out->ord_slot[j],.desc = list_nth_int(ints, 6 + j) & 1,.nulls_first = (list_nth_int(ints, 6 + j) >> 1) & 1};
+		out->ps.ord[j] = (SiftWinPsKey) {.slot = out->ord_slot[j],.desc = list_nth_int(ints, 7 + j) & 1,.nulls_first = (list_nth_int(ints, 7 + j) >> 1) & 1};
 }
 
 bool
@@ -311,7 +161,7 @@ sift_v6_window_spec(const List *priv, SiftV6Input *in, ParamListInfo params, Sif
 	ps_order(ints, out);
 	foreach_node(WindowFunc, wf, funcs)
 	{
-		if (!func_spec(in, wf, list_nth_int(ints, 4) != 0, out, f++))
+		if (!sift_v6_win_func_spec(in, wf, list_nth_int(ints, 4) != 0, out, f++))
 			return false;
 	}
 	out->win.n_funcs = (uint16) f;
@@ -438,7 +288,7 @@ typedef struct WinPlan
 	PlannerInfo *root;
 	RelOptInfo *rel;
 	RelOptInfo *out;
-	const IndexOptInfo *index;
+	const SiftV6RelSource *src;
 	List	   *part;
 	List	   *ord;
 	List	   *funcs;
@@ -551,8 +401,9 @@ run_condition(WinPlan *p)
 static List *
 private_of(const WinPlan *p)
 {
-	List	   *ints = lappend_int(list_make5_int((int) p->index->indexoid, (int) p->rel->relid, p->mode, p->topk_func, p->range), p->part_mode);
+	List	   *ints = list_make5_int((int) p->src->reloid, (int) p->rel->relid, p->mode, p->topk_func, p->range);
 
+	ints = lappend_int(lappend_int(ints, p->part_mode), p->src->is_table);
 	ints = list_concat(ints, list_copy(p->ord_flags));
 	return lappend(list_make5(ints, p->scan_tlist, p->part, p->ord, p->funcs), p->bound);
 }
@@ -575,7 +426,7 @@ vars_of_tlist(const List *tlist)
 static bool
 window_finish(WinPlan *p, List *pathkeys, double rows)
 {
-	SiftV6Input in;
+	SiftV6Input in = p->src->input;
 	SiftV6WindowSpec spec;
 	SiftV6Vexpr probe;
 	SiftV6Vexpr filters[SIFT_WINX_MAX_FUNCS];
@@ -592,7 +443,6 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		p->quals = lappend(p->quals, ri->clause);
 	}
 	priv = private_of(p);
-	sift_v6_input_init_info(&in, p->index);
 	if (!sift_v6_window_spec(priv, &in, NULL, &spec) || !sift_v6_vexpr_quals(CurrentMemoryContext, p->quals, p->rel->relid, NULL, &in, &probe) ||
 		(spec.winx != NULL && !sift_v6_winx_filters(CurrentMemoryContext, p->funcs, p->rel->relid, NULL, &in, filters)))
 		return false;
@@ -601,9 +451,9 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 	for (int i = 0; p->part_mode == WIN_EXACT && i < spec.win.n_ord; i++)
 		atts[n++] = in.col[spec.ord_slot[i]].attno;
 	if (p->part_mode == WIN_REGROUP ? !sift_win_regroup_fits(&in, vars_of_tlist(p->scan_tlist), p->rel->rows, estimate_num_groups(p->root, p->part, p->rel->rows, NULL, NULL), (uint64) work_mem * 1024) :
-		!sift_v6_rel_sorted_by(p->index->indexoid, false, atts, n))
+		!sift_v6_rel_sorted_by(p->src->reloid, p->src->is_table, atts, n))
 		return false;
-	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &total);
+	sift_v6_source_scan_price(p->root, p->rel, p->src, 0, &open, &total);
 	total += cpu_tuple_cost * p->rel->rows + cpu_operator_cost * p->rel->rows * (spec.win.n_funcs + list_length(p->quals));
 	if (p->part_mode != WIN_EXACT)
 		total += cpu_operator_cost * p->rel->rows * 2.0 * (1 + spec.win.n_ord);
@@ -664,9 +514,9 @@ vars_any(WinPlan *p, const List *clauses, List **vars, List **flags)
  * neither (the rows of a partition are put together first, and the rows leave in no order: a path with no pathkeys, so that PostgreSQL sorts them when the statement wants them sorted).
  */
 static bool
-window_try(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, IndexOptInfo *ix, const WindowClause *wc, WinPartMode mode)
+window_try(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, const SiftV6RelSource *src, const WindowClause *wc, WinPartMode mode)
 {
-	WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.mode = SWIN_MODE_WINDOW,.part_mode = mode};
+	WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.src = src,.mode = SWIN_MODE_WINDOW,.part_mode = mode};
 
 	if (!frame_ok(wc, &p.range) || (mode == WIN_EXACT ? !(vars_of(&p, wc->partitionClause, false, &p.part) && vars_of(&p, wc->orderClause, false, &p.ord) && int_vars(p.part) && int_vars(p.ord)) :
 		(wc->partitionClause == NIL || !vars_any(&p, wc->partitionClause, &p.part, NULL) || !vars_any(&p, wc->orderClause, &p.ord, &p.ord_flags) || (mode == WIN_REGROUP && !int_vars(p.part)))))
@@ -679,16 +529,19 @@ window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	const Query *q = root->parse;
 	const WindowClause *wc;
+	SiftV6RelSource *src;
+	int			nsrc;
 
 	if (!q->hasWindowFuncs || list_length(q->windowClause) != 1 || q->distinctClause != NIL)
 		return;
 	wc = linitial(q->windowClause);
-	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
+	for (int i = 0; i < nsrc; i++)
 	{
-		if (!agg_index_complete(ix) || !sift_v6_rel_ordered(ix->indexoid, false) || wc->orderClause == NIL)
+		if (!sift_v6_source_usable(&src[i]) || !sift_v6_rel_ordered(src[i].reloid, src[i].is_table) || wc->orderClause == NIL)
 			continue;
 		for (WinPartMode mode = WIN_EXACT; mode <= WIN_REGROUP; mode++)
-			if (window_try(root, input_rel, output_rel, ix, wc, mode))
+			if (window_try(root, input_rel, output_rel, &src[i], wc, mode))
 				return;
 	}
 }
@@ -698,16 +551,19 @@ distinct_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	const Query *q = root->parse;
 	const int	nd = list_length(q->distinctClause);
+	SiftV6RelSource *src;
+	int			nsrc;
 
 	if (!q->hasDistinctOn || q->hasWindowFuncs || q->sortClause == NIL || list_length(q->sortClause) < nd)
 		return;
-	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
+	for (int i = 0; i < nsrc; i++)
 	{
-		WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.mode = SWIN_MODE_DISTINCT_FIRST,.topk_func = -1};
+		WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.src = &src[i],.mode = SWIN_MODE_DISTINCT_FIRST,.topk_func = -1};
 		List	   *rest = list_copy_tail(q->sortClause, nd);
 		List	   *keys = list_copy_head(q->sortClause, nd);
 
-		if (!agg_index_complete(ix) || !sift_v6_rel_ordered(ix->indexoid, false) || !vars_of(&p, keys, false, &p.part))
+		if (!sift_v6_source_usable(&src[i]) || !sift_v6_rel_ordered(src[i].reloid, src[i].is_table) || !vars_of(&p, keys, false, &p.part))
 			continue;
 		if (rest != NIL && !vars_of(&p, rest, false, &p.ord))
 		{
@@ -820,7 +676,7 @@ window_put(WindowState *st, uint64 tag, const Datum *res, const bool *res_null)
 	const bool	have = st->nattrs == 0 || (st->carry != NULL && sift_win_carry_take(st->carry, tag, fetched, fnull)) ||
 		st->src->fetch(st->src, tag, st->attnos, st->nattrs, fetched, fnull);
 
-	SIFT_INVARIANT(have, "a row of the window scan of index %u has no columns to fetch", st->spec->indexoid);
+	SIFT_INVARIANT(have, "a row of the window scan of relation %u has no columns to fetch", st->spec->indexoid);
 	for (int i = 0; i < list_length(tlist); i++)
 	{
 		const int	e = st->entry[i];
@@ -890,16 +746,16 @@ window_run(WindowState *st, EState *estate)
 	SiftV6Input in;
 	SiftV6Vexpr quals;
 	bool		compiled;
-	Relation	index = index_open((Oid) list_nth_int(linitial(st->priv), 0), AccessShareLock);
+	const bool	is_table = list_nth_int(linitial(st->priv), 6);
+	Relation	source = sift_v6_source_open((Oid) list_nth_int(linitial(st->priv), 0), is_table, AccessShareLock, &in);
 
 	sift_v6_store_start(&st->out, estate);
-	sift_v6_input_init_rel(&in, index);
 	sift_v6_input_bind(&in, estate);
-	index_close(index, NoLock);
+	sift_v6_source_close(source, is_table, NoLock);
 	st->filters = palloc0(SIFT_WINX_MAX_FUNCS * sizeof(SiftV6Vexpr));
 	compiled = sift_v6_window_spec(st->priv, &in, estate->es_param_list_info, st->spec) && sift_v6_vexpr_quals(st->out.cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals) &&
 		(st->spec->winx == NULL || sift_v6_winx_filters(st->out.cx, list_nth(st->priv, PRIV_FUNCS), st->spec->rti, estate->es_param_list_info, &in, st->filters));
-	SIFT_INVARIANT(compiled, "the window scan of index %u is not compiled", st->spec->indexoid);
+	SIFT_INVARIANT(compiled, "the window scan of relation %u is not compiled", st->spec->indexoid);
 	if (st->spec->empty)
 	{
 		st->out.ran = true;
@@ -970,7 +826,7 @@ window_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	WindowState *st = (WindowState *) node;
 
-	sift_v6_explain_index(es, (Oid) list_nth_int(linitial(st->priv), 0), false);
+	sift_v6_explain_index(es, (Oid) list_nth_int(linitial(st->priv), 0), list_nth_int(linitial(st->priv), 6));
 	if (st->out.ran)
 	{
 		sift_v6_explain_count(es, "Rows In", (int64) st->stats.rows_in);
