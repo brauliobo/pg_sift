@@ -138,12 +138,36 @@ own_strings(SiftVec *v, uint32 n, char *at)
 	return at;
 }
 
+/* The n bits of src from bit `from` as the first n bits of dst (and no bit past them): one word at a time */
+static void
+copy_bits(uint64 *dst, const uint64 *src, uint32 from, uint32 n)
+{
+	const uint32 words = (n + 63) / 64,
+				shift = from & 63,
+				last = (from + n - 1) / 64 - from / 64;
+	const uint64 *s = src + from / 64;
+
+	for (uint32 w = 0; w < words; w++)
+		dst[w] = s[w] >> shift | (shift != 0 && w + 1 <= last ? s[w + 1] << (64 - shift) : 0);
+	if (n & 63)
+		dst[words - 1] &= (UINT64CONST(1) << (n & 63)) - 1;
+	dst[words] = 0;
+}
+
 static void
 copy_valid(uint64 *dst, const SiftVec *src, uint32 from, uint32 n)
 {
-	memset(dst, 0, ((n + 63) / 64 + 1) * sizeof(uint64));
-	for (uint32 i = 0; i < n; i++)
-		dst[i >> 6] |= (uint64) (src->all_valid || bit_at(src->valid, from + i)) << (i & 63);
+	if (n == 0)
+		dst[0] = 0;
+	else if (src->all_valid || src->valid == NULL)
+	{
+		memset(dst, 0xff, (n + 63) / 64 * sizeof(uint64));
+		if (n & 63)
+			dst[n / 64] = (UINT64CONST(1) << (n & 63)) - 1;
+		dst[(n + 63) / 64] = 0;
+	}
+	else
+		copy_bits(dst, src->valid, from, n);
 }
 
 /* The batch b with the rows of mask and the elements of keep (NULL: all), made the slot's own: nothing of it points into the memory of the scan */
