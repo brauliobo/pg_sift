@@ -13,6 +13,7 @@
 #include "col/v1/v1_reader.h"
 #include "col/v1/v1_store_ops.h"
 #include "core/tidbridge.h"
+#include "table/v1/v1_tbl_ops.h"
 
 typedef struct SiftV1Src
 {
