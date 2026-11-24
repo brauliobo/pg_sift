@@ -103,7 +103,7 @@ write_deletes(Relation rel, SiftTxnStage *st, bool at_end)
 void
 sift_stage_flush_deletes(Relation rel, SiftTxnStage *st, bool at_end)
 {
-	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift stage deletes");
+	MemoryContext scratch = sift_mem_allocset_create(TopTransactionContext, "sift stage deletes");
 	MemoryContext caller = MemoryContextSwitchTo(scratch);
 
 	write_deletes(rel, st, at_end);
@@ -415,11 +415,14 @@ write_stage(Relation rel, SiftTxnStage *st, bool at_end)
 uint64		sift_stage_flushes = 0;
 #endif
 
-/* The buffers that writing parts takes are the flush's own: a statement that flushes at each full index page does not keep them in its executor context */
+/*
+ * The buffers that writing parts takes are the flush's own: a statement that flushes at each full index page does not keep them in its executor context. The context hangs from the
+ * transaction, not from the caller's: an error leaves it behind, and a long-lived caller context (the message of an apply worker) would keep it until the process ends.
+ */
 void
 sift_stage_flush_rows(Relation rel, SiftTxnStage *st, bool at_end)
 {
-	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift stage flush");
+	MemoryContext scratch = sift_mem_allocset_create(TopTransactionContext, "sift stage flush");
 	MemoryContext caller = MemoryContextSwitchTo(scratch);
 
 #ifdef SIFT_TESTING
