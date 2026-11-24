@@ -169,9 +169,9 @@ SELECT * FROM check_rows('after vacuum');
 (10 rows)
 
 SELECT plan_shape(stmt(12, true)) AS after_changes;
-    after_changes     
-----------------------
- shared: lb; scans: 4
+     after_changes      
+------------------------
+ shared: none; scans: 4
 (1 row)
 
 DROP FUNCTION check_rows(text), same_rows(text), counts(), plan_shape(text), stmt(int, bool);
