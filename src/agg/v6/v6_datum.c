@@ -151,6 +151,17 @@ sift_v6_native_datum(const SiftVec *v, uint16 r, Oid typid, int scale)
 	return (Datum) 0;
 }
 
+Datum
+sift_v6_vec_datum(const SiftVec *v, uint16 r, Oid typid, int scale, bool *isnull)
+{
+	const bool	nan = v->nan != NULL && ((v->nan[r >> 6] >> (r & 63)) & 1);
+
+	*isnull = !nan && !(v->all_valid || ((v->valid[r >> 6] >> (r & 63)) & 1));
+	if (*isnull)
+		return (Datum) 0;
+	return nan ? DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1)) : sift_v6_native_datum(v, r, typid, scale);
+}
+
 SiftVecType
 sift_v6_result_vec_type(Oid typid)
 {

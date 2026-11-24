@@ -215,7 +215,7 @@ setup_derived(V6Scan *s, const int *first)
 		for (int j = 0; j < k && dv->prefix == NULL; j++)
 			if (sift_vn_prefix_of(&spec->derive[j], dv->d))
 				dv->prefix = &s->derived[j];
-		dv->src = &col_for(s, first, dv->d->src, false, false)->vec;
+		dv->src = &col_for(s, first, dv->d->src, false, dv->d->kind == SVD_PG_EXPR)->vec;
 		for (int i = 0; i < dv->d->ncond; i++)
 			dv->cond[i] = &col_for(s, first, dv->d->cond[i], false, false)->vec;
 		sift_vx_out_init(&dv->out, CurrentMemoryContext);
@@ -235,13 +235,25 @@ typedef struct BqCols
 } BqCols;
 
 static const SiftVec *
-bq_col(void *arg, const SiftV6InCol *c)
+input_col(void *arg, const SiftV6InCol *c, bool takes_nan)
 {
 	const BqCols *b = arg;
-
 	const bool	jtype = c->attno >= SIFT_V6_JTYPE_VATT;
 
-	return &col_for(b->s, b->first, (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale,.jleaf = jtype ? c->attno - SIFT_V6_JTYPE_VATT + 1 : 0,.jtype = jtype}, false, false)->vec;
+	return &col_for(b->s, b->first, (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale,.jleaf = jtype ? c->attno - SIFT_V6_JTYPE_VATT + 1 : 0,.jtype = jtype}, false, takes_nan)->vec;
+}
+
+static const SiftVec *
+bq_col(void *arg, const SiftV6InCol *c)
+{
+	return input_col(arg, c, false);
+}
+
+/* the inputs of an expression PostgreSQL evaluates: a NaN is the value it is for PostgreSQL (sift_v6_vec_datum) */
+static const SiftVec *
+pg_col(void *arg, const SiftV6InCol *c)
+{
+	return input_col(arg, c, true);
 }
 
 /* the quals no scan key says: their input is the relation's, their columns are decoded with the others */
@@ -291,7 +303,7 @@ scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *s
 	setup_bq(s, first);
 	for (int k = 0; k < s->nderived; k++)
 		if (s->derived[k].d->kind == SVD_PG_EXPR)
-			s->derived[k].pg = sift_v6_pgexpr_bind(CurrentMemoryContext, spec, s->derived[k].d, bq_col, &(BqCols) {s, first}, s->derived[k].pgin);
+			s->derived[k].pg = sift_v6_pgexpr_bind(CurrentMemoryContext, spec, s->derived[k].d, pg_col, &(BqCols) {s, first}, s->derived[k].pgin);
 	for (int i = 0; i < s->ncols; i++)
 		if ((s->cols[i].json || s->cols[i].cls == SV6C_DATUM) && s->batch_cx == NULL)
 			/* MEM[MEM-AGG-05]: SiftV6Scan batch_cx (the json exceptions of a batch, made only when a column reads a JSON key; was made for every scan) */

@@ -269,11 +269,7 @@ sift_v6_pgexpr_eval(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSe
 			ExecClearTuple(slot);
 			for (int i = 0; i < x->nin; i++)
 			{
-				const SiftVec *v = in[i];
-				const bool	valid = v->all_valid || ((v->valid[r >> 6] >> (r & 63)) & 1);
-
-				slot->tts_isnull[i] = !valid;
-				slot->tts_values[i] = valid ? sift_v6_native_datum(v, r, x->in[i].typid, x->in[i].scale) : (Datum) 0;
+				slot->tts_values[i] = sift_v6_vec_datum(in[i], r, x->in[i].typid, x->in[i].scale, &slot->tts_isnull[i]);
 			}
 			ExecStoreVirtualTuple(slot);
 			MemoryContextSwitchTo(old);

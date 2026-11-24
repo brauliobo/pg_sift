@@ -36,6 +36,9 @@ extern bool sift_v6_key_generic(Oid typid);
  */
 extern Datum sift_v6_native_datum(const SiftVec *v, uint16 r, Oid typid, int scale);
 
+/* The same for a row that may be NULL or a NaN (a numeric whose NaN the vector marks and calls invalid): *isnull says NULL, and a NaN is the datum PostgreSQL has for it */
+extern Datum sift_v6_vec_datum(const SiftVec *v, uint16 r, Oid typid, int scale, bool *isnull);
+
 /* The result d of a PostgreSQL expression of the native type typid, into row r of the data of a native vector: an integer, a double or a string view of the bytes of the datum */
 extern void sift_v6_result_put(Oid typid, void *data, uint16 r, Datum d);
 /* The type of the native vector the results of typid are (SVEC_I64, SVEC_F64 or SVEC_STRVIEW) */
