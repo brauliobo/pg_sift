@@ -8,7 +8,7 @@ SET client_min_messages = warning;
 CREATE FUNCTION ios_same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE via_index text; via_heap text; plan text;
 BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = on;
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = on; SET LOCAL enable_indexonlyscan = on;
 	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
 	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q INTO plan;
 	SET LOCAL enable_seqscan = on; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_indexscan = off;
