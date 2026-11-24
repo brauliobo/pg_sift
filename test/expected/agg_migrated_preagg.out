@@ -26,43 +26,49 @@ SELECT mig_same($$SELECT current_setting('sift.enable_agg') AS v$$) LIKE 'DIFF%'
  t
 (1 row)
 
--- >>> preagg
-SET client_min_messages = warning;
-CREATE SCHEMA m1;
-GRANT USAGE ON SCHEMA m1 TO PUBLIC;
-SET search_path = m1, public;
+-- A snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the pages of rows written
+-- since from becoming all-visible, so the units stay scanned: pa_settle() waits for the queue drained and no such session.
 \set ECHO none
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+-- the sorted rows of q, or its error, with the aggregate scan on (pa_rows) or the plain plan, which no worker helps (pa_plain)
+CREATE FUNCTION pa_exec(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
 EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR: ' || SQLERRM;
 END $$;
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
+CREATE FUNCTION pa_rows(q text) RETURNS text LANGUAGE sql SET sift.enable_agg = on AS $$ SELECT pa_exec(q) $$;
+CREATE FUNCTION pa_plain(q text) RETURNS text LANGUAGE sql SET sift.enable_agg = off SET max_parallel_workers_per_gather = 0 AS $$ SELECT pa_exec(q) $$;
+-- one row per query of pa_q (those marked w only, for a pass that starts workers for every query) in the schema of the segment:
+-- whether the aggregate scan and the plain plan agree
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000, w_only bool DEFAULT false) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
-	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
+	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q) IS NOT DISTINCT FROM pa_plain(z.q)
+	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi AND (p.w OR NOT w_only)) z ORDER BY z.n;
 END $$;
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
+-- the same, summed up for a table whose answers need not be listed
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000, w_only bool DEFAULT false) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
+	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi, w_only) c;
 END $$;
--- SiftAgg answers the units that are exact from the pre-aggregates the sift_col index stored with them (docs/COL-PREAGG.md section 6).
--- Every query runs three ways, which must give the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and
--- the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata: all, some, none ('-': no SiftAgg).
-SET default_statistics_target = 10000;
-	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
+-- >>> preagg
 SET client_min_messages = warning;
+CREATE SCHEMA m1;
+GRANT USAGE ON SCHEMA m1 TO PUBLIC;
+SET search_path = m1, public;
+-- SiftAgg answers the units that are exact from the pre-aggregates the sift_col index stored with them (docs/COL-PREAGG.md section 6).
+-- Every query runs two ways, which must give the same rows: the aggregate scan, which answers from metadata the units that are exact, and
+-- the plain plan (sift.enable_agg off).
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
--- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
--- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run: every build is
+-- serial except the one of step 6
 SET max_parallel_maintenance_workers = 0;
-CREATE TABLE ap (id int, grp text, cat int, d date, amt numeric(10,2), qty int, big bigint, huge numeric(18, 0), f float8, ts timestamp, pad text) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text);
+-- a unit is a superblock of 256 pages: a pad that fills a page with one row makes a unit of 256 rows, so 832 rows are 3 units and a tail of 64 rows
+CREATE TABLE ap (id int, grp text, cat int, d date, amt numeric(10,2), qty int, big bigint, huge numeric(18, 0), f float8, ts timestamp, pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
+CREATE TABLE pa_q (n int, shape text, q text, w bool DEFAULT false);
 INSERT INTO pa_q VALUES
 	(1, 'key text',          'SELECT grp, count(*) FROM %s GROUP BY grp'),
 	(2, 'key int',           'SELECT cat, count(*), sum(amt) FROM %s GROUP BY cat'),
@@ -72,7 +78,7 @@ INSERT INTO pa_q VALUES
 	(6, 'sum past int64',    'SELECT grp, sum(huge), count(huge), avg(huge) FROM %s GROUP BY grp'),
 	(7, 'whole table',       'SELECT count(*), sum(amt), min(qty), max(qty), avg(qty), count(grp), count(amt), min(d), max(ts), min(big), max(big), sum(huge) FROM %s'),
 	(8, 'zone covers all',   'SELECT count(*), sum(amt) FROM %s WHERE id >= 1'),
-	(9, 'zone covers some',  'SELECT count(*), sum(amt) FROM %s WHERE id < 20000'),
+	(9, 'zone covers some',  'SELECT count(*), sum(amt) FROM %s WHERE id < 600'),
 	(10, 'key in list',      'SELECT grp, count(*) FROM %s WHERE grp IN (''g01'', ''g02'', ''g03'') GROUP BY grp'),
 	(11, 'test of dim',      'SELECT count(*), sum(amt) FROM %s WHERE grp = ''g05'''),
 	(12, 'null group',       'SELECT count(*), sum(amt) FROM %s WHERE grp IS NULL'),
@@ -82,7 +88,7 @@ INSERT INTO pa_q VALUES
 	(16, 'zone and key',     'SELECT grp, sum(amt) FROM %s WHERE ts >= ''2024-01-05'' GROUP BY grp'),
 	(17, 'float: scan',      'SELECT grp, sum(f), count(*) FROM %s GROUP BY grp'),
 	(18, 'other test: scan', 'SELECT grp, sum(amt) FROM %s WHERE qty = 3 GROUP BY grp'),
-	(19, 'having, limit',    'SELECT grp, count(*) FROM %s GROUP BY grp HAVING count(*) > 100 ORDER BY 2 DESC, 1 LIMIT 5'),
+	(19, 'having, limit',    'SELECT grp, count(*) FROM %s GROUP BY grp HAVING count(*) > 50 ORDER BY 2 DESC, 1 LIMIT 5'),
 	(20, 'no rows',          'SELECT count(*), sum(amt), min(qty) FROM %s WHERE id > 100000000'),
 	(21, 'count of a measure', 'SELECT cat, count(cat), count(amt) FROM %s GROUP BY cat'),
 	(22, 'nan: count',       'SELECT grp, count(*) FROM %s GROUP BY grp'),
@@ -90,34 +96,30 @@ INSERT INTO pa_q VALUES
 	(24, 'nan: other sum',   'SELECT grp, sum(qty) FROM %s GROUP BY grp'),
 	(25, 'nan: whole',       'SELECT count(*), sum(qty), min(qty), count(amt) FROM %s'),
 	(26, 'nan: whole sum',   'SELECT sum(amt) FROM %s');
--- one row per query: whether the three ways agree (the scan may refuse a column it cannot read, as it does without pre-aggregates), and how much the first answered from metadata
--- the same, summed up for a table whose answers need not be listed
+-- w: the queries of the pass through the workers of the scan, one or more of each shape of aggregate state (every query of a pass starts workers)
+UPDATE pa_q SET w = true WHERE n IN (1, 2, 3, 6, 7, 9, 12, 17, 19, 20);
 INSERT INTO ap
 SELECT g, CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END, CASE WHEN g % 23 = 0 THEN NULL ELSE g % 10 END,
-       date '2024-01-01' + g / 140, CASE WHEN g % 31 = 0 THEN NULL ELSE ((g::bigint * 37) % 100000)::numeric / 100 END, g % 7,
-       4611686018427387904 - g % 1000, 999999999999999999 - g, g / 8.0, timestamp '2024-01-01' + g * interval '1 minute', repeat('p', 200)
-FROM generate_series(1, 40000) g;
+       date '2024-01-01' + g / 4, CASE WHEN g % 31 = 0 THEN NULL ELSE ((g::bigint * 37) % 100000)::numeric / 100 END, g % 7,
+       4611686018427387904 - g % 1000, 999999999999999999 - g, g / 8.0, timestamp '2024-01-01' + g * interval '25 minutes', repeat('p', 4100)
+FROM generate_series(1, 832) g;
 -- the default cube; an explicit cube with several measures; no cube
-CREATE TABLE ac (LIKE ap) WITH (autovacuum_enabled = off);
-CREATE TABLE ao (LIKE ap) WITH (autovacuum_enabled = off);
+CREATE TABLE ac (LIKE ap INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE ao (LIKE ap INCLUDING STORAGE) WITH (autovacuum_enabled = off);
 INSERT INTO ac SELECT * FROM ap;
 INSERT INTO ao SELECT * FROM ap;
 CREATE INDEX ap_col ON ap USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (write_buffer_limit = 4096);
--- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
 CREATE INDEX ac_col ON ac USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts)
 	WITH (write_buffer_limit = 4096, preagg = 'cube(grp: amt, qty, huge; cat: amt; d: amt; qty: amt)');
 CREATE INDEX ao_col ON ao USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (write_buffer_limit = 4096, preagg = 'off');
 CALL pa_settle();
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap, ac, ao;
-	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
 SELECT sift.col_verify('ac_col', true);
  col_verify 
 ------------
  
 (1 row)
 
--- The pad column (not in the indexes) makes a row 300 bytes: a unit is a superblock of 256 pages, about 6000 rows, so 40000 rows are 7 units
--- (200000 narrow rows were 10): enough for units that stay exact next to the ones an update or a delete touches
 -- 1. built, every page all-visible
 SELECT * FROM pa_check('ac');
  n  |       shape        | same 
@@ -163,11 +165,11 @@ SELECT * FROM pa_sum('ao');
 (1 row)
 
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
-UPDATE ac SET amt = amt + 1, grp = 'g99' WHERE id BETWEEN 100 AND 200;
-DELETE FROM ac WHERE id BETWEEN 18000 AND 18100;
-UPDATE ap SET amt = amt + 1, grp = 'g99' WHERE id BETWEEN 100 AND 200;
-DELETE FROM ap WHERE id BETWEEN 18000 AND 18100;
-UPDATE ao SET amt = amt + 1 WHERE id BETWEEN 100 AND 200;
+UPDATE ac SET amt = amt + 1, grp = 'g99' WHERE id BETWEEN 10 AND 20;
+DELETE FROM ac WHERE id BETWEEN 530 AND 540;
+UPDATE ap SET amt = amt + 1, grp = 'g99' WHERE id BETWEEN 10 AND 20;
+DELETE FROM ap WHERE id BETWEEN 530 AND 540;
+UPDATE ao SET amt = amt + 1 WHERE id BETWEEN 10 AND 20;
 SELECT * FROM pa_check('ac');
  n  |       shape        | same 
 ----+--------------------+------
@@ -245,8 +247,8 @@ SELECT * FROM pa_check('ac');
 (26 rows)
 
 -- 4. rows in the write buffer, then sealed
-INSERT INTO ac SELECT g, CASE WHEN g % 5 = 0 THEN NULL ELSE 'g' || (g % 40) END, g % 12, date '2025-01-01' + g % 50, g % 997, g % 9, g, g, g, timestamp '2025-01-01' + g * interval '1 minute', repeat('p', 200)
-FROM generate_series(300001, 301500) g;
+INSERT INTO ac SELECT g, CASE WHEN g % 5 = 0 THEN NULL ELSE 'g' || (g % 40) END, g % 12, date '2025-01-01' + g % 50, g % 997, g % 9, g, g, g, timestamp '2025-01-01' + g * interval '1 minute', repeat('p', 4100)
+FROM generate_series(300001, 300300) g;
 SELECT * FROM pa_check('ac');
  n  |       shape        | same 
 ----+--------------------+------
@@ -408,16 +410,16 @@ SELECT * FROM pa_check('ac');
 (26 rows)
 
 -- half of the units change and the rest answer, through the workers of the scan
-UPDATE ac SET qty = qty WHERE id < 20000;
+UPDATE ac SET qty = qty WHERE id < 600;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ac');
+SELECT * FROM pa_sum('ac', w_only => true);
  queries | differ 
 ---------+--------
-      26 |      0
+      10 |      0
 (1 row)
 
 RESET max_parallel_workers_per_gather;
@@ -425,7 +427,7 @@ RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 -- a transaction that deleted rows sees them gone, another does not until it commits
 BEGIN;
-DELETE FROM ao WHERE id BETWEEN 1 AND 100;
+DELETE FROM ao WHERE id BETWEEN 1 AND 20;
 SELECT * FROM pa_sum('ao');
  queries | differ 
 ---------+--------
@@ -440,8 +442,8 @@ SELECT * FROM pa_sum('ao');
 (1 row)
 
 -- values the index cannot store (a numeric NaN): the units that hold them are scanned, as they are without pre-aggregates
-CREATE TABLE an (id int, grp text, amt numeric(10, 2), qty int, pad text) WITH (autovacuum_enabled = off);
-INSERT INTO an SELECT g, 'g' || g % 5, CASE WHEN g % 1000 = 0 THEN 'NaN'::numeric ELSE g % 100 END, g % 3, repeat('p', 200) FROM generate_series(1, 30000) g;
+CREATE TABLE an (id int, grp text, amt numeric(10, 2), qty int, pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
+INSERT INTO an SELECT g, 'g' || g % 5, CASE WHEN g % 300 = 0 THEN 'NaN'::numeric ELSE g % 100 END, g % 3, repeat('p', 4100) FROM generate_series(1, 832) g;
 CREATE INDEX an_col ON an USING sift_col (id, grp, amt, qty) WITH (preagg = 'cube(grp: amt, qty; qty: amt)');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) an;
 SELECT * FROM pa_check('an', 22, 26);
@@ -454,16 +456,17 @@ SELECT * FROM pa_check('an', 22, 26);
  26 | nan: whole sum | t
 (5 rows)
 
--- Mixed NULL counts of a high-cardinality leaf use its zone counts without a histogram.
-CREATE TABLE az (id int, val int, pad text) WITH (autovacuum_enabled = off);
-INSERT INTO az SELECT g, CASE WHEN g % 3 = 0 THEN NULL ELSE g END, repeat('p', 200) FROM generate_series(1, 12000) g;
+-- Mixed NULL counts of a high-cardinality leaf use its zone counts without a histogram: two rows to a page, so a unit of 512 rows has 341 values, more than
+-- the 256 groups a histogram holds.
+CREATE TABLE az (id int, val int, pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
+INSERT INTO az SELECT g, CASE WHEN g % 3 = 0 THEN NULL ELSE g END, repeat('p', 3000) FROM generate_series(1, 812) g;
 CREATE INDEX az_col ON az USING sift_col (id, val);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) az;
 INSERT INTO pa_q VALUES
 	(27, 'zone null count', 'SELECT count(*) FROM %s WHERE val IS NULL'),
 	(28, 'zone nonnull count', 'SELECT count(*) FROM %s WHERE val IS NOT NULL'),
 	(29, 'null count of leaf', 'SELECT count(val) FROM %s WHERE val IS NULL'),
-	(30, 'null and range', 'SELECT count(*) FROM %s WHERE val IS NULL AND id < 2000');
+	(30, 'null and range', 'SELECT count(*) FROM %s WHERE val IS NULL AND id < 300');
 SELECT * FROM pa_check('az', 27, 30);
  n  |       shape        | same 
 ----+--------------------+------
@@ -507,52 +510,31 @@ SELECT * FROM pa_check('az', 27, 30);
  30 | null and range     | t
 (4 rows)
 
-DROP TABLE az;
--- the switches
-DROP TABLE ap, ac, ao, an, pa_q;
-DROP PROCEDURE pa_settle();
+DROP TABLE ap, ac, ao, an, az, pa_q;
 RESET ALL;
 SET client_min_messages = warning;
 DROP SCHEMA m1 CASCADE;
 -- <<< preagg
--- >>> dimfilter
+-- >>> dimfilter, filter
 SET client_min_messages = warning;
 CREATE SCHEMA m2;
 GRANT USAGE ON SCHEMA m2 TO PUBLIC;
 SET search_path = m2, public;
-\set ECHO none
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
-	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
-END $$;
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
-END $$;
 -- A filter on a dimension of the cube (`kind = 3`, `kind IN (1, 4)`, a range) with no group key is answered from the histogram of that dimension: the
 -- groups that pass the filter are added up for the units whose zone is not inside it, the sums of the leaves for those whose zone is.
--- Every query runs three ways, which must give the same rows (text, so the scale of the numeric counts): from the pre-aggregates, scanning
--- every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
+-- A FILTER on the dimension (`count(*) FILTER (WHERE kind = 3)`) is answered from the same histogram: the groups that pass the FILTER add to the
+-- aggregate, the others add nothing; the queries 101 and up are the ones with FILTER.
+-- Every query runs two ways, which must give the same rows (text, so the scale of the numeric counts): the aggregate scan, which answers from
+-- metadata the units that are exact, and the plain plan (sift.enable_agg off).
 SET default_statistics_target = 10000;
-	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
-SET client_min_messages = warning;
+-- a unit is a superblock of 256 pages: a pad that fills a page with one row makes a unit of 256 rows, so 832 rows are 3 units and a tail of 64 rows
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 -- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
 -- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
 SET max_parallel_maintenance_workers = 0;
-CREATE TABLE ev (id int, kind int, big bigint, grp text, val int, small int, amt numeric(12, 2), pad text) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text);
+CREATE TABLE ec (id int, kind int, big bigint, grp text, val int, small int, amt numeric(12, 2), pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
+CREATE TABLE pa_q (n int, shape text, q text, w bool DEFAULT false);
 INSERT INTO pa_q VALUES
 	(1, 'eq, count',          'SELECT count(*) FROM %s WHERE kind = 3'),
 	(2, 'eq, sums',           'SELECT count(*), sum(val), avg(val), count(val), sum(amt), avg(amt), count(amt) FROM %s WHERE kind = 3'),
@@ -569,7 +551,7 @@ INSERT INTO pa_q VALUES
 	(13, 'not equal',         'SELECT count(*), sum(val) FROM %s WHERE kind <> 3'),
 	(14, 'IS NULL',           'SELECT count(*), sum(val), count(kind) FROM %s WHERE kind IS NULL'),
 	(15, 'count of the dim',  'SELECT count(kind), count(*) FROM %s WHERE kind = 3'),
-	(16, 'eq, zone on the id', 'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND id < 20000'),
+	(16, 'eq, zone on the id', 'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND id < 600'),
 	(17, 'eq, zone covers',   'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND id >= 1'),
 	(18, 'two dims: scan',    'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND big = 4611686018427387905'),
 	(19, 'int8 eq',           'SELECT count(*), sum(val) FROM %s WHERE big = 4611686018427387905'),
@@ -585,27 +567,59 @@ INSERT INTO pa_q VALUES
 	(29, 'the key is the dim', 'SELECT kind, count(*), sum(val) FROM %s WHERE kind = 3 GROUP BY kind'),
 	(30, 'FILTER on the dim',      'SELECT count(*) FILTER (WHERE kind = 3) FROM %s'),
 	(31, 'no rows',           'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND id > 100000000'),
-	(32, 'the dim and its text', 'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND grp = ''g05''');
+	(32, 'the dim and its text', 'SELECT count(*), sum(val) FROM %s WHERE kind = 3 AND grp = ''g05'''),
+	(101, 'count',              'SELECT count(*) FILTER (WHERE kind = 3) FROM %s'),
+	(102, 'count and total',    'SELECT count(*), count(*) FILTER (WHERE kind = 3) FROM %s'),
+	(103, 'sums',               'SELECT sum(val) FILTER (WHERE kind = 3), avg(val) FILTER (WHERE kind = 3), count(val) FILTER (WHERE kind = 3), sum(amt) FILTER (WHERE kind = 3), avg(amt) FILTER (WHERE kind = 3), count(amt) FILTER (WHERE kind = 3) FROM %s'),
+	(104, 'two filters',        'SELECT count(*) FILTER (WHERE kind = 1), count(*) FILTER (WHERE kind = 2), sum(val) FILTER (WHERE kind IN (3, 4)), sum(val), count(*) FROM %s'),
+	(105, 'zero, the NULL group', 'SELECT count(*) FILTER (WHERE kind = 0), sum(val) FILTER (WHERE kind = 0) FROM %s'),
+	(106, 'absent',             'SELECT count(*) FILTER (WHERE kind = 99), sum(val) FILTER (WHERE kind = 99), avg(amt) FILTER (WHERE kind = 99) FROM %s'),
+	(107, 'down',           'SELECT count(*) FILTER (WHERE kind = -2), sum(val) FILTER (WHERE kind = -2) FROM %s'),
+	(108, 'in list, gaps',      'SELECT count(*) FILTER (WHERE kind IN (1, 4, 6)), sum(val) FILTER (WHERE kind IN (1, 4, 6)) FROM %s'),
+	(109, 'in list, NULL',      'SELECT count(*) FILTER (WHERE kind IN (2, NULL)), sum(val) FILTER (WHERE kind IN (2, NULL)) FROM %s'),
+	(110, 'range',             'SELECT count(*) FILTER (WHERE kind >= 4), sum(val) FILTER (WHERE kind > 1 AND kind < 5) FROM %s'),
+	(111, 'not equal',         'SELECT count(*) FILTER (WHERE kind <> 3), sum(val) FILTER (WHERE kind <> 3) FROM %s'),
+	(112, 'IS NULL',           'SELECT count(*) FILTER (WHERE kind IS NULL), sum(val) FILTER (WHERE kind IS NULL), count(kind) FILTER (WHERE kind IS NULL) FROM %s'),
+	(113, 'OR on the dim',     'SELECT count(*) FILTER (WHERE kind = 1 OR kind = 5), sum(val) FILTER (WHERE kind = 1 OR kind IS NULL) FROM %s'),
+	(114, 'count of the dim',  'SELECT count(kind) FILTER (WHERE kind = 3), count(kind) FILTER (WHERE kind > 2), count(kind) FROM %s'),
+	(115, 'key is the dim',    'SELECT kind, count(*), count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind > 2), sum(val) FROM %s GROUP BY kind'),
+	(116, 'key, a group never passes', 'SELECT kind, count(*) FILTER (WHERE kind = 99), sum(val) FILTER (WHERE kind = 99), avg(amt) FILTER (WHERE kind = 99) FROM %s GROUP BY kind'),
+	(117, 'text key',          'SELECT grp, count(*) FILTER (WHERE grp = ''g05''), sum(val) FILTER (WHERE grp IN (''g05'', ''g06'')), count(*) FROM %s GROUP BY grp'),
+	(118, 'where on the dim',  'SELECT count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind > 1), sum(val) FROM %s WHERE kind <> 2'),
+	(119, 'key and where',     'SELECT kind, count(*) FILTER (WHERE kind IN (1, 3)), sum(val) FILTER (WHERE kind <> 4) FROM %s WHERE kind > 0 GROUP BY kind'),
+	(120, 'zone on the id',    'SELECT count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind = 3) FROM %s WHERE id < 600'),
+	(121, 'zone covers',       'SELECT count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind = 3) FROM %s WHERE id >= 1'),
+	(122, 'no rows',           'SELECT count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind = 3) FROM %s WHERE id > 100000000'),
+	(123, 'int8 dim',          'SELECT count(*) FILTER (WHERE big = 4611686018427387905), sum(val) FILTER (WHERE big IN (0, 7)), sum(amt) FILTER (WHERE big IS NULL) FROM %s'),
+	(124, 'int8 extremes',     'SELECT count(*) FILTER (WHERE big IN (9223372036854775807, -9223372036854775807 - 1)), sum(val) FILTER (WHERE big < 0) FROM %s'),
+	(125, 'text dim',          'SELECT count(*) FILTER (WHERE grp = ''g05''), sum(val) FILTER (WHERE grp = ''g05''), count(*) FILTER (WHERE grp IS NULL) FROM %s'),
+	(126, 'two dims: scan',    'SELECT count(*) FILTER (WHERE kind = 3), count(*) FILTER (WHERE big = 0) FROM %s'),
+	(127, 'one test of two dims: scan', 'SELECT count(*) FILTER (WHERE kind = 3 AND big = 0) FROM %s'),
+	(128, 'other key: scan',   'SELECT grp, count(*) FILTER (WHERE kind = 3) FROM %s GROUP BY grp'),
+	(129, 'filter on a measure: scan', 'SELECT sum(val) FILTER (WHERE val > 0) FROM %s'),
+	(130, 'measure not stored: scan', 'SELECT sum(small) FILTER (WHERE kind = 3) FROM %s'),
+	(131, 'min, max: scan',    'SELECT min(val) FILTER (WHERE kind = 3), max(val) FILTER (WHERE kind = 3) FROM %s'),
+	(132, 'distinct: scan',    'SELECT count(DISTINCT val) FILTER (WHERE kind = 3) FROM %s'),
+	(133, 'where on another dim: scan', 'SELECT count(*) FILTER (WHERE kind = 3) FROM %s WHERE big = 0');
+-- w: the queries of the pass through the workers of the scan, one or more of each shape of aggregate state (every query of a pass starts workers)
+UPDATE pa_q SET w = true WHERE n IN (2, 3, 4, 6, 11, 14, 16, 19, 25, 28, 29, 31, 103, 104, 106, 112, 115, 117, 120, 123, 128, 132);
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
 -- the same, summed up for a table whose answers need not be listed
 -- kind: 0 to 6 (a ninth of the rows NULL, -2 for one row) in every unit, so no zone lies inside a comparison with it; big: a few int8 values with the
 -- extremes and NULLs, the sign and 2^62 as dims; val and amt: NULLs among the values
-INSERT INTO ev
+INSERT INTO ec
 SELECT g, CASE WHEN g % 9 = 0 THEN NULL WHEN g = 1000 THEN -2 ELSE g % 7 END,
        CASE g % 6 WHEN 0 THEN 4611686018427387905 WHEN 1 THEN -4611686018427387905 WHEN 2 THEN 0 WHEN 3 THEN NULL
                   WHEN 4 THEN CASE WHEN g % 12 = 4 THEN 9223372036854775807 ELSE -9223372036854775807 - 1 END ELSE 7 END,
        CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END,
        CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END, g % 13,
-       CASE WHEN g % 19 = 0 THEN NULL ELSE ((g::bigint * 37) % 100000)::numeric / 100 END, repeat('p', 200)
-FROM generate_series(1, 40000) g;
+       CASE WHEN g % 19 = 0 THEN NULL ELSE ((g::bigint * 37) % 100000)::numeric / 100 END, repeat('p', 4100)
+FROM generate_series(1, 832) g;
 -- an explicit cube with the measures; the default cube; no cube
-CREATE TABLE ec (LIKE ev) WITH (autovacuum_enabled = off);
-CREATE TABLE ed (LIKE ev) WITH (autovacuum_enabled = off);
-CREATE TABLE eo (LIKE ev) WITH (autovacuum_enabled = off);
-INSERT INTO ec SELECT * FROM ev;
-INSERT INTO ed SELECT * FROM ev;
-INSERT INTO eo SELECT * FROM ev;
-DROP TABLE ev;
+CREATE TABLE ed (LIKE ec INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE eo (LIKE ec INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+INSERT INTO ed SELECT * FROM ec;
+INSERT INTO eo SELECT * FROM ec;
 CREATE INDEX ec_col ON ec USING sift_col (id, kind, big, grp, val, small, amt)
 	WITH (write_buffer_limit = 4096, preagg = 'cube(kind: val, amt; big: val, amt; grp: val)');
 CREATE INDEX ed_col ON ed USING sift_col (id, kind, big, grp, val, small, amt) WITH (write_buffer_limit = 4096);
@@ -622,224 +636,393 @@ SELECT sift.col_verify('ec_col', true);
 
 -- 1. built, every page all-visible
 SELECT * FROM pa_check('ec');
- n  |        shape         | same 
-----+----------------------+------
-  1 | eq, count            | t
-  2 | eq, sums             | t
-  3 | eq 0, the NULL group | t
-  4 | eq, absent           | t
-  5 | eq, negative         | t
-  6 | in list              | t
-  7 | in list, gaps        | t
-  8 | in list, NULL        | t
-  9 | in list, absent      | t
- 10 | in list, one         | t
- 11 | range                | t
- 12 | range, both ends     | t
- 13 | not equal            | t
- 14 | IS NULL              | t
- 15 | count of the dim     | t
- 16 | eq, zone on the id   | t
- 17 | eq, zone covers      | t
- 18 | two dims: scan       | t
- 19 | int8 eq              | t
- 20 | int8 in list         | t
- 21 | int8 extremes        | t
- 22 | int8 range           | t
- 23 | int8 not equal       | t
- 24 | int8 IS NULL         | t
- 25 | text eq              | t
- 26 | min, max: scan       | t
- 27 | measure not stored   | t
- 28 | other key: scan      | t
- 29 | the key is the dim   | t
- 30 | FILTER on the dim    | t
- 31 | no rows              | t
- 32 | the dim and its text | t
-(32 rows)
+  n  |           shape            | same 
+-----+----------------------------+------
+   1 | eq, count                  | t
+   2 | eq, sums                   | t
+   3 | eq 0, the NULL group       | t
+   4 | eq, absent                 | t
+   5 | eq, negative               | t
+   6 | in list                    | t
+   7 | in list, gaps              | t
+   8 | in list, NULL              | t
+   9 | in list, absent            | t
+  10 | in list, one               | t
+  11 | range                      | t
+  12 | range, both ends           | t
+  13 | not equal                  | t
+  14 | IS NULL                    | t
+  15 | count of the dim           | t
+  16 | eq, zone on the id         | t
+  17 | eq, zone covers            | t
+  18 | two dims: scan             | t
+  19 | int8 eq                    | t
+  20 | int8 in list               | t
+  21 | int8 extremes              | t
+  22 | int8 range                 | t
+  23 | int8 not equal             | t
+  24 | int8 IS NULL               | t
+  25 | text eq                    | t
+  26 | min, max: scan             | t
+  27 | measure not stored         | t
+  28 | other key: scan            | t
+  29 | the key is the dim         | t
+  30 | FILTER on the dim          | t
+  31 | no rows                    | t
+  32 | the dim and its text       | t
+ 101 | count                      | t
+ 102 | count and total            | t
+ 103 | sums                       | t
+ 104 | two filters                | t
+ 105 | zero, the NULL group       | t
+ 106 | absent                     | t
+ 107 | down                       | t
+ 108 | in list, gaps              | t
+ 109 | in list, NULL              | t
+ 110 | range                      | t
+ 111 | not equal                  | t
+ 112 | IS NULL                    | t
+ 113 | OR on the dim              | t
+ 114 | count of the dim           | t
+ 115 | key is the dim             | t
+ 116 | key, a group never passes  | t
+ 117 | text key                   | t
+ 118 | where on the dim           | t
+ 119 | key and where              | t
+ 120 | zone on the id             | t
+ 121 | zone covers                | t
+ 122 | no rows                    | t
+ 123 | int8 dim                   | t
+ 124 | int8 extremes              | t
+ 125 | text dim                   | t
+ 126 | two dims: scan             | t
+ 127 | one test of two dims: scan | t
+ 128 | other key: scan            | t
+ 129 | filter on a measure: scan  | t
+ 130 | measure not stored: scan   | t
+ 131 | min, max: scan             | t
+ 132 | distinct: scan             | t
+ 133 | where on another dim: scan | t
+(65 rows)
 
 SELECT * FROM pa_sum('ed');
  queries | differ 
 ---------+--------
-      32 |      0
+      65 |      0
 (1 row)
 
 SELECT * FROM pa_sum('eo');
  queries | differ 
 ---------+--------
-      32 |      0
+      65 |      0
 (1 row)
 
 -- the answers of the first way, which the plain plan gives too (the rows of a query on one line)
-SELECT n, replace(pa_rows(format(q, 'ec'), true, true), E'\n', ' / ') AS answer FROM pa_q WHERE n <> 28 ORDER BY n;
- n  |                                   answer                                    
-----+-----------------------------------------------------------------------------
-  1 | (5079)
-  2 | (5079,455861,98.7139454309224773,4618,2379218.44,494.4344222776392352,4812)
-  3 | (5080,452213)
-  4 | (0,,)
-  5 | (1,-400)
-  6 | (10159,910883)
-  7 | (15237,1362552,7137889.52)
-  8 | (5080,455875)
-  9 | (0,)
- 10 | (5079,453397)
- 11 | (15236,1360927,494.5237760687313795)
- 12 | (15238,1366361)
- 13 | (30477,2723637)
- 14 | (4444,439040,0)
- 15 | (5079,5079)
- 16 | (2540,226530)
- 17 | (5079,455861)
- 18 | (635,56070)
- 19 | (6666,605560)
- 20 | (20000,1806843,9371877.54)
- 21 | (6667,594444)
- 22 | (23333,2105586)
- 23 | (26667,2400855)
- 24 | (6667,612123)
- 25 | (1256,114400)
- 26 | (-400,599,5079)
- 27 | (30489)
- 29 | (3,5079,455861)
- 30 | (5079)
- 31 | (0,)
- 32 | (179,16930)
-(31 rows)
+SELECT n, replace(pa_rows(format(q, 'ec')), E'\n', ' / ') AS answer FROM pa_q WHERE n NOT IN (28, 117, 128) ORDER BY n;
+  n  |                                                                             answer                                                                             
+-----+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+   1 | (106)
+   2 | (106,8749,90.1958762886597938,97,15522.61,153.6892079207920792,101)
+   3 | (105,6864)
+   4 | (0,,)
+   5 | (0,)
+   6 | (212,15975)
+   7 | (318,23431,46599.28)
+   8 | (105,8185)
+   9 | (0,)
+  10 | (106,8451)
+  11 | (318,24656,155.2291362126245847)
+  12 | (317,25589)
+  13 | (634,46931)
+  14 | (92,21106,0)
+  15 | (106,106)
+  16 | (77,5956)
+  17 | (106,8749)
+  18 | (14,1336)
+  19 | (138,17326)
+  20 | (416,38259,60627.83)
+  21 | (139,8316)
+  22 | (485,46859)
+  23 | (555,41578)
+  24 | (139,17882)
+  25 | (27,2475)
+  26 | (-389,560,106)
+  27 | (637)
+  29 | (3,106,8749)
+  30 | (106)
+  31 | (0,)
+  32 | (4,415)
+ 101 | (106)
+ 102 | (832,106)
+ 103 | (8749,90.1958762886597938,97,15522.61,153.6892079207920792,101)
+ 104 | (106,105,17404,76786,832)
+ 105 | (105,6864)
+ 106 | (0,,)
+ 107 | (0,)
+ 108 | (318,23431)
+ 109 | (105,8185)
+ 110 | (318,25589)
+ 111 | (634,46931)
+ 112 | (92,21106,0)
+ 113 | (212,28332)
+ 114 | (106,424,740)
+ 115 | (,92,0,,21106) / (0,105,0,,6864) / (1,106,0,,7226) / (2,105,0,,8185) / (3,106,106,8749,8749) / (4,106,0,8655,8655) / (5,106,0,8451,8451) / (6,106,0,7550,7550)
+ 116 | (,0,,) / (0,0,,) / (1,0,,) / (2,0,,) / (3,0,,) / (4,0,,) / (5,0,,) / (6,0,,)
+ 118 | (106,33405,47495)
+ 119 | (1,106,7226) / (2,0,8185) / (3,106,8749) / (4,0,) / (5,0,8451) / (6,0,7550)
+ 120 | (77,5956)
+ 121 | (106,8749)
+ 122 | (0,)
+ 123 | (138,25309,20412.90)
+ 124 | (139,12045)
+ 125 | (27,2475,48)
+ 126 | (106,139)
+ 127 | (19)
+ 129 | (136526)
+ 130 | (637)
+ 131 | (-389,560)
+ 132 | (97)
+ 133 | (19)
+(62 rows)
 
 -- the plan counts the units answered from the pre-aggregates
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
-UPDATE ec SET val = -(val / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 100 AND 200;
-DELETE FROM ec WHERE id BETWEEN 18000 AND 18100;
-UPDATE ed SET val = -(val / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 100 AND 200;
-DELETE FROM ed WHERE id BETWEEN 18000 AND 18100;
+UPDATE ec SET val = -(val / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 10 AND 20;
+DELETE FROM ec WHERE id BETWEEN 530 AND 540;
+UPDATE ed SET val = -(val / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 10 AND 20;
+DELETE FROM ed WHERE id BETWEEN 530 AND 540;
 SELECT * FROM pa_check('ec');
- n  |        shape         | same 
-----+----------------------+------
-  1 | eq, count            | t
-  2 | eq, sums             | t
-  3 | eq 0, the NULL group | t
-  4 | eq, absent           | t
-  5 | eq, negative         | t
-  6 | in list              | t
-  7 | in list, gaps        | t
-  8 | in list, NULL        | t
-  9 | in list, absent      | t
- 10 | in list, one         | t
- 11 | range                | t
- 12 | range, both ends     | t
- 13 | not equal            | t
- 14 | IS NULL              | t
- 15 | count of the dim     | t
- 16 | eq, zone on the id   | t
- 17 | eq, zone covers      | t
- 18 | two dims: scan       | t
- 19 | int8 eq              | t
- 20 | int8 in list         | t
- 21 | int8 extremes        | t
- 22 | int8 range           | t
- 23 | int8 not equal       | t
- 24 | int8 IS NULL         | t
- 25 | text eq              | t
- 26 | min, max: scan       | t
- 27 | measure not stored   | t
- 28 | other key: scan      | t
- 29 | the key is the dim   | t
- 30 | FILTER on the dim    | t
- 31 | no rows              | t
- 32 | the dim and its text | t
-(32 rows)
+  n  |           shape            | same 
+-----+----------------------------+------
+   1 | eq, count                  | t
+   2 | eq, sums                   | t
+   3 | eq 0, the NULL group       | t
+   4 | eq, absent                 | t
+   5 | eq, negative               | t
+   6 | in list                    | t
+   7 | in list, gaps              | t
+   8 | in list, NULL              | t
+   9 | in list, absent            | t
+  10 | in list, one               | t
+  11 | range                      | t
+  12 | range, both ends           | t
+  13 | not equal                  | t
+  14 | IS NULL                    | t
+  15 | count of the dim           | t
+  16 | eq, zone on the id         | t
+  17 | eq, zone covers            | t
+  18 | two dims: scan             | t
+  19 | int8 eq                    | t
+  20 | int8 in list               | t
+  21 | int8 extremes              | t
+  22 | int8 range                 | t
+  23 | int8 not equal             | t
+  24 | int8 IS NULL               | t
+  25 | text eq                    | t
+  26 | min, max: scan             | t
+  27 | measure not stored         | t
+  28 | other key: scan            | t
+  29 | the key is the dim         | t
+  30 | FILTER on the dim          | t
+  31 | no rows                    | t
+  32 | the dim and its text       | t
+ 101 | count                      | t
+ 102 | count and total            | t
+ 103 | sums                       | t
+ 104 | two filters                | t
+ 105 | zero, the NULL group       | t
+ 106 | absent                     | t
+ 107 | down                       | t
+ 108 | in list, gaps              | t
+ 109 | in list, NULL              | t
+ 110 | range                      | t
+ 111 | not equal                  | t
+ 112 | IS NULL                    | t
+ 113 | OR on the dim              | t
+ 114 | count of the dim           | t
+ 115 | key is the dim             | t
+ 116 | key, a group never passes  | t
+ 117 | text key                   | t
+ 118 | where on the dim           | t
+ 119 | key and where              | t
+ 120 | zone on the id             | t
+ 121 | zone covers                | t
+ 122 | no rows                    | t
+ 123 | int8 dim                   | t
+ 124 | int8 extremes              | t
+ 125 | text dim                   | t
+ 126 | two dims: scan             | t
+ 127 | one test of two dims: scan | t
+ 128 | other key: scan            | t
+ 129 | filter on a measure: scan  | t
+ 130 | measure not stored: scan   | t
+ 131 | min, max: scan             | t
+ 132 | distinct: scan             | t
+ 133 | where on another dim: scan | t
+(65 rows)
 
 SELECT * FROM pa_sum('ed');
  queries | differ 
 ---------+--------
-      32 |      0
+      65 |      0
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
 VACUUM (freeze, index_cleanup on, disable_page_skipping) ec, ed;
 SELECT * FROM pa_check('ec');
- n  |        shape         | same 
-----+----------------------+------
-  1 | eq, count            | t
-  2 | eq, sums             | t
-  3 | eq 0, the NULL group | t
-  4 | eq, absent           | t
-  5 | eq, negative         | t
-  6 | in list              | t
-  7 | in list, gaps        | t
-  8 | in list, NULL        | t
-  9 | in list, absent      | t
- 10 | in list, one         | t
- 11 | range                | t
- 12 | range, both ends     | t
- 13 | not equal            | t
- 14 | IS NULL              | t
- 15 | count of the dim     | t
- 16 | eq, zone on the id   | t
- 17 | eq, zone covers      | t
- 18 | two dims: scan       | t
- 19 | int8 eq              | t
- 20 | int8 in list         | t
- 21 | int8 extremes        | t
- 22 | int8 range           | t
- 23 | int8 not equal       | t
- 24 | int8 IS NULL         | t
- 25 | text eq              | t
- 26 | min, max: scan       | t
- 27 | measure not stored   | t
- 28 | other key: scan      | t
- 29 | the key is the dim   | t
- 30 | FILTER on the dim    | t
- 31 | no rows              | t
- 32 | the dim and its text | t
-(32 rows)
+  n  |           shape            | same 
+-----+----------------------------+------
+   1 | eq, count                  | t
+   2 | eq, sums                   | t
+   3 | eq 0, the NULL group       | t
+   4 | eq, absent                 | t
+   5 | eq, negative               | t
+   6 | in list                    | t
+   7 | in list, gaps              | t
+   8 | in list, NULL              | t
+   9 | in list, absent            | t
+  10 | in list, one               | t
+  11 | range                      | t
+  12 | range, both ends           | t
+  13 | not equal                  | t
+  14 | IS NULL                    | t
+  15 | count of the dim           | t
+  16 | eq, zone on the id         | t
+  17 | eq, zone covers            | t
+  18 | two dims: scan             | t
+  19 | int8 eq                    | t
+  20 | int8 in list               | t
+  21 | int8 extremes              | t
+  22 | int8 range                 | t
+  23 | int8 not equal             | t
+  24 | int8 IS NULL               | t
+  25 | text eq                    | t
+  26 | min, max: scan             | t
+  27 | measure not stored         | t
+  28 | other key: scan            | t
+  29 | the key is the dim         | t
+  30 | FILTER on the dim          | t
+  31 | no rows                    | t
+  32 | the dim and its text       | t
+ 101 | count                      | t
+ 102 | count and total            | t
+ 103 | sums                       | t
+ 104 | two filters                | t
+ 105 | zero, the NULL group       | t
+ 106 | absent                     | t
+ 107 | down                       | t
+ 108 | in list, gaps              | t
+ 109 | in list, NULL              | t
+ 110 | range                      | t
+ 111 | not equal                  | t
+ 112 | IS NULL                    | t
+ 113 | OR on the dim              | t
+ 114 | count of the dim           | t
+ 115 | key is the dim             | t
+ 116 | key, a group never passes  | t
+ 117 | text key                   | t
+ 118 | where on the dim           | t
+ 119 | key and where              | t
+ 120 | zone on the id             | t
+ 121 | zone covers                | t
+ 122 | no rows                    | t
+ 123 | int8 dim                   | t
+ 124 | int8 extremes              | t
+ 125 | text dim                   | t
+ 126 | two dims: scan             | t
+ 127 | one test of two dims: scan | t
+ 128 | other key: scan            | t
+ 129 | filter on a measure: scan  | t
+ 130 | measure not stored: scan   | t
+ 131 | min, max: scan             | t
+ 132 | distinct: scan             | t
+ 133 | where on another dim: scan | t
+(65 rows)
 
 -- 4. rows in the write buffer (a kind and a big no unit holds), then sealed
 INSERT INTO ec SELECT g, CASE WHEN g % 4 = 0 THEN NULL ELSE 7 + g % 3 END, CASE WHEN g % 3 = 0 THEN 4611686018427387905 ELSE 5 END,
-                  'g' || (g % 40), g % 9, g % 5, g % 100, repeat('p', 200)
-FROM generate_series(300001, 301500) g;
+                  'g' || (g % 40), g % 9, g % 5, g % 100, repeat('p', 4100)
+FROM generate_series(300001, 300300) g;
 SELECT * FROM pa_check('ec');
- n  |        shape         | same 
-----+----------------------+------
-  1 | eq, count            | t
-  2 | eq, sums             | t
-  3 | eq 0, the NULL group | t
-  4 | eq, absent           | t
-  5 | eq, negative         | t
-  6 | in list              | t
-  7 | in list, gaps        | t
-  8 | in list, NULL        | t
-  9 | in list, absent      | t
- 10 | in list, one         | t
- 11 | range                | t
- 12 | range, both ends     | t
- 13 | not equal            | t
- 14 | IS NULL              | t
- 15 | count of the dim     | t
- 16 | eq, zone on the id   | t
- 17 | eq, zone covers      | t
- 18 | two dims: scan       | t
- 19 | int8 eq              | t
- 20 | int8 in list         | t
- 21 | int8 extremes        | t
- 22 | int8 range           | t
- 23 | int8 not equal       | t
- 24 | int8 IS NULL         | t
- 25 | text eq              | t
- 26 | min, max: scan       | t
- 27 | measure not stored   | t
- 28 | other key: scan      | t
- 29 | the key is the dim   | t
- 30 | FILTER on the dim    | t
- 31 | no rows              | t
- 32 | the dim and its text | t
-(32 rows)
+  n  |           shape            | same 
+-----+----------------------------+------
+   1 | eq, count                  | t
+   2 | eq, sums                   | t
+   3 | eq 0, the NULL group       | t
+   4 | eq, absent                 | t
+   5 | eq, negative               | t
+   6 | in list                    | t
+   7 | in list, gaps              | t
+   8 | in list, NULL              | t
+   9 | in list, absent            | t
+  10 | in list, one               | t
+  11 | range                      | t
+  12 | range, both ends           | t
+  13 | not equal                  | t
+  14 | IS NULL                    | t
+  15 | count of the dim           | t
+  16 | eq, zone on the id         | t
+  17 | eq, zone covers            | t
+  18 | two dims: scan             | t
+  19 | int8 eq                    | t
+  20 | int8 in list               | t
+  21 | int8 extremes              | t
+  22 | int8 range                 | t
+  23 | int8 not equal             | t
+  24 | int8 IS NULL               | t
+  25 | text eq                    | t
+  26 | min, max: scan             | t
+  27 | measure not stored         | t
+  28 | other key: scan            | t
+  29 | the key is the dim         | t
+  30 | FILTER on the dim          | t
+  31 | no rows                    | t
+  32 | the dim and its text       | t
+ 101 | count                      | t
+ 102 | count and total            | t
+ 103 | sums                       | t
+ 104 | two filters                | t
+ 105 | zero, the NULL group       | t
+ 106 | absent                     | t
+ 107 | down                       | t
+ 108 | in list, gaps              | t
+ 109 | in list, NULL              | t
+ 110 | range                      | t
+ 111 | not equal                  | t
+ 112 | IS NULL                    | t
+ 113 | OR on the dim              | t
+ 114 | count of the dim           | t
+ 115 | key is the dim             | t
+ 116 | key, a group never passes  | t
+ 117 | text key                   | t
+ 118 | where on the dim           | t
+ 119 | key and where              | t
+ 120 | zone on the id             | t
+ 121 | zone covers                | t
+ 122 | no rows                    | t
+ 123 | int8 dim                   | t
+ 124 | int8 extremes              | t
+ 125 | text dim                   | t
+ 126 | two dims: scan             | t
+ 127 | one test of two dims: scan | t
+ 128 | other key: scan            | t
+ 129 | filter on a measure: scan  | t
+ 130 | measure not stored: scan   | t
+ 131 | min, max: scan             | t
+ 132 | distinct: scan             | t
+ 133 | where on another dim: scan | t
+(65 rows)
 
 SELECT count(*), sum(val) FROM ec WHERE kind = 8;
- count | sum  
--------+------
-   375 | 1503
+ count | sum 
+-------+-----
+    75 | 297
+(1 row)
+
+SELECT count(*) FILTER (WHERE kind = 8), sum(val) FILTER (WHERE kind = 8) FROM ec;
+ count | sum 
+-------+-----
+    75 | 297
 (1 row)
 
 SELECT sift.col_promote('ec_col') >= 0 AS promoted;
@@ -850,41 +1033,74 @@ SELECT sift.col_promote('ec_col') >= 0 AS promoted;
 
 VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT * FROM pa_check('ec');
- n  |        shape         | same 
-----+----------------------+------
-  1 | eq, count            | t
-  2 | eq, sums             | t
-  3 | eq 0, the NULL group | t
-  4 | eq, absent           | t
-  5 | eq, negative         | t
-  6 | in list              | t
-  7 | in list, gaps        | t
-  8 | in list, NULL        | t
-  9 | in list, absent      | t
- 10 | in list, one         | t
- 11 | range                | t
- 12 | range, both ends     | t
- 13 | not equal            | t
- 14 | IS NULL              | t
- 15 | count of the dim     | t
- 16 | eq, zone on the id   | t
- 17 | eq, zone covers      | t
- 18 | two dims: scan       | t
- 19 | int8 eq              | t
- 20 | int8 in list         | t
- 21 | int8 extremes        | t
- 22 | int8 range           | t
- 23 | int8 not equal       | t
- 24 | int8 IS NULL         | t
- 25 | text eq              | t
- 26 | min, max: scan       | t
- 27 | measure not stored   | t
- 28 | other key: scan      | t
- 29 | the key is the dim   | t
- 30 | FILTER on the dim    | t
- 31 | no rows              | t
- 32 | the dim and its text | t
-(32 rows)
+  n  |           shape            | same 
+-----+----------------------------+------
+   1 | eq, count                  | t
+   2 | eq, sums                   | t
+   3 | eq 0, the NULL group       | t
+   4 | eq, absent                 | t
+   5 | eq, negative               | t
+   6 | in list                    | t
+   7 | in list, gaps              | t
+   8 | in list, NULL              | t
+   9 | in list, absent            | t
+  10 | in list, one               | t
+  11 | range                      | t
+  12 | range, both ends           | t
+  13 | not equal                  | t
+  14 | IS NULL                    | t
+  15 | count of the dim           | t
+  16 | eq, zone on the id         | t
+  17 | eq, zone covers            | t
+  18 | two dims: scan             | t
+  19 | int8 eq                    | t
+  20 | int8 in list               | t
+  21 | int8 extremes              | t
+  22 | int8 range                 | t
+  23 | int8 not equal             | t
+  24 | int8 IS NULL               | t
+  25 | text eq                    | t
+  26 | min, max: scan             | t
+  27 | measure not stored         | t
+  28 | other key: scan            | t
+  29 | the key is the dim         | t
+  30 | FILTER on the dim          | t
+  31 | no rows                    | t
+  32 | the dim and its text       | t
+ 101 | count                      | t
+ 102 | count and total            | t
+ 103 | sums                       | t
+ 104 | two filters                | t
+ 105 | zero, the NULL group       | t
+ 106 | absent                     | t
+ 107 | down                       | t
+ 108 | in list, gaps              | t
+ 109 | in list, NULL              | t
+ 110 | range                      | t
+ 111 | not equal                  | t
+ 112 | IS NULL                    | t
+ 113 | OR on the dim              | t
+ 114 | count of the dim           | t
+ 115 | key is the dim             | t
+ 116 | key, a group never passes  | t
+ 117 | text key                   | t
+ 118 | where on the dim           | t
+ 119 | key and where              | t
+ 120 | zone on the id             | t
+ 121 | zone covers                | t
+ 122 | no rows                    | t
+ 123 | int8 dim                   | t
+ 124 | int8 extremes              | t
+ 125 | text dim                   | t
+ 126 | two dims: scan             | t
+ 127 | one test of two dims: scan | t
+ 128 | other key: scan            | t
+ 129 | filter on a measure: scan  | t
+ 130 | measure not stored: scan   | t
+ 131 | min, max: scan             | t
+ 132 | distinct: scan             | t
+ 133 | where on another dim: scan | t
+(65 rows)
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('ec_col', true) >= 0 AS merged;
@@ -901,41 +1117,74 @@ SELECT sift.col_verify('ec_col', true);
 (1 row)
 
 SELECT * FROM pa_check('ec');
- n  |        shape         | same 
-----+----------------------+------
-  1 | eq, count            | t
-  2 | eq, sums             | t
-  3 | eq 0, the NULL group | t
-  4 | eq, absent           | t
-  5 | eq, negative         | t
-  6 | in list              | t
-  7 | in list, gaps        | t
-  8 | in list, NULL        | t
-  9 | in list, absent      | t
- 10 | in list, one         | t
- 11 | range                | t
- 12 | range, both ends     | t
- 13 | not equal            | t
- 14 | IS NULL              | t
- 15 | count of the dim     | t
- 16 | eq, zone on the id   | t
- 17 | eq, zone covers      | t
- 18 | two dims: scan       | t
- 19 | int8 eq              | t
- 20 | int8 in list         | t
- 21 | int8 extremes        | t
- 22 | int8 range           | t
- 23 | int8 not equal       | t
- 24 | int8 IS NULL         | t
- 25 | text eq              | t
- 26 | min, max: scan       | t
- 27 | measure not stored   | t
- 28 | other key: scan      | t
- 29 | the key is the dim   | t
- 30 | FILTER on the dim    | t
- 31 | no rows              | t
- 32 | the dim and its text | t
-(32 rows)
+  n  |           shape            | same 
+-----+----------------------------+------
+   1 | eq, count                  | t
+   2 | eq, sums                   | t
+   3 | eq 0, the NULL group       | t
+   4 | eq, absent                 | t
+   5 | eq, negative               | t
+   6 | in list                    | t
+   7 | in list, gaps              | t
+   8 | in list, NULL              | t
+   9 | in list, absent            | t
+  10 | in list, one               | t
+  11 | range                      | t
+  12 | range, both ends           | t
+  13 | not equal                  | t
+  14 | IS NULL                    | t
+  15 | count of the dim           | t
+  16 | eq, zone on the id         | t
+  17 | eq, zone covers            | t
+  18 | two dims: scan             | t
+  19 | int8 eq                    | t
+  20 | int8 in list               | t
+  21 | int8 extremes              | t
+  22 | int8 range                 | t
+  23 | int8 not equal             | t
+  24 | int8 IS NULL               | t
+  25 | text eq                    | t
+  26 | min, max: scan             | t
+  27 | measure not stored         | t
+  28 | other key: scan            | t
+  29 | the key is the dim         | t
+  30 | FILTER on the dim          | t
+  31 | no rows                    | t
+  32 | the dim and its text       | t
+ 101 | count                      | t
+ 102 | count and total            | t
+ 103 | sums                       | t
+ 104 | two filters                | t
+ 105 | zero, the NULL group       | t
+ 106 | absent                     | t
+ 107 | down                       | t
+ 108 | in list, gaps              | t
+ 109 | in list, NULL              | t
+ 110 | range                      | t
+ 111 | not equal                  | t
+ 112 | IS NULL                    | t
+ 113 | OR on the dim              | t
+ 114 | count of the dim           | t
+ 115 | key is the dim             | t
+ 116 | key, a group never passes  | t
+ 117 | text key                   | t
+ 118 | where on the dim           | t
+ 119 | key and where              | t
+ 120 | zone on the id             | t
+ 121 | zone covers                | t
+ 122 | no rows                    | t
+ 123 | int8 dim                   | t
+ 124 | int8 extremes              | t
+ 125 | text dim                   | t
+ 126 | two dims: scan             | t
+ 127 | one test of two dims: scan | t
+ 128 | other key: scan            | t
+ 129 | filter on a measure: scan  | t
+ 130 | measure not stored: scan   | t
+ 131 | min, max: scan             | t
+ 132 | distinct: scan             | t
+ 133 | where on another dim: scan | t
+(65 rows)
 
 -- 6. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
 SET max_parallel_maintenance_workers = 2;
@@ -953,51 +1202,84 @@ SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('ec');
 SET max_parallel_maintenance_workers = 0;
 REINDEX INDEX ec_col;
 SELECT * FROM pa_check('ec');
- n  |        shape         | same 
-----+----------------------+------
-  1 | eq, count            | t
-  2 | eq, sums             | t
-  3 | eq 0, the NULL group | t
-  4 | eq, absent           | t
-  5 | eq, negative         | t
-  6 | in list              | t
-  7 | in list, gaps        | t
-  8 | in list, NULL        | t
-  9 | in list, absent      | t
- 10 | in list, one         | t
- 11 | range                | t
- 12 | range, both ends     | t
- 13 | not equal            | t
- 14 | IS NULL              | t
- 15 | count of the dim     | t
- 16 | eq, zone on the id   | t
- 17 | eq, zone covers      | t
- 18 | two dims: scan       | t
- 19 | int8 eq              | t
- 20 | int8 in list         | t
- 21 | int8 extremes        | t
- 22 | int8 range           | t
- 23 | int8 not equal       | t
- 24 | int8 IS NULL         | t
- 25 | text eq              | t
- 26 | min, max: scan       | t
- 27 | measure not stored   | t
- 28 | other key: scan      | t
- 29 | the key is the dim   | t
- 30 | FILTER on the dim    | t
- 31 | no rows              | t
- 32 | the dim and its text | t
-(32 rows)
+  n  |           shape            | same 
+-----+----------------------------+------
+   1 | eq, count                  | t
+   2 | eq, sums                   | t
+   3 | eq 0, the NULL group       | t
+   4 | eq, absent                 | t
+   5 | eq, negative               | t
+   6 | in list                    | t
+   7 | in list, gaps              | t
+   8 | in list, NULL              | t
+   9 | in list, absent            | t
+  10 | in list, one               | t
+  11 | range                      | t
+  12 | range, both ends           | t
+  13 | not equal                  | t
+  14 | IS NULL                    | t
+  15 | count of the dim           | t
+  16 | eq, zone on the id         | t
+  17 | eq, zone covers            | t
+  18 | two dims: scan             | t
+  19 | int8 eq                    | t
+  20 | int8 in list               | t
+  21 | int8 extremes              | t
+  22 | int8 range                 | t
+  23 | int8 not equal             | t
+  24 | int8 IS NULL               | t
+  25 | text eq                    | t
+  26 | min, max: scan             | t
+  27 | measure not stored         | t
+  28 | other key: scan            | t
+  29 | the key is the dim         | t
+  30 | FILTER on the dim          | t
+  31 | no rows                    | t
+  32 | the dim and its text       | t
+ 101 | count                      | t
+ 102 | count and total            | t
+ 103 | sums                       | t
+ 104 | two filters                | t
+ 105 | zero, the NULL group       | t
+ 106 | absent                     | t
+ 107 | down                       | t
+ 108 | in list, gaps              | t
+ 109 | in list, NULL              | t
+ 110 | range                      | t
+ 111 | not equal                  | t
+ 112 | IS NULL                    | t
+ 113 | OR on the dim              | t
+ 114 | count of the dim           | t
+ 115 | key is the dim             | t
+ 116 | key, a group never passes  | t
+ 117 | text key                   | t
+ 118 | where on the dim           | t
+ 119 | key and where              | t
+ 120 | zone on the id             | t
+ 121 | zone covers                | t
+ 122 | no rows                    | t
+ 123 | int8 dim                   | t
+ 124 | int8 extremes              | t
+ 125 | text dim                   | t
+ 126 | two dims: scan             | t
+ 127 | one test of two dims: scan | t
+ 128 | other key: scan            | t
+ 129 | filter on a measure: scan  | t
+ 130 | measure not stored: scan   | t
+ 131 | min, max: scan             | t
+ 132 | distinct: scan             | t
+ 133 | where on another dim: scan | t
+(65 rows)
 
-UPDATE ec SET small = small WHERE id < 20000;
+UPDATE ec SET small = small WHERE id < 600;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ec');
+SELECT * FROM pa_sum('ec', w_only => true);
  queries | differ 
 ---------+--------
-      32 |      0
+      22 |      0
 (1 row)
 
 RESET max_parallel_workers_per_gather;
@@ -1005,571 +1287,43 @@ RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 -- a transaction that deleted rows sees them gone, another does not until it commits
 BEGIN;
-DELETE FROM eo WHERE id BETWEEN 1 AND 100;
+DELETE FROM eo WHERE id BETWEEN 1 AND 20;
 SELECT * FROM pa_sum('eo');
  queries | differ 
 ---------+--------
-      32 |      0
+      65 |      0
 (1 row)
 
 ROLLBACK;
 SELECT * FROM pa_sum('eo');
  queries | differ 
 ---------+--------
-      32 |      0
+      65 |      0
 (1 row)
 
 -- the switch
 DROP TABLE ec, ed, eo, pa_q;
-DROP PROCEDURE pa_settle();
 RESET ALL;
 SET client_min_messages = warning;
 DROP SCHEMA m2 CASCADE;
--- <<< dimfilter
--- >>> filter
-SET client_min_messages = warning;
-CREATE SCHEMA m3;
-GRANT USAGE ON SCHEMA m3 TO PUBLIC;
-SET search_path = m3, public;
-\set ECHO none
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
-	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
-END $$;
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
-END $$;
--- A FILTER on the dimension of the cube that a query groups or filters by (`count(*) FILTER (WHERE kind = 3)`, `sum(val) FILTER (WHERE kind IN (1, 4))`) is
--- answered from the histogram of that dimension: the groups that pass the FILTER add to the aggregate, the others add nothing to it.
--- Every query runs three ways, which must give the same rows (text, so the scale of the numeric counts): from the pre-aggregates, scanning
--- every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
-SET default_statistics_target = 10000;
-	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
-SET client_min_messages = warning;
-SET max_parallel_workers_per_gather = 0;
-SET cpu_tuple_cost = 0.5;
-CREATE TABLE ev (id int, kind int, big bigint, grp text, val int, small int, amt numeric(12, 2), pad text) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text);
-INSERT INTO pa_q VALUES
-	(1, 'count',              'SELECT count(*) FILTER (WHERE kind = 3) FROM %s'),
-	(2, 'count and total',    'SELECT count(*), count(*) FILTER (WHERE kind = 3) FROM %s'),
-	(3, 'sums',               'SELECT sum(val) FILTER (WHERE kind = 3), avg(val) FILTER (WHERE kind = 3), count(val) FILTER (WHERE kind = 3), sum(amt) FILTER (WHERE kind = 3), avg(amt) FILTER (WHERE kind = 3), count(amt) FILTER (WHERE kind = 3) FROM %s'),
-	(4, 'two filters',        'SELECT count(*) FILTER (WHERE kind = 1), count(*) FILTER (WHERE kind = 2), sum(val) FILTER (WHERE kind IN (3, 4)), sum(val), count(*) FROM %s'),
-	(5, 'zero, the NULL group', 'SELECT count(*) FILTER (WHERE kind = 0), sum(val) FILTER (WHERE kind = 0) FROM %s'),
-	(6, 'absent',             'SELECT count(*) FILTER (WHERE kind = 99), sum(val) FILTER (WHERE kind = 99), avg(amt) FILTER (WHERE kind = 99) FROM %s'),
-	(7, 'down',           'SELECT count(*) FILTER (WHERE kind = -2), sum(val) FILTER (WHERE kind = -2) FROM %s'),
-	(8, 'in list, gaps',      'SELECT count(*) FILTER (WHERE kind IN (1, 4, 6)), sum(val) FILTER (WHERE kind IN (1, 4, 6)) FROM %s'),
-	(9, 'in list, NULL',      'SELECT count(*) FILTER (WHERE kind IN (2, NULL)), sum(val) FILTER (WHERE kind IN (2, NULL)) FROM %s'),
-	(10, 'range',             'SELECT count(*) FILTER (WHERE kind >= 4), sum(val) FILTER (WHERE kind > 1 AND kind < 5) FROM %s'),
-	(11, 'not equal',         'SELECT count(*) FILTER (WHERE kind <> 3), sum(val) FILTER (WHERE kind <> 3) FROM %s'),
-	(12, 'IS NULL',           'SELECT count(*) FILTER (WHERE kind IS NULL), sum(val) FILTER (WHERE kind IS NULL), count(kind) FILTER (WHERE kind IS NULL) FROM %s'),
-	(13, 'OR on the dim',     'SELECT count(*) FILTER (WHERE kind = 1 OR kind = 5), sum(val) FILTER (WHERE kind = 1 OR kind IS NULL) FROM %s'),
-	(14, 'count of the dim',  'SELECT count(kind) FILTER (WHERE kind = 3), count(kind) FILTER (WHERE kind > 2), count(kind) FROM %s'),
-	(15, 'key is the dim',    'SELECT kind, count(*), count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind > 2), sum(val) FROM %s GROUP BY kind'),
-	(16, 'key, a group never passes', 'SELECT kind, count(*) FILTER (WHERE kind = 99), sum(val) FILTER (WHERE kind = 99), avg(amt) FILTER (WHERE kind = 99) FROM %s GROUP BY kind'),
-	(17, 'text key',          'SELECT grp, count(*) FILTER (WHERE grp = ''g05''), sum(val) FILTER (WHERE grp IN (''g05'', ''g06'')), count(*) FROM %s GROUP BY grp'),
-	(18, 'where on the dim',  'SELECT count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind > 1), sum(val) FROM %s WHERE kind <> 2'),
-	(19, 'key and where',     'SELECT kind, count(*) FILTER (WHERE kind IN (1, 3)), sum(val) FILTER (WHERE kind <> 4) FROM %s WHERE kind > 0 GROUP BY kind'),
-	(20, 'zone on the id',    'SELECT count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind = 3) FROM %s WHERE id < 20000'),
-	(21, 'zone covers',       'SELECT count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind = 3) FROM %s WHERE id >= 1'),
-	(22, 'no rows',           'SELECT count(*) FILTER (WHERE kind = 3), sum(val) FILTER (WHERE kind = 3) FROM %s WHERE id > 100000000'),
-	(23, 'int8 dim',          'SELECT count(*) FILTER (WHERE big = 4611686018427387905), sum(val) FILTER (WHERE big IN (0, 7)), sum(amt) FILTER (WHERE big IS NULL) FROM %s'),
-	(24, 'int8 extremes',     'SELECT count(*) FILTER (WHERE big IN (9223372036854775807, -9223372036854775807 - 1)), sum(val) FILTER (WHERE big < 0) FROM %s'),
-	(25, 'text dim',          'SELECT count(*) FILTER (WHERE grp = ''g05''), sum(val) FILTER (WHERE grp = ''g05''), count(*) FILTER (WHERE grp IS NULL) FROM %s'),
-	(26, 'two dims: scan',    'SELECT count(*) FILTER (WHERE kind = 3), count(*) FILTER (WHERE big = 0) FROM %s'),
-	(27, 'one test of two dims: scan', 'SELECT count(*) FILTER (WHERE kind = 3 AND big = 0) FROM %s'),
-	(28, 'other key: scan',   'SELECT grp, count(*) FILTER (WHERE kind = 3) FROM %s GROUP BY grp'),
-	(29, 'filter on a measure: scan', 'SELECT sum(val) FILTER (WHERE val > 0) FROM %s'),
-	(30, 'measure not stored: scan', 'SELECT sum(small) FILTER (WHERE kind = 3) FROM %s'),
-	(31, 'min, max: scan',    'SELECT min(val) FILTER (WHERE kind = 3), max(val) FILTER (WHERE kind = 3) FROM %s'),
-	(32, 'distinct: scan',    'SELECT count(DISTINCT val) FILTER (WHERE kind = 3) FROM %s'),
-	(33, 'where on another dim: scan', 'SELECT count(*) FILTER (WHERE kind = 3) FROM %s WHERE big = 0');
--- one row per query: whether the three ways agree, and how much the first answered from metadata
--- the same, summed up for a table whose answers need not be listed
--- kind: 0 to 6 (a ninth of the rows NULL, -2 for one row) in every unit, so no zone lies inside a comparison with it; big: a few int8 values with the
--- extremes and NULLs, the sign and 2^62 as dims; val and amt: NULLs among the values
-INSERT INTO ev
-SELECT g, CASE WHEN g % 9 = 0 THEN NULL WHEN g = 1000 THEN -2 ELSE g % 7 END,
-       CASE g % 6 WHEN 0 THEN 4611686018427387905 WHEN 1 THEN -4611686018427387905 WHEN 2 THEN 0 WHEN 3 THEN NULL
-                  WHEN 4 THEN CASE WHEN g % 12 = 4 THEN 9223372036854775807 ELSE -9223372036854775807 - 1 END ELSE 7 END,
-       CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END,
-       CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END, g % 13,
-       CASE WHEN g % 19 = 0 THEN NULL ELSE ((g::bigint * 37) % 100000)::numeric / 100 END, repeat('p', 200)
-FROM generate_series(1, 40000) g;
--- an explicit cube with the measures; the default cube; no cube
-CREATE TABLE ec (LIKE ev) WITH (autovacuum_enabled = off);
-CREATE TABLE ed (LIKE ev) WITH (autovacuum_enabled = off);
-CREATE TABLE eo (LIKE ev) WITH (autovacuum_enabled = off);
-INSERT INTO ec SELECT * FROM ev;
-INSERT INTO ed SELECT * FROM ev;
-INSERT INTO eo SELECT * FROM ev;
-DROP TABLE ev;
-CREATE INDEX ec_col ON ec USING sift_col (id, kind, big, grp, val, small, amt)
-	WITH (write_buffer_limit = 4096, preagg = 'cube(kind: val, amt; big: val, amt; grp: val)');
-CREATE INDEX ed_col ON ed USING sift_col (id, kind, big, grp, val, small, amt) WITH (write_buffer_limit = 4096);
-CREATE INDEX eo_col ON eo USING sift_col (id, kind, big, grp, val, small, amt) WITH (write_buffer_limit = 4096, preagg = 'off');
-CALL pa_settle();
--- FREEZE: a plain VACUUM skips a page another backend has pinned (the checkpointer or the background writer writing it) and leaves it not
--- all-visible, so its unit is scanned; one that has to freeze a page waits for the cleanup lock, and every page written since the load has tuples to freeze
-VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
-SELECT sift.col_verify('ec_col', true);
- col_verify 
-------------
- 
-(1 row)
-
--- 1. built, every page all-visible
-SELECT * FROM pa_check('ec');
- n  |           shape            | same 
-----+----------------------------+------
-  1 | count                      | t
-  2 | count and total            | t
-  3 | sums                       | t
-  4 | two filters                | t
-  5 | zero, the NULL group       | t
-  6 | absent                     | t
-  7 | down                       | t
-  8 | in list, gaps              | t
-  9 | in list, NULL              | t
- 10 | range                      | t
- 11 | not equal                  | t
- 12 | IS NULL                    | t
- 13 | OR on the dim              | t
- 14 | count of the dim           | t
- 15 | key is the dim             | t
- 16 | key, a group never passes  | t
- 17 | text key                   | t
- 18 | where on the dim           | t
- 19 | key and where              | t
- 20 | zone on the id             | t
- 21 | zone covers                | t
- 22 | no rows                    | t
- 23 | int8 dim                   | t
- 24 | int8 extremes              | t
- 25 | text dim                   | t
- 26 | two dims: scan             | t
- 27 | one test of two dims: scan | t
- 28 | other key: scan            | t
- 29 | filter on a measure: scan  | t
- 30 | measure not stored: scan   | t
- 31 | min, max: scan             | t
- 32 | distinct: scan             | t
- 33 | where on another dim: scan | t
-(33 rows)
-
-SELECT * FROM pa_sum('ed');
- queries | differ 
----------+--------
-      33 |      0
-(1 row)
-
-SELECT * FROM pa_sum('eo');
- queries | differ 
----------+--------
-      33 |      0
-(1 row)
-
--- the answers of the first way, which the plain plan gives too (the rows of a query on one line)
-SELECT n, replace(pa_rows(format(q, 'ec'), true, true), E'\n', ' / ') AS answer FROM pa_q WHERE n NOT IN (17, 28) ORDER BY n;
- n  |                                                                                                      answer                                                                                                      
-----+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  1 | (5079)
-  2 | (40000,5079)
-  3 | (455861,98.7139454309224773,4618,2379218.44,494.4344222776392352,4812)
-  4 | (5080,5080,910486,3618538,40000)
-  5 | (5080,452213)
-  6 | (0,,)
-  7 | (1,-400)
-  8 | (15237,1362552)
-  9 | (5080,455875)
- 10 | (15236,1366361)
- 11 | (30477,2723637)
- 12 | (4444,439040,0)
- 13 | (10159,894062)
- 14 | (5079,20315,35556)
- 15 | (,4444,0,,439040) / (-2,1,0,,-400) / (0,5080,0,,452213) / (1,5080,0,,455022) / (2,5080,0,,455875) / (3,5079,5079,455861,455861) / (4,5079,0,454625,454625) / (5,5079,0,453397,453397) / (6,5078,0,452905,452905)
- 16 | (,0,,) / (-2,0,,) / (0,0,,) / (1,0,,) / (2,0,,) / (3,0,,) / (4,0,,) / (5,0,,) / (6,0,,)
- 18 | (5079,1816788,2723623)
- 19 | (1,5080,455022) / (2,0,455875) / (3,5079,455861) / (4,0,) / (5,0,453397) / (6,0,452905)
- 20 | (2540,226530)
- 21 | (5079,455861)
- 22 | (0,)
- 23 | (6666,1205930,3123957.70)
- 24 | (6667,900829)
- 25 | (1256,114400,2352)
- 26 | (5079,6667)
- 27 | (952)
- 29 | (6534859)
- 30 | (30489)
- 31 | (-400,599)
- 32 | (1000)
- 33 | (952)
-(31 rows)
-
--- the plan counts the units answered from the pre-aggregates
--- 2. a few pages change (update, delete): their units are scanned, the others answer
-UPDATE ec SET val = -(val / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 100 AND 200;
-DELETE FROM ec WHERE id BETWEEN 18000 AND 18100;
-UPDATE ed SET val = -(val / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 100 AND 200;
-DELETE FROM ed WHERE id BETWEEN 18000 AND 18100;
-SELECT * FROM pa_check('ec');
- n  |           shape            | same 
-----+----------------------------+------
-  1 | count                      | t
-  2 | count and total            | t
-  3 | sums                       | t
-  4 | two filters                | t
-  5 | zero, the NULL group       | t
-  6 | absent                     | t
-  7 | down                       | t
-  8 | in list, gaps              | t
-  9 | in list, NULL              | t
- 10 | range                      | t
- 11 | not equal                  | t
- 12 | IS NULL                    | t
- 13 | OR on the dim              | t
- 14 | count of the dim           | t
- 15 | key is the dim             | t
- 16 | key, a group never passes  | t
- 17 | text key                   | t
- 18 | where on the dim           | t
- 19 | key and where              | t
- 20 | zone on the id             | t
- 21 | zone covers                | t
- 22 | no rows                    | t
- 23 | int8 dim                   | t
- 24 | int8 extremes              | t
- 25 | text dim                   | t
- 26 | two dims: scan             | t
- 27 | one test of two dims: scan | t
- 28 | other key: scan            | t
- 29 | filter on a measure: scan  | t
- 30 | measure not stored: scan   | t
- 31 | min, max: scan             | t
- 32 | distinct: scan             | t
- 33 | where on another dim: scan | t
-(33 rows)
-
-SELECT * FROM pa_sum('ed');
- queries | differ 
----------+--------
-      33 |      0
-(1 row)
-
--- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
-VACUUM (freeze, index_cleanup on, disable_page_skipping) ec, ed;
-SELECT * FROM pa_check('ec');
- n  |           shape            | same 
-----+----------------------------+------
-  1 | count                      | t
-  2 | count and total            | t
-  3 | sums                       | t
-  4 | two filters                | t
-  5 | zero, the NULL group       | t
-  6 | absent                     | t
-  7 | down                       | t
-  8 | in list, gaps              | t
-  9 | in list, NULL              | t
- 10 | range                      | t
- 11 | not equal                  | t
- 12 | IS NULL                    | t
- 13 | OR on the dim              | t
- 14 | count of the dim           | t
- 15 | key is the dim             | t
- 16 | key, a group never passes  | t
- 17 | text key                   | t
- 18 | where on the dim           | t
- 19 | key and where              | t
- 20 | zone on the id             | t
- 21 | zone covers                | t
- 22 | no rows                    | t
- 23 | int8 dim                   | t
- 24 | int8 extremes              | t
- 25 | text dim                   | t
- 26 | two dims: scan             | t
- 27 | one test of two dims: scan | t
- 28 | other key: scan            | t
- 29 | filter on a measure: scan  | t
- 30 | measure not stored: scan   | t
- 31 | min, max: scan             | t
- 32 | distinct: scan             | t
- 33 | where on another dim: scan | t
-(33 rows)
-
--- 4. rows in the write buffer (a kind and a big no unit holds), then sealed
-INSERT INTO ec SELECT g, CASE WHEN g % 4 = 0 THEN NULL ELSE 7 + g % 3 END, CASE WHEN g % 3 = 0 THEN 4611686018427387905 ELSE 5 END,
-                  'g' || (g % 40), g % 9, g % 5, g % 100, repeat('p', 200)
-FROM generate_series(300001, 301500) g;
-SELECT * FROM pa_check('ec');
- n  |           shape            | same 
-----+----------------------------+------
-  1 | count                      | t
-  2 | count and total            | t
-  3 | sums                       | t
-  4 | two filters                | t
-  5 | zero, the NULL group       | t
-  6 | absent                     | t
-  7 | down                       | t
-  8 | in list, gaps              | t
-  9 | in list, NULL              | t
- 10 | range                      | t
- 11 | not equal                  | t
- 12 | IS NULL                    | t
- 13 | OR on the dim              | t
- 14 | count of the dim           | t
- 15 | key is the dim             | t
- 16 | key, a group never passes  | t
- 17 | text key                   | t
- 18 | where on the dim           | t
- 19 | key and where              | t
- 20 | zone on the id             | t
- 21 | zone covers                | t
- 22 | no rows                    | t
- 23 | int8 dim                   | t
- 24 | int8 extremes              | t
- 25 | text dim                   | t
- 26 | two dims: scan             | t
- 27 | one test of two dims: scan | t
- 28 | other key: scan            | t
- 29 | filter on a measure: scan  | t
- 30 | measure not stored: scan   | t
- 31 | min, max: scan             | t
- 32 | distinct: scan             | t
- 33 | where on another dim: scan | t
-(33 rows)
-
-SELECT count(*) FILTER (WHERE kind = 8), sum(val) FILTER (WHERE kind = 8) FROM ec;
- count | sum  
--------+------
-   375 | 1503
-(1 row)
-
-SELECT sift.col_promote('ec_col') >= 0 AS promoted;
- promoted 
-----------
- t
-(1 row)
-
-VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
-SELECT * FROM pa_check('ec');
- n  |           shape            | same 
-----+----------------------------+------
-  1 | count                      | t
-  2 | count and total            | t
-  3 | sums                       | t
-  4 | two filters                | t
-  5 | zero, the NULL group       | t
-  6 | absent                     | t
-  7 | down                       | t
-  8 | in list, gaps              | t
-  9 | in list, NULL              | t
- 10 | range                      | t
- 11 | not equal                  | t
- 12 | IS NULL                    | t
- 13 | OR on the dim              | t
- 14 | count of the dim           | t
- 15 | key is the dim             | t
- 16 | key, a group never passes  | t
- 17 | text key                   | t
- 18 | where on the dim           | t
- 19 | key and where              | t
- 20 | zone on the id             | t
- 21 | zone covers                | t
- 22 | no rows                    | t
- 23 | int8 dim                   | t
- 24 | int8 extremes              | t
- 25 | text dim                   | t
- 26 | two dims: scan             | t
- 27 | one test of two dims: scan | t
- 28 | other key: scan            | t
- 29 | filter on a measure: scan  | t
- 30 | measure not stored: scan   | t
- 31 | min, max: scan             | t
- 32 | distinct: scan             | t
- 33 | where on another dim: scan | t
-(33 rows)
-
--- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
-SELECT sift.col_merge('ec_col', true) >= 0 AS merged;
- merged 
---------
- t
-(1 row)
-
-VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
-SELECT sift.col_verify('ec_col', true);
- col_verify 
-------------
- 
-(1 row)
-
-SELECT * FROM pa_check('ec');
- n  |           shape            | same 
-----+----------------------------+------
-  1 | count                      | t
-  2 | count and total            | t
-  3 | sums                       | t
-  4 | two filters                | t
-  5 | zero, the NULL group       | t
-  6 | absent                     | t
-  7 | down                       | t
-  8 | in list, gaps              | t
-  9 | in list, NULL              | t
- 10 | range                      | t
- 11 | not equal                  | t
- 12 | IS NULL                    | t
- 13 | OR on the dim              | t
- 14 | count of the dim           | t
- 15 | key is the dim             | t
- 16 | key, a group never passes  | t
- 17 | text key                   | t
- 18 | where on the dim           | t
- 19 | key and where              | t
- 20 | zone on the id             | t
- 21 | zone covers                | t
- 22 | no rows                    | t
- 23 | int8 dim                   | t
- 24 | int8 extremes              | t
- 25 | text dim                   | t
- 26 | two dims: scan             | t
- 27 | one test of two dims: scan | t
- 28 | other key: scan            | t
- 29 | filter on a measure: scan  | t
- 30 | measure not stored: scan   | t
- 31 | min, max: scan             | t
- 32 | distinct: scan             | t
- 33 | where on another dim: scan | t
-(33 rows)
-
--- 6. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
-SET max_parallel_maintenance_workers = 2;
-SET min_parallel_table_scan_size = 0;
-SET parallel_leader_participation = off;
-REINDEX INDEX ec_col;
-RESET parallel_leader_participation;
-SELECT * FROM pa_check('ec');
- n  |           shape            | same 
-----+----------------------------+------
-  1 | count                      | t
-  2 | count and total            | t
-  3 | sums                       | t
-  4 | two filters                | t
-  5 | zero, the NULL group       | t
-  6 | absent                     | t
-  7 | down                       | t
-  8 | in list, gaps              | t
-  9 | in list, NULL              | t
- 10 | range                      | t
- 11 | not equal                  | t
- 12 | IS NULL                    | t
- 13 | OR on the dim              | t
- 14 | count of the dim           | t
- 15 | key is the dim             | t
- 16 | key, a group never passes  | t
- 17 | text key                   | t
- 18 | where on the dim           | t
- 19 | key and where              | t
- 20 | zone on the id             | t
- 21 | zone covers                | t
- 22 | no rows                    | t
- 23 | int8 dim                   | t
- 24 | int8 extremes              | t
- 25 | text dim                   | t
- 26 | two dims: scan             | t
- 27 | one test of two dims: scan | t
- 28 | other key: scan            | t
- 29 | filter on a measure: scan  | t
- 30 | measure not stored: scan   | t
- 31 | min, max: scan             | t
- 32 | distinct: scan             | t
- 33 | where on another dim: scan | t
-(33 rows)
-
-UPDATE ec SET small = small WHERE id < 20000;
-SET max_parallel_workers_per_gather = 2;
-SET parallel_setup_cost = 0;
-SET parallel_tuple_cost = 0;
-SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ec');
- queries | differ 
----------+--------
-      33 |      0
-(1 row)
-
-RESET max_parallel_workers_per_gather;
-RESET parallel_setup_cost;
-RESET parallel_tuple_cost;
--- a transaction that deleted rows sees them gone, another does not until it commits
-BEGIN;
-DELETE FROM eo WHERE id BETWEEN 1 AND 100;
-SELECT * FROM pa_sum('eo');
- queries | differ 
----------+--------
-      33 |      0
-(1 row)
-
-ROLLBACK;
-SELECT * FROM pa_sum('eo');
- queries | differ 
----------+--------
-      33 |      0
-(1 row)
-
--- the switch
-DROP TABLE ec, ed, eo, pa_q;
-DROP PROCEDURE pa_settle();
-RESET ALL;
-SET client_min_messages = warning;
-DROP SCHEMA m3 CASCADE;
--- <<< filter
+-- <<< dimfilter, filter
 -- >>> int8
 SET client_min_messages = warning;
 CREATE SCHEMA m4;
 GRANT USAGE ON SCHEMA m4 TO PUBLIC;
 SET search_path = m4, public;
-\set ECHO none
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
-	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
-END $$;
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
-END $$;
 -- sum(int8) and avg(int8) are numeric aggregates over an exact 128-bit sum: the units that are exact answer them from the stored sums.
--- Every query runs three ways, which must give the same rows (text, so the scale of the numeric counts): from the pre-aggregates, scanning
--- every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
+-- Every query runs two ways, which must give the same rows (text, so the scale of the numeric counts): the aggregate scan, which answers from
+-- metadata the units that are exact, and the plain plan (sift.enable_agg off).
 SET default_statistics_target = 10000;
-	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
-SET client_min_messages = warning;
+-- a unit is a superblock of 256 pages: a pad that fills a page with one row makes a unit of 256 rows, so 832 rows are 3 units and a tail of 64 rows
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 -- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
 -- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
 SET max_parallel_maintenance_workers = 0;
-CREATE TABLE ev (id int, kind int, grp text, val bigint, small bigint, pad text) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text);
+CREATE TABLE ec (id int, kind int, grp text, val bigint, small bigint, pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
+CREATE TABLE pa_q (n int, shape text, q text, w bool DEFAULT false);
 INSERT INTO pa_q VALUES
 	(1, 'whole',               'SELECT sum(val), avg(val), count(val), count(*) FROM %s'),
 	(2, 'whole, small values', 'SELECT sum(small), avg(small) FROM %s'),
@@ -1579,7 +1333,7 @@ INSERT INTO pa_q VALUES
 	(6, 'no rows',             'SELECT sum(val), avg(val), count(*) FROM %s WHERE id > 100000000'),
 	(7, 'no rows, grouped',    'SELECT kind, sum(val), avg(val) FROM %s WHERE id > 100000000 GROUP BY kind'),
 	(8, 'zone covers all',     'SELECT sum(val), avg(val) FROM %s WHERE id >= 1'),
-	(9, 'zone covers some',    'SELECT sum(val), avg(val) FROM %s WHERE id < 20000'),
+	(9, 'zone covers some',    'SELECT sum(val), avg(val) FROM %s WHERE id < 600'),
 	(10, 'keys in list',       'SELECT kind, sum(val), avg(val) FROM %s WHERE kind IN (0, 1, 3) GROUP BY kind'),
 	(11, 'test of dim',        'SELECT sum(val), avg(val) FROM %s WHERE grp = ''g05'''),
 	(12, 'other test: scan',   'SELECT kind, sum(val), avg(val) FROM %s WHERE small > 0 GROUP BY kind'),
@@ -1590,11 +1344,13 @@ INSERT INTO pa_q VALUES
 	(17, 'DISTINCT, expr: scan', 'SELECT sum(DISTINCT val), avg(DISTINCT val), sum(val + 1), avg(val * 2) FROM %s'),
 	(18, 'having, limit',      'SELECT kind, sum(val) FROM %s GROUP BY kind HAVING sum(val) > 0 ORDER BY 2 DESC, 1 LIMIT 3'),
 	(19, 'int4 beside int8',   'SELECT kind, sum(kind), avg(kind), sum(val) FROM %s GROUP BY kind');
+-- w: the queries of the pass through the workers of the scan, one or more of each shape of aggregate state (every query of a pass starts workers)
+UPDATE pa_q SET w = true WHERE n IN (1, 3, 4, 5, 6, 9, 16, 17);
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
 -- the same, summed up for a table whose answers need not be listed
 -- kind 0: near 2^62 (two rows pass 2^63), kind 1: near -2^62, kind 2: the extremes of int8 with both signs, kind 3: only NULLs,
 -- kind 4: small values, a fifth of them NULL, kind 5: values that make the average a repeating decimal
-INSERT INTO ev
+INSERT INTO ec
 SELECT g, g % 6, CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END,
        CASE g % 6 WHEN 0 THEN 4611686018427387904 - g % 1000
                   WHEN 1 THEN -4611686018427387904 + g % 1000
@@ -1602,16 +1358,13 @@ SELECT g, g % 6, CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text,
                   WHEN 3 THEN NULL
                   WHEN 4 THEN CASE WHEN g % 5 = 0 THEN NULL ELSE g % 100 - 50 END
                   ELSE (g % 997) * 3 + 1 END,
-       CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END, repeat('p', 200)
-FROM generate_series(1, 40000) g;
+       CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END, repeat('p', 4100)
+FROM generate_series(1, 832) g;
 -- an explicit cube with the measures; the default cube; no cube
-CREATE TABLE ec (LIKE ev) WITH (autovacuum_enabled = off);
-CREATE TABLE ed (LIKE ev) WITH (autovacuum_enabled = off);
-CREATE TABLE eo (LIKE ev) WITH (autovacuum_enabled = off);
-INSERT INTO ec SELECT * FROM ev;
-INSERT INTO ed SELECT * FROM ev;
-INSERT INTO eo SELECT * FROM ev;
-DROP TABLE ev;
+CREATE TABLE ed (LIKE ec INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE eo (LIKE ec INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+INSERT INTO ed SELECT * FROM ec;
+INSERT INTO eo SELECT * FROM ec;
 CREATE INDEX ec_col ON ec USING sift_col (id, kind, grp, val, small)
 	WITH (write_buffer_limit = 4096, preagg = 'cube(kind: val, small; grp: val, small)');
 CREATE INDEX ed_col ON ed USING sift_col (id, kind, grp, val, small) WITH (write_buffer_limit = 4096);
@@ -1628,37 +1381,37 @@ SELECT sift.col_verify('ec_col', true);
 
 -- the result is PostgreSQL's: a numeric of scale 0 for the sum, the numeric division of the sum by the count for the average
 SELECT kind, pg_typeof(sum(val)) AS sum_type, sum(val), scale(avg(val)) AS avg_scale, avg(val) FROM ec GROUP BY kind ORDER BY kind;
- kind | sum_type |           sum            | avg_scale |          avg           
-------+----------+--------------------------+-----------+------------------------
-    0 | numeric  |  30741498998836964441398 |         0 |    4611686018427387405
-    1 | numeric  | -30746110684855391822635 |         0 |   -4611686018427387404
-    2 | numeric  |      9223372036854772473 |         4 |  1383436633696531.0444
-    3 | numeric  |                          |           |                       
-    4 | numeric  |                       14 |        20 | 0.00262516407275454716
-    5 | numeric  |                  9940266 |        16 |  1491.1890189018901890
+ kind | sum_type |          sum           | avg_scale |          avg          
+------+----------+------------------------+-----------+-----------------------
+    0 | numeric  |  636412670542979473206 |         0 |   4611686018427387487
+    1 | numeric  | -641024356561406860971 |         0 |  -4611686018427387489
+    2 | numeric  |    9223372036854775735 |         0 |     66355194509746588
+    3 | numeric  |                        |           |                      
+    4 | numeric  |                   -168 |        16 |   -1.5135135135135135
+    5 | numeric  |                 172362 |        16 | 1249.0000000000000000
 (6 rows)
 
 SELECT kind, sum(val), avg(val) FROM ec GROUP BY kind ORDER BY kind;
- kind |           sum            |          avg           
-------+--------------------------+------------------------
-    0 |  30741498998836964441398 |    4611686018427387405
-    1 | -30746110684855391822635 |   -4611686018427387404
-    2 |      9223372036854772473 |  1383436633696531.0444
-    3 |                          |                       
-    4 |                       14 | 0.00262516407275454716
-    5 |                  9940266 |  1491.1890189018901890
+ kind |          sum           |          avg          
+------+------------------------+-----------------------
+    0 |  636412670542979473206 |   4611686018427387487
+    1 | -641024356561406860971 |  -4611686018427387489
+    2 |    9223372036854775735 |     66355194509746588
+    3 |                        |                      
+    4 |                   -168 |   -1.5135135135135135
+    5 |                 172362 | 1249.0000000000000000
 (6 rows)
 
 SET sift.enable_agg = off;
 SELECT kind, sum(val), avg(val) FROM ec GROUP BY kind ORDER BY kind;
- kind |           sum            |          avg           
-------+--------------------------+------------------------
-    0 |  30741498998836964441398 |    4611686018427387405
-    1 | -30746110684855391822635 |   -4611686018427387404
-    2 |      9223372036854772473 |  1383436633696531.0444
-    3 |                          |                       
-    4 |                       14 | 0.00262516407275454716
-    5 |                  9940266 |  1491.1890189018901890
+ kind |          sum           |          avg          
+------+------------------------+-----------------------
+    0 |  636412670542979473206 |   4611686018427387487
+    1 | -641024356561406860971 |  -4611686018427387489
+    2 |    9223372036854775735 |     66355194509746588
+    3 |                        |                      
+    4 |                   -168 |   -1.5135135135135135
+    5 |                 172362 | 1249.0000000000000000
 (6 rows)
 
 RESET sift.enable_agg;
@@ -1712,10 +1465,10 @@ SELECT * FROM pa_sum('eo');
 (1 row)
 
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
-UPDATE ec SET val = -(val / 2), small = small + 1 WHERE id BETWEEN 100 AND 200;
-DELETE FROM ec WHERE id BETWEEN 18000 AND 18100;
-UPDATE ed SET val = -(val / 2), small = small + 1 WHERE id BETWEEN 100 AND 200;
-DELETE FROM ed WHERE id BETWEEN 18000 AND 18100;
+UPDATE ec SET val = -(val / 2), small = small + 1 WHERE id BETWEEN 10 AND 20;
+DELETE FROM ec WHERE id BETWEEN 530 AND 540;
+UPDATE ed SET val = -(val / 2), small = small + 1 WHERE id BETWEEN 10 AND 20;
+DELETE FROM ed WHERE id BETWEEN 530 AND 540;
 SELECT * FROM pa_check('ec');
  n  |        shape         | same 
 ----+----------------------+------
@@ -1773,8 +1526,8 @@ SELECT * FROM pa_check('ec');
 (19 rows)
 
 -- 4. rows in the write buffer, then sealed
-INSERT INTO ec SELECT g, g % 6, 'g' || (g % 40), CASE WHEN g % 6 = 3 THEN NULL ELSE 4611686018427387904 + g END, g % 9, repeat('p', 200)
-FROM generate_series(300001, 301500) g;
+INSERT INTO ec SELECT g, g % 6, 'g' || (g % 40), CASE WHEN g % 6 = 3 THEN NULL ELSE 4611686018427387904 + g END, g % 9, repeat('p', 4100)
+FROM generate_series(300001, 300300) g;
 SELECT * FROM pa_check('ec');
  n  |        shape         | same 
 ----+----------------------+------
@@ -1907,15 +1660,15 @@ SELECT * FROM pa_check('ec');
  19 | int4 beside int8     | t
 (19 rows)
 
-UPDATE ec SET small = small WHERE id < 20000;
+UPDATE ec SET small = small WHERE id < 600;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ec');
+SELECT * FROM pa_sum('ec', w_only => true);
  queries | differ 
 ---------+--------
-      19 |      0
+       8 |      0
 (1 row)
 
 RESET max_parallel_workers_per_gather;
@@ -1923,7 +1676,7 @@ RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 -- a transaction that deleted rows sees them gone, another does not until it commits
 BEGIN;
-DELETE FROM eo WHERE id BETWEEN 1 AND 100;
+DELETE FROM eo WHERE id BETWEEN 1 AND 20;
 SELECT * FROM pa_sum('eo');
  queries | differ 
 ---------+--------
@@ -1939,7 +1692,6 @@ SELECT * FROM pa_sum('eo');
 
 -- the switch
 DROP TABLE ec, ed, eo, pa_q;
-DROP PROCEDURE pa_settle();
 RESET ALL;
 SET client_min_messages = warning;
 DROP SCHEMA m4 CASCADE;
@@ -1949,36 +1701,16 @@ SET client_min_messages = warning;
 CREATE SCHEMA m5;
 GRANT USAGE ON SCHEMA m5 TO PUBLIC;
 SET search_path = m5, public;
-\set ECHO none
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
-	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
-END $$;
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
-END $$;
 -- The default cube keeps up to eight measures of a dim (the first three decide which dims fit the unit's byte budget, the others come with a dim that is kept),
 -- so the sum, avg and count of the integer columns beyond the first three answer from the histogram of the group key too.
--- Every query runs three ways, which must give the same rows (text, so the scale of the numeric counts): from the pre-aggregates, scanning
--- every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
+-- Every query runs two ways, which must give the same rows (text, so the scale of the numeric counts): the aggregate scan, which answers from
+-- metadata the units that are exact, and the plain plan (sift.enable_agg off).
 SET default_statistics_target = 10000;
-	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
-SET client_min_messages = warning;
+-- a unit is a superblock of 256 pages: a pad that fills a page with one row makes a unit of 256 rows, so 832 rows are 3 units and a tail of 64 rows
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
-CREATE TABLE ev (id int, kind int, grp text, flag int, amt numeric(12, 2), score float8, n2 int2, n4 int4, n8 bigint, cnt int4, extra int4, pad text) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text);
+CREATE TABLE ec (id int, kind int, grp text, flag int, amt numeric(12, 2), score float8, n2 int2, n4 int4, n8 bigint, cnt int4, extra int4, pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
+CREATE TABLE pa_q (n int, shape text, q text, w bool DEFAULT false);
 INSERT INTO pa_q VALUES
 	(1, 'sum int2',           'SELECT kind, sum(n2) FROM %s GROUP BY kind'),
 	(2, 'sum, avg int4',      'SELECT kind, sum(n4), avg(n4), count(n4) FROM %s GROUP BY kind'),
@@ -1993,15 +1725,17 @@ INSERT INTO pa_q VALUES
 	(11, 'absent key',        'SELECT kind, sum(n8) FROM %s WHERE kind = 99 GROUP BY kind'),
 	(12, 'a group of NULL measures', 'SELECT flag, sum(cnt), avg(cnt), count(cnt) FROM %s WHERE kind = 6 GROUP BY flag'),
 	(13, 'int8 extremes',       'SELECT kind, sum(n8), avg(n8) FROM %s WHERE kind < 3 GROUP BY kind'),
-	(14, 'zone on the id',    'SELECT kind, sum(n4) FROM %s WHERE id < 20000 GROUP BY kind'),
+	(14, 'zone on the id',    'SELECT kind, sum(n4) FROM %s WHERE id < 600 GROUP BY kind'),
 	(15, 'having, limit',     'SELECT kind, sum(n8) FROM %s GROUP BY kind HAVING sum(n8) > 0 ORDER BY 2 DESC LIMIT 3'),
 	(16, 'a measure past the eighth: scan', 'SELECT kind, sum(extra) FROM %s GROUP BY kind'),
 	(17, 'min, max: scan',    'SELECT kind, min(n4), max(n8) FROM %s GROUP BY kind'),
 	(18, 'expression: scan',  'SELECT kind, sum(n4 + n2) FROM %s GROUP BY kind');
+-- w: the queries of the pass through the workers of the scan, one or more of each shape of aggregate state (every query of a pass starts workers)
+UPDATE pa_q SET w = true WHERE n IN (2, 4, 6, 8, 9, 10, 13, 16, 18);
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
 -- the same, summed up for a table whose answers need not be listed
 -- kind: 0 to 6 (a ninth of the rows NULL) in every unit; flag: 0 or 1; n2, n4, n8, cnt: NULLs among the values, n8 up to the int8 extremes
-INSERT INTO ev
+INSERT INTO ec
 SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE g % 7 END,
        CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END,
        g % 2, CASE WHEN g % 19 = 0 THEN NULL ELSE ((g::bigint * 37) % 100000)::numeric / 100 END,
@@ -2009,16 +1743,13 @@ SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE g % 7 END,
        CASE WHEN g % 13 = 0 THEN NULL ELSE (g % 200 - 100)::int2 END,
        CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 100000 - 40000 END,
        CASE WHEN g % 23 = 0 THEN NULL WHEN g % 1000 = 7 THEN 9223372036854775807 WHEN g % 1000 = 8 THEN -9223372036854775807 - 1 ELSE (g::bigint * 977) % 1000000 END,
-       CASE WHEN g % 9 <> 0 AND g % 7 = 6 THEN NULL ELSE g % 40 END, g % 3, repeat('p', 200)
-FROM generate_series(1, 40000) g;
+       CASE WHEN g % 9 <> 0 AND g % 7 = 6 THEN NULL ELSE g % 40 END, g % 3, repeat('p', 4100)
+FROM generate_series(1, 832) g;
 -- an explicit cube with the measures; the default cube; no cube
-CREATE TABLE ec (LIKE ev) WITH (autovacuum_enabled = off);
-CREATE TABLE ed (LIKE ev) WITH (autovacuum_enabled = off);
-CREATE TABLE eo (LIKE ev) WITH (autovacuum_enabled = off);
-INSERT INTO ec SELECT * FROM ev;
-INSERT INTO ed SELECT * FROM ev;
-INSERT INTO eo SELECT * FROM ev;
-DROP TABLE ev;
+CREATE TABLE ed (LIKE ec INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE eo (LIKE ec INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+INSERT INTO ed SELECT * FROM ec;
+INSERT INTO eo SELECT * FROM ec;
 CREATE INDEX ec_col ON ec USING sift_col (id, kind, grp, flag, amt, score, n2, n4, n8, cnt, extra)
 	WITH (write_buffer_limit = 4096, preagg = 'cube(kind: amt, score, n2, n4, n8, cnt; flag: n2, cnt; grp: n4, n8)');
 CREATE INDEX ed_col ON ed USING sift_col (id, kind, grp, flag, amt, score, n2, n4, n8, cnt, extra) WITH (write_buffer_limit = 4096);
@@ -2068,34 +1799,34 @@ SELECT * FROM pa_sum('eo');
 (1 row)
 
 -- the answers of the first way, which the plain plan gives too (the rows of a query on one line)
-SELECT n, replace(pa_rows(format(q, 'ec'), true, true), E'\n', ' / ') AS answer FROM pa_q WHERE n NOT IN (4) ORDER BY n;
- n  |                                                                                                                                                                                                                                    answer                                                                                                                                                                                                                                     
-----+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  1 | (,-1977) / (0,-2236) / (1,-2175) / (2,-2323) / (3,-2280) / (4,-2403) / (5,-2561) / (6,-2583)
-  2 | (,38201040,9455.7029702970297030,4040) / (0,43690413,9460.8949761801645734,4618) / (1,43445222,9407.8003464703334777,4618) / (2,43920475,9508.6544706646460273,4619) / (3,43536061,9427.4709831095712430,4618) / (4,43711425,9467.4951267056530214,4617) / (5,43766197,9479.3582412822178904,4617) / (6,43698305,9464.6534546242148581,4617)
-  3 | (,2114909871,497508.791107974594,4251) / (0,2421579842,498370.002469643960,4859) / (1,-9223372034433907983,-1897813175809446.0870,4860) / (2,2416080886,497238.297180489813,4859) / (3,9223372039273639542,1898594491410794.4714,4858) / (4,2417539132,497640.825854261013,4858) / (5,-9223372034437524728,-1898203752714040.8990,4859) / (6,9223372039273058480,1898985390008865.2419,4857)
-  5 | (0,331720,18.9988545246277205,-18566) / (1,349239,20.0010881392818281,28)
-  6 | (,2082907.23,-1977,38201040,2114909871,86670,4444) / (0,2384328.79,-2236,43690413,2421579842,99060,5080) / (1,2378461.23,-2175,43445222,-9223372034433907983,99035,5080) / (2,2381200.70,-2323,43920475,2416080886,99055,5080) / (3,2379218.44,-2280,43536061,9223372039273639542,99069,5079) / (4,2378089.09,-2403,43711425,2417539132,99048,5079) / (5,2378033.37,-2561,43766197,-9223372034437524728,99022,5079) / (6,2381709.20,-2583,43698305,9223372039273058480,,5079)
-  7 | (1,-9223372034433907983,43445222) / (3,9223372039273639542,43536061) / (5,-9223372034437524728,43766197)
-  8 | (-18538,343969138,19045375042,497775.150727895246)
-  9 | (9223372039273639542,43536061)
- 10 | (38201040,4444)
+SELECT n, replace(pa_rows(format(q, 'ec')), E'\n', ' / ') AS answer FROM pa_q WHERE n NOT IN (4) ORDER BY n;
+ n  |                                                                                                                                                                                                 answer                                                                                                                                                                                                 
+----+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  1 | (,-274) / (0,-362) / (1,-143) / (2,-533) / (3,-305) / (4,-367) / (5,-467) / (6,-461)
+  2 | (,-2067294,-24610.642857142857,84) / (0,-2364736,-24632.666666666667,96) / (1,-2388974,-24628.597938144330,97) / (2,-2356815,-24808.578947368421,95) / (3,-2393451,-24674.752577319588,97) / (4,-2340945,-24384.843750000000,96) / (5,-2359149,-24574.468750000000,96) / (6,-2347050,-24448.437500000000,96)
+  3 | (,35594064,404478.000000000000,88) / (0,9223372036894824991,92233720368948250,100) / (1,-9223372036813526868,-90425216047191440,102) / (2,40839577,408395.770000000000,100) / (3,40858140,404536.039603960396,101) / (4,41856634,410359.156862745098,102) / (5,41470719,406575.676470588235,102) / (6,41660257,412477.792079207921,101)
+  5 | (0,6842,18.9005524861878453,-1656) / (1,7250,19.9175824175824176,-1256)
+  6 | (,13613.04,-274,-2067294,35594064,1782,92) / (0,15029.77,-362,-2364736,9223372036894824991,2054,105) / (1,15372.39,-143,-2388974,-9223372036813526868,2044,106) / (2,15303.20,-533,-2356815,40839577,2006,105) / (3,15522.61,-305,-2393451,40858140,2085,106) / (4,15506.70,-367,-2340945,41856634,2075,106) / (5,15497.08,-467,-2359149,41470719,2046,106) / (6,15720.19,-461,-2347050,41660257,,106)
+  7 | (1,-9223372036813526868,-2388974) / (3,40858140,-2393451) / (5,41470719,-2359149)
+  8 | (-2912,-18618414,323577514,406504.414572864322)
+  9 | (40858140,-2393451)
+ 10 | (-2067294,92)
  11 | 
  12 | (0,,,0) / (1,,,0)
- 13 | (0,2421579842,498370.002469643960) / (1,-9223372034433907983,-1897813175809446.0870) / (2,2416080886,497238.297180489813)
- 14 | (,16925260) / (0,19342150) / (1,19319166) / (2,19536885) / (3,19414530) / (4,19172323) / (5,19249968) / (6,19367021)
- 15 | (0,2421579842) / (3,9223372039273639542) / (6,9223372039273058480)
- 16 | (,0) / (0,5715) / (1,5715) / (2,5715) / (3,5713) / (4,5715) / (5,5714) / (6,5713)
- 17 | (,-39968,9223372036854775807) / (0,-39975,9223372036854775807) / (1,-39990,9223372036854775807) / (2,-39979,9223372036854775807) / (3,-39994,9223372036854775807) / (4,-39982,9223372036854775807) / (5,-39997,9223372036854775807) / (6,-39986,9223372036854775807)
- 18 | (,35289630) / (0,40332914) / (1,40007332) / (2,40654154) / (3,40044004) / (4,40336662) / (5,40371344) / (6,40465068)
+ 13 | (0,9223372036894824991,92233720368948250) / (1,-9223372036813526868,-90425216047191440) / (2,40839577,408395.770000000000)
+ 14 | (,-1740660) / (0,-1998022) / (1,-2028698) / (2,-2000686) / (3,-2048644) / (4,-1980558) / (5,-1992768) / (6,-1965459)
+ 15 | (0,9223372036894824991) / (4,41856634) / (6,41660257)
+ 16 | (,0) / (0,118) / (1,120) / (2,119) / (3,118) / (4,120) / (5,119) / (6,118)
+ 17 | (,-39667,800163) / (0,-39741,9223372036854775807) / (1,-39963,807979) / (2,-39926,802117) / (3,-39889,809933) / (4,-39852,810910) / (5,-39815,811887) / (6,-39778,812864)
+ 18 | (,-1909144) / (0,-2166352) / (1,-2216732) / (2,-2178350) / (3,-2238220) / (4,-2133826) / (5,-2183824) / (6,-2155798)
 (17 rows)
 
 -- the plan counts the units answered from the pre-aggregates
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
-UPDATE ec SET n4 = -(n4 / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 100 AND 200;
-DELETE FROM ec WHERE id BETWEEN 18000 AND 18100;
-UPDATE ed SET n4 = -(n4 / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 100 AND 200;
-DELETE FROM ed WHERE id BETWEEN 18000 AND 18100;
+UPDATE ec SET n4 = -(n4 / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 10 AND 20;
+DELETE FROM ec WHERE id BETWEEN 530 AND 540;
+UPDATE ed SET n4 = -(n4 / 2), kind = (kind + 1) % 7 WHERE id BETWEEN 10 AND 20;
+DELETE FROM ed WHERE id BETWEEN 530 AND 540;
 SELECT * FROM pa_check('ec');
  n  |              shape              | same 
 ----+---------------------------------+------
@@ -2151,8 +1882,8 @@ SELECT * FROM pa_check('ec');
 (18 rows)
 
 -- 4. rows in the write buffer (a kind no unit holds), then sealed
-INSERT INTO ec SELECT g, CASE WHEN g % 4 = 0 THEN NULL ELSE 7 + g % 3 END, 'g' || (g % 40), g % 2, g % 100, g % 9, g % 5, g % 7, g, g % 3, g % 11, repeat('p', 200)
-FROM generate_series(300001, 301500) g;
+INSERT INTO ec SELECT g, CASE WHEN g % 4 = 0 THEN NULL ELSE 7 + g % 3 END, 'g' || (g % 40), g % 2, g % 100, g % 9, g % 5, g % 7, g, g % 3, g % 11, repeat('p', 4100)
+FROM generate_series(300001, 300300) g;
 SELECT * FROM pa_check('ec');
  n  |              shape              | same 
 ----+---------------------------------+------
@@ -2177,11 +1908,11 @@ SELECT * FROM pa_check('ec');
 (18 rows)
 
 SELECT kind, sum(n8), sum(n4) FROM ec WHERE kind >= 7 GROUP BY kind ORDER BY kind;
- kind |    sum    | sum  
-------+-----------+------
-    7 | 112781250 | 1121
-    8 | 112781250 | 1121
-    9 | 112781250 | 1128
+ kind |   sum    | sum 
+------+----------+-----
+    7 | 22511250 | 223
+    8 | 22511250 | 223
+    9 | 22511250 | 230
 (3 rows)
 
 SELECT sift.col_promote('ec_col') >= 0 AS promoted;
@@ -2254,7 +1985,7 @@ SELECT * FROM pa_check('ec');
 -- 5b. an index written with three measures (an older cube) and then with the default: the units of the first kind are scanned for the other measures,
 -- the later ones answer, and the answers do not change
 ALTER INDEX ed_col SET (preagg = 'cube(kind: amt, score, id; flag: amt, score, id; grp: amt, score, id)');
-INSERT INTO ed SELECT g + 500000, g % 7, 'g' || (g % 30), g % 2, g % 100, g % 9, g % 5, g % 7, g, g % 3, g % 11, repeat('p', 200) FROM generate_series(1, 6000) g;
+INSERT INTO ed SELECT g + 500000, g % 7, 'g' || (g % 30), g % 2, g % 100, g % 9, g % 5, g % 7, g, g % 3, g % 11, repeat('p', 4100) FROM generate_series(1, 300) g;
 SELECT sift.col_promote('ed_col') >= 0 AS promoted;
  promoted 
 ----------
@@ -2262,7 +1993,7 @@ SELECT sift.col_promote('ed_col') >= 0 AS promoted;
 (1 row)
 
 ALTER INDEX ed_col SET (preagg = 'default');
-INSERT INTO ed SELECT g + 600000, g % 7, 'g' || (g % 30), g % 2, g % 100, g % 9, g % 5, g % 7, g, g % 3, g % 11, repeat('p', 200) FROM generate_series(1, 6000) g;
+INSERT INTO ed SELECT g + 600000, g % 7, 'g' || (g % 30), g % 2, g % 100, g % 9, g % 5, g % 7, g, g % 3, g % 11, repeat('p', 4100) FROM generate_series(1, 300) g;
 SELECT sift.col_promote('ed_col') >= 0 AS promoted;
  promoted 
 ----------
@@ -2313,15 +2044,15 @@ SELECT * FROM pa_check('ec');
  18 | expression: scan                | t
 (18 rows)
 
-UPDATE ec SET extra = extra WHERE id < 20000;
+UPDATE ec SET extra = extra WHERE id < 600;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ec');
+SELECT * FROM pa_sum('ec', w_only => true);
  queries | differ 
 ---------+--------
-      18 |      0
+       9 |      0
 (1 row)
 
 RESET max_parallel_workers_per_gather;
@@ -2329,7 +2060,7 @@ RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 -- a transaction that deleted rows sees them gone, another does not until it commits
 BEGIN;
-DELETE FROM eo WHERE id BETWEEN 1 AND 100;
+DELETE FROM eo WHERE id BETWEEN 1 AND 20;
 SELECT * FROM pa_sum('eo');
  queries | differ 
 ---------+--------
@@ -2345,11 +2076,12 @@ SELECT * FROM pa_sum('eo');
 
 -- the switch
 DROP TABLE ec, ed, eo, pa_q;
-DROP PROCEDURE pa_settle();
 RESET ALL;
 SET client_min_messages = warning;
 DROP SCHEMA m5 CASCADE;
 -- <<< measures
+DROP PROCEDURE pa_settle();
+DROP FUNCTION pa_check(text, int, int, bool), pa_sum(text, int, int, bool), pa_rows(text), pa_plain(text), pa_exec(text);
 DROP FUNCTION mig_same(text), mig_run(text, bool);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
