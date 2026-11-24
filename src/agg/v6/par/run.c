@@ -10,6 +10,7 @@
 #include "miscadmin.h"
 
 #include "agg/v6/par/run_int.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "core/memtrack.h"
 #include "core/par/pool.h"
 
@@ -118,7 +119,7 @@ par_src_of(ParShape *sh, const SiftV6Spec *sp, const int *first, const SiftV6Col
 static bool
 shape_of(const SiftV6Spec *spec, const int *first, ParShape *sh)
 {
-	if (spec->nparts != 0 || spec->ext != NULL || spec->jsonqual != NIL || OidIsValid(spec->text_indexoid))
+	if (spec->nparts != 0 || spec->ext != NULL || spec->jsonqual != NIL || OidIsValid(spec->text_indexoid) || sift_v6_spec_pg_reads(spec))
 		return false;
 	for (int k = 0; k < lengthof(kinds); k++)
 	{

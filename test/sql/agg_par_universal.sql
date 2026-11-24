@@ -87,6 +87,17 @@ SELECT * FROM check_par('integer elements, left, counted', $q$ SELECT n, count(*
 SELECT * FROM check_par('text key of the row', $q$ SELECT f.label, count(*) FROM un_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) GROUP BY 1 $q$);
 SELECT * FROM check_par('a NULL in a counted column', $q$ SELECT n, count(*), count(f.label) FROM un_t f CROSS JOIN LATERAL unnest(f.nums) AS u(n) GROUP BY 1 $q$);
 SELECT * FROM check_par('with a predicate', $q$ SELECT t, count(*) FROM un_t f LEFT JOIN LATERAL unnest(f.tags) AS u(t) ON true WHERE f.qty > 2 GROUP BY 1 $q$);
+-- ---- quals the scan keys do not say: a <> on a sift_table and a column against a column on an index run over the batch, so the threads leave them to the serial scan ----
+CREATE TABLE bq_t (id int, g smallint, v int, w int) USING sift_table;
+INSERT INTO bq_t SELECT i, i % 7, i % 11, i % 5 FROM generate_series(1, 300000) i;
+CREATE TABLE bq_c (id int, g smallint, v int, w int);
+INSERT INTO bq_c SELECT * FROM bq_t;
+CREATE INDEX bq_c_col ON bq_c USING sift_col (g, v, w, id);
+VACUUM (FREEZE, ANALYZE) bq_t;
+VACUUM (FREEZE, ANALYZE) bq_c;
+SELECT * FROM check_par('table <>', $q$ SELECT g, count(*) FROM bq_t WHERE g <> 0 GROUP BY 1 $q$);
+SELECT * FROM check_par('table column against column', $q$ SELECT g, count(*) FROM bq_t WHERE v > w GROUP BY 1 $q$);
+SELECT * FROM check_par('index column against column', $q$ SELECT g, count(*) FROM bq_c WHERE v > w GROUP BY 1 $q$);
 DROP FUNCTION check_par(text, text), node_of(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
-DROP TABLE ts_t, st_f, st_d1, st_p, st_d2, un_t;
+DROP TABLE ts_t, st_f, st_d1, st_p, st_d2, un_t, bq_t, bq_c;
 DROP EXTENSION pg_sift;
