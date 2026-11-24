@@ -29,16 +29,16 @@ input_pos(const SiftV6Input *in, AttrNumber attno)
 	return -1;
 }
 
-/* jsonb_typeof(doc -> 'key'): the column is the virtual attribute of the key's leaf, a text */
+/* What a statement reads of a key of a document (its type, its `->>` text or the float8 cast of it): the column is the virtual attribute of the key's leaf */
 static int
-add_jtype_column(SiftV6Input *in, const Var *v)
+add_json_column(SiftV6Input *in, const Var *v)
 {
 	for (int k = 0; k < in->ncols; k++)
 		if (in->col[k].attno == v->varattno)
 			return k;
 	if (in->ncols == SIFT_V6_MAX_COLS || in->is_table)
 		return -1;
-	in->col[in->ncols] = (SiftV6InCol) {.attno = v->varattno,.typid = TEXTOID,.type = SVEC_STRVIEW};
+	in->col[in->ncols] = (SiftV6InCol) {.attno = v->varattno,.typid = v->vartype,.type = sift_v6_result_vec_type(v->vartype)};
 	return in->ncols++;
 }
 
@@ -51,8 +51,8 @@ add_column(SiftV6Input *in, const Var *v)
 	const SiftV6Class cls = datum ? SV6C_DATUM : sift_v6_class(v->vartype);
 	SiftV6InCol col = {.typid = v->vartype,.type = datum ? SVEC_DATUM : sift_v6_result_vec_type(v->vartype),.scale = datum ? SIFT_V6_SCALE_DATUM : 0};
 
-	if (v->varattno >= SIFT_V6_JTYPE_VATT)
-		return add_jtype_column(in, v);
+	if (sift_v6_vatt_is_json(v->varattno))
+		return add_json_column(in, v);
 	if (pos < 0 || v->vartype == JSONBOID)
 		return -1;
 	col.attno = pos + 1;

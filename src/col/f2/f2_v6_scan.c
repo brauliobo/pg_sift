@@ -239,11 +239,11 @@ static const SiftVec *
 input_col(void *arg, const SiftV6InCol *c, bool takes_nan)
 {
 	const BqCols *b = arg;
-	int			jleaf = 0;
-	bool		jtype = false;
+	SiftV6Col	col = {.attno = c->attno,.typid = c->typid,.scale = c->scale};
 
-	sift_v6_input_attno_json(c->attno, &jleaf, &jtype);
-	return &col_for(b->s, b->first, (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale,.jleaf = jleaf,.jtype = jtype}, false, takes_nan)->vec;
+	if (sift_v6_vatt_is_json(c->attno))
+		col = sift_v6_vatt_col(c->attno, c->attno, c->typid, c->scale);
+	return &col_for(b->s, b->first, col, false, takes_nan)->vec;
 }
 
 static const SiftVec *

@@ -153,11 +153,11 @@ column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 
 	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || (v->vartype == NUMERICOID && !numeric_ok))
 		return false;
-	if (v->varattno >= SIFT_V6_JLEAF_VATT)
+	if (sift_v6_vatt_is_json(v->varattno))
 	{
 		const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-		return !p->is_table && (v->varattno >= SIFT_V6_JTYPE_VATT ? sift_v6_json_type_col(&rel, v, out) : sift_v6_json_value_col(&rel, v, out));
+		return !p->is_table && sift_v6_json_type_col(&rel, v, out);
 	}
 	att = host_attno(p, v->varattno);
 	if (att == 0 || !leaf_class_ok(&host_schema(p)->cols[host_first(p, att)], host_nleaves(p, att), sift_v6_class(v->vartype)))
@@ -220,11 +220,11 @@ sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *o
 }
 
 Expr *
-sift_v6_plan_type_vars(const V6Plan *p, const Expr *e)
+sift_v6_plan_json_vars(const V6Plan *p, const Expr *e, bool values)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return p->is_table || p->xseed != NULL ? (Expr *) e : sift_v6_json_type_vars(&rel, e);
+	return p->is_table || p->xseed != NULL ? (Expr *) e : sift_v6_json_vars(&rel, e, values);
 }
 
 /* An expression of the query that is a column of the index (its indexprs entry, which PostgreSQL has built over the same range table entry): the scan reads what the index stored of it */
@@ -336,7 +336,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	int			at;
 
 	if (!p->is_table)
-		e = sift_v6_json_value_vars(&rel, e);
+		e = sift_v6_json_vars(&rel, e, true);
 	if ((p->xseed != NULL && !p->xseed->unnest) || !sift_v6_pgexpr_derive_of(p->batch_ok ? p->root : NULL, &rs, p->rel->relid, e, &d, &restype, &p->spec.pgexpr) ||
 		!(sift_v6_type_native(restype) || (p->xseed == NULL && key && sift_v6_key_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
 		return false;

@@ -17,6 +17,7 @@
 #include "agg/cost.h"
 #include "agg/plan/safety.h"
 #include "agg/v6/v6.h"
+#include "agg/v6/v6_bqual.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_sip.h"
@@ -137,6 +138,23 @@ cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, int leaf_of(con
 	return bytes;
 }
 
+/* the bytes of a row of the leaves: as cols_bytes, for the columns the statistics hold by leaf */
+static double
+leaves_bytes(const SiftCardStatsView *view, const Bitmapset *leaves, bool stored, double unsized)
+{
+	double		bytes = 0;
+	int			l = -1;
+
+	while ((l = bms_next_member(leaves, l)) >= 0)
+	{
+		const SiftColCardStats *c = view != NULL && (uint32) l < view->ncols ? &view->cols[l] : NULL;
+		const double b = c == NULL ? 0 : stored ? c->avg_comp_bytes_row : c->avg_dec_bytes_row;
+
+		bytes += b > 0 ? b : unsized;
+	}
+	return bytes;
+}
+
 static int
 index_leaf(const void *ix, int col)
 {
@@ -151,22 +169,38 @@ heap_leaf(const void *ix, int attno)
 	return col >= 0 ? sift_v6_card_leaf((const IndexOptInfo *) ix, col) : -1;
 }
 
+/* the columns of the index the clauses (filter) or the keys and arguments read, and the leaves of the keys of documents they read instead of the document: a scan decodes those alone */
 static Bitmapset *
-spec_cols(const SiftV6Spec *spec, bool filter)
+spec_cols(const SiftV6Spec *spec, bool filter, Bitmapset **leaves)
 {
 	Bitmapset  *cols = NULL;
 
 	if (filter)
 	{
+		Bitmapset  *virt = NULL;
+		int			a = -1;
+
 		pull_varattnos((Node *) spec->indexqual, INDEX_VAR, &cols);
 		pull_varattnos((Node *) spec->filter, INDEX_VAR, &cols);
+		pull_varattnos((Node *) spec->vqual, SIFT_V6_BQ_RELID, &virt);
+		while ((a = bms_next_member(cols, a)) >= 0)
+			if (sift_v6_vatt_is_json(a + FirstLowInvalidHeapAttributeNumber))
+			{
+				*leaves = bms_add_member(*leaves, sift_v6_vatt_leaf(a + FirstLowInvalidHeapAttributeNumber));
+				cols = bms_del_member(cols, a);
+			}
+		for (a = -1; (a = bms_next_member(virt, a)) >= 0;)
+			if (sift_v6_vatt_is_json(a + FirstLowInvalidHeapAttributeNumber))
+				*leaves = bms_add_member(*leaves, sift_v6_vatt_leaf(a + FirstLowInvalidHeapAttributeNumber));
 		return cols;
 	}
 	for (int i = 0; i < spec->nkeys + spec->naggs; i++)
 	{
 		const SiftV6Col c = i < spec->nkeys ? spec->key[i] : spec->agg[i - spec->nkeys].arg;
 
-		if (c.attno > 0)
+		if (c.jleaf > 0)
+			*leaves = bms_add_member(*leaves, c.jleaf - 1);
+		else if (c.attno > 0)
 			cols = bms_add_member(cols, c.attno - FirstLowInvalidHeapAttributeNumber);
 	}
 	return cols;
@@ -245,15 +279,17 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 {
 	ScanBytes	b;
 	SiftV6AggPrice price;
-	Bitmapset  *filter = spec_cols(spec, true),
-			   *measure = bms_difference(spec_cols(spec, false), filter);
+	Bitmapset  *filter_leaves = NULL,
+			   *measure_leaves = NULL,
+			   *filter = spec_cols(spec, true, &filter_leaves),
+			   *measure = bms_difference(spec_cols(spec, false, &measure_leaves), filter);
 
 	scan_bytes(root, rel, ix, &b);
 	b.surv = Min(Max(clauselist_selectivity(root, rel->baserestrictinfo, rel->relid, JOIN_INNER, NULL) * b.table_rows, 1.0), b.table_rows);
-	b.filter_row = cols_bytes(b.view, filter, index_leaf, ix, false, SIFT_WORD_BYTES);
-	b.measure_row = cols_bytes(b.view, measure, index_leaf, ix, false, SIFT_WORD_BYTES);
-	b.filter_io_row = cols_bytes(b.view, filter, index_leaf, ix, true, b.io_col_row);
-	b.measure_io_row = cols_bytes(b.view, measure, index_leaf, ix, true, b.io_col_row);
+	b.filter_row = cols_bytes(b.view, filter, index_leaf, ix, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, filter_leaves, false, SIFT_WORD_BYTES);
+	b.measure_row = cols_bytes(b.view, measure, index_leaf, ix, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, measure_leaves, false, SIFT_WORD_BYTES);
+	b.filter_io_row = cols_bytes(b.view, filter, index_leaf, ix, true, b.io_col_row) + leaves_bytes(b.view, filter_leaves, true, b.io_col_row);
+	b.measure_io_row = cols_bytes(b.view, measure, index_leaf, ix, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
 	price.in = scan_inputs(&b);
 	price.in.n_groups = Max(groups, 1.0);
 	price.selectivity = Min(b.surv / (price.in.g_eff * SIFT_GRANULE_ROWS), 1.0);

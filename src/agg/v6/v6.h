@@ -120,9 +120,33 @@ typedef enum SiftV6Src
 /* SiftV6Col.attno of sift.score(ctid), the score of the row's hit: no column of the index, a float4 the rows of a fold come with (sift_v6_fold_batch_scored) */
 #define SIFT_V6_SCORE_ATTNO		(-1)
 
-/* The virtual attributes (an INDEX_VAR or scan varattno above every column of an index): the `->>` text or float8 cast of the key whose leaf is SIFT_V6_JLEAF_VATT + leaf, and jsonb_typeof(doc -> 'key') of the key whose leaf is SIFT_V6_JTYPE_VATT + leaf */
-#define SIFT_V6_JLEAF_VATT		(1 << 14)
-#define SIFT_V6_JTYPE_VATT		(3 << 13)
+/*
+ * The virtual attributes (an INDEX_VAR or scan varattno above every column of an index) of what a statement reads of a key of a jsonb document whose leaf is `leaf`: its JSON type
+ * (jsonb_typeof(doc -> 'key')), its `->>` text, and the float8 cast of that text. An index holds at most SIFT_F2_MAX_COLS (1024) leaves, so each kind has a range of that many attributes.
+ */
+#define SIFT_V6_JVIRT_VATT		(3 << 13)
+#define SIFT_V6_JVIRT_SPAN		1024
+#define SIFT_V6_JTYPE_VATT		SIFT_V6_JVIRT_VATT
+#define SIFT_V6_JTEXT_VATT		(SIFT_V6_JVIRT_VATT + SIFT_V6_JVIRT_SPAN)
+#define SIFT_V6_JF8_VATT		(SIFT_V6_JVIRT_VATT + 2 * SIFT_V6_JVIRT_SPAN)
+
+static inline bool
+sift_v6_vatt_is_json(int attno)
+{
+	return attno >= SIFT_V6_JVIRT_VATT;
+}
+
+static inline int
+sift_v6_vatt_leaf(int attno)
+{
+	return (attno - SIFT_V6_JVIRT_VATT) % SIFT_V6_JVIRT_SPAN;
+}
+
+static inline bool
+sift_v6_vatt_is_type(int attno)
+{
+	return attno >= SIFT_V6_JTYPE_VATT && attno < SIFT_V6_JTEXT_VATT;
+}
 /* The virtual attribute of the boolean flag of test i of the elements of a row's array (SiftV6Ext.test, v6_ext.h), which a FILTER reads */
 #define SIFT_V6_XFLAG_VATT		(3 << 12)
 
@@ -369,30 +393,29 @@ typedef struct SiftV6Rel
  */
 extern List *sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause);
 extern bool sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out);
-/* e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy); the column such a Var is */
-extern Expr *sift_v6_json_type_vars(const SiftV6Rel *rel, const Expr *e);
+/*
+ * e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy), and with values every
+ * `doc ->> 'key'` and its float8 cast as one of the text or float8 kind: the scan reads a value a leaf cannot hold from the exception of its chunk, which a scan key (a FILTER) does not; the column such a Var is
+ */
+extern Expr *sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values);
 extern bool sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
 /* The statement reads the type and the value of one key apart from the scan keys: PostgreSQL's own plan decides which values it reads */
 extern bool sift_v6_json_type_clash(const SiftV6Spec *s);
-/* The attribute a column is an input of an expression or a qual by: its own, or the virtual one of the value or of the jsonb_typeof of its key */
+/* The attribute a column is an input of an expression or a qual by: its own, or the virtual one of what it reads of a key of a document */
 static inline int
 sift_v6_col_input_attno(const SiftV6Col *c)
 {
-	return c->jleaf == 0 ? c->attno : (c->jtype ? SIFT_V6_JTYPE_VATT : SIFT_V6_JLEAF_VATT) + c->jleaf - 1;
+	if (c->jleaf == 0)
+		return c->attno;
+	return (c->jtype ? SIFT_V6_JTYPE_VATT : c->typid == FLOAT8OID ? SIFT_V6_JF8_VATT : SIFT_V6_JTEXT_VATT) + c->jleaf - 1;
 }
-/* The column of the virtual attribute attno: the leaf and what of it is read (the type of the key, or its value) */
-static inline bool
-sift_v6_input_attno_json(int attno, int *jleaf, bool *jtype)
+
+/* The column of the scan a virtual attribute of a key of document attribute att is: the type, the text or the float8 cast of the key whose leaf is in the attribute */
+static inline SiftV6Col
+sift_v6_vatt_col(int attno, int att, Oid typid, int scale)
 {
-	if (attno < SIFT_V6_JLEAF_VATT)
-		return false;
-	*jtype = attno >= SIFT_V6_JTYPE_VATT;
-	*jleaf = attno - (*jtype ? SIFT_V6_JTYPE_VATT : SIFT_V6_JLEAF_VATT) + 1;
-	return true;
+	return (SiftV6Col) {.attno = att,.typid = typid,.scale = scale,.jleaf = sift_v6_vatt_leaf(attno) + 1,.jtype = sift_v6_vatt_is_type(attno)};
 }
-/* e with every `doc ->> 'key'` and `(doc ->> 'key')::float8` of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JLEAF_VATT + leaf (varno rel->relid, a copy); the column such a Var is */
-extern Expr *sift_v6_json_value_vars(const SiftV6Rel *rel, const Expr *e);
-extern bool sift_v6_json_value_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
 /* e is doc -> 'k' or doc['k'] (as_text false), or doc ->> 'k' or its #>> '{}' (as_text true), of a column doc and a constant text key */
 extern bool sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **key);
 /* keys and nkeys with the scan keys of spec->jsonqual appended */
@@ -467,6 +490,7 @@ typedef struct SiftV6ScanStats
 	uint64		heap_rows_dead;
 	uint64		grans_preagg;	/* granules answered from their pre-aggregates (col/f2/f2_v6_preagg.h) */
 	uint64		grans_preagg_delta;	/* ... of them, those corrected for dead rows */
+	uint64		heap_reread_rows;	/* rows of an unnest whose document the leaves cannot hold, which the function takes apart again from the heap */
 	uint64		chunks;			/* passes of a scan that takes the hits of a text query as bridges */
 	uint64		bridge_tids;
 } SiftV6ScanStats;

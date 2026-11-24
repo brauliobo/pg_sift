@@ -202,7 +202,7 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 	{
 		const bool	two = g.kind == SV6_ARG_MAX || g.kind == SV6_ARG_MIN;
 
-		Expr	   *arg = list_length(a->args) > 0 ? sift_v6_plan_type_vars(p, ((TargetEntry *) linitial(a->args))->expr) : NULL;
+		Expr	   *arg = list_length(a->args) > 0 ? sift_v6_plan_json_vars(p, ((TargetEntry *) linitial(a->args))->expr, true) : NULL;
 		const bool	score = !two && !sift_v6_kind_distinct(g.kind) && sift_v6_score_col(p, arg, &g.arg);
 		const bool	derived_ok = !two && !sift_v6_kind_valued(g.kind);
 
@@ -423,7 +423,7 @@ affine_key(V6Plan *p, Expr *e)
 static bool
 key_of(V6Plan *p, Expr *source, SiftV6Col *k)
 {
-	Expr	   *e = sift_v6_plan_type_vars(p, source);
+	Expr	   *e = sift_v6_plan_json_vars(p, source, true);
 	const Oid	typid = getBaseType(exprType((Node *) e));
 
 	if (sift_v6_read_of(p, e, false, k) || compile_bin(p, e, k) || sift_v6_derived_col(p, e, true, k) || sift_v6_pg_derived_col(p, e, true, k) ||
@@ -578,7 +578,7 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 bool
 sift_v6_compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	return sift_v6_index_complete(p) && sift_v6_compile_head(p, extra, group_exprs) && sift_v6_compile_quals(p) && !sift_v6_json_type_clash(&p->spec);
+	return sift_v6_index_complete(p) && sift_v6_compile_head(p, extra, group_exprs) && sift_v6_compile_quals(p) && !sift_v6_json_type_clash(&p->spec) && sift_v6_json_cast_order_ok(p);
 }
 
 void

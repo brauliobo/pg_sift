@@ -20,7 +20,7 @@ filter_qual(V6Plan *p, Expr *c)
 	const bool	on_elem = p->elem_rel != NULL && bms_is_member(p->elem_rel->relid, pull_varnos(p->root, (Node *) c));
 	Expr	   *q = on_elem || sift_v6_mapkey_on(p) ? sift_v6_unnest_elem_qual(p, (Node *) c) : NULL;
 
-	return q != NULL || on_elem ? q : sift_v6_index_qual(p, sift_v6_plan_type_vars(p, c));
+	return q != NULL || on_elem ? q : sift_v6_index_qual(p, sift_v6_plan_json_vars(p, c, false));
 }
 
 /* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */

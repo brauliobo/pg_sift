@@ -15,7 +15,7 @@
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_filter_pg.h"
 
-/* The virtual attribute of the quals the scan evaluates on its batches (an INDEX_VAR varattno above every column of an index): column c of the element (the leaf of a jsonb key of the fact table is SIFT_V6_JLEAF_VATT, agg/v6/v6.h) */
+/* The virtual attribute of the quals the scan evaluates on its batches (an INDEX_VAR varattno above every column of an index): column c of the element (the leaf of a jsonb key of the fact table is SIFT_V6_JTEXT_VATT, agg/v6/v6.h) */
 #define SIFT_V6_ELEM_VATT	(1 << 13)
 
 /* The lateral function scan of the statement: its function, the column of the fact table it takes, and what it declares */

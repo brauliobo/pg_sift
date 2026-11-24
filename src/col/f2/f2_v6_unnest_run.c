@@ -147,11 +147,8 @@ vec_type(SiftV6Class cls)
 static int
 leaf_of(const SiftColRel *r, const SiftV6Col *c)
 {
-	int			jleaf;
-	bool		jtype;
-
-	if (sift_v6_input_attno_json(c->attno, &jleaf, &jtype))
-		return jleaf - 1;
+	if (sift_v6_vatt_is_json(c->attno))
+		return sift_v6_vatt_leaf(c->attno);
 	return c->jleaf > 0 ? c->jleaf - 1 : r->first[c->attno];
 }
 
@@ -181,7 +178,7 @@ col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 	if (u->ncols == SIFT_F2_PULL_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
 						errhint("Aggregate fewer columns of the table that is unnested.")));
-	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = sift_v6_class(c->typid),.month = month,.json = c->jleaf > 0 || c->attno >= SIFT_V6_JLEAF_VATT,.read = true};
+	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = sift_v6_class(c->typid),.month = month,.json = c->jleaf > 0 || sift_v6_vatt_is_json(c->attno),.read = true};
 	if (sift_f2_rel(u->index)->key_leaf[leaf])
 	{
 		const SiftF2Rel *f = sift_f2_rel(u->index);

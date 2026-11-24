@@ -43,9 +43,7 @@ fcol_index(Build *b, const Var *v)
 			return i;
 	if (!b->add || *b->nfcols == SIFT_V6_MAX_FCOLS)
 		return -1;
-	b->fcol[*b->nfcols] = sift_v6_elem_vatt_col(v->varattno, v->vartype);
-	if (v->varattno >= SIFT_V6_JTYPE_VATT)
-		b->fcol[*b->nfcols].jleaf = v->varattno - SIFT_V6_JTYPE_VATT + 1,b->fcol[*b->nfcols].jtype = true;
+	b->fcol[*b->nfcols] = sift_v6_vatt_is_json(v->varattno) ? sift_v6_vatt_col(v->varattno, v->varattno, v->vartype, 0) : sift_v6_elem_vatt_col(v->varattno, v->vartype);
 	return (*b->nfcols)++;
 }
 

@@ -5,11 +5,13 @@
 /* check-memory: allow-allocs every list here follows the quals of one statement, not the rows of the table */
 #include "postgres.h"
 
-#include "catalog/pg_opfamily_d.h"
+#include "catalog/pg_am_d.h"
+#include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/lsyscache.h"
 
 #include "agg/group/ht.h"
 #include "agg/plan/safety.h"
@@ -38,14 +40,14 @@ is_operand(const Node *n)
 static Expr *
 index_var(const Var *v, int col)
 {
-	return (Expr *) makeVar(INDEX_VAR, v->varattno >= SIFT_V6_JTYPE_VATT ? v->varattno : col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
+	return (Expr *) makeVar(INDEX_VAR, sift_v6_vatt_is_json(v->varattno) ? v->varattno : col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
 }
 
-/* the operator family the comparisons of the column are of: a jsonb_typeof is a text */
+/* the operator family the comparisons of the column are of: what a key of a document reads as is a text or a float8 */
 static Oid
 col_opfamily(const V6Plan *p, const SiftV6Col *col)
 {
-	return col->jtype ? TEXT_BTREE_FAM_OID : sift_v6_plan_opfamily(p, col->attno);
+	return col->jleaf > 0 ? get_opclass_family(GetDefaultOpClass(col->typid, BTREE_AM_OID)) : sift_v6_plan_opfamily(p, col->attno);
 }
 
 /* A numeric column of an index decides a comparison with a constant of its scale range on the scaled integers; a NaN row is decided by the scan (col/f2/scan/verdict.c) */
@@ -195,7 +197,7 @@ qual_batch(V6Plan *p, RestrictInfo *ri)
 		return false;
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
-	clause = sift_v6_plan_type_vars(p, ri->clause);
+	clause = sift_v6_plan_json_vars(p, ri->clause, true);
 	clause = clause == ri->clause ? copyObject(clause) : clause;
 	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
 	if (!sift_v6_bq_plan_ok(p->root, &in, clause))

@@ -269,35 +269,6 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
-static Node *
-value_vars_mutator(Node *n, const SiftV6Rel *rel)
-{
-	SiftV6Col	col;
-
-	if (n == NULL)
-		return NULL;
-	if (sift_v6_json_read(rel, (const Expr *) n, &col))
-		return (Node *) makeVar(rel->relid, SIFT_V6_JLEAF_VATT + col.jleaf - 1, col.typid, -1, exprCollation(n), 0);
-	return expression_tree_mutator(n, value_vars_mutator, unconstify(SiftV6Rel *, rel));
-}
-
-Expr *
-sift_v6_json_value_vars(const SiftV6Rel *rel, const Expr *e)
-{
-	return (Expr *) value_vars_mutator((Node *) e, rel);
-}
-
-bool
-sift_v6_json_value_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out)
-{
-	const int	leaf = v->varattno - SIFT_V6_JLEAF_VATT;
-	const bool	held = rel->colrel != NULL && leaf >= 0 && leaf < rel->colrel->schema->ncols && scalar_leaf(rel, leaf);
-
-	if (held)
-		*out = (SiftV6Col) {.attno = rel->colrel->schema->cols[leaf].attno,.typid = v->vartype,.jleaf = leaf + 1};
-	return held;
-}
-
 /* jsonb_typeof(doc -> 'key') of a shredded scalar key: the leaf of the key (-1: the expression is no such call) */
 static int
 typeof_leaf(const SiftV6Rel *rel, const Node *n)
@@ -313,32 +284,59 @@ typeof_leaf(const SiftV6Rel *rel, const Node *n)
 	return scalar_leaf(rel, leaf) ? leaf : -1;
 }
 
-static Node *
-type_vars_mutator(Node *n, const SiftV6Rel *rel)
+/* The virtual attribute of what n reads of a shredded scalar key (the type, the `->>` text of a text leaf, its float8 cast of a float8 leaf), InvalidAttrNumber for any other expression */
+static int
+read_vatt(const SiftV6Rel *rel, const Node *n, bool values, Oid *typid)
 {
+	SiftV6Col	col;
 	int			leaf;
+
+	if ((leaf = typeof_leaf(rel, n)) >= 0)
+	{
+		*typid = TEXTOID;
+		return SIFT_V6_JTYPE_VATT + leaf;
+	}
+	if (!values || !sift_v6_json_read(rel, (const Expr *) n, &col))
+		return InvalidAttrNumber;
+	*typid = col.typid;
+	return sift_v6_col_input_attno(&col);
+}
+
+typedef struct VarsCtx
+{
+	const SiftV6Rel *rel;
+	bool		values;
+} VarsCtx;
+
+static Node *
+vars_mutator(Node *n, VarsCtx *ctx)
+{
+	Oid			typid;
+	int			vatt;
 
 	if (n == NULL)
 		return NULL;
-	if ((leaf = typeof_leaf(rel, n)) >= 0)
-		return (Node *) makeVar(rel->relid, SIFT_V6_JTYPE_VATT + leaf, TEXTOID, -1, exprCollation(n), 0);
-	return expression_tree_mutator(n, type_vars_mutator, unconstify(SiftV6Rel *, rel));
+	if ((vatt = read_vatt(ctx->rel, n, ctx->values, &typid)) != InvalidAttrNumber)
+		return (Node *) makeVar(ctx->rel->relid, vatt, typid, -1, exprCollation(n), 0);
+	return expression_tree_mutator(n, vars_mutator, ctx);
 }
 
 Expr *
-sift_v6_json_type_vars(const SiftV6Rel *rel, const Expr *e)
+sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values)
 {
-	return (Expr *) type_vars_mutator((Node *) e, rel);
+	VarsCtx		ctx = {rel, values};
+
+	return (Expr *) vars_mutator((Node *) e, &ctx);
 }
 
 bool
 sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out)
 {
-	const int	leaf = v->varattno - SIFT_V6_JTYPE_VATT;
-	const bool	held = rel->colrel != NULL && leaf >= 0 && leaf < rel->colrel->schema->ncols;
+	const int	leaf = sift_v6_vatt_leaf(v->varattno);
+	const bool	held = rel->colrel != NULL && leaf < rel->colrel->schema->ncols;
 
 	if (held)
-		*out = (SiftV6Col) {.attno = rel->colrel->schema->cols[leaf].attno,.typid = TEXTOID,.jleaf = leaf + 1,.jtype = true};
+		*out = sift_v6_vatt_col(v->varattno, rel->colrel->schema->cols[leaf].attno, v->vartype, 0);
 	return held;
 }
 
@@ -359,11 +357,19 @@ note_col(JsonLeaves *j, const SiftV6Col *c)
 	}
 }
 
+static void
+note_vatt(JsonLeaves *j, int attno)
+{
+	Bitmapset **set = sift_v6_vatt_is_type(attno) ? &j->type : &j->value;
+
+	*set = bms_add_member(*set, sift_v6_vatt_leaf(attno));
+}
+
 static bool
 note_vars(Node *n, JsonLeaves *j)
 {
-	if (n != NULL && IsA(n, Var) && ((const Var *) n)->varattno >= SIFT_V6_JTYPE_VATT)
-		j->type = bms_add_member(j->type, ((const Var *) n)->varattno - SIFT_V6_JTYPE_VATT);
+	if (n != NULL && IsA(n, Var) && sift_v6_vatt_is_json(((const Var *) n)->varattno))
+		note_vatt(j, ((const Var *) n)->varattno);
 	return n != NULL && expression_tree_walker(n, note_vars, j);
 }
 
@@ -390,14 +396,9 @@ sift_v6_json_type_clash(const SiftV6Spec *s)
 	for (int d = 0; d < s->nderive; d++)
 		note_col(&j, &s->derive[d].src);
 	foreach_ptr(List, item, s->pgexpr)
-		for (int i = 1; i < list_length(lsecond(item)); i += SIFT_V6_PGX_INTS)
-		{
-			int			leaf;
-			bool		jtype;
-
-			if (sift_v6_input_attno_json(list_nth_int(lsecond(item), i), &leaf, &jtype))
-				note_col(&j, &(SiftV6Col) {.jleaf = leaf,.jtype = jtype});
-		}
+		for (int i = 1; i < list_length(lsecond(item)); i += 3)
+			if (sift_v6_vatt_is_json(list_nth_int(lsecond(item), i)))
+				note_vatt(&j, list_nth_int(lsecond(item), i));
 	foreach_ptr(Node, clause, s->vqual)
 		note_vars(clause, &j);
 	return bms_overlap(j.value, j.type);
@@ -438,7 +439,7 @@ sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op)
 	if (c == NULL || !IsA(c, Const) || c->constisnull || c->consttype != TEXTOID || !json_text_unambiguous(c) || !sift_v6_json_read(rel, l, &col) || col.typid != TEXTOID)
 		return NULL;
 	q = copyObject((OpExpr *) op);
-	q->args = list_make2(makeVar(INDEX_VAR, SIFT_V6_JLEAF_VATT + col.jleaf - 1, TEXTOID, -1, op->inputcollid, 0), copyObject((Node *) c));
+	q->args = list_make2(makeVar(INDEX_VAR, SIFT_V6_JTEXT_VATT + col.jleaf - 1, TEXTOID, -1, op->inputcollid, 0), copyObject((Node *) c));
 	return (Expr *) q;
 }
 
