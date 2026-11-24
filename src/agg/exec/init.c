@@ -144,6 +144,10 @@ sift_agg_init(void)
 							 "Testing: the table of the shared verdicts cannot be had (an error in the registry), once for a backend.",
 							 NULL, &sift_test_verdict_fail, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_unified_agg",
+							 "Testing: Format 1 statements are planned by SiftAggV6 alone, the legacy Format 1 planner is left out.",
+							 NULL, &sift_test_unified_agg, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_fail_pick",
 							"Testing: planning the n-th column index (1 is the second) of a table in an aggregate stage raises an error (0: none).",
 							NULL, &sift_test_fail_pick, 0, 0, 100,

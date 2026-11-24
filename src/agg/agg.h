@@ -235,6 +235,14 @@ extern void sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, Rel
 extern void sift_agg_v1_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel,
 								 RelOptInfo *output_rel, void *extra);
 
+/* The legacy Format 1 planner competes with SiftAggV6 for the statements with a Format 1 source until SiftAggV6 serves them all; the testing build can leave it out (sift.test_unified_agg), to see what SiftAggV6 alone serves */
+#ifdef SIFT_TESTING
+extern bool sift_test_unified_agg;
+#define sift_agg_unified_only() (sift_test_unified_agg)
+#else
+#define sift_agg_unified_only() false
+#endif
+
 extern PGDLLIMPORT const CustomScanMethods sift_agg_plan_methods;
 
 /* agg/col.c: registers the sift_col index as a column source (does nothing in a build without the column engine) */
