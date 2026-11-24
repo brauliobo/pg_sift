@@ -16,11 +16,12 @@ rc=$?
 if ((rc == 77)); then echo '1..0 # SKIP the 8-page flavour needs PostgreSQL 18'; exit 0; fi
 ((rc == 0)) || { echo '1..1'; echo 'not ok 1 - build of the 8-page flavour'; exit 1; }
 
-SIZES=(40000 80000 120000)
+IFS=, read -ra SIZES <<<"$(knob SIFT_BTREE_SIZES 40000,80000,120000 16000,32000,48000)"
+SEG_KB=$(knob SIFT_BTREE_SEG_KB 4096 1664)
+PAR_SEG_KB=$(knob SIFT_BTREE_PAR_SEG_KB 1024 416)
+BIG=${SIZES[2]}
 SLOPE_MAX=32
 MB=1048576
-SEG_KB=4096
-PAR_SEG_KB=1024
 BOUND=$((SEG_KB * 1024 * 21 / 10 + 6 * MB))
 PAR_BOUND=$((PAR_SEG_KB * 1024 * 21 / 10 + 6 * MB))
 PICK_BUDGET=$((24 * MB))
@@ -62,10 +63,11 @@ fit() {
 		END { mx = sx / n; my = sy / n; for (i = 1; i <= n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ^ 2 }; printf "%.0f\n", sxy / sxx }' <<<"$1"
 }
 
-# worker_peak OFFSET LAUNCHED: the greatest peak of the col_build scope among the participants that exited after OFFSET of the log (the leader's backend logs at its exit too)
+# worker_peak OFFSET: the greatest peak of the col_build scope among the participants that exited after OFFSET of the log (the leader's backend logs at its exit too): every process of the
+# build has exited, and logged, when the postmaster has no more children than before it (a participant that was given no rows logs no peak, so the lines cannot be counted)
+postmaster_children() { pgrep -P "$(head -1 "$(dir bm)/data/postmaster.pid")" | wc -l; }
 worker_peak() {
-	local want=$(($2 + 1))
-	wait_for "(( \$(tail -c +$(($1 + 1)) '$LOG' | grep -c 'SIFTMEM_SCOPE name=col_build peak=[1-9][0-9]* .* checks=[1-9]') >= $want ))" 60
+	wait_for "(( \$(postmaster_children) <= $2 ))" 60
 	tail -c +$(($1 + 1)) "$LOG" | sed -n 's/.*SIFTMEM_SCOPE name=col_build peak=\([1-9][0-9]*\) .* checks=[1-9].*/\1/p' | sort -n | tail -1
 }
 
@@ -77,9 +79,9 @@ for n in "${SIZES[@]}"; do
 	serial+="$n $peak"$'\n'
 	((peak <= BOUND)) || over_serial=$((over_serial + 1))
 	[[ $path == btree ]] || paths_ok=0
-	off=$(wc -c <"$LOG" | tr -d " ")
+	off=$(wc -c <"$LOG" | tr -d " ") idle=$(postmaster_children)
 	read -r _ _ _ path launched <<<"$(build "$n" 2 -1 "$PAR_SEG_KB")"
-	peak=$(worker_peak "$off" "$launched")
+	peak=$(worker_peak "$off" "$idle")
 	sql bm "DROP INDEX e_col" >/dev/null
 	parallel+="$n $peak"$'\n'
 	((peak <= PAR_BOUND)) || over_parallel=$((over_parallel + 1))
@@ -95,10 +97,10 @@ check "both builds read the heap through the btree, the parallel one by workers"
 
 # the choice: the walk keeps a node and a hash entry for each block of the simulated cache (at most 65,536 of them), so the bytes grow with the cache up to that and not with the table:
 # measured with a cache of none, 2,048 and 4,096 blocks (the table has more blocks than that), the bytes at 65,536 are what the fit says, and are under the budget of the scope
-load 120000
+load $BIG
 picks=""
 for cache in 0 2048 4096; do
-	read -r _ pick walk _ _ <<<"$(build 120000 0 "$cache" "$SEG_KB")"
+	read -r _ pick walk _ _ <<<"$(build "$BIG" 0 "$cache" "$SEG_KB")"
 	sql bm "DROP INDEX e_col" >/dev/null
 	picks+="$cache $walk $pick"$'\n'
 done
@@ -110,6 +112,6 @@ diag "col_btree_pick: the walk's bytes and the scope's peak by cache blocks: $(t
 check "choice: the walk holds bytes at every cache size" test "$p0" -gt 0 -a "$p2k" -gt 0 -a "$p4k" -gt 0
 check "choice: the bytes grow with the cache, at most 128 a block (a node and its hash entry)" test "$per_block" -gt 0 -a "$per_block" -le 128
 check "choice: the bytes at the largest cache the simulation holds (65,536 blocks) are under the budget of the scope" test "$at_max" -le "$PICK_BUDGET"
-check "choice: with no cache the scope is under the bound of the build at 120000 rows (it is not larger than the run it saves)" test "$scope0" -le "$BOUND"
+check "choice: with no cache the scope is under the bound of the build at the largest size (it is not larger than the run it saves)" test "$scope0" -le "$BOUND"
 check "no scope of the btree build went over its budget (the memory gate of a build fails the statement)" test -z "$(grep -c 'sift memory budget exceeded' "$LOG" | grep -v '^0$')"
 finish
