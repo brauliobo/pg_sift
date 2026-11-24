@@ -72,8 +72,8 @@ field_key(const Expr *e, const Expr **doc)
 }
 
 /* the function of the lateral relation, taking the column array of the fact table: unnest of an array, or jsonb_to_recordset of a jsonb one with the columns it declares */
-static bool
-rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out)
+bool
+sift_v6_unnest_rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out)
 {
 	const FuncExpr *fe = (const FuncExpr *) rtf->funcexpr;
 	const Oid	vartype = exprType((const Node *) v);
@@ -125,7 +125,7 @@ sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, 
 	fe = (const FuncExpr *) rtf->funcexpr;
 	if (!IsA(rtf->funcexpr, FuncExpr) || list_length(fe->args) != 1 || !sift_v6_unnest_array_ok(root, fact, linitial(fe->args)))
 		return false;
-	return rte_function(rtf, linitial(fe->args), out);
+	return sift_v6_unnest_rte_function(rtf, linitial(fe->args), out);
 }
 
 typedef struct OuterTerms
@@ -166,7 +166,7 @@ sift_v6_unnest_exists_rte(const RangeTblEntry *rte, const SubPlan *sp, SiftV6Ele
 		list_length(((const FuncExpr *) rtf->funcexpr)->args) != 1)
 		return false;
 	array = outer_terms(linitial(((const FuncExpr *) rtf->funcexpr)->args), &c);
-	return c.ok && rte_function(rtf, (const Expr *) array, out);
+	return c.ok && sift_v6_unnest_rte_function(rtf, (const Expr *) array, out);
 }
 
 /* the lengths leaf of the attribute's array (the document itself, or its key `key`) and its element leaves are the ones of a list of objects (no key leaf, which a map has) */

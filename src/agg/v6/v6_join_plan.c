@@ -24,45 +24,22 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_exists_plan.h"
 #include "agg/v6/v6_join_plan.h"
+#include "agg/v6/v6_join_shape.h"
 #include "agg/v6/v6_lateral_plan.h"
 #include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 
-#define ROLE_FACT	(-2)
-#define ROLE_ELEM	(-1)
-#define ROLE_NONE	(-3)
-
-typedef struct JoinDim
-{
-	Relids		rels;
-	RelOptInfo *rel;			/* its plan: the relation, or the join PostgreSQL made of the relations */
-	SiftV6JoinMode mode;
-	int			nkeys;
-	const Node *probe[SIFT_STAR_MAX_KEYS];	/* the column of the relations before the dimension, or the expression of them, that its key is probed with */
-	const Var  *key[SIFT_STAR_MAX_KEYS];
-	bool		lateral;		/* a lateral sub-select cut to one row: its keys are the equalities it ties itself to the relations before it with (v6_lateral_plan.h) */
-} JoinDim;
-
-typedef struct JoinShape
-{
-	RelOptInfo *fact;
-	RelOptInfo *elem;
-	bool		elem_left;
-	int			nd;
-	JoinDim		dim[SIFT_STAR_MAX_DIMS];
-	List	   *resid;			/* the RestrictInfo of each condition no key says */
-} JoinShape;
-
-static bool
-add_dim(JoinShape *sh, Relids rels, SiftV6JoinMode mode)
+bool
+sift_v6_join_add_dim(SiftV6JoinShape *sh, Relids rels, SiftV6JoinMode mode)
 {
 	if (sh->nd == SIFT_STAR_MAX_DIMS)
 		return false;
 	for (int i = 0; i < sh->nd; i++)
 		if (bms_overlap(sh->dim[i].rels, rels))
 			return false;
-	sh->dim[sh->nd++] = (JoinDim) {.rels = rels,.mode = mode};
+	sh->dim[sh->nd++] = (SiftV6JoinDim) {.rels = rels,.mode = mode};
 	return true;
 }
 
@@ -74,7 +51,7 @@ single_in(Relids r, Relids rest)
 
 /* the special join of the statement as a dimension: a left join to a relation, the relation a RIGHT or FULL join keeps, the relations under a semi or anti join; false for any other */
 static bool
-special_dim(JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
+special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 {
 	Relids		fact = bms_make_singleton(sh->fact->relid);
 	Relids		l = sj->min_lefthand,
@@ -84,15 +61,15 @@ special_dim(JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 	{
 		case JOIN_LEFT:
 			if (single_in(r, rest))
-				return add_dim(sh, r, SV6J_LEFT_EQUI);
-			return bms_equal(r, fact) && single_in(l, rest) && add_dim(sh, l, SV6J_RIGHT_EQUI);
+				return sift_v6_join_add_dim(sh, r, SV6J_LEFT_EQUI);
+			return bms_equal(r, fact) && single_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_RIGHT_EQUI);
 		case JOIN_FULL:
 			if (bms_equal(l, fact))
-				return single_in(r, rest) && add_dim(sh, r, SV6J_FULL_EQUI);
-			return bms_equal(r, fact) && single_in(l, rest) && add_dim(sh, l, SV6J_FULL_EQUI);
+				return single_in(r, rest) && sift_v6_join_add_dim(sh, r, SV6J_FULL_EQUI);
+			return bms_equal(r, fact) && single_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_FULL_EQUI);
 		case JOIN_SEMI:
 		case JOIN_ANTI:
-			return bms_is_subset(r, rest) && add_dim(sh, r, sj->jointype == JOIN_SEMI ? SV6J_SEMI_EQUI : SV6J_ANTI_EQUI);
+			return bms_is_subset(r, rest) && sift_v6_join_add_dim(sh, r, sj->jointype == JOIN_SEMI ? SV6J_SEMI_EQUI : SV6J_ANTI_EQUI);
 		default:
 			return false;
 	}
@@ -100,10 +77,10 @@ special_dim(JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 
 /* the dimensions in the order the pipe probes them: a join of inner relations, then the others in the order the statement joins them, each probing columns of the relations before it */
 static bool
-make_dims(PlannerInfo *root, Relids base, JoinShape *sh)
+make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 {
 	Relids		rest = bms_del_member(bms_copy(base), sh->fact->relid);
-	JoinDim		inner[SIFT_STAR_MAX_DIMS];
+	SiftV6JoinDim		inner[SIFT_STAR_MAX_DIMS];
 	int			ni = 0,
 				r = -1;
 
@@ -128,17 +105,17 @@ make_dims(PlannerInfo *root, Relids base, JoinShape *sh)
 	{
 		if (sh->nd + ni >= SIFT_STAR_MAX_DIMS)
 			return false;
-		inner[ni++] = (JoinDim) {.rels = bms_make_singleton(r),.mode = SV6J_INNER_EQUI};
+		inner[ni++] = (SiftV6JoinDim) {.rels = bms_make_singleton(r),.mode = SV6J_INNER_EQUI};
 	}
-	memmove(&sh->dim[ni], &sh->dim[0], sh->nd * sizeof(JoinDim));
-	memcpy(&sh->dim[0], inner, ni * sizeof(JoinDim));
+	memmove(&sh->dim[ni], &sh->dim[0], sh->nd * sizeof(SiftV6JoinDim));
+	memcpy(&sh->dim[0], inner, ni * sizeof(SiftV6JoinDim));
 	sh->nd += ni;
 	return sh->nd > 0;
 }
 
 /* the part a relation has in the join: the fact table, the element, the index of its dimension, or none */
-static int
-role_of(const JoinShape *sh, const Var *v)
+int
+sift_v6_join_role(const SiftV6JoinShape *sh, const Var *v)
 {
 	if (v->varno == sh->fact->relid)
 		return ROLE_FACT;
@@ -151,8 +128,8 @@ role_of(const JoinShape *sh, const Var *v)
 }
 
 /* the part of the latest relation the columns of e are of; ROLE_NONE when it reads a column the join does not know, or none */
-static int
-expr_role(const JoinShape *sh, const Node *e)
+int
+sift_v6_join_expr_role(const SiftV6JoinShape *sh, const Node *e)
 {
 	List	   *vars;
 	int			role = ROLE_FACT;
@@ -164,7 +141,7 @@ expr_role(const JoinShape *sh, const Node *e)
 		return ROLE_NONE;
 	foreach_node(Var, v, vars)
 	{
-		const int	r = v->varlevelsup == 0 ? role_of(sh, v) : ROLE_NONE;
+		const int	r = v->varlevelsup == 0 ? sift_v6_join_role(sh, v) : ROLE_NONE;
 
 		if (r == ROLE_NONE)
 			return ROLE_NONE;
@@ -182,8 +159,8 @@ same_probe(const Node *a, const Node *b)
 	return equal(a, b);
 }
 
-static bool
-add_key(JoinDim *d, const Node *probe, const Var *key)
+bool
+sift_v6_join_add_key(SiftV6JoinDim *d, const Node *probe, const Var *key)
 {
 	for (int k = 0; k < d->nkeys; k++)
 		if (same_probe(d->probe[k], probe) && d->key[k]->varno == key->varno && d->key[k]->varattno == key->varattno)
@@ -195,35 +172,14 @@ add_key(JoinDim *d, const Node *probe, const Var *key)
 	return true;
 }
 
-/* the keys of a lateral sub-select probe columns or expressions of the relations before it only */
 static bool
-lateral_dim(PlannerInfo *root, JoinShape *sh, int at, RelOptInfo *rel)
-{
-	JoinDim    *d = &sh->dim[at];
-	SiftV6LateralDim ld;
-
-	if (!sift_v6_lateral_dim(root, rel, &ld))
-		return false;
-	d->rel = ld.rel;
-	d->lateral = true;
-	for (int k = 0; k < ld.nkeys; k++)
-	{
-		const int	role = expr_role(sh, ld.probe[k]);
-
-		if (role == ROLE_NONE || role >= at || (!IsA(ld.probe[k], Var) && !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) ld.probe[k])) || !add_key(d, ld.probe[k], ld.key[k]))
-			return false;
-	}
-	return true;
-}
-
-static bool
-dim_rels_ok(PlannerInfo *root, JoinShape *sh)
+dim_rels_ok(PlannerInfo *root, SiftV6JoinShape *sh)
 {
 	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / sh->nd, 4096);
 
 	for (int i = 0; i < sh->nd; i++)
 	{
-		JoinDim    *d = &sh->dim[i];
+		SiftV6JoinDim *d = &sh->dim[i];
 		RelOptInfo *rel;
 
 		if (bms_membership(d->rels) == BMS_SINGLETON)
@@ -232,7 +188,7 @@ dim_rels_ok(PlannerInfo *root, JoinShape *sh)
 			rel = find_join_rel(root, d->rels);
 		if (rel != NULL && rel->lateral_relids != NULL)
 		{
-			if (!lateral_dim(root, sh, i, rel) || !sift_v6_dim_rel_ok(root, d->rel, budget))
+			if (!sift_v6_lateral_join_dim(root, root, NULL, rel, rel->relid, sh, i) || !sift_v6_dim_rel_ok(root, d->rel, budget))
 				return false;
 		}
 		else if (rel == NULL || !sift_v6_dim_rel_ok(root, rel, budget))
@@ -245,7 +201,7 @@ dim_rels_ok(PlannerInfo *root, JoinShape *sh)
 
 /* the relations are all under one dimension: its plan applies what joins them */
 static bool
-within_one_dim(const JoinShape *sh, Relids rels)
+within_one_dim(const SiftV6JoinShape *sh, Relids rels)
 {
 	for (int i = 0; i < sh->nd; i++)
 		if (bms_is_subset(rels, sh->dim[i].rels))
@@ -255,7 +211,7 @@ within_one_dim(const JoinShape *sh, Relids rels)
 
 /* a class of equal columns and expressions that the planner made of the inner and semi joins: the members that are dimensions are joined to the member before them, the column or expression of the fact table, of the element or of the first dimension */
 static bool
-equivalence_keys(PlannerInfo *root, Relids base, JoinShape *sh)
+equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 {
 	foreach_node(EquivalenceClass, ec, root->eq_classes)
 	{
@@ -271,7 +227,7 @@ equivalence_keys(PlannerInfo *root, Relids base, JoinShape *sh)
 		{
 			const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
 			Relids		vr = bms_intersect(pull_varnos(root, (Node *) em->em_expr), base);
-			const int	role = bms_is_empty(vr) ? ROLE_NONE : expr_role(sh, (Node *) em->em_expr);
+			const int	role = bms_is_empty(vr) ? ROLE_NONE : sift_v6_join_expr_role(sh, (Node *) em->em_expr);
 
 			if (em->em_is_child)
 				continue;
@@ -293,11 +249,11 @@ equivalence_keys(PlannerInfo *root, Relids base, JoinShape *sh)
 		foreach_node(EquivalenceMember, em, ec->ec_members)
 		{
 			const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
-			const int	d = v != NULL && !em->em_is_child ? role_of(sh, v) : ROLE_NONE;
+			const int	d = v != NULL && !em->em_is_child ? sift_v6_join_role(sh, v) : ROLE_NONE;
 
 			if (d < 0 || d == probe_role)
 				continue;
-			if ((sh->dim[d].mode != SV6J_INNER_EQUI && sh->dim[d].mode != SV6J_SEMI_EQUI) || !add_key(&sh->dim[d], probe, v))
+			if ((sh->dim[d].mode != SV6J_INNER_EQUI && sh->dim[d].mode != SV6J_SEMI_EQUI) || !sift_v6_join_add_key(&sh->dim[d], probe, v))
 				return false;
 		}
 	}
@@ -320,20 +276,20 @@ period_types(Oid elem, Oid range)
 
 /* fact.col <@ dim.range of an inner join: the dimension is the periods, probed by the column (SV6J_RANGE_SMALL); a LEFT or semi join of it, and the rows of an unnest, are the normal plan's */
 static bool
-place_period(JoinShape *sh, const RestrictInfo *ri)
+place_period(SiftV6JoinShape *sh, const RestrictInfo *ri)
 {
 	const OpExpr *op = (const OpExpr *) ri->clause;
 	const Var  *col,
 			   *range;
-	JoinDim    *d;
+	SiftV6JoinDim    *d;
 
 	if (sh->elem != NULL || !IsA(ri->clause, OpExpr) || op->opno != OID_RANGE_ELEM_CONTAINED_OP || !ri->is_pushed_down)
 		return false;
 	col = sift_v6_plain_var(linitial(op->args));
 	range = sift_v6_plain_var(lsecond(op->args));
-	if (col == NULL || range == NULL || role_of(sh, col) != ROLE_FACT || role_of(sh, range) < 0 || !period_types(col->vartype, range->vartype))
+	if (col == NULL || range == NULL || sift_v6_join_role(sh, col) != ROLE_FACT || sift_v6_join_role(sh, range) < 0 || !period_types(col->vartype, range->vartype))
 		return false;
-	d = &sh->dim[role_of(sh, range)];
+	d = &sh->dim[sift_v6_join_role(sh, range)];
 	if (d->mode != SV6J_INNER_EQUI || d->nkeys != 0)
 		return false;
 	d->mode = SV6J_RANGE_SMALL;
@@ -345,21 +301,21 @@ place_period(JoinShape *sh, const RestrictInfo *ri)
 
 /* the equality of a column of a dimension (other) and a column or an expression of the relations before it (arg), as a key of the dimension */
 static bool
-place_key(JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other)
+place_key(SiftV6JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other)
 {
 	const Var  *key = sift_v6_plain_var(other);
 	const Var  *column = sift_v6_plain_var(arg);
 	const Node *probe = column != NULL ? (const Node *) column : arg;
 	int			d;
 
-	if (key == NULL || (d = role_of(sh, key)) < 0 || expr_role(sh, probe) == ROLE_NONE || expr_role(sh, probe) >= d)
+	if (key == NULL || (d = sift_v6_join_role(sh, key)) < 0 || sift_v6_join_expr_role(sh, probe) == ROLE_NONE || sift_v6_join_expr_role(sh, probe) >= d)
 		return false;
-	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && add_key(&sh->dim[d], probe, key);
+	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && sift_v6_join_add_key(&sh->dim[d], probe, key);
 }
 
 /* where a condition of the join goes: a key of the dimension it joins to the relations before it, a condition of the plan of one dimension, or a condition on the pairs. false: the join has no place for it */
 static bool
-place_clause(JoinShape *sh, RestrictInfo *ri)
+place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
 {
 	const OpExpr *op = (const OpExpr *) ri->clause;
 
@@ -379,7 +335,7 @@ place_clause(JoinShape *sh, RestrictInfo *ri)
 }
 
 static bool
-join_clauses(PlannerInfo *root, Relids base, JoinShape *sh)
+join_clauses(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 {
 	List	   *seen = NIL;
 	int			r = -1;
@@ -395,22 +351,25 @@ join_clauses(PlannerInfo *root, Relids base, JoinShape *sh)
 			if (list_member_ptr(seen, ri))
 				continue;
 			seen = lappend(seen, ri);
-			if (!place_clause(sh, ri))
+			if (sift_v6_exists_clause(ri) ? !sift_v6_exists_join(root, sh, ri) : !place_clause(sh, ri))
 				return false;
 		}
 	}
+	foreach_node(RestrictInfo, ri, sh->fact->baserestrictinfo)
+		if (sift_v6_exists_clause(ri) && sift_v6_exists_join(root, sh, ri))
+			sh->sub_qual = ri;
 	return true;
 }
 
 /* the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the keys of a semi join into the scan (v6_join_push.h) the one of a table, not of a sub-select */
 static bool
-needs_lookup(const JoinShape *sh)
+needs_lookup(const SiftV6JoinShape *sh)
 {
 	if (sh->elem != NULL || sh->resid != NIL)
 		return true;
 	for (int i = 0; i < sh->nd; i++)
 	{
-		const JoinDim *d = &sh->dim[i];
+		const SiftV6JoinDim *d = &sh->dim[i];
 
 		if (d->lateral)
 			return true;
@@ -419,7 +378,7 @@ needs_lookup(const JoinShape *sh)
 		if (d->mode != SV6J_INNER_EQUI && d->mode != SV6J_LEFT_EQUI && d->mode != SV6J_SEMI_EQUI)
 			return true;
 		for (int k = 0; k < d->nkeys; k++)
-			if (!IsA(d->probe[k], Var) || role_of(sh, (const Var *) d->probe[k]) != ROLE_FACT)
+			if (!IsA(d->probe[k], Var) || sift_v6_join_role(sh, (const Var *) d->probe[k]) != ROLE_FACT)
 				return true;
 	}
 	return false;
@@ -427,7 +386,7 @@ needs_lookup(const JoinShape *sh)
 
 /* a RIGHT or FULL join keeps the rows of its dimension that no row matched, and nothing else of the statement may change what matches */
 static bool
-preserved_ok(const JoinShape *sh)
+preserved_ok(const SiftV6JoinShape *sh)
 {
 	for (int i = 0; i < sh->nd; i++)
 		if (sift_star_preserves_dim(sh->dim[i].mode))
@@ -436,9 +395,10 @@ preserved_ok(const JoinShape *sh)
 }
 
 static bool
-shape_of(PlannerInfo *root, Relids base, JoinShape *sh)
+shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 {
-	if (!make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh) || !join_clauses(root, base, sh))
+	if (!make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh) || !join_clauses(root, base, sh) ||
+		!sift_v6_exists_main_unique(root, sh))
 		return false;
 	for (int i = 0; i < sh->nd; i++)
 		if (sh->dim[i].nkeys == 0)
@@ -465,7 +425,7 @@ key_class(Oid typid)
 
 /* the column of the probing side a key is: of the index, of the unnest's element, or a payload column of an earlier dimension */
 static bool
-probe_col(V6Plan *p, const JoinShape *sh, const Var *v, int dim, SiftV6Col *out)
+probe_col(V6Plan *p, const SiftV6JoinShape *sh, const Var *v, int dim, SiftV6Col *out)
 {
 	bool		ok;
 
@@ -534,7 +494,7 @@ resid_var(Node *n, ResidCtx *c)
 
 /* a key probed by an expression: the expression over the virtual attributes of the columns of the pairs, each one a column the join can give before the dimension is probed */
 static bool
-seed_key_expr(ResidCtx *rc, const JoinShape *sh, int dim, const Node *probe, SiftV6XDim *xd, int k)
+seed_key_expr(ResidCtx *rc, const SiftV6JoinShape *sh, int dim, const Node *probe, SiftV6XDim *xd, int k)
 {
 	Node	   *e = resid_var(copyObject((Node *) probe), rc);
 
@@ -554,15 +514,16 @@ seed_key_expr(ResidCtx *rc, const JoinShape *sh, int dim, const Node *probe, Sif
 }
 
 static bool
-seed_dims(V6Plan *p, const JoinShape *sh, const SiftV6ElemRte *rte, ResidCtx *rc)
+seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
 {
 	SiftV6Ext  *x;
 
 	if (sh->elem != NULL)
 	{
-		if (!sift_v6_unnest_seed(p, sh->elem, rte, sh->elem_left))
+		if (!sift_v6_unnest_seed(p, sh->elem, &sh->rte, sh->elem_left))
 			return false;
 		x = p->xseed;
+		x->elem.semi = sh->semi;
 	}
 	else
 		p->xseed = x = sift_v6_ext_new();
@@ -570,7 +531,7 @@ seed_dims(V6Plan *p, const JoinShape *sh, const SiftV6ElemRte *rte, ResidCtx *rc
 	rc->x = x;
 	for (int d = 0; d < sh->nd; d++)
 	{
-		const JoinDim *jd = &sh->dim[d];
+		const SiftV6JoinDim *jd = &sh->dim[d];
 		SiftV6XDim *xd = &x->dim[d];
 
 		xd->mode = jd->mode;
@@ -607,7 +568,7 @@ seed_dims(V6Plan *p, const JoinShape *sh, const SiftV6ElemRte *rte, ResidCtx *rc
 }
 
 static bool
-seed_resid(const JoinShape *sh, ResidCtx *rc)
+seed_resid(const SiftV6JoinShape *sh, ResidCtx *rc)
 {
 	foreach_node(RestrictInfo, ri, sh->resid)
 	{
@@ -621,7 +582,7 @@ seed_resid(const JoinShape *sh, ResidCtx *rc)
 }
 
 static Cost
-lookup_cost(const JoinShape *sh, const RelOptInfo *input_rel, Cost *startup)
+lookup_cost(const SiftV6JoinShape *sh, const RelOptInfo *input_rel, Cost *startup)
 {
 	Cost		total = 0;
 
@@ -637,9 +598,9 @@ lookup_cost(const JoinShape *sh, const RelOptInfo *input_rel, Cost *startup)
 }
 
 static void
-try_index(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, const JoinShape *sh, const SiftV6ElemRte *rte, IndexOptInfo *ix)
+try_index(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, const SiftV6JoinShape *sh, IndexOptInfo *ix)
 {
-	V6Plan		p = {.root = root,.rel = sh->fact,.out = output_rel,.relid = ix->indexoid,.index = ix};
+	V6Plan		p = {.root = root,.rel = sh->fact,.out = output_rel,.relid = ix->indexoid,.index = ix,.sub_qual = sh->sub_qual};
 	ResidCtx	rc = {.p = &p,.ok = true};
 	Relation	irel;
 	Cost		xs,
@@ -650,7 +611,7 @@ try_index(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Grou
 		return;
 	irel = index_open(ix->indexoid, AccessShareLock);
 	sift_v6_plan_index(&p, irel);
-	if (p.ops != NULL && seed_dims(&p, sh, rte, &rc) && sift_v6_compile_on(&p, extra, group_exprs) && (sh->elem != NULL ? sift_v6_unnest_ready(&p) : p.spec.nbins == 0) && seed_resid(sh, &rc))
+	if (p.ops != NULL && seed_dims(&p, sh, &rc) && sift_v6_compile_on(&p, extra, group_exprs) && (sh->elem != NULL ? sift_v6_unnest_ready(&p) : p.spec.nbins == 0) && seed_resid(sh, &rc))
 	{
 		xt = lookup_cost(sh, input_rel, &xs);
 		if (sh->elem != NULL)
@@ -662,16 +623,24 @@ try_index(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Grou
 	index_close(irel, NoLock);
 }
 
+static bool
+sift_index_of(const RelOptInfo *fact)
+{
+	foreach_ptr(IndexOptInfo, ix, fact->indexlist)
+		if (sift_v6_index_owned(ix))
+			return true;
+	return false;
+}
+
 static void
 try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo *elem, GroupPathExtraData *extra, List *group_exprs)
 {
-	JoinShape	sh = {.fact = fact,.elem = elem};
-	SiftV6ElemRte rte = {0};
+	SiftV6JoinShape sh = {.fact = fact,.elem = elem};
 
-	if (!sift_v6_plan_fact_ok(root, fact) || (elem != NULL && !sift_v6_unnest_rte_joined(root, fact, elem, &rte)) || !shape_of(root, base, &sh))
+	if (!sift_v6_plan_fact_ok(root, fact) || !sift_index_of(fact) || (elem != NULL && !sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte)) || !shape_of(root, base, &sh))
 		return;
 	foreach_ptr(IndexOptInfo, ix, fact->indexlist)
-		try_index(root, input_rel, output_rel, extra, group_exprs, &sh, &rte, ix);
+		try_index(root, input_rel, output_rel, extra, group_exprs, &sh, ix);
 }
 
 void

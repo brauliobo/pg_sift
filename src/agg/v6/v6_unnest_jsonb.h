@@ -35,6 +35,8 @@ typedef struct SiftV6ElemRte
 extern bool sift_v6_unnest_rte(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *elem_rel, SiftV6ElemRte *out);
 /* the same for a relation that other relations join (a lookup keyed by its columns): the join clauses are the caller's to read */
 extern bool sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *elem_rel, SiftV6ElemRte *out);
+/* the function of a lateral function scan, over the column v: unnest of an array, or jsonb_to_recordset of a jsonb one with the columns it declares */
+extern bool sift_v6_unnest_rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out);
 /* e is date_trunc('month', c)::date of a date column c of the fact table in a statement that unnests: k is c */
 extern bool sift_v6_unnest_month_key(V6Plan *p, const Expr *e, SiftV6Col *k);
 /* rte is the function scan of the sub-select of the EXISTS sp, which takes an array of the fact table (an expression of the parameters sp passes); false for any other. out->array is that array in the terms of the fact table */
