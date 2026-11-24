@@ -807,6 +807,7 @@ TESTING_REGRESS += tbl_topn
 TESTING_REGRESS += v1_store_ops
 TESTING_REGRESS += v1_store_ops_ext
 TESTING_REGRESS += v1_store_ops_par_zone
+TESTING_REGRESS += v1_unified_scan
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)

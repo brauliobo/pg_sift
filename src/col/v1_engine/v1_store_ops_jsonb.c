@@ -10,6 +10,7 @@
 #include "postgres.h"
 
 #include "access/tableam.h"
+#include "catalog/pg_class_d.h"
 #include "catalog/pg_type_d.h"
 #include "utils/array.h"
 #include "utils/date.h"
@@ -105,10 +106,14 @@ typed_leaf(Oid typid)
 static int
 jsonb_key_leaf(Oid indexoid, int att, const char *key, int len)
 {
-	const SiftV1Rel r = sift_v1_rel_open(indexoid, false);
-	const SiftSrcLayout *lay = sift_v1_idx_reader.layout(r.rel);
+	SiftV1Rel	r;
+	const SiftSrcLayout *lay;
 	int			found = -1;
 
+	if (get_rel_relkind(indexoid) != RELKIND_INDEX)
+		return -1;
+	r = sift_v1_rel_open(indexoid, false);
+	lay = sift_v1_idx_reader.layout(r.rel);
 	for (int i = 0; i < lay->nleaves && found < 0; i++)
 	{
 		const SiftSrcLeaf *l = &lay->leaf[i];
