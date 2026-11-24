@@ -345,6 +345,13 @@ append_deltas(Relation rel, uint64 part_id, SiftPartDesc *parts, PartMarks *pm, 
 		taken[at[i]] = took[i];
 }
 
+/* An index that CREATE INDEX CONCURRENTLY has not made valid yet is still given the rows the heap showed its validation: a delete that names a row it has not inserted is kept for it, not dropped as the delete of a row compacted away */
+static bool
+index_unbuilt(Relation rel)
+{
+	return rel->rd_rel->relkind == RELKIND_INDEX && !rel->rd_index->indisvalid;
+}
+
 int
 sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs_in, int n_in, bool fold, const SiftPartSpec *spec)
 {
@@ -386,7 +393,7 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 	if (npend > 0)
 		memcpy(recs + n, pend, npend * sizeof(SiftPendDelRec));
 	n += npend;
-	keep = palloc(Max(n, 1) * sizeof(SiftPendDelRec));
+	keep = palloc(Max(2 * n, 1) * sizeof(SiftPendDelRec));
 	n = sift_pend_del_unpair(recs, n, keep, &nkeep);
 	done = palloc0(Max(n, 1) * sizeof(bool));
 	if (entry.l0_slab_blk != InvalidBlockNumber)
@@ -432,6 +439,10 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 	sift_u64_set_free(&remapped);
 	sift_cd_remap_free(rm);
 	append_deltas(rel, part_id, parts, pm, nparts, recs, n, taken);
+	if (index_unbuilt(rel))
+		for (int i = 0; i < n; i++)
+			if (!done[i])
+				keep[nkeep++] = recs[i];
 	for (int p = 0; p < nparts; p++)
 		ncow += pm[p].nm > 0 && !taken[p];
 	updated = palloc(Max(ncow, 1) * sizeof(SiftPartDesc));

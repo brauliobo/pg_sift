@@ -26,6 +26,7 @@
 #include "core/f2/f2_progress.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "core/visibility.h"
 
 /* The rows of a build are cold, immutable data: each run is written as the part a compaction of the level below would write, so the cold codecs (zstd, part dictionaries) apply at once */
 #define SIFT_BUILD_LEVEL	SIFT_MAX_PART_LEVEL
@@ -294,6 +295,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	}
 	if (info->ii_Concurrent && sift_f2_scoped(index))
 		sift_scope_resolve(heap, index, true, SIFT_JOURNAL_EMPTY);
+	SIFT_TEST_GATE(sift_test_build_gate, 8);
 	if (sift_col_track_on(index))
 	{
 		sift_f2_progress_phase(SIFT_F2_PHASE_TRACK);

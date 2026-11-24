@@ -16,6 +16,7 @@
 #include "col/f2/f2_journal.h"
 #include "col/f2/f2_unique.h"
 #include "col/f2/f2_vac_vm.h"
+#include "col/f2/heap_probe.h"
 #include "col/f2/f2_vacuum_run.h"
 #include "col/f2/compact.h"
 #include "col/f2/delete.h"
@@ -29,6 +30,7 @@
 #include "col/f2/l0_stage.h"
 #include "col/f2/part_vis.h"
 #include "core/errctx.h"
+#include "core/visibility.h"
 #include "core/f2/f2_progress.h"
 #include "core/memtrack.h"
 #include "core/f2/fsm.h"
@@ -105,6 +107,7 @@ typedef struct DeadList
 	IndexBulkDeleteResult *stats;
 	const SiftVmDirtySet *vm;	/* the heap blocks that are not all-visible: the rows in the others have no dead tuple to offer */
 	const SiftCdRemapMap *rm;	/* the rows that moved to another address in the column delta chain: the address offered is the one they have now */
+	SiftHeapProbe *probe;		/* the validation of a concurrent build: the rows the heap has no live version for are dead too, whatever the callback says */
 } DeadList;
 
 /* The rows are gone from the index in the manifest before VACUUM marks their heap pages all-visible (core/vis_f2.h): never a pending delete */
@@ -113,27 +116,28 @@ flush_dead(DeadList *dead)
 {
 	if (dead->n == 0)
 		return;
-	(void) sift_del_bulk(dead->rel, dead->entry->part_id, dead->entry->key_lo, dead->recs, dead->n, true, dead->spec);
+	(void) sift_del_bulk(dead->rel, dead->entry->part_id, dead->entry->key_lo, dead->recs, dead->n, dead->probe == NULL, dead->spec);
 	dead->stats->tuples_removed += dead->n;
 	dead->stats->num_index_tuples -= dead->n;
 	dead->n = 0;
 }
 
-/* Offers one address to the callback of VACUUM (the one of CREATE INDEX CONCURRENTLY says none dead) */
+/* Offers one address to the callback of VACUUM (the one of CREATE INDEX CONCURRENTLY says none dead, and the heap says which are) */
 static void
 offer_tid(uint64 tid, IndexBulkDeleteCallback cb, void *state, DeadList *dead)
 {
 	ItemPointerData ip;
+	SiftPendDelRec rec = {.tid = tid,.xmax = InvalidTransactionId,.cmax = 0};
 
 	sift_f2_tid_set(&ip, tid);
-	if (!cb(&ip, state))
+	if (!cb(&ip, state) && (dead->probe == NULL || !sift_heap_probe_gone(dead->probe, tid, &rec)))
 		return;
 	if (dead->n == dead->cap)
 	{
 		dead->cap = Min(Max(64, dead->cap * 2), dead->max);
 		dead->recs = dead->recs ? repalloc(dead->recs, dead->cap * sizeof(SiftPendDelRec)) : palloc(dead->cap * sizeof(SiftPendDelRec));
 	}
-	dead->recs[dead->n++] = (SiftPendDelRec) {.tid = tid,.xmax = InvalidTransactionId,.cmax = 0};
+	dead->recs[dead->n++] = rec;
 	if (dead->n == dead->max)
 		flush_dead(dead);
 }
@@ -251,7 +255,7 @@ offer_slab(Relation rel, const SiftPartitionEntry *e, const SiftPartSpec *spec, 
 	return live;
 }
 
-/* The validation pass of a concurrent build (the only caller of ambulkdelete that asks for progress reports): the journals of the relations of the pairs are filled, and the summaries are built over the parts of the first pass */
+/* The validation pass of a concurrent build (the only caller of ambulkdelete that asks for progress reports): the journals of the relations of the pairs are filled, and the summaries are built over the parts of the first pass, after the rows the heap ended since are deleted from them */
 static void
 scope_validated(Relation rel)
 {
@@ -273,6 +277,7 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 	SiftErrCtx	ctx;
 	SiftF2Trace tr;
 	SiftVmDirtySet vm;
+	SiftHeapProbe probe;
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
@@ -280,8 +285,8 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 	sift_errctx_push(&ctx, RelationGetRelid(rel));
 	sift_stage_flush(rel);
 	sift_f2_trace_phase(&tr, "bulkdelete");
-	if (info->report_progress && sift_f2_scoped(rel))
-		scope_validated(rel);
+	if (info->report_progress)
+		sift_heap_probe_begin(&probe, info->heaprel);
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	sift_vm_dirty_build(&vm, info->heaprel, info->report_progress);
 	for (int i = 0; i < mr.n; i++)
@@ -291,7 +296,7 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 		SiftCdRemapMap *rm = sift_cdi_remap_load(rel, e);
 		int			np;
 		DeadList	dead = {.max = Max(64, (int) Min((uint64) maintenance_work_mem * 1024 / 4 / sizeof(SiftPendDelRec), INT_MAX / 2)),.rel = rel,.entry = e,.spec = &f->spec,.stats = stats,.vm = &vm,
-			.rm = rm};
+			.rm = rm,.probe = info->report_progress ? &probe : NULL};
 
 		if (e->l0_slab_blk != InvalidBlockNumber)
 			stats->num_index_tuples += offer_slab(rel, e, &f->spec, callback, callback_state, &dead);
@@ -303,6 +308,13 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 		sift_f2_trace_step(1, 0);
 	}
 	sift_vm_dirty_free(&vm);
+	if (info->report_progress)
+	{
+		sift_heap_probe_end(&probe);
+		SIFT_TEST_GATE(sift_test_build_gate, 20);
+		if (sift_f2_scoped(rel))
+			scope_validated(rel);
+	}
 	sift_errctx_pop(&ctx);
 	sift_f2_trace_end(&tr);
 	return stats;

@@ -128,7 +128,7 @@ ctx_make(TriggerData *td)
 	if (ctx.live)
 	{
 		index = index_open(ctx.index, RowExclusiveLock);
-		ctx.live = index->rd_index->indisvalid && !sift_quarantine_skips(index, SIFT_SKIP_WRITE);
+		ctx.live = index->rd_index->indisready && !sift_quarantine_skips(index, SIFT_SKIP_WRITE);
 		if (ctx.live)
 		{
 			ctx.f = sift_f2_rel(index);
