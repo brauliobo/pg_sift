@@ -12,6 +12,7 @@ columns of its verdict are
   temp                       the most bytes pg_ls_tmpdir() held at once at 4x, and tmp_x the multiple of the bytes the statement spills (at most 2.5)
   a_time                     time(4x) / time(1x)
   cap                        peak_4x above the start of the backend at most 2.5 x the hash memory + FIXED_BASE_MB: nothing of the statement is allowed to follow the rows or its own settings
+  files_at_once              the most files pg_ls_tmpdir() held at once (at most FILES_MAX)
   files                      the files pg_ls_tmpdir() holds after the statement (none), and the leak warnings it raised (none)
 
   scripts/par-sorts-gate.py run [--only RE] [--runs N] [--table-only]   one CASE line a case (cases of kind `mem`: the columns above; kind `files`: the leftovers and warnings)
@@ -30,7 +31,7 @@ TSV = os.environ.get("PAR_SORTS_TSV") or os.path.join(HERE, "..", "test", "par-s
 SCALES = (1, 2, 4)
 ALPHA_MAX, B_EXACT_MAX, B_RSS_MAX, TMP_X_MAX = 1.15, 2.0, 8.0, 2.5
 FIXED_BASE_MB = 4.0
-FILES_MAX = 40
+FILES_MAX = 192					# the files at once of a spilling parallel aggregate: a file for each of its 64 partitions and each of its 3 participants
 CAP_X = 2.5
 RUNS = int(os.environ.get("PAR_SORTS_RUNS", "2"))
 LEAK = re.compile(r"leak|still pinned|reference leak|resource", re.I)
