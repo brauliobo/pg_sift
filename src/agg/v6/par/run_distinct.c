@@ -31,20 +31,14 @@ text_col(const SiftV6Col *c)
 static bool
 keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
-	sh->nk = sp->nkeys;
-	if (sp->nkeys > SIFT_PAR_GROUP_MAX_KEYS)
+	if (!par_keys_of(sp, first, sh))
 		return false;
-	for (int i = 0; i < sp->nkeys; i++)
+	for (int i = 0; i < sh->nk; i++)
 	{
-		const SiftV6Class cls = sift_v6_class(sp->key[i].typid);
-
-		sh->ktext[i] = cls == SV6C_TEXT;
-		if (!(cls == SV6C_I32 || cls == SV6C_I64 || (sh->ktext[i] && !sh->ds.kstr)) || !par_src_of(sh, sp, first, &sp->key[i], &sh->key_src[i]))
-			return false;
 		sh->ds.kstr |= sh->ktext[i];
 		sh->ds.kw += !sh->ktext[i];
 	}
-	return true;
+	return sh->nk - sh->ds.kw <= 1;
 }
 
 static bool

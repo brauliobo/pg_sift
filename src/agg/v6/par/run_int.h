@@ -35,7 +35,7 @@ typedef struct ParShape
 	SiftParDistinctSpec ds;		/* distinct: the keys (words, then the text), the sums and the counted value */
 	int			val_at;			/* distinct: the leaf of the counted value */
 	int			mm_at[SIFT_PAR_DISTINCT_MM_MAX];	/* distinct: the leaf of each text minimum or maximum */
-	bool		ktext[SIFT_PAR_GROUP_MAX_KEYS];	/* distinct: the key is the text */
+	bool		ktext[SIFT_PAR_GROUP_MAX_KEYS];	/* the key is a text, else an integer */
 	int			nchk;
 	int			chk[PAR_LEAVES_MAX];	/* the leaves in which a NULL is not for a thread: the keys, and the columns of the sums and counts (distinct) */
 	SiftParRowsSpec rs;			/* rows */
@@ -112,6 +112,9 @@ extern bool par_count_sum_of(const SiftV6Agg *a, const SiftV6Spec *sp, const int
 
 /* Whether the column c is a key or an argument the threads read (a plain column, or one the spec computes by a derive of a plain column and plain conditions), with its leaves added to the shape, and to the ones in which a NULL is not for a thread */
 extern bool par_src_of(ParShape *sh, const SiftV6Spec *sp, const int *first, const SiftV6Col *c, ParSrc *s);
+
+/* The keys of the statement: integer or text columns (ktext tells which) the threads read, with their sources in key_src */
+extern bool par_keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh);
 
 /* The rows of a granule that a thread folds, and their leaves decoded */
 typedef struct ParLoad

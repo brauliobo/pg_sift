@@ -20,18 +20,11 @@
 static bool
 keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
-	sh->nk = sp->nkeys;
-	sh->gs.nk = sp->nkeys;
-	if (sp->nkeys < 1 || sp->nkeys > SIFT_PAR_GROUP_MAX_KEYS)
+	if (sp->nkeys < 1 || !par_keys_of(sp, first, sh))
 		return false;
-	for (int i = 0; i < sp->nkeys; i++)
-	{
-		const SiftV6Class cls = sift_v6_class(sp->key[i].typid);
-
-		if (!(cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_TEXT) || !par_src_of(sh, sp, first, &sp->key[i], &sh->key_src[i]))
-			return false;
-		sh->gs.strs |= (cls == SV6C_TEXT) << i;
-	}
+	sh->gs.nk = sh->nk;
+	for (int i = 0; i < sh->nk; i++)
+		sh->gs.strs |= sh->ktext[i] << i;
 	return true;
 }
 

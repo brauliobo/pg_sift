@@ -65,6 +65,23 @@ par_count_sum_of(const SiftV6Agg *a, const SiftV6Spec *sp, const int *first, Par
 	return true;
 }
 
+bool
+par_keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
+{
+	sh->nk = sp->nkeys;
+	if (sp->nkeys > SIFT_PAR_GROUP_MAX_KEYS)
+		return false;
+	for (int i = 0; i < sp->nkeys; i++)
+	{
+		const SiftV6Class cls = sift_v6_class(sp->key[i].typid);
+
+		sh->ktext[i] = cls == SV6C_TEXT;
+		if (!(sh->ktext[i] || cls == SV6C_I32 || cls == SV6C_I64) || !par_src_of(sh, sp, first, &sp->key[i], &sh->key_src[i]))
+			return false;
+	}
+	return true;
+}
+
 static bool
 text_result(SiftV6DeriveKind kind)
 {
