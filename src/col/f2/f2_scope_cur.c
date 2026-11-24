@@ -123,6 +123,13 @@ sift_f2s_deltas_clear(Relation rel, const SiftF2Store *store, int ord, const Sif
 	return true;
 }
 
+/* The records of the journals of the pairs are tagged by integer and string keys: for the keys of a date or a timestamp a read takes every change, and cuts them to its keys itself */
+static bool
+journal_tags_keys(Relation rel)
+{
+	return rel->rd_index == NULL || !sift_scope_stamp_key(rel);
+}
+
 bool
 sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, int64 **out, uint32 *nout)
 {
@@ -135,7 +142,7 @@ sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap
 	*out = NULL;
 	*nout = 0;
 	if (sift_scope_vouch(rel, ord, stamp, snap) != SIFT_CONN_OK ||
-		sift_scope_changed(rel, ord, stamp, snap, nkeys > 0 ? SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS : 1, nkeys > 0 ? keys : NULL, nkeys, km, &changed) != SIFT_CONN_OK)
+		sift_scope_changed(rel, ord, stamp, snap, nkeys > 0 ? SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS : 1, nkeys > 0 && journal_tags_keys(rel) ? keys : NULL, nkeys, km, &changed) != SIFT_CONN_OK)
 		return false;
 	for (uint32 i = 0; i < changed.n; i++)
 		if (nkeys == 0 || changed.kept == NULL || !changed.kept[i])

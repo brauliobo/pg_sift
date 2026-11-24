@@ -187,11 +187,11 @@ sift_f2_scope_reads_any(Relation rel, const int16 *leaves, int n)
 	return false;
 }
 
-/* The columns of a pair a summary of format major 2 is made of: an integer member, and a key that is an integer or a text, varchar or uuid column (the codes of its store) */
+/* The columns of a pair a summary of format major 2 is made of: an integer member, and a key that is an integer, a date, a timestamp or a timestamptz (its own word) or a text, varchar or uuid column (the code of its store) */
 bool
 sift_f2s_pair_types(Oid member, Oid key)
 {
-	return sift_f2s_int_type(member) && (sift_f2s_int_type(key) || sift_keymap_type(key));
+	return sift_f2s_int_type(member) && (sift_scope_word_type(key) || sift_keymap_type(key));
 }
 
 SiftKeyMap *

@@ -154,6 +154,8 @@ extern bool sift_scope_two_paths(Relation index);
 /* Does the index declare a scope whose key or member is a text, varchar or uuid column (column format minor 50) */
 extern bool sift_scope_coded(Relation index);
 extern bool sift_scope_member_text(Relation index, int scope);
+/* Does the index declare a scope keyed by a date, timestamp or timestamptz column: only format major 2 holds it */
+extern bool sift_scope_stamp_key(Relation index);
 /*
  * The journals of the scopes of the index, made with the writers of the scope relations held out to the end of the statement. read_after: the build reads the relations under snapshots it takes
  * after this call, so that it stamps the segments with the journal it makes here (else the first scope index of a relation says "unfilled" until a REINDEX)
@@ -621,6 +623,7 @@ extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_
 /* The map of the codes of the scope key (NULL for an integer key): one for each statement that reads the scope, which every key, pair and group of the read goes through (col/scope_keys.c) */
 extern SiftKeyMap *sift_scope_keymap(Relation heap, Relation index, const char *key_name);
 /* The code of a value of a scope key column (an integer, or a text, varchar or uuid value as the code of km), the value of a code, and the scan key of a btree on the column for a value (col/scope_keys.c) */
+extern bool sift_scope_word_type(Oid typid);
 extern int64 sift_scope_key_code(Oid typid, SiftKeyMap *km, Datum d);
 extern Datum sift_scope_key_datum(Oid typid, SiftKeyMap *km, int64 code);
 extern void sift_scope_key_eq_init(ScanKey sk, AttrNumber attno, Oid typid, Oid collation, Datum value);

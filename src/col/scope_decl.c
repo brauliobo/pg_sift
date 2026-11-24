@@ -39,6 +39,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/keystore/keystore.h"
+#include "core/meta_peek.h"
 #include "core/ring.h"
 #include "core/restrict.h"
 
@@ -54,7 +55,7 @@ bool		sift_test_scope_patch = false;
  * it NOT NULL (a pair has both keys); on two paths a row with a NULL in a column of its path is not a pair of that path, as a join drops it (a grant on a group has no member, a grant on a member no group).
  */
 static AttrNumber
-relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, const char *name, bool via)
+relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, const char *name, bool via, bool key)
 {
 	AttrNumber	att = get_attnum(RelationGetRelid(rel), name);
 	Form_pg_attribute a;
@@ -66,7 +67,7 @@ relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, con
 	if (sift_attr_is_virtual(a))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is a virtual generated column", s->key_name, name, r->name),
 						errhint("A virtual column stores nothing for the scope to read: name a stored column.")));
-	why = sift_keymap_column_refusal(a->atttypid, a->attcollation);
+	why = key && sift_scope_word_type(a->atttypid) ? NULL : sift_keymap_column_refusal(a->atttypid, a->attcollation);
 	if (why != NULL)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" %s", s->key_name, name, r->name, why),
 						errhint("The member and scope key columns are int2, int4, int8, text, varchar or uuid columns.")));
@@ -205,8 +206,8 @@ static void
 check_columns(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, AttrNumber *a, AttrNumber *b)
 {
 	/* of the two relations of the second path, the group (via) column is the first (a) */
-	*a = relation_column(rel, s, r, r->a, r != &s->rel);
-	*b = relation_column(rel, s, r, r->b, false);
+	*a = relation_column(rel, s, r, r->a, r != &s->rel, false);
+	*b = relation_column(rel, s, r, r->b, false, r == &s->rel);
 	if (*a == *b)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the member and scope key columns are the same column", s->key_name),
 						errhint("A scope relation has two columns: the member key and the scope key.")));
@@ -726,6 +727,9 @@ sift_scope_alter(Relation index)
 {
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
+	if (sift_meta_resolve_major(index) != SIFT_FORMAT2_MAJOR && sift_scope_stamp_key(index))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a sift_col index of format major 1 has no scope keyed by a date or a timestamp"),
+						errhint("REINDEX the index in format major 2, then declare the scope.")));
 	sift_scope_resolve(heap, index, true, SIFT_JOURNAL_PLAIN);
 	sift_scope_journal_drop_unused();
 	sift_scope_start(heap, index, false);
@@ -785,6 +789,24 @@ sift_scope_coded(Relation index)
 	for (int c = 0; specs != NULL && c < specs->n; c++)
 		if (key_is_coded(index, specs->s[c]) || column_is_text(index, specs->s[c], false))
 			return true;
+	return false;
+}
+
+/* Does the index declare a scope whose key is a date, timestamp or timestamptz column: format major 2 summarizes it, format major 1 does not */
+bool
+sift_scope_stamp_key(Relation index)
+{
+	SiftScopeSpecs *specs = sift_scope_specs(index);
+
+	for (int c = 0; specs != NULL && c < specs->n; c++)
+	{
+		const SiftScopeSpec *s = specs->s[c];
+		Oid			rel = sift_conn_relation_oid(index->rd_index->indrelid, s->rel.schema, s->rel.name, NoLock, true);
+		Oid			type = OidIsValid(rel) ? get_atttype(rel, get_attnum(rel, s->rel.b)) : InvalidOid;
+
+		if (sift_scope_word_type(type) && !sift_conn_integer_type(type))
+			return true;
+	}
 	return false;
 }
 

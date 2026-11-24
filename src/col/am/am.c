@@ -52,7 +52,7 @@ format1_only(Relation index)
 	return sift_col_options_connect(index)[0] != '\0' || sift_conn_children(RelationGetRelid(index)) != NIL;
 }
 
-/* INCLUDE columns and UNIQUE are held by the engine of format major 2 alone: the index that the build routes to format major 1 is refused them */
+/* INCLUDE columns, UNIQUE and a scope keyed by a date or a timestamp are held by the engine of format major 2 alone: the index that the build routes to format major 1 is refused them */
 static const SiftColFormatOps *
 ops_for_build(Relation index)
 {
@@ -60,6 +60,9 @@ ops_for_build(Relation index)
 
 	if (ops->format_major != SIFT_FORMAT2_MAJOR && (index->rd_index->indisunique || IndexRelationGetNumberOfAttributes(index) != IndexRelationGetNumberOfKeyAttributes(index)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a sift_col index of format major 1 has no %s", index->rd_index->indisunique ? "UNIQUE" : "INCLUDE columns"),
+						errhint("Leave out the connect option: the index is then built in format major 2.")));
+	if (ops->format_major != SIFT_FORMAT2_MAJOR && sift_scope_stamp_key(index))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a sift_col index of format major 1 has no scope keyed by a date or a timestamp"),
 						errhint("Leave out the connect option: the index is then built in format major 2.")));
 	return ops;
 }

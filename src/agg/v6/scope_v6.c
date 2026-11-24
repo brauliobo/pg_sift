@@ -142,14 +142,21 @@ strip_relabel(Node *n)
 	return n;
 }
 
-/* Is opno the equality of the scope key column (an integer, or a text, varchar or uuid column of a deterministic collation under the collation of the operator) */
+/* Is the type of a constant or a parameter one the key column compares equal values of: an integer to an integer, a date, timestamp or timestamptz to its own type, a string to a string, a uuid to a uuid */
+static bool
+key_arg_ok(const ScopePlan *p, Oid typid)
+{
+	return sift_keymap_same_kind(p->spec.key_type, typid) || (sift_scope_word_type(p->spec.key_type) && typid == p->spec.key_type);
+}
+
+/* Is opno the equality of the scope key column (an integer, a date, a timestamp or a timestamptz, or a text, varchar or uuid column of a deterministic collation under the collation of the operator) */
 static bool
 key_equality(const ScopePlan *p, Oid opno, Oid inputcollid)
 {
 	const Oid	typid = p->spec.key_type;
 	const Oid	opclass = GetDefaultOpClass(typid, BTREE_AM_OID);
 
-	if (typid != UUIDOID && !is_int(typid) && OidIsValid(inputcollid) && !get_collation_isdeterministic(inputcollid))
+	if (sift_keymap_type(typid) && typid != UUIDOID && OidIsValid(inputcollid) && !get_collation_isdeterministic(inputcollid))
 		return false;
 	return OidIsValid(opclass) && get_op_opfamily_strategy(opno, get_opclass_family(opclass)) == BTEqualStrategyNumber;
 }
@@ -234,7 +241,7 @@ key_operand(const ScopePlan *p, OpExpr *op, bool inner, Expr **rhs)
 	l = strip_relabel(linitial(op->args));
 	r = strip_relabel(lsecond(op->args));
 	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
-		!sift_keymap_same_kind(p->spec.key_type, exprType(r)))
+		!key_arg_ok(p, exprType(r)))
 		return false;
 	*rhs = (Expr *) r;
 	return true;
@@ -252,7 +259,7 @@ key_array_operand(const ScopePlan *p, ScalarArrayOpExpr *sa, bool inner, Expr **
 	l = strip_relabel(linitial(sa->args));
 	r = strip_relabel(lsecond(sa->args));
 	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
-		!sift_keymap_same_kind(p->spec.key_type, get_element_type(exprType(r))))
+		!key_arg_ok(p, get_element_type(exprType(r))))
 		return false;
 	*rhs = (Expr *) r;
 	return true;
@@ -593,7 +600,7 @@ scope_matches(ScopePlan *p, int ord)
 		return false;
 	p->leg = legs[0];
 	p->spec.key_type = get_atttype(p->leg.rel, p->leg.key);
-	return (is_int(p->spec.key_type) || sift_keymap_type(p->spec.key_type)) && joined_by_member(p, fact_attno(p, p->layout.member_col));
+	return (sift_scope_word_type(p->spec.key_type) || sift_keymap_type(p->spec.key_type)) && joined_by_member(p, fact_attno(p, p->layout.member_col));
 }
 
 static Relation
