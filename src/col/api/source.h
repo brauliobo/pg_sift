@@ -663,3 +663,32 @@ sift_col_put_varint(StringInfo out, uint64 v)
 }
 
 /* The index-bound declarations (relcache, planner expressions, shredder adapter, options, SQL entry points): col/pg.h, PostgreSQL only */
+
+/* The right hand side of && and @> over an array leaf (SIFT_COLOP_ARR_OVERLAP, SIFT_COLOP_ARR_CONTAINS); the tests over a stored image are col/f2/f2_pred_ext.h */
+typedef enum SiftArrKind
+{
+	SIFT_ARR_TEXT = 1,
+	SIFT_ARR_INT4,
+	SIFT_ARR_INT8
+} SiftArrKind;
+
+#define SIFT_ARRQ_LINEAR	16		/* at most this many distinct elements are searched one by one, more by a hash table */
+
+/* The right hand side of an array operator, deduplicated: its elements are borrowed (they stay the caller's while the query is used); a scan owns the scratch of the @> count */
+typedef struct SiftArrQuery
+{
+	SiftArrKind kind;
+	uint32		n;				/* distinct elements that are not NULL */
+	bool		has_null;		/* the array had a NULL element */
+	const uint8 **ptr;			/* TEXT: the bytes of each element */
+	uint32	   *len;
+	int64	   *ival;			/* INT4, INT8 */
+	uint32		nslots;			/* a power of two; 0 when n <= SIFT_ARRQ_LINEAR */
+	int32	   *slot;			/* element index + 1, 0 for a free slot */
+	uint32	   *seen;			/* the @> count: the generation of the call that saw each element */
+	uint32		gen;
+} SiftArrQuery;
+
+extern SiftArrQuery *sift_arr_query_text(const uint8 *const *elem, const uint32 *len, const bool *isnull, int n);
+extern SiftArrQuery *sift_arr_query_int(SiftArrKind kind, const int64 *val, const bool *isnull, int n);
+extern void sift_arr_query_free(SiftArrQuery *q);

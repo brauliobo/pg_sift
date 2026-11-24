@@ -9,6 +9,7 @@
 #ifndef SIFT_GRANULE_H
 #define SIFT_GRANULE_H
 
+#include "core/scan_types.h"
 #include "core/host.h"
 
 #include "agg/vec.h"
@@ -239,13 +240,6 @@ typedef struct SiftGranuleHeader
 
 StaticAssertDecl(offsetof(SiftGranuleHeader, chunks) == 16, "SiftGranuleHeader fixed prefix is 16 bytes");
 
-typedef enum SiftCellKind
-{
-	SIFT_CELL_INT = 1,
-	SIFT_CELL_STR = 2,
-	SIFT_CELL_F8 = 3
-} SiftCellKind;
-
 /* One column of rows in memory; isnull is NULL when no value is */
 typedef struct SiftColIn
 {
@@ -381,15 +375,6 @@ extern const char *sift_granule_exc_payload(const SiftGranuleView *v, int col, i
  * dst->dict is set for SVEC_DICT32. The string views point into the granule record, which must live as long as the vector is used.
  */
 extern void sift_granule_decode_vec(const SiftGranuleView *v, int col, uint16 row_off, uint16 nrows, SiftVec *dst, const SiftVariantExcStream **exc_out);
-
-/* The dictionary of a DICT_CODE chunk (SVEC_DICT32): its strings, which code i of dst->data names */
-typedef struct SiftGranuleDict
-{
-	uint32		n;
-	const uint32 *off;			/* n + 1 byte offsets */
-	const char *bytes;
-	bool		part;			/* the dictionary of the whole part, not of the granule */
-} SiftGranuleDict;
 
 typedef enum SiftMaskState
 {
