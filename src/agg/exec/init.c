@@ -192,9 +192,6 @@ sift_agg_init(void)
 	DefineCustomRealVariable("sift.test_agg_rollup_cost",
 							 "Testing: the factor the cost of reading a rollup is scaled by.",
 							 NULL, &sift_agg_rollup_cost, 1.0, 0.0, 100.0, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_agg_par_min_rows",
-							"Testing: rows below which an aggregate scan takes no workers.",
-							NULL, &sift_agg_par_min_rows, 80000, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_agg_super",
 							 "Testing: a scan answers from the summaries of groups of units.",
 							 NULL, &sift_agg_super, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

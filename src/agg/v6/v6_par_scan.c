@@ -8,6 +8,7 @@
 #include "executor/nodeAgg.h"
 
 #include "agg/v6/v6_par.h"
+#include "agg/v6/v6_test_gucs.h"
 
 uint32
 sift_v6_par_barrier_event(void)
@@ -121,6 +122,7 @@ sift_v6_par_scan(SiftV6ParRun *r, void (*relief) (void *r))
 	while (sift_morsel_claim(mq, (uint32) r->pid, &m))
 	{
 		CHECK_FOR_INTERRUPTS();
+		sift_v6_test_item_gate();
 		r->eng->scan_morsel(r->local, &m, &r->stats);
 		r->stats.morsels_stolen++;
 		relief(r);

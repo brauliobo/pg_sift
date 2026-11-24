@@ -25,6 +25,7 @@
 #include "agg/v6/par/pinrun.h"
 #include "agg/v6/par/run.h"
 #include "agg/v6/v6_par_pg.h"
+#include "agg/v6/v6_test_gucs.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "core/sift.h"
 
@@ -245,7 +246,7 @@ static SiftV6ParInput
 par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
 {
 	SiftV6ParInput in = {.parallel_scan = sift_parallel_scan,.parallel_ok = rel->consider_parallel && root->glob->parallelModeOK,.max_workers = max_parallel_workers_per_gather,
-		.exact_float = sift_agg_exact_float,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.scan_rows = scan_rows(spec, rel),.g_eff = scan_rows(spec, rel) / GRANULE_ROWS + 1.0,
+		.exact_float = sift_agg_exact_float,.force = sift_agg_par_min_rows == 0,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.scan_rows = scan_rows(spec, rel),.g_eff = scan_rows(spec, rel) / GRANULE_ROWS + 1.0,
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
 	bool		slot_text = false;

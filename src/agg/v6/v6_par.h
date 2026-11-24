@@ -65,6 +65,7 @@ typedef struct SiftV6ParInput
 	bool		exact_float;		/* sift.agg_exact_float */
 	bool		float_sum_avg;		/* a sum or avg of a float */
 	bool		has_distinct;		/* a count(DISTINCT) */
+	bool		force;				/* sift.test_agg_par_min_rows = 0: takes the workers the settings allow, whatever the rows, the granules and the cost say */
 	int			max_workers;		/* max_parallel_workers_per_gather */
 	int			nkeys;
 	int			nsets;

@@ -151,7 +151,6 @@ extern PGDLLIMPORT bool sift_agg_dist_stream;
 extern PGDLLIMPORT bool sift_agg_join_filter;
 extern PGDLLIMPORT bool sift_agg_left_lateral;
 extern PGDLLIMPORT bool sift_topn_walk;
-extern PGDLLIMPORT int sift_agg_par_min_rows;
 extern PGDLLIMPORT bool sift_agg_key_skew;
 /* the kB of a lookup table the plan lets a scan load: half of work_mem; and the elements it assumes for an array parameter of a generic plan */
 extern int agg_lookup_limit_kb(void);

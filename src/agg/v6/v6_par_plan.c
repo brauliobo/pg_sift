@@ -14,18 +14,18 @@ static bool
 serial_gate(const SiftV6ParInput *in)
 {
 	return !in->parallel_scan || in->max_workers <= 0 || !in->parallel_ok || in->has_rls || in->parallel_hazard ||
-		(in->exact_float && in->float_sum_avg) || in->scan_rows < SIFT_PAR_MIN_ROWS || in->g_eff < (double) SIFT_PAR_MIN_GRANULES_PER_W;
+		(in->exact_float && in->float_sum_avg) || (!in->force && (in->scan_rows < SIFT_PAR_MIN_ROWS || in->g_eff < (double) SIFT_PAR_MIN_GRANULES_PER_W));
 }
 
 SiftV6ParStrategy
 sift_v6_par_choose_strategy(const SiftV6ParInput *in, int *nworkers)
 {
-	const int	by_granules = (int) Min((double) in->max_workers, in->g_eff / SIFT_PAR_MIN_GRANULES_PER_W);
+	const int	by_granules = in->force ? in->max_workers : (int) Min((double) in->max_workers, in->g_eff / SIFT_PAR_MIN_GRANULES_PER_W);
 	int			w;
 	double		ring_bytes;
 
 	*nworkers = 0;
-	if (serial_gate(in) || by_granules < 1 || (w = in->cost_workers(in->cost_arg, by_granules)) <= 0)
+	if (serial_gate(in) || by_granules < 1 || (w = in->force ? by_granules : in->cost_workers(in->cost_arg, by_granules)) <= 0)
 		return SV6P_SERIAL;
 	*nworkers = Min(w, by_granules);
 	if (in->has_distinct)

@@ -17,6 +17,7 @@
 #include "utils/snapmgr.h"
 
 #include "agg/agg.h"
+#include "agg/v6/v6_test_gucs.h"
 #include "agg/lookclass_int.h"
 #include "col/am.h"
 #include "col/dictshm.h"

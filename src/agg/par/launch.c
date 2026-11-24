@@ -14,6 +14,7 @@
 #include "agg/init_int.h"
 #include "agg/par/int.h"
 #include "agg/cost/model.h"
+#include "agg/v6/v6_test_gucs.h"
 
 /* does the packed spec (its expressions are Nodes among Integers and Strings) start a sub-plan? */
 static bool
@@ -48,7 +49,6 @@ select_stmt(AggExec *ex, Plan *tree)
  * of unnested documents: 990 ms alone, 750 with 4. The rows are those of the units kept, not their number times the average unit of the index: units
  * cut by a key hold a few hundred rows for a small key and hundreds of thousands for a large one.
  */
-int			sift_agg_par_min_rows = 80000;
 
 /*
  * A scope read has its keys when it runs (a generic plan prices the average key): the node knows what the read costs, in instructions, and keeps one process where the workers do not pay for their start;

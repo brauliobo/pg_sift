@@ -1,0 +1,53 @@
+-- sift.test_agg_par_min_rows: a parallel aggregate scan takes the workers the settings allow on a table far under the rows and granules a plan needs to launch them, and
+-- its rows are those of the heap plan. Without the setting the same small scan is not a parallel SiftAggV6 node.
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET jit = off;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+
+CREATE TABLE small_par (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO small_par SELECT i, i % 7, i % 100 FROM generate_series(1, 3000) i;
+CREATE INDEX small_par_col ON small_par USING sift_col (id, g, v);
+ANALYZE small_par;
+
+CREATE FUNCTION workers_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; w int := 0; node boolean := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		node := node OR l ~ 'Parallel Custom Scan \(SiftAggV6\)';
+		IF l ~ 'Workers Planned: ' THEN w := substring(l from 'Workers Planned: (\d+)')::int; END IF;
+	END LOOP;
+	RETURN CASE WHEN node THEN w ELSE 0 END;
+END $$;
+CREATE FUNCTION agrees(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE 'SELECT string_agg(x::text, '' '') FROM (' || q || ') x' INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	EXECUTE 'SELECT string_agg(x::text, '' '') FROM (' || q || ') x' INTO b;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '2', true);
+	RETURN a = b;
+END $$;
+
+CREATE TABLE par_cases (name text, q text);
+INSERT INTO par_cases VALUES
+	('group by', 'SELECT g, count(*), sum(v) FROM small_par GROUP BY g ORDER BY g'),
+	('no keys', 'SELECT count(*), sum(v), min(v), max(v) FROM small_par'),
+	('distinct', 'SELECT g, count(DISTINCT v) FROM small_par GROUP BY g ORDER BY g'),
+	('filtered', 'SELECT g, avg(v) FROM small_par WHERE id > 100 GROUP BY g ORDER BY g');
+
+SELECT name, workers_of(q) AS workers_default FROM par_cases ORDER BY name;
+SET sift.test_agg_par_min_rows = 0;
+SELECT name, workers_of(q) AS workers_forced, agrees(q) AS same_rows FROM par_cases ORDER BY name;
+SET max_parallel_workers_per_gather = 0;
+SELECT name, workers_of(q) AS workers_none FROM par_cases ORDER BY name;
+
+DROP TABLE par_cases, small_par;
+DROP FUNCTION workers_of(text), agrees(text);
+DROP EXTENSION pg_sift;
