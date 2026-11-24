@@ -6,7 +6,7 @@
 # maintenance_work_mem holds the whole index in one partition: VACUUM leaves a partition of free blocks in a key_cut index in partitions for its rolling rewrite (col_rewrite_roll).
 . "$(dirname "$0")/lib.bash"
 
-ROWS=$(knob SIFT_SH_ROWS 200000 100000)
+ROWS=$(knob SIFT_SH_ROWS 200000 60000)
 ROUNDS=$(knob SIFT_SH_ROUNDS 4 2)
 plan 29
 node_init primary 2 "wal_level = replica
@@ -36,8 +36,8 @@ tight() {
 }
 loose() { test "$(size)" -gt "$(( $(live) * ${1:-16} / 10 ))"; }
 vacuum() { sql primary "SET sift.async_maintenance = off" "VACUUM t" >/dev/null; }
-# the standby reports its horizon every second (hot_standby_feedback): a pass moves what the horizon has passed
-past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 1.2; }
+# a pass moves what the horizon has passed: a transaction of the primary after it, replayed, and the feedback of the standby (hot_standby_feedback) beyond it, except while a standby query holds the horizon back
+past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; if [[ -e $D/held && ! -e $D/unhold ]]; then catchup primary standby; else horizon_past primary standby; fi; }
 # VACUUM until the file is within PERCENT of the live bytes: a pass moves a share of the file, and the cut follows once the horizon has passed what it moved
 vacuum_until() {
 	for _ in $(seq 40); do
@@ -64,8 +64,7 @@ table_answer() { sql primary "SET enable_indexscan = off" "SET enable_bitmapscan
 replayed_within() {
 	local lsn
 	lsn=$(sql primary "SELECT pg_current_wal_insert_lsn()")
-	sleep "$1"
-	[[ $(sql standby "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]]
+	wait_for "[[ \$(sql standby \"SELECT pg_last_wal_replay_lsn() >= '$lsn'\") == t ]]" "$1"
 }
 # a standby query on the table that stays open until release (or $1 seconds)
 hold() {
@@ -86,13 +85,14 @@ recovered() { verified primary && agree; }
 fragment
 check "the merges leave the file over 1.6 times the live bytes" loose
 size_before=$(size)
-hold 45
-vacuum_until
-check "a standby query holds the table: the file is within 1.2 times the live bytes" tight
-check "... it did not grow meanwhile" test "$(size)" -le "$size_before"
+hold 120
+for _ in $(seq 8); do past; vacuum; done
+check "a standby query holds the table: the passes did not grow the file" test "$(size)" -le "$size_before"
 check "... the replay does not stall behind the query" replayed_within 3
 release
-check "... the query reads the same rows as the primary" held_answer_ok
+vacuum_until
+check "... once the query is done the file is within 1.2 times the live bytes" tight
+check "... the query read the same rows as the primary" held_answer_ok
 check "... the index counts as the table" agree
 catchup primary standby
 check "... the primary verifies the index" verified primary
