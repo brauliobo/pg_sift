@@ -256,13 +256,16 @@ group_phase1(void *vg, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *
 {
 	SiftParGroup *g = vg;
 	SiftParGroupBatch b = {0};
+	bool		ok;
 
 	*done = 0;
 	if (!g->hooks.fill(g->hooks.arg, t, lo, hi, scratch, &b, err))
 		return false;
 	if (b.n == 0)
 		return true;
-	return batch_room(g, t, &b, err) && (fold_batch(g, t, &b) || fail_bug(err, "parallel aggregation: a batch that fits did not fit"));
+	ok = batch_room(g, t, &b, err) && (fold_batch(g, t, &b) || fail_bug(err, "parallel aggregation: a batch that fits did not fit"));
+	sift_radix_publish();
+	return ok;
 }
 
 static inline int64
@@ -379,6 +382,7 @@ group_seal(void *vg, uint32 *nparts, SiftErr *err)
 			if (!g->w[t].radix && !spill_local(g, t, err))
 				return false;
 		*nparts = SIFT_RADIX_PARTS;
+		sift_radix_publish();
 		return true;
 	}
 	for (int t = 0; t < g->nw; t++)
@@ -536,8 +540,11 @@ group_phase2(void *vg, int t, uint32 part, SiftArena *work, SiftErr *err)
 	SiftParGroup *g = vg;
 	SiftCompact tab;
 	Walk		wk = {.g = g,.t = t,.from = &tab};
+	bool		ok;
 
-	if (!fold_partition(g, part, &tab, work) || !deliver_table(&wk))
+	ok = fold_partition(g, part, &tab, work) && deliver_table(&wk);
+	sift_radix_publish();
+	if (!ok)
 		return fail_mem(err, "parallel aggregation: the arena of a partition is full");
 	atomic_store_explicit(&g->done[part], true, memory_order_release);
 	return true;

@@ -52,6 +52,9 @@ sift_radix_fits(const SiftRadixOut *o, uint64 bytes)
 	return o->arena->cap - o->arena->used >= bytes + SIFT_RADIX_PARTS * (SIFT_RADIX_BLOCK_MAX + sizeof(SiftRadixBlock) + SIFT_ARENA_ALIGN);
 }
 
+/* Called by a thread that has written streams that others read, before it says it is done: the lines it flushed are then in memory */
+extern void sift_radix_publish(void);
+
 /* The record that does not fit the line of p (the line goes to its stream first): the slow part of sift_radix_reserve */
 extern void *sift_radix_reserve_flush(SiftRadixOut *o, uint32 p, uint32 len);
 

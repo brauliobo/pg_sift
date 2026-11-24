@@ -3,6 +3,10 @@
  */
 #include "core/par/radix.h"
 
+#ifdef __SSE2__
+#include <emmintrin.h>
+#endif
+
 #define BLOCK_FIRST		4096
 
 void
@@ -39,6 +43,29 @@ stream_reserve(SiftRadixOut *o, uint32 p, uint32 len)
 	return (uint8 *) (b + 1) + b->used - len;
 }
 
+/* A full line of a stream, past the caches where the host has the instruction: the threads of phase 2 read it from other cores, long after it was written */
+static inline void
+line_copy(void *dst, const void *src)
+{
+#ifdef __SSE2__
+	if (((uintptr_t) dst & 15) == 0)
+	{
+		for (int i = 0; i < SIFT_RADIX_LINE / 16; i++)
+			_mm_stream_si128((__m128i *) dst + i, _mm_load_si128((const __m128i *) src + i));
+		return;
+	}
+#endif
+	memcpy(dst, src, SIFT_RADIX_LINE);
+}
+
+void
+sift_radix_publish(void)
+{
+#ifdef __SSE2__
+	_mm_sfence();
+#endif
+}
+
 void *
 sift_radix_reserve_flush(SiftRadixOut *o, uint32 p, uint32 len)
 {
@@ -50,7 +77,10 @@ sift_radix_reserve_flush(SiftRadixOut *o, uint32 p, uint32 len)
 		dst = stream_reserve(o, p, fill);
 		if (dst == NULL)
 			return NULL;
-		memcpy(dst, o->line[p], fill);
+		if (fill == SIFT_RADIX_LINE)
+			line_copy(dst, o->line[p]);
+		else
+			memcpy(dst, o->line[p], fill);
 		o->fill[p] = 0;
 	}
 	if (len > SIFT_RADIX_LINE)
