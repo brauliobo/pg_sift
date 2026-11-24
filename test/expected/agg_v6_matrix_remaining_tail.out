@@ -59,6 +59,30 @@ SELECT n, parity(format(q, 'tc')) AS index_rows, parity(format(q, 'tt')) AS tabl
  7 | t          | t          | t
 (7 rows)
 
+-- the partitions of one table that are a sift_table and a heap with a sift_col index compile to one plan: the key or argument that the index derives natively and the table cannot is PostgreSQL's expression in both
+CREATE TABLE pm (id int, k int, t text) PARTITION BY RANGE (id);
+CREATE TABLE pm_0 PARTITION OF pm FOR VALUES FROM (0) TO (1500) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE pm_1 PARTITION OF pm FOR VALUES FROM (1500) TO (3001) WITH (autovacuum_enabled = false);
+CREATE INDEX pm_1_col ON pm_1 USING sift_col (id, k, t);
+INSERT INTO pm SELECT g, g % 40, CASE WHEN g % 31 = 0 THEN NULL ELSE 't' || g % 13 END FROM generate_series(0, 3000) g;
+CREATE TABLE pmd (id int PRIMARY KEY, kind text);
+INSERT INTO pmd SELECT g, 'kind' || g % 4 FROM generate_series(0, 39) g;
+ANALYZE pm; ANALYZE pmd;
+CREATE TEMP TABLE m_cases (n int, q text);
+INSERT INTO m_cases VALUES
+	(1, 'SELECT sum(length(t)) FROM pm'),
+	(2, 'SELECT k % 3, sum(length(t)), max(upper(t)) FROM pm GROUP BY 1 ORDER BY 1'),
+	(3, 'SELECT d.kind, sum(length(f.t)) FROM pm f JOIN pmd d ON d.id = f.k GROUP BY 1 ORDER BY 1'),
+	(4, 'SELECT d.kind, length(f.t), count(*) FROM pm f LEFT JOIN pmd d ON d.id = f.k GROUP BY 1, 2 ORDER BY 1, 2');
+SELECT n, parity(q) AS rows, plan_ok(q) AS plan FROM m_cases ORDER BY n;
+ n | rows | plan 
+---+------+------
+ 1 | t    | t
+ 2 | t    | t
+ 3 | t    | t
+ 4 | t    | t
+(4 rows)
+
 DROP FUNCTION rows_of(text, boolean), parity(text), plan_ok(text);
-DROP TABLE th, tc, tt;
+DROP TABLE th, tc, tt, pm, pmd;
 DROP EXTENSION pg_sift;

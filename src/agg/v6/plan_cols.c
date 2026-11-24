@@ -375,7 +375,7 @@ sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	Oid			restype;
 	int			at;
 
-	if (!join_derive_ok(p, e) || !sift_v6_derive_of(&rs, e, key, &d, &restype) || !pipe_carries(p, &d) || (at = add_derive(p, &d)) == 0)
+	if (p->pg_derive || !join_derive_ok(p, e) || !sift_v6_derive_of(&rs, e, key, &d, &restype) || !pipe_carries(p, &d) || (at = add_derive(p, &d)) == 0)
 		return false;
 	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.scale = d.kind == SVD_NUM_EXPR ? (int) d.aux : 0,.derive = at};
 	return true;

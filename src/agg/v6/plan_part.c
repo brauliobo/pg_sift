@@ -191,6 +191,7 @@ typedef struct PartPlan
 	const void *stmt;
 	bool		rows;			/* the best rows: the node fetches the columns of the heap rows, whose attributes each partition numbers as it was made */
 	List	   *leaves;
+	bool		pg_derive;		/* the keys and arguments PostgreSQL's evaluator computes are not computed natively by the partitions that could (V6Plan.pg_derive) */
 } PartPlan;
 
 static bool
@@ -199,7 +200,7 @@ compile_source(const PartPlan *pp, const SiftV6RelSource *s, V6Plan *p)
 	Relation	rel = sift_v6_source_open(s->reloid, s->is_table, AccessShareLock, NULL);
 	bool		ok;
 
-	*p = (V6Plan) {.root = pp->root,.rel = pp->parent,.out = pp->out};
+	*p = (V6Plan) {.root = pp->root,.rel = pp->parent,.out = pp->out,.pg_derive = pp->pg_derive};
 	ok = sift_v6_plan_bind(p, s, rel) && pp->compile(p, pp->stmt);
 	sift_v6_source_close(rel, s->is_table, NoLock);
 	return ok;
@@ -269,11 +270,15 @@ sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *ou
 	ls = palloc(list_length(pp.leaves) * sizeof(LeafSources));
 	foreach_ptr(RelOptInfo, leaf, pp.leaves)
 		ls[n++] = leaf_sources(root, leaf, parent->relid);
-	for (int i = 0; i < ls[0].n; i++)
-		if (compile_alike(&pp, ls, n, &ls[0].src[i], first))
+	for (int pg = 0; pg <= 1; pg++)
+		for (int i = 0; i < ls[0].n; i++)
 		{
-			*like = ls[0].src[i];
-			return true;
+			pp.pg_derive = pg;
+			if (compile_alike(&pp, ls, n, &ls[0].src[i], first))
+			{
+				*like = ls[0].src[i];
+				return true;
+			}
 		}
 	return false;
 }
