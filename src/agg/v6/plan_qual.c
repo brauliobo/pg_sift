@@ -58,7 +58,7 @@ numeric_exact(const V6Plan *p, int strat, const SiftV6Col *col, const Node *oper
 		sift_col_numeric_key_fits(col->scale, ((const Const *) operand)->constvalue);
 }
 
-/* The strategy of a comparison of the column with a constant or parameter: of the operator class, or, on an index, <> and NOT LIKE '%literal%' (agg/v6/v6_qual.h) that only a scan outside a FILTER clause has; 0: not one the scan decides */
+/* The strategy of a comparison of the column with a constant or parameter (a text of a table is no scan key: its leaf holds the cell, which only the batch decides): of the operator class, or, on an index, <> and NOT LIKE '%literal%' (agg/v6/v6_qual.h) that only a scan outside a FILTER clause has; 0: not one the scan decides */
 static int
 compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const Node *operand)
 {
@@ -69,7 +69,7 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 
 	if (strat == 0 && index && !p->in_filter)
 		strat = sift_v6_qual_private_strategy(q->opno, family);
-	if (text && !sift_text_bytes_equal(q->inputcollid))
+	if (text && (p->is_table || !sift_text_bytes_equal(q->inputcollid)))
 		return 0;
 	if (col->typid == NUMERICOID && !numeric_exact(p, strat, col, operand))
 		return 0;
@@ -131,7 +131,7 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !IsA(lsecond(sa->args), Const) ||
 		!sift_v6_plan_column(p, linitial(sa->args), false, &col) || ((Const *) lsecond(sa->args))->constisnull || sift_v6_class(col.typid) == SV6C_F64 ||
 		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), col_opfamily(p, &col)) != BTEqualStrategyNumber ||
-		(sift_v6_class(col.typid) == SV6C_TEXT && !sift_text_bytes_equal(sa->inputcollid)))
+		(sift_v6_class(col.typid) == SV6C_TEXT && (p->is_table || !sift_text_bytes_equal(sa->inputcollid))))
 		return NULL;
 	linitial(q->args) = index_var(linitial(sa->args), col.attno - 1);
 	return (Expr *) q;
