@@ -2,7 +2,7 @@
 
 `SiftAgg` can run grouped and filtered integer counts and sums of a `sift_col` index on a Vulkan compute device. It is **off by default** twice: the library is built without it unless `make VULKAN=1`, and a build that has it runs on the CPU unless `sift.gpu` says otherwise. A query the device cannot take, a unit it cannot read and a device that fails all run on the CPU, with the same rows.
 
-**6.0 status.** Vulkan stays a first-class opt-in feature of 6.0 and its 4 `sift.gpu*` settings are part of the 27 release GUCs (no knob is added). The 6.0 device path is an overhaul for Format Major 2 and `SiftAggV6`, summarized below; the eligibility rules and limits in the sections after it describe the 5.x backend and are replaced when the 6.0 backend is integrated. The GPU-versus-CPU numbers for 6.0 are regenerated at release (`bench/gpu/bench-pg.sh`, [BENCHMARKS.md](BENCHMARKS.md#8-vulkan-gpu-versus-cpu-opt-in)); the figures marked *development host* are from the staging suite and are replaced by the integrated run.
+**6.0 status.** Vulkan stays a first-class opt-in feature of 6.0 and its 4 `sift.gpu*` settings are part of the 27 release GUCs (no knob is added). The 6.0 device path is an overhaul for Format Major 2 and `SiftAggV6`, summarized below; the eligibility rules and limits in the sections after it describe the 5.x backend and are replaced when the 6.0 backend is integrated. The GPU-versus-CPU numbers for 6.0 are regenerated at release (`bench/gpu/bench-pg.sh`, [benchmarks/scalability.md](benchmarks/scalability.md#vulkan-gpu-against-cpu-opt-in)); the figures marked *development host* are from the staging suite and are replaced by the integrated run.
 
 ## 6.0 Overhaul Summary
 
