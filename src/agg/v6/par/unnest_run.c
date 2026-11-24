@@ -57,7 +57,7 @@ slot_new(UnPar *r)
 	for (int i = 0; i < r->ncols; i++)
 	{
 		sl->data[i] = MemoryContextAllocAligned(r->cx, SIFT_VEC_LEN * sift_gather_width(r->type[i]) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
-		sl->valid[i] = MemoryContextAllocZero(r->cx, SIFT_VEC_WORDS * sizeof(uint64));
+		sl->valid[i] = MemoryContextAllocZero(r->cx, (SIFT_VEC_WORDS + 1) * sizeof(uint64));
 	}
 	return sl;
 }
