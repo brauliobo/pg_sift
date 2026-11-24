@@ -158,8 +158,8 @@ run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an 
 	return 0
 }
 
-settled() { # no session but ours is left
-	[[ $(sql cm "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()") == 0 ]]
+settled() { # no session but ours is left, and no background worker of sift (async maintenance hands its work to one) is at work
+	[[ $(sql cm "SELECT count(*) FROM pg_stat_activity WHERE (backend_type = 'client backend' OR backend_type LIKE 'sift %') AND pid <> pg_backend_pid()") == 0 ]]
 }
 
 # the invariants after a fault; prints what is wrong
@@ -168,7 +168,7 @@ after_fault() { # NAME
 	wait_for settled 30 || { echo "a session is left"; return 1; }
 	# first: a session that loads the library in a transaction removes the orphans of the log, as the sessions of the checks below do
 	wait_for "test \"\$(sql cm \"$ORPHANS\")\" == 0" "$ORPHAN_SECONDS" || { echo "orphan triggers of the log of changes are left"; return 1; }
-	[[ $(sql cm "$LOCKS") == 0 ]] || { echo "locks left: $(sql cm "SELECT locktype, mode, relation::regclass FROM pg_locks WHERE pid IS DISTINCT FROM pg_backend_pid() AND locktype <> 'virtualxid'" | tr '\n' ';')"; return 1; }
+	[[ $(sql cm "$LOCKS") == 0 ]] || { echo "locks left: $(sql cm "SELECT l.pid, a.backend_type, l.locktype, l.mode, l.classid, l.objid, l.objsubid, l.relation::regclass, l.granted FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid) WHERE l.pid IS DISTINCT FROM pg_backend_pid() AND l.locktype <> 'virtualxid'" | tr '\n' ';')"; return 1; }
 	[[ $(sql cm "$SLOTS") == 0 ]] || { echo "a progress or quarantine slot is left"; return 1; }
 	for _ in 1 2 3; do # an index another one depends on goes after it
 		for ix in $(sql cm "$INVALID"); do
