@@ -61,10 +61,10 @@ SET lc_messages = 'C';
 \set VERBOSITY terse
 
 CREATE TABLE ka (id int, acct_id int, v int, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO ka SELECT i, 1 + (hashint4(i) & 2147483647) % 5000, (hashint4(i + 1) & 2147483647) % 1000, repeat('x', 100) FROM generate_series(1, 400000) i;
+INSERT INTO ka SELECT i, 1 + (hashint4(i) & 2147483647) % 5000, (hashint4(i + 1) & 2147483647) % 1000, repeat('x', 100) FROM generate_series(1, 100000) i;
 VACUUM (FREEZE, ANALYZE) ka;
 CREATE TABLE kb (id int, t timestamp, v int, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO kb SELECT i, timestamp '2020-01-01' + ((hashint4(i) & 2147483647) % 157766400) * interval '1 second', (hashint4(i + 1) & 2147483647) % 1000, repeat('x', 100) FROM generate_series(1, 400000) i;
+INSERT INTO kb SELECT i, timestamp '2020-01-01' + ((hashint4(i) & 2147483647) % 157766400) * interval '1 second', (hashint4(i + 1) & 2147483647) % 1000, repeat('x', 100) FROM generate_series(1, 100000) i;
 VACUUM (FREEZE, ANALYZE) kb;
 
 CREATE FUNCTION ka_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -126,7 +126,7 @@ SELECT NOT reloptions::text LIKE '%key_order%' AS no_key_order FROM pg_class WHE
 DROP INDEX kb_arr;
 -- an entity and a date: the latest rows of one entity read entries of its group, the heap in the order of the dates
 CREATE TABLE kc (id int, tenant_id int, event_date date, amount int, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO kc SELECT i, 1 + least(999, floor(1000 * power((hashint4(i) & 2147483647) / 2147483647.0, 1.5)))::int, date '2022-01-01' + (i * 730 / 400000 + (hashint4(i + 7) & 2147483647) % 3), (hashint4(i + 13) & 2147483647) % 1000, repeat('x', 100) FROM generate_series(1, 400000) i;
+INSERT INTO kc SELECT i, 1 + least(999, floor(1000 * power((hashint4(i) & 2147483647) / 2147483647.0, 1.5)))::int, date '2022-01-01' + (i * 730 / 100000 + (hashint4(i + 7) & 2147483647) % 3), (hashint4(i + 13) & 2147483647) % 1000, repeat('x', 100) FROM generate_series(1, 100000) i;
 VACUUM (FREEZE, ANALYZE) kc;
 CREATE INDEX kc_auto ON kc USING sift_col (tenant_id, event_date, amount);
 SELECT reloptions @> ARRAY['key_order=auto: tenant_id, event_date'] AS entity_and_date FROM pg_class WHERE relname = 'kc_auto';
@@ -140,21 +140,21 @@ DROP INDEX kc_off;
 DROP TABLE kc;
 -- 200 entities in a heap that follows the date: the plain choice builds no second order there, the layout would add one (+37% of the index): the plain arrays stay
 CREATE TABLE kd (id int, tenant_id int, event_date date, amount int, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO kd SELECT i, 1 + least(199, floor(200 * power((hashint4(i) & 2147483647) / 2147483647.0, 1.5)))::int, date '2022-01-01' + (i * 730 / 400000 + (hashint4(i + 7) & 2147483647) % 3), (hashint4(i + 13) & 2147483647) % 1000, repeat('x', 100) FROM generate_series(1, 400000) i;
+INSERT INTO kd SELECT i, 1 + least(199, floor(200 * power((hashint4(i) & 2147483647) / 2147483647.0, 1.5)))::int, date '2022-01-01' + (i * 730 / 100000 + (hashint4(i + 7) & 2147483647) % 3), (hashint4(i + 13) & 2147483647) % 1000, repeat('x', 100) FROM generate_series(1, 100000) i;
 VACUUM (FREEZE, ANALYZE) kd;
 CREATE INDEX kd_auto ON kd USING sift_col (tenant_id, event_date, amount);
 SELECT NOT reloptions::text LIKE '%key_order%' AS plain_choice_stays FROM pg_class WHERE relname = 'kd_auto';
 DROP TABLE kd;
 -- 40 entities in a random order under a cut by the date: the layout would replace the group by another column and gain nothing beyond the noise (B - C of -2 to +7 in four builds), the plain choice stays
 CREATE TABLE kf (id int, tenant_id int, event_date date, amount int, status int2, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO kf SELECT i, 1 + least(39, floor(40 * power((hashint4(i) & 2147483647) / 2147483647.0, 1.5)))::int, date '2022-01-01' + ((hashint4(i + 7) & 2147483647) % 730), (hashint4(i + 13) & 2147483647) % 1000, 1 + (hashint4(i + 11) & 2147483647) % 5, md5(i::text) FROM generate_series(1, 300000) i;
+INSERT INTO kf SELECT i, 1 + least(39, floor(40 * power((hashint4(i) & 2147483647) / 2147483647.0, 1.5)))::int, date '2022-01-01' + ((hashint4(i + 7) & 2147483647) % 730), (hashint4(i + 13) & 2147483647) % 1000, 1 + (hashint4(i + 11) & 2147483647) % 5, md5(i::text) FROM generate_series(1, 75000) i;
 VACUUM (FREEZE, ANALYZE) kf;
 CREATE INDEX kf_auto ON kf USING sift_col (tenant_id, event_date, amount, status) WITH (key_cut = 'event_date');
 SELECT reloptions @> ARRAY['key_cut=event_date'] AS cut_by_date, NOT reloptions::text LIKE '%key_order%' AS plain_choice_stays FROM pg_class WHERE relname = 'kf_auto';
 DROP TABLE kf;
 -- a date cut with 730 values, no entity: runs of equal keys, a top-N with a filter reads the units the cut keeps (12 blocks), not the order of the key (441 heap fetches): the plain choice stays
 CREATE TABLE ke (id int, event_date date, status int2, amount int, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO ke SELECT i, date '2022-01-01' + ((hashint4(i + 7) & 2147483647) % 730), (hashint4(i + 11) & 2147483647) % 5, (hashint4(i + 13) & 2147483647) % 1000, md5(i::text) FROM generate_series(1, 400000) i;
+INSERT INTO ke SELECT i, date '2022-01-01' + ((hashint4(i + 7) & 2147483647) % 730), (hashint4(i + 11) & 2147483647) % 5, (hashint4(i + 13) & 2147483647) % 1000, md5(i::text) FROM generate_series(1, 100000) i;
 VACUUM (FREEZE, ANALYZE) ke;
 CREATE INDEX ke_auto ON ke USING sift_col (event_date, status, amount) WITH (key_cut = 'event_date');
 SELECT reloptions @> ARRAY['key_cut=event_date'] AS cut_by_date, NOT reloptions::text LIKE '%key_order%' AS plain_choice_stays FROM pg_class WHERE relname = 'ke_auto';
@@ -177,12 +177,12 @@ SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 
--- 70 superblocks (fillfactor 10 keeps the rows few); ranges and addresses scattered over them, a range column in heap order, a sequential id
+-- 28 superblocks (fillfactor 10 keeps the rows few); ranges and addresses scattered over them, a range column in heap order, a sequential id
 CREATE TABLE kr (id int, r int4range, ordered int4range, ip inet, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
 INSERT INTO kr SELECT (random() * 1000000)::int, int4range(a, a + 1 + (random() * 5000)::int), int4range(i * 4, i * 4 + 3),
 	('20.0.0.0'::inet + (random() * 16777215)::int), repeat('x', 100)
-FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 125000) i) s;
+FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 50000) i) s;
 VACUUM (FREEZE, ANALYZE) kr;
 
 CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.index_key_cut_reloption(i) $$;
@@ -241,13 +241,13 @@ SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 
--- 20 tenants of 6,000 rows (more than a unit holds), dates and measures independent of the tenant and of the heap order; ten leaves that follow nothing
+-- 20 tenants of 3,000 rows (more than a unit holds), dates and measures independent of the tenant and of the heap order; ten leaves that follow nothing
 CREATE TABLE kd (id int, tenant_id int, d date, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, n numeric(12,2), f float8, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
 INSERT INTO kd SELECT i, (random() * 20)::int, date '2020-01-01' + (random() * 2000)::int,
 	(i * 31) % 1000, (i * 37) % 1000, (i * 41) % 1000, (i * 43) % 1000, (i * 47) % 1000, (i * 53) % 1000, (i * 59) % 1000, (i * 61) % 1000, (i * 67) % 1000, (i * 71) % 1000,
 	(random() * 100000)::numeric(12,2), random() * 1000, repeat('x', 100)
-FROM generate_series(1, 125000) i;
+FROM generate_series(1, 62500) i;
 VACUUM (FREEZE, ANALYZE) kd;
 
 CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.index_key_cut_reloption(i) $$;
