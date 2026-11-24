@@ -43,12 +43,24 @@ hybrid_sink(void *arg, const SiftF2Batch *b)
 	pfree(any);
 }
 
+/* the columns the sink reads are folded by the fold of the aggregate, which takes the NaN of a numeric or refuses it for the aggregate that cannot (f2_v6_scan_fill.c) */
+static bool *
+folded_leaves(const SiftHybridScan *s, const SiftF2Store *store)
+{
+	bool	   *nan_leaves = palloc0(Max(store->ncols, 1) * sizeof(bool));
+
+	for (int i = 0; i < s->nleaves; i++)
+		nan_leaves[s->leaves[i]] = true;
+	return nan_leaves;
+}
+
 static void
 table_scan(const SiftHybridScan *s, HybridSinkArg *a)
 {
 	const SiftStoreQuals *q = (const SiftStoreQuals *) s->quals;
-	SiftStoreScanOpts o = {.rel = s->heap,.store = sift_f2_store_open(s->heap),.snap = s->snap,.preds = q->preds,.npreds = q->npreds,
-		.leaves = s->leaves,.nleaves = s->nleaves,.bridge = s->bridge,.bridge_seen = s->granules_seen,.bridge_skipped = s->granules_skipped};
+	SiftF2Store *store = sift_f2_store_open(s->heap);
+	SiftStoreScanOpts o = {.rel = s->heap,.store = store,.snap = s->snap,.preds = q->preds,.npreds = q->npreds,.leaves = s->leaves,.nleaves = s->nleaves,
+		.nan_leaves = folded_leaves(s, store),.bridge = s->bridge,.bridge_seen = s->granules_seen,.bridge_skipped = s->granules_skipped};
 
 	if (q->possible)
 		sift_f2_store_scan_sink(&o, hybrid_sink, a);
