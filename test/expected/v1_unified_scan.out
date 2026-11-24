@@ -27,7 +27,7 @@ BEGIN
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (%s) x', q) INTO b;
 	node := coalesce((regexp_match(p, 'Custom Scan \((Sift\w+)\)'))[1], 'none');
-	text_index := p LIKE '%Text Index:%';
+	text_index := p LIKE '%Search:%';
 	same := a = b;
 	RETURN NEXT;
 END $$;
