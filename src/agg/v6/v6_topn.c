@@ -520,14 +520,14 @@ topn_run(TopNState *st, EState *estate)
 	st->pos = 0;
 	st->ran = true;
 	topn_open = sift_store_ops_for_oid(st->spec->indexoid, false)->order->topn_open;
-	if (topn_open == NULL || !tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows))
+	opened = topn_open != NULL && tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows) &&
+		topn_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
+	if (!opened)
 	{
 		index_close(index, NoLock);
 		topn_sort_rows(st, estate, &in, st->quals == NIL ? NULL : &quals);
 		return;
 	}
-	opened = topn_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
-	SIFT_INVARIANT(opened, "the Top-N scan of index %u cannot be opened", st->spec->indexoid);
 	topn_device(st, estate, index, &in);
 	index_close(index, NoLock);
 	st->rows = sift_v6_topn_run(st->cx, st->spec, &st->src, &st->tourn, &st->nrows);
