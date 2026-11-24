@@ -507,6 +507,7 @@ col/f2/scan/chunk_filter.c
 col/f2/scan/fetch.c
 col/f2/scan/par_int.h
 col/f2/scan/part_answer.c
+col/f2/scan/prepare.c
 col/f2/scan/ret.c
 col/f2/scan/scan_int.h
 col/f2/scan/stream.c
