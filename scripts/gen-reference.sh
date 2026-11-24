@@ -229,9 +229,14 @@ def scan(*paths):
         if m:
             f = dict((k.upper(), v) for k, v in re.findall(r'(\w+)\s*=\s*([\w.]+)', m.group(2)))
             fn = f['FUNCTION'].replace('sift.', '')
-            objs[('operator', m.group(1))] = dict(kind='operator', sig='%s %s %s' % (f['LEFTARG'], m.group(1), f['RIGHTARG']), ret='bool', internal=False, fn=fn)
+            types = '%s,%s' % (f['LEFTARG'], f['RIGHTARG'])
+            key = ('operator', m.group(1))
+            o = dict(kind='operator', sig='%s %s %s' % (f['LEFTARG'], m.group(1), f['RIGHTARG']), ret='bool', internal=False, fn=fn)
+            if first_types.setdefault(m.group(1), types) != types:
+                key, o['fname'] = ('operator', '%s(%s)' % (m.group(1), types)), m.group(1)
+            objs[key] = o
             continue
-        m = re.match(r'COMMENT\s+ON\s+(FUNCTION|AGGREGATE|VIEW|TABLE|OPERATOR\s+CLASS|OPERATOR)\s+(?:sift\.|pg_catalog\.)?([^\s(]+)(\([^)]*\))?[^\']*?\s+IS\s+(\'(?:[^\']|\'\')*\'|NULL)$', s, re.I | re.S)
+        m = re.match(r'COMMENT\s+ON\s+(FUNCTION|AGGREGATE|VIEW|TABLE|OPERATOR\s+CLASS|OPERATOR)\s+(?:sift\.|pg_catalog\.)?([^\s(]+)\s*(\([^)]*\))?[^\']*?\s+IS\s+(\'(?:[^\']|\'\')*\'|NULL)$', s, re.I | re.S)
         if m:
             k = {'operator class': 'opclass', 'aggregate': 'function'}.get(norm(m.group(1)).lower(), m.group(1).lower())
             name = m.group(2)
@@ -318,7 +323,7 @@ rows = []   # dict(group, kind, name, sig, ret, since, desc, link)
 internal = []
 for k, o in sorted(objs.items(), key=lambda kv: kv[0][1]):
     kind, name = k[0], objs[k].get('fname', k[1])
-    note = notes.get(name if kind != 'operator' else name)
+    note = notes.get(k[1])
     g = note[0] if note and note[0] else ('col' if name.startswith(('col_', 'projection', 'scope_')) else 'table' if name.startswith('table_') else 'search')
     desc = comments.get(k)
     if o['internal'] or name.startswith('_') or (note and note[0] == '-') or (desc or '').startswith('Internal:'):
