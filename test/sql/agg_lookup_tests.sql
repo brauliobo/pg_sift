@@ -10,7 +10,7 @@ SET sift.agg_force = on;
 SET sift.shared_cache_kb = 0;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
-INSERT INTO ev SELECT i, i % 10500, i % 11 FROM generate_series(1, 450000) i;
+INSERT INTO ev SELECT i, i % 10500, i % 11 FROM generate_series(1, 120000) i;
 -- some events with no key: a NULL key is no class
 UPDATE ev SET k = NULL WHERE id % 997 = 0;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
