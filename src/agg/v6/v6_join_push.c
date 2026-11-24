@@ -89,23 +89,30 @@ join_vars(const Var *a, const Var *b, PushJoin *j)
 	return OidIsValid(j->opno);
 }
 
-/* The one clause that joins the two relations, fact.col = dim.col over integers: the equivalence class of the two columns, or the clause of the semi-join of an IN (sub-select) that no class holds */
+/* The one clause that joins the two relations, fact.col = dim.col over integers: the only equivalence class that holds a column of each, or the clause of the semi-join of an IN (sub-select) that no class holds */
 static bool
 find_join(PlannerInfo *root, PushJoin *j)
 {
+	bool		classed = false;
+
 	j->semi = root->join_info_list != NIL;
 	foreach_node(EquivalenceClass, ec, root->eq_classes)
 	{
 		const Var  *a,
 				   *b;
 
-		if (ec->ec_has_const || ec->ec_has_volatile || list_length(ec->ec_members) != 2)
+		if (ec->ec_has_const || !bms_is_member(j->fact->relid, ec->ec_relids) || !bms_is_member(j->dim->relid, ec->ec_relids))
 			continue;
+		if (classed || ec->ec_has_volatile || list_length(ec->ec_members) != 2)
+			return false;
 		a = (const Var *) ((EquivalenceMember *) linitial(ec->ec_members))->em_expr;
 		b = (const Var *) ((EquivalenceMember *) lsecond(ec->ec_members))->em_expr;
-		if (IsA(a, Var) && IsA(b, Var) && join_vars(a, b, j))
-			return j->fact->joininfo == NIL && j->dim->joininfo == NIL;
+		if (!IsA(a, Var) || !IsA(b, Var) || !join_vars(a, b, j))
+			return false;
+		classed = true;
 	}
+	if (classed)
+		return j->fact->joininfo == NIL && j->dim->joininfo == NIL;
 	if (j->semi && list_length(j->fact->joininfo) == 1 && list_length(j->dim->joininfo) == 1)
 	{
 		const OpExpr *op = (const OpExpr *) ((RestrictInfo *) linitial(j->dim->joininfo))->clause;
