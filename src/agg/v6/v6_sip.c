@@ -6,6 +6,7 @@
 #include "access/genam.h"
 #include "access/relation.h"
 #include "access/table.h"
+#include "access/sysattr.h"
 #include "access/tableam.h"
 #include "catalog/pg_namespace_d.h"
 #include "catalog/pg_type_d.h"
@@ -208,6 +209,20 @@ pushable(RelOptInfo *rel, const IndexOptInfo *ix)
 
 static const CustomPathMethods sip_path_methods = {"SiftAggV6Sip", sift_agg_v6_sip_plan_path, NULL};
 
+/* the scan gives the columns of the table, not its system columns (ctid): a condition or output that reads one is the heap's */
+static bool
+reads_system_column(RelOptInfo *rel)
+{
+	Bitmapset  *attrs = NULL;
+	int			first;
+
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		pull_varattnos((Node *) ri->clause, rel->relid, &attrs);
+	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &attrs);
+	first = bms_next_member(attrs, -1);
+	return first >= 0 && first < -FirstLowInvalidHeapAttributeNumber;
+}
+
 static bool
 sip_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SipJoin *j)
 {
@@ -219,7 +234,7 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SipJo
 				scan;
 	List	   *ints;
 
-	if (slot < 0 || (in.col[slot].type != SVEC_I32 && in.col[slot].type != SVEC_I64))
+	if (slot < 0 || (in.col[slot].type != SVEC_I32 && in.col[slot].type != SVEC_I64) || reads_system_column(rel))
 		return false;
 	ints = list_make5_int((int) ix->indexoid, (int) rel->relid, (int) planner_rt_fetch(j->dim->relid, root)->relid, (int) j->dim->relid, j->fact_key->varattno);
 	ints = lappend_int(lappend_int(ints, j->dim_key->varattno), (int) Min(j->dim->rows, (double) INT_MAX));
