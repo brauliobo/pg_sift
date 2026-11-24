@@ -321,7 +321,7 @@ ord_first(const Dshm *s, Size at)
 	return lo;
 }
 
-static void
+void
 ord_drop(Dshm *s, int slot)
 {
 	int			i = ord_first(s, s->dir[slot].off);

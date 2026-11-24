@@ -1,6 +1,6 @@
 /*
  * col/dictshm_int.h - the layout of the shared table of parsed dictionaries
- * the table, its entries and records, and the one function the test hooks call
+ * the table, its entries and records, and the functions the test hooks call
  * the directory and the ring of records are described in col/dictshm.c
  */
 #ifndef SIFT_COL_DICTSHM_INT_H
@@ -101,6 +101,7 @@ typedef struct Layout
 extern Dshm  *dshm_get(void);
 extern bool ring_get(Dshm *s);
 extern Layout layout(uint32 n, uint32 nbytes, uint32 flags, uint32 nslots);
+extern void ord_drop(Dshm *s, int slot);
 extern bool ring_take(Dshm *s, Size len, Size *off, int *flight, int *evicted);
 extern DshmEnt *bucket(Dshm *s, const DictKey *k);
 

@@ -65,6 +65,34 @@ sift_test_col_dict_shared_hold(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_shared_stale);
 
+/* What is wrong with the index of places of the ring (NULL when nothing): by place, no overlap, each entry once, every entry that holds a place in it, the live ones within the ring */
+static const char *
+ring_problem(const Dshm *s)
+{
+	bool		held[lengthof(s->dir)] = {false};
+	Size		live = 0,
+				end = 0;
+
+	for (int i = 0; i < s->nord; i++)
+	{
+		const DshmEnt *e = &s->dir[s->ord[i]];
+
+		if (held[s->ord[i]])
+			return "an entry is in the index of places twice";
+		held[s->ord[i]] = true;
+		if (e->off < end)
+			return "the index of places is not by place, or two of its entries overlap";
+		end = e->off + e->len;
+	}
+	for (int i = 0; i < lengthof(s->dir); i++)
+	{
+		if (s->dir[i].state != E_FREE && !held[i])
+			return "an entry that holds a place is not in the index of places";
+		live += s->dir[i].state == E_LIVE ? s->dir[i].len : 0;
+	}
+	return live > s->size ? "the live records are more than the ring" : NULL;
+}
+
 /* 6,000 strings of 64 bytes that start with c: two such dictionaries have the same record size, and the strings tell them apart */
 static SiftCDict *
 stale_dict(char c)
@@ -85,13 +113,15 @@ stale_dict(char c)
  * sift._test_col_dict_shared_stale(): the two ways a reader could be handed the record of another key. A place that a writer is copying into is not given to a
  * second writer (a ring of 2.5 records refuses the third while two are being copied in), and a directory entry that names a place that holds the record of
  * another key (forged here) is a miss for the reader, which gives its pin back. Returns the first letter of the dictionary the reader of the first key gets,
- * NULL when it gets none. The ring is made small for the test and put back, empty.
+ * NULL when it gets none. The ring is made small for the test and put back, empty. A record kept past the small ring, in the bucket of the forged entry, is the
+ * history of a server: the forged entry takes its slot out of the index of places, which stays right for the tests that follow.
  */
 Datum
 sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 {
 	Dshm	   *s = dshm_get();
 	DictKey		ka,
+				kb,
 				kc;
 	SiftCDict  *dc = stale_dict('c'),
 			   *got;
@@ -105,6 +135,7 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	bool		third,
 				wrote,
 				ready;
+	const char *problem;
 	char		res[2] = {0, 0};
 
 	if (s == NULL)
@@ -116,6 +147,16 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	kc = ka;
 	ka.gen = 1;
 	kc.gen = 2;
+	for (kb = ka, kb.gen = 3; bucket(s, &kb) != bucket(s, &ka); kb.gen++)
+		;
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < lengthof(s->dir); i++)
+		s->dir[i].state = E_FREE;
+	s->head = TYPEALIGN(DSHM_ALIGN, len * 3);
+	s->hold = 0;
+	SpinLockRelease(&s->mutex);
+	wrote = sift_dictshm_write(&kb, dc);
+	SIFT_INVARIANT(wrote, "the record of a place past the small ring was not written");
 	SpinLockAcquire(&s->mutex);
 	size = s->size;
 	s->size = len * 5 / 2;
@@ -139,6 +180,7 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 		{
 			DshmEnt    *b = bucket(s, &ka);
 
+			ord_drop(s, (int) (b - s->dir));
 			b[0] = s->dir[i];
 			b[0].key = ka;
 			break;
@@ -158,7 +200,9 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	s->head = 0;
 	for (int i = 0; i < lengthof(s->dir); i++)
 		s->dir[i].state = E_FREE;
+	problem = ring_problem(s);
 	SpinLockRelease(&s->mutex);
+	SIFT_INVARIANT(problem == NULL, "the test left the ring of the shared dictionaries wrong: %s", problem);
 	if (got == NULL)
 		PG_RETURN_NULL();
 	PG_RETURN_TEXT_P(cstring_to_text(res));
