@@ -901,7 +901,7 @@ unnest_slot(void *arg, const SiftV6Col *c)
 {
 	V6Scan	   *s = arg;
 
-	return slot_of(s, s->first, c);
+	return slot_of(s, s->first, c, false);
 }
 
 /* a table whose array column is unnested: the pairs of each row go through a pipe whose fact slots are the columns the scan reads and whose element slot follows them */
