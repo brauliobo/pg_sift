@@ -306,11 +306,7 @@ crash() {
 catchup() {
 	local lsn
 	lsn=$(sql "$1" "SELECT pg_current_wal_insert_lsn()")
-	for _ in $(seq 600); do
-		[[ $(sql "$2" "SELECT pg_last_wal_replay_lsn() >= '$lsn'") == t ]] && return 0
-		sleep 0.1
-	done
-	return 1
+	wait_for "[[ \$(sql $2 \"SELECT pg_last_wal_replay_lsn() >= '$lsn'\") == t ]]" 60
 }
 # standby_setting STANDBY GUC VALUE: a new session of the standby reads VALUE for GUC (the reload has reached it)
 standby_setting() { wait_for "[[ \$(sql $1 \"SHOW $2\") == '$3' ]]" 30; }
