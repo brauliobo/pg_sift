@@ -14,7 +14,7 @@
 
 #define NO_ROOM "parallel aggregation: the arena of a thread has no room for a batch"
 #define TAB_FIRST			256
-#define TAB_PART_MAX		8192
+#define TAB_PART_MAX		16384
 #define ROWS_HALF_SLOT_MAX	(UINT64CONST(1) << 31)
 
 typedef struct SiftTopEnt
@@ -176,18 +176,20 @@ put_rec(SiftRadixOut *o, uint32 part, const SiftParGroupSpec *sp, bool partial, 
 {
 	if (!sp->str)
 	{
-		const uint32 n = sp->kw + partial + sp->nsum;
-		const uint32 words = partial ? n : raw_words(sp);
-		uint64	   *w = sift_radix_reserve(o, part, rec_size(sp, partial, 0));
-		uint32		i = sp->kw;
+		const uint32 words = partial ? sp->kw + 1 + sp->nsum : raw_words(sp);
+		uint64	   *w = sift_radix_reserve(o, part, 8 * words);
+		uint32		i = 0;
 
 		if (w == NULL)
 			return false;
-		memcpy(w, r->k, sp->kw * sizeof(uint64));
+		for (; i < sp->kw; i++)
+			w[i] = r->k[i];
 		if (partial)
 			w[i++] = r->count;
-		memcpy(w + i, r->sum, sp->nsum * sizeof(uint64));
-		memset(w + n, 0, (words - n) * sizeof(uint64));
+		for (uint32 m = 0; m < sp->nsum; m++)
+			w[i++] = r->sum[m];
+		for (; i < words; i++)
+			w[i] = 0;
 	}
 	else
 	{
@@ -350,11 +352,42 @@ batch_room(SiftParGroup *g, int t, const SiftParGroupBatch *b, SiftErr *err)
 	return (w->local.strm ? sstr_put(&w->local, NULL, strbytes) : cmp_intern_reserve(&w->local, b->n, strbytes)) || fail_mem(err, NO_ROOM);
 }
 
+/* The rows of integer keys of a batch to the partitions: the record of a row is its key words and arguments, in the partition of the hash of its key */
+static bool
+scatter_words(SiftParGroup *g, GroupWorker *w, const SiftParGroupBatch *b)
+{
+	const SiftParGroupSpec *sp = &g->sp;
+	const uint32 words = raw_words(sp);
+
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		uint64		k[SIFT_PAR_GROUP_MAX_KW];
+		uint64	   *rec;
+		uint32		n = 0;
+
+		for (int j = 0; j < sp->kw; j++)
+			k[j] = b->key[j][i];
+		rec = sift_radix_reserve(&w->raw, sift_radix_part(cmp_key_hash(&w->local, k)), 8 * words);
+		if (rec == NULL)
+			return false;
+		for (int j = 0; j < sp->kw; j++)
+			rec[n++] = k[j];
+		for (int m = 0; m < sp->nsum; m++)
+			rec[n++] = b->arg[m][i];
+		for (; n < words; n++)
+			rec[n] = 0;
+	}
+	return true;
+}
+
 static bool
 fold_batch(SiftParGroup *g, int t, const SiftParGroupBatch *b)
 {
 	GroupWorker *w = &g->w[t];
 	const SiftParGroupSpec *sp = &g->sp;
+
+	if (w->radix && !sp->str)
+		return scatter_words(g, w, b);
 
 	for (uint32 i = 0; i < b->n; i++)
 	{
@@ -527,12 +560,33 @@ typedef struct Fold
 	bool		partial;
 } Fold;
 
+/* the records of integer keys of a chunk: the table has room for all of them at once, and each is found and folded where it is */
+static bool
+fold_words(const Fold *f, const uint8 *b, uint32 len)
+{
+	SiftCompact *c = f->tab;
+	const uint32 rb = rec_size(f->sp, f->partial, 0);
+
+	if (!cmp_reserve(c, len / rb, UINT64_MAX))
+		return false;
+	for (uint32 off = 0; off < len; off += rb)
+	{
+		Rec			r;
+
+		parse_rec(f->sp, f->partial, b + off, &r);
+		cmp_fold(c, cmp_find(c, cmp_key_hash(c, r.k), r.k), r.count, r.sum);
+	}
+	return true;
+}
+
 /* the records of a chunk, each as its table takes it */
 static bool
 fold_chunk(void *arg, const uint8 *b, uint32 len)
 {
 	const Fold *f = arg;
 
+	if (!f->sp->str)
+		return fold_words(f, b, len);
 	for (uint32 off = 0; off < len;)
 	{
 		Rec			r;
