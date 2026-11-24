@@ -43,7 +43,7 @@ const SiftPreaggOps sift_f2_preagg_ops = {
 static bool
 dict_has_dict32(Oid relid, bool is_table, int att)
 {
-	return sift_f2_ops_leaf_holds(relid, is_table, att, SV6C_TEXT);
+	return !is_table && sift_f2_ops_leaf_holds(relid, is_table, att, SV6C_TEXT);
 }
 
 const SiftDictOps sift_f2_dict_ops = {

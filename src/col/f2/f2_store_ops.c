@@ -59,11 +59,12 @@ datum_leaf(const SiftF2Store *st, int att)
 bool
 sift_f2_ops_leaf_holds(Oid relid, bool is_table, int att, int cls)
 {
+	const SiftF2Store *st = sift_f2_store_from_oid(relid);
 	const SiftColDef *d;
 
-	if ((SiftV6Class) cls == SV6C_DATUM)
-		return datum_leaf(sift_f2_store_from_oid(relid), att);
-	d = scalar_leaf(sift_f2_store_from_oid(relid), att);
+	if ((SiftV6Class) cls == SV6C_DATUM || (st->host->host_kind != SIFT_F2_HOST_INDEX && (SiftV6Class) cls == SV6C_TEXT))
+		return datum_leaf(st, att);
+	d = scalar_leaf(st, att);
 
 	if (d == NULL)
 		return false;
