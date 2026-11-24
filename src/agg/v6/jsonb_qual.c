@@ -76,15 +76,84 @@ key_leaf(const SiftV6Rel *rel, int att, const char *key)
 	return rel->ops != NULL && rel->ops->jsonb != NULL ? rel->ops->jsonb->key_leaf(rel->index->indexoid, att, key, strlen(key)) : -1;
 }
 
-/* doc -> 'k' (fn F_JSONB_OBJECT_FIELD) or doc ->> 'k' (F_JSONB_OBJECT_FIELD_TEXT) of such a document, and the leaf of its key (-1: none keeps it) */
-static int
-field_leaf(const SiftV6Rel *rel, const Expr *e, Oid fn, int *att, const char **key)
+/* the empty path '{}' of a #>> */
+static bool
+empty_path(const Expr *e)
 {
-	List	   *args;
+	const Const *c = (const Const *) strip(e);
+
+	return c != NULL && IsA(c, Const) && !c->constisnull && c->consttype == TEXTARRAYOID && ARR_NDIM(DatumGetArrayTypeP(c->constvalue)) == 0;
+}
+
+/* the one key of a path of one element: '{k}' of #> and #>>, or the k of the variadic path of jsonb_extract_path(doc, 'k') and jsonb_extract_path_text(doc, 'k') */
+static const char *
+path_key(const Expr *e)
+{
+	const Expr *a = strip(e);
+	const Const *c = (const Const *) a;
+	Datum	   *el;
+	bool	   *nl;
+	int			n;
+
+	if (a != NULL && IsA(a, ArrayExpr) && list_length(((const ArrayExpr *) a)->elements) == 1)
+		return text_const(linitial(((const ArrayExpr *) a)->elements));
+	if (a == NULL || !IsA(a, Const) || c->constisnull || c->consttype != TEXTARRAYOID || ARR_NDIM(DatumGetArrayTypeP(c->constvalue)) != 1)
+		return NULL;
+	deconstruct_array_builtin(DatumGetArrayTypeP(c->constvalue), TEXTOID, &el, &nl, &n);
+	return n == 1 && !nl[0] ? TextDatumGetCString(el[0]) : NULL;
+}
+
+/* doc -> 'k' as a call with a path of one key: jsonb_extract_path(doc, 'k') or doc #> '{k}' (as_text false), jsonb_extract_path_text(doc, 'k') or doc #>> '{k}' (as_text true) */
+static bool
+path_member(const Expr *e, bool as_text, const Var **doc, const char **key)
+{
+	const List *args = e != NULL ? args_of(e) : NIL;
+
+	if (e == NULL || func_of(e) != (as_text ? F_JSONB_EXTRACT_PATH_TEXT : F_JSONB_EXTRACT_PATH) || list_length(args) != 2 || (*key = path_key(lsecond(args))) == NULL ||
+		strchr(" +-0123456789", (*key)[strspn(*key, " ")]) != NULL)
+		return false;
+	*doc = (const Var *) strip(linitial(args));
+	return *doc != NULL && IsA(*doc, Var);
+}
+
+bool
+sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **key)
+{
+	const List *args;
 
 	e = strip(e);
+	if (path_member(e, as_text, doc, key))
+		return true;
+	if (as_text && e != NULL && func_of(e) == F_JSONB_EXTRACT_PATH_TEXT && list_length(args_of(e)) == 2 && empty_path(lsecond(args_of(e))))
+	{
+		e = strip(linitial(args_of(e)));
+		as_text = false;
+	}
+	if (e != NULL && IsA(e, SubscriptingRef))
+	{
+		const SubscriptingRef *sr = (const SubscriptingRef *) e;
+
+		if (as_text || sr->refcontainertype != JSONBOID || sr->refassgnexpr != NULL || sr->reflowerindexpr != NIL || list_length(sr->refupperindexpr) != 1)
+			return false;
+		*doc = (const Var *) strip(sr->refexpr);
+		*key = text_const(linitial(sr->refupperindexpr));
+		return *doc != NULL && IsA(*doc, Var) && *key != NULL;
+	}
 	args = e != NULL ? args_of(e) : NIL;
-	if (e == NULL || func_of(e) != fn || list_length(args) != 2 || !doc_of(rel, linitial(args), att) || (*key = text_const(lsecond(args))) == NULL)
+	if (e == NULL || func_of(e) != (as_text ? F_JSONB_OBJECT_FIELD_TEXT : F_JSONB_OBJECT_FIELD) || list_length(args) != 2)
+		return false;
+	*doc = (const Var *) strip(linitial(args));
+	*key = text_const(lsecond(args));
+	return *doc != NULL && IsA(*doc, Var) && *key != NULL;
+}
+
+/* doc -> 'k' or doc['k'] (as_text false), doc ->> 'k' or its #>> '{}' (as_text true) of such a document, and the leaf of its key (-1: none keeps it) */
+static int
+field_leaf(const SiftV6Rel *rel, const Expr *e, bool as_text, int *att, const char **key)
+{
+	const Var  *doc;
+
+	if (!sift_v6_json_member(e, as_text, &doc, key) || !doc_of(rel, (const Expr *) doc, att))
 		return -1;
 	return key_leaf(rel, *att, *key);
 }
@@ -172,7 +241,7 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 		return NIL;
 	}
 	if (typeof_test(clause, &call, &mask) && func_of(call) == F_JSONB_TYPEOF && list_length(args_of(call)) == 1 &&
-		scalar_leaf(rel, field_leaf(rel, linitial(args_of(call)), F_JSONB_OBJECT_FIELD, &att, &key)))
+		scalar_leaf(rel, field_leaf(rel, linitial(args_of(call)), false, &att, &key)))
 		return qual_of(JQ_TYPE, att, key, mask);
 	return NIL;
 }
@@ -193,7 +262,7 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 		typid = FLOAT8OID;
 		store = SIFT_COLS_F8;
 	}
-	leaf = field_leaf(rel, text, F_JSONB_OBJECT_FIELD_TEXT, &att, &key);
+	leaf = field_leaf(rel, text, true, &att, &key);
 	if (!scalar_leaf(rel, leaf) || rel->colrel->schema->cols[leaf].store != store)
 		return false;
 	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1};

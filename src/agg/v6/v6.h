@@ -391,6 +391,8 @@ sift_v6_input_attno_json(int attno, int *jleaf, bool *jtype)
 /* e with every `doc ->> 'key'` and `(doc ->> 'key')::float8` of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JLEAF_VATT + leaf (varno rel->relid, a copy); the column such a Var is */
 extern Expr *sift_v6_json_value_vars(const SiftV6Rel *rel, const Expr *e);
 extern bool sift_v6_json_value_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
+/* e is doc -> 'k' or doc['k'] (as_text false), or doc ->> 'k' or its #>> '{}' (as_text true), of a column doc and a constant text key */
+extern bool sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **key);
 /* keys and nkeys with the scan keys of spec->jsonqual appended */
 extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys);
 /* The value of a row whose leaf could not hold it, from the payload of its exception (a jsonb datum): the `->>` text, or its float8 cast; false: NULL */
