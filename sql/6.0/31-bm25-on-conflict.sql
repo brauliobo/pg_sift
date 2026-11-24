@@ -16,3 +16,6 @@ ALTER OPERATOR FAMILY sift.any_ops USING sift ADD OPERATOR 3 sift.=== (anyelemen
 
 COMMENT ON FUNCTION sift.key_equal(text, text) IS 'The equality of the key columns of a UNIQUE sift index, for INSERT ... ON CONFLICT; not a query operator.';
 COMMENT ON FUNCTION sift.key_equal(anyelement, anyelement) IS 'The equality of the key columns of a UNIQUE sift index, for INSERT ... ON CONFLICT; not a query operator.';
+
+COMMENT ON OPERATOR sift.=== (text, text) IS 'The equality of the key columns of a UNIQUE sift index, for INSERT ... ON CONFLICT; not a query operator.';
+COMMENT ON OPERATOR sift.=== (anyelement, anyelement) IS 'The equality of the key columns of a UNIQUE sift index, for INSERT ... ON CONFLICT; not a query operator.';

@@ -225,7 +225,7 @@ def scan(*paths):
             objs[('opclass', m.group(1))] = dict(kind='opclass', ret='-', internal=False,
                                                  sig='sift.%s FOR TYPE %s USING %s%s' % (m.group(1), m.group(3), m.group(4), ' (default)' if m.group(2) else ''))
             continue
-        m = re.match(r'CREATE\s+OPERATOR\s+(?:pg_catalog\.)?(\S+?)\s*\((.*)\)$', s, re.I | re.S)
+        m = re.match(r'CREATE\s+OPERATOR\s+(?:pg_catalog\.|sift\.)?(\S+?)\s*\((.*)\)$', s, re.I | re.S)
         if m:
             f = dict((k.upper(), v) for k, v in re.findall(r'(\w+)\s*=\s*([\w.]+)', m.group(2)))
             fn = f['FUNCTION'].replace('sift.', '')
