@@ -103,7 +103,9 @@ INSERT INTO stmts VALUES
 (49, 'SELECT d.t, count(*) FROM f JOIN d ON d.k = f.k AND d.w > f.v::numeric / 10 GROUP BY d.t'),
 -- the node leaves these to PostgreSQL: an exact numeric product beside a join, a condition of a semi join that no key says (it would decide on the first match only)
 (50, 'SELECT d.t, sum(f.v::numeric * 2.5) FROM f JOIN d ON d.k = f.k GROUP BY d.t'),
-(51, 'SELECT count(*) FROM f WHERE EXISTS (SELECT 1 FROM d WHERE d.k = f.k AND d.w < f.v % 7)');
+(51, 'SELECT count(*) FROM f WHERE EXISTS (SELECT 1 FROM d WHERE d.k = f.k AND d.w < f.v % 7)'),
+-- an aggregate whose FILTER reads a column of the dimension: the scan cannot compute CASE WHEN d.w > 1 THEN f.v END from the columns of one relation
+(52, 'SELECT d.t, sum(f.v) FILTER (WHERE d.w > 1), count(*) FILTER (WHERE f.v > 20) FROM f JOIN d ON d.k = f.k GROUP BY d.t');
 
 SELECT id, (same(q)).* FROM stmts ORDER BY id;
 
