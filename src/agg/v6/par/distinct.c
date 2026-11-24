@@ -54,14 +54,11 @@ sift_par_distinct_create(SiftParArenas *ar, const SiftParDistinctSpec *spec, con
 
 /* ---- phase 1 ---- */
 
-static uint32
-key_of(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, uint32 i)
+static SiftKey
+row_key(const SiftParDistinct *d, const SiftParDistinctBatch *b, uint32 i, uint64 *words)
 {
-	uint64		words[SIFT_PAR_GROUP_MAX_KEYS];
 	SiftKey		k = {.w = words};
 
-	if (!d->grouped)
-		return 0;
 	for (int j = 0; j < d->sp.kw; j++)
 		words[j] = b->key[j][i];
 	if (d->sp.kstr)
@@ -69,7 +66,39 @@ key_of(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, u
 		k.p = b->kstr[i].p;
 		k.len = b->kstr[i].len;
 	}
-	k.h = sift_key_hash(&d->ks, words, k.p, k.len);
+	return k;
+}
+
+#define KEY_AHEAD	16
+
+static void
+hash_keys(const SiftParDistinct *d, const SiftParDistinctBatch *b, uint64 *hs)
+{
+	uint64		words[SIFT_PAR_GROUP_MAX_KEYS];
+
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		const SiftKey k = row_key(d, b, i, words);
+
+		hs[i] = sift_key_hash(&d->ks, words, k.p, k.len);
+	}
+}
+
+/* The number of the key of row i in the table of the thread; the hashes of the rows ahead are known (hs), and their places in the table are brought in */
+static uint32
+key_of(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, const uint64 *hs, uint32 i)
+{
+	uint64		words[SIFT_PAR_GROUP_MAX_KEYS];
+	SiftKey		k;
+
+	if (!d->grouped)
+		return 0;
+	k = row_key(d, b, i, words);
+	k.h = hs[i];
+	if (i + KEY_AHEAD < b->n)
+		sift_keytab_prefetch_slot(&w->keys, hs[i + KEY_AHEAD]);
+	if (i + KEY_AHEAD / 2 < b->n)
+		sift_keytab_prefetch_ent(&w->keys, hs[i + KEY_AHEAD / 2]);
 	return sift_keytab_intern(&w->keys, &k);
 }
 
@@ -114,11 +143,11 @@ put_value(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDist
 }
 
 static bool
-rows_in(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b)
+rows_in(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, uint64 *hs)
 {
 	for (uint32 i = 0; i < b->n; i++)
 	{
-		const uint32 kid = key_of(d, w, b, i);
+		const uint32 kid = key_of(d, w, b, hs, i);
 
 		if (kid == SIFT_KEYTAB_NONE)
 			return false;
@@ -134,13 +163,16 @@ distinct_phase1(void *vd, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint3
 {
 	SiftParDistinct *d = vd;
 	SiftParDistinctBatch b = {0};
+	uint64	   *hs;
 
 	*done = 0;
 	if (!d->hooks.fill(d->hooks.arg, t, lo, hi, scratch, &b, err))
 		return false;
-	if (!sift_radix_fits(&d->w[t].raw, (uint64) b.n * rec_bytes(d)))
+	if (!sift_radix_fits(&d->w[t].raw, (uint64) b.n * rec_bytes(d)) || (hs = sift_arena_alloc(scratch, (size_t) b.n * sizeof(uint64), 8)) == NULL)
 		return dist_fail(err, "parallel distinct: the arena of a thread has no room for a batch");
-	return rows_in(d, &d->w[t], &b) || dist_fail(err, "parallel distinct: the arena of a thread has no room for the keys");
+	if (d->grouped)
+		hash_keys(d, &b, hs);
+	return rows_in(d, &d->w[t], &b, hs) || dist_fail(err, "parallel distinct: the arena of a thread has no room for the keys");
 }
 
 /* ---- the seal: the rows and sums of the keys of a thread, to the partitions of the keys ---- */

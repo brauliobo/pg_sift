@@ -66,6 +66,22 @@ sift_keytab_pay(const SiftKeyTab *t, uint64 *e)
 	return e + SIFT_KEY_HEAD + t->sh.kw;
 }
 
+/* Brings in the slot of a hash, and (once that has arrived) the entry its slot holds: the keys of a batch are looked up a few at a time ahead */
+static inline void
+sift_keytab_prefetch_slot(const SiftKeyTab *t, uint64 h)
+{
+	__builtin_prefetch(&t->slot[h & (t->scap - 1)]);
+}
+
+static inline void
+sift_keytab_prefetch_ent(const SiftKeyTab *t, uint64 h)
+{
+	const uint64 s = t->slot[h & (t->scap - 1)];
+
+	if (s != 0)
+		__builtin_prefetch(sift_keytab_at(t, (uint32) s - 1));
+}
+
 static inline SiftKey
 sift_keytab_key(const uint64 *e)
 {

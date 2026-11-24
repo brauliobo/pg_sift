@@ -34,8 +34,11 @@ slot_of(uint64 h, uint32 id)
 static inline bool
 key_equal(const SiftKeyTab *t, const uint64 *e, const SiftKey *k)
 {
-	return e[0] == k->h && (uint32) e[2] == k->len && (t->sh.kw == 0 || memcmp(e + SIFT_KEY_HEAD, k->w, t->sh.kw * sizeof(uint64)) == 0) &&
-		(k->len == 0 || memcmp((const void *) (uintptr_t) e[1], k->p, k->len) == 0);
+	uint64		diff = e[0] ^ k->h;
+
+	for (int i = 0; i < t->sh.kw; i++)
+		diff |= e[SIFT_KEY_HEAD + i] ^ k->w[i];
+	return diff == 0 && (uint32) e[2] == k->len && (k->len == 0 || memcmp((const void *) (uintptr_t) e[1], k->p, k->len) == 0);
 }
 
 static uint64

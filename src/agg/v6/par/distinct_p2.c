@@ -12,6 +12,7 @@
 #define DIST_TILE		256
 #define DIST_FIRST_CAP	1024
 #define DIST_PART_MAX	16384
+#define TILE_AHEAD		8
 
 /* The partition: its keys and its texts numbered across the threads, and the table of its values, or of its pairs of a key and a value */
 typedef struct P2
@@ -150,6 +151,9 @@ tile_fill(P2 *p, const DistRec *rec, uint32 m, SiftDuPair *tile)
 	for (uint32 i = 0; i < m; i++)
 	{
 		uint64	   *e = sift_keytab_at(&p->src->keys, rec[i].kid);
+
+		if (i + TILE_AHEAD < m)
+			__builtin_prefetch(sift_keytab_at(&p->src->keys, rec[i + TILE_AHEAD].kid));
 		const uint32 g = (uint32) sift_keytab_pay(&p->src->keys, e)[dist_pay_last(p->d)];
 		uint64		v = rec[i].v;
 
