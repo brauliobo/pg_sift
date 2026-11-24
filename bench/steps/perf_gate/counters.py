@@ -1,6 +1,8 @@
 # Hardware counters: the user-space instructions a case retires, from perf stat, next to its elapsed time.
 # Instructions do not depend on how busy the host is: a slower elapsed time with equal instructions is a cache, IPC or parallel-scaling regression.
 
+import tmpfs  # noqa: F401  (tempfile on tmpfs)
+
 PERF_EVENT = 'instructions:u'
 PERF_AVAILABLE = False
 PROFILE = False

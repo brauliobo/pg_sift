@@ -13,3 +13,4 @@ bench/steps/lib.sh	the cells of the servers that are not under test, a few MB of
 bench/steps/store.py	the default of the same cache directory
 bench/README.md	the text that names the cache directory
 scripts/check-complexity.sh	the sites of each source by its size and modification time, a few kB, read to skip a file that did not change
+bench/steps/perf_gate/anchor.py	the release anchor build of the perf gate, built once per commit and PostgreSQL major and read by every later run

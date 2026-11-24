@@ -6,11 +6,14 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_perf_gate import gate
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
+from test_perf_gate import gate  # noqa: E402
 
 
 def pressure_dir(root, cpu, io_pressure):
