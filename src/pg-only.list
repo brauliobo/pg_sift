@@ -869,6 +869,8 @@ core/sql_space.c
 core/sql_status.c
 core/store.c
 core/store_int.h
+core/store_ops.c
+core/store_ops.h
 core/store_ops_test.c
 core/store_test.c
 core/store_test_am.c

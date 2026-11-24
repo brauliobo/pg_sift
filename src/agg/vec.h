@@ -32,7 +32,8 @@ typedef enum SiftVecType
 	SVEC_UUID,					/* SiftUuid16[n] */
 	SVEC_STRVIEW,				/* SiftStrView[n] */
 	SVEC_DICT32,				/* uint32[n]: a dictionary code */
-	SVEC_INTERVAL				/* SiftInterval16[n] */
+	SVEC_INTERVAL,				/* SiftInterval16[n] */
+	SVEC_DATUM					/* Datum[n]: arbitrary PostgreSQL type fallback (typid/typlen/typbyval on SiftVec) */
 } SiftVecType;
 
 typedef struct __attribute__((aligned(16))) SiftI128
@@ -100,6 +101,9 @@ typedef struct SiftVec
 	int16		scale;
 	const void *dict;
 	const uint64 *nan;			/* a numeric: bit set = the row holds a NaN, which valid says is NULL; NULL when no row of the batch does */
+	uint32		typid;			/* SVEC_DATUM: PostgreSQL Oid of the Datum values (InvalidOid for native vectors) */
+	int16		typlen;			/* SVEC_DATUM: pg_type.typlen */
+	bool		typbyval;		/* SVEC_DATUM: pg_type.typbyval */
 } SiftVec;
 
 /* The active rows of a batch of n_raw <= SIFT_VEC_LEN rows: the bitmap always, the selection vector once an operator asks for it */

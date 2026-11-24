@@ -209,6 +209,8 @@ v6g_acc_op(const SiftV6Agg *a)
 		case SV6_BOOL_OR:
 		case SV6_BOOL_AND:
 		case SV6_PCT_CONT:
+		case SV6_GEN_PG:
+		case SV6_OSA:
 			break;
 	}
 	return V6A_NONE;

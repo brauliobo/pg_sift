@@ -39,7 +39,9 @@ typedef enum SiftV6Kind
 	SV6_VAR_SAMP,
 	SV6_BOOL_OR,
 	SV6_BOOL_AND,
-	SV6_PCT_CONT				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 column): the values of the group in the arena of its text states (v6_pct.h) */
+	SV6_PCT_CONT,				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 column): the values of the group in the arena of its text states (v6_pct.h) */
+	SV6_GEN_PG,					/* generic PostgreSQL aggregate (aggtransfn/aggcombinefn/aggfinalfn + optional DISTINCT/ORDER BY tuplesort) */
+	SV6_OSA						/* ordered-set / hypothetical-set aggregate (WITHIN GROUP: mode, percentile_disc/cont, rank/dense_rank/...) */
 } SiftV6Kind;
 
 #define SIFT_V6_MAX_KEYS	32
@@ -61,7 +63,8 @@ typedef enum SiftV6Class
 	SV6C_I64,					/* int8, timestamp, timestamptz */
 	SV6C_F64,					/* float4, float8 */
 	SV6C_BOOL,
-	SV6C_TEXT					/* text, varchar */
+	SV6C_TEXT,					/* text, varchar */
+	SV6C_DATUM					/* arbitrary PostgreSQL type decoded into SVEC_DATUM */
 } SiftV6Class;
 
 static inline SiftV6Class
@@ -159,7 +162,8 @@ typedef enum SiftV6DeriveKind
 	SVD_EXTRACT,				/* extract(minute or hour FROM src), src a timestamp; aux is the unit in microseconds */
 	SVD_CASE_STR,				/* CASE WHEN cond[0] = cval[0] AND .. THEN src ELSE the constant END, text */
 	SVD_ARITH,					/* + - * of float8 columns (src, cond[0..]) and a constant (aux): the postfix tokens in cval, v6_plan_rewrite.h; the batches of an unnest only */
-	SVD_NUM_EXPR				/* the exact scaled-integer product of up to three affine factors of numeric columns (agg/v6/v6_expr_num.h) */
+	SVD_NUM_EXPR,				/* the exact scaled-integer product of up to three affine factors of numeric columns (agg/v6/v6_expr_num.h) */
+	SVD_PG_EXPR					/* arbitrary PostgreSQL Expr evaluated over active rows via ExecEvalExpr with per-batch ResetExprContext */
 } SiftV6DeriveKind;
 
 #define SIFT_V6_MAX_DERIVE	8
