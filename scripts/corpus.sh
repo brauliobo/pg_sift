@@ -35,7 +35,7 @@ export PGUSER=postgres PGDATABASE=postgres
 pg_isready -q -t 2 || { echo "corpus: no server at SIFT_TMP=$SIFT_TMP SIFT_PORT=${SIFT_PORT:-} (scripts/corpus-local.sh installs and starts a throwaway one)" >&2; exit 1; }
 DB=sift_corpus
 cleanup() {
-	[[ -n $KEEP ]] || psql -X -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "DROP ROLE IF EXISTS corpus_rls" >/dev/null 2>&1 || true
+	[[ -n $KEEP ]] || PGDATABASE=postgres psql -X -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "DROP ROLE IF EXISTS corpus_rls" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 t0=$SECONDS
