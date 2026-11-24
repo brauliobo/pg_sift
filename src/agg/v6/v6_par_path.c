@@ -94,6 +94,13 @@ is_key_column(const SiftV6Spec *spec, int attno)
 	return false;
 }
 
+/* what a row is tested by before the aggregate sees it: the quals of the scan keys and the ones that run over the batch */
+static List *
+quals_of(const SiftV6Spec *spec)
+{
+	return list_concat_copy(spec->indexqual, spec->vqual);
+}
+
 /* the ns of a row for the text columns the quals of the scan read: their strings are decoded for every row, whether or not it passes; a column the query groups by (of few groups) is read as codes */
 static double
 text_qual_ns(const SiftV6Spec *spec, double groups)
@@ -101,7 +108,7 @@ text_qual_ns(const SiftV6Spec *spec, double groups)
 	Bitmapset  *cols = NULL;
 	double		ns = 0;
 
-	foreach_ptr(Var, v, pull_var_clause((Node *) spec->indexqual, 0))
+	foreach_ptr(Var, v, pull_var_clause((Node *) quals_of(spec), 0))
 		if (sift_v6_class(v->vartype) == SV6C_TEXT && !bms_is_member(v->varattno, cols))
 		{
 			cols = bms_add_member(cols, v->varattno);
@@ -114,7 +121,7 @@ text_qual_ns(const SiftV6Spec *spec, double groups)
 static double
 scan_rows(const SiftV6Spec *spec, const RelOptInfo *rel)
 {
-	foreach_ptr(Var, v, pull_var_clause((Node *) spec->indexqual, 0))
+	foreach_ptr(Var, v, pull_var_clause((Node *) quals_of(spec), 0))
 		if (sift_v6_class(v->vartype) == SV6C_TEXT && !is_key_column(spec, v->varattno))
 			return rel->tuples;
 	return rel->rows;
