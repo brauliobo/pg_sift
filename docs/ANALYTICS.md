@@ -106,6 +106,10 @@ CREATE INDEX orders_custom ON orders
 
 A granule with unvacuumed deletes still uses its pre-aggregates through **additive delta subtraction**: when at most 5% of its rows and at most 64 rows (128 when the only rows to take out are those one `col IS NULL` predicate excludes) are dead, those rows are read from the Copy-on-Write deletion vector and subtracted from the cells they fall in, which costs the dead rows and not the granule. A dead row that is the least or the greatest of its cell cannot be subtracted from the extremes, and a granule with more dead rows than the bound is scanned with its deletion vector.
 
+The same option is read by `sift.table_set_option(tbl, 'preagg', ...)` on a Format 2.0 `sift_table`, whose parts keep the cubes the index would keep; a column that is not in the table, or a `cube(` that is not closed, is refused when the option is set. `cube(dim[: m1, m2]; dim2 ...)` names the dimensions (up to 4) and the measures each cube holds (up to 8); the clauses can be joined by `,` or `;`. `rollup(...)` and `calendar(...)` are accepted and keep nothing in a part of Format Major 2. A table text column is lossy in the part, so a table cube serves integer keys.
+
+The workers of a parallel aggregate over a `sift_col` index answer granules from the cubes as the serial scan does. A table part answers once it is sealed (`VACUUM (FREEZE)` or maintenance), under a snapshot of a transaction that is not serializable. A granule with at most 64 dead rows (and under 5% of its rows) from deletes, updates, pending deletes or staged deletes is corrected from its cube; one with more, one patched by a column delta, a float sum over dead rows and a `count(DISTINCT)` over dead rows are scanned in the same plan. A parallel aggregate over a `sift_table` is not planned.
+
 ## 4. Shredding `JSONB` Columns (`paths`)
 
 Declare typed paths inside `JSONB` columns so `SiftAgg` evaluates `payload->>'channel'`, `(payload->>'discount')::float8`, `@>`, `?`, and `jsonb_array_elements()` directly on compressed columns.
