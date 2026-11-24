@@ -133,6 +133,30 @@ jsonb_key_leaf(Oid indexoid, int att, const char *key, int len)
 	return found;
 }
 
+/* the leaf is at the path, or is the object of free keys (`path.*`) whose member the path is */
+static bool
+leaf_declares(const SiftSrcLeaf *l, int att, const List *path)
+{
+	if (l->attno != att || l->parent >= 0)
+		return false;
+	if (l->kind == SCL_OBJECT)
+		return list_length(path) == list_length(l->path) + 1 && equal(list_copy_head(path, list_length(l->path)), l->path);
+	return equal(l->path, path);
+}
+
+static bool
+jsonb_path_declared(Oid relid, bool is_table, int att, const List *path)
+{
+	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
+	const SiftSrcLayout *lay = sift_v1_reader_of(is_table)->layout(r.rel);
+	bool		found = false;
+
+	for (int i = 0; i < lay->nleaves && !found; i++)
+		found = leaf_declares(&lay->leaf[i], att, path);
+	sift_v1_rel_close(&r);
+	return found;
+}
+
 static SiftVecType
 vec_type(SiftV6Class cls)
 {
@@ -670,5 +694,6 @@ v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation in
 
 const SiftJsonbOps v1_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
+	.path_declared = jsonb_path_declared,
 	.unnest_run = v1_unnest_run
 };

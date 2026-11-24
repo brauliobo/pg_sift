@@ -176,6 +176,21 @@ field_leaf(const SiftV6Rel *rel, const Expr *e, bool as_text, int *att, const ch
 	return key_leaf(rel, *att, *key);
 }
 
+const Var *
+sift_v6_doc_chain(const Expr *e, List **path)
+{
+	*path = NIL;
+	for (e = strip(e); e != NULL && (func_of(e) == F_JSONB_OBJECT_FIELD || func_of(e) == F_JSONB_OBJECT_FIELD_TEXT) && list_length(args_of(e)) == 2; e = strip(linitial(args_of(e))))
+	{
+		const char *key = text_const(lsecond(args_of(e)));
+
+		if (key == NULL)
+			return NULL;
+		*path = lcons(makeString(pstrdup(key)), *path);
+	}
+	return e != NULL && IsA(e, Var) && ((const Var *) e)->vartype == JSONBOID ? (const Var *) e : NULL;
+}
+
 static bool
 scalar_leaf(const SiftV6Rel *rel, int leaf)
 {

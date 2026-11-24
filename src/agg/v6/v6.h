@@ -417,6 +417,8 @@ sift_v6_vatt_col(int attno, int att, Oid typid, int scale)
 }
 /* e is doc -> 'k' or doc['k'] (as_text false), or doc ->> 'k' or its #>> '{}' (as_text true), of a column doc and a constant text key */
 extern bool sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **key);
+/* the jsonb column e is a chain of -> and ->> with constant keys over (NULL: it is not one), and the keys in order (NIL: e is the column) */
+extern const Var *sift_v6_doc_chain(const Expr *e, List **path);
 /* keys and nkeys with the scan keys of spec->jsonqual appended */
 extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys);
 /* The value of a row whose leaf could not hold it, from the payload of its exception (a jsonb datum): the `->>` text, or its float8 cast; false: NULL */
