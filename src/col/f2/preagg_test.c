@@ -106,7 +106,14 @@ oracle_read(const SiftPreaggCubeDesc *cd, const SiftGranuleView *v, OracleCols *
 	const int	nr = oc->nr;
 
 	for (int d = 0; d < cd->ndims; d++)
+	{
 		oracle_ints(v, cd->dim_leaf[d], cd->dim_kind[d] == SIFT_PDIM_DICT32, nr, &oc->dim[d], &oc->dnull[d]);
+		for (int r = 0; cd->dim_kind[d] == SIFT_PDIM_NULLFLAG && r < nr; r++)
+		{
+			oc->dim[d][r] = !oc->dnull[d][r];
+			oc->dnull[d][r] = false;
+		}
+	}
 	for (int m = 0; m < cd->nmeasures; m++)
 	{
 		oc->mnull[m] = palloc(nr);

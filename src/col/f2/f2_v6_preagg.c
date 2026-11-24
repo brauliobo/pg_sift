@@ -223,8 +223,10 @@ find_dist(const SiftPreaggCubeDesc *cd, int leaf)
 static bool
 pred_on_dim(const SiftColDef *d, const SiftColPred *p, SiftPreaggDimKind kind)
 {
-	if (!def_plain(d) || (kind == SIFT_PDIM_INT64 ? d->store != SIFT_COLS_INT : (d->store != SIFT_COLS_STR || d->type != SIFT_COLT_TEXT)))
+	if (!def_plain(d) || (kind != SIFT_PDIM_DICT32 ? d->store != SIFT_COLS_INT : (d->store != SIFT_COLS_STR || d->type != SIFT_COLT_TEXT)))
 		return false;
+	if (kind == SIFT_PDIM_NULLFLAG)
+		return p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL;
 	for (int j = 0; j < p->nvals; j++)
 		if (p->vals[j].isnull || p->vals[j].overflow)
 			return false;
@@ -330,8 +332,11 @@ bind_cube(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCube
 	{
 		const SiftColPred *p = &o->preds[k];
 		const SiftColDef *d = &schema->cols[p->col];
-		int			dim = find_dim(cd, part_leaf(o, p->col), d->store == SIFT_COLS_STR ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64);
+		const int	leaf = part_leaf(o, p->col);
+		int			dim = find_dim(cd, leaf, d->store == SIFT_COLS_STR ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64);
 
+		if (dim < 0 && (p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL))
+			dim = find_dim(cd, leaf, SIFT_PDIM_NULLFLAG);
 		pb->pred_dim[k] = dim;
 		pb->pred_ok[k] = dim >= 0 && pred_on_dim(d, p, cd->dim_kind[dim]);
 		score += pb->pred_ok[k] ? 0 : 1000;
@@ -507,7 +512,7 @@ cell_passes(const PartBind *pb, const SiftPreaggCubeDesc *cd, const SiftF2GranOf
 	{
 		const SiftColPred *p = &o->preds[k];
 		const int	d = pb->pred_dim[k];
-		const bool	null = d >= 0 && ((grp->dim_null_mask >> d) & 1);
+		const bool	null = d >= 0 && (cd->dim_kind[d] == SIFT_PDIM_NULLFLAG ? grp->keys[d] == 0 : (grp->dim_null_mask >> d) & 1);
 
 		if (!pb->pred_ok[k] || o->decided[k])
 			continue;

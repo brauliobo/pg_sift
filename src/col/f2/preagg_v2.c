@@ -18,6 +18,7 @@
 #define PAG_AUTO_DIST_MAX_CARD	4096	/* ... and of at most this many is one whose distinct values a cube counts */
 #define PAG_AUTO_GROUPS			512		/* the most cells a cube of a granule has: a dimension and its NULL group, or the product of the dimensions of the joint cube */
 #define PAG_AUTO_CELL_BYTES		65536	/* ... and the most bytes of them: the budget of SIFT_PAG_BUDGET_PERCENT would leave the cube out of most granules otherwise */
+#define PAG_SPARSE_PERCENT		2		/* a column too wide to be a dimension that has a value in at most this share of its rows (a soft-delete stamp) is a dimension of whether it has one */
 #define PAG_EXPLICIT_GROUPS		4096
 #define PAG_SAMPLE_ROWS			16384
 
@@ -38,6 +39,22 @@ static bool
 col_plain(const SiftColIn *c)
 {
 	return c->group1 == 0 && !c->key_leaf && !c->astext && c->hint != SIFT_CHINT_LIST && c->hint != SIFT_CHINT_KEY_PRESENT;
+}
+
+/* The rows of the sample of the column (every step-th) and those of them that are not NULL */
+static uint32
+sample_nonnull(const SiftColIn *col, int n, uint32 *sampled)
+{
+	const int	step = Max(1, n / PAG_SAMPLE_ROWS);
+	uint32		nonnull = 0;
+
+	*sampled = 0;
+	for (int r = 0; r < n; r += step)
+	{
+		*sampled += 1;
+		nonnull += col->isnull == NULL || !col->isnull[r];
+	}
+	return nonnull;
 }
 
 /* The distinct values of a sample of the column, at most cap + 1 */
@@ -89,12 +106,21 @@ col_info(const SiftRows *rows, const SiftDictEnc *const *dicts, int c, ColInfo *
 	{
 		const bool	num = col->hint == SIFT_CHINT_NUM64;
 		const uint32 nd = sample_distinct(col, rows->nrows, PAG_AUTO_DIST_MAX_CARD);
+		uint32		sampled;
+		const uint32 nonnull = sample_nonnull(col, rows->nrows, &sampled);
+		const bool	sparse = nonnull > 0 && (uint64) nonnull * 100 <= (uint64) sampled * PAG_SPARSE_PERCENT;
 
 		ci->numeric = true;
 		ci->mkind = num ? SIFT_PMEAS_NUM64 : SIFT_PMEAS_INT64;
 		ci->card = nd;
 		ci->dkind = SIFT_PDIM_INT64;
 		ci->dim = !num && nd > 0 && nd <= PAG_AUTO_DIM_MAX_CARD;
+		if (!num && !ci->dim && sparse)
+		{
+			ci->dkind = SIFT_PDIM_NULLFLAG;
+			ci->card = 2;
+			ci->dim = true;
+		}
 		ci->dist = !num && nd > 0 && nd <= PAG_AUTO_DIST_MAX_CARD;
 	}
 	else if (col->kind == SIFT_CELL_F8)
@@ -111,10 +137,12 @@ col_info(const SiftRows *rows, const SiftDictEnc *const *dicts, int c, ColInfo *
 	}
 }
 
-/* The row r of a column as a group key: the code of the dictionary of a string, NULL as -1 */
+/* The row r of a column as a group key: the code of the dictionary of a string, NULL as -1, whether it has a value for a NULL flag */
 static int64
-plan_key(const SiftColIn *col, const SiftDictEnc *dict, int r)
+plan_key(const SiftColIn *col, const SiftDictEnc *dict, SiftPreaggDimKind kind, int r)
 {
+	if (kind == SIFT_PDIM_NULLFLAG)
+		return col->isnull == NULL || !col->isnull[r];
 	if (col->isnull != NULL && col->isnull[r])
 		return -1;
 	return col->kind == SIFT_CELL_STR ? (int64) (col->dcode != NULL ? col->dcode[r] : dict->row_codes[r]) : col->i[r];
@@ -122,7 +150,7 @@ plan_key(const SiftColIn *col, const SiftDictEnc *dict, int r)
 
 /* The distinct combinations of the values of the columns in the first granule of the rows, at most limit + 1 */
 static uint32
-observed_groups(const SiftRows *rows, const SiftDictEnc *const *dicts, const int *cols, int n, uint32 limit)
+observed_groups(const SiftRows *rows, const SiftDictEnc *const *dicts, const ColInfo *ci, const int *cols, int n, uint32 limit)
 {
 	const uint32 size = pg_nextpower2_32((limit + 1) * 2);
 	uint64	   *seen = palloc0(size * sizeof(uint64));
@@ -134,7 +162,7 @@ observed_groups(const SiftRows *rows, const SiftDictEnc *const *dicts, const int
 		uint32		at;
 
 		for (int i = 0; i < n; i++)
-			h = sift_fmix64(h ^ (uint64) plan_key(&rows->cols[cols[i]], dicts != NULL ? dicts[cols[i]] : NULL, r)) + i;
+			h = sift_fmix64(h ^ (uint64) plan_key(&rows->cols[cols[i]], dicts != NULL ? dicts[cols[i]] : NULL, ci[cols[i]].dkind, r)) + i;
 		h |= 1;
 		for (at = (uint32) h & (size - 1); seen[at] != 0 && seen[at] != h; at = (at + 1) & (size - 1))
 			;
@@ -249,7 +277,7 @@ plan_declared(const SiftRows *rows, const SiftDictEnc *const *dicts, ColInfo *ci
 	add_cube(plan, ci, nc, dims, 0, NULL, 0, PAG_EXPLICIT_GROUPS);
 	for (int i = 0; i < nd; i++)
 		add_cube(plan, ci, nc, &dims[i], 1, NULL, 0, PAG_EXPLICIT_GROUPS);
-	if (nd > 1 && observed_groups(rows, dicts, dims, nd, PAG_EXPLICIT_GROUPS) <= PAG_EXPLICIT_GROUPS)
+	if (nd > 1 && observed_groups(rows, dicts, ci, dims, nd, PAG_EXPLICIT_GROUPS) <= PAG_EXPLICIT_GROUPS)
 		add_cube(plan, ci, nc, dims, nd, NULL, 0, PAG_EXPLICIT_GROUPS);
 }
 
@@ -282,7 +310,7 @@ sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftP
 		add_cube(plan, ci, nc, dims, 0, dist, ndist, groups);
 		for (int i = 0; i < nd; i++)
 			add_cube(plan, ci, nc, &dims[i], 1, dist, ndist, groups);
-		for (njoint = nd; njoint > 1 && observed_groups(rows, dicts, dims, njoint, groups) > groups; njoint--)
+		for (njoint = nd; njoint > 1 && observed_groups(rows, dicts, ci, dims, njoint, groups) > groups; njoint--)
 			;
 		if (njoint > 1)
 			add_cube(plan, ci, nc, dims, njoint, dist, 0, groups);
@@ -441,10 +469,15 @@ dist_add(DistAcc *a, int64 v, const SiftDictEnc *dict)
 		a->vals[a->n++] = v;
 }
 
-/* The value of row r of a dimension or distinct column: false for NULL */
+/* The value of row r of a dimension or distinct column: false for NULL; a NULL flag always has one */
 static bool
-col_value(const SiftColIn *c, int r, int64 *v)
+col_value(const SiftColIn *c, SiftPreaggDimKind kind, int r, int64 *v)
 {
+	if (kind == SIFT_PDIM_NULLFLAG)
+	{
+		*v = c->isnull == NULL || !c->isnull[r];
+		return true;
+	}
 	if (c->isnull != NULL && c->isnull[r])
 		return false;
 	*v = c->kind == SIFT_CELL_STR ? (int64) c->dcode[r] : c->i[r];
@@ -507,7 +540,7 @@ fold_row(GranCtx *x, int r, Grp *g)
 		const SiftColIn *c = &x->cols[cd->dist_leaf[d]];
 		int64		v;
 
-		if (col_value(c, r, &v))
+		if (col_value(c, SIFT_PDIM_INT64, r, &v))
 			dist_add(&g->d[d], v, c->kind == SIFT_CELL_STR ? x->dicts[cd->dist_leaf[d]] : NULL);
 	}
 }
@@ -658,7 +691,7 @@ cube_granule(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int nrows, con
 		Grp		   *g;
 
 		for (int d = 0; d < cd->ndims; d++)
-			if (!col_value(&cols[cd->dim_leaf[d]], r, &key[d]))
+			if (!col_value(&cols[cd->dim_leaf[d]], (SiftPreaggDimKind) cd->dim_kind[d], r, &key[d]))
 				nullmask |= (uint8) (1 << d);
 		g = group_of(&x, nullmask, key, &full);
 		if (g != NULL)

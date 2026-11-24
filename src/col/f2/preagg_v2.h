@@ -44,7 +44,8 @@ StaticAssertDecl(sizeof(SiftPreaggSecHdr) == 32, "SiftPreaggSecHdr must be 32 by
 typedef enum SiftPreaggDimKind
 {
 	SIFT_PDIM_INT64 = 1,		/* int2, int4, int8, bool, date, timestamp */
-	SIFT_PDIM_DICT32 = 2		/* the code of a string in the dictionary of the part */
+	SIFT_PDIM_DICT32 = 2,		/* the code of a string in the dictionary of the part */
+	SIFT_PDIM_NULLFLAG = 3		/* of an integer column that is NULL in nearly every row: 0 where the row is NULL, 1 where it has a value; it answers IS NULL and IS NOT NULL and keeps no value */
 } SiftPreaggDimKind;
 
 typedef enum SiftPreaggMeasKind

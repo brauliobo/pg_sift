@@ -82,7 +82,27 @@ SELECT * FROM oracle('words_col');
  t                    | t         |          0
 (1 row)
 
-DROP TABLE ty, wide, tiny, words;
+-- A column with a value in few rows, each its own (a soft-delete stamp), is a dimension of whether it has one: the cells hold that flag and no stamp
+CREATE TABLE stamps (id int PRIMARY KEY, kind int, v8 int8, stamp timestamptz, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO stamps SELECT i, i % 6, (i * 37) % 10007, CASE WHEN i % 100 = 0 THEN timestamptz '2025-06-01 00:00:00+00' + i * interval '1 second' END, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text)
+FROM generate_series(1, 40000) i;
+CREATE INDEX stamps_col ON stamps USING sift_col (id, kind, v8, stamp) WITH (key_order = 'id');
+SELECT * FROM oracle('stamps_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+DELETE FROM stamps WHERE id % 40 = 3;
+UPDATE stamps SET stamp = timestamptz '2026-01-01 00:00:00+00' + id * interval '1 second' WHERE id % 1000 = 7;
+VACUUM stamps;
+SELECT * FROM oracle('stamps_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+DROP TABLE ty, wide, tiny, words, stamps;
 DROP FUNCTION oracle(regclass);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

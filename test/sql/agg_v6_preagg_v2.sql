@@ -158,6 +158,7 @@ INSERT INTO churn SELECT * FROM orders;
 ALTER TABLE churn ADD PRIMARY KEY (id);
 CREATE INDEX churn_col ON churn USING sift_col (id, region, channel, tier, status, qty4, qty8, price, weight, score, ref, city, pad) WITH (key_order = 'id');
 VACUUM churn;
+SET sift.agg_force = on;
 CREATE TABLE served (label text PRIMARY KEY, n int);
 CREATE FUNCTION graded(label text, q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n int := preagg_granules(q);
@@ -210,6 +211,7 @@ COMMIT;
 SELECT 'committed insert' AS txn, * FROM churn_checks();
 VACUUM churn;
 SELECT 'vacuum again' AS txn, * FROM churn_checks();
+RESET sift.agg_force;
 
 -- preagg = 'off' stores no cubes and every granule is scanned; 'auto' stores them
 CREATE TABLE cubes_auto (id int PRIMARY KEY, g int, v int, pad text) WITH (autovacuum_enabled = off);
@@ -224,6 +226,22 @@ SELECT (SELECT sum(preagg_bytes) > 0 FROM sift.col_segments('cubes_auto_col')) A
        (SELECT sum(preagg_bytes) = 0 FROM sift.col_segments('cubes_off_col')) AS off_stores_none;
 SELECT same('SELECT g, count(*), sum(v) FROM cubes_auto GROUP BY g') AS auto, same('SELECT g, count(*), sum(v) FROM cubes_off GROUP BY g') AS off;
 
-DROP TABLE churn, served, events, readings, grid, orders, cubes_auto, cubes_off;
+-- a column that is NULL in nearly every row (a soft-delete stamp) with a value of its own in each of the others is a dimension of the cubes: its few rows make few cells, and the NULL group answers IS NULL
+CREATE TABLE soft (id int PRIMARY KEY, kind int, val int8, stamp timestamptz, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE soft ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO soft SELECT i, i % 6, (i % 997) * 3 - 1000, CASE WHEN i % 60 = 0 THEN timestamptz '2025-06-01 00:00:00+00' + i * interval '1 second' END, (SELECT string_agg(md5(i::text || s::text), '') FROM generate_series(1, 10) s) FROM generate_series(1, 24000) i;
+CREATE INDEX soft_col ON soft USING sift_col (id, kind, val, stamp) WITH (key_order = 'id');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) soft;
+SELECT parity('SELECT kind, count(*), sum(val) FROM soft WHERE stamp IS NULL GROUP BY kind') AS stamp_is_null,
+       parity('SELECT kind, count(*), sum(val) FROM soft WHERE stamp IS NOT NULL GROUP BY kind') AS stamp_is_not_null,
+       parity('SELECT count(*), sum(val), min(val), max(val) FROM soft WHERE stamp IS NULL') AS stamp_is_null_global;
+UPDATE soft SET stamp = timestamptz '2026-01-01 00:00:00+00' + id * interval '1 second' WHERE id % 1000 = 3;
+DELETE FROM soft WHERE id % 500 = 7;
+SELECT parity('SELECT kind, count(*), sum(val) FROM soft WHERE stamp IS NULL GROUP BY kind') AS after_churn;
+VACUUM soft;
+SELECT parity('SELECT kind, count(*), sum(val) FROM soft WHERE stamp IS NULL GROUP BY kind') AS after_vacuum,
+       parity('SELECT kind, count(*), sum(val) FROM soft WHERE stamp IS NOT NULL GROUP BY kind') AS not_null_after_vacuum;
+
+DROP TABLE churn, served, events, readings, grid, orders, soft, cubes_auto, cubes_off;
 DROP FUNCTION churn_checks(), graded(text, text), same(text), parity(text), delta_granules(text), preagg_granules(text), answer(text, bool);
 DROP EXTENSION pg_sift;

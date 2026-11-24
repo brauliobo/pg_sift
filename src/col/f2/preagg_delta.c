@@ -88,11 +88,16 @@ read_rows(const SiftPreaggCubeDesc *cd, const SiftGranuleView *v, const uint16 *
 	const int	cap = Max(n, 1);
 
 	for (int d = 0; d < cd->ndims; d++)
-		if (cd->dim_kind[d] == SIFT_PDIM_INT64)
+		if (cd->dim_kind[d] != SIFT_PDIM_DICT32)
 		{
 			rv->dim[d] = palloc(cap * sizeof(int64));
 			rv->dnull[d] = palloc(cap);
 			sift_granule_point_ints(v, cd->dim_leaf[d], rows, n, rv->dim[d], rv->dnull[d]);
+			for (int i = 0; cd->dim_kind[d] == SIFT_PDIM_NULLFLAG && i < n; i++)
+			{
+				rv->dim[d][i] = !rv->dnull[d][i];
+				rv->dnull[d][i] = false;
+			}
 		}
 		else
 		{
@@ -121,13 +126,13 @@ read_rows(const SiftPreaggCubeDesc *cd, const SiftGranuleView *v, const uint16 *
 static bool
 dim_is(const SiftPreaggCubeDesc *cd, const SiftGranuleView *v, const SiftPreaggGroupHdr *grp, const RowVals *rv, int d, int i)
 {
-	const bool	null = cd->dim_kind[d] == SIFT_PDIM_INT64 ? rv->dnull[d][i] : rv->dstr[d][i].isnull;
+	const bool	null = cd->dim_kind[d] != SIFT_PDIM_DICT32 ? rv->dnull[d][i] : rv->dstr[d][i].isnull;
 
 	if (((grp->dim_null_mask >> d) & 1) != null)
 		return false;
 	if (null)
 		return true;
-	if (cd->dim_kind[d] == SIFT_PDIM_INT64)
+	if (cd->dim_kind[d] != SIFT_PDIM_DICT32)
 		return grp->keys[d] == rv->dim[d][i];
 	{
 		const SiftPartDict *pd = sift_part_dict_find(v->dicts, cd->dim_leaf[d], SIFT_DICT_KIND_STR);
