@@ -359,7 +359,14 @@ join_derive_ok(const V6Plan *p, const Expr *e)
 	return true;
 }
 
-/* e is a key or argument the scan computes (v6_plan_rewrite.h): col is its column, typed as e; none of these are carried by the pipe of a join */
+/* the pipe of a star join carries the vector of a derivation through the dimensions, so it needs one type for the whole scan (the unnest's carries its own) */
+static bool
+pipe_carries(const V6Plan *p, const SiftV6Derive *d)
+{
+	return p->xseed == NULL || p->xseed->unnest || sift_v6_derive_vec_typed(d);
+}
+
+/* e is a key or argument the scan computes (v6_plan_rewrite.h): col is its column, typed as e */
 bool
 sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 {
@@ -368,7 +375,7 @@ sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	Oid			restype;
 	int			at;
 
-	if ((p->xseed != NULL && !p->xseed->unnest) || !sift_v6_derive_of(&rs, e, key, &d, &restype) || (at = add_derive(p, &d)) == 0)
+	if (!join_derive_ok(p, e) || !sift_v6_derive_of(&rs, e, key, &d, &restype) || !pipe_carries(p, &d) || (at = add_derive(p, &d)) == 0)
 		return false;
 	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.scale = d.kind == SVD_NUM_EXPR ? (int) d.aux : 0,.derive = at};
 	return true;

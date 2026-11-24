@@ -274,6 +274,30 @@ sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s)
 	return true;
 }
 
+SiftVecType
+sift_v6_derive_vec_type(const SiftV6Spec *s, const SiftV6Derive *d)
+{
+	SiftV6PgItem it;
+
+	switch (d->kind)
+	{
+		case SVD_PG_EXPR:
+			sift_v6_pgexpr_item(s, d, &it);
+			return sift_v6_result_vec_type(it.restype);
+		case SVD_URL_HOST:
+		case SVD_CASE_STR:
+			return SVEC_STRVIEW;
+		default:
+			return SVEC_I64;
+	}
+}
+
+bool
+sift_v6_derive_vec_typed(const SiftV6Derive *d)
+{
+	return d->kind != SVD_NUM_EXPR && d->kind != SVD_ARITH;
+}
+
 bool
 sift_v6_spec_pg_reads(const SiftV6Spec *s)
 {

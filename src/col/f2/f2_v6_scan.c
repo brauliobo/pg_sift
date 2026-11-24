@@ -180,7 +180,7 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 	for (int i = 0; i < s->ncols; i++)
 		type[i] = s->cols[i].vec.type;
 	for (int k = 0; k < s->nderived; k++)
-		type[s->ncols + k] = sift_v6_pgexpr_vec_type(spec, s->derived[k].d);
+		type[s->ncols + k] = sift_v6_derive_vec_type(spec, s->derived[k].d);
 	if (s->rows != NULL)
 	{
 		type[s->ncols + s->nderived] = SVEC_I64;
