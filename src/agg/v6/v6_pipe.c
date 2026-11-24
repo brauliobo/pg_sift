@@ -65,7 +65,7 @@ sift_v6_vec_col(const SiftV6Spec *spec, int v)
 	if (v < spec->naggs)
 		return sift_v6_kind_reads_column(spec->agg[v].kind) ? &spec->agg[v].arg : NULL;
 	if (v < 2 * spec->naggs)
-		return spec->agg[v - spec->naggs].kind == SV6_ARG_MAX || spec->agg[v - spec->naggs].kind == SV6_ARG_MIN ? &spec->agg[v - spec->naggs].arg2 : NULL;
+		return spec->agg[v - spec->naggs].kind == SV6_ARG_MAX || spec->agg[v - spec->naggs].kind == SV6_ARG_MIN || (v6g_is_gen(&spec->agg[v - spec->naggs]) && spec->agg[v - spec->naggs].arg2.attno != 0) ? &spec->agg[v - spec->naggs].arg2 : NULL;
 	if (v >= sift_v6_spec_fvec(spec))
 		return &spec->fcol[v - sift_v6_spec_fvec(spec)];
 	for (int j = 0; j < spec->naggs; j++)

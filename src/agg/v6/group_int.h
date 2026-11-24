@@ -95,7 +95,7 @@ typedef struct V6DistBatch
 struct SiftV6Group
 {
 	const SiftV6Spec *spec;
-	struct SiftV6GenKeys *gen;	/* the keys the table does not group by their bytes: the spec above is then the copy in which they are int8 codes (v6_datum.h) */
+	struct SiftV6GenKeys *gkeys;/* the keys the table does not group by their bytes: the spec above is then the copy in which they are int8 codes (v6_datum.h) */
 	MemoryContext cx;
 	int			nsets;
 	V6Set	   *set;
@@ -135,6 +135,7 @@ struct SiftV6Group
 	uint32		code_cap;
 	uint32		code_epoch_cur;
 	SiftTextArena tx;			/* the winners of MIN and MAX of text (group_ext.h) */
+	struct V6Gen *gen;			/* the generic and ordered-set aggregates (v6_gen.h); their groups never spill */
 };
 
 /* the Datums of the keys of a slot of a set of keys (only: just key number only, -1: all), and of an aggregate of its state */
@@ -174,7 +175,7 @@ extern Datum v6g_ext_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc
 static inline bool
 v6g_is_ext(const SiftV6Agg *a)
 {
-	return a->kind >= SV6_STDDEV_POP || ((a->kind == SV6_MIN || a->kind == SV6_MAX) && sift_v6_class(a->arg.typid) == SV6C_TEXT);
+	return (a->kind >= SV6_STDDEV_POP && a->kind <= SV6_PCT_CONT) || ((a->kind == SV6_MIN || a->kind == SV6_MAX) && sift_v6_class(a->arg.typid) == SV6C_TEXT);
 }
 
 /* How the states of aggregate a combine: the one operation of v6_acc.h for the merge of the spill of a serial run and the partitions of a parallel one */

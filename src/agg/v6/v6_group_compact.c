@@ -599,8 +599,8 @@ v6g_compact_key_datums(const SiftV6Group *g, const V6Set *set, const uint64 *slo
 		else
 			values[k] = v6g_int_datum(g->spec->key[k].typid, x);
 	}
-	if (g->gen != NULL)
-		sift_v6_genkeys_resolve(g->gen, values, isnull, want);
+	if (g->gkeys != NULL)
+		sift_v6_genkeys_resolve(g->gkeys, values, isnull, want);
 }
 
 void

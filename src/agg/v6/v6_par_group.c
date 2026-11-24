@@ -11,6 +11,7 @@
 #include "postgres.h"
 
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_gen.h"
 #include "agg/v6/v6_par_dist.h"
 #include "agg/v6/v6_par_pg.h"
 #include "agg/v6/v6_topk_run.h"
@@ -59,32 +60,28 @@ typedef struct ParLocal
 	Size		rec_cap;
 	SiftV6ParDistOut *dist_out;	/* a participant that scans: its COUNT(DISTINCT) rows (v6_par_dist.h) */
 	SiftV6ParDist *dist;		/* the owner of a partition: the values of its COUNT(DISTINCT) aggregates (v6_par_dist.h) */
+	StringInfoData tail;		/* the bytes after the accumulators of the record in hand */
 } ParLocal;
 
-/* The bytes after the accumulators of a record that a text state needs: its winner when it does not fit the 8 bytes of the state itself (the offsets of an arena mean nothing to another participant) */
-static Size
-tail_bytes(const ParEnv *e, const V6Acc *acc)
-{
-	Size		n = 0;
-
-	for (int j = 0; j < e->spec->naggs; j++)
-		if (is_text_ext(&e->spec->agg[j]) && acc[j].n > 0 && !(((const SiftTextSlot *) &acc[j])->pad & SIFT_TSLOT_INLINE))
-			n += (Size) ((const SiftTextSlot *) &acc[j])->v1;
-	return n;
-}
-
+/* The bytes after the accumulators of a record that its states need: the winner of a text state when it does not fit the 8 bytes of the state itself (the offsets of an arena mean nothing to another participant), and the partial state of a generic aggregate */
 static void
-put_tail(const ParLocal *l, const V6Acc *acc, uint8 *dst)
+tail_build(const ParLocal *l, const V6Acc *acc, StringInfo buf)
 {
+	resetStringInfo(buf);
 	for (int j = 0; j < l->env->spec->naggs; j++)
-		if (is_text_ext(&l->env->spec->agg[j]) && acc[j].n > 0 && !(((const SiftTextSlot *) &acc[j])->pad & SIFT_TSLOT_INLINE))
+	{
+		const SiftV6Agg *a = &l->env->spec->agg[j];
+
+		if (v6g_is_gen(a))
+			v6_gen_state_put(l->g->gen, j, &acc[j], buf);
+		else if (is_text_ext(a) && acc[j].n > 0 && !(((const SiftTextSlot *) &acc[j])->pad & SIFT_TSLOT_INLINE))
 		{
 			uint32		len;
 			const char *w = sift_tslot_bytes(&l->g->tx, (const SiftTextSlot *) &acc[j], &len);
 
-			memcpy(dst, w, len);
-			dst += len;
+			appendBinaryStringInfo(buf, w, len);
 		}
+	}
 }
 
 /* The winner of a text state of a record: dst takes it when it is better, and counts the values the record folded */
@@ -113,7 +110,9 @@ combine_accs(ParLocal *l, V6Acc *dst, const V6Acc *src, const char *tail)
 	const ParEnv *e = l->env;
 
 	for (int j = 0; j < e->spec->naggs; j++)
-		if (is_text_ext(&e->spec->agg[j]))
+		if (v6g_is_gen(&e->spec->agg[j]))
+			tail = v6_gen_state_take(l->g->gen, j, &dst[j], &src[j], tail);
+		else if (is_text_ext(&e->spec->agg[j]))
 			merge_text(l, &e->spec->agg[j], &dst[j], &src[j], &tail);
 		else if (v6g_is_ext(&e->spec->agg[j]))
 			v6g_ext_merge(l->g, &e->spec->agg[j], &dst[j], &src[j]);
@@ -223,10 +222,14 @@ par_local_new(void *env, bool whole)
 {
 	ParEnv	   *e = env;
 	ParLocal   *l = MemoryContextAllocZero(e->cx, sizeof(ParLocal));
+	MemoryContext old = CurrentMemoryContext;
 
 	l->env = e;
 	l->cx = sift_mem_allocset_create(e->cx, "sift agg v6 parallel state");
 	l->g = sift_v6_group_new(whole ? e->spec : &e->part_spec, l->cx, e->desc);
+	MemoryContextSwitchTo(l->cx);
+	initStringInfo(&l->tail);
+	MemoryContextSwitchTo(old);
 	if (!whole)
 		for (int s = 0; s < l->g->nsets; s++)
 			l->g->set[s].plain_row = false;
@@ -296,15 +299,19 @@ export_plain(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 {
 	V6Set	   *set = &l->g->set[s];
 	const Size	accs = (Size) l->env->spec->naggs * sizeof(V6Acc);
-	const Size	len = MAXALIGN(sizeof(SiftV6RecHdr) + accs + tail_bytes(l->env, set->plain));
-	uint8	   *rec = record_room(l, len);
-	SiftV6RecHdr h = {.len = (uint32) len,.set_idx = (uint16) s,.flags = V6REC_PLAIN};
+	Size		len;
+	uint8	   *rec;
+	SiftV6RecHdr h = {.set_idx = (uint16) s,.flags = V6REC_PLAIN};
 
+	tail_build(l, set->plain, &l->tail);
+	len = MAXALIGN(sizeof(SiftV6RecHdr) + accs + l->tail.len);
+	h.len = (uint32) len;
+	rec = record_room(l, len);
 	sift_v6_par_check_record_size((uint32) len);
 	memcpy(rec, &h, sizeof(h));
 	memcpy(rec + sizeof(h), set->plain, accs);
 	memset(rec + sizeof(h) + accs, 0, len - sizeof(h) - accs);
-	put_tail(l, set->plain, rec + sizeof(h) + accs);
+	memcpy(rec + sizeof(h) + accs, l->tail.data, l->tail.len);
 	put(arg, rec, h.len);
 	memset(set->plain, 0, accs);
 }
@@ -322,10 +329,13 @@ export_groups(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 		uint32		klen = 0;
 		const uint8 *kbytes = set->wide ? sift_ht_wide_key(&set->ht, slot, &klen) : NULL;
 		const V6Acc *acc = (const V6Acc *) sift_ht_ext(&set->ht, slot);
-		const uint32 rlen = (uint32) MAXALIGN(base + klen + tail_bytes(l->env, acc));
+		uint32		rlen;
 		uint8	   *rec;
-		SiftV6RecHdr h = {.len = rlen,.set_idx = (uint16) s,.flags = set->wide ? V6REC_WIDE : 0,.hash64 = slot->hash64,.key = slot->key};
+		SiftV6RecHdr h = {.set_idx = (uint16) s,.flags = set->wide ? V6REC_WIDE : 0,.hash64 = slot->hash64,.key = slot->key};
 
+		tail_build(l, acc, &l->tail);
+		rlen = (uint32) MAXALIGN(base + klen + l->tail.len);
+		h.len = rlen;
 		sift_v6_par_check_record_size(rlen);
 		rec = record_room(l, rlen);
 		memset(rec + base + klen, 0, rlen - base - klen);
@@ -335,7 +345,7 @@ export_groups(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 			h.key.i64[1] = klen;
 			memcpy(rec + base, kbytes, klen);
 		}
-		put_tail(l, acc, rec + base + klen);
+		memcpy(rec + base + klen, l->tail.data, l->tail.len);
 		memcpy(rec, &h, sizeof(h));
 		memcpy(rec + sizeof(h), acc, accs);
 		put(arg, rec, rlen);
@@ -363,6 +373,8 @@ par_local_export(void *local, SiftV6RecPut put, void *arg)
 			export_plain(l, s, put, arg);
 		else
 			export_groups(l, s, put, arg);
+	if (l->g->gen != NULL)
+		v6_gen_release(l->g->gen);
 	l->g->tx.used = 0;
 }
 

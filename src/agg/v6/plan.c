@@ -42,6 +42,7 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_cost.h"
 #include "agg/v6/v6_filter_pg.h"
+#include "agg/v6/v6_gen.h"
 #include "agg/v6/v6_pct.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_unnest_jsonb.h"
@@ -390,7 +391,7 @@ agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
 }
 
 static bool
-compile_agg(V6Plan *p, Aggref *a)
+compile_agg_native(V6Plan *p, Aggref *a)
 {
 	SiftV6Agg	g = {.restype = a->aggtype};
 	Aggref		unfiltered = *a;
@@ -430,6 +431,34 @@ compile_agg(V6Plan *p, Aggref *a)
 	p->spec.agg[p->spec.naggs++] = g;
 	add_scan_var(p, (Expr *) a);
 	return true;
+}
+
+/* any other aggregate, and the ones whose arguments or collation the kernels do not take: PostgreSQL's own functions over the values the scan decodes (v6_gen.h) */
+static bool
+compile_agg_gen(V6Plan *p, Aggref *a)
+{
+	SiftV6Agg	g;
+	Aggref		unfiltered = *a;
+
+	unfiltered.aggfilter = NULL;
+	if (!sift_v6_gen_compile(p, &unfiltered, &g) || (a->aggfilter != NULL && !compile_filter(p, a->aggfilter, &g.fclause)))
+		return false;
+	p->spec.genref = lappend(p->spec.genref, copyObject(&unfiltered));
+	spec_room(p, false);
+	p->spec.agg[p->spec.naggs++] = g;
+	add_scan_var(p, (Expr *) a);
+	return true;
+}
+
+static bool
+compile_agg(V6Plan *p, Aggref *a)
+{
+	const int	nderive = p->spec.nderive;
+
+	if (compile_agg_native(p, a))
+		return true;
+	p->spec.nderive = nderive;
+	return compile_agg_gen(p, a);
 }
 
 static int
@@ -741,6 +770,8 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	bool		locked;
 	const double groups = (p->spec.nkeys == 0 ? 1.0 : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) * Max(p->spec.nsets, 1);
 
+	if (!sift_v6_gen_fits(&p->spec, groups))
+		return;
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = p->out;
 	cp->path.pathtarget = p->out->reltarget;
@@ -758,7 +789,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	agg_force_price(&cp->path);
 	serial_total = cp->path.total_cost;
 	add_path(p->out, &cp->path);
-	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table && !locked && sift_v6_spec_parallel_ok(p->root, &p->spec))
+	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table && !locked && sift_v6_spec_parallel_ok(p->root, &p->spec) && sift_v6_gen_parallel_ok(&p->spec))
 		sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, serial_total);
 }
 

@@ -26,6 +26,7 @@
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_argext.h"
 #include "agg/v6/v6_datum.h"
+#include "agg/v6/v6_gen.h"
 #include "agg/v6/v6_group_compact.h"
 #include "core/memtrack.h"
 
@@ -151,6 +152,14 @@ plain_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *
 		}
 		if (a->kind == SV6_GROUPING)
 			continue;
+		if (v6g_is_gen(a))
+		{
+			uint32		r;
+
+			V6_FOR_EACH_ROW(mk, bs->n_raw, r)
+				v6_gen_fold(g->gen, j, acc, argvec, (uint16) r);
+			continue;
+		}
 		if (a->kind == SV6_ARG_MAX || a->kind == SV6_ARG_MIN)
 		{
 			uint32		r;
@@ -424,6 +433,13 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 				((V6Acc *) (sift_ht_ext(&set->ht, g->slots[k]) + g->off[j]))->n++;
 			continue;
 		}
+		if (v6g_is_gen(&g->spec->agg[j]))
+		{
+			for (uint16 k = 0; k < n; k++)
+				if (v6g_row_takes(g, &g->spec->agg[j], g->sel[k]))
+					v6_gen_fold(g->gen, j, (V6Acc *) (sift_ht_ext(&set->ht, g->slots[k]) + g->off[j]), argvec, g->sel[k]);
+			continue;
+		}
 		for (uint16 k = 0; k < n; k++)
 			if (v6g_row_takes(g, &g->spec->agg[j], g->sel[k]))
 				fold_row(g, &g->spec->agg[j], (V6Acc *) (sift_ht_ext(&set->ht, g->slots[k]) + g->off[j]), argvec[j], argvec[g->spec->naggs + j], g->sel[k]);
@@ -458,8 +474,8 @@ sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *key
 		return;
 	old = MemoryContextSwitchTo(g->cx);
 	v6g_filter_eval(g, bs, argvec);
-	if (g->gen != NULL)
-		keyvec = sift_v6_genkeys_apply(g->gen, bs, keyvec);
+	if (g->gkeys != NULL)
+		keyvec = sift_v6_genkeys_apply(g->gkeys, bs, keyvec);
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].nk == 0)
 		{
@@ -475,7 +491,9 @@ sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *key
 static void
 merge_acc(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s)
 {
-	if (v6g_is_ext(a))
+	if (v6g_is_gen(a))
+		v6_gen_combine(g->gen, (int) (a - g->spec->agg), d, s);
+	else if (v6g_is_ext(a))
 		v6g_ext_merge(g, a, d, s);
 	else if ((a->kind == SV6_MIN || a->kind == SV6_MAX) && sift_v6_class(a->arg.typid) == SV6C_TEXT)
 	{
@@ -561,6 +579,8 @@ sift_v6_group_scan_sink(SiftV6Group *g, SiftV6DistPut put, void *arg)
 {
 	g->dist_put = put;
 	g->dist_arg = arg;
+	if (g->gen != NULL)
+		v6_gen_unbound(g->gen);
 	for (int s = 0; s < g->nsets; s++)
 		if (v6g_compact_eligible(g, &g->set[s]))
 			presize_set(g, &g->set[s]);
@@ -586,6 +606,8 @@ sift_v6_group_recycle(SiftV6Group *g)
 		set->emitted = false;
 	}
 	v6g_dist_recycle(g);
+	if (g->gen != NULL)
+		v6_gen_release(g->gen);
 }
 
 /* the group tables of the sets that have no compact table to take the groups first */
@@ -604,8 +626,8 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	const uint32 all = spec->nkeys >= 32 ? UINT32_MAX : (((uint32) 1) << spec->nkeys) - 1;
 
-	g->gen = sift_v6_genkeys_new(cx, spec);
-	g->spec = g->gen != NULL ? sift_v6_genkeys_spec(g->gen) : spec;
+	g->gkeys = sift_v6_genkeys_new(cx, spec);
+	g->spec = g->gkeys != NULL ? sift_v6_genkeys_spec(g->gkeys) : spec;
 	g->cx = cx;
 	g->desc = desc;
 	g->budget = get_hash_memory_limit();
@@ -628,6 +650,11 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	for (int j = 0; j < spec->naggs; j++)
 		if ((spec->agg[j].kind == SV6_MIN || spec->agg[j].kind == SV6_MAX) && sift_v6_class(spec->agg[j].arg.typid) == SV6C_TEXT && g->slab == NULL)
 			g->slab = sift_strslab_new(cx);
+	if (sift_v6_spec_has_gen(spec))
+	{
+		g->gen = v6_gen_new(spec, cx, g->budget);
+		g->budget = UINT64_MAX;
+	}
 	presize(g);
 	MemoryContextSwitchTo(old);
 	return g;
@@ -714,7 +741,7 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str,
 static uint64
 group_bytes(const SiftV6Group *g)
 {
-	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch)) + (g->gen != NULL ? sift_v6_genkeys_bytes(g->gen) : 0);
+	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch)) + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0);
 
 	for (int s = 0; s < g->nsets; s++)
 	{
@@ -757,7 +784,12 @@ v6g_spill_all(SiftV6Group *g)
 void
 v6g_spill_if_over(SiftV6Group *g)
 {
-	if (group_bytes(g) > g->budget - g->dist_budget)
+	if (g->gen != NULL)
+	{
+		if (group_bytes(g) > v6_gen_limit(g->gen))
+			v6_gen_no_spill(g->gen);
+	}
+	else if (group_bytes(g) > g->budget - g->dist_budget)
 		v6g_spill_all(g);
 }
 
@@ -826,6 +858,8 @@ sift_v6_group_finish(SiftV6Group *g)
 	for (int s = 0; s < g->nsets && g->spec->topk == 0; s++)
 		v6g_compact_flush(g, &g->set[s]);
 	v6g_spill_if_over(g);
+	if (g->gen != NULL)
+		v6_gen_finish(g->gen, g);
 	finish_in_cx(g);
 	MemoryContextSwitchTo(old);
 }
@@ -950,6 +984,8 @@ sift_v6_group_free(SiftV6Group *g)
 		v6g_compact_free(&g->set[s]);
 	v6g_dist_free(g);
 	v6g_filter_free(g);
+	if (g->gen != NULL)
+		v6_gen_free(g->gen);
 	if (g->wb.buf != NULL)
 		sift_wide_batch_free(&g->wb);
 	if (g->slab != NULL)
@@ -963,8 +999,8 @@ sift_v6_group_free(SiftV6Group *g)
 		tuplestore_end(g->store);
 	if (g->tx.buf != NULL)
 		pfree(g->tx.buf);
-	if (g->gen != NULL)
-		sift_v6_genkeys_free(g->gen);
+	if (g->gkeys != NULL)
+		sift_v6_genkeys_free(g->gkeys);
 }
 
 const char *

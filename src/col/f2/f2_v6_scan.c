@@ -86,7 +86,7 @@ read_by_code_only(const SiftV6Spec *spec, int attno)
 		for (int c = 0; c < a->nxcols; c++)
 			if (a->xcol[c].attno == attno)
 				return false;
-		if ((a->kind == SV6_ARG_MAX || a->kind == SV6_ARG_MIN) && a->arg2.attno == attno)
+		if ((a->kind == SV6_ARG_MAX || a->kind == SV6_ARG_MIN || v6g_is_gen(a)) && a->arg2.attno == attno)
 			return false;
 		if (sift_v6_kind_reads_column(a->kind) && a->arg.attno == attno)
 		{
@@ -128,7 +128,7 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 static bool
 vec_takes_nan(const SiftV6Spec *spec, int v)
 {
-	return v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v]);
+	return (v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v])) || sift_v6_vec_of_gen(spec, v);
 }
 
 /* The keys and arguments the spec computes from columns: their sources are read as values, their vectors replace the ones of the columns */
