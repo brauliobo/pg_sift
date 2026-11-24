@@ -70,10 +70,10 @@ SELECT * FROM queries('ev');
 ---------------+-------+------
  count_by_kind |     6 | t
  by_kind_sums  |     6 | t
- global        |     6 | t
+ global        |     0 | t
  count_live    |     5 | t
  range_part    |     1 | t
- by_grp_float  |     6 | t
+ by_grp_float  |     0 | t
  point_days    |     0 | t
  live_by_kind  |     5 | t
  by_day        |     6 | t
@@ -125,7 +125,7 @@ SELECT * FROM queries('ev', 5);
 ---------------+-------+------
  count_by_kind |     3 | t
  by_kind_sums  |     3 | t
- global        |     3 | t
+ global        |     0 | t
  count_live    |     3 | t
  range_part    |     1 | t
 (5 rows)
@@ -136,7 +136,7 @@ SELECT * FROM queries('ev', 5);
 ---------------+-------+------
  count_by_kind |     3 | t
  by_kind_sums  |     3 | t
- global        |     3 | t
+ global        |     0 | t
  count_live    |     3 | t
  range_part    |     1 | t
 (5 rows)
@@ -151,7 +151,7 @@ SELECT * FROM queries('ev', 5);
 ---------------+-------+------
  count_by_kind |     2 | t
  by_kind_sums  |     2 | t
- global        |     2 | t
+ global        |     0 | t
  count_live    |     2 | t
  range_part    |     1 | t
 (5 rows)
@@ -163,7 +163,7 @@ SELECT * FROM queries('ev', 5);
 ---------------+-------+------
  count_by_kind |     4 | t
  by_kind_sums  |     4 | t
- global        |     4 | t
+ global        |     0 | t
  count_live    |     4 | t
  range_part    |     1 | t
 (5 rows)
@@ -200,7 +200,7 @@ SELECT * FROM queries('tv', 5);
 ---------------+-------+------
  count_by_kind |     6 | t
  by_kind_sums  |     6 | t
- global        |     6 | t
+ global        |     0 | t
  count_live    |     5 | t
  range_part    |     1 | t
 (5 rows)
@@ -212,7 +212,7 @@ SELECT * FROM queries('tv', 5);
 ---------------+-------+------
  count_by_kind |     4 | t
  by_kind_sums  |     4 | t
- global        |     4 | t
+ global        |     0 | t
  count_live    |     4 | t
  range_part    |     1 | t
 (5 rows)
@@ -226,7 +226,7 @@ SELECT * FROM queries('tv', 5);
 ---------------+-------+------
  count_by_kind |     3 | t
  by_kind_sums  |     3 | t
- global        |     3 | t
+ global        |     0 | t
  count_live    |     3 | t
  range_part    |     1 | t
 (5 rows)
@@ -237,7 +237,7 @@ SELECT * FROM queries('tv', 5);
 ---------------+-------+------
  count_by_kind |     5 | t
  by_kind_sums  |     5 | t
- global        |     5 | t
+ global        |     0 | t
  count_live    |     4 | t
  range_part    |     1 | t
 (5 rows)

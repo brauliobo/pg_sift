@@ -552,7 +552,7 @@ bind_aggs(SiftV1Cube *c, const SiftSrcLayout *lay)
 
 		if (a->kind == SV6_COUNT_DISTINCT || (a->kind != SV6_COUNT_STAR && (!leaf_plain(l) || (cls == SV6C_F64) != (l->vtype == SCV_F64) || (cls == SV6C_TEXT && l->vtype != SCV_CODE))))
 			return false;
-		if ((a->kind == SV6_SUM || a->kind == SV6_AVG) && a->arg.typid == FLOAT4OID)
+		if ((a->kind == SV6_SUM || a->kind == SV6_AVG) && cls == SV6C_F64)
 			return false;
 		if (c->nkeys > 0 && l != NULL && l->id == c->key_leaf && a->kind != SV6_COUNT)
 			return false;
