@@ -454,6 +454,13 @@ sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 }
 
 void
+sift_srcfold_finish(SiftSrcFold *f)
+{
+	if (f->pipe != NULL)
+		sift_v6_pipe_finish(f->pipe);
+}
+
+void
 sift_srcfold_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, const SiftSrcFoldArgs *common, SiftSrcOpen open, void *open_arg)
 {
 	for (int i = 0; i < cohort->narms; i++)

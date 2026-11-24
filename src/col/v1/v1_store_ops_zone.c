@@ -57,15 +57,24 @@ zone_quals_keys(const struct SiftStoreQuals *q, ScanKey *keys, int *nkeys)
 	return false;
 }
 
+/* One fold for the whole scan: its pipe keeps which rows of the dimensions matched across the chunks, and gives the rows no chunk matched once, at the end */
 static void
-fold_run(const SiftSrcFoldArgs *a, Snapshot snap, const SiftV1Scan *scan)
+fold_run(const SiftSrcFoldArgs *a, Snapshot snap, SiftV1Scan *scan, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 zone scan");
-	SiftV1UnitSink *cube = sift_v1_cube_begin(a, scan, cx);
-	V1Open		o = {.cx = cx,.snap = snap,.scan = scan,.cube = cube};
+	V1Open		o = {.cx = cx,.snap = snap,.scan = scan,.cube = next_chunk == NULL ? sift_v1_cube_begin(a, scan, cx) : NULL};
 	SiftSrcFold *f = sift_srcfold_new(a, sift_mem_allocset_create(cx, "sift v1 zone fold"));
+	const struct SiftTidBridge *bridge = NULL;
 
-	sift_srcfold_run(f, open_source, &o);
+	if (next_chunk == NULL)
+		sift_srcfold_run(f, open_source, &o);
+	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
+	{
+		sift_srcfold_count_chunk(a->stats, bridge);
+		scan->bridge = bridge;
+		sift_srcfold_run(f, open_source, &o);
+	}
+	sift_srcfold_finish(f);
 	MemoryContextDelete(cx);
 }
 
@@ -77,7 +86,7 @@ zone_scan_table(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation r
 	SIFT_INVARIANT(nskip == 0, "Format 1 has no device parts to leave out of the scan of table %u", RelationGetRelid(rel));
 	SIFT_INVARIANT(next_chunk == NULL, "Format 1 tables are not scanned by the hits of a text query (table %u)", RelationGetRelid(rel));
 	SIFT_INVARIANT(star == NULL, "Format 1 tables are not scanned beside the dimensions of a star join (table %u)", RelationGetRelid(rel));
-	fold_run(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.host = rel,.quals = quals->clauses,.estate = quals->estate}, snap, NULL);
+	fold_run(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.host = rel,.quals = quals->clauses,.estate = quals->estate}, snap, NULL, NULL, NULL);
 }
 
 /* the JSON type tests of an index scan: jsonb_typeof(doc -> 'k') in the tag set of the key, and `doc ? 'k'` as every type but a missing path */
@@ -114,17 +123,9 @@ zone_scan_run(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation hea
 {
 	SiftSrcFoldArgs a = {.spec = spec,.group = g,.stats = stats,.star = star,.host = index,.quals = sift_srcfold_scankey_quals(index, keys, nkeys)};
 	SiftV1Scan	scan = sift_v1_key_scan(index, keys, nkeys);
-	const struct SiftTidBridge *bridge = NULL;
 
 	SIFT_INVARIANT(nskip == 0 && router == NULL, "Format 1 has no device parts or scope summaries to scan index %u by", RelationGetRelid(index));
-	if (next_chunk == NULL)
-		fold_run(&a, snap, &scan);
-	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
-	{
-		sift_srcfold_count_chunk(stats, bridge);
-		scan.bridge = bridge;
-		fold_run(&a, snap, &scan);
-	}
+	fold_run(&a, snap, &scan, next_chunk, chunk_arg);
 }
 
 static void
