@@ -253,6 +253,16 @@ v1_point_cover(Oid relid, int col)
 	return l != NULL ? st.point_cover[l->id] : 0.0;
 }
 
+static int
+v1_card_leaf(Oid relid, int col)
+{
+	const SiftV1Rel r = sift_v1_rel_open(relid, false);
+	const int	leaf = sift_v1_card_leaf(sift_v1_reader_of(false)->layout(r.rel), col);
+
+	sift_v1_rel_close(&r);
+	return leaf;
+}
+
 static bool
 v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 {
@@ -262,7 +272,8 @@ v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 	sift_v1_reader_of(is_table)->stats(r.rel, &st);
 	*out = (SiftStoreStats) {.live_rows = r.heap->rd_rel->reltuples >= 0 ? r.heap->rd_rel->reltuples : st.nrows,
 		.stored_bytes = is_table ? table_relation_size(r.heap, MAIN_FORKNUM) : (uint64) st.bytes,.allvis_frac = Min(Max(st.allvisible_frac, 0.0), 1.0),
-		.point_cover = is_table ? NULL : v1_point_cover};
+		.point_cover = is_table ? NULL : v1_point_cover,.card_view = is_table ? NULL : sift_v1_card_view(sift_v1_reader_of(false)->layout(r.rel), &st),
+		.card_leaf = is_table ? NULL : v1_card_leaf};
 	sift_v1_rel_close(&r);
 	return true;
 }

@@ -193,6 +193,7 @@ sift_src_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *l
 		st->ovf_units[i] = st->ovf[i] ? Max(ls[i].novf, 1.0) / Max(ls[i].nunits, 1.0) : 0;
 		st->ovf_frac[i] = ls[i].ovf_vals > 0 ? ls[i].ovf_slots / ls[i].ovf_vals : -1;
 		st->nokinds[i] = ls[i].nokinds;
+		st->null_frac[i] = ls[i].nvals > 0 ? Min(ls[i].nnull / ls[i].nvals, 1.0) : 0;
 		st->rootless[i] = ls[i].nvals > 0 ? ls[i].rootless * ls[i].nnull / ls[i].nvals : ls[i].rootless;
 		st->jnull[i] = ls[i].has_jnull || ls[i].nokinds || wjnull[i];
 		if (def->kind == SIFT_COLK_GROUP)

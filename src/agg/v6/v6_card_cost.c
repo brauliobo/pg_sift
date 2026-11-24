@@ -155,8 +155,16 @@ f_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCa
 	List	   *rest;
 	double		zones = sift_v6_card_prune(root, rel, ix, view, &rest);
 	double		cover;
-	const double share = (zones < 0 ? 1.0 : zones) * clauses_prune(root, rest, ix, &cover);
+	double		share = (zones < 0 ? 1.0 : zones) * clauses_prune(root, rest, ix, &cover);
 
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		if (!list_member_ptr(rest, ri))
+		{
+			const double c = point_cover(ix, ri, pull_var_clause((Node *) ri->clause, 0));
+
+			share *= (1.0 - c) + c * clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL);
+			cover = Max(cover, c);
+		}
 	return Min(Max(share, (1.0 - cover) / granules + cover / (granules * SIFT_GRANULE_ROWS)), 1.0);
 }
 
