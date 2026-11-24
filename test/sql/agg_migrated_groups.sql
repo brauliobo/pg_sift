@@ -1,0 +1,581 @@
+-- The groups of an aggregate over every kind of key, held to the normal plan: a table that outgrows hash memory (work_mem 64kB), NULL keys, a group much larger than the rest, count(DISTINCT) sets, one to five integer keys, the ends of every integer type, floats that are not finite and keys that are a function of a float.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+-- the rows of q as sorted jsonb text, or its error, with the aggregate scan on or off
+CREATE FUNCTION mig_run(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+-- 'same' when the rows (or the error) of q are those of the normal plan, else both cut to 200 characters
+CREATE FUNCTION mig_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := mig_run(q, false); b text := mig_run(q, true);
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
+END $$;
+-- the control: a statement whose rows depend on the setting is told apart
+SELECT mig_same($$SELECT current_setting('sift.enable_agg') AS v$$) LIKE 'DIFF%' AS control_detects_a_difference;
+
+-- >>> spill
+SET client_min_messages = warning;
+CREATE SCHEMA m1;
+GRANT USAGE ON SCHEMA m1 TO PUBLIC;
+SET search_path = m1, public;
+SET default_statistics_target = 10000;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '60s';
+SET client_min_messages = warning;
+CREATE TABLE events (id int, k1 int, k2 text, k3 float8, val int, w float8, n numeric(12,2), ts date);
+INSERT INTO events
+SELECT i, CASE WHEN i % 20 = 0 THEN NULL ELSE (i * 7919) % 6000 END, 'k' || (i * 31) % 400, ((i * 13) % 700) * 0.5,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END, (i % 977) * 1.25, (i % 313) / 4.0, date '2024-01-01' + i % 400
+FROM generate_series(1, 12500) i;
+CREATE INDEX events_col ON events USING sift_col (id, k1, k2, k3, val, w, n, ts);
+VACUUM (FREEZE, ANALYZE) events;
+-- the rows of two tables, the keys (columns k*) equal and the measures (columns m*) equal or within 1e-9 of each other
+CREATE FUNCTION same_rows(a regclass, b regclass) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE ok boolean;
+BEGIN
+	EXECUTE format($q$
+		WITH ka AS (SELECT j, (SELECT coalesce(jsonb_object_agg(key, value), '{}') FROM jsonb_each(j) WHERE key LIKE 'k%%') k FROM (SELECT to_jsonb(x) j FROM %s x) s),
+		     kb AS (SELECT j, (SELECT coalesce(jsonb_object_agg(key, value), '{}') FROM jsonb_each(j) WHERE key LIKE 'k%%') k FROM (SELECT to_jsonb(y) j FROM %s y) s)
+		SELECT NOT EXISTS (SELECT 1 FROM ka FULL JOIN kb USING (k)
+			WHERE ka.j IS NULL OR kb.j IS NULL OR EXISTS (
+				SELECT 1 FROM jsonb_each(ka.j) e LEFT JOIN jsonb_each(kb.j) f USING (key)
+				WHERE e.key LIKE 'm%%' AND NOT (e.value = f.value OR (jsonb_typeof(e.value) = 'number' AND jsonb_typeof(f.value) = 'number'
+					AND abs((e.value)::text::numeric - (f.value)::text::numeric) <= 1e-9 * greatest(1, abs((e.value)::text::numeric), abs((f.value)::text::numeric))))))
+		$q$, a, b) INTO ok;
+	RETURN ok;
+END $$;
+-- one query forced to the scan (the sort and the hash of the normal plan off) with the memory given, then as the normal plan: does it spill, are the rows the same
+-- one query with the memory given and the sort and the hash of the normal plan off, then as the normal plan: are the rows the same
+CREATE FUNCTION spill_case(kcols text, keys text, mem text DEFAULT '64kB', aggs text DEFAULT NULL, tbl text DEFAULT 'events') RETURNS TABLE (shape text, same boolean) LANGUAGE plpgsql AS $$
+DECLARE q text;
+BEGIN
+	q := format('SELECT %s, %s FROM %s GROUP BY %s', kcols, coalesce(aggs, 'count(*) AS m1, count(val) AS m2, sum(val) AS m3, avg(val) AS m4, min(val) AS m5, max(val) AS m6, sum(w) AS m7, avg(w) AS m8, '
+				'min(w) AS m9, max(w) AS m10, sum(n) AS m11, avg(n) AS m12'), tbl, keys);
+	DROP TABLE IF EXISTS got;
+	DROP TABLE IF EXISTS want;
+	PERFORM set_config('work_mem', mem, false), set_config('hash_mem_multiplier', '1', false), set_config('enable_hashagg', 'off', false), set_config('enable_sort', 'off', false);
+	EXECUTE 'CREATE TABLE got AS ' || q;
+	RESET work_mem; RESET hash_mem_multiplier; RESET enable_hashagg; RESET enable_sort;
+	SET sift.enable_agg = off;
+	EXECUTE 'CREATE TABLE want AS ' || q;
+	RESET sift.enable_agg;
+	RETURN QUERY SELECT keys, same_rows('got', 'want');
+END $$;
+-- 100 groups of 94 rows whose sets of 40 to 12,000 values outgrow hash memory in the partitions that are merged: they go through the sort there, and
+-- the counts are taken from it when the partition is done
+CREATE TABLE sets AS
+SELECT i AS id, (hashint4(i) & 2147483647) % 100 AS k1, (hashint4(i * 3) & 2147483647) % 40 AS v40, (hashint4(i * 5) & 2147483647) % 12000 AS v5, 1.5::float8 AS w
+FROM generate_series(1, 9400) i;
+CREATE INDEX sets_col ON sets USING sift_col (id, k1, v40, v5, w);
+VACUUM (FREEZE, ANALYZE) sets;
+SELECT * FROM spill_case('k1 AS k1', 'k1', '64kB', 'count(*) AS m1, count(DISTINCT v40) AS m2, count(DISTINCT v5) AS m3', 'sets');
+SELECT * FROM spill_case('k1 AS k1', 'k1');
+SELECT * FROM spill_case('k2 AS k2', 'k2');
+SELECT * FROM spill_case('k1 AS k1, k2 AS k2', 'k1, k2');
+SELECT * FROM spill_case('k3 AS k3', 'k3');
+SELECT * FROM spill_case('k1 % 7 AS k1, ts AS k2', 'k1 % 7, ts');
+-- the sets of count(DISTINCT) (integers, a dictionary of text, numbers) go with their groups, and are united when the partitions are merged
+SELECT * FROM spill_case('k1 AS k1', 'k1', '64kB', 'count(DISTINCT val) AS m1, count(DISTINCT k2) AS m2, count(DISTINCT id) FILTER (WHERE id % 3 = 0) AS m3, count(*) AS m4');
+SELECT * FROM spill_case('k1 AS k1, k3 AS k2', 'k1, k3', '64kB', 'count(DISTINCT val) AS m1, sum(DISTINCT n) AS m2, avg(DISTINCT n) AS m3, count(DISTINCT n) AS m4');
+-- more memory, fewer spills; the answer is the same
+SELECT * FROM spill_case('k1 AS k1', 'k1', '80kB');
+CREATE FUNCTION rescan_case(forced boolean) RETURNS TABLE (g int, n bigint, total numeric, groups_seen bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('work_mem', '64kB', true), set_config('hash_mem_multiplier', '1', true), set_config('enable_material', 'off', true),
+			set_config('enable_hashjoin', 'off', true), set_config('enable_mergejoin', 'off', true);
+	IF forced THEN
+		PERFORM set_config('enable_hashagg', 'off', true), set_config('enable_sort', 'off', true);
+	ELSE
+		PERFORM set_config('sift.enable_agg', 'off', true);
+	END IF;
+	RETURN QUERY SELECT x, count(*), round(sum(s.m)::numeric, 2),
+		(SELECT count(*) FROM (SELECT k1, sum(w) FROM events GROUP BY k1 LIMIT 7) l)
+	FROM generate_series(1, 3) x LEFT JOIN (SELECT k1, sum(w) AS m FROM events GROUP BY k1) s ON true GROUP BY x ORDER BY x;
+END $$;
+SELECT * FROM rescan_case(true);
+SELECT * FROM rescan_case(false);
+RESET ALL;
+SET client_min_messages = warning;
+SET search_path = m1, public;
+SET client_min_messages = warning;
+-- the comparison fails on a wrong row, a missing row and a measure off by more than 1e-9
+CREATE TABLE wrong AS SELECT * FROM want;
+SELECT same_rows('got', 'wrong') AS control_equal;
+UPDATE wrong SET m7 = m7 * 1.000001 WHERE ctid = (SELECT min(ctid) FROM wrong);
+SELECT same_rows('got', 'wrong') AS control_measure;
+DELETE FROM wrong WHERE ctid = (SELECT min(ctid) FROM wrong);
+SELECT same_rows('got', 'wrong') AS control_missing;
+-- the same statement twice, whole and after a few of its groups: the groups come back, as the normal plan gives them
+SELECT count(*) AS differing FROM ((SELECT * FROM rescan_case(true) EXCEPT SELECT * FROM rescan_case(false))
+	UNION ALL (SELECT * FROM rescan_case(false) EXCEPT SELECT * FROM rescan_case(true))) d;
+SELECT count(*) AS rows_seen FROM rescan_case(true);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m1 CASCADE;
+-- <<< spill
+
+-- >>> passes
+SET client_min_messages = warning;
+CREATE SCHEMA m2;
+GRANT USAGE ON SCHEMA m2 TO PUBLIC;
+SET search_path = m2, public;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '120s';
+CREATE TABLE ev (id int, ki int, kt text, kd date, kts timestamp, kv varchar, u int, v int, w numeric(10,2));
+INSERT INTO ev
+SELECT i, CASE WHEN i % 17 = 0 THEN NULL WHEN i % 10 = 0 THEN 7 ELSE (i * 7919) % 20000 END,
+       CASE WHEN i % 19 = 0 THEN NULL ELSE 'k' || (i * 31) % 15000 END, CASE WHEN i % 23 = 0 THEN NULL ELSE date '2020-01-01' + (i * 13) % 3000 END,
+       timestamp '2020-01-01' + ((i * 17) % 90000) * interval '1 minute', 'v' || (i * 7) % 9000,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE (i::bigint * 104729) % 40000 END, i % 1000, (i % 313) / 4.0
+FROM generate_series(1, 120000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, ki, kt, kd, kts, kv, u, v, w);
+VACUUM (FREEZE, ANALYZE) ev;
+-- a second segment (new strings in its dictionaries), a write buffer, and dead rows and new row versions: one statement reads one snapshot, so every pass
+-- sees the same rows
+INSERT INTO ev SELECT i, (i * 7919) % 25000, 'k' || (i * 31) % 20000, date '2021-01-01' + (i * 13) % 500, timestamp '2021-01-01' + (i % 700) * interval '1 hour',
+       'v' || (i * 7) % 12000, (i::bigint * 104729) % 50000, i % 1000, (i % 313) / 4.0 FROM generate_series(120001, 140000) i;
+SELECT sift.col_promote('ev_col') IS NOT NULL AS promoted;
+INSERT INTO ev SELECT i, (i * 7919) % 30000, 'k' || (i * 31) % 22000, NULL, timestamp '2022-01-01', 'v' || i % 10, NULL, i % 1000, 1.5 FROM generate_series(140001, 150000) i;
+UPDATE ev SET u = u + 1 WHERE id % 29 = 0;
+DELETE FROM ev WHERE id % 31 = 0;
+CREATE TABLE qs (name text PRIMARY KEY, q text);
+INSERT INTO qs VALUES
+	('int key', 'SELECT ki, count(*), count(DISTINCT u), sum(v), min(v), max(v), avg(w) FROM ev GROUP BY ki'),
+	('text key', 'SELECT kt, count(*), count(DISTINCT u), sum(v) FROM ev GROUP BY kt'),
+	('varchar key', 'SELECT kv, count(*), count(DISTINCT u) FROM ev GROUP BY kv'),
+	('date key', 'SELECT kd, count(*), count(DISTINCT u), max(w) FROM ev GROUP BY kd'),
+	('timestamp key', 'SELECT kts, count(*), count(DISTINCT u), min(v) FROM ev GROUP BY kts'),
+	('two keys', 'SELECT ki, kt, count(*), count(DISTINCT u) FROM ev GROUP BY ki, kt'),
+	('filtered distinct', 'SELECT kt, count(DISTINCT u) FILTER (WHERE v > 500), count(DISTINCT v) FROM ev GROUP BY kt'),
+	('few rows, most shares empty', 'SELECT ki, count(*), count(DISTINCT u) FROM ev WHERE id < 40 GROUP BY ki'),
+	('no row', 'SELECT kt, count(*), count(DISTINCT u) FROM ev WHERE id < 0 GROUP BY kt'),
+	('top-n', 'SELECT * FROM (SELECT ki, count(DISTINCT u) c FROM ev GROUP BY ki ORDER BY c DESC, ki LIMIT 20) t'),
+	('having', 'SELECT kt, count(DISTINCT u) c FROM ev GROUP BY kt HAVING count(DISTINCT u) > 6');
+CREATE FUNCTION digest(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE d text;
+BEGIN
+	EXECUTE format($f$SELECT md5(coalesce(string_agg(t::text, E'\n' ORDER BY t::text), '')) FROM (%s) t$f$, q) INTO d;
+	RETURN d;
+END $$;
+SET sift.enable_agg = off;
+CREATE TABLE want AS SELECT name, digest(q) AS d FROM qs;
+RESET sift.enable_agg;
+-- a table that would outgrow hash memory is read in shares: the rows are the normal plan's with room, with 64 kB and with 1 MB
+SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) ORDER BY name;
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) ORDER BY name;
+SET work_mem = '1MB';
+SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) WHERE name IN ('int key', 'top-n') ORDER BY name;
+RESET work_mem;
+RESET hash_mem_multiplier;
+-- a node that is read again replays its rows
+SET work_mem = '1MB';
+SET hash_mem_multiplier = 1;
+SELECT count(*) AS rows_replayed FROM generate_series(1, 3) g, (SELECT kt, count(DISTINCT u) c FROM ev GROUP BY kt) s;
+RESET work_mem;
+RESET hash_mem_multiplier;
+SET sift.enable_agg = off;
+SELECT count(*) AS rows_replayed_normal FROM generate_series(1, 3) g, (SELECT kt, count(DISTINCT u) c FROM ev GROUP BY kt) s;
+RESET sift.enable_agg;
+-- groups of two keys in a small direct table
+CREATE TABLE dk AS SELECT i AS id, i % 250 AS a, (i / 250) % 250 AS b, i % 7 AS c FROM generate_series(1, 120000) i;
+CREATE INDEX dk_col ON dk USING sift_col (id, a, b, c);
+VACUUM (FREEZE, ANALYZE) dk;
+INSERT INTO qs VALUES ('direct arrays', 'SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b');
+SET sift.enable_agg = off;
+INSERT INTO want SELECT name, digest(q) FROM qs WHERE name = 'direct arrays';
+RESET sift.enable_agg;
+SET work_mem = '2MB';
+SET hash_mem_multiplier = 1;
+SELECT digest(q) = d AS same FROM qs JOIN want USING (name) WHERE name = 'direct arrays';
+SELECT (SELECT count(*) FROM (SELECT a, b, count(*) n FROM dk GROUP BY a, b LIMIT 5) l) AS rows_limited;
+RESET work_mem;
+RESET hash_mem_multiplier;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m2 CASCADE;
+-- <<< passes
+
+-- >>> hash_probe
+SET client_min_messages = warning;
+CREATE SCHEMA m3;
+GRANT USAGE ON SCHEMA m3 TO PUBLIC;
+SET search_path = m3, public;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET work_mem = '256MB';
+CREATE TABLE h (id int, k1 int, k2 int, k3 int, k4 int, k5 int, v int) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO h SELECT i, i % 1000, i % 997, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 991 END, i % 983, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 977 END, (i * 7) % 1000
+FROM generate_series(1, 200000) i;
+CREATE INDEX h_col ON h USING sift_col (id, k1, k2, k3, k4, k5, v);
+VACUUM ANALYZE h;
+CREATE FUNCTION h_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT md5(string_agg(q::text, E''\n'' ORDER BY q::text)) || '' '' || count(*) FROM (%s) q', q) INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE h_q (n int, q text);
+INSERT INTO h_q VALUES
+	(1, 'SELECT k1, count(*) AS n, sum(v) AS s FROM h GROUP BY k1'),
+	(2, 'SELECT k1, k2, count(*) AS n, sum(v) AS s FROM h GROUP BY k1, k2'),
+	(3, 'SELECT k1, k3, count(*) AS n, sum(v) AS s FROM h GROUP BY k1, k3'),
+	(4, 'SELECT k1, k2, k3, count(*) AS n, min(v) AS lo FROM h GROUP BY k1, k2, k3'),
+	(5, 'SELECT k2, k3, k4, k5, count(*) AS n, max(v) AS hi FROM h GROUP BY k2, k3, k4, k5'),
+	(6, 'SELECT k1, k2, k3, k4, k5, count(*) AS n FROM h GROUP BY k1, k2, k3, k4, k5'),
+	(7, 'SELECT k3, k5, count(*) AS n, sum(v) AS s FROM h WHERE id <= 5000 GROUP BY k3, k5');
+-- the plan is the scan, and the rows are the normal plan's: the direct arrays when they fit, then the hash table forced for every size
+SELECT n, h_rows(q, true) = h_rows(q, false) AS same FROM h_q ORDER BY n;
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT n, h_rows(q, true) = h_rows(q, false) AS same_in_a_small_table FROM h_q ORDER BY n;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m3 CASCADE;
+-- <<< hash_probe
+
+-- >>> int_keys
+SET client_min_messages = warning;
+CREATE SCHEMA m4;
+GRANT USAGE ON SCHEMA m4 TO PUBLIC;
+SET search_path = m4, public;
+SET max_parallel_workers_per_gather = 0;
+SET work_mem = '256MB';
+CREATE TABLE d (id int, i4 int, i8 bigint, sp bigint, ext bigint, dt date, ts timestamptz, f8 float8, nu numeric(12,2), v int) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO d SELECT i,
+	(i * 37 % 700) - 350,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE 4000000000 + (i * 37 % 5000) END,
+	i::bigint * 1000003 * 7919,
+	CASE i % 4 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775808 WHEN 2 THEN 9223372036854775800 + (i % 5) ELSE -9223372036854775800 - (i % 5) END,
+	date '2020-01-01' + (i % 900),
+	timestamptz '2020-01-01 00:00:00+00' + (i * 61 % 20000) * interval '1 second',
+	CASE i % 7 WHEN 0 THEN 'NaN'::float8 WHEN 1 THEN '-0'::float8 WHEN 2 THEN 0 WHEN 3 THEN 'Infinity'::float8 WHEN 4 THEN '-Infinity'::float8 ELSE (i % 50) * 0.5 END,
+	(i % 3000) / 100.0,
+	(i * 7) % 1000
+FROM generate_series(1, 12000) i;
+CREATE INDEX d_col ON d USING sift_col (id, i4, i8, sp, ext, dt, ts, f8, nu, v);
+VACUUM ANALYZE d;
+CREATE FUNCTION d_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT md5(string_agg(q::text, E''\n'' ORDER BY q::text)) || '' '' || count(*) FROM (%s) q', q) INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE d_q (n int, q text);
+INSERT INTO d_q VALUES
+	(1, 'SELECT i4, count(*) AS n, sum(v) AS s FROM d GROUP BY i4'),
+	(2, 'SELECT i8, count(*) AS n, sum(v) AS s FROM d GROUP BY i8'),
+	(3, 'SELECT sp, count(*) AS n, sum(v) AS s FROM d GROUP BY sp'),
+	(4, 'SELECT ext, count(*) AS n, sum(v) AS s FROM d GROUP BY ext'),
+	(5, 'SELECT dt, count(*) AS n, sum(v) AS s FROM d GROUP BY dt'),
+	(6, 'SELECT ts, count(*) AS n, sum(v) AS s FROM d GROUP BY ts'),
+	(7, 'SELECT f8, count(*) AS n, sum(v) AS s FROM d GROUP BY f8'),
+	(8, 'SELECT nu, count(*) AS n, sum(v) AS s FROM d GROUP BY nu'),
+	(9, 'SELECT i8 / 3 AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
+	(10, 'SELECT i4 / 2 AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
+	(11, 'SELECT i4 % 100 AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
+	(12, 'SELECT ext / 4 AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
+	(13, 'SELECT sp % 997 AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
+	(14, 'SELECT dt - 5 AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
+	(15, 'SELECT date_trunc(''hour'', ts) AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
+	(16, 'SELECT i4, i8, count(*) AS n, sum(v) AS s FROM d GROUP BY i4, i8'),
+	(17, 'SELECT i8 / 3 AS g, i4 / 2 AS h, count(*) AS n, min(v) AS lo FROM d GROUP BY 1, 2'),
+	(18, 'SELECT i8 / 3 AS g, count(*) AS n FROM d WHERE id <= 3000 GROUP BY 1'),
+	(19, 'SELECT i4, count(DISTINCT i8) AS n FROM d GROUP BY i4'),
+	(20, 'SELECT ext / 4 AS g, count(*) AS n FROM d WHERE id % 3 = 0 GROUP BY 1'),
+	(21, 'SELECT nu * 100000000000000000000 AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
+	(22, 'SELECT ext * 4.0 AS g, count(*) AS n FROM d GROUP BY 1');
+-- the plan is the scan, and the rows are the normal plan's
+SELECT n, d_rows(q, true) = d_rows(q, false) AS same FROM d_q ORDER BY n;
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT n, d_rows(q, true) = d_rows(q, false) AS same_in_a_small_table FROM d_q ORDER BY n;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m4 CASCADE;
+-- <<< int_keys
+
+-- >>> float_step
+SET client_min_messages = warning;
+CREATE SCHEMA m5;
+GRANT USAGE ON SCHEMA m5 TO PUBLIC;
+SET search_path = m5, public;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+CREATE TABLE fs_t (id int, x float8, r float4, v int) USING sift_table;
+CREATE TABLE fs_h (LIKE fs_t);
+-- 9000 random values with three decimals (some of them near the ends of int32, in every chunk), the multiples of 0.1, 0.25 and 5 and their neighbours in the last bit (the edges of the buckets), the ties of rint, the ends of int32,
+-- the signed zeros, the values no number is made of, and NULLs
+INSERT INTO fs_t SELECT i, CASE WHEN i % 1700 = 0 THEN -2147483647.0 + i / 1700 WHEN i % 1900 = 0 THEN 2147483646.0 - i / 1900 ELSE ((hashint4(i) % 5000001) / 1000.0 - 2500)::float8 END,
+	((hashint4(i + 7) % 200001) / 100.0 - 1000)::float4, i % 17 FROM generate_series(1, 9000) i;
+INSERT INTO fs_t SELECT 10000 + i, i * 0.1, i * 0.25, i % 5 FROM generate_series(-300, 300) i;
+INSERT INTO fs_t SELECT 11000 + i, i * 0.1 * (1 + 2.220446049250313e-16), i * 0.25 * (1 - 1.1102230246251565e-16), i % 5 FROM generate_series(-300, 300) i;
+INSERT INTO fs_t SELECT 12000 + i, i * 5.0 - 1e-13 * (i % 3 - 1), i * 5.0, i % 7 FROM generate_series(-300, 300) i;
+INSERT INTO fs_t SELECT 13000 + i, i + 0.5, i + 0.5, i % 3 FROM generate_series(-40, 40) i;
+INSERT INTO fs_t VALUES
+	(14001, 0, 0, 1), (14002, '-0'::float8, '-0'::float4, 2), (14003, 0.5, 0.5, 3), (14004, -0.5, -0.5, 4), (14005, 1e-320, 1e-40, 5), (14006, -1e-320, -1e-40, 6),
+	(14007, 2147483646.5, 2147483520, 1), (14008, 2147483647, 2147483520, 2), (14009, 2147483647.5, 2147483648, 3), (14010, -2147483647, -2147483520, 4),
+	(14011, -2147483648, -2147483648, 5), (14012, 1e300, 1e30, 6), (14013, -1e300, -1e30, 7), (14014, 'NaN', 'NaN', 8), (14015, 'Infinity', 'Infinity', 9),
+	(14016, '-Infinity', '-Infinity', 10), (14017, NULL, NULL, 11), (14018, NULL, 3.5, 12), (14019, 12345678901.5, 5, 13), (14020, 4.9999999999999991, 4.9999, 14);
+INSERT INTO fs_h SELECT * FROM fs_t;
+ANALYZE fs_t;
+-- the whole table, and the rows an integer cast does not raise on
+CREATE TABLE fs_q (q text);
+INSERT INTO fs_q VALUES
+	('SELECT floor(x / 5)::int AS k, count(*), sum(v) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*), sum(v) FROM fs_t GROUP BY 1'),
+	('SELECT ceil(x / 0.1) + 0.0 AS k, count(*), min(v), max(v) FROM fs_t GROUP BY 1'),
+	('SELECT ceiling(x / 0.1) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT trunc(x * 0.25) + 0.0 AS k, count(*), sum(v) FROM fs_t GROUP BY 1'),
+	('SELECT trunc(0.25 * x) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT round(x / 10) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT round(x) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	-- the ends of int32 alone: the table of bucket numbers stops at them
+	('SELECT floor(x) + 0.0 AS k, count(*) FROM fs_t WHERE x < -2147483000 GROUP BY 1'),
+	('SELECT ceil(x) + 0.0 AS k, count(*) FROM fs_t WHERE x > 2147483000 AND x < 3e9 GROUP BY 1'),
+	('SELECT floor(x / 5) * 5 + 0.0 AS k, count(*), avg(v) FROM fs_t GROUP BY 1'),
+	('SELECT (floor(x / 5) * 5 + 0.0)::text AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT (x / 3)::int AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	('SELECT (x / 3)::bigint AS k, count(*) FROM fs_t WHERE x BETWEEN -1e12 AND 1e12 GROUP BY 1'),
+	('SELECT (x * 2)::bigint AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	('SELECT (x / 8)::int2 AS k, count(*) FROM fs_t WHERE x BETWEEN -1000 AND 1000 GROUP BY 1'),
+	('SELECT round(x / 2)::int AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	-- a negative zero is a value of its own (atan2 tells -0 from +0); the keys that are floats are added 0.0, which makes the zero of a group that holds both the same in every plan
+	('SELECT atan2(0.0, ceil(x / 5)) AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT atan2(0.0, round(x / 10)) AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT atan2(0.0, trunc(x)) AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT atan2(0.0, floor(x)) AS k, count(*) FROM fs_t GROUP BY 1'),
+	-- the key of a NULL is the key of the NULL, whatever the expression makes of it
+	('SELECT coalesce(floor(x / 5), -999) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5) IS NULL AS k, count(*) FROM fs_t GROUP BY 1'),
+	-- the step in an aggregate, a filter and a count(DISTINCT)
+	('SELECT v % 3 AS g, sum(floor(x / 10) + 0.0), count(DISTINCT floor(x / 10) + 0.0) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*) FROM fs_t WHERE floor(x / 5) > 3 GROUP BY 1'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*) FILTER (WHERE round(x / 5) > 3) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1 HAVING count(*) > 100'),
+	('SELECT floor(x / 5) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 7'),
+	('SELECT floor(x / 5) + 0.0 AS k, v % 4 AS g, count(*) FROM fs_t GROUP BY 1, 2'),
+	('SELECT count(DISTINCT floor(x / 5) + 0.0) FROM fs_t'),
+	('SELECT floor(r::float8 / 4) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT round(r::float8) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	-- not a step of one kind: the values keep their ids, the rows are the same
+	('SELECT floor(x / 5) + 0.0 AS k, round(x / 5) + 0.0 AS m, count(*) FROM fs_t GROUP BY 1, 2'),
+	('SELECT floor(x / 5) + 0.0 AS k, floor(x / 7) + 0.0 AS m, count(*) FROM fs_t GROUP BY 1, 2'),
+	('SELECT floor(x / 5) + 0.0 AS k, x AS m, count(*) FROM fs_t WHERE x BETWEEN 0 AND 20 GROUP BY 1, 2'),
+	('SELECT floor(x / 5) + x + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5.5) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5)::int AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT (x / 3)::int AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x * 1e-300) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 1e300) + 0.0 AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x * 1e-300) + 0.0 AS k, count(*) FROM fs_t WHERE x >= 0 GROUP BY 1'),
+	('SELECT floor(x / 1e300) + 0.0 AS k, count(*) FROM fs_t WHERE x >= 0 GROUP BY 1'),
+	('SELECT 10 / floor(x / 5)::int AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1');
+CREATE FUNCTION fs_compare(OUT query text, OUT same text) RETURNS SETOF record LANGUAGE sql AS $$ SELECT q, mig_same(q) FROM fs_q $$;
+SELECT count(*) FILTER (WHERE same <> 'same') AS differing, count(*) AS queries FROM fs_compare();
+VACUUM fs_t;
+SELECT count(*) FILTER (WHERE same <> 'same') AS differing, count(*) AS queries FROM fs_compare();
+CREATE TABLE fs_e (q text);
+INSERT INTO fs_e VALUES
+	('SELECT floor(x / 5)::int AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT (x / 3)::int AS k, count(*) FROM fs_t GROUP BY 1'),
+	('SELECT floor(x / 5)::int AS k, count(*) FROM fs_t WHERE x < 1e9 GROUP BY 1'),
+	('SELECT (x / 8)::int2 AS k, count(*) FROM fs_t WHERE x BETWEEN -1e10 AND 1e10 GROUP BY 1'),
+	('SELECT (x * 1e300)::bigint AS k, count(*) FROM fs_t WHERE x BETWEEN -1e9 AND 1e9 GROUP BY 1'),
+	('SELECT (x / 8)::int2 AS k, count(*) FROM fs_t WHERE x BETWEEN -1000 AND 1000 GROUP BY 1 ORDER BY 1 LIMIT 1');
+SELECT q, mig_same(q) AS same FROM fs_e ORDER BY q;
+UPDATE fs_t SET x = x + 12.3 WHERE id % 11 = 0;
+DELETE FROM fs_t WHERE id % 13 = 0;
+INSERT INTO fs_t SELECT 20000 + i, (i % 90) * 7.5 - 300, i, i % 5 FROM generate_series(1, 500) i;
+SELECT count(*) FILTER (WHERE same <> 'same') AS differing, count(*) AS queries FROM fs_compare();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m5 CASCADE;
+-- <<< float_step
+
+-- >>> dense
+SET client_min_messages = warning;
+CREATE SCHEMA m6;
+GRANT USAGE ON SCHEMA m6 TO PUBLIC;
+SET search_path = m6, public;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+-- the element cubes of the pre-aggregates answer the grouped element queries without a scan; the chunks are the point here
+-- 9000 rows (three chunks of 4096 and a tail): NULLs in the key, the filter column and the arguments
+CREATE TABLE d_t (id int, grp int, kind text, flag text, qty int4, amt float8);
+INSERT INTO d_t
+SELECT i, i % 7,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE 'k' || (i * 7 % 11) END,
+       CASE WHEN i % 17 = 0 THEN NULL ELSE (ARRAY['fa', 'fb', 'fc'])[1 + i % 3] END,
+       CASE WHEN i % 5 = 0 THEN NULL ELSE (i * 37) % 1000 - 300 END,
+       CASE WHEN i % 6 = 0 THEN NULL ELSE ((i * 53) % 400 - 100) * 0.25 END
+FROM generate_series(1, 9000) i;
+CREATE INDEX d_col ON d_t USING sift_col (id, grp, kind, flag, qty, amt);
+VACUUM ANALYZE d_t;
+-- 3000 documents of 0 to 6 elements, one of 9000 (an element chunk ends inside a document), SQL NULL and empty arrays
+CREATE TABLE d_j (id int, grp int, label text, items jsonb);
+INSERT INTO d_j
+SELECT i, i % 5, CASE WHEN i % 9 = 0 THEN NULL ELSE 'L' || (i % 4) END,
+       CASE WHEN i % 11 = 0 THEN NULL
+            WHEN i = 7 THEN (SELECT jsonb_agg(jsonb_build_object('k', 'c' || (k % 5), 'f', (ARRAY['fa', 'fb'])[1 + k % 2], 'n', k % 100, 'x', (k % 40) * 0.25) ORDER BY k)
+                             FROM generate_series(1, 8000) k)
+            ELSE (SELECT coalesce(jsonb_agg(jsonb_build_object('k', CASE WHEN (i + k) % 23 = 0 THEN NULL ELSE 'c' || ((i + k) % 5) END,
+                                                              'f', (ARRAY['fa', 'fb', 'fc'])[1 + (i * k) % 3],
+                                                              'n', CASE WHEN (i + k) % 7 = 0 THEN NULL ELSE (i * k) % 50 - 20 END,
+                                                              'x', CASE WHEN (i + k) % 6 = 0 THEN NULL ELSE ((i * k) % 80 - 20) * 0.25 END) ORDER BY k), '[]')
+                  FROM generate_series(1, (i * 5) % 7) k) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX d_jcol ON d_j USING sift_col (id, grp, label, items) WITH (paths = 'items[]{k text, f text, n int4, x float8}');
+VACUUM ANALYZE d_j;
+-- the same documents never vacuumed (no page is all-visible, so the rows that keep an element are checked against the heap), with deleted and updated rows
+CREATE TABLE d_nv (id int, grp int, label text, items jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO d_nv SELECT * FROM d_j WHERE id <= 2000 AND id <> 7;
+CREATE INDEX d_nvcol ON d_nv USING sift_col (id, grp, label, items) WITH (paths = 'items[]{k text, f text, n int4, x float8}');
+DELETE FROM d_nv WHERE id % 10 = 3;
+UPDATE d_nv SET items = '[{"k": "c1", "f": "fa", "n": 1, "x": 0.5}]' WHERE id % 10 = 4;
+-- floats that are not finite: infinities of both signs, NaN, a group that has only NULLs
+CREATE TABLE d_f (id int, grp int, amt float8);
+INSERT INTO d_f
+SELECT i, i % 5,
+       CASE WHEN i % 50 = 1 AND i % 5 = 1 THEN 'Infinity' WHEN i % 70 = 2 AND i % 5 = 2 THEN '-Infinity' WHEN i % 90 = 3 AND i % 5 = 3 THEN 'NaN'
+            WHEN i % 5 = 4 THEN NULL ELSE (i % 40) * 0.5 END
+FROM generate_series(1, 5000) i;
+CREATE INDEX d_fcol ON d_f USING sift_col (id, grp, amt);
+VACUUM ANALYZE d_f;
+CREATE TABLE d_q (q text);
+INSERT INTO d_q VALUES
+	-- a plain table: ungrouped
+	('SELECT count(*), count(kind), count(qty), count(amt) FROM d_t'),
+	('SELECT count(*) FILTER (WHERE flag = ''fa''), count(*) FILTER (WHERE flag = ''fb''), count(*) FROM d_t'),
+	('SELECT count(*) FILTER (WHERE flag = ''fa'' AND qty > 100), count(qty) FILTER (WHERE flag <> ''fc''), count(amt) FILTER (WHERE kind LIKE ''k1%'') FROM d_t'),
+	('SELECT sum(qty), avg(qty), min(qty), max(qty) FROM d_t'),
+	('SELECT sum(qty) FILTER (WHERE flag = ''fb''), avg(qty) FILTER (WHERE grp < 3), sum(qty) FILTER (WHERE flag IS NULL) FROM d_t'),
+	('SELECT sum(amt), avg(amt), count(amt) FROM d_t'),
+	('SELECT sum(amt) FILTER (WHERE kind = ''k3''), avg(amt) FILTER (WHERE qty < 0), sum(amt) FILTER (WHERE kind IS NULL) FROM d_t'),
+	('SELECT count(*), sum(qty), avg(amt) FROM d_t WHERE flag = ''fa'''),
+	('SELECT count(*), sum(qty), avg(amt) FROM d_t WHERE flag = ''fa'' AND id > 4000 AND id < 4100'),
+	('SELECT count(*), sum(amt) FROM d_t WHERE id < 0'),
+	('SELECT count(*), sum(qty), avg(amt), count(*) FILTER (WHERE false) FROM d_t WHERE kind = ''nothing'''),
+	-- a plain table: grouped by a text column, an integer, both
+	('SELECT kind, count(*), count(qty), sum(qty), avg(qty) FROM d_t GROUP BY 1'),
+	('SELECT kind, count(*) FILTER (WHERE flag = ''fa''), sum(amt), avg(amt) FROM d_t GROUP BY 1'),
+	('SELECT flag, count(*), sum(qty) FILTER (WHERE grp = 3), avg(amt) FILTER (WHERE qty > 0) FROM d_t GROUP BY 1'),
+	('SELECT kind, flag, count(*), sum(amt), sum(qty) FROM d_t GROUP BY 1, 2'),
+	('SELECT kind, count(*), avg(amt) FROM d_t WHERE grp <> 2 AND flag <> ''fb'' GROUP BY 1'),
+	('SELECT kind, count(*), sum(qty) FROM d_t WHERE id < 5000 GROUP BY 1'),
+	('SELECT kind, count(*), sum(qty) FROM d_t WHERE id > 8990 GROUP BY 1'),
+	('SELECT kind, flag, count(*), sum(amt) FROM d_t WHERE id > 4000 AND id < 4100 AND flag <> ''fb'' GROUP BY 1, 2'),
+	('SELECT grp, count(*), sum(amt), avg(qty), count(*) FILTER (WHERE kind = ''k5'') FROM d_t GROUP BY 1'),
+	('SELECT grp, kind, count(*) FILTER (WHERE amt > 0), sum(qty) FROM d_t GROUP BY 1, 2'),
+	('SELECT kind, count(*) FROM d_t GROUP BY 1 HAVING count(*) > 700'),
+	-- the elements of an array of objects: ungrouped
+	('SELECT count(*), count(e.k), count(e.n), count(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	('SELECT count(*) FILTER (WHERE e.f = ''fa''), count(*) FILTER (WHERE e.f = ''fb''), count(*) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	('SELECT sum(e.n), avg(e.n), sum(e.x), avg(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	('SELECT count(*) FILTER (WHERE e.k = ''c1''), sum(e.x) FILTER (WHERE e.f = ''fa''), avg(e.n) FILTER (WHERE e.k <> ''c2'') FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	('SELECT count(*), sum(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE e.f = ''fc'' AND d.grp < 3'),
+	('SELECT count(*), sum(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.label = ''L1'''),
+	('SELECT count(*), sum(e.n) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.id = 7'),
+	('SELECT count(*) FILTER (WHERE d.label = ''L2''), sum(d.grp), count(d.label) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	-- the elements: grouped by an element key, a document key, both
+	('SELECT e.k, count(*), avg(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) GROUP BY 1'),
+	('SELECT e.k, count(*), sum(e.n), avg(e.x), count(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) GROUP BY 1'),
+	('SELECT e.k, e.f, count(*) FILTER (WHERE e.n > 0), sum(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) GROUP BY 1, 2'),
+	('SELECT d.label, count(*), sum(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) GROUP BY 1'),
+	('SELECT d.label, e.k, count(*), avg(e.n) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.grp <> 1 AND e.f <> ''fc'' GROUP BY 1, 2'),
+	('SELECT e.k, count(*), avg(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.id <> 7 GROUP BY 1'),
+	('SELECT e.k, count(*), sum(e.n) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.id = 7 GROUP BY 1'),
+	-- the documents never vacuumed
+	('SELECT count(*), count(e.k), sum(e.n), sum(e.x) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	('SELECT count(*) FILTER (WHERE e.f = ''fa''), count(*) FILTER (WHERE e.f = ''fb''), avg(e.x) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
+	('SELECT e.k, count(*), avg(e.x) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) GROUP BY 1'),
+	('SELECT d.label, count(*), sum(e.n) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.grp < 3 GROUP BY 1'),
+	-- floats that are not finite
+	('SELECT count(*), count(amt), sum(amt), avg(amt) FROM d_f'),
+	('SELECT grp, count(amt), sum(amt), avg(amt) FROM d_f GROUP BY 1'),
+	('SELECT sum(amt) FILTER (WHERE grp = 1), sum(amt) FILTER (WHERE grp = 2), sum(amt) FILTER (WHERE grp = 3), sum(amt) FILTER (WHERE grp = 0), sum(amt) FILTER (WHERE grp = 4) FROM d_f'),
+	('SELECT avg(amt) FILTER (WHERE grp = 1), avg(amt) FILTER (WHERE grp = 2), avg(amt) FILTER (WHERE grp = 0) FROM d_f'),
+	('SELECT sum(amt), avg(amt) FROM d_f WHERE id < 40'),
+	('SELECT grp, sum(amt) FROM d_f WHERE id < 40 GROUP BY 1');
+CREATE TABLE d_big (id int, amt float8);
+INSERT INTO d_big SELECT i, 1e308 FROM generate_series(1, 5000) i;
+CREATE INDEX d_bigcol ON d_big USING sift_col (id, amt);
+VACUUM d_big;
+CREATE FUNCTION d_err(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE q;
+	RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLERRM;
+END $$;
+SELECT q, d_err(q, true) = d_err(q, false) AS same, d_err(q, false) AS error
+FROM (VALUES ('SELECT sum(amt) FROM d_big'), ('SELECT avg(amt) FROM d_big'), ('SELECT sum(amt) FROM d_big WHERE id < 2'),
+             ('SELECT id % 2, sum(amt) FROM d_big GROUP BY 1')) v(q);
+CREATE FUNCTION d_compare(OUT n int, OUT same text) RETURNS SETOF record LANGUAGE sql AS $$ SELECT (row_number() OVER ())::int, mig_same(q) FROM d_q $$;
+SELECT n, same FROM d_compare();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m6 CASCADE;
+-- <<< dense
+
+-- >>> single_key
+SET client_min_messages = warning;
+CREATE SCHEMA m7;
+GRANT USAGE ON SCHEMA m7 TO PUBLIC;
+SET search_path = m7, public;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE sk_facts (id int, k int, v int, big bigint, f float8, n numeric(12,2), d date) WITH (autovacuum_enabled = false);
+INSERT INTO sk_facts
+SELECT g, g % 100, g % 1000, g::bigint * 3000000000, g / 7.0, (g % 5000) / 100.0, date '2024-01-01' + g % 700
+FROM generate_series(1, 2000) g;
+CREATE INDEX sk_facts_col ON sk_facts USING sift_col (k, v, big, f, n, d);
+VACUUM (FREEZE, ANALYZE) sk_facts;
+-- the statistics are those of the first 2,000 rows (100 groups): the arrays start small and the key outgrows them
+INSERT INTO sk_facts
+SELECT g, (hashint4(g) & 2147483647) % 24000, g % 1000, g::bigint * 3000000000, g / 7.0, (g % 5000) / 100.0, date '2024-01-01' + g % 700
+FROM generate_series(2001, 60000) g;
+VACUUM (FREEZE) sk_facts;
+CREATE FUNCTION groups_summary(wm text) RETURNS TABLE (groups bigint, same bool) LANGUAGE plpgsql AS $$
+DECLARE
+	q text := 'SELECT count(*) AS c, md5(string_agg(g::text, '','' ORDER BY k)) AS m FROM (SELECT k, count(*), sum(v), sum(big), round(avg(f)::numeric, 6), min(d), max(v), sum(n), count(DISTINCT v) FROM sk_facts GROUP BY k) g';
+	want record;
+	got record;
+BEGIN
+	PERFORM set_config('work_mem', wm, true);
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE q INTO want;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE q INTO got;
+	RETURN QUERY SELECT got.c, got = want;
+END $$;
+-- the groups of one key: few (the direct arrays), many (past a million slots), with work_mem as the arrays and the table that spills need it
+SELECT * FROM groups_summary('1GB');
+ANALYZE sk_facts;
+SELECT * FROM groups_summary('64kB');
+SELECT * FROM groups_summary('1MB');
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m7 CASCADE;
+-- <<< single_key
+
+DROP FUNCTION mig_same(text), mig_run(text, bool);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
+

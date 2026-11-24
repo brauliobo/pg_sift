@@ -1,0 +1,403 @@
+-- Semi joins by an int8 key, uncorrelated scalar sub-selects, count(DISTINCT) over the rows of aggregate scans and the dead rows of a unit, each held to the normal plan.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+-- the rows of q as sorted jsonb text, or its error, with the aggregate scan on or off
+CREATE FUNCTION mig_run(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+-- 'same' when the rows (or the error) of q are those of the normal plan, else both cut to 200 characters
+CREATE FUNCTION mig_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := mig_run(q, false); b text := mig_run(q, true);
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
+END $$;
+-- the control: a statement whose rows depend on the setting is told apart
+SELECT mig_same($$SELECT current_setting('sift.enable_agg') AS v$$) LIKE 'DIFF%' AS control_detects_a_difference;
+
+-- >>> semi_int8
+SET client_min_messages = warning;
+CREATE SCHEMA m1;
+GRANT USAGE ON SCHEMA m1 TO PUBLIC;
+SET search_path = m1, public;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SET work_mem = '64MB';
+SET sift.enable_col_scan = off;
+-- the same keys as an int4 leaf and as an int8 leaf, a key beyond int32 in the int8 one, NULLs
+CREATE TABLE ev (id int PRIMARY KEY, k4 int, k8 int8, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, 1 + (i::bigint * 7919) % 30000,
+       CASE WHEN i % 997 = 0 THEN NULL WHEN i <= 5 THEN -i::int8 * 10000000000 WHEN i <= 10 THEN 9000000000 + i
+            WHEN i <= 15 THEN 9223372036854775807 - i ELSE 1 + (i::bigint * 7919) % 30000 END,
+       (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
+FROM generate_series(1, 200000) i;
+CREATE INDEX ev_col ON ev USING sift_col (k4, k8, kind, amount);
+ALTER TABLE ev ALTER COLUMN k8 SET STATISTICS 1000;
+VACUUM (FREEZE, ANALYZE) ev;
+-- sets of keys: int8 keys (a duplicate, a NULL, keys beyond int32 and at the ends of int8), an int4 table, an int2 table, a table with no rows
+CREATE TABLE keys8 (grp int, k int8);
+INSERT INTO keys8 SELECT 1, 1 + i * 13 FROM generate_series(0, 2000) i;
+INSERT INTO keys8 VALUES (1, 11), (1, 11), (1, NULL), (2, -50000000000), (2, 9000000007), (2, 9000000008), (2, 9223372036854775800), (2, 5), (2, 6);
+INSERT INTO keys8 SELECT 3, 3000000000 + i * 5 FROM generate_series(0, 50) i;
+INSERT INTO keys8 VALUES (4, -9223372036854775808), (4, 9223372036854775807), (4, 0);
+CREATE TABLE keys8_nn (k int8 NOT NULL);
+INSERT INTO keys8_nn SELECT 1 + i * 17 FROM generate_series(0, 1500) i;
+CREATE TABLE dims (id int PRIMARY KEY, country int);
+INSERT INTO dims SELECT i, i % 60 FROM generate_series(1, 30000) i;
+CREATE TABLE dims8 (id int8 PRIMARY KEY, country int);
+INSERT INTO dims8 SELECT i, i % 60 FROM generate_series(1, 30000) i;
+CREATE TABLE nothing (k int8);
+ANALYZE keys8;
+ANALYZE keys8_nn;
+ANALYZE dims;
+ANALYZE dims8;
+ANALYZE nothing;
+CREATE FUNCTION run(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
+CREATE TABLE q (n int PRIMARY KEY, shape text, sql text);
+INSERT INTO q VALUES
+	(1, 'IN int8 set, a duplicate and a NULL', 'SELECT kind, count(*), sum(amount) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 1) GROUP BY kind'),
+	(2, 'EXISTS int8 set', 'SELECT kind, count(*), sum(amount) FROM ev WHERE EXISTS (SELECT 1 FROM keys8 m WHERE m.k = ev.k8 AND m.grp = 1) GROUP BY kind'),
+	(3, 'NOT EXISTS int8 set', 'SELECT kind, count(*), sum(amount) FROM ev WHERE NOT EXISTS (SELECT 1 FROM keys8 m WHERE m.k = ev.k8 AND m.grp = 1) GROUP BY kind'),
+	(4, 'NOT EXISTS, NULL leaf counted', 'SELECT count(*), count(k8) FROM ev WHERE NOT EXISTS (SELECT 1 FROM keys8 m WHERE m.k = ev.k8 AND m.grp = 2)'),
+	(5, 'IN keys beyond int32, span 9e9', 'SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2 AND k > 0 AND k < 9000000100)'),
+	(6, 'NOT EXISTS keys beyond int32', 'SELECT count(*), sum(amount) FROM ev WHERE NOT EXISTS (SELECT 1 FROM keys8 m WHERE m.k = ev.k8 AND m.grp = 3)'),
+	(7, 'IN a window beyond int32', 'SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 3)'),
+	(8, 'IN the ends of int8, a span past the table', 'SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 4)'),
+	(9, 'NOT EXISTS the ends of int8', 'SELECT count(*) FROM ev WHERE NOT EXISTS (SELECT 1 FROM keys8 m WHERE m.k = ev.k8 AND m.grp = 4)'),
+	(10, 'IN the whole table, a span past the table', 'SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8)'),
+	(11, 'NOT IN a column without NULL', 'SELECT count(*), count(k8) FROM ev WHERE k8 NOT IN (SELECT k FROM keys8_nn)'),
+	(12, 'IN int4 table, int8 leaf', 'SELECT kind, count(*) FROM ev WHERE k8 IN (SELECT id FROM dims WHERE country = 7) GROUP BY kind'),
+	(13, 'NOT EXISTS int4 table, int8 leaf', 'SELECT kind, count(*) FROM ev WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.k8 AND d.country < 30) GROUP BY kind'),
+	(14, 'IN int8 table, int4 leaf', 'SELECT kind, count(*) FROM ev WHERE k4 IN (SELECT id FROM dims8 WHERE country = 7) GROUP BY kind'),
+	(15, 'inner join, int8 unique key, no column', 'SELECT kind, count(*) FROM ev JOIN dims8 d ON d.id = ev.k8 WHERE d.country < 20 GROUP BY kind'),
+	(16, 'IN an empty table', 'SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM nothing)'),
+	(17, 'NOT EXISTS an empty table', 'SELECT count(*) FROM ev WHERE NOT EXISTS (SELECT 1 FROM nothing x WHERE x.k = ev.k8)'),
+	(19, 'inner join, unique wide keys, no column', 'SELECT count(*) FROM ev JOIN keys8 m ON m.k = ev.k8 AND m.grp = 2'),
+	(20, 'inner join, a repeated key', 'SELECT count(*) FROM ev JOIN keys8 m ON m.k = ev.k8 AND m.grp = 1'),
+	(18, 'two joins and a filter of the leaves', 'SELECT kind, count(*) FROM ev WHERE amount > 20 AND k8 IN (SELECT id FROM dims8 WHERE country < 40) AND NOT EXISTS (SELECT 1 FROM keys8_nn x WHERE x.k = ev.k8) GROUP BY kind');
+CREATE FUNCTION check_all(which text) RETURNS TABLE (stage text, n int, shape text, same text) LANGUAGE sql AS $$ SELECT which, q.n, q.shape, mig_same(q.sql) FROM q ORDER BY q.n $$;
+SELECT * FROM check_all('key sets');
+SELECT run('SELECT count(*) FROM ev WHERE k4 IN (SELECT k FROM keys8 WHERE grp = 2)', true) = run('SELECT count(*) FROM ev WHERE k4 IN (SELECT k FROM keys8 WHERE grp = 2)', false) AS int4_leaf;
+SELECT run('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)', true) = run('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)', false) AS int8_leaf_after;
+SELECT run('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)', true) = run('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)', false) AS int8_leaf_again;
+SELECT run('SELECT count(*) FROM ev WHERE k4 IN (SELECT k FROM keys8 WHERE grp = 2)', true) = run('SELECT count(*) FROM ev WHERE k4 IN (SELECT k FROM keys8 WHERE grp = 2)', false) AS int4_leaf_after;
+SET work_mem = '512kB';
+SELECT run(sql, true) = run(sql, false) AS same_64kb FROM q WHERE n IN (1, 3, 5, 8, 19);
+SET work_mem = '64MB';
+ALTER TABLE ev SET (parallel_workers = 2);
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT run(sql, true) = run(sql, false) AS same_with_workers FROM q WHERE n IN (1, 3, 13);
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m1 CASCADE;
+-- <<< semi_int8
+
+-- >>> scalar_init
+SET client_min_messages = warning;
+CREATE SCHEMA m2;
+GRANT USAGE ON SCHEMA m2 TO PUBLIC;
+SET search_path = m2, public;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE kinds (id int PRIMARY KEY, name text NOT NULL, grp int NOT NULL);
+INSERT INTO kinds SELECT g, 'kind_' || g, g % 4 FROM generate_series(1, 40) g;
+CREATE UNIQUE INDEX kinds_name ON kinds (name);
+CREATE TABLE nothing (x int, d date);
+CREATE TABLE events (id int PRIMARY KEY, kind_id int, label text NOT NULL, amount numeric(10,2), at date NOT NULL, score int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT g, CASE WHEN g % 10 = 0 THEN NULL ELSE 1 + (g * 7919) % 45 END, 'kind_' || (1 + (g * 31) % 50), CASE WHEN g % 11 = 0 THEN NULL ELSE (g % 500) / 5.0 END,
+       date '2024-01-01' + (g % 700), CASE WHEN g % 17 = 0 THEN NULL ELSE g % 90 END FROM generate_series(1, 30000) g;
+CREATE INDEX events_col ON events USING sift_col (id, kind_id, label, amount, at, score);
+VACUUM (FREEZE, ANALYZE) events, kinds, nothing;
+CREATE TABLE init_q (n int, label text, q text);
+INSERT INTO init_q VALUES
+	(1, 'above the average',               'SELECT kind_id, count(*) AS n FROM events WHERE amount > (SELECT avg(amount) FROM events) GROUP BY 1 ORDER BY 1'),
+	(2, 'a key by the unique name',         'SELECT label, count(*) AS n FROM events WHERE kind_id = (SELECT id FROM kinds WHERE name = ''kind_7'') GROUP BY 1 ORDER BY 1'),
+	(3, 'a name that is not there',         'SELECT label, count(*) AS n FROM events WHERE kind_id = (SELECT id FROM kinds WHERE name = ''kind_99'') GROUP BY 1 ORDER BY 1'),
+	(4, 'a date bound',                     'SELECT kind_id, count(*) AS n FROM events WHERE at > (SELECT max(at) - 30 FROM events) GROUP BY 1 ORDER BY 1'),
+	(5, 'a text column',                    'SELECT kind_id, count(*) AS n FROM events WHERE label = (SELECT name FROM kinds WHERE id = 12) GROUP BY 1 ORDER BY 1'),
+	(6, 'between two sub-selects',          'SELECT label, count(*) AS n FROM events WHERE score BETWEEN (SELECT min(grp) + 10 FROM kinds) AND (SELECT max(grp) + 40 FROM kinds) GROUP BY 1 ORDER BY 1'),
+	(7, 'an aggregate argument',            'SELECT kind_id, sum(amount * (SELECT count(*) FROM kinds)) AS s FROM events GROUP BY 1 ORDER BY 1'),
+	(8, 'a sub-select of no rows is NULL',  'SELECT label, count(*) AS n FROM events WHERE score > (SELECT max(x) FROM nothing) GROUP BY 1 ORDER BY 1'),
+	(9, 'an OR with another condition',     'SELECT kind_id, count(*) AS n FROM events WHERE score > (SELECT max(grp) + 85 FROM kinds) OR kind_id = 3 GROUP BY 1 ORDER BY 1'),
+	(10, 'a column of unique rows is one row', 'SELECT label, count(*) AS n FROM events WHERE kind_id = (SELECT id FROM kinds WHERE id = 5) GROUP BY 1 ORDER BY 1'),
+	(11, 'a sub-select that may give two rows', 'SELECT label, count(*) AS n FROM events WHERE kind_id = (SELECT id FROM kinds WHERE grp = 1) GROUP BY 1 ORDER BY 1'),
+	(12, 'two rows only when a row asks',     'SELECT label, count(*) AS n FROM events WHERE id < 0 AND kind_id = (SELECT id FROM kinds WHERE grp = 1) GROUP BY 1 ORDER BY 1'),
+	(13, 'the same sub-select twice',        'SELECT kind_id, count(*) AS n FROM events WHERE amount > (SELECT avg(amount) FROM events) AND amount < (SELECT avg(amount) * 1.5 FROM events) GROUP BY 1 ORDER BY 1'),
+	(14, 'an expression of the argument',    'SELECT kind_id, sum(score + (SELECT max(grp) FROM kinds)) AS s FROM events GROUP BY 1 ORDER BY 1'),
+	(15, 'a sub-select and a literal bound', 'SELECT label, count(*) AS n FROM events WHERE score > (SELECT min(grp) + 10 FROM kinds) AND at > date ''2024-06-01'' GROUP BY 1 ORDER BY 1');
+SELECT n, label, mig_same(q) AS same FROM init_q ORDER BY n;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m2 CASCADE;
+-- <<< scalar_init
+
+-- >>> rows
+SET client_min_messages = warning;
+CREATE SCHEMA m3;
+GRANT USAGE ON SCHEMA m3 TO PUBLIC;
+SET search_path = m3, public;
+SET max_parallel_workers_per_gather = 0;
+-- the node under test: a LEFT JOIN of the arms to the spine is a two-level aggregate by default (agg_two_level_spine), which has no rows to group
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, bucket int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO facts
+SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE i % 50 END, i % 2,
+       CASE WHEN i % 11 = 0 THEN NULL
+            ELSE jsonb_build_object('items', coalesce((SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3],
+                                                                                   'n', CASE WHEN (i + j) % 13 = 0 THEN NULL ELSE (i * j) % 10 END))
+                                              FROM generate_series(1, i % 5) j), '[]')) END
+FROM generate_series(1, 20000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, bucket, doc) WITH (paths = 'doc.items[]{k text, n float8}');
+VACUUM (FREEZE, ANALYZE) facts;
+-- the spine has a range no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
+CREATE FUNCTION report(aggs text, filt text DEFAULT 'true', tail text DEFAULT '') RETURNS text LANGUAGE sql AS $$
+	SELECT format($q$WITH periods AS (SELECT * FROM (VALUES ('a', 0), ('b', 1), ('c', 2)) p(label, bucket)),
+	                  cells AS (SELECT f.id, f.dim_a_id, f.bucket, i.k, avg(i.n) AS val, count(*) FILTER (WHERE i.n > 5) AS big
+	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
+	                            WHERE %s GROUP BY f.id, f.dim_a_id, f.bucket, i.k
+	                            UNION ALL
+	                            SELECT f.id, f.dim_a_id, f.bucket, NULL::text, avg(i.n), count(*) FILTER (WHERE i.n > 5)
+	                            FROM facts f CROSS JOIN LATERAL jsonb_to_recordset(f.doc -> 'items') AS i(k text, n float8)
+	                            WHERE %s GROUP BY f.id, f.dim_a_id, f.bucket)
+	               SELECT c.k, p.label, %s
+	               FROM periods p LEFT JOIN cells c ON c.bucket = p.bucket GROUP BY c.k, p.label %s$q$, filt, filt, aggs, tail)
+$$;
+CREATE FUNCTION check_report(name text, q text) RETURNS TABLE (label text, same text) LANGUAGE sql AS $$ SELECT name, mig_same(q) $$;
+SELECT * FROM check_report('ids and dim_a', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.dim_a_id) AS dim_a'));
+-- the aggregates a report reads: FILTERs on the per-row aggregate (the same argument, several FILTERs share a set), count(*), count of a column with NULLs, sum of a bigint, avg
+SELECT * FROM check_report('filters', report($a$count(DISTINCT c.id) AS ids, count(DISTINCT c.id) FILTER (WHERE c.val >= 6) AS high,
+	count(DISTINCT c.id) FILTER (WHERE c.val < 3) AS low, count(DISTINCT c.id) FILTER (WHERE c.val IS NULL) AS no_val,
+	count(DISTINCT c.dim_a_id) FILTER (WHERE c.big > 0) AS dim_a, count(*) AS n, count(c.dim_a_id) AS with_entity,
+	sum(c.big) AS big, avg(c.val) AS mean, count(*) FILTER (WHERE c.k = 'a') AS a$a$));
+SELECT * FROM check_report('where', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.dim_a_id) AS dim_a', 'f.dim_a_id < 25 OR f.dim_a_id IS NULL'));
+-- HAVING, and an aggregate the node leaves to the normal plan (min over a column)
+SELECT * FROM check_report('having', report('count(DISTINCT c.id) AS ids', 'true', 'HAVING count(DISTINCT c.dim_a_id) > 10'));
+SELECT * FROM check_report('min keeps the plan', report('count(DISTINCT c.id) AS ids, min(c.val) AS lowest'));
+-- grouping sets are PostgreSQL's
+SELECT * FROM check_report('rollup keeps the plan', replace(report('count(DISTINCT c.id) AS ids, count(DISTINCT c.dim_a_id) AS dim_a'), 'GROUP BY c.k, p.label', 'GROUP BY ROLLUP (c.k, p.label)'));
+-- the scans in workers
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SELECT * FROM check_report('workers', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.dim_a_id) AS dim_a, sum(c.big) AS big'));
+SET max_parallel_workers_per_gather = 0;
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 40;
+SELECT * FROM check_report('spill', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.dim_a_id) AS dim_a, count(DISTINCT c.id) FILTER (WHERE c.val >= 6) AS high'));
+RESET work_mem;
+RESET hash_mem_multiplier;
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m3 CASCADE;
+-- <<< rows
+
+-- >>> lookup_gang
+SET client_min_messages = warning;
+CREATE SCHEMA m4;
+GRANT USAGE ON SCHEMA m4 TO PUBLIC;
+SET search_path = m4, public;
+SET work_mem = '256MB';
+SET jit = off;
+SET max_parallel_maintenance_workers = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+CREATE TABLE pg (k int PRIMARY KEY, f8 float8, tm time, tx text, nm numeric(12, 3), n int) WITH (autovacuum_enabled = false);
+INSERT INTO pg SELECT i,
+	(ARRAY['NaN', 'Infinity', '-0', '0', NULL, '1.5', '0.1']::float8[])[i % 7 + 1],
+	(ARRAY['00:00:00', '23:59:59.999999', NULL, '12:00:00']::time[])[i % 4 + 1],
+	(ARRAY['', 'a', 'A', 'é', NULL, 'x y', repeat('long', 40)])[i % 7 + 1],
+	(ARRAY['0.000', '-1.500', '99999999.999', NULL, '0.001'])[i % 5 + 1]::numeric,
+	i % 50
+FROM generate_series(0, 299999) i;
+CREATE INDEX pg_col ON pg USING sift_col (k, f8, tm, tx, nm, n);
+-- many tuples of values: more than a table of classes keeps
+CREATE TABLE pm (k int PRIMARY KEY, a int, b int) WITH (autovacuum_enabled = false);
+INSERT INTO pm SELECT i, i % 97, i % 89 FROM generate_series(0, 299999) i;
+CREATE INDEX pm_col ON pm USING sift_col (k, a, b);
+-- a key twice
+CREATE TABLE pd (k int, a int) WITH (autovacuum_enabled = false);
+INSERT INTO pd SELECT i % 200000, i % 7 FROM generate_series(0, 299999) i;
+CREATE INDEX pd_col ON pd USING sift_col (k, a);
+CREATE TABLE pe (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 320000)::int END, i % 13 FROM generate_series(1, 400000) i;
+CREATE INDEX pe_col ON pe USING sift_col (id, k, v);
+VACUUM (FREEZE, ANALYZE) pg, pm, pd, pe;
+CREATE TABLE shapes (n int, sql text);
+INSERT INTO shapes VALUES
+ (1, $q$SELECT p.f8::text, p.tm::text, count(*), sum(pe.v) FROM pe LEFT JOIN pg p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
+ (2, $q$SELECT p.tx, p.nm::text, count(*) FROM pe LEFT JOIN pg p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
+ (3, $q$SELECT count(*) FILTER (WHERE p.tx = 'a'), count(*) FILTER (WHERE p.f8 > 1), count(DISTINCT p.n), max(p.tx) FROM pe LEFT JOIN pg p ON p.k = pe.k$q$),
+ (4, $q$SELECT p.a, p.b, count(*) FROM pe LEFT JOIN pm p ON p.k = pe.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
+ (5, $q$SELECT p.a, count(*) FROM pe LEFT JOIN pd p ON p.k = pe.k GROUP BY 1 ORDER BY 1$q$),
+ -- tests of the columns, computed for the rows of the table by the tuples of values they read (strings, floats, numerics, times, NULLs; several units)
+ (6, $q$SELECT count(*) FILTER (WHERE p.tx = 'a' OR p.tx IS NULL), count(*) FILTER (WHERE p.f8 > 1 AND p.nm < 1), sum(pe.v) FILTER (WHERE p.tm > '12:00') FROM pe JOIN pg p ON p.k = pe.k WHERE pe.id > 0$q$),
+ (7, $q$SELECT p.n > 25, p.tx = 'x y', p.nm IS NULL, count(*) FROM pe JOIN pg p ON p.k = pe.k WHERE pe.id > 0 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3$q$);
+CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN
+	PERFORM set_config('sift.enable_agg', scan::text, true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION report(label text) RETURNS TABLE (stage text, workers int, shape int, same_answers bool) LANGUAGE plpgsql AS $$
+DECLARE w int;
+BEGIN
+	FOREACH w IN ARRAY ARRAY[0, 3] LOOP
+		PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
+		RETURN QUERY SELECT label, w, n, answer(sql, true) = answer(sql, false) FROM shapes ORDER BY n;
+	END LOOP;
+END $$;
+SELECT * FROM report('built');
+-- keys written since the index says its largest: the workers' array is short for them, the process alone reads the table
+INSERT INTO pg SELECT i, 1.5, '01:00:00', 'new', 1.000, 1 FROM generate_series(300000, 330000) i;
+SELECT * FROM report('keys beyond');
+VACUUM pg;
+SELECT * FROM report('vacuumed');
+-- a negative key, a key twice: not classes, by workers as by one process
+INSERT INTO pg VALUES (-5, 0, '00:00:00', 'neg', 0, 0);
+SELECT * FROM report('negative key');
+DELETE FROM pg WHERE k = -5;
+ALTER TABLE pg DROP CONSTRAINT pg_pkey;
+INSERT INTO pg VALUES (7, 0, '00:00:00', 'again', 0, 0);
+SELECT * FROM report('repeated key');
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m4 CASCADE;
+-- <<< lookup_gang
+
+-- >>> dead_rows
+SET client_min_messages = warning;
+CREATE SCHEMA m5;
+GRANT USAGE ON SCHEMA m5 TO PUBLIC;
+SET search_path = m5, public;
+CREATE TABLE dd (id int, grp int, kind text, amount numeric(12,2), qty int, big int8, f float8, ts date, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO dd SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHEN g % 23 = 0 THEN NULL WHEN g % 50 = 1 THEN 'rare' ELSE 'k' || g % 5 END,
+       CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 997) * 1.07 - 40 END, CASE WHEN g % 29 = 0 THEN NULL ELSE g % 100 - 30 END,
+       4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
+FROM generate_series(1, 40000) g;
+CREATE INDEX dd_col ON dd USING sift_col (id, grp, kind, amount, qty, big, f, ts)
+	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_columns = 'kind, grp: amount, qty', calendar_columns = 'ts', dead_rewrite_pct = 50);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) dd;
+CREATE TABLE dd_q (n int, q text);
+INSERT INTO dd_q VALUES
+	(1, 'SELECT count(*), count(grp), count(amount), sum(amount), sum(qty), avg(amount), sum(big) FROM dd'),
+	(2, 'SELECT grp, count(*), count(amount), sum(amount), sum(qty), avg(qty), sum(big) FROM dd GROUP BY grp'),
+	(3, 'SELECT kind, count(*), sum(amount) FROM dd GROUP BY kind'),
+	(4, 'SELECT kind, grp, count(*), sum(amount), count(qty) FROM dd GROUP BY kind, grp'),
+	(5, 'SELECT ts, count(*), sum(qty) FROM dd GROUP BY ts'),
+	(6, 'SELECT ts, count(*), sum(amount) FROM dd WHERE ts >= date ''2024-02-01'' AND ts < date ''2024-04-01'' GROUP BY ts'),
+	(7, 'SELECT count(*), sum(amount) FROM dd WHERE grp IS NULL'),
+	(8, 'SELECT kind, count(*), sum(amount) FROM dd WHERE grp IN (1, 2, 3) GROUP BY kind'),
+	(9, 'SELECT count(*), sum(amount) FROM dd WHERE ctid >= ''(800,1)'' AND ctid < ''(3000,1)'''),
+	(10, 'SELECT grp, min(amount), max(amount), count(*) FROM dd GROUP BY grp'),
+	(11, 'SELECT min(qty), max(qty), min(ts), max(ts) FROM dd'),
+	(12, 'SELECT count(DISTINCT kind), count(DISTINCT grp) FROM dd'),
+	(13, 'SELECT grp, round(sum(f)::numeric, 3), count(*) FROM dd GROUP BY grp'),
+	(14, 'SELECT round(sum(f)::numeric, 3), count(*) FROM dd'),
+	(15, 'SELECT count(*), sum(amount), sum(qty) FROM dd WHERE grp = 3'),
+	(16, 'SELECT count(*), sum(amount) FROM dd WHERE qty > 10'),
+	(17, 'SELECT date_trunc(''month'', ts)::date AS m, count(*), sum(amount), sum(qty) FROM dd GROUP BY 1'),
+	(18, 'SELECT date_trunc(''month'', ts)::date AS m, kind, count(*), sum(amount) FROM dd WHERE ts >= date ''2024-03-01'' GROUP BY 1, 2');
+CREATE FUNCTION dd_same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT mig_same(q) = 'same' $$;
+DELETE FROM dd WHERE id % 29 = 1 OR kind = 'rare' OR (kind IS NULL AND id % 2 = 0);
+VACUUM (DISABLE_PAGE_SKIPPING) dd;
+SELECT sift.col_verify('dd_col', true);
+SELECT n, dd_same(q) AS same FROM dd_q ORDER BY n;
+SELECT kind, count(*) FROM dd GROUP BY kind ORDER BY kind;
+UPDATE dd SET qty = qty + 1 WHERE id % 1000 = 5;
+SELECT n, dd_same(q) AS same FROM dd_q WHERE n IN (1, 2, 3, 9) ORDER BY n;
+VACUUM (DISABLE_PAGE_SKIPPING) dd;
+SELECT sift.col_merge('dd_col', true) >= 0 AS merged;
+SELECT n, dd_same(q) AS same FROM dd_q ORDER BY n;
+SELECT sift.col_verify('dd_col', true);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m5 CASCADE;
+-- <<< dead_rows
+
+-- >>> net_sidecar
+SET client_min_messages = warning;
+CREATE SCHEMA m6;
+GRANT USAGE ON SCHEMA m6 TO PUBLIC;
+SET search_path = m6, public;
+CREATE TABLE ov (id int, grp int, kind text, amount numeric(12,2), qty int, big int8, f float8, ts date, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO ov SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHEN g % 23 = 0 THEN NULL WHEN g % 50 = 1 THEN 'rare' ELSE 'k' || g % 5 END,
+       CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 997) * 1.07 - 40 END, CASE WHEN g % 29 = 0 THEN NULL ELSE g % 100 - 30 END,
+       4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
+FROM generate_series(1, 20000) g;
+CREATE INDEX ov_col ON ov USING sift_col (id, grp, kind, amount, qty, big, f, ts)
+	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_columns = 'kind, grp: amount, qty', calendar_columns = 'ts');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ov;
+CREATE TABLE ov_q (n int, q text);
+INSERT INTO ov_q VALUES
+	(1, 'SELECT count(*), count(grp), count(amount), sum(amount), sum(qty), avg(amount), sum(big) FROM ov'),
+	(2, 'SELECT grp, count(*), count(amount), sum(amount), sum(qty), avg(qty), sum(big) FROM ov GROUP BY grp'),
+	(3, 'SELECT kind, count(*), sum(amount) FROM ov GROUP BY kind'),
+	(4, 'SELECT kind, grp, count(*), sum(amount), count(qty) FROM ov GROUP BY kind, grp'),
+	(5, 'SELECT ts, count(*), sum(qty) FROM ov GROUP BY ts'),
+	(6, 'SELECT ts, count(*), sum(amount) FROM ov WHERE ts >= date ''2024-02-01'' AND ts < date ''2024-04-01'' GROUP BY ts'),
+	(7, 'SELECT count(*), sum(amount) FROM ov WHERE grp IS NULL'),
+	(8, 'SELECT kind, count(*), sum(amount) FROM ov WHERE grp IN (1, 2, 3) GROUP BY kind'),
+	(9, 'SELECT count(*), sum(amount) FROM ov WHERE ctid >= ''(800,1)'' AND ctid < ''(3000,1)'''),
+	(10, 'SELECT grp, min(amount), max(amount), count(*) FROM ov GROUP BY grp'),
+	(11, 'SELECT min(qty), max(qty), min(ts), max(ts) FROM ov'),
+	(12, 'SELECT count(DISTINCT kind), count(DISTINCT grp) FROM ov'),
+	(13, 'SELECT grp, round(sum(f)::numeric, 3), count(*) FROM ov GROUP BY grp'),
+	(14, 'SELECT round(sum(f)::numeric, 3), count(*) FROM ov'),
+	(15, 'SELECT count(*), sum(amount), sum(qty) FROM ov WHERE grp = 3'),
+	(16, 'SELECT count(*), sum(amount) FROM ov WHERE qty > 10'),
+	(17, 'SELECT date_trunc(''month'', ts)::date AS m, count(*), sum(amount), sum(qty) FROM ov GROUP BY 1'),
+	(18, 'SELECT date_trunc(''month'', ts)::date AS m, kind, count(*), sum(amount) FROM ov WHERE ts >= date ''2024-03-01'' GROUP BY 1, 2');
+CREATE FUNCTION ov_same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT mig_same(q) = 'same' $$;
+DELETE FROM ov WHERE id % 29 = 1 OR kind = 'rare' OR (kind IS NULL AND id % 2 = 0);
+VACUUM (DISABLE_PAGE_SKIPPING) ov;
+SELECT sift.col_verify('ov_col', true);
+SELECT n, ov_same(q) AS same FROM ov_q ORDER BY n;
+SELECT kind, count(*) FROM ov GROUP BY kind ORDER BY kind;
+DELETE FROM ov WHERE id % 37 = 2;
+VACUUM (DISABLE_PAGE_SKIPPING) ov;
+SELECT sift.col_verify('ov_col', true);
+SELECT n, ov_same(q) AS same FROM ov_q ORDER BY n;
+SELECT n, ov_same(q) AS same FROM ov_q WHERE n IN (1, 2, 3, 9, 11) ORDER BY n;
+SELECT n, ov_same(q) AS same FROM ov_q ORDER BY n;
+CREATE TABLE ov6 AS SELECT id, grp, kind, amount, qty FROM ov;
+CREATE INDEX ov6_col ON ov6 USING sift_col (id, grp, kind, amount, qty);
+DELETE FROM ov6 WHERE id % 11 = 3;
+SELECT sift.col_verify('ov6_col', true);
+SELECT ov_same('SELECT kind, count(*), sum(amount), sum(qty) FROM ov6 GROUP BY kind') AS same6;
+SELECT sift.col_merge('ov_col', true) >= 0 AS merged;
+SELECT n, ov_same(q) AS same FROM ov_q ORDER BY n;
+SELECT sift.col_verify('ov_col', true);
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m6 CASCADE;
+-- <<< net_sidecar
+
+DROP FUNCTION mig_same(text), mig_run(text, bool);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
+

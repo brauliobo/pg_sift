@@ -1,0 +1,793 @@
+-- The rollups of elements and rows and the wide keys of the column index held to the normal plan: every query gives the rows of the plain plan whichever units answer it from metadata.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+-- the rows of q as sorted jsonb text, or its error, with the aggregate scan on or off
+CREATE FUNCTION mig_run(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+-- 'same' when the rows (or the error) of q are those of the normal plan, else both cut to 200 characters
+CREATE FUNCTION mig_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text := mig_run(q, false); b text := mig_run(q, true);
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
+END $$;
+-- the control: a statement whose rows depend on the setting is told apart
+SELECT mig_same($$SELECT current_setting('sift.enable_agg') AS v$$) LIKE 'DIFF%' AS control_detects_a_difference;
+
+-- >>> rollup
+SET client_min_messages = warning;
+CREATE SCHEMA m1;
+GRANT USAGE ON SCHEMA m1 TO PUBLIC;
+SET search_path = m1, public;
+\set ECHO none
+-- Shared by the agg_preagg* tests (\ir test/agg_preagg_helpers.sql). pa_rows(q, pre, push) is the sorted rows of q, or its error, with sift.agg_preagg and
+-- sift.enable_agg set. A snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the
+-- pages of rows written since from becoming all-visible, so the units stay scanned: pa_settle() waits for the conditions themselves, the queue drained
+-- and no such session.
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled: queue %, snapshots %', (SELECT count(*) FROM sift.col_rollup_queue()),
+				(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+				 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+\set ECHO all
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
+END $$;
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
+END $$;
+-- SiftAgg answers the units that are exact from the rollup of the elements of a list that the sift_col index stored with them (docs/COL-PREAGG.md section 2):
+-- the distinct tuples of the low-cardinality leaves of the elements (dims) with their counts and the sums, minima and maxima of the measures. Any group keys
+-- over the dims (one, two, three, a subset), any conjuncts on them (=, IN, <>, IS NULL, LIKE, OR across dims) and count, sum, avg, min, max of the measures
+-- are folded from the tuples. Every query runs three ways, which must give the same rows: from the rollups, scanning every unit (sift.agg_preagg off), and
+-- the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata: all, some, none ('-': no SiftAgg).
+SET client_min_messages = warning;
+-- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
+-- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE rl (id int, grp int, lines jsonb, tags jsonb, attrs jsonb, pad text) WITH (autovacuum_enabled = off);
+-- a wide row: a superblock is 256 pages, so that 4,000 rows are eight of them
+ALTER TABLE rl ALTER COLUMN pad SET STORAGE PLAIN;
+-- units of the SiftAgg node, those it answered from the pre-aggregates and the dims it read (NULL: the plan has no SiftAgg, or the query fails)
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'one key',           'SELECT e.a, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1'),
+	(2, 'two keys',          'SELECT e.a, e.b, count(*), sum(e.q) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1, 2'),
+	(3, 'three keys',        'SELECT e.a, e.b, e.c, count(*), sum(e.q), avg(e.q) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1, 2, 3'),
+	(4, 'subset: second',    'SELECT e.b, count(*), sum(e.q), avg(e.q) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1'),
+	(5, 'subset: c then a',  'SELECT e.c, e.a, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1, 2'),
+	(6, 'filter =',          'SELECT e.b, count(*), sum(e.q) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.a = ''aa'' GROUP BY 1'),
+	(7, 'filter IN, IN',     'SELECT e.b, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.a IN (''aa'', ''ab'', ''zz'') AND e.c IN (0, 1) GROUP BY 1'),
+	(8, 'filter <>',         'SELECT e.c, count(*), sum(e.q) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.a <> ''aa'' GROUP BY 1'),
+	(9, 'filter IS NULL',    'SELECT e.a, count(*), count(e.q) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.c IS NULL GROUP BY 1'),
+	(10, 'filter LIKE',      'SELECT e.b, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.a LIKE ''a%%'' GROUP BY 1'),
+	(11, 'filter OR dims',   'SELECT e.b, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.a = ''ab'' OR e.c = 1 GROUP BY 1'),
+	(12, 'filter int range', 'SELECT e.a, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.c >= 1 GROUP BY 1'),
+	(13, 'min max int',      'SELECT e.a, min(e.q), max(e.q) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1'),
+	(14, 'min max float',    'SELECT e.a, min(e.w), max(e.w) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1'),
+	(15, 'sum avg float',    'SELECT e.a, e.b, round(sum(e.w)::numeric, 6), round(avg(e.w)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1, 2'),
+	(16, 'int4 measure',     'SELECT e.a, sum(e.amt), avg(e.amt), min(e.amt), max(e.amt) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1'),
+	(17, 'count of leaves',  'SELECT e.a, count(e.a), count(e.c), count(e.q), count(e.w), count(e.amt) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1'),
+	(18, 'no key',           'SELECT count(*), sum(e.q), min(e.q), max(e.w), round(avg(e.w)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4)'),
+	(19, 'no key, filters',  'SELECT count(*), sum(e.q) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.a = ''ab'' AND e.b <> ''bb'' AND e.c IS NOT NULL'),
+	(20, 'zone and dims',    'SELECT e.a, e.c, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE d.id < 15000 AND e.b = ''ba'' GROUP BY 1, 2'),
+	(21, 'having, limit',    'SELECT e.a, e.b, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1, 2 HAVING count(*) > 100 ORDER BY 3 DESC, 1, 2 LIMIT 4'),
+	(22, 'array elements',   'SELECT e.v->>''a'', e.v->>''b'', count(*), sum((e.v->>''q'')::int) FROM %s d CROSS JOIN LATERAL jsonb_array_elements(d.lines) e(v) GROUP BY 1, 2'),
+	(23, 'scalars',          'SELECT t, count(*) FROM %s d CROSS JOIN LATERAL jsonb_array_elements_text(d.tags) t GROUP BY 1'),
+	(24, 'scalars: test',    'SELECT count(*) FROM %s d CROSS JOIN LATERAL jsonb_array_elements_text(d.tags) t WHERE t IN (''t3'', ''t4'')'),
+	(25, 'map: key',         'SELECT s.key, count(*), count(s.value::float8), round(sum(s.value::float8)::numeric, 6), round(avg(s.value::float8)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_each_text(d.attrs) s GROUP BY 1'),
+	(26, 'map: key filter',  'SELECT s.key, count(*), min(s.value::float8), max(s.value::float8) FROM %s d CROSS JOIN LATERAL jsonb_each_text(d.attrs) s WHERE s.key IN (''m1'', ''m2'', ''m9'') GROUP BY 1'),
+	(27, 'map: no key',      'SELECT count(*), round(sum(s.value::float8)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_each_text(d.attrs) s WHERE s.key LIKE ''m%%'' AND s.key <> ''m0'''),
+	(28, 'map: keys only',   'SELECT s.key, count(*) FROM %s d CROSS JOIN LATERAL jsonb_each(d.attrs) s GROUP BY 1'),
+	-- not answered from the rollups: the scan of the units
+	(29, 'row test: scan',   'SELECT e.a, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE d.grp = 3 GROUP BY 1'),
+	(30, 'measure test',     'SELECT e.a, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) WHERE e.q > 3 GROUP BY 1'),
+	(31, 'row key: scan',    'SELECT d.grp, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1'),
+	(32, 'distinct: scan',   'SELECT e.a, count(DISTINCT d.id) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1'),
+	(33, 'map: value test',  'SELECT s.key, count(*) FROM %s d CROSS JOIN LATERAL jsonb_each_text(d.attrs) s WHERE s.value::float8 > 3 GROUP BY 1'),
+	(34, 'key not a dim',    'SELECT e.q, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, c int2, q int4, w float8, amt int4) GROUP BY 1');
+-- one row per query: whether the three ways agree, and how much the first answered from metadata
+-- absent, null and empty arrays, elements with missing and null members; quarter multiples keep the float sums exact in any order
+INSERT INTO rl
+SELECT g, g % 7,
+       CASE WHEN g % 10 = 0 THEN NULL
+            WHEN g % 10 = 1 THEN '[]'
+            ELSE (SELECT jsonb_agg(CASE WHEN (g + e) % 13 = 0 THEN jsonb_build_object('q', e)
+                                        ELSE jsonb_strip_nulls(o) END ORDER BY e)
+                  FROM generate_series(1, g % 5 + 1) e,
+                       LATERAL (SELECT jsonb_build_object('a', CASE WHEN (g + e) % 11 = 0 THEN NULL ELSE (ARRAY['aa', 'ab', 'ba', 'bb', 'ca'])[1 + (g + e) % 5] END,
+                                                          'b', (ARRAY['ba', 'bb', 'bc'])[1 + (g * e) % 3],
+                                                          'c', CASE WHEN (g + 2 * e) % 9 = 0 THEN NULL ELSE (g + e) % 3 END,
+                                                          'q', CASE WHEN (g * e) % 17 = 0 THEN NULL ELSE (g * e) % 9 END,
+                                                          'w', CASE WHEN (g + e) % 7 = 0 THEN NULL ELSE ((g * e) % 40) * 0.25 END,
+                                                          'amt', CASE WHEN (g + e) % 6 = 0 THEN NULL ELSE (g * e) % 500 END) AS o) l) END,
+       CASE WHEN g % 19 = 0 THEN NULL ELSE coalesce((SELECT jsonb_agg(CASE WHEN (g + e) % 8 = 0 THEN NULL ELSE 't' || (g + e) % 6 END) FROM generate_series(1, g % 4) e), '[]') END,
+       CASE WHEN g % 23 = 0 THEN NULL ELSE coalesce((SELECT jsonb_object_agg('m' || (g + e) % 6, CASE WHEN (g + e) % 9 = 0 THEN NULL ELSE ((g * e) % 50) * 0.25 END) FROM generate_series(1, g % 5) e), '{}') END,
+       repeat('p', 3000)
+FROM generate_series(1, 4000) g;
+CREATE TABLE rd (LIKE rl INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE ro (LIKE rl INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE rx (LIKE rl INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+INSERT INTO rd SELECT * FROM rl;
+INSERT INTO ro SELECT * FROM rl;
+INSERT INTO rx SELECT * FROM rl;
+-- rl: the dims named; rd: the automatic rule; ro: no rollup; rx: only two of the three dims
+CREATE INDEX rl_col ON rl USING sift_col (id, grp, lines, tags, attrs)
+	WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8, amt int4}, tags[] text, attrs.* float8', write_buffer_limit = 4096,
+	      preagg = 'cube(grp: id) rollup(lines[].a, lines[].b, lines[].c: lines[].q, lines[].w, lines[].amt; tags[]; attrs.*#key: attrs.*)');
+CREATE INDEX rd_col ON rd USING sift_col (id, grp, lines, tags, attrs)
+	WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8, amt int4}, tags[] text, attrs.* float8', write_buffer_limit = 4096);
+CREATE INDEX ro_col ON ro USING sift_col (id, grp, lines, tags, attrs)
+	WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8, amt int4}, tags[] text, attrs.* float8', write_buffer_limit = 4096, preagg = 'off');
+CREATE INDEX rx_col ON rx USING sift_col (id, grp, lines, tags, attrs)
+	WITH (paths = 'lines[]{a text, b text, c int2, q int4, w float8, amt int4}, tags[] text, attrs.* float8', write_buffer_limit = 4096,
+	      preagg = 'rollup(lines[].a, lines[].b: lines[].q, lines[].w, lines[].amt)');
+CALL pa_settle();
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) rl, rd, ro, rx;
+SELECT sift.col_verify('rl_col', true), sift.col_verify('rd_col', true), sift.col_verify('rx_col', true);
+-- 1. built, every page all-visible: the dims named
+SELECT * FROM pa_check('rl');
+-- the automatic rule, the index without rollups, the index with two of the three dims (a query that reads c is scanned)
+SELECT * FROM pa_sum('rd');
+SELECT * FROM pa_sum('ro');
+SELECT * FROM pa_check('rx', 1, 5);
+-- 2. a few pages change: their units are scanned, the others answer
+UPDATE rl SET lines = '[{"a": "ab", "b": "bb", "c": 1, "q": 5, "w": 1.5}]' WHERE id BETWEEN 100 AND 200;
+DELETE FROM rl WHERE id BETWEEN 2500 AND 2600;
+UPDATE rd SET lines = '[{"a": "ab", "b": "bb", "c": 1, "q": 5, "w": 1.5}]' WHERE id BETWEEN 100 AND 200;
+SELECT * FROM pa_check('rl');
+SELECT * FROM pa_sum('rd');
+-- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl, rd;
+SELECT * FROM pa_sum('rl');
+-- 4. rows in the write buffer, then sealed
+INSERT INTO rl SELECT g, g % 7, jsonb_build_array(jsonb_build_object('a', 'ab', 'b', 'bb', 'c', g % 3, 'q', g % 9, 'w', g * 0.25), jsonb_build_object('a', 'zz', 'q', 1)),
+       '["t1", null]', '{"m1": 2.5, "m7": null}', repeat('p', 3000) FROM generate_series(300001, 300400) g;
+SELECT * FROM pa_sum('rl');
+SELECT sift.col_promote('rl_col') >= 0 AS promoted;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl;
+SELECT * FROM pa_sum('rl');
+-- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
+SELECT sift.col_merge('rl_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rl;
+SELECT sift.col_verify('rl_col', true);
+SELECT * FROM pa_check('rl');
+-- 6. built by parallel workers (several segments)
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+SET parallel_leader_participation = off;
+REINDEX INDEX rl_col;
+RESET parallel_leader_participation;
+SELECT sift.col_verify('rl_col', true);
+-- the layout of a parallel build is not the same twice: its answers must be, the counts are for a serial rebuild
+SELECT queries, differ FROM pa_sum('rl');
+SET max_parallel_maintenance_workers = 0;
+REINDEX INDEX rl_col;
+SELECT * FROM pa_sum('rl');
+-- 7. the index without rollups: every unit is scanned
+SELECT * FROM pa_sum('ro');
+DROP TABLE rl, rd, ro, rx, pa_q;
+DROP PROCEDURE pa_settle();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m1 CASCADE;
+-- <<< rollup
+
+-- >>> rows
+SET client_min_messages = warning;
+CREATE SCHEMA m2;
+GRANT USAGE ON SCHEMA m2 TO PUBLIC;
+SET search_path = m2, public;
+\set ECHO none
+-- Shared by the agg_preagg* tests (\ir test/agg_preagg_helpers.sql). pa_rows(q, pre, push) is the sorted rows of q, or its error, with sift.agg_preagg and
+-- sift.enable_agg set. A snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the
+-- pages of rows written since from becoming all-visible, so the units stay scanned: pa_settle() waits for the conditions themselves, the queue drained
+-- and no such session.
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled: queue %, snapshots %', (SELECT count(*) FROM sift.col_rollup_queue()),
+				(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+				 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+\set ECHO all
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
+END $$;
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
+END $$;
+-- The rollup of the rows of a unit (reloption rollup_columns, column format minor 9, docs/COL-PREAGG.md section 2): a cell for each distinct combination of a few
+-- scalar columns with the rows, the sums, the minima and the maxima of its measures. A GROUP BY of two or more of them, and a test of one with a group by
+-- another, are answered from the cells of the exact units. Every query runs three ways, which must give the same rows (text): from the pre-aggregates,
+-- scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata:
+-- none for an index without the option, a unit written before it, a unit with more cells than the cap, a query the cells cannot answer.
+SET default_statistics_target = 10000;
+	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- the cells are the rollup's, not the cost model's: the tests take them for every exact unit
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
+-- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 7
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'two keys',            'SELECT a, b, count(*), sum(v), sum(w) FROM %s GROUP BY a, b'),
+	(2, 'keys swapped',        'SELECT b, a, count(*), sum(v), avg(w) FROM %s GROUP BY b, a'),
+	(3, 'test a, key b',       'SELECT b, count(*), sum(v), min(v), max(v) FROM %s WHERE a = 3 GROUP BY b'),
+	(4, 'tests of two, no key','SELECT count(*), sum(w), count(v) FROM %s WHERE a IN (1, 2, 5) AND b = ''b03'''),
+	(5, 'range of a',          'SELECT b, count(*), sum(v) FROM %s WHERE a BETWEEN 3 AND 7 GROUP BY b'),
+	(6, 'range of the text',   'SELECT a, count(*), sum(w) FROM %s WHERE b >= ''b02'' AND b < ''b05'' GROUP BY a'),
+	(7, 'three keys',          'SELECT a, b, c, count(*), sum(v) FROM %s GROUP BY a, b, c'),
+	(8, 'NULL keys',           'SELECT a, b, count(*), count(a), count(b), count(v) FROM %s GROUP BY a, b'),
+	(9, 'test IS NULL',        'SELECT b, count(*), sum(v) FROM %s WHERE a IS NULL GROUP BY b'),
+	(10, 'min and max',        'SELECT a, b, min(v), max(v), min(w), max(w) FROM %s GROUP BY a, b'),
+	(11, 'FILTER on a dim',    'SELECT b, count(*), sum(v) FILTER (WHERE a = 1), count(*) FILTER (WHERE a > 4) FROM %s GROUP BY b, c'),
+	(12, 'having, limit',      'SELECT a, b, sum(v) FROM %s GROUP BY a, b HAVING count(*) > 3 ORDER BY 3 DESC NULLS LAST, 1, 2 LIMIT 5'),
+	(13, 'date and a',         'SELECT d, a, count(*), sum(w) FROM %s WHERE d >= date ''2024-03-01'' GROUP BY d, a'),
+	(14, 'test of date',       'SELECT a, count(*), sum(v) FROM %s WHERE d = date ''2024-05-04'' GROUP BY a'),
+	(15, 'other test: scan',   'SELECT a, b, count(*) FROM %s WHERE v > 0 GROUP BY a, b'),
+	(16, 'float: scan',        'SELECT a, b, max(f), min(f) FROM %s GROUP BY a, b'),
+	(17, 'distinct: scan',     'SELECT a, b, count(DISTINCT c) FROM %s GROUP BY a, b'),
+	(18, 'expression: scan',   'SELECT a %% 3, b, count(*) FROM %s GROUP BY a %% 3, b'),
+	(19, 'grouping sets',      'SELECT a, b, count(*) FROM %s GROUP BY GROUPING SETS ((a, b), (b), ())'),
+	(20, 'zone of another',    'SELECT a, b, count(*) FROM %s WHERE id < 20000 GROUP BY a, b'),
+	(21, 'measure of a dim',   'SELECT a, b, sum(c), max(c) FROM %s GROUP BY a, b'),
+	(22, 'one key: the cube',  'SELECT a, count(*), sum(v) FROM %s GROUP BY a'),
+	(23, 'no rows',            'SELECT a, b, count(*), sum(v) FROM %s WHERE a = 99 GROUP BY a, b'),
+	(24, 'OR of two dims',     'SELECT c, count(*), sum(w) FROM %s WHERE a = 2 OR b = ''b04'' GROUP BY c'),
+	(25, 'dims, range of date','SELECT a, b, count(*), sum(w) FROM %s WHERE d >= date ''2024-03-01'' AND d < date ''2024-06-01'' GROUP BY a, b');
+-- one row per query: whether the three ways agree, and how much the first answered from metadata
+-- the same, summed up for a table whose answers need not be listed
+-- a: 12 values and NULLs, b: 8 texts and NULLs, c: 5 values from -2, d: 8 months, v: bigint with NULLs and negatives, w: numeric(10,2), f: float8
+CREATE TABLE rw (id int, a int, b text, c int, d date, v bigint, w numeric(10, 2), f float8, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO rw
+SELECT g, CASE WHEN g % 13 = 0 THEN NULL ELSE g % 12 END, CASE WHEN g % 17 = 0 THEN NULL ELSE 'b0' || (g * 7 % 8) END, g % 5 - 2,
+       date '2024-01-01' + (g / 5000) * 31, CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END,
+       CASE WHEN g % 11 = 0 THEN NULL ELSE ((g * 91) % 20000) / 100.0 - 50 END, (g % 71) / 7.0 - 3, repeat('p', 200)
+FROM generate_series(1, 40000) g;
+-- named measures; the default measures; ids as a dim (a unit has more cells than the cap); no option; the setting 8 (the option is ignored)
+CREATE TABLE rc (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rd (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rh (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE ro (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rf (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rx (LIKE rw) WITH (autovacuum_enabled = off);
+CREATE TABLE rm (LIKE rw) WITH (autovacuum_enabled = off);
+INSERT INTO rc SELECT * FROM rw;
+INSERT INTO rd SELECT * FROM rw;
+INSERT INTO rh SELECT * FROM rw;
+INSERT INTO ro SELECT * FROM rw;
+INSERT INTO rf SELECT * FROM rw;
+INSERT INTO rx SELECT * FROM rw;
+INSERT INTO rm SELECT * FROM rw;
+DROP TABLE rw;
+-- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
+CREATE INDEX rc_col ON rc USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, d: v, w, c');
+CREATE INDEX rd_col ON rd USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, c');
+CREATE INDEX rh_col ON rh USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'id, a: v');
+CREATE INDEX ro_col ON ro USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
+CREATE INDEX rf_col ON rf USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b');
+-- the rollup of a segment written under 14 has no length before each measure (minor 9); one written under the default has (minor 36): both are read
+CREATE INDEX rm_col ON rm USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, d: v, w, c');
+CREATE INDEX rx_col ON rx USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
+CALL pa_settle();
+-- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) rc, rd, rh, ro, rf, rx, rm;
+SELECT sift.col_verify('rc_col', true), sift.col_verify('rd_col', true), sift.col_verify('rh_col', true), sift.col_verify('rf_col', true), sift.col_verify('rm_col', true);
+-- 1. built, every page all-visible: the indexes with the option answer from their cells, the others scan
+SELECT * FROM pa_check('rc');
+SELECT * FROM pa_sum('rd');
+SELECT * FROM pa_sum('rh');
+SELECT * FROM pa_sum('ro');
+SELECT * FROM pa_sum('rf');
+-- EXPLAIN says it: the rollup, its dims and measures, the units it answered
+-- 2. a few pages change (update, delete): their units are scanned, the others answer
+UPDATE rc SET v = -(v / 2), c = c + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM rc WHERE id BETWEEN 18000 AND 18100;
+UPDATE rd SET v = -(v / 2), c = c + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM rd WHERE id BETWEEN 18000 AND 18100;
+SELECT * FROM pa_check('rc');
+SELECT * FROM pa_sum('rd');
+-- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rc, rd;
+SELECT * FROM pa_check('rc');
+-- 4. rows in the write buffer, then sealed
+INSERT INTO rc SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', CASE WHEN g % 6 = 3 THEN NULL ELSE 4611686018427387904 + g END, g / 7.0, g / 3.0, repeat('p', 200)
+FROM generate_series(300001, 301500) g;
+SELECT * FROM pa_check('rc');
+SELECT sift.col_promote('rc_col') >= 0 AS promoted;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rc;
+SELECT * FROM pa_check('rc');
+-- 5. merged: the dead rows are gone and every unit is stored with its cells again
+SELECT sift.col_merge('rc_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rc;
+SELECT sift.col_verify('rc_col', true);
+SELECT * FROM pa_check('rc');
+-- 6. the option comes after the build: the segments written before have no cells (their units scan), the ones written after have them, and a merge of both
+-- writes them for every unit. Under the setting 8 the option is ignored
+SELECT * FROM pa_sum('rx');
+ALTER INDEX rx_col SET (rollup_columns = 'a, b');
+INSERT INTO rx SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', g * 1000, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 320000) g;
+SELECT sift.col_promote('rx_col') >= 0 AS promoted;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
+SELECT * FROM pa_check('rx');
+SELECT sift.col_verify('rx_col', true);
+SELECT sift.col_merge('rx_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
+SELECT sift.col_verify('rx_col', true);
+SELECT * FROM pa_sum('rx');
+INSERT INTO rf SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', g * 1000, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 310000) g;
+SELECT sift.col_promote('rf_col') >= 0 AS promoted;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rf;
+SELECT sift.col_verify('rf_col', true);
+SELECT * FROM pa_sum('rf');
+-- the option off again: a merge of the units that hold cells writes none
+ALTER INDEX rx_col SET (rollup_columns = '');
+SELECT sift.col_merge('rx_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
+SELECT sift.col_verify('rx_col', true);
+SELECT * FROM pa_sum('rx');
+-- 7. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+SET parallel_leader_participation = off;
+REINDEX INDEX rc_col;
+RESET parallel_leader_participation;
+SELECT sift.col_verify('rc_col', true);
+-- the layout of a parallel build is not the same twice: its answers must be, the counts are for a serial rebuild
+SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('rc');
+SET max_parallel_maintenance_workers = 0;
+REINDEX INDEX rc_col;
+SELECT * FROM pa_check('rc');
+-- the rows are in the order of their months, so the default leaves the units as they are (a cut by d gains nothing): a date no row has lies between the zones of two units, which are read
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT * FROM pa_sum('rc');
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+SELECT * FROM pa_sum('rm');
+-- a transaction that deleted rows sees them gone, another does not until it commits
+BEGIN;
+DELETE FROM rd WHERE id BETWEEN 1 AND 100;
+SELECT * FROM pa_sum('rd');
+ROLLBACK;
+SELECT * FROM pa_sum('rd');
+-- the switch
+DROP TABLE rc, rd, rh, ro, rf, rx, rm, pa_q;
+DROP PROCEDURE pa_settle();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m2 CASCADE;
+-- <<< rows
+
+-- >>> elem
+SET client_min_messages = warning;
+CREATE SCHEMA m3;
+GRANT USAGE ON SCHEMA m3 TO PUBLIC;
+SET search_path = m3, public;
+\set ECHO none
+-- Shared by the agg_preagg* tests (\ir test/agg_preagg_helpers.sql). pa_rows(q, pre, push) is the sorted rows of q, or its error, with sift.agg_preagg and
+-- sift.enable_agg set. A snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the
+-- pages of rows written since from becoming all-visible, so the units stay scanned: pa_settle() waits for the conditions themselves, the queue drained
+-- and no such session.
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled: queue %, snapshots %', (SELECT count(*) FROM sift.col_rollup_queue()),
+				(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+				 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+\set ECHO all
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
+END $$;
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
+END $$;
+-- SiftAgg answers the units that are exact from the element cubes the sift_col index stored with them (docs/COL-PREAGG.md sections 2 and 6): the groups of
+-- the elements of an array of objects (jsonb_to_recordset, jsonb_array_elements) or of scalars, counted and summed per value of one of their leaves.
+-- Every query runs three ways, which must give the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain
+-- plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata: all, some, none ('-': no SiftAgg).
+SET client_min_messages = warning;
+-- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts
+-- below (units answered from the pre-aggregates, segments of an index) follow the layout: every build is serial except the one of step 6
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE ae (id int, grp int, items jsonb, tags jsonb, pad text) WITH (autovacuum_enabled = off);
+-- a wide row: a superblock is 256 pages, so that 4,000 rows are eight of them
+ALTER TABLE ae ALTER COLUMN pad SET STORAGE PLAIN;
+-- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'key text',          'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(2, 'int measure',       'SELECT e.kind, count(*), sum(e.n), avg(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(3, 'float measure',     'SELECT e.kind, count(*), round(sum(e.score)::numeric, 6), round(avg(e.score)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(4, 'counts',            'SELECT e.kind, count(e.n), count(e.score), count(e.kind) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(5, 'key int',           'SELECT e.n, count(*), round(sum(e.score)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(6, 'test of key',       'SELECT count(*), sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind = ''k1'''),
+	(7, 'key in list',       'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind IN (''k1'', ''k2'', ''k9'') GROUP BY 1'),
+	(8, 'null key',          'SELECT count(*), round(avg(e.score)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind IS NULL'),
+	(9, 'text prefix',       'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind LIKE ''k1%%'' GROUP BY 1'),
+	(10, 'int compare',      'SELECT e.n, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.n > 3 GROUP BY 1'),
+	(11, 'zone covers all',  'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id >= 1 GROUP BY 1'),
+	(12, 'zone covers some', 'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 2000 GROUP BY 1'),
+	(13, 'zone and test',    'SELECT e.kind, sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 2000 AND e.kind <> ''k0'' GROUP BY 1'),
+	(14, 'row test: scan',   'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.grp = 3 GROUP BY 1'),
+	(15, 'other leaf', 'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.n = 2 GROUP BY 1'),
+	(16, 'two keys',   'SELECT e.kind, e.n, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1, 2'),
+	(17, 'min max',    'SELECT e.kind, min(e.n), max(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(18, 'row key: scan',    'SELECT d.grp, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(19, 'no key',     'SELECT count(*), sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8)'),
+	(20, 'distinct: scan',   'SELECT e.kind, count(DISTINCT d.id) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(21, 'having, limit',    'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1 HAVING count(*) > 100 ORDER BY 2 DESC, 1 LIMIT 3'),
+	(22, 'array elements',   'SELECT e.v->>''kind'', count(*), sum((e.v->>''n'')::int) FROM %s d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) GROUP BY 1'),
+	(23, 'scalars',          'SELECT t, count(*) FROM %s d CROSS JOIN LATERAL jsonb_array_elements_text(d.tags) t GROUP BY 1'),
+	(24, 'scalars: test',    'SELECT count(*) FROM %s d CROSS JOIN LATERAL jsonb_array_elements_text(d.tags) t WHERE t = ''t3'''),
+	(25, 'huge floats',      'SELECT e.kind, count(*), sum(e.score) > 1e119 FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
+	(26, 'bad measure',      'SELECT e.kind, sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1');
+-- one row per query: whether the three ways agree (the scan may refuse a column it cannot read, as it does without pre-aggregates), and how much the first answered from metadata
+-- the same, summed up for a table whose answers need not be listed
+-- Compare execution with the stored dimension intersection, independently of physical unit packing.
+-- Function-local settings also restore the changes made by pa_rows on return.
+-- absent, null and empty arrays, objects with missing and null members; in fixed id ranges what a unit cannot hold: floats too large for the sum of
+-- their squares (1000..1003), more than 256 distinct kinds in a unit (3500..3900)
+INSERT INTO ae
+SELECT g, g % 7,
+       CASE WHEN g % 10 = 0 THEN NULL
+            WHEN g % 10 = 1 THEN '[]'
+            WHEN g BETWEEN 1000 AND 1003 THEN '[{"kind": "huge", "n": 1, "score": 1e120}]'
+            ELSE (SELECT jsonb_agg(CASE WHEN (g + e) % 13 = 0 THEN jsonb_build_object('n', e)
+                                        WHEN g BETWEEN 3500 AND 3900 THEN jsonb_build_object('kind', 'u' || g || '_' || e, 'n', e, 'score', e * 0.25)
+                                        ELSE CASE WHEN (g + e) % 2 = 0 THEN jsonb_strip_nulls(o) ELSE o END END ORDER BY e)
+                  FROM generate_series(1, g % 4 + 1) e,
+                       LATERAL (SELECT jsonb_build_object('kind', CASE WHEN (g + e) % 11 = 0 THEN NULL ELSE 'k' || (g + e) % 5 END,
+                                                          'n', CASE WHEN (g * e) % 17 = 0 THEN NULL ELSE (g * e) % 9 END,
+                                                          'score', CASE WHEN (g + e) % 7 = 0 THEN NULL ELSE ((g * e) % 40) * 0.25 END) AS o) l) END,
+       CASE WHEN g % 19 = 0 THEN NULL ELSE coalesce((SELECT jsonb_agg(CASE WHEN (g + e) % 8 = 0 THEN NULL ELSE 't' || (g + e) % 6 END) FROM generate_series(1, g % 4) e), '[]') END,
+       repeat('p', 3000)
+FROM generate_series(1, 4000) g;
+-- the default cube; an explicit cube; no cube; an index of the format before the element cubes (minor 3)
+CREATE TABLE ac (LIKE ae INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE ao (LIKE ae INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+CREATE TABLE a3 (LIKE ae INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+-- a string in an int path (ids 1600..1603): a unit that holds one has no histogram of n, the one of kind stays, and a scan of n is refused
+CREATE TABLE ab (LIKE ae INCLUDING STORAGE) WITH (autovacuum_enabled = off);
+INSERT INTO ab SELECT id, grp, CASE WHEN id BETWEEN 1600 AND 1603 THEN '[{"kind": "k1", "n": "7", "score": 2}, {"kind": "k2", "n": 2, "score": 3}]'::jsonb ELSE items END, tags, pad
+FROM ae WHERE id <= 1900;
+INSERT INTO ac SELECT * FROM ae;
+INSERT INTO ao SELECT * FROM ae;
+INSERT INTO a3 SELECT * FROM ae;
+CREATE INDEX ae_col ON ae USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX ac_col ON ac USING sift_col (id, grp, items, tags)
+	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096,
+	      preagg = 'cube(grp: id) rollup(items[].kind, items[].n: items[].n, items[].score; tags[])', cube_minmax = false, superunit = 0);
+CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off', cube_minmax = false, superunit = 0);
+CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ae, ac, ao, a3, ab;
+	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
+SELECT sift.col_verify('ae_col', true), sift.col_verify('ac_col', true), sift.col_verify('a3_col', true);
+-- 1. built, every page all-visible
+-- Freeze automatic rollup selection before any query can enqueue a refresh of ae.
+SELECT * FROM pa_check('ac');
+SELECT * FROM pa_check('ae') WHERE n <> 16;
+SELECT * FROM pa_sum('ao');
+SELECT * FROM pa_sum('a3');
+SELECT * FROM pa_check('ab', 1, 1) UNION ALL SELECT * FROM pa_check('ab', 26, 26) ORDER BY 1;
+CALL pa_settle();
+-- Small automatic cubes: both dimensions fit; 65 distinct n values exceed the 64-key preselection cap.
+-- The only element leaves are kind and n; short text/small integers leave ample encoding room.
+CREATE TABLE ap (id int, items jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', k, 'n', n) ORDER BY k, n)
+FROM unnest(ARRAY['a', 'b']) k CROSS JOIN generate_series(1, 2) n;
+CREATE INDEX ap_col ON ap USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4}', cube_minmax = false, superunit = 0);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap;
+SELECT count(*) = 4 AS elements, count(DISTINCT e.kind) = 2 AS kinds, count(DISTINCT e.n) = 2 AS nums
+FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);
+TRUNCATE ap;
+INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', CASE WHEN n % 2 = 0 THEN 'a' ELSE 'b' END, 'n', n) ORDER BY n)
+FROM generate_series(1, 65) n;
+REINDEX INDEX ap_col;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap;
+SELECT count(*) = 65 AS elements, count(DISTINCT e.kind) = 2 AS kinds, count(DISTINCT e.n) = 65 AS nums
+FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);
+DROP TABLE ap;
+-- 2. a few pages change (update, delete): their units are scanned, the others answer
+UPDATE ac SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
+DELETE FROM ac WHERE id BETWEEN 2500 AND 2600;
+UPDATE ae SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
+DELETE FROM ae WHERE id BETWEEN 2500 AND 2600;
+UPDATE a3 SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
+SELECT * FROM pa_check('ac');
+SELECT * FROM pa_sum('ae');
+SELECT * FROM pa_sum('a3');
+-- 3. vacuumed (the index is vacuumed too: with few dead rows VACUUM would skip it): the units that lost rows stay scanned until a merge rewrites them
+CALL pa_settle();
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac, ae, a3;
+SELECT * FROM pa_check('ac');
+-- 4. rows in the write buffer, then sealed
+INSERT INTO ac SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25), jsonb_build_object('kind', 'w' || g % 3, 'n', 1)),
+       '["t1", null]', repeat('p', 3000) FROM generate_series(300001, 300400) g;
+SELECT * FROM pa_check('ac');
+SELECT sift.col_promote('ac_col') >= 0 AS promoted;
+CALL pa_settle();
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac;
+SELECT * FROM pa_check('ac');
+-- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
+SELECT sift.col_merge('ac_col', true) >= 0 AS merged;
+CALL pa_settle();
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ac;
+SELECT sift.col_verify('ac_col', true);
+SELECT * FROM pa_check('ac');
+-- 6. built by parallel workers (several segments)
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+SET parallel_leader_participation = off;
+REINDEX INDEX ac_col;
+RESET parallel_leader_participation;
+SELECT sift.col_verify('ac_col', true);
+SELECT * FROM pa_check('ac');
+SET max_parallel_maintenance_workers = 0;
+-- 7. a minor 3 index that gets default segments (minor 15 or more, shown as 15) (rows inserted and sealed after the format changed): the units of each answer by what they hold
+INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(400001, 400500) g;
+SELECT sift.col_promote('a3_col') >= 0 AS promoted;
+INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(410001, 410500) g;
+SELECT sift.col_promote('a3_col') >= 0 AS promoted;
+CALL pa_settle();
+VACUUM (freeze, index_cleanup on, disable_page_skipping) a3;
+SELECT sift.col_verify('a3_col', true);
+SELECT * FROM pa_sum('a3');
+-- a rebuild gives the one layout of units the counts below are for
+REINDEX INDEX a3_col;
+CALL pa_settle();
+SELECT * FROM pa_sum('a3');
+-- 8. the index without cubes: every unit is scanned
+SELECT * FROM pa_sum('ao');
+DROP TABLE ae, ac, ao, a3, ab, pa_q;
+DROP PROCEDURE pa_settle();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m3 CASCADE;
+-- <<< elem
+
+-- >>> wide_key
+SET client_min_messages = warning;
+CREATE SCHEMA m4;
+GRANT USAGE ON SCHEMA m4 TO PUBLIC;
+SET search_path = m4, public;
+\set ECHO none
+-- Shared by the agg_preagg* tests (\ir test/agg_preagg_helpers.sql). pa_rows(q, pre, push) is the sorted rows of q, or its error, with sift.agg_preagg and
+-- sift.enable_agg set. A snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the
+-- pages of rows written since from becoming all-visible, so the units stay scanned: pa_settle() waits for the conditions themselves, the queue drained
+-- and no such session.
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled: queue %, snapshots %', (SELECT count(*) FROM sift.col_rollup_queue()),
+				(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+				 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+\set ECHO all
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
+END $$;
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
+END $$;
+-- A group key that is an int8 or a numeric(p,s) column is answered from the cube's histogram of the column, as an int4 or text key is: the group is
+-- the stored integer (numeric: times 10^scale), and the key of the result is built from it as the scan builds it.
+-- Every query runs three ways, which must give the same rows (text, so the scale of the numeric keys counts): from the pre-aggregates, scanning
+-- every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
+SET default_statistics_target = 10000;
+	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
+-- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'int8 key',            'SELECT k8, count(*), sum(val), sum(small), avg(small) FROM %s GROUP BY k8'),
+	(2, 'numeric key',         'SELECT kn, count(*), sum(val), sum(amt), avg(amt) FROM %s GROUP BY kn'),
+	(3, 'int8 key, count(key)', 'SELECT k8, count(k8), count(val) FROM %s GROUP BY k8'),
+	(4, 'int8 key, test of it', 'SELECT k8, count(*), sum(val) FROM %s WHERE k8 > 0 GROUP BY k8'),
+	(5, 'numeric key, range',  'SELECT kn, count(*), sum(small) FROM %s WHERE kn >= 2.5 AND kn < 7 GROUP BY kn'),
+	(6, 'numeric key, IN',     'SELECT kn, count(*), sum(small) FROM %s WHERE kn IN (0.25, 1.50, 12.75) GROUP BY kn'),
+	(7, 'int8 key, IS NULL',   'SELECT k8, count(*), sum(small) FROM %s WHERE k8 IS NULL GROUP BY k8'),
+	(8, 'int8 key, FILTER',    'SELECT k8, sum(val) FILTER (WHERE k8 > 100), count(*) FROM %s GROUP BY k8'),
+	(9, 'no rows',             'SELECT k8, count(*), sum(val) FROM %s WHERE id > 100000000 GROUP BY k8'),
+	(10, 'having, limit',      'SELECT kn, count(*) FROM %s GROUP BY kn HAVING count(*) > 10 ORDER BY 2 DESC, 1 LIMIT 3'),
+	(11, 'test of numeric, no key', 'SELECT count(*), sum(small) FROM %s WHERE kn = 1.50'),
+	(12, 'test of int8, no key', 'SELECT count(*), sum(val) FROM %s WHERE k8 = 4611686018427387904'),
+	(13, 'two keys: scan',     'SELECT k8, kt, count(*) FROM %s GROUP BY k8, kt'),
+	(14, 'expression of the key: scan', 'SELECT k8 / 2, count(*) FROM %s GROUP BY k8 / 2'),
+	(15, 'key plus one: scan', 'SELECT kn + 1, count(*) FROM %s GROUP BY kn + 1'),
+	(16, 'int4 key beside',    'SELECT kt, count(*), sum(small) FROM %s GROUP BY kt'),
+	(17, 'grouping sets',      'SELECT k8, count(*) FROM %s GROUP BY GROUPING SETS ((k8), ())'),
+	(18, 'rollup of numeric',  'SELECT kn, count(*) FROM %s GROUP BY ROLLUP (kn)'),
+	(19, 'cast of the key: scan', 'SELECT kt::numeric, count(*), sum(small) FROM %s GROUP BY kt::numeric');
+-- one row per query: whether the three ways agree, and how much the first answered from metadata
+-- the same, summed up for a table whose answers need not be listed
+-- k8: the extremes of int8 with both signs, NULLs, small values; kn: numeric(12,2) with NULLs and one NaN (the unit that holds it has no histogram);
+-- kt: int4; val: int8 with NULLs; amt: numeric(10,2)
+CREATE TABLE wk (id int, k8 bigint, kn numeric(12, 2), kt int, val bigint, small int, amt numeric(10, 2), pad text) WITH (autovacuum_enabled = off);
+INSERT INTO wk
+SELECT g,
+       CASE g % 9 WHEN 0 THEN 4611686018427387904 WHEN 1 THEN -4611686018427387904 WHEN 2 THEN 9223372036854775807 WHEN 3 THEN -9223372036854775807 - 1
+                  WHEN 4 THEN NULL ELSE g % 5 * 100 END,
+       CASE WHEN g = 5000 THEN 'NaN'::numeric WHEN g % 11 = 0 THEN NULL ELSE (g % 13) * 0.25 + (g % 3) * 0.5 END,
+       g % 6,
+       CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END,
+       CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END,
+       CASE WHEN g % 13 = 0 THEN NULL ELSE ((g * 91) % 20000) / 100.0 END,
+       repeat('p', 200)
+FROM generate_series(1, 40000) g;
+-- an explicit cube with the keys as dims; the default cube; no cube
+CREATE TABLE wc (LIKE wk) WITH (autovacuum_enabled = off);
+CREATE TABLE wd (LIKE wk) WITH (autovacuum_enabled = off);
+CREATE TABLE wo (LIKE wk) WITH (autovacuum_enabled = off);
+INSERT INTO wc SELECT * FROM wk;
+INSERT INTO wd SELECT * FROM wk;
+INSERT INTO wo SELECT * FROM wk;
+DROP TABLE wk;
+CREATE INDEX wc_col ON wc USING sift_col (id, k8, kn, kt, val, small, amt)
+	WITH (rollup_columns = 'off', write_buffer_limit = 4096, preagg = 'cube(k8: val, small, amt; kn: val, small, amt; kt: small)');
+CREATE INDEX wd_col ON wd USING sift_col (id, k8, kn, kt, val, small, amt) WITH (rollup_columns = 'off', write_buffer_limit = 4096);
+CREATE INDEX wo_col ON wo USING sift_col (id, k8, kn, kt, val, small, amt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, preagg = 'off');
+CALL pa_settle();
+-- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) wc, wd, wo;
+SELECT sift.col_verify('wc_col', true);
+-- the keys of the result are the column's own: the type, the scale of a numeric, the extremes of int8
+SELECT pg_typeof(k8) AS k8_type, k8, count(*) FROM wc GROUP BY k8 ORDER BY k8 NULLS LAST;
+SELECT pg_typeof(kn) AS kn_type, kn, count(*) FROM wc GROUP BY kn ORDER BY kn NULLS LAST LIMIT 6;
+-- 1. built, every page all-visible. The units that hold a numeric NaN are scanned
+SELECT * FROM pa_check('wc');
+SELECT * FROM pa_sum('wd');
+SELECT * FROM pa_sum('wo');
+-- 2. a few pages change (update, delete): their units are scanned, the others answer
+UPDATE wc SET k8 = k8 / -3, kn = kn + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM wc WHERE id BETWEEN 18000 AND 18100;
+UPDATE wd SET k8 = k8 / -3, kn = kn + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM wd WHERE id BETWEEN 18000 AND 18100;
+SELECT * FROM pa_check('wc');
+SELECT * FROM pa_sum('wd');
+-- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
+VACUUM (freeze, index_cleanup on, disable_page_skipping) wc, wd;
+SELECT * FROM pa_check('wc');
+-- 4. rows in the write buffer, then sealed
+INSERT INTO wc SELECT g, g % 4 * 1000, (g % 5) * 1.25, g % 6, g, g % 9, g / 7.0, repeat('p', 200) FROM generate_series(300001, 301500) g;
+SELECT * FROM pa_check('wc');
+SELECT sift.col_promote('wc_col') >= 0 AS promoted;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) wc;
+SELECT * FROM pa_check('wc');
+-- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
+SELECT sift.col_merge('wc_col', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) wc;
+SELECT sift.col_verify('wc_col', true);
+SELECT * FROM pa_check('wc');
+-- 6. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+SET parallel_leader_participation = off;
+REINDEX INDEX wc_col;
+RESET parallel_leader_participation;
+-- the layout of a parallel build is not the same twice: its answers must be, the counts are for a serial rebuild
+SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('wc');
+SET max_parallel_maintenance_workers = 0;
+REINDEX INDEX wc_col;
+SELECT * FROM pa_check('wc');
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT * FROM pa_sum('wc');
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+-- the switch
+DROP TABLE wc, wd, wo, pa_q;
+DROP PROCEDURE pa_settle();
+RESET ALL;
+SET client_min_messages = warning;
+DROP SCHEMA m4 CASCADE;
+-- <<< wide_key
+
+DROP FUNCTION mig_same(text), mig_run(text, bool);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
+
