@@ -23,9 +23,11 @@ CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text; b text; plan text := ''; l text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
+	SET LOCAL enable_sort = off;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l; END LOOP;
 	a := answer(q);
 	SET LOCAL sift.enable_agg = off;
+	SET LOCAL enable_sort = on;
 	b := answer(q);
 	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || (CASE WHEN plan LIKE '%SiftAgg%' THEN 'node' ELSE 'normal' END) || ' ' || q;
 END $$;
