@@ -63,11 +63,11 @@ extern void sift_v6_pgexpr_derive(SiftV6PgExpr *x, const SiftVec *const *in, con
 extern SiftV6PgExpr *sift_v6_pgexpr_bind(MemoryContext cx, const SiftV6Spec *s, const SiftV6Derive *d, SiftV6BqCol col, void *arg, const SiftVec **in);
 
 /*
- * The derivation of a key or an argument the scan evaluates with these: e is an expression (not a column or a constant) of at most SIFT_V6_MAX_COLS columns of the relations of the statement, each one a
+ * The derivation of a key or an argument the scan evaluates with these: e is an expression (not a column or a constant) of at most SIFT_V6_MAX_COLS columns of the range table entry relid, each one a
  * column rs resolves, and PostgreSQL can run it as it is (sift_v6_pgexpr_plan_ok of root). d is SVD_PG_EXPR with the first column as its source and the place of its item in *items as aux, *restype the base type of
  * the result. An item is the renumbered expression and the ints (result type, then attno, type and scale of each column).
  */
-extern bool sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Expr *e, SiftV6Derive *d, Oid *restype, List **items);
+extern bool sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6Derive *d, Oid *restype, List **items);
 
 typedef struct SiftV6PgItem
 {
@@ -87,9 +87,9 @@ extern bool sift_v6_spec_pg_reads(const SiftV6Spec *s);
 /* The columns the derivations of the spec read, the room the scan's column array needs for them */
 extern int	sift_v6_spec_pg_inputs(const SiftV6Spec *s);
 
-/* The Vars of e of the range table entries relid and elem_relid (relid 0: those of every entry), each once in the order met: their attnos and types; false when there are more than SIFT_V6_MAX_COLS */
+/* The Vars of e of the range table entries relid and elem_relid (0: none), each once in the order met: their attnos and types; false when there are more than SIFT_V6_MAX_COLS or e names a column of another range table entry */
 extern bool sift_v6_pgexpr_vars(const Expr *e, Index relid, Index elem_relid, List **vars);
-/* A copy of e whose Vars of relid and elem_relid (relid 0: of every entry) are the Vars of SIFT_V6_PGX_RELID numbered by their place in vars (as sift_v6_pgexpr_vars found them) */
+/* A copy of e whose Vars of relid and elem_relid are the Vars of SIFT_V6_PGX_RELID numbered by their place in vars (as sift_v6_pgexpr_vars found them) */
 extern Expr *sift_v6_pgexpr_renumber(const Expr *e, Index relid, Index elem_relid, const List *vars);
 
 #endif							/* SIFT_AGG_V6_PG_EXPR_H */
