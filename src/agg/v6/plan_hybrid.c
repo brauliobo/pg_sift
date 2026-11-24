@@ -10,6 +10,7 @@
 #include "parser/parsetree.h"
 
 #include "agg/v6/plan_int.h"
+#include "agg/v6/v6_unnest_jsonb.h"
 #include "bm25/planner.h"
 
 bool
@@ -44,12 +45,34 @@ compile_once(V6Plan *p, IndexOptInfo *ix, Relation irel, const SiftStoreSchema *
 	return sift_v6_compile_head(p, (GroupPathExtraData *) extra, group_exprs);
 }
 
-/* a row the source gives may be left out after it, by a batch qual, a FILTER or a join: the members the source reads from the heap row of each row it gives could raise for a row PostgreSQL never reads; and
- * the rows of a text bridge are folded by the hybrid scan, which reads no member */
-static bool
-drops_rows_after_source(const V6Plan *p)
+bool
+sift_v6_members_dropped(const V6Plan *p)
 {
 	return p->spec.vqual != NIL || p->spec.nfilters > 0 || p->spec.ext != NULL || p->text != NULL;
+}
+
+/* the members of a map are read from the leaves of the index; a plan that drops rows after the source reads them from the document, as PostgreSQL does for the rows it reads */
+void
+sift_v6_index_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, IndexOptInfo *ix, GroupPathExtraData *extra, List *group_exprs)
+{
+	Relation	irel = index_open(ix->indexoid, AccessShareLock);
+
+	for (bool members = true;; members = false)
+	{
+		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix,.batch_ok = true,.members = members};
+		bool		ok;
+
+		sift_v6_plan_index(&p, irel);
+		if (p.ops == NULL || sift_v6_mapkey_paths(&p, extra, group_exprs))
+			break;
+		ok = sift_v6_compile_on(&p, extra, group_exprs);
+		if (members && p.spec.jmembers != NIL && (!ok || sift_v6_members_dropped(&p)))
+			continue;
+		if (ok)
+			sift_v6_add_group_path(&p, output_rel, group_exprs, extra != NULL ? (List *) extra->havingQual : NIL);
+		break;
+	}
+	index_close(irel, NoLock);
 }
 
 bool
@@ -61,7 +84,7 @@ sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, I
 	*group_exprs = sift_v6_group_exprs_of(root);
 	if (!compile_once(&p, ix, irel, table, extra, *group_exprs))
 		return false;
-	if (p.spec.jmembers != NIL && drops_rows_after_source(&p))
+	if (p.spec.jmembers != NIL && sift_v6_members_dropped(&p))
 	{
 		p = (V6Plan) {.root = root,.rel = rel,.out = out,.score_ok = true};
 		if (!compile_once(&p, ix, irel, table, extra, *group_exprs))

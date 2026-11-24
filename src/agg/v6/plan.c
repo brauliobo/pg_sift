@@ -659,18 +659,8 @@ sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	}
 	else
 		foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
-		{
-			V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix,.batch_ok = true};
-			Relation	irel;
-
-			if (!sift_v6_index_owned(ix))
-				continue;
-			irel = index_open(ix->indexoid, AccessShareLock);
-			sift_v6_plan_index(&p, irel);
-			if (p.ops != NULL && !sift_v6_mapkey_paths(&p, extra, group_exprs) && sift_v6_compile_on(&p, extra, group_exprs))
-				sift_v6_add_group_path(&p, output_rel, group_exprs, having);
-			index_close(irel, NoLock);
-		}
+			if (sift_v6_index_owned(ix))
+				sift_v6_index_group_path(root, input_rel, output_rel, ix, extra, group_exprs);
 	table_close(heap, NoLock);
 }
 
