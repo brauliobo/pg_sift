@@ -141,7 +141,8 @@ subtest 'block 0 keeps the summary of the partitions, split by time into hot and
 };
 
 subtest 'a prepared transaction writes its staged rows at PREPARE, under its own transaction id' => sub {
-	my $rows = sub { return $_[0]->safe_psql('postgres', "SELECT coalesce(sum(total_rows), 0) FROM sift._test_f2_partitions('$idx')") };
+	# a transaction of fewer than 256 rows (SIFT_L0_MICRO_MIN) writes a micro-slab, which the partition does not count in total_rows
+	my $rows = sub { return $_[0]->safe_psql('postgres', "SELECT coalesce(sum(total_rows + coalesce(substring(sift._test_f2_slab('$idx', part_id, key_lo) from 'rows=(\\d+)')::int8, 0)), 0) FROM sift._test_f2_partitions('$idx')") };
 	my $before = $rows->($primary);
 	$primary->safe_psql('postgres', qq{
 		BEGIN;
