@@ -178,7 +178,7 @@ WHERE kind = 'cat_a' AND created_at >= '2026-03-01' AND created_at < '2026-03-02
 | `sift.col_text_ops` | `text`, `varchar` | `=`, `LIKE 'prefix%'`, `^@`, `= ANY`, `IS [NOT] NULL` |
 | `sift.col_bpchar_ops`, `col_uuid_ops` | `char(n)`, `uuid` | `=`, `= ANY`, `IS [NOT] NULL` |
 
-The default `sift.col_ops` class supports both `SiftAgg` and row-returning bitmap filters on any column subset without naming individual opclasses.
+The classes of the integers, floats, `bool`, `date`, `timestamp`, `timestamptz`, `text` (and `varchar`) and `uuid` are the default of their types, so `CREATE INDEX ... USING sift_col (id)` binds them and `INSERT ... ON CONFLICT (id)` finds the equality of a `UNIQUE` index with no class written; `sift.col_numeric_ops` (`numeric(p, s)` with `p` up to 18) and `sift.col_bpchar_ops` (`char(n)`) take some columns of their type only and are named when wanted. A `text` column under a nondeterministic collation names `sift.col_ops`. An index made before keeps the class it was made with. The `sift.col_ops` class supports both `SiftAgg` and row-returning bitmap filters on any column subset, and is the default of every other type.
 
 On Format Major 2, the classes of integers, floats, booleans, text, uuid, the temporal types, and numeric also answer `col <> value` from the rows whose value is not `NULL` and differs from the constant, which is what `SiftAgg` folds without a second look. The opt-in `sift.col_array_ops` class (`CREATE INDEX ON t USING sift_col (id, tags sift.col_array_ops)`) lets the planner offer the index for `tags && ARRAY['a', 'b']`: the index keeps the rows whose array is not `NULL` and the executor tests the elements. Range and network classes keep their containment operators and have no `<>`.
 
