@@ -61,7 +61,6 @@ script:exec-budget.sh	600	1000	-
 script:stability.sh	2700	3072	see gate:stability
 script:bm25-size.sh	600	1000	-
 script:merge-bytes.sh	600	1000	-
-script:plan-margin.sh	600	1000	-
 script:old-lib-check.sh	900	1500	builds an older release; -
 script:release-library-check.sh	900	1500	hosted release-library-regress 239-276 s
 script:multibuild.sh	900	2000	-
