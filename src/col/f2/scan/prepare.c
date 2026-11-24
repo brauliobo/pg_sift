@@ -111,7 +111,8 @@ sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
 			s->nrowcmp++;
 		}
 	s->possible = s->possible && sift_f2_key_set(f, s->preds, s->npreds, &s->keys) && sift_f2_time_window(f, s->preds, s->npreds, &s->time);
-	sift_f2_key_plan(f, r->schema->cols, s->preds, s->npreds, &s->keyplan);
+	if (s->possible)
+		sift_f2_key_plan(f, r->schema->cols, s->preds, s->npreds, &s->keyplan);
 	for (int i = 0; i < s->nrowcmp && sift_f2_rel_key_spec(f, &spec); i++)
 		sift_key_plan_row_bound(&spec, &s->keyplan, s->rowcmp[i].op, s->rowcmp[i].vals, s->rowcmp[i].n);
 	s->possible = s->possible && s->keyplan.state != SIFT_KEY_PLAN_EMPTY;
