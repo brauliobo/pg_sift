@@ -48,7 +48,7 @@ keys_prune(const SiftScopeMeta *m, const int64 *keys, uint32 nkeys)
 }
 
 SiftScopeRouter *
-sift_f2_scope_build_router(Relation rel, int ord, Snapshot snap, const int64 *keys, uint32 nkeys, MemoryContext mcxt)
+sift_f2_scope_build_router(Relation rel, int ord, Snapshot snap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, MemoryContext mcxt)
 {
 	const SiftScopeMeta *meta = sift_f2_scope_cache_get(rel, sift_plan_cache_get(rel, mcxt), ord, mcxt);
 	SiftF2Scope *sc;
@@ -56,7 +56,7 @@ sift_f2_scope_build_router(Relation rel, int ord, Snapshot snap, const int64 *ke
 	SiftScopeReadMask mask;
 	SiftScopeRouter *r;
 
-	if (meta == NULL || !keys_prune(meta, keys, nkeys) || (sc = sift_f2_scope_open_keys(rel, ord, snap, 0, keys, nkeys)) == NULL)
+	if (meta == NULL || !keys_prune(meta, keys, nkeys) || (sc = sift_f2_scope_open_keys(rel, ord, snap, 0, keys, nkeys, km)) == NULL)
 		return NULL;
 	old = MemoryContextSwitchTo(mcxt);
 	sift_scope_rmask_build(&sc->meta, keys, nkeys, sc->changed, sc->nchanged, &sc->source, &mask);

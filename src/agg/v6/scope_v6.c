@@ -15,6 +15,8 @@
 #include "access/stratnum.h"
 #include "catalog/pg_namespace_d.h"
 #include "catalog/pg_opfamily_d.h"
+#include "catalog/pg_am_d.h"
+#include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
@@ -132,6 +134,26 @@ is_int(Oid typid)
 	return typid == INT2OID || typid == INT4OID || typid == INT8OID;
 }
 
+static Node *
+strip_relabel(Node *n)
+{
+	while (n != NULL && IsA(n, RelabelType))
+		n = (Node *) ((RelabelType *) n)->arg;
+	return n;
+}
+
+/* Is opno the equality of the scope key column (an integer, or a text, varchar or uuid column of a deterministic collation under the collation of the operator) */
+static bool
+key_equality(const ScopePlan *p, Oid opno, Oid inputcollid)
+{
+	const Oid	typid = p->spec.key_type;
+	const Oid	opclass = GetDefaultOpClass(typid, BTREE_AM_OID);
+
+	if (typid != UUIDOID && !is_int(typid) && OidIsValid(inputcollid) && !get_collation_isdeterministic(inputcollid))
+		return false;
+	return OidIsValid(opclass) && get_op_opfamily_strategy(opno, get_opclass_family(opclass)) == BTEqualStrategyNumber;
+}
+
 /* The columns of the tuple the node leaves are those of its scan tlist, in the order the statement names them */
 static void
 add_col(ScopePlan *p, Expr *e, int what)
@@ -207,11 +229,12 @@ key_operand(const ScopePlan *p, OpExpr *op, bool inner, Expr **rhs)
 	Node	   *l,
 			   *r;
 
-	if (list_length(op->args) != 2 || get_op_opfamily_strategy(op->opno, INTEGER_BTREE_FAM_OID) != BTEqualStrategyNumber)
+	if (list_length(op->args) != 2 || !key_equality(p, op->opno, op->inputcollid))
 		return false;
-	l = linitial(op->args);
-	r = lsecond(op->args);
-	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) || !is_int(exprType(r)))
+	l = strip_relabel(linitial(op->args));
+	r = strip_relabel(lsecond(op->args));
+	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
+		!sift_keymap_same_kind(p->spec.key_type, exprType(r)))
 		return false;
 	*rhs = (Expr *) r;
 	return true;
@@ -224,11 +247,12 @@ key_array_operand(const ScopePlan *p, ScalarArrayOpExpr *sa, bool inner, Expr **
 	Node	   *l,
 			   *r;
 
-	if (!sa->useOr || list_length(sa->args) != 2 || get_op_opfamily_strategy(sa->opno, INTEGER_BTREE_FAM_OID) != BTEqualStrategyNumber)
+	if (!sa->useOr || list_length(sa->args) != 2 || !key_equality(p, sa->opno, sa->inputcollid))
 		return false;
-	l = linitial(sa->args);
-	r = lsecond(sa->args);
-	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) || !is_int(get_element_type(exprType(r))))
+	l = strip_relabel(linitial(sa->args));
+	r = strip_relabel(lsecond(sa->args));
+	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
+		!sift_keymap_same_kind(p->spec.key_type, get_element_type(exprType(r))))
 		return false;
 	*rhs = (Expr *) r;
 	return true;
@@ -569,7 +593,7 @@ scope_matches(ScopePlan *p, int ord)
 		return false;
 	p->leg = legs[0];
 	p->spec.key_type = get_atttype(p->leg.rel, p->leg.key);
-	return is_int(p->spec.key_type) && joined_by_member(p, fact_attno(p, p->layout.member_col));
+	return (is_int(p->spec.key_type) || sift_keymap_type(p->spec.key_type)) && joined_by_member(p, fact_attno(p, p->layout.member_col));
 }
 
 static Relation
@@ -933,7 +957,7 @@ sift_v6_scope_one_key(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, In
 	for (int o = 0; o < sift_f2_nscopes(p.irel) && !ok; o++)
 	{
 		reset_spec(&p, o);
-		ok = scope_matches(&p, o) && fact_attno(&p, p.layout.member_col) == fact_att && p.leg.member == pairs_att && compile_key_filter(&p) &&
+		ok = scope_matches(&p, o) && is_int(p.spec.key_type) && fact_attno(&p, p.layout.member_col) == fact_att && p.leg.member == pairs_att && compile_key_filter(&p) &&
 			p.spec.key_given && !p.spec.key_array;
 		if (ok)
 		{

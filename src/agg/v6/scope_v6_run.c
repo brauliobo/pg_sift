@@ -50,6 +50,7 @@ typedef struct ScopeState
 	Relation	rel;			/* the index that keeps the summary, or the sift_table */
 	ExprState  *key;
 	Oid			key_type;
+	SiftKeyMap *km;				/* the codes of a text, varchar or uuid key of the scope (the statement's own map), NULL for an integer key */
 	ExprState  *lo;
 	ExprState  *hi;
 	MemoryContext rcx;
@@ -83,6 +84,8 @@ scope_begin(CustomScanState *node, EState *estate, int eflags)
 	st->spec = sift_v6_scope_spec_unpack(linitial(cs->custom_private));
 	st->rel = st->spec->is_table ? table_open(st->spec->relid, AccessShareLock) : index_open(st->spec->relid, AccessShareLock);
 	st->rcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 scope rows");
+	if (sift_keymap_type(st->spec->key_type))
+		st->km = sift_f2_scope_keymap(st->rel, st->spec->ord);
 	foreach_ptr(Plan, child, cs->custom_plans)
 		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags));
 	if (st->spec->key_given)
@@ -115,13 +118,7 @@ key_value(ScopeState *st, bool *isnull)
 	ExprContext *ec = st->css.ss.ps.ps_ExprContext;
 	Datum		d = ExecEvalExprSwitchContext(st->key, ec, isnull);
 
-	return *isnull ? 0 : st->key_type == INT2OID ? (int64) DatumGetInt16(d) : st->key_type == INT4OID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
-}
-
-static int64
-int_of(Oid typid, Datum d)
-{
-	return typid == INT2OID ? (int64) DatumGetInt16(d) : typid == INT4OID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
+	return *isnull ? 0 : sift_scope_key_code(st->key_type, st->km, d);
 }
 
 /* More keys than this are the join's: each costs a cube */
@@ -137,6 +134,9 @@ key_list(ScopeState *st, int64 **keys, uint32 *nkeys)
 	bool	   *nulls;
 	int			n = 0;
 	uint32		u = 0;
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
 
 	*keys = palloc(sizeof(int64));
 	*nkeys = 0;
@@ -144,16 +144,17 @@ key_list(ScopeState *st, int64 **keys, uint32 *nkeys)
 		return true;
 	if (!st->spec->key_array)
 	{
-		(*keys)[(*nkeys)++] = int_of(st->key_type, d);
+		(*keys)[(*nkeys)++] = sift_scope_key_code(st->key_type, st->km, d);
 		return true;
 	}
-	deconstruct_array_builtin(DatumGetArrayTypeP(d), st->key_type, &vals, &nulls, &n);
+	get_typlenbyvalalign(st->key_type, &typlen, &typbyval, &typalign);
+	deconstruct_array(DatumGetArrayTypeP(d), st->key_type, typlen, typbyval, typalign, &vals, &nulls, &n);
 	if (n > SCOPE_KEYS_MAX)
 		return false;
 	*keys = palloc(Max(n, 1) * sizeof(int64));
 	for (int i = 0; i < n; i++)
 		if (!nulls[i])
-			(*keys)[u++] = int_of(st->key_type, vals[i]);
+			(*keys)[u++] = sift_scope_key_code(st->key_type, st->km, vals[i]);
 	qsort(*keys, u, sizeof(int64), sift_cmp_i64);
 	for (uint32 i = 0; i < u; i++)
 		if (*nkeys == 0 || (*keys)[*nkeys - 1] != (*keys)[i])
@@ -238,9 +239,9 @@ agg_datum(const SiftV6Agg *a, const SiftScopeCubeAcc *c, bool *isnull)
 }
 
 static Datum
-key_datum(const ScopeSpec *sp, int64 key)
+key_datum(const ScopeState *st, int64 key)
 {
-	return int_datum(sp->key_type, key);
+	return sift_scope_key_datum(st->spec->key_type, st->km, key);
 }
 
 /* A tuple: the key, the month and the aggregates of the cube, in the order of the scan tlist */
@@ -253,7 +254,7 @@ add_row(ScopeState *st, const SiftScopeCubeAcc *c, int64 key, int32 month)
 	bool	   *n = palloc0(Max(sp->ncols, 1) * sizeof(bool));
 
 	for (int i = 0; i < sp->ncols; i++)
-		v[i] = sp->col[i] == SCOPE_COL_KEY ? key_datum(sp, key) : sp->col[i] == SCOPE_COL_MONTH ? TimestampTzGetDatum(sift_scope_month_start(month)) : agg_datum(&sp->agg[sp->col[i]], c, &n[i]);
+		v[i] = sp->col[i] == SCOPE_COL_KEY ? key_datum(st, key) : sp->col[i] == SCOPE_COL_MONTH ? TimestampTzGetDatum(sift_scope_month_start(month)) : agg_datum(&sp->agg[sp->col[i]], c, &n[i]);
 	if (st->nrows == st->cap_rows)
 	{
 		st->cap_rows = st->cap_rows == 0 ? 64 : st->cap_rows * 2;
@@ -502,12 +503,6 @@ push_member(Datum *vals, int n, int *cap, Datum m)
 	return vals;
 }
 
-static Oid
-int_eq_proc(Oid type)
-{
-	return type == INT2OID ? F_INT2EQ : type == INT4OID ? F_INT4EQ : F_INT8EQ;
-}
-
 /* The plain btree of the pairs that leads with the key column: the members of a key are one descent and a range of it */
 static Relation
 key_index(Relation pairs, AttrNumber key_att)
@@ -526,13 +521,13 @@ key_index(Relation pairs, AttrNumber key_att)
 }
 
 static Datum
-key_member_at(const ScopeSpec *sp, TupleTableSlot *slot, int64 key, bool *member_null)
+key_member_at(const ScopeState *st, TupleTableSlot *slot, int64 key, bool *member_null)
 {
 	bool		key_null;
-	const Datum k = slot_getattr(slot, sp->pairs_key_att, &key_null);
-	const Datum m = slot_getattr(slot, sp->pairs_member_att, member_null);
+	const Datum k = slot_getattr(slot, st->spec->pairs_key_att, &key_null);
+	const Datum m = slot_getattr(slot, st->spec->pairs_member_att, member_null);
 
-	*member_null |= key_null || int_of(sp->key_type, k) != key;
+	*member_null |= key_null || sift_scope_key_code(st->spec->key_type, st->km, k) != key;
 	return m;
 }
 
@@ -556,11 +551,11 @@ key_members(ScopeState *st, EState *estate)
 		IndexScanDesc scan = sift_index_beginscan(pairs, ix, estate->es_snapshot, 1);
 		ScanKeyData sk;
 
-		ScanKeyInit(&sk, 1, BTEqualStrategyNumber, int_eq_proc(sp->key_type), int_datum(sp->key_type, key));
+		sift_scope_key_eq_init(&sk, 1, sp->key_type, TupleDescAttr(RelationGetDescr(pairs), sp->pairs_key_att - 1)->attcollation, sift_scope_key_datum(sp->key_type, st->km, key));
 		index_rescan(scan, &sk, 1, NULL, 0);
 		while (index_getnext_slot(scan, ForwardScanDirection, slot))
 		{
-			const Datum m = key_member_at(sp, slot, key, &skip);
+			const Datum m = key_member_at(st, slot, key, &skip);
 
 			if (!skip)
 				vals = push_member(vals, n++, &cap, m);
@@ -574,7 +569,7 @@ key_members(ScopeState *st, EState *estate)
 
 		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 		{
-			const Datum m = key_member_at(sp, slot, key, &skip);
+			const Datum m = key_member_at(st, slot, key, &skip);
 
 			if (!skip)
 				vals = push_member(vals, n++, &cap, m);
@@ -594,7 +589,7 @@ scan_router(ScopeState *st, EState *estate)
 	bool		no_key;
 	const int64 key = key_value(st, &no_key);
 
-	return no_key ? NULL : sift_f2_scope_build_router(st->rel, st->spec->ord, estate->es_snapshot, &key, 1, st->gcx);
+	return no_key ? NULL : sift_f2_scope_build_router(st->rel, st->spec->ord, estate->es_snapshot, &key, 1, st->km, st->gcx);
 }
 
 /* The facts of the key K are the facts whose member is one of its members: the scan of the index with the list among its keys, in the granules of the key */
@@ -699,7 +694,7 @@ static SiftF2Scope *
 open_summary(ScopeState *st, EState *estate, const int64 *keys, uint32 nkeys)
 {
 	const ScopeSpec *sp = st->spec;
-	SiftF2Scope *sc = sift_f2_scope_open_keys(st->rel, sp->ord, estate->es_snapshot, sp->excl_col, keys, nkeys);
+	SiftF2Scope *sc = sift_f2_scope_open_keys(st->rel, sp->ord, estate->es_snapshot, sp->excl_col, keys, nkeys, st->km);
 
 	if (sc != NULL && sc->nchanged > 0 && sp->by_month)
 	{

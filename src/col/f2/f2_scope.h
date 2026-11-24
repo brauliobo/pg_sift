@@ -10,8 +10,12 @@
 #define SIFT_F2_SCOPE_H
 
 #include "col/f2/f2.h"
+#include "col/scope.h"
 #include "col/scope_v6/meta.h"
 #include "col/scope_v6/overlay.h"
+
+/* The map of the codes of the key of scope ord (a text, varchar or uuid key; NULL for an integer key), the reader's own for a statement: made in the current memory context */
+extern SiftKeyMap *sift_f2_scope_keymap(Relation rel, int ord);
 
 /* The scopes the relation declares, and whether it declares any */
 extern int	sift_f2_nscopes(Relation rel);
@@ -63,8 +67,8 @@ struct SiftF2Scope
  * rows it leaves out (`WHERE deleted_at IS NULL`): the entity side counts them with the rows of the deletion vectors, so that the cubes read less them (sift_f2_scope_excl_ok).
  */
 extern SiftF2Scope *sift_f2_scope_open(Relation rel, int ord, Snapshot snap, int excl_col);
-/* Opened for the statement's snapshot with what the summary lacks (the parts it does not name, slabs) or counts too many (pending deletes, inserters not settled) read from the parts; NULL when the scope has no summary, the journals cannot name the pair edits, or those rows are more than a read is worth. A read of the scope keys keys[0..nkeys) (ascending, distinct): the pairs of those keys may have been edited since the summary (at most SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS members, named by the journal), which sift_f2_scope_key_cube overlays; nkeys 0: any key, and no edit is tolerated */
-extern SiftF2Scope *sift_f2_scope_open_keys(Relation rel, int ord, Snapshot snap, int excl_col, const int64 *keys, uint32 nkeys);
+/* Opened for the statement's snapshot with what the summary lacks (the parts it does not name, slabs) or counts too many (pending deletes, inserters not settled) read from the parts; NULL when the scope has no summary, the journals cannot name the pair edits, or those rows are more than a read is worth. A read of the scope keys keys[0..nkeys) (ascending, distinct): the pairs of those keys may have been edited since the summary (at most SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS members, named by the journal), which sift_f2_scope_key_cube overlays; nkeys 0: any key, and no edit is tolerated. km: the map of the codes of the scope key the keys are in (NULL: an integer key), the statement's own */
+extern SiftF2Scope *sift_f2_scope_open_keys(Relation rel, int ord, Snapshot snap, int excl_col, const int64 *keys, uint32 nkeys, SiftKeyMap *km);
 /* How the opened summary is served */
 extern SiftScopeServeMode sift_f2_scope_mode(const SiftF2Scope *sc);
 /* The rows the summary lacks that the snapshot sees (slabs, parts written since) hold some of the key that may rank among the first rows of a ring: its order leaf is not the time, or `missing` rows are still wanted, or one is as new as last */

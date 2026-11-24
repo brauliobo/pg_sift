@@ -165,7 +165,7 @@ build_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg 
 
 	cfg.nrings = cfg.time_leaf >= 0 ? 1 : 0;
 	spec_init(rel, store, &cfg, snap, gen, &spec);
-	pm = sift_f2s_load_pairs(heap, rel, &cfg, snap);
+	pm = sift_f2s_load_pairs(heap, rel, &cfg, snap, sift_f2s_key_map(heap, rel, cfg.spec, true), true);
 	p = sift_f2s_parts_new(rel, store, heap, &cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr));
 	sift_f2s_parts_of_manifest(p, mr);
 	pick_rings(p, &cfg, store, &spec);
@@ -461,7 +461,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 	gen = sift_manifest_new_gen(rel, 1);
 	spec_init(rel, store, &cfg, snap, gen, &spec);
 	spec.flags |= old.hdr.flags & SIFT_SMETA_CLUSTERED;
-	pm = sift_f2s_load_pairs(heap, rel, &cfg, snap);
+	pm = sift_f2s_load_pairs(heap, rel, &cfg, snap, sift_f2s_key_map(heap, rel, cfg.spec, true), true);
 	p = refresh_parts(heap, rel, store, &cfg, snap, pm, mr, &old);
 	src = sift_f2s_source(p);
 	initStringInfo(&out);

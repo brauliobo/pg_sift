@@ -45,15 +45,11 @@ sift_col_flush_held(void)
 			format_ops[major]->flush_held();
 }
 
-/* What format major 2 does not hold stays in format major 1: a connection (the index that declares it and the indexes it connects to) and a scope that format major 2 does not summarize */
+/* What format major 2 does not hold stays in format major 1: a connection (the index that declares it and the indexes it connects to) */
 static bool
 format1_only(Relation index)
 {
-	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
-	bool		only = sift_col_options_connect(index)[0] != '\0' || sift_conn_children(RelationGetRelid(index)) != NIL || !sift_f2s_index_summarizable(heap, index);
-
-	table_close(heap, NoLock);
-	return only;
+	return sift_col_options_connect(index)[0] != '\0' || sift_conn_children(RelationGetRelid(index)) != NIL;
 }
 
 /* INCLUDE columns and UNIQUE are held by the engine of format major 2 alone: the index that the build routes to format major 1 is refused them */
@@ -64,7 +60,7 @@ ops_for_build(Relation index)
 
 	if (ops->format_major != SIFT_FORMAT2_MAJOR && (index->rd_index->indisunique || IndexRelationGetNumberOfAttributes(index) != IndexRelationGetNumberOfKeyAttributes(index)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a sift_col index of format major 1 has no %s", index->rd_index->indisunique ? "UNIQUE" : "INCLUDE columns"),
-						errhint("Leave out the connect option and the scopes the engine of format major 2 does not summarize: the index is then built in format major 2.")));
+						errhint("Leave out the connect option: the index is then built in format major 2.")));
 	return ops;
 }
 

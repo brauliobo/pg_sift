@@ -95,6 +95,7 @@ typedef struct SiftF2ScopeParts
 	int			gen_map_n;
 	Snapshot	snap;
 	Relation	heap;
+	SiftKeyMap *km;				/* the map of the codes of the scope key the statement reads by, NULL for an integer key */
 	SiftScopePairMap *pm;
 	SiftScopePairMap *pm_object;	/* with edited pairs: the map of the object that pm patches, NULL: pm (or the map the read loads) is it */
 	const int64 *fkeys;			/* the keys the read asks for (ascending, distinct; none: every key): a row of the overlay whose member owns none of them is not kept, unless the rows are kept for other statements */
@@ -177,7 +178,10 @@ extern bool sift_f2s_kept(const SiftF2Store *store, const SiftScopeSpec *sp, int
 extern void sift_f2s_cfg(Relation rel, const SiftF2Store *store, int ord, SiftF2ScopeCfg *sc);
 extern void sift_f2s_cfg_rings_of(SiftF2ScopeCfg *cfg, const SiftF2Store *store, const SiftScopeMeta *m);
 extern bool sift_f2s_int_type(Oid type);
-extern SiftScopePairMap *sift_f2s_load_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap);
+/* km: the map of the codes of the scope key (NULL: an integer key), the statement's own for a read; intern: km is a writer's (the build, the refresh), which gives the keys the store lacks a code */
+extern SiftScopePairMap *sift_f2s_load_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, bool intern);
+/* The map of the codes of the key of the scope: NULL for an integer key */
+extern SiftKeyMap *sift_f2s_key_map(Relation heap, Relation index, const SiftScopeSpec *spec, bool write);
 extern SiftF2ScopeParts *sift_f2s_parts_new(Relation rel, SiftF2Store *store, Relation heap, const SiftF2ScopeCfg *sc, Snapshot snap, SiftScopePairMap *pm, int nparts);
 extern SiftF2ScopeSlot *sift_f2s_parts_add(SiftF2ScopeParts *p, const SiftPartDesc *d, uint64 part_id, uint32 base, uint32 ng);
 extern int	sift_f2s_parts_in_manifest(Relation rel, const SiftManifestRead *mr);
@@ -229,15 +233,15 @@ extern bool sift_f2s_object(Relation rel, int ord, SiftScopeMeta *m, uint32 open
 extern void sift_f2s_meta_map(const SiftScopeMeta *m, SiftGenMap *gm);
 extern bool sift_f2s_pairs_unchanged(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap);
 /* The members whose pairs of the scope keys changed since the summary, ascending, palloc'd in *out (NULL: none); false when the journals cannot name them, or they are more than a read overlays. nkeys 0: every key, and any change is false */
-extern bool sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap, const int64 *keys, uint32 nkeys, int64 **out, uint32 *nout);
+extern bool sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, int64 **out, uint32 *nout);
 /* Can this transaction not count the rows from the summary (a change of the relation that is not written, or SSI) */
 extern bool sift_f2s_unreadable(Relation rel, const SiftF2Store *store, Snapshot snap);
 /* Does no column delta of a partition of the manifest patch a column the summary of the scope reads */
 extern bool sift_f2s_deltas_clear(Relation rel, const SiftF2Store *store, int ord, const SiftManifestRead *mr);
 extern SiftScopePairMap *sift_f2s_pairs(SiftF2ScopeParts *p);
 /* The pairs of the object with those of the changed members as the snapshot sees them, for the scope keys the read asks for (f2_scope_pairs.c) */
-extern SiftScopePairMap *sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged);
-extern SiftScopePairMap *sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, uint64 object_gen, MemoryContext reader);
+extern SiftScopePairMap *sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged);
+extern SiftScopePairMap *sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, uint64 object_gen, MemoryContext reader);
 extern bool sift_f2s_added_cube(void *arg, int64 scope_key, SiftScopeSpan span, SiftScopeCubeAcc *out);
 extern SiftScopeGone sift_f2s_gone_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out);
 extern bool sift_f2s_slot_dirty(const SiftF2ScopeParts *p, const SiftF2ScopeSlot *s);

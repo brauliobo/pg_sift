@@ -7,6 +7,7 @@
 
 #include "access/relscan.h"
 
+#include "col/scope.h"
 #include "col/scope_v6/mask.h"
 
 typedef struct SiftScopeRoutePart
@@ -27,7 +28,7 @@ typedef struct SiftScopeRouter
  * The router of the keys (ascending, distinct) of scope ord of rel (a sift_col index or a sift_table) as the snapshot sees it, in mcxt; NULL when the scope has no summary the statement may read, the
  * journal cannot say which members changed, or the keys take more than 60% of the granules (a router prunes little then): the scan reads every granule.
  */
-extern SiftScopeRouter *sift_f2_scope_build_router(Relation rel, int ord, Snapshot snap, const int64 *keys, uint32 nkeys, MemoryContext mcxt);
+extern SiftScopeRouter *sift_f2_scope_build_router(Relation rel, int ord, Snapshot snap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, MemoryContext mcxt);
 
 extern bool sift_scope_router_wants(const SiftScopeRouter *r, uint64 part_gen, uint32 granule);
 

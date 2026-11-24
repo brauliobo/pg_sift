@@ -44,8 +44,8 @@ typedef struct SiftF2Rel
 } SiftF2Rel;
 
 extern SiftF2Rel *sift_f2_rel(Relation index);
-/* Does format major 2 build this index: its scopes are over one relation of integer pairs (the other indexes stay in format major 1) */
-extern bool sift_f2s_index_summarizable(Relation heap, Relation index);
+/* The types of the member and of the key of a pair a summary is made of */
+extern bool sift_f2s_pair_types(Oid member, Oid key);
 
 /* The leaf of the key of the jsonb attribute attno that jsonb_exists(document, key) is answered from (-1: none keeps it) */
 extern int	sift_f2_key_leaf(const SiftF2Rel *f, int attno, const char *key, int len);

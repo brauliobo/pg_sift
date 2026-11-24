@@ -10,9 +10,12 @@
  */
 #include "postgres.h"
 
+#include "access/skey.h"
+#include "access/stratnum.h"
 #include "access/table.h"
 #include "catalog/pg_type_d.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/uuid.h"
@@ -120,6 +123,38 @@ sift_member_hash_bytes(const char *s, uint32 len)
 		h &= (UINT64CONST(1) << sift_test_member_hash_bits) - 1;
 #endif
 	return h;
+}
+
+/* The code of a value of a scope key column: the integer itself, or its code in the map of a text, varchar or uuid column */
+int64
+sift_scope_key_code(Oid typid, SiftKeyMap *km, Datum d)
+{
+	int64		code;
+
+	if (km != NULL)
+	{
+		(void) sift_keymap_code(km, d, &code);
+		return code;
+	}
+	return typid == INT2OID ? DatumGetInt16(d) : typid == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
+}
+
+/* The value of a code of a scope key column, a palloc'd datum of the column's type */
+Datum
+sift_scope_key_datum(Oid typid, SiftKeyMap *km, int64 code)
+{
+	if (km != NULL)
+		return sift_keymap_datum(km, code);
+	return typid == INT2OID ? Int16GetDatum((int16) code) : typid == INT4OID ? Int32GetDatum((int32) code) : Int64GetDatum(code);
+}
+
+/* The scan key for the rows of a btree whose scope key column equals value: the equality of the type of the column, under its collation */
+void
+sift_scope_key_eq_init(ScanKey sk, AttrNumber attno, Oid typid, Oid collation, Datum value)
+{
+	const RegProcedure proc = typid == INT2OID ? F_INT2EQ : typid == INT4OID ? F_INT4EQ : typid == INT8OID ? F_INT8EQ : typid == UUIDOID ? F_UUID_EQ : F_TEXTEQ;
+
+	ScanKeyEntryInitialize(sk, 0, attno, BTEqualStrategyNumber, InvalidOid, collation, proc, value);
 }
 
 /* The store, open for one operation (its view is the backend's: the lock is held to the end of the transaction) */

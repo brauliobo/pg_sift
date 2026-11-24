@@ -124,7 +124,7 @@ sift_f2s_deltas_clear(Relation rel, const SiftF2Store *store, int ord, const Sif
 }
 
 bool
-sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap, const int64 *keys, uint32 nkeys, int64 **out, uint32 *nout)
+sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, int64 **out, uint32 *nout)
 {
 	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS] = {0};
 	SiftConnKeys changed;
@@ -135,7 +135,7 @@ sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap
 	*out = NULL;
 	*nout = 0;
 	if (sift_scope_vouch(rel, ord, stamp, snap) != SIFT_CONN_OK ||
-		sift_scope_changed(rel, ord, stamp, snap, nkeys > 0 ? SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS : 1, nkeys > 0 ? keys : NULL, nkeys, NULL, &changed) != SIFT_CONN_OK)
+		sift_scope_changed(rel, ord, stamp, snap, nkeys > 0 ? SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS : 1, nkeys > 0 ? keys : NULL, nkeys, km, &changed) != SIFT_CONN_OK)
 		return false;
 	for (uint32 i = 0; i < changed.n; i++)
 		if (nkeys == 0 || changed.kept == NULL || !changed.kept[i])
@@ -153,7 +153,7 @@ sift_f2s_pairs_unchanged(Relation rel, int ord, const SiftScopeMeta *m, Snapshot
 	int64	   *none;
 	uint32		n;
 
-	return sift_f2s_pair_edits(rel, ord, m, snap, NULL, 0, &none, &n) && n == 0;
+	return sift_f2s_pair_edits(rel, ord, m, snap, NULL, 0, NULL, &none, &n) && n == 0;
 }
 
 /* A summary of a table is of the leaves the table had when it was built: another schema (a column added, dropped or renamed since) is another set of cubes. The schema of an index is never altered */

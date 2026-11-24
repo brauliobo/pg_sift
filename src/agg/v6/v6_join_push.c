@@ -459,7 +459,7 @@ scope_router(PushState *st, EState *estate)
 	if (isnull)
 		return NULL;
 	key = value_of(st->scope_type, d);
-	return sift_f2_scope_build_router(st->index, st->scope_ord, estate->es_snapshot, &key, 1, st->gcx);
+	return sift_f2_scope_build_router(st->index, st->scope_ord, estate->es_snapshot, &key, 1, NULL, st->gcx);
 }
 
 /* One scan of the fact for the values of ids: each value is in one batch only, so the rows of the batches are the rows of the join */

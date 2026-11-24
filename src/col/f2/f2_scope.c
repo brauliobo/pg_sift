@@ -187,26 +187,22 @@ sift_f2_scope_reads_any(Relation rel, const int16 *leaves, int n)
 	return false;
 }
 
-/* Format 2 summarizes the scopes whose pairs are integers; the other indexes of a scope stay in format major 1 */
+/* The columns of a pair a summary of format major 2 is made of: an integer member, and a key that is an integer or a text, varchar or uuid column (the codes of its store) */
 bool
-sift_f2s_index_summarizable(Relation heap, Relation index)
+sift_f2s_pair_types(Oid member, Oid key)
 {
-	SiftScopeSpecs *specs = sift_scope_specs(index);
+	return sift_f2s_int_type(member) && (sift_f2s_int_type(key) || sift_keymap_type(key));
+}
 
-	for (int i = 0; specs != NULL && i < specs->n; i++)
-	{
-		Relation	pairs;
-		AttrNumber	member,
-					key;
-		bool		ok;
+SiftKeyMap *
+sift_f2_scope_keymap(Relation rel, int ord)
+{
+	Relation	heap = sift_f2s_is_table(sift_f2_store_open(rel)) ? rel : table_open(sift_scope_fact_oid(rel), AccessShareLock);
+	SiftKeyMap *km = sift_f2s_key_map(heap, rel, sift_scope_specs(rel)->s[ord], false);
 
-		sift_scope_relation(heap, index, specs->s[i], &pairs, &member, &key);
-		ok = sift_f2s_int_type(get_atttype(RelationGetRelid(pairs), member)) && sift_f2s_int_type(get_atttype(RelationGetRelid(pairs), key));
-		table_close(pairs, NoLock);
-		if (!ok)
-			return false;
-	}
-	return true;
+	if (heap != rel)
+		table_close(heap, NoLock);
+	return km;
 }
 
 bool
@@ -286,7 +282,7 @@ scope_object(Relation rel, const SiftPlanSnapshot *plan, int ord, MemoryContext 
 
 /* live: the rows the summary lacks or counts too many for the snapshot are read from the parts (f2_scope_over.c); NULL when it cannot be served from the summary and the parts */
 static SiftF2Scope *
-scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const int64 *keys, uint32 nkeys)
+scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const int64 *keys, uint32 nkeys, SiftKeyMap *km)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	const SiftPlanSnapshot *plan = sift_plan_cache_get(rel, CurrentMemoryContext);
@@ -314,6 +310,7 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	p = sift_f2s_parts_new(rel, store, heap, cfg, snap, NULL, sc->meta.hdr.nparts);
 	p->excl_leaf = excl_col > 0 ? store->att_first[excl_col] : -1;
+	p->km = km;
 	{
 		SiftGenMap	in_plan;
 		uint32		nplan = 0;
@@ -362,7 +359,7 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	}
 	if (p->excl_leaf >= 0 && !sift_f2s_leaf_direct(p, p->excl_leaf))
 		return scope_abandon(cx, old, rel, heap);
-	if (live && !(sift_f2s_deltas_clear(rel, store, ord, &mr) && sift_f2s_pair_edits(rel, ord, &sc->meta, snap, keys, nkeys, &sc->changed, &sc->nchanged)))
+	if (live && !(sift_f2s_deltas_clear(rel, store, ord, &mr) && sift_f2s_pair_edits(rel, ord, &sc->meta, snap, keys, nkeys, km, &sc->changed, &sc->nchanged)))
 		return scope_abandon(cx, old, rel, heap);
 	p->pair_gen = live ? sift_f2_scope_cache_ref(plan, ord)->meta_gen : 0;
 	if (live && sc->nchanged > 0)
@@ -370,7 +367,7 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 		p->pm_object = sift_f2s_pairs(p);
 		p->changed = sc->changed;
 		p->nchanged = sc->nchanged;
-		p->pm = sift_f2s_edited_pairs(heap, rel, cfg, snap, p->pm_object, keys, nkeys, sc->changed, sc->nchanged);
+		p->pm = sift_f2s_edited_pairs(heap, rel, cfg, snap, km, p->pm_object, keys, nkeys, sc->changed, sc->nchanged);
 	}
 	p->fkeys = keys;
 	p->nfkeys = nkeys;
@@ -398,18 +395,18 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 SiftF2Scope *
 sift_f2_scope_open(Relation rel, int ord, Snapshot snap, int excl_col)
 {
-	return scope_open(rel, ord, snap, excl_col, false, NULL, 0);
+	return scope_open(rel, ord, snap, excl_col, false, NULL, 0, NULL);
 }
 
 /* The summary read for the snapshot of a statement whatever the parts and the slabs hold that it does not count, and the pairs of the keys it reads as the journal says they changed (NULL: it cannot be served, the join answers) */
 SiftF2Scope *
-sift_f2_scope_open_keys(Relation rel, int ord, Snapshot snap, int excl_col, const int64 *keys, uint32 nkeys)
+sift_f2_scope_open_keys(Relation rel, int ord, Snapshot snap, int excl_col, const int64 *keys, uint32 nkeys, SiftKeyMap *km)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 
 	if (snap->snapshot_type != SNAPSHOT_MVCC || sift_f2s_unreadable(rel, store, snap) || !sift_f2s_supported(rel, store, ord))
 		return NULL;
-	return scope_open(rel, ord, snap, excl_col, true, keys, nkeys);
+	return scope_open(rel, ord, snap, excl_col, true, keys, nkeys, km);
 }
 
 void

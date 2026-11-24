@@ -620,6 +620,10 @@ extern int64 *sift_scope_groups(Relation heap, Relation index, int ord, SiftKeyM
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 /* The map of the codes of the scope key (NULL for an integer key): one for each statement that reads the scope, which every key, pair and group of the read goes through (col/scope_keys.c) */
 extern SiftKeyMap *sift_scope_keymap(Relation heap, Relation index, const char *key_name);
+/* The code of a value of a scope key column (an integer, or a text, varchar or uuid value as the code of km), the value of a code, and the scan key of a btree on the column for a value (col/scope_keys.c) */
+extern int64 sift_scope_key_code(Oid typid, SiftKeyMap *km, Datum d);
+extern Datum sift_scope_key_datum(Oid typid, SiftKeyMap *km, int64 code);
+extern void sift_scope_key_eq_init(ScanKey sk, AttrNumber attno, Oid typid, Oid collation, Datum value);
 /* The rows of the relations a read lists the pairs of the scope from (the estimate of each): the pairs relation, and for two paths the joined and the via relations; *scanned of them those whose pairs the leaves of no journal index list */
 extern double sift_scope_relations_rows(Relation heap, Relation index, const char *key_name, double *scanned);
 /* The relation of pairs of the scope (open, AccessShare) with its member and scope key columns, and the journal index of the relation: a sift_col index that holds both columns */

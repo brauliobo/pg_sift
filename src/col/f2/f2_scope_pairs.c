@@ -105,7 +105,7 @@ map_bytes(const SiftScopePairMap *pm)
 }
 
 SiftScopePairMap *
-sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, uint64 object_gen, MemoryContext reader)
+sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, uint64 object_gen, MemoryContext reader)
 {
 	SiftScopePairMap *loaded;
 	bool		same = cache.pm != NULL && cache.index == RelationGetRelid(index) && cache.relnumber == index->rd_locator.relNumber && cache.gen == object_gen;
@@ -117,11 +117,11 @@ sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, S
 		registered = true;
 	}
 	if (!same && cache.pins > 0)
-		return sift_f2s_load_pairs(heap, index, sc, snap);
+		return sift_f2s_load_pairs(heap, index, sc, snap, km, false);
 	if (!same)
 	{
 		cache_drop();
-		loaded = sift_f2s_load_pairs(heap, index, sc, snap);
+		loaded = sift_f2s_load_pairs(heap, index, sc, snap, km, false);
 		/* MEM[MEM-SCOPE-02]: cached pair map charged to the cache budget (room, then commit) */
 		if (!sift_cache_room(map_bytes(loaded)))
 			return loaded;
@@ -139,24 +139,6 @@ sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, S
 	cache.pins++;
 	(void) sift_cache_commit();
 	return cache.pm;
-}
-
-static Oid
-int_eq_proc(Oid type)
-{
-	return type == INT2OID ? F_INT2EQ : type == INT4OID ? F_INT4EQ : F_INT8EQ;
-}
-
-static int64
-int_of(Oid type, Datum d)
-{
-	return type == INT2OID ? DatumGetInt16(d) : type == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
-}
-
-static Datum
-int_datum(Oid type, int64 v)
-{
-	return type == INT2OID ? Int16GetDatum((int16) v) : type == INT4OID ? Int32GetDatum((int32) v) : Int64GetDatum(v);
 }
 
 static int
@@ -216,9 +198,9 @@ now_add(SiftScopeMemberKey **now, uint32 *n, uint32 *cap, int64 member, int64 ke
 
 /* The pairs of a scope of two paths for the changed members and the keys asked: the pairs of both paths now, as the snapshot sees them, cut to those */
 static SiftScopePairMap *
-edited_two_paths(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
+edited_two_paths(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
 {
-	SiftScopePairMap *all = sift_f2s_load_pairs(heap, rel, sc, snap);
+	SiftScopePairMap *all = sift_f2s_load_pairs(heap, rel, sc, snap, km, false);
 	SiftScopeMemberKey *now = NULL;
 	uint32		n = 0,
 				cap = 0;
@@ -245,7 +227,7 @@ edited_two_paths(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot
  * leads with the member is read once for each changed member and its keys cut to those asked; any other is probed for each (member, key).
  */
 static SiftScopePairMap *
-edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
+edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
 {
 	Relation	prel;
 	AttrNumber	a,
@@ -267,21 +249,22 @@ edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot 
 		{
 			ScanKeyData sk[2];
 
-			ScanKeyInit(&sk[0], pa, BTEqualStrategyNumber, int_eq_proc(ta), int_datum(ta, changed[i]));
+			sift_scope_key_eq_init(&sk[0], pa, ta, InvalidOid, sift_scope_key_datum(ta, NULL, changed[i]));
 			if (by_member)
 			{
 				index_rescan(scan, sk, 1, NULL, 0);
 				while (index_getnext_slot(scan, ForwardScanDirection, slot))
 				{
 					bool		isnull;
-					int64		key = int_of(tb, slot_getattr(slot, b, &isnull));
+					const Datum d = slot_getattr(slot, b, &isnull);
+					int64		key = isnull ? 0 : sift_scope_key_code(tb, km, d);
 
 					if (!isnull && key_asked(keys, nkeys, key))
 						now_add(&now, &n, &cap, changed[i], key);
 				}
 				continue;
 			}
-			ScanKeyInit(&sk[1], pb, BTEqualStrategyNumber, int_eq_proc(tb), int_datum(tb, keys[k]));
+			sift_scope_key_eq_init(&sk[1], pb, tb, TupleDescAttr(prel->rd_att, b - 1)->attcollation, sift_scope_key_datum(tb, km, keys[k]));
 			index_rescan(scan, sk, 2, NULL, 0);
 			if (index_getnext_slot(scan, ForwardScanDirection, slot))
 				now_add(&now, &n, &cap, changed[i], keys[k]);
@@ -294,7 +277,7 @@ edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot 
 }
 
 SiftScopePairMap *
-sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
+sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
 {
-	return sc->spec->joined != NULL ? edited_two_paths(heap, rel, sc, snap, object, keys, nkeys, changed, nchanged) : edited_one_path(heap, rel, sc, snap, object, keys, nkeys, changed, nchanged);
+	return sc->spec->joined != NULL ? edited_two_paths(heap, rel, sc, snap, km, object, keys, nkeys, changed, nchanged) : edited_one_path(heap, rel, sc, snap, km, object, keys, nkeys, changed, nchanged);
 }

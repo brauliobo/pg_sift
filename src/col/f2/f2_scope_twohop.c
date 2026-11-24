@@ -28,12 +28,6 @@ sift_f2s_int_type(Oid type)
 	return type == INT2OID || type == INT4OID || type == INT8OID;
 }
 
-static int64
-int_value(Oid type, Datum d)
-{
-	return type == INT2OID ? (int64) DatumGetInt16(d) : type == INT4OID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
-}
-
 static int
 pair_order(const void *a, const void *b)
 {
@@ -60,9 +54,9 @@ pairs_add(SiftMemTracker *t, Pairs *p, int64 member, int64 key)
 	p->v[p->n++] = (SiftScopeMemberKey) {member, key};
 }
 
-/* The rows (a, b) of the btree of rel under snap: the pairs when a is the member and b the key; the (group, key) or (group, member) rows of a hop */
+/* The rows (a, b) of the btree of rel under snap: the pairs when a is the member and b the key; the (group, key) or (group, member) rows of a hop. A string column is read as the codes of its map; out NULL: the rows are only met, so that a writer's map holds every key */
 static void
-scan_pairs(Oid btree, Relation rel, AttrNumber a, AttrNumber b, Snapshot snap, const char *what, SiftMemTracker *mem, Pairs *out)
+scan_pairs(Oid btree, Relation rel, AttrNumber a, SiftKeyMap *ma, AttrNumber b, SiftKeyMap *mb, Snapshot snap, SiftMemTracker *mem, Pairs *out)
 {
 	Relation	ix = index_open(btree, AccessShareLock);
 	IndexScanDesc scan = sift_index_beginscan(rel, ix, snap, 0);
@@ -70,9 +64,6 @@ scan_pairs(Oid btree, Relation rel, AttrNumber a, AttrNumber b, Snapshot snap, c
 	const Oid	ta = TupleDescAttr(rel->rd_att, a - 1)->atttypid,
 				tb = TupleDescAttr(rel->rd_att, b - 1)->atttypid;
 
-	if (!sift_f2s_int_type(ta) || !sift_f2s_int_type(tb))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the pairs of scope \"%s\" are not integers", what),
-						errhint("Format major 2 summarizes scopes whose member and key are integer columns.")));
 	index_rescan(scan, NULL, 0, NULL, 0);
 	while (index_getnext_slot(scan, ForwardScanDirection, slot))
 	{
@@ -82,7 +73,13 @@ scan_pairs(Oid btree, Relation rel, AttrNumber a, AttrNumber b, Snapshot snap, c
 					y = slot_getattr(slot, b, &nb);
 
 		if (!na && !nb)
-			pairs_add(mem, out, int_value(ta, x), int_value(tb, y));
+		{
+			const int64 code_a = sift_scope_key_code(ta, ma, x),
+						code_b = sift_scope_key_code(tb, mb, y);
+
+			if (out != NULL)
+				pairs_add(mem, out, code_a, code_b);
+		}
 	}
 	ExecDropSingleTupleTableSlot(slot);
 	index_endscan(scan);
@@ -121,18 +118,43 @@ sort_unique(SiftScopeMemberKey *v, uint32 n)
 
 /* The members of each group the joined path gives a key: the (group, member) rows of the via relation that meet the sorted (group, key) rows */
 static void
-join_via(const Pairs *groups, Oid btree, Relation via, AttrNumber group, AttrNumber member, Snapshot snap, const char *what, SiftMemTracker *mem, Pairs *out)
+join_via(const Pairs *groups, Oid btree, Relation via, AttrNumber group, AttrNumber member, Snapshot snap, SiftMemTracker *mem, Pairs *out)
 {
 	Pairs		hop = {0};
 
-	scan_pairs(btree, via, group, member, snap, what, mem, &hop);
+	scan_pairs(btree, via, group, NULL, member, NULL, snap, mem, &hop);
 	for (uint32 i = 0; i < hop.n; i++)
 		for (uint32 q = first_of(groups->v, groups->n, hop.v[i].member); q < groups->n && groups->v[q].member == hop.v[i].member; q++)
 			pairs_add(mem, out, hop.v[i].key, groups->v[q].key);
 }
 
+/* The map of the codes of the scope key of the pairs relation: NULL for an integer key; a writer's interns the keys the store lacks, all of them as one run (the pass that meets them comes first) */
+SiftKeyMap *
+sift_f2s_key_map(Relation heap, Relation index, const SiftScopeSpec *spec, bool write)
+{
+	Relation	rel;
+	AttrNumber	member,
+				key;
+	SiftKeyMap *km;
+
+	sift_scope_relation(heap, index, spec, &rel, &member, &key);
+	km = sift_keymap_open(rel, key, write);
+	table_close(rel, NoLock);
+	return km;
+}
+
+static void
+check_pair_types(Relation rel, AttrNumber member, AttrNumber key, const char *what)
+{
+	const Oid	tkey = TupleDescAttr(rel->rd_att, key - 1)->atttypid;
+
+	if (!sift_f2s_pair_types(TupleDescAttr(rel->rd_att, member - 1)->atttypid, tkey))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the pairs of scope \"%s\" are not integers or strings", what),
+						errhint("Format major 2 summarizes scopes whose member is an integer column and whose key is an integer, text, varchar or uuid column.")));
+}
+
 SiftScopePairMap *
-sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap)
+sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, bool intern)
 {
 	Pairs		pairs = {0};
 	SiftMemTracker mem;
@@ -142,8 +164,15 @@ sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Sna
 	const Oid	b0 = sift_scope_relation_index(heap, index, sc->spec, &rel, &m0, &k0);
 	SiftScopePairMap *pm;
 
+	check_pair_types(rel, m0, k0, sc->spec->key_name);
 	sift_mem_init(&mem, "scope pairs", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 1, 1);
-	scan_pairs(b0, rel, m0, k0, snap, sc->spec->key_name, &mem, &pairs);
+	if (intern && km != NULL)
+	{
+		sift_keymap_collect(km, true);
+		scan_pairs(b0, rel, m0, NULL, k0, km, snap, &mem, NULL);
+		sift_keymap_collect(km, false);
+	}
+	scan_pairs(b0, rel, m0, NULL, k0, km, snap, &mem, &pairs);
 	table_close(rel, NoLock);
 	if (sc->spec->joined != NULL)
 	{
@@ -157,9 +186,9 @@ sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Sna
 		const Oid	b1 = sift_scope_hop_index(heap, index, sc->spec, 1, &joined, &g1, &k1),
 					b2 = sift_scope_hop_index(heap, index, sc->spec, 2, &via, &g2, &m2);
 
-		scan_pairs(b1, joined, g1, k1, snap, sc->spec->key_name, &mem, &groups);
+		scan_pairs(b1, joined, g1, NULL, k1, km, snap, &mem, &groups);
 		groups.n = sort_unique(groups.v, groups.n);
-		join_via(&groups, b2, via, g2, m2, snap, sc->spec->key_name, &mem, &pairs);
+		join_via(&groups, b2, via, g2, m2, snap, &mem, &pairs);
 		table_close(via, NoLock);
 		table_close(joined, NoLock);
 	}
