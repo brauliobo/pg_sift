@@ -60,7 +60,8 @@ SELECT plan('SELECT kind, count(*) FROM pt GROUP BY kind') AS text_key;
 -------------------------
  Custom Scan (SiftAggV6)
  Table: pt
-(2 rows)
+ Group Keys: kind
+(3 rows)
 
 DROP FUNCTION plan(text);
 DROP TABLE pt;
