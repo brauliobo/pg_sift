@@ -190,7 +190,7 @@ leaf_get(Relation index, const SiftSegEntry *entry, int col)
 			lru = i;
 	}
 	for (int i = 0; i < WBUF_CACHE_LEAVES; i++)
-		if (wbuf_leaves[i] && wbuf_leaves[i]->rel == index->rd_locator.relNumber && wbuf_leaves[i]->gen < entry->gen)
+		if (wbuf_leaves[i] && !wbuf_leaves[i]->pinned && wbuf_leaves[i]->rel == index->rd_locator.relNumber && wbuf_leaves[i]->gen < entry->gen)
 		{
 			leaf_free(wbuf_leaves[i]);
 			free_slot = i;
@@ -212,52 +212,33 @@ leaf_get(Relation index, const SiftSegEntry *entry, int col)
 	return lf;
 }
 
-/*
- * The heap addresses of the live records of a write buffer whose plain leaf holds one of the constants of pred (EQ or IN; INT: the integer, STR: the bytes): the
- * records are read once by this backend (wbuf_read_lane), a lookup is a probe of the hash for each constant. A value the leaf could not store (an overflow)
- * may be any: its record is kept. The hash may name another value: the heap checks the condition. Ascending, each once; n = the count, rows = the live records of the leaf.
- */
-ItemPointerData *
-sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n, uint64 *rows)
+/* Reads the records of the buffer that are new to the leaf: opening the buffer asks the cache for room, so the leaf is pinned by the caller */
+static void
+leaf_fill(WbufLeaf *lf, Relation index, const SiftSegEntry *entry, const SiftColSchema *schema)
 {
-	int			col = pred->col;
-	bool		str = schema->cols[col].store == SIFT_COLS_STR;
-	WbufLeaf   *lf = leaf_get(index, entry, col);
-	MemoryContext tmp,
-				old;
-	ItemPointerData *out;
-	uint32		m,
-				cap;
+	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer lookup", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(tmp);
+	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
 
-	/* held from here: opening the buffer asks the cache for room, and a leaf that fails half read is dropped with its pin */
-	lf->used = sift_cache_tick();
-	lf->pinned = true;
-	tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer lookup", ALLOCSET_DEFAULT_SIZES);
-	old = MemoryContextSwitchTo(tmp);
-	PG_TRY();
-	{
-		SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
-
-		for (int l = 0; l < SIFT_LANES; l++)
-			if (BlockNumberIsValid(r->it.head[l]))
-				wbuf_read_lane(r, r->it.head[l], &lf->lane[l], leaf_read_rec, &(LeafRead) {lf, r, schema});
-		sift_cwbuf_close(r);
-	}
-	PG_CATCH();
-	{
-		leaf_free(lf);
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
+	for (int l = 0; l < SIFT_LANES; l++)
+		if (BlockNumberIsValid(r->it.head[l]))
+			wbuf_read_lane(r, r->it.head[l], &lf->lane[l], leaf_read_rec, &(LeafRead) {lf, r, schema});
+	sift_cwbuf_close(r);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
-	*rows = lf->n + lf->nover;
-	cap = lf->nover + 16;
-	out = MemoryContextAlloc(mcxt, cap * sizeof(ItemPointerData));
+}
+
+/* The addresses of the leaf that the constants of pred name, and every row it could not store, in the order of the heap, each once */
+static ItemPointerData *
+leaf_addresses(const WbufLeaf *lf, bool str, const SiftColPred *pred, MemoryContext mcxt, uint32 *n)
+{
+	uint32		cap = lf->nover + 16,
+				m = lf->nover;
+	ItemPointerData *out = MemoryContextAlloc(mcxt, cap * sizeof(ItemPointerData));
+
 	/* over is NULL until a row overflows: memcpy takes no NULL source, not even for zero bytes */
 	if (lf->nover > 0)
 		memcpy(out, lf->over, lf->nover * sizeof(ItemPointerData));
-	m = lf->nover;
 	for (int j = 0; j < pred->nvals; j++)
 	{
 		uint64		h = leaf_hash(str, &pred->vals[j]);
@@ -270,13 +251,10 @@ sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema
 				out[m++] = lf->ent[e - 1].tid;
 			}
 	}
-	lf->pinned = false;
-	sift_cache_commit();
 	if (m > 1)
 	{
 		uint32		k = 1;
 
-		/* in the order of the heap, a repeated address once */
 		qsort(out, m, sizeof(ItemPointerData), tid_cmp);
 		for (uint32 i = 1; i < m; i++)
 			if (ItemPointerCompare(&out[i], &out[k - 1]) != 0)
@@ -284,6 +262,37 @@ sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema
 		m = k;
 	}
 	*n = m;
+	return out;
+}
+
+/*
+ * The heap addresses of the live records of a write buffer whose plain leaf holds one of the constants of pred (EQ or IN; INT: the integer, STR: the bytes): the
+ * records are read once by this backend (wbuf_read_lane), a lookup is a probe of the hash for each constant. A value the leaf could not store (an overflow)
+ * may be any: its record is kept. The hash may name another value: the heap checks the condition. Ascending, each once; n = the count, rows = the live records of the leaf.
+ */
+ItemPointerData *
+sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n, uint64 *rows)
+{
+	WbufLeaf   *lf = leaf_get(index, entry, pred->col);
+	ItemPointerData *out;
+
+	/* pinned for the read and the copy: a leaf that fails in either is dropped with its pin, and one that does not is let go below */
+	lf->used = sift_cache_tick();
+	lf->pinned = true;
+	PG_TRY();
+	{
+		leaf_fill(lf, index, entry, schema);
+		*rows = lf->n + lf->nover;
+		out = leaf_addresses(lf, schema->cols[pred->col].store == SIFT_COLS_STR, pred, mcxt, n);
+	}
+	PG_CATCH();
+	{
+		leaf_free(lf);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	lf->pinned = false;
+	sift_cache_commit();
 	return out;
 }
 
