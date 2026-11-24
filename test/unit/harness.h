@@ -6,6 +6,12 @@
 
 #include <time.h>
 
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define UNIT_QUERIES	5000
+#else
+#define UNIT_QUERIES	15000
+#endif
+
 static int	failures = 0;
 
 #define CHECK(cond, ...) \

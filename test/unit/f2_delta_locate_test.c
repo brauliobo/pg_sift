@@ -316,7 +316,7 @@ tree_run_fix(int parts, bool verify)
 	}
 	t = tree_build(CurrentMemoryContext, maxes, parts);
 	t0 = now_s();
-	for (int q = 0; q < 50000; q++)
+	for (int q = 0; q < UNIT_QUERIES; q++)
 	{
 		uint64		tid = rnd() % ((uint64) parts * 1000 + 1000);
 		int			first = 0,

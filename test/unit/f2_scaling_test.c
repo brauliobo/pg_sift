@@ -26,7 +26,7 @@
 
 /* ---- [ON-F2-02] the constants of an IN list in a table ---- */
 
-enum { ROWS_PRED = 100000 };
+enum { ROWS_PRED = 2 * UNIT_QUERIES };
 
 static double
 pred_run_kind(int nvals, int kind, bool verify)
@@ -280,7 +280,7 @@ remap_run_fix(int m, bool verify)
 
 	remap_fix(&f, m, 256);
 	t0 = now_s();
-	for (int q = 0; q < 50000; q++)
+	for (int q = 0; q < UNIT_QUERIES; q++)
 	{
 		const SiftCdRemap *r = &f.map.slot[rnd() % f.map.n];
 		uint64		tid = rnd() % 3 == 0 ? r->new_tid + 1 : r->new_tid;
