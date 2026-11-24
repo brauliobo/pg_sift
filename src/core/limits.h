@@ -332,6 +332,42 @@
 	X(win_offset, "SIFT_WIN_MAX_OFFSET", "agg/window.h", 4096, "rows", \
 	  "LAG and LEAD offset the window operator reads", \
 	  "normal plan", "-", 0) \
+	X(win_regroup_rows, "RG_MAX_ROWS", "agg/v6/v6_win_par.c", 67108863, "rows", \
+	  "rows a window of a SiftAgg scan holds while it puts them together by PARTITION BY (no array of them passes 1 GB; work_mem bounds them sooner at its default)", \
+	  "ERROR 54000 naming work_mem", "work_mem", 0) \
+	X(win_regroup_groups, "RG_MAX_GROUPS", "agg/v6/v6_win_par.c", 33554431, "partitions", \
+	  "partitions a window of a SiftAgg scan holds while it puts its rows together by PARTITION BY (no array of their keys passes 1 GB; work_mem bounds them sooner at its default)", \
+	  "ERROR 54000 naming work_mem", "work_mem", 0) \
+	X(num_expr_bits, "-", "agg/v6/v6_expr_num.c", 95, "bits", \
+	  "magnitude of the scaled integer a row of an exact numeric product takes in a SiftAgg scan (below 2^95, so that 2^32 rows add up in the 128 bits of a sum)", \
+	  "ERROR 22003, the hint names sift.enable_agg = off", "-", 0) \
+	X(num_factors, "SIFT_VN_MAX_FACTORS", "agg/v6/v6_expr_num.h", 3, "factors", \
+	  "factors of an exact numeric product (a * b * c) of a SiftAgg scan, each a numeric column with a constant added and a constant multiplied", \
+	  "normal plan", "-", 0) \
+	X(v6_derived, "SIFT_V6_MAX_DERIVE", "agg/v6/v6.h", 8, "expressions", \
+	  "different computed keys and arguments (length, extract, CASE, arithmetic, exact numeric products) of one SiftAgg scan", \
+	  "normal plan", "-", 0) \
+	X(v6_case_conds, "SIFT_V6_MAX_CASE", "agg/v6/v6.h", 4, "conditions", \
+	  "equalities ANDed in the WHEN of the CASE of a computed text key or argument of a SiftAgg scan (the columns of an arithmetic expression of an unnest are one more)", \
+	  "normal plan", "-", 0) \
+	X(arith_tokens, "SIFT_ARITH_MAX_TOKENS", "agg/v6/v6_plan_rewrite.h", 32, "tokens", \
+	  "columns, constant and operators of an arithmetic expression of float8 columns in the scan of an unnest (postfix)", \
+	  "normal plan", "-", 0) \
+	X(arith_stack, "SIFT_ARITH_MAX_STACK", "agg/v6/v6_plan_rewrite.h", 8, "values", \
+	  "operands an arithmetic expression of the scan of an unnest holds at once while it is computed", \
+	  "normal plan", "-", 0) \
+	X(v6_topk_items, "SIFT_V6_MAX_TOPK_ITEMS", "agg/v6/v6.h", 8, "columns", \
+	  "ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan", \
+	  "normal plan", "-", 0) \
+	X(v6_topk_k, "SIFT_TOPK_MAX_K", "agg/v6/v6_group_topk.h", 65536, "rows", \
+	  "LIMIT + OFFSET of the Top-K of the groups of a SiftAgg scan (ORDER BY .. LIMIT)", \
+	  "normal plan (a Sort of the groups)", "-", 0) \
+	X(v6_lock_k, "SIFT_LOCK_MAX_K", "agg/v6/v6_plan_rewrite.h", 4096, "rows", \
+	  "LIMIT + OFFSET of a GROUP BY .. LIMIT with no ORDER BY, HAVING or DISTINCT ON, for which the group table stops taking new groups once it holds them", \
+	  "the table takes every group, as without a LIMIT", "-", 0) \
+	X(search_arms, "SEARCH_MAX_ARMS", "agg/search.c", 16, "arms", \
+	  "arms of the ORs of searches a scan takes: the product of the branches of its ORs (the plain matches and one branch of each OR, ANDed)", \
+	  "the OR stays a filter of the scan", "-", 0) \
 	X(winx_keys, "SIFT_WINX_MAX_KEYS", "agg/v6/v6_datebin_win.h", SIFT_WINX_MAX_KEYS, "keys", \
 	  "PARTITION BY keys, and ORDER BY keys, of a window of a SiftAgg scan", \
 	  "normal plan", "-", 0) \

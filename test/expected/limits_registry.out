@@ -6,6 +6,8 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
 ---------------------+---------------------------------+---------------------+-----------+--------
  any_list_rows       | ANY_LIST_MAX_ROWS               |              100000 | t         | f
  arena_slots         | ARENA_SLOTS                     |                 256 | t         | f
+ arith_stack         | SIFT_ARITH_MAX_STACK            |                   8 | t         | f
+ arith_tokens        | SIFT_ARITH_MAX_TOKENS           |                  32 | t         | f
  arms                | SIFT_AGG_MAX_ARMS               |                  16 | t         | t
  bits_set_values     | MIN_BITS_VALUES                 |                1024 | t         | t
  blob_bytes          | BLOB_CHUNK_BYTES                |           268435456 | t         | t
@@ -68,6 +70,8 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  merge_disk_peak     | -                               |                   2 | t         | f
  merge_fanin         | MERGE_MAX_FANIN                 |                  64 | t         | f
  mirror_bytes        | SEG_MIRROR_BYTES                |                6144 | t         | t
+ num_expr_bits       | -                               |                  95 | t         | f
+ num_factors         | SIFT_VN_MAX_FACTORS             |                   3 | t         | f
  num_in_list         | AGG_MAX_NUM_IN                  |                  64 | t         | t
  par_build_rows      | PAR_BUILD_ROWS                  |              150000 | t         | t
  par_build_workers   | MAX_WORKERS                     |                  15 | t         | f
@@ -102,6 +106,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  rows_shared         | SIFT_ROWS_MAX_SHARED            |                  32 | t         | t
  scan_filters        | SIFT_COLSRC_MAX_FILTERS         |                  64 | t         | f
  scope_batch_entries | SIFT_SCOPE_BATCH_MAX_ENTRIES    |          2147483648 | t         | t
+ search_arms         | SEARCH_MAX_ARMS                 |                  16 | t         | f
  semi_lut_bytes      | -                               |             4194304 | t         | t
  semi_set            | SIFT_SEMI_MAX_SET               |               65536 | t         | f
  set_keys            | SIFT_CSET_LIMIT                 |                  32 | t         | f
@@ -132,7 +137,12 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  topn_rows           | SIFT_TOPN_MAX_ROWS              |              100000 | t         | t
  unit_bytes          | SIFT_COL_UNIT_MAX_BYTES         |          1073741823 | t         | t
  unit_rows           | SIFT_COL_UNIT_MAX_ROWS          |               74496 | t         | f
+ v6_case_conds       | SIFT_V6_MAX_CASE                |                   4 | t         | f
+ v6_derived          | SIFT_V6_MAX_DERIVE              |                   8 | t         | f
  v6_join_keys        | JOIN_MAX_KEYS                   |                   8 | t         | f
+ v6_lock_k           | SIFT_LOCK_MAX_K                 |                4096 | t         | f
+ v6_topk_items       | SIFT_V6_MAX_TOPK_ITEMS          |                   8 | t         | f
+ v6_topk_k           | SIFT_TOPK_MAX_K                 |               65536 | t         | f
  vexpr_args          | SIFT_VEXPR_MAX_ARGS             |                  17 | t         | f
  vexpr_masks         | SIFT_VEXPR_MAX_MASKS            |                  16 | t         | f
  vexpr_ops           | SIFT_VEXPR_MAX_OPS              |                  64 | t         | f
@@ -144,13 +154,15 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  win_funcs           | SIFT_WIN_MAX_FUNCS              |                   8 | t         | f
  win_keys            | SIFT_WIN_MAX_KEYS               |                   4 | t         | f
  win_offset          | SIFT_WIN_MAX_OFFSET             |                4096 | t         | f
+ win_regroup_groups  | RG_MAX_GROUPS                   |            33554431 | t         | f
+ win_regroup_rows    | RG_MAX_ROWS                     |            67108863 | t         | f
  winx_filters        | SIFT_WINX_MAX_FILTERS           |                  64 | t         | f
  winx_funcs          | SIFT_WINX_MAX_FUNCS             |                  16 | t         | f
  winx_keys           | SIFT_WINX_MAX_KEYS              |                   4 | t         | f
  winx_offset         | SIFT_WINX_MAX_OFFSET            |                4096 | t         | f
  write_buffer_kb     | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |                4096 | t         | f
  zstd_dict_bytes     | SIFT_ZSTD_DICT_MAX_BYTES        |               16384 | t         | f
-(146 rows)
+(158 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';

@@ -30,7 +30,8 @@ mode = sys.argv[1]
 ROOT = os.getcwd()
 SRC = os.path.join(ROOT, 'src')
 CONST = {'CHAR_BIT': 8, 'FUNC_MAX_ARGS': 100, 'MaxHeapTuplesPerPage': 291, 'BLCKSZ': 8192, 'PG_UINT16_MAX': 65535,
-         'PG_UINT32_MAX': 4294967295, 'PG_INT32_MAX': 2147483647}
+         'PG_UINT32_MAX': 4294967295, 'PG_INT32_MAX': 2147483647, 'MaxAllocSize': 1073741823}
+SIZEOF = {'uint32': 4, 'int32': 4, 'int64': 8, 'SiftI128': 16}
 LIMIT_NAME = re.compile(r'_MAX_|_LIMIT|_ENTRIES$|_SLOTS$|_QUEUE$|_WORKERS$')
 
 
@@ -65,7 +66,7 @@ def ev(expr, rel, depth=0):
     if depth > 12:
         raise ValueError('macro nesting too deep')
     e = re.sub(r'\bUINT64CONST\s*\(', '(', expr)
-    e = re.sub(r'\bsizeof\s*\(\s*(?:uint32|int32)\s*\)', '4', e)
+    e = re.sub(r'\bsizeof\s*\(\s*(%s)\s*\)' % '|'.join(SIZEOF), lambda m: str(SIZEOF[m.group(1)]), e)
     e = re.sub(r'\(\s*(?:Size|uint32|uint64|int64|int|unsigned|long|double)\s*\)', '', e)
     e = re.sub(r'\b(0[xX][0-9a-fA-F]+|\d+)[uUlL]+\b', r'\1', e)
     e = re.sub(r'\bM(in|ax)\(', lambda m: 'm' + m.group(1) + '(', e)
