@@ -17,7 +17,7 @@
 bool
 sift_v1_tbl_owns(Oid relid)
 {
-	Relation	rel = table_open(relid, NoLock);
+	Relation	rel = table_open(relid, AccessShareLock);
 	bool		owns = sift_tbl_is_table(rel) && sift_meta_resolve_major(rel) == SIFT_FORMAT_MAJOR;
 
 	table_close(rel, NoLock);
