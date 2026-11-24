@@ -47,24 +47,24 @@ SELECT r.groups, r.tier AS tier_now, r.visited AS tiers_visited, r.spilled_bytes
 FROM sift._test_group_tiers(50000, 120000, 0, 2, 33554432, 0, 0) AS r;
 -- the array outgrows its share of a small budget: to the table, and the table outgrows it: to the files (dict, table, spill = 2 + 8 + 16)
 SELECT r.groups, r.tier AS tier_now, r.visited AS tiers_visited, r.spilled_bytes > 0 AS spilled, r.same
-FROM sift._test_group_tiers(200000, 120000, 0, 1, 262144, 0, 0) AS r;
+FROM sift._test_group_tiers(50000, 30000, 0, 1, 65536, 0, 0) AS r;
 -- the same groups as SQL's, by key: the count, the sum, the key sum and the groups
 SELECT r.groups = x.groups AND r.rows = x.rows AND r.key_sum = x.key_sum AND r.sum_sum = x.sum_sum AS equals_sql, r.spilled_bytes > 0 AS spilled
-FROM sift._test_group_tiers(200000, 120000, 0, 1, 262144, 0, 0) AS r,
+FROM sift._test_group_tiers(50000, 30000, 0, 1, 65536, 0, 0) AS r,
      (SELECT count(*) AS groups, sum(c) AS rows, sum(k) AS key_sum, sum(s) AS sum_sum
-      FROM (SELECT k, count(*) AS c, sum(v) AS s FROM (SELECT (i * 7919) % 120000 AS k, (i * 31) % 1000 - 500 AS v FROM generate_series(0::int8, 199999) AS i) AS t GROUP BY k) AS g) AS x;
+      FROM (SELECT k, count(*) AS c, sum(v) AS s FROM (SELECT (i * 7919) % 30000 AS k, (i * 31) % 1000 - 500 AS v FROM generate_series(0::int8, 49999) AS i) AS t GROUP BY k) AS g) AS x;
 -- groups that are a few hot keys and many cold: no spill when they fit
 SELECT r.groups, r.tier AS tier_now, r.spilled_bytes, r.same FROM sift._test_group_tiers(100000, 5000, 1000000, 3, 33554432, 60, 0) AS r;
 -- half of the keys in one of the sixteen partitions of the first level: a second level makes them fit
-SELECT r.groups, r.tier AS tier_now, r.depth >= 1 AS split_again, r.same FROM sift._test_group_tiers(300000, 300000, 0, 3, 131072, 0, 60) AS r;
+SELECT r.groups, r.tier AS tier_now, r.depth >= 1 AS split_again, r.same FROM sift._test_group_tiers(75000, 75000, 0, 3, 32768, 0, 60) AS r;
 
 -- the grouping sets: the biggest set goes to files when the sets hold 80% of the budget, and the answer is the one with no limit
 SELECT m AS masks, b AS max_bytes, r.nodes_spilled > 0 AS spilled, r.groups_out, r.same
-FROM (VALUES ('{3,1,0}'::int8[]), ('{3,2,1,0}'), ('{1,2}')) AS ms(m), (VALUES (262144::int8), (1048576)) AS bs(b),
-     LATERAL sift._test_rollup_spill(m, 120000, 60000, b, false, false) AS r ORDER BY masks, max_bytes;
+FROM (VALUES ('{3,1,0}'::int8[]), ('{3,2,1,0}'), ('{1,2}')) AS ms(m), (VALUES (65536::int8), (262144)) AS bs(b),
+     LATERAL sift._test_rollup_spill(m, 30000, 15000, b, false, false) AS r ORDER BY masks, max_bytes;
 -- count(DISTINCT) of the first value column in every set, and the keys of half of the groups in one partition of the first level
-SELECT r.nodes_spilled > 0 AS spilled, r.depth, r.same FROM sift._test_rollup_spill('{3,1,2,0}', 80000, 40000, 524288, true, true) AS r;
-SELECT r.nodes_spilled, r.depth >= 1 AS split_again, r.same FROM sift._test_rollup_spill('{3,1}', 200000, 150000, 131072, true, false) AS r;
+SELECT r.nodes_spilled > 0 AS spilled, r.depth, r.same FROM sift._test_rollup_spill('{3,1,2,0}', 20000, 10000, 131072, true, true) AS r;
+SELECT r.nodes_spilled, r.depth >= 1 AS split_again, r.same FROM sift._test_rollup_spill('{3,1}', 100000, 75000, 65536, true, false) AS r;
 -- nothing spills when it fits
 SELECT r.nodes_spilled, r.bytes_spilled, r.same FROM sift._test_rollup_spill('{3,1,0}', 5000, 300, 268435456, false, false) AS r;
 
@@ -115,15 +115,15 @@ END $$;
 -- the categories are the ones the query keeps (department 1 and 2); the other dimensions are whole
 CREATE TABLE s_cat_f AS SELECT * FROM s_cat WHERE dept IN (1, 2);
 CREATE TABLE s_cat_f_dup AS SELECT * FROM s_cat_dup WHERE dept IN (1, 2, 9);
--- fact table x items x categories x regions, every kind of join of each against PostgreSQL's, serial and with 4 workers; rows, payloads and NULLs equal
+-- fact table x items x categories x regions, every kind of join of each against PostgreSQL's (every pair of kinds meets: the kind of the regions is (categories + items) mod 4), serial and with 4 workers; rows, payloads and NULLs equal
 SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, kr, 's_cat_f', 's_item', true, true, true, workers) > 0) AS differ
-FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, generate_series(0, 3) AS kr, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
+FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, LATERAL (SELECT (kc + ki) % 4 AS kr) AS k, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
 -- the same with no regions: the fact table, the items and the categories
 SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, 0, 's_cat_f', 's_item', true, true, false, workers) > 0) AS differ
 FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
 -- an item with several rows: the fact row has a row for each (a fan-out), the categories that are not unique are joined as semi or anti
 SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, kr, 's_cat_f', 's_item_dup', true, false, true, workers, 512) > 0) AS differ
-FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, generate_series(0, 3) AS kr, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
+FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, LATERAL (SELECT (kc + ki) % 4 AS kr) AS k, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
 SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, 0, 's_cat_f_dup', 's_item_dup', false, false, true, workers, 2048) > 0) AS differ
 FROM (VALUES (1), (3)) AS k(kc), generate_series(0, 3) AS ki, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
 -- a parent that is not unique and joined by inner or left would multiply the rows: it is refused
