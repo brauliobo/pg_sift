@@ -423,22 +423,22 @@ buckets_dedup(SiftDu64G *d)
 	d->fresh = 0;
 }
 
-/* a pair into its bucket: false, with nothing added, when the bucket must grow and the budget does not hold it (once the buckets have been deduplicated, which may leave room) */
+/*
+ * a pair into its bucket: false, with nothing added, when the bucket must grow, or a group beyond the ones the set has counters for must have one, and the budget does not hold it (once the
+ * buckets have been deduplicated, which may leave room): the counts of the groups are made in a dense array of the groups at the end, so a far group is the bytes of all the groups before it
+ */
 static bool
 bucket_put(SiftDu64G *d, uint32 gid, uint64 value, uint64 h)
 {
 	DuBucket   *b = bucket_of(d, h);
+	const uint64 counters = gid > d->max_gid ? (uint64) (gid - d->max_gid) * sizeof(uint64) : 0;
+	const uint64 grow = b->n == b->cap ? (uint64) (Max(DU64G_BUCKET_FIRST, b->cap * 2) - b->cap) * sizeof(DuPair) : 0;
 
-	if (b->n == b->cap)
+	if (grow + counters > 0 && sift_du64g_bytes(d) + grow + counters > d->budget)
 	{
-		const uint64 more = (uint64) (Max(DU64G_BUCKET_FIRST, b->cap * 2) - b->cap) * sizeof(DuPair);
-
-		if (sift_du64g_bytes(d) + more > d->budget)
-		{
-			buckets_dedup(d);
-			if (b->n == b->cap)
-				return false;
-		}
+		buckets_dedup(d);
+		if (b->n == b->cap || sift_du64g_bytes(d) + counters > d->budget)
+			return false;
 	}
 	bucket_push(d, gid, value, h);
 	if (++d->fresh >= Max(d->radix_cap << DU64G_DEDUP_SHIFT, d->kept))
