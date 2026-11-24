@@ -1,5 +1,7 @@
 /*
  * col/f2/f2_tid_hash.c - the address hash directory of a part of a sift_table (f2_tid_hash.h)
+ *
+ * check-memory: allow-allocs every array here follows the rows of one part, which are bounded by the build buffer, not the rows of the table
  */
 #include "postgres.h"
 
@@ -123,5 +125,3 @@ sift_tid_hash_find(Relation rel, const SiftPart *part, uint64 nrows, uint64 tid,
 #endif
 	return n;
 }
- *
- * check-memory: allow-allocs every array here follows the rows of one part, which are bounded by the build buffer, not the rows of the table
