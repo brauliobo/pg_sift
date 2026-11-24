@@ -63,7 +63,7 @@ scan() {
 			else FN[i] = (line ~ /^#/ ? FN[i - 1] : cur)
 			text = ""
 			line_full = L[i]
-			while (match(line, /[A-Za-z_][A-Za-z0-9_]*\(/)) {
+			while ((spin || line ~ /[Ll]ock|RangeVarGetRelidExtended|_open|open_index|sift_ext/) && match(line, /[A-Za-z_][A-Za-z0-9_]*\(/)) {
 				call = substr(line, RSTART, RLENGTH - 1)
 				line = substr(line, RSTART + RLENGTH)
 				if (call == "SpinLockAcquire") { spin = 1; spinline = i; continue }
@@ -99,15 +99,17 @@ scan() {
 }
 
 # rows FILE...: the acquisitions with their counts, as file<TAB>function<TAB>call<TAB>mode<TAB>n
-rows() { scan "$@" | awk -F'\t' '$1 == "row" { k = $2 "\t" $3 "\t" $4 "\t" $5; n[k]++; if (n[k] == 1) order[++c] = k } END { for (i = 1; i <= c; i++) print order[i] "\t" n[order[i]] }' | LC_ALL=C sort; }
+rows_of() { awk -F'\t' '$1 == "row" { k = $2 "\t" $3 "\t" $4 "\t" $5; n[k]++; if (n[k] == 1) order[++c] = k } END { for (i = 1; i <= c; i++) print order[i] "\t" n[order[i]] }' | LC_ALL=C sort; }
+rows() { scan "$@" | rows_of; }
 
 # verify TABLE FILE...: the problems, one a line
 verify() {
-	local table=$1 found keys
+	local table=$1 scanned found
 	shift
-	found=$(rows "$@")
+	scanned=$(scan "$@")
+	found=$(rows_of <<<"$scanned")
 	{
-		scan "$@" | awk -F'\t' '$1 == "rule" { print $2 ": " $3 }'
+		awk -F'\t' '$1 == "rule" { print $2 ": " $3 }' <<<"$scanned"
 		awk -F'\t' '
 			NR == FNR { if ($0 !~ /^#/ && NF) { have[$1 "\t" $2 "\t" $3 "\t" $4] = $5; if (NF < 10) bad[$1 "\t" $2 "\t" $3 "\t" $4] = "has " NF " columns, 10 are needed"; else for (i = 6; i <= 10; i++) if ($i == "") bad[$1 "\t" $2 "\t" $3 "\t" $4] = "has an empty column " i; seen[$1 "\t" $2 "\t" $3 "\t" $4] = 0 } next }
 			{ k = $1 "\t" $2 "\t" $3 "\t" $4; if (!(k in have)) print $1 ": " $2 " takes " $3 "(" $4 ") x" $5 " and scripts/locks.tsv has no row for it: add one (object, scope, longest hold, the PostgreSQL equivalent and the verdict), and a lock that is stronger or held longer than that of PostgreSQL needs its reason, or the lock is the wrong design"
