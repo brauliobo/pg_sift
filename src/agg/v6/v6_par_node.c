@@ -106,16 +106,16 @@ list_units(SiftV6ParNode *pn)
 {
 	SiftV6ScanStats stats = {0};
 	SiftF2ParPlan *each = palloc(pn->nsources * sizeof(SiftF2ParPlan));
+	SiftV6Scan **scan = palloc(pn->nsources * sizeof(SiftV6Scan *));
 	uint32		nrefs = 0,
 				nstaged = 0;
 
 	for (int k = 0; k < pn->nsources; k++)
 	{
 		const SiftV6ScanSrc *src = &pn->sources[k];
-		SiftV6Scan *scan = src->ops->par->begin(pn->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, NULL, NULL);
 
-		src->ops->par->plan(scan, &each[k]);
-		src->ops->par->end(scan);
+		scan[k] = src->ops->par->begin(pn->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, NULL, NULL);
+		src->ops->par->plan(scan[k], &each[k]);
 		nrefs += each[k].nrefs;
 		nstaged += each[k].nstaged;
 	}
@@ -133,8 +133,10 @@ list_units(SiftV6ParNode *pn)
 			memcpy(pn->plan.staged_dead + pn->plan.nstaged, each[k].staged_dead, each[k].nstaged * sizeof(uint64));
 		pn->plan.nstaged += each[k].nstaged;
 		pfree(each[k].refs);
+		pn->sources[k].ops->par->end(scan[k]);
 	}
 	pn->staged_start[pn->nsources] = pn->plan.nstaged;
+	pfree(scan);
 	pfree(each);
 }
 
