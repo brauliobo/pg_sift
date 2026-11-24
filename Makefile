@@ -156,6 +156,7 @@ TESTING_REGRESS += agg_v6_generic
 TESTING_REGRESS += agg_v6_join_lookup
 TESTING_REGRESS += agg_v6_jsonb_exists
 TESTING_REGRESS += agg_v6_live_suites
+TESTING_REGRESS += agg_v6_lookup_nan
 TESTING_REGRESS += agg_v6_numeric_nan
 TESTING_REGRESS += agg_v6_par
 TESTING_REGRESS += agg_v6_par_dist_lean
