@@ -2,8 +2,8 @@
  * col/f2/f2_point_dir.h - SEC_POINT (0x0209), an optional section of a part of level 1 and up of an index (keyed or not): for each of at most SIFT_POINT_MAX_COLS keys whose values are nearly
  * all distinct, a hash table from a value to the rows that hold it (granule << 13 | row in it), so that a scan for one value or a few reads three pages of the section and the granules
  * of the rows it names, and not every granule of the part. A key is one column (an integer, a uuid, a text) or two to four columns whose values together are nearly all distinct. The lead
- * column of a keyed part has its marks (SEC_KEY_MARKS) and no directory. A reader that does not know the section, or its version, ignores it, and a part that holds it is not joined as it is
- * (col/granule/part_join.c).
+ * column of a keyed part has its marks (SEC_KEY_MARKS) and no directory. A reader that does not know the section, or its version, ignores it, and a part that holds it is joined with others
+ * only by a rewrite; a part that moves alone carries it as it is (col/granule/part_join.c).
  *
  *   SiftPointHdr, then one SiftPointCol for each key, then for each key the bucket table (nbuckets + 1 entry numbers) and its entries (the rows, ascending in a bucket)
  *

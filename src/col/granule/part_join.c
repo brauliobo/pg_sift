@@ -17,7 +17,7 @@ bool
 sift_parts_joinable(Relation rel, SiftPart *const *src, int n)
 {
 	static const uint16 same[] = {SEC_SCHEMA, SEC_DICTS};
-	static const uint16 never[] = {SEC_VERS, SEC_PREAGG_SUPER, SEC_PREAGG_ROLLUP, SEC_PREAGG_EXCEPT, SEC_SETS, SEC_HLL, SEC_KTAB, SEC_RUNS, SEC_POINT, SEC_TID_HASH};
+	static const uint16 never[] = {SEC_VERS, SEC_PREAGG_SUPER, SEC_PREAGG_ROLLUP, SEC_PREAGG_EXCEPT, SEC_SETS, SEC_HLL, SEC_KTAB, SEC_RUNS, SEC_TID_HASH};
 	void	   *base[lengthof(same)] = {NULL};
 	uint64		blen[lengthof(same)] = {0};
 	bool		ok = true;
@@ -32,6 +32,7 @@ sift_parts_joinable(Relation rel, SiftPart *const *src, int n)
 			ok = false;
 		for (int t = 0; ok && t < lengthof(never); t++)
 			ok = sift_part_section(src[i], never[t]) == NULL;
+		ok = ok && (n == 1 || sift_part_section(src[i], SEC_POINT) == NULL);
 		for (int t = 0; ok && i > 0 && t < lengthof(same); t++)
 		{
 			uint64		b = 0;
@@ -168,7 +169,8 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	uint8		ext_flags;
 	void	   *schema,
 			   *defaults,
-			   *dicts;
+			   *dicts,
+			   *point;
 	int64		tmin[SIFT_MANIFEST_TIME_COLS] = {0},
 				tmax[SIFT_MANIFEST_TIME_COLS] = {0};
 
@@ -288,6 +290,8 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	}
 	if (excs.len > 0)
 		sift_part_add_section(secs, &nsec, SEC_VARIANT_EXC, 0, excs.data, excs.len, false);
+	if (n == 1 && (point = sift_part_read_section(rel, src[0], SEC_POINT, &len)) != NULL)
+		sift_part_add_section(secs, &nsec, SEC_POINT, 0, point, len, false);
 	if (sift_skip_join(rel, src, n, &skipsec))
 		sift_part_add_section(secs, &nsec, SEC_SKIP_INDEX, 0, skipsec.data, skipsec.len, false);
 	if (kll != NULL)
