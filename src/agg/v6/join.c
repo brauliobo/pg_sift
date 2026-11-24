@@ -288,7 +288,8 @@ typedef struct V6Join
 	Tuplestorestate *rd;		/* the rows being given: the batch that was full before it */
 	uint64		nwr;
 	bool		started;		/* the build side is in */
-	bool		probed;			/* the probe side is read and the partitions that went to files are joined */
+	bool		probe_read;		/* the probe side is read */
+	bool		probed;			/* and the partitions that went to files are joined */
 	MinimalTuple pbuf;			/* the probe and build tuples of an output row, rebuilt in place for each row */
 	MinimalTuple bbuf;
 	Size		pcap;
@@ -443,7 +444,6 @@ join_start(V6Join *st, EState *estate)
 static void
 join_probe_done(V6Join *st)
 {
-	sift_gjoin_finish(st->gj);
 	st->stats = *sift_gjoin_stats(st->gj);
 	sift_gjoin_free(st->gj);
 	st->gj = NULL;
@@ -451,7 +451,7 @@ join_probe_done(V6Join *st)
 	st->probed = true;
 }
 
-/* the rows of probe rows until JOIN_BATCH of them are made (or the probe side ends) are the next batch to give */
+/* the rows of probe rows until JOIN_BATCH of them are made (or the probe side and the partitions in files end) are the next batch to give */
 #define JOIN_BATCH	1024
 
 static void
@@ -459,10 +459,15 @@ join_fill(V6Join *st)
 {
 	while (st->nwr < JOIN_BATCH && !st->probed)
 	{
-		TupleTableSlot *slot = ExecProcNode(st->ops);
+		TupleTableSlot *slot = st->probe_read ? NULL : ExecProcNode(st->ops);
 
-		if (TupIsNull(slot))
-			join_probe_done(st);
+		if (st->probe_read)
+		{
+			if (!sift_gjoin_next(st->gj))
+				join_probe_done(st);
+		}
+		else if (TupIsNull(slot))
+			st->probe_read = true;
 		else
 		{
 			CHECK_FOR_INTERRUPTS();
@@ -523,7 +528,7 @@ join_reset(V6Join *st)
 	st->pbuf = st->bbuf = NULL;
 	st->pcap = st->bcap = 0;
 	st->nwr = 0;
-	st->started = st->probed = false;
+	st->started = st->probe_read = st->probed = false;
 }
 
 static void
@@ -563,11 +568,13 @@ join_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyText("Join Type", names[st->type], es);
 	if (st->started)
 	{
-		sift_v6_explain_count(es, "Build Rows", (int64) st->stats.build_rows);
-		sift_v6_explain_count(es, "Probe Rows", (int64) st->stats.probe_rows);
-		sift_v6_explain_count(es, "Partitions", (int64) st->stats.partitions);
-		sift_v6_explain_count(es, "Spilled Bytes", (int64) st->stats.spilled_bytes);
-		sift_v6_explain_count(es, "Peak Bytes", (int64) st->stats.peak_bytes);
+		const SiftGraceStats *gs = st->gj != NULL ? sift_gjoin_stats(st->gj) : &st->stats;
+
+		sift_v6_explain_count(es, "Build Rows", (int64) gs->build_rows);
+		sift_v6_explain_count(es, "Probe Rows", (int64) gs->probe_rows);
+		sift_v6_explain_count(es, "Partitions", (int64) gs->partitions);
+		sift_v6_explain_count(es, "Spilled Bytes", (int64) gs->spilled_bytes);
+		sift_v6_explain_count(es, "Peak Bytes", (int64) gs->peak_bytes);
 	}
 }
 

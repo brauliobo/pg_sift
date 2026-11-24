@@ -4,9 +4,9 @@
  *
  * The build side is read into a hash table of exact key bytes while it is under budget (work_mem / 2: the other half is the probe side's and the output's). At the first overflow the rows of every
  * partition but one go to their files and the table keeps that partition (the hybrid hash join: the probe rows of the resident partition are joined as they arrive, the others are written to the probe
- * files of their partitions); a second overflow sends the resident partition away too. sift_gjoin_finish then joins each pair of files: the build file is loaded into the table when it fits; when it does not,
+ * files of their partitions); a second overflow sends the resident partition away too. sift_gjoin_next then joins each pair of files: the build file is loaded into the table when it fits; when it does not,
  * both files are split again by a different hash (up to SIFT_GJOIN_MAX_LEVEL levels); a partition that still does not fit (more rows with one key than the budget holds) is joined in chunks of the build
- * file, one scan of the probe file for each chunk, with a bit for each probe row telling whether it has matched. The rows are the same as PostgreSQL's hash join whatever the budget; their order is not.
+ * file, one scan of the probe file for each chunk, with a bit for each probe row telling whether it has matched (the bits are in a temporary file, a window of them in memory). The rows are the same as PostgreSQL's hash join whatever the budget; their order is not.
  *
  * A key is the bytes the caller makes of the join columns (equal bytes, equal keys); a NULL key never matches: the build row is dropped, an inner or semi probe row is dropped, a left or anti probe row is
  * emitted with no match (NOT EXISTS, not NOT IN). The join takes equi conditions only: a residual qual of the join is the caller's to apply to the pairs (a left join with one is PostgreSQL's).
@@ -48,8 +48,11 @@ extern void sift_gjoin_build(SiftGraceJoin *j, const void *key, uint32 klen, boo
 /* Every build row is in: the probe rows may come */
 extern void sift_gjoin_build_done(SiftGraceJoin *j);
 extern void sift_gjoin_probe(SiftGraceJoin *j, const void *key, uint32 klen, bool key_null, const void *payload, uint32 plen);
-/* Joins the partitions that went to files */
-extern void sift_gjoin_finish(SiftGraceJoin *j);
+/*
+ * Joins the partitions that went to files, one probe row of a partition for each call: the rows are emitted as they are made, so that what the caller does not take is not joined and not kept. True
+ * while there is more to join, false when every partition is. Every temporary file is closed when its partition is joined, and at sift_gjoin_free.
+ */
+extern bool sift_gjoin_next(SiftGraceJoin *j);
 extern const SiftGraceStats *sift_gjoin_stats(const SiftGraceJoin *j);
 extern void sift_gjoin_free(SiftGraceJoin *j);
 
