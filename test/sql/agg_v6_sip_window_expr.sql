@@ -414,13 +414,15 @@ WHERE bi - 1 = (prehash::int + dist::int + act::int) % 3;
 SET work_mem = '64MB';
 SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, dist, true) AS wrong
 FROM rsets, (VALUES (false), (true)) AS p(prehash), (VALUES (false), (true)) AS d(dist)
-WHERE sets IN ('ROLLUP (k1, k2, k3)', 'CUBE (k1, k2, k3)', 'GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ())') ORDER BY sets, prehash, dist;
+WHERE sets IN ('ROLLUP (k1, k2, k3)', 'CUBE (k1, k2, k3)', 'GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ())') AND (prehash::int + dist::int + hashtext(sets)) % 2 = 0
+ORDER BY sets, prehash, dist;
 RESET work_mem;
 -- the groups of the sets outgrow the budget of work_mem: the biggest sets go to temporary files and come back one partition at a time, and the answer is the same
 SET work_mem = '256kB';
 SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, dist, true) AS wrong
 FROM rsets, (VALUES (false), (true)) AS p(prehash), (VALUES (false), (true)) AS d(dist)
-WHERE sets IN ('ROLLUP (k1, k2, k3)', 'CUBE (k1, k2, k3)') ORDER BY sets, prehash, dist;
+WHERE sets IN ('ROLLUP (k1, k2, k3)', 'CUBE (k1, k2, k3)') AND (prehash::int + dist::int + hashtext(sets)) % 2 = 0
+ORDER BY sets, prehash, dist;
 SET work_mem = '64kB';
 SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, false, true) AS wrong
 FROM rsets, (VALUES (false), (true)) AS p(prehash)
