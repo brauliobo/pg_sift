@@ -53,18 +53,23 @@ read -r -d '' PERL <<'EOF' || true
 use strict; use warnings;
 my ($mode, $words, $allow, $path, $label) = @ARGV;
 open my $w, '<', $words or die "$words: $!"; chomp(my @w = <$w>); close $w;
-my $dom = join '|', map { quotemeta } sort { length $b <=> length $a } grep { length } @w;
-$dom = length $dom ? qr/(?<![A-Za-z0-9])(?:$dom)(?![A-Za-z0-9])/i : qr/(?!)/;
+my $words_alt = join '|', map { quotemeta } sort { length $b <=> length $a } grep { length } @w;
+my $dom = length $words_alt ? qr/(?<![A-Za-z0-9])(?:$words_alt)(?![A-Za-z0-9])/i : qr/(?!)/;
 my $oct = qr/[0-9]{1,3}/;
 my $net = qr{\b(?:10(?:\.$oct){3}|192\.168(?:\.$oct){2}|172\.(?:1[6-9]|2[0-9]|3[01])(?:\.$oct){2})\b|\.(?:la[n]|w[g])\b|/home/[a-z]|/Users/[a-z]|~/\.local\b};
+# a hit is a piece of the line before the allowlist removes anything, so a line or file that holds none of these pieces is not read further
+my $maybe_dom = length $words_alt ? qr/(?:$words_alt)/i : undef;
+my $maybe_net = qr{10\.[0-9]|192\.168\.|172\.[0-9]|\.la[n]|\.w[g]|/home/|/Users/|~/\.local};
 my @allow;
 open my $a, '<', $allow or die "$allow: $!";
 while (<$a>) { chomp; next if /^#/ || !length; my ($p, $t) = split /\t/; push @allow, [qr/$p/, qr/$t/]; }
 close $a;
 my $bad = 0;
+sub allowed { my ($p) = @_; [map { $_->[1] } grep { $p =~ $_->[0] } @allow] }
 sub scan {
-	my ($p, $line, $where) = @_;
-	for my $e (@allow) { $line =~ s/$e->[1]/ /g if $p =~ $e->[0]; }
+	my ($p, $line, $where, $texts) = @_;
+	$texts //= allowed($p);
+	$line =~ s/$_/ /g for @$texts;
 	for ([$dom, 'a domain word'], [$net, 'a private address or host']) {
 		next unless $line =~ $_->[0];
 		print "neutral: $where holds $_->[1]\n"; $bad = 1;
@@ -72,16 +77,24 @@ sub scan {
 }
 if ($mode eq 'text') {
 	local $/; my $s = <STDIN>; my $n = 0;
-	scan($path, $_, "$label, line " . ++$n) for split /\r?\n/, $s;
+	my $texts = allowed($path);
+	scan($path, $_, "$label, line " . ++$n, $texts) for split /\r?\n/, $s;
 } else {
 	local $/ = "\0";
 	while (my $f = <STDIN>) {
 		chomp $f;
 		if ($mode eq 'names') { scan($f, $f, "the name of $f"); next }
 		open my $fh, '<:raw', $f or next;
-		local $/ = "\n";
-		while (<$fh>) { chomp; scan($f, $_, "$f:$.") }
+		my $texts = allowed($f);
+		my $all = do { local $/; <$fh> };
 		close $fh;
+		next unless $all =~ $maybe_net || ($maybe_dom && $all =~ $maybe_dom);
+		my $n = 0;
+		for (split /\n/, $all) {
+			$n++;
+			next unless /$maybe_net/ || ($maybe_dom && /$maybe_dom/);
+			scan($f, $_, "$f:$n", $texts);
+		}
 	}
 }
 exit $bad;
