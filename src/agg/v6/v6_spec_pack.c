@@ -18,17 +18,17 @@ static List *
 put_col(List *l, const SiftV6Col *c)
 {
 	l = lappend_int(lappend_int(lappend_int(l, c->attno), (int) c->typid), c->scale);
-	return lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(l, c->jleaf), (int) c->jtype), (int) c->src), c->dim), c->slot), (int) c->collid);
+	return lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(l, c->jleaf), c->jmember), (int) c->jtype), (int) c->src), c->dim), c->slot), (int) c->collid);
 }
 
 static SiftV6Col
 take_col(const List *l, int *at)
 {
 	SiftV6Col	c = {.attno = list_nth_int(l, *at),.typid = (Oid) list_nth_int(l, *at + 1),.scale = list_nth_int(l, *at + 2),.jleaf = list_nth_int(l, *at + 3),
-	.jtype = list_nth_int(l, *at + 4) != 0,.src = (SiftV6Src) list_nth_int(l, *at + 5),.dim = list_nth_int(l, *at + 6),.slot = list_nth_int(l, *at + 7),
-	.collid = (Oid) list_nth_int(l, *at + 8)};
+	.jmember = list_nth_int(l, *at + 4),.jtype = list_nth_int(l, *at + 5) != 0,.src = (SiftV6Src) list_nth_int(l, *at + 6),.dim = list_nth_int(l, *at + 7),.slot = list_nth_int(l, *at + 8),
+	.collid = (Oid) list_nth_int(l, *at + 9)};
 
-	*at += 9;
+	*at += 10;
 	return c;
 }
 
@@ -114,7 +114,8 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	ints = sift_v6_derive_pack(ints, s);
 	l = list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext));
 	l = list_concat(l, list_make5(s->text_queries, s->vqual, s->pgexpr, s->genref, desc_list(s->topn_desc)));
-	return list_concat(l, list_make2(desc_list(s->agg_desc), desc_list(s->join_desc)));
+	l = list_concat(l, list_make2(desc_list(s->agg_desc), desc_list(s->join_desc)));
+	return lappend(l, s->jmembers);
 }
 
 SiftV6Spec *
@@ -194,6 +195,7 @@ sift_v6_spec_unpack(const List *l)
 	s->topn_desc = list_nth(l, 9) != NIL ? strVal(linitial(list_nth(l, 9))) : NULL;
 	s->agg_desc = list_nth(l, 10) != NIL ? strVal(linitial(list_nth(l, 10))) : NULL;
 	s->join_desc = list_nth(l, 11) != NIL ? strVal(linitial(list_nth(l, 11))) : NULL;
+	s->jmembers = list_nth(l, 12);
 	s->ext = sift_v6_ext_unpack(list_nth(l, 4));
 	return s;
 }

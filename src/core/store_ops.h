@@ -265,6 +265,7 @@ typedef struct SiftParOps
 typedef struct SiftJsonbOps
 {
 	int			(*key_leaf) (Oid indexoid, int att, const char *key, int len);
+	int			(*member_leaf) (Oid indexoid, int att, const List *path);	/* the leaf of the float8 values of the members of the map `path` (its last key is the member's) of the document attribute att, -1: none */
 	int			(*table_key_leaf) (Oid relid, int att, const char *key, int len);	/* the same for a sift_table: the leaf of the declared path of the key (NULL: a table has none) */
 	bool		exact_values;	/* the scan of the store gives what a document gives the heap: the value of a key that its leaf cannot hold, read from the exception of its row, and the array an index expression computes */
 	bool		(*path_declared) (Oid relid, bool is_table, int att, const List *path);	/* the paths option of the index declares the path (a list of String keys) of the document attribute att */

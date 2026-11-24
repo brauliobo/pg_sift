@@ -736,6 +736,7 @@ col/v1/v1_reader.h
 col/v1/v1_reader_int.h
 col/v1/v1_reader_preagg.c
 col/v1/v1_store_ops_elem.c
+col/v1/v1_store_ops_member.c
 col/v1/v1_reader_meta.c
 col/v1/v1_reader_unit.c
 col/v1/v1_store_ops.c

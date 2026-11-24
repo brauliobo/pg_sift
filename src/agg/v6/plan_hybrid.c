@@ -23,30 +23,50 @@ sift_v6_score_col(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
+static bool
+compile_once(V6Plan *p, IndexOptInfo *ix, Relation irel, const SiftStoreSchema *table, void *extra, List *group_exprs)
+{
+	if (table != NULL)
+	{
+		p->relid = planner_rt_fetch(p->rel->relid, p->root)->relid;
+		p->ops = sift_store_ops_for_oid(p->relid, true);
+		p->is_table = true;
+		p->sch = *table;
+	}
+	else
+	{
+		p->relid = ix->indexoid;
+		p->index = ix;
+		sift_v6_plan_index(p, irel);
+		if (p->ops == NULL)
+			return false;
+	}
+	return sift_v6_compile_head(p, (GroupPathExtraData *) extra, group_exprs);
+}
+
+/* a row the source gives may be left out after it, by a batch qual, a FILTER or a join: the members the source reads from the heap row of each row it gives could raise for a row PostgreSQL never reads; and
+ * the rows of a text bridge are folded by the hybrid scan, which reads no member */
+static bool
+drops_rows_after_source(const V6Plan *p)
+{
+	return p->spec.vqual != NIL || p->spec.nfilters > 0 || p->spec.ext != NULL || p->text != NULL;
+}
+
 bool
 sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, const SiftStoreSchema *table, void *extra, SiftV6Spec *spec, List **scan_tlist,
 						  List **group_exprs)
 {
-	V6Plan		p = {.root = root,.rel = rel,.out = out,.score_ok = true};
+	V6Plan		p = {.root = root,.rel = rel,.out = out,.score_ok = true,.members = true};
 
 	*group_exprs = sift_v6_group_exprs_of(root);
-	if (table != NULL)
+	if (!compile_once(&p, ix, irel, table, extra, *group_exprs))
+		return false;
+	if (p.spec.jmembers != NIL && drops_rows_after_source(&p))
 	{
-		p.relid = planner_rt_fetch(rel->relid, root)->relid;
-		p.ops = sift_store_ops_for_oid(p.relid, true);
-		p.is_table = true;
-		p.sch = *table;
-	}
-	else
-	{
-		p.relid = ix->indexoid;
-		p.index = ix;
-		sift_v6_plan_index(&p, irel);
-		if (p.ops == NULL)
+		p = (V6Plan) {.root = root,.rel = rel,.out = out,.score_ok = true};
+		if (!compile_once(&p, ix, irel, table, extra, *group_exprs))
 			return false;
 	}
-	if (!sift_v6_compile_head(&p, (GroupPathExtraData *) extra, *group_exprs))
-		return false;
 	*spec = p.spec;
 	*scan_tlist = p.scan_tlist;
 	return true;

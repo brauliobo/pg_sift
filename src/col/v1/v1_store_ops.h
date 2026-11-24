@@ -133,6 +133,21 @@ extern void sift_v1_strview(MemoryContext cx, SiftStrView *sv, const SiftSrcDict
 /* The vector types the leaves of the shredded array of a layout are read as: false when the array or one of the columns of its elements is not one the elements of a source are read from (the array is read from the heap row) */
 extern bool sift_v1_elem_spec(const SiftSrcLayout *lay, int group_leaf, int nchild, const int *child_leaf, const SiftVecType *child_type, SiftV1ElemSpec *out);
 
+/*
+ * The float8 of a member of a map of a document (v1_store_ops_member.c) as a column of a source: the leaf of the values of the map named by the keys of path (a document attribute att; -1: the index holds
+ * no such map), and its reader, which gives the member of each row of a unit, or marks the row poison (its value is read from the heap row with sift_v1_member_doc).
+ */
+typedef struct SiftV1Member SiftV1Member;
+extern int	sift_v1_member_value_leaf(const SiftSrcLayout *lay, int att, const List *path);
+extern SiftV1Member *sift_v1_member_new(MemoryContext cx, const SiftSrcLayout *lay, int value_leaf, const List *path);
+extern int	sift_v1_member_leaf(const SiftV1Member *m, int part);
+extern void sift_v1_member_bind(SiftV1Member *m, int part, int slot);
+extern void sift_v1_member_unit(SiftV1Member *m, const SiftSrcVec *read);
+extern void sift_v1_member_batch(SiftV1Member *m);
+extern void sift_v1_member_put(SiftV1Member *m, uint32 o, uint32 n, double *data, uint64 *valid);
+extern const uint64 *sift_v1_member_poison(const SiftV1Member *m);
+extern bool sift_v1_member_doc(const SiftV1Member *m, Datum doc, double *value);
+
 /* The elements reader of a source (v1_store_ops_elem.c), which reads the leaves of spec of each unit through the slots of the source's own reads */
 typedef struct SiftV1Elems SiftV1Elems;
 extern SiftV1Elems *sift_v1_elems_new(MemoryContext cx, const SiftV1ElemSpec *spec, const SiftSrcLayout *lay);

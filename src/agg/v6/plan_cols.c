@@ -257,6 +257,29 @@ generated_expr_of(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return found;
 }
 
+/* the float8 of a member of a map of a document: the column, with the keys that lead to the member in the spec */
+static bool
+member_of(V6Plan *p, const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
+{
+	List	   *path;
+	int			at = 0;
+
+	if (!p->members || !sift_v6_json_map_member(rel, e, out, &path))
+		return false;
+	foreach_ptr(List, known, p->spec.jmembers)
+	{
+		at++;
+		if (equal(known, path))
+		{
+			out->jmember = at;
+			return true;
+		}
+	}
+	p->spec.jmembers = lappend(p->spec.jmembers, path);
+	out->jmember = list_length(p->spec.jmembers);
+	return true;
+}
+
 /* A column the scan reads as a value: a column of the index, the text or the float8 of a key of a jsonb document, a payload column of a dimension or the element of the unnest */
 bool
 sift_v6_read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
@@ -264,7 +287,7 @@ sift_v6_read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
 	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) || generated_expr_of(p, e, out) ||
-		sift_v6_json_read(&rel, e, out) || sift_v6_plan_read_column(p, e, numeric_ok, out);
+		sift_v6_json_read(&rel, e, out) || member_of(p, &rel, e, out) || sift_v6_plan_read_column(p, e, numeric_ok, out);
 }
 
 bool

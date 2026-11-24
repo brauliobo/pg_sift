@@ -25,6 +25,7 @@ typedef struct SiftV6InCol
 	SiftVecType type;
 	int16		scale;
 	uint8		prec;
+	const List *path;			/* attno is a jsonb document's leaf (SIFT_V6_JLEAF_VATT + its leaf), the column the float8 of the member these keys lead to: the document's heap row gives it when the leaf cannot */
 } SiftV6InCol;
 
 /* A boolean the scan decodes as a bitmap: a boolean column, or the presence of a key in a jsonb column */

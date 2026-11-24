@@ -156,6 +156,7 @@ typedef struct SiftV6Col
 	Oid			typid;
 	int			scale;			/* numeric: the digits after the point of the scaled integer the leaf holds; 0 for any other type */
 	int			jleaf;			/* 1 + the leaf of a key of the jsonb attribute whose `->>` text (typid text) or float8 cast the column is; 0: the first leaf of attno */
+	int			jmember;		/* 1 + the entry of SiftV6Spec.jmembers whose keys lead from the document to the member whose `->>` float8 cast the column is (jleaf is then the leaf of the values of its map); 0: none */
 	bool		jtype;			/* with jleaf: the column is jsonb_typeof(doc -> 'key') (typid text), the type each row's chunk keeps of the key, not the value of it */
 	SiftV6Src	src;
 	int			dim;			/* SV6SRC_DIM: the dimension */
@@ -296,6 +297,7 @@ typedef struct SiftV6Spec
 	SiftV6Col	fcol[SIFT_V6_MAX_FCOLS];	/* the columns the clauses read, after the columns of the aggregates in the vectors of a batch */
 	int			nbins;
 	SiftV6Bin	bin[SIFT_V6_MAX_KEYS];
+	List	   *jmembers;		/* of each member of a map of a document the scan reads (SiftV6Col.jmember), the list of its keys from the document, as String nodes */
 	List	   *jsonqual;		/* the quals on the keys of jsonb documents the clauses of an operator class cannot say (agg/v6/jsonb_qual.c) */
 	List	   *vqual;			/* the quals no scan key says (a column against a column, OR, a numeric against a constant), over the columns the scan decodes (agg/v6/v6_bqual.h): they narrow every batch */
 	struct SiftV6Ext *ext;		/* the dimensions of a star join or the array an unnest takes apart (v6_ext.h); NULL for the scan of the columns of one table */
@@ -392,6 +394,8 @@ typedef struct SiftV6Rel
  */
 extern List *sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause);
 extern bool sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out);
+/* `(doc -> 'a' -> .. ->> 'k')::float8` of a map of float8 members of a document of the index as a column of the scan, and the keys in order */
+extern bool sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path);
 extern bool sift_v6_values_exact(const SiftV6Rel *rel);
 /*
  * e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy), and with values every

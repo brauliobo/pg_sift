@@ -1,7 +1,8 @@
 /*
  * col/v1_engine/v1_store_ops_jsonb.c - SiftJsonbOps of Format 1 (core/store_ops.h).
  *
- * key_leaf: the shredded scalar leaf of a top-level key of a document whose chunks keep the JSON type of each row (a path declared with a type or as text), -1 for any other key.
+ * key_leaf: the shredded scalar leaf of a top-level key of a document whose chunks keep the JSON type of each row (a path declared with a type or as text), -1 for any other key. member_leaf: the leaf of
+ * the float8 values of the map `doc.a.*` that a member `doc -> 'a' ->> 'k'` is read from (v1_store_ops_member.c), -1 for any other path.
  * unnest_run: the aggregate scan of a LATERAL unnest of an array column (agg/v6/v6_unnest_run.h). The columns of the table the statement reads come from the batches of the Format 1 source, which
  * hands over only the rows the tombstones and the snapshot leave. When the index keeps the array shredded (an SCL_ARRAY leaf of the lengths and a child leaf for each column of the element), the
  * elements of the rows that pass the quals of the table are those of the leaves (v1_store_ops_elem.c); the rows the leaves cannot hold (a NULL array or a document that is no array, an array cut by
@@ -131,6 +132,20 @@ jsonb_key_leaf(Oid indexoid, int att, const char *key, int len)
 	}
 	sift_v1_rel_close(&r);
 	return found;
+}
+
+static int
+jsonb_member_leaf(Oid indexoid, int att, const List *path)
+{
+	SiftV1Rel	r;
+	int			leaf;
+
+	if (get_rel_relkind(indexoid) != RELKIND_INDEX)
+		return -1;
+	r = sift_v1_rel_open(indexoid, false);
+	leaf = sift_v1_member_value_leaf(sift_v1_idx_reader.layout(r.rel), att, path);
+	sift_v1_rel_close(&r);
+	return leaf;
 }
 
 /* the leaf is at the path, or is the object of free keys (`path.*`) whose member the path is */
@@ -694,6 +709,7 @@ v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation in
 
 const SiftJsonbOps v1_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
+	.member_leaf = jsonb_member_leaf,
 	.path_declared = jsonb_path_declared,
 	.unnest_run = v1_unnest_run
 };

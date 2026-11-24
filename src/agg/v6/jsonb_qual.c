@@ -310,6 +310,26 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
+bool
+sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path)
+{
+	const Expr *text = strip(e);
+	const Var  *doc;
+	int			att,
+				leaf;
+
+	if (text == NULL || !IsA(text, CoerceViaIO) || ((const CoerceViaIO *) text)->resulttype != FLOAT8OID)
+		return false;
+	text = strip(((const CoerceViaIO *) text)->arg);
+	if (text == NULL || func_of(text) != F_JSONB_OBJECT_FIELD_TEXT || (doc = sift_v6_doc_chain(text, path)) == NULL || list_length(*path) < 2 || !doc_of(rel, (const Expr *) doc, &att))
+		return false;
+	leaf = rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->member_leaf != NULL ? rel->ops->jsonb->member_leaf(rel->index->indexoid, att, *path) : -1;
+	if (leaf < 0)
+		return false;
+	*out = (SiftV6Col) {.attno = att,.typid = FLOAT8OID,.jleaf = leaf + 1};
+	return true;
+}
+
 /* jsonb_typeof(doc -> 'key') of a shredded scalar key: the leaf of the key (-1: the expression is no such call) */
 static int
 typeof_leaf(const SiftV6Rel *rel, const Node *n)

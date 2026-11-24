@@ -39,7 +39,7 @@ sift_v1_att_leaf(const SiftSrcLayout *lay, int att)
 	const SiftSrcLeaf *found = NULL;
 
 	if (att >= SIFT_V6_JLEAF_VATT)
-		return &lay->leaf[att - SIFT_V6_JLEAF_VATT];
+		return lay->leaf[att - SIFT_V6_JLEAF_VATT].parent < 0 ? &lay->leaf[att - SIFT_V6_JLEAF_VATT] : NULL;
 	for (int i = 0; i < lay->nleaves; i++)
 	{
 		const SiftSrcLeaf *l = &lay->leaf[i];
@@ -306,6 +306,8 @@ typedef struct V1Src
 	const SiftSrcLayout *lay;
 	const SiftSrcLeaf *col_leaf[SIFT_V6_MAX_COLS];
 	int			col_read[SIFT_V6_MAX_COLS];		/* of each column and boolean of the input, the entry of read_vec that holds its leaf */
+	SiftV1Member *col_mem[SIFT_V6_MAX_COLS];	/* of each column of the input that is the float8 of a member of a map of a document, its reader: the heap row gives the rows the leaves cannot hold */
+	AttrNumber	mem_att[SIFT_V6_MAX_COLS];
 	int			ndocs;			/* the columns of the input that are a jsonb document, read from the heap row of each row the batch keeps */
 	int			doc_col[SIFT_V6_MAX_COLS];
 	AttrNumber	doc_att[SIFT_V6_MAX_COLS];
@@ -383,6 +385,9 @@ unit_next(V1Src *s)
 			{
 				for (int k = 0; k < s->nread; k++)
 					s->rd->read(s->src, &s->unit, s->read_leaf[k], &s->read_vec[k]);
+				for (int i = 0; i < s->in.ncols; i++)
+					if (s->col_mem[i] != NULL)
+						sift_v1_member_unit(s->col_mem[i], s->read_vec);
 				s->pos = 0;
 				return true;
 			}
@@ -513,6 +518,8 @@ batch_start(V1Src *s)
 		memset(s->valid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
 		memset(s->nan[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
 		s->has_nan[i] = false;
+		if (s->col_mem[i] != NULL)
+			sift_v1_member_batch(s->col_mem[i]);
 	}
 	for (int m = 0; m < s->in.nmasks; m++)
 	{
@@ -537,7 +544,9 @@ batch_fill(V1Src *s)
 		for (int j = 0; j < k; j++)
 		{
 			for (int i = 0; i < s->in.ncols; i++)
-				if (i != s->score_col && s->col_leaf[i] != NULL)
+				if (s->col_mem[i] != NULL)
+					sift_v1_member_put(s->col_mem[i], s->ords[j], n + j, s->data[i], s->valid[i]);
+				else if (i != s->score_col && s->col_leaf[i] != NULL)
 					put_col(s, i, s->ords[j], n + j);
 			for (int m = 0; m < s->in.nmasks; m++)
 				put_mask(s, m, s->ords[j], n + j);
@@ -607,6 +616,32 @@ fill_docs(V1Src *s, const SiftV6Batch *b)
 	}
 }
 
+/* the members of the rows the batch keeps whose leaves cannot hold them: as PostgreSQL reads them from the document of the heap row the snapshot sees */
+static void
+fill_members(V1Src *s, const SiftV6Batch *b)
+{
+	for (int i = 0; i < s->in.ncols; i++)
+		for (uint32 r = 0; s->col_mem[i] != NULL && r < b->n; r++)
+		{
+			Datum		doc;
+			bool		isnull,
+						found;
+			double		v;
+
+			if (!sift_src_bit(sift_v1_member_poison(s->col_mem[i]), r) || (b->mask != NULL && !sift_src_bit(b->mask, r)))
+				continue;
+			found = v1_fetch(&s->base, b->tag[r], &s->mem_att[i], 1, &doc, &isnull);
+			SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its document is read");
+			if (!isnull && sift_v1_member_doc(s->col_mem[i], doc, &v))
+			{
+				((double *) s->data[i])[r] = v;
+				s->valid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
+			}
+			else
+				s->valid[i][r >> 6] &= ~(UINT64CONST(1) << (r & 63));
+		}
+}
+
 /* the elements of the rows the batch keeps, from the leaves of the unit it is of (a batch of a source that reads elements never spans two) */
 static void
 fill_elems(V1Src *s, const SiftV6Batch *b)
@@ -637,6 +672,7 @@ v1_next(SiftV6Source *base, SiftV6Batch *out)
 			out->mask = s->mask;
 		}
 		fill_docs(s, out);
+		fill_members(s, out);
 		if (s->elems != NULL)
 			fill_elems(s, out);
 		return true;
@@ -723,11 +759,30 @@ bind_doc(V1Src *s, int i)
 }
 
 static void
+bind_member(V1Src *s, int i)
+{
+	const SiftV6InCol *c = &s->in.col[i];
+	SiftV1Member *m = sift_v1_member_new(s->cx, s->lay, c->attno - SIFT_V6_JLEAF_VATT, c->path);
+
+	for (int part = 0; part < 3; part++)
+		sift_v1_member_bind(m, part, read_slot(s, &s->lay->leaf[sift_v1_member_leaf(m, part)]));
+	s->col_mem[i] = m;
+	s->mem_att[i] = att_heap_column(s->lay, s->lay->leaf[sift_v1_member_leaf(m, 0)].attno);
+	alloc_column(s, i, sizeof(double));
+}
+
+static void
 bind_column(V1Src *s, int i)
 {
 	SiftV6InCol *c = &s->in.col[i];
 	const SiftSrcLeaf *l;
 	size_t		width;
+
+	if (c->path != NIL)
+	{
+		bind_member(s, i);
+		return;
+	}
 
 	if (c->type == SVEC_DATUM && c->typid == JSONBOID)
 	{

@@ -33,6 +33,7 @@
 typedef struct FoldCol
 {
 	int			attno;
+	int			jmember;
 	SiftV6Class cls;
 	bool		nan_ok;			/* a numeric whose every use is the argument of an aggregate that folds a NaN */
 	int			slot;			/* of the source's input */
@@ -94,13 +95,13 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 	attno = c.jleaf > 0 ? SIFT_V6_JLEAF_VATT + c.jleaf - 1 : c.attno;
 	SIFT_INVARIANT((c.attno > 0 || c.attno == SIFT_V6_SCORE_ATTNO) && cls != SV6C_NONE, "column %d of relation %s is not one the source fold reads", c.attno, sift_rel_label(f->a.spec->relid));
 	for (int i = 0; i < f->nfold; i++)
-		if (f->col[i].attno == attno)
+		if (f->col[i].attno == attno && f->col[i].jmember == c.jmember)
 		{
 			f->col[i].nan_ok &= takes_nan;
 			return &f->col[i];
 		}
-	f->col[f->nfold] = (FoldCol) {.attno = attno,.cls = cls,.nan_ok = takes_nan,.slot = f->in.ncols};
-	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = attno,.typid = c.typid,.scale = c.scale,
+	f->col[f->nfold] = (FoldCol) {.attno = attno,.jmember = c.jmember,.cls = cls,.nan_ok = takes_nan,.slot = f->in.ncols};
+	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = attno,.typid = c.typid,.scale = c.scale,.path = c.jmember > 0 ? list_nth(f->a.spec->jmembers, c.jmember - 1) : NIL,
 		.type = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : cls == SV6C_DATUM ? SVEC_DATUM : SVEC_I64};
 	return &f->col[f->nfold++];
 }
@@ -299,7 +300,10 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 			setup_pipe(f);
 	}
 	for (int i = 0; i < f->in.ncols; i++)
+	{
 		f->vec[i].type = f->in.col[i].type;
+		SIFT_INVARIANT(f->in.col[i].path == NIL || f->residual == NIL, "a member of a document of %s is read for rows a qual of the fold leaves out", sift_rel_label(f->a.spec->relid));
+	}
 	MemoryContextSwitchTo(old);
 	return f;
 }

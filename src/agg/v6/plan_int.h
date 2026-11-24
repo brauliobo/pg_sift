@@ -36,6 +36,7 @@ typedef struct V6Plan
 	List	   *dim_rels;		/* the RelOptInfo of each dimension, in the order of xseed->dim */
 	List	   *gen_vars;		/* the columns the generic aggregates read, from any relation of the statement: the position + 1 of a column is the attribute their expressions read it as (v6_gen.h) */
 	RelOptInfo *elem_rel;		/* the relation of the unnest */
+	bool		members;		/* a member of a map of a document may be a column of the scan: no row the source gives is left out after it (no batch qual, FILTER or join), so PostgreSQL would read the document of each */
 	bool		score_ok;		/* an aggregate over sift.score(ctid): the scan that brings its rows brings their scores (agg/hybrid_plan.c) */
 	IndexOptInfo *text;			/* the sift index of the text query of the statement, if it has one (v6_text.c) */
 	RestrictInfo *text_qual;
