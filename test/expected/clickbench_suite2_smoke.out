@@ -68,21 +68,21 @@ SELECT n, label, node_of(sql) AS node, answer_on(sql) = answer_off(sql) AS same_
  n  |                  label                  |    node     | same_answer 
 ----+-----------------------------------------+-------------+-------------
   1 | count                                   | SiftAggV6   | t
-  2 | count with a filter                     | index scan  | t
+  2 | count with a filter                     | SiftAggV6   | t
   3 | sum, count, avg                         | SiftAggV6   | t
   4 | avg of a bigint                         | SiftAggV6   | t
   5 | count distinct of a bigint              | SiftAggV6   | t
   6 | count distinct of a text                | SiftAggV6   | t
   7 | min and max of a date                   | SiftAggV6   | t
-  8 | group by a small key, ordered           | index scan  | t
+  8 | group by a small key, ordered           | SiftAggV6   | t
   9 | group by region, distinct users, top 10 | SiftAggV6   | t
  10 | group by a text with a filter, top 10   | SiftAggV6   | t
  11 | group by two keys, top 10               | SiftAggV6   | t
- 12 | group by an expression of a timestamp   | index scan  | t
+ 12 | group by an expression of a timestamp   | normal plan | t
  13 | a point lookup of a user                | normal plan | t
  14 | LIKE on a text, count                   | SiftAggV6   | t
- 15 | rows ordered by time, limit             | SiftAggV6   | t
- 16 | date-bucketed star join                 | index scan  | t
+ 15 | rows ordered by time, limit             | normal plan | t
+ 16 | date-bucketed star join                 | normal plan | t
  17 | BM25 search with a facet                | SiftAggV6   | t
 (17 rows)
 

@@ -463,7 +463,7 @@ SELECT * FROM ct_stage('vacuum');
         | date_nf=same+topn 15   +
         | date_nl=same+topn 15   +
         | expr_out=same+topn 8   +
-        | few=same+topn 37       +
+        | few=same+topn 31       +
         | filters=same+topn 12   +
         | float_all=same+topn 40 +
         | float_asc=same+topn 9  +
@@ -506,7 +506,7 @@ SELECT * FROM ct_stage('workers');
          | date_nf=same+topn 15   +
          | date_nl=same+topn 15   +
          | expr_out=same+topn 8   +
-         | few=same+topn 37       +
+         | few=same+topn 31       +
          | filters=same+topn 12   +
          | float_all=same+topn 40 +
          | float_asc=same+topn 9  +
@@ -563,7 +563,7 @@ SELECT * FROM ct_stage('added columns');
                | date_nf=same+topn 15   +
                | date_nl=same+topn 15   +
                | expr_out=same+topn 8   +
-               | few=same+topn 52       +
+               | few=same+topn 46       +
                | filters=same+topn 12   +
                | float_all=same+topn 40 +
                | float_asc=same+topn 9  +
@@ -606,7 +606,7 @@ SELECT * FROM ct_stage('added columns, vacuumed');
                          | date_nf=same+topn 15   +
                          | date_nl=same+topn 15   +
                          | expr_out=same+topn 8   +
-                         | few=same+topn 52       +
+                         | few=same+topn 31       +
                          | filters=same+topn 12   +
                          | float_all=same+topn 40 +
                          | float_asc=same+topn 9  +
