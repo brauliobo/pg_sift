@@ -52,6 +52,7 @@ typedef struct SiftF2PartPin
 	bool		point_read;
 	struct SiftTidDir *tdir;	/* the granule of every address of the part, made when a lookup finds the envelopes of no use (f2_tid_dir.c); lives in cx */
 	bool		tdir_denied;	/* the budget had no room for it: the lookups use the envelopes */
+	struct SiftRescanPart *rescan;	/* the granules an ordered scan decoded (scan/rescan_cache.c) */
 } SiftF2PartPin;
 
 typedef struct SiftF2GranuleBuf

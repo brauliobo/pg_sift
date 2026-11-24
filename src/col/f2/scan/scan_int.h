@@ -24,6 +24,7 @@
 #include "col/granule/granule_filter.h"
 #include "col/skip/skip_index.h"
 #include "col/f2/scan/ord_stream.h"
+#include "core/popcount.h"
 #include "core/tidbridge.h"
 
 #ifdef SIFT_TESTING
@@ -113,6 +114,8 @@ typedef struct F2Scan
 	int			nrowcmp;
 	struct SiftOrdStream *ord;	/* the ordered scan of the index, once its first row was asked (scan/ord_stream.c) */
 	bool		ord_off;		/* the index is not ordered natively: its rows come as the addresses give them */
+	uint32		rescans;		/* the keys the scan was given: one given others again reads decoded granules */
+	struct SiftRescanScan *rescan;	/* what it keeps between the rescans (scan/rescan_cache.c) */
 } F2Scan;
 
 /* What a scan knows of the predicates for one part: the dictionaries of its strings, the skipping indexes, the predicates that run on its chunks */
@@ -170,6 +173,16 @@ sink_verdict(const F2Scan *s, Verdict v, uint64 *live, uint64 *maybe, int r)
 						errhint("Run the statement with sift.enable_agg = off: the heap decides such a qual.")));
 	live[r >> 6] |= (uint64) (v == V_YES) << (r & 63);
 	maybe[r >> 6] |= (uint64) (v == V_MAYBE) << (r & 63);
+}
+
+static inline int
+sift_f2_batch_rows(const SiftF2Batch *b)
+{
+	int			n = 0;
+
+	for (int w = 0; w < (b->n + 63) / 64; w++)
+		n += sift_pc64(b->live[w] | b->maybe[w]);
+	return n;
 }
 
 #endif
