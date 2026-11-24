@@ -121,8 +121,8 @@ reads_fact(const SiftV6Col *c)
 }
 
 /* the slot of a column of the pipe: a payload column of a dimension, or the column of the fact side that col_for finds */
-static int
-slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan)
+int
+sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan)
 {
 	return c->src == SV6SRC_DIM ? sift_v6_pipe_dim_slot(s->pipe, c->dim, c->slot) : (int) (col_for(s, first, *c, false, takes_nan) - s->cols);
 }
@@ -183,14 +183,14 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 			{
 				const SiftV6Col key = sift_v6_xdim_key_col(&x->dim[d], k);
 
-			s->pipe->fslot[d][k] = slot_of(s, first, &key, false);
+			s->pipe->fslot[d][k] = sift_f2_v6_slot_of(s, first, &key, false);
 			}
 	for (int i = 0; i < x->nrcol; i++)
-		s->pipe->rslot[i] = slot_of(s, first, &x->rcol[i], false);
+		s->pipe->rslot[i] = sift_f2_v6_slot_of(s, first, &x->rcol[i], false);
 	for (int i = 0; i < spec->nkeys; i++)
-		s->pipe->key_slot[i] = slot_of(s, first, &spec->key[i], spec->rows);
+		s->pipe->key_slot[i] = sift_f2_v6_slot_of(s, first, &spec->key[i], spec->rows);
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
-		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : slot_of(s, first, sift_v6_vec_col(spec, v), vec_takes_nan(spec, v));
+		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : sift_f2_v6_slot_of(s, first, sift_v6_vec_col(spec, v), vec_takes_nan(spec, v));
 	s->fact = palloc(nfact * sizeof(SiftVec *));
 	for (int i = 0; i < s->ncols; i++)
 		s->fact[i] = &s->cols[i].vec;
@@ -283,8 +283,8 @@ setup_bq(V6Scan *s, const int *first)
 	s->bq = sift_v6_bq_open(CurrentMemoryContext, s->spec->vqual, &in, bq_col, &cols, s->spec->exec);
 }
 
-static void
-scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *star)
+void
+sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *star)
 {
 	const SiftV6Spec *spec = s->spec;
 	const SiftV6Ext *x = spec->ext;
@@ -543,8 +543,8 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 	}
 }
 
-static void
-v6_sink(void *arg, const SiftF2Batch *b)
+void
+sift_f2_v6_sink(void *arg, const SiftF2Batch *b)
 {
 	V6Scan	   *s = arg;
 	const bool	visible = batch_visible(s, b);
@@ -562,8 +562,8 @@ v6_sink(void *arg, const SiftF2Batch *b)
 	}
 }
 
-static int *
-scan_leaves(const V6Scan *s)
+int *
+sift_f2_v6_scan_leaves(const V6Scan *s)
 {
 	int		   *leaves = palloc(Max(s->ncols, 1) * sizeof(int));
 
@@ -572,8 +572,8 @@ scan_leaves(const V6Scan *s)
 	return leaves;
 }
 
-static bool *
-scan_nan_leaves(const V6Scan *s, int nleaves)
+bool *
+sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves)
 {
 	bool	   *nan_ok = palloc0(Max(nleaves, 1) * sizeof(bool));
 
@@ -724,7 +724,7 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	if (s->preagg != NULL)
 		sift_f2_scan_set_gran_sink(scan, sift_v6_preagg_try_granule, s->preagg);
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
-	sift_f2_scan_sink(scan, v6_sink, s, scan_leaves(s), s->ncols);
+	sift_f2_scan_sink(scan, sift_f2_v6_sink, s, sift_f2_v6_scan_leaves(s), s->ncols);
 	index_endscan(scan);
 }
 
@@ -736,7 +736,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 
 	s->count_only = s->rows == NULL && s->spec->ext == NULL && s->spec->vqual == NIL && sift_v6_spec_count_only(s->spec);
 	s->host = index;
-	scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, star);
+	sift_f2_v6_scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, star);
 	s->minmax_only = s->rows == NULL && s->pipe == NULL && sift_v6_spec_minmax_only(s->spec);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
 	sift_v6_vis_init(&s->vis, CurrentMemoryContext);
@@ -785,7 +785,7 @@ sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	s->recheck_arg = recheck_arg;
 	s->host = index != NULL ? index : heap;
 	s->is_table = index == NULL;
-	scan_setup(s, index != NULL ? sift_col_rel(index)->schema->cols : sift_f2_store_open(heap)->schema->cols,
+	sift_f2_v6_scan_setup(s, index != NULL ? sift_col_rel(index)->schema->cols : sift_f2_store_open(heap)->schema->cols,
 			   index != NULL ? sift_col_rel(index)->first : sift_f2_store_open(heap)->att_first, NULL);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
 	s->pub = palloc(Max(s->ncols, 1) * sizeof(SiftV6FoldCol));
@@ -832,22 +832,6 @@ sift_v6_fold_end(SiftV6Fold *s)
 		MemoryContextDelete(s->batch_cx);
 }
 
-static void
-begin_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap)
-{
-	SiftF2Store *store = sift_f2_store_open(rel);
-	SiftStoreScanOpts *o = palloc(sizeof(SiftStoreScanOpts));
-
-	s->host = rel;
-	s->is_table = true;
-	scan_setup(s, store->schema->cols, store->att_first, NULL);
-	s->leaves = scan_leaves(s);
-	*o = (SiftStoreScanOpts) {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.leaves = s->leaves,.nleaves = s->ncols,
-		.nan_leaves = scan_nan_leaves(s, store->ncols)};
-	s->store_scan = sift_f2_store_scan_open(o);
-	s->unsatisfiable = !quals->possible;
-}
-
 /* A scan of a parallel run: begun by the leader to list the units of the scan, and by each participant to read the runs of granules it takes; its batches go to emit */
 SiftV6Scan *
 sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats,
@@ -861,12 +845,12 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	s->emit_arg = emit_arg;
 	if (index == NULL)
 	{
-		begin_table_morsels(s, heap, quals, snap);
+		sift_f2_v6_scan_table_morsels(s, heap, quals, snap);
 		return s;
 	}
 	s->host = index;
-	scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
-	s->leaves = scan_leaves(s);
+	sift_f2_v6_scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
+	s->leaves = sift_f2_v6_scan_leaves(s);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
 	s->scan = sift_index_beginscan(heap, index, snap, nkeys);
 	index_rescan(s->scan, keys, nkeys, NULL, 0);
@@ -892,7 +876,7 @@ void
 sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged)
 {
 	if (s->scan != NULL)
-		sift_f2_scan_morsel_begin(s->scan, v6_sink, s, s->leaves, s->ncols, staged_dead, nstaged);
+		sift_f2_scan_morsel_begin(s->scan, sift_f2_v6_sink, s, s->leaves, s->ncols, staged_dead, nstaged);
 	else
 		sift_f2_store_scan_morsel_begin(s->store_scan, staged_dead, nstaged);
 }
@@ -902,7 +886,7 @@ sift_v6_scan_morsel(SiftV6Scan *s, SiftV6Group *into, const SiftParPartRef *ref,
 {
 	if (s->scan == NULL)
 	{
-		sift_f2_store_scan_morsel(s->store_scan, ref, first, n, v6_sink, s);
+		sift_f2_store_scan_morsel(s->store_scan, ref, first, n, sift_f2_v6_sink, s);
 		return;
 	}
 	if (s->preagg != NULL)
@@ -937,64 +921,6 @@ sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation
 	sift_v6_scan_run_ext(spec, g, heap, index, keys, nkeys, snap, skip, nskip, router, stats, NULL, next_chunk, chunk_arg);
 }
 
-static int
-unnest_slot(void *arg, const SiftV6Col *c)
-{
-	V6Scan	   *s = arg;
-
-	return slot_of(s, s->first, c, false);
-}
-
-/* a table whose array column is unnested: the pairs of each row go through a pipe whose fact slots are the columns the scan reads and whose element slot follows them */
-static void
-unnest_begin(V6Scan *s, Relation rel, Snapshot snap)
-{
-	SiftVecType *type = palloc(Max(s->ncols, 1) * sizeof(SiftVecType));
-
-	for (int i = 0; i < s->ncols; i++)
-		type[i] = s->cols[i].vec.type;
-	s->unnest = sift_v6_unnest_rows_begin(s->spec, s->group, rel, snap, s->stats, s->ncols, type, unnest_slot, s);
-	s->fact = palloc(Max(s->ncols, 1) * sizeof(SiftVec *));
-	for (int i = 0; i < s->ncols; i++)
-		s->fact[i] = &s->cols[i].vec;
-}
-
-static void
-scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, SiftV6StarRun *star)
-{
-	SiftF2Store *store = sift_f2_store_open(rel);
-	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
-
-	s->host = rel;
-	s->is_table = true;
-	scan_setup(s, store->schema->cols, store->att_first, star);
-	if (s->spec->ext != NULL && s->spec->ext->unnest)
-		unnest_begin(s, rel, snap);
-	o.leaves = scan_leaves(s);
-	o.nleaves = s->ncols;
-	o.nan_leaves = scan_nan_leaves(s, store->ncols);
-	s->preagg = quals->possible && s->rows == NULL && s->group != NULL ? sift_v6_preagg_begin(s->spec, s->group, store->att_first, NULL, s->stats) : NULL;
-	o.gran_sink = s->preagg != NULL ? sift_v6_preagg_try_granule : NULL;
-	o.gran_arg = s->preagg;
-	if (quals->possible)
-		sift_f2_store_scan_sink(&o, v6_sink, s);
-	if (s->preagg != NULL)
-		sift_v6_preagg_end(s->preagg);
-	if (s->unnest != NULL)
-		sift_v6_unnest_rows_end(s->unnest);
-	if (s->batch_cx != NULL)
-		MemoryContextDelete(s->batch_cx);
-}
-
-void
-sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip,
-				   SiftV6ScanStats *stats, SiftV6StarRun *star)
-{
-	V6Scan		s = {.spec = spec,.group = g,.stats = stats};
-
-	scan_table_run(&s, rel, quals, snap, skip, nskip, star);
-}
-
 void
 sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap)
 {
@@ -1007,7 +933,7 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	for (int i = 0; i < cohort->narms; i++)
 	{
 		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate};
-		scan_setup(&a.s[i], sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
+		sift_f2_v6_scan_setup(&a.s[i], sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
 		nleaves += a.s[i].ncols;
 	}
 	leaves = palloc(Max(nleaves, 1) * sizeof(int));
@@ -1033,7 +959,7 @@ sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals,
 	V6Scan		s = {.spec = spec,.rows = rows,.group = totals,.stats = stats};
 
 	if (index == NULL)
-		scan_table_run(&s, heap, quals, snap, NULL, 0, star);
+		sift_f2_v6_scan_table_run(&s, heap, quals, snap, NULL, 0, star);
 	else
 		scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, star, next_chunk, chunk_arg);
 }

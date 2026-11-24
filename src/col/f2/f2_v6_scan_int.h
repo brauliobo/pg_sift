@@ -120,6 +120,16 @@ struct SiftV6Scan
 
 typedef struct SiftV6Scan V6Scan;
 
+/* f2_v6_scan.c: what the scan of a sift_table (f2_v6_scan_table.c) shares with the scan of an index */
+extern void sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, struct SiftV6StarRun *star);
+extern int *sift_f2_v6_scan_leaves(const V6Scan *s);
+extern bool *sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves);
+extern void sift_f2_v6_sink(void *arg, const SiftF2Batch *b);
+extern int	sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan);
+/* f2_v6_scan_table.c */
+extern void sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap);
+extern void sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, struct SiftV6StarRun *star);
+
 /* f2_v6_scan_fill.c: the vectors of the columns of a batch from the decoded views of its leaves */
 extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
 extern void sift_f2_v6_refuse_nan(const V6Col *c, const SiftBatchSel *bs);
