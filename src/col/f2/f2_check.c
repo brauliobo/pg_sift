@@ -10,7 +10,10 @@
 #include "access/tableam.h"
 #include "catalog/index.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
 #include "utils/snapmgr.h"
+#include "utils/tuplesort.h"
 
 #include "col/f2/f2.h"
 #include "col/f2/f2_store.h"
@@ -72,6 +75,7 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 	SiftPartSpec own = part_spec(rel, current, part, sort_cols);
 	const SiftPartSpec *spec = &own;
 	SiftCell   *cells = palloc0(Max(spec->ncols, 1) * sizeof(SiftCell));
+	MemoryContext granule_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 check granule");
 	int			nint = sift_spec_int_keys(spec);
 	uint8		prev[SIFT_BOUND_BYTES],
 				least[SIFT_BOUND_BYTES],
@@ -85,6 +89,7 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 
 	for (uint32 g = 0; g < part->hdr.ngranules; g++)
 	{
+		MemoryContext old = MemoryContextSwitchTo(granule_cx);
 		bool	   *want = palloc0(Max(spec->ncols, 1));
 		SiftGranuleDesc gd;
 		char	   *rec;
@@ -141,7 +146,10 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 		}
 		*rows += gd.nrows;
 		(*granules)++;
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(granule_cx);
 	}
+	MemoryContextDelete(granule_cx);
 	if (have_prev && (memcmp(least, d->key_lo, SIFT_BOUND_BYTES) != 0 || memcmp(greatest, d->key_hi, SIFT_BOUND_BYTES) != 0))
 		SIFT_CORRUPT(rel, "Part %llu: its key range in the manifest is not that of its least and greatest row.", (unsigned long long) d->part_gen);
 	check_sketches(rel, spec, part, d);
@@ -152,6 +160,7 @@ sift_f2_check_keys(Relation rel)
 {
 	const SiftPartSpec *spec = rel->rd_rel->relkind == RELKIND_INDEX ? &sift_f2_rel(rel)->spec : &sift_f2_store_open(rel)->spec;
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+	MemoryContext part_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 check part");
 	uint64		parts = 0,
 				granules = 0,
 				rows = 0;
@@ -162,77 +171,73 @@ sift_f2_check_keys(Relation rel)
 		SiftPartDesc *pd = sift_manifest_read_parts(rel, &mr.entries[i], &np);
 
 		for (int p = 0; p < np; p++)
+		{
+			MemoryContext old = MemoryContextSwitchTo(part_cx);
+
 			check_part(rel, spec, &mr.entries[i], &pd[p], &granules, &rows);
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(part_cx);
+		}
 		parts += np;
+		pfree(pd);
 	}
+	MemoryContextDelete(part_cx);
 	return psprintf("parts=%llu granules=%llu rows=%llu exact", (unsigned long long) parts, (unsigned long long) granules, (unsigned long long) rows);
 }
 
-typedef struct TidList
+/* The address of a row as an int8: a block of 32 bits and an offset of 16 never make it negative, so the order of the sort is the order of the addresses */
+static Datum
+tid_datum(const ItemPointerData *tid)
 {
-	SiftMemTracker *mem;
-	uint64	   *tid;
-	uint64		n;
-	uint64		cap;
-} TidList;
-
-static void
-tid_add(TidList *l, const ItemPointerData *tid)
-{
-	if (l->n == l->cap)
-	{
-		uint64		ncap = Min(Max(1024, l->cap * 2), MaxAllocSize / sizeof(uint64));
-
-		if (ncap == l->cap || sift_mem_would_exceed(l->mem, (Size) (ncap - l->cap) * sizeof(uint64)))
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the addresses of the rows do not fit in maintenance_work_mem"), errhint("Raise maintenance_work_mem.")));
-		l->tid = l->tid ? repalloc(l->tid, (Size) ncap * sizeof(uint64)) : sift_mem_alloc(l->mem, l->mem->root_cx, (Size) ncap * sizeof(uint64));
-		l->cap = ncap;
-	}
-	l->tid[l->n++] = ((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid);
+	return Int64GetDatum((int64) (((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid)));
 }
 
 static void
 heap_tid_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive, void *state)
 {
 	if (alive)
-		tid_add(state, tid);
-}
-
-static int
-tid_cmp(const void *a, const void *b)
-{
-	uint64		x = *(const uint64 *) a,
-				y = *(const uint64 *) b;
-
-	return x < y ? -1 : x > y;
+		tuplesort_putdatum(state, tid_datum(tid), false);
 }
 
 static void
-sorted(TidList *l)
-{
-	if (l->n > 1)
-		qsort(l->tid, l->n, sizeof(uint64), tid_cmp);
-}
-
-static void
-heap_tids(Relation heap, Relation index, Snapshot snap, TidList *l)
+heap_tids(Relation heap, Relation index, Snapshot snap, Tuplesortstate *sort)
 {
 	IndexInfo  *info = BuildIndexInfo(index);
 
 	info->ii_Concurrent = true;
-	table_index_build_scan(heap, index, info, true, false, heap_tid_cb, l, table_beginscan_strat(heap, snap, 0, NULL, true, false));
+	table_index_build_scan(heap, index, info, true, false, heap_tid_cb, sort, table_beginscan_strat(heap, snap, 0, NULL, true, false));
 }
 
 static void
-index_tids(Relation heap, Relation index, Snapshot snap, TidList *l)
+index_tids(Relation heap, Relation index, Snapshot snap, Tuplesortstate *sort)
 {
 	IndexScanDesc scan = sift_index_beginscan(heap, index, snap, 0);
 	ItemPointer tid;
 
 	index_rescan(scan, NULL, 0, NULL, 0);
 	while ((tid = index_getnext_tid(scan, ForwardScanDirection)) != NULL)
-		tid_add(l, tid);
+		tuplesort_putdatum(sort, tid_datum(tid), false);
 	index_endscan(scan);
+}
+
+static Tuplesortstate *
+tid_sort(void)
+{
+	int			kb = (int) Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2) / 1024, 64);
+
+	return tuplesort_begin_datum(INT8OID, Int8LessOperator, InvalidOid, false, kb, NULL, TUPLESORT_NONE);
+}
+
+static bool
+next_tid(Tuplesortstate *sort, uint64 *tid)
+{
+	Datum		d;
+	bool		isnull;
+
+	if (!tuplesort_getdatum(sort, true, false, &d, &isnull, NULL))
+		return false;
+	*tid = (uint64) DatumGetInt64(d);
+	return true;
 }
 
 /* Every row the heap shows to a snapshot is a live row of the index: the index may hold more, the versions that UPDATE, DELETE and aborted INSERTs left until its next VACUUM */
@@ -241,23 +246,26 @@ sift_f2_check_heap(Relation index)
 {
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	Snapshot	snap = RegisterSnapshot(GetTransactionSnapshot());
-	SiftMemTracker mem;
-	TidList		want = {.mem = &mem},
-				have = {.mem = &mem};
+	Tuplesortstate *want = tid_sort(),
+			   *have = tid_sort();
+	uint64		w,
+				h = 0;
+	bool		more_have;
 
-	sift_mem_init(&mem, "f2 heap check", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 1, 1);
-	heap_tids(heap, index, snap, &want);
-	index_tids(heap, index, snap, &have);
-	sorted(&want);
-	sorted(&have);
-	for (uint64 i = 0, j = 0; i < want.n; i++, j++)
+	heap_tids(heap, index, snap, want);
+	index_tids(heap, index, snap, have);
+	tuplesort_performsort(want);
+	tuplesort_performsort(have);
+	more_have = next_tid(have, &h);
+	while (next_tid(want, &w))
 	{
-		while (j < have.n && have.tid[j] < want.tid[i])
-			j++;
-		if (j == have.n || have.tid[j] != want.tid[i])
-			SIFT_CORRUPT(index, "The heap tuple (%u,%u) is visible to the snapshot and is not in the index.", (unsigned) (want.tid[i] >> 16), (unsigned) (want.tid[i] & 0xFFFF));
+		while (more_have && h < w)
+			more_have = next_tid(have, &h);
+		if (!more_have || h != w)
+			SIFT_CORRUPT(index, "The heap tuple (%u,%u) is visible to the snapshot and is not in the index.", (unsigned) (w >> 16), (unsigned) (w & 0xFFFF));
 	}
-	sift_mem_end(&mem);
+	tuplesort_end(want);
+	tuplesort_end(have);
 	UnregisterSnapshot(snap);
 	table_close(heap, AccessShareLock);
 }
