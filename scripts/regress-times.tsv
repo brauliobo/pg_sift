@@ -473,8 +473,8 @@ agg_v6_parallel_2stage_plan	0.72
 agg_v6_parallel_2stage_robust	36.99
 agg_v6_parallel_col_delta	33.70
 agg_v6_params_float_exec	0.93
-agg_v6_par_distinct_dict	111.19
-agg_v6_par_distinct_dict_robust	401.32
+agg_v6_par_distinct_dict	30.2
+agg_v6_par_distinct_dict_robust	34.75
 agg_v6_parity_workload	0.80
 agg_v6_scope_topk	7.17
 agg_v6_sip_window_expr	24.08
