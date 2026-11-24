@@ -38,7 +38,7 @@
 ^(scripts/(ci/|(ci|ci-build|pgtest|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/(workflows/(ci|nightly)\.yml))	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
 ^(test/unit/|scripts/unit-scaling\.sh)	-
-^test/bench_on/	-
+^test/bench_on/	^(fuzz|hardened|tools-build)$|{ci}
 ^test/(agg_(helpers|having_helpers|preagg_helpers|preagg_units|check_query|check_pushed|probe_helpers|rows_helpers|same_helpers|cte_inline_fixture)|scope_multiset_helpers)\.sql$	^installcheck-(agg_|col_|tbl_agg)|{ci}
 ^test/sift_plan\.sql$	^installcheck-(count_scan|filter_pushdown|rank_)|{ci}
 ^test/roles_helpers\.sql$	^installcheck-roles_|{ci}
@@ -98,7 +98,6 @@
 ^scripts/static\.sh$	^static$
 ^scripts/plangate\.sh$	^plan-gate
 ^scripts/fast-gate\.sh$	^(fast-gate-|compat-f1-fast-gate$)
-^scripts/plan-margin\.sh$	-
 ^(scripts/exec-budget\.sh|bench/steps/cases\.sh|bench/steps/cases/.*|test/plan/execution\.tsv)$	^exec-budget$
 ^(scripts/corpus(-local)?\.sh|test/corpus/)	^corpus$
 ^scripts/(replication|check-portable)\.sh$	gh:replication|gh:sqlite|gh:mariadb
@@ -172,7 +171,6 @@
 ^scripts/(audit-gucs\.(pl|sh)|guc-disposition\.psv|check-retired\.sh)$	-
 ^(scripts/build-v510-fixture\.sh|test/t/SiftCompat\.pm)$	{compat}
 ^test/proj_helpers\.sql$	^installcheck-proj_|{ci}
-^test/live/	-
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	fast:{compat}|{cheap}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	{compat}|{any}
 ^scripts/check-format-isolation\.sh$	^format-isolation$

@@ -34,33 +34,7 @@ RULES = [
      "a retired SQL name: use the public 6.0 API (sift.promote, sift.merge, sift.maintain, sift.explain_why), or drop the setting the harness no longer needs"),
 ]
 # harness -> (workstream that owns it, findings it had): delete a line when its workstream has fixed the file
-PENDING = {
-    'scripts/coldiff.sh': ('WS-84-2', 1),
-    'scripts/coverage.sh': ('WS-84-2', 3),
-    'scripts/plangate.sh': ('WS-84-1', 1),
-    'test/col/coverage.sql': ('WS-84-2', 11),
-    'test/col/run.sql': ('WS-84-2', 3),
-    'test/corpus/lab.sql': ('WS-84-1', 1),
-    'test/corpus/run.py': ('WS-84-1', 1),
-    'test/fuzz/col_scope_fuzz.py': ('WS-84-3', 2),
-    'test/fuzz/col_scope_textkey_fuzz.py': ('WS-84-3', 2),
-    'test/fuzz/col_twin_fuzz.py': ('WS-84-3', 6),
-    'test/fuzz/diff_fuzz.py': ('WS-84-3', 1),
-    'test/fuzz/diff_fuzz.sql': ('WS-84-3', 1),
-    'test/fuzz/diff_fuzz/dml.py': ('WS-84-3', 21),
-    'test/fuzz/diff_fuzz/fam_cte.py': ('WS-84-3', 18),
-    'test/fuzz/diff_fuzz/fam_groups.py': ('WS-84-3', 2),
-    'test/fuzz/diff_fuzz/fam_lists.py': ('WS-84-3', 5),
-    'test/fuzz/diff_fuzz/fam_scope.py': ('WS-84-3', 2),
-    'test/fuzz/scope_oracle.py': ('WS-84-3', 14),
-    'test/fuzz/tbl_twin_fuzz.py': ('WS-84-3', 3),
-    'test/fuzz/txn_fuzz.py': ('WS-84-3', 1),
-    'test/fuzz/txn_fuzz/gen.py': ('WS-84-3', 5),
-    'test/matrix/matrix.py': ('WS-84-2', 2),
-    'test/plan/calibrate.sql': ('WS-84-1', 3),
-    'test/plan/run.sql': ('WS-84-1', 3),
-    'test/plan/shapes.sql': ('WS-84-1', 1),
-}
+PENDING = {}
 
 
 def rows(path):
