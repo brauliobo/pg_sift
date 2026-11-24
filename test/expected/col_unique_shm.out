@@ -10,7 +10,7 @@ DO $$ BEGIN
 		PERFORM set_config('sift.test_create_format1', 'off', false);
 	END IF;
 END $$;
--- the class of an index made with no class written: the typed one of the type (varchar takes the one of text), sift.col_ops for the types whose class takes some columns only (numeric, char(n)) and for those that have none
+-- the class of an index made with no class written: the typed one of the type (varchar takes the one of text), sift.col_ops for the types that have none
 CREATE TABLE ops_t (i2 smallint, i4 int, i8 bigint, d date, ts timestamp, tz timestamptz, b bool, n numeric, n2 numeric(30, 2), t text, v varchar(40), c char(4), u uuid, f4 real, f8 float8, j jsonb, y bytea, a int[]);
 CREATE INDEX ops_i ON ops_t USING sift_col (i2, i4, i8, d, ts, tz, b, n, n2, t, v, c, u, f4, f8, j, y, a);
 SELECT a.attname, oc.opcname FROM pg_index x JOIN pg_attribute a ON a.attrelid = x.indexrelid JOIN pg_opclass oc ON oc.oid = x.indclass[a.attnum - 1]
@@ -24,11 +24,11 @@ WHERE x.indexrelid = 'ops_i'::regclass ORDER BY a.attnum;
  ts      | col_timestamp_ops
  tz      | col_timestamptz_ops
  b       | col_bool_ops
- n       | col_ops
- n2      | col_ops
+ n       | col_numeric_ops
+ n2      | col_numeric_ops
  t       | col_text_ops
  v       | col_text_ops
- c       | col_ops
+ c       | col_bpchar_ops
  u       | col_uuid_ops
  f4      | col_float4_ops
  f8      | col_float8_ops
@@ -40,7 +40,7 @@ WHERE x.indexrelid = 'ops_i'::regclass ORDER BY a.attnum;
 SELECT count(*) AS default_classes FROM pg_opclass WHERE opcmethod = (SELECT oid FROM pg_am WHERE amname = 'sift_col') AND opcdefault;
  default_classes 
 -----------------
-              12
+              14
 (1 row)
 
 -- ON CONFLICT with no class written, for each type a key can be
@@ -237,6 +237,8 @@ INSERT INTO key_n VALUES (1e30);
 ERROR:  duplicate key value violates unique constraint "key_n_i"
 DETAIL:  Key (n)=(1000000000000000000000000000000) already exists.
 INSERT INTO key_n VALUES (0.1000);
+ERROR:  duplicate key value violates unique constraint "key_n_i"
+DETAIL:  Key (n)=(0.1000) already exists.
 INSERT INTO key_n VALUES (-5.0);
 ERROR:  duplicate key value violates unique constraint "key_n_i"
 DETAIL:  Key (n)=(-5.0) already exists.
@@ -283,7 +285,7 @@ DETAIL:  Key (a, b)=(null, null) already exists.
 SELECT (SELECT count(*) FROM key_n) AS numerics, (SELECT count(*) FROM key_t) AS texts, (SELECT count(*) FROM key_ab) AS pairs;
  numerics | texts | pairs 
 ----------+-------+-------
-        4 |     6 |     3
+        3 |     6 |     3
 (1 row)
 
 -- more keys than the registry holds: the stage goes to the partitions and the keys stay unique (before and after the flush)

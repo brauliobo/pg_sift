@@ -11,7 +11,7 @@ DO $$ BEGIN
 	END IF;
 END $$;
 
--- the class of an index made with no class written: the typed one of the type (varchar takes the one of text), sift.col_ops for the types whose class takes some columns only (numeric, char(n)) and for those that have none
+-- the class of an index made with no class written: the typed one of the type (varchar takes the one of text), sift.col_ops for the types that have none
 CREATE TABLE ops_t (i2 smallint, i4 int, i8 bigint, d date, ts timestamp, tz timestamptz, b bool, n numeric, n2 numeric(30, 2), t text, v varchar(40), c char(4), u uuid, f4 real, f8 float8, j jsonb, y bytea, a int[]);
 CREATE INDEX ops_i ON ops_t USING sift_col (i2, i4, i8, d, ts, tz, b, n, n2, t, v, c, u, f4, f8, j, y, a);
 SELECT a.attname, oc.opcname FROM pg_index x JOIN pg_attribute a ON a.attrelid = x.indexrelid JOIN pg_opclass oc ON oc.oid = x.indclass[a.attnum - 1]
