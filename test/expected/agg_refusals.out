@@ -75,7 +75,7 @@ INSERT INTO shapes VALUES
  ('unnest leaf', 'single', 'SELECT x->>''k'', count(*) FROM events e, jsonb_array_elements(e.doc->''nope'') x GROUP BY 1'),
  ('where', 'single', 'SELECT kind, count(*) FROM events WHERE length(doc::text) > 3 GROUP BY 1'),
  ('volatile', 'single', 'SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1'),
- ('join condition', 'single', 'SELECT count(*) FROM events e, plain p'),
+ ('join condition', 'single', 'SELECT count(*) FROM events e, plain p, dims d WHERE p.id = d.id'),
  ('join child', 'single', 'SELECT count(*) FROM events e JOIN LATERAL (SELECT 1 FROM plain p WHERE p.id = e.id LIMIT 1 FOR UPDATE) s ON true'),
  ('volatile child', 'single', 'SELECT count(*) FROM events e JOIN LATERAL (SELECT 1 FROM plain p WHERE p.id = e.id ORDER BY random() LIMIT 1) s ON true'),
  ('group key', 'single', 'SELECT length(doc::text), count(*) FROM events GROUP BY 1'),
@@ -87,9 +87,9 @@ INSERT INTO shapes VALUES
  ('volatile filter', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE random() > 0.5) FROM events GROUP BY 1'),
  ('dirty cast', 'single', 'SELECT sum(CAST(r.value AS integer)), avg(CAST(r.value AS float8)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = ''m_total'''),
  ('distinct', 'distinct', 'SELECT DISTINCT kind FROM events'),
- ('distinct on', 'distinct', 'SELECT DISTINCT ON (kind) kind, parent_id, ARRAY[id] FROM events ORDER BY kind, parent_id'),
+ ('distinct on', 'distinct', 'SELECT DISTINCT ON (kind) kind, parent_id FROM events ORDER BY kind, random()'),
  ('top n', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3'),
- ('top n order', 'topn', 'SELECT id FROM events ORDER BY id + extract(year FROM now())::int LIMIT 3'),
+ ('top n order', 'topn', 'SELECT id FROM events ORDER BY doc LIMIT 3'),
  ('top n where', 'topn', 'SELECT id FROM events WHERE length(doc::text) > 3 ORDER BY parent_id LIMIT 3'),
  ('top n volatile', 'topn', 'SELECT id FROM events WHERE random() < 0.5 ORDER BY parent_id LIMIT 3'),
  ('top n locked', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3 FOR UPDATE'),
@@ -206,13 +206,13 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM events 
 (1 row)
 
 RESET sift.enable_agg;
--- the first rows of the groups of a DISTINCT ON have to fit in a hash aggregate's memory
+-- the groups of a DISTINCT ON have to fit in a hash aggregate's memory
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
-SELECT arm, used, slug FROM sift.explain_why('SELECT DISTINCT ON (id) id, kind FROM events ORDER BY id, ts');
+SELECT arm, used, slug FROM sift.explain_why('SELECT DISTINCT ON (id, kind) id, kind, ts FROM events ORDER BY id, kind, ts');
    arm    | used |     slug     
 ----------+------+--------------
- distinct | f    | first_memory
+ distinct | f    | group_memory
 (1 row)
 
 SET work_mem = '64MB';
