@@ -14,7 +14,7 @@
 #include "utils/tuplesort.h"
 
 #include "agg/nth.h"
-#include "agg/osa_int.h"
+#include "agg/v6/v6_osa_round.h"
 #include "agg/v6/v6_pct.h"
 
 #define PCT_CHUNK_FIRST	64

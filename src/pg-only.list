@@ -120,7 +120,6 @@ agg/memo.h
 agg/order/
 agg/osa.c
 agg/osa_int.h
-agg/osa_round.c
 agg/osa_runs.c
 agg/par/
 agg/par_int.h
@@ -217,6 +216,7 @@ agg/v6/
 agg/v6/plan_kind.c
 agg/v6/v6_cost_model.c
 agg/v6/v6_cost_model.h
+agg/v6/v6_osa_round.c
 agg/v6/store_ops_test.c
 agg/v6/v6_batch_source.c
 agg/v6/v6_open_scan.c

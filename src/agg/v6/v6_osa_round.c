@@ -1,5 +1,5 @@
 /*
- * agg/osa_round.c - how this server rounds the interpolation of percentile_cont
+ * agg/v6/v6_osa_round.c - how this server rounds the interpolation of percentile_cont
  * The final functions of PostgreSQL find the proportion `p * (n - 1) - first` and the result `lo + prop * (hi - lo)` in float8. A server built with contraction of
  * floating-point expressions (the default of gcc and clang on aarch64, or any build for a CPU with FMA) rounds each of them once, a build without it twice, and the
  * scalar function and the one for an array of fractions are compiled apart, so each may differ. The scan is built with -ffp-contract=off and cannot see the flags
@@ -14,7 +14,7 @@
 #include "utils/guc.h"
 
 #include "core/host.h"
-#include "agg/osa_int.h"
+#include "agg/v6/v6_osa_round.h"
 
 /* 34 values, the first 19 zero and the rest one: the result is the proportion, 0.5659... * 33 - 18 */
 #define PROP_ROWS		34
