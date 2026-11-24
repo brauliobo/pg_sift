@@ -512,6 +512,7 @@ TESTING_REGRESS += format2_check_heap
 TESTING_REGRESS += format2_col_am
 TESTING_REGRESS += format2_compact
 TESTING_REGRESS += format2_deep_compress
+TESTING_REGRESS += format2_dv_delta_chunks
 TESTING_REGRESS += format2_ext_safety
 TESTING_REGRESS += format2_fsm
 TESTING_REGRESS += format2_heapref_l0_wal
