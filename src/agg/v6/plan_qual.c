@@ -147,10 +147,20 @@ qual_json_text(V6Plan *p, OpExpr *op)
 	return p->xseed != NULL && p->xseed->unnest && !p->is_table ? sift_v6_json_text_qual(&rel, op) : NULL;
 }
 
+static bool
+has_numeric_var(Node *n, void *context)
+{
+	return n != NULL && ((IsA(n, Var) && ((Var *) n)->vartype == NUMERICOID) || expression_tree_walker(n, has_numeric_var, context));
+}
+
 Expr *
 sift_v6_index_qual(V6Plan *p, Expr *clause)
 {
 	Expr	   *q;
+
+	/* a table has no heap to decide the rows whose stored value is a NaN: PostgreSQL's own comparison of the datums does */
+	if (p->is_table && has_numeric_var((Node *) clause, NULL))
+		return NULL;
 
 	switch (nodeTag(clause))
 	{
@@ -171,14 +181,7 @@ has_param(Node *n, void *context)
 	return n != NULL && (IsA(n, Param) || expression_tree_walker(n, has_param, context));
 }
 
-static bool
-has_numeric_var(Node *n, void *context)
-{
-	return n != NULL && ((IsA(n, Var) && ((Var *) n)->vartype == NUMERICOID) || expression_tree_walker(n, has_numeric_var, context));
-}
-
-/* a qual no scan key says (a column against a column, an OR, a numeric against a constant): the scan runs it over the columns of each batch (agg/v6/v6_bqual.h); a table refuses the statement that reads a NaN of a numeric, so
- * it leaves the quals on numerics to the executor */
+/* a qual no scan key says (a column against a column, an OR, a numeric against a constant): the scan runs it over the columns of each batch (agg/v6/v6_bqual.h) */
 static bool
 qual_batch(V6Plan *p, RestrictInfo *ri)
 {
@@ -186,8 +189,6 @@ qual_batch(V6Plan *p, RestrictInfo *ri)
 	Expr	   *clause;
 
 	if (!p->batch_ok || ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || has_param((Node *) ri->clause, NULL))
-		return false;
-	if (p->is_table && has_numeric_var((Node *) ri->clause, NULL))
 		return false;
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);

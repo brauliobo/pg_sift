@@ -83,6 +83,9 @@ sift_v6_class(Oid typid)
 	}
 }
 
+/* SiftV6Col.scale of a column the scan reads as datums: a type the native vectors do not hold, or a numeric whose NaN, infinities and digit count are values of it instead of scaled integers */
+#define SIFT_V6_SCALE_DATUM	(-1)
+
 /* Where the values of a column of the scan come from */
 typedef enum SiftV6Src
 {
@@ -106,6 +109,13 @@ typedef struct SiftV6Col
 	int			derive;			/* 1 + the number of its entry in SiftV6Spec.derive when the key or argument is computed from the column (attno is then the source) */
 	Oid			collid;			/* a key: the collation its type is grouped under (the interner of a generic key, v6_datum.h) */
 } SiftV6Col;
+
+/* How the scan decodes the column: SV6C_DATUM for a column the planner marked to be read as datums (v6_datum.h) */
+static inline SiftV6Class
+sift_v6_col_class(const SiftV6Col *c)
+{
+	return c->scale == SIFT_V6_SCALE_DATUM ? SV6C_DATUM : sift_v6_class(c->typid);
+}
 
 struct SiftV6Ext;
 

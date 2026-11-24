@@ -172,6 +172,52 @@ sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	return column_of(p, e, numeric_ok, out);
 }
 
+/* The host holds attribute att whole in leaves the scan decodes as a datum: a table keeps the datum of every attribute in one cell, an index the leaves of its type (sift_col_def_datum_ok) */
+static bool
+datum_leaf_ok(const V6Plan *p, int att)
+{
+	return p->is_table ? host_nleaves(p, att) == 1 : sift_col_def_datum_ok(&host_schema(p)->cols[host_first(p, att)], host_nleaves(p, att));
+}
+
+/* A column of a type no native vector holds, or a numeric of any form: its values are read as datums, so a NaN, an infinity or a numeric of any digits is the value it is */
+static bool
+datum_column_of(V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	const Var  *v = (const Var *) e;
+	int			att;
+
+	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || sift_v6_type_native(v->vartype) || v->vartype == JSONBOID)
+		return false;
+	att = host_attno(p, v->varattno);
+	if (att == 0 || !datum_leaf_ok(p, att))
+		return false;
+	*out = (SiftV6Col) {.attno = att,.typid = v->vartype,.scale = SIFT_V6_SCALE_DATUM};
+	return true;
+}
+
+/* A text column of a sift_table: its cells are the datums, so its bytes are read after the header; no scan key may compare them (the leaf is lossy) */
+static bool
+table_text_of(V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	const Var  *v = (const Var *) e;
+	int			att;
+
+	if (!p->is_table || e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || sift_v6_class(v->vartype) != SV6C_TEXT)
+		return false;
+	att = host_attno(p, v->varattno);
+	if (att == 0 || host_nleaves(p, att) != 1)
+		return false;
+	*out = (SiftV6Col) {.attno = att,.typid = v->vartype};
+	return true;
+}
+
+/* A column the scan reads as a value of any type: the columns of the kernels, the text of a table, and the datums */
+bool
+sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
+{
+	return column_of(p, e, numeric_ok, out) || table_text_of(p, e, out) || datum_column_of(p, e, out);
+}
+
 /* An expression of the query that is a column of the index (its indexprs entry, which PostgreSQL has built over the same range table entry): the scan reads what the index stored of it */
 static bool
 index_expr_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
@@ -204,7 +250,8 @@ read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 
 	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) ||
 		(!p->is_table && (sift_v6_json_read(&rel, e, out) ||
-							  (exprType((Node *) e) != NUMERICOID && (sift_v6_star_column(p, e, out) || sift_v6_unnest_column(p, e, out)))));
+							  (exprType((Node *) e) != NUMERICOID && (sift_v6_star_column(p, e, out) || sift_v6_unnest_column(p, e, out))))) ||
+		table_text_of(p, e, out) || datum_column_of(p, e, out);
 }
 
 static bool
@@ -416,7 +463,8 @@ compile_agg_native(V6Plan *p, Aggref *a)
 		const bool	score = !two && g.kind != SV6_COUNT_DISTINCT && sift_v6_score_col(p, arg, &g.arg);
 
 		if (list_length(a->args) != (two ? 2 : 1) ||
-			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && (derived_col(p, arg, false, &g.arg) || pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))))
+			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && (derived_col(p, arg, false, &g.arg) || pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))) ||
+			sift_v6_col_class(&g.arg) == SV6C_DATUM)
 			return false;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_PG_EXPR && g.kind >= SV6_STDDEV_POP && g.kind <= SV6_VAR_SAMP)
 			return false;
@@ -632,6 +680,8 @@ compile_key(V6Plan *p, Expr *e, SiftV6Col *k)
 		(typid == NUMERICOID && column_of(p, e, true, k)))
 	{
 		k->collid = exprCollation((Node *) e);
+		if (sift_v6_col_class(k) == SV6C_DATUM)
+			return sift_genkey_supported(getBaseType(k->typid));
 		return !(sift_v6_class(k->typid) == SV6C_TEXT && !sift_text_bytes_equal(k->collid));
 	}
 	return false;

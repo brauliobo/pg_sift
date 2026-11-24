@@ -36,6 +36,11 @@ typedef struct V6Col
 	bool		by_code;		/* the argument of COUNT(DISTINCT) and of nothing else: a part that codes the column by a dictionary gives the codes of its rows (vec.dict is then this dict) */
 	SiftDictSrc dict;			/* the dictionary of the part, for the batch in hand when vec.type is SVEC_DICT32 */
 	SiftKeyDict kdict;			/* the same for a key column: the dictionary of the batch, and the part it is the dictionary of */
+	const SiftColDef *def;		/* a DATUM column: its head leaf (the leaves after it that its value is made of are lane columns) */
+	int16		typlen;			/* a DATUM column: the length and the passing of its type */
+	bool		typbyval;
+	bool		is_table;		/* the leaf is a cell of a sift_table: the datum of the attribute, not the leaves of a sift_col index */
+	bool		lane;			/* a leaf the datum of the column before it is made of: it is decoded with that one, and has no vector of its own */
 } V6Col;
 
 /* a key that is date_bin() of a column, or its date_trunc('month'): the batch of the column binned into out, as the vector of the key */
@@ -87,6 +92,7 @@ struct SiftV6Scan
 	const SiftPartDesc *visible_part;	/* the part whose rows part_offer found all-visible: its batches are not vetted */
 	V6VisMap	vis;
 	V6ColStat  *stat;			/* an ungrouped aggregate of integer columns: the totals of the parts it has read whole */
+	const SiftColDef *defs;		/* the leaves of the index or table, by id */
 	SiftV6Pipe *pipe;			/* the dimensions of a star join (v6_pipe.h) */
 	SiftVec   **fact;			/* the vectors of the columns, for the pipe */
 	const SiftClause *gate;		/* an arm of a pass over the union of the keys of its arms: the rows it takes */
@@ -105,6 +111,8 @@ typedef struct SiftV6Scan V6Scan;
 /* f2_v6_scan_fill.c: the vectors of the columns of a batch from the decoded views of its leaves */
 extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
 extern void sift_f2_v6_refuse_nan(const V6Col *c, const SiftBatchSel *bs);
+/* f2_v6_datum.c: the datums of a column of a type no native vector holds: the rows of mask (all n when it is NULL) made in cx */
+extern void sift_f2_v6_fill_datum(V6Col *c, const ColView *views, int off, int n, MemoryContext cx, const uint64 *mask);
 extern void sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int n);
 extern void sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n);
 

@@ -791,7 +791,7 @@ sift_v6_gen_compile(V6Plan *p, const Aggref *a, SiftV6Agg *out)
 				if (v == NULL && pv->varattno == att)
 					v = pv;
 		if (col == V6GEN_MAX_COLS || v->varno != p->rel->relid || v->varlevelsup != 0 ||
-			!sift_v6_plan_column(p, (Expr *) v, true, col == 0 ? &out->arg : col == 1 ? &out->arg2 : &out->xcol[col - 2]))
+			!sift_v6_plan_read_column(p, (Expr *) v, true, col == 0 ? &out->arg : col == 1 ? &out->arg2 : &out->xcol[col - 2]))
 			return false;
 		col++;
 	}

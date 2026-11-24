@@ -12,6 +12,7 @@
 #include "executor/tuptable.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
 #include "agg/group/ht.h"
@@ -39,9 +40,36 @@
 #include "core/memtrack.h"
 #include "col/f2/f2_v6_scan_int.h"
 
+/* the vector of a column of a leaf: 16 bytes an element for a text or a JSON key, 8 for the others (a datum too) */
+static void
+col_init(V6Scan *s, int leaf, const SiftV6Col *c, bool key, bool takes_nan)
+{
+	V6Col	   *n = &s->cols[s->ncols];
+
+	*n = (V6Col) {.leaf = leaf,.attno = c->attno,.scale = c->scale,.json = c->jleaf > 0,.typid = c->typid,.cls = sift_v6_col_class(c),
+		.nan_ok = takes_nan,.key_only = key,.is_table = s->spec->is_table};
+	/* MEM[MEM-AGG-05]: SiftV6Scan batch column buffer (SIFT_VEC_LEN * elem + SIFT_VEC_PAD: 8B an element, 16KB a column; 16B, 32KB, only for a text or JSON column; was 32KB for every column) */
+	n->vec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * (n->cls == SV6C_TEXT || c->jleaf > 0 ? sizeof(SiftStrView) : sizeof(int64)) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	s->ncols++;
+}
+
+/* the leaves after the head of a datum column, which its value is made of */
+static void
+lane_cols(V6Scan *s, int head)
+{
+	const int	lanes = s->spec->is_table ? 1 : sift_col_def_value_lanes(&s->defs[head]);
+
+	for (int k = 1; k < lanes; k++)
+	{
+		col_init(s, head + k, &(SiftV6Col) {.attno = s->cols[s->ncols - 1].attno,.typid = INT8OID}, false, false);
+		s->cols[s->ncols - 1].lane = true;
+	}
+}
+
 static V6Col *
 col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 {
+	V6Col	   *n;
 	int			leaf;
 
 	if (c.derive > 0)
@@ -49,16 +77,22 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 	leaf = c.attno == SIFT_V6_SCORE_ATTNO ? -1 : c.jleaf > 0 ? c.jleaf - 1 : first[c.attno];
 
 	for (int i = 0; i < s->ncols; i++)
-		if (s->cols[i].leaf == leaf)
+		if (s->cols[i].leaf == leaf && !s->cols[i].lane && s->cols[i].cls == sift_v6_col_class(&c))
 		{
 			s->cols[i].key_only &= key;
-			s->cols[i].nan_ok &= takes_nan;
+			s->cols[i].nan_ok &= takes_nan || s->cols[i].cls == SV6C_DATUM;
 			return &s->cols[i];
 		}
-	s->cols[s->ncols] = (V6Col) {.leaf = leaf,.attno = c.attno,.scale = c.scale,.json = c.jleaf > 0,.typid = c.typid,.cls = sift_v6_class(c.typid),.nan_ok = takes_nan,.key_only = key};
-	/* MEM[MEM-AGG-05]: SiftV6Scan batch column buffer (SIFT_VEC_LEN * elem + SIFT_VEC_PAD: 8B an element, 16KB a column; 16B, 32KB, only for a text or JSON column; was 32KB for every column) */
-	s->cols[s->ncols].vec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * (s->cols[s->ncols].cls == SV6C_TEXT || c.jleaf > 0 ? sizeof(SiftStrView) : sizeof(int64)) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
-	return &s->cols[s->ncols++];
+	col_init(s, leaf, &c, key, takes_nan);
+	n = &s->cols[s->ncols - 1];
+	if (n->cls == SV6C_DATUM)
+	{
+		n->nan_ok = true;
+		n->def = &s->defs[leaf];
+		get_typlenbyval(c.typid, &n->typlen, &n->typbyval);
+		lane_cols(s, leaf);
+	}
+	return n;
 }
 
 /* the slot of a column of the pipe: a payload column of a dimension, or the column of the fact side that col_for finds */
@@ -196,13 +230,14 @@ setup_bq(V6Scan *s, const int *first)
 }
 
 static void
-scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
+scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *star)
 {
 	const SiftV6Spec *spec = s->spec;
 	const SiftV6Ext *x = spec->ext;
 	const int	nvec = sift_v6_spec_nvec(spec);
 
-	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS + x->nrcol : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * sizeof(V6Col));
+	s->defs = defs;
+	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS + x->nrcol : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * SIFT_COL_MAX_LANES * sizeof(V6Col));
 	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < spec->nkeys; i++)
@@ -224,7 +259,7 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 		if (s->derived[k].d->kind == SVD_PG_EXPR)
 			s->derived[k].pg = sift_v6_pgexpr_bind(CurrentMemoryContext, spec, s->derived[k].d, bq_col, &(BqCols) {s, first}, s->derived[k].pgin);
 	for (int i = 0; i < s->ncols; i++)
-		if (s->cols[i].json && s->batch_cx == NULL)
+		if ((s->cols[i].json || s->cols[i].cls == SV6C_DATUM) && s->batch_cx == NULL)
 			/* MEM[MEM-AGG-05]: SiftV6Scan batch_cx (the json exceptions of a batch, made only when a column reads a JSON key; was made for every scan) */
 			s->batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 json exceptions");
 	for (int i = 0; i < s->ncols; i++)
@@ -242,7 +277,14 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 		s->keyvec[bn->key] = &bn->vec;
 	}
 	for (int i = 0; i < s->ncols; i++)
-		s->cols[i].vec.type = s->cols[i].cls == SV6C_F64 ? SVEC_F64 : s->cols[i].cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
+	{
+		V6Col	   *c = &s->cols[i];
+
+		c->vec.type = c->cls == SV6C_F64 ? SVEC_F64 : c->cls == SV6C_TEXT ? SVEC_STRVIEW : c->cls == SV6C_DATUM ? SVEC_DATUM : SVEC_I64;
+		c->vec.typid = c->cls == SV6C_DATUM ? c->typid : InvalidOid;
+		c->vec.typlen = c->typlen;
+		c->vec.typbyval = c->typbyval;
+	}
 	if (x != NULL && x->ndims > 0)
 		setup_pipe(s, first, star);
 }
@@ -391,9 +433,16 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 		MemoryContextReset(s->batch_cx);
 	for (int i = 0; i < s->ncols; i++)
 	{
+		if (s->cols[i].lane)
+			continue;
 		if (s->cols[i].attno == SIFT_V6_SCORE_ATTNO)
 		{
 			sift_f2_v6_fill_score(&s->cols[i], score, off, n);
+			continue;
+		}
+		if (s->cols[i].cls == SV6C_DATUM)
+		{
+			sift_f2_v6_fill_datum(&s->cols[i], views, off, n, s->batch_cx, s->bs.n_active * 2 < n ? s->bs.mask : NULL);
 			continue;
 		}
 		sift_f2_v6_fill_col(&s->cols[i], &views[s->cols[i].leaf], off, n, part_gen, s->bs.n_active * 2 < n ? s->bs.mask : NULL);
@@ -611,7 +660,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 
 	s->count_only = s->rows == NULL && s->spec->ext == NULL && s->spec->vqual == NIL && sift_v6_spec_count_only(s->spec);
 	s->host = index;
-	scan_setup(s, sift_col_rel(index)->first, star);
+	scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, star);
 	s->minmax_only = s->rows == NULL && s->pipe == NULL && sift_v6_spec_minmax_only(s->spec);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
 	sift_v6_vis_init(&s->vis, CurrentMemoryContext);
@@ -655,7 +704,8 @@ sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	s->recheck = recheck;
 	s->recheck_arg = recheck_arg;
 	s->host = index != NULL ? index : heap;
-	scan_setup(s, index != NULL ? sift_col_rel(index)->first : sift_f2_store_open(heap)->att_first, NULL);
+	scan_setup(s, index != NULL ? sift_col_rel(index)->schema->cols : sift_f2_store_open(heap)->schema->cols,
+			   index != NULL ? sift_col_rel(index)->first : sift_f2_store_open(heap)->att_first, NULL);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
 	s->pub = palloc(Max(s->ncols, 1) * sizeof(SiftV6FoldCol));
 	for (int i = 0; i < s->ncols; i++)
@@ -712,7 +762,7 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	s->emit = emit;
 	s->emit_arg = emit_arg;
 	s->host = index;
-	scan_setup(s, sift_col_rel(index)->first, NULL);
+	scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
 	s->leaves = scan_leaves(s);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
 	s->scan = sift_index_beginscan(heap, index, snap, nkeys);
@@ -768,7 +818,7 @@ sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const S
 	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
 
 	s.host = rel;
-	scan_setup(&s, store->att_first, NULL);
+	scan_setup(&s, store->schema->cols, store->att_first, NULL);
 	o.leaves = scan_leaves(&s);
 	o.nleaves = s.ncols;
 	o.nan_leaves = scan_nan_leaves(&s, store->ncols);
@@ -790,7 +840,7 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	for (int i = 0; i < cohort->narms; i++)
 	{
 		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate};
-		scan_setup(&a.s[i], sift_col_rel(index)->first, NULL);
+		scan_setup(&a.s[i], sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
 		nleaves += a.s[i].ncols;
 	}
 	leaves = palloc(Max(nleaves, 1) * sizeof(int));

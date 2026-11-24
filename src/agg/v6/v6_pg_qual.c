@@ -29,17 +29,16 @@ input_pos(const SiftV6Input *in, AttrNumber attno)
 	return -1;
 }
 
-/* The slot of the input column that holds v, added when it is not one yet; -1 for a type the scan does not decode, or a column the format does not hold in one leaf of its class */
+/* The slot of the input column that holds v, added when it is not one yet; -1 for a column the format does not hold in leaves the scan decodes. A numeric and a type the native vectors do not hold are read as datums: a NaN is a value of them */
 static int
 add_column(SiftV6Input *in, const Var *v)
 {
-	const SiftV6Class cls = sift_v6_class(v->vartype);
 	const int	pos = input_pos(in, v->varattno);
-	SiftV6InCol col = {.typid = v->vartype,.type = sift_v6_result_vec_type(v->vartype)};
+	const bool	datum = v->vartype == NUMERICOID || sift_v6_class(v->vartype) == SV6C_NONE;
+	const SiftV6Class cls = datum ? SV6C_DATUM : sift_v6_class(v->vartype);
+	SiftV6InCol col = {.typid = v->vartype,.type = datum ? SVEC_DATUM : sift_v6_result_vec_type(v->vartype),.scale = datum ? SIFT_V6_SCALE_DATUM : 0};
 
-	if (pos < 0 || cls == SV6C_NONE)
-		return -1;
-	if (v->vartype == NUMERICOID && !sift_v6_vec_type(v->vartype, v->vartypmod, &col))
+	if (pos < 0 || v->vartype == JSONBOID)
 		return -1;
 	col.attno = pos + 1;
 	for (int k = 0; k < in->ncols; k++)

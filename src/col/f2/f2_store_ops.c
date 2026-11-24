@@ -46,10 +46,23 @@ scalar_leaf(const SiftF2Store *st, int att)
 	return d;
 }
 
+/* the attribute is held whole in leaves the scan decodes as a datum: the one cell of a table, the leaves of the type of an index */
+static bool
+datum_leaf(const SiftF2Store *st, int att)
+{
+	const int	n = att < 1 || att > st->natts ? 0 : sift_f2_store_attr_leaves(st, att);
+
+	return st->host->host_kind != SIFT_F2_HOST_INDEX ? n == 1 : n > 0 && sift_col_def_datum_ok(&st->schema->cols[st->att_first[att]], n);
+}
+
 bool
 sift_f2_ops_leaf_holds(Oid relid, bool is_table, int att, int cls)
 {
-	const SiftColDef *d = scalar_leaf(sift_f2_store_from_oid(relid), att);
+	const SiftColDef *d;
+
+	if ((SiftV6Class) cls == SV6C_DATUM)
+		return datum_leaf(sift_f2_store_from_oid(relid), att);
+	d = scalar_leaf(sift_f2_store_from_oid(relid), att);
 
 	if (d == NULL)
 		return false;

@@ -78,6 +78,8 @@ extern bool sift_v6_compile_quals(V6Plan *p);
 
 /* A column of the fact relation that its index holds as a plain leaf of the class of its type */
 extern bool sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
+/* the same for a column the scan reads as any value: the kernels' columns, the text of a table and the datums (an aggregate of PostgreSQL's own functions reads them) */
+extern bool sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
 /* The statement is one the node may answer, whatever its relations; and the relation is a plain table the node may read (no inheritance, sampling or security quals) */
 extern bool sift_v6_plan_query_ok(PlannerInfo *root, RelOptInfo *output_rel);
 extern bool sift_v6_plan_fact_ok(PlannerInfo *root, RelOptInfo *rel);

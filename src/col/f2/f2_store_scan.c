@@ -214,8 +214,8 @@ decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 				const char *ref = sift_granule_exc_payload(&gb->view, phys, r, &len);
 				struct varlena *val = (struct varlena *) DatumGetPointer(s->store->host->read_wide_blob(s->o->rel, ref, len, att->atttypid, att->attlen, p->gcx));
 
-				ss[r] = VARDATA_ANY(val);
-				lens[r] = VARSIZE_ANY_EXHDR(val);
+				ss[r] = (const char *) val;
+				lens[r] = VARSIZE_ANY(val);
 				nulls[r] = false;
 				continue;
 			}

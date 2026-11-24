@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 
+#include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "port/pg_bitutils.h"
 
@@ -30,12 +31,19 @@ compile(MemoryContext cx, const List *quals, SiftV6Input *in, SiftV6Vexpr *vx)
 
 /* the machine runs the clause: it has no stable function either (what it reads of the session or the snapshot is not known to a program made with the path) */
 static bool
+reads_numeric(Node *n, void *context)
+{
+	return n != NULL && ((IsA(n, Var) && ((Var *) n)->vartype == NUMERICOID) || expression_tree_walker(n, reads_numeric, context));
+}
+
+/* a numeric is not run by the machine: it reads scaled integers and has no NaN, which PostgreSQL's own functions on the datums do */
+static bool
 machine_runs(const SiftV6Input *in, const Expr *clause)
 {
 	SiftV6Input scratch = *in;
 	SiftV6Vexpr vx;
 
-	return !contain_mutable_functions((Node *) clause) && compile(CurrentMemoryContext, list_make1((void *) clause), &scratch, &vx);
+	return !contain_mutable_functions((Node *) clause) && !reads_numeric((Node *) clause, NULL) && compile(CurrentMemoryContext, list_make1((void *) clause), &scratch, &vx);
 }
 
 bool

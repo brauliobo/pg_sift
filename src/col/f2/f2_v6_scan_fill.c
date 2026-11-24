@@ -45,8 +45,9 @@ any_null(const bool *isnull, int n)
 	return any != 0;
 }
 
+/* a sift_table keeps the datum of the attribute in its cell: the bytes of a text are the ones after its header */
 static void
-text_view_at(SiftStrView *out, const ColView *cv, int off, int i)
+text_view_at(SiftStrView *out, const ColView *cv, int off, int i, bool table)
 {
 	const uint32 code = cv->dcode != NULL ? cv->dcode[off + i] : 0;
 
@@ -54,21 +55,23 @@ text_view_at(SiftStrView *out, const ColView *cv, int off, int i)
 		out[i] = strview_of(NULL, 0);
 	else if (cv->dcode != NULL)
 		out[i] = strview_of(cv->dict->bytes + cv->dict->off[code], cv->dict->off[code + 1] - cv->dict->off[code]);
+	else if (table)
+		out[i] = strview_of(VARDATA_ANY(cv->s[off + i]), VARSIZE_ANY_EXHDR(cv->s[off + i]));
 	else
 		out[i] = strview_of(cv->s[off + i], cv->slen[off + i]);
 }
 
 /* The views of the strings of the rows of mask (all n rows when it is NULL): a batch that keeps few rows makes the views of those */
 static void
-text_views(SiftStrView *out, const ColView *cv, int off, int n, const uint64 *mask)
+text_views(SiftStrView *out, const ColView *cv, int off, int n, const uint64 *mask, bool table)
 {
 	if (mask == NULL)
 		for (int i = 0; i < n; i++)
-			text_view_at(out, cv, off, i);
+			text_view_at(out, cv, off, i, table);
 	else
 		for (int w = 0; w < (n + 63) / 64; w++)
 			for (uint64 bits = mask[w]; bits != 0; bits &= bits - 1)
-				text_view_at(out, cv, off, w * 64 + __builtin_ctzll(bits));
+				text_view_at(out, cv, off, w * 64 + __builtin_ctzll(bits), table);
 }
 
 void
@@ -114,7 +117,7 @@ sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen
 			if (cv->dcode != NULL && c->by_code)
 			{
 				v->type = SVEC_STRVIEW;
-				text_views(v->data, cv, off, n, mask);
+				text_views(v->data, cv, off, n, mask, c->is_table);
 				break;
 			}
 			if (cv->dcode != NULL)
@@ -126,7 +129,7 @@ sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen
 				break;
 			}
 			v->type = SVEC_STRVIEW;
-			text_views(v->data, cv, off, n, mask);
+			text_views(v->data, cv, off, n, mask, c->is_table);
 			break;
 		default:
 			v->type = SVEC_I64;
