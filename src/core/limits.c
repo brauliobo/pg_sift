@@ -18,6 +18,7 @@
 #include "agg/topn.h"
 #include "agg/v6/v6_datebin_win.h"
 #include "agg/v6/v6_filter_pivot.h"
+#include "agg/v6/v6_first.h"
 #include "bm25/dict.h"
 #include "bm25/query.h"
 #include "col/col.h"

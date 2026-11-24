@@ -68,3 +68,4 @@ src/agg/v6/v6_proj_sort_plan.c	sort_plan_path	list-first	custom_private is sort_
 src/agg/v6/v6_vexpr.c	sift_v6_plan_scan	list-first	custom_private is the list every caller of sift_v6_add_path passes (stream, window, SIP, top-N): a list of at least three, the scan tlist second
 src/agg/v6/v6_unnest_exists.c	exists_subplan	list-first	sp is a SubPlan of the plan: its plan_id is the 1-based position of its root in glob->subroots
 src/agg/v6/v6_unnest_jsonb.c	array_column	list-first	an index column whose indexkeys entry is 0 is an expression: the index has one indexprs entry for each of them, in order
+src/agg/v6/v6_first_node.c	first_begin	list-first	custom_private and custom_plans of a SiftAggV6First plan are the lists its own path function made: the packed columns and the one plan of the rows

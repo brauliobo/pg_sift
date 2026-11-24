@@ -9,6 +9,7 @@
 #include "agg/agg.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_card.h"
+#include "agg/v6/v6_first_node.h"
 #include "agg/v6/v6_live.h"
 #include "agg/v6/v6_sip.h"
 #include "agg/v6/v6_stream.h"
@@ -22,6 +23,7 @@ sift_agg_v6_live_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 		return;
 	sift_agg_v6_topn_upper_paths(root, stage, input_rel, output_rel, extra);
 	sift_agg_v6_window_upper_paths(root, stage, input_rel, output_rel, extra);
+	sift_agg_v6_first_upper_paths(root, stage, input_rel, output_rel, extra);
 	sift_agg_v6_stream_upper_paths(root, stage, input_rel, output_rel, extra);
 }
 
@@ -30,6 +32,7 @@ sift_agg_v6_live_register(void)
 {
 	RegisterCustomScanMethods(&sift_agg_v6_topn_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_window_plan_methods);
+	RegisterCustomScanMethods(&sift_agg_v6_first_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_stream_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_sip_plan_methods);
 }
