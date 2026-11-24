@@ -230,6 +230,7 @@ typedef struct SiftGpuOps
  */
 typedef struct SiftZoneOps
 {
+	bool		table_text;		/* scan_table reads the rows of a text match by the chunks of its hits (next_chunk) */
 	struct SiftStoreQuals *(*compile_quals) (Relation heap, List *indexqual, MemoryContext cx);
 	void		(*bind_quals) (Relation heap, struct SiftStoreQuals *q, ExprContext *econtext);
 	bool		(*quals_keys) (const struct SiftStoreQuals *q, ScanKey *keys, int *nkeys);
