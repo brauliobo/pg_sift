@@ -9,14 +9,15 @@ SET max_parallel_workers = 8;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
+SET sift.test_agg_par_min_rows = 0;
 CREATE TABLE pd AS
 SELECT i, (i * 7919) % 9 AS k, CASE WHEN i % 23 = 0 THEN NULL ELSE (i * 40503) % 2111 END AS ti,
        CASE WHEN i % 19 = 0 THEN NULL ELSE 'w' || (i * 7 % 311) END AS tc,
        CASE WHEN i % 29 = 0 THEN NULL ELSE 'u' || md5(i::text) END AS tf,
-       CASE WHEN i % 17 = 0 THEN NULL WHEN i <= 200000 THEN 'm' || (i * 13 % 57) ELSE 'x' || (i * 31 % 70001) END AS tm
-FROM generate_series(1::int8, 400000::int8) AS i;
+       CASE WHEN i % 17 = 0 THEN NULL WHEN i <= 30000 THEN 'm' || (i * 13 % 57) ELSE 'x' || (i * 31 % 11001) END AS tm
+FROM generate_series(1::int8, 60000::int8) AS i;
 CREATE INDEX pd_col ON pd USING sift_col (k, ti, tc, tf, tm);
-INSERT INTO pd SELECT i, i % 9, i % 3001, 'w' || (i % 400), 'u' || md5((i + 7)::text), CASE WHEN i % 5 = 0 THEN NULL ELSE 'm' || (i % 90) END FROM generate_series(400001::int8, 420000::int8) AS i;
+INSERT INTO pd SELECT i, i % 9, i % 3001, 'w' || (i % 400), 'u' || md5((i + 7)::text), CASE WHEN i % 5 = 0 THEN NULL ELSE 'm' || (i % 90) END FROM generate_series(60001::int8, 63000::int8) AS i;
 UPDATE pd SET tc = 'w' || (i % 977), tm = 'x' || (i % 123) WHERE i % 199 = 0;
 DELETE FROM pd WHERE i % 131 = 0;
 ANALYZE pd;
@@ -80,7 +81,7 @@ SELECT shape, p.* FROM unnest(ARRAY['v_tc', 'v_tf', 'v_tm', 'v_all', 'v_twice', 
  v_tm        |      1 |      0 |      0 |      0 |      0
  v_all       |      1 |      0 |      0 |      0 |      0
  v_twice     |      1 |      0 |      0 |      0 |      0
- v_key       |    978 |      0 |      0 |      0 |      0
+ v_key       |    586 |      0 |      0 |      0 |      0
  v_minmax    |      1 |      0 |      0 |      0 |      0
  v_pair      |      1 |      0 |      0 |      0 |      0
  v_qual_t    |      1 |      0 |      0 |      0 |      0

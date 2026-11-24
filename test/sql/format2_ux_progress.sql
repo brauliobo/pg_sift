@@ -1,6 +1,6 @@
 -- Format 2.0 live progress and one-line summaries (Spec 31 2.2, 2.3, 2.5). Run on a build where new tables and indexes take Format 2.0; needs dblink and pg_sift_test.
 -- Sections 1 and 2 print nothing (the golden output has no NOTICE or INFO line: the silence of a small quick build, of client_min_messages = warning and of a plain VACUUM is the contract).
--- Sections 3 to 5 check themselves: a second connection runs the statement while this one samples the progress views (about 20 s with :rows rows; default 300000).
+-- Sections 3 to 5 check themselves: a second connection runs the statement while this one samples the progress views (about 10 s with :rows rows; default 300000).
 -- Section 6 prints the lines and is run on request: psql -v show_messages=1 (its numbers are the timings and sizes of the machine, so it has no golden output).
 CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 CREATE EXTENSION IF NOT EXISTS dblink;
@@ -54,6 +54,19 @@ BEGIN
 	END LOOP;
 END $$;
 
+-- CREATE INDEX CONCURRENTLY waits for every transaction that holds an older snapshot, the sampling session's own among them: it samples one transaction at a time
+CREATE PROCEDURE sample_create_index_concurrently(rel regclass, conn text, secs int) LANGUAGE plpgsql AS $$
+DECLARE stop timestamptz := clock_timestamp() + secs * interval '1 second';
+BEGIN
+	WHILE clock_timestamp() < stop AND dblink_is_busy(conn) = 1 LOOP
+		PERFORM pg_stat_clear_snapshot();
+		INSERT INTO samples SELECT clock_timestamp(), phase, tuples_done, tuples_total, blocks_done, blocks_total, partitions_done, partitions_total
+			FROM pg_stat_progress_create_index WHERE relid = rel;
+		COMMIT;
+		PERFORM pg_sleep(0.002);
+	END LOOP;
+END $$;
+
 CREATE FUNCTION build_checks(label text, nrows bigint) RETURNS SETOF text LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN NEXT chk(label || ': a sample was taken', (SELECT count(*) FROM samples) > 0);
@@ -81,6 +94,8 @@ SELECT sample_create_index('ev'::regclass, 'b', 120);
 SELECT finish('b');
 SELECT build_checks('serial build', :rows);
 SELECT chk('serial build: the index holds the rows', count(*) = :rows) FROM ev;
+SELECT chk('serial build: the access method names its build phases', pg_indexam_progress_phasename(am.oid, 1) = 'initializing' AND pg_indexam_progress_phasename(am.oid, 2) = 'scanning table')
+FROM pg_am am WHERE am.amname = 'sift_col';
 
 -- 4. the same with parallel workers (they count their rows through the leader) and CREATE INDEX CONCURRENTLY
 TRUNCATE samples;
@@ -92,7 +107,7 @@ SELECT finish('b');
 SELECT build_checks('parallel build', :rows);
 TRUNCATE samples;
 SELECT dblink_send_query('b', 'CREATE INDEX CONCURRENTLY ev_cic ON ux.ev USING sift_col (g, v, s) WITH (key_order = ''g'', track_changes = off)');
-SELECT sample_create_index('ev'::regclass, 'b', 120);
+CALL sample_create_index_concurrently('ev'::regclass, 'b', 120);
 SELECT finish('b');
 SELECT chk('concurrent build: a sample was taken', count(*) > 0) FROM samples;
 SELECT chk('concurrent build: the rows are indexed', count(*) = :rows) FROM ev WHERE g >= 0;

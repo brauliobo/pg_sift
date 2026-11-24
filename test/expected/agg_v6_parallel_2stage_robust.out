@@ -8,10 +8,11 @@ SET max_parallel_workers = 8;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
+SET sift.test_agg_par_min_rows = 0;
 SET max_parallel_workers_per_gather = 4;
 CREATE TABLE pr AS
-SELECT i, ((i * 7919) % 400009)::int8 AS g, (i * 31 % 1000)::int8 AS v, (((i * 104729) % 100000)::numeric / 100)::numeric(12,2) AS n, 'k' || (i * 7 % 311) AS t, (i * 40503) % 90001 AS d
-FROM generate_series(1::int8, 1500000::int8) AS i;
+SELECT i, ((i * 7919) % 21001)::int8 AS g, (i * 31 % 1000)::int8 AS v, (((i * 104729) % 100000)::numeric / 100)::numeric(12,2) AS n, 'k' || (i * 7 % 311) AS t, (i * 40503) % 4801 AS d
+FROM generate_series(1::int8, 80000::int8) AS i;
 CREATE INDEX pr_col ON pr USING sift_col (g, v, n, t, d);
 VACUUM (ANALYZE, FREEZE) pr;
 CREATE FUNCTION plan_of(q text) RETURNS jsonb LANGUAGE plpgsql AS $f$
@@ -63,19 +64,19 @@ FROM plan_of('SELECT s.i, q.c FROM generate_series(1, 3) AS s(i) JOIN LATERAL (S
 
 SELECT s.i, q.c, q.c = (SELECT count(DISTINCT g) FROM pr) AS whole_answer
 FROM generate_series(1, 3) AS s(i) JOIN LATERAL (SELECT count(*) AS c FROM (SELECT g, count(*) FROM pr GROUP BY g) AS x WHERE s.i > 0) AS q ON true ORDER BY s.i;
- i |   c    | whole_answer 
----+--------+--------------
- 1 | 400009 | t
- 2 | 400009 | t
- 3 | 400009 | t
+ i |   c   | whole_answer 
+---+-------+--------------
+ 1 | 21001 | t
+ 2 | 21001 | t
+ 3 | 21001 | t
 (3 rows)
 
 SELECT s.i, q.c FROM generate_series(1, 3) AS s(i) JOIN LATERAL (SELECT count(DISTINCT d) AS c FROM pr WHERE s.i > 0) AS q ON true ORDER BY s.i;
- i |   c   
----+-------
- 1 | 90001
- 2 | 90001
- 3 | 90001
+ i |  c   
+---+------
+ 1 | 4801
+ 2 | 4801
+ 3 | 4801
 (3 rows)
 
 RESET enable_material;

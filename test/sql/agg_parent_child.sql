@@ -8,10 +8,10 @@ SET jit = off;
 SET client_min_messages = warning;
 
 CREATE TABLE pc_parent (id int PRIMARY KEY, region int, kind int, name text) WITH (autovacuum_enabled = false);
-INSERT INTO pc_parent SELECT i, i % 50, i % 7, 'n' || i FROM generate_series(1, 20000) i;
+INSERT INTO pc_parent SELECT i, i % 50, i % 7, 'n' || i FROM generate_series(1, 2500) i;
 CREATE TABLE pc_child (id int PRIMARY KEY, parent_id int NOT NULL REFERENCES pc_parent, v int, ts date, flag boolean) WITH (autovacuum_enabled = false);
--- the parents above 18,000 have no child; v is NULL in one row of eleven
-INSERT INTO pc_child SELECT i, 1 + (i::bigint * 7919) % 18000, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END, date '2026-01-01' + i % 365, i % 5 = 0 FROM generate_series(1, 200000) i;
+-- the parents above 2,250 have no child; v is NULL in one row of eleven
+INSERT INTO pc_child SELECT i, 1 + (i::bigint * 7919) % 2250, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END, date '2026-01-01' + i % 365, i % 5 = 0 FROM generate_series(1, 25000) i;
 CREATE INDEX pc_parent_col ON pc_parent USING sift_col (id, region, kind, name);
 CREATE INDEX pc_child_col ON pc_child USING sift_col (id, parent_id, v, ts, flag);
 RESET client_min_messages;

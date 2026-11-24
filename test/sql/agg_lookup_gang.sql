@@ -22,18 +22,18 @@ INSERT INTO pg SELECT i,
 	(ARRAY['', 'a', 'A', 'é', NULL, 'x y', repeat('long', 40)])[i % 7 + 1],
 	(ARRAY['0.000', '-1.500', '99999999.999', NULL, '0.001'])[i % 5 + 1]::numeric,
 	i % 50
-FROM generate_series(0, 299999) i;
+FROM generate_series(0, 24999) i;
 CREATE INDEX pg_col ON pg USING sift_col (k, f8, tm, tx, nm, n);
 -- many tuples of values: more than a table of classes keeps
 CREATE TABLE pm (k int PRIMARY KEY, a int, b int) WITH (autovacuum_enabled = false);
-INSERT INTO pm SELECT i, i % 97, i % 89 FROM generate_series(0, 299999) i;
+INSERT INTO pm SELECT i, i % 97, i % 89 FROM generate_series(0, 24999) i;
 CREATE INDEX pm_col ON pm USING sift_col (k, a, b);
 -- a key twice
 CREATE TABLE pd (k int, a int) WITH (autovacuum_enabled = false);
-INSERT INTO pd SELECT i % 200000, i % 7 FROM generate_series(0, 299999) i;
+INSERT INTO pd SELECT i % 16667, i % 7 FROM generate_series(0, 24999) i;
 CREATE INDEX pd_col ON pd USING sift_col (k, a);
 CREATE TABLE pe (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
-INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 320000)::int END, i % 13 FROM generate_series(1, 400000) i;
+INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 28000)::int END, i % 13 FROM generate_series(1, 35000) i;
 CREATE INDEX pe_col ON pe USING sift_col (id, k, v);
 VACUUM (FREEZE, ANALYZE) pg, pm, pd, pe;
 
@@ -77,7 +77,7 @@ END $$;
 SELECT * FROM report('built');
 
 -- keys written since the index says its largest: the workers' array is short for them, the process alone reads the table
-INSERT INTO pg SELECT i, 1.5, '01:00:00', 'new', 1.000, 1 FROM generate_series(300000, 330000) i;
+INSERT INTO pg SELECT i, 1.5, '01:00:00', 'new', 1.000, 1 FROM generate_series(25000, 44999) i;
 SELECT * FROM report('keys beyond');
 VACUUM pg;
 SELECT * FROM report('vacuumed');

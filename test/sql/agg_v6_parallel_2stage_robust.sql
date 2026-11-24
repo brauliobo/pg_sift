@@ -8,10 +8,11 @@ SET max_parallel_workers = 8;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
+SET sift.test_agg_par_min_rows = 0;
 SET max_parallel_workers_per_gather = 4;
 CREATE TABLE pr AS
-SELECT i, ((i * 7919) % 400009)::int8 AS g, (i * 31 % 1000)::int8 AS v, (((i * 104729) % 100000)::numeric / 100)::numeric(12,2) AS n, 'k' || (i * 7 % 311) AS t, (i * 40503) % 90001 AS d
-FROM generate_series(1::int8, 1500000::int8) AS i;
+SELECT i, ((i * 7919) % 21001)::int8 AS g, (i * 31 % 1000)::int8 AS v, (((i * 104729) % 100000)::numeric / 100)::numeric(12,2) AS n, 'k' || (i * 7 % 311) AS t, (i * 40503) % 4801 AS d
+FROM generate_series(1::int8, 80000::int8) AS i;
 CREATE INDEX pr_col ON pr USING sift_col (g, v, n, t, d);
 VACUUM (ANALYZE, FREEZE) pr;
 CREATE FUNCTION plan_of(q text) RETURNS jsonb LANGUAGE plpgsql AS $f$
