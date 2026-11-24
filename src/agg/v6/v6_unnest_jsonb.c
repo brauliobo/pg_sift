@@ -28,7 +28,8 @@
 static bool
 col_holds(Oid typid, int32 typmod, const SiftColDef *d)
 {
-	if (typmod != -1 || d->kind != SIFT_COLK_SCALAR || d->lane != 0 || (d->flags & (SIFT_COLD_LOSSY | SIFT_COLD_ASTEXT)))
+	if (typmod != -1 || d->kind != SIFT_COLK_SCALAR || d->lane != 0 || (d->flags & SIFT_COLD_LOSSY) ||
+		((d->flags & SIFT_COLD_ASTEXT) && typid != TEXTOID && typid != VARCHAROID))
 		return false;
 	switch (typid)
 	{
@@ -54,6 +55,22 @@ sift_v6_unnest_rte(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, SiftV6E
 	return rel->joininfo == NIL && sift_v6_unnest_rte_joined(root, fact, rel, out);
 }
 
+/* doc -> 'key' of a constant key: the document and the key */
+static const char *
+field_key(const Expr *e, const Expr **doc)
+{
+	const OpExpr *op = (const OpExpr *) e;
+	const Const *k;
+
+	if (!IsA(e, OpExpr) || get_opcode(op->opno) != F_JSONB_OBJECT_FIELD || list_length(op->args) != 2)
+		return NULL;
+	k = lsecond(op->args);
+	if (!IsA(k, Const) || k->constisnull || k->consttype != TEXTOID)
+		return NULL;
+	*doc = linitial(op->args);
+	return TextDatumGetCString(k->constvalue);
+}
+
 /* the function of the lateral relation, taking the column array of the fact table: unnest of an array, or jsonb_to_recordset of a jsonb one with the columns it declares */
 static bool
 rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out)
@@ -61,7 +78,9 @@ rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out)
 	const FuncExpr *fe = (const FuncExpr *) rtf->funcexpr;
 	const Oid	vartype = exprType((const Node *) v);
 
-	*out = (SiftV6ElemRte) {.array = v};
+	*out = (SiftV6ElemRte) {.array = v,.base = v};
+	if (fe->funcid == F_JSONB_TO_RECORDSET)
+		out->key = field_key(v, &out->base);
 	if (fe->funcid == F_UNNEST_ANYARRAY)
 	{
 		out->fn = SV6E_UNNEST;
@@ -150,15 +169,21 @@ sift_v6_unnest_exists_rte(const RangeTblEntry *rte, const SubPlan *sp, SiftV6Ele
 	return c.ok && rte_function(rtf, (const Expr *) array, out);
 }
 
-/* the lengths leaf of the attribute and its element leaves are the ones of a list of objects (no key leaf, which a map has) */
+/* the lengths leaf of the attribute's array (the document itself, or its key `key`) and its element leaves are the ones of a list of objects (no key leaf, which a map has) */
 static int
-group_of(const SiftColRel *r, int att)
+group_of(const SiftColRel *r, int att, const char *key)
 {
+	const size_t len = key != NULL ? strlen(key) : 0;
 	int			group = -1;
 
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
-		if (r->schema->cols[i].kind == SIFT_COLK_GROUP)
+	{
+		const SiftColDef *d = &r->schema->cols[i];
+		const char *dot = d->kind == SIFT_COLK_GROUP && d->path != NULL ? strchr(d->path, '.') : NULL;
+
+		if (d->kind == SIFT_COLK_GROUP && (key == NULL ? dot == NULL : dot != NULL && strncmp(dot + 1, key, len) == 0 && strcmp(dot + 1 + len, "[]") == 0))
 			group = i;
+	}
 	return group;
 }
 
@@ -178,12 +203,12 @@ member_leaf(const SiftColRel *r, int att, int group, const char *name)
 }
 
 static bool
-seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, int att, List **names)
+seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *key, int att, List **names)
 {
 	const SiftColRel *r = p->colrel;
 	int			c = 0;
 
-	if (!r->json[att] || (e->group_leaf = group_of(r, att)) < 0)
+	if (!r->json[att] || (e->group_leaf = group_of(r, att, key)) < 0)
 		return false;
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
 		if (r->schema->cols[i].parent == e->group_leaf && r->schema->cols[i].path != NULL && strstr(r->schema->cols[i].path, "#key") != NULL)
@@ -247,15 +272,22 @@ sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, b
 {
 	SiftV6Ext  *x = sift_v6_ext_new();
 	List	   *names = NIL;
-	const int	i = array_column(p->index, rte->array);
+	const char *key = rte->key;
+	int			i = key != NULL ? array_column(p->index, rte->base) : -1;
 
+	if (i < 0)
+	{
+		i = array_column(p->index, rte->array);
+		key = NULL;
+	}
 	if (i < 0)
 		return false;
 	x->unnest = true;
 	x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
-	if (!(rte->fn == SV6E_RECORDSET ? seed_recordset(p, &x->elem, rte, i + 1, &names) : seed_unnest_array(p, &x->elem, rte, i + 1)))
+	if (!(rte->fn == SV6E_RECORDSET ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) : seed_unnest_array(p, &x->elem, rte, i + 1)))
 		return false;
 	x->elem_names = names;
+	x->elem_array = IsA(rte->array, Var) ? NIL : list_make1(copyObject(unconstify(Expr *, rte->array)));
 	p->xseed = x;
 	p->elem_rel = elem_rel;
 	return true;

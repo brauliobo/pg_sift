@@ -23,7 +23,9 @@
 typedef struct SiftV6ElemRte
 {
 	SiftV6ElemFn fn;
-	const Expr *array;			/* a column of the fact table, or an expression of it that the index holds as a column */
+	const Expr *array;			/* the array of a row: a column of the fact table, an expression of it that the index holds as a column, or the key of such a document (base -> 'key') */
+	const Expr *base;			/* the column or index expression that holds the array, array itself or the document it is a key of */
+	const char *key;			/* the key of the document base that holds the array; NULL when base is the array */
 	Oid			elem;			/* unnest: the type of the element */
 	List	   *names;			/* jsonb_to_recordset: the String of each declared column */
 	List	   *types;			/* and its type, as Oid cells */

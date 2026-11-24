@@ -210,7 +210,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	ints = list_concat(ints, list_make3_int(x->elem.left, x->elem.semi, x->elem.ncols));
 	for (int c = 0; c < x->elem.ncols; c++)
 		ints = lappend_int(lappend_int(ints, x->elem.col_leaf[c]), (int) x->elem.col_type[c]);
-	return lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid);
+	return lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array);
 }
 
 SiftV6Ext *
@@ -267,6 +267,7 @@ sift_v6_ext_unpack(const List *l)
 	x->elem_names = lfourth(l);
 	x->heap_where = list_nth(l, 4);
 	x->resid = list_nth(l, 5);
+	x->elem_array = list_nth(l, 6);
 	return x;
 }
 

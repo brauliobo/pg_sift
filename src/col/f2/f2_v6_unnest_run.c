@@ -77,6 +77,7 @@ typedef struct UnRun
 	EState	   *estate;			/* the quals of the table as a row of the heap is tested with them */
 	ExprContext *econtext;
 	ExprState  *hqual;
+	ExprState  *arr;			/* the array of a row of the heap when it is an expression (SiftV6Ext.elem_array), else NULL: the column heap_att */
 	SiftClause	where;
 	bool		has_where;
 	SiftVec   **wvecs;
@@ -187,7 +188,6 @@ setup_cols(UnRun *u, const SiftColRel *r)
 		for (int c = 0; c <= d->ncond; c++)
 			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR)
 				col_index(u, r, c == 0 ? &d->src : &d->cond[c - 1], false);
-	}
 		if (d->kind == SVD_PG_EXPR)
 		{
 			SiftV6PgItem it;
@@ -197,6 +197,7 @@ setup_cols(UnRun *u, const SiftColRel *r)
 				if (it.col[c].src == SV6SRC_ATTR)
 					col_index(u, r, &it.col[c], false);
 		}
+	}
 	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
 		col_index(u, r, &spec->fcol[i], false);
 }
@@ -213,7 +214,6 @@ pull_spec(const UnRun *u)
 	return ps;
 }
 
-static void
 static SiftVecType
 pg_vec_type(const SiftV6Spec *spec, const SiftV6Derive *d)
 {
@@ -241,6 +241,7 @@ bind_pg(UnRun *u, const SiftColRel *r, int k)
 	sift_vx_out_init(&u->pgout[k], CurrentMemoryContext);
 }
 
+static void
 setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *star)
 {
 	const SiftV6Spec *spec = u->spec;
@@ -277,12 +278,12 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 		const SiftV6Derive *d = &spec->derive[k];
 		UnArith    *ar = &u->arith[k];
 
-		ar->nin = d->ncond + 1;
 		if (d->kind == SVD_PG_EXPR)
 		{
 			bind_pg(u, r, k);
 			continue;
 		}
+		ar->nin = d->ncond + 1;
 		for (int c = 0; c < ar->nin; c++)
 		{
 			const SiftV6Col *col = c == 0 ? &d->src : &d->cond[c - 1];
@@ -403,7 +404,6 @@ arith_pairs(UnRun *u, int k, uint32 m)
 	u->outv[slot] = (SiftVec) {.data = out,.valid = valid,.len = (uint16) m,.all_valid = false,.dense = true,.type = SVEC_F64};
 }
 
-/* the pairs of (row, element) into the vectors of the pairs, and on to the groups: pidx[i] names the row of fact and eidx[i] the element of elems of pair i (SIFT_GATHER_NONE: a NULL one) */
 /* the PostgreSQL expression of derivation k on the pairs of obs: its inputs are the vectors of the pairs, its result the vector of the slot of the derivation */
 static void
 pg_pairs(UnRun *u, int k)
@@ -417,6 +417,7 @@ pg_pairs(UnRun *u, int k)
 	u->out[u->ncols + u->nel + k] = &u->pgout[k].vec;
 }
 
+/* the pairs of (row, element) into the vectors of the pairs, and on to the groups: pidx[i] names the row of fact and eidx[i] the element of elems of pair i (SIFT_GATHER_NONE: a NULL one) */
 static void
 emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
 {
@@ -433,12 +434,12 @@ emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
 	bs->n_raw = bs->n_active = (uint16) m;
 	bs->all_active = true;
 	bs->has_sel = false;
-	sift_v6_pipe_run(u->pipe, u->out, bs);
 	for (int k = 0; k < u->spec->nderive; k++)
 		if (u->spec->derive[k].kind == SVD_PG_EXPR)
 			pg_pairs(u, k);
 		else
 			arith_pairs(u, k, m);
+	sift_v6_pipe_run(u->pipe, u->out, bs);
 }
 
 /* the elements the clause of the element keeps, as a bitmap of n_elems bits, from the columns ev of the elements */
@@ -559,17 +560,17 @@ emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row)
 
 	found = sift_v6_vet_fetch(&u->vet, tid);
 	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its array is read");
-	if (u->hqual != NULL)
+	if (u->econtext != NULL)
 	{
 		u->econtext->ecxt_scantuple = u->vet.slot;
 		ResetExprContext(u->econtext);
-		if (!ExecQual(u->hqual, u->econtext))
-		{
-			MemoryContextSwitchTo(old);
-			return;
-		}
 	}
-	d = slot_getattr(u->vet.slot, u->heap_att, &isnull);
+	if (u->hqual != NULL && !ExecQual(u->hqual, u->econtext))
+	{
+		MemoryContextSwitchTo(old);
+		return;
+	}
+	d = u->arr != NULL ? ExecEvalExprSwitchContext(u->arr, u->econtext, &isnull) : slot_getattr(u->vet.slot, u->heap_att, &isnull);
 	if (!isnull)
 		nel = u->rec != NULL ? sift_v6_recfn_call(u->rec, d, u->bcx, ev) : array_elems(u, d, ev);
 	if (u->has_ewhere && nel > 0)
@@ -735,13 +736,14 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	else
 		u->rec = sift_v6_recfn_new(CurrentMemoryContext, u->x);
 	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest heap rows");
-	if (u->x->heap_where != NIL)
+	if (u->x->heap_where != NIL || u->x->elem_array != NIL)
 	{
 		MemoryContext old = CurrentMemoryContext;
 
 		u->estate = CreateExecutorState();
 		MemoryContextSwitchTo(u->estate->es_query_cxt);
-		u->hqual = ExecPrepareQual(u->x->heap_where, u->estate);
+		u->hqual = u->x->heap_where != NIL ? ExecPrepareQual(u->x->heap_where, u->estate) : NULL;
+		u->arr = u->x->elem_array != NIL ? ExecPrepareExpr(linitial(u->x->elem_array), u->estate) : NULL;
 		u->econtext = CreateExprContext(u->estate);
 		MemoryContextSwitchTo(old);
 	}
