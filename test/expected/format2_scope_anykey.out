@@ -1,0 +1,369 @@
+-- A scope whose key is a text, varchar or uuid column is built in format major 2 (not moved to format major 1): the codes of its keys are those of the scope key store of the key column
+-- (col/scope_keys.c), the cubes of the summary are cut by them, and a statement names a key by its value. The summary composes with UNIQUE and INCLUDE, and every answer of the node is compared
+-- with the heap (sift.enable_agg = off): counts and sums of a key, the keys of a group, an IN list, the newest rows of a key, a key the pairs lack, the empty and the long keys, keys that
+-- differ in case, in a trailing blank or in an accent. The summary follows INSERT, UPDATE, DELETE, an aborted write, VACUUM, the maintenance step, REINDEX and CREATE INDEX CONCURRENTLY.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+CREATE TABLE events (id int PRIMARY KEY, member int NOT NULL, created_at timestamptz NOT NULL, amount int NOT NULL, kind int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 60, timestamptz '2026-01-01' + i * interval '97 minutes', i % 101, i % 7 FROM generate_series(1, 4000) i;
+-- the keys: ordinary, empty, long, differing in case, in a trailing blank or an accent, with a quote and a multibyte character
+CREATE TABLE key_names (n int PRIMARY KEY, name text NOT NULL, u uuid NOT NULL);
+INSERT INTO key_names SELECT n, name, md5('k' || n)::uuid FROM (VALUES (0, 'alpha'), (1, 'Alpha'), (2, 'ALPHA'), (3, ''), (4, repeat('long-', 40)), (5, repeat('long-', 40) || 'x'), (6, 'alpha '),
+	(7, 'ténant'), (8, 'tenant'), (9, 'it''s'), (10, '日本'), (11, 'beta'), (12, 'gamma')) v (n, name);
+CREATE TABLE pairs_text (member int NOT NULL, key text NOT NULL) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX pairs_text_u ON pairs_text (member, key);
+CREATE TABLE pairs_varchar (member int NOT NULL, key varchar(255) NOT NULL) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX pairs_varchar_u ON pairs_varchar (member, key);
+CREATE TABLE pairs_uuid (member int NOT NULL, key uuid NOT NULL) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX pairs_uuid_u ON pairs_uuid (member, key);
+-- member m (1..60) is in the keys (m + j) % 13 for j < m % 4: 0 to 2 keys; the keys 0 to 12 all have members
+INSERT INTO pairs_text SELECT m, name FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
+INSERT INTO pairs_varchar SELECT m, name FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
+INSERT INTO pairs_uuid SELECT m, u FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
+CREATE INDEX events_text ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_text(member, key)', track_changes = 'ctid');
+CREATE INDEX events_varchar ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_varchar(member, key)', track_changes = 'ctid');
+CREATE INDEX events_uuid ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_uuid(member, key)', track_changes = 'ctid');
+VACUUM ANALYZE events;
+VACUUM ANALYZE pairs_text;
+VACUUM ANALYZE pairs_varchar;
+VACUUM ANALYZE pairs_uuid;
+-- 1. Format major 2, one summary of 13 keys each
+SELECT relation::text, format_major, scopes FROM sift.status() WHERE relation::text LIKE 'events\_%' ORDER BY 1;
+    relation    | format_major | scopes 
+----------------+--------------+--------
+ events_text    |            2 |      1
+ events_uuid    |            2 |      1
+ events_varchar |            2 |      1
+(3 rows)
+
+SELECT 'text' AS key_type, nkeys FROM sift.scope_stats('events_text') UNION ALL SELECT 'varchar', nkeys FROM sift.scope_stats('events_varchar') UNION ALL SELECT 'uuid', nkeys FROM sift.scope_stats('events_uuid') ORDER BY 1;
+ key_type | nkeys 
+----------+-------
+ text     |    13
+ uuid     |    13
+ varchar  |    13
+(3 rows)
+
+-- the answer of the node and of the heap for one statement: same or DIFFERENT, and whether the node ran
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a jsonb; b jsonb; plan text := ''; l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l; END LOOP;
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text), ''[]'') FROM (%s) r', q) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text), ''[]'') FROM (%s) r', q) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN plan LIKE '%SiftAggV6Scope%' THEN 'node' ELSE 'other' END);
+END $$;
+-- the key n of a key type as a literal of the type of its column; n = 99: a key the pairs lack
+CREATE FUNCTION lit(ktype text, n int) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE WHEN ktype = 'uuid' THEN quote_literal(coalesce((SELECT u::text FROM key_names WHERE key_names.n = lit.n), md5('absent')::uuid::text)) || '::uuid'
+				ELSE quote_literal(coalesce((SELECT name FROM key_names WHERE key_names.n = lit.n), 'absent')) END
+$$;
+-- every shape of statement over a key type, one line each: the keys 0 to 12 and 99 by value, the group by the key, an IN list, the newest rows
+CREATE FUNCTION shapes(ktype text) RETURNS TABLE (what text, result text) LANGUAGE plpgsql AS $$
+DECLARE pairs text := 'pairs_' || ktype; k int;
+BEGIN
+	FOR k IN SELECT unnest(ARRAY[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 99]) LOOP
+		what := 'key ' || k;
+		result := same(format('SELECT count(*), sum(e.amount), max(e.kind), avg(e.amount) FROM events e JOIN %s p ON p.member = e.member WHERE p.key = %s', pairs, lit(ktype, k)));
+		RETURN NEXT;
+	END LOOP;
+	what := 'group by key';
+	result := same(format('SELECT p.key, count(*), sum(e.amount) FROM events e JOIN %s p ON p.member = e.member GROUP BY p.key', pairs));
+	RETURN NEXT;
+	what := 'IN list';
+	result := same(format('SELECT count(*), sum(e.amount) FROM events e JOIN %s p ON p.member = e.member WHERE p.key IN (%s, %s, %s)', pairs, lit(ktype, 0), lit(ktype, 3), lit(ktype, 12)));
+	RETURN NEXT;
+	what := 'IN list with an absent key';
+	result := same(format('SELECT p.key, count(*) FROM events e JOIN %s p ON p.member = e.member WHERE p.key IN (%s, %s) GROUP BY p.key', pairs, lit(ktype, 4), lit(ktype, 99)));
+	RETURN NEXT;
+	what := 'newest rows';
+	result := same(format('SELECT e.member, e.created_at, e.amount, e.kind FROM events e JOIN %s p ON p.member = e.member WHERE p.key = %s ORDER BY e.created_at DESC LIMIT 5', pairs, lit(ktype, 7)));
+	RETURN NEXT;
+END $$;
+-- 2. The answers of the three key types
+SELECT * FROM shapes('text');
+            what            |  result   
+----------------------------+-----------
+ key 0                      | same node
+ key 1                      | same node
+ key 2                      | same node
+ key 3                      | same node
+ key 4                      | same node
+ key 5                      | same node
+ key 6                      | same node
+ key 7                      | same node
+ key 8                      | same node
+ key 9                      | same node
+ key 10                     | same node
+ key 11                     | same node
+ key 12                     | same node
+ key 99                     | same node
+ group by key               | same node
+ IN list                    | same node
+ IN list with an absent key | same node
+ newest rows                | same node
+(18 rows)
+
+SELECT * FROM shapes('varchar');
+            what            |  result   
+----------------------------+-----------
+ key 0                      | same node
+ key 1                      | same node
+ key 2                      | same node
+ key 3                      | same node
+ key 4                      | same node
+ key 5                      | same node
+ key 6                      | same node
+ key 7                      | same node
+ key 8                      | same node
+ key 9                      | same node
+ key 10                     | same node
+ key 11                     | same node
+ key 12                     | same node
+ key 99                     | same node
+ group by key               | same node
+ IN list                    | same node
+ IN list with an absent key | same node
+ newest rows                | same node
+(18 rows)
+
+SELECT * FROM shapes('uuid');
+            what            |  result   
+----------------------------+-----------
+ key 0                      | same node
+ key 1                      | same node
+ key 2                      | same node
+ key 3                      | same node
+ key 4                      | same node
+ key 5                      | same node
+ key 6                      | same node
+ key 7                      | same node
+ key 8                      | same node
+ key 9                      | same node
+ key 10                     | same node
+ key 11                     | same node
+ key 12                     | same node
+ key 99                     | same node
+ group by key               | same node
+ IN list                    | same node
+ IN list with an absent key | same node
+ newest rows                | same node
+(18 rows)
+
+-- the statements of every key type, and the keys the pairs or the facts changed: the lines that are not "same node" are listed
+CREATE FUNCTION all_shapes() RETURNS TABLE (ktype text, what text, result text) LANGUAGE sql AS $$
+	SELECT t, s.what, s.result FROM unnest(ARRAY['text', 'varchar', 'uuid']) t, LATERAL shapes(t) s WHERE s.result <> 'same node'
+$$;
+SELECT * FROM all_shapes();
+ ktype | what | result 
+-------+------+--------
+(0 rows)
+
+-- 3. DML of the facts and of the pairs: new keys (a key no summary has), a key whose members leave, a key whose pairs all go, rows deleted and updated, a write that aborts
+INSERT INTO events SELECT 10000 + i, 1 + i % 60, timestamptz '2026-08-01' + i * interval '13 minutes', i % 11, 3 FROM generate_series(1, 400) i;
+INSERT INTO key_names VALUES (13, 'newcomer', md5('k13')::uuid), (14, '', md5('k14')::uuid) ON CONFLICT DO NOTHING;
+INSERT INTO pairs_text SELECT m, 'newcomer' FROM generate_series(1, 10) m;
+INSERT INTO pairs_varchar SELECT m, 'newcomer' FROM generate_series(1, 10) m;
+INSERT INTO pairs_uuid SELECT m, md5('k13')::uuid FROM generate_series(1, 10) m;
+DELETE FROM pairs_text WHERE key = 'gamma';
+DELETE FROM pairs_varchar WHERE key = 'gamma';
+DELETE FROM pairs_uuid WHERE key = md5('k12')::uuid;
+UPDATE pairs_text SET key = 'beta' WHERE key = 'alpha' AND member % 2 = 0;
+UPDATE pairs_varchar SET key = 'beta' WHERE key = 'alpha' AND member % 2 = 0;
+UPDATE pairs_uuid SET key = md5('k11')::uuid WHERE key = md5('k0')::uuid AND member % 2 = 0;
+DELETE FROM events WHERE id % 29 = 0;
+UPDATE events SET amount = amount + 1000, kind = 5 WHERE id % 31 = 0;
+BEGIN;
+INSERT INTO pairs_text VALUES (1, 'aborted');
+INSERT INTO pairs_uuid VALUES (1, md5('aborted')::uuid);
+INSERT INTO events VALUES (99999, 1, now(), 777, 6);
+ROLLBACK;
+CREATE FUNCTION after_dml() RETURNS TABLE (ktype text, what text, result text) LANGUAGE plpgsql AS $$
+DECLARE t text;
+BEGIN
+	FOR t IN SELECT unnest(ARRAY['text', 'varchar', 'uuid']) LOOP
+		ktype := t;
+		what := 'newcomer';
+		result := same(format('SELECT count(*), sum(e.amount) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s', t, lit(t, 13)));
+		RETURN NEXT;
+		what := 'group by key';
+		result := same(format('SELECT p.key, count(*), sum(e.amount) FROM events e JOIN pairs_%s p ON p.member = e.member GROUP BY p.key', t));
+		RETURN NEXT;
+		what := 'gamma gone';
+		result := same(format('SELECT count(*) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s', t, lit(t, 12)));
+		RETURN NEXT;
+		what := 'alpha moved';
+		result := same(format('SELECT count(*), sum(e.amount) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key IN (%s, %s)', t, lit(t, 0), lit(t, 11)));
+		RETURN NEXT;
+		what := 'aborted key';
+		result := same(format('SELECT count(*) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s', t, CASE WHEN t = 'uuid' THEN quote_literal(md5('aborted')::uuid::text) || '::uuid' ELSE '''aborted''' END));
+		RETURN NEXT;
+		what := 'newest rows';
+		result := same(format('SELECT e.member, e.created_at, e.amount, e.kind FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s ORDER BY e.created_at DESC LIMIT 5', t, lit(t, 13)));
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT * FROM after_dml() WHERE result <> 'same node';
+ ktype | what | result 
+-------+------+--------
+(0 rows)
+
+SELECT count(*) AS statements FROM after_dml();
+ statements 
+------------
+         18
+(1 row)
+
+SELECT count(*) FROM all_shapes();
+ count 
+-------
+     0
+(1 row)
+
+-- 4. VACUUM, the maintenance step, REINDEX and CREATE INDEX CONCURRENTLY build the summary again over the same keys
+VACUUM events;
+SELECT count(*) AS differ FROM after_dml() WHERE result <> 'same node';
+ differ 
+--------
+      0
+(1 row)
+
+SELECT count(*) AS differ FROM all_shapes();
+ differ 
+--------
+      0
+(1 row)
+
+SELECT count(*) AS busy FROM sift.maintain('events_text') WHERE busy;
+ busy 
+------
+    0
+(1 row)
+
+SELECT count(*) AS differ FROM after_dml() WHERE result <> 'same node';
+ differ 
+--------
+      0
+(1 row)
+
+REINDEX INDEX events_text;
+REINDEX INDEX events_varchar;
+REINDEX INDEX events_uuid;
+SELECT relation::text, format_major, scopes FROM sift.status() WHERE relation::text LIKE 'events\_%' ORDER BY 1;
+    relation    | format_major | scopes 
+----------------+--------------+--------
+ events_text    |            2 |      1
+ events_uuid    |            2 |      1
+ events_varchar |            2 |      1
+(3 rows)
+
+SELECT count(*) AS differ FROM after_dml() WHERE result <> 'same node';
+ differ 
+--------
+      0
+(1 row)
+
+CREATE INDEX CONCURRENTLY events_text_c ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_text(member, key)', track_changes = 'ctid');
+SELECT relation::text, format_major, scopes FROM sift.status('events_text_c');
+   relation    | format_major | scopes 
+---------------+--------------+--------
+ events_text_c |            2 |      1
+(1 row)
+
+DROP INDEX events_text;
+SELECT count(*) AS differ FROM after_dml() WHERE ktype = 'text' AND result <> 'same node';
+ differ 
+--------
+      0
+(1 row)
+
+REINDEX INDEX CONCURRENTLY events_varchar;
+SELECT relation::text, format_major, scopes FROM sift.status('events_varchar');
+    relation    | format_major | scopes 
+----------------+--------------+--------
+ events_varchar |            2 |      1
+(1 row)
+
+SELECT count(*) AS differ FROM after_dml() WHERE ktype = 'varchar' AND result <> 'same node';
+ differ 
+--------
+      0
+(1 row)
+
+-- 5. UNIQUE and INCLUDE compose with a text or uuid scope in format major 2
+CREATE TABLE accounts (id int NOT NULL, member int NOT NULL, email text NOT NULL, plan int NOT NULL, spent int NOT NULL);
+INSERT INTO accounts SELECT i, 1 + i % 60, 'user' || i || '@example.com', i % 5, i % 90 FROM generate_series(1, 3000) i;
+CREATE UNIQUE INDEX accounts_u ON accounts USING sift_col (member, id) INCLUDE (plan, spent) WITH (scope = 'k: member -> pairs_text(member, key)', track_changes = 'ctid');
+CREATE UNIQUE INDEX accounts_uu ON accounts USING sift_col (member, id) INCLUDE (plan, spent) WITH (scope = 'k: member -> pairs_uuid(member, key)', track_changes = 'ctid');
+SELECT relation::text, format_major, scopes FROM sift.status() WHERE relation::text LIKE 'accounts\_%' ORDER BY 1;
+  relation   | format_major | scopes 
+-------------+--------------+--------
+ accounts_u  |            2 |      1
+ accounts_uu |            2 |      1
+(2 rows)
+
+INSERT INTO accounts VALUES (1, 2, 'dup', 0, 0);
+ERROR:  duplicate key value violates unique constraint "accounts_u"
+DETAIL:  Key (member, id)=(2, 1) already exists.
+SELECT same(format('SELECT count(*), sum(a.spent) FROM accounts a JOIN pairs_text p ON p.member = a.member WHERE p.key = %s', lit('text', 0))) AS unique_include_text;
+ unique_include_text 
+---------------------
+ same node
+(1 row)
+
+SELECT same(format('SELECT count(*), sum(a.spent) FROM accounts a JOIN pairs_uuid p ON p.member = a.member WHERE p.key = %s', lit('uuid', 0))) AS unique_include_uuid;
+ unique_include_uuid 
+---------------------
+ same node
+(1 row)
+
+SELECT same(format('SELECT p.key, count(*), sum(a.spent) FROM accounts a JOIN pairs_text p ON p.member = a.member GROUP BY p.key')) AS unique_include_group;
+ unique_include_group 
+----------------------
+ same node
+(1 row)
+
+INSERT INTO accounts SELECT 5000 + i, 1 + i % 60, 'new' || i, i % 5, i % 90 FROM generate_series(1, 500) i;
+UPDATE accounts SET spent = spent + 1 WHERE id % 7 = 0;
+DELETE FROM accounts WHERE id % 11 = 0;
+VACUUM accounts;
+SELECT same(format('SELECT count(*), sum(a.spent) FROM accounts a JOIN pairs_text p ON p.member = a.member WHERE p.key = %s', lit('text', 0))) AS after_dml_text;
+ after_dml_text 
+----------------
+ same node
+(1 row)
+
+SELECT same(format('SELECT count(*), sum(a.spent) FROM accounts a JOIN pairs_uuid p ON p.member = a.member WHERE p.key = %s', lit('uuid', 0))) AS after_dml_uuid;
+ after_dml_uuid 
+----------------
+ same node
+(1 row)
+
+-- 6. sift.check finds nothing wrong
+SELECT count(*) AS problems FROM sift.check('events_varchar');
+ problems 
+----------
+        0
+(1 row)
+
+SELECT count(*) AS problems FROM sift.check('events_uuid');
+ problems 
+----------
+        0
+(1 row)
+
+SELECT count(*) AS problems FROM sift.check('accounts_u');
+ problems 
+----------
+        0
+(1 row)
+
+DROP TABLE accounts, events, key_names, pairs_text, pairs_varchar, pairs_uuid;
+DROP FUNCTION same(text), lit(text, int), shapes(text), all_shapes(), after_dml();
+DROP EXTENSION pg_sift;
