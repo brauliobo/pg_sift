@@ -298,14 +298,26 @@ stage_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 	}
 }
 
+static bool
+same_key_order(const SiftPartSpec *a, const SiftPartSpec *b)
+{
+	return a->nsort == b->nsort && memcmp(a->sort_cols, b->sort_cols, a->nsort * sizeof(uint16)) == 0 && memcmp(a->sort_flags, b->sort_flags, a->nsort) == 0;
+}
+
+/* A key_order set or reset after the stage was made keys the rows of the caller by the new order: the rows the stage holds are written under the order they were keyed by, and the stage is made again */
 SiftTxnStage *
 sift_stage_get(Relation rel, const SiftPartSpec *spec)
 {
 	MemoryContext old;
 	SiftTxnStage *st = stage_of(rel);
 
-	if (st != NULL)
+	if (st != NULL && same_key_order(&st->spec, spec))
 		return st;
+	if (st != NULL)
+	{
+		sift_stage_flush_rows(rel, st, false);
+		sift_stage_discard(RelationGetRelid(rel));
+	}
 	if (!callbacks_registered)
 	{
 		RegisterXactCallback(stage_xact, NULL);

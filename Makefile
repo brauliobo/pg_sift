@@ -644,6 +644,7 @@ TESTING_REGRESS += table_f2_col_delta
 TESTING_REGRESS += table_f2_col_delta_dir
 TESTING_REGRESS += table_f2_col_delta_hot
 TESTING_REGRESS += table_f2_col_delta_summ
+TESTING_REGRESS += table_f2_key_order_check
 TESTING_REGRESS += table_f2_col_delta_trigger
 TESTING_REGRESS += table_f2_copy_schema_evol
 TESTING_REGRESS += table_f2_drop_in_txn
