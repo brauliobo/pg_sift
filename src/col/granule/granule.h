@@ -612,6 +612,8 @@ extern char *sift_part_read_granule(Relation rel, const SiftPart *part, uint32 g
 
 /* The same with the chunks of the columns whose want flag is set and the _tid (chunk 0) read only: the bytes of the other chunks are not defined */
 extern char *sift_part_read_granule_cols(Relation rel, const SiftPart *part, uint32 g, const bool *want, SiftGranuleDesc *desc);
+/* The same into rec, data_len bytes of the descriptor d of the granule: the buffer of a reader that keeps one for every granule it reads */
+extern void sift_part_read_granule_into(Relation rel, const SiftPart *part, uint32 g, const bool *want, const SiftGranuleDesc *d, char *rec);
 
 /*
  * A granule read as a scan needs it: the header and the table of its chunks first, which is all a scan of a granule that no row passes ever reads, then the chunks it asks for, each once.

@@ -23,6 +23,7 @@
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_part_pin_scan.h"
+#include "col/f2/pin_win.h"
 #include "col/f2/f2_point_dir.h"
 #include "col/f2/f2_scope_route.h"
 #include "col/f2/f2_unique.h"
@@ -464,6 +465,8 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 							 .decided = win.decided + (Size) wi * np,.zones = offer_zones,.exceptions = offer_exc,.pend_hit = pend_hit,.patched = sift_cdi_scan_granule_patched(s, g),.px = px,.vis = SIFT_GVIS_HEAP}))
 				continue;
 		}
+		if (s->pinwin != NULL && sift_pin_win_take(s->pinwin, rel, s, schema, pin, pp, g, win.decided + (Size) wi * np, px, snap))
+			continue;
 		old = MemoryContextSwitchTo(gcx);
 		sift_cfstr_memo_open(gcx);
 		decided = memcpy(palloc((Size) np), win.decided + (Size) wi * np, np);

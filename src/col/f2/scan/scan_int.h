@@ -129,6 +129,8 @@ typedef struct F2Scan
 	bool		ord_off;		/* the index is not ordered natively: its rows come as the addresses give them */
 	uint32		rescans;		/* the keys the scan was given: one given others again reads decoded granules */
 	struct SiftRescanScan *rescan;	/* what it keeps between the rescans (scan/rescan_cache.c) */
+
+	struct SiftPinWin *pinwin;	/* the granules the compute threads of the backend filter and decode: the scan hands them over instead of reading them (col/f2/pin_win.h) */
 } F2Scan;
 
 /* What a scan knows of the predicates for one part: the dictionaries of its strings, the skipping indexes, the predicates that run on its chunks */

@@ -186,21 +186,18 @@ sift_part_read_gdesc(Relation rel, const SiftPart *part, uint32 g)
 	return d;
 }
 
-char *
-sift_part_read_granule_cols(Relation rel, const SiftPart *part, uint32 g, const bool *want, SiftGranuleDesc *desc)
+/* The header of granule g and the chunks wanted (want[c] for leaf c; NULL: every chunk) into rec, the data_len bytes of the record of d */
+void
+sift_part_read_granule_into(Relation rel, const SiftPart *part, uint32 g, const bool *want, const SiftGranuleDesc *d, char *rec)
 {
 	const SiftSecDirEntry *gs = sift_part_section(part, SEC_GRANULES);
-	SiftGranuleDesc d = sift_part_read_gdesc(rel, part, g);
 	uint32		nchunks = part->hdr.ncols + 1,
 				hdrlen = offsetof(SiftGranuleHeader, chunks) + nchunks * sizeof(SiftChunkRef);
 	const SiftGranuleHeader *h;
-	char	   *rec;
 
-	if (gs == NULL || d.data_off + d.data_len > gs->len || hdrlen > d.data_len)
+	if (gs == NULL || d->data_off + d->data_len > gs->len || hdrlen > d->data_len)
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "Granule %u of the part is outside its section.", g);
-	/* check-memory: allow one granule record, bounded by its rows */
-	rec = palloc(d.data_len);
-	sift_part_read_bytes(rel, part, gs->off + d.data_off, want == NULL ? d.data_len : hdrlen, rec);
+	sift_part_read_bytes(rel, part, gs->off + d->data_off, want == NULL ? d->data_len : hdrlen, rec);
 	h = (const SiftGranuleHeader *) rec;
 	if (want != NULL)
 	{
@@ -215,13 +212,23 @@ sift_part_read_granule_cols(Relation rel, const SiftPart *part, uint32 g, const 
 
 			if (c > 0 && !want[c - 1])
 				continue;
-			if ((uint64) ref->off + ref->len > d.data_len || ref->off < hdrlen)
+			if ((uint64) ref->off + ref->len > d->data_len || ref->off < hdrlen)
 				SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "Chunk %u of granule %u lies outside it.", c, g);
-			ranges[nr++] = (SiftByteRange) {.off = gs->off + d.data_off + ref->off,.len = ref->len,.dst_off = ref->off};
+			ranges[nr++] = (SiftByteRange) {.off = gs->off + d->data_off + ref->off,.len = ref->len,.dst_off = ref->off};
 		}
 		sift_part_read_ranges(rel, part, ranges, nr, rec, SIFT_IOS_SELECTIVE);
 		pfree(ranges);
 	}
+}
+
+char *
+sift_part_read_granule_cols(Relation rel, const SiftPart *part, uint32 g, const bool *want, SiftGranuleDesc *desc)
+{
+	SiftGranuleDesc d = sift_part_read_gdesc(rel, part, g);
+	/* check-memory: allow one granule record, bounded by its rows */
+	char	   *rec = palloc(d.data_len);
+
+	sift_part_read_granule_into(rel, part, g, want, &d, rec);
 	*desc = d;
 	return rec;
 }

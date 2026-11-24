@@ -109,6 +109,10 @@ extern void sift_f2_scan_set_bound(IndexScanDesc scan, int sink_leaf, const Sift
 /* The sink leaves (by their place among the leaves given to sift_f2_scan_sink; the array must outlive the scan) it takes as the codes of the dictionary of a granule when the chunk has one; call it before the scan runs */
 extern void sift_f2_scan_set_dict_leaves(IndexScanDesc scan, const bool *dict_leaf);
 
+/* The granules the scan would filter and decode go to the window instead, which the compute threads of the backend work through (col/f2/pin_win.h): call it before the scan runs */
+struct SiftPinWin;
+extern void sift_f2_scan_set_pin_win(IndexScanDesc scan, struct SiftPinWin *win);
+
 extern void sift_f2_par_plan_build(IndexScanDesc scan, SiftF2ParPlan *out);
 /* A participant: the sink and the leaves it reads, as for sift_f2_scan_sink; then the runs of granules [first, first + n) of a unit, any number of times */
 extern void sift_f2_scan_morsel_begin(IndexScanDesc scan, SiftF2Sink sink, void *arg, const int *leaves, int nleaves, const uint64 *staged_dead, uint32 nstaged);
