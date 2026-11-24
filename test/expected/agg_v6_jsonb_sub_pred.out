@@ -1,0 +1,93 @@
+-- keys of a jsonb document inside PostgreSQL expressions, with and without an unnest, in SiftAggV6 (src/agg/v6/jsonb_qual.c, src/agg/v6/v6_pg_expr.c, src/col/f2/f2_v6_unnest_run.c): the `->>` text and
+-- float8 cast of a key as an input of an expression, and as a key or an argument beside the elements of an array. A row whose document holds the key as another JSON type than its leaf's (a number, a boolean,
+-- an object or an array where text is declared, a numeric string where a float is), a JSON null, a missing key, a missing document and a row still in the slab of the index are in the data: the value of the
+-- exception is the one the heap gives. Every statement runs over the index and over a heap twin (the truth): the first word says they agree, the second whether the plan is the node's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+CREATE TABLE sh (id int PRIMARY KEY, grp int, region text, doc jsonb, items jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO sh
+SELECT i, i % 7, (ARRAY['north', 'south', NULL, 'east'])[i % 4 + 1],
+	CASE i % 13
+		WHEN 0 THEN NULL
+		WHEN 1 THEN '{}'
+		WHEN 2 THEN '{"k": 5, "n": "7.5", "t": "x"}'
+		WHEN 3 THEN '{"k": true, "n": 2, "t": 1}'
+		WHEN 4 THEN '{"k": null, "n": null, "t": null}'
+		WHEN 5 THEN '{"k": {"a": 1}, "n": 1e3, "t": [1]}'
+		WHEN 6 THEN '{"k": [1, "a"], "n": "-0.25", "t": {"u": 1}}'
+		ELSE jsonb_build_object('k', (ARRAY['web', 'pos', 'app', 'kiosk'])[i % 4 + 1], 'n', (i % 17) / 4.0, 't', (ARRAY['a', 'b'])[i % 2 + 1])
+	END,
+	CASE i % 9
+		WHEN 0 THEN NULL
+		WHEN 1 THEN '[]'
+		WHEN 3 THEN '[{"category": 5, "kind": "gift", "qty": 3}]'
+		WHEN 4 THEN '[{"category": "Toys", "kind": "standard", "qty": "7"}]'
+		ELSE jsonb_build_array(
+			jsonb_build_object('category', (ARRAY['Toys', 'Books', 'Food', 'Games'])[i % 4 + 1], 'kind', (ARRAY['standard', 'gift', 'express'])[i % 3 + 1], 'qty', i % 9),
+			jsonb_build_object('category', (ARRAY['Books', 'Food', 'Toys', 'Games'])[i % 4 + 1], 'kind', (ARRAY['express', 'standard', 'gift'])[i % 3 + 1], 'qty', i % 5))
+	END
+FROM generate_series(1, 2400) i;
+CREATE TABLE sc (LIKE sh INCLUDING INDEXES);
+INSERT INTO sc SELECT * FROM sh WHERE id <= 2000;
+CREATE INDEX sc_col ON sc USING sift_col (id, grp, region, doc, items)
+	WITH (paths = 'doc->k text, doc->n float8, doc->t text, items[]{category text, kind text, qty int4}');
+INSERT INTO sc SELECT * FROM sh WHERE id > 2000;
+ANALYZE sh;
+ANALYZE sc;
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; line text; node boolean := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'sc') LOOP node := node OR line LIKE '%SiftAgg%'; END LOOP;
+	EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', 'sc')) INTO a;
+	EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', 'sh')) INTO b;
+	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN node THEN 'node' ELSE 'normal' END) || ' ' || q;
+END $$;
+-- a key of a document as the input of an expression: a key, an argument and beside a column
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT coalesce(o.doc ->> ''k'', o.region) || ''/'' || o.grp AS k, count(*) FROM @T o GROUP BY 1',
+	'SELECT upper(o.doc ->> ''k'') AS k, count(*), sum(o.grp) FROM @T o GROUP BY 1',
+	'SELECT o.grp, count(*), sum(length(o.doc ->> ''t'' || o.region)) FROM @T o GROUP BY 1',
+	'SELECT round(((o.doc ->> ''n'')::float8)::numeric, 1)::text || coalesce(o.doc ->> ''k'', ''-'') AS k, count(*) FROM @T o WHERE o.grp < 5 GROUP BY 1',
+	'SELECT CASE WHEN o.region = ''north'' THEN o.doc ->> ''k'' ELSE o.doc ->> ''t'' END AS k, count(*) FROM @T o GROUP BY 1',
+	'SELECT o.region, sum(length(coalesce(o.doc ->> ''k'', ''none''))) FROM @T o GROUP BY 1'
+]) q;
+                                                                          same                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node SELECT coalesce(o.doc ->> 'k', o.region) || '/' || o.grp AS k, count(*) FROM @T o GROUP BY 1
+ same node SELECT upper(o.doc ->> 'k') AS k, count(*), sum(o.grp) FROM @T o GROUP BY 1
+ same node SELECT o.grp, count(*), sum(length(o.doc ->> 't' || o.region)) FROM @T o GROUP BY 1
+ same node SELECT round(((o.doc ->> 'n')::float8)::numeric, 1)::text || coalesce(o.doc ->> 'k', '-') AS k, count(*) FROM @T o WHERE o.grp < 5 GROUP BY 1
+ same node SELECT CASE WHEN o.region = 'north' THEN o.doc ->> 'k' ELSE o.doc ->> 't' END AS k, count(*) FROM @T o GROUP BY 1
+ same node SELECT o.region, sum(length(coalesce(o.doc ->> 'k', 'none'))) FROM @T o GROUP BY 1
+(6 rows)
+
+-- the same beside the elements of an array: a key of the document of the row, in an expression or alone, and the elements' columns around it
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT o.doc ->> ''k'' AS k, i.category, count(*), sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) GROUP BY 1, 2',
+	'SELECT coalesce(o.doc ->> ''k'', o.region) || ''/'' || o.grp AS k, CASE WHEN o.region = ''north'' THEN i.category ELSE coalesce(i.kind, ''?'') END AS pick, count(*), sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE o.grp < 6 GROUP BY 1, 2',
+	'SELECT upper(o.doc ->> ''t'') AS t, i.kind, count(*) FROM @T o LEFT JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) ON true GROUP BY 1, 2',
+	'SELECT o.grp, count(*), sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE i.kind = ''gift'' OR o.doc ->> ''k'' = ''web'' GROUP BY 1',
+	'SELECT i.kind, count(*), sum(((o.doc ->> ''n'')::float8 * 4)::int) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE jsonb_typeof(o.doc -> ''n'') = ''number'' GROUP BY 1',
+	'SELECT length(o.doc ->> ''k'') AS l, i.category, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS j(kind text) WHERE j.kind = ''gift'') GROUP BY 1, 2'
+]) q;
+                                                                                                                                                       same                                                                                                                                                        
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node SELECT o.doc ->> 'k' AS k, i.category, count(*), sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) GROUP BY 1, 2
+ same node SELECT coalesce(o.doc ->> 'k', o.region) || '/' || o.grp AS k, CASE WHEN o.region = 'north' THEN i.category ELSE coalesce(i.kind, '?') END AS pick, count(*), sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE o.grp < 6 GROUP BY 1, 2
+ same node SELECT upper(o.doc ->> 't') AS t, i.kind, count(*) FROM @T o LEFT JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) ON true GROUP BY 1, 2
+ same normal SELECT o.grp, count(*), sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE i.kind = 'gift' OR o.doc ->> 'k' = 'web' GROUP BY 1
+ same normal SELECT i.kind, count(*), sum(((o.doc ->> 'n')::float8 * 4)::int) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE jsonb_typeof(o.doc -> 'n') = 'number' GROUP BY 1
+ same normal SELECT length(o.doc ->> 'k') AS l, i.category, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS j(kind text) WHERE j.kind = 'gift') GROUP BY 1, 2
+(6 rows)
+
+DROP FUNCTION same(text);
+DROP TABLE sc, sh;
+DROP EXTENSION pg_sift;
