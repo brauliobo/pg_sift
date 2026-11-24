@@ -18,6 +18,7 @@
 #include "col/am.h"
 #include "col/am/format_ops.h"
 #include "col/f2/col_meta.h"
+#include "core/scan_types.h"
 #include "col/f2/f2_kll.h"
 #include "col/f2/rowbuf.h"
 
@@ -63,19 +64,6 @@ extern void sift_f2_track_reconcile(Relation index);
 extern void sift_f2_track_install(Relation heap, Relation index, bool concurrent);
 extern Datum sift_f2_worker_history(FunctionCallInfo fcinfo);
 
-/* The address of a heap tuple as the part stores it, and back */
-static inline uint64
-sift_f2_tid(const ItemPointerData *tid)
-{
-	return ((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid);
-}
-
-static inline void
-sift_f2_tid_set(ItemPointer tid, uint64 addr)
-{
-	ItemPointerSet(tid, (BlockNumber) (addr >> 16), (OffsetNumber) (addr & 0xFFFF));
-}
-
 typedef enum ZoneVerdict
 {
 	Z_MAYBE,					/* the zone does not decide */
@@ -109,38 +97,8 @@ typedef struct SiftF2ScanStats
 extern SiftF2ScanStats sift_f2_scan_stats;
 #endif
 
-/* The keys a scan is confined to (f2_prune.c): the integers of the lead key column its predicates allow, as bounds in the order of the keys of a part (core/range.h) */
-typedef struct SiftF2KeyRange
-{
-	uint8		lo[SIFT_BOUND_BYTES];
-	uint8		hi[SIFT_BOUND_BYTES];	/* exclusive */
-	bool		has_lo;
-	bool		has_hi;
-	bool		null_only;
-	int64		ilo;
-	int64		ihi;
-} SiftF2KeyRange;
-
-/* The ranges of an IN list on the lead key column that is short enough to probe each value apart, else the one range of all the predicates; hull holds them all */
-#define SIFT_F2_MAX_RANGES	16
-
-typedef struct SiftF2KeySet
-{
-	int			n;
-	SiftF2KeyRange range[SIFT_F2_MAX_RANGES];
-	SiftF2KeyRange hull;
-} SiftF2KeySet;
-
 /* The key set of the predicates; false when no row can satisfy them */
 extern bool sift_f2_key_set(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2KeySet *ks);
-
-/* The integers the predicates allow the time columns (SiftF2Rel.spec.time_cols), as closed ranges; a column no predicate narrows is not used (use[s] false) */
-typedef struct SiftF2TimeWin
-{
-	bool		use[SIFT_MANIFEST_TIME_COLS];
-	int64		lo[SIFT_MANIFEST_TIME_COLS];
-	int64		hi[SIFT_MANIFEST_TIME_COLS];
-} SiftF2TimeWin;
 
 /* The time window of the predicates; false when no row can satisfy them */
 extern bool sift_f2_time_window(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2TimeWin *w);

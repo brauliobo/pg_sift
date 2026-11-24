@@ -399,7 +399,7 @@ extern void sift_proj_cursor_close(SiftProjCursor *c);
 
 /*
  * Before the first row: the cursor reads only the granules the key marks (SEC_KEY_MARKS) of the part leave to the plan, found by binary search over the marks. false: the part has no marks and is read whole.
- * The key spec and the plan come from agg/v6/v6_proj_seek.h.
+ * The key spec and the plan come from col/f2/f2_v6_proj_seek.h.
  */
 struct SiftKeySpec;
 struct SiftKeyPlan;

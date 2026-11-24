@@ -7,23 +7,8 @@
 #include "access/relscan.h"
 
 #include "col/granule/granule.h"
+#include "core/scan_types.h"
 #include "core/f2/manifest.h"
-
-typedef struct ColView
-{
-	SiftCellKind kind;
-	const int64 *i;
-	const double *f;
-	const char *const *s;
-	const uint32 *slen;
-	const bool *isnull;
-	const uint8 *tag;
-	const bool *keyp;			/* of the leaf of a key: the rows that have the key */
-	const char *const *xpay;	/* of the leaf of a key of a document: the payload of the exception of each row whose value of a JSON type the leaf cannot hold is not in it (a jsonb datum), NULL: no row has one */
-	const uint32 *xplen;
-	const uint32 *dcode;		/* a string leaf the sink asked for as codes (sift_f2_scan_set_dict_leaves) and the chunk holds as a dictionary: s and slen are then NULL */
-	const SiftGranuleDict *dict;
-} ColView;
 
 /*
  * The rows of a granule or of the slab of a partition that every predicate of a scan accepted exactly (the dead and the pending deletes left out): tid[r] is the heap address of
@@ -79,59 +64,10 @@ typedef struct SiftF2PartZone
 typedef bool (*SiftF2ZoneSink) (void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone);
 extern void sift_f2_scan_set_zone_sink(IndexScanDesc scan, SiftF2ZoneSink zone_sink);
 
-/*
- * A consumer that keeps the best K rows by an integer sort leaf says what a row must beat to stay: a granule whose zone of the leaf holds no row that sorts strictly before value is not read,
- * and with ties (a later sort key orders the rows equal to value) none that sorts before or equal to it.
- * The consumer changes the bound as its heap fills; it must outlive the scan, and sink_leaf is the place of the leaf among those given to sift_f2_scan_sink.
- */
-typedef struct SiftF2Bound
-{
-	bool		active;
-	bool		desc;
-	bool		nulls_first;
-	bool		ties;
-	int64		value;
-} SiftF2Bound;
-
 extern void sift_f2_scan_set_bound(IndexScanDesc scan, int sink_leaf, const SiftF2Bound *bound);
 
 /* The sink leaves (by their place among the leaves given to sift_f2_scan_sink; the array must outlive the scan) it takes as the codes of the dictionary of a granule when the chunk has one; call it before the scan runs */
 extern void sift_f2_scan_set_dict_leaves(IndexScanDesc scan, const bool *dict_leaf);
-
-/*
- * A parallel scan: the leader lists the units of the scan once, in memory a DSM chunk can hold (no pointer), and the participants take runs of the granules of the units. A unit is the granules of one part
- * that the key ranges and the zone maps of the part leave (a part with several ranges has a unit for each) or the L0 slab of a partition, which is one virtual granule. The descriptor of the part is in the
- * unit, so that a worker reads no manifest; the partition's own fields it needs (the column delta chain) are there too. flags: SIFT_PAR_PART_ALL_VISIBLE says the part is frozen with no deletion vector and no pending delete, so that no row of it needs the visibility map.
- */
-#define SIFT_PAR_PART_L0_SLAB		(UINT16_C(1) << 0)
-#define SIFT_PAR_PART_ALL_VISIBLE	(UINT16_C(1) << 2)
-#define SIFT_PAR_PART_HAS_PEND_DEL	(UINT16_C(1) << 3)
-
-typedef struct SiftParPartRef
-{
-	SiftPartDesc desc;
-	uint64		part_id;
-	BlockNumber l0_slab_blk;
-	BlockNumber pend_del_blk;
-	uint32		g_base;			/* the first granule of the unit, in its part */
-	uint32		ngranules;
-	uint16		flags;
-	uint16		pad;
-	uint32		entry_flags;	/* SIFT_PARTENTRY_* of its partition: a participant reads the column delta chain the partition has, as the serial scan does */
-	uint64		manifest_gen;	/* where the chain's anchor is read: the partition's list (core/f2/manifest.h) */
-	BlockNumber manifest_blk;
-	uint32		pad2[13];
-} SiftParPartRef;
-
-StaticAssertDecl(sizeof(SiftParPartRef) == 320, "a scan unit is five cache lines");
-
-typedef struct SiftF2ParPlan
-{
-	SiftParPartRef *refs;
-	uint32		nrefs;
-	uint64	   *staged_dead;	/* the TIDs the transaction deleted that no partition holds yet, sorted */
-	uint32		nstaged;
-} SiftF2ParPlan;
 
 extern void sift_f2_par_plan_build(IndexScanDesc scan, SiftF2ParPlan *out);
 /* A participant: the sink and the leaves it reads, as for sift_f2_scan_sink; then the runs of granules [first, first + n) of a unit, any number of times */

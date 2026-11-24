@@ -9,6 +9,7 @@
 #define SIFT_F2_PRED_EXT_H
 
 #include "core/host.h"
+#include "col/col.h"
 #include "col/like_simd.h"
 
 /* ---- lower(col) LIKE 'prefix%', lower(col) = 'lit': the pattern is ASCII and lower case already ---- */
@@ -23,34 +24,6 @@ extern SiftLikeVerdict sift_f2_iprefix_test(const char *s, uint32 len, const uin
 extern uint32 sift_f2_iprefix_dict(uint32 n, const uint32 *off, const uint8 *bytes, const uint8 *pat, uint32 plen, bool exact_eq, uint64 *yes, uint64 *maybe);
 
 /* ---- && and @> over the stored image of an array ---- */
-
-typedef enum SiftArrKind
-{
-	SIFT_ARR_TEXT = 1,
-	SIFT_ARR_INT4,
-	SIFT_ARR_INT8
-} SiftArrKind;
-
-#define SIFT_ARRQ_LINEAR	16		/* at most this many distinct elements are searched one by one, more by a hash table */
-
-/* The right hand side of an array operator, deduplicated: its elements are borrowed (they stay the caller's while the query is used); a scan owns the scratch of the @> count */
-typedef struct SiftArrQuery
-{
-	SiftArrKind kind;
-	uint32		n;				/* distinct elements that are not NULL */
-	bool		has_null;		/* the array had a NULL element */
-	const uint8 **ptr;			/* TEXT: the bytes of each element */
-	uint32	   *len;
-	int64	   *ival;			/* INT4, INT8 */
-	uint32		nslots;			/* a power of two; 0 when n <= SIFT_ARRQ_LINEAR */
-	int32	   *slot;			/* element index + 1, 0 for a free slot */
-	uint32	   *seen;			/* the @> count: the generation of the call that saw each element */
-	uint32		gen;
-} SiftArrQuery;
-
-extern SiftArrQuery *sift_arr_query_text(const uint8 *const *elem, const uint32 *len, const bool *isnull, int n);
-extern SiftArrQuery *sift_arr_query_int(SiftArrKind kind, const int64 *val, const bool *isnull, int n);
-extern void sift_arr_query_free(SiftArrQuery *q);
 
 /*
  * Whether the array of the stored image (a detoasted ArrayType, img_len bytes, any alignment) overlaps the query (contains false) or contains it. An empty query overlaps nothing and is

@@ -46,7 +46,7 @@
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/v6/v6_plan_shape.h"
-#include "agg/v6/v6_proj_sort_plan.h"
+#include "col/f2/f2_v6_proj_sort_plan.h"
 #include "agg/v6/v6_qual.h"
 #include "col/am.h"
 #include "col/am/format_ops.h"

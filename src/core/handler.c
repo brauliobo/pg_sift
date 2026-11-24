@@ -45,7 +45,7 @@
 #include "agg/agg.h"
 #include "agg/gpu_cfg.h"
 #include "agg/stub.h"
-#include "agg/v6/v6_proj_sort_plan.h"
+#include "col/f2/f2_v6_proj_sort_plan.h"
 #include "bm25/am.h"
 #include "bm25/analyze.h"
 #include "bm25/bitmap.h"

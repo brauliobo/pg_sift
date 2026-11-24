@@ -13,7 +13,7 @@
 #include "storage/buf.h"
 #include "utils/relcache.h"
 
-#include "agg/v6/v6_proj.h"
+#include "col/f2/f2_v6_proj.h"
 
 #define SORT_IOS_MAX	8
 
