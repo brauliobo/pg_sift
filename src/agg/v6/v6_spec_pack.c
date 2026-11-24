@@ -230,7 +230,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 		ints = list_concat(ints, list_make5_int(x->rcol[c].attno, (int) x->rcol[c].typid, (int) x->rcol[c].src, x->rcol[c].dim, x->rcol[c].slot));
 	ints = lappend_int(ints, x->unnest);
 	ints = list_concat(ints, list_make4_int((int) x->elem.fn, x->elem.attno, (int) x->elem.type, x->elem.group_leaf));
-	ints = list_concat(ints, list_make3_int(x->elem.left, x->elem.semi, x->elem.ncols));
+	ints = list_concat(ints, list_make4_int(x->elem.left, x->elem.semi, (int) x->elem.vread, x->elem.ncols));
 	for (int c = 0; c < x->elem.ncols; c++)
 		ints = lappend_int(lappend_int(ints, x->elem.col_leaf[c]), (int) x->elem.col_type[c]);
 	return lappend(lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array), x->kexpr);
@@ -279,8 +279,9 @@ sift_v6_ext_unpack(const List *l)
 		.dim = list_nth_int(ints, at + 3),.slot = list_nth_int(ints, at + 4)};
 	x->unnest = list_nth_int(ints, at++);
 	x->elem = (SiftV6XElem) {.fn = (SiftV6ElemFn) list_nth_int(ints, at),.attno = list_nth_int(ints, at + 1),.type = (Oid) list_nth_int(ints, at + 2),
-	.group_leaf = list_nth_int(ints, at + 3),.left = list_nth_int(ints, at + 4),.semi = list_nth_int(ints, at + 5),.ncols = list_nth_int(ints, at + 6)};
-	at += 7;
+	.group_leaf = list_nth_int(ints, at + 3),.left = list_nth_int(ints, at + 4),.semi = list_nth_int(ints, at + 5),
+	.vread = (SiftV6ValueRead) list_nth_int(ints, at + 6),.ncols = list_nth_int(ints, at + 7)};
+	at += 8;
 	for (int c = 0; c < x->elem.ncols; c++, at += 2)
 	{
 		x->elem.col_leaf[c] = list_nth_int(ints, at);

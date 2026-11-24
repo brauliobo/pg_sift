@@ -1,0 +1,321 @@
+-- jsonb_each and jsonb_each_text over a map `col.* type` of a sift_col index of format major 2: the key and the value of each member are columns of the aggregate scan of SiftAggV6.
+-- Every query is run with the node and without it (sift.enable_agg) and the two answers are compared, errors included; the first word says they agree, the second that the plan is the node's.
+-- The plan comes from the cost of the pages, not from a setting that forces it.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
+CREATE TABLE em (id int PRIMARY KEY, g int, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO em SELECT i, i % 7,
+	CASE i % 10
+		WHEN 0 THEN NULL
+		WHEN 1 THEN '{}'
+		WHEN 2 THEN jsonb_build_object('m_total', i * 0.5, 'packaging', i % 7)
+		WHEN 3 THEN jsonb_build_object('check_a', i % 5, 'check_b', i % 3 - 1, 'tip', i % 4)
+		WHEN 4 THEN jsonb_build_object('m_total', i * 0.25, 'check_a', i % 11)
+		WHEN 5 THEN jsonb_build_object('packaging', i % 9, 'tip', 1.5)
+		WHEN 6 THEN jsonb_build_object('m_total', i, 'packaging', i % 2, 'check_b', i % 6)
+		WHEN 7 THEN jsonb_build_object('tip', i % 13)
+		WHEN 8 THEN jsonb_build_object('m_total', -i, 'checkout', i % 4)
+		ELSE jsonb_build_object('m_total', i * 1.5, 'packaging', 0, 'check_a', 7, 'check_b', 3, 'tip', 5)
+	END
+FROM generate_series(1, 3000) i;
+CREATE INDEX em_col ON em USING sift_col (id, g, metrics) WITH (paths = 'metrics.* float8');
+ANALYZE em;
+CREATE TABLE ei (id int PRIMARY KEY, c jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ei SELECT i, CASE WHEN i % 8 = 0 THEN NULL ELSE jsonb_build_object('a', i % 5, 'b', i % 3 - 1, 'z', i) END FROM generate_series(1, 1500) i;
+CREATE INDEX ei_col ON ei USING sift_col (id, c) WITH (paths = 'c.* int4');
+ANALYZE ei;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text := ''; l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l; END LOOP;
+	RETURN plan;
+END $$;
+CREATE FUNCTION answer(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'error ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; plan text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	plan := plan_of(q);
+	a := answer(q);
+	SET LOCAL sift.enable_agg = off;
+	b := answer(q);
+	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || (CASE WHEN plan LIKE '%SiftAggV6%' THEN 'node' ELSE 'normal' END) || ' ' ||
+		(CASE WHEN a LIKE 'error %' THEN a ELSE 'ok' END) || ' ' || q;
+END $$;
+-- Q-01. The plans of the three coverage rows: the keys of the map are the groups and its value the argument, as the text of the scalar, as the jsonb cast to the number, and as the text of jsonb_each_text
+EXPLAIN (COSTS OFF) SELECT kv.key, avg((kv.value #>> '{}')::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Custom Scan (SiftAggV6)
+   Index: em_col
+   Unnest: lateral columnar
+   Unnest Value: metrics.*.value
+   Exec: SIMD=avx2 group=salted-ht
+   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
+(6 rows)
+
+EXPLAIN (COSTS OFF) SELECT kv.key, avg(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Custom Scan (SiftAggV6)
+   Index: em_col
+   Unnest: lateral columnar
+   Unnest Value: metrics.*.value
+   Exec: SIMD=avx2 group=salted-ht
+   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
+(6 rows)
+
+EXPLAIN (COSTS OFF) SELECT m.key, count(*), sum(m.value::float8), avg(m.value::float8), min(m.value::float8), max(m.value::float8)
+FROM em o CROSS JOIN LATERAL jsonb_each_text(o.metrics) m WHERE m.key IN ('m_total', 'packaging') OR m.key LIKE 'check%' GROUP BY m.key;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Custom Scan (SiftAggV6)
+   Index: em_col
+   Unnest: lateral columnar
+   Unnest Value: metrics.*.value
+   Exec: SIMD=avx2 group=salted-ht
+   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
+(6 rows)
+
+-- Q-02. The values of the groups
+SELECT kv.key, count(*), round(avg((kv.value #>> '{}')::float8)::numeric, 3) AS mean FROM em o, jsonb_each(o.metrics) kv GROUP BY 1 ORDER BY 1;
+    key    | count |  mean   
+-----------+-------+---------
+ check_a   |   900 |   4.993
+ check_b   |   900 |   1.667
+ checkout  |   300 |   1.000
+ m_total   |  1500 | 675.450
+ packaging |  1200 |   1.753
+ tip       |  1200 |   3.626
+(6 rows)
+
+SELECT kv.key, round(avg(kv.value::float8)::numeric, 3) AS mean, count(*) FILTER (WHERE kv.value::float8 >= 4) AS high, count(DISTINCT o.id) AS docs
+FROM em o, jsonb_each(o.metrics) kv GROUP BY 1 ORDER BY 1;
+    key    |  mean   | high | docs 
+-----------+---------+------+------
+ check_a   |   4.993 |  490 |  900
+ check_b   |   1.667 |  100 |  900
+ checkout  |   1.000 |    0 |  300
+ m_total   | 675.450 | 1197 | 1500
+ packaging |   1.753 |  296 | 1200
+ tip       |   3.626 |  508 | 1200
+(6 rows)
+
+SELECT m.key, count(*), sum(m.value::float8), min(m.value::float8), max(m.value::float8)
+FROM em o CROSS JOIN LATERAL jsonb_each_text(o.metrics) m WHERE m.key IN ('m_total', 'packaging') OR m.key LIKE 'check%' GROUP BY m.key ORDER BY 1;
+    key    | count |   sum   |  min  |  max   
+-----------+-------+---------+-------+--------
+ check_a   |   900 |    4494 |     0 |     10
+ check_b   |   900 |    1500 |    -1 |      4
+ checkout  |   300 |     300 |     0 |      2
+ m_total   |  1500 | 1013175 | -2998 | 4498.5
+ packaging |  1200 |    2103 |     0 |      8
+(5 rows)
+
+-- Q-03. The three ways to read the value, over the keys of the map, with and without a key test, with a test on the table, with no group, and grouped by a column of the table as well
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, avg((kv.value #>> ''{}'')::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, count(*) FROM em o CROSS JOIN LATERAL jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, avg(kv.value::float8), min(kv.value::float8), max(kv.value::float8), sum(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, avg(kv.value::float8), count(*) FILTER (WHERE kv.value::float8 >= 4), count(DISTINCT o.id) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT m.key, count(*), sum(m.value::float8), avg(m.value::float8), min(m.value::float8), max(m.value::float8) FROM em o, jsonb_each_text(o.metrics) m GROUP BY 1',
+	'SELECT m.key, count(*), sum(m.value::float8) FROM em o, jsonb_each_text(o.metrics) m WHERE m.key IN (''m_total'', ''packaging'') OR m.key LIKE ''check%'' GROUP BY 1',
+	'SELECT o.g, kv.key, sum(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv WHERE o.g < 3 GROUP BY 1, 2',
+	'SELECT count(*), sum(kv.value::float8), avg(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv',
+	'SELECT count(*) FROM em o, jsonb_each(o.metrics) kv',
+	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key IN (''tip'', ''check_a'') GROUP BY 1',
+	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key <> ''tip'' AND kv.key LIKE ''check%'' GROUP BY 1',
+	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key IS NOT NULL GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::float8) FILTER (WHERE kv.key LIKE ''m%'' OR kv.key = ''tip'') FROM em o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT o.g, count(*), count(kv.key), sum(kv.value::float8) FROM em o LEFT JOIN LATERAL jsonb_each(o.metrics) kv ON true GROUP BY 1',
+	'SELECT o.g, kv.key, count(*) FROM em o LEFT JOIN LATERAL jsonb_each(o.metrics) kv ON true GROUP BY 1, 2'
+]) q;
+                                                                                      same                                                                                      
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT kv.key, avg((kv.value #>> '{}')::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT kv.key, count(*) FROM em o CROSS JOIN LATERAL jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT kv.key, avg(kv.value::float8), min(kv.value::float8), max(kv.value::float8), sum(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT kv.key, avg(kv.value::float8), count(*) FILTER (WHERE kv.value::float8 >= 4), count(DISTINCT o.id) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT m.key, count(*), sum(m.value::float8), avg(m.value::float8), min(m.value::float8), max(m.value::float8) FROM em o, jsonb_each_text(o.metrics) m GROUP BY 1
+ same node ok SELECT m.key, count(*), sum(m.value::float8) FROM em o, jsonb_each_text(o.metrics) m WHERE m.key IN ('m_total', 'packaging') OR m.key LIKE 'check%' GROUP BY 1
+ same node ok SELECT o.g, kv.key, sum(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv WHERE o.g < 3 GROUP BY 1, 2
+ same node ok SELECT count(*), sum(kv.value::float8), avg(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv
+ same node ok SELECT count(*) FROM em o, jsonb_each(o.metrics) kv
+ same node ok SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key IN ('tip', 'check_a') GROUP BY 1
+ same node ok SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key <> 'tip' AND kv.key LIKE 'check%' GROUP BY 1
+ same node ok SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key IS NOT NULL GROUP BY 1
+ same node ok SELECT kv.key, sum(kv.value::float8) FILTER (WHERE kv.key LIKE 'm%' OR kv.key = 'tip') FROM em o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT o.g, count(*), count(kv.key), sum(kv.value::float8) FROM em o LEFT JOIN LATERAL jsonb_each(o.metrics) kv ON true GROUP BY 1
+ same node ok SELECT o.g, kv.key, count(*) FROM em o LEFT JOIN LATERAL jsonb_each(o.metrics) kv ON true GROUP BY 1, 2
+(15 rows)
+
+-- Q-04. What the scan does not take keeps the normal plan and the same answers: a test on the value, a key pattern of another form, another type than the leaf's, the value as it is,
+-- a key that an equality fixes (it is no group), and the value read in two ways
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key = ''tip'' GROUP BY 1',
+	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.value::float8 > 3 GROUP BY 1',
+	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key LIKE ''%a'' GROUP BY 1',
+	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key NOT LIKE ''check%'' GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::int4) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key = ''packaging'' GROUP BY 1',
+	'SELECT kv.key, count(kv.value) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, avg(kv.value::float8), avg((kv.value #>> ''{}'')::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1'
+]) q;
+                                                                 same                                                                 
+--------------------------------------------------------------------------------------------------------------------------------------
+ same normal ok SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key = 'tip' GROUP BY 1
+ same normal ok SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.value::float8 > 3 GROUP BY 1
+ same normal ok SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key LIKE '%a' GROUP BY 1
+ same normal ok SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key NOT LIKE 'check%' GROUP BY 1
+ same normal ok SELECT kv.key, sum(kv.value::int4) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key = 'packaging' GROUP BY 1
+ same normal ok SELECT kv.key, count(kv.value) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1
+ same normal ok SELECT kv.key, avg(kv.value::float8), avg((kv.value #>> '{}')::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1
+(7 rows)
+
+-- Q-05. A map of integers: the cast and the text of the value as int4
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, sum(kv.value::int4), count(*) FROM ei o, jsonb_each(o.c) kv GROUP BY 1',
+	'SELECT kv.key, sum((kv.value #>> ''{}'')::int4), max((kv.value #>> ''{}'')::int4) FROM ei o, jsonb_each(o.c) kv GROUP BY 1',
+	'SELECT m.key, sum(m.value::int4), min(m.value::int4) FROM ei o, jsonb_each_text(o.c) m GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::float8) FROM ei o, jsonb_each(o.c) kv GROUP BY 1'
+]) q;
+                                                                same                                                                 
+-------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT kv.key, sum(kv.value::int4), count(*) FROM ei o, jsonb_each(o.c) kv GROUP BY 1
+ same node ok SELECT kv.key, sum((kv.value #>> '{}')::int4), max((kv.value #>> '{}')::int4) FROM ei o, jsonb_each(o.c) kv GROUP BY 1
+ same node ok SELECT m.key, sum(m.value::int4), min(m.value::int4) FROM ei o, jsonb_each_text(o.c) m GROUP BY 1
+ same normal ok SELECT kv.key, sum(kv.value::float8) FROM ei o, jsonb_each(o.c) kv GROUP BY 1
+(4 rows)
+
+-- Q-06. A JSON null value: its text is NULL and so is its cast to a number
+CREATE TABLE en (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO en SELECT i, CASE WHEN i % 7 = 0 THEN NULL WHEN i % 5 = 0 THEN jsonb_build_object('a', i, 'tip', NULL) ELSE jsonb_build_object('a', i, 'tip', i % 3) END FROM generate_series(1, 600) i;
+CREATE INDEX en_col ON en USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+ANALYZE en;
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, count((kv.value #>> ''{}'')::float8), avg((kv.value #>> ''{}'')::float8) FROM en o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT m.key, count(m.value::float8), sum(m.value::float8) FROM en o, jsonb_each_text(o.metrics) m GROUP BY 1',
+	'SELECT kv.key, avg(kv.value::float8) FROM en o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, avg(kv.value::float8) FROM en o, jsonb_each(o.metrics) kv WHERE o.id > 100 GROUP BY 1',
+	'SELECT kv.key, avg(kv.value::float8) FROM en o, jsonb_each(o.metrics) kv WHERE kv.key IN (''a'', ''tip'') GROUP BY 1',
+	'SELECT kv.key, count(*) FILTER (WHERE kv.value::float8 > 1) FROM en o, jsonb_each(o.metrics) kv GROUP BY 1'
+]) q;
+                                                                      same                                                                       
+-------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT kv.key, count((kv.value #>> '{}')::float8), avg((kv.value #>> '{}')::float8) FROM en o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT m.key, count(m.value::float8), sum(m.value::float8) FROM en o, jsonb_each_text(o.metrics) m GROUP BY 1
+ same node ok SELECT kv.key, avg(kv.value::float8) FROM en o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT kv.key, avg(kv.value::float8) FROM en o, jsonb_each(o.metrics) kv WHERE o.id > 100 GROUP BY 1
+ same node ok SELECT kv.key, avg(kv.value::float8) FROM en o, jsonb_each(o.metrics) kv WHERE kv.key IN ('a', 'tip') GROUP BY 1
+ same node ok SELECT kv.key, count(*) FILTER (WHERE kv.value::float8 > 1) FROM en o, jsonb_each(o.metrics) kv GROUP BY 1
+(6 rows)
+
+-- Q-07. A value the leaf cannot hold: a numeric string, a boolean and an object are read again from the table as PostgreSQL reads them, and so are their errors
+CREATE TABLE ed (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ed SELECT i, CASE i % 6 WHEN 0 THEN '{"a": "5", "b": 1}' WHEN 1 THEN '{"a": 2.5, "b": "7.5"}' WHEN 2 THEN '{"a": 1}' WHEN 3 THEN NULL ELSE jsonb_build_object('a', i, 'b', i % 4) END FROM generate_series(1, 600) i;
+CREATE INDEX ed_col ON ed USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+ANALYZE ed;
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, count(*), sum((kv.value #>> ''{}'')::float8) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT m.key, count(*), sum(m.value::float8) FROM ed o, jsonb_each_text(o.metrics) m GROUP BY 1',
+	'SELECT m.key, count(*), sum(m.value::float8) FROM ed o, jsonb_each_text(o.metrics) m WHERE m.key IN (''b'', ''c'') GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE o.id IN (2, 4, 5, 8, 10, 11) GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE kv.key IN (''b'', ''c'') AND o.id <> 1 GROUP BY 1'
+]) q;
+                                                                                                 same                                                                                                 
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT kv.key, count(*), sum((kv.value #>> '{}')::float8) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT m.key, count(*), sum(m.value::float8) FROM ed o, jsonb_each_text(o.metrics) m GROUP BY 1
+ same node ok SELECT m.key, count(*), sum(m.value::float8) FROM ed o, jsonb_each_text(o.metrics) m WHERE m.key IN ('b', 'c') GROUP BY 1
+ same node error 22023 cannot cast jsonb string to type double precision SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE o.id IN (2, 4, 5, 8, 10, 11) GROUP BY 1
+ same node error 22023 cannot cast jsonb string to type double precision SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE kv.key IN ('b', 'c') AND o.id <> 1 GROUP BY 1
+(6 rows)
+
+INSERT INTO ed VALUES (1001, '{"a": true, "b": {"x": 1}}'), (1002, '{"a": "text"}');
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, sum((kv.value #>> ''{}'')::float8) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, count(*) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, sum((kv.value #>> ''{}'')::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE o.id < 1001 GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE o.id IN (1001, 1002) GROUP BY 1',
+	'SELECT m.key, sum(m.value::float8) FROM ed o, jsonb_each_text(o.metrics) m WHERE o.id = 1001 AND m.key IN (''b'', ''c'') GROUP BY 1'
+]) q;
+                                                                                                       same                                                                                                       
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node error 22P02 invalid input syntax for type double precision: "true" SELECT kv.key, sum((kv.value #>> '{}')::float8) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT kv.key, count(*) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT kv.key, sum((kv.value #>> '{}')::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE o.id < 1001 GROUP BY 1
+ same node error 22023 cannot cast jsonb boolean to type double precision SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE o.id IN (1001, 1002) GROUP BY 1
+ same node error 22P02 invalid input syntax for type double precision: "{"x": 1}" SELECT m.key, sum(m.value::float8) FROM ed o, jsonb_each_text(o.metrics) m WHERE o.id = 1001 AND m.key IN ('b', 'c') GROUP BY 1
+(5 rows)
+
+-- Q-08. A document that is no object raises where the row reaches the function, and none of the others is read
+CREATE TABLE eo (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO eo SELECT i, CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN '{"a": 1}' WHEN 2 THEN '{}' ELSE jsonb_build_object('a', i, 'b', 2) END FROM generate_series(1, 600) i;
+CREATE INDEX eo_col ON eo USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+ANALYZE eo;
+INSERT INTO eo VALUES (1001, '[1, 2]'), (1002, '"s"'), (1003, 'null'), (1004, '3');
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, sum(kv.value::float8) FROM eo o, jsonb_each(o.metrics) kv WHERE o.id < 1001 GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::float8) FROM eo o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT kv.key, sum(kv.value::float8) FROM eo o, jsonb_each(o.metrics) kv WHERE o.id IN (1001, 1002, 1003, 1004) GROUP BY 1',
+	'SELECT m.key, count(*) FROM eo o, jsonb_each_text(o.metrics) m WHERE o.id = 1003 GROUP BY 1',
+	'SELECT m.key, count(*) FROM eo o LEFT JOIN LATERAL jsonb_each_text(o.metrics) m ON true WHERE o.id < 100 GROUP BY 1'
+]) q;
+                                                                                          same                                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT kv.key, sum(kv.value::float8) FROM eo o, jsonb_each(o.metrics) kv WHERE o.id < 1001 GROUP BY 1
+ same node error 22023 cannot call jsonb_each on a non-object SELECT kv.key, sum(kv.value::float8) FROM eo o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node error 22023 cannot call jsonb_each on a non-object SELECT kv.key, sum(kv.value::float8) FROM eo o, jsonb_each(o.metrics) kv WHERE o.id IN (1001, 1002, 1003, 1004) GROUP BY 1
+ same node error 22023 cannot call jsonb_each_text on a non-object SELECT m.key, count(*) FROM eo o, jsonb_each_text(o.metrics) m WHERE o.id = 1003 GROUP BY 1
+ same node ok SELECT m.key, count(*) FROM eo o LEFT JOIN LATERAL jsonb_each_text(o.metrics) m ON true WHERE o.id < 100 GROUP BY 1
+(5 rows)
+
+-- Q-09. Rows that change: an update, a delete, and a row the index has not seen (the index is read with the table)
+UPDATE em SET metrics = jsonb_build_object('m_total', 100, 'tip', 2) WHERE id % 50 = 3;
+DELETE FROM em WHERE id % 60 = 4;
+INSERT INTO em SELECT 3000 + i, i % 7, jsonb_build_object('m_total', i, 'packaging', i % 3, 'check_a', 1) FROM generate_series(1, 200) i;
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, count(*), avg(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT m.key, count(*), sum(m.value::float8) FROM em o, jsonb_each_text(o.metrics) m WHERE m.key IN (''m_total'', ''packaging'') OR m.key LIKE ''check%'' GROUP BY 1'
+]) q;
+                                                                                    same                                                                                     
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT kv.key, count(*), avg(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT m.key, count(*), sum(m.value::float8) FROM em o, jsonb_each_text(o.metrics) m WHERE m.key IN ('m_total', 'packaging') OR m.key LIKE 'check%' GROUP BY 1
+(2 rows)
+
+-- Q-10. A dimension joined on the key of the member, inner and left
+CREATE TABLE dk (k text, grp text) WITH (autovacuum_enabled = false);
+INSERT INTO dk VALUES ('m_total', 'a'), ('tip', 'b'), ('packaging', 'a'), ('absent', 'c');
+ANALYZE dk;
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT d.grp, count(*), sum(kv.value::float8) FROM em o CROSS JOIN LATERAL jsonb_each(o.metrics) kv JOIN dk d ON d.k = kv.key GROUP BY 1',
+	'SELECT d.grp, count(*), count(kv.key) FROM em o CROSS JOIN LATERAL jsonb_each(o.metrics) kv LEFT JOIN dk d ON d.k = kv.key GROUP BY 1',
+	'SELECT d.grp, sum(m.value::float8) FROM em o CROSS JOIN LATERAL jsonb_each_text(o.metrics) m JOIN dk d ON d.k = m.key WHERE o.g < 4 GROUP BY 1'
+]) q;
+                                                                            same                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT d.grp, count(*), sum(kv.value::float8) FROM em o CROSS JOIN LATERAL jsonb_each(o.metrics) kv JOIN dk d ON d.k = kv.key GROUP BY 1
+ same node ok SELECT d.grp, count(*), count(kv.key) FROM em o CROSS JOIN LATERAL jsonb_each(o.metrics) kv LEFT JOIN dk d ON d.k = kv.key GROUP BY 1
+ same node ok SELECT d.grp, sum(m.value::float8) FROM em o CROSS JOIN LATERAL jsonb_each_text(o.metrics) m JOIN dk d ON d.k = m.key WHERE o.g < 4 GROUP BY 1
+(3 rows)
+
+DROP FUNCTION same(text), answer(text), plan_of(text);
+DROP TABLE em, ei, en, ed, eo, dk;
+DROP EXTENSION pg_sift;

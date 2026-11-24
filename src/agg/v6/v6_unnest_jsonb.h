@@ -64,5 +64,7 @@ typedef struct SiftV6RecFn SiftV6RecFn;
 extern SiftV6RecFn *sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x);
 /* The elements of doc, as the vectors ev[0..ncols) (data, valid) allocated in cx; returns how many */
 extern uint32 sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev);
+/* jsonb_each and jsonb_each_text: the value column of the n members of the last call, for the members of keep (NULL: all), which are those that reach the statement's expressions */
+extern void sift_v6_recfn_values(SiftV6RecFn *f, const uint64 *keep, MemoryContext cx, SiftVec *ev, uint32 n);
 
 #endif							/* SIFT_AGG_V6_UNNEST_JSONB_H */

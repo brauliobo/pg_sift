@@ -35,12 +35,22 @@ typedef struct SiftV6XDim
 	Oid			ptype[SIFT_STAR_MAX_PAY];
 } SiftV6XDim;
 
-/* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset of a jsonb one */
+/* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_each or jsonb_each_text of a jsonb one */
 typedef enum SiftV6ElemFn
 {
 	SV6E_UNNEST = 0,
-	SV6E_RECORDSET
+	SV6E_RECORDSET,
+	SV6E_EACH,
+	SV6E_EACH_TEXT
 } SiftV6ElemFn;
+
+/* How the statement reads the value of a member of jsonb_each / jsonb_each_text: through its text, (value #>> '{}')::T or value::T of the text, or as jsonb_each's jsonb cast to T: a string or a boolean raises for the cast and not for the text */
+typedef enum SiftV6ValueRead
+{
+	SV6V_NONE = 0,
+	SV6V_TEXT,
+	SV6V_CAST
+} SiftV6ValueRead;
 
 /*
  * The array of an unnest: the attribute of the index, the leaf of its lengths, and one leaf for each column of its elements (the one of unnest, the declared columns of a recordset, all of them
@@ -54,6 +64,7 @@ typedef struct SiftV6XElem
 	int			group_leaf;
 	bool		left;			/* LEFT JOIN LATERAL ... ON true: a row with no element is kept with a NULL one */
 	bool		semi;			/* EXISTS over the elements: a row once, when an element passes elem_where, and no element */
+	SiftV6ValueRead vread;		/* jsonb_each, jsonb_each_text: how the statement reads column 1, the value of the member (column 0 is its key) */
 	int			ncols;
 	int			col_leaf[SIFT_V6_XELEM_COLS];
 	Oid			col_type[SIFT_V6_XELEM_COLS];

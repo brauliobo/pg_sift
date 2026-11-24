@@ -1,6 +1,6 @@
 /*
  * agg/v6/v6_filter_eval.h - the clauses of FILTER (WHERE ..) over the vectors of a batch: a clause is a conjunction of column-and-constant predicates (the forms the aggregate scan already takes
- * as quals: a comparison, IN of constants, IS [NOT] NULL), and its rows are a bitmap (v6_filter_pivot.h evaluates each distinct clause once for a batch and shares the bitmap among the aggregates).
+ * as quals: a comparison, IN of constants, IS [NOT] NULL, a text that starts with a constant), and its rows are a bitmap (v6_filter_pivot.h evaluates each distinct clause once for a batch and shares the bitmap among the aggregates).
  *
  * A comparison with a NULL is not true; IS NULL looks at the validity only. A float8 compares as PostgreSQL does (NaN is above every number and equal to itself); a text compares by its bytes, which
  * the planner allows only for a collation whose equality is the bytes'. A pred holds its constant in the form of the column it is for (the integer of an int2, int4, int8, date, timestamp or boolean
@@ -26,7 +26,8 @@ typedef enum SiftPredOp
 	SPO_IN,						/* equal to one of the constants */
 	SPO_IS_NULL,
 	SPO_NOT_NULL,
-	SPO_NOT_IN					/* equal to none of the constants (no NULL among them) */
+	SPO_NOT_IN,					/* equal to none of the constants (no NULL among them) */
+	SPO_PREFIX					/* a text that starts with the bytes of s: LIKE 'abc%' */
 } SiftPredOp;
 
 typedef enum SiftPredKind

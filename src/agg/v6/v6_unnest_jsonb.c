@@ -14,6 +14,8 @@
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 #include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/tuplestore.h"
@@ -87,6 +89,11 @@ sift_v6_unnest_rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6El
 		out->elem = get_element_type(vartype);
 		return rtf->funccolcount == 1 && fe->funcresulttype == out->elem &&
 			(out->elem == TEXTOID || out->elem == VARCHAROID || out->elem == INT2OID || out->elem == INT4OID || out->elem == INT8OID);
+	}
+	if (fe->funcid == F_JSONB_EACH || fe->funcid == F_JSONB_EACH_TEXT)
+	{
+		out->fn = fe->funcid == F_JSONB_EACH ? SV6E_EACH : SV6E_EACH_TEXT;
+		return vartype == JSONBOID && rtf->funccolcount == 2;
 	}
 	if (fe->funcid != F_JSONB_TO_RECORDSET || vartype != JSONBOID || rtf->funccolcount < 1 || rtf->funccolcount > SIFT_V6_XELEM_COLS)
 		return false;
@@ -228,6 +235,51 @@ seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *
 	return true;
 }
 
+/* the type of the values a leaf holds, among those an element column has */
+static Oid
+leaf_oid(const SiftColDef *d)
+{
+	static const Oid held[] = {TEXTOID, INT2OID, INT4OID, INT8OID, FLOAT8OID};
+
+	for (int t = 0; t < lengthof(held); t++)
+		if (col_holds(held[t], -1, d))
+			return held[t];
+	return InvalidOid;
+}
+
+/* the map `col.* type` of attribute att: the leaf of its keys and the one of its values, which are the columns of jsonb_each and jsonb_each_text */
+static bool
+seed_each(V6Plan *p, SiftV6XElem *e, int att)
+{
+	const SiftColRel *r = p->colrel;
+	int			key = -1,
+				value = -1;
+
+	if (!r->json[att] || (e->group_leaf = group_of(r, att)) < 0 || strstr(r->schema->cols[e->group_leaf].path, ".*") == NULL)
+		return false;
+	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+	{
+		const SiftColDef *d = &r->schema->cols[i];
+
+		if (d->parent != e->group_leaf)
+			continue;
+		if (d->path != NULL && strstr(d->path, "#key") != NULL)
+			key = i;
+		else if (value < 0)
+			value = i;
+		else
+			return false;
+	}
+	if (key < 0 || value < 0 || !col_holds(TEXTOID, -1, &r->schema->cols[key]) || leaf_oid(&r->schema->cols[value]) == InvalidOid)
+		return false;
+	e->col_leaf[0] = key;
+	e->col_type[0] = TEXTOID;
+	e->col_leaf[1] = value;
+	e->col_type[1] = leaf_oid(&r->schema->cols[value]);
+	e->ncols = 2;
+	return true;
+}
+
 /* the lengths leaf of the array of attribute att and the leaf of its elements: the one of unnest */
 static bool
 seed_unnest_array(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, int att)
@@ -284,12 +336,71 @@ sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, b
 		return false;
 	x->unnest = true;
 	x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
-	if (!(rte->fn == SV6E_RECORDSET ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) : seed_unnest_array(p, &x->elem, rte, i + 1)))
+	if (!(rte->fn == SV6E_RECORDSET ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) :
+		  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, &x->elem, rte, i + 1) : seed_each(p, &x->elem, i + 1)))
 		return false;
 	x->elem_names = names;
 	x->elem_array = IsA(rte->array, Var) ? NIL : list_make1(copyObject(unconstify(Expr *, rte->array)));
 	p->xseed = x;
 	p->elem_rel = elem_rel;
+	return true;
+}
+
+/* the value column of the member of jsonb_each or jsonb_each_text */
+static bool
+is_value_var(const V6Plan *p, const Node *n, Oid type)
+{
+	const Var  *v = (const Var *) n;
+
+	return IsA(n, Var) && v->varno == p->elem_rel->relid && v->varlevelsup == 0 && v->varattno == 2 && v->vartype == type;
+}
+
+/* value #>> '{}': the text of the scalar of the value */
+static bool
+is_value_text(const V6Plan *p, const Node *n)
+{
+	const OpExpr *op = (const OpExpr *) n;
+	const Const *path;
+
+	if (!IsA(n, OpExpr) || get_opcode(op->opno) != F_JSONB_EXTRACT_PATH_TEXT || list_length(op->args) != 2 || !is_value_var(p, linitial(op->args), JSONBOID) ||
+		!IsA(lsecond(op->args), Const))
+		return false;
+	path = lsecond(op->args);
+	return !path->constisnull && ARR_NDIM(DatumGetArrayTypeP(path->constvalue)) == 0;
+}
+
+static bool
+is_jsonb_number_cast(Oid funcid)
+{
+	return funcid == F_INT2_JSONB || funcid == F_INT4_JSONB || funcid == F_INT8_JSONB || funcid == F_FLOAT8_JSONB;
+}
+
+/* how e reads the value of the member: the cast of its text to the type of the leaf, or of jsonb_each's jsonb as it is; SV6V_NONE for anything else */
+static SiftV6ValueRead
+value_read(const V6Plan *p, const Expr *e)
+{
+	const SiftV6XElem *el = &p->xseed->elem;
+
+	if (el->fn == SV6E_EACH && IsA(e, FuncExpr) && is_jsonb_number_cast(((const FuncExpr *) e)->funcid) &&
+		is_value_var(p, linitial(((const FuncExpr *) e)->args), JSONBOID))
+		return SV6V_CAST;
+	if (IsA(e, CoerceViaIO) && (el->fn == SV6E_EACH ? is_value_text(p, (const Node *) ((const CoerceViaIO *) e)->arg) :
+								is_value_var(p, (const Node *) ((const CoerceViaIO *) e)->arg, TEXTOID)))
+		return SV6V_TEXT;
+	return SV6V_NONE;
+}
+
+/* an expression of the statement that is the value of the member, read as the leaf of the map holds it: the type the leaf has */
+static bool
+value_column(V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	SiftV6XElem *el = &p->xseed->elem;
+	const SiftV6ValueRead read = value_read(p, e);
+
+	if (read == SV6V_NONE || exprType((const Node *) e) != el->col_type[1] || (el->vread != SV6V_NONE && el->vread != read))
+		return false;
+	el->vread = read;
+	*out = (SiftV6Col) {.attno = el->attno,.typid = el->col_type[1],.src = SV6SRC_ELEM,.slot = 1};
 	return true;
 }
 
@@ -300,7 +411,12 @@ sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	const SiftV6Ext *x = p->xseed;
 	SiftV6Class cls;
 
-	if (p->elem_rel == NULL || x == NULL || !IsA(e, Var) || v->varno != p->elem_rel->relid || v->varlevelsup != 0 || v->varattno < 1 || v->varattno > x->elem.ncols)
+	if (p->elem_rel == NULL || x == NULL)
+		return false;
+	if (x->elem.fn >= SV6E_EACH && !IsA(e, Var))
+		return value_column(p, e, out);
+	if (!IsA(e, Var) || v->varno != p->elem_rel->relid || v->varlevelsup != 0 || v->varattno < 1 || v->varattno > x->elem.ncols ||
+		(x->elem.fn >= SV6E_EACH && v->varattno != 1))
 		return false;
 	cls = sift_v6_class(v->vartype);
 	if (cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_TEXT && v->vartype != FLOAT8OID)
@@ -333,19 +449,15 @@ sift_v6_unnest_month_key(V6Plan *p, const Expr *e, SiftV6Col *k)
 
 /* ---- the quals of the element ---- */
 
+/* the column of the element that n is, as the virtual attribute of its slot; the value of a member is tested by the clauses of the pairs (a FILTER) only: that of a row read again from the heap is made after the quals of the element */
 static Expr *
-elem_var(const Var *v)
+elem_var(const V6Plan *p, const Node *n, bool pairs)
 {
-	return (Expr *) makeVar(INDEX_VAR, SIFT_V6_ELEM_VATT + v->varattno - 1, v->vartype, v->vartypmod, v->varcollid, 0);
-}
-
-static const Var *
-elem_column(const V6Plan *p, const Node *n)
-{
-	const Var  *v = (const Var *) n;
 	SiftV6Col	col;
 
-	return n != NULL && IsA(n, Var) && sift_v6_unnest_column((V6Plan *) p, (const Expr *) n, &col) ? v : NULL;
+	if (n == NULL || !sift_v6_unnest_column((V6Plan *) p, (const Expr *) n, &col) || col.src != SV6SRC_ELEM || (!pairs && p->xseed->elem.fn >= SV6E_EACH && col.slot == 1))
+		return NULL;
+	return (Expr *) makeVar(INDEX_VAR, SIFT_V6_ELEM_VATT + col.slot, exprType(n), exprTypmod(n), exprCollation(n), 0);
 }
 
 SiftV6Col
@@ -356,9 +468,15 @@ sift_v6_elem_vatt_col(int attno, Oid typid)
 	return (SiftV6Col) {.attno = attno,.typid = typid,.src = elem ? SV6SRC_ELEM : SV6SRC_ATTR,.slot = elem ? attno - SIFT_V6_ELEM_VATT : 0};
 }
 
+static bool
+text_compares_bytes(const Node *n, Oid collation)
+{
+	return sift_v6_class(exprType(n)) != SV6C_TEXT || sift_text_bytes_equal(collation);
+}
+
 /* a comparison of a column of the element with a constant, an IN list of constants, or a null test, over the virtual attribute of the column; or an AND, OR or NOT of such tests */
-Expr *
-sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause)
+static Expr *
+elem_qual(const V6Plan *p, Node *clause, bool pairs)
 {
 	if (IsA(clause, BoolExpr))
 	{
@@ -367,7 +485,7 @@ sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause)
 
 		foreach_ptr(Node, a, q->args)
 		{
-			Expr	   *t = sift_v6_unnest_elem_qual(p, a);
+			Expr	   *t = elem_qual(p, a, pairs);
 
 			if (t == NULL)
 				return NULL;
@@ -381,8 +499,9 @@ sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause)
 		OpExpr	   *q = copyObject((OpExpr *) clause);
 		Node	   *l = linitial(q->args),
 				   *r = lsecond(q->args);
+		Expr	   *var;
 
-		if (IsA(r, Var) && IsA(l, Const))
+		if (IsA(l, Const) && !IsA(r, Const))
 		{
 			q->opno = get_commutator(q->opno);
 			if (!OidIsValid(q->opno))
@@ -391,28 +510,38 @@ sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause)
 			l = lsecond(q->args);
 			r = linitial(q->args);
 		}
-		if (elem_column(p, l) == NULL || !IsA(r, Const) || (sift_v6_class(exprType(l)) == SV6C_TEXT && !sift_text_bytes_equal(q->inputcollid)))
+		if ((var = elem_var(p, l, pairs)) == NULL || !IsA(r, Const) || !text_compares_bytes(l, q->inputcollid))
 			return NULL;
-		q->args = list_make2(elem_var((Var *) l), r);
+		q->args = list_make2(var, r);
 		return (Expr *) q;
 	}
 	if (IsA(clause, ScalarArrayOpExpr) && list_length(((ScalarArrayOpExpr *) clause)->args) == 2)
 	{
 		ScalarArrayOpExpr *q = copyObject((ScalarArrayOpExpr *) clause);
+		Expr	   *var = elem_var(p, linitial(q->args), pairs);
 
-		if (elem_column(p, linitial(q->args)) == NULL || !IsA(lsecond(q->args), Const) || (sift_v6_class(exprType(linitial(q->args))) == SV6C_TEXT && !sift_text_bytes_equal(q->inputcollid)))
+		if (var == NULL || !IsA(lsecond(q->args), Const) || !text_compares_bytes(linitial(q->args), q->inputcollid))
 			return NULL;
-		linitial(q->args) = elem_var(linitial(q->args));
+		linitial(q->args) = var;
 		return (Expr *) q;
 	}
-	if (IsA(clause, NullTest) && elem_column(p, (Node *) ((NullTest *) clause)->arg) != NULL && !((NullTest *) clause)->argisrow)
+	if (IsA(clause, NullTest) && !((NullTest *) clause)->argisrow)
 	{
 		NullTest   *q = copyObject((NullTest *) clause);
+		Expr	   *var = elem_var(p, (Node *) q->arg, pairs);
 
-		q->arg = elem_var((Var *) q->arg);
+		if (var == NULL)
+			return NULL;
+		q->arg = var;
 		return (Expr *) q;
 	}
 	return NULL;
+}
+
+Expr *
+sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause)
+{
+	return elem_qual(p, clause, true);
 }
 
 bool
@@ -425,7 +554,7 @@ sift_v6_unnest_elem_quals(V6Plan *p)
 
 	foreach_node(RestrictInfo, ri, p->elem_rel->baserestrictinfo)
 	{
-		Expr	   *q = ri->pseudoconstant ? NULL : sift_v6_unnest_elem_qual(p, (Node *) ri->clause);
+		Expr	   *q = ri->pseudoconstant ? NULL : elem_qual(p, (Node *) ri->clause, false);
 
 		if (q == NULL)
 			return false;
@@ -461,7 +590,28 @@ struct SiftV6RecFn
 	TupleTableSlot *slot;
 	int			ncols;
 	Oid			type[SIFT_V6_XELEM_COLS];
+	SiftV6ElemFn fn;
+	SiftV6ValueRead vread;		/* jsonb_each, jsonb_each_text: the members come with the value as the function gives it, which values() reads as the statement does */
+	FmgrInfo	vfn;			/* the cast of jsonb_each's jsonb to the type of the value, or its #>> '{}' */
+	FmgrInfo	vin;			/* the input function of the type of the value */
+	Oid			vio;
+	Datum	   *val;
+	bool	   *val_null;
 };
+
+static Oid
+jsonb_cast_fn(Oid type)
+{
+	return type == INT2OID ? F_INT2_JSONB : type == INT4OID ? F_INT4_JSONB : type == INT8OID ? F_INT8_JSONB : F_FLOAT8_JSONB;
+}
+
+/* the columns of the members of jsonb_each and jsonb_each_text: the key and the value, as the function gives them */
+static void
+each_columns(TupleDesc desc, const SiftV6Ext *x)
+{
+	TupleDescInitEntry(desc, 1, "key", TEXTOID, -1, 0);
+	TupleDescInitEntry(desc, 2, "value", x->elem.fn == SV6E_EACH ? JSONBOID : TEXTOID, -1, 0);
+}
 
 SiftV6RecFn *
 sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x)
@@ -469,19 +619,31 @@ sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftV6RecFn *f = palloc0(sizeof(SiftV6RecFn));
 	int			c = 0;
+	Oid			typinput;
 
 	f->ncols = x->elem.ncols;
+	f->fn = x->elem.fn;
+	f->vread = x->elem.vread;
 	f->desc = CreateTemplateTupleDesc(f->ncols);
+	if (x->elem.fn >= SV6E_EACH)
+		each_columns(f->desc, x);
 	foreach_node(String, n, x->elem_names)
 	{
 		TupleDescInitEntry(f->desc, c + 1, strVal(n), x->elem.col_type[c], -1, 0);
 		TupleDescInitEntryCollation(f->desc, c + 1, sift_v6_class(x->elem.col_type[c]) == SV6C_TEXT ? DEFAULT_COLLATION_OID : InvalidOid);
-		f->type[c] = x->elem.col_type[c];
 		c++;
 	}
+	for (c = 0; c < f->ncols; c++)
+		f->type[c] = x->elem.col_type[c];
 	sift_tupdesc_finalize(f->desc);
 	BlessTupleDesc(f->desc);
-	fmgr_info(F_JSONB_TO_RECORDSET, &f->flinfo);
+	if (f->fn >= SV6E_EACH)
+	{
+		getTypeInputInfo(f->type[1], &typinput, &f->vio);
+		fmgr_info(typinput, &f->vin);
+		fmgr_info(f->vread == SV6V_CAST ? jsonb_cast_fn(f->type[1]) : F_JSONB_EXTRACT_PATH_TEXT, &f->vfn);
+	}
+	fmgr_info(f->fn == SV6E_EACH ? F_JSONB_EACH : f->fn == SV6E_EACH_TEXT ? F_JSONB_EACH_TEXT : F_JSONB_TO_RECORDSET, &f->flinfo);
 	f->econtext = CreateStandaloneExprContext();
 	f->slot = MakeSingleTupleTableSlot(f->desc, &TTSOpsMinimalTuple);
 	f->rsinfo = (ReturnSetInfo) {.type = T_ReturnSetInfo,.econtext = f->econtext,.expectedDesc = f->desc,.allowedModes = (int) SFRM_Materialize,.returnMode = SFRM_ValuePerCall};
@@ -544,13 +706,70 @@ sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev)
 		ev[c].all_valid = false;
 		ev[c].len = (uint16) Min(n, UINT16_MAX);
 	}
+	if (f->fn >= SV6E_EACH)
+	{
+		f->val = MemoryContextAlloc(cx, Max(n, 1) * sizeof(Datum));
+		f->val_null = MemoryContextAlloc(cx, Max(n, 1) * sizeof(bool));
+	}
 	for (uint32 k = 0; ts != NULL && tuplestore_gettupleslot(ts, true, false, f->slot); k++)
 	{
 		slot_getallattrs(f->slot);
+		if (f->fn >= SV6E_EACH)
+		{
+			put_cell(cx, &ev[0], TEXTOID, k, f->slot->tts_values[0], f->slot->tts_isnull[0]);
+			f->val_null[k] = f->slot->tts_isnull[1];
+			f->val[k] = f->val_null[k] ? (Datum) 0 : datumCopy(f->slot->tts_values[1], false, -1);
+			continue;
+		}
 		for (int c = 0; c < f->ncols; c++)
 			put_cell(cx, &ev[c], f->type[c], k, f->slot->tts_values[c], f->slot->tts_isnull[c]);
 	}
 	if (ts != NULL)
 		tuplestore_end(ts);
 	return n;
+}
+
+/* the value of member k of jsonb_each as the statement reads it: the cast of the jsonb, or the input function of the text of the scalar; the errors are those of the statement */
+static Datum
+member_value(SiftV6RecFn *f, uint32 k, bool *isnull)
+{
+	LOCAL_FCINFO(fcinfo, 2);
+	Datum		d = f->val[k];
+
+	*isnull = f->val_null[k];
+	if (*isnull)
+		return (Datum) 0;
+	if (f->vread == SV6V_CAST)
+	{
+		InitFunctionCallInfoData(*fcinfo, &f->vfn, 1, InvalidOid, NULL, NULL);
+		fcinfo->args[0] = (NullableDatum) {d, false};
+		d = FunctionCallInvoke(fcinfo);
+		*isnull = fcinfo->isnull;
+		return d;
+	}
+	if (f->fn == SV6E_EACH)
+	{
+		InitFunctionCallInfoData(*fcinfo, &f->vfn, 2, InvalidOid, NULL, NULL);
+		fcinfo->args[0] = (NullableDatum) {d, false};
+		fcinfo->args[1] = (NullableDatum) {PointerGetDatum(construct_empty_array(TEXTOID)), false};
+		d = FunctionCallInvoke(fcinfo);
+		if ((*isnull = fcinfo->isnull))
+			return (Datum) 0;
+	}
+	return InputFunctionCall(&f->vin, TextDatumGetCString(d), f->vio, -1);
+}
+
+void
+sift_v6_recfn_values(SiftV6RecFn *f, const uint64 *keep, MemoryContext cx, SiftVec *ev, uint32 n)
+{
+	if (f->fn < SV6E_EACH || f->vread == SV6V_NONE)
+		return;
+	for (uint32 k = 0; k < n; k++)
+		if (keep == NULL || ((keep[k >> 6] >> (k & 63)) & 1))
+		{
+			bool		isnull;
+			const Datum d = member_value(f, k, &isnull);
+
+			put_cell(cx, &ev[1], f->type[1], k, d, isnull);
+		}
 }

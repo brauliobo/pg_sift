@@ -599,6 +599,8 @@ emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row)
 		keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
 		eval_elems(u, ev, nel, keep);
 	}
+	if (u->rec != NULL)
+		sift_v6_recfn_values(u->rec, keep, u->bcx, ev, nel);
 	emit_row(u, fact, ev, keep, nel, row);
 	MemoryContextSwitchTo(old);
 }

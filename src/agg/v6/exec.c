@@ -669,6 +669,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	}
 	if (st->spec->ext != NULL && st->spec->ext->unnest)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);
+	if (st->spec->ext != NULL && st->spec->ext->unnest && st->spec->ext->elem.vread != SV6V_NONE)
+		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(RelationGetDescr(st->sources[0].index), st->spec->ext->elem.attno - 1)->attname)), es);
 	if (st->star_passes > 1)
 		ExplainPropertyInteger("Star Passes", NULL, st->star_passes, es);
 	if (st->star != NULL && sift_v6_star_cache(st->star, &dim_hits, &dim_built))

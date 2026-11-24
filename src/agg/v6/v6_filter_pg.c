@@ -179,6 +179,30 @@ set_const(Build *b, SiftPred *p, Oid coltype, const Const *c)
 	}
 }
 
+/* text LIKE 'abc%': the pattern is literal bytes and one % at its end, which no collation or escape can read another way */
+static bool
+pred_prefix(Build *b, const OpExpr *op, SiftPred *p)
+{
+	const Var  *v;
+	const Const *c;
+	SiftPredStr pattern;
+
+	if (list_length(op->args) != 2 || !IsA(linitial(op->args), Var) || !IsA(lsecond(op->args), Const))
+		return false;
+	v = linitial(op->args);
+	c = lsecond(op->args);
+	if (v->vartype != TEXTOID || c->constisnull || c->consttype != TEXTOID)
+		return false;
+	pattern = str_of(b, c->constvalue);
+	if (pattern.len == 0 || pattern.bytes[pattern.len - 1] != '%' || memchr(pattern.bytes, '%', pattern.len - 1) != NULL ||
+		memchr(pattern.bytes, '_', pattern.len) != NULL || memchr(pattern.bytes, '\\', pattern.len) != NULL)
+		return false;
+	p->op = SPO_PREFIX;
+	p->kind = SPK_STR;
+	p->s = (SiftPredStr) {pattern.bytes, pattern.len - 1};
+	return (p->vec = fcol_index(b, v)) >= 0;
+}
+
 static bool
 pred_compare(Build *b, const OpExpr *op, SiftPred *p)
 {
@@ -324,7 +348,7 @@ add_pred(Build *b, const Node *q, int group, SiftClause *out)
 	switch (nodeTag(q))
 	{
 		case T_OpExpr:
-			ok = pred_compare(b, (const OpExpr *) q, p);
+			ok = get_opcode(((const OpExpr *) q)->opno) == F_TEXTLIKE ? pred_prefix(b, (const OpExpr *) q, p) : pred_compare(b, (const OpExpr *) q, p);
 			break;
 		case T_ScalarArrayOpExpr:
 			ok = pred_in(b, (const ScalarArrayOpExpr *) q, p);

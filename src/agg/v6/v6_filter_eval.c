@@ -128,6 +128,8 @@ eval_str(const SiftPred *p, const SiftVec *v, uint32 n, uint64 *out)
 				hit = str_equal(&s[r], p->in_s[k].bytes, p->in_s[k].len);
 			hit ^= p->op == SPO_NOT_IN;
 		}
+		else if (p->op == SPO_PREFIX)
+			hit = s[r].len >= p->s.len && (p->s.len == 0 || memcmp(str_bytes(&s[r]), p->s.bytes, p->s.len) == 0);
 		else
 			hit = str_equal(&s[r], p->s.bytes, p->s.len) == (p->op == SPO_EQ);
 		out[r >> 6] |= (uint64) hit << (r & 63);
