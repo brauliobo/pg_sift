@@ -13,6 +13,7 @@
 #include "core/store.h"
 #include "core/restrict.h"
 #include "core/memtrack.h"
+#include "bm25/maintmem.h"
 
 PGDLLEXPORT void sift_merge_worker(dsm_segment *seg, shm_toc *toc);
 
@@ -125,7 +126,7 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 	MemSet(shared, 0, sizeof(SiftBuildShared));
 	shared->common = (SiftParCommon) {InvalidOid, RelationGetRelid(index), false};
 	shared->nparticipants = nworkers + 1;
-	shared->budget = (Size) maintenance_work_mem * 1024 / (nworkers + 1);
+	shared->budget = sift_bm25_maint_bytes(nworkers + 1);
 	ConditionVariableInit(&shared->ranges.cv);
 	SharedFileSetInit(&shared->fileset, ldr->pcxt->seg);
 	SpinLockInit(&shared->mutex);

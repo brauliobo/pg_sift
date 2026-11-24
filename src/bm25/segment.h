@@ -392,7 +392,7 @@ typedef void (*SiftWalkVisit) (void *arg, const char *term, int len, const SiftT
  * group and block bounds >= the true maximum computed with ref's k1 and b
  * and the segment's avgdl_ref, position records against tf and dl) and
  * raises ERRCODE_INDEX_CORRUPTED. visit may be NULL. Memory: the dl of the SBs a
- * term touches within maintenance_work_mem / 2 (as sift_seg_stream), a group and
+ * term touches within half the maintenance memory (as sift_seg_stream), a group and
  * a window of the position records, whatever the segment.
  */
 extern void sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify,

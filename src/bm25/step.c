@@ -40,6 +40,7 @@
 #include "core/varint.h"
 #include "core/visibility.h"
 #include "core/memtrack.h"
+#include "bm25/maintmem.h"
 #include "table/dispatch.h"
 
 #define CLAIM_TRIES			8		/* picks of a step whose segments others replaced meanwhile */
@@ -218,7 +219,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 
 /*
  * The live docs of a write buffer go through a tuplesort, so that promoting a segment of any size stays within
- * maintenance_work_mem (the excess spills to temporary files). A doc is packed as a bytea: its key and arrival number
+ * the maintenance memory (the excess spills to temporary files). A doc is packed as a bytea: its key and arrival number
  * first, big-endian, so that byte order is key order and the first record of a repeated tid comes first, then its
  * length, its terms' lengths, frequencies and hashes, then the bytes of the terms.
  */
@@ -267,7 +268,7 @@ static Tuplesortstate *
 sort_docs(Relation index, const SiftSegEntry *seg)
 {
 	SiftWbufReader *r = sift_wbuf_open(index, seg, CurrentMemoryContext, NULL, NULL);
-	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, maintenance_work_mem / 2,
+	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, (int) (sift_bm25_maint_bytes(1) / 2048),
 												 NULL, TUPLESORT_RANDOMACCESS);
 	DocPacker	pk = {palloc(1024), 1024};
 	SiftWbufDoc	d;
@@ -282,12 +283,12 @@ sort_docs(Relation index, const SiftSegEntry *seg)
 	return sort;
 }
 
-/* The memory the inverted buffer may take: what the sort left of maintenance_work_mem when it kept its docs in memory, the half it does not take when it spilled (the sort has half of it) */
+/* The memory the inverted buffer may take: what the sort left of the maintenance memory when it kept its docs in memory, the half it does not take when it spilled (the sort has half of it) */
 static Size
 inv_budget(Tuplesortstate *sort)
 {
 	TuplesortInstrumentation st;
-	Size		budget = (Size) maintenance_work_mem * 1024;
+	Size		budget = sift_bm25_maint_bytes(1);
 
 	tuplesort_get_stats(sort, &st);
 	if (st.sortMethod == SORT_TYPE_QUICKSORT)
@@ -606,7 +607,7 @@ heal_runs(DocText *dt, SiftInvBuf *inv, SiftSegment *seg, RunList *runs)
 {
 	Heal		h = {.dt = dt,.inv = inv,.runs = runs};
 
-	sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {.docs = heal_docs}, &h);
+	sift_seg_stream(seg, sift_bm25_maint_bytes(1) / 2, &(SiftSegSink) {.docs = heal_docs}, &h);
 	if (!sift_inv_empty(h.inv))
 		runlist_push(runs, sift_inv_spill(h.inv));
 }
@@ -644,7 +645,7 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	if (written < 0)
 	{
 		if (dt != NULL)
-			inv = inv_create_for(index, (Size) maintenance_work_mem * 1024 / 2, cx, true);
+			inv = inv_create_for(index, sift_bm25_maint_bytes(1) / 2, cx, true);
 		for (int i = 0; i < in->n; i++)
 		{
 			SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);

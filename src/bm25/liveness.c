@@ -6,6 +6,7 @@
 #include "core/cmp.h"
 #include "core/live.h"
 #include "core/memtrack.h"
+#include "bm25/maintmem.h"
 #include "core/popcount.h"
 #include "bm25/segment.h"
 
@@ -815,7 +816,7 @@ dead_window(DeadScan *ds, DocMap *dm, const uint8 *dirty, int64 i, Size rows, Me
 
 /*
  * Counts again, for every term with a slot, the postings of the docs that are dead now: the whole table, so that a repeat is harmless. The dead rows of the
- * dirty SBs (5 to 20 kB each) are held a window of them at a time within maintenance_work_mem; the arrays by SB (24 bytes for each SB of the segment, of the size
+ * dirty SBs (5 to 20 kB each) are held a window of them at a time within the maintenance memory; the arrays by SB (24 bytes for each SB of the segment, of the size
  * of the directory the docmap keeps) are not windowed. Every window reads the dictionary again and, for each term, looks for its postings from the first SB of
  * the window, so that the postings of a term are read once in all: a table that fits is counted in one window, with the postings of the short lists walked once.
  */
@@ -828,7 +829,7 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 	MemoryContext wcx = sift_mem_allocset_create(cx, "sift dead rows");
 	DeadScan	ds = {.seg = seg,.dead = dead,.nslots = h->nslots};
 	uint8	   *dirty = palloc((h->nsb + 7) / 8);
-	Size		budget = (Size) maintenance_work_mem * 1024 / 2;
+	Size		budget = sift_bm25_maint_bytes(1) / 2;
 
 	ds.tcxt = sift_mem_allocset_create(cx, "sift dead postings term");
 	ds.grp = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_grp *));

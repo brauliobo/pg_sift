@@ -12,6 +12,7 @@
 #include "bm25/segment_int.h"
 #include "core/cmp.h"
 #include "core/memtrack.h"
+#include "bm25/maintmem.h"
 
 const uint32 sift_df_class_lo[SIFT_DF_CLASSES] = {1, 2, 3, 16, 128, 1024, 8192, 65536, 524288};
 const char *const sift_df_class_name[SIFT_DF_CLASSES] = {
@@ -28,7 +29,7 @@ typedef struct Walk
 	SiftWalkVisit visit;
 	void	   *arg;
 	uint64		ndocs;
-	DocCache	dc;				/* the dl of the docs the postings of a term name: the SBs it touches, within maintenance_work_mem */
+	DocCache	dc;				/* the dl of the docs the postings of a term name: the SBs it touches, within the maintenance memory */
 	/* current term */
 	MemoryContext tcxt;
 	sift_tid   *tids;			/* SIFT_GRP_MAXTIDS */
@@ -443,7 +444,7 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	w.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 	w.gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
 	w.gdl = palloc(SIFT_GRP_MAXTIDS * sizeof(uint16));
-	doccache_init(&w.dc, seg, CurrentMemoryContext, (Size) maintenance_work_mem * 1024 / 2);
+	doccache_init(&w.dc, seg, CurrentMemoryContext, sift_bm25_maint_bytes(1) / 2);
 	st->dict_bytes = s[SIFT_SEC_DICT].len + s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
 	walk_docs(&w);
 	if (verify && seg->fmt >= SIFT_SEGFMT_LIVEROWS)

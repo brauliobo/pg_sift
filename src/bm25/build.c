@@ -10,6 +10,7 @@
 
 #include "core/format_ux.h"
 #include "core/memtrack.h"
+#include "bm25/maintmem.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_build_peak = 0;
@@ -280,7 +281,7 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	MemSet(shared, 0, sizeof(SiftBuildShared));
 	shared->common = (SiftParCommon) {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent};
 	shared->nparticipants = nworkers + 1;
-	shared->budget = (Size) maintenance_work_mem * 1024 / (nworkers + 1);
+	shared->budget = sift_bm25_maint_bytes(nworkers + 1);
 	ConditionVariableInit(&shared->ranges.cv);
 	SharedFileSetInit(&shared->fileset, ldr->pcxt->seg);
 	SpinLockInit(&shared->mutex);
@@ -374,7 +375,7 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	SharedFileSetAttach(&shared->fileset, seg);
 	bs = build_begin(w.index, shared->budget);
 	bs->home = (RunHome) {.fileset = &shared->fileset,.worker = ParallelWorkerNumber};
-	/* a worker's budget is a slice of maintenance_work_mem: the floor is what its buffers (the inverted buffer, the tuple and the runs) take at their smallest */
+	/* a worker's budget is a slice of the maintenance memory: the floor is what its buffers (the inverted buffer, the tuple and the runs) take at their smallest */
 	sift_mem_init_sub(&mt_bm25_build_worker, "bm25_build_worker", bs->cxt, false, Max(shared->budget, BUILD_WORKER_FLOOR));
 	reltuples = build_scan(bs, w.heap, w.info, sift_table_beginscan_parallel(w.heap, SCAN_OF(shared)), false);
 	sift_mem_assert_within(&mt_bm25_build_worker);
@@ -430,7 +431,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_analyzer_config_from_index(index, &cfg);
 		ldr = begin_parallel(heap, index, info);
 	}
-	bs = build_begin(index, (Size) maintenance_work_mem * 1024 / (ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1));
+	bs = build_begin(index, sift_bm25_maint_bytes(ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1));
 	old = MemoryContextSwitchTo(bs->cxt);
 	SiftMemTracker mt_bm25_build;
 
@@ -458,7 +459,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	{
 		add_counts(ldr->shared, res->heap_tuples, bs->indexed);
 		adopt_runs(ldr, bs, res);
-		bs->budget = (Size) maintenance_work_mem * 1024;
+		bs->budget = sift_bm25_maint_bytes(1);
 	}
 	bs->scanned = true;
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) res->index_tuples);

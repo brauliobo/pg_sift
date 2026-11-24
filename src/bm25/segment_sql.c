@@ -29,6 +29,7 @@
 #include "core/catname.h"
 #include "core/inspect.h"
 #include "core/memtrack.h"
+#include "bm25/maintmem.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -482,7 +483,7 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 	HeapCheck	hc = {.index = index};
 	HeapDump	dump = {0};
 
-	hc.bf = bloom_create(Max(nelems, 1), maintenance_work_mem, pg_prng_uint64(&pg_global_prng_state));
+	hc.bf = bloom_create(Max(nelems, 1), (int) (sift_bm25_maint_bytes(1) / 1024), pg_prng_uint64(&pg_global_prng_state));
 	dump.bf = hc.bf;
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -493,7 +494,7 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 
 			MemoryContext old = MemoryContextSwitchTo(segcx);
 
-			sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &dump);
+			sift_seg_stream(seg, sift_bm25_maint_bytes(1) / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &dump);
 			MemoryContextSwitchTo(old);
 			sift_seg_close(seg);
 			MemoryContextDelete(segcx);
@@ -650,7 +651,7 @@ seen_entry(Bm25Verify *bv, uint32 block)
 		size_t		cap = Max(bv->seen_cap * 2, 1024);
 		SeenBlock  *t;
 
-		if (cap * sizeof(SeenBlock) > (Size) maintenance_work_mem * 1024 / 2)
+		if (cap * sizeof(SeenBlock) > sift_bm25_maint_bytes(1) / 2)
 			return NULL;
 		t = MemoryContextAllocZero(bv->cxt, cap * sizeof(SeenBlock));
 		for (size_t i = 0; i < bv->seen_cap; i++)
