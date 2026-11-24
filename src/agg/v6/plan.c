@@ -30,7 +30,7 @@
 #include "utils/selfuncs.h"
 #include "utils/timestamp.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/agg.h"
 #include "agg/group/ht.h"
 #include "agg/v6/plan_int.h"

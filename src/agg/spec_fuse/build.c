@@ -16,7 +16,7 @@
 #include "catalog/pg_operator.h"
 #include "common/hashfn.h"
 
-#include "agg/plan/node_hash.h"
+#include "agg/v6/v6_node_hash.h"
 #include "agg/spec_fuse/int.h"
 
 static uint32

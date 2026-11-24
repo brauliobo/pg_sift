@@ -30,7 +30,7 @@
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/plan_int.h"
 
 /* does the query level, or a statement of its CTEs, modify the table */

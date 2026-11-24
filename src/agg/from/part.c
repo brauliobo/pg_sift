@@ -14,7 +14,7 @@
 
 #include "agg/agg.h"
 #include "agg/part.h"
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/from/int.h"
 #include "agg/v6/v6_settings.h"
 #include "table/dispatch.h"

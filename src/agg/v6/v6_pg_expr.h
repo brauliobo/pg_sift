@@ -43,7 +43,7 @@ typedef struct SiftV6PgExpr
 
 /*
  * The expression can run over the native vectors: no volatile function, no set-returning function, no aggregate or window, and only the Vars of the inputs. A sub-plan or an executor parameter it holds
- * is one the scan may start when a row first needs it (lut_subplan_ok, initplan_ok of agg/plan/safety.h), and only when root is given: the scan of a node that prepares them (sift_v6_exec_begin)
+ * is one the scan may start when a row first needs it (lut_subplan_ok, initplan_ok of agg/v6/v6_safety.h), and only when root is given: the scan of a node that prepares them (sift_v6_exec_begin)
  */
 extern bool sift_v6_pgexpr_plan_ok(PlannerInfo *root, const Expr *e);
 

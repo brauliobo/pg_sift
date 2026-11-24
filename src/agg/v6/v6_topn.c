@@ -26,7 +26,7 @@
 #include "agg/v6/v6_test_gucs.h"
 
 #include "agg/agg.h"
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_gpu.h"

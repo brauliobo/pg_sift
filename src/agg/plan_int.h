@@ -7,7 +7,7 @@
 #include "nodes/extensible.h"
 
 #include "agg/cost/model.h"
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/refuse.h"
 #include "agg/search.h"
 #include "agg/spec.h"

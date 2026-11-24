@@ -224,7 +224,7 @@ CREATE FUNCTION sift._test_f2_pack_tails(index regclass) RETURNS int4 AS 'MODULE
 CREATE FUNCTION sift._test_f2_pack_info(index regclass, part_id int8, plo int8, OUT part_gen int8, OUT header_blk int8, OUT packed bool, OUT slot int4, OUT inline bool)
 	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_f2_pack_info' LANGUAGE C;
 CREATE FUNCTION sift._test_f2_compact_racing(index regclass, part_id int8, plo int8, gens int8[], deleted_meanwhile int4) RETURNS bool AS 'MODULE_PATHNAME', 'sift_test_f2_compact_racing' LANGUAGE C;
--- The guards of the planners of the aggregation (src/agg/plan/safety.c) and the bridges of SiftAggV6 (src/agg/v6/bridge_test.c): whether a rewritten query has row security or a security barrier; the guards on
+-- The guards of the planners of the aggregation (src/agg/v6/v6_safety.c) and the bridges of SiftAggV6 (src/agg/v6/bridge_test.c): whether a rewritten query has row security or a security barrier; the guards on
 -- built nodes (the number of wrong answers); the ids of the rows the vector machine passes for a WHERE clause over the columns of the table of an index (NULL: it does not run it); what a query is as the
 -- planner and the executor give it with the bridges (the plan has the node, the rows are those of the normal plan: 'ok' or what differs); the clauses the cardinality bridge made of a query.
 CREATE FUNCTION sift._test_agg_guards() RETURNS int4

@@ -14,7 +14,7 @@
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 
-#include "agg/plan/node_hash.h"
+#include "agg/v6/v6_node_hash.h"
 #include "agg/v6/v6_filter_eval.h"
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/v6_vexpr.h"

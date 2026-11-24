@@ -37,7 +37,7 @@
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/v6_asof.h"
 #include "agg/v6/v6_batch.h"
 #include "agg/v6/v6_join.h"

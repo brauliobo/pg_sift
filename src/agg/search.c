@@ -27,7 +27,7 @@
 #include "bm25/estimate.h"
 #include "bm25/eval.h"
 #include "bm25/planner.h"
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/search.h"
 #include "core/quarantine.h"
 #include "core/memtrack.h"

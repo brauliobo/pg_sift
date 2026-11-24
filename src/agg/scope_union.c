@@ -32,7 +32,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/plan_int.h"
 #include "col/scope.h"
 

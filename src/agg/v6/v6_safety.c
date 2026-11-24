@@ -1,5 +1,5 @@
 /*
- * agg/plan/safety.c - the guards of agg/plan/safety.h. A relation is read through its own check of privileges and policies by PostgreSQL's scans; the aggregation reads the
+ * agg/v6/v6_safety.c - the guards of agg/v6/v6_safety.h. A relation is read through its own check of privileges and policies by PostgreSQL's scans; the aggregation reads the
  * columns of an index directly, so it is used only where no policy, barrier, parameter, cursor or partial index can make its rows differ from the rows of the normal plan.
  */
 #include "postgres.h"
@@ -11,7 +11,7 @@
 #include "parser/parsetree.h"
 #include "utils/rls.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 
 typedef struct RlsWalk
 {

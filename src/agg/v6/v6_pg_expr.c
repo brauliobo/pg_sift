@@ -11,7 +11,7 @@
 #include "optimizer/optimizer.h"
 #include "utils/lsyscache.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_pg_exec.h"
 #include "agg/v6/v6_pg_expr.h"

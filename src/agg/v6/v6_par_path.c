@@ -19,7 +19,7 @@
 #include "utils/syscache.h"
 
 #include "agg/cost.h"
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/group_int.h"
 #include "agg/v6/par/pinrun.h"

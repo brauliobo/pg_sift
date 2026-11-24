@@ -16,7 +16,7 @@
 #include "utils/spccache.h"
 
 #include "agg/cost.h"
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_bqual.h"
 #include "agg/v6/v6_card.h"

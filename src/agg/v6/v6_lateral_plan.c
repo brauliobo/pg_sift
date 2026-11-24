@@ -20,7 +20,7 @@
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/agg.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_lateral_plan.h"

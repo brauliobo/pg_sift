@@ -21,7 +21,7 @@
 #include "utils/selfuncs.h"
 #include "utils/tuplestore.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/par/winrun.h"
 #include "agg/v6/v6_source_quals.h"
 #include "agg/v6/v6_source_rel.h"

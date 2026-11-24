@@ -1,1 +1,1 @@
-table_f2_col_delta	
+table_f2_col_delta	src/agg/v6/v6_safety.c:agg_query_has_rls src/agg/v6/v6_safety.c:query_has_rls src/agg/v6/v6_safety.c:rls_walker

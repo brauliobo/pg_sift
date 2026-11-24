@@ -12,7 +12,7 @@
 #include "pgstat.h"
 #include "storage/predicate.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_source_rel.h"
 #include "core/meta_peek.h"

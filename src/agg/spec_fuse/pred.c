@@ -9,7 +9,7 @@
 #include "nodes/nodeFuncs.h"
 
 #include "agg/agg.h"
-#include "agg/plan/node_hash.h"
+#include "agg/v6/v6_node_hash.h"
 #include "agg/spec_fuse/int.h"
 
 static SiftAggPred *

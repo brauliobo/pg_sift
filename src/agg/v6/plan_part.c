@@ -14,7 +14,7 @@
 #include "optimizer/paths.h"
 #include "parser/parsetree.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_source_rel.h"

@@ -1,11 +1,11 @@
 /*
- * agg/plan/safety.h - the guards every planner of the aggregation shares before it reads a table's own files instead of the plan PostgreSQL would run: row-level security and
+ * agg/v6/v6_safety.h - the guards every planner of the aggregation shares before it reads a table's own files instead of the plan PostgreSQL would run: row-level security and
  * security barriers (the scan reads raw columns, so a policy or a barrier view would be bypassed), parameters of a generic plan (the value is not known when the plan is made),
  * cursors that scroll or hold (the node must buffer what it gives), and partial or expression indexes (the index does not hold every row, or its columns are not table columns).
  * One answer for the whole of agg/: a planner never tests securityQuals, hasRowSecurity, a Param or indpred itself.
  */
-#ifndef SIFT_AGG_PLAN_SAFETY_H
-#define SIFT_AGG_PLAN_SAFETY_H
+#ifndef SIFT_AGG_V6_SAFETY_H
+#define SIFT_AGG_V6_SAFETY_H
 
 #include "postgres.h"
 
@@ -42,4 +42,4 @@ extern bool agg_index_complete(const IndexOptInfo *ii);
 /* The 0-based place of the table column attno among the columns of the index, -1 when the index holds it in no column (an expression column is no table column) */
 extern int	agg_index_col(const IndexOptInfo *ii, AttrNumber attno);
 
-#endif							/* SIFT_AGG_PLAN_SAFETY_H */
+#endif							/* SIFT_AGG_V6_SAFETY_H */

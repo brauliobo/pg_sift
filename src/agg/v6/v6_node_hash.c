@@ -1,5 +1,5 @@
 /*
- * agg/plan/node_hash.c - the hash of node trees that agrees with equal() (node_hash.h).
+ * agg/v6/v6_node_hash.c - the hash of node trees that agrees with equal() (node_hash.h).
  */
 #include "postgres.h"
 
@@ -8,7 +8,7 @@
 #include "nodes/value.h"
 #include "utils/datum.h"
 
-#include "agg/plan/node_hash.h"
+#include "agg/v6/v6_node_hash.h"
 
 /* a hash of a node from the fields equal() compares (not the ones it skips: locations, the function of an operator that may be set or not), so that equal nodes share it; what it leaves out only costs a longer chain */
 uint64

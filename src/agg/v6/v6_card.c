@@ -11,7 +11,7 @@
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 
-#include "agg/plan/safety.h"
+#include "agg/v6/v6_safety.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_vexpr.h"
