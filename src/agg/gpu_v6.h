@@ -1,6 +1,6 @@
 /*
  * agg/gpu_v6.h - the Vulkan path of SiftAggV6 (Spec 39): the four settings sift.gpu, sift.gpu_min_rows, sift.gpu_device and sift.gpu_cache_mb, the choice between the device and the CPU, and
- * the scan of the parts of a Format 2.0 relation (a sift_col index or a sift_table, through SiftF2Store) on the device.
+ * the scan of the parts of a Format 2.0 relation (a sift_col index or a sift_table, through the gpu ops of its store) on the device.
  *
  * The aggregate asks for the device once, before it scans: sift_gpu_v6_agg gives back the groups that the device made of the parts it could read, or NULL when the CPU runs everything. The CPU then
  * scans what the device did not take (the slab, the parts with pending deletes or unsettled writers, any part sift_gpu_v6_covers refuses) into the same groups. Whatever goes wrong on the device

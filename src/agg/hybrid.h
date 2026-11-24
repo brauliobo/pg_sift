@@ -127,7 +127,7 @@ typedef struct SiftHybridBatch
 
 typedef void (*SiftHybridSink) (void *arg, const SiftHybridBatch *batch);
 
-/* The columnar side. A host fills it in: sift_col (hybrid_exec.c) or a sift_table's SiftF2Store */
+/* The columnar side. A host fills it in: sift_col (hybrid_exec.c) or a sift_table (the hybrid ops of its store) */
 typedef struct SiftHybridStore
 {
 	SiftHybridHost host;

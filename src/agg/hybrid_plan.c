@@ -35,7 +35,6 @@
 #include "agg/hybrid_agg_core.h"
 #include "agg/hybrid_int.h"
 #include "agg/hybrid_quals.h"
-#include "agg/plan/format_ops.h"
 #include "agg/v6/v6.h"
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
@@ -222,7 +221,7 @@ col_index(RelOptInfo *rel)
 {
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
 		if ((ix->indpred == NIL || ix->predOK) && !ix->hypothetical && ix->nkeycolumns == ix->ncolumns &&
-			sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
+			sift_store_ops_for_oid(ix->indexoid, false) != NULL)
 			return ix;
 	return NULL;
 }

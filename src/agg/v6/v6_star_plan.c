@@ -22,8 +22,6 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_ext.h"
-#include "col/am/format_ops.h"
-#include "agg/plan/format_ops.h"
 
 typedef struct StarDim
 {
@@ -342,7 +340,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 		Cost		xs = 0,
 					xt = 0;
 
-		if (ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
+		if (!sift_v6_index_owned(ix))
 			continue;
 		irel = index_open(ix->indexoid, AccessShareLock);
 		sift_v6_plan_index(&p, irel);
