@@ -26,6 +26,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
+#include "storage/lmgr.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
@@ -71,7 +72,10 @@ class_of(const SiftStoreAtt *a)
 static const SiftStoreOps *
 ops_of(Oid relid, bool is_table)
 {
-	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, is_table);
+	const SiftStoreOps *ops;
+
+	LockRelationOid(relid, AccessShareLock);
+	ops = sift_store_ops_for_oid(relid, is_table);
 
 	if (ops == NULL)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("no storage format owns relation %u", relid)));
@@ -315,7 +319,7 @@ sift_test_store_ops(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	bool		is_table = PG_GETARG_BOOL(1);
-	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, is_table);
+	const SiftStoreOps *ops;
 	SiftStoreSchema schema;
 	SiftStoreStats stats;
 	StringInfoData types,
@@ -326,6 +330,8 @@ sift_test_store_ops(PG_FUNCTION_ARGS)
 
 	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
+	LockRelationOid(relid, AccessShareLock);
+	ops = sift_store_ops_for_oid(relid, is_table);
 	if (ops == NULL)
 		PG_RETURN_NULL();
 	ops->schema(relid, is_table, &schema);
