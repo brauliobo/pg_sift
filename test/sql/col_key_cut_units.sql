@@ -1,6 +1,6 @@
 -- key_cut on a table of narrow rows: a superblock holds tens of thousands of such rows, and the units of the key cut are as large (up to 32,768 rows) with
 -- the summaries of groups of units, so that a scan that does not use the key reads about the units of the page cut and answers from the same pre-aggregates,
--- and a lookup of the key still reads a unit or two. Four integer columns, 1,200,000 rows in a random order of the key.
+-- and a lookup of the key still reads a unit or two. Four integer columns, 400,000 rows in a random order of the key.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
@@ -10,13 +10,13 @@ SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE nu (id int, cust int, amt int, q int) WITH (autovacuum_enabled = false);
-INSERT INTO nu SELECT i, ((i::bigint * 7919) % 20000)::int, ((i::bigint * 31) % 1000)::int, i % 100 FROM generate_series(1, 1200000) i;
+INSERT INTO nu SELECT i, ((i::bigint * 7919) % 20000)::int, ((i::bigint * 31) % 1000)::int, i % 100 FROM generate_series(1, 400000) i;
 CREATE TABLE nk (LIKE nu);
 INSERT INTO nk SELECT * FROM nu;
 VACUUM (FREEZE, ANALYZE) nu;
 VACUUM (FREEZE, ANALYZE) nk;
-CREATE INDEX nu_idx ON nu USING sift_col (id, cust, amt, q) WITH (dead_rewrite_pct = 10);
-CREATE INDEX nk_idx ON nk USING sift_col (id, cust, amt, q) WITH (dead_rewrite_pct = 10, key_cut = 'cust');
+CREATE INDEX nu_idx ON nu USING sift_col (id, cust, amt, q) WITH (dead_rewrite_pct = 10, superunit = 4);
+CREATE INDEX nk_idx ON nk USING sift_col (id, cust, amt, q) WITH (dead_rewrite_pct = 10, superunit = 4, key_cut = 'cust');
 SELECT sift.col_verify('nk_idx', true);
 
 -- no more than twice the units of the page cut
@@ -39,7 +39,7 @@ SELECT (SELECT count(*) || ' ' || sum(amt) FROM nk WHERE cust = 4242) = (SELECT 
 
 -- a few pages of an all-visible heap lose rows (the visibility map is read 8 bytes of 32 pages at a time, the pages are in different words): the keys of those rows
 -- are counted without them, from the units whose pages are not all-visible
-CREATE TEMP TABLE dirty_ids AS SELECT id FROM nu WHERE ctid >= '(40,1)' AND ctid < '(41,1)' OR ctid >= '(2500,1)' AND ctid < '(2501,1)' OR ctid >= '(5000,1)' AND ctid < '(5001,1)';
+CREATE TEMP TABLE dirty_ids AS SELECT id FROM nu WHERE ctid >= '(40,1)' AND ctid < '(41,1)' OR ctid >= '(800,1)' AND ctid < '(801,1)' OR ctid >= '(1600,1)' AND ctid < '(1601,1)';
 CREATE TEMP TABLE dirty_custs AS SELECT DISTINCT cust FROM nu WHERE id IN (SELECT id FROM dirty_ids);
 DELETE FROM nk WHERE id IN (SELECT id FROM dirty_ids);
 DELETE FROM nu WHERE id IN (SELECT id FROM dirty_ids);
