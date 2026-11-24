@@ -9,7 +9,10 @@
 #include "mb/pg_wchar.h"
 
 #include "bm25/analyze.h"
+#include "core/cpu.h"
 #include "../pgshim.h"
+
+SiftCpu		sift_cpu;
 
 static SiftAnalyzer *
 analyzer(int mode, SiftStemmer stem)
