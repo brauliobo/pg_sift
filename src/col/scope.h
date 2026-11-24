@@ -295,9 +295,6 @@ extern struct SiftScopeDelta *sift_scope_delta_merge(const struct SiftScopeDelta
 extern struct SiftScopeDelta *sift_scope_delta_select(Relation index, int scope, SiftKeyMap *mm, const SiftScopeBuffer *bufs, int nbufs, const SiftScopePair *pairs, uint32 npairs, const int *leaves,
 													  int nleaves, uint64 *rows);
 
-/* The pairs of the rows of rel (under snap) whose column key is one of the nkeys keys (ascending; NULL: every row), read from the leaves of its sift_col index ix (agg/lookcol.c; a text, varchar or uuid column as the codes of its map mm or km); false: the index cannot give them */
-extern bool lookcol_pairs(Relation rel, Oid ix, Snapshot snap, int member, int key, SiftKeyMap *mm, SiftKeyMap *km, const int64 *keys, int nkeys, SiftScopePair **out, uint32 *n);
-
 typedef struct SiftScopeRead
 {
 	const char *why;

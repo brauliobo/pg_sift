@@ -292,35 +292,19 @@ probe_all(PairScan *ps, AttrNumber lead, const int64 *vals, uint32 n, SiftConnPr
 	sift_conn_probe_close(&s);
 }
 
-/* A pair read from the leaves of the journal index of the relation costs about this (138 instructions: 16 million for 116,000 pairs; the heap read of FILL_SCAN_NS_PER_PARENT_ROW in conn_fill.c is three times that), a probe of the btree about 3,500 */
-#define LEAF_PAIR_NS	45
+/* A pair of the relation read costs about this many ns (the heap read of FILL_SCAN_NS_PER_PARENT_ROW in conn_fill.c), a probe of the btree about 3,500 */
 #define SCAN_NS		130
 #define PROBE_NS		3500
 
-static bool
-leaf_pairs(PairScan *ps)
-{
-	Oid			journal = sift_scope_pairs_journal(ps->rel, ps->member, ps->skey, ps->btree);
-	SiftScopePair *p;
-	uint32		n;
-
-	if (!OidIsValid(journal) || !lookcol_pairs(ps->rel, journal, ps->snap, ps->member, ps->skey, ps->kma, ps->km, ps->keys, ps->nkeys, &p, &n))
-		return false;
-	for (uint32 i = 0; i < n; i++)
-		pairs_add(&ps->out, p[i].member, p[i].key);
-	return true;
-}
-
 /*
- * The pairs with one of the keys (any key: keys NULL), ascending by member: the btree asked for each key when it leads with the scope key and the keys are few, else the leaves of the relation's journal index (a pair with a NULL in a column is no pair)
- * (a sift_col index of both columns), else the relation read once
+ * The pairs with one of the keys (any key: keys NULL), ascending by member: the btree asked for each key when it leads with the scope key and the keys are few, else the relation read once
  */
 static void
 pairs_of_keys(PairScan *ps)
 {
-	if (ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) && (double) ps->nkeys * PROBE_NS < sift_conn_rows_of(ps->rel) * LEAF_PAIR_NS)
+	if (ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) && (double) ps->nkeys * PROBE_NS < sift_conn_rows_of(ps->rel) * SCAN_NS)
 		probe_all(ps, ps->skey, ps->keys, ps->nkeys, probe_of_key);
-	else if (!leaf_pairs(ps))
+	else
 		sift_conn_scan_pairs(ps->rel, ps->btree, ps->member, ps->kma, ps->skey, ps->km, ps->snap, scan_pair, ps);
 	pairs_distinct(&ps->out);
 }
@@ -339,11 +323,11 @@ probe_journal(PairScan *ps, Oid journal, const int64 *members, uint32 n)
 	sift_conn_pred_end(&ps->pred);
 }
 
-/* What the pairs of the keys cost to ask for, in ns: the btree for each key when it leads with the scope key, else the leaves of the relation's journal index, else the relation read (pairs_of_keys) */
+/* What the pairs of the keys cost to ask for, in ns: the btree for each key when it leads with the scope key, else the relation read (pairs_of_keys) */
 static double
 keys_ns(const PairScan *ps, double rows)
 {
-	double		read = rows * (OidIsValid(sift_scope_pairs_journal(ps->rel, ps->member, ps->skey, ps->btree)) ? LEAF_PAIR_NS : SCAN_NS);
+	double		read = rows * SCAN_NS;
 
 	return ps->keys != NULL && btree_leads_with(ps->btree, ps->skey) ? Min(read, (double) ps->nkeys * PROBE_NS) : read;
 }
