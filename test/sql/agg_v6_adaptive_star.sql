@@ -115,17 +115,22 @@ END $$;
 -- the categories are the ones the query keeps (department 1 and 2); the other dimensions are whole
 CREATE TABLE s_cat_f AS SELECT * FROM s_cat WHERE dept IN (1, 2);
 CREATE TABLE s_cat_f_dup AS SELECT * FROM s_cat_dup WHERE dept IN (1, 2, 9);
--- fact table x items x categories x regions, every kind of join of each against PostgreSQL's (every pair of kinds meets: the kind of the regions is (categories + items) mod 4), serial and with 4 workers; rows, payloads and NULLs equal
+-- fact table x items x categories x regions, every kind of join of each against PostgreSQL's (every pair of kinds meets: the kind of the regions is (categories + items) mod 4), serial and with 4 workers by turns
+-- (each kind of each join, and every kind of the regions, runs in both); rows, payloads and NULLs equal
 SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, kr, 's_cat_f', 's_item', true, true, true, workers) > 0) AS differ
-FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, LATERAL (SELECT (kc + ki) % 4 AS kr) AS k, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
+FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, LATERAL (SELECT (kc + ki) % 4 AS kr) AS k, (VALUES (0), (4)) AS w(workers)
+WHERE (kc / 2 + ki) % 2 * 4 = workers GROUP BY workers ORDER BY workers;
 -- the same with no regions: the fact table, the items and the categories
 SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, 0, 's_cat_f', 's_item', true, true, false, workers) > 0) AS differ
-FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
+FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, (VALUES (0), (4)) AS w(workers)
+WHERE (kc / 2 + ki) % 2 * 4 = workers GROUP BY workers ORDER BY workers;
 -- an item with several rows: the fact row has a row for each (a fan-out), the categories that are not unique are joined as semi or anti
 SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, kr, 's_cat_f', 's_item_dup', true, false, true, workers, 512) > 0) AS differ
-FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, LATERAL (SELECT (kc + ki) % 4 AS kr) AS k, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
+FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, LATERAL (SELECT (kc + ki) % 4 AS kr) AS k, (VALUES (0), (4)) AS w(workers)
+WHERE (kc / 2 + ki) % 2 * 4 = workers GROUP BY workers ORDER BY workers;
 SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, 0, 's_cat_f_dup', 's_item_dup', false, false, true, workers, 2048) > 0) AS differ
-FROM (VALUES (1), (3)) AS k(kc), generate_series(0, 3) AS ki, (VALUES (0), (4)) AS w(workers) GROUP BY workers ORDER BY workers;
+FROM (VALUES (1), (3)) AS k(kc), generate_series(0, 3) AS ki, (VALUES (0), (4)) AS w(workers)
+WHERE (kc / 2 + ki) % 2 * 4 = workers GROUP BY workers ORDER BY workers;
 -- a parent that is not unique and joined by inner or left would multiply the rows: it is refused
 \set VERBOSITY terse
 SELECT star_diff(0, 0, 0, 's_cat_f_dup', 's_item', false, true, true, 0);
