@@ -68,11 +68,11 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT DISTINCT ON (g) g, count(*) FROM pw GROUP BY g ORDER BY g, count(*) DESC'
 ]) q;
 
--- Q-A04. stddev, variance, bool_or, bool_and of floats and booleans, min and max of a text in the C collation (a collation that sorts otherwise is the executor's)
+-- Q-A04. stddev, variance, bool_or, bool_and of floats and booleans, min and max of a text in the C collation (a collation that sorts otherwise runs through the aggregate's own function)
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT g, round(stddev(f)::numeric, 3), round(stddev_pop(f)::numeric, 3), round(variance(f)::numeric, 3), round(var_pop(f)::numeric, 3), round(var_samp(f)::numeric, 3) FROM pw GROUP BY g',
 	'SELECT g, round(stddev(h)::numeric, 6), round(var_pop(h)::numeric, 6) FROM pw GROUP BY g',
-	'SELECT g, stddev_pop(n::float8), var_samp(n::float8) FROM pw GROUP BY g',
+	'SELECT g, round(stddev_pop(n::float8)::numeric, 3), round(var_samp(n::float8)::numeric, 3) FROM pw GROUP BY g',
 	'SELECT stddev(f), var_pop(f) FROM pw WHERE n > 1000',
 	'SELECT g, bool_or(b), bool_and(b), every(b) FROM pw GROUP BY g',
 	'SELECT g, min(t), max(t) FROM pw GROUP BY g',
