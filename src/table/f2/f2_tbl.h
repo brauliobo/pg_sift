@@ -70,6 +70,13 @@ sift_tbl_tid_pack(const ItemPointerData *tid)
 	return ((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid);
 }
 
+/* An end of the range of a TID range scan: the executor steps an exclusive end to the address next to it, so an end may be (block, 0), which is no row's address */
+static inline uint64
+sift_tbl_tid_bound_pack(const ItemPointerData *bound)
+{
+	return ((uint64) ItemPointerGetBlockNumberNoCheck(bound) << 16) | ItemPointerGetOffsetNumberNoCheck(bound);
+}
+
 static inline void
 sift_tbl_tid_unpack(ItemPointer tid, uint64 addr)
 {

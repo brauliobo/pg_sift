@@ -15,9 +15,9 @@ deadlock_timeout = 200ms"
 node_start lo || bail "start failed"
 D=$(dir lo)
 sql lo "CREATE EXTENSION pg_sift_test CASCADE" \
-	"CREATE TABLE a (k int, v int) USING sift_table" \
-	"CREATE TABLE b (k int, v int) USING sift_table" \
-	"CREATE TABLE c (k int, v int) USING sift_table" \
+	"CREATE TABLE a (k int PRIMARY KEY, v int) USING sift_table" \
+	"CREATE TABLE b (k int PRIMARY KEY, v int) USING sift_table" \
+	"CREATE TABLE c (k int PRIMARY KEY, v int) USING sift_table" \
 	"INSERT INTO a SELECT g, 0 FROM generate_series(1, 6000) g" \
 	"INSERT INTO b SELECT g, 0 FROM generate_series(1, 6000) g" \
 	"INSERT INTO c SELECT g, 0 FROM generate_series(1, 6000) g" >/dev/null || bail "setup failed"

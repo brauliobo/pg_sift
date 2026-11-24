@@ -555,8 +555,8 @@ sift_tbl_f2_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointe
 	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
 
 	s->has_range = true;
-	s->mintid = sift_tbl_tid_pack(mintid);
-	s->maxtid = sift_tbl_tid_pack(maxtid);
+	s->mintid = sift_tbl_tid_bound_pack(mintid);
+	s->maxtid = sift_tbl_tid_bound_pack(maxtid);
 	if (s->par == NULL)
 	{
 		scan_units_restart(s);

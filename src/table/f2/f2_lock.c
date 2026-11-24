@@ -789,11 +789,13 @@ lock_held(Relation rel, const SiftRowState *rs, uint64 tid, LockTupleMode mode, 
 	return lock_entry_or_partition(rel, tid, rs->part_id, mode, wait_policy, tmfd, reread);
 }
 
-/* The lock is held before the deltas are read: no one else can add one while the row is ours; cur is the address a wait names in the message of a row it waits on */
+/* The lock is held before the deltas are read: no one else can add one while the row is ours */
 static TM_Result
-lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool judge_delta,
-		 ItemPointer cur, bool *waited)
+lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool judge_delta, bool *waited)
 {
+	ItemPointerData waiting_for;
+
+	sift_tbl_tid_unpack(&waiting_for, tid);
 	memset(tmfd, 0, sizeof(*tmfd));
 	*waited = false;
 	for (;;)
@@ -814,14 +816,14 @@ lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_polic
 		if (res != TM_BeingModified || wait_policy != LockWaitBlock)
 			return res;
 		*waited = true;
-		XactLockTableWait(tmfd->xmax, rel, cur, XLTW_Lock);
+		XactLockTableWait(tmfd->xmax, rel, &waiting_for, XLTW_Lock);
 	}
 }
 
 TM_Result
 sift_tbl_f2_lock_for_modify(Relation rel, uint64 tid, LockTupleMode mode, bool wait, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool *waited)
 {
-	return lock_row(rel, tid, mode, wait ? LockWaitBlock : LockWaitError, snap, cid, tmfd, true, NULL, waited);
+	return lock_row(rel, tid, mode, wait ? LockWaitBlock : LockWaitError, snap, cid, tmfd, true, waited);
 }
 
 /* ---- the callbacks ---- */
@@ -858,7 +860,7 @@ sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTa
 	for (;;)
 	{
 		bool		waited;
-		TM_Result	res = lock_row(rel, sift_tbl_tid_pack(&cur), mode, wait_policy, snapshot, cid, tmfd, !at_latest, &cur, &waited);
+		TM_Result	res = lock_row(rel, sift_tbl_tid_pack(&cur), mode, wait_policy, snapshot, cid, tmfd, !at_latest, &waited);
 
 		if (res == TM_BeingModified && wait_policy == LockWaitSkip)
 			return TM_WouldBlock;
