@@ -1,8 +1,8 @@
 # CI-02, Spec 30: a cluster written by the v5.1.0 release is opened by the 6.0 library with no REINDEX and no rewrite.
-# Every Format 1 relation (sift_col plain, JSONB paths, tracked and scoped; sift_table; sift BM25 1.7) answers as it
+# Every Format 1 relation (sift_col plain, JSONB paths, tracked and scoped; sift_table; sift BM25 1.x) answers as it
 # did under v5.1.0 (golden digests), takes INSERT, UPDATE, DELETE, VACUUM and SiftAgg, is replayed by a standby, and is
 # moved to Format 2.0 online: REINDEX INDEX CONCURRENTLY with reads and writes running (sift_col), sift.upgrade_table()
-# and VACUUM FULL (sift_table). The BM25 index stays Format 1.7. Rows are checked against the heap, never against the
+# and VACUUM FULL (sift_table). The BM25 index stays on its Format 1 minor. Rows are checked against the heap, never against the
 # index under test.
 #
 # The v5.1.0 library comes from scripts/build-v510-fixture.sh (SIFT_V510_LIBDIR, default /tmp/sift-v510-lib;
@@ -41,7 +41,7 @@ vacuum_all($node);
 sql($node, 'CHECKPOINT');
 
 for my $rel (@FORMAT1) { like(format_of($node, $rel), qr/^1\.\d+$/, "$rel is Format 1 under v5.1.0") }
-is(format_of($node, $BM25), '1.7', "$BM25 is Format 1.7 under v5.1.0");
+like(format_of($node, $BM25), qr/^1\.\d+$/, "$BM25 is Format 1 under v5.1.0");
 agree_with_heap($node, 'v5.1.0');
 my $golden    = snapshot($node);
 my $nodes0    = filenodes($node);
@@ -130,7 +130,7 @@ agree_with_heap($node, 'ev_col Format 2.0');
 
 sql($node, "REINDEX INDEX CONCURRENTLY $_") for qw(ev_trk pairs_journal sc_idx);
 is(format_of($node, $_), '2.0', "$_ is Format 2.0 after REINDEX INDEX CONCURRENTLY") for qw(ev_trk pairs_journal sc_idx);
-is(format_of($node, $BM25), '1.7', "$BM25 stays Format 1.7");
+is(format_of($node, $BM25), $formats0->{$BM25}, "$BM25 stays on the Format 1 minor v5.1.0 wrote");
 agree_with_heap($node, 'every sift_col Format 2.0');
 same_on_standby('sift_col Format 2.0');
 is(format_of($standby, 'ev_col'), '2.0', 'the standby has ev_col on Format 2.0');
@@ -151,12 +151,12 @@ is(sql($node, q{SELECT count(*)::text || ':' || sum(v) FROM st_vf}), $st_vf0, 'V
 # ------------------------------------------------------------------ the upgraded relations and the BM25 index take writes
 sql($node, dml(3, @ALL_DML));
 vacuum_all($node);
-agree_with_heap($node, 'Format 2.0 and 1.7 writes');
+agree_with_heap($node, 'Format 2.0 and Format 1 writes');
 is(sql($node, "SELECT count(*) FROM sift.check(NULL, true)"), '0', 'sift.check(heapallindexed) finds no problem after the upgrades');
 is(sql($node, 'SELECT count(*) FROM sift.health()'), '0', 'sift.health() reports nothing: every Format 1 relation but the BM25 index is Format 2.0');
 is(sql($node, "SELECT string_agg(relation::text || ' ' || format, ',' ORDER BY relation::text) FROM sift.indexes"),
-	join(',', map { "$_ " . ($_ eq $BM25 ? '1.7' : '2.0') } sort(@FORMAT1, $BM25)), 'sift.indexes: Format 2.0 everywhere, 1.7 for the BM25 index');
-same_on_standby('Format 2.0 and 1.7 writes');
+	join(',', map { "$_ " . ($_ eq $BM25 ? $formats0->{$BM25} : '2.0') } sort(@FORMAT1, $BM25)), 'sift.indexes: Format 2.0 everywhere, the v5.1.0 minor for the BM25 index');
+same_on_standby('Format 2.0 and Format 1 writes');
 for my $rel (@FORMAT1) { is(format_of($standby, $rel), '2.0', "the standby has $rel on Format 2.0") }
 
 $standby->stop;
