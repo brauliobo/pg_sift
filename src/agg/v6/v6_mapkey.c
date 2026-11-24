@@ -164,7 +164,7 @@ static bool
 reads_member(V6Plan *p, GroupPathExtraData *extra, List *group_exprs, int *att)
 {
 	Probe		pr = {p, 0};
-	bool		found = probe((Node *) p->out->reltarget->exprs, &pr) || probe((Node *) group_exprs, &pr) || probe(extra->havingQual, &pr);
+	bool		found = probe((Node *) p->out->reltarget->exprs, &pr) || probe((Node *) group_exprs, &pr) || probe(extra != NULL ? extra->havingQual : NULL, &pr);
 
 	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
 		found = found || probe((Node *) ri->clause, &pr);
