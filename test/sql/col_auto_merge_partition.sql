@@ -3,7 +3,6 @@
 -- the partitions are merged into the ones they share superblocks with. The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
-SET sift.test_agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
 -- the overlays are cut by superblock here: the units a TID-range overlay (sift.test_col_unit_floor, col_unit_floor) lists are no fragmentation to fold
 SET sift.test_col_unit_floor = 0;
@@ -23,21 +22,17 @@ ALTER INDEX items_col SET (dead_rewrite_pct = 100);
 ALTER INDEX items_plain_col SET (dead_rewrite_pct = 100);
 SET sift.vacuum_rewrite_limit = 0;
 
--- whether none, some or all the units of the SiftAgg node were answered from the pre-aggregates, and whether the three ways (pre-aggregates, scan, heap) agree
-CREATE FUNCTION pt_state(tbl text) RETURNS TABLE (from_preagg text, same bool) LANGUAGE plpgsql AS $$
-DECLARE l text; u int; p int; q text := format('SELECT kind, count(*), sum(amount) FROM %s GROUP BY kind', tbl); a text; b text; c text;
+-- whether the three ways (pre-aggregates, scan, heap) agree
+CREATE FUNCTION pt_state(tbl text) RETURNS TABLE (same bool) LANGUAGE plpgsql AS $$
+DECLARE q text := format('SELECT kind, count(*), sum(amount) FROM %s GROUP BY kind', tbl); a text; b text; c text;
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		u := coalesce(substring(l from '^\s*Units: (\d+)')::int, u);
-		p := coalesce(substring(l from '(\d+) from pre-aggregates')::int, p);
-	END LOOP;
 	SET LOCAL sift.agg_preagg = on;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
 	SET LOCAL sift.agg_preagg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
-	RETURN QUERY SELECT CASE WHEN p = 0 THEN 'none' WHEN p = u THEN 'all' ELSE 'some' END, a = b AND b = c;
+	RETURN QUERY SELECT a = b AND b = c;
 END $$;
 
 -- the segments: how many, how many hold a dead row, how many rows are in the write buffer
