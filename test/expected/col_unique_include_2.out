@@ -1,0 +1,463 @@
+-- sift_col (format major 2): INCLUDE columns and UNIQUE indexes. An INCLUDE column is stored and returned like a key column and is no key; a unique index refuses a second live row of a key at the
+-- build and at each write (23505), waits for the transaction of a row that is not out of doubt, and knows NULLs as PostgreSQL does (distinct unless NULLS NOT DISTINCT).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET TimeZone = 'UTC';
+-- the library of the testing build creates the indexes of format major 1 by default; these are of format major 2, which the release library creates
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+-- ---------------------------------------------------------------------------------------------------------
+-- INCLUDE
+-- ---------------------------------------------------------------------------------------------------------
+CREATE TABLE inc (k1 int, k2 text, c1 bigint, c2 text, c3 numeric(10, 2), c4 point, c5 date);
+INSERT INTO inc SELECT g % 50, 'k' || (g % 7), g * 10, CASE WHEN g % 11 = 0 THEN NULL ELSE 'c' || g END, g / 4.0, point(g, -g), DATE '2024-01-01' + g
+FROM generate_series(1, 2000) g;
+CREATE INDEX inc_i ON inc USING sift_col (k1, k2) INCLUDE (c1, c2, c3, c4, c5) WITH (return_columns = 'c2, c4');
+SELECT a.attname, a.attnum <= i.indnkeyatts AS is_key, i.indnatts, i.indnkeyatts
+FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indexrelid WHERE i.indexrelid = 'inc_i'::regclass ORDER BY a.attnum;
+ attname | is_key | indnatts | indnkeyatts 
+---------+--------+----------+-------------
+ k1      | t      |        7 |           2
+ k2      | t      |        7 |           2
+ c1      | f      |        7 |           2
+ c2      | f      |        7 |           2
+ c3      | f      |        7 |           2
+ c4      | f      |        7 |           2
+ c5      | f      |        7 |           2
+(7 rows)
+
+VACUUM inc;
+-- what an index-only scan returns of the INCLUDE columns is what the heap holds
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT k1, c1, c2, c3, c4, c5 FROM inc WHERE k1 = 7;
+             QUERY PLAN             
+------------------------------------
+ Index Only Scan using inc_i on inc
+   Index Cond: (k1 = 7)
+(2 rows)
+
+CREATE TABLE inc_ios AS SELECT k1, k2, c1, c2, c3, c4::text AS c4, c5 FROM inc WHERE k1 = 7;
+RESET enable_seqscan; RESET enable_bitmapscan;
+SELECT count(*) AS ios_rows, (SELECT count(*) FROM (SELECT * FROM inc_ios EXCEPT SELECT k1, k2, c1, c2, c3, c4::text, c5 FROM inc WHERE k1 = 7) x) AS extra,
+	   (SELECT count(*) FROM (SELECT k1, k2, c1, c2, c3, c4::text, c5 FROM inc WHERE k1 = 7 EXCEPT SELECT * FROM inc_ios) x) AS missing FROM inc_ios;
+ ios_rows | extra | missing 
+----------+-------+---------
+       40 |     0 |       0
+(1 row)
+
+DROP TABLE inc_ios;
+-- the aggregates read the INCLUDE columns of the index (the answers are the heap's)
+SELECT k1, count(*), sum(c1), count(c2), sum(c3), min(c5) FROM inc WHERE k1 < 3 GROUP BY k1 ORDER BY k1;
+ k1 | count |  sum   | count |   sum    |    min     
+----+-------+--------+-------+----------+------------
+  0 |    40 | 410000 |    37 | 10250.00 | 02-20-2024
+  1 |    40 | 390400 |    37 |  9760.00 | 01-02-2024
+  2 |    40 | 390800 |    37 |  9770.00 | 01-03-2024
+(3 rows)
+
+SET sift.enable_agg = off;
+SELECT k1, count(*), sum(c1), count(c2), sum(c3), min(c5) FROM inc WHERE k1 < 3 GROUP BY k1 ORDER BY k1;
+ k1 | count |  sum   | count |   sum    |    min     
+----+-------+--------+-------+----------+------------
+  0 |    40 | 410000 |    37 | 10250.00 | 02-20-2024
+  1 |    40 | 390400 |    37 |  9760.00 | 01-02-2024
+  2 |    40 | 390800 |    37 |  9770.00 | 01-03-2024
+(3 rows)
+
+RESET sift.enable_agg;
+-- a write is read back, and a row that leaves is gone
+INSERT INTO inc VALUES (7, 'k0', 1, 'new', 1.50, point(1, 1), '2030-01-01');
+UPDATE inc SET c2 = 'changed', c4 = point(0, 0) WHERE c1 = 70;
+DELETE FROM inc WHERE c1 = 140;
+SELECT k1, k2, c1, c2, c3, c4, c5 FROM inc WHERE k1 = 7 AND c1 IN (1, 70, 140, 210) ORDER BY c1;
+ k1 | k2 | c1 |   c2    |  c3  |  c4   |     c5     
+----+----+----+---------+------+-------+------------
+  7 | k0 |  1 | new     | 1.50 | (1,1) | 01-01-2030
+  7 | k0 | 70 | changed | 1.75 | (0,0) | 01-08-2024
+(2 rows)
+
+SELECT count(*), sum(c1) FROM inc WHERE k1 = 7;
+ count |  sum   
+-------+--------
+    41 | 392801
+(1 row)
+
+-- the options name INCLUDE columns, and a rename follows
+CREATE INDEX inc_o ON inc USING sift_col (k1) INCLUDE (c1, c2) WITH (compression = 'zstd:3; c2=lz4', return_columns = 'c2');
+ALTER TABLE inc RENAME COLUMN c1 TO c1_renamed;
+ERROR:  sift index "inc_i" uses on-disk format 2.0, newer than this pg_sift supports (up to 1.7)
+HINT:  Upgrade the pg_sift library to the release that wrote this index, on every node that reads it.
+SELECT a.attname FROM pg_attribute a WHERE a.attrelid = 'inc_o'::regclass AND a.attnum > 0 ORDER BY a.attnum;
+ attname 
+---------
+ k1
+ c1
+ c2
+(3 rows)
+
+CREATE INDEX inc_bad ON inc USING sift_col (k1) INCLUDE (c1_renamed) WITH (return_columns = 'nosuch');
+ERROR:  column "c1_renamed" does not exist
+LINE 1: ...INDEX inc_bad ON inc USING sift_col (k1) INCLUDE (c1_renamed...
+                                                             ^
+DROP TABLE inc;
+-- ---------------------------------------------------------------------------------------------------------
+-- UNIQUE: the build
+-- ---------------------------------------------------------------------------------------------------------
+CREATE TABLE u (id int, a int, b text, n numeric, u uuid, ts timestamptz, flag bool, pad text);
+INSERT INTO u SELECT g, g % 10, 'b' || g, g, ('00000000-0000-0000-0000-' || lpad(g::text, 12, '0'))::uuid, TIMESTAMPTZ '2024-01-01 00:00:00+00' + g * interval '1 minute', g % 2 = 0, repeat('x', 20)
+FROM generate_series(1, 3000) g;
+CREATE UNIQUE INDEX u_id ON u USING sift_col (id);
+CREATE UNIQUE INDEX u_ab ON u USING sift_col (a, b) INCLUDE (pad);
+CREATE UNIQUE INDEX u_n ON u USING sift_col (n);
+CREATE UNIQUE INDEX u_u ON u USING sift_col (u);
+CREATE UNIQUE INDEX u_ts ON u USING sift_col (ts);
+SELECT indexrelid::regclass AS idx, indisunique, indnullsnotdistinct, indnatts, indnkeyatts FROM pg_index WHERE indrelid = 'u'::regclass ORDER BY 1::text;
+ idx  | indisunique | indnullsnotdistinct | indnatts | indnkeyatts 
+------+-------------+---------------------+----------+-------------
+ u_id | t           | f                   |        1 |           1
+ u_ab | t           | f                   |        3 |           2
+ u_n  | t           | f                   |        1 |           1
+ u_u  | t           | f                   |        1 |           1
+ u_ts | t           | f                   |        1 |           1
+(5 rows)
+
+-- a duplicate in the table is refused, whichever column or columns make the key
+CREATE TABLE ud AS SELECT g AS id, g % 100 AS a, 'b' || (g % 30) AS b, g::numeric AS n FROM generate_series(1, 1000) g;
+CREATE UNIQUE INDEX ud_a ON ud USING sift_col (a);
+ERROR:  could not create unique index "ud_a"
+DETAIL:  Key (a)=(0) is duplicated.
+CREATE UNIQUE INDEX ud_ab ON ud USING sift_col (a, b);
+ERROR:  could not create unique index "ud_ab"
+DETAIL:  Key (a, b)=(0, b0) is duplicated.
+CREATE UNIQUE INDEX ud_id ON ud USING sift_col (id);
+UPDATE ud SET n = -1 WHERE id IN (5, 6);
+CREATE UNIQUE INDEX ud_n ON ud USING sift_col (n);
+ERROR:  could not create unique index "ud_n"
+DETAIL:  Key (n)=(-1) is duplicated.
+UPDATE ud SET n = -1.00 WHERE id = 7;
+CREATE UNIQUE INDEX ud_n ON ud USING sift_col (n);
+ERROR:  could not create unique index "ud_n"
+DETAIL:  Key (n)=(-1) is duplicated.
+-- the rows a delete took out are no duplicate, and a failed build leaves no index
+DELETE FROM ud WHERE id IN (6, 7);
+CREATE UNIQUE INDEX ud_n ON ud USING sift_col (n);
+SELECT count(*) FROM pg_class WHERE relname IN ('ud_a', 'ud_ab', 'ud_n');
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE ud;
+-- the key types: what the leaf looks up by equality, and nothing else
+CREATE TABLE ut (f8 float8, p point, c char(3), t text COLLATE "C", j jsonb, d date, v varchar(10));
+CREATE UNIQUE INDEX ut_f8 ON ut USING sift_col (f8);
+ERROR:  a UNIQUE sift_col index cannot have the key column "f8" of type double precision
+HINT:  The key of a unique index is made of smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric, uuid, text and varchar (deterministic collation) columns; put other columns in INCLUDE.
+CREATE UNIQUE INDEX ut_p ON ut USING sift_col (p);
+ERROR:  a UNIQUE sift_col index cannot have the key column "p" of type point
+HINT:  The key of a unique index is made of smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric, uuid, text and varchar (deterministic collation) columns; put other columns in INCLUDE.
+CREATE UNIQUE INDEX ut_c ON ut USING sift_col (c);
+ERROR:  a UNIQUE sift_col index cannot have the key column "c" of type character
+HINT:  The key of a unique index is made of smallint, integer, bigint, boolean, date, timestamp, timestamptz, numeric, uuid, text and varchar (deterministic collation) columns; put other columns in INCLUDE.
+CREATE UNIQUE INDEX ut_t ON ut USING sift_col (t);
+CREATE UNIQUE INDEX ut_dv ON ut USING sift_col (d, v) INCLUDE (f8, p, c);
+SELECT count(*) AS built FROM pg_class WHERE relname IN ('ut_t', 'ut_dv');
+ built 
+-------
+     2
+(1 row)
+
+DROP TABLE ut;
+-- ---------------------------------------------------------------------------------------------------------
+-- UNIQUE: the writes
+-- ---------------------------------------------------------------------------------------------------------
+INSERT INTO u (id, a, b, n, u, ts) VALUES (1, 100, 'x100', 100000, '10000000-0000-0000-0000-000000000000', '2000-01-01 00:00:00+00');
+ERROR:  duplicate key value violates unique constraint "u_id"
+DETAIL:  Key (id)=(1) already exists.
+INSERT INTO u (id, a, b, n, u, ts) VALUES (3001, 3, 'b3', 100001, '10000000-0000-0000-0000-000000000001', '2000-01-01 00:00:01+00');
+ERROR:  duplicate key value violates unique constraint "u_ab"
+DETAIL:  Key (a, b)=(3, b3) already exists.
+INSERT INTO u (id, a, b, n, u, ts) VALUES (3001, 100, 'y', 100002, '10000000-0000-0000-0000-000000000002', '2000-01-01 00:00:02+00');
+INSERT INTO u (id, a, b, n, u, ts) VALUES (3002, 100, 'z', 7.000, '10000000-0000-0000-0000-000000000003', '2000-01-01 00:00:03+00');
+ERROR:  duplicate key value violates unique constraint "u_n"
+DETAIL:  Key (n)=(7.000) already exists.
+INSERT INTO u (id, a, b, n, u, ts) VALUES (3002, 100, 'z', 100003, '00000000-0000-0000-0000-000000000005', '2000-01-01 00:00:03+00');
+ERROR:  duplicate key value violates unique constraint "u_u"
+DETAIL:  Key (u)=(00000000-0000-0000-0000-000000000005) already exists.
+INSERT INTO u (id, a, b, n, u, ts) VALUES (3002, 100, 'z', 100003, '10000000-0000-0000-0000-000000000003', '2024-01-01 00:05:00+00');
+ERROR:  duplicate key value violates unique constraint "u_ts"
+DETAIL:  Key (ts)=(Mon Jan 01 00:05:00 2024 UTC) already exists.
+INSERT INTO u (id, a, b, n, u, ts) VALUES (3002, 100, 'z', 100003, '10000000-0000-0000-0000-000000000003', '2000-01-01 00:00:03+00');
+SELECT count(*) FROM u;
+ count 
+-------
+  3002
+(1 row)
+
+-- a duplicate inside one statement, and inside one transaction
+INSERT INTO u (id, a, b, n, u, ts) VALUES (4000, 1, 'q1', 4000, '40000000-0000-0000-0000-000000000000', '2001-01-01'), (4000, 1, 'q2', 4001, '40000000-0000-0000-0000-000000000001', '2001-01-02');
+ERROR:  duplicate key value violates unique constraint "u_id"
+DETAIL:  Key (id)=(4000) already exists.
+BEGIN;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (4001, 1, 'q1', 4001, '40000000-0000-0000-0000-000000000001', '2001-01-03');
+INSERT INTO u (id, a, b, n, u, ts) VALUES (4001, 1, 'q3', 4002, '40000000-0000-0000-0000-000000000002', '2001-01-04');
+ERROR:  duplicate key value violates unique constraint "u_id"
+DETAIL:  Key (id)=(4001) already exists.
+ROLLBACK;
+SELECT count(*) FROM u WHERE id >= 4000;
+ count 
+-------
+     0
+(1 row)
+
+-- the rows of a rolled back transaction and of a rolled back savepoint hold no key
+BEGIN;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (5000, 5, 'r5000', 5000, '50000000-0000-0000-0000-000000000000', '2002-01-01');
+SAVEPOINT s1;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (5001, 5, 'r5001', 5001, '50000000-0000-0000-0000-000000000001', '2002-01-02');
+ROLLBACK TO s1;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (5001, 5, 'r5001', 5001, '50000000-0000-0000-0000-000000000001', '2002-01-02');
+INSERT INTO u (id, a, b, n, u, ts) VALUES (5000, 5, 'r5002', 5002, '50000000-0000-0000-0000-000000000002', '2002-01-03');
+ERROR:  duplicate key value violates unique constraint "u_id"
+DETAIL:  Key (id)=(5000) already exists.
+ROLLBACK TO s1;
+COMMIT;
+SELECT id FROM u WHERE id BETWEEN 5000 AND 5001 ORDER BY id;
+  id  
+------
+ 5000
+(1 row)
+
+BEGIN;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (5100, 5, 'r5100', 5100, '51000000-0000-0000-0000-000000000000', '2003-01-01');
+ROLLBACK;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (5100, 5, 'r5100', 5100, '51000000-0000-0000-0000-000000000000', '2003-01-01');
+SELECT id FROM u WHERE id = 5100;
+  id  
+------
+ 5100
+(1 row)
+
+-- UPDATE: a row keeps its key, takes a free one, and cannot take a live one
+UPDATE u SET pad = 'same key' WHERE id = 10;
+UPDATE u SET id = 6000 WHERE id = 10;
+UPDATE u SET id = 11 WHERE id = 6000;
+ERROR:  duplicate key value violates unique constraint "u_id"
+DETAIL:  Key (id)=(11) already exists.
+UPDATE u SET id = 12 WHERE id = 6000;
+ERROR:  duplicate key value violates unique constraint "u_id"
+DETAIL:  Key (id)=(12) already exists.
+UPDATE u SET id = id + 100000 WHERE id IN (20, 21);
+SELECT id FROM u WHERE id IN (6000, 10, 11, 12, 20, 21, 100020, 100021) ORDER BY id;
+   id   
+--------
+     11
+     12
+   6000
+ 100020
+ 100021
+(5 rows)
+
+-- DELETE, then the key again: in another transaction, in the same one, and after a VACUUM
+DELETE FROM u WHERE id = 30;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (30, 0, 'again', 30, '30000000-0000-0000-0000-000000000000', '2004-01-01');
+BEGIN;
+DELETE FROM u WHERE id = 31;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (31, 1, 'again', 31, '31000000-0000-0000-0000-000000000000', '2004-01-02');
+INSERT INTO u (id, a, b, n, u, ts) VALUES (31, 1, 'twice', 32, '32000000-0000-0000-0000-000000000000', '2004-01-03');
+ERROR:  duplicate key value violates unique constraint "u_id"
+DETAIL:  Key (id)=(31) already exists.
+COMMIT;
+DELETE FROM u WHERE id = 32;
+VACUUM u;
+INSERT INTO u (id, a, b, n, u, ts) VALUES (32, 2, 'after vacuum', 32, '32000000-0000-0000-0000-000000000001', '2004-01-04');
+INSERT INTO u (id, a, b, n, u, ts) VALUES (33, 3, 'dup after vacuum', 33, '33000000-0000-0000-0000-000000000000', '2004-01-05');
+ERROR:  duplicate key value violates unique constraint "u_id"
+DETAIL:  Key (id)=(33) already exists.
+SELECT id, b FROM u WHERE id IN (30, 31, 32, 33) ORDER BY id;
+ id |      b       
+----+--------------
+ 30 | again
+ 31 | b31
+ 32 | after vacuum
+ 33 | b33
+(4 rows)
+
+-- the index and the heap agree on every key, whatever the plan
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*) AS by_index, count(DISTINCT id) AS distinct_ids FROM u WHERE id >= 0;
+ by_index | distinct_ids 
+----------+--------------
+     3004 |         3004
+(1 row)
+
+RESET enable_seqscan; RESET enable_bitmapscan;
+SELECT count(*) AS by_heap, count(DISTINCT id) AS distinct_ids FROM u;
+ by_heap | distinct_ids 
+---------+--------------
+    3004 |         3004
+(1 row)
+
+-- ---------------------------------------------------------------------------------------------------------
+-- UNIQUE: NULLs
+-- ---------------------------------------------------------------------------------------------------------
+CREATE TABLE un (a int, b text, v int);
+CREATE UNIQUE INDEX un_ab ON un USING sift_col (a, b);
+INSERT INTO un VALUES (1, 'x', 1), (1, NULL, 2), (1, NULL, 3), (NULL, NULL, 4), (NULL, NULL, 5);
+INSERT INTO un VALUES (1, 'x', 6);
+ERROR:  duplicate key value violates unique constraint "un_ab"
+DETAIL:  Key (a, b)=(1, x) already exists.
+SELECT count(*) FROM un;
+ count 
+-------
+     5
+(1 row)
+
+CREATE TABLE unn (a int, b text, v int);
+INSERT INTO unn VALUES (1, NULL, 1), (2, NULL, 2), (NULL, 'x', 3);
+CREATE UNIQUE INDEX unn_ab ON unn USING sift_col (a, b) NULLS NOT DISTINCT;
+SELECT indnullsnotdistinct FROM pg_index WHERE indexrelid = 'unn_ab'::regclass;
+ indnullsnotdistinct 
+---------------------
+ t
+(1 row)
+
+INSERT INTO unn VALUES (1, NULL, 4);
+ERROR:  duplicate key value violates unique constraint "unn_ab"
+DETAIL:  Key (a, b)=(1, null) already exists.
+INSERT INTO unn VALUES (NULL, 'x', 5);
+ERROR:  duplicate key value violates unique constraint "unn_ab"
+DETAIL:  Key (a, b)=(null, x) already exists.
+INSERT INTO unn VALUES (NULL, NULL, 6), (3, NULL, 7);
+INSERT INTO unn VALUES (NULL, NULL, 8);
+ERROR:  duplicate key value violates unique constraint "unn_ab"
+DETAIL:  Key (a, b)=(null, null) already exists.
+SELECT count(*) FROM unn;
+ count 
+-------
+     5
+(1 row)
+
+INSERT INTO unn VALUES (2, NULL, 9);
+ERROR:  duplicate key value violates unique constraint "unn_ab"
+DETAIL:  Key (a, b)=(2, null) already exists.
+DELETE FROM unn WHERE a = 2;
+INSERT INTO unn VALUES (2, NULL, 10);
+CREATE TABLE unb (a int, v int);
+INSERT INTO unb VALUES (NULL, 1), (NULL, 2);
+CREATE UNIQUE INDEX unb_a ON unb USING sift_col (a) NULLS NOT DISTINCT;
+ERROR:  could not create unique index "unb_a"
+DETAIL:  Key (a)=(null) is duplicated.
+CREATE UNIQUE INDEX unb_a ON unb USING sift_col (a);
+DROP TABLE un, unn, unb;
+-- ---------------------------------------------------------------------------------------------------------
+-- UNIQUE: INSERT ... ON CONFLICT (the operator class names the type: the default class is polymorphic and PostgreSQL asks it for its equality operator)
+-- ---------------------------------------------------------------------------------------------------------
+CREATE TABLE oc (id int, t text, v int);
+CREATE UNIQUE INDEX oc_id ON oc USING sift_col (id sift.col_int4_ops);
+CREATE UNIQUE INDEX oc_t ON oc USING sift_col (t sift.col_text_ops);
+INSERT INTO oc VALUES (1, 'a', 1), (2, 'b', 2);
+INSERT INTO oc VALUES (1, 'z', 9) ON CONFLICT DO NOTHING;
+INSERT INTO oc VALUES (1, 'z', 9) ON CONFLICT (id) DO NOTHING;
+INSERT INTO oc VALUES (5, 'a', 9) ON CONFLICT (t) DO NOTHING;
+INSERT INTO oc VALUES (1, 'z', 9) ON CONFLICT (id) DO UPDATE SET v = oc.v + 100;
+INSERT INTO oc VALUES (7, 'b', 9) ON CONFLICT (t) DO UPDATE SET v = excluded.v, id = 8;
+INSERT INTO oc VALUES (3, 'c', 3), (4, 'd', 4), (1, 'e', 5) ON CONFLICT (id) DO UPDATE SET v = oc.v + 1000;
+INSERT INTO oc VALUES (9, 'a', 9);
+ERROR:  duplicate key value violates unique constraint "oc_t"
+DETAIL:  Key (t)=(a) already exists.
+SELECT id, t, v FROM oc ORDER BY id, t;
+ id | t |  v   
+----+---+------
+  1 | a | 1101
+  3 | c |    3
+  4 | d |    4
+  8 | b |    9
+(4 rows)
+
+INSERT INTO oc VALUES (10, 'k', 1), (11, 'l', 2) ON CONFLICT (id) DO UPDATE SET v = oc.v + excluded.v;
+INSERT INTO oc VALUES (10, 'k', 5), (11, 'l', 6) ON CONFLICT (id) DO UPDATE SET v = oc.v + excluded.v;
+INSERT INTO oc VALUES (12, 'm', 7) ON CONFLICT (id) DO NOTHING;
+INSERT INTO oc VALUES (13, 'k', 7) ON CONFLICT (id) DO NOTHING;
+ERROR:  duplicate key value violates unique constraint "oc_t"
+DETAIL:  Key (t)=(k) already exists.
+DROP TABLE oc;
+-- ---------------------------------------------------------------------------------------------------------
+-- UNIQUE: expression and partial indexes
+-- ---------------------------------------------------------------------------------------------------------
+CREATE TABLE ue (id int, name text, live bool);
+CREATE UNIQUE INDEX ue_lower ON ue USING sift_col ((lower(name)));
+CREATE UNIQUE INDEX ue_live ON ue USING sift_col (id) WHERE live;
+INSERT INTO ue VALUES (1, 'Alpha', true), (2, 'beta', true), (1, 'gamma', false), (1, 'delta', false);
+INSERT INTO ue VALUES (3, 'ALPHA', true);
+ERROR:  duplicate key value violates unique constraint "ue_lower"
+DETAIL:  Key (lower)=(alpha) already exists.
+INSERT INTO ue VALUES (1, 'epsilon', true);
+ERROR:  duplicate key value violates unique constraint "ue_live"
+DETAIL:  Key (id)=(1) already exists.
+UPDATE ue SET live = true WHERE name = 'gamma';
+ERROR:  duplicate key value violates unique constraint "ue_live"
+DETAIL:  Key (id)=(1) already exists.
+UPDATE ue SET name = 'BETA' WHERE id = 1 AND live;
+ERROR:  duplicate key value violates unique constraint "ue_lower"
+DETAIL:  Key (lower)=(beta) already exists.
+SELECT id, name, live FROM ue ORDER BY name;
+ id | name  | live 
+----+-------+------
+  1 | Alpha | t
+  2 | beta  | t
+  1 | delta | f
+  1 | gamma | f
+(4 rows)
+
+DROP TABLE ue;
+-- ---------------------------------------------------------------------------------------------------------
+-- UNIQUE: after a build of the index in another way, and a table that has rows, merges and a reindex
+-- ---------------------------------------------------------------------------------------------------------
+CREATE TABLE ur (id int, v text);
+INSERT INTO ur SELECT g, 'v' FROM generate_series(1, 20000) g;
+CREATE UNIQUE INDEX CONCURRENTLY ur_id ON ur USING sift_col (id);
+INSERT INTO ur VALUES (20000, 'dup');
+ERROR:  duplicate key value violates unique constraint "ur_id"
+DETAIL:  Key (id)=(20000) already exists.
+INSERT INTO ur SELECT g, 'more' FROM generate_series(20001, 25000) g;
+SELECT sift.maintain('ur_id') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+INSERT INTO ur VALUES (24999, 'dup after merge');
+ERROR:  duplicate key value violates unique constraint "ur_id"
+DETAIL:  Key (id)=(24999) already exists.
+REINDEX INDEX CONCURRENTLY ur_id;
+INSERT INTO ur VALUES (1, 'dup after reindex');
+ERROR:  duplicate key value violates unique constraint "ur_id"
+DETAIL:  Key (id)=(1) already exists.
+INSERT INTO ur VALUES (25001, 'new');
+SELECT count(*) FROM ur;
+ count 
+-------
+ 25001
+(1 row)
+
+INSERT INTO ur SELECT g, 'copy' FROM generate_series(25001, 25002) g;
+ERROR:  duplicate key value violates unique constraint "ur_id"
+DETAIL:  Key (id)=(25001) already exists.
+CREATE TABLE ur_dup AS SELECT * FROM ur WHERE id = 7;
+INSERT INTO ur SELECT * FROM ur_dup;
+ERROR:  duplicate key value violates unique constraint "ur_id"
+DETAIL:  Key (id)=(7) already exists.
+SELECT count(*) FROM ur WHERE id = 7;
+ count 
+-------
+     1
+(1 row)
+
+DROP TABLE ur, ur_dup, u;
+DROP EXTENSION pg_sift;

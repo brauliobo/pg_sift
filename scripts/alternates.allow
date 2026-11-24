@@ -92,6 +92,10 @@ test/expected/col_skip_map_1.out	f6c04dafc71d45625470833e31b521767c771f06	17 18 
 test/expected/col_topn_offset_1.out	3855a99e3a1312abe7e20e1bec123f6a0a95e425	19	confirmed | 74
 test/expected/col_topn_offset_1.out	5f3a76f93fb85af3330441f90a0bd7ac88fa9f31	19	result   | n
 test/expected/col_topn_offset_1.out	65f85ed967261617e3035128ac302bfb1b8195bd	19	confirmed | 95
+test/expected/col_unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	17	ERROR:  duplicate key value violates unique constraint "oc_t"
+test/expected/col_unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
+test/expected/col_unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
+test/expected/col_unique_include_2.out	4c74016e37a4e684f3b78adcff25e0d2f5c92942	19	LINE 1: ...INDEX inc_bad ON inc USING sift_col (k1) INCLUDE (c1_renamed...
 test/expected/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
 test/expected/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
 test/expected/explain_sift_1.out	6828e0176c1ed616697ed217d1a40490b1f94e87	17	sift_lines

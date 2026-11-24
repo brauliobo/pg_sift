@@ -80,7 +80,9 @@ for s in "${SPECS[@]}"; do
 		continue
 	fi
 	translate <"$f" >"$OUT/in/specs/$s.spec"
-	translate <"$REPO/test/isolation/expected/$s.out" >"$OUT/in/expected/$s.out"
+	for e in "$REPO/test/isolation/expected/$s.out" "$REPO/test/isolation/expected/${s}"_[0-9].out; do
+		[[ ! -f $e ]] || translate <"$e" >"$OUT/in/expected/${e##*/}"
+	done
 	run+=("$s")
 done
 (( ${#run[@]} )) || { echo "isolation ($MODE): nothing runnable yet"; exit 0; }

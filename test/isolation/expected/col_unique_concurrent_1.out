@@ -1,0 +1,143 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s2b s1i1 s2i1 s1c s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i1: INSERT INTO iso_u VALUES (100, 's1');
+step s2i1: INSERT INTO iso_u VALUES (100, 's2'); <waiting ...>
+step s1c: COMMIT;
+step s2i1: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_u_idx"
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+ id|v   
+---+----
+  2|seed
+100|s1  
+(2 rows)
+
+
+starting permutation: s1b s2b s1i1 s2i1 s1r s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i1: INSERT INTO iso_u VALUES (100, 's1');
+step s2i1: INSERT INTO iso_u VALUES (100, 's2'); <waiting ...>
+step s1r: ROLLBACK;
+step s2i1: <... completed>
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+ id|v   
+---+----
+  2|seed
+100|s2  
+(2 rows)
+
+
+starting permutation: s1b s2b s1i1 s2i3 s1c s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i1: INSERT INTO iso_u VALUES (100, 's1');
+step s2i3: INSERT INTO iso_u VALUES (300, 's2');
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+ id|v   
+---+----
+  2|seed
+100|s1  
+300|s2  
+(3 rows)
+
+
+starting permutation: s1b s2b s1sp s2i3 s1c s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1sp: SAVEPOINT a; INSERT INTO iso_u VALUES (300, 's1'); ROLLBACK TO a;
+step s2i3: INSERT INTO iso_u VALUES (300, 's2');
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+ id|v   
+---+----
+  2|seed
+300|s2  
+(2 rows)
+
+
+starting permutation: s1b s2b s1d2 s2d2 s1c s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1d2: DELETE FROM iso_u WHERE id = 2;
+step s2d2: INSERT INTO iso_u VALUES (2, 's2'); <waiting ...>
+step s1c: COMMIT;
+step s2d2: <... completed>
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+id|v 
+--+--
+ 2|s2
+(1 row)
+
+
+starting permutation: s1b s2b s1d2 s2d2 s1r s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1d2: DELETE FROM iso_u WHERE id = 2;
+step s2d2: INSERT INTO iso_u VALUES (2, 's2'); <waiting ...>
+step s1r: ROLLBACK;
+step s2d2: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_u_idx"
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+id|v   
+--+----
+ 2|seed
+(1 row)
+
+
+starting permutation: s1b s2b s1i1 s2nothing s1c s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i1: INSERT INTO iso_u VALUES (100, 's1');
+step s2nothing: INSERT INTO iso_u VALUES (100, 's2') ON CONFLICT DO NOTHING;
+ERROR:  unexpected non-btree speculative unique index
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+ id|v   
+---+----
+  2|seed
+100|s1  
+(2 rows)
+
+
+starting permutation: s1b s2b s1i1 s2upsert s1c s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i1: INSERT INTO iso_u VALUES (100, 's1');
+step s2upsert: INSERT INTO iso_u VALUES (100, 's2') ON CONFLICT (id) DO UPDATE SET v = 'upserted';
+ERROR:  unexpected non-btree speculative unique index
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+ id|v   
+---+----
+  2|seed
+100|s1  
+(2 rows)
+
+
+starting permutation: s1b s2b s1i1 s2nothing s1r s2c s3q
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i1: INSERT INTO iso_u VALUES (100, 's1');
+step s2nothing: INSERT INTO iso_u VALUES (100, 's2') ON CONFLICT DO NOTHING;
+ERROR:  unexpected non-btree speculative unique index
+step s1r: ROLLBACK;
+step s2c: COMMIT;
+step s3q: SELECT id, v FROM iso_u WHERE id IN (2, 100, 200, 300) ORDER BY id, v;
+id|v   
+--+----
+ 2|seed
+(1 row)
+
