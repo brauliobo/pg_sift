@@ -202,11 +202,12 @@ setup_pipe(UnRun *u, SiftV6Group *g, const SiftV6StarRun *star)
 		sift_v6_star_attach(star, u->pipe);
 	for (int d = 0; d < u->x->ndims; d++)
 		for (int k = 0; k < u->x->dim[d].nkeys; k++)
-		{
-			const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
+			if (sift_v6_xdim_key_is_col(&u->x->dim[d], k))
+			{
+				const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
 
-			u->pipe->fslot[d][k] = slot_of(u, &key, false);
-		}
+				u->pipe->fslot[d][k] = slot_of(u, &key, false);
+			}
 	for (int i = 0; i < u->x->nrcol; i++)
 		u->pipe->rslot[i] = slot_of(u, &u->x->rcol[i], false);
 	for (int i = 0; i < spec->nkeys; i++)
