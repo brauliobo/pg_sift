@@ -123,10 +123,11 @@ FROM (VALUES ('str', 'lowcard', false), ('str', 'lowcard', true), ('str', 'uniqu
 
 -- High-cardinality text that no dictionary holds (ids, URLs, free tags) is held in a table of at most 255 symbols of 1 to 8 bytes (FSST), each string apart, when that is not a quarter
 -- larger than the codec's list; where the owner keeps compression off, or the text is long on average (64 bytes), or the table would not pay, the list stays
-SELECT pattern, nrows, wrap, nulls, sift._test_f2_enc('str', pattern, nrows, nulls, false, wrap) AS result
+SELECT pattern, nrows, wrap, nulls, CASE WHEN wrap <> 'none' AND r ~ 'enc=STR_(FSST|BLOCK)' THEN regexp_replace(r, 'bytes=\d+', 'bytes=*') ELSE r END AS result
 FROM (VALUES ('tag', 8192, 'lz4', false), ('tag', 8192, 'zstd', true), ('tag', 8192, 'none', false), ('tag', 1000, 'lz4', false), ('tag', 500, 'lz4', false), ('tag', 1, 'lz4', false), ('unique', 8192, 'lz4', false),
 			 ('url', 5000, 'zstd', false), ('utf8', 8192, 'lz4', true), ('binary', 8192, 'lz4', false), ('onebyte', 700, 'lz4', false), ('multikb', 300, 'zstd', false), ('empty', 100, 'lz4', false),
-			 ('mixed', 8192, 'lz4', false)) AS c(pattern, nrows, wrap, nulls);
+			 ('mixed', 8192, 'lz4', false)) AS c(pattern, nrows, wrap, nulls),
+	 LATERAL (SELECT sift._test_f2_enc('str', pattern, nrows, nulls, false, wrap) AS r) x;
 
 -- The symbol table on its own: every string coded and decoded alone and in a run, the table stored and read back, a string cut inside its escape refused; the empty string, a byte, UTF-8, bytes
 -- of every value (all escapes) and strings of several kilobytes. Coded sizes against the raw bytes and the LZ4 of the same strings (the ids, URLs and tags of a column are the case)
@@ -151,9 +152,10 @@ SELECT sift._test_f2_enc('int', 'const', 1, false);
 SELECT sift._test_f2_enc('str', 'unique', 1, false);
 
 -- Wrapped chunks: only when the compressed bytes are at least an eighth fewer
-SELECT kind, pattern, wrap, sift._test_f2_enc(kind, pattern, 8192, false, false, wrap) AS result
+SELECT kind, pattern, wrap, CASE WHEN r ~ 'wrapped=t' THEN regexp_replace(r, 'bytes=\d+', 'bytes=*') ELSE r END AS result
 FROM (VALUES ('str', 'unique', 'lz4'), ('str', 'unique', 'zstd'), ('str', 'lowcard', 'zstd'), ('int', 'wide', 'lz4'), ('f8', 'random', 'zstd'), ('view', 'mixed', 'lz4'), ('uuid', 'uuid', 'lz4'),
-			 ('int', 'runs', 'zstd')) AS c(kind, pattern, wrap);
+			 ('int', 'runs', 'zstd')) AS c(kind, pattern, wrap),
+	 LATERAL (SELECT sift._test_f2_enc(kind, pattern, 8192, false, false, wrap) AS r) x;
 SELECT sift._test_f2_enc('str', 'unique', 3000, true, true, 'zstd');
 
 -- A row count out of range is refused
@@ -596,6 +598,8 @@ INSERT INTO sk SELECT i, ((i::bigint * 7919) % 1000003)::int, CASE WHEN i % 3 = 
 	'ord-' || lpad(i::text, 6, '0') || '-' || (ARRAY['alpha', 'beta', 'gamma', 'delta'])[i % 4 + 1],
 	(SELECT decode(string_agg(md5(i::text || 'a' || k), ''), 'hex') FROM generate_series(1, 20) k), (SELECT decode(string_agg(md5(i::text || 'b' || k), ''), 'hex') FROM generate_series(1, 20) k)
 FROM generate_series(1, 40000) i;
+-- one participant, one part: the skip budget of a part follows its own bytes, which the workers' share of the heap would change from run to run
+SET max_parallel_maintenance_workers = 0;
 CREATE INDEX sk_i ON sk USING sift_col (id, k_hi, k_n, note, pad1, pad2) WITH (key_order = 'id');
 SELECT sift._test_f2_check('sk_i') ~ '^parts=[0-9]+ ' AS consistent;
 SELECT k_hi AS hi, k_n AS kn, note AS one FROM sk WHERE id = 31337 \gset
