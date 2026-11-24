@@ -153,22 +153,21 @@ agg_chunk(void *arg, const uint8 *data, uint32 len)
 	return true;
 }
 
+/* The pairs of the records with the number of their key in this partition and the number of their text in this partition; those of a direct table are what phase 1 wrote */
 static bool
-tile_fill(P2 *p, const DistRec *rec, uint32 m, SiftDuPair *tile)
+tile_remap(P2 *p, const SiftDuPair *rec, uint32 m, SiftDuPair *tile)
 {
 	for (uint32 i = 0; i < m; i++)
 	{
-		const uint32 g = p->d->direct ? rec[i].kid : (uint32) sift_keytab_pay(&p->src->keys, sift_keytab_at(&p->src->keys, rec[i].kid))[dist_pay_last(p->d)];
-		uint64		v = rec[i].v;
+		const uint32 kid = rec[i].gid1 - 1;
+		const uint32 g = p->d->direct ? kid : (uint32) sift_keytab_pay(&p->src->keys, sift_keytab_at(&p->src->keys, kid))[dist_pay_last(p->d)];
+		uint64		v = rec[i].val;
 
 		if (!p->d->direct && i + TILE_AHEAD < m)
-			__builtin_prefetch(sift_keytab_at(&p->src->keys, rec[i + TILE_AHEAD].kid));
-
+			__builtin_prefetch(sift_keytab_at(&p->src->keys, rec[i + TILE_AHEAD].gid1 - 1));
 		if (p->d->sp.vstr && (v = sift_keytab_intern_of(&p->v2, sift_keytab_at(&p->src->vals, (uint32) v))) == SIFT_KEYTAB_NONE)
 			return false;
-		tile[i] = (SiftDuPair) {.val = v,.gid1 = g + 1,.h32 = p->d->direct && !p->d->sp.vstr ? rec[i].h32 : (uint32) sift_du64_pair_hash(v, g)};
-		if (p->d->direct)
-			sift_keytab_pay(&p->d->w[p->t].keys, sift_keytab_at(&p->d->w[p->t].keys, g))[0]++;
+		tile[i] = (SiftDuPair) {.val = v,.gid1 = g + 1,.h32 = (uint32) sift_du64_pair_hash(v, g)};
 	}
 	return true;
 }
@@ -178,22 +177,28 @@ static bool
 pair_chunk(void *arg, const uint8 *data, uint32 len)
 {
 	P2		   *p = arg;
-	const uint32 last = dist_pay_last(p->d);
+	const bool	as_written = p->d->direct && !p->d->sp.vstr;
 	const SiftKeyTab *tab = p->d->direct ? &p->d->w[p->t].keys : &p->k2;
+	uint64	   *distinct = sift_keytab_pay(tab, sift_keytab_at(tab, 0)) + dist_pay_last(p->d);
+	const size_t step = tab->ew;
 
 	for (uint32 off = 0; off < len;)
 	{
-		const uint32 m = Min(DIST_TILE, (len - off) / sizeof(DistRec));
+		const uint32 m = Min(DIST_TILE, (len - off) / sizeof(SiftDuPair));
 		SiftDuPair	tile[DIST_TILE];
 		uint32		fresh;
 
-		if (!tile_fill(p, (const DistRec *) (data + off), m, tile) || !tab_room(p, m))
+		if (!tab_room(p, m))
+			return false;
+		if (as_written)
+			memcpy(tile, data + off, (size_t) m * sizeof(SiftDuPair));
+		else if (!tile_remap(p, (const SiftDuPair *) (data + off), m, tile))
 			return false;
 		fresh = sift_du64g_dedup_bucket(p->pairs, p->cap, tile, m);
 		for (uint32 i = 0; i < fresh; i++)
-			sift_keytab_pay(tab, sift_keytab_at(tab, tile[i].gid1 - 1))[last]++;
+			distinct[(tile[i].gid1 - 1) * step]++;
 		p->count += fresh;
-		off += m * sizeof(DistRec);
+		off += m * sizeof(SiftDuPair);
 	}
 	return true;
 }

@@ -107,16 +107,6 @@ sift_keytab_prefetch_ent(const SiftKeyTab *t, uint64 h)
 		__builtin_prefetch(sift_keytab_at(t, (uint32) s - 1));
 }
 
-/* The entry of a key of a direct table (a key out of its range has none) */
-static inline void
-sift_keytab_prefetch_direct(const SiftKeyTab *t, uint64 word)
-{
-	const uint64 at = word - t->direct_lo;
-
-	if (at < t->direct_n)
-		__builtin_prefetch(sift_keytab_at(t, (uint32) at), 1);
-}
-
 static inline SiftTabKey
 sift_keytab_key(const uint64 *e)
 {

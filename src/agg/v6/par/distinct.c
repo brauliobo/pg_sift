@@ -10,7 +10,7 @@
 static inline uint32
 rec_bytes(const SiftParDistinct *d)
 {
-	return d->grouped ? sizeof(DistRec) : sizeof(uint64);
+	return d->grouped ? sizeof(SiftDuPair) : sizeof(uint64);
 }
 
 static bool
@@ -87,109 +87,202 @@ hash_keys(const SiftParDistinct *d, const SiftParDistinctBatch *b, uint64 *hs)
 	}
 }
 
-/* The number of the key of row i in the table of the thread; the hashes of the rows ahead are known (hs), and their places in the table are brought in */
-static uint32
-key_of(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, const uint64 *hs, uint32 i)
+static inline uint64 *
+pay_of(const SiftKeyTab *t, uint32 kid)
 {
-	uint64		words[SIFT_PAR_GROUP_MAX_KEYS];
-	SiftTabKey		k;
-
-	if (!d->grouped)
-		return 0;
-	if (d->direct)
-	{
-		if (i + KEY_AHEAD < b->n)
-			sift_keytab_prefetch_direct(&w->keys, b->key[0][i + KEY_AHEAD]);
-		return sift_keytab_direct_id(&w->keys, b->key[0][i]);
-	}
-	k = row_key(d, b, i, words);
-	k.h = hs[i];
-	if (i + KEY_AHEAD < b->n)
-		sift_keytab_prefetch_slot(&w->keys, hs[i + KEY_AHEAD]);
-	if (i + KEY_AHEAD / 2 < b->n)
-		sift_keytab_prefetch_ent(&w->keys, hs[i + KEY_AHEAD / 2]);
-	return sift_keytab_intern(&w->keys, &k);
+	return sift_keytab_pay(t, sift_keytab_at(t, kid));
 }
 
+/* The number of the key of each row in the table of the thread, and one more row for the key */
 static bool
-add_row(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDistinctBatch *b, uint32 i)
+key_ids_direct(DistWorker *w, const SiftParDistinctBatch *b, uint32 *kids)
 {
-	uint64	   *pay = sift_keytab_pay(&w->keys, sift_keytab_at(&w->keys, kid));
+	const SiftKeyTab t = w->keys;
+	const uint64 *key = b->key[0];
 
-	pay[0] += !d->direct;
-	for (int m = 0; m < d->sp.nsum; m++)
-		pay[1 + m] += b->sum[m][i];
-	for (int m = 0; m < d->sp.nmm; m++)
-	{
-		const SiftStrRef s = b->mm[m][i];
-
-		if (s.len != SIFT_STR_NULL && !dist_mm_offer(pay + dist_pay_mm(d, m), (d->sp.mm_max >> m) & 1, s.p, s.len, w->keys.a))
-			return false;
-	}
-	return true;
-}
-
-/* A row with no value is no record: in a direct table the rows of a key are the records that phase 2 counts (in the entry of its thread) and these */
-static bool
-no_value(const SiftParDistinct *d, DistWorker *w, uint32 kid)
-{
-	if (d->direct)
-		sift_keytab_pay(&w->keys, sift_keytab_at(&w->keys, kid))[0]++;
-	return true;
-}
-
-/* The value of row i into the partition of its key (with no key: of itself); a NULL is no value; false when the arena has no room */
-static bool
-put_value(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDistinctBatch *b, uint32 i)
-{
-	DistRec		rec = {.kid = kid};
-	uint64		h;
-
-	if (d->sp.novalue)
-		return no_value(d, w, kid);
-	if (d->sp.vstr)
-	{
-		const SiftStrRef s = b->vstr[i];
-		SiftTabKey		k = {.p = s.p,.len = s.len};
-
-		if (s.len == SIFT_STR_NULL)
-			return no_value(d, w, kid);
-		k.h = h = sift_key_hash(&d->vs, NULL, s.p, s.len);
-		if ((rec.v = sift_keytab_intern(&w->vals, &k)) == SIFT_KEYTAB_NONE)
-			return false;
-	}
-	else
-	{
-		if (b->vnull != NULL && b->vnull[i])
-			return no_value(d, w, kid);
-		rec.v = b->val[i];
-		h = sift_du64_mix(rec.v);
-	}
-	if (!d->grouped)
-		return sift_radix_put(&w->raw, sift_radix_part(h), &rec.v, sizeof(rec.v));
-	if (d->direct)
-	{
-		const uint64 ph = sift_du64_pair_hash(d->sp.vstr ? h : rec.v, kid);
-
-		rec.h32 = (uint32) ph;
-		return sift_radix_put(&w->raw, sift_radix_part(ph), &rec, sizeof(rec));
-	}
-	return sift_radix_put(&w->raw, sift_radix_part(sift_keytab_at(&w->keys, kid)[0]), &rec, sizeof(rec));
-}
-
-static bool
-rows_in(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, uint64 *hs)
-{
 	for (uint32 i = 0; i < b->n; i++)
 	{
-		const uint32 kid = key_of(d, w, b, hs, i);
+		const uint32 kid = sift_keytab_direct_id(&t, key[i]);
 
 		if (kid == SIFT_KEYTAB_NONE)
 			return false;
-		if (!add_row(d, w, kid, b, i) || !put_value(d, w, kid, b, i))
+		kids[i] = kid;
+		pay_of(&t, kid)[0]++;
+	}
+	return true;
+}
+
+/* The hashes of the rows are known (hs), and the places of the rows ahead in the table are brought in */
+static bool
+key_ids_hashed(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, const uint64 *hs, uint32 *kids)
+{
+	uint64		words[SIFT_PAR_GROUP_MAX_KEYS];
+
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		SiftTabKey	k = row_key(d, b, i, words);
+		uint32		kid;
+
+		k.h = hs[i];
+		if (i + KEY_AHEAD < b->n)
+			sift_keytab_prefetch_slot(&w->keys, hs[i + KEY_AHEAD]);
+		if (i + KEY_AHEAD / 2 < b->n)
+			sift_keytab_prefetch_ent(&w->keys, hs[i + KEY_AHEAD / 2]);
+		if ((kid = sift_keytab_intern_hashed(&w->keys, &k)) == SIFT_KEYTAB_NONE)
+			return false;
+		kids[i] = kid;
+		pay_of(&w->keys, kid)[0]++;
+	}
+	return true;
+}
+
+/* The sum m of the rows into their keys (kids NULL: the one set) */
+static void
+add_sum(const DistWorker *w, const uint64 *arg, uint32 n, uint32 at, const uint32 *kids)
+{
+	const SiftKeyTab t = w->keys;
+	uint64		set = 0;
+
+	if (kids == NULL)
+	{
+		for (uint32 i = 0; i < n; i++)
+			set += arg[i];
+		pay_of(&t, 0)[at] += set;
+		return;
+	}
+	for (uint32 i = 0; i < n; i++)
+		pay_of(&t, kids[i])[at] += arg[i];
+}
+
+static bool
+add_mm(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, int m, const uint32 *kids)
+{
+	const bool	max = (d->sp.mm_max >> m) & 1;
+
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		const SiftStrRef s = b->mm[m][i];
+
+		if (s.len != SIFT_STR_NULL && !dist_mm_offer(pay_of(&w->keys, kids != NULL ? kids[i] : 0) + dist_pay_mm(d, m), max, s.p, s.len, w->keys.a))
 			return false;
 	}
 	return true;
+}
+
+static bool
+add_aggs(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, const uint32 *kids)
+{
+	for (int m = 0; m < d->sp.nsum; m++)
+		add_sum(w, b->sum[m], b->n, 1 + m, kids);
+	for (int m = 0; m < d->sp.nmm; m++)
+		if (!add_mm(d, w, b, m, kids))
+			return false;
+	return true;
+}
+
+/* ---- the values: a record of the value (and of the number of its key) into the partition of its key, or of its hash with no key ---- */
+
+static bool
+put_set_words(DistWorker *w, const SiftParDistinctBatch *b)
+{
+	const uint64 *val = b->val;
+	const uint8 *vnull = b->vnull;
+
+	for (uint32 i = 0; i < b->n; i++)
+		if ((vnull == NULL || !vnull[i]) && !sift_radix_put(&w->raw, sift_radix_part(sift_du64_mix(val[i])), &val[i], sizeof(uint64)))
+			return false;
+	return true;
+}
+
+/* The partition is that of the hash of the pair, and the record has it for phase 2 */
+static bool
+put_pairs_direct(DistWorker *w, const SiftParDistinctBatch *b, const uint32 *kids)
+{
+	const uint64 *val = b->val;
+	const uint8 *vnull = b->vnull;
+
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		uint64		ph;
+		SiftDuPair	rec;
+
+		if (vnull != NULL && vnull[i])
+			continue;
+		ph = sift_du64_pair_hash(val[i], kids[i]);
+		rec = (SiftDuPair) {.val = val[i],.gid1 = kids[i] + 1,.h32 = (uint32) ph};
+		if (!sift_radix_put(&w->raw, sift_radix_part(ph), &rec, sizeof(rec)))
+			return false;
+	}
+	return true;
+}
+
+/* The partition is that of the key, so that a key is in one partition */
+static bool
+put_pairs_hashed(DistWorker *w, const SiftParDistinctBatch *b, const uint64 *hs, const uint32 *kids)
+{
+	const uint64 *val = b->val;
+	const uint8 *vnull = b->vnull;
+
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		const SiftDuPair rec = {.val = val[i],.gid1 = kids[i] + 1};
+
+		if ((vnull == NULL || !vnull[i]) && !sift_radix_put(&w->raw, sift_radix_part(hs[i]), &rec, sizeof(rec)))
+			return false;
+	}
+	return true;
+}
+
+/* A text value: the number of the text among those of the thread is the value of the record; a NULL is no value */
+static bool
+put_texts(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, const uint64 *hs, const uint32 *kids)
+{
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		const SiftStrRef s = b->vstr[i];
+		SiftTabKey	k = {.p = s.p,.len = s.len};
+		SiftDuPair	rec = {0};
+		uint64		ph;
+
+		if (s.len == SIFT_STR_NULL)
+			continue;
+		k.h = sift_key_hash(&d->vs, NULL, s.p, s.len);
+		if ((rec.val = sift_keytab_intern_hashed(&w->vals, &k)) == SIFT_KEYTAB_NONE)
+			return false;
+		if (!d->grouped)
+		{
+			if (!sift_radix_put(&w->raw, sift_radix_part(k.h), &rec.val, sizeof(rec.val)))
+				return false;
+			continue;
+		}
+		rec.gid1 = kids[i] + 1;
+		ph = d->direct ? sift_du64_pair_hash(k.h, kids[i]) : hs[i];
+		if (!sift_radix_put(&w->raw, sift_radix_part(ph), &rec, sizeof(rec)))
+			return false;
+	}
+	return true;
+}
+
+static bool
+put_values(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, const uint64 *hs, const uint32 *kids)
+{
+	if (d->sp.novalue)
+		return true;
+	if (d->sp.vstr)
+		return put_texts(d, w, b, hs, kids);
+	if (!d->grouped)
+		return put_set_words(w, b);
+	return d->direct ? put_pairs_direct(w, b, kids) : put_pairs_hashed(w, b, hs, kids);
+}
+
+static bool
+rows_in(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, const uint64 *hs, uint32 *kids)
+{
+	if (!d->grouped)
+		pay_of(&w->keys, 0)[0] += b->n;
+	else if (!(d->direct ? key_ids_direct(w, b, kids) : key_ids_hashed(d, w, b, hs, kids)))
+		return false;
+	return add_aggs(d, w, b, kids) && put_values(d, w, b, hs, kids);
 }
 
 static bool
@@ -197,17 +290,21 @@ distinct_phase1(void *vd, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint3
 {
 	SiftParDistinct *d = vd;
 	SiftParDistinctBatch b = {0};
-	uint64	   *hs;
+	uint64	   *hs = NULL;
+	uint32	   *kids = NULL;
 
 	*done = 0;
 	if (!d->hooks.fill(d->hooks.arg, t, lo, hi, scratch, &b, err))
 		return false;
-	hs = d->grouped && !d->direct ? sift_arena_alloc(scratch, (size_t) b.n * sizeof(uint64), 8) : NULL;
-	if (!sift_radix_fits(&d->w[t].raw, (uint64) b.n * rec_bytes(d)) || (d->grouped && !d->direct && hs == NULL))
+	if (d->grouped)
+		kids = sift_arena_alloc(scratch, (size_t) b.n * sizeof(uint32), 8);
+	if (d->grouped && !d->direct)
+		hs = sift_arena_alloc(scratch, (size_t) b.n * sizeof(uint64), 8);
+	if (!sift_radix_fits(&d->w[t].raw, (uint64) b.n * rec_bytes(d)) || (d->grouped && kids == NULL) || (d->grouped && !d->direct && hs == NULL))
 		return dist_fail(err, "parallel distinct: the arena of a thread has no room for a batch");
 	if (hs != NULL)
 		hash_keys(d, &b, hs);
-	return rows_in(d, &d->w[t], &b, hs) || dist_fail(err, "parallel distinct: the arena of a thread has no room for the keys");
+	return rows_in(d, &d->w[t], &b, hs, kids) || dist_fail(err, "parallel distinct: the arena of a thread has no room for the keys");
 }
 
 /* ---- the seal: the rows and sums of the keys of a thread, to the partitions of the keys ---- */

@@ -26,7 +26,7 @@ typedef struct DistWorker
 {
 	SiftKeyTab	keys;
 	SiftKeyTab	vals;			/* the texts the thread counts */
-	SiftRadixOut raw;			/* the values: DistRec with a key, else the word of the value (the number of a text) */
+	SiftRadixOut raw;			/* the values: with a key a SiftDuPair of the value (the number of a text) and the number of its key plus one, else the word of the value */
 	SiftRadixOut agg;			/* the rows and sums of each key: its number, its rows, its sums */
 	DistOut    *out;
 	DistOut    *out_tail;
@@ -45,13 +45,6 @@ struct SiftParDistinct
 	SiftKeyShape vs;
 	DistWorker *w;
 };
-
-typedef struct DistRec
-{
-	uint64		v;
-	uint32		kid;
-	uint32		h32;			/* a direct table: the hash of the pair of the key and the value */
-} DistRec;
 
 /* The words of the payload of a key: its rows, its sums, the text minimums and maximums (3 words each), and a last word (below) */
 static inline uint32

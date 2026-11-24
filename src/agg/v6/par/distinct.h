@@ -10,7 +10,7 @@
  * With no key the one set is spread over the partitions by the hash of the value, and the rows and sums are those of the threads, added.
  *
  * A key of one integer word in a narrow range (direct_n values from direct_lo) is numbered by its distance from the least in every thread, so that the keys need no second numbering: phase 2 only
- * deduplicates the values (the pairs of a key and a value go to a partition by their hash), and the answer adds the entries of the threads, each of which counted the rows and values new to its partitions. The minimum or maximum of a text column of the rows of a group (C collation: the order of the bytes) is kept per key, as a
+ * deduplicates the values (the pairs of a key and a value go to a partition by their hash), and the answer adds the entries of the threads, each of which counted the rows it read and the values new to its partitions. The minimum or maximum of a text column of the rows of a group (C collation: the order of the bytes) is kept per key, as a
  * copy in the arena of the thread, and merged by the same order.
  */
 #ifndef SIFT_AGG_V6_PAR_DISTINCT_H
