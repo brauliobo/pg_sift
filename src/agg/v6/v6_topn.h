@@ -29,6 +29,7 @@ typedef struct SiftV6TopNSpec
 	Node	   *offset;			/* NULL: none */
 	uint64		rows;			/* offset + limit, when a run found them small enough for the tournament */
 	bool		with_ties;
+	char	   *desc;			/* EXPLAIN: the sort keys */
 } SiftV6TopNSpec;
 
 /* What a source passed over without reading: partitions and parts whose keys or times leave no row, granules whose zones do */
@@ -73,6 +74,11 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_topn_plan_methods;
 
 extern void sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_topn_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
+
+/* EXPLAIN of a Top-N: the sort keys of the statement ("total DESC, id") and the rows the scan holds for its LIMIT and OFFSET */
+extern char *sift_v6_topn_desc(PlannerInfo *root, Oid relid);
+extern char *sift_v6_topn_limit_text(const Node *limit, const Node *offset);
+extern void sift_v6_topn_explain(ExplainState *es, const char *desc, const char *limit);
 
 extern List *sift_v6_topn_spec_pack(const SiftV6TopNSpec *s);
 extern SiftV6TopNSpec *sift_v6_topn_spec_unpack(const List *l);
