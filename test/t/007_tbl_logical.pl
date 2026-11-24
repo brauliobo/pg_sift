@@ -82,8 +82,7 @@ $plain->stop;
 subtest 'a library preloaded under another name is registered and its tables can be published' => sub {
 	my $pkglib = `pg_config --pkglibdir`;
 	chomp $pkglib;
-	my $dir = ($ENV{SIFT_ROOT} // '') . $pkglib;
-	plan skip_all => 'pg_sift.so is not under SIFT_ROOT' unless -f "$dir/pg_sift.so";
+	my $dir = ($plain->pg_version->major >= 18 ? $ENV{SIFT_ROOT} : '') . $pkglib;
 	my $alias = sift_node('alias', allows_streaming => 'logical');
 	my $links = $alias->basedir . '/links';
 	mkdir $links;
