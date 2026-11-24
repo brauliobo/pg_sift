@@ -10,6 +10,7 @@
 #include "miscadmin.h"
 
 #include "agg/v6/par/run_int.h"
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_pg_expr.h"
 #include "core/memtrack.h"
 #include "core/par/pool.h"
@@ -76,7 +77,7 @@ par_keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 		const SiftV6Class cls = sift_v6_class(sp->key[i].typid);
 
 		sh->ktext[i] = cls == SV6C_TEXT;
-		if (!(sh->ktext[i] || cls == SV6C_I32 || cls == SV6C_I64) || !par_src_of(sh, sp, first, &sp->key[i], &sh->key_src[i]))
+		if (!(sh->ktext[i] || cls == SV6C_I32 || cls == SV6C_I64) || sift_v6_key_generic(sp->key[i].typid) || !par_src_of(sh, sp, first, &sp->key[i], &sh->key_src[i]))
 			return false;
 	}
 	return true;

@@ -6,6 +6,7 @@
 
 #include "agg/v6/par/tseries.h"
 #include "agg/v6/par/tseries_run.h"
+#include "agg/v6/v6_datum.h"
 
 #define SCRATCH_BYTES	(2u << 20)
 
@@ -51,7 +52,7 @@ keys_of(const SiftV6Spec *sp, const int *first, TsRun *t)
 		const SiftV6Col *c = &sp->key[i];
 		const SiftV6Class cls = sift_v6_class(c->typid);
 
-		if (!plain_col(c) || !(cls == SV6C_I32 || cls == SV6C_I64))
+		if (!plain_col(c) || !(cls == SV6C_I32 || cls == SV6C_I64) || sift_v6_key_generic(c->typid))
 			return false;
 		sh->key[i].at = add_leaf(t, first, c);
 	}
