@@ -102,4 +102,10 @@ struct SiftV6Scan
 
 typedef struct SiftV6Scan V6Scan;
 
+/* f2_v6_scan_fill.c: the vectors of the columns of a batch from the decoded views of its leaves */
+extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
+extern void sift_f2_v6_refuse_nan(const V6Col *c, const SiftBatchSel *bs);
+extern void sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int n);
+extern void sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n);
+
 #endif							/* SIFT_COL_F2_V6_SCAN_INT_H */
