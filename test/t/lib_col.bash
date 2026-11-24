@@ -37,30 +37,3 @@ COL_WEIGHT_FUNCS=(
 			RETURN a IS NOT DISTINCT FROM b;
 		END \$\$"
 )
-
-# table t (k, v) with its sift_col index, and the top-N comparison
-COL_TOPN_FIXTURE=(
-	"CREATE FUNCTION topn_same() RETURNS bool LANGUAGE plpgsql AS \$\$
-		DECLARE col text; dir text; lim int; g text; q text; a text; b text;
-		BEGIN
-			SET LOCAL max_parallel_workers_per_gather = 0;
-			FOREACH col IN ARRAY ARRAY['k', 'v'] LOOP
-			FOREACH dir IN ARRAY ARRAY['ASC', 'DESC'] LOOP
-			FOREACH lim IN ARRAY ARRAY[1, 32, 100] LOOP
-			FOREACH g IN ARRAY ARRAY['on', 'off'] LOOP
-				q := format('SELECT coalesce(string_agg(%1\$s::text, '','' ORDER BY pos), '''') FROM (SELECT row_number() OVER () AS pos, %1\$s FROM (SELECT %1\$s FROM t ORDER BY %1\$s %2\$s LIMIT %3\$s) x) y', col, dir, lim);
-				PERFORM set_config('sift.test_topn_gorder', g, true);
-				SET LOCAL sift.enable_agg = on;
-				EXECUTE q INTO a;
-				SET LOCAL sift.enable_agg = off;
-				EXECUTE q INTO b;
-				IF a IS DISTINCT FROM b THEN RETURN false; END IF;
-			END LOOP; END LOOP; END LOOP; END LOOP;
-			RETURN true;
-		END \$\$"
-	"CREATE TABLE t (id bigserial PRIMARY KEY, k int NOT NULL, v int NOT NULL, pad text)"
-	"ALTER TABLE t ALTER COLUMN pad SET STORAGE PLAIN"
-	"INSERT INTO t (k, v, pad) SELECT (hashint4(i) & 2147483647) % 100000, i, repeat('x', 400) FROM generate_series(1, 60000) i"
-	"CREATE INDEX t_col ON t USING sift_col (k, v) WITH (write_buffer_limit = 64, order_array_columns = 'k, v')"
-	"VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) t"
-)
