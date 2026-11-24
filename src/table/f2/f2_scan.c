@@ -315,6 +315,16 @@ sift_tbl_f2_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKe
 	return &s->base;
 }
 
+/* The snapshot the rows of a scan that has not read a row yet are seen by */
+void
+sift_tbl_f2_scan_set_snapshot(TableScanDesc scan, Snapshot snapshot)
+{
+	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
+
+	s->base.rs_snapshot = snapshot;
+	sift_tbl_f2_vis_begin(&s->vis, s->base.rs_rd, snapshot);
+}
+
 static void
 drop_granule(SiftTblF2Scan *s)
 {

@@ -247,6 +247,9 @@ sift_tbl_f2_index_build_range_scan(Relation table_rel, Relation index_rel, struc
 			sift_tbl_f2_scan_set_tidrange(scan, &lo, &hi);
 		}
 	}
+	else if (scan->rs_snapshot->snapshot_type == SNAPSHOT_ANY)
+		/* a parallel build that holds off the writers hands in SnapshotAny, which sees the versions a commit deleted: the index gets the rows the serial build reads. A worker cannot take the latest snapshot */
+		sift_tbl_f2_scan_set_snapshot(scan, SnapshotSelf);
 	/* a row deleted after the snapshot is not in this index, which a snapshot older than the build must not rely on (indcheckxmin) */
 	index_info->ii_BrokenHotChain = true;
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))

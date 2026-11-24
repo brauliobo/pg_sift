@@ -339,6 +339,7 @@ extern TableScanDesc sift_tbl_f2_scan_begin(Relation rel, Snapshot snapshot, int
 extern void sift_tbl_f2_scan_end(TableScanDesc scan);
 extern void sift_tbl_f2_scan_rescan(TableScanDesc scan, struct ScanKeyData *key, bool set_params, bool allow_strat, bool allow_sync, bool allow_pagemode);
 extern bool sift_tbl_f2_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
+extern void sift_tbl_f2_scan_set_snapshot(TableScanDesc scan, Snapshot snapshot);
 extern void sift_tbl_f2_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointer maxtid);
 extern bool sift_tbl_f2_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot);
 extern Size sift_tbl_f2_parallelscan_estimate(Relation rel);
