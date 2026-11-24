@@ -14,7 +14,7 @@
 #include "postgres.h"
 
 #include "col/am.h"
-#include "col/v1/conn.h"
+#include "col/am/conn_route.h"
 
 #include "agg/agg_int.h"
 
@@ -30,7 +30,7 @@ struct LookValid
 bool
 lookvalid_journal(Relation index, AttrNumber keyatt)
 {
-	return index != NULL && sift_col_row_key_on(index) && sift_conn_journal_on(index) &&
+	return index != NULL && sift_col_row_key_on(index) && sift_jrnl_on(index) &&
 		index->rd_index->indkey.values[sift_col_rel(index)->rowkey_attno - 1] == keyatt;
 }
 
@@ -47,7 +47,7 @@ lookvalid_take(Relation rel, Relation index, AttrNumber keyatt, Snapshot snap, S
 	LookFinger *f;
 
 	st->budget = budget;
-	if (lookvalid_journal(index, keyatt) && sift_conn_take(rel, index, snap, &cs, NULL) == SIFT_CONN_OK)
+	if (lookvalid_journal(index, keyatt) && sift_jrnl_take(rel, index, snap, &cs) == SIFT_CONN_OK)
 	{
 		st->journal = true;
 		st->stamp[0] = cs.lineage;
@@ -68,8 +68,8 @@ lookvalid_readable(Relation rel, Relation index, Snapshot snap, const LookFinger
 	SiftConnStamp cs = {.lineage = stored->lsn[0],.xmin = (TransactionId) stored->lsn[1]};
 	SiftConnKeys keys = {0};
 
-	return stored->stamp && sift_conn_vouches(rel, index, &cs, snap) == SIFT_CONN_OK && sift_conn_inserted_rows(rel, index, &cs) == 0 &&
-		sift_conn_changed(rel, index, &cs, snap, 0, &keys) == SIFT_CONN_OK;
+	return stored->stamp && sift_jrnl_vouches(rel, index, &cs, snap) == SIFT_CONN_OK && sift_jrnl_inserted_rows(rel, index, &cs) == 0 &&
+		sift_jrnl_changed(rel, index, &cs, snap, 0, &keys) == SIFT_CONN_OK;
 }
 
 /* is the table, after its rows were read, the one the stamp was taken of, and one every later statement may read? */

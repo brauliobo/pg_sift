@@ -10,6 +10,7 @@
 #include "fmgr.h"
 
 struct SiftCheck;
+struct SiftColJournalOps;
 
 /* The SQL functions that read or drive the file of an index (sift.col_space ...): each format answers them in its own way */
 typedef enum SiftColSqlFn
@@ -63,6 +64,9 @@ typedef struct SiftColFormatOps
 	bool		tracks_addresses;
 
 	Datum		(*sql) (SiftColSqlFn fn, FunctionCallInfo fcinfo);
+
+	/* The key journal of a parent index (col/am/conn_route.h); NULL: the format keeps it in the log of its tombstones (col/v1/conn.h) */
+	const struct SiftColJournalOps *journal;
 
 	/* sift.check: the steps of the verification of the index, reporting or raising by ck (core/check.h) */
 	void		(*check) (struct SiftCheck *ck, Oid indexoid, bool heapallindexed);

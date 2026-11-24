@@ -4,6 +4,7 @@
 #include "postgres.h"
 #include "access/reloptions.h"
 #include "col/am/am_int.h"
+#include "col/am/conn_route.h"
 #include "col/v1/conn.h"
 #include "col/scope.h"
 #include "core/lane.h"
@@ -101,7 +102,7 @@ sift_col_alter_check(Relation index)
 	sift_col_row_key_check(index);
 	sift_scope_journal_alter(index);
 	sift_col_track_reconcile(index);
-	sift_conn_alter(index);
+	sift_conn_route_alter(index);
 	sift_scope_alter(index);
 	if (sift_col_rel(index)->stale)
 		sift_lane_alter_refuse(index, "column definitions");

@@ -8,6 +8,8 @@ src/agg/v6/scope_v6_match.c	paths_exclusive	guarded	the relation is a leg of the
 src/bm25/facet.c	sift_facet_counts	guarded	the heap is the heap of the facet index, which open_index checked (sift_rel_must_exist) and holds open
 src/bm25/funcs.c	keyed_indexes	guarded	the OID is the relid of an RTE of the statement being planned or executed: the parser locked the relation, so it cannot be dropped before the statement ends
 src/bm25/funcs.c	match_selectivity	guarded	the index OID is a member of the relation's index list in the planner (the relation is locked by the parser)
+src/col/am/conn_route.c	major_of	guarded	the OID is the parent index of a connection of an index being built or altered, found by serving_index in the relation list of its parent table, which this statement holds open with a lock: DROP INDEX waits for that lock; index_open raises for a missing one
+src/col/am/conn_route.c	sift_col_conn_state	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/v1/am_v1.c	sift_col_v1_flush_held	guarded	the OID is one this backend queued for a write (sift_cwbuf_pending) in a transaction that holds its lock; the pending list is cleared for an index dropped in the transaction (sift_cwbuf_discard)
 src/col/am/cache.c	sift_col_index_meta	guarded	heapoid is the heap of an open index (the caller holds the index and a lock on its heap)
 src/col/am/rel.c	sift_col_index_stale	guarded	its only caller (agg/scope_unread.c) passes the OID of an index of a table of the planned statement, from RelationGetIndexList under the table's lock
