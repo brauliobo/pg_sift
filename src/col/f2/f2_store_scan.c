@@ -69,15 +69,11 @@ struct SiftStoreScan
 	List	   *pxs;			/* the SiftPendDelIndex of those partitions */
 };
 
-struct SiftStorePart
+/* What a part holds while it is read: the run holds a SiftStorePart for every part of its partitions, only the one being read holds this */
+typedef struct SiftPartRead
 {
-	SiftStoreScan *s;
-	const SiftPartitionEntry *e;
-	const SiftPartDesc *d;
-	const SiftPendDelIndex *px;
 	MemoryContext gcx;
 	SiftF2PartPin *pin;
-	bool		started;
 	uint32		spans[SIFT_F2_MAX_RANGES][2];
 	int			nspans;
 	int			span;
@@ -92,6 +88,17 @@ struct SiftStorePart
 	uint64		dead[SIFT_DV_MASK_WORDS];
 	uint64		live[SIFT_DV_MASK_WORDS];
 	uint64		maybe[SIFT_DV_MASK_WORDS];
+} SiftPartRead;
+
+struct SiftStorePart
+{
+	SiftStoreScan *s;
+	const SiftPartitionEntry *e;
+	const SiftPartDesc *d;
+	const SiftPendDelIndex *px;
+	MemoryContext cx;
+	SiftPartRead *r;
+	bool		started;
 };
 
 /* ---- the predicates on the stored values ---- */
@@ -127,7 +134,7 @@ row_verdict(const SiftStorePart *p, int r)
 	for (int k = 0; k < s->o->npreds; k++)
 	{
 		const SiftColPred *pr = &s->o->preds[k];
-		Verdict		v = pred_row(&s->store->schema->cols[pr->col], pr, &s->psets[k], &p->views[pr->col], r);
+		Verdict		v = pred_row(&s->store->schema->cols[pr->col], pr, &s->psets[k], &p->r->views[pr->col], r);
 
 		if (v == V_NO)
 			return V_NO;
@@ -141,16 +148,16 @@ row_verdict(const SiftStorePart *p, int r)
 static ColView
 constant_view(SiftStorePart *p, int leaf, const SiftF2ColMap *map)
 {
-	SiftF2GranuleBuf *gb = p->gb;
+	SiftF2GranuleBuf *gb = p->r->gb;
 	int			n = gb->nrows;
 	int16		attno = p->s->store->leaf_attno[leaf];
 	SiftCellKind kind = p->s->store->kinds[leaf];
 	ColView		v = {.kind = kind};
-	bool	   *isnull = MemoryContextAlloc(p->gcx, n);
-	int64	   *ints = kind == SIFT_CELL_INT ? MemoryContextAlloc(p->gcx, sizeof(int64) * n) : NULL;
-	double	   *fs = kind == SIFT_CELL_F8 ? MemoryContextAlloc(p->gcx, sizeof(double) * n) : NULL;
-	const char **ss = kind == SIFT_CELL_STR ? MemoryContextAlloc(p->gcx, sizeof(char *) * n) : NULL;
-	uint32	   *lens = kind == SIFT_CELL_STR ? MemoryContextAlloc(p->gcx, sizeof(uint32) * n) : NULL;
+	bool	   *isnull = MemoryContextAlloc(p->r->gcx, n);
+	int64	   *ints = kind == SIFT_CELL_INT ? MemoryContextAlloc(p->r->gcx, sizeof(int64) * n) : NULL;
+	double	   *fs = kind == SIFT_CELL_F8 ? MemoryContextAlloc(p->r->gcx, sizeof(double) * n) : NULL;
+	const char **ss = kind == SIFT_CELL_STR ? MemoryContextAlloc(p->r->gcx, sizeof(char *) * n) : NULL;
+	uint32	   *lens = kind == SIFT_CELL_STR ? MemoryContextAlloc(p->r->gcx, sizeof(uint32) * n) : NULL;
 
 	for (int r = 0; r < n; r++)
 	{
@@ -188,7 +195,7 @@ static ColView
 decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 {
 	const SiftStoreScan *s = p->s;
-	SiftF2GranuleBuf *gb = p->gb;
+	SiftF2GranuleBuf *gb = p->r->gb;
 	ColView		v = {.kind = kind};
 
 	if (!gb->col_decoded[phys])
@@ -199,9 +206,9 @@ decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 	v.f = gb->col_f[phys];
 	if (kind == SIFT_CELL_STR)
 	{
-		const char **ss = MemoryContextAlloc(p->gcx, sizeof(char *) * gb->nrows);	/* check-memory: allow the rows of one granule (SIFT_GRANULE_ROWS at most) */
-		uint32	   *lens = MemoryContextAlloc(p->gcx, sizeof(uint32) * gb->nrows);
-		bool	   *nulls = memcpy(MemoryContextAlloc(p->gcx, gb->nrows), gb->col_isnull[phys], gb->nrows);
+		const char **ss = MemoryContextAlloc(p->r->gcx, sizeof(char *) * gb->nrows);	/* check-memory: allow the rows of one granule (SIFT_GRANULE_ROWS at most) */
+		uint32	   *lens = MemoryContextAlloc(p->r->gcx, sizeof(uint32) * gb->nrows);
+		bool	   *nulls = memcpy(MemoryContextAlloc(p->r->gcx, gb->nrows), gb->col_isnull[phys], gb->nrows);
 		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(s->o->rel), s->store->leaf_attno[leaf] - 1);
 
 		for (int r = 0; r < gb->nrows; r++)
@@ -212,7 +219,7 @@ decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 			{
 				uint32		len;
 				const char *ref = sift_granule_exc_payload(&gb->view, phys, r, &len);
-				struct varlena *val = (struct varlena *) DatumGetPointer(s->store->host->read_wide_blob(s->o->rel, ref, len, att->atttypid, att->attlen, p->gcx));
+				struct varlena *val = (struct varlena *) DatumGetPointer(s->store->host->read_wide_blob(s->o->rel, ref, len, att->atttypid, att->attlen, p->r->gcx));
 
 				ss[r] = VARDATA_ANY(val);
 				lens[r] = VARSIZE_ANY_EXHDR(val);
@@ -233,18 +240,18 @@ decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 static ColView
 widened_view(SiftStorePart *p, int leaf, int phys, uint8 scale)
 {
-	SiftF2GranuleBuf *gb = p->gb;
+	SiftF2GranuleBuf *gb = p->r->gb;
 	int			n = gb->nrows;
-	const char **ss = MemoryContextAlloc(p->gcx, sizeof(char *) * n);	/* check-memory: allow the rows of one granule (SIFT_GRANULE_ROWS at most) */
-	uint32	   *lens = MemoryContextAlloc(p->gcx, sizeof(uint32) * n);
-	bool	   *nulls = MemoryContextAlloc(p->gcx, n);
+	const char **ss = MemoryContextAlloc(p->r->gcx, sizeof(char *) * n);	/* check-memory: allow the rows of one granule (SIFT_GRANULE_ROWS at most) */
+	uint32	   *lens = MemoryContextAlloc(p->r->gcx, sizeof(uint32) * n);
+	bool	   *nulls = MemoryContextAlloc(p->r->gcx, n);
 	MemoryContext old;
 	ColView		v;
 
 	if (!gb->col_decoded[phys])
 		sift_f2_gbuf_decode(gb, phys, SIFT_CELL_INT, true);
 	v = decoded_view(p, leaf, phys, SIFT_CELL_INT);
-	old = MemoryContextSwitchTo(p->gcx);
+	old = MemoryContextSwitchTo(p->r->gcx);
 	for (int r = 0; r < n; r++)
 	{
 		const bool	exc = v.tag != NULL && v.tag[r] != 0;
@@ -256,7 +263,7 @@ widened_view(SiftStorePart *p, int leaf, int phys, uint8 scale)
 		{
 			const char *payload = sift_granule_exc_payload(&gb->view, phys, r, &lens[r]);
 
-			ss[r] = DatumGetPointer(sift_f2_num64_exception_datum(payload, lens[r], p->gcx));
+			ss[r] = DatumGetPointer(sift_f2_num64_exception_datum(payload, lens[r], p->r->gcx));
 		}
 		else if (!nulls[r])
 		{
@@ -272,7 +279,7 @@ static void
 load_views(SiftStorePart *p)
 {
 	const SiftStoreScan *s = p->s;
-	const SiftF2ColMap *map = p->gb->pin->col_map;
+	const SiftF2ColMap *map = p->r->gb->pin->col_map;
 
 	for (int leaf = 0; leaf < s->store->ncols; leaf++)
 	{
@@ -281,11 +288,11 @@ load_views(SiftStorePart *p)
 		if (!s->want[leaf])
 			continue;
 		if (phys < 0)
-			p->views[leaf] = constant_view(p, leaf, map);
+			p->r->views[leaf] = constant_view(p, leaf, map);
 		else if (map != NULL && map->phys_kind[leaf] == SIFT_CELL_INT && s->store->kinds[leaf] == SIFT_CELL_STR)
-			p->views[leaf] = widened_view(p, leaf, phys, map->old_scale[leaf]);
+			p->r->views[leaf] = widened_view(p, leaf, phys, map->old_scale[leaf]);
 		else
-			p->views[leaf] = decoded_view(p, leaf, phys, s->store->kinds[leaf]);
+			p->r->views[leaf] = decoded_view(p, leaf, phys, s->store->kinds[leaf]);
 	}
 }
 
@@ -294,23 +301,23 @@ load_views(SiftStorePart *p)
 static bool
 table_row(SiftStorePart *p, uint16 r)
 {
-	return sift_tbl_f2_vis_row(&p->s->tvis, p->gb, r, p->px);
+	return sift_tbl_f2_vis_row(&p->s->tvis, p->r->gb, r, p->px);
 }
 
 static void
 index_granule(SiftStorePart *p)
 {
-	const SiftF2PartPin *pin = p->gb->pin;
-	const SiftDvGran *dg = pin->dv != NULL ? sift_dv_granule(pin->dv, p->gb->granule_id) : NULL;
+	const SiftF2PartPin *pin = p->r->gb->pin;
+	const SiftDvGran *dg = pin->dv != NULL ? sift_dv_granule(pin->dv, p->r->gb->granule_id) : NULL;
 
-	p->any_dead = dg != NULL && sift_dv_mask64(dg, p->s->o->snap, p->dead) > 0;
-	p->pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &pin->tidx[p->gb->granule_id]);
+	p->r->any_dead = dg != NULL && sift_dv_mask64(dg, p->s->o->snap, p->r->dead) > 0;
+	p->r->pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &pin->tidx[p->r->gb->granule_id]);
 }
 
 static bool
 index_row(SiftStorePart *p, uint16 r)
 {
-	return !(p->any_dead && ((p->dead[r >> 6] >> (r & 63)) & 1)) && !(p->pend_hit && sift_pdel_idx_has(p->px, p->tids[r]));
+	return !(p->r->any_dead && ((p->r->dead[r >> 6] >> (r & 63)) & 1)) && !(p->r->pend_hit && sift_pdel_idx_has(p->px, p->r->tids[r]));
 }
 
 static const RowVis table_vis = {NULL, table_row};
@@ -343,18 +350,18 @@ select_tagged_cols(SiftStorePart *p)
 {
 	const SiftStoreScan *s = p->s;
 
-	p->nactive = 0;
+	p->r->nactive = 0;
 	for (int k = 0; k < s->ncheck; k++)
-		if (p->views[s->check_cols[k]].tag != NULL)
-			p->active[p->nactive++] = s->check_cols[k];
+		if (p->r->views[s->check_cols[k]].tag != NULL)
+			p->r->active[p->r->nactive++] = s->check_cols[k];
 }
 
 static void
 refuse_unsure_cells(const SiftStorePart *p, int r)
 {
-	for (int k = 0; k < p->nactive; k++)
+	for (int k = 0; k < p->r->nactive; k++)
 	{
-		const ColView *v = &p->views[p->active[k]];
+		const ColView *v = &p->r->views[p->r->active[k]];
 
 		if (v->isnull[r] && v->tag[r] == SIFT_COLTAG_UNSURE)
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a numeric NaN cannot be aggregated on the stored values"),
@@ -367,12 +374,12 @@ static bool
 granule_batch(SiftStorePart *p, SiftF2Batch *b)
 {
 	const SiftStoreScan *s = p->s;
-	int			n = p->gb->nrows;
+	int			n = p->r->gb->nrows;
 	int			any = 0;
 
-	p->tids = sift_f2_gbuf_tids(p->gb);
-	memset(p->live, 0, sizeof(p->live));
-	memset(p->maybe, 0, sizeof(p->maybe));
+	p->r->tids = sift_f2_gbuf_tids(p->r->gb);
+	memset(p->r->live, 0, sizeof(p->r->live));
+	memset(p->r->maybe, 0, sizeof(p->r->maybe));
 	load_views(p);
 	select_tagged_cols(p);
 	if (s->vis->granule != NULL)
@@ -381,7 +388,7 @@ granule_batch(SiftStorePart *p, SiftF2Batch *b)
 	{
 		Verdict		v;
 
-		if (!s->vis->row(p, (uint16) r) || (s->o->bridge != NULL && !in_bridge(s->o->bridge, p->tids[r])))
+		if (!s->vis->row(p, (uint16) r) || (s->o->bridge != NULL && !in_bridge(s->o->bridge, p->r->tids[r])))
 			continue;
 		v = row_verdict(p, r);
 		if (v == V_MAYBE && !s->o->emit_maybe)
@@ -389,11 +396,11 @@ granule_batch(SiftStorePart *p, SiftF2Batch *b)
 							errhint("Run the statement with sift.enable_agg = off: the heap decides such a qual.")));
 		if (v == V_YES)
 			refuse_unsure_cells(p, r);
-		p->live[r >> 6] |= (uint64) (v == V_YES) << (r & 63);
-		p->maybe[r >> 6] |= (uint64) (v == V_MAYBE) << (r & 63);
+		p->r->live[r >> 6] |= (uint64) (v == V_YES) << (r & 63);
+		p->r->maybe[r >> 6] |= (uint64) (v == V_MAYBE) << (r & 63);
 		any += v != V_NO;
 	}
-	*b = (SiftF2Batch) {.views = p->views,.tid = p->tids,.live = p->live,.maybe = p->maybe,.n = n};
+	*b = (SiftF2Batch) {.views = p->r->views,.tid = p->r->tids,.live = p->r->live,.maybe = p->r->maybe,.n = n};
 	return any > 0;
 }
 
@@ -419,41 +426,51 @@ part_open_pin(SiftStorePart *p)
 {
 	SiftStoreScan *s = p->s;
 
-	p->pin = sift_f2_pin_open(s->o->rel, s->store, p->d, (uint32) p->e->part_id);
-	p->nspans = sift_f2_granule_spans(s->o->rel, p->pin->part, &s->f, &s->ks, &s->plan, p->spans);
-	p->g = p->nspans > 0 ? p->spans[0][0] : 0;
+	p->cx = sift_mem_allocset_create(s->cx, "sift f2 store scan part");
+	p->r = MemoryContextAllocZero(p->cx, sizeof(SiftPartRead));
+	p->r->pin = sift_f2_pin_open(s->o->rel, s->store, p->d, (uint32) p->e->part_id);
+	p->r->nspans = sift_f2_granule_spans(s->o->rel, p->r->pin->part, &s->f, &s->ks, &s->plan, p->r->spans);
+	p->r->g = p->r->nspans > 0 ? p->r->spans[0][0] : 0;
+	p->r->gcx = sift_mem_allocset_create(p->cx, "sift f2 store scan granule");
+	p->r->views = MemoryContextAllocZero(p->cx, sizeof(ColView) * s->store->ncols);
+	p->r->active = MemoryContextAlloc(p->cx, sizeof(int) * Max(s->ncheck, 1));
 	p->started = true;
 }
 
 static void
 part_release_pin(SiftStorePart *p)
 {
-	if (p->pin != NULL)
-		sift_f2_pin_release(p->pin);
-	p->pin = NULL;
+	if (p->r == NULL)
+		return;
+	sift_f2_pin_release(p->r->pin);
+	MemoryContextDelete(p->cx);
+	p->cx = NULL;
+	p->r = NULL;
 }
 
 static void
 part_release_granule(SiftStorePart *p)
 {
-	if (p->gb != NULL)
-		sift_f2_gbuf_unref(p->gb);
-	p->gb = NULL;
-	MemoryContextReset(p->gcx);
+	if (p->r == NULL)
+		return;
+	if (p->r->gb != NULL)
+		sift_f2_gbuf_unref(p->r->gb);
+	p->r->gb = NULL;
+	MemoryContextReset(p->r->gcx);
 }
 
 static bool
 part_next_granule_id(SiftStorePart *p, uint32 *g)
 {
-	while (p->span < p->nspans)
+	while (p->r->span < p->r->nspans)
 	{
-		if (p->g < p->spans[p->span][1])
+		if (p->r->g < p->r->spans[p->r->span][1])
 		{
-			*g = p->g++;
+			*g = p->r->g++;
 			return true;
 		}
-		if (++p->span < p->nspans)
-			p->g = p->spans[p->span][0];
+		if (++p->r->span < p->r->nspans)
+			p->r->g = p->r->spans[p->r->span][0];
 	}
 	return false;
 }
@@ -463,7 +480,7 @@ static bool
 bridge_wants(const SiftStorePart *p, uint32 g)
 {
 	const SiftStoreScanOpts *o = p->s->o;
-	const SiftTidIndexEntry *t = &p->pin->tidx[g];
+	const SiftTidIndexEntry *t = &p->r->pin->tidx[g];
 	bool		wanted = o->bridge == NULL || sift_tidbridge_granule_may_match(o->bridge, t->tid_min, t->tid_max, t->blk_bloom);
 
 	if (o->bridge_seen != NULL)
@@ -481,12 +498,12 @@ part_load_granule(SiftStorePart *p)
 
 	if (!p->started)
 		part_open_pin(p);
-	while (p->pin != NULL && part_next_granule_id(p, &g))
+	while (p->r != NULL && part_next_granule_id(p, &g))
 		if (bridge_wants(p, g))
 		{
-			p->gb = sift_f2_gbuf_load(s->o->rel, s->store, p->pin, g);
+			p->r->gb = sift_f2_gbuf_load(s->o->rel, s->store, p->r->pin, g);
 			if (s->delta != NULL)
-				sift_col_delta_scan_attach(s->delta, p->e, p->gb);
+				sift_col_delta_scan_attach(s->delta, p->e, p->r->gb);
 			return true;
 		}
 	part_release_pin(p);
@@ -511,7 +528,6 @@ part_close(SiftStorePart *p)
 {
 	part_release_granule(p);
 	part_release_pin(p);
-	MemoryContextDelete(p->gcx);
 	pfree(p);
 }
 
@@ -524,9 +540,6 @@ part_new(SiftStoreScan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, c
 	p->e = e;
 	p->d = d;
 	p->px = px;
-	p->gcx = sift_mem_allocset_create(s->cx, "sift f2 store scan granule");
-	p->views = MemoryContextAllocZero(s->cx, sizeof(ColView) * s->store->ncols);
-	p->active = MemoryContextAlloc(s->cx, sizeof(int) * Max(s->ncheck, 1));
 	return p;
 }
 

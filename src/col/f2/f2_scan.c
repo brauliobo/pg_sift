@@ -760,30 +760,33 @@ part_offered(F2Scan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, cons
 void
 scan_slab(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPendDelIndex *px, Snapshot snap)
 {
+	MemoryContext slab_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 scan slab");
+	MemoryContext old = MemoryContextSwitchTo(slab_cx);
 	SiftRowBuf *rb = sift_rowbuf_new(&f->spec);
 	BlockNumber *pages;
 	int			npages;
-	ColView    *views = palloc0(schema->ncols * sizeof(ColView));
-	bool	   *decided = palloc0(Max(s->npreds, 1));
+	ColView    *views = MemoryContextAllocZero(slab_cx, schema->ncols * sizeof(ColView));
+	bool	   *decided = MemoryContextAllocZero(slab_cx, Max(s->npreds, 1));
 	uint64	   *live,
 			   *maybe,
 			   *bmask;
 
 	sift_l0_slab_read(rel, e->part_id, e->l0_slab_blk, rb, &f->spec, snap, &pages, &npages);
+	MemoryContextSwitchTo(old);
 	for (int c = 0; c < f->ncols; c++)
 		views[c] = (ColView) {.kind = rb->kinds[c],.i = rb->i[c],.f = rb->f[c],.s = (const char *const *) rb->s[c],.slen = rb->slen[c],.isnull = rb->isnull[c],.tag = rb->tag[c],.xpay = (const char *const *) rb->xpay[c],.xplen = rb->xplen[c]};
 	for (int k = 0; k < s->npreds; k++)
 		if (s->preds[k].op == SIFT_COLOP_KEY_EXISTS && views[s->preds[k].col].keyp == NULL)
 		{
 			ColView    *cv = &views[s->preds[k].col];
-			bool	   *kp = palloc(Max(rb->n, 1));
+			bool	   *kp = MemoryContextAlloc(slab_cx, Max(rb->n, 1));
 
 			for (int r = 0; r < rb->n; r++)
 				kp[r] = sift_key_row_present(cv->isnull[r], cv->tag != NULL ? cv->tag[r] : 0);
 			cv->keyp = kp;
 		}
 	bmask = sift_f2_scan_slab_bridge(s, rb->tid, rb->n);
-	live = s->sink != NULL ? palloc0(2 * ((rb->n + 63) / 64 * sizeof(uint64) + sizeof(uint64))) : NULL;
+	live = s->sink != NULL ? MemoryContextAllocZero(slab_cx, 2 * ((rb->n + 63) / 64 * sizeof(uint64) + sizeof(uint64))) : NULL;
 	maybe = live != NULL ? live + (rb->n + 63) / 64 + 1 : NULL;
 	for (int r = 0; r < rb->n; r++)
 	{
@@ -799,7 +802,7 @@ scan_slab(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *sche
 	}
 	if (s->sink != NULL && rb->n > 0)
 		s->sink(s->sink_arg, &(SiftF2Batch) {.views = views,.tid = rb->tid,.live = live,.maybe = maybe,.scores = s->bscores,.n = rb->n});
-	sift_rowbuf_free(rb);
+	MemoryContextDelete(slab_cx);
 }
 
 static bool
@@ -881,6 +884,8 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 			else
 				fn(s, rel, &(F2Unit) {e, &list->parts[p], px}, arg);
 		}
+		if (px != NULL)
+			sift_pdel_idx_release(px, staged_px);
 	}
 }
 
