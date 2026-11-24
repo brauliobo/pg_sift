@@ -110,4 +110,3 @@ def select(areas=None, smoke=False):
 
 def limit(canary, name, default=None):
     return dict(canary.extra).get(name, default)
-

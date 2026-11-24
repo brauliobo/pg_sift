@@ -156,4 +156,3 @@ select distinct on (sensor_id) sensor_id, ts, value from readings order by senso
 select count(*) filter (where gap > interval '30 minutes' or gap is null) from (select ts - lag(ts) over (partition by session_id order by ts) gap from weblog where session_id <= 2000) s;
 -- @case ts_weblog_status_hour | time | web analytics status by hour
 select date_trunc('hour', ts) h, status, count(*) from weblog where ts >= '2026-03-10' and ts < '2026-03-12' group by 1, 2;
-

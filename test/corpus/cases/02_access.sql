@@ -247,4 +247,3 @@ select count(*) from events where 7 = any (tags) and d >= '2026-01-01';
 select count(*) from events where (attrs->>'flag')::boolean and dim_a_id between 100 and 400;
 -- @case s2_pred_not_null_group | pred | IS NOT NULL group
 select kind_id, count(*) from events where note is not null group by 1;
-

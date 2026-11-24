@@ -171,7 +171,7 @@ class Catalog(unittest.TestCase):
             with self.subTest(c.id):
                 self.assertIn(c.mode, gate.WORKERS)
                 self.assertTrue(c.blocks is not None or c.ratio or c.total or c.extra, 'no limit')
-                
+
     def test_selection(self):
         self.assertEqual(len(canaries.select()), 22)
         self.assertEqual([c.id for c in canaries.select(['bm25'])], ['bm25_topk_common_1t', 'bm25_hybrid_facet_4t'])
