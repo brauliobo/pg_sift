@@ -25,6 +25,7 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_join_plan.h"
+#include "agg/v6/v6_lateral_plan.h"
 #include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 
@@ -40,6 +41,7 @@ typedef struct JoinDim
 	int			nkeys;
 	const Node *probe[SIFT_STAR_MAX_KEYS];	/* the column of the relations before the dimension, or the expression of them, that its key is probed with */
 	const Var  *key[SIFT_STAR_MAX_KEYS];
+	bool		lateral;		/* a lateral sub-select cut to one row: its keys are the equalities it ties itself to the relations before it with (v6_lateral_plan.h) */
 } JoinDim;
 
 typedef struct JoinShape
@@ -134,28 +136,6 @@ make_dims(PlannerInfo *root, Relids base, JoinShape *sh)
 	return sh->nd > 0;
 }
 
-static bool
-dim_rels_ok(PlannerInfo *root, JoinShape *sh)
-{
-	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / sh->nd, 4096);
-
-	for (int i = 0; i < sh->nd; i++)
-	{
-		JoinDim    *d = &sh->dim[i];
-
-		RelOptInfo *rel;
-
-		if (bms_membership(d->rels) == BMS_SINGLETON)
-			rel = root->simple_rel_array[bms_singleton_member(d->rels)];
-		else
-			rel = find_join_rel(root, d->rels);
-		if (rel == NULL || !sift_v6_dim_rel_ok(root, rel, budget))
-			return false;
-		d->rel = rel;
-	}
-	return true;
-}
-
 /* the part a relation has in the join: the fact table, the element, the index of its dimension, or none */
 static int
 role_of(const JoinShape *sh, const Var *v)
@@ -212,6 +192,54 @@ add_key(JoinDim *d, const Node *probe, const Var *key)
 		return false;
 	d->probe[d->nkeys] = probe;
 	d->key[d->nkeys++] = key;
+	return true;
+}
+
+/* the keys of a lateral sub-select probe columns or expressions of the relations before it only */
+static bool
+lateral_dim(PlannerInfo *root, JoinShape *sh, int at, RelOptInfo *rel)
+{
+	JoinDim    *d = &sh->dim[at];
+	SiftV6LateralDim ld;
+
+	if (!sift_v6_lateral_dim(root, rel, &ld))
+		return false;
+	d->rel = ld.rel;
+	d->lateral = true;
+	for (int k = 0; k < ld.nkeys; k++)
+	{
+		const int	role = expr_role(sh, ld.probe[k]);
+
+		if (role == ROLE_NONE || role >= at || (!IsA(ld.probe[k], Var) && !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) ld.probe[k])) || !add_key(d, ld.probe[k], ld.key[k]))
+			return false;
+	}
+	return true;
+}
+
+static bool
+dim_rels_ok(PlannerInfo *root, JoinShape *sh)
+{
+	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / sh->nd, 4096);
+
+	for (int i = 0; i < sh->nd; i++)
+	{
+		JoinDim    *d = &sh->dim[i];
+		RelOptInfo *rel;
+
+		if (bms_membership(d->rels) == BMS_SINGLETON)
+			rel = root->simple_rel_array[bms_singleton_member(d->rels)];
+		else
+			rel = find_join_rel(root, d->rels);
+		if (rel != NULL && rel->lateral_relids != NULL)
+		{
+			if (!lateral_dim(root, sh, i, rel) || !sift_v6_dim_rel_ok(root, d->rel, budget))
+				return false;
+		}
+		else if (rel == NULL || !sift_v6_dim_rel_ok(root, rel, budget))
+			return false;
+		else
+			d->rel = rel;
+	}
 	return true;
 }
 
@@ -384,6 +412,8 @@ needs_lookup(const JoinShape *sh)
 	{
 		const JoinDim *d = &sh->dim[i];
 
+		if (d->lateral)
+			return true;
 		if (d->mode == SV6J_SEMI_EQUI && (sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON || d->rel->rtekind != RTE_RELATION))
 			return true;
 		if (d->mode != SV6J_INNER_EQUI && d->mode != SV6J_LEFT_EQUI && d->mode != SV6J_SEMI_EQUI)
@@ -662,8 +692,7 @@ sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *o
 
 		if (fact == NULL)
 			continue;
-		if (!root->hasLateralRTEs)
-			try_fact(root, input_rel, base, output_rel, fact, NULL, (GroupPathExtraData *) extra, group_exprs);
+		try_fact(root, input_rel, base, output_rel, fact, NULL, (GroupPathExtraData *) extra, group_exprs);
 		while (root->hasLateralRTEs && (e = bms_next_member(base, e)) >= 0)
 			if (e != f && root->simple_rel_array[e] != NULL)
 				try_fact(root, input_rel, base, output_rel, fact, root->simple_rel_array[e], (GroupPathExtraData *) extra, group_exprs);

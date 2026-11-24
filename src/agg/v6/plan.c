@@ -50,6 +50,7 @@
 #include "agg/v6/v6_unnest_exists.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/v6/v6_join_plan.h"
+#include "agg/v6/v6_lateral_plan.h"
 #include "agg/v6/v6_plan_shape.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_pg_expr.h"
@@ -800,6 +801,7 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 	cs->custom_plans = custom_plans;
 	if (spec->ext != NULL)
 	{
+		sift_v6_lateral_adopt(root, best->custom_paths);
 		sift_v6_ext_resolve(spec->ext, custom_plans);
 		cs->custom_private = sift_v6_spec_pack(spec);
 	}
