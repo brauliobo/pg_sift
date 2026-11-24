@@ -1,5 +1,5 @@
--- The functions that have no result without a BM25 index say so while it is out of service, and name what to do: sift.score() and sift.max_score() (computed inside a sift scan) name the
--- quarantined index in their hint, sift.facets() refuses with the state of the index. With every index in service the messages are the ones of before.
+-- sift.facets() has no result without a BM25 index: while it is out of service it refuses with the state of the index and names what to do. sift.score() and sift.max_score() never refuse:
+-- a score the index cannot compute is the one of a heap scan (a score outside a match is 0). With every index in service the messages are the ones of before.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 CREATE FUNCTION diag(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -27,9 +27,9 @@ SELECT diag($$ SELECT count(*) FROM sift.facets('d_idx', 'd_kw', 'alpha 3', 10) 
 (1 row)
 
 SELECT diag($$ SELECT sift.score(ctid) FROM d $$) AS score_not_in_a_scan;
-                                                                                                score_not_in_a_scan                                                                                                 
---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 0A000 | sift.score() must be computed by a sift scan of the same relation | Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+ score_not_in_a_scan 
+---------------------
+ ok
 (1 row)
 
 SELECT sift._test_poke('d_idx', 2, 8176, 9, 2);
@@ -45,15 +45,15 @@ SELECT left(diag($$ SELECT count(*) FROM d WHERE body @@> 'alpha 3' $$), 5) AS d
 (1 row)
 
 SELECT diag($$ SELECT sift.score(ctid) FROM d WHERE body @@> 'alpha 3' $$) AS score;
-                                                                                                                   score                                                                                                                   
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 0A000 | sift.score() must be computed by a sift scan of the same relation | Index "d_idx" of this database is quarantined (sift.quarantine), so no sift scan runs on it and the score has no value: REINDEX it to put it back in service.
+ score 
+-------
+ ok
 (1 row)
 
 SELECT diag($$ SELECT sift.max_score(ctid) FROM d WHERE body @@> 'alpha 3' $$) AS max_score;
-                                                                                                                   max_score                                                                                                                   
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 0A000 | sift.max_score() must be computed by a sift scan of the same relation | Index "d_idx" of this database is quarantined (sift.quarantine), so no sift scan runs on it and the score has no value: REINDEX it to put it back in service.
+ max_score 
+-----------
+ ok
 (1 row)
 
 SELECT diag($$ SELECT count(*) FROM sift.facets('d_idx', 'd_kw', 'alpha 3', 10) $$) AS facets;

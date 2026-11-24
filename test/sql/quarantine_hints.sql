@@ -1,5 +1,5 @@
--- The functions that have no result without a BM25 index say so while it is out of service, and name what to do: sift.score() and sift.max_score() (computed inside a sift scan) name the
--- quarantined index in their hint, sift.facets() refuses with the state of the index. With every index in service the messages are the ones of before.
+-- sift.facets() has no result without a BM25 index: while it is out of service it refuses with the state of the index and names what to do. sift.score() and sift.max_score() never refuse:
+-- a score the index cannot compute is the one of a heap scan (a score outside a match is 0). With every index in service the messages are the ones of before.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE FUNCTION diag(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE

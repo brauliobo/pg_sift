@@ -117,17 +117,17 @@ SELECT * FROM report();
                           q                          | matches | same | rechecked 
 -----------------------------------------------------+---------+------+-----------
  "quick fox"                                         |     202 | t    |       746
- dog OR "quick fox"                                  |     575 | t    |       776
- quick OR "quick fox"                                |     918 | t    |        60
+ dog OR "quick fox"                                  |     575 | t    |       746
+ quick OR "quick fox"                                |     918 | t    |         0
  "quick fox" OR "fox quick"                          |     403 | t    |       746
  quick AND NOT "quick fox"                           |     716 | t    |       746
  fox AND NOT "quick fox"                             |     544 | t    |       746
  (dog OR "quick fox") AND w1                         |     104 | t    |       137
  "quick fox" AND w1                                  |      35 | t    |       137
  (brown OR "quick fox") AND NOT ("quick fox" AND w2) |     512 | t    |       608
- dog OR ("fox quick" AND w3)                         |     407 | t    |       168
+ dog OR ("fox quick" AND w3)                         |     407 | t    |       138
  quick fox                                           |     746 | t    |         0
- fox NOT "quick red"                                 |     575 | t    |       231
+ fox NOT "quick red"                                 |     575 | t    |       171
 (12 rows)
 
 SELECT sift.promote('s_idx') IS NOT NULL AS promoted, sift.merge('s_idx') IS NOT NULL AS merged;

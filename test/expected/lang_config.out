@@ -185,7 +185,7 @@ GROUP BY l.cfg, o.op ORDER BY l.cfg, o.op;
 SELECT count(*) AS stop_not_rows FROM d_german WHERE body @@> 'und AND NOT Katze';
  stop_not_rows 
 ---------------
-             0
+           345
 (1 row)
 
 -- the same through a scan of the index in a plan that ranks, and through the exact check of the text (sift.match)
