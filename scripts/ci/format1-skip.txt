@@ -8,4 +8,4 @@
 ^installcheck-(format2_|table_f2_|f2_|stor_f2_|compat_v1_|format_v1_v2_compat|agg_lateral_flatten_f2$)
 # the Format 2.0 WAL tests, and the upgrade and compatibility tests (a golden v5 cluster, pg_upgrade, the dump and restore)
 ^tap-(024_format2_wal|025_format2_minimal_wal|013_upgrade_v5_to_v6|031_v51_full_compat|032_v6_dump_restore_tablespace)$
-^tap-shell-(f2_|pg_upgrade|compat_|old_lib_refusal|upgrade_)
+^tap-shell-(f2_|prod_viability_gate|pg_upgrade|compat_|old_lib_refusal|upgrade_)

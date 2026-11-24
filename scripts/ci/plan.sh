@@ -5,7 +5,7 @@
 DIFF_JOBS=$(( LANES > 1 ? 2 : 1 )) MUTANT_JOBS=$(( LANES > 1 ? 4 : 1 ))
 # by measured time, the long jobs of each kind first (SLOW_REGRESS: scripts/ci/weights.sh)
 SLOW_PERL="001_crash 004_wal_consistency"
-SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_wbuf_crash"
+SLOW_SHELL="prod_viability_gate leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_wbuf_crash"
 # the memory slope gate of the quick tier in SLOPE_SHARDS jobs, each the cases whose crc32 of the name falls in its shard (the slope of a case does not depend on the others)
 SLOPE_SHARDS=3
 # the fault matrix of the quick tier is a smoke: the quick rows of the operations that publish the most (FAULT_SMOKE, a regex of the rows of test/t/fault_matrix.tsv) and the standby

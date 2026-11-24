@@ -163,3 +163,4 @@ installcheck-col_key_cut_range	9	11	20	11
 installcheck-col_partition_adopt	11	11	20	8
 installcheck-tbl_key_order	8	8	20	7
 coverage	51	38	38	38
+tap-shell-prod_viability_gate	75	75	75	75

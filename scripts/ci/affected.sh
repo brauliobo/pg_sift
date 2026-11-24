@@ -101,7 +101,7 @@ if [[ $MODE == affected ]]; then
 	cassert=false
 	for f in ${FILES[@]+"${FILES[@]}"}; do [[ $f == src/*.c && -f $REPO/$f ]] && grep -qE "$ASSERT_MARK" "$REPO/$f" && cassert=true; done
 	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
-	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$|perf-gate-)'
+	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$|perf-gate-|tap-shell-prod_viability_gate$)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation-[0-9]+$'
