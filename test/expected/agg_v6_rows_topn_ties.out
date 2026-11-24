@@ -1,0 +1,43 @@
+-- ORDER BY a, b LIMIT N of the rows of a table in Custom Scan (SiftAggV6) when many rows tie on the first column across several granules and parts: a granule whose newest value is
+-- the first column of the worst row held can still hold a row that beats it on the second column (id DESC), so it is read. Each statement runs with the node and without it
+-- (sift.enable_agg off) and the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_create_format1 = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE tt (id int PRIMARY KEY, ts date NOT NULL, grp int NOT NULL, kind text NOT NULL);
+INSERT INTO tt SELECT i, date '2025-01-01' + i % 3, i % 5, 'cat_' || chr(97 + i % 4) FROM generate_series(1, 30000) i;
+CREATE INDEX tt_col ON tt USING sift_col (id, ts, grp, kind);
+INSERT INTO tt SELECT i, date '2025-01-01' + i % 3, i % 5, 'cat_' || chr(97 + i % 4) FROM generate_series(30001, 45000) i;
+VACUUM (FREEZE, ANALYZE) tt;
+CREATE FUNCTION rows_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r record; node text; a text := ''; b text := '';
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP node := coalesce(node, substring(l FROM 'Custom Scan \((SiftAggV6\w*)\)')); END LOOP;
+	FOR r IN EXECUTE q LOOP a := a || r::text || ';'; END LOOP;
+	SET LOCAL sift.enable_agg = off;
+	FOR r IN EXECUTE q LOOP b := b || r::text || ';'; END LOOP;
+	RETURN CASE WHEN a <> b THEN 'DIFFERS: ' || a || ' vs ' || b WHEN node IS NULL THEN 'not engaged' ELSE 'same rows, ' || node END;
+END $$;
+SELECT q, rows_chk(q) FROM unnest(ARRAY[
+	$$SELECT id, ts FROM tt ORDER BY ts DESC, id DESC LIMIT 20$$,
+	$$SELECT id, ts FROM tt ORDER BY ts, id DESC LIMIT 20$$,
+	$$SELECT id, ts FROM tt ORDER BY ts DESC, id DESC LIMIT 20 OFFSET 7$$,
+	$$SELECT id, ts FROM tt WHERE grp IN (1, 2, 3) ORDER BY ts DESC, id DESC LIMIT 20$$,
+	$$SELECT id, ts FROM tt WHERE kind = 'cat_b' ORDER BY ts, id DESC LIMIT 20$$,
+	$$SELECT id, ts FROM tt WHERE kind = 'cat_b' ORDER BY ts DESC, id DESC LIMIT 20 OFFSET 7$$
+]) q;
+                                           q                                            |         rows_chk         
+----------------------------------------------------------------------------------------+--------------------------
+ SELECT id, ts FROM tt ORDER BY ts DESC, id DESC LIMIT 20                               | same rows, SiftAggV6TopN
+ SELECT id, ts FROM tt ORDER BY ts, id DESC LIMIT 20                                    | same rows, SiftAggV6TopN
+ SELECT id, ts FROM tt ORDER BY ts DESC, id DESC LIMIT 20 OFFSET 7                      | same rows, SiftAggV6TopN
+ SELECT id, ts FROM tt WHERE grp IN (1, 2, 3) ORDER BY ts DESC, id DESC LIMIT 20        | same rows, SiftAggV6
+ SELECT id, ts FROM tt WHERE kind = 'cat_b' ORDER BY ts, id DESC LIMIT 20               | same rows, SiftAggV6
+ SELECT id, ts FROM tt WHERE kind = 'cat_b' ORDER BY ts DESC, id DESC LIMIT 20 OFFSET 7 | same rows, SiftAggV6
+(6 rows)
+
+DROP FUNCTION rows_chk(text);
+DROP TABLE tt;
+DROP EXTENSION pg_sift;

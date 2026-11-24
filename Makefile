@@ -146,6 +146,7 @@ TESTING_REGRESS += agg_v6_parallel_col_delta
 TESTING_REGRESS += agg_v6_params_float_exec
 TESTING_REGRESS += agg_v6_parity_workload
 TESTING_REGRESS += agg_v6_rows_text_ties
+TESTING_REGRESS += agg_v6_rows_topn_ties
 TESTING_REGRESS += agg_v6_scope_topk
 TESTING_REGRESS += agg_v6_sip_window_expr
 TESTING_REGRESS += agg_v6_star_jsonb_unnest
