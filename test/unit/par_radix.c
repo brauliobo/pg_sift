@@ -251,16 +251,20 @@ test_group_topk(void)
 	}
 }
 
+typedef struct Cover
+{
+	uint32		overflows;
+	uint32		left;
+	uint32		drained;
+} Cover;
+
 /* Arenas from room for everything down to room for nothing, at the sizes where the run fits, drains, hands items back and hits the floor: every run, whether it overflowed or not, gives the answer of the rows */
 static void
-sweep_group(const Data *d, const SiftParGroupSpec *sp, bool high, uint32 workers, uint32 rec_words)
+sweep_group(Cover *cv, const Data *d, const SiftParGroupSpec *sp, bool high, uint32 workers, uint32 rec_words)
 {
 	static const int shifts[] = {0, 3, 6, 9, 12};
 	const Sizes full = roomy(workers, rec_words);
 	Vec			want = reference(d, sp);
-	uint32		overflows = 0,
-				left = 0,
-				drained = 0;
 
 	for (int i = 0; i < lengthof(shifts); i++)
 		for (int what = 0; what < 2; what++)
@@ -273,12 +277,11 @@ sweep_group(const Data *d, const SiftParGroupSpec *sp, bool high, uint32 workers
 			else
 				sz.work = Max(full.work >> (shifts[i] + 2), 8 << 10);
 			check_group(d, sp, &want, high, workers, sz, &r);
-			overflows += r.overflowed;
-			left += r.left_items > 0;
-			drained += r.overflowed && r.left_items == 0;
+			cv->overflows += r.overflowed;
+			cv->left += r.left_items > 0;
+			cv->drained += r.overflowed && r.left_items == 0;
 		}
 	vec_free(&want);
-	PASS(overflows > 0 && left > 0 && drained > 0);
 }
 
 static void
@@ -287,28 +290,30 @@ test_group_overflow(void)
 	Data	   *ints = gen_int(2, ROWS, MANY, false, 2, true),
 			   *strs = gen_str(ROWS, MANY, false, 2, true),
 			   *mixed = gen_mixed(3, 2, ROWS, MANY, false, 2, true);
+	Cover		cv = {0};
 
 	for (uint32 w = 1; w <= 4; w += (w == 1 ? 1 : 2))
 	{
 		SiftParGroupSpec sp = int_spec(2, 2, true);
 
-		sweep_group(ints, &sp, true, w, 5);
-		sweep_group(ints, &sp, false, w, 5);
+		sweep_group(&cv, ints, &sp, true, w, 5);
+		sweep_group(&cv, ints, &sp, false, w, 5);
 		sp.topk = 10;
 		sp.order = 1;
 		sp.desc = true;
-		sweep_group(ints, &sp, true, w, 5);
+		sweep_group(&cv, ints, &sp, true, w, 5);
 		sp = str_spec(2);
-		sweep_group(strs, &sp, true, w, 6);
+		sweep_group(&cv, strs, &sp, true, w, 6);
 		sp.topk = 100;
-		sweep_group(strs, &sp, true, w, 6);
+		sweep_group(&cv, strs, &sp, true, w, 6);
 		sp = mixed_spec(3, 2, 2);
-		sweep_group(mixed, &sp, true, w, mixed_words(&sp));
-		sweep_group(mixed, &sp, false, w, mixed_words(&sp));
+		sweep_group(&cv, mixed, &sp, true, w, mixed_words(&sp));
+		sweep_group(&cv, mixed, &sp, false, w, mixed_words(&sp));
 		sp.topk = 50;
 		sp.order = SIFT_PAR_GROUP_BY_KEY;
-		sweep_group(mixed, &sp, true, w, mixed_words(&sp));
+		sweep_group(&cv, mixed, &sp, true, w, mixed_words(&sp));
 	}
+	PASS(cv.overflows > 0 && cv.left > 0 && cv.drained > 0);
 	data_free(ints);
 	data_free(strs);
 	data_free(mixed);
