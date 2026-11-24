@@ -8,6 +8,8 @@
 #ifdef SIFT_TESTING
 
 #include "col/f2/f2test.h"
+#include "col/f2/f2_store.h"
+#include "core/horizon.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_alloc);
 PG_FUNCTION_INFO_V1(sift_test_f2_pack_tails);
@@ -19,6 +21,7 @@ PG_FUNCTION_INFO_V1(sift_test_f2_release);
 PG_FUNCTION_INFO_V1(sift_test_f2_reclaim);
 PG_FUNCTION_INFO_V1(sift_test_f2_extend_file);
 PG_FUNCTION_INFO_V1(sift_test_f2_tail_shrink);
+PG_FUNCTION_INFO_V1(sift_test_f2_tail_relocate);
 PG_FUNCTION_INFO_V1(sift_test_f2_meta_inline);
 PG_FUNCTION_INFO_V1(sift_test_f2_fsm);
 PG_FUNCTION_INFO_V1(sift_test_f2_meta_alloc);
@@ -158,6 +161,16 @@ sift_test_f2_tail_shrink(PG_FUNCTION_ARGS)
 
 	index_close(rel, NoLock);
 	return f2t_record_result(fcinfo, v, n);
+}
+
+/* (index): the pass that moves what holds the end of the file below the free space under it, alone (a vacuum compacts and refreshes first); the length of the file after it */
+Datum
+sift_test_f2_tail_relocate(PG_FUNCTION_ARGS)
+{
+	Relation	rel = f2t_open_index(fcinfo, RowExclusiveLock);
+
+	sift_f2_tail_relocate(rel, sift_f2_store_open(rel), sift_horizon(rel), sift_f2_hot_cut(sift_f2_rel(rel)));
+	PG_RETURN_INT64(RelationGetNumberOfBlocks(rel));
 }
 
 /* (index): what block 0 keeps inline: its offset and length, the partitions of the summary and whether the index says so; the check of the manifest fails when the summary is not the directory */

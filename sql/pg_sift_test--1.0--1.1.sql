@@ -60,6 +60,7 @@ CREATE FUNCTION sift._test_f2_release(index regclass, start int8, nblocks int4, 
 CREATE FUNCTION sift._test_f2_reclaim(index regclass) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_f2_reclaim' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_extend_file(index regclass, blocks int8) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_f2_extend_file' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_tail_shrink(index regclass, OUT blocks_truncated int8, OUT lock_skipped bool, OUT high_water int8, OUT file_blocks int8) RETURNS record AS 'MODULE_PATHNAME', 'sift_test_f2_tail_shrink' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_f2_tail_relocate(index regclass) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_f2_tail_relocate' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_meta_inline(index regclass, OUT inline_off int4, OUT inline_len int4, OUT inline_parts int4, OUT flagged bool) RETURNS record AS 'MODULE_PATHNAME', 'sift_test_f2_meta_inline' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_fsm(index regclass) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_f2_fsm' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_dump(index regclass, part_id int8, plo int8, gen int8, base_key int8, tid_base int8, mode int4 DEFAULT 0) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_f2_dump' LANGUAGE C;
