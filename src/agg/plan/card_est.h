@@ -106,6 +106,7 @@ typedef struct SiftCardStatsView
 {
 	uint64		total_live_rows;
 	uint64		total_granules;
+	uint64		total_bytes;	/* what the parts of the index take */
 	uint32		ncols;
 	uint32		nparts;
 	uint32		nfiles;			/* the parts of every partition: a scan opens each of them before its zones leave a granule */

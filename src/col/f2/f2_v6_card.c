@@ -330,6 +330,7 @@ build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 	v->sample_zones = (SiftCardZone *) (base + off);
 	v->total_live_rows = live;
 	v->total_granules = granules;
+	v->total_bytes = plan->total_bytes;
 	v->ncols = f->ncols;
 	v->nparts = plan->npartitions;
 	for (int i = 0; i < plan->npartitions; i++)
