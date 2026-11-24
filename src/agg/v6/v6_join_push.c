@@ -275,8 +275,7 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 
 	if (!compile_fact(root, j, out, extra, ix, &int_col, &spec, &scan_tlist) || OidIsValid(spec.text_indexoid))
 		return;
-	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
-		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));
+	group_exprs = sift_v6_group_exprs_of(root);
 	groups = spec.nkeys == 0 ? 1.0 : estimate_num_groups(root, group_exprs, j->fact->rows, NULL, NULL);
 	cp = makeNode(CustomPath);
 	cp->path.pathtype = T_CustomScan;

@@ -336,8 +336,7 @@ sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *o
 
 	if (!sift_v6_plan_query_ok(root, output_rel) || nrels < 2 || nrels > 1 + SIFT_STAR_MAX_DIMS || root->hasLateralRTEs || root->placeholder_list != NIL)
 		return;
-	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
-		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));
+	group_exprs = sift_v6_group_exprs_of(root);
 	while ((r = bms_next_member(base, r)) >= 0)
 		try_fact(root, input_rel, base, output_rel, root->simple_rel_array[r], (GroupPathExtraData *) extra, group_exprs);
 }

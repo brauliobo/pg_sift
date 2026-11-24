@@ -141,7 +141,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOp
 void
 sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
-	List	   *group_exprs = NIL;
+	List	   *group_exprs;
 	Relids		base = sift_v6_plan_base_relids(root, input_rel);
 	int			a,
 				b;
@@ -150,8 +150,7 @@ sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo 
 		return;
 	a = bms_next_member(base, -1);
 	b = bms_next_member(base, a);
-	foreach_node(SortGroupClause, sgc, root->parse->groupClause)
-		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));
+	group_exprs = sift_v6_group_exprs_of(root);
 	try_fact(root, input_rel, output_rel, root->simple_rel_array[a], root->simple_rel_array[b], (GroupPathExtraData *) extra, group_exprs);
 	try_fact(root, input_rel, output_rel, root->simple_rel_array[b], root->simple_rel_array[a], (GroupPathExtraData *) extra, group_exprs);
 }

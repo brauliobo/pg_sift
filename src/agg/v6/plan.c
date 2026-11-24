@@ -935,8 +935,8 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	}
 	if (!sift_v6_plan_shape(root, input_rel, output_rel))
 		return;
-	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
-		group_exprs = lappend(group_exprs, in_terms_of(root, input_rel, (Node *) get_sortgroupclause_expr(sgc, root->parse->targetList)));
+	foreach_ptr(Node, e, sift_v6_group_exprs_of(root))
+		group_exprs = lappend(group_exprs, in_terms_of(root, input_rel, e));
 	if (input_rel->part_scheme != NULL && planner_rt_fetch(input_rel->relid, root)->inh)
 	{
 		sift_agg_v6_partition_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
@@ -946,14 +946,36 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	sift_v6_scan_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 }
 
+typedef struct DependentCols
+{
+	List	   *keys;
+} DependentCols;
+
+/* a column the output reads that is no key and no argument of an aggregate: PostgreSQL allows it only when the keys decide it (a primary key), so it is one more key that splits no group */
+static bool
+dependent_cols(Node *n, DependentCols *c)
+{
+	if (n == NULL || list_member(c->keys, n) || IsA(n, Aggref) || IsA(n, GroupingFunc) || IsA(n, WindowFunc))
+		return false;
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup == 0)
+	{
+		c->keys = lappend(c->keys, n);
+		return false;
+	}
+	return expression_tree_walker(n, dependent_cols, c);
+}
+
 List *
 sift_v6_group_exprs_of(PlannerInfo *root)
 {
-	List	   *group_exprs = NIL;
+	const PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
+	DependentCols c = {NIL};
 
 	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
-		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));
-	return group_exprs;
+		c.keys = lappend(c.keys, get_sortgroupclause_expr(sgc, root->parse->targetList));
+	if (target != NULL && root->parse->groupingSets == NIL)
+		dependent_cols((Node *) target->exprs, &c);
+	return c.keys;
 }
 
 bool

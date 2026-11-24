@@ -585,8 +585,7 @@ sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *o
 
 	if (!sift_v6_plan_query_ok(root, output_rel) || nrels < 2 || nrels > 2 + SIFT_STAR_MAX_DIMS || root->placeholder_list != NIL)
 		return;
-	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
-		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));
+	group_exprs = sift_v6_group_exprs_of(root);
 	while ((f = bms_next_member(base, f)) >= 0)
 	{
 		RelOptInfo *fact = root->simple_rel_array[f];
