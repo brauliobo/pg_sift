@@ -49,6 +49,7 @@ typedef struct SiftF2PullSpec
 	int			nmasks;
 	SiftF2PullMask mask[SIFT_F2_PULL_MAX_MASKS];
 	int			group_leaf;		/* an array column: the leaf of its lengths (SIFT_CENC_LIST_LEN), -1: none */
+	bool		poison_rows;	/* with no array column too: the rows of a granule that holds a value a leaf of ncols cannot hold are poison (the consumer reads them from the heap), and the slab's are, as with one */
 	int			nchild;
 	SiftF2PullCol child[SIFT_F2_PULL_MAX_CHILD];	/* its element leaves */
 	/*
@@ -90,7 +91,7 @@ typedef struct SiftF2ExtBatch
 	const SiftVexprMaskIn *masks;
 	const uint64 *tid;
 	const uint64 *live;
-	const SiftF2ElemStream *elem;	/* NULL unless the spec names a group */
+	const SiftF2ElemStream *elem;	/* NULL unless the spec names a group or asks for poison_rows (then its layout is empty) */
 } SiftF2ExtBatch;
 
 /* What the predicates of the spec left of the index, and how the element columns were decoded */

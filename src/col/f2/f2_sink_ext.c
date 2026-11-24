@@ -267,11 +267,11 @@ poison_granule(SiftF2Pull *p)
 	memset(p->poison, 0xff, ((p->n + 63) / 64) * sizeof(uint64));
 }
 
-/* a value a vector of a column cannot hold: the rows of the granule are the consumer's when it reads arrays, else the scan has no answer */
+/* a value a vector of a column cannot hold: the rows of the granule are the consumer's when it reads arrays or poison rows, else the scan has no answer */
 static void
 unholdable(SiftF2Pull *p)
 {
-	if (p->spec.group_leaf < 0)
+	if (p->spec.group_leaf < 0 && !p->spec.poison_rows)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
 				errhint("Read the column through a scan that decodes exceptions.")));
 	poison_granule(p);
@@ -412,6 +412,39 @@ decode_children(SiftF2Pull *p)
 	}
 }
 
+/* a leaf of a key of a jsonb document the consumer reads holds, on some rows, a value of another type than its own (the payload of its exception): those rows are poison, the consumer reads them from the heap */
+static bool
+key_leaf_col(const SiftF2Pull *p, int i)
+{
+	return sift_f2_rel(p->index)->key_leaf[p->spec.col[i].leaf];
+}
+
+static void
+poison_key_rows(SiftF2Pull *p)
+{
+	uint8	   *tag = palloc(Max(p->n, 1));
+
+	for (int i = 0; i < p->spec.ncols; i++)
+	{
+		if (!key_leaf_col(p, i))
+			continue;
+		sift_granule_tags(&p->gv, p->spec.col[i].leaf, tag);
+		for (uint32 r = 0; r < p->n; r++)
+			p->poison[r >> 6] |= (uint64) (tag[r] != 0 && tag[r] != SIFT_COLTAG_JNULL) << (r & 63);
+	}
+}
+
+/* no array column: every row has its document, and a row is poison where a leaf of a key holds a value it cannot */
+static void
+begin_rows(SiftF2Pull *p)
+{
+	p->poison = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
+	p->doc_valid = palloc((((p->n + 63) / 64) + 1) * sizeof(uint64));
+	memset(p->doc_valid, 0xff, (((p->n + 63) / 64) + 1) * sizeof(uint64));
+	p->has_layout = false;
+	p->n_elems = 0;
+}
+
 static void
 begin_layout(SiftF2Pull *p)
 {
@@ -519,6 +552,8 @@ begin_granule(SiftF2Pull *p)
 	finish_live(p, any_dead ? dead : NULL);
 	if (p->spec.group_leaf >= 0)
 		begin_layout(p);
+	else if (p->spec.poison_rows)
+		begin_rows(p);
 	no_elems = elems_ruled_out(p);
 	if (no_elems && !live_poison(p))
 	{
@@ -532,6 +567,8 @@ begin_granule(SiftF2Pull *p)
 		p->stats.granules_elem_elided++;
 	}
 	sift_lazy_granule_load(p->index, &p->lg, chunks, body_chunks(p, chunks));
+	if (p->spec.group_leaf >= 0 || p->spec.poison_rows)
+		poison_key_rows(p);
 	p->stats.child_chunks += p->n_elems > 0 ? p->spec.nchild : 0;
 	if (p->spec.group_leaf >= 0 && p->has_layout)
 		decode_children(p);
@@ -702,7 +739,7 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 				p->cur_on[i] = true;
 			}
 			sift_vec_cursor_decode(&p->cur[i], off, cnt, &p->vec[i], &exc);
-			if (exc != NULL)
+			if (exc != NULL && !(p->spec.poison_rows && key_leaf_col(p, i)))
 				unholdable(p);
 			patch_col(p, i, off, cnt);
 		}
@@ -790,7 +827,7 @@ sift_f2_pull_next(SiftF2Pull *p)
 	p->slice_off = off;
 	fill_slice(p, off, cnt);
 	p->out = (SiftF2ExtBatch) {.n = cnt,.col = p->vec,.masks = p->masks,.tid = p->tids + off,.live = p->live + off / 64};
-	if (p->spec.group_leaf >= 0)
+	if (p->spec.group_leaf >= 0 || p->spec.poison_rows)
 	{
 		fill_elems(p, off, cnt);
 		p->out.elem = &p->es;
