@@ -32,7 +32,6 @@
 #include "utils/tuplestore.h"
 
 #include "agg/v6/v6_vexpr.h"
-#include "core/filter.h"
 #include "core/store_ops.h"
 
 PG_FUNCTION_INFO_V1(sift_test_store_rows);
@@ -101,35 +100,6 @@ quals_gt(StoreScan *sc, int att, int64 value)
 	if (!ok)
 		ereport(ERROR, (errmsg("the engine does not compile the qual on attribute %d", att)));
 	return out;
-}
-
-/* ---- the match set of a hybrid scan ---- */
-
-static int
-tid_cmp(const void *a, const void *b)
-{
-	return ItemPointerCompare((ItemPointer) a, (ItemPointer) b);
-}
-
-static SiftFilter *
-match_set(ArrayType *tids)
-{
-	int			n = ArrayGetNItems(ARR_NDIM(tids), ARR_DIMS(tids));
-	ItemPointerData *t = palloc(n * sizeof(ItemPointerData));
-	SiftFilter *f = sift_filter_create(CurrentMemoryContext);
-
-	memcpy(t, ARR_DATA_PTR(tids), n * sizeof(ItemPointerData));
-	qsort(t, n, sizeof(ItemPointerData), tid_cmp);
-	for (int i = 0; i < n;)
-	{
-		uint64		offmask[SIFT_OFFMASK_WORDS] = {0};
-		const BlockNumber blk = ItemPointerGetBlockNumber(&t[i]);
-
-		for (; i < n && ItemPointerGetBlockNumber(&t[i]) == blk; i++)
-			offmask[(ItemPointerGetOffsetNumber(&t[i]) - 1) >> 6] |= UINT64CONST(1) << ((ItemPointerGetOffsetNumber(&t[i]) - 1) & 63);
-		sift_filter_add_page(f, blk, offmask);
-	}
-	return f;
 }
 
 /* ---- the rows ---- */
@@ -277,13 +247,7 @@ sift_test_store_rows(PG_FUNCTION_ARGS)
 	sift_v6_input_bind(&sc.in, estate);
 	if (!PG_ARGISNULL(3))
 		quals = quals_gt(&sc, PG_GETARG_INT32(3), PG_GETARG_INT64(4));
-	if (PG_ARGISNULL(5))
-		src = ops->open(estate, &sc.in, quals, false);
-	else
-	{
-		SIFT_INVARIANT(ops->hybrid != NULL && ops->hybrid->can_hybrid(relid, is_table), "relation %u takes no match set", relid);
-		src = ops->hybrid->open_hybrid(estate, &sc.in, quals, match_set(PG_GETARG_ARRAYTYPE_P(5)), false);
-	}
+	src = ops->open(estate, &sc.in, quals, false);
 	while (src->next(src, &b))
 	{
 		batch++;
@@ -335,6 +299,13 @@ sift_test_store_ops(PG_FUNCTION_ARGS)
 	if (ops == NULL)
 		PG_RETURN_NULL();
 	ops->schema(relid, is_table, &schema);
+	if (schema.atts == NULL)
+	{
+		memset(nulls, true, sizeof(nulls));
+		nulls[0] = false;
+		values[0] = CStringGetTextDatum(ops->name);
+		PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, values, nulls)));
+	}
 	ops->stats(relid, is_table, &stats);
 	initStringInfo(&types);
 	initStringInfo(&holds);

@@ -1,12 +1,12 @@
 -- Format 1 behind the storage seam of the unified engine (core/store_ops.h, col/v1/v1_store_ops.c): the sift_col indexes and sift_table tables built in Format 1 (sift.test_create_format1,
 -- the testing build only) are opened as batches of SIFT_VEC_LEN rows, and the rows they give are the heap's own: the same rows, with the same tag (the TID), values and NULLs, after
--- inserts, updates, deletes, a rollback and VACUUM, over integer, boolean, float, date, timestamp, numeric (narrow, NaN and wide), text and uuid columns, with the quals of the engine, and
--- with a match set. A heap and a btree index have no owner; a relation of Format 2 is owned by f2, which describes no attribute.
+-- inserts, updates, deletes, a rollback and VACUUM, over integer, boolean, float, date, timestamp, numeric (narrow, NaN and wide), text and uuid columns, and with the quals of the engine.
+-- A relation of Format 2 is owned by the Format 2 ops, a heap and a btree index by none.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 SET client_min_messages = warning;
 \set VERBOSITY terse
-CREATE FUNCTION sift._test_store_rows(rel regclass, is_table bool, atts int4[], qual_att int4, qual_gt int8, match tid[])
+CREATE FUNCTION sift._test_store_rows(rel regclass, is_table bool, atts int4[], qual_att int4, qual_gt int8)
 	RETURNS TABLE (batch int4, n int4, row_tid tid, vals text[], fetched text[]) AS '$libdir/pg_sift', 'sift_test_store_rows' LANGUAGE C;
 CREATE FUNCTION sift._test_store_ops(rel regclass, is_table bool, OUT owner text, OUT vec_types text, OUT live_rows float8, OUT stored_bytes int8, OUT allvis float8, OUT holds text)
 	RETURNS record AS '$libdir/pg_sift', 'sift_test_store_ops' LANGUAGE C STRICT;
@@ -18,18 +18,18 @@ DECLARE d int8; f int8;
 BEGIN
 	SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_seqscan = on;
 	EXECUTE format('SELECT count(*) FROM (
-		(SELECT vals FROM sift._test_store_rows(%1$L, %2$L, %3$L, %6$L, %7$L, NULL) EXCEPT ALL SELECT ARRAY[%4$s]::text[] FROM %8$s WHERE %5$s)
+		(SELECT vals FROM sift._test_store_rows(%1$L, %2$L, %3$L, %6$L, %7$L) EXCEPT ALL SELECT ARRAY[%4$s]::text[] FROM %8$s WHERE %5$s)
 		UNION ALL
-		(SELECT ARRAY[%4$s]::text[] FROM %8$s WHERE %5$s EXCEPT ALL SELECT vals FROM sift._test_store_rows(%1$L, %2$L, %3$L, %6$L, %7$L, NULL))) x',
+		(SELECT ARRAY[%4$s]::text[] FROM %8$s WHERE %5$s EXCEPT ALL SELECT vals FROM sift._test_store_rows(%1$L, %2$L, %3$L, %6$L, %7$L))) x',
 		rel, is_table, atts, exprs, pred, qual_att, qual_gt, coalesce(tbl, CASE WHEN is_table THEN rel ELSE (SELECT indrelid FROM pg_index WHERE indexrelid = rel) END)) INTO d;
-	EXECUTE format('SELECT count(*) FROM sift._test_store_rows(%L, %L, %L, %L, %L, NULL) WHERE fetched IS DISTINCT FROM vals', rel, is_table, atts, qual_att, qual_gt) INTO f;
+	EXECUTE format('SELECT count(*) FROM sift._test_store_rows(%L, %L, %L, %L, %L) WHERE fetched IS DISTINCT FROM vals', rel, is_table, atts, qual_att, qual_gt) INTO f;
 	RETURN d + f;
 END $$;
 -- The batches: how many, how many rows each holds, and that every one but the last holds SIFT_VEC_LEN
 CREATE FUNCTION batches(rel regclass, is_table bool, atts int4[]) RETURNS text LANGUAGE sql AS $$
 	SELECT count(*) || ' batches, ' || count(*) FILTER (WHERE n = 2048) || ' of 2048 rows, last ' || (array_agg(rows ORDER BY batch DESC))[1] || ', all rows ' || sum(rows) ||
 		CASE WHEN bool_and(rows = n) THEN ', sizes right' ELSE ', SIZES WRONG' END
-	FROM (SELECT batch, max(n) n, count(*) rows FROM sift._test_store_rows(rel, is_table, atts, NULL, NULL, NULL) GROUP BY batch) b $$;
+	FROM (SELECT batch, max(n) n, count(*) rows FROM sift._test_store_rows(rel, is_table, atts, NULL, NULL) GROUP BY batch) b $$;
 -- 1. A sift_col index of Format 1 over a heap: the planner's view of it
 SET sift.test_create_format1 = on;
 CREATE TABLE c1 (id int, g int2, b bool, big int8, f4 float4, f8 float8, d date, ts timestamptz, n numeric(12,2), s text, u uuid, w numeric(30,5));
@@ -161,32 +161,6 @@ SELECT diff('c1_idx', false, '{1,2}', 'id::text, g::text', 'g > 5', 2, 5) AS int
          0
 (1 row)
 
--- 6. A match set: the rows the search found, by their TIDs
-CREATE FUNCTION diff_match(rel regclass, is_table bool, atts int4[], exprs text, tbl regclass, pred text) RETURNS int8 LANGUAGE plpgsql AS $$
-DECLARE d int8; f int8; m tid[];
-BEGIN
-	SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT array_agg(ctid) FROM %s WHERE %s', tbl, pred) INTO m;
-	EXECUTE format('SELECT count(*) FROM (
-		(SELECT vals FROM sift._test_store_rows(%1$L, %2$L, %3$L, NULL, NULL, %6$L) EXCEPT ALL SELECT ARRAY[%4$s]::text[] FROM %5$s WHERE %7$s)
-		UNION ALL
-		(SELECT ARRAY[%4$s]::text[] FROM %5$s WHERE %7$s EXCEPT ALL SELECT vals FROM sift._test_store_rows(%1$L, %2$L, %3$L, NULL, NULL, %6$L))) x',
-		rel, is_table, atts, exprs, tbl, m, pred) INTO d;
-	EXECUTE format('SELECT count(*) FROM sift._test_store_rows(%L, %L, %L, NULL, NULL, %L) WHERE fetched IS DISTINCT FROM vals', rel, is_table, atts, m) INTO f;
-	RETURN d + f;
-END $$;
-SELECT diff_match('c1_idx', false, '{1,10}', 'id::text, s::text', 'c1', 'id % 97 = 0') AS match_set;
- match_set 
------------
-         0
-(1 row)
-
-SELECT diff_match('c1_idx', false, '{1,10}', 'id::text, s::text', 'c1', 'id > 8990 OR id < 5') AS match_set_edges;
- match_set_edges 
------------------
-               0
-(1 row)
-
 -- 7. A sift_table of Format 1: the table itself
 CREATE TABLE t1 (id int, g int2, b bool, big int8, f4 float4, f8 float8, d date, ts timestamptz, n numeric(12,2), s text, u uuid, w numeric(30,5)) USING sift_table;
 INSERT INTO t1 SELECT * FROM c1 WHERE id <= 6101;
@@ -265,12 +239,6 @@ SELECT diff('t1', true, '{1,2,10}', 'id::text, g::text, s::text', 'id > 4000', 1
          0
 (1 row)
 
-SELECT diff_match('t1', true, '{1,10}', 'id::text, s::text', 't1', 'id % 97 = 0') AS match_set;
- match_set 
------------
-         0
-(1 row)
-
 -- 8. What no Format 1 owner holds: a sift_col index and a sift_table of Format 2, a heap, a btree index
 SET sift.test_create_format1 = off;
 CREATE TABLE c2 (id int, s text);
@@ -296,6 +264,6 @@ UNION ALL SELECT 'f1 table', owner FROM sift._test_store_ops('t1', true);
 (6 rows)
 
 DROP TABLE c1, c2, t1, t2;
-DROP FUNCTION diff, diff_match, batches, sift._test_store_rows, sift._test_store_ops;
+DROP FUNCTION diff, batches, sift._test_store_rows, sift._test_store_ops;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

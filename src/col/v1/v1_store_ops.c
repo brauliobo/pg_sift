@@ -564,39 +564,13 @@ v1_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool so
 	return open_source(estate, in, quals, NULL);
 }
 
-static bool
-hybrid_can(Oid relid, bool is_table)
-{
-	return v1_owns_rel(relid, is_table);
-}
-
-/* the scores of the hits are the search's: they join the rows by their tag (the TID of the row) */
-static SiftV6Source *
-hybrid_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, const void *match_set, bool with_scores)
-{
-	return open_source(estate, in, quals, match_set);
-}
-
-static bool
-hybrid_scores(SiftV6Source *src, const float4 **scores, uint16 *n)
-{
-	return false;
-}
-
-static const SiftHybridOps v1_hybrid = {
-	.can_hybrid = hybrid_can,
-	.open_hybrid = hybrid_open,
-	.batch_scores = hybrid_scores
-};
-
 static const SiftStoreOps v1_store_ops = {
 	.name = "v1",
 	.owns_rel = v1_owns_rel,
 	.schema = v1_schema,
 	.stats = v1_stats,
 	.open = v1_open,
-	.leaf_holds = v1_leaf_holds,
-	.hybrid = &v1_hybrid
+	.leaf_holds = v1_leaf_holds
 };
 
 void
