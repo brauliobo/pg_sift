@@ -14,7 +14,7 @@ INSERT INTO steps (mode, sql) VALUES
 	('load', 'CREATE TABLE %1$I (id int, grp int, v text, pad text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)'),
 	('load', 'CREATE INDEX %1$s_id ON %1$I (id) WITH (deduplicate_items = off)'),
 	('load', 'CREATE INDEX %1$s_grp ON %1$I (grp) WITH (deduplicate_items = off)'),
-	('load', 'CREATE INDEX %1$s_v ON %1$I USING sift (v)'),
+	('load', 'CREATE INDEX %1$s_v ON %1$I USING sift (v) WITH (dead_rewrite_pct = 50)'),
 	('all', 'INSERT INTO %1$I SELECT g, g %% 7, ''row '' || g, ''p'' FROM generate_series(1, 30000) g'),
 	('all', 'VACUUM %1$I'),
 	-- the log of the groups: a third deleted, a seventh updated in place (HOT: the chains go on), a tenth moved to another group value

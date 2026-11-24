@@ -14,7 +14,7 @@ INSERT INTO steps (mode, sql) VALUES
 	('load', 'CREATE TABLE %1$I (id int, grp int, v text, pad text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)'),
 	('load', 'CREATE INDEX %1$s_id ON %1$I (id) WITH (deduplicate_items = off)'),
 	('load', 'CREATE INDEX %1$s_grp ON %1$I (grp) WITH (deduplicate_items = off)'),
-	('load', 'CREATE INDEX %1$s_v ON %1$I USING sift (v)'),
+	('load', 'CREATE INDEX %1$s_v ON %1$I USING sift (v) WITH (dead_rewrite_pct = 50)'),
 	('all', 'INSERT INTO %1$I SELECT g, g %% 7, ''row '' || g, ''p'' FROM generate_series(1, 30000) g'),
 	('all', 'VACUUM %1$I'),
 	-- the log of the groups: a third deleted, a seventh updated in place (HOT: the chains go on), a tenth moved to another group value
@@ -42,7 +42,7 @@ SELECT format(sql, t) FROM unnest(ARRAY['a', 'b', 'c']) t, steps WHERE mode IN (
 CREATE TABLE a (id int, grp int, v text, pad text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)
 CREATE INDEX a_id ON a (id) WITH (deduplicate_items = off)
 CREATE INDEX a_grp ON a (grp) WITH (deduplicate_items = off)
-CREATE INDEX a_v ON a USING sift (v)
+CREATE INDEX a_v ON a USING sift (v) WITH (dead_rewrite_pct = 50)
 INSERT INTO a SELECT g, g % 7, 'row ' || g, 'p' FROM generate_series(1, 30000) g
 VACUUM a
 DELETE FROM a WHERE id % 3 = 0
@@ -66,7 +66,7 @@ COMMIT
 CREATE TABLE b (id int, grp int, v text, pad text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)
 CREATE INDEX b_id ON b (id) WITH (deduplicate_items = off)
 CREATE INDEX b_grp ON b (grp) WITH (deduplicate_items = off)
-CREATE INDEX b_v ON b USING sift (v)
+CREATE INDEX b_v ON b USING sift (v) WITH (dead_rewrite_pct = 50)
 INSERT INTO b SELECT g, g % 7, 'row ' || g, 'p' FROM generate_series(1, 30000) g
 VACUUM b
 DELETE FROM b WHERE id % 3 = 0
@@ -90,7 +90,7 @@ COMMIT
 CREATE TABLE c (id int, grp int, v text, pad text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)
 CREATE INDEX c_id ON c (id) WITH (deduplicate_items = off)
 CREATE INDEX c_grp ON c (grp) WITH (deduplicate_items = off)
-CREATE INDEX c_v ON c USING sift (v)
+CREATE INDEX c_v ON c USING sift (v) WITH (dead_rewrite_pct = 50)
 INSERT INTO c SELECT g, g % 7, 'row ' || g, 'p' FROM generate_series(1, 30000) g
 VACUUM c
 DELETE FROM c WHERE id % 3 = 0
@@ -115,7 +115,7 @@ SELECT format(sql, t) FROM unnest(ARRAY['d', 'e']) t, steps WHERE mode = 'load' 
 CREATE TABLE d (id int, grp int, v text, pad text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)
 CREATE INDEX d_id ON d (id) WITH (deduplicate_items = off)
 CREATE INDEX d_grp ON d (grp) WITH (deduplicate_items = off)
-CREATE INDEX d_v ON d USING sift (v)
+CREATE INDEX d_v ON d USING sift (v) WITH (dead_rewrite_pct = 50)
 BEGIN
 COPY d FROM PROGRAM $q$seq 40001 41000 | awk '{ printf "%d\t%d\trow %d\tp\n", $1, $1 % 7, $1 }'$q$
 SAVEPOINT s1
@@ -132,7 +132,7 @@ COMMIT
 CREATE TABLE e (id int, grp int, v text, pad text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false)
 CREATE INDEX e_id ON e (id) WITH (deduplicate_items = off)
 CREATE INDEX e_grp ON e (grp) WITH (deduplicate_items = off)
-CREATE INDEX e_v ON e USING sift (v)
+CREATE INDEX e_v ON e USING sift (v) WITH (dead_rewrite_pct = 50)
 BEGIN
 COPY e FROM PROGRAM $q$seq 40001 41000 | awk '{ printf "%d\t%d\trow %d\tp\n", $1, $1 % 7, $1 }'$q$
 SAVEPOINT s1
@@ -198,7 +198,7 @@ RESET sift.test_vacuum_batch_bytes;
 SELECT what, a.val, a.val = b.val AS b_same, a.val = c.val AS c_same FROM state('a') a JOIN state('b') b USING (what) JOIN state('c') c USING (what) ORDER BY what;
     what     |                             val                              | b_same | c_same 
 -------------+--------------------------------------------------------------+--------+--------
- bm25 docs   | immutable 30000 12000,buffer 13000 0                         | t      | t
+ bm25 docs   | immutable 30000 12000,buffer 0 0                             | t      | t
  grp entries | 25000                                                        | t      | t
  id entries  | 25000                                                        | t      | t
  rows        | 25000 484001000 96c6cb88848f1c874350da681c4c0af3             | t      | t
@@ -208,7 +208,7 @@ SELECT what, a.val, a.val = b.val AS b_same, a.val = c.val AS c_same FROM state(
 SELECT what, e.val, d.val = e.val AS d_same FROM state('d') d JOIN state('e') e USING (what) ORDER BY what;
     what     |                      val                       | d_same 
 -------------+------------------------------------------------+--------
- bm25 docs   | buffer 5000 0                                  | t
+ bm25 docs   | immutable 1000 0,buffer 0 0                    | t
  grp entries | 2000                                           | t
  id entries  | 2000                                           | t
  rows        | 2000 85001000 d881dc0427128dc051a45e209c50122b | t

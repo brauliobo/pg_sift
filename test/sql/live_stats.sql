@@ -9,7 +9,7 @@ CREATE TABLE ls (id serial PRIMARY KEY, body text) WITH (autovacuum_enabled = of
 SELECT setseed(0.3);
 INSERT INTO ls (body) SELECT (SELECT string_agg('w' || floor(300 * power(random(), 3))::int, ' ') FROM generate_series(1, 5 + (i % 40)))
 	FROM generate_series(1, 20000) i;
-CREATE INDEX ls_idx ON ls USING sift (body);
+CREATE INDEX ls_idx ON ls USING sift (body) WITH (dead_rewrite_pct = 50);
 
 CREATE TABLE ls_q (n serial, q text);
 INSERT INTO ls_q (q) VALUES

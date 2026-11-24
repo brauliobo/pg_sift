@@ -87,7 +87,7 @@ SELECT * FROM sift_lines($$SELECT count(*) FROM d WHERE body @@> 'word3'$$);
                                         sift_lines                                        
 ------------------------------------------------------------------------------------------
  Custom Scan (SiftCount)
- Sift Index State: 1 segments, 200 buffered rows, 5.0% dead
+ Sift Index State: 1 segments, 0 buffered rows, 0.0% dead
  Sift: not used: no_source: no sift_col index or sift_table covers the table (arm single)
 (3 rows)
 

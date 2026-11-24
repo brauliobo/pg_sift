@@ -1,7 +1,6 @@
--- VACUUM seals the open write buffer of a BM25 index once it holds a quarter of write_buffer_limit (1 MB at the default), as it does for a sift_col index, and the
+-- VACUUM seals the open write buffer of a BM25 index once it holds 8 pages, whatever its write_buffer_limit, and the
 -- rows are promoted: a search reads every document of the open buffer, so the 4 MB a buffer may reach cost a search many times what a small index needs
 -- (300,000 documents, 16 MB: 684 blocks and 1.6 ms for a search with the buffer left, 186 blocks and 0.54 ms when the VACUUM of each round seals it).
--- A limit written larger keeps its buffer for longer.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
@@ -22,9 +21,9 @@ DELETE FROM docs_kept WHERE id % 50 = 0;
 SELECT max(bytes) > 1500000 AS buffer_before FROM sift.segments('docs_ix') WHERE kind <> 'immutable';
 VACUUM docs, docs_kept;
 
--- the default limit: the buffer was sealed and promoted; the larger limit keeps its buffer
+-- the default limit: the buffer was sealed and promoted, and so was the one of the larger limit
 SELECT count(*) FILTER (WHERE kind <> 'immutable' AND bytes > 500000) AS big_buffers_left, sum(ndocs) AS docs FROM sift.segments('docs_ix');
-SELECT max(bytes) > 1500000 AS larger_limit_kept FROM sift.segments('docs_kept_ix') WHERE kind <> 'immutable';
+SELECT count(*) FILTER (WHERE kind <> 'immutable' AND bytes > 500000) AS big_buffers_left_larger_limit FROM sift.segments('docs_kept_ix');
 SELECT count(*) FROM docs WHERE body @@> 'w3';
 SELECT count(*) FROM docs_kept WHERE body @@> 'w3';
 SELECT sift.verify('docs_ix', true);

@@ -14,13 +14,13 @@ SELECT count(*) AS segments FROM built;
         1
 (1 row)
 
--- 30% dead: under 50 the segment stays
+-- 30% dead: under the default 50 the segment stays
 DELETE FROM dr WHERE id % 10 < 3;
 VACUUM dr;
-SELECT count(*) AS kept_at_50 FROM sift.segments('dr_idx') s JOIN built USING (gen);
- kept_at_50 
-------------
-          1
+SELECT count(*) AS kept_at_default FROM sift.segments('dr_idx') s JOIN built USING (gen);
+ kept_at_default 
+-----------------
+               1
 (1 row)
 
 -- the same 30% with the threshold at 25: VACUUM rewrites it and drops the dead documents

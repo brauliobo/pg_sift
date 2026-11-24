@@ -43,7 +43,7 @@ SELECT kind, ndocs FROM sift.segments('ps_idx') ORDER BY gen;
    kind    | ndocs 
 -----------+-------
  buffer    |     0
- immutable |  6000
+ immutable |  5401
 (2 rows)
 
 SELECT count(*) FROM ps WHERE body @@> 'common';

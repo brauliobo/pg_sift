@@ -13,8 +13,8 @@ SELECT g, 'common dim_a' || g % 7 || ' w' || g % 30,
 	g::int8 * 10, CASE WHEN g % 13 = 0 THEN NULL ELSE (g / 10000)::smallint END, repeat('x', 600)
 FROM generate_series(1, 40000) g;
 CREATE TABLE docs_plain AS SELECT * FROM docs ORDER BY ctid;
-CREATE INDEX docs_idx ON docs USING sift (body) INCLUDE (category_id, created_at, counter_a, tier);
-CREATE INDEX docs_plain_idx ON docs_plain USING sift (body);
+CREATE INDEX docs_idx ON docs USING sift (body) INCLUDE (category_id, created_at, counter_a, tier) WITH (dead_rewrite_pct = 50);
+CREATE INDEX docs_plain_idx ON docs_plain USING sift (body) WITH (dead_rewrite_pct = 50);
 CREATE INDEX docs_cols ON docs (category_id, created_at, counter_a, tier);
 CREATE INDEX docs_plain_cols ON docs_plain (category_id, created_at, counter_a, tier);
 VACUUM ANALYZE docs, docs_plain;
@@ -177,8 +177,8 @@ SELECT * FROM answer_diffs('dim_a3 AND w7');
 -----+---
 (0 rows)
 
--- a doc whose heap tuple is gone when its segment is written has no value to test: rows that are deleted and pruned (VACUUM without index cleanup) before
--- their promotion are written as unknown, and the superblock that holds them is read whatever its range
+-- a doc whose heap tuple is gone when its buffer is promoted is not written: rows that are deleted and pruned (VACUUM without index cleanup) before
+-- their promotion leave no value that a range would have to cover, and no superblock is read for them
 SELECT flt, sbs FROM scan_gaps('common', 'docs') WHERE flt IN ('created_at < ''2020-01-01''', 'counter_a < 0') ORDER BY 1;
             flt            | sbs 
 ---------------------------+-----
@@ -206,8 +206,8 @@ SELECT * FROM answer_diffs('common');
 SELECT flt, sbs FROM scan_gaps('common', 'docs') WHERE flt IN ('created_at < ''2020-01-01''', 'counter_a < 0') ORDER BY 1;
             flt            | sbs 
 ---------------------------+-----
- counter_a < 0             |   1
- created_at < '2020-01-01' |   1
+ counter_a < 0             |   0
+ created_at < '2020-01-01' |   0
 (2 rows)
 
 SELECT sift.merge('docs_idx') >= 0 AND sift.merge('docs_plain_idx') >= 0 AS merged_dead;
@@ -224,8 +224,8 @@ SELECT * FROM answer_diffs('common');
 SELECT flt, sbs FROM scan_gaps('common', 'docs') WHERE flt IN ('created_at < ''2020-01-01''', 'counter_a < 0') ORDER BY 1;
             flt            | sbs 
 ---------------------------+-----
- counter_a < 0             |   1
- created_at < '2020-01-01' |   1
+ counter_a < 0             |   0
+ created_at < '2020-01-01' |   0
 (2 rows)
 
 -- a REINDEX writes the ranges again

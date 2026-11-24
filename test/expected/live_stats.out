@@ -13,7 +13,7 @@ SELECT setseed(0.3);
 
 INSERT INTO ls (body) SELECT (SELECT string_agg('w' || floor(300 * power(random(), 3))::int, ' ') FROM generate_series(1, 5 + (i % 40)))
 	FROM generate_series(1, 20000) i;
-CREATE INDEX ls_idx ON ls USING sift (body);
+CREATE INDEX ls_idx ON ls USING sift (body) WITH (dead_rewrite_pct = 50);
 CREATE TABLE ls_q (n serial, q text);
 INSERT INTO ls_q (q) VALUES
 	('w5'), ('w5 w50'), ('w5 OR w50 OR w7 OR w100'), ('w5 NOT w7'), ('w1*'), ('w12~1'), ('"w5 w7"'), ('w5 OR "w1 w2"'), ('missing OR w9');
@@ -118,13 +118,13 @@ SELECT sift.verify('ls_idx', true);
 SELECT sift.promote('ls_idx') > 0 AS promoted;
  promoted 
 ----------
- t
+ f
 (1 row)
 
 SELECT sift.merge('ls_idx', true) > 0 AS merged;
  merged 
 --------
- t
+ f
 (1 row)
 
 SELECT count(*) FILTER (WHERE kind = 'immutable') = 1 AS one_segment, count(*) FILTER (WHERE dirty) AS dirty_left FROM sift.segments('ls_idx');
