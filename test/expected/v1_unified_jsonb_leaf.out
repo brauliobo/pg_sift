@@ -262,7 +262,118 @@ SELECT * FROM check_q($$SELECT r.k, count(*), sum(r.v) FROM e CROSS JOIN LATERAL
  SiftAggV6 | lateral columnar | t
 (1 row)
 
-DROP TABLE j, e;
+-- the JSON type of a key of a document and its values, from the leaf of the key and, for a value the leaf cannot hold (a number under a text key, a string under a float8 key), from the heap row the
+-- scan keeps: on an index and on a table with declared paths, over every JSON type under the keys, rows the write buffer holds and deleted ones
+CREATE TABLE t (id int PRIMARY KEY, grp int NOT NULL, doc jsonb);
+INSERT INTO t
+SELECT i, i % 7, CASE i % 8 WHEN 0 THEN '{"m": "s", "a": "x"}' WHEN 1 THEN '{"m": true, "a": 12}' WHEN 2 THEN '{"m": {"x": 1}, "a": true}' WHEN 3 THEN '{"m": [1], "a": 1.50}'
+	WHEN 4 THEN '{"m": null, "a": null}' WHEN 5 THEN '{}' WHEN 6 THEN '[1]' ELSE jsonb_build_object('m', i / 4.0, 'a', 'v' || i % 5) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX t_col ON t USING sift_col (id, grp, doc) WITH (paths = 'doc->m float8, doc->a astext');
+CREATE TABLE tp (id int, grp int NOT NULL, doc jsonb) USING sift_table;
+SELECT sift.table_set_paths('tp', 'doc', 'doc->m float8, doc->a astext') IS NOT NULL AS declared;
+ declared 
+----------
+ t
+(1 row)
+
+INSERT INTO tp SELECT id, grp, doc FROM t;
+VACUUM FULL tp;
+VACUUM (FREEZE, ANALYZE) t;
+SELECT * FROM check_q($$SELECT count(*) FROM t WHERE jsonb_typeof(doc -> 'm') <> 'number'$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM t WHERE jsonb_typeof(doc -> 'm') IS NULL$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM t WHERE jsonb_typeof(doc -> 'm') = 'null' OR grp = 2$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FILTER (WHERE jsonb_typeof(doc -> 'm') = 'number') AS nums, count(*) FILTER (WHERE jsonb_typeof(doc -> 'm') IS NULL) AS missing FROM t$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT jsonb_typeof(doc -> 'a') AS ty, count(*) FROM t GROUP BY 1$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM tp WHERE jsonb_typeof(doc -> 'm') = 'number'$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT jsonb_typeof(doc -> 'm') AS ty, count(*) FROM tp GROUP BY 1$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT doc ->> 'a' AS a, count(*) FROM t GROUP BY 1$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT grp, sum((doc ->> 'm')::float8) FROM t WHERE jsonb_typeof(doc -> 'm') = 'number' GROUP BY 1$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT grp, count(*) FROM t WHERE (doc ->> 'm')::float8 > 100 AND grp IN (0, 1, 5) AND jsonb_typeof(doc -> 'm') = 'number' GROUP BY 1$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_err($$SELECT sum((doc ->> 'm')::float8) FROM t$$);
+   node    | same |                          err                           
+-----------+------+--------------------------------------------------------
+ SiftAggV6 | t    | invalid input syntax for type double precision: "true"
+(1 row)
+
+SELECT * FROM check_err($$SELECT grp, count(*) FROM t WHERE (doc ->> 'm')::float8 > 1 AND grp IN (0, 1) GROUP BY grp$$);
+   node    | same |                          err                           
+-----------+------+--------------------------------------------------------
+ SiftAggV6 | t    | invalid input syntax for type double precision: "true"
+(1 row)
+
+INSERT INTO t SELECT 3000 + i, i % 7, jsonb_build_object('m', i * 0.5, 'a', i) FROM generate_series(1, 100) i;
+UPDATE t SET doc = '{"m": "7", "a": false}' WHERE id % 50 = 0;
+DELETE FROM t WHERE id % 97 = 0;
+SELECT * FROM check_q($$SELECT jsonb_typeof(doc -> 'a') AS ty, count(*) FROM t GROUP BY 1$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT grp, count(*) FILTER (WHERE jsonb_typeof(doc -> 'm') = 'string') AS s, count(*) FILTER (WHERE jsonb_typeof(doc -> 'm') IS NULL) AS missing FROM t GROUP BY 1$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT doc ->> 'a' AS a, count(*) FROM t WHERE grp < 3 GROUP BY 1$$);
+   node    | unnest | same 
+-----------+--------+------
+ SiftAggV6 | -      | t
+(1 row)
+
+DROP TABLE j, e, t, tp;
 DROP FUNCTION check_q, check_err;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
