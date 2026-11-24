@@ -210,13 +210,14 @@ BEGIN
 		ok := ARRAY(SELECT id FROM vd ORDER BY id);
 	EXCEPTION WHEN others THEN clean := false;
 	END;
-	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 13 = 0 ORDER BY id LOOP
+	EXECUTE format('PREPARE vdq(int) AS SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = $1', pgx);
+	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 29 = 0 ORDER BY id LOOP
 		BEGIN
-			EXECUTE format('SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = %s', pgx, r) INTO p;
+			EXECUTE format('EXECUTE vdq(%s)', r) INTO p;
 			IF NOT clean THEN ok := ok || r; END IF;
 		EXCEPTION WHEN others THEN p := 'error: ' || SQLERRM;
 		END;
-		CONTINUE WHEN r % 13 <> 0 AND p NOT LIKE 'error: %';
+		CONTINUE WHEN r % 29 <> 0 AND p NOT LIKE 'error: %';
 		BEGIN
 			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
 		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
@@ -226,6 +227,7 @@ BEGIN
 			IF bad <= 3 THEN RAISE NOTICE '% row %: engine %, PostgreSQL %', prog, r, e, p; END IF;
 		END IF;
 	END LOOP;
+	DEALLOCATE vdq;
 	EXECUTE format('SELECT count(*) FROM (((SELECT ord, res FROM vexpr_run(%L, %L) AS t(ord int, res text)) EXCEPT ALL (SELECT id, (%s)::text FROM vd WHERE id = ANY (%L))) UNION ALL ((SELECT id, (%s)::text FROM vd WHERE id = ANY (%L)) EXCEPT ALL (SELECT ord, res FROM vexpr_run(%L, %L) AS t(ord int, res text)))) AS d',
 	               prog, CASE WHEN cardinality(ok) = nrows THEN NULL ELSE ok END, pgx, ok, pgx, ok, prog, CASE WHEN cardinality(ok) = nrows THEN NULL ELSE ok END) INTO n;
 	RETURN bad + n;
