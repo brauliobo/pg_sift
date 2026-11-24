@@ -462,7 +462,7 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 		keycols[k] = (AttrNumber) (tlist_pos(tlist, in, spec->key[k].attno) + 1);
 		nullsfirst[k] = spec->order[k].nulls_first;
 	}
-	st->sort = tuplesort_begin_heap(desc, spec->nkeys, keycols, (Oid *) spec->sortop, (Oid *) spec->collation, nullsfirst, work_mem, NULL, TUPLESORT_NONE);
+	st->sort = tuplesort_begin_heap(desc, spec->nkeys, keycols, (Oid *) spec->sortop, (Oid *) spec->collation, nullsfirst, work_mem, NULL, TUPLESORT_ALLOWBOUNDED);
 	count_value(estate->es_param_list_info, spec->offset, &offset);
 	if (!spec->with_ties && count_value(estate->es_param_list_info, spec->limit, &limit) && !pg_add_s64_overflow(limit, offset, &bound))
 		tuplesort_set_bound(st->sort, bound);
