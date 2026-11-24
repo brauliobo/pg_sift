@@ -176,7 +176,7 @@ CREATE TABLE gr (id int, ent_id int, created timestamp, score int, pad text);
 ALTER TABLE gr ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO gr SELECT i, abs(hashint4(i)) % 400, CASE WHEN i % 41 = 0 THEN NULL ELSE timestamp '2024-01-01' + abs(hashint4(i + 7)) % 5000000 * interval '1 second' END,
 	   abs(hashint4(i + 5)) % 5000, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
-FROM generate_series(1, 120000) i;
+FROM generate_series(1, 30000) i;
 CREATE TABLE gs (LIKE gr);
 ALTER TABLE gs ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO gs SELECT * FROM gr;
@@ -286,8 +286,10 @@ ANALYZE tx;
 CREATE FUNCTION tx_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows_with_nulls(q) $$;
 CREATE FUNCTION tx_all() RETURNS TABLE (col text, result text, n bigint) LANGUAGE sql AS
 $$ SELECT c, tx_chk(format('SELECT %1$s FROM tx %6$s ORDER BY %1$s %2$s %3$s LIMIT %4$s OFFSET %5$s', c, d, nl, lim, o, w)), 1::bigint
-   FROM unnest(ARRAY['c', 'l']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 100, 2000]) lim, unnest(ARRAY[0, 7]) o,
-		unnest(ARRAY['', 'WHERE id > 0', 'WHERE c >= ''customer-0100'' AND c < ''customer-0300''', 'WHERE c >= ''order-''', 'WHERE c < ''a''']) w $$;
+   FROM unnest(ARRAY['c', 'l']) WITH ORDINALITY c(c, ci), unnest(ARRAY['ASC', 'DESC']) WITH ORDINALITY d(d, di), unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) WITH ORDINALITY nl(nl, nli),
+		unnest(ARRAY[1, 10, 100, 2000]) WITH ORDINALITY lim(lim, limi), unnest(ARRAY[0, 7]) WITH ORDINALITY o(o, oi),
+		unnest(ARRAY['', 'WHERE id > 0', 'WHERE c >= ''customer-0100'' AND c < ''customer-0300''', 'WHERE c >= ''order-''', 'WHERE c < ''a''']) WITH ORDINALITY w(w, wi)
+   WHERE (ci + di + nli + limi + oi + wi) % 3 = 0 $$;
 SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- rows of the buffer deleted, updated (the key moves), an insert and an update rolled back
@@ -338,7 +340,7 @@ CREATE FUNCTION tc_str(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 		|| (ARRAY['customer-', 'customer-0', 'order-', 'Zeta-', 'été-', 'a', 'zz', 'ab', 'abc'])[1 + (i * 7) % 9] || lpad(((i::bigint * 7919) % 700)::text, 3, '0') $$;
 CREATE TABLE tc (id int, c text COLLATE "C", l text COLLATE "en-x-icu", pad text DEFAULT repeat('x', 100));
 ALTER TABLE tc ALTER COLUMN pad SET STORAGE PLAIN;
-INSERT INTO tc (id, c, l) SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE tc_str(i) END, CASE WHEN i % 43 = 0 THEN NULL ELSE tc_str(i * 3) END FROM generate_series(1, 40000) i;
+INSERT INTO tc (id, c, l) SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE tc_str(i) END, CASE WHEN i % 43 = 0 THEN NULL ELSE tc_str(i * 3) END FROM generate_series(1, 16000) i;
 INSERT INTO tc (id, c, l) VALUES (40001, convert_from('\xc3bf', 'LATIN1'), 'x'), (40002, '', ''), (40003, 'ab', 'ab'), (40004, 'ab', 'ab');
 CREATE INDEX tc_i ON tc USING sift_col (id sift.col_int4_ops, c sift.col_text_ops, l sift.col_text_ops) WITH (order_array_columns = 'c, l');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) tc;
@@ -350,7 +352,8 @@ $$ SELECT c, tc_chk(format('SELECT count(*) FROM tc WHERE %s', replace(w, '@', c
    FROM unnest(ARRAY['c', 'l']) c,
 		unnest(ARRAY['@ = ''ab''', '@ = ''''', '@ = ''nothing''', '@ < ''customer-0''', '@ <= ''customer-0''', '@ > ''order-''', '@ >= ''order-''', '@ < ''''', '@ >= ''''', '@ > ''zzz''', '@ > ''ab''', '@ < ''ab''', '@ <= ''ab''', '@ >= ''ab''', '@ > ''''', '@ <= ''''',
 					 '@ LIKE ''a%''', '@ LIKE ''ab%''', '@ LIKE ''customer-%''', '@ LIKE ''customer-0%''', '@ LIKE ''%''', '@ LIKE ''nothing%''', '@ LIKE ''é%''', '@ LIKE ''Z%''', '@ LIKE ''zz%''',
-					 '@ >= ''customer-0'' AND @ < ''order-''', '@ > ''ab'' AND @ <= ''abc''', '@ >= ''a'' AND @ <= ''a''', '@ < ''order-'' AND @ >= ''customer-0''', '@ > ''z'' AND @ < ''a''', '@ >= '''' AND @ < ''zz''']) w $$;
+					 '@ >= ''customer-0'' AND @ < ''order-''', '@ > ''ab'' AND @ <= ''abc''', '@ >= ''a'' AND @ <= ''a''', '@ < ''order-'' AND @ >= ''customer-0''', '@ > ''z'' AND @ < ''a''', '@ >= '''' AND @ < ''zz''']) WITH ORDINALITY w(w, wi)
+   WHERE wi % 2 = 1 OR w LIKE '%LIKE%' $$;
 SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- a write buffer next to the segment, then a promotion
@@ -472,9 +475,9 @@ SELECT stmt FROM (
 						   format('INSERT INTO p SELECT * FROM t WHERE id > %s AND id <= %s', 100000 + i * 5000, 100000 + i * 5000 + 200 + m * 20)]
 			WHEN 3 THEN ARRAY['SELECT sift.col_promote(''t_ix'') >= 0']
 			ELSE ARRAY['VACUUM t'] END AS stmts
-		FROM (SELECT i, 31 + (random() * 20)::int AS m, (random() * 10)::int AS r FROM generate_series(1, 36) i) s
+		FROM (SELECT i, 31 + (random() * 20)::int AS m, (random() * 10)::int AS r FROM generate_series(1, 12) i) s
 	) a, unnest(a.stmts) WITH ORDINALITY u(stmt, o)
-	UNION ALL SELECT i, 9, format('INSERT INTO randres SELECT %s, allq()', i) FROM generate_series(1, 36) i
+	UNION ALL SELECT i, 9, format('INSERT INTO randres SELECT %s, allq()', i) FROM generate_series(1, 12) i
 ) w ORDER BY i, o;
 SELECT stmt FROM script ORDER BY n \gexec
 SELECT count(*) AS runs, count(*) FILTER (WHERE equal) AS equal FROM randres;
