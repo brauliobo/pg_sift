@@ -59,17 +59,17 @@ SELECT n, tbl, (da_same(body)).* FROM da_q ORDER BY n, tbl;
  n  |  tbl   |            node             | rows | diff 
 ----+--------+-----------------------------+------+------
   1 | da_col | SiftHybridAgg OR            |    3 |    0
-  1 | da_tbl | Aggregate above the scan OR |    3 |    0
+  1 | da_tbl | SiftHybridAgg OR            |    3 |    0
   2 | da_col | SiftHybridAgg OR            |    1 |    0
   2 | da_tbl | SiftHybridAgg OR            |    1 |    0
   3 | da_col | SiftHybridAgg OR            |    2 |    0
   3 | da_tbl | SiftHybridAgg OR            |    2 |    0
   4 | da_col | SiftHybridAgg OR            |    3 |    0
-  4 | da_tbl | Aggregate above the scan OR |    3 |    0
+  4 | da_tbl | SiftHybridAgg OR            |    3 |    0
   5 | da_col | SiftHybridAgg OR            |    1 |    0
   5 | da_tbl | SiftHybridAgg OR            |    1 |    0
   6 | da_col | SiftHybridAgg OR            |    3 |    0
-  6 | da_tbl | Aggregate above the scan OR |    3 |    0
+  6 | da_tbl | SiftHybridAgg OR            |    3 |    0
   7 | da_col | SiftHybridAgg OR            |    1 |    0
   7 | da_tbl | SiftHybridAgg OR            |    1 |    0
   8 | da_col | SiftHybridAgg OR            |    3 |    0
@@ -108,17 +108,17 @@ SELECT n, tbl, (da_same(body)).* FROM da_q ORDER BY n, tbl;
  n  |  tbl   |            node             | rows | diff 
 ----+--------+-----------------------------+------+------
   1 | da_col | SiftHybridAgg OR            |    6 |    0
-  1 | da_tbl | Aggregate above the scan OR |    6 |    0
+  1 | da_tbl | SiftHybridAgg OR            |    6 |    0
   2 | da_col | SiftHybridAgg OR            |    1 |    0
   2 | da_tbl | SiftHybridAgg OR            |    1 |    0
   3 | da_col | SiftHybridAgg OR            |   11 |    0
   3 | da_tbl | SiftHybridAgg OR            |   11 |    0
   4 | da_col | SiftHybridAgg OR            |    6 |    0
-  4 | da_tbl | Aggregate above the scan OR |    6 |    0
+  4 | da_tbl | SiftHybridAgg OR            |    6 |    0
   5 | da_col | SiftHybridAgg OR            |    1 |    0
   5 | da_tbl | SiftHybridAgg OR            |    1 |    0
   6 | da_col | SiftHybridAgg OR            |    6 |    0
-  6 | da_tbl | Aggregate above the scan OR |    6 |    0
+  6 | da_tbl | SiftHybridAgg OR            |    6 |    0
   7 | da_col | SiftHybridAgg OR            |    1 |    0
   7 | da_tbl | SiftHybridAgg OR            |    1 |    0
   8 | da_col | SiftHybridAgg OR            |    3 |    0
