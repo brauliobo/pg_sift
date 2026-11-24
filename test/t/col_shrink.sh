@@ -36,8 +36,10 @@ tight() {
 }
 loose() { test "$(size)" -gt "$(( $(live) * ${1:-16} / 10 ))"; }
 vacuum() { sql primary "SET sift.async_maintenance = off" "VACUUM t" >/dev/null; }
+# a reload makes the walreceiver send its feedback now, not at the next wal_receiver_status_interval
+feedback_now() { pg_ctl -D "$(dir standby)/data" reload >/dev/null; }
 # a pass moves what the horizon has passed: a transaction of the primary after it, replayed, and the feedback of the standby (hot_standby_feedback) beyond it, except while a standby query holds the horizon back
-past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; if [[ -e $D/held && ! -e $D/unhold ]]; then catchup primary standby; else horizon_past primary standby; fi; }
+past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; if [[ -e $D/held && ! -e $D/unhold ]]; then catchup primary standby; else feedback_now; horizon_past primary standby; fi; }
 # VACUUM until the file is within PERCENT of the live bytes: a pass moves a share of the file, and the cut follows once the horizon has passed what it moved
 vacuum_until() {
 	for _ in $(seq 40); do
