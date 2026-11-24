@@ -184,7 +184,10 @@ sift_row_part_count(Relation rel)
 	return sift_col_meta_read(rel).npartitions;
 }
 
-/* A row the transaction staged is alive for it: nothing is written to ask the relation about it, which at every index page the btree tries to clean made a part of the stage */
+/*
+ * A row the transaction staged is alive for it: nothing is written to ask the relation about it, which at every index page the btree tries to clean made a part of the stage.
+ * The array ends at its last deletable entry, and is empty when nothing is: the btree deletes every entry of it that is marked.
+ */
 TransactionId
 sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 {
@@ -192,6 +195,7 @@ sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	TransactionId horizon = InvalidTransactionId;
 	uint64	   *tids = palloc(Max(delstate->ndeltids, 1) * sizeof(uint64));
 	bool	   *staged = palloc0(Max(delstate->ndeltids, 1) * sizeof(bool));
+	int			final = 0;
 
 	for (int i = 0; i < delstate->ndeltids; i++)
 		tids[i] = sift_tbl_tid_pack(&delstate->deltids[i].tid);
@@ -205,9 +209,12 @@ sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 			rs = sift_row_state_read_settled(rel, tids[i]);
 		status->knowndeletable = !rs.found || (TransactionIdIsValid(rs.xmax) && !TransactionIdIsInProgress(rs.xmax) && (!TransactionIdIsNormal(rs.xmax) || TransactionIdDidCommit(rs.xmax)) &&
 											   sift_vis_removable_xid(vistest, rs.xmax));
+		if (status->knowndeletable)
+			final = i + 1;
 		if (status->knowndeletable && TransactionIdIsNormal(rs.xmax) && (!TransactionIdIsValid(horizon) || TransactionIdFollows(rs.xmax, horizon)))
 			horizon = rs.xmax;
 	}
+	delstate->ndeltids = final;
 	pfree(tids);
 	pfree(staged);
 	return horizon;
