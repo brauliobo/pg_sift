@@ -739,6 +739,8 @@ col/v1/v1_store_ops.c
 col/v1/v1_store_ops.h
 col/v1/v1_store_ops_par.c
 col/v1/v1_store_ops_zone.c
+col/v1_engine/v1_gorder_cursor.c
+col/v1_engine/v1_gorder_cursor.h
 col/v1_engine/v1_store_ops_ext.c
 col/v1_engine/v1_store_ops_ext_test.c
 col/v1_engine/v1_store_ops_hybrid.c
