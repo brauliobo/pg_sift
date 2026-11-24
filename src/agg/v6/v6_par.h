@@ -4,7 +4,7 @@
  *
  *   SV6P_TWO_STAGE            few groups: every participant aggregates its morsels into a table of its own; the first to finish keeps its table and the others hand it their groups as records; after one
  *                             barrier it merges them and emits the result. Workers return no tuple.
- *   SV6P_RADIX_GROUPED        many groups: a participant aggregates into a small table (SIFT_PAR_LOCAL_GROUPS) that stays in its cache and, when it is full, scatters the groups as records into
+ *   SV6P_RADIX_GROUPED        many groups: a participant aggregates into a small table (SIFT_PAR_LOCAL_BYTES) that stays in its cache and, when it is full, scatters the groups as records into
  *                             SIFT_PAR_RADIX_PARTS partitions by the hash of the key; after one barrier every participant claims whole partitions, merges and finishes them, and emits their groups itself, through
  *                             the Gather above it: no group is merged by one process alone, none is emitted twice.
  *   SV6P_RADIX_UNGROUPED_DIST count(DISTINCT) of no keys: the distinct values are scattered by the hash of the value, each partition counts its values exactly and adds the count to a shared word; one
@@ -12,7 +12,7 @@
  *
  * Both strategies carry the groups as the records of the engine (a header of SiftV6RecHdr and a payload the engine of the node reads: group.c for the node, a table of the test for the tests) through
  * the chunks and the spill files of agg/par/radix.h, so a partial state that outgrows its share of memory leaves for a file and nothing fails. A two-stage run whose groups turn out to be many (a
- * participant's table passes SIFT_PAR_TWO_STAGE_MAX_GROUPS, or the chunks run out) sets a flag: after the barrier every participant hands its table over and the run goes on as the radix strategy.
+ * participant's table passes its share of the hash memory, or the chunks run out) sets a flag: after the barrier every participant hands its table over and the run goes on as the radix strategy.
  *
  * The shared state is one block, the DSM chunk of the node, with offsets and no pointer (SiftV6ParDsmHdr); the barrier has three phases: 0 scan, 1 merge, 2 (the distinct strategy only) every partition counted.
  */
@@ -40,7 +40,9 @@
 #define SIFT_PAR_RADIX_PARTS_WIDE	128U			/* from SIFT_PAR_WIDE_WORKERS workers */
 #define SIFT_PAR_WIDE_WORKERS		16
 #define SIFT_PAR_RING_MAX_BYTES		((Size) 16 << 20)	/* the chunks of the two-stage strategy */
-#define SIFT_PAR_LOCAL_GROUPS		65536U			/* the table of a participant of the radix strategy: it folds a group of up to this many keys before it is scattered */
+#define SIFT_PAR_LOCAL_GROUPS		65536U			/* the slots the coordinator of the partitions is told for a local table (agg/par/radix.h): a participant of this node makes its own */
+#define SIFT_PAR_LOCAL_BYTES		((uint64) 8 << 20)	/* the table of a participant stays in its cache: it is handed over at this many bytes, or at its share of the hash memory when that is less */
+#define SIFT_PAR_MIN_SHARE_BYTES	((uint64) 256 << 10)	/* the least a participant folds before it hands over, whatever the hash memory */
 #define SIFT_PAR_MAX_DIST			32
 #define SIFT_PAR_DIST_FLAT_SHARE	0.3			/* the share of the rows whose values a participant of a query of no keys hands over: it dedups them first */
 
@@ -155,9 +157,11 @@ typedef struct SiftV6ParEngine
 	 */
 	void	   *(*local_new) (void *env, bool whole);
 	void		(*local_free) (void *local);
+	/* fn(arg) is called after every batch the scan folds into a state, so that a participant that holds too much hands it over between two batches of a morsel, not after the whole of it */
+	void		(*scan_hook) (void *env, void (*fn) (void *arg), void *arg);
 	/* Folds the rows of the morsel (the part is an index into the parts of the shared block) */
 	void		(*scan_morsel) (void *local, const SiftMorsel *m, SiftV6ParWorkerStats *stats);
-	/* The groups and distinct values it holds: the participant empties it into the partitions when this passes the cap */
+	/* The bytes of the groups and distinct values it holds: the participant empties it into the partitions when this passes its export_cap */
 	uint64		(*local_load) (const void *local);
 	/* Every group as records (the state of each, and the pending distinct values); the state is empty afterwards. A set of no keys gives its record even when it holds no row */
 	void		(*local_export) (void *local, SiftV6RecPut put, void *arg);
@@ -304,10 +308,12 @@ typedef struct SiftV6ParRun
 	SiftV6ParWorkerStats stats;
 	uint64		ring_recs;
 	uint64		ring_bytes;
-	uint32		export_cap;			/* the groups a table holds before it is handed to the partitions */
+	uint64		export_cap;			/* the bytes a table holds before it is handed to the partitions: sift_v6_par_share */
 	uint32		tick;				/* tuples since the last interrupt check */
 } SiftV6ParRun;
 
+/* The bytes a participant of the run folds before it hands them over: its share of the hash memory of the statement, at most SIFT_PAR_LOCAL_BYTES */
+extern uint64 sift_v6_par_share(const SiftV6ParDsmHdr *hdr);
 extern SiftV6ParRun *sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng, SiftV6TopKRun *topk);
 /* The next finished group of this participant, false when it has no more; the first call runs the scan */
 extern bool sift_v6_par_next(SiftV6ParRun *r, Datum *values, bool *isnull);
@@ -321,7 +327,7 @@ extern void sift_v6_par_run_abort(int code, Datum arg);
 /* the pieces the strategies share (v6_par_scan.c) */
 extern int	sift_v6_par_attach(SiftV6ParRun *r);
 extern void sift_v6_par_leave(SiftV6ParRun *r);
-extern void sift_v6_par_scan(SiftV6ParRun *r, void (*relief) (SiftV6ParRun *r));
+extern void sift_v6_par_scan(SiftV6ParRun *r, void (*relief) (void *r));
 extern void sift_v6_par_export(SiftV6ParRun *r);
 extern void sift_v6_par_export_plain(SiftV6ParRun *r);
 extern void sift_v6_par_finish_stages(SiftV6ParRun *r);

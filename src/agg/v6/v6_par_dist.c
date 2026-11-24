@@ -12,7 +12,7 @@
 #include "agg/v6/v6_par_dist.h"
 
 #define DIST_BATCH			512
-#define DIST_FLAT_BYTES		(8 << 20)		/* what the flat set of a participant (a query of no keys) holds before it goes to the partitions */
+#define DIST_MORSEL_BYTES	((uint64) SIFT_MORSEL_MAX * 8192 * sizeof(uint64) * 2)	/* what the values of one morsel add to a flat set of a participant: a flat set has room for its share and for them, whatever the batches in which the hand over runs */
 
 static inline bool
 flat_kind(const SiftV6Agg *a)
@@ -46,8 +46,6 @@ sift_v6_par_check_record_size(uint32 rlen)
 }
 
 /* ---- a participant that scans ---- */
-
-#define DIST_RAW_BYTES		(1 << 20)		/* the records of a GROUP BY a participant holds before they go to the partitions: what its L2 cache keeps */
 
 struct SiftV6ParDistOut
 {
@@ -103,7 +101,7 @@ row_sink(void *arg, uint32 set_idx, uint32 slot, const void *bytes, uint32 len)
 }
 
 SiftV6ParDistOut *
-sift_v6_par_dist_out_new(SiftV6Group *g)
+sift_v6_par_dist_out_new(SiftV6Group *g, uint64 share)
 {
 	SiftV6ParDistOut *o = MemoryContextAllocZero(g->cx, sizeof(SiftV6ParDistOut));
 
@@ -115,8 +113,8 @@ sift_v6_par_dist_out_new(SiftV6Group *g)
 	}
 	else
 	{
-		g->budget = UINT64_MAX;
-		g->dist_budget = UINT64_MAX / 4;
+		g->dist_budget = (uint64) g->ndist * 2 * (share + DIST_MORSEL_BYTES);
+		g->budget = 2 * g->dist_budget;
 	}
 	return o;
 }
@@ -129,10 +127,10 @@ sift_v6_par_dist_load(const SiftV6ParDistOut *o)
 	uint64		bytes = 0;
 
 	if (set->nk > 0)
-		return (uint64) o->recs.len * SIFT_PAR_LOCAL_GROUPS / DIST_RAW_BYTES;
+		return o->recs.len;
 	for (int k = 0; k < g->ndist; k++)
 		bytes += set->flat != NULL && set->flat[k] != NULL ? sift_du64_bytes(set->flat[k]) : 0;
-	return bytes * SIFT_PAR_LOCAL_GROUPS / DIST_FLAT_BYTES;
+	return bytes;
 }
 
 static void
@@ -163,6 +161,8 @@ sift_v6_par_dist_export(SiftV6ParDistOut *o, SiftV6RecPut put, void *arg)
 		return;
 	}
 	for (int k = 0; k < o->g->ndist; k++)
+	{
+		SIFT_INVARIANT(set->flat_moved == NULL || !set->flat_moved[k], "the flat set of a participant holds the values of a morsel over its share");
 		if (set->flat != NULL && set->flat[k] != NULL)
 		{
 			const struct
@@ -176,6 +176,7 @@ sift_v6_par_dist_export(SiftV6ParDistOut *o, SiftV6RecPut put, void *arg)
 			sift_du64_free(set->flat[k]);
 			set->flat[k] = NULL;
 		}
+	}
 }
 
 /* ---- the owner of a partition ---- */

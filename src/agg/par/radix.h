@@ -177,7 +177,7 @@ extern void sift_radix_local_finish(SiftRadixLocal *l);
 
 /* Phase 2: claims the next partition, false when none is left */
 extern bool sift_par_next_part(SiftParCoord *c, uint32 *part);
-/* Calls fn for each block of whole records of the partition (the chunks, then the files of the participants): the records of a block are at its offsets of their lengths */
+/* Calls fn for each block of whole records of the partition (the chunks, then the files of the participants, each deleted once read, so a partition is scanned once): the records of a block are at its offsets of their lengths */
 typedef void (*SiftRadixBlockFn) (void *arg, const uint8 *block, uint32 len);
 extern void sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *arg);
 /* Merges every record of the partition into ht (initialized here, to be destroyed by the caller) */

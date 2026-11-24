@@ -5,6 +5,8 @@
  */
 #include "core/host.h"
 
+#include "executor/nodeAgg.h"
+
 #include "agg/v6/v6_par.h"
 
 uint32
@@ -21,6 +23,12 @@ sift_v6_par_barrier_event(void)
 	return e;
 }
 
+uint64
+sift_v6_par_share(const SiftV6ParDsmHdr *hdr)
+{
+	return Max(Min((uint64) get_hash_memory_limit() / ((uint64) hdr->nworkers_planned + 1), SIFT_PAR_LOCAL_BYTES), SIFT_PAR_MIN_SHARE_BYTES);
+}
+
 SiftV6ParRun *
 sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng, SiftV6TopKRun *topk)
 {
@@ -32,7 +40,7 @@ sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng, SiftV6TopK
 	r->eng = eng;
 	r->topk = topk;
 	r->stage = SV6S_NEW;
-	r->export_cap = hdr->strategy == SV6P_TWO_STAGE ? SIFT_PAR_TWO_STAGE_MAX_GROUPS : SIFT_PAR_LOCAL_GROUPS;
+	r->export_cap = sift_v6_par_share(hdr);
 	return r;
 }
 
@@ -74,11 +82,12 @@ sift_v6_par_run_abort(int code, Datum arg)
 }
 
 void
-sift_v6_par_scan(SiftV6ParRun *r, void (*relief) (SiftV6ParRun *r))
+sift_v6_par_scan(SiftV6ParRun *r, void (*relief) (void *r))
 {
 	SiftMorselQueue *mq = sift_v6_par_morsels(r->hdr);
 	SiftMorsel	m;
 
+	r->eng->scan_hook(r->eng->env, relief, r);
 	while (sift_morsel_claim(mq, (uint32) r->pid, &m))
 	{
 		CHECK_FOR_INTERRUPTS();

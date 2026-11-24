@@ -37,6 +37,8 @@ typedef struct ParEnv
 	SiftV6ScanStats seen;
 	V6AccOp    *op;
 	struct ParLocal *cur;
+	void		(*relief) (void *arg);	/* what the scan runs after a batch: the participant hands over what it holds over its share */
+	void	   *relief_arg;
 	bool		lean;			/* the COUNT(DISTINCT) aggregates are those of v6_par_dist.h */
 } ParEnv;
 
@@ -199,7 +201,11 @@ seen_new(ParLocal *l)
 static void
 batch_to_local(void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
 {
-	sift_v6_group_update(((ParEnv *) arg)->cur->g, bs, keyvec, argvec);
+	ParEnv	   *e = arg;
+
+	sift_v6_group_update(e->cur->g, bs, keyvec, argvec);
+	if (e->relief != NULL)
+		e->relief(e->relief_arg);
 }
 
 static SiftV6Scan *
@@ -248,6 +254,15 @@ par_local_free(void *local)
 }
 
 static void
+par_scan_hook(void *env, void (*fn) (void *arg), void *arg)
+{
+	ParEnv	   *e = env;
+
+	e->relief = fn;
+	e->relief_arg = arg;
+}
+
+static void
 par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 {
 	ParLocal   *l = local;
@@ -261,7 +276,7 @@ par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 
 		l->scanning = true;
 		if (e->lean)
-			l->dist_out = sift_v6_par_dist_out_new(l->g);
+			l->dist_out = sift_v6_par_dist_out_new(l->g, sift_v6_par_share(e->hdr));
 		else
 		{
 			l->seen = seen_new(l);
@@ -284,14 +299,32 @@ static uint64
 par_local_load(const void *local)
 {
 	const ParLocal *l = local;
-	uint64		n = 0;
+	const SiftV6Group *g = l->g;
+	uint64		bytes = g->tx.cap + (g->slab != NULL ? sift_strslab_bytes(g->slab) : 0);
 
 	if (l->scanning)
-		n = l->env->lean ? sift_v6_par_dist_load(l->dist_out) : sift_distinct_bytes(l->seen) / SEEN_ENTRY_BYTES + v6g_dist_dict_load(l->g);
+		bytes += l->env->lean ? sift_v6_par_dist_load(l->dist_out) : sift_distinct_bytes(l->seen) + v6g_dist_dict_load(g) * SEEN_ENTRY_BYTES;
+	for (int s = 0; s < g->nsets; s++)
+		bytes += g->set[s].nk > 0 ? sift_ht_bytes(&g->set[s].ht) : 0;
+	return bytes;
+}
 
-	for (int s = 0; s < l->g->nsets; s++)
-		n += l->g->set[s].nk > 0 ? l->g->set[s].ht.count : 0;
-	return n;
+/* What an export leaves: the tables at the size a spill leaves them, the text winners gone with the groups that held them, so that the next groups start from nothing and a table that was full is not full again */
+static void
+release_exported(SiftV6Group *g)
+{
+	for (int s = 0; s < g->nsets; s++)
+		if (g->set[s].nk > 0)
+			sift_ht_shrink_to(&g->set[s].ht, SIFT_SPILL_LOCAL_CAP);
+	if (g->tx.buf != NULL)
+		pfree(g->tx.buf);
+	g->tx.buf = NULL;
+	g->tx.cap = g->tx.used = 0;
+	if (g->slab != NULL)
+	{
+		sift_strslab_free(g->slab);
+		g->slab = sift_strslab_new(g->cx);
+	}
 }
 
 static void
@@ -375,7 +408,7 @@ par_local_export(void *local, SiftV6RecPut put, void *arg)
 			export_groups(l, s, put, arg);
 	if (l->g->gen != NULL)
 		v6_gen_release(l->g->gen);
-	l->g->tx.used = 0;
+	release_exported(l->g);
 }
 
 static void
@@ -504,7 +537,7 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	e->op = MemoryContextAlloc(cx, Max(spec->naggs, 1) * sizeof(V6AccOp));
 	for (int j = 0; j < spec->naggs; j++)
 		e->op[j] = v6g_acc_op(&spec->agg[j]);
-	*eng = (SiftV6ParEngine) {.env = e,.local_new = par_local_new,.local_free = par_local_free,.scan_morsel = par_scan_morsel,.local_load = par_local_load,
+	*eng = (SiftV6ParEngine) {.env = e,.local_new = par_local_new,.local_free = par_local_free,.scan_hook = par_scan_hook,.scan_morsel = par_scan_morsel,.local_load = par_local_load,
 		.local_export = par_local_export,.local_merge = par_local_merge,.local_finish = par_local_finish,.local_next = par_local_next,.local_offer = par_local_offer,
 		.local_dist_count = par_local_dist_count,.local_set_dist = par_local_set_dist,.local_reset = par_local_reset};
 }

@@ -612,6 +612,7 @@ sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *ar
 			fn(arg, buf, len);
 		}
 		BufFileClose(f);
+		BufFileDeleteFileSet(&c->spill_files.fs, name, true);
 	}
 	pfree(buf);
 }

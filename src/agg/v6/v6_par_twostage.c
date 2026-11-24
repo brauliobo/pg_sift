@@ -2,7 +2,7 @@
  * agg/v6/v6_par_twostage.c - SV6P_TWO_STAGE of v6_par.h: few groups, so the partial states are small and one participant merges them.
  *
  * Phase 0: every participant folds the morsels it claims into a table of its own. The first to finish keeps its table (the leader's own groups never cross the shared memory when the leader is first, and a
- * run of one process hands nothing to anyone); the others hand their groups to the partitions as records and take no further part. A table that passes SIFT_PAR_TWO_STAGE_MAX_GROUPS is handed over at once, and
+ * run of one process hands nothing to anyone); the others hand their groups to the partitions as records and take no further part. A table that passes its share of the hash memory is handed over at once, and
  * a chunk pool that ran out (the partitions went to files) is noted: both mean the groups are many, and the flag escalated says so. Barrier: the records are all written. Phase 1: with the flag clear the
  * keeper merges the partitions into its table and emits it, and the others return no tuple; with it set every participant (the keeper hands its table over first, a second barrier) finishes whole
  * partitions and emits them itself, as the radix strategy does.
@@ -14,8 +14,10 @@
 #include "agg/v6/v6_par.h"
 
 static void
-relief(SiftV6ParRun *r)
+relief(void *arg)
 {
+	SiftV6ParRun *r = arg;
+
 	if (r->eng->local_load(r->local) < r->export_cap)
 		return;
 	pg_atomic_write_u32(&r->hdr->escalated, 1);

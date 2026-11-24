@@ -21,10 +21,11 @@ typedef struct SiftV6ParDistOut SiftV6ParDistOut;
 
 /*
  * The state of a participant takes its COUNT(DISTINCT) rows as this: a query of no keys keeps the flat set of the serial run (the values repeat, and the set is small and in the cache), a GROUP BY makes
- * a record of each row at once (a set of pairs is as large as the rows and the owner of a partition, which holds a share of it, counts them in its cache). It has no budget but the one the load gives.
+ * a record of each row at once (a set of pairs is as large as the rows and the owner of a partition, which holds a share of it, counts them in its cache). It is bounded by the share the caller hands it over at.
  */
-extern SiftV6ParDistOut *sift_v6_par_dist_out_new(SiftV6Group *g);
-/* What it holds, in the units of SIFT_PAR_LOCAL_GROUPS */
+/* share: the bytes the participant holds before it hands them over (sift_v6_par_share); the flat sets of a query of no keys have room for that and the values of one more morsel */
+extern SiftV6ParDistOut *sift_v6_par_dist_out_new(SiftV6Group *g, uint64 share);
+/* The bytes it holds */
 extern uint64 sift_v6_par_dist_load(const SiftV6ParDistOut *o);
 /* Everything it holds as records, which are then gone from it */
 extern void sift_v6_par_dist_export(SiftV6ParDistOut *o, SiftV6RecPut put, void *arg);
