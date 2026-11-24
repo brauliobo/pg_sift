@@ -6,14 +6,16 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET TimeZone = 'UTC';
 DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
 
 CREATE TABLE events (id int PRIMARY KEY, member int NOT NULL, created_at timestamptz NOT NULL, amount int NOT NULL, kind int NOT NULL) WITH (autovacuum_enabled = false);
-INSERT INTO events SELECT i, 1 + i % 60, timestamptz '2026-01-01' + i * interval '97 minutes', i % 101, i % 7 FROM generate_series(1, 4000) i;
+INSERT INTO events SELECT i, 1 + i % 60, timestamptz '2026-01-01' + i * interval '97 minutes', i % 101, i % 7 FROM generate_series(1, 3000) i;
 
 -- the keys: ordinary, empty, long, differing in case, in a trailing blank or an accent, with a quote and a multibyte character
-CREATE TABLE key_names (n int PRIMARY KEY, name text NOT NULL, u uuid NOT NULL);
-INSERT INTO key_names SELECT n, name, md5('k' || n)::uuid FROM (VALUES (0, 'alpha'), (1, 'Alpha'), (2, 'ALPHA'), (3, ''), (4, repeat('long-', 40)), (5, repeat('long-', 40) || 'x'), (6, 'alpha '),
+CREATE TABLE key_names (n int PRIMARY KEY, name text NOT NULL, u uuid NOT NULL, d date, ts timestamptz, t timestamp);
+INSERT INTO key_names SELECT n, name, md5('k' || n)::uuid, CASE WHEN n = 12 THEN 'infinity' ELSE date '2026-01-01' + n END, CASE WHEN n = 12 THEN 'infinity' ELSE timestamptz '2026-03-01' + n * interval '90 minutes' END,
+	CASE WHEN n = 12 THEN 'infinity' ELSE timestamp '2026-03-01' + n * interval '90 minutes' END FROM (VALUES (0, 'alpha'), (1, 'Alpha'), (2, 'ALPHA'), (3, ''), (4, repeat('long-', 40)), (5, repeat('long-', 40) || 'x'), (6, 'alpha '),
 	(7, 'ténant'), (8, 'tenant'), (9, 'it''s'), (10, '日本'), (11, 'beta'), (12, 'gamma')) v (n, name);
 
 CREATE TABLE pairs_text (member int NOT NULL, key text NOT NULL) WITH (autovacuum_enabled = false);
@@ -22,22 +24,38 @@ CREATE TABLE pairs_varchar (member int NOT NULL, key varchar(255) NOT NULL) WITH
 CREATE UNIQUE INDEX pairs_varchar_u ON pairs_varchar (member, key);
 CREATE TABLE pairs_uuid (member int NOT NULL, key uuid NOT NULL) WITH (autovacuum_enabled = false);
 CREATE UNIQUE INDEX pairs_uuid_u ON pairs_uuid (member, key);
+CREATE TABLE pairs_date (member int NOT NULL, key date NOT NULL) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX pairs_date_u ON pairs_date (member, key);
+CREATE TABLE pairs_timestamptz (member int NOT NULL, key timestamptz NOT NULL) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX pairs_timestamptz_u ON pairs_timestamptz (member, key);
+CREATE TABLE pairs_timestamp (member int NOT NULL, key timestamp NOT NULL) WITH (autovacuum_enabled = false);
+CREATE UNIQUE INDEX pairs_timestamp_u ON pairs_timestamp (member, key);
 -- member m (1..60) is in the keys (m + j) % 13 for j < m % 4: 0 to 2 keys; the keys 0 to 12 all have members
 INSERT INTO pairs_text SELECT m, name FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
 INSERT INTO pairs_varchar SELECT m, name FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
 INSERT INTO pairs_uuid SELECT m, u FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
+INSERT INTO pairs_date SELECT m, d FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
+INSERT INTO pairs_timestamptz SELECT m, ts FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
+INSERT INTO pairs_timestamp SELECT m, t FROM generate_series(1, 60) m, generate_series(0, 2) j, key_names WHERE n = (m + j) % 13 AND j < m % 4;
 
 CREATE INDEX events_text ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_text(member, key)', track_changes = 'ctid');
 CREATE INDEX events_varchar ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_varchar(member, key)', track_changes = 'ctid');
 CREATE INDEX events_uuid ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_uuid(member, key)', track_changes = 'ctid');
+CREATE INDEX events_date ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_date(member, key)', track_changes = 'ctid');
+CREATE INDEX events_timestamptz ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_timestamptz(member, key)', track_changes = 'ctid');
+CREATE INDEX events_timestamp ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_timestamp(member, key)', track_changes = 'ctid');
 VACUUM ANALYZE events;
 VACUUM ANALYZE pairs_text;
 VACUUM ANALYZE pairs_varchar;
 VACUUM ANALYZE pairs_uuid;
+VACUUM ANALYZE pairs_date;
+VACUUM ANALYZE pairs_timestamptz;
+VACUUM ANALYZE pairs_timestamp;
 
--- 1. Format major 2, one summary of 13 keys each
+-- 1. Format major 2, one summary of 13 keys each (a date or a timestamp is its own word: the key 12 is infinity)
 SELECT relation::text, format_major, scopes FROM sift.status() WHERE relation::text LIKE 'events\_%' ORDER BY 1;
-SELECT 'text' AS key_type, nkeys FROM sift.scope_stats('events_text') UNION ALL SELECT 'varchar', nkeys FROM sift.scope_stats('events_varchar') UNION ALL SELECT 'uuid', nkeys FROM sift.scope_stats('events_uuid') ORDER BY 1;
+SELECT 'text' AS key_type, nkeys FROM sift.scope_stats('events_text') UNION ALL SELECT 'varchar', nkeys FROM sift.scope_stats('events_varchar') UNION ALL SELECT 'uuid', nkeys FROM sift.scope_stats('events_uuid')
+	UNION ALL SELECT 'date', nkeys FROM sift.scope_stats('events_date') UNION ALL SELECT 'timestamptz', nkeys FROM sift.scope_stats('events_timestamptz') UNION ALL SELECT 'timestamp', nkeys FROM sift.scope_stats('events_timestamp') ORDER BY 1;
 
 -- the answer of the node and of the heap for one statement: same or DIFFERENT, and whether the node ran
 CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -54,8 +72,11 @@ END $$;
 
 -- the key n of a key type as a literal of the type of its column; n = 99: a key the pairs lack
 CREATE FUNCTION lit(ktype text, n int) RETURNS text LANGUAGE sql AS $$
-	SELECT CASE WHEN ktype = 'uuid' THEN quote_literal(coalesce((SELECT u::text FROM key_names WHERE key_names.n = lit.n), md5('absent')::uuid::text)) || '::uuid'
-				ELSE quote_literal(coalesce((SELECT name FROM key_names WHERE key_names.n = lit.n), 'absent')) END
+	SELECT CASE WHEN ktype = 'uuid' THEN quote_literal(coalesce((SELECT u::text FROM key_names WHERE key_names.n = lit.n), md5(CASE WHEN n = 98 THEN 'aborted' ELSE 'absent' END)::uuid::text)) || '::uuid'
+				WHEN ktype = 'date' THEN quote_literal(coalesce((SELECT d::text FROM key_names WHERE key_names.n = lit.n), CASE WHEN n = 98 THEN '1990-01-01' ELSE '2001-01-01' END)) || '::date'
+				WHEN ktype = 'timestamptz' THEN quote_literal(coalesce((SELECT ts::text FROM key_names WHERE key_names.n = lit.n), CASE WHEN n = 98 THEN '1990-01-01 00:00:00+00' ELSE '2001-01-01 00:00:00+00' END)) || '::timestamptz'
+				WHEN ktype = 'timestamp' THEN quote_literal(coalesce((SELECT t::text FROM key_names WHERE key_names.n = lit.n), '2001-01-01 00:00:00')) || '::timestamp'
+				ELSE quote_literal(coalesce((SELECT name FROM key_names WHERE key_names.n = lit.n), CASE WHEN n = 98 THEN 'aborted' ELSE 'absent' END)) END
 $$;
 
 -- every shape of statement over a key type, one line each: the keys 0 to 12 and 99 by value, the group by the key, an IN list, the newest rows
@@ -85,36 +106,40 @@ END $$;
 SELECT * FROM shapes('text');
 SELECT * FROM shapes('varchar');
 SELECT * FROM shapes('uuid');
+SELECT * FROM shapes('date');
+SELECT * FROM shapes('timestamptz');
+SELECT * FROM shapes('timestamp');
 
 -- the statements of every key type, and the keys the pairs or the facts changed: the lines that are not "same node" are listed
 CREATE FUNCTION all_shapes() RETURNS TABLE (ktype text, what text, result text) LANGUAGE sql AS $$
-	SELECT t, s.what, s.result FROM unnest(ARRAY['text', 'varchar', 'uuid']) t, LATERAL shapes(t) s WHERE s.result <> 'same node'
+	SELECT t, s.what, s.result FROM unnest(ARRAY['text', 'varchar', 'uuid', 'date', 'timestamptz', 'timestamp']) t, LATERAL shapes(t) s WHERE s.result <> 'same node'
 $$;
 SELECT * FROM all_shapes();
 
 -- 3. DML of the facts and of the pairs: new keys (a key no summary has), a key whose members leave, a key whose pairs all go, rows deleted and updated, a write that aborts
 INSERT INTO events SELECT 10000 + i, 1 + i % 60, timestamptz '2026-08-01' + i * interval '13 minutes', i % 11, 3 FROM generate_series(1, 400) i;
-INSERT INTO key_names VALUES (13, 'newcomer', md5('k13')::uuid), (14, '', md5('k14')::uuid) ON CONFLICT DO NOTHING;
-INSERT INTO pairs_text SELECT m, 'newcomer' FROM generate_series(1, 10) m;
-INSERT INTO pairs_varchar SELECT m, 'newcomer' FROM generate_series(1, 10) m;
-INSERT INTO pairs_uuid SELECT m, md5('k13')::uuid FROM generate_series(1, 10) m;
-DELETE FROM pairs_text WHERE key = 'gamma';
-DELETE FROM pairs_varchar WHERE key = 'gamma';
-DELETE FROM pairs_uuid WHERE key = md5('k12')::uuid;
-UPDATE pairs_text SET key = 'beta' WHERE key = 'alpha' AND member % 2 = 0;
-UPDATE pairs_varchar SET key = 'beta' WHERE key = 'alpha' AND member % 2 = 0;
-UPDATE pairs_uuid SET key = md5('k11')::uuid WHERE key = md5('k0')::uuid AND member % 2 = 0;
+INSERT INTO key_names SELECT 13, 'newcomer', md5('k13')::uuid, date '2026-01-01' + 13, timestamptz '2026-03-01' + 13 * interval '90 minutes', timestamp '2026-03-01' + 13 * interval '90 minutes';
+DO $$ DECLARE t text; kc text;
+BEGIN
+	FOR t, kc IN SELECT * FROM (VALUES ('text', 'name'), ('varchar', 'name'), ('uuid', 'u'), ('date', 'd'), ('timestamptz', 'ts'), ('timestamp', 't')) v LOOP
+		EXECUTE format('INSERT INTO pairs_%s SELECT m, %s FROM generate_series(1, 10) m, key_names WHERE n = 13', t, kc);
+		EXECUTE format('DELETE FROM pairs_%s WHERE key = (SELECT %s FROM key_names WHERE n = 12)', t, kc);
+		EXECUTE format('UPDATE pairs_%s SET key = (SELECT %s FROM key_names WHERE n = 11) WHERE key = (SELECT %s FROM key_names WHERE n = 0) AND member %% 2 = 0', t, kc, kc);
+	END LOOP;
+END $$;
 DELETE FROM events WHERE id % 29 = 0;
 UPDATE events SET amount = amount + 1000, kind = 5 WHERE id % 31 = 0;
 BEGIN;
 INSERT INTO pairs_text VALUES (1, 'aborted');
 INSERT INTO pairs_uuid VALUES (1, md5('aborted')::uuid);
+INSERT INTO pairs_date VALUES (1, '1990-01-01');
+INSERT INTO pairs_timestamptz VALUES (1, '1990-01-01 00:00:00+00');
 INSERT INTO events VALUES (99999, 1, now(), 777, 6);
 ROLLBACK;
 CREATE FUNCTION after_dml() RETURNS TABLE (ktype text, what text, result text) LANGUAGE plpgsql AS $$
 DECLARE t text;
 BEGIN
-	FOR t IN SELECT unnest(ARRAY['text', 'varchar', 'uuid']) LOOP
+	FOR t IN SELECT unnest(ARRAY['text', 'varchar', 'uuid', 'date', 'timestamptz', 'timestamp']) LOOP
 		ktype := t;
 		what := 'newcomer';
 		result := same(format('SELECT count(*), sum(e.amount) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s', t, lit(t, 13)));
@@ -122,14 +147,14 @@ BEGIN
 		what := 'group by key';
 		result := same(format('SELECT p.key, count(*), sum(e.amount) FROM events e JOIN pairs_%s p ON p.member = e.member GROUP BY p.key', t));
 		RETURN NEXT;
-		what := 'gamma gone';
+		what := 'infinity gone';
 		result := same(format('SELECT count(*) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s', t, lit(t, 12)));
 		RETURN NEXT;
-		what := 'alpha moved';
+		what := 'key 0 moved';
 		result := same(format('SELECT count(*), sum(e.amount) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key IN (%s, %s)', t, lit(t, 0), lit(t, 11)));
 		RETURN NEXT;
 		what := 'aborted key';
-		result := same(format('SELECT count(*) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s', t, CASE WHEN t = 'uuid' THEN quote_literal(md5('aborted')::uuid::text) || '::uuid' ELSE '''aborted''' END));
+		result := same(format('SELECT count(*) FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s', t, lit(t, 98)));
 		RETURN NEXT;
 		what := 'newest rows';
 		result := same(format('SELECT e.member, e.created_at, e.amount, e.kind FROM events e JOIN pairs_%s p ON p.member = e.member WHERE p.key = %s ORDER BY e.created_at DESC LIMIT 5', t, lit(t, 13)));
@@ -149,6 +174,9 @@ SELECT count(*) AS differ FROM after_dml() WHERE result <> 'same node';
 REINDEX INDEX events_text;
 REINDEX INDEX events_varchar;
 REINDEX INDEX events_uuid;
+REINDEX INDEX events_date;
+REINDEX INDEX events_timestamptz;
+REINDEX INDEX events_timestamp;
 SELECT relation::text, format_major, scopes FROM sift.status() WHERE relation::text LIKE 'events\_%' ORDER BY 1;
 SELECT count(*) AS differ FROM after_dml() WHERE result <> 'same node';
 CREATE INDEX CONCURRENTLY events_text_c ON events USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pairs_text(member, key)', track_changes = 'ctid');
@@ -179,8 +207,10 @@ SELECT same(format('SELECT count(*), sum(a.spent) FROM accounts a JOIN pairs_uui
 -- 6. sift.check finds nothing wrong
 SELECT count(*) AS problems FROM sift.check('events_varchar');
 SELECT count(*) AS problems FROM sift.check('events_uuid');
+SELECT count(*) AS problems FROM sift.check('events_date');
+SELECT count(*) AS problems FROM sift.check('events_timestamptz');
 SELECT count(*) AS problems FROM sift.check('accounts_u');
 
-DROP TABLE accounts, events, key_names, pairs_text, pairs_varchar, pairs_uuid;
+DROP TABLE accounts, events, key_names, pairs_text, pairs_varchar, pairs_uuid, pairs_date, pairs_timestamptz, pairs_timestamp;
 DROP FUNCTION same(text), lit(text, int), shapes(text), all_shapes(), after_dml();
 DROP EXTENSION pg_sift;
