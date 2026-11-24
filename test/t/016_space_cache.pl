@@ -27,6 +27,12 @@ sub fixture
 	my $view = $kind eq 'tbl' ? "sift.table_segments('s')" : $kind eq 'col' ? "sift.col_segments('idx')" : "sift.segments('idx')";
 	return ($rel, $view);
 }
+# VACUUM of a BM25 index seals its open buffer (a fresh buffer already holds the 8 pages that threshold asks), so none is left to relocate: the space step runs alone
+sub space_step
+{
+	my ($kind, $rel) = @_;
+	return $kind eq 'bm25' ? "SELECT sift._test_space('$rel')" : 'VACUUM s';
+}
 for my $kind (qw(bm25 col tbl))
 {
 	subtest "$kind cached writer after publication ERROR without truncate" => sub {
@@ -36,7 +42,7 @@ for my $kind (qw(bm25 col tbl))
 		my $before = $node->safe_psql('postgres', "SELECT string_agg(gen::text, ',' ORDER BY gen) FROM $view");
 		my $bytes = $node->safe_psql('postgres', "SELECT pg_relation_size('$rel')");
 		my ($out, $err) = ('', '');
-		my $rc = $node->psql('postgres', 'SET sift.test_space_error = on; VACUUM s', stdout => \$out, stderr => \$err);
+		my $rc = $node->psql('postgres', 'SET sift.test_space_error = on; ' . space_step($kind, $rel), stdout => \$out, stderr => \$err);
 		ok($rc != 0 && $err =~ /error after open buffer relocation publication/, 'ordinary ERROR after publishing the open buffer');
 		my ($old_header, $new_header) = $err =~ /header (\d+) to (\d+)/;
 		ok(defined($old_header) && defined($new_header) && $old_header != $new_header, 'open buffer header moved before the error');
@@ -58,7 +64,7 @@ for my $kind (qw(bm25 col tbl))
 		my ($rel, $view) = fixture($kind);
 		my $before = $node->safe_psql('postgres', "SELECT string_agg(gen::text, ',' ORDER BY gen) FROM $view");
 		my ($out, $err) = ('', '');
-		my $rc = $node->psql('postgres', 'SET sift.test_fail_pages = 1; VACUUM s', stdout => \$out, stderr => \$err);
+		my $rc = $node->psql('postgres', 'SET sift.test_fail_pages = 1; ' . space_step($kind, $rel), stdout => \$out, stderr => \$err);
 		is($rc, 0, 'automatic relocation failure does not fail VACUUM');
 		like($err, qr/WARNING:.*injected failure after 1 pages/s, 'copy actually failed under the maintenance error contract');
 		is($node->safe_psql('postgres', "SELECT string_agg(gen::text, ',' ORDER BY gen) FROM $view"), $before, 'unpublished replacement never entered the directory');
