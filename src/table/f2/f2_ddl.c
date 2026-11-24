@@ -24,6 +24,7 @@
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_tbl.h"
 #include "core/damage.h"
+#include "core/meta_peek.h"
 
 static bool
 is_time_type(Oid t)
@@ -64,11 +65,13 @@ sift_tbl_f2_identities_hash(const SiftPartColIdentity *ids, int n)
 
 /* ---- the leaves of a table ---- */
 
-/* A table made by this build says so in its metapage; one that has no block yet is made with the flags of the host */
+/* A Format 2.0 table made by this build says so in its metapage; one that has no block yet is made with the flags of the host; a Format 1 table (the source of sift.upgrade_table) has none */
 static bool
 native_strings(Relation rel)
 {
-	return RelationGetNumberOfBlocks(rel) == 0 || (sift_col_meta_read(rel).common.compat_flags & SIFT_COMPAT_NATIVE_STRINGS) != 0;
+	SiftFormatStatus status = sift_meta_peek_format(rel).status;
+
+	return status == SIFT_FMT_EMPTY || (status != SIFT_FMT_V1 && (sift_col_meta_read(rel).common.compat_flags & SIFT_COMPAT_NATIVE_STRINGS) != 0);
 }
 
 static void
