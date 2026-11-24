@@ -20,8 +20,11 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
+#include "optimizer/planner.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteHandler.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/timestamp.h"
@@ -257,13 +260,37 @@ index_expr_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
 	return false;
 }
 
+/* An expression of the query that is the generation expression of a stored generated column of the table: the scan reads the column, which holds what the expression gives */
+static bool
+generated_expr_of(V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	Relation	rel = p->is_table && !IsA(e, Var) ? table_open(p->relid, NoLock) : NULL;
+	bool		found = false;
+
+	for (int a = 1; rel != NULL && a <= RelationGetNumberOfAttributes(rel) && !found; a++)
+	{
+		const Form_pg_attribute att = TupleDescAttr(RelationGetDescr(rel), a - 1);
+		Node	   *gen;
+
+		if (att->attgenerated != ATTRIBUTE_GENERATED_STORED || att->attisdropped)
+			continue;
+		gen = (Node *) expression_planner((Expr *) build_column_default(rel, a));
+		ChangeVarNodes(gen, 1, p->rel->relid, 0);
+		found = equal(e, gen) &&
+			column_of(p, (Expr *) makeVar(p->rel->relid, a, att->atttypid, att->atttypmod, att->attcollation, 0), false, out);
+	}
+	if (rel != NULL)
+		table_close(rel, NoLock);
+	return found;
+}
+
 /* A column the scan reads as a value: a column of the index, the text or the float8 of a key of a jsonb document, a payload column of a dimension or the element of the unnest */
 static bool
 read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) ||
+	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) || generated_expr_of(p, e, out) ||
 		(!p->is_table && (sift_v6_json_read(&rel, e, out) ||
 							  (exprType((Node *) e) != NUMERICOID && (sift_v6_star_column(p, e, out) || sift_v6_unnest_column(p, e, out))))) ||
 		table_text_of(p, e, out) || datum_column_of(p, e, out);
