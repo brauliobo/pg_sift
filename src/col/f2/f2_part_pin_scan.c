@@ -16,6 +16,24 @@ sift_f2_scan_pin(Relation rel, const SiftPartDesc *d, uint32 part_id)
 	return sift_f2_pin_open(rel, sift_f2_store_open(rel), d, part_id);
 }
 
+bool
+sift_f2_exc_has(const SiftVariantExcSummary *ex, int nex, uint32 g, int col)
+{
+	int			lo = 0,
+				hi = nex;
+
+	while (lo < hi)
+	{
+		int			mid = lo + ((hi - lo) >> 1);
+
+		if (ex[mid].granule < g || (ex[mid].granule == g && ex[mid].col < col))
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo < nex && ex[lo].granule == g && ex[lo].col == col;
+}
+
 const SiftVariantExcSummary *
 sift_f2_pin_exc(Relation rel, SiftF2PartPin *pin, int *nexc)
 {

@@ -13,6 +13,9 @@ extern SiftF2PartPin *sift_f2_scan_pin(Relation rel, const SiftPartDesc *d, uint
 /* The exceptions of the part (SEC_VARIANT_EXC), NULL when it has none */
 extern const SiftVariantExcSummary *sift_f2_pin_exc(Relation rel, SiftF2PartPin *pin, int *nexc);
 
+/* Whether the leaf of the granule holds a value the chunk cannot judge (the summaries of SEC_VARIANT_EXC are ordered by granule, then leaf) */
+extern bool sift_f2_exc_has(const SiftVariantExcSummary *ex, int nex, uint32 g, int col);
+
 /* The zones of every granule of a leaf (SEC_ZONES), NULL when the part has none */
 extern const SiftZone *sift_f2_pin_zones(Relation rel, SiftF2PartPin *pin, int leaf);
 

@@ -10,6 +10,7 @@
 #include "utils/float.h"
 #include "utils/memutils.h"
 
+#include "agg/agg.h"
 #include "agg/v6/v6_preagg.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_pred.h"
@@ -144,7 +145,7 @@ sift_v6_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, const int *first, S
 	SiftV6Preagg *pa;
 	bool		dist = false;
 
-	if (!spec_ok(spec))
+	if (!sift_agg_preagg || !spec_ok(spec))
 		return NULL;
 	pa = palloc0(sizeof(SiftV6Preagg));
 	pa->spec = spec;

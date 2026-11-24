@@ -18,6 +18,7 @@
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_gbuf.h"
 #include "col/f2/f2_marks.h"
+#include "col/f2/f2_part_pin_scan.h"
 #include "col/f2/f2_pred.h"
 #include "col/f2/f2_store_schema.h"
 #include "col/f2/f2_store_scan.h"
@@ -456,6 +457,24 @@ granule_vis(const SiftStorePart *p, uint32 g)
 	return sift_vis_granule_inserts_settled(p->d, &p->pin->gdir[g], sift_vis_snap_xmin(s->o->snap)) ? SIFT_GVIS_SETTLED : SIFT_GVIS_PER_ROW;
 }
 
+/* The zone and the exception of granule g of the leaf of each predicate, as the part holds the leaf */
+static void
+offer_zones(const SiftStorePart *p, uint32 g)
+{
+	const SiftStoreScan *s = p->s;
+	int			nexc;
+	const SiftVariantExcSummary *exc = sift_f2_pin_exc(s->o->rel, p->pin, &nexc);
+
+	for (int k = 0; k < s->o->npreds; k++)
+	{
+		const int	leaf = p->phys != NULL ? p->phys[s->o->preds[k].col] : s->o->preds[k].col;
+		const SiftZone *zones = leaf >= 0 ? sift_f2_pin_zones(s->o->rel, p->pin, leaf) : NULL;
+
+		s->offer_zones[k] = zones != NULL ? &zones[g] : NULL;
+		s->offer_exceptions[k] = leaf < 0 || sift_f2_exc_has(exc, nexc, g, leaf);
+	}
+}
+
 /* The granule of a table offered to the sink of the scan before a byte of it is read: true when the sink answered it */
 static bool
 granule_answered(const SiftStorePart *p, uint32 g)
@@ -464,7 +483,10 @@ granule_answered(const SiftStorePart *p, uint32 g)
 	const SiftF2PartPin *pin = p->pin;
 	const SiftStoreScanOpts *o = s->o;
 
-	return o->gran_sink != NULL && s->vis == &table_vis && o->bridge == NULL && o->gran_sink(o->gran_arg, &(SiftF2GranOffer) {.rel = o->rel,.part = pin->part,.desc = p->d,.schema = s->store->schema,.g = g,.gd = &pin->gdir[g],
+	if (o->gran_sink == NULL || s->vis != &table_vis || o->bridge != NULL)
+		return false;
+	offer_zones(p, g);
+	return o->gran_sink(o->gran_arg, &(SiftF2GranOffer) {.rel = o->rel,.part = pin->part,.desc = p->d,.schema = s->store->schema,.g = g,.gd = &pin->gdir[g],
 						 .dead = pin->dv != NULL ? sift_dv_granule(pin->dv, g) : NULL,.snap = o->snap,.preds = o->preds,.npreds = o->npreds,.decided = s->offer_decided,
 						 .zones = s->offer_zones,.exceptions = s->offer_exceptions,.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &pin->tidx[g]),
 						 .patched = sift_col_delta_scan_granule(s->delta, p->e, pin, g) != NULL,.px = p->px,.vis = granule_vis(p, g),.phys = p->phys});

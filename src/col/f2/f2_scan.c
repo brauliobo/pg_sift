@@ -75,24 +75,6 @@ emit(F2Scan *s, const SiftColSchema *schema, uint64 tid, Verdict v, const ColVie
 	s->ntids++;
 }
 
-static bool
-has_exceptions(const SiftVariantExcSummary *ex, int nex, uint32 g, int col)
-{
-	int			lo = 0,
-				hi = nex;
-
-	while (lo < hi)
-	{
-		int			mid = lo + ((hi - lo) >> 1);
-
-		if (ex[mid].granule < g || (ex[mid].granule == g && ex[mid].col < col))
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
-	return lo < nex && ex[lo].granule == g && ex[lo].col == col;
-}
-
 static int
 tid_cmp(const void *a, const void *b)
 {
@@ -342,7 +324,7 @@ granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const Si
 	bool	   *exceptions = palloc0(Max(s->npreds, 1));
 
 	for (int k = 0; k < s->npreds; k++)
-		exceptions[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
+		exceptions[k] = sift_f2_exc_has(exc, nexc, g, s->preds[k].col);
 	for (int k = 0; k < s->npreds && !skip; k++)
 	{
 		ZoneVerdict zv;
@@ -497,7 +479,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 			for (int k = 0; k < s->npreds; k++)
 			{
 				offer_zones[k] = zones[k] != NULL ? &zones[k][g - g0] : NULL;
-				offer_exc[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
+				offer_exc[k] = sift_f2_exc_has(exc, nexc, g, s->preds[k].col);
 			}
 			if (s->gran_sink(s->gran_arg, &(SiftF2GranOffer) {.rel = rel,.part = part,.desc = s->part,.schema = schema,.g = g,.gd = &dir[g],.dead = dg,.snap = snap,.preds = s->preds,.npreds = s->npreds,
 							 .decided = win.decided + (Size) wi * np,.zones = offer_zones,.exceptions = offer_exc,.pend_hit = pend_hit,.patched = sift_cdi_scan_granule_patched(s, g),.px = px,.vis = SIFT_GVIS_HEAP}))
@@ -508,7 +490,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 		decided = memcpy(palloc((Size) np), win.decided + (Size) wi * np, np);
 		exceptions = palloc0(np);
 		for (int k = 0; k < s->npreds; k++)
-			exceptions[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
+			exceptions[k] = sift_f2_exc_has(exc, nexc, g, s->preds[k].col);
 		F2_STAT(read);
 		ncand = s->cands != NULL ? sift_point_cands_rows(s->cands, g, cand, lengthof(cand)) : sparse_rows(rel, s, schema, part, dir != NULL ? &dir[g] : NULL, exceptions, decided, cand);
 		if (ncand >= 0)
