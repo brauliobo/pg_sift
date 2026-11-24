@@ -112,7 +112,7 @@ sift_v6_unnest_ready(V6Plan *p)
 	return computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
 }
 
-/* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument; the values of a map are float8 leaves, no cast of them raises, and its filter is a clause of the pairs */
+/* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument; the members of jsonb_each of a map are float8 leaves, no cast of them raises, and its filter is a clause of the pairs */
 Aggref *
 sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a)
 {
@@ -121,7 +121,7 @@ sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a)
 	CaseExpr   *c;
 	Aggref	   *plain;
 
-	if (p->elem_rel == NULL || (p->xseed != NULL && p->xseed->elem.group_leaf >= 0) || a->aggfilter == NULL || list_length(a->args) != 1 || a->aggdistinct != NIL || a->aggorder != NIL)
+	if (p->elem_rel == NULL || (p->xseed != NULL && p->xseed->elem.fn >= SV6E_EACH) || a->aggfilter == NULL || list_length(a->args) != 1 || a->aggdistinct != NIL || a->aggorder != NIL)
 		return a;
 	te = linitial_node(TargetEntry, a->args);
 	if (IsA(te->expr, Var) || exprType((Node *) te->expr) != FLOAT8OID ||
