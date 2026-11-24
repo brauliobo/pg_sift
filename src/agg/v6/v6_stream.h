@@ -78,6 +78,11 @@ extern Datum sift_v6_stream_key_datum(const SiftV6StreamSpec *spec, int i, const
 extern bool sift_v6_stream_filters(MemoryContext cxt, const SiftV6StreamSpec *spec, ParamListInfo params, SiftV6Input *in, SiftV6Vexpr *out);
 
 /* The engine over the source (which gives the rows that pass the WHERE clauses, sorted by the keys): every group goes to emit */
-extern void sift_v6_stream_run(SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg);
+typedef struct SiftV6StreamRun SiftV6StreamRun;
+
+/* The engine over src in the memory context cx: the groups come out by step, one batch of the input at a time, as final (emit), false once the input is out */
+extern SiftV6StreamRun *sift_v6_stream_open(MemoryContext cx, SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg);
+extern bool sift_v6_stream_step(SiftV6StreamRun *r);
+extern void sift_v6_stream_close(SiftV6StreamRun *r);
 
 #endif							/* SIFT_AGG_V6_STREAM_H */

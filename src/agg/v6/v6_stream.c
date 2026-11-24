@@ -30,6 +30,7 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_datebin_win_pg.h"
 #include "agg/v6/v6_plan_shape.h"
+#include "agg/v6/v6_fifo.h"
 #include "agg/v6/v6_stream.h"
 
 enum
@@ -403,25 +404,44 @@ feed_next(void *p, SiftStreamBatch *out)
 	return true;
 }
 
-void
-sift_v6_stream_run(SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg)
+struct SiftV6StreamRun
 {
-	Feed	   *fd = palloc_aligned(sizeof(Feed), _Alignof(Feed), MCXT_ALLOC_ZERO);
+	Feed	   *fd;
 	SiftStreamExec se;
+};
+
+SiftV6StreamRun *
+sift_v6_stream_open(MemoryContext cx, SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg)
+{
+	SiftV6StreamRun *r = MemoryContextAllocZero(cx, sizeof(SiftV6StreamRun));
+	Feed	   *fd = MemoryContextAllocAligned(cx, sizeof(Feed), _Alignof(Feed), MCXT_ALLOC_ZERO);
 
 	fd->src = src;
 	fd->spec = spec;
 	fd->filters = filters;
-	fd->vctx = sift_vexpr_ctx_new(CurrentMemoryContext);
+	fd->vctx = sift_vexpr_ctx_new(cx);
 	for (int k = 0; k < spec->nbins; k++)
 	{
 		fd->bin[k] = (SiftDateBin) {.stride_us = spec->bin[k].stride_us,.origin = spec->bin[k].origin,.stride_status = SDB_OK};
-		fd->binout[k] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+		fd->binout[k] = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	}
-	sift_stream_init(&se, (uint8) spec->nkeys, false, false, 0, SIFT_STREAM_NO_LIMIT, emit, NULL, emit_arg);
-	sift_stream_add_source(&se, feed_next, fd);
-	sift_stream_run(&se);
-	sift_stream_free(&se);
+	r->fd = fd;
+	sift_stream_init(&r->se, (uint8) spec->nkeys, false, false, 0, SIFT_STREAM_NO_LIMIT, emit, NULL, emit_arg);
+	sift_stream_add_source(&r->se, feed_next, fd);
+	return r;
+}
+
+bool
+sift_v6_stream_step(SiftV6StreamRun *r)
+{
+	return sift_stream_step(&r->se);
+}
+
+void
+sift_v6_stream_close(SiftV6StreamRun *r)
+{
+	sift_stream_free(&r->se);
+	pfree(r);
 }
 
 /* ---- the planner ---- */
@@ -578,12 +598,16 @@ typedef struct StreamState
 	CustomScanState css;
 	List	   *priv;
 	SiftV6StreamSpec spec;
+	MemoryContext cx;			/* one run of the engine */
 	SiftV6Source *src;
-	SiftV6Store out;
+	SiftV6StreamRun *run;
+	SiftV6Fifo	fifo;
 	int		   *entry;			/* of each entry of the scan tlist: its key (0 ..) or -1 - its aggregate */
 	Datum	   *vals;
 	bool	   *nulls;
 	uint64		groups;
+	bool		started;
+	bool		done;
 } StreamState;
 
 static void
@@ -598,6 +622,7 @@ stream_begin(CustomScanState *node, EState *estate, int eflags)
 	st->entry = palloc(list_length(tlist) * sizeof(int));
 	st->vals = palloc(list_length(tlist) * sizeof(Datum));
 	st->nulls = palloc(list_length(tlist) * sizeof(bool));
+	sift_v6_fifo_open(&st->fifo, estate->es_query_cxt);
 	foreach_node(TargetEntry, te, (List *) tlist)
 	{
 		int			j = 0;
@@ -632,7 +657,7 @@ stream_emit(void *arg, const SiftStreamGroup *g)
 {
 	StreamState *st = arg;
 	const int	n = list_length(list_nth(st->priv, PRIV_TLIST));
-	MemoryContext old = MemoryContextSwitchTo(st->out.row_cx);
+	MemoryContext old = MemoryContextSwitchTo(st->fifo.row_cx);
 
 	for (int i = 0; i < n; i++)
 	{
@@ -647,12 +672,12 @@ stream_emit(void *arg, const SiftStreamGroup *g)
 			st->nulls[i] = !sift_v6_stream_datum(&st->spec, -1 - e, g, &st->vals[i]);
 	}
 	MemoryContextSwitchTo(old);
-	sift_v6_store_put(&st->out, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
+	sift_v6_fifo_put(&st->fifo, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
 	st->groups++;
 }
 
 static void
-stream_run(StreamState *st, EState *estate)
+stream_start(StreamState *st, EState *estate)
 {
 	SiftV6Input in;
 	SiftV6Vexpr quals,
@@ -662,16 +687,16 @@ stream_run(StreamState *st, EState *estate)
 	const bool	is_table = list_nth_int(linitial(st->priv), 2);
 	Relation	source = sift_v6_source_open((Oid) linitial_int(linitial(st->priv)), is_table, AccessShareLock, &in);
 
-	sift_v6_store_start(&st->out, estate);
+	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 run");
 	sift_v6_input_bind(&in, estate);
 	sift_v6_source_close(source, is_table, NoLock);
-	compiled = sift_v6_stream_spec(st->priv, &in, &st->spec) && sift_v6_stream_filters(st->out.cx, &st->spec, estate->es_param_list_info, &in, filters) &&
-		sift_v6_vexpr_quals(st->out.cx, where, st->spec.rti, estate->es_param_list_info, &in, &quals);
+	compiled = sift_v6_stream_spec(st->priv, &in, &st->spec) && sift_v6_stream_filters(st->cx, &st->spec, estate->es_param_list_info, &in, filters) &&
+		sift_v6_vexpr_quals(st->cx, where, st->spec.rti, estate->es_param_list_info, &in, &quals);
 	SIFT_INVARIANT(compiled, "the stream of groups of relation %u is not compiled", st->spec.indexoid);
 	st->src = sift_v6_rel_open(estate, &in, where == NIL ? NULL : &quals, true);
+	st->run = sift_v6_stream_open(st->cx, st->src, &st->spec, filters, stream_emit, st);
 	st->groups = 0;
-	sift_v6_stream_run(st->src, &st->spec, filters, stream_emit, st);
-	st->out.ran = true;
+	st->started = true;
 }
 
 static TupleTableSlot *
@@ -679,9 +704,16 @@ stream_next(ScanState *ss)
 {
 	StreamState *st = (StreamState *) ss;
 
-	if (!st->out.ran)
-		stream_run(st, ss->ps.state);
-	return sift_v6_store_get(&st->out, ss->ss_ScanTupleSlot);
+	if (!st->started)
+		stream_start(st, ss->ps.state);
+	for (;;)
+	{
+		TupleTableSlot *slot = sift_v6_fifo_get(&st->fifo, ss->ss_ScanTupleSlot);
+
+		if (slot != NULL || st->done)
+			return slot;
+		st->done = !sift_v6_stream_step(st->run);
+	}
 }
 
 static bool
@@ -699,26 +731,35 @@ stream_exec(CustomScanState *node)
 static void
 stream_release(StreamState *st)
 {
+	if (st->run != NULL)
+		sift_v6_stream_close(st->run);
 	if (st->src != NULL)
 		st->src->close(st->src);
+	if (st->cx != NULL)
+		MemoryContextDelete(st->cx);
+	st->run = NULL;
 	st->src = NULL;
-	sift_v6_store_end(&st->out);
+	st->cx = NULL;
+	st->started = st->done = false;
 }
 
 static void
 stream_end(CustomScanState *node)
 {
-	stream_release((StreamState *) node);
+	StreamState *st = (StreamState *) node;
+
+	stream_release(st);
+	sift_v6_fifo_close(&st->fifo);
 }
 
+/* a scan again reads the input again: no tuple of the run is kept to be given twice */
 static void
 stream_rescan(CustomScanState *node)
 {
 	StreamState *st = (StreamState *) node;
 
-	if (node->ss.ps.chgParam != NULL && st->src != NULL)
-		stream_release(st);
-	sift_v6_store_rescan(&st->out, node->ss.ps.chgParam != NULL);
+	stream_release(st);
+	sift_v6_fifo_clear(&st->fifo);
 }
 
 static void
@@ -727,7 +768,7 @@ stream_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	StreamState *st = (StreamState *) node;
 
 	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), list_nth_int(linitial(st->priv), 2));
-	if (st->out.ran)
+	if (st->started)
 		sift_v6_explain_count(es, "Groups", (int64) st->groups);
 }
 
