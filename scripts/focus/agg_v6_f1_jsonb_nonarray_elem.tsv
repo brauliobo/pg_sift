@@ -1,1 +1,1 @@
-agg_v6_f1_jsonb_nonarray_elem	src/col/v1_engine/v1_store_ops_jsonb.c:emit_heap_row src/col/v1_engine/v1_store_ops_jsonb.c:heap_array src/col/v1_engine/v1_store_ops_jsonb.c:setup_array src/col/v1_engine/v1_store_ops_jsonb.c:v1_unnest_run
+agg_v6_f1_jsonb_nonarray_elem	src/col/v1_engine/v1_store_ops_jsonb.c:emit_heap_row src/col/v1_engine/v1_store_ops_jsonb.c:v1_unnest_run src/col/v1_engine/v1_store_ops_unnest_emit.c:heap_array
