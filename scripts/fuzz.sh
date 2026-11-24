@@ -3,7 +3,7 @@
 #
 #   scripts/fuzz.sh [--scale N] [--seed N] [--budget SEC] [TARGET...]
 #
-# Targets (default: all): canary codec blob kernels analyze query sql colchunk bm25 shred colwide gquant (bm25-raw is opt-in). Standalone
+# Targets (default: all): canary codec blob kernels analyze query sql colchunk bm25 shred colwide gquant bench_on (bm25-raw is opt-in). Standalone
 # harnesses are built sanitized into $SIFT_TMP/fuzz; "query" also replays its
 # corpus through the server, "sql" fuzzes parse_query/tokenize in the server.
 # Server-side targets run against the scripts/pgtest.sh cluster, which should
@@ -33,7 +33,7 @@ while [[ ${1:-} == --* ]]; do
 	case $1 in --scale) SCALE=$2 ;; --seed) SEED=$2 ;; --budget) BUDGET=$2 ;; *) sed -n '2,16p' "$0"; exit 1 ;; esac
 	shift 2
 done
-TARGETS=("${@:-canary codec blob kernels analyze query sql colchunk bm25 shred colwide gquant}")
+TARGETS=("${@:-canary codec blob kernels analyze query sql colchunk bm25 shred colwide gquant bench_on}")
 (( BUDGET == 0 )) || SCALE=1
 
 q() { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
@@ -82,6 +82,9 @@ colwide() {
 gquant() {
 	build -C "$REPO/tools/gquant" SANITIZE=1 OUT="$OUT/gquant" "$OUT/gquant/test" && "$OUT/gquant/test" "${FZ_GQUANT_N:-$SCALE}"
 }
+
+# the header-only structures (core/u64set.h, table/f2/f2_lock_touched.c, table/v1/keyidx.h) against the scans they replace, under ASan and UBSan (test/bench_on)
+bench_on() { "$REPO/test/bench_on/run.sh"; }
 
 analyze() {
 	build -C "$REPO/tools/analyze" -B SANITIZE=1 harness && mv "$REPO/tools/analyze/harness" "$OUT/analyze-harness" &&
