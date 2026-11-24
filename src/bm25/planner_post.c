@@ -69,7 +69,7 @@ score_column(const ModifyTable *mt, int n)
 	foreach_node(TargetEntry, tle, mt->plan.lefttree->targetlist)
 		if (tle->resjunk && tle->resname != NULL && strcmp(tle->resname, name) == 0)
 			return tle;
-	elog(ERROR, "sift: the score %d of a RETURNING list is not in the plan of its statement", n);
+	SIFT_INVARIANT(false, "sift: the score %d of a RETURNING list is not in the plan of its statement", n);
 	return NULL;
 }
 

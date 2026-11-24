@@ -247,7 +247,8 @@ sift_key_equal(PG_FUNCTION_ARGS)
 	if (!OidIsValid(type))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.=== is the equality of a UNIQUE sift key, for INSERT ... ON CONFLICT: it is not a query operator")));
+				 errmsg("sift.=== is the equality of a UNIQUE sift key, for INSERT ... ON CONFLICT: it is not a query operator"),
+				 errhint("Compare the column with =, or use INSERT ... ON CONFLICT on the UNIQUE index.")));
 	tc = lookup_type_cache(type, TYPECACHE_EQ_OPR_FINFO);
 	if (!OidIsValid(tc->eq_opr))
 		ereport(ERROR,
