@@ -20,9 +20,15 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 # Portable baseline: SIMD kernels opt in per function with target attributes.
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
 # -MMD records header dependencies (a .d beside each object) so a header edit rebuilds its users.
+# SIFT_FAST_DEBUG=1 builds with -g1 (line tables, enough for backtraces) instead of -g: smaller objects, a faster link; the optimization is the same.
+# SIFT_CCACHE=auto (default): compile through ccache when it is installed; SIFT_CCACHE=0 runs the compiler itself. Behind ccache the checkout and the build directory are mapped
+# to fixed prefixes, so that the debug info and __FILE__ do not tell the checkouts apart.
 PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SIFT_INCDIRS)) $(SIFT_FMV_CPPFLAGS)
 # an implicit declaration is an error: gcc 13 only warns, and a function taken to return int cuts a pointer to 32 bits (an include dropped from a file whose code is built only with assertions did that)
-PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement -Werror=implicit-function-declaration -pthread $(SIFT_BASE_ISA)
+SIFT_CCACHE ?= auto
+SIFT_USE_CCACHE := $(and $(filter-out 0,$(SIFT_CCACHE)),$(shell command -v ccache 2>/dev/null))
+SIFT_PREFIX_MAP = $(if $(SIFT_USE_CCACHE),-ffile-prefix-map=$(abspath $(or $(srcdir),.))=. $(if $(SIFT_OUT),-ffile-prefix-map=$(SIFT_OUT)=build))
+PG_CFLAGS = -O2 $(if $(filter-out 0,$(SIFT_FAST_DEBUG)),-g1,-g) $(SIFT_PREFIX_MAP) -ffp-contract=off -MMD -Wno-declaration-after-statement -Werror=implicit-function-declaration -pthread $(SIFT_BASE_ISA)
 SHLIB_LINK += -pthread
 # PGXS inherits -flto=auto from some distributions' pg_config: a link step that starts one job per core.
 # Off by default; SIFT_LTO=1 enables it with at most 4 jobs. Switching it needs `make clean`.
@@ -854,6 +860,14 @@ pg-valgrind:
 	nice scripts/pg-assert.sh --valgrind $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
 else
 include $(PGXS)
+
+# SIFT_LLD=auto (default): link with ld.lld on Linux when the compiler can use it and SIFT_LTO is off; SIFT_LLD=0 keeps the system linker.
+SIFT_LLD ?= auto
+SIFT_USE_LLD := $(and $(filter Linux,$(shell uname -s)),$(filter-out 0,$(SIFT_LLD)),$(if $(SIFT_LTO),,x),$(shell command -v ld.lld 2>/dev/null),$(shell echo 'int main(void) { return 0; }' | $(CC) -fuse-ld=lld -x c - -o /dev/null 2>/dev/null && echo ok))
+SHLIB_LINK += $(if $(SIFT_USE_LLD),-fuse-ld=lld)
+ifneq ($(and $(SIFT_USE_CCACHE),$(if $(findstring ccache,$(CC)),,x)),)
+override CC := ccache $(CC)
+endif
 
 ifneq ($(SIFT_OUT),)
 $(OBJS): $(SIFT_OUT)/%.o: %.c
