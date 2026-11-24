@@ -1,0 +1,56 @@
+-- A generic aggregate whose arguments read a joined table (the value and its sort key) keeps the ids of both in the one table of joined values the aggregate holds, which has one type: string_agg(dm.g::text, ',' ORDER BY dm.g)
+-- gave every row of a group the value of one row (found as the rows of a scope index on a logical subscriber, whose scope read is declined, that sift.col_scope_verify reported as differing). A call whose joined arguments
+-- are of two types keeps PostgreSQL's plan; one type (the value is its own key), or a joined key of a value of the scan's own table, runs in the scan. Every answer is the normal plan's, on Format 1 and Format 2.0.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+CREATE SCHEMA fmt1;
+CREATE SCHEMA fmt2;
+CREATE FUNCTION make_tables(sch text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('search_path', sch, true);
+	CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
+	INSERT INTO ev SELECT i, i % 100, i % 7 FROM generate_series(1, 1400) i;
+	CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
+	CREATE TABLE dm (k int, g int, t text, PRIMARY KEY (k, g)) WITH (autovacuum_enabled = false);
+	INSERT INTO dm SELECT i, j, 'kind' || (i * 7 + j) % 31 FROM generate_series(0, 99) i, generate_series(0, i % 3) j;
+	CREATE INDEX dm_col ON dm USING sift_col (k, g, t);
+END $$;
+SET sift.test_create_format1 = on;
+SELECT make_tables('fmt1');
+SET sift.test_create_format1 = off;
+SELECT make_tables('fmt2');
+VACUUM (FREEZE, ANALYZE) fmt1.ev, fmt1.dm, fmt2.ev, fmt2.dm;
+\ir test/agg_helpers.sql
+CREATE TABLE shapes (n int, label text, sql text);
+INSERT INTO shapes VALUES
+ (1, 'value of another type than its key', $q$SELECT ev.v, string_agg(dm.g::text, ',' ORDER BY dm.g) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1$q$),
+ (2, 'array of a cast value', $q$SELECT ev.v, array_agg(dm.g::text ORDER BY dm.g DESC) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1$q$),
+ (3, 'text value, text key', $q$SELECT ev.v, string_agg(dm.t, ',' ORDER BY dm.t) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1$q$),
+ (4, 'integer value, integer key', $q$SELECT ev.v, array_agg(dm.g ORDER BY dm.g) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1$q$),
+ (5, 'value of the scan, joined key', $q$SELECT ev.v, string_agg(ev.id::text, ',' ORDER BY dm.g, ev.id) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1$q$);
+CREATE FUNCTION agg_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Pushed Aggregates:.*_agg\(' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION check_shapes(sch text) RETURNS TABLE (n int, label text, pushed bool, same bool) LANGUAGE plpgsql AS $$
+DECLARE s record;
+BEGIN
+	PERFORM set_config('search_path', sch || ', public', true);
+	FOR s IN SELECT * FROM public.shapes ORDER BY 1 LOOP
+		n := s.n; label := s.label; pushed := agg_pushed(s.sql); same := outcome(s.sql, false) = outcome(s.sql, true);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT * FROM check_shapes('fmt1');
+SELECT * FROM check_shapes('fmt2');
+DROP FUNCTION check_shapes(text), agg_pushed(text), make_tables(text), runs_in_scan(text), outcome(text, bool), pushed, runq;
+DROP TABLE shapes;
+DROP SCHEMA fmt1, fmt2 CASCADE;
+DROP EXTENSION pg_sift;

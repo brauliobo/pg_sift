@@ -71,6 +71,7 @@ TESTING_REGRESS += agg_group_spill_limits
 TESTING_REGRESS += agg_int_key_ids
 TESTING_REGRESS += agg_join_flip_probe_consolidated
 TESTING_REGRESS += agg_join_on_true
+TESTING_REGRESS += agg_joined_args_types
 TESTING_REGRESS += agg_jsonb_key_forms
 TESTING_REGRESS += agg_jsonb_key_read
 TESTING_REGRESS += agg_jsonb_not_exist
