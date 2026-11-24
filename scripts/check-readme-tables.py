@@ -3,7 +3,9 @@
 
     scripts/check-readme-tables.py             exit 1 when any table in README.md (outside code blocks) has more than MAX_COLS columns,
                                                a header word longer than MAX_WORD characters, a cell longer than MAX_CELL characters,
-                                               an empty cell, or when <!-- bench:v6-readme:begin --> disagrees with docs/results/v6-readme.tsv (if present)
+                                               an empty cell, when a table in a <details> expander has more than MAX_ROWS rows, when an expander lacks
+                                               its <summary> or the blank lines after </summary> and before </details> (without them GitHub shows the table as text),
+                                               or when <!-- bench:v6-readme:begin --> disagrees with docs/results/v6-readme.tsv (if present)
     scripts/check-readme-tables.py --selftest  proves each rule fails on a table that breaks it
 """
 import csv
@@ -13,6 +15,7 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAX_COLS = 5
+MAX_ROWS = 6
 MAX_WORD = 16
 MAX_CELL = 140
 
@@ -41,8 +44,25 @@ def visible_len(cell):
     return len(plain.strip())
 
 
-def problems(text):
+def expanders(text):
+    """the <details> expanders of the page, outside code blocks"""
+    return re.findall(r'<details.*?</details>', re.sub(r'^```.*?^```', '', text, flags=re.S | re.M), re.S)
+
+
+def expander_problems(text):
+    """a table in an expander is a mini-table (at most MAX_ROWS rows), and the blank lines that let GitHub render Markdown inside the HTML are there"""
     bad = []
+    for e in expanders(text):
+        summary = re.search(r'<summary>(.*?)</summary>', e, re.S)
+        title = re.sub(r'<[^>]+>', '', summary.group(1)).strip()[:40] if summary else e[:40]
+        if not summary or not e.endswith('\n\n</details>') or not e.split('</summary>', 1)[1].startswith('\n\n'):
+            bad.append('expander "%s" needs a <summary>, a blank line after </summary> and a blank line before </details>' % title)
+        bad += ['table of %d rows in expander "%s" (at most %d)' % (len(t) - 1, title, MAX_ROWS) for t in tables(e) if len(t) - 1 > MAX_ROWS]
+    return bad
+
+
+def problems(text):
+    bad = expander_problems(text)
     for t in tables(text):
         head = t[0]
         if len(head) > MAX_COLS:
@@ -111,8 +131,18 @@ def selftest():
     ok = '| System | Metric A | Metric B |\n|---|---:|---:|\n| pg_sift | 1.2 ms | 3.4 ms |\n'
     wide = '| c1 | c2 | c3 | c4 | c5 | c6 |\n|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 |\n'
     long_cell = '| System | Notes |\n|---|---|\n| pg_sift | ' + ('x' * (MAX_CELL + 5)) + ' |\n'
+    rows = lambda n: ok.split('\n')[0] + '\n|---|---:|---:|\n' + '| pg_sift | 1.2 ms | 3.4 ms |\n' * n
+    expander = lambda body, open_='': '<details%s>\n<summary><b>Title</b> <code>x</code></summary>\n\n%s\n</details>\n' % (open_, body)
     cases = (
         ('a table that fits', ok, ''),
+        ('a mini-table in an expander (6 rows)', expander(rows(MAX_ROWS)), ''),
+        ('a mini-table in an open expander', expander(rows(MAX_ROWS), ' open'), ''),
+        ('a table of more rows outside an expander', rows(MAX_ROWS + 1), ''),
+        ('a table of too many rows in an expander', expander(rows(MAX_ROWS + 1)), 'rows in expander'),
+        ('a wide table in an expander', expander(wide), 'columns'),
+        ('no blank line after </summary>', expander(rows(2)).replace('</summary>\n\n', '</summary>\n'), 'blank line'),
+        ('no blank line before </details>', expander(rows(2)).replace('\n\n</details>', '\n</details>'), 'blank line'),
+        ('an expander without a summary', '<details>\n\n' + rows(2) + '\n</details>\n', 'summary'),
         ('too many columns (>5)', wide, 'columns'),
         ('a long header word (>16)', ok.replace('Metric A', 'a' * (MAX_WORD + 1)), 'header word'),
         ('a header that wraps', ok.replace('Metric A', 'a' * 9 + '<br>' + 'b' * 9), ''),
@@ -124,7 +154,7 @@ def selftest():
         got = ' '.join(problems(text))
         if (words and words not in got) or (not words and got):
             sys.exit('selftest: %s: expected %r, got %r' % (what, words, got))
-    print('check-readme-tables: selftest passed (5-col cap, 140-char cell cap, 16-char header word, empty cell, code block skip)')
+    print('check-readme-tables: selftest passed (5-col cap, 6-row cap in expanders, expander blank lines, 140-char cell cap, 16-char header word, empty cell, code block skip)')
 
 
 if __name__ == '__main__':
