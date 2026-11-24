@@ -1,5 +1,10 @@
-# The number of sleeps of 0.5 s or more each shell test of test/t has today (scripts/check-tap-sleeps.sh): a window in which nothing may happen, a session held open, a clock the product
+# The number of sleeps of 0.5 s or more each shell or perl test of test/t has today (scripts/check-tap-sleeps.sh): a window in which nothing may happen, a session held open, a clock the product
 # waits on. FILE<TAB>COUNT. The number only goes down: a test that waits for a state uses wait_for (test/t/lib.bash).
+004_wal_consistency.pl	2
+017_tbl_autodefrag.pl	9
+018_tbl_async_promote.pl	3
+019_tbl_bulk_groups.pl	1
+019_tbl_defrag.pl	1
 col_cut_online_fallback.sh	3
 col_index_replica.sh	2
 col_online_cut.sh	5

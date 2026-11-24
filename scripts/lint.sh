@@ -84,6 +84,8 @@ CHECKS+=(
 	'budgets	scripts/check-budgets.sh --selftest && scripts/check-budgets.sh'
 	'cache-kinds	[ "$(grep -rn "sift_cache_register(" src --include=*.c | grep -vc "^src/core/cachebudget")" -le "$(sed -n "s/^#define SIFT_CACHE_MAX_KINDS[[:space:]]*//p" src/core/cachebudget.h)" ] || { echo "more sift_cache_register() sites than SIFT_CACHE_MAX_KINDS (core/cachebudget.h): raise it with the new cache"; exit 1; }'
 	'tap-timeouts	scripts/check-tap-timeouts.sh --selftest && scripts/check-tap-timeouts.sh'
+	'tap-sleeps	scripts/check-tap-sleeps.sh --selftest && scripts/check-tap-sleeps.sh'
+	'test-budget	scripts/check-test-budget.sh --selftest && scripts/check-test-budget.sh'
 	'port-isa-check	sh scripts/port-isa-check.sh --selftest'
 	'isa-scan	scripts/isa-scan.sh --selftest'
 	'no-ifunc	scripts/check-no-ifunc.sh --selftest'
