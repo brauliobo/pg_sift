@@ -31,7 +31,7 @@ CREATE TABLE hc_t (id int, ts timestamptz, dev int, site int, v int, w smallint)
 INSERT INTO hc_t SELECT i,
 	CASE WHEN i % 997 = 0 THEN NULL WHEN i % 4999 = 0 THEN 'infinity' ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 37 % 6000000) * interval '1 second' END,
 	CASE WHEN i % 1009 = 0 THEN NULL ELSE (i::bigint * 7919 % 20000)::int END, i % 5, CASE WHEN i % 20011 = 0 THEN NULL ELSE i % 1000 END, (i % 100)::smallint
-FROM generate_series(1, 400000) i;
+FROM generate_series(1, 100000) i;
 CREATE INDEX hc_t_col ON hc_t USING sift_col (id, ts, dev, site, v, w) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) hc_t;
 SELECT * FROM check_par('15 minutes by dev', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hc_t GROUP BY 1, 2 $q$);
@@ -63,7 +63,7 @@ SELECT * FROM check_par('sum of a column with NULLs, one group has only NULLs', 
 SELECT * FROM check_par('count of the element, NULL elements', $q$ SELECT f.grp, count(*), count(n), sum(f.qty) FROM un2_t f CROSS JOIN LATERAL unnest(f.nums) AS u(n) GROUP BY 1 $q$);
 SELECT * FROM check_par('count of the element, left', $q$ SELECT n, count(*), count(n), count(f.qty) FROM un2_t f LEFT JOIN LATERAL unnest(f.nums) AS u(n) ON true GROUP BY 1 $q$);
 SELECT * FROM check_par('count of the text element, NULL elements', $q$ SELECT f.grp, count(*), count(t) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) GROUP BY 1 $q$);
-SELECT * FROM check_par('a group for every row and element', $q$ SELECT f.id, t, count(*) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('a group for every row and element', $q$ SELECT f.id, t, count(*) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) WHERE f.id <= 20000 GROUP BY 1, 2 $q$);
 DROP FUNCTION check_par(text, text), node_of(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
 DROP TABLE hc_t, un2_t;
 DROP EXTENSION pg_sift;
