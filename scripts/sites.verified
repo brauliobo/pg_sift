@@ -82,6 +82,10 @@ src/core/handler.c	sift_func	guarded	SearchSysCacheList1 returns a list that may
 src/core/inspect.c	sift_require_owner	fixed	sift_rel_must_exist runs first in the same expression; the name is only for the error
 src/core/inspect.c	sift_require_select	guarded	pg_class_aclcheck raises 42P01 for a relation that is gone before the name is read; the name is only for the error
 src/core/ops.c	sift_check_maintain	guarded	heap is the heap of an index of the caller's statement, held open; the name is only for the error
+src/table/am.c	paths_row_changed	guarded	the OID is read from a row of sift.table_paths and SearchSysCacheExists1 has just found the relation; the statement that changes the row holds the lock of the table it declares paths for, and relation_open raises for a missing one, it never returns NULL
+src/table/f2/f2_options.c	auto_key_attr	guarded	the OID is rd_pkindex of the open table, tested with OidIsValid right above; index_open raises for a missing index, it never returns NULL
+src/table/f2/f2_options.c	sift_tbl_f2_apply_key_order	guarded	the OID is that of the open relation the function is applied to; get_attnum returns InvalidAttrNumber for a name the table lacks and the code right below raises for a == 0
+src/table/f2/f2_paths.c	sift_tbl_f2_declared_paths	guarded	reloid is the OID of sift.table_paths, found by name in the sift schema and tested with OidIsValid right above; table_open raises for a missing relation, it never returns NULL
 src/table/v1/keyorder.c	sift_tbl_key_order	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
 src/table/v1/keyorder.c	sift_tbl_key_order_check	guarded	get_attnum of an open relation: the function refuses an unknown column (InvalidAttrNumber) before reading the type; the type cache entry is of the type of a column of the open relation
 src/table/v1/options.c	config_get	guarded	cfgid as for config_open; the caller holds the relation of the option open and locked, and the configuration table dies with the extension (internal dependency)

@@ -151,6 +151,8 @@ typedef struct SiftColRemap
 	const int16 *phys;
 	const SiftCell *missing;
 	const int16 *num64_scale;
+	/* the part lacks leaves of the store that no row of it can give (the paths a table declared after the part was written): a part written from it names those leaves of its own as no column's (compact.c) */
+	bool		incomplete;
 } SiftColRemap;
 
 /* The same through a remap (NULL: the part has the columns of the spec); code_map is indexed by the current column */

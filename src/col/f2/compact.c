@@ -386,6 +386,9 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	dm = sift_dict_merge_plan(rel, src, ngens, spec, fold != NULL ? sift_compact_fold->folded_leaves(fold) : NULL, remap);
 	mspec = sift_dict_merge_spec(dm, spec);
 	for (int i = 0; i < ngens; i++)
+		if (remap[i] != NULL && remap[i]->incomplete)
+			mspec.col_ids = sift_f2_unnamed_path_ids(store);
+	for (int i = 0; i < ngens; i++)
 		total_rows += src[i]->hdr.nrows;
 	for (int i = 0; i < ngens; i++)
 		if (remap[i] == NULL && src[i]->hdr.nrows * 10 >= total_rows * 6)

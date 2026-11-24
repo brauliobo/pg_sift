@@ -7,9 +7,12 @@
 #include "access/heapam.h"
 #include "access/table.h"
 #include "catalog/pg_class.h"
+#include "commands/trigger.h"
 #include "fmgr.h"
+#include "storage/lmgr.h"
 #include "utils/acl.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
 #include "core/catname.h"
 #include "core/check.h"
@@ -44,6 +47,50 @@ sift_tbl_ops(Relation rel)
 	if (rel->rd_amcache != NULL)
 		return ((SiftTblRelHeader *) rel->rd_amcache)->ops;
 	return sift_tbl_ops_of_major(sift_meta_resolve_major(rel));
+}
+
+PG_FUNCTION_INFO_V1(sift_table_paths_trg);
+
+/* The table a row of sift.table_paths is about to change the declaration of: its format writes out what it holds under the old one, once for the statement's first row of it */
+static void
+paths_row_changed(HeapTuple row, TupleDesc desc)
+{
+	bool		isnull;
+	Oid			relid = DatumGetObjectId(heap_getattr(row, 1, desc, &isnull));
+	Relation	rel;
+
+	if (isnull || !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
+		return;
+	rel = relation_open(relid, AccessShareLock);
+	if (sift_tbl_is_table(rel) && sift_tbl_ops(rel)->paths_changed != NULL)
+	{
+		LockRelationOid(relid, AccessExclusiveLock);
+		sift_tbl_ops(rel)->paths_changed(rel);
+	}
+	relation_close(rel, NoLock);
+}
+
+/*
+ * BEFORE ROW on the rows of sift.table_paths, whichever statement changes them (sift.table_set_paths, a rename of a column, a restore, a repair by hand): a table of a format that lays its
+ * stored rows out by its declared paths finishes what it holds under the old declaration and replaces its store in every backend.
+ */
+Datum
+sift_table_paths_trg(PG_FUNCTION_ARGS)
+{
+	TriggerData *td = (TriggerData *) fcinfo->context;
+	TupleDesc	desc;
+
+	if (!CALLED_AS_TRIGGER(fcinfo) || !TRIGGER_FIRED_BEFORE(td->tg_event) || !TRIGGER_FIRED_FOR_ROW(td->tg_event))
+		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED), errmsg("sift.table_paths_trg is a BEFORE ROW trigger function"),
+						errhint("It is attached to sift.table_paths; it cannot be called from SQL.")));
+	desc = td->tg_relation->rd_att;
+	paths_row_changed(td->tg_trigtuple, desc);
+	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event))
+	{
+		paths_row_changed(td->tg_newtuple, desc);
+		return PointerGetDatum(td->tg_newtuple);
+	}
+	return PointerGetDatum(td->tg_trigtuple);
 }
 
 static const TableAmRoutine sift_tbl_methods;

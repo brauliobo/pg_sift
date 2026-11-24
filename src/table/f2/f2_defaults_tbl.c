@@ -143,6 +143,8 @@ sift_tbl_f2_build_col_remap(const SiftF2Store *store, Relation rel, const SiftPa
 		}
 	r = MemoryContextAlloc(cx, sizeof(SiftColRemap));
 	*r = (SiftColRemap) {.ncols = m->cur_ncols,.phys = m->phys_col,.missing = m->missing_cell,.num64_scale = num64};
+	for (int c = 0; c < store->ncols; c++)
+		r->incomplete = r->incomplete || (m->phys_col[c] < 0 && sift_f2_leaf_is_path(store, c));
 	return r;
 }
 
@@ -151,5 +153,5 @@ sift_tbl_f2_col_synth(const SiftF2Store *store, int leaf, SiftSynth *out)
 {
 	const SiftSchemaDefaults *d = sift_tbl_extra(store)->defaults;
 
-	sift_defaults_synth(d != NULL ? sift_defaults_find(d, store->leaf_attno[leaf]) : NULL, out);
+	sift_defaults_synth(d != NULL && !sift_f2_leaf_is_path(store, leaf) ? sift_defaults_find(d, store->leaf_attno[leaf]) : NULL, out);
 }

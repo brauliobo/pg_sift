@@ -102,6 +102,9 @@ typedef struct SiftF2Store
 	SiftF2StoreOpts opts;
 	struct SiftColSchema *schema;
 	struct SiftColShred *shred;
+	struct SiftColShredAdapter *paths;	/* a table: the shredder of the declared paths of its jsonb columns, whose leaves follow the leaf of their column; NULL: none declared */
+	int		   *path_first;		/* [natts + 1] the first leaf the shredder fills for attribute a, -1: none */
+	struct SiftColDef *path_def;	/* [ncols] the definition of a leaf of a declared path, zeroed for the others; NULL: none declared */
 	uint32		schema_hash;
 
 	int			ncols;
@@ -146,9 +149,24 @@ typedef struct SiftF2Store
 extern SiftF2Store *sift_f2_store_open(Relation rel);
 extern SiftF2Store *sift_f2_store_from_oid(Oid relid);
 
-/* The cells of a row and its key for either host (the one conversion of aminsert, multi_insert and a build) */
+/* Every backend drops the store of the relation when its transaction commits (the one that asks, at its next command): what a store is built from has changed in a catalog that no invalidation of PostgreSQL's covers */
+extern void sift_f2_store_invalidate(Relation rel);
+
+/* A leaf of a declared path of a jsonb column of a table, which a part written before the declaration does not have */
+extern bool sift_f2_leaf_is_path(const SiftF2Store *s, int leaf);
+
+/* The identities of the columns of a part written from parts that lack the leaves of the paths: its leaves of paths hold no value and are named by no attribute, so that the part reads as one without them until VACUUM FULL rewrites it */
+extern const SiftPartColIdentity *sift_f2_unnamed_path_ids(const SiftF2Store *s);
+
+/* The cells of a row and its key for either host (the one conversion of aminsert, multi_insert and a build); a table that has declared paths needs elem, the cells of the elements of its lists, made in row_cx */
 extern void sift_f2_store_pack_row(Relation rel, SiftF2Store *store, MemoryContext row_cx, const ItemPointerData *tid, const Datum *values, const bool *isnull,
 								   bool spill_wide_blobs, SiftCell *cells, SiftCell **elem, uint8 *key);
+
+/* The cells of the leaves of the declared paths of a table, and of the elements of its lists, from the values of the row's columns (elem: as for sift_f2_store_pack_row, zeroed) */
+extern void sift_f2_store_pack_paths(const SiftF2Store *store, MemoryContext row_cx, const Datum *values, const bool *isnull, SiftCell *cells, SiftCell **elem);
+
+/* The key of the row of a table: the cells of its columns only, not those of its paths */
+extern void sift_f2_store_pack_key(Relation rel, SiftF2Store *store, MemoryContext row_cx, const ItemPointerData *tid, const Datum *values, const bool *isnull, SiftCell *cells, uint8 *key);
 
 /* The kind of cell the leaf of a table attribute is: floats are SIFT_CELL_F8, other by-value types SIFT_CELL_INT, the rest a string image */
 extern SiftCellKind sift_f2_kind_of_attribute(Form_pg_attribute att);

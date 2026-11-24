@@ -470,7 +470,7 @@ add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *ver
 	uint8		key[SIFT_BOUND_BYTES];
 
 	sift_granule_tids(v, tids);
-	SIFT_INVARIANT(remap == NULL || (rb->parent == NULL && remap->ncols == rb->ncols), "a part is remapped only for a table, whose columns are all of the rows");
+	SIFT_INVARIANT(remap == NULL || remap->ncols == rb->ncols, "a part is remapped only for a table, whose columns are those of the rows");
 	for (int c = 0; c < rb->ncols; c++)
 	{
 		int			pc = remap != NULL ? remap->phys[c] : c;
@@ -552,7 +552,7 @@ add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *ver
 						e->f = fv[c] ? fv[c][at] : 0;
 					}
 					if (e->tag != 0)
-						e->xp = sift_granule_exc_payload(v, c, at, &e->xplen);
+						e->xp = sift_granule_exc_payload(v, remap != NULL ? remap->phys[c] : c, at, &e->xplen);
 				}
 				continue;
 			}

@@ -571,7 +571,8 @@ sift_stage_add(Relation rel, SiftTxnStage *st, const uint8 *key, uint64 tid, uin
 }
 
 void
-sift_stage_add_batch(Relation rel, SiftTxnStage *st, int n, const uint8 (*keys)[SIFT_BOUND_BYTES], const uint64 *tids, uint32 xmin, uint32 cmin, const SiftCell *cells)
+sift_stage_add_batch(Relation rel, SiftTxnStage *st, int n, const uint8 (*keys)[SIFT_BOUND_BYTES], const uint64 *tids, uint32 xmin, uint32 cmin, const SiftCell *cells,
+						const SiftCell *const *elem)
 {
 	SubTransactionId sub = GetCurrentSubTransactionId();
 
@@ -579,7 +580,8 @@ sift_stage_add_batch(Relation rel, SiftTxnStage *st, int n, const uint8 (*keys)[
 	{
 		SiftStagePart *p = sift_stage_part_get(st, &st->routing.entries[sift_stage_route(&st->routing, keys[i])]);
 
-		stage_row(rel, st, p, keys[i], tids[i], xmin, cmin, sub, cells + (size_t) i * st->spec.ncols, NULL);
+		stage_row(rel, st, p, keys[i], tids[i], xmin, cmin, sub, cells + (size_t) i * st->spec.ncols,
+			  elem != NULL ? elem + (size_t) i * st->spec.ncols : NULL);
 	}
 }
 

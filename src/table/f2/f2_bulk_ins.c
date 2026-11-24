@@ -23,6 +23,7 @@ typedef struct SiftTblBulkState
 	SiftCell   *cells;			/* SIFT_BULK_PACK_ROWS rows of the cells of a row, and their keys and addresses */
 	uint8	  (*keys)[SIFT_BOUND_BYTES];
 	uint64	   *tids;
+	SiftCell  **elem;			/* the elements of the lists of declared paths of each row of the batch (NULL: the table has none) */
 	MemoryContext batch_cx;
 	uint32		since_reset;
 	uint64		row_bytes;
@@ -50,6 +51,7 @@ bulk_state(SiftF2Store *store)
 	b->cells = MemoryContextAlloc(store->cx, sizeof(SiftCell) * Max(store->ncols, 1) * SIFT_BULK_PACK_ROWS);
 	b->keys = MemoryContextAlloc(store->cx, SIFT_BULK_PACK_ROWS * (Size) SIFT_BOUND_BYTES);
 	b->tids = MemoryContextAlloc(store->cx, SIFT_BULK_PACK_ROWS * sizeof(uint64));
+	b->elem = store->has_groups ? MemoryContextAlloc(store->cx, sizeof(SiftCell *) * Max(store->ncols, 1) * SIFT_BULK_PACK_ROWS) : NULL;
 	b->batch_cx = sift_mem_allocset_create(store->cx, "sift cache bulk insert batch");
 	b->row_bytes = row_bytes_of(store);
 	x->bulk = b;
@@ -85,12 +87,13 @@ sift_tbl_f2_bulk_insert(Relation rel, SiftF2Store *store, TupleTableSlot **slots
 
 			slot_getallattrs(slot);
 			sift_tbl_f2_tid_next(rel, store, &tid);
-			sift_f2_store_pack_row(rel, store, b->batch_cx, &tid, slot->tts_values, slot->tts_isnull, true, b->cells + (size_t) i * store->ncols, NULL, b->keys[i]);
+			sift_f2_store_pack_row(rel, store, b->batch_cx, &tid, slot->tts_values, slot->tts_isnull, true, b->cells + (size_t) i * store->ncols,
+								   b->elem != NULL ? b->elem + (size_t) i * store->ncols : NULL, b->keys[i]);
 			b->tids[i] = sift_tbl_tid_pack(&tid);
 			slot->tts_tid = tid;
 			slot->tts_tableOid = RelationGetRelid(rel);
 		}
-		sift_stage_add_batch(rel, st, n, b->keys, b->tids, xid, cid, b->cells);
+		sift_stage_add_batch(rel, st, n, b->keys, b->tids, xid, cid, b->cells, (const SiftCell *const *) b->elem);
 		if (sift_batch_reset_due(&b->since_reset, n))
 			MemoryContextReset(b->batch_cx);
 		CHECK_FOR_INTERRUPTS();

@@ -192,7 +192,7 @@ sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable)
 	ItemPointerData tid;
 	double		rows = 0;
 
-	sift_tbl_f2_adopt_layout(sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
+	sift_tbl_f2_adopt_layout(NewTable, sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
 	sift_tbl_f2_bulk_begin(&bulk, NewTable, GetCurrentCommandId(true), true);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{

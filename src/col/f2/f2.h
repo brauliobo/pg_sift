@@ -51,6 +51,14 @@ extern bool sift_f2s_pair_types(Oid member, Oid key);
 /* The leaf of the key of the jsonb attribute attno that jsonb_exists(document, key) is answered from (-1: none keeps it) */
 extern int	sift_f2_key_leaf(const SiftF2Rel *f, int attno, const char *key, int len);
 
+/* What a leaf definition makes of its cells: their kind and the hint of their chunk, and the key it is the leaf of at the top of its jsonb document (NULL path or not a top-level key: false) */
+extern SiftCellKind sift_f2_def_kind(const SiftColDef *d);
+extern uint8 sift_f2_def_hint(const SiftColDef *d);
+extern bool sift_f2_def_top_key(const SiftColDef *d, const char **key, int *len);
+
+/* The cell of a value the shredder made for a leaf of the kind */
+extern SiftCell sift_f2_value_cell(SiftCellKind kind, const SiftColValue *v);
+
 /* The cells of a row, the cells of the elements of its arrays (elem[c] for a leaf of elements, made in rowcxt) and its key (the 40 bytes of core/range.h that route it to its partition and order it) */
 extern void sift_f2_row(Relation index, SiftF2Rel *f, MemoryContext rowcxt, const ItemPointerData *tid, const Datum *values, const bool *isnull, SiftCell *cells, SiftCell **elem, uint8 *key);
 

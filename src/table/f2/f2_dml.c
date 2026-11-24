@@ -146,6 +146,7 @@ static uint64
 stage_row(Relation rel, SiftF2Store *store, TupleTableSlot *slot, CommandId cid, bool frozen)
 {
 	SiftCell   *cells = palloc(sizeof(SiftCell) * Max(store->ncols, 1));
+	SiftCell  **elem = store->has_groups ? palloc(sizeof(SiftCell *) * store->ncols) : NULL;
 	uint8		key[SIFT_BOUND_BYTES];
 	ItemPointerData tid;
 	uint64		packed;
@@ -153,10 +154,13 @@ stage_row(Relation rel, SiftF2Store *store, TupleTableSlot *slot, CommandId cid,
 	slot_getallattrs(slot);
 	sift_tbl_f2_tid_next(rel, store, &tid);
 	packed = sift_tbl_tid_pack(&tid);
-	sift_f2_store_pack_row(rel, store, store->row_cx, &tid, slot->tts_values, slot->tts_isnull, true, cells, NULL, key);
-	sift_stage_add(rel, sift_stage_get(rel, &store->spec), key, packed, frozen ? FrozenTransactionId : GetCurrentTransactionId(), frozen ? 0 : cid, cells, NULL);
+	sift_f2_store_pack_row(rel, store, store->row_cx, &tid, slot->tts_values, slot->tts_isnull, true, cells, elem, key);
+	sift_stage_add(rel, sift_stage_get(rel, &store->spec), key, packed, frozen ? FrozenTransactionId : GetCurrentTransactionId(), frozen ? 0 : cid, cells,
+				   (const SiftCell *const *) elem);
 	MemoryContextReset(store->row_cx);
 	pfree(cells);
+	if (elem != NULL)
+		pfree(elem);
 	slot->tts_tid = tid;
 	slot->tts_tableOid = RelationGetRelid(rel);
 	return packed;
@@ -170,7 +174,7 @@ key_of_slot(Relation rel, SiftF2Store *store, TupleTableSlot *slot, uint64 tid, 
 
 	slot_getallattrs(slot);
 	sift_tbl_tid_unpack(&ip, tid);
-	sift_f2_store_pack_row(rel, store, store->row_cx, &ip, slot->tts_values, slot->tts_isnull, false, cells, NULL, key);
+	sift_f2_store_pack_key(rel, store, store->row_cx, &ip, slot->tts_values, slot->tts_isnull, cells, key);
 	MemoryContextReset(store->row_cx);
 	pfree(cells);
 }

@@ -89,6 +89,7 @@ const SiftTableFormatOps sift_tbl_v2_ops = {
 	.ddl_before = sift_tbl_f2_ddl_before,
 	.ddl_after = sift_tbl_f2_ddl_after,
 	.ddl_rename_column = sift_tbl_f2_ddl_rename_column,
+	.paths_changed = sift_tbl_f2_paths_changed,
 	.filter_page = sift_tbl_f2_fetch_filter_page,
 	.fetch_order = sift_tbl_f2_fetch_order,
 	.nvblocks = sift_tbl_f2_nvblocks,
