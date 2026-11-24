@@ -640,10 +640,12 @@ scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSe
 	if (!force)
 		maint_keep_overlays(fam);
 	n = sift_merge_pick(index, &pol, fam, force, sel);
-	pfree(fam);
 	if (force)
-		return n > 1 && (maint_merge_settled(index, sel, n) || scope_apart(index, sel, n, s)) ? 0 : n;
-	return n > 1 && maint_merge_settled(index, sel, n) ? sift_merge_pick_dead(index, &pol, fam, sel) : n;
+		n = n > 1 && (maint_merge_settled(index, sel, n) || scope_apart(index, sel, n, s)) ? 0 : n;
+	else if (n > 1 && maint_merge_settled(index, sel, n))
+		n = sift_merge_pick_dead(index, &pol, fam, sel);
+	pfree(fam);
+	return n;
 }
 
 /*
