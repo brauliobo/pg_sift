@@ -1,0 +1,407 @@
+-- A scope whose member is a text, varchar or uuid column is summarized in format major 2 (sift.status: format_major = 2, scopes > 0): the cubes are cut by the scope key as for an integer member, and
+-- the member is named by its code in the scope key store of the member column of the pairs relation (col/f2/f2_scope_mem.c). Every answer of the node is compared with the heap
+-- (sift.enable_agg = off): counts and sums of a key, the keys of a group, an IN list, the newest rows, a key the pairs lack, the members that are empty, long, differ in case, in a trailing blank or in
+-- an accent, members no pair has, NULL members. The summary follows INSERT, UPDATE, DELETE, an aborted write, VACUUM, the maintenance step, REINDEX and CREATE INDEX CONCURRENTLY, and composes with UNIQUE and INCLUDE.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET TimeZone = 'UTC';
+-- the testing library builds new indexes in format major 1 unless told otherwise; the release library has no such setting
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+-- the members: ordinary, empty, long, long with one different last byte, differing in case, in a trailing blank or an accent, with a quote and a multibyte character; 41 to 44 are in no pair
+CREATE TABLE names (n int PRIMARY KEY, name text NOT NULL, u uuid NOT NULL);
+INSERT INTO names SELECT n, CASE n WHEN 1 THEN '' WHEN 2 THEN repeat('long-', 50) WHEN 3 THEN repeat('x', 200) || 'a' WHEN 4 THEN repeat('x', 200) || 'b' WHEN 5 THEN 'Tenant' WHEN 6 THEN 'tenant'
+	WHEN 7 THEN 'tenant ' WHEN 8 THEN 'ténant' WHEN 9 THEN 'it''s' WHEN 10 THEN '日本' ELSE 'member-' || n END, md5('m' || n)::uuid FROM generate_series(1, 44) n;
+CREATE TABLE ev_text (id int PRIMARY KEY, member text, created_at timestamptz NOT NULL, amount int NOT NULL, kind int NOT NULL) WITH (autovacuum_enabled = false);
+CREATE TABLE ev_varchar (id int PRIMARY KEY, member varchar(255), created_at timestamptz NOT NULL, amount int NOT NULL, kind int NOT NULL) WITH (autovacuum_enabled = false);
+CREATE TABLE ev_uuid (id int PRIMARY KEY, member uuid, created_at timestamptz NOT NULL, amount int NOT NULL, kind int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO ev_text SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE name END, timestamptz '2026-01-01' + i * interval '97 minutes', i % 101, i % 7 FROM generate_series(1, 2000) i JOIN names ON n = 1 + i % 44;
+INSERT INTO ev_varchar SELECT id, member, created_at, amount, kind FROM ev_text;
+INSERT INTO ev_uuid SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE u END, timestamptz '2026-01-01' + i * interval '97 minutes', i % 101, i % 7 FROM generate_series(1, 2000) i JOIN names ON n = 1 + i % 44;
+-- member n is in the key n % 10, and in the next one when n is a multiple of 3: keys 0 to 9, and 99 is absent
+CREATE TABLE pm_text (member text NOT NULL, key int NOT NULL);
+CREATE TABLE pm_varchar (member varchar(255) NOT NULL, key int NOT NULL);
+CREATE TABLE pm_uuid (member uuid NOT NULL, key int NOT NULL);
+CREATE UNIQUE INDEX pm_text_u ON pm_text (member, key);
+CREATE UNIQUE INDEX pm_varchar_u ON pm_varchar (member, key);
+CREATE UNIQUE INDEX pm_uuid_u ON pm_uuid (member, key);
+INSERT INTO pm_text SELECT name, (n + j) % 10 FROM names, generate_series(0, 1) j WHERE n <= 40 AND j <= (n % 3 = 0)::int;
+INSERT INTO pm_varchar SELECT name, (n + j) % 10 FROM names, generate_series(0, 1) j WHERE n <= 40 AND j <= (n % 3 = 0)::int;
+INSERT INTO pm_uuid SELECT u, (n + j) % 10 FROM names, generate_series(0, 1) j WHERE n <= 40 AND j <= (n % 3 = 0)::int;
+CREATE INDEX ev_text_i ON ev_text USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pm_text(member, key)', track_changes = 'ctid');
+CREATE INDEX ev_varchar_i ON ev_varchar USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pm_varchar(member, key)', track_changes = 'ctid');
+CREATE INDEX ev_uuid_i ON ev_uuid USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pm_uuid(member, key)', track_changes = 'ctid');
+VACUUM ANALYZE ev_text;
+VACUUM ANALYZE ev_varchar;
+VACUUM ANALYZE ev_uuid;
+VACUUM ANALYZE pm_text;
+VACUUM ANALYZE pm_varchar;
+VACUUM ANALYZE pm_uuid;
+-- 1. Format major 2 with a summary of the 10 keys each
+SELECT relation::text, format_major, scopes > 0 AS summarized FROM sift.status() WHERE relation::text LIKE 'ev\_%' ORDER BY 1;
+   relation   | format_major | summarized 
+--------------+--------------+------------
+ ev_text_i    |            2 | t
+ ev_uuid_i    |            2 | t
+ ev_varchar_i |            2 | t
+(3 rows)
+
+SELECT 'text' AS member_type, nkeys FROM sift.scope_stats('ev_text_i') UNION ALL SELECT 'varchar', nkeys FROM sift.scope_stats('ev_varchar_i') UNION ALL SELECT 'uuid', nkeys FROM sift.scope_stats('ev_uuid_i') ORDER BY 1;
+ member_type | nkeys 
+-------------+-------
+ text        |    10
+ uuid        |    10
+ varchar     |    10
+(3 rows)
+
+-- the answer of the node and of the heap for one statement: same or DIFFERENT, and whether the summary served it (join: the node ran the join, other: no node)
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a jsonb; b jsonb; plan text := ''; l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP plan := plan || l; END LOOP;
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text), ''[]'') FROM (%s) r', q) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(r) ORDER BY to_jsonb(r)::text), ''[]'') FROM (%s) r', q) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN plan ~ 'Scope Read: (summary|ring)' THEN 'summary' WHEN plan LIKE '%SiftAggV6Scope%' THEN 'join' ELSE 'other' END);
+END $$;
+-- every shape of statement over a member type: the keys 0 to 9 and 99 by value, the group by the key, an IN list, a key no pair has, the newest rows
+CREATE FUNCTION shapes(t text) RETURNS TABLE (what text, result text) LANGUAGE plpgsql AS $$
+DECLARE k int;
+BEGIN
+	FOR k IN SELECT unnest(ARRAY[0, 1, 3, 4, 5, 6, 7, 9, 99]) LOOP
+		what := 'key ' || k;
+		result := same(format('SELECT count(*), sum(e.amount), max(e.kind), avg(e.amount) FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key = %s', t, t, k));
+		RETURN NEXT;
+	END LOOP;
+	what := 'group by key';
+	result := same(format('SELECT p.key, count(*), sum(e.amount) FROM ev_%s e JOIN pm_%s p ON p.member = e.member GROUP BY p.key', t, t));
+	RETURN NEXT;
+	what := 'IN list';
+	result := same(format('SELECT count(*), sum(e.amount) FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key IN (0, 3, 6)', t, t));
+	RETURN NEXT;
+	what := 'IN list with an absent key';
+	result := same(format('SELECT p.key, count(*) FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key IN (4, 99) GROUP BY p.key', t, t));
+	RETURN NEXT;
+	what := 'newest rows';
+	result := same(format('SELECT e.created_at, e.amount, e.kind FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key = 7 ORDER BY e.created_at DESC LIMIT 5', t, t));
+	RETURN NEXT;
+END $$;
+CREATE FUNCTION all_shapes() RETURNS TABLE (member_type text, what text, result text) LANGUAGE sql AS $$
+	SELECT t, s.what, s.result FROM unnest(ARRAY['text', 'varchar', 'uuid']) t, LATERAL shapes(t) s WHERE s.result <> 'same summary'
+$$;
+-- 2. The answers of the three member types
+SELECT * FROM shapes('text');
+            what            |    result    
+----------------------------+--------------
+ key 0                      | same summary
+ key 1                      | same summary
+ key 3                      | same summary
+ key 4                      | same summary
+ key 5                      | same summary
+ key 6                      | same summary
+ key 7                      | same summary
+ key 9                      | same summary
+ key 99                     | same summary
+ group by key               | same summary
+ IN list                    | same summary
+ IN list with an absent key | same summary
+ newest rows                | same summary
+(13 rows)
+
+SELECT * FROM shapes('varchar');
+            what            |    result    
+----------------------------+--------------
+ key 0                      | same summary
+ key 1                      | same summary
+ key 3                      | same summary
+ key 4                      | same summary
+ key 5                      | same summary
+ key 6                      | same summary
+ key 7                      | same summary
+ key 9                      | same summary
+ key 99                     | same summary
+ group by key               | same summary
+ IN list                    | same summary
+ IN list with an absent key | same summary
+ newest rows                | same summary
+(13 rows)
+
+SELECT * FROM shapes('uuid');
+            what            |    result    
+----------------------------+--------------
+ key 0                      | same summary
+ key 1                      | same summary
+ key 3                      | same summary
+ key 4                      | same summary
+ key 5                      | same summary
+ key 6                      | same summary
+ key 7                      | same summary
+ key 9                      | same summary
+ key 99                     | same summary
+ group by key               | same summary
+ IN list                    | same summary
+ IN list with an absent key | same summary
+ newest rows                | same summary
+(13 rows)
+
+SELECT * FROM all_shapes();
+ member_type | what | result 
+-------------+------+--------
+(0 rows)
+
+-- the members the pairs and the facts changed: a member no summary has (45), a member of a key it was not in, members that leave a key or all their keys, rows deleted and updated, a write that aborts
+INSERT INTO names SELECT n, 'member-' || n, md5('m' || n)::uuid FROM generate_series(45, 46) n;
+DO $$ DECLARE t text; mc text;
+BEGIN
+	FOR t, mc IN SELECT * FROM (VALUES ('text', 'name'), ('varchar', 'name'), ('uuid', 'u')) v LOOP
+		EXECUTE format('INSERT INTO ev_%s SELECT 10000 + i, CASE WHEN i %% 53 = 0 THEN NULL ELSE %s END, timestamptz ''2026-08-01'' + i * interval ''13 minutes'', i %% 11, 3 FROM generate_series(1, 400) i JOIN names ON n = 1 + i %% 46', t, mc);
+	END LOOP;
+	DELETE FROM ev_text WHERE id % 29 = 0;
+	DELETE FROM ev_varchar WHERE id % 29 = 0;
+	DELETE FROM ev_uuid WHERE id % 29 = 0;
+	UPDATE ev_text SET amount = amount + 1000, kind = 5 WHERE id % 31 = 0;
+	UPDATE ev_varchar SET amount = amount + 1000, kind = 5 WHERE id % 31 = 0;
+	UPDATE ev_uuid SET amount = amount + 1000, kind = 5 WHERE id % 31 = 0;
+END $$;
+BEGIN;
+INSERT INTO ev_text VALUES (99999, 'member-1', now(), 777, 6);
+INSERT INTO ev_uuid VALUES (99999, md5('m1')::uuid, now(), 777, 6);
+ROLLBACK;
+CREATE FUNCTION after_dml() RETURNS TABLE (member_type text, what text, result text) LANGUAGE plpgsql AS $$
+DECLARE t text;
+BEGIN
+	FOR t IN SELECT unnest(ARRAY['text', 'varchar', 'uuid']) LOOP
+		member_type := t;
+		what := 'key 3';
+		result := same(format('SELECT count(*), sum(e.amount) FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key = 3', t, t));
+		RETURN NEXT;
+		what := 'key 5';
+		result := same(format('SELECT count(*), sum(e.amount), max(e.kind) FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key = 5', t, t));
+		RETURN NEXT;
+		what := 'group by key';
+		result := same(format('SELECT p.key, count(*), sum(e.amount) FROM ev_%s e JOIN pm_%s p ON p.member = e.member GROUP BY p.key', t, t));
+		RETURN NEXT;
+		what := 'IN list';
+		result := same(format('SELECT count(*), sum(e.amount) FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key IN (0, 5, 99)', t, t));
+		RETURN NEXT;
+		what := 'newest rows';
+		result := same(format('SELECT e.created_at, e.amount, e.kind FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key = 5 ORDER BY e.created_at DESC LIMIT 5', t, t));
+		RETURN NEXT;
+	END LOOP;
+END $$;
+-- 3. The facts changed: new members of the pairs are not new members of the summary, a row of a member no pair has, deleted and updated rows, an aborted insert
+SELECT * FROM after_dml() WHERE result <> 'same summary';
+ member_type | what | result 
+-------------+------+--------
+(0 rows)
+
+SELECT count(*) AS statements FROM after_dml();
+ statements 
+------------
+         15
+(1 row)
+
+SELECT count(*) AS differ FROM all_shapes();
+ differ 
+--------
+      0
+(1 row)
+
+-- the journal names a member by a 64-bit word of its bytes: the testing library keeps 3 bits of it, so that the members share their words and the read patches the members that share one with a changed member
+DO $$ BEGIN IF current_setting('sift.test_member_hash_bits', true) IS NOT NULL THEN PERFORM set_config('sift.test_member_hash_bits', '3', false); END IF; END $$;
+-- 4. The pairs changed: a member that joins a key (a row the summary lacks for the key), leaves it, a new member that is in the facts, a key that is new
+INSERT INTO pm_text SELECT name, 5 FROM names WHERE n IN (1, 2, 41, 45);
+INSERT INTO pm_varchar SELECT name, 5 FROM names WHERE n IN (1, 2, 41, 45);
+INSERT INTO pm_uuid SELECT u, 5 FROM names WHERE n IN (1, 2, 41, 45);
+DELETE FROM pm_text WHERE key = 4;
+DELETE FROM pm_varchar WHERE key = 4;
+DELETE FROM pm_uuid WHERE key = 4;
+UPDATE pm_text SET key = 12 WHERE key = 7;
+UPDATE pm_varchar SET key = 12 WHERE key = 7;
+UPDATE pm_uuid SET key = 12 WHERE key = 7;
+-- a read of every key answers from the pairs as the summary was built: the join answers it while they have moved, whatever the member type
+SELECT * FROM after_dml() WHERE result <> 'same summary';
+ member_type |     what     |  result   
+-------------+--------------+-----------
+ text        | group by key | same join
+ varchar     | group by key | same join
+ uuid        | group by key | same join
+(3 rows)
+
+SELECT * FROM all_shapes();
+ member_type |     what     |  result   
+-------------+--------------+-----------
+ text        | group by key | same join
+ text        | newest rows  | same join
+ varchar     | group by key | same join
+ varchar     | newest rows  | same join
+ uuid        | group by key | same join
+ uuid        | newest rows  | same join
+(6 rows)
+
+SELECT same(format('SELECT count(*), sum(e.amount) FROM ev_%s e JOIN pm_%s p ON p.member = e.member WHERE p.key = 12', t, t)) AS new_key FROM unnest(ARRAY['text', 'varchar', 'uuid']) t;
+   new_key    
+--------------
+ same summary
+ same summary
+ same summary
+(3 rows)
+
+-- 5. VACUUM, the maintenance step, REINDEX and CREATE INDEX CONCURRENTLY build the summary again over the same members
+VACUUM ev_text;
+VACUUM ev_varchar;
+VACUUM ev_uuid;
+SELECT count(*) AS differ FROM after_dml() WHERE result <> 'same summary';
+ differ 
+--------
+      0
+(1 row)
+
+SELECT count(*) AS busy FROM sift.maintain('ev_text_i') WHERE busy;
+ busy 
+------
+    0
+(1 row)
+
+SELECT count(*) AS differ FROM after_dml() WHERE result <> 'same summary';
+ differ 
+--------
+      0
+(1 row)
+
+REINDEX INDEX ev_text_i;
+REINDEX INDEX ev_varchar_i;
+REINDEX INDEX ev_uuid_i;
+SELECT relation::text, format_major, scopes > 0 AS summarized FROM sift.status() WHERE relation::text LIKE 'ev\_%' ORDER BY 1;
+   relation   | format_major | summarized 
+--------------+--------------+------------
+ ev_text_i    |            2 | t
+ ev_uuid_i    |            2 | t
+ ev_varchar_i |            2 | t
+(3 rows)
+
+SELECT count(*) AS differ FROM after_dml() WHERE result <> 'same summary';
+ differ 
+--------
+      0
+(1 row)
+
+SELECT count(*) AS differ FROM all_shapes();
+ differ 
+--------
+      0
+(1 row)
+
+CREATE INDEX CONCURRENTLY ev_text_c ON ev_text USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pm_text(member, key)', track_changes = 'ctid');
+SELECT relation::text, format_major, scopes > 0 AS summarized FROM sift.status('ev_text_c');
+ relation  | format_major | summarized 
+-----------+--------------+------------
+ ev_text_c |            2 | t
+(1 row)
+
+DROP INDEX ev_text_i;
+SELECT count(*) AS differ FROM after_dml() WHERE member_type = 'text' AND result <> 'same summary';
+ differ 
+--------
+      0
+(1 row)
+
+REINDEX INDEX CONCURRENTLY ev_varchar_i;
+SELECT relation::text, format_major, scopes > 0 AS summarized FROM sift.status('ev_varchar_i');
+   relation   | format_major | summarized 
+--------------+--------------+------------
+ ev_varchar_i |            2 | t
+(1 row)
+
+SELECT count(*) AS differ FROM after_dml() WHERE member_type = 'varchar' AND result <> 'same summary';
+ differ 
+--------
+      0
+(1 row)
+
+-- 6. UNIQUE and INCLUDE compose with a text or uuid member in format major 2
+CREATE TABLE accounts (id int NOT NULL, email text NOT NULL, plan int NOT NULL, spent int NOT NULL, tag uuid NOT NULL);
+INSERT INTO accounts SELECT i, name, i % 5, i % 90, u FROM generate_series(1, 500) i JOIN names ON n = 1 + i % 44;
+CREATE UNIQUE INDEX accounts_u ON accounts USING sift_col (email, id) INCLUDE (plan, spent) WITH (scope = 'k: email -> pm_text(member, key)', track_changes = 'ctid');
+CREATE UNIQUE INDEX accounts_uu ON accounts USING sift_col (tag, id) INCLUDE (plan, spent) WITH (scope = 'k: tag -> pm_uuid(member, key)', track_changes = 'ctid');
+SELECT relation::text, format_major, scopes > 0 AS summarized FROM sift.status() WHERE relation::text LIKE 'accounts\_%' ORDER BY 1;
+  relation   | format_major | summarized 
+-------------+--------------+------------
+ accounts_u  |            2 | t
+ accounts_uu |            2 | t
+(2 rows)
+
+SELECT same('SELECT count(*), sum(a.spent) FROM accounts a JOIN pm_text p ON p.member = a.email WHERE p.key = 3') AS unique_include_text;
+ unique_include_text 
+---------------------
+ same summary
+(1 row)
+
+SELECT same('SELECT count(*), sum(a.spent) FROM accounts a JOIN pm_uuid p ON p.member = a.tag WHERE p.key = 3') AS unique_include_uuid;
+ unique_include_uuid 
+---------------------
+ same summary
+(1 row)
+
+SELECT same('SELECT p.key, count(*), sum(a.spent) FROM accounts a JOIN pm_text p ON p.member = a.email GROUP BY p.key') AS unique_include_group;
+ unique_include_group 
+----------------------
+ same summary
+(1 row)
+
+INSERT INTO accounts SELECT 5000 + i, name, i % 5, i % 90, u FROM generate_series(1, 200) i JOIN names ON n = 1 + i % 44;
+UPDATE accounts SET spent = spent + 1 WHERE id % 7 = 0;
+DELETE FROM accounts WHERE id % 11 = 0;
+VACUUM accounts;
+SELECT same('SELECT count(*), sum(a.spent) FROM accounts a JOIN pm_text p ON p.member = a.email WHERE p.key = 3') AS after_dml_text;
+ after_dml_text 
+----------------
+ same summary
+(1 row)
+
+SELECT same('SELECT count(*), sum(a.spent) FROM accounts a JOIN pm_uuid p ON p.member = a.tag WHERE p.key = 3') AS after_dml_uuid;
+ after_dml_uuid 
+----------------
+ same summary
+(1 row)
+
+-- 7. sift.check finds nothing wrong
+SELECT count(*) AS problems FROM sift.check('ev_text_c');
+ problems 
+----------
+        0
+(1 row)
+
+SELECT count(*) AS problems FROM sift.check('ev_varchar_i');
+ problems 
+----------
+        0
+(1 row)
+
+SELECT count(*) AS problems FROM sift.check('ev_uuid_i');
+ problems 
+----------
+        0
+(1 row)
+
+SELECT count(*) AS problems FROM sift.check('accounts_u');
+ problems 
+----------
+        0
+(1 row)
+
+-- 8. A member of the pairs longer than a scope key store holds is refused with its size
+CREATE TABLE pm_big (member text NOT NULL, key int NOT NULL);
+CREATE UNIQUE INDEX pm_big_u ON pm_big (member, key);
+INSERT INTO pm_big VALUES (repeat('b', 300), 1);
+DO $$ BEGIN
+	CREATE INDEX ev_big ON ev_text USING sift_col (member, created_at, amount, kind) WITH (scope = 'k: member -> pm_big(member, key)', track_changes = 'ctid');
+EXCEPTION WHEN program_limit_exceeded THEN RAISE WARNING 'refused: %', SQLERRM;
+END $$;
+WARNING:  refused: a scope key of 300 bytes is longer than the 255 bytes a scope key store holds
+DROP TABLE ev_text, ev_varchar, ev_uuid, pm_text, pm_varchar, pm_uuid, pm_big, accounts, names;
+DROP FUNCTION same(text), shapes(text), all_shapes(), after_dml();
+DROP EXTENSION pg_sift;

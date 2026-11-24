@@ -212,7 +212,7 @@ SELECT count(*) AS problems FROM sift.check('events_date');
 SELECT count(*) AS problems FROM sift.check('events_timestamptz');
 SELECT count(*) AS problems FROM sift.check('accounts_u');
 
--- 7. A text member is kept in format major 2 as well: the scope has no summary (a member is an integer there) and its statements are answered by the join
+-- 7. A text member is kept in format major 2 as well, with a summary of its own (format2_scope_member_anykey)
 CREATE TABLE tm_events (id int PRIMARY KEY, member text NOT NULL, amount int NOT NULL);
 INSERT INTO tm_events SELECT i, 'm' || (1 + i % 60), i % 101 FROM generate_series(1, 1000) i;
 CREATE TABLE tm_pairs (member text NOT NULL, key text NOT NULL);
