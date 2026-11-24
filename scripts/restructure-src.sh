@@ -24,8 +24,8 @@ check_layout() {
 	local f dir area name rc=0
 	while read -r f; do
 		dir=${f#src/}; area=${dir%%/*}; name=${dir#*/}
-		if [[ $dir != */* || ( $name == */*/* && $dir != col/v1/*/* && $dir != table/v1/*/* && $dir != col/f2/*/* && $dir != core/f2/*/* && $dir != agg/vk/shaders/* && $dir != col/scope_v6/test/* ) || $dir == col/v1/*/*/* || $dir == table/v1/*/*/* || $dir == col/f2/*/*/* || $dir == core/f2/*/*/* ]] || ! grep -qw -- "$area" <<<"$AREAS"; then echo "$f: not in a folder of src/ ($AREAS), or deeper than area/context/ (col/v1/context/, table/v1/context/, col/f2/context/, core/f2/context/)"; rc=1; continue; fi
-		if grep -qw -- "$area" <<<"$RENAMED" && [[ ${name##*/} == sift_* ]]; then echo "$f: a file of $area/ still has the sift_ prefix"; rc=1; fi
+		if [[ $dir != */* || ( $name == */*/* && $dir != col/v1/*/* && $dir != table/v1/*/* && $dir != col/f2/*/* && $dir != core/f2/*/* && $dir != agg/vk/shaders/* && $dir != col/scope_v6/test/* ) || $dir == col/v1/*/*/* || $dir == table/v1/*/*/* || $dir == col/f2/*/*/* || $dir == core/f2/*/*/* ]] || [[ " $AREAS " != *" $area "* ]]; then echo "$f: not in a folder of src/ ($AREAS), or deeper than area/context/ (col/v1/context/, table/v1/context/, col/f2/context/, core/f2/context/)"; rc=1; continue; fi
+		if [[ " $RENAMED " == *" $area "* && ${name##*/} == sift_* ]]; then echo "$f: a file of $area/ still has the sift_ prefix"; rc=1; fi
 	done < <(src_files)
 	return $rc
 }
