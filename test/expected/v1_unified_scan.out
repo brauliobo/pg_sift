@@ -93,6 +93,12 @@ SELECT * FROM check_q($$SELECT grp, count(*) FROM u WHERE body @@> 'cable' AND p
  SiftAggV6 | t          | t
 (1 row)
 
+SELECT * FROM check_q($$SELECT a.grp, count(*) FROM u a JOIN u b ON b.id = a.price + 1 WHERE a.body @@> 'cable' GROUP BY 1$$);
+ node | text_index | same 
+------+------------+------
+ none | f          | t
+(1 row)
+
 CREATE TABLE up (id int, k int, v int);
 INSERT INTO up SELECT i, (i * 7919) % 9000, i % 100 FROM generate_series(1, 30000) i;
 CREATE INDEX up_col ON up USING sift_col (id, k, v) WITH (point_tid_columns = 'k');
