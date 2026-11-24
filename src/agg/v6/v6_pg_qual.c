@@ -36,7 +36,7 @@ add_json_column(SiftV6Input *in, const Var *v)
 	for (int k = 0; k < in->ncols; k++)
 		if (in->col[k].attno == v->varattno)
 			return k;
-	if (in->ncols == SIFT_V6_MAX_COLS || in->is_table)
+	if (in->ncols == SIFT_V6_MAX_COLS)
 		return -1;
 	in->col[in->ncols] = (SiftV6InCol) {.attno = v->varattno,.typid = v->vartype,.type = sift_v6_result_vec_type(v->vartype)};
 	return in->ncols++;

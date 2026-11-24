@@ -382,8 +382,10 @@ sift_v6_spec_reads_score(const SiftV6Spec *s)
 typedef struct SiftV6Rel
 {
 	Index		relid;
-	const IndexOptInfo *index;
-	const SiftColRel *colrel;
+	Oid			reloid;			/* the index, or the table */
+	const IndexOptInfo *index;	/* NULL for a sift_table */
+	const SiftColRel *colrel;	/* NULL for a sift_table */
+	const SiftStoreSchema *table;	/* a sift_table: the schema of its store, whose attributes are those of the table */
 	const SiftStoreOps *ops;	/* the format of the index, NULL when it holds nothing of it (a stale index) */
 } SiftV6Rel;
 

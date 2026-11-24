@@ -52,7 +52,14 @@ text_const(const Expr *e)
 	return c != NULL && IsA(c, Const) && !c->constisnull && c->consttype == TEXTOID ? TextDatumGetCString(c->constvalue) : NULL;
 }
 
-/* The column of the index (1-based) that holds the jsonb attribute e is, and is shredded */
+/* The leaves of the relation: those of its index, or of the store of its table */
+static const SiftColSchema *
+leaves_of(const SiftV6Rel *rel)
+{
+	return rel->table != NULL ? rel->table->leaves : rel->colrel != NULL ? rel->colrel->schema : NULL;
+}
+
+/* The column of the index (1-based) that holds the jsonb attribute e is, and is shredded; of a table, the attribute that has the leaves of declared paths */
 static bool
 doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 {
@@ -60,6 +67,11 @@ doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 
 	if (v == NULL || !IsA(v, Var) || v->varno != rel->relid || v->varlevelsup != 0 || v->vartype != JSONBOID)
 		return false;
+	if (rel->table != NULL)
+	{
+		*att = v->varattno;
+		return v->varattno > 0 && v->varattno <= rel->table->natts && rel->table->att_nleaves[v->varattno] > 1;
+	}
 	for (int i = 0; i < rel->index->ncolumns; i++)
 		if (rel->index->indexkeys[i] == v->varattno)
 		{
@@ -73,7 +85,13 @@ doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 static int
 key_leaf(const SiftV6Rel *rel, int att, const char *key)
 {
-	return rel->ops != NULL && rel->ops->jsonb != NULL ? rel->ops->jsonb->key_leaf(rel->index->indexoid, att, key, strlen(key)) : -1;
+	const SiftJsonbOps *jsonb = rel->ops != NULL ? rel->ops->jsonb : NULL;
+
+	if (jsonb == NULL)
+		return -1;
+	if (rel->table != NULL)
+		return jsonb->table_key_leaf != NULL ? jsonb->table_key_leaf(rel->reloid, att, key, strlen(key)) : -1;
+	return jsonb->key_leaf(rel->index->indexoid, att, key, strlen(key));
 }
 
 /* the empty path '{}' of a #>> */
@@ -161,7 +179,7 @@ field_leaf(const SiftV6Rel *rel, const Expr *e, bool as_text, int *att, const ch
 static bool
 scalar_leaf(const SiftV6Rel *rel, int leaf)
 {
-	return leaf >= 0 && rel->colrel->schema->cols[leaf].kind == SIFT_COLK_SCALAR;
+	return leaf >= 0 && leaves_of(rel)->cols[leaf].kind == SIFT_COLK_SCALAR;
 }
 
 static uint32
@@ -263,7 +281,7 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 		store = SIFT_COLS_F8;
 	}
 	leaf = field_leaf(rel, text, true, &att, &key);
-	if (!scalar_leaf(rel, leaf) || rel->colrel->schema->cols[leaf].store != store)
+	if (!scalar_leaf(rel, leaf) || leaves_of(rel)->cols[leaf].store != store)
 		return false;
 	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1};
 	return true;
@@ -333,10 +351,11 @@ bool
 sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out)
 {
 	const int	leaf = sift_v6_vatt_leaf(v->varattno);
-	const bool	held = rel->colrel != NULL && leaf < rel->colrel->schema->ncols;
+	const SiftColSchema *leaves = leaves_of(rel);
+	const bool	held = leaves != NULL && leaf < leaves->ncols;
 
 	if (held)
-		*out = sift_v6_vatt_col(v->varattno, rel->colrel->schema->cols[leaf].attno, v->vartype, 0);
+		*out = sift_v6_vatt_col(v->varattno, leaves->cols[leaf].attno, v->vartype, 0);
 	return held;
 }
 
