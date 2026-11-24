@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
 DO $$ BEGIN
 	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
 		PERFORM set_config('sift.test_create_format1', 'off', false);
