@@ -52,9 +52,6 @@ sift_str_type(Oid t)
 	return t == TEXTOID || t == VARCHAROID;
 }
 
-/* The integer a numeric(p, s) with p at most 18 holds as scaled by 10^scale; an error for NaN and the infinities */
-extern int64 sift_numeric_scaled(Datum d, int scale);
-
 /* the types of a join key that the lookup compares by its bytes: a string, a uuid (16 bytes) */
 static inline bool
 sift_bytes_key_type(Oid t)

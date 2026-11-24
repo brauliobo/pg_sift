@@ -157,6 +157,7 @@ typedef struct PointCol
 	const char **s;
 	uint32	   *slen;
 	bool	   *isnull;
+	uint8	   *tag;				/* SIFT_COLTAG_UNSURE on the NULL of a numeric NaN, as the store keeps it */
 } PointCol;
 
 bool
@@ -178,31 +179,27 @@ point_cols(HybridAggState *st, const SiftV6FoldCol *cols, int n)
 		pc[c].typid = TupleDescAttr(h->heapslot->tts_tupleDescriptor, pc[c].attno - 1)->atttypid;
 		pc[c].cls = cols[c].cls;
 		pc[c].scale = cols[c].scale;
-		if (!sift_hybrid_point_type(pc[c].typid))
+		if (!sift_hybrid_point_type(pc[c].typid) || pc[c].cls == SV6C_DATUM)
 			return NULL;
 		pc[c].i = palloc(POINT_BATCH * sizeof(int64));
 		pc[c].f = palloc(POINT_BATCH * sizeof(double));
 		pc[c].s = palloc(POINT_BATCH * sizeof(char *));
 		pc[c].slen = palloc(POINT_BATCH * sizeof(uint32));
 		pc[c].isnull = palloc(POINT_BATCH * sizeof(bool));
+		pc[c].tag = palloc(POINT_BATCH * sizeof(uint8));
 	}
 	return pc;
 }
 
-/* The scaled integer the store holds of a numeric (the column's type is numeric(p, s) with p at most 18, so the value fits and has no digit past the scale) */
-int64
-sift_numeric_scaled(Datum d, int scale)
+/* The scaled integer the store holds of a numeric(p, s) with p at most 18 (a typmod keeps the infinities out of the column: its NaN is a NULL the store tags) */
+static int64
+numeric_scaled(Datum d, int scale)
 {
 	int64		pow10 = 1;
-	Datum		unit;
 
 	for (int i = 0; i < scale; i++)
 		pow10 *= 10;
-	unit = DirectFunctionCall1(int8_numeric, Int64GetDatum(pow10));
-	if (numeric_is_nan(DatumGetNumeric(d)) || numeric_is_inf(DatumGetNumeric(d)))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a numeric value that is not a number cannot be folded from the store"),
-						errhint("Run the statement with sift.enable_agg = off.")));
-	return DatumGetInt64(DirectFunctionCall1(numeric_int8, DirectFunctionCall2(numeric_mul, d, unit)));
+	return DatumGetInt64(DirectFunctionCall1(numeric_int8, DirectFunctionCall2(numeric_mul, d, DirectFunctionCall1(int8_numeric, Int64GetDatum(pow10)))));
 }
 
 static void
@@ -210,8 +207,15 @@ point_put(HybridState *h, PointCol *c, int r)
 {
 	Datum		d = slot_getattr(h->heapslot, c->attno, &c->isnull[r]);
 
+	c->tag[r] = 0;
 	if (c->isnull[r])
 		return;
+	if (c->typid == NUMERICOID && numeric_is_nan(DatumGetNumeric(d)))
+	{
+		c->isnull[r] = true;
+		c->tag[r] = SIFT_COLTAG_UNSURE;
+		return;
+	}
 	switch (c->typid)
 	{
 		case INT2OID:
@@ -227,7 +231,7 @@ point_put(HybridState *h, PointCol *c, int r)
 			c->i[r] = DatumGetInt64(d);
 			break;
 		case NUMERICOID:
-			c->i[r] = sift_numeric_scaled(d, c->scale);
+			c->i[r] = numeric_scaled(d, c->scale);
 			break;
 		case BOOLOID:
 			c->i[r] = DatumGetBool(d);
@@ -259,7 +263,7 @@ point_flush(HybridAggState *st, PointCol *pc, int ncols, const uint64 *keys, con
 		nviews = Max(nviews, st->point_leaf[c] + 1);
 	views = palloc0(nviews * sizeof(ColView));
 	for (int c = 0; c < ncols; c++)
-		views[st->point_leaf[c]] = (ColView) {.i = pc[c].i,.f = pc[c].f,.s = pc[c].s,.slen = pc[c].slen,.isnull = pc[c].isnull};
+		views[st->point_leaf[c]] = (ColView) {.i = pc[c].i,.f = pc[c].f,.s = pc[c].s,.slen = pc[c].slen,.isnull = pc[c].isnull,.tag = pc[c].tag};
 	memset(live, 0, sizeof(live));
 	for (int r = 0; r < n; r++)
 		live[r / 64] |= UINT64CONST(1) << (r % 64);
