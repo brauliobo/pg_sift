@@ -152,6 +152,24 @@ level_of(SiftV6Pipe *p, int l)
 	return b;
 }
 
+SiftV6Pipe *
+sift_v6_pipe_clone(MemoryContext cx, const SiftV6Pipe *p, SiftV6BatchFn sink, void *sink_arg)
+{
+	SiftV6Pipe *c = sift_v6_pipe_new(cx, p->spec, NULL, NULL, p->nfact, p->type);
+
+	c->sink = sink;
+	c->sink_arg = sink_arg;
+	memcpy(c->dim, p->dim, sizeof(c->dim));
+	memcpy(c->nparts, p->nparts, sizeof(c->nparts));
+	memcpy(c->part, p->part, sizeof(c->part));
+	memcpy(c->fslot, p->fslot, sizeof(c->fslot));
+	memcpy(c->key_slot, p->key_slot, Max(p->spec->nkeys, 1) * sizeof(int));
+	memcpy(c->arg_slot, p->arg_slot, Max(sift_v6_spec_nvec(p->spec), 1) * sizeof(int));
+	for (int l = 0; l <= c->ndims; l++)
+		level_of(c, l);
+	return c;
+}
+
 static void
 count_active(SiftBatchSel *bs)
 {
@@ -173,7 +191,9 @@ update_groups(SiftV6Pipe *p, SiftV6PipeBatch *b)
 		p->keyvec[i] = &b->vec[p->key_slot[i]];
 	for (int j = 0; j < sift_v6_spec_nvec(spec); j++)
 		p->argvec[j] = p->arg_slot[j] < 0 ? NULL : &b->vec[p->arg_slot[j]];
-	if (p->rows != NULL)
+	if (p->sink != NULL)
+		p->sink(p->sink_arg, b->bs, p->keyvec, p->argvec);
+	else if (p->rows != NULL)
 		sift_v6_rows_update(p->rows, b->bs, p->keyvec, (const uint64 *) b->vec[p->nfact - 1].data);
 	else
 		sift_v6_group_update(p->group, b->bs, p->keyvec, p->argvec);
@@ -292,7 +312,7 @@ static void
 expand(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const SiftStarProbe *pr)
 {
 	SiftStarCursor cur = {0};
-	uint32	   *idx = palloc(SIFT_VEC_LEN * sizeof(uint32));
+	uint32		idx[SIFT_VEC_LEN];
 
 	while (!sift_star_cursor_done(&cur, pr->n))
 	{
@@ -306,7 +326,6 @@ expand(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const SiftStarProbe *pr)
 			idx[i] = p->fact_idx[i];
 		stage(p, d + 1, pairs_batch(p, d, b, idx, p->dim_row, m));
 	}
-	pfree(idx);
 }
 
 /* the dimension rows of the pairs a condition kept, which a RIGHT or FULL join counts as matched; the others are not */

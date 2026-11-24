@@ -22,7 +22,7 @@ serial(SiftErr *err, const char *why)
 
 /* The bin of each active row of column c, by the kernel of the scan over slices of SIFT_VEC_LEN rows: out[r] for the rows whose source is not NULL */
 static bool
-bin_column(const SiftTsKey *k, const SiftTsCol *c, const uint64 *active, int n, SiftArena *a, SiftErr *err, int64 **out)
+bin_column(const SiftTsKey *k, const SiftParCol *c, const uint64 *active, int n, SiftArena *a, SiftErr *err, int64 **out)
 {
 	SiftBatchSel *bs = sift_arena_alloc(a, sizeof(SiftBatchSel), SIFT_ARENA_ALIGN);
 	uint64	   *valid = sift_arena_alloc(a, SIFT_VEC_WORDS * sizeof(uint64), SIFT_ARENA_ALIGN);
@@ -62,7 +62,7 @@ bin_column(const SiftTsKey *k, const SiftTsCol *c, const uint64 *active, int n, 
 }
 
 bool
-sift_tseries_batch(const SiftTsShape *sh, const SiftTsCol *col, const uint64 *active, uint32 nact, int n, SiftArena *a, SiftErr *err, SiftParGroupBatch *out)
+sift_tseries_batch(const SiftTsShape *sh, const SiftParCol *col, const uint64 *active, uint32 nact, int n, SiftArena *a, SiftErr *err, SiftParGroupBatch *out)
 {
 	const int64 *bins[SIFT_PAR_GROUP_MAX_KW] = {0};
 	uint64	   *key[SIFT_PAR_GROUP_MAX_KW] = {0},
@@ -105,7 +105,7 @@ sift_tseries_batch(const SiftTsShape *sh, const SiftTsCol *col, const uint64 *ac
 			}
 			for (int j = 0; j < sh->nk; j++)
 			{
-				const SiftTsCol *c = &col[sh->key[j].at];
+				const SiftParCol *c = &col[sh->key[j].at];
 
 				if (c->isnull[r])
 					key[j][i] = SIFT_TS_NULL_WORD;

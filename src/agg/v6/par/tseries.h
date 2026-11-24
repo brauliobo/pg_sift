@@ -11,6 +11,7 @@
 
 #include "postgres.h"
 
+#include "agg/v6/par/cols.h"
 #include "agg/v6/par/group.h"
 #include "agg/v6/v6_datebin_win.h"
 
@@ -39,15 +40,8 @@ typedef struct SiftTsShape
 	SiftParGroupSpec gs;
 } SiftTsShape;
 
-/* A decoded column of the granule: the values of its rows (for the ones that are not NULL) */
-typedef struct SiftTsCol
-{
-	const int64 *v;
-	const bool *isnull;
-} SiftTsCol;
-
 /* The key and argument words of the n rows of a granule whose bit is set in active (nact of them), in memory of a. false with err: SIFT_ERR_SERIAL for the rows the scan must do, SIFT_ERR_ARENA_FULL */
-extern bool sift_tseries_batch(const SiftTsShape *sh, const SiftTsCol *col, const uint64 *active, uint32 nact, int n, SiftArena *a, SiftErr *err, SiftParGroupBatch *out);
+extern bool sift_tseries_batch(const SiftTsShape *sh, const SiftParCol *col, const uint64 *active, uint32 nact, int n, SiftArena *a, SiftErr *err, SiftParGroupBatch *out);
 
 /* The value of a key word: false for the NULL key */
 static inline bool

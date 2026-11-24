@@ -11,6 +11,7 @@
 #include "utils/memutils.h"
 
 #include "agg/v6/par/pinrun.h"
+#include "agg/v6/par/star_run.h"
 #include "agg/v6/par/tseries_run.h"
 #include "col/granule/cfilt_str_simd.h"
 #include "core/memtrack.h"
@@ -271,6 +272,8 @@ run_threads(SiftV6PinRun *r, int nthreads, size_t state, size_t sink)
 	bool		done;
 	bool		kept;
 
+	if (r->d.prepare != NULL)
+		r->d.prepare(r->d.arg, cx, nthreads);
 	r->pending = palloc(sizeof(uint32) * items);
 	make_sinks(r, cx, nthreads, sink);
 	r->grp = sift_par_group_create(ar, &r->d.gs, false, sift_pin_win_rows(r->win), &hooks, &err);
@@ -390,9 +393,11 @@ sift_v6_pin_wanted(const SiftV6Spec *spec)
 
 SiftV6PinRun *
 sift_v6_pin_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6ScanStats *stats, const int *first, Relation index, Snapshot snap, SiftPinPartOk part_ok, void *part_arg,
-				  const SiftV6Pipe *pipe)
+				  const SiftV6Pipe *pipe, const SiftV6PinCol *cols, int ncols)
 {
 	if (sift_par_pool_threads() < 2)
 		return NULL;
+	if (spec->ext != NULL)
+		return sift_v6_star_pin_begin(spec, g, stats, index, snap, part_ok, part_arg, pipe, cols, ncols);
 	return sift_v6_tseries_begin(spec, g, stats, first, index, snap, part_ok, part_arg);
 }

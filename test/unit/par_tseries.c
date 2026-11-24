@@ -139,7 +139,7 @@ fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftParGro
 	const Ctx  *c = arg;
 	const uint32 at = lo * GRAN;
 	const uint64 *alive = c->d->alive + at / 64;
-	SiftTsCol	col[3] = {{c->d->ts + at, c->d->ts_null + at}, {c->d->dev + at, c->d->dev_null + at}, {c->d->val + at, c->d->val_null + at}};
+	SiftParCol	col[3] = {{c->d->ts + at, c->d->ts_null + at}, {c->d->dev + at, c->d->dev_null + at}, {c->d->val + at, c->d->val_null + at}};
 	uint32		nact = 0;
 
 	for (int w = 0; w < GRAN / 64; w++)
@@ -360,7 +360,7 @@ check_serial(const Gen *g, const SiftTsKey *bin, void (*poke) (Data *), bool exp
 	SiftArena  *a = sift_arena_create(CurrentMemoryContext, 4 << 20);
 	SiftParGroupBatch out = {0};
 	SiftErr		err = {0};
-	SiftTsCol	col[3] = {{d->ts, d->ts_null}, {d->dev, d->dev_null}, {d->val, d->val_null}};
+	SiftParCol	col[3] = {{d->ts, d->ts_null}, {d->dev, d->dev_null}, {d->val, d->val_null}};
 	uint64		active[GRAN / 64];
 	bool		ok;
 

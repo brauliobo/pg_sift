@@ -20,6 +20,13 @@
 
 typedef struct SiftV6PinRun SiftV6PinRun;
 
+/* A column of the batch of a scan: its leaf, and whether it is an integer without a scale that a thread decodes as the scan does */
+typedef struct SiftV6PinCol
+{
+	int			leaf;
+	bool		plain_int;
+} SiftV6PinCol;
+
 typedef struct SiftV6PinDesc
 {
 	const char *name;
@@ -27,6 +34,8 @@ typedef struct SiftV6PinDesc
 	const int  *leaf;			/* the leaves a thread decodes, the leader reads them with the columns of the predicates */
 	int			nleaves;
 	size_t		scratch_bytes;	/* the decode of one granule by one thread */
+	/* The leader, before the threads run: what each of nthreads threads takes, made in cx (NULL: nothing) */
+	void		(*prepare) (void *arg, MemoryContext cx, int nthreads);
 	/* Thread `worker`: the batch of the rows of granule slot sl (memory of scratch); false with err filled: SIFT_ERR_SERIAL, SIFT_ERR_ARENA_FULL leave the granule to the scan */
 	bool		(*fill) (void *arg, int worker, const SiftPinSlot *sl, SiftArena *scratch, SiftParGroupBatch *out, SiftErr *err);
 	/* The leader: a group, or a partial aggregate of one, to add to the groups of the statement */
@@ -49,7 +58,7 @@ extern bool sift_v6_pin_slot_cols(const SiftPinSlot *sl, SiftArena *a, SiftErr *
 /* The statements the operators of this directory take: begin is NULL for the others, or when the backend has no threads for them */
 extern bool sift_v6_pin_wanted(const SiftV6Spec *spec);
 extern SiftV6PinRun *sift_v6_pin_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6ScanStats *stats, const int *first, Relation index, Snapshot snap, SiftPinPartOk part_ok, void *part_arg,
-									   const SiftV6Pipe *pipe);
+									   const SiftV6Pipe *pipe, const SiftV6PinCol *cols, int ncols);
 
 /* The group of a run, in the key and accumulator form the statement's groups take */
 extern void sift_v6_pin_fold_row(SiftV6Group *g, const SiftV6Spec *spec, const SiftParGroupRow *row, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls);

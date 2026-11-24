@@ -730,6 +730,18 @@ par_part_ok(void *arg, const SiftPartDesc *d)
 	return s->visible_part != NULL && s->visible_part->part_gen == d->part_gen;
 }
 
+/* The statements the threads of agg/v6/par/pinrun.h take, with the columns of the scan's batch as they decode them */
+static struct SiftV6PinRun *
+pin_begin(V6Scan *s, Relation index, Snapshot snap)
+{
+	SiftV6PinCol *cols = palloc(Max(s->ncols, 1) * sizeof(SiftV6PinCol));
+
+	for (int i = 0; i < s->ncols; i++)
+		cols[i] = (SiftV6PinCol) {.leaf = s->cols[i].leaf,.plain_int = (s->cols[i].cls == SV6C_I32 || s->cols[i].cls == SV6C_I64) && s->cols[i].scale == 0 && !s->cols[i].json &&
+			s->cols[i].attno > 0 && s->cols[i].typid != NUMERICOID};
+	return sift_v6_pin_begin(s->spec, s->group, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s, s->pipe, cols, s->ncols);
+}
+
 /* One pass over the index (over the rows of the bridge, when it is one) */
 static void
 scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip, const SiftTidBridge *bridge)
@@ -784,7 +796,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 		if (s->pipe == NULL && s->emit == NULL && s->gate == NULL && (s->group != NULL) != (s->rows != NULL))
 			s->par = sift_v6_par_begin(s->spec, s->group, s->rows, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s);
 		if (s->par == NULL && s->rows == NULL && s->emit == NULL && s->gate == NULL && s->group != NULL)
-			s->pin = sift_v6_pin_begin(s->spec, s->group, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s, s->pipe);
+			s->pin = pin_begin(s, index, snap);
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
 	}
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
