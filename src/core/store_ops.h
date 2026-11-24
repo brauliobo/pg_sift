@@ -110,7 +110,8 @@ typedef struct SiftOrderOps
 	int			(*lead_att) (Oid relid);
 	void		(*scan_rows) (const struct SiftV6Spec *spec, struct SiftV6Rows *rows, struct SiftV6Group *totals, struct SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals,
 							  Snapshot snap, struct SiftV6ScanStats *stats, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);
-	/* the source of the Top-N tournament over the parts of an index (NULL: the best rows are those of a sort of the rows scan_rows gives) */
+	bool		rows_extras;	/* scan_rows also folds the aggregates of the whole set into totals, reads the dimensions of a join (star) and takes the chunks of a text match */
+	/* the source of the Top-N tournament over the parts of an index (NULL, or false: the best rows are those of a sort of the rows the source gives) */
 	bool		(*topn_open) (EState *estate, const struct SiftV6TopNSpec *spec, const struct SiftV6Input *in, const struct SiftV6Vexpr *quals, struct SiftV6TopNSource *dst);
 } SiftOrderOps;
 
@@ -265,6 +266,7 @@ typedef struct SiftJsonbOps
 {
 	int			(*key_leaf) (Oid indexoid, int att, const char *key, int len);
 	int			(*table_key_leaf) (Oid relid, int att, const char *key, int len);	/* the same for a sift_table: the leaf of the declared path of the key (NULL: a table has none) */
+	bool		(*path_declared) (Oid relid, bool is_table, int att, const List *path);	/* the paths option of the index declares the path (a list of String keys) of the document attribute att */
 	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 } SiftJsonbOps;
 

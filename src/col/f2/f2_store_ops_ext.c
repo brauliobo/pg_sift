@@ -26,6 +26,7 @@ const SiftOrderOps sift_f2_order_ops = {
 	.sorted_by = sift_f2_ops_sorted_by,
 	.lead_att = order_lead_att,
 	.scan_rows = sift_v6_scan_rows,
+	.rows_extras = true,
 	.topn_open = sift_f2_v6_topn_open
 };
 

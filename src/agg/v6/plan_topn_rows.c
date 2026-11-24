@@ -93,13 +93,23 @@ sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
 		ExplainPropertyText("Lookup Joins", spec->join_desc, es);
 }
 
+/* the format keeps the best rows of the relation, and what the spec asks beyond them (the aggregates of the whole set, the dimensions of a join, a text match) when it serves that */
+static bool
+rows_served(const V6Plan *p)
+{
+	const SiftOrderOps *order = p->ops->order;
+
+	return order != NULL && order->scan_rows != NULL &&
+		(order->rows_extras || (p->spec.naggs == 0 && p->spec.ext == NULL && !OidIsValid(p->spec.text_indexoid)));
+}
+
 bool
 sift_v6_rows_compile(V6Plan *p, uint32 k)
 {
 	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.rows = true,.topk = k,.ext = p->xseed};
 	p->freg = sift_freg_create(CurrentMemoryContext);
 	p->cap_aggs = p->cap_funcs = 0;
-	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && sift_v6_rows_outputs(p) && sift_v6_compile_quals(p);
+	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && sift_v6_rows_outputs(p) && sift_v6_compile_quals(p) && rows_served(p);
 }
 
 void
@@ -143,7 +153,7 @@ rows_index_path(V6Plan *p, uint32 k)
 		return false;
 	irel = index_open(p->index->indexoid, AccessShareLock);
 	sift_v6_plan_index(p, irel);
-	ok = p->ops != NULL && p->ops->order != NULL && p->ops->order->scan_rows != NULL && sift_v6_rows_compile(p, k);
+	ok = sift_v6_rows_compile(p, k);
 	index_close(irel, NoLock);
 	if (!ok)
 		return false;

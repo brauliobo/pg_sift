@@ -56,38 +56,12 @@ order_lead_att(Oid relid)
 
 /* ---- the quals of the scan as a program over the columns of the source ---- */
 
-/* a clause on the columns of the index (INDEX_VAR) as the program reads it: over the attributes of the heap, which the input maps back to its columns */
-static Node *
-heap_clause(Node *n, SiftV6Input *in)
-{
-	if (n == NULL)
-		return NULL;
-	if (IsA(n, Param))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the quals of a Format 1 row Top-N take no parameters"), errhint("Plan the statement with the values as constants.")));
-	if (IsA(n, RestrictInfo))
-		return heap_clause((Node *) ((RestrictInfo *) n)->clause, in);
-	if (IsA(n, Var) && ((Var *) n)->varno == INDEX_VAR)
-	{
-		Var		   *v = copyObject((Var *) n);
-		const AttrNumber att = in->is_table ? v->varattno : in->keys[v->varattno - 1];
-
-		SIFT_INVARIANT(att > 0, "a qual of a Format 1 row Top-N reads an expression of index %u", in->indexoid);
-		v->varno = v->varnosyn = 1;
-		v->varattno = v->varattnosyn = att;
-		return (Node *) v;
-	}
-	return expression_tree_mutator(n, heap_clause, in);
-}
-
 static bool
-compile_quals(MemoryContext cx, const SiftV6Spec *spec, SiftV6Input *in, Relation index, ScanKey keys, int nkeys, SiftV6Vexpr *out)
+compile_quals(MemoryContext cx, const SiftV6Spec *spec, const struct SiftStoreQuals *quals, SiftV6Input *in, Relation index, ScanKey keys, int nkeys, SiftV6Vexpr *out)
 {
-	List	   *clauses = spec->is_table ? NIL : sift_srcfold_scankey_quals(index, keys, nkeys);
+	List	   *clauses = spec->is_table ? list_copy(quals->clauses) : sift_srcfold_scankey_quals(index, keys, nkeys);
 	bool		compiled;
 
-	if (spec->is_table)
-		foreach_ptr(Node, q, spec->indexqual)
-			clauses = lappend(clauses, heap_clause(q, in));
 	clauses = list_concat(clauses, list_copy(spec->vqual));
 	if (clauses == NIL)
 		return false;
@@ -129,13 +103,13 @@ batch_sel(SiftBatchSel *bs, const SiftV6Batch *b)
 }
 
 static void
-batches_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats)
+batches_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats)
 {
 	const SiftStoreOps *ops = sift_store_ops_for_oid(spec->relid, spec->is_table);
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 rows");
 	SiftStoreSchema schema;
 	SiftV6Input in;
-	SiftV6Vexpr quals;
+	SiftV6Vexpr compiled;
 	SiftV6Source *src;
 	SiftV6Batch b;
 	SiftBatchSel bs;
@@ -148,7 +122,7 @@ batches_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation i
 	else
 		sift_v6_input_init_rel(&in, index);
 	sort_columns(spec, &schema, &in);
-	src = sift_v1_source_open(cx, snap, &in, compile_quals(cx, spec, &in, index, keys, nkeys, &quals) ? &quals : NULL, &scan);
+	src = sift_v1_source_open(cx, snap, &in, compile_quals(cx, spec, quals, &in, index, keys, nkeys, &compiled) ? &compiled : NULL, &scan);
 	while (src->next(src, &b))
 	{
 		batch_sel(&bs, &b);
@@ -508,10 +482,12 @@ order_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *i
 }
 
 static void
-order_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats)
+order_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, struct SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys,
+				const struct SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
+	SIFT_INVARIANT(totals == NULL && star == NULL && next_chunk == NULL, "the row Top-N of a Format 1 relation %u keeps the rows of that relation alone", spec->relid);
 	if (!gorder_rows(spec, rows, heap, index, keys, nkeys, snap, stats))
-		batches_rows(spec, rows, heap, index, keys, nkeys, snap, stats);
+		batches_rows(spec, rows, heap, index, keys, nkeys, quals, snap, stats);
 }
 
 const SiftOrderOps v1_order_ops = {
