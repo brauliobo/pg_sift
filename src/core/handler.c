@@ -44,7 +44,6 @@
 #include "core/maint_sched.h"
 #include "agg/agg.h"
 #include "agg/gpu_cfg.h"
-#include "agg/stub.h"
 #include "col/f2/f2_v6_proj_sort_plan.h"
 #include "bm25/am.h"
 #include "bm25/analyze.h"
@@ -344,7 +343,6 @@ _PG_init(void)
 	sift_hybrid_init();
 	sift_v6_proj_sort_plan_init();
 	sift_f2_ord_plan_init();
-	sift_agg_init();
 	sift_v6_define_gucs();
 	sift_f2_v6_format_init();
 	sift_v1_store_ops_init();
@@ -357,7 +355,6 @@ _PG_init(void)
 	sift_memcensus_init();
 	sift_memtrack_define_test_gucs();
 	sift_v6_define_test_gucs();
-	sift_aggstub_init();
 	sift_limits_init();
 #endif
 	/* after the last GUC is defined: a value set before the library loaded is applied to its GUC, not dropped with the placeholder */
@@ -401,7 +398,6 @@ sift_catalog(void)
 	catalog.am = get_index_am_oid("sift", true);
 	catalog.col_am = get_index_am_oid("sift_col", true);
 #ifdef SIFT_TESTING
-	catalog.colstub_am = get_index_am_oid(SIFT_COLSTUB_AM, true);
 #endif
 	nsp = get_namespace_oid("sift", true);
 	if (OidIsValid(nsp))
