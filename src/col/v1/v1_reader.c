@@ -47,6 +47,12 @@ idx_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 	return r;
 }
 
+SiftColSource *
+sift_v1_idx_colsource(void *impl)
+{
+	return ((SiftV1Idx *) impl)->cs;
+}
+
 static Size
 idx_view_size(void *impl)
 {
