@@ -19,6 +19,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "agg/agg.h"
 #include "agg/batch_source.h"
 #include "col/am.h"
 #include "col/source_fold.h"
@@ -268,12 +269,14 @@ v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
 	SiftSrcStats st;
+	/* the legacy planner prices Format 1 on its own, so v6 does not undercut it with the card view unless it is the only planner */
+	const bool	priced =!is_table && sift_agg_unified_only();
 
 	sift_v1_reader_of(is_table)->stats(r.rel, &st);
 	*out = (SiftStoreStats) {.live_rows = r.heap->rd_rel->reltuples >= 0 ? r.heap->rd_rel->reltuples : st.nrows,
 		.stored_bytes = is_table ? table_relation_size(r.heap, MAIN_FORKNUM) : (uint64) st.bytes,.allvis_frac = Min(Max(st.allvisible_frac, 0.0), 1.0),
-		.point_cover = is_table ? NULL : v1_point_cover,.card_view = is_table ? NULL : sift_v1_card_view(sift_v1_reader_of(false)->layout(r.rel), &st),
-		.card_leaf = is_table ? NULL : v1_card_leaf};
+		.point_cover = is_table ? NULL : v1_point_cover,.card_view = priced ? sift_v1_card_view(sift_v1_reader_of(false)->layout(r.rel), &st) : NULL,
+		.card_leaf = priced ? v1_card_leaf : NULL};
 	sift_v1_rel_close(&r);
 	return true;
 }
