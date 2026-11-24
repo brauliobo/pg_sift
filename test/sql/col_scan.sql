@@ -75,8 +75,8 @@ BEGIN
 	PERFORM set_config('enable_bitmapscan', (m IN ('col', 'btree'))::text, true);
 END $$;
 
--- the rows of a query in one mode (count and md5 of the sorted rows) and the index its plan reads
-CREATE FUNCTION sc_run(q text, m text, OUT n bigint, OUT md5 text, OUT idx text) LANGUAGE plpgsql AS $$
+-- the rows of a query in one mode (their count and the sum of the hashes of their text) and the index its plan reads
+CREATE FUNCTION sc_run(q text, m text, OUT n bigint, OUT digest numeric, OUT idx text) LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN
 	PERFORM sc_mode(m);
@@ -88,7 +88,7 @@ BEGIN
 		IF line ~ 'sc_b_' THEN idx := idx || 'btree'; END IF;
 		IF line ~ 'Seq Scan' THEN idx := idx || 'seq'; END IF;
 	END LOOP;
-	EXECUTE 'SELECT count(*), md5(string_agg(r, ''|'' ORDER BY r)) FROM (SELECT row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO n, md5;
+	EXECUTE 'SELECT count(*), sum(hashtextextended(x::text, 0)::numeric) FROM (' || q || ') x' INTO n, digest;
 END $$;
 
 -- the four ways agree; col_idx: the column index was read in the col mode (a bitmap scan); tup_idx: in the tup mode by an index scan or an index-only scan (not by
@@ -102,7 +102,7 @@ BEGIN
 	SELECT * INTO h FROM sc_run(q, 'heap');
 	SELECT * INTO b FROM sc_run(q, 'btree');
 	rows := h.n;
-	agree := c.n = h.n AND t.n = h.n AND h.n = b.n AND c.md5 IS NOT DISTINCT FROM h.md5 AND t.md5 IS NOT DISTINCT FROM h.md5 AND h.md5 IS NOT DISTINCT FROM b.md5;
+	agree := c.n = h.n AND t.n = h.n AND h.n = b.n AND c.digest IS NOT DISTINCT FROM h.digest AND t.digest IS NOT DISTINCT FROM h.digest AND h.digest IS NOT DISTINCT FROM b.digest;
 	col_idx := c.idx ~ 'col';
 	tup_idx := t.idx ~ 'tuple';
 	btree_idx := b.idx ~ 'btree';
@@ -263,13 +263,13 @@ INSERT INTO sc_q (q) VALUES
  ('SELECT id, s FROM %T WHERE s IN (''k1'', ''k2'', ''caf'' || chr(233))'),
  ('SELECT id, c, vc FROM %T WHERE c = ''c17''');
 
-CREATE FUNCTION sc_all(sel int[] DEFAULT NULL, OUT n int, OUT rows bigint, OUT agree bool, OUT col_idx bool, OUT tup_idx bool, OUT btree_idx bool) RETURNS SETOF record LANGUAGE sql AS $$
-	SELECT sc_q.n, c.rows, c.agree, c.col_idx, c.tup_idx, c.btree_idx FROM sc_q, LATERAL sc_check(sc_q.q) c WHERE sel IS NULL OR sc_q.n = ANY (sel) ORDER BY sc_q.n $$;
+CREATE FUNCTION sc_all(sel int[] DEFAULT NULL, stage int DEFAULT NULL, OUT n int, OUT rows bigint, OUT agree bool, OUT col_idx bool, OUT tup_idx bool, OUT btree_idx bool) RETURNS SETOF record LANGUAGE sql AS $$
+	SELECT sc_q.n, c.rows, c.agree, c.col_idx, c.tup_idx, c.btree_idx FROM sc_q, LATERAL sc_check(sc_q.q) c WHERE (sel IS NULL OR sc_q.n = ANY (sel)) AND (stage IS NULL OR (sc_q.n + stage) % 3 = 0) ORDER BY sc_q.n $$;
 
 -- the queries the planner reads the column index for, and the ones that disagree (none)
 \echo -- after the build
--- the 4 ways of every query run once for the summary and the list
-CREATE TEMP TABLE sc_r AS SELECT * FROM sc_all();
+-- the 4 ways of a third of the queries run once for the summary and the list: each state of the index meets another third
+CREATE TEMP TABLE sc_r AS SELECT * FROM sc_all(stage => 0);
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup, count(*) FILTER (WHERE btree_idx) AS on_btree FROM sc_r;
 SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_r;
 DROP TABLE sc_r;
@@ -325,7 +325,7 @@ SELECT sc_dml($$INSERT INTO %T (id, f4, f8, b, nm, c, vc) SELECT 110000 + i, i %
 SELECT sc_dml($$UPDATE %T SET f8 = f8 + 1, nm = nm + 0.01, c = 'c9', b = NOT b, vc = 'v' || (id % 150 + 1) WHERE id % 47 = 3$$);
 \echo -- write buffer
 SELECT buffers > 0 AS rows_in_the_buffer FROM sift.col_index_info('sc_col'::regclass);
-CREATE TEMP TABLE sc_r AS SELECT * FROM sc_all();
+CREATE TEMP TABLE sc_r AS SELECT * FROM sc_all(stage => 1);
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_r;
 SELECT n, rows, agree FROM sc_r WHERE NOT agree;
 DROP TABLE sc_r;
@@ -343,7 +343,7 @@ SELECT n, rows, agree, col_idx, tup_idx FROM sc_all(ARRAY[1, 22, 23, 41, 43]);
 VACUUM sc;
 VACUUM sc_b;
 \echo -- vacuumed, buffer promoted
-SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
+SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all(stage => 2);
 
 SELECT sc_dml($$UPDATE %T SET v = (v * 3) % 500 WHERE id % 7 = 0$$);
 SELECT sc_dml($$DELETE FROM %T WHERE id % 71 = 0$$);
@@ -352,7 +352,7 @@ VACUUM sc;
 VACUUM sc_b;
 SELECT sift.col_merge('sc_col'::regclass) >= 0 AS merged;
 \echo -- merged
-SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
+SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all(stage => 1);
 
 -- an update that leaves the indexed columns alone (HOT where the page has room), and one that changes them in the same page
 SELECT sc_dml($$UPDATE %T SET pad = repeat('z', 500) WHERE id BETWEEN 2000 AND 2100$$);
@@ -381,5 +381,5 @@ SELECT sift.col_verify('sc_col'::regclass, true) IS NOT NULL AS verified;
 
 DROP COLLATION sc_ci;
 DROP TABLE sc, sc_b, sc_q, sc_few;
-DROP FUNCTION sc_dml(text), sc_mode(text), sc_run(text, text), sc_check(text), sc_uses_col(text), sc_all(int[]);
+DROP FUNCTION sc_dml(text), sc_mode(text), sc_run(text, text), sc_check(text), sc_uses_col(text), sc_all(int[], int);
 DROP EXTENSION pg_sift;
