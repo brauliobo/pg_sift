@@ -92,10 +92,7 @@ static void
 pending_xact(XactEvent event, void *arg)
 {
 	if (event == XACT_EVENT_ABORT)
-	{
-		list_free(pending);
 		pending = NIL;
-	}
 }
 
 static IndexElem *
@@ -180,7 +177,7 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 			RegisterXactCallback(pending_xact, NULL);
 		pending_hooked = true;
 		{
-			MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
+			MemoryContext old = MemoryContextSwitchTo(PortalContext);
 
 			pending = list_append_unique_oid(pending, addr.objectId);
 			MemoryContextSwitchTo(old);
