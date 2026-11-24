@@ -171,10 +171,6 @@ sift_agg_init(void)
 							 "Testing: a statement whose verdict is not cached waits, before it is planned in full, for the advisory lock (20984, 1) to be free.",
 							 NULL, &sift_test_verdict_gate, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_agg_wait",
-							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
-							 NULL, &sift_test_agg_wait, false,
-							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_agg_probe_rewrite",
 							 "Testing: a join to a lookup table is planned as a probe of its keys.",
 							 NULL, &sift_agg_probe_rewrite, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

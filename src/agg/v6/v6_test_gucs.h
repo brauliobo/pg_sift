@@ -11,6 +11,9 @@ extern PGDLLIMPORT int sift_search_chunk_sbs;
 
 #ifdef SIFT_TESTING
 extern void sift_v6_define_test_gucs(void);
+extern void sift_v6_test_wait(void);
+#else
+#define sift_v6_test_wait() ((void) 0)
 #endif
 
 #endif							/* SIFT_AGG_V6_TEST_GUCS_H */

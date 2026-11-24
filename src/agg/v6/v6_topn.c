@@ -23,6 +23,7 @@
 #include "utils/ruleutils.h"
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
+#include "agg/v6/v6_test_gucs.h"
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
@@ -478,6 +479,7 @@ topn_begin(CustomScanState *node, EState *estate, int eflags)
 	TopNState  *st = (TopNState *) node;
 	const CustomScan *cs = (CustomScan *) node->ss.ps.plan;
 	List	   *tlist = lsecond(cs->custom_private);
+	sift_v6_test_wait();
 	int			i = 0;
 
 	st->spec = sift_v6_topn_spec_unpack(linitial(cs->custom_private));

@@ -8,11 +8,7 @@
 #include "agg/agg_int.h"
 
 #ifdef SIFT_TESTING
-extern bool sift_test_agg_wait;
 extern int	sift_test_agg_pass_w;
-extern void agg_test_wait(void);
-#else
-#define agg_test_wait() ((void) 0)
 #endif
 extern const CustomExecMethods agg_exec_methods;
 extern void agg_shutdown(CustomScanState *node);
