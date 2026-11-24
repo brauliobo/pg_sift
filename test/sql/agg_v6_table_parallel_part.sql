@@ -9,6 +9,9 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 4;
+SET seq_page_cost = 10000;
+SET cpu_tuple_cost = 100;
+SET random_page_cost = 10000;
 
 CREATE TABLE ts (id int, a int, b int, v int, n numeric(12,2), t text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE th (LIKE ts) WITH (autovacuum_enabled = false);
@@ -115,11 +118,7 @@ SELECT plan_has('SELECT a, sum(v) FROM pp GROUP BY a', 'Workers Planned') AS par
 SELECT launched('SELECT a, sum(v) FROM pp GROUP BY a') > 0 AS partitioned_workers_launched;
 SELECT parity('SELECT a, b, count(*), sum(v), sum(n) FROM @T GROUP BY a, b', 'pp', 'ph') AS partitioned_groups;
 SELECT parity('SELECT a, count(*), sum(v) FROM @T WHERE id >= 25000 AND id < 35000 GROUP BY a', 'pp', 'ph') AS partitioned_pruned;
-SET seq_page_cost = 10000;
-SET cpu_tuple_cost = 100;
 SELECT plan_has('SELECT a, sum(v) FROM pp WHERE id >= 25000 AND id < 35000 GROUP BY a', 'Partitions: 2') AS pruned_partitions;
-RESET seq_page_cost;
-RESET cpu_tuple_cost;
 SELECT parity('SELECT count(*), sum(v), count(DISTINCT b) FROM @T', 'pp', 'ph') AS partitioned_no_keys;
 DELETE FROM pp WHERE id % 9 = 0;
 DELETE FROM ph WHERE id % 9 = 0;

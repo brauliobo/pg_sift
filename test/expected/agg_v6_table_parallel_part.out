@@ -9,6 +9,9 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 4;
+SET seq_page_cost = 10000;
+SET cpu_tuple_cost = 100;
+SET random_page_cost = 10000;
 CREATE TABLE ts (id int, a int, b int, v int, n numeric(12,2), t text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE th (LIKE ts) WITH (autovacuum_enabled = false);
 INSERT INTO ts SELECT g, g % 7, g % 101, g % 1000, (g % 997) / 8.0, CASE WHEN g % 13 = 0 THEN NULL ELSE 'k' || g % 11 END FROM generate_series(1, 150000) g;
@@ -210,16 +213,12 @@ SELECT parity('SELECT a, count(*), sum(v) FROM @T WHERE id >= 25000 AND id < 350
  t
 (1 row)
 
-SET seq_page_cost = 10000;
-SET cpu_tuple_cost = 100;
 SELECT plan_has('SELECT a, sum(v) FROM pp WHERE id >= 25000 AND id < 35000 GROUP BY a', 'Partitions: 2') AS pruned_partitions;
  pruned_partitions 
 -------------------
  t
 (1 row)
 
-RESET seq_page_cost;
-RESET cpu_tuple_cost;
 SELECT parity('SELECT count(*), sum(v), count(DISTINCT b) FROM @T', 'pp', 'ph') AS partitioned_no_keys;
  partitioned_no_keys 
 ---------------------
