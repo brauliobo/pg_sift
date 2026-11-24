@@ -523,6 +523,7 @@ TESTING_REGRESS += format2_deep_compress
 TESTING_REGRESS += format2_dv_delta_chunks
 TESTING_REGRESS += format2_ext_safety
 TESTING_REGRESS += format2_float_zones
+TESTING_REGRESS += format2_flush_slab_turnover
 TESTING_REGRESS += format2_framed_chunks
 TESTING_REGRESS += format2_fsm
 TESTING_REGRESS += format2_heapref_l0_wal

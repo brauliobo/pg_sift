@@ -472,12 +472,13 @@ chain_has_room(Relation rel, uint32 part_id, BlockNumber head, int nbatches)
 
 /*
  * A chain that holds as many rows or pages as it may is written out as an L0 part before the rows go on, so that the micro-slab turns over every SIFT_L0_SLAB_FLUSH_ROWS rows and the
- * commits that follow land in the fresh slab, where a transaction that found the chain full wrote a part and a manifest commit of its own. The caller holds the lock of the partition.
+ * commits that follow land in the fresh slab, where a transaction that found the chain full wrote a part and a manifest commit of its own. A chain of references is no chain of batches:
+ * batches go behind none, so it is written out whatever it holds. The caller holds the lock of the partition.
  */
 static bool
 rotate_full_chain(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber head, int nbatches)
 {
-	if (head == InvalidBlockNumber || chain_has_room(rel, (uint32) part_id, head, nbatches))
+	if (head == InvalidBlockNumber || (!sift_l0_slab_is_href(rel, part_id, head) && chain_has_room(rel, (uint32) part_id, head, nbatches)))
 		return false;
 	return sift_l0_slab_flush(rel, part_id, key_lo, spec);
 }
