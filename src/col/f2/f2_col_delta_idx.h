@@ -1,7 +1,8 @@
 /*
  * col/f2/f2_col_delta_idx.h - the column delta chain (SIFT_PT_COL_DELTA, table/f2/f2_col_delta.h) of a sift_col index (spec 49 3, 4): an UPDATE that does not change what the index holds
  * of a row, or changes a few leaves of it, appends a record that names the row by its place in its part (part, granule, row) and holds its new heap address (SIFT_CD_ATT_TID_REMAP, a
- * column of its own: attribute 0) and the new cells of the leaves that changed (attribute = leaf + 1), instead of ending the row's entry and writing a new one.
+ * column of its own: attribute 0) and the new cells of the leaves that changed (attribute = leaf + 1), instead of ending the row's entry and writing a new one. A UNIQUE index keeps the entry of
+ * each version: the check of every row a writer adds reads the chain of the partition it probes, so the chain of a unique index stays empty.
  *
  * This file holds what needs no server: the records a trigger writes, the map of the address changes a snapshot sees (what a vacuum and a delete find a row by), the patch of the views and
  * the addresses of a granule a scan decoded, and the exceptions a patched leaf is given so that no zone, dictionary or chunk filter of the part decides for it. f2_col_delta_srv.c holds the
