@@ -33,7 +33,6 @@
 #include "utils/tuplesort.h"
 
 #include "agg/v6/v6_safety.h"
-#include "agg/plan/format_ops.h"
 #include "col/f2/f2_v6_proj_sort_ios.h"
 #include "col/f2/f2_v6_proj_ctx.h"
 #include "col/f2/f2_v6_proj_key.h"
@@ -644,7 +643,7 @@ sort_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 		{
 			Relation	irel;
 
-			if ((ix->indpred != NIL && !ix->predOK) || ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
+			if ((ix->indpred != NIL && !ix->predOK) || ix->hypothetical || sift_col_index_oid_engine(ix->indexoid) != sift_col_v2_ops.format_major)
 				continue;
 			irel = index_open(ix->indexoid, AccessShareLock);
 			p.ix = ix;

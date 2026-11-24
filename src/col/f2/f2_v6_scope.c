@@ -30,7 +30,6 @@
 #include "utils/selfuncs.h"
 
 #include "agg/agg.h"
-#include "agg/plan/format_ops.h"
 #include "agg/v6/v6_safety.h"
 #include "agg/spec/spec.h"
 #include "agg/v6/v6_card.h"
@@ -630,7 +629,7 @@ table_usable(PlannerInfo *root, const RelOptInfo *fact)
 static bool
 index_usable(const IndexOptInfo *ix)
 {
-	bool		ok = ix->indpred == NIL && !ix->hypothetical && sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid);
+	bool		ok = ix->indpred == NIL && !ix->hypothetical && sift_col_index_oid_engine(ix->indexoid) == sift_col_v2_ops.format_major;
 	Relation	irel;
 
 	if (!ok)
