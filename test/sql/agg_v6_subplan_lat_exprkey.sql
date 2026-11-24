@@ -1,6 +1,5 @@
 -- SubPlans and InitPlans in filters and aggregate FILTERs, joins on an expression of the fact side and a correlated lateral LIMIT 1 on Format 2.0: each statement runs with the cost settings
--- of the coverage proofs (a page costs 10000, no Memoize) and with sift.enable_agg = off, and the rows must be the same. The engine column is the plan of the first run (a lateral LIMIT 1 stays in
--- PostgreSQL's plan: a shape the node does not serve yet keeps its rows as the heap's).
+-- of the coverage proofs (a page costs 10000, no Memoize) and with sift.enable_agg = off, and the rows must be the same. The engine column is the plan of the first run.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
