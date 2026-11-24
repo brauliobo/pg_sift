@@ -150,7 +150,7 @@ sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo 
 		return;
 	a = bms_next_member(base, -1);
 	b = bms_next_member(base, a);
-	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
+	foreach_node(SortGroupClause, sgc, root->parse->groupClause)
 		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));
 	try_fact(root, input_rel, output_rel, root->simple_rel_array[a], root->simple_rel_array[b], (GroupPathExtraData *) extra, group_exprs);
 	try_fact(root, input_rel, output_rel, root->simple_rel_array[b], root->simple_rel_array[a], (GroupPathExtraData *) extra, group_exprs);
