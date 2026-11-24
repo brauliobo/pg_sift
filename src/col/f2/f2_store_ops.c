@@ -20,6 +20,7 @@
 #include "col/f2/f2_v6_format.h"
 #include "core/catname.h"
 #include "core/sift.h"
+#include "table/f2/f2_tbl.h"
 #include "table/dispatch.h"
 
 static bool
@@ -95,14 +96,30 @@ sift_f2_ops_sorted_by(Oid relid, bool is_table, const int *atts, int n)
 	return true;
 }
 
+/* The leaves of the declared paths of a table are the scan's once every part has them (table/f2/f2_paths.c); until then the columns have the one leaf of their bytes */
+static bool
+paths_shown(Oid relid, const SiftF2Store *st)
+{
+	Relation	rel;
+	bool		ready;
+
+	if (st->paths == NULL)
+		return true;
+	rel = relation_open(relid, AccessShareLock);
+	ready = sift_tbl_f2_paths_ready(rel, (SiftF2Store *) st);
+	relation_close(rel, NoLock);
+	return ready;
+}
+
 static bool
 f2_schema(Oid relid, bool is_table, SiftStoreSchema *out)
 {
 	const SiftF2Store *st = sift_f2_store_from_oid(relid);
+	const bool	paths = !is_table || paths_shown(relid, st);
 	int		   *nleaves = palloc0((st->natts + 1) * sizeof(int));
 
 	for (int a = 1; a <= st->natts; a++)
-		nleaves[a] = sift_f2_store_attr_leaves(st, a);
+		nleaves[a] = !paths && st->path_first[a] >= 0 ? 1 : sift_f2_store_attr_leaves(st, a);
 	*out = (SiftStoreSchema) {.natts = st->natts,.is_table = is_table,.has_jsonb = st->has_jsonb,.leaves = st->schema,.att_first = st->att_first,
 		.att_nleaves = nleaves,.att_opfamily = st->opfamily,.leaf_kinds = st->kinds,.leaf_hints = st->hints};
 	return true;

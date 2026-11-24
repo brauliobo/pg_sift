@@ -258,6 +258,7 @@ typedef struct SiftParOps
 typedef struct SiftJsonbOps
 {
 	int			(*key_leaf) (Oid indexoid, int att, const char *key, int len);
+	int			(*table_key_leaf) (Oid relid, int att, const char *key, int len);	/* the same for a sift_table: the leaf of the declared path of the key (NULL: a table has none) */
 	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 } SiftJsonbOps;
 

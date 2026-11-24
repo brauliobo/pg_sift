@@ -8,6 +8,27 @@
 #include "col/f2/f2_view.h"
 #include "col/granule/cfilt_str_simd.h"
 
+/* The rows of a leaf of a key of a document that hold a value of a JSON type it could not store: its value is the payload of their exception */
+void
+sift_f2_decode_payloads(const SiftGranuleView *v, int c, int n, ColView *cv)
+{
+	const char **xp = NULL;
+	uint32	   *xl = NULL;
+
+	for (int r = 0; r < n; r++)
+		if (cv->isnull[r] && cv->tag[r] >= SIFT_COLTAG_STRING && cv->tag[r] <= SIFT_COLTAG_ARRAY)
+		{
+			if (xp == NULL)
+			{
+				xp = palloc0(n * sizeof(char *));
+				xl = palloc0(n * sizeof(uint32));
+			}
+			xp[r] = sift_granule_exc_payload(v, c, r, &xl[r]);
+		}
+	cv->xpay = xp;
+	cv->xplen = xl;
+}
+
 static void
 strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView *cv)
 {

@@ -57,7 +57,26 @@ jsonb_key_leaf(Oid indexoid, int att, const char *key, int len)
 	return leaf;
 }
 
+static int
+jsonb_table_key_leaf(Oid relid, int att, const char *key, int len)
+{
+	const SiftF2Store *st = sift_f2_store_from_oid(relid);
+
+	if (att < 1 || att > st->natts || st->path_first == NULL || st->path_first[att] < 0)
+		return -1;
+	for (int c = st->path_first[att]; c < st->ncols && st->leaf_attno[c] == att; c++)
+	{
+		const char *k;
+		int			klen;
+
+		if (sift_f2_def_top_key(&st->path_def[c], &k, &klen) && klen == len && memcmp(k, key, len) == 0)
+			return c;
+	}
+	return -1;
+}
+
 const SiftJsonbOps sift_f2_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
+	.table_key_leaf = jsonb_table_key_leaf,
 	.unnest_run = sift_v6_unnest_run
 };

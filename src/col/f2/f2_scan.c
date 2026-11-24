@@ -84,27 +84,6 @@ tid_cmp(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-/* The rows of a leaf of a key of a document that hold a value of a JSON type it could not store: its value is the payload of their exception */
-static void
-decode_payloads(const SiftGranuleView *v, int c, int n, ColView *cv)
-{
-	const char **xp = NULL;
-	uint32	   *xl = NULL;
-
-	for (int r = 0; r < n; r++)
-		if (cv->isnull[r] && cv->tag[r] >= SIFT_COLTAG_STRING && cv->tag[r] <= SIFT_COLTAG_ARRAY)
-		{
-			if (xp == NULL)
-			{
-				xp = palloc0(n * sizeof(char *));
-				xl = palloc0(n * sizeof(uint32));
-			}
-			xp[r] = sift_granule_exc_payload(v, c, r, &xl[r]);
-		}
-	cv->xpay = xp;
-	cv->xplen = xl;
-}
-
 /* The zones of the leaf of every predicate from granule g0 of the part; NULL for a leaf when the part holds none */
 static const SiftZone **
 pred_zones(Relation rel, const F2Scan *s, SiftF2PartPin *pin, uint32 g0)
@@ -559,7 +538,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 			if (views[leaf].isnull == NULL)
 				views[leaf] = sift_f2_decode_view(&schema->cols[leaf], &v, leaf, n, s->sink_dict != NULL && s->sink_dict[j], rows, nrows);
 			if (schema->cols[leaf].path[0] != '\0')
-				decode_payloads(&v, leaf, n, &views[leaf]);
+				sift_f2_decode_payloads(&v, leaf, n, &views[leaf]);
 		}
 		for (int k = 0; k < s->npreds && !few; k++)
 			if (!decided[k] && s->preds[k].op == SIFT_COLOP_KEY_EXISTS && views[s->preds[k].col].keyp == NULL)

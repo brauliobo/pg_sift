@@ -13,4 +13,7 @@
  */
 extern ColView sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows);
 
+/* The rows of the leaf of a path of a document that hold a value of a JSON type it could not store: their value is the payload of their exception, which the view then has (xpay) */
+extern void sift_f2_decode_payloads(const SiftGranuleView *v, int c, int n, ColView *cv);
+
 #endif							/* SIFT_F2_VIEW_H */

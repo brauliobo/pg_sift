@@ -21,6 +21,7 @@
 #include "col/f2/f2_part_pin_scan.h"
 #include "col/f2/f2_pred.h"
 #include "col/f2/f2_store_schema.h"
+#include "col/f2/f2_view.h"
 #include "col/f2/f2_store_scan.h"
 #include "col/f2/key_plan.h"
 #include "col/f2/l0_stage.h"
@@ -198,7 +199,7 @@ decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 	ColView		v = {.kind = kind};
 
 	if (!gb->col_decoded[phys])
-		sift_f2_gbuf_decode(gb, phys, kind, s->wide || s->store->hints[leaf] == SIFT_CHINT_NUM64);
+		sift_f2_gbuf_decode(gb, phys, kind, s->wide || s->store->hints[leaf] == SIFT_CHINT_NUM64 || sift_f2_leaf_is_path(s->store, leaf));
 	v.isnull = gb->col_isnull[phys];
 	v.tag = gb->col_tag[phys];
 	v.i = gb->col_i[phys];
@@ -232,6 +233,8 @@ decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 		v.slen = lens;
 		v.isnull = nulls;
 	}
+	if (sift_f2_leaf_is_path(s->store, leaf) && v.tag != NULL)
+		sift_f2_decode_payloads(&gb->view, phys, gb->nrows, &v);
 	return v;
 }
 
@@ -286,7 +289,9 @@ load_views(SiftStorePart *p)
 
 		if (!s->want[leaf])
 			continue;
-		if (phys < 0)
+		if (phys < 0 && sift_f2_leaf_is_path(s->store, leaf))
+			unsupported_form(s->store, leaf);
+		else if (phys < 0)
 			p->views[leaf] = constant_view(p, leaf, map);
 		else if (map != NULL && map->phys_kind[leaf] == SIFT_CELL_INT && s->store->kinds[leaf] == SIFT_CELL_STR)
 			p->views[leaf] = widened_view(p, leaf, phys, map->old_scale[leaf]);
