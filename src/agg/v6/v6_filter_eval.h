@@ -46,6 +46,7 @@ typedef struct SiftPred
 {
 	SiftPredOp	op;
 	SiftPredKind kind;
+	int			group;			/* 0: a conjunct of the clause; n: one of the consecutive arms of the disjunction n, which is a conjunct (the rows of a pred are the ones it is true for, so an OR is their union) */
 	int			vec;			/* the column: its index in the vectors given to sift_clause_eval */
 	int64		i;
 	double		f;

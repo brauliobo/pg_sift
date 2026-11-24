@@ -19,6 +19,8 @@ typedef struct Build
 	SiftV6Col  *fcol;
 	int		   *nfcols;
 	bool		add;
+	bool		or_ok;			/* an OR of preds is a conjunct (the clause of the elements of an unnest: its evaluation is sift_clause_eval alone) */
+	int			ngroups;
 	SiftBytes  *canon;
 } Build;
 
@@ -288,40 +290,66 @@ canon_pred(Build *b, const SiftPred *p)
 	}
 }
 
+static bool add_pred(Build *b, const Node *q, int group, SiftClause *out);
+
+/* the arms of an OR (the ORs among them are its arms too) as the preds of one disjunction */
+static bool
+add_or(Build *b, const BoolExpr *q, int group, SiftClause *out)
+{
+	if (!b->or_ok || q->boolop != OR_EXPR)
+		return false;
+	if (group == 0)
+		group = ++b->ngroups;
+	foreach_ptr(Node, arm, q->args)
+		if (!add_pred(b, arm, group, out))
+			return false;
+	return true;
+}
+
+static bool
+add_pred(Build *b, const Node *q, int group, SiftClause *out)
+{
+	SiftPred   *p = &out->pred[out->npred];
+	bool		ok;
+
+	if (IsA(q, BoolExpr))
+		return add_or(b, (const BoolExpr *) q, group, out);
+	if (out->npred == SIFT_CLAUSE_MAX_PREDS)
+		return false;
+	*p = (SiftPred) {.group = group};
+	switch (nodeTag(q))
+	{
+		case T_OpExpr:
+			ok = pred_compare(b, (const OpExpr *) q, p);
+			break;
+		case T_ScalarArrayOpExpr:
+			ok = pred_in(b, (const ScalarArrayOpExpr *) q, p);
+			break;
+		case T_NullTest:
+			ok = pred_null_test(b, (const NullTest *) q, p);
+			break;
+		case T_BooleanTest:
+			ok = pred_derived(b, (const BooleanTest *) q, p);
+			break;
+		default:
+			ok = false;
+	}
+	if (!ok)
+		return false;
+	if (group != 0)
+		canon_put(b, &group, sizeof(group));
+	canon_pred(b, p);
+	out->npred++;
+	return true;
+}
+
 static bool
 build(Build *b, const List *quals, SiftClause *out)
 {
 	*out = (SiftClause) {0};
-	if (list_length(quals) > SIFT_CLAUSE_MAX_PREDS)
-		return false;
 	foreach_ptr(Node, q, quals)
-	{
-		SiftPred   *p = &out->pred[out->npred];
-		bool		ok;
-
-		*p = (SiftPred) {0};
-		switch (nodeTag(q))
-		{
-			case T_OpExpr:
-				ok = pred_compare(b, (const OpExpr *) q, p);
-				break;
-			case T_ScalarArrayOpExpr:
-				ok = pred_in(b, (const ScalarArrayOpExpr *) q, p);
-				break;
-			case T_NullTest:
-				ok = pred_null_test(b, (const NullTest *) q, p);
-				break;
-			case T_BooleanTest:
-				ok = pred_derived(b, (const BooleanTest *) q, p);
-				break;
-			default:
-				ok = false;
-		}
-		if (!ok)
+		if (!add_pred(b, q, 0, out))
 			return false;
-		canon_pred(b, p);
-		out->npred++;
-	}
 	return true;
 }
 
@@ -329,6 +357,14 @@ bool
 sift_v6_clause_make(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon)
 {
 	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.canon = canon};
+
+	return build(&b, quals, out);
+}
+
+bool
+sift_v6_clause_make_or(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out)
+{
+	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.or_ok = true};
 
 	return build(&b, quals, out);
 }

@@ -247,10 +247,26 @@ elem_column(const V6Plan *p, const Node *n)
 	return n != NULL && IsA(n, Var) && sift_v6_unnest_column((V6Plan *) p, (const Expr *) n, &col) ? v : NULL;
 }
 
-/* a comparison of a column of the element with a constant, an IN list of constants, or a null test, over the virtual attribute of the column */
+/* a comparison of a column of the element with a constant, an IN list of constants, or a null test, over the virtual attribute of the column; or an AND, OR or NOT of such tests */
 static Expr *
 elem_qual(const V6Plan *p, Node *clause)
 {
+	if (IsA(clause, BoolExpr))
+	{
+		BoolExpr   *q = copyObject((BoolExpr *) clause);
+		List	   *args = NIL;
+
+		foreach_ptr(Node, a, q->args)
+		{
+			Expr	   *t = elem_qual(p, a);
+
+			if (t == NULL)
+				return NULL;
+			args = lappend(args, t);
+		}
+		q->args = args;
+		return (Expr *) q;
+	}
 	if (IsA(clause, OpExpr) && list_length(((OpExpr *) clause)->args) == 2)
 	{
 		OpExpr	   *q = copyObject((OpExpr *) clause);
@@ -317,7 +333,7 @@ sift_v6_unnest_elem_clause(MemoryContext cx, const List *quals, SiftClause *out,
 {
 	SiftV6Spec	tmp = {0};
 
-	if (!sift_v6_clause_make(cx, quals, &tmp, out, NULL))
+	if (!sift_v6_clause_make_or(cx, quals, &tmp, out))
 		return false;
 	for (int i = 0; i < tmp.nfcols; i++)
 		col[i] = tmp.fcol[i].attno - SIFT_V6_ELEM_VATT;

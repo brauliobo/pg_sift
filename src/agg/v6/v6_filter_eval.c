@@ -167,10 +167,19 @@ sift_clause_eval(const SiftClause *c, SiftVec *const *vecs, uint32 n_raw, uint64
 	memset(out, 0, sizeof(uint64) * SIFT_VEC_WORDS);
 	for (uint32 w = 0; w < words; w++)
 		out[w] = w + 1 < words || (n_raw & 63) == 0 ? ~UINT64_C(0) : (UINT64_C(1) << (n_raw & 63)) - 1;
-	for (int i = 0; i < c->npred; i++)
+	for (int i = 0; i < c->npred;)
 	{
-		sift_pred_eval(&c->pred[i], vecs[c->pred[i].vec], n_raw, one);
+		const int	group = c->pred[i].group;
+		uint64		any[SIFT_VEC_WORDS] = {0};
+
+		do
+		{
+			sift_pred_eval(&c->pred[i], vecs[c->pred[i].vec], n_raw, one);
+			for (uint32 w = 0; w < words; w++)
+				any[w] |= one[w];
+			i++;
+		} while (group != 0 && i < c->npred && c->pred[i].group == group);
 		for (uint32 w = 0; w < words; w++)
-			out[w] &= one[w];
+			out[w] &= any[w];
 	}
 }
