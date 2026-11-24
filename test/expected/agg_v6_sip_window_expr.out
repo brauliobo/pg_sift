@@ -677,14 +677,14 @@ SELECT count(*) AS programs, count(*) FILTER (WHERE bad > 0) AS differ FROM (SEL
 -- ---------------------------------------------------------------------------------------------------------------------------------------------------
 -- GROUPING SETS, ROLLUP and CUBE in one pass over the rows
 -- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- rd: NULL keys and values, values whose sums do not fit an int8; rbig: 20000 rows of many groups; the arrays are what the executor is fed in batches
+-- rd: NULL keys and values, values whose sums do not fit an int8; rbig: 6000 rows of many groups; the arrays are what the executor is fed in batches
 CREATE TABLE rsrc AS
 SELECT 'rd' AS name, g AS id, CASE WHEN g % 11 = 0 THEN NULL ELSE g % 4 END::int8 AS k1, CASE WHEN g % 13 = 0 THEN NULL ELSE (g / 3) % 3 END::int8 AS k2,
        CASE WHEN g % 7 = 0 THEN NULL ELSE g % 2 END::int8 AS k3, CASE WHEN g % 5 = 0 THEN NULL ELSE (g * 37) % 101 - 50 END::int8 AS v1,
        CASE WHEN g % 6 = 0 THEN NULL ELSE (4611686018427387904 - g) * CASE WHEN g % 2 = 0 THEN 1 ELSE -1 END END::int8 AS v2, g % 9 <> 0 AS keep
 FROM generate_series(1, 600) AS g
 UNION ALL
-SELECT 'rbig', g, g % 500, (g / 7) % 40, g % 3, (g * 37) % 1001 - 500, g::int8 * 1000003, g % 4 <> 0 FROM generate_series(1, 20000) AS g;
+SELECT 'rbig', g, g % 500, (g / 7) % 40, g % 3, (g * 37) % 1001 - 500, g::int8 * 1000003, g % 4 <> 0 FROM generate_series(1, 6000) AS g;
 CREATE TABLE rda AS
 SELECT name, array_agg(k1 ORDER BY id) AS ka, array_agg(k2 ORDER BY id) AS kb, array_agg(k3 ORDER BY id) AS kc, array_agg(v1 ORDER BY id) AS va,
        array_agg(v2 ORDER BY id) AS vb, array_agg(keep ORDER BY id) AS x FROM rsrc GROUP BY name;
@@ -743,7 +743,7 @@ WHERE sets IN ('ROLLUP (k1, k2, k3)', 'CUBE (k1, k2, k3)', 'GROUPING SETS ((k1, 
 
 RESET work_mem;
 -- the groups of the sets outgrow the budget of work_mem: the biggest sets go to temporary files and come back one partition at a time, and the answer is the same
-SET work_mem = '1MB';
+SET work_mem = '256kB';
 SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, dist, true) AS wrong
 FROM rsets, (VALUES (false), (true)) AS p(prehash), (VALUES (false), (true)) AS d(dist)
 WHERE sets IN ('ROLLUP (k1, k2, k3)', 'CUBE (k1, k2, k3)') ORDER BY sets, prehash, dist;
