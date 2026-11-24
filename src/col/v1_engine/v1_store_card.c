@@ -34,7 +34,8 @@ has_range(const SiftSrcLeaf *l, const SiftSrcStats *st)
 	return l->kind == SCL_SCALAR && !l->wide && (l->vtype == SCV_I32 || l->vtype == SCV_I64) && st->ndistinct[l->id] > 0 && st->max[l->id] > st->min[l->id];
 }
 
-/* the bytes of a row of each leaf: the bytes of the index per row, shared by the width of the values of each leaf (a child's per element, an element count's per row) */
+/* the bytes of a row of each leaf: the bytes of the index per row, shared by the width of the values of each leaf (a child's per element, an element count's per row), and no more than that width: the
+ * headers of a few segments are no cost of a row */
 static void
 leaf_bytes(const SiftSrcLayout *lay, const SiftSrcStats *st, double *per_row)
 {
@@ -49,7 +50,7 @@ leaf_bytes(const SiftSrcLayout *lay, const SiftSrcStats *st, double *per_row)
 		total += per_row[i];
 	}
 	for (int i = 0; i < lay->nleaves && total > 0 && st->bytes > 0 && st->nrows > 0; i++)
-		per_row[i] *= st->bytes / st->nrows / total;
+		per_row[i] = Min(per_row[i] * st->bytes / st->nrows / total, per_row[i]);
 }
 
 static SiftColCardStats
