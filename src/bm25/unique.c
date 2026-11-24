@@ -212,17 +212,20 @@ duplicate(Relation heap, Relation index, const Datum *values, const bool *isnull
 			 errtableconstraint(heap, RelationGetRelationName(index))));
 }
 
-/* A live duplicate of the row (the first found), or the transaction to wait for when the only ones are not committed */
+/* A live duplicate of the row (the first found), or the transaction to wait for, and the row it inserted, when the only ones are not committed */
 static bool
-find_duplicate(Prober *p, uint64 key, const Datum *values, const bool *isnull, ItemPointer self, TransactionId *xwait, uint32 *token)
+find_duplicate(Prober *p, uint64 key, const Datum *values, const bool *isnull, ItemPointer self, TransactionId *xwait, ItemPointer at, uint32 *token)
 {
 	foreach_ptr(ItemPointerData, cand, candidates(p->index, key, CurrentMemoryContext))
 	{
+		const TransactionId before = *xwait;
 		ProbeResult r;
 
 		if (ItemPointerEquals(cand, self))
 			continue;
 		r = probe_row(p, cand, values, isnull, xwait, token);
+		if (*xwait != before)
+			*at = *cand;
 		if (r == PROBE_DUPLICATE)
 		{
 			*xwait = InvalidTransactionId;
@@ -243,17 +246,18 @@ sift_bm25_unique_check(Relation index, Relation heap, const Datum *values, const
 	for (;;)
 	{
 		TransactionId xwait = InvalidTransactionId;
+		ItemPointerData at;
 		uint32		token = 0;
 
 		LockPage(index, bucket(key), ExclusiveLock);
-		duplicated = find_duplicate(&p, key, values, isnull, tid, &xwait, &token);
+		duplicated = find_duplicate(&p, key, values, isnull, tid, &xwait, &at, &token);
 		if (!TransactionIdIsValid(xwait))
 			break;
 		UnlockPage(index, bucket(key), ExclusiveLock);
 		if (token != 0)
 			SpeculativeInsertionWait(xwait, token);
 		else
-			XactLockTableWait(xwait, heap, NULL, XLTW_InsertIndex);
+			XactLockTableWait(xwait, heap, &at, XLTW_InsertIndex);
 	}
 	prober_close(&p);
 	if (check == UNIQUE_CHECK_EXISTING)
