@@ -10,7 +10,8 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 VERSION=$(sed -n "s/^default_version = '\(.*\)'/\1/p" "$REPO/pg_sift.control")
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 OLD_REF=${SIFT_UPGRADE_OLD_REF:-v5.0.0}
-ROWS=$(knob SIFT_COMPAT_ROWS 6000 3000)
+ROWS=$(knob SIFT_COMPAT_ROWS 6000 2000)
+WORKER_SECONDS=$(knob SIFT_COMPAT_WORKER_SECONDS 60 5)
 newroot=$ROOT
 build_old "$OLD_REF"; oldroot=$OLDROOT
 OLD_VERSION=$(sed -n "s/^default_version = '\(.*\)'/\1/p" "$oldroot$(pg_config --sharedir)/extension/pg_sift.control")
@@ -136,8 +137,8 @@ run_variant() { # VARIANT OFFSET
 	sql "$n" "UPDATE docs SET n = n + 1 WHERE id % 2 = 0" "DELETE FROM trk_c WHERE id % 3 = 0" "DELETE FROM trk_i WHERE id % 3 = 0" "UPDATE kc SET v = v + 1 WHERE id % 2 = 0" >/dev/null
 	sql "$n" "ALTER SYSTEM SET sift.async_maintenance = on" "ALTER SYSTEM SET autovacuum = on" "ALTER SYSTEM SET autovacuum_naptime = 2" "SELECT pg_reload_conf()" >/dev/null
 	due() { sql "$n" "SELECT count(*) FROM unnest(ARRAY[$COLIDX]) u WHERE sift.col_maintenance_due(u::regclass) IS NOT NULL"; }
-	wait_for "test \$(due) == 0" 60
-	diag "$v: indexes still due after 60 s of the workers (their WAL pacing may hold them): $(due)"
+	wait_for "test \$(due) == 0" "$WORKER_SECONDS"
+	diag "$v: indexes still due after $WORKER_SECONDS s of the workers (their WAL pacing may hold them): $(due)"
 	for _ in 1 2 3; do sql "$n" "SELECT sift.col_maintain(u::regclass) FROM unnest(ARRAY[$COLIDX]) u WHERE sift.col_maintenance_due(u::regclass) IS NOT NULL" >/dev/null; done
 	check "$v: maintenance converges: col_maintain leaves no index due" test "$(due)" == 0
 	check "$v: the workers left no error in the log" test "$(grep -cE 'ERROR:  .*sift|PANIC|TRAP' "$(dir "$n")/postgres.log")" == 0

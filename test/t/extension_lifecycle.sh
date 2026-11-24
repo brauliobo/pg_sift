@@ -9,10 +9,11 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 # the extension version of this tree: the minor, or X.Y.N for a patch release (scripts/release.sh --ext-version)
 EXT=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
+N=$(knob SIFT_LIFE_ROWS 20000 4000)
 
 q() { local n=$1 db=$2; shift 2; sql_db "$n" "$db" "$@"; }
 # a VACUUM of a sift_table promotes only the rows older than the oldest snapshot of the database, which a maintenance worker can hold for a moment: vacuum again until the segments show it (under the column minor the rows were written with)
-vacuum_until() { local table=$1 want=$2 set=${3:-RESET sift.test_col_format_minor} out _; for _ in $(seq 120); do out=$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.table_segments('$table') WHERE kind = 'columns'" | tail -n 1); [[ $out == "$want" ]] && return 0; q life upg "$set" "VACUUM $table" >/dev/null; sleep 0.5; done; }
+vacuum_until() { local table=$1 want=$2 set=${3:-RESET sift.test_col_format_minor} out _; for _ in $(seq 120); do out=$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.table_segments('$table') WHERE kind = 'columns'" | tail -n 1); [[ $out == "$want" ]] && return 0; q life upg "$set" "VACUUM $table" >/dev/null; sleep 0.05; done; }
 sql_db() {
 	local n=$1 db=$2
 	shift 2
@@ -132,11 +133,11 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE TO '3.0'" >/dev/null
 	# a column index written with the 3.0 segment format (minor 3), which the 3.1 library must keep reading across the update
 	q life upg "CREATE TABLE colt (id int, grp int, v numeric(10,2))" \
-		"INSERT INTO colt SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"INSERT INTO colt SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, $N) g" \
 		"SET sift.test_col_format_minor = 3" "CREATE INDEX colt_col ON colt USING sift_col (id, grp, v)" >/dev/null
 	# a sift_table with the 3.0 column minor (the files of the real 3.0 library are read in old_lib_refusal.sh)
 	q life upg "SET sift.test_col_format_minor = 3" "CREATE TABLE tbl (id int, grp int, v numeric(10,2)) USING sift_table" \
-		"INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 20000) g" "VACUUM tbl" >/dev/null
+		"INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, $N) g" "VACUUM tbl" >/dev/null
 	vacuum_until tbl 3 "SET sift.test_col_format_minor = 3"
 	TBLQ="SELECT count(*) || ':' || sum(v) || ':' || max(id) FROM tbl"
 	TBL0=$(q life upg "$TBLQ" | tail -n 1)
@@ -330,10 +331,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life lock32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
 		"SET sift.test_col_format_minor = 6" "CREATE INDEX f_1 ON f USING sift_col (id, g)" "ALTER INDEX f_1 SET (key_columns = 'g')" >/dev/null
 	q life lock32 "BEGIN" "REINDEX INDEX f_1" "SELECT pg_sleep(60)" >/dev/null 2>&1 &
-	for _ in $(seq 100); do
-		[[ $(q life lock32 "SELECT count(*) FROM pg_locks WHERE locktype = 'relation' AND mode = 'AccessExclusiveLock' AND granted AND relation = 'f_1'::regclass") != 0 ]] && break
-		sleep 0.1
-	done
+	wait_for "[[ \$(q life lock32 \"SELECT count(*) FROM pg_locks WHERE locktype = 'relation' AND mode = 'AccessExclusiveLock' AND granted AND relation = 'f_1'::regclass\") != 0 ]]" 10
 	upd=$(LC_ALL=C q life lock32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
 	q life lock32 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'lock32' AND pid <> pg_backend_pid() AND query LIKE '%pg_sleep(60)%'" >/dev/null; wait
 	check "the update with a locked index finishes and says to run the function after reconnecting" test "$rc/$(grep -c 'the check for what to REINDEX or rewrite did not run' <<<"$upd")/$(q life lock32 \
@@ -354,14 +352,14 @@ if (( PG_MAJOR >= 18 )); then
 	check "the minor 3 column index verifies and answers the same after the update" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 	# minor 4 segments join the same index: written after the update, beside the minor 3 ones
-	q life upg "INSERT INTO colt SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "SELECT sift.col_promote('colt_col')" >/dev/null
+	q life upg "INSERT INTO colt SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series($((N + 1)), $((2 * N))) g" "SELECT sift.col_promote('colt_col')" >/dev/null
 	COLOFF=$(q life upg "SET sift.enable_agg = off" "$COLQ" | tail -n 1)
 	check "the index with minor 3 and minor 4 segments verifies and answers the same" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
 	# minor 7 segments (the cube also holds min and max; on by default since 3.3) join an index of minor 3 segments: the units written before scan, the others answer, the results are the heap's
-	q life upg "CREATE TABLE colm (id int, grp int, v numeric(10,2))" "INSERT INTO colm SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+	q life upg "CREATE TABLE colm (id int, grp int, v numeric(10,2))" "INSERT INTO colm SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, $N) g" \
 		"SET sift.test_col_format_minor = 3" "CREATE INDEX colm_col ON colm USING sift_col (id, grp, v) WITH (superunit = 0)" "RESET sift.test_col_format_minor" \
-		"ALTER INDEX colm_col SET (cube_minmax = true)" "INSERT INTO colm SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"ALTER INDEX colm_col SET (cube_minmax = true)" "INSERT INTO colm SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series($((N + 1)), $((2 * N))) g" \
 		"SELECT sift.col_promote('colm_col')" >/dev/null
 	MMQ="SELECT string_agg(grp || ':' || lo || ':' || hi, ',' ORDER BY grp) FROM (SELECT grp, min(v) lo, max(v) hi FROM colm GROUP BY grp) g"
 	MMOFF=$(q life upg "SET sift.enable_agg = off" "$MMQ" | tail -n 1)
@@ -370,9 +368,9 @@ if (( PG_MAJOR >= 18 )); then
 		"SET sift.enable_agg = on" "$MMQ" | tail -n 1)" == "$MMOFF"
 	# a sift_table with a timestamp column written as minor 3 takes the writes of the default setting (the month of the column is a dim of the cube): the units written before scan, the others answer, the results are the plain plan's
 	q life upg "SET sift.test_col_format_minor = 3" "CREATE TABLE tblm (id int, ts timestamp, v numeric(10,2), d date, tz timestamptz) USING sift_table" \
-		"INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0, date '2020-01-01' + g / 24, timestamptz '2020-01-01+00' + g * interval '1 hour' FROM generate_series(1, 30000) g" "VACUUM tblm" >/dev/null
+		"INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0, date '2020-01-01' + g / 24, timestamptz '2020-01-01+00' + g * interval '1 hour' FROM generate_series(1, $((N * 3 / 2))) g" "VACUUM tblm" >/dev/null
 	vacuum_until tblm 3 "SET sift.test_col_format_minor = 3"
-	q life upg "INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0, date '2020-01-01' + g / 24, timestamptz '2020-01-01+00' + g * interval '1 hour' FROM generate_series(30001, 60000) g" "VACUUM tblm" >/dev/null
+	q life upg "INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0, date '2020-01-01' + g / 24, timestamptz '2020-01-01+00' + g * interval '1 hour' FROM generate_series($((N * 3 / 2 + 1)), $((N * 3))) g" "VACUUM tblm" >/dev/null
 	MONQ="SELECT string_agg(m || ':' || n || ':' || s, ',' ORDER BY m) FROM (SELECT date_trunc('month', ts)::date m, count(*) n, sum(v) s FROM tblm GROUP BY 1) g"
 	MONOFF=$(q life upg "SET sift.enable_agg = off" "$MONQ" | tail -n 1)
 	CALQ="SELECT string_agg(y || ':' || n || ':' || s, ',' ORDER BY y) FROM (SELECT extract(isoyear FROM d) y, count(*) n, sum(v) s FROM tblm WHERE d >= '2020-03-01' AND d < '2025-03-01' GROUP BY 1) g"
@@ -385,20 +383,20 @@ if (( PG_MAJOR >= 18 )); then
 	check "the sift_table with minor 3 and minor 8 segments answers the ISO years of a date range as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$CALQ" | tail -n 1)" == "$CALOFF"
 	check "the sift_table with minor 3 and minor 8 segments answers the UTC quarters of a timestamptz as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$TZQ" | tail -n 1)" == "$TZOFF"
 	# minor 9 segments (the rollup of the rows; opt-in) join an index of minor 3 and minor 7 segments: the units written before scan, the others answer, the results are the heap's
-	q life upg "CREATE TABLE rowr (id int, a int, b int, v numeric(10,2))" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+	q life upg "CREATE TABLE rowr (id int, a int, b int, v numeric(10,2))" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(1, $N) g" \
 		"SET sift.test_col_format_minor = 3" "CREATE INDEX rowr_col ON rowr USING sift_col (id, a, b, v) WITH (superunit = 0, rollup_dims = 'off')" "RESET sift.test_col_format_minor" \
-		"ALTER INDEX rowr_col SET (cube_minmax = true)" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(20001, 30000) g" \
+		"ALTER INDEX rowr_col SET (cube_minmax = true)" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series($((N + 1)), $((N * 3 / 2))) g" \
 		"SELECT sift.col_promote('rowr_col')" "ALTER INDEX rowr_col SET (rollup_dims = 'a, b')" \
-		"INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(30001, 40000) g" "SELECT sift.col_promote('rowr_col')" >/dev/null
+		"INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series($((N * 3 / 2 + 1)), $((2 * N))) g" "SELECT sift.col_promote('rowr_col')" >/dev/null
 	RRQ="SELECT string_agg(a || ':' || b || ':' || n || ':' || s, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n, sum(v) s FROM rowr GROUP BY a, b) g"
 	RROFF=$(q life upg "SET sift.enable_agg = off" "$RRQ" | tail -n 1)
 	check "an index with minor 3, minor 7 and minor 9 segments" test "$(q life upg "SELECT string_agg(DISTINCT least(format, 9)::text, ',' ORDER BY least(format, 9)::text) FROM sift.col_segments('rowr_col') WHERE kind = 'immutable'")" == 3,7,9
 	check "the index with minor 3, 7 and 9 segments verifies and answers the two-key group as the heap" test "$(q life upg "SELECT sift.col_verify('rowr_col', true)" \
 		"SET sift.enable_agg = on" "$RRQ" | tail -n 1)" == "$RROFF"
 	# minor 10 segments (the small-set summary of a bigint leaf; opt-in) join an index of minor 3 segments: the units written before are read, the others skip by their summary, the results are the heap's
-	q life upg "CREATE TABLE cols8 (id int, grp bigint, v numeric(10,2))" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+	q life upg "CREATE TABLE cols8 (id int, grp bigint, v numeric(10,2))" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, $N) g" \
 		"SET sift.test_col_format_minor = 3" "CREATE INDEX cols8_col ON cols8 USING sift_col (id, grp, v) WITH (superunit = 0)" "RESET sift.test_col_format_minor" \
-		"ALTER INDEX cols8_col SET (key_columns = 'grp')" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"ALTER INDEX cols8_col SET (key_columns = 'grp')" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series($((N + 1)), $((2 * N))) g" \
 		"SELECT sift.col_promote('cols8_col')" >/dev/null
 	S8Q="SELECT count(*) || ':' || sum(v) FROM cols8 WHERE grp = 7919"
 	S8OFF=$(q life upg "SET sift.enable_agg = off" "$S8Q" | tail -n 1)
@@ -417,9 +415,9 @@ if (( PG_MAJOR >= 18 )); then
 	check "the index with minor 3 and minor 12 segments verifies and answers as the heap, with and without the summaries" test "$(q life upg "SELECT sift.col_verify('cols_col', true)" \
 		"SET sift.enable_agg = on" "$SUQ" | tail -n 1)$(q life upg "SET sift.test_agg_super = off" "SET sift.enable_agg = on" "$SUQ" | tail -n 1)" == "$SUOFF$SUOFF"
 	# minor 15 segments (the key list or bitmap of an int leaf; opt-in) join an index of minor 3 segments: the units written before are scanned, the others answer count(DISTINCT) from their bitmap, the result is the heap's; REINDEX gives every unit its bitmap
-	q life upg "CREATE TABLE cols15 (id int, k int, v numeric(10,2))" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+	q life upg "CREATE TABLE cols15 (id int, k int, v numeric(10,2))" "INSERT INTO cols15 SELECT g, g % $((N / 4)), g % 1000 / 8.0 FROM generate_series(1, $N) g" \
 		"SET sift.test_col_format_minor = 3" "CREATE INDEX cols15_col ON cols15 USING sift_col (id, k, v)" "RESET sift.test_col_format_minor" \
-		"ALTER INDEX cols15_col SET (key_columns = 'k')" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"ALTER INDEX cols15_col SET (key_columns = 'k')" "INSERT INTO cols15 SELECT g, g % $((N / 4)), g % 1000 / 8.0 FROM generate_series($((N + 1)), $((2 * N))) g" \
 		"SELECT sift.col_promote('cols15_col')" >/dev/null
 	S15Q="SELECT count(DISTINCT k), count(*), sum(v) FROM cols15"
 	S15OFF=$(q life upg "SET sift.enable_agg = off" "$S15Q" | tail -n 1)
@@ -430,7 +428,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "after REINDEX every segment of the index is minor 15 and the answer is the same" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols15_col') WHERE kind = 'immutable') x")/$(q life upg \
 		"SELECT sift.col_verify('cols15_col', true)" "SET sift.enable_agg = on" "$S15Q" | tail -n 1)" == "15/$S15OFF"
 	# the sift_table written by 3.0 takes the writes of 3.1 (column minor 4 groups beside its minor 3 ones)
-	q life upg "INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "VACUUM tbl" >/dev/null
+	q life upg "INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series($((N + 1)), $((2 * N))) g" "VACUUM tbl" >/dev/null
 	# paths declared on the updated extension: the rewrite writes them, and the query answers as the jsonb column does
 	q life upg "CREATE TABLE tblj (id int, doc jsonb) USING sift_table" "INSERT INTO tblj SELECT g, jsonb_build_object('k', g % 7) FROM generate_series(1, 3000) g" \
 		"SELECT sift.table_set_paths('tblj', 'doc', 'doc->k int4')" "VACUUM FULL tblj" >/dev/null
@@ -438,7 +436,7 @@ if (( PG_MAJOR >= 18 )); then
 		"SELECT (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT doc->>'k' k, count(*) c FROM tblj WHERE (doc->>'k')::int >= 0 GROUP BY 1) g)
 			= (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT (id % 7)::text k, count(*) c FROM tblj GROUP BY 1) g)" | tail -n 1)" == t
 	check "the sift_table written by 3.0 adds up the rows written after the update" test "$(q life upg "$TBLQ" | tail -n 1)" == "$(q life upg \
-		"SELECT count(*) || ':' || sum(v) || ':' || max(id) FROM (SELECT g id, (g % 1000 / 8.0)::numeric(10,2) v FROM generate_series(1, 40000) g) s" | tail -n 1)"
+		"SELECT count(*) || ':' || sum(v) || ':' || max(id) FROM (SELECT g id, (g % 1000 / 8.0)::numeric(10,2) v FROM generate_series(1, $((2 * N))) g) s" | tail -n 1)"
 	q life upg "INSERT INTO docs VALUES (9000, 'alpha3 afterupdate')" "SELECT sift.promote('docs_idx')" >/dev/null
 	check "the updated library writes segments of format 4 next to the format 2 one (a mixed index, verified and equal to a scan)" \
 		test "$(formats | grep -c '^2,4$')$(vq life upg "SELECT fp() = seq()")" == 1t

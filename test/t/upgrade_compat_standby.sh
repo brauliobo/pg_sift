@@ -12,7 +12,7 @@
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 OLD_REF=${SIFT_UPGRADE_OLD_REF:-v5.0.0}
-ROWS=$(knob SIFT_COMPAT_ROWS 6000 3000)
+ROWS=$(knob SIFT_COMPAT_ROWS 6000 2000)
 newroot=$ROOT
 build_old "$OLD_REF"; oldroot=$OLDROOT
 

@@ -29,6 +29,7 @@ for row in "${MATRIX[@]}"; do
 	git -C "$REPO" rev-parse --verify -q "${row%% *}^{commit}" >/dev/null || { echo "1..0 # SKIP released library source ${row%% *} is unavailable"; exit 0; }
 done
 newroot=$ROOT
+D=$(knob SIFT_COMPAT_MATRIX_ROWS 12000 3000)
 # the version of this tree: what the catalog, the library and the preflight say after the downgrade is this one, whatever the release in preparation is
 cur=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
 q() { sql mx "$@"; }
@@ -98,9 +99,9 @@ sift.async_maintenance = off'
 	# ---- the release writes
 	q "CREATE EXTENSION pg_sift" \
 		"CREATE TABLE docs (id int PRIMARY KEY, g int, n int, body text)" \
-		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(1, 12000) i" \
+		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(1, $D) i" \
 		"CREATE INDEX docs_idx ON docs USING sift (body)" "CREATE INDEX docs_col ON docs USING sift_col (id, g, n)" \
-		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 3 || ' beta' || i % 7 FROM generate_series(12001, 12600) i" \
+		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 3 || ' beta' || i % 7 FROM generate_series($((D + 1)), $((D + 600))) i" \
 		"CREATE TABLE lw (id int, body text)" "INSERT INTO lw VALUES (1, repeat('x', 300))" "CREATE INDEX lw_idx ON lw USING sift (body)" \
 		"CREATE TABLE jt (id int, items jsonb, attr jsonb)" \
 		"INSERT INTO jt SELECT i, jsonb_build_array(CASE i % 3 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"s\":null}'::jsonb ELSE '{\"s\":\"gift\"}'::jsonb END),
@@ -109,8 +110,8 @@ sift.async_maintenance = off'
 		"CREATE INDEX jt_col ON jt USING sift_col (id, items, attr) WITH (paths = 'items[]{s text}, attr->a $textkind')" \
 		"INSERT INTO jt SELECT i, '[{\"s\":\"gift\"}]', '{\"a\":null}' FROM generate_series(3001, 3300) i" >/dev/null || bail "$ref setup"
 	if [[ $hastbl == yes ]]; then
-		q "CREATE TABLE tbl (id int, g int, n int) USING sift_table" "INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 12000) i" "VACUUM tbl" \
-			"INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(12001, 12600) i" "CREATE TABLE tbl_h AS TABLE tbl" \
+		q "CREATE TABLE tbl (id int, g int, n int) USING sift_table" "INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, $D) i" "VACUUM tbl" \
+			"INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series($((D + 1)), $((D + 600))) i" "CREATE TABLE tbl_h AS TABLE tbl" \
 			"CREATE TABLE tbl_ts (id int, at timestamp) USING sift_table" "INSERT INTO tbl_ts SELECT i, timestamp '2026-01-01' + i * interval '1 hour' FROM generate_series(1, 3000) i" \
 			"VACUUM tbl_ts" "CREATE TABLE tbl_big (id int, v text) USING sift_table" "INSERT INTO tbl_big VALUES (1, repeat('b', 2000000))" >/dev/null || bail "$ref table setup"
 	fi
@@ -146,13 +147,13 @@ sift.async_maintenance = off'
 	check "$ref: verify after REINDEX" verify_all "sift.verify('docs_idx', true)" "sift.col_verify('docs_col', true)" "sift.col_verify('jt_col', true)"
 	agree "$ref: answers after REINDEX equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
 	# writes with this tree on what the release wrote
-	q "INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 4 || ' beta' || i % 13 FROM generate_series(12601, 13500) i" \
+	q "INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 4 || ' beta' || i % 13 FROM generate_series($((D + 601)), $((D + 1500))) i" \
 		"UPDATE docs SET n = n + 1, body = body || ' moved' WHERE id % 17 = 0" "DELETE FROM docs WHERE id % 19 = 0" \
 		"INSERT INTO jt SELECT i, '[{\"s\":null},{\"s\":\"x\"}]', '{\"a\":2}' FROM generate_series(3301, 3600) i" \
 		"UPDATE jt SET attr = '{\"a\":true}' WHERE id % 23 = 0" "DELETE FROM jt WHERE id % 29 = 0" >/dev/null || bail "$ref writes"
 	if [[ $hastbl == yes ]]; then
 		for t in tbl tbl_h; do
-			q "INSERT INTO $t SELECT i, i % 9, i % 100 FROM generate_series(12601, 13500) i" "UPDATE $t SET n = n + 1 WHERE id % 17 = 0" "DELETE FROM $t WHERE id % 19 = 0" >/dev/null || bail "$ref table writes"
+			q "INSERT INTO $t SELECT i, i % 9, i % 100 FROM generate_series($((D + 601)), $((D + 1500))) i" "UPDATE $t SET n = n + 1 WHERE id % 17 = 0" "DELETE FROM $t WHERE id % 19 = 0" >/dev/null || bail "$ref table writes"
 		done
 	fi
 	agree "$ref: answers after writes equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
@@ -295,7 +296,7 @@ sift.async_maintenance = off'
 		DGB="SELECT count(*), sum(id) FROM dgb WHERE body @@> 'alpha3 beta4'"
 		bidx=$(q "SET enable_seqscan = off" "$DGB" | tail -1)
 		q "ALTER SYSTEM SET sift.test_col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
-		for _ in $(seq 100); do [[ $(q "SHOW sift.test_col_format_minor") == 6 ]] && break; sleep 0.1; done
+		wait_for "[[ \$(q \"SHOW sift.test_col_format_minor\") == 6 ]]" 10
 		check "3.2 downgrade: the setting is 6 for every new session" test "$(q "SHOW sift.test_col_format_minor")" == 6
 		# the relations written above minor 6, or in a buffer of format 11, that the release cannot read (the 6.0 preflight names only what it cannot read of Format 2.0); the indexes with the
 		# presence leaf of 4.2 are written by a REINDEX of this tree: the REINDEX under the release rewrites them, after the restart (below)
