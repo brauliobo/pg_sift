@@ -60,6 +60,9 @@ END $$;
 SELECT * FROM check_q($$SELECT grp, round(avg((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 3), count(*) FROM j WHERE ts >= date '2024-01-10' GROUP BY 1$$);
 SELECT * FROM check_q($$SELECT grp, sum((doc -> 'metrics' ->> 'm_a')::float8), avg((doc -> 'metrics' ->> 'm_b')::float8) FROM j GROUP BY 1$$);
 SELECT * FROM check_q($$SELECT count((doc -> 'metrics' ->> 'm_a')::float8), count(*) FROM j$$);
+-- a member or a path the index does not declare is not on the scan
+SELECT * FROM check_q($$SELECT doc ->> 'm_a', count(*) FROM j GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT sum((doc -> 'other' ->> 'm_a')::float8) FROM j$$);
 SELECT * FROM check_q($$SELECT grp, max((doc -> 'metrics' ->> 'm_b')::float8), min((doc -> 'metrics' ->> 'm_b')::float8) FROM j WHERE grp > 1 GROUP BY 1$$);
 SELECT * FROM check_q($$SELECT 'a' AS arm, avg((doc -> 'metrics' ->> 'm_a')::float8), count(*) FROM j UNION ALL SELECT 'b', avg((doc -> 'metrics' ->> 'm_b')::float8), count(*) FROM j$$);
 SELECT * FROM check_q($$SELECT (doc -> 'metrics' ->> 'm_b')::int AS m, count(*) FROM j GROUP BY 1$$);

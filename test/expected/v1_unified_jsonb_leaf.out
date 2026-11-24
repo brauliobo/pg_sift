@@ -72,6 +72,19 @@ SELECT * FROM check_q($$SELECT count((doc -> 'metrics' ->> 'm_a')::float8), coun
  SiftAggV6 | -      | t
 (1 row)
 
+-- a member or a path the index does not declare is not on the scan
+SELECT * FROM check_q($$SELECT doc ->> 'm_a', count(*) FROM j GROUP BY 1$$);
+ node | unnest | same 
+------+--------+------
+ none | -      | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT sum((doc -> 'other' ->> 'm_a')::float8) FROM j$$);
+ node | unnest | same 
+------+--------+------
+ none | -      | t
+(1 row)
+
 SELECT * FROM check_q($$SELECT grp, max((doc -> 'metrics' ->> 'm_b')::float8), min((doc -> 'metrics' ->> 'm_b')::float8) FROM j WHERE grp > 1 GROUP BY 1$$);
    node    | unnest | same 
 -----------+--------+------
