@@ -20,7 +20,6 @@ CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_op
 NOTICE:  sift_col index "ot_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "ot_i" is column format minor 44, which a library before 4.3 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
-SET sift.test_topn_heads = off;
 -- the answer is right when its keys are the heap's, in order, and every row it names is a distinct row of the table with that key; the second field is the heap fetches
 -- of the scan: 'skipped' when it fetched no more rows than it gave out (no entry before the OFFSET was confirmed), 'confirmed' when it fetched more than the LIMIT and half
 -- the OFFSET (dead entries are not counted), 'partly' between

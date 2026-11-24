@@ -19,7 +19,6 @@ CREATE INDEX ob_i ON ob USING sift_col (id sift.col_int4_ops, n sift.col_int4_op
 NOTICE:  sift_col index "ob_i": 2 automatic choices (order_array_columns, track_changes)
 NOTICE:  sift_col index "ob_i" is column format minor 44, which a library before 4.3 cannot read
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ob;
-SET sift.test_topn_heads = off;
 -- the answer says DIFFERS with the query when the rows of the scan are not those of the plan without the extension or of the walk of every entry; 'bulk' when the scan used the global order
 CREATE FUNCTION ob_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; used bool := false; ka text; kb text; kc text;

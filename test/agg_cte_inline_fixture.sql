@@ -3,7 +3,6 @@
 \set ECHO none
 SET client_min_messages = warning;
 -- the node under test: the two-level scan (agg_two_level_arm_where) takes the same shape in one node, with no rows to group
-SET sift.test_agg_two_level = off;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, removed_at timestamptz, payload jsonb);
 INSERT INTO events
 SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360), CASE WHEN g % 97 = 0 THEN now() END,
