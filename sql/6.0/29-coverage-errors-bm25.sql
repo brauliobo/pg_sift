@@ -16,4 +16,5 @@ CREATE OPERATOR CLASS sift.any_ops DEFAULT FOR TYPE anyelement USING sift AS
 	OPERATOR 1 pg_catalog.@@> (anyelement, text);
 
 COMMENT ON FUNCTION sift.match_any(anyelement, text) IS 'doc @@> query for a column of any type: the text its output function writes, matched as the text operator does.';
+COMMENT ON OPERATOR pg_catalog.@@> (anyelement, text) IS 'Full-text match of a column of any type against a SiftQL query, matched on the text its output function writes; answered by a sift BM25 index.';
 COMMENT ON OPERATOR CLASS sift.any_ops USING sift IS 'Lets a sift index key be a column of any type without an operator class of its own (varchar, char(n), int, uuid, jsonb, ...), indexed by its text.';
