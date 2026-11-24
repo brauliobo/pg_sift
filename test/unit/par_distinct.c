@@ -37,8 +37,6 @@ roomy(uint32 workers)
 	return (Sizes) {(size_t) ROWS * 80 / workers + (32 << 20), 16 << 20};
 }
 
-/* ---- the answer ---- */
-
 typedef struct DRow
 {
 	uint64		key[SIFT_PAR_GROUP_MAX_KEYS];
@@ -410,8 +408,6 @@ test_overflow(void)
 		dfree(d);
 	}
 }
-
-/* ---- the key table, with one hash for every key: only the bytes and the words tell them apart ---- */
 
 typedef struct KeyIn
 {

@@ -153,8 +153,6 @@ dfree(DData *d)
 	free(d);
 }
 
-/* ---- the scan: the rows of the items [lo, hi), with no copy ---- */
-
 typedef struct DSrc
 {
 	const DData *d;

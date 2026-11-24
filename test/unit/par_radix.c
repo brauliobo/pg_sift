@@ -48,8 +48,6 @@ typedef struct Run
 	uint32		left_items;
 } Run;
 
-/* ---- the grouped aggregation ---- */
-
 typedef struct GCtx
 {
 	Src			src;
@@ -315,8 +313,6 @@ test_group_overflow(void)
 	data_free(strs);
 	data_free(mixed);
 }
-
-/* ---- the bitsets of dictionary codes ---- */
 
 typedef struct OrJob
 {

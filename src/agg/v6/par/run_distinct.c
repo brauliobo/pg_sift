@@ -122,8 +122,6 @@ distinct_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads,
 	sz->state_want = sz->state_min + 3 * (grouped ? sizeof(uint64) * 2 : sizeof(uint64)) * per + 256 * (keys + texts);
 }
 
-/* ---- a thread ---- */
-
 static void *
 batch_array(SiftArena *scratch, uint32 n, size_t size, SiftErr *err)
 {
@@ -280,8 +278,6 @@ distinct_create(SiftV6ParScan *p, SiftParArenas *ar, uint64 rows, SiftErr *err)
 
 	return sift_par_distinct_create(ar, &p->sh.ds, &hooks, err);
 }
-
-/* ---- the leader ---- */
 
 /* A group of the answer into the groups of the statement: the distinct count is a piece the aggregate adds up, and each group comes once */
 static void

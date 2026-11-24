@@ -17,8 +17,6 @@
 /* The groups a statement with no K may have for the threads to give them all to the leader, which folds each one in turn (more are merged by the workers of the plan, in parallel) */
 #define ALL_GROUPS_MAX	(1u << 20)
 
-/* ---- the shape of the statement ---- */
-
 static bool
 keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
@@ -138,8 +136,6 @@ group_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads, Pa
 		(sh->gs.topk == 0 ? 2 * rec * Min(groups_est, ALL_GROUPS_MAX) / nthreads : 0);
 }
 
-/* ---- a thread ---- */
-
 static void *
 scratch_array(SiftArena *scratch, uint32 n, size_t size, SiftErr *err)
 {
@@ -218,8 +214,6 @@ group_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, Sift
 	out->n = ld.nact;
 	return true;
 }
-
-/* ---- the leader ---- */
 
 /* A group of the K best, or a partial aggregate of one, into the groups of the statement */
 static void

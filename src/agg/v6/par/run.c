@@ -19,8 +19,6 @@
 
 static const ParKind *const kinds[] = {&par_kind_group, &par_kind_distinct, &par_kind_rows};
 
-/* ---- the shape of the statement ---- */
-
 int
 par_add_leaf(ParShape *sh, int leaf, bool codes)
 {
@@ -115,8 +113,6 @@ shape_of(const SiftV6Spec *spec, const int *first, ParShape *sh)
 	return false;
 }
 
-/* ---- the memory of the threads: the statement may take 3/4 of work_mem ---- */
-
 /* The state each thread gets: what the operator wants within what the budget leaves; false when the least it needs does not fit, which is known before the scan hands a granule over */
 static bool
 arenas_size(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads, ParSizes *sz, size_t *state)
@@ -140,8 +136,6 @@ sift_v6_par_wanted(const SiftV6Spec *spec)
 
 	return nthreads > 1 && shape_of(spec, NULL, &sh) && arenas_size(&sh, spec->groups_est, 0, nthreads, &sz, &state);
 }
-
-/* ---- a thread ---- */
 
 bool
 par_arena_full(SiftArena *a, SiftErr *err)
@@ -185,8 +179,6 @@ par_load(const ParShape *sh, const SiftPinSlot *sl, SiftArena *scratch, SiftErr 
 			return false;
 	return true;
 }
-
-/* ---- the leader ---- */
 
 static bool
 op_feed(void *vp, uint32 item)

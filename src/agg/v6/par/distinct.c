@@ -55,8 +55,6 @@ sift_par_distinct_create(SiftParArenas *ar, const SiftParDistinctSpec *spec, con
 	return d;
 }
 
-/* ---- phase 1 ---- */
-
 static SiftTabKey
 row_key(const SiftParDistinct *d, const SiftParDistinctBatch *b, uint32 i, uint64 *words)
 {
@@ -179,8 +177,6 @@ add_aggs(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b,
 			return false;
 	return true;
 }
-
-/* ---- the values: a record of the value (and of the number of its key) into the partition of its key, or of its hash with no key ---- */
 
 static bool
 put_set_words(DistWorker *w, const SiftParDistinctBatch *b)
@@ -307,8 +303,6 @@ distinct_phase1(void *vd, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint3
 	return rows_in(d, &d->w[t], &b, hs, kids) || dist_fail(err, "parallel distinct: the arena of a thread has no room for the keys");
 }
 
-/* ---- the seal: the rows and sums of the keys of a thread, to the partitions of the keys ---- */
-
 static bool
 spill_keys(const SiftParDistinct *d, DistWorker *w)
 {
@@ -356,8 +350,6 @@ distinct_overflow(void *vd, const SiftParRange *left, uint32 nleft)
 }
 
 const SiftParOps sift_par_distinct_ops = {.phase1 = distinct_phase1,.seal = distinct_seal,.phase2 = distinct_phase2,.overflow_drain = distinct_overflow};
-
-/* ---- the answer ---- */
 
 typedef void (*EachFn) (void *arg, const SiftParDistinctRow *row);
 
@@ -441,8 +433,6 @@ sift_par_distinct_each(const SiftParDistinct *d, EachFn fn, void *arg)
 			for (uint32 i = 0; i < o->n; i++)
 				each_key(d, o->ent + (size_t) i * d->w[t].keys.ew, fn, arg);
 }
-
-/* ---- dictionary codes ---- */
 
 uint64
 sift_par_distinct_bits_or(const uint64 *const *bits, int nbits, uint32 nwords, int t, int nthreads, uint64 *out)

@@ -13,8 +13,6 @@ pad8(uint32 len)
 	return len == SIFT_STR_NULL ? 0 : (len + 7) & ~7u;
 }
 
-/* ---- the table ---- */
-
 bool
 pgk_layout(SiftCompact *proto, const SiftParGroupSpec *sp, uint64 rows_bound)
 {
@@ -114,8 +112,6 @@ pgk_add(SiftCompact *c, const SiftParGroupSpec *sp, const SiftParGroupRow *r, co
 	cmp_fold(c, s, r->count, r->sum);
 	return true;
 }
-
-/* ---- the records ---- */
 
 uint32
 pgk_word_rec_size(const SiftParGroupSpec *sp, bool partial)
@@ -259,8 +255,6 @@ pgk_parse(const SiftParGroupSpec *sp, bool partial, const uint8 *b, SiftParGroup
 	memcpy(r->sum, q + 8 * partial, sp->nsum * sizeof(uint64));
 	return pgk_rec_size(sp, partial, r);
 }
-
-/* ---- the order ---- */
 
 int
 pgk_cmp(const SiftParGroupSpec *sp, const SiftParGroupRow *a, const SiftParGroupRow *b)

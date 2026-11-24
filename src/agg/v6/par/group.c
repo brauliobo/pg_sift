@@ -59,8 +59,6 @@ fail_bug(SiftErr *err, const char *msg)
 	return false;
 }
 
-/* ---- the groups of a table, one by one, to the work of a thread ---- */
-
 typedef struct Walk
 {
 	SiftParGroup *g;
@@ -95,8 +93,6 @@ table_each(const Walk *wk, WalkFn fn)
 	}
 	return true;
 }
-
-/* ---- phase 1 ---- */
 
 static bool
 spill_row(const Walk *wk, const SiftParGroupRow *r)
@@ -223,8 +219,6 @@ group_phase1(void *vg, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *
 		return true;
 	return batch_room(g, t, &b, err) && (fold_batch(g, t, &b) || fail_bug(err, "parallel aggregation: a batch that fits did not fit"));
 }
-
-/* ---- the groups to their consumer ---- */
 
 static inline int64
 metric_of(const SiftParGroupSpec *sp, const SiftParGroupRow *r)
@@ -356,8 +350,6 @@ group_seal(void *vg, uint32 *nparts, SiftErr *err)
 	return ok || fail_mem(err, "parallel aggregation: the arena of the merge is full");
 }
 
-/* ---- phase 2 ---- */
-
 typedef struct Fold
 {
 	const SiftParGroupSpec *sp;
@@ -438,8 +430,6 @@ group_phase2(void *vg, int t, uint32 part, SiftArena *work, SiftErr *err)
 	return true;
 }
 
-/* ---- the answer ---- */
-
 static void flush_fin(const SiftParGroup *g);
 
 static void
@@ -464,8 +454,6 @@ group_finish(void *vg)
 	for (uint32 i = 0; i < n; i++)
 		g->hooks.emit(g->hooks.arg, 0, &((const SiftTopEnt *) sorted[i])->row);
 }
-
-/* ---- what was not delivered ---- */
 
 static bool
 drain_row(const Walk *wk, const SiftParGroupRow *r)
@@ -541,8 +529,6 @@ group_overflow(void *vg, const SiftParRange *left, uint32 nleft)
 }
 
 const SiftParOps sift_par_group_ops = {.phase1 = group_phase1,.seal = group_seal,.phase2 = group_phase2,.finish = group_finish,.overflow_drain = group_overflow};
-
-/* ---- the state ---- */
 
 static bool
 worker_open(SiftParGroup *g, int t, bool high_card, SiftErr *err)

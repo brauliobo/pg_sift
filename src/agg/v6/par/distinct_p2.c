@@ -30,8 +30,6 @@ typedef struct P2
 	bool		zero;			/* the value 0 (the empty entry of the flat table) is in the partition */
 } P2;
 
-/* ---- the table of the values ---- */
-
 static bool
 tab_open(P2 *p, uint32 part)
 {
@@ -80,8 +78,6 @@ tab_room(P2 *p, uint32 more)
 			return false;
 	return true;
 }
-
-/* ---- the records ---- */
 
 /* No key, a word value: the words of the chunk into the flat table */
 static bool
@@ -202,8 +198,6 @@ pair_chunk(void *arg, const uint8 *data, uint32 len)
 	}
 	return true;
 }
-
-/* ---- the partition ---- */
 
 static bool
 scan_threads(P2 *p, uint32 part, bool agg, SiftRadixChunkFn fn)
