@@ -295,7 +295,8 @@ lookup_ready(AggCtx *c, JoinCtx *jc, List *quals, Relids done)
 		if (bms_is_subset(vars, available))
 			return true;
 	}
-	return !named && (jc->kind == SJ_INNER || jc->kind == SJ_LEFT);
+	/* a preserved join keeps its unmatched rows once, not once per row of a cross-joined table the conditions above it do not name */
+	return !named && !preserved_join(c) && (jc->kind == SJ_INNER || jc->kind == SJ_LEFT);
 }
 
 static bool
