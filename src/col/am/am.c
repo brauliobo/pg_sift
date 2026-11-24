@@ -6,6 +6,7 @@
 #include "utils/rel.h"
 #include "access/genam.h"
 #include "access/table.h"
+#include "commands/extension.h"
 #include "col/am.h"
 #include "col/am/am_int.h"
 #include "col/f2/f2.h"
@@ -265,7 +266,15 @@ sift_col_handler(PG_FUNCTION_ARGS)
 	am->amsearcharray = am->amsearchnulls = true;
 	am->amcaninclude = true;
 	am->amcanunique = true;
+	/*
+	 * No flag of backward scans: an index of format major 1 cannot turn its scan round, and a cursor that scrolls reads over a Materialize instead (the ordered scans of format major 2 go backward on their own).
+	 * Only an index of format major 2 whose key_order is the order of its columns has an order to give: the planner is told which (sift_f2_ord_plan_init). An access method that orders wants a
+	 * comparison function with two arguments in the first member of every class, and the default class of the released scripts (which a fresh install runs again) has a placeholder with one:
+	 * the scripts that create classes run before the order is offered.
+	 */
+	am->amcanorder = !creating_extension;
 #if PG_VERSION_NUM >= 180000
+	am->amconsistentordering = !creating_extension;
 	am->amtranslatestrategy = col_translatestrategy;
 	am->amtranslatecmptype = col_translatecmptype;
 #endif

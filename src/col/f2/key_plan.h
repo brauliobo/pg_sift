@@ -67,6 +67,12 @@ typedef struct SiftKeyPlan
 
 extern void sift_key_plan_build(const SiftKeySpec *spec, const SiftKeyPred *preds, int npreds, SiftKeyPlan *plan);
 
+/*
+ * (key column 0, .., n - 1) op (vals): the keys of the leading columns compared as a row, which is one range of the key bytes when the columns are ordered alike (op: SIFT_KOP_LT, LE, GT or GE in the order of the values); the
+ * ranges of the plan are cut to it. A NULL value or columns ordered otherwise leave the plan as it is: the rows the range keeps are those the comparison decides.
+ */
+extern void sift_key_plan_row_bound(const SiftKeySpec *spec, SiftKeyPlan *plan, int op, const SiftKeyVal *vals, int n);
+
 /* Whether a key (key_bytes of an encoded tuple) is inside the range: the check of a plan against the rows */
 extern bool sift_mark_range_has(const SiftMarkRange *r, const uint8 *key, uint8 key_bytes);
 

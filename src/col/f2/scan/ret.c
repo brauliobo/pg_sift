@@ -18,8 +18,8 @@
 #include "core/quarantine.h"
 
 /* The value of row r of a leaf the index returns (sift_col_amcanreturn); false when it is NULL. The NaN of a numeric is stored as a NULL with a tag, the only value such a leaf cannot hold */
-static bool
-view_datum(const SiftColDef *d, const ColView *cv, int r, Datum *value, const FormData_pg_attribute *att)
+bool
+sift_f2_view_datum(const SiftColDef *d, const ColView *cv, int r, Datum *value, const FormData_pg_attribute *att)
 {
 	if (cv->isnull[r])
 	{
@@ -160,7 +160,7 @@ sift_f2_scan_sort_put(F2Scan *s, const SiftColSchema *schema, uint64 tid, bool m
 		const ColView *cv = &views[s->ret_leaf[j]];
 
 		slot->tts_values[j + 1] = (Datum) 0;
-		slot->tts_isnull[j + 1] = !view_datum(&schema->cols[s->ret_leaf[j]], cv, r, &slot->tts_values[j + 1], TupleDescAttr(s->itupdesc, s->ret_att[j] - 1));
+		slot->tts_isnull[j + 1] = !sift_f2_view_datum(&schema->cols[s->ret_leaf[j]], cv, r, &slot->tts_values[j + 1], TupleDescAttr(s->itupdesc, s->ret_att[j] - 1));
 	}
 	sort_put_slot(s, slot);
 	MemoryContextSwitchTo(old);

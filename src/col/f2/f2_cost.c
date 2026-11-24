@@ -23,6 +23,18 @@
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_point_dir.h"
 #include "col/f2/f2_cost_model.h"
+#include "col/f2/scan/ord_stream.h"
+#include "core/sift.h"
+#include "catalog/pg_statistic.h"
+#include "access/stratnum.h"
+#include "nodes/makefuncs.h"
+#include "optimizer/clauses.h"
+#include "optimizer/pathnode.h"
+#include "optimizer/restrictinfo.h"
+#include "optimizer/paths.h"
+#include "optimizer/plancat.h"
+#include "parser/parsetree.h"
+#include "utils/syscache.h"
 
 #define F2_RETURN_ROW_FACTOR	3.0
 
@@ -146,16 +158,40 @@ point_lookups(PlannerInfo *root, const IndexPath *path, int lead)
 	return fewest;
 }
 
-/* the scan reads the directory of each value, then the granules its rows are in */
+/* the scan reads the directory of each value, then the granules its rows are in; the pages of a loop are those of the loops before it: what a later loop reads is what index_pages_fetched says the cache does not hold */
 static void
-point_cost(double tuples, double sel, int lookups, double share, Cost *total, double *pages)
+point_cost(PlannerInfo *root, const IndexOptInfo *index, double loop_count, double tuples, double sel, int lookups, double share, Cost *total, double *pages)
 {
 	const double granules = Max(tuples / SIFT_GRANULE_ROWS, 1),
 				touched = Min(granules, Max(tuples * sel, 1)),
-				directory = Min(lookups * 3.0, *pages);
+				directory = Min(lookups * 3.0, *pages),
+				read = directory + touched * (*pages / granules) * share;
+	double		io_reuse = 1.0;
 
-	*total = directory * random_page_cost + touched * (*pages / granules) * share * random_page_cost + cpu_operator_cost * touched * SIFT_GRANULE_ROWS;
+	if (loop_count > 1.0)
+		io_reuse = sift_cost_clamp(index_pages_fetched(read * loop_count, Max(index->pages, 1), Max((double) index->pages, 1.0), root) / (read * loop_count), 0.02, 1.0);
+	*total = read * random_page_cost * io_reuse + cpu_operator_cost * touched * SIFT_GRANULE_ROWS;
 	*pages = touched * *pages / granules;
+}
+
+/* The correlation of the leading key column with the order of the rows of the heap, as the statistics of the table have it (what the rows of an ordered scan cost to fetch depends on it) */
+static double
+lead_correlation(PlannerInfo *root, const IndexOptInfo *index)
+{
+	const RangeTblEntry *rte = planner_rt_fetch(index->rel->relid, root);
+	HeapTuple	stats = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(rte->relid), Int16GetDatum(index->indexkeys[0]), BoolGetDatum(rte->inh));
+	AttStatsSlot slot;
+	double		corr = 0.0;
+
+	if (!HeapTupleIsValid(stats))
+		return corr;
+	if (get_attstatsslot(&slot, stats, STATISTIC_KIND_CORRELATION, index->sortopfamily[0], ATTSTATSSLOT_NUMBERS))
+	{
+		corr = slot.nnumbers == 1 ? slot.numbers[0] : 0.0;
+		free_attstatsslot(&slot);
+	}
+	ReleaseSysCache(stats);
+	return index->reverse_sort[0] ? -corr : corr;
 }
 
 void
@@ -202,9 +238,184 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 	if (path->path.pathtype == T_IndexOnlyScan)
 		*indexTotalCost += cpu_index_tuple_cost * F2_RETURN_ROW_FACTOR * Max(sel * rows, 1.0);
 	*indexSelectivity = sel;
-	*indexCorrelation = c.correlation;
+	*indexCorrelation = path->path.pathkeys != NIL && index->sortopfamily != NULL ? lead_correlation(root, index) : c.correlation;
+	if (path->path.pathkeys != NIL)
+		*indexTotalCost += cpu_operator_cost * Max(sel * rows, 1.0) * log2(Max(nparts, 2));
 	*indexPages = Max(index->pages, 1);
 	if (lookups > 0)
-		point_cost(rows, sel, lookups, Min(1.0, Max(list_length(path->indexclauses), 1) / (double) Max(index->ncolumns, 1)), indexTotalCost, indexPages);
+		point_cost(root, index, loop_count, rows, sel, lookups, Min(1.0, Max(list_length(path->indexclauses), 1) / (double) Max(index->ncolumns, 1)), indexTotalCost, indexPages);
 	index_close(rel, NoLock);
 }
+
+/* ---- the order of an index ---- */
+
+/* The planner offers the order of the key columns of an index only when its scan gives it (sift_f2_native_order_matches): the opclasses tell the planner every index of sift_col has one */
+static void
+ord_withhold_unmatched(RelOptInfo *rel)
+{
+	const SiftCatalog *cat = sift_catalog();
+
+	foreach_node(IndexOptInfo, ii, rel->indexlist)
+	{
+		Relation	index;
+
+		if (ii->relam != cat->col_am || ii->sortopfamily == NULL)
+			continue;
+		index = ii->hypothetical ? NULL : index_open(ii->indexoid, NoLock);
+		if (index == NULL || !sift_f2_native_order_matches(index))
+			ii->sortopfamily = NULL;
+		if (index != NULL)
+			index_close(index, NoLock);
+	}
+}
+
+/* ---- keyset pagination ---- */
+
+static const Node *
+strip_relabel(const Node *n)
+{
+	while (IsA(n, RelabelType))
+		n = (const Node *) ((const RelabelType *) n)->arg;
+	return n;
+}
+
+#if PG_VERSION_NUM >= 180000
+#define ROWCMP(rc)	((int) (rc)->cmptype)
+#else
+#define ROWCMP(rc)	((int) (rc)->rctype)
+#endif
+
+static bool
+row_type(Oid type)
+{
+	return type == INT2OID || type == INT4OID || type == INT8OID || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID;
+}
+
+/* The executor compares the members of a row by the comparison function of the family of the column: the operator and that function are both in it */
+static bool
+comparable_in(Oid opno, Oid opfamily)
+{
+	int			strategy;
+	Oid			left,
+				right;
+
+	if (get_op_opfamily_strategy(opno, opfamily) == 0)
+		return false;
+	get_op_opfamily_properties(opno, opfamily, false, &strategy, &left, &right);
+	return OidIsValid(get_opfamily_proc(opfamily, left, right, 1));
+}
+
+/*
+ * PostgreSQL offers a row comparison (a, b) > ($1, $2) to btree only: for the other access methods it is a filter that is tested on every row an ordered scan reads from the start. The clause is
+ * offered to the scan as a lossy index clause on the leading columns (the node still tests it: the clause the scan gets is one of the families of the index, so that the planner does not find it the same as the filter), as its integer or date or timestamp members, of the type of their column, give the scan a range of the key.
+ */
+static IndexClause *
+rowcompare_clause(PlannerInfo *root, const RelOptInfo *rel, const IndexOptInfo *ix, RestrictInfo *rinfo)
+{
+	const RowCompareExpr *rc = (const RowCompareExpr *) rinfo->clause;
+	IndexClause *ic;
+	List	   *cols = NIL;
+	ListCell   *l,
+			   *r,
+			   *o;
+	RowCompareExpr *index_rc;
+	int			i = 0;
+
+	if (!IsA(rc, RowCompareExpr) || ROWCMP(rc) == COMPARE_EQ || list_length(rc->largs) > Min(ix->nkeycolumns, SIFT_BOUND_COMPS))
+		return NULL;
+	forthree(l, rc->largs, r, rc->rargs, o, rc->opnos)
+	{
+		const Node *left = strip_relabel(lfirst(l));
+		const Node *right = lfirst(r);
+
+		if (!IsA(left, Var) || ((const Var *) left)->varno != rel->relid || ((const Var *) left)->varlevelsup != 0 || ((const Var *) left)->varattno != ix->indexkeys[i] ||
+			!row_type(exprType(left)) || !row_type(exprType(right)) || (exprType(left) != exprType(right) && (exprType(left) == DATEOID || exprType(left) == TIMESTAMPOID || exprType(left) == TIMESTAMPTZOID)) ||
+			contain_volatile_functions((Node *) right) || bms_is_member(rel->relid, pull_varnos(root, (Node *) right)) || !comparable_in(lfirst_oid(o), ix->opfamily[i]))
+			return NULL;
+		cols = lappend_int(cols, i++);
+	}
+	index_rc = copyObject((RowCompareExpr *) rc);
+	index_rc->opfamilies = NIL;
+	for (int c = 0; c < i; c++)
+		index_rc->opfamilies = lappend_oid(index_rc->opfamilies, ix->opfamily[c]);
+	ic = makeNode(IndexClause);
+	ic->rinfo = rinfo;
+	ic->indexquals = list_make1(make_simple_restrictinfo(root, (Expr *) index_rc));
+	ic->lossy = true;
+	ic->indexcol = 0;
+	ic->indexcols = cols;
+	return ic;
+}
+
+static set_rel_pathlist_hook_type prev_pathlist_hook;
+
+/* The ordered index paths of the relation again with the row comparison among their index clauses */
+static void
+ord_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
+{
+	const SiftCatalog *cat = sift_catalog();
+	List	   *added = NIL;
+
+	if (prev_pathlist_hook)
+		prev_pathlist_hook(root, rel, rti, rte);
+	foreach_ptr(Path, p, rel->pathlist)
+	{
+		const IndexPath *ip = (const IndexPath *) p;
+		IndexClause *ic = NULL;
+
+		if (!IsA(p, IndexPath) || p->pathkeys == NIL || p->param_info != NULL || ip->indexinfo->relam != cat->col_am)
+			continue;
+		foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+			if (ic == NULL)
+				ic = rowcompare_clause(root, rel, ip->indexinfo, ri);
+		foreach_node(IndexClause, have, ip->indexclauses)
+			if (ic != NULL && have->rinfo == ic->rinfo)
+				ic = NULL;
+		if (ic != NULL)
+			added = lappend(added, create_index_path(root, ip->indexinfo, lappend(list_copy(ip->indexclauses), ic), ip->indexorderbys, ip->indexorderbycols, p->pathkeys, ip->indexscandir,
+													 p->pathtype == T_IndexOnlyScan, NULL, 1.0, false));
+	}
+	foreach_ptr(Path, np, added)
+		add_path(rel, np);
+}
+
+static get_relation_info_hook_type prev_info_hook;
+#if PG_VERSION_NUM < 190000
+static get_relation_info_hook_type prev_info_hook;
+
+static void
+ord_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *rel)
+{
+	if (prev_info_hook)
+		prev_info_hook(root, relid, inhparent, rel);
+	ord_withhold_unmatched(rel);
+}
+
+void
+sift_f2_ord_plan_init(void)
+{
+	prev_info_hook = get_relation_info_hook;
+	get_relation_info_hook = ord_get_relation_info;
+	prev_pathlist_hook = set_rel_pathlist_hook;
+	set_rel_pathlist_hook = ord_pathlist;
+}
+#else
+static build_simple_rel_hook_type prev_simple_rel_hook;
+
+static void
+ord_build_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	if (prev_simple_rel_hook)
+		prev_simple_rel_hook(root, rel, rte);
+	ord_withhold_unmatched(rel);
+}
+
+void
+sift_f2_ord_plan_init(void)
+{
+	prev_simple_rel_hook = build_simple_rel_hook;
+	build_simple_rel_hook = ord_build_simple_rel;
+	prev_pathlist_hook = set_rel_pathlist_hook;
+	set_rel_pathlist_hook = ord_pathlist;
+}
+#endif

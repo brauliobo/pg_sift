@@ -236,6 +236,7 @@ TESTING_REGRESS += col_dv_oracle
 TESTING_REGRESS += col_dv_reads_paid
 TESTING_REGRESS += col_dv_switch
 TESTING_REGRESS += col_enc
+TESTING_REGRESS += col_f2_ordered_scan
 TESTING_REGRESS += col_fold_due_count
 TESTING_REGRESS += col_fold_keys_mem
 TESTING_REGRESS += col_fold_marks

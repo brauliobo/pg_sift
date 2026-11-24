@@ -5,14 +5,8 @@
 
 #include "col/f2/f2.h"
 #include "col/f2/l0_stage.h"
+#include "col/f2/scan/ord_stream.h"
 #include "core/f2/f2_progress.h"
-
-static void
-f2_ammarkpos(IndexScanDesc scan)
-{
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a sift_col index of format major 2 cannot mark and restore a scan position"),
-					errhint("Read the rows through a bitmap scan or without a merge join over this index.")));
-}
 
 const SiftColFormatOps sift_col_v2_ops = {
 	.format_major = SIFT_FORMAT2_MAJOR,
@@ -27,11 +21,11 @@ const SiftColFormatOps sift_col_v2_ops = {
 	.ambeginscan = sift_f2_ambeginscan,
 	.amrescan = sift_f2_amrescan,
 	.amgetbitmap = sift_f2_amgetbitmap,
-	.amgettuple = sift_f2_amgettuple,
+	.amgettuple = sift_f2_ord_gettuple,
 	.amendscan = sift_f2_amendscan,
 	.amcanreturn = sift_f2_amcanreturn,
-	.ammarkpos = f2_ammarkpos,
-	.amrestrpos = f2_ammarkpos,
+	.ammarkpos = sift_f2_ord_markpos,
+	.amrestrpos = sift_f2_ord_restrpos,
 	.flush_held = sift_stage_flush_all,
 	.track_trigger = sift_f2_track_trigger,
 	.track_reconcile = sift_f2_track_reconcile,

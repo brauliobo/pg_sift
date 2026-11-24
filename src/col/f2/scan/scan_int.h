@@ -23,6 +23,7 @@
 #include "col/f2/pend_del.h"
 #include "col/granule/granule_filter.h"
 #include "col/skip/skip_index.h"
+#include "col/f2/scan/ord_stream.h"
 #include "core/tidbridge.h"
 
 #ifdef SIFT_TESTING
@@ -108,6 +109,10 @@ typedef struct F2Scan
 	int			nskip_gens;
 	const struct SiftPlanSnapshot *pinned_plan;	/* a scan of the rest of a relation a projection executor pins: the manifest it read, so that the served parts and the rest are one partition of one version */
 	struct MorselCx *morsel;	/* a participant of a parallel scan: what it keeps between the runs of granules it takes (f2_par.c) */
+	SiftRowBound rowcmp[SIFT_ROW_BOUNDS_MAX];	/* the row comparisons of the keys: an ordered scan gives only the rows they accept */
+	int			nrowcmp;
+	struct SiftOrdStream *ord;	/* the ordered scan of the index, once its first row was asked (scan/ord_stream.c) */
+	bool		ord_off;		/* the index is not ordered natively: its rows come as the addresses give them */
 } F2Scan;
 
 /* What a scan knows of the predicates for one part: the dictionaries of its strings, the skipping indexes, the predicates that run on its chunks */
@@ -154,6 +159,7 @@ extern void sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s);
 extern void sift_f2_scan_sort_put(F2Scan *s, const SiftColSchema *schema, uint64 tid, bool maybe, const ColView *views, int r);
 extern void sift_f2_scan_sort_end(F2Scan *s);
 extern HeapTuple sift_f2_returned_tuple(IndexScanDesc scan, F2Scan *s);
+extern bool sift_f2_view_datum(const SiftColDef *d, const ColView *cv, int r, Datum *value, const FormData_pg_attribute *att);
 
 /* A row handed to a sink: decided yes, or undecided for a sink that takes those; any other sink counts only what the stored values decided, so it is an error for it */
 static inline void

@@ -511,6 +511,8 @@ col/f2/scan/stream.c
 col/f2/scan/stream.h
 col/f2/scan/survey.c
 col/f2/scan/verdict.c
+col/f2/scan/ord_stream.c
+col/f2/scan/ord_stream.h
 col/f2/track_f2.c
 col/f2/vis_test.c
 col/f2/f2_uniq_shm.c

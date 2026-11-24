@@ -569,3 +569,75 @@ sift_key_marks_spans(const SiftKeyMarks *km, const SiftKeyPlan *plan, uint32 spa
 	}
 	return n;
 }
+
+/* ---- a row comparison ---- */
+
+/* The least image of a bound above the keys of the plan's range r that it is cut to (lo), or the greatest (hi) */
+static void
+range_tighten(const SiftKeySpec *s, SiftMarkRange *r, const Bound *lo, const Bound *hi)
+{
+	uint8		img[SIFT_KEY_BYTES_MAX];
+
+	if (lo != NULL)
+	{
+		bound_image(s, lo, img);
+		if (!r->has_lo || memcmp(img, r->lo, SIFT_KEY_BYTES_MAX) > 0)
+		{
+			memcpy(r->lo, img, SIFT_KEY_BYTES_MAX);
+			r->has_lo = true;
+		}
+	}
+	if (hi != NULL)
+	{
+		bound_image(s, hi, img);
+		if (!r->has_hi || memcmp(img, r->hi, SIFT_KEY_BYTES_MAX) < 0)
+		{
+			memcpy(r->hi, img, SIFT_KEY_BYTES_MAX);
+			r->has_hi = true;
+			r->hi_exact = !hi->trunc;
+		}
+		else if (memcmp(img, r->hi, SIFT_KEY_BYTES_MAX) == 0)
+			r->hi_exact &= !hi->trunc;
+	}
+}
+
+void
+sift_key_plan_row_bound(const SiftKeySpec *spec, SiftKeyPlan *plan, int op, const SiftKeyVal *vals, int n)
+{
+	const bool	desc = (spec->cols[0].flags & SIFT_KEYCOL_DESC) != 0,
+				incl = op == SIFT_KOP_LE || op == SIFT_KOP_GE,
+				upper = (op == SIFT_KOP_LT || op == SIFT_KOP_LE) != desc;
+	Bound		p = {0};
+	SiftMarkRange base = {0},
+			   *r;
+	int			kept = 0;
+
+	if (plan->state == SIFT_KEY_PLAN_EMPTY || n < 1 || n > spec->ncols)
+		return;
+	for (int k = 0; k < n; k++)
+		if (vals[k].isnull || ((spec->cols[k].flags & SIFT_KEYCOL_DESC) != 0) != desc)
+			return;
+	for (int k = 0; k < n; k++)
+		bound_enc(spec, &p, k, &vals[k]);
+	if (upper == incl && !bound_succ(&p))
+	{
+		if (!upper)
+			plan->state = SIFT_KEY_PLAN_EMPTY;
+		return;
+	}
+	if (plan->state == SIFT_KEY_PLAN_FULL)
+	{
+		plan->state = SIFT_KEY_PLAN_RANGES;
+		plan->n = 1;
+		plan->range[0] = base;
+	}
+	for (int i = 0; i < plan->n; i++)
+	{
+		r = &plan->range[i];
+		range_tighten(spec, r, upper ? NULL : &p, upper ? &p : NULL);
+		if (!(r->has_lo && r->has_hi && r->hi_exact && memcmp(r->lo, r->hi, SIFT_KEY_BYTES_MAX) >= 0))
+			plan->range[kept++] = *r;
+	}
+	plan->n = kept;
+	plan->state = kept == 0 ? SIFT_KEY_PLAN_EMPTY : SIFT_KEY_PLAN_RANGES;
+}

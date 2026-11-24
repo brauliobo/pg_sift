@@ -9,6 +9,8 @@
 #include "access/relscan.h"
 #include "access/transam.h"
 #include "catalog/pg_operator_d.h"
+#include "access/skey.h"
+#include "access/stratnum.h"
 #include "catalog/pg_type_d.h"
 #include "miscadmin.h"
 #include "portability/instr_time.h"
@@ -16,6 +18,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/scan/bridge_core.h"
+#include "col/f2/scan/ord_stream.h"
 #include "col/f2/scan/par_int.h"
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_col_delta_idx.h"
@@ -798,8 +801,8 @@ part_skipped(const F2Scan *s, uint64 gen)
 }
 
 /* The first partition that reaches the lower bound: the partitions tile the key space in order, so those whose range ends before it are one prefix */
-static int
-first_reaching(const SiftPlanSnapshot *plan, const uint8 *lo)
+int
+sift_f2_first_reaching(const SiftPlanSnapshot *plan, const uint8 *lo)
 {
 	int			a = 0,
 				b = plan->npartitions;
@@ -824,7 +827,7 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 	const SiftPendDelIndex *staged_px = want_px ? sift_f2_staged_index(staged, nstaged) : NULL;
 
 	sift_f2_maint_note_parts(rel, plan->partitions, plan->npartitions, NULL, NULL);
-	for (int i = first_reaching(plan, lo); i < plan->npartitions; i++)
+	for (int i = sift_f2_first_reaching(plan, lo); i < plan->npartitions; i++)
 	{
 		const SiftPartitionEntry *e = &plan->partitions[i];
 		const SiftPlanPartList *list = &plan->partlists[i];
@@ -935,6 +938,46 @@ key_leaf(const void *f, int attno, const char *key, int len)
 	return sift_f2_key_leaf(f, attno, key, len);
 }
 
+/*
+ * A row comparison (a, b) > ($1, $2) of an ordered scan (the planner offers it as a lossy index clause, f2_cost.c: the heap or the node still tests it): the leading key column leaves a bound
+ * for the zones and the partitions as a predicate of its own, and the whole row one range of the key marks. The key of the row comparison is not a predicate of any leaf: it is taken out of the keys
+ * the predicates are made of, and its bound is made in place of it. false: the comparison is not on the leading columns of the key order, and the plan is as the other quals leave it.
+ */
+static bool
+row_type(Oid type)
+{
+	return type == INT2OID || type == INT4OID || type == INT8OID || type == DATEOID || type == TIMESTAMPOID || type == TIMESTAMPTZOID;
+}
+
+static bool
+row_bound(IndexScanDesc scan, const ScanKeyData *rk, SiftRowBound *rb, SiftColPred *lead, SiftColValue *lead_val)
+{
+	const SiftColRel *r = sift_col_rel(scan->indexRelation);
+	const SiftF2Rel *f = sift_f2_rel(scan->indexRelation);
+	const ScanKeyData *sub = (const ScanKeyData *) DatumGetPointer(rk->sk_argument);
+	SiftColValue cv;
+	int			n = 0,
+				op = rk->sk_strategy;
+
+	if (op < BTLessStrategyNumber || op > BTGreaterStrategyNumber || op == BTEqualStrategyNumber)
+		return false;
+	for (const ScanKeyData *m = sub;; m++)
+	{
+		if (n >= f->nkey || r->first[m->sk_attno] != f->key_cols[n] || (m->sk_flags & SK_ISNULL) || !row_type(m->sk_subtype))
+			return false;
+		key_value(m->sk_subtype, -1, m->sk_argument, &cv);
+		rb->vals[n] = (SiftKeyVal) {.i = cv.v.i};
+		if (n++ == 0)
+			*lead_val = cv;
+		if (m->sk_flags & SK_ROW_END)
+			break;
+	}
+	*lead = (SiftColPred) {.col = f->key_cols[0],.op = op == BTLessStrategyNumber || op == BTLessEqualStrategyNumber ? SIFT_COLOP_LE : SIFT_COLOP_GE,.nvals = 1,.vals = lead_val};
+	rb->n = n;
+	rb->op = op == BTLessStrategyNumber ? SIFT_KOP_LT : op == BTLessEqualStrategyNumber ? SIFT_KOP_LE : op == BTGreaterEqualStrategyNumber ? SIFT_KOP_GE : SIFT_KOP_GT;
+	return true;
+}
+
 void
 sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
 {
@@ -942,17 +985,40 @@ sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
 	SiftColRel *r = sift_col_rel(scan->indexRelation);
 	SiftF2Rel  *f = sift_f2_rel(scan->indexRelation);
 	ColKeys		ck = {.defs = r->schema->cols,.first = r->first,.idesc = RelationGetDescr(scan->indexRelation),.infix = true,.key_leaf = key_leaf,.key_leaf_arg = f};
-	int			kept = 0;
+	ScanKey		all = scan->keyData,
+				plain = palloc(Max(scan->numberOfKeys, 1) * sizeof(ScanKeyData));
+	const ScanKeyData *rows[SIFT_KEY_COLS_MAX];
+	SiftKeySpec spec;
+	int			nall = scan->numberOfKeys,
+				nrows = 0,
+				kept = 0;
 
-	s->preds = MemoryContextAlloc(s->cx, Max(scan->numberOfKeys + s->n_ext_preds, 1) * sizeof(SiftColPred));
+	for (int k = 0; k < nall; k++)
+		if ((all[k].sk_flags & SK_ROW_HEADER) && nrows < lengthof(rows))
+			rows[nrows++] = &all[k];
+		else
+			plain[k - nrows] = all[k];
+	scan->keyData = plain;
+	scan->numberOfKeys = nall - nrows;
+	s->preds = MemoryContextAlloc(s->cx, Max(nall + s->n_ext_preds, 1) * sizeof(SiftColPred));
 	s->npreds = scan->numberOfKeys;
 	s->possible = scan_preds(scan, &ck, s->preds);
+	scan->keyData = all;
+	scan->numberOfKeys = nall;
 	for (int k = 0; s->possible && k < s->npreds; k++)
 		if (s->preds[k].col >= 0)
 			s->preds[kept++] = s->preds[k];
 	s->npreds = s->possible ? sift_f2_scan_append_ext(s, kept) : s->npreds;
+	for (int i = 0; s->possible && i < nrows && s->nrowcmp < SIFT_ROW_BOUNDS_MAX; i++)
+		if (row_bound(scan, rows[i], &s->rowcmp[s->nrowcmp], &s->preds[s->npreds], MemoryContextAlloc(s->cx, sizeof(SiftColValue))))
+		{
+			s->npreds++;
+			s->nrowcmp++;
+		}
 	s->possible = s->possible && sift_f2_key_set(f, s->preds, s->npreds, &s->keys) && sift_f2_time_window(f, s->preds, s->npreds, &s->time);
 	sift_f2_key_plan(f, r->schema->cols, s->preds, s->npreds, &s->keyplan);
+	for (int i = 0; i < s->nrowcmp && sift_f2_rel_key_spec(f, &spec); i++)
+		sift_key_plan_row_bound(&spec, &s->keyplan, s->rowcmp[i].op, s->rowcmp[i].vals, s->rowcmp[i].n);
 	s->possible = s->possible && s->keyplan.state != SIFT_KEY_PLAN_EMPTY;
 	return_columns(scan, s);
 	s->recheck_all = ck.recheck;
