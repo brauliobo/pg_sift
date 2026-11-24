@@ -8,9 +8,19 @@
 #include "optimizer/optimizer.h"
 #include "port/pg_bitutils.h"
 
+#include "agg/v6/text_qual.h"
 #include "agg/v6/v6_bqual.h"
 #include "agg/v6/v6_pg_exec.h"
 #include "agg/v6/v6_pg_qual.h"
+#include "agg/vexpr_str.h"
+
+#define BQ_TEXT_MAX		8
+
+typedef struct BqText
+{
+	int			slot;			/* the column of the input that holds the strings */
+	SiftTextQual q;
+} BqText;
 
 struct SiftV6Bq
 {
@@ -18,6 +28,8 @@ struct SiftV6Bq
 	bool		has_vx;
 	SiftV6PgQual *pg;
 	SiftV6PgQual *pgx;			/* the clauses that need the node's executor */
+	int			ntext;			/* the clauses over the bytes of a text column (text_qual.h), which no executor runs */
+	BqText		text[BQ_TEXT_MAX];
 	SiftVexprCtx *ctx;
 	SiftV6Input in;
 	const SiftVec *src[SIFT_V6_MAX_COLS];
@@ -48,10 +60,22 @@ machine_runs(const SiftV6Input *in, const Expr *clause)
 	return !contain_mutable_functions((Node *) clause) && !sift_v6_pgexpr_exec((const Node *) clause) && !reads_numeric((Node *) clause, NULL) && compile(CurrentMemoryContext, list_make1((void *) clause), &scratch, &vx);
 }
 
+/* the clause is a text qual of the bytes, and the input decodes its column as strings: the slot of the column in in, else -1 */
+static int
+text_slot(SiftV6Input *in, const Expr *clause, SiftTextQual *q)
+{
+	const Var  *column;
+
+	return sift_text_qual_of((const Node *) clause, SIFT_V6_BQ_RELID, q, &column) ? sift_v6_input_add_text(in, column) : -1;
+}
+
 bool
 sift_v6_bq_plan_ok(PlannerInfo *root, const SiftV6Input *in, const Expr *clause)
 {
-	return machine_runs(in, clause) || sift_v6_pgqual_plan_ok(root, in, clause);
+	SiftV6Input scratch = *in;
+	SiftTextQual q;
+
+	return text_slot(&scratch, clause, &q) >= 0 || machine_runs(in, clause) || sift_v6_pgqual_plan_ok(root, in, clause);
 }
 
 SiftV6Bq *
@@ -65,7 +89,9 @@ sift_v6_bq_open(MemoryContext cx, const List *quals, const SiftV6Input *in, Sift
 
 	bq->in = *in;
 	foreach_ptr(Expr, clause, quals)
-		if (sift_v6_pgexpr_exec((const Node *) clause))
+		if (bq->ntext < BQ_TEXT_MAX && (bq->text[bq->ntext].slot = text_slot(&bq->in, clause, &bq->text[bq->ntext].q)) >= 0)
+			bq->ntext++;
+		else if (sift_v6_pgexpr_exec((const Node *) clause))
 			needs_exec = lappend(needs_exec, clause);
 		else if (machine_runs(in, clause))
 			machine = lappend(machine, clause);
@@ -123,6 +149,32 @@ filter_machine(SiftV6Bq *bq, SiftBatchSel *bs)
 	bs->has_sel = false;
 }
 
+/* the rows of bs whose string passes the qual; a NULL string passes none */
+static void
+filter_text(const BqText *t, const SiftVec *v, SiftBatchSel *bs)
+{
+	const SiftStrView *views = v->data;
+	uint16		left = 0;
+
+	for (uint16 w = 0; w < (bs->n_raw + 63) / 64; w++)
+	{
+		uint64		keep = 0;
+
+		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
+		{
+			const uint16 r = (uint16) (w * 64 + __builtin_ctzll(bits));
+			const bool	valid = v->all_valid || ((v->valid[w] >> (r & 63)) & 1);
+
+			keep |= (uint64) (valid && sift_text_qual_holds(&t->q, (const uint8 *) sift_vstr_bytes(&views[r]), views[r].len)) << (r & 63);
+		}
+		bs->mask[w] = keep;
+		left += (uint16) __builtin_popcountll(keep);
+	}
+	bs->n_active = left;
+	bs->all_active = left == bs->n_raw;
+	bs->has_sel = false;
+}
+
 void
 sift_v6_bq_filter(SiftV6Bq *bq, SiftBatchSel *bs)
 {
@@ -130,6 +182,8 @@ sift_v6_bq_filter(SiftV6Bq *bq, SiftBatchSel *bs)
 		return;
 	if (bq->has_vx)
 		filter_machine(bq, bs);
+	for (int i = 0; i < bq->ntext && bs->n_active > 0; i++)
+		filter_text(&bq->text[i], bq->src[bq->text[i].slot], bs);
 	if (bq->pg != NULL)
 		sift_v6_pgqual_filter(bq->pg, bs, bq->src);
 	if (bq->pgx != NULL)

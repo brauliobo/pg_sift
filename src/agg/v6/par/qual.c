@@ -10,7 +10,6 @@
 #include "port/pg_bitutils.h"
 #include "utils/lsyscache.h"
 
-#include "agg/group/ht.h"
 #include "agg/v6/par/run_int.h"
 #include "agg/v6/v6_bqual.h"
 
@@ -59,12 +58,6 @@ is_time_type(Oid t)
 	return t == DATEOID || t == TIMESTAMPOID || t == TIMESTAMPTZOID;
 }
 
-static bool
-is_text_type(Oid t)
-{
-	return t == TEXTOID || t == VARCHAROID;
-}
-
 static int64
 int_of(const Const *c)
 {
@@ -92,46 +85,7 @@ int_qual(const Var *v, const Const *c, ParQualOp op, ParQual *q)
 }
 
 static bool
-text_bytes(const Const *c, const uint8 **bytes, uint32 *len)
-{
-	const text *t = DatumGetTextPP(c->constvalue);
-
-	*len = VARSIZE_ANY_EXHDR(t);
-	*bytes = memcpy(palloc(Max(*len, 1)), VARDATA_ANY(t), *len);
-	return true;
-}
-
-static bool
-cmp_qual(const Const *c, ParQualOp op, Oid collid, ParQual *q)
-{
-	if (c->consttype != TEXTOID || (op != PQO_EQ && op != PQO_NE) || !sift_text_bytes_equal(collid))
-		return false;
-	q->kind = PQK_STR_CMP;
-	q->op = op;
-	return text_bytes(c, &q->bytes, &q->len);
-}
-
-static bool
-like_qual(const Const *c, bool negate, Oid collid, ParQual *q)
-{
-	const uint8 *pat;
-	uint32		plen;
-	uint8	   *lit;
-
-	if (c->consttype != TEXTOID || !sift_text_bytes_equal(collid) || !text_bytes(c, &pat, &plen))
-		return false;
-	lit = palloc(Max(plen, 1));
-	q->like = sift_like_parse(pat, plen, lit, &q->len);
-	q->kind = PQK_STR_LIKE;
-	q->negate = negate;
-	q->bytes = lit;
-	if (q->like == SIFT_LIKE_CONTAINS)
-		sift_like_needle_borrow(&q->needle, lit, q->len, false);
-	return q->like != SIFT_LIKE_OTHER;
-}
-
-static bool
-one_qual(Node *clause, const int *first, ParShape *sh)
+int_clause(Node *clause, const int *first, ParShape *sh)
 {
 	const OpExpr *op;
 	Node	   *l,
@@ -156,19 +110,24 @@ one_qual(Node *clause, const int *first, ParShape *sh)
 	}
 	if (l == NULL || r == NULL || !IsA(l, Var) || !IsA(r, Const) || ((const Var *) l)->varno != SIFT_V6_BQ_RELID || ((const Var *) l)->varattno <= 0 || ((const Const *) r)->constisnull)
 		return false;
-	if (is_int_type(((const Var *) l)->vartype) || is_time_type(((const Var *) l)->vartype))
-	{
-		if (!op_of(name, &cmp) || !int_qual((const Var *) l, (const Const *) r, swapped ? commuted(cmp) : cmp, q))
-			return false;
-	}
-	else if (is_text_type(((const Var *) l)->vartype) && !swapped)
-	{
-		if (op_of(name, &cmp) ? !cmp_qual((const Const *) r, cmp, op->inputcollid, q) : !((strcmp(name, "~~") == 0 || strcmp(name, "!~~") == 0) && like_qual((const Const *) r, name[0] == '!', op->inputcollid, q)))
-			return false;
-	}
-	else
+	if (!(is_int_type(((const Var *) l)->vartype) || is_time_type(((const Var *) l)->vartype)) || !op_of(name, &cmp) ||
+		!int_qual((const Var *) l, (const Const *) r, swapped ? commuted(cmp) : cmp, q))
 		return false;
-	q->at = par_add_leaf(sh, first != NULL ? first[((const Var *) l)->varattno] : 0, is_text_type(((const Var *) l)->vartype));
+	q->at = par_add_leaf(sh, first != NULL ? first[((const Var *) l)->varattno] : 0, false);
+	sh->nq++;
+	return true;
+}
+
+static bool
+one_qual(Node *clause, const int *first, ParShape *sh)
+{
+	ParQual    *q = &sh->q[sh->nq];
+	const Var  *v;
+
+	if (!sift_text_qual_of(clause, SIFT_V6_BQ_RELID, &q->text, &v))
+		return int_clause(clause, first, sh);
+	q->kind = PQK_TEXT;
+	q->at = par_add_leaf(sh, first != NULL ? first[v->varattno] : 0, true);
 	sh->nq++;
 	return true;
 }
@@ -207,34 +166,11 @@ int_holds(const ParQual *q, int64 v)
 }
 
 static bool
-like_holds(const ParQual *q, const SiftStrRef s)
+str_holds(const ParQual *q, const ParLoad *ld, const ColView *cv, uint32 r)
 {
-	bool		hit;
+	const SiftStrRef s = par_str_at(ld, cv, r);
 
-	switch (q->like)
-	{
-		case SIFT_LIKE_CONTAINS:
-			hit = sift_like_test(&q->needle, s.p, s.len) == SIFT_LIKE_YES;
-			break;
-		case SIFT_LIKE_PREFIX:
-			hit = s.len >= q->len && memcmp(s.p, q->bytes, q->len) == 0;
-			break;
-		case SIFT_LIKE_SUFFIX:
-			hit = s.len >= q->len && memcmp(s.p + s.len - q->len, q->bytes, q->len) == 0;
-			break;
-		default:
-			hit = s.len == q->len && memcmp(s.p, q->bytes, q->len) == 0;
-			break;
-	}
-	return hit != q->negate;
-}
-
-static bool
-str_holds(const ParQual *q, const SiftStrRef s)
-{
-	if (q->kind == PQK_STR_LIKE)
-		return like_holds(q, s);
-	return (s.len == q->len && memcmp(s.p, q->bytes, q->len) == 0) == (q->op == PQO_EQ);
+	return sift_text_qual_holds(&q->text, s.p, s.len);
 }
 
 /* a dictionary entry is judged the first time a row holds it */
@@ -244,7 +180,7 @@ code_holds(const ParQual *q, const ParLoad *ld, const ColView *cv, uint32 r, uin
 	const uint32 code = cv->dcode[r];
 
 	if (memo[code] == 0)
-		memo[code] = 1 + str_holds(q, par_str_at(ld, cv, r));
+		memo[code] = 1 + str_holds(q, ld, cv, r);
 	return memo[code] == 2;
 }
 
@@ -255,7 +191,7 @@ row_holds(const ParQual *q, const ParLoad *ld, const ColView *cv, uint32 r, uint
 		return false;
 	if (q->kind == PQK_INT)
 		return int_holds(q, cv->i[r]);
-	return memo != NULL ? code_holds(q, ld, cv, r, memo) : str_holds(q, par_str_at(ld, cv, r));
+	return memo != NULL ? code_holds(q, ld, cv, r, memo) : str_holds(q, ld, cv, r);
 }
 
 bool
@@ -267,7 +203,7 @@ par_quals_apply(const ParShape *sh, ParLoad *ld, SiftArena *scratch, SiftErr *er
 		const ColView *cv = &ld->cv[q->at];
 		uint8	   *memo = NULL;
 
-		if (q->kind != PQK_INT && cv->dcode != NULL)
+		if (q->kind == PQK_TEXT && cv->dcode != NULL)
 		{
 			if ((memo = sift_arena_alloc(scratch, cv->dict->n, 1)) == NULL)
 				return par_arena_full(scratch, err);
