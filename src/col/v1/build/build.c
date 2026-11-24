@@ -198,24 +198,6 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
 						errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
-	/* the bitmap scan compares bytes, which is equality only under a deterministic collation (a query matches the index collation exactly) */
-	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
-	{
-		Oid			opc = index->rd_opcintype[i];
-		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
-		SiftColDef	def[SIFT_COL_MAX_LANES];
-
-		if ((opc == TEXTOID || opc == BPCHAROID) && OidIsValid(index->rd_indcollation[i]) && !get_collation_isdeterministic(index->rd_indcollation[i]))
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_%s_ops needs a deterministic collation", opc == TEXTOID ? "text" : "bpchar"),
-							errhint("Use the default operator class for a column under a nondeterministic collation.")));
-		/* a char without a length holds values the leaf does not keep as its equality; a numeric is scanned only as the scaled integer of numeric(p <= 18, s) */
-		if (opc == BPCHAROID && att->atttypmod < 0)
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_bpchar_ops needs char(n)"),
-							errhint("Use the default operator class for a column of type bpchar.")));
-		if (opc == NUMERICOID && (sift_col_att_leaves(att, def, 0) != 1 || def[0].store != SIFT_COLS_INT))
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_numeric_ops needs numeric(p, s) with p up to 18"),
-							errhint("Use the default operator class for a numeric column of another precision.")));
-	}
 	sift_conn_auto(heap, index);
 	sift_conn_resolve(heap, index);
 	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);

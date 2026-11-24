@@ -390,6 +390,21 @@ numeric_preds(const SiftColDef *def, const ScanKeyData *key, SiftColPred *p, Col
 	return true;
 }
 
+/* The leaf holds the scaled integer of a narrow numeric and the bytes of a text: a wide or imaged numeric, a char without a length and a text of a nondeterministic collation are equal by more than their stored form, so the heap decides */
+static bool
+leaf_decides(const SiftColDef *def, Oid typid, Oid collid)
+{
+	Oid			base = getBaseType(typid);
+
+	if (base == NUMERICOID)
+		return !sift_col_def_is_wide(def) && def->store == SIFT_COLS_INT;
+	if (base == BPCHAROID && (def->flags & SIFT_COLD_LOSSY))
+		return false;
+	if (base == TEXTOID || base == VARCHAROID || base == BPCHAROID)
+		return !OidIsValid(collid) || get_collation_isdeterministic(collid);
+	return true;
+}
+
 /* are the constants of a leaf compared by their bytes (a text, a uuid) or as integers (the key of an integer-like type, a date, a timestamp)? */
 static bool
 same_constant(const SiftColDef *def, const SiftColValue *a, const SiftColValue *b)
@@ -543,6 +558,8 @@ sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *
 			p->op = SIFT_COLOP_NOTNULL;
 		else if (key->sk_flags & SK_ISNULL)
 			return false;
+		else if (!leaf_decides(&k->defs[leaf], att->atttypid, key->sk_collation))
+			key_any(p, k);
 		else if (key->sk_strategy == COL_STRAT_NE && sift_col_def_shape(&k->defs[leaf]))
 			key_any(p, k);
 		else if (sift_col_def_shape(&k->defs[leaf]))

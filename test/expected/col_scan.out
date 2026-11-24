@@ -650,27 +650,31 @@ SELECT n, rows, agree, col_idx, tup_idx FROM sc_all() WHERE n IN (8, 9, 41, 42);
  42 |    4 | t     | t       | t
 (4 rows)
 
--- the bitmap scan compares bytes: a nondeterministic collation has no such index
+-- a nondeterministic collation, a char without a length and a numeric the leaf holds in another form take their typed classes: the leaf decides what it holds exactly and the heap the rest
 CREATE COLLATION sc_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_text_ops);
-ERROR:  operator class sift.col_text_ops needs a deterministic collation
-HINT:  Use the default operator class for a column under a nondeterministic collation.
+NOTICE:  sift_col index "sc_col_ci": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_col_ci');
+DROP INDEX sc_col_ci;
 CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_ops);
 NOTICE:  sift_col index "sc_col_ci": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_col_ci');
 DROP INDEX sc_col_ci;
--- a char without a length and a numeric the leaf holds in another form are not scanned
 CREATE TABLE sc_bad (w bpchar, y numeric, z numeric(30, 5));
 CREATE INDEX ON sc_bad USING sift_col (w sift.col_bpchar_ops);
-ERROR:  operator class sift.col_bpchar_ops needs char(n)
-HINT:  Use the default operator class for a column of type bpchar.
+NOTICE:  sift_col index "sc_bad_w_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_bad_w_idx');
 CREATE INDEX ON sc_bad USING sift_col (y sift.col_numeric_ops);
-ERROR:  operator class sift.col_numeric_ops needs numeric(p, s) with p up to 18
-HINT:  Use the default operator class for a numeric column of another precision.
+NOTICE:  sift_col index "sc_bad_y_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_bad_y_idx');
 CREATE INDEX ON sc_bad USING sift_col (z sift.col_numeric_ops);
-ERROR:  operator class sift.col_numeric_ops needs numeric(p, s) with p up to 18
-HINT:  Use the default operator class for a numeric column of another precision.
+NOTICE:  sift_col index "sc_bad_z_idx": 1 advice (track_changes)
+DETAIL:  advice: track_changes = the table has no one-column primary key
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_bad_z_idx');
 DROP TABLE sc_bad;
 -- the scans are counted
 SELECT pg_stat_force_next_flush();

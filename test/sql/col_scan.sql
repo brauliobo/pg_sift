@@ -359,12 +359,12 @@ SELECT sc_dml($$UPDATE %T SET pad = repeat('z', 500) WHERE id BETWEEN 2000 AND 2
 SELECT sc_dml($$UPDATE %T SET v = 499 WHERE id BETWEEN 2000 AND 2020$$);
 SELECT n, rows, agree, col_idx, tup_idx FROM sc_all() WHERE n IN (8, 9, 41, 42);
 
--- the bitmap scan compares bytes: a nondeterministic collation has no such index
+-- a nondeterministic collation, a char without a length and a numeric the leaf holds in another form take their typed classes: the leaf decides what it holds exactly and the heap the rest
 CREATE COLLATION sc_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_text_ops);
+DROP INDEX sc_col_ci;
 CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_ops);
 DROP INDEX sc_col_ci;
--- a char without a length and a numeric the leaf holds in another form are not scanned
 CREATE TABLE sc_bad (w bpchar, y numeric, z numeric(30, 5));
 CREATE INDEX ON sc_bad USING sift_col (w sift.col_bpchar_ops);
 CREATE INDEX ON sc_bad USING sift_col (y sift.col_numeric_ops);
