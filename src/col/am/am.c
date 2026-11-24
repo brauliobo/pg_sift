@@ -151,6 +151,7 @@ route_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	return sift_col_ops(info->index)->amvacuumcleanup(info, stats);
 }
 
+/* A scan without an order hands the rows over by heap address: its matches are not contiguous in the heap, which any correlation above 0 tells the planner */
 static void
 route_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *startup, Cost *total, Selectivity *selectivity, double *correlation,
 					 double *pages)
@@ -166,6 +167,8 @@ route_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost
 	ops = sift_col_ops(index);
 	index_close(index, NoLock);
 	ops->amcostestimate(root, path, loop_count, startup, total, selectivity, correlation, pages);
+	if (path->path.pathkeys == NIL)
+		*correlation = 0.0;
 }
 
 /* The session that reads pg_stat_progress_create_index is not the one that builds: the number of the subphase alone says the format that names it (core/f2/f2_progress.h) */

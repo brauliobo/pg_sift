@@ -38,14 +38,12 @@ typedef struct SiftScanCostIn
 	double		sel_lead;		/* what the most selective filter on a chunk leaves of the rows it is run on */
 	double		io_reuse;		/* (0, 1]: the share of the page reads the pages of an earlier loop do not save (1 for one loop) */
 	bool		rescan;			/* a probe of a nested loop: the index is open and its plan read, only the parts are opened again */
-	bool		key_ordered;	/* the quals bind the leading column of the key order: the rows come in its order */
 } SiftScanCostIn;
 
 typedef struct SiftScanCost
 {
 	double		startup;
 	double		total;
-	double		correlation;
 	double		bytes_read;
 	double		rows_read;
 } SiftScanCost;
@@ -83,7 +81,6 @@ sift_scan_cost(const SiftScanCostIn *in)
 	out.total = out.startup + in->seq_page_cost * (bytes / in->block_size) * in->io_reuse +
 		in->cpu_operator_cost * rows * (SIFT_COST_FILTER_OPS * in->n_filt + SIFT_COST_REST_OPS * in->sel_lead * in->n_rest) +
 		in->cpu_index_tuple_cost * in->total_rows * in->sel * SIFT_COST_ROW_OPS;
-	out.correlation = in->key_ordered ? 0.9 : 0.0;
 	return out;
 }
 

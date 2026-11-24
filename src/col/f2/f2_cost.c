@@ -223,7 +223,6 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 	in.filt_share = Min(1.0, Max(in.n_filt, 1) / (double) Max(index->ncolumns, 1));
 	in.sel_lead = Max(lead, sel);
 	in.rescan = loop_count > 1.0;
-	in.key_ordered = f->nkey > 0 && clauses_on(path, r->schema->cols[f->key_cols[0]].attno - 1) != NIL;
 	c = sift_scan_cost(&in);
 	if (loop_count > 1.0)
 	{
@@ -238,7 +237,7 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 	if (path->path.pathtype == T_IndexOnlyScan)
 		*indexTotalCost += cpu_index_tuple_cost * F2_RETURN_ROW_FACTOR * Max(sel * rows, 1.0);
 	*indexSelectivity = sel;
-	*indexCorrelation = path->path.pathkeys != NIL && index->sortopfamily != NULL ? lead_correlation(root, index) : c.correlation;
+	*indexCorrelation = path->path.pathkeys != NIL && index->sortopfamily != NULL ? lead_correlation(root, index) : 0.0;
 	if (path->path.pathkeys != NIL)
 		*indexTotalCost += cpu_operator_cost * Max(sel * rows, 1.0) * log2(Max(nparts, 2));
 	*indexPages = Max(index->pages, 1);
