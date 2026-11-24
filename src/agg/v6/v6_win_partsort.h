@@ -5,7 +5,7 @@
  * order (each key ascending or descending, NULLs first or last, as the query wrote it) and given back in batches. What the engine of agg/window.h and SiftWinx need of the keys is only when
  * they change, so the batches carry them as integers: column ncols is the number of the partition (one for every key of PARTITION BY, whatever their types, a string among them) and column
  * ncols + 1 + j counts the changes of the value of order key j in the sorted partition. Every column of the input is given as it was, so the arguments of the functions and the tags
- * (what the source fetches a row by) are the input's. A partition that does not fit max_bytes is an error (54000), never a wrong answer.
+ * (what the source fetches a row by) are the input's. A partition that does not fit max_bytes is sorted by v6_win_spill.h, which spills to files.
  *
  * keep: the engine wants no more than the first keep rows of each partition (ROW_NUMBER <= K): the rows past the best keep are dropped as the partition is read, so the partition costs
  * O(rows log keep) and keep rows of memory. 0 keeps every row.
@@ -48,6 +48,9 @@ sift_win_ps_peer_slot(const SiftWinPsSpec *s, int j)
 {
 	return s->ncols + 1 + j;
 }
+
+/* the bytes of a cell of a column of a type */
+extern size_t sift_win_ps_elem_size(SiftVecType t);
 
 /* the types a column may have to be held: false for others (the planner leaves the window to PostgreSQL) */
 extern bool sift_win_ps_type_ok(SiftVecType t);
