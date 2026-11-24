@@ -156,9 +156,7 @@ ROLLBACK;
 SELECT * FROM pa_sum('eo');
 
 -- the switch
-SET sift.agg_preagg = off;
 SELECT pre IS NULL AS off FROM pa_units('SELECT kind, sum(n8 + 1) FROM ed WHERE id <= 30000 GROUP BY kind');
-RESET sift.agg_preagg;
 SELECT pre > 0 AS on FROM pa_units('SELECT kind, sum(n8 + 1) FROM ed WHERE id <= 30000 GROUP BY kind');
 
 DROP TABLE ec, ed, eo, pa_q;

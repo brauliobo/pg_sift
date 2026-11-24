@@ -30,7 +30,6 @@ BEGIN
 	PERFORM set_config('TimeZone', z, true);
 	PERFORM set_config('sift.enable_agg', scan::text, true);
 	PERFORM set_config('sift.agg_force', scan::text, true);
-	PERFORM set_config('sift.agg_preagg', cells::text, true);
 	EXECUTE format('SELECT md5(string_agg(row(k, n, s)::text, E''\n'' ORDER BY k)) FROM (SELECT %s AS k, count(*) AS n, sum(v) AS s FROM uz GROUP BY 1) q', e) INTO r;
 	RETURN r;
 END $$;

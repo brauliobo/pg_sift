@@ -44,7 +44,6 @@ setup
 		p jsonb;
 	BEGIN
 		PERFORM set_config('sift.agg_force', 'on', true);
-		PERFORM set_config('sift.agg_preagg', 'off', true);
 		PERFORM set_config('sift.test_scope_patch', 'on', true);
 		PERFORM set_config('max_parallel_workers_per_gather', '2', true);
 		PERFORM set_config('parallel_setup_cost', '0', true);

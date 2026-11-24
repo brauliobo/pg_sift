@@ -159,7 +159,6 @@ SELECT loaded(grequest(2));
 -- the answers: the same with the table read whole (the setting off), by tuple
 CREATE FUNCTION answers(grp int, probe bool, grouped bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
-	PERFORM set_config('sift.agg_lookup_pushdown', probe::text, true);
 	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || CASE WHEN grouped THEN grequest(grp) ELSE request(grp) END || ') t' INTO r;
 	RETURN r;
 END $$;

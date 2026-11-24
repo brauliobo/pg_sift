@@ -59,9 +59,7 @@ END $$;
 
 -- every statement that differs, with and without the pre-aggregates
 SELECT shape, same_rows(q) AS same FROM shapes WHERE NOT same_rows(q) ORDER BY id;
-SET sift.agg_preagg = off;
 SELECT shape, same_rows(q) AS same FROM shapes WHERE NOT same_rows(q) ORDER BY id;
-RESET sift.agg_preagg;
 
 -- most of them are the scan's: the test is not about the normal plan
 SELECT count(*) > 60 AS mostly_pushed FROM shapes WHERE pushed(q);

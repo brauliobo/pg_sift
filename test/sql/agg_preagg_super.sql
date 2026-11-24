@@ -14,7 +14,6 @@ SET max_parallel_maintenance_workers = 0;
 CREATE FUNCTION pa_rows(q text, sup bool, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
 	PERFORM set_config('sift.enable_agg', push::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
@@ -27,7 +26,6 @@ CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT sup int) LANGUA
 DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('sift.agg_preagg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
 		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);

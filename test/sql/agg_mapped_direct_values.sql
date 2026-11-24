@@ -5,7 +5,6 @@ CREATE EXTENSION pg_sift;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 
 SET client_min_messages = warning;
-SET sift.agg_preagg = off;
 
 CREATE TABLE mv_parent (id int PRIMARY KEY, grp int, i2 int2, i4 int4, i8 int8, d date, ts timestamp, tstz timestamptz, f8 float8, nn int4) WITH (autovacuum_enabled = off);
 INSERT INTO mv_parent

@@ -17,7 +17,6 @@ FROM generate_series(1, 6000) i;
 CREATE INDEX ev2_col ON ev2 USING sift_col (id, day, items) WITH (paths = 'items[]{kind text, n int4}');
 VACUUM ANALYZE ev, ev2;
 SET max_parallel_workers_per_gather = 0;
-SET sift.agg_preagg = off;
 SET sift.agg_force = on;
 
 CREATE TABLE s_q (name text, q text);

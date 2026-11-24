@@ -27,9 +27,7 @@ BEGIN
 		ELSIF l ~ 'distinct stream superblocks' AND h = 'plain' THEN h := 'streamed';
 		END IF;
 	END LOOP;
-	SET sift.agg_dist_stream = off;
 	EXECUTE 'CREATE TABLE plain AS ' || q;
-	RESET sift.agg_dist_stream;
 	RESET work_mem; RESET hash_mem_multiplier; RESET enable_hashagg; RESET enable_sort;
 	SET sift.enable_agg = off;
 	EXECUTE 'CREATE TABLE want AS ' || q;

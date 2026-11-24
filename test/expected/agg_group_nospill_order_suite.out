@@ -60,7 +60,6 @@ SET search_path = s2, public;
 -- sorted once with the comparator of the pathkey (its sort operator, collation and nulls order) and the groups by the ranks. The rows are the normal plan's in the same
 -- order (the key columns, row by row), for text, numeric, date, float and jsonb keys, DESC, NULLS FIRST and LAST, a prefix of the group keys, and with workers.
 SET seq_page_cost = 10000;
-SET sift.agg_preagg = off;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
@@ -595,7 +594,6 @@ SET search_path = s4, public;
 -- the same order, for plain keys, a flag (key = constant), a COALESCE of a key, a jsonb key, DESC and NULLS FIRST; and the Sort stays where the keys are not
 -- the window's partition (a key of the window's order, an expression of two columns).
 SET seq_page_cost = 10000;
-SET sift.agg_preagg = off;
 CREATE TABLE s (id int, a text, e int, d date, j int, x float8) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO s
 SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i * 7 % 11) END, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 9 END, DATE '2024-01-01' + (i % 12), i % 5, i * 0.5

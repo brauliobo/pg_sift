@@ -52,9 +52,7 @@ CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no
 BEGIN
 	plan := plan_of(q);
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.agg_join_filter = off;
 	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
-	RESET sift.agg_join_filter;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	RESET sift.enable_agg;

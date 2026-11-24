@@ -7,7 +7,6 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
-SET sift.agg_left_lateral = on;
 
 CREATE TABLE items (id int PRIMARY KEY, parent_id int, grp text, weight float8, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO items
@@ -78,7 +77,6 @@ SELECT * FROM check_same($q$SELECT i.parent_id, count(*) AS tuples
   FROM items i LEFT JOIN LATERAL jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) ON true WHERE p.n > 3 GROUP BY i.parent_id$q$);
 
 -- the setting off keeps the normal plan
-SET sift.agg_left_lateral = off;
 SELECT * FROM check_same($q$SELECT i.id, max(i.weight) AS weight, avg(p.n) AS n
   FROM items i LEFT JOIN LATERAL jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) ON true GROUP BY i.id$q$);
 

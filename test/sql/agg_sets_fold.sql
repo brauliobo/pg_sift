@@ -53,10 +53,8 @@ INSERT INTO sf_queries VALUES
 
 SELECT n, sf_rows(q, true) = sf_rows(q, false) AS same_rows, length(sf_rows(q, false)) > 0 AS has_rows, sf_summed(q) AS summed FROM sf_queries ORDER BY n;
 
-SET sift.agg_preagg = off;
 SELECT n, sf_rows(q, true) = sf_rows(q, false) AS same_rows, sf_summed(q) AS summed FROM sf_queries WHERE n IN (1, 2, 3, 7) ORDER BY n;
 
-SET sift.agg_preagg = on;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;

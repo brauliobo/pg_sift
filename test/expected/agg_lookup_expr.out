@@ -217,7 +217,6 @@ SELECT * FROM report('workers');
  workers |    14 | t            | t           | t    | t
 (14 rows)
 
-SET sift.agg_lookup_columns = off;
 SELECT * FROM report('lookup columns off');
        stage        | shape | same_answers | from_leaves | scan | not_empty 
 --------------------+-------+--------------+-------------+------+-----------

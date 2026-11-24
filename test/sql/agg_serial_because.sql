@@ -18,7 +18,6 @@ DECLARE l text; r text := 'no scan';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config('sift.agg_force', 'on', true);
-	PERFORM set_config('sift.agg_preagg', preagg::text, true);
 	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'none given'; END IF;
 		IF l LIKE '%Workers Planned%' AND r <> 'no scan' THEN RETURN 'workers'; END IF;

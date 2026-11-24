@@ -43,7 +43,6 @@ CREATE FUNCTION p_rows(q text, push bool, pre bool) RETURNS text LANGUAGE plpgsq
 DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
 END $$;
@@ -51,7 +50,6 @@ CREATE FUNCTION p_mode(q text, OUT mode text, OUT pre int) LANGUAGE plpgsql AS $
 DECLARE l text; gather bool := false; agg bool := false;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('sift.agg_preagg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		gather := gather OR l LIKE '%Workers Planned: 2%';
 		agg := agg OR l LIKE '%Custom Scan (SiftAgg%';

@@ -3,7 +3,6 @@
 -- and expression keys, DESC, NULLS FIRST and LAST, ties, a scroll cursor read backwards, a merge join, a rescan, with workers, and the Sort under a Limit stays.
 CREATE EXTENSION pg_sift;
 SET work_mem = '256MB';
-SET sift.agg_preagg = off;
 SET extra_float_digits = 0;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

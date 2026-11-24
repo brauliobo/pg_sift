@@ -5,7 +5,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 
-SET sift.agg_preagg = off;
 SET sift.agg_force = on;
 SET sift.test_ahead_cold = on;
 

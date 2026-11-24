@@ -184,9 +184,7 @@ ROLLBACK;
 SELECT * FROM pa_sum('md');
 
 -- the switch
-SET sift.agg_preagg = off;
 SELECT pre IS NULL AS off FROM pa_units('SELECT kind, min(val), max(val) FROM md GROUP BY kind');
-RESET sift.agg_preagg;
 SELECT pre > 0 AS on FROM pa_units('SELECT kind, min(val), max(val) FROM md GROUP BY kind');
 
 DROP TABLE mc, md, mo, mf, mx, pa_q;

@@ -26,9 +26,7 @@ SET sift.vacuum_rewrite_limit = 0;
 CREATE FUNCTION pt_state(tbl text) RETURNS TABLE (same bool) LANGUAGE plpgsql AS $$
 DECLARE q text := format('SELECT kind, count(*), sum(amount) FROM %s GROUP BY kind', tbl); a text; b text; c text;
 BEGIN
-	SET LOCAL sift.agg_preagg = on;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
-	SET LOCAL sift.agg_preagg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;

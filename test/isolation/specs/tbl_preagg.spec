@@ -11,7 +11,6 @@ setup
 	CREATE FUNCTION iso_pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $f$
 	DECLARE r text;
 	BEGIN
-		PERFORM set_config('sift.agg_preagg', pre::text, true);
 		PERFORM set_config('sift.enable_agg', push::text, true);
 		PERFORM set_config('cpu_tuple_cost', '0.5', true);
 		PERFORM set_config('max_parallel_workers_per_gather', '0', true);
@@ -21,7 +20,6 @@ setup
 	CREATE FUNCTION iso_pa_units(q text) RETURNS text LANGUAGE plpgsql AS $f$
 	DECLARE l text; units int; pre int;
 	BEGIN
-		PERFORM set_config('sift.agg_preagg', 'on', true);
 		PERFORM set_config('sift.enable_agg', 'on', true);
 		PERFORM set_config('cpu_tuple_cost', '0.5', true);
 		PERFORM set_config('max_parallel_workers_per_gather', '0', true);

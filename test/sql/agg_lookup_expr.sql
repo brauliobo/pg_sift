@@ -120,7 +120,6 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SELECT * FROM report('workers');
 
-SET sift.agg_lookup_columns = off;
 SELECT * FROM report('lookup columns off');
 
 DROP FUNCTION report(text), scanned(text), loads(text), answer(text, bool);

@@ -32,7 +32,6 @@ INSERT INTO q (name, sql) VALUES
 
 SELECT 'default' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;
 
-SET sift.agg_preagg = off;
 SELECT 'rows, no pre-aggregates' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;
 
 SET parallel_setup_cost = 0;
@@ -42,7 +41,6 @@ SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT 'two workers' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;
 SET max_parallel_workers_per_gather = 0;
-RESET sift.agg_preagg;
 
 -- inserts, updates and deletes that move groups across the bounds: 15 goes from 5 to 8 rows and gets a value, 16 from 1 to 7, 17 loses a row, 18 is new, the biggest group loses seven rows
 INSERT INTO hv_events SELECT 40000 + i, 15, 2, 'k2', DATE '2026-02-05', 1, 3, 5, 2.50, 2.5, 'l3', true FROM generate_series(1, 3) i;
@@ -54,11 +52,9 @@ UPDATE hv_events SET tenant_id = 15, counter_a = 11 WHERE id IN (SELECT id FROM 
 UPDATE hv_events SET counter_b = counter_b + 1 WHERE tenant_id = 13 AND id % 2 = 0;
 SELECT 'after writes' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;
 
-SET sift.agg_preagg = off;
 SET max_parallel_workers_per_gather = 2;
 SELECT 'after writes, two workers, rows' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;
 SET max_parallel_workers_per_gather = 0;
-RESET sift.agg_preagg;
 
 VACUUM (ANALYZE) hv_events;
 SELECT 'after VACUUM' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;

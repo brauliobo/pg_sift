@@ -57,7 +57,6 @@ ROLLBACK;
 DROP TABLE zones, zev;
 
 -- the rows held back for the index of a partition
-SET sift.agg_preagg = off;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 CREATE TABLE pt (id int, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);

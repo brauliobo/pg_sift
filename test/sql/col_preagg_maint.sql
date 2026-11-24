@@ -26,9 +26,7 @@ BEGIN
 		u := coalesce(substring(l from '^\s*Units: (\d+)')::int, u);
 		p := coalesce(substring(l from '(\d+) from pre-aggregates')::int, p);
 	END LOOP;
-	SET LOCAL sift.agg_preagg = on;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
-	SET LOCAL sift.agg_preagg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;

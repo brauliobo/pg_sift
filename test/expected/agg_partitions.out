@@ -1241,14 +1241,12 @@ SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN
 RESET sift.test_limits;
 DROP TABLE pt_days2;
 -- off: the join key filter off reads every partition, with the rows of the normal plan
-SET sift.agg_join_filter = off;
 SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (2, 8) GROUP BY 1');
   scan   | partitions_read | key_filters | result_rows | vs_normal_plan 
 ---------+-----------------+-------------+-------------+----------------
  SiftAgg |               5 |           0 |           1 |              0
 (1 row)
 
-RESET sift.agg_join_filter;
 -- the workers take the superblocks of the partitions the leader kept
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;

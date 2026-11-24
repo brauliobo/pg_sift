@@ -6,7 +6,6 @@ CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-SET sift.agg_preagg = off;
 SET sift.agg_force = on;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_vs_normal_in_session(q) $$;

@@ -36,9 +36,7 @@ CREATE FUNCTION ne_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text; c text;
 BEGIN
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
-	SET LOCAL sift.agg_preagg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
-	SET LOCAL sift.agg_preagg = on;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
 	RETURN a IS NOT DISTINCT FROM b AND b IS NOT DISTINCT FROM c;

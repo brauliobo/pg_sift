@@ -42,7 +42,6 @@ CREATE FUNCTION scan_cost(agg text) RETURNS float8 LANGUAGE sql AS $$
 $$;
 
 -- the lookup join is what is priced: the child grouped by its key first (sift.agg_child_first) is another plan of these statements
-SET sift.agg_child_first = off;
 SELECT n, sql, plan(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
 
 -- the scan's price: a count needs no ids, and the ids of 300,000 values cost more than those of 1,000

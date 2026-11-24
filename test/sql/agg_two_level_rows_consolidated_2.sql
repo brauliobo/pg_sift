@@ -600,7 +600,6 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET seq_page_cost = 10000;
-SET sift.agg_preagg = off;
 
 CREATE TABLE items (id int PRIMARY KEY, parent_id int, region text, doc jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO items
@@ -863,9 +862,7 @@ CREATE FUNCTION many_groups() RETURNS text LANGUAGE sql AS $$
 	SELECT report('count(DISTINCT c.dim_a_id) AS dim_a, count(*) AS n, count(c.id) AS ids', 'true', ', c.id')
 $$;
 
-SET sift.agg_rows = off;
 DO $$ BEGIN EXECUTE format('CREATE TEMP TABLE want AS %s', many_groups()); END $$;
-RESET sift.agg_rows;
 
 -- the plan is made at the default factor and has the node; it is run under 1.6 MB (the tables of the arms, 20,000 groups, take 1.2 MB; the 47,000 groups of the node 2 MB)
 SET plan_cache_mode = force_generic_plan;
