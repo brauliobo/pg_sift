@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_marks.h"
 #include "col/f2/f2_pull_prune.h"
 #include "col/f2/part_format.h"
@@ -67,8 +68,22 @@ read_zones(const SiftF2PullPrune *pr, int leaf)
 	return z;
 }
 
+/* the zones of a leaf that a column delta of the part patches say nothing of the cells it now holds: an exception of the granule keeps them from ruling it out */
+static void
+patched_exceptions(SiftF2PullPrune *pr, const SiftColDeltaPartMap *map)
+{
+	const int	ncols = sift_col_rel(pr->index)->schema->ncols;
+	bool	   *pred_leaf = palloc0(ncols * sizeof(bool));
+
+	for (int k = 0; k < pr->npred; k++)
+		pred_leaf[pr->pred[k].col] = true;
+	for (int k = 0; k < pr->nelem; k++)
+		pred_leaf[pr->elem[k].col] = true;
+	pr->exc = sift_cdi_exceptions(map, pr->exc, pr->nexc, pred_leaf, ncols, &pr->nexc);
+}
+
 void
-sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const SiftPart *part, const SiftGranuleDesc *dir, SiftF2PullStats *st)
+sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const SiftPart *part, const SiftGranuleDesc *dir, const SiftColDeltaPartMap *map, SiftF2PullStats *st)
 {
 	const uint32 ng = part->hdr.ngranules;
 	const int	nleaf = pr->npred + pr->nelem;
@@ -82,6 +97,8 @@ sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const SiftPart *par
 	pr->zones = palloc0(Max(nleaf, 1) * sizeof(SiftZone *));
 	pr->exc = nleaf > 0 ? sift_part_read_section(index, part, SEC_VARIANT_EXC, &len) : NULL;
 	pr->nexc = pr->exc != NULL ? len / sizeof(SiftVariantExcSummary) : 0;
+	if (nleaf > 0)
+		patched_exceptions(pr, map);
 	for (int k = 0; k < nleaf; k++)
 		pr->zones[k] = read_zones(pr, (k < pr->npred ? pr->pred[k] : pr->elem[k - pr->npred]).col);
 	if (pr->npred == 0)

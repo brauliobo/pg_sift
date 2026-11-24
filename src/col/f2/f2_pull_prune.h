@@ -11,6 +11,7 @@
 #include "col/f2/f2.h"
 #include "col/f2/f2_sink_ext.h"
 #include "col/f2/key_plan.h"
+#include "table/f2/f2_col_delta.h"
 
 typedef struct SiftF2PullPrune
 {
@@ -42,8 +43,8 @@ extern void sift_f2_pull_prune_begin(SiftF2PullPrune *pr, Relation index, const 
 extern bool sift_f2_pull_prune_entry(const SiftF2PullPrune *pr, const SiftPartitionEntry *e);
 extern bool sift_f2_pull_prune_part(const SiftF2PullPrune *pr, const SiftPartDesc *d);
 
-/* The part to read next: the granules its key marks leave, and the zones of the leaves of the predicates, kept in the current memory context until the next part is opened. Counts the granules outside the key marks in st */
-extern void sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const SiftPart *part, const SiftGranuleDesc *dir, SiftF2PullStats *st);
+/* The part to read next: the granules its key marks leave, and the zones of the leaves of the predicates, kept in the current memory context until the next part is opened; map: the column deltas of the part the snapshot sees (NULL: none), the leaves they patch have no zone to say. Counts the granules outside the key marks in st */
+extern void sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const SiftPart *part, const SiftGranuleDesc *dir, const SiftColDeltaPartMap *map, SiftF2PullStats *st);
 /* The next granule of the open part that the key marks and the zones of the rows leave; false after the last. Counts the ones the zones ruled out in st */
 extern bool sift_f2_pull_prune_next(SiftF2PullPrune *pr, uint32 *g, SiftF2PullStats *st);
 /* Whether the zones of the element leaves say that no element of granule g, which has n_elems of them, passes the predicates of the elements */

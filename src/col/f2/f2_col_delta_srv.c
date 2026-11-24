@@ -155,6 +155,11 @@ scan_granule_map(const F2Scan *s, uint32 g)
 }
 
 bool
+sift_cdi_gran_remaps(const SiftColDeltaGranMap *gm)
+{
+	return gm != NULL && (gm->attnum_bloom & sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP)) != 0;
+}
+bool
 sift_cdi_scan_patch(F2Scan *s, const SiftColSchema *schema, uint32 g, ColView *views, uint64 *tids, int n, MemoryContext cx)
 {
 	const SiftColDeltaGranMap *gm = scan_granule_map(s, g);

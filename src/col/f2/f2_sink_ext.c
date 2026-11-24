@@ -10,6 +10,7 @@
 #include "col/am.h"
 #include "col/f2/delvec.h"
 #include "col/f2/f2_cache.h"
+#include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_pull_prune.h"
 #include "col/f2/f2_sink_ext.h"
 #include "col/f2/l0_slab.h"
@@ -41,11 +42,14 @@ struct SiftF2Pull
 	const SiftPlanPartList *list;
 	SiftPendDelIndex *px;
 
+	SiftXidCache xc;
 	SiftPart   *part;
 	const SiftPartDesc *pd;
 	SiftGranuleDesc *dir;
 	SiftDv	   *dv;
 	SiftTidIndexEntry *tix;
+	SiftColDeltaPartMap *dmap;	/* what the snapshot sees of the column deltas of the part: NULL when it sees none */
+	const SiftColDeltaGranMap *gm;	/* the patches of the granule being read, NULL: none */
 	uint32		g;				/* the granule being read */
 	SiftF2PullPrune prune;
 	SiftF2PullStats stats;
@@ -114,6 +118,7 @@ sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec)
 	p->gcx = sift_mem_allocset_create(cx, "sift f2 pull granule");
 	p->r = sift_col_rel(index);
 	sift_f2_pull_prune_begin(&p->prune, index, spec);
+	sift_xid_cache_init(&p->xc, snap);
 	sift_stage_flush(index);
 	{
 		int			nstaged;
@@ -189,6 +194,8 @@ begin_part(SiftF2Pull *p)
 	p->dir = sift_part_granule_dir(p->index, p->part);
 	p->dv = NULL;
 	p->tix = NULL;
+	p->dmap = (p->e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0 ? sift_cdi_part_map(p->index, p->e, p->part, &p->xc) : NULL;
+	p->gm = NULL;
 	if (p->pd->dv_blk != InvalidBlockNumber)
 	{
 		uint16	   *rows = palloc(Max(p->part->hdr.ngranules, 1) * sizeof(uint16));
@@ -205,7 +212,7 @@ begin_part(SiftF2Pull *p)
 		if (p->tix == NULL || tlen != (uint64) p->part->hdr.ngranules * sizeof(*p->tix))
 			SIFT_SEG_CORRUPT(p->index, p->part->hdr.part_gen, "The part has no usable TID index.");
 	}
-	sift_f2_pull_prune_open(&p->prune, p->index, p->part, p->dir, &p->stats);
+	sift_f2_pull_prune_open(&p->prune, p->index, p->part, p->dir, p->dmap, &p->stats);
 	MemoryContextSwitchTo(old);
 }
 
@@ -256,6 +263,77 @@ static void
 poison_granule(SiftF2Pull *p)
 {
 	memset(p->poison, 0xff, ((p->n + 63) / 64) * sizeof(uint64));
+}
+
+/* a value a vector of a column cannot hold: the rows of the granule are the consumer's when it reads arrays, else the scan has no answer */
+static void
+unholdable(SiftF2Pull *p)
+{
+	if (p->spec.group_leaf < 0)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
+				errhint("Read the column through a scan that decodes exceptions.")));
+	poison_granule(p);
+}
+
+static void
+put_patch(SiftVec *v, uint16 j, const SiftColDeltaPatch *pt)
+{
+	const bool	isnull = (pt->flags & SIFT_CDCOL_IS_NULL) != 0;
+
+	switch (v->type)
+	{
+		case SVEC_I32:
+			((int32 *) v->data)[j] = isnull ? 0 : (int32) pt->val.i;
+			break;
+		case SVEC_F64:
+			((double *) v->data)[j] = isnull ? 0 : pt->val.f;
+			break;
+		case SVEC_STRVIEW:
+			((SiftStrView *) v->data)[j] = isnull ? (SiftStrView) {0} : sift_vstr_make(pt->val.s, pt->vlen);
+			break;
+		default:
+			((int64 *) v->data)[j] = isnull ? 0 : pt->val.i;
+	}
+	v->valid[j >> 6] = (v->valid[j >> 6] & ~(UINT64CONST(1) << (j & 63))) | ((uint64) !isnull << (j & 63));
+}
+
+/* the validity of the cells of column i in a bitmap of the pull, which a patch may write */
+static void
+own_valid(SiftF2Pull *p, int i, uint16 cnt)
+{
+	SiftVec    *v = &p->vec[i];
+
+	if (v->all_valid)
+		memset(p->valid[i], 0xff, SIFT_VEC_WORDS * sizeof(uint64));
+	else
+		memcpy(p->valid[i], v->valid, ((cnt + 63) / 64) * sizeof(uint64));
+	v->valid = p->valid[i];
+	v->all_valid = false;
+}
+
+/* the cells of the rows [off, off + cnt) of column i that the column deltas the snapshot sees changed, over the cells the granule holds; a cell the vector cannot hold is the consumer's */
+static void
+patch_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt)
+{
+	SiftVec    *v = &p->vec[i];
+	uint32		lo = 0,
+				hi = 0;
+
+	if (p->gm == NULL)
+		return;
+	sift_col_delta_patch_slice(p->gm, (int16) (p->spec.col[i].leaf + 1), &lo, &hi);
+	for (uint32 k = lo; k < hi; k++)
+	{
+		const SiftColDeltaPatch *pt = &p->gm->patches[k];
+
+		if (pt->row_ordinal < off || pt->row_ordinal >= off + cnt)
+			continue;
+		if (v->all_valid || v->valid != p->valid[i])
+			own_valid(p, i, cnt);
+		put_patch(v, pt->row_ordinal - off, pt);
+		if ((pt->flags & SIFT_CDCOL_HAS_TAG) != 0 && pt->tag != 0)
+			unholdable(p);
+	}
 }
 
 /* an element column held as a dictionary in this granule: its codes, whole, and the dictionary they name; false when the chunk is no dictionary */
@@ -363,13 +441,14 @@ static void
 finish_live(SiftF2Pull *p, const uint64 *dead)
 {
 	const uint32 words = (p->n + 63) / 64;
+	const bool	any_tid = p->is_slab || sift_cdi_gran_remaps(p->gm) || (p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g]));
 
 	p->live = palloc0((words + 1) * sizeof(uint64));
 	for (uint32 r = 0; r < p->n; r++)
 	{
 		bool		ok = dead == NULL || !((dead[r >> 6] >> (r & 63)) & 1);
 
-		if (ok && p->px != NULL && (p->is_slab ? true : sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g])) && sift_pdel_idx_has(p->px, p->tids[r]))
+		if (ok && p->px != NULL && any_tid && sift_pdel_idx_has(p->px, p->tids[r]))
 			ok = false;
 		p->live[r >> 6] |= (uint64) ok << (r & 63);
 	}
@@ -428,6 +507,9 @@ begin_granule(SiftF2Pull *p)
 	p->off = 0;
 	tids = palloc(Max(p->n, 1) * sizeof(uint64));
 	sift_granule_tids(&p->gv, tids);
+	p->gm = p->dmap != NULL ? sift_col_delta_gran_map(p->dmap, p->g) : NULL;
+	if (p->gm != NULL)
+		sift_cdi_remap_tids(p->gm, tids, p->n);
 	p->tids = tids;
 	if (dg != NULL)
 		any_dead = sift_dv_mask64(dg, p->snap, dead) > 0;
@@ -470,6 +552,7 @@ begin_slab(SiftF2Pull *p)
 	p->rb = sift_rowbuf_new(&f->spec);
 	sift_l0_slab_read(p->index, p->e->part_id, p->e->l0_slab_blk, p->rb, &f->spec, p->snap, &pages, &npages);
 	p->is_slab = true;
+	p->gm = NULL;
 	p->n = p->rb->n;
 	p->off = 0;
 	p->tids = p->rb->tid;
@@ -605,11 +688,9 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 				p->cur_on[i] = true;
 			}
 			sift_vec_cursor_decode(&p->cur[i], off, cnt, &p->vec[i], &exc);
-			if (exc != NULL && p->spec.group_leaf >= 0)
-				poison_granule(p);
-			else if (exc != NULL)
-				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
-						errhint("Read the column through a scan that decodes exceptions.")));
+			if (exc != NULL)
+				unholdable(p);
+			patch_col(p, i, off, cnt);
 		}
 	}
 	for (int m = 0; m < p->spec.nmasks; m++)
