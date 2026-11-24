@@ -3,8 +3,10 @@
  *
  * key_leaf: the shredded scalar leaf of a top-level key of a document whose chunks keep the JSON type of each row (a path declared with a type or as text), -1 for any other key.
  * unnest_run: the aggregate scan of a LATERAL unnest of an array column (agg/v6/v6_unnest_run.h). The columns of the table the statement reads come from the batches of the Format 1 source, which
- * hands over only the rows the tombstones and the snapshot leave; the array of each row that passes the quals of the table is read from its heap row and taken apart as PostgreSQL does (NULL and
- * empty arrays, NULL elements, a jsonb document that is no array and the errors it raises included), and the pairs of (row, element) go through the pipe of the engine into the groups.
+ * hands over only the rows the tombstones and the snapshot leave. When the index keeps the array shredded (an SCL_ARRAY leaf of the lengths and a child leaf for each column of the element), the
+ * elements of the rows that pass the quals of the table are those of the leaves (v1_store_ops_elem.c); the rows the leaves cannot hold (a NULL array or a document that is no array, an array cut by
+ * the shredder, an element that holds a value its column cannot or may be no object) have their array read from the heap row and taken apart as PostgreSQL does, with the errors it raises. Without
+ * the leaves every array is read from its heap row. The pairs of (row, element) go through the pipe of the engine into the groups.
  */
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
 #include "postgres.h"
@@ -25,6 +27,7 @@
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_star_run.h"
+#include "agg/v6/v6_unnest.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/v6/v6_vexpr.h"
 #include "agg/vexpr_str.h"
@@ -32,6 +35,8 @@
 #include "table/v1/v1_tbl_ops.h"
 #include "core/errctx.h"
 #include "core/memtrack.h"
+
+StaticAssertDecl(SIFT_V1_MAX_ELEM_COLS == SIFT_V6_XELEM_COLS, "the element columns of a source are those of the unnest");
 
 #define OUT_SLOTS	(SIFT_V6_MAX_COLS + SIFT_V6_XELEM_COLS + SIFT_V6_MAX_DERIVE)
 #define MONTH_SLOTS	4096
@@ -67,6 +72,8 @@ typedef struct UnRun
 	SiftVecType etype[SIFT_V6_XELEM_COLS];
 	bool		eused[SIFT_V6_XELEM_COLS];
 	AttrNumber	heap_att;
+	bool		has_elems;		/* the leaves of the index hold the elements of the array: the rows they cannot hold are read from the heap */
+	SiftV1ElemSpec espec;
 	int16		typlen;
 	bool		typbyval;
 	char		typalign;
@@ -512,6 +519,37 @@ restrict_where(UnRun *u, const SiftV6Batch *b)
 		bs->mask[w] &= keep[w];
 }
 
+/* the pairs of the rows of the batch whose elements the leaves hold; the rows they cannot hold (poison) are read from their heap row */
+static void
+emit_elems(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
+{
+	SiftVec		ev[SIFT_V6_XELEM_COLS];
+	SiftUnnestIn in = {.lay = &eb->layout,.parent_mask = u->bs.mask,.poison = eb->poison,.doc_valid = eb->doc_valid,.left = u->x->elem.left};
+	SiftUnnestCursor cur = {0};
+	uint64		fallback[SIFT_VEC_WORDS] = {0};
+
+	MemoryContextReset(u->bcx);
+	for (int c = 0; c < u->nel; c++)
+		ev[c] = (SiftVec) {.type = u->etype[c],.data = (void *) eb->child_data[c],.valid = (uint64 *) eb->child_valid[c],.all_valid = false};
+	if (u->has_ewhere)
+	{
+		uint64	   *keep = MemoryContextAllocZero(u->bcx, ((eb->layout.n_elems + 63) / 64 + 1) * sizeof(uint64));
+
+		eval_elems(u, ev, eb->layout.n_elems, keep);
+		in.elem_mask = keep;
+	}
+	while (!sift_unnest_done(&in, &cur))
+	{
+		const uint32 m = sift_unnest_expand(&in, &cur, u->pidx, u->eidx, SIFT_VEC_LEN, fallback);
+
+		if (m > 0)
+			emit_pairs(u, u->fv, ev, m);
+	}
+	for (int w = 0; w < (b->n + 63) / 64; w++)
+		for (uint64 bits = fallback[w]; bits != 0; bits &= bits - 1)
+			emit_heap_row(u, b, w * 64 + (uint32) __builtin_ctzll(bits));
+}
+
 static void
 run_batch(UnRun *u, const SiftV6Batch *b)
 {
@@ -528,11 +566,15 @@ run_batch(UnRun *u, const SiftV6Batch *b)
 		restrict_where(u, b);
 	compute_columns(u, b, bs);
 	for (int w = 0; w < words; w++)
+		u->stats->rows += __builtin_popcountll(bs->mask[w]);
+	if (u->has_elems)
+	{
+		emit_elems(u, b, sift_v1_source_elems(u->src));
+		return;
+	}
+	for (int w = 0; w < words; w++)
 		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
-		{
-			u->stats->rows++;
 			emit_heap_row(u, b, w * 64 + (uint32) __builtin_ctzll(bits));
-		}
 }
 
 static void
@@ -569,6 +611,9 @@ static void
 open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
 {
 	SiftV6Input in;
+	const SiftSrcLayout *lay = sift_v1_reader_of(u->spec->is_table)->layout(u->spec->is_table ? heap : index);
+	SiftVecType type[SIFT_V6_XELEM_COLS];
+	SiftV1Scan	scan = {0};
 
 	if (u->spec->is_table)
 		sift_v6_input_init_table(&in, heap);
@@ -577,7 +622,11 @@ open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
 	for (int i = 0; i < u->ncols; i++)
 		in.col[i] = (SiftV6InCol) {.attno = u->cols[i].attno,.typid = u->cols[i].typid,.type = vec_type(u->cols[i].cls)};
 	in.ncols = u->ncols;
-	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, NULL, NULL);
+	memcpy(type, u->etype, sizeof(type));
+	u->has_elems = sift_v1_elem_spec(lay, u->x->elem.group_leaf, u->nel, u->x->elem.col_leaf, type, &u->espec);
+	u->espec.objects = u->x->elem.fn == SV6E_RECORDSET;
+	scan.elem = u->has_elems ? &u->espec : NULL;
+	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, NULL, &scan);
 }
 
 static void

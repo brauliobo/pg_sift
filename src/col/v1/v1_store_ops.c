@@ -64,6 +64,22 @@ sift_v1_att_typid(const SiftSrcLayout *lay, int att)
 	return e == NULL ? InvalidOid : exprType(e);
 }
 
+/* the column of the heap row attribute att of the layout is; 0: an expression */
+static AttrNumber
+att_heap_column(const SiftSrcLayout *lay, int att)
+{
+	const Node *e = att >= 1 && att <= list_length(lay->attexprs) ? list_nth(lay->attexprs, att - 1) : NULL;
+
+	return e != NULL && IsA(e, Var) ? ((const Var *) e)->varattno : 0;
+}
+
+/* a jsonb document is no leaf: it is the Datum of its heap row, which the scan reads for the rows it keeps */
+static bool
+doc_holds(const SiftSrcLayout *lay, int att)
+{
+	return att >= 1 && att <= lay->natts && sift_v1_att_typid(lay, att) == JSONBOID && att_heap_column(lay, att) != 0;
+}
+
 /* a type that is its integer or float as stored: a Datum is made of it without the type's input or a dictionary */
 static bool
 datum_by_value(const SiftSrcLeaf *l, Oid typid)
@@ -124,6 +140,8 @@ describe_att(const SiftSrcLayout *lay, int att)
 	SiftStoreAtt a = {.attno = att,.typid = sift_v1_att_typid(lay, att),.typmod = e == NULL ? -1 : exprTypmod(e),.vec_type = SVEC_DATUM};
 
 	a.is_jsonb = a.typid == JSONBOID;
+	if (a.is_jsonb)
+		return a;
 	if (l == NULL || l->wide)
 	{
 		a.is_wide = l != NULL;
@@ -255,7 +273,7 @@ v1_leaf_holds(Oid relid, bool is_table, int att, int cls)
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
 	const SiftSrcLayout *lay = sift_v1_reader_of(is_table)->layout(r.rel);
 	const SiftSrcLeaf *l = sift_v1_att_leaf(lay, att);
-	const bool	holds = l != NULL && leaf_serves(l, sift_v1_att_typid(lay, att), (SiftV6Class) cls);
+	const bool	holds = (cls == SV6C_DATUM && doc_holds(lay, att)) || (l != NULL && leaf_serves(l, sift_v1_att_typid(lay, att), (SiftV6Class) cls));
 
 	sift_v1_rel_close(&r);
 	return holds;
@@ -277,11 +295,19 @@ typedef struct V1Src
 	const SiftSrcLayout *lay;
 	const SiftSrcLeaf *col_leaf[SIFT_V6_MAX_COLS];
 	int			col_read[SIFT_V6_MAX_COLS];		/* of each column and boolean of the input, the entry of read_vec that holds its leaf */
+	int			ndocs;			/* the columns of the input that are a jsonb document, read from the heap row of each row the batch keeps */
+	int			doc_col[SIFT_V6_MAX_COLS];
+	AttrNumber	doc_att[SIFT_V6_MAX_COLS];
 	const SiftSrcLeaf *mask_leaf[SIFT_V6_MAX_MASKS];
 	int			mask_read[SIFT_V6_MAX_MASKS];
 	int			nread;
-	int			read_leaf[SIFT_V6_MAX_COLS + SIFT_V6_MAX_MASKS];	/* the distinct leaves of a unit that are read: one read of a leaf is valid until the next of the same leaf */
-	SiftSrcVec	read_vec[SIFT_V6_MAX_COLS + SIFT_V6_MAX_MASKS];
+	int			read_leaf[SIFT_V6_MAX_COLS + SIFT_V6_MAX_MASKS + SIFT_V1_MAX_ELEM_COLS + 1];	/* the distinct leaves of a unit that are read: one read of a leaf is valid until the next of the same leaf */
+	SiftSrcVec	read_vec[SIFT_V6_MAX_COLS + SIFT_V6_MAX_MASKS + SIFT_V1_MAX_ELEM_COLS + 1];
+	SiftV1Elems *elems;			/* the shredded array of the scan: the slots of read_vec of its lengths leaf and of its element columns, and its elements for the rows of the batch */
+	int			elem_group;
+	int			nelem_child;
+	int			elem_child[SIFT_V1_MAX_ELEM_COLS];
+	const SiftV1ElemBatch *elem_batch;
 	SiftSrcUnit unit;
 	bool		in_unit;
 	uint64	   *bits;			/* the rows of the unit the snapshot sees and nothing has been taken of */
@@ -383,19 +409,10 @@ unreadable(const V1Src *s, const SiftSrcLeaf *l)
 static void
 put_strview(V1Src *s, SiftStrView *sv, const SiftSrcVec *v, uint32 r, bool valid)
 {
-	char		buf[SIFT_SRC_DICT_ENTRY];
-	uint32		len;
-	const char *p = valid ? sift_srcdict_str(v->dict, ((const uint32 *) v->data)[r], &len, buf) : NULL;
-
-	memset(sv, 0, sizeof(*sv));
-	if (!valid)
-		return;
-	sv->len = len;
-	memcpy(sv->prefix, p, Min(len, 4));
-	if (len > 12)
-		sv->u.ptr = memcpy(MemoryContextAlloc(s->batch_cx, len), p, len);
-	else if (len > 4)
-		memcpy(sv->u.tail, p + 4, len - 4);
+	if (valid)
+		sift_v1_strview(s->batch_cx, sv, v->dict, ((const uint32 *) v->data)[r]);
+	else
+		memset(sv, 0, sizeof(*sv));
 }
 
 static Datum
@@ -509,7 +526,7 @@ batch_fill(V1Src *s)
 		for (int j = 0; j < k; j++)
 		{
 			for (int i = 0; i < s->in.ncols; i++)
-				if (i != s->score_col)
+				if (i != s->score_col && s->col_leaf[i] != NULL)
 					put_col(s, i, s->ords[j], n + j);
 			for (int m = 0; m < s->in.nmasks; m++)
 				put_mask(s, m, s->ords[j], n + j);
@@ -517,6 +534,8 @@ batch_fill(V1Src *s)
 		}
 		n += k;
 		s->in_unit = k == cap;
+		if (s->elems != NULL)
+			break;
 	}
 	for (int i = 0; i < s->in.ncols; i++)
 		s->vec[i] = (SiftVec) {.data = s->data[i],.valid = s->valid[i],.len = (uint16) n,.dense = true,.type = s->in.col[i].type,.scale = s->in.col[i].scale,
@@ -546,6 +565,48 @@ bridge_narrow(V1Src *s, SiftV6Batch *b)
 	return true;
 }
 
+static bool v1_fetch(SiftV6Source *base, uint64 tag, const AttrNumber *attnos, int n, Datum *values, bool *isnull);
+
+/* the jsonb documents of the rows the batch keeps: each one as PostgreSQL reads it from the heap row the snapshot sees (a NULL one is not valid) */
+static void
+fill_docs(V1Src *s, const SiftV6Batch *b)
+{
+	for (uint32 r = 0; s->ndocs > 0 && r < b->n; r++)
+	{
+		Datum		vals[SIFT_V6_MAX_COLS];
+		bool		nulls[SIFT_V6_MAX_COLS];
+		bool		found;
+
+		if (b->mask != NULL && !sift_src_bit(b->mask, r))
+			continue;
+		found = v1_fetch(&s->base, b->tag[r], s->doc_att, s->ndocs, vals, nulls);
+		SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its document is read");
+		for (int d = 0; d < s->ndocs; d++)
+		{
+			const int	i = s->doc_col[d];
+			MemoryContext old = MemoryContextSwitchTo(s->batch_cx);
+
+			if (!nulls[d])
+			{
+				s->valid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
+				((Datum *) s->data[i])[r] = PointerGetDatum(PG_DETOAST_DATUM_COPY(vals[d]));
+			}
+			MemoryContextSwitchTo(old);
+		}
+	}
+}
+
+/* the elements of the rows the batch keeps, from the leaves of the unit it is of (a batch of a source that reads elements never spans two) */
+static void
+fill_elems(V1Src *s, const SiftV6Batch *b)
+{
+	const SiftSrcVec *child[SIFT_V1_MAX_ELEM_COLS];
+
+	for (int c = 0; c < s->nelem_child; c++)
+		child[c] = &s->read_vec[s->elem_child[c]];
+	s->elem_batch = sift_v1_elems_batch(s->elems, &s->read_vec[s->elem_group], child, s->ords, b->n, b->mask, s->batch_cx);
+}
+
 static bool
 v1_next(SiftV6Source *base, SiftV6Batch *out)
 {
@@ -557,16 +618,25 @@ v1_next(SiftV6Source *base, SiftV6Batch *out)
 		*out = (SiftV6Batch) {.n = (uint16) n,.col = s->vec,.masks = s->masks,.tag = s->tag};
 		if (s->bridge != NULL && !bridge_narrow(s, out))
 			continue;
-		if (s->quals == NULL)
-			return true;
-		sift_v6_vexpr_cover(s->quals, &s->in, out);
-		if (sift_v6_vexpr_filter(s->vctx, s->quals, out, s->mask) > 0)
+		if (s->quals != NULL)
 		{
+			sift_v6_vexpr_cover(s->quals, &s->in, out);
+			if (sift_v6_vexpr_filter(s->vctx, s->quals, out, s->mask) == 0)
+				continue;
 			out->mask = s->mask;
-			return true;
 		}
+		fill_docs(s, out);
+		if (s->elems != NULL)
+			fill_elems(s, out);
+		return true;
 	}
 	return false;
+}
+
+const SiftV1ElemBatch *
+sift_v1_source_elems(SiftV6Source *base)
+{
+	return ((V1Src *) base)->elem_batch;
 }
 
 static bool
@@ -629,12 +699,32 @@ alloc_column(V1Src *s, int i, size_t width)
 }
 
 static void
+bind_doc(V1Src *s, int i)
+{
+	SiftV6InCol *c = &s->in.col[i];
+
+	SIFT_INVARIANT(doc_holds(s->lay, c->attno), "attribute %d of relation %u is not a jsonb document Format 1 reads from the heap row", c->attno, s->in.indexoid);
+	c->typid = JSONBOID;
+	get_typlenbyval(c->typid, &s->typlen[i], &s->typbyval[i]);
+	s->doc_col[s->ndocs] = i;
+	s->doc_att[s->ndocs++] = att_heap_column(s->lay, c->attno);
+	alloc_column(s, i, sizeof(Datum));
+}
+
+static void
 bind_column(V1Src *s, int i)
 {
 	SiftV6InCol *c = &s->in.col[i];
-	const SiftSrcLeaf *l = input_leaf(s, c->attno, vec_class[c->type]);
-	const size_t width = c->type == SVEC_STRVIEW ? sizeof(SiftStrView) : c->type == SVEC_I32 ? sizeof(int32) : c->type == SVEC_BOOL ? 1 : sizeof(int64);
+	const SiftSrcLeaf *l;
+	size_t		width;
 
+	if (c->type == SVEC_DATUM && c->typid == JSONBOID)
+	{
+		bind_doc(s, i);
+		return;
+	}
+	l = input_leaf(s, c->attno, vec_class[c->type]);
+	width = c->type == SVEC_STRVIEW ? sizeof(SiftStrView) : c->type == SVEC_I32 ? sizeof(int32) : c->type == SVEC_BOOL ? 1 : sizeof(int64);
 	SIFT_INVARIANT(c->type != SVEC_NUM64 || l->scale == c->scale, "numeric attribute %d of relation %u is stored at scale %d, not %d", c->attno, s->in.indexoid, l->scale, c->scale);
 	if (c->type == SVEC_DATUM)
 	{
@@ -672,6 +762,16 @@ bind_columns(V1Src *s)
 		s->mvalid[m] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
 		s->masks[m] = (SiftVexprMaskIn) {.bits = s->mbits[m],.valid = s->mvalid[m]};
 	}
+}
+
+static void
+bind_elems(V1Src *s, const SiftV1ElemSpec *spec)
+{
+	s->elems = sift_v1_elems_new(s->cx, spec, s->lay);
+	s->elem_group = read_slot(s, &s->lay->leaf[spec->group_leaf]);
+	s->nelem_child = spec->nchild;
+	for (int c = 0; c < spec->nchild; c++)
+		s->elem_child[c] = read_slot(s, &s->lay->leaf[spec->child_leaf[c]]);
 }
 
 static void
@@ -733,6 +833,8 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, range ? range->view : NULL);
 	s->lay = s->rd->source_layout(s->src);
 	bind_columns(s);
+	if (scan->elem != NULL)
+		bind_elems(s, scan->elem);
 	s->fslot = table_slot_create(s->rels.heap, NULL);
 	if (!in->is_table)
 		s->index_fetch = sift_table_index_fetch_begin(s->rels.heap);
