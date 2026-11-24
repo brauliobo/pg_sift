@@ -59,11 +59,11 @@ par_plan(struct SiftV6Scan *scan, SiftF2ParPlan *out)
 		rd->close(src);
 		return;
 	}
-	out->refs = MemoryContextAllocZero(s->cx, sizeof(SiftParPartRef));
+	out->refs = palloc0(sizeof(SiftParPartRef));
 	out->refs[0] = (SiftParPartRef) {.g_base = 0,.ngranules = nsb};
 	out->nrefs = 1;
 	out->nstaged = (uint32) ((bytes + sizeof(uint64) - 1) / sizeof(uint64));
-	out->staged_dead = MemoryContextAllocZero(s->cx, Max(out->nstaged, 1) * sizeof(uint64));
+	out->staged_dead = palloc0(Max(out->nstaged, 1) * sizeof(uint64));
 	if (bytes > 0)
 		rd->view_export(src, out->staged_dead);
 	rd->close(src);
