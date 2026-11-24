@@ -2,7 +2,7 @@
  * table/f2/f2_vacuum.c - VACUUM of a sift_table: the freeze that moves pg_class.relfrozenxid, the cleanup of the secondary indexes, and ANALYZE.
  *
  * The steps are those of a heap VACUUM in the order the heap keeps: the aged slabs and pending deletes are written out and folded, the addresses of the rows that are dead for every
- * snapshot (a delete that committed before the horizon, an insert that aborted) are given to the indexes in batches that fit maintenance_work_mem, then the parts that hold such
+ * snapshot (a delete that committed before the horizon, an insert that aborted) are given to the indexes in batches that fit the maintenance budget, then the parts that hold such
  * rows are compacted and the deletion vectors settled (a crash between the two leaves rows with an index entry and no address to find it by, so no part is rewritten before the indexes
  * let go of its dead rows), and last the oldest transaction id any page of the table still holds is computed again and becomes relfrozenxid.
  */
@@ -25,6 +25,8 @@
 
 #include "core/f2/f2_progress.h"
 #include "col/f2/delvec_delta.h"
+#include "core/cmp.h"
+#include "core/memtrack.h"
 #include "core/wal_conflict.h"
 #include "core/u64set.h"
 #include "table/f2/f2_col_delta.h"
@@ -37,8 +39,12 @@
 
 #define SIFT_VAC_L0_FLUSH_ROWS 2048
 
+#define SIFT_VAC_ROW_BYTES 64
+#define SIFT_VAC_EXPANSION 8
+
 typedef struct VacCtx
 {
+	MemoryContext cx;			/* what outlives a partition: the addresses of a batch and the results of the indexes */
 	Relation	rel;
 	Relation   *indexes;
 	int			nindexes;
@@ -59,19 +65,10 @@ tid_reaped(ItemPointer itemptr, void *state)
 	return TidStoreIsMember((TidStore *) state, itemptr);
 }
 
-static int
-cmp_tid(const void *a, const void *b)
-{
-	uint64		x = *(const uint64 *) a,
-				y = *(const uint64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 static uint64
 vc_max_bytes(void)
 {
-	return (uint64) maintenance_work_mem * 1024;
+	return sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1);
 }
 
 static uint32
@@ -104,11 +101,13 @@ batch_store(const VacCtx *vc)
 static void
 flush_batch(VacCtx *vc)
 {
+	MemoryContext old;
 	TidStore   *ts;
 
 	if (vc->ntids == 0)
 		return;
-	pg_qsort(vc->tids, vc->ntids, sizeof(uint64), cmp_tid);
+	old = MemoryContextSwitchTo(vc->cx);
+	pg_qsort(vc->tids, vc->ntids, sizeof(uint64), sift_cmp_u64);
 	ts = batch_store(vc);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_VACUUM_INDEX);
 	sift_f2_vacuum_progress_indexes(vc->nindexes, 0);
@@ -124,13 +123,14 @@ flush_batch(VacCtx *vc)
 	vc->ntids = 0;
 	vc->batches++;
 	sift_f2_vacuum_progress_dead(vc->total_dead, 0, vc_max_bytes(), vc->batches);
+	MemoryContextSwitchTo(old);
 }
 
 static void
 grow_tids(VacCtx *vc, uint32 max)
 {
 	vc->cap = Min(Max(1024, vc->cap * 2), max);
-	vc->tids = vc->tids == NULL ? palloc(sizeof(uint64) * vc->cap) : repalloc(vc->tids, sizeof(uint64) * vc->cap);
+	vc->tids = vc->tids == NULL ? MemoryContextAlloc(vc->cx, sizeof(uint64) * vc->cap) : repalloc(vc->tids, sizeof(uint64) * vc->cap);
 }
 
 void
@@ -164,38 +164,63 @@ settled_delete(const SiftDvXmaxEntry *e, TransactionId oldest)
 	return e == NULL || !TransactionIdIsNormal(e->xmax) || (TransactionIdPrecedes(e->xmax, oldest) && TransactionIdDidCommit(e->xmax));
 }
 
+/* The addresses of the rows of granule g that are dead for every snapshot, in tids (rows is the scratch of the walk); how many. A granule with no row in doubt is not read: one that is frozen and has no delete, or that one transaction wrote and has none either */
+static uint32
+granule_dead(Relation rel, SiftF2PartPin *pin, uint32 g, TransactionId oldest, uint16 *rows, uint64 *tids)
+{
+	const SiftGranuleDesc *gd = &pin->gdir[g];
+	const SiftDvGran *dvg = pin->dv != NULL ? sift_dv_granule(pin->dv, g) : NULL;
+	const bool	frozen = (gd->flags & SIFT_GDESC_ALL_FROZEN) != 0,
+				single = (gd->flags & SIFT_GDESC_SINGLE_XACT) != 0;
+	const bool	single_aborted = !frozen && single && aborted(XidFromFullTransactionId(gd->min_xid));
+	SiftRowVer *vers;
+	uint32		n = 0;
+
+	if (dvg == NULL && (frozen || (single && !single_aborted)))
+		return 0;
+	vers = frozen || single ? NULL : sift_part_read_vers(rel, pin->part, pin->gdir, g);
+	for (uint16 r = 0; r < gd->nrows; r++)
+	{
+		bool		isdead = !frozen && (single ? single_aborted : aborted(vers[r].xmin));
+
+		if (!isdead && dvg != NULL)
+		{
+			bool		del;
+			const SiftDvXmaxEntry *x = sift_dv_find(dvg, r, &del);
+
+			isdead = del && settled_delete(x, oldest);
+		}
+		if (isdead)
+			rows[n++] = r;
+	}
+	if (n > 0)
+	{
+		sift_f2_pin_granule_tids(rel, pin, g, tids);
+		for (uint32 i = 0; i < n; i++)
+			tids[i] = tids[rows[i]];
+	}
+	return n;
+}
+
 static void
 collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const SiftPartDesc *d, TransactionId oldest)
 {
 	SiftF2PartPin *pin = sift_f2_pin_open(vc->rel, store, d, (uint32) e->part_id);
-	uint64	   *dead = palloc(sizeof(uint64) * SIFT_GRANULE_ROWS);
+	MemoryContext gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum granule");
+	uint64	   *tids = palloc(sizeof(uint64) * SIFT_GRANULE_ROWS);
+	uint16	   *rows = palloc(sizeof(uint16) * SIFT_GRANULE_ROWS);
 
 	PG_TRY();
 	{
 		for (uint32 g = 0; g < pin->part->hdr.ngranules; g++)
 		{
-			SiftF2GranuleBuf *gb = sift_f2_gbuf_load(vc->rel, store, pin, g);
-			const SiftDvGran *dvg = pin->dv != NULL ? sift_dv_granule(pin->dv, g) : NULL;
-			const uint64 *tids = sift_f2_gbuf_tids(gb);
-			uint32		n = 0;
+			MemoryContext old = MemoryContextSwitchTo(gcx);
+			uint32		n = granule_dead(vc->rel, pin, g, oldest, rows, tids);
 
-			for (uint16 r = 0; r < gb->nrows; r++)
-			{
-				bool		isdead = !gb->is_all_frozen && aborted(gb->is_single_xact ? gb->single_xmin : gb->vers[r].xmin);
-
-				if (!isdead && dvg != NULL)
-				{
-					bool		del;
-					const SiftDvXmaxEntry *x = sift_dv_find(dvg, r, &del);
-
-					isdead = del && settled_delete(x, oldest);
-				}
-				if (isdead)
-					dead[n++] = tids[r];
-			}
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(gcx);
 			if (n > 0)
-				store->host->on_vacuum_dead_tids(vc, dead, n);
-			sift_f2_gbuf_unref(gb);
+				store->host->on_vacuum_dead_tids(vc, tids, n);
 			CHECK_FOR_INTERRUPTS();
 		}
 	}
@@ -204,7 +229,9 @@ collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const 
 		sift_f2_pin_release(pin);
 	}
 	PG_END_TRY();
-	pfree(dead);
+	MemoryContextDelete(gcx);
+	pfree(tids);
+	pfree(rows);
 }
 
 /* ---- freezing ---- */
@@ -340,9 +367,99 @@ collect_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand
 			collect_part(vc, store, &e, &parts[i], cutoffs->OldestXmin);
 }
 
+static void
+collect_all(VacCtx *vc, SiftF2Store *store, const SiftManifestRead *mr, const struct VacuumCutoffs *cutoffs, FullTransactionId oldest_fx, bool aggressive)
+{
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum partition");
+	MemoryContext old = MemoryContextSwitchTo(cx);
+
+	for (int i = 0; i < mr->n; i++)
+	{
+		collect_partition(vc, store, &mr->entries[i], cutoffs, oldest_fx, aggressive);
+		MemoryContextReset(cx);
+		sift_f2_vacuum_progress_scanned(i + 1, mr->n);
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+}
+
+/* What a part takes in the buffer of the compaction that rewrites it */
+static uint64
+part_mem(const SiftPartDesc *d)
+{
+	return Max((uint64) d->nrows * SIFT_VAC_ROW_BYTES, d->nbytes * SIFT_VAC_EXPANSION);
+}
+
+static int
+by_age(const void *a, const void *b)
+{
+	const SiftPartDesc *x = *(const SiftPartDesc *const *) a,
+			   *y = *(const SiftPartDesc *const *) b;
+	int			c = SIFT_CMP3(U64FromFullTransactionId(x->min_xid), U64FromFullTransactionId(y->min_xid));
+
+	return c != 0 ? c : SIFT_CMP3(x->part_gen, y->part_gen);
+}
+
+/* One compaction of the group, in a context of its own that goes with it; the bytes it wrote */
+static uint64
+compact_group(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, const uint64 *gens, int ngens, FullTransactionId oldest_fx)
+{
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum compaction");
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	SiftCompactResult res;
+	Size		freed;
+
+	(void) sift_partition_compact_online(rel, e->part_id, e->key_lo, gens, ngens, &store->spec, PG_INT64_MIN, oldest_fx, &res);
+	MemoryContextSwitchTo(old);
+	freed = MemoryContextMemAllocated(cx, true);
+	MemoryContextDelete(cx);
+	sift_mem_release_os(freed);
+	return res.bytes_out;
+}
+
+/*
+ * The parts to compact, the oldest transaction first, in groups that a half of the budget holds (a part that is more than it holds goes alone), each group in one commit of the partition:
+ * a crash or a cancel between two keeps what the commits before it did, and the oldest transaction a partition holds only goes up. Once the pass has written sift.vacuum_rewrite_limit
+ * the rest waits for the next VACUUM.
+ */
+static void
+compact_chunks(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens, FullTransactionId oldest_fx, uint64 *rewrite_left)
+{
+	const SiftPartDesc **chosen = palloc(sizeof(SiftPartDesc *) * ngens);
+	uint64	   *group = palloc(sizeof(uint64) * ngens);
+	const uint64 budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);
+	SiftU64Set	want;
+	int			n = 0;
+
+	sift_u64set_init(&want, ngens);
+	for (int i = 0; i < ngens; i++)
+		(void) sift_u64set_add(&want, gens[i]);
+	for (int i = 0; i < np; i++)
+		if (sift_u64set_has(&want, parts[i].part_gen))
+			chosen[n++] = &parts[i];
+	sift_u64set_free(&want);
+	qsort(chosen, n, sizeof(SiftPartDesc *), by_age);
+	for (int i = 0; i < n && *rewrite_left > 0;)
+	{
+		uint64		mem = 0,
+					written;
+		int			k = 0;
+
+		for (; i < n && (k == 0 || mem + part_mem(chosen[i]) <= budget); i++, k++)
+		{
+			group[k] = chosen[i]->part_gen;
+			mem += part_mem(chosen[i]);
+		}
+		written = compact_group(rel, store, e, group, k, oldest_fx);
+		*rewrite_left -= Min(written, *rewrite_left);
+	}
+	pfree(chosen);
+	pfree(group);
+}
+
 /* Second pass, once the indexes have given up the addresses of the first: the deletion vectors are settled, the parts sealed and the ones with dead or old rows compacted, which drops the rows the indexes no longer point at */
 static void
-settle_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *cand, FullTransactionId oldest_fx, FullTransactionId target_fx, bool aggressive)
+settle_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *cand, FullTransactionId oldest_fx, FullTransactionId target_fx, bool aggressive, uint64 *rewrite_left)
 {
 	SiftPartitionEntry e;
 	int			np;
@@ -351,7 +468,6 @@ settle_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *can
 			   *settle = NULL;
 	int			ngens = 0,
 				nsettle = 0;
-	SiftCompactResult res;
 	SiftXidHorizonCache hc;
 	int			dead_pct = store->opts.dead_rewrite_pct > 0 ? store->opts.dead_rewrite_pct : sift_dead_rewrite_pct;
 
@@ -379,9 +495,36 @@ settle_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *can
 		ngens = sift_col_delta_fold_gens(rel, &e, parts, np, oldest_fx, aggressive, gens, ngens);
 	}
 	if (ngens > 0)
-		(void) sift_partition_compact_online(rel, e.part_id, e.key_lo, gens, ngens, &store->spec, PG_INT64_MIN, oldest_fx, &res);
+		compact_chunks(rel, store, &e, parts, np, gens, ngens, oldest_fx, rewrite_left);
 	if ((e.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 		(void) sift_col_delta_gc(rel, e.part_id, e.key_lo, oldest_fx);
+}
+
+/* The oldest transaction id the pages of a partition still hold, or lowest when none is older */
+static FullTransactionId
+partition_oldest(Relation rel, const SiftPartitionEntry *e, FullTransactionId lowest)
+{
+	int			np;
+	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
+
+	if (e->l0_slab_blk != InvalidBlockNumber || e->pend_del_blk != InvalidBlockNumber)
+		lowest = FullTransactionIdPrecedes(e->min_xid, lowest) ? e->min_xid : lowest;
+	if ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
+	{
+		FullTransactionId chain_min = sift_col_delta_min_xid(rel, e);
+
+		if (FullTransactionIdIsValid(chain_min) && FullTransactionIdPrecedes(chain_min, lowest))
+			lowest = chain_min;
+	}
+	for (int j = 0; j < np; j++)
+	{
+		bool		holds = (parts[j].flags & SIFT_PART_FLAG_UNFROZEN) != 0 || (parts[j].dv_blk != InvalidBlockNumber && (parts[j].flags & SIFT_PART_FLAG_DV_SETTLED) == 0);
+
+		if (holds && FullTransactionIdPrecedes(parts[j].min_xid, lowest))
+			lowest = parts[j].min_xid;
+	}
+	pfree(parts);
+	return lowest;
 }
 
 /* The oldest transaction id any page of the table still holds: what relfrozenxid may become */
@@ -392,27 +535,7 @@ recompute_oldest(Relation rel, FullTransactionId oldest_fx)
 	FullTransactionId lowest = oldest_fx;
 
 	for (int i = 0; i < mr.n; i++)
-	{
-		int			np;
-		SiftPartDesc *parts = sift_manifest_read_parts(rel, &mr.entries[i], &np);
-
-		if (mr.entries[i].l0_slab_blk != InvalidBlockNumber || mr.entries[i].pend_del_blk != InvalidBlockNumber)
-			lowest = FullTransactionIdPrecedes(mr.entries[i].min_xid, lowest) ? mr.entries[i].min_xid : lowest;
-		if ((mr.entries[i].flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
-		{
-			FullTransactionId chain_min = sift_col_delta_min_xid(rel, &mr.entries[i]);
-
-			if (FullTransactionIdIsValid(chain_min) && FullTransactionIdPrecedes(chain_min, lowest))
-				lowest = chain_min;
-		}
-		for (int j = 0; j < np; j++)
-		{
-			bool		holds = (parts[j].flags & SIFT_PART_FLAG_UNFROZEN) != 0 || (parts[j].dv_blk != InvalidBlockNumber && (parts[j].flags & SIFT_PART_FLAG_DV_SETTLED) == 0);
-
-			if (holds && FullTransactionIdPrecedes(parts[j].min_xid, lowest))
-				lowest = parts[j].min_xid;
-		}
-	}
+		lowest = partition_oldest(rel, &mr.entries[i], lowest);
 	return lowest;
 }
 
@@ -459,6 +582,89 @@ cutoff_fx(FullTransactionId next, TransactionId xid)
 	return FullTransactionIdFromAllowableAt(next, xid);
 }
 
+/* What the pages hold now, as far as it is known, becomes relfrozenxid at once (the statistics of the table are those of the end of the VACUUM): a VACUUM that does not end has moved it as far as it went */
+static void
+advance_frozenxid(Relation rel, FullTransactionId oldest, const struct VacuumCutoffs *cutoffs)
+{
+	bool		fz,
+				mz;
+	Form_pg_class form = rel->rd_rel;
+
+	store_oldest_active(rel, oldest);
+#if PG_VERSION_NUM >= 180000
+	vac_update_relstats(rel, form->relpages, form->reltuples, form->relallvisible, form->relallfrozen, form->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
+#else
+	vac_update_relstats(rel, form->relpages, form->reltuples, form->relallvisible, form->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
+#endif
+}
+
+typedef struct Held
+{
+	int			part;			/* the place of the partition in the manifest read */
+	FullTransactionId oldest;	/* what it holds, before it is settled */
+} Held;
+
+static int
+by_held(const void *a, const void *b)
+{
+	const Held *x = a,
+			   *y = b;
+	int			c = SIFT_CMP3(U64FromFullTransactionId(x->oldest), U64FromFullTransactionId(y->oldest));
+
+	return c != 0 ? c : SIFT_CMP3(x->part, y->part);
+}
+
+static FullTransactionId
+oldest_held(Relation rel, const SiftPartitionEntry *cand, FullTransactionId lowest)
+{
+	SiftPartitionEntry e;
+
+	return sift_manifest_find_entry(rel, cand->part_id, cand->key_lo, &e) ? partition_oldest(rel, &e, lowest) : lowest;
+}
+
+/*
+ * The partitions are settled the one that holds the oldest transaction first, each in a context of its own, with the budget of rewriting of the pass shared: after each, the oldest of what
+ * the partitions still hold (the settled ones as they are now, the others as they were) is relfrozenxid, if that is newer than it was.
+ */
+static void
+settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const struct VacuumCutoffs *cutoffs, FullTransactionId oldest_fx, FullTransactionId target_fx, bool aggressive)
+{
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum partition");
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	Held	   *order = MemoryContextAlloc(old, sizeof(Held) * Max(mr->n, 1));
+	FullTransactionId settled = oldest_fx,
+				published = oldest_fx;
+	uint64		rewrite_left = sift_vacuum_rewrite_limit > 0 ? (uint64) sift_vacuum_rewrite_limit << 20 : UINT64_MAX;
+
+	for (int i = 0; i < mr->n; i++)
+	{
+		order[i] = (Held) {i, oldest_held(rel, &mr->entries[i], oldest_fx)};
+		MemoryContextReset(cx);
+	}
+	qsort(order, mr->n, sizeof(Held), by_held);
+	if (mr->n > 0)
+		published = order[0].oldest;
+	for (int k = 0; k < mr->n; k++)
+	{
+		const SiftPartitionEntry *cand = &mr->entries[order[k].part];
+		FullTransactionId rest = k + 1 < mr->n ? order[k + 1].oldest : oldest_fx;
+		FullTransactionId after;
+
+		settle_partition(rel, store, cand, oldest_fx, target_fx, aggressive, &rewrite_left);
+		after = oldest_held(rel, cand, oldest_fx);
+		settled = FullTransactionIdPrecedes(after, settled) ? after : settled;
+		MemoryContextReset(cx);
+		if (FullTransactionIdPrecedes(published, FullTransactionIdPrecedes(settled, rest) ? settled : rest))
+		{
+			published = FullTransactionIdPrecedes(settled, rest) ? settled : rest;
+			advance_frozenxid(rel, published, cutoffs);
+		}
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	pfree(order);
+}
+
 void
 sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrategy bstrategy)
 {
@@ -469,7 +675,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	FullTransactionId oldest_fx = cutoff_fx(next, cutoffs.OldestXmin);
 	FullTransactionId freeze_fx = cutoff_fx(next, cutoffs.FreezeLimit);
 	FullTransactionId target_fx = aggressive ? oldest_fx : freeze_fx;
-	VacCtx		vc = {.rel = rel,.strategy = bstrategy};
+	VacCtx		vc = {.cx = CurrentMemoryContext,.rel = rel,.strategy = bstrategy};
 	SiftManifestRead mr;
 	FullTransactionId new_oldest;
 	int			elevel = (params->options & VACOPT_VERBOSE) != 0 ? INFO : DEBUG2;
@@ -486,14 +692,9 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	sift_stage_flush(rel);
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	sift_f2_vacuum_progress_total(rel);
-	for (int i = 0; i < mr.n; i++)
-	{
-		collect_partition(&vc, store, &mr.entries[i], &cutoffs, oldest_fx, aggressive);
-		sift_f2_vacuum_progress_scanned(i + 1, mr.n);
-	}
+	collect_all(&vc, store, &mr, &cutoffs, oldest_fx, aggressive);
 	flush_batch(&vc);
-	for (int i = 0; i < mr.n; i++)
-		settle_partition(rel, store, &mr.entries[i], oldest_fx, target_fx, aggressive);
+	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive);
 	sift_f2_tier_maintain(rel, store, oldest_fx);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_INDEX_CLEANUP);
 	sift_f2_vacuum_progress_indexes(vc.nindexes, 0);
@@ -525,6 +726,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	meta = sift_col_meta_read(rel);
 	sift_f2_say_table_vacuum(&trace, rel, elevel, vc.total_dead, vc.batches, (double) (meta.total_rows - meta.total_dead), (double) meta.total_dead);
 	sift_f2_vacuum_progress_end();
+	sift_mem_trim_os();
 }
 
 /* ---- ANALYZE ---- */
