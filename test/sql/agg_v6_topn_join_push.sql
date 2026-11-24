@@ -1,0 +1,110 @@
+-- ORDER BY .. LIMIT of rows next to a join (W11), an OR of searches (W12) and the aggregates of the whole set as window functions (W19), on a sift_col index and on a sift_table: every statement
+-- answers the rows the heap answers with the pushdown off, in order, with the same row count, on whichever engine the build picks (scripts/coverage.sh proves the plans of rows W11, W12 and W19).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET sift.async_maintenance = off;
+SET client_min_messages = warning;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE jt (id int PRIMARY KEY, name text, kind text);
+INSERT INTO jt SELECT g, 'tenant ' || g, (ARRAY['outlet', 'popup', 'hq'])[1 + g % 3] FROM generate_series(1, 40) g;
+CREATE TABLE jd (id int, label text, rank int);
+INSERT INTO jd SELECT g, 'label ' || g || chr(97 + k), k FROM generate_series(1, 40) g, generate_series(0, g % 3) k;
+CREATE TABLE jo (id int PRIMARY KEY, tenant_id int, status text, total numeric(10,2), placed timestamp, memo text);
+INSERT INTO jo
+SELECT i, CASE WHEN i % 29 = 0 THEN NULL WHEN i % 17 = 0 THEN 41 + i % 3 ELSE 1 + (hashint4(i) & 2147483647) % 40 END, (ARRAY['paid', 'open', 'void'])[1 + i % 3],
+	   CASE WHEN i % 13 = 0 THEN NULL ELSE ((hashint4(i + 3) & 2147483647) % 60)::numeric / 4 END, timestamp '2026-01-01' + ((hashint4(i + 7) & 2147483647) % 200000) * interval '1 second',
+	   CASE WHEN i % 19 = 0 THEN NULL ELSE (ARRAY['cable', 'wire', 'cable wire', 'fiber', 'plug', 'express cable', 'size color', 'wire plug'])[1 + i % 8] END
+FROM generate_series(1, 3000) i;
+CREATE INDEX jo_fts ON jo USING sift (memo);
+CREATE INDEX jo_col ON jo USING sift_col (id, tenant_id, status, total, placed);
+VACUUM (ANALYZE) jo, jt, jd;
+CREATE TABLE jo_t USING sift_table AS SELECT * FROM jo;
+VACUUM (ANALYZE) jo_t;
+
+CREATE FUNCTION jp_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
+
+CREATE FUNCTION jp_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	DROP TABLE IF EXISTS jp_a, jp_b;
+	PERFORM jp_mode(true);
+	EXECUTE 'CREATE TEMP TABLE jp_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM jp_mode(false);
+	EXECUTE 'CREATE TEMP TABLE jp_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM jp_a EXCEPT ALL SELECT pos, r FROM jp_b) UNION ALL (SELECT pos, r FROM jp_b EXCEPT ALL SELECT pos, r FROM jp_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || ' ' || (SELECT count(*) FROM jp_b);
+END $$;
+
+CREATE TABLE jp_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO jp_q VALUES
+	-- W11: a join to a small table, its columns in the result, its conditions on it
+	('join',          $q$SELECT o.id, s.name FROM jo o JOIN jt s ON s.id = o.tenant_id WHERE s.kind = 'outlet' ORDER BY o.total, o.id LIMIT 5$q$),
+	('join_desc',     $q$SELECT o.id, o.total, s.name, s.kind FROM jo o JOIN jt s ON s.id = o.tenant_id WHERE o.status = 'paid' ORDER BY o.total DESC NULLS LAST, o.id LIMIT 12$q$),
+	('join_nulls',    $q$SELECT o.id, o.total, s.name FROM jo o JOIN jt s ON s.id = o.tenant_id ORDER BY o.total NULLS FIRST, o.id DESC LIMIT 15$q$),
+	('join_offset',   $q$SELECT o.id, s.name FROM jo o JOIN jt s ON s.id = o.tenant_id WHERE s.kind <> 'hq' ORDER BY o.placed, o.id LIMIT 7 OFFSET 20$q$),
+	('join_ties',     $q$SELECT o.id, o.status, s.kind FROM jo o JOIN jt s ON s.id = o.tenant_id ORDER BY o.status, s.kind, o.id LIMIT 30$q$),
+	('join_dim_key',  $q$SELECT o.id, s.name FROM jo o JOIN jt s ON s.id = o.tenant_id ORDER BY s.name DESC, o.id LIMIT 10$q$),
+	('join_dim_only', $q$SELECT s.name, s.kind FROM jo o JOIN jt s ON s.id = o.tenant_id ORDER BY o.total, o.id LIMIT 6$q$),
+	('join_fact_only', $q$SELECT o.id, o.total FROM jo o JOIN jt s ON s.id = o.tenant_id WHERE s.kind = 'popup' ORDER BY o.total, o.id LIMIT 6$q$),
+	('join_filter',   $q$SELECT o.id, s.name FROM jo o JOIN jt s ON s.id = o.tenant_id WHERE o.total > 5 AND o.status <> 'void' AND s.id < 30 ORDER BY o.placed DESC, o.id LIMIT 9$q$),
+	('join_empty',    $q$SELECT o.id, s.name FROM jo o JOIN jt s ON s.id = o.tenant_id WHERE s.kind = 'none' ORDER BY o.total, o.id LIMIT 5$q$),
+	('join_all',      $q$SELECT o.id, s.name FROM jo o JOIN jt s ON s.id = o.tenant_id ORDER BY o.id LIMIT 100000$q$),
+	('join_pairs',    $q$SELECT o.id, d.label FROM jo o JOIN jd d ON d.id = o.tenant_id ORDER BY o.total, o.id, d.label LIMIT 14$q$),
+	('join_pairs_k',  $q$SELECT o.id, d.label, d.rank FROM jo o JOIN jd d ON d.id = o.tenant_id WHERE d.rank > 0 ORDER BY d.rank DESC, o.id, d.label LIMIT 11$q$),
+	('join_left',     $q$SELECT o.id, s.name FROM jo o LEFT JOIN jt s ON s.id = o.tenant_id ORDER BY o.total NULLS FIRST, o.id LIMIT 20$q$),
+	('join_two',      $q$SELECT o.id, s.name, d.label FROM jo o JOIN jt s ON s.id = o.tenant_id JOIN jd d ON d.id = o.tenant_id WHERE d.rank = 1 ORDER BY o.total, o.id LIMIT 8$q$),
+	('join_expr',     $q$SELECT o.id, upper(s.name) AS n, o.total * 2 AS t2 FROM jo o JOIN jt s ON s.id = o.tenant_id ORDER BY o.total * 2, o.id LIMIT 8$q$),
+	('join_window',   $q$SELECT o.id, count(*) OVER () AS c FROM jo o JOIN jt s ON s.id = o.tenant_id ORDER BY o.id LIMIT 5$q$),
+	-- W12: an OR of searches of one index
+	('or_two',        $q$SELECT id, placed FROM jo WHERE memo @@> 'cable' OR memo @@> 'wire' ORDER BY placed DESC, id LIMIT 10$q$),
+	('or_overlap',    $q$SELECT id, placed FROM jo WHERE memo @@> 'cable' OR memo @@> 'cable wire' ORDER BY placed DESC, id LIMIT 10$q$),
+	('or_same',       $q$SELECT id, placed FROM jo WHERE memo @@> 'cable' OR memo @@> 'cable' ORDER BY placed, id LIMIT 10$q$),
+	('or_three',      $q$SELECT id, total FROM jo WHERE memo @@> 'cable' OR memo @@> 'wire' OR memo @@> 'plug' ORDER BY total NULLS FIRST, id LIMIT 15$q$),
+	('or_none',       $q$SELECT id, placed FROM jo WHERE memo @@> 'zzzzzz' OR memo @@> 'yyyyyy' ORDER BY placed, id LIMIT 10$q$),
+	('or_one_none',   $q$SELECT id, placed FROM jo WHERE memo @@> 'zzzzzz' OR memo @@> 'fiber' ORDER BY placed, id LIMIT 10$q$),
+	('or_filters',    $q$SELECT id, placed FROM jo WHERE (memo @@> 'cable' OR memo @@> 'wire') AND tenant_id < 20 AND status <> 'void' ORDER BY placed, id LIMIT 8 OFFSET 3$q$),
+	('or_not',        $q$SELECT id, placed FROM jo WHERE memo @@> 'cable NOT wire' OR memo @@> 'express NOT cable' ORDER BY placed DESC, id LIMIT 10$q$),
+	('or_prefix',     $q$SELECT id, placed FROM jo WHERE memo @@> 'exp*' OR memo @@> 'fibr~1' ORDER BY placed DESC, id LIMIT 10$q$),
+	('or_phrase',     $q$SELECT id, placed FROM jo WHERE memo @@> '"cable wire"' OR memo @@> 'express' ORDER BY placed DESC, id LIMIT 10$q$),
+	('or_column',     $q$SELECT id, placed FROM jo WHERE memo @@> 'cable' OR tenant_id = 3 ORDER BY placed DESC, id LIMIT 10$q$),
+	('or_nested',     $q$SELECT id, placed FROM jo WHERE (memo @@> 'cable' AND memo @@> 'wire') OR memo @@> 'express' ORDER BY placed DESC, id LIMIT 10$q$),
+	('or_two_groups', $q$SELECT id, placed FROM jo WHERE (memo @@> 'cable' OR memo @@> 'wire') AND (memo @@> 'express' OR memo @@> 'size') ORDER BY placed DESC, id LIMIT 10$q$),
+	('or_all',        $q$SELECT id FROM jo WHERE memo @@> 'cable' OR memo @@> 'wire' OR memo @@> 'plug' OR memo @@> 'fiber' OR memo @@> 'size' ORDER BY id LIMIT 100000$q$),
+	('or_agg',        $q$SELECT status, count(*), sum(total) FROM jo WHERE memo @@> 'cable' OR memo @@> 'wire' GROUP BY status ORDER BY status$q$),
+	-- W19: the aggregates of the whole set next to a page of rows
+	('win_count',     $q$SELECT id, total, count(*) OVER () AS c FROM {t} WHERE tenant_id < 14 ORDER BY total, id LIMIT 7$q$),
+	('win_two',       $q$SELECT id, total, count(*) OVER () AS c, sum(total) OVER () AS s FROM {t} WHERE tenant_id < 14 ORDER BY total, id LIMIT 7$q$),
+	('win_aggs',      $q$SELECT id, count(total) OVER () AS ct, avg(total) OVER () AS a, min(placed) OVER () AS lo, max(tenant_id) OVER () AS hi FROM {t} WHERE tenant_id < 30 ORDER BY id DESC LIMIT 9$q$),
+	('win_offset',    $q$SELECT id, count(*) OVER () AS c FROM {t} WHERE tenant_id > 30 ORDER BY id LIMIT 7 OFFSET 40$q$),
+	('win_past_end',  $q$SELECT id, count(*) OVER () AS c FROM {t} WHERE tenant_id > 30 ORDER BY id LIMIT 7 OFFSET 100000$q$),
+	('win_empty',     $q$SELECT id, count(*) OVER () AS c, sum(total) OVER () AS s FROM {t} WHERE total > 100000 ORDER BY id LIMIT 10$q$),
+	('win_nulls',     $q$SELECT id, tenant_id, count(tenant_id) OVER () AS nn, count(*) OVER () AS c FROM {t} ORDER BY tenant_id NULLS FIRST, id LIMIT 20$q$),
+	('win_ties',      $q$SELECT id, status, count(*) OVER () AS c FROM {t} ORDER BY status, id LIMIT 30$q$),
+	('win_only',      $q$SELECT count(*) OVER () AS c, sum(total) OVER () AS s FROM {t} WHERE tenant_id BETWEEN 5 AND 9 ORDER BY placed, id LIMIT 3$q$),
+	('win_filter',    $q$SELECT id, count(*) FILTER (WHERE tenant_id = 3) OVER () AS c3, sum(total) FILTER (WHERE tenant_id < 14) OVER () AS sp FROM {t} ORDER BY id LIMIT 6$q$),
+	('win_frame',     $q$SELECT id, count(*) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS c FROM {t} WHERE tenant_id < 14 ORDER BY id LIMIT 6$q$),
+	('win_named',     $q$SELECT id, count(*) OVER w AS c, max(total) OVER w AS m FROM {t} WHERE tenant_id < 14 WINDOW w AS () ORDER BY id LIMIT 8$q$),
+	('win_same_twice', $q$SELECT id, count(*) OVER () AS c, count(*) OVER () + 1 AS c1 FROM {t} WHERE tenant_id < 14 ORDER BY id LIMIT 8$q$),
+	('win_expr',      $q$SELECT id, round(100 * total / nullif(sum(total) OVER (), 0), 4) AS share FROM {t} WHERE tenant_id < 14 ORDER BY id LIMIT 8$q$),
+	('win_partition', $q$SELECT id, count(*) OVER (PARTITION BY status) AS c FROM {t} ORDER BY id LIMIT 6$q$),
+	('win_ordered',   $q$SELECT id, count(*) OVER (ORDER BY id) AS c FROM {t} ORDER BY id LIMIT 6$q$),
+	('win_running',   $q$SELECT id, sum(total) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS c FROM {t} ORDER BY id LIMIT 6$q$),
+	('win_rank',      $q$SELECT id, row_number() OVER () AS c FROM {t} ORDER BY id LIMIT 6$q$);
+
+SELECT tag, jp_check(q) FROM jp_q WHERE tag NOT LIKE 'win\_%' ORDER BY tag;
+SELECT tag, jp_check(replace(q, '{t}', 'jo')) AS index_col FROM jp_q WHERE tag LIKE 'win\_%' ORDER BY tag;
+SELECT tag, jp_check(replace(q, '{t}', 'jo_t')) AS table_ FROM jp_q WHERE tag LIKE 'win\_%' ORDER BY tag;
+
+-- every statement again after a write that moves rows in and out of the answer
+UPDATE jo SET total = total + 100 WHERE id % 50 = 0;
+DELETE FROM jo WHERE id % 61 = 0;
+INSERT INTO jo SELECT i, 1 + i % 40, 'paid', i % 7, timestamp '2026-02-01' + i * interval '1 minute', 'cable express' FROM generate_series(3001, 3040) i;
+SELECT tag, jp_check(q) FROM jp_q WHERE tag IN ('join', 'join_desc', 'join_pairs', 'or_two', 'or_overlap', 'or_filters') ORDER BY tag;
+SELECT tag, jp_check(replace(q, '{t}', 'jo')) FROM jp_q WHERE tag IN ('win_two', 'win_aggs', 'win_empty') ORDER BY tag;
+
+DROP TABLE jo, jo_t, jt, jd, jp_q;
+DROP FUNCTION jp_check(text), jp_mode(boolean);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
