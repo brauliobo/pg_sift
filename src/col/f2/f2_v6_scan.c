@@ -106,11 +106,18 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 	return n;
 }
 
+/* whether the vector v of a batch is the argument of an aggregate that folds a NaN */
+static bool
+vec_takes_nan(const SiftV6Spec *spec, int v)
+{
+	return (v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v])) || sift_v6_vec_of_gen(spec, v);
+}
+
 /* the slot of a column of the pipe: a payload column of a dimension, or the column of the fact side that col_for finds */
 static int
-slot_of(V6Scan *s, const int *first, const SiftV6Col *c)
+slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan)
 {
-	return c->src == SV6SRC_DIM ? sift_v6_pipe_dim_slot(s->pipe, c->dim, c->slot) : (int) (col_for(s, first, *c, false, false) - s->cols);
+	return c->src == SV6SRC_DIM ? sift_v6_pipe_dim_slot(s->pipe, c->dim, c->slot) : (int) (col_for(s, first, *c, false, takes_nan) - s->cols);
 }
 
 /* Whether the column is read by nothing but a COUNT(DISTINCT) of it (and so can be counted by the codes of the dictionaries of the parts): not a key, another aggregate's argument, a FILTER or a row of several columns */
@@ -169,14 +176,14 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 			{
 				const SiftV6Col key = sift_v6_xdim_key_col(&x->dim[d], k);
 
-				s->pipe->fslot[d][k] = slot_of(s, first, &key);
+			s->pipe->fslot[d][k] = slot_of(s, first, &key, false);
 			}
 	for (int i = 0; i < x->nrcol; i++)
-		s->pipe->rslot[i] = slot_of(s, first, &x->rcol[i]);
+		s->pipe->rslot[i] = slot_of(s, first, &x->rcol[i], false);
 	for (int i = 0; i < spec->nkeys; i++)
-		s->pipe->key_slot[i] = slot_of(s, first, &spec->key[i]);
+		s->pipe->key_slot[i] = slot_of(s, first, &spec->key[i], spec->rows);
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
-		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : slot_of(s, first, sift_v6_vec_col(spec, v));
+		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : slot_of(s, first, sift_v6_vec_col(spec, v), vec_takes_nan(spec, v));
 	s->fact = palloc(nfact * sizeof(SiftVec *));
 	for (int i = 0; i < s->ncols; i++)
 		s->fact[i] = &s->cols[i].vec;
@@ -193,13 +200,6 @@ fill_tids(V6Scan *s, const uint64 *tid, int n)
 	s->tidvec.all_valid = true;
 	s->tidvec.dense = true;
 	s->tidvec.type = SVEC_I64;
-}
-
-/* whether the vector v of a batch is the argument of an aggregate that folds a NaN */
-static bool
-vec_takes_nan(const SiftV6Spec *spec, int v)
-{
-	return (v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v])) || sift_v6_vec_of_gen(spec, v);
 }
 
 /* The keys and arguments the spec computes from columns: their sources are read as values, their vectors replace the ones of the columns */
