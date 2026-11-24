@@ -621,15 +621,6 @@ try_source(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Gro
 	sift_v6_source_close(rel, src->is_table, NoLock);
 }
 
-static bool
-sift_index_of(const RelOptInfo *fact)
-{
-	foreach_ptr(IndexOptInfo, ix, fact->indexlist)
-		if (sift_v6_index_owned(ix))
-			return true;
-	return false;
-}
-
 static void
 try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo *elem, GroupPathExtraData *extra, List *group_exprs)
 {
