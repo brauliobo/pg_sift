@@ -89,6 +89,7 @@ struct SiftV6Scan
 	V6Bin	   *bins;
 	int			nderived;
 	V6Derived  *derived;
+	bool		is_table;		/* the host is a sift_table: the cells of its leaves are the datum of the attribute */
 	Relation	host;			/* the index, or the sift_table, the scan reads: the columns of the quals the keys do not say are those of its input */
 	SiftV6Bq   *bq;				/* those quals (SiftV6Spec.vqual), run over every batch */
 	SiftBatchSel bs;

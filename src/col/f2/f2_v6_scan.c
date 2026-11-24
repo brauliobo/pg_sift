@@ -58,7 +58,7 @@ col_init(V6Scan *s, int leaf, const SiftV6Col *c, bool key, bool takes_nan)
 	V6Col	   *n = &s->cols[s->ncols];
 
 	*n = (V6Col) {.leaf = leaf,.attno = c->attno,.scale = c->scale,.json = c->jleaf > 0,.jtype = c->jtype,.jbase = c->jtype ? type_of_leaf_value(s, leaf) : 0,
-		.typid = c->typid,.cls = sift_v6_col_class(c),.nan_ok = takes_nan,.key_only = key,.is_table = s->spec->is_table && c->jleaf == 0};
+		.typid = c->typid,.cls = sift_v6_col_class(c),.nan_ok = takes_nan,.key_only = key,.is_table = s->is_table && c->jleaf == 0};
 	/* MEM[MEM-AGG-05]: SiftV6Scan batch column buffer (SIFT_VEC_LEN * elem + SIFT_VEC_PAD: 8B an element, 16KB a column; 16B, 32KB, only for a text or JSON column; was 32KB for every column) */
 	n->vec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * (n->cls == SV6C_TEXT || c->jleaf > 0 ? sizeof(SiftStrView) : sizeof(int64)) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	s->ncols++;
@@ -68,7 +68,7 @@ col_init(V6Scan *s, int leaf, const SiftV6Col *c, bool key, bool takes_nan)
 static void
 lane_cols(V6Scan *s, int head)
 {
-	const int	lanes = s->spec->is_table ? 1 : sift_col_def_value_lanes(&s->defs[head]);
+	const int	lanes = s->is_table ? 1 : sift_col_def_value_lanes(&s->defs[head]);
 
 	for (int k = 1; k < lanes; k++)
 	{
@@ -276,7 +276,7 @@ setup_bq(V6Scan *s, const int *first)
 
 	if (s->spec->vqual == NIL)
 		return;
-	if (s->spec->is_table)
+	if (s->is_table)
 		sift_v6_input_init_table(&in, s->host);
 	else
 		sift_v6_input_init_rel(&in, s->host);
@@ -784,6 +784,7 @@ sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	s->recheck = recheck;
 	s->recheck_arg = recheck_arg;
 	s->host = index != NULL ? index : heap;
+	s->is_table = index == NULL;
 	scan_setup(s, index != NULL ? sift_col_rel(index)->schema->cols : sift_f2_store_open(heap)->schema->cols,
 			   index != NULL ? sift_col_rel(index)->first : sift_f2_store_open(heap)->att_first, NULL);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
@@ -838,6 +839,7 @@ begin_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapsh
 	SiftStoreScanOpts *o = palloc(sizeof(SiftStoreScanOpts));
 
 	s->host = rel;
+	s->is_table = true;
 	scan_setup(s, store->schema->cols, store->att_first, NULL);
 	s->leaves = scan_leaves(s);
 	*o = (SiftStoreScanOpts) {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.leaves = s->leaves,.nleaves = s->ncols,
@@ -964,6 +966,7 @@ scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot sn
 	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
 
 	s->host = rel;
+	s->is_table = true;
 	scan_setup(s, store->schema->cols, store->att_first, star);
 	if (s->spec->ext != NULL && s->spec->ext->unnest)
 		unnest_begin(s, rel, snap);
