@@ -421,7 +421,8 @@ extern void sift_v6_scan_end(SiftV6Scan *s);
 /* The rows the scan keeps go to rows (v6_rows_topn.h) instead of the groups */
 typedef struct SiftV6Rows SiftV6Rows;
 
-extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats);
+extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats,
+							  SiftV6ChunkFn next_chunk, void *chunk_arg);
 extern void sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
 							 const uint64 *skip, int nskip, const struct SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);
 

@@ -319,9 +319,11 @@ static void
 v6_run_rows(V6State *st, EState *estate)
 {
 	const V6Source *src = &st->sources[0];
+	SiftV6Text *text = text_begin(st);
 
 	st->rows = sift_v6_rows_new(st->gcx, st->spec);
-	sift_v6_scan_rows(st->spec, st->rows, src->heap, src->index, src->keys, src->nkeys, estate->es_snapshot, &st->stats);
+	sift_v6_scan_rows(st->spec, st->rows, src->heap, src->index, src->keys, src->nkeys, estate->es_snapshot, &st->stats, text ? sift_v6_text_chunk : NULL, text);
+	text_end(text);
 	sift_v6_rows_finish(st->rows);
 	st->fetch = sift_table_index_fetch_begin(src->heap);
 	st->fetch_slot = table_slot_create(src->heap, NULL);

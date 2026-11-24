@@ -979,9 +979,10 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 }
 
 void
-sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats)
+sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats,
+				  SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	V6Scan		s = {.spec = spec,.rows = rows,.stats = stats};
 
-	scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, NULL, NULL, NULL);
+	scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, NULL, next_chunk, chunk_arg);
 }

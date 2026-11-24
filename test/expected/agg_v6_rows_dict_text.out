@@ -43,6 +43,19 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT id, lang FROM tr WHERE tenant_id > 50 ORDER BY lang DESC, id DESC LIMIT 25 OFFSET 10
 (4 rows)
 
+-- the hits of a text query are the rows the scan keeps, whatever the keys
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT id, tenant_id, source, status, lang FROM tr WHERE memo @@> ''express'' ORDER BY tenant_id DESC, source, status NULLS FIRST, lang DESC, id LIMIT 20',
+	'SELECT id, tenant_id FROM tr WHERE memo @@> ''express'' AND tenant_id > 200 ORDER BY tenant_id, id LIMIT 20',
+	'SELECT id, source FROM tr WHERE memo @@> ''absent'' ORDER BY source, id LIMIT 20'
+]) q;
+                                                                               same                                                                                
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node SELECT id, tenant_id, source, status, lang FROM tr WHERE memo @@> 'express' ORDER BY tenant_id DESC, source, status NULLS FIRST, lang DESC, id LIMIT 20
+ same node SELECT id, tenant_id FROM tr WHERE memo @@> 'express' AND tenant_id > 200 ORDER BY tenant_id, id LIMIT 20
+ same node SELECT id, source FROM tr WHERE memo @@> 'absent' ORDER BY source, id LIMIT 20
+(3 rows)
+
 DELETE FROM tr WHERE id % 9 = 0;
 SELECT same('SELECT id, source, status FROM tr WHERE tenant_id < 300 ORDER BY source, status NULLS FIRST, id LIMIT 30');
                                                         same                                                        
