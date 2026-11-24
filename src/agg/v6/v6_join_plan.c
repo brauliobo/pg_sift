@@ -16,6 +16,8 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/tlist.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 
@@ -244,6 +246,38 @@ clause_level_ok(const RestrictInfo *ri, SiftV6JoinMode mode)
 	return mode == SV6J_SEMI_EQUI || ri->is_pushed_down == (mode == SV6J_INNER_EQUI);
 }
 
+/* the discrete range types, whose bounds are int64 values: a date or int4 element of the fact table in a range column of a dimension is a period of the range join */
+static bool
+period_types(Oid elem, Oid range)
+{
+	return (elem == DATEOID && range == DATERANGEOID) || (elem == INT4OID && range == INT4RANGEOID);
+}
+
+/* fact.col <@ dim.range of an inner join: the dimension is the periods, probed by the column (SV6J_RANGE_SMALL); a LEFT or semi join of it, and the rows of an unnest, are the normal plan's */
+static bool
+place_period(JoinShape *sh, const RestrictInfo *ri)
+{
+	const OpExpr *op = (const OpExpr *) ri->clause;
+	const Var  *col,
+			   *range;
+	JoinDim    *d;
+
+	if (sh->elem != NULL || !IsA(ri->clause, OpExpr) || op->opno != OID_RANGE_ELEM_CONTAINED_OP || !ri->is_pushed_down)
+		return false;
+	col = sift_v6_plain_var(linitial(op->args));
+	range = sift_v6_plain_var(lsecond(op->args));
+	if (col == NULL || range == NULL || role_of(sh, col) != ROLE_FACT || role_of(sh, range) < 0 || !period_types(col->vartype, range->vartype))
+		return false;
+	d = &sh->dim[role_of(sh, range)];
+	if (d->mode != SV6J_INNER_EQUI || d->nkeys != 0)
+		return false;
+	d->mode = SV6J_RANGE_SMALL;
+	d->probe[0] = col;
+	d->key[0] = range;
+	d->nkeys = 1;
+	return true;
+}
+
 /* where a condition of the join goes: a key of the dimension it joins to the relations before it, a condition of the plan of one dimension, or a condition on the pairs. false: the join has no place for it */
 static bool
 place_clause(JoinShape *sh, RestrictInfo *ri)
@@ -255,6 +289,8 @@ place_clause(JoinShape *sh, RestrictInfo *ri)
 	if (ri->has_clone || ri->is_clone)
 		return false;
 	if (within_one_dim(sh, ri->required_relids))
+		return true;
+	if (place_period(sh, ri))
 		return true;
 	if (IsA(ri->clause, OpExpr) && list_length(op->args) == 2 && op_hashjoinable(op->opno, exprType(linitial(op->args))))
 	{
@@ -399,7 +435,7 @@ seed_dims(V6Plan *p, const JoinShape *sh, const SiftV6ElemRte *rte)
 		{
 			SiftV6Col	col;
 
-			if (!probe_col(p, sh, jd->probe[k], d, &col) || !key_class(jd->key[k]->vartype) || !rel_outputs(jd->rel, jd->key[k]))
+			if (!probe_col(p, sh, jd->probe[k], d, &col) || !(jd->mode == SV6J_RANGE_SMALL ? jd->rel->rows <= SIFT_STAR_RANGE_MAX : key_class(jd->key[k]->vartype)) || !rel_outputs(jd->rel, jd->key[k]))
 				return false;
 			xd->fatt[k] = col.attno;
 			xd->ftype[k] = col.typid;

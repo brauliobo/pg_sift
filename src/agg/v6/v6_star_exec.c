@@ -450,6 +450,8 @@ sift_star_row_part(const SiftStarShape *sh, const SiftStarRow *row, uint32 npart
 {
 	uint64		h = 0;
 
+	if (is_range(sh))
+		return 0;
 	for (int k = 0; k < sh->nkeys; k++)
 	{
 		if (row->key_null[k])
@@ -464,6 +466,8 @@ sift_star_probe_part(const SiftStarShape *sh, const SiftStarProbe *p, uint32 r, 
 {
 	uint64		h = 0;
 
+	if (is_range(sh))
+		return 0;
 	for (int k = 0; k < sh->nkeys; k++)
 	{
 		const Cell	c = probe_cell(p->key[k], sh->kcls[k], r);

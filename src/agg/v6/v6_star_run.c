@@ -6,6 +6,8 @@
 
 #include "miscadmin.h"
 #include "utils/memutils.h"
+#include "utils/rangetypes.h"
+#include "utils/typcache.h"
 
 #include "agg/v6/v6_dim_cache.h"
 #include "agg/v6/v6_join_lookup.h"
@@ -113,11 +115,31 @@ put_cell(SiftStarCls cls, Oid typid, Datum v, bool isnull, int64 *i, const char 
 static void
 shape_of(const SiftV6XDim *xd, uint64 budget, SiftStarShape *sh)
 {
-	*sh = (SiftStarShape) {.mode = xd->mode,.nkeys = xd->nkeys,.npay = xd->npay,.budget = budget};
+	*sh = (SiftStarShape) {.mode = xd->mode,.nkeys = xd->nkeys,.npay = xd->npay,.budget = budget,.lo_inc = true};
 	for (int k = 0; k < xd->nkeys; k++)
-		sh->kcls[k] = cls_of_type(xd->ktype[k]);
+		sh->kcls[k] = xd->mode == SV6J_RANGE_SMALL ? SSC_INT : cls_of_type(xd->ktype[k]);
 	for (int c = 0; c < xd->npay; c++)
 		sh->pcls[c] = cls_of_type(xd->ptype[c]);
+}
+
+/* The period a range column holds, as the int64 bounds [lo, hi) of its elements (a date or an int4): the row of an empty or NULL range is no period, and its first key is its lower bound (the one key a period dimension has) */
+static void
+take_period(const SiftV6XDim *xd, Datum v, bool isnull, SiftStarRow *row)
+{
+	TypeCacheEntry *tc = lookup_type_cache(xd->ktype[0], TYPECACHE_RANGE_INFO);
+	RangeBound	lower,
+				upper;
+	bool		empty = isnull;
+
+	if (!isnull)
+		range_deserialize(tc, DatumGetRangeTypeP(v), &lower, &upper, &empty);
+	row->lo_null = row->hi_null = empty;
+	row->key_null[0] = isnull;
+	if (empty)
+		return;
+	row->lo = lower.infinite ? PG_INT64_MIN : int_of(xd->ftype[0], lower.val) + !lower.inclusive;
+	row->hi = upper.infinite ? PG_INT64_MAX : int_of(xd->ftype[0], upper.val) + upper.inclusive;
+	row->key_i[0] = row->lo;
 }
 
 /* The cells of the row of the plan the keys and payload columns are, in the memory of the row; false when the row is not of the part, or has a NULL key (joined to nothing; a dimension a RIGHT or FULL join keeps takes it, in part 0) */
@@ -132,7 +154,10 @@ take_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, TupleTableSlot *slot,
 		bool		isnull;
 		const Datum v = slot_getattr(slot, xd->kcol[k], &isnull);
 
-		put_cell(sh->kcls[k], xd->ktype[k], v, isnull, &row->key_i[k], &row->key_p[k], &row->key_len[k], &row->key_null[k]);
+		if (xd->mode == SV6J_RANGE_SMALL)
+			take_period(xd, v, isnull, row);
+		else
+			put_cell(sh->kcls[k], xd->ktype[k], v, isnull, &row->key_i[k], &row->key_p[k], &row->key_len[k], &row->key_null[k]);
 		anynull |= isnull;
 	}
 	if (anynull && !sift_star_preserves_dim(sh->mode))
