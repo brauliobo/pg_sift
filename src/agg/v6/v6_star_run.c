@@ -423,4 +423,5 @@ sift_v6_star_close(SiftV6StarRun *r)
 		r->dc[d] = NULL;
 	}
 	MemoryContextReset(r->cx);
+	sift_mem_release_os(r->bytes);
 }

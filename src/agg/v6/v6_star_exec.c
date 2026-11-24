@@ -72,14 +72,24 @@ sift_star_dim_init(SiftStarDim *d, const SiftStarShape *shape)
 	d->hull_max = PG_INT64_MIN;
 }
 
+#define INDEX_ROW_BYTES	(4 + 36)	/* the chain, and a share of the index at its largest */
+
+/* what a slot of the arrays takes, held or not */
 static uint64
-row_bytes(const SiftStarShape *sh)
+slot_bytes(const SiftStarShape *sh)
 {
-	uint64		b = 4 + 36;		/* the chain, and a share of the index at its largest */
+	uint64		b = 0;
 
 	for (int c = 0; c < ncols_of(sh); c++)
 		b += 9 + (cls_of(sh, c) == SSC_STR ? 4 : 0);
 	return b + (is_range(sh) ? 17 : 0);
+}
+
+/* what the table takes when it holds nrows rows in arrays of cap slots and an arena of arena_cap bytes, and the index it will have */
+static uint64
+table_bytes(const SiftStarShape *sh, uint32 cap, uint32 nrows, uint64 arena_cap)
+{
+	return (uint64) cap * slot_bytes(sh) + arena_cap + (uint64) nrows * INDEX_ROW_BYTES;
 }
 
 static void
@@ -144,8 +154,14 @@ sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
 		strs += sh->kcls[k] == SSC_STR && !row->key_null[k] ? row->key_len[k] : 0;
 	for (int c = 0; c < sh->npay; c++)
 		strs += sh->pcls[c] == SSC_STR && !row->pay_null[c] ? row->pay_len[c] : 0;
-	if (d->bytes + row_bytes(sh) + strs > sh->budget)
-		return false;
+	{
+		const uint32 cap = d->nrows < d->cap ? d->cap : d->cap == 0 ? 64 : d->cap * 2;
+		const uint64 need = TYPEALIGN(MAXIMUM_ALIGNOF, d->arena_used) + strs + (uint64) ncols_of(sh) * MAXIMUM_ALIGNOF;
+		const uint64 arena = need <= d->arena_cap ? d->arena_cap : Max(d->arena_cap * 2, Max(need, 1024));
+
+		if (table_bytes(sh, cap, d->nrows + 1, arena) > sh->budget)
+			return false;
+	}
 	if (d->nrows == d->cap)
 		grow(d);
 	for (int k = 0; k < sh->nkeys; k++)
@@ -170,8 +186,8 @@ sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
 		d->hull_min = Min(d->hull_min, row->key_i[0]);
 		d->hull_max = Max(d->hull_max, row->key_i[0]);
 	}
-	d->bytes += row_bytes(sh) + strs;
 	d->nrows++;
+	d->bytes = table_bytes(sh, d->cap, d->nrows, d->arena_cap);
 	return true;
 }
 
