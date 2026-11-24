@@ -19,9 +19,8 @@
 
 #define GORD_HEAD_MIN	32
 
-/* sift_col_gorder_exact: 1 the row is live and visible to every snapshot, -1 its segment lost it; 0 the unit holds it live, -2 it cannot say: the heap decides both */
+/* sift_col_gorder_exact: 1 the row is live and visible to every snapshot; any other answer (the unit holds it live, its segment lost it, it cannot say) leaves the heap to decide */
 #define GORD_EXACT		1
-#define GORD_DEAD		(-1)
 
 typedef struct GCur
 {
@@ -49,14 +48,6 @@ typedef struct GEnt
 	uint64		tid;
 } GEnt;
 
-/* One step of the merge: the entry (ok: none is left after the last) and whether it dropped an entry of another source that repeated the one before */
-typedef struct GStep
-{
-	bool		ok;
-	bool		repeat;
-	GEnt		ent;
-} GStep;
-
 struct SiftV1GOrd
 {
 	SiftV1GOrdSpec spec;
@@ -71,8 +62,6 @@ struct SiftV1GOrd
 	uint64		examined;
 	bool		last_set;
 	GEnt		last;
-	bool		ahead_set;
-	GStep		ahead;
 	IndexFetchTableData *fetch;
 	TupleTableSlot *slot;
 	BlockNumber nblocks;
@@ -171,11 +160,9 @@ cand_cmp(const SiftV1GOrd *g, const GCur *a, const GCur *b)
 	return 0;
 }
 
-static GStep
-merge_step(SiftV1GOrd *g)
+static bool
+merge_step(SiftV1GOrd *g, GEnt *ent)
 {
-	GStep		s = {0};
-
 	if (!g->started)
 	{
 		for (int i = 0; i < g->ncur; i++)
@@ -191,19 +178,15 @@ merge_step(SiftV1GOrd *g)
 				best = &g->cur[i];
 		if (best == NULL)
 			break;
-		s.ent = (GEnt) {.src = best->src,.cls = best->cls,.key = best->k,.tid = best->tid};
+		*ent = (GEnt) {.src = best->src,.cls = best->cls,.key = best->k,.tid = best->tid};
 		cur_next(g, best);
-		if (g->last_set && g->last.cls == s.ent.cls && g->last.key == s.ent.key && g->last.tid == s.ent.tid)
-		{
-			s.repeat = true;
+		if (g->last_set && g->last.cls == ent->cls && g->last.key == ent->key && g->last.tid == ent->tid)
 			continue;
-		}
 		g->last_set = true;
-		g->last = s.ent;
-		s.ok = true;
-		break;
+		g->last = *ent;
+		return true;
 	}
-	return s;
+	return false;
 }
 
 /* ---- the confirmation of an entry ---- */
@@ -237,31 +220,20 @@ sift_v1_gord_next(SiftV1GOrd *g, SiftV1GRow *row)
 {
 	for (;;)
 	{
-		const GStep s = g->ahead_set ? g->ahead : merge_step(g);
-		int			st;
+		GEnt		ent;
 
-		g->ahead_set = false;
-		if (!s.ok)
+		if (!merge_step(g, &ent))
 			return false;
 		if (++g->examined > g->spec.budget)
 		{
 			g->over = true;
 			return false;
 		}
-		sift_key_to_tid(s.ent.tid, &row->tid);
-		row->key = s.ent.key;
-		row->isnull = s.ent.cls != 1;
+		sift_key_to_tid(ent.tid, &row->tid);
+		row->key = ent.key;
+		row->isnull = ent.cls != 1;
 		row->held = false;
-		st = sift_col_gorder_exact(g->cs, s.ent.src, s.ent.tid);
-		if (st == GORD_DEAD)
-		{
-			/* its segment lost the row: an entry of no row, unless another source holds a row at that address with that key, which the merge dropped as the repeat of this entry */
-			g->ahead = merge_step(g);
-			g->ahead_set = true;
-			if (!g->ahead.repeat)
-				continue;
-		}
-		if (st == GORD_EXACT)
+		if (sift_col_gorder_exact(g->cs, ent.src, ent.tid) == GORD_EXACT)
 			return true;
 		if (heap_confirms(g, row))
 		{

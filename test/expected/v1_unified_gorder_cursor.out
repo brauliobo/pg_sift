@@ -489,7 +489,62 @@ SELECT * FROM sweep(17);
         21 |     21
 (1 row)
 
+-- a delete that aborts after a read in its transaction: the rows stay in the order, though the units list them as lost (an update that aborted and a vacuum before it, in an index not yet frozen)
+CREATE TABLE d (id int PRIMARY KEY, a int, ts timestamptz, pad int);
+INSERT INTO d SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 7) % 60 END, TIMESTAMPTZ '2026-01-01' + (i * 37 % 5000) * INTERVAL '1 minute', i FROM generate_series(1, 3000) i;
+CREATE INDEX d_ix ON d USING sift_col (id, a, ts, pad) WITH (order_array_columns = 'a, ts', write_buffer_limit = 65536);
+CREATE TABLE dp AS SELECT * FROM d;
+ANALYZE d;
+ANALYZE dp;
+SELECT mirror('UPDATE @ SET a = a + 1 WHERE id % 6 = 0 AND a IS NOT NULL', 'd', 'dp');
+ mirror 
+--------
+ 
+(1 row)
+
+VACUUM d;
+VACUUM dp;
+BEGIN;
+SELECT mirror('UPDATE @ SET a = coalesce(a, 0) + 18, ts = ts - INTERVAL ''248 minutes'' WHERE id % 6 = 3', 'd', 'dp');
+ mirror 
+--------
+ 
+(1 row)
+
+SELECT mirror('UPDATE @ SET pad = pad + 1 WHERE id % 11 = 1', 'd', 'dp');
+ mirror 
+--------
+ 
+(1 row)
+
+ROLLBACK;
+BEGIN;
+SELECT mirror('DELETE FROM @ WHERE id % 59 = 3', 'd', 'dp');
+ mirror 
+--------
+ 
+(1 row)
+
+SELECT same('SELECT a FROM @ ORDER BY a DESC NULLS LAST LIMIT 5 OFFSET 10', 'd', 'dp');
+ same 
+------
+ t
+(1 row)
+
+ROLLBACK;
+SELECT same('SELECT id FROM @ WHERE id IN (62, 121, 593, 652, 1065, 2127) ORDER BY a DESC NULLS LAST LIMIT 100', 'd', 'dp') AS deleted_rows_stay;
+ deleted_rows_stay 
+-------------------
+ t
+(1 row)
+
+SELECT same('SELECT id, a FROM @ ORDER BY a DESC NULLS LAST, id LIMIT 3000', 'd', 'dp') AS all_rows_stay;
+ all_rows_stay 
+---------------
+ t
+(1 row)
+
 DROP FUNCTION mirror, same, node, decoded, shape_sql, sweep, quals, recent;
-DROP TABLE shapes, t, p, r, rp, e, ep;
+DROP TABLE shapes, t, p, r, rp, e, ep, d, dp;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

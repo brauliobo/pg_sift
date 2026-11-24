@@ -2,7 +2,7 @@
  * col/v1_engine/v1_gorder_cursor.h - the global order of a leaf of a Format 1 index (col/v1/gorder.h) as the rows a snapshot sees, in the order of an ORDER BY on the leaf.
  * The entries of the stored segments and of the write buffers are (key, heap address) of rows as of the build: the cursor merges them and has each entry confirmed. A row that is live on a page
  * every snapshot sees is exact and the heap is not read; a row the unit holds on another page, or one a write buffer holds, is fetched for the snapshot and must hold the key of its entry (an UPDATE
- * that changed the key leaves the old entry on the version that is no longer the row); a row the segment lost is dropped unless another source repeats it, which the heap then decides.
+ * that changed the key leaves the old entry on the version that is no longer the row); a row the segment lost is fetched the same way, as a delete that aborted leaves it lost and live.
  */
 #ifndef SIFT_COL_V1_ENGINE_V1_GORDER_CURSOR_H
 #define SIFT_COL_V1_ENGINE_V1_GORDER_CURSOR_H
