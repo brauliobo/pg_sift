@@ -9,6 +9,7 @@
 #include "commands/extension.h"
 #include "col/am.h"
 #include "col/am/am_int.h"
+#include "col/am/conn_route.h"
 #include "col/f2/f2.h"
 #include "col/pg.h"
 #include "bm25/am.h"
@@ -45,11 +46,15 @@ sift_col_flush_held(void)
 			format_ops[major]->flush_held();
 }
 
-/* What format major 2 does not hold stays in format major 1: a connection (the index that declares it and the indexes it connects to) */
+/* What format major 2 does not hold stays in format major 1: the connections of an index of format major 1 (a child of it, or a parent it names, that is of format major 1) */
 static bool
 format1_only(Relation index)
 {
-	return sift_col_options_connect(index)[0] != '\0' || sift_conn_children(RelationGetRelid(index)) != NIL;
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	bool		only = sift_conn_route_format1(heap, index);
+
+	table_close(heap, NoLock);
+	return only;
 }
 
 /* INCLUDE columns, UNIQUE and a scope keyed by a date or a timestamp are held by the engine of format major 2 alone: the index that the build routes to format major 1 is refused them */
@@ -60,10 +65,10 @@ ops_for_build(Relation index)
 
 	if (ops->format_major != SIFT_FORMAT2_MAJOR && (index->rd_index->indisunique || IndexRelationGetNumberOfAttributes(index) != IndexRelationGetNumberOfKeyAttributes(index)))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a sift_col index of format major 1 has no %s", index->rd_index->indisunique ? "UNIQUE" : "INCLUDE columns"),
-						errhint("Leave out the connect option: the index is then built in format major 2.")));
+						errhint("Leave out the connections to indexes of format major 1: the index is then built in format major 2.")));
 	if (ops->format_major != SIFT_FORMAT2_MAJOR && sift_scope_stamp_key(index))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a sift_col index of format major 1 has no scope keyed by a date or a timestamp"),
-						errhint("Leave out the connect option: the index is then built in format major 2.")));
+						errhint("Leave out the connections to indexes of format major 1: the index is then built in format major 2.")));
 	return ops;
 }
 
@@ -77,7 +82,11 @@ route_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
 	PG_TRY();
 	{
-		result = ops_for_build(index)->ambuild(heap, index, info);
+		const SiftColFormatOps *ops = ops_for_build(index);
+
+		if (ops->format_major == SIFT_FORMAT_MAJOR)
+			sift_conn_route_check_parents(heap, index, SIFT_FORMAT_MAJOR);
+		result = ops->ambuild(heap, index, info);
 	}
 	PG_FINALLY();
 	{

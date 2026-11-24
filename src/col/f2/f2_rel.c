@@ -11,13 +11,6 @@
 #include "col/pg.h"
 #include "col/scope.h"
 
-static void
-unsupported(Relation index, const char *what)
-{
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col index \"%s\" cannot be built in format major 2 with %s", RelationGetRelationName(index), what),
-					errhint("Build the index in format major 1, or take %s out of the index.", what)));
-}
-
 static SiftCellKind
 cell_kind(const SiftColDef *d)
 {
@@ -121,17 +114,10 @@ time_leaves(SiftF2Rel *f, const SiftColSchema *schema)
 		}
 }
 
-static void
-check_supported(Relation index, const SiftColRel *r)
-{
-	if (r->nconn > 0)
-		unsupported(index, "connections");
-}
-
 SiftF2Rel *
 sift_f2_rel(Relation index)
 {
-	/* check-memory: allow check_supported and key_leaf read the entry, no catalog */
+	/* check-memory: allow key_leaf reads the entry, no catalog */
 	SiftColRel *r = sift_col_rel(index);
 	const SiftColOptions *o = sift_col_options(index);
 	MemoryContext old;
@@ -141,7 +127,6 @@ sift_f2_rel(Relation index)
 
 	if (r->f2 != NULL)
 		return r->f2;
-	check_supported(index, r);
 	old = MemoryContextSwitchTo(GetMemoryChunkContext(r));
 	n = r->nscope > 0 ? r->scope_first : r->schema->ncols;
 	f = palloc0(sizeof(SiftF2Rel));

@@ -16,6 +16,7 @@
 
 #include "col/f2/f2.h"
 #include "col/f2/f2_build.h"
+#include "col/f2/f2_connect.h"
 #include "col/f2/compact.h"
 #include "col/f2/delete.h"
 #include "col/f2/f2_scope.h"
@@ -258,6 +259,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (info->ii_Unique)
 		info->ii_ParallelWorkers = 0;	/* the rows of one key may be in the shares of two participants */
 	sift_stage_discard(RelationGetRelid(index));
+	sift_f2_connect_resolve(heap, index);
 	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);
 	choices = sift_f2_choices(index);
 	if (!info->ii_Concurrent && sift_f2_scoped(index))
@@ -297,6 +299,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_f2_progress_phase(SIFT_F2_PHASE_TRACK);
 		sift_f2_track_install(heap, index, info->ii_Concurrent);
 	}
+	sift_f2_connect_build(heap, index, info->ii_Concurrent);
 	sift_scope_start(heap, index, info->ii_Concurrent);
 	sift_f2_say_build(heap, index, start, res->index_tuples, choices);
 	(void) sift_compact_pack_tails(index);

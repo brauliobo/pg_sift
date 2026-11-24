@@ -297,7 +297,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		n += k;
 	}
 	r->conn_first = n;
-	n = sift_conn_leaves(index, defs, n, r->conn_found, &r->nconn);
+	if (!f2)
+		n = sift_conn_leaves(index, defs, n, r->conn_found, &r->nconn);
 	r->scope_first = n;
 	n = sift_scope_leaves(index, defs, n, r->scope_leaf, &r->nscope, r->scope_cols);
 	r->ret = palloc0((natts + 1) * sizeof(bool));

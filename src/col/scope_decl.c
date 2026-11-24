@@ -470,12 +470,12 @@ sift_scope_hop_index(Relation heap, Relation index, const SiftScopeSpec *s, int 
 	return path_index(heap, index, s, hop, rel, a, b);
 }
 
-/* Is the sift_col index a scope relation's journal index (track_changes = 'ctid', as opposed to the parent index of a connection, which tracks a key column)? */
+/* Is the sift_col index a scope relation's journal index (it tracks the addresses of the rows, as opposed to the parent index of a connection, which tracks a key column)? */
 static bool
 is_journal_index(Oid oid)
 {
 	Relation	idx = index_open(oid, AccessShareLock);
-	bool		ctid = sift_col_track_ctid(idx);
+	bool		ctid = sift_col_track_ctid(idx) && !sift_col_row_key_on(idx);
 
 	index_close(idx, AccessShareLock);
 	return ctid;

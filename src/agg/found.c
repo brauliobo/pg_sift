@@ -35,11 +35,11 @@
 
 bool		sift_agg_connect_found = true;
 
-/* does the scanned index take columns from a parent (EXPLAIN shows where the parent was read from) */
+/* does the scanned index take columns from a parent (EXPLAIN shows where the parent was read from): one of format major 1 keeps the found flag of each connection as a leaf, one of format major 2 keeps none */
 bool
 sift_agg_connected(const AggExec *ex)
 {
-	return ex->index != NULL && sift_col_is_index(ex->index) && sift_conn_specs(ex->index) != NULL;
+	return ex->index != NULL && sift_col_is_index(ex->index) && sift_col_rel(ex->index)->nconn > 0;
 }
 
 /* is the join one the flag answers: a semi, anti or inner join by one integer column of the scanned table, with no column of the parent read, no condition of the parent's own */
@@ -230,7 +230,7 @@ join_found(AggExec *ex, int ci, int *total, List **add)
 	SiftAggPred *p;
 	ComboSt    *cs = &ex->cs[ci];
 
-	if (!found_possible(ex, ci) || ex->index == NULL || sift_conn_find(ex->heap, ex->index, ex->lay->leaf[cb->leaf[0]].attno, j->relid, j->keyatt[0], &found, &pidxoid) < 0)
+	if (!found_possible(ex, ci) || !sift_agg_connected(ex) || sift_conn_find(ex->heap, ex->index, ex->lay->leaf[cb->leaf[0]].attno, j->relid, j->keyatt[0], &found, &pidxoid) < 0)
 		return false;
 	fk = cb->leaf[0];
 	parent = table_open(j->relid, AccessShareLock);
