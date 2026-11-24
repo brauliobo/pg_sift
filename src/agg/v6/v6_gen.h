@@ -113,9 +113,9 @@ typedef struct V6Gen
 	bool		sorted;
 } V6Gen;
 
-/* planner side (v6_gen.c): the Aggref as the generic aggregate of the spec, its argument columns in order; false when the scan cannot run it */
+/* planner side (v6_gen.c): the generic aggregate of the spec, its argument columns in order, and the Aggref the groups run, whose columns are attributes 1.. of p->gen_vars; NULL when the scan cannot run it */
 struct V6Plan;
-extern bool sift_v6_gen_compile(struct V6Plan *p, const Aggref *a, SiftV6Agg *out);
+extern Aggref *sift_v6_gen_compile(struct V6Plan *p, Aggref *a, SiftV6Agg *out);
 /* the groups the planner expects fit the group table, for a spec whose aggregates never spill */
 extern bool sift_v6_gen_fits(const SiftV6Spec *spec, double groups);
 extern bool sift_v6_spec_has_gen(const SiftV6Spec *spec);

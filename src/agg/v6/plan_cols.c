@@ -211,11 +211,12 @@ table_text_of(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
-/* A column the scan reads as a value of any type: the columns of the kernels, the text of a table, and the datums */
+/* A column the scan reads as a value of any type: the columns of the kernels, the text of a table, the datums, and the payload of a dimension or the element of the unnest */
 bool
 sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
-	return column_of(p, e, numeric_ok, out) || table_text_of(p, e, out) || datum_column_of(p, e, out);
+	return column_of(p, e, numeric_ok, out) || table_text_of(p, e, out) || datum_column_of(p, e, out) ||
+		(!p->is_table && (sift_v6_star_column(p, e, out) || (exprType((Node *) e) != NUMERICOID && sift_v6_unnest_column(p, e, out))));
 }
 
 Expr *
@@ -281,9 +282,7 @@ sift_v6_read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
 	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) || generated_expr_of(p, e, out) ||
-		(!p->is_table && (sift_v6_json_read(&rel, e, out) ||
-							  (exprType((Node *) e) != NUMERICOID && (sift_v6_star_column(p, e, out) || sift_v6_unnest_column(p, e, out))))) ||
-		table_text_of(p, e, out) || datum_column_of(p, e, out);
+		(!p->is_table && sift_v6_json_read(&rel, e, out)) || sift_v6_plan_read_column(p, e, numeric_ok, out);
 }
 
 bool

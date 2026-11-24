@@ -34,6 +34,7 @@ typedef struct V6Plan
 	bool		batch_ok;		/* the quals no scan key says may be run over the batches of the scan (SiftV6Spec.vqual): the scan of one relation that no other operator reads the rows of */
 	struct SiftV6Ext *xseed;	/* the dimensions or the unnest the join of the statement makes of its relations (v6_ext.h); NULL for a scan of the fact relation alone */
 	List	   *dim_rels;		/* the RelOptInfo of each dimension, in the order of xseed->dim */
+	List	   *gen_vars;		/* the columns the generic aggregates read, from any relation of the statement: the position + 1 of a column is the attribute their expressions read it as (v6_gen.h) */
 	RelOptInfo *elem_rel;		/* the relation of the unnest */
 	bool		score_ok;		/* an aggregate over sift.score(ctid): the scan that brings its rows brings their scores (agg/hybrid_plan.c) */
 	IndexOptInfo *text;			/* the sift index of the text query of the statement, if it has one (v6_text.c) */
@@ -106,7 +107,7 @@ extern bool sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col);
 extern bool sift_v6_resolve_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out);
 /* A sort key of a row Top-N: a column or an expression of the scan under any collation, since the heap of the best rows compares by the sort operator */
 extern bool sift_v6_compile_sort_key(V6Plan *p, Expr *e, SiftV6Col *k);
-/* the same for a column the scan reads as any value: the kernels' columns, the text of a table and the datums (an aggregate of PostgreSQL's own functions reads them) */
+/* the same for a column the scan reads as any value: the kernels' columns, the text of a table, the datums, and a column of a dimension or of the unnested element (an aggregate of PostgreSQL's own functions reads them) */
 extern bool sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
 /* a key or argument PostgreSQL's executor computes from columns of the scan, as a column of the scan */
 extern bool sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col);

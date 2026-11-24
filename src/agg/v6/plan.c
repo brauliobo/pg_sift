@@ -225,11 +225,12 @@ compile_agg_gen(V6Plan *p, Aggref *a)
 {
 	SiftV6Agg	g;
 	Aggref		unfiltered = *a;
+	Aggref	   *ref;
 
 	unfiltered.aggfilter = NULL;
-	if (!sift_v6_gen_compile(p, &unfiltered, &g) || (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause)))
+	if ((ref = sift_v6_gen_compile(p, &unfiltered, &g)) == NULL || (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause)))
 		return false;
-	p->spec.genref = lappend(p->spec.genref, copyObject(&unfiltered));
+	p->spec.genref = lappend(p->spec.genref, ref);
 	spec_room(p, false);
 	p->spec.agg[p->spec.naggs++] = g;
 	return true;
@@ -559,6 +560,7 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	p->cap_aggs = p->cap_funcs = 0;
 	p->scan_tlist = NIL;
 	p->scan_vars = NULL;
+	p->gen_vars = NIL;
 	p->text = NULL;
 	exprs = sift_vn_rewrite_aggs((Node *) p->out->reltarget->exprs);
 	having = sift_vn_rewrite_aggs(having);

@@ -766,38 +766,76 @@ stable_arg(const Expr *e)
 		!expression_returns_set((Node *) e) && !has_params((Node *) e, NULL);
 }
 
-bool
-sift_v6_gen_compile(V6Plan *p, const Aggref *a, SiftV6Agg *out)
+static int
+var_position(const List *vars, const Var *v)
 {
+	foreach_node(Var, w, vars)
+		if (w->varno == v->varno && w->varattno == v->varattno)
+			return foreach_current_index(w);
+	return -1;
+}
+
+/* the distinct columns the arguments read, in the order they first appear: the order of the columns of the aggregate in the spec */
+static List *
+argument_vars(Aggref *a)
+{
+	List	   *vars = NIL;
+
+	foreach_node(TargetEntry, te, a->args)
+		foreach_node(Var, v, pull_var_clause((Node *) te->expr, PVC_RECURSE_PLACEHOLDERS))
+			if (var_position(vars, v) < 0)
+				vars = lappend(vars, v);
+	return vars;
+}
+
+/* a column of any relation of the statement as the attribute the expressions of the aggregates read: its position among the columns that the generic aggregates of the statement read */
+static Node *
+attribute_of(Node *n, List **vars)
+{
+	if (n != NULL && IsA(n, Var))
+	{
+		Var		   *v = (Var *) n;
+		int			at = var_position(*vars, v);
+
+		if (at < 0)
+		{
+			*vars = lappend(*vars, copyObject(v));
+			at = list_length(*vars) - 1;
+		}
+		return (Node *) makeVar(1, at + 1, v->vartype, v->vartypmod, v->varcollid, 0);
+	}
+	return expression_tree_mutator(n, attribute_of, vars);
+}
+
+Aggref *
+sift_v6_gen_compile(V6Plan *p, Aggref *a, SiftV6Agg *out)
+{
+	Aggref	   *ref;
 	int			col = 0;
 
-	if (p->xseed != NULL || a->agglevelsup != 0 || a->aggsplit != AGGSPLIT_SIMPLE || list_length(a->args) > FUNC_MAX_ARGS || volatile_fns(a->aggfnoid) ||
+	if (a->agglevelsup != 0 || a->aggsplit != AGGSPLIT_SIMPLE || list_length(a->args) > FUNC_MAX_ARGS || volatile_fns(a->aggfnoid) ||
 		(a->aggkind != AGGKIND_NORMAL && !sift_v6_osa_eligible(a)) || (a->aggdistinct != NIL && a->aggkind != AGGKIND_NORMAL) ||
 		(a->aggdistinct != NIL && list_length(a->aggdistinct) != list_length(a->args)))
-		return false;
+		return NULL;
 	foreach_ptr(Node, d, a->aggdirectargs)
 		if (contain_var_clause(d) || !stable_arg((Expr *) d))
-			return false;
+			return NULL;
 	*out = (SiftV6Agg) {.kind = a->aggkind == AGGKIND_NORMAL ? SV6_GEN_PG : SV6_OSA,.restype = a->aggtype};
 	foreach_node(TargetEntry, te, a->args)
 		if (!stable_arg(te->expr))
-			return false;
-	foreach_int(att, argument_columns(a))
+			return NULL;
+	foreach_node(Var, v, argument_vars(a))
 	{
-		const Var  *v = NULL;
-
-		foreach_node(TargetEntry, te, a->args)
-			foreach_node(Var, pv, pull_var_clause((Node *) te->expr, PVC_RECURSE_PLACEHOLDERS))
-				if (v == NULL && pv->varattno == att)
-					v = pv;
-		if (col == V6GEN_MAX_COLS || v->varno != p->rel->relid || v->varlevelsup != 0 ||
-			!sift_v6_plan_read_column(p, (Expr *) v, true, col == 0 ? &out->arg : col == 1 ? &out->arg2 : &out->xcol[col - 2]))
-			return false;
+		if (col == V6GEN_MAX_COLS || !sift_v6_plan_read_column(p, (Expr *) v, true, col == 0 ? &out->arg : col == 1 ? &out->arg2 : &out->xcol[col - 2]))
+			return NULL;
 		col++;
 	}
 	if (col == 0)
-		return false;
+		return NULL;
 	out->nxcols = Max(col - 2, 0);
+	ref = copyObject(a);
+	foreach_node(TargetEntry, te, ref->args)
+		te->expr = (Expr *) attribute_of((Node *) te->expr, &p->gen_vars);
 	record_plan_function_dependency(p->root, a->aggfnoid);
-	return true;
+	return ref;
 }
