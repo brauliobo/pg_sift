@@ -17,16 +17,16 @@ static List *
 put_col(List *l, const SiftV6Col *c)
 {
 	l = lappend_int(lappend_int(lappend_int(l, c->attno), (int) c->typid), c->scale);
-	return lappend_int(lappend_int(lappend_int(lappend_int(l, c->jleaf), (int) c->src), c->dim), c->slot);
+	return lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(l, c->jleaf), (int) c->src), c->dim), c->slot), (int) c->collid);
 }
 
 static SiftV6Col
 take_col(const List *l, int *at)
 {
 	SiftV6Col	c = {.attno = list_nth_int(l, *at),.typid = (Oid) list_nth_int(l, *at + 1),.scale = list_nth_int(l, *at + 2),.jleaf = list_nth_int(l, *at + 3),
-	.src = (SiftV6Src) list_nth_int(l, *at + 4),.dim = list_nth_int(l, *at + 5),.slot = list_nth_int(l, *at + 6)};
+	.src = (SiftV6Src) list_nth_int(l, *at + 4),.dim = list_nth_int(l, *at + 5),.slot = list_nth_int(l, *at + 6),.collid = (Oid) list_nth_int(l, *at + 7)};
 
-	*at += 7;
+	*at += 8;
 	return c;
 }
 
@@ -97,9 +97,9 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	ints = lappend_int(ints, s->nparts);
 	for (int k = 0; k < s->nparts; k++)
 		ints = lappend_int(ints, (int) s->part_index[k]);
-	ints = list_concat(ints, list_make3_int(s->par_strategy, s->par_workers, (int) s->text_indexoid));
+	ints = list_concat(ints, list_make4_int(s->par_strategy, s->par_workers, (int) s->text_indexoid, s->constant_groups));
 	ints = sift_v6_derive_pack(ints, s);
-	return lappend(lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL), s->vqual);
+	return lappend(lappend(lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL), s->vqual), s->pgexpr);
 }
 
 SiftV6Spec *
@@ -159,6 +159,7 @@ sift_v6_spec_unpack(const List *l)
 	s->par_strategy = list_nth_int(ints, at++);
 	s->par_workers = list_nth_int(ints, at++);
 	s->text_indexoid = (Oid) list_nth_int(ints, at++);
+	s->constant_groups = list_nth_int(ints, at++);
 	sift_v6_derive_unpack(s, ints, at);
 	s->text_query = list_nth(l, 5) ? linitial_node(Const, (List *) list_nth(l, 5)) : NULL;
 	s->indexqual = lsecond(l);
@@ -166,6 +167,7 @@ sift_v6_spec_unpack(const List *l)
 	s->nfilters = list_length(s->filter);
 	s->jsonqual = lfourth(l);
 	s->vqual = list_nth(l, 6);
+	s->pgexpr = list_nth(l, 7);
 	s->ext = sift_v6_ext_unpack(list_nth(l, 4));
 	return s;
 }

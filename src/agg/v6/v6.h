@@ -104,6 +104,7 @@ typedef struct SiftV6Col
 	int			dim;			/* SV6SRC_DIM: the dimension */
 	int			slot;			/* SV6SRC_DIM: the payload column of the dimension */
 	int			derive;			/* 1 + the number of its entry in SiftV6Spec.derive when the key or argument is computed from the column (attno is then the source) */
+	Oid			collid;			/* a key: the collation its type is grouped under (the interner of a generic key, v6_datum.h) */
 } SiftV6Col;
 
 struct SiftV6Ext;
@@ -222,6 +223,8 @@ typedef struct SiftV6Spec
 	uint32		topk;			/* LIMIT + OFFSET of the query when the node gives the best groups in order (0: all groups, unordered) */
 	int			ntopk;
 	SiftV6TopKItem topk_item[SIFT_V6_MAX_TOPK_ITEMS];
+	List	   *pgexpr;			/* the PostgreSQL expressions of the SVD_PG_EXPR derivations: their items (v6_pg_expr.h) */
+	bool		constant_groups;	/* GROUP BY of expressions that read no column: no group when no row is read (the single set of no keys has a row only once a row was folded) */
 	uint32		lock_k;			/* LIMIT + OFFSET of a query with no ORDER BY, HAVING or DISTINCT: any K groups with their exact aggregates answer it, so the group table takes no group after the K-th (0: all groups) */
 } SiftV6Spec;
 
