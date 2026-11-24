@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # tap: pooled
-# A VACUUM that runs while a top-N scan (Custom Scan (SiftAgg) with Top-N) is open, after its snapshot and its source, before it reads the
+# A VACUUM that runs while a top-N scan (Custom Scan (SiftAggV6TopN)) is open, after its snapshot and its source, before it reads the
 # units. The scan keeps the rows its snapshot sees and, at the end,
 # fetches the n winners from the heap by TID: a row of a tuple that VACUUM removed after the snapshot, on a page it made all-visible, would
 # be a winner that is not in the heap ("top-N row is not in the heap"). The scan (sift.test_agg_wait) waits for an advisory lock after it
 # opens, which the test holds until the statements are done: no timing involved. Stored units, a unit that was already dirty, the write buffer.
 . "$(dirname "$0")/lib.bash"
+F2="SET sift.test_create_format1 = off"
 
 plan 4
 node_init vs 14 "autovacuum = off"
@@ -36,21 +37,21 @@ differ() {
 }
 
 # stored units: the index is built last, on the rows; the largest ids are the deleted ones
-sql vs "CREATE TABLE stored (id int, g int, n int)" "INSERT INTO stored SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
+sql vs "$F2" "CREATE TABLE stored (id int, g int, n int)" "INSERT INTO stored SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
 	"CREATE INDEX stored_idx ON stored USING sift_col (id, g, n)" "VACUUM stored" "DELETE FROM stored WHERE id % 5 = 0" >/dev/null || bail "setup stored failed"
-check "the query is a top-N scan" test "$(sql vs "SET enable_sort = off" "EXPLAIN (COSTS OFF) SELECT id FROM stored ORDER BY id DESC LIMIT 10" | grep -c 'Top-N: id DESC')" == 1
+check "the query is a top-N scan" test "$(sql vs "SET enable_sort = off" "EXPLAIN (COSTS OFF) SELECT id FROM stored ORDER BY id DESC LIMIT 10" | grep -c 'SiftAggV6TopN')" == 1
 race stored
 check "stored units: the top-N returns the rows of its snapshot" test "$(differ stored)" == 0
 
 # a unit already dirty: an earlier VACUUM removed rows, and the scan opens before the next one
-sql vs "CREATE TABLE dirty (id int, g int, n int)" "INSERT INTO dirty SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
+sql vs "$F2" "CREATE TABLE dirty (id int, g int, n int)" "INSERT INTO dirty SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
 	"CREATE INDEX dirty_idx ON dirty USING sift_col (id, g, n)" "DELETE FROM dirty WHERE id % 5 = 0" "VACUUM dirty" \
 	"DELETE FROM dirty WHERE id % 7 = 0" >/dev/null || bail "setup dirty failed"
 race dirty
 check "dirty units: the top-N returns the rows of its snapshot" test "$(differ dirty)" == 0
 
 # the write buffer
-sql vs "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" \
+sql vs "$F2" "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" \
 	"INSERT INTO lane SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" "VACUUM lane" "DELETE FROM lane WHERE id % 5 = 0" >/dev/null || bail "setup lane failed"
 race lane
 check "lane rows: the top-N returns the rows of its snapshot" test "$(differ lane)" == 0
