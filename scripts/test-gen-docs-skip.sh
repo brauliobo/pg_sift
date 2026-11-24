@@ -3,6 +3,7 @@
 # are the same as a run without the skip. Works on a copy of the tree (a few seconds of CPU per run of gen-docs.py).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
+shopt -s nullglob
 cd "$(dirname "$0")/.." || exit 2
 bad=0
 fail() { echo "FAIL: $*"; bad=1; }
@@ -34,18 +35,24 @@ sed -i.bak "${n}s/\$/ stale/" "$T/README.md" && rm -f "$T/README.md.bak"
 gen changed
 skipped changed && fail "a changed input did not run the renderers"
 [[ $(state) == "$good" ]] || fail "the renderers did not restore the block"
+# a change of a chart they draw (docs/charts): they run, and the charts are as the first run drew them
+for f in "$T"/docs/charts/*.svg; do echo '<!-- stale -->' >>"$f"; done
+[[ $(state) != "$good" ]] || fail "the change of the charts did not change the files"
+gen charts
+skipped charts && fail "a changed chart did not run the renderers"
+[[ $(state) == "$good" ]] || fail "the renderers did not redraw the charts"
 # a change of a file they do not read (src/), and one of prose: skipped, and what a run without the skip gives is the same
 echo '/* a comment */' >>"$T/src/core/ops.c"
 gen src
 skipped src || fail "a change of src/ ran the renderers"
 # a change of the prose of a page with benchmark blocks (outside the blocks): the renderers only replace the blocks, so they are skipped
-sed -i.bak '1s/$/ (edited)/' "$T/README.md" && rm -f "$T/README.md.bak"
+for f in "$T/README.md" "$T"/docs/benchmarks/*.md; do sed -i.bak '1s/$/ (edited)/' "$f" && rm -f "$f.bak"; done
 gen prose
-skipped prose || fail "a change of the prose of README.md ran the renderers"
+skipped prose || fail "a change of the prose of README.md or docs/benchmarks/ ran the renderers"
 good_src=$(state)
 rm -rf "$T/.cache"
 gen full SIFT_LINT_NOCACHE=1
 skipped full && fail "a run with SIFT_LINT_NOCACHE skipped the renderers"
 [[ $(state) == "$good_src" ]] || fail "the files after a skipped run differ from those of a full run"
-(( bad )) || echo "gen-docs-skip: the renderers are skipped on files a run left, run on a changed one, and give the files of a full run"
+(( bad )) || echo "gen-docs-skip: the renderers are skipped on files a run left, run on a changed block or chart, and give the files of a full run"
 exit $bad

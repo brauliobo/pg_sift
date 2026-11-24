@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/gen-docs.py --check without SIFT_PUBLIC_TREE fails on a benchmark block whose results file is missing or stale; with SIFT_PUBLIC_TREE=true (the public repository, whose
-# results stay private) a block whose results file is not in the tree is not compared, while a block that its results file backs is. Works on a copy of the tree.
+# results stay private) a block whose results file is not in the tree is not compared, while a block that its results file backs is; a chart that README.md shows must be
+# in the tree in both. Works on a copy of the tree.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
@@ -15,20 +16,27 @@ git -C "$T" add -A
 unset CI SIFT_LINT_NOCACHE SIFT_PUBLIC_TREE
 export SIFT_GEN_DOCS_CACHE=$T/.cache
 check() { (cd "$T" && env "$@" python3 -B -I scripts/gen-docs.py --check >"$T/check.log" 2>&1); }
-FILE=v6-readme.tsv
-RESULTS=docs/results/$FILE
-BLOCK=v6-readme
+# a chart that README.md shows and the tree lacks is refused in both checks
+chart=$(grep -o 'docs/charts/[a-z0-9-]*\.svg' README.md | head -n 1)
+[[ -n $chart ]] || fail "README.md shows no chart of docs/charts"
+mv "$T/$chart" "$T/$chart.off"
+check && fail "a README.md that shows the missing $chart was accepted"
+check SIFT_PUBLIC_TREE=true && fail "a README.md that shows the missing $chart was accepted in the public check"
+mv "$T/$chart.off" "$T/$chart"
+RESULTS=docs/results/scope-stock.tsv
+BLOCK=scope-stock-tally
 [[ -f $T/$RESULTS ]] || { echo "gen-docs-public: skipped, $RESULTS is not populated yet"; exit 0; }
-grep -q "bench:$BLOCK:begin" "$T/README.md" || { echo "FAIL: README.md has no $BLOCK block to build the cases on"; exit 1; }
+PAGE=$(cd "$T" && grep -l "bench:$BLOCK:begin" README.md docs/BENCHMARKS.md docs/benchmarks/*.md 2>/dev/null | head -n 1)
+[[ -n $PAGE ]] || { echo "FAIL: no page of README.md, docs/BENCHMARKS.md or docs/benchmarks/ has the $BLOCK block to build the cases on"; exit 1; }
 
 check || fail "a complete tree is stale: $(tail -n 2 "$T/check.log")"
 check SIFT_PUBLIC_TREE=true || fail "a complete tree is stale in the public check: $(tail -n 2 "$T/check.log")"
 # a block that its results file backs and that no longer matches it is stale, in both checks
-n=$(awk "/<!-- bench:$BLOCK:begin/ { f = 1; next } f && NF && !d { print NR; d = 1 }" "$T/README.md")
-sed -i.bak "${n}s/\$/ stale/" "$T/README.md" && rm -f "$T/README.md.bak"
+n=$(awk "/<!-- bench:$BLOCK:begin/ { f = 1; next } f && NF && !d { print NR; d = 1 }" "$T/$PAGE")
+sed -i.bak "${n}s/\$/ stale/" "$T/$PAGE" && rm -f "$T/$PAGE.bak"
 check && fail "a stale block was accepted"
 check SIFT_PUBLIC_TREE=true && fail "a stale block that its results file backs was accepted in the public check"
-git -C "$T" checkout -q README.md
+git -C "$T" checkout -q -- "$PAGE"
 # the results file is not in the tree: stale in the development check, not compared in the public one
 git -C "$T" rm -q -f "$RESULTS"
 check && fail "a block without its results file was accepted in the development check"
