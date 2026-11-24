@@ -278,14 +278,32 @@ read_directory(Relation rel, const SiftShmIndexMeta *meta, const SiftShmManifest
 	return mr;
 }
 
+/* The directory of the version *meta names. A commit writes the pages of its version before the registry names it, so a read of the pages may find a later version than the registry's: meta then becomes the one the pages hold */
+static SiftManifestRead
+read_directory_of(Relation rel, SiftShmIndexMeta *meta, const SiftShmManifestSnap **shm, SiftManifestScopeRef **scopes, int *nscopes)
+{
+	SiftManifestRead mr = read_directory(rel, meta, shm, scopes, nscopes);
+
+	while (mr.version != meta->manifest_version)
+	{
+		SiftColMetaPageData page = sift_col_meta_read(rel);
+
+		*meta = sift_col_meta_shm(rel, &page);
+		mr = read_directory(rel, meta, shm, scopes, nscopes);
+	}
+	return mr;
+}
+
 /* Reads the directory and the part lists that moved since s was loaded into s->cx; s is left as it was when a read fails */
 static void
-load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *meta)
+load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *registry)
 {
+	SiftShmIndexMeta at = *registry;
+	const SiftShmIndexMeta *meta = &at;
 	const SiftShmManifestSnap *shm;
 	SiftManifestScopeRef *scopes;
 	int			nscopes;
-	SiftManifestRead mr = read_directory(rel, meta, &shm, &scopes, &nscopes);
+	SiftManifestRead mr = read_directory_of(rel, &at, &shm, &scopes, &nscopes);
 	/* MEM[MEM-IDLE-07]: cachebudget plan snapshot ctx (1 KB init + partitions + part lists + card view; evictable LRU) */
 	MemoryContext prev = MemoryContextSwitchTo(s->cx);
 	SiftPlanPartList *lists = palloc0(Max(mr.n, 1) * sizeof(SiftPlanPartList));
