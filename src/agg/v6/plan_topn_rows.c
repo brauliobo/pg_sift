@@ -36,13 +36,6 @@ proj_sort_offered(const RelOptInfo *rel)
 	return false;
 }
 
-/* a sort key the scan can compare by the sort operator of the statement: a plain float or boolean column has no decoded vector of its values (NaN, the mask of a boolean), their expressions do */
-static bool
-sort_key_ok(V6Plan *p, Expr *e, SiftV6Col *k)
-{
-	return sift_v6_compile_sort_key(p, e, k) && (k->derive > 0 || (sift_v6_class(k->typid) != SV6C_F64 && sift_v6_class(k->typid) != SV6C_BOOL));
-}
-
 /* the sort expressions of the query as the keys of the spec: columns of the index and what PostgreSQL's own expression machinery computes from them */
 static bool
 rows_keys(V6Plan *p)
@@ -57,7 +50,7 @@ rows_keys(V6Plan *p)
 		Expr	   *e = (Expr *) get_sortgroupclause_expr(sgc, q->targetList);
 		SiftV6Col  *k = &p->spec.key[p->spec.nkeys];
 
-		if (IsA(e, Const) || !sort_key_ok(p, e, k))
+		if (IsA(e, Const) || !sift_v6_compile_sort_key(p, e, k))
 			return false;
 		p->spec.topk_item[p->spec.ntopk++] = (SiftV6TopKItem) {.pos = p->spec.nkeys++,.sortop = sgc->sortop,.collid = exprCollation((const Node *) e),.nulls_first = sgc->nulls_first};
 	}

@@ -255,7 +255,7 @@ typedef struct SiftV6TopKItem
 	bool		nulls_first;
 } SiftV6TopKItem;
 
-#define SIFT_V6_MAX_TOPK_ITEMS	8
+#define SIFT_V6_MAX_TOPK_ITEMS	12
 
 /* A column a row Top-N gives: the heap row of the winner (the plan's tlist names its attribute), a key its heap of winners carries (a column of a dimension), or an aggregate of the whole set */
 typedef enum SiftV6RowFrom
