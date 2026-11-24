@@ -294,6 +294,8 @@ bm25/semi_cache.h
 bm25/step.c
 bm25/unique.c
 bm25/wbuf.c
+bm25/doctext.c
+bm25/doctext.h
 col/am.h
 col/am/
 col/codec_gen.h
