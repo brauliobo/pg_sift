@@ -42,7 +42,7 @@ typedef struct V6Col
 	const SiftColDef *def;		/* a DATUM column: its head leaf (the leaves after it that its value is made of are lane columns) */
 	int16		typlen;			/* a DATUM column: the length and the passing of its type */
 	bool		typbyval;
-	bool		is_table;		/* the leaf is a cell of a sift_table: the datum of the attribute, not the leaves of a sift_col index */
+	bool		is_table;		/* the leaf is a cell of a sift_table: the datum of the attribute, not the bytes a sift_col index or the path of a document holds */
 	bool		lane;			/* a leaf the datum of the column before it is made of: it is decoded with that one, and has no vector of its own */
 } V6Col;
 
