@@ -343,7 +343,7 @@ undeclared_doc_walker(Node *n, const V6Plan *p)
 bool
 sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 {
-	const SiftV6Resolver rs = {resolve_datum_column, p, false, p->elem_rel != NULL ? p->elem_rel->relid : 0};
+	const SiftV6Resolver rs = {resolve_datum_column, p, false};
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 	SiftV6Derive d = {0};
 	Oid			restype;
@@ -352,7 +352,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	if (undeclared_doc_walker((Node *) e, p))
 		return false;
 	e = sift_v6_json_vars(&rel, e, true);
-	if ((p->xseed != NULL && !p->xseed->unnest) || !sift_v6_pgexpr_derive_of(p->batch_ok ? p->root : NULL, &rs, p->rel->relid, e, &d, &restype, &p->spec.pgexpr) ||
+	if ((p->xseed != NULL && !p->xseed->unnest) || !sift_v6_pgexpr_derive_of(p->batch_ok ? p->root : NULL, &rs, e, &d, &restype, &p->spec.pgexpr) ||
 		!(sift_v6_type_native(restype) || (p->xseed == NULL && key && sift_v6_key_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
 		return false;
 	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at,.collid = exprCollation((Node *) e)};

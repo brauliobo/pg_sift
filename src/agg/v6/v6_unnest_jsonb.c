@@ -291,11 +291,21 @@ leaf_oid(const SiftColDef *d)
 	return InvalidOid;
 }
 
+/* the group of the map `col.* type` of attribute att (-1: the attribute has none) */
+static int
+map_group_of(const SiftColRel *r, int att)
+{
+	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+		if (r->schema->cols[i].kind == SIFT_COLK_GROUP && r->schema->cols[i].path != NULL && strstr(r->schema->cols[i].path, ".*") != NULL)
+			return i;
+	return -1;
+}
+
 bool
 sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value)
 {
 	*key = *value = -1;
-	if (!r->json[att] || (*group = group_of(r, att, NULL)) < 0 || strstr(r->schema->cols[*group].path, ".*") == NULL)
+	if (!r->json[att] || (*group = map_group_of(r, att)) < 0)
 		return false;
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
 	{

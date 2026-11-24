@@ -112,7 +112,7 @@ vars_walker(Node *n, VarsCtx *c)
 	{
 		Var		   *v = (Var *) n;
 
-		if (v->varno != c->relid && (c->elem_relid == 0 || v->varno != c->elem_relid))
+		if (c->relid != 0 && v->varno != c->relid && (c->elem_relid == 0 || v->varno != c->elem_relid))
 			return false;
 		foreach_ptr(Var, seen, c->vars)
 			if (seen->varno == v->varno && seen->varattno == v->varattno)
@@ -148,7 +148,7 @@ renumber_mutator(Node *n, RenumberCtx *c)
 {
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, Var) && (((const Var *) n)->varno == c->relid || (c->elem_relid != 0 && ((const Var *) n)->varno == c->elem_relid)))
+	if (IsA(n, Var) && (c->relid == 0 || ((const Var *) n)->varno == c->relid || (c->elem_relid != 0 && ((const Var *) n)->varno == c->elem_relid)))
 	{
 		Var		   *v = copyObject((Var *) n);
 
@@ -175,7 +175,7 @@ sift_v6_pgexpr_renumber(const Expr *e, Index relid, Index elem_relid, const List
 }
 
 bool
-sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6Derive *d, Oid *restype, List **items)
+sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Expr *e, SiftV6Derive *d, Oid *restype, List **items)
 {
 	List	   *vars;
 	List	   *ints;
@@ -183,7 +183,7 @@ sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index reli
 	SiftV6Col	col;
 	int			at = 0;
 
-	if (IsA(e, Var) || IsA(e, Const) || !sift_v6_pgexpr_plan_ok(root, e) || !sift_v6_pgexpr_vars(e, relid, rs->elem_relid, &vars) || vars == NIL)
+	if (IsA(e, Var) || IsA(e, Const) || !sift_v6_pgexpr_plan_ok(root, e) || !sift_v6_pgexpr_vars(e, 0, 0, &vars) || vars == NIL)
 		return false;
 	*restype = getBaseType(exprType((Node *) e));
 	ints = list_make1_int((int) *restype);
@@ -195,7 +195,7 @@ sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index reli
 			d->src = col;
 		ints = list_concat(ints, list_make5_int(sift_v6_col_input_attno(&col), (int) col.typid, col.scale, (int) col.src, col.slot));
 	}
-	item = list_make2(sift_v6_pgexpr_renumber(e, relid, rs->elem_relid, vars), ints);
+	item = list_make2(sift_v6_pgexpr_renumber(e, 0, 0, vars), ints);
 	foreach_ptr(List, seen, *items)
 	{
 		if (equal(seen, item))
