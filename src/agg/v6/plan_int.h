@@ -99,6 +99,11 @@ extern bool sift_v6_tid_qual(V6Plan *p, const RestrictInfo *ri);
 
 /* A column of the fact relation that its index holds as a plain leaf of the class of its type */
 extern bool sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
+/* plan_cols.c: a column the scan reads whatever its form (a leaf, a datum, an index or generated expression), and a key or argument the scan computes from columns (v6_plan_rewrite.h) */
+extern bool sift_v6_read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
+extern bool sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col);
+/* the resolver of the columns of an expression of the scan for v6_plan_rewrite.h */
+extern bool sift_v6_resolve_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out);
 /* A sort key of a row Top-N: a column or an expression of the scan under any collation, since the heap of the best rows compares by the sort operator */
 extern bool sift_v6_compile_sort_key(V6Plan *p, Expr *e, SiftV6Col *k);
 /* the same for a column the scan reads as any value: the kernels' columns, the text of a table and the datums (an aggregate of PostgreSQL's own functions reads them) */

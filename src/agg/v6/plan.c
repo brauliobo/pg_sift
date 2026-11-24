@@ -68,288 +68,6 @@ sift_v6_plan_rel(const V6Plan *p)
 
 static const CustomPathMethods v6_path_methods = {"SiftAggV6", sift_agg_v6_plan_path, NULL};
 
-/* The attribute of the host a column of the table is: the column of the index, or the attribute of the table; 0: the host does not hold it */
-static int
-host_attno(const V6Plan *p, AttrNumber attno)
-{
-	if (p->is_table)
-		return attno > 0 && attno <= p->tsch.natts ? attno : 0;
-	for (int i = 0; attno > 0 && i < p->index->ncolumns; i++)
-		if (p->index->indexkeys[i] == attno)
-			return i + 1;
-	return 0;
-}
-
-static const SiftColSchema *
-host_schema(const V6Plan *p)
-{
-	return p->is_table ? p->tsch.leaves : p->colrel->schema;
-}
-
-static int
-host_first(const V6Plan *p, int att)
-{
-	return p->is_table ? p->tsch.att_first[att] : p->colrel->first[att];
-}
-
-static int
-host_nleaves(const V6Plan *p, int att)
-{
-	return p->is_table ? p->tsch.att_nleaves[att] : p->colrel->nleaves[att];
-}
-
-Oid
-sift_v6_plan_opfamily(const V6Plan *p, int att)
-{
-	return p->is_table ? p->tsch.att_opfamily[att] : p->index->opfamily[att - 1];
-}
-
-static bool
-leaf_class_ok(const SiftColDef *d, int nleaves, SiftV6Class cls)
-{
-	if (nleaves != 1)
-		return false;
-	if (d->lane != 0 || d->kind != SIFT_COLK_SCALAR || (d->flags & (SIFT_COLD_LOSSY | SIFT_COLD_DERIVED)) || d->path[0] != '\0')
-		return false;
-	switch (cls)
-	{
-		case SV6C_I32:
-		case SV6C_I64:
-		case SV6C_BOOL:
-			return d->store == SIFT_COLS_INT;
-		case SV6C_F64:
-			return d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8;
-		case SV6C_TEXT:
-			return d->store == SIFT_COLS_STR;
-		default:
-			return false;
-	}
-}
-
-bool
-sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls)
-{
-	return leaf_class_ok(&r->schema->cols[r->first[att]], r->nleaves[att], cls);
-}
-
-bool
-sift_v6_table_leaf_holds(const SiftStoreSchema *table, int att, SiftV6Class cls)
-{
-	return att > 0 && att <= table->natts && leaf_class_ok(&table->leaves->cols[table->att_first[att]], table->att_nleaves[att], cls);
-}
-
-bool
-sift_v6_plan_table(V6Plan *p, Oid relid)
-{
-	p->ops = sift_store_ops_for_scan(relid, true);
-	p->is_table = p->ops != NULL && p->ops->schema(relid, true, &p->tsch);
-	return p->is_table;
-}
-
-void
-sift_v6_plan_index(V6Plan *p, Relation irel)
-{
-	p->colrel = sift_col_rel(irel);
-	p->ops = p->colrel->stale ? NULL : sift_store_ops_for_scan(RelationGetRelid(irel), false);
-}
-
-static bool
-column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
-{
-	const Var  *v = (const Var *) e;
-	int			att;
-
-	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || (v->vartype == NUMERICOID && !numeric_ok))
-		return false;
-	if (v->varattno >= SIFT_V6_JTYPE_VATT)
-	{
-		const SiftV6Rel rel = sift_v6_plan_rel(p);
-
-		return !p->is_table && sift_v6_json_type_col(&rel, v, out);
-	}
-	att = host_attno(p, v->varattno);
-	if (att == 0 || !leaf_class_ok(&host_schema(p)->cols[host_first(p, att)], host_nleaves(p, att), sift_v6_class(v->vartype)))
-		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = v->vartype,.scale = v->vartype == NUMERICOID ? host_schema(p)->cols[host_first(p, att)].scale : 0};
-	return true;
-}
-
-bool
-sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
-{
-	return column_of(p, e, numeric_ok, out);
-}
-
-/* The host holds attribute att whole in leaves the scan decodes as a datum: a table keeps the datum of every attribute in one cell, an index the leaves of its type (sift_col_def_datum_ok) */
-static bool
-datum_leaf_ok(const V6Plan *p, int att)
-{
-	return p->is_table ? host_nleaves(p, att) == 1 : sift_col_def_datum_ok(&host_schema(p)->cols[host_first(p, att)], host_nleaves(p, att));
-}
-
-/* A column of a type no native vector holds, or a numeric of any form: its values are read as datums, so a NaN, an infinity or a numeric of any digits is the value it is */
-static bool
-datum_column_of(V6Plan *p, const Expr *e, SiftV6Col *out)
-{
-	const Var  *v = (const Var *) e;
-	int			att;
-
-	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || sift_v6_type_native(v->vartype) || v->vartype == JSONBOID)
-		return false;
-	att = host_attno(p, v->varattno);
-	if (att == 0 || !datum_leaf_ok(p, att))
-		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = v->vartype,.scale = SIFT_V6_SCALE_DATUM};
-	return true;
-}
-
-/* A text column of a sift_table: its cells are the datums, so its bytes are read after the header; no scan key may compare them (the leaf is lossy) */
-static bool
-table_text_of(V6Plan *p, const Expr *e, SiftV6Col *out)
-{
-	const Var  *v = (const Var *) e;
-	int			att;
-
-	if (!p->is_table || e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || sift_v6_class(v->vartype) != SV6C_TEXT)
-		return false;
-	att = host_attno(p, v->varattno);
-	if (att == 0 || host_nleaves(p, att) != 1)
-		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = v->vartype};
-	return true;
-}
-
-/* A column the scan reads as a value of any type: the columns of the kernels, the text of a table, and the datums */
-bool
-sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
-{
-	return column_of(p, e, numeric_ok, out) || table_text_of(p, e, out) || datum_column_of(p, e, out);
-}
-
-Expr *
-sift_v6_plan_type_vars(const V6Plan *p, const Expr *e)
-{
-	const SiftV6Rel rel = sift_v6_plan_rel(p);
-
-	return p->is_table || p->xseed != NULL ? (Expr *) e : sift_v6_json_type_vars(&rel, e);
-}
-
-/* An expression of the query that is a column of the index (its indexprs entry, which PostgreSQL has built over the same range table entry): the scan reads what the index stored of it */
-static bool
-index_expr_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
-{
-	int			k = 0;
-	const Oid	typid = exprType((const Node *) e);
-
-	if (p->index == NULL || p->index->indexprs == NIL || typid == NUMERICOID || sift_v6_class(typid) == SV6C_NONE)
-		return false;
-	for (int i = 0; i < p->index->ncolumns; i++)
-	{
-		if (p->index->indexkeys[i] != 0)
-			continue;
-		if (equal(e, list_nth(p->index->indexprs, k++)))
-		{
-			if (!leaf_class_ok(&host_schema(p)->cols[host_first(p, i + 1)], host_nleaves(p, i + 1), sift_v6_class(typid)))
-				return false;
-			*out = (SiftV6Col) {.attno = i + 1,.typid = typid};
-			return true;
-		}
-	}
-	return false;
-}
-
-/* An expression of the query that is the generation expression of a stored generated column of the table: the scan reads the column, which holds what the expression gives */
-static bool
-generated_expr_of(V6Plan *p, const Expr *e, SiftV6Col *out)
-{
-	Relation	rel = p->is_table && !IsA(e, Var) ? table_open(p->relid, NoLock) : NULL;
-	bool		found = false;
-
-	for (int a = 1; rel != NULL && a <= RelationGetNumberOfAttributes(rel) && !found; a++)
-	{
-		const Form_pg_attribute att = TupleDescAttr(RelationGetDescr(rel), a - 1);
-		Node	   *gen;
-
-		if (att->attgenerated != ATTRIBUTE_GENERATED_STORED || att->attisdropped)
-			continue;
-		gen = (Node *) expression_planner((Expr *) build_column_default(rel, a));
-		ChangeVarNodes(gen, 1, p->rel->relid, 0);
-		found = equal(e, gen) &&
-			column_of(p, (Expr *) makeVar(p->rel->relid, a, att->atttypid, att->atttypmod, att->attcollation, 0), false, out);
-	}
-	if (rel != NULL)
-		table_close(rel, NoLock);
-	return found;
-}
-
-/* A column the scan reads as a value: a column of the index, the text or the float8 of a key of a jsonb document, a payload column of a dimension or the element of the unnest */
-static bool
-read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
-{
-	const SiftV6Rel rel = sift_v6_plan_rel(p);
-
-	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) || generated_expr_of(p, e, out) ||
-		(!p->is_table && (sift_v6_json_read(&rel, e, out) ||
-							  (exprType((Node *) e) != NUMERICOID && (sift_v6_star_column(p, e, out) || sift_v6_unnest_column(p, e, out))))) ||
-		table_text_of(p, e, out) || datum_column_of(p, e, out);
-}
-
-static bool
-resolve_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
-{
-	return column_of(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
-}
-
-/* the columns of an expression PostgreSQL computes: a numeric and a type the native vectors do not hold are datums, so a NaN is the value it is */
-static bool
-resolve_datum_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
-{
-	return datum_column_of(ctx, e, out) || sift_v6_plan_read_column(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
-}
-
-static int
-add_derive(V6Plan *p, const SiftV6Derive *d)
-{
-	for (int i = 0; i < p->spec.nderive; i++)
-		if (memcmp(&p->spec.derive[i], d, sizeof(SiftV6Derive)) == 0)
-			return i + 1;
-	if (p->spec.nderive == SIFT_V6_MAX_DERIVE)
-		return 0;
-	p->spec.derive[p->spec.nderive] = *d;
-	return ++p->spec.nderive;
-}
-
-/* e is a key or argument the scan computes (v6_plan_rewrite.h): col is its column, typed as e */
-static bool
-derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
-{
-	const SiftV6Resolver rs = {resolve_column, p, p->xseed != NULL && p->xseed->unnest};
-	SiftV6Derive d;
-	Oid			restype;
-	int			at;
-
-	if (!sift_v6_derive_of(&rs, e, key, &d, &restype) || (at = add_derive(p, &d)) == 0)
-		return false;
-	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.scale = d.kind == SVD_NUM_EXPR ? (int) d.aux : 0,.derive = at};
-	return true;
-}
-
-/* e is a key or argument PostgreSQL's executor computes from columns of the scan (v6_pg_expr.h): col is its column, typed as e; an argument has a native vector, a key may be of any type that can be grouped */
-bool
-sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
-{
-	const SiftV6Resolver rs = {resolve_datum_column, p, false, p->elem_rel != NULL ? p->elem_rel->relid : 0};
-	SiftV6Derive d = {0};
-	Oid			restype;
-	int			at;
-
-	if ((p->xseed != NULL && !p->xseed->unnest) || !sift_v6_pgexpr_derive_of(&rs, p->rel->relid, e, &d, &restype, &p->spec.pgexpr) ||
-		!(sift_v6_type_native(restype) || (p->xseed == NULL && key && sift_v6_key_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
-		return false;
-	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at,.collid = exprCollation((Node *) e)};
-	return true;
-}
-
 static void
 scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 {
@@ -434,7 +152,7 @@ compile_distinct_row(V6Plan *p, const RowExpr *row, SiftV6Agg *g)
 	{
 		SiftV6Col  *col = n == 0 ? &g->arg : &g->xcol[n - 1];
 
-		if (!column_of(p, e, true, col) || !sift_v6_kind_takes(SV6_COUNT_DISTINCT, col->typid) ||
+		if (!sift_v6_plan_column(p, e, true, col) || !sift_v6_kind_takes(SV6_COUNT_DISTINCT, col->typid) ||
 			(sift_v6_class(col->typid) == SV6C_TEXT && !sift_text_bytes_equal(exprCollation((Node *) e))))
 			return false;
 		n++;
@@ -481,14 +199,14 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *a)
 		const bool	derived_ok = !two && !sift_v6_kind_valued(g.kind);
 
 		if (list_length(a->args) != (two ? 2 : 1) ||
-			!(score || ((read_of(p, arg, !two, &g.arg) || (derived_ok && (derived_col(p, arg, false, &g.arg) || sift_v6_pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))) ||
+			!(score || ((sift_v6_read_of(p, arg, !two, &g.arg) || (derived_ok && (sift_v6_derived_col(p, arg, false, &g.arg) || sift_v6_pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))) ||
 			sift_v6_col_class(&g.arg) == SV6C_DATUM)
 			return false;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_PG_EXPR && g.kind >= SV6_STDDEV_POP && g.kind <= SV6_VAR_SAMP)
 			return false;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_NUM_EXPR && g.kind != SV6_SUM && g.kind != SV6_AVG && g.kind != SV6_COUNT)
 			return false;
-		if (two && (!column_of(p, ((TargetEntry *) lsecond(a->args))->expr, false, &g.arg2) || sift_v6_class(g.arg2.typid) == SV6C_BOOL || sift_v6_class(g.arg2.typid) == SV6C_TEXT))
+		if (two && (!sift_v6_plan_column(p, ((TargetEntry *) lsecond(a->args))->expr, false, &g.arg2) || sift_v6_class(g.arg2.typid) == SV6C_BOOL || sift_v6_class(g.arg2.typid) == SV6C_TEXT))
 			return false;
 		cls = sift_v6_class(g.arg.typid);
 		coll = exprCollation((Node *) ((TargetEntry *) linitial(a->args))->expr);
@@ -612,7 +330,7 @@ compile_month(V6Plan *p, const FuncExpr *f, SiftV6Col *k)
 	const Const *unit = linitial(f->args);
 
 	if (!IsA(unit, Const) || unit->constisnull || unit->consttype != TEXTOID || strcmp(TextDatumGetCString(unit->constvalue), "month") != 0 ||
-		!column_of(p, lsecond(f->args), false, k) || k->typid != TIMESTAMPOID)
+		!sift_v6_plan_column(p, lsecond(f->args), false, k) || k->typid != TIMESTAMPOID)
 		return false;
 	p->spec.bin[p->spec.nbins++] = (SiftV6Bin) {.key = p->spec.nkeys,.stride_us = SIFT_DATEBIN_MONTH,.origin = 0};
 	return true;
@@ -627,7 +345,7 @@ compile_bin(V6Plan *p, Expr *e, SiftV6Col *k)
 	SiftDateBin bin;
 	const Const *stride,
 			   *origin;
-	const SiftV6Resolver rs = {resolve_column, p};
+	const SiftV6Resolver rs = {sift_v6_resolve_column, p};
 	const char *fn;
 	int64		trunc_us;
 
@@ -661,7 +379,7 @@ compile_bin(V6Plan *p, Expr *e, SiftV6Col *k)
 		if (!shape.stride_null)
 			shape.stride = (SiftInterval16) {.time = iv->time,.day = iv->day,.month = iv->month};
 		shape.origin = origin->constisnull ? 0 : DatumGetInt64(origin->constvalue);
-		shape.source_ok = column_of(p, lsecond(f->args), false, k) && (k->typid == TIMESTAMPOID || k->typid == TIMESTAMPTZOID) && origin->consttype == k->typid;
+		shape.source_ok = sift_v6_plan_column(p, lsecond(f->args), false, k) && (k->typid == TIMESTAMPOID || k->typid == TIMESTAMPTZOID) && origin->consttype == k->typid;
 	}
 	if (sift_shape_datebin(&shape, &bin) != SSV_OK)
 		return false;
@@ -678,7 +396,7 @@ affine_key(V6Plan *p, Expr *e)
 	const Var  *v = sift_v6_affine_of(e, &delta, &type);
 	SiftV6Col	base;
 
-	if (v == NULL || p->spec.nkeys == 0 || p->root->parse->groupingSets != NIL || !column_of(p, (Expr *) v, false, &base) || base.attno != p->spec.key[0].attno ||
+	if (v == NULL || p->spec.nkeys == 0 || p->root->parse->groupingSets != NIL || !sift_v6_plan_column(p, (Expr *) v, false, &base) || base.attno != p->spec.key[0].attno ||
 		p->spec.key[0].derive != 0 || p->spec.key[0].typid != type)
 		return false;
 	if (!p->spec.affine)
@@ -699,8 +417,8 @@ key_of(V6Plan *p, Expr *source, SiftV6Col *k)
 	Expr	   *e = sift_v6_plan_type_vars(p, source);
 	const Oid	typid = getBaseType(exprType((Node *) e));
 
-	if (read_of(p, e, false, k) || compile_bin(p, e, k) || derived_col(p, e, true, k) || sift_v6_pg_derived_col(p, e, true, k) ||
-		(typid == NUMERICOID && column_of(p, e, true, k)))
+	if (sift_v6_read_of(p, e, false, k) || compile_bin(p, e, k) || sift_v6_derived_col(p, e, true, k) || sift_v6_pg_derived_col(p, e, true, k) ||
+		(typid == NUMERICOID && sift_v6_plan_column(p, e, true, k)))
 	{
 		k->collid = exprCollation((Node *) e);
 		return true;
