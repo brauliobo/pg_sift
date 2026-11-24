@@ -314,7 +314,7 @@ star_add(V6Plan *p, const StarGoal *goal, double input_rows, List *children, Cos
 		sift_v6_rows_add(p, goal->topk, scan, children, dims, dims);
 	}
 	else
-		sift_v6_add_join_path(p, goal->group_exprs, sift_v6_having_of(goal->extra), children, startup, total, input_rows);
+		sift_v6_add_join_path(p, goal->group_exprs, sift_v6_having(goal->extra), children, startup, total, input_rows);
 }
 
 /* the statement, its dimensions and what the join of them to the fact makes of its input */

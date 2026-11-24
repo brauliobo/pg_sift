@@ -757,7 +757,7 @@ join_add(V6Plan *p, const void *arg)
 		xt += sift_v6_unnest_pairs_cost(p, js->input_rel);
 	for (int d = 0; d < js->sh->nd; d++)
 		children = lappend(children, js->sh->dim[d].path);
-	sift_v6_add_join_path(p, js->group_exprs, sift_v6_having_of(js->extra), children, xs, xt, js->input_rel->rows);
+	sift_v6_add_join_path(p, js->group_exprs, sift_v6_having(js->extra), children, xs, xt, js->input_rel->rows);
 }
 
 static void

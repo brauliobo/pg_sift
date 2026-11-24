@@ -71,6 +71,13 @@ extern bool sift_v6_compile_text(V6Plan *p);
 extern bool sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 extern List *sift_v6_group_exprs_of(PlannerInfo *root);
 
+/* The HAVING of the statement: none below the grouping stage, where extra is NULL */
+static inline List *
+sift_v6_having(const GroupPathExtraData *extra)
+{
+	return extra != NULL ? (List *) extra->havingQual : NIL;
+}
+
 /* The paths of the one table of the input: the table or each index that holds what the statement reads; extra is NULL below the grouping stage */
 extern void sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
 /* plan_distinct.c: SELECT DISTINCT of the columns of one table, at the UPPERREL_DISTINCT stage */
@@ -162,13 +169,6 @@ extern Expr *sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct);
 extern bool sift_v6_unnest_test_ri(const V6Plan *p, const RestrictInfo *ri);
 extern Cost sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel);
 extern void sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
-
-/* The HAVING of the statement, NIL below the grouping stage (SELECT DISTINCT) */
-static inline List *
-sift_v6_having_of(const GroupPathExtraData *extra)
-{
-	return extra != NULL ? (List *) extra->havingQual : NIL;
-}
 
 /* What a planner does with a plan bound to one source of a fact: seeds the join of the statement in it and compiles the statement; for a partitioned fact it does so for a source of every partition */
 typedef bool (*SiftV6CompileFn) (V6Plan *p, const void *stmt);

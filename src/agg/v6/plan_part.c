@@ -286,7 +286,7 @@ sift_agg_v6_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 	V6Plan		first;
 
 	if (sift_v6_compile_partitions(root, input_rel, output_rel, part_compile, &stmt, false, &first, &like))
-		sift_v6_add_group_path(&first, output_rel, group_exprs, sift_v6_having_of(extra));
+		sift_v6_add_group_path(&first, output_rel, group_exprs, sift_v6_having(extra));
 }
 
 bool
