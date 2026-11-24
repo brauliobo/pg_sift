@@ -11,6 +11,7 @@
 
 #include "agg/group/ht.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_topk_run.h"
 #include "core/compat.h"
@@ -67,27 +68,18 @@ text_datum(const uint8 *p, uint32 len, char *sbuf)
 static Datum
 key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull, char *sbuf)
 {
-	*isnull = !is_valid(v, row);
-	if (*isnull)
-		return (Datum) 0;
-	switch (c->typid)
+	if (v->type == SVEC_DICT32 || ((c->typid == TEXTOID || c->typid == VARCHAROID) && v->type == SVEC_STRVIEW))
 	{
-		case INT2OID:
-			return Int16GetDatum((int16) int_at(v, row));
-		case INT4OID:
-		case DATEOID:
-			return Int32GetDatum((int32) int_at(v, row));
-		case TEXTOID:
-		case VARCHAROID:
-			{
-				uint32		len;
-				const uint8 *p = text_at(v, row, &len);
+		uint32		len;
+		const uint8 *p;
 
-				return text_datum(p, len, sbuf);
-			}
-		default:
-			return Int64GetDatum(int_at(v, row));
+		*isnull = !is_valid(v, row);
+		if (*isnull)
+			return (Datum) 0;
+		p = text_at(v, row, &len);
+		return text_datum(p, len, sbuf);
 	}
+	return sift_v6_vec_datum(v, row, c->typid, c->scale, isnull);
 }
 
 static Datum
@@ -129,6 +121,7 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	SiftV6Rows *r = MemoryContextAllocZero(cx, sizeof(SiftV6Rows));
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	TupleDesc	desc = CreateTemplateTupleDesc(spec->nkeys + 1);
+	const SiftV6Col *key0 = &spec->key[spec->topk_item[0].pos];
 
 	for (int i = 0; i < spec->nkeys; i++)
 		TupleDescInitEntry(desc, i + 1, NULL, spec->key[i].typid, -1, 0);
@@ -136,8 +129,8 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	sift_tupdesc_finalize(desc);
 	r->spec = spec;
 	r->run = sift_v6_topk_run_new(cx, spec, desc);
-	r->bounded = bound_type(spec->key[spec->topk_item[0].pos].typid);
-	r->by_code = text_type(spec->key[spec->topk_item[0].pos].typid) && OidIsValid(spec->topk_item[0].collid) && sift_collate_is_c(spec->topk_item[0].collid);
+	r->bounded = key0->derive == 0 && bound_type(key0->typid);
+	r->by_code = key0->derive == 0 && text_type(key0->typid) && OidIsValid(spec->topk_item[0].collid) && sift_collate_is_c(spec->topk_item[0].collid);
 	if (r->bounded || r->by_code)
 	{
 		Oid			opfamily,

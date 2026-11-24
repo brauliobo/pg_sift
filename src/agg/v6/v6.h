@@ -266,6 +266,7 @@ typedef struct SiftV6Spec
 	Oid			aff_type;
 	int64		aff_lo;
 	int64		aff_hi;
+	char	   *topn_desc;		/* EXPLAIN of a row Top-N: its sort keys */
 	bool		rows;			/* ORDER BY .. LIMIT of the rows of one table, not of groups: the keys are the sort columns, topk the K, and the node gives the rows it fetches from the heap (v6_rows_topn.h) */
 	uint32		groups_est;		/* the groups the planner expects (0: unknown): the group table is sized for them at the start */
 	uint32		topk;			/* LIMIT + OFFSET of the query when the node gives the best groups in order (0: all groups, unordered) */

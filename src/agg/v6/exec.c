@@ -551,6 +551,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyText(st->spec->is_table ? "Table" : "Index", RelationGetRelationName(st->spec->is_table ? st->sources[0].heap : st->sources[0].index), es);
 	if (st->spec->nparts > 0)
 		ExplainPropertyInteger("Partitions", NULL, st->spec->nparts, es);
+	if (st->spec->rows)
+		sift_v6_rows_explain(es, st->spec);
 	sift_v6_explain_reads(st->spec, st->sources[0].heap, st->sources[0].index, es);
 	sift_v6_explain_group_keys(st->spec, es);
 	if (st->spec->topk > 0)

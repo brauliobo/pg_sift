@@ -253,7 +253,7 @@ scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *s
 	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < spec->nkeys; i++)
 		if (spec->key[i].src != SV6SRC_DIM)
-			s->keyvec[i] = &col_for(s, first, spec->key[i], x == NULL && !spec->rows, false)->vec;
+			s->keyvec[i] = &col_for(s, first, spec->key[i], x == NULL && !spec->rows, spec->rows)->vec;
 	for (int v = 0; v < nvec; v++)
 		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src != SV6SRC_DIM)
 			s->argvec[v] = &col_for(s, first, *sift_v6_vec_col(spec, v), false, vec_takes_nan(spec, v))->vec;

@@ -11,6 +11,8 @@
 #include "agg/v6/v6.h"
 
 
+/* EXPLAIN of a row Top-N: its sort keys and the rows its heap holds */
+extern void sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec);
 /* spec.topk rows, the sort columns being the keys of the spec in the order of spec.topk_item */
 extern SiftV6Rows *sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec);
 /* the rows of bs, whose keys are keyvec and whose heap addresses are tid[row] */

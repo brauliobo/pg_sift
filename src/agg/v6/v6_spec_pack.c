@@ -101,7 +101,7 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	ints = list_concat(ints, list_make4_int(s->par_strategy, s->par_workers, (int) s->text_indexoid, s->constant_groups));
 	ints = put_int64(put_int64(lappend_int(ints, s->tid_range), (int64) s->tid_lo), (int64) s->tid_hi);
 	ints = sift_v6_derive_pack(ints, s);
-	return lappend(lappend(lappend(lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL), s->vqual), s->pgexpr), s->genref);
+	return lappend(lappend(lappend(lappend(lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL), s->vqual), s->pgexpr), s->genref), s->topn_desc != NULL ? list_make1(makeString(s->topn_desc)) : NIL);
 }
 
 SiftV6Spec *
@@ -174,6 +174,7 @@ sift_v6_spec_unpack(const List *l)
 	s->vqual = list_nth(l, 6);
 	s->pgexpr = list_nth(l, 7);
 	s->genref = list_nth(l, 8);
+	s->topn_desc = list_nth(l, 9) != NIL ? strVal(linitial(list_nth(l, 9))) : NULL;
 	s->ext = sift_v6_ext_unpack(list_nth(l, 4));
 	return s;
 }

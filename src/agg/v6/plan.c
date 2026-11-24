@@ -696,7 +696,7 @@ affine_key(V6Plan *p, Expr *e)
 
 /* a key: a column, a binned or derived column, or what the executor computes from columns; the table groups the types it has no bytes of by their values (v6_datum.h) */
 static bool
-compile_key(V6Plan *p, Expr *source, SiftV6Col *k)
+key_of(V6Plan *p, Expr *source, SiftV6Col *k)
 {
 	Expr	   *e = sift_v6_plan_type_vars(p, source);
 	const Oid	typid = getBaseType(exprType((Node *) e));
@@ -705,11 +705,26 @@ compile_key(V6Plan *p, Expr *source, SiftV6Col *k)
 		(typid == NUMERICOID && column_of(p, e, true, k)))
 	{
 		k->collid = exprCollation((Node *) e);
-		if (sift_v6_col_class(k) == SV6C_DATUM)
-			return sift_genkey_supported(getBaseType(k->typid));
-		return !(sift_v6_class(k->typid) == SV6C_TEXT && !sift_text_bytes_equal(k->collid));
+		return true;
 	}
 	return false;
+}
+
+/* a key of the groups: a datum groups by its image, a text by its bytes, which the collation must not tell apart */
+static bool
+compile_key(V6Plan *p, Expr *source, SiftV6Col *k)
+{
+	if (!key_of(p, source, k))
+		return false;
+	if (sift_v6_col_class(k) == SV6C_DATUM)
+		return sift_genkey_supported(getBaseType(k->typid));
+	return !(sift_v6_class(k->typid) == SV6C_TEXT && !sift_text_bytes_equal(k->collid));
+}
+
+bool
+sift_v6_compile_sort_key(V6Plan *p, Expr *e, SiftV6Col *k)
+{
+	return key_of(p, e, k);
 }
 
 static bool

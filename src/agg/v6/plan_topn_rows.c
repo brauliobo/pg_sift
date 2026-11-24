@@ -19,6 +19,8 @@
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_plan_rewrite.h"
+#include "agg/v6/v6_rows_topn.h"
+#include "agg/v6/v6_topn.h"
 #include "agg/v6/v6_vexpr.h"
 #include "core/store_ops.h"
 
@@ -32,7 +34,14 @@ proj_sort_offered(const RelOptInfo *rel)
 	return false;
 }
 
-/* the sort columns of the query as the keys of the spec: columns of the index the scan reads whose values PostgreSQL's own comparison orders */
+/* a sort key the scan can compare by the sort operator of the statement: a plain float or boolean column has no decoded vector of its values (NaN, the mask of a boolean), their expressions do */
+static bool
+sort_key_ok(V6Plan *p, Expr *e, SiftV6Col *k)
+{
+	return sift_v6_compile_sort_key(p, e, k) && (k->derive > 0 || (sift_v6_class(k->typid) != SV6C_F64 && sift_v6_class(k->typid) != SV6C_BOOL));
+}
+
+/* the sort expressions of the query as the keys of the spec: columns of the index and what PostgreSQL's own expression machinery computes from them */
 static bool
 rows_keys(V6Plan *p)
 {
@@ -43,15 +52,40 @@ rows_keys(V6Plan *p)
 	p->spec.key = palloc(list_length(q->sortClause) * sizeof(SiftV6Col));
 	foreach_node(SortGroupClause, sgc, q->sortClause)
 	{
-		const Expr *e = (const Expr *) get_sortgroupclause_expr(sgc, q->targetList);
+		Expr	   *e = (Expr *) get_sortgroupclause_expr(sgc, q->targetList);
 		SiftV6Col  *k = &p->spec.key[p->spec.nkeys];
-		const SiftV6Class cls = e != NULL && IsA(e, Var) ? sift_v6_class(((const Var *) e)->vartype) : SV6C_NONE;
 
-		if (cls == SV6C_NONE || cls == SV6C_F64 || cls == SV6C_BOOL || !sift_v6_plan_column(p, e, false, k))
+		if (IsA(e, Const) || !sort_key_ok(p, e, k))
 			return false;
 		p->spec.topk_item[p->spec.ntopk++] = (SiftV6TopKItem) {.pos = p->spec.nkeys++,.sortop = sgc->sortop,.collid = exprCollation((const Node *) e),.nulls_first = sgc->nulls_first};
 	}
 	return true;
+}
+
+/* what PostgreSQL's expression machinery costs for the sort expressions of every row the scan keeps */
+static Cost
+sort_exprs_cost(PlannerInfo *root, double rows)
+{
+	const Query *q = root->parse;
+	Cost		cost = 0;
+
+	foreach_node(SortGroupClause, sgc, q->sortClause)
+	{
+		QualCost	qc;
+		const Node *e = (Node *) get_sortgroupclause_expr(sgc, q->targetList);
+
+		if (IsA(e, Var))
+			continue;
+		cost_qual_eval_node(&qc, (Node *) e, root);
+		cost += qc.startup + qc.per_tuple * rows;
+	}
+	return cost;
+}
+
+void
+sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
+{
+	sift_v6_topn_explain(es, spec->topn_desc, psprintf("%u", spec->topk));
 }
 
 /* the columns the statement reads, which the node takes from the heap rows of the winners: plain columns of the table */
@@ -94,8 +128,9 @@ sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 		index_close(irel, NoLock);
 		if (!ok)
 			continue;
+		p.spec.topn_desc = sift_v6_topn_desc(root, planner_rt_fetch(input_rel->relid, root)->relid);
 		sift_v6_scan_price(root, input_rel, ix, 0, &open, &scan);
-		scan += cpu_operator_cost * input_rel->rows * log2(k + 1.0);
+		scan += cpu_operator_cost * input_rel->rows * log2(k + 1.0) + sort_exprs_cost(root, input_rel->rows);
 		sift_v6_add_path(output_rel, sift_v6_group_path_methods(), scan, scan + cpu_tuple_cost * k, Min((double) k, input_rel->rows), root->sort_pathkeys,
 						 list_make3(sift_v6_spec_pack(&p.spec), p.scan_tlist, NIL));
 		return;
