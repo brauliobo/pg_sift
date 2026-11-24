@@ -724,6 +724,7 @@ heap_row_kept(UnRun *u, uint64 tid)
 	const bool	found = sift_v6_vet_fetch(&u->vet, tid);
 
 	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its array is read");
+	u->stats->heap_reread_rows++;
 	if (u->econtext != NULL)
 	{
 		u->econtext->ecxt_scantuple = u->vet.slot;

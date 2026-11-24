@@ -5,6 +5,7 @@
 /* check-memory: allow-allocs every array here follows the keys and aggregates of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pg_list.h"
 

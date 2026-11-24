@@ -67,6 +67,7 @@ typedef struct SiftV6XElem
 	int			attno;
 	Oid			type;			/* unnest: the type of the element */
 	int			group_leaf;
+	char	   *key;			/* recordset: the key of the document whose array it takes apart (jsonb_to_recordset(doc -> 'key')); NULL for the document itself */
 	bool		left;			/* LEFT JOIN LATERAL ... ON true: a row with no element is kept with a NULL one */
 	bool		semi;			/* EXISTS over the elements: a row once, when an element passes elem_where, and no element */
 	SiftV6ValueRead vread;		/* jsonb_each, jsonb_each_text: how the statement reads column 1, the value of the member (column 0 is its key) */
