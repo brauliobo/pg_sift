@@ -358,7 +358,8 @@ sift_maint_truncate(Relation index, int elevel)
 
 /* A coarse candidate screen only; sift_store_relocate plans exact extent reservations with the allocator before accepting a move. */
 #define SPACE_MIN_RUN		16
-#define SPACE_ROUNDS		64		/* rounds of one VACUUM: at most this many times sift.vacuum_rewrite_limit is copied */
+#define SPACE_ROUNDS		64		/* rounds of one call of sift_maint_space_rounds */
+#define SPACE_QUANTUM		((uint64) 16 << 20)	/* what a round copies at least under the lock, which is let go between rounds */
 
 static bool
 space_worth(int64 blocks, BlockNumber nblocks)
@@ -603,7 +604,8 @@ done:
 /*
  * The online shrink: the immutable segments lose what lies above `keep` (sift_store_shrink), step by step, while the index is in use. keep is the lowest end of the file
  * such that the blocks of the segments above it fit in the reusable free runs below it; the file is cut there by the cut that follows, once the horizon
- * (held back by the feedback of a standby, and by its queries) has passed the runs that left. A VACUUM copies at most a share of the file, the next one goes on.
+ * (held back by the feedback of a standby, and by its queries) has passed the runs that left. A VACUUM copies at most a share of the file and no more than
+ * sift.vacuum_rewrite_limit, the next one goes on.
  */
 #define SHRINK_SHARE	4
 
@@ -806,7 +808,7 @@ sift_maint_shrink(Relation rel, int elevel)
 
 	if (!online_cut_wanted(rel))
 		return 0;
-	budget = (uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ / SHRINK_SHARE;
+	budget = Min((uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ / SHRINK_SHARE, (uint64) sift_vacuum_rewrite_limit << 20);
 	while (budget > 0)
 	{
 		SiftExtent *ext;
@@ -962,19 +964,22 @@ sift_maint_cut_released(Relation rel, int elevel)
 }
 
 /*
- * Rounds of the space step: a rewrite leaves the index twice its size in the file, and a round copies at most the cap. Rounds follow while one
- * copies segments or cuts a worthwhile end, the lock let go between them, so that the file is back near the live bytes after one VACUUM and not after as many
- * VACUUMs as the cap fits in the index
+ * Rounds of the space step: the cap is what all the rounds copy together (the next VACUUM goes on where this one stopped), a round of at most a quantum of it, or a SPACE_ROUNDS-th of it
+ * when that is more. Rounds follow while one copies segments or cuts a worthwhile end, the lock let go between them, so that the lock is not held for more than a round.
  */
 void
 sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
 {
+	uint64		copied = 0;
+	uint64		quantum = Max(SPACE_QUANTUM, budget / SPACE_ROUNDS);
+
 	space_resume = false;
 	for (int round = 0; round < SPACE_ROUNDS; round++)
 	{
-		BlockNumber freed = sift_maint_space_budget(rel, relocate_page, elevel, budget);
+		BlockNumber freed = sift_maint_space_budget(rel, relocate_page, elevel, Min(budget - copied, quantum));
 
-		if (budget == 0 || (space_copied == 0 && !space_worth(freed, RelationGetNumberOfBlocks(rel) + freed)))
+		copied += space_copied;
+		if (budget == 0 || copied >= budget || (space_copied == 0 && !space_worth(freed, RelationGetNumberOfBlocks(rel) + freed)))
 			break;
 		space_resume = space_copied > 0;
 		CHECK_FOR_INTERRUPTS();
