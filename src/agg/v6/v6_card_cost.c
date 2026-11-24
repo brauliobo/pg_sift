@@ -12,6 +12,7 @@
 #include "optimizer/optimizer.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
+#include "utils/spccache.h"
 
 #include "agg/cost.h"
 #include "agg/plan/safety.h"
@@ -183,6 +184,7 @@ typedef struct ScanBytes
 	const SiftCardStatsView *view;
 	double		table_rows;
 	double		granules;
+	double		pages;			/* of the index */
 	double		f_prune;
 	double		surv;
 	double		filter_row;		/* bytes of a row of the columns of the quals, decoded on the rows of the granules the zones leave */
@@ -199,6 +201,7 @@ scan_bytes(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, ScanBytes
 	b->table_rows = b->view != NULL ? (double) Max(b->view->total_live_rows, 1) : Max(rel->tuples, 1.0);
 	b->granules = b->view != NULL ? (double) Max(b->view->total_granules, 1) : Max(1.0, ceil(b->table_rows / SIFT_GRANULE_ROWS));
 	b->io_col_row = b->view != NULL ? Min((double) b->view->total_bytes / (Max(ix->ncolumns, 1) * b->table_rows), SIFT_WORD_BYTES) : SIFT_WORD_BYTES;
+	b->pages = Max((double) ix->pages, 1.0);
 	b->surv = Min(Max(rel->rows, 1.0), b->table_rows);
 	b->f_prune = f_prune(root, rel, ix, b->view, b->granules);
 }
@@ -215,7 +218,7 @@ scan_inputs(const ScanBytes *b)
 		.n_groups = 1.0,
 		.f_join = 1.0,
 		.r_bw_cpu = SIFT_COST_R_BW_CPU,
-		.f_cold = 1.0,
+		.f_cold = sift_agg_cold_share(b->pages),
 	};
 }
 
@@ -223,6 +226,18 @@ static double
 scan_parts(const ScanBytes *b)
 {
 	return b->view != NULL ? Max(1.0, (double) b->view->nfiles) : 1.0;
+}
+
+Cost
+sift_v6_dim_cost(const RelOptInfo *rel)
+{
+	const Path *child = rel->cheapest_total_path;
+	Cost		spc_seq;
+
+	if (child->pathtype != T_SeqScan)
+		return child->total_cost;
+	get_tablespace_page_costs(rel->reltablespace, NULL, &spc_seq);
+	return child->total_cost - (1.0 - sift_agg_cold_share(rel->pages)) * rel->pages * spc_seq;
 }
 
 SiftV6AggPrice

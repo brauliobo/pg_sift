@@ -62,6 +62,9 @@ extern SiftV6AggPrice sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, cons
  */
 extern void sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, AttrNumber key, Cost *open, Cost *total);
 
+/* What the node pays to read a dimension whole: the price of its plan, less the page reads of the share of its pages the cache holds when a sequential scan takes the table */
+extern Cost sift_v6_dim_cost(const RelOptInfo *rel);
+
 /* The share of the granules the clauses leave of a relation that has no statistics of its own: a column that follows the order of the rows keeps the share of the rows, any other (Yao) nearly all */
 extern double sift_v6_clause_prune(PlannerInfo *root, const List *clauses);
 

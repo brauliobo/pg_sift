@@ -16,6 +16,7 @@ typedef struct SiftV6CostIn
 {
 	double		tuples;			/* the rows of the relation */
 	double		rows;			/* the rows that pass its quals */
+	double		pages;			/* of the relation */
 	double		f_prune;		/* the share of the granules the quals leave */
 	double		groups;
 	int			ncols_read;		/* the attributes of the host the statement reads: keys, aggregate arguments, quals */

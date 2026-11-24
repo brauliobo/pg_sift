@@ -75,7 +75,7 @@ scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 		sift_v6_agg_cost(p->root, p->rel, p->index, &p->spec, groups, startup, total);
 	else
 	{
-		const SiftV6CostIn in = {.tuples = p->rel->tuples,.rows = p->rel->rows,.f_prune = sift_v6_clause_prune(p->root, p->rel->baserestrictinfo),
+		const SiftV6CostIn in = {.tuples = p->rel->tuples,.pages = p->rel->pages,.rows = p->rel->rows,.f_prune = sift_v6_clause_prune(p->root, p->rel->baserestrictinfo),
 		.groups = groups,.ncols_read = sift_v6_spec_ncols_read(&p->spec)};
 
 		sift_v6_scan_cost(&in, startup, total);

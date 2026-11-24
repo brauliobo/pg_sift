@@ -352,8 +352,8 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 				Path	   *child = dims[d].rel->cheapest_total_path;
 
 				children = lappend(children, child);
-				xs += child->total_cost;
-				xt += child->total_cost + dims[d].rel->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
+				xs += sift_v6_dim_cost(dims[d].rel);
+				xt += sift_v6_dim_cost(dims[d].rel) + dims[d].rel->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
 			}
 			star_add(&p, goal, input_rel->rows, children, xs, xt);
 		}

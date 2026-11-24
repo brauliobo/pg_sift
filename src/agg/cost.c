@@ -3,10 +3,18 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 
 #include "agg/cost.h"
+
+double
+sift_agg_cold_share(double pages)
+{
+	pages = Max(pages, 1.0);
+	return 1.0 - Max(Min(effective_cache_size / pages, 1.0), Min(NBuffers / pages, 1.0));
+}
 
 double
 sift_agg_scan_ops(const SiftCostInputs *in, double selectivity, bool is_preagg, bool is_streaming)

@@ -35,6 +35,9 @@ typedef struct SiftCostInputs
 
 #define SIFT_COST_R_BW_CPU		12.0
 
+/* The share of the pages of a relation that is neither in shared buffers nor in the cache of the operating system (effective_cache_size): what f_cold is for a scan of it */
+extern double sift_agg_cold_share(double pages);
+
 /* The operators (cpu_operator_cost units) the scan spends decoding the bytes and aggregating the rows, before the page reads and the lookups */
 extern double sift_agg_scan_ops(const SiftCostInputs *in, double selectivity, bool is_preagg, bool is_streaming);
 extern void sift_agg_estimate_cost(const SiftCostInputs *in, double selectivity, bool is_preagg, bool is_streaming,

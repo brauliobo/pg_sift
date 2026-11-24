@@ -55,7 +55,7 @@ sift_v6_scan_cost(const SiftV6CostIn *in, Cost *startup, Cost *total)
 		.n_groups = Max(in->groups, 1.0),
 		.f_join = 1.0,
 		.r_bw_cpu = SIFT_COST_R_BW_CPU,
-		.f_cold = 1.0,
+		.f_cold = sift_agg_cold_share(in->pages),
 	};
 
 	sift_agg_estimate_cost(&costs, Min(Max(in->rows, 1.0) / decoded, 1.0), false, false, SIFT_OPEN_OPS * cpu_operator_cost, 0, startup, total);

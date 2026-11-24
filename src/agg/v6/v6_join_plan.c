@@ -22,6 +22,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/v6/plan_int.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_join_plan.h"
 #include "agg/v6/v6_unnest_jsonb.h"
@@ -528,10 +529,10 @@ lookup_cost(const JoinShape *sh, const RelOptInfo *input_rel, Cost *startup)
 	*startup = 0;
 	for (int d = 0; d < sh->nd; d++)
 	{
-		const Path *child = sh->dim[d].rel->cheapest_total_path;
+		const Cost	read = sift_v6_dim_cost(sh->dim[d].rel);
 
-		*startup += child->total_cost;
-		total += child->total_cost + sh->dim[d].rel->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
+		*startup += read;
+		total += read + sh->dim[d].rel->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
 	}
 	return total;
 }
