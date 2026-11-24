@@ -224,7 +224,7 @@ joins_ok(PlannerInfo *root, StarDim *dims, int nd)
 	return true;
 }
 
-/* a relation whose plan (any plan of it that takes no parameter) the node reads whole: a table, a VALUES list, a CTE, a sub-select, or the result of a join of such relations (a join tree under a semi or anti join) */
+/* a relation whose plan (any plan of it that takes no parameter) the node reads whole: a table, a VALUES list, a CTE, a sub-select, a function that is not volatile (generate_series, unnest), or the result of a join of such relations (a join tree under a semi or anti join) */
 bool
 sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
 {
@@ -234,7 +234,8 @@ sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
 	{
 		const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
 
-		if (rte->rtekind != RTE_RELATION && rte->rtekind != RTE_VALUES && rte->rtekind != RTE_CTE && rte->rtekind != RTE_SUBQUERY)
+		if (rte->rtekind == RTE_FUNCTION ? contain_volatile_functions((Node *) rte->functions) :
+			(rte->rtekind != RTE_RELATION && rte->rtekind != RTE_VALUES && rte->rtekind != RTE_CTE && rte->rtekind != RTE_SUBQUERY))
 			return false;
 	}
 	else if (rel->reloptkind != RELOPT_JOINREL)

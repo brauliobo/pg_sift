@@ -92,7 +92,7 @@ static bool
 dimension_rels(PlanState *ps, Bitmapset **rels)
 {
 	const Plan *plan = ps->plan;
-	const bool	scan = IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan) || IsA(plan, CustomScan);
+	const bool	scan = IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan) || IsA(plan, CustomScan) || IsA(plan, FunctionScan);
 
 	if ((scan || IsA(plan, SubqueryScan)) && ((Scan *) plan)->scanrelid > 0)
 		*rels = bms_add_member(*rels, ((Scan *) plan)->scanrelid);
@@ -102,6 +102,8 @@ dimension_rels(PlanState *ps, Bitmapset **rels)
 static char *
 dimension_name(const RangeTblEntry *rte)
 {
+	if (rte->rtekind == RTE_FUNCTION)
+		return psprintf("%s (function)", rte->eref->aliasname);
 	return rte->rtekind == RTE_SUBQUERY ? psprintf("%s (subquery)", rte->eref->aliasname) : get_rel_name(rte->relid);
 }
 
