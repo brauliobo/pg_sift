@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_group_compact.h"
 
 static uint16
 identity_sel(SiftV6Group *g, uint16 n)
@@ -13,6 +14,17 @@ identity_sel(SiftV6Group *g, uint16 n)
 	for (uint16 c = 0; c < n; c++)
 		g->sel[c] = c;
 	return n;
+}
+
+/* From here the groups of the set are in its group table alone: what the compact table holds moves there, and neither it nor the lock of the first groups is used again */
+void
+v6g_table_only(SiftV6Group *g, V6Set *set)
+{
+	set->ht.lock_at = 0;
+	v6g_compact_flush(g, set);
+	set->cmp_off = true;
+	if (set->ht.count == 0)
+		v6g_presize_set(g, set);
 }
 
 void

@@ -543,8 +543,8 @@ set_init(SiftV6Group *g, V6Set *set, uint32 mask)
 }
 
 /* the group table of a set for the groups the planner expects, when that many (a quarter of the memory the groups may take at most) */
-static void
-presize_set(SiftV6Group *g, V6Set *set)
+void
+v6g_presize_set(SiftV6Group *g, V6Set *set)
 {
 	const uint64 per_group = sizeof(SiftAggSlot64) + 1 + g->stride;
 	const uint64 room = (g->budget - g->dist_budget) / 4 / per_group;
@@ -564,7 +564,7 @@ sift_v6_group_scan_sink(SiftV6Group *g, SiftV6DistPut put, void *arg)
 		v6_gen_unbound(g->gen);
 	for (int s = 0; s < g->nsets; s++)
 		if (v6g_compact_eligible(g, &g->set[s]))
-			presize_set(g, &g->set[s]);
+			v6g_presize_set(g, &g->set[s]);
 	g->budget = UINT64_MAX;
 	g->dist_budget = 0;
 	for (int s = 0; s < g->nsets; s++)
@@ -597,7 +597,7 @@ presize(SiftV6Group *g)
 {
 	for (int s = 0; s < g->nsets; s++)
 		if (!v6g_compact_eligible(g, &g->set[s]))
-			presize_set(g, &g->set[s]);
+			v6g_presize_set(g, &g->set[s]);
 }
 
 SiftV6Group *
@@ -651,17 +651,6 @@ acc_of_in(const SiftV6Agg *a, const SiftV6AccIn *in)
 		return acc;
 	memcpy(&sum, &in->v0, sizeof(sum));
 	return v6fsum_of_double(sum, in->n);
-}
-
-/* From here the groups of the set are in its group table alone: what the compact table holds moves there and the compact table and the lock of the first groups are off */
-void
-v6g_table_only(SiftV6Group *g, V6Set *set)
-{
-	set->ht.lock_at = 0;
-	v6g_compact_flush(g, set);
-	set->cmp_off = true;
-	if (set->ht.count == 0)
-		presize_set(g, set);
 }
 
 void

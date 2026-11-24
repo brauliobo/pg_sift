@@ -287,6 +287,7 @@ extern void v6g_dist_dict_part(SiftV6Group *g, int attno, const SiftDictSrc *src
 extern void v6g_dist_finish(SiftV6Group *g);
 extern void v6g_dist_free(SiftV6Group *g);
 
+extern void v6g_presize_set(SiftV6Group *g, V6Set *set);
 extern void v6g_table_only(SiftV6Group *g, V6Set *set);
 
 /* group_cells.c: n cells of a granule (keyvec[i] is key i, one row for each; acc[c * naggs + j] the partial state of aggregate j of cell c) folded into the groups */
