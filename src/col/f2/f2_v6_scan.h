@@ -27,7 +27,7 @@ extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Gr
 extern void sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
 							 const uint64 *skip, int nskip, const struct SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);
 extern void sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const struct SiftStoreQuals *quals, Snapshot snap, const uint64 *skip,
-							   int nskip, SiftV6ScanStats *stats, struct SiftV6StarRun *star);
+							   int nskip, SiftV6ScanStats *stats, struct SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg);
 extern void sift_v6_scan_run_arms(struct SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap);
 
 #endif							/* SIFT_COL_F2_V6_SCAN_H */

@@ -71,9 +71,11 @@ fold_run(const SiftSrcFoldArgs *a, Snapshot snap, const SiftV1Scan *scan)
 
 static void
 zone_scan_table(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation rel, const struct SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip,
-				struct SiftV6ScanStats *stats, struct SiftV6StarRun *star)
+				struct SiftV6ScanStats *stats, struct SiftV6StarRun *star,
+				bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg)
 {
 	SIFT_INVARIANT(nskip == 0, "Format 1 has no device parts to leave out of the scan of table %u", RelationGetRelid(rel));
+	SIFT_INVARIANT(next_chunk == NULL, "Format 1 tables are not scanned by the hits of a text query (table %u)", RelationGetRelid(rel));
 	SIFT_INVARIANT(star == NULL, "Format 1 tables are not scanned beside the dimensions of a star join (table %u)", RelationGetRelid(rel));
 	fold_run(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.host = rel,.quals = quals->clauses,.estate = quals->estate}, snap, NULL);
 }

@@ -99,7 +99,7 @@ sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, I
 bool
 sift_v6_text_qual(V6Plan *p, RestrictInfo *ri)
 {
-	if (p->is_table || p->text != NULL || p->rel->reloptkind != RELOPT_BASEREL || (p->text = sift_v6_text_match(p->rel, ri, &p->text_queries)) == NULL)
+	if (p->text != NULL || p->rel->reloptkind != RELOPT_BASEREL || (p->text = sift_v6_text_match(p->rel, ri, &p->text_queries)) == NULL)
 		return false;
 	p->text_qual = ri;
 	return true;

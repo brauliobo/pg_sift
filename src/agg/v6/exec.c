@@ -207,7 +207,7 @@ static void
 v6_scan_unnest(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 {
 	if (src->index == NULL)
-		src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star);
+		src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star, NULL, NULL);
 	else
 		src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
 }
@@ -233,7 +233,7 @@ v6_scan_ext(V6State *st, Snapshot snap)
 		if (open == SSO_SCAN && st->spec->ext->unnest)
 			v6_scan_unnest(st, src, snap);
 		else if (open == SSO_SCAN && src->index == NULL)
-			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star);
+			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star, NULL, NULL);
 		else if (open == SSO_SCAN)
 			scan_with_text(st, src, snap, st->star);
 		MemoryContextSwitchTo(old);
@@ -268,7 +268,8 @@ v6_scan(V6State *st, Snapshot snap)
 		else if (src->index != NULL)
 			scan_with_text(st, src, snap, NULL);
 		else
-			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats, NULL);
+			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats, NULL,
+									 text ? sift_v6_text_chunk : NULL, text);
 	}
 	sift_v6_group_finish(st->group);
 }

@@ -53,8 +53,10 @@ unnest_begin(V6Scan *s, Relation rel, Snapshot snap)
 }
 
 void
-sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, SiftV6StarRun *star)
+sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, SiftV6StarRun *star, SiftV6ChunkFn next_chunk,
+						  void *chunk_arg)
 {
+	const SiftTidBridge *bridge = NULL;
 	SiftF2Store *store = sift_f2_store_open(rel);
 	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
 
@@ -69,8 +71,15 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 	s->preagg = quals->possible && s->rows == NULL && s->group != NULL ? sift_v6_preagg_begin(s->spec, s->group, store->att_first, NULL, s->stats) : NULL;
 	o.gran_sink = s->preagg != NULL ? sift_v6_preagg_try_granule : NULL;
 	o.gran_arg = s->preagg;
-	if (quals->possible)
+	if (quals->possible && next_chunk == NULL)
 		sift_f2_store_scan_sink(&o, sift_f2_v6_sink, s);
+	while (quals->possible && next_chunk != NULL && next_chunk(chunk_arg, &bridge))
+	{
+		s->stats->chunks++;
+		s->stats->bridge_tids += bridge->ntids;
+		o.bridge = bridge;
+		sift_f2_store_scan_sink(&o, sift_f2_v6_sink, s);
+	}
 	if (s->pipe != NULL)
 		sift_v6_pipe_finish(s->pipe);
 	if (s->preagg != NULL)
@@ -83,9 +92,9 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 
 void
 sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip,
-				   SiftV6ScanStats *stats, SiftV6StarRun *star)
+				   SiftV6ScanStats *stats, SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	V6Scan		s = {.spec = spec,.group = g,.stats = stats};
 
-	sift_f2_v6_scan_table_run(&s, rel, quals, snap, skip, nskip, star);
+	sift_f2_v6_scan_table_run(&s, rel, quals, snap, skip, nskip, star, next_chunk, chunk_arg);
 }

@@ -128,7 +128,8 @@ extern void sift_f2_v6_sink(void *arg, const SiftF2Batch *b);
 extern int	sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan);
 /* f2_v6_scan_table.c */
 extern void sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap);
-extern void sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, struct SiftV6StarRun *star);
+extern void sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, struct SiftV6StarRun *star,
+								  SiftV6ChunkFn next_chunk, void *chunk_arg);
 
 /* f2_v6_scan_fill.c: the vectors of the columns of a batch from the decoded views of its leaves */
 extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
