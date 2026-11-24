@@ -106,6 +106,39 @@ psql -d mydb -At -c "SELECT action_sql FROM sift.migrate_plan() WHERE phase LIKE
 psql -d mydb -At -c "SELECT action_sql FROM sift.migrate_plan() WHERE phase = 'post_optional_upgrade' ORDER BY step;" | psql -d mydb -v ON_ERROR_STOP=1
 ```
 
+## 2b. Large Installations (10 GB and More)
+
+A 5.x relation that stays on Format Major 1 keeps its 5.x layout. The 6.0 library bounds what its maintenance holds, and Format 2.0 removes the causes: it has no tombstone log to read into every backend and builds from bounded buffers, not through a spool of temporary files. For a relation of 10 GB or more, set the guardrails first and move it to Format 2.0 one relation at a time.
+
+**What 6.0 bounds on a Format 1 relation**
+
+| Operation | Bound |
+|---|---|
+| `VACUUM` of a `sift_table` | The merges rewrite segments up to `sift.vacuum_rewrite_limit` (128 MB by default; the first merge step always runs), as the `VACUUM` of a `sift_col` index does. The dirty segments it did not reach wait for the next `VACUUM`: a table with many dead rows takes several (autovacuum repeats them), not one rewrite of the whole table |
+| Reading the tombstones of a `sift_table` after a bulk `UPDATE` or `DELETE` | A backend keeps up to half of `work_mem` of the log (never more than `sift.backend_cache_kb`) and reads the rest from sorted runs in temporary files |
+| Merges, scope refills, `VACUUM` batches, `CLUSTER` sorts and bulk loads | Sized from the maintenance memory: `maintenance_work_mem`, and `autovacuum_work_mem` in an autovacuum worker |
+
+**Guardrails while a relation is on Format 1**
+
+- Set `autovacuum_work_mem` explicitly (for example `64MB` to `256MB`): each autovacuum worker may hold that much, so it times `autovacuum_max_workers` is the memory autovacuum may take.
+- Keep `sift.vacuum_rewrite_limit` at `64` to `128` (MB): it bounds the I/O, the temporary space and the time under lock of one `VACUUM`.
+- Set `temp_file_limit` to a fraction of the free disk of the temporary tablespace (10 to 25 percent): a statement that goes over it fails and its temporary files go. The tombstones of a bulk write spill past `work_mem`, so `pg_stat_database.temp_bytes` rises with a bulk `UPDATE` or `DELETE` of a Format 1 table; that is the bound at work, not a leak.
+
+**Move to Format 2.0**
+
+```sql
+-- sift_col: online, the old index serves queries and writes until the swap; room for the new index on disk
+REINDEX INDEX CONCURRENTLY orders_col;
+
+-- sift_table: a rewrite under ACCESS EXCLUSIVE, as VACUUM FULL: room for a second copy of the table, and a window for its time
+SELECT sift.upgrade_table('events_col');
+
+-- what is left on Format 1 (the format column reads 1.x)
+SELECT relation, format FROM sift.indexes WHERE format LIKE '1.%';
+```
+
+Start with the `sift_col` indexes (online), then the tables in a window, the largest ones when the disk has the room for the copy. The preflight lists every Format 1 relation (section 1) and `sift.migrate_plan()` orders the statements smallest first (section 2a). A table that has to stay available for the whole move can be dumped and restored into Format 2.0 instead (see the end of section 3).
+
 ## 3. Step-by-Step Upgrade (Standbys First)
 
 Install the 6.0 binary on **all physical standbys first**, then the primary, so a standby never receives Format Major 2 WAL pages from a newer primary.
