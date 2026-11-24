@@ -179,6 +179,7 @@ agg/setfold.c
 agg/sip.c
 agg/sip.h
 agg/sip_test.c
+agg/sorts_test.c
 agg/spec.c
 agg/spec.h
 agg/spec/
