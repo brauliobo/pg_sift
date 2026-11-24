@@ -9,6 +9,9 @@
 #include "nodes/execnodes.h"
 #include "utils/rel.h"
 
+#include "col/f2/f2_cache.h"
+#include "col/f2/f2_uniq_shm.h"
+
 /* ERROR (0A000) for a key column the leaf cannot look up by equality exactly: the key of a unique index is an integer, boolean, date, timestamp, numeric, uuid, text or varchar column */
 extern void sift_f2_unique_check_keys(Relation index);
 
@@ -18,6 +21,20 @@ extern void sift_f2_unique_check_keys(Relation index);
  * is true when the key is known unique.
  */
 extern bool sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull, ItemPointer heap_tid, IndexUniqueCheck check, IndexInfo *info);
+
+/*
+ * The scan that ON CONFLICT (and any check of one key under a dirty snapshot) makes of a unique index before the row is written does not read the stage of its own transaction through the
+ * partitions, which would flush the stage for each row: what the transactions hold in their stages is the entries of the registry (hits, to be judged by their heap tuples), and what is
+ * in the partitions is the manifest in plan, which leaves out what holds no row of the key. false when the scan is not of that kind: all the keys of the index by equality, one key.
+ * plan is valid in cx, and until the next lookup or insert into the index.
+ */
+typedef struct SiftUniqLookup
+{
+	const SiftPlanSnapshot *plan;
+	SiftUniqHits hits;
+} SiftUniqLookup;
+
+extern bool sift_f2_unique_lookup(IndexScanDesc scan, MemoryContext cx, SiftUniqLookup *out);
 
 typedef struct SiftF2UniqueBuild SiftF2UniqueBuild;
 

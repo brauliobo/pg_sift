@@ -18,6 +18,12 @@
 /* The 64-bit hash of the key of the row in the slot, 0 for a row whose key holds no row of the unique index (a NULL that is distinct) */
 typedef uint64 (*SiftUniqSlabKeyFn) (void *arg, TupleTableSlot *slot);
 
+/* Takes the 64-bit hash of one key; false when the table that keeps them has no room left: the fold stops */
+typedef bool (*SiftUniqFpPut) (void *arg, uint64 fp);
+
+/* The hashes of the keys of the heap tuples at tids[0..n) (what a slab or a part names), offered to put in order; one that is gone (an aborted insert the heap pruned) holds no key. False when put stopped it */
+extern bool sift_uniq_fold_tids(Relation heap, const ItemPointerData *tids, uint32 n, SiftUniqSlabKeyFn key_fp, void *arg, SiftUniqFpPut put, void *put_arg);
+
 /*
  * The manifest of plan without the slabs that hold no key of the hash fp64 (a copy in cx; plan itself when it has no slab to leave out). A slab that holds a row of the hash stays: the scan of the
  * key reads its rows and decides.

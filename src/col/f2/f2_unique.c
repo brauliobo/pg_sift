@@ -38,10 +38,12 @@
 #include "col/f2/f2.h"
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_sink.h"
+#include "col/f2/f2_uniq_parts.h"
 #include "col/f2/f2_uniq_shm.h"
 #include "col/f2/f2_uniq_slab.h"
 #include "col/f2/f2_unique.h"
 #include "col/f2/l0_stage.h"
+#include "core/cachebudget.h"
 #include "core/memtrack.h"
 #include "core/part_lock.h"
 
@@ -310,14 +312,43 @@ slab_key_fp(void *arg, TupleTableSlot *slot)
 	return key_has_null(s->k, isnull) && !s->k->nulls_not_distinct ? 0 : rk.fp64;
 }
 
-/* The rows in the partitions: a scan with the manifest as it is now, which does not flush the stage of this transaction (its rows are in the registry), and does not read a slab that holds no row of the key */
+static bool
+plan_reads_nothing(const SiftPlanSnapshot *plan)
+{
+	for (int i = 0; i < plan->npartitions; i++)
+		if (plan->partitions[i].l0_slab_blk != InvalidBlockNumber || plan->partlists[i].nparts > 0)
+			return false;
+	return true;
+}
+
+/* The manifest of the partitions as the key needs it read: without the small parts and the slabs that hold no row of it (f2_uniq_parts.h, f2_uniq_slab.h) */
+static const SiftPlanSnapshot *
+published_plan(UniqueKey *k, const Row *row, Relation heap, const SiftUniqKey *rk, MemoryContext cx)
+{
+	SlabKey		sk = {.k = k,.row = row};
+	const SiftPlanSnapshot *plan = sift_plan_cache_get(row->index, cx);
+
+	plan = sift_uniq_parts_prune(row->index, heap, plan, rk->fp64, slab_key_fp, &sk, cx);
+	return sift_uniq_slab_prune(row->index, heap, plan, rk->fp64, slab_key_fp, &sk, cx);
+}
+
+static MemoryContext
+probe_context(void)
+{
+	static MemoryContext cx;
+
+	if (cx == NULL)
+		cx = sift_cache_create_context("sift cache unique probe");
+	MemoryContextReset(cx);
+	return cx;
+}
+
+/* The rows in the partitions of plan: a scan of the manifest as it is, which does not flush the stage of this transaction (its rows are in the registry) */
 static void
-find_published(UniqueKey *k, const Row *row, Relation heap, const SiftUniqKey *rk, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
+scan_published(UniqueKey *k, const Row *row, Relation heap, const SiftPlanSnapshot *plan, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
 {
 	SnapshotData dirty;
 	ScanKeyData keys[INDEX_MAX_KEYS];
-	SlabKey		sk = {.k = k,.row = row};
-	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift unique probe");
 	TupleTableSlot *slot = table_slot_create(heap, NULL);
 	IndexScanDesc scan;
 
@@ -327,13 +358,23 @@ find_published(UniqueKey *k, const Row *row, Relation heap, const SiftUniqKey *r
 							   isnull[i] ? (Datum) 0 : values[i]);
 	scan = sift_index_beginscan(heap, row->index, &dirty, k->n);
 	index_rescan(scan, keys, k->n, NULL, 0);
-	sift_f2_scan_set_plan(scan, sift_uniq_slab_prune(row->index, heap, sift_plan_cache_get(row->index, cx), rk->fp64, slab_key_fp, &sk, cx));
+	sift_f2_scan_set_plan(scan, plan);
 	while (c->found == FOUND_NONE && index_getnext_slot(scan, ForwardScanDirection, slot))
 		if (!ItemPointerEquals(self, &slot->tts_tid) && row_has_key(k, row, slot, values, isnull))
 			judge(c, &dirty, &slot->tts_tid, false);
 	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
-	MemoryContextDelete(cx);
+}
+
+static void
+find_published(UniqueKey *k, const Row *row, Relation heap, const SiftUniqKey *rk, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
+{
+	MemoryContext cx = probe_context();
+	const SiftPlanSnapshot *plan = published_plan(k, row, heap, rk, cx);
+
+	if (!plan_reads_nothing(plan))
+		scan_published(k, row, heap, plan, values, isnull, self, c);
+	MemoryContextReset(cx);
 }
 
 /* The rows of this transaction's stage go to the partition, and then its entries of the index leave the registry */
@@ -344,6 +385,20 @@ spill(Relation index)
 	sift_uniq_shm_release(&index->rd_locator);
 }
 
+/* The entries of the registry of the key; a stripe that holds more than a probe reports is emptied first (the rows of this transaction go to the partition) */
+static void
+probe_staged(Relation index, const SiftUniqKey *rk, SiftUniqHits *hits)
+{
+	sift_uniq_shm_probe(rk, hits);
+	if (hits->overflow)
+	{
+		spill(index);
+		sift_uniq_shm_probe(rk, hits);
+		if (hits->overflow)
+			ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("too many transactions hold a row of one key of the unique index \"%s\"", RelationGetRelationName(index))));
+	}
+}
+
 /* A row of the same key as the new one, if there is one: in the registry first, in the partitions after */
 static void
 find_conflict(UniqueKey *k, Relation index, Relation heap, IndexInfo *info, const SiftUniqKey *rk, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
@@ -352,19 +407,47 @@ find_conflict(UniqueKey *k, Relation index, Relation heap, IndexInfo *info, cons
 	SiftUniqHits hits;
 
 	*c = (Conflict) {.found = FOUND_NONE};
-	sift_uniq_shm_probe(rk, &hits);
-	if (hits.overflow)
-	{
-		spill(index);
-		sift_uniq_shm_probe(rk, &hits);
-		if (hits.overflow)
-			ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("too many transactions hold a row of one key of the unique index \"%s\"", RelationGetRelationName(index))));
-	}
+	probe_staged(index, rk, &hits);
 	find_staged(k, &row, heap, &hits, values, isnull, self, c);
 	if (c->found == FOUND_NONE)
 		find_published(k, &row, heap, rk, values, isnull, self, c);
 	if (row.estate != NULL)
 		FreeExecutorState(row.estate);
+}
+
+bool
+sift_f2_unique_lookup(IndexScanDesc scan, MemoryContext cx, SiftUniqLookup *out)
+{
+	Relation	index = scan->indexRelation;
+	UniqueKey	k;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	SiftUniqKey rk;
+	Row			row;
+
+	if (scan->xs_snapshot == NULL || scan->xs_snapshot->snapshot_type != SNAPSHOT_DIRTY || scan->heapRelation == NULL || scan->xs_want_itup || !index->rd_index->indisunique ||
+		scan->numberOfKeys != IndexRelationGetNumberOfKeyAttributes(index))
+		return false;
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		const ScanKeyData *sk = &scan->keyData[i];
+
+		if (sk->sk_attno != i + 1 || sk->sk_strategy != BTEqualStrategyNumber)
+			return false;
+		isnull[i] = (sk->sk_flags & SK_ISNULL) != 0;
+		values[i] = isnull[i] ? (Datum) 0 : sk->sk_argument;
+	}
+	key_init(&k, index);
+	if (key_has_null(&k, isnull) && !k.nulls_not_distinct)
+		return false;
+	registry_key(&k, index, key_hash(&k, values, isnull), values, isnull, &rk);
+	probe_staged(index, &rk, &out->hits);
+	row = (Row) {.index = index,.info = BuildIndexInfo(index)};
+	row.estate = row.info->ii_Expressions != NIL ? CreateExecutorState() : NULL;
+	out->plan = published_plan(&k, &row, scan->heapRelation, &rk, cx);
+	if (row.estate != NULL)
+		FreeExecutorState(row.estate);
+	return true;
 }
 
 /* The row of a key nobody holds goes to the stage, its key to the registry first; a stripe with no entry free sends the rows of the stage to the partition, and the entries of the index go */

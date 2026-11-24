@@ -100,7 +100,7 @@ filter_get(Relation index, uint64 part_id)
 	{
 		if (filter_cx == NULL)
 		{
-			filter_cx = sift_cache_create_context("sift unique slab hashes");
+			filter_cx = sift_cache_create_context("sift cache unique slab hashes");
 			before_shmem_exit(filters_free, 0);
 		}
 		f = MemoryContextAllocZero(filter_cx, sizeof(SlabFilter));
@@ -120,14 +120,14 @@ same_ref(const SiftL0HeapRef *a, const SiftL0HeapRef *b)
 	return memcmp(&a->ctid, &b->ctid, sizeof(ItemPointerData)) == 0 && a->xmin == b->xmin;
 }
 
-/* Folds the tuples at tids[nrefs..n); one that is gone (an aborted insert the heap pruned) holds no key */
-static void
-filter_fold(SlabFilter *f, Relation heap, const ItemPointerData *tids, uint32 n, SiftUniqSlabKeyFn key_fp, void *arg)
+bool
+sift_uniq_fold_tids(Relation heap, const ItemPointerData *tids, uint32 n, SiftUniqSlabKeyFn key_fp, void *arg, SiftUniqFpPut put, void *put_arg)
 {
 	IndexFetchTableData *fetch = sift_table_index_fetch_begin(heap);
 	TupleTableSlot *slot = table_slot_create(heap, NULL);
+	bool		room = true;
 
-	for (uint32 i = f->nrefs; i < n && !f->full; i++)
+	for (uint32 i = 0; i < n && room; i++)
 	{
 		bool		again = false,
 					dead = false;
@@ -136,13 +136,30 @@ filter_fold(SlabFilter *f, Relation heap, const ItemPointerData *tids, uint32 n,
 		{
 			uint64		fp = key_fp(arg, slot);
 
-			if (fp != 0)
-				tab_put(f, fp);
+			room = fp == 0 || put(put_arg, fp);
 		}
 	}
-	f->nrefs = n;
 	ExecDropSingleTupleTableSlot(slot);
 	table_index_fetch_end(fetch);
+	return room;
+}
+
+static bool
+tab_put_fn(void *arg, uint64 fp)
+{
+	SlabFilter *f = arg;
+
+	tab_put(f, fp);
+	return !f->full;
+}
+
+/* Folds the tuples at tids[nrefs..n) */
+static void
+filter_fold(SlabFilter *f, Relation heap, const ItemPointerData *tids, uint32 n, SiftUniqSlabKeyFn key_fp, void *arg)
+{
+	if (!f->full)
+		(void) sift_uniq_fold_tids(heap, tids + f->nrefs, n - f->nrefs, key_fp, arg, tab_put_fn, f);
+	f->nrefs = n;
 }
 
 /* The slab of references: new references are folded, and the slab began again when the reference at the place of the last one folded is another */
