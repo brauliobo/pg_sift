@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "access/hash.h"
+#include "catalog/pg_type_d.h"
 #include "fmgr.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -20,6 +21,7 @@ struct SiftGenKey
 	Oid			collid;
 	int16		typlen;
 	bool		typbyval;
+	bool		by_image;		/* the type has no hash function and equal values are equal bytes: the hash is the one of the bytes */
 	FmgrInfo	hash_fn;
 	FmgrInfo	eq_fn;
 	FmgrInfo	cmp_fn;
@@ -39,12 +41,19 @@ type_entry(Oid typid)
 	return lookup_type_cache(typid, TYPECACHE_HASH_PROC_FINFO | TYPECACHE_EQ_OPR_FINFO | TYPECACHE_CMP_PROC_FINFO);
 }
 
+/* money, bit and bit varying have a btree operator class and no hash one; their equal values are equal bytes (a bit string keeps the unused bits of its last byte zero) */
+static bool
+image_equality(Oid typid)
+{
+	return typid == CASHOID || typid == BITOID || typid == VARBITOID;
+}
+
 bool
 sift_genkey_supported(Oid typid)
 {
 	const TypeCacheEntry *te = type_entry(typid);
 
-	return OidIsValid(te->hash_proc) && OidIsValid(te->eq_opr);
+	return OidIsValid(te->eq_opr) && (OidIsValid(te->hash_proc) || image_equality(typid));
 }
 
 SiftGenKey *
@@ -53,7 +62,8 @@ sift_genkey_new(MemoryContext cx, Oid typid, Oid collid)
 	TypeCacheEntry *te = type_entry(typid);
 	SiftGenKey *k = MemoryContextAllocZero(cx, sizeof(SiftGenKey));
 
-	Assert(OidIsValid(te->hash_proc) && OidIsValid(te->eq_opr));
+	Assert(OidIsValid(te->eq_opr));
+	k->by_image = !OidIsValid(te->hash_proc);
 	k->typid = typid;
 	k->collid = collid;
 	k->typlen = te->typlen;
@@ -71,6 +81,10 @@ sift_genkey_new(MemoryContext cx, Oid typid, Oid collid)
 static uint32
 value_hash(SiftGenKey *k, Datum value)
 {
+	if (k->by_image && k->typbyval)
+		return DatumGetUInt32(hash_bytes((const unsigned char *) &value, k->typlen));
+	if (k->by_image)
+		return DatumGetUInt32(hash_bytes((const unsigned char *) VARDATA_ANY(DatumGetPointer(value)), VARSIZE_ANY_EXHDR(DatumGetPointer(value))));
 	return DatumGetUInt32(FunctionCall1Coll(&k->hash_fn, k->collid, value));
 }
 
