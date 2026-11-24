@@ -196,20 +196,21 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	so->defs = palloc(r->meta.ncols * sizeof(SiftColDef));
 	memcpy(so->defs, r->meta.cols, r->meta.ncols * sizeof(SiftColDef));
 	so->preds = palloc(Max(scan->numberOfKeys, 1) * sizeof(SiftColPred));
-	keys = (ColKeys) {.defs = so->defs, .first = so->first, .idesc = RelationGetDescr(scan->indexRelation)};
+	keys = (ColKeys) {.defs = so->defs, .ndefs = r->meta.ncols, .first = so->first, .idesc = RelationGetDescr(scan->indexRelation)};
 	if (so->heap == NULL)
 		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
 	sat = scan_preds(scan, &keys, so->preds);
+	so->npreds = sat ? sift_col_preds_keep(so->preds, scan->numberOfKeys) : 0;
 	/*
 	 * an equality or IN on a plain leaf finds the rows of the write buffers in their records, which costs a few instructions a row where their batches cost thousands:
 	 * the one with the fewest values (of an IN list of the scope and an equality on the same key, the equality), since the heap checks the rows it finds against all
 	 */
-	for (int i = 0; sat && !scan->xs_want_itup && i < scan->numberOfKeys; i++)
+	for (int i = 0; !scan->xs_want_itup && i < so->npreds; i++)
 		if (sift_col_wbuf_lookup_ok(&so->defs[so->preds[i].col], &so->preds[i]) && (wl < 0 || so->preds[i].nvals < so->preds[wl].nvals))
 			wl = i;
 	col_tomb_open(scan, so, rowkey);
 	so->src = col_scan_source(so, scan, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)),
-							  sat && sift_col_key_range(scan->indexRelation, so->preds, scan->numberOfKeys, &so->keys) ? &so->keys : NULL);
+							  sat && sift_col_key_range(scan->indexRelation, so->preds, so->npreds, &so->keys) ? &so->keys : NULL);
 	if (sat)
 	{
 		ItemPointerData *wt = NULL;
@@ -218,7 +219,6 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 		/* before the begin: a lookup that finds too many rows has the source load the buffers (sift_col_wbuf_lookup) */
 		if (wl >= 0)
 			wt = sift_col_wbuf_lookup(so->src, &so->preds[wl], so->cxt, &nw);
-		so->npreds = scan->numberOfKeys;
 		sift_col_begin(so->src, so->preds, so->npreds, 0, PG_UINT32_MAX);
 		/* the addresses a directory of heap addresses lists are the fingerprints': the heap checks every condition again */
 		if ((tids = sift_col_point_tids(so->src, &so->ndtids)) != NULL)
@@ -244,8 +244,8 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	}
 	else
 		so->unsat = true;
-	for (int i = 0; sat && i < scan->numberOfKeys; i++)
-		keys.recheck |= so->preds[i].col >= 0 && so->defs[so->preds[i].col].type == SIFT_COLT_NUMERIC;	/* Format 1 stores a NaN as a NULL with the overflow flag: the heap decides it */
+	for (int i = 0; i < so->npreds; i++)
+		keys.recheck |= so->defs[so->preds[i].col].type == SIFT_COLT_NUMERIC;	/* Format 1 stores a NaN as a NULL with the overflow flag: the heap decides it */
 	so->recheck = keys.recheck;
 	so->started = true;
 	MemoryContextSwitchTo(old);

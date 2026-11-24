@@ -13,6 +13,7 @@
 typedef struct ColKeys
 {
 	const SiftColDef *defs;		/* the leaves of the index */
+	int			ndefs;			/* the number of leaves */
 	const int  *first;			/* first[attno]: the leaf of attribute attno */
 	TupleDesc	idesc;
 	bool		infix;			/* a LIKE with no literal prefix but a literal run is a substring test of the leaf (the skipping indexes of format major 2 keep the three byte windows) */
@@ -54,6 +55,9 @@ extern void like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_w
 
 /* The predicates of the keys of a scan, one for each key, on the leaves of k; false: a key no leaf can decide and no recheck covers (the scan finds no row) */
 extern bool sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *preds);
+
+/* The predicates a leaf decides, moved to the front in order, and how many: the others (col -1) are the heap's, which ColKeys.recheck says */
+extern int	sift_col_preds_keep(SiftColPred *preds, int n);
 
 extern bool scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds);
 

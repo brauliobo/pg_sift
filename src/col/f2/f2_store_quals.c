@@ -67,14 +67,10 @@ is_param_comparison(const Node *clause)
 static void
 fill_preds(Relation rel, const SiftF2Store *store, SiftStoreQuals *q)
 {
-	ColKeys		ck = {.defs = store->schema->cols,.first = store->att_first,.idesc = RelationGetDescr(rel)};
-	int			kept = 0;
+	ColKeys		ck = {.defs = store->schema->cols,.ndefs = store->schema->ncols,.first = store->att_first,.idesc = RelationGetDescr(rel)};
 
 	q->possible = sift_col_key_preds(q->keys, q->nkeys, &ck, q->preds);
-	for (int i = 0; q->possible && i < q->nkeys; i++)
-		if (q->preds[i].col >= 0)
-			q->preds[kept++] = q->preds[i];
-	q->npreds = q->possible ? kept : 0;
+	q->npreds = q->possible ? sift_col_preds_keep(q->preds, q->nkeys) : 0;
 }
 
 void

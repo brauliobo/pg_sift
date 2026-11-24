@@ -515,6 +515,19 @@ key_exists_pred(ColKeys *k, const ScanKeyData *key, SiftColPred *p)
 	return true;
 }
 
+/* IS [NOT] NULL on a jsonb column is a test of the document, which only its "<column>#present" leaf holds; an index with none (a column that cannot be NULL, an index built before the leaf) leaves it to the heap (col -1) */
+static void
+json_null_pred(ColKeys *k, const ScanKeyData *key, SiftColPred *p)
+{
+	int			leaf = -1;
+
+	for (int i = k->first[key->sk_attno]; i < k->ndefs && k->defs[i].attno == key->sk_attno && leaf < 0; i++)
+		if (sift_col_def_is_present(&k->defs[i]))
+			leaf = i;
+	*p = (SiftColPred) {.col = leaf,.op = (key->sk_flags & SK_SEARCHNULL) ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL};
+	k->recheck |= leaf < 0;
+}
+
 /* The predicates of the keys; false when one cannot be satisfied (an operator is strict: a NULL operand matches nothing) */
 bool
 sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *preds)
@@ -540,6 +553,11 @@ sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *
 
 			v->v.i = COL_JSON_TYPE_MASK(DatumGetInt64(key->sk_argument));
 			*p = (SiftColPred) {.col = COL_JSON_TYPE_LEAF(DatumGetInt64(key->sk_argument)),.op = SIFT_COLOP_JSON_TYPE,.nvals = 1,.vals = v};
+			continue;
+		}
+		if (att->atttypid == JSONBOID && (key->sk_flags & (SK_SEARCHNULL | SK_SEARCHNOTNULL)))
+		{
+			json_null_pred(k, key, p);
 			continue;
 		}
 		/* an array without its image: its null bitmap is the cardinality's, and a comparison with an array is the heap's to decide for every array there is */
@@ -692,6 +710,17 @@ sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *
 		}
 	}
 	return narrow_lists(nkeys, k, preds);
+}
+
+int
+sift_col_preds_keep(SiftColPred *preds, int n)
+{
+	int			kept = 0;
+
+	for (int i = 0; i < n; i++)
+		if (preds[i].col >= 0)
+			preds[kept++] = preds[i];
+	return kept;
 }
 
 bool

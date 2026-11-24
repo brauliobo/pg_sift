@@ -1,0 +1,75 @@
+-- doc IS NULL and doc IS NOT NULL on a jsonb column that declares paths are tests of the document, which the leaf "doc#present" holds, and not of the first path: an Index Scan and a
+-- Bitmap Index Scan of an index of format major 1 and of format major 2 return the rows of the heap, whatever JSON type the other documents are (a JSON null is a document), and so
+-- does an index built before the leaf (sift.test_col_no_present), which leaves the test to the heap. Before and after writes (INSERT, UPDATE to and from NULL, DELETE)
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+SET sift.enable_agg = off;
+
+CREATE FUNCTION jn_shape(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS
+$$ SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE (ARRAY['{"k":1}', '{"k":null}', '{"j":1}', '{}', '["k"]', '"k"', 'null', '5', '{"k":2,"j":3}'])[1 + i % 9]::jsonb END $$;
+
+CREATE FUNCTION jn_make(t text, format1 bool, no_present bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TABLE %I (id int, g int, doc jsonb) WITH (autovacuum_enabled = false)', t);
+	EXECUTE format('INSERT INTO %I SELECT i, i %% 5, jn_shape(i) FROM generate_series(1, 4800) i', t);
+	PERFORM set_config('sift.test_create_format1', format1::text, false);
+	PERFORM set_config('sift.test_col_no_present', no_present::text, false);
+	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (id, g, doc) WITH (paths = ''doc.k int4, doc.j int4'')', t || '_col', t);
+	PERFORM set_config('sift.test_col_no_present', 'off', false);
+END $$;
+
+CREATE FUNCTION jn_write(t text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('INSERT INTO %I SELECT i, i %% 5, CASE WHEN i %% 2 = 0 THEN NULL ELSE jn_shape(i) END FROM generate_series(4801, 5000) i', t);
+	EXECUTE format('UPDATE %I SET doc = NULL WHERE id %% 11 = 1 AND id <= 4800', t);
+	EXECUTE format('UPDATE %I SET doc = ''{"k":7}'' WHERE id %% 7 = 0 AND id %% 3 = 0 AND id <= 4800', t);
+	EXECUTE format('DELETE FROM %I WHERE id %% 13 = 2 AND id <= 4800', t);
+END $$;
+
+CREATE FUNCTION jn_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP r := r || l || E'\n'; END LOOP;
+	RETURN r;
+END $$;
+
+-- the rows of a condition by one kind of scan: the plan's node, how many rows, and a hash of their ids
+CREATE FUNCTION jn_scan(t text, cond text, how text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE q text := format('SELECT id FROM %I WHERE %s ORDER BY id', t, cond); plan text; ids int[]; node text;
+BEGIN
+	PERFORM set_config('enable_seqscan', (how = 'heap')::text, true);
+	PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+	PERFORM set_config('enable_indexonlyscan', 'off', true);
+	PERFORM set_config('enable_bitmapscan', (how = 'bitmap')::text, true);
+	plan := jn_plan(q);
+	node := CASE WHEN plan LIKE '%Bitmap Index Scan%' THEN 'bitmap' WHEN plan LIKE '%Index Scan using%' THEN 'index' WHEN plan LIKE '%Seq Scan%' THEN 'heap' ELSE 'other' END;
+	EXECUTE format('SELECT array_agg(id) FROM (%s) s', q) INTO ids;
+	RETURN format('%s %s %s', node, coalesce(cardinality(ids), 0), md5(coalesce(ids::text, '')));
+END $$;
+CREATE FUNCTION jn_check(t text, cond text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE h text := jn_scan(t, cond, 'heap'); i text := jn_scan(t, cond, 'index'); b text := jn_scan(t, cond, 'bitmap');
+BEGIN
+	RETURN format('%s rows, %s', split_part(h, ' ', 2),
+		CASE WHEN split_part(i, ' ', 1) = 'index' AND split_part(b, ' ', 1) = 'bitmap' AND split_part(h, ' ', 3) = split_part(i, ' ', 3) AND split_part(h, ' ', 3) = split_part(b, ' ', 3)
+			THEN 'index scan and bitmap scan the same' ELSE 'DIFFERENT: ' || h || ' / ' || i || ' / ' || b END);
+END $$;
+
+SELECT jn_make('f1', true, false), jn_make('f2', false, false), jn_make('f1_old', true, true), jn_make('f2_old', false, true);
+VACUUM ANALYZE f1, f2, f1_old, f2_old;
+SELECT t, sift._test_index_format((t || '_col')::regclass) AS format_major FROM (VALUES ('f1'), ('f2'), ('f1_old'), ('f2_old')) v(t);
+
+CREATE TABLE jn_cond (n int PRIMARY KEY, cond text);
+INSERT INTO jn_cond VALUES (1, 'doc IS NULL'), (2, 'doc IS NOT NULL'), (3, 'doc IS NULL AND g = 2'), (4, 'doc IS NOT NULL AND id < 1500'), (5, 'id > 2000 AND doc IS NULL');
+
+SELECT t, n, cond, jn_check(t, cond) FROM (VALUES ('f1'), ('f2'), ('f1_old'), ('f2_old')) v(t), jn_cond ORDER BY t, n;
+
+SELECT jn_write('f1'), jn_write('f2'), jn_write('f1_old'), jn_write('f2_old');
+SELECT t, n, cond, jn_check(t, cond) FROM (VALUES ('f1'), ('f2'), ('f1_old'), ('f2_old')) v(t), jn_cond ORDER BY t, n;
+
+DROP FUNCTION jn_check(text, text), jn_scan(text, text, text), jn_plan(text), jn_write(text), jn_make(text, bool, bool), jn_shape(int);
+DROP TABLE jn_cond, f1, f2, f1_old, f2_old;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

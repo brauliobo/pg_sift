@@ -79,14 +79,13 @@ sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
 	/* check-memory: allow nothing reads the catalog between the fetch and the keys */
 	SiftColRel *r = sift_col_rel(scan->indexRelation);
 	SiftF2Rel  *f = sift_f2_rel(scan->indexRelation);
-	ColKeys		ck = {.defs = r->schema->cols,.first = r->first,.idesc = RelationGetDescr(scan->indexRelation),.infix = true,.key_leaf = key_leaf,.key_leaf_arg = f};
+	ColKeys		ck = {.defs = r->schema->cols,.ndefs = r->schema->ncols,.first = r->first,.idesc = RelationGetDescr(scan->indexRelation),.infix = true,.key_leaf = key_leaf,.key_leaf_arg = f};
 	ScanKey		all = scan->keyData,
 				plain = palloc(Max(scan->numberOfKeys, 1) * sizeof(ScanKeyData));
 	const ScanKeyData *rows[SIFT_KEY_COLS_MAX];
 	SiftKeySpec spec;
 	int			nall = scan->numberOfKeys,
-				nrows = 0,
-				kept = 0;
+				nrows = 0;
 
 	for (int k = 0; k < nall; k++)
 		if ((all[k].sk_flags & SK_ROW_HEADER) && nrows < lengthof(rows))
@@ -100,10 +99,7 @@ sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
 	s->possible = scan_preds(scan, &ck, s->preds);
 	scan->keyData = all;
 	scan->numberOfKeys = nall;
-	for (int k = 0; s->possible && k < s->npreds; k++)
-		if (s->preds[k].col >= 0)
-			s->preds[kept++] = s->preds[k];
-	s->npreds = s->possible ? sift_f2_scan_append_ext(s, kept) : s->npreds;
+	s->npreds = s->possible ? sift_f2_scan_append_ext(s, sift_col_preds_keep(s->preds, s->npreds)) : s->npreds;
 	for (int i = 0; s->possible && i < nrows && s->nrowcmp < SIFT_ROW_BOUNDS_MAX; i++)
 		if (row_bound(r, f, rows[i], &s->rowcmp[s->nrowcmp], &s->preds[s->npreds], MemoryContextAlloc(s->cx, sizeof(SiftColValue))))
 		{
