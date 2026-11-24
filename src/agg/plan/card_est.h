@@ -112,6 +112,7 @@ typedef struct SiftCardStatsView
 	uint32		nfiles;			/* the parts of every partition: a scan opens each of them before its zones leave a granule */
 	uint32		n_sample;
 	bool		has_l0;			/* rows not yet in a part exist, and no partition describes them */
+	bool		rows_from_pg;	/* the rows of a scan are PostgreSQL's own: the view prices the granules a scan reads, and the groups it makes, not the rows of the relation */
 	const SiftColCardStats *cols;
 	const SiftCardPartition *parts;
 	const SiftSampleGranule *sample;

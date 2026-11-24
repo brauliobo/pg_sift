@@ -107,7 +107,7 @@ sift_v1_card_view(const SiftSrcLayout *lay, const SiftSrcStats *st)
 
 	leaf_bytes(lay, st, bytes);
 	*v = (SiftCardStatsView) {.total_live_rows = (uint64) rows,.total_granules = (uint64) Max(st->nunits, 1.0),.total_bytes = (uint64) st->bytes,.ncols = lay->nleaves,
-		.nfiles = 1,.n_sample = nsample,.cols = cols,.sample = sample,.sample_zones = zones};
+		.nfiles = 1,.rows_from_pg = true,.n_sample = nsample,.cols = cols,.sample = sample,.sample_zones = zones};
 	for (int i = 0; i < lay->nleaves; i++)
 		cols[i] = leaf_stats(&lay->leaf[i], st, rows, bytes[i]);
 	for (uint32 g = 0; g < nsample; g++)

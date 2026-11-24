@@ -275,7 +275,7 @@ sift_v6_card_rel(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, con
 	SiftCardEst est;
 	double		rest_sel = 1.0;
 
-	if (view == NULL || may_leak(root, rel))
+	if (view == NULL || view->rows_from_pg || may_leak(root, rel))
 		return false;
 	sift_v6_card_query(rel->baserestrictinfo, rel->relid, ix, &cq);
 	sift_card_estimate(view, &cq.q, &est);
