@@ -11,17 +11,15 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
-# check FILE...: the lines of the files that break a rule, as FILE:LINE: text
+# check FILE...: the lines of the files that break a rule, as FILE:LINE: text (one awk for all the files)
 check() {
-	local f
-	for f; do
-		awk -v f="$f" '
-			/^[ \t]*(\/?\*|\/\/)/ { next }
-			f !~ /core\/page\.h$/ && /[\/%*] *\(?SIFT_PAGE_PAYLOAD/ { print f ":" FNR ": paging arithmetic on SIFT_PAGE_PAYLOAD: use SIFT_PAYLOAD_PAGE/_OFF/_PAGES/_BYTES (core/page.h)"; next }
-			f !~ /core\/live\.c$/ && /SiftPageGetData\([^)]*\)\[/ { print f ":" FNR ": a payload byte by index: only core/live.c reads the bytes of a bitmap, through sift_live_byte"; next }
-			f !~ /core\/xlog\.h$/ && /GenericXLog(Start|RegisterBuffer|Finish|Abort)/ { print f ":" FNR ": generic WAL not through sift_xlog_* (core/xlog.h)" }
-		' "$f"
-	done
+	(( $# )) || return 0
+	awk '
+		/^[ \t]*(\/?\*|\/\/)/ { next }
+		FILENAME !~ /core\/page\.h$/ && /[\/%*] *\(?SIFT_PAGE_PAYLOAD/ { print FILENAME ":" FNR ": paging arithmetic on SIFT_PAGE_PAYLOAD: use SIFT_PAYLOAD_PAGE/_OFF/_PAGES/_BYTES (core/page.h)"; next }
+		FILENAME !~ /core\/live\.c$/ && /SiftPageGetData\([^)]*\)\[/ { print FILENAME ":" FNR ": a payload byte by index: only core/live.c reads the bytes of a bitmap, through sift_live_byte"; next }
+		FILENAME !~ /core\/xlog\.h$/ && /GenericXLog(Start|RegisterBuffer|Finish|Abort)/ { print FILENAME ":" FNR ": generic WAL not through sift_xlog_* (core/xlog.h)" }
+	' "$@"
 }
 
 if [[ ${1:-} == --selftest ]]; then
