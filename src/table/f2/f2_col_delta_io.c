@@ -616,7 +616,8 @@ fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo)
 	return e;
 }
 
-/* A row whose part a compaction replaced since the record was staged is where its address says now; one whose part a TTL drop took is gone, and its record with it */
+/* A row whose part a compaction replaced since the record was staged is where its address says now; one whose part a TTL drop took is gone, and its record with it. The stage is the one being
+ * flushed and still holds the row: the lookup leaves it alone (a lookup that flushes a stage holding its address would flush this one again) */
 static void
 relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *ord, int lo, int hi, const SiftPartDesc *parts, int nparts)
 {
@@ -634,7 +635,7 @@ relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const in
 		memcpy(&h, it->rec, sizeof(h));
 		if (sift_u64set_has(&gens, h.part_gen))
 			continue;
-		if (!sift_f2_locate_cached(rel, store, sift_col_delta_hdr_tid(&h), &loc))
+		if (!sift_f2_locate_settled(rel, store, sift_col_delta_hdr_tid(&h), &loc))
 		{
 			sift_col_delta_stage_release(cd, ord[k]);
 			continue;
