@@ -379,19 +379,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
-	if (rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_CTE)
-		derived_rel_rows(root, rel);
-	if (rte->rtekind == RTE_SUBQUERY)
-		agg_subquery_ordered(root, rel, rti);
-	if (rte->rtekind == RTE_RELATION)
-	{
-		agg_range_join_rows(root, rel, rte);
-		sift_agg_minmax_paths(root, rel);
-		if (sift_v6_rels_have_index(root, rel->relids))
-			sift_agg_v6_rel_paths(root, rel, rti, rte);
-	}
-	if (rte->rtekind == RTE_CTE)
-		derived_cte_rows(root, rel);
+	if (rte->rtekind == RTE_RELATION && sift_v6_rels_have_index(root, rel->relids))
+		sift_agg_v6_rel_paths(root, rel, rti, rte);
 	if (!scannable(root, rel, rte))
 		return;
 	/* a relation the planner proved empty is left out of root->total_table_pages, which the page costs of a scan divide by */
@@ -505,7 +494,7 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 	if (prev_upper_hook)
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
 	count_upper_paths(root, stage, input_rel, output_rel);
-	sift_agg_upper_paths(root, stage, input_rel, output_rel, extra);
+	sift_agg_v6_upper_paths(root, stage, input_rel, output_rel, extra);
 	sift_agg_v6_live_upper_paths(root, stage, input_rel, output_rel, extra);
 	/* the aggregates read the scores out of the scan/join target, which holds only the Vars they use */
 	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_JOINREL)
@@ -609,7 +598,6 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 			if (IsA(cte->ctequery, Query))
 				returning_score_outputs(castNode(Query, cte->ctequery));
 	}
-	sift_agg_walks_forget();
 	sift_vis_scope(true);
 	PG_TRY();
 	{
@@ -617,7 +605,6 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 	}
 	PG_FINALLY();
 	{
-		sift_agg_walks_forget();
 		sift_vis_scope(false);
 	}
 	PG_END_TRY();
