@@ -458,14 +458,17 @@ sift_srcfold_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, const Sif
 	}
 }
 
-StaticAssertDecl(SIFT_SRC_MAX_BOUNDS == SIFT_V6_MAX_BOUNDS, "a source takes the bounds the program gives");
+StaticAssertDecl(SIFT_SRC_MAX_BOUNDS == SIFT_V6_MAX_BOUNDS + SIFT_V6_MAX_INSETS, "a source takes the bounds and lists the program gives");
 
 int
 sift_srcfold_bounds(const SiftV6Vexpr *quals, SiftSrcBound *out)
 {
 	for (int i = 0; i < quals->nbounds; i++)
 		out[i] = (SiftSrcBound) {.slot = quals->bound[i].slot,.has_lo = quals->bound[i].has_lo,.has_hi = quals->bound[i].has_hi,.lo = quals->bound[i].lo,.hi = quals->bound[i].hi};
-	return quals->nbounds;
+	for (int i = 0; i < quals->ninsets; i++)
+		out[quals->nbounds + i] = (SiftSrcBound) {.slot = quals->inset[i].slot,.has_lo = true,.lo = quals->inset[i].vmin,.has_hi = true,.hi = quals->inset[i].vmax,
+			.nvals = quals->inset[i].n,.vals = quals->inset[i].vals};
+	return quals->nbounds + quals->ninsets;
 }
 
 void

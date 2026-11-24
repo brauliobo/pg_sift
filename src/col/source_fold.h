@@ -50,8 +50,9 @@ extern void sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b);
 extern void sift_srcfold_arms(struct SiftV6FuseCohort *cohort, const struct SiftV6ScanArm *arms, const SiftSrcFoldArgs *common, SiftSrcOpen open, void *open_arg);
 
 /* A conjunct of the quals that bounds an integer column of the input (its slot) to a closed range: a source may leave unread a unit that lies wholly outside it */
-#define SIFT_SRC_MAX_BOUNDS	8
+#define SIFT_SRC_MAX_BOUNDS	12
 
+/* ... or, with nvals, to the values of a list (ascending, within lo and hi): a source with a point directory of the column reads the units that list them */
 typedef struct SiftSrcBound
 {
 	int			slot;
@@ -59,6 +60,8 @@ typedef struct SiftSrcBound
 	bool		has_hi;
 	int64		lo;
 	int64		hi;
+	int			nvals;
+	const int64 *vals;
 } SiftSrcBound;
 
 extern int	sift_srcfold_bounds(const SiftV6Vexpr *quals, SiftSrcBound *out);

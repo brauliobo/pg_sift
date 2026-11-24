@@ -86,26 +86,58 @@ var_correlation(PlannerInfo *root, Node *var)
 	return corr;
 }
 
-/* the share of the granules a clause leaves: a column that follows the order of the rows keeps the share of the rows, from |correlation| 0.7 up to Yao's at 0.7 and below (v6_card_cost.h) */
+/* `var = const` or `var = ANY (const list)`: what a point directory answers */
+static bool
+is_point_clause(const Expr *clause)
+{
+	if (IsA(clause, OpExpr) && list_length(((const OpExpr *) clause)->args) == 2)
+		return strcmp(get_opname(((const OpExpr *) clause)->opno), "=") == 0;
+	return IsA(clause, ScalarArrayOpExpr) && ((const ScalarArrayOpExpr *) clause)->useOr && strcmp(get_opname(((const ScalarArrayOpExpr *) clause)->opno), "=") == 0;
+}
+
+/* the share of the units of the index a point clause reads: those that keep no point directory of its column are read whole (0 without an index) */
 static double
-clause_share(PlannerInfo *root, RestrictInfo *ri)
+point_cover(const IndexOptInfo *ix, const RestrictInfo *ri, const List *vars)
+{
+	const int	col = ix != NULL && list_length(vars) == 1 && IsA(linitial(vars), Var) && is_point_clause(ri->clause) ? agg_index_col(ix, ((Var *) linitial(vars))->varattno) : -1;
+
+	return col >= 0 ? sift_v6_rel_point_cover(ix->indexoid, col) : 0.0;
+}
+
+/* the share of the granules a clause leaves: a column that follows the order of the rows keeps the share of the rows, from |correlation| 0.7 up to Yao's at 0.7 and below (v6_card_cost.h); a point
+ * directory of the column lists the rows of its units alone */
+static double
+clause_share(PlannerInfo *root, RestrictInfo *ri, const IndexOptInfo *ix, double *cover_out)
 {
 	const double sel = clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL);
 	List	   *vars = pull_var_clause((Node *) ri->clause, 0);
 	const double corr = list_length(vars) == 1 ? var_correlation(root, linitial(vars)) : 0;
 	const double alpha = Min(Max((corr - SIFT_CORR_CLUSTERED) / (1.0 - SIFT_CORR_CLUSTERED), 0.0), 1.0);
+	const double share = alpha * sel + (1.0 - alpha) * yao_share(sel);
+	const double cover = point_cover(ix, ri, vars);
 
-	return alpha * sel + (1.0 - alpha) * yao_share(sel);
+	*cover_out = Max(*cover_out, cover);
+	return cover * Min(sel, share) + (1.0 - cover) * share;
+}
+
+/* the share of the granules the clauses leave, and in *cover how much of it a point directory reads by rows: the scan reads no whole granule then */
+static double
+clauses_prune(PlannerInfo *root, const List *clauses, const IndexOptInfo *ix, double *cover)
+{
+	double		share = 1.0;
+
+	*cover = 0.0;
+	foreach_node(RestrictInfo, ri, (List *) clauses)
+		share *= clause_share(root, ri, ix, cover);
+	return share;
 }
 
 double
 sift_v6_clause_prune(PlannerInfo *root, const List *clauses)
 {
-	double		share = 1.0;
+	double		cover;
 
-	foreach_node(RestrictInfo, ri, (List *) clauses)
-		share *= clause_share(root, ri);
-	return share;
+	return clauses_prune(root, clauses, NULL, &cover);
 }
 
 /* the share of the granules of the index the quals leave: what the zones of its sampled granules say of the quals the estimator describes, Yao's for the others */
@@ -114,8 +146,10 @@ f_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCa
 {
 	List	   *rest;
 	double		zones = sift_v6_card_prune(root, rel, ix, view, &rest);
+	double		cover;
+	const double share = (zones < 0 ? 1.0 : zones) * clauses_prune(root, rest, ix, &cover);
 
-	return Min(Max((zones < 0 ? 1.0 : zones) * sift_v6_clause_prune(root, rest), 1.0 / granules), 1.0);
+	return Min(Max(share, (1.0 - cover) / granules + cover / (granules * SIFT_GRANULE_ROWS)), 1.0);
 }
 
 /* the bytes of a row of the columns in cols (the attributes of the index the Vars of INDEX_VAR name, or those of the relation when rel is given), decoded or as stored: those of the view, or unsized for a column it has no size of */
