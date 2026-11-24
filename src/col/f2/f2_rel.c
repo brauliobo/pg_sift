@@ -86,6 +86,15 @@ top_level_key(const SiftColDef *d, const char **key, int *len)
 	return k > 0 && ((*key)[k] == '\0' || strcmp(*key + k, "[]") == 0);
 }
 
+/* The leaf of the keys of a map: the text child of its group, named `<map>#key` */
+static bool
+is_map_key(const SiftColDef *d)
+{
+	const size_t n = d->path != NULL ? strlen(d->path) : 0;
+
+	return d->parent >= 0 && n > 4 && strcmp(d->path + n - 4, "#key") == 0;
+}
+
 static bool
 is_time_leaf(const SiftColDef *d)
 {
@@ -139,6 +148,7 @@ sift_f2_rel(Relation index)
 	SiftF2Rel  *f;
 	int			n,
 				klen;
+	bool	   *map_key = NULL;
 
 	if (r->f2 != NULL)
 		return r->f2;
@@ -168,6 +178,11 @@ sift_f2_rel(Relation index)
 			f->key_attno[i] = d->attno;
 			f->has_keys = true;
 		}
+		if (is_map_key(d))
+		{
+			map_key = map_key != NULL ? map_key : palloc0(n * sizeof(bool));
+			map_key[i] = true;
+		}
 		f->kinds[i] = cell_kind(d);
 		f->hints[i] = chunk_hint(d);
 		f->scales[i] = d->scale;
@@ -180,7 +195,7 @@ sift_f2_rel(Relation index)
 	const SiftPreaggDecl *decl = sift_f2_preagg_decl(index, r->schema, &preagg);
 
 	f->spec = (SiftPartSpec) {.ncols = n,.kinds = f->kinds,.nsort = f->nkey,.sort_cols = f->key_cols,.hints = f->hints,.scales = f->scales,.key_leaf = f->has_keys ? f->key_leaf : NULL,
-	.parent = f->has_groups ? f->parent : NULL,.preagg = preagg,.preagg_decl = decl};
+	.parent = f->has_groups ? f->parent : NULL,.preagg = preagg,.preagg_decl = decl,.map_key = map_key};
 	memcpy(f->spec.sort_flags, o->ko_flags, sizeof(f->spec.sort_flags));
 	SiftF2KllCols kll;
 

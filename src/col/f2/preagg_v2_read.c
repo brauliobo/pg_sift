@@ -124,7 +124,7 @@ sift_preagg_dist_values(const SiftPreaggDistRef *ref, const uint8 *bytes, int64 
 static bool
 same_cube(const SiftPreaggCubeDesc *a, const SiftPreaggCubeDesc *b)
 {
-	return a->ndims == b->ndims && a->nmeasures == b->nmeasures && a->ndistinct == b->ndistinct && a->max_groups_per_gran == b->max_groups_per_gran &&
+	return ((a->flags ^ b->flags) & SIFT_PCUBE_ELEMENTS) == 0 && a->ndims == b->ndims && a->nmeasures == b->nmeasures && a->ndistinct == b->ndistinct && a->max_groups_per_gran == b->max_groups_per_gran &&
 		memcmp(a->dim_leaf, b->dim_leaf, sizeof(a->dim_leaf)) == 0 && memcmp(a->dim_kind, b->dim_kind, sizeof(a->dim_kind)) == 0 &&
 		memcmp(a->meas_kind, b->meas_kind, sizeof(a->meas_kind)) == 0 && memcmp(a->meas_leaf, b->meas_leaf, sizeof(a->meas_leaf)) == 0 &&
 		memcmp(a->dist_leaf, b->dist_leaf, sizeof(a->dist_leaf)) == 0;

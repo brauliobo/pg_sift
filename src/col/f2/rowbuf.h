@@ -38,6 +38,7 @@ typedef struct SiftPartSpec
 	const uint8 *hints;			/* per column the SiftChunkHint, NULL: all automatic */
 	const uint8 *scales;		/* per column the scale of SIFT_CHINT_NUM64 */
 	const bool *key_leaf;		/* per column: the leaf of a top-level key of a jsonb document, whose chunks keep on which rows the key exists (SiftColIn.key_leaf); NULL: none */
+	const bool *map_key;		/* per column: the `#key` leaf of a map (SiftRows.map_key); NULL: none */
 	int			time_col;		/* 1 + the integer column of the time stride index, 0: none */
 	int			time_cols[SIFT_MANIFEST_TIME_COLS];	/* 1 + the integer column of each time bound of the manifest (the date and timestamp columns, the key's first), 0: none */
 	int			compress_alg;	/* the wrap of the chunks of a part, 0: none */

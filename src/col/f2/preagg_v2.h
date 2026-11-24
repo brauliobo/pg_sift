@@ -57,6 +57,11 @@ typedef enum SiftPreaggMeasKind
 } SiftPreaggMeasKind;
 
 #define SIFT_PCUBE_NULL_GROUPS	(UINT8_C(1) << 0)	/* some group of the cube has a NULL dimension */
+/*
+ * The cube groups the elements of a map, not the rows: its dimension is the `#key` leaf of the map (a dictionary code) and its measures are the value leaves of the same map, so a cell counts the
+ * members with its key. A granule with a row whose document the map leaves cannot hold, or a member they cannot hold, has no cells in it. A granule with no member has one cell of no rows.
+ */
+#define SIFT_PCUBE_ELEMENTS		(UINT8_C(1) << 1)
 
 typedef struct SiftPreaggCubeDesc
 {
@@ -209,7 +214,7 @@ extern bool sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *
 
 typedef struct SiftPreaggBuild SiftPreaggBuild;
 
-/* The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and SIFT_PAG_BUDGET_SLACK more: a granule that would go over is left out of the cube it does not fit */
+/* The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and SIFT_PAG_BUDGET_SLACK more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own */
 #define SIFT_PAG_BUDGET_PERCENT	4
 #define SIFT_PAG_BUDGET_SLACK	65536
 
