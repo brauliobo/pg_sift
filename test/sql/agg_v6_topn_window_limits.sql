@@ -148,6 +148,14 @@ CREATE INDEX wp_fts ON wp USING sift (memo);
 SELECT parity('SELECT id, placed FROM wp WHERE memo @@> ''cable'' ORDER BY placed DESC, id LIMIT 10') AS w12_partitioned_text_top_n;
 SELECT parity('SELECT status, count(*) FROM wp WHERE memo @@> ''wire'' GROUP BY status ORDER BY status') AS w12_partitioned_text_groups;
 
+-- ORDER BY .. LIMIT over quals no scan key says (an OR, an expression, LIKE, a function, a name or cidr compared): the scan runs them over the batches
+CREATE TEMP TABLE w_quals (n int, q text);
+INSERT INTO w_quals VALUES (1, 'tenant_id = 3 OR customer_id < 20'), (2, 'customer_id % 7 = 3'), (3, 'status LIKE ''pa%'''), (4, 'lower(status) = ''paid'' AND total > 100'),
+	(5, 'nm = ''beta'''), (6, 'nm < ''delta'' OR tenant_id = 5'), (7, 'cd = (''10.'' || 3 || ''.0.0/16'')::cidr'), (8, 'NOT (cd < (''10.'' || 3 || ''.0.0/16'')::cidr)');
+SELECT n, parity(format('SELECT id, total FROM wc WHERE %s ORDER BY total DESC, id LIMIT 7', q)) AS index_parity,
+	   parity(format('SELECT id, total FROM wt WHERE %s ORDER BY total DESC, id LIMIT 7', q)) AS table_parity,
+	   plan_ok(format('SELECT id, total FROM wc WHERE %s ORDER BY total DESC, id LIMIT 7', q)) AS index_plan FROM w_quals ORDER BY n;
+
 -- LIMIT and OFFSET given as int parameters (the cast to int8 of the parameter is part of the statement)
 SET plan_cache_mode = force_generic_plan;
 PREPARE w_page(int, int) AS SELECT id, total FROM wc WHERE tenant_id < 15 ORDER BY total DESC, id LIMIT $1 OFFSET $2;

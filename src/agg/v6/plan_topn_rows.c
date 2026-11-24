@@ -200,14 +200,14 @@ sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 	relid = planner_rt_fetch(rel->relid, root)->relid;
 	if (sift_v6_rel_owned(relid, true))
 	{
-		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = relid};
+		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = relid,.batch_ok = true};
 
 		rows_table_path(&p, relid, k);
 		return;
 	}
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
 	{
-		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = ix->indexoid,.index = ix};
+		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = ix->indexoid,.index = ix,.batch_ok = true};
 
 		if (rows_index_path(&p, k))
 			return;
