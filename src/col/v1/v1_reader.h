@@ -2,7 +2,7 @@
  * col/v1/v1_reader.h - the unit reader of Format 1: the rows of a sift_col index or a sift_table table, unit by unit, as the vectors of col/v1/src_exec.h.
  *
  * A reader is opened on one relation with the scan's snapshot and read in superblock order: begin, then next gives the units, and for the unit it gave
- * live (the rows the tombstones leave) and vet (the rows the snapshot sees, when vet_needed) clear the bits of its rows, read decodes a leaf, tids names the
+ * live (the rows the tombstones leave) and vet (the rows the snapshot sees, when vet_needed) clear the bits of its rows in a bitmap of SIFT_COL_NWORDS(nrow) words, read decodes a leaf, tids names the
  * heap rows. select restricts the units begin starts to a match set. The index reader is col/v1/v1_reader.c, the table's is table/v1/v1_tbl_reader.c; the
  * layout and the statistics of a relation are read without opening a source.
  */

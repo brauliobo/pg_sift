@@ -225,9 +225,6 @@ typedef struct V1Src
 	ItemPointerData tids[SIFT_VEC_LEN];
 } V1Src;
 
-/* the live and vet of the provider may write up to PADW (agg/agg_int.h) words past the last word of the rows of a unit */
-#define UNIT_BITS_PAD	8
-
 static bool
 unit_next(V1Src *s)
 {
@@ -239,7 +236,7 @@ unit_next(V1Src *s)
 		if (!s->rd->next(s->src, &s->unit))
 			return false;
 		nw = (s->unit.nrow + 63) / 64;
-		s->bits = MemoryContextAllocZero(s->unit_cx, (nw + UNIT_BITS_PAD) * sizeof(uint64));
+		s->bits = MemoryContextAllocZero(s->unit_cx, SIFT_COL_NWORDS(s->unit.nrow) * sizeof(uint64));
 		s->rd->live(s->src, &s->unit, s->bits);
 		if (s->rd->vet_needed(s->src, &s->unit))
 			s->rd->vet(s->src, &s->unit, s->bits);
