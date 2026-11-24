@@ -611,6 +611,12 @@ v6g_dist_add(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 le
 }
 
 void
+v6g_dist_add_dkey(SiftV6Group *g, V6Set *set, uint32 slot, const SiftDistinctKey *k)
+{
+	sift_distinct_add_dkey(dist_of(g, set), slot, k);
+}
+
+void
 v6g_dist_recycle(SiftV6Group *g)
 {
 	for (int s = 0; s < g->nsets; s++)

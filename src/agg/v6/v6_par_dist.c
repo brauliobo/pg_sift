@@ -225,7 +225,7 @@ add_generic(SiftV6ParDist *d, uint32 slot, const uint8 *prefix, uint32 plen, uin
 		sift_bytes_put(&d->key, prefix, plen);
 	}
 	sift_dkey_i64(&d->key, (int64) value);
-	v6g_dist_add(g, set, slot, d->key.buf, d->key.len);
+	v6g_dist_add_dkey(g, set, slot, &d->key);
 }
 
 static void
