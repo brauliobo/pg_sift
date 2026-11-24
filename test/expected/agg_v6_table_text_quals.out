@@ -212,6 +212,24 @@ SELECT same('filter clause', 'SELECT count(*) FILTER (WHERE s <> ''''), count(*)
 same
 filter clause: ok
 (1 row)
+\echo == the rows of an ORDER BY .. LIMIT with a text filter
+== the rows of an ORDER BY .. LIMIT with a text filter
+SELECT same('top n rows, text <>', 'SELECT s, id FROM @T@ WHERE s <> '''' ORDER BY g, id LIMIT 10');
+same
+top n rows, text <>: ok
+(1 row)
+SELECT same('top n rows, like', 'SELECT * FROM @T@ WHERE s LIKE ''%google%'' ORDER BY g DESC, id LIMIT 12');
+same
+top n rows, like: ok
+(1 row)
+SELECT same('top n rows, text key', 'SELECT s FROM @T@ WHERE s <> '''' AND v <> '''' ORDER BY s, id LIMIT 15');
+same
+top n rows, text key: ok
+(1 row)
+SELECT same('top n rows, text in', 'SELECT id, v FROM @T@ WHERE s IN (''p3'', ''Google'') ORDER BY id DESC LIMIT 9 OFFSET 3');
+same
+top n rows, text in: ok
+(1 row)
 \echo == after updates, deletes and a table rewrite
 == after updates, deletes and a table rewrite
 UPDATE qt SET s = 'p3' WHERE id % 97 = 0;

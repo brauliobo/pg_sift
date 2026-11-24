@@ -109,6 +109,12 @@ SELECT same('having', 'SELECT s, count(*) FROM @T@ WHERE v <> '''' GROUP BY s HA
 SELECT same('top n', 'SELECT s, count(*) AS n FROM @T@ WHERE s <> '''' GROUP BY s ORDER BY n DESC, s LIMIT 5');
 SELECT same('filter clause', 'SELECT count(*) FILTER (WHERE s <> ''''), count(*) FILTER (WHERE s LIKE ''%google%'') FROM @T@');
 
+\echo == the rows of an ORDER BY .. LIMIT with a text filter
+SELECT same('top n rows, text <>', 'SELECT s, id FROM @T@ WHERE s <> '''' ORDER BY g, id LIMIT 10');
+SELECT same('top n rows, like', 'SELECT * FROM @T@ WHERE s LIKE ''%google%'' ORDER BY g DESC, id LIMIT 12');
+SELECT same('top n rows, text key', 'SELECT s FROM @T@ WHERE s <> '''' AND v <> '''' ORDER BY s, id LIMIT 15');
+SELECT same('top n rows, text in', 'SELECT id, v FROM @T@ WHERE s IN (''p3'', ''Google'') ORDER BY id DESC LIMIT 9 OFFSET 3');
+
 \echo == after updates, deletes and a table rewrite
 UPDATE qt SET s = 'p3' WHERE id % 97 = 0;
 UPDATE qh SET s = 'p3' WHERE id % 97 = 0;
