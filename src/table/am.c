@@ -299,12 +299,13 @@ tbl_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 	REL_TAM(rel)->relation_copy_data(rel, newrlocator);
 }
 
+/* The rows are written by the format of the new relation, which is the one a new relation takes: a Format 1 table is rewritten as Format 2.0 */
 static void
 tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort, TransactionId OldestXmin,
 							  SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff, MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed,
 							  double *tups_recently_dead)
 {
-	REL_TAM(OldTable)->relation_copy_for_cluster(OldTable, NewTable, OldIndex, use_sort, OldestXmin, SIFT_TAM_CLUSTER_SNAPSHOT_ARG xid_cutoff,
+	REL_TAM(NewTable)->relation_copy_for_cluster(OldTable, NewTable, OldIndex, use_sort, OldestXmin, SIFT_TAM_CLUSTER_SNAPSHOT_ARG xid_cutoff,
 												 multi_cutoff, num_tuples, tups_vacuumed, tups_recently_dead);
 }
 

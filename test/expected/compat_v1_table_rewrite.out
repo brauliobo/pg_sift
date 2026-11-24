@@ -1,0 +1,49 @@
+-- A Format 1 sift_table (the 5.x layout) rewritten by VACUUM FULL or CLUSTER while new relations take Format 2.0 comes out as Format 2.0 with every row.
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = on;
+CREATE TABLE r1 (id int PRIMARY KEY, g int NOT NULL, s text NOT NULL) USING sift_table;
+CREATE TABLE r2 (id int PRIMARY KEY, g int NOT NULL, s text NOT NULL) USING sift_table;
+INSERT INTO r1 SELECT i, i % 7, 'k' || i % 11 FROM generate_series(1, 3000) i;
+INSERT INTO r2 SELECT i, i % 7, 'k' || i % 11 FROM generate_series(1, 3000) i;
+DELETE FROM r1 WHERE id % 10 = 0;
+DELETE FROM r2 WHERE id % 10 = 0;
+VACUUM r1;
+VACUUM r2;
+SELECT r::text, f.major || '.' || f.minor AS format FROM unnest(ARRAY['r1', 'r2']::regclass[]) r, LATERAL sift.index_format(r) f ORDER BY 1;
+ r  | format 
+----+--------
+ r1 | 1.2
+ r2 | 1.2
+(2 rows)
+
+SET sift.test_create_format1 = off;
+VACUUM FULL r1;
+CLUSTER r2 USING r2_pkey;
+SELECT r::text, f.major || '.' || f.minor AS format FROM unnest(ARRAY['r1', 'r2']::regclass[]) r, LATERAL sift.index_format(r) f ORDER BY 1;
+ r  | format 
+----+--------
+ r1 | 2.0
+ r2 | 2.0
+(2 rows)
+
+SELECT count(*), sum(g), min(id), max(id) FROM r1;
+ count | sum  | min | max  
+-------+------+-----+------
+  2700 | 8095 |   1 | 2999
+(1 row)
+
+SELECT count(*), sum(g), min(id), max(id) FROM r2;
+ count | sum  | min | max  
+-------+------+-----+------
+  2700 | 8095 |   1 | 2999
+(1 row)
+
+INSERT INTO r1 VALUES (3001, 1, 'new');
+SELECT count(*) FROM r1;
+ count 
+-------
+  2701
+(1 row)
+
+DROP TABLE r1, r2;
+DROP EXTENSION pg_sift;
