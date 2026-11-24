@@ -5,6 +5,7 @@
 #
 #   scripts/lint.sh            all of them
 #   scripts/lint.sh NAME...    only those (the names are the first column below)
+#   scripts/lint.sh --macos    only the checks that run the BSD tools and the clang of macOS (MACOS_CHECKS): the others read the same files as the Linux job
 #   scripts/lint.sh --selftest the runner itself
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 cd "$(dirname "$0")/.." || exit 2
@@ -23,7 +24,7 @@ cd "$(dirname "$0")/.." || exit 2
 PLAN_IN="scripts Makefile test sql pg_sift.control src/agg/par ':(exclude)test/sql' ':(exclude)test/expected'"
 plan_check() { CHECKS+=("plan-$1"$'\t'"scripts/lint-cache.sh plan-$1 --names $2 $3 -- scripts/ci.sh --selftest $1"); }   # PART NAMES-OF CONTENT
 CHECKS=()
-for part in shards-quick spread shards-full areas-select tooling slices flavors; do plan_check $part test "$PLAN_IN"; done
+for part in shards-quick spread areas-select tooling budgets flavors formats; do plan_check $part test "$PLAN_IN"; done
 plan_check areas-files . "$PLAN_IN"
 plan_check portability test/t "scripts test/t '*.py'"
 CHECKS+=(
@@ -137,6 +138,10 @@ CHECKS+=(
 	'test-hygiene	python3 -I scripts/check-test-hygiene.py --selftest && python3 -I scripts/check-test-hygiene.py'
 )
 
+# the checks the macOS job runs: the shell syntax and the portability of the scripts (the BSD paste, stat, seq, wc and sed; bash 4), the portable core and the stubs of the SQLite and MariaDB hosts
+# (the clang of macOS), the runner and the helpers of the harness that call those tools. The 100 others (python, documents, policy of the sources) give the same answer on every system
+MACOS_CHECKS='syntax runner plan-portability portable host-stubs pgtest-auto-conf port-isa-check isa-scan no-ifunc ci-claim ci-stop ci-ready ci-build-fail build-id leakcheck formula-sha'
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
@@ -180,6 +185,9 @@ run_checks() {
 
 if [[ ${1:-} == --selftest ]]; then
 	unset LINT_TIMES
+	for name in $MACOS_CHECKS; do
+		[[ -n $(printf '%s\n' "${CHECKS[@]}" | grep -m1 "^$name"$'\t') ]] || { echo "FAIL: lint.sh --macos runs $name, which is no check"; exit 1; }
+	done
 	now() { cat "$tmp/$1.clock" 2>/dev/null || echo 0; }
 	CHECKS=($'quick\ttrue' "slow"$'\t'"echo 1 >$tmp/slow.clock; echo slept" $'broken\techo boom; exit 3' $'silent\texit 4')
 	out=$(LINT_JOBS=2 run_checks); rc=$?
@@ -198,4 +206,5 @@ if [[ ${1:-} == --selftest ]]; then
 	exit 0
 fi
 
+[[ ${1:-} != --macos ]] || set -- $MACOS_CHECKS
 run_checks "$@"
