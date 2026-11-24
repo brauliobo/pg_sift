@@ -226,11 +226,13 @@ typedef struct WinxCell
 {
 	SiftWinI128 v;
 	bool		null;
+	bool		nan;			/* a numeric NaN: not NULL, and v holds nothing */
 } WinxCell;
 
 typedef struct WinxState
 {
-	uint64		n;
+	uint64		n;				/* the rows with a value */
+	uint64		nans;			/* the NaN rows */
 	SiftWinI128 sum;
 	SiftWinI128 ext;
 	int64		i;
@@ -366,6 +368,8 @@ cell_at(SiftVecType type, const SiftVec *v, uint32 r)
 {
 	WinxCell	c = {0};
 
+	if (sift_vec_nan_at(v, r))
+		return (WinxCell) {.nan = true};
 	if (!sift_vec_valid_at(v, r))
 		return (WinxCell) {.null = true};
 	switch (type)
@@ -413,7 +417,8 @@ val_of_cell(SiftVecType type, const WinxCell *c, SiftWinxVal *v)
 {
 	memset(v, 0, sizeof(*v));
 	v->null = c->null;
-	if (c->null)
+	v->nan = c->nan;
+	if (c->null || c->nan)
 		return;
 	if (type == SVEC_F64)
 	{
@@ -435,7 +440,12 @@ var_fill(const SiftWinxFunc *fn, const WinxState *s, SiftWinxVal *v)
 {
 	const SiftWinVarKind vk = sift_winx_var_kind(fn->kind);
 
-	if (fn->arg_type == SVEC_F64)
+	if (s->nans > 0)
+	{
+		v->null = s->n + s->nans < (sift_winvar_is_sample(vk) ? 2 : 1);
+		v->nan = !v->null;
+	}
+	else if (fn->arg_type == SVEC_F64)
 		v->null = !sift_winvar_f64_final(&s->vf, vk, &v->f);
 	else
 	{
@@ -459,7 +469,8 @@ winx_fill(const SiftWinx *w, int f, WinxState *s, SiftWinxVal *v)
 	v->n = s->n;
 	if (fn->kind == SWX_COUNT_STAR || fn->kind == SWX_COUNT)
 	{
-		v->i = (int64) s->n;
+		v->n = s->n + s->nans;
+		v->i = (int64) v->n;
 		return;
 	}
 	if (fn->kind == SWX_FIRST_VALUE)
@@ -471,6 +482,11 @@ winx_fill(const SiftWinx *w, int f, WinxState *s, SiftWinxVal *v)
 	if (sift_winx_is_var(fn->kind))
 	{
 		var_fill(fn, s, v);
+		return;
+	}
+	if (s->nans > 0 && (fn->kind != SWX_MIN || s->n == 0))
+	{
+		v->nan = true;
 		return;
 	}
 	if (s->n == 0)
@@ -606,6 +622,8 @@ winx_row_fold(SiftWinx *w, const SiftWinxBatch *b, uint32 r)
 			continue;
 		if (fn->kind == SWX_COUNT_STAR)
 			s->n++;
+		else if (sift_vec_nan_at(b->arg[f], r))
+			s->nans++;
 		else if (!sift_vec_valid_at(b->arg[f], r))
 			continue;
 		else if (fn->kind == SWX_COUNT)
