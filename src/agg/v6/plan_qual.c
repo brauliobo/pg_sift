@@ -169,8 +169,8 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 {
 	Expr	   *q;
 
-	/* a table has no heap to decide the rows whose stored value is a NaN: PostgreSQL's own comparison of the datums does */
-	if (p->is_table && has_numeric_var((Node *) clause, NULL))
+	/* a table, and a FILTER clause of an index, have no scan to decide the rows whose stored value is a NaN: PostgreSQL's own comparison of the datums does */
+	if ((p->is_table || p->in_filter) && has_numeric_var((Node *) clause, NULL))
 		return NULL;
 
 	switch (nodeTag(clause))
