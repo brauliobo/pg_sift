@@ -1,7 +1,7 @@
 /*
  * core/store_ops.h - format-agnostic storage seam for the unified SiftAgg engine (Spec 86).
  *
- * Replaces the 6-pointer SiftV6Format with a multi-format registry with 6 mandatory core pointers and 10 independent optional capability sub-vtables (NULL = unsupported, skipped in one
+ * A multi-format registry with 6 mandatory core pointers and 10 independent optional capability sub-vtables (NULL = unsupported, skipped in one
  * branch). The engine (agg/) reaches a format only through these tables and the plain structs of core/scan_types.h: no col/f2, col/v1, table/f2 or table/v1 header is included here or in agg/.
  * Format state that crosses the seam is opaque (a struct named here and defined by the format, or a void pointer).
  */
