@@ -1,14 +1,17 @@
 /*
  * agg/v6/par/run_distinct.c - COUNT(DISTINCT x) of SiftAggV6 on the compute threads (agg/v6/par/run.h): x is an integer or a text column, the statement has no key or keys (integer columns and one
- * text), and COUNT(*), COUNT(column), SUM and AVG of int2 and int4 columns next to the one distinct count (agg/v6/par/distinct.h). A NULL in a key or in a column of a sum is not for a thread (the
- * scan does it); a NULL value is not counted, and its row is a row of its group.
+ * text), and COUNT(*), COUNT(column), SUM and AVG of int2 and int4 columns and MIN and MAX of text columns next to the one distinct count (agg/v6/par/distinct.h). A NULL in a key or in a column of a
+ * sum is not for a thread (the scan does it); a NULL value is not counted, and its row is a row of its group; a NULL text is not a minimum or maximum. The plan takes a text MIN or MAX only of a
+ * column in the C collation (agg/v6/plan.c), the order of the bytes that the threads compare by.
  */
 #include "postgres.h"
 
+#include "agg/v6/par/keytab.h"
 #include "agg/v6/par/run_int.h"
 
 #define AGGS_MAX		16
 #define STATE_MIN		(8u << 20)
+#define DIRECT_MAX		(1u << 16)
 
 static bool
 int_col(const SiftV6Col *c)
@@ -22,16 +25,6 @@ static bool
 text_col(const SiftV6Col *c)
 {
 	return par_plain_col(c) && sift_v6_class(c->typid) == SV6C_TEXT;
-}
-
-/* A leaf a NULL of which is not for a thread */
-static int
-checked_leaf(ParShape *sh, const int *first, const SiftV6Col *c, bool codes)
-{
-	const int	at = par_add_leaf(sh, par_leaf_of(first, c), codes);
-
-	sh->chk[sh->nchk++] = at;
-	return at;
 }
 
 static bool
@@ -49,7 +42,8 @@ keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 			return false;
 		sh->ds.kstr |= sh->ktext[i];
 		sh->ds.kw += !sh->ktext[i];
-		sh->key_at[i] = checked_leaf(sh, first, &sp->key[i], sh->ktext[i]);
+		sh->key_at[i] = par_add_leaf(sh, par_leaf_of(first, c), sh->ktext[i]);
+		par_check_leaf(sh, sh->key_at[i]);
 	}
 	return true;
 }
@@ -64,7 +58,17 @@ value_of(const SiftV6Agg *a, const int *first, ParShape *sh)
 	return true;
 }
 
-/* The one distinct count, and the counts and sums that go with it, with the leaves they read */
+static bool
+min_max_of(const SiftV6Agg *a, const int *first, ParShape *sh)
+{
+	if (a->fclause != 0 || a->nxcols != 0 || !text_col(&a->arg) || sh->ds.nmm == SIFT_PAR_DISTINCT_MM_MAX)
+		return false;
+	sh->ds.mm_max |= (a->kind == SV6_MAX) << sh->ds.nmm;
+	sh->mm_at[sh->ds.nmm++] = par_add_leaf(sh, par_leaf_of(first, &a->arg), true);
+	return true;
+}
+
+/* The one distinct count, the text minimums and maximums, and the counts and sums that go with them, with the leaves they read */
 static bool
 aggs_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
@@ -76,25 +80,21 @@ aggs_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 	{
 		const SiftV6Agg *a = &sp->agg[j];
 
-		if (a->fclause != 0 || a->nxcols != 0)
-			return false;
-		if (a->kind == SV6_COUNT_STAR)
-			continue;
-		if (!par_plain_col(&a->arg))
-			return false;
-		if (a->kind == SV6_COUNT_DISTINCT)
+		if (a->kind == SV6_COUNT_DISTINCT && a->fclause == 0 && a->nxcols == 0)
 		{
 			ndistinct++;
 			if (!value_of(a, first, sh))
 				return false;
 		}
-		else if (a->kind == SV6_COUNT)
-			checked_leaf(sh, first, &a->arg, false);
-		else if ((a->kind == SV6_SUM || a->kind == SV6_AVG) && (a->arg.typid == INT2OID || a->arg.typid == INT4OID) && sh->ds.nsum < SIFT_PAR_GROUP_MAX_SUM)
-			sh->sum_at[sh->ds.nsum++] = checked_leaf(sh, first, &a->arg, false);
-		else
+		else if (a->kind == SV6_MIN || a->kind == SV6_MAX)
+		{
+			if (!min_max_of(a, first, sh))
+				return false;
+		}
+		else if (!par_count_sum_of(a, first, sh))
 			return false;
 	}
+	sh->ds.nsum = sh->nsum;
 	return ndistinct == 1;
 }
 
@@ -113,11 +113,13 @@ distinct_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads,
 	const bool	grouped = sh->ds.kw > 0 || sh->ds.kstr;
 	const uint64 keys = grouped ? Min(per, groups_est > 0 ? groups_est : per / 8) : 0;
 	const uint64 texts = sh->ds.vstr ? per / 8 : 0;
+	const bool	direct = sh->ds.kw == 1 && !sh->ds.kstr;
+	const uint64 direct_bytes = direct ? (uint64) DIRECT_MAX * (SIFT_KEY_HEAD + 1 + 2 + sh->ds.nsum + 3 * sh->ds.nmm) * sizeof(uint64) : 0;
 
 	sz->scratch = 8u << 20;
 	sz->work = (8u << 20) + rows / 16;
-	sz->state_min = STATE_MIN;
-	sz->state_want = STATE_MIN + 3 * (grouped ? sizeof(uint64) * 2 : sizeof(uint64)) * per + 256 * (keys + texts);
+	sz->state_min = STATE_MIN + direct_bytes;
+	sz->state_want = sz->state_min + 3 * (grouped ? sizeof(uint64) * 2 : sizeof(uint64)) * per + 256 * (keys + texts);
 }
 
 /* ---- a thread ---- */
@@ -205,6 +207,23 @@ fill_word_values(const ColView *cv, const ParLoad *ld, SiftArena *scratch, SiftP
 }
 
 static bool
+fill_mm(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b)
+{
+	for (int m = 0; m < sh->ds.nmm; m++)
+	{
+		const ColView *cv = &ld->cv[sh->mm_at[m]];
+		SiftStrRef *s = batch_array(scratch, ld->nact, sizeof(SiftStrRef));
+
+		if (s == NULL)
+			return false;
+		PAR_EACH_ROW(ld, r, k)
+			s[k] = cv->isnull[r] ? (SiftStrRef) {NULL, SIFT_STR_NULL} : par_str_at(cv, r);
+		b->mm[m] = s;
+	}
+	return true;
+}
+
+static bool
 fill_values(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b)
 {
 	const ColView *cv = &ld->cv[sh->val_at];
@@ -226,7 +245,7 @@ distinct_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, S
 	for (int c = 0; c < sh->nchk; c++)
 		if (par_has_null(&ld, &ld.cv[sh->chk[c]]))
 			return par_serial(err, "a NULL in a column of the aggregate");
-	if (!fill_keys(sh, &ld, scratch, out) || !fill_sums(sh, &ld, scratch, out) || !fill_values(sh, &ld, scratch, out))
+	if (!fill_keys(sh, &ld, scratch, out) || !fill_sums(sh, &ld, scratch, out) || !fill_mm(sh, &ld, scratch, out) || !fill_values(sh, &ld, scratch, out))
 		return par_arena_full(scratch, err);
 	p->w[worker].rows += ld.nact;
 	out->n = ld.nact;
@@ -238,10 +257,27 @@ distinct_overflow(void *arg, const SiftParRange *left, uint32 nleft)
 {
 }
 
+/* The zone of the one integer key of every granule: the keys of the run are then in a range, which may be narrow */
+static void
+distinct_setup(SiftV6ParScan *p)
+{
+	if (p->sh.ds.kw == 1 && !p->sh.ds.kstr)
+		sift_pin_win_track_zone(p->win, p->sh.leaf[p->sh.key_at[0]]);
+}
+
 static void *
 distinct_create(SiftV6ParScan *p, SiftParArenas *ar, uint64 rows, SiftErr *err)
 {
 	const SiftParDistinctHooks hooks = {.fill = distinct_fill,.overflow = distinct_overflow,.arg = p};
+	SiftParDistinctSpec *ds = &p->sh.ds;
+	int64		lo,
+				hi;
+
+	if (ds->kw == 1 && !ds->kstr && sift_pin_win_zone_range(p->win, &lo, &hi) && (uint64) hi - (uint64) lo < DIRECT_MAX)
+	{
+		ds->direct_lo = lo;
+		ds->direct_n = (uint32) ((uint64) hi - (uint64) lo + 1);
+	}
 
 	return sift_par_distinct_create(ar, &p->sh.ds, &hooks, err);
 }
@@ -258,7 +294,8 @@ distinct_emit(void *arg, const SiftParDistinctRow *row)
 	SiftV6StrIn str[SIFT_V6_MAX_KEYS] = {{0}};
 	SiftV6AccIn acc[AGGS_MAX] = {{0}};
 	int			word = 0,
-				m = 0;
+				m = 0,
+				mm = 0;
 
 	for (int i = 0; i < sp->nkeys; i++)
 	{
@@ -273,6 +310,11 @@ distinct_emit(void *arg, const SiftParDistinctRow *row)
 
 		if (a->kind == SV6_COUNT_DISTINCT)
 			acc[j].v0 = row->distinct;
+		else if (a->kind == SV6_MIN || a->kind == SV6_MAX)
+		{
+			acc[j].str = row->mm[mm].p;
+			acc[j].len = row->mm[mm++].len;
+		}
 		else
 			acc[j].n = (int64) row->rows;
 		if (a->kind == SV6_SUM || a->kind == SV6_AVG)
@@ -290,4 +332,4 @@ distinct_done(SiftV6ParScan *p)
 	sift_par_distinct_each(p->op, distinct_emit, p);
 }
 
-const ParKind par_kind_distinct = {.shape = distinct_shape,.sizes = distinct_sizes,.create = distinct_create,.ops = &sift_par_distinct_ops,.done = distinct_done};
+const ParKind par_kind_distinct = {.shape = distinct_shape,.sizes = distinct_sizes,.create = distinct_create,.ops = &sift_par_distinct_ops,.setup = distinct_setup,.done = distinct_done};

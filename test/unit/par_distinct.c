@@ -43,6 +43,7 @@ typedef struct DRow
 	uint64		rows;
 	uint64		sum[SIFT_PAR_GROUP_MAX_SUM];
 	uint64		distinct;
+	SiftStrRef	mm[SIFT_PAR_DISTINCT_MM_MAX];	/* copies: p NULL when no row had a text */
 } DRow;
 
 typedef struct DVec
@@ -65,7 +66,11 @@ static void
 dvec_free(DVec *v)
 {
 	for (uint32 i = 0; i < v->n; i++)
+	{
 		free(v->r[i].str);
+		for (int m = 0; m < SIFT_PAR_DISTINCT_MM_MAX; m++)
+			free((void *) v->r[i].mm[m].p);
+	}
 	free(v->r);
 	*v = (DVec) {0};
 }
@@ -99,6 +104,9 @@ dgot_push(void *arg, const SiftParDistinctRow *row)
 	r->rows = row->rows;
 	memcpy(r->sum, row->sum, sizeof(r->sum));
 	r->distinct = row->distinct;
+	for (int m = 0; m < SIFT_PAR_DISTINCT_MM_MAX; m++)
+		if (row->mm[m].p != NULL)
+			r->mm[m] = (SiftStrRef) {memcpy(malloc(row->mm[m].len + 1), row->mm[m].p, row->mm[m].len), row->mm[m].len};
 }
 
 /* The row i of the data as a DRow (rows 1, the sums of the row, no distinct yet) */
@@ -163,6 +171,26 @@ dvalue_same(const DData *d, const SiftParDistinctSpec *sp, uint32 i, uint32 j)
 	return dindex_cmp(&i, &j) == 0;
 }
 
+/* The text s into the minimum or maximum m of the row: by the bytes, then the length */
+static void
+dref_mm(DRow *r, int m, bool max, SiftStrRef s)
+{
+	int			c;
+
+	if (s.len == SIFT_STR_NULL)
+		return;
+	if (r->mm[m].p != NULL)
+	{
+		c = memcmp(s.p, r->mm[m].p, Min(s.len, r->mm[m].len));
+		if (c == 0)
+			c = s.len < r->mm[m].len ? -1 : s.len > r->mm[m].len;
+		if (max ? c <= 0 : c >= 0)
+			return;
+		free((void *) r->mm[m].p);
+	}
+	r->mm[m] = (SiftStrRef) {memcpy(malloc(s.len + 1), s.p, s.len), s.len};
+}
+
 /* The answer of the rows: one row per key (with no key, one, also with no rows), by sorting; the str of a row is the data's */
 static DVec
 dreference(const DData *d, const SiftParDistinctSpec *sp)
@@ -195,6 +223,8 @@ dreference(const DData *d, const SiftParDistinctSpec *sp)
 		cur->rows++;
 		for (int m = 0; m < sp->nsum; m++)
 			cur->sum[m] += row.sum[m];
+		for (int m = 0; m < sp->nmm; m++)
+			dref_mm(cur, m, (sp->mm_max >> m) & 1, d->mm[m][idx[k]]);
 		if (!dvalue_null(d, sp, idx[k]) && (fresh_key || k == 0 || !dvalue_same(d, sp, idx[k - 1], idx[k])))
 			cur->distinct++;
 	}
@@ -216,6 +246,9 @@ same_answer(DVec *got, const DVec *want, const SiftParDistinctSpec *sp)
 
 		if (drow_cmp(g, w) != 0 || g->rows != w->rows || g->distinct != w->distinct || memcmp(g->sum, w->sum, sizeof(uint64) * sp->nsum) != 0)
 			return false;
+		for (int m = 0; m < sp->nmm; m++)
+			if (g->mm[m].len != w->mm[m].len || (g->mm[m].p == NULL) != (w->mm[m].p == NULL) || (w->mm[m].len > 0 && memcmp(g->mm[m].p, w->mm[m].p, w->mm[m].len) != 0))
+				return false;
 	}
 	return true;
 }
@@ -272,7 +305,7 @@ check_all_threads(const DData *d, const SiftParDistinctSpec *sp)
 static void
 test_shapes(void)
 {
-	static const SiftParDistinctSpec keys[] = {{0, false}, {1, false}, {2, false}, {4, false}, {0, true}, {1, true}, {2, true}};
+	static const SiftParDistinctSpec keys[] = {{0, false}, {1, false}, {2, false}, {4, false}, {0, true}, {1, true}, {2, true}, {.kw = 1,.direct_n = 6000,.direct_lo = -300}};
 	static const uint32 ngroups[] = {1, 40, 5000};
 	static const uint32 ndist[] = {7, 4000};
 	int			variant = 0;
@@ -290,6 +323,8 @@ test_shapes(void)
 							continue;
 						sp.vstr = vstr;
 						sp.nsum = nsum;
+						sp.nmm = variant % 3 == 0 ? 2 : variant % 3 == 1 ? 1 : 0;
+						sp.mm_max = 2;
 						d = dgen(&sp, ROWS, ngroups[ig], ndist[in], variant % 2, (variant / 2) % 2);
 						variant++;
 						check_all_threads(d, &sp);
@@ -310,7 +345,9 @@ all_null_values(DData *d, const SiftParDistinctSpec *sp)
 static void
 test_edges(void)
 {
-	static const SiftParDistinctSpec shapes[] = {{0, false, 1, false}, {0, false, 1, true}, {1, true, 2, false}, {1, true, 2, true}, {2, false, 0, true}, {0, true, 0, false}};
+	static const SiftParDistinctSpec shapes[] = {{0, false, 1, false}, {0, false, 1, true}, {1, true, 2, false}, {1, true, 2, true}, {2, false, 0, true}, {0, true, 0, false},
+												 {.kw = 1,.nsum = 1,.nmm = 1,.direct_n = 40,.direct_lo = 7}, {.kw = 1,.kstr = true,.nsum = 1,.vstr = true,.nmm = 2,.mm_max = 1},
+												 {.nmm = 2,.mm_max = 2}};
 	static const uint32 sizes[] = {0, 1, 3, 17, ROWS};
 
 	for (int is = 0; is < lengthof(shapes); is++)
@@ -355,7 +392,8 @@ sweep(const DData *d, const SiftParDistinctSpec *sp, uint32 workers)
 static void
 test_overflow(void)
 {
-	static const SiftParDistinctSpec shapes[] = {{0, false, 0, false}, {0, false, 0, true}, {1, false, 2, false}, {1, true, 2, true}, {0, true, 1, true}};
+	static const SiftParDistinctSpec shapes[] = {{0, false, 0, false}, {0, false, 0, true}, {1, false, 2, false}, {1, true, 2, true}, {0, true, 1, true},
+												 {.kw = 1,.nsum = 1,.vstr = true,.nmm = 1,.direct_n = 3000,.direct_lo = -1}, {.kw = 1,.kstr = true,.nmm = 2,.mm_max = 1}};
 
 	for (int is = 0; is < lengthof(shapes); is++)
 	{
@@ -388,7 +426,7 @@ key_in(uint32 i)
 static uint32
 intern_in(SiftKeyTab *t, const KeyIn *in, uint64 h)
 {
-	const SiftKey k = {.h = h,.w = &in->w,.p = (const uint8 *) in->buf,.len = in->len};
+	const SiftTabKey k = {.h = h,.w = &in->w,.p = (const uint8 *) in->buf,.len = in->len};
 
 	return sift_keytab_intern(t, &k);
 }
@@ -404,7 +442,7 @@ test_keytab(void)
 	KeyIn		in[KEYS];
 	const uint64 word = 5;
 	uint8		bytes[3] = {1, 2, 3};
-	SiftKey		raw = {.h = 7,.w = &word,.p = bytes,.len = 3};
+	SiftTabKey		raw = {.h = 7,.w = &word,.p = bytes,.len = 3};
 
 	PASS(sift_keytab_init(&t, a, sh, false) && sift_keytab_init(&borrower, a, sh, true));
 	for (uint32 i = 0; i < KEYS; i++)
@@ -430,11 +468,36 @@ test_keytab(void)
 	raw.h = sift_key_hash(&sh, raw.w, raw.p, raw.len);
 	{
 		uint8		copy[3] = {1, 2, 3};
-		const SiftKey same = {.h = raw.h,.w = raw.w,.p = copy,.len = 3};
+		const SiftTabKey same = {.h = raw.h,.w = raw.w,.p = copy,.len = 3};
 		const uint32 id = sift_keytab_intern(&t, &raw);
 
 		PASS(id == KEYS && sift_keytab_intern(&t, &same) == id && sift_key_hash(&sh, same.w, same.p, same.len) == raw.h);
 	}
+}
+
+static void
+test_keytab_direct(void)
+{
+	SiftArena  *a = sift_arena_create(CurrentMemoryContext, 1 << 20);
+	const SiftKeyShape sh = {.kw = 1,.npay = 1};
+	SiftKeyTab	t;
+	const uint64 in[] = {(uint64) -5, (uint64) 0, 5, 6, (uint64) -6};
+	const uint32 id[] = {0, 5, 10, SIFT_KEYTAB_NONE, SIFT_KEYTAB_NONE};
+
+	PASS(sift_keytab_init_direct(&t, a, sh, -5, 11) && t.count == 11);
+	for (int i = 0; i < 5; i++)
+	{
+		const SiftTabKey k = {.h = 0,.w = &in[i]};
+
+		PASS(sift_keytab_intern(&t, &k) == id[i]);
+	}
+	for (uint32 i = 0; i < 11; i++)
+	{
+		const uint64 word = (uint64) ((int64) i - 5);
+
+		PASS(sift_keytab_at(&t, i)[0] == sift_key_hash(&sh, &word, NULL, 0) && sift_keytab_key(sift_keytab_at(&t, i)).w[0] == word && sift_keytab_pay(&t, sift_keytab_at(&t, i))[0] == 0);
+	}
+	PASS(!sift_keytab_init_direct(&t, a, sh, 0, 1 << 20));
 }
 
 int
@@ -442,6 +505,7 @@ main(void)
 {
 	pgshim_keep();
 	test_keytab();
+	test_keytab_direct();
 	test_shapes();
 	test_edges();
 	test_overflow();

@@ -36,6 +36,8 @@ typedef struct SiftV6AccIn
 	int64		n;				/* the values folded: a count, 0 for a state that has none */
 	uint64		v0;				/* the low half of an integer sum, a double sum (its bits), a minimum or maximum (a double: its bits) */
 	int64		v1;				/* the high half of an integer sum */
+	const uint8 *str;			/* the minimum or maximum of a text column: its bytes, which the group copies (NULL: none) */
+	uint32		len;
 } SiftV6AccIn;
 
 /* The value of a text key of a group of the device: the bytes, which no int64 holds */

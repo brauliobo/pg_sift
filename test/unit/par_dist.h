@@ -23,8 +23,11 @@ typedef struct DData
 	SiftStrRef *vstr;
 	SiftStrRef *pool[DIST_COPIES];	/* the texts of the keys, and of the values, as many times as a part has its own dictionary */
 	SiftStrRef *vpool[DIST_COPIES];
+	SiftStrRef *mm[SIFT_PAR_DISTINCT_MM_MAX];	/* the texts of the minimums and maximums, and their pool */
+	SiftStrRef *mpool[DIST_COPIES];
 	uint32		npool;
 	uint32		nvpool;
+	uint32		nmpool;
 } DData;
 
 static uint64 dgen_state;
@@ -69,7 +72,8 @@ dpool_free(SiftStrRef *p, uint32 n)
 
 /*
  * n rows of ngroups groups at most (with a text, the word 0 of a key is of group % 3 and the text of group / 3; the other words are of group % (3 + j)), ndist values (the value 0 is the zero word, or
- * the empty text), skew: nine rows of ten in group 0 (and value 0), nulls: a value in nine is NULL. A text is not at one place: the row i reads the copy of the pool that its part has.
+ * the empty text), skew: nine rows of ten in group 0 (and value 0), nulls: a value in nine is NULL (and a text of a minimum or maximum in seven). A text is not at one place: the row i reads the copy
+ * of the pool that its part has. A direct spec has the key words direct_lo + group % direct_n.
  */
 static DData *
 dgen(const SiftParDistinctSpec *sp, uint32 n, uint32 ngroups, uint32 ndist, bool skew, bool nulls)
@@ -80,11 +84,15 @@ dgen(const SiftParDistinctSpec *sp, uint32 n, uint32 ngroups, uint32 ndist, bool
 	d->n = n;
 	d->npool = Max(ngroups / 3 + 1, 1);
 	d->nvpool = ndist;
+	d->nmpool = 3000;
 	for (int c = 0; c < DIST_COPIES; c++)
 	{
 		d->pool[c] = dpool(d->npool, "k");
 		d->vpool[c] = sp->vstr ? dpool(ndist, "v") : NULL;
+		d->mpool[c] = sp->nmm > 0 ? dpool(d->nmpool, "m") : NULL;
 	}
+	for (int m = 0; m < sp->nmm; m++)
+		d->mm[m] = malloc(sizeof(SiftStrRef) * Max(n, 1));
 	for (int j = 0; j < sp->kw; j++)
 		d->key[j] = malloc(sizeof(uint64) * Max(n, 1));
 	for (int m = 0; m < sp->nsum; m++)
@@ -102,11 +110,14 @@ dgen(const SiftParDistinctSpec *sp, uint32 n, uint32 ngroups, uint32 ndist, bool
 		const int	copy = (i >> 8) % DIST_COPIES;
 
 		for (int j = 0; j < sp->kw; j++)
-			d->key[j][i] = j == 0 ? (sp->kstr ? g % 3 : g) * UINT64CONST(0x9E3779B97F4A7C15) : sift_fmix64((g % (3 + j)) * 7 + j);
+			d->key[j][i] = sp->direct_n > 0 ? (uint64) sp->direct_lo + g % sp->direct_n :
+				j == 0 ? (sp->kstr ? g % 3 : g) * UINT64CONST(0x9E3779B97F4A7C15) : sift_fmix64((g % (3 + j)) * 7 + j);
 		if (sp->kstr)
 			d->kstr[i] = d->pool[copy][g / 3];
 		for (int m = 0; m < sp->nsum; m++)
 			d->sum[m][i] = (uint64) ((int64) (dgen_next() % 2001) - 1000);
+		for (int m = 0; m < sp->nmm; m++)
+			d->mm[m][i] = nulls && dgen_next() % 7 == 0 ? (SiftStrRef) {NULL, SIFT_STR_NULL} : d->mpool[copy][dgen_next() % d->nmpool];
 		if (sp->vstr)
 			d->vstr[i] = null ? (SiftStrRef) {NULL, SIFT_STR_NULL} : d->vpool[copy][v];
 		else
@@ -130,7 +141,11 @@ dfree(DData *d)
 		dpool_free(d->pool[c], d->npool);
 		if (d->vpool[c] != NULL)
 			dpool_free(d->vpool[c], d->nvpool);
+		if (d->mpool[c] != NULL)
+			dpool_free(d->mpool[c], d->nmpool);
 	}
+	for (int m = 0; m < SIFT_PAR_DISTINCT_MM_MAX; m++)
+		free(d->mm[m]);
 	free(d->kstr);
 	free(d->val);
 	free(d->vnull);
@@ -161,6 +176,8 @@ dsrc_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftP
 	b->val = s->sp->vstr ? NULL : s->d->val + lo;
 	b->vnull = s->sp->vstr ? NULL : s->d->vnull + lo;
 	b->vstr = s->sp->vstr ? s->d->vstr + lo : NULL;
+	for (int m = 0; m < s->sp->nmm; m++)
+		b->mm[m] = s->d->mm[m] + lo;
 	return true;
 }
 

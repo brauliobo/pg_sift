@@ -713,7 +713,10 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str,
 	{
 		const V6Acc in = acc_of_in(&g->spec->agg[j], &acc[j]);
 
-		v6g_merge_acc(g, &g->spec->agg[j], (V6Acc *) (state + g->off[j]), &in);
+		if (acc[j].str != NULL)
+			sift_strmm_offer(g->slab, (SiftStrMM *) (state + g->off[j]), g->spec->agg[j].kind == SV6_MIN, acc[j].str, acc[j].len);
+		else
+			v6g_merge_acc(g, &g->spec->agg[j], (V6Acc *) (state + g->off[j]), &in);
 	}
 	v6g_spill_if_over(g);
 	MemoryContextSwitchTo(old);

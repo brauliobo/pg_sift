@@ -40,6 +40,7 @@ struct SiftParDistinct
 	SiftParArenas *ar;
 	int			nw;
 	bool		grouped;
+	bool		direct;			/* the keys are a range of words (the key tables of the threads are direct) */
 	SiftKeyShape ks;
 	SiftKeyShape vs;
 	DistWorker *w;
@@ -52,10 +53,65 @@ typedef struct DistRec
 	uint32		pad;
 } DistRec;
 
+/* The words of the payload of a key: its rows, its sums, the text minimums and maximums (3 words each), and a last word (below) */
+static inline uint32
+dist_pay_mm(const SiftParDistinct *d, int m)
+{
+	return 1 + d->sp.nsum + 3 * m;
+}
+
 static inline uint32
 dist_pay_last(const SiftParDistinct *d)
 {
-	return 1 + d->sp.nsum;
+	return dist_pay_mm(d, d->sp.nmm);
+}
+
+/*
+ * A text minimum or maximum in the payload of a key: the place of the bytes, their length plus one (0: no row had a text), and the bytes the thread owns there (0: the bytes are another's). The
+ * order is that of the bytes. A thread copies the best into its arena when a better one comes, in a block it reuses while the best fit it; the answer of a partition points to those blocks.
+ */
+static inline bool
+dist_mm_better(const uint64 *s, bool max, const uint8 *p, uint32 len)
+{
+	const uint32 n = s[1] == 0 ? 0 : Min(len, (uint32) (s[1] - 1));
+	int			c;
+
+	if (s[1] == 0)
+		return true;
+	c = n > 0 ? memcmp(p, (const uint8 *) (uintptr_t) s[0], n) : 0;
+	if (c == 0)
+		c = len < s[1] - 1 ? -1 : len > s[1] - 1;
+	return max ? c > 0 : c < 0;
+}
+
+/* The text p into the state s if it is better; own: the arena the copy is made in (NULL: s points at p, which stays); false when the arena has no room */
+static inline bool
+dist_mm_offer(uint64 *s, bool max, const uint8 *p, uint32 len, SiftArena *own)
+{
+	if (!dist_mm_better(s, max, p, len))
+		return true;
+	if (own != NULL)
+	{
+		if (len > s[2] || s[2] == 0)
+		{
+			const uint64 cap = Max(len, Max(32, 2 * s[2]));
+			uint8	   *copy = sift_arena_alloc(own, cap, 1);
+
+			if (copy == NULL)
+				return false;
+			s[0] = (uint64) (uintptr_t) copy;
+			s[2] = cap;
+		}
+		if (len > 0)
+			memcpy((void *) (uintptr_t) s[0], p, len);
+	}
+	else
+	{
+		s[0] = (uint64) (uintptr_t) p;
+		s[2] = 0;
+	}
+	s[1] = (uint64) len + 1;
+	return true;
 }
 
 static inline bool

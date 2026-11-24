@@ -32,7 +32,7 @@ slot_of(uint64 h, uint32 id)
 }
 
 static inline bool
-key_equal(const SiftKeyTab *t, const uint64 *e, const SiftKey *k)
+key_equal(const SiftKeyTab *t, const uint64 *e, const SiftTabKey *k)
 {
 	uint64		diff = e[0] ^ k->h;
 
@@ -90,6 +90,25 @@ sift_keytab_init(SiftKeyTab *t, SiftArena *a, SiftKeyShape sh, bool borrow)
 	return ents_alloc(t, KEYTAB_FIRST) && slots_alloc(t, 2 * KEYTAB_FIRST);
 }
 
+bool
+sift_keytab_init_direct(SiftKeyTab *t, SiftArena *a, SiftKeyShape sh, int64 lo, uint32 n)
+{
+	*t = (SiftKeyTab) {.a = a,.sh = sh,.ew = SIFT_KEY_HEAD + sh.kw + sh.npay,.direct_n = n,.direct_lo = (uint64) lo};
+	if (!ents_alloc(t, n))
+		return false;
+	memset(t->ent, 0, (size_t) n * t->ew * sizeof(uint64));
+	for (uint32 id = 0; id < n; id++)
+	{
+		uint64	   *e = sift_keytab_at(t, id);
+		const uint64 word = t->direct_lo + id;
+
+		e[0] = sift_key_hash(&sh, &word, NULL, 0);
+		e[SIFT_KEY_HEAD] = word;
+	}
+	t->count = n;
+	return true;
+}
+
 static bool
 grow(SiftKeyTab *t)
 {
@@ -99,7 +118,7 @@ grow(SiftKeyTab *t)
 }
 
 static uint32
-append(SiftKeyTab *t, const SiftKey *k)
+append(SiftKeyTab *t, const SiftTabKey *k)
 {
 	const uint8 *p = k->p;
 	uint64	   *e;
@@ -127,7 +146,7 @@ append(SiftKeyTab *t, const SiftKey *k)
 }
 
 uint32
-sift_keytab_intern(SiftKeyTab *t, const SiftKey *k)
+sift_keytab_intern_hashed(SiftKeyTab *t, const SiftTabKey *k)
 {
 	for (uint64 j = k->h & (t->scap - 1); t->slot[j] != 0; j = (j + 1) & (t->scap - 1))
 		if ((uint32) (t->slot[j] >> 32) == (uint32) (k->h >> 32) && key_equal(t, sift_keytab_at(t, slot_id(t->slot[j])), k))

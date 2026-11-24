@@ -18,6 +18,7 @@
 typedef struct P2
 {
 	SiftParDistinct *d;
+	int			t;				/* the thread */
 	DistWorker *src;			/* the thread whose records are read */
 	SiftArena  *work;
 	SiftKeyTab	k2;
@@ -120,13 +121,13 @@ text_chunk(void *arg, const uint8 *data, uint32 len)
 	return true;
 }
 
-/* The rows and sums of the keys of a thread, into the keys of the partition, which tell the thread's key the number it has here */
+/* The rows, sums and texts of the keys of a thread, into the keys of the partition, which tell the thread's key the number it has here */
 static bool
 agg_chunk(void *arg, const uint8 *data, uint32 len)
 {
 	P2		   *p = arg;
 	const SiftParDistinct *d = p->d;
-	const uint32 words = 2 + d->sp.nsum;
+	const uint32 words = 1 + dist_pay_last(d);
 
 	for (uint32 off = 0; off < len; off += words * sizeof(uint64))
 	{
@@ -138,8 +139,15 @@ agg_chunk(void *arg, const uint8 *data, uint32 len)
 		if (id == SIFT_KEYTAB_NONE)
 			return false;
 		pay = sift_keytab_pay(&p->k2, sift_keytab_at(&p->k2, id));
-		for (uint32 m = 0; m < words - 1; m++)
+		for (uint32 m = 0; m <= d->sp.nsum; m++)
 			pay[m] += rec[1 + m];
+		for (int m = 0; m < d->sp.nmm; m++)
+		{
+			const uint64 *s = rec + 1 + dist_pay_mm(d, m);
+
+			if (s[1] != 0)
+				dist_mm_offer(pay + dist_pay_mm(d, m), (d->sp.mm_max >> m) & 1, (const uint8 *) (uintptr_t) s[0], (uint32) (s[1] - 1), NULL);
+		}
 		sift_keytab_pay(&p->src->keys, e)[dist_pay_last(d)] = id;
 	}
 	return true;
@@ -150,12 +158,11 @@ tile_fill(P2 *p, const DistRec *rec, uint32 m, SiftDuPair *tile)
 {
 	for (uint32 i = 0; i < m; i++)
 	{
-		uint64	   *e = sift_keytab_at(&p->src->keys, rec[i].kid);
+		const uint32 g = p->d->direct ? rec[i].kid : (uint32) sift_keytab_pay(&p->src->keys, sift_keytab_at(&p->src->keys, rec[i].kid))[dist_pay_last(p->d)];
+		uint64		v = rec[i].v;
 
 		if (i + TILE_AHEAD < m)
 			__builtin_prefetch(sift_keytab_at(&p->src->keys, rec[i + TILE_AHEAD].kid));
-		const uint32 g = (uint32) sift_keytab_pay(&p->src->keys, e)[dist_pay_last(p->d)];
-		uint64		v = rec[i].v;
 
 		if (p->d->sp.vstr && (v = sift_keytab_intern_of(&p->v2, sift_keytab_at(&p->src->vals, (uint32) v))) == SIFT_KEYTAB_NONE)
 			return false;
@@ -170,6 +177,7 @@ pair_chunk(void *arg, const uint8 *data, uint32 len)
 {
 	P2		   *p = arg;
 	const uint32 last = dist_pay_last(p->d);
+	const SiftKeyTab *tab = p->d->direct ? &p->d->w[p->t].keys : &p->k2;
 
 	for (uint32 off = 0; off < len;)
 	{
@@ -181,7 +189,7 @@ pair_chunk(void *arg, const uint8 *data, uint32 len)
 			return false;
 		fresh = sift_du64g_dedup_bucket(p->pairs, p->cap, tile, m);
 		for (uint32 i = 0; i < fresh; i++)
-			sift_keytab_pay(&p->k2, sift_keytab_at(&p->k2, tile[i].gid1 - 1))[last]++;
+			sift_keytab_pay(tab, sift_keytab_at(tab, tile[i].gid1 - 1))[last]++;
 		p->count += fresh;
 		off += m * sizeof(DistRec);
 	}
@@ -228,15 +236,17 @@ keys_out(const P2 *p, int t)
 static bool
 grouped_partition(P2 *p, int t, uint32 part)
 {
+	if (p->d->direct)
+		return tab_open(p, part) && scan_threads(p, part, false, pair_chunk);
 	return tab_open(p, part) && scan_threads(p, part, true, agg_chunk) && scan_threads(p, part, false, pair_chunk) && keys_out(p, t);
 }
 
 bool
 sift_dist_phase2(SiftParDistinct *d, int t, uint32 part, SiftArena *work)
 {
-	P2			p = {.d = d,.work = work};
+	P2			p = {.d = d,.t = t,.work = work};
 
-	if ((d->grouped && !sift_keytab_init(&p.k2, work, d->ks, true)) || (d->sp.vstr && !sift_keytab_init(&p.v2, work, d->vs, true)))
+	if ((d->grouped && !d->direct && !sift_keytab_init(&p.k2, work, d->ks, true)) || (d->sp.vstr && !sift_keytab_init(&p.v2, work, d->vs, true)))
 		return false;
 	if (d->grouped)
 		return grouped_partition(&p, t, part);

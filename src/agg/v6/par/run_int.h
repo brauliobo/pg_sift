@@ -33,9 +33,10 @@ typedef struct ParShape
 	SiftParGroupSpec gs;
 	SiftParDistinctSpec ds;		/* distinct: the keys (words, then the text), the sums and the counted value */
 	int			val_at;			/* distinct: the leaf of the counted value */
+	int			mm_at[SIFT_PAR_DISTINCT_MM_MAX];	/* distinct: the leaf of each text minimum or maximum */
 	bool		ktext[SIFT_PAR_GROUP_MAX_KEYS];	/* distinct: the key is the text */
 	int			nchk;
-	int			chk[PAR_LEAVES_MAX];	/* distinct: the leaves in which a NULL is not for a thread: the keys, and the columns of the sums and counts */
+	int			chk[PAR_LEAVES_MAX];	/* the leaves in which a NULL is not for a thread: the keys, and the columns of the sums and counts (distinct) */
 	SiftParRowsSpec rs;			/* rows */
 	int			rkey_at[SIFT_PAR_ROWS_MAX_KEYS];
 } ParShape;

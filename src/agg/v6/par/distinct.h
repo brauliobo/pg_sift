@@ -8,6 +8,10 @@
  * from the shared cursor; the keys of a partition are numbered again across the threads (bytes compared, never the hash alone: a text of one thread is the same as a text of another when the bytes
  * are, whatever the codes of their dictionaries), the values deduplicated in a table that fits the L2 cache, and each key goes with its rows, sums and distinct values to the answer of the thread.
  * With no key the one set is spread over the partitions by the hash of the value, and the rows and sums are those of the threads, added.
+ *
+ * A key of one integer word in a narrow range (direct_n values from direct_lo) is numbered by its distance from the least in every thread, so that the keys need no second numbering: phase 2 only
+ * deduplicates the values, and the answer adds the entries of the threads. The minimum or maximum of a text column of the rows of a group (C collation: the order of the bytes) is kept per key, as a
+ * copy in the arena of the thread, and merged by the same order.
  */
 #ifndef SIFT_AGG_V6_PAR_DISTINCT_H
 #define SIFT_AGG_V6_PAR_DISTINCT_H
@@ -23,7 +27,13 @@ typedef struct SiftParDistinctSpec
 	bool		kstr;			/* and a text key */
 	uint8		nsum;			/* the sums of 64-bit arguments, of the rows of the group */
 	bool		vstr;			/* the counted value is a text (else a 64-bit word) */
+	uint8		nmm;			/* the minimums and maximums of a text column of the rows of a group */
+	uint8		mm_max;			/* bit m: the aggregate m is a maximum */
+	uint32		direct_n;		/* a key of one word, in direct_n values from direct_lo: 0 for none */
+	int64		direct_lo;
 } SiftParDistinctSpec;
+
+#define SIFT_PAR_DISTINCT_MM_MAX	4
 
 /* The rows of a unit of the scan: the key words of column j in key[j][0..n), the text keys in kstr[0..n), the sum arguments m in sum[m][0..n), and the counted values */
 typedef struct SiftParDistinctBatch
@@ -35,6 +45,7 @@ typedef struct SiftParDistinctBatch
 	const uint64 *val;			/* a word value: vnull[i] says it is NULL (vnull may be NULL: none is) */
 	const uint8 *vnull;
 	const SiftStrRef *vstr;		/* a text value: the length SIFT_STR_NULL is a NULL */
+	const SiftStrRef *mm[SIFT_PAR_DISTINCT_MM_MAX];	/* the texts of the minimums and maximums: the length SIFT_STR_NULL is a NULL, which they leave out */
 } SiftParDistinctBatch;
 
 typedef struct SiftParDistinctHooks
@@ -63,6 +74,7 @@ typedef struct SiftParDistinctRow
 	uint64		rows;
 	uint64		sum[SIFT_PAR_GROUP_MAX_SUM];
 	uint64		distinct;
+	SiftStrRef	mm[SIFT_PAR_DISTINCT_MM_MAX];	/* the text of each minimum or maximum: p NULL when no row had one */
 } SiftParDistinctRow;
 
 /* After a run that is an answer: every group once (with no key, one group, also with no rows) */
