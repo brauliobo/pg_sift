@@ -19,7 +19,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 exec python3 -I - "$here" "${1:-}" <<'PY'
-import os, re, subprocess, sys
+import multiprocessing, os, re, subprocess, sys
 
 root, arg = sys.argv[1], sys.argv[2]
 FUNC = re.compile(r'^([A-Za-z_]\w*)\(')
@@ -43,11 +43,18 @@ WRAPPERS = r'(?:strcmp|strncmp|strlen|pstrdup|strcpy|strcasecmp|pg_strcasecmp|pg
 OPEN_CALL = re.compile(r'\b(?:relation_open|index_open|table_open|RelationIdGetRelation)\(\s*((?:[^(),]|\([^()]*\))*)')
 SQL_OID = re.compile(r'PG_GETARG_(?:OID|DATUM)\(')
 WRAPPED = re.compile(r'\b' + WRAPPERS + r'\(\s*(?:[^(),;]*,\s*)*(?:' + NAME_CALLS + r'|strchr|strrchr|strstr|getenv)\(')
+PRODUCER_RES = [(rule, ASSIGN(call), re.compile(call + r'[^;]*\)\s*(\?|[!=]=\s*NULL)')) for rule, call in PRODUCERS]
+# a line that matches none of the patterns of the rules cannot hit one: the rules below run on the other lines only
+TRIGGER = re.compile('|'.join(rx.pattern for rx in (ARRAYS, LIST_ACCESS, OPEN_CALL, WRAPPED, *(a for _, a, _ in PRODUCER_RES))))
+TEST_TRIGGER = OPEN_CALL
 
 
 def clean(lines):
     res, inside = [], False
     for l in lines:
+        if not inside and '/' not in l:
+            res.append(l)
+            continue
         if inside:
             if '*/' not in l:
                 res.append('')
@@ -166,7 +173,10 @@ def hits(path, text):
     found = []
     for name, a, b in functions(lines):
         body = cl[a:b + 1]
+        trigger = TEST_TRIGGER if test_code else TRIGGER
         for k, l in enumerate(body):
+            if not trigger.search(l):
+                continue
             n = a + k + 1
             if test_code:
                 for m in OPEN_CALL.finditer(l):
@@ -180,10 +190,10 @@ def hits(path, text):
                 arg = m.group(2).strip()
                 if VARIABLE_LISTS.search(arg) and not guarded_list(arg, body) and not positive_id(m, l, body):
                     found.append((path, n, name, 'list-first', '%s of %s with no test of the list in the function (list_length or NIL)' % (m.group(1), arg)))
-            for rule, call in PRODUCERS:
-                for m in ASSIGN(call).finditer(l):
+            for rule, assign, tested in PRODUCER_RES:
+                for m in assign.finditer(l):
                     v = m.group(1)
-                    if (rule == 'name' and only_messages(v, body, k)) or re.search(call + r'[^;]*\)\s*(\?|[!=]=\s*NULL)', l):
+                    if (rule == 'name' and only_messages(v, body, k)) or tested.search(l):
                         continue
                     if not compared(v, body):
                         found.append((path, n, name, 'null-result', '%s is assigned a result that can be NULL and the function never tests it' % v))
@@ -264,15 +274,22 @@ if arg == '--selftest':
 allow = load_allow(os.path.join(root, 'scripts', 'null.allow'))
 names = subprocess.run(['git', '-C', root, 'ls-files', 'src'], capture_output=True, text=True, check=True).stdout.split()
 names = [f for f in names if f.endswith(('.c', '.h'))]
-found = []
-for f in names:
-    found += hits(f, open(os.path.join(root, f), errors='replace').read())
+sites = subprocess.Popen([sys.executable, '-I', os.path.join(root, 'scripts', 'check-sites.py'), root], stdout=subprocess.PIPE, text=True)
+
+
+def file_hits(f):
+    return hits(f, open(os.path.join(root, f), errors='replace').read())
+
+
+with multiprocessing.get_context('fork').Pool(min(os.cpu_count() or 1, 8)) as pool:
+    found = [h for per_file in pool.map(file_hits, names, chunksize=16) for h in per_file]
 bad, stale = report(found, allow)
 for f, n, fn, rule, msg in bad:
     print('%s:%d: %s: %s (%s; or a row in scripts/null.allow with the reason it cannot be NULL)' % (f, n, rule, msg, fn))
 for k in stale:
     print('scripts/null.allow: %s %s %s has no hit any more: delete the row' % k)
 print('check-null: %d unread site(s), %d stale row(s), %d allowed, %d files' % (len(bad), len(stale), len(allow), len(names)))
-sites = subprocess.run([sys.executable, '-I', os.path.join(root, 'scripts', 'check-sites.py'), root]).returncode
-sys.exit(1 if bad or stale or sites else 0)
+sites_out = sites.communicate()[0]
+print(sites_out, end='')
+sys.exit(1 if bad or stale or sites.returncode else 0)
 PY

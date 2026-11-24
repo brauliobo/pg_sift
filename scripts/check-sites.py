@@ -24,6 +24,9 @@ GUARDS = ('sift_rel_must_exist', 'sift_relation_get', 'sift_rel_name', 'sift_fun
 def clean(lines):
     res, inside = [], False
     for l in lines:
+        if not inside and '/' not in l:
+            res.append(l)
+            continue
         if inside:
             if '*/' not in l:
                 res.append('')
