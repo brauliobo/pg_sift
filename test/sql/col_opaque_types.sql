@@ -81,7 +81,7 @@ SELECT o_rows('heap', 'pt, ln, ls, bx, pa, pg, ci, tsv, tsq, j, x, oi, rc, xi, t
      = o_rows('index-only', 'pt, ln, ls, bx, pa, pg, ci, tsv, tsq, j, x, oi, rc, xi, td, ch, lsn, v2, cp, dp, dc, jp, sn, big', 1, 3000) AS all_columns;
 
 -- a value as it was written
-SELECT id, pt, bx, tsv, j, x, oi, td, ch, lsn, cp, dp, dc FROM o WHERE id IN (5, 13) ORDER BY id;
+SELECT id, pt, bx, tsv, j, x, oi, td, ch, lsn - '0/0' AS lsn, cp, dp, dc FROM o WHERE id IN (5, 13) ORDER BY id;
 SELECT id, left(big::text, 20) AS big_head, length(big::text) AS big_len FROM o WHERE id IN (50, 100) ORDER BY id;
 
 -- NULL and not NULL, and COUNT(column), under every plan
