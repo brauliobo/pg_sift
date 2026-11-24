@@ -1,9 +1,11 @@
 /*
  * col/f2/f2_unique.c - UNIQUE indexes of format major 2.
  *
- * A row is looked up by its key the way PostgreSQL looks one up for an exclusion constraint: an index scan with a dirty snapshot (the rows of a running transaction count, an aborted one's do not),
- * every row it finds judged by the heap tuple it points at. That needs the rows of other transactions to be in the index before they commit, so a unique index never stages a row: aminsert
- * writes it to the partition (sift_stage_flush) at once, and the rows of an aborted (sub)transaction are dead to every snapshot by their transaction, with nothing to undo.
+ * A row is looked up by its key the way PostgreSQL looks one up for an exclusion constraint: the rows of other transactions count before they commit (an aborted one's do not), every row found
+ * judged by the heap tuple it names under a dirty snapshot. The rows a transaction has not flushed are in its stage, which no other backend reads: their keys are in the registry in shared memory
+ * (f2_uniq_shm.h), and the rows that were flushed are in the partitions, which a scan with a pinned manifest reads without flushing the stage of the writer. The registry is read first and the
+ * partitions second, and the stage is flushed (the manifest published) before its entries are let go, so a key is never in neither. The rows of an aborted (sub)transaction are dead to every snapshot
+ * by their transaction, with nothing to undo.
  *
  * The lookup and the write of a row are one step for the rows of one key: the page lock SIFT_UNIQUE_LOCK_BASE + (hash of the key) % SIFT_UNIQUE_LOCK_SLOTS of the index is held from the lookup to the write,
  * so of two writers of one key the second finds the first. It is never held while waiting for a transaction: the second writer lets go, waits for the one it found (XactLockTableWait, or
@@ -34,8 +36,13 @@
 #include "utils/typcache.h"
 
 #include "col/f2/f2.h"
+#include "col/f2/f2_cache.h"
+#include "col/f2/f2_sink.h"
+#include "col/f2/f2_uniq_shm.h"
+#include "col/f2/f2_uniq_slab.h"
 #include "col/f2/f2_unique.h"
 #include "col/f2/l0_stage.h"
+#include "core/memtrack.h"
 #include "core/part_lock.h"
 
 typedef struct UniqueKey
@@ -45,8 +52,11 @@ typedef struct UniqueKey
 	Oid			subtype[INDEX_MAX_KEYS];	/* the type of the constant of the scan key (a varchar is looked up as the text it is stored as) */
 	Oid			collation[INDEX_MAX_KEYS];
 	Oid			lt[INDEX_MAX_KEYS];
+	int16		typlen[INDEX_MAX_KEYS];		/* what sift_uniq_key_add takes: 0 for a numeric, which is never kept by its bytes */
+	bool		typbyval[INDEX_MAX_KEYS];
 	FmgrInfo	eq[INDEX_MAX_KEYS];
 	FmgrInfo	hash[INDEX_MAX_KEYS];
+	FmgrInfo	hash64[INDEX_MAX_KEYS];
 } UniqueKey;
 
 /* The types whose leaf is looked up by =, and whose = is that of their bytes (a text of a nondeterministic collation is not) */
@@ -97,14 +107,18 @@ key_init(UniqueKey *k, Relation index)
 	k->nulls_not_distinct = index->rd_index->indnullsnotdistinct;
 	for (int i = 0; i < k->n; i++)
 	{
-		Oid			base = getBaseType(TupleDescAttr(desc, i)->atttypid);
-		TypeCacheEntry *tc = lookup_type_cache(base, TYPECACHE_EQ_OPR_FINFO | TYPECACHE_HASH_PROC_FINFO | TYPECACHE_LT_OPR);
+		Form_pg_attribute att = TupleDescAttr(desc, i);
+		Oid			base = getBaseType(att->atttypid);
+		TypeCacheEntry *tc = lookup_type_cache(base, TYPECACHE_EQ_OPR_FINFO | TYPECACHE_HASH_PROC_FINFO | TYPECACHE_HASH_EXTENDED_PROC_FINFO | TYPECACHE_LT_OPR);
 
 		k->subtype[i] = base == VARCHAROID ? TEXTOID : base;
 		k->collation[i] = index->rd_indcollation[i];
 		k->lt[i] = tc->lt_opr;
+		k->typlen[i] = base == NUMERICOID ? 0 : att->attlen;
+		k->typbyval[i] = att->attbyval;
 		fmgr_info_copy(&k->eq[i], &tc->eq_opr_finfo, CurrentMemoryContext);
 		fmgr_info_copy(&k->hash[i], &tc->hash_proc_finfo, CurrentMemoryContext);
+		fmgr_info_copy(&k->hash64[i], &tc->hash_extended_proc_finfo, CurrentMemoryContext);
 	}
 }
 
@@ -134,16 +148,25 @@ key_has_null(const UniqueKey *k, const bool *isnull)
 	return false;
 }
 
-/* The lock of the rows of one key: equal keys hash alike (numeric 1.0 and 1.00, a text by its collation's hash) */
-static BlockNumber
-key_lock(UniqueKey *k, const Datum *values, const bool *isnull)
+/* The hash of a key: equal keys hash alike (numeric 1.0 and 1.00, a text by its collation's hash). It picks the lock of the rows of the key and their place in the registry */
+static uint32
+key_hash(UniqueKey *k, const Datum *values, const bool *isnull)
 {
 	uint32		h = 0;
 
 	for (int i = 0; i < k->n; i++)
 		if (!isnull[i])
 			h = hash_combine(h, DatumGetUInt32(FunctionCall1Coll(&k->hash[i], k->collation[i], values[i])));
-	return SIFT_UNIQUE_LOCK_BASE + h % SIFT_UNIQUE_LOCK_SLOTS;
+	return h;
+}
+
+static void
+registry_key(UniqueKey *k, Relation index, uint32 hash, const Datum *values, const bool *isnull, SiftUniqKey *rk)
+{
+	sift_uniq_key_begin(rk, &index->rd_locator, hash, k->n);
+	for (int i = 0; i < k->n; i++)
+		sift_uniq_key_add(rk, values[i], isnull[i], k->typlen[i], k->typbyval[i],
+						  isnull[i] ? 0 : DatumGetUInt64(FunctionCall2Coll(&k->hash64[i], k->collation[i], values[i], Int64GetDatum(0))));
 }
 
 /* "(col, ...)=(value, ...)" of the key, what BuildIndexValueDescription says of a key whose operator class is not polymorphic (it prints by the type of the class: anyelement here); NULL for a caller who may not read the table */
@@ -183,20 +206,22 @@ key_violation(Relation index, Relation heap, Datum *values, bool *isnull, bool b
 					errtableconstraint(heap, RelationGetRelationName(index))));
 }
 
-/* The row goes to the partition at once, where the lookups of the other transactions find it */
-static void
-publish(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid)
-{
-	sift_f2_stage_row(index, values, isnull, heap_tid);
-	sift_stage_flush(index);
-}
-
 typedef enum Found
 {
 	FOUND_NONE,
 	FOUND_LIVE,
 	FOUND_RUNNING
 } Found;
+
+/* The row of the same key as the new one, if there is one: live, or written (or deleted) by a running transaction, which the dirty snapshot names, and the speculative insertion it is in */
+typedef struct Conflict
+{
+	Found		found;
+	bool		in_stage;		/* the row is one a running transaction holds in its stage */
+	TransactionId xwait;
+	uint32		token;
+	ItemPointerData at;
+} Conflict;
 
 typedef struct Row
 {
@@ -219,51 +244,152 @@ row_key(const Row *row, TupleTableSlot *slot, Datum *values, bool *isnull)
 	}
 }
 
-/* A row of the same key as the new one, live or written by a running transaction: what the dirty snapshot saw of it says which (and whom to wait for) */
-static Found
-find_row(UniqueKey *k, Relation index, Relation heap, IndexInfo *info, const Datum *values, const bool *isnull, ItemPointer self, TransactionId *xwait, uint32 *token, ItemPointerData *at)
+/* Whether the row of the slot has the key */
+static bool
+row_has_key(UniqueKey *k, const Row *row, TupleTableSlot *slot, const Datum *values, const bool *isnull)
+{
+	Datum		have[INDEX_MAX_KEYS];
+	bool		have_null[INDEX_MAX_KEYS];
+	bool		equal;
+
+	row_key(row, slot, have, have_null);
+	equal = key_equal(k, have, have_null, values, isnull);
+	if (row->estate != NULL)
+		ResetExprContext(GetPerTupleExprContext(row->estate));
+	return equal;
+}
+
+/* What the dirty snapshot saw of the heap tuple at `at` says whether the row is live or a transaction is still to decide it, and whom to wait for */
+static void
+judge(Conflict *c, const SnapshotData *dirty, const ItemPointerData *at, bool in_stage)
+{
+	c->xwait = TransactionIdIsValid(dirty->xmin) ? dirty->xmin : dirty->xmax;
+	c->token = dirty->speculativeToken;
+	c->at = *at;
+	c->in_stage = in_stage;
+	c->found = TransactionIdIsValid(c->xwait) ? FOUND_RUNNING : FOUND_LIVE;
+}
+
+/* The rows of the key that transactions hold in their stages: the heap tuples of the entries of the registry */
+static void
+find_staged(UniqueKey *k, const Row *row, Relation heap, const SiftUniqHits *hits, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
+{
+	SnapshotData dirty;
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+	InitDirtySnapshot(dirty);
+	for (int i = 0; i < hits->n && c->found == FOUND_NONE; i++)
+	{
+		ItemPointerData at = hits->hit[i].tid;
+
+		if (!ItemPointerEquals(self, &at) && table_tuple_fetch_row_version(heap, &at, &dirty, slot) && (!hits->hit[i].external || row_has_key(k, row, slot, values, isnull)))
+			judge(c, &dirty, &at, true);
+	}
+	ExecDropSingleTupleTableSlot(slot);
+}
+
+typedef struct SlabKey
+{
+	UniqueKey  *k;
+	const Row  *row;
+} SlabKey;
+
+/* The 64-bit hash of the key of a row of a slab, as the registry makes it */
+static uint64
+slab_key_fp(void *arg, TupleTableSlot *slot)
+{
+	const SlabKey *s = arg;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	SiftUniqKey rk;
+
+	row_key(s->row, slot, values, isnull);
+	registry_key(s->k, s->row->index, 0, values, isnull, &rk);
+	if (s->row->estate != NULL)
+		ResetExprContext(GetPerTupleExprContext(s->row->estate));
+	return key_has_null(s->k, isnull) && !s->k->nulls_not_distinct ? 0 : rk.fp64;
+}
+
+/* The rows in the partitions: a scan with the manifest as it is now, which does not flush the stage of this transaction (its rows are in the registry), and does not read a slab that holds no row of the key */
+static void
+find_published(UniqueKey *k, const Row *row, Relation heap, const SiftUniqKey *rk, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
 {
 	SnapshotData dirty;
 	ScanKeyData keys[INDEX_MAX_KEYS];
-	Row			row = {.index = index,.info = info,.estate = info->ii_Expressions != NIL ? CreateExecutorState() : NULL};
+	SlabKey		sk = {.k = k,.row = row};
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift unique probe");
 	TupleTableSlot *slot = table_slot_create(heap, NULL);
 	IndexScanDesc scan;
-	Found		found = FOUND_NONE;
 
 	InitDirtySnapshot(dirty);
 	for (int i = 0; i < k->n; i++)
 		ScanKeyEntryInitialize(&keys[i], isnull[i] ? SK_ISNULL | SK_SEARCHNULL : 0, i + 1, BTEqualStrategyNumber, k->subtype[i], k->collation[i], isnull[i] ? InvalidOid : k->eq[i].fn_oid,
 							   isnull[i] ? (Datum) 0 : values[i]);
-	scan = sift_index_beginscan(heap, index, &dirty, k->n);
+	scan = sift_index_beginscan(heap, row->index, &dirty, k->n);
 	index_rescan(scan, keys, k->n, NULL, 0);
-	while (found == FOUND_NONE && index_getnext_slot(scan, ForwardScanDirection, slot))
-	{
-		Datum		have[INDEX_MAX_KEYS];
-		bool		have_null[INDEX_MAX_KEYS];
-
-		if (ItemPointerEquals(self, &slot->tts_tid))
-			continue;
-		row_key(&row, slot, have, have_null);
-		if (row.estate != NULL)
-			ResetExprContext(GetPerTupleExprContext(row.estate));
-		if (!key_equal(k, have, have_null, values, isnull))
-			continue;
-		*xwait = TransactionIdIsValid(dirty.xmin) ? dirty.xmin : dirty.xmax;
-		*token = dirty.speculativeToken;
-		*at = slot->tts_tid;
-		found = TransactionIdIsValid(*xwait) ? FOUND_RUNNING : FOUND_LIVE;
-	}
+	sift_f2_scan_set_plan(scan, sift_uniq_slab_prune(row->index, heap, sift_plan_cache_get(row->index, cx), rk->fp64, slab_key_fp, &sk, cx));
+	while (c->found == FOUND_NONE && index_getnext_slot(scan, ForwardScanDirection, slot))
+		if (!ItemPointerEquals(self, &slot->tts_tid) && row_has_key(k, row, slot, values, isnull))
+			judge(c, &dirty, &slot->tts_tid, false);
 	index_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
+	MemoryContextDelete(cx);
+}
+
+/* The rows of this transaction's stage go to the partition, and then its entries of the index leave the registry */
+static void
+spill(Relation index)
+{
+	sift_stage_flush(index);
+	sift_uniq_shm_release(&index->rd_locator);
+}
+
+/* A row of the same key as the new one, if there is one: in the registry first, in the partitions after */
+static void
+find_conflict(UniqueKey *k, Relation index, Relation heap, IndexInfo *info, const SiftUniqKey *rk, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
+{
+	Row			row = {.index = index,.info = info,.estate = info->ii_Expressions != NIL ? CreateExecutorState() : NULL};
+	SiftUniqHits hits;
+
+	*c = (Conflict) {.found = FOUND_NONE};
+	sift_uniq_shm_probe(rk, &hits);
+	if (hits.overflow)
+	{
+		spill(index);
+		sift_uniq_shm_probe(rk, &hits);
+		if (hits.overflow)
+			ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("too many transactions hold a row of one key of the unique index \"%s\"", RelationGetRelationName(index))));
+	}
+	find_staged(k, &row, heap, &hits, values, isnull, self, c);
+	if (c->found == FOUND_NONE)
+		find_published(k, &row, heap, rk, values, isnull, self, c);
 	if (row.estate != NULL)
 		FreeExecutorState(row.estate);
-	return found;
+}
+
+/* The row of a key nobody holds goes to the stage, its key to the registry first; a stripe with no entry free sends the rows of the stage to the partition, and the entries of the index go */
+static void
+write_row(Relation index, const SiftUniqKey *rk, Datum *values, bool *isnull, ItemPointer heap_tid)
+{
+	if (!sift_uniq_shm_reserve(rk, GetCurrentTransactionId(), heap_tid))
+	{
+		spill(index);
+		if (!sift_uniq_shm_reserve(rk, GetCurrentTransactionId(), heap_tid))
+		{
+			sift_f2_stage_row(index, values, isnull, heap_tid);
+			sift_stage_flush(index);
+			return;
+		}
+	}
+	sift_f2_stage_row(index, values, isnull, heap_tid);
 }
 
 bool
 sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull, ItemPointer heap_tid, IndexUniqueCheck check, IndexInfo *info)
 {
 	UniqueKey	k;
+	SiftUniqKey rk;
+	uint32		hash;
 	BlockNumber lock;
 	bool		write = check != UNIQUE_CHECK_EXISTING;
 
@@ -271,33 +397,31 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 	if (key_has_null(&k, isnull) && !k.nulls_not_distinct)
 	{
 		if (write)
-			publish(index, values, isnull, heap_tid);
+			sift_f2_stage_row(index, values, isnull, heap_tid);
 		return true;
 	}
-	lock = key_lock(&k, values, isnull);
+	hash = key_hash(&k, values, isnull);
+	registry_key(&k, index, hash, values, isnull, &rk);
+	lock = SIFT_UNIQUE_LOCK_BASE + hash % SIFT_UNIQUE_LOCK_SLOTS;
 	for (;;)
 	{
-		TransactionId xwait = InvalidTransactionId;
-		uint32		token = 0;
-		ItemPointerData at;
-		Found		found;
+		Conflict	c;
 
 		LockPage(index, lock, ExclusiveLock);
-		found = find_row(&k, index, heap, info, values, isnull, heap_tid, &xwait, &token, &at);
-		if (found == FOUND_NONE || check == UNIQUE_CHECK_PARTIAL)
-		{
-			if (write)
-				publish(index, values, isnull, heap_tid);
-			UnlockPage(index, lock, ExclusiveLock);
-			return found == FOUND_NONE;
-		}
+		find_conflict(&k, index, heap, info, &rk, values, isnull, heap_tid, &c);
+		if (c.found == FOUND_NONE && write)
+			write_row(index, &rk, values, isnull, heap_tid);
 		UnlockPage(index, lock, ExclusiveLock);
-		if (found == FOUND_LIVE)
+		if (c.found == FOUND_NONE)
+			return true;
+		if (check == UNIQUE_CHECK_PARTIAL && !(c.found == FOUND_RUNNING && c.in_stage))
+			return false;
+		if (c.found == FOUND_LIVE)
 			key_violation(index, heap, values, isnull, false);
-		if (token != 0)
-			SpeculativeInsertionWait(xwait, token);
+		if (c.token != 0)
+			SpeculativeInsertionWait(c.xwait, c.token);
 		else
-			XactLockTableWait(xwait, heap, &at, XLTW_InsertIndex);
+			XactLockTableWait(c.xwait, heap, &c.at, XLTW_InsertIndex);
 	}
 }
 

@@ -513,6 +513,10 @@ col/f2/scan/survey.c
 col/f2/scan/verdict.c
 col/f2/track_f2.c
 col/f2/vis_test.c
+col/f2/f2_uniq_shm.c
+col/f2/f2_uniq_shm.h
+col/f2/f2_uniq_slab.c
+col/f2/f2_uniq_slab.h
 col/gpu.c
 col/gpu.h
 col/gpu_unwrap.c
