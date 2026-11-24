@@ -38,20 +38,19 @@ sift_f2_attr_num64(Form_pg_attribute att, uint8 *scale)
 void
 sift_f2_num64_cell(Datum d, uint8 scale, MemoryContext row_cx, SiftCell *c)
 {
+	MemoryContext old = MemoryContextSwitchTo(row_cx);
 	Numeric		num = DatumGetNumeric(d);
-	MemoryContext old;
 
 	if (!numeric_is_nan(num))
-	{
 		c->i = sift_col_numeric_key(scale, d, SIFT_COL_ROUND_NEAREST);
-		return;
+	else
+	{
+		c->xp = (const char *) num;
+		c->xplen = VARSIZE_ANY(c->xp);
+		c->isnull = true;
+		c->tag = SIFT_COLTAG_UNSURE;
 	}
-	old = MemoryContextSwitchTo(row_cx);
-	c->xp = (const char *) PG_DETOAST_DATUM(d);
 	MemoryContextSwitchTo(old);
-	c->xplen = VARSIZE_ANY(c->xp);
-	c->isnull = true;
-	c->tag = SIFT_COLTAG_UNSURE;
 }
 
 Datum
