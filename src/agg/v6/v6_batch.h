@@ -61,4 +61,33 @@ sift_vec_valid_at(const SiftVec *v, uint32 r)
 	return v->all_valid || ((v->valid[r >> 6] >> (r & 63)) & 1);
 }
 
+/* the row holds a NaN: a numeric the scan keeps as scaled integers cannot, so valid says NULL and nan says which of those rows are not */
+static inline bool
+sift_vec_nan_at(const SiftVec *v, uint32 r)
+{
+	return v->nan != NULL && ((v->nan[r >> 6] >> (r & 63)) & 1);
+}
+
+/* what an operator that holds rows keeps of a cell besides its value: one byte (a NULL is 0 and a value 1, as valid says) */
+enum
+{
+	SIFT_CELL_STATE_NULL,
+	SIFT_CELL_STATE_VALUE,
+	SIFT_CELL_STATE_NAN
+};
+
+static inline uint8
+sift_vec_state_at(const SiftVec *v, uint32 r)
+{
+	return sift_vec_nan_at(v, r) ? SIFT_CELL_STATE_NAN : sift_vec_valid_at(v, r);
+}
+
+/* the bits of cell i of an output batch (valid and nan zeroed) for a state */
+static inline void
+sift_vec_state_put(uint64 *valid, uint64 *nan, uint32 i, uint8 state)
+{
+	valid[i >> 6] |= (uint64) (state == SIFT_CELL_STATE_VALUE) << (i & 63);
+	nan[i >> 6] |= (uint64) (state == SIFT_CELL_STATE_NAN) << (i & 63);
+}
+
 #endif							/* SIFT_AGG_V6_BATCH_H */

@@ -12,6 +12,7 @@
 #include "utils/uuid.h"
 
 #include "agg/v6/v6.h"
+#include "agg/v6/v6_batch.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/group/ht.h"
 #include "core/memtrack.h"
@@ -152,14 +153,20 @@ sift_v6_native_datum(const SiftVec *v, uint16 r, Oid typid, int scale)
 }
 
 Datum
+sift_v6_numeric_nan(void)
+{
+	return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+}
+
+Datum
 sift_v6_vec_datum(const SiftVec *v, uint16 r, Oid typid, int scale, bool *isnull)
 {
-	const bool	nan = v->nan != NULL && ((v->nan[r >> 6] >> (r & 63)) & 1);
+	const bool	nan = sift_vec_nan_at(v, r);
 
-	*isnull = !nan && !(v->all_valid || ((v->valid[r >> 6] >> (r & 63)) & 1));
+	*isnull = !nan && !sift_vec_valid_at(v, r);
 	if (*isnull)
 		return (Datum) 0;
-	return nan ? DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1)) : sift_v6_native_datum(v, r, typid, scale);
+	return nan ? sift_v6_numeric_nan() : sift_v6_native_datum(v, r, typid, scale);
 }
 
 SiftVecType

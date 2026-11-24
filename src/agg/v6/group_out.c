@@ -20,12 +20,6 @@
 #include "agg/v6/v6_datum.h"
 
 
-static Datum
-nan_datum(void)
-{
-	return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
-}
-
 /* sum and avg of a float: PostgreSQL's float8 sum raises the overflow of finite numbers, and the bins of a group hold at most V6FSUM_MAX_ROWS */
 static Datum
 sum_f64_datum(const SiftV6Agg *a, const V6Acc *acc, bool *isnull)
@@ -166,7 +160,7 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 			if (sift_v6_class(a->arg.typid) == SV6C_F64)
 				return sum_f64_datum(a, acc, isnull);
 			if (v6acc_is_nan(a, acc))
-				return nan_datum();
+				return sift_v6_numeric_nan();
 			*isnull = acc->n == 0;
 			if (acc->n == 0)
 				return (Datum) 0;
@@ -183,7 +177,7 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 			return sift_v6_scaled_numeric(v6acc_i128(acc), a->arg.scale);
 		default:
 			if (v6acc_is_nan(a, acc))
-				return nan_datum();
+				return sift_v6_numeric_nan();
 			*isnull = acc->n == 0;
 			if (acc->n == 0)
 				return (Datum) 0;

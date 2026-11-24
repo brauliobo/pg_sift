@@ -36,6 +36,8 @@ extern bool sift_v6_key_generic(Oid typid);
  */
 extern Datum sift_v6_native_datum(const SiftVec *v, uint16 r, Oid typid, int scale);
 
+/* The numeric NaN */
+extern Datum sift_v6_numeric_nan(void);
 /* The same for a row that may be NULL or a NaN (a numeric whose NaN the vector marks and calls invalid): *isnull says NULL, and a NaN is the datum PostgreSQL has for it */
 extern Datum sift_v6_vec_datum(const SiftVec *v, uint16 r, Oid typid, int scale, bool *isnull);
 
