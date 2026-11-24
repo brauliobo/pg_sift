@@ -342,7 +342,7 @@ typeof_leaf(const SiftV6Rel *rel, const Node *n)
 	if (e == NULL || !IsA(e, FuncExpr) || func_of(e) != F_JSONB_TYPEOF || list_length(args_of(e)) != 1)
 		return -1;
 	leaf = field_leaf(rel, linitial(args_of(e)), false, &att, &key);
-	return scalar_leaf(rel, leaf) && rel->ops->jsonb->exact_values ? leaf : -1;
+	return scalar_leaf(rel, leaf) && sift_v6_values_exact(rel) ? leaf : -1;
 }
 
 /* The virtual attribute of what n reads of a shredded scalar key (the type, the `->>` text of a text leaf, its float8 cast of a float8 leaf), InvalidAttrNumber for any other expression */

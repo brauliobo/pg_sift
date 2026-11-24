@@ -22,4 +22,32 @@ typedef enum SiftV6Class
 /* SiftV6InCol.attno of a column that is a leaf of the layout of the index, not an attribute: SIFT_V6_JLEAF_VATT + the leaf (a typed path of a document, `doc ->> 'k'`) */
 #define SIFT_V6_JLEAF_VATT		(1 << 14)
 
+/*
+ * The virtual attributes (an INDEX_VAR or scan varattno above every column of an index) of what a statement reads of a key of a jsonb document whose leaf is `leaf`: its JSON type
+ * (jsonb_typeof(doc -> 'key')), its `->>` text, and the float8 cast of that text. An index holds at most SIFT_F2_MAX_COLS (1024) leaves, so each kind has a range of that many attributes.
+ */
+#define SIFT_V6_JVIRT_VATT		(3 << 13)
+#define SIFT_V6_JVIRT_SPAN		1024
+#define SIFT_V6_JTYPE_VATT		SIFT_V6_JVIRT_VATT
+#define SIFT_V6_JTEXT_VATT		(SIFT_V6_JVIRT_VATT + SIFT_V6_JVIRT_SPAN)
+#define SIFT_V6_JF8_VATT		(SIFT_V6_JVIRT_VATT + 2 * SIFT_V6_JVIRT_SPAN)
+
+static inline bool
+sift_v6_vatt_is_json(int attno)
+{
+	return attno >= SIFT_V6_JVIRT_VATT;
+}
+
+static inline int
+sift_v6_vatt_leaf(int attno)
+{
+	return (attno - SIFT_V6_JVIRT_VATT) % SIFT_V6_JVIRT_SPAN;
+}
+
+static inline bool
+sift_v6_vatt_is_type(int attno)
+{
+	return attno >= SIFT_V6_JTYPE_VATT && attno < SIFT_V6_JTEXT_VATT;
+}
+
 #endif							/* SIFT_AGG_VCLASS_H */
