@@ -7,6 +7,7 @@
 #include "common/hashfn.h"
 #include "executor/executor.h"
 #include "fmgr.h"
+#include "miscadmin.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/sortsupport.h"
@@ -284,7 +285,10 @@ pass_of_spill(SiftV6First *f, FirstSpill *s)
 	FirstPass  *p = pass_new(f, s->level);
 
 	while (tuplestore_gettupleslot(s->rows, true, false, f->spilled))
+	{
+		CHECK_FOR_INTERRUPTS();
 		pass_offer(f, p, f->spilled);
+	}
 	tuplestore_end(s->rows);
 	pfree(s);
 	pass_park_partitions(f, p);

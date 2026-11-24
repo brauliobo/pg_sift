@@ -147,7 +147,10 @@ reads_owned_table(PlannerInfo *root)
 	return false;
 }
 
-/* what PostgreSQL's sort of that many rows of that width costs above its input: the comparisons, and the pages written and read when they do not fit work_mem */
+/* the node holds the groups in half of work_mem, and sorts them in the other half */
+#define FIRST_HALF_KB	Max(work_mem / 2, 64)
+
+/* what PostgreSQL's sort of that many rows of that width costs above its input: the comparisons, and the pages written and read when they do not fit its half of work_mem */
 static Cost
 sort_cost(double rows, double width)
 {
@@ -155,7 +158,7 @@ sort_cost(double rows, double width)
 	const double pages = ceil(bytes / BLCKSZ);
 	Cost		c = 2.0 * cpu_operator_cost * Max(rows, 1.0) * log2(Max(rows, 2.0));
 
-	if (bytes > (double) work_mem * 1024.0)
+	if (bytes > (double) FIRST_HALF_KB * 1024.0)
 		c += 2.0 * pages * (0.75 * seq_page_cost + 0.25 * random_page_cost);
 	return c;
 }
@@ -165,7 +168,7 @@ static void
 first_cost(PlannerInfo *root, const Path *child, const SiftV6FirstKeys *k, const List *key_exprs, Cost *total, double *groups)
 {
 	const double width = child->pathtarget->width + FIRST_ENTRY_OVERHEAD;
-	const double limit = (double) get_hash_memory_limit();
+	const double limit = (double) FIRST_HALF_KB * 1024.0;
 	const double ndv = Max(estimate_num_groups(root, (List *) key_exprs, child->rows, NULL, NULL), 1.0);
 	const double outside = ndv * width > limit ? 1.0 - limit / (ndv * width) : 0.0;
 
@@ -236,6 +239,7 @@ typedef struct FirstState
 	PlanState  *child;
 	SiftV6FirstKeys keys;
 	MemoryContext cx;
+	SiftV6First *first;
 	Tuplesortstate *sorted;
 	SiftV6FirstStats done;
 } FirstState;
@@ -254,27 +258,33 @@ first_begin(CustomScanState *node, EState *estate, int eflags)
 static void
 first_release(FirstState *st)
 {
+	if (st->first != NULL)
+		sift_v6_first_free(st->first);
 	if (st->sorted != NULL)
 		tuplesort_end(st->sorted);
 	if (st->cx != NULL)
 		MemoryContextDelete(st->cx);
+	st->first = NULL;
 	st->sorted = NULL;
 	st->cx = NULL;
 }
 
-/* the groups' first rows into a sort in the order of the statement, so that no sort of the rows of the input and none of the groups' is left above the node */
+/* the groups' first rows into a sort in the order of the statement, so that no sort of the rows of the input and none of the groups' is left above the node; the groups are gone before the sort merges */
 static void
-first_sort(FirstState *st, SiftV6First *first)
+first_sort(FirstState *st)
 {
 	const SiftV6FirstKeys *k = &st->keys;
 	TupleDesc	desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
 	TupleTableSlot *group = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 
-	st->sorted = tuplesort_begin_heap(desc, k->nsort, (AttrNumber *) k->sort_att, (Oid *) k->sort_op, (Oid *) k->sort_coll, (bool *) k->sort_nulls_first, work_mem, NULL, TUPLESORT_NONE);
-	while (sift_v6_first_next(first, group))
+	st->sorted = tuplesort_begin_heap(desc, k->nsort, (AttrNumber *) k->sort_att, (Oid *) k->sort_op, (Oid *) k->sort_coll, (bool *) k->sort_nulls_first, FIRST_HALF_KB, NULL, TUPLESORT_NONE);
+	while (sift_v6_first_next(st->first, group))
 		tuplesort_puttupleslot(st->sorted, group);
-	tuplesort_performsort(st->sorted);
 	ExecDropSingleTupleTableSlot(group);
+	st->done = *sift_v6_first_stats(st->first);
+	sift_v6_first_free(st->first);
+	st->first = NULL;
+	tuplesort_performsort(st->sorted);
 }
 
 static void
@@ -282,11 +292,10 @@ first_run(FirstState *st)
 {
 	ExprContext *econtext = st->css.ss.ps.ps_ExprContext;
 	MemoryContext old = MemoryContextSwitchTo(st->css.ss.ps.state->es_query_cxt);
-	SiftV6First *first;
 
 	st->cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 first");
 	MemoryContextSwitchTo(st->cx);
-	first = sift_v6_first_new(st->cx, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, &st->keys, get_hash_memory_limit());
+	st->first = sift_v6_first_new(st->cx, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, &st->keys, (uint64) FIRST_HALF_KB * 1024);
 	MemoryContextSwitchTo(old);
 	for (;;)
 	{
@@ -294,15 +303,14 @@ first_run(FirstState *st)
 
 		if (TupIsNull(row))
 			break;
+		CHECK_FOR_INTERRUPTS();
 		MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
-		sift_v6_first_offer(first, row);
+		sift_v6_first_offer(st->first, row);
 		MemoryContextSwitchTo(old);
 		ResetExprContext(econtext);
 	}
 	MemoryContextSwitchTo(st->cx);
-	first_sort(st, first);
-	st->done = *sift_v6_first_stats(first);
-	sift_v6_first_free(first);
+	first_sort(st);
 	MemoryContextSwitchTo(old);
 }
 
