@@ -114,7 +114,13 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 	sift_v6_star_attach(star, s->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
-			s->pipe->fslot[d][k] = slot_of(s, first, &(SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]});
+		{
+			const SiftV6Col key = sift_v6_xdim_key_col(&x->dim[d], k);
+
+			s->pipe->fslot[d][k] = slot_of(s, first, &key);
+		}
+	for (int i = 0; i < x->nrcol; i++)
+		s->pipe->rslot[i] = slot_of(s, first, &x->rcol[i]);
 	for (int i = 0; i < spec->nkeys; i++)
 		s->pipe->key_slot[i] = slot_of(s, first, &spec->key[i]);
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
@@ -196,7 +202,7 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 	const SiftV6Ext *x = spec->ext;
 	const int	nvec = sift_v6_spec_nvec(spec);
 
-	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * sizeof(V6Col));
+	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS + x->nrcol : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * sizeof(V6Col));
 	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < spec->nkeys; i++)
@@ -207,7 +213,11 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 			s->argvec[v] = &col_for(s, first, *sift_v6_vec_col(spec, v), false, vec_takes_nan(spec, v))->vec;
 	for (int d = 0; x != NULL && d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
-			col_for(s, first, (SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]}, false, false);
+			if (x->dim[d].fsrc[k] == SV6SRC_ATTR)
+				col_for(s, first, sift_v6_xdim_key_col(&x->dim[d], k), false, false);
+	for (int i = 0; x != NULL && i < x->nrcol; i++)
+		if (x->rcol[i].src == SV6SRC_ATTR)
+			col_for(s, first, x->rcol[i], false, false);
 	setup_derived(s, first);
 	setup_bq(s, first);
 	for (int k = 0; k < s->nderived; k++)
@@ -803,6 +813,8 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 		s->stats->bridge_tids += bridge->ntids;
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, bridge);
 	}
+	if (s->pipe != NULL)
+		sift_v6_pipe_finish(s->pipe);
 	if (s->stat != NULL)
 		sift_v6_colstat_end(s->stat);
 	sift_v6_vis_free(&s->vis);

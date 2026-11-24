@@ -53,7 +53,7 @@ is_range(const SiftStarShape *sh)
 static inline bool
 is_left(const SiftStarShape *sh)
 {
-	return sh->mode == SV6J_LEFT_EQUI || (is_range(sh) && sh->left);
+	return sift_star_keeps_fact(sh->mode) || (is_range(sh) && sh->left);
 }
 
 void
@@ -304,6 +304,8 @@ sift_star_dim_finish(SiftStarDim *d)
 		}
 	}
 	d->unique_keys = d->ndistinct == inserted;
+	if (sift_star_preserves_dim(d->shape.mode))
+		d->matched = palloc0(((size_t) d->nrows + 63) / 64 * sizeof(uint64));
 	if (d->shape.kcls[0] == SSC_INT && d->nrows <= SIFT_STAR_EXACT_MAX)
 	{
 		d->exact = palloc(Max(d->nrows, 1) * sizeof(int64));
@@ -358,6 +360,8 @@ sift_star_dim_free(SiftStarDim *d)
 		pfree(d->next);
 	if (d->exact != NULL)
 		pfree(d->exact);
+	if (d->matched != NULL)
+		pfree(d->matched);
 	memset(d, 0, sizeof(*d));
 }
 
@@ -494,7 +498,7 @@ sift_star_apply(const SiftStarDim *d, const uint32 *match, const uint64 *gate, u
 	{
 		if (!((mask[r >> 6] >> (r & 63)) & 1))
 			continue;
-		if (mode != SV6J_LEFT_EQUI)
+		if (!sift_star_keeps_fact(mode))
 		{
 			const bool	matched = match[r] != 0 && bit_at(gate, r);
 

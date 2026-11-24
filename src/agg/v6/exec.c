@@ -56,6 +56,7 @@ typedef struct V6State
 	SiftV6Gpu	gpu;
 	SiftV6StarRun *star;		/* the dimensions of a star join */
 	uint32		star_passes;
+	uint32		star_shared;
 	SiftV6TopKRun *topk;
 	SiftV6Rows *rows;
 	IndexFetchTableData *fetch;
@@ -211,9 +212,9 @@ v6_scan_ext(V6State *st, Snapshot snap)
 	SiftStarOpen open;
 	uint32		pass = 0;
 
-	if (st->spec->ext->unnest)
+	if (st->spec->ext->unnest && st->star == NULL)
 	{
-		src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats);
+		src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats, NULL);
 		return;
 	}
 	while ((open = sift_v6_star_open(st->star, pass++)) != SSO_DONE)
@@ -221,12 +222,15 @@ v6_scan_ext(V6State *st, Snapshot snap)
 		MemoryContext pass_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 star pass");
 		MemoryContext old = MemoryContextSwitchTo(pass_cx);
 
-		if (open == SSO_SCAN)
+		if (open == SSO_SCAN && st->spec->ext->unnest)
+			src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
+		else if (open == SSO_SCAN)
 			scan_with_text(st, src, snap, st->star);
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(pass_cx);
 	}
 	st->star_passes = sift_v6_star_passes(st->star);
+	st->star_shared = sift_v6_star_shared(st->star);
 	sift_v6_star_close(st->star);
 }
 
@@ -506,6 +510,7 @@ v6_rescan(CustomScanState *node)
 	st->group = NULL;
 	st->ran = false;
 	st->star_passes = 0;
+	st->star_shared = 0;
 	if (st->star != NULL)
 		sift_v6_star_close(st->star);
 	foreach_ptr(PlanState, child, node->custom_ps)
@@ -585,6 +590,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Star Passes", NULL, st->star_passes, es);
 	if (st->star != NULL && sift_v6_star_cache(st->star, &dim_hits, &dim_built))
 		ExplainPropertyText("Dimension Cache", psprintf("%u hit, %u built", dim_hits, dim_built), es);
+	if (st->star_shared > 0)
+		ExplainPropertyInteger("Shared Dimensions", NULL, st->star_shared, es);
 	sift_v6_gpu_explain(&st->gpu, es);
 	ex.heap_vet_rows = st->stats.heap_vet_rows;
 	ex.grans_scanned = st->stats.batches;

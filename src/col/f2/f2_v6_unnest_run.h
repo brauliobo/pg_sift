@@ -11,6 +11,9 @@
 
 #include "agg/v6/v6.h"
 
-extern void sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats);
+struct SiftV6StarRun;
+
+/* One pass over the dimensions of star (NULL: the unnest reads no other relation) */
+extern void sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 
 #endif							/* SIFT_COL_F2_V6_UNNEST_RUN_H */

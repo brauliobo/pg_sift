@@ -14,6 +14,7 @@
 
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_join_lookup.h"
 #include "agg/v6/v6_star.h"
 
 typedef struct SiftV6PipeBatch SiftV6PipeBatch;
@@ -31,6 +32,8 @@ typedef struct SiftV6Pipe
 	int			fslot[SIFT_STAR_MAX_DIMS][SIFT_STAR_MAX_KEYS];	/* the slots of the fact keys of each dimension */
 	int			pay_slot[SIFT_STAR_MAX_DIMS];	/* the first payload slot of each dimension */
 	SiftVecType *type;			/* [nslots] */
+	SiftV6Resid *resid;			/* the conditions of the join no key says, run on the pairs that went through every dimension (NULL: none) */
+	int			rslot[SIFT_V6_RESID_COLS];	/* the slot of each of their columns */
 	int		   *key_slot;		/* [nkeys] */
 	int		   *arg_slot;		/* [nvec] */
 	SiftVec   **keyvec;
@@ -51,5 +54,7 @@ extern const SiftV6Col *sift_v6_vec_col(const SiftV6Spec *spec, int v);
 extern int	sift_v6_pipe_dim_slot(const SiftV6Pipe *p, int dim, int pay);
 /* One batch of the fact side: fact[i] is slot i; bs gives its rows. The vectors must live until the call returns */
 extern void sift_v6_pipe_run(SiftV6Pipe *p, SiftVec *const *fact, SiftBatchSel *bs);
+/* The fact side has ended: the rows of the dimensions of a RIGHT or FULL join that no row matched go through the dimensions after them, with a NULL fact side */
+extern void sift_v6_pipe_finish(SiftV6Pipe *p);
 
 #endif							/* SIFT_AGG_V6_PIPE_H */

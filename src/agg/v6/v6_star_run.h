@@ -31,6 +31,8 @@ extern uint32 sift_v6_star_passes(const SiftV6StarRun *r);
 extern uint64 sift_v6_star_bytes(const SiftV6StarRun *r);
 /* The dimensions read from the cache of the tables of earlier statements, and those read from their plans to be kept (false: neither, no dimension is of a table that keeps a journal) */
 extern bool sift_v6_star_cache(const SiftV6StarRun *r, uint32 *hits, uint32 *built);
+/* The tables of its dimensions that another node of the statement had read */
+extern uint32 sift_v6_star_shared(const SiftV6StarRun *r);
 /* The tables are freed; the next open reads the plans again */
 extern void sift_v6_star_close(SiftV6StarRun *r);
 

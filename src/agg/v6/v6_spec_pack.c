@@ -193,17 +193,23 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 
 		ints = lappend_int(lappend_int(ints, (int) xd->mode), xd->nkeys);
 		for (int k = 0; k < xd->nkeys; k++)
+		{
 			ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, xd->fatt[k]), (int) xd->ftype[k]), (int) xd->ktype[k]), xd->kcol[k]);
+			ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, (int) xd->fsrc[k]), xd->fdim[k]), xd->fslot[k]), (int) xd->kvarno[k]);
+		}
 		ints = lappend_int(ints, xd->npay);
 		for (int c = 0; c < xd->npay; c++)
 			ints = lappend_int(lappend_int(ints, xd->pcol[c]), (int) xd->ptype[c]);
 	}
+	ints = lappend_int(ints, x->nrcol);
+	for (int c = 0; c < x->nrcol; c++)
+		ints = list_concat(ints, list_make5_int(x->rcol[c].attno, (int) x->rcol[c].typid, (int) x->rcol[c].src, x->rcol[c].dim, x->rcol[c].slot));
 	ints = lappend_int(ints, x->unnest);
 	ints = list_concat(ints, list_make4_int((int) x->elem.fn, x->elem.attno, (int) x->elem.type, x->elem.group_leaf));
 	ints = list_concat(ints, list_make3_int(x->elem.left, x->elem.semi, x->elem.ncols));
 	for (int c = 0; c < x->elem.ncols; c++)
 		ints = lappend_int(lappend_int(ints, x->elem.col_leaf[c]), (int) x->elem.col_type[c]);
-	return list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where);
+	return lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid);
 }
 
 SiftV6Ext *
@@ -224,12 +230,16 @@ sift_v6_ext_unpack(const List *l)
 
 		xd->mode = (SiftV6JoinMode) list_nth_int(ints, at++);
 		xd->nkeys = list_nth_int(ints, at++);
-		for (int k = 0; k < xd->nkeys; k++, at += 4)
+		for (int k = 0; k < xd->nkeys; k++, at += 8)
 		{
 			xd->fatt[k] = list_nth_int(ints, at);
 			xd->ftype[k] = (Oid) list_nth_int(ints, at + 1);
 			xd->ktype[k] = (Oid) list_nth_int(ints, at + 2);
 			xd->kcol[k] = (AttrNumber) list_nth_int(ints, at + 3);
+			xd->fsrc[k] = (SiftV6Src) list_nth_int(ints, at + 4);
+			xd->fdim[k] = list_nth_int(ints, at + 5);
+			xd->fslot[k] = list_nth_int(ints, at + 6);
+			xd->kvarno[k] = (Index) list_nth_int(ints, at + 7);
 		}
 		xd->npay = list_nth_int(ints, at++);
 		for (int c = 0; c < xd->npay; c++, at += 2)
@@ -238,6 +248,10 @@ sift_v6_ext_unpack(const List *l)
 			xd->ptype[c] = (Oid) list_nth_int(ints, at + 1);
 		}
 	}
+	x->nrcol = list_nth_int(ints, at++);
+	for (int c = 0; c < x->nrcol; c++, at += 5)
+		x->rcol[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),
+		.dim = list_nth_int(ints, at + 3),.slot = list_nth_int(ints, at + 4)};
 	x->unnest = list_nth_int(ints, at++);
 	x->elem = (SiftV6XElem) {.fn = (SiftV6ElemFn) list_nth_int(ints, at),.attno = list_nth_int(ints, at + 1),.type = (Oid) list_nth_int(ints, at + 2),
 	.group_leaf = list_nth_int(ints, at + 3),.left = list_nth_int(ints, at + 4),.semi = list_nth_int(ints, at + 5),.ncols = list_nth_int(ints, at + 6)};
@@ -251,17 +265,24 @@ sift_v6_ext_unpack(const List *l)
 	x->elem_where = lthird(l);
 	x->elem_names = lfourth(l);
 	x->heap_where = list_nth(l, 4);
+	x->resid = list_nth(l, 5);
 	return x;
 }
 
 static AttrNumber
-column_position(const Plan *plan, AttrNumber attno)
+column_position(const Plan *plan, Index varno, AttrNumber attno)
 {
 	foreach_node(TargetEntry, te, plan->targetlist)
-		if (IsA(te->expr, Var) && ((Var *) te->expr)->varattno == attno)
+		if (IsA(te->expr, Var) && ((Var *) te->expr)->varattno == attno && (varno == 0 || ((Var *) te->expr)->varno == varno))
 			return te->resno;
 	SIFT_INVARIANT(false, "a column of a dimension of the star join is in the output of its plan");
 	return 0;
+}
+
+SiftV6Col
+sift_v6_xdim_key_col(const SiftV6XDim *xd, int k)
+{
+	return (SiftV6Col) {.attno = xd->fatt[k],.typid = xd->ftype[k],.src = xd->fsrc[k],.dim = xd->fdim[k],.slot = xd->fslot[k]};
 }
 
 void
@@ -273,8 +294,8 @@ sift_v6_ext_resolve(SiftV6Ext *x, const List *custom_plans)
 		const Plan *plan = list_nth(custom_plans, d);
 
 		for (int k = 0; k < xd->nkeys; k++)
-			xd->kcol[k] = column_position(plan, xd->kcol[k]);
+			xd->kcol[k] = column_position(plan, xd->kvarno[k], xd->kcol[k]);
 		for (int c = 0; c < xd->npay; c++)
-			xd->pcol[c] = column_position(plan, xd->pcol[c]);
+			xd->pcol[c] = column_position(plan, 0, xd->pcol[c]);
 	}
 }

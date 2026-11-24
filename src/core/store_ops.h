@@ -47,8 +47,8 @@ struct SiftV6Scan;
 struct SiftV6ScanArm;
 struct SiftV6ScanStats;
 struct SiftV6Source;
-struct SiftV6Spec;
 struct SiftV6StarRun;
+struct SiftV6Spec;
 struct SiftV6Vexpr;
 
 /* Per-attribute descriptor returned by SiftStoreOps.schema */
@@ -257,7 +257,7 @@ typedef struct SiftParOps
 typedef struct SiftJsonbOps
 {
 	int			(*key_leaf) (Oid indexoid, int att, const char *key, int len);
-	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats);
+	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 } SiftJsonbOps;
 
 /* Unified multi-format storage ops descriptor */

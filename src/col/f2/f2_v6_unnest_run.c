@@ -17,6 +17,7 @@
 #include "agg/v6/v6_gather.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_pipe.h"
+#include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_unnest.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "col/f2/f2_v6_unnest_run.h"
@@ -146,6 +147,8 @@ slot_of(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 		u->eused[c->slot] = true;
 		return u->ncols + c->slot;
 	}
+	if (c->src == SV6SRC_DIM)
+		return sift_v6_pipe_dim_slot(u->pipe, c->dim, c->slot);
 	return col_index(u, r, c, month);
 }
 
@@ -155,17 +158,28 @@ setup_cols(UnRun *u, const SiftColRel *r)
 	const SiftV6Spec *spec = u->spec;
 
 	for (int i = 0; i < spec->nkeys; i++)
-		if (spec->key[i].src != SV6SRC_ELEM)
+		if (spec->key[i].src == SV6SRC_ATTR)
 			col_index(u, r, &spec->key[i], key_is_month(spec, i));
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
-		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src != SV6SRC_ELEM && sift_v6_vec_col(spec, v)->derive == 0)
+		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src == SV6SRC_ATTR && sift_v6_vec_col(spec, v)->derive == 0)
 			col_index(u, r, sift_v6_vec_col(spec, v), false);
+	for (int d = 0; d < u->x->ndims; d++)
+		for (int k = 0; k < u->x->dim[d].nkeys; k++)
+			if (u->x->dim[d].fsrc[k] == SV6SRC_ATTR)
+			{
+				const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
+
+				col_index(u, r, &key, false);
+			}
+	for (int i = 0; i < u->x->nrcol; i++)
+		if (u->x->rcol[i].src == SV6SRC_ATTR)
+			col_index(u, r, &u->x->rcol[i], false);
 	for (int k = 0; k < spec->nderive; k++)
 	{
 		const SiftV6Derive *d = &spec->derive[k];
 
 		for (int c = 0; c <= d->ncond; c++)
-			if ((c == 0 ? d->src : d->cond[c - 1]).src != SV6SRC_ELEM)
+			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR)
 				col_index(u, r, c == 0 ? &d->src : &d->cond[c - 1], false);
 	}
 	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
@@ -185,7 +199,7 @@ pull_spec(const UnRun *u)
 }
 
 static void
-setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g)
+setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *star)
 {
 	const SiftV6Spec *spec = u->spec;
 	SiftVecType type[OUT_SLOTS];
@@ -197,6 +211,17 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g)
 	for (int k = 0; k < spec->nderive; k++)
 		type[u->ncols + u->nel + k] = SVEC_F64;
 	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, u->ncols + u->nel + spec->nderive, type);
+	if (star != NULL)
+		sift_v6_star_attach(star, u->pipe);
+	for (int d = 0; d < u->x->ndims; d++)
+		for (int k = 0; k < u->x->dim[d].nkeys; k++)
+		{
+			const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
+
+			u->pipe->fslot[d][k] = slot_of(u, r, &key, false);
+		}
+	for (int i = 0; i < u->x->nrcol; i++)
+		u->pipe->rslot[i] = slot_of(u, r, &u->x->rcol[i], false);
 	for (int i = 0; i < spec->nkeys; i++)
 		u->pipe->key_slot[i] = slot_of(u, r, &spec->key[i], key_is_month(spec, i));
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
@@ -573,7 +598,7 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 }
 
 void
-sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats)
+sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
 {
 	UnRun		run = {0};
 	UnRun	   *u = &run;
@@ -609,7 +634,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	u->month_val = palloc0(MONTH_SLOTS * sizeof(int32));
 	setup_cols(u, sift_col_rel(index));
 	setup_clauses(u, sift_col_rel(index));
-	setup_pipe(u, sift_col_rel(index), g);
+	setup_pipe(u, sift_col_rel(index), g, star);
 	for (int i = 0; i < u->ncols; i++)
 		if (u->cols[i].month)
 		{
@@ -622,6 +647,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	while ((b = sift_f2_pull_next(pull)) != NULL)
 		run_batch(u, b);
 	sift_f2_pull_end(pull);
+	sift_v6_pipe_finish(u->pipe);
 	sift_v6_vet_end(&u->vet);
 	if (u->estate != NULL)
 		FreeExecutorState(u->estate);

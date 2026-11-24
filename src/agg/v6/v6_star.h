@@ -29,8 +29,24 @@ typedef enum SiftV6JoinMode
 	SV6J_LEFT_EQUI,
 	SV6J_SEMI_EQUI,
 	SV6J_ANTI_EQUI,
-	SV6J_RANGE_SMALL
+	SV6J_RANGE_SMALL,
+	SV6J_RIGHT_EQUI,			/* the dimension is the preserved side: its rows no fact row matched come out once, with a NULL fact side */
+	SV6J_FULL_EQUI				/* both sides are preserved */
 } SiftV6JoinMode;
+
+/* The rows of the dimension are kept whether or not a fact row matches them: they are marked as the scan matches them and the ones left come out when it ends (v6_join_lookup.h) */
+static inline bool
+sift_star_preserves_dim(SiftV6JoinMode mode)
+{
+	return mode == SV6J_RIGHT_EQUI || mode == SV6J_FULL_EQUI;
+}
+
+/* The fact rows that match nothing stay, with a NULL dimension side */
+static inline bool
+sift_star_keeps_fact(SiftV6JoinMode mode)
+{
+	return mode == SV6J_LEFT_EQUI || mode == SV6J_FULL_EQUI;
+}
 
 typedef enum SiftStarCls
 {
@@ -100,6 +116,7 @@ typedef struct SiftStarDim
 	uint32	   *tail;
 	uint32	   *next;			/* the next row of the same key, 0 at the last */
 	uint32		ndistinct;
+	uint64	   *matched;		/* a dimension of RIGHT or FULL join (sift_star_preserves_dim): bit i = row i (0-based) was matched by a fact row; allocated by sift_star_dim_finish */
 	int64	   *exact;			/* the distinct values of the first key, sorted: while nrows <= SIFT_STAR_EXACT_MAX and it is an integer */
 	uint32		nexact;
 } SiftStarDim;

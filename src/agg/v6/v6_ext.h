@@ -19,12 +19,16 @@
 /* A dimension of a star join: the fact attributes and the columns of the plan of the dimension its keys and payload are */
 typedef struct SiftV6XDim
 {
-	SiftV6JoinMode mode;		/* SV6J_INNER_EQUI or SV6J_LEFT_EQUI */
+	SiftV6JoinMode mode;
 	int			nkeys;
-	int			fatt[SIFT_STAR_MAX_KEYS];	/* the attribute of the index each key is of the fact table */
+	int			fatt[SIFT_STAR_MAX_KEYS];	/* the attribute of the index each key is of the fact table (fsrc SV6SRC_ATTR) */
 	Oid			ftype[SIFT_STAR_MAX_KEYS];
+	SiftV6Src	fsrc[SIFT_STAR_MAX_KEYS];	/* where the probing side has the key: a column of the index, the element of the unnest (fslot: its column) or a payload column of an earlier dimension (fdim, fslot) */
+	int			fdim[SIFT_STAR_MAX_KEYS];
+	int			fslot[SIFT_STAR_MAX_KEYS];
 	Oid			ktype[SIFT_STAR_MAX_KEYS];	/* the type of the key column of the dimension */
 	AttrNumber	kcol[SIFT_STAR_MAX_KEYS];	/* the column of the dimension: its attribute while planned, then its position in the tuples of its plan */
+	Index		kvarno[SIFT_STAR_MAX_KEYS];	/* the relation of the column when the dimension is a join of several (0: the attribute is the one of the only relation) */
 	int			npay;
 	AttrNumber	pcol[SIFT_STAR_MAX_PAY];
 	Oid			ptype[SIFT_STAR_MAX_PAY];
@@ -54,10 +58,15 @@ typedef struct SiftV6XElem
 	Oid			col_type[SIFT_V6_XELEM_COLS];
 } SiftV6XElem;
 
+#define SIFT_V6_RESID_COLS	16
+
 typedef struct SiftV6Ext
 {
 	int			ndims;
 	SiftV6XDim	dim[SIFT_STAR_MAX_DIMS];
+	List	   *resid;			/* the conditions of the join that no key says (an inequality, a WHERE over the columns of a left join), over the virtual attributes 1.. of rcol (v6_join_lookup.h); a pair that fails one leaves the join */
+	int			nrcol;
+	SiftV6Col	rcol[SIFT_V6_RESID_COLS];
 	bool		unnest;
 	SiftV6XElem elem;
 	List	   *where;			/* unnest: the quals of the fact table over INDEX_VAR attributes, which the scan evaluates on its batches (it has no index keys) */
@@ -67,7 +76,9 @@ typedef struct SiftV6Ext
 } SiftV6Ext;
 
 extern SiftV6Ext *sift_v6_ext_new(void);
-/* The Ext of a spec as a list: [ints, where, elem_where, elem_names, heap_where]; NIL for none */
+/* The column the probing side has key k of dimension d in: what the scan or the unnest maps to a slot of its pipe */
+extern SiftV6Col sift_v6_xdim_key_col(const SiftV6XDim *xd, int k);
+/* The Ext of a spec as a list: [ints, where, elem_where, elem_names, heap_where, resid]; NIL for none */
 extern List *sift_v6_ext_pack(const SiftV6Ext *x);
 extern SiftV6Ext *sift_v6_ext_unpack(const List *l);
 /* The positions of the key and payload columns of every dimension in the output of its plan (custom_plans of the node), from the attributes the planner chose */
