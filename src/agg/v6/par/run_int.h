@@ -105,6 +105,12 @@ par_leaf_of(const int *first, const SiftV6Col *c)
 /* A column that reads as itself: no derivation, no JSON key, no scale */
 extern bool par_plain_col(const SiftV6Col *c);
 
+/* The leaf at (of sh) is one in which a NULL is not for a thread */
+extern void par_check_leaf(ParShape *sh, int at);
+
+/* The aggregate that counts or sums: COUNT(*), COUNT(column), SUM and AVG of an int2 or int4 column (the sums of sh, and the leaves it reads, which cannot hold a NULL for a thread); false for any other */
+extern bool par_count_sum_of(const SiftV6Agg *a, const int *first, ParShape *sh);
+
 /* The rows of a granule that a thread folds, and their leaves decoded */
 typedef struct ParLoad
 {

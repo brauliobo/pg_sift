@@ -41,6 +41,36 @@ par_plain_col(const SiftV6Col *c)
 	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->scale == 0 && c->attno > 0;
 }
 
+void
+par_check_leaf(ParShape *sh, int at)
+{
+	for (int i = 0; i < sh->nchk; i++)
+		if (sh->chk[i] == at)
+			return;
+	sh->chk[sh->nchk++] = at;
+}
+
+bool
+par_count_sum_of(const SiftV6Agg *a, const int *first, ParShape *sh)
+{
+	int			at;
+
+	if (a->fclause != 0 || a->nxcols != 0)
+		return false;
+	if (a->kind == SV6_COUNT_STAR)
+		return true;
+	if (!par_plain_col(&a->arg))
+		return false;
+	if (a->kind == SV6_COUNT)
+		at = par_add_leaf(sh, par_leaf_of(first, &a->arg), false);
+	else if ((a->kind == SV6_SUM || a->kind == SV6_AVG) && (a->arg.typid == INT2OID || a->arg.typid == INT4OID) && sh->nsum < SIFT_PAR_GROUP_MAX_SUM)
+		at = sh->sum_at[sh->nsum++] = par_add_leaf(sh, par_leaf_of(first, &a->arg), false);
+	else
+		return false;
+	par_check_leaf(sh, at);
+	return true;
+}
+
 static bool
 shape_of(const SiftV6Spec *spec, const int *first, ParShape *sh)
 {

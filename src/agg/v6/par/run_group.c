@@ -41,24 +41,8 @@ static bool
 aggs_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
 	for (int j = 0; j < sp->naggs; j++)
-	{
-		const SiftV6Agg *a = &sp->agg[j];
-
-		if (a->fclause != 0 || a->nxcols != 0)
+		if (!par_count_sum_of(&sp->agg[j], first, sh))
 			return false;
-		if (a->kind == SV6_COUNT_STAR)
-			continue;
-		if (!par_plain_col(&a->arg))
-			return false;
-		if (a->kind == SV6_COUNT)
-		{
-			par_add_leaf(sh, par_leaf_of(first, &a->arg), false);
-			continue;
-		}
-		if ((a->kind != SV6_SUM && a->kind != SV6_AVG) || (a->arg.typid != INT2OID && a->arg.typid != INT4OID) || sh->nsum == SIFT_PAR_GROUP_MAX_SUM)
-			return false;
-		sh->sum_at[sh->nsum++] = par_add_leaf(sh, par_leaf_of(first, &a->arg), false);
-	}
 	return true;
 }
 
