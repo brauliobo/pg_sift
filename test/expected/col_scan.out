@@ -655,7 +655,7 @@ CREATE COLLATION sc_ci (provider = icu, locale = 'und-u-ks-level2', deterministi
 CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_text_ops);
 ERROR:  operator class sift.col_text_ops needs a deterministic collation
 HINT:  Use the default operator class for a column under a nondeterministic collation.
-CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci);
+CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_ops);
 NOTICE:  sift_col index "sc_col_ci": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sc_col_ci');

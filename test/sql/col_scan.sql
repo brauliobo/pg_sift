@@ -362,7 +362,7 @@ SELECT n, rows, agree, col_idx, tup_idx FROM sc_all() WHERE n IN (8, 9, 41, 42);
 -- the bitmap scan compares bytes: a nondeterministic collation has no such index
 CREATE COLLATION sc_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_text_ops);
-CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci);
+CREATE INDEX sc_col_ci ON sc USING sift_col (s COLLATE sc_ci sift.col_ops);
 DROP INDEX sc_col_ci;
 -- a char without a length and a numeric the leaf holds in another form are not scanned
 CREATE TABLE sc_bad (w bpchar, y numeric, z numeric(30, 5));

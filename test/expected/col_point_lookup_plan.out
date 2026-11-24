@@ -34,8 +34,8 @@ FROM (VALUES ('id = 777', 1), ('id IN ($L)', 10), ('id IN ($L)', 60), ('dup = 77
  id IN ($L)  |   60 | index
  dup = 777   |    1 | index
  dup IN ($L) |   10 | index
- day = 7     |    1 | seq
- day IN ($L) |   10 | seq
+ day = 7     |    1 | index
+ day IN ($L) |   10 | index
 (7 rows)
 
 SELECT q AS statement, pl_path(q) AS path FROM unnest(ARRAY[
@@ -48,10 +48,10 @@ SELECT q AS statement, pl_path(q) AS path FROM unnest(ARRAY[
 ]) q;
                           statement                          | path  
 -------------------------------------------------------------+-------
- SELECT g, count(*) FROM pl WHERE id IN (1, 2, 3) GROUP BY g | seq
+ SELECT g, count(*) FROM pl WHERE id IN (1, 2, 3) GROUP BY g | index
  SELECT count(*) FROM pl WHERE id BETWEEN 100 AND 5000       | seq
  SELECT count(*) FROM pl WHERE v = 5                         | seq
- SELECT count(*) FROM pl WHERE id = 777 AND v = 5            | seq
+ SELECT count(*) FROM pl WHERE id = 777 AND v = 5            | index
  SELECT count(DISTINCT v) FROM pl WHERE id IN (1, 2, 3)      | index
  SELECT id, v FROM pl WHERE id IN (1, 2, 3)                  | index
 (6 rows)
