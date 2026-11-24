@@ -16,7 +16,7 @@
 #include "agg/v6/v6_expr_str.h"
 #include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_pipe.h"
-#include "agg/v6/v6_preagg.h"
+#include "col/f2/f2_v6_preagg.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_vet.h"
 #include "col/f2/f2_scope_route.h"

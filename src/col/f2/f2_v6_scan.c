@@ -26,7 +26,7 @@
 #include "agg/v6/v6_dictseen.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_pipe.h"
-#include "agg/v6/v6_preagg.h"
+#include "col/f2/f2_v6_preagg.h"
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_vet.h"
 #include "agg/v6/v6_bqual.h"

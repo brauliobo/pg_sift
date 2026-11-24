@@ -1,5 +1,5 @@
 /*
- * agg/v6/v6_preagg.c - SiftAggV6 answering granules from the cubes of SEC_PREAGG version 2 (agg/v6/v6_preagg.h).
+ * col/f2/f2_v6_preagg.c - SiftAggV6 answering granules from the cubes of SEC_PREAGG version 2 (col/f2/f2_v6_preagg.h).
  */
 /* check-memory: allow-allocs every array here follows the keys, aggregates and predicates of one statement or the groups of one granule, not the rows of the table */
 #include "postgres.h"
@@ -11,7 +11,8 @@
 #include "utils/memutils.h"
 
 #include "agg/agg.h"
-#include "agg/v6/v6_preagg.h"
+#include "col/f2/f2_v6_preagg.h"
+#include "agg/v6/group_int.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_pred.h"
 #include "col/f2/preagg_delta.h"

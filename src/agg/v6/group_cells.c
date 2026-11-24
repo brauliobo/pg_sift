@@ -1,12 +1,11 @@
 /*
- * agg/v6/group_cells.c - pre-aggregated cells folded into the groups of SiftAggV6 (agg/v6/v6_preagg.h): a cell stands for the rows of one group of a granule, its key one row of the key
+ * agg/v6/group_cells.c - pre-aggregated cells folded into the groups of SiftAggV6 (agg/v6/group_int.h): a cell stands for the rows of one group of a granule, its key one row of the key
  * vectors and its partial states the states the rows would have made, which combine into the group's exactly as two partial states of a parallel run do. The distinct values a cell holds go through
  * the same sets the rows of a batch do.
  */
 #include "postgres.h"
 
 #include "agg/v6/group_int.h"
-#include "agg/v6/v6_preagg.h"
 
 static uint16
 identity_sel(SiftV6Group *g, uint16 n)
