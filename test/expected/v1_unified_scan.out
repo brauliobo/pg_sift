@@ -44,9 +44,9 @@ SELECT * FROM check_q($$SELECT grp, count(*), sum(price) FROM u WHERE body @@> '
 (1 row)
 
 SELECT * FROM check_q($$SELECT count(*) FROM u a JOIN u b ON a.grp = b.grp AND a.id < b.id AND b.price < 3$$);
-     node     | text_index | same 
---------------+------------+------
- SiftAggV6Sip | f          | t
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
 (1 row)
 
 SELECT * FROM check_q($$SELECT doc->>'k', count(*) FROM u GROUP BY 1$$);
