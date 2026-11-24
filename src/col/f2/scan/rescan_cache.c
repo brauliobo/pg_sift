@@ -328,12 +328,6 @@ fill(Relation rel, const SiftRescanScan *sc, SiftF2PartPin *pin, uint32 g)
 	return gr;
 }
 
-static Size
-granule_bytes(const SiftRescanScan *sc, int n)
-{
-	return (Size) n * (sizeof(uint64) + sc->nleaf * sizeof(int64)) + 2048;
-}
-
 static SiftRescanPart *
 part_store(SiftF2PartPin *pin)
 {
@@ -385,7 +379,7 @@ granule_of(Relation rel, const SiftRescanScan *sc, SiftF2PartPin *pin, uint32 g,
 		return slot;
 	}
 	gr = fill(rel, sc, pin, g);
-	if (pin->uncached || !sift_cache_room(granule_bytes(sc, gr->n)))
+	if (pin->uncached || !sift_cache_room(MemoryContextMemAllocated(gr->cx, true)))
 	{
 		*kept = false;
 		return gr;
