@@ -516,7 +516,7 @@ selftest() {
 		[[ $out == *"format=$fmt "* && $out == *'lane 1:'* && $out == *'lane 4:'* && $out == *'leakcheck'* ]] || fail "--dry-run --format $fmt misses the format, a lane or the leak gate: $out"
 		for s in corpus plangate plangate-4t lifecycle coldiff shapes_matrix surface_sweep txn_fuzz tbl_twin_fuzz; do [[ $out == *"  $s "* ]] || fail "--dry-run --format $fmt lists no step $s"; done
 	done
-	out=$("$0" --dry-run --format release); [[ $out == *'release library (SIFT_TESTING= empty)'* && $out == *'SKIP'* ]] || fail "release: no release library line or no skipped harness without --format"
+	out=$("$0" --dry-run --format release); [[ $out == *'release library (SIFT_TESTING= empty)'* && $out == *'skipped:   -'* ]] || fail "release: no release library line, or a harness is skipped"
 	out=$("$0" --dry-run --format f2); [[ $out == *'test_create_format1 = off'* ]] || fail "f2 does not say sift.test_create_format1 = off"
 	out=$("$0" --dry-run --format f1); [[ $out == *'test_create_format1 = on'* ]] || fail "f1 does not say sift.test_create_format1 = on"
 	out=$("$0" --dry-run --format f2 --assert); [[ $out == *'assertions'* ]] || fail "--assert says nothing of assertions"

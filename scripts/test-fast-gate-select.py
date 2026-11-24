@@ -74,7 +74,7 @@ def table():
     yield one('union: five areas', files(STAR, TABLE, BM25, COL, SQL),
               lambda p: p['areas'] == ['star', 'col', 'table', 'bm25', 'sql'] and has(p, 'coldiff', 'coldiff-table', 'bm25_fuzz', 'surface_sweep'))
 
-    harnesses = (('test/fuzz/txn_fuzz.py', ['txn_fuzz']), ('test/fuzz/shapes_matrix.py', ['shapes_matrix']), ('test/fuzz/surface_sweep.py', ['surface_sweep']),
+    harnesses = (('test/fuzz/txn_fuzz.py', ['txn_fuzz', 'txn_fuzz-table']), ('test/fuzz/shapes_matrix.py', ['shapes_matrix']), ('test/fuzz/surface_sweep.py', ['surface_sweep']),
                  ('test/fuzz/tbl_twin_fuzz.py', ['tbl_twin_fuzz']), ('test/fuzz/bm25_fuzz.py', ['bm25_fuzz']), ('test/fuzz/diff_fuzz.py', ['diff_fuzz', 'diff_fuzz-table']),
                  ('scripts/coldiff.sh', ['coldiff', 'coldiff-table']), ('scripts/plangate.sh', ['plangate', 'plangate-table', 'plangate-4t']),
                  ('test/plan/anything.sql', ['plangate', 'plangate-table', 'plangate-4t']), ('test/corpus/anything.sql', ['corpus', 'corpus-table']), ('scripts/corpus.sh', ['corpus', 'corpus-table']))
@@ -100,8 +100,8 @@ def table():
 
     only = [area(a) for a in ('jsonb', 'star', 'clickbench', 'gpu', 'col')]
     yield ('corpus --only globs are joined with |', only,
-           lambda ps: all(not re.search(r'--only \S*[, ]', p['cmds'].get('corpus', '')) and '\\,' not in p['cmds'].get('corpus', '') for p in ps))
-    yield one('a single glob stays a single glob', area('gpu'), lambda p: cmd(p, 'corpus', r'--only \\\*agg\\\*$'))
+           lambda ps: all(not re.search(r'--only \S*,|--only \S+ [^-]', p['cmds'].get('corpus', '')) and '\\,' not in p['cmds'].get('corpus', '') for p in ps))
+    yield one('a single glob stays a single glob', area('gpu'), lambda p: cmd(p, 'corpus', r'--only \\\*agg\\\*( --format \S+)?$'))
     yield one('the column index narrows surface_sweep with |', area('col'), lambda p: cmd(p, 'surface_sweep', r'--only col\\\|check'))
 
     yield one('--area all is the default', (), lambda p: p['areas'] == ['all'] and has(p, 'corpus', 'plangate', 'lifecycle', 'coldiff', 'surface_sweep', 'shapes_matrix', 'txn_fuzz'))
