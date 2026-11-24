@@ -138,6 +138,10 @@ sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec *keep, int *nke
 	return out;
 }
 
+#ifdef SIFT_TESTING
+uint64		sift_pend_del_reads = 0;
+#endif
+
 /* The records of a chain from the oldest page: a chain made new (SIFT_PEND_DEL_REV) is walked from its newest page back, a forward one from its first; the pages are in the order of their records */
 SiftPendDelRec *
 sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, BlockNumber **pages, int *npages)
@@ -150,6 +154,10 @@ sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, Block
 	int		   *nrecs = palloc(cap * sizeof(int));
 	SiftPendDelRec *out;
 	bool		rev = false;
+
+#ifdef SIFT_TESTING
+	sift_pend_del_reads++;
+#endif
 
 	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
 	{

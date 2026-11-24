@@ -12,6 +12,7 @@
 #include "storage/procarray.h"
 #include "utils/snapmgr.h"
 
+#include "table/f2/f2_chain_cache.h"
 #include "table/f2/f2_gcache.h"
 #include "table/f2/f2_tbl.h"
 #include "core/compat.h"
@@ -148,6 +149,31 @@ sift_tbl_f2_pending_index(Relation rel, const SiftPartitionEntry *entry, Snapsho
 	return px;
 }
 
+/* The snapshot sees the row at tid deleted by a pending delete of the partition or by one the transaction has not written yet: two lookups by address, none of them reads the chain again */
+bool
+sift_tbl_f2_pending_dead(SiftTblVis *v, const SiftPartitionEntry *entry, uint64 tid)
+{
+	TransactionId xmax;
+	CommandId	cmax;
+	bool		has_succ;
+	uint64		succ;
+	const SiftPendDelLog *log;
+
+	if (v->snap->snapshot_type == SNAPSHOT_ANY)
+		return false;
+	if (sift_stage_find_delete(v->rel, tid, &xmax, &cmax, &has_succ, &succ) && deleted(v, xmax, cmax))
+		return true;
+	log = sift_pend_del_log(v->rel, entry);
+	for (int i = log != NULL ? sift_pend_del_log_newest(log, tid) : -1; i >= 0; i = sift_pend_del_log_prev(log, i))
+	{
+		const SiftPendDelRec *r = sift_pend_del_log_rec(log, i);
+
+		if (deleted(v, r->xmax, r->cmax))
+			return true;
+	}
+	return false;
+}
+
 /* ---- granules ---- */
 
 static bool
@@ -169,8 +195,8 @@ row_inserted(SiftTblVis *v, SiftF2GranuleBuf *gb, uint16 row)
 	return inserted(v, gb->vers[row].xmin, gb->vers[row].cmin);
 }
 
-bool
-sift_tbl_f2_vis_row(SiftTblVis *v, SiftF2GranuleBuf *gb, uint16 row, const SiftPendDelIndex *pdel)
+static bool
+row_visible(SiftTblVis *v, SiftF2GranuleBuf *gb, uint16 row, const SiftPendDelIndex *pdel, bool pending_dead)
 {
 	const SiftDvGran *dvg = gb->pin != NULL && gb->pin->dv != NULL ? sift_dv_granule(gb->pin->dv, gb->granule_id) : NULL;
 
@@ -180,11 +206,23 @@ sift_tbl_f2_vis_row(SiftTblVis *v, SiftF2GranuleBuf *gb, uint16 row, const SiftP
 		return false;
 	if (dvg != NULL && row_dead_in_dv(v, dvg, row))
 		return false;
-	if (pdel != NULL && sift_pdel_idx_has(pdel, sift_f2_gbuf_tids(gb)[row]))
+	if (pending_dead || (pdel != NULL && sift_pdel_idx_has(pdel, sift_f2_gbuf_tids(gb)[row])))
 		return false;
 	if (v->snap->snapshot_type == SNAPSHOT_DIRTY)
 		v->snap->speculativeToken = sift_tbl_rowlock_speculative_token(v->rel, sift_f2_gbuf_tids(gb)[row]);
 	return true;
+}
+
+bool
+sift_tbl_f2_vis_row(SiftTblVis *v, SiftF2GranuleBuf *gb, uint16 row, const SiftPendDelIndex *pdel)
+{
+	return row_visible(v, gb, row, pdel, false);
+}
+
+bool
+sift_tbl_f2_vis_point(SiftTblVis *v, SiftF2GranuleBuf *gb, uint16 row, bool pending_dead)
+{
+	return row_visible(v, gb, row, NULL, pending_dead);
 }
 
 static void
@@ -379,8 +417,6 @@ sift_tbl_f2_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapsho
 {
 	SiftF2Loc loc;
 	SiftTblVis	v;
-	SiftF2GranuleBuf *gb;
-	SiftPendDelIndex *pdel;
 	bool		ok;
 	SiftF2Store *store = sift_f2_store_open(rel);
 	uint64		tid = sift_tbl_tid_pack(&slot->tts_tid);
@@ -389,11 +425,8 @@ sift_tbl_f2_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapsho
 	sift_stage_flush(rel);
 	if (!sift_tbl_f2_locate_or_wait(rel, store, tid, snapshot, &loc, &waiting))
 		return waiting;
-	gb = loc.gb;
 	sift_tbl_f2_vis_begin(&v, rel, snapshot);
-	pdel = sift_tbl_f2_pending_index(rel, &loc.entry, snapshot);
-	ok = sift_tbl_f2_vis_row(&v, gb, loc.row, pdel);
-	sift_pdel_idx_free(pdel);
-	sift_f2_gbuf_unref(gb);
+	ok = sift_tbl_f2_vis_point(&v, loc.gb, loc.row, sift_tbl_f2_pending_dead(&v, &loc.entry, tid));
+	sift_f2_gbuf_unref(loc.gb);
 	return ok;
 }

@@ -183,6 +183,16 @@ slot_find(Relation rel, bool pending, uint64 part_id)
 	return NULL;
 }
 
+/* The pending deletes of a partition are asked for by the entries of different readers, which may name the chain by different heads (a manifest read before and after the chain grew): each head has its log */
+static Slot *
+slot_find_head(Relation rel, uint64 part_id, BlockNumber head)
+{
+	for (int i = 0; i < CHAIN_SLOTS; i++)
+		if (slots[i].cx != NULL && slots[i].pending && slots[i].part_id == part_id && slots[i].head_blk == head && RelFileLocatorEquals(slots[i].loc, rel->rd_locator))
+			return &slots[i];
+	return NULL;
+}
+
 /* A free slot, else the least recently used one, emptied */
 static Slot *
 slot_take(void)
@@ -283,8 +293,8 @@ sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry)
 		return NULL;
 	if (chain_cx == NULL)
 		chain_init();
-	s = slot_find(rel, true, entry->part_id);
-	if (s != NULL && s->head_blk == entry->pend_del_blk)
+	s = slot_find_head(rel, entry->part_id, entry->pend_del_blk);
+	if (s != NULL)
 	{
 		PageStamp now = stamp_read(rel, s->stamp.blk);
 
@@ -293,9 +303,8 @@ sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry)
 			s->tick = sift_cache_tick();
 			return &s->log.pd;
 		}
-	}
-	if (s != NULL)
 		slot_drop(s);
+	}
 	s = slot_open(rel, true, entry->part_id);
 	old = MemoryContextSwitchTo(s->cx);
 	pd_load(rel, entry, s);

@@ -282,6 +282,10 @@ extern void sift_tbl_f2_vis_begin(SiftTblVis *v, Relation rel, Snapshot snap);
 extern uint16 sift_tbl_f2_vis_granule(SiftTblVis *v, SiftF2GranuleBuf *gb, const SiftPendDelIndex *pdel, uint64 *sel);
 extern bool sift_tbl_f2_vis_row(SiftTblVis *v, SiftF2GranuleBuf *gb, uint16 row, const SiftPendDelIndex *pdel);
 
+/* The same for one row fetched by address, whose pending delete sift_tbl_f2_pending_dead answered */
+extern bool sift_tbl_f2_vis_point(SiftTblVis *v, SiftF2GranuleBuf *gb, uint16 row, bool pending_dead);
+extern bool sift_tbl_f2_pending_dead(SiftTblVis *v, const SiftPartitionEntry *entry, uint64 tid);
+
 /* The pending deletes of the partition the snapshot sees, as an index (NULL: none) */
 extern SiftPendDelIndex *sift_tbl_f2_pending_index(Relation rel, const SiftPartitionEntry *entry, Snapshot snap);
 

@@ -92,6 +92,9 @@ extern SiftChainStamp sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNum
 
 /* The records of the chain at head, in order, and the blocks of its pages */
 extern SiftPendDelRec *sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, BlockNumber **pages, int *npages);
+#ifdef SIFT_TESTING
+extern uint64 sift_pend_del_reads;
+#endif
 
 /*
  * The addresses a reader met in the pending deletes of a partition and the snapshot sees deleted, as a set: the range and the blocks of the addresses (the blocks as the bloom of a

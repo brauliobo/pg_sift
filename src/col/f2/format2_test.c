@@ -36,6 +36,7 @@ PG_FUNCTION_INFO_V1(sift_test_f2_partitions);
 PG_FUNCTION_INFO_V1(sift_test_f2_parts);
 PG_FUNCTION_INFO_V1(sift_test_f2_range);
 PG_FUNCTION_INFO_V1(sift_test_stage_flushes);
+PG_FUNCTION_INFO_V1(sift_test_pend_del_reads);
 PG_FUNCTION_INFO_V1(sift_test_f2_check);
 PG_FUNCTION_INFO_V1(sift_test_f2_check_keys);
 PG_FUNCTION_INFO_V1(sift_test_f2_leaves);
@@ -896,6 +897,12 @@ Datum
 sift_test_stage_flushes(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT64((int64) sift_stage_flushes);
+}
+
+Datum
+sift_test_pend_del_reads(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT64((int64) sift_pend_del_reads);
 }
 
 #endif							/* SIFT_TESTING */

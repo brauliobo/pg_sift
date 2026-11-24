@@ -1,8 +1,9 @@
 /*
  * table/f2/f2_fetch.c - reading rows of a sift_table by address: the index fetch, and the fetch of a row version, which a transaction keeps one of for all its rows.
  *
- * The granule of the last row stays with the fetch, so that the rows of one granule in a row of calls cost one lookup; what the snapshot sees of the pending deletes and the patches of
- * column deltas is read again for each call that is not of SnapshotAny, the stage of the transaction being part of it.
+ * The granule of the last row stays with the fetch, so that the rows of one granule in a row of calls cost one lookup; what the snapshot sees of the pending deletes (the stage of the
+ * transaction being part of them) is asked of the row, by its address, in each call that is not of SnapshotAny: a fetch holds no index of them, so a probe costs the same at the first
+ * delete of a transaction and at the last. The patches of column deltas are read again for each call.
  *
  * A row of a part that has a row pack (f2_row_pack.h) is found by the address hash of the part and read from its block, with no granule: when its granule needs no version (frozen, settled for the
  * snapshot, or the rows of one transaction) and holds no deleted row. A part with a column delta reads the granule too, for the map of the patches. Any other row is read from its granule.
@@ -37,10 +38,6 @@ typedef struct SiftTblF2Fetch
 	Snapshot	vis_snap;
 	SiftTblVis	vis;
 	SiftColDeltaScan *delta;
-	SiftPendDelIndex *pdel;
-	uint64		pdel_part;
-	BlockNumber pdel_blk;
-	bool		pdel_valid;
 } SiftTblF2Fetch;
 
 StaticAssertDecl(offsetof(SiftTblF2Fetch, ops) == offsetof(SiftTblFetchHeader, ops), "a fetch starts with SiftTblFetchHeader");
@@ -97,22 +94,6 @@ row_in_granule(SiftF2GranuleBuf *gb, uint64 tid)
 	return tid < t->tid_min || tid > t->tid_max ? -1 : sift_f2_gbuf_row_of(gb, tid);
 }
 
-static void
-fetch_select_pending(SiftTblF2Fetch *f, Snapshot snapshot)
-{
-	MemoryContext prev;
-
-	if (f->pdel_valid && f->pdel_part == f->entry.part_id && f->pdel_blk == f->entry.pend_del_blk)
-		return;
-	prev = MemoryContextSwitchTo(f->cx);
-	sift_pdel_idx_free(f->pdel);
-	f->pdel = sift_tbl_f2_pending_index(f->base.rel, &f->entry, snapshot);
-	f->pdel_part = f->entry.part_id;
-	f->pdel_blk = f->entry.pend_del_blk;
-	f->pdel_valid = true;
-	MemoryContextSwitchTo(prev);
-}
-
 typedef struct PackedFetch
 {
 	SiftTblF2Fetch *f;
@@ -140,8 +121,7 @@ packed_visible(SiftTblF2Fetch *f, const SiftF2PartPin *pin, const SiftPartitionE
 	if (!packed_inserted(f, pin, &pin->gdir[granule_id]) || (pin->dv != NULL && sift_dv_granule(pin->dv, granule_id) != NULL))
 		return false;
 	f->entry = *entry;
-	fetch_select_pending(f, snapshot);
-	return f->pdel == NULL || !sift_pdel_idx_has(f->pdel, tid);
+	return !sift_tbl_f2_pending_dead(&f->vis, entry, tid);
 }
 
 static void
@@ -210,7 +190,6 @@ fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot
 		fetch_drop_granule(f);
 		sift_tbl_f2_vis_begin(&f->vis, rel, snapshot);
 		f->vis_snap = snapshot;
-		f->pdel_valid = false;
 		sift_col_delta_scan_reset(f->delta);
 	}
 	row = f->gb != NULL ? row_in_granule(f->gb, tid) : -1;
@@ -235,9 +214,8 @@ fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot
 		f->entry = loc.entry;
 		row = loc.row;
 	}
-	fetch_select_pending(f, snapshot);
 	sift_tbl_f2_predicate_point(rel, tid, snapshot);
-	if (!sift_tbl_f2_vis_row(&f->vis, f->gb, (uint16) row, f->pdel))
+	if (!sift_tbl_f2_vis_point(&f->vis, f->gb, (uint16) row, sift_tbl_f2_pending_dead(&f->vis, &f->entry, tid)))
 		return false;
 	gm = sift_col_delta_scan_map(f->delta, &f->entry, f->gb);
 	sift_f2_slot_store(slot, rel, f->gb, (uint16) row, sift_col_delta_scan_part_map(f->delta), gm, f->rowcx);
@@ -309,7 +287,6 @@ sift_tbl_f2_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snap
 	SiftTblF2Fetch *f = tx_fetch_for(rel);
 	bool		found;
 
-	f->pdel_valid = false;
 	sift_col_delta_scan_reset(f->delta);
 	found = fetch_one(f, sift_tbl_tid_pack(tid), snapshot, slot);
 	if (found)
