@@ -41,3 +41,5 @@ SET statement_timeout = '60ms';
 SELECT * FROM sift._test_par_group(4, 1000000, 1000, 100000, 0);
 RESET statement_timeout;
 SELECT bad, runs FROM sift._test_par_group(4, 100000, 20000, 2, 0);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -70,3 +70,5 @@ SELECT bad, runs FROM sift._test_par_group(4, 100000, 20000, 2, 0);
    0 |    2
 (1 row)
 
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
