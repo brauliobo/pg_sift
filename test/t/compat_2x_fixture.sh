@@ -84,11 +84,12 @@ check "the counts equal the heap's, the dead documents of the dirty segment stay
 
 restarted() { verify && agree; }
 
-# VACUUM marks documents dead in the dirty 2.x segment (150 more), in the clean one (140) and in the write buffer
+# VACUUM marks documents dead in the dirty 2.x segment (150 more) and in the clean one (140), and it seals the 2.x write buffer (8 pages
+# or more, commit 6fa815c0e) without its dead documents into a segment of format 4 (90 live documents) and raises the metapage to 1.6
 vacuumed() {
 	# Relocation assigns new generations but preserves the legacy formats, document totals and liveness.
-	[[ $(sql fx "SELECT ndocs || ':' || dirty || ':' || dead_docs FROM sift.segments('docs_idx') WHERE kind = 'immutable' ORDER BY ndocs") == $'1400:true:140\n1500:true:300' ]] &&
-		formats_match '^[12](,[12])*/[12]$' && verify && agree
+	[[ $(sql fx "SELECT ndocs || ':' || dirty || ':' || dead_docs FROM sift.segments('docs_idx') WHERE kind = 'immutable' ORDER BY ndocs") == $'90:false:0\n1400:true:140\n1500:true:300' ]] &&
+		formats_match '^[12](,[12])*,4/6$' && verify && agree
 }
 # a promotion seals the 2.x write buffer together with the new rows into a segment of this build
 promoted() {
