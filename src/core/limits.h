@@ -427,7 +427,10 @@
 	  "the scan runs without parallel workers", "-", 0) \
 	X(first_cols, "SIFT_V6_FIRST_MAX_COLS", "agg/v6/v6_first.h", SIFT_V6_FIRST_MAX_COLS, "columns", \
 	  "ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them)", \
-	  "the normal plan sorts the rows and keeps the first of each group", "-", 0)
+	  "the normal plan sorts the rows and keeps the first of each group", "-", 0) \
+	X(float_sum_rows, "V6FSUM_MAX_ROWS", "agg/v6/v6_fsum.h", 137438953472, "rows", \
+	  "rows one group adds in the float8 sum or average of a Format Major 2 scan (its bins are 64-bit integer sums of 26-bit digits)", \
+	  "an error (the float8 sum is over more rows than the bins hold)", "-", 0)
 
 typedef enum SiftLimitId
 {

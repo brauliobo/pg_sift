@@ -81,6 +81,7 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | equality column pairs of a join of two SiftAgg scans | `8 columns` | normal plan | — | `agg/v6/join.c` `JOIN_MAX_KEYS` |
 | count(DISTINCT) aggregates of one scan a parallel plan runs | `32 aggregates` | the scan runs without parallel workers | — | `agg/v6/v6_par.h` `SIFT_PAR_MAX_DIST` |
 | ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them) | `32 columns` | the normal plan sorts the rows and keeps the first of each group | — | `agg/v6/v6_first.h` `SIFT_V6_FIRST_MAX_COLS` |
+| rows one group adds in the float8 sum or average of a Format Major 2 scan (its bins are 64-bit integer sums of 26-bit digits) | `137,438,953,472 rows` | an error (the float8 sum is over more rows than the bins hold) | — | `agg/v6/v6_fsum.h` `V6FSUM_MAX_ROWS` |
 
 ## Column index (`src/col`)
 

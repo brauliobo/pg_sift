@@ -131,7 +131,7 @@ SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN a * (1 - b) ELSE 0 END
 SELECT parity_text('SELECT (100.00 * sum(CASE WHEN tag IN (''R'', ''A'') THEN a * (1 - b) ELSE 0 END) / sum(a * (1 - b)))::text FROM @T WHERE d1 >= date ''2020-02-01'' AND d1 < date ''2020-03-01''') AS promo_revenue_shape;
 SELECT parity('SELECT sum(CASE WHEN tag = ''R'' THEN a ELSE 0 END) FROM @T WHERE tag = ''N''') AS case_never_true_with_rows;
 SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 1 ELSE 0 END) FROM @T GROUP BY grp HAVING sum(CASE WHEN tag = ''R'' THEN 1 ELSE 0 END) > 100') AS case_in_having;
-SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 2 ELSE 0 END), sum(CASE WHEN tag = ''R'' THEN f8 ELSE 0 END) FROM @T GROUP BY grp') AS case_not_rewritten_still_right;
+SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 2 ELSE 0 END), round(sum(CASE WHEN tag = ''R'' THEN f8 ELSE 0 END)::numeric, 6) FROM @T GROUP BY grp') AS case_not_rewritten_still_right;
 SELECT parity('SELECT sum(CASE WHEN d1 < d2 THEN 1 ELSE 0 END) FROM @T') AS case_with_column_compare_is_left_to_the_heap;
 
 -- ---- the whole of the queries: the shapes of TPC-H 1, 4, 6, 12, 14, 19 over one table ----

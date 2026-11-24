@@ -387,7 +387,7 @@ SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 1 ELSE 0 END) FROM @T 
  t
 (1 row)
 
-SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 2 ELSE 0 END), sum(CASE WHEN tag = ''R'' THEN f8 ELSE 0 END) FROM @T GROUP BY grp') AS case_not_rewritten_still_right;
+SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 2 ELSE 0 END), round(sum(CASE WHEN tag = ''R'' THEN f8 ELSE 0 END)::numeric, 6) FROM @T GROUP BY grp') AS case_not_rewritten_still_right;
  case_not_rewritten_still_right 
 --------------------------------
  t

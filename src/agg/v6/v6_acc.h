@@ -16,16 +16,9 @@
 
 #include "agg/group/state.h"
 #include "agg/v6/v6_argext.h"
+#include "agg/v6/v6_acc_type.h"
+#include "agg/v6/v6_fsum.h"
 
-typedef struct V6Acc
-{
-	int64		n;				/* the values folded: a count, or 0 for an empty state */
-	uint64		v0;				/* the low half of an integer sum, a double sum, a minimum or maximum; COUNT(DISTINCT): the distinct values counted so far */
-	int64		v1;				/* the high half of an integer sum */
-	int64		aux;			/* sift.arg_max, sift.arg_min: 1 when the best val is NULL; COUNT, SUM, AVG, MIN, MAX of a numeric: the rows whose value is NaN (COUNT DISTINCT: 1 when there is one) */
-} V6Acc;
-
-StaticAssertDecl(sizeof(V6Acc) == 32, "an accumulator is 32 bytes");
 
 /* How an aggregate combines: the operation is chosen once per aggregate of the statement, from its kind and the class of its argument */
 typedef enum V6AccOp
@@ -34,7 +27,8 @@ typedef enum V6AccOp
 	V6A_COUNT,					/* count(*), count(x): n adds */
 	V6A_COUNT_PIECE,			/* count(DISTINCT x) of disjoint groups: v0 adds */
 	V6A_SUM_INT,				/* sum, avg of an integer or a scaled numeric: the 128-bit sum in v0, v1 and the count in n */
-	V6A_SUM_F64,				/* sum, avg of a float */
+	V6A_SUM_F64,				/* sum, avg of a float: the three bins of v6_fsum.h */
+	V6A_SUM_F64_ROW,			/* sift.agg_exact_float: the running double sum, in the order of the rows */
 	V6A_MIN_INT,
 	V6A_MAX_INT,
 	V6A_MIN_F64,
@@ -94,6 +88,9 @@ sift_v6_acc_combine(V6AccOp op, V6Acc *d, const V6Acc *s)
 			d->aux |= s->aux;
 			break;
 		case V6A_SUM_F64:
+			v6fsum_combine(d, s);
+			break;
+		case V6A_SUM_F64_ROW:
 			v6acc_set_f64(d, float8_pl(v6acc_f64(d), v6acc_f64(s)));
 			d->n += s->n;
 			d->aux += s->aux;

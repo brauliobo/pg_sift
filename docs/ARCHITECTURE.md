@@ -54,7 +54,7 @@ Block 0: SiftColMetaPageData (424 B, CRC32C)
 - **Zero-heap-I/O JSONB variant exceptions:** Mismatched JSONB types on shredded paths spill into a per-granule `SEC_VARIANT_EXC` stream instead of forcing heap page fetches or invalidating clean granules.
 - **64-Byte Cache-Line Salted Hash Table:** Group keys hash into a compact SwissTable-style open-addressed table (`SiftAggSlot64`) bounded strictly by `work_mem * hash_mem_multiplier`, spilling cleanly by hash partition when `SiftMemTracker` hits `SIFT_MEM_SOFT`.
 - **2-Phase Radix-Partitioned Parallel Merge:** Parallel workers aggregate into thread-local hash tables, radix-partition partial states by group hash, and merge disjoint partitions in parallel — delivering ≥ 3.0× 4-worker scaling on high-cardinality `GROUP BY` and `count(DISTINCT)`.
-- **Floating-point determinism:** By default (`sift.agg_exact_float = off`), parallel `float8` sums use fast IEEE-754 summation matching PostgreSQL/ClickHouse/DuckDB. Enable `sift.agg_exact_float = on` for bit-identical row-order determinism.
+- **Floating-point determinism:** By default (`sift.agg_exact_float = off`), the `float8` `sum` and `avg` of a Format Major 2 scan keep the three top 26-bit bins of every number they add as integer sums, so the answer has the same bits for any order of the rows and any number of workers (it can differ from the heap's row-order sum in the last digit); a sum of finite numbers that overflows raises `22003` as PostgreSQL's does. Enable `sift.agg_exact_float = on` for the row-order sum of one process.
 
 ## 4. Single-Pass Planner and Cost Model
 

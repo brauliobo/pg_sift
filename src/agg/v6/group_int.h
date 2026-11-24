@@ -178,6 +178,18 @@ v6g_is_ext(const SiftV6Agg *a)
 	return (a->kind >= SV6_STDDEV_POP && a->kind <= SV6_PCT_CONT) || ((a->kind == SV6_MIN || a->kind == SV6_MAX) && sift_v6_class(a->arg.typid) == SV6C_TEXT);
 }
 
+extern PGDLLIMPORT bool sift_agg_exact_float;
+
+/* a float into the sum of a group: in the order of the rows under sift.agg_exact_float, else into the bins of v6_fsum.h (the count of rows is the caller's) */
+static inline void
+v6g_sum_f64(V6Acc *acc, double x)
+{
+	if (sift_agg_exact_float)
+		v6acc_set_f64(acc, float8_pl(v6acc_f64(acc), x));
+	else
+		v6fsum_add(acc, x);
+}
+
 /* How the states of aggregate a combine: the one operation of v6_acc.h for the merge of the spill of a serial run and the partitions of a parallel one */
 static inline V6AccOp
 v6g_acc_op(const SiftV6Agg *a)
@@ -193,7 +205,7 @@ v6g_acc_op(const SiftV6Agg *a)
 			return V6A_COUNT_PIECE;
 		case SV6_SUM:
 		case SV6_AVG:
-			return f64 ? V6A_SUM_F64 : V6A_SUM_INT;
+			return !f64 ? V6A_SUM_INT : sift_agg_exact_float ? V6A_SUM_F64_ROW : V6A_SUM_F64;
 		case SV6_MIN:
 			return f64 ? V6A_MIN_F64 : V6A_MIN_INT;
 		case SV6_MAX:
