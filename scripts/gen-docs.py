@@ -9,13 +9,16 @@
 The options regions (scripts/gen-options.sh) are part of it, so `--check` covers them.
 Nothing here measures: a benchmark number comes from docs/results/ (written by `bench/bench ... --docs`, which runs this too), the rest from the tree.
 The parts:
-  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (v6_readme.py, v6_benchmarks.py, scope_stock_tables.py; readme_charts.py draws docs/charts); a block whose
-                                                          results file is missing or empty says it is not measured yet (v6-readme: the committed baseline of readme_charts.py; the v6-* blocks of docs/BENCHMARKS.md keep their committed text without their results file, the 6.0 ones say TBD until v6-core.tsv exists)
+  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (v6_readme.py, v6_benchmarks.py, scope_stock_tables.py, clickbench.py report; readme_charts.py draws docs/charts) into
+                                                          README.md, docs/BENCHMARKS.md and docs/benchmarks/*.md; a block whose results file is missing or empty says it is not measured yet (the README
+                                                          blocks: the committed baseline of readme_charts.py; the v6-* blocks of the docs pages keep their committed text without their results file, the 6.0 ones say TBD until v6-core.tsv exists)
+  docs/charts/*.svg                                       drawn by readme_charts.py; every chart a page shows must exist, and every readme-*-light.svg has its readme-*-dark.svg
   <!-- coverage:start --> ... <!-- coverage:end -->        scripts/coverage.sh --gen, from docs/coverage.tsv (also writes docs/COVERAGE.md)
   <!-- gen:NAME --> ... <!-- /gen:NAME -->                 gucs: the settings table (DefineCustom*Variable calls of src/); guc:sift.NAME: the default of
                                                           one setting, inline
 """
 import argparse
+import glob
 import hashlib
 import os
 import re
@@ -28,8 +31,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
 # the results file behind each bench block that needs one (docs/results/, written by the bench command of BENCH_CMD with --docs); a block with a missing file is not rendered, it says so; the blocks of v6_readme.py
-# (v6-readme, v6-search, v6-storage) read what exists and fall back to the committed baseline of readme_charts.py, so they are always rendered
-RESULTS = dict.fromkeys(('scope-stock-tally', 'scope-stock-geomean', 'scope-stock-costs'), 'scope-stock.tsv')
+# read what exists and fall back to the committed baseline of readme_charts.py, so they are always rendered
+RESULTS =dict.fromkeys(('scope-stock-tally', 'scope-stock-geomean', 'scope-stock-costs'), 'scope-stock.tsv')
 BENCH_CMD = dict.fromkeys(RESULTS, 'bench/bench scope-stock --docs')
 
 CONTEXT = {'PGC_USERSET': 'any user', 'PGC_SUSET': 'superuser', 'PGC_SIGHUP': 'reload', 'PGC_POSTMASTER': 'restart', 'PGC_BACKEND': 'connection', 'PGC_SU_BACKEND': 'connection'}
@@ -186,12 +189,22 @@ def fill_gen_blocks(root):
         write_if_changed(path, pat.sub(lambda m: m.group(1) + text(m.group(2)) + m.group(4), old))
 
 
-def have(root, name):
-    p = os.path.join(root, 'docs', 'results', RESULTS[name])
+def has_results(root, file):
+    p = os.path.join(root, 'docs', 'results', file)
     if not os.path.exists(p):
         return False
     rows = [l for l in read(p).splitlines() if l.strip() and not l.startswith('#')]
     return len(rows) > (1 if p.endswith('.tsv') else 0)   # a tsv has its header line
+
+
+def have(root, name):
+    return has_results(root, RESULTS[name])
+
+
+def clickbench_page(root):
+    """the page that holds the clickbench-* blocks: docs/benchmarks/clickbench.md, docs/BENCHMARKS.md while the pages are not split"""
+    pages = [p for p in ('docs/benchmarks/clickbench.md', 'docs/BENCHMARKS.md') if os.path.exists(os.path.join(root, p))]
+    return next(p for p in pages if '<!-- bench:clickbench-' in read(os.path.join(root, p)))
 
 
 def fill_missing_bench_blocks(root):
@@ -216,7 +229,7 @@ GENERATED_PAGES = (b'docs/perf/AGGREGATES.md',)   # pages a renderer writes whol
 
 def renderer_view(name, data):
     """what the renderers see of a file, None when nothing: a page is only the benchmark blocks they replace (a change of its prose gives the same files again), a page with no
-    block and not written whole is not theirs (strace of each renderer: README.md, docs/BENCHMARKS.md, the READMEs of the ports, docs/perf/AGGREGATES.md and docs/img/)"""
+    block and not written whole is not theirs (strace of each renderer: README.md, docs/BENCHMARKS.md, docs/benchmarks/*.md, the READMEs of the ports, docs/perf/AGGREGATES.md and docs/charts/)"""
     if name.endswith(b'.md') and name != b'CHANGELOG.md' and name not in GENERATED_PAGES:
         blocks = BENCH_BLOCK.findall(data.decode('utf-8', 'replace'))
         return '\0'.join(blocks).encode() if blocks else None
@@ -267,6 +280,8 @@ def generate(root):
         run(*py, os.path.join(steps, 'readme_charts.py'), '--root', '.')
         if have(root, 'scope-stock-tally'):
             run(*py, os.path.join(steps, 'scope_stock_tables.py'), 'render', '--root', '.')
+        if has_results(root, 'clickbench.tsv'):
+            run(*py, os.path.join(steps, 'clickbench.py'), 'report', '--in', 'docs/results/clickbench.tsv', '--md', clickbench_page(root), '--svg', 'docs/charts/clickbench.svg')
     run('bash', os.path.join('scripts', 'coverage.sh'), '--gen')
     run('bash', os.path.join('scripts', 'gen-options.sh'))   # the options regions of docs/OPTIONS.md (docs/options.tsv and src/)
     fill_missing_bench_blocks(root)
@@ -327,8 +342,28 @@ def same_page(shown, generated):
     return shown == generated
 
 
+SVG_REF = re.compile(r'(?:\]\(|\b(?:src|srcset)=")((?!https?:)[^)"\s#]+\.svg)')
+
+
+def chart_problems(root):
+    """the charts a page shows that are not in the tree, and the light charts without their dark twin (a README <picture> shows both)"""
+    bad = []
+    for page in docs_files(root):
+        for ref in SVG_REF.findall(read(page)):
+            if not os.path.exists(os.path.normpath(os.path.join(os.path.dirname(page), ref))):
+                bad.append('%s shows %s, which is not in the tree' % (os.path.relpath(page, root), ref))
+    charts = os.path.join(root, 'docs', 'charts')
+    for light in sorted(glob.glob(os.path.join(charts, '*-light.svg'))):
+        if not os.path.exists(light[:-len('-light.svg')] + '-dark.svg'):
+            bad.append('docs/charts/%s has no dark twin' % os.path.basename(light))
+    return bad
+
+
 def check():
     format_docs(REPO)
+    bad = chart_problems(REPO)
+    if bad:
+        sys.exit('gen-docs: charts:\n  ' + '\n  '.join(bad))
     with tempfile.TemporaryDirectory(prefix='sift-gen-docs.') as tmp:
         for f in worktree_files(REPO):
             src, dst = os.path.join(REPO, os.fsdecode(f)), os.path.join(tmp, os.fsdecode(f))
@@ -437,7 +472,7 @@ def resolve():
     for path in git_out('diff', '--name-only', '--diff-filter=U').split():
         if path in ROW_KEY:
             merge_rows(path, ROW_KEY[path])
-        elif path.startswith('docs/img/'):
+        elif path.startswith('docs/charts/'):
             subprocess.run(['git', '-C', REPO, 'checkout', '--ours' if rebasing() else '--theirs', '--', path], check=True)
         elif path.endswith('.md') and (path == 'README.md' or path.startswith('docs/')):
             if take_tip_hunks(path):
