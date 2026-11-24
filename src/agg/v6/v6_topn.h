@@ -64,11 +64,7 @@ typedef struct SiftV6TopNSource
 	const SiftV6SkipStats *skips;
 } SiftV6TopNSource;
 
-/* in: the columns the quals read; the source offers only the rows that pass quals (NULL: all) */
-typedef bool (*SiftV6TopNOpen) (EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst);
-
-extern void sift_v6_topn_bind(SiftV6TopNOpen open);
-extern SiftV6TopNOpen sift_v6_topn_bound(void);
+/* SiftOrderOps.topn_open: in is the columns the quals read; the source offers only the rows that pass quals (NULL: all) */
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_topn_plan_methods;
 

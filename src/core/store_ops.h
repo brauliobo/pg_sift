@@ -48,6 +48,8 @@ struct SiftV6ScanArm;
 struct SiftV6ScanStats;
 struct SiftV6Source;
 struct SiftV6StarRun;
+struct SiftV6TopNSource;
+struct SiftV6TopNSpec;
 struct SiftV6Spec;
 struct SiftV6Vexpr;
 
@@ -106,6 +108,8 @@ typedef struct SiftOrderOps
 	int			(*lead_att) (Oid relid);
 	void		(*scan_rows) (const struct SiftV6Spec *spec, struct SiftV6Rows *rows, struct SiftV6Group *totals, struct SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals,
 							  Snapshot snap, struct SiftV6ScanStats *stats, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);
+	/* the source of the Top-N tournament over the parts of an index (NULL: the best rows are those of a sort of the rows scan_rows gives) */
+	bool		(*topn_open) (EState *estate, const struct SiftV6TopNSpec *spec, const struct SiftV6Input *in, const struct SiftV6Vexpr *quals, struct SiftV6TopNSource *dst);
 } SiftOrderOps;
 
 /* 2. Pre-aggregates: whether the parts of the relation keep cubes (preagg is not off) */

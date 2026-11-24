@@ -493,7 +493,9 @@ fmt_stats(Oid relid, bool is_table, SiftStoreStats *out)
 	return true;
 }
 
-static const SiftOrderOps test_order = {.sorted_by = fmt_sorted_by};
+static bool topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst);
+
+static const SiftOrderOps test_order = {.sorted_by = fmt_sorted_by,.topn_open = topn_open};
 
 static const SiftStoreOps test_ops = {
 	.name = "test",
@@ -710,7 +712,6 @@ register_once(void)
 	if (done)
 		return;
 	sift_store_ops_register(&test_ops);
-	sift_v6_topn_bind(topn_open);
 	card_view_init();
 	done = true;
 }
@@ -746,12 +747,9 @@ run_lines(const char *sql, int bridges)
 	set_rel_pathlist_hook_type rl = set_rel_pathlist_hook;
 	MemoryContext cx = CurrentMemoryContext;
 
-	const SiftV6TopNOpen live_topn = sift_v6_topn_bound();
-
 	enabled = bridges;
 	if (bridges == 0)
 		sift_store_ops_unregister(&test_ops);
-	sift_v6_topn_bind(bridges != 0 ? topn_open : NULL);
 	prev_upper_hook = up;
 	prev_rel_hook = rl;
 	create_upper_paths_hook = test_upper_hook;
@@ -781,7 +779,6 @@ run_lines(const char *sql, int bridges)
 		create_upper_paths_hook = up;
 		set_rel_pathlist_hook = rl;
 		sift_store_ops_register(&test_ops);
-		sift_v6_topn_bind(live_topn);
 		enabled = was;
 	}
 	PG_END_TRY();

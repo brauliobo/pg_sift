@@ -10,6 +10,7 @@
 #include "col/f2/f2.h"
 #include "col/f2/f2_store.h"
 #include "col/f2/f2_store_ops_int.h"
+#include "col/f2/f2_v6_bridge.h"
 #include "col/f2/f2_v6_scan.h"
 #include "col/f2/f2_v6_unnest_run.h"
 
@@ -24,7 +25,8 @@ order_lead_att(Oid relid)
 const SiftOrderOps sift_f2_order_ops = {
 	.sorted_by = sift_f2_ops_sorted_by,
 	.lead_att = order_lead_att,
-	.scan_rows = sift_v6_scan_rows
+	.scan_rows = sift_v6_scan_rows,
+	.topn_open = sift_f2_v6_topn_open
 };
 
 static bool

@@ -31,19 +31,6 @@
 #include "agg/v6/v6_topn.h"
 #include "core/memtrack.h"
 
-static SiftV6TopNOpen bound_open;
-
-void
-sift_v6_topn_bind(SiftV6TopNOpen open)
-{
-	bound_open = open;
-}
-
-SiftV6TopNOpen
-sift_v6_topn_bound(void)
-{
-	return bound_open;
-}
 
 /* the key types whose int64 is in the order of the type: integers and dates and timestamps as they are, float8 by sift_f64_order_i64, a numeric of at most 18 digits as its scaled integer */
 static bool
@@ -522,6 +509,7 @@ topn_run(TopNState *st, EState *estate)
 	SiftV6Vexpr quals;
 	bool		compiled,
 				opened;
+	bool		(*topn_open) (EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst);
 	Relation	index = index_open(st->spec->indexoid, AccessShareLock);
 
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 topn");
@@ -531,13 +519,14 @@ topn_run(TopNState *st, EState *estate)
 	SIFT_INVARIANT(compiled, "the quals of the Top-N scan of index %u are not compiled", st->spec->indexoid);
 	st->pos = 0;
 	st->ran = true;
-	if (!tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows))
+	topn_open = sift_store_ops_for_oid(st->spec->indexoid, false)->order->topn_open;
+	if (topn_open == NULL || !tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows))
 	{
 		index_close(index, NoLock);
 		topn_sort_rows(st, estate, &in, st->quals == NIL ? NULL : &quals);
 		return;
 	}
-	opened = bound_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
+	opened = topn_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
 	SIFT_INVARIANT(opened, "the Top-N scan of index %u cannot be opened", st->spec->indexoid);
 	topn_device(st, estate, index, &in);
 	index_close(index, NoLock);
