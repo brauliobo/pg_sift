@@ -23,4 +23,5 @@ maint_standby.sh	1
 quarantine_standby.sh	1
 store_replica.sh	2
 tbl_defrag_scans_durable.sh	4
+tbl_vm_standby.sh	1
 vacuum_standby_cut.sh	2
