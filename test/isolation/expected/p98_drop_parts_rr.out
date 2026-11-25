@@ -1,0 +1,56 @@
+Parsed test spec with 2 sessions
+
+starting permutation: rb drop rn rend rafter
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n FROM iso_d;
+  n
+---
+200
+(1 row)
+
+step drop: SELECT parts_dropped FROM sift.drop_parts_before('iso_d', timestamptz '2030-01-20'); <waiting ...>
+step rn: SELECT count(*) AS n FROM iso_d;
+  n
+---
+200
+(1 row)
+
+step rend: COMMIT;
+step drop: <... completed>
+parts_dropped
+-------------
+            1
+(1 row)
+
+step rafter: SELECT count(*) AS n FROM iso_d;
+  n
+---
+100
+(1 row)
+
+
+starting permutation: drop rb rn rend rafter
+step drop: SELECT parts_dropped FROM sift.drop_parts_before('iso_d', timestamptz '2030-01-20');
+parts_dropped
+-------------
+            1
+(1 row)
+
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n FROM iso_d;
+  n
+---
+100
+(1 row)
+
+step rn: SELECT count(*) AS n FROM iso_d;
+  n
+---
+100
+(1 row)
+
+step rend: COMMIT;
+step rafter: SELECT count(*) AS n FROM iso_d;
+  n
+---
+100
+(1 row)
+

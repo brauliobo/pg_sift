@@ -1,0 +1,85 @@
+-- A sift_table with a scope against metadata-only ALTER TABLE: the summary is of the columns the table had when it was built, so a query that runs after a column was added, dropped or changed in type
+-- is answered by the join over the table (a summary of another schema is never read) and gives what the heap tables give. Every check prints t.
+-- requires: build col
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE pairs (member_id int NOT NULL, scope_key int NOT NULL, PRIMARY KEY (member_id, scope_key));
+INSERT INTO pairs SELECT m, 1 + (m * 31 + j * 13) % 20 FROM generate_series(1, 500) m, generate_series(0, 3) j WHERE j < m % 4 GROUP BY 1, 2;
+CREATE INDEX pairs_journal ON pairs USING sift_col (member_id, scope_key) WITH (track_changes = 'ctid');
+CREATE TABLE facts (id int, member_id int, ts timestamptz NOT NULL, a int NOT NULL, b int NOT NULL) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE facts_heap (id int, member_id int, ts timestamptz NOT NULL, a int NOT NULL, b int NOT NULL);
+INSERT INTO facts_heap SELECT i, 1 + (i * 7919) % 500, timestamptz '2026-01-01' + i * interval '7 minutes', i % 100, i % 1000 FROM generate_series(1, 20000) i;
+INSERT INTO facts SELECT * FROM facts_heap;
+SELECT sift.table_set_option('facts', 'scope', 'tenant: member_id -> pairs(member_id, scope_key)');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+VACUUM (FREEZE) facts;
+CREATE FUNCTION same_answer(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE x text; y text;
+BEGIN
+	EXECUTE format('SELECT string_agg(r::text, '';'' ORDER BY r::text) FROM (%s) r', replace(q, 'FACTS', 'facts')) INTO x;
+	EXECUTE format('SELECT string_agg(r::text, '';'' ORDER BY r::text) FROM (%s) r', replace(q, 'FACTS', 'facts_heap')) INTO y;
+	RETURN x = y;
+END $$;
+CREATE FUNCTION scoped_queries_agree() RETURNS boolean LANGUAGE sql AS $$
+	SELECT bool_and(same_answer(q)) FROM unnest(ARRAY[
+		'SELECT sum(f.b), count(*) FROM FACTS f JOIN pairs p ON f.member_id = p.member_id WHERE p.scope_key = 7',
+		'SELECT p.scope_key, sum(f.b) FROM FACTS f JOIN pairs p ON f.member_id = p.member_id WHERE p.scope_key IN (3, 7, 11) GROUP BY 1',
+		'SELECT f.id FROM FACTS f JOIN pairs p ON f.member_id = p.member_id WHERE p.scope_key = 5 ORDER BY f.ts DESC LIMIT 10']) q
+$$;
+SELECT scoped_queries_agree() AS before_ddl;
+ before_ddl 
+------------
+ t
+(1 row)
+
+ALTER TABLE facts ADD COLUMN c int DEFAULT 9;
+ALTER TABLE facts_heap ADD COLUMN c int DEFAULT 9;
+SELECT scoped_queries_agree() AS after_add_column;
+ after_add_column 
+------------------
+ t
+(1 row)
+
+SELECT same_answer('SELECT sum(f.c), sum(f.b) FROM FACTS f JOIN pairs p ON f.member_id = p.member_id WHERE p.scope_key = 7') AS new_column_summed;
+ new_column_summed 
+-------------------
+ t
+(1 row)
+
+ALTER TABLE facts DROP COLUMN a;
+ALTER TABLE facts_heap DROP COLUMN a;
+SELECT scoped_queries_agree() AS after_drop_column;
+ after_drop_column 
+-------------------
+ t
+(1 row)
+
+SELECT same_answer('SELECT sum(f.c), sum(f.b) FROM FACTS f JOIN pairs p ON f.member_id = p.member_id WHERE p.scope_key = 7') AS after_drop_summed;
+ after_drop_summed 
+-------------------
+ t
+(1 row)
+
+ALTER TABLE facts ALTER COLUMN b TYPE bigint;
+ALTER TABLE facts_heap ALTER COLUMN b TYPE bigint;
+SELECT scoped_queries_agree() AS after_alter_type;
+ after_alter_type 
+------------------
+ t
+(1 row)
+
+VACUUM facts;
+SELECT scoped_queries_agree() AS after_vacuum;
+ after_vacuum 
+--------------
+ t
+(1 row)
+
+DROP TABLE facts, facts_heap, pairs;
+DROP FUNCTION same_answer(text), scoped_queries_agree();
+DROP EXTENSION pg_sift;

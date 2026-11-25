@@ -1,0 +1,56 @@
+-- The key journal of a connected parent index (SIFT_PT_KEYJRNL) survives REINDEX INDEX CONCURRENTLY, and a rolled-back savepoint writes nothing into it. Every check prints t.
+-- requires: build col
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+CREATE TABLE dim (k int PRIMARY KEY, a int, b int) WITH (autovacuum_enabled = false);
+INSERT INTO dim SELECT i, i % 7, i % 3 FROM generate_series(0, 699) i;
+CREATE TABLE ev (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, i % 750, i % 11 FROM generate_series(1, 3000) i;
+CREATE INDEX dim_col ON dim USING sift_col (k, a, b);
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'k -> dim(k)');
+VACUUM (FREEZE, ANALYZE) ev, dim;
+SELECT lineage IS NOT NULL AS journal FROM sift.col_connection_state('dim_col');
+ journal 
+---------
+ t
+(1 row)
+
+SELECT lineage AS before_lineage FROM sift.col_connection_state('dim_col') \gset
+REINDEX INDEX CONCURRENTLY dim_col;
+SELECT lineage IS NOT NULL AS journal_after_concurrent, lineage <> :before_lineage AS other_lineage FROM sift.col_connection_state('dim_col');
+ journal_after_concurrent | other_lineage 
+--------------------------+---------------
+ t                        | t
+(1 row)
+
+SELECT count(*) = 1 AS child_still_connected FROM sift.col_connections WHERE child = 'ev_col'::regclass AND lineage IS NOT NULL;
+ child_still_connected 
+-----------------------
+ t
+(1 row)
+
+VACUUM dim;
+-- the writes of a savepoint that rolled back are no change of the parent
+SELECT records AS before_records FROM sift.col_connection_state('dim_col') \gset
+BEGIN;
+SAVEPOINT s;
+UPDATE dim SET b = 2 WHERE k % 19 = 0;
+ROLLBACK TO s;
+COMMIT;
+SELECT records = :before_records AS savepoint_wrote_nothing FROM sift.col_connection_state('dim_col');
+ savepoint_wrote_nothing 
+-------------------------
+ t
+(1 row)
+
+UPDATE dim SET b = 2 WHERE k = 1;
+SELECT records > :before_records AS a_commit_writes FROM sift.col_connection_state('dim_col');
+ a_commit_writes 
+-----------------
+ t
+(1 row)
+
+DROP TABLE ev, dim;
+DROP EXTENSION pg_sift;

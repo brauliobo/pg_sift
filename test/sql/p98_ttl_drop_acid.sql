@@ -1,0 +1,46 @@
+-- sift.drop_parts_before takes the parts out of the table for good, as VACUUM does: a transaction block, a savepoint and a function that may roll back cannot promise rows back that are gone, so
+-- the call is refused there and loses nothing. A partitioned parent is no sift_table: the calls that need one say so and name the partitions. Every check prints t.
+-- requires: build col
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+
+CREATE TABLE dp (id int, at timestamptz NOT NULL, payload text) USING sift_table WITH (autovacuum_enabled = false);
+\o /dev/null
+SELECT stmt FROM generate_series(0, 9) d,
+	LATERAL unnest(ARRAY[
+		format('INSERT INTO dp SELECT %s * 200 + g, timestamptz ''2030-01-01'' + %s * interval ''1 day'' + g * interval ''1 minute'', repeat(''x'', 40) FROM generate_series(0, 199) g', d, d),
+		'VACUUM (FREEZE) dp']) WITH ORDINALITY AS u(stmt, ord) ORDER BY d, ord
+\gexec
+\o
+SELECT count(*) = 2000 AS all_rows_present FROM dp;
+
+BEGIN;
+SELECT parts_dropped FROM sift.drop_parts_before('dp', timestamptz '2030-01-06');
+ROLLBACK;
+SELECT count(*) = 2000 AS rollback_lost_nothing FROM dp;
+BEGIN;
+SAVEPOINT s;
+SELECT parts_dropped FROM sift.drop_parts_before('dp', timestamptz '2030-01-06');
+ROLLBACK TO s;
+COMMIT;
+SELECT count(*) = 2000 AS savepoint_lost_nothing FROM dp;
+CREATE FUNCTION drop_in_function() RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN (SELECT parts_dropped FROM sift.drop_parts_before('dp', timestamptz '2030-01-06'));
+EXCEPTION WHEN OTHERS THEN RETURN -1;
+END $$;
+SELECT drop_in_function() AS refused_inside_a_function_with_a_handler;
+SELECT count(*) = 2000 AS function_lost_nothing FROM dp;
+
+SELECT parts_dropped = 5 AS the_call_alone_drops FROM sift.drop_parts_before('dp', timestamptz '2030-01-06');
+SELECT count(*) = 1000 AS five_days_left FROM dp;
+
+CREATE TABLE pt (id int, at timestamptz NOT NULL) PARTITION BY RANGE (at);
+CREATE TABLE pt1 PARTITION OF pt FOR VALUES FROM ('2030-01-01') TO ('2031-01-01') USING sift_table;
+SELECT sift.create_projection('pt', 'p', 'ORDER BY id');
+SELECT sift.drop_projection('pt', 'p');
+SELECT * FROM sift.drop_parts_before('pt', now());
+
+DROP TABLE dp, pt;
+DROP FUNCTION drop_in_function();
+DROP EXTENSION pg_sift;
