@@ -1,6 +1,6 @@
--- The rows of a unit that hold a value a path cannot store are read again from the heap, but only those that every condition on a column the stored unit
--- holds lets through: a row a key set, a rare NOT NULL or a stored comparison rejects is not fetched. A condition on the path itself, or of a shape the scan
--- cannot test on the stored unit, keeps the row. The rows and the errors are those of the normal plan; "Rows Read Again From The Heap" counts the fetches.
+-- The rows of a unit that hold a value a path cannot store (a container) keep it in the payload of their exception, so SiftAggV6 reads no row again from the heap for them whatever the
+-- conditions on the columns the stored unit holds, and the rows and the errors are those of the normal plan. "Rows Vetted Against The Heap" counts the fetches that remain (none here); the
+-- last column of each case counts the rows of the heap that hold a container and pass the conditions.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -18,9 +18,9 @@ BEGIN
 	scan := false; gather := false; reread := 0;
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		scan := scan OR l ~ 'Custom Scan \(SiftAgg\)';
+		scan := scan OR l ~ 'Custom Scan \(SiftAgg';
 		gather := gather OR l ~ 'Workers Planned: [1-9]';
-		IF l ~ '(\d+) re-read from the heap' THEN reread := substring(l from '(\d+) re-read from the heap')::bigint; END IF;
+		IF l ~ 'Rows Vetted Against The Heap: (\d+)' THEN reread := substring(l from 'Rows Vetted Against The Heap: (\d+)')::bigint; END IF;
 	END LOOP;
 EXCEPTION WHEN others THEN reread := -1;
 END $$;
