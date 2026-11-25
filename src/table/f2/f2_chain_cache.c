@@ -503,6 +503,8 @@ cd_extend(Relation rel, const SiftPartitionEntry *entry, Slot *s)
 	if (!sift_col_delta_anchor_sane(&a) || (a.flags & SIFT_CDLA_INDEXED_DIR) == 0 || a.npages < held ||
 		sift_cddir_chain_entries(&a, &reader, &ent, &dir_blks, &ndir) != NULL)
 		return false;
+	if ((uint64) a.npages * BLCKSZ > (uint64) sift_backend_cache_kb * 1024 / 4)
+		return false;
 	now = palloc(BLCKSZ);
 	if (!cd_read_newer(l, &reader, ent, a.npages, now))
 		return false;
