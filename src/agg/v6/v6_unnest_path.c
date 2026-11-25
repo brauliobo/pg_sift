@@ -17,6 +17,7 @@
 
 #include "agg/kern6.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_jsonpath.h"
 #include "agg/v6/v6_unnest_path.h"
 
 /* the clauses of the conjunction and the tests of a clause that the quals of one test may have: an OR of ANDs is their product */

@@ -92,7 +92,7 @@ sift_v6_map_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6Vet *vet,
 {
 	SiftV6MapPreagg *m;
 
-	if (!sift_agg_preagg || !spec_ok(spec))
+	if (!spec_ok(spec))
 		return NULL;
 	m = palloc0(sizeof(SiftV6MapPreagg));
 	m->spec = spec;

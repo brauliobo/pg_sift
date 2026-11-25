@@ -23,6 +23,8 @@
 #include "col/f2/f2_proj.h"
 #include "col/v1/gorder.h"
 #include "col/v1/preagg.h"
+#include "col/v1/src_exec.h"
+#include "col/v1/src_meta.h"
 #include "col/scope.h"
 #include "col/v1/setsum.h"
 #include "col/shred.h"
