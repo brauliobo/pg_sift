@@ -26,6 +26,7 @@ extern bool sift_tbl_vm_active(Relation rel);
 extern void sift_tbl_vm_lease_open(Relation rel);
 extern void sift_tbl_vm_lease_set(Relation rel, uint64 lo, uint64 hi);
 extern void sift_tbl_vm_lease_roll(Relation rel, uint64 open_vblock);
+extern void sift_tbl_vm_lease_release(Relation rel);
 
 /* The 32 bits of the transaction of fx that a record of the map names as the newest one its bits hide from no snapshot; InvalidTransactionId where no snapshot can still need it to be waited for */
 extern TransactionId sift_vm_horizon_xid(FullTransactionId fx, FullTransactionId next);

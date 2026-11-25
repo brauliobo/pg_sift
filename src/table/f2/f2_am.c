@@ -87,6 +87,7 @@ sift_tbl_f2_relation_set_new_filelocator(Relation rel, const RelFileLocator *new
 		log_smgrcreate(newrlocator, INIT_FORKNUM);
 	}
 	smgrclose(srel);
+	sift_stage_flush(rel);
 	sift_stage_discard(RelationGetRelid(rel));
 	sift_fsm_cache_discard_rel(rel);
 	if (persistence != RELPERSISTENCE_TEMP)
@@ -118,6 +119,8 @@ sift_tbl_f2_relation_nontransactional_truncate(Relation rel)
 	sift_shm_manifest_invalidate(&rel->rd_locator, false);
 	RelationTruncate(rel, 0);
 	init_pages(rel);
+	sift_tbl_f2_tid_reset(sift_f2_store_open(rel));
+	sift_tbl_vm_lease_release(rel);
 	CacheInvalidateRelcache(rel);
 }
 

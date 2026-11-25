@@ -167,6 +167,15 @@ sift_tbl_vm_lease_set(Relation rel, uint64 lo, uint64 hi)
 }
 
 void
+sift_tbl_vm_lease_release(Relation rel)
+{
+	VmLease    *l = lease_find(&rel->rd_locator);
+
+	if (l != NULL)
+		lease_drop(l);
+}
+
+void
 sift_tbl_vm_lease_roll(Relation rel, uint64 open_vblock)
 {
 	VmLease    *l = lease_find(&rel->rd_locator);
