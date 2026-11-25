@@ -119,6 +119,34 @@ SELECT is_v6('SELECT k_st, array_agg(amt) FROM gstale GROUP BY 1') AS v6_stale,
        same_rows('SELECT k_st, cardinality(array_agg(amt)) AS n, sum(amt) AS s FROM gstale GROUP BY 1') AS rows_stale_array_agg,
        same_rows('SELECT k_st, length(string_agg(amt::text, '','')) AS n FROM gstale GROUP BY 1') AS rows_stale_string_agg;
 
+-- the aggregates whose states cannot leave for the spill (a generic aggregate with no combine function, DISTINCT, ORDER BY, WITHIN GROUP, a set of no keys beside the sets of keys) keep the groups the
+-- table has and send the rows of the others to partitions that come back one at a time: the groups are those of PostgreSQL's aggregate, and no file is left
+SELECT is_v6('SELECT k_st, jsonb_agg(amt) FROM gstale GROUP BY 1') AS v6_jsonb_agg,
+       is_v6('SELECT k_st, array_agg(DISTINCT amt) FROM gstale GROUP BY 1') AS v6_distinct,
+       is_v6('SELECT k_st, string_agg(amt::text, '','' ORDER BY amt DESC, id) FROM gstale GROUP BY 1') AS v6_order_by,
+       is_v6('SELECT k_st, percentile_disc(0.5) WITHIN GROUP (ORDER BY amt) FROM gstale GROUP BY 1') AS v6_within_group,
+       is_v6('SELECT k_st, count(*), array_agg(DISTINCT amt) FROM gstale GROUP BY GROUPING SETS ((k_st), ())') AS v6_grand_total;
+SELECT same_rows('SELECT k_st, jsonb_array_length(a) AS n, (SELECT sum(x::int) FROM jsonb_array_elements_text(a) x) AS s FROM (SELECT k_st, jsonb_agg(amt) a FROM gstale GROUP BY 1) q') AS rows_jsonb_agg,
+       same_rows('SELECT k_st, json_array_length(a) AS n, c FROM (SELECT k_st, count(*) c, json_agg(amt) a FROM gstale GROUP BY 1) q') AS rows_json_agg_count,
+       same_rows('SELECT k_st, array_agg(DISTINCT amt) FROM gstale GROUP BY 1') AS rows_distinct,
+       same_rows('SELECT k_st, string_agg(amt::text, '','' ORDER BY amt DESC, id) FROM gstale GROUP BY 1') AS rows_order_by,
+       same_rows('SELECT k_st, percentile_disc(0.5) WITHIN GROUP (ORDER BY amt), count(*) FROM gstale GROUP BY 1') AS rows_within_group,
+       same_rows('SELECT coalesce(k_st::text, ''total''), count(*), array_agg(DISTINCT amt) FROM gstale GROUP BY GROUPING SETS ((k_st), ())') AS rows_grand_total,
+       same_rows('SELECT k_st, array_agg(amt ORDER BY id) FROM gstale GROUP BY k_st, amt % 2') AS rows_two_keys;
+SELECT count(*) AS files_after_rows FROM pg_ls_tmpdir();
+SELECT count(*) FROM (SELECT * FROM (SELECT k_st, jsonb_agg(amt) FROM gstale GROUP BY 1 OFFSET 0) y LIMIT 5) x;
+SELECT count(*) AS files_after_rows_limit FROM pg_ls_tmpdir();
+BEGIN;
+DECLARE c CURSOR FOR SELECT k_st, jsonb_agg(amt) FROM gstale GROUP BY 1;
+MOVE FORWARD 90000 FROM c;
+CLOSE c;
+SELECT count(*) AS files_after_rows_cursor FROM pg_ls_tmpdir();
+COMMIT;
+SET temp_file_limit = '1MB';
+DO $$ BEGIN PERFORM count(*) FROM (SELECT k_st, jsonb_agg(amt) FROM gstale GROUP BY 1) x; EXCEPTION WHEN configuration_limit_exceeded THEN NULL; END $$;
+RESET temp_file_limit;
+SELECT count(*) AS files_after_rows_error FROM pg_ls_tmpdir();
+
 -- the values of the groups of percentile_cont over the elements of an array are those of PostgreSQL's aggregate
 SELECT is_v6('SELECT i.category, percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price) FROM gj CROSS JOIN LATERAL jsonb_to_recordset(gj.items) AS i(category text, price float8) GROUP BY 1') AS v6_pct,
        same_rows('SELECT i.category, round(percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price)::numeric, 6) FROM gj CROSS JOIN LATERAL jsonb_to_recordset(gj.items) AS i(category text, price float8) GROUP BY 1') AS rows_pct,
