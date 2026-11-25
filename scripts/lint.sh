@@ -63,7 +63,7 @@ CHECKS+=(
 	'refusals	scripts/gen-refusals.sh --check'
 	'approx		scripts/check-approx.sh'
 	'kernels	python3 scripts/check-kernels.py'
-	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
+	'memory		scripts/check-memory.sh --strict && scripts/check-memory.sh --selftest'
 	'prod-viability-gate	python3 -I scripts/prod-viability-gate.py --selftest'
 	'mem-growth	scripts/check-mem-growth.sh --selftest && scripts/check-mem-growth.sh && python3 scripts/mem-slope.py selftest && python3 scripts/mem-slope-legacy.py selftest'
 	'leak-gate	python3 -I scripts/mem-report.py selftest && python3 -I scripts/mem-report.py check'
