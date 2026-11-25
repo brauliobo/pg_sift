@@ -155,6 +155,7 @@ constant_view(SiftStorePart *p, int leaf, const SiftF2ColMap *map)
 	SiftCellKind kind = p->s->store->kinds[leaf];
 	ColView		v = {.kind = kind};
 	bool	   *isnull = MemoryContextAlloc(p->r->gcx, n);
+	uint8	   *tags = map->missing_cell[leaf].tag != 0 ? MemoryContextAllocZero(p->r->gcx, n) : NULL;
 	int64	   *ints = kind == SIFT_CELL_INT ? MemoryContextAlloc(p->r->gcx, sizeof(int64) * n) : NULL;
 	double	   *fs = kind == SIFT_CELL_F8 ? MemoryContextAlloc(p->r->gcx, sizeof(double) * n) : NULL;
 	const char **ss = kind == SIFT_CELL_STR ? MemoryContextAlloc(p->r->gcx, sizeof(char *) * n) : NULL;
@@ -167,6 +168,7 @@ constant_view(SiftStorePart *p, int leaf, const SiftF2ColMap *map)
 
 		if (patch != NULL)
 		{
+			c.tag = 0;
 			c.isnull = (patch->flags & SIFT_CDCOL_IS_NULL) != 0;
 			c.i = patch->val.i;
 			c.f = patch->val.f;
@@ -174,6 +176,8 @@ constant_view(SiftStorePart *p, int leaf, const SiftF2ColMap *map)
 			c.slen = patch->vlen;
 		}
 		isnull[r] = c.isnull;
+		if (tags != NULL)
+			tags[r] = c.tag;
 		if (ints != NULL)
 			ints[r] = c.i;
 		if (fs != NULL)
@@ -185,6 +189,7 @@ constant_view(SiftStorePart *p, int leaf, const SiftF2ColMap *map)
 		}
 	}
 	v.isnull = isnull;
+	v.tag = tags;
 	v.i = ints;
 	v.f = fs;
 	v.s = ss;
