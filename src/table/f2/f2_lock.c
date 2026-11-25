@@ -934,7 +934,7 @@ sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTa
 			return TM_WouldBlock;
 		if (res == TM_BeingModified)
 			ereport(ERROR, (errcode(ERRCODE_LOCK_NOT_AVAILABLE), errmsg("could not obtain lock on row in relation \"%s\"", RelationGetRelationName(rel))));
-		if (res == TM_Updated && (flags & TUPLE_LOCK_FLAG_FIND_LAST_VERSION) != 0)
+		if (res == TM_Updated && ((flags & TUPLE_LOCK_FLAG_FIND_LAST_VERSION) != 0 || (!IsolationUsesXactSnapshot() && ItemPointerEquals(&tmfd->ctid, &cur))))
 		{
 			if (IsolationUsesXactSnapshot())
 				ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), errmsg("could not serialize access due to concurrent update")));
