@@ -256,6 +256,7 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 		return stats;
 	sift_f2_trace_begin(&tr, rel, SIFT_JOB_VACUUM, info->message_level == INFO);
 	sift_errctx_push(&ctx, RelationGetRelid(rel));
+	sift_horizon_vacuum_read_begin(rel);
 	sift_stage_flush(rel);
 	sift_f2_journal_trim(rel);
 	sift_f2_trace_phase(&tr, "settle");
@@ -290,6 +291,7 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 	(void) sift_col_open_meta(rel, &meta);
 	stats->num_pages = RelationGetNumberOfBlocks(rel);
 	stats->num_index_tuples = meta.total_rows - meta.total_dead;
+	sift_horizon_vacuum_read_end(rel);
 	sift_errctx_pop(&ctx);
 	sift_f2_say_vacuum(&tr, info->message_level, stats->tuples_removed, shrink.lock_skipped);
 	sift_f2_trace_end(&tr);

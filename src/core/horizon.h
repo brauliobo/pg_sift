@@ -15,4 +15,12 @@ extern bool sift_horizon_removable(Relation index, FullTransactionId xid);
  */
 extern FullTransactionId sift_horizon(Relation index);
 
+/*
+ * A VACUUM is left out of every horizon (PROC_IN_VACUUM): the extents a writer releases while the VACUUM reads the manifest of an index would be reusable the moment the writer commits, under
+ * the feet of the reader. Between begin and end of the read, the extents released stay in the quarantine of the allocator (sift_horizon_vacuum_reading); the writers never wait.
+ */
+extern void sift_horizon_vacuum_read_begin(Relation index);
+extern void sift_horizon_vacuum_read_end(Relation index);
+extern bool sift_horizon_vacuum_reading(Relation index);
+
 #endif

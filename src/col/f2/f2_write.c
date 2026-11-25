@@ -30,6 +30,7 @@
 #include "col/f2/l0_stage.h"
 #include "col/f2/part_vis.h"
 #include "core/errctx.h"
+#include "core/horizon.h"
 #include "core/visibility.h"
 #include "core/f2/f2_progress.h"
 #include "core/memtrack.h"
@@ -283,6 +284,7 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
 	sift_f2_trace_begin(&tr, rel, SIFT_JOB_VACUUM, false);
 	sift_errctx_push(&ctx, RelationGetRelid(rel));
+	sift_horizon_vacuum_read_begin(rel);
 	sift_stage_flush(rel);
 	sift_f2_trace_phase(&tr, "bulkdelete");
 	if (info->report_progress)
@@ -315,6 +317,7 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 		if (sift_f2_scoped(rel))
 			scope_validated(rel);
 	}
+	sift_horizon_vacuum_read_end(rel);
 	sift_errctx_pop(&ctx);
 	sift_f2_trace_end(&tr);
 	return stats;

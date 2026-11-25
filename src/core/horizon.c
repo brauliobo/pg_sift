@@ -8,6 +8,7 @@
 
 #include "core/catname.h"
 #include "core/horizon.h"
+#include "core/part_lock.h"
 
 bool
 sift_horizon_removable(Relation index, FullTransactionId xid)
@@ -21,6 +22,32 @@ sift_horizon_removable(Relation index, FullTransactionId xid)
 	removable = GlobalVisCheckRemovableFullXid(heap, xid);
 	RelationClose(heap);
 	return removable;
+}
+
+void
+sift_horizon_vacuum_read_begin(Relation index)
+{
+	LockPage(index, SIFT_F2_VACUUM_READ_LOCK_BLKNO, ShareLock);
+}
+
+void
+sift_horizon_vacuum_read_end(Relation index)
+{
+	UnlockPage(index, SIFT_F2_VACUUM_READ_LOCK_BLKNO, ShareLock);
+}
+
+bool
+sift_horizon_vacuum_reading(Relation index)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_PAGE(tag, index->rd_lockInfo.lockRelId.dbId, index->rd_lockInfo.lockRelId.relId, SIFT_F2_VACUUM_READ_LOCK_BLKNO);
+	if (LockHeldByMe(&tag, ShareLock, false))
+		return true;
+	if (!ConditionalLockPage(index, SIFT_F2_VACUUM_READ_LOCK_BLKNO, ExclusiveLock))
+		return true;
+	UnlockPage(index, SIFT_F2_VACUUM_READ_LOCK_BLKNO, ExclusiveLock);
+	return false;
 }
 
 FullTransactionId

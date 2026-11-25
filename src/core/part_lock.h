@@ -37,6 +37,7 @@
 #define SIFT_F2_LOAD_LOCK_BLKNO		0xFFFFF801U		/* shared by the loads in progress, exclusive for the orphan sweep */
 #define SIFT_F2_WORKER_LOCK_BLKNO	0xFFFFF802U		/* held by the maintenance worker of the relation */
 #define SIFT_F2_SPLIT_LOCK_BLKNO	0xFFFFF803U		/* the splits of partitions and the rewrites of the scope directory */
+#define SIFT_F2_VACUUM_READ_LOCK_BLKNO 0xFFFFF804U	/* shared by the VACUUM runs that read the manifest; the reclaim of the allocator only tries it, exclusive, and frees no extent while it is held (core/horizon.h) */
 
 #define SIFT_COMPACT_LOCK_BASE		0xFFFFFC00U		/* a partition's compaction lock, one of SIFT_COMPACT_LOCK_SLOTS by its number: it makes compactions of the partition one at a time and stops no writer or reader */
 #define SIFT_COMPACT_LOCK_SLOTS		1023U
