@@ -6,6 +6,7 @@
 #include "access/twophase.h"
 #include "storage/itemptr.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 
 #include "table/f2/f2_lock_2pc.h"
 
