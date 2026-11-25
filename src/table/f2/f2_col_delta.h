@@ -768,20 +768,53 @@ extern SiftColDeltaPartMap *sift_col_delta_scan_part_map(const SiftColDeltaScan 
 /*
  * The map of the whole of part_gen for the snapshot of vis, from the cache of the maps of the parts the backend has read (f2_col_delta_mapcache.c): the one an earlier statement made, with the records
  * the chain gained since over it. False when the cache cannot answer (the chain is short, a writer of a record is not settled for the snapshot, the map does not fit the budget): the caller reads the
- * chain. create: a part the cache has no map of yet is read whole and kept; the map is a new reference, NULL when no record patches the part.
+ * chain. A part the cache has no map of yet is read and kept, leaving out the pages that patch none of the attributes of attnum_bloom (0: every attribute); a later ask for an attribute those pages
+ * patch reads them. The map is a new reference, NULL when no record patches the part. looks (of a scan, NULL for none): what the scan saw of the newest page of each chain it asked for.
  */
-extern bool sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, bool create, SiftColDeltaPartMap **map);
+typedef struct SiftColDeltaLook
+{
+	bool		set;
+	uint64		part_id;
+	SiftColDeltaAnchor anchor;
+	BlockNumber blk;
+	uint64		gen;
+	XLogRecPtr	lsn;
+	uint32		used;
+	uint32		crc;
+} SiftColDeltaLook;
+
+#define SIFT_COL_DELTA_LOOKS	4
+
+typedef struct SiftColDeltaLooks
+{
+	SiftColDeltaLook v[SIFT_COL_DELTA_LOOKS];
+	int			next;
+} SiftColDeltaLooks;
+
+extern bool sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, uint64 attnum_bloom, SiftColDeltaLooks *looks,
+										SiftColDeltaPartMap **map);
 
 /*
  * What a cache of the records of a chain remembers of the chain it read (f2_col_delta_watch.c): the blocks of its pages and a copy of the newest. read visits the newest page the watch saw, from the
  * byte it was seen to, and every page after it, oldest first, and says whether the chain is the watch's with pages added; r holds what set needs to make the watch cover the chain, until release.
  */
+typedef struct SiftColDeltaHeadSeen
+{
+	uint64		gen;
+	XLogRecPtr	lsn;
+	uint32		used;
+	uint32		crc;			/* of the page */
+	uint32		sum;			/* of its records */
+	uint16		chain_pages;
+	BlockNumber prev_blk;
+} SiftColDeltaHeadSeen;
+
 typedef struct SiftColDeltaWatch
 {
 	MemoryContext cx;
 	int			npages;
 	BlockNumber *blks;
-	char	   *head;
+	SiftColDeltaHeadSeen head;
 } SiftColDeltaWatch;
 
 typedef struct SiftColDeltaWatchRead
@@ -790,13 +823,16 @@ typedef struct SiftColDeltaWatchRead
 	BlockNumber *dir_blks;
 	int			ndir;
 	char	   *last;
+	uint64		skipped_bloom;	/* the attributes of the pages the prune left out of this read */
 } SiftColDeltaWatchRead;
 
 typedef bool (*SiftColDeltaPageVisit) (void *arg, const char *page, uint32 from_used);
 
+extern SiftColDeltaHeadSeen sift_col_delta_head_seen(const char *page);
 extern void sift_col_delta_watch_init(SiftColDeltaWatch *w, MemoryContext cx);
 extern void sift_col_delta_watch_reset(SiftColDeltaWatch *w);
-extern bool sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftColDeltaWatch *w, SiftColDeltaPageVisit visit, void *arg, SiftColDeltaWatchRead *r);
+extern bool sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftColDeltaWatch *w, const SiftColDeltaPrune *prune, SiftColDeltaPageVisit visit, void *arg,
+									  SiftColDeltaWatchRead *r);
 extern void sift_col_delta_watch_set(SiftColDeltaWatch *w, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r);
 extern void sift_col_delta_watch_release(SiftColDeltaWatchRead *r);
 

@@ -1,6 +1,9 @@
 /*
  * table/f2/f2_col_delta_mapcache.c - the map of the patches of a whole part, kept from one statement to the next (f2_col_delta.h).
  *
+ * A slot is made for the attributes of the first ask: the pages of the chain that patch none of them are not read, and the slot remembers the attributes of those pages. An ask whose attributes meet
+ * them makes the slot over, for the attributes of both; every other ask, whatever its attributes, is answered by the slot with one look at the newest page of the chain.
+ *
  * A map is what a snapshot sees of the records of one part: it depends on the snapshot only through the writers whose fate the snapshot decides. A record whose writer finished before the
  * oldest transaction the snapshot can see (or, for a snapshot that takes any row, whose writer is not running) is committed for every later snapshot or never visible to any, so a map
  * made of such records alone is the map of the next statement too, and a statement that appended records to the chain only adds them: pages are only ever added at the newest end of a
@@ -15,6 +18,7 @@
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -28,7 +32,8 @@
 #include "table/f2/f2_col_delta_dir.h"
 #include "table/f2/f2_tbl.h"
 
-#define MAP_SLOTS		4
+#define MAP_SLOTS		128
+#define ALL_ATTRS		(~UINT64CONST(0))
 
 typedef struct MapSlot
 {
@@ -40,6 +45,9 @@ typedef struct MapSlot
 	uint64		part_gen;
 	SiftColDeltaPartMap *map;	/* the slot's reference; NULL: the part has no patch the records show */
 	SiftColDeltaWatch watch;	/* the pages of the chain the map covers, the newest as far as its copy says */
+	SiftColDeltaAnchor anchor;	/* the chain the watch covers as the manifest named it */
+	uint64		built_bloom;	/* the attributes the pages were chosen for; ALL_ATTRS: every page */
+	uint64		skipped_bloom;	/* the attributes of the pages left out */
 	TransactionId max_xmin;		/* the newest writer of a record the map covers */
 	bool		has_xmin;
 	bool		declined;		/* the chain as it ended at declined_pages showed a writer the snapshot of declined_xmin could not settle */
@@ -184,7 +192,7 @@ slot_find(Relation rel, uint64 part_id, uint64 part_gen)
 }
 
 static MapSlot *
-slot_open(Relation rel, uint64 part_id, uint64 part_gen)
+slot_open(Relation rel, uint64 part_id, uint64 part_gen, uint64 want)
 {
 	MapSlot    *s = &slots[0];
 
@@ -205,8 +213,23 @@ slot_open(Relation rel, uint64 part_id, uint64 part_gen)
 	s->relhash = sift_f2_rel_hash(rel);
 	s->part_id = part_id;
 	s->part_gen = part_gen;
+	s->built_bloom = want;
 	sift_col_delta_watch_init(&s->watch, s->cx);
 	return s;
+}
+
+/* The slot made over for the attributes of both its first ask and this one: no map, no page seen */
+static void
+slot_widen(MapSlot *s, uint64 want)
+{
+	sift_col_delta_part_map_unref(s->map);
+	s->map = NULL;
+	sift_col_delta_watch_reset(&s->watch);
+	s->built_bloom |= want;
+	s->skipped_bloom = 0;
+	s->max_xmin = InvalidTransactionId;
+	s->has_xmin = false;
+	s->declined = false;
 }
 
 /* ---- the chain the slot covers, and what it gained ---- */
@@ -241,6 +264,8 @@ slot_cover(MapSlot *s, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead 
 	sift_col_delta_part_map_unref(s->map);
 	s->map = map;
 	sift_col_delta_watch_set(&s->watch, a, r);
+	s->anchor = *a;
+	s->skipped_bloom |= r->skipped_bloom;
 	if (st->any && (!s->has_xmin || TransactionIdFollows(st->newest, s->max_xmin)))
 		s->max_xmin = st->newest;
 	s->has_xmin |= st->any;
@@ -270,11 +295,12 @@ slot_advance(Relation rel, const SiftPartitionEntry *entry, MapSlot *s, uint32 n
 {
 	Settled		st = {.vis = vis};
 	News		news = {.c = sift_col_delta_collector_new(),.part_gen = s->part_gen,.ngranules = ngranules};
+	SiftColDeltaPrune prune = {.part_gen = s->part_gen,.attnum_bloom = s->built_bloom == ALL_ATTRS ? 0 : s->built_bloom | sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP)};
 	SiftColDeltaWatchRead r;
 	Advance		adv = STALE;
 
 	sift_col_delta_ops_make(&news.ops, &st, settled_visible);
-	if (sift_col_delta_watch_read(rel, entry, a, &s->watch, collect_news, &news, &r))
+	if (sift_col_delta_watch_read(rel, entry, a, &s->watch, &prune, collect_news, &news, &r))
 	{
 		adv = st.unsettled ? UNSETTLED : ADVANCED;
 		if (adv == ADVANCED)
@@ -293,12 +319,73 @@ slot_advance(Relation rel, const SiftPartitionEntry *entry, MapSlot *s, uint32 n
 
 /* ---- the ask ---- */
 
+typedef struct HeadStamp
+{
+	BlockNumber blk;
+	uint64		gen;
+	XLogRecPtr	lsn;
+	uint32		used;
+	uint32		crc;
+} HeadStamp;
+
+static HeadStamp
+stamp_of(const char *page, BlockNumber blk)
+{
+	return (HeadStamp) {blk, SiftPageGetOpaque((Page) page)->gen, PageGetLSN((Page) page), SiftPageGetUsed((Page) page), *(const uint32 *) (SiftPageGetData((Page) page) + SIFT_PAGE_CRC_OFF)};
+}
+
+/* The newest page of the chain as the scan looked at it first: a scan asks for each part of a partition in turn, and its snapshot sees no record written after its first look */
+static SiftColDeltaLook *
+look_of(SiftColDeltaLooks *looks, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, BlockNumber blk)
+{
+	for (int i = 0; i < SIFT_COL_DELTA_LOOKS; i++)
+		if (looks->v[i].set && looks->v[i].part_id == entry->part_id && looks->v[i].blk == blk && memcmp(&looks->v[i].anchor, a, sizeof(*a)) == 0)
+			return &looks->v[i];
+	return NULL;
+}
+
+static HeadStamp
+head_now(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftTblVis *vis, SiftColDeltaLooks *looks, BlockNumber blk)
+{
+	bool		scoped = looks != NULL && vis->snap->snapshot_type == SNAPSHOT_MVCC;
+	SiftColDeltaLook *l = scoped ? look_of(looks, entry, a, blk) : NULL;
+	Buffer		buf;
+	HeadStamp	st;
+
+	if (l != NULL)
+		return (HeadStamp) {l->blk, l->gen, l->lsn, l->used, l->crc};
+	buf = sift_blk_read(rel, blk, BUFFER_LOCK_SHARE);
+	st = stamp_of(BufferGetPage(buf), blk);
+	UnlockReleaseBuffer(buf);
+	if (scoped)
+	{
+		looks->v[looks->next] = (SiftColDeltaLook) {.set = true,.part_id = entry->part_id,.anchor = *a,.blk = blk,.gen = st.gen,.lsn = st.lsn,.used = st.used,.crc = st.crc};
+		looks->next = (looks->next + 1) % SIFT_COL_DELTA_LOOKS;
+	}
+	return st;
+}
+
+/* The newest page of the chain is the one the slot saw, with the records it held and no more: with the same anchor, the chain is the slot's */
+static bool
+chain_unchanged(Relation rel, const SiftPartitionEntry *entry, const MapSlot *s, const SiftColDeltaAnchor *a, const SiftTblVis *vis, SiftColDeltaLooks *looks)
+{
+	HeadStamp	seen,
+				now;
+
+	if (s->watch.npages == 0 || memcmp(&s->anchor, a, sizeof(*a)) != 0)
+		return false;
+	seen = (HeadStamp) {s->watch.blks[s->watch.npages - 1], s->watch.head.gen, s->watch.head.lsn, s->watch.head.used, s->watch.head.crc};
+	now = head_now(rel, entry, a, vis, looks, seen.blk);
+	return seen.gen == now.gen && seen.lsn == now.lsn && seen.used == now.used && seen.crc == now.crc;
+}
+
 bool
-sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, bool create, SiftColDeltaPartMap **map)
+sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, uint64 attnum_bloom, SiftColDeltaLooks *looks, SiftColDeltaPartMap **map)
 {
 	SiftColDeltaAnchor a;
 	MapSlot    *s;
-	Advance		r;
+	uint64		want = attnum_bloom == 0 ? ALL_ATTRS : attnum_bloom;
+	Advance		r = ADVANCED;
 
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || RecoveryInProgress() || !snapshot_supported(vis))
 		return false;
@@ -316,15 +403,17 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	}
 	if (s != NULL && s->declined && s->declined_pages == a.npages && vis->snap->snapshot_type == SNAPSHOT_MVCC && !TransactionIdFollows(vis->snap->xmin, s->declined_xmin))
 		return false;
-	if (s == NULL && !create)
-		return false;
+	if (s != NULL && (want & s->skipped_bloom) != 0)
+		slot_widen(s, want);
 	if (s == NULL)
-		s = slot_open(rel, entry->part_id, part_gen);
-	r = slot_advance(rel, entry, s, ngranules, &a, vis);
+		s = slot_open(rel, entry->part_id, part_gen, want);
+	if (!chain_unchanged(rel, entry, s, &a, vis, looks))
+		r = slot_advance(rel, entry, s, ngranules, &a, vis);
 	if (r == STALE && s->watch.npages > 0)
 	{
+		want = s->built_bloom;
 		slot_drop(s);
-		s = slot_open(rel, entry->part_id, part_gen);
+		s = slot_open(rel, entry->part_id, part_gen, want);
 		r = slot_advance(rel, entry, s, ngranules, &a, vis);
 	}
 	if (r != ADVANCED)

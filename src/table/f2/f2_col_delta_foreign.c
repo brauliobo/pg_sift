@@ -236,10 +236,10 @@ log_follow(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnch
 	SiftColDeltaWatchRead r;
 
 	log_forget_settled();
-	if (!sift_col_delta_watch_read(rel, entry, a, &flog.watch, log_visit, NULL, &r))
+	if (!sift_col_delta_watch_read(rel, entry, a, &flog.watch, NULL, log_visit, NULL, &r))
 	{
 		log_reset();
-		if (!sift_col_delta_watch_read(rel, entry, a, &flog.watch, log_visit, NULL, &r))
+		if (!sift_col_delta_watch_read(rel, entry, a, &flog.watch, NULL, log_visit, NULL, &r))
 			SIFT_CORRUPT(rel, "the column delta chain of partition %llu cannot be read.", (unsigned long long) entry->part_id);
 	}
 	sift_col_delta_watch_set(&flog.watch, a, &r);

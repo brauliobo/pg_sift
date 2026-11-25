@@ -5,10 +5,11 @@
  * one, and the rest of the chain is the one it knows when the blocks of its pages are the blocks the directory names and its newest page is still that page (its generation, depth and link) with the
  * records it held. A chain that was folded or rewritten is made of pages of other generations.
  *
- * check-memory: allow-allocs a watch holds the block list of one chain and a copy of its newest page, in the context of the cache that owns it, and the budget of core/cachebudget.h bounds the caches
+ * check-memory: allow-allocs a watch holds the block list of one chain, in the context of the cache that owns it, and the budget of core/cachebudget.h bounds the caches
  */
 #include "postgres.h"
 
+#include "port/pg_crc32c.h"
 #include "utils/memutils.h"
 
 #include "core/page_io.h"
@@ -18,7 +19,7 @@
 void
 sift_col_delta_watch_init(SiftColDeltaWatch *w, MemoryContext cx)
 {
-	*w = (SiftColDeltaWatch) {.cx = cx,.head = MemoryContextAlloc(cx, BLCKSZ)};
+	*w = (SiftColDeltaWatch) {.cx = cx};
 }
 
 void
@@ -27,16 +28,35 @@ sift_col_delta_watch_reset(SiftColDeltaWatch *w)
 	w->npages = 0;
 }
 
+/* The checksum of the first used bytes of the records of a page */
+static uint32
+records_sum(const char *page, uint32 used)
+{
+	const uint8 *first = sift_col_delta_page_first(page);
+	pg_crc32c	crc;
+
+	INIT_CRC32C(crc);
+	COMP_CRC32C(crc, first, (const uint8 *) SiftPageGetData(page) + used - first);
+	FIN_CRC32C(crc);
+	return crc;
+}
+
+SiftColDeltaHeadSeen
+sift_col_delta_head_seen(const char *page)
+{
+	return (SiftColDeltaHeadSeen) {.gen = SiftPageGetOpaque((Page) page)->gen,.lsn = PageGetLSN((Page) page),.used = SiftPageGetUsed(page),
+								   .crc = *(const uint32 *) (SiftPageGetData((Page) page) + SIFT_PAGE_CRC_OFF),.sum = records_sum(page, SiftPageGetUsed(page)),
+								   .chain_pages = sift_col_delta_page_hdr(page)->chain_pages,.prev_blk = sift_col_delta_page_hdr(page)->prev_blk};
+}
+
 /* The newest page of the watch as the chain has it now: the same page (its generation, depth and link), and its records the ones it held */
 static bool
-same_head(const char *held, const char *now)
+same_head(const SiftColDeltaHeadSeen *held, const char *now)
 {
-	const SiftColDeltaPageData *a = sift_col_delta_page_hdr(held),
-			   *b = sift_col_delta_page_hdr(now);
+	const SiftColDeltaPageData *b = sift_col_delta_page_hdr(now);
 
-	return SiftPageGetOpaque((Page) held)->gen == SiftPageGetOpaque((Page) now)->gen && a->chain_pages == b->chain_pages && a->prev_blk == b->prev_blk &&
-		SiftPageGetUsed(now) >= SiftPageGetUsed(held) &&
-		memcmp(sift_col_delta_page_first(held), sift_col_delta_page_first(now), sift_col_delta_page_end(held) - sift_col_delta_page_first(held)) == 0;
+	return held->gen == SiftPageGetOpaque((Page) now)->gen && held->chain_pages == b->chain_pages && held->prev_blk == b->prev_blk && SiftPageGetUsed(now) >= held->used &&
+		records_sum(now, held->used) == held->sum;
 }
 
 static bool
@@ -45,8 +65,18 @@ read_page(const SiftColDeltaPageReader *reader, BlockNumber blk, char *dst)
 	return reader->read(reader->ctx, blk, dst) == NULL && sift_col_delta_page_check(dst) == NULL;
 }
 
+/* A page the prune leaves out because of the attributes it patches (not because it is of another part): what the watch will not have seen of the chain */
+static bool
+left_out(const SiftColDeltaPrune *prune, const SiftColDeltaDirEntry *e)
+{
+	if (prune == NULL || sift_cddir_entry_wanted(e, prune))
+		return false;
+	return prune->part_gen == 0 || e->part_gen == 0 || e->part_gen == prune->part_gen;
+}
+
 bool
-sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftColDeltaWatch *w, SiftColDeltaPageVisit visit, void *arg, SiftColDeltaWatchRead *r)
+sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftColDeltaWatch *w, const SiftColDeltaPrune *prune, SiftColDeltaPageVisit visit, void *arg,
+						  SiftColDeltaWatchRead *r)
 {
 	SiftColDeltaDiskReader d = {.rel = rel,.part_id = (uint32) entry->part_id};
 	SiftColDeltaPageReader reader = sift_col_delta_disk_reader(&d);
@@ -63,12 +93,18 @@ sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const S
 		ok = r->ent[i].blkno == w->blks[i];
 	if (ok && w->npages > 0)
 	{
-		ok = read_page(&reader, w->blks[w->npages - 1], page) && same_head(w->head, page);
+		ok = read_page(&reader, w->blks[w->npages - 1], page) && same_head(&w->head, page);
 		memcpy(r->last, page, BLCKSZ);
-		ok = ok && visit(arg, page, SiftPageGetUsed(w->head));
+		ok = ok && visit(arg, page, w->head.used);
 	}
 	for (int i = w->npages; i < a->npages && ok; i++)
 	{
+		if (i < a->npages - 1 && prune != NULL && !sift_cddir_entry_wanted(&r->ent[i], prune))
+		{
+			if (left_out(prune, &r->ent[i]))
+				r->skipped_bloom |= r->ent[i].attnum_bloom;
+			continue;
+		}
 		ok = read_page(&reader, r->ent[i].blkno, page) && sift_col_delta_check_link(page, i + 1, i > 0 ? r->ent[i - 1].blkno : InvalidBlockNumber) == NULL;
 		memcpy(r->last, page, BLCKSZ);
 		ok = ok && visit(arg, page, 0);
@@ -85,7 +121,7 @@ sift_col_delta_watch_set(SiftColDeltaWatch *w, const SiftColDeltaAnchor *a, cons
 	w->blks = w->blks == NULL ? MemoryContextAlloc(w->cx, sizeof(BlockNumber) * a->npages) : repalloc(w->blks, sizeof(BlockNumber) * a->npages);
 	for (int i = 0; i < a->npages; i++)
 		w->blks[i] = r->ent[i].blkno;
-	memcpy(w->head, r->last, BLCKSZ);
+	w->head = sift_col_delta_head_seen(r->last);
 	w->npages = a->npages;
 }
 
