@@ -314,7 +314,7 @@ CREATE FUNCTION sift_helpers.plan_siftagg_nodes(q text) RETURNS int LANGUAGE plp
 DECLARE l text; n int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN n := n + 1; END IF;
 	END LOOP;
 	RETURN n;
 END $$;
@@ -830,7 +830,7 @@ CREATE FUNCTION sift_helpers.plan_siftagg_with_lookup_counts(q text) RETURNS tex
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'SiftAgg'; END IF;
 		IF l LIKE '%Lookup: %' THEN r := r || ',' || concat_ws(',', substring(l from '\d+ rows read'), substring(l from '\d+ rows loaded'), substring(l from '\d+ index scans')); END IF;
 	END LOOP;
 	RETURN r;
@@ -883,7 +883,7 @@ CREATE FUNCTION sift_helpers.plan_siftagg_with_workers_label(q text) RETURNS tex
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'SiftAgg'; END IF;
 		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN r := r || ' with workers'; END IF;
 	END LOOP;
 	RETURN r;
@@ -936,7 +936,7 @@ CREATE FUNCTION sift_helpers.plan_engaged_and_answers_same(q text) RETURNS TABLE
 $$ DECLARE l text; plan text := ''; a text; b text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-  engaged := plan LIKE '%Custom Scan (SiftAgg)%';
+  engaged := plan LIKE '%Custom Scan (SiftAgg%';
   PERFORM set_config('sift.enable_agg', 'on', true);
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
   PERFORM set_config('sift.enable_agg', 'off', true);

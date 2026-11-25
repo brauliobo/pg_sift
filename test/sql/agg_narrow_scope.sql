@@ -32,7 +32,7 @@ CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
-	RETURN CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
+	RETURN CASE WHEN j::text LIKE '%"SiftAgg%' THEN 'SiftAgg' ELSE 'normal' END;
 END $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
