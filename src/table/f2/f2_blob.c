@@ -26,14 +26,18 @@ sift_ext_vec_add(SiftExtVec *v, const SiftExtent *e)
 static const char *
 compressed(const char *raw, uint32 raw_len, uint32 *stored_len, uint16 *flags)
 {
-	Size		n;
+	Size		n,
+				bound;
 	char	   *buf;
 
 	*stored_len = raw_len;
 	if (!sift_colz_available(SIFT_CC_ALG_LZ4))
 		return raw;
-	buf = palloc(sift_colz_bound(SIFT_CC_ALG_LZ4, raw_len));
-	n = sift_colz_compress(SIFT_CC_ALG_LZ4, 0, raw, raw_len, buf, sift_colz_bound(SIFT_CC_ALG_LZ4, raw_len));
+	bound = sift_colz_bound(SIFT_CC_ALG_LZ4, raw_len);
+	if (bound == 0 || bound > MaxAllocSize)
+		return raw;
+	buf = palloc(bound);
+	n = sift_colz_compress(SIFT_CC_ALG_LZ4, 0, raw, raw_len, buf, bound);
 	if (n == 0 || n >= (Size) raw_len / 8 * 7)
 	{
 		pfree(buf);
@@ -129,12 +133,18 @@ sift_tbl_blob_spill_rows(Relation rel, SiftRowBuf *rb)
 	}
 }
 
-static const SiftTblBlobRef *
+/* A copy of the reference in memory of its own alignment, whose lengths are those a writer makes: a value no longer than a palloc, stored as it is exactly when it is not compressed */
+static SiftTblBlobRef *
 checked_ref(Relation rel, const char *bytes, uint32 len)
 {
-	const SiftTblBlobRef *ref = (const SiftTblBlobRef *) bytes;
+	SiftTblBlobRef *ref;
 
-	if (len < sizeof(SiftTblBlobRef) || ref->magic != SIFT_TBL_BLOB_MAGIC || len != SIFT_TBL_BLOB_REF_SIZE(ref->nextents))
+	if (len < sizeof(SiftTblBlobRef))
+		SIFT_DAMAGE_OTHER_DATA(errmsg("table \"%s\" holds a damaged reference to a wide value", RelationGetRelationName(rel)));
+	ref = palloc(len);
+	memcpy(ref, bytes, len);
+	if (ref->magic != SIFT_TBL_BLOB_MAGIC || len != SIFT_TBL_BLOB_REF_SIZE(ref->nextents) || ref->raw_len == 0 || ref->raw_len > SIFT_TBL_BLOB_MAX || ref->stored_len == 0 ||
+		ref->stored_len > SIFT_TBL_BLOB_MAX || (ref->flags & ~SIFT_BLOB_FLAG_LZ4) != 0 || ((ref->flags & SIFT_BLOB_FLAG_LZ4) == 0 && ref->raw_len != ref->stored_len))
 		SIFT_DAMAGE_OTHER_DATA(errmsg("table \"%s\" holds a damaged reference to a wide value", RelationGetRelationName(rel)));
 	return ref;
 }
@@ -149,10 +159,15 @@ read_pages(Relation rel, const SiftTblBlobRef *ref)
 		for (uint32 b = 0; b < ref->ext[e].nblocks && done < ref->stored_len; b++)
 		{
 			BlockNumber blk = ref->ext[e].start + b;
-			Buffer		buf = sift_blk_read(rel, blk, BUFFER_LOCK_SHARE);
+			Buffer		buf;
 			uint32		n = (uint32) Min(ref->stored_len - done, (uint64) SIFT_PAGE_PAYLOAD);
 
+			if (ref->ext[e].nblocks > InvalidBlockNumber - ref->ext[e].start)
+				SIFT_DAMAGE_OTHER_DATA(errmsg("a wide value of table \"%s\" has an extent past the last block", RelationGetRelationName(rel)));
+			buf = sift_blk_read(rel, blk, BUFFER_LOCK_SHARE);
 			sift_page_expect(rel, BufferGetPage(buf), blk, SIFT_PT_DATA, ref->gen, 0);
+			if (SiftPageGetUsed(BufferGetPage(buf)) < n)
+				SIFT_DAMAGE_OTHER_DATA(errmsg("a wide value of table \"%s\" is longer than its page", RelationGetRelationName(rel)));
 			memcpy(stored + done, SiftPageGetData(BufferGetPage(buf)), n);
 			UnlockReleaseBuffer(buf);
 			done += n;
@@ -165,7 +180,7 @@ read_pages(Relation rel, const SiftTblBlobRef *ref)
 Datum
 sift_tbl_blob_read(Relation rel, const char *ref_bytes, uint32 ref_len, Oid typid pg_attribute_unused(), int16 typlen pg_attribute_unused(), MemoryContext dst_cx)
 {
-	const SiftTblBlobRef *ref = checked_ref(rel, ref_bytes, ref_len);
+	SiftTblBlobRef *ref = checked_ref(rel, ref_bytes, ref_len);
 	char	   *stored = read_pages(rel, ref);
 	char	   *raw = MemoryContextAlloc(dst_cx, ref->raw_len);
 
@@ -174,16 +189,18 @@ sift_tbl_blob_read(Relation rel, const char *ref_bytes, uint32 ref_len, Oid typi
 	else if (!sift_colz_decompress(SIFT_CC_ALG_LZ4, stored, ref->stored_len, raw, ref->raw_len))
 		SIFT_DAMAGE_OTHER_DATA(errmsg("a wide value of table \"%s\" does not decompress", RelationGetRelationName(rel)));
 	pfree(stored);
+	pfree(ref);
 	return PointerGetDatum(raw);
 }
 
 void
 sift_tbl_blob_release_ref(Relation rel, const char *ref_bytes, uint32 ref_len, SiftExtVec *release)
 {
-	const SiftTblBlobRef *ref = checked_ref(rel, ref_bytes, ref_len);
+	SiftTblBlobRef *ref = checked_ref(rel, ref_bytes, ref_len);
 
 	for (int e = 0; e < ref->nextents; e++)
 		sift_ext_vec_add(release, &ref->ext[e]);
+	pfree(ref);
 }
 
 void

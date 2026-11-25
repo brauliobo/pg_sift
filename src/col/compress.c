@@ -4,6 +4,8 @@
  * Without either it answers "not available" and the codec writes no wrapped chunk.
  */
 
+#include <limits.h>
+
 #include "col/codec.h"
 #include "col/compress.h"
 
@@ -35,7 +37,7 @@ sift_colz_bound(int alg, Size n)
 {
 #ifdef SIFT_HAVE_LZ4
 	if (alg == SIFT_CC_ALG_LZ4)
-		return (Size) LZ4_compressBound((int) n);
+		return n <= LZ4_MAX_INPUT_SIZE ? (Size) LZ4_compressBound((int) n) : 0;
 #endif
 #ifdef SIFT_HAVE_ZSTD
 	if (alg == SIFT_CC_ALG_ZSTD)
@@ -67,8 +69,12 @@ sift_colz_compress(int alg, int level, const void *src, Size n, void *dst, Size 
 #ifdef SIFT_HAVE_LZ4
 	if (alg == SIFT_CC_ALG_LZ4)
 	{
-		int			r = level >= 3 ? LZ4_compress_HC(src, dst, (int) n, (int) cap, level) : LZ4_compress_default(src, dst, (int) n, (int) cap);
+		int			r;
 
+		if (n > LZ4_MAX_INPUT_SIZE)
+			return 0;
+		cap = Min(cap, (Size) INT_MAX);
+		r = level >= 3 ? LZ4_compress_HC(src, dst, (int) n, (int) cap, level) : LZ4_compress_default(src, dst, (int) n, (int) cap);
 		return r > 0 ? (Size) r : 0;
 	}
 #endif
@@ -92,7 +98,7 @@ sift_colz_decompress(int alg, const void *src, Size clen, void *dst, Size rawlen
 {
 #ifdef SIFT_HAVE_LZ4
 	if (alg == SIFT_CC_ALG_LZ4)
-		return LZ4_decompress_safe(src, dst, (int) clen, (int) rawlen) == (int) rawlen;
+		return clen <= INT_MAX && rawlen <= INT_MAX && LZ4_decompress_safe(src, dst, (int) clen, (int) rawlen) == (int) rawlen;
 #endif
 #ifdef SIFT_HAVE_ZSTD
 	if (alg == SIFT_CC_ALG_ZSTD)
