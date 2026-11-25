@@ -428,7 +428,7 @@ typedef struct CompactIn
 static CompactIn *
 read_inputs(Relation rel, uint64 part_id, const SiftPartDesc *parts, int nparts, const uint64 *gens, int ngens)
 {
-	CompactIn  *in = palloc(Max(ngens, 1) * sizeof(CompactIn));
+	CompactIn  *in = palloc0(Max(ngens, 1) * sizeof(CompactIn));
 	SiftPartGenIndex by_gen;
 
 	sift_part_gen_idx_init(&by_gen, parts, nparts);
