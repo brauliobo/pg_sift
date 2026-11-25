@@ -277,9 +277,8 @@ read_rows(Relation rel, SiftF2StoreOpts *o, MemoryContext cx)
 		return;
 	cfg = table_open(cfgid, AccessShareLock);
 	indexes = RelationGetIndexList(cfg);
-	SIFT_INVARIANT(indexes != NIL, "sift.table_option_values has no index");
 	ScanKeyInit(&key, 1, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(rel)));
-	scan = systable_beginscan(cfg, linitial_oid(indexes), true, NULL, 1, &key);
+	scan = systable_beginscan(cfg, indexes != NIL ? linitial_oid(indexes) : InvalidOid, indexes != NIL, NULL, 1, &key);
 	while (HeapTupleIsValid(tup = systable_getnext(scan)))
 	{
 		bool		isnull;
