@@ -175,4 +175,7 @@ extern SiftExtent sift_dv_write(Relation rel, const SiftDv *dv, uint32 part_id, 
 
 extern SiftDv *sift_dv_read(Relation rel, const SiftPartDesc *desc, uint32 part_id, const uint16 *granule_rows);
 
+/* The same, with the length of the stream it read: the one a later sift_dv_stream_len is compared with */
+extern SiftDv *sift_dv_read_stream(Relation rel, const SiftPartDesc *desc, uint32 part_id, const uint16 *granule_rows, uint32 *stream_len);
+
 #endif							/* SIFT_DELVEC_H */

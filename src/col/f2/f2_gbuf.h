@@ -101,6 +101,9 @@ extern void sift_f2_gbuf_forget(Relation rel);
 
 /* The part of the descriptor opened once (cached under sift.backend_cache_kb) and given back; the pin of a granule is held until it is released */
 extern SiftF2PartPin *sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
+
+/* The pin for what the header of the part says: its deletion vector is not brought up to date, for the caller that reads no row */
+extern SiftF2PartPin *sift_f2_pin_open_header(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
 extern void sift_f2_pin_release(SiftF2PartPin *pin);
 
 /* The addresses of the rows of granule g of the pin's part, ascending as the granule keeps them, in out (at most SIFT_GRANULE_ROWS of them); reads the address chunk only, in the current memory context */

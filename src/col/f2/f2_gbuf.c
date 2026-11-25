@@ -235,7 +235,6 @@ pin_load_dv(Relation rel, SiftF2PartPin *pin, const SiftPartDesc *d)
 	pin->dv_len = 0;
 	if (d->dv_blk == InvalidBlockNumber)
 		return;
-	pin->dv_len = sift_dv_stream_len(rel, d->dv_blk);
 	/* MEM[MEM-IDLE-06]: cachebudget f2 part pin lazy dv_cx (0 B if no delvec; 1 KB min on first load) */
 	if (pin->dv_cx == NULL)
 		pin->dv_cx = AllocSetContextCreateInternal(pin->cx, "sift cache f2 part pin dv", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
@@ -245,7 +244,7 @@ pin_load_dv(Relation rel, SiftF2PartPin *pin, const SiftPartDesc *d)
 	{
 		MemoryContext old = MemoryContextSwitchTo(pin->dv_cx);
 
-		pin->dv = sift_dv_read(rel, d, pin->part_id, rows);
+		pin->dv = sift_dv_read_stream(rel, d, pin->part_id, rows, &pin->dv_len);
 		MemoryContextSwitchTo(old);
 	}
 }
@@ -295,9 +294,23 @@ slab_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 pa
 	return pin;
 }
 
+static SiftF2PartPin *pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id, bool current_dv);
+
 /* In the context of the caller until the pin is whole: a build that fails leaves nothing in the cache budget */
 SiftF2PartPin *
 sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
+{
+	return pin_open(rel, store, d, part_id, true);
+}
+
+SiftF2PartPin *
+sift_f2_pin_open_header(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
+{
+	return pin_open(rel, store, d, part_id, false);
+}
+
+static SiftF2PartPin *
+pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id, bool current_dv)
 {
 	PinKey		key;
 	PinEntry   *e;
@@ -338,8 +351,8 @@ sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32
 	e->pin->stale = false;
 	e->pin->refcnt++;
 	e->pin->lru_tick = sift_cache_tick();
-	if (d->dv_gen != e->pin->dv_gen || (d->dv_blk != InvalidBlockNumber) != (e->pin->dv != NULL) ||
-		(sift_dvd_part_takes(d) && sift_dv_stream_len(rel, d->dv_blk) != e->pin->dv_len))
+	if (current_dv && (d->dv_gen != e->pin->dv_gen || (d->dv_blk != InvalidBlockNumber) != (e->pin->dv != NULL) ||
+					   (sift_dvd_part_takes(d) && sift_dv_stream_len(rel, d->dv_blk) != e->pin->dv_len)))
 		pin_load_dv(rel, e->pin, d);
 	e->pin->desc = *d;
 	if (built)

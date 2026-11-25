@@ -88,7 +88,7 @@ cursor_take(Relation rel, SiftF2Store *store, UnitCursor *c, UnitList *out, cons
 	d = &v->partlists[c->part].parts[c->next++];
 	if (tid_range != NULL && sift_part_tid_excludes(d, tid_range[0], tid_range[1]))
 		return true;
-	pin = sift_f2_pin_open(rel, store, d, (uint32) v->partitions[c->part].part_id);
+	pin = sift_f2_pin_open_header(rel, store, d, (uint32) v->partitions[c->part].part_id);
 	ng = pin->part->hdr.ngranules;
 	sift_f2_pin_release(pin);
 	for (uint32 g = 0; g < ng; g += SIFT_TBL_SCAN_UNIT_GRANULES)

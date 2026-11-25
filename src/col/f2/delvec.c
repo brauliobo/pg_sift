@@ -379,20 +379,28 @@ sift_dv_write(Relation rel, const SiftDv *dv, uint32 part_id, SiftPartDesc *desc
 SiftDv *
 sift_dv_read(Relation rel, const SiftPartDesc *desc, uint32 part_id, const uint16 *granule_rows)
 {
+	uint32		len;
+
+	return sift_dv_read_stream(rel, desc, part_id, granule_rows, &len);
+}
+
+SiftDv *
+sift_dv_read_stream(Relation rel, const SiftPartDesc *desc, uint32 part_id, const uint16 *granule_rows, uint32 *stream_len)
+{
 	Buffer		buf = sift_blk_read(rel, desc->dv_blk, BUFFER_LOCK_SHARE);
 	uint32		len = ((const SiftDvHeaderData *) SiftPageGetData(BufferGetPage(buf)))->stream_len;
 	char	   *bytes;
 
-	UnlockReleaseBuffer(buf);
 	if (len < sizeof(SiftDvHeaderData) || len > SIFT_PAYLOAD_BYTES(desc->dv_nblocks))
 		SIFT_SEG_CORRUPT(rel, desc->part_gen, "The deletion vector at block %u claims %u bytes in %u blocks.", desc->dv_blk, len, desc->dv_nblocks);
 	bytes = palloc(len);
 	for (uint32 from = 0, p = 0; from < len; from += SIFT_PAGE_PAYLOAD, p++)
 	{
-		buf = sift_blk_read(rel, desc->dv_blk + p, BUFFER_LOCK_SHARE);
+		buf = p == 0 ? buf : sift_blk_read(rel, desc->dv_blk + p, BUFFER_LOCK_SHARE);
 		sift_page_expect(rel, BufferGetPage(buf), desc->dv_blk + p, SIFT_PT_DELVEC, desc->dv_gen, SIFT_PART_ID_ANY);
 		memcpy(bytes + from, SiftPageGetData(BufferGetPage(buf)), Min(len - from, (uint32) SIFT_PAGE_PAYLOAD));
 		UnlockReleaseBuffer(buf);
 	}
+	*stream_len = len;
 	return sift_dv_deserialize(rel, bytes, len, desc->part_gen, desc->dv_gen, granule_rows);
 }
