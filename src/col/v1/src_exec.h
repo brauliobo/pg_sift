@@ -389,4 +389,18 @@ extern void sift_src_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull,
 #define SIFT_SRC_TYPE_NONE		0xFF	/* SiftSrcProvider.read_types: the path has no value */
 #define SIFT_SRC_JT_READ		0x80	/* not a type: the query reads the leaf's values besides, so a row of the types whose value the leaf cannot hold is an error */
 
+/*
+ * Does a test of these types (SIFT_SRC_JT_*) tell what only the kinds of a chunk say: a JSON null from a missing key (the types have one of them
+ * and not the other), or the types of the values of an astext leaf apart (some of the string, number and boolean types and not all)? Where the
+ * leaf has a segment without them (SiftSrcStats.nokinds) the source could only raise the REINDEX error.
+ */
+static inline bool
+sift_src_types_need_kinds(uint32 types, bool astext)
+{
+	uint32		vals = types & (SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN);
+
+	return ((types & SIFT_SRC_JT_NONE) != 0) != ((types & SIFT_SRC_JT_NULL) != 0) ||
+		(astext && vals != 0 && vals != (SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN));
+}
+
 #endif							/* SIFT_COL_V1_SRC_EXEC_H */

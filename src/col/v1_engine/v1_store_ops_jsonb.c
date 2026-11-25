@@ -95,10 +95,25 @@ jsonb_path_declared(Oid relid, bool is_table, int att, const List *path)
 	return found;
 }
 
+static bool
+jsonb_types_exact(Oid relid, bool is_table, int leaf, uint32 types)
+{
+	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
+	const SiftV1ReaderOps *reader = sift_v1_reader_of(is_table);
+	SiftSrcStats st;
+	bool		exact;
+
+	reader->stats(r.rel, &st);
+	exact = !st.nokinds[leaf] || !sift_src_types_need_kinds(types >> 1, reader->layout(r.rel)->leaf[leaf].astext);
+	sift_v1_rel_close(&r);
+	return exact;
+}
+
 const SiftJsonbOps v1_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
 	.member_leaf = jsonb_member_leaf,
 	.table_key_leaf = jsonb_table_key_leaf,
+	.types_exact = jsonb_types_exact,
 	.path_declared = jsonb_path_declared,
 	.unnest_run = sift_v1_unnest_run
 };
