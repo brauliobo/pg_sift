@@ -413,16 +413,16 @@ by_age(const void *a, const void *b)
 	return c != 0 ? c : SIFT_CMP3(x->part_gen, y->part_gen);
 }
 
-/* One compaction of the group, in a context of its own that goes with it; the bytes it wrote */
+/* One compaction of the group (a join of its parts when join), in a context of its own that goes with it; the bytes it wrote */
 static uint64
-compact_group(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, const uint64 *gens, int ngens, FullTransactionId oldest_fx)
+compact_group(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, const uint64 *gens, int ngens, bool join, FullTransactionId oldest_fx)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum compaction");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftCompactResult res;
 	Size		freed;
 
-	(void) sift_partition_compact_online(rel, e->part_id, e->key_lo, gens, ngens, &store->spec, PG_INT64_MIN, oldest_fx, &res);
+	(void) (join ? sift_partition_join_online : sift_partition_compact_online) (rel, e->part_id, e->key_lo, gens, ngens, &store->spec, PG_INT64_MIN, oldest_fx, &res);
 	MemoryContextSwitchTo(old);
 	freed = MemoryContextMemAllocated(cx, true);
 	MemoryContextDelete(cx);
@@ -463,11 +463,33 @@ compact_chunks(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, co
 			group[k] = chosen[i]->part_gen;
 			mem += part_mem(chosen[i]);
 		}
-		written = compact_group(rel, store, e, group, k, oldest_fx);
+		written = compact_group(rel, store, e, group, k, false, oldest_fx);
 		*rewrite_left -= Min(written, *rewrite_left);
 	}
 	pfree(chosen);
 	pfree(group);
+}
+
+/* What the plan of the partition rewrites of the parts the compaction left (the level-1 parts of a bulk insert, the parts of the last level that a small budget wrote one granule each): the groups as it makes them, each in one commit */
+static void
+compact_planned(Relation rel, SiftF2Store *store, const SiftPartitionEntry *cand, FullTransactionId oldest_fx, uint64 *rewrite_left)
+{
+	SiftPartitionEntry e;
+	int			np,
+				ngroups;
+	SiftPartDesc *parts;
+	SiftCompactGroup *groups;
+
+	if (!sift_manifest_find_entry(rel, cand->part_id, cand->key_lo, &e))
+		return;
+	parts = sift_manifest_read_parts(rel, &e, &np);
+	groups = sift_compact_plan_rewrites(parts, np, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 4, 1), &ngroups);
+	for (int k = 0; k < ngroups && *rewrite_left > 0; k++)
+	{
+		uint64		written = compact_group(rel, store, &e, groups[k].gens, groups[k].n, groups[k].join, oldest_fx);
+
+		*rewrite_left -= Min(written, *rewrite_left);
+	}
 }
 
 /* Second pass, once the indexes have given up the addresses of the first: the deletion vectors are settled, the parts sealed and the ones with dead or old rows compacted, which drops the rows the indexes no longer point at */
@@ -509,6 +531,7 @@ settle_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *can
 	}
 	if (ngens > 0)
 		compact_chunks(rel, store, &e, parts, np, gens, ngens, oldest_fx, rewrite_left);
+	compact_planned(rel, store, &e, oldest_fx, rewrite_left);
 	if ((e.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 		(void) sift_col_delta_gc(rel, e.part_id, e.key_lo, oldest_fx);
 }
