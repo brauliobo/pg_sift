@@ -517,6 +517,9 @@ def activity(ctl, pid, needle):
     return "running" if state == "active" else "finished" if state == "idle" else "waiting"
 
 
+BM25_BUILD = "set maintenance_work_mem='1MB'; create index e1_2x_build_bm on e1_2x using sift (title)"
+
+
 def run_cleanup(env, ctl, c, ns):
     """each way a spilling statement ends (error of temp_file_limit, early LIMIT, cancel) leaves no file in pg_ls_tmpdir(); the error and LIMIT cases must have written temp files (an
     unexercised case proves nothing), a cancel that came after the statement finished is not counted against it"""
@@ -524,8 +527,8 @@ def run_cleanup(env, ctl, c, ns):
     script(env, BUILD + fill(drops("e1") + segments("e1"), s, ns[1]))
     group = f"select k_hi, count(*), sum(amount) from read_col_{big} group by 1"
     cases = [("group_error", f"set temp_file_limit='512kB'; {group}", "group by 1", None, True), ("group_limit", f"{group} limit 10", "limit 10", None, False),
-             ("group_cancel", group, "group by 1", "cancel", False), ("bm25_merge_error", "set temp_file_limit='256kB'; select sift.merge('e1_2x_bm', true)", "sift.merge", None, True),
-             ("bm25_merge_cancel", "select sift.merge('e1_2x_bm', true)", "sift.merge", "cancel", False)]
+             ("group_cancel", group, "group by 1", "cancel", False), ("bm25_build_error", f"set temp_file_limit='256kB'; {BM25_BUILD}", "e1_2x_build_bm", None, True),
+             ("bm25_build_cancel", BM25_BUILD, "e1_2x_build_bm", "cancel", False)]
     fails, notes = [], []
     for name, sql, needle, cancel, must in cases:
         me = Psql(env)
