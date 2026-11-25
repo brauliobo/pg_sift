@@ -7,6 +7,7 @@
 #include "postgres.h"
 
 #include "access/transam.h"
+#include "access/twophase.h"
 #include "access/xact.h"
 #include "common/hashfn.h"
 #include "miscadmin.h"
@@ -19,6 +20,7 @@
 #include "col/dsmreg.h"
 #include "core/memtrack.h"
 #include "core/part_lock.h"
+#include "table/f2/f2_lock_2pc.h"
 #include "table/f2/f2_lock_esc.h"
 
 /* ---- the table in shared memory ---- */
@@ -248,6 +250,8 @@ typedef struct SiftLocalLock
 	int8		held_max;		/* the strongest entry taken, -1 for none */
 	bool		split_pinned;
 	bool		published;
+	bool		prepared_marked;	/* PREPARE took the page lock that says the relation has row locks in the lock manager */
+	uint8		prepared_probe;	/* of a relation: 0 not asked, 1 no prepared transaction holds row locks of it in the lock manager, 2 some does */
 	SubTransactionId esc_sub;
 	struct SiftLocalLock *rel_parts;	/* of a relation: the locks of its partitions, linked by rel_next */
 	struct SiftLocalLock *rel_next;
@@ -379,6 +383,33 @@ sift_esc_note_tier1_acquire(const RelFileLocator *loc, uint64 part_id, LockTuple
 	}
 	pl->held_max = Max(pl->held_max, (int8) mode);
 	rl->held_max = Max(rl->held_max, (int8) mode);
+}
+
+bool
+sift_esc_prepared_locks_possible(Relation rel)
+{
+	SiftLocalLock *rl;
+
+	if (max_prepared_xacts == 0)
+		return false;
+	rl = lock_of(rel, SIFT_ESC_PART_ALL);
+	if (rl->prepared_probe == 0)
+		rl->prepared_probe = sift_lock_2pc_present(rl->dbid, rl->relid) ? 2 : 1;
+	return rl->prepared_probe == 2;
+}
+
+bool
+sift_esc_prepared_ids(const RelFileLocator *loc, Oid *dbid, Oid *relid, bool *first)
+{
+	SiftLocalLock *rl = find_lock(loc, SIFT_ESC_PART_ALL);
+
+	if (rl == NULL)
+		return false;
+	*dbid = rl->dbid;
+	*relid = rl->relid;
+	*first = !rl->prepared_marked;
+	rl->prepared_marked = true;
+	return true;
 }
 
 void

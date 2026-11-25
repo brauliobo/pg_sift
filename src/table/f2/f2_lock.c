@@ -10,7 +10,8 @@
  * A transaction takes an entry only while it holds few rows of a partition: past SIFT_ROWLOCK_ESCALATE_AT rows, or where the area has no memory for an entry, it holds the partition or the
  * relation (f2_lock_esc.h) and gives its entries back. Whoever waits on that learns the outcome of a row from the row on disk, as after any commit.
  *
- * The holders of a row past the room of its entry are the members of a MultiXactId, which is read and made with no stripe lock held (f2_lock_mxid.h).
+ * The holders of a row past the room of its entry are the members of a MultiXactId, which is read and made with no stripe lock held (f2_lock_mxid.h). The row locks of a prepared transaction are
+ * also tuple locks of the lock manager, which survive a crash and a restart (f2_lock_2pc.h).
  *
  * An update that is a column delta keeps the address: the writer is a holder of the row's lock until its end, and the chain of the partition (table/f2/f2_col_delta.h) tells whoever locks
  * the row after it what the writer left. A committed delta its snapshot cannot see is TM_Updated with the address of the row itself; EvalPlanQual locks the row there and
@@ -28,6 +29,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "table/f2/f2_lock_2pc.h"
 #include "table/f2/f2_lock_esc.h"
 #include "table/f2/f2_lock_int.h"
 #include "table/f2/f2_lock_mxid.h"
@@ -288,18 +290,36 @@ settle(const SiftTouched *t, bool commit, bool keep_speculative)
 	return settled;
 }
 
-/* The row stays held after the prepare: the entry says so */
+/* The row stays held after the prepare: the entry says so, and the lock manager gets the tuple lock that a restart finds again (f2_lock_2pc.h) */
 static void
 prepare_row(const SiftTouched *t)
 {
 	int			si = stripe_of(&t->key);
 	SiftRowLockEntry *e;
+	SiftMxMembers members = {InvalidMultiXactId, NULL, 0};
+	MultiXactId overflow = InvalidMultiXactId;
+	int			mode = -1;
+	Oid			dbid,
+				relid;
+	bool		first;
 
 	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
 	e = sift_rowlock_find(rows, si, &t->key);
 	if (e != NULL)
+	{
 		e->flags |= SIFT_ROWLOCK_PREPARE_HELD;
+		mode = sift_hold_held_mode(e);
+		overflow = e->overflow_mxid;
+	}
 	LWLockRelease(stripe_lock(si));
+	if (MultiXactIdIsValid(overflow))
+	{
+		sift_mx_read(&members, overflow);
+		mode = Max(mode, sift_mx_held_mode(&members));
+		sift_mx_free(&members);
+	}
+	if (mode >= 0 && sift_esc_prepared_ids(&t->key.locator, &dbid, &relid, &first))
+		sift_lock_2pc_hold(dbid, relid, t->key.tid, (LockTupleMode) mode, first);
 }
 
 /* A subtransaction released: its holder is its parent's, and one of the transaction that the parent has of the row already takes its mode (a loop of savepoints is one holder, not one for each) */
@@ -804,12 +824,17 @@ lock_entry_or_partition(Relation rel, uint64 tid, uint64 part_id, LockTupleMode 
 	return res;
 }
 
+/* A prepared transaction that crashed with the server holds its rows in the lock manager only (f2_lock_2pc.h): asked first, so that a request it refuses takes no entry and no intention lock */
 static TM_Result
 lock_held(Relation rel, const SiftRowState *rs, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, TM_FailureData *tmfd, bool *reread, bool *added)
 {
-	bool		covered;
-	TM_Result	res = sift_esc_before_row_lock(rel, rs->part_id, mode, wait_policy, &covered, reread, tmfd);
+	bool		covered = false;
+	TM_Result	res = TM_Ok;
 
+	if (sift_esc_prepared_locks_possible(rel))
+		res = sift_lock_2pc_probe(rel->rd_lockInfo.lockRelId.dbId, rel->rd_lockInfo.lockRelId.relId, tid & SIFT_PD_TID_MASK, mode, tmfd);
+	if (res == TM_Ok)
+		res = sift_esc_before_row_lock(rel, rs->part_id, mode, wait_policy, &covered, reread, tmfd);
 	if (res != TM_Ok || *reread || covered)
 		return res;
 	return lock_entry_or_partition(rel, tid, rs->part_id, mode, wait_policy, tmfd, reread, added);

@@ -174,6 +174,12 @@ extern TM_Result sift_esc_promote(Relation rel, uint64 part_id, uint32 nparts, L
 /* An entry was taken for a row of the partition (new_row: the (sub)transaction did not hold it before) or released: the counts the thresholds are tested by */
 extern void sift_esc_note_tier1_acquire(const RelFileLocator *loc, uint64 part_id, LockTupleMode mode, bool new_row);
 extern void sift_esc_note_tier1_release(const RelFileLocator *loc, uint64 part_id, uint32 count);
+
+/* Whether a prepared transaction may hold row locks of the relation in the lock manager (f2_lock_2pc.h): asked once for each transaction and relation, and not at all without prepared transactions */
+extern bool sift_esc_prepared_locks_possible(Relation rel);
+
+/* The ids of the lock manager of the relation that a row the transaction holds by entry belongs to; *first: PREPARE has not marked the relation yet (asked once for each relation) */
+extern bool sift_esc_prepared_ids(const RelFileLocator *loc, Oid *dbid, Oid *relid, bool *first);
 extern bool sift_esc_rel_is_escalated(const RelFileLocator *loc);
 
 /* The transaction is about to prepare: partitions nobody else is in are held coarsely (their entries go), the holders it keeps are marked prepared */
