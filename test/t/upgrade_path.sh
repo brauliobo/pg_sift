@@ -14,7 +14,7 @@ q "$(node_db up)" "CREATE DATABASE locked" "CREATE DATABASE marked" "CREATE DATA
 
 # two column indexes that wait for a REINDEX (key_columns after units of format 6); one of them is rebuilt in a session that stays open
 q locked "CREATE EXTENSION pg_sift" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
-	"SET sift.test_col_format_minor = 6" "CREATE INDEX f_1 ON f USING sift_col (id, g)" "CREATE INDEX f_2 ON f USING sift_col (id, g)" \
+	"SET sift.test_create_format1 = on" "SET sift.test_col_format_minor = 6" "CREATE INDEX f_1 ON f USING sift_col (id, g)" "CREATE INDEX f_2 ON f USING sift_col (id, g)" \
 	"ALTER INDEX f_1 SET (key_columns = 'g')" "ALTER INDEX f_2 SET (key_columns = 'g')" >/dev/null || bail "setup failed"
 check "both indexes are listed, with a RESET and a REINDEX each, while nothing holds them" test "$(q locked "SELECT string_agg(object::text, ',' ORDER BY object::text, kind) FROM sift.upgrade_commands()")" == f_1,f_1,f_2,f_2
 q locked "BEGIN" "REINDEX INDEX f_1" "SELECT pg_sleep(60)" >/dev/null 2>&1 &
