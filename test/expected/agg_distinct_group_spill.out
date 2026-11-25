@@ -1,0 +1,45 @@
+-- The groups of a COUNT(DISTINCT) of integers that outgrow work_mem come back with the counts of PostgreSQL's own plan, the groups whose every value is NULL (a count of 0) and the groups
+-- a FILTER leaves no value among them.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE gd (id int PRIMARY KEY, g int NOT NULL, v int, f int NOT NULL);
+INSERT INTO gd SELECT i, i % 5000, CASE WHEN (i % 5000) % 7 = 0 THEN NULL ELSE i % 300 END, i % 3 FROM generate_series(1, 60000) i;
+INSERT INTO gd SELECT 60000 + i, 5000 + i, NULL, 0 FROM generate_series(1, 40) i;
+CREATE INDEX gd_col ON gd USING sift_col (g, v, f);
+VACUUM ANALYZE gd;
+SET work_mem = '64kB';
+CREATE TABLE got AS SELECT g, count(DISTINCT v) c FROM gd GROUP BY g;
+CREATE TABLE got_filtered AS SELECT g, count(DISTINCT v) FILTER (WHERE f = 1 AND g % 11 <> 0) c FROM gd GROUP BY g;
+CREATE TABLE got_total AS SELECT count(DISTINCT v) c FROM gd;
+SET sift.enable_agg = off;
+CREATE TABLE want AS SELECT g, count(DISTINCT v) c FROM gd GROUP BY g;
+CREATE TABLE want_filtered AS SELECT g, count(DISTINCT v) FILTER (WHERE f = 1 AND g % 11 <> 0) c FROM gd GROUP BY g;
+CREATE TABLE want_total AS SELECT count(DISTINCT v) c FROM gd;
+SELECT (SELECT count(*) FROM got) AS groups, (SELECT count(*) FROM got WHERE c = 0) AS empty_groups, (SELECT sum(c) FROM got) AS pairs;
+ groups | empty_groups | pairs 
+--------+--------------+-------
+   5040 |          755 | 12855
+(1 row)
+
+SELECT (SELECT count(*) FROM (TABLE got EXCEPT TABLE want) a) AS extra, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) a) AS missing;
+ extra | missing 
+-------+---------
+     0 |       0
+(1 row)
+
+SELECT (SELECT count(*) FROM got_filtered WHERE c = 0) AS empty_filtered,
+	(SELECT count(*) FROM (TABLE got_filtered EXCEPT TABLE want_filtered) a) AS extra, (SELECT count(*) FROM (TABLE want_filtered EXCEPT TABLE got_filtered) a) AS missing;
+ empty_filtered | extra | missing 
+----------------+-------+---------
+           1145 |     0 |       0
+(1 row)
+
+SELECT got_total.c = want_total.c AS total_same FROM got_total, want_total;
+ total_same 
+------------
+ t
+(1 row)
+
+DROP TABLE got, got_filtered, got_total, want, want_filtered, want_total, gd;
+DROP EXTENSION pg_sift;

@@ -109,6 +109,8 @@ struct SiftV6Group
 	int			ndist;			/* COUNT(DISTINCT), SUM(DISTINCT) and AVG(DISTINCT) aggregates */
 	int		   *dagg;			/* the aggregate of each of them */
 	uint32		dvalued;		/* bit k: the slot k is a DISTINCT sum or average, whose values the set hands to the group's state */
+	bool		dist_only;		/* the one aggregate is a COUNT(DISTINCT) of integers: a group has no state until the set of pairs is finished, and the set is where its existence is kept (slot ndist) */
+	bool		dist_done;		/* the sets of pairs are finished and have handed their counts to the groups */
 	int		   *dslot;			/* the slot of each aggregate in a distinct set (-1 for the others) */
 	uint64		dist_budget;	/* of budget: what the distinct sets of all the sets of keys may hold; the groups have the rest */
 	uint64		budget;
@@ -310,6 +312,8 @@ extern void v6g_dist_plain(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, cons
 extern void v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, uint16 n);
 /* The pairs the grouped flat sets hold by group number go to the generic set, before the group table is emptied and its numbers mean other groups */
 extern void v6g_dist_gflat_flush(SiftV6Group *g, V6Set *set);
+/* The groups of the table of the set are in the set of pairs (a pair, or a note of a row without one), and need no record when the table spills: they come back, with their counts, when the set is finished */
+extern bool v6g_dist_groups_in_pairs(const SiftV6Group *g, const V6Set *set);
 /* A key of COUNT(DISTINCT) aggregate slot that a participant of a parallel run sent here: the bytes v6g_dist_group_row or v6g_dist_plain built */
 extern void v6g_dist_add(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 len);
 /* A key a row of the state builds, hashed as the set hashes every key it holds: the pairs that moved from the grouped flat sets are the same pairs */

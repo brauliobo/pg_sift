@@ -15,6 +15,8 @@
 
 #define DICT_PARALLEL_CAP		((uint64) 8 << 20)	/* the strings a participant of a parallel run holds by dictionary before it hands them on: what its own set of distinct values has no budget for either */
 
+static bool dist_by_row(const SiftV6Agg *a);
+
 void
 v6g_dist_init(SiftV6Group *g)
 {
@@ -34,6 +36,7 @@ v6g_dist_init(SiftV6Group *g)
 		}
 	}
 	g->ndist = k;
+	g->dist_only = spec->naggs == 1 && spec->agg[0].kind == SV6_COUNT_DISTINCT && !dist_by_row(&spec->agg[0]);
 	g->dist_budget = k > 0 ? g->budget / 2 : 0;
 	sift_dkey_init(&g->dkey, g->cx);
 	sift_dkey_init(&g->pkey, g->cx);
@@ -85,9 +88,13 @@ dist_emit(void *arg, uint32 slot, const uint8 *prefix, uint32 plen, uint64 count
 	V6Set	   *set = arg;
 	SiftV6Group *g = set->owner;
 
+	uint8	   *state;
+
 	if ((g->dvalued >> slot) & 1)
 		return;
-	((V6Acc *) (group_state(set, prefix, plen) + g->off[g->dagg[slot]]))->v0 += count;
+	state = group_state(set, prefix, plen);
+	if (slot < (uint32) g->ndist)
+		((V6Acc *) (state + g->off[g->dagg[slot]]))->v0 += count;
 	v6g_spill_if_over(g);
 }
 
@@ -439,7 +446,7 @@ typedef struct MovePairs
 } MovePairs;
 
 static void
-add_pair_key(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const V6RowKey *rk, int64 value)
+put_prefix(SiftDistinctKey *k, const V6RowKey *rk)
 {
 	const uint32 plen = (uint32) sizeof(rk->nulls) + rk->len;
 
@@ -447,8 +454,34 @@ add_pair_key(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const 
 	sift_bytes_put(k, &plen, sizeof(plen));
 	sift_bytes_put(k, &rk->nulls, sizeof(rk->nulls));
 	sift_bytes_put(k, rk->p, rk->len);
+}
+
+static void
+add_pair_key(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const V6RowKey *rk, int64 value)
+{
+	put_prefix(k, rk);
 	sift_dkey_i64(k, value);
 	sift_distinct_add_dkey(dist_of(g, set), slot, k);
+}
+
+bool
+v6g_dist_groups_in_pairs(const SiftV6Group *g, const V6Set *set)
+{
+	return g->dist_only && !g->dist_done && g->dist_put == NULL && set->cmp == NULL;
+}
+
+/* A row with no pair names its group to the set of pairs, which is where the group is when the table spills */
+static void
+note_group(SiftV6Group *g, V6Set *set, uint16 k)
+{
+	V6RowKey	rk;
+
+	if (g->gid_direct)
+		v6g_compact_rowkey(set, g->gid[k], &rk);
+	else
+		rk = slot_key(set, g->slots[k]);
+	put_prefix(&g->dkey, &rk);
+	sift_distinct_add_dkey(dist_of(g, set), (uint32) g->ndist, &g->dkey);
 }
 
 static void
@@ -582,7 +615,11 @@ v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, u
 		const uint16 r = g->sel[k];
 
 		if (!v6g_row_takes(g, a, r) || (a->nxcols == 0 && !is_valid(argvec[j], r)))
+		{
+			if (g->dist_only)
+				note_group(g, set, k);
 			continue;
+		}
 		if (d == NULL)
 		{
 			row_to_dist(g, set, j, argvec, r, g->slots[k]);
@@ -619,6 +656,7 @@ v6g_dist_add_dkey(SiftV6Group *g, V6Set *set, uint32 slot, const SiftDistinctKey
 void
 v6g_dist_recycle(SiftV6Group *g)
 {
+	g->dist_done = false;
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].dist != NULL)
 			sift_distinct_reset(g->set[s].dist);
@@ -670,6 +708,7 @@ emit_group(void *arg, uint32 gid, uint64 count)
 void
 v6g_dist_finish(SiftV6Group *g)
 {
+	g->dist_done = true;
 	dict_exact(g);
 	v6g_dist_dict_drain(g, dist_finish_add, g);
 	for (int s = 0; s < g->nsets; s++)

@@ -460,14 +460,17 @@ v6g_spill_sets(SiftV6Group *g)
 
 		if (set->nk == 0 || set->ht.count == 0 || set->ht.lock_at != 0)
 			continue;
-		if (set->spill == NULL)
+		if (!v6g_dist_groups_in_pairs(g, set))
 		{
-			MemoryContext old = MemoryContextSwitchTo(g->cx);
+			if (set->spill == NULL)
+			{
+				MemoryContext old = MemoryContextSwitchTo(g->cx);
 
-			set->spill = sift_gspill_new(&set->shape);
-			MemoryContextSwitchTo(old);
+				set->spill = sift_gspill_new(&set->shape);
+				MemoryContextSwitchTo(old);
+			}
+			sift_gspill_put_ht(set->spill, &set->ht);
 		}
-		sift_gspill_put_ht(set->spill, &set->ht);
 		v6g_dist_gflat_flush(g, set);
 		sift_ht_clear(&set->ht);
 		sift_ht_shrink_to(&set->ht, SIFT_SPILL_LOCAL_CAP);
@@ -483,11 +486,25 @@ v6g_spill_all(SiftV6Group *g)
 		values_reset(g);
 }
 
+/* The tables a spill leaves (SIFT_SPILL_LOCAL_CAP slots each) have room for more groups: spilling them now would write a few groups at a time, whatever the budget */
+static bool
+in_local_tables(const SiftV6Group *g)
+{
+	for (int s = 0; s < g->nsets; s++)
+	{
+		const SiftSaltedHT *ht = &g->set[s].ht;
+
+		if (g->set[s].nk > 0 && (ht->capacity > SIFT_SPILL_LOCAL_CAP || ht->count + SIFT_VEC_LEN > ht->grow_at))
+			return false;
+	}
+	return true;
+}
+
 /* MEM[MEM-AGG-02]: SiftV6Group spill budget check (group_bytes of allocated memory against budget - dist_budget; a spill leaves SIFT_SPILL_LOCAL_CAP slots per set; was count * 65B and the whole table kept) */
 void
 v6g_spill_if_over(SiftV6Group *g)
 {
-	if (g->frozen || group_bytes(g) <= g->budget - g->dist_budget)
+	if (g->frozen || group_bytes(g) <= g->budget - g->dist_budget || (g->spilled && in_local_tables(g)))
 		return;
 	if (g->gen != NULL && !gen_spills(g))
 	{
