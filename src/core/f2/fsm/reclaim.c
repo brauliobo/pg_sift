@@ -103,7 +103,7 @@ static int
 tail_run(const ExtVec *data, BlockNumber hw)
 {
 	for (int i = 0; i < data->n; i++)
-		if ((uint64) data->v[i].start + data->v[i].nblocks == hw && data->v[i].nblocks >= SIFT_TAIL_SHRINK_MIN_BLOCKS)
+		if ((uint64) data->v[i].start + data->v[i].nblocks == hw)
 			return i;
 	return -1;
 }
