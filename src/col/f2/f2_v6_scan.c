@@ -467,7 +467,7 @@ part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded
 {
 	V6Scan	   *s = arg;
 
-	s->visible_part = sift_v6_vis_part_all_visible(&s->vis, s->vet.heap, d) ? d : NULL;
+	s->visible_part = sift_v6_vet_part_settled(&s->vet, d) || sift_v6_vis_part_all_visible(&s->vis, s->vet.heap, d) ? d : NULL;
 	if (s->visible_part == NULL || s->spec->tid_range)
 		return false;
 	if (countable && s->count_only)
@@ -704,6 +704,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	sift_f2_v6_scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, star);
 	s->minmax_only = s->rows == NULL && s->pipe == NULL && sift_v6_spec_minmax_only(s->spec);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
+	sift_v6_vet_ask_index(&s->vet, index);
 	sift_v6_vis_init(&s->vis, CurrentMemoryContext);
 	if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && nkeys == 0 && !s->spec->tid_range)
 		s->stat = sift_v6_colstat_begin(s->spec, s->group, index, sift_col_rel(index)->first, CurrentMemoryContext);
