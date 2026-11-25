@@ -1,0 +1,16 @@
+-- A DELETE of a Format 1 sift_table (the 5.x layout) keeps the scans of the superblocks it fetched from within work_mem: the memory it leaves in the backend does not follow the rows
+-- of the table. 30,000 rows of 400 bytes span several superblocks; the deleted rows are the ones of every superblock, at work_mem 256 kB.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.test_create_format1 = on;
+SET sift.async_maintenance = off;
+SET client_min_messages = warning;
+CREATE TABLE tc USING sift_table AS SELECT i AS id, repeat('x', 400) AS pad FROM generate_series(1, 30000) i;
+\c -
+SET work_mem = '256kB';
+DELETE FROM tc WHERE id % 3 = 0;
+SELECT count(*) <= 1 AS one_scan_kept, coalesce(sum(total_bytes), 0) < 512 * 1024 AS scans_within_budget FROM pg_backend_memory_contexts WHERE name = 'sift_table group scan';
+SELECT count(*), max(id) FROM tc;
+DROP TABLE tc;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

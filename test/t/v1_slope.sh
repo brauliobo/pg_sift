@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The memory slope of Format 1 relations (scripts/mem-slope.py, test/mem-slope-v1.tsv): what an upgraded 5.x sift_table holds while a whole-table UPDATE, a DELETE and a VACUUM
-# run at 50,000, 100,000 and 200,000 rows with work_mem and maintenance_work_mem at 1 MB and the default sift.backend_cache_kb. The rows are open: the slope each keeps is the memory
-# of the caches the operation fills (its REASON), and the ceiling fails a slope that goes back up to what the tombstones held (they follow work_mem).
+# run at 50,000, 100,000 and 200,000 rows with work_mem and maintenance_work_mem at 1 MB and the default sift.backend_cache_kb. A DELETE and a VACUUM are clean; the rows that are
+# open say in their REASON the memory of the caches the operation fills, and their ceiling fails a slope that goes back up to what the tombstones held (they follow work_mem).
 # Only the testing library creates Format 1 (sift.test_create_format1), so the release library skips.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
