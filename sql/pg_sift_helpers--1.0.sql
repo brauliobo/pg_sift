@@ -92,7 +92,7 @@ CREATE FUNCTION sift_helpers.agg_check_outcome(q text) RETURNS text LANGUAGE plp
 DECLARE a bigint; l text; pushed boolean := false; e_on text; e_off text;
 BEGIN
 	SET sift.enable_agg = on;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg\)' THEN pushed := true; END IF; END LOOP;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg(V6)?\)' THEN pushed := true; END IF; END LOOP;
 	BEGIN
 		EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
 	EXCEPTION WHEN OTHERS THEN e_on := SQLERRM; END;
