@@ -230,6 +230,21 @@ sift_v6_index_complete(const V6Plan *p)
 	return predicate_implied_by(p->index->indpred, clauses, false);
 }
 
+static bool
+unsafe_initplan_walker(Node *n, PlannerInfo *root)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+	{
+		foreach_ptr(SubPlan, sp, root->init_plans)
+			if (list_member_int(sp->setParam, ((Param *) n)->paramid))
+				return !initplan_ok(root, (Param *) n);
+		return false;
+	}
+	return expression_tree_walker(n, unsafe_initplan_walker, root);
+}
+
 bool
 sift_v6_compile_quals(V6Plan *p)
 {
@@ -240,6 +255,8 @@ sift_v6_compile_quals(V6Plan *p)
 		Expr	   *q;
 		List	   *jq;
 
+		if (unsafe_initplan_walker((Node *) ri->clause, p->root))
+			return false;
 		if (sift_v6_unnest_test_ri(p, ri))
 			continue;
 		if (p->index != NULL && p->index->indpred != NIL && predicate_implied_by(list_make1(ri->clause), p->index->indpred, false))

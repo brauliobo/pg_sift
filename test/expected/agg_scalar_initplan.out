@@ -36,7 +36,7 @@ DECLARE l text; scans int := 0; inits int := 0;
 BEGIN
 	BEGIN
 		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-			scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+			scans := scans + (l LIKE '%Custom Scan (SiftAgg%')::int;
 			inits := inits + (l LIKE '%InitPlan%')::int;
 		END LOOP;
 	EXCEPTION WHEN OTHERS THEN RETURN 'error';
