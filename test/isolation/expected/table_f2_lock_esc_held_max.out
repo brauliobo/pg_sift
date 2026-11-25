@@ -15,16 +15,16 @@ id
 (1 row)
 
 step s1rb: ROLLBACK TO a;
-step s1share: SELECT count(*) AS n FROM (SELECT id FROM iso_hm WHERE id BETWEEN 10 AND 5009 FOR SHARE) q;
-   n
-----
-5000
+step s1share: SELECT count(*) AS n FROM (SELECT id FROM iso_hm WHERE id BETWEEN 10 AND 33009 FOR SHARE) q;
+    n
+-----
+33000
 (1 row)
 
-step s2share: SELECT id FROM iso_hm WHERE id = 9000 FOR SHARE;
-  id
-----
-9000
+step s2share: SELECT id FROM iso_hm WHERE id = 40000 FOR SHARE;
+   id
+-----
+40000
 (1 row)
 
 step s1c: COMMIT;

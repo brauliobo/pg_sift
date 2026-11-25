@@ -1,6 +1,6 @@
 Parsed test spec with 3 sessions
 
-starting permutation: s1begin s1lock100 s1sp s1big s1rb s2u9000 s2u50 s1c s2v
+starting permutation: s1begin s1lock100 s1sp s1big s1rb s2uout s2u50 s1c s2v
 busy
 ----
 f   
@@ -14,52 +14,52 @@ step s1lock100: SELECT count(*) AS n FROM (SELECT id FROM iso_sp WHERE id <= 100
 (1 row)
 
 step s1sp: SAVEPOINT a;
-step s1big: UPDATE iso_sp SET val = val + 1 WHERE id BETWEEN 101 AND 5200;
+step s1big: UPDATE iso_sp SET val = val + 1 WHERE id BETWEEN 101 AND 34000;
 step s1rb: ROLLBACK TO a;
-step s2u9000: UPDATE iso_sp SET val = val + 100 WHERE id = 9000;
+step s2uout: UPDATE iso_sp SET val = val + 100 WHERE id = 40000;
 step s2u50: UPDATE iso_sp SET val = val + 100 WHERE id = 50; <waiting ...>
 step s1c: COMMIT;
 step s2u50: <... completed>
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_sp;
     n|  s
 -----+---
-20000|200
+60000|200
 (1 row)
 
 
-starting permutation: s1begin s1lock5000 s1sp s1all s1rb s2sh9000 s2u9000 s1c s2v
+starting permutation: s1begin s1lockmany s1sp s1all s1rb s2shout s2uout s1c s2v
 busy
 ----
 f   
 (1 row)
 
 step s1begin: BEGIN;
-step s1lock5000: SELECT count(*) AS n FROM (SELECT id FROM iso_sp WHERE id <= 5000 FOR SHARE) q;
-   n
-----
-5000
+step s1lockmany: SELECT count(*) AS n FROM (SELECT id FROM iso_sp WHERE id <= 33000 FOR SHARE) q;
+    n
+-----
+33000
 (1 row)
 
 step s1sp: SAVEPOINT a;
-step s1all: UPDATE iso_sp SET val = val + 1 WHERE id <= 5000;
+step s1all: UPDATE iso_sp SET val = val + 1 WHERE id <= 33000;
 step s1rb: ROLLBACK TO a;
-step s2sh9000: SELECT id FROM iso_sp WHERE id = 9000 FOR SHARE;
-  id
-----
-9000
+step s2shout: SELECT id FROM iso_sp WHERE id = 40000 FOR SHARE;
+   id
+-----
+40000
 (1 row)
 
-step s2u9000: UPDATE iso_sp SET val = val + 100 WHERE id = 9000; <waiting ...>
+step s2uout: UPDATE iso_sp SET val = val + 100 WHERE id = 40000; <waiting ...>
 step s1c: COMMIT;
-step s2u9000: <... completed>
+step s2uout: <... completed>
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_sp;
     n|  s
 -----+---
-20000|100
+60000|100
 (1 row)
 
 
-starting permutation: s1begin s1sp s1big s1rel s2u9000 s1c s2v
+starting permutation: s1begin s1sp s1big s1rel s2uout s1c s2v
 busy
 ----
 f   
@@ -67,15 +67,15 @@ f
 
 step s1begin: BEGIN;
 step s1sp: SAVEPOINT a;
-step s1big: UPDATE iso_sp SET val = val + 1 WHERE id BETWEEN 101 AND 5200;
+step s1big: UPDATE iso_sp SET val = val + 1 WHERE id BETWEEN 101 AND 34000;
 step s1rel: RELEASE a;
-step s2u9000: UPDATE iso_sp SET val = val + 100 WHERE id = 9000; <waiting ...>
+step s2uout: UPDATE iso_sp SET val = val + 100 WHERE id = 40000; <waiting ...>
 step s1c: COMMIT;
-step s2u9000: <... completed>
+step s2uout: <... completed>
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_sp;
-    n|   s
------+----
-20000|5200
+    n|    s
+-----+-----
+60000|34000
 (1 row)
 
 
@@ -85,7 +85,7 @@ busy
 f   
 (1 row)
 
-step s1pb: BEGIN; UPDATE iso_sp SET val = val + 1 WHERE id <= 6000;
+step s1pb: BEGIN; UPDATE iso_sp SET val = val + 1 WHERE id <= 34000;
 step s1prep: PREPARE TRANSACTION 'sift_esc_2pc';
 step s1other: UPDATE iso_sp_other SET val = val + 1 WHERE id = 1;
 step s2t: BEGIN; SET LOCAL lock_timeout = '300ms'; UPDATE iso_sp SET val = val + 100 WHERE id = 50;
@@ -100,9 +100,9 @@ prepared
 (1 row)
 
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_sp;
-    n|   s
------+----
-20000|6100
+    n|    s
+-----+-----
+60000|34100
 (1 row)
 
 
@@ -112,7 +112,7 @@ busy
 f   
 (1 row)
 
-step s1pb: BEGIN; UPDATE iso_sp SET val = val + 1 WHERE id <= 6000;
+step s1pb: BEGIN; UPDATE iso_sp SET val = val + 1 WHERE id <= 34000;
 step s1prep: PREPARE TRANSACTION 'sift_esc_2pc';
 step s1other: UPDATE iso_sp_other SET val = val + 1 WHERE id = 1;
 step s2t: BEGIN; SET LOCAL lock_timeout = '300ms'; UPDATE iso_sp SET val = val + 100 WHERE id = 50;
@@ -129,6 +129,6 @@ prepared
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_sp;
     n|  s
 -----+---
-20000|100
+60000|100
 (1 row)
 

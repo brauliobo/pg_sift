@@ -7,7 +7,7 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 	SET sift.test_create_format1 = off;
 	CREATE TABLE iso_hm (id int PRIMARY KEY, val int) USING sift_table WITH (autovacuum_enabled = false);
-	INSERT INTO iso_hm SELECT i, 0 FROM generate_series(1, 20000) i;
+	INSERT INTO iso_hm SELECT i, 0 FROM generate_series(1, 50000) i;
 }
 
 setup
@@ -26,11 +26,11 @@ step s1begin	{ BEGIN; }
 step s1sp	{ SAVEPOINT a; }
 step s1ex	{ SELECT id FROM iso_hm WHERE id = 1 FOR UPDATE; }
 step s1rb	{ ROLLBACK TO a; }
-step s1share	{ SELECT count(*) AS n FROM (SELECT id FROM iso_hm WHERE id BETWEEN 10 AND 5009 FOR SHARE) q; }
+step s1share	{ SELECT count(*) AS n FROM (SELECT id FROM iso_hm WHERE id BETWEEN 10 AND 33009 FOR SHARE) q; }
 step s1c	{ COMMIT; }
 
 session s2
 setup		{ SET deadlock_timeout = '30s'; }
-step s2share	{ SELECT id FROM iso_hm WHERE id = 9000 FOR SHARE; }
+step s2share	{ SELECT id FROM iso_hm WHERE id = 40000 FOR SHARE; }
 
 permutation s1begin s1sp s1ex s1rb s1share s2share s1c

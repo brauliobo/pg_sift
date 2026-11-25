@@ -1,6 +1,6 @@
 -- The row locks of a sift_table at the size of a bulk statement: an UPDATE or DELETE of every row of a table holds the relation with one lock of the lock manager once a partition has more
--- than 4,096 locked rows, and the backend keeps no entry for each row. The answers are the heap's, no statement fails with "too many row locks held", and what the backend holds for its locks does not grow with the rows.
--- Every check raises on failure and prints one row (name, ok). SIFT_SCALE=n sets the rows (default 12000, about 17 seconds: the statements run at 1 to 3 ms for each row, so 100000 takes minutes; the thresholds are 4,096 and 8,192 rows).
+-- than 32,768 locked rows, and the backend keeps no entry for each row. The answers are the heap's, no statement fails with "too many row locks held", and what the backend holds for its locks does not grow with the rows.
+-- Every check raises on failure and prints one row (name, ok). SIFT_SCALE=n sets the rows (default 40000, about 2 seconds: the statements run at 1 to 3 ms for each row, so 100000 takes minutes; the thresholds are 32,768 and 65,536 rows).
 -- Runs with no shared_preload_libraries. SIFT_DSM_FAIL=1 runs it as a server that cannot make the segment of the row locks (sift.test_dsm_fail): on a cluster that has just started, since
 -- a segment that exists is used; the answers are the same, the locks are the ones of the lock manager and no segment is made (the warning that says so is not shown).
 CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
@@ -12,7 +12,7 @@ SET statement_timeout = '3600s';
 \getenv scale SIFT_SCALE
 \if :{?scale}
 \else
-\set scale 12000
+\set scale 40000
 \endif
 \getenv dsm_fail SIFT_DSM_FAIL
 \if :{?dsm_fail}
@@ -54,7 +54,7 @@ BEGIN;
 UPDATE t SET val = val + 1;
 UPDATE h SET val = val + 1;
 SELECT chk('update of every row: the heap''s rows', same_rows(), true);
-SELECT chk('update of every row: held with one lock of the lock manager', relation_locks(), (:scale > 4096)::int::bigint);
+SELECT chk('update of every row: held with one lock of the lock manager', relation_locks(), (:scale > 32768)::int::bigint);
 COMMIT;
 SELECT chk('update of every row: after the commit', same_rows(), true);
 SELECT chk('update of every row: no lock is left', relation_locks(), 0::bigint);
@@ -72,7 +72,7 @@ SELECT chk('self-join update: every row changed once', (SELECT sum(val) FROM t),
 BEGIN;
 DELETE FROM t WHERE id % 2 = 0;
 DELETE FROM h WHERE id % 2 = 0;
-SELECT chk('delete of half the rows: held with one lock of the lock manager', relation_locks(), (:scale > 8192)::int::bigint);
+SELECT chk('delete of half the rows: held with one lock of the lock manager', relation_locks(), (:scale > 65536)::int::bigint);
 COMMIT;
 SELECT chk('delete of half the rows: the rows left', (SELECT count(*) FROM t), (:scale - :scale / 2)::bigint);
 SELECT chk('delete of half the rows: the heap''s rows', same_rows(), true);
@@ -91,7 +91,7 @@ UPDATE t SET val = val + 1 WHERE id > :scale / 4 AND id <= :scale / 2;
 UPDATE t SET val = val + 1 WHERE id > :scale / 2 AND id <= :scale * 3 / 4;
 UPDATE t SET val = val + 1 WHERE id > :scale * 3 / 4;
 SELECT chk('the backend holds at most 256 KiB for the row locks of its four statements', (SELECT coalesce(max(total_bytes), 0) <= 256 * 1024 FROM pg_backend_memory_contexts WHERE name = 'sift cache f2 row locks of the transaction'), true);
-SELECT chk('the transaction holds the relation with one lock of the lock manager', relation_locks(), (:scale > 4096)::int::bigint);
+SELECT chk('the transaction holds the relation with one lock of the lock manager', relation_locks(), (:scale > 32768)::int::bigint);
 COMMIT;
 SELECT chk('every row updated once', (SELECT count(*) FROM t WHERE val = id % 1000 + 1), :scale::bigint);
 SELECT chk('the backend holds at most 1 KiB for row locks after the commit', (SELECT coalesce(max(used_bytes), 0) <= 1024 FROM pg_backend_memory_contexts WHERE name = 'sift cache f2 row locks of the transaction'), true);

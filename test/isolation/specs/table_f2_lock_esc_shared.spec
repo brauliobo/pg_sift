@@ -1,4 +1,4 @@
-# A transaction that holds more than 4,096 rows of a partition with a shared lock holds the partition (here the relation: a sift_table has one) with one lock of the lock manager, and
+# A transaction that holds more than 32,768 rows of a partition with a shared lock holds the partition (here the relation: a sift_table has one) with one lock of the lock manager, and
 # that lock conflicts with what the heap's row locks do: FOR KEY SHARE stops FOR UPDATE alone (a FOREIGN KEY check never blocks a non-key update), FOR SHARE stops FOR NO KEY UPDATE and
 # FOR UPDATE, and both let every shared lock through. NOWAIT states each answer without a wait.
 # requires: tam
@@ -8,7 +8,7 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 	SET sift.test_create_format1 = off;
 	CREATE TABLE iso_ls (id int PRIMARY KEY, val int, note text) USING sift_table WITH (autovacuum_enabled = false);
-	INSERT INTO iso_ls SELECT i, 0, 'row ' || i FROM generate_series(1, 20000) i;
+	INSERT INTO iso_ls SELECT i, 0, 'row ' || i FROM generate_series(1, 60000) i;
 }
 
 setup
@@ -22,9 +22,9 @@ teardown
 }
 
 session s1
-step s1ks	{ BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR KEY SHARE) l; }
-step s1sh	{ BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR SHARE) l; }
-step s1nk	{ BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR NO KEY UPDATE) l; }
+step s1ks	{ BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 34000 FOR KEY SHARE) l; }
+step s1sh	{ BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 34000 FOR SHARE) l; }
+step s1nk	{ BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 34000 FOR NO KEY UPDATE) l; }
 step s1c	{ COMMIT; }
 
 session s2

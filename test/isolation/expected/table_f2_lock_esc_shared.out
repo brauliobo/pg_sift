@@ -6,10 +6,10 @@ busy
 f   
 (1 row)
 
-step s1ks: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR KEY SHARE) l;
+step s1ks: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 34000 FOR KEY SHARE) l;
 locked
 ------
-  6000
+ 34000
 (1 row)
 
 step s2ks: SELECT id FROM iso_ls WHERE id = 100 FOR KEY SHARE NOWAIT;
@@ -37,7 +37,7 @@ step s1c: COMMIT;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_ls;
     n| s
 -----+--
-20000|10
+60000|10
 (1 row)
 
 
@@ -47,10 +47,10 @@ busy
 f   
 (1 row)
 
-step s1sh: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR SHARE) l;
+step s1sh: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 34000 FOR SHARE) l;
 locked
 ------
-  6000
+ 34000
 (1 row)
 
 step s2ks: SELECT id FROM iso_ls WHERE id = 100 FOR KEY SHARE NOWAIT;
@@ -73,7 +73,7 @@ step s1c: COMMIT;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_ls;
     n|s
 -----+-
-20000|0
+60000|0
 (1 row)
 
 
@@ -83,10 +83,10 @@ busy
 f   
 (1 row)
 
-step s1nk: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR NO KEY UPDATE) l;
+step s1nk: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 34000 FOR NO KEY UPDATE) l;
 locked
 ------
-  6000
+ 34000
 (1 row)
 
 step s2ks: SELECT id FROM iso_ls WHERE id = 100 FOR KEY SHARE NOWAIT;
@@ -105,6 +105,6 @@ step s1c: COMMIT;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_ls;
     n|s
 -----+-
-20000|0
+60000|0
 (1 row)
 

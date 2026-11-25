@@ -6,12 +6,12 @@ busy
 f   
 (1 row)
 
-step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 34000;
 step s2other: UPDATE iso_other SET val = val + 1 WHERE id = 1;
-step s2read: SELECT count(*) AS n, sum(val) AS s FROM iso_le WHERE id <= 6000;
-   n|s
-----+-
-6000|0
+step s2read: SELECT count(*) AS n, sum(val) AS s FROM iso_le WHERE id <= 34000;
+    n|s
+-----+-
+34000|0
 (1 row)
 
 step s2ks: BEGIN; SELECT id FROM iso_le WHERE id = 100 FOR KEY SHARE;
@@ -23,9 +23,9 @@ step s2ks: BEGIN; SELECT id FROM iso_le WHERE id = 100 FOR KEY SHARE;
 step s2c: COMMIT;
 step s1c: COMMIT;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
-    n|   s
------+----
-20000|6000
+    n|    s
+-----+-----
+80000|34000
 (1 row)
 
 
@@ -35,10 +35,10 @@ busy
 f   
 (1 row)
 
-step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 34000;
 step s2nowait: SELECT id FROM iso_le WHERE id = 100 FOR UPDATE NOWAIT;
 ERROR:  could not obtain lock on row in relation "iso_le"
-step s2skip: SELECT id FROM iso_le WHERE id IN (100, 9000) ORDER BY id FOR UPDATE SKIP LOCKED;
+step s2skip: SELECT id FROM iso_le WHERE id IN (100, 35000) ORDER BY id FOR UPDATE SKIP LOCKED;
 id
 --
 (0 rows)
@@ -47,7 +47,7 @@ step s1r: ROLLBACK;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
     n|s
 -----+-
-20000|0
+80000|0
 (1 row)
 
 
@@ -57,14 +57,14 @@ busy
 f   
 (1 row)
 
-step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 34000;
 step s2gone: UPDATE iso_le SET val = val + 10 WHERE id = 100 AND val = 0; <waiting ...>
 step s1c: COMMIT;
 step s2gone: <... completed>
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
-    n|   s
------+----
-20000|6000
+    n|    s
+-----+-----
+80000|34000
 (1 row)
 
 
@@ -74,14 +74,14 @@ busy
 f   
 (1 row)
 
-step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 34000;
 step s2kept: UPDATE iso_le SET val = val + 10 WHERE id = 100 AND val >= 0; <waiting ...>
 step s1c: COMMIT;
 step s2kept: <... completed>
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
-    n|   s
------+----
-20000|6010
+    n|    s
+-----+-----
+80000|34010
 (1 row)
 
 
@@ -91,14 +91,14 @@ busy
 f   
 (1 row)
 
-step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 34000;
 step s2kept: UPDATE iso_le SET val = val + 10 WHERE id = 100 AND val >= 0; <waiting ...>
 step s1r: ROLLBACK;
 step s2kept: <... completed>
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
     n| s
 -----+--
-20000|10
+80000|10
 (1 row)
 
 
@@ -114,15 +114,15 @@ n
 1
 (1 row)
 
-step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 34000;
 step s1c: COMMIT;
 step s2rrw: UPDATE iso_le SET val = 0 WHERE id = 100;
 ERROR:  could not serialize access due to concurrent update
 step s2e: ROLLBACK;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
-    n|   s
------+----
-20000|6000
+    n|    s
+-----+-----
+80000|34000
 (1 row)
 
 
@@ -138,14 +138,14 @@ n
 1
 (1 row)
 
-step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 34000;
 step s1c: COMMIT;
-step s2rru: UPDATE iso_le SET val = val + 1 WHERE id = 8000;
+step s2rru: UPDATE iso_le SET val = val + 1 WHERE id = 35000;
 step s2e: ROLLBACK;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
-    n|   s
------+----
-20000|6000
+    n|    s
+-----+-----
+80000|34000
 (1 row)
 
 
@@ -155,17 +155,17 @@ busy
 f   
 (1 row)
 
-step s1a: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 2500;
-step s2a: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 10001 AND 12500;
-step s1b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 2501 AND 4200; <waiting ...>
-step s2b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 12501 AND 14200;
+step s1a: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 18000;
+step s2a: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 36001 AND 54000;
+step s1b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 18001 AND 34000; <waiting ...>
+step s2b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 54001 AND 72000;
 ERROR:  deadlock detected
 step s1b: <... completed>
 step s1c: COMMIT;
 step s2e: ROLLBACK;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
-    n|   s
------+----
-20000|4200
+    n|    s
+-----+-----
+80000|34000
 (1 row)
 
