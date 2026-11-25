@@ -25,6 +25,7 @@
 #include "col/f2/f2_store_schema.h"
 #include "col/f2/f2_view.h"
 #include "col/f2/f2_store_scan.h"
+#include "col/f2/f2_store_scan_int.h"
 #include "col/f2/key_plan.h"
 #include "col/f2/l0_stage.h"
 #include "col/f2/part_vis.h"
@@ -35,88 +36,6 @@
 #include "table/f2/f2_blob.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_tbl.h"
-
-typedef enum Verdict
-{
-	V_NO,
-	V_YES,
-	V_MAYBE
-} Verdict;
-
-/* What decides, per host, which rows of a granule are there for the snapshot: granule (when not NULL) is called when the granule is loaded, row for each of its rows */
-typedef struct RowVis
-{
-	void		(*granule) (SiftStorePart *p);
-	bool		(*row) (SiftStorePart *p, uint16 r);
-} RowVis;
-
-struct SiftStoreScan
-{
-	const SiftStoreScanOpts *o;
-	SiftF2Store *store;
-	const RowVis *vis;
-	MemoryContext cx;
-	dlist_head	live;			/* the parts that hold a pin */
-	MemoryContextCallback cb;	/* gives the pins back when the scan is abandoned */
-	SiftF2Rel	f;
-	SiftF2KeySet ks;
-	SiftKeyPlan plan;
-	SiftF2TimeWin tw;
-	SiftTblVis	tvis;			/* a sift_table */
-	SiftColDeltaScan *delta;	/* a sift_table */
-	const SiftPendDelIndex *staged_px;	/* the deletes of the transaction not yet in a pending delete, as a set: a sift_col scan reads them from the stage, a parallel table scan is given them */
-	struct MorselPart *morsel;	/* a parallel table scan: the part the last run of granules was of */
-	bool	   *want;
-	SiftPredSet *psets;			/* the constants of each IN predicate, hashed when the list is long */
-	int		   *check_cols;		/* the wanted leaves that are not NaN leaves: the ones whose unsure cells a table scan refuses */
-	int			ncheck;
-	bool		wide;
-	bool		possible;
-	SiftF2Sink	sink;			/* sift_f2_store_scan_sink: where the granules a thread left go */
-	void	   *sink_arg;
-	bool		replaying;		/* the granules of the window are being read: none goes back to it */
-	bool	   *offer_decided;	/* a sift_table with a granule sink: what no zone or skipping index of the table decides, per predicate (never a predicate) */
-	const SiftZone **offer_zones;
-	bool	   *offer_exceptions;
-	const SiftPlanSnapshot *view;
-	int			next;			/* the next partition of the view */
-	List	   *run;			/* the SiftStorePart of the partitions of the run last given */
-	List	   *pxs;			/* the SiftPendDelIndex of those partitions */
-};
-
-/* What a part holds while it is read: the run holds a SiftStorePart for every part of its partitions, only the one being read holds this */
-typedef struct SiftPartRead
-{
-	MemoryContext gcx;
-	uint32		spans[SIFT_F2_MAX_RANGES][2];
-	int			nspans;
-	int			span;
-	uint32		g;				/* the next granule of the span */
-	const int16 *phys;			/* a sift_table with a granule sink: the column of the part that holds each leaf as it is (SiftF2GranOffer.phys) */
-	SiftF2GranuleBuf *gb;
-	const uint64 *tids;
-	int		   *active;			/* the check_cols of the scan that carry tags in the granule loaded */
-	int			nactive;
-	ColView    *views;
-	bool		pend_hit;
-	bool		any_dead;
-	uint64		dead[SIFT_DV_MASK_WORDS];
-	uint64		live[SIFT_DV_MASK_WORDS];
-	uint64		maybe[SIFT_DV_MASK_WORDS];
-} SiftPartRead;
-
-struct SiftStorePart
-{
-	SiftStoreScan *s;
-	dlist_node	node;			/* in SiftStoreScan.live while the part is open */
-	const SiftPartitionEntry *e;
-	const SiftPartDesc *d;
-	const SiftPendDelIndex *px;
-	SiftF2PartPin *pin;			/* held while the part is read, outside its context: an abandoned scan gives it back */
-	MemoryContext cx;
-	SiftPartRead *r;
-	bool		started;
-};
 
 /* ---- the predicates on the stored values ---- */
 
@@ -160,174 +79,6 @@ row_verdict(const SiftStorePart *p, int r)
 	return all;
 }
 
-/* ---- the columns of a granule ---- */
-
-static void
-unsupported_form(const SiftF2Store *store, int leaf)
-{
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a part of the table holds column \"%s\" in a form the aggregate does not read", store->schema->cols[leaf].name),
-					errhint("VACUUM (FREEZE) the table to rewrite its old parts, or run the statement with sift.enable_agg = off.")));
-}
-
-static ColView
-constant_view(SiftStorePart *p, int leaf, const SiftF2ColMap *map)
-{
-	SiftF2GranuleBuf *gb = p->r->gb;
-	int			n = gb->nrows;
-	int16		attno = p->s->store->leaf_attno[leaf];
-	SiftCellKind kind = p->s->store->kinds[leaf];
-	ColView		v = {.kind = kind};
-	bool	   *isnull = MemoryContextAlloc(p->r->gcx, n);
-	uint8	   *tags = map->missing_cell[leaf].tag != 0 ? MemoryContextAllocZero(p->r->gcx, n) : NULL;
-	int64	   *ints = kind == SIFT_CELL_INT ? MemoryContextAlloc(p->r->gcx, sizeof(int64) * n) : NULL;
-	double	   *fs = kind == SIFT_CELL_F8 ? MemoryContextAlloc(p->r->gcx, sizeof(double) * n) : NULL;
-	const char **ss = kind == SIFT_CELL_STR ? MemoryContextAlloc(p->r->gcx, sizeof(char *) * n) : NULL;
-	uint32	   *lens = kind == SIFT_CELL_STR ? MemoryContextAlloc(p->r->gcx, sizeof(uint32) * n) : NULL;
-
-	for (int r = 0; r < n; r++)
-	{
-		const SiftColDeltaPatch *patch = gb->patch != NULL ? sift_col_delta_find_row(gb->patch_arg, attno, (uint16) r) : NULL;
-		SiftCell	c = map->missing_cell[leaf];
-
-		if (patch != NULL)
-		{
-			c.tag = 0;
-			c.isnull = (patch->flags & SIFT_CDCOL_IS_NULL) != 0;
-			c.i = patch->val.i;
-			c.f = patch->val.f;
-			c.s = patch->val.s;
-			c.slen = patch->vlen;
-		}
-		isnull[r] = c.isnull;
-		if (tags != NULL)
-			tags[r] = c.tag;
-		if (ints != NULL)
-			ints[r] = c.i;
-		if (fs != NULL)
-			fs[r] = c.f;
-		if (ss != NULL)
-		{
-			ss[r] = c.s;
-			lens[r] = c.slen;
-		}
-	}
-	v.isnull = isnull;
-	v.tag = tags;
-	v.i = ints;
-	v.f = fs;
-	v.s = ss;
-	v.slen = lens;
-	return v;
-}
-
-static ColView
-decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
-{
-	const SiftStoreScan *s = p->s;
-	SiftF2GranuleBuf *gb = p->r->gb;
-	ColView		v = {.kind = kind};
-
-	if (!gb->col_decoded[phys])
-		sift_f2_gbuf_decode(gb, phys, kind, s->wide || s->store->hints[leaf] == SIFT_CHINT_NUM64 || sift_f2_leaf_is_path(s->store, leaf));
-	v.isnull = gb->col_isnull[phys];
-	v.tag = gb->col_tag[phys];
-	v.i = gb->col_i[phys];
-	v.f = gb->col_f[phys];
-	if (kind == SIFT_CELL_STR)
-	{
-		const char **ss = MemoryContextAlloc(p->r->gcx, sizeof(char *) * gb->nrows);	/* check-memory: allow the rows of one granule (SIFT_GRANULE_ROWS at most) */
-		uint32	   *lens = MemoryContextAlloc(p->r->gcx, sizeof(uint32) * gb->nrows);
-		bool	   *nulls = memcpy(MemoryContextAlloc(p->r->gcx, gb->nrows), gb->col_isnull[phys], gb->nrows);
-		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(s->o->rel), s->store->leaf_attno[leaf] - 1);
-
-		for (int r = 0; r < gb->nrows; r++)
-		{
-			const SiftStrCell *c = &gb->col_s[phys][r];
-
-			if (gb->col_tag[phys] != NULL && gb->col_tag[phys][r] == SIFT_COLTAG_WIDE_BLOB)
-			{
-				uint32		len;
-				const char *ref = sift_granule_exc_payload(&gb->view, phys, r, &len);
-				struct varlena *val = (struct varlena *) DatumGetPointer(s->store->host->read_wide_blob(s->o->rel, ref, len, att->atttypid, att->attlen, p->r->gcx));
-
-				ss[r] = (const char *) val;
-				lens[r] = VARSIZE_ANY(val);
-				nulls[r] = false;
-				continue;
-			}
-			ss[r] = c->p;
-			lens[r] = c->len;
-		}
-		v.s = ss;
-		v.slen = lens;
-		v.isnull = nulls;
-	}
-	if (sift_f2_leaf_is_path(s->store, leaf) && v.tag != NULL)
-		sift_f2_decode_payloads(&gb->view, phys, gb->nrows, &v);
-	return v;
-}
-
-/* A numeric column that ALTER TABLE .. TYPE left unconstrained or wide keeps the parts written as scaled integers: their values are read as the numerics they hold, a NaN from its exception */
-static ColView
-widened_view(SiftStorePart *p, int leaf, int phys, uint8 scale)
-{
-	SiftF2GranuleBuf *gb = p->r->gb;
-	int			n = gb->nrows;
-	const char **ss = MemoryContextAlloc(p->r->gcx, sizeof(char *) * n);	/* check-memory: allow the rows of one granule (SIFT_GRANULE_ROWS at most) */
-	uint32	   *lens = MemoryContextAlloc(p->r->gcx, sizeof(uint32) * n);
-	bool	   *nulls = MemoryContextAlloc(p->r->gcx, n);
-	MemoryContext old;
-	ColView		v;
-
-	if (!gb->col_decoded[phys])
-		sift_f2_gbuf_decode(gb, phys, SIFT_CELL_INT, true);
-	v = decoded_view(p, leaf, phys, SIFT_CELL_INT);
-	old = MemoryContextSwitchTo(p->r->gcx);
-	for (int r = 0; r < n; r++)
-	{
-		const bool	exc = v.tag != NULL && v.tag[r] != 0;
-
-		nulls[r] = v.isnull[r] && !exc;
-		ss[r] = NULL;
-		lens[r] = 0;
-		if (exc)
-		{
-			const char *payload = sift_granule_exc_payload(&gb->view, phys, r, &lens[r]);
-
-			ss[r] = DatumGetPointer(sift_f2_num64_exception_datum(payload, lens[r], p->r->gcx));
-		}
-		else if (!nulls[r])
-		{
-			ss[r] = DatumGetPointer(sift_f2_num64_datum(v.i[r], scale));
-			lens[r] = VARSIZE_ANY(ss[r]);
-		}
-	}
-	MemoryContextSwitchTo(old);
-	return (ColView) {.kind = SIFT_CELL_STR,.isnull = nulls,.s = ss,.slen = lens};
-}
-
-static void
-load_views(SiftStorePart *p)
-{
-	const SiftStoreScan *s = p->s;
-	const SiftF2ColMap *map = p->r->gb->pin->col_map;
-
-	for (int leaf = 0; leaf < s->store->ncols; leaf++)
-	{
-		int			phys = map != NULL ? map->phys_col[leaf] : leaf;
-
-		if (!s->want[leaf])
-			continue;
-		if (phys < 0 && sift_f2_leaf_is_path(s->store, leaf))
-			unsupported_form(s->store, leaf);
-		else if (phys < 0)
-			p->r->views[leaf] = constant_view(p, leaf, map);
-		else if (map != NULL && map->phys_kind[leaf] == SIFT_CELL_INT && s->store->kinds[leaf] == SIFT_CELL_STR)
-			p->r->views[leaf] = widened_view(p, leaf, phys, map->old_scale[leaf]);
-		else
-			p->r->views[leaf] = decoded_view(p, leaf, phys, s->store->kinds[leaf]);
-	}
-}
 
 /* ---- the rows of a granule: what each host shows to the snapshot ---- */
 
@@ -413,7 +164,7 @@ granule_batch(SiftStorePart *p, SiftF2Batch *b)
 	p->r->tids = sift_f2_gbuf_tids(p->r->gb);
 	memset(p->r->live, 0, sizeof(p->r->live));
 	memset(p->r->maybe, 0, sizeof(p->r->maybe));
-	load_views(p);
+	sift_store_scan_load_views(p);
 	select_tagged_cols(p);
 	if (s->vis->granule != NULL)
 		s->vis->granule(p);
