@@ -40,11 +40,12 @@ wait "$PGBENCH_PID"; bench=$?
 touch "$D/stop"
 wait "$mp"
 diag "$(grep -E 'transactions actually processed|tps' "$D/pgbench.log" | tr '\n' ' ') maintenance passes: $(wc -l <"$D/maintain.n" | tr -d ' ')"
-diag "first trouble in the log: $(grep -a -m3 -E 'terminated by signal|double free|is damaged|is corrupted|quarantine|TRAP' "$D/postgres.log" | cut -c1-240)"$'\n'"maintainer: $(head -n 3 "$D/maintain.err" | cut -c1-240)"
+trouble() { grep -a -v 'listening on Unix socket' "$D/postgres.log" | grep -a -E 'terminated by signal|double free|is damaged|is corrupted|quarantine|TRAP'; }
+diag "first trouble in the log: $(trouble | head -n 3 | cut -c1-240)"$'\n'"maintainer: $(head -n 3 "$D/maintain.err" | cut -c1-240)"
 check "pgbench ran its 16 clients to the end" test "$bench" -eq 0
 check "no statement of the 16 clients failed" test "$(grep -ac -E '^(pgbench: error|ERROR)|failed transactions: [1-9]' "$D/pgbench.log")" -eq 0
 check "VACUUM and the maintenance ran beside them and failed no statement" test ! -s "$D/maintain.err" -a "$(wc -l <"$D/maintain.n")" -ge 3
-check "the server never crashed and nothing is damaged or quarantined (log of the server)" test "$(grep -ac -E 'terminated by signal|double free|is damaged|is corrupted|quarantine|TRAP' "$D/postgres.log")" -eq 0
+check "the server never crashed and nothing is damaged or quarantined (log of the server)" test "$(trouble | wc -l)" -eq 0
 check "afterwards the index checks" test -z "$(sql ivw "VACUUM facts" "SELECT problem FROM sift.check('facts_idx')" 2>&1)"
 check "the aggregates count and sum the rows of a scan" test "$(sql ivw "SET sift.enable_agg = on" "SELECT count(*), sum(amount) FROM facts" | tail -1)" == "$(sql ivw "SET sift.enable_agg = off" "SELECT count(*), sum(amount) FROM facts" | tail -1)"
 finish
