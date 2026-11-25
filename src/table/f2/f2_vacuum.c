@@ -30,6 +30,7 @@
 #include "core/wal_conflict.h"
 #include "core/u64set.h"
 #include "table/f2/f2_col_delta.h"
+#include "table/f2/f2_lock_mxid.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_proj.h"
 #include "col/f2/f2_scope.h"
@@ -561,14 +562,15 @@ update_relstats(Relation rel, FullTransactionId oldest, const struct VacuumCutof
 	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
 	double		live = (double) (meta.total_rows - meta.total_dead),
 				allvisfrac;
+	MultiXactId minmxid = sift_tbl_rowlock_vacuum_mxid(rel, cutoffs->OldestMxact);
 	BlockNumber relallvisible,
 				relallfrozen;
 
 	sift_tbl_vm_fractions(rel, nblocks, &relallvisible, &relallfrozen, &allvisfrac);
 #if PG_VERSION_NUM >= 180000
-	vac_update_relstats(rel, nblocks, live, relallvisible, relallfrozen, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
+	vac_update_relstats(rel, nblocks, live, relallvisible, relallfrozen, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), minmxid, &fz, &mz, false);
 #else
-	vac_update_relstats(rel, nblocks, live, relallvisible, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
+	vac_update_relstats(rel, nblocks, live, relallvisible, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), minmxid, &fz, &mz, false);
 #endif
 	sift_pgstat_report_vacuum(rel, (PgStat_Counter) live, (PgStat_Counter) meta.total_dead, GetCurrentTimestamp());
 }
