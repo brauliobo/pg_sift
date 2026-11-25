@@ -31,7 +31,7 @@ DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;
