@@ -1,0 +1,57 @@
+-- The sum and the average of floats on the Vulkan path against the CPU: finite values that overflow raise "value out of range: overflow" (22003), and an infinity the table holds
+-- is a value, with sift.gpu on and off alike. The test prints what the CPU gives and whether the device agrees, so the output is the same on a build without the backend, on
+-- one without a device, and on one with a device.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = error;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE fo (k int, x float8) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO fo SELECT 0, 1.0 FROM generate_series(1, 20000);
+INSERT INTO fo VALUES (1, 1e308), (1, 1e308), (2, 'Infinity'), (2, 1), (3, 1.5), (3, 2.5), (4, '-Infinity'), (4, 1);
+VACUUM (FREEZE, ANALYZE) fo;
+CREATE FUNCTION outcome(q text, gpu text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.gpu', gpu, true);
+	PERFORM set_config('sift.gpu_min_rows', '1', true);
+	EXECUTE q INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'error ' || SQLSTATE;
+END $$;
+CREATE FUNCTION cpu(q text) RETURNS text LANGUAGE sql AS $$ SELECT outcome(q, 'off') $$;
+CREATE FUNCTION device(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, 'on') = outcome(q, 'off') $$;
+SELECT k, cpu(format('SELECT sum(x) FROM fo WHERE k = %s', k)) AS sum, device(format('SELECT sum(x) FROM fo WHERE k = %s', k)) AS same
+FROM generate_series(1, 4) k ORDER BY k;
+ k |     sum     | same 
+---+-------------+------
+ 1 | error 22003 | t
+ 2 | Infinity    | t
+ 3 | 4           | t
+ 4 | -Infinity   | t
+(4 rows)
+
+SELECT k, cpu(format('SELECT avg(x) FROM fo WHERE k = %s', k)) AS avg, device(format('SELECT avg(x) FROM fo WHERE k = %s', k)) AS same
+FROM generate_series(1, 4) k ORDER BY k;
+ k |     avg     | same 
+---+-------------+------
+ 1 | error 22003 | t
+ 2 | Infinity    | t
+ 3 | 2           | t
+ 4 | -Infinity   | t
+(4 rows)
+
+-- grouped: the groups that overflow fail the query, whichever group they are
+SELECT cpu('SELECT max(s) FROM (SELECT k, sum(x) AS s FROM fo WHERE k IN (0, 3, 4) GROUP BY k) g') AS ok_groups,
+       device('SELECT max(s) FROM (SELECT k, sum(x) AS s FROM fo WHERE k IN (0, 3, 4) GROUP BY k) g') AS ok_same,
+       cpu('SELECT max(s) FROM (SELECT k, sum(x) AS s FROM fo GROUP BY k) g') AS overflowing,
+       device('SELECT max(s) FROM (SELECT k, sum(x) AS s FROM fo GROUP BY k) g') AS overflowing_same;
+ ok_groups | ok_same | overflowing | overflowing_same 
+-----------+---------+-------------+------------------
+ 20000     | t       | error 22003 | t
+(1 row)
+
+DROP FUNCTION device(text), cpu(text), outcome(text, text);
+DROP TABLE fo;
+DROP EXTENSION pg_sift;
