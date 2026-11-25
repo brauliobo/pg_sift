@@ -406,33 +406,6 @@ sift_rowbuf_add_granule(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowV
 	sift_rowbuf_add_granule_mapped(rb, v, vers, spec, code_map, NULL);
 }
 
-/* The column c of n rows that a part written before it was added has: the cell every row gets */
-static void
-fill_missing(const SiftRowBuf *rb, int c, const SiftCell *mc, int n, bool *nv, uint8 *tv, int64 **iv, double **fv, SiftStrCell **sv)
-{
-	memset(tv, 0, Max(n, 1));
-	for (int r = 0; r < n; r++)
-		nv[r] = mc->isnull;
-	if (rb->kinds[c] == SIFT_CELL_INT)
-	{
-		*iv = palloc(Max(n, 1) * sizeof(int64));
-		for (int r = 0; r < n; r++)
-			(*iv)[r] = mc->isnull ? 0 : mc->i;
-	}
-	else if (rb->kinds[c] == SIFT_CELL_F8)
-	{
-		*fv = palloc(Max(n, 1) * sizeof(double));
-		for (int r = 0; r < n; r++)
-			(*fv)[r] = mc->isnull ? 0 : mc->f;
-	}
-	else
-	{
-		*sv = palloc(Max(n, 1) * sizeof(SiftStrCell));
-		for (int r = 0; r < n; r++)
-			(*sv)[r] = (SiftStrCell) {.isnull = mc->isnull,.p = mc->s,.len = mc->slen};
-	}
-}
-
 /* The numerics of chunk pc of n rows written as scaled integers, for a column that now keeps numeric values: a NaN keeps its datum in the payload of its exception */
 static void
 widen_num64(const SiftGranuleView *v, int pc, int scale, int n, bool *nv, uint8 *tv, SiftStrCell *sv)
@@ -459,134 +432,182 @@ widen_num64(const SiftGranuleView *v, int pc, int scale, int n, bool *nv, uint8 
 	pfree(iv);
 }
 
-/* MEM[MEM-COL-07]: rowbuf add_granule_mapped reusable granule scratch ctx (reset per granule) */
+/* One column of a granule decoded alone: the flags, tags and the values of its kind (the dictionary codes through code_map, the numerics widened for a remapped column) */
+typedef struct DecodedCol
+{
+	bool	   *nv;
+	uint8	   *tv;
+	int64	   *iv;
+	double	   *fv;
+	SiftStrCell *sv;
+} DecodedCol;
+
+static DecodedCol
+decode_column(const SiftRowBuf *rb, const SiftGranuleView *v, int c, int pc, int len, const SiftCodeMap *code_map, const SiftColRemap *remap)
+{
+	DecodedCol	d = {.nv = palloc(Max(len, 1) * sizeof(bool)),.tv = palloc(Max(len, 1))};
+
+	sift_granule_tags(v, pc, d.tv);
+	if (remap != NULL && remap->num64_scale != NULL && remap->num64_scale[c] >= 0)
+	{
+		d.sv = palloc(Max(len, 1) * sizeof(SiftStrCell));
+		widen_num64(v, pc, remap->num64_scale[c], len, d.nv, d.tv, d.sv);
+	}
+	else if (rb->kinds[c] == SIFT_CELL_INT)
+	{
+		d.iv = palloc(Max(len, 1) * sizeof(int64));
+		if (code_map != NULL && code_map[c].to != NULL)
+			sift_granule_dict_codes(v, pc, code_map[c].to, code_map[c].n, d.iv, d.nv);
+		else
+			sift_granule_ints(v, pc, d.iv, d.nv);
+	}
+	else if (rb->kinds[c] == SIFT_CELL_F8)
+	{
+		d.fv = palloc(Max(len, 1) * sizeof(double));
+		sift_granule_f8(v, pc, d.fv, d.nv);
+	}
+	else
+	{
+		d.sv = palloc(Max(len, 1) * sizeof(SiftStrCell));
+		sift_granule_strs(v, pc, d.sv);
+	}
+	return d;
+}
+
+/* Values [from, to) of the decoded column as the values dst.. of column c of the buffer */
+static void
+store_decoded(SiftRowBuf *rb, int c, int dst, int from, int to, const SiftGranuleView *v, int pc, const DecodedCol *d)
+{
+	for (int at = from; at < to; at++)
+	{
+		SiftCell	cell = {.tag = d->tv[at]};
+
+		if (rb->kinds[c] == SIFT_CELL_STR)
+		{
+			cell.isnull = d->sv[at].isnull;
+			cell.s = d->sv[at].p;
+			cell.slen = d->sv[at].len;
+		}
+		else
+		{
+			cell.isnull = d->nv[at];
+			cell.i = d->iv ? d->iv[at] : 0;
+			cell.f = d->fv ? d->fv[at] : 0;
+		}
+		if (cell.tag != 0)
+			cell.xp = sift_granule_exc_payload(v, pc, at, &cell.xplen);
+		set_cell(rb, dst + at - from, c, &cell);
+	}
+}
+
+/* Where the elements of each row of a column of lengths start among those of the granule */
+static uint32 *
+element_starts(MemoryContext cx, const DecodedCol *d, int n)
+{
+	uint32	   *first = MemoryContextAlloc(cx, (n + 1) * sizeof(uint32));
+
+	first[0] = 0;
+	for (int r = 0; r < n; r++)
+		first[r + 1] = first[r] + (d->nv[r] ? 0 : (uint32) d->iv[r]);
+	return first;
+}
+
+/*
+ * Rows [r0, r1) of the granule appended to the buffer, a column at a time: only the values of the column being stored are decoded, so what a granule holds in memory beside the buffer is its
+ * widest column and not all of them. A column the part lacks (phys < 0) or that want leaves out gets one cell for every row.
+ */
 static void
 add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap, int r0, int r1, const bool *want)
 {
 	static const SiftCell null_cell = {.isnull = true};
 	MemoryContext tmp = sift_mem_allocset_create(CurrentMemoryContext, "sift granule rows");
 	MemoryContext old = MemoryContextSwitchTo(tmp);
-	int			n = v->hdr->nrows;
+	MemoryContext col_cx = sift_mem_allocset_create(tmp, "sift granule column");
+	int			n = v->hdr->nrows,
+				cnt = r1 - r0,
+				base = rb->n;
 	uint64	   *tids = palloc(n * sizeof(uint64));
 	SiftCell   *cells = palloc0(rb->ncols * sizeof(SiftCell));
-	SiftCell  **elem = palloc0(rb->ncols * sizeof(SiftCell *));
-	uint32	   *elemcap = palloc0(rb->ncols * sizeof(uint32));
-	int64	  **iv = palloc0(rb->ncols * sizeof(int64 *));
-	double	  **fv = palloc0(rb->ncols * sizeof(double *));
-	SiftStrCell **sv = palloc0(rb->ncols * sizeof(SiftStrCell *));
-	bool	  **nv = palloc(rb->ncols * sizeof(bool *));
-	uint8	  **tv = palloc(rb->ncols * sizeof(uint8 *));
 	uint32	  **first = palloc0(rb->ncols * sizeof(uint32 *));
-	uint8		key[SIFT_BOUND_BYTES];
 
-	sift_granule_tids(v, tids);
 	SIFT_INVARIANT(remap == NULL || remap->ncols == rb->ncols, "a part is remapped only for a table, whose columns are those of the rows");
+	reserve(rb, cnt);
+	sift_granule_tids(v, tids);
+	for (int r = r0; r < r1; r++)
+	{
+		rb->tid[base + r - r0] = tids[r];
+		rb->xmin[base + r - r0] = vers ? vers[r].xmin : FrozenTransactionId;
+		rb->cmin[base + r - r0] = vers ? vers[r].cmin : 0;
+		rb->subxid[base + r - r0] = 0;
+	}
+	pfree(tids);
 	for (int c = 0; c < rb->ncols; c++)
 	{
 		int			pc = remap != NULL ? remap->phys[c] : c;
-		const bool	unwanted = want != NULL && !want[c] && !sift_rowbuf_is_group(rb, c) && !sift_rowbuf_is_child(rb, c);
-		int			len = pc < 0 || unwanted ? n : sift_granule_chunk_len(v, pc);
+		bool		constant = pc < 0 || (want != NULL && !want[c] && !sift_rowbuf_is_group(rb, c) && !sift_rowbuf_is_child(rb, c));
 
-		nv[c] = palloc(Max(len, 1) * sizeof(bool));
-		tv[c] = palloc(Max(len, 1));
-		if (pc < 0 || unwanted)
-		{
-			fill_missing(rb, c, pc < 0 ? &remap->missing[c] : &null_cell, n, nv[c], tv[c], &iv[c], &fv[c], &sv[c]);
+		if (sift_rowbuf_is_child(rb, c))
 			continue;
-		}
-		sift_granule_tags(v, pc, tv[c]);
-		if (remap != NULL && remap->num64_scale != NULL && remap->num64_scale[c] >= 0)
+		MemoryContextSwitchTo(col_cx);
+		if (constant)
 		{
-			sv[c] = palloc(Max(len, 1) * sizeof(SiftStrCell));
-			widen_num64(v, pc, remap->num64_scale[c], len, nv[c], tv[c], sv[c]);
-		}
-		else if (rb->kinds[c] == SIFT_CELL_INT)
-		{
-			iv[c] = palloc(Max(len, 1) * sizeof(int64));
-			if (code_map != NULL && code_map[c].to != NULL)
-				sift_granule_dict_codes(v, pc, code_map[c].to, code_map[c].n, iv[c], nv[c]);
-			else
-				sift_granule_ints(v, pc, iv[c], nv[c]);
-		}
-		else if (rb->kinds[c] == SIFT_CELL_F8)
-		{
-			fv[c] = palloc(Max(len, 1) * sizeof(double));
-			sift_granule_f8(v, pc, fv[c], nv[c]);
+			SiftCell	k = pc < 0 ? remap->missing[c] : null_cell;
+
+			k.tag = 0;
+			k.xplen = 0;
+			for (int i = 0; i < cnt; i++)
+				set_cell(rb, base + i, c, &k);
 		}
 		else
 		{
-			sv[c] = palloc(Max(len, 1) * sizeof(SiftStrCell));
-			sift_granule_strs(v, pc, sv[c]);
+			DecodedCol	d = decode_column(rb, v, c, pc, sift_granule_chunk_len(v, pc), code_map, remap);
+
+			store_decoded(rb, c, base, r0, r1, v, pc, &d);
+			if (sift_rowbuf_is_group(rb, c))
+				first[c] = element_starts(tmp, &d, n);
 		}
+		MemoryContextReset(col_cx);
 	}
-	for (int g = 0; g < rb->ncols; g++)
-		if (sift_rowbuf_is_group(rb, g))
-		{
-			first[g] = palloc((n + 1) * sizeof(uint32));
-			first[g][0] = 0;
-			for (int r = 0; r < n; r++)
-				first[g][r + 1] = first[g][r] + (nv[g][r] ? 0 : (uint32) iv[g][r]);
-		}
-	for (int r = r0; r < r1; r++)
+	for (int gi = 0; gi < rb->ngroups; gi++)
 	{
-		for (int c = 0; c < rb->ncols; c++)
+		int			g = rb->groups[gi];
+		uint32		from,
+					total;
+
+		if (first[g] == NULL)
 		{
-			if (sift_rowbuf_is_child(rb, c))
-			{
-				uint32		from = first[rb->parent[c]][r],
-							cnt = first[rb->parent[c]][r + 1] - from;
-
-				if (cnt > elemcap[c])
-				{
-					elemcap[c] = Max(cnt, 2 * elemcap[c]);
-					elem[c] = elem[c] ? repalloc(elem[c], elemcap[c] * sizeof(SiftCell)) : palloc(elemcap[c] * sizeof(SiftCell));
-				}
-				for (uint32 j = 0; j < cnt; j++)
-					elem[c][j] = (SiftCell) {0};
-				for (uint32 j = 0; j < cnt; j++)
-				{
-					SiftCell   *e = &elem[c][j];
-					uint32		at = from + j;
-
-					e->tag = tv[c][at];
-					if (rb->kinds[c] == SIFT_CELL_STR)
-					{
-						e->isnull = sv[c][at].isnull;
-						e->s = sv[c][at].p;
-						e->slen = sv[c][at].len;
-					}
-					else
-					{
-						e->isnull = nv[c][at];
-						e->i = iv[c] ? iv[c][at] : 0;
-						e->f = fv[c] ? fv[c][at] : 0;
-					}
-					if (e->tag != 0)
-						e->xp = sift_granule_exc_payload(v, remap != NULL ? remap->phys[c] : c, at, &e->xplen);
-				}
-				continue;
-			}
-			cells[c] = (SiftCell) {.tag = tv[c][r]};
-			if (rb->kinds[c] == SIFT_CELL_STR)
-			{
-				cells[c].isnull = sv[c][r].isnull;
-				cells[c].s = sv[c][r].p;
-				cells[c].slen = sv[c][r].len;
-			}
-			else
-			{
-				cells[c].isnull = nv[c][r];
-				cells[c].i = iv[c] ? iv[c][r] : 0;
-				cells[c].f = fv[c] ? fv[c][r] : 0;
-			}
-			if (cells[c].tag != 0)
-				cells[c].xp = sift_granule_exc_payload(v, remap != NULL ? remap->phys[c] : c, r, &cells[c].xplen);
+			for (int r = r0; r <= r1; r++)
+				rb->estart[g][base + r - r0] = rb->nelem[g];
+			continue;
 		}
-		sift_row_key(spec, cells, tids[r], key);
-		MemoryContextSwitchTo(old);
-		sift_rowbuf_add(rb, tids[r], vers ? vers[r].xmin : FrozenTransactionId, vers ? vers[r].cmin : 0, 0, key, cells, (const SiftCell *const *) elem);
-		MemoryContextSwitchTo(tmp);
+		from = first[g][r0];
+		total = first[g][r1] - from;
+		reserve_elems(rb, gi, total);
+		for (int r = r0; r <= r1; r++)
+			rb->estart[g][base + r - r0] = rb->nelem[g] + first[g][r] - from;
+		for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1]; k++)
+		{
+			int			c = rb->children[k],
+						pc = remap != NULL ? remap->phys[c] : c;
+			DecodedCol	d;
+
+			if (pc < 0 || total == 0)
+				continue;
+			MemoryContextSwitchTo(col_cx);
+			d = decode_column(rb, v, c, pc, sift_granule_chunk_len(v, pc), code_map, remap);
+			store_decoded(rb, c, rb->nelem[g], from, from + total, v, pc, &d);
+			MemoryContextReset(col_cx);
+		}
+		rb->nelem[g] += total;
 	}
+	MemoryContextSwitchTo(tmp);
+	for (int i = 0; i < cnt; i++)
+	{
+		for (int k = 0; k < spec->nsort; k++)
+			cells[spec->sort_cols[k]] = sift_rowbuf_cell(rb, spec->sort_cols[k], base + i);
+		sift_row_key(spec, cells, rb->tid[base + i], rb->keys[base + i]);
+	}
+	rb->n += cnt;
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 }
