@@ -27,5 +27,5 @@ run_pack(uint32_t n)
 
 const ScalingCase case_pack = {
 	.name = "pack_ffd", .under_test = "col/f2/f2_pack.c assign_bins, candidates x8", .n_small = 512, .factor = 8, .run = run_pack,
-	GATES({OP_STEPS, 11.5, "Spec 66 #5: segment-tree first fit (63C)"}, {OP_SORT_CALLS, 11.5, NULL}),
+	GATES({OP_STEPS, 11.5, NULL}, {OP_SORT_CALLS, 11.5, NULL}),
 };
