@@ -4,7 +4,7 @@
 -- index and over a heap twin; each state must give the same rows. Each of the 8 states checks the 16 windows once, and the relation type (3), the shape (5) and the key (4) rotate with the window and
 -- the state, so that every window meets every type and shape over the states and every state meets every type, shape and key; every window with two bounds must be answered by the summary
 -- (plan_surprises counts the windows whose plan is not the expected one: the shape that groups by month is the join's, for the key whose pairs are edited, while the summary is not refreshed).
--- A window with one bound is the join's.
+-- A window with one bound is the join's unless the statement groups by month.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -117,7 +117,7 @@ BEGIN
 			bad := bad + 1;
 			RAISE WARNING 'DIFFERENT % %', phase, q;
 		END IF;
-		surprises := surprises + ((pl LIKE '%Scope Read: summary%') <> (win.label NOT IN ('open end', 'open start') AND NOT (edited AND sh.n = 5)))::int;
+		surprises := surprises + ((pl LIKE '%Scope Read: summary%') <> ((win.label NOT IN ('open end', 'open start') OR sh.n = 5) AND NOT (edited AND sh.n = 5)))::int;
 	END LOOP;
 	INSERT INTO w_result VALUES (phase, n, bad, surprises);
 END $$;
