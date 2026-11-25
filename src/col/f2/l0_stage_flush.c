@@ -221,6 +221,14 @@ flush_and_renew(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
 	sift_stage_renew_part(st, p);
 }
 
+/* The context goes with what it held, which is given back to the system */
+static void
+end_scratch(MemoryContext scratch)
+{
+	sift_mem_release_os(MemoryContextMemAllocated(scratch, true));
+	MemoryContextDelete(scratch);
+}
+
 /* The partition whose buffer holds the most memory: the one a flush frees the most with */
 static SiftStagePart *
 largest_buffer(SiftTxnStage *st)
@@ -256,8 +264,7 @@ sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
 	if (same)
 		flush_part(rel, st, victim, NULL);
 	MemoryContextSwitchTo(caller);
-	sift_mem_release_os(MemoryContextMemAllocated(scratch, true));
-	MemoryContextDelete(scratch);
+	end_scratch(scratch);
 	if (same)
 		sift_stage_renew_part(st, victim);
 	else
@@ -462,8 +469,7 @@ sift_stage_flush_rows(Relation rel, SiftTxnStage *st, bool at_end)
 	write_stage(rel, st, at_end);
 	sift_cdi_cache_staged_changed(st);
 	MemoryContextSwitchTo(caller);
-	sift_mem_release_os(MemoryContextMemAllocated(scratch, true));
-	MemoryContextDelete(scratch);
+	end_scratch(scratch);
 	if (st->host_stage != NULL)
 		st->host_event(rel, st, at_end ? SIFT_STAGE_FLUSH_AT_END : SIFT_STAGE_FLUSH, 0, 0);
 }

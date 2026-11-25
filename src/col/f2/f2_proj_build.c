@@ -101,6 +101,12 @@ add_out_row(BuildRows *b, uint64 tid, const SiftCell *cells)
 	sift_rowbuf_add(b->out, tid, FrozenTransactionId, 0, 0, key, cells, NULL);
 }
 
+static bool
+cube_over(const BuildRows *b)
+{
+	return MemoryContextMemAllocated(b->cube_cx, true) > b->budget;
+}
+
 static void
 build_row(BuildRows *b, const SiftRowBuf *rows, int r)
 {
@@ -118,7 +124,7 @@ build_row(BuildRows *b, const SiftRowBuf *rows, int r)
 
 		(void) sift_proj_cube_add(b->cube, b->cells, 1);
 		MemoryContextSwitchTo(old);
-		b->over = (++b->added & 255) == 0 && MemoryContextMemAllocated(b->cube_cx, true) > b->budget;
+		b->over = (++b->added & 255) == 0 && cube_over(b);
 	}
 	else
 	{
