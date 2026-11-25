@@ -475,6 +475,7 @@ col/f2/f2_v6_format.h
 col/f2/f2_v6_lead.c
 col/f2/f2_v6_read.c
 col/f2/f2_v6_read.h
+col/f2/f2_v6_datum.c
 col/f2/f2_v6_source.c
 col/f2/f2_v6_topn.c
 col/f2/f2_vac_vm.c
