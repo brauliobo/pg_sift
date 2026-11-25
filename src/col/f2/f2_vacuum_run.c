@@ -191,7 +191,7 @@ compact_partition(Relation rel, const SiftPartSpec *spec, const SiftPartitionEnt
 			return SIFT_MSTEP_MORE;
 		}
 		sift_vacuum_delay_point();
-		if (!sift_partition_compact_online(rel, e->part_id, e->key_lo, groups[k].gens, groups[k].n, spec, hot_cut, horizon, &res))
+		if (!(groups[k].join ? sift_partition_join_online : sift_partition_compact_online) (rel, e->part_id, e->key_lo, groups[k].gens, groups[k].n, spec, hot_cut, horizon, &res))
 			r = SIFT_MSTEP_DEFERRED;
 		*written += res.bytes_out;
 		sift_f2_trace_step(1, res.bytes_out);

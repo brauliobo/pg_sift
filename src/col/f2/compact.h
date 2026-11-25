@@ -94,6 +94,7 @@ typedef struct SiftCompactGroup
 {
 	uint64	   *gens;
 	int			n;
+	bool		join;			/* the parts are joined as they are (sift_partition_join_online), their rows not read */
 } SiftCompactGroup;
 
 /* A part a bulk insert wrote at level 1 for the cold tier to rewrite: the plan takes it in a group of its own kind, and a compaction of it never copies its granules */
@@ -122,6 +123,9 @@ typedef struct SiftCompactChain
 
 extern SiftCompactGroup *sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, const SiftCompactChain *chain, int *ngroups);
 
+/* What the VACUUM of a table adds to the parts it chose itself (those with dead rows, old or of level 0): the small parts that are not frozen merged, the parts of a bulk insert re-tiered, the parts joined */
+extern SiftCompactGroup *sift_compact_plan_rewrites(const SiftPartDesc *parts, int nparts, uint64 budget, int *ngroups);
+
 /*
  * What a host folds into the parts a compaction rewrites besides their rows: a table, the column deltas of the partition (table/f2/f2_col_delta.h). The host installs it once; with none,
  * a compaction is what it was. A record may reach the partition while the outputs are written, so open serves every compaction and commit reads the host's records again under the lock.
@@ -149,6 +153,13 @@ extern PGDLLIMPORT const SiftCompactFold *sift_compact_fold;
  */
 extern bool sift_partition_compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
 								   SiftCompactResult *res);
+
+/*
+ * The parts of gens of the partition as one part of the level above, their granules copied as they are: no row is read, so the memory held is that of one granule. true with nothing
+ * written (res->bytes_out 0) when they cannot be joined (their keys overlap, their dictionaries differ...); false, as for sift_partition_compact_online, when it has to wait.
+ */
+extern bool sift_partition_join_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
+									   SiftCompactResult *res);
 
 /*
  * Neighbouring partitions that hold less than SIFT_PARTITION_MERGE_BYTES together and have no slab and no pending deletes become one partition (the manifest keeps the lower one), the

@@ -572,10 +572,13 @@ release_outputs(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout)
 	}
 }
 
-/* Phase 1: the rows of the inputs read and the output parts written, with no lock held: nothing of the output is reachable until the manifest takes it in. false: a deleter of a row is not settled, and no output is left */
+/*
+ * Phase 1: the rows of the inputs read and the output parts written, with no lock held: nothing of the output is reachable until the manifest takes it in. false: a deleter of a row is not
+ * settled, and no output is left. join_only: the parts are joined or nothing is written (*nout 0).
+ */
 static bool
-write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const SiftPartSpec *spec, int64 hot_cut, bool bounds_hold, SiftXidHorizonCache *hc, void *fold, SiftCompactResult *res,
-			  SiftExtent **rel_ext, int *nrel, SiftMemTracker *mem, SiftPartDesc **out, int *nout)
+write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const SiftPartSpec *spec, int64 hot_cut, bool bounds_hold, bool join_only, SiftXidHorizonCache *hc, void *fold,
+			  SiftCompactResult *res, SiftExtent **rel_ext, int *nrel, SiftMemTracker *mem, SiftPartDesc **out, int *nout)
 {
 	const SiftPartDesc **at = palloc(Max(ngens, 1) * sizeof(SiftPartDesc *));
 	SiftDictMerge *dm;
@@ -605,6 +608,11 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	{
 		*out = memcpy(palloc(sizeof(SiftPartDesc)), &joined, sizeof(SiftPartDesc));
 		*nout = 1;
+		return true;
+	}
+	if (join_only)
+	{
+		*nout = 0;
 		return true;
 	}
 	dm = sift_dict_merge_plan(rel, (uint32) part_id, at, ngens, spec, fold != NULL ? sift_compact_fold->folded_leaves(fold) : NULL, remap, mem->budget / SIFT_COMPACT_DICT_SHARE);
@@ -780,7 +788,7 @@ release_packed_pages(Relation rel, uint64 part_id, const CompactIn *in, int ngen
  */
 static bool
 compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
-			   SiftCompactResult *res, SiftMemTracker *mem)
+			   bool join_only, SiftCompactResult *res, SiftMemTracker *mem)
 {
 	SiftManifestRead mr;
 	SiftPartDesc *parts;
@@ -811,10 +819,15 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	parts = sift_manifest_read_parts(rel, &mr.entries[0], &nparts);
 	in = read_inputs(rel, part_id, parts, nparts, gens, ngens);
 	fold = sift_compact_fold != NULL ? sift_compact_fold->open(rel, &mr.entries[0], parts, nparts, gens, ngens, horizon) : NULL;
-	if (!write_outputs(rel, part_id, in, ngens, spec, hot_cut, bounds_hold, &hc, fold, res, &rel_ext, &nrel, mem, &out, &nout))
+	if (!write_outputs(rel, part_id, in, ngens, spec, hot_cut, bounds_hold, join_only, &hc, fold, res, &rel_ext, &nrel, mem, &out, &nout))
 	{
 		UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
 		return false;
+	}
+	if (join_only && nout == 0)
+	{
+		UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
+		return true;
 	}
 	SIFT_F2_GATE(SIFT_F2_GATE_COMPACT);
 #ifdef SIFT_TESTING
@@ -890,9 +903,9 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
  * The whole compaction runs in a context of its own, held to the maintenance budget (the half of it: the other half is what the part writer and the commit need), and what it
  * read and wrote is given back, to the system too, when it is done.
  */
-bool
-sift_partition_compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
-							  SiftCompactResult *res)
+static bool
+compact_budgeted(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon, bool join_only,
+				 SiftCompactResult *res)
 {
 	SiftMemTracker mem;
 	MemoryContext old;
@@ -900,10 +913,24 @@ sift_partition_compact_online(Relation rel, uint64 part_id, const uint8 *key_lo,
 
 	sift_mem_init(&mem, "f2_compact", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 2, 1);
 	old = MemoryContextSwitchTo(mem.root_cx);
-	done = compact_online(rel, part_id, key_lo, gens, ngens, spec, hot_cut, horizon, res, &mem);
+	done = compact_online(rel, part_id, key_lo, gens, ngens, spec, hot_cut, horizon, join_only, res, &mem);
 	MemoryContextSwitchTo(old);
 	sift_mem_end(&mem);
 	return done;
+}
+
+bool
+sift_partition_compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
+							  SiftCompactResult *res)
+{
+	return compact_budgeted(rel, part_id, key_lo, gens, ngens, spec, hot_cut, horizon, false, res);
+}
+
+bool
+sift_partition_join_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
+						   SiftCompactResult *res)
+{
+	return compact_budgeted(rel, part_id, key_lo, gens, ngens, spec, hot_cut, horizon, true, res);
 }
 
 static bool

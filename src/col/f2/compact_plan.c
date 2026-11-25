@@ -110,21 +110,38 @@ by_key_lo(const void *a, const void *b)
 	return memcmp((*(const SiftPartDesc *const *) a)->key_lo, (*(const SiftPartDesc *const *) b)->key_lo, SIFT_BOUND_BYTES);
 }
 
+/* How many of the first parts fit the budget: at least one */
+static int
+fit_budget(const SiftPartDesc *const *at, int n, uint64 budget)
+{
+	uint64		bytes = 0;
+	int			taken = 0;
+
+	for (; taken < n && (taken == 0 || bytes + at[taken]->nbytes <= budget); taken++)
+		bytes += at[taken]->nbytes;
+	return taken;
+}
+
+/* The first taken of the parts as the next group of out */
+static void
+add_group(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *const *at, int taken, bool join)
+{
+	SiftCompactGroup *g = &out[(*ngroups)++];
+
+	g->gens = palloc(taken * sizeof(uint64));
+	for (int i = 0; i < taken; i++)
+		g->gens[i] = at[i]->part_gen;
+	g->n = taken;
+	g->join = join;
+}
+
 /* The first of the parts that fit the budget (at least one) as the next group of out; how many it took */
 static int
 append_group(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *const *at, int n, uint64 budget)
 {
-	SiftCompactGroup *g = &out[(*ngroups)++];
-	uint64		bytes = 0;
-	int			taken = 0;
+	int			taken = fit_budget(at, n, budget);
 
-	g->gens = palloc(n * sizeof(uint64));
-	for (; taken < n && (taken == 0 || bytes + at[taken]->nbytes <= budget); taken++)
-	{
-		g->gens[taken] = at[taken]->part_gen;
-		bytes += at[taken]->nbytes;
-	}
-	g->n = taken;
+	add_group(out, ngroups, at, taken, false);
 	return taken;
 }
 
@@ -144,14 +161,54 @@ plan_retier(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *parts, int 
 	pfree(at);
 }
 
-SiftCompactGroup *
-sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, int *ngroups)
+/*
+ * The frozen parts of the last level that are under the floor, as a compaction under a small budget leaves them (one granule each, written whole): runs of them whose keys ascend from one to the
+ * next are joined, their granules copied as they are. The rewrites of a table also join the parts a join left small, as no merge by size takes them.
+ */
+static bool
+part_is_joinable(const SiftPartDesc *d, bool rewrites)
 {
-	return sift_compact_plan_chained(parts, nparts, budget, hot_cut, NULL, ngroups);
+	return d->level == SIFT_MAX_PART_LEVEL && (d->flags & SIFT_PART_FLAG_UNFROZEN) == 0 && d->nbytes < SIFT_COMPACT_FLOOR_BYTES && (rewrites || part_is_consolidated(d));
 }
 
-SiftCompactGroup *
-sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, const SiftCompactChain *chain, int *ngroups)
+static void
+plan_join(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *parts, int nparts, const bool *taken, int level, bool cold, bool rewrites, uint64 budget)
+{
+	const SiftPartDesc **at = palloc(Max(nparts, 1) * sizeof(SiftPartDesc *));
+	int			n = 0;
+
+	for (int i = 0; i < nparts; i++)
+		if (!taken[i] && plannable(&parts[i], level, cold) && part_is_joinable(&parts[i], rewrites))
+			at[n++] = &parts[i];
+	qsort(at, n, sizeof(SiftPartDesc *), by_key_lo);
+	for (int i = 0; i < n;)
+	{
+		int			run = 1,
+					fit;
+
+		while (i + run < n && memcmp(at[i + run - 1]->key_hi, at[i + run]->key_lo, SIFT_BOUND_BYTES) < 0)
+			run++;
+		fit = run > 1 ? fit_budget(at + i, run, budget) : 1;
+		if (fit > 1)
+			add_group(out, ngroups, at + i, fit, true);
+		i += fit;
+	}
+	pfree(at);
+}
+
+/* A part whose inserters are not frozen yet: what a bulk insert left and the horizon has passed, which a rewrite freezes at no more than its own size */
+static bool
+part_is_unsettled_small(const SiftPartDesc *d)
+{
+	return (d->flags & SIFT_PART_FLAG_UNFROZEN) != 0 && part_is_small(d);
+}
+
+/*
+ * rewrites: the plan of the VACUUM of a table, which chose the parts with dead rows, the old ones and those of level 0 itself: of the rest it takes the small parts that are not frozen
+ * (merged), the parts of a bulk insert to re-tier and the parts to join.
+ */
+static SiftCompactGroup *
+plan_groups(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, const SiftCompactChain *chain, bool rewrites, int *ngroups)
 {
 	int			maxlevel = 0;
 	SiftCompactGroup *out;
@@ -179,7 +236,7 @@ sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, 
 			if (plannable(&parts[i], level, cold))
 			{
 				count += !part_is_consolidated(&parts[i]);
-				small += part_is_small(&parts[i]);
+				small += rewrites ? part_is_unsettled_small(&parts[i]) : part_is_small(&parts[i]);
 				level_bytes += parts[i].nbytes;
 				dead += part_is_dead(&parts[i]);
 				aged += part_has_aged(&parts[i], hot_cut, chain);
@@ -188,13 +245,18 @@ sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, 
 		all = level == 0 ? l0_due(count, level_bytes, settled_bytes(parts, nparts, cold)) : level < SIFT_MAX_PART_LEVEL && count >= SIFT_COMPACT_FANOUT;
 		if (level == 0)
 			small = 0;
+		if (rewrites)
+		{
+			all = false;
+			dead = aged = chained = 0;
+		}
 		memset(taken, 0, Max(nparts, 1) * sizeof(bool));
 		if (all || small >= 2 || dead > 0 || aged > 0 || chained > 0)
 		{
 			for (int i = 0; i < nparts; i++)
 				if (plannable(&parts[i], level, cold) &&
 					((all && !part_is_consolidated(&parts[i])) || part_is_dead(&parts[i]) || part_has_aged(&parts[i], hot_cut, chain) || part_has_long_delta_chain(&parts[i], chain) ||
-					 (small >= 2 && part_is_small(&parts[i]))))
+					 (small >= 2 && (rewrites ? part_is_unsettled_small(&parts[i]) : part_is_small(&parts[i])))))
 				{
 					taken[i] = true;
 					at[n++] = &parts[i];
@@ -203,8 +265,27 @@ sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, 
 			(void) append_group(out, ngroups, at, n, budget);
 		}
 		plan_retier(out, ngroups, parts, nparts, taken, level, cold, budget);
+		plan_join(out, ngroups, parts, nparts, taken, level, cold, rewrites, budget);
 	}
 	pfree(at);
 	pfree(taken);
 	return out;
+}
+
+SiftCompactGroup *
+sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, int *ngroups)
+{
+	return plan_groups(parts, nparts, budget, hot_cut, NULL, false, ngroups);
+}
+
+SiftCompactGroup *
+sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, const SiftCompactChain *chain, int *ngroups)
+{
+	return plan_groups(parts, nparts, budget, hot_cut, chain, false, ngroups);
+}
+
+SiftCompactGroup *
+sift_compact_plan_rewrites(const SiftPartDesc *parts, int nparts, uint64 budget, int *ngroups)
+{
+	return plan_groups(parts, nparts, budget, PG_INT64_MIN, NULL, true, ngroups);
 }
