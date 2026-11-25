@@ -125,6 +125,23 @@ plan_partition(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *pa
 	return sift_compact_plan_chained(parts, np, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 4, 1), hot_cut, &chain, ngroups);
 }
 
+/* Whether the plan of the partition, as the groups it wrote left it, has a group: what a worker that wrote asks a second step for */
+static bool
+replan_due(Relation rel, const SiftPartitionEntry *e, FullTransactionId horizon, int64 hot_cut)
+{
+	SiftPartitionEntry fresh;
+	SiftPartDesc *parts;
+	int			np,
+				ngroups;
+
+	if (!sift_manifest_find_entry(rel, e->part_id, e->key_lo, &fresh))
+		return false;
+	parts = sift_manifest_read_parts(rel, &fresh, &np);
+	(void) plan_partition(rel, &fresh, parts, np, horizon, hot_cut, false, &ngroups);
+	pfree(parts);
+	return ngroups > 0;
+}
+
 /*
  * The groups of one partition, compacted in the order of the plan while the bytes written stay under budget (and, in a worker, while the pacer does not ask it to yield); the bytes written are
  * added to *written. MORE: the budget or the pacer stopped it with groups left, or (in a worker) the groups it wrote leave parts to be planned again, as the plan makes one group of a tier, as
@@ -159,7 +176,7 @@ compact_partition(Relation rel, const SiftPartSpec *spec, const SiftPartitionEnt
 		MemoryContextReset(cx);
 		sift_f2_pace_pay();
 	}
-	return r == SIFT_MSTEP_DONE && paced && *written > before ? SIFT_MSTEP_MORE : r;
+	return r == SIFT_MSTEP_DONE && paced && *written > before && replan_due(rel, e, horizon, hot_cut) ? SIFT_MSTEP_MORE : r;
 }
 
 static void

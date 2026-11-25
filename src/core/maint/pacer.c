@@ -26,6 +26,7 @@
 #define DEFER_LOG_EVERY_US	(10 * USECS_PER_MINUTE)
 #define FOREGROUND_EVERY	64
 #define FG_IDLE_US			USECS_PER_SEC				/* a foreground that reported nothing for this long has ended: its averages fall back to the usual */
+#define FG_QUIET_US			(100 * INT64CONST(1000))	/* the same when no backend is running: nobody is left for the spike to protect */
 
 typedef struct SiftPacerTelemetry
 {
@@ -141,7 +142,7 @@ sift_pacer_running_backends(Oid db)
 
 /*
  * The decision for now, from the telemetry: a caller that finds the last look older than SAMPLE_US makes a new one (the first to claim it; the others use what it writes). A foreground that has
- * been silent for FG_IDLE_US has ended: its fast average goes back to the slow one and a backoff of the heavy regime ends with it. An observer (a client backend that reads the pacer) is not
+ * been silent for FG_IDLE_US (FG_QUIET_US when no backend runs) has ended: its fast average goes back to the slow one and a backoff of the heavy regime ends with it. An observer (a client backend that reads the pacer) is not
  * load, and leaves the locks yielded to the worker that will look next.
  */
 static SiftPaceDecision
@@ -153,13 +154,14 @@ current(SiftPacerTelemetry *t, bool observer)
 	if (now - (TimestampTz) last >= SAMPLE_US && pg_atomic_compare_exchange_u64(&t->last_sample_ts, &last, now))
 	{
 		uint32		running = (uint32) sift_pacer_running_backends(InvalidOid);
+		uint32		active = running - (observer && running > 0);
 		SiftPaceLoad load;
 		SiftPaceDecision d;
 
-		if (now - (TimestampTz) pg_atomic_read_u64(&t->last_fg_ts) >= FG_IDLE_US)
+		if (now - (TimestampTz) pg_atomic_read_u64(&t->last_fg_ts) >= (active == 0 ? FG_QUIET_US : FG_IDLE_US))
 			pg_atomic_write_u64(&t->fg_lat_ewma_us, pg_atomic_read_u64(&t->fg_lat_base_us));
 		load = (SiftPaceLoad) {
-			.active_oltp = running - (observer && running > 0),
+			.active_oltp = active,
 			.cpu_slots = Max(2, max_parallel_workers),
 			.lat_ewma_us = pg_atomic_read_u64(&t->fg_lat_ewma_us),
 			.lat_base_us = pg_atomic_read_u64(&t->fg_lat_base_us),
