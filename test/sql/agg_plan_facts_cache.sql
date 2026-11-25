@@ -15,7 +15,7 @@ DECLARE l text; p numeric;
 BEGIN
 	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	FOR l IN EXECUTE 'EXPLAIN SELECT grp, sum(v) FROM ev GROUP BY grp' LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN p := substring(l from '\.\.([0-9.]+) rows')::numeric; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN p := substring(l from '\.\.([0-9.]+) rows')::numeric; END IF;
 	END LOOP;
 	RETURN p;
 END $$;

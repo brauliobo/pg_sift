@@ -1,0 +1,36 @@
+-- sum(CASE WHEN p THEN n ELSE 0.00 END) shows two decimals for a group where p never holds, as the sum of the CASE does in PostgreSQL: the scan keeps the scale of the other branch, so the text of
+-- every row equals that of the normal plan, whatever the scale of the zero is.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE cs (id int, k int, p text, n numeric);
+INSERT INTO cs SELECT i, i % 5, (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 11) * 0.5 FROM generate_series(1, 3000) i;
+UPDATE cs SET p = 'c' WHERE k = 4 AND p = 'b';
+CREATE INDEX cs_col ON cs USING sift_col (id, k, p, n);
+VACUUM ANALYZE cs;
+
+CREATE TABLE shapes (n int, q text);
+INSERT INTO shapes VALUES
+	(1, 'SELECT k, sum(CASE WHEN p = ''b'' THEN n ELSE 0.00 END) FROM cs GROUP BY k'),
+	(2, 'SELECT k, sum(CASE WHEN p = ''b'' THEN n ELSE 0 END) FROM cs GROUP BY k'),
+	(3, 'SELECT k, sum(CASE WHEN p = ''b'' THEN n ELSE 0.000 END) FROM cs GROUP BY k'),
+	(4, 'SELECT k, sum(CASE WHEN p = ''b'' THEN n END) FROM cs GROUP BY k');
+
+CREATE FUNCTION same_text(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE 'SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (' || q || ') r' INTO a;
+	SET sift.enable_agg = off;
+	EXECUTE 'SELECT string_agg(r::text, ''|'' ORDER BY r::text) FROM (' || q || ') r' INTO b;
+	RESET sift.enable_agg;
+	RETURN a = b;
+END $$;
+
+SELECT n, same_text(q) AS same_text FROM shapes ORDER BY n;
+
+DROP FUNCTION same_text(text);
+DROP TABLE shapes, cs;
+DROP EXTENSION pg_sift;

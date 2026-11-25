@@ -1,0 +1,88 @@
+-- Format 1 on the unified aggregate scan (sift.test_unified_agg) over the objects of an array that a key of a document holds (jsonb_to_recordset(doc -> 'parts')): the rows whose array the
+-- shredded leaves cannot hold (no document, no such key, a key that is no array, an empty array) are taken apart from the array of the key, as PostgreSQL does, and not from the document, which
+-- is no array. A test of the elements of a row (EXISTS) is one the Format 1 scan does not run: the statement is planned without it and answers as the heap does.
+-- Every statement is run with the node and without it (sift.enable_agg) and the answers, or the errors, are compared.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET sift.test_create_format1 = on;
+SET sift.test_unified_agg = on;
+SET sift.agg_force = on;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE a (id int PRIMARY KEY, grp int, ts date, doc jsonb);
+INSERT INTO a
+SELECT i, i % 5, date '2024-01-01' + i % 60,
+	CASE
+		WHEN i % 23 = 0 THEN NULL
+		WHEN i % 19 = 0 THEN '{"other": 1}'
+		WHEN i % 17 = 0 THEN '{"parts": []}'
+		WHEN i % 13 = 0 THEN '{"other": 2}'
+		WHEN i % 11 = 0 THEN '{"parts": [{"kind": "a"}, {"score": 7}, {"kind": null, "score": null}]}'
+		ELSE jsonb_build_object('parts', jsonb_build_array(
+			jsonb_build_object('kind', 'k' || (i % 4), 'score', 1 + i % 10),
+			jsonb_build_object('kind', 'k' || ((i + 1) % 4), 'score', 1 + (i * 3) % 10)))
+	END
+FROM generate_series(1, 3000) i;
+CREATE INDEX a_col ON a USING sift_col (id, grp, ts, doc) WITH (paths = 'doc.parts[]{kind astext, score float8}');
+VACUUM (FREEZE, ANALYZE) a;
+
+CREATE TABLE b (id int PRIMARY KEY, grp int, doc jsonb);
+INSERT INTO b SELECT i, i % 3, CASE WHEN i = 700 THEN '{"parts": {"kind": "a", "score": 1}}'::jsonb WHEN i = 800 THEN '{"parts": "x"}'::jsonb
+	ELSE jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('kind', 'k' || (i % 4), 'score', i % 10))) END FROM generate_series(1, 1500) i;
+CREATE INDEX b_col ON b USING sift_col (id, grp, doc) WITH (paths = 'doc.parts[]{kind astext, score float8}');
+VACUUM (FREEZE, ANALYZE) b;
+
+-- the node the plan of q has, how it unnests an array, and whether its rows are those of the heap (sift.enable_agg = off)
+CREATE FUNCTION check_q(q text) RETURNS TABLE (node text, unnest text, same bool) LANGUAGE plpgsql AS $$
+DECLARE l text; p text := ''; x text; y text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || l || E'\n'; END LOOP;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', q) INTO x;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', q) INTO y;
+	SET LOCAL sift.enable_agg = on;
+	node := coalesce((regexp_match(p, 'Custom Scan \((Sift\w+)\)'))[1], 'none');
+	unnest := coalesce((regexp_match(p, 'Unnest: ([a-z ]+)'))[1], '-');
+	same := x = y;
+	RETURN NEXT;
+END $$;
+
+-- the error of q, with the node and without it: the same, or none
+CREATE FUNCTION check_err(q text) RETURNS TABLE (node text, same bool, err text) LANGUAGE plpgsql AS $$
+DECLARE l text; p text := ''; x text := 'none'; y text := 'none';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || l || E'\n'; END LOOP;
+	BEGIN EXECUTE q; EXCEPTION WHEN OTHERS THEN x := SQLERRM; END;
+	SET LOCAL sift.enable_agg = off;
+	BEGIN EXECUTE q; EXCEPTION WHEN OTHERS THEN y := SQLERRM; END;
+	SET LOCAL sift.enable_agg = on;
+	node := coalesce((regexp_match(p, 'Custom Scan \((Sift\w+)\)'))[1], 'none');
+	same := x = y;
+	err := left(y, 60);
+	RETURN NEXT;
+END $$;
+
+-- the elements of the array of a key, with a qual of the table and of the element
+SELECT * FROM check_q($$SELECT e.kind, count(*), sum(e.score) FROM a CROSS JOIN LATERAL jsonb_to_recordset(a.doc -> 'parts') AS e(kind text, score float8) WHERE e.score > 2 AND a.ts >= date '2024-01-10' GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT a.grp, count(*) FROM a CROSS JOIN LATERAL jsonb_to_recordset(a.doc -> 'parts') AS e(kind text, score float8) GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT a.grp, e.kind, count(*) FROM a LEFT JOIN LATERAL jsonb_to_recordset(a.doc -> 'parts') AS e(kind text, score float8) ON true GROUP BY 1, 2$$);
+
+-- the rows without a document, without the key or with an empty array give no element
+SELECT e.kind, count(*) FROM a CROSS JOIN LATERAL jsonb_to_recordset(a.doc -> 'parts') AS e(kind text, score float8) WHERE a.id % 11 = 0 GROUP BY 1 ORDER BY 1;
+
+-- a test of the elements of a row: the scan answers as the heap does
+SELECT * FROM check_q($$SELECT grp, count(*) FROM a WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(a.doc -> 'parts') AS e(kind text, score float8) WHERE e.kind = 'k1' AND e.score > 4) GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT grp, count(*) FROM a WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(a.doc -> 'parts') AS e(kind text) WHERE e.kind = 'k1') GROUP BY 1$$);
+
+-- a key that is no array: the error of the function, for the rows it reaches
+SELECT * FROM check_err($$SELECT e.kind, count(*) FROM b CROSS JOIN LATERAL jsonb_to_recordset(b.doc -> 'parts') AS e(kind text, score float8) GROUP BY 1$$);
+SELECT * FROM check_err($$SELECT e.kind, count(*) FROM b CROSS JOIN LATERAL jsonb_to_recordset(b.doc -> 'parts') AS e(kind text, score float8) WHERE b.id < 700 GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT e.kind, count(*) FROM b CROSS JOIN LATERAL jsonb_to_recordset(b.doc -> 'parts') AS e(kind text, score float8) WHERE b.id NOT IN (700, 800) GROUP BY 1$$);
+
+DROP TABLE a, b;
+DROP FUNCTION check_q, check_err;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

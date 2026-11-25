@@ -91,3 +91,4 @@ tap:col_build_exact_memory	120	300	the exact bytes of the col_build scope at thr
 tap:col_merge_exact_memory	120	300	the exact bytes of the col_merge scope at five steps of 8,000 to 40,000 rows, plain and key_cut: 4 s, one cluster
 tap:upgrade_compat	1200	600	one zoo cluster of the release, two shutdowns, two copies opened by this tree and one by the release, one fresh cluster for the restore: 9 min on a loaded host, 3000 rows with SIFT_QUICK
 tap:upgrade_compat_standby	900	500	two directions of a primary and a standby on different libraries, 3 stages each: 5 min
+tap:prod_par_sorts	600	1500	the bounded-memory gate of the sorts, the parallel aggregate and the scans that spill (scripts/par-sorts-gate.py, test/par-sorts.tsv): 9 cases at 1x, 2x and 4x rows in fresh backends, one cluster at shared_buffers 64 MB

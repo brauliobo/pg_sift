@@ -30,6 +30,11 @@ sift_gpu_part_eligible(const SiftPartDesc *d, FullTransactionId snap_xmin, SiftV
 		*why = "a level 0 part is read on the CPU";
 		return false;
 	}
+	if (d->ext_flags & SIFT_PART_EXT_REMOTE)
+	{
+		*why = "a part in object storage is read on the CPU";
+		return false;
+	}
 	*cls = sift_vis_part_class(d, false, snap_xmin);
 	return true;
 }

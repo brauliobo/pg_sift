@@ -1,0 +1,51 @@
+-- ORDER BY .. LIMIT of the rows of a table with a text match (memo @@> 'word') is SiftAggV6 over the sift_col index with the hits of the sift index as its bridges: the rows it keeps are the rows of the
+-- match, ordered as the heap orders them, whatever the filters beside the match and the direction of the order, and the plan names the text index.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+SET sift.test_create_format1 = off;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+CREATE TABLE th (id int PRIMARY KEY, placed_at date NOT NULL, total numeric(12,2), memo text, deleted_at timestamp) WITH (autovacuum_enabled = false);
+INSERT INTO th SELECT g, date '2025-01-01' + (g * 7) % 300, (g * 37) % 50000 / 100.0,
+	(ARRAY['damaged', 'late', 'refund', 'wrong size', 'missing', 'gift box', 'broken label', 'perfect'])[1 + g % 8] || ' ' || (ARRAY['cable', 'wire', 'plug', 'color'])[1 + g % 4],
+	CASE WHEN g % 11 = 0 THEN timestamp '2025-06-01' END FROM generate_series(1, 3000) g;
+CREATE TABLE tc (LIKE th INCLUDING ALL) WITH (autovacuum_enabled = false);
+INSERT INTO tc SELECT * FROM th;
+CREATE INDEX tc_col ON tc USING sift_col (id, placed_at, total, deleted_at);
+CREATE INDEX tc_fts ON tc USING sift (memo);
+ANALYZE tc;
+
+CREATE FUNCTION ordered_rows(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE x text;
+BEGIN
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n''), '''') FROM (%s) r', q) INTO x;
+	RETURN x;
+END $$;
+
+-- the rows in order from the index and the text index, and from the heap (the heap twin has neither, so it is the truth)
+CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
+$$ SELECT ordered_rows(replace(q, '@T', 'tc')) = ordered_rows(replace(q, '@T', 'th')) $$;
+
+CREATE FUNCTION plan_ok(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text; agg boolean := false; fts boolean := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'tc') LOOP
+		agg := agg OR line LIKE '%SiftAggV6%';
+		fts := fts OR line LIKE '%Search: tc_fts%';
+	END LOOP;
+	RETURN agg AND fts;
+END $$;
+
+SELECT count(*) > 100 AS matches FROM th WHERE memo ~ 'damaged';
+SELECT plan_ok('SELECT id, total FROM @T WHERE memo @@> ''damaged'' AND deleted_at IS NULL ORDER BY placed_at DESC, id LIMIT 10') AS topn_plan;
+SELECT parity('SELECT id, total FROM @T WHERE memo @@> ''damaged'' AND deleted_at IS NULL ORDER BY placed_at DESC, id LIMIT 10') AS topn_desc;
+SELECT parity('SELECT id, total FROM @T WHERE memo @@> ''damaged'' AND deleted_at IS NULL ORDER BY placed_at, id LIMIT 10') AS topn_asc;
+SELECT parity('SELECT id, total FROM @T WHERE memo @@> ''damaged'' ORDER BY placed_at DESC, id LIMIT 25') AS topn_no_filter;
+SELECT parity('SELECT id, total FROM @T WHERE memo @@> ''gift'' AND total > 200 ORDER BY placed_at DESC, id LIMIT 10') AS topn_range_filter;
+SELECT parity('SELECT id, total FROM @T WHERE memo @@> ''cable'' ORDER BY id DESC LIMIT 10') AS topn_by_id;
+SELECT parity('SELECT id, total FROM @T WHERE memo @@> ''nosuchword'' ORDER BY placed_at DESC, id LIMIT 10') AS topn_no_hit;
+DROP TABLE th, tc;
+DROP FUNCTION plan_ok(text), parity(text), ordered_rows(text);
+DROP EXTENSION pg_sift;

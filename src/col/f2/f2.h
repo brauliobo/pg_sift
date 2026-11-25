@@ -18,6 +18,7 @@
 #include "col/am.h"
 #include "col/am/format_ops.h"
 #include "col/f2/col_meta.h"
+#include "core/scan_types.h"
 #include "col/f2/f2_kll.h"
 #include "col/f2/rowbuf.h"
 
@@ -50,6 +51,14 @@ extern bool sift_f2s_pair_types(Oid member, Oid key);
 /* The leaf of the key of the jsonb attribute attno that jsonb_exists(document, key) is answered from (-1: none keeps it) */
 extern int	sift_f2_key_leaf(const SiftF2Rel *f, int attno, const char *key, int len);
 
+/* What a leaf definition makes of its cells: their kind and the hint of their chunk, and the key it is the leaf of at the top of its jsonb document (NULL path or not a top-level key: false) */
+extern SiftCellKind sift_f2_def_kind(const SiftColDef *d);
+extern uint8 sift_f2_def_hint(const SiftColDef *d);
+extern bool sift_f2_def_top_key(const SiftColDef *d, const char **key, int *len);
+
+/* The cell of a value the shredder made for a leaf of the kind */
+extern SiftCell sift_f2_value_cell(SiftCellKind kind, const SiftColValue *v);
+
 /* The cells of a row, the cells of the elements of its arrays (elem[c] for a leaf of elements, made in rowcxt) and its key (the 40 bytes of core/range.h that route it to its partition and order it) */
 extern void sift_f2_row(Relation index, SiftF2Rel *f, MemoryContext rowcxt, const ItemPointerData *tid, const Datum *values, const bool *isnull, SiftCell *cells, SiftCell **elem, uint8 *key);
 
@@ -62,19 +71,6 @@ extern Datum sift_f2_track_trigger(PG_FUNCTION_ARGS);
 extern void sift_f2_track_reconcile(Relation index);
 extern void sift_f2_track_install(Relation heap, Relation index, bool concurrent);
 extern Datum sift_f2_worker_history(FunctionCallInfo fcinfo);
-
-/* The address of a heap tuple as the part stores it, and back */
-static inline uint64
-sift_f2_tid(const ItemPointerData *tid)
-{
-	return ((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid);
-}
-
-static inline void
-sift_f2_tid_set(ItemPointer tid, uint64 addr)
-{
-	ItemPointerSet(tid, (BlockNumber) (addr >> 16), (OffsetNumber) (addr & 0xFFFF));
-}
 
 typedef enum ZoneVerdict
 {
@@ -109,38 +105,8 @@ typedef struct SiftF2ScanStats
 extern SiftF2ScanStats sift_f2_scan_stats;
 #endif
 
-/* The keys a scan is confined to (f2_prune.c): the integers of the lead key column its predicates allow, as bounds in the order of the keys of a part (core/range.h) */
-typedef struct SiftF2KeyRange
-{
-	uint8		lo[SIFT_BOUND_BYTES];
-	uint8		hi[SIFT_BOUND_BYTES];	/* exclusive */
-	bool		has_lo;
-	bool		has_hi;
-	bool		null_only;
-	int64		ilo;
-	int64		ihi;
-} SiftF2KeyRange;
-
-/* The ranges of an IN list on the lead key column that is short enough to probe each value apart, else the one range of all the predicates; hull holds them all */
-#define SIFT_F2_MAX_RANGES	16
-
-typedef struct SiftF2KeySet
-{
-	int			n;
-	SiftF2KeyRange range[SIFT_F2_MAX_RANGES];
-	SiftF2KeyRange hull;
-} SiftF2KeySet;
-
 /* The key set of the predicates; false when no row can satisfy them */
 extern bool sift_f2_key_set(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2KeySet *ks);
-
-/* The integers the predicates allow the time columns (SiftF2Rel.spec.time_cols), as closed ranges; a column no predicate narrows is not used (use[s] false) */
-typedef struct SiftF2TimeWin
-{
-	bool		use[SIFT_MANIFEST_TIME_COLS];
-	int64		lo[SIFT_MANIFEST_TIME_COLS];
-	int64		hi[SIFT_MANIFEST_TIME_COLS];
-} SiftF2TimeWin;
 
 /* The time window of the predicates; false when no row can satisfy them */
 extern bool sift_f2_time_window(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2TimeWin *w);

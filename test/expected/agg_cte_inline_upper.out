@@ -44,7 +44,7 @@ $$;
 CREATE FUNCTION scan_nodes(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg\)' THEN n := n + 1; END IF; END LOOP;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg' THEN n := n + 1; END IF; END LOOP;
 	RETURN n;
 END $$;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
@@ -63,7 +63,7 @@ END $$;
 SELECT scan_nodes(series_query('')) AS shared_cte_nodes, scan_nodes(series_query('NOT MATERIALIZED')) AS inline_nodes;
  shared_cte_nodes | inline_nodes 
 ------------------+--------------
-                2 |            2
+                3 |            3
 (1 row)
 
 SELECT differences(series_query('')) AS shared_cte_differences, differences(series_query('NOT MATERIALIZED')) AS inline_differences;

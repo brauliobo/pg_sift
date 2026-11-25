@@ -83,7 +83,7 @@ SELECT parity('SELECT sum(w * (1 - b)), sum(w * (1 - b) * (1 + c)), avg(w * (1 -
 SELECT parity('SELECT grp, sum(w * (1 - b)), sum(w * (1 - b) * (1 + c)) FROM @T GROUP BY grp') AS wide_grouped;
 SELECT parity('SELECT sum(w * (1 - b)) FILTER (WHERE tag <> ''N'') FROM @T') AS wide_under_filter;
 SELECT parity('SELECT sum(a * (1 - b) * (1 + c)), sum(a * (1 - b)) FROM @T WHERE id <= 40') AS small_after_wide_free;
--- a product past 2^95 scaled (the rows of a sum of 2^32 rows add up in 128 bits) is refused, never answered wrongly
+-- a product past 2^95 scaled is answered (sums of 192 bits); one of 2^191 or more is refused, never answered wrongly
 CREATE FUNCTION refused(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE x text;
 BEGIN
@@ -92,8 +92,7 @@ BEGIN
 EXCEPTION WHEN numeric_value_out_of_range THEN RETURN true;
 END $$;
 SELECT refused('SELECT sum(w * w * w)::text FROM tc WHERE w IS NOT NULL') AS beyond_128_bits_refused;
-SELECT refused('SELECT sum(w * w)::text FROM tc WHERE w IS NOT NULL') AS beyond_2_95_refused;
-SELECT refused('SELECT sum(w * w)::text FROM tt WHERE w IS NOT NULL') AS beyond_2_95_refused_table;
+SELECT parity('SELECT sum(w * w)::text, avg(w * w)::text FROM @T WHERE w IS NOT NULL') AS beyond_2_95_answered;
 
 -- ---- a column against a column, OR, numerics against constants ----
 SELECT plan_ok('SELECT count(*) FROM @T WHERE d1 < d2') AS column_compare_plan;
@@ -131,7 +130,7 @@ SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN a * (1 - b) ELSE 0 END
 SELECT parity_text('SELECT (100.00 * sum(CASE WHEN tag IN (''R'', ''A'') THEN a * (1 - b) ELSE 0 END) / sum(a * (1 - b)))::text FROM @T WHERE d1 >= date ''2020-02-01'' AND d1 < date ''2020-03-01''') AS promo_revenue_shape;
 SELECT parity('SELECT sum(CASE WHEN tag = ''R'' THEN a ELSE 0 END) FROM @T WHERE tag = ''N''') AS case_never_true_with_rows;
 SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 1 ELSE 0 END) FROM @T GROUP BY grp HAVING sum(CASE WHEN tag = ''R'' THEN 1 ELSE 0 END) > 100') AS case_in_having;
-SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 2 ELSE 0 END), sum(CASE WHEN tag = ''R'' THEN f8 ELSE 0 END) FROM @T GROUP BY grp') AS case_not_rewritten_still_right;
+SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 2 ELSE 0 END), round(sum(CASE WHEN tag = ''R'' THEN f8 ELSE 0 END)::numeric, 6) FROM @T GROUP BY grp') AS case_not_rewritten_still_right;
 SELECT parity('SELECT sum(CASE WHEN d1 < d2 THEN 1 ELSE 0 END) FROM @T') AS case_with_column_compare_is_left_to_the_heap;
 
 -- ---- the whole of the queries: the shapes of TPC-H 1, 4, 6, 12, 14, 19 over one table ----
@@ -164,22 +163,14 @@ SELECT parity_text('SELECT sum(a * (1 - b))::text FROM @T') AS inside_a_transact
 ROLLBACK;
 SELECT parity_text('SELECT sum(a * (1 - b))::text FROM @T') AS after_rollback;
 
--- ---- a NaN of a numeric: the engine refuses what it cannot fold, the executor answers it ----
-CREATE FUNCTION nan_refused(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text;
-BEGIN
-	EXECUTE q INTO x;
-	RETURN false;
-EXCEPTION WHEN feature_not_supported THEN RETURN true;
-END $$;
+-- ---- a NaN of a numeric: a product of it is NaN, a sum of that NaN ----
 INSERT INTO th VALUES (900001, 1, 'NaN', 0.5, 0.1, 1, date '2000-01-01', date '2000-01-02', 1, 1, 1, 'R');
 INSERT INTO tc SELECT * FROM th WHERE id = 900001;
 INSERT INTO tt SELECT * FROM th WHERE id = 900001;
-SELECT nan_refused('SELECT sum(a * (1 - b))::text FROM tc') AS nan_product_refused_index;
-SELECT nan_refused('SELECT sum(a * (1 - b))::text FROM tt') AS nan_product_refused_table;
+SELECT parity('SELECT sum(a * (1 - b))::text, avg(a * (1 - b))::text, count(a * (1 - b)) FROM @T') AS nan_product_answered;
 SELECT same_rows('SELECT count(*) FROM tc WHERE a > 1', 'SELECT count(*) FROM th WHERE a > 1') AS nan_qual_answered_on_an_index;
 SELECT same_rows('SELECT count(*) FROM tt WHERE a > 1', 'SELECT count(*) FROM th WHERE a > 1') AS nan_qual_answered_by_the_executor_on_a_table;
 
-DROP FUNCTION same_rows(text, text), parity(text), plan_ok(text), plan_index(text), parity_text(text), refused(text), nan_refused(text);
+DROP FUNCTION same_rows(text, text), parity(text), plan_ok(text), plan_index(text), parity_text(text), refused(text);
 DROP TABLE th, tc, tt;
 DROP EXTENSION pg_sift;

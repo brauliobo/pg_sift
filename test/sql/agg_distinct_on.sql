@@ -116,7 +116,7 @@ SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parall
 SELECT * FROM same_tied($$SELECT DISTINCT ON (tenant_id) tenant_id, id, day, amount, kind FROM ev ORDER BY tenant_id, day DESC$$, 'tenant_id, day', 'ev');
 RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET min_parallel_index_scan_size;
 SET max_parallel_workers_per_gather = 0;
--- the normal plan stays: a volatile function in the ORDER BY, more sort columns than the scan keeps. A volatile function of the select list is evaluated by PostgreSQL after the rows are picked.
+-- the normal plan stays for a volatile function in the ORDER BY; more sort columns are kept by the scan. A volatile function of the select list is evaluated by PostgreSQL after the rows are picked.
 SELECT plan_of($$SELECT DISTINCT ON (tenant_id) tenant_id, id FROM ev WHERE tenant_id < 30 ORDER BY tenant_id, 0 * random(), id$$) AS volatile_sort;
 SELECT plan_of($$SELECT DISTINCT ON (tenant_id) tenant_id, id, ts FROM ev ORDER BY tenant_id, ts DESC, kind, day, note, amount, id$$) AS six_sort_columns;
 SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, id, 0 * random() AS z FROM ev ORDER BY tenant_id, ts DESC, id$$);

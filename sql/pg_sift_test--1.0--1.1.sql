@@ -146,7 +146,7 @@ CREATE FUNCTION sift._test_ht_text_groups(vals text[], collation oid) RETURNS in
 CREATE FUNCTION sift._test_radix_par(seed int8, workers int4, granules int4, groups int4, mode int4, local_cap int4, max_chunks int4,
 									 OUT launched int4, OUT out_groups int8, OUT bad int8, OUT spilled int4, OUT chunks int4, OUT par_us int8, OUT scan_us int8)
 	AS 'MODULE_PATHNAME', 'sift_test_radix_par' LANGUAGE C STRICT;
--- Guided work queue of the parallel scans (src/agg/par/morsel_test.c): workers launched, claims, granules, granules not visited exactly once, claims out of protocol, longest claim, length of the last claim.
+-- Guided work queue of the parallel scans (src/core/par/morsel_test.c): workers launched, claims, granules, granules not visited exactly once, claims out of protocol, longest claim, length of the last claim.
 CREATE FUNCTION sift._test_morsel_par(seed int8, workers int4, parts int4, granules int4,
 									  OUT launched int4, OUT claims int8, OUT total int8, OUT wrong int8, OUT bad_claims int8, OUT max_run int4, OUT tail_run int4)
 	AS 'MODULE_PATHNAME', 'sift_test_morsel_par' LANGUAGE C STRICT;
@@ -262,3 +262,11 @@ CREATE FUNCTION sift._test_rowlock_stats(OUT in_table int8, OUT in_chunks int8, 
 
 -- The pages of column delta chains the cache of a sift_table's chains has read since the backend started (src/table/f2/f2_chain_cache.c): a chain that grew is read from its newest page on, not whole
 CREATE FUNCTION sift._test_chain_cache_pages() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_chain_cache_pages' LANGUAGE C STRICT;
+
+-- The pool, the driver and the grouped aggregation of core/par and agg/v6/par (src/core/par/par_test.c): threads used, runs done, groups of the last run, runs that gave a wrong number of rows or groups. cancel_at: the leader cancels the statement at its n-th unit of work (0: never).
+CREATE FUNCTION sift._test_par_group(workers int4, rows int4, groups int4, loops int4, cancel_at int4,
+									 OUT threads int4, OUT runs int4, OUT out_groups int8, OUT bad int8)
+	AS 'MODULE_PATHNAME', 'sift_test_par_group' LANGUAGE C STRICT;
+
+-- Every cube of every granule of every part of an index against the values it was made of: the parts, those with SEC_PREAGG, the cubes, the granules, the cubes that leave a granule out, the cells and the cells that differ (src/col/f2/preagg_test.c)
+CREATE FUNCTION sift._test_preagg_v2_check(index regclass, OUT parts int4, OUT with_preagg int4, OUT cubes int4, OUT granules int4, OUT skipped int4, OUT cells int8, OUT mismatched int4) RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_preagg_v2_check' LANGUAGE C STRICT;

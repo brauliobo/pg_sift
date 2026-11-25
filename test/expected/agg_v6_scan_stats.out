@@ -1,0 +1,100 @@
+-- A statement of SiftAggV6 that scans a sift_col index counts one scan of the index in pg_stat_user_indexes (idx_scan), and one that scans a sift_table counts one in pg_stat_user_tables
+-- (seq_scan), as the scan of any other index or table does: a table whose analytical queries all run in the node must not look unused to the tools that read these views. The
+-- Top-N node of a sift_table counts as well.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+CREATE TABLE st_tbl (grp int NOT NULL, bal int NOT NULL, id int NOT NULL) USING sift_table;
+INSERT INTO st_tbl SELECT g % 4, g, g FROM generate_series(1, 4000) g;
+CREATE TABLE st_col (grp int NOT NULL, bal int NOT NULL, id int NOT NULL);
+INSERT INTO st_col SELECT * FROM st_tbl;
+CREATE INDEX st_col_idx ON st_col USING sift_col (grp, bal, id);
+VACUUM (ANALYZE) st_tbl, st_col;
+CREATE FUNCTION engine(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text[] := '{}';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan' THEN r := r || substring(l from 'Custom Scan \(([A-Za-z0-9]+)\)'); END IF;
+	END LOOP;
+	RETURN coalesce(nullif(array_to_string(r, ','), ''), 'normal');
+END $$;
+CREATE FUNCTION scans() RETURNS TABLE (relation text, scans int8) LANGUAGE sql AS $$
+	SELECT 'st_tbl seq_scan', (SELECT seq_scan FROM pg_stat_user_tables WHERE relname = 'st_tbl')
+	UNION ALL SELECT 'st_col_idx idx_scan', (SELECT idx_scan FROM pg_stat_user_indexes WHERE indexrelname = 'st_col_idx')
+$$;
+CREATE PROCEDURE flush_stats() LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_stat_force_next_flush(); END $$;
+SELECT engine($$SELECT sum(bal) FROM st_tbl WHERE grp = 1$$) AS table_aggregate, engine($$SELECT sum(bal) FROM st_col WHERE grp = 1$$) AS col_aggregate,
+	engine($$SELECT id FROM st_tbl ORDER BY bal DESC LIMIT 3$$) AS table_top_n;
+ table_aggregate | col_aggregate |  table_top_n  
+-----------------+---------------+---------------
+ SiftAggV6       | SiftAggV6     | SiftAggV6TopN
+(1 row)
+
+SELECT * FROM scans();
+      relation       | scans 
+---------------------+-------
+ st_tbl seq_scan     |     0
+ st_col_idx idx_scan |     0
+(2 rows)
+
+BEGIN;
+SELECT sum(bal) FROM st_tbl WHERE grp = 1;
+   sum   
+---------
+ 1999000
+(1 row)
+
+CALL flush_stats();
+COMMIT;
+SELECT * FROM scans();
+      relation       | scans 
+---------------------+-------
+ st_tbl seq_scan     |     1
+ st_col_idx idx_scan |     0
+(2 rows)
+
+BEGIN;
+SELECT sum(bal) FROM st_col WHERE grp = 1;
+   sum   
+---------
+ 1999000
+(1 row)
+
+CALL flush_stats();
+COMMIT;
+SELECT * FROM scans();
+      relation       | scans 
+---------------------+-------
+ st_tbl seq_scan     |     1
+ st_col_idx idx_scan |     1
+(2 rows)
+
+BEGIN;
+SELECT id FROM st_tbl ORDER BY bal DESC LIMIT 3;
+  id  
+------
+ 4000
+ 3999
+ 3998
+(3 rows)
+
+CALL flush_stats();
+COMMIT;
+SELECT * FROM scans();
+      relation       | scans 
+---------------------+-------
+ st_tbl seq_scan     |     2
+ st_col_idx idx_scan |     1
+(2 rows)
+
+DROP TABLE st_tbl, st_col;
+DROP FUNCTION engine(text), scans();
+DROP PROCEDURE flush_stats();
+DROP EXTENSION pg_sift;

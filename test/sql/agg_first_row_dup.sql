@@ -26,7 +26,7 @@ BEGIN
   SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
   pushed := false; hits := false; differ := false;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
     IF l ~ '[1-9]\d* first row lookups' THEN hits := true; END IF;
     IF l ~ '[1-9]\d* first row keys differ' THEN differ := true; END IF;
   END LOOP;

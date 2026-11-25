@@ -1,5 +1,5 @@
 /*
- * col/f2/f2_v6_bridge.h - what the index of format major 2 gives the operators of SiftAggV6 (agg/v6/v6_vexpr.h): the SiftV6Format that owns an index, says what it holds and how it is sorted,
+ * col/f2/f2_v6_bridge.h - what the index of format major 2 gives the operators of SiftAggV6 (agg/v6/v6_vexpr.h): the format that owns an index, says what it holds and how it is sorted,
  * opens its batches (f2_v6_bridge.c), the Top-N tournament source (f2_v6_topn.c) and the statistics for the planner (f2_v6_card.c). All of it is bound once at load by sift_f2_v6_format_init() (f2_v6_format.c).
  *
  * The functions below that take no server are the decisions the sources make about the order of a part: whether the leading key of a part reads in the order the query asks, or in the
@@ -202,7 +202,7 @@ sift_f2_zone_hist(const SiftCardZone *z, const uint32 *nrows, uint32 n, int64 gm
 	return SIFT_CARD_HIST_BUCKETS;
 }
 
-/* The batches of the input over a sift_col index (SiftV6Format.open of an index): the partitions and parts the bounds of the quals leave, in the order of the keys when sorted */
+/* The batches of the input over a sift_col index (SiftStoreOps.open of an index): the partitions and parts the bounds of the quals leave, in the order of the keys when sorted */
 extern SiftV6Source *sift_f2_v6_index_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted);
 
 /*

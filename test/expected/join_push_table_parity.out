@@ -76,9 +76,9 @@ SELECT shape, sum(tried) AS tried, sum(pushed) AS pushed, sum(bad) AS mismatches
  count        |    24 |      0 |          0
  having       |    24 |      0 |          0
  repeating    |    24 |      0 |          0
- semi         |    24 |      0 |          0
- semi grouped |    24 |      0 |          0
- window       |    24 |     24 |          0
+ semi         |    24 |     24 |          0
+ semi grouped |    24 |     19 |          0
+ window       |    24 |      0 |          0
 (8 rows)
 
 DROP TABLE jt_ev, jt_pr CASCADE;

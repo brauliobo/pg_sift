@@ -22,8 +22,10 @@ typedef enum SiftStarOpen
 } SiftStarOpen;
 
 extern SiftV6StarRun *sift_v6_star_begin(const SiftV6Ext *x, PlanState *const *children, MemoryContext cx);
-/* Reads the dimensions of the pass; the first call (pass 0) chooses the classes of the ones that do not fit */
-extern SiftStarOpen sift_v6_star_open(SiftV6StarRun *r, uint32 pass);
+/* Reads the dimensions of the pass, which the node joins in scans fact scans (one for each partition of a partitioned fact); the first call (pass 0) chooses the classes of the ones that do not fit */
+extern SiftStarOpen sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans);
+/* A scan of the pass has read its fact rows: the last one sends the rows of the dimensions of a RIGHT or FULL join that no scan matched through the pipe of that scan */
+extern void sift_v6_star_scan_end(SiftV6StarRun *r, SiftV6Pipe *p);
 /* The dimensions of the pass for a pipe */
 extern void sift_v6_star_attach(const SiftV6StarRun *r, SiftV6Pipe *p);
 /* The passes the dimensions need (known after pass 0) and the bytes the largest table took */
@@ -31,6 +33,8 @@ extern uint32 sift_v6_star_passes(const SiftV6StarRun *r);
 extern uint64 sift_v6_star_bytes(const SiftV6StarRun *r);
 /* The dimensions read from the cache of the tables of earlier statements, and those read from their plans to be kept (false: neither, no dimension is of a table that keeps a journal) */
 extern bool sift_v6_star_cache(const SiftV6StarRun *r, uint32 *hits, uint32 *built);
+/* The tables of its dimensions that another node of the statement had read */
+extern uint32 sift_v6_star_shared(const SiftV6StarRun *r);
 /* The tables are freed; the next open reads the plans again */
 extern void sift_v6_star_close(SiftV6StarRun *r);
 

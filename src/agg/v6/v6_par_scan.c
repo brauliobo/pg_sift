@@ -1,9 +1,11 @@
 /*
  * agg/v6/v6_par_scan.c - what the two strategies of v6_par.h share: the participant's place at the barrier, the loop that claims morsels, the hand-over of a table to the partitions, and the
- * merge of a partition into an engine state. The morsels are those of agg/par/morsel.h over the parts of the scan (the shared block holds the parts, one SiftParPartRef each); the engine decides
+ * merge of a partition into an engine state. The morsels are those of core/par/morsel.h over the parts of the scan (the shared block holds the parts, one SiftParPartRef each); the engine decides
  * what a morsel is (group.c: the granules of a part of a sift_col index or of a sift_table, col/f2/f2_sink.h).
  */
 #include "core/host.h"
+
+#include "executor/nodeAgg.h"
 
 #include "agg/v6/v6_par.h"
 
@@ -21,6 +23,12 @@ sift_v6_par_barrier_event(void)
 	return e;
 }
 
+uint64
+sift_v6_par_share(const SiftV6ParDsmHdr *hdr)
+{
+	return Max(Min((uint64) get_hash_memory_limit() / ((uint64) hdr->nworkers_planned + 1), SIFT_PAR_LOCAL_BYTES), SIFT_PAR_MIN_SHARE_BYTES);
+}
+
 SiftV6ParRun *
 sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng, SiftV6TopKRun *topk)
 {
@@ -32,7 +40,7 @@ sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng, SiftV6TopK
 	r->eng = eng;
 	r->topk = topk;
 	r->stage = SV6S_NEW;
-	r->export_cap = hdr->strategy == SV6P_TWO_STAGE ? SIFT_PAR_TWO_STAGE_MAX_GROUPS : SIFT_PAR_LOCAL_GROUPS;
+	r->export_cap = sift_v6_par_share(hdr);
 	return r;
 }
 
@@ -66,19 +74,50 @@ sift_v6_par_leave(SiftV6ParRun *r)
 	BarrierDetach(&r->hdr->phase_barrier);
 }
 
-void
-sift_v6_par_run_abort(int code, Datum arg)
+static SiftV6ParRun *guarded_run;
+
+/* The exit of the process in a guarded run: the barrier of the others is not left waiting for it */
+static void
+guarded_exit(int code, Datum arg)
 {
-	(void) code;
-	sift_v6_par_leave((SiftV6ParRun *) arg);
+	if (guarded_run != NULL)
+		sift_v6_par_leave(guarded_run);
+}
+
+/* The hook is made once and never cancelled: a callback another part of the process registers inside the run (the first pin of a shared dictionary) cannot get between it and its cancel */
+void
+sift_v6_par_guarded(SiftV6ParRun *r, void (*body) (SiftV6ParRun *r))
+{
+	static bool hooked;
+	SiftV6ParRun *outer = guarded_run;
+
+	if (!hooked)
+	{
+		before_shmem_exit(guarded_exit, 0);
+		hooked = true;
+	}
+	guarded_run = r;
+	PG_TRY();
+	{
+		body(r);
+	}
+	PG_CATCH();
+	{
+		guarded_run = outer;
+		sift_v6_par_leave(r);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	guarded_run = outer;
 }
 
 void
-sift_v6_par_scan(SiftV6ParRun *r, void (*relief) (SiftV6ParRun *r))
+sift_v6_par_scan(SiftV6ParRun *r, void (*relief) (void *r))
 {
 	SiftMorselQueue *mq = sift_v6_par_morsels(r->hdr);
 	SiftMorsel	m;
 
+	r->eng->scan_hook(r->eng->env, relief, r);
 	while (sift_morsel_claim(mq, (uint32) r->pid, &m))
 	{
 		CHECK_FOR_INTERRUPTS();

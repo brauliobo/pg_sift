@@ -3,6 +3,7 @@
  */
 #include "agg/v6/v6_grace_join.h"
 #include "agg/v6/v6_bytes.h"
+#include "agg/v6/v6_gj_bits.h"
 #include "agg/v6/v6_spill.h"
 
 #define GJ_NO_PART		UINT32_MAX
@@ -41,6 +42,50 @@ typedef struct GjTab
 	uint32		chunk_size;
 } GjTab;
 
+typedef struct GjRecHdr
+{
+	uint32		klen;
+	uint32		plen;
+} GjRecHdr;
+
+typedef struct GjScan
+{
+	uint8	   *buf;
+	uint32		cap;
+} GjScan;
+
+typedef enum GjStep
+{
+	GS_PARTS,					/* the next partition of the two sets */
+	GS_PROBE,					/* its build file is in the table, the probe file is read */
+	GS_CHUNK_LOAD,				/* too much of one key: the next chunk of the build file into the table */
+	GS_CHUNK_PROBE,				/* the probe file against the chunk */
+	GS_TAIL						/* the probe rows that matched no chunk */
+} GjStep;
+
+/* The partitions of a pair of sets being joined; a partition too big for the budget is split into a frame of the next level above this one */
+typedef struct GjFrame
+{
+	uint32		level;
+	SiftSpillSet *bset;
+	SiftSpillSet *pset;
+	uint32		nparts;
+	uint32		next_part;
+	uint32		part;
+	GjStep		step;
+	GjTab		t;
+	GjScan		bsc;
+	GjScan		psc;
+	SiftGjBits *bits;
+	uint64		ord;
+	uint64		bhash;			/* the build record read that is not in a chunk yet */
+	GjRecHdr	bh;
+	const uint8 *bkey;
+	const uint8 *bpay;
+	bool		pending;
+	bool		beof;
+} GjFrame;
+
 struct SiftGraceJoin
 {
 	MemoryContext cx;
@@ -55,15 +100,12 @@ struct SiftGraceJoin
 	SiftSpillSet *pset;
 	uint32		resident;
 	bool		probing;
+	bool		joining;		/* sift_gjoin_next began */
+	GjFrame		frame[SIFT_GJOIN_MAX_LEVEL + 1];
+	int			nframes;
 	SiftBytes	rec;
 	SiftGraceStats st;
 };
-
-typedef struct GjRecHdr
-{
-	uint32		klen;
-	uint32		plen;
-} GjRecHdr;
 
 static uint64
 gj_tab_bytes(const GjTab *t)
@@ -362,17 +404,12 @@ sift_gjoin_probe(SiftGraceJoin *j, const void *key, uint32 klen, bool key_null, 
 
 /* ---- the partitions that went to files ---- */
 
-typedef struct GjScan
-{
-	uint8	   *buf;
-	uint32		cap;
-} GjScan;
-
 static bool
 gj_next(SiftSpillSet *s, uint32 part, GjScan *sc, uint64 *hash, const uint8 **key, GjRecHdr *h, const uint8 **payload)
 {
 	uint32		len;
 
+	CHECK_FOR_INTERRUPTS();
 	if (!sift_spill_get(s, part, hash, &sc->buf, &sc->cap, &len))
 		return false;
 	memcpy(h, sc->buf, sizeof(*h));
@@ -381,179 +418,278 @@ gj_next(SiftSpillSet *s, uint32 part, GjScan *sc, uint64 *hash, const uint8 **ke
 	return true;
 }
 
+static void
+gj_scan_free(GjScan *sc)
+{
+	if (sc->buf != NULL)
+		pfree(sc->buf);
+	*sc = (GjScan) {NULL, 0};
+}
+
 static uint64
 gj_est_bytes(const SiftSpillSet *s, uint32 part)
 {
 	return sift_spill_part_bytes(s, part) + sift_spill_part_records(s, part) * 2 * (sizeof(GjRow) + sizeof(uint32));
 }
 
-static void join_files(SiftGraceJoin *j, uint32 level, SiftSpillSet *bset, SiftSpillSet *pset, uint32 part);
-
-/* The two files are split again by the hash of the next level, and each pair of the halves is joined */
-static void
-gj_resplit(SiftGraceJoin *j, uint32 level, SiftSpillSet *bset, SiftSpillSet *pset, uint32 part)
+static GjFrame *
+gj_top(SiftGraceJoin *j)
 {
-	uint32		nsub = sift_spill_nparts(gj_est_bytes(bset, part), j->budget);
+	return &j->frame[j->nframes - 1];
+}
+
+static void
+gj_push(SiftGraceJoin *j, uint32 level, SiftSpillSet *bset, SiftSpillSet *pset)
+{
+	j->frame[j->nframes++] = (GjFrame) {.level = level,.bset = bset,.pset = pset,.nparts = sift_spill_nparts_of(bset),.step = GS_PARTS};
+}
+
+/* what a partition holds apart from its files */
+static void
+gj_frame_part_free(GjFrame *f)
+{
+	gj_tab_free(&f->t);
+	gj_scan_free(&f->bsc);
+	gj_scan_free(&f->psc);
+	if (f->bits != NULL)
+		sift_gj_bits_close(f->bits);
+	f->bits = NULL;
+}
+
+/* the partition is joined: its files are closed */
+static void
+gj_part_done(GjFrame *f)
+{
+	gj_frame_part_free(f);
+	sift_spill_drop(f->bset, f->part);
+	sift_spill_drop(f->pset, f->part);
+	f->step = GS_PARTS;
+}
+
+static void
+gj_pop(SiftGraceJoin *j)
+{
+	GjFrame    *f = gj_top(j);
+
+	gj_frame_part_free(f);
+	sift_spill_free(f->bset);
+	sift_spill_free(f->pset);
+	if (f->level == 0)
+		j->bset = j->pset = NULL;
+	j->nframes--;
+}
+
+/* The two files are split again by the hash of the next level: the pairs of the halves are the partitions of a frame above this one */
+static void
+gj_resplit(SiftGraceJoin *j, GjFrame *f)
+{
+	const uint32 nsub = sift_spill_nparts(gj_est_bytes(f->bset, f->part), j->budget);
 	SiftSpillSet *bsub = sift_spill_create(j->cx, nsub);
 	SiftSpillSet *psub = sift_spill_create(j->cx, nsub);
-	GjScan		sc = {NULL, 0};
 	uint64		hash;
 	const uint8 *key, *payload;
 	GjRecHdr	h;
 
-	j->st.max_level = Max(j->st.max_level, level + 2);
-	sift_spill_rewind(bset, part);
-	while (gj_next(bset, part, &sc, &hash, &key, &h, &payload))
+	j->st.max_level = Max(j->st.max_level, f->level + 2);
+	sift_spill_rewind(f->bset, f->part);
+	while (gj_next(f->bset, f->part, &f->bsc, &hash, &key, &h, &payload))
 	{
-		uint64		nh = gj_hash(level + 1, key, h.klen);
+		const uint64 nh = gj_hash(f->level + 1, key, h.klen);
 
 		gj_put_rec(j, bsub, sift_spill_part_of(nh, nsub), nh, key, h.klen, payload, h.plen);
 	}
-	sift_spill_drop(bset, part);
-	if (pset != NULL && sift_spill_part_records(pset, part) > 0)
+	sift_spill_drop(f->bset, f->part);
+	sift_spill_rewind(f->pset, f->part);
+	while (gj_next(f->pset, f->part, &f->psc, &hash, &key, &h, &payload))
 	{
-		sift_spill_rewind(pset, part);
-		while (gj_next(pset, part, &sc, &hash, &key, &h, &payload))
-		{
-			uint64		nh = gj_hash(level + 1, key, h.klen);
+		const uint64 nh = gj_hash(f->level + 1, key, h.klen);
 
-			gj_put_rec(j, psub, sift_spill_part_of(nh, nsub), nh, key, h.klen, payload, h.plen);
-		}
+		gj_put_rec(j, psub, sift_spill_part_of(nh, nsub), nh, key, h.klen, payload, h.plen);
 	}
-	if (sc.buf != NULL)
-		pfree(sc.buf);
+	sift_spill_drop(f->pset, f->part);
+	gj_scan_free(&f->bsc);
+	gj_scan_free(&f->psc);
 	j->st.spilled_bytes += sift_spill_total_bytes(bsub) + sift_spill_total_bytes(psub);
-	for (uint32 p = 0; p < nsub; p++)
-		join_files(j, level + 1, bsub, psub, p);
-	sift_spill_free(bsub);
-	sift_spill_free(psub);
+	gj_push(j, f->level + 1, bsub, psub);
 }
 
-/* A partition whose build side holds more than the budget in rows of one key: the build file in chunks, the probe file once for each, a bit for each probe row */
+/* The build file of the partition fits the budget: into the table, to be probed by the probe file */
 static void
-gj_chunked(SiftGraceJoin *j, SiftSpillSet *bset, SiftSpillSet *pset, uint32 part)
+gj_load(SiftGraceJoin *j, GjFrame *f)
 {
-	uint64		nprobe = pset != NULL ? sift_spill_part_records(pset, part) : 0;
-	uint8	   *matched = MemoryContextAllocZero(j->cx, (nprobe + 7) / 8 + 1);
-	GjScan		bsc = {NULL, 0}, psc = {NULL, 0};
-	uint64		hash, bhash;
-	const uint8 *key, *payload, *bkey, *bpay;
-	GjRecHdr	h, bh;
-	bool		pending = false, eof = false;
-
-	sift_spill_rewind(bset, part);
-	while (!eof || pending)
-	{
-		GjTab		t;
-		uint64		ord = 0;
-
-		gj_tab_init(&t, j->budget);
-		for (;;)
-		{
-			if (!pending)
-			{
-				if (!gj_next(bset, part, &bsc, &bhash, &bkey, &bh, &bpay))
-				{
-					eof = true;
-					break;
-				}
-				pending = true;
-			}
-			if (t.nrows > 0 && gj_tab_bytes(&t) + gj_row_cost(&t, bh.klen, bh.plen) > j->budget)
-				break;
-			gj_tab_insert(&t, j->cx, bhash, bkey, bh.klen, bpay, bh.plen);
-			pending = false;
-		}
-		j->st.chunk_passes++;
-		if (t.nrows > 0 && nprobe > 0)
-		{
-			sift_spill_rewind(pset, part);
-			while (gj_next(pset, part, &psc, &hash, &key, &h, &payload))
-			{
-				bool		semi_done = (matched[ord >> 3] >> (ord & 7)) & 1;
-
-				if (gj_pairs(j, &t, hash, key, h.klen, payload, h.plen, semi_done))
-					matched[ord >> 3] |= (uint8) (1 << (ord & 7));
-				ord++;
-			}
-		}
-		j->st.peak_bytes = Max(j->st.peak_bytes, gj_tab_bytes(&t));
-		gj_tab_free(&t);
-	}
-	if ((j->type == SGJ_LEFT || j->type == SGJ_ANTI) && nprobe > 0)
-	{
-		uint64		ord = 0;
-
-		sift_spill_rewind(pset, part);
-		while (gj_next(pset, part, &psc, &hash, &key, &h, &payload))
-		{
-			if (!((matched[ord >> 3] >> (ord & 7)) & 1))
-				gj_unmatched(j, payload, h.plen);
-			ord++;
-		}
-	}
-	if (bsc.buf != NULL)
-		pfree(bsc.buf);
-	if (psc.buf != NULL)
-		pfree(psc.buf);
-	pfree(matched);
-}
-
-static void
-join_files(SiftGraceJoin *j, uint32 level, SiftSpillSet *bset, SiftSpillSet *pset, uint32 part)
-{
-	uint64		nprobe = pset != NULL ? sift_spill_part_records(pset, part) : 0;
-	GjScan		sc = {NULL, 0};
-	GjTab		t;
 	uint64		hash;
 	const uint8 *key, *payload;
 	GjRecHdr	h;
 
-	if (nprobe == 0)
-	{
-		sift_spill_drop(bset, part);
-		return;
-	}
-	if (gj_est_bytes(bset, part) > j->budget)
-	{
-		if (level < SIFT_GJOIN_MAX_LEVEL)
-			gj_resplit(j, level, bset, pset, part);
-		else
-			gj_chunked(j, bset, pset, part);
-		sift_spill_drop(bset, part);
-		sift_spill_drop(pset, part);
-		return;
-	}
-	gj_tab_init(&t, j->budget);
-	sift_spill_rewind(bset, part);
-	while (gj_next(bset, part, &sc, &hash, &key, &h, &payload))
-		gj_tab_insert(&t, j->cx, hash, key, h.klen, payload, h.plen);
-	sift_spill_drop(bset, part);
-	j->st.peak_bytes = Max(j->st.peak_bytes, gj_tab_bytes(&t));
-	sift_spill_rewind(pset, part);
-	while (gj_next(pset, part, &sc, &hash, &key, &h, &payload))
-		if (!gj_pairs(j, &t, hash, key, h.klen, payload, h.plen, false))
-			gj_unmatched(j, payload, h.plen);
-	sift_spill_drop(pset, part);
-	gj_tab_free(&t);
-	if (sc.buf != NULL)
-		pfree(sc.buf);
+	gj_tab_init(&f->t, j->budget);
+	sift_spill_rewind(f->bset, f->part);
+	while (gj_next(f->bset, f->part, &f->bsc, &hash, &key, &h, &payload))
+		gj_tab_insert(&f->t, j->cx, hash, key, h.klen, payload, h.plen);
+	sift_spill_drop(f->bset, f->part);
+	j->st.peak_bytes = Max(j->st.peak_bytes, gj_tab_bytes(&f->t));
+	sift_spill_rewind(f->pset, f->part);
+	f->step = GS_PROBE;
 }
 
-void
-sift_gjoin_finish(SiftGraceJoin *j)
+/* A partition whose build side holds more than the budget in rows of one key: the build file in chunks, the probe file once for each, a bit for each probe row that has matched */
+static void
+gj_chunk_begin(SiftGraceJoin *j, GjFrame *f)
+{
+	sift_spill_rewind(f->bset, f->part);
+	f->pending = f->beof = false;
+	f->bits = j->type == SGJ_INNER ? NULL : sift_gj_bits_open(j->cx);
+	f->step = GS_CHUNK_LOAD;
+}
+
+static void
+gj_chunk_load(SiftGraceJoin *j, GjFrame *f)
+{
+	gj_tab_init(&f->t, j->budget);
+	for (;;)
+	{
+		if (!f->pending)
+		{
+			if (!gj_next(f->bset, f->part, &f->bsc, &f->bhash, &f->bkey, &f->bh, &f->bpay))
+			{
+				f->beof = true;
+				break;
+			}
+			f->pending = true;
+		}
+		if (f->t.nrows > 0 && gj_tab_bytes(&f->t) + gj_row_cost(&f->t, f->bh.klen, f->bh.plen) > j->budget)
+			break;
+		gj_tab_insert(&f->t, j->cx, f->bhash, f->bkey, f->bh.klen, f->bpay, f->bh.plen);
+		f->pending = false;
+	}
+	j->st.chunk_passes++;
+	sift_spill_rewind(f->pset, f->part);
+	f->ord = 0;
+	f->step = GS_CHUNK_PROBE;
+}
+
+static void
+gj_chunk_probed(SiftGraceJoin *j, GjFrame *f)
+{
+	j->st.peak_bytes = Max(j->st.peak_bytes, gj_tab_bytes(&f->t));
+	gj_tab_free(&f->t);
+	if (!f->beof || f->pending)
+		f->step = GS_CHUNK_LOAD;
+	else if (j->type == SGJ_LEFT || j->type == SGJ_ANTI)
+	{
+		sift_spill_rewind(f->pset, f->part);
+		f->ord = 0;
+		f->step = GS_TAIL;
+	}
+	else
+		gj_part_done(f);
+}
+
+static void
+gj_enter_part(SiftGraceJoin *j, GjFrame *f, uint32 part)
+{
+	f->part = part;
+	if (sift_spill_part_records(f->pset, part) == 0)
+		sift_spill_drop(f->bset, part);
+	else if (gj_est_bytes(f->bset, part) <= j->budget)
+		gj_load(j, f);
+	else if (f->level < SIFT_GJOIN_MAX_LEVEL)
+		gj_resplit(j, f);
+	else
+		gj_chunk_begin(j, f);
+}
+
+/* one probe row of the partition: its pairs are emitted */
+static void
+gj_probe_row(SiftGraceJoin *j, GjFrame *f)
+{
+	uint64		hash;
+	const uint8 *key, *payload;
+	GjRecHdr	h;
+
+	if (!gj_next(f->pset, f->part, &f->psc, &hash, &key, &h, &payload))
+		gj_part_done(f);
+	else if (!gj_pairs(j, &f->t, hash, key, h.klen, payload, h.plen, false))
+		gj_unmatched(j, payload, h.plen);
+}
+
+static void
+gj_chunk_probe_row(SiftGraceJoin *j, GjFrame *f)
+{
+	uint64		hash;
+	const uint8 *key, *payload;
+	GjRecHdr	h;
+
+	if (!gj_next(f->pset, f->part, &f->psc, &hash, &key, &h, &payload))
+		gj_chunk_probed(j, f);
+	else
+	{
+		const bool	seen = f->bits != NULL && sift_gj_bits_get(f->bits, f->ord);
+
+		if (gj_pairs(j, &f->t, hash, key, h.klen, payload, h.plen, seen) && f->bits != NULL)
+			sift_gj_bits_set(f->bits, f->ord);
+		f->ord++;
+	}
+}
+
+static void
+gj_tail_row(SiftGraceJoin *j, GjFrame *f)
+{
+	uint64		hash;
+	const uint8 *key, *payload;
+	GjRecHdr	h;
+
+	if (!gj_next(f->pset, f->part, &f->psc, &hash, &key, &h, &payload))
+		gj_part_done(f);
+	else
+	{
+		if (!sift_gj_bits_get(f->bits, f->ord))
+			gj_unmatched(j, payload, h.plen);
+		f->ord++;
+	}
+}
+
+/* what the join gives from one step of the partitions in files: false when there is no more */
+bool
+sift_gjoin_next(SiftGraceJoin *j)
 {
 	SIFT_INVARIANT(j->probing, "hash join: finished before the build side was done");
-	if (j->bset == NULL)
-		return;
-	gj_tab_free(&j->tab);
-	j->st.spilled_bytes = sift_spill_total_bytes(j->bset) + sift_spill_total_bytes(j->pset);
-	for (uint32 p = 0; p < sift_spill_nparts_of(j->bset); p++)
-		join_files(j, 0, j->bset, j->pset, p);
-	sift_spill_free(j->bset);
-	sift_spill_free(j->pset);
-	j->bset = NULL;
-	j->pset = NULL;
+	if (!j->joining)
+	{
+		j->joining = true;
+		if (j->bset == NULL)
+			return false;
+		gj_tab_free(&j->tab);
+		j->st.spilled_bytes = sift_spill_total_bytes(j->bset) + sift_spill_total_bytes(j->pset);
+		gj_push(j, 0, j->bset, j->pset);
+	}
+	while (j->nframes > 0)
+	{
+		GjFrame    *f = gj_top(j);
+
+		CHECK_FOR_INTERRUPTS();
+		switch (f->step)
+		{
+			case GS_PARTS:
+				if (f->next_part < f->nparts)
+					gj_enter_part(j, f, f->next_part++);
+				else
+					gj_pop(j);
+				break;
+			case GS_PROBE:
+				gj_probe_row(j, f);
+				return true;
+			case GS_CHUNK_LOAD:
+				gj_chunk_load(j, f);
+				break;
+			case GS_CHUNK_PROBE:
+				gj_chunk_probe_row(j, f);
+				return true;
+			case GS_TAIL:
+				gj_tail_row(j, f);
+				return true;
+		}
+	}
+	return false;
 }
 
 const SiftGraceStats *
@@ -566,6 +702,15 @@ void
 sift_gjoin_free(SiftGraceJoin *j)
 {
 	gj_tab_free(&j->tab);
+	for (int i = 0; i < j->nframes; i++)
+	{
+		gj_frame_part_free(&j->frame[i]);
+		if (j->frame[i].level > 0)
+		{
+			sift_spill_free(j->frame[i].bset);
+			sift_spill_free(j->frame[i].pset);
+		}
+	}
 	if (j->bset != NULL)
 		sift_spill_free(j->bset);
 	if (j->pset != NULL)

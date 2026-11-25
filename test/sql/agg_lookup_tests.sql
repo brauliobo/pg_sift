@@ -50,7 +50,7 @@ CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'loaded'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'loaded'; END IF;
 		IF l ~ '[1-9]\d* rows classed' THEN r := 'classed'; ELSIF l ~ '[1-9]\d* cached tables' THEN r := 'cached'; END IF;
 	END LOOP;
 	RETURN r;

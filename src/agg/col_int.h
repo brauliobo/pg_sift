@@ -7,10 +7,11 @@
 #include "nodes/execnodes.h"
 
 #include "agg/pre.h"
-#include "agg/zoneprune.h"
+#include "col/v1/src_zone.h"
 #include "agg/chunkfilter.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "agg/wide.h"
+#include "col/v1/v1_reader_int.h"
 #include "col/col.h"
 #include "col/shred_pg.h"
 
@@ -51,35 +52,19 @@ typedef struct ColRecheck
 
 typedef struct ColSource
 {
+	SiftV1Idx	rd;				/* the unit reader: first, a unit's priv points at it */
 	ColRecheck *rck;			/* NULL: no leaf is rechecked */
-	SiftColSource *cs;
-	SiftColUnit unit;
-	SiftSrcLayout *lay;
-	MemoryContext cxt;
-	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
-	SiftSrcLeafBuf *buf;			/* per leaf */
-	bool	   *tol;			/* per leaf: its values the index cannot hold are read as NULL (tolerate_ovf) */
-	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary (set_raw) */
 	bool	   *numsum;			/* per leaf: a numeric leaf only summed, read as one record for each row (set_numsum) */
-	Relation	heap;
-	Relation	index;
-	Snapshot	snapshot;
-	SiftAggSel	sel;			/* the match set the units are restricted to */
 	SiftAggFilters flt;			/* the filters set_filters accepted, in rcx (reset by the next set_filters) */
 	MemoryContext rcx;
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
 	int		   *spmap;			/* per spred: the test of prune_str it stands for */
 	int			spoff;			/* the position of the first spred among the predicates of a begin (col_preds) */
-	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin */
 	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
 	int			nwtest;
 	SiftColPred *wpred;			/* the predicates that prune the units by the conjuncts of wtest that can: a wide integer test as it is, a containment test as SIFT_COLOP_SHAPE (col_preds) */
 	int			nwpred;
-	SiftAggWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */
-	uint64	   *wgen;
-	uint64		ugen;			/* the unit the source is at, counted */
-	uint64		wseq;			/* dictionaries made, for their ids */
 	SiftAggPre	pre;			/* the histogram or rollup of the last unit_hist / unit_rollup */
 } ColSource;
 #define COL_MAX_WIDE		8		/* the wide conjuncts of a scan (SIFT_AGG_MAX_WIDE) */
@@ -108,32 +93,18 @@ extern void col_tolerate_ovf(void *impl, int leaf);
 extern void col_set_raw(void *impl, int leaf);
 extern void col_set_numsum(void *impl, int leaf);
 
-/* a leaf read through the per-unit dictionary of datums (agg/wide.h) */
-static inline bool
-col_wide(const ColSource *src, int leaf)
-{
-	return src->lay->leaf[leaf].wide && !src->raw[leaf];
-}
 extern bool col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 extern void col_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags);
 extern void col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits);
 extern void col_counters(const void *impl, SiftSrcCounters *c);
-extern int64 col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf);
-extern void col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
-extern void col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
-extern void col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
-extern void col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
+extern void col_wide_dict(SiftV1Idx *r, int leaf, SiftSrcWide *w, const SiftColVec *v, uint32 n);
 extern void col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits);
-extern void col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
-extern bool col_vet_needed(void *impl, const SiftSrcUnit *unit);
 extern bool col_gorder_compact(void *impl, int i, int leaf);
 extern bool col_gorder_clean(void *impl, int i);
 extern void *col_gorder_groups_open(void *impl, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt);
 extern bool col_gorder_groups_next(void *cursor, int64 *group);
 extern bool col_gorder_groups(void *impl, int i, int leaf, uint32 *ngroups);
 extern void col_gorder_group_at(void *impl, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
-extern void col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols);
-extern const SiftSrcZones *col_zones(const SiftColZones *zs, const SiftColIndexMeta *meta, double nunits);
 extern bool sift_col_scope_stats(Relation index, SiftSrcStats *st);
 typedef struct ColZones
 {
@@ -142,7 +113,6 @@ typedef struct ColZones
 } ColZones;
 
 extern bool col_key_range(Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out);
-extern int	col_key_leaf(Relation index);
 extern Size col_view_size(void *impl);
 extern void col_view_export(void *impl, void *buf);
 extern void *col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys);

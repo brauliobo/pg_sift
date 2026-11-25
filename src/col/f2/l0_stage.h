@@ -117,7 +117,8 @@ extern void sift_stage_ask_retier(Relation rel, uint64 part_id);
 extern void sift_stage_add(Relation rel, SiftTxnStage *st, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, const SiftCell *cells, const SiftCell *const *elem);
 
 /* n rows staged as sift_stage_add does each: keys[i] and tids[i] of the row whose spec.ncols cells are the i-th group of cells (no elements) */
-extern void sift_stage_add_batch(Relation rel, SiftTxnStage *st, int n, const uint8 (*keys)[SIFT_BOUND_BYTES], const uint64 *tids, uint32 xmin, uint32 cmin, const SiftCell *cells);
+extern void sift_stage_add_batch(Relation rel, SiftTxnStage *st, int n, const uint8 (*keys)[SIFT_BOUND_BYTES], const uint64 *tids, uint32 xmin, uint32 cmin, const SiftCell *cells,
+								const SiftCell *const *elem);
 
 /*
  * Stages the delete of a row of the index (track_changes): held in memory until the transaction is about to commit, when the deletes are written for the partitions after the rows

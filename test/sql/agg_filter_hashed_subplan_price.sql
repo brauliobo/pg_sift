@@ -25,7 +25,7 @@ INSERT INTO shapes VALUES
 CREATE FUNCTION plan_of(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal plan'; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'scan'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'scan'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

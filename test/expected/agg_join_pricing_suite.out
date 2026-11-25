@@ -135,7 +135,7 @@ FROM (SELECT sub, format('SELECT count(*), sum(v) FROM facts WHERE k IN (SELECT 
     sub    | scan | same_rows 
 -----------+------+-----------
  n         | t    | t
- n + 1     | f    | t
+ n + 1     | t    | t
  n::bigint | t    | t
 (3 rows)
 
@@ -292,7 +292,7 @@ CREATE FUNCTION scanned(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF line LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+		IF line LIKE '%Custom Scan (SiftAgg%' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;

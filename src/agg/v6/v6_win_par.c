@@ -6,6 +6,7 @@
 
 #include "agg/v6/v6_batch.h"
 #include "agg/v6/v6_win_par.h"
+#include "agg/v6/v6_win_spill.h"
 
 #define RG_FIRST_ROWS		SIFT_VEC_LEN
 #define RG_FIRST_SLOTS		1024
@@ -13,6 +14,7 @@
 #define RG_MAX_GROUPS		(MaxAllocSize / (sizeof(int64) * SIFT_WIN_MAX_KEYS))
 #define RG_GROUP_BYTE		(sizeof(int64) * SIFT_WIN_MAX_KEYS + 2 * sizeof(uint32) + sizeof(uint8))
 #define RG_GROUP_BYTES(np)	((uint64) (np) * RG_GROUP_BYTE)
+#define RG_NO_GROUP			UINT32_MAX
 
 typedef struct Regroup
 {
@@ -26,7 +28,7 @@ typedef struct Regroup
 	uint32		n;
 	uint32		cap;
 	char	   *data[SIFT_V6_MAX_COLS];
-	uint8	   *valid[SIFT_V6_MAX_COLS];
+	uint8	   *valid[SIFT_V6_MAX_COLS];	/* of each row: SIFT_CELL_STATE_* */
 	uint64	   *tag;
 	uint32	   *gid;			/* of each row: its partition */
 	uint32		ngroups;
@@ -37,8 +39,12 @@ typedef struct Regroup
 	uint32		nslot;
 	uint32	   *order;			/* the rows by partition */
 	uint32		pos;
+	SiftWinSpill *sp;			/* the rows are more than max_bytes: they are here, sorted by the partition keys */
+	uint8		ostate[SIFT_V6_MAX_COLS][SIFT_VEC_LEN];
+	int64		opeer[SIFT_WIN_MAX_KEYS][SIFT_VEC_LEN];
 	char	   *obuf[SIFT_V6_MAX_COLS];
 	uint64		ovalid[SIFT_V6_MAX_COLS][SIFT_VEC_WORDS];
+	uint64		onan[SIFT_V6_MAX_COLS][SIFT_VEC_WORDS];
 	SiftVec		ovec[SIFT_V6_MAX_COLS];
 	uint64	   *otag;
 } Regroup;
@@ -93,21 +99,14 @@ sift_win_regroup_fits(const SiftV6Input *input, const List *vars, double rows, d
 	return rows * row_bytes_of(type, in.ncols) + groups * RG_GROUP_BYTE <= max_bytes * 0.9;
 }
 
-static void
-over_budget(void)
-{
-	ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the rows of a window do not fit in work_mem to be put together by partition"),
-					errhint("Increase work_mem, or filter the rows of the window.")));
-}
-
-static void
+static bool
 grow_rows(Regroup *g)
 {
 	const uint64 room = g->spec.max_bytes > RG_GROUP_BYTES(g->gcap) ? (g->spec.max_bytes - RG_GROUP_BYTES(g->gcap)) / g->row_bytes : 0;
 	const uint32 cap = (uint32) Min(Min(room, RG_MAX_ROWS), g->cap == 0 ? RG_FIRST_ROWS : (uint64) g->cap * 2);
 
 	if (cap <= g->cap)
-		over_budget();
+		return false;
 	for (int c = 0; c < g->spec.ncols; c++)
 	{
 		g->data[c] = g->cap == 0 ? MemoryContextAlloc(g->cx, (Size) cap * g->esz[c]) : repalloc(g->data[c], (Size) cap * g->esz[c]);
@@ -116,6 +115,7 @@ grow_rows(Regroup *g)
 	g->tag = g->cap == 0 ? MemoryContextAlloc(g->cx, (Size) cap * sizeof(uint64)) : repalloc(g->tag, (Size) cap * sizeof(uint64));
 	g->gid = g->cap == 0 ? MemoryContextAlloc(g->cx, (Size) cap * sizeof(uint32)) : repalloc(g->gid, (Size) cap * sizeof(uint32));
 	g->cap = cap;
+	return true;
 }
 
 static inline uint64
@@ -153,7 +153,7 @@ rehash(Regroup *g, uint32 nslot)
 	}
 }
 
-static void
+static bool
 grow_groups(Regroup *g)
 {
 	const uint64 used = (uint64) g->cap * g->row_bytes;
@@ -161,13 +161,14 @@ grow_groups(Regroup *g)
 	const uint32 gcap = (uint32) Min(Min(room, RG_MAX_GROUPS), g->gcap == 0 ? RG_FIRST_SLOTS : (uint64) g->gcap * 2);
 
 	if (gcap <= g->gcap)
-		over_budget();
+		return false;
 	g->gkey = g->gcap == 0 ? MemoryContextAlloc(g->cx, (Size) gcap * g->spec.n_part * sizeof(int64)) : repalloc(g->gkey, (Size) gcap * g->spec.n_part * sizeof(int64));
 	g->gnull = g->gcap == 0 ? MemoryContextAlloc(g->cx, gcap) : repalloc(g->gnull, gcap);
 	g->gcap = gcap;
+	return true;
 }
 
-/* the partition of the key (the number of a new one when the key has not been seen) */
+/* the partition of the key (the number of a new one when the key has not been seen), RG_NO_GROUP when a new one does not fit */
 static uint32
 group_of(Regroup *g, const int64 *key, uint8 nulls)
 {
@@ -177,8 +178,8 @@ group_of(Regroup *g, const int64 *key, uint8 nulls)
 	for (uint32 id; (id = g->slot[i]) != 0; i = (i + 1) & (g->nslot - 1))
 		if (g->gnull[id - 1] == nulls && memcmp(&g->gkey[(Size) (id - 1) * np], key, np * sizeof(int64)) == 0)
 			return id - 1;
-	if (g->ngroups == g->gcap)
-		grow_groups(g);
+	if (g->ngroups == g->gcap && !grow_groups(g))
+		return RG_NO_GROUP;
 	memcpy(&g->gkey[(Size) g->ngroups * np], key, np * sizeof(int64));
 	g->gnull[g->ngroups] = nulls;
 	g->slot[i] = ++g->ngroups;
@@ -194,19 +195,87 @@ int_at(const SiftVec *v, uint32 r)
 }
 
 static void
+free_rows(Regroup *g)
+{
+	if (g->cap > 0)
+	{
+		for (int c = 0; c < g->spec.ncols; c++)
+		{
+			pfree(g->data[c]);
+			pfree(g->valid[c]);
+		}
+		pfree(g->tag);
+	}
+	if (g->gid != NULL)
+		pfree(g->gid);
+	if (g->gkey != NULL)
+	{
+		pfree(g->gkey);
+		pfree(g->gnull);
+	}
+	if (g->slot != NULL)
+		pfree(g->slot);
+	g->cap = 0;
+	g->n = 0;
+	g->gid = NULL;
+	g->gkey = NULL;
+	g->gnull = NULL;
+	g->slot = NULL;
+}
+
+/* the rows do not fit: they go to a sort by the partition keys, which puts the partitions together as it puts the rows of each in the order they came */
+static void
+start_spill(Regroup *g)
+{
+	SiftWinPsSpec ps = {.ncols = g->spec.ncols,.n_ord = g->spec.n_part,.max_bytes = g->spec.max_bytes};
+
+	memcpy(ps.type, g->spec.type, sizeof(ps.type));
+	memcpy(ps.scale, g->spec.scale, sizeof(ps.scale));
+	for (int k = 0; k < g->spec.n_part; k++)
+		ps.ord[k] = (SiftWinPsKey) {.slot = g->spec.part_slot[k]};
+	g->sp = sift_win_spill_begin(g->cx, &ps, g->spec.max_bytes);
+	for (uint32 i = 0; i < g->n; i++)
+	{
+		uint8		state[SIFT_V6_MAX_COLS];
+		const char *cell[SIFT_V6_MAX_COLS];
+
+		for (int c = 0; c < g->spec.ncols; c++)
+		{
+			state[c] = g->valid[c][i];
+			cell[c] = g->data[c] + (size_t) i * g->esz[c];
+		}
+		sift_win_spill_put(g->sp, g->tag[i], state, cell);
+	}
+	free_rows(g);
+}
+
+static void
+spill_row(Regroup *g, const SiftV6Batch *b, uint32 r)
+{
+	uint8		state[SIFT_V6_MAX_COLS];
+	const char *cell[SIFT_V6_MAX_COLS];
+
+	for (int c = 0; c < g->spec.ncols; c++)
+	{
+		state[c] = sift_vec_state_at(&b->col[c], r);
+		cell[c] = (const char *) b->col[c].data + (size_t) r * g->esz[c];
+	}
+	sift_win_spill_put(g->sp, b->tag[r], state, cell);
+}
+
+static void
 append_row(Regroup *g, const SiftV6Batch *b, uint32 r)
 {
 	int64		key[SIFT_WIN_MAX_KEYS] = {0};
 	uint8		nulls = 0;
+	uint32		gid;
 
-	if (g->n == g->cap)
-		grow_rows(g);
-	for (int c = 0; c < g->spec.ncols; c++)
+	if (g->sp == NULL && g->n == g->cap && !grow_rows(g))
+		start_spill(g);
+	if (g->sp != NULL)
 	{
-		const SiftVec *v = &b->col[c];
-
-		copy_elem(g->data[c], g->n, v->data, r, g->esz[c]);
-		g->valid[c][g->n] = sift_vec_valid_at(v, r);
+		spill_row(g, b, r);
+		return;
 	}
 	for (int k = 0; k < g->spec.n_part; k++)
 	{
@@ -217,8 +286,22 @@ append_row(Regroup *g, const SiftV6Batch *b, uint32 r)
 		else
 			nulls |= (uint8) (1 << k);
 	}
+	gid = group_of(g, key, nulls);
+	if (gid == RG_NO_GROUP)
+	{
+		start_spill(g);
+		spill_row(g, b, r);
+		return;
+	}
+	for (int c = 0; c < g->spec.ncols; c++)
+	{
+		const SiftVec *v = &b->col[c];
+
+		copy_elem(g->data[c], g->n, v->data, r, g->esz[c]);
+		g->valid[c][g->n] = sift_vec_state_at(v, r);
+	}
 	g->tag[g->n] = b->tag[r];
-	g->gid[g->n] = group_of(g, key, nulls);
+	g->gid[g->n] = gid;
 	g->n++;
 }
 
@@ -262,8 +345,45 @@ drain(Regroup *g)
 			if (b.mask == NULL || ((b.mask[r >> 6] >> (r & 63)) & 1))
 				append_row(g, &b, r);
 	}
-	sort_rows(g);
+	if (g->sp != NULL)
+		sift_win_spill_sort(g->sp);
+	else
+		sort_rows(g);
 	g->drained = true;
+}
+
+static uint32
+memory_batch(Regroup *g)
+{
+	const uint32 m = Min(SIFT_VEC_LEN, g->n - g->pos);
+
+	for (int c = 0; c < g->spec.ncols; c++)
+		for (uint32 i = 0; i < m; i++)
+		{
+			const uint32 row = g->order[g->pos + i];
+
+			copy_elem(g->obuf[c], i, g->data[c], row, g->esz[c]);
+			g->ostate[c][i] = g->valid[c][row];
+		}
+	for (uint32 i = 0; i < m; i++)
+		g->otag[i] = g->tag[g->order[g->pos + i]];
+	g->pos += m;
+	return m;
+}
+
+static uint32
+spill_batch(Regroup *g)
+{
+	SiftWinSpillOut o = {.cx = CurrentMemoryContext,.tag = g->otag};
+
+	for (int c = 0; c < g->spec.ncols; c++)
+	{
+		o.col[c] = g->obuf[c];
+		o.state[c] = g->ostate[c];
+	}
+	for (int k = 0; k < g->spec.n_part; k++)
+		o.peer[k] = g->opeer[k];
+	return sift_win_spill_read(g->sp, SIFT_VEC_LEN, &o);
 }
 
 static bool
@@ -274,29 +394,26 @@ rg_next(SiftV6Source *s, SiftV6Batch *out)
 
 	if (!g->drained)
 		drain(g);
-	if (g->pos >= g->n)
+	m = g->sp != NULL ? spill_batch(g) : g->pos < g->n ? memory_batch(g) : 0;
+	if (m == 0)
 		return false;
-	m = Min(SIFT_VEC_LEN, g->n - g->pos);
 	for (int c = 0; c < g->spec.ncols; c++)
 	{
 		uint64	   *words = g->ovalid[c];
-		bool		all_valid = true;
+		bool		all_valid = true,
+					has_nan = false;
 
 		memset(words, 0, sizeof(g->ovalid[c]));
+		memset(g->onan[c], 0, sizeof(g->onan[c]));
 		for (uint32 i = 0; i < m; i++)
 		{
-			const uint32 row = g->order[g->pos + i];
-			const bool	valid = g->valid[c][row];
-
-			copy_elem(g->obuf[c], i, g->data[c], row, g->esz[c]);
-			words[i >> 6] |= (uint64) valid << (i & 63);
-			all_valid &= valid;
+			sift_vec_state_put(words, g->onan[c], i, g->ostate[c][i]);
+			all_valid &= g->ostate[c][i] == SIFT_CELL_STATE_VALUE;
+			has_nan |= g->ostate[c][i] == SIFT_CELL_STATE_NAN;
 		}
-		g->ovec[c] = (SiftVec) {.data = g->obuf[c],.valid = all_valid ? NULL : words,.len = (uint16) m,.all_valid = all_valid,.dense = true,.type = g->spec.type[c],.scale = g->spec.scale[c]};
+		g->ovec[c] = (SiftVec) {.data = g->obuf[c],.valid = all_valid ? NULL : words,.nan = has_nan ? g->onan[c] : NULL,.len = (uint16) m,.all_valid = all_valid,.dense = true,
+								.type = g->spec.type[c],.scale = g->spec.scale[c]};
 	}
-	for (uint32 i = 0; i < m; i++)
-		g->otag[i] = g->tag[g->order[g->pos + i]];
-	g->pos += m;
 	*out = (SiftV6Batch) {.n = (uint16) m,.col = g->ovec,.tag = g->otag};
 	return true;
 }
@@ -315,18 +432,11 @@ rg_close(SiftV6Source *s)
 	Regroup    *g = (Regroup *) s;
 
 	g->in->close(g->in);
-	if (g->cap > 0)
-	{
-		for (int c = 0; c < g->spec.ncols; c++)
-		{
-			pfree(g->data[c]);
-			pfree(g->valid[c]);
-		}
-		pfree(g->tag);
-	}
+	if (g->sp != NULL)
+		sift_win_spill_end(g->sp);
+	free_rows(g);
 	if (g->order != NULL)
 		pfree(g->order);
-	g->cap = 0;
 	g->order = NULL;
 }
 

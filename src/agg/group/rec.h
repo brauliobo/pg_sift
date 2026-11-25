@@ -14,11 +14,31 @@
 #include "agg/group/dist.h"
 #include "agg/group/ht.h"
 
+/* The buffer a record is built in: it grows */
+typedef struct SiftRecBuf
+{
+	uint8	   *p;
+	uint32		cap;
+} SiftRecBuf;
+
+/* Gets a record of one group (the hash of its group, the record, its length) */
+typedef void (*SiftRecPut) (void *arg, uint64 hash, const uint8 *rec, uint32 len);
+
+struct SiftRecMerge;
+
+/* The kind of the first record a shape's own records have (flush, merge_rec): the kinds below it are those of this file */
+#define SIFT_REC_OWN	4
+
 /*
  * The state of a group beyond its key: init puts a new group in its empty state, merge adds the state of src (a partial group of another table) into
  * dst; slot aggregates and the state block (NULL when the table has none) are both passed, with the shape (ctx is the caller's). wide_key, ext_stride
  * and ext_dist_off are those of sift_ht_init_ex, of the tables that make the records and the ones that merge them alike. A shape with ext_dist_off set
  * keeps count(DISTINCT) sets, which are shipped as records of values, never as the sets.
+ *
+ * A group whose state points into memory that does not go with the record (a value interned in the caller's tables, a string in its arena) has records of its
+ * own, that hold the values: flush puts every group of a table as them (the slot records are not made), merge_rec merges one into the table of m, and part_begin
+ * is called before a partition is merged, the memory of the values of the one before given back; held is the bytes the caller holds for the values of the
+ * partition in hand, which count against the budget of its table.
  */
 typedef struct SiftRadixShape
 {
@@ -28,6 +48,10 @@ typedef struct SiftRadixShape
 	const void *ctx;
 	void		(*init) (const struct SiftRadixShape *sh, SiftAggSlot64 *slot, uint8 *ext);
 	void		(*merge) (const struct SiftRadixShape *sh, SiftAggSlot64 *dst, uint8 *dst_ext, const SiftAggSlot64 *src, const uint8 *src_ext);
+	void		(*flush) (const struct SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, SiftRecPut put, void *arg);
+	void		(*merge_rec) (const struct SiftRadixShape *sh, struct SiftRecMerge *m, const uint8 *rec);
+	void		(*part_begin) (const struct SiftRadixShape *sh);
+	uint64		(*held) (const struct SiftRadixShape *sh);
 } SiftRadixShape;
 
 /* The hash of the group of a record, and its length */
@@ -48,16 +72,6 @@ sift_rec_len(const uint8 *rec)
 	memcpy(&len, rec, sizeof(len));
 	return len;
 }
-
-/* The buffer a record is built in: it grows */
-typedef struct SiftRecBuf
-{
-	uint8	   *p;
-	uint32		cap;
-} SiftRecBuf;
-
-/* Gets a record of one group (the hash of its group, the record, its length) */
-typedef void (*SiftRecPut) (void *arg, uint64 hash, const uint8 *rec, uint32 len);
 
 /* Every group of the table, as its state record and a value record for each value of its set, to put */
 extern void sift_rec_flush_ht(const SiftSaltedHT *ht, const SiftRadixShape *shape, SiftRecBuf *buf, SiftRecPut put, void *arg);

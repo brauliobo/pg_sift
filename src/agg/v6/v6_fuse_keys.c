@@ -20,7 +20,6 @@
 #include "agg/v6/v6_vexpr.h"
 #include "agg/v6/v6_fuse_keys.h"
 #include "col/am.h"
-#include "col/f2/f2.h"
 #include "core/errctx.h"
 
 static bool
@@ -100,14 +99,9 @@ values_of(const Node *q, SiftF2KeySet *ks)
 static int
 lead_att_of(Relation index)
 {
-	const SiftColRel *r;
-	const SiftF2Rel *f;
+	const SiftStoreOps *ops = sift_store_ops_for_oid(RelationGetRelid(index), false);
 
-	if (!sift_v6_format()->owns_rel(RelationGetRelid(index), false))
-		return 0;
-	r = sift_col_rel(index);
-	f = sift_f2_rel(index);
-	return f->nkey >= 1 ? r->schema->cols[f->key_cols[0]].attno : 0;
+	return ops != NULL && ops->order != NULL ? ops->order->lead_att(RelationGetRelid(index), false) : 0;
 }
 
 typedef struct QualEnt

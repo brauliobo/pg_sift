@@ -113,9 +113,9 @@
 	  "UNION ALL arms of a fused or two-level scan", "normal plan (slug shape_width)", "-", 1) \
 	X(virtual_leaves, "SIFT_AGG_MAX_VLEAVES", "agg/spec/expr.h", SIFT_AGG_MAX_VLEAVES, "leaves", \
 	  "virtual leaves (expressions) per scan", "normal plan (slug shape_width)", "-", 1) \
-	X(layout_leaves, "SIFT_COLSRC_MAX_LEAVES", "agg/colsrc/meta.h", SIFT_COLSRC_MAX_LEAVES, "leaves", \
+	X(layout_leaves, "SIFT_COLSRC_MAX_LEAVES", "col/v1/src_meta.h", SIFT_COLSRC_MAX_LEAVES, "leaves", \
 	  "leaves of the layout of one scan", "normal plan", "-", 0) \
-	X(scan_filters, "SIFT_COLSRC_MAX_FILTERS", "agg/colsrc/exec.h", SIFT_COLSRC_MAX_FILTERS, "filters", \
+	X(scan_filters, "SIFT_COLSRC_MAX_FILTERS", "col/v1/src_exec.h", SIFT_COLSRC_MAX_FILTERS, "filters", \
 	  "filters of a scan that skip units", "the others do not skip units", "-", 0) \
 	X(wide_conjuncts, "SIFT_AGG_MAX_WIDE", "agg/spec/expr.h", SIFT_AGG_MAX_WIDE, "conjuncts", \
 	  "conjuncts on wide leaves per scan", "normal plan", "-", 0) \
@@ -174,7 +174,7 @@
 	  "no statistics block: the plan reads the zone arrays of the segment", "-", 1) \
 	X(int_digits, "SIFT_COL_MAX_SCALE", "col/api/leaf.h", SIFT_COL_MAX_SCALE, "digits", \
 	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
-	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/v1/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
+	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "core/wide_datum.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
 	  "precision of a numeric in a wide leaf", "ERROR 54000 at build or merge", "-", 0) \
 	X(cube_dims, "SIFT_PAGG_MAX_DIMS", "col/v1/preagg.h", SIFT_PAGG_MAX_DIMS, "dimensions", \
 	  "dimensions of the cube of an index", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
@@ -423,8 +423,14 @@
 	  "the dictionary of the zstd compression of a part", \
 	  "a larger dictionary is not written; the part is compressed without it", "-", 0) \
 	X(par_dist, "SIFT_PAR_MAX_DIST", "agg/v6/v6_par.h", 32, "aggregates", \
-	  "count(DISTINCT) aggregates of one scan a parallel plan runs", \
-	  "the scan runs without parallel workers", "-", 0)
+	  "count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) aggregates of one scan a parallel plan runs", \
+	  "the scan runs without parallel workers", "-", 0) \
+	X(first_cols, "SIFT_V6_FIRST_MAX_COLS", "agg/v6/v6_first.h", SIFT_V6_FIRST_MAX_COLS, "columns", \
+	  "ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them)", \
+	  "the normal plan sorts the rows and keeps the first of each group", "-", 0) \
+	X(float_sum_rows, "V6FSUM_MAX_ROWS", "agg/v6/v6_fsum.h", 137438953472, "rows", \
+	  "rows one group adds in the float8 sum or average of a Format Major 2 scan (its bins are 64-bit integer sums of 26-bit digits)", \
+	  "an error (the float8 sum is over more rows than the bins hold)", "-", 0)
 
 typedef enum SiftLimitId
 {

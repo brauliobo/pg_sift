@@ -17,7 +17,6 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/tlist.h"
-#include "parser/parsetree.h"
 #include "port/pg_bitutils.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -25,33 +24,12 @@
 #include "utils/memutils.h"
 #include "utils/numeric.h"
 
-#include "agg/plan/safety.h"
 #include "executor/nodeSubplan.h"
 
 #include "agg/v6/v6_vexpr.h"
 #include "agg/zoneoff.h"
 #include "core/memtrack.h"
-
-static const SiftV6Format *bound_format;
-
-void
-sift_v6_format_bind(const SiftV6Format *fmt)
-{
-	bound_format = fmt;
-}
-
-const SiftV6Format *
-sift_v6_format(void)
-{
-	Assert(bound_format != NULL);
-	return bound_format;
-}
-
-bool
-sift_v6_format_bound(void)
-{
-	return bound_format != NULL;
-}
+#include "core/store_ops.h"
 
 bool
 sift_v6_vec_type(Oid typid, int32 typmod, SiftV6InCol *out)
@@ -124,6 +102,12 @@ input_col(const SiftV6Input *in, AttrNumber attno)
 	return -1;
 }
 
+int
+sift_v6_input_attno(const SiftV6Input *in, int col)
+{
+	return in->is_table ? col : in->keys[col - 1];
+}
+
 static int
 input_add(SiftV6Input *in, const Var *v, SiftV6InCol col)
 {
@@ -135,7 +119,7 @@ input_add(SiftV6Input *in, const Var *v, SiftV6InCol col)
 	for (int k = 0; k < in->ncols; k++)
 		if (in->col[k].attno == col.attno)
 			return k;
-	if (in->ncols == SIFT_V6_MAX_COLS || !sift_v6_format()->leaf_holds(in->indexoid, col.attno, sift_v6_class(v->vartype)))
+	if (in->ncols == SIFT_V6_MAX_COLS || !sift_v6_input_holds(in, col.attno, sift_v6_class(v->vartype)))
 		return -1;
 	in->col[in->ncols] = col;
 	return in->ncols++;
@@ -270,7 +254,7 @@ mask_node(Comp *c, AttrNumber attno, const char *key)
 	SiftVexprNode *n;
 	int			m;
 
-	if (i < 0 || !sift_v6_format()->leaf_holds(in->indexoid, i + 1, key == NULL ? SV6C_BOOL : SV6C_NONE))
+	if (i < 0 || !sift_v6_input_holds(in, i + 1, key == NULL ? SV6C_BOOL : SV6C_NONE))
 		return NULL;
 	for (m = 0; m < in->nmasks; m++)
 		if (in->mask[m].attno == i + 1 && (in->mask[m].key == NULL) == (key == NULL) && (key == NULL || strcmp(in->mask[m].key, key) == 0))
@@ -637,9 +621,6 @@ any_node(Comp *c, const ScalarArrayOpExpr *sa)
 	const Node *left = linitial(sa->args);
 	const Const *arr = lsecond(sa->args);
 	ArrayType  *a;
-	int16		len;
-	bool		byval;
-	char		align;
 	Datum	   *el;
 	bool	   *nulls;
 	int			n;
@@ -649,10 +630,9 @@ any_node(Comp *c, const ScalarArrayOpExpr *sa)
 		get_func_namespace(get_opcode(sa->opno)) != PG_CATALOG_NAMESPACE)
 		return NULL;
 	a = DatumGetArrayTypeP(arr->constvalue);
-	get_typlenbyvalalign(ARR_ELEMTYPE(a), &len, &byval, &align);
-	deconstruct_array(a, ARR_ELEMTYPE(a), len, byval, align, &el, &nulls, &n);
-	if (n > SIFT_V6_ANY_MAX || domain_of(exprType(left)) == DOM_NONE || domain_of(exprType(left)) != domain_of(ARR_ELEMTYPE(a)))
+	if (ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a)) > SIFT_V6_ANY_MAX || domain_of(exprType(left)) == DOM_NONE || domain_of(exprType(left)) != domain_of(ARR_ELEMTYPE(a)))
 		return NULL;
+	sift_v6_array_elems(a, &el, &nulls, &n);
 	if (n == 0)
 	{
 		acc = node_new(c, SVX_BOOL_CONST, SVEC_BOOL);
@@ -831,9 +811,9 @@ sift_v6_vexpr_filter(SiftVexprCtx *ctx, const SiftV6Vexpr *quals, const SiftV6Ba
 }
 
 void
-sift_v6_explain_index(ExplainState *es, Oid indexoid)
+sift_v6_explain_index(ExplainState *es, Oid relid, bool is_table)
 {
-	ExplainPropertyText("Index", get_rel_name(indexoid), es);
+	ExplainPropertyText(is_table ? "Table" : "Index", get_rel_name(relid), es);
 }
 
 void
@@ -842,19 +822,8 @@ sift_v6_explain_count(ExplainState *es, const char *label, int64 value)
 	ExplainPropertyInteger(label, NULL, value, es);
 }
 
-bool
-sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel)
-{
-	RangeTblEntry *rte;
-
-	if (rel->reloptkind != RELOPT_BASEREL || rel->indexlist == NIL || rel->lateral_relids != NULL || agg_query_has_rls(root))
-		return false;
-	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL;
-}
-
 void
-sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private)
+sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private, List *custom_paths)
 {
 	CustomPath *cp = makeNode(CustomPath);
 
@@ -867,6 +836,7 @@ sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, doubl
 	cp->path.pathkeys = pathkeys;
 	cp->methods = methods;
 	cp->custom_private = custom_private;
+	cp->custom_paths = custom_paths;
 	add_path(output_rel, &cp->path);
 }
 
@@ -876,8 +846,21 @@ sift_v6_stage_target(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *out
 	output_rel->reltarget = root->upper_targets[stage];
 }
 
+bool
+sift_v6_collect_params(Node *n, List **out)
+{
+	if (n == NULL || IsA(n, SubPlan))
+		return false;
+	if (IsA(n, Param))
+	{
+		*out = lappend(*out, n);
+		return false;
+	}
+	return expression_tree_walker(n, sift_v6_collect_params, out);
+}
+
 Plan *
-sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const CustomScanMethods *methods, Oid indexoid)
+sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const CustomScanMethods *methods, Oid indexoid, const Node *exprs)
 {
 	CustomScan *cs = makeNode(CustomScan);
 
@@ -886,6 +869,7 @@ sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const Custom
 	cs->flags = best->flags;
 	cs->custom_scan_tlist = lsecond(best->custom_private);
 	cs->custom_private = best->custom_private;
+	sift_v6_collect_params((Node *) exprs, &cs->custom_exprs);
 	cs->methods = methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, indexoid);
 	return &cs->scan.plan;

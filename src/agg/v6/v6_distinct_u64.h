@@ -8,6 +8,41 @@
 
 #include "postgres.h"
 
+/*
+ * The part of the sets that calls no server function: the hash, and the deduplication of values and of pairs in a table the caller made (the sets above make theirs of the memory of the server, the
+ * threads of v6_par_radix_dist.c of an arena). A table has a power of 2 of entries and room for what it is given: the caller grows it before it is full.
+ */
+typedef struct SiftDuPair
+{
+	uint64		val;
+	uint32		gid1;			/* the group + 1: 0 is an empty entry */
+	uint32		h32;			/* the low half of the hash of the pair */
+} SiftDuPair;
+
+static inline uint64
+sift_du64_mix(uint64 x)
+{
+	x ^= x >> 32;
+	x *= UINT64CONST(0xd6e8feb86659fd93);
+	x ^= x >> 32;
+	x *= UINT64CONST(0xd6e8feb86659fd93);
+	return x ^ (x >> 32);
+}
+
+static inline uint64
+sift_du64_pair_hash(uint64 v, uint32 gid)
+{
+	return sift_du64_mix(v ^ ((uint64) gid + 1) * UINT64CONST(0x9e3779b97f4a7c15));
+}
+
+/* The values of vals[0 .. n-1] that are not 0 and are new to tab (0 is an empty entry: the caller keeps the value 0 itself); returns how many were new */
+extern uint32 sift_du64_dedup_slice(uint64 *tab, uint64 cap, const uint64 *vals, uint32 n);
+/* The entries of src (scap of them) into the empty table dst of dcap entries, which is twice as large or more: no entry is compared, they are all different (a pair is placed by the hash of its value and group) */
+extern void sift_du64_rehash(uint64 *dst, uint64 dcap, const uint64 *src, uint64 scap);
+extern void sift_du64g_rehash(SiftDuPair *dst, uint64 dcap, const SiftDuPair *src, uint64 scap);
+/* The pairs p[0 .. n-1] that are new to tab, moved to the front of p in their order; returns how many */
+extern uint32 sift_du64g_dedup_bucket(SiftDuPair *tab, uint64 cap, SiftDuPair *p, uint32 n);
+
 typedef struct SiftDistinctU64 SiftDistinctU64;
 
 extern SiftDistinctU64 *sift_du64_create(MemoryContext cx, uint64 budget_bytes);

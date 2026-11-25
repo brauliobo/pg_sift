@@ -8,6 +8,7 @@
 #include "utils/memutils.h"
 
 #include "agg/kern6.h"
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_group_cmp.h"
 
 #define CMP_AHEAD		16
@@ -44,84 +45,6 @@ agg_fits(const SiftV6Agg *a)
 		default:
 			return false;
 	}
-}
-
-/* ---- the numbers of the strings ---- */
-
-static uint32
-intern_slot(const Intern *in, uint64 h, const char *p, uint32 len)
-{
-	uint32		i = (uint32) h & (in->cap - 1);
-
-	while (in->ht[i] != 0 && !(in->str[in->ht[i] - 1].hash == h && in->str[in->ht[i] - 1].len == len && memcmp(in->arena + in->str[in->ht[i] - 1].off, p, len) == 0))
-		i = (i + 1) & (in->cap - 1);
-	return i;
-}
-
-static void
-intern_grow(Intern *in, MemoryContext cx)
-{
-	const uint32 ocap = in->cap;
-	uint32	   *old = in->ht;
-
-	in->cap = ocap == 0 ? 1024 : ocap * 2;
-	in->ht = MemoryContextAllocZero(cx, (Size) in->cap * sizeof(uint32));
-	for (uint32 id = 0; id < in->n; id++)
-	{
-		uint32		i = (uint32) in->str[id].hash & (in->cap - 1);
-
-		while (in->ht[i] != 0)
-			i = (i + 1) & (in->cap - 1);
-		in->ht[i] = id + 1;
-	}
-	if (old != NULL)
-		pfree(old);
-}
-
-/* The number of the string, which is new when it has none yet */
-static uint32
-intern_id(Intern *in, MemoryContext cx, const char *p, uint32 len)
-{
-	const uint64 h = sift_aggk6_hash_bytes(p, len);
-	uint32		i;
-
-	if ((in->n + 1) * 2 > in->cap)
-		intern_grow(in, cx);
-	i = intern_slot(in, h, p, len);
-	if (in->ht[i] != 0)
-		return in->ht[i] - 1;
-	if (in->n == in->str_cap)
-	{
-		in->str_cap = Max(1024, in->str_cap * 2);
-		in->str = in->str == NULL ? MemoryContextAlloc(cx, (Size) in->str_cap * sizeof(IStr)) : repalloc(in->str, (Size) in->str_cap * sizeof(IStr));
-	}
-	if (in->used + len > in->arena_cap)
-	{
-		in->arena_cap = Max(Max(in->arena_cap * 2, in->used + len), 4096);
-		in->arena = in->arena == NULL ? MemoryContextAlloc(cx, in->arena_cap) : repalloc(in->arena, in->arena_cap);
-	}
-	memcpy(in->arena + in->used, p, len);
-	in->str[in->n] = (IStr) {h, (uint32) in->used, len};
-	in->used += len;
-	in->ht[i] = ++in->n;
-	return in->n - 1;
-}
-
-static Size
-intern_bytes(const Intern *in)
-{
-	return (Size) in->cap * sizeof(uint32) + (Size) in->str_cap * sizeof(IStr) + in->arena_cap;
-}
-
-static void
-intern_free(Intern *in)
-{
-	if (in->ht != NULL)
-		pfree(in->ht);
-	if (in->str != NULL)
-		pfree(in->str);
-	if (in->arena != NULL)
-		pfree(in->arena);
 }
 
 /* The numbers of the strings of the codes of the dictionary of a batch: kept while the batches are of the same part, else made again */
@@ -163,12 +86,6 @@ cap_for(const SiftV6Group *g, int sw)
 	return cap;
 }
 
-static uint64 *
-tab_alloc(const SiftV6Group *g, uint64 cap, int sw)
-{
-	return MemoryContextAllocAligned(g->cx, cap * sw * sizeof(uint64), 64, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
-}
-
 /* The layout of the key in the table: one integer, or the packed key of the set, or a word for each key column (the integers as they are, the text as its number) */
 static bool
 key_plan(const SiftV6Spec *spec, const V6Set *set, SiftCompact *c)
@@ -206,20 +123,13 @@ key_plan(const SiftV6Spec *spec, const V6Set *set, SiftCompact *c)
 	return c->strk >= 0;
 }
 
-static int
-slot_words(int need)
-{
-	return need <= 2 ? 2 : need <= 4 ? 4 : 8;
-}
-
 /* Whether the set has a compact table, whatever the state of the scan: what the table would be, in c */
 static bool
 compact_plan(const SiftV6Group *g, const V6Set *set, SiftCompact *c)
 {
 	const SiftV6Spec *spec = g->spec;
-	int			need;
 
-	if (spec->nsets != 0 || g->nfilters != 0 || set->nk == 0 || set->ht.lock_at != 0)
+	if (spec->nsets != 0 || g->nfilters != 0 || set->nk == 0 || set->ht.lock_at != 0 || g->gkeys != NULL)
 		return false;
 	for (int j = 0; j < spec->naggs; j++)
 	{
@@ -228,21 +138,8 @@ compact_plan(const SiftV6Group *g, const V6Set *set, SiftCompact *c)
 		c->nsum += spec->agg[j].kind == SV6_SUM || spec->agg[j].kind == SV6_AVG;
 	}
 	c->has_gid = g->ndist > 0;
-	if (!key_plan(spec, set, c))
+	if (!key_plan(spec, set, c) || !cmp_layout(c, set->packed))
 		return false;
-	c->strm = c->strk == 0 && c->kw == 1 && c->nsum == 0 && !c->has_gid;
-	need = c->kw + 1 + c->nsum + c->has_gid;
-	c->cnt_hi = c->strm || (c->kw == 2 && c->strk < 0 && !c->has_gid && slot_words(need - 1) < slot_words(need));
-	need -= c->cnt_hi;
-	if (need > CMP_MAX_WORDS)
-		return false;
-	c->sw = slot_words(need);
-	c->sum0 = c->cnt_hi ? c->kw : c->kw + 1;
-	c->cw = c->cnt_hi ? 1 : c->kw;
-	c->cshift = c->cnt_hi ? 32 : 0;
-	c->cinc = UINT64CONST(1) << c->cshift;
-	c->last_mask = c->cnt_hi ? UINT32_MAX : UINT64_MAX;
-	c->gidw = c->sum0 + c->nsum;
 	return (uint64) spec->groups_est * c->sw * sizeof(uint64) * 12 / 5 <= g->budget - g->dist_budget;
 }
 
@@ -263,6 +160,7 @@ compact_new(const SiftV6Group *g, const V6Set *set)
 	if (g->dist_put != NULL || g->spilled || set->ht.count != 0 || set->spill != NULL)
 		return NULL;
 	c = MemoryContextAllocZero(g->cx, sizeof(SiftCompact));
+	c->cx = g->cx;
 	if (!compact_plan(g, set, c))
 	{
 		pfree(c);
@@ -273,83 +171,8 @@ compact_new(const SiftV6Group *g, const V6Set *set)
 		c->word[j] = spec->agg[j].kind == SV6_SUM || spec->agg[j].kind == SV6_AVG ? (int8) w++ : -1;
 	if (c->strk >= 0 && c->kw >= 2)
 		c->rowk = MemoryContextAlloc(g->cx, (Size) SIFT_VEC_LEN * c->kw * sizeof(uint64));
-	c->cap = cap_for(g, c->sw);
-	c->mask = c->cap - 1;
-	c->tab = tab_alloc(g, c->cap, c->sw);
+	cmp_init(c, cap_for(g, c->sw));
 	return c;
-}
-
-static inline uint64
-key_hash(const SiftCompact *c, const uint64 *k)
-{
-	uint64		h;
-
-	if (c->kw == 1)
-		return sift_aggk6_hash1(k[0]);
-	if (c->strk < 0)
-		return sift_pack_hash(&(SiftInlineKey16) {.u64 = {k[0], c->cnt_hi ? (uint32) k[1] : k[1]}});
-	h = sift_aggk6_hash1(k[c->kw - 1]);
-	for (int i = c->kw - 2; i >= 0; i--)
-		h = sift_aggk6_hash1(k[i] ^ h);
-	return h;
-}
-
-static inline uint64 *
-find_slot(SiftCompact *c, uint64 h, const uint64 *key)
-{
-	for (uint64 i = h & c->mask;; i = (i + 1) & c->mask)
-	{
-		uint64	   *s = c->tab + i * c->sw;
-		int			w = 0;
-
-		if (cmp_count(c, s) == 0)
-		{
-			memcpy(s, key, c->kw * sizeof(uint64));
-			c->count++;
-			return s;
-		}
-		while (w < c->kw - 1 && s[w] == key[w])
-			w++;
-		if (w == c->kw - 1 && ((s[w] ^ key[w]) & c->last_mask) == 0)
-			return s;
-	}
-}
-
-/* the table of twice the capacity, when the memory the groups may take holds both while the groups move */
-static bool
-compact_grow(SiftCompact *c, const SiftV6Group *g)
-{
-	uint64	   *old = c->tab;
-	const uint64 ocap = c->cap;
-
-	if ((ocap * 3 * c->sw * sizeof(uint64)) + intern_bytes(&c->in) > g->budget - g->dist_budget)
-		return false;
-	c->cap = ocap * 2;
-	c->mask = c->cap - 1;
-	c->tab = tab_alloc(g, c->cap, c->sw);
-	c->count = 0;
-	c->by_n = 0;
-	if (c->strm)
-		sstr_move(c, old, ocap);
-	for (uint64 i = 0; !c->strm && i < ocap; i++)
-	{
-		const uint64 *s = old + i * c->sw;
-
-		if (cmp_count(c, s) != 0)
-			memcpy(find_slot(c, key_hash(c, s), s), s, c->sw * sizeof(uint64));
-	}
-	pfree(old);
-	return true;
-}
-
-/* room for n more groups at the load limit of 5 in 8, so that a batch grows nothing */
-static bool
-compact_reserve(SiftCompact *c, const SiftV6Group *g, uint16 n)
-{
-	while ((c->count + n) * 8 > c->cap * 5)
-		if (!compact_grow(c, g))
-			return false;
-	return true;
 }
 
 /* whether the batch is one the table holds exactly: every argument of its aggregates has a value in every row, and no sum can pass 62 bits */
@@ -374,10 +197,10 @@ text_id(SiftCompact *c, const SiftV6Group *g, const SiftVec *kv, uint16 r)
 		const uint32 code = ((const uint32 *) kv->data)[r];
 
 		if (c->code_id[code] == CMP_NO_ID)
-			c->code_id[code] = intern_id(&c->in, g->cx, d->bytes + d->off[code], d->off[code + 1] - d->off[code]);
+			c->code_id[code] = cmp_intern(c, d->bytes + d->off[code], d->off[code + 1] - d->off[code]);
 		return c->code_id[code];
 	}
-	return intern_id(&c->in, g->cx, (const char *) sift_strview_bytes(&((const SiftStrView *) kv->data)[r]), ((const SiftStrView *) kv->data)[r].len);
+	return cmp_intern(c, (const char *) sift_strview_bytes(&((const SiftStrView *) kv->data)[r]), ((const SiftStrView *) kv->data)[r].len);
 }
 
 /* The key words and hash of the rows of the batch (g->ikey, g->hash): false when a row has a NULL column and the table has no room for the flags */
@@ -427,7 +250,7 @@ key_rows(SiftCompact *c, SiftV6Group *g, const V6Set *set, SiftVec *const *keyve
 			w[i] = !valid ? 0 : i == c->strk ? text_id(c, g, kvs[i], g->sel[k]) : (uint64) int_at(kvs[i], g->sel[k]);
 		}
 		w[c->strk] |= nulls << 32;
-		g->hash[k] = key_hash(c, w);
+		g->hash[k] = cmp_key_hash(c, w);
 	}
 	return true;
 }
@@ -455,7 +278,7 @@ v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *c
 		compact_flush(g, set, false);
 		return false;
 	}
-	if (!compact_reserve(c, g, n))
+	if (!cmp_reserve(c, n, g->budget - g->dist_budget))
 	{
 		compact_flush(g, set, true);
 		return false;
@@ -483,7 +306,7 @@ v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *c
 
 		if (k + CMP_AHEAD < n)
 			__builtin_prefetch(c->tab + (g->hash[k + CMP_AHEAD] & c->mask) * c->sw, 1);
-		s = c->kw == 1 && g->ikey[k].i64[1] != 0 ? c->null_group : find_slot(c, g->hash[k], key);
+		s = c->kw == 1 && g->ikey[k].i64[1] != 0 ? c->null_group : cmp_find(c, g->hash[k], key);
 		if (c->has_gid)
 		{
 			if (cmp_count(c, s) == 0)
@@ -598,6 +421,8 @@ v6g_compact_key_datums(const SiftV6Group *g, const V6Set *set, const uint64 *slo
 		else
 			values[k] = v6g_int_datum(g->spec->key[k].typid, x);
 	}
+	if (g->gkeys != NULL)
+		sift_v6_genkeys_resolve(g->gkeys, values, isnull, want);
 }
 
 void
@@ -721,9 +546,8 @@ typedef struct Flush
 	V6Set	   *set;
 	bool		spill;			/* the groups leave for the spill a run at a time, as the table is flushed because the memory is out */
 	uint32		run;
+	uint32		run_max;		/* the groups a quarter of the budget holds */
 } Flush;
-
-#define FLUSH_SPILL_RUN		65536
 
 static void
 flush_group(void *arg, const uint64 *slot)
@@ -732,20 +556,24 @@ flush_group(void *arg, const uint64 *slot)
 	V6Set	   *set = f->set;
 
 	v6g_compact_acc(set->owner, set, slot, (V6Acc *) sift_ht_ext(&set->ht, flush_upsert(set->owner, set, slot)));
-	if (f->spill && ++f->run % FLUSH_SPILL_RUN == 0)
-		v6g_spill_all(set->owner);
+	if (f->spill && ++f->run == f->run_max)
+	{
+		f->run = 0;
+		v6g_spill_sets(set->owner);
+	}
 }
 
 static void
 compact_flush(SiftV6Group *g, V6Set *set, bool spill)
 {
-	Flush		f = {set, spill && !set->cmp->has_gid, 0};
+	Flush		f = {set, spill && !set->cmp->has_gid, 0, 0};
 	MemoryContext old;
 
 	if (set->cmp == NULL)
 		return;
+	f.run_max = (uint32) Max(g->budget / 4 / (g->stride + sizeof(SiftAggSlot64) + 1), 1024);
 	old = MemoryContextSwitchTo(g->cx);
-	sift_ht_presize(&set->ht, (uint32) Min(set->cmp->count, f.spill ? FLUSH_SPILL_RUN : UINT32_MAX));
+	sift_ht_presize(&set->ht, (uint32) Min(set->cmp->count, f.spill ? f.run_max : UINT32_MAX));
 	if (set->cmp->has_gid)
 	{
 		by_gid_make(set->cmp, set);
@@ -770,7 +598,7 @@ v6g_compact_bytes(const V6Set *set)
 {
 	const SiftCompact *c = set->cmp;
 
-	return c == NULL ? 0 : c->cap * c->sw * sizeof(uint64) + intern_bytes(&c->in) + (Size) c->code_cap * (c->strm ? sizeof(uint64) : sizeof(uint32));
+	return c == NULL ? 0 : cmp_bytes(c);
 }
 
 void
@@ -780,7 +608,7 @@ v6g_compact_free(V6Set *set)
 
 	if (c == NULL)
 		return;
-	intern_free(&c->in);
+	cmp_free_all(c);
 	if (c->dv != NULL)
 		pfree(c->dv);
 	if (c->by_gid != NULL)
@@ -791,7 +619,6 @@ v6g_compact_free(V6Set *set)
 		pfree(c->code_ent);
 	if (c->rowk != NULL)
 		pfree(c->rowk);
-	pfree(c->tab);
 	pfree(c->word);
 	pfree(c);
 	set->cmp = NULL;

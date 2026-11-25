@@ -10,10 +10,13 @@
 #include "agg/rows.h"
 #include "agg/exec/int.h"
 #include "agg/v6/v6_live.h"
+#include "col/compress.h"
+#include "core/par/pool.h"
 
 void
 sift_agg_init(void)
 {
+	sift_par_pool_on_thread_exit(sift_colz_thread_fini);
 	sift_aggkern_init();
 	sift_aggcol_register();
 	sift_aggcte_init();
@@ -143,6 +146,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.test_verdict_shm_fail",
 							 "Testing: the table of the shared verdicts cannot be had (an error in the registry), once for a backend.",
 							 NULL, &sift_test_verdict_fail, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_unified_agg",
+							 "Testing: Format 1 statements are planned by SiftAggV6 alone, the legacy Format 1 planner is left out.",
+							 NULL, &sift_test_unified_agg, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_fail_pick",
 							"Testing: planning the n-th column index (1 is the second) of a table in an aggregate stage raises an error (0: none).",

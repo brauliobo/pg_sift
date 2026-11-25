@@ -7,6 +7,7 @@
 #include "access/genam.h"
 #include "access/table.h"
 #include "catalog/pg_type_d.h"
+#include "commands/explain.h"
 #include "common/int.h"
 #include "executor/executor.h"
 #include "nodes/makefuncs.h"
@@ -15,36 +16,29 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
+#include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/ruleutils.h"
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_gpu.h"
+#include "agg/v6/v6_explain.h"
 #include "agg/v6/v6_topn.h"
 #include "core/memtrack.h"
 
-static SiftV6TopNOpen bound_open;
-
-void
-sift_v6_topn_bind(SiftV6TopNOpen open)
-{
-	bound_open = open;
-}
-
-SiftV6TopNOpen
-sift_v6_topn_bound(void)
-{
-	return bound_open;
-}
 
 /* the key types whose int64 is in the order of the type: integers and dates and timestamps as they are, float8 by sift_f64_order_i64, a numeric of at most 18 digits as its scaled integer */
 static bool
-key_type_ok(const SiftV6InCol *c)
+int_order_type(Oid typid)
 {
-	switch (c->typid)
+	switch (typid)
 	{
 		case INT2OID:
 		case INT4OID:
@@ -54,25 +48,117 @@ key_type_ok(const SiftV6InCol *c)
 		case TIMESTAMPTZOID:
 		case FLOAT8OID:
 			return true;
-		case NUMERICOID:
-			return c->type == SVEC_NUM64;
 		default:
 			return false;
 	}
 }
 
-/* A count the query gives as an int8 constant or an external parameter (NULL: not given) */
+/* a sort key of the table in hand as it is named in its own namespace; a column of another relation of the statement by its name */
+static char *
+sort_key_text(PlannerInfo *root, Index rti, List *dcx, Node *e)
+{
+	const Var  *v = (const Var *) e;
+
+	if (IsA(e, Var) && v->varno != rti)
+		return get_attname(planner_rt_fetch(v->varno, root)->relid, v->varattno, false);
+	e = copyObject(e);
+	ChangeVarNodes(e, rti, 1, 0);
+	return deparse_expression(e, dcx, false, false);
+}
+
+char *
+sift_v6_topn_desc(PlannerInfo *root, Index rti)
+{
+	const Query *q = root->parse;
+	const Oid	relid = planner_rt_fetch(rti, root)->relid;
+	List	   *dcx = deparse_context_for(get_rel_name(relid), relid);
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	foreach_node(SortGroupClause, sgc, q->sortClause)
+	{
+		bool		desc;
+
+		get_equality_op_for_ordering_op(sgc->sortop, &desc);
+		appendStringInfo(&buf, "%s%s%s", buf.len > 0 ? ", " : "", sort_key_text(root, rti, dcx, (Node *) get_sortgroupclause_expr(sgc, q->targetList)),
+						 desc ? " DESC" : "");
+		if (sgc->nulls_first != desc)
+			appendStringInfoString(&buf, sgc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
+	}
+	return buf.data;
+}
+
+char *
+sift_v6_topn_limit_text(const Node *limit, const Node *offset)
+{
+	const Const *l = (const Const *) limit,
+			   *o = (const Const *) offset;
+	int64		sum;
+
+	if (limit != NULL && IsA(limit, Const) && !l->constisnull && (offset == NULL || (IsA(offset, Const) && !o->constisnull)) &&
+		!pg_add_s64_overflow(DatumGetInt64(l->constvalue), offset == NULL ? 0 : DatumGetInt64(o->constvalue), &sum))
+		return psprintf(INT64_FORMAT, sum);
+	return "by parameter";
+}
+
+void
+sift_v6_topn_explain(ExplainState *es, const char *desc, const char *limit)
+{
+	ExplainPropertyText("Top-N", psprintf("%s (limit %s)", desc, limit), es);
+}
+
+/* the key types a sift_table orders as the rows of its table: the sort of its winners is the query's own, whose comparator and collation order the stored value exactly */
+static bool
+table_key_type_ok(Oid typid)
+{
+	switch (typid)
+	{
+		case UUIDOID:
+		case BYTEAOID:
+		case BPCHAROID:
+		case NAMEOID:
+		case NUMERICOID:
+			return true;
+		default:
+			return int_order_type(typid);
+	}
+}
+
+static bool
+index_key_type_ok(const SiftV6InCol *c)
+{
+	return c->typid == NUMERICOID ? c->type == SVEC_NUM64 : int_order_type(c->typid);
+}
+
+/* The external parameter a count is: bare, or under the implicit cast to int8 of an int2 or int4 one (PREPARE q(int) .. LIMIT $1) */
+static const Param *
+count_param(const Node *n)
+{
+	if (IsA(n, FuncExpr) && (((const FuncExpr *) n)->funcid == F_INT8_INT4 || ((const FuncExpr *) n)->funcid == F_INT8_INT2))
+		n = linitial(((const FuncExpr *) n)->args);
+	return IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXTERN ? (const Param *) n : NULL;
+}
+
+/* A count the query gives as an int8 constant or an external parameter of an integer type (NULL: not given) */
 static bool
 count_ok(const Node *n)
 {
-	return n == NULL || (IsA(n, Const) && ((const Const *) n)->consttype == INT8OID) ||
-		(IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXTERN && ((const Param *) n)->paramtype == INT8OID);
+	const Param *prm;
+
+	if (n == NULL || IsA(n, Const))
+		return n == NULL || ((const Const *) n)->consttype == INT8OID;
+	prm = count_param(n);
+	return prm != NULL && (prm->paramtype == INT8OID || prm->paramtype == INT4OID || prm->paramtype == INT2OID);
 }
 
 /* The value of a count; false: it is NULL (LIMIT ALL, no offset). A parameter has the value of this execution */
 static bool
 count_value(const ParamListInfo params, const Node *n, int64 *out)
 {
+	const Param *param;
+	ParamExternData work;
+	const ParamExternData *prm;
+
 	if (n == NULL)
 		return false;
 	if (IsA(n, Const))
@@ -80,14 +166,10 @@ count_value(const ParamListInfo params, const Node *n, int64 *out)
 		*out = ((const Const *) n)->constisnull ? 0 : DatumGetInt64(((const Const *) n)->constvalue);
 		return !((const Const *) n)->constisnull;
 	}
-	{
-		const int	id = ((const Param *) n)->paramid;
-		ParamExternData work;
-		const ParamExternData *prm = params->paramFetch != NULL ? params->paramFetch(params, id, false, &work) : &params->params[id - 1];
-
-		*out = prm->isnull ? 0 : DatumGetInt64(prm->value);
-		return !prm->isnull;
-	}
+	param = count_param(n);
+	prm = params->paramFetch != NULL ? params->paramFetch(params, param->paramid, false, &work) : &params->params[param->paramid - 1];
+	*out = prm->isnull ? 0 : param->paramtype == INT8OID ? DatumGetInt64(prm->value) : param->paramtype == INT4OID ? DatumGetInt32(prm->value) : DatumGetInt16(prm->value);
+	return !prm->isnull;
 }
 
 /* offset + limit for the tournament; false when a run must sort the rows it is given: LIMIT ALL, WITH TIES, a sum past SIFT_TOURN_MAX_K */
@@ -131,7 +213,7 @@ shape_ok(PlannerInfo *root, SiftV6TopNSpec *spec)
 		q->hasTargetSRFs || q->distinctClause != NIL || q->setOperations != NULL || q->rowMarks != NIL || q->sortClause == NIL ||
 		list_length(q->sortClause) > SIFT_TOURN_MAX_KEYS || q->limitCount == NULL || !count_ok(q->limitCount) || !count_ok(q->limitOffset))
 		return false;
-	if (IsA(l, Const) && !l->constisnull && (DatumGetInt64(l->constvalue) <= 0 || plan_rows(q->limitCount, q->limitOffset) > SIFT_TOURN_MAX_K))
+	if (IsA(l, Const) && (l->constisnull || DatumGetInt64(l->constvalue) <= 0))
 		return false;
 	if (q->limitOffset != NULL && IsA(o, Const) && !o->constisnull && DatumGetInt64(o->constvalue) < 0)
 		return false;
@@ -146,12 +228,29 @@ typedef struct TopNPlan
 	PlannerInfo *root;
 	RelOptInfo *rel;
 	RelOptInfo *out;
-	const IndexOptInfo *index;
+	const IndexOptInfo *index;	/* NULL for a sift_table */
 	SiftV6TopNSpec spec;
 	SiftV6Input in;
 	List	   *scan_tlist;
 	List	   *quals;
 } TopNPlan;
+
+/* the key of a Var: of a table the column to fetch, of an index the column of the input the tournament reads */
+static bool
+key_col(TopNPlan *p, const Var *v, SiftV6Col *key)
+{
+	int			slot;
+
+	if (p->spec.is_table)
+	{
+		*key = (SiftV6Col) {.attno = v->varattno,.typid = v->vartype};
+		return table_key_type_ok(v->vartype);
+	}
+	if ((slot = sift_v6_input_add_var(&p->in, v)) < 0 || !index_key_type_ok(&p->in.col[slot]))
+		return false;
+	*key = (SiftV6Col) {.attno = p->in.col[slot].attno,.typid = p->in.col[slot].typid,.scale = p->in.col[slot].scale};
+	return true;
+}
 
 static bool
 compile_keys(TopNPlan *p)
@@ -163,12 +262,10 @@ compile_keys(TopNPlan *p)
 		const Node *e = (Node *) get_sortgroupclause_expr(sgc, q->targetList);
 		SiftV6TopNSpec *s = &p->spec;
 		bool		reverse;
-		int			slot;
 
-		if (!IsA(e, Var) || ((Var *) e)->varno != p->rel->relid || (slot = sift_v6_input_add_var(&p->in, (Var *) e)) < 0 || !key_type_ok(&p->in.col[slot]) ||
-			!OidIsValid(get_equality_op_for_ordering_op(sgc->sortop, &reverse)))
+		if (!IsA(e, Var) || ((Var *) e)->varno != p->rel->relid || !OidIsValid(get_equality_op_for_ordering_op(sgc->sortop, &reverse)) ||
+			!key_col(p, (Var *) e, &s->key[s->nkeys]))
 			return false;
-		s->key[s->nkeys] = (SiftV6Col) {.attno = p->in.col[slot].attno,.typid = p->in.col[slot].typid,.scale = p->in.col[slot].scale};
 		s->order[s->nkeys] = (SiftTournKey) {.desc = reverse,.nulls_first = sgc->nulls_first};
 		s->sortop[s->nkeys] = sgc->sortop;
 		s->collation[s->nkeys] = exprCollation(e);
@@ -177,15 +274,15 @@ compile_keys(TopNPlan *p)
 	return true;
 }
 
-/* The place (0-based) in the tuples the node outputs of the table column attno; -1: it is not one of them */
+/* The place (0-based) in the tuples the node outputs of the column of the index whose number is col (1-based); -1: it is not one of them */
 static int
-tlist_pos(const List *tlist, AttrNumber attno)
+tlist_pos(const List *tlist, const SiftV6Input *in, int col)
 {
 	int			i = 0;
 
 	foreach_node(TargetEntry, te, (List *) tlist)
 	{
-		if (((Var *) te->expr)->varattno == attno)
+		if (((Var *) te->expr)->varattno == sift_v6_input_attno(in, col))
 			return i;
 		i++;
 	}
@@ -201,7 +298,7 @@ compile_outputs(TopNPlan *p)
 		if (((Var *) te->expr)->varattno <= 0)
 			return false;
 	for (int k = 0; k < p->spec.nkeys; k++)
-		if (tlist_pos(p->scan_tlist, p->spec.key[k].attno) < 0)
+		if (tlist_pos(p->scan_tlist, &p->in, p->spec.key[k].attno) < 0)
 			return false;
 	return p->scan_tlist != NIL;
 }
@@ -228,47 +325,66 @@ leading_key_ordered(const SiftV6TopNSpec *spec)
 {
 	const int	att = spec->key[0].attno;
 
-	return sift_v6_format()->sorted_by(spec->indexoid, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
+	return !spec->is_table && sift_v6_rel_sorted_by(spec->indexoid, false, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
+}
+
+static double
+index_total(const TopNPlan *p, double k)
+{
+	const double sel = Max(p->rel->rows / Max(p->rel->tuples, 1.0), 1e-9);
+	const bool	ordered = leading_key_ordered(&p->spec);
+	const double read = ordered ? Min(p->rel->tuples, k / sel + 4.0 * SIFT_VEC_LEN) : p->rel->tuples;
+	Cost		open,
+				scan;
+
+	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
+	if (k > SIFT_TOURN_MAX_K)
+		return scan + cpu_tuple_cost * p->rel->rows + cpu_operator_cost * p->rel->rows * (p->spec.nkeys + list_length(p->quals) + log2(Max(p->rel->rows, 2.0)));
+	if (!ordered && sift_v6_gpu_topn_forced(&p->spec))
+		return open + cpu_tuple_cost * k;
+	return open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
+}
+
+/* A sift_table has no tournament: its rows are read whole in vectors, and each row that passes the quals is fetched once into a sort bounded by the limit */
+static double
+table_total(const TopNPlan *p, double k)
+{
+	return cpu_tuple_cost * (0.05 * p->rel->tuples + p->rel->rows + k) + cpu_operator_cost * (p->rel->tuples * list_length(p->quals) + p->rel->rows * p->spec.nkeys);
 }
 
 static void
 topn_add_path(TopNPlan *p)
 {
 	const double k = plan_rows(p->spec.limit, p->spec.offset);
-	const double sel = Max(p->rel->rows / Max(p->rel->tuples, 1.0), 1e-9);
-	const bool	ordered = leading_key_ordered(&p->spec);
-	const double read = ordered ? Min(p->rel->tuples, k / sel + 4.0 * SIFT_VEC_LEN) : p->rel->tuples;
-	Cost		open,
-				scan;
-	double		total;
-
-	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
-	total = !ordered && sift_v6_gpu_topn_forced(&p->spec) ? open + cpu_tuple_cost * k :
-		open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
+	const double total = p->spec.is_table ? table_total(p, k) : index_total(p, k);
 
 	sift_v6_add_path(p->out, &topn_path_methods, total - cpu_tuple_cost * k, total, Min(k, p->rel->rows), p->root->sort_pathkeys,
-					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals));
+					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals), NIL);
 }
 
 void
 sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
 	SiftV6TopNSpec shape = {0};
+	SiftV6RelSource *src;
+	int			nsrc;
 
 	if (stage != UPPERREL_ORDERED || !sift_v6_base_rel_ok(root, input_rel) || !shape_ok(root, &shape))
 		return;
 	sift_v6_stage_target(root, stage, output_rel);
-	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
+	for (int i = 0; i < nsrc; i++)
 	{
-		TopNPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.spec = shape};
+		TopNPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = src[i].ix,.spec = shape,.in = src[i].input};
 
-		if (!agg_index_complete(ix) || !sift_v6_format()->owns_rel(ix->indexoid, false))
+		if (!sift_v6_source_usable(&src[i]) || (!src[i].is_table && !sift_v6_rel_ordered(src[i].reloid, false)))
 			continue;
-		p.spec.indexoid = ix->indexoid;
+		p.spec.indexoid = src[i].reloid;
+		p.spec.is_table = src[i].is_table;
 		p.spec.rti = input_rel->relid;
-		sift_v6_input_init_info(&p.in, ix);
 		if (compile_keys(&p) && compile_outputs(&p) && compile_quals(&p))
 		{
+			p.spec.desc = sift_v6_topn_desc(root, input_rel->relid);
 			topn_add_path(&p);
 			return;
 		}
@@ -278,13 +394,15 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 Plan *
 sift_agg_v6_topn_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
-	return sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_topn_plan_methods, sift_v6_topn_spec_unpack(linitial(best->custom_private))->indexoid);
+	const SiftV6TopNSpec *spec = sift_v6_topn_spec_unpack(linitial(best->custom_private));
+
+	return sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_topn_plan_methods, spec->indexoid, (Node *) list_make3(spec->limit, spec->offset, lthird(best->custom_private)));
 }
 
 List *
 sift_v6_topn_spec_pack(const SiftV6TopNSpec *s)
 {
-	List	   *l = list_make3_int((int) s->indexoid, (int) s->rti, s->nkeys);
+	List	   *l = list_make4_int((int) s->indexoid, (int) s->rti, s->nkeys, s->is_table);
 
 	for (int i = 0; i < s->nkeys; i++)
 	{
@@ -292,7 +410,7 @@ sift_v6_topn_spec_pack(const SiftV6TopNSpec *s)
 		l = lappend_int(lappend_int(l, s->key[i].scale), s->order[i].desc | (s->order[i].nulls_first << 1));
 		l = lappend_int(lappend_int(l, (int) s->sortop[i]), (int) s->collation[i]);
 	}
-	return list_make2(l, list_make3(s->limit, s->offset, makeBoolConst(s->with_ties, false)));
+	return list_make2(l, list_make4(s->limit, s->offset, makeBoolConst(s->with_ties, false), makeString(s->desc)));
 }
 
 SiftV6TopNSpec *
@@ -305,9 +423,10 @@ sift_v6_topn_spec_unpack(const List *l)
 	s->indexoid = (Oid) list_nth_int(ints, 0);
 	s->rti = (Index) list_nth_int(ints, 1);
 	s->nkeys = list_nth_int(ints, 2);
+	s->is_table = list_nth_int(ints, 3);
 	for (int i = 0; i < s->nkeys; i++)
 	{
-		const int	at = 3 + 6 * i;
+		const int	at = 4 + 6 * i;
 
 		s->key[i] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.scale = list_nth_int(ints, at + 2)};
 		s->order[i] = (SiftTournKey) {.desc = list_nth_int(ints, at + 3) & 1,.nulls_first = (list_nth_int(ints, at + 3) >> 1) & 1};
@@ -317,6 +436,7 @@ sift_v6_topn_spec_unpack(const List *l)
 	s->limit = linitial(rest);
 	s->offset = lsecond(rest);
 	s->with_ties = DatumGetBool(((Const *) lthird(rest))->constvalue);
+	s->desc = strVal(lfourth(rest));
 	return s;
 }
 
@@ -400,7 +520,7 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 	const SiftV6TopNSpec *spec = st->spec;
 	TupleDesc	desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
 	TupleTableSlot *slot = st->css.ss.ss_ScanTupleSlot;
-	SiftV6Source *src = sift_v6_format()->open(estate, in, quals, false);
+	SiftV6Source *src = sift_v6_rel_open(estate, in, quals, false);
 	List	   *tlist = lsecond(((CustomScan *) st->css.ss.ps.plan)->custom_private);
 	AttrNumber	keycols[SIFT_TOURN_MAX_KEYS];
 	bool		nullsfirst[SIFT_TOURN_MAX_KEYS];
@@ -411,28 +531,38 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 
 	for (int k = 0; k < spec->nkeys; k++)
 	{
-		keycols[k] = (AttrNumber) (tlist_pos(tlist, spec->key[k].attno) + 1);
+		keycols[k] = (AttrNumber) (tlist_pos(tlist, in, spec->key[k].attno) + 1);
 		nullsfirst[k] = spec->order[k].nulls_first;
 	}
-	st->sort = tuplesort_begin_heap(desc, spec->nkeys, keycols, (Oid *) spec->sortop, (Oid *) spec->collation, nullsfirst, work_mem, NULL, TUPLESORT_NONE);
+	st->sort = tuplesort_begin_heap(desc, spec->nkeys, keycols, (Oid *) spec->sortop, (Oid *) spec->collation, nullsfirst, work_mem, NULL, TUPLESORT_ALLOWBOUNDED);
 	count_value(estate->es_param_list_info, spec->offset, &offset);
 	if (!spec->with_ties && count_value(estate->es_param_list_info, spec->limit, &limit) && !pg_add_s64_overflow(limit, offset, &bound))
 		tuplesort_set_bound(st->sort, bound);
-	while (src->next(src, &b))
-		for (int w = 0; w < (b.n + 63) / 64; w++)
-			for (uint64 bits = b.mask != NULL ? b.mask[w] : ~UINT64CONST(0); bits != 0; bits &= bits - 1)
-			{
-				const int	r = w * 64 + __builtin_ctzll(bits);
+	PG_TRY();
+	{
+		while (src->next(src, &b))
+		{
+			CHECK_FOR_INTERRUPTS();
+			for (int w = 0; w < (b.n + 63) / 64; w++)
+				for (uint64 bits = b.mask != NULL ? b.mask[w] : ~UINT64CONST(0); bits != 0; bits &= bits - 1)
+				{
+					const int	r = w * 64 + __builtin_ctzll(bits);
 
-				if (r >= b.n)
-					break;
-				ExecClearTuple(slot);
-				if (!src->fetch(src, b.tag[r], st->attnos, st->nattrs, slot->tts_values, slot->tts_isnull))
-					continue;
-				ExecStoreVirtualTuple(slot);
-				tuplesort_puttupleslot(st->sort, slot);
-			}
-	src->close(src);
+					if (r >= b.n)
+						break;
+					ExecClearTuple(slot);
+					if (!src->fetch(src, b.tag[r], st->attnos, st->nattrs, slot->tts_values, slot->tts_isnull))
+						continue;
+					ExecStoreVirtualTuple(slot);
+					tuplesort_puttupleslot(st->sort, slot);
+				}
+		}
+	}
+	PG_FINALLY();
+	{
+		src->close(src);
+	}
+	PG_END_TRY();
 	tuplesort_performsort(st->sort);
 	st->sorted = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 }
@@ -461,25 +591,27 @@ topn_run(TopNState *st, EState *estate)
 	SiftV6Vexpr quals;
 	bool		compiled,
 				opened;
-	Relation	index = index_open(st->spec->indexoid, AccessShareLock);
+	bool		(*topn_open) (EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst);
+	Relation	source = sift_v6_source_open(st->spec->indexoid, st->spec->is_table, AccessShareLock, &in);
 
+	sift_v6_source_enter(source, st->spec->is_table, estate->es_snapshot);
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 topn");
-	sift_v6_input_init_rel(&in, index);
 	sift_v6_input_bind(&in, estate);
 	compiled = sift_v6_vexpr_quals(st->cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals);
-	SIFT_INVARIANT(compiled, "the quals of the Top-N scan of index %u are not compiled", st->spec->indexoid);
+	SIFT_INVARIANT(compiled, "the quals of the Top-N scan of relation %u are not compiled", st->spec->indexoid);
 	st->pos = 0;
 	st->ran = true;
-	if (!tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows))
+	topn_open = st->spec->is_table ? NULL : sift_store_ops_for_oid(st->spec->indexoid, false)->order->topn_open;
+	opened = topn_open != NULL && tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows) &&
+		topn_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
+	if (!opened)
 	{
-		index_close(index, NoLock);
+		sift_v6_source_close(source, st->spec->is_table, NoLock);
 		topn_sort_rows(st, estate, &in, st->quals == NIL ? NULL : &quals);
 		return;
 	}
-	opened = bound_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
-	SIFT_INVARIANT(opened, "the Top-N scan of index %u cannot be opened", st->spec->indexoid);
-	topn_device(st, estate, index, &in);
-	index_close(index, NoLock);
+	topn_device(st, estate, source, &in);
+	sift_v6_source_close(source, st->spec->is_table, NoLock);
 	st->rows = sift_v6_topn_run(st->cx, st->spec, &st->src, &st->tourn, &st->nrows);
 }
 
@@ -538,7 +670,8 @@ topn_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	TopNState  *st = (TopNState *) node;
 
-	sift_v6_explain_index(es, st->spec->indexoid);
+	sift_v6_explain_index(es, st->spec->indexoid, st->spec->is_table);
+	sift_v6_topn_explain(es, st->spec->desc, sift_v6_topn_limit_text(st->spec->limit, st->spec->offset));
 	sift_v6_gpu_explain(&st->gpu, es);
 	if (st->tourn != NULL)
 		sift_v6_explain_count(es, "Top-N Rows", (int64) st->spec->rows);

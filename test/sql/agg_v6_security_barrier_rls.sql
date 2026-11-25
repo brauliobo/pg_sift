@@ -1,0 +1,137 @@
+-- A role that reads through a SECURITY BARRIER view or a table with row-level security sees the rows PostgreSQL's plan gives, and a predicate of its own that is not LEAKPROOF (a division that raises when it
+-- meets the one hidden row) never meets a row the policy or the view hides: SiftAggV6 reads the columns of an index and not the table, so it is used only where no barrier and no policy applies, whatever the
+-- node (the aggregate, the Top-N, the window, a star join with a dimension that has a policy, EXISTS, LATERAL, a keyset page) and whatever the table (a sift_table, a sift_col index, a
+-- partitioned table whose partitions have policies, which PostgreSQL does not apply to a read of the parent). A table with no policy of the same shape is the control that the node answers it.
+-- A text column of a nondeterministic collation compares as the collation says in a FILTER, an IN list and a LIKE, as PostgreSQL does.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+CREATE ROLE sbr_alice;
+CREATE SCHEMA sbr;
+GRANT USAGE ON SCHEMA sbr TO sbr_alice;
+GRANT USAGE ON SCHEMA sift TO sbr_alice;
+SET search_path = sbr, public;
+
+CREATE FUNCTION engine(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text[] := '{}';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan' THEN r := r || substring(l from 'Custom Scan \(([A-Za-z0-9]+)\)'); END IF;
+	END LOOP;
+	RETURN coalesce(nullif(array_to_string(r, ','), ''), 'normal');
+END $$;
+CREATE FUNCTION answer(q text, sift_on bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', sift_on::text, true);
+	EXECUTE format('CREATE TEMP TABLE got ON COMMIT DROP AS %s', q);
+	SELECT coalesce(string_agg(g::text, '|' ORDER BY g::text), '') INTO r FROM got g;
+	DROP TABLE got;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION check_shape(q text, OUT engine text, OUT same bool, OUT leaked bool) LANGUAGE plpgsql AS $$
+DECLARE a text;
+BEGIN
+	engine := sbr.engine(q);
+	a := answer(q, true);
+	same := a = answer(q, false);
+	leaked := a LIKE '%division by zero%';
+END $$;
+
+CREATE TABLE fact (id int, tenant int, dim_id int, val int, secret int) USING sift_table;
+CREATE TABLE dim (id int PRIMARY KEY, tenant int, label text) USING sift_table;
+CREATE TABLE hfact (id int, tenant int, dim_id int, val int, secret int);
+CREATE TABLE open_fact (id int, tenant int, dim_id int, val int, secret int) USING sift_table;
+CREATE TABLE part (id int, tenant int, val int, secret int) PARTITION BY RANGE (id);
+CREATE TABLE part_1 PARTITION OF part FOR VALUES FROM (1) TO (600) USING sift_table;
+CREATE TABLE part_2 PARTITION OF part FOR VALUES FROM (600) TO (1001) USING sift_table;
+INSERT INTO dim VALUES (1, 1, 'ok'), (2, 2, 'hidden');
+INSERT INTO fact SELECT g, CASE WHEN g <= 500 THEN 1 ELSE 2 END, CASE WHEN g <= 500 THEN 1 ELSE 2 END, g, g FROM generate_series(1, 1000) g;
+INSERT INTO hfact SELECT * FROM fact;
+INSERT INTO open_fact SELECT * FROM fact WHERE tenant = 1;
+INSERT INTO part SELECT g, CASE WHEN g <= 500 THEN 1 ELSE 2 END, g, g FROM generate_series(1, 1000) g;
+CREATE INDEX hfact_col ON hfact USING sift_col (id, tenant, dim_id, val, secret);
+VACUUM (ANALYZE) fact, dim, hfact, open_fact, part;
+CREATE VIEW v_fact WITH (security_barrier) AS SELECT id, dim_id, val, secret FROM fact WHERE tenant = 1;
+CREATE VIEW v_hfact WITH (security_barrier) AS SELECT id, dim_id, val, secret FROM hfact WHERE tenant = 1;
+GRANT SELECT ON v_fact, v_hfact, fact, dim, hfact, open_fact, part TO sbr_alice;
+GRANT EXECUTE ON FUNCTION engine(text), answer(text, bool), check_shape(text) TO sbr_alice;
+
+CREATE TABLE shapes (name text PRIMARY KEY, q text);
+INSERT INTO shapes VALUES
+	('control aggregate',      $q$SELECT count(*), sum(val) FROM open_fact WHERE 1 / (secret - 600) <> 0$q$),
+	('barrier aggregate',      $q$SELECT count(*), sum(val) FROM v_fact WHERE 1 / (secret - 600) <> 0$q$),
+	('barrier col aggregate',  $q$SELECT dim_id, count(*) FROM v_hfact WHERE 1 / (secret - 600) <> 0 GROUP BY dim_id$q$),
+	('barrier top-n',          $q$SELECT id FROM v_fact WHERE 1 / (secret - 600) <> 0 ORDER BY val DESC LIMIT 3$q$),
+	('barrier col top-n',      $q$SELECT id FROM v_hfact WHERE 1 / (secret - 600) <> 0 ORDER BY val DESC LIMIT 3$q$),
+	('barrier window',         $q$SELECT count(*) FROM (SELECT id, row_number() OVER (PARTITION BY dim_id ORDER BY val) rn FROM v_fact WHERE 1 / (secret - 600) <> 0) s WHERE rn <= 2$q$),
+	('barrier keyset',         $q$SELECT id FROM v_hfact WHERE (id, val) > (10, 10) AND 1 / (secret - 600) <> 0 ORDER BY id LIMIT 3$q$),
+	('barrier exists',         $q$SELECT count(*) FROM dim d WHERE EXISTS (SELECT 1 FROM v_fact f WHERE f.dim_id = d.id AND 1 / (f.secret - 600) <> 0)$q$),
+	('barrier lateral',        $q$SELECT d.id, x.c FROM dim d, LATERAL (SELECT count(*) c FROM v_fact f WHERE f.dim_id = d.id AND 1 / (f.secret - 600) <> 0) x$q$);
+CREATE TABLE rls_shapes (name text PRIMARY KEY, q text);
+INSERT INTO rls_shapes VALUES
+	('aggregate',              $q$SELECT count(*), sum(val) FROM fact WHERE 1 / (secret - 600) <> 0$q$),
+	('col aggregate',          $q$SELECT dim_id, count(*) FROM hfact WHERE 1 / (secret - 600) <> 0 GROUP BY dim_id$q$),
+	('top-n',                  $q$SELECT id FROM fact WHERE 1 / (secret - 600) <> 0 ORDER BY val DESC LIMIT 3$q$),
+	('col top-n',              $q$SELECT id FROM hfact WHERE 1 / (secret - 600) <> 0 ORDER BY val DESC LIMIT 3$q$),
+	('window',                 $q$SELECT count(*) FROM (SELECT id, row_number() OVER (PARTITION BY dim_id ORDER BY val) rn FROM hfact WHERE 1 / (secret - 600) <> 0) s WHERE rn <= 2$q$),
+	('star join',              $q$SELECT d.label, count(*) FROM fact f JOIN dim d ON d.id = f.dim_id GROUP BY d.label$q$),
+	('star join, leaky',       $q$SELECT d.label, count(*) FROM hfact f JOIN dim d ON d.id = f.dim_id WHERE 1 / (f.secret - 600) <> 0 GROUP BY d.label$q$),
+	('semi join',              $q$SELECT count(*) FROM fact f WHERE f.dim_id IN (SELECT id FROM dim)$q$),
+	('exists',                 $q$SELECT count(*) FROM dim d WHERE EXISTS (SELECT 1 FROM hfact f WHERE f.dim_id = d.id AND 1 / (f.secret - 600) <> 0)$q$),
+	('lateral',                $q$SELECT d.id, x.c FROM dim d, LATERAL (SELECT count(*) c FROM hfact f WHERE f.dim_id = d.id AND 1 / (f.secret - 600) <> 0) x$q$);
+
+GRANT SELECT ON shapes, rls_shapes TO sbr_alice;
+SET ROLE sbr_alice;
+SELECT s.name, c.* FROM shapes s, LATERAL check_shape(s.q) c ORDER BY s.name;
+RESET ROLE;
+
+ALTER TABLE fact ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hfact ENABLE ROW LEVEL SECURITY;
+ALTER TABLE dim ENABLE ROW LEVEL SECURITY;
+ALTER TABLE part_1 ENABLE ROW LEVEL SECURITY;
+ALTER TABLE part_1 FORCE ROW LEVEL SECURITY;
+CREATE POLICY fact_tenant ON fact USING (tenant = 1);
+CREATE POLICY hfact_tenant ON hfact USING (tenant = 1);
+CREATE POLICY dim_tenant ON dim USING (tenant = 1);
+CREATE POLICY part_tenant ON part_1 USING (tenant = 1);
+SET ROLE sbr_alice;
+SELECT s.name, c.* FROM rls_shapes s, LATERAL check_shape(s.q) c ORDER BY s.name;
+SELECT count(*) AS visible_in_partitions FROM part;
+RESET ROLE;
+SET sift.enable_agg = off;
+SELECT count(*) AS visible_in_partitions_normal_plan FROM part;
+RESET sift.enable_agg;
+
+CREATE COLLATION sbr_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+CREATE TABLE names (id int, name text COLLATE sbr_ci, kind int) USING sift_table;
+CREATE TABLE hnames (id int, name text COLLATE sbr_ci, kind int);
+INSERT INTO names SELECT g, (ARRAY['Alice', 'ALICE', 'bob', 'alice', 'Bob'])[1 + g % 5], g % 3 FROM generate_series(1, 5000) g;
+INSERT INTO hnames SELECT * FROM names;
+CREATE INDEX hnames_col ON hnames USING sift_col (id, name, kind);
+VACUUM (ANALYZE) names, hnames;
+SELECT shape, c.* FROM (VALUES
+	('filter equal',    $q$SELECT count(*) FILTER (WHERE name = 'alice') FROM names$q$),
+	('filter in',       $q$SELECT count(*) FILTER (WHERE name IN ('alice', 'nobody')) FROM names$q$),
+	('filter not in',   $q$SELECT count(*) FILTER (WHERE name <> ALL (ARRAY['alice'])) FROM names$q$),
+	('filter like',     $q$SELECT count(*) FILTER (WHERE name LIKE 'al%') FROM names$q$),
+	('col filter equal', $q$SELECT kind, count(*) FILTER (WHERE name = 'alice') FROM hnames GROUP BY kind$q$),
+	('col filter like', $q$SELECT count(*) FILTER (WHERE name LIKE 'al%') FROM hnames$q$),
+	('where equal',     $q$SELECT count(*) FROM names WHERE name = 'alice'$q$)) t(shape, q), LATERAL check_shape(t.q) c ORDER BY shape;
+SELECT count(*) FILTER (WHERE name = 'alice') AS equal_rows, count(*) FILTER (WHERE name IN ('alice', 'nobody')) AS in_rows FROM names;
+
+RESET search_path;
+DROP SCHEMA sbr CASCADE;
+DROP OWNED BY sbr_alice;
+DROP ROLE sbr_alice;
+DROP EXTENSION pg_sift;

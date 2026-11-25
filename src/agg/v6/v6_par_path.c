@@ -22,6 +22,8 @@
 #include "agg/plan/safety.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/par/pinrun.h"
+#include "agg/v6/par/run.h"
 #include "agg/v6/v6_par_pg.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "core/sift.h"
@@ -92,6 +94,13 @@ is_key_column(const SiftV6Spec *spec, int attno)
 	return false;
 }
 
+/* what a row is tested by before the aggregate sees it: the quals of the scan keys and the ones that run over the batch */
+static List *
+quals_of(const SiftV6Spec *spec)
+{
+	return list_concat_copy(spec->indexqual, spec->vqual);
+}
+
 /* the ns of a row for the text columns the quals of the scan read: their strings are decoded for every row, whether or not it passes; a column the query groups by (of few groups) is read as codes */
 static double
 text_qual_ns(const SiftV6Spec *spec, double groups)
@@ -99,7 +108,7 @@ text_qual_ns(const SiftV6Spec *spec, double groups)
 	Bitmapset  *cols = NULL;
 	double		ns = 0;
 
-	foreach_ptr(Var, v, pull_var_clause((Node *) spec->indexqual, 0))
+	foreach_ptr(Var, v, pull_var_clause((Node *) quals_of(spec), 0))
 		if (sift_v6_class(v->vartype) == SV6C_TEXT && !bms_is_member(v->varattno, cols))
 		{
 			cols = bms_add_member(cols, v->varattno);
@@ -112,7 +121,7 @@ text_qual_ns(const SiftV6Spec *spec, double groups)
 static double
 scan_rows(const SiftV6Spec *spec, const RelOptInfo *rel)
 {
-	foreach_ptr(Var, v, pull_var_clause((Node *) spec->indexqual, 0))
+	foreach_ptr(Var, v, pull_var_clause((Node *) quals_of(spec), 0))
 		if (sift_v6_class(v->vartype) == SV6C_TEXT && !is_key_column(spec, v->varattno))
 			return rel->tuples;
 	return rel->rows;
@@ -165,7 +174,7 @@ scan_ms(const SiftV6Spec *spec, double tuples, double rows, double groups)
 		ns += col_ns(spec, &spec->key[i], text_key_ns, PAR_INT_KEY_NS);
 	for (int j = 0; j < spec->naggs; j++)
 	{
-		const bool	distinct = spec->agg[j].kind == SV6_COUNT_DISTINCT;
+		const bool	distinct = sift_v6_kind_distinct(spec->agg[j].kind);
 
 		ns += col_ns(spec, &spec->agg[j].arg, distinct ? PAR_DICT_DISTINCT_NS : PAR_TEXT_AGG_NS, spec->nkeys == 0 ? PAR_VECTOR_AGG_NS : PAR_AGG_NS) +
 			(distinct ? (spec->nkeys == 0 ? PAR_DISTINCT_NS : PAR_GROUP_DISTINCT_NS) : 0.0);
@@ -240,18 +249,20 @@ par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const Sift
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
 	bool		slot_text = false;
+	bool		valued = false;
 
 	for (int j = 0; j < spec->naggs; j++)
 	{
 		const SiftV6Agg *a = &spec->agg[j];
 
-		ndist += a->kind == SV6_COUNT_DISTINCT;
+		ndist += sift_v6_kind_distinct(a->kind);
+		valued |= sift_v6_kind_valued(a->kind);
 		slot_text |= v6g_is_ext(a) && sift_v6_class(a->arg.typid) == SV6C_TEXT;
 		in.float_sum_avg |= (a->kind == SV6_SUM || a->kind == SV6_AVG) && sift_v6_class(a->arg.typid) == SV6C_F64;
 	}
 	in.has_distinct = ndist > 0;
 	in.has_rls = agg_query_has_rls(root);
-	in.parallel_hazard = (slot_text && ndist > 0 && spec->nkeys == 0) || OidIsValid(spec->text_indexoid) || unsafe_for_workers(root, spec, output_rel, having) || distinct_not_partitionable(spec, ndist);
+	in.parallel_hazard = (slot_text && ndist > 0 && spec->nkeys == 0) || (valued && spec->nkeys == 0) || OidIsValid(spec->text_indexoid) || unsafe_for_workers(root, spec, output_rel, having) || distinct_not_partitionable(spec, ndist);
 	in.state_bytes = sizeof(SiftAggSlot64) + (double) spec->naggs * sizeof(V6Acc) + 16.0;
 	return in;
 }
@@ -285,6 +296,8 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	if (!equal(sift_v6_collapse_offset_sums((Node *) output_rel->reltarget->exprs), output_rel->reltarget->exprs))
 		return;
 	set_topk(root, &spec, scan_tlist, having);
+	if (parallel_setup_cost > 0 && debug_parallel_query == DEBUG_PARALLEL_OFF && (sift_v6_par_wanted(&spec) || sift_v6_pin_wanted(&spec)))
+		return;
 	pick.topk = spec.topk;
 	pick.rows = rel->rows;
 	pick.scan_ms = scan_ms(&spec, rel->tuples, rel->rows, groups);
@@ -292,7 +305,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	pick.values = false;
 	pick.nkeys = spec.nkeys;
 	for (int j = 0; j < spec.naggs; j++)
-		pick.values |= spec.agg[j].kind == SV6_COUNT_DISTINCT;
+		pick.values |= sift_v6_kind_distinct(spec.agg[j].kind);
 	in = par_input(root, rel, output_rel, &spec, having, groups, &pick);
 	strategy = sift_v6_par_choose_strategy(&in, &nworkers);
 	if (strategy == SV6P_SERIAL)

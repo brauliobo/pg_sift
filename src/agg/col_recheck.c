@@ -11,7 +11,7 @@
 #include "nodes/execnodes.h"
 #include "utils/memutils.h"
 
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "col/col.h"
 #include "col/am.h"
 #include "col/v1/enc.h"
@@ -26,19 +26,19 @@
 static ColRecheck *
 recheck_init(ColSource *src)
 {
-	MemoryContext old = MemoryContextSwitchTo(src->cxt);
+	MemoryContext old = MemoryContextSwitchTo(src->rd.cxt);
 	ColRecheck *k = palloc0(sizeof(ColRecheck));
 	/* check-memory: allow r->shred is read once, before any lock or catalog read */
-	SiftColRel *r = sift_col_rel(src->index);
+	SiftColRel *r = sift_col_rel(src->rd.index);
 
-	k->heap = src->heap;
-	k->index = src->index;
-	k->snap = src->snapshot;
-	k->life = src->cxt;
+	k->heap = src->rd.heap;
+	k->index = src->rd.index;
+	k->snap = src->rd.snapshot;
+	k->life = src->rd.cxt;
 	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
-	k->cxt = sift_mem_allocset_create(src->cxt, "sift recheck rows");
-	k->tmp = sift_mem_allocset_create(src->cxt, "sift recheck row");
-	k->rc = sift_col_shred_recheck_create(src->cxt, r->shred);
+	k->cxt = sift_mem_allocset_create(src->rd.cxt, "sift recheck rows");
+	k->tmp = sift_mem_allocset_create(src->rd.cxt, "sift recheck row");
+	k->rc = sift_col_shred_recheck_create(src->rd.cxt, r->shred);
 	k->rc->mcxt = k->cxt;
 	src->rck = k;
 	MemoryContextSwitchTo(old);
@@ -51,8 +51,8 @@ col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 	ColSource  *src = impl;
 	ColRecheck *k = src->rck ? src->rck : recheck_init(src);
 	/* check-memory: allow r->shred and r->first are read for the arguments of the calls, r is not used after them */
-	SiftColRel *r = sift_col_rel(src->index);
-	int			att = src->lay->leaf[leaf].attno;
+	SiftColRel *r = sift_col_rel(src->rd.index);
+	int			att = src->rd.lay->leaf[leaf].attno;
 
 	if (mode == SRK_NONE)
 		return;
@@ -78,10 +78,10 @@ col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 static void
 recheck_flag_leaf(ColSource *src, int leaf, uint64 *rows)
 {
-	const SiftColUnit *cu = &src->unit;
+	const SiftColUnit *cu = &src->rd.unit;
 	uint32		n;
 	const uint64 *ovf = sift_col_ovf_slots(cu, leaf, &n);
-	int			parent = src->lay->leaf[leaf].parent;
+	int			parent = src->rd.lay->leaf[leaf].parent;
 	const uint32 *par = NULL,
 			   *counts;
 
@@ -106,7 +106,7 @@ recheck_flag_leaf(ColSource *src, int leaf, uint64 *rows)
 static bool
 recheck_flag_haskey(ColSource *src, int leaf, uint32 nw, uint64 *rows)
 {
-	const SiftColUnit *cu = &src->unit;
+	const SiftColUnit *cu = &src->rd.unit;
 	uint64	   *none = palloc0(Max(nw, 1) * sizeof(uint64));
 	bool		any = false;
 
@@ -140,15 +140,15 @@ recheck_collect(ColSource *src, uint32 nrow, uint64 *bits)
 	ColRecheck *k = src->rck;
 	uint32		nw = SIFT_COL_NWORDS(nrow);
 
-	if (k->gen != src->ugen)
+	if (k->gen != src->rd.ugen)
 	{
 		bool		any = false;
 
-		k->gen = src->ugen;
+		k->gen = src->rd.ugen;
 		k->taken = false;
 		k->nrow = nrow;
-		SIFT_REGROW_IN(src->cxt, k->flag, Max(nw, 1) * sizeof(uint64));
-		SIFT_REGROW_IN(src->cxt, k->cand, Max(nw, 1) * sizeof(uint64));
+		SIFT_REGROW_IN(src->rd.cxt, k->flag, Max(nw, 1) * sizeof(uint64));
+		SIFT_REGROW_IN(src->rd.cxt, k->cand, Max(nw, 1) * sizeof(uint64));
 		memset(k->flag, 0, Max(nw, 1) * sizeof(uint64));
 		for (int i = 0; i < k->nleaf; i++)
 		{
@@ -181,7 +181,7 @@ col_recheck_rows(void *impl, const SiftSrcUnit *unit)
 	ColSource  *src = impl;
 
 	/* the rows of a match set are renumbered: the executor does not test them */
-	return src->rck && src->rck->taken && !src->sel.keep ? src->rck->cand : NULL;
+	return src->rck && src->rck->taken && !src->rd.sel.keep ? src->rck->cand : NULL;
 }
 
 /* the TIDs of the candidates the executor left, to be the rows of the next unit; false: none is left */
@@ -202,11 +202,11 @@ recheck_pending(ColSource *src)
 	for (uint32 v = 0; v < nw; v++)
 		for (uint64 b = k->cand[v]; b; b &= b - 1)
 			ords[m++] = v * 64 + pg_rightmost_one_pos64(b);
-	SIFT_REGROW_IN(src->cxt, k->tid, m * sizeof(ItemPointerData));
-	sift_col_row_tids(&src->unit, ords, m, k->tid);
+	SIFT_REGROW_IN(src->rd.cxt, k->tid, m * sizeof(ItemPointerData));
+	sift_col_row_tids(&src->rd.unit, ords, m, k->tid);
 	pfree(ords);
 	k->npend = m;
-	k->sb = src->unit.sb;
+	k->sb = src->rd.unit.sb;
 	k->nunits++;
 	return true;
 }
@@ -241,7 +241,7 @@ recheck_batch(ColSource *src)
 	uint32		n = 0;
 
 	MemoryContextReset(k->cxt);
-	b = sift_cbatch_create(k->cxt, sift_col_schema(src->cs));
+	b = sift_cbatch_create(k->cxt, sift_col_schema(src->rd.cs));
 	sift_cbatch_reset(b, k->sb);
 	b->keyed = true;		/* the rows of a key-cut unit lie in any superblock */
 	k->err = MemoryContextAllocZero(k->cxt, Max(k->npend, 1) * sizeof(ErrorData *));
@@ -286,11 +286,11 @@ recheck_next(ColSource *src, SiftSrcUnit *unit)
 
 	if (b == NULL)
 		return false;
-	sift_col_unit_batch(src->cs, b, &src->unit);
-	src->ugen++;
+	sift_col_unit_batch(src->rd.cs, b, &src->rd.unit);
+	src->rd.ugen++;
 	src->rck->active = true;
-	unit->sb = src->unit.sb;
-	unit->nrow = src->unit.nrows;
+	unit->sb = src->rd.unit.sb;
+	unit->nrow = src->rd.unit.nrows;
 	unit->nsu = 0;
 	unit->priv = src;
 	return true;
@@ -305,7 +305,7 @@ col_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows)
 	if (k == NULL || !k->active)
 		return;
 	for (uint32 r = 0; r < unit->nrow; r++)
-		if (sift_colsrc_bit(rows, r) && k->err[r])
+		if (sift_src_bit(rows, r) && k->err[r])
 			ThrowErrorData(k->err[r]);
 }
 

@@ -1,0 +1,23 @@
+# NAME	KIND	FIXTURE	SETTINGS	BASE_MB	TEMP	CAP_MB	OPERATION -- test/prod95_scale.py: every case in a fresh backend at 1x, 2x and 4x rows (P95_ROWS, 50,000) with work_mem as its SETTINGS say; BASE_MB the memory a sampler may miss, TEMP `0` | `max:BYTES_PER_ROW` | `any`, CAP_MB a bound of peak_4x (0: none).
+stream_limit10	mem	sg	set work_mem='1MB'; set temp_file_limit='1MB';	1.0	0	0	select id, count(*), sum(amount) from {t} group by id order by id limit 10;
+stream_full	mem	sg	set work_mem='1MB';	1.0	0	0	select id, count(*), sum(amount) from {t} group by id order by id;
+window_exact_limit10	memx	wg	set work_mem='1MB'; set temp_file_limit='1MB';	1.0	0	0	select grp, id, sum(c1) over (partition by grp order by id) from {t} limit 10;
+window_exact_full	memx	wg	set work_mem='1MB';	1.0	0	0	select grp, id, sum(c1) over (partition by grp order by id) from {t};
+window_partsort_topk_text	memx	wg	set work_mem='1MB';	1.0	0	0	select grp, txt, rn from (select grp, txt, row_number() over (partition by grp order by txt) rn from {t}) s where rn <= 5;
+window_large_part_spill	memx	wg	set work_mem='1MB';	1.0	max:300	0	select grp, ts, sum(c1) over (partition by grp order by ts) from {t};
+window_wide_cols_1mb	mem	wn	set work_mem='1MB';	1.0	0	0	select g1, g2, g3, g4, o1, o2, o3, o4, row_number() over w, rank() over w, dense_rank() over w, sum(v1) over w, sum(v2) over w, count(v3) over w, min(v4) over w, max(v5) over w from {t} window w as (partition by g1, g2, g3, g4 order by o1, o2, o3, o4);
+window_wide_cols_64kb	mem	wn	set work_mem='64kB';	1.0	0	0	select g1, g2, g3, g4, o1, o2, o3, o4, row_number() over w, rank() over w, dense_rank() over w, sum(v1) over w, sum(v2) over w, count(v3) over w, min(v4) over w, max(v5) over w from {t} window w as (partition by g1, g2, g3, g4 order by o1, o2, o3, o4);
+asof_limit10	memx	af	set work_mem='1MB'; set temp_file_limit='1MB'; set enable_nestloop=off;	1.0	0	0	select f.id, q.px from {t} f left join lateral (select px from {u} d where d.k = f.k and d.ts <= f.ts order by d.ts desc limit 1) q on true limit 10;
+asof_full	memx	af	set work_mem='1MB'; set enable_nestloop=off;	1.0	max:30	0	select f.id, q.ts from {t} f left join lateral (select ts from {u} d where d.k = f.k and d.ts <= f.ts order by d.ts desc limit 1) q on true;
+grace_join_limit10	mem	jj	set work_mem='64kB';	2.0	max:300	0	select p.id, b.v from {t} p join {u} b on b.k = p.k limit 10;
+grace_join_full	mem	jj	set work_mem='64kB';	2.0	max:300	0	select p.id, b.v from {t} p join {u} b on b.k = p.k;
+grace_semi_chunked	mem	js	set work_mem='1MB';	2.0	any	0	select count(*) from {t} p where exists (select 1 from {u} b where b.k = p.k);
+grace_anti_chunked	mem	js	set work_mem='64kB';	2.0	any	0	select count(*) from {t} p where not exists (select 1 from {u} b where b.k = p.k);
+grace_cancel	cancel	jk	set work_mem='64kB';	2.0	any	0	select count(*) from {t} p where not exists (select 1 from {u} b where b.k = p.k);
+first_distinct_on	mem	fg	set work_mem='1MB'; set enable_sort=off;	1.0	any	3.0	select distinct on (k) k, ts, txt from {t} order by k, ts desc;
+control_wg_limit1	mem	wg	set work_mem='1MB';	1.0	0	0	select grp from {t} limit 1;
+control_wg_count	mem	wg	set work_mem='1MB';	1.0	0	0	select count(*), sum(c1) from {t};
+control_sg_limit1	mem	sg	set work_mem='1MB';	1.0	0	0	select id from {t} limit 1;
+control_af_count	mem	af	set work_mem='1MB';	1.0	0	0	select count(*), sum(k), sum(ts) from {t};
+control_af_dim_count	mem	af	set work_mem='1MB';	1.0	0	0	select count(*), sum(px) from {u};
+control_af_pgsort	mem	af	set work_mem='1MB';	1.0	any	0	select id from {t} order by id desc offset 1000000000;

@@ -7,39 +7,45 @@
 
 #include "libpq/pqformat.h"
 #include "utils/builtins.h"
+#include "utils/float.h"
 #include "utils/numeric.h"
 
 #include "agg/group/ht.h"
 #include "agg/group/state.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_gen.h"
 #include "agg/v6/group_nan.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_argext.h"
+#include "agg/v6/v6_datum.h"
 
 
+/* sum and avg of a float: PostgreSQL's float8 sum raises the overflow of finite numbers, and the bins of a group hold at most V6FSUM_MAX_ROWS */
 static Datum
-nan_datum(void)
+sum_f64_datum(const SiftV6Agg *a, const V6Acc *acc, bool *isnull)
 {
-	return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	const int64 n = sift_agg_exact_float ? acc->n : v6fsum_count(acc);
+	const double sum = sift_agg_exact_float ? v6acc_f64(acc) : v6fsum_value(acc);
+
+	*isnull = n == 0;
+	if (n == 0)
+		return (Datum) 0;
+	if ((uint64) n >= V6FSUM_MAX_ROWS && !sift_agg_exact_float)
+		ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("float8 sum over more than %lld rows", (long long) V6FSUM_MAX_ROWS)));
+	if (isinf(sum) && !sift_agg_exact_float && v6fsum_flags(acc) == 0)
+		float_overflow_error();
+	if (sift_v6_kind_base(a->kind) == SV6_SUM && a->arg.typid == FLOAT4OID)
+		return Float4GetDatum((float4) sum);
+	return Float8GetDatum(sift_v6_kind_base(a->kind) == SV6_SUM ? sum : sum / (double) n);
 }
 
+/* the numeric of the n decimal digits rev (least significant first, at least scale + 1 of them): scale of them are after the point */
 static Datum
-scaled_numeric_text(SiftI128 v, int scale)
+numeric_of_digits(const char *rev, int n, bool neg, int scale)
 {
-	char		rev[48],
-				out[64];
-	int			n = 0,
-				o = 0;
-	unsigned __int128 u = ((unsigned __int128) (uint64) v.hi << 64) | v.lo;
-	const bool	neg = v.hi < 0;
+	char		out[96];
+	int			o = 0;
 
-	if (neg)
-		u = -u;
-	do
-	{
-		rev[n++] = '0' + (int) (u % 10);
-		u /= 10;
-	} while (u != 0 || n <= scale);
 	if (neg)
 		out[o++] = '-';
 	for (int i = n - 1; i >= 0; i--)
@@ -50,6 +56,70 @@ scaled_numeric_text(SiftI128 v, int scale)
 	}
 	out[o] = '\0';
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(out), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+}
+
+static Datum
+scaled_numeric_text(SiftI128 v, int scale)
+{
+	char		rev[48];
+	int			n = 0;
+	unsigned __int128 u = ((unsigned __int128) (uint64) v.hi << 64) | v.lo;
+	const bool	neg = v.hi < 0;
+
+	if (neg)
+		u = -u;
+	do
+	{
+		rev[n++] = '0' + (int) (u % 10);
+		u /= 10;
+	} while (u != 0 || n <= scale);
+	return numeric_of_digits(rev, n, neg, scale);
+}
+
+/* the numeric of the 192-bit sum of a V6A_SUM_WIDE state: the 128-bit path when it fits, else its decimal digits */
+static Datum
+wide_numeric(const V6Acc *acc, int scale)
+{
+	const bool	neg = acc->aux < 0;
+	uint64		m[3] = {acc->v0, (uint64) acc->v1, (uint64) acc->aux};
+	char		rev[72];
+	int			n = 0;
+
+	if (v6acc_wide_fits_i128(acc))
+		return sift_v6_scaled_numeric(v6acc_i128(acc), scale);
+	if (neg)
+	{
+		m[0] = -m[0];
+		m[1] = ~m[1] + (m[0] == 0);
+		m[2] = ~m[2] + (m[0] == 0 && m[1] == 0);
+	}
+	do
+	{
+		unsigned __int128 rem = 0;
+
+		for (int i = 2; i >= 0; i--)
+		{
+			const unsigned __int128 cur = (rem << 64) | m[i];
+
+			m[i] = (uint64) (cur / 10);
+			rem = cur % 10;
+		}
+		rev[n++] = '0' + (int) rem;
+	} while ((m[0] | m[1] | m[2]) != 0 || n <= scale);
+	return numeric_of_digits(rev, n, neg, scale);
+}
+
+static Datum
+wide_sum_datum(const SiftV6Agg *a, const V6Acc *acc, bool *isnull)
+{
+	if (v6acc_wide_is_nan(acc))
+		return sift_v6_numeric_nan();
+	*isnull = acc->n == 0;
+	if (acc->n == 0)
+		return (Datum) 0;
+	if (sift_v6_kind_base(a->kind) == SV6_AVG)
+		return DirectFunctionCall2(numeric_div, wide_numeric(acc, a->arg.scale), NumericGetDatum(int64_to_numeric(acc->n)));
+	return wide_numeric(acc, a->arg.scale);
 }
 
 /* The digits of PostgreSQL's numeric straight from the 128-bit integer (v6_acc.h), through its wire format: no decimal string is made and parsed; only a value too wide for them takes the text */
@@ -119,6 +189,8 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 	const SiftV6Spec *spec = g->spec;
 
 	*isnull = false;
+	if (v6g_is_gen(a))
+		return v6_gen_datum(g->gen, (int) (a - spec->agg), (V6Acc *) acc, isnull);
 	if (v6g_is_ext(a))
 		return v6g_ext_datum(g, a, acc, isnull);
 	switch (a->kind)
@@ -137,16 +209,18 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 			return Int64GetDatum(v6acc_count(a, acc));
 		case SV6_SUM:
 		case SV6_AVG:
+		case SV6_SUM_DISTINCT:
+		case SV6_AVG_DISTINCT:
+			if (sift_v6_class(a->arg.typid) == SV6C_F64)
+				return sum_f64_datum(a, acc, isnull);
+			if (v6g_sum_wide(a))
+				return wide_sum_datum(a, acc, isnull);
 			if (v6acc_is_nan(a, acc))
-				return nan_datum();
+				return sift_v6_numeric_nan();
 			*isnull = acc->n == 0;
 			if (acc->n == 0)
 				return (Datum) 0;
-			if (a->kind == SV6_SUM && a->arg.typid == FLOAT4OID)
-				return Float4GetDatum((float4) v6acc_f64(acc));
-			if (sift_v6_class(a->arg.typid) == SV6C_F64)
-				return Float8GetDatum(a->kind == SV6_SUM ? v6acc_f64(acc) : v6acc_f64(acc) / (double) acc->n);
-			if (a->kind == SV6_AVG)
+			if (sift_v6_kind_base(a->kind) == SV6_AVG)
 				return DirectFunctionCall2(numeric_div, sift_v6_scaled_numeric(v6acc_i128(acc), a->arg.scale), NumericGetDatum(int64_to_numeric(acc->n)));
 			if (a->restype == INT8OID)
 			{
@@ -159,7 +233,7 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 			return sift_v6_scaled_numeric(v6acc_i128(acc), a->arg.scale);
 		default:
 			if (v6acc_is_nan(a, acc))
-				return nan_datum();
+				return sift_v6_numeric_nan();
 			*isnull = acc->n == 0;
 			if (acc->n == 0)
 				return (Datum) 0;
@@ -179,8 +253,8 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 	}
 }
 
-void
-v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want)
+static void
+raw_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want)
 {
 	const SiftV6Spec *spec = g->spec;
 
@@ -237,4 +311,12 @@ v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, c
 			}
 		}
 	}
+}
+
+void
+v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want)
+{
+	raw_key_datums(g, set, ht, s, values, isnull, want);
+	if (g->gkeys != NULL)
+		sift_v6_genkeys_resolve(g->gkeys, values, isnull, want);
 }

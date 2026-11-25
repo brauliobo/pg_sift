@@ -65,7 +65,7 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_stream_plan_methods;
 extern void sift_agg_v6_stream_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_stream_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 
-/* The spec of the plan's private list (indexoid, rti; scan tlist; key Vars; Aggref nodes; HAVING; WHERE clauses), its columns added to in; false when the engine does not run it */
+/* The spec of the plan's private list (the oid of the source, rti, the source is a sift_table; scan tlist; key Vars; Aggref nodes; HAVING; WHERE clauses), its columns added to in; false when the engine does not run it */
 extern bool sift_v6_stream_spec(const List *priv, SiftV6Input *in, SiftV6StreamSpec *out);
 
 /* The result j of a group as the Datum of its PostgreSQL type; false: it is NULL (sum, min and max of no value) */
@@ -78,6 +78,11 @@ extern Datum sift_v6_stream_key_datum(const SiftV6StreamSpec *spec, int i, const
 extern bool sift_v6_stream_filters(MemoryContext cxt, const SiftV6StreamSpec *spec, ParamListInfo params, SiftV6Input *in, SiftV6Vexpr *out);
 
 /* The engine over the source (which gives the rows that pass the WHERE clauses, sorted by the keys): every group goes to emit */
-extern void sift_v6_stream_run(SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg);
+typedef struct SiftV6StreamRun SiftV6StreamRun;
+
+/* The engine over src in the memory context cx: the groups come out by step, one batch of the input at a time, as final (emit), false once the input is out */
+extern SiftV6StreamRun *sift_v6_stream_open(MemoryContext cx, SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg);
+extern bool sift_v6_stream_step(SiftV6StreamRun *r);
+extern void sift_v6_stream_close(SiftV6StreamRun *r);
 
 #endif							/* SIFT_AGG_V6_STREAM_H */

@@ -551,12 +551,12 @@ sift_promo_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len)
 				nt;
 
 	if (c->body_len < sizeof(pm) + 8)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a promoted chunk is shorter than its header"));
+		SIFT_FAIL_CORRUPT("sift: a promoted chunk is shorter than its header");
 	memcpy(&pm, b, sizeof(pm));
 	memcpy(hdr, b + sizeof(pm), 8);
 	nx = hdr[0];
 	if (nx > (uint32) c->nnonnull)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a promoted chunk holds %u texts for %d rows", nx, c->nnonnull));
+		SIFT_FAIL_CORRUPT("sift: a promoted chunk holds %u texts for %d rows", nx, c->nnonnull);
 	b += sizeof(pm) + 8;
 	if (pm.kind == SIFT_PROMO_PREFIX_INT)
 		b += sift_prefix_get_head(b, end, &px);
@@ -565,11 +565,11 @@ sift_promo_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len)
 	xoff = (const uint32 *) b;
 	b += MAXALIGN(((uint64) nx + 1) * 4);
 	if (b > end || (nx > 0 && xoff[nx] > (uint64) (end - b)))
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the texts of a promoted chunk do not fit it"));
+		SIFT_FAIL_CORRUPT("sift: the texts of a promoted chunk do not fit it");
 	xbytes = b;
 	b += MAXALIGN((uint64) xoff[nx]);
 	if (b > end || pm.kind == SIFT_PROMO_NONE || pm.kind > SIFT_PROMO_PREFIX_INT)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a promoted chunk has type %u", pm.kind));
+		SIFT_FAIL_CORRUPT("sift: a promoted chunk has type %u", pm.kind);
 	nt = c->nnonnull - nx;
 	iref.enc = (uint16) hdr[1];
 	iref.nnonnull = nt;
@@ -579,8 +579,8 @@ sift_promo_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len)
 	x1 = x0;
 	while (x1 < (int) nx && xrank[x1] < k1)
 		x1++;
-	tv = palloc(Max(k1 - k0, 1) * sizeof(int64));
-	arena = palloc(Max(k1 - k0, 1) * SIFT_PROMO_ARENA_ROW);
+	tv = sift_alloc(Max(k1 - k0, 1) * sizeof(int64));
+	arena = sift_alloc(Max(k1 - k0, 1) * SIFT_PROMO_ARENA_ROW);
 	sift_chunk_ints(&ic, k0 - x0, k1 - x1, tv);
 	for (int r = k0, xi = x0, ti = 0; r < k1; r++)
 	{
@@ -597,5 +597,5 @@ sift_promo_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len)
 				format_value(&pm, tv[ti++], arena + (uint64) (r - k0) * SIFT_PROMO_ARENA_ROW);
 		}
 	}
-	pfree(tv);
+	sift_free(tv);
 }

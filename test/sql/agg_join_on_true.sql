@@ -48,7 +48,7 @@ SELECT * FROM check_query($q$SELECT s.g, t.kind, count(*) FROM orders o JOIN (SE
 SELECT * FROM check_query($q$SELECT count(*), sum(o.qty) FROM orders o JOIN (SELECT 1 AS k WHERE false) m ON true$q$);
 SELECT * FROM check_query($q$SELECT count(o.id), m.k FROM orders o LEFT JOIN (SELECT 1 AS k WHERE false) m ON true GROUP BY m.k$q$);
 SELECT * FROM check_query($q$SELECT count(*), sum(o.qty) FROM orders o, (SELECT g FROM generate_series(1, 5) g) s$q$);
--- the nullable side of an outer join keeps the normal plan
+-- the nullable side of an outer join is scanned by the aggregate node, with the rows of the normal plan
 SELECT * FROM check_query($q$SELECT m.k, count(*) FROM (VALUES (1), (2)) m(k) LEFT JOIN orders o ON true GROUP BY m.k$q$);
 
 DROP FUNCTION check_query(text);

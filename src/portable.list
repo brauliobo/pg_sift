@@ -62,6 +62,8 @@ bm25/rank_stream.c
 bm25/count.c
 bm25/parallel.c
 core/par/arena.c
+core/par/radix.c
+core/par/topk.c
 core/cpu.c
 core/range.c
 core/span.c
@@ -122,6 +124,8 @@ bm25/query.h
 bm25/query_int.h
 bm25/merge.h
 core/par/arena.h
+core/par/radix.h
+core/par/topk.h
 core/par/sbuf.h
 core/damage.h
 core/live.h

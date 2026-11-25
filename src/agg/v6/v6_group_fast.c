@@ -6,7 +6,6 @@
 
 #include "agg/kern6.h"
 #include "agg/v6/v6_group_fast.h"
-#include "col/granule/granule.h"
 
 /* ---- packed keys ---- */
 
@@ -44,18 +43,6 @@ vec_int(const SiftVec *v, uint16 r)
 	}
 }
 
-static inline uint64
-pack_hash(uint64 lo, uint64 hi)
-{
-	return sift_aggk6_hash1(lo ^ sift_aggk6_hash1(hi));
-}
-
-uint64
-sift_pack_hash(const SiftInlineKey16 *k)
-{
-	return pack_hash(k->u64[0], k->u64[1]);
-}
-
 uint64
 sift_pack_key(const SiftPackSpec *ps, const int64 *x, uint64 nulls, SiftInlineKey16 *k)
 {
@@ -70,7 +57,7 @@ sift_pack_key(const SiftPackSpec *ps, const int64 *x, uint64 nulls, SiftInlineKe
 		}
 	k->u64[0] = (uint64) v;
 	k->u64[1] = (uint64) (uint32) (v >> 64) | (nulls << 32);
-	return pack_hash(k->u64[0], k->u64[1]);
+	return sift_pack_hash(k);
 }
 
 void

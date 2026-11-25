@@ -12,6 +12,7 @@
 #include "utils/numeric.h"
 
 #include "agg/v6/v6_datebin_win_pg.h"
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_plan_shape.h"
 #include "agg/v6/v6_winx_glue.h"
 
@@ -292,6 +293,8 @@ sift_v6_winx_datum(const SiftV6Winx *w, int f, const SiftWinxVal *v)
 	const SiftWinxFunc *fs = &w->spec.func[f];
 	const bool	numeric_arg = fs->arg_type == SVEC_NUM64 || fs->arg_type == SVEC_NUM128;
 
+	if (v->nan)
+		return sift_v6_numeric_nan();
 	switch (fs->kind)
 	{
 		case SWX_COUNT_STAR:

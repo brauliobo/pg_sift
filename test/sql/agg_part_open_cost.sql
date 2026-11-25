@@ -20,7 +20,7 @@ CREATE FUNCTION pp_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'scan'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'scan'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

@@ -128,6 +128,8 @@ extern bool sift_cdi_scan_patch(struct F2Scan *s, const struct SiftColSchema *sc
 /* The addresses of granule g as the snapshot sees them, for a decision taken before any column is decoded; whether the chain moved a row of g, so that the range of addresses of g is not the range of its rows */
 extern void sift_cdi_scan_remap_tids(const struct F2Scan *s, uint32 g, uint64 *tids, int n);
 extern bool sift_cdi_scan_remaps(const struct F2Scan *s, uint32 g);
+/* Whether a column delta changes a value of granule g of the part being scanned */
+extern bool sift_cdi_scan_granule_patched(const struct F2Scan *s, uint32 g);
 
 /*
  * The update of a row of the index from oldt (at old_tid) to newt as a record of the chain, when the row is in a part, none of its key or partial-index columns changed, its leaves that changed

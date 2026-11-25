@@ -44,7 +44,7 @@ CREATE FUNCTION served(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'rows'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'rows'; END IF;
 		IF l ~ '[1-9]\d* rows classed' AND r = 'rows' THEN r := 'classes'; END IF;
 		IF l ~ '[1-9]\d* maps (shared|built)' THEN r := 'map'; END IF;
 	END LOOP;

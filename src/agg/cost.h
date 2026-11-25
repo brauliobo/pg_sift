@@ -25,6 +25,7 @@ typedef struct SiftCostInputs
 {
 	double		g_eff;			/* granules left by the zone maps and the primary index */
 	double		b_dec;			/* bytes decoded from the columns the query reads, over those granules */
+	double		b_io;			/* bytes those columns take in storage over the same granules: what a page read costs (b_dec when nothing is stored smaller) */
 	double		n_groups;		/* output groups (estimate_num_groups), >= 1 */
 	double		f_join;			/* fanout of the star-schema lookups, >= 1 (1: one table) */
 	double		r_bw_cpu;		/* cpu_operator_costs per 64 bytes decoded (12: about 2.7 GB/s, what a warm scan of a column of numbers measures) */
@@ -33,6 +34,9 @@ typedef struct SiftCostInputs
 } SiftCostInputs;
 
 #define SIFT_COST_R_BW_CPU		12.0
+
+/* The share of the pages of a relation that is neither in shared buffers nor in the cache of the operating system (effective_cache_size): what f_cold is for a scan of it */
+extern double sift_agg_cold_share(double pages);
 
 /* The operators (cpu_operator_cost units) the scan spends decoding the bytes and aggregating the rows, before the page reads and the lookups */
 extern double sift_agg_scan_ops(const SiftCostInputs *in, double selectivity, bool is_preagg, bool is_streaming);

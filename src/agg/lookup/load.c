@@ -671,9 +671,13 @@ map_load_child(AggExec *ex, int ci)
 	PlanState  *child = j->subplan > 0 ? list_nth(ex->css.ss.ps.state->es_subplanstates, j->subplan - 1) : list_nth(agg_children(ex), j->child);
 	MemoryContext caller = MemoryContextSwitchTo(ex->cxt);
 	MapTab	   *m = map_new(j, own != NULL, ex->cxt);
+	SiftMemTracker mt_agg_lookup;
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
+	sift_mem_init_sub(&mt_agg_lookup, "agg_lookup", ex->cxt, false, agg_mem_slice(ex, SIFT_BUDGET_WORK_MEM, 2));
+	sift_mem_rebase(&mt_agg_lookup);
+	m->tr = &mt_agg_lookup;
 	/* the top-N that starts again (topn_widen) reads the rows of a plan that has run to its end */
 	if (ex->widen > 0)
 	{
@@ -691,10 +695,17 @@ map_load_child(AggExec *ex, int ci)
 		if (TupIsNull(slot))
 			break;
 		map_row(ex, m, slot, j, cb, own);
+		if (m->over)
+			break;
 	}
-	map_index_rows(m);
+	m->over |= sift_mem_pressure(&mt_agg_lookup, true) >= SIFT_MEM_HARD;
+	m->tr = NULL;
 	MemoryContextSwitchTo(caller);
+	if (m->over)
+		lookup_overflow(ex, &mt_agg_lookup);
+	map_index_rows(m);
 	map_loaded(ex, m->nrow, t0);
+	sift_mem_assert_within(&mt_agg_lookup);
 	return m;
 }
 

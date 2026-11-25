@@ -692,7 +692,7 @@ raise_poison(AggExec *ex, const SiftAggPred *p, uint32 r)
 		leaf_overflow_rows(ex, p->leaf2, &st->poison);
 		st->poison_ok = true;
 	}
-	if (st->poison && sift_colsrc_bit(st->poison, r))
+	if (st->poison && sift_src_bit(st->poison, r))
 	{
 		uint64	   *one = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
 

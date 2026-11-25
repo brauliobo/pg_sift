@@ -1,8 +1,8 @@
 /*
  * agg/gpu_local.c - the device of a backend of its own, where the GPU worker cannot be had (agg/gpu_shm.h).
  *
- * The device stays open for the session; what it holds beyond the device is given back as the backend lets go of it: the buffers of the jobs when the transaction ends, the cache
- * of decoded chunks when the other caches of the backend (sift.backend_cache_kb) need the room.
+ * The device stays open for the session (agg/vk/seat.c opens it again when it is lost, and does not look for a driver of a host that has none at each query); what it holds beyond the
+ * device is given back as the backend lets go of it: the buffers of the jobs when the transaction ends, the cache of decoded chunks when the other caches of the backend (sift.backend_cache_kb) need the room.
  */
 #include "postgres.h"
 
@@ -18,10 +18,7 @@
 /* MEM[MEM-VK-03]: per-backend local SiftVk (device kept for the session; job buffers freed at transaction end, cache of sift.gpu_cache_mb freed under sift.backend_cache_kb pressure) */
 static struct LocalDevice
 {
-	SiftVk	   *vk;
-	char		device[64];
-	bool		software;
-	uint64		cache_bytes;
+	SiftVkSeat	seat;
 	uint64		tick;
 	bool		hooks;
 }			local;
@@ -29,27 +26,26 @@ static struct LocalDevice
 static void
 local_exit(pg_attribute_unused() int code, pg_attribute_unused() Datum arg)
 {
-	sift_vk_close(local.vk);
-	local.vk = NULL;
+	sift_vk_seat_close(&local.seat);
 }
 
 static void
 local_xact(XactEvent event, pg_attribute_unused() void *arg)
 {
-	if (local.vk != NULL && (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT))
-		sift_vk_release(local.vk, false);
+	if (local.seat.vk != NULL && (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT))
+		sift_vk_release(local.seat.vk, false);
 }
 
 static uint64
 local_oldest(void)
 {
-	return local.vk != NULL && sift_vk_caps(local.vk)->cache_bytes > 0 ? local.tick : UINT64_MAX;
+	return local.seat.vk != NULL && sift_vk_caps(local.seat.vk)->cache_bytes > 0 ? local.tick : UINT64_MAX;
 }
 
 static bool
 local_evict_one(void)
 {
-	return local.vk != NULL && sift_vk_release(local.vk, true);
+	return local.seat.vk != NULL && sift_vk_release(local.seat.vk, true);
 }
 
 static void
@@ -74,33 +70,21 @@ local_hooks(void)
 SiftVk *
 sift_gpu_local_open(const char **why)
 {
-	static char err[200];
-	uint64		bytes = (uint64) sift_gpu_cache_mb << 20;
-	bool		software = sift_gpu_mode == SIFT_GPU_ON;
+	const uint32 opens = local.seat.opens;
+	SiftVk	   *vk = sift_vk_seat_follow(&local.seat, sift_gpu_device, sift_gpu_mode == SIFT_GPU_ON, (uint64) sift_gpu_cache_mb << 20);
 
-	if (local.vk != NULL && (strcmp(local.device, sift_gpu_device) != 0 || (software && !local.software)))
+	if (vk == NULL)
 	{
-		sift_vk_close(local.vk);
-		local.vk = NULL;
+		*why = local.seat.err;
+		return NULL;
 	}
-	if (local.vk == NULL)
+	if (local.seat.opens != opens)
 	{
-		local.vk = sift_vk_open(sift_gpu_device, software, bytes, err, sizeof(err));
-		if (local.vk == NULL)
-		{
-			*why = err;
-			return NULL;
-		}
-		sift_vk_set_envelope(local.vk, SIFT_VK_VRAM_ENVELOPE, SIFT_VK_VRAM_FIXED);
-		strlcpy(local.device, sift_gpu_device, sizeof(local.device));
-		local.software = software;
-		local.cache_bytes = bytes;
+		sift_vk_set_envelope(vk, SIFT_VK_VRAM_ENVELOPE, SIFT_VK_VRAM_FIXED);
 		local_hooks();
 	}
-	else if (bytes != local.cache_bytes && sift_vk_set_cache(local.vk, bytes))
-		local.cache_bytes = bytes;
 	local.tick = sift_cache_tick();
-	return local.vk;
+	return vk;
 }
 
 #endif							/* SIFT_VULKAN */

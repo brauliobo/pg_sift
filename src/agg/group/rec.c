@@ -15,6 +15,8 @@ enum
 	REC_DISTINCT_BYTES = 3
 };
 
+StaticAssertDecl(REC_DISTINCT_BYTES < SIFT_REC_OWN, "the kinds of a shape's own records follow those of this file");
+
 typedef struct RecHdr
 {
 	uint32		len;
@@ -105,6 +107,11 @@ sift_rec_flush_ht(const SiftSaltedHT *ht, const SiftRadixShape *sh, SiftRecBuf *
 {
 	SiftAggSlot64 *s;
 
+	if (sh->flush != NULL)
+	{
+		sh->flush(sh, ht, buf, put, arg);
+		return;
+	}
 	SIFT_HT_FOREACH(ht, s)
 	{
 		uint32		len = build_state(buf, ht, sh, s);
@@ -164,7 +171,9 @@ sift_rec_merge(SiftRecMerge *m, const uint8 *rec)
 	RecHdr		h;
 
 	memcpy(&h, rec, sizeof(h));
-	if (h.kind == REC_STATE)
+	if (h.kind >= SIFT_REC_OWN)
+		sh->merge_rec(sh, m, rec);
+	else if (h.kind == REC_STATE)
 	{
 		SiftAggSlot64 src;
 		const uint8 *ext = rec + REC_STATE_FIXED;

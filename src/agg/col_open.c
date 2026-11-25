@@ -23,12 +23,6 @@ zone_keys(int leaf, const void *arg, int64 *lo, int64 *hi, bool *null)
 	return false;
 }
 
-int
-col_key_leaf(Relation index)
-{
-	return sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index)) ? sift_col_rel(index)->cut[0] : -1;
-}
-
 bool
 col_key_range(Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out)
 {
@@ -38,11 +32,11 @@ col_key_range(Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out)
 Size
 col_view_size(void *impl)
 {
-	return sift_col_view_size(((ColSource *) impl)->cs);
+	return sift_col_view_size(((ColSource *) impl)->rd.cs);
 }
 
 void
 col_view_export(void *impl, void *buf)
 {
-	sift_col_view_export(((ColSource *) impl)->cs, buf);
+	sift_col_view_export(((ColSource *) impl)->rd.cs, buf);
 }

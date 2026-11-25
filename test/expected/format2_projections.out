@@ -669,6 +669,7 @@ SELECT name, kind, state, rows FROM sift.projection_list() WHERE relation = 'tp'
  by_v | sort | ready | 1000
 (1 row)
 
+SET sift.enable_agg = off;
 SELECT p_uses('SELECT id, v FROM tp ORDER BY v DESC LIMIT 5', 'by_v');
  p_uses 
 --------
@@ -681,6 +682,7 @@ SELECT p_same_order('SELECT id, v FROM tp ORDER BY v DESC LIMIT 5', 'SELECT id, 
  same
 (1 row)
 
+RESET sift.enable_agg;
 SELECT sift.drop_projection('tp', 'by_v');
  drop_projection 
 -----------------

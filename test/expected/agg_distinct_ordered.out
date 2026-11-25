@@ -38,8 +38,8 @@ SELECT q.name, c.* FROM q, LATERAL do_check(q.sql) c ORDER BY q.ord;
  no row                   | f       | t
  all NULL group           | t       | t
  two aggregates           | t       | t
- descending               | f       | t
- NULLS FIRST              | f       | t
+ descending               | t       | t
+ NULLS FIRST              | t       | t
  with a filter            | t       | t
  an expression            | t       | t
  with a WHERE and a limit | t       | t

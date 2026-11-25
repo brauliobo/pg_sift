@@ -7,10 +7,7 @@
 
 #include "col/col.h"
 #include "col/v1/preagg.h"
-#include "agg/sel.h"
-
-/* The histograms a spec writes, as the planner sees them (SiftSrcPreagg.aggs is always set: every unit has the sums of its integer leaves) */
-extern void sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa);
+#include "col/v1/src_sel.h"
 
 /* The histogram of the last sift_aggpre_unit_hist and the dictionary of its keys; the rollup of the last sift_aggpre_unit_rollup and the dictionaries of its dims */
 typedef struct SiftAggPre
@@ -53,7 +50,7 @@ extern bool sift_aggpre_unit_dset(const SiftColUnit *unit, int cal, int col, int
  * The sorted run of leaf col in the unit, whose rows are in the stored numbering: not those of a unit narrowed by the match set sel or by
  * the filters (SiftSrcProvider.run_info); run_heads and run_read are of the run run_info found
  */
-extern bool sift_aggpre_run_info(const SiftAggSel *sel, const SiftSrcUnit *unit, const SiftColUnit *cu, int col, uint32 *nvals, uint32 *nnull, uint64 *id);
+extern bool sift_aggpre_run_info(const SiftSrcSel *sel, const SiftSrcUnit *unit, const SiftColUnit *cu, int col, uint32 *nvals, uint32 *nnull, uint64 *id);
 extern int	sift_aggpre_run_heads(const SiftColUnit *unit, int col, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
 
 #endif							/* SIFT_AGGPRE_H */

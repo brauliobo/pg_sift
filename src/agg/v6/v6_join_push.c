@@ -25,18 +25,18 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
+#include "agg/plan/safety.h"
 #include "agg/agg.h"
 #include "agg/v6/plan_int.h"
-#include "agg/v6/scope_v6_int.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_card.h"
+#include "agg/v6/v6_dim_keys.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_join_push.h"
+#include "agg/v6/v6_source_rel.h"
 #include "col/am.h"
 #include "col/col.h"
-#include "col/f2/f2_scope_route.h"
-#include "col/f2/f2_store.h"
-#include "col/f2/f2_store_scan.h"
+#include "core/store_ops.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
 #include "table/dispatch.h"
@@ -51,6 +51,7 @@ typedef struct PushJoin
 {
 	RelOptInfo *fact;
 	RelOptInfo *dim;
+	Path	   *dim_path;		/* the plan the small side is read with */
 	Var		   *dim_var;
 	AttrNumber	fact_attno;
 	Oid			opno;
@@ -71,7 +72,7 @@ plain_table(PlannerInfo *root, RelOptInfo *rel)
 	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL)
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && rte->securityQuals == NIL;
+	return sift_v6_rte_stored(rte) && !rte->inh && rte->tablesample == NULL && agg_rel_security_ok(root, rel);
 }
 
 static bool
@@ -89,38 +90,51 @@ join_vars(const Var *a, const Var *b, PushJoin *j)
 	return OidIsValid(j->opno);
 }
 
-/* The one clause that joins the two relations, fact.col = dim.col over integers: the only equivalence class that holds a column of each, or the clause of the semi-join of an IN (sub-select) that no class holds */
+static bool
+class_joins(const EquivalenceClass *ec, const PushJoin *j)
+{
+	return !ec->ec_has_const && bms_is_member(j->fact->relid, ec->ec_relids) && bms_is_member(j->dim->relid, ec->ec_relids);
+}
+
+static bool
+class_vars(const EquivalenceClass *ec, PushJoin *j)
+{
+	const Expr *a,
+			   *b;
+
+	if (ec->ec_has_volatile || list_length(ec->ec_members) != 2)
+		return false;
+	a = ((EquivalenceMember *) linitial(ec->ec_members))->em_expr;
+	b = ((EquivalenceMember *) lsecond(ec->ec_members))->em_expr;
+	return IsA(a, Var) && IsA(b, Var) && join_vars((const Var *) a, (const Var *) b, j);
+}
+
+static bool
+equal_vars(const OpExpr *op, PushJoin *j)
+{
+	return IsA(op, OpExpr) && list_length(op->args) == 2 && IsA(linitial(op->args), Var) && IsA(lsecond(op->args), Var) &&
+		get_op_opfamily_strategy(op->opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber && join_vars(linitial(op->args), lsecond(op->args), j);
+}
+
+/* The join of the two relations is one clause, fact.col = dim.col over integers, that the key of the scan decides: every other clause that holds a column of each (a class of an expression or a third column, an inequality, an OR) stays with PostgreSQL's join. The clause is the one equivalence class that holds both relations, or the one clause of the semi-join of an IN (sub-select) that no class holds */
 static bool
 find_join(PlannerInfo *root, PushJoin *j)
 {
-	bool		classed = false;
+	const EquivalenceClass *joining = NULL;
+	int			clauses = list_length(j->dim->joininfo);
 
 	j->semi = root->join_info_list != NIL;
 	foreach_node(EquivalenceClass, ec, root->eq_classes)
-	{
-		const Var  *a,
-				   *b;
-
-		if (ec->ec_has_const || !bms_is_member(j->fact->relid, ec->ec_relids) || !bms_is_member(j->dim->relid, ec->ec_relids))
-			continue;
-		if (classed || ec->ec_has_volatile || list_length(ec->ec_members) != 2)
-			return false;
-		a = (const Var *) ((EquivalenceMember *) linitial(ec->ec_members))->em_expr;
-		b = (const Var *) ((EquivalenceMember *) lsecond(ec->ec_members))->em_expr;
-		if (!IsA(a, Var) || !IsA(b, Var) || !join_vars(a, b, j))
-			return false;
-		classed = true;
-	}
-	if (classed)
-		return j->fact->joininfo == NIL && j->dim->joininfo == NIL;
-	if (j->semi && list_length(j->fact->joininfo) == 1 && list_length(j->dim->joininfo) == 1)
-	{
-		const OpExpr *op = (const OpExpr *) ((RestrictInfo *) linitial(j->dim->joininfo))->clause;
-
-		return IsA(op, OpExpr) && list_length(op->args) == 2 && IsA(linitial(op->args), Var) && IsA(lsecond(op->args), Var) &&
-			get_op_opfamily_strategy(op->opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber && join_vars(linitial(op->args), lsecond(op->args), j);
-	}
-	return false;
+		if (class_joins(ec, j))
+		{
+			joining = ec;
+			clauses++;
+		}
+	if (clauses != 1 || list_length(j->fact->joininfo) != list_length(j->dim->joininfo))
+		return false;
+	if (joining == NULL)
+		return j->semi && equal_vars((const OpExpr *) ((RestrictInfo *) linitial(j->dim->joininfo))->clause, j);
+	return class_vars(joining, j);
 }
 
 #define PUSH_PINNED_MAX 64
@@ -147,7 +161,7 @@ collect_pinned(const RelOptInfo *dim, Pinned *pin)
 		if (pin->n == PUSH_PINNED_MAX || !IsA(op, OpExpr) || list_length(op->args) != 2)
 			continue;
 		v = linitial(op->args);
-		if (IsA(v, Var) && (Index) v->varno == dim->relid && IsA(lsecond(op->args), Const) && !((Const *) lsecond(op->args))->constisnull)
+		if (IsA(v, Var) && (Index) v->varno == dim->relid && v->varattno > 0 && IsA(lsecond(op->args), Const) && !((Const *) lsecond(op->args))->constisnull)
 		{
 			pin->attno[pin->n] = v->varattno;
 			pin->opno[pin->n++] = op->opno;
@@ -200,19 +214,17 @@ index_pos(const IndexOptInfo *ix, AttrNumber attno)
 static bool
 table_holds_join_column(PlannerInfo *root, const PushJoin *j)
 {
-	Relation	heap = table_open(planner_rt_fetch(j->fact->relid, root)->relid, AccessShareLock);
-	const bool	ok = sift_tbl_is_table(heap) && sift_tbl_ops(heap) == &sift_tbl_v2_ops && sift_v6_table_leaf_holds(sift_f2_store_open(heap), j->fact_attno, SV6C_I64);
+	const Oid	relid = planner_rt_fetch(j->fact->relid, root)->relid;
+	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, true);
 
-	table_close(heap, NoLock);
-	return ok;
+	return ops != NULL && ops->zone != NULL && ops->leaf_holds(relid, true, j->fact_attno, SV6C_I64);
 }
 
 /* The scan of the index ix of the fact (ix NULL: of the sift_table) that the statement's quals and aggregates compile to, and the join column as a column of the index the scan reads as integers */
 static bool
 compile_fact(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra, IndexOptInfo *ix, int *int_col, SiftV6Spec *spec, List **scan_tlist)
 {
-	Relation	irel;
-	bool		ok;
+	const SiftStoreOps *ops;
 
 	if (ix == NULL)
 	{
@@ -222,10 +234,9 @@ compile_fact(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra,
 	if (!sift_v6_index_owned(ix))
 		return false;
 	*int_col = index_pos(ix, j->fact_attno);
-	irel = index_open(ix->indexoid, AccessShareLock);
-	ok = *int_col >= 0 && !sift_col_rel(irel)->stale && sift_v6_leaf_holds(sift_col_rel(irel), *int_col + 1, SV6C_I64);
-	index_close(irel, NoLock);
-	return ok && sift_v6_compile_fact(root, j->fact, out, ix, extra, spec, scan_tlist);
+	ops = sift_store_ops_for_oid(ix->indexoid, false);
+	return *int_col >= 0 && ops->zone != NULL && ops->leaf_holds(ix->indexoid, false, *int_col + 1, SV6C_I64) &&
+		sift_v6_compile_fact(root, j->fact, out, ix, extra, spec, scan_tlist);
 }
 
 static ScalarArrayOpExpr *
@@ -254,7 +265,9 @@ scope_route(PlannerInfo *root, const PushJoin *j, IndexOptInfo *ix)
 	int			ord;
 	Expr	   *key;
 
-	if (ix == NULL || !sift_v6_scope_one_key(root, j->fact, j->dim, ix, j->fact_attno, j->dim_var->varattno, &ord, &key))
+	const SiftStoreOps *ops = ix != NULL ? sift_store_ops_for_oid(ix->indexoid, false) : NULL;
+
+	if (ops == NULL || ops->scope == NULL || !ops->scope->one_key(root, j->fact, j->dim, ix, j->fact_attno, j->dim_var->varattno, &ord, &key))
 		return NIL;
 	return list_make2(makeInteger(ord), copyObject(key));
 }
@@ -270,12 +283,11 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	double		groups;
 	Cost		open,
 				scan;
-	const Path *dim_path = j->dim->cheapest_total_path;
+	const Path *dim_path = j->dim_path;
 
 	if (!compile_fact(root, j, out, extra, ix, &int_col, &spec, &scan_tlist) || OidIsValid(spec.text_indexoid))
 		return;
-	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
-		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));
+	group_exprs = sift_v6_group_exprs_of(root);
 	groups = spec.nkeys == 0 ? 1.0 : estimate_num_groups(root, group_exprs, j->fact->rows, NULL, NULL);
 	cp = makeNode(CustomPath);
 	cp->path.pathtype = T_CustomScan;
@@ -300,7 +312,7 @@ sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 	const int	a = bms_next_member(input_rel->relids, -1),
 				b = bms_next_member(input_rel->relids, a);
 
-	if (!sift_enable_agg || !parse->hasAggs || parse->hasRowSecurity || parse->hasDistinctOn || parse->hasTargetSRFs || parse->hasWindowFuncs || parse->groupingSets != NIL ||
+	if (!sift_enable_agg || !parse->hasAggs || agg_query_has_rls(root) || parse->hasDistinctOn || parse->hasTargetSRFs || parse->hasWindowFuncs || parse->groupingSets != NIL ||
 		bms_num_members(input_rel->relids) != 2 || out->reltarget == NULL ||
 		(root->join_info_list != NIL && !(list_length(root->join_info_list) == 1 && ((SpecialJoinInfo *) linitial(root->join_info_list))->jointype == JOIN_SEMI)))
 		return;
@@ -311,6 +323,7 @@ sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 		if (j.fact == NULL || j.dim == NULL || !plain_table(root, j.fact) || !plain_table(root, j.dim) || j.dim->cheapest_total_path == NULL ||
 			j.dim->rows > PUSH_ROWS_MAX || !find_join(root, &j) || !(j.semi || dim_unique(&j)))
 			continue;
+		j.dim_path = sift_v6_dim_path(root, j.fact, j.dim, j.semi ? SV6J_SEMI_EQUI : SV6J_INNER_EQUI, 1, &j.fact_attno, (const Var *const *) &j.dim_var);
 		add_push_path(root, &j, out, extra, NULL);
 		foreach_ptr(IndexOptInfo, ix, j.fact->indexlist)
 			add_push_path(root, &j, out, extra, ix);
@@ -334,8 +347,11 @@ push_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	cs->custom_plans = custom_plans;
 	cs->custom_scan_tlist = lsecond(best->custom_private);
 	cs->custom_private = list_make2(linitial(best->custom_private),
-									list_make4(linitial(join), makeInteger(resno), makeInteger(dim_var->vartype), makeInteger(scope == NIL ? 0 : intVal(linitial(scope)))));
+									list_make5(linitial(join), makeInteger(resno), makeInteger(dim_var->vartype), makeInteger(scope == NIL ? 0 : intVal(linitial(scope))),
+											   makeBoolean(scope != NIL)));
 	cs->custom_exprs = scope == NIL ? NIL : list_make1(lsecond(scope));
+	sift_v6_collect_params((Node *) spec->indexqual, &cs->custom_exprs);
+	sift_v6_collect_params((Node *) spec->vqual, &cs->custom_exprs);
 	cs->methods = &sift_agg_v6_push_plan_methods;
 	cs->scan.plan.qual = lthird(best->custom_private);
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->relid);
@@ -356,7 +372,8 @@ typedef struct PushState
 	int			scope_ord;		/* with scope_key: the scope whose summary routes the scan */
 	ExprState  *scope_key;		/* the one key the statement binds the small side to, NULL when the scan is not routed */
 	Oid			scope_type;
-	const SiftScopeRouter *router;
+	const SiftStoreOps *ops;
+	const struct SiftScopeRouter *router;
 	Relation	heap;
 	Relation	index;
 	MemoryContext gcx;
@@ -378,13 +395,16 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 	st->resno = intVal(lsecond(join));
 	st->elemtype = (Oid) intVal(lthird(join));
 	st->scope_ord = intVal(lfourth(join));
-	if (cs->custom_exprs != NIL)
+	if (boolVal(list_nth(join, 4)))
 	{
 		st->scope_key = ExecInitExpr(linitial(cs->custom_exprs), &node->ss.ps);
 		st->scope_type = exprType(linitial(cs->custom_exprs));
 	}
+	st->ops = sift_store_ops_for_oid(st->spec->relid, st->spec->is_table);
 	st->index = st->spec->is_table ? NULL : index_open(st->spec->relid, AccessShareLock);
 	st->heap = table_open(st->spec->is_table ? st->spec->relid : st->index->rd_index->indrelid, AccessShareLock);
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		sift_v6_source_enter(st->spec->is_table ? st->heap : st->index, st->spec->is_table, estate->es_snapshot);
 	foreach_ptr(Plan, child, cs->custom_plans)
 		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags));
 }
@@ -453,7 +473,7 @@ values_array(const PushState *st, const int64 *v, int n)
 }
 
 /* The granules of the key that the summary of the scope names; NULL when the scan is not routed, the key is NULL, or the summary cannot route */
-static const SiftScopeRouter *
+static const struct SiftScopeRouter *
 scope_router(PushState *st, EState *estate)
 {
 	bool		isnull;
@@ -466,7 +486,7 @@ scope_router(PushState *st, EState *estate)
 	if (isnull)
 		return NULL;
 	key = value_of(st->scope_type, d);
-	return sift_f2_scope_build_router(st->index, st->scope_ord, estate->es_snapshot, &key, 1, NULL, st->gcx);
+	return st->ops->scope->build_router(st->index, st->scope_ord, estate->es_snapshot, &key, 1, st->gcx);
 }
 
 /* One scan of the fact for the values of ids: each value is in one batch only, so the rows of the batches are the rows of the join */
@@ -484,16 +504,17 @@ push_scan(PushState *st, EState *estate, ArrayType *ids)
 	quals = lappend(quals, q);
 	if (st->spec->is_table)
 	{
-		SiftStoreQuals sq;
+		struct SiftStoreQuals *sq = st->ops->zone->compile_quals(st->heap, quals, estate->es_query_cxt);
 
-		sift_f2_store_compile_quals(st->heap, sift_f2_store_open(st->heap), quals, estate->es_query_cxt, &sq);
-		sift_v6_scan_table(st->spec, st->group, st->heap, &sq, estate->es_snapshot, NULL, 0, &st->stats);
+		st->ops->zone->bind_quals(st->heap, sq, st->css.ss.ps.ps_ExprContext);
+		st->ops->zone->scan_table(st->spec, st->group, st->heap, sq, estate->es_snapshot, NULL, 0, &st->stats, NULL, NULL, NULL);
 	}
 	else
 	{
 		ExecIndexBuildScanKeys(&st->css.ss.ps, st->index, quals, false, &keys, &nkeys, &rtkeys, &nrt, NULL, NULL);
-		SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
-		sift_v6_scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL);
+		if (nrt > 0)
+			ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, rtkeys, nrt);
+		st->ops->zone->scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL, NULL);
 	}
 }
 
@@ -597,8 +618,12 @@ push_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Join Keys Pushed", NULL, st->nvalues, es);
 	if (st->router != NULL)
 	{
-		ExplainPropertyInteger("Scope Granules Kept", NULL, st->router->mask.kept, es);
-		ExplainPropertyInteger("Scope Granules Total", NULL, st->router->mask.n, es);
+		int64		kept,
+					total;
+
+		st->ops->scope->router_counts(st->router, &kept, &total);
+		ExplainPropertyInteger("Scope Granules Kept", NULL, kept, es);
+		ExplainPropertyInteger("Scope Granules Total", NULL, total, es);
 	}
 }
 

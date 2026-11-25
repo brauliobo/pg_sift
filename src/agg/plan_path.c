@@ -27,8 +27,8 @@ jsonb_lit(const JsonbValue *v, Lit *lit)
 
 /* ---- jsonb_path_exists(col, '$[*] ? (<comparisons of @.key with literals, && ||>)') ---- */
 
-static int
-path_cmp_op(JsonPathItemType t)
+int
+jsonpath_cmp_op(JsonPathItemType t)
 {
 	switch (t)
 	{
@@ -50,8 +50,8 @@ path_cmp_op(JsonPathItemType t)
 }
 
 /* a literal of the path, or a variable of it with its value in the constant vars of the call (a variable it lacks is an error of the heap's plan) */
-static bool
-path_lit(JsonPathItem *v, const Jsonb *vars, Lit *lit)
+bool
+jsonpath_lit(JsonPathItem *v, const Jsonb *vars, Lit *lit)
 {
 	JsonbValue	jv;
 	int32		len;
@@ -85,8 +85,8 @@ path_lit(JsonPathItem *v, const Jsonb *vars, Lit *lit)
 }
 
 /* @.key, as the name of the member */
-static char *
-path_key(JsonPathItem *v)
+char *
+jsonpath_key(JsonPathItem *v)
 {
 	JsonPathItem k;
 	int32		len;
@@ -127,7 +127,7 @@ path_pred(AggCtx *c, int grp, JsonPathItem *v, const PathArg *a, bool neg)
 		jspGetArg(v, &l);
 		return a->strict ? NULL : path_pred(c, grp, &l, a, !neg);
 	}
-	op = path_cmp_op(v->type);
+	op = jsonpath_cmp_op(v->type);
 	if (op < 0 && v->type != jpiAnd && v->type != jpiOr)
 		return NULL;
 	jspGetLeftArg(v, &l);
@@ -140,9 +140,9 @@ path_pred(AggCtx *c, int grp, JsonPathItem *v, const PathArg *a, bool neg)
 		junction_done(p);
 		return p;
 	}
-	if ((key = path_key(&l)) != NULL && path_lit(&r, a->vars, &lit))
+	if ((key = jsonpath_key(&l)) != NULL && jsonpath_lit(&r, a->vars, &lit))
 		;
-	else if ((key = path_key(&r)) != NULL && path_lit(&l, a->vars, &lit))
+	else if ((key = jsonpath_key(&r)) != NULL && jsonpath_lit(&l, a->vars, &lit))
 		op = commute(op);
 	else
 		return NULL;
@@ -158,8 +158,8 @@ build_path(AggCtx *c, int grp, void *arg)
 }
 
 /* the variables of jsonb_path_exists as an object constant (NULL with *ok: none; not ok: not a constant object) */
-static const Jsonb *
-path_vars(Node *vars, bool *ok)
+const Jsonb *
+jsonpath_vars(Node *vars, bool *ok)
 {
 	Jsonb	   *jb;
 
@@ -192,7 +192,7 @@ compile_path_exists(AggCtx *c, Node *n)
 	{
 		if (list_length(args) != 4)
 			return NULL;
-		arg.vars = path_vars(lthird(args), &ok);
+		arg.vars = jsonpath_vars(lthird(args), &ok);
 	}
 	if (!ok || !IsA(path, Const) || ((Const *) path)->constisnull)
 		return NULL;

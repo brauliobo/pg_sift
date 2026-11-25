@@ -1,10 +1,13 @@
 /*
  * agg/dist/psort.c - count(DISTINCT): the sort of the pairs of a set that outgrew hash memory
  * The pairs (sort id of the group above the value, 8 bytes) fill an array of at most hash memory, which is sorted by radix and stripped of repeats when it is full. What the
- * array cannot keep goes out as a sorted run to a temporary file, and the runs are merged into one sorted file of distinct pairs when the scan ends.
+ * array cannot keep goes out as a sorted run to a temporary file, and the runs are merged into one sorted file of distinct pairs when the scan ends: a pass reads the runs of
+ * one file, a fan-in of them at a time, into the next file and ends the one it read, so the runs a pass has consumed are not kept; the fan-in and the read buffer of a run
+ * are what hash memory holds.
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
 #include "storage/buffile.h"
 
 #include "agg/dist/int.h"
@@ -12,10 +15,12 @@
 #include "core/cmp.h"
 
 #define PS_START		1024		/* pairs of the first array */
-#define PS_CHUNK		8192		/* pairs a run is read in */
+#define PS_CHUNK		8192		/* pairs a run is read in, at most */
+#define PS_CHUNK_MIN	512			/* ... and at least: a page of the file is 8 kB */
 #define PS_PROBE		(1 << 20)	/* pairs of the array at which its repeats are looked at before it grows */
-/* MEM[MEM-AGG-10]: PairSort merge buffers (PS_FANIN=32 runs at a time * 64KB = 2MiB; was 64 runs, 4MiB) */
-#define PS_FANIN		32			/* runs merged at a time: a read buffer each */
+#define PS_FANIN		32			/* runs merged at a time, at most: a read buffer each */
+#define PS_FANIN_MIN	4
+#define PS_INTERRUPT	4096		/* pairs between two looks at the interrupts of a merge */
 
 typedef struct PsRun
 {
@@ -23,7 +28,7 @@ typedef struct PsRun
 	uint64		left;			/* pairs not read yet */
 	uint32		i;
 	uint32		n;
-	uint64		buf[PS_CHUNK];
+	uint64	   *buf;
 } PsRun;
 
 struct PairSort
@@ -33,18 +38,20 @@ struct PairSort
 	uint64		n;
 	uint64		cap;
 	uint64		maxcap;
-	BufFile    *runs;
+	BufFile    *runs;			/* the runs of one generation: those the array wrote, then those of the pass that read the generation before */
 	uint64	   *runlen;
-	uint64	   *runoff;			/* the byte of the file a run starts at (the runs a merge pass made follow the runs the array wrote) */
+	uint64	   *runoff;			/* the byte of the file a run starts at */
 	uint64		fend;			/* bytes of the file */
 	uint32		nruns;
 	uint32		runcap;
+	uint64		budget;			/* hash memory: what a merge may hold in read buffers */
+	uint32		chunk;			/* pairs of the read buffer of a run (and of the buffer of what a merge writes) */
+	uint32		fanin;			/* runs merged at a time */
 	bool		unique;			/* the array lost less than a quarter of its pairs to repeats at PS_PROBE: it grows without looking */
 	BufFile    *out;			/* the merged distinct pairs */
 	uint64		nout;
 	uint64		pos;			/* the pairs given so far */
-	/* MEM[MEM-AGG-10]: PairSort rbuf (PS_CHUNK*8 = 64KB read buffer, made when the merged pairs are first read from the file; was inside every PairSort) */
-	uint64	   *rbuf;
+	uint64	   *rbuf;			/* the read buffer of the merged pairs, made when they are first read from the file */
 	uint32		ri;
 	uint32		rn;
 };
@@ -71,8 +78,11 @@ psort_begin(MemoryContext cxt, uint64 budget)
 	PairSort   *s = MemoryContextAllocZero(cxt, sizeof(PairSort));
 
 	s->cxt = cxt;
-	/* MEM[MEM-AGG-10]: PairSort array and radix tmp (the array holds at most half the budget, so it and the tmp array of ps_radix fit it together; was the whole budget twice) */
+	/* the array holds at most half the budget, so it and the tmp array of ps_radix fit it together */
 	s->maxcap = Min(Max(budget / sizeof(uint64) / 2, PS_START), MaxAllocHugeSize / sizeof(uint64) / 2);
+	s->budget = budget;
+	s->chunk = (uint32) Min(Max((int64) (budget / sizeof(uint64) / (PS_FANIN + 1)), PS_CHUNK_MIN), PS_CHUNK);
+	s->fanin = (uint32) Min(Max((int64) (budget / ((uint64) s->chunk * sizeof(uint64))) - 1, PS_FANIN_MIN), PS_FANIN);
 	return s;
 }
 
@@ -155,7 +165,7 @@ ps_run_fill(PairSort *s, PsRun *r)
 {
 	if (r->left == 0)
 		return false;
-	r->n = (uint32) Min(r->left, PS_CHUNK);
+	r->n = (uint32) Min(r->left, s->chunk);
 	SIFT_INVARIANT(BufFileSeek(s->runs, 0, (off_t) r->off, SEEK_SET) == 0, "sift: could not seek in the runs of a count(DISTINCT)");
 	BufFileReadExact(s->runs, r->buf, r->n * sizeof(uint64));
 	r->off += r->n * sizeof(uint64);
@@ -176,26 +186,28 @@ ps_run_less(void *arg, int a, int b)
 	return r[a]->buf[r[a]->i] < r[b]->buf[r[b]->i];
 }
 
-/* the distinct pairs a merge writes, PS_CHUNK at a time */
+/* the distinct pairs a merge writes to the end of a file, a chunk at a time */
 typedef struct PsSink
 {
 	BufFile    *to;
-	bool		seek;			/* the file is also read from: each write goes to its place at off */
-	uint64		off;
-	uint64		n;
+	uint64		n;				/* the pairs of the run being written */
 	uint32		nw;
-	uint64		w[PS_CHUNK];
+	uint32		cap;
+	uint64	   *w;
 } PsSink;
+
+static void
+sink_begin(PsSink *k, BufFile *to, uint32 cap)
+{
+	*k = (PsSink) {.to = to,.cap = cap,.w = palloc(cap * sizeof(uint64))};
+}
 
 static void
 sink_flush(PsSink *k)
 {
 	if (k->nw == 0)
 		return;
-	if (k->seek)
-		SIFT_INVARIANT(BufFileSeek(k->to, 0, (off_t) k->off, SEEK_SET) == 0, "sift: could not seek in the runs of a count(DISTINCT)");
 	BufFileWrite(k->to, k->w, k->nw * sizeof(uint64));
-	k->off += k->nw * sizeof(uint64);
 	k->nw = 0;
 }
 
@@ -204,24 +216,27 @@ sink_put(PsSink *k, uint64 v)
 {
 	k->w[k->nw++] = v;
 	k->n++;
-	if (k->nw == PS_CHUNK)
+	if (k->nw == k->cap)
 		sink_flush(k);
 }
 
-/* the distinct pairs of the runs idx[0 .. k-1] in order, to sink */
+/* the distinct pairs of the runs first .. first+k-1 in order, to sink; the pairs the sink had before are not part of its run */
 static void
-ps_merge_runs(PairSort *s, const uint32 *idx, uint32 k, PsSink *sink)
+ps_merge_runs(PairSort *s, uint32 first, uint32 k, PsSink *sink)
 {
 	PsRun	  **r = palloc(k * sizeof(PsRun *));
 	SiftLTree	lt;
-	uint64		prev = 0;
+	uint64		prev = 0,
+				seen = 0;
 	bool		any = false;
 
+	sink->n = 0;
 	for (uint32 j = 0; j < k; j++)
 	{
 		r[j] = palloc(sizeof(PsRun));
-		r[j]->off = s->runoff[idx[j]];
-		r[j]->left = s->runlen[idx[j]];
+		r[j]->buf = palloc(s->chunk * sizeof(uint64));
+		r[j]->off = s->runoff[first + j];
+		r[j]->left = s->runlen[first + j];
 		r[j]->i = r[j]->n = 0;
 		(void) ps_run_fill(s, r[j]);
 	}
@@ -233,6 +248,8 @@ ps_merge_runs(PairSort *s, const uint32 *idx, uint32 k, PsSink *sink)
 
 		if (top->i >= top->n)
 			break;
+		if ((++seen % PS_INTERRUPT) == 0)
+			CHECK_FOR_INTERRUPTS();
 		v = top->buf[top->i];
 		if (!any || v != prev)
 			sink_put(sink, v);
@@ -245,61 +262,79 @@ ps_merge_runs(PairSort *s, const uint32 *idx, uint32 k, PsSink *sink)
 	sink_flush(sink);
 	sift_ltree_free(&lt);
 	for (uint32 j = 0; j < k; j++)
+	{
+		pfree(r[j]->buf);
 		pfree(r[j]);
+	}
 	pfree(r);
 }
 
-static int
-ps_len_cmp(const void *a, const void *b, void *arg)
+static void
+ps_set_runs(PairSort *s, uint32 n, uint64 **len, uint64 **off)
 {
-	const uint64 *len = arg;
-	const uint64 x = len[*(const uint32 *) a],
-				y = len[*(const uint32 *) b];
-
-	return x < y ? -1 : x > y;
+	*len = MemoryContextAlloc(s->cxt, n * sizeof(uint64));
+	*off = MemoryContextAlloc(s->cxt, n * sizeof(uint64));
 }
 
 /*
- * The runs merged into the file of the distinct pairs. At most PS_FANIN runs are read at a time (a read buffer each): more are reduced first, the fewest smallest ones that leave
- * PS_FANIN of them becoming one run at the end of the file of the runs.
+ * One pass: the runs of the file are merged a fan-in of them at a time into runs of a new file, the file they were read from ends, and the new file is what the next pass reads. The groups
+ * are as even as they can be (a lone run left over would be copied for nothing); every run of the new file has at least two of the old.
+ */
+static void
+ps_pass(PairSort *s)
+{
+	const uint32 groups = (s->nruns + s->fanin - 1) / s->fanin;
+	BufFile    *to;
+	uint64	   *len,
+			   *off;
+	uint32		first = 0;
+	PsSink		sink;
+	MemoryContext old = MemoryContextSwitchTo(s->cxt);
+
+	to = BufFileCreateTemp(false);
+	MemoryContextSwitchTo(old);
+	ps_set_runs(s, groups, &len, &off);
+	sink_begin(&sink, to, s->chunk);
+	for (uint32 g = 0; g < groups; g++)
+	{
+		const uint32 k = s->nruns / groups + (g < s->nruns % groups);
+
+		off[g] = g == 0 ? 0 : off[g - 1] + len[g - 1] * sizeof(uint64);
+		ps_merge_runs(s, first, k, &sink);
+		len[g] = sink.n;
+		first += k;
+	}
+	pfree(sink.w);
+	BufFileClose(s->runs);
+	pfree(s->runlen);
+	pfree(s->runoff);
+	s->runs = to;
+	s->runlen = len;
+	s->runoff = off;
+	s->nruns = s->runcap = groups;
+	s->fend = off[groups - 1] + len[groups - 1] * sizeof(uint64);
+}
+
+/*
+ * The runs merged into the file of the distinct pairs: passes while there are more runs than a fan-in, then the last merge into a file of its own, which stays to be read as often as
+ * the pairs are asked for; the file of the runs ends with it.
  */
 static void
 ps_merge(PairSort *s)
 {
-	uint32	   *idx = palloc(s->nruns * sizeof(uint32));
-	uint32		live = s->nruns;
-	PsSink	   *sink = palloc(sizeof(PsSink));
+	PsSink		sink;
 	MemoryContext old = MemoryContextSwitchTo(s->cxt);
 
-	for (uint32 k = 0; k < live; k++)
-		idx[k] = k;
-	while (live > PS_FANIN)
-	{
-		uint32		m = live - PS_FANIN + 1;
-
-		qsort_arg(idx, live, sizeof(uint32), ps_len_cmp, s->runlen);
-		*sink = (PsSink) {s->runs, true, s->fend, 0, 0};
-		ps_merge_runs(s, idx, m, sink);
-		if (s->nruns == s->runcap)
-		{
-			s->runcap *= 2;
-			SIFT_REGROW_IN(s->cxt, s->runlen, s->runcap * sizeof(uint64));
-			SIFT_REGROW_IN(s->cxt, s->runoff, s->runcap * sizeof(uint64));
-		}
-		s->runoff[s->nruns] = s->fend;
-		s->runlen[s->nruns] = sink->n;
-		s->fend += sink->n * sizeof(uint64);
-		memmove(idx, idx + m, (live - m) * sizeof(uint32));
-		idx[live - m] = s->nruns++;
-		live -= m - 1;
-	}
+	while (s->nruns > s->fanin)
+		ps_pass(s);
 	s->out = BufFileCreateTemp(false);
 	MemoryContextSwitchTo(old);
-	*sink = (PsSink) {s->out, false, 0, 0, 0};
-	ps_merge_runs(s, idx, live, sink);
-	s->nout = sink->n;
-	pfree(sink);
-	pfree(idx);
+	sink_begin(&sink, s->out, s->chunk);
+	ps_merge_runs(s, 0, s->nruns, &sink);
+	s->nout = sink.n;
+	pfree(sink.w);
+	BufFileClose(s->runs);
+	s->runs = NULL;
 }
 
 /* all the pairs are in: sorted, each once */
@@ -360,6 +395,8 @@ psort_end(PairSort *s)
 		BufFileClose(s->runs);
 	if (s->out)
 		BufFileClose(s->out);
+	if (s->rbuf)
+		pfree(s->rbuf);
 	if (s->runlen)
 		pfree(s->runlen);
 	if (s->runoff)

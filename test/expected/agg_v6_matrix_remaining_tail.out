@@ -1,0 +1,88 @@
+-- The last variants of the format matrix that Format 1 pushes and Format 2.0 left to PostgreSQL: ORDER BY .. LIMIT past the Top-N cap. Every statement answers the rows the heap answers with
+-- sift.enable_agg = off, on a sift_col index and on a sift_table; plan_ok prints t when it ran as SiftAggV6 (the Top-N node or the aggregate node).
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+SET sift.test_create_format1 = off;
+SET sift.agg_force = on;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+CREATE TABLE th (id int PRIMARY KEY, cat int, a int, b float8, t text) WITH (autovacuum_enabled = false);
+INSERT INTO th SELECT g, g % 40, CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 7919) % 1000 END, CASE WHEN g % 13 = 0 THEN NULL ELSE (g % 50) - 20.5 END, 'k' || g % 9
+FROM generate_series(1, 3000) g;
+CREATE TABLE tc (LIKE th INCLUDING ALL) WITH (autovacuum_enabled = false);
+CREATE TABLE tt (LIKE th INCLUDING ALL) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO tc SELECT * FROM th;
+INSERT INTO tt SELECT * FROM th;
+CREATE INDEX tc_col ON tc USING sift_col (id, cat, a, b, t);
+SELECT sift.table_maintain('tt') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+ANALYZE th; ANALYZE tc; ANALYZE tt;
+CREATE FUNCTION rows_of(q text, agg boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n''), '''') FROM (%s) r', q) INTO r;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN r;
+END $$;
+CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT rows_of(q, true) = rows_of(q, false) $$;
+CREATE FUNCTION plan_ok(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text; n int := 0;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP n := n + (line LIKE '%SiftAggV6%')::int; END LOOP;
+	RETURN n >= 1;
+END $$;
+-- LIMIT past the cap of the Top-N tournament (100000 rows): the node sorts the rows it reads, as it does for a limit it is given as a parameter
+CREATE TEMP TABLE l_cases (n int, q text);
+INSERT INTO l_cases VALUES
+	(1, 'SELECT id, a FROM %s WHERE cat < 30 ORDER BY a DESC, id LIMIT 100001'),
+	(2, 'SELECT id, a FROM %s WHERE cat < 30 ORDER BY a DESC, id LIMIT 1000000'),
+	(3, 'SELECT id, a FROM %s WHERE cat < 30 ORDER BY a DESC, id LIMIT 99990 OFFSET 11'),
+	(4, 'SELECT id, a FROM %s ORDER BY a NULLS FIRST, id DESC LIMIT 200000 OFFSET 5'),
+	(5, 'SELECT id, b FROM %s WHERE cat > 10 ORDER BY b DESC NULLS LAST, id LIMIT 150000'),
+	(6, 'SELECT id, a FROM %s ORDER BY a, id FETCH FIRST 150000 ROWS WITH TIES'),
+	(7, 'SELECT id, a FROM %s WHERE cat < 0 ORDER BY a, id LIMIT 100001');
+SELECT n, parity(format(q, 'tc')) AS index_rows, parity(format(q, 'tt')) AS table_rows, plan_ok(format(q, 'tc')) AS index_plan FROM l_cases ORDER BY n;
+ n | index_rows | table_rows | index_plan 
+---+------------+------------+------------
+ 1 | t          | t          | t
+ 2 | t          | t          | t
+ 3 | t          | t          | t
+ 4 | t          | t          | t
+ 5 | t          | t          | t
+ 6 | t          | t          | t
+ 7 | t          | t          | t
+(7 rows)
+
+-- the partitions of one table that are a sift_table and a heap with a sift_col index compile to one plan: the key or argument that the index derives natively and the table cannot is PostgreSQL's expression in both
+CREATE TABLE pm (id int, k int, t text) PARTITION BY RANGE (id);
+CREATE TABLE pm_0 PARTITION OF pm FOR VALUES FROM (0) TO (1500) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE pm_1 PARTITION OF pm FOR VALUES FROM (1500) TO (3001) WITH (autovacuum_enabled = false);
+CREATE INDEX pm_1_col ON pm_1 USING sift_col (id, k, t);
+INSERT INTO pm SELECT g, g % 40, CASE WHEN g % 31 = 0 THEN NULL ELSE 't' || g % 13 END FROM generate_series(0, 3000) g;
+CREATE TABLE pmd (id int PRIMARY KEY, kind text);
+INSERT INTO pmd SELECT g, 'kind' || g % 4 FROM generate_series(0, 39) g;
+ANALYZE pm; ANALYZE pmd;
+CREATE TEMP TABLE m_cases (n int, q text);
+INSERT INTO m_cases VALUES
+	(1, 'SELECT sum(length(t)) FROM pm'),
+	(2, 'SELECT k % 3, sum(length(t)), max(upper(t)) FROM pm GROUP BY 1 ORDER BY 1'),
+	(3, 'SELECT d.kind, sum(length(f.t)) FROM pm f JOIN pmd d ON d.id = f.k GROUP BY 1 ORDER BY 1'),
+	(4, 'SELECT d.kind, length(f.t), count(*) FROM pm f LEFT JOIN pmd d ON d.id = f.k GROUP BY 1, 2 ORDER BY 1, 2');
+SELECT n, parity(q) AS rows, plan_ok(q) AS plan FROM m_cases ORDER BY n;
+ n | rows | plan 
+---+------+------
+ 1 | t    | t
+ 2 | t    | t
+ 3 | t    | t
+ 4 | t    | t
+(4 rows)
+
+DROP FUNCTION rows_of(text, boolean), parity(text), plan_ok(text);
+DROP TABLE th, tc, tt, pm, pmd;
+DROP EXTENSION pg_sift;

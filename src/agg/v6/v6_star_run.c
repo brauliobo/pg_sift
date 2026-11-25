@@ -5,9 +5,14 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/rangetypes.h"
+#include "utils/typcache.h"
 
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_dim_cache.h"
+#include "agg/v6/v6_join_lookup.h"
 #include "agg/v6/v6_star_run.h"
 #include "core/memtrack.h"
 
@@ -24,9 +29,12 @@ struct SiftV6StarRun
 	bool		kept[SIFT_STAR_MAX_DIMS];	/* the table is an entry of the cache: pinned until the tables are freed, not freed with them */
 	uint32		hits;			/* the dimensions read from the cache, and those read from the plan to be kept */
 	uint32		built;
+	bool		shared[SIFT_STAR_MAX_DIMS];	/* the table is the statement's, shared with the other nodes that join the same relation (v6_join_lookup.h): not this node's to free */
+	uint32		nshared;		/* the tables another node had read */
 	uint32		nparts[SIFT_STAR_MAX_DIMS];
 	uint32		part[SIFT_STAR_MAX_DIMS];
 	uint32		passes;
+	uint32		scans_left;		/* the scans of the fact table the pass still has to read */
 	uint64		budget;
 	uint64		bytes;
 	MemoryContext qcx;			/* the query: the plans of the dimensions allocate their scans in it */
@@ -56,6 +64,8 @@ sift_v6_star_begin(const SiftV6Ext *x, PlanState *const *children, MemoryContext
 static SiftStarCls
 cls_of_type(Oid typid)
 {
+	if (!sift_v6_type_native(typid))
+		return get_typbyval(typid) ? SSC_INT : SSC_STR;
 	switch (sift_v6_class(typid))
 	{
 		case SV6C_F64:
@@ -84,13 +94,35 @@ int_of(Oid typid, Datum v)
 	}
 }
 
+/* the bytes of a datum of a type no native vector holds and that is passed by reference: the whole value, in the memory of the row */
+static void
+datum_bytes(Oid typid, Datum v, const char **p, uint32 *len)
+{
+	const int16 typlen = get_typlen(typid);
+
+	if (typlen == -1)
+	{
+		struct varlena *t = pg_detoast_datum((struct varlena *) DatumGetPointer(v));
+
+		*p = (const char *) t;
+		*len = VARSIZE(t);
+	}
+	else
+	{
+		*p = DatumGetPointer(v);
+		*len = (uint32) typlen;
+	}
+}
+
 static void
 put_cell(SiftStarCls cls, Oid typid, Datum v, bool isnull, int64 *i, const char **p, uint32 *len, bool *null)
 {
 	*null = isnull;
 	if (isnull)
 		return;
-	if (cls == SSC_STR)
+	if (cls == SSC_STR && !sift_v6_type_native(typid))
+		datum_bytes(typid, v, p, len);
+	else if (cls == SSC_STR)
 	{
 		struct varlena *t = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(v));
 
@@ -108,16 +140,38 @@ put_cell(SiftStarCls cls, Oid typid, Datum v, bool isnull, int64 *i, const char 
 }
 
 static void
-shape_of(const SiftV6XDim *xd, uint64 budget, SiftStarShape *sh)
+shape_of(const SiftV6Ext *x, int d, uint64 budget, SiftStarShape *sh)
 {
-	*sh = (SiftStarShape) {.mode = xd->mode,.nkeys = xd->nkeys,.npay = xd->npay,.budget = budget};
+	const SiftV6XDim *xd = &x->dim[d];
+
+	*sh = (SiftStarShape) {.mode = xd->mode,.nkeys = xd->nkeys,.npay = xd->npay,.budget = budget,.lo_inc = true,.on = x->on[d] != NIL};
 	for (int k = 0; k < xd->nkeys; k++)
-		sh->kcls[k] = cls_of_type(xd->ktype[k]);
+		sh->kcls[k] = xd->mode == SV6J_RANGE_SMALL ? SSC_INT : cls_of_type(xd->ktype[k]);
 	for (int c = 0; c < xd->npay; c++)
 		sh->pcls[c] = cls_of_type(xd->ptype[c]);
 }
 
-/* The cells of the row of the plan the keys and payload columns are, in the memory of the row; false when the row is not of the part (or has a NULL key: it is joined to nothing) */
+/* The period a range column holds, as the int64 bounds [lo, hi) of its elements (a date or an int4): the row of an empty or NULL range is no period, and its first key is its lower bound (the one key a period dimension has) */
+static void
+take_period(const SiftV6XDim *xd, Datum v, bool isnull, SiftStarRow *row)
+{
+	TypeCacheEntry *tc = lookup_type_cache(xd->ktype[0], TYPECACHE_RANGE_INFO);
+	RangeBound	lower,
+				upper;
+	bool		empty = isnull;
+
+	if (!isnull)
+		range_deserialize(tc, DatumGetRangeTypeP(v), &lower, &upper, &empty);
+	row->lo_null = row->hi_null = empty;
+	row->key_null[0] = isnull;
+	if (empty)
+		return;
+	row->lo = lower.infinite ? PG_INT64_MIN : int_of(xd->ftype[0], lower.val) + !lower.inclusive;
+	row->hi = upper.infinite ? PG_INT64_MAX : int_of(xd->ftype[0], upper.val) + upper.inclusive;
+	row->key_i[0] = row->lo;
+}
+
+/* The cells of the row of the plan the keys and payload columns are, in the memory of the row; false when the row is not of the part, or has a NULL key (joined to nothing; a dimension a RIGHT or FULL join keeps takes it, in part 0) */
 static bool
 take_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, TupleTableSlot *slot, uint32 nparts, uint32 part, SiftStarRow *row)
 {
@@ -129,10 +183,15 @@ take_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, TupleTableSlot *slot,
 		bool		isnull;
 		const Datum v = slot_getattr(slot, xd->kcol[k], &isnull);
 
-		put_cell(sh->kcls[k], xd->ktype[k], v, isnull, &row->key_i[k], &row->key_p[k], &row->key_len[k], &row->key_null[k]);
+		if (xd->mode == SV6J_RANGE_SMALL)
+			take_period(xd, v, isnull, row);
+		else
+			put_cell(sh->kcls[k], xd->ktype[k], v, isnull, &row->key_i[k], &row->key_p[k], &row->key_len[k], &row->key_null[k]);
 		anynull |= isnull;
 	}
-	if (anynull || (nparts > 1 && sift_star_row_part(sh, row, nparts) != part))
+	if (anynull && !sift_star_preserves_dim(sh->mode))
+		return false;
+	if (nparts > 1 && sift_star_row_part(sh, row, nparts) != part)
 		return false;
 	for (int c = 0; c < xd->npay; c++)
 	{
@@ -163,7 +222,7 @@ read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 	TupleTableSlot *slot;
 	bool		fits = true;
 
-	shape_of(&r->x->dim[d], r->budget, &sh);
+	shape_of(r->x, d, r->budget, &sh);
 	if (r->read[d])
 	{
 		MemoryContext old = MemoryContextSwitchTo(r->qcx);
@@ -195,9 +254,9 @@ read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 static void
 free_dim(SiftV6StarRun *r, int d)
 {
-	if (r->have[d] && !r->kept[d])
+	if (r->have[d] && !r->kept[d] && !r->shared[d])
 		sift_star_dim_free(&r->dim[d]);
-	r->have[d] = r->kept[d] = false;
+	r->have[d] = r->kept[d] = r->shared[d] = false;
 }
 
 /* The table of dimension d as a statement before it kept it, when the table it was read from is still the one */
@@ -206,7 +265,7 @@ find_kept(SiftV6StarRun *r, int d)
 {
 	SiftStarShape sh;
 
-	shape_of(&r->x->dim[d], r->budget, &sh);
+	shape_of(r->x, d, r->budget, &sh);
 	r->dc[d] = sift_dimcache_try(r->ps[d], &r->x->dim[d], &sh, r->cx);
 	if (r->dc[d] == NULL || !sift_dimcache_find(r->dc[d], r->budget, &r->dim[d]))
 		return false;
@@ -215,12 +274,12 @@ find_kept(SiftV6StarRun *r, int d)
 	return true;
 }
 
-/* Reads dimension d for the pass; in the first pass, with the classes of keys it needs to fit, or as the cache holds it when it need not be read */
+/* Reads dimension d for the pass; in the first pass, with the classes of keys it needs to fit, or as the cache holds it when it need not be read. A table that fits whole and is not kept for later statements is the statement's: a node that joins the same relation takes it */
 static void
 build_dim(SiftV6StarRun *r, int d, uint32 pass)
 {
 	MemoryContext old = MemoryContextSwitchTo(r->cx);
-	bool		settled;
+	bool		settled = false;
 
 	free_dim(r, d);
 	r->dc[d] = NULL;
@@ -233,11 +292,28 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 	do
 	{
 		const bool	keep = pass == 0 && r->nparts[d] == 1 && r->dc[d] != NULL;
-		bool		fits;
-		bool		last;
+		SiftStarShape sh;
+		const SiftStarDim *hit = NULL;
+		SiftV6SharedDim *share = NULL;
+		bool		fits,
+					last;
 
+		if (!keep && r->nparts[d] == 1)
+		{
+			shape_of(r->x, d, r->budget, &sh);
+			share = sift_v6_shared_dim_open(r->ps[d], &r->x->dim[d], &sh, &hit);
+		}
+		if (hit != NULL)
+		{
+			r->dim[d] = *hit;
+			r->shared[d] = true;
+			r->nshared++;
+			break;
+		}
 		if (keep)
 			MemoryContextSwitchTo(sift_dimcache_read_cx(r->dc[d]));
+		else if (share != NULL)
+			MemoryContextSwitchTo(sift_v6_shared_dim_cx(share));
 		fits = read_dim(r, d, r->nparts[d], r->part[d]);
 		MemoryContextSwitchTo(r->cx);
 		last = pass > 0 || r->nparts[d] >= STAR_MAX_PARTS;
@@ -247,9 +323,16 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 			r->built++;
 			r->kept[d] = sift_dimcache_keep(r->dc[d], &r->dim[d]);
 		}
+		else if (settled && share != NULL)
+		{
+			sift_v6_shared_dim_publish(share, &r->dim[d]);
+			r->shared[d] = true;
+		}
 		if (settled)
 			continue;
 		sift_star_dim_free(&r->dim[d]);
+		if (share != NULL)
+			sift_v6_shared_dim_abort(share);
 		if (!fits && last)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a dimension of the star join does not fit work_mem in any part of its keys"),
 							errhint("Increase work_mem.")));
@@ -262,12 +345,14 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 }
 
 SiftStarOpen
-sift_v6_star_open(SiftV6StarRun *r, uint32 pass)
+sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 {
 	uint32		stride = 1;
+	bool		preserves = false;
 
 	if (pass >= r->passes)
 		return SSO_DONE;
+	r->scans_left = scans;
 	for (int d = 0; d < r->x->ndims; d++)
 	{
 		r->part[d] = (pass / stride) % r->nparts[d];
@@ -278,9 +363,18 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass)
 	if (pass == 0)
 		r->passes = stride;
 	for (int d = 0; d < r->x->ndims; d++)
-		if (r->x->dim[d].mode == SV6J_INNER_EQUI && r->dim[d].nrows == 0)
+		preserves |= sift_star_preserves_dim(r->x->dim[d].mode);
+	for (int d = 0; d < r->x->ndims; d++)
+		if (r->dim[d].nrows == 0 && (r->x->dim[d].mode == SV6J_RIGHT_EQUI || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI))))
 			return SSO_EMPTY;
 	return SSO_SCAN;
+}
+
+void
+sift_v6_star_scan_end(SiftV6StarRun *r, SiftV6Pipe *p)
+{
+	if (--r->scans_left == 0)
+		sift_v6_pipe_finish(p);
 }
 
 void
@@ -298,6 +392,12 @@ uint32
 sift_v6_star_passes(const SiftV6StarRun *r)
 {
 	return r->passes;
+}
+
+uint32
+sift_v6_star_shared(const SiftV6StarRun *r)
+{
+	return r->nshared;
 }
 
 uint64
@@ -323,4 +423,5 @@ sift_v6_star_close(SiftV6StarRun *r)
 		r->dc[d] = NULL;
 	}
 	MemoryContextReset(r->cx);
+	sift_mem_release_os(r->bytes);
 }

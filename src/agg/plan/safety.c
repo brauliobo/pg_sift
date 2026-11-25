@@ -74,6 +74,17 @@ agg_rte_has_rls(PlannerInfo *root, const RangeTblEntry *rte)
 }
 
 bool
+agg_rel_security_ok(PlannerInfo *root, RelOptInfo *rel)
+{
+	if (agg_rte_has_rls(root, planner_rt_fetch(rel->relid, root)) || root->qual_security_level > 0)
+		return false;
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		if (ri->security_level > 0)
+			return false;
+	return true;
+}
+
+bool
 agg_query_has_rls(PlannerInfo *root)
 {
 	return root == NULL || root->parse == NULL || query_has_rls(root->parse);

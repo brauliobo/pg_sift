@@ -136,20 +136,6 @@ typeof_test(Node *n, Node **call, uint32 *types)
 	return *types != 0;
 }
 
-/*
- * Does a test of these types (SIFT_SRC_JT_*) tell what only the kinds of a chunk say: a JSON null from a missing key (the types have one of them
- * and not the other), or the types of the values of an astext leaf apart (some of the string, number and boolean types and not all)? Where the
- * leaf has a segment without them (SiftSrcStats.nokinds) the source could only raise the REINDEX error.
- */
-static bool
-types_need_kinds(uint32 types, bool astext)
-{
-	uint32		vals = types & (SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN);
-
-	return ((types & SIFT_SRC_JT_NONE) != 0) != ((types & SIFT_SRC_JT_NULL) != 0) ||
-		(astext && vals != 0 && vals != (SIFT_SRC_JT_STRING | SIFT_SRC_JT_NUMBER | SIFT_SRC_JT_BOOLEAN));
-}
-
 /* the test of the JSON types (SIFT_SRC_JT_*) of a leaf, which nothing else of the query may read as a value unless it is a conjunct (typeof_reads) */
 static SiftAggPred *
 type_pred(AggCtx *c, int leaf, uint32 types, bool key)
@@ -185,7 +171,7 @@ compile_typeof(AggCtx *c, Node *n)
 
 	n = strip_relabel(n);
 	if (!typeof_test(n, &call, &types) || func_of(call) != F_JSONB_TYPEOF || (leaf = typeof_leaf(c, linitial(func_args(call)))) < 0 ||
-		!source_can_types(c) || (c->stats.nokinds[leaf] && types_need_kinds(types, leaf_of(c, leaf)->astext)))
+		!source_can_types(c) || (c->stats.nokinds[leaf] && sift_src_types_need_kinds(types, leaf_of(c, leaf)->astext)))
 		return NULL;
 	p = type_pred(c, leaf, types, false);
 	p->desc = expr_text(c, n);

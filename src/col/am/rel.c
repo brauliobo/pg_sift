@@ -71,6 +71,21 @@ say_rollup_skips(Relation index, const SiftCPaggSpec *pagg)
 	ereport(NOTICE, (errmsg("sift_col index \"%s\": left out of the rollups: %s", RelationGetRelationName(index), pagg->skipped)));
 }
 
+/* An index of format major 2 keeps no pre-aggregates, but it takes the options as the statement wrote them: a leaf they name that the index does not hold or cannot roll up is an error, as it is for format major 1 */
+static void
+validate_rollup_options(Relation index, const SiftColRel *r, char **names)
+{
+	SiftCPaggSpec scratch = {0};
+	const char *err = sift_cpagg_spec_parse(sift_col_options_preagg(index), r->schema, (const char *const *) names, &scratch);
+
+	if (err)
+		sift_col_option_error("preagg", sift_col_options_preagg(index), err);
+	if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup_leaves(index), r->schema, (const char *const *) names, &scratch)) != NULL)
+		sift_col_option_error("rollup_leaves", sift_col_options_rollup_leaves(index), err);
+	if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_columns(index), r->schema, (const char *const *) names, &scratch)) != NULL)
+		sift_col_option_error("rollup_columns", sift_col_options_rollup_columns(index), err);
+}
+
 /* The options of the pre-aggregates, orders and key cuts of format major 1; an index of format major 2 has none of them */
 static void
 parse_v5_options(Relation index, SiftColRel *r, SiftColDef *defs, char **names, int n, int natts, TupleDesc desc)
@@ -325,6 +340,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 	}
 	if (!f2)
 		parse_v5_options(index, r, defs, names, n, natts, desc);
+	else
+		validate_rollup_options(index, r, names);
 	if (sift_col_row_key_on(index))
 	{
 		const char *rk = sift_col_options_row_key(index);
@@ -603,7 +620,8 @@ oid_format(Oid indexoid, bool serving)
 
 	if (index == NULL)
 		return 0;
-	if (index->rd_rel->relam == sift_col_am_oid() && !(serving && (!index->rd_index->indisvalid || sift_index_quarantined(index))))
+	if (index->rd_rel->relam == sift_col_am_oid() &&
+		!(serving && (index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX || !index->rd_index->indisvalid || sift_index_quarantined(index))))
 		major = sift_col_format_major(index);
 	relation_close(index, AccessShareLock);
 	return major;

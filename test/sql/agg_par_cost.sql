@@ -44,7 +44,7 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		planned := planned OR l ~ 'Workers Planned: [1-9]';
 		split := split OR l ~ 'Groups Split By: ';
-		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg\)';
+		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg(V6)?\)';
 	END LOOP;
 	RETURN CASE WHEN NOT pushed THEN 'normal plan' WHEN split THEN 'workers split groups' WHEN planned THEN 'workers' ELSE 'one process' END;
 END $$;

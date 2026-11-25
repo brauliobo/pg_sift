@@ -29,7 +29,7 @@ CREATE FUNCTION plan_has(q text, pat text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; scan bool := false; hit bool := false;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan := true; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN scan := true; END IF;
 		IF l ~ pat THEN hit := true; END IF;
 	END LOOP;
 	RETURN scan AND hit;

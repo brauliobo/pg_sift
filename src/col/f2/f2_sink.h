@@ -6,24 +6,11 @@
 
 #include "access/relscan.h"
 
+#include "col/col.h"
+#include "col/f2/delvec.h"
 #include "col/granule/granule.h"
+#include "core/scan_types.h"
 #include "core/f2/manifest.h"
-
-typedef struct ColView
-{
-	SiftCellKind kind;
-	const int64 *i;
-	const double *f;
-	const char *const *s;
-	const uint32 *slen;
-	const bool *isnull;
-	const uint8 *tag;
-	const bool *keyp;			/* of the leaf of a key: the rows that have the key */
-	const char *const *xpay;	/* of the leaf of a key of a document: the payload of the exception of each row whose value of a JSON type the leaf cannot hold is not in it (a jsonb datum), NULL: no row has one */
-	const uint32 *xplen;
-	const uint32 *dcode;		/* a string leaf the sink asked for as codes (sift_f2_scan_set_dict_leaves) and the chunk holds as a dictionary: s and slen are then NULL */
-	const SiftGranuleDict *dict;
-} ColView;
 
 /*
  * The rows of a granule or of the slab of a partition that every predicate of a scan accepted exactly (the dead and the pending deletes left out): tid[r] is the heap address of
@@ -66,6 +53,44 @@ typedef bool (*SiftF2PartDictSink) (void *arg, const SiftPartDesc *d, const Sift
 extern void sift_f2_scan_set_part_dict_sink(IndexScanDesc scan, SiftF2PartDictSink sink);
 
 /*
+ * A granule the scan is about to read, offered to the consumer before a byte of it is decoded (the pruning, the zones and the skipping indexes have left it): its place, the predicates of the scan, which of
+ * them the zones or the indexes found true of every row (decided[k]) and the zone of the leaf of each (NULL: none), whether a value the zone holds is one the leaf could not keep (exceptions[k]), its deletion
+ * vector for the snapshot and whether a pending delete may be in it. A consumer that answers the granule from what it stores returns true and the granule is not read.
+ */
+typedef enum SiftF2GranVis
+{
+	SIFT_GVIS_HEAP,				/* a sift_col index: the heap says what each row is, so the consumer knows them when the heap pages of the granule are all-visible */
+	SIFT_GVIS_SETTLED,			/* a sift_table: the inserters of every row are settled for the snapshot, and the deletes it sees are those of the deletion vector and the pending deletes */
+	SIFT_GVIS_PER_ROW			/* a sift_table: the rows are asked one by one (an inserter that is not settled, a snapshot that is not MVCC, a serializable transaction) */
+} SiftF2GranVis;
+
+typedef struct SiftF2GranOffer
+{
+	Relation	rel;
+	const SiftPart *part;
+	const SiftPartDesc *desc;
+	const struct SiftColSchema *schema;
+	uint32		g;
+	const SiftGranuleDesc *gd;
+	const SiftDvGran *dead;
+	Snapshot	snap;
+	const SiftColPred *preds;
+	int			npreds;
+	const bool *decided;
+	const SiftZone *const *zones;
+	const bool *exceptions;
+	bool		pend_hit;		/* a pending delete may be in the granule */
+	bool		patched;		/* a column delta changes cells of the granule */
+	const struct SiftPendDelIndex *px;	/* the addresses the pending deletes and the deletes of the transaction take from the snapshot; NULL: none */
+	SiftF2GranVis vis;
+	const int16 *phys;			/* the column of the part that holds each leaf the scan names, -1: none that holds its cells as they are; NULL: the part has the leaves of the scan */
+} SiftF2GranOffer;
+
+typedef bool (*SiftF2GranSink) (void *arg, const SiftF2GranOffer *offer);
+/* The consumer of sift_f2_scan_sink offered the granules too; the argument is the one of the sink */
+extern void sift_f2_scan_set_gran_sink(IndexScanDesc scan, SiftF2GranSink gran_sink, void *gran_arg);
+
+/*
  * The least and the greatest value of each sink leaf over the granules of a part that no key, predicate, deletion vector, pending delete, bridge, column delta or
  * exception touches, offered after the part is pinned and before a granule of it is read: the consumer returns true when that answers it and the part is then not scanned. zone[j] is the
  * sink leaf j; a part whose zones are not integers (or have a granule with no value) is not offered.
@@ -79,59 +104,14 @@ typedef struct SiftF2PartZone
 typedef bool (*SiftF2ZoneSink) (void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone);
 extern void sift_f2_scan_set_zone_sink(IndexScanDesc scan, SiftF2ZoneSink zone_sink);
 
-/*
- * A consumer that keeps the best K rows by an integer sort leaf says what a row must beat to stay: a granule whose zone of the leaf holds no row that sorts strictly before value is not read,
- * and with ties (a later sort key orders the rows equal to value) none that sorts before or equal to it.
- * The consumer changes the bound as its heap fills; it must outlive the scan, and sink_leaf is the place of the leaf among those given to sift_f2_scan_sink.
- */
-typedef struct SiftF2Bound
-{
-	bool		active;
-	bool		desc;
-	bool		nulls_first;
-	bool		ties;
-	int64		value;
-} SiftF2Bound;
-
 extern void sift_f2_scan_set_bound(IndexScanDesc scan, int sink_leaf, const SiftF2Bound *bound);
 
 /* The sink leaves (by their place among the leaves given to sift_f2_scan_sink; the array must outlive the scan) it takes as the codes of the dictionary of a granule when the chunk has one; call it before the scan runs */
 extern void sift_f2_scan_set_dict_leaves(IndexScanDesc scan, const bool *dict_leaf);
 
-/*
- * A parallel scan: the leader lists the units of the scan once, in memory a DSM chunk can hold (no pointer), and the participants take runs of the granules of the units. A unit is the granules of one part
- * that the key ranges and the zone maps of the part leave (a part with several ranges has a unit for each) or the L0 slab of a partition, which is one virtual granule. The descriptor of the part is in the
- * unit, so that a worker reads no manifest; the partition's own fields it needs (the column delta chain) are there too. flags: SIFT_PAR_PART_ALL_VISIBLE says the part is frozen with no deletion vector and no pending delete, so that no row of it needs the visibility map.
- */
-#define SIFT_PAR_PART_L0_SLAB		(UINT16_C(1) << 0)
-#define SIFT_PAR_PART_ALL_VISIBLE	(UINT16_C(1) << 2)
-#define SIFT_PAR_PART_HAS_PEND_DEL	(UINT16_C(1) << 3)
-
-typedef struct SiftParPartRef
-{
-	SiftPartDesc desc;
-	uint64		part_id;
-	BlockNumber l0_slab_blk;
-	BlockNumber pend_del_blk;
-	uint32		g_base;			/* the first granule of the unit, in its part */
-	uint32		ngranules;
-	uint16		flags;
-	uint16		pad;
-	uint32		entry_flags;	/* SIFT_PARTENTRY_* of its partition: a participant reads the column delta chain the partition has, as the serial scan does */
-	uint64		manifest_gen;	/* where the chain's anchor is read: the partition's list (core/f2/manifest.h) */
-	BlockNumber manifest_blk;
-	uint32		pad2[13];
-} SiftParPartRef;
-
-StaticAssertDecl(sizeof(SiftParPartRef) == 320, "a scan unit is five cache lines");
-
-typedef struct SiftF2ParPlan
-{
-	SiftParPartRef *refs;
-	uint32		nrefs;
-	uint64	   *staged_dead;	/* the TIDs the transaction deleted that no partition holds yet, sorted */
-	uint32		nstaged;
-} SiftF2ParPlan;
+/* The granules the scan would filter and decode go to the window instead, which the compute threads of the backend work through (col/f2/pin_win.h): call it before the scan runs */
+struct SiftPinWin;
+extern void sift_f2_scan_set_pin_win(IndexScanDesc scan, struct SiftPinWin *win);
 
 extern void sift_f2_par_plan_build(IndexScanDesc scan, SiftF2ParPlan *out);
 /* A participant: the sink and the leaves it reads, as for sift_f2_scan_sink; then the runs of granules [first, first + n) of a unit, any number of times */

@@ -81,6 +81,21 @@ sift_f2_scan_set_part_dict_sink(IndexScanDesc scan, SiftF2PartDictSink sink)
 }
 
 void
+sift_f2_scan_set_gran_sink(IndexScanDesc scan, SiftF2GranSink gran_sink, void *gran_arg)
+{
+	F2Scan	   *s = scan->opaque;
+
+	s->gran_sink = gran_sink;
+	s->gran_arg = gran_arg;
+}
+
+void
+sift_f2_scan_set_pin_win(IndexScanDesc scan, struct SiftPinWin *win)
+{
+	((F2Scan *) scan->opaque)->pinwin = win;
+}
+
+void
 sift_f2_scan_set_dict_leaves(IndexScanDesc scan, const bool *dict_leaf)
 {
 	((F2Scan *) scan->opaque)->sink_dict = dict_leaf;

@@ -14,7 +14,7 @@
 
 #include "agg/agg.h"
 #include "agg/kern.h"
-#include "col/v1/kern.h"
+#include "core/simd_kern.h"
 #include "agg/agg_int.h"
 
 /* the cells of every arm to newcap groups, renumbered through remap (NULL: as they are); the touched list follows */

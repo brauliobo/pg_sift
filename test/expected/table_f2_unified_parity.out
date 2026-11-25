@@ -48,8 +48,6 @@ SELECT parity('SELECT id, amount FROM @T WHERE id = 20001') AS nan_round_trip;
  t
 (1 row)
 
-CREATE FUNCTION raises(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-BEGIN EXECUTE q; RETURN false; EXCEPTION WHEN OTHERS THEN RETURN true; END $$;
 SELECT parity('SELECT count(amount), sum(amount), min(amount), max(amount) FROM @T') AS aggregate_over_a_nan;
  aggregate_over_a_nan 
 ----------------------
@@ -62,9 +60,9 @@ SELECT parity('SELECT count(*) FROM @T WHERE amount > 1') AS comparison_with_a_n
  t
 (1 row)
 
-SELECT raises('SELECT count(*) FROM ut WHERE amount IS NULL') AS null_test_over_a_nan_is_refused;
- null_test_over_a_nan_is_refused 
----------------------------------
+SELECT parity('SELECT count(*) FROM @T WHERE amount IS NULL') AS null_test_over_a_nan;
+ null_test_over_a_nan 
+----------------------
  t
 (1 row)
 
@@ -147,5 +145,5 @@ SELECT parity('SELECT grp, count(*), sum(qty) FROM @T GROUP BY grp') AS after_ma
 (1 row)
 
 DROP TABLE ut, uh;
-DROP FUNCTION parity(text), same_rows(text, text), plan_has(text, text), raises(text);
+DROP FUNCTION parity(text), same_rows(text, text), plan_has(text, text);
 DROP EXTENSION pg_sift;

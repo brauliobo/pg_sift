@@ -21,6 +21,7 @@
 #include "agg/vec.h"
 #include "agg/vexpr.h"
 #include "col/f2/f2.h"
+#include "col/f2/f2_sink.h"
 #include "col/granule/granule.h"
 
 #define SIFT_F2_PULL_MAX_COLS	SIFT_VEXPR_MAX_REGS
@@ -33,6 +34,7 @@ typedef struct SiftF2PullCol
 	int			leaf;
 	SiftVecType type;
 	int16		scale;
+	bool		kind;			/* an element leaf: not its values but, as SVEC_I64 for each element, whether it holds a value (1), the member is a JSON null (7) or it is missing (0); the leaf is also a column of the spec that is not a kind */
 } SiftF2PullCol;
 
 /* A boolean the consumer wants: the leaf of a key of a jsonb document, whose chunks keep on which rows the key is there */
@@ -48,6 +50,7 @@ typedef struct SiftF2PullSpec
 	int			nmasks;
 	SiftF2PullMask mask[SIFT_F2_PULL_MAX_MASKS];
 	int			group_leaf;		/* an array column: the leaf of its lengths (SIFT_CENC_LIST_LEN), -1: none */
+	bool		poison_rows;	/* with no array column too: the rows of a granule that holds a value a leaf of ncols cannot hold are poison (the consumer reads them from the heap), and the slab's are, as with one */
 	int			nchild;
 	SiftF2PullCol child[SIFT_F2_PULL_MAX_CHILD];	/* its element leaves */
 	/*
@@ -59,6 +62,9 @@ typedef struct SiftF2PullSpec
 	const SiftColPred *pred;
 	int			nelem_pred;
 	const SiftColPred *elem_pred;
+	/* A sink offered each granule of a part the predicates leave, before a byte of it is read (f2_sink.h): when it answers the granule from what the part stores it returns true and the pull skips it */
+	SiftF2GranSink gran_sink;
+	void	   *gran_arg;
 } SiftF2PullSpec;
 
 /*
@@ -86,7 +92,7 @@ typedef struct SiftF2ExtBatch
 	const SiftVexprMaskIn *masks;
 	const uint64 *tid;
 	const uint64 *live;
-	const SiftF2ElemStream *elem;	/* NULL unless the spec names a group */
+	const SiftF2ElemStream *elem;	/* NULL unless the spec names a group or asks for poison_rows (then its layout is empty) */
 } SiftF2ExtBatch;
 
 /* What the predicates of the spec left of the index, and how the element columns were decoded */
@@ -110,6 +116,8 @@ typedef struct SiftF2Pull SiftF2Pull;
 extern SiftF2Pull *sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec);
 /* The next slice, valid until the next call; NULL after the last */
 extern const SiftF2ExtBatch *sift_f2_pull_next(SiftF2Pull *p);
+/* The payload (a jsonb datum, len bytes) of row `row` of the slice just given, of column i of the spec when it is a leaf of a key of a document and the row holds a value of a JSON type the leaf cannot store (it is NULL in the column); NULL for any other row. Valid until the next slice */
+extern const char *sift_f2_pull_payload(SiftF2Pull *p, int i, uint16 row, uint32 *len);
 extern const SiftF2PullStats *sift_f2_pull_stats(const SiftF2Pull *p);
 extern void sift_f2_pull_end(SiftF2Pull *p);
 

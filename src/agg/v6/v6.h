@@ -16,10 +16,11 @@
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 
+#include "agg/vclass.h"
 #include "agg/vec.h"
 #include "core/tidbridge.h"
-#include "col/f2/f2.h"
-#include "col/f2/f2_store.h"
+#include "col/am.h"
+#include "core/store_ops.h"
 
 typedef enum SiftV6Kind
 {
@@ -39,8 +40,33 @@ typedef enum SiftV6Kind
 	SV6_VAR_SAMP,
 	SV6_BOOL_OR,
 	SV6_BOOL_AND,
-	SV6_PCT_CONT				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 column): the values of the group in the arena of its text states (v6_pct.h) */
+	SV6_PCT_CONT,				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 column): the values of the group in the arena of its text states (v6_pct.h) */
+	SV6_GEN_PG,					/* generic PostgreSQL aggregate (aggtransfn/aggcombinefn/aggfinalfn + optional DISTINCT/ORDER BY tuplesort) */
+	SV6_OSA,					/* ordered-set / hypothetical-set aggregate (WITHIN GROUP: mode, percentile_disc/cont, rank/dense_rank/...) */
+	SV6_SUM_DISTINCT,			/* sum(DISTINCT x) of an integer, numeric or float column: each distinct value of a group joins the sum of SV6_SUM once (group_dist.c) */
+	SV6_AVG_DISTINCT
 } SiftV6Kind;
+
+/* the aggregates whose values go through the exact set of v6_distinct.h */
+static inline bool
+sift_v6_kind_distinct(SiftV6Kind kind)
+{
+	return kind == SV6_COUNT_DISTINCT || kind == SV6_SUM_DISTINCT || kind == SV6_AVG_DISTINCT;
+}
+
+/* the ones that add the distinct values: the exact set hands each value to the group's sum (group_dist.c) instead of counting it */
+static inline bool
+sift_v6_kind_valued(SiftV6Kind kind)
+{
+	return kind == SV6_SUM_DISTINCT || kind == SV6_AVG_DISTINCT;
+}
+
+/* the aggregate whose state and result a DISTINCT sum or average has */
+static inline SiftV6Kind
+sift_v6_kind_base(SiftV6Kind kind)
+{
+	return kind == SV6_SUM_DISTINCT ? SV6_SUM : kind == SV6_AVG_DISTINCT ? SV6_AVG : kind;
+}
 
 #define SIFT_V6_MAX_KEYS	32
 #define SIFT_V6_MAX_DCOLS	8		/* the columns of a COUNT(DISTINCT (a, b, ..)) */
@@ -52,17 +78,6 @@ sift_v6_kind_reads_column(SiftV6Kind kind)
 {
 	return kind != SV6_COUNT_STAR && kind != SV6_GROUPING;
 }
-
-/* The physical class of a column the scan reads: how it decodes (SiftVecType) and what the group makes of it */
-typedef enum SiftV6Class
-{
-	SV6C_NONE = 0,
-	SV6C_I32,					/* int2, int4, date */
-	SV6C_I64,					/* int8, timestamp, timestamptz */
-	SV6C_F64,					/* float4, float8 */
-	SV6C_BOOL,
-	SV6C_TEXT					/* text, varchar */
-} SiftV6Class;
 
 static inline SiftV6Class
 sift_v6_class(Oid typid)
@@ -91,6 +106,9 @@ sift_v6_class(Oid typid)
 	}
 }
 
+/* SiftV6Col.scale of a column the scan reads as datums: a type the native vectors do not hold, or a numeric whose NaN, infinities and digit count are values of it instead of scaled integers */
+#define SIFT_V6_SCALE_DATUM	(-1)
+
 /* Where the values of a column of the scan come from */
 typedef enum SiftV6Src
 {
@@ -99,8 +117,11 @@ typedef enum SiftV6Src
 	SV6SRC_ELEM					/* the element of the unnested array of the index */
 } SiftV6Src;
 
-/* SiftV6Col.attno of sift.score(ctid), the score of the row's hit: no column of the index, a float4 the rows of a fold come with (sift_v6_fold_batch_scored) */
-#define SIFT_V6_SCORE_ATTNO		(-1)
+/* The virtual attribute of the boolean flag of test i of the elements of a row's array (SiftV6Ext.test, v6_ext.h), which a FILTER reads */
+#define SIFT_V6_XFLAG_VATT		(3 << 12)
+
+/* The ints each input of an SiftV6Spec.pgexpr item has after its result type: its attribute, type, scale, source and slot (agg/v6/v6_pg_expr.c) */
+#define SIFT_V6_PGX_INTS		5
 
 typedef struct SiftV6Col
 {
@@ -108,11 +129,21 @@ typedef struct SiftV6Col
 	Oid			typid;
 	int			scale;			/* numeric: the digits after the point of the scaled integer the leaf holds; 0 for any other type */
 	int			jleaf;			/* 1 + the leaf of a key of the jsonb attribute whose `->>` text (typid text) or float8 cast the column is; 0: the first leaf of attno */
+	int			jmember;		/* 1 + the entry of SiftV6Spec.jmembers whose keys lead from the document to the member whose `->>` float8 cast the column is (jleaf is then the leaf of the values of its map); 0: none */
+	bool		jtype;			/* with jleaf: the column is jsonb_typeof(doc -> 'key') (typid text), the type each row's chunk keeps of the key, not the value of it */
 	SiftV6Src	src;
 	int			dim;			/* SV6SRC_DIM: the dimension */
 	int			slot;			/* SV6SRC_DIM: the payload column of the dimension */
 	int			derive;			/* 1 + the number of its entry in SiftV6Spec.derive when the key or argument is computed from the column (attno is then the source) */
+	Oid			collid;			/* a key: the collation its type is grouped under (the interner of a generic key, v6_datum.h) */
 } SiftV6Col;
+
+/* How the scan decodes the column: SV6C_DATUM for a column the planner marked to be read as datums (v6_datum.h) and for a whole jsonb document */
+static inline SiftV6Class
+sift_v6_col_class(const SiftV6Col *c)
+{
+	return c->scale == SIFT_V6_SCALE_DATUM || c->typid == JSONBOID ? SV6C_DATUM : sift_v6_class(c->typid);
+}
 
 struct SiftV6Ext;
 
@@ -128,11 +159,19 @@ typedef struct SiftV6Agg
 	double		frac;			/* SV6_PCT_CONT: the fraction */
 } SiftV6Agg;
 
+/* a generic PostgreSQL aggregate or an ordered-set one (v6_gen.h): it reads up to nine columns, one per argument that is not a constant, and folds a NaN as PostgreSQL's own function does */
+static inline bool
+v6g_is_gen(const SiftV6Agg *a)
+{
+	return a->kind == SV6_GEN_PG || a->kind == SV6_OSA;
+}
+
 /* A numeric NaN is not NULL: these aggregates fold it. It counts, and makes a sum or an average NaN, a maximum NaN and a minimum NaN when no other row has a value, and is one more distinct value */
 static inline bool
 sift_v6_agg_takes_nan(const SiftV6Agg *a)
 {
-	return a->kind == SV6_COUNT || a->kind == SV6_SUM || a->kind == SV6_AVG || a->kind == SV6_MIN || a->kind == SV6_MAX || (a->kind == SV6_COUNT_DISTINCT && a->nxcols == 0);
+	return a->kind == SV6_COUNT || a->kind == SV6_SUM || a->kind == SV6_AVG || a->kind == SV6_MIN || a->kind == SV6_MAX || sift_v6_kind_valued(a->kind) ||
+		(a->kind == SV6_COUNT_DISTINCT && a->nxcols == 0);
 }
 
 /* The keys (indexes into SiftV6Spec.key) the arguments of a GROUPING() name */
@@ -159,7 +198,8 @@ typedef enum SiftV6DeriveKind
 	SVD_EXTRACT,				/* extract(minute or hour FROM src), src a timestamp; aux is the unit in microseconds */
 	SVD_CASE_STR,				/* CASE WHEN cond[0] = cval[0] AND .. THEN src ELSE the constant END, text */
 	SVD_ARITH,					/* + - * of float8 columns (src, cond[0..]) and a constant (aux): the postfix tokens in cval, v6_plan_rewrite.h; the batches of an unnest only */
-	SVD_NUM_EXPR				/* the exact scaled-integer product of up to three affine factors of numeric columns (agg/v6/v6_expr_num.h) */
+	SVD_NUM_EXPR,				/* the exact scaled-integer product of up to three affine factors of numeric columns (agg/v6/v6_expr_num.h) */
+	SVD_PG_EXPR					/* arbitrary PostgreSQL Expr evaluated over active rows via ExecEvalExpr with per-batch ResetExprContext */
 } SiftV6DeriveKind;
 
 #define SIFT_V6_MAX_DERIVE	8
@@ -188,7 +228,24 @@ typedef struct SiftV6TopKItem
 	bool		nulls_first;
 } SiftV6TopKItem;
 
-#define SIFT_V6_MAX_TOPK_ITEMS	8
+#define SIFT_V6_MAX_TOPK_ITEMS	12
+
+/* A column a row Top-N gives: the heap row of the winner (the plan's tlist names its attribute), a key its heap of winners carries (a column of a dimension), or an aggregate of the whole set */
+typedef enum SiftV6RowFrom
+{
+	SV6OUT_HEAP,
+	SV6OUT_KEY,					/* at: the key */
+	SV6OUT_TOTAL				/* at: the aggregate */
+} SiftV6RowFrom;
+
+typedef struct SiftV6RowOut
+{
+	SiftV6RowFrom from;
+	int			at;
+} SiftV6RowOut;
+
+/* the end of the keys of a TID range: no block is as large as this */
+#define SIFT_V6_TID_END	(UINT64CONST(1) << 48)
 
 typedef struct SiftV6Spec
 {
@@ -196,6 +253,9 @@ typedef struct SiftV6Spec
 	bool		is_table;
 	int			nparts;			/* a partitioned table: the index of each live partition, read into the one set of groups (indexoid is the first); 0 for one index */
 	Oid		   *part_index;
+	int			part_ncols;		/* a row Top-N of partitions: the columns the node fetches, and the attribute of each in every partition (part_attno[partition * part_ncols + column]) */
+	AttrNumber *part_attno;
+	bool	   *part_is_table;	/* of each partition: its sift_table is read, not an index of it (the other fields of a partition are those of part_index) */
 	int			nkeys;
 	SiftV6Col  *key;
 	int			naggs;
@@ -211,11 +271,12 @@ typedef struct SiftV6Spec
 	SiftV6Col	fcol[SIFT_V6_MAX_FCOLS];	/* the columns the clauses read, after the columns of the aggregates in the vectors of a batch */
 	int			nbins;
 	SiftV6Bin	bin[SIFT_V6_MAX_KEYS];
+	List	   *jmembers;		/* of each member of a map of a document the scan reads (SiftV6Col.jmember), the list of its keys from the document, as String nodes */
 	List	   *jsonqual;		/* the quals on the keys of jsonb documents the clauses of an operator class cannot say (agg/v6/jsonb_qual.c) */
 	List	   *vqual;			/* the quals no scan key says (a column against a column, OR, a numeric against a constant), over the columns the scan decodes (agg/v6/v6_bqual.h): they narrow every batch */
 	struct SiftV6Ext *ext;		/* the dimensions of a star join or the array an unnest takes apart (v6_ext.h); NULL for the scan of the columns of one table */
-	Oid			text_indexoid;	/* a sift index whose text query (a Const, text_query) keeps the rows: its hits go to the scan as bridges (v6_text.c); InvalidOid without one */
-	Const	   *text_query;
+	Oid			text_indexoid;	/* a sift index whose text queries (the Consts of text_queries, the arms of an OR) keep the rows: their hits go to the scan as bridges (v6_text.c); InvalidOid without one */
+	List	   *text_queries;
 	int			par_strategy;	/* SiftV6ParStrategy of the plan (0: serial) */
 	int			par_workers;
 	int			nderive;
@@ -224,13 +285,39 @@ typedef struct SiftV6Spec
 	Oid			aff_type;
 	int64		aff_lo;
 	int64		aff_hi;
-	bool		rows;			/* ORDER BY .. LIMIT of the rows of one table, not of groups: the keys are the sort columns, topk the K, and the node gives the rows it fetches from the heap (v6_rows_topn.h) */
+	char	   *topn_desc;		/* EXPLAIN of a row Top-N: its sort keys */
+	char	   *agg_desc;		/* its aggregates of the whole set (NULL: none) */
+	char	   *join_desc;		/* its dimensions (NULL: none) */
+	int			nout;			/* a row Top-N: the columns the node gives, in the order of its scan tlist */
+	SiftV6RowOut *out;
+	bool		rows;			/* ORDER BY .. LIMIT of the rows of one table, not of groups: the keys are the sort columns (then the columns of the dimensions the rows carry), topk the K, and the node gives the rows it fetches from the heap (v6_rows_topn.h); the aggregates are those of the whole set the rows carry */
 	uint32		groups_est;		/* the groups the planner expects (0: unknown): the group table is sized for them at the start */
 	uint32		topk;			/* LIMIT + OFFSET of the query when the node gives the best groups in order (0: all groups, unordered) */
 	int			ntopk;
 	SiftV6TopKItem topk_item[SIFT_V6_MAX_TOPK_ITEMS];
+	bool		having;			/* the node runs a HAVING qual on the groups: the K best are the best that pass it, not the best of all groups */
+	List	   *pgexpr;			/* the PostgreSQL expressions of the SVD_PG_EXPR derivations: their items (v6_pg_expr.h) */
+	bool		constant_groups;	/* GROUP BY of expressions that read no column: no group when no row is read (the single set of no keys has a row only once a row was folded) */
+	List	   *genref;			/* the Aggref of each SV6_GEN_PG and SV6_OSA aggregate, in the order of agg (v6_gen.h) */
+	bool		tid_range;		/* the WHERE bounds ctid: the rows whose heap row's ctid is in [tid_lo, tid_hi), as block << 16 | offset (v6_vet.h) */
+	uint64		tid_lo;
+	uint64		tid_hi;
 	uint32		lock_k;			/* LIMIT + OFFSET of a query with no ORDER BY, HAVING or DISTINCT: any K groups with their exact aggregates answer it, so the group table takes no group after the K-th (0: all groups) */
+	struct SiftV6Exec *exec;	/* what the node that runs the scan prepared of the expressions above that need the executor (v6_pg_exec.h); set when the node begins, never packed */
 } SiftV6Spec;
+
+/* What the scan of partition k reads (k = 0 when the table is not partitioned) */
+static inline Oid
+sift_v6_spec_part_oid(const SiftV6Spec *s, int k)
+{
+	return s->nparts > 0 ? s->part_index[k] : s->relid;
+}
+
+static inline bool
+sift_v6_spec_part_is_table(const SiftV6Spec *s, int k)
+{
+	return s->nparts > 0 ? s->part_is_table[k] : s->is_table;
+}
 
 /*
  * The vectors of a batch: argvec[j] is the argument of aggregate j, argvec[naggs + j] its second argument (sift.arg_max, sift.arg_min), and then the columns after the first of each
@@ -259,6 +346,15 @@ sift_v6_spec_nvec(const SiftV6Spec *s)
 	return sift_v6_spec_fvec(s) + s->nfcols;
 }
 
+static inline bool
+sift_v6_spec_distinct(const SiftV6Spec *s)
+{
+	for (int j = 0; j < s->naggs; j++)
+		if (s->agg[j].kind == SV6_COUNT_DISTINCT)
+			return true;
+	return false;
+}
+
 /* An aggregate over sift.score(ctid): the rows of the fold have to come with their scores */
 static inline bool
 sift_v6_spec_reads_score(const SiftV6Spec *s)
@@ -273,9 +369,11 @@ sift_v6_spec_reads_score(const SiftV6Spec *s)
 typedef struct SiftV6Rel
 {
 	Index		relid;
-	const IndexOptInfo *index;
-	const SiftColRel *colrel;
-	const SiftF2Rel *f2;
+	Oid			reloid;			/* the index, or the table */
+	const IndexOptInfo *index;	/* NULL for a sift_table */
+	const SiftColRel *colrel;	/* NULL for a sift_table */
+	const SiftStoreSchema *table;	/* a sift_table: the schema of its store, whose attributes are those of the table */
+	const SiftStoreOps *ops;	/* the format of the index, NULL when it holds nothing of it (a stale index) */
 } SiftV6Rel;
 
 /*
@@ -284,12 +382,45 @@ typedef struct SiftV6Rel
  */
 extern List *sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause);
 extern bool sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out);
+/* `(doc -> 'a' -> .. ->> 'k')::float8` of a map of float8 members of a document of the index as a column of the scan, and the keys in order */
+extern bool sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path);
+extern bool sift_v6_values_exact(const SiftV6Rel *rel);
+/*
+ * e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy), and with values every
+ * `doc ->> 'key'` and its float8 cast as one of the text or float8 kind: the scan reads a value a leaf cannot hold from the exception of its chunk, which a scan key (a FILTER) does not; the column such a Var is
+ */
+extern Expr *sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values);
+extern bool sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
+/* The statement reads the type and the value of one key apart from the scan keys: PostgreSQL's own plan decides which values it reads */
+extern bool sift_v6_json_type_clash(const SiftV6Spec *s);
+/* The attribute a column is an input of an expression or a qual by: its own, or the virtual one of what it reads of a key of a document */
+static inline int
+sift_v6_col_input_attno(const SiftV6Col *c)
+{
+	if (c->jleaf == 0)
+		return c->attno;
+	return (c->jtype ? SIFT_V6_JTYPE_VATT : c->typid == FLOAT8OID ? SIFT_V6_JF8_VATT : SIFT_V6_JTEXT_VATT) + c->jleaf - 1;
+}
+
+/* The column of the scan a virtual attribute of a key of document attribute att is: the type, the text or the float8 cast of the key whose leaf is in the attribute */
+static inline SiftV6Col
+sift_v6_vatt_col(int attno, int att, Oid typid, int scale)
+{
+	return (SiftV6Col) {.attno = att,.typid = typid,.scale = scale,.jleaf = sift_v6_vatt_leaf(attno) + 1,.jtype = sift_v6_vatt_is_type(attno)};
+}
+/* e is doc -> 'k' or doc['k'] (as_text false), or doc ->> 'k' or its #>> '{}' (as_text true), of a column doc and a constant text key */
+extern bool sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **key);
+/* the jsonb column e is a chain of -> and ->> with constant keys over (NULL: it is not one), and the keys in order (NIL: e is the column) */
+extern const Var *sift_v6_doc_chain(const Expr *e, List **path);
 /* keys and nkeys with the scan keys of spec->jsonqual appended */
 extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys);
 /* The value of a row whose leaf could not hold it, from the payload of its exception (a jsonb datum): the `->>` text, or its float8 cast; false: NULL */
 extern bool sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryContext cx, const char **text, uint32 *tlen, double *f);
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_plan_methods;
+
+/* Prepares the expressions of spec that need the executor (v6_pg_exec.h) under the node ps, which begins; spec.exec stays NULL when there are none */
+extern void sift_v6_exec_begin(SiftV6Spec *spec, struct PlanState *ps);
 
 extern void sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
@@ -298,14 +429,11 @@ extern Plan *sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPat
  * *spec, the entries of the rows the aggregate leaves in *scan_tlist (the keys, then the aggregates), the grouping expressions in *group_exprs; false when the index does not hold what the statement reads.
  * extra is the GroupPathExtraData of the upper path. sift_v6_plan_shape says whether the statement is of the shape the aggregate scan serves (one table, no windows or DISTINCT ON).
  */
-extern bool sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, SiftF2Store *store, void *extra, SiftV6Spec *spec,
+extern bool sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, const SiftStoreSchema *table, void *extra, SiftV6Spec *spec,
 									  List **scan_tlist, List **group_exprs);
 extern bool sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
-/* The index holds attribute att (1-based), of the class, in one plain leaf the scan decodes as it is stored */
-extern bool sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls);
-/* The same for column att of a sift_table (1-based) */
-struct SiftF2Store;
-extern bool sift_v6_table_leaf_holds(const struct SiftF2Store *store, int att, SiftV6Class cls);
+/* is vector v of a batch (the argvec of sift_v6_group_update) one the generic or ordered-set aggregates of the spec read (v6_gen.c) */
+extern bool sift_v6_vec_of_gen(const SiftV6Spec *spec, int v);
 extern bool sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind);
 extern bool sift_v6_kind_takes(SiftV6Kind kind, Oid typid);
 /* The aggregate of the facts of a join as a scan of the index (the tuple of its scan tlist): false when a key, an aggregate or a qual of the facts is not one the scan decides (scope_v6.c adds the members of a scope key) */
@@ -317,13 +445,6 @@ extern const CustomPathMethods *sift_v6_group_path_methods(void);
 extern List *sift_v6_spec_pack(const SiftV6Spec *s);
 extern SiftV6Spec *sift_v6_spec_unpack(const List *l);
 
-/* The scope aggregate (agg/v6/scope_v6.c): a join of the facts with the pairs of a scope of the index is answered by the cubes of its summary (col/f2/f2_scope.h) */
-extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_scope_plan_methods;
-
-extern void sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
-/* ORDER BY ring leaf DESC LIMIT n of the facts of a scope key: the newest rows of its ring (ORDERED stage) */
-extern void sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
-extern Plan *sift_agg_v6_scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 
 /* The groups: keys and aggregates folded from batches, then every group once */
 typedef struct SiftV6Group SiftV6Group;
@@ -332,6 +453,9 @@ typedef struct SiftV6Group SiftV6Group;
 extern SiftV6Group *sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc);
 /* keyvec[i] is key i and argvec[j] the argument of aggregate j (NULL for count(*)); the rows are those of bs */
 extern void sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
+/* The derived columns of a batch that go to the groups g (NULL: elsewhere): derive(arg, k, rows) computes column k for rows. A column only the aggregates with a FILTER read is computed for the rows their clauses keep (group_derive.c) */
+typedef void (*SiftV6DeriveFn) (void *arg, int k, const SiftBatchSel *rows);
+extern void sift_v6_derive_batch(SiftV6Group *g, int nderive, const SiftBatchSel *bs, SiftVec *const *argvec, SiftV6DeriveFn derive, void *arg);
 /* Rows that no key or filter tells apart, for a statement of count(*) alone (sift_v6_spec_count_only) */
 extern bool sift_v6_spec_count_only(const SiftV6Spec *spec);
 extern void sift_v6_group_add_rows(SiftV6Group *g, uint64 n);
@@ -357,6 +481,9 @@ typedef struct SiftV6ScanStats
 	uint64		rows;
 	uint64		heap_vet_rows;
 	uint64		heap_rows_dead;
+	uint64		grans_preagg;	/* granules answered from their pre-aggregates (col/f2/f2_v6_preagg.h) */
+	uint64		grans_preagg_delta;	/* ... of them, those corrected for dead rows */
+	uint64		heap_reread_rows;	/* rows of an unnest whose document the leaves cannot hold, which the function takes apart again from the heap */
 	uint64		chunks;			/* passes of a scan that takes the hits of a text query as bridges */
 	uint64		bridge_tids;
 } SiftV6ScanStats;
@@ -365,10 +492,12 @@ typedef struct SiftV6ScanStats
 typedef bool (*SiftV6ChunkFn) (void *arg, const SiftTidBridge **bridge);
 
 /* v6_text.c: the text query of a statement of the aggregate (the planner reads it from the quals, the executor feeds it to the scan as chunks) */
-extern IndexOptInfo *sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, Const **query);
-extern bool sift_v6_text_usable(IndexOptInfo *text, Const *query);
+extern IndexOptInfo *sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **queries);
+/* The clause is a match of a text index of the relation, which no scan key or batch qual decides */
+extern bool sift_v6_text_clause(RelOptInfo *rel, RestrictInfo *ri);
+extern bool sift_v6_text_usable(IndexOptInfo *text, List *queries);
 /* touch: the fraction of the rows of the store that the scan of the chunks reads (the granules the hits are in) */
-extern double sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, Const *query, double *touch);
+extern double sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, List *queries, double *touch);
 
 typedef struct SiftV6Text SiftV6Text;
 extern SiftV6Text *sift_v6_text_open(const SiftV6Spec *spec, MemoryContext parent);
@@ -376,7 +505,7 @@ extern bool sift_v6_text_chunk(void *text, const SiftTidBridge **bridge);
 extern void sift_v6_text_close(SiftV6Text *t);
 
 /*
- * The fold of the rows of a scan into the groups, which sift_v6_scan_run drives with the rows of a scan of the index and a caller with the rows of its own (agg/hybrid_agg_exec.c): sift_v6_fold_batch
+ * The fold of the rows of a scan into the groups, which the zone scan of the format (core/store_ops.h) drives with the rows of a scan of the index and a caller with the rows of its own (agg/hybrid_agg_exec.c): sift_v6_fold_batch
  * takes a batch of rows (the ColView of each leaf, indexed by leaf; sift_v6_fold_cols are the ones to decode), the live ones decided by the stored values and the maybe ones they could not decide;
  * the recheck says whether the heap keeps a maybe row (visible, and passing the quals the scan holds). A fold lives in the memory context it began in.
  */
@@ -392,44 +521,12 @@ typedef struct SiftV6FoldCol
 	int			scale;			/* a numeric: the digits after the point of the scaled integer the leaf holds */
 } SiftV6FoldCol;
 
-extern SiftV6Fold *sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, SiftV6Recheck recheck, void *recheck_arg);
-extern const SiftV6FoldCol *sift_v6_fold_cols(const SiftV6Fold *f, int *n);
-extern void sift_v6_fold_batch(SiftV6Fold *f, const uint64 *tid, const uint64 *live, const uint64 *maybe, const void *views, int n);
-/* The same for rows that come with the score of their hit (score[r] for row r): the batch of a fold whose spec reads the score (sift_v6_spec_reads_score) */
-extern void sift_v6_fold_batch_scored(SiftV6Fold *f, const uint64 *tid, const uint64 *live, const uint64 *maybe, const void *views, const float4 *score, int n);
-extern void sift_v6_fold_end(SiftV6Fold *f);
-
 /* The rows of a batch as the vectors of the keys and of the arguments of the aggregates (keyvec[i] is key i, argvec[j] the argument of aggregate j); what a scan hands each batch to */
 typedef void (*SiftV6BatchFn) (void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
 typedef struct SiftV6Scan SiftV6Scan;
-struct SiftParPartRef;
-struct SiftF2ParPlan;
 
-extern SiftV6Scan *sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats, SiftV6BatchFn emit,
-									  void *emit_arg);
-/* The parts of the generations skip (ascending) are not read: another scan took them; a router (NULL: none) keeps the scan to the granules of one scope key (f2_scope_route.h) */
-struct SiftScopeRouter;
-struct SiftV6StarRun;
-/* The same for a statement of ext: star is the dimensions of the pass the scan is of (v6_star_run.h), NULL for an unnest or none */
-extern void sift_v6_scan_run_ext(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip,
-								 const struct SiftScopeRouter *router, SiftV6ScanStats *stats, struct SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg);
-extern void sift_v6_scan_all(SiftV6Scan *s, const uint64 *skip, int nskip);
-extern void sift_v6_scan_plan(SiftV6Scan *s, struct SiftF2ParPlan *out);
-extern void sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged);
-extern void sift_v6_scan_morsel(SiftV6Scan *s, const struct SiftParPartRef *ref, uint32 first, uint32 n);
-extern void sift_v6_scan_end(SiftV6Scan *s);
 /* The rows the scan keeps go to rows (v6_rows_topn.h) instead of the groups */
 typedef struct SiftV6Rows SiftV6Rows;
-
-extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats,
-							  SiftV6ChunkFn next_chunk, void *chunk_arg);
-extern void sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
-							 const uint64 *skip, int nskip, const struct SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);
-
-/* The same for a spec that is_table: the rows of the sift_table the quals accept, which its own versions show to the snapshot */
-struct SiftStoreQuals;
-extern void sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const struct SiftStoreQuals *quals, Snapshot snap, const uint64 *skip,
-							   int nskip, SiftV6ScanStats *stats);
 
 /*
  * The arms of a cohort of SiftV6Fuse (v6_fuse.h) that scan the same index with the same keys, in one pass: the rows are looked at in the heap once and every arm folds them into its groups. arms[0]
@@ -448,6 +545,5 @@ typedef struct SiftV6ScanArm
 	const struct SiftClause *gate;
 } SiftV6ScanArm;
 
-extern void sift_v6_scan_run_arms(struct SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap);
 
 #endif							/* SIFT_AGG_V6_H */

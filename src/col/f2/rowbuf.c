@@ -480,7 +480,7 @@ add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *ver
 	uint8		key[SIFT_BOUND_BYTES];
 
 	sift_granule_tids(v, tids);
-	SIFT_INVARIANT(remap == NULL || (rb->parent == NULL && remap->ncols == rb->ncols), "a part is remapped only for a table, whose columns are all of the rows");
+	SIFT_INVARIANT(remap == NULL || remap->ncols == rb->ncols, "a part is remapped only for a table, whose columns are those of the rows");
 	for (int c = 0; c < rb->ncols; c++)
 	{
 		int			pc = remap != NULL ? remap->phys[c] : c;
@@ -562,7 +562,7 @@ add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *ver
 						e->f = fv[c] ? fv[c][at] : 0;
 					}
 					if (e->tag != 0)
-						e->xp = sift_granule_exc_payload(v, c, at, &e->xplen);
+						e->xp = sift_granule_exc_payload(v, remap != NULL ? remap->phys[c] : c, at, &e->xplen);
 				}
 				continue;
 			}
@@ -920,7 +920,7 @@ sift_rowbuf_rows(SiftRowBuf *rb, SiftColIn *cols, const SiftPartSpec *spec)
 	}
 	SiftRows	rows = {.nrows = rb->n,.ncols = rb->ncols,.tid = rb->tid,.xmin = rb->xmin,.cmin = rb->cmin,.cols = cols,
 	.keys = (const uint8 (*)[SIFT_BOUND_BYTES]) rb->keys,.sort_cols = spec->sort_cols,.sort_flags = spec->sort_flags,.nsort = spec->nsort,.key_lo = NULL,.key_hi = NULL,
-	.preagg = spec->preagg,.preagg_dim = spec->preagg_dim,.preagg_measure = spec->preagg_measure,.time_col = spec->time_col,.compress_alg = spec->compress_alg,.kll = spec->kll,
+	.preagg = spec->preagg,.preagg_decl = spec->preagg_decl,.map_key = spec->map_key,.time_col = spec->time_col,.compress_alg = spec->compress_alg,.kll = spec->kll,
 	.col_ids = spec->col_ids,.ncol_ids = spec->ncol_ids,.defaults = spec->defaults,.defaults_len = spec->defaults_len,.defaults_stamp = spec->defaults_stamp};
 
 	memcpy(rows.time_cols, spec->time_cols, sizeof(rows.time_cols));

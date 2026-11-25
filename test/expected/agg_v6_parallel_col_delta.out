@@ -70,6 +70,9 @@ SELECT * FROM check_all('built');
 
 UPDATE ev SET note = 'upd ' || id WHERE id % 7 = 0;
 UPDATE evh SET note = 'upd ' || id WHERE id % 7 = 0;
+-- an integer leaf is not patched by a column delta: the rows whose qty changes are replaced
+UPDATE ev SET qty = qty + 1 WHERE id % 7 = 0 AND id % 2 = 0;
+UPDATE evh SET qty = qty + 1 WHERE id % 7 = 0 AND id % 2 = 0;
 SELECT dead() < 8571 AS some_rows_patched_in_place, dead() > 0 AS some_rows_replaced;
  some_rows_patched_in_place | some_rows_replaced 
 ----------------------------+--------------------

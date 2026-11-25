@@ -20,7 +20,6 @@
 #include "agg/gpu_v6.h"
 #include "agg/nth.h"
 #include "agg/vk/layout.h"
-#include "col/f2/f2_cache.h"
 
 #ifdef SIFT_VULKAN
 #define GPU_BUILT			true
@@ -106,7 +105,7 @@ decline(SiftGpuRun *run, const char *fmt,...)
 	run->used = false;
 	if (run->plan != NULL)
 	{
-		sift_gpu_f2_free(run->plan);
+		run->plan->ops->free(run->plan);
 		run->plan = NULL;
 	}
 	return false;
@@ -305,7 +304,7 @@ resident_share(Exec *x)
 
 	x->keys = palloc(Max(n, 1) * sizeof(SiftVkKey));
 	x->resident = palloc0(Max(n, 1));
-	sift_gpu_f2_keys(x->plan, x->keys);
+	x->plan->ops->keys(x->plan, x->keys);
 	sift_gpu_conn_resident(x->conn, x->tables, x->keys, (uint32) n, x->resident);
 	for (uint64 i = 0; i < n; i++)
 		hit += x->resident[i];
@@ -425,9 +424,9 @@ setup(Exec *x, const char *why)
 		return decline(run, "this build has no Vulkan support (make VULKAN=1)");
 	if (why != NULL)
 		return decline(run, "%s", why);
-	if (sift_gpu_mode == SIFT_GPU_AUTO && sift_plan_cache_get(q->rel, CurrentMemoryContext)->total_rows < (uint64) sift_gpu_min_rows)
+	if (sift_gpu_mode == SIFT_GPU_AUTO && q->live_rows < (double) sift_gpu_min_rows)
 		return decline(run, "fewer rows than sift.gpu_min_rows (%d)", sift_gpu_min_rows);
-	run->plan = sift_gpu_f2_plan(q, CurrentMemoryContext);
+	run->plan = q->ops->plan(q, CurrentMemoryContext);
 	x->plan = run->plan;
 	run->parts = x->plan->ndevice;
 	run->parts_all = x->plan->nparts;
@@ -503,13 +502,13 @@ run_range(Exec *x, SiftVkJob *job, uint32 g0, uint32 gmax, uint32 *g1, SiftVkRes
 	{
 		SiftVkJob	larger = *job;
 
-		if (!sift_gpu_f2_load(p, g0, gmax, sift_gpu_conn_batch_bytes(x->conn), elide ? x->resident : NULL, g1, why))
+		if (!p->ops->load(p, g0, gmax, sift_gpu_conn_batch_bytes(x->conn), elide ? x->resident : NULL, g1, why))
 			return SIFT_VK_DECODE;
 		job->gran = &p->gran[g0];
 		job->ngran = *g1 - g0;
-		job->tab = sift_gpu_f2_tab_key(p, g0, *g1);
+		p->ops->tab_key(p, g0, *g1, &job->tab);
 		st = sift_gpu_conn_run(x->conn, job, res);
-		sift_gpu_f2_unload(p);
+		p->ops->unload(p);
 		larger.est_groups = Min(job->est_groups * 8, Max(p->rows, (uint64) 1024));
 		if (st == SIFT_GPU_NEED_BYTES && elide)
 			elide = false;
@@ -836,7 +835,7 @@ take_cand(Exec *x, const SiftVkResult *res, void *arg)
 		c->key = res->cand[2 * i];
 		c->isnull = (meta >> 62) & 1;
 		c->row = (uint32) meta & 0x3FFFFFFF;
-		sift_gpu_f2_locate(x->plan, (uint32) ((uint64) meta >> 32) & 0x3FFFFFFF, &c->part_id, &c->part_gen, &c->granule);
+		x->plan->ops->locate(x->plan, (uint32) ((uint64) meta >> 32) & 0x3FFFFFFF, &c->part_id, &c->part_gen, &c->granule);
 	}
 }
 
@@ -893,7 +892,7 @@ sift_gpu_v6_topn(const SiftGpuQuery *q, uint32 k, bool desc, bool nulls_first, b
 bool
 sift_gpu_v6_covers(const SiftGpuRun *run, uint64 part_gen)
 {
-	return run != NULL && run->used && run->plan != NULL && sift_gpu_f2_covers(run->plan, part_gen);
+	return run != NULL && run->used && run->plan != NULL && run->plan->ops->covers(run->plan, part_gen);
 }
 
 static const char *
@@ -927,6 +926,6 @@ sift_gpu_v6_end(SiftGpuRun *run)
 {
 	if (run == NULL || run->plan == NULL)
 		return;
-	sift_gpu_f2_free(run->plan);
+	run->plan->ops->free(run->plan);
 	run->plan = NULL;
 }

@@ -1,0 +1,149 @@
+-- Format 1 on the unified aggregate scan (sift.test_unified_agg): the text hits of a BM25 index, the typed JSON path leaves of a document and the residual condition of a self join are folded
+-- from the batches of the Format 1 source, and the groups are the heap's own after updates and deletes. A scan with a text bridge reads the score of the hit as a column.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET sift.test_create_format1 = on;
+SET sift.test_unified_agg = on;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+CREATE TABLE u (id int PRIMARY KEY, grp int, price int, body text, doc jsonb);
+INSERT INTO u
+SELECT i, i % 7, i % 100, 'item ' || CASE WHEN i % 5 = 0 THEN 'cable ' ELSE '' END || CASE WHEN i % 11 = 0 THEN 'wire' ELSE 'plug' END,
+	CASE WHEN i % 13 = 0 THEN jsonb_build_object('m', 'x', 'k', 'g' || i % 4) WHEN i % 17 = 0 THEN jsonb_build_object('m', NULL, 'k', 'g' || i % 4)
+		ELSE jsonb_build_object('m', i % 50, 'k', 'g' || i % 4) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX u_fts ON u USING sift (body);
+CREATE INDEX u_col ON u USING sift_col (id, grp, price, doc) WITH (paths = 'doc->m float8, doc->k text');
+VACUUM (FREEZE, ANALYZE) u;
+-- the node the plan of q has, whether it reads a text index, and whether its rows are those of the heap (sift.enable_agg = off)
+CREATE FUNCTION check_q(q text) RETURNS TABLE (node text, text_index bool, same bool) LANGUAGE plpgsql AS $$
+DECLARE l text; p text := ''; a text; b text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || l || E'\n'; END LOOP;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (%s) x', q) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (%s) x', q) INTO b;
+	node := coalesce((regexp_match(p, 'Custom Scan \((Sift\w+)\)'))[1], 'none');
+	text_index := p LIKE '%Search:%';
+	same := a = b;
+	RETURN NEXT;
+END $$;
+SELECT * FROM check_q($$SELECT count(*) FROM u WHERE body @@> 'cable'$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | t          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT grp, count(*), sum(price) FROM u WHERE body @@> 'cable wire' GROUP BY grp$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | t          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM u a JOIN u b ON a.grp = b.grp AND a.id < b.id AND b.price < 3$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT doc->>'k', count(*) FROM u GROUP BY 1$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*), sum((doc->>'m')::float8) FROM u WHERE jsonb_typeof(doc->'m') = 'number'$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM u WHERE jsonb_typeof(doc->'m') = 'null'$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM u WHERE jsonb_typeof(doc->'m') IN ('string', 'null')$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+UPDATE u SET doc = '{"m": null}', body = 'item cable plug' WHERE id % 50 = 0;
+DELETE FROM u WHERE id % 97 = 0;
+SELECT * FROM check_q($$SELECT count(*) FROM u WHERE body @@> 'cable'$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | t          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM u WHERE jsonb_typeof(doc->'m') = 'null'$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT grp, count(*) FROM u WHERE body @@> 'cable' AND price > 10 GROUP BY grp$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | t          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT a.grp, count(*) FROM u a JOIN u b ON b.id = a.price + 1 WHERE a.body @@> 'cable' GROUP BY 1$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT d.g, x.id FROM (SELECT g FROM generate_series(0, 6) g) d, LATERAL (SELECT id FROM u WHERE u.grp = d.g ORDER BY price DESC, id LIMIT 1) x$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+CREATE TABLE up (id int, k int, v int);
+INSERT INTO up SELECT i, (i * 7919) % 9000, i % 100 FROM generate_series(1, 30000) i;
+CREATE INDEX up_col ON up USING sift_col (id, k, v) WITH (point_tid_columns = 'k');
+VACUUM (FREEZE, ANALYZE) up;
+SELECT * FROM check_q($$SELECT count(*), sum(v) FROM up WHERE k IN (17, 4242, 3, 8999, 123456)$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*), sum(v) FROM up WHERE k = 4242$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+UPDATE up SET v = v + 1 WHERE k = 4242;
+DELETE FROM up WHERE k = 17 AND id % 2 = 0;
+INSERT INTO up VALUES (50000, 17, 5), (50001, 3, 7);
+SELECT * FROM check_q($$SELECT count(*), sum(v) FROM up WHERE k IN (17, 4242, 3, 8999, 123456)$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+-- a key that is NULL when the scan starts matches no row, not the rows of 0
+SELECT * FROM check_q($$SELECT count(*) FROM up WHERE k = (SELECT NULL::int)$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM up WHERE k = (SELECT 0)$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+DROP TABLE u, up;
+DROP FUNCTION check_q;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

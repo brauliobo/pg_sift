@@ -5,7 +5,7 @@
 # a row is added by its line: the columns after OPERATION may be left out for a clean case that needs no warm-up.
 group_low	slope	12	sampled	clean		select k_lo, count(*), sum(amount) from {f} group by 1;	=	
 group_mid	slope	12	sampled	clean		select k_mid, count(*), sum(amount) from {f} group by 1;	=	
-group_unique_int	slope	12	sampled	clean		select k_hi, count(*), sum(amount) from {f} group by 1;	=
+group_unique_int	slope	8	sampled	clean		select k_hi, count(*), sum(amount) from {f} group by 1;	=	
 group_unique_text	slope	12	sampled	clean		select txt, count(*), sum(amount) from {f} group by 1;	=	
 group_two_keys	slope	12	sampled	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;	=	
 count_distinct_int	slope	12	sampled	clean		select count(distinct k_hi) from {f};	=	

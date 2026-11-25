@@ -64,35 +64,6 @@ extern const char *sift_colsrc_conn_proof(SiftSrcSource *src, int leaf, uint64 *
 /* Superblocks of the heap now: the morsels of a parallel scan are ranges of [0, nsb) */
 extern uint32 sift_colsrc_nsb(SiftSrcSource *src);
 
-/* Bit i of a row (or element) bitmap */
-static inline bool
-sift_colsrc_bit(const uint64 *bits, size_t i)
-{
-	return (bits[i >> 6] >> (i & 63)) & 1;
-}
-
-/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
-static inline bool
-sift_colsrc_nan_leaf(const SiftSrcLeaf *l)
-{
-	return l->typid == NUMERICOID && l->kind == SCL_SCALAR;
-}
-
-/*
- * A NaN of a numeric leaf is a value to the executor, the greatest of the leaf: PG_INT64_MAX (no scaled number reaches it), not NULL, and
- * its bit in vec->ovf for the code that evaluates it as PostgreSQL does. The engine stores it as NULL with the flag; a source calls this
- * after it filled data and isnull.
- */
-/* The bytes of one value of each vector type, by SiftSrcVecType */
-extern const size_t sift_src_vtype_size[];
-extern void sift_colsrc_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull, const SiftSrcVec *vec);
-
-/* The leaf of leaf def i of a shredded jsonb attribute (a sift_col index, or the declared paths of a sift_table); desc names the attribute and gives its type */
-struct SiftColDef;
-extern void sift_colsrc_def_leaf(const struct SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l);
-/* The numbers of SiftSrcStats of the leaves of cols from the zones and dictionaries; wovf[i], wjnull[i]: a write buffer holds an overflow value, a JSON null, of leaf i */
-struct SiftColLeafStats;
-extern void sift_colsrc_leaf_stats(const struct SiftColDef *cols, int ncols, const struct SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st);
 
 /* Optional text tests of the provider (see SiftSrcProvider.prune_str / filter_str); no-ops that say "not done" without them */
 static inline void
@@ -352,18 +323,6 @@ extern void sift_colsrc_counters(const SiftSrcSource *src, SiftSrcCounters *c);
  */
 extern uint64 sift_colsrc_set_filters(SiftSrcSource *src, const SiftSrcFilter *f, int nf);
 extern bool sift_colsrc_filter(SiftSrcSource *src, const SiftSrcUnit *unit, uint64 *bits);
-
-/* The JSON types of a value (jsonb_typeof), as the bits of the types a filter keeps; the bit t - 1 is the chunk tag t (SIFT_COLTAG_*) */
-#define SIFT_SRC_JT_STRING		0x01
-#define SIFT_SRC_JT_NUMBER		0x02
-#define SIFT_SRC_JT_BOOLEAN		0x04
-#define SIFT_SRC_JT_OBJECT		0x08
-#define SIFT_SRC_JT_ARRAY		0x10
-#define SIFT_SRC_JT_NONE		0x20	/* the path has no value: jsonb_typeof is NULL */
-#define SIFT_SRC_JT_NULL		0x40	/* a JSON null: jsonb_typeof is 'null' */
-#define SIFT_SRC_JT_ALL			0x7F
-#define SIFT_SRC_TYPE_NONE		0xFF	/* SiftSrcProvider.read_types: the path has no value */
-#define SIFT_SRC_JT_READ		0x80	/* not a type: the query reads the leaf's values besides, so a row of the types whose value the leaf cannot hold is an error */
 
 /* How the query reads a leaf whose value the leaf cannot store (SiftSrcProvider.set_recheck) */
 typedef enum SiftSrcRecheck

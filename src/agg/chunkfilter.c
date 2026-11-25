@@ -231,7 +231,7 @@ sift_aggfilt_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 		z.has_ovf &= !run->tol[leaf[order[i]]];
 		if (!sift_col_filter(cu, p, np[order[i]], sel))
 			break;
-		if (z.has_ovf && sift_colsrc_nan_leaf(&run->lay->leaf[leaf[order[i]]]))
+		if (z.has_ovf && sift_src_nan_leaf(&run->lay->leaf[leaf[order[i]]]))
 			for (int k = 0; k < np[order[i]]; k++)
 				clear_nan_rows(cu, &p[k], sel);
 	}

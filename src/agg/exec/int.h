@@ -18,6 +18,8 @@ extern const CustomExecMethods agg_exec_methods;
 extern void agg_shutdown(CustomScanState *node);
 extern void agg_explain(CustomScanState *node, List *ancestors, ExplainState *es);
 extern void run_counters(AggExec *c, SiftSrcCounters *cc);
+/* the group table holds no more than its memory: asserted where it is at its largest, at the end of a scan and of each of its passes */
+extern void agg_mem_checkpoint(const AggExec *ex);
 
 extern TupleTableSlot * topn_next(AggExec *ex, TupleTableSlot *slot);
 
@@ -28,7 +30,7 @@ extern TupleTableSlot * topn_next(AggExec *ex, TupleTableSlot *slot);
 typedef struct SiftExplainStatsV6
 {
 	uint64		parts_scanned, parts_pruned_key, parts_pruned_time, l0_slabs_read;
-	uint64		grans_scanned, grans_pruned_zone, grans_pruned_skip, grans_pruned_dict, grans_preagg;
+	uint64		grans_scanned, grans_pruned_zone, grans_pruned_skip, grans_pruned_dict, grans_preagg, grans_preagg_delta;
 	uint64		cfilt_grans_total, cfilt_grans_hit;
 	uint64		cfilt_dict, cfilt_rle, cfilt_forbit, cfilt_delta, cfilt_fsst, cfilt_alp;
 	uint64		late_mat_early_exits, late_mat_saved_bytes, sparse_decodes, adapt_reorders;

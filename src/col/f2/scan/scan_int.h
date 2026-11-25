@@ -68,6 +68,8 @@ typedef struct F2Scan
 	SiftF2ZoneSink zone_sink;	/* a sink that is offered the zones of each part it reads no key or predicate of (SiftF2ZoneSink) */
 	const SiftF2Bound *bound;	/* a sink that keeps the best rows by a leaf: the granules that cannot beat its worst are not read */
 	int			bound_sink_leaf;
+	void	   *gran_arg;
+	SiftF2GranSink gran_sink;	/* a sink that is offered each granule before it is read (SiftF2GranOffer) */
 	const SiftPartDesc *part;	/* the part being scanned; NULL for a slab */
 	const struct SiftPointCands *cands;	/* the rows of the part being scanned that the point directory names for a predicate: the others are not looked at */
 	bool		tids_unneeded;	/* the sink will not read the addresses of the rows of this part */
@@ -127,6 +129,8 @@ typedef struct F2Scan
 	bool		ord_off;		/* the index is not ordered natively: its rows come as the addresses give them */
 	uint32		rescans;		/* the keys the scan was given: one given others again reads decoded granules */
 	struct SiftRescanScan *rescan;	/* what it keeps between the rescans (scan/rescan_cache.c) */
+
+	struct SiftPinWin *pinwin;	/* the granules the compute threads of the backend filter and decode: the scan hands them over instead of reading them (col/f2/pin_win.h) */
 } F2Scan;
 
 /* What a scan knows of the predicates for one part: the dictionaries of its strings, the skipping indexes, the predicates that run on its chunks */
@@ -167,6 +171,10 @@ extern int	sift_f2_scan_bridge_probe(Relation rel, F2Scan *s, uint32 g, SiftLazy
 									  Snapshot snap, uint64 *active);
 extern uint64 *sift_f2_scan_slab_bridge(F2Scan *s, const uint64 *tids, int n);
 extern int	sift_f2_scan_append_ext(F2Scan *s, int kept);
+
+/* The predicates that run on a chunk as it is stored, for the dictionaries of one part: cf (the compiled predicates of the scan, copied) gets the caches of the part; false when a predicate rules out every row of the part */
+extern bool sift_f2_part_cfilt(const SiftPartDicts *ds, const SiftColSchema *schema, const SiftVariantExcSummary *exc, int nexc, const SiftColPred *preds, int npreds, const bool *cf_ok,
+							   SiftCfiltPred *cf);
 
 extern void sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s);
 extern bool sift_f2_part_dicts_answer(Relation rel, F2Scan *s, const SiftPartitionEntry *e, SiftF2PartPin *pin, const SiftPendDelIndex *px);

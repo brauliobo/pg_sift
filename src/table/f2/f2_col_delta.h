@@ -766,6 +766,7 @@ extern void sift_col_delta_scan_set_attnums(SiftColDeltaScan *ds, uint64 attnum_
 extern void sift_col_delta_scan_attach(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, SiftF2GranuleBuf *gb);
 
 /* The patches of the granule the scan's snapshot sees, NULL for none: the map of the part is read once for the scan and stays while its granules change; the granule is not touched */
+extern const SiftColDeltaGranMap *sift_col_delta_scan_granule(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const SiftF2PartPin *pin, uint32 granule_id);
 extern const SiftColDeltaGranMap *sift_col_delta_scan_map(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const SiftF2GranuleBuf *gb);
 
 /* The map the last sift_col_delta_scan_map read from, which owns the granule map it returned: a holder that outlives the next call takes a reference of it */

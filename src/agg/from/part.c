@@ -16,6 +16,7 @@
 #include "agg/part.h"
 #include "agg/plan/safety.h"
 #include "agg/from/int.h"
+#include "table/dispatch.h"
 
 /* a partition a column index or the table itself can be read through: a heap table without row security, or a sift_table of the format the source reads */
 static bool

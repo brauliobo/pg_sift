@@ -34,7 +34,7 @@ DECLARE l text; r text := '';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, BUFFERS off) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := r || 'scan '; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := r || 'scan '; END IF;
 		IF l ~ 'ordered sets spilled' THEN r := r || 'spilled '; END IF;
 	END LOOP;
 	RETURN trim(r);

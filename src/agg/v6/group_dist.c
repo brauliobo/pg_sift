@@ -15,6 +15,8 @@
 
 #define DICT_PARALLEL_CAP		((uint64) 8 << 20)	/* the strings a participant of a parallel run holds by dictionary before it hands them on: what its own set of distinct values has no budget for either */
 
+static bool dist_by_row(const SiftV6Agg *a);
+
 void
 v6g_dist_init(SiftV6Group *g)
 {
@@ -26,24 +28,24 @@ v6g_dist_init(SiftV6Group *g)
 	for (int j = 0; j < spec->naggs; j++)
 	{
 		g->dslot[j] = -1;
-		if (spec->agg[j].kind == SV6_COUNT_DISTINCT)
+		if (sift_v6_kind_distinct(spec->agg[j].kind))
 		{
 			g->dagg[k] = j;
+			g->dvalued |= (uint32) sift_v6_kind_valued(spec->agg[j].kind) << k;
 			g->dslot[j] = k++;
 		}
 	}
 	g->ndist = k;
+	g->dist_only = spec->naggs == 1 && spec->agg[0].kind == SV6_COUNT_DISTINCT && !dist_by_row(&spec->agg[0]);
 	g->dist_budget = k > 0 ? g->budget / 2 : 0;
 	sift_dkey_init(&g->dkey, g->cx);
 	sift_dkey_init(&g->pkey, g->cx);
 }
 
-/* The bytes of a group in a grouped set, added to its accumulator as a piece of the count of aggregate dagg[slot] */
-static void
-dist_emit(void *arg, uint32 slot, const uint8 *prefix, uint32 plen, uint64 count)
+/* The state block of the group a prefix of its nulls and key bytes names in a grouped set: the group is made when it has none */
+static uint8 *
+group_state(V6Set *set, const uint8 *prefix, uint32 plen)
 {
-	V6Set	   *set = arg;
-	SiftV6Group *g = set->owner;
 	SiftAggSlot64 *s;
 	uint64		nulls;
 
@@ -76,7 +78,67 @@ dist_emit(void *arg, uint32 slot, const uint8 *prefix, uint32 plen, uint64 count
 		h = sift_aggk6_hash1((uint64) ik.i64[0]);
 		sift_ht_upsert_batch(&set->ht, &h, &ik, 1, &s);
 	}
-	((V6Acc *) (sift_ht_ext(&set->ht, s) + g->off[g->dagg[slot]]))->v0 += count;
+	return sift_ht_ext(&set->ht, s);
+}
+
+/* The bytes of a group in a grouped set, added to its accumulator as a piece of the count of aggregate dagg[slot] */
+static void
+dist_emit(void *arg, uint32 slot, const uint8 *prefix, uint32 plen, uint64 count)
+{
+	V6Set	   *set = arg;
+	SiftV6Group *g = set->owner;
+
+	uint8	   *state;
+
+	if ((g->dvalued >> slot) & 1)
+		return;
+	state = group_state(set, prefix, plen);
+	if (slot < (uint32) g->ndist)
+		((V6Acc *) (state + g->off[g->dagg[slot]]))->v0 += count;
+	v6g_spill_if_over(g);
+}
+
+/* A distinct value (the key of v6_distinct.h: a tag byte and the 8 bytes of an integer, or the bits of a float) joins the sum of its group */
+static void
+add_value(const SiftV6Agg *a, V6Acc *acc, const uint8 *value)
+{
+	int64		x;
+
+	memcpy(&x, value + 1, sizeof(x));
+	if (sift_v6_class(a->arg.typid) == SV6C_F64)
+	{
+		double		d;
+
+		memcpy(&d, &x, sizeof(d));
+		v6g_sum_f64(acc, d);
+	}
+	else
+	{
+		SiftI128	s = v6acc_i128(acc);
+
+		sift_i128_add(&s, sift_i128_of_i64(x));
+		v6acc_set_i128(acc, s);
+	}
+	acc->n++;
+}
+
+/* A distinct key of a slot that adds its values: [plen][prefix][value] in a grouped set, the value alone in one of no keys */
+static void
+value_visit(void *arg, uint32 slot, const void *key, uint32 len)
+{
+	V6Set	   *set = arg;
+	SiftV6Group *g = set->owner;
+	const SiftV6Agg *a = &g->spec->agg[g->dagg[slot]];
+	const uint8 *k = key;
+	uint32		plen;
+
+	if (set->nk == 0)
+	{
+		add_value(a, &set->plain[g->dagg[slot]], k);
+		return;
+	}
+	memcpy(&plen, k, sizeof(plen));
+	add_value(a, (V6Acc *) (group_state(set, k + sizeof(plen), plen) + g->off[g->dagg[slot]]), k + sizeof(plen) + plen);
 	v6g_spill_if_over(g);
 }
 
@@ -88,6 +150,8 @@ dist_of(SiftV6Group *g, V6Set *set)
 		const uint64 budget = g->dist_budget / (uint64) g->nsets;
 
 		set->dist = set->nk == 0 ? sift_distinct_create(g->cx, budget, 0) : sift_distinct_create_grouped(g->cx, budget, 0, dist_emit, set);
+		if (g->dvalued != 0)
+			sift_distinct_visit_values(set->dist, g->dvalued, value_visit, set);
 	}
 	return set->dist;
 }
@@ -140,6 +204,13 @@ flat_add(SiftV6Group *g, V6Set *set, uint32 slot, const uint64 *vals, uint32 n)
 	}
 	for (uint32 i = done; i < n; i++)
 		sift_distinct_add_u64(dist_of(g, set), slot, vals[i]);
+}
+
+/* the values of the aggregate go to the exact set as the bytes of a row: it has columns beyond the first, its values are floats or strings, or the set hands them to a sum */
+static bool
+dist_by_row(const SiftV6Agg *a)
+{
+	return a->nxcols > 0 || sift_v6_class(a->arg.typid) == SV6C_F64 || sift_v6_class(a->arg.typid) == SV6C_TEXT || sift_v6_kind_valued(a->kind);
 }
 
 /* the columns of the row r of aggregate j after what is in the key */
@@ -304,7 +375,7 @@ v6g_dist_plain(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, const uint64 *ta
 	const SiftVec *v = argvec[j];
 	SiftDistinct *d;
 	const uint32 slot = (uint32) g->dslot[j];
-	const bool	row_key = a->nxcols > 0 || sift_v6_class(a->arg.typid) == SV6C_F64 || sift_v6_class(a->arg.typid) == SV6C_TEXT;
+	const bool	row_key = dist_by_row(a);
 	uint32		r;
 
 	if (g->dist_put == NULL && set->nk == 0 && !row_key)
@@ -375,7 +446,7 @@ typedef struct MovePairs
 } MovePairs;
 
 static void
-add_pair_key(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const V6RowKey *rk, int64 value)
+put_prefix(SiftDistinctKey *k, const V6RowKey *rk)
 {
 	const uint32 plen = (uint32) sizeof(rk->nulls) + rk->len;
 
@@ -383,8 +454,34 @@ add_pair_key(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const 
 	sift_bytes_put(k, &plen, sizeof(plen));
 	sift_bytes_put(k, &rk->nulls, sizeof(rk->nulls));
 	sift_bytes_put(k, rk->p, rk->len);
+}
+
+static void
+add_pair_key(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const V6RowKey *rk, int64 value)
+{
+	put_prefix(k, rk);
 	sift_dkey_i64(k, value);
 	sift_distinct_add_dkey(dist_of(g, set), slot, k);
+}
+
+bool
+v6g_dist_groups_in_pairs(const SiftV6Group *g, const V6Set *set)
+{
+	return g->dist_only && !g->dist_done && g->dist_put == NULL && set->cmp == NULL;
+}
+
+/* A row with no pair names its group to the set of pairs, which is where the group is when the table spills */
+static void
+note_group(SiftV6Group *g, V6Set *set, uint16 k)
+{
+	V6RowKey	rk;
+
+	if (g->gid_direct)
+		v6g_compact_rowkey(set, g->gid[k], &rk);
+	else
+		rk = slot_key(set, g->slots[k]);
+	put_prefix(&g->dkey, &rk);
+	sift_distinct_add_dkey(dist_of(g, set), (uint32) g->ndist, &g->dkey);
 }
 
 static void
@@ -505,7 +602,7 @@ void
 v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, uint16 n)
 {
 	const SiftV6Agg *a = &g->spec->agg[j];
-	const bool	flat = g->dist_put == NULL && a->nxcols == 0 && sift_v6_class(a->arg.typid) != SV6C_F64 && sift_v6_class(a->arg.typid) != SV6C_TEXT;
+	const bool	flat = g->dist_put == NULL && !dist_by_row(a);
 	SiftDu64G  *d = flat ? gflat_of(g, set, (uint32) g->dslot[j]) : NULL;
 	V6DistBatch *b = g->dbatch;
 	uint32		m = 0,
@@ -518,7 +615,11 @@ v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, u
 		const uint16 r = g->sel[k];
 
 		if (!v6g_row_takes(g, a, r) || (a->nxcols == 0 && !is_valid(argvec[j], r)))
+		{
+			if (g->dist_only)
+				note_group(g, set, k);
 			continue;
+		}
 		if (d == NULL)
 		{
 			row_to_dist(g, set, j, argvec, r, g->slots[k]);
@@ -547,8 +648,15 @@ v6g_dist_add(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 le
 }
 
 void
+v6g_dist_add_dkey(SiftV6Group *g, V6Set *set, uint32 slot, const SiftDistinctKey *k)
+{
+	sift_distinct_add_dkey(dist_of(g, set), slot, k);
+}
+
+void
 v6g_dist_recycle(SiftV6Group *g)
 {
+	g->dist_done = false;
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].dist != NULL)
 			sift_distinct_reset(g->set[s].dist);
@@ -600,6 +708,7 @@ emit_group(void *arg, uint32 gid, uint64 count)
 void
 v6g_dist_finish(SiftV6Group *g)
 {
+	g->dist_done = true;
 	dict_exact(g);
 	v6g_dist_dict_drain(g, dist_finish_add, g);
 	for (int s = 0; s < g->nsets; s++)
@@ -623,6 +732,8 @@ v6g_dist_finish(SiftV6Group *g)
 		if (set->nk == 0)
 			for (int k = 0; k < g->ndist; k++)
 			{
+				if ((g->dvalued >> k) & 1)
+					continue;
 				if (set->dict != NULL && set->dict[k].direct)
 					set->plain[g->dagg[k]].v0 = set->dict[k].direct_n;
 				else if (set->flat != NULL && set->flat[k] != NULL)

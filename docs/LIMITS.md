@@ -40,8 +40,6 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | words of a group in a narrow count(DISTINCT) set (64 values a word, one window of values for all the groups); 0 turns the form off | `8 words` | the set is a bitmap, a directory and chunks of 4096 bits a group | — | `agg/dist_int.h` `DIST_NARROW_WORDS` |
 | UNION ALL arms of a fused or two-level scan | `16 arms` | normal plan (slug shape_width) | — | `agg/spec/expr.h` `SIFT_AGG_MAX_ARMS` |
 | virtual leaves (expressions) per scan | `16 leaves` | normal plan (slug shape_width) | — | `agg/spec/expr.h` `SIFT_AGG_MAX_VLEAVES` |
-| leaves of the layout of one scan | `128 leaves` | normal plan | — | `agg/colsrc/meta.h` `SIFT_COLSRC_MAX_LEAVES` |
-| filters of a scan that skip units | `64 filters` | the others do not skip units | — | `agg/colsrc/exec.h` `SIFT_COLSRC_MAX_FILTERS` |
 | conjuncts on wide leaves per scan | `8 conjuncts` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_WIDE` |
 | leaves one argument of a generic aggregate reads | `4 leaves` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_GLEAVES` |
 | arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS) | `100 arguments` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_GARGS` |
@@ -79,7 +77,9 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | distinct FILTER clauses one stream node folds | `4 filters` | normal plan | — | `agg/v6/v6_stream.h` `SIFT_V6_STREAM_MAX_FILTERS` |
 | distinct FILTER clauses of the aggregates of one scan, evaluated once per batch | `64 filters` | normal plan | — | `agg/v6/v6_filter_pivot.h` `SIFT_PIVOT_MAX_FILTERS` |
 | equality column pairs of a join of two SiftAgg scans | `8 columns` | normal plan | — | `agg/v6/join.c` `JOIN_MAX_KEYS` |
-| count(DISTINCT) aggregates of one scan a parallel plan runs | `32 aggregates` | the scan runs without parallel workers | — | `agg/v6/v6_par.h` `SIFT_PAR_MAX_DIST` |
+| count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) aggregates of one scan a parallel plan runs | `32 aggregates` | the scan runs without parallel workers | — | `agg/v6/v6_par.h` `SIFT_PAR_MAX_DIST` |
+| ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them) | `32 columns` | the normal plan sorts the rows and keeps the first of each group | — | `agg/v6/v6_first.h` `SIFT_V6_FIRST_MAX_COLS` |
+| rows one group adds in the float8 sum or average of a Format Major 2 scan (its bins are 64-bit integer sums of 26-bit digits) | `137,438,953,472 rows` | an error (the float8 sum is over more rows than the bins hold) | — | `agg/v6/v6_fsum.h` `V6FSUM_MAX_ROWS` |
 
 ## Column index (`src/col`)
 
@@ -91,6 +91,8 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | the mean distance between the positions of a group in a chunk of a grouped order array that the writer keeps positional (as many entries as two chunks of the plain order): farther apart, each entry a scan reads is in a chunk of the plain order of its own | `1,024 entries` | the chunk keeps the keys and addresses of its entries (the rows are the same) | — | `col/v1/gorder.h` `SIFT_CGORD_POS_MAX_GAP` |
 | rows a top-N, range or count by an order array sorts in memory for one source: the write buffers' and those of the segments the overlays left without the array (a text key under a locale: at least 16,384 or 8 for each row wanted) | `2,097,152 rows` | the scan reads the units, and the planner prices no walk of the array (the rows are the same) | — | `col/v1/gorder.h` `SIFT_CGORD_MEM_MAX` |
 | rows of the segments that keep no order array of a leaf (the overlays written lean) that a top-N, range or count by the array of the leaf decodes and sorts in memory once for the backend (the first scan; the next find the order kept) | `65,536 rows` | the scan reads the units, and the planner prices no walk of the array (the rows are the same) | — | `col/v1/gorder.h` `SIFT_CGORD_FREE_MAX` |
+| leaves of the layout of one scan | `128 leaves` | normal plan | — | `col/v1/src_meta.h` `SIFT_COLSRC_MAX_LEAVES` |
+| filters of a scan that skip units | `64 filters` | the others do not skip units | — | `col/v1/src_exec.h` `SIFT_COLSRC_MAX_FILTERS` |
 | disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back | `2 times the live index` | the step fails with PostgreSQL's disk-full error before it replaces a segment | — | `col/v1/maint/maint.c` |
 | leaf slots of a sift_col index of format major 1 and columns of a sift_table of format major 1 (127 are usable) | `128 leaves` | CREATE INDEX, CREATE TABLE or ALTER TABLE rejected | — | `col/api/format.h` `SIFT_COL_MAX_COLS` |
 | leaf slots (columns and shredded jsonb paths) of a sift_col index of format major 2 | `1,024 leaves` | CREATE INDEX rejected | — | `col/api/format.h` `SIFT_F2_MAX_COLS` |
@@ -108,7 +110,6 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | bytes of the header page of a segment that keep a copy of the small structures a plan and a first read of the segment open (the schema and the unit directory, the point directories, the order headers, the headers of the pre-aggregates), so that they cost no pages of their own | `6,144 (6 KiB) bytes` | no copy: each of them is read from its own page of the segment | — | `col/v1/seg_write/seg_write_int.h` `SEG_MIRROR_BYTES` |
 | the share of its segment a leaf statistics block may take: a segment whose block would take more than 1/n of its bytes (3% at 33; units of a few rows and many leaves) keeps none | `33 1/n of a segment` | no statistics block: the plan reads the zone arrays of the segment | — | `col/v1/seg_write/seg_write.c` `LST_SHARE_DIV` |
 | precision of a numeric the integer leaf class holds exactly | `18 digits` | the wide leaf class holds it | — | `col/api/leaf.h` `SIFT_COL_MAX_SCALE` |
-| precision of a numeric in a wide leaf | `38 digits` | ERROR 54000 at build or merge | — | `col/v1/wide.h` `SIFT_COL_MAX_WIDE_SCALE` |
 | dimensions of the cube of an index | `16 dimensions` | option rejected at CREATE or ALTER INDEX | `cube option` | `col/v1/preagg.h` `SIFT_PAGG_MAX_DIMS` |
 | dimensions of one rollup | `6 dimensions` | option rejected at CREATE or ALTER INDEX | `rollup option` | `col/v1/preagg.h` `SIFT_PAGG_MAX_RDIMS` |
 | rollups of one index | `8 rollups` | option rejected at CREATE or ALTER INDEX | `rollup option` | `col/v1/preagg.h` `SIFT_PAGG_MAX_ROLLUPS` |
@@ -150,6 +151,7 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 
 | Limit | Default | At the limit | Tuned by | Source |
 |---|---|---|---|---|
+| precision of a numeric in a wide leaf | `38 digits` | ERROR 54000 at build or merge | — | `core/wide_datum.h` `SIFT_COL_MAX_WIDE_SCALE` |
 | directory entries a writer of a sift or sift_col index keeps it within (a sift_table has sift.table_max_segments for a test); a directory of more is a chain of pages, which holds 32,768 | `128 segments` | writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE) | — | `core/page.h` `SIFT_DIR_POLICY_MAX` |
 | a BM25 token | `255 bytes` | the token is its first 236 bytes and a hash of all of it | — | `core/sift.h` `SIFT_MAX_TERM_BYTES` |
 | term frequency in one document | `255 occurrences` | saturated | — | `core/sift.h` `SIFT_MAX_TF` |

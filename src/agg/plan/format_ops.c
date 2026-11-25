@@ -12,11 +12,16 @@
 #include "agg/agg.h"
 #include "agg/colsrc.h"
 #include "agg/plan/format_ops.h"
+#include "agg/plan_int.h"
 #include "agg/v6/v6.h"
 #include "col/am.h"
 #include "col/scope.h"
 #include "core/meta_peek.h"
 #include "table/dispatch.h"
+
+#ifdef SIFT_TESTING
+bool		sift_test_unified_agg;	/* sift.test_unified_agg */
+#endif
 
 static const SiftAggFormatOps ENGINES[] = {
 	{1, "v1", sift_agg_v1_upper_paths},
@@ -119,10 +124,24 @@ v2_has_source(PlannerInfo *root, RelOptInfo *input_rel)
 	return false;
 }
 
+/* Did the legacy planner of Format 1 give the output relation a path? */
+static bool
+has_legacy_path(const RelOptInfo *output_rel)
+{
+	foreach_ptr(Path, p, output_rel->pathlist)
+		if (IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods)
+			return true;
+	return false;
+}
+
+/* The legacy planner of Format 1 plans the statements with a Format 1 source; SiftAggV6 plans the others, and those the legacy planner left without a path. The testing build can leave the legacy one out */
 void
 sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
-	for (int i = 0; i < lengthof(ENGINES); i++)
-		if (ENGINES[i].format_major != 1 || v1_may_plan(root, input_rel) || !v2_has_source(root, input_rel))
-			ENGINES[i].upper_paths(root, stage, input_rel, output_rel, extra);
+	const bool	legacy = !sift_agg_unified_only() && (v1_may_plan(root, input_rel) || !v2_has_source(root, input_rel));
+
+	if (legacy)
+		sift_agg_format_ops(1)->upper_paths(root, stage, input_rel, output_rel, extra);
+	if (!legacy || !has_legacy_path(output_rel))
+		sift_agg_format_ops(2)->upper_paths(root, stage, input_rel, output_rel, extra);
 }

@@ -624,7 +624,7 @@ dist_update_narrow(AggExec *ex, Dist *d, int ai, int64 *cnt, const uint64 *ok, i
 	if (d->nk == 0)
 	{
 		for (j = 0; j < nsel; j++)
-			if (!ok || sift_colsrc_bit(ok, j))
+			if (!ok || sift_src_bit(ok, j))
 			{
 				lo = Min(lo, dist_x(d, v[j]));
 				hi = Max(hi, dist_x(d, v[j]));
@@ -641,7 +641,7 @@ dist_update_narrow(AggExec *ex, Dist *d, int ai, int64 *cnt, const uint64 *ok, i
 	{
 		int			r;
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		if ((r = dist_narrow_bit(ex, d, ex->gid[j], dist_x(d, v[j]))) < 0)
 			break;
@@ -668,7 +668,7 @@ dist_bits_one(Dist *d, int64 *cnt, const uint64 *ok, int nsel, const uint32 *v, 
 					m;
 		uint64	   *w;
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		x = dist_vx(&vw, v[j]);
 		c = (uint64) ((x >> DB_SHIFT) - vw.cbase);
@@ -702,7 +702,7 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 		uint64		m;
 		uint64	   *w;
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		if ((w = dist_word(&vw, g, dist_vx(&vw, v[j]), &m)) != NULL)
 		{
@@ -729,7 +729,7 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 
 		for (k = 0; k < nb; k++)
 		{
-			take[k] = !ok || sift_colsrc_bit(ok, j + k);
+			take[k] = !ok || sift_src_bit(ok, j + k);
 			wp[k] = take[k] ? dist_word(&vw, gid[j + k], dist_vx(&vw, v[j + k]), &mk[k]) : NULL;
 			if (wp[k])
 				__builtin_prefetch(wp[k], 1);
@@ -771,7 +771,7 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 						jj[32];
 
 			for (; j < nsel && m < 32; j++)
-				if (!ok || sift_colsrc_bit(ok, j))
+				if (!ok || sift_src_bit(ok, j))
 				{
 					pair[m] = DSET_PAIR(ex->gid[j], v[j]);
 					h[m] = dset_hash(pair[m]) & (s->cap - 1);
@@ -794,7 +794,7 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 		}
 	}
 	for (; j < nsel; j++)
-		if ((!ok || sift_colsrc_bit(ok, j)) && dist_add(ex, d, ex->gid[j], v[j]))
+		if ((!ok || sift_src_bit(ok, j)) && dist_add(ex, d, ex->gid[j], v[j]))
 			cnt[ex->gid[j]]++;
 }
 

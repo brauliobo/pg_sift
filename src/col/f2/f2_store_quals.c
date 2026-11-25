@@ -1,17 +1,19 @@
 /*
  * col/f2/f2_store_quals.c - the quals of the scan of a sift_table as the keys of an index scan and as predicates on its leaves (col/f2/f2_store_scan.h), through the one conversion a sift_col index scan
  * uses (sift_col_key_preds). The clauses are those a plan keeps for the scan of an index: a comparison, an IN list or a null test on an INDEX_VAR attribute, which for a table is the attribute of the table.
- * The operand of a comparison is a constant or a parameter: a parameter takes its value when the scan starts (sift_f2_store_bind_quals), as the runtime keys of an index scan do.
+ * The operand of a comparison is a constant, a parameter or a stable expression: the last two take their value when the scan starts (sift_f2_store_bind_quals), as the runtime keys of an index scan do.
  */
 #include "postgres.h"
 
 #include "access/stratnum.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
+#include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "agg/v6/v6_qual.h"
 #include "col/am/preds.h"
 #include "col/am.h"
 #include "col/pg.h"
@@ -26,7 +28,7 @@ key_of_null_test(const NullTest *nt)
 	return k;
 }
 
-/* The key of an operator on a column and an operand: a constant gives its value now, a parameter leaves it to the bind */
+/* The key of an operator on a column and an operand: a constant gives its value now, a parameter or a stable expression leaves it to the bind */
 static ScanKeyData
 key_of_operator(const SiftF2Store *store, Oid opno, Oid collid, int flags, const Var *v, const Node *operand)
 {
@@ -37,7 +39,13 @@ key_of_operator(const SiftF2Store *store, Oid opno, Oid collid, int flags, const
 
 	if (IsA(operand, Const))
 		k.sk_argument = ((const Const *) operand)->constvalue;
-	get_op_opfamily_properties(opno, store->opfamily[v->varattno], false, &strategy, &lefttype, &righttype);
+	if (get_op_opfamily_strategy(opno, store->opfamily[v->varattno]) == 0)
+	{
+		strategy = sift_v6_qual_private_strategy(opno, store->opfamily[v->varattno]);
+		righttype = exprType(operand);
+	}
+	else
+		get_op_opfamily_properties(opno, store->opfamily[v->varattno], false, &strategy, &lefttype, &righttype);
 	k.sk_strategy = (StrategyNumber) strategy;
 	k.sk_subtype = righttype;
 	return k;
@@ -59,9 +67,9 @@ key_of(const SiftF2Store *store, const Node *clause)
 }
 
 static bool
-is_param_comparison(const Node *clause)
+is_runtime_comparison(const Node *clause)
 {
-	return IsA(clause, OpExpr) && IsA(lsecond(((const OpExpr *) clause)->args), Param);
+	return IsA(clause, OpExpr) && !IsA(lsecond(((const OpExpr *) clause)->args), Const);
 }
 
 static void
@@ -93,7 +101,7 @@ sift_f2_store_compile_quals(Relation rel, const SiftF2Store *store, const List *
 	for (int i = 0; i < list_length(quals); i++)
 	{
 		keys[i] = key_of(store, list_nth(quals, i));
-		if (is_param_comparison(list_nth(quals, i)))
+		if (is_runtime_comparison(list_nth(quals, i)))
 			runtime = lappend_int(runtime, i);
 	}
 	if (runtime == NIL)
@@ -120,15 +128,19 @@ sift_f2_store_bind_quals(Relation rel, const SiftF2Store *store, SiftStoreQuals 
 		return;
 	MemoryContextReset(q->cx);
 	ResetExprContext(econtext);
+	old = MemoryContextSwitchTo(q->cx);
 	for (int i = 0; i < q->nrt; i++)
 	{
 		ScanKeyData *k = &q->keys[q->rt[i].key];
-		bool		isnull;
+		int16		len;
+		bool		byval,
+					isnull;
+		Datum		d = ExecEvalExprSwitchContext(q->rt[i].expr, econtext, &isnull);
 
-		k->sk_argument = ExecEvalExprSwitchContext(q->rt[i].expr, econtext, &isnull);
+		get_typlenbyval(k->sk_subtype, &len, &byval);
+		k->sk_argument = isnull ? (Datum) 0 : datumCopy(d, byval, len);
 		k->sk_flags = isnull ? k->sk_flags | SK_ISNULL : k->sk_flags & ~SK_ISNULL;
 	}
-	old = MemoryContextSwitchTo(q->cx);
 	/* check-memory: allow the scan keys of one statement, which the planner passed */
 	q->preds = palloc(Max(q->nkeys, 1) * sizeof(SiftColPred));
 	fill_preds(rel, store, q);

@@ -51,9 +51,16 @@ is_range(const SiftStarShape *sh)
 }
 
 static inline bool
+keeps_fact(const SiftStarShape *sh)
+{
+	return sift_star_keeps_fact(sh->mode) || (is_range(sh) && sh->left);
+}
+
+/* an unmatched fact row is one pair with no dimension row: not when a condition of the pairs decides, which also needs the matched rows' pairs */
+static inline bool
 is_left(const SiftStarShape *sh)
 {
-	return sh->mode == SV6J_LEFT_EQUI || (is_range(sh) && sh->left);
+	return !sh->on && keeps_fact(sh);
 }
 
 void
@@ -65,14 +72,24 @@ sift_star_dim_init(SiftStarDim *d, const SiftStarShape *shape)
 	d->hull_max = PG_INT64_MIN;
 }
 
+#define INDEX_ROW_BYTES	(4 + 36)	/* the chain, and a share of the index at its largest */
+
+/* what a slot of the arrays takes, held or not */
 static uint64
-row_bytes(const SiftStarShape *sh)
+slot_bytes(const SiftStarShape *sh)
 {
-	uint64		b = 4 + 36;		/* the chain, and a share of the index at its largest */
+	uint64		b = 0;
 
 	for (int c = 0; c < ncols_of(sh); c++)
 		b += 9 + (cls_of(sh, c) == SSC_STR ? 4 : 0);
 	return b + (is_range(sh) ? 17 : 0);
+}
+
+/* what the table takes when it holds nrows rows in arrays of cap slots and an arena of arena_cap bytes, and the index it will have */
+static uint64
+table_bytes(const SiftStarShape *sh, uint32 cap, uint32 nrows, uint64 arena_cap)
+{
+	return (uint64) cap * slot_bytes(sh) + arena_cap + (uint64) nrows * INDEX_ROW_BYTES;
 }
 
 static void
@@ -100,15 +117,15 @@ grow(SiftStarDim *d)
 static uint64
 arena_put(SiftStarDim *d, const char *p, uint32 len)
 {
-	const uint64 off = d->arena_used;
+	const uint64 off = TYPEALIGN(MAXIMUM_ALIGNOF, d->arena_used);
 
-	if (d->arena_used + len > d->arena_cap)
+	if (off + len > d->arena_cap)
 	{
-		d->arena_cap = Max(d->arena_cap * 2, Max(d->arena_used + len, 1024));
+		d->arena_cap = Max(d->arena_cap * 2, Max(off + len, 1024));
 		d->arena = d->arena == NULL ? palloc(d->arena_cap) : repalloc(d->arena, d->arena_cap);
 	}
 	memcpy(d->arena + off, p, len);
-	d->arena_used += len;
+	d->arena_used = off + len;
 	return off;
 }
 
@@ -137,8 +154,14 @@ sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
 		strs += sh->kcls[k] == SSC_STR && !row->key_null[k] ? row->key_len[k] : 0;
 	for (int c = 0; c < sh->npay; c++)
 		strs += sh->pcls[c] == SSC_STR && !row->pay_null[c] ? row->pay_len[c] : 0;
-	if (d->bytes + row_bytes(sh) + strs > sh->budget)
-		return false;
+	{
+		const uint32 cap = d->nrows < d->cap ? d->cap : d->cap == 0 ? 64 : d->cap * 2;
+		const uint64 need = TYPEALIGN(MAXIMUM_ALIGNOF, d->arena_used) + strs + (uint64) ncols_of(sh) * MAXIMUM_ALIGNOF;
+		const uint64 arena = need <= d->arena_cap ? d->arena_cap : Max(d->arena_cap * 2, Max(need, 1024));
+
+		if (table_bytes(sh, cap, d->nrows + 1, arena) > sh->budget)
+			return false;
+	}
 	if (d->nrows == d->cap)
 		grow(d);
 	for (int k = 0; k < sh->nkeys; k++)
@@ -158,13 +181,13 @@ sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
 			d->hull_max = Max(d->hull_max, row->hi);
 		}
 	}
-	else if (sh->kcls[0] == SSC_INT && !row->key_null[0])
+	else if (sh->nkeys > 0 && sh->kcls[0] == SSC_INT && !row->key_null[0])
 	{
 		d->hull_min = Min(d->hull_min, row->key_i[0]);
 		d->hull_max = Max(d->hull_max, row->key_i[0]);
 	}
-	d->bytes += row_bytes(sh) + strs;
 	d->nrows++;
+	d->bytes = table_bytes(sh, d->cap, d->nrows, d->arena_cap);
 	return true;
 }
 
@@ -304,7 +327,9 @@ sift_star_dim_finish(SiftStarDim *d)
 		}
 	}
 	d->unique_keys = d->ndistinct == inserted;
-	if (d->shape.kcls[0] == SSC_INT && d->nrows <= SIFT_STAR_EXACT_MAX)
+	if (sift_star_preserves_dim(d->shape.mode))
+		d->matched = palloc0(((size_t) d->nrows + 63) / 64 * sizeof(uint64));
+	if (d->shape.nkeys > 0 && d->shape.kcls[0] == SSC_INT && d->nrows <= SIFT_STAR_EXACT_MAX)
 	{
 		d->exact = palloc(Max(d->nrows, 1) * sizeof(int64));
 		for (uint32 i = 0; i < d->nrows; i++)
@@ -358,6 +383,8 @@ sift_star_dim_free(SiftStarDim *d)
 		pfree(d->next);
 	if (d->exact != NULL)
 		pfree(d->exact);
+	if (d->matched != NULL)
+		pfree(d->matched);
 	memset(d, 0, sizeof(*d));
 }
 
@@ -446,6 +473,8 @@ sift_star_row_part(const SiftStarShape *sh, const SiftStarRow *row, uint32 npart
 {
 	uint64		h = 0;
 
+	if (is_range(sh))
+		return 0;
 	for (int k = 0; k < sh->nkeys; k++)
 	{
 		if (row->key_null[k])
@@ -460,6 +489,8 @@ sift_star_probe_part(const SiftStarShape *sh, const SiftStarProbe *p, uint32 r, 
 {
 	uint64		h = 0;
 
+	if (is_range(sh))
+		return 0;
 	for (int k = 0; k < sh->nkeys; k++)
 	{
 		const Cell	c = probe_cell(p->key[k], sh->kcls[k], r);
@@ -494,7 +525,7 @@ sift_star_apply(const SiftStarDim *d, const uint32 *match, const uint64 *gate, u
 	{
 		if (!((mask[r >> 6] >> (r & 63)) & 1))
 			continue;
-		if (mode != SV6J_LEFT_EQUI)
+		if (!sift_star_keeps_fact(mode))
 		{
 			const bool	matched = match[r] != 0 && bit_at(gate, r);
 
@@ -534,6 +565,22 @@ sift_star_gather_str(const SiftStarDim *d, int pay, const uint32 *dim_row, uint1
 		const bool	ok = row != 0 && !d->null[c][row - 1];
 
 		out[i] = ok ? sift_vstr_make(d->arena + d->col[c][row - 1], d->len[c][row - 1]) : (SiftStrView) {0};
+		valid_out[i >> 6] |= (uint64) ok << (i & 63);
+	}
+}
+
+void
+sift_star_gather_datum(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, uint64 *out, uint64 *valid_out)
+{
+	const int	c = d->shape.nkeys + pay;
+
+	memset(valid_out, 0, SIFT_VEC_WORDS * sizeof(uint64));
+	for (uint16 i = 0; i < n; i++)
+	{
+		const uint32 row = dim_row[i];
+		const bool	ok = row != 0 && !d->null[c][row - 1];
+
+		out[i] = ok ? (uint64) (uintptr_t) (d->arena + d->col[c][row - 1]) : 0;
 		valid_out[i >> 6] |= (uint64) ok << (i & 63);
 	}
 }
@@ -696,7 +743,7 @@ sift_star_push(const SiftStarDim *d)
 	SiftStarPush push = {.kind = SSP_NONE};
 	bool		any;
 
-	if (is_left(sh) || sh->mode == SV6J_ANTI_EQUI)
+	if (keeps_fact(sh) || sh->mode == SV6J_ANTI_EQUI || sh->nkeys == 0)
 		return push;
 	if (is_range(sh))
 	{

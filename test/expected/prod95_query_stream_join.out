@@ -1,0 +1,471 @@
+-- The nodes of SiftAggV6 that give their rows as they make them (a stream of groups, a window, an ASOF join) read no more of their input than the statement takes, so a LIMIT writes no temporary file;
+-- a window sorts a partition larger than its slice of work_mem with files and not with an error, and with many columns at a small work_mem; a Grace hash join gives the rows of the partitions that
+-- went to files as it joins them. Every statement is compared with the rows of the normal plan (sift.enable_agg = off), and no temporary file is left after a LIMIT, a closed cursor or an error.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+SET sift.test_create_format1 = off;
+SET sift.agg_force = on;
+CREATE FUNCTION leftover() RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM pg_ls_tmpdir() $$;
+-- whether the plan of the statement has the node
+CREATE FUNCTION has_node(q text, node text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%' || node || '%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+-- the rows of the statement with the node and with the normal plan: how many, and how many differ
+CREATE FUNCTION same_rows(q text) RETURNS TABLE (n bigint, diff bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+	RESET sift.enable_agg;
+	SELECT count(*) INTO n FROM r_off;
+	SELECT count(*) INTO diff FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+-- the statement runs under temp_file_limit, which stops it at the first byte of a temporary file, and leaves no file behind
+CREATE FUNCTION no_temp(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('temp_file_limit', '64kB', true);
+	EXECUTE q;
+	PERFORM set_config('temp_file_limit', '-1', true);
+	RETURN leftover() = 0;
+END $$;
+CREATE TABLE sg (id int PRIMARY KEY, k int, amount int, txt text) USING sift_table;
+INSERT INTO sg SELECT g, g % 7, g % 1000, 'row ' || g FROM generate_series(1, 30000) g;
+CREATE TABLE wg (grp int, id int, ts timestamptz, txt text COLLATE "C", c1 int, PRIMARY KEY (grp, id)) USING sift_table;
+SELECT sift.table_set_option('wg', 'key_order', 'grp, id');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+INSERT INTO wg SELECT 1 + g % 3, g, timestamptz '2025-01-01' + (g::bigint * 7919 % 100003) * interval '1 second', repeat(md5(g::text), 4), g % 1000 FROM generate_series(1, 30000) g;
+SELECT sift.table_maintain(t) IS NOT NULL FROM unnest(ARRAY['sg', 'wg']) t;
+ ?column? 
+----------
+ t
+ t
+(2 rows)
+
+ANALYZE sg, wg;
+SET work_mem = '64kB';
+-- a stream of groups: a LIMIT reads a few of them and writes no file
+SELECT has_node($$SELECT id, count(*), sum(amount) FROM sg GROUP BY id ORDER BY id$$, 'SiftAggV6Stream');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT has_node($$SELECT id, count(*), sum(amount) FROM sg GROUP BY id ORDER BY id LIMIT 10$$, 'SiftAggV6Stream');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT no_temp($$SELECT * FROM (SELECT id, count(*), sum(amount) FROM sg GROUP BY id ORDER BY id LIMIT 10) s$$);
+ no_temp 
+---------
+ t
+(1 row)
+
+SELECT * FROM same_rows($$SELECT id, count(*), sum(amount) FROM sg GROUP BY id ORDER BY id$$);
+   n   | diff 
+-------+------
+ 30000 |    0
+(1 row)
+
+-- a window over the order of its table: the same, and the rows of a partition do not wait for the end of the input
+SET seq_page_cost = 10000;
+SET cpu_tuple_cost = 100;
+SET random_page_cost = 10000;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT has_node($$SELECT grp, id, sum(c1) OVER (PARTITION BY grp ORDER BY id) FROM wg$$, 'SiftAggV6Window');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT no_temp($$SELECT * FROM (SELECT grp, id, sum(c1) OVER (PARTITION BY grp ORDER BY id) FROM wg LIMIT 10) s$$);
+ no_temp 
+---------
+ t
+(1 row)
+
+SELECT * FROM same_rows($$SELECT grp, id, sum(c1) OVER (PARTITION BY grp ORDER BY id) FROM wg$$);
+   n   | diff 
+-------+------
+ 30000 |    0
+(1 row)
+
+-- the partitions of 10000 rows are more than the work_mem / 4 a window may hold sorted by an order the table does not have: they are sorted with files
+SELECT has_node($$SELECT grp, ts, sum(c1) OVER (PARTITION BY grp ORDER BY ts) FROM wg$$, 'SiftAggV6Window');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT * FROM same_rows($$SELECT grp, id, ts, sum(c1) OVER (PARTITION BY grp ORDER BY ts), rank() OVER (PARTITION BY grp ORDER BY ts DESC), count(*) OVER (PARTITION BY grp ORDER BY ts, id DESC) FROM wg$$);
+   n   | diff 
+-------+------
+ 30000 |    0
+(1 row)
+
+SELECT * FROM same_rows($$SELECT grp, id, rn FROM (SELECT grp, id, row_number() OVER (PARTITION BY grp ORDER BY txt DESC, id) rn FROM wg) s WHERE rn <= 5$$);
+ n  | diff 
+----+------
+ 15 |    0
+(1 row)
+
+SELECT leftover();
+ leftover 
+----------
+        0
+(1 row)
+
+-- keys of every type, NULLs, NaNs and ties, in both directions
+CREATE TABLE wt (grp int, id int, t text COLLATE "C", n6 numeric(12, 2), n12 numeric(30, 4), f float8, i8 bigint, PRIMARY KEY (grp, id)) USING sift_table;
+SELECT sift.table_set_option('wt', 'key_order', 'grp, id');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+INSERT INTO wt SELECT g % 2, g, CASE WHEN g % 11 = 0 THEN NULL ELSE 'k' || (g * 7 % 13) || repeat('z', g % 4 * 8) END,
+	CASE WHEN g % 13 = 0 THEN NULL ELSE (g * 31 % 17) / 4.0 END, CASE WHEN g % 17 = 0 THEN NULL ELSE (g * 37 % 19) * 1000000000000000000::numeric / 8 END,
+	CASE WHEN g % 19 = 0 THEN NULL WHEN g % 23 = 0 THEN 'NaN'::float8 ELSE (g * 41 % 29) / 8.0 END, CASE WHEN g % 29 = 0 THEN NULL ELSE g * 43 % 31 END
+FROM generate_series(1, 20000) g;
+SELECT sift.table_maintain('wt') IS NOT NULL;
+ ?column? 
+----------
+ t
+(1 row)
+
+ANALYZE wt;
+SELECT has_node($$SELECT grp, id, rank() OVER (PARTITION BY grp ORDER BY t DESC NULLS FIRST, n6) FROM wt$$, 'SiftAggV6Window');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT * FROM same_rows($$SELECT grp, id, rank() OVER (PARTITION BY grp ORDER BY t DESC NULLS FIRST, n6) FROM wt$$);
+   n   | diff 
+-------+------
+ 20000 |    0
+(1 row)
+
+SELECT * FROM same_rows($$SELECT grp, id, dense_rank() OVER (PARTITION BY grp ORDER BY n12 DESC NULLS LAST), row_number() OVER (PARTITION BY grp ORDER BY f NULLS FIRST, id) FROM wt$$);
+   n   | diff 
+-------+------
+ 20000 |    0
+(1 row)
+
+SELECT * FROM same_rows($$SELECT grp, id, sum(i8) OVER (PARTITION BY grp ORDER BY f DESC, i8 NULLS FIRST), rank() OVER (PARTITION BY grp ORDER BY n6 DESC NULLS FIRST, t) FROM wt$$);
+   n   | diff 
+-------+------
+ 20000 |    0
+(1 row)
+
+SELECT leftover();
+ leftover 
+----------
+        0
+(1 row)
+
+-- a window of many columns at a small work_mem
+CREATE TABLE wn (g1 int, g2 int, g3 int, g4 int, o1 int, o2 int, o3 int, o4 int, v1 int, v2 int, v3 int, v4 int, v5 int, PRIMARY KEY (g1, g2, g3, g4, o1, o2, o3, o4)) USING sift_table;
+SELECT sift.table_set_option('wn', 'key_order', 'g1, g2, g3, g4, o1, o2, o3, o4');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+INSERT INTO wn SELECT 1, 1, 1, g % 2, g, 1, 1, 1, g, g, g, g, g FROM generate_series(1, 10) g;
+SELECT sift.table_maintain('wn') IS NOT NULL;
+ ?column? 
+----------
+ t
+(1 row)
+
+ANALYZE wn;
+SET work_mem = '64kB';
+SELECT has_node($$SELECT g1, g2, g3, g4, o1, o2, o3, o4, row_number() OVER w rn, rank() OVER w rk, dense_rank() OVER w dr, sum(v1) OVER w s1, sum(v2) OVER w s2, count(v3) OVER w c3, min(v4) OVER w m4, max(v5) OVER w m5
+	FROM wn WINDOW w AS (PARTITION BY g1, g2, g3, g4 ORDER BY o1, o2, o3, o4)$$, 'SiftAggV6Window');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT * FROM same_rows($$SELECT g1, g2, g3, g4, o1, o2, o3, o4, row_number() OVER w rn, rank() OVER w rk, dense_rank() OVER w dr, sum(v1) OVER w s1, sum(v2) OVER w s2, count(v3) OVER w c3, min(v4) OVER w m4, max(v5) OVER w m5
+	FROM wn WINDOW w AS (PARTITION BY g1, g2, g3, g4 ORDER BY o1, o2, o3, o4)$$);
+ n  | diff 
+----+------
+ 10 |    0
+(1 row)
+
+-- rows that the plan estimated to fit and do not (the estimate is of the plan, work_mem is of the run): the rows of the partitions are put together with files
+CREATE TABLE rg (dev int, ts bigint, v int) USING sift_table;
+INSERT INTO rg SELECT g % 3000, g, g FROM generate_series(1, 60000) g;
+SELECT sift.table_maintain('rg') IS NOT NULL;
+ ?column? 
+----------
+ t
+(1 row)
+
+ANALYZE rg;
+CREATE FUNCTION regroup_spill() RETURNS TABLE (n bigint, diff bigint, files bigint) LANGUAGE plpgsql AS $$
+DECLARE c refcursor; r record;
+BEGIN
+	SET LOCAL work_mem = '64MB';
+	OPEN c FOR SELECT dev, ts, sum(v) OVER (PARTITION BY dev ORDER BY ts) s FROM rg;
+	PERFORM set_config('work_mem', '64kB', true);
+	CREATE TEMP TABLE got ON COMMIT DROP AS SELECT 0 dev, 0::bigint ts, 0::bigint s WHERE false;
+	LOOP
+		FETCH c INTO r;
+		EXIT WHEN NOT FOUND;
+		INSERT INTO got VALUES (r.dev, r.ts, r.s);
+	END LOOP;
+	CLOSE c;
+	SET LOCAL sift.enable_agg = off;
+	CREATE TEMP TABLE want ON COMMIT DROP AS SELECT dev, ts, sum(v) OVER (PARTITION BY dev ORDER BY ts) s FROM rg;
+	SELECT count(*) INTO n FROM want;
+	SELECT count(*) INTO diff FROM ((TABLE got EXCEPT ALL TABLE want) UNION ALL (TABLE want EXCEPT ALL TABLE got)) x;
+	files := leftover();
+	RETURN NEXT;
+END $$;
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT temp_bytes AS t0 FROM pg_stat_database WHERE datname = current_database() \gset
+SELECT * FROM regroup_spill();
+   n   | diff | files 
+-------+------+-------
+ 60000 |    0 |     0
+(1 row)
+
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT temp_bytes > :t0 AS wrote_files FROM pg_stat_database WHERE datname = current_database();
+ wrote_files 
+-------------
+ t
+(1 row)
+
+-- an ASOF join: a LIMIT writes no file
+CREATE TABLE af_d (k int, ts bigint, px int, PRIMARY KEY (k, ts)) USING sift_table;
+SELECT sift.table_set_option('af_d', 'key_order', 'k, ts');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+INSERT INTO af_d SELECT g % 50, g::bigint * 13, g FROM generate_series(1, 20000) g;
+CREATE TABLE af (k int, ts bigint, id int, PRIMARY KEY (k, ts)) USING sift_table;
+SELECT sift.table_set_option('af', 'key_order', 'k, ts');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+INSERT INTO af SELECT g % 50, g::bigint * 10 + g % 7, g FROM generate_series(1, 20000) g;
+SELECT sift.table_maintain(t) IS NOT NULL FROM unnest(ARRAY['af', 'af_d']) t;
+ ?column? 
+----------
+ t
+ t
+(2 rows)
+
+ANALYZE af, af_d;
+SET enable_nestloop = off;
+SELECT has_node($$SELECT f.id, q.px FROM af f LEFT JOIN LATERAL (SELECT px FROM af_d d WHERE d.k = f.k AND d.ts <= f.ts ORDER BY d.ts DESC LIMIT 1) q ON true$$, 'SiftAggV6Asof');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT no_temp($$SELECT * FROM (SELECT f.id, q.px FROM af f LEFT JOIN LATERAL (SELECT px FROM af_d d WHERE d.k = f.k AND d.ts <= f.ts ORDER BY d.ts DESC LIMIT 1) q ON true LIMIT 10) s$$);
+ no_temp 
+---------
+ t
+(1 row)
+
+SELECT * FROM same_rows($$SELECT f.id, q.px FROM af f LEFT JOIN LATERAL (SELECT px FROM af_d d WHERE d.k = f.k AND d.ts <= f.ts ORDER BY d.ts DESC LIMIT 1) q ON true$$);
+   n   | diff 
+-------+------
+ 20000 |    0
+(1 row)
+
+RESET enable_nestloop;
+SELECT leftover();
+ leftover 
+----------
+        0
+(1 row)
+
+-- a Grace hash join whose build side is more than its half of work_mem
+CREATE TABLE jp (id int PRIMARY KEY, k int, v int) USING sift_table;
+INSERT INTO jp SELECT g, g % 2500, g FROM generate_series(1, 20000) g;
+CREATE TABLE jb (id int PRIMARY KEY, k int, v int, pad text) USING sift_table;
+INSERT INTO jb SELECT g, g % 2500, g, repeat('b', 24) FROM generate_series(1, 20000) g;
+-- one key with more rows than the budget (joined in chunks) and keys that have none
+CREATE TABLE hp (id int PRIMARY KEY, k int, v int) USING sift_table;
+INSERT INTO hp SELECT g, CASE WHEN g % 5 = 0 THEN g ELSE 1 END, g FROM generate_series(1, 20000) g;
+CREATE TABLE hb (id int PRIMARY KEY, k int, v int, pad text) USING sift_table;
+INSERT INTO hb SELECT g, 1, g, repeat('b', 24) FROM generate_series(1, 12000) g;
+INSERT INTO hb SELECT 100000 + g, g, g, repeat('b', 24) FROM generate_series(1, 3000) g;
+SELECT sift.table_maintain(t) IS NOT NULL FROM unnest(ARRAY['jp', 'jb', 'hp', 'hb']) t;
+ ?column? 
+----------
+ t
+ t
+ t
+ t
+(4 rows)
+
+ANALYZE jp, jb, hp, hb;
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_nestloop = off;
+SELECT has_node($$SELECT p.id, b.v FROM jp p JOIN jb b ON b.k = p.k$$, 'SiftAggV6Join');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT * FROM same_rows($$SELECT p.id, b.v FROM jp p JOIN jb b ON b.k = p.k$$);
+   n    | diff 
+--------+------
+ 160000 |    0
+(1 row)
+
+SELECT * FROM same_rows($$SELECT p.id, b.v FROM jp p LEFT JOIN jb b ON b.k = p.k + 1000$$);
+   n    | diff 
+--------+------
+ 104000 |    0
+(1 row)
+
+SELECT * FROM same_rows($$SELECT p.id FROM hp p WHERE EXISTS (SELECT 1 FROM hb b WHERE b.k = p.k)$$);
+   n   | diff 
+-------+------
+ 16600 |    0
+(1 row)
+
+SELECT * FROM same_rows($$SELECT p.id FROM hp p WHERE NOT EXISTS (SELECT 1 FROM hb b WHERE b.k = p.k)$$);
+  n   | diff 
+------+------
+ 3400 |    0
+(1 row)
+
+SELECT * FROM same_rows($$SELECT p.id, b.v FROM hp p JOIN hb b ON b.k = p.k WHERE p.id % 500 = 0$$);
+ n | diff 
+---+------
+ 6 |    0
+(1 row)
+
+SELECT leftover();
+ leftover 
+----------
+        0
+(1 row)
+
+-- no file is left after a LIMIT, a cursor that is closed before its end, or an error in the middle of the join (a cancel is test/prod95_scale.tsv's grace_cancel)
+BEGIN;
+DECLARE c NO SCROLL CURSOR FOR SELECT p.id, b.v FROM jp p JOIN jb b ON b.k = p.k;
+FETCH 10 FROM c;
+  id   |  v  
+-------+-----
+ 17568 |  68
+ 15068 |  68
+ 12568 |  68
+ 10068 |  68
+  7568 |  68
+  5068 |  68
+  2568 |  68
+    68 |  68
+ 17618 | 118
+ 15118 | 118
+(10 rows)
+
+CLOSE c;
+COMMIT;
+SELECT leftover();
+ leftover 
+----------
+        0
+(1 row)
+
+SELECT count(*) FROM (SELECT p.id, b.v FROM jp p JOIN jb b ON b.k = p.k LIMIT 10) s;
+ count 
+-------
+    10
+(1 row)
+
+SELECT leftover();
+ leftover 
+----------
+        0
+(1 row)
+
+DO $$
+BEGIN
+	PERFORM p.id, 1 / (b.v - b.v) FROM hp p LEFT JOIN hb b ON b.k = p.k;
+EXCEPTION WHEN division_by_zero THEN
+	RAISE NOTICE 'caught, % files left', leftover();
+END $$;
+NOTICE:  caught, 0 files left
+SELECT leftover();
+ leftover 
+----------
+        0
+(1 row)
+
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+RESET enable_nestloop;
+-- DISTINCT ON of groups that do not fit half of work_mem
+CREATE TABLE fg (id int PRIMARY KEY, k int, ts bigint, txt text) USING sift_table;
+INSERT INTO fg SELECT g, g % 15011, g * 7919 % 100003, repeat('x', 40) FROM generate_series(1, 30000) g;
+SELECT sift.table_maintain('fg') IS NOT NULL;
+ ?column? 
+----------
+ t
+(1 row)
+
+ANALYZE fg;
+SET enable_sort = off;
+SELECT has_node($$SELECT DISTINCT ON (k) k, ts, txt FROM fg ORDER BY k, ts DESC$$, 'SiftAggV6First');
+ has_node 
+----------
+ t
+(1 row)
+
+SELECT * FROM same_rows($$SELECT DISTINCT ON (k) k, ts, txt FROM fg ORDER BY k, ts DESC, id$$);
+   n   | diff 
+-------+------
+ 15011 |    0
+(1 row)
+
+SELECT leftover();
+ leftover 
+----------
+        0
+(1 row)
+
+RESET enable_sort;
+DROP TABLE sg, wg, wt, wn, rg, af_d, af, jp, jb, hp, hb, fg;
+DROP FUNCTION leftover(), has_node(text, text), same_rows(text), no_temp(text), regroup_spill();
+DROP EXTENSION pg_sift;

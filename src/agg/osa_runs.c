@@ -3,9 +3,10 @@
  * The histogram or array of pairs (agg/osa.c) is the first run's buffer; when it is full it is sorted, equal pairs are added up and it goes to a temporary
  * file of its own. At the end the runs are merged in the order the readers walk (group, then value) by a loser tree, a pair costing log2 of the runs compares.
  * A tuplesort of the same pairs takes about ten times the instructions for each value (a heap tuple formed, compared through the generic comparator and read
- * back for every value). A merge takes at most OSA_FANIN runs, so that it holds a fixed number of read buffers; more than OSA_MAX_RUNS runs while the scan goes
- * on, and the smallest OSA_FANIN of them become one (a pair is then written about log64 of the runs times, where merging all the runs each time rewrote the
- * biggest one every time); more than OSA_FANIN at the end, and the fewest smallest that leave OSA_FANIN do.
+ * back for every value). A merge takes at most a fan-in of runs (OSA_FANIN, fewer when the read buffers of that many do not fit half of work_mem), so that it holds a
+ * fixed number of read buffers; more than OSA_MAX_RUNS runs while the scan goes on, and the smallest fan-in of them become one (a pair is then written about log64 of
+ * the runs times, where merging all the runs each time rewrote the biggest one every time); more than a fan-in at the end, and passes of the smallest runs that leave
+ * a fan-in do, with the buffer of the last run given back first.
  */
 #include "postgres.h"
 
@@ -14,7 +15,8 @@
 #include "agg/agg_int.h"
 #include "agg/ltree.h"
 
-#define OSA_FANIN	64			/* runs merged at a time */
+#define OSA_FANIN	64			/* the most runs merged at a time */
+#define OSA_FANIN_MIN	4
 #define OSA_MAX_RUNS	256		/* runs kept while the scan goes on */
 #define OSA_RB		512			/* entries one run is read in */
 
@@ -56,6 +58,7 @@ typedef struct OsaRuns
 	uint64		cap;
 	uint64		room;			/* the most entries a buffer may hold: work_mem */
 	OsaFile    *run;
+	int			fanin;			/* the runs a merge reads at once: what half of work_mem holds of their read buffers */
 	int			nrun;
 	int			run_cap;
 	OsaMerge   *merge;
@@ -80,6 +83,7 @@ osa_runs_begin(AggExec *ex, Osa *o)
 	rs->n = o->n;
 	rs->cap = o->cap;
 	rs->room = Max((uint64) work_mem * 1024 / sizeof(OsaSlot), o->cap);
+	rs->fanin = (int) Min(Max((uint64) work_mem * 1024 / 2 / (OSA_RB * sizeof(OsaSlot) + BLCKSZ), (uint64) OSA_FANIN_MIN), (uint64) OSA_FANIN);
 	o->runs = rs;
 	o->slot = NULL;
 	o->flat = false;
@@ -197,7 +201,8 @@ merge_down(OsaRuns *rs, int k)
 	while (merge_next(m, &e))
 	{
 		BufFileWrite(nf.file, &e, sizeof(e));
-		nf.n++;
+		if ((++nf.n & 4095) == 0)
+			CHECK_FOR_INTERRUPTS();
 	}
 	merge_end(m);
 	memmove(rs->run, rs->run + k, (rs->nrun - k) * sizeof(OsaFile));
@@ -241,7 +246,7 @@ flush_run(OsaRuns *rs)
 	rs->run[rs->nrun++] = (OsaFile) {f, w};
 	rs->n = 0;
 	if (rs->nrun > OSA_MAX_RUNS)
-		merge_down(rs, OSA_FANIN);
+		merge_down(rs, rs->fanin);
 }
 
 void
@@ -282,8 +287,10 @@ osa_runs_sort(Osa *o)
 	}
 	if (rs->n > 0)
 		flush_run(rs);
-	if (rs->nrun > OSA_FANIN)
-		merge_down(rs, rs->nrun - OSA_FANIN + 1);
+	pfree(rs->buf);
+	rs->buf = NULL;
+	while (rs->nrun > rs->fanin)
+		merge_down(rs, Min(rs->nrun - rs->fanin + 1, rs->fanin));
 	rs->merge = merge_begin(rs, rs->run, rs->nrun);
 	rs->nrun = 0;
 }
@@ -321,7 +328,8 @@ osa_runs_end(Osa *o)
 		BufFileClose(rs->run[i].file);
 	if (rs->run)
 		pfree(rs->run);
-	pfree(rs->buf);
+	if (rs->buf)
+		pfree(rs->buf);
 	pfree(rs);
 	o->runs = NULL;
 }

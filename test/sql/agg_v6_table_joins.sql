@@ -1,0 +1,55 @@
+-- A sift_table with no sift_col index joined to a dimension whose rows are kept (RIGHT and FULL JOIN, the table on the nullable side of a LEFT JOIN) is read by SiftAggV6, row for row as its heap twin
+-- is answered: the dimension rows no table row matches are given once, the table rows no dimension matches keep their NULLs. Every check prints t.
+-- requires: build col
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+SET max_parallel_workers_per_gather = 0;
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+
+CREATE TABLE jt (id int PRIMARY KEY, k int, v int) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE jh (LIKE jt INCLUDING ALL) WITH (autovacuum_enabled = false);
+CREATE TABLE jd (id int PRIMARY KEY, kind text);
+INSERT INTO jt SELECT g, 5 + g % 55, g % 97 FROM generate_series(1, 20000) g;
+INSERT INTO jh SELECT * FROM jt;
+INSERT INTO jd SELECT g, 'kind' || g % 4 FROM generate_series(0, 49) g;
+SELECT sift.table_maintain('jt') IS NOT NULL AS maintained;
+ANALYZE jt; ANALYZE jh; ANALYZE jd;
+
+CREATE FUNCTION on_table(q text, twin boolean) RETURNS text LANGUAGE sql AS
+$$ SELECT replace(q, '@T', CASE WHEN twin THEN 'jh' ELSE 'jt' END) $$;
+
+CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE x text; y text;
+BEGIN
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
+	RETURN x = y;
+END $$;
+
+CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
+$$ SELECT same_rows(on_table(q, false), on_table(q, true)) $$;
+
+CREATE FUNCTION plan_has(q text, node text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || on_table(q, false) LOOP
+		IF line LIKE '%' || node || '%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE TABLE cases (name text, q text);
+INSERT INTO cases VALUES
+	('table right join', 'SELECT d.kind, count(*) AS n, sum(f.v) AS s FROM @T f RIGHT JOIN jd d ON d.id = f.k GROUP BY 1'),
+	('table full join', 'SELECT d.kind, count(*) AS n, sum(f.v) AS s FROM @T f FULL JOIN jd d ON d.id = f.k GROUP BY 1'),
+	('dimension left join', 'SELECT d.kind, count(f.id) AS n, sum(f.v) AS s FROM jd d LEFT JOIN @T f ON d.id = f.k GROUP BY 1'),
+	('dimension full join', 'SELECT d.kind, count(f.id) AS n, sum(f.v) AS s FROM jd d FULL JOIN @T f ON d.id = f.k GROUP BY 1');
+
+SELECT name, parity(q) AS same_as_heap FROM cases ORDER BY name;
+SELECT name, plan_has(q, 'Custom Scan (SiftAggV6)') AS served_by_agg_v6, plan_has(q, 'Table: jt') AS reads_the_table FROM cases ORDER BY name;
+
+DROP TABLE cases, jt, jh, jd;
+DROP FUNCTION on_table(text, boolean), same_rows(text, text), parity(text), plan_has(text, text);
+DROP EXTENSION pg_sift;

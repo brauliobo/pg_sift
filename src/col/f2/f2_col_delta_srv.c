@@ -183,6 +183,7 @@ scan_granule_map(const F2Scan *s, uint32 g)
 	return s->cd != NULL && s->cd->map != NULL ? sift_col_delta_gran_map(s->cd->map, g) : NULL;
 }
 
+
 bool
 sift_cdi_scan_patch(F2Scan *s, const SiftColSchema *schema, uint32 g, ColView *views, uint64 *tids, int n, MemoryContext cx)
 {
@@ -201,6 +202,12 @@ sift_cdi_scan_remap_tids(const F2Scan *s, uint32 g, uint64 *tids, int n)
 
 	if (gm != NULL)
 		sift_cdi_remap_tids(gm, tids, n);
+}
+
+bool
+sift_cdi_scan_granule_patched(const F2Scan *s, uint32 g)
+{
+	return scan_granule_map(s, g) != NULL;
 }
 
 bool
@@ -392,7 +399,7 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 	uint8		rec[SIFT_COL_DELTA_MAX_REC_BYTES];
 	uint32		len;
 
-	if (f->spec.preagg || sift_proj_relation_has(env->index) || env->index->rd_index->indisunique)
+	if (sift_proj_relation_has(env->index) || env->index->rd_index->indisunique)
 		return false;
 	if (index_unchanged)
 		res = (SiftF2DiffResult) {.pred = SIFT_PRED_BOTH};

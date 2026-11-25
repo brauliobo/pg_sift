@@ -147,6 +147,7 @@ struct SiftVk
 	VkPhysicalDeviceMemoryProperties mp;
 	SiftVkCaps	caps;
 	bool		lost, inflight, stamps, split_queues, test_lost, test_timeout, usable;
+	bool		cancel;			/* the run in progress left a wait because its query was cancelled: the submissions it made are in flight, the next run settles them */
 	char		err[256];
 	void		(*account) (void *arg, int64_t delta);
 	void	   *account_arg;
@@ -237,7 +238,7 @@ void reap_tabs(SiftVk *vk);
 /* run.c */
 void trim_job_buffers(SiftVk *vk);
 bool settle_all(SiftVk *vk);
-bool wait_slot(SiftVk *vk, Slot *s, void (*interrupt) (void));
+bool wait_slot(SiftVk *vk, Slot *s, bool (*cancelled) (void));
 
 #endif							/* SIFT_VULKAN */
 

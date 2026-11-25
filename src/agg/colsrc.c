@@ -4,7 +4,6 @@
  */
 #include "postgres.h"
 
-#include "port/pg_bitutils.h"
 
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -12,6 +11,8 @@
 #include "agg/kern.h"
 #include "agg/colsrc.h"
 #include "core/memtrack.h"
+
+StaticAssertDecl(SIFT_SRC_PAD == SIFT_AGG_PAD, "the padding of a vector read and of the kernels is one");
 
 #define MAX_PROVIDERS	4
 
@@ -627,8 +628,6 @@ sift_colsrc_leaf_n(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
 	return vec.n;
 }
 
-const size_t sift_src_vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
-
 void
 sift_colsrc_read_into(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
 {
@@ -709,19 +708,4 @@ void
 sift_colsrc_read_sel(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
 {
 	src->prov->read_sel(src->impl, unit, leaf, bits, vec);
-}
-
-void
-sift_colsrc_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull, const SiftSrcVec *vec)
-{
-	if (!vec->ovf || !sift_colsrc_nan_leaf(l))
-		return;
-	for (size_t w = 0; w * 64 < vec->n; w++)
-		for (uint64 b = vec->ovf[w]; b; b &= b - 1)
-		{
-			size_t		i = w * 64 + pg_rightmost_one_pos64(b);
-
-			((int64 *) data)[i] = PG_INT64_MAX;
-			isnull[i] = 0;
-		}
 }

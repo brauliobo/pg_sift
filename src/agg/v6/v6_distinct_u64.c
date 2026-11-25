@@ -24,14 +24,99 @@ struct SiftDistinctU64
 	bool		has_zero;
 };
 
-static inline uint64
-mix(uint64 x)
+#define mix(x)	sift_du64_mix(x)
+
+uint32
+sift_du64_dedup_slice(uint64 *tab, uint64 cap, const uint64 *vals, uint32 n)
 {
-	x ^= x >> 32;
-	x *= UINT64CONST(0xd6e8feb86659fd93);
-	x ^= x >> 32;
-	x *= UINT64CONST(0xd6e8feb86659fd93);
-	return x ^ (x >> 32);
+	const uint64 mask = cap - 1;
+	uint32		fresh = 0;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		const uint64 v = vals[i];
+
+		if (i + DU64_AHEAD < n)
+			__builtin_prefetch(&tab[mix(vals[i + DU64_AHEAD]) & mask], 1);
+		if (v == 0)
+			continue;
+		for (uint64 j = mix(v) & mask;; j = (j + 1) & mask)
+		{
+			if (tab[j] == v)
+				break;
+			if (tab[j] == 0)
+			{
+				tab[j] = v;
+				fresh++;
+				break;
+			}
+		}
+	}
+	return fresh;
+}
+
+void
+sift_du64_rehash(uint64 *dst, uint64 dcap, const uint64 *src, uint64 scap)
+{
+	const uint64 mask = dcap - 1;
+
+	for (uint64 i = 0; i < scap; i++)
+	{
+		uint64		j;
+
+		if (i + DU64_AHEAD < scap && src[i + DU64_AHEAD] != 0)
+			__builtin_prefetch(&dst[mix(src[i + DU64_AHEAD]) & mask], 1);
+		if (src[i] == 0)
+			continue;
+		for (j = mix(src[i]) & mask; dst[j] != 0; j = (j + 1) & mask)
+			;
+		dst[j] = src[i];
+	}
+}
+
+void
+sift_du64g_rehash(SiftDuPair *dst, uint64 dcap, const SiftDuPair *src, uint64 scap)
+{
+	const uint64 mask = dcap - 1;
+
+	for (uint64 i = 0; i < scap; i++)
+	{
+		uint64		j;
+
+		if (i + DU64_AHEAD < scap && src[i + DU64_AHEAD].gid1 != 0)
+			__builtin_prefetch(&dst[sift_du64_pair_hash(src[i + DU64_AHEAD].val, src[i + DU64_AHEAD].gid1 - 1) & mask], 1);
+		if (src[i].gid1 == 0)
+			continue;
+		for (j = sift_du64_pair_hash(src[i].val, src[i].gid1 - 1) & mask; dst[j].gid1 != 0; j = (j + 1) & mask)
+			;
+		dst[j] = src[i];
+	}
+}
+
+uint32
+sift_du64g_dedup_bucket(SiftDuPair *tab, uint64 cap, SiftDuPair *p, uint32 n)
+{
+	uint32		out = 0;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		const SiftDuPair e = p[i];
+
+		if (i + DU64_AHEAD < n)
+			__builtin_prefetch(&tab[p[i + DU64_AHEAD].h32 & (cap - 1)], 1);
+		for (uint64 j = e.h32 & (cap - 1);; j = (j + 1) & (cap - 1))
+		{
+			if (tab[j].gid1 == 0)
+			{
+				tab[j] = e;
+				p[out++] = e;
+				break;
+			}
+			if (tab[j].val == e.val && tab[j].gid1 == e.gid1)
+				break;
+		}
+	}
+	return out;
 }
 
 static inline void
@@ -87,13 +172,7 @@ grow(SiftDistinctU64 *d)
 	if (ocap * (factor + 1) * sizeof(uint64) > d->budget)
 		return false;
 	table_alloc(d, ocap * factor);
-	for (uint64 i = 0; i < ocap; i++)
-	{
-		if (i + DU64_AHEAD < ocap && okey[i + DU64_AHEAD] != 0)
-			du64_prefetch(d, mix(okey[i + DU64_AHEAD]));
-		if (okey[i] != 0)
-			probe(d, okey[i], mix(okey[i]));
-	}
+	sift_du64_rehash(d->key, d->cap, okey, ocap);
 	pfree(okey);
 	return true;
 }
@@ -172,12 +251,7 @@ sift_du64_free(SiftDistinctU64 *d)
  * One cache line holds four: a probe reads the value and the group of an entry together, and the group number 0 is an empty entry (a group g is stored as g + 1). In a bucket of the radix
  * mode h32 is the low half of the hash of the pair, so that the bucket is deduplicated with no hash made again.
  */
-typedef struct DuPair
-{
-	uint64		val;
-	uint32		gid1;
-	uint32		h32;
-} DuPair;
+typedef SiftDuPair DuPair;
 
 /*
  * A table that outgrows DU64G_RADIX_CAP entries is past the cache, and each pair it takes is a miss (twice again while it grows). It becomes DU64G_BUCKETS buckets of pairs, chosen by the top
@@ -216,11 +290,7 @@ struct SiftDu64G
 	uint64		scratch_cap;
 };
 
-static inline uint64
-pair_hash(uint64 v, uint32 gid)
-{
-	return mix(v ^ ((uint64) gid + 1) * UINT64CONST(0x9e3779b97f4a7c15));
-}
+#define pair_hash(v, gid)	sift_du64_pair_hash(v, gid)
 
 uint64
 sift_du64g_bytes(const SiftDu64G *d)
@@ -291,13 +361,7 @@ pairs_grow(SiftDu64G *d)
 		return false;
 	d->cap = ocap * 2;
 	d->tab = MemoryContextAllocZero(d->cx, d->cap * sizeof(DuPair));
-	for (uint64 i = 0; i < ocap; i++)
-	{
-		if (i + DU64_AHEAD < ocap && old[i + DU64_AHEAD].gid1 != 0)
-			__builtin_prefetch(&d->tab[pair_hash(old[i + DU64_AHEAD].val, old[i + DU64_AHEAD].gid1 - 1) & (d->cap - 1)], 1);
-		if (old[i].gid1 != 0)
-			d->tab[empty_slot(d, pair_hash(old[i].val, old[i].gid1 - 1))] = old[i];
-	}
+	sift_du64g_rehash(d->tab, d->cap, old, ocap);
 	pfree(old);
 	return true;
 }
@@ -333,7 +397,6 @@ static void
 bucket_dedup(SiftDu64G *d, DuBucket *b)
 {
 	const uint64 cap = pg_nextpower2_64(Max(64, (uint64) b->n * 2));
-	uint32		out = 0;
 
 	if (cap > d->scratch_cap)
 	{
@@ -343,25 +406,7 @@ bucket_dedup(SiftDu64G *d, DuBucket *b)
 		d->scratch_cap = cap;
 	}
 	memset(d->scratch, 0, cap * sizeof(DuPair));
-	for (uint32 i = 0; i < b->n; i++)
-	{
-		const DuPair e = b->p[i];
-
-		if (i + DU64_AHEAD < b->n)
-			__builtin_prefetch(&d->scratch[b->p[i + DU64_AHEAD].h32 & (cap - 1)], 1);
-		for (uint64 j = e.h32 & (cap - 1);; j = (j + 1) & (cap - 1))
-		{
-			if (d->scratch[j].gid1 == 0)
-			{
-				d->scratch[j] = e;
-				b->p[out++] = e;
-				break;
-			}
-			if (d->scratch[j].val == e.val && d->scratch[j].gid1 == e.gid1)
-				break;
-		}
-	}
-	b->n = out;
+	b->n = sift_du64g_dedup_bucket(d->scratch, cap, b->p, b->n);
 }
 
 static void
@@ -378,22 +423,22 @@ buckets_dedup(SiftDu64G *d)
 	d->fresh = 0;
 }
 
-/* a pair into its bucket: false, with nothing added, when the bucket must grow and the budget does not hold it (once the buckets have been deduplicated, which may leave room) */
+/*
+ * a pair into its bucket: false, with nothing added, when the bucket must grow, or a group beyond the ones the set has counters for must have one, and the budget does not hold it (once the
+ * buckets have been deduplicated, which may leave room): the counts of the groups are made in a dense array of the groups at the end, so a far group is the bytes of all the groups before it
+ */
 static bool
 bucket_put(SiftDu64G *d, uint32 gid, uint64 value, uint64 h)
 {
 	DuBucket   *b = bucket_of(d, h);
+	const uint64 counters = gid > d->max_gid ? (uint64) (gid - d->max_gid) * sizeof(uint64) : 0;
+	const uint64 grow = b->n == b->cap ? (uint64) (Max(DU64G_BUCKET_FIRST, b->cap * 2) - b->cap) * sizeof(DuPair) : 0;
 
-	if (b->n == b->cap)
+	if (grow + counters > 0 && sift_du64g_bytes(d) + grow + counters > d->budget)
 	{
-		const uint64 more = (uint64) (Max(DU64G_BUCKET_FIRST, b->cap * 2) - b->cap) * sizeof(DuPair);
-
-		if (sift_du64g_bytes(d) + more > d->budget)
-		{
-			buckets_dedup(d);
-			if (b->n == b->cap)
-				return false;
-		}
+		buckets_dedup(d);
+		if (b->n == b->cap || sift_du64g_bytes(d) + counters > d->budget)
+			return false;
 	}
 	bucket_push(d, gid, value, h);
 	if (++d->fresh >= Max(d->radix_cap << DU64G_DEDUP_SHIFT, d->kept))

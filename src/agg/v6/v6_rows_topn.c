@@ -11,6 +11,7 @@
 
 #include "agg/group/ht.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_topk_run.h"
 #include "core/compat.h"
@@ -29,6 +30,7 @@ struct SiftV6Rows
 	bool		bounded;		/* the first sort column is an integer: the heap's worst row bounds what a granule must hold */
 	bool		by_code;		/* the first sort column is a text in byte order: a dictionary lists its strings in that order, so the codes bound the rows as the strings do */
 	bool		desc;
+	uint64		source;			/* the partition being scanned, in the bits of its rows' addresses above SIFT_V6_ROWS_ADDR_BITS */
 };
 
 typedef struct RowCand
@@ -65,29 +67,35 @@ text_datum(const uint8 *p, uint32 len, char *sbuf)
 }
 
 static Datum
-key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull, char *sbuf)
+int_key_datum(Oid typid, int64 x)
 {
-	*isnull = !is_valid(v, row);
-	if (*isnull)
-		return (Datum) 0;
-	switch (c->typid)
+	switch (typid)
 	{
 		case INT2OID:
-			return Int16GetDatum((int16) int_at(v, row));
+			return Int16GetDatum((int16) x);
 		case INT4OID:
 		case DATEOID:
-			return Int32GetDatum((int32) int_at(v, row));
-		case TEXTOID:
-		case VARCHAROID:
-			{
-				uint32		len;
-				const uint8 *p = text_at(v, row, &len);
-
-				return text_datum(p, len, sbuf);
-			}
+			return Int32GetDatum((int32) x);
 		default:
-			return Int64GetDatum(int_at(v, row));
+			return Int64GetDatum(x);
 	}
+}
+
+static Datum
+key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull, char *sbuf)
+{
+	if (v->type == SVEC_DICT32 || ((c->typid == TEXTOID || c->typid == VARCHAROID) && v->type == SVEC_STRVIEW))
+	{
+		uint32		len;
+		const uint8 *p;
+
+		*isnull = !is_valid(v, row);
+		if (*isnull)
+			return (Datum) 0;
+		p = text_at(v, row, &len);
+		return text_datum(p, len, sbuf);
+	}
+	return sift_v6_vec_datum(v, row, c->typid, c->scale, isnull);
 }
 
 static Datum
@@ -97,6 +105,38 @@ cand_value(void *ctx, int item, bool *isnull)
 	const int	pos = c->r->spec->topk_item[item].pos;
 
 	return key_datum(&c->r->spec->key[pos], c->keyvec[pos], c->row, isnull, c->sbuf);
+}
+
+typedef struct DatumCand
+{
+	const SiftV6Rows *r;
+	const Datum *values;
+	const bool *isnull;
+} DatumCand;
+
+static Datum
+datum_value(void *ctx, int item, bool *isnull)
+{
+	const DatumCand *c = ctx;
+	const int	pos = c->r->spec->topk_item[item].pos;
+
+	*isnull = c->isnull[pos];
+	return c->values[pos];
+}
+
+void
+sift_v6_rows_put(SiftV6Rows *r, const Datum *values, const bool *isnull, uint64 tid)
+{
+	const DatumCand c = {.r = r,.values = values,.isnull = isnull};
+	const int	nkeys = r->spec->nkeys;
+
+	if (!sift_v6_topk_run_wants(r->run, datum_value, (void *) &c))
+		return;
+	memcpy(r->values, values, nkeys * sizeof(Datum));
+	memcpy(r->isnull, isnull, nkeys * sizeof(bool));
+	r->values[nkeys] = Int64GetDatum((int64) tid);
+	r->isnull[nkeys] = false;
+	sift_v6_topk_run_put(r->run, r->values, r->isnull);
 }
 
 static bool
@@ -129,6 +169,7 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	SiftV6Rows *r = MemoryContextAllocZero(cx, sizeof(SiftV6Rows));
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	TupleDesc	desc = CreateTemplateTupleDesc(spec->nkeys + 1);
+	const SiftV6Col *key0 = &spec->key[spec->topk_item[0].pos];
 
 	for (int i = 0; i < spec->nkeys; i++)
 		TupleDescInitEntry(desc, i + 1, NULL, spec->key[i].typid, -1, 0);
@@ -136,8 +177,8 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	sift_tupdesc_finalize(desc);
 	r->spec = spec;
 	r->run = sift_v6_topk_run_new(cx, spec, desc);
-	r->bounded = bound_type(spec->key[spec->topk_item[0].pos].typid);
-	r->by_code = text_type(spec->key[spec->topk_item[0].pos].typid) && OidIsValid(spec->topk_item[0].collid) && sift_collate_is_c(spec->topk_item[0].collid);
+	r->bounded = key0->derive == 0 && key0->src != SV6SRC_DIM && bound_type(key0->typid);
+	r->by_code = key0->derive == 0 && key0->src != SV6SRC_DIM && text_type(key0->typid) && OidIsValid(spec->topk_item[0].collid) && sift_collate_is_c(spec->topk_item[0].collid);
 	if (r->bounded || r->by_code)
 	{
 		Oid			opfamily,
@@ -220,7 +261,7 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 				continue;
 			for (int i = 0; i < spec->nkeys; i++)
 				r->values[i] = key_datum(&spec->key[i], keyvec[i], c.row, &r->isnull[i], r->sbuf[i]);
-			r->values[spec->nkeys] = Int64GetDatum((int64) tid[c.row]);
+			r->values[spec->nkeys] = Int64GetDatum((int64) (tid[c.row] | r->source));
 			r->isnull[spec->nkeys] = false;
 			sift_v6_topk_run_put(r->run, r->values, r->isnull);
 			if (coded)
@@ -239,17 +280,91 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 	}
 }
 
+typedef struct PutCand
+{
+	const SiftV6Rows *r;
+	const Datum *values;
+	const bool *isnull;
+} PutCand;
+
+static Datum
+put_value(void *ctx, int item, bool *isnull)
+{
+	const PutCand *c = ctx;
+	const int	pos = c->r->spec->topk_item[item].pos;
+
+	*isnull = c->isnull[pos];
+	return c->values[pos];
+}
+
+void
+sift_v6_rows_put_raw(SiftV6Rows *r, const int64 *ival, const char *const *str, const uint32 *slen, const bool *isnull, uint64 tid)
+{
+	const SiftV6Spec *spec = r->spec;
+	MemoryContext old = MemoryContextSwitchTo(r->tmp);
+
+	for (int i = 0; i < spec->nkeys; i++)
+	{
+		r->isnull[i] = isnull[i];
+		if (isnull[i])
+			r->values[i] = (Datum) 0;
+		else if (text_type(spec->key[i].typid))
+			r->values[i] = text_datum((const uint8 *) str[i], slen[i], r->sbuf[i]);
+		else
+			r->values[i] = int_key_datum(spec->key[i].typid, ival[i]);
+	}
+	r->values[spec->nkeys] = Int64GetDatum((int64) tid);
+	r->isnull[spec->nkeys] = false;
+	if (sift_v6_topk_run_wants(r->run, put_value, &(PutCand) {r, r->values, r->isnull}))
+		sift_v6_topk_run_put(r->run, r->values, r->isnull);
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(r->tmp);
+}
+
 void
 sift_v6_rows_finish(SiftV6Rows *r)
 {
 	sift_v6_topk_run_finish(r->run);
 }
 
-bool
-sift_v6_rows_next(SiftV6Rows *r, uint64 *tid)
+SiftV6Group *
+sift_v6_rows_totals_new(MemoryContext cx, const SiftV6Spec *spec)
 {
+	SiftV6Spec *totals = MemoryContextAlloc(cx, sizeof(SiftV6Spec));
+	TupleDesc	desc = CreateTemplateTupleDesc(spec->naggs);
+
+	*totals = *spec;
+	totals->nkeys = 0;
+	totals->rows = false;
+	totals->topk = 0;
+	for (int j = 0; j < spec->naggs; j++)
+		TupleDescInitEntry(desc, j + 1, NULL, spec->agg[j].restype, -1, 0);
+	sift_tupdesc_finalize(desc);
+	return sift_v6_group_new(totals, cx, desc);
+}
+
+void
+sift_v6_rows_source(SiftV6Rows *r, uint32 source)
+{
+	r->source = (uint64) source << SIFT_V6_ROWS_ADDR_BITS;
+}
+
+bool
+sift_v6_rows_next(SiftV6Rows *r, uint32 *source, uint64 *tid)
+{
+	uint64		addr;
+
 	if (!sift_v6_topk_run_next(r->run, r->values, r->isnull))
 		return false;
-	*tid = (uint64) DatumGetInt64(r->values[r->spec->nkeys]);
+	addr = (uint64) DatumGetInt64(r->values[r->spec->nkeys]);
+	*source = (uint32) (addr >> SIFT_V6_ROWS_ADDR_BITS);
+	*tid = addr & ((UINT64CONST(1) << SIFT_V6_ROWS_ADDR_BITS) - 1);
 	return true;
+}
+
+Datum
+sift_v6_rows_key(const SiftV6Rows *r, int key, bool *isnull)
+{
+	*isnull = r->isnull[key];
+	return r->values[key];
 }

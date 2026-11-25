@@ -158,10 +158,12 @@ typedef struct SiftWinStats
 
 typedef struct SiftWindowExec SiftWindowExec;
 
-/* max_bytes bounds the ring of held rows (work_mem / 4 by the caller); an offset or a frame this cannot hold is an error here, at creation */
+/* max_bytes bounds the ring of held rows (work_mem / 4 by the caller) over what the window holds whatever its input (the column buffers and the first ring, which a LEAD sizes by its offset); a frame the ring cannot hold is an error */
 extern SiftWindowExec *sift_window_create(MemoryContext cxt, const SiftWindowSpec *spec, uint64 max_bytes, SiftWinNext next, SiftWinSkip skip, void *src,
 										  SiftWinEmit emit, void *emit_arg);
-/* Reads the input to its end, or until offset + limit rows are out */
+/* Takes one batch of the input and emits the rows it makes final; false once the input is at its end, or offset + limit rows are out (the rows of the last step are emitted too) */
+extern bool sift_window_step(SiftWindowExec *w);
+/* Steps to the end of the input, or until offset + limit rows are out */
 extern void sift_window_run(SiftWindowExec *w);
 extern const SiftWinStats *sift_window_stats(const SiftWindowExec *w);
 extern void sift_window_free(SiftWindowExec *w);

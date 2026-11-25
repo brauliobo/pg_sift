@@ -95,6 +95,11 @@ make_schema(Relation rel, const SiftF2Store *s)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, s->leaf_attno[c] - 1);
 
+		if (sift_f2_leaf_is_path(s, c))
+		{
+			defs[c] = s->path_def[c];
+			continue;
+		}
 		defs[c] = (SiftColDef) {
 			.id = (int16) c,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store_of(s->kinds[c], att),.attno = s->leaf_attno[c],
 			.type = s->hints[c] == SIFT_CHINT_NUM64 ? SIFT_COLT_NUMERIC : sift_col_type_of_oid(att->atttypid),.path = "",.scale = s->scales[c],

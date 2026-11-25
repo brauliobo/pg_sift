@@ -39,11 +39,9 @@ END $$;
 
 SELECT parity('SELECT grp, count(*), sum(qty), min(qty), max(qty) FROM @T GROUP BY grp') AS plain_groups;
 SELECT parity('SELECT id, amount FROM @T WHERE id = 20001') AS nan_round_trip;
-CREATE FUNCTION raises(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-BEGIN EXECUTE q; RETURN false; EXCEPTION WHEN OTHERS THEN RETURN true; END $$;
 SELECT parity('SELECT count(amount), sum(amount), min(amount), max(amount) FROM @T') AS aggregate_over_a_nan;
 SELECT parity('SELECT count(*) FROM @T WHERE amount > 1') AS comparison_with_a_nan_row;
-SELECT raises('SELECT count(*) FROM ut WHERE amount IS NULL') AS null_test_over_a_nan_is_refused;
+SELECT parity('SELECT count(*) FROM @T WHERE amount IS NULL') AS null_test_over_a_nan;
 SELECT parity('SELECT count(*), count(DISTINCT grp) FROM @T') AS totals_with_a_nan_row;
 DELETE FROM ut WHERE id = 20001;
 DELETE FROM uh WHERE id = 20001;
@@ -66,5 +64,5 @@ SELECT sift.table_maintain('ut') IS NOT NULL AS maintained_again;
 SELECT parity('SELECT grp, count(*), sum(qty) FROM @T GROUP BY grp') AS after_maintenance;
 
 DROP TABLE ut, uh;
-DROP FUNCTION parity(text), same_rows(text, text), plan_has(text, text), raises(text);
+DROP FUNCTION parity(text), same_rows(text, text), plan_has(text, text);
 DROP EXTENSION pg_sift;

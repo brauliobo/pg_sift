@@ -31,7 +31,7 @@ BEGIN
   SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
   pushed := false;
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
   END LOOP;
   DROP TABLE r_off, r_on;
   RETURN NEXT;

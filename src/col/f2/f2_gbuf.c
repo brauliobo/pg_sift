@@ -643,6 +643,11 @@ decode_column(SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, bool wide, Memo
 	{
 		gb->col_f[phys] = palloc(sizeof(double) * gb->nrows);
 		sift_granule_f8(&gb->view, phys, gb->col_f[phys], gb->col_isnull[phys]);
+		if (wide)
+		{
+			gb->col_tag[phys] = palloc(gb->nrows);
+			sift_granule_tags(&gb->view, phys, gb->col_tag[phys]);
+		}
 	}
 	else
 	{

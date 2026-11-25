@@ -117,7 +117,7 @@ has_exec_param_walker(Node *node, void *context)
 	if (level_param(node))
 		return false;
 	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
-		return ((Param *) node)->paramid < SIFT_AGG_INIT_PARAM && (!context || !initplan_ok(context, (Param *) node));
+		return ((Param *) node)->paramid < SIFT_AGG_INIT_PARAM && (!context || !initplan_ok(((AggCtx *) context)->root, (Param *) node));
 	if (IsA(node, SubPlan) || IsA(node, SubLink) || IsA(node, Aggref) || IsA(node, WindowFunc))
 		return true;
 	return expression_tree_walker(node, has_exec_param_walker, context);

@@ -102,6 +102,7 @@ typedef struct SiftTblF2Extra
 	Bitmapset  *summarized_attrs;	/* the attributes of the summarising indexes (BRIN) */
 	Bitmapset  *protected_attrs;	/* the attributes of the sort key and those with more than one leaf (sift_col_delta_protected_attrs) */
 	struct SiftTblBulkState *bulk;	/* the cells and the memory of a bulk insert, made by the first one (f2_bulk_ins.c) */
+	struct HTAB *path_parts;		/* the part_gens known to hold every leaf of the declared paths (f2_paths.c) */
 	SiftSchemaDefaults *defaults;	/* the fast defaults and the dropped attributes of the tuple descriptor (f2_defaults_tbl.c); NULL: none */
 } SiftTblF2Extra;
 
@@ -115,6 +116,27 @@ sift_tbl_extra(const SiftF2Store *store)
 
 /* Builds the leaves, the key, the time columns and the part spec of a table from its tuple descriptor and its options (the host of sift_f2_store_open) */
 extern void sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store);
+
+/* ---- the declared paths of the jsonb columns (f2_paths.c) ---- */
+
+/* The paths declared in sift.table_paths for table paths_relid that rel has jsonb columns of the name of, as one specification of the grammar of sift_col's paths option; NULL when it has none */
+extern char *sift_tbl_f2_declared_paths(Relation rel, Oid paths_relid, MemoryContext cx);
+
+/* The leaves the paths make: the shredder of the specification is made and kept in store->paths; the number of leaves it adds to those of the columns (0, and no shredder, for NULL) */
+extern int	sift_tbl_f2_path_leaf_count(Relation rel, SiftF2Store *store, const char *paths);
+
+/* Lays out the leaves of the paths of column a at leaf n, after the leaf of the column; returns the first leaf after them */
+extern int	sift_tbl_f2_add_path_leaves(Relation rel, SiftF2Store *store, int a, int n);
+
+/* The declaration of paths of the table changes (table/dispatch.h): the slabs and the stage, written under the old layout, become parts, and the stores are replaced */
+extern void sift_tbl_f2_paths_changed(Relation rel);
+
+/* Whether every part of the table has every leaf of its declared paths: until a rewrite has taken the parts written before the declaration out, a scan of the paths would read leaves they lack */
+extern bool sift_tbl_f2_paths_ready(Relation rel, SiftF2Store *store);
+
+/* The two fields of the identity of a leaf in a part that tell a path from the other leaves of its column (0, 0 for a column) */
+extern void sift_tbl_f2_path_identity(const SiftF2Store *store, int leaf, uint8 *flags, uint16 *hash16);
+
 
 /* ---- schema evolution (f2_ddl.c) ---- */
 
@@ -190,7 +212,7 @@ extern int	sift_tbl_f2_option_count(void);
 extern int	sift_tbl_f2_hidden_option_count(void);
 extern void sift_tbl_f2_load_options(Relation rel, SiftF2Store *store, MemoryContext cx);
 extern void sift_tbl_f2_apply_key_order(Relation rel, SiftF2Store *store);
-extern void sift_tbl_f2_adopt_layout(SiftF2Store *to, const SiftF2Store *from);
+extern void sift_tbl_f2_adopt_layout(Relation to_rel, SiftF2Store *to, const SiftF2Store *from);
 
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_headered_strings;

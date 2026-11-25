@@ -1,4 +1,4 @@
--- ORDER BY a leaf DESC LIMIT n over the facts of a scope key (src/agg/v6/scope_v6.c, scope_v6_run.c): the newest rows of the key are the ring of the summary the index of format major 2 keeps
+-- ORDER BY a leaf DESC LIMIT n over the facts of a scope key (src/col/f2/f2_v6_scope.c, scope_v6_run.c): the newest rows of the key are the ring of the summary the index of format major 2 keeps
 -- (col/scope_v6/topk.c), read without a row of the facts when the summary counts exactly what the heap shows the snapshot, and the join sorted, the child of the node, when it does not. Each
 -- line is a group of statements: whether the node's answer and the heap's agree (the ties of the order leaf may pick other rows: the order leaves are compared and every row must be a row of
 -- the join), what the node read (ring, or join) and the scans of the table the plan ran.
@@ -282,10 +282,10 @@ SELECT probe(q) || ' ' || q FROM unnest(ARRAY[
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5000
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC FETCH FIRST 5 ROWS WITH TIES
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC
- normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id ORDER BY e.updated_at DESC LIMIT 5
+ normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id ORDER BY e.updated_at DESC LIMIT 5
  node ring 0 SELECT e.id, e.updated_at FROM events e LEFT JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT (SELECT 5)
- normal - 2 SELECT DISTINCT e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
+ normal - 0 SELECT DISTINCT e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
 (14 rows)
 
 PREPARE topk_p(int, int) AS SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = $1 ORDER BY e.updated_at DESC LIMIT $2;

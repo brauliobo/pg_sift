@@ -116,6 +116,7 @@ typedef struct SiftWinxVal SiftWinxVal;
 struct SiftWinxVal
 {
 	bool		null;
+	bool		nan;			/* the numeric NaN, which is not NULL: the other members hold nothing */
 	uint64		n;				/* COUNT*; the rows the other aggregates folded */
 	int64		i;				/* ROW_NUMBER, RANK, DENSE_RANK; min, max, LAG, LEAD and FIRST_VALUE of an integer or of a numeric that fits 64 bits */
 	double		f;				/* sum, avg, min, max, LAG, LEAD, FIRST_VALUE, the variances of a float8 */

@@ -64,7 +64,7 @@ BEGIN
   pushed := false;
   finished := false;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
     finished := finished OR l LIKE '%Groups Finished: per partition%';
   END LOOP;
   DROP TABLE r_off, r_on;

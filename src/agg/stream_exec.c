@@ -260,43 +260,52 @@ cursor_consume(SiftStreamExec *se, SiftPartCursor *c, const SiftStreamRow *bound
 	}
 }
 
+bool
+sift_stream_step(SiftStreamExec *se)
+{
+	SiftStreamRow head,
+				best,
+				second;
+	SiftPartCursor *first = NULL;
+	bool		have_second = false;
+
+	if (se->done)
+		return false;
+	for (uint32 i = 0; i < se->n_parts; i++)
+	{
+		SiftPartCursor *c = &se->cursors[i];
+
+		if (!cursor_head(se, c, &head))
+			continue;
+		if (first == NULL || row_cmp(se, &head, &best) < 0)
+		{
+			if (first)
+			{
+				second = best;
+				have_second = true;
+			}
+			first = c;
+			best = head;
+		}
+		else if (!have_second || row_cmp(se, &head, &second) < 0)
+		{
+			second = head;
+			have_second = true;
+		}
+	}
+	if (first == NULL)
+	{
+		group_close(se);
+		se->done = true;
+		return false;
+	}
+	cursor_consume(se, first, have_second ? &second : NULL);
+	return true;
+}
+
 void
 sift_stream_run(SiftStreamExec *se)
 {
-	while (!se->done)
-	{
-		SiftStreamRow head,
-					best,
-					second;
-		SiftPartCursor *first = NULL;
-		bool		have_second = false;
-
-		for (uint32 i = 0; i < se->n_parts; i++)
-		{
-			SiftPartCursor *c = &se->cursors[i];
-
-			if (!cursor_head(se, c, &head))
-				continue;
-			if (first == NULL || row_cmp(se, &head, &best) < 0)
-			{
-				if (first)
-				{
-					second = best;
-					have_second = true;
-				}
-				first = c;
-				best = head;
-			}
-			else if (!have_second || row_cmp(se, &head, &second) < 0)
-			{
-				second = head;
-				have_second = true;
-			}
-		}
-		if (first == NULL)
-			break;
-		cursor_consume(se, first, have_second ? &second : NULL);
-	}
-	if (!se->done)
-		group_close(se);
+	while (sift_stream_step(se))
+		;
 }

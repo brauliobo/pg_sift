@@ -9,6 +9,7 @@
 #include "col/codec.h"
 #include "core/par/sbuf.h"
 #include "col/granule/granule.h"
+#include "core/par/arena.h"
 
 static inline int
 bits_for(uint64 v)
@@ -45,6 +46,20 @@ sift_exc_entries(const SiftExcHeader *h)
 }
 
 extern void sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c);
+
+static inline void
+sift_granule_check_col(const SiftGranuleView *v, int col)
+{
+	if (col < 0 || col + 1 >= v->hdr->nchunks)
+		SIFT_FAIL_INVALID("sift: column %d is not in the granule", col);
+}
+
+static inline void
+sift_chunk_open_col(const SiftGranuleView *v, int col, SiftChunk *c)
+{
+	sift_granule_check_col(v, col);
+	sift_chunk_open(v, col + 1, c);
+}
 
 /* Frees the buffers a chunk owns (idempotent); the release for strings keeps the decompressed bytes when the strings point into them */
 extern void sift_chunk_close(SiftChunk *c);

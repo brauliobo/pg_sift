@@ -9,6 +9,7 @@
 #ifndef SIFT_GRANULE_H
 #define SIFT_GRANULE_H
 
+#include "core/scan_types.h"
 #include "core/host.h"
 
 #include "agg/vec.h"
@@ -239,13 +240,6 @@ typedef struct SiftGranuleHeader
 
 StaticAssertDecl(offsetof(SiftGranuleHeader, chunks) == 16, "SiftGranuleHeader fixed prefix is 16 bytes");
 
-typedef enum SiftCellKind
-{
-	SIFT_CELL_INT = 1,
-	SIFT_CELL_STR = 2,
-	SIFT_CELL_F8 = 3
-} SiftCellKind;
-
 /* One column of rows in memory; isnull is NULL when no value is */
 typedef struct SiftColIn
 {
@@ -381,15 +375,6 @@ extern const char *sift_granule_exc_payload(const SiftGranuleView *v, int col, i
  * dst->dict is set for SVEC_DICT32. The string views point into the granule record, which must live as long as the vector is used.
  */
 extern void sift_granule_decode_vec(const SiftGranuleView *v, int col, uint16 row_off, uint16 nrows, SiftVec *dst, const SiftVariantExcStream **exc_out);
-
-/* The dictionary of a DICT_CODE chunk (SVEC_DICT32): its strings, which code i of dst->data names */
-typedef struct SiftGranuleDict
-{
-	uint32		n;
-	const uint32 *off;			/* n + 1 byte offsets */
-	const char *bytes;
-	bool		part;			/* the dictionary of the whole part, not of the granule */
-} SiftGranuleDict;
 
 typedef enum SiftMaskState
 {
@@ -550,9 +535,9 @@ typedef struct SiftRows
 	int			nsort;
 	const uint8 *key_lo;		/* the key range of the part when keys is NULL */
 	const uint8 *key_hi;
-	bool		preagg;			/* a part of level 1 and up gets SEC_PREAGG by the integer column preagg_dim, of the integer column preagg_measure */
-	int			preagg_dim;
-	int			preagg_measure;
+	bool		preagg;			/* a part of level 1 and up gets SEC_PREAGG: the cubes of preagg_decl (SiftPreaggDecl), or chosen from the data */
+	const struct SiftPreaggDecl *preagg_decl;
+	const bool *map_key;		/* per column: the `#key` leaf of a map, whose elements the cubes of SEC_PREAGG group by (NULL: none) */
 	int			time_col;		/* 1 + the integer column the part keeps a time stride index of (SEC_GRANULE_TSTRIDE), 0: none */
 	int			time_cols[SIFT_MANIFEST_TIME_COLS];	/* 1 + the integer column the part's time bounds are of (SiftPartDesc.time_min), 0: none */
 	uint32		part_flags;		/* SIFT_PART_FLAG_TIME_HOT or _TIME_COLD: the tier of the part, set by the compaction that splits rows by time; SIFT_PART_FLAG_BUILT, set by a build */
@@ -627,6 +612,8 @@ extern char *sift_part_read_granule(Relation rel, const SiftPart *part, uint32 g
 
 /* The same with the chunks of the columns whose want flag is set and the _tid (chunk 0) read only: the bytes of the other chunks are not defined */
 extern char *sift_part_read_granule_cols(Relation rel, const SiftPart *part, uint32 g, const bool *want, SiftGranuleDesc *desc);
+/* The same into rec, data_len bytes of the descriptor d of the granule: the buffer of a reader that keeps one for every granule it reads */
+extern void sift_part_read_granule_into(Relation rel, const SiftPart *part, uint32 g, const bool *want, const SiftGranuleDesc *d, char *rec);
 
 /*
  * A granule read as a scan needs it: the header and the table of its chunks first, which is all a scan of a granule that no row passes ever reads, then the chunks it asks for, each once.

@@ -29,7 +29,7 @@
 #include "access/parallel.h"
 #include "agg/group/dist.h"
 #include "agg/group/rec.h"
-#include "agg/par/morsel.h"
+#include "core/par/morsel.h"
 #include "agg/group/ht.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"
@@ -148,7 +148,7 @@ extern shm_mq_handle **sift_par_leader_queues(SiftParCoord *c, dsm_segment *seg,
 /* The participant id: the leader 0, worker w w + 1 */
 extern int	sift_par_participant(void);
 
-/* Phase 1: the next morsel of granules [*first, *first + *n) of the flat list of the scan (agg/par/morsel.h), false when there is none */
+/* Phase 1: the next morsel of granules [*first, *first + *n) of the flat list of the scan (core/par/morsel.h), false when there is none */
 extern bool sift_par_next_morsel(SiftParCoord *c, uint32 *first, uint32 *n);
 
 /* Joins the barrier; returns the phase: 0 when there is a scan to do */
@@ -177,7 +177,7 @@ extern void sift_radix_local_finish(SiftRadixLocal *l);
 
 /* Phase 2: claims the next partition, false when none is left */
 extern bool sift_par_next_part(SiftParCoord *c, uint32 *part);
-/* Calls fn for each block of whole records of the partition (the chunks, then the files of the participants): the records of a block are at its offsets of their lengths */
+/* Calls fn for each block of whole records of the partition (the chunks, then the files of the participants, each deleted once read, so a partition is scanned once): the records of a block are at its offsets of their lengths */
 typedef void (*SiftRadixBlockFn) (void *arg, const uint8 *block, uint32 len);
 extern void sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *arg);
 /* Merges every record of the partition into ht (initialized here, to be destroyed by the caller) */

@@ -1,0 +1,161 @@
+-- What the groups of SiftAggV6 hold and write when they spill (work_mem 1MB: hash memory 2MB): the groups of keys the table does not hold by their bytes (numeric, uuid, interval)
+-- and the strings of MIN and MAX of text leave the memory with the groups, so that the table spills as often as the groups of integer keys do; a spill is read back one partition at a time
+-- and the only thing the statement writes but for the partitions that do not fit the memory, which are split once, so that a LIMIT writes no more than the full statement and the temp_file_limit is that of the spill; an aggregate whose groups the planner
+-- underestimated spills instead of stopping; the values of percentile_cont over the elements of a JSON array are the values of PostgreSQL's aggregate; no file is left in the temporary directory.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '120s';
+SET client_min_messages = warning;
+SET sift.test_create_format1 = off;
+SET work_mem = '1MB';
+
+CREATE TABLE gs (id int PRIMARY KEY, k_int int, k_num numeric, k_uuid uuid, k_iv interval, txt text, fl float8, amt int);
+INSERT INTO gs SELECT g, g, g::numeric + 0.123456789, md5(g::text)::uuid, (g || ' seconds')::interval, repeat(md5(g::text), 4), (g::bigint * 7919 % 1000003)::float8 / 7, g % 100
+FROM generate_series(1, 100000) g;
+CREATE INDEX gs_col ON gs USING sift_col (id, k_int, k_num, k_uuid, k_iv, txt, fl, amt);
+VACUUM (FREEZE, ANALYZE) gs;
+
+-- the stale statistics of a table whose key was one value when it was analyzed
+CREATE TABLE gstale (id int PRIMARY KEY, k_st int, amt int);
+INSERT INTO gstale SELECT g, 1, g % 100 FROM generate_series(1, 100000) g;
+ANALYZE gstale;
+UPDATE gstale SET k_st = id;
+CREATE INDEX gstale_col ON gstale USING sift_col (id, k_st, amt);
+VACUUM gstale;
+
+-- a table of JSON arrays: the elements of each row are the values of its group
+CREATE TABLE gj (id int PRIMARY KEY, cat int, items jsonb);
+INSERT INTO gj SELECT g, g % 20, jsonb_build_array(jsonb_build_object('category', 'c' || (g % 20), 'price', (g::bigint * 7919 % 1000003)::float8 / 7)) FROM generate_series(1, 100000) g;
+CREATE INDEX gj_col ON gj USING sift_col (id, cat, items) WITH (paths = 'items[].category text, items[].price float8');
+VACUUM (FREEZE, ANALYZE) gj;
+
+-- the rows of a statement, by md5, with SiftAggV6 and with PostgreSQL's aggregate
+CREATE FUNCTION rows_md5(q text, sift boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN sift THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT md5(string_agg(x::text, %L ORDER BY x::text)) FROM (%s) x', ',', q) INTO r;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN r;
+END $$;
+
+CREATE FUNCTION same_rows(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT rows_md5(q, true) = rows_md5(q, false) $$;
+
+-- the spills of a statement and the bytes they wrote, from EXPLAIN ANALYZE
+CREATE FUNCTION spills_of(q text, OUT spills int, OUT mb numeric) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.agg_force', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'spills=\d+ \([0-9.]+MB\)' THEN
+			spills := substring(l from 'spills=(\d+)')::int;
+			mb := substring(l from 'spills=\d+ \(([0-9.]+)MB\)')::numeric;
+		END IF;
+	END LOOP;
+END $$;
+
+-- the plan is SiftAggV6
+CREATE FUNCTION is_v6(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.agg_force', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%SiftAggV6%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- the groups of a key the table does not hold by its bytes spill as often as the groups of an integer key do (the same groups: 100,000 of them)
+CREATE TABLE want_spills AS SELECT (spills_of('SELECT k_int, count(*), sum(amt) FROM gs GROUP BY 1')).spills AS base;
+SELECT is_v6('SELECT k_num, count(*), sum(amt) FROM gs GROUP BY 1') AS v6_numeric,
+       is_v6('SELECT k_uuid, count(*), sum(amt) FROM gs GROUP BY 1') AS v6_uuid,
+       is_v6('SELECT k_iv, count(*), sum(amt) FROM gs GROUP BY 1') AS v6_interval,
+       is_v6('SELECT k_int, min(txt), max(txt) FROM gs GROUP BY 1') AS v6_minmax_text;
+SELECT (spills_of('SELECT k_num, count(*), sum(amt) FROM gs GROUP BY 1')).spills <= 1.5 * base + 2 AS spills_numeric,
+       (spills_of('SELECT k_uuid, count(*), sum(amt) FROM gs GROUP BY 1')).spills <= 1.5 * base + 2 AS spills_uuid,
+       (spills_of('SELECT k_iv, count(*), sum(amt) FROM gs GROUP BY 1')).spills <= 1.5 * base + 2 AS spills_interval,
+       (spills_of('SELECT k_int, min(txt), max(txt) FROM gs GROUP BY 1')).spills <= 1.5 * base + 2 AS spills_minmax_text
+FROM want_spills;
+
+-- ... and the groups they read back are those of PostgreSQL's aggregate
+SELECT same_rows('SELECT k_num, count(*), sum(amt) FROM gs GROUP BY 1') AS rows_numeric,
+       same_rows('SELECT k_uuid, count(*), sum(amt) FROM gs GROUP BY 1') AS rows_uuid,
+       same_rows('SELECT k_iv, count(*), sum(amt) FROM gs GROUP BY 1') AS rows_interval,
+       same_rows('SELECT k_int, min(txt), max(txt) FROM gs GROUP BY 1') AS rows_minmax_text,
+       same_rows('SELECT k_num, min(txt), max(txt), count(*) FROM gs GROUP BY 1') AS rows_numeric_minmax_text,
+       same_rows('SELECT amt, k_num, min(txt), max(txt) FROM gs GROUP BY 1, 2') AS rows_two_keys;
+
+-- a spill is the only thing a statement writes: the full statement and a LIMIT write the blocks of the spill (each partition fits the hash memory: none is written again), whatever rows are read from it
+CREATE FUNCTION written_blocks(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE l text; w bigint := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'temp read=\d+ written=\d+' THEN w := greatest(w, substring(l from 'temp read=\d+ written=(\d+)')::bigint); END IF;
+	END LOOP;
+	RETURN w;
+END $$;
+SELECT (spills_of('SELECT k_int, count(*), sum(amt), sum(k_int), sum(id) FROM gs GROUP BY 1')).mb * 1048576 / 8192 AS spill_blocks \gset
+SELECT :spill_blocks > 0 AS spilled,
+       written_blocks('SELECT k_int, count(*), sum(amt), sum(k_int), sum(id) FROM gs GROUP BY 1') <= 2.2 * :spill_blocks + 32 AS written_is_the_spill_twice,
+       written_blocks('SELECT * FROM (SELECT k_int, count(*), sum(amt), sum(k_int), sum(id) FROM gs GROUP BY 1 OFFSET 0) y LIMIT 5') <= 1.15 * :spill_blocks + 32 AS written_is_the_spill_limit;
+
+-- the files of a statement are gone when it ends, however it ends
+SELECT count(*) AS files_after_full FROM pg_ls_tmpdir();
+SELECT count(*) FROM (SELECT * FROM (SELECT k_int, count(*) FROM gs GROUP BY 1 OFFSET 0) y LIMIT 5) x;
+SELECT count(*) AS files_after_limit FROM pg_ls_tmpdir();
+BEGIN;
+DECLARE c CURSOR FOR SELECT k_int, count(*), sum(amt) FROM gs GROUP BY 1;
+MOVE FORWARD 5 FROM c;
+CLOSE c;
+SELECT count(*) AS files_after_cursor FROM pg_ls_tmpdir();
+COMMIT;
+SET temp_file_limit = '1MB';
+DO $$ BEGIN PERFORM count(*) FROM (SELECT k_int, count(*), sum(amt), sum(k_int), sum(id) FROM gs GROUP BY 1) x; EXCEPTION WHEN configuration_limit_exceeded THEN NULL; END $$;
+RESET temp_file_limit;
+SELECT count(*) AS files_after_error FROM pg_ls_tmpdir();
+
+-- groups the planner expected to be few (a statistic of one value) spill instead of stopping the statement
+SELECT is_v6('SELECT k_st, array_agg(amt) FROM gstale GROUP BY 1') AS v6_stale,
+       same_rows('SELECT k_st, cardinality(array_agg(amt)) AS n, sum(amt) AS s FROM gstale GROUP BY 1') AS rows_stale_array_agg,
+       same_rows('SELECT k_st, length(string_agg(amt::text, '','')) AS n FROM gstale GROUP BY 1') AS rows_stale_string_agg;
+
+-- the aggregates whose states cannot leave for the spill (a generic aggregate with no combine function, DISTINCT, ORDER BY, WITHIN GROUP, a set of no keys beside the sets of keys) keep the groups the
+-- table has and send the rows of the others to partitions that come back one at a time: the groups are those of PostgreSQL's aggregate, and no file is left
+SELECT is_v6('SELECT k_st, jsonb_agg(amt) FROM gstale GROUP BY 1') AS v6_jsonb_agg,
+       is_v6('SELECT k_st, array_agg(DISTINCT amt) FROM gstale GROUP BY 1') AS v6_distinct,
+       is_v6('SELECT k_st, string_agg(amt::text, '','' ORDER BY amt DESC, id) FROM gstale GROUP BY 1') AS v6_order_by,
+       is_v6('SELECT k_st, percentile_disc(0.5) WITHIN GROUP (ORDER BY amt) FROM gstale GROUP BY 1') AS v6_within_group,
+       is_v6('SELECT k_st, count(*), array_agg(DISTINCT amt) FROM gstale GROUP BY GROUPING SETS ((k_st), ())') AS v6_grand_total;
+SELECT same_rows('SELECT k_st, jsonb_array_length(a) AS n, (SELECT sum(x::int) FROM jsonb_array_elements_text(a) x) AS s FROM (SELECT k_st, jsonb_agg(amt) a FROM gstale GROUP BY 1) q') AS rows_jsonb_agg,
+       same_rows('SELECT k_st, json_array_length(a) AS n, c FROM (SELECT k_st, count(*) c, json_agg(amt) a FROM gstale GROUP BY 1) q') AS rows_json_agg_count,
+       same_rows('SELECT k_st, array_agg(DISTINCT amt) FROM gstale GROUP BY 1') AS rows_distinct,
+       same_rows('SELECT k_st, string_agg(amt::text, '','' ORDER BY amt DESC, id) FROM gstale GROUP BY 1') AS rows_order_by,
+       same_rows('SELECT k_st, percentile_disc(0.5) WITHIN GROUP (ORDER BY amt), count(*) FROM gstale GROUP BY 1') AS rows_within_group,
+       same_rows('SELECT coalesce(k_st::text, ''total''), count(*), array_agg(DISTINCT amt) FROM gstale GROUP BY GROUPING SETS ((k_st), ())') AS rows_grand_total,
+       same_rows('SELECT k_st, array_agg(amt ORDER BY id) FROM gstale GROUP BY k_st, amt % 2') AS rows_two_keys;
+SELECT count(*) AS files_after_rows FROM pg_ls_tmpdir();
+SELECT count(*) FROM (SELECT * FROM (SELECT k_st, jsonb_agg(amt) FROM gstale GROUP BY 1 OFFSET 0) y LIMIT 5) x;
+SELECT count(*) AS files_after_rows_limit FROM pg_ls_tmpdir();
+BEGIN;
+DECLARE c CURSOR FOR SELECT k_st, jsonb_agg(amt) FROM gstale GROUP BY 1;
+MOVE FORWARD 90000 FROM c;
+CLOSE c;
+SELECT count(*) AS files_after_rows_cursor FROM pg_ls_tmpdir();
+COMMIT;
+SET temp_file_limit = '1MB';
+DO $$ BEGIN PERFORM count(*) FROM (SELECT k_st, jsonb_agg(amt) FROM gstale GROUP BY 1) x; EXCEPTION WHEN configuration_limit_exceeded THEN NULL; END $$;
+RESET temp_file_limit;
+SELECT count(*) AS files_after_rows_error FROM pg_ls_tmpdir();
+
+-- the values of the groups of percentile_cont over the elements of an array are those of PostgreSQL's aggregate
+SELECT is_v6('SELECT i.category, percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price) FROM gj CROSS JOIN LATERAL jsonb_to_recordset(gj.items) AS i(category text, price float8) GROUP BY 1') AS v6_pct,
+       same_rows('SELECT i.category, round(percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price)::numeric, 6) FROM gj CROSS JOIN LATERAL jsonb_to_recordset(gj.items) AS i(category text, price float8) GROUP BY 1') AS rows_pct,
+       same_rows('SELECT round(percentile_cont(0.9) WITHIN GROUP (ORDER BY i.price)::numeric, 6) FROM gj CROSS JOIN LATERAL jsonb_to_recordset(gj.items) AS i(category text, price float8)') AS rows_pct_one_group;
+
+DROP FUNCTION is_v6(text);
+DROP FUNCTION rows_md5(text, boolean);
+DROP FUNCTION same_rows(text);
+DROP FUNCTION spills_of(text);
+DROP FUNCTION written_blocks(text);
+DROP TABLE want_spills, gj, gs, gstale;
+DROP EXTENSION pg_sift;

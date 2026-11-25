@@ -59,7 +59,7 @@ CREATE FUNCTION unary_check(pred text) RETURNS TABLE (scan bool, same bool, n bi
 $$ DECLARE l text; plan text := ''; sel text := 'SELECT id FROM rg WHERE ' || pred; agg text := 'SELECT count(*) AS n, sum(id) AS s FROM rg WHERE ' || pred; off text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || agg LOOP plan := plan || l || E'\n'; END LOOP;
-  scan := plan LIKE '%Custom Scan (SiftAgg)%';
+  scan := plan LIKE '%Custom Scan (SiftAgg%';
   PERFORM set_config('sift.enable_agg', 'off', true);
   off := rows_md5(agg);
   PERFORM set_config('sift.enable_agg', 'on', true);

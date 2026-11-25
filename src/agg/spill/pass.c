@@ -265,6 +265,7 @@ pass_more(AggExec *ex)
 
 		ex->pass_w = Max(w, (uint32) Min(w * (double) sp->budget * PASS_FILL / held, PASS_SHARES));
 	}
+	agg_mem_checkpoint(ex);
 	ex->n_passes++;
 	if (!ex->pass_got)
 	{

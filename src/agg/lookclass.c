@@ -114,7 +114,7 @@ strids_datum(const StrIds *s, uint32 id, const SiftSrcLeaf *lf)
 
 	memcpy(&len, b, sizeof(len));
 	if (lf->wide)
-		return sift_aggwide_datum(lf->typid, memcpy(palloc(len), b + sizeof(len), len), len);
+		return sift_srcwide_datum(lf->typid, memcpy(palloc(len), b + sizeof(len), len), len);
 	return PointerGetDatum(cstring_to_text_with_len(b + sizeof(len), len));
 }
 

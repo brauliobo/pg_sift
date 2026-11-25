@@ -1,0 +1,133 @@
+-- SELECT DISTINCT, ctid ranges, joins to a sub-select, a range of periods and the shapes around them on Format 2.0: each statement runs with the cost settings of the coverage proofs
+-- (a page costs 10000, no Memoize) and with sift.enable_agg = off, and the rows must be the same. The engine column is the plan of the first run: SiftAggV6 where the node serves the shape,
+-- normal where PostgreSQL's plan does (a shape the node does not serve yet stays there with its rows as the heap's).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET TimeZone = 'UTC';
+-- the library of the testing build creates the indexes of format major 1 by default; these are of format major 2, which the release library creates
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+CREATE TABLE o (id int PRIMARY KEY, tenant int, status text, placed date, total int, note text, items jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO o
+SELECT i, 1 + i % 40, CASE WHEN i % 13 = 0 THEN NULL ELSE 's' || (i % 5) END, date '2024-01-01' + i % 700, i % 97, 'n' || i,
+       jsonb_build_array(jsonb_build_object('category', 'c' || (i % 5), 'qty', i % 7), jsonb_build_object('category', 'c' || (i % 3), 'qty', i % 4))
+FROM generate_series(1, 4000) i;
+CREATE INDEX o_col ON o USING sift_col (id, tenant, status, placed, total, items) WITH (paths = 'items[]{category text, qty int4}');
+VACUUM (FREEZE, ANALYZE) o;
+-- rows that moved inside their page (the note is no column of the index): the index holds the address of the root of the chain, the ctid is the newest version's
+UPDATE o SET note = note || 'x' WHERE id % 7 = 0;
+UPDATE o SET note = note || 'y' WHERE id % 14 = 0;
+CREATE TABLE t (id int PRIMARY KEY, kind text, country text);
+INSERT INTO t SELECT i, CASE WHEN i % 4 = 0 THEN 'outlet' ELSE 'shop' || i % 3 END, CASE WHEN i % 5 = 0 THEN NULL ELSE 'c' || i % 3 END FROM generate_series(1, 40) i;
+-- periods: canonical ranges that overlap, an empty one, a NULL one, one with no upper bound and one with no lower bound
+CREATE TABLE p (label text, r daterange);
+INSERT INTO p VALUES ('a', '[2024-03-01,2024-09-01)'), ('b', '[2024-06-01,2025-06-01)'), ('wide', '[2023-01-01,2026-01-01)'), ('empty', 'empty'), (NULL, '[2024-02-01,2024-02-20)'),
+                     ('open', '[2025-05-01,)'), ('early', '(,2024-02-01)'), ('nul', NULL);
+CREATE TABLE w (id int PRIMARY KEY, a int, b int, c text);
+INSERT INTO w SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 9 END, i % 6, 'x' || i % 4 FROM generate_series(1, 40) i;
+ANALYZE t; ANALYZE p; ANALYZE w;
+CREATE FUNCTION same(q text) RETURNS TABLE (engine text, result_rows bigint, vs_heap bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	engine := 'normal';
+	SET LOCAL seq_page_cost = 10000;
+	SET LOCAL random_page_cost = 10000;
+	SET LOCAL enable_memoize = off;
+	SET LOCAL enable_tidscan = off;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAggV6)%' THEN engine := 'SiftAggV6'; END IF;
+	END LOOP;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT x::text AS r FROM (%s) x', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS SELECT x::text AS r FROM (%s) x', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_heap := (SELECT count(*) FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+CREATE TABLE stmts (id int, q text);
+INSERT INTO stmts VALUES
+-- SELECT DISTINCT of columns and expressions, with a filter and with ORDER BY and LIMIT above it
+(1, 'SELECT DISTINCT status FROM o'),
+(2, 'SELECT DISTINCT tenant, status FROM o WHERE total < 40'),
+(3, 'SELECT DISTINCT status, tenant % 7 FROM o ORDER BY 1 NULLS FIRST, 2 LIMIT 12'),
+(4, 'SELECT DISTINCT placed FROM o WHERE tenant = 3'),
+(5, 'SELECT DISTINCT ON (tenant) tenant, id, placed FROM o WHERE tenant < 10 ORDER BY tenant, placed DESC, id'),
+-- ctid ranges: one block, several, between, equal, empty, beyond the end, an offset at the edge, with other conditions
+(6, 'SELECT status, count(*) FROM o WHERE ctid >= ''(0,1)'' AND ctid < ''(1000000,1)'' GROUP BY status'),
+(7, 'SELECT status, count(*), sum(total) FROM o WHERE ctid >= ''(2,1)'' AND ctid < ''(9,1)'' GROUP BY status'),
+(8, 'SELECT count(*) FROM o WHERE ctid BETWEEN ''(3,5)'' AND ''(7,20)'''),
+(9, 'SELECT tenant, count(*) FROM o WHERE ctid = ''(4,7)'' GROUP BY tenant'),
+(10, 'SELECT count(*) FROM o WHERE ctid > ''(5,3)'' AND ctid <= ''(5,3)'''),
+(11, 'SELECT count(*) FROM o WHERE ''(1,1)''::tid <= ctid AND ''(60000,1)'' > ctid'),
+(12, 'SELECT count(*), sum(total) FROM o WHERE ctid >= ''(1,14)'' AND ctid < ''(3,2)'' AND total > 10 AND status = ''s1'''),
+(13, 'SELECT count(*) FROM o WHERE ctid >= ''(2,1)'' OR total = 4'),
+(14, 'SELECT count(*) FROM o WHERE ctid <> ''(2,1)'''),
+(15, 'SELECT t.kind, count(*) FROM o JOIN t ON t.id = o.tenant WHERE o.ctid >= ''(1,1)'' AND o.ctid < ''(5,1)'' GROUP BY t.kind'),
+-- a small dimension on equality, and on a union of sub-selects
+(16, 'SELECT t.kind, count(*), sum(o.total) FROM o JOIN t ON t.id = o.tenant GROUP BY t.kind'),
+(17, 'SELECT s.kind, count(*) FROM o JOIN (SELECT id, kind FROM t UNION ALL SELECT id, kind FROM t) s ON o.tenant = s.id GROUP BY s.kind'),
+-- a semi join to a sub-select with LIMIT, and to one with an ORDER BY
+(18, 'SELECT status, count(*) FROM o WHERE tenant IN (SELECT id FROM t LIMIT 7) GROUP BY status'),
+(19, 'SELECT status, count(*) FROM o WHERE id IN (SELECT id FROM o WHERE total > 90 ORDER BY id DESC LIMIT 100) GROUP BY status'),
+(20, 'SELECT count(*) FROM o WHERE tenant NOT IN (SELECT id FROM t WHERE kind = ''outlet'')'),
+-- a date in the periods of a small table: the periods overlap, are empty, NULL or open
+(21, 'SELECT p.label, count(*), sum(o.total) FROM o JOIN p ON o.placed <@ p.r GROUP BY p.label'),
+(22, 'SELECT count(*) FROM o JOIN p ON o.placed <@ p.r WHERE o.tenant < 10'),
+(23, 'SELECT p.label, count(*) FROM o LEFT JOIN p ON o.placed <@ p.r GROUP BY p.label'),
+(24, 'SELECT p.label, count(*) FROM o JOIN p ON o.placed >= lower(p.r) AND o.placed < upper(p.r) GROUP BY p.label'),
+(25, 'SELECT count(*) FROM o WHERE EXISTS (SELECT 1 FROM p WHERE o.placed <@ p.r)'),
+(26, 'SELECT i.category, count(*) FROM o JOIN p ON o.placed <@ p.r CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) GROUP BY i.category'),
+-- an expression key is matched by the pairs of the rows of the dimension
+(30, 'SELECT w.c, count(*) FROM o JOIN w ON w.c = lower(''X'' || (o.tenant % 4)) GROUP BY w.c'),
+-- shapes of the same family that the node leaves to PostgreSQL's plan: sub-plans, lookups per row, the elements of an array
+(27, 'SELECT count(*) FROM o WHERE (tenant, total) NOT IN (SELECT a, b FROM w WHERE a IS NOT NULL)'),
+(28, 'SELECT count(*) FROM o WHERE tenant = ANY (ARRAY(SELECT a FROM w WHERE c = ''x1''))'),
+(29, 'SELECT w2.c, count(*) FROM o LEFT JOIN LATERAL (SELECT c FROM w WHERE w.id = o.tenant LIMIT 1) w2 ON true GROUP BY w2.c'),
+(31, 'SELECT i.category, i.qty, count(*) FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) WHERE i.qty > 5 OR i.category = ''c1'' GROUP BY i.category, i.qty'),
+(32, 'SELECT count(*) FROM o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, qty int) JOIN w ON w.b = i.qty WHERE i.category = ''c2'')');
+SELECT s.id, r.* FROM stmts s, LATERAL same(s.q) r ORDER BY s.id;
+ id |  engine   | result_rows | vs_heap 
+----+-----------+-------------+---------
+  1 | SiftAggV6 |           6 |       0
+  2 | SiftAggV6 |          80 |       0
+  3 | SiftAggV6 |          12 |       0
+  4 | SiftAggV6 |          35 |       0
+  5 | normal    |           9 |       0
+  6 | SiftAggV6 |           6 |       0
+  7 | SiftAggV6 |           6 |       0
+  8 | SiftAggV6 |           1 |       0
+  9 | SiftAggV6 |           1 |       0
+ 10 | SiftAggV6 |           1 |       0
+ 11 | SiftAggV6 |           1 |       0
+ 12 | SiftAggV6 |           1 |       0
+ 13 | normal    |           1 |       0
+ 14 | normal    |           1 |       0
+ 15 | normal    |           4 |       0
+ 16 | SiftAggV6 |           4 |       0
+ 17 | SiftAggV6 |           4 |       0
+ 18 | SiftAggV6 |           6 |       0
+ 19 | SiftAggV6 |           6 |       0
+ 20 | SiftAggV6 |           1 |       0
+ 21 | SiftAggV6 |           6 |       0
+ 22 | SiftAggV6 |           1 |       0
+ 23 | SiftAggV6 |           6 |       0
+ 24 | SiftAggV6 |           4 |       0
+ 25 | normal    |           1 |       0
+ 26 | normal    |           5 |       0
+ 27 | SiftAggV6 |           1 |       0
+ 28 | SiftAggV6 |           1 |       0
+ 29 | SiftAggV6 |           4 |       0
+ 30 | SiftAggV6 |           4 |       0
+ 31 | SiftAggV6 |          11 |       0
+ 32 | normal    |           1 |       0
+(32 rows)
+
+DROP FUNCTION same(text);
+DROP TABLE stmts, o, t, p, w;
+DROP EXTENSION pg_sift;

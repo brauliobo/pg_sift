@@ -130,30 +130,30 @@ nd_u32(const CcNode *nd, int64 sub, uint32 *dst)
 			break;
 		case SIFT_CCN_DELTA:
 			{
-				uint32	   *tmp = palloc(sizeof(uint32) * CC_CAP32(n));
+				uint32	   *tmp = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 
 				sift_cck->unpack32((const uint32 *) nd->words, nd->W, rows_for(n), 0, tmp);
 				sift_cck->prefix32(tmp, n, dst, off, (uint32) nd->mind);
-				pfree(tmp);
+				sift_free(tmp);
 				break;
 			}
 		case SIFT_CCN_RLE:
 			{
-				uint32	   *rv = palloc(sizeof(uint32) * CC_CAP32(nd->nruns)),
-						   *rl = palloc(sizeof(uint32) * CC_CAP32(nd->nruns));
+				uint32	   *rv = sift_alloc(sizeof(uint32) * CC_CAP32(nd->nruns)),
+						   *rl = sift_alloc(sizeof(uint32) * CC_CAP32(nd->nruns));
 
 				nd_u32(nd->a, sub, rv);
 				for (uint32 r = 0; r < nd->nruns; r++)
 					rl[r] = nd->rstart[r + 1] - nd->rstart[r];
 				sift_cck->rle_expand32(rv, rl, nd->nruns, dst);
-				pfree(rv);
-				pfree(rl);
+				sift_free(rv);
+				sift_free(rl);
 				break;
 			}
 		case SIFT_CCN_DICT:
 			{
-				uint32	   *dv = palloc(sizeof(uint32) * CC_CAP32(nd->d)),
-						   *codes = palloc(sizeof(uint32) * CC_CAP32(n));
+				uint32	   *dv = sift_alloc(sizeof(uint32) * CC_CAP32(nd->d)),
+						   *codes = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 
 				for (uint32 i = 0; i < nd->d; i++)
 					dv[i] = (uint32) ((uint64) nd->dict[i] - (uint64) sub);
@@ -161,8 +161,8 @@ nd_u32(const CcNode *nd, int64 sub, uint32 *dst)
 				if (sift_cck->max32(codes, n) >= nd->d)
 					CC_CORRUPT("dictionary code out of range");
 				sift_colk->gather_u32(dv, codes, n, dst);
-				pfree(dv);
-				pfree(codes);
+				sift_free(dv);
+				sift_free(codes);
 				break;
 			}
 		case SIFT_CCN_SCALE:
@@ -174,12 +174,12 @@ nd_u32(const CcNode *nd, int64 sub, uint32 *dst)
 			break;
 		default:
 			{
-				int64	   *tmp = palloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
+				int64	   *tmp = sift_alloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
 
 				nd_i64(nd, tmp);
 				for (uint32 i = 0; i < n; i++)
 					dst[i] = (uint32) ((uint64) tmp[i] - (uint64) sub);
-				pfree(tmp);
+				sift_free(tmp);
 				break;
 			}
 	}
@@ -198,11 +198,11 @@ nd_i64(const CcNode *nd, int64 *dst)
 			break;
 		case SIFT_CCN_FORBIT:
 			{
-				uint32	   *tmp = palloc(sizeof(uint32) * CC_CAP32(n));
+				uint32	   *tmp = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 
 				sift_cck->unpack32((const uint32 *) nd->words, nd->W, rows_for(n), 0, tmp);
 				sift_colk->for_i64[SIFT_COLW_32](tmp, n, nd->base, dst);
-				pfree(tmp);
+				sift_free(tmp);
 				break;
 			}
 		case SIFT_CCN_FORBYTE:
@@ -210,38 +210,38 @@ nd_i64(const CcNode *nd, int64 *dst)
 			break;
 		case SIFT_CCN_DELTA:
 			{
-				uint32	   *tmp = palloc(sizeof(uint32) * CC_CAP32(n));
+				uint32	   *tmp = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 
 				sift_cck->unpack32((const uint32 *) nd->words, nd->W, rows_for(n), 0, tmp);
 				sift_cck->prefix64(tmp, n, dst, nd->base, nd->mind);
-				pfree(tmp);
+				sift_free(tmp);
 				break;
 			}
 		case SIFT_CCN_RLE:
 			{
-				int64	   *rv = palloc(sizeof(int64) * (nd->nruns + SIFT_COL_PAD / 8));
+				int64	   *rv = sift_alloc(sizeof(int64) * (nd->nruns + SIFT_COL_PAD / 8));
 
 				nd_i64(nd->a, rv);
 				for (uint32 r = 0; r < nd->nruns; r++)
 					for (uint32 j = nd->rstart[r]; j < nd->rstart[r + 1]; j++)
 						dst[j] = rv[r];
-				pfree(rv);
+				sift_free(rv);
 				break;
 			}
 		case SIFT_CCN_DICT:
 			{
-				uint32	   *codes = palloc(sizeof(uint32) * CC_CAP32(n));
+				uint32	   *codes = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 
 				nd_u32(nd->b, 0, codes);
 				if (sift_cck->max32(codes, n) >= nd->d)
 					CC_CORRUPT("dictionary code out of range");
 				sift_colk->for_i64_sel[SIFT_COLW_64](nd->dict, codes, n, 0, dst);
-				pfree(codes);
+				sift_free(codes);
 				break;
 			}
 		case SIFT_CCN_ALP:
 			{
-				uint32	   *dg = palloc(sizeof(uint32) * CC_CAP32(n));
+				uint32	   *dg = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 
 				nd_u32(nd->a, nd->dmin, dg);
 				if (nd->kind == SIFT_CC_F8)
@@ -250,7 +250,7 @@ nd_i64(const CcNode *nd, int64 *dst)
 					sift_cck->alp_keys_f4(dst, dg, n, nd->dmin, sift_cc_p10f[nd->e]);
 				for (uint32 k = 0; k < nd->nexc; k++)
 					memcpy(dst + nd->pos[k], nd->ekeys + 8 * (size_t) k, 8);
-				pfree(dg);
+				sift_free(dg);
 				break;
 			}
 		case SIFT_CCN_SCALE:
@@ -302,11 +302,11 @@ nd_i64_head(const CcNode *nd, int64 *dst, uint32 w)
 			break;
 		default:
 			{
-				int64	   *all = palloc(sizeof(int64) * ((size_t) nd->n + SIFT_COL_PAD / 8));
+				int64	   *all = sift_alloc(sizeof(int64) * ((size_t) nd->n + SIFT_COL_PAD / 8));
 
 				nd_i64(nd, all);
 				memcpy(dst, all, sizeof(int64) * w);
-				pfree(all);
+				sift_free(all);
 			}
 	}
 }
@@ -330,7 +330,7 @@ nd_f8(const CcNode *nd, double *dst)
 		nd_f8(nd->a, dst);
 	else if (nd->tag == SIFT_CCN_ALP)
 	{
-		uint32	   *dg = palloc(sizeof(uint32) * CC_CAP32(n));
+		uint32	   *dg = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 
 		nd_u32(nd->a, nd->dmin, dg);
 		if (nd->kind == SIFT_CC_F8)
@@ -339,7 +339,7 @@ nd_f8(const CcNode *nd, double *dst)
 			sift_cck->alp_f4(dst, dg, n, nd->dmin, sift_cc_p10f[nd->e]);
 		for (uint32 k = 0; k < nd->nexc; k++)
 			dst[nd->pos[k]] = sift_col_f8_from_key((int64) get64(nd->ekeys + 8 * (size_t) k));
-		pfree(dg);
+		sift_free(dg);
 	}
 	else
 	{

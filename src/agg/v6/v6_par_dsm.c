@@ -40,7 +40,7 @@ lay_out(const SiftV6ParShape *sh, SiftV6ParDsmHdr *h)
 	h->parts_off = at;
 	at = LINE(at + mul_size(sh->n_parts, sh->part_ref_bytes));
 	h->staged_dead_off = at;
-	at = LINE(at + mul_size(sh->n_staged_dead, sizeof(uint64)));
+	at = LINE(at + mul_size((Size) sh->n_children + 1 + sh->n_staged_dead, sizeof(uint64)));
 	h->morsel_off = at;
 	at = LINE(at + sift_morsel_size(sh->n_parts));
 	h->coord_off = at;
@@ -95,6 +95,7 @@ sift_v6_par_dsm_init(void *raw, dsm_segment *seg, const SiftV6ParShape *sh, cons
 	h->nworkers_planned = (uint16) sh->nworkers;
 	h->n_parts = sh->n_parts;
 	h->n_staged_dead = sh->n_staged_dead;
+	h->n_children = sh->n_children;
 	h->n_aggs = sh->n_aggs;
 	h->n_dist = sh->n_dist;
 	h->radix_nparts = sh->radix_nparts;

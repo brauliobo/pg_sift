@@ -76,7 +76,7 @@ RESET client_min_messages;
 CREATE SCHEMA s4;
 GRANT USAGE ON SCHEMA s4 TO PUBLIC;
 SET search_path = s4, public;
--- Guided work queue of the parallel scans (src/agg/par/morsel.c): the leader and 0, 1, 2, 4 and 8 workers take every granule of
+-- Guided work queue of the parallel scans (src/core/par/morsel.c): the leader and 0, 1, 2, 4 and 8 workers take every granule of
 -- parts whose sizes are as skewed as a Zipf law (half of the granules in one part, a quarter in the next, some parts empty)
 -- from one cursor. Every granule is visited exactly once, every claim lies in one part and has the guided length (the part is
 -- shared by all the participants, not given to one), and the claim that ends the list is one granule.
@@ -180,7 +180,7 @@ CREATE FUNCTION ti_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'SiftAggV6|Text Index' THEN r := r || btrim(l) || '; '; END IF;
+		IF l ~ 'SiftAggV6|Search' THEN r := r || btrim(l) || '; '; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

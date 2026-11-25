@@ -443,7 +443,7 @@ key_source(AggCtx *c, Node *val, SiftAggScope *sc)
 		sc->nkeys = elem == type ? 1 : IsA(val, ArrayExpr) ? list_length(((ArrayExpr *) val)->elements) : IsA(val, Const) ? ArrayGetNItems(ARR_NDIM(DatumGetArrayTypeP(((Const *) val)->constvalue)),
 					ARR_DIMS(DatumGetArrayTypeP(((Const *) val)->constvalue))) : SCOPE_PARAM_KEYS;
 	}
-	else if (IsA(val, Param) && ((Param *) val)->paramkind == PARAM_EXEC && initplan_ok(c, (Param *) val))
+	else if (IsA(val, Param) && ((Param *) val)->paramkind == PARAM_EXEC && initplan_ok(c->root, (Param *) val))
 	{
 		sc->nkeys = elem == type ? 1 : initplan_rows(c, (Param *) val);
 		sc->param = (Node *) initplan_param(c, (Param *) val);

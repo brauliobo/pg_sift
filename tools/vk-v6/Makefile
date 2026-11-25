@@ -38,7 +38,7 @@ PGLIB    := -L$(shell pg_config --libdir)
 SRC       = $(WTI)/src
 CCFLAGS   = -std=gnu11 -O2 -g $(SIFT_BASE_ISA) -ffp-contract=off -w -I$(SRC) -I$(WTI)/tools/kernels -I$(PGINC) $(SIFT_PGCPP) -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD $(SANFLAGS)
 CODEC     = col/codec/codec.c col/codec/filter.c col/codec/get.c col/codec_policy.c col/codec_write.c col/codec_parse.c col/codec_blob.c col/codec_cold.c col/codec_kern.c \
-            col/codec_avx2.c col/codec_avx512.c col/codec_neon.c col/compress.c bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/kernels_neon.c \
+            col/codec_avx2.c col/codec_avx512.c col/codec_neon.c col/compress.c core/par/arena.c bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/kernels_neon.c \
             bm25/analyze.c bm25/analyze_config.c bm25/analyze_stem.c col/v1/kern.c col/v1/kern_avx2.c col/v1/kern_avx512.c col/v1/kern_neon.c \
             bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c bm25/bitmap_neon.c
 CODECOBJ  = $(patsubst %.c,$(OUT)/codec/%.o,$(CODEC)) $(OUT)/codec/shim.o $(OUT)/codec/ccshim.o $(OUT)/codec/pgshim.o

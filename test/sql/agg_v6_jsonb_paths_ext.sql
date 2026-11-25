@@ -1,0 +1,137 @@
+-- jsonb arrays of objects as the elements of an unnest in SiftAggV6 (src/agg/v6/v6_unnest_*.c, src/col/f2/f2_v6_unnest_run.c): tests of one element joined by OR, EXISTS over the elements of an array,
+-- group keys and arguments that are PostgreSQL expressions, and arrays that are a key of the document an index expression holds (doc_expr(doc) -> 'parts', its text columns held as astext) with a lookup
+-- join keyed by columns of the fact table and of the elements. Documents the leaves cannot hold (a number or an object where text is declared, a string where an int is, NULL members, missing keys, a
+-- missing or empty array, SQL NULL) are in the data and are decided from the heap. Every statement runs over the index and over a heap twin (the truth): the first word says they agree, the second
+-- whether the plan is the node's; the traps keep the normal plan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+	IF current_setting('sift.agg_force', true) IS NOT NULL THEN
+		PERFORM set_config('sift.agg_force', 'on', false);
+	END IF;
+END $$;
+
+CREATE FUNCTION pe_norm(d jsonb) RETURNS jsonb LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$ BEGIN RETURN d; END $$;
+
+CREATE TABLE ud (id int PRIMARY KEY, typ text);
+INSERT INTO ud SELECT i, 't' || (i % 3) FROM generate_series(1, 7) i;
+CREATE TABLE um (entity_type text, category text, val text, derived text);
+INSERT INTO um SELECT 't' || t, c, v, 'd' || ((t + length(c) + length(v)) % 4)
+FROM generate_series(0, 2) t, unnest(ARRAY['Toys', 'Books', 'Food', '5']) c, unnest(ARRAY['a', 'b', 'true']) v;
+
+CREATE TABLE uh (id int, grp int, dim_id int, items jsonb, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO uh
+SELECT i, i % 7, i % 7 + 1,
+	CASE i % 12
+		WHEN 0 THEN NULL
+		WHEN 1 THEN '[]'
+		WHEN 3 THEN '[{"category": 5, "kind": "gift", "qty": 3, "price": 2}]'
+		WHEN 4 THEN '[{"category": "Toys", "kind": "standard", "qty": "7", "price": 9.5}]'
+		WHEN 5 THEN '[{"category": null, "kind": "gift"}, {"qty": 4}, {}]'
+		WHEN 6 THEN '[{"category": {"a": 1}, "kind": "x", "qty": 1, "price": 1}]'
+		ELSE jsonb_build_array(
+			jsonb_build_object('category', (ARRAY['Toys', 'Books', 'Food', 'Games', 'Tools'])[i % 5 + 1], 'kind', (ARRAY['standard', 'gift', 'express', 'bulk'])[i % 4 + 1], 'qty', i % 9, 'price', (i % 50) * 1.5),
+			jsonb_build_object('category', (ARRAY['Books', 'Toys', 'Tools', 'Food', 'Games'])[i % 5 + 1], 'kind', (ARRAY['bulk', 'express', 'gift', 'standard'])[i % 4 + 1], 'qty', i % 5, 'price', (i % 20) * 2.25))
+	END,
+	CASE
+		WHEN i % 17 = 0 THEN NULL
+		WHEN i % 13 = 0 THEN '{"lang": "en"}'
+		WHEN i % 11 = 0 THEN '{"lang": "fr", "parts": []}'
+		WHEN i % 29 = 0 THEN '{"lang": "es", "parts": [{"category": "Toys", "val": "a", "dir_a": {"k": 1}, "score": 1}]}'
+		WHEN i % 19 = 0 THEN '{"lang": "de", "parts": [{"category": 5, "val": "a", "dir_a": "up", "score": 1}, {"category": "Toys", "val": true, "dir_a": "dn", "score": 2.5}]}'
+		ELSE jsonb_build_object('lang', 'en', 'parts', jsonb_build_array(
+			jsonb_build_object('category', (ARRAY['Toys', 'Books', 'Food', '5'])[i % 4 + 1], 'val', (ARRAY['a', 'b', 'true'])[i % 3 + 1], 'dir_a', (ARRAY['up', 'dn'])[i % 2 + 1], 'score', i % 10 / 2.0),
+			jsonb_build_object('category', (ARRAY['Food', 'Toys', '5', 'Books'])[i % 4 + 1], 'val', (ARRAY['b', 'true', 'a'])[i % 3 + 1], 'dir_a', (ARRAY['dn', 'up', 'up'])[i % 3 + 1], 'score', i % 7 / 2.0)))
+	END
+FROM generate_series(1, 3000) i;
+ALTER TABLE uh ADD PRIMARY KEY (id);
+CREATE TABLE uc (LIKE uh INCLUDING INDEXES);
+INSERT INTO uc SELECT * FROM uh;
+CREATE INDEX uc_col ON uc USING sift_col (id, grp, dim_id, items, pe_norm(doc))
+	WITH (paths = 'items[]{category text, kind text, qty int4, price float8}, pe_norm.lang astext, pe_norm.parts[]{category astext, val astext, dir_a astext, score float8}');
+VACUUM (FREEZE, ANALYZE) uh;
+VACUUM (FREEZE, ANALYZE) uc;
+ANALYZE ud;
+ANALYZE um;
+
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; line text; node boolean := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'uc') LOOP node := node OR line LIKE '%SiftAgg%'; END LOOP;
+	EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', 'uc')) INTO a;
+	EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', 'uh')) INTO b;
+	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN node THEN 'node' ELSE 'normal' END) || ' ' || q;
+END $$;
+
+-- tests of one element joined by OR: IN and =, NULL tests, three arms, beside a test the arms do not share, with one key and two; NOT of an OR is the AND of the complements
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT i.category, i.kind, count(*), sum(i.qty), min(i.price), max(i.price) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE i.kind IN (''standard'', ''gift'') OR i.category = ''Toys'' GROUP BY i.category, i.kind',
+	'SELECT i.kind, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE i.category = ''Toys'' OR i.category IS NULL GROUP BY 1',
+	'SELECT i.category, count(*), sum(i.price) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE i.qty > 6 OR i.kind = ''gift'' OR i.price < 3 GROUP BY 1',
+	'SELECT o.grp, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE (i.kind = ''gift'' OR i.category = ''Food'') AND o.grp < 5 GROUP BY 1',
+	'SELECT i.kind, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE i.kind = ''gift'' OR i.kind = ''bulk'' OR i.kind IS NULL GROUP BY 1',
+	'SELECT count(*), sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE i.kind <> ''gift'' OR i.qty IS NULL',
+	'SELECT i.category, count(*) FROM @T o LEFT JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) ON true WHERE o.grp = 1 GROUP BY 1',
+	'SELECT i.kind, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE NOT (i.kind = ''gift'' OR i.qty > 6) GROUP BY 1'
+]) q;
+
+-- EXISTS over the elements of an array: the tests on the same element, with other tests of the table, an element test of ORs, with no element test, the array of an index expression and a key of it
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT o.grp, count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text, price float8) WHERE i.category = ''Toys'' AND i.kind = ''standard'' AND i.price > 10) GROUP BY 1',
+	'SELECT count(*), sum(o.id) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text, price float8) WHERE i.category = ''Books'' AND i.kind = ''gift'')',
+	'SELECT o.grp, count(*) FROM @T o WHERE o.id > 300 AND o.grp <> 3 AND EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = ''express'') GROUP BY 1',
+	'SELECT count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE i.kind = ''gift'' OR i.category = ''Food'')',
+	'SELECT count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text, qty int))',
+	'SELECT o.grp % 3 AS g, count(*) AS n, sum(o.id) AS ids FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, dir_a text) WHERE p.dir_a = ''up'') GROUP BY 1',
+	'SELECT o.dim_id, count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, val text, dir_a text) WHERE p.category = ''Toys'' AND p.val = ''a'') GROUP BY 1',
+	'SELECT count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, val text, dir_a text) WHERE p.category = ''5'')',
+	'SELECT count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(score float8) WHERE p.score >= 3)'
+]) q;
+
+-- group keys and arguments that are PostgreSQL expressions, of the table's columns and of the elements
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT o.grp % 3 AS g, i.kind, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY 1, 2',
+	'SELECT CASE WHEN o.grp < 3 THEN ''low'' ELSE ''high'' END AS band, sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY 1',
+	'SELECT lower(i.category) AS c, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY 1',
+	'SELECT coalesce(i.kind, ''?'') || ''/'' || o.grp AS k, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY 1',
+	'SELECT i.qty % 4 AS q, count(*), sum(i.price) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE i.kind = ''gift'' OR i.qty > 5 GROUP BY 1',
+	'SELECT i.kind, sum(o.id % 10) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY 1',
+	'SELECT o.grp % 2 AS g, count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = ''gift'') GROUP BY 1'
+]) q;
+
+-- the elements of a key of the document an index expression holds, as text columns held as astext, and a lookup join keyed by columns of the table, of its dimension and of the elements
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT p.dir_a, count(*), sum(p.score) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, val text, dir_a text, score float8) GROUP BY 1',
+	'SELECT p.category, p.val, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, val text, dir_a text, score float8) WHERE p.dir_a = ''up'' OR p.score > 2 GROUP BY 1, 2',
+	'SELECT o.grp, count(*) FROM @T o LEFT JOIN LATERAL jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, val text) ON true GROUP BY 1',
+	'SELECT sm.derived, count(*) FROM @T r JOIN ud d ON d.id = r.dim_id CROSS JOIN LATERAL jsonb_to_recordset(pe_norm(r.doc) -> ''parts'') AS p(category text, val text) LEFT JOIN um sm ON sm.entity_type = d.typ AND sm.category = p.category AND sm.val = p.val GROUP BY 1',
+	'SELECT d.typ, sm.derived, count(*), sum(r.id) FROM @T r JOIN ud d ON d.id = r.dim_id CROSS JOIN LATERAL jsonb_to_recordset(pe_norm(r.doc) -> ''parts'') AS p(category text, val text, dir_a text) JOIN um sm ON sm.entity_type = d.typ AND sm.category = p.category AND sm.val = p.val WHERE p.dir_a = ''up'' GROUP BY 1, 2',
+	'SELECT sm.derived, count(*) FROM @T r CROSS JOIN LATERAL jsonb_to_recordset(r.items) AS i(category text, kind text) LEFT JOIN um sm ON sm.entity_type = ''t1'' AND sm.category = i.category AND sm.val = ''a'' GROUP BY 1'
+]) q;
+
+-- per-item arms: the keys are the primary key of the table with the columns it fixes (the plan leaves these out of its group list) and an element column, and the aggregates are those of a CASE that
+-- the scan cannot decide as a filter: the sum and the average of the same cast, and of two tests
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT o.id, o.dim_id, p.category, avg(p.score) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, score float8) GROUP BY o.id, o.dim_id, p.category',
+	'SELECT o.id, o.grp, o.dim_id, count(*), sum(p.score) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, score float8) GROUP BY o.id, o.grp, o.dim_id',
+	'SELECT o.id, p.category, avg(CASE WHEN p.val ~ ''^[ab]$'' THEN p.score * 2 END), sum(CASE WHEN p.val ~ ''^[ab]$'' THEN p.score * 2 END) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, val text, score float8) GROUP BY o.id, p.category',
+	'SELECT o.id, o.grp, sum(CASE WHEN p.score > 1 THEN p.score + 1 END), count(CASE WHEN p.score > 1 THEN p.score + 1 END), sum(CASE WHEN p.val = ''a'' THEN p.score END) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(val text, score float8) GROUP BY o.id, o.grp'
+]) q;
+
+-- traps: the plans and results of PostgreSQL's own (an EXISTS under OR, an AND among the arms of an OR)
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT count(*) FROM @T o WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = ''gift'')',
+	'SELECT count(*) FROM @T o WHERE o.grp = 1 OR EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = ''gift'')',
+	'SELECT count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = ''gift'') AND EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.category = ''Toys'')',
+	'SELECT i.kind, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE (i.kind = ''gift'' AND i.qty > 2) OR i.category = ''Food'' GROUP BY 1'
+]) q;
+
+DROP FUNCTION same(text);
+DROP TABLE uc, uh, ud, um;
+DROP FUNCTION pe_norm(jsonb);
+DROP EXTENSION pg_sift;

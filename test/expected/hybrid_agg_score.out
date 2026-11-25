@@ -60,7 +60,7 @@ SELECT name, sc_node(q) AS node, (sc_same(q)).* FROM sc_q ORDER BY name;
  no_hits    | none                       |    0 |    0
  or_terms   | SiftHybridAgg B            |   20 |    0
  range      | SiftHybridAgg B (adaptive) |    5 |    0
- structured | none                       |    3 |    0
+ structured | SiftHybridAgg B (adaptive) |    3 |    0
  ungrouped  | SiftHybridAgg B            |    1 |    0
 (7 rows)
 
@@ -108,9 +108,9 @@ SELECT (sc_same('SELECT category, count(*) FROM sc_docs WHERE sift.score(ctid) >
 (1 row)
 
 SELECT sc_node('SELECT category, avg(sift.score(ctid)) FILTER (WHERE amount > 10) FROM sc_docs WHERE body @@> ''common'' GROUP BY category') AS filtered;
- filtered 
-----------
- none
+    filtered     
+-----------------
+ SiftHybridAgg B
 (1 row)
 
 SELECT sc_node('SELECT category, max(sift.score(ctid)), count(DISTINCT sift.score(ctid)) FROM sc_docs WHERE body @@> ''common'' GROUP BY category') AS count_distinct;

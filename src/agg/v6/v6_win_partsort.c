@@ -6,7 +6,9 @@
 
 #include <math.h>
 
+#include "agg/v6/v6_batch.h"
 #include "agg/v6/v6_win_partsort.h"
+#include "agg/v6/v6_win_spill.h"
 
 #define PS_CHUNK	65536
 
@@ -15,7 +17,7 @@ typedef struct PsCol
 	SiftVecType type;
 	size_t		esz;
 	char	   *data;
-	uint8	   *valid;
+	uint8	   *valid;			/* of each row: SIFT_CELL_STATE_* */
 } PsCol;
 
 typedef struct PsChunk
@@ -41,6 +43,10 @@ typedef struct PartSort
 	uint32		cap;
 	uint64		bytes;
 	PsChunk    *chunks;
+	SiftWinSpill *sp;			/* the partition read is more than max_bytes: its rows are here, and one (the first) is held */
+	MemoryContext bcx;			/* what a batch of the spill points to */
+	uint8		ostate[SIFT_V6_MAX_COLS][SIFT_VEC_LEN];
+	int64		speer[SIFT_WIN_MAX_KEYS][SIFT_VEC_LEN];
 	uint32	   *perm;
 	int64	   *peer[SIFT_WIN_MAX_KEYS];
 	uint32		opos;
@@ -48,11 +54,12 @@ typedef struct PartSort
 	SiftVec		ovec[SIFT_V6_MAX_COLS + 1 + SIFT_WIN_MAX_KEYS];
 	char	   *obuf[SIFT_V6_MAX_COLS + 1 + SIFT_WIN_MAX_KEYS];
 	uint64		ovalid[SIFT_V6_MAX_COLS + 1 + SIFT_WIN_MAX_KEYS][SIFT_VEC_WORDS];
+	uint64		onan[SIFT_V6_MAX_COLS + 1 + SIFT_WIN_MAX_KEYS][SIFT_VEC_WORDS];
 	uint64		otag[SIFT_VEC_LEN];
 } PartSort;
 
-static size_t
-elem_size(SiftVecType t)
+size_t
+sift_win_ps_elem_size(SiftVecType t)
 {
 	switch (t)
 	{
@@ -101,12 +108,6 @@ f8_cmp(double a, double b)
 	return a < b ? -1 : a > b;
 }
 
-static inline bool
-cell_valid(const PsCol *c, uint32 i)
-{
-	return c->valid[i] != 0;
-}
-
 /* the order of the cells i and j of a column: the values only, both valid */
 static int
 cell_cmp(const PsCol *c, uint32 i, uint32 j)
@@ -148,13 +149,13 @@ static int
 key_cmp(const PartSort *ps, const SiftWinPsKey *k, uint32 i, uint32 j)
 {
 	const PsCol *c = &ps->col[k->slot];
-	const bool	in = !cell_valid(c, i),
-				jn = !cell_valid(c, j);
+	const uint8	si = c->valid[i],
+				sj = c->valid[j];
 	int			r;
 
-	if (in || jn)
-		return in == jn ? 0 : (in == k->nulls_first ? -1 : 1);
-	r = cell_cmp(c, i, j);
+	if (si == SIFT_CELL_STATE_NULL || sj == SIFT_CELL_STATE_NULL)
+		return si == sj ? 0 : ((si == SIFT_CELL_STATE_NULL) == k->nulls_first ? -1 : 1);
+	r = si != sj ? (si == SIFT_CELL_STATE_NAN ? 1 : -1) : si == SIFT_CELL_STATE_NAN ? 0 : cell_cmp(c, i, j);
 	return k->desc ? -r : r;
 }
 
@@ -216,21 +217,22 @@ arena_copy(PartSort *ps, const char *p, uint32 len)
 }
 
 static void
-release_chunks(PartSort *ps)
+free_chunks(PsChunk *ch)
 {
-	while (ps->chunks != NULL)
+	while (ch != NULL)
 	{
-		PsChunk    *next = ps->chunks->next;
+		PsChunk    *next = ch->next;
 
-		pfree(ps->chunks);
-		ps->chunks = next;
+		pfree(ch);
+		ch = next;
 	}
 }
 
-static inline bool
-batch_valid(const SiftVec *v, uint32 r)
+static void
+release_chunks(PartSort *ps)
 {
-	return v->all_valid || ((v->valid[r >> 6] >> (r & 63)) & 1);
+	free_chunks(ps->chunks);
+	ps->chunks = NULL;
 }
 
 static inline bool
@@ -247,12 +249,11 @@ same_partition(const PartSort *ps, uint32 r)
 	{
 		const SiftVec *v = &ps->ib.col[ps->spec.part_slot[k]];
 		const PsCol *c = &ps->col[ps->spec.part_slot[k]];
-		const bool	vn = !batch_valid(v, r),
-					hn = !cell_valid(c, 0);
+		const uint8	state = sift_vec_state_at(v, r);
 
-		if (vn != hn)
+		if (state != c->valid[0])
 			return false;
-		if (vn)
+		if (state != SIFT_CELL_STATE_VALUE)
 			continue;
 		switch (v->type)
 		{
@@ -282,20 +283,96 @@ same_partition(const PartSort *ps, uint32 r)
 }
 
 static void
+put_batch_row(PartSort *ps, uint32 r)
+{
+	uint8		state[SIFT_V6_MAX_COLS];
+	const char *cell[SIFT_V6_MAX_COLS];
+
+	for (int c = 0; c < ps->spec.ncols; c++)
+	{
+		state[c] = sift_vec_state_at(&ps->ib.col[c], r);
+		cell[c] = (const char *) ps->ib.col[c].data + (size_t) r * ps->col[c].esz;
+	}
+	sift_win_spill_put(ps->sp, ps->ib.tag != NULL ? ps->ib.tag[r] : 0, state, cell);
+}
+
+static void
+put_held_row(PartSort *ps, uint32 i)
+{
+	uint8		state[SIFT_V6_MAX_COLS];
+	const char *cell[SIFT_V6_MAX_COLS];
+
+	for (int c = 0; c < ps->spec.ncols; c++)
+	{
+		state[c] = ps->col[c].valid[i];
+		cell[c] = ps->col[c].data + (size_t) i * ps->col[c].esz;
+	}
+	sift_win_spill_put(ps->sp, ps->tag[i], state, cell);
+}
+
+/* the rows taken stay, in their order, and the strings of the others are freed */
+static void
+retain(PartSort *ps, const uint8 *take)
+{
+	PsChunk    *old = ps->chunks;
+	const uint32 before = ps->n;
+	uint32		o = 0;
+
+	ps->chunks = NULL;
+	for (uint32 i = 0; i < before; i++)
+	{
+		if (!take[i])
+			continue;
+		for (int c = 0; c < ps->spec.ncols; c++)
+		{
+			PsCol	   *pc = &ps->col[c];
+
+			memmove(pc->data + o * pc->esz, pc->data + i * pc->esz, pc->esz);
+			pc->valid[o] = pc->valid[i];
+			if (pc->type == SVEC_STRVIEW && pc->valid[o] == SIFT_CELL_STATE_VALUE && ((SiftStrView *) pc->data)[o].len > 12)
+				((SiftStrView *) pc->data)[o].u.ptr = arena_copy(ps, ((SiftStrView *) pc->data)[o].u.ptr, ((SiftStrView *) pc->data)[o].len);
+		}
+		ps->tag[o++] = ps->tag[i];
+	}
+	free_chunks(old);
+	ps->bytes = ps->bytes / before * o;
+	ps->n = o;
+}
+
+/* the partition is more than max_bytes: its rows go to the sort, of which the first row stays for same_partition() */
+static void
+start_spill(PartSort *ps)
+{
+	uint8	   *take = MemoryContextAllocZero(ps->cx, ps->n);
+
+	ps->sp = sift_win_spill_begin(ps->cx, &ps->spec, ps->spec.max_bytes);
+	for (uint32 i = 0; i < ps->n; i++)
+		put_held_row(ps, i);
+	take[0] = 1;
+	retain(ps, take);
+	pfree(take);
+}
+
+static void
 add_row(PartSort *ps, uint32 r)
 {
 	const uint32 i = ps->n;
 
+	if (ps->sp != NULL)
+	{
+		put_batch_row(ps, r);
+		return;
+	}
 	grow(ps, i + 1);
 	for (int c = 0; c < ps->spec.ncols; c++)
 	{
 		const SiftVec *v = &ps->ib.col[c];
 		PsCol	   *pc = &ps->col[c];
-		const bool	valid = batch_valid(v, r);
+		const uint8	state = sift_vec_state_at(v, r);
 
-		pc->valid[i] = valid;
+		pc->valid[i] = state;
 		memset(pc->data + i * pc->esz, 0, pc->esz);
-		if (!valid)
+		if (state != SIFT_CELL_STATE_VALUE)
 			continue;
 		memcpy(pc->data + i * pc->esz, (const char *) v->data + (size_t) r * pc->esz, pc->esz);
 		if (pc->type == SVEC_STRVIEW)
@@ -312,8 +389,7 @@ add_row(PartSort *ps, uint32 r)
 	ps->bytes += sizeof(uint64) + sizeof(uint32) + sizeof(int64) * ps->spec.n_ord;
 	ps->n++;
 	if (ps->bytes > ps->spec.max_bytes && (ps->spec.keep == 0 || ps->n < 2 * ps->spec.keep + 2))
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("window: a partition of more than %llu bytes", (unsigned long long) ps->spec.max_bytes),
-						errhint("Raise work_mem, or order the window by the columns of the index.")));
+		start_spill(ps);
 }
 
 static void
@@ -329,29 +405,12 @@ sort_rows(PartSort *ps)
 static void
 compact(PartSort *ps)
 {
-	uint32		kept = (uint32) ps->spec.keep;
 	uint8	   *take = MemoryContextAllocZero(ps->cx, ps->n);
-	uint32		o = 0;
-	const uint32 before = ps->n;
 
 	sort_rows(ps);
-	for (uint32 i = 0; i < kept; i++)
+	for (uint32 i = 0; i < (uint32) ps->spec.keep; i++)
 		take[ps->perm[i]] = 1;
-	for (uint32 i = 0; i < ps->n; i++)
-	{
-		if (!take[i])
-			continue;
-		for (int c = 0; c < ps->spec.ncols; c++)
-		{
-			PsCol	   *pc = &ps->col[c];
-
-			memmove(pc->data + o * pc->esz, pc->data + i * pc->esz, pc->esz);
-			pc->valid[o] = pc->valid[i];
-		}
-		ps->tag[o++] = ps->tag[i];
-	}
-	ps->n = o;
-	ps->bytes = ps->bytes / before * o;
+	retain(ps, take);
 	pfree(take);
 }
 
@@ -409,10 +468,9 @@ peers_of(PartSort *ps)
 				const PsCol *c = &ps->col[key->slot];
 				const uint32 a = ps->perm[i - 1],
 							b = ps->perm[i];
-				const bool	an = !cell_valid(c, a),
-							bn = !cell_valid(c, b);
+				const uint8	sa = c->valid[a];
 
-				if (an != bn || (!an && cell_cmp(c, a, b) != 0))
+				if (sa != c->valid[b] || (sa == SIFT_CELL_STATE_VALUE && cell_cmp(c, a, b) != 0))
 					no++;
 			}
 			ps->peer[k][i] = no;
@@ -421,31 +479,108 @@ peers_of(PartSort *ps)
 }
 
 static void
+seal_column(PartSort *ps, int c, uint16 m)
+{
+	uint64	   *valid = ps->ovalid[c];
+	bool		has_nan = false;
+
+	memset(valid, 0, sizeof(ps->ovalid[c]));
+	memset(ps->onan[c], 0, sizeof(ps->onan[c]));
+	for (uint16 i = 0; i < m; i++)
+	{
+		sift_vec_state_put(valid, ps->onan[c], i, ps->ostate[c][i]);
+		has_nan |= ps->ostate[c][i] == SIFT_CELL_STATE_NAN;
+	}
+	ps->ovec[c] = (SiftVec) {.data = ps->obuf[c],.valid = valid,.nan = has_nan ? ps->onan[c] : NULL,.len = m,.all_valid = false,.dense = true,.type = ps->col[c].type,.scale = ps->spec.scale[c]};
+}
+
+static void
 gather_column(PartSort *ps, int c, uint32 from, uint16 m)
 {
 	const PsCol *pc = &ps->col[c];
-	char	   *out = ps->obuf[c];
-	uint64	   *valid = ps->ovalid[c];
 
-	memset(valid, 0, sizeof(ps->ovalid[c]));
 	for (uint16 i = 0; i < m; i++)
 	{
 		const uint32 row = ps->perm[from + i];
 
-		memcpy(out + (size_t) i * pc->esz, pc->data + (size_t) row * pc->esz, pc->esz);
-		valid[i >> 6] |= (uint64) (pc->valid[row] != 0) << (i & 63);
+		memcpy(ps->obuf[c] + (size_t) i * pc->esz, pc->data + (size_t) row * pc->esz, pc->esz);
+		ps->ostate[c][i] = pc->valid[row];
 	}
-	ps->ovec[c] = (SiftVec) {.data = out,.valid = valid,.len = m,.all_valid = false,.dense = true,.type = pc->type,.scale = ps->spec.scale[c]};
+	seal_column(ps, c, m);
 }
 
+/* the numbers of the partition (peers: NULL) or of the changes of an order key, of the m rows of a batch */
 static void
-synthetic_column(PartSort *ps, int slot, uint32 from, uint16 m, int k)
+synthetic_column(PartSort *ps, int slot, uint16 m, const int64 *peers)
 {
 	int64	   *out = (int64 *) ps->obuf[slot];
 
 	for (uint16 i = 0; i < m; i++)
-		out[i] = k < 0 ? ps->part_no : ps->peer[k][from + i];
+		out[i] = peers == NULL ? ps->part_no : peers[i];
 	ps->ovec[slot] = (SiftVec) {.data = out,.valid = NULL,.len = m,.all_valid = true,.dense = true,.type = SVEC_I64};
+}
+
+static uint16
+memory_batch(PartSort *ps)
+{
+	const uint16 m = (uint16) Min(SIFT_VEC_LEN, ps->n - ps->opos);
+
+	for (int c = 0; c < ps->spec.ncols; c++)
+		gather_column(ps, c, ps->opos, m);
+	for (int k = 0; k < ps->spec.n_ord; k++)
+		synthetic_column(ps, sift_win_ps_peer_slot(&ps->spec, k), m, ps->peer[k] + ps->opos);
+	for (uint16 i = 0; i < m; i++)
+		ps->otag[i] = ps->tag[ps->perm[ps->opos + i]];
+	ps->opos += m;
+	return m;
+}
+
+static uint16
+spill_batch(PartSort *ps)
+{
+	SiftWinSpillOut o = {.cx = ps->bcx,.tag = ps->otag};
+	uint16		m;
+
+	MemoryContextReset(ps->bcx);
+	for (int c = 0; c < ps->spec.ncols; c++)
+	{
+		o.col[c] = ps->obuf[c];
+		o.state[c] = ps->ostate[c];
+	}
+	for (int k = 0; k < ps->spec.n_ord; k++)
+		o.peer[k] = ps->speer[k];
+	m = sift_win_spill_read(ps->sp, SIFT_VEC_LEN, &o);
+	for (int c = 0; c < ps->spec.ncols; c++)
+		seal_column(ps, c, m);
+	for (int k = 0; k < ps->spec.n_ord; k++)
+		synthetic_column(ps, sift_win_ps_peer_slot(&ps->spec, k), m, ps->speer[k]);
+	return m;
+}
+
+static void
+end_spill(PartSort *ps)
+{
+	sift_win_spill_end(ps->sp);
+	ps->sp = NULL;
+	ps->n = 0;
+	ps->opos = 0;
+}
+
+static bool
+next_partition(PartSort *ps)
+{
+	if (!fill_partition(ps))
+		return false;
+	if (ps->sp != NULL)
+		sift_win_spill_sort(ps->sp);
+	else
+	{
+		sort_rows(ps);
+		peers_of(ps);
+	}
+	ps->part_no++;
+	ps->opos = 0;
+	return true;
 }
 
 static bool
@@ -454,25 +589,25 @@ ps_next(SiftV6Source *s, SiftV6Batch *out)
 	PartSort   *ps = (PartSort *) s;
 	uint16		m;
 
-	if (ps->opos >= ps->n)
+	for (;;)
 	{
-		if (!fill_partition(ps))
+		if (ps->sp != NULL)
+		{
+			m = spill_batch(ps);
+			if (m > 0)
+				break;
+			end_spill(ps);
+		}
+		else if (ps->opos < ps->n)
+		{
+			m = memory_batch(ps);
+			break;
+		}
+		if (!next_partition(ps))
 			return false;
-		sort_rows(ps);
-		peers_of(ps);
-		ps->part_no++;
-		ps->opos = 0;
 	}
-	m = (uint16) Min(SIFT_VEC_LEN, ps->n - ps->opos);
-	for (int c = 0; c < ps->spec.ncols; c++)
-		gather_column(ps, c, ps->opos, m);
-	synthetic_column(ps, sift_win_ps_part_slot(&ps->spec), ps->opos, m, -1);
-	for (int k = 0; k < ps->spec.n_ord; k++)
-		synthetic_column(ps, sift_win_ps_peer_slot(&ps->spec, k), ps->opos, m, k);
-	for (uint16 i = 0; i < m; i++)
-		ps->otag[i] = ps->tag[ps->perm[ps->opos + i]];
+	synthetic_column(ps, sift_win_ps_part_slot(&ps->spec), m, NULL);
 	*out = (SiftV6Batch) {.n = m,.col = ps->ovec,.masks = NULL,.mask = NULL,.tag = ps->otag};
-	ps->opos += m;
 	return true;
 }
 
@@ -490,6 +625,9 @@ ps_close(SiftV6Source *s)
 	PartSort   *ps = (PartSort *) s;
 
 	ps->in->close(ps->in);
+	if (ps->sp != NULL)
+		sift_win_spill_end(ps->sp);
+	MemoryContextDelete(ps->bcx);
 	release_chunks(ps);
 	if (ps->cap > 0)
 	{
@@ -517,10 +655,11 @@ sift_win_partsort_open(MemoryContext cx, SiftV6Source *in, const SiftWinPsSpec *
 	ps->in = in;
 	ps->cx = cx;
 	ps->spec = *spec;
+	ps->bcx = AllocSetContextCreate(cx, "sift window spill batch", ALLOCSET_SMALL_SIZES);
 	for (int c = 0; c < spec->ncols; c++)
 	{
 		SIFT_INVARIANT(sift_win_ps_type_ok(spec->type[c]), "window: a column of a type the partition sort does not hold");
-		ps->col[c] = (PsCol) {.type = spec->type[c],.esz = elem_size(spec->type[c])};
+		ps->col[c] = (PsCol) {.type = spec->type[c],.esz = sift_win_ps_elem_size(spec->type[c])};
 	}
 	for (int i = 0; i < spec->ncols + 1 + spec->n_ord; i++)
 	{

@@ -38,7 +38,7 @@ BEGIN
 	EXECUTE 'CREATE TEMP TABLE cs_b AS SELECT row_to_json(x)::text AS r FROM (' || q || ') x' USING arg;
 	SELECT count(*) INTO n FROM ((SELECT r FROM cs_a EXCEPT ALL SELECT r FROM cs_b) UNION ALL (SELECT r FROM cs_b EXCEPT ALL SELECT r FROM cs_a)) d;
 	res := CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END;
-	RETURN res || CASE WHEN plan ~ 'Custom Scan \(SiftAgg\)' THEN CASE WHEN plan ~ 'Search: ' THEN '+search' ELSE '+agg' END ELSE '' END ||
+	RETURN res || CASE WHEN plan ~ 'Custom Scan \(SiftAgg' THEN CASE WHEN plan ~ 'Search: ' THEN '+search' ELSE '+agg' END ELSE '' END ||
 		' ' || (SELECT count(*) FROM cs_b);
 END $$;
 

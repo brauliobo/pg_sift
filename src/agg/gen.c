@@ -362,7 +362,7 @@ gen_leaf_value(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 i, bool *isnull
 		case SCV_I32:
 			return leaf_datum(l->typid, ((const int32 *) v->data)[i]);
 		case SCV_I64:
-			if (l->typid == NUMERICOID && v->ovf && sift_colsrc_bit(v->ovf, i))
+			if (l->typid == NUMERICOID && v->ovf && sift_src_bit(v->ovf, i))
 				return scaled_numeric(SIFT_NX_NAN, 0);
 			if (l->typid == NUMERICOID)
 				return NumericGetDatum(int64_div_fast_to_numeric(((const int64 *) v->data)[i], l->scale));
@@ -378,7 +378,7 @@ gen_leaf_value(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 i, bool *isnull
 				const char *str = sift_srcdict_str(v->dict, code, &len, buf);
 
 				if (l->wide)
-					return sift_aggwide_datum(l->typid, str, len);
+					return sift_srcwide_datum(l->typid, str, len);
 				return PointerGetDatum(cstring_to_text_with_len(str, len));
 			}
 	}

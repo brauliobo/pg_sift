@@ -25,7 +25,7 @@
 		uint32		g = ex->gid[j]; \
 		Datum		d; \
 		\
-		if (id == 0 || (ok && !sift_colsrc_bit(ok, j))) \
+		if (id == 0 || (ok && !sift_src_bit(ok, j))) \
 			continue; \
 		d = val[id - 1]; \
 		if (acc->n[g] == 0 || !(a->kind == SAA_M_MIN ? LT(TYPE(acc->v[g]), TYPE(d)) : GT(TYPE(acc->v[g]), TYPE(d)))) \
@@ -80,7 +80,7 @@ mapped_sum(AggExec *ex, int ai, const uint64 *ok, int nsel)
 		uint32		id = combo_val(ex, a->combo, out[j], a->slot);
 		uint32		g = ex->gid[j];
 
-		if (id == 0 || (ok && !sift_colsrc_bit(ok, j)))
+		if (id == 0 || (ok && !sift_src_bit(ok, j)))
 			continue;
 		if (a->kind != SAA_M_PG)
 		{
@@ -143,7 +143,7 @@ mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 			if (ahead)
 				dset_prefetch(&ex->dset[ai], ex->gid[j + DSET_AHEAD], ahead);
 		}
-		if (id == 0 || (ok && !sift_colsrc_bit(ok, j)))
+		if (id == 0 || (ok && !sift_src_bit(ok, j)))
 			continue;
 		if (a->kind == SAA_M_COUNT || (dset_add(ex, &ex->dset[ai], ex->gid[j], id) && a->kind == SAA_M_DISTINCT))
 			acc->n[ex->gid[j]]++;
@@ -296,7 +296,7 @@ wide_sum_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 		Datum		x = (Datum) 0;
 		uint32		g = ex->gid[j];
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		c = codes[idx[j]];
 		if (recs)

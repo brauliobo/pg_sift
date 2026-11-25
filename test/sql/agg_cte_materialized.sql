@@ -35,7 +35,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', scan_on::text, true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		cte_scans := cte_scans + (l ~ 'CTE Scan on mapped_note_rows')::int;
-		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg%')::int;
 	END LOOP;
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	RETURN NEXT;

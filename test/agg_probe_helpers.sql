@@ -29,7 +29,7 @@ BEGIN
   pushed := false;
   direct := false;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
     direct := direct OR l ~ '[1-9][0-9]* child direct probes';
   END LOOP;
   DROP TABLE r_nat, r_child, r_dir;

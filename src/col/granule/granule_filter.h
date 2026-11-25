@@ -12,6 +12,7 @@
 #include "col/codec.h"
 #include "col/col.h"
 #include "col/granule/granule_int.h"
+#include "core/par/arena.h"
 
 typedef enum SiftCfiltResult
 {
@@ -103,6 +104,9 @@ typedef struct SiftCfiltPred
 /* Whether the predicate can run on a chunk as it is stored; false: the scan decodes the leaf for it */
 extern bool sift_cfilt_compile(SiftCfiltPred *cp, const SiftColDef *def, const SiftColPred *p);
 
+/* What the filters of strings keep of the strings they decode, for the view of the same granule (col/granule/cfilt_str_simd.h) */
+typedef struct SiftStrMemo SiftStrMemo;
+
 /* The rows of the granule that pass; out_mask: SIFT_GRANULE_ROWS / 64 words */
 #define SIFT_CFILT_WORDS		(SIFT_GRANULE_ROWS / 64)
 extern SiftCfiltResult sift_granule_filter_compressed(const SiftGranuleView *v, const SiftCfiltPred *cp, uint64 *out_mask);
@@ -112,5 +116,14 @@ extern SiftCfiltResult sift_granule_filter_compressed(const SiftGranuleView *v, 
  * pass), the bits of the others are not defined, and a chunk of strings decodes and tests the live rows only when they are few.
  */
 extern SiftCfiltResult sift_granule_filter_compressed_live(const SiftGranuleView *v, const SiftCfiltPred *cp, const uint64 *live, uint64 *out_mask);
+
+/* The same keeping the strings it decodes in memo (NULL: none): the memo of a worker, or the leader's one that sift_granule_filter_compressed_live finds */
+extern SiftCfiltResult sift_granule_filter_in(SiftStrMemo *memo, const SiftGranuleView *v, const SiftCfiltPred *cp, const uint64 *live, uint64 *out_mask);
+
+/*
+ * On a worker (core/par/arena.h): the sift_granule_filter_in of a granule whose live rows (NULL: all) are filtered into *res. false, with err filled: a damaged chunk or an arena that is full (the leader
+ * filters the granule); the arena holds what the memo keeps and is rewound by the caller.
+ */
+extern bool sift_granule_filter_compressed_live_a(SiftArena *a, SiftErr *err, SiftStrMemo *memo, const SiftGranuleView *v, const SiftCfiltPred *cp, const uint64 *live, uint64 *out_mask, SiftCfiltResult *res);
 
 #endif							/* SIFT_GRANULE_FILTER_H */

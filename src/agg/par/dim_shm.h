@@ -29,7 +29,7 @@
 #define SIFT_AGG_PAR_DIM_SHM_H
 
 #include "agg/kern6.h"
-#include "agg/par/morsel.h"
+#include "core/par/morsel.h"
 #include "agg/sip.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"

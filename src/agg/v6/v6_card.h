@@ -23,6 +23,7 @@ typedef struct SiftV6CardQuery
 	SiftCardPred preds[SIFT_CARD_MAX_PREDS];
 	uint64	   *vals;
 	uint32		nvals;
+	uint32		cap;			/* the values vals has room for */
 	SiftCardQuery q;
 	List	   *rest;
 } SiftV6CardQuery;
@@ -62,7 +63,10 @@ extern SiftV6AggPrice sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, cons
  */
 extern void sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, AttrNumber key, Cost *open, Cost *total);
 
+/* What the node pays to read a dimension whole: the price of its plan, less the page reads of the share of its pages the cache holds when a sequential scan takes the table */
+extern Cost sift_v6_dim_cost(const Path *child);
+
 /* The share of the granules the clauses leave of a relation that has no statistics of its own: a column that follows the order of the rows keeps the share of the rows, any other (Yao) nearly all */
-extern double sift_v6_clause_prune(PlannerInfo *root, const List *clauses);
+extern double sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att);
 
 #endif							/* SIFT_AGG_V6_CARD_H */

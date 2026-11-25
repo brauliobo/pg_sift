@@ -70,7 +70,7 @@ set_filter(AggExec *ex, Tup *t, const SiftAggPred *p)
 
 	eval_pred(ex, (SiftAggPred *) p, ex->qlevel, ex->cstart, ex->cn, pass);
 	for (int j = 0; j < t->n; j++)
-		if (sift_colsrc_bit(pass, t->sel[j]))
+		if (sift_src_bit(pass, t->sel[j]))
 			tup_move(ex, t, k++, j, ex->nj);
 	return k;
 }

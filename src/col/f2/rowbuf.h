@@ -34,11 +34,11 @@ typedef struct SiftPartSpec
 	const uint16 *sort_cols;
 	uint8		sort_flags[SIFT_KEY_ORDER_MAX];	/* of each sort column: SIFT_KEY_DESC, SIFT_KEY_NULLS_FIRST; none: ascending, NULLs last */
 	bool		preagg;
-	int			preagg_dim;
-	int			preagg_measure;
+	const struct SiftPreaggDecl *preagg_decl;	/* the cubes the user declared, NULL: chosen from the data */
 	const uint8 *hints;			/* per column the SiftChunkHint, NULL: all automatic */
 	const uint8 *scales;		/* per column the scale of SIFT_CHINT_NUM64 */
 	const bool *key_leaf;		/* per column: the leaf of a top-level key of a jsonb document, whose chunks keep on which rows the key exists (SiftColIn.key_leaf); NULL: none */
+	const bool *map_key;		/* per column: the `#key` leaf of a map (SiftRows.map_key); NULL: none */
 	int			time_col;		/* 1 + the integer column of the time stride index, 0: none */
 	int			time_cols[SIFT_MANIFEST_TIME_COLS];	/* 1 + the integer column of each time bound of the manifest (the date and timestamp columns, the key's first), 0: none */
 	int			compress_alg;	/* the wrap of the chunks of a part, 0: none */
@@ -154,6 +154,8 @@ typedef struct SiftColRemap
 	const int16 *phys;
 	const SiftCell *missing;
 	const int16 *num64_scale;
+	/* the part lacks leaves of the store that no row of it can give (the paths a table declared after the part was written): a part written from it names those leaves of its own as no column's (compact.c) */
+	bool		incomplete;
 } SiftColRemap;
 
 /* The same through a remap (NULL: the part has the columns of the spec); code_map is indexed by the current column */

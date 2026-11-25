@@ -111,6 +111,7 @@ typedef struct AggExec
 	MemoryContext tcxt;			/* the group table: keys, groups, aggregate states (reset by table_reset) */
 	Size		tfloor;			/* what the empty group table holds: the room the planner's estimate of the groups made */
 	MemoryContext ucxt;			/* one unit */
+	MemoryContext rcxt;			/* the datums of the group returned last (group_tuple): the next group resets it, as an executor node's per-tuple memory */
 	ExprContext *lutcx;
 	PgAgg	  **pgagg;			/* per aggregate: SAA_M_PG */
 	AggState   *pgstate;		/* the context the transition functions see, their states live in pgstate->curaggcontext's memory */

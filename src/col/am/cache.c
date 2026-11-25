@@ -519,8 +519,8 @@ sift_col_zones(Relation index, bool scope)
 	return leaf_cache_entry(index, NULL)->cls[scope].zones;
 }
 
-SiftColIndexMeta *
-sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
+static SiftColIndexMeta *
+index_meta_read(Relation index, SiftColLeafMemo *memo)
 {
 	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
 	SiftDirSnapshot *snap;
@@ -570,6 +570,46 @@ sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
 	}
 	pfree(snap);
 	return m;
+}
+
+typedef struct MetaMemo
+{
+	Oid			index;
+	SiftColIndexMeta *meta;
+	SiftColLeafMemo leaves;
+} MetaMemo;
+
+static HTAB *meta_memo;
+static uint64 meta_memo_plan;
+
+SiftColIndexMeta *
+sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
+{
+	uint64		plan;
+	MemoryContext cx = sift_col_plan_memo(&plan);
+	Oid			key = RelationGetRelid(index);
+	MemoryContext old;
+	MetaMemo   *e;
+	bool		found;
+
+	if (cx == NULL)
+		return index_meta_read(index, memo);
+	if (meta_memo_plan != plan || meta_memo == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(MetaMemo), .hcxt = cx};
+
+		meta_memo = hash_create("sift planning index meta", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		meta_memo_plan = plan;
+	}
+	e = hash_search(meta_memo, &key, HASH_ENTER, &found);
+	if (!found)
+	{
+		old = MemoryContextSwitchTo(cx);
+		e->meta = index_meta_read(index, &e->leaves);
+		MemoryContextSwitchTo(old);
+	}
+	*memo = e->leaves;
+	return e->meta;
 }
 
 bool

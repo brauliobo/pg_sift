@@ -68,7 +68,7 @@ CREATE FUNCTION scan_price(bound int, off int) RETURNS float8 LANGUAGE plpgsql A
 DECLARE line text; p float8;
 BEGIN
 	FOR line IN EXECUTE format('EXPLAIN SELECT id, amount FROM events WHERE x < %s ORDER BY ts, id LIMIT 100 OFFSET %s', bound, off) LOOP
-		IF line ~ 'Custom Scan \(SiftAgg\)' THEN p := substring(line from 'cost=[0-9.]+\.\.([0-9.]+)')::float8; END IF;
+		IF line ~ 'Custom Scan \(SiftAgg' THEN p := substring(line from 'cost=[0-9.]+\.\.([0-9.]+)')::float8; END IF;
 	END LOOP;
 	RETURN p;
 END $$;
@@ -123,7 +123,7 @@ BEGIN
 	startup := (j->0->'Plan'->>'Startup Cost')::float8;
 	sift := false;
 	FOR pl IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP
-		sift := sift OR pl LIKE '%Custom Scan (SiftAgg)%';
+		sift := sift OR pl LIKE '%Custom Scan (SiftAgg%';
 	END LOOP;
 END $$;
 

@@ -14,7 +14,7 @@ const char *
 sift_col_conn_proof(void *impl, int leaf, uint64 *lineage, uint32 *xmin, bool *clean)
 {
 	SiftConnStamp st;
-	const char *why = sift_col_source_proof(((ColSource *) impl)->cs, leaf, &st, clean);
+	const char *why = sift_col_source_proof(((ColSource *) impl)->rd.cs, leaf, &st, clean);
 
 	*lineage = st.lineage;
 	*xmin = st.xmin;

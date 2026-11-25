@@ -95,7 +95,7 @@ agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool *all)
 		eval_pred(ex, a->filter, ex->qlevel, start, n, fm);
 		ex->alive = NULL;
 		for (int j = 0; j < nsel; j++)
-			ex->okb[j] = sift_colsrc_bit(fm, ex->sel[j]);
+			ex->okb[j] = sift_src_bit(fm, ex->sel[j]);
 		any = true;
 	}
 	if (a->leaf >= 0)
@@ -139,7 +139,7 @@ eval_vx(AggExec *ex, SiftAggAgg *a, int nsel)
 							top[j] = ((const int32 *) v->data)[idx[j]];
 					else if (ex->lay->leaf[x->leaf].vtype == SCV_I64)	/* numeric: the integer over 10^scale, in c */
 						for (int j = 0; j < nsel; j++)
-							top[j] = v->ovf && sift_colsrc_bit(v->ovf, idx[j]) ? get_float8_nan() : (double) ((const int64 *) v->data)[idx[j]] / x->c;
+							top[j] = v->ovf && sift_src_bit(v->ovf, idx[j]) ? get_float8_nan() : (double) ((const int64 *) v->data)[idx[j]] / x->c;
 					else
 						for (int j = 0; j < nsel; j++)
 							top[j] = ((const double *) v->data)[idx[j]];
@@ -189,7 +189,7 @@ float_guard(AggExec *ex, int ai, const double *x, const uint64 *ok, int n, const
 	if (!sift_aggk->absmax_f64(x, ok, n, &m))
 	{
 		for (int j = 0; j < n; j++)
-			if ((!ok || sift_colsrc_bit(ok, j)) && !isfinite(x[j]))
+			if ((!ok || sift_src_bit(ok, j)) && !isfinite(x[j]))
 				ex->acc[ai].nf[gid[j]] = 1;
 		return;
 	}

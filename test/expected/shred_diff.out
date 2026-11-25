@@ -136,8 +136,7 @@ $$ SELECT CASE WHEN ovf THEN 'overflow' WHEN j IS NULL THEN 'absent' WHEN jsonb_
 CREATE FUNCTION efield(e jsonb, f text, typ text, OUT state text, OUT val text) LANGUAGE plpgsql AS $$
 BEGIN
 	IF jsonb_typeof(e) = 'object' THEN SELECT * INTO state, val FROM fit(e -> f, false, typ);
-	ELSIF jsonb_typeof(e) = 'array' THEN state := 'overflow';
-	ELSE state := 'absent';
+	ELSE state := 'overflow';
 	END IF;
 END $$;
 CREATE FUNCTION oracle(doc jsonb) RETURNS TABLE (kind text, path text, parent int, ord int, key text, state text, val text) LANGUAGE plpgsql AS $$
@@ -226,8 +225,7 @@ BEGIN
 						j := j + 1;
 					END LOOP;
 				END IF;
-			ELSIF jsonb_typeof(e.value) = 'array' THEN ls := 'overflow';
-			ELSE ls := 'absent';
+			ELSE ls := 'overflow';
 			END IF;
 			RETURN QUERY SELECT 'list', 'o[].l[]', e.i::int, k, NULL::text, ls, j::text;
 			k := k + j;

@@ -11,6 +11,7 @@
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
+#include "utils/tuplesort.h"
 
 #include "agg/nth.h"
 #include "agg/osa_int.h"
@@ -18,6 +19,9 @@
 
 #define PCT_CHUNK_FIRST	64
 #define PCT_CHUNK_LAST	8192
+#define PCT_SORT_AFTER	16384			/* values a state keeps in the arena before they go to its sort */
+#define PCT_SORTED		(-1)			/* v1 of a state whose values are in a tuplesort that v0 points to */
+#define PCT_DONE		(-2)			/* v1 of a state that has its answer: v0 holds the double */
 
 typedef struct PctChunk
 {
@@ -99,11 +103,55 @@ sift_v6_pct_add(SiftTextArena *ar, V6Acc *acc, double x)
 	acc->n++;
 }
 
+static inline Tuplesortstate *
+sort_of(const V6Acc *acc)
+{
+	return (Tuplesortstate *) (uintptr_t) acc->v0;
+}
+
+static void
+sort_put_chunks(const SiftTextArena *ar, Tuplesortstate *ts, const V6Acc *acc)
+{
+	for (uint64 off = acc->n > 0 ? acc->v0 : 0; off != 0; off = chunk_at(ar, off - 1)->next)
+	{
+		PctChunk   *c = chunk_at(ar, off - 1);
+
+		for (uint32 i = 0; i < c->n; i++)
+			tuplesort_putdatum(ts, Float8GetDatum(chunk_vals(c)[i]), false);
+	}
+}
+
+void
+sift_v6_pct_add_sorted(SiftTextArena *ar, V6Acc *acc, double x, int sort_kb)
+{
+	if (acc->v1 != PCT_SORTED && acc->n >= PCT_SORT_AFTER)
+	{
+		Tuplesortstate *ts = tuplesort_begin_datum(FLOAT8OID, Float8LessOperator, InvalidOid, false, sort_kb, NULL, TUPLESORT_NONE);
+
+		sort_put_chunks(ar, ts, acc);
+		acc->v0 = (uint64) (uintptr_t) ts;
+		acc->v1 = PCT_SORTED;
+	}
+	if (acc->v1 == PCT_SORTED)
+	{
+		tuplesort_putdatum(sort_of(acc), Float8GetDatum(x), false);
+		acc->n++;
+	}
+	else
+		sift_v6_pct_add(ar, acc, x);
+}
+
 void
 sift_v6_pct_merge(SiftTextArena *ar, V6Acc *d, const V6Acc *s)
 {
 	if (s->n == 0)
 		return;
+	if (d->v1 == PCT_SORTED)
+	{
+		sort_put_chunks(ar, sort_of(d), s);
+		d->n += s->n;
+		return;
+	}
 	if (d->n == 0)
 	{
 		*d = *s;
@@ -112,6 +160,30 @@ sift_v6_pct_merge(SiftTextArena *ar, V6Acc *d, const V6Acc *s)
 	chunk_at(ar, (uint64) d->v1 - 1)->next = s->v0;
 	d->v1 = s->v1;
 	d->n += s->n;
+}
+
+void
+sift_v6_pct_put(const SiftTextArena *ar, const V6Acc *acc, StringInfo buf)
+{
+	for (uint64 off = acc->n > 0 ? acc->v0 : 0; off != 0; off = chunk_at(ar, off - 1)->next)
+	{
+		const PctChunk *c = chunk_at(ar, off - 1);
+
+		appendBinaryStringInfo(buf, (const char *) (c + 1), (int) (c->n * sizeof(double)));
+	}
+}
+
+const char *
+sift_v6_pct_take(SiftTextArena *ar, V6Acc *dst, const V6Acc *src, const char *tail)
+{
+	for (int64 i = 0; i < src->n; i++, tail += sizeof(double))
+	{
+		double		x;
+
+		memcpy(&x, tail, sizeof(x));
+		sift_v6_pct_add(ar, dst, x);
+	}
+	return tail;
 }
 
 /* the order of PostgreSQL's float8 sort: every NaN is above +Infinity and equal to the others */
@@ -145,6 +217,46 @@ gather(const SiftTextArena *ar, const V6Acc *acc)
 	return v;
 }
 
+static double
+sorted_final(Tuplesortstate *ts, int64 n, double frac)
+{
+	const OsaRound *rd = osa_round(false);
+	const double at = frac * (double) (n - 1);
+	const int64 lo = (int64) floor(at),
+				hi = (int64) ceil(at);
+	Datum		first,
+				second;
+	bool		isnull;
+
+	tuplesort_performsort(ts);
+	tuplesort_skiptuples(ts, lo, true);
+	tuplesort_getdatum(ts, true, false, &first, &isnull, NULL);
+	if (lo == hi)
+		return DatumGetFloat8(first);
+	tuplesort_getdatum(ts, true, false, &second, &isnull, NULL);
+	return osa_lerp(DatumGetFloat8(first), DatumGetFloat8(second), osa_prop(frac, n, lo, rd->prop), rd->lerp);
+}
+
+void
+sift_v6_pct_finish(V6Acc *acc, double frac)
+{
+	double		r;
+
+	if (acc->v1 != PCT_SORTED)
+		return;
+	r = sorted_final(sort_of(acc), acc->n, frac);
+	tuplesort_end(sort_of(acc));
+	memcpy(&acc->v0, &r, sizeof(r));
+	acc->v1 = PCT_DONE;
+}
+
+void
+sift_v6_pct_release(V6Acc *acc)
+{
+	if (acc->v1 == PCT_SORTED)
+		tuplesort_end(sort_of(acc));
+}
+
 double
 sift_v6_pct_final(const SiftTextArena *ar, const V6Acc *acc, double frac)
 {
@@ -153,10 +265,17 @@ sift_v6_pct_final(const SiftTextArena *ar, const V6Acc *acc, double frac)
 	const double at = frac * (double) (n - 1);
 	const int64 lo = (int64) floor(at),
 				hi = (int64) ceil(at);
-	double	   *v = gather(ar, acc);
+	double	   *v;
 	double		first,
 				second,
 				r;
+
+	if (acc->v1 == PCT_DONE)
+	{
+		memcpy(&r, &acc->v0, sizeof(r));
+		return r;
+	}
+	v = gather(ar, acc);
 
 	sift_nth((char *) v, (size_t) n, sizeof(double), (size_t) lo, float8_order, NULL);
 	first = v[lo];

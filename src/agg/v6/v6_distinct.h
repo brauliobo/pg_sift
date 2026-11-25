@@ -83,6 +83,8 @@ extern void sift_distinct_add_dkey(SiftDistinct *d, uint32 slot, const SiftDisti
 /* Every key the table holds (a set that never spilled holds them all) */
 typedef void (*SiftDistinctVisit) (void *arg, uint32 slot, const void *key, uint32 len);
 extern void sift_distinct_foreach(const SiftDistinct *d, SiftDistinctVisit visit, void *arg);
+/* The keys of the slots whose bit is set in slots, each distinct key once, to visit as the set is finished (the table's, then those of each partition read back): the values a SUM or AVG adds */
+extern void sift_distinct_visit_values(SiftDistinct *d, uint32 slots, SiftDistinctVisit visit, void *arg);
 /* The same with the hash each key was added with */
 typedef void (*SiftDistinctVisitHashed) (void *arg, uint32 slot, const void *key, uint32 len, uint64 hash);
 extern void sift_distinct_foreach_hashed(const SiftDistinct *d, SiftDistinctVisitHashed visit, void *arg);

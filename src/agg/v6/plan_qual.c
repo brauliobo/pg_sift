@@ -5,12 +5,17 @@
 /* check-memory: allow-allocs every list here follows the quals of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "catalog/pg_am_d.h"
+#include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/lsyscache.h"
 
 #include "agg/group/ht.h"
+#include "agg/plan/safety.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_bqual.h"
@@ -18,47 +23,64 @@
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "col/am/preds.h"
 
-/* a constant, or a parameter the scan reads when it starts (and again when it is rescanned) */
+/* an expression of constants and stable functions: its value is the same for the whole scan, which reads it when it starts */
+static bool
+stable_operand(const Node *n)
+{
+	return !IsA(n, Const) && !IsA(n, Param) && !contain_var_clause((Node *) n) && !contain_volatile_functions((Node *) n) && !contain_subplans((Node *) n) &&
+		!expression_returns_set((Node *) n) && !agg_node_has_extern_param((Node *) n);
+}
+
+/* a constant, a parameter, or a stable expression the scan reads when it starts (and again when it is rescanned) */
 static bool
 operand_usable(const V6Plan *p, const Node *n)
 {
 	if (IsA(n, Param))
 		return !p->in_filter && (((const Param *) n)->paramkind == PARAM_EXTERN || ((const Param *) n)->paramkind == PARAM_EXEC);
+	if (stable_operand(n))
+		return !p->in_filter;
 	return IsA(n, Const) && !((const Const *) n)->constisnull;
 }
 
 static bool
 is_operand(const Node *n)
 {
-	return IsA(n, Const) || IsA(n, Param);
+	return IsA(n, Const) || IsA(n, Param) || stable_operand(n);
 }
 
 static Expr *
 index_var(const Var *v, int col)
 {
-	return (Expr *) makeVar(INDEX_VAR, col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
+	return (Expr *) makeVar(INDEX_VAR, sift_v6_vatt_is_json(v->varattno) ? v->varattno : col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
+}
+
+/* the operator family the comparisons of the column are of: what a key of a document reads as is a text or a float8 */
+static Oid
+col_opfamily(const V6Plan *p, const SiftV6Col *col)
+{
+	return col->jleaf > 0 ? get_opclass_family(GetDefaultOpClass(col->typid, BTREE_AM_OID)) : sift_v6_plan_opfamily(p, col->attno);
 }
 
 /* A numeric column of an index decides a comparison with a constant of its scale range on the scaled integers; a NaN row is decided by the scan (col/f2/scan/verdict.c) */
 static bool
 numeric_exact(const V6Plan *p, int strat, const SiftV6Col *col, const Node *operand)
 {
-	return p->store == NULL && strat >= BTLessStrategyNumber && strat <= BTGreaterStrategyNumber && IsA(operand, Const) &&
+	return !p->is_table && strat >= BTLessStrategyNumber && strat <= BTGreaterStrategyNumber && IsA(operand, Const) &&
 		sift_col_numeric_key_fits(col->scale, ((const Const *) operand)->constvalue);
 }
 
-/* The strategy of a comparison of the column with a constant or parameter: of the operator class, or, on an index, <> and NOT LIKE '%literal%' (agg/v6/v6_qual.h) that only a scan outside a FILTER clause has; 0: not one the scan decides */
+/* The strategy of a comparison of the column with a constant or parameter (a text of a table is no scan key: its leaf holds the cell, which only the batch decides): of the operator class, or, on an index, <> and NOT LIKE '%literal%' (agg/v6/v6_qual.h) that only a scan outside a FILTER clause has; 0: not one the scan decides */
 static int
 compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const Node *operand)
 {
 	const bool	text = sift_v6_class(col->typid) == SV6C_TEXT;
-	const Oid	family = sift_v6_plan_opfamily(p, col->attno);
-	const bool	index = p->store == NULL;
+	const Oid	family = col_opfamily(p, col);
+	const bool	index = !p->is_table;
 	int			strat = get_op_opfamily_strategy(q->opno, family);
 
-	if (strat == 0 && index && !p->in_filter)
+	if (strat == 0 && (index || !text) && !p->in_filter && !stable_operand(operand))
 		strat = sift_v6_qual_private_strategy(q->opno, family);
-	if (text && !sift_text_bytes_equal(q->inputcollid))
+	if (text && (p->is_table || !sift_text_bytes_equal(q->inputcollid)))
 		return 0;
 	if (col->typid == NUMERICOID && !numeric_exact(p, strat, col, operand))
 		return 0;
@@ -119,8 +141,8 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 
 	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !IsA(lsecond(sa->args), Const) ||
 		!sift_v6_plan_column(p, linitial(sa->args), false, &col) || ((Const *) lsecond(sa->args))->constisnull || sift_v6_class(col.typid) == SV6C_F64 ||
-		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), sift_v6_plan_opfamily(p, col.attno)) != BTEqualStrategyNumber ||
-		(sift_v6_class(col.typid) == SV6C_TEXT && !sift_text_bytes_equal(sa->inputcollid)))
+		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), col_opfamily(p, &col)) != BTEqualStrategyNumber ||
+		(sift_v6_class(col.typid) == SV6C_TEXT && (p->is_table || !sift_text_bytes_equal(sa->inputcollid))))
 		return NULL;
 	linitial(q->args) = index_var(linitial(sa->args), col.attno - 1);
 	return (Expr *) q;
@@ -144,13 +166,23 @@ qual_json_text(V6Plan *p, OpExpr *op)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return p->xseed != NULL && p->xseed->unnest && p->store == NULL ? sift_v6_json_text_qual(&rel, op) : NULL;
+	return p->xseed != NULL && p->xseed->unnest && !p->is_table ? sift_v6_json_text_qual(&rel, op) : NULL;
+}
+
+static bool
+has_numeric_var(Node *n, void *context)
+{
+	return n != NULL && ((IsA(n, Var) && ((Var *) n)->vartype == NUMERICOID) || expression_tree_walker(n, has_numeric_var, context));
 }
 
 Expr *
 sift_v6_index_qual(V6Plan *p, Expr *clause)
 {
 	Expr	   *q;
+
+	/* a table, and a FILTER clause of an index, have no scan to decide the rows whose stored value is a NaN: PostgreSQL's own comparison of the datums does */
+	if ((p->is_table || p->in_filter) && has_numeric_var((Node *) clause, NULL))
+		return NULL;
 
 	switch (nodeTag(clause))
 	{
@@ -165,35 +197,21 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 	}
 }
 
-static bool
-has_param(Node *n, void *context)
-{
-	return n != NULL && (IsA(n, Param) || expression_tree_walker(n, has_param, context));
-}
-
-static bool
-has_numeric_var(Node *n, void *context)
-{
-	return n != NULL && ((IsA(n, Var) && ((Var *) n)->vartype == NUMERICOID) || expression_tree_walker(n, has_numeric_var, context));
-}
-
-/* a qual no scan key says (a column against a column, an OR, a numeric against a constant): the scan runs it over the columns of each batch (agg/v6/v6_bqual.h); a table refuses the statement that reads a NaN of a numeric, so
- * it leaves the quals on numerics to the executor */
+/* a qual no scan key says (a column against a column, an OR, a numeric against a constant): the scan runs it over the columns of each batch (agg/v6/v6_bqual.h) */
 static bool
 qual_batch(V6Plan *p, RestrictInfo *ri)
 {
-	SiftV6Input in = {.indexoid = p->relid,.is_table = p->store != NULL,.nkeys = p->store != NULL ? p->store->natts : 0};
+	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->sch.natts : 0};
 	Expr	   *clause;
 
-	if (!p->batch_ok || ri->pseudoconstant || contain_mutable_functions((Node *) ri->clause) || has_param((Node *) ri->clause, NULL))
+	if (!p->batch_ok || contain_volatile_functions((Node *) ri->clause) || agg_node_has_extern_param((Node *) ri->clause) || sift_v6_text_clause(p->rel, ri))
 		return false;
-	if (p->store != NULL && has_numeric_var((Node *) ri->clause, NULL))
-		return false;
-	if (p->store == NULL)
+	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
-	clause = copyObject(ri->clause);
+	clause = sift_v6_plan_json_vars(p, ri->clause, true);
+	clause = clause == ri->clause ? copyObject(clause) : clause;
 	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
-	if (!sift_v6_bq_plan_ok(&in, clause))
+	if (!sift_v6_bq_plan_ok(p->root, &in, clause))
 		return false;
 	p->spec.vqual = lappend(p->spec.vqual, clause);
 	return true;
@@ -212,6 +230,21 @@ sift_v6_index_complete(const V6Plan *p)
 	return predicate_implied_by(p->index->indpred, clauses, false);
 }
 
+static bool
+unsafe_initplan_walker(Node *n, PlannerInfo *root)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+	{
+		foreach_ptr(SubPlan, sp, root->init_plans)
+			if (list_member_int(sp->setParam, ((Param *) n)->paramid))
+				return !initplan_ok(root, (Param *) n);
+		return false;
+	}
+	return expression_tree_walker(n, unsafe_initplan_walker, root);
+}
+
 bool
 sift_v6_compile_quals(V6Plan *p)
 {
@@ -222,12 +255,18 @@ sift_v6_compile_quals(V6Plan *p)
 		Expr	   *q;
 		List	   *jq;
 
+		if (unsafe_initplan_walker((Node *) ri->clause, p->root))
+			return false;
+		if (sift_v6_unnest_test_ri(p, ri))
+			continue;
 		if (p->index != NULL && p->index->indpred != NIL && predicate_implied_by(list_make1(ri->clause), p->index->indpred, false))
 			continue;
-		if (!ri->pseudoconstant && sift_v6_text_qual(p, ri))
+		if (!ri->pseudoconstant && (sift_v6_tid_qual(p, ri) || sift_v6_text_qual(p, ri)))
 			continue;
-		q = ri->pseudoconstant ? NULL : sift_v6_index_qual(p, ri->clause);
-		jq = ri->pseudoconstant || q != NULL || p->store != NULL ? NIL : sift_v6_json_qual(&rel, ri->clause);
+		if (sift_v6_mapkey_pair_qual(p, ri))
+			continue;
+		q = ri->pseudoconstant || p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_index_qual(p, ri->clause);
+		jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(&rel, ri->clause);
 		if (q == NULL && jq == NIL && qual_batch(p, ri))
 			continue;
 		if (q == NULL && jq == NIL)
@@ -237,5 +276,5 @@ sift_v6_compile_quals(V6Plan *p)
 		else
 			p->spec.jsonqual = lappend(p->spec.jsonqual, jq);
 	}
-	return sift_v6_compile_text(p);
+	return sift_v6_compile_text(p) && !(p->spec.tid_range && p->text != NULL);
 }

@@ -94,7 +94,9 @@ extern void sift_stream_init(SiftStreamExec *se, uint8 nkeys, bool descending, b
 							 void (*emit_group) (void *, const SiftStreamGroup *), void (*emit_row) (void *, const SiftStreamRow *),
 							 void *arg);
 extern void sift_stream_add_source(SiftStreamExec *se, SiftStreamNext next, void *src);
-/* Reads the parts to their ends or to the limit, emitting as it goes */
+/* Reads the parts up to one batch of one of them, emitting the groups or rows that are final; false once everything is out (the groups of that last step are emitted too) */
+extern bool sift_stream_step(SiftStreamExec *se);
+/* Steps to the end of the parts or to the limit */
 extern void sift_stream_run(SiftStreamExec *se);
 extern void sift_stream_free(SiftStreamExec *se);
 

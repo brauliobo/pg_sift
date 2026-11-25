@@ -12,6 +12,7 @@
 
 #include "col/f2/f2test.h"
 #include "col/f2/f2_tid_hash.h"
+#include "col/f2/preagg_v2.h"
 #include "col/compress.h"
 #include "col/granule/granule.h"
 #include "col/f2/f2_point_dir.h"
@@ -401,12 +402,11 @@ preagg_case(Case *c)
 	uint32		sec_bytes[16] = {0};
 	SiftSecInput secs[2];
 	SiftPart   *part;
-	int			n;
 
 	secs[0] = sec(SEC_SCHEMA, "SSSSSSSSSSSSSSSS", 16);
 	secs[1] = sec(SEC_PREAGG, sec_bytes, sizeof(sec_bytes));
 	part = write_part(c->rel, 1, c->mode == 1 ? UINT32_MAX : 1, 1, secs, 2);
-	(void) sift_part_read_preagg(c->rel, part, 0, &n);
+	(void) sift_preagg_part_open(c->rel, part);
 }
 
 Datum

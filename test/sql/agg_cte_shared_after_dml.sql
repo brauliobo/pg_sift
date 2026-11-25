@@ -1,0 +1,75 @@
+-- A CTE that two arms of a UNION ALL read over a LATERAL jsonb_to_recordset is planned inline when the arms run on the Format 2.0 index (one SiftAggV6 node per arm), and each arm reads the table as a
+-- snapshot sees it: after a DELETE and an UPDATE of scalar columns (a column delta of the part), in the transaction that writes, after its rollback and after VACUUM, the rows of the arms are the
+-- rows of the normal plan (sift.enable_agg off), serial and with workers allowed. Every row of the result says the CTE was planned as two nodes and that the rows agree.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE o (id int PRIMARY KEY, store int, placed date, kind text, amount float8, items jsonb) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO o
+SELECT g, g % 7, date '2024-01-01' + g % 400, (ARRAY['web', 'shop', 'phone'])[1 + g % 3], (g % 100) * 1.5,
+	   CASE WHEN g % 19 = 0 THEN NULL ELSE jsonb_build_array(jsonb_build_object('qty', g % 5, 'price', (g % 9) * 2.5), jsonb_build_object('qty', g % 3, 'price', (g % 7) * 1.5)) END
+FROM generate_series(1, 2500) g;
+CREATE INDEX o_col ON o USING sift_col (id, store, placed, kind, amount, items) WITH (paths = 'items[]{qty int4, price float8}');
+VACUUM ANALYZE o;
+
+CREATE FUNCTION cte_query() RETURNS text LANGUAGE sql AS $$ SELECT $q$
+	WITH b AS (SELECT o.id, o.placed, i.qty, i.qty * i.price AS net FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(qty int, price float8) WHERE o.store < 6)
+	SELECT 'day' AS g, placed AS d, count(DISTINCT id) AS n, sum(qty) AS q, sum(net) AS r FROM b GROUP BY 2
+	UNION ALL SELECT 'month', date_trunc('month', placed)::date, count(DISTINCT id), sum(qty), sum(net) FROM b GROUP BY 2
+$q$ $$;
+CREATE FUNCTION answer(on_off text, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', on_off, true), set_config('max_parallel_workers_per_gather', workers::text, true), set_config('seq_page_cost', '1000', true), set_config('random_page_cost', '1000', true);
+	EXECUTE format('SELECT md5(string_agg(r::text, E''\n'' ORDER BY r::text)) FROM (%s) r', cte_query()) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION two_nodes() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text; nodes int := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true), set_config('max_parallel_workers_per_gather', '0', true), set_config('seq_page_cost', '1000', true), set_config('random_page_cost', '1000', true);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || cte_query() LOOP
+		IF line LIKE '%Unnest: lateral columnar%' THEN nodes := nodes + 1; END IF;
+	END LOOP;
+	RETURN nodes = 2;
+END $$;
+CREATE FUNCTION check_all(label text) RETURNS TABLE (step text, inlined boolean, serial boolean, workers boolean) LANGUAGE plpgsql AS $$
+BEGIN
+	step := label;
+	inlined := two_nodes();
+	serial := answer('on', 0) = answer('off', 0);
+	workers := answer('on', 2) = answer('off', 0);
+	RETURN NEXT;
+END $$;
+
+SELECT * FROM check_all('built');
+
+DELETE FROM o WHERE id % 10 = 0;
+SELECT * FROM check_all('deleted');
+
+UPDATE o SET kind = 'web', amount = amount + 1 WHERE id % 7 = 1;
+SELECT * FROM check_all('updated');
+
+UPDATE o SET placed = placed + 40, store = (store + 1) % 7 WHERE id % 11 = 2;
+SELECT * FROM check_all('updated the grain');
+
+BEGIN;
+UPDATE o SET placed = placed + 9, store = 5 WHERE id % 3 = 0;
+DELETE FROM o WHERE id % 29 = 0;
+SELECT * FROM check_all('own transaction');
+ROLLBACK;
+SELECT * FROM check_all('rolled back');
+
+VACUUM o;
+SELECT * FROM check_all('vacuumed');
+
+DROP TABLE o;
+DROP FUNCTION cte_query(), answer(text, int), two_nodes(), check_all(text);
+DROP EXTENSION pg_sift;

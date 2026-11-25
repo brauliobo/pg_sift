@@ -148,9 +148,9 @@ outer_ref_walker(Node *n, OuterRef *o)
 
 /* does the sub-select, a body of its own, read a column, aggregate or CTE of the queries around it? */
 static bool
-reads_outer_query(AggCtx *c, Query *q)
+reads_outer_query(PlannerInfo *root, Query *q)
 {
-	OuterRef	oref = {c->root, 0, 0};
+	OuterRef	oref = {root, 0, 0};
 
 	return query_tree_walker(q, outer_ref_walker, &oref, QTW_EXAMINE_RTES_BEFORE);
 }
@@ -163,22 +163,22 @@ reads_outer_query(AggCtx *c, Query *q)
  * extParam of its plan says that only after PostgreSQL has finished the whole plan, so the sub-select itself is walked, the copies of it that were planned too.
  */
 static bool
-subplan_runs_at_start(AggCtx *c, SubPlan *sp)
+subplan_runs_at_start(PlannerInfo *root, SubPlan *sp)
 {
-	PlannerGlobal *glob = c->root->glob;
+	PlannerGlobal *glob = root->glob;
 	Query	   *q;
 
 	if (sp->plan_id < 1 || sp->plan_id > list_length(glob->subroots))
 		return false;
 	q = ((PlannerInfo *) list_nth(glob->subroots, sp->plan_id - 1))->parse;
-	return q->rowMarks == NIL && !contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, c) && !reads_outer_query(c, q);
+	return q->rowMarks == NIL && !contain_volatile_functions((Node *) q) && !raising_walker((Node *) q, root) && !reads_outer_query(root, q);
 }
 
 bool
-lut_subplan_ok(AggCtx *c, SubPlan *sp)
+lut_subplan_ok(PlannerInfo *root, SubPlan *sp)
 {
 	return sp->subLinkType == ANY_SUBLINK && sp->useHashTable && sp->testexpr != NULL && sp->parParam == NIL && sp->args == NIL &&
-		sp->setParam == NIL && subplan_runs_at_start(c, sp);
+		sp->setParam == NIL && subplan_runs_at_start(root, sp);
 }
 
 /*
@@ -187,7 +187,7 @@ lut_subplan_ok(AggCtx *c, SubPlan *sp)
  * sub-select with a plain select list may): the lookup table asks it once, under the same conditions as a hashed sub-plan. Another kind of initplan or one
  * of an outer query keeps the normal plan.
  */
-/* does the sub-select give one row at most whatever the data? aggregates with no GROUP BY give one; a table read by equalities to constants that hold a whole unique key gives one or none */
+/* does the sub-select give one row at most whatever the data? aggregates with no GROUP BY give one; a select with no FROM gives one; a table read by equalities to constants that hold a whole unique key gives one or none */
 static bool
 one_row_query(Query *q)
 {
@@ -199,6 +199,8 @@ one_row_query(Query *q)
 		return false;
 	if (q->hasAggs)
 		return q->groupClause == NIL;
+	if (list_length(q->rtable) == 1 && linitial_node(RangeTblEntry, q->rtable)->rtekind == RTE_RESULT)
+		return true;
 	if (q->groupClause != NIL || q->distinctClause != NIL || q->jointree == NULL || list_length(q->rtable) != 1 || q->jointree->quals == NULL)
 		return false;
 	t = linitial_node(RangeTblEntry, q->rtable);
@@ -233,18 +235,18 @@ one_row_query(Query *q)
 }
 
 bool
-initplan_ok(AggCtx *c, Param *prm)
+initplan_ok(PlannerInfo *root, Param *prm)
 {
 	if (null_input_param((Node *) prm))
 		return false;
-	foreach_ptr(SubPlan, sp, c->root->init_plans)
+	foreach_ptr(SubPlan, sp, root->init_plans)
 		if (list_member_int(sp->setParam, prm->paramid))
 		{
 			Query	   *q;
 
-			if (sp->parParam != NIL || sp->args != NIL || !subplan_runs_at_start(c, sp))
+			if (sp->parParam != NIL || sp->args != NIL || !subplan_runs_at_start(root, sp))
 				return false;
-			q = ((PlannerInfo *) list_nth(c->root->glob->subroots, sp->plan_id - 1))->parse;
+			q = ((PlannerInfo *) list_nth(root->glob->subroots, sp->plan_id - 1))->parse;
 			return sp->subLinkType == ARRAY_SUBLINK || (sp->subLinkType == EXPR_SUBLINK && one_row_query(q));
 		}
 	return false;
@@ -280,10 +282,10 @@ leaf_walker(Node *n, LeafWalk *w)
 			return false;
 		}
 	}
-	if (IsA(n, SubPlan) && lut_subplan_ok(w->c, (SubPlan *) n))
+	if (IsA(n, SubPlan) && lut_subplan_ok(w->c->root, (SubPlan *) n))
 		w->subparams = list_concat_copy(w->subparams, ((SubPlan *) n)->paramIds);
 	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < SIFT_AGG_INIT_PARAM && !list_member_int(w->subparams, ((Param *) n)->paramid) &&
-			 !initplan_ok(w->c, (Param *) n))
+			 !initplan_ok(w->c->root, (Param *) n))
 	{
 		w->bad = true;
 		return false;
@@ -372,7 +374,7 @@ scalar_initplans_mutator(Node *n, AggCtx *c)
 {
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < SIFT_AGG_INIT_PARAM && !null_input_param(n) && initplan_ok(c, (Param *) n))
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid < SIFT_AGG_INIT_PARAM && !null_input_param(n) && initplan_ok(c->root, (Param *) n))
 	{
 		foreach_ptr(SubPlan, sp, c->root->init_plans)
 			if (list_member_int(sp->setParam, ((Param *) n)->paramid) && sp->subLinkType == EXPR_SUBLINK)

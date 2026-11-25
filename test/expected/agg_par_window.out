@@ -1,0 +1,230 @@
+-- Window functions of an index of format major 2 on the compute threads of the backend (core/par/pool.h): the node sorts each PARTITION BY partition and runs COUNT, SUM, AVG, MIN, MAX,
+-- ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD and FIRST_VALUE over int4, int8, float8, date and timestamp columns on 4 threads, for the parts that are sorted by the partition key only and for the parts that
+-- are in no order of it. Every query runs on the threads and on the heap (sift.enable_agg = off) and the sorted rows are compared: the first word says they agree, the second that the plan is the node's
+-- and that the threads ran it (or that they did not, for the shapes that stay with the serial node), the third that the answer is not empty.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 3;
+SET jit = off;
+SET work_mem = '256MB';
+SET sift.test_create_format1 = off;
+SET sift.agg_force = on;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE FUNCTION win_rows(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT md5(coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''')) || '' '' || count(*) FROM (%s) t', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+-- the threads of the window node of the plan of q (0: the node runs it alone, -1: no node)
+CREATE FUNCTION win_threads(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := -1;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF, SUMMARY OFF) ' || q LOOP
+		IF l LIKE '%SiftAggV6Window%' THEN n := 0; END IF;
+		IF l ~ '^\s*Threads: ' THEN n := substring(l from 'Threads: (\d+)')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+CREATE FUNCTION check_win(name text, q text, par bool) RETURNS TABLE (label text, same bool, plan bool, answer text) LANGUAGE plpgsql AS $$
+DECLARE a text := win_rows(q, true); b text := win_rows(q, false); t int := win_threads(q);
+BEGIN
+	RETURN QUERY SELECT name, a = b, CASE WHEN par THEN t >= 2 ELSE t = 0 END, CASE WHEN b LIKE 'ERR%' THEN 'error' WHEN b LIKE '% 0' THEN 'none' ELSE 'rows' END;
+END $$;
+-- ---- the tables: grp 0 is one partition of a few thousand rows, NULL is a partition, the rest are small; ts and k tie, and have NULLs ----
+CREATE TABLE ws_h (id int, grp int, ts timestamptz, k int, v int, w bigint, f float8, d date, tag text COLLATE "C", n numeric(10,2)) WITH (autovacuum_enabled = false);
+INSERT INTO ws_h SELECT i,
+	CASE WHEN i % 10 = 0 THEN 0 WHEN i % 53 = 0 THEN NULL ELSE 1 + i % 2500 END,
+	CASE WHEN i % 211 = 0 THEN NULL ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 7919 % 100000) * interval '1 second' END,
+	CASE WHEN i % 97 = 0 THEN NULL ELSE i * 13 % 40 END,
+	CASE WHEN i % 29 = 0 THEN NULL ELSE i * 31 % 1000 - 300 END,
+	CASE WHEN i % 31 = 0 THEN NULL ELSE i::bigint * 104729 % 1000003 - 400000 END,
+	CASE WHEN i % 41 = 0 THEN NULL WHEN i % 997 = 0 THEN 'NaN' WHEN i % 1999 = 0 THEN 'Infinity' ELSE (i * 17 % 4000) / 4.0 - 400 END,
+	date '2020-01-01' + i % 3000,
+	'tag' || i % 17,
+	CASE WHEN i % 37 = 0 THEN NULL ELSE (i % 977) / 7.0 END
+FROM generate_series(1, 60000) i;
+-- the parts sorted by grp alone (each partition is sorted), by id (the rows of a partition are put together first), and by grp, ts and id (no sort: the serial node)
+CREATE TABLE ws_p AS TABLE ws_h;
+CREATE TABLE ws_r AS TABLE ws_h;
+CREATE TABLE ws_e AS TABLE ws_h;
+CREATE INDEX ws_p_col ON ws_p USING sift_col (grp, ts, id, k, v, w, f, d, tag, n) WITH (rollup_columns = 'off', key_order = 'grp');
+CREATE INDEX ws_r_col ON ws_r USING sift_col (id, grp, ts, k, v, w, f, d, tag, n) WITH (rollup_columns = 'off', key_order = 'id');
+CREATE INDEX ws_e_col ON ws_e USING sift_col (grp, ts, id, k, v, w, f, d, tag, n) WITH (rollup_columns = 'off', key_order = 'grp, ts, id');
+VACUUM (FREEZE, ANALYZE) ws_h, ws_p, ws_r, ws_e;
+-- 20000 partitions of 3 rows
+CREATE TABLE wt_h (id int, grp int, ts timestamptz, v int) WITH (autovacuum_enabled = false);
+INSERT INTO wt_h SELECT i, i % 20000, timestamptz '2024-01-01' + (i / 20000) * interval '1 minute', CASE WHEN i % 17 = 0 THEN NULL ELSE i % 500 END FROM generate_series(1, 60000) i;
+CREATE TABLE wt_p AS TABLE wt_h;
+CREATE INDEX wt_p_col ON wt_p USING sift_col (grp, ts, id, v) WITH (rollup_columns = 'off', key_order = 'grp');
+VACUUM (FREEZE, ANALYZE) wt_h, wt_p;
+-- one partition of 40000 rows
+CREATE TABLE wb_h (id int, grp int, ts timestamptz, v int, f float8) WITH (autovacuum_enabled = false);
+INSERT INTO wb_h SELECT i, 1, timestamptz '2024-01-01' + (i * 7919 % 50000) * interval '1 second', CASE WHEN i % 13 = 0 THEN NULL ELSE i % 700 END, (i % 90) / 4.0 FROM generate_series(1, 40000) i;
+CREATE TABLE wb_p AS TABLE wb_h;
+CREATE INDEX wb_p_col ON wb_p USING sift_col (grp, ts, id, v, f) WITH (rollup_columns = 'off', key_order = 'grp');
+VACUUM (FREEZE, ANALYZE) wb_h, wb_p;
+-- two partitions of 15000 rows whose float8 keys tie, with NaNs and NULLs among them
+CREATE TABLE wn_h (id int, grp int, ts timestamptz, v int, f float8) WITH (autovacuum_enabled = false);
+INSERT INTO wn_h SELECT i, 1 + i % 2, timestamptz '2024-01-01' + i * interval '1 second', CASE WHEN i % 13 = 0 THEN NULL ELSE i % 700 END,
+	CASE WHEN i % 7 = 0 THEN 'NaN' WHEN i % 11 = 0 THEN NULL ELSE (i % 50)::float8 END FROM generate_series(1, 30000) i;
+CREATE TABLE wn_p AS TABLE wn_h;
+CREATE INDEX wn_p_col ON wn_p USING sift_col (grp, ts, id, v, f) WITH (rollup_columns = 'off', key_order = 'grp');
+VACUUM (FREEZE, ANALYZE) wn_h, wn_p;
+SELECT (SELECT count(*) FROM ws_p) AS rows, (SELECT count(DISTINCT grp) FROM ws_p) AS groups, (SELECT count(*) FROM ws_p WHERE grp = 0) AS grp0;
+ rows  | groups | grp0 
+-------+--------+------
+ 60000 |   2251 | 6000
+(1 row)
+
+CREATE TABLE win_q (name text, q text, par bool);
+INSERT INTO win_q SELECT 'rows, ' || t, replace(q, '@T', t), true FROM (VALUES ('ws_p'), ('ws_r')) tb(t), (VALUES
+	('SELECT id, sum(v) OVER w, count(v) OVER w, min(v) OVER w, max(f) OVER w, row_number() OVER w, lag(v) OVER w, lead(v, 2, -1) OVER w, first_value(f) OVER w FROM @T WINDOW w AS (PARTITION BY grp ORDER BY ts, id)'),
+	('SELECT id, sum(v) OVER w, sum(w) OVER w, count(*) OVER w, min(ts) OVER w, max(d) OVER w, avg(v) OVER w, rank() OVER w, dense_rank() OVER w FROM @T WINDOW w AS (PARTITION BY grp ORDER BY ts DESC NULLS FIRST, id DESC)'),
+	('SELECT id, sum(f) OVER w, avg(f) OVER w, min(f) OVER w, max(w) OVER w, lag(f, 3) OVER w, lead(d, 1) OVER w, lag(ts, 1) OVER w, lead(w, 0) OVER w FROM @T WINDOW w AS (PARTITION BY grp ORDER BY k NULLS FIRST, id)'),
+	('SELECT id, row_number() OVER w, sum(v) OVER w, count(w) OVER w, lag(v, 1, 99) OVER w, first_value(w) OVER w FROM @T WINDOW w AS (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)')) q(q);
+-- the peers of a RANGE frame share a value: the default frame over keys that tie
+INSERT INTO win_q SELECT 'range peers, ' || t, replace(q, '@T', t), true FROM (VALUES ('ws_p'), ('ws_r')) tb(t), (VALUES
+	('SELECT id, sum(v) OVER w, count(v) OVER w, count(*) OVER w, min(v) OVER w, max(f) OVER w, rank() OVER w, dense_rank() OVER w FROM @T WINDOW w AS (PARTITION BY grp ORDER BY k)'),
+	('SELECT id, sum(w) OVER w, avg(v) OVER w, min(ts) OVER w, max(d) OVER w, rank() OVER w FROM @T WINDOW w AS (PARTITION BY grp ORDER BY k DESC NULLS LAST)'),
+	('SELECT id, count(*) OVER w, sum(v) OVER w, rank() OVER w, dense_rank() OVER w FROM @T WINDOW w AS (PARTITION BY grp ORDER BY k, ts NULLS FIRST)'),
+	('SELECT id, sum(v) OVER w, rank() OVER w FROM @T WINDOW w AS (PARTITION BY grp ORDER BY f)')) q(q);
+INSERT INTO win_q VALUES
+	('many tiny partitions', 'SELECT id, sum(v) OVER w, count(v) OVER w, row_number() OVER w, lag(v) OVER w, lead(v) OVER w, max(v) OVER w, avg(v) OVER w FROM wt_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true),
+	('one huge partition', 'SELECT id, sum(v) OVER w, row_number() OVER w, min(f) OVER w, lag(v, 2) OVER w, rank() OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true),
+	('a predicate', 'SELECT id, sum(v) OVER w, count(*) OVER w, row_number() OVER w, lag(w, 2) OVER w FROM ws_p WHERE v > 100 AND d < date ''2024-01-01'' WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true),
+	('a predicate that leaves nothing', 'SELECT id, sum(v) OVER w FROM ws_p WHERE v > 100000 WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true),
+	('the node is the whole select', 'SELECT sum(s), count(r) FROM (SELECT sum(v) OVER w s, row_number() OVER w r FROM ws_r WINDOW w AS (PARTITION BY grp ORDER BY ts, id)) x', true),
+	('serial: numeric', 'SELECT id, sum(n) OVER w, avg(n) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', false),
+	('serial: avg of an int8', 'SELECT id, avg(w) OVER w, sum(v) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', false),
+	('serial: text order key', 'SELECT id, row_number() OVER w, sum(v) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY tag, id)', false),
+	('serial: FILTER', 'SELECT id, count(*) FILTER (WHERE v > 0) OVER w, sum(v) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', false),
+	('serial: parts in the order of the window', 'SELECT id, sum(v) OVER w, row_number() OVER w, lag(v) OVER w FROM ws_e WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', false),
+	('serial: top 3 of each partition', 'SELECT * FROM (SELECT id, grp, row_number() OVER w r FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)) x WHERE r <= 3', false),
+	('serial: variance', 'SELECT id, var_pop(v) OVER w, sum(v) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', false);
+SELECT c.* FROM win_q q, LATERAL check_win(q.name, q.q, q.par) c ORDER BY c.label COLLATE "C";
+                  label                   | same | plan | answer 
+------------------------------------------+------+------+--------
+ a predicate                              | t    | t    | rows
+ a predicate that leaves nothing          | t    | t    | none
+ many tiny partitions                     | t    | t    | rows
+ one huge partition                       | t    | t    | rows
+ range peers, ws_p                        | t    | t    | rows
+ range peers, ws_p                        | t    | t    | rows
+ range peers, ws_p                        | t    | t    | rows
+ range peers, ws_p                        | t    | t    | rows
+ range peers, ws_r                        | t    | t    | rows
+ range peers, ws_r                        | t    | t    | rows
+ range peers, ws_r                        | t    | t    | rows
+ range peers, ws_r                        | t    | t    | rows
+ rows, ws_p                               | t    | t    | rows
+ rows, ws_p                               | t    | t    | rows
+ rows, ws_p                               | t    | t    | rows
+ rows, ws_p                               | t    | t    | rows
+ rows, ws_r                               | t    | t    | rows
+ rows, ws_r                               | t    | t    | rows
+ rows, ws_r                               | t    | t    | rows
+ rows, ws_r                               | t    | t    | rows
+ serial: FILTER                           | t    | t    | rows
+ serial: avg of an int8                   | t    | t    | rows
+ serial: numeric                          | t    | t    | rows
+ serial: parts in the order of the window | t    | t    | rows
+ serial: text order key                   | t    | t    | rows
+ serial: top 3 of each partition          | t    | t    | rows
+ serial: variance                         | t    | t    | rows
+ the node is the whole select             | t    | t    | rows
+(28 rows)
+
+-- the work_mem that holds a few partitions at a time: the rows are the same
+SET work_mem = '1MB';
+SELECT c.* FROM (VALUES
+	('little work_mem, many partitions', 'SELECT id, sum(v) OVER w, count(v) OVER w, row_number() OVER w, lag(v) OVER w, max(f) OVER w FROM ws_p WHERE grp <> 0 WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true),
+	('little work_mem, tiny partitions', 'SELECT id, sum(v) OVER w, rank() OVER w FROM wt_p WINDOW w AS (PARTITION BY grp ORDER BY ts)', true)) q(name, q, par), LATERAL check_win(q.name, q.q, q.par) c;
+              label               | same | plan | answer 
+----------------------------------+------+------+--------
+ little work_mem, many partitions | t    | t    | rows
+ little work_mem, tiny partitions | t    | t    | rows
+(2 rows)
+
+SET work_mem = '16MB';
+SELECT c.* FROM (VALUES
+	('modest work_mem, regroup', 'SELECT id, sum(v) OVER w, rank() OVER w, lag(v) OVER w FROM ws_r WHERE grp <> 0 WINDOW w AS (PARTITION BY grp ORDER BY k, id)', true)) q(name, q, par), LATERAL check_win(q.name, q.q, q.par) c;
+          label           | same | plan | answer 
+--------------------------+------+------+--------
+ modest work_mem, regroup | t    | t    | rows
+(1 row)
+
+-- a partition that does not fit work_mem is sorted by a spill and run over the sorted stream: the rows of the serial node and of PostgreSQL, with or without the threads, and no error
+SET work_mem = '512kB';
+SELECT c.* FROM (VALUES
+	('spilled partitions, rows frame', 'SELECT id, sum(v) OVER w, count(v) OVER w, min(f) OVER w, row_number() OVER w, lag(v) OVER w, lead(v, 2, -1) OVER w, first_value(f) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true),
+	('spilled partitions, peers', 'SELECT id, sum(v) OVER w, count(*) OVER w, rank() OVER w, dense_rank() OVER w, max(f) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY k NULLS FIRST)', true),
+	('spilled partitions, descending', 'SELECT id, sum(f) OVER w, avg(v) OVER w, min(ts) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id DESC)', true),
+	('spilled partitions, float peers', 'SELECT id, count(*) OVER w, rank() OVER w, sum(v) OVER w FROM wn_p WINDOW w AS (PARTITION BY grp ORDER BY f)', true),
+	('spilled partitions, float order', 'SELECT id, sum(v) OVER w, rank() OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY f)', true),
+	('one huge partition', 'SELECT id, sum(v) OVER w, row_number() OVER w, min(f) OVER w, lag(v, 2) OVER w, rank() OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true)) q(name, q, par), LATERAL check_win(q.name, q.q, q.par) c;
+              label              | same | plan | answer 
+---------------------------------+------+------+--------
+ spilled partitions, rows frame  | t    | t    | rows
+ spilled partitions, peers       | t    | t    | rows
+ spilled partitions, descending  | t    | t    | rows
+ spilled partitions, float peers | t    | t    | rows
+ spilled partitions, float order | t    | t    | rows
+ one huge partition              | t    | t    | rows
+(6 rows)
+
+CREATE TEMP TABLE err_cmp (workers int, r text);
+SET max_parallel_workers_per_gather = 3;
+INSERT INTO err_cmp SELECT 3, win_rows('SELECT id, sum(v) OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true);
+SET max_parallel_workers_per_gather = 0;
+INSERT INTO err_cmp SELECT 0, win_rows('SELECT id, sum(v) OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true);
+INSERT INTO err_cmp SELECT -1, win_rows('SELECT id, sum(v) OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', false);
+SELECT count(DISTINCT r) = 1 AS same_rows, bool_and(r NOT LIKE 'ERR%') AS no_error, bool_and(r LIKE '% 40000') AS all_rows FROM err_cmp;
+ same_rows | no_error | all_rows 
+-----------+----------+----------
+ t         | t        | t
+(1 row)
+
+SET max_parallel_workers_per_gather = 3;
+-- a float8 sum that overflows is the error of float8pl
+SET work_mem = '256MB';
+CREATE TABLE wo_p (id int, grp int, f float8) WITH (autovacuum_enabled = false);
+INSERT INTO wo_p SELECT i, i % 3, CASE WHEN i % 3 = 0 AND i > 9000 THEN 1.7e308 ELSE 1.0 END FROM generate_series(1, 12000) i;
+CREATE INDEX wo_p_col ON wo_p USING sift_col (grp, id, f) WITH (rollup_columns = 'off', key_order = 'grp');
+VACUUM (FREEZE, ANALYZE) wo_p;
+SELECT win_rows('SELECT id, sum(f) OVER w FROM wo_p WINDOW w AS (PARTITION BY grp ORDER BY id)', true) AS threads_error,
+	win_rows('SELECT id, sum(f) OVER w FROM wo_p WINDOW w AS (PARTITION BY grp ORDER BY id)', false) AS heap_error;
+             threads_error              |               heap_error               
+----------------------------------------+----------------------------------------
+ ERR 22003 value out of range: overflow | ERR 22003 value out of range: overflow
+(1 row)
+
+-- the same in partitions that spill, and a LIMIT over a spilled partition: the sorts are gone with the statement
+SET work_mem = '64kB';
+SELECT win_rows('SELECT id, sum(f) OVER w FROM wo_p WINDOW w AS (PARTITION BY grp ORDER BY id)', true) AS spilled_threads_error,
+	win_rows('SELECT id, sum(f) OVER w FROM wo_p WINDOW w AS (PARTITION BY grp ORDER BY id)', false) AS spilled_heap_error;
+         spilled_threads_error          |           spilled_heap_error           
+----------------------------------------+----------------------------------------
+ ERR 22003 value out of range: overflow | ERR 22003 value out of range: overflow
+(1 row)
+
+SELECT count(*) AS limited FROM (SELECT id, sum(v) OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id) LIMIT 10) t;
+ limited 
+---------
+      10
+(1 row)
+
+SELECT count(*) = 0 AS no_temp_files FROM pg_ls_tmpdir();
+ no_temp_files 
+---------------
+ t
+(1 row)
+
+DROP FUNCTION check_win(text, text, bool), win_rows(text, bool), win_threads(text);
+DROP TABLE ws_h, ws_p, ws_r, ws_e, wt_h, wt_p, wb_h, wb_p, wn_h, wn_p, wo_p, win_q;
+DROP EXTENSION pg_sift;

@@ -59,8 +59,8 @@ DECLARE pl text; cheap bool := false; used bool := false; agg bool := false;
 BEGIN
 	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS on, TIMING off, SUMMARY off) ' || q LOOP
-		agg := agg OR pl LIKE '%Custom Scan (SiftAgg)%';
-		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
+		agg := agg OR pl LIKE '%Custom Scan (SiftAgg%';
+		IF pl LIKE '%Custom Scan (SiftAgg%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
 		used := used OR pl LIKE '%Global Order%';
 	END LOOP;
 	RETURN CASE WHEN NOT agg THEN 'native' WHEN used AND cheap THEN 'array' WHEN NOT used AND NOT cheap THEN 'units' ELSE 'MISPRICED' END;

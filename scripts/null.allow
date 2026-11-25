@@ -43,7 +43,7 @@ src/bm25/planner_ties.c	ranked_scan	list-first	the list is read after cs->method
 src/agg/v6/scope_v6_run.c	scope_begin	list-first	custom_private is the packed spec that sift_agg_v6_scope_plan_path made, and custom_exprs holds the key and the window bounds exactly when the spec says it has them
 src/agg/v6/v6_star_plan.c	join_clause_keys	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
 src/agg/v6/v6_star_plan.c	try_fact	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
-src/agg/v6/v6_star_plan.c	sift_v6_star_upper_paths	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
+src/agg/v6/v6_star_plan.c	try_facts	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
 src/agg/v6/v6_unnest_plan.c	sift_v6_unnest_upper_paths	planner-array	a and b are the two base relations of the query (sift_v6_plan_base_relids): both have an entry
 src/agg/v6/v6_sip.c	sift_agg_v6_sip_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
 src/agg/v6/v6_stream.c	sift_agg_v6_stream_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
@@ -66,3 +66,6 @@ src/agg/v6/plan.c	sift_agg_v6_plan_path	list-first	custom_private of the path is
 src/agg/v6/scope_v6.c	pairs_table	list-first	pairs_query is set only by pairs_subquery, which accepts a query of single_table_query: exactly one range table entry
 src/agg/v6/v6_proj_sort_plan.c	sort_plan_path	list-first	custom_private is sort_pack(): list_make5 whose first list is the ints, with the table flag and the index OID first
 src/agg/v6/v6_vexpr.c	sift_v6_plan_scan	list-first	custom_private is the list every caller of sift_v6_add_path passes (stream, window, SIP, top-N): a list of at least three, the scan tlist second
+src/agg/v6/v6_unnest_exists.c	exists_subplan	list-first	sp is a SubPlan of the plan: its plan_id is the 1-based position of its root in glob->subroots
+src/agg/v6/v6_unnest_jsonb.c	array_column	list-first	an index column whose indexkeys entry is 0 is an expression: the index has one indexprs entry for each of them, in order
+src/agg/v6/v6_first_node.c	first_begin	list-first	custom_private and custom_plans of a SiftAggV6First plan are the lists its own path function made: the packed columns and the one plan of the rows

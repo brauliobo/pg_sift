@@ -103,11 +103,11 @@ SELECT * FROM check_query($q$SELECT count(*), sum(o.qty) FROM orders o, (SELECT 
  1 |    0 |     1
 (1 row)
 
--- the nullable side of an outer join keeps the normal plan
+-- the nullable side of an outer join is scanned by the aggregate node, with the rows of the normal plan
 SELECT * FROM check_query($q$SELECT m.k, count(*) FROM (VALUES (1), (2)) m(k) LEFT JOIN orders o ON true GROUP BY m.k$q$);
  n | diff | scans 
 ---+------+-------
- 2 |    0 |     0
+ 2 |    0 |     1
 (1 row)
 
 DROP FUNCTION check_query(text);

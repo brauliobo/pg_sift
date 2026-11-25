@@ -207,3 +207,21 @@ sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Sna
 	sift_mem_end(&mem);
 	return pm;
 }
+
+/* The members of the pairs of one scope key as the snapshot sees them, ascending, palloc'd in *out: the pairs of the declaration, its predicates and both of its paths included */
+uint32
+sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, int64 key, int64 **out)
+{
+	SiftF2ScopeCfg sc;
+	SiftScopePairMap *pm;
+	uint32		n = 0;
+
+	sift_f2s_cfg(index, sift_f2_store_open(index), ord, &sc);
+	pm = sift_f2s_load_pairs(heap, index, &sc, snap, sift_f2s_key_map(heap, index, sc.spec, false), false);
+	*out = palloc(Max(pm->nmembers, 1) * sizeof(int64));
+	for (uint32 i = 0; i < pm->nmembers; i++)
+		if (sift_spm_owns_key(pm, pm->member_ids[i], key))
+			(*out)[n++] = pm->member_ids[i];
+	sift_spm_free(pm);
+	return n;
+}

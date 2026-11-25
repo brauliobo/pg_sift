@@ -32,7 +32,9 @@ typedef enum SiftVecType
 	SVEC_UUID,					/* SiftUuid16[n] */
 	SVEC_STRVIEW,				/* SiftStrView[n] */
 	SVEC_DICT32,				/* uint32[n]: a dictionary code */
-	SVEC_INTERVAL				/* SiftInterval16[n] */
+	SVEC_INTERVAL,				/* SiftInterval16[n] */
+	SVEC_DATUM,					/* Datum[n]: arbitrary PostgreSQL type fallback (typid/typlen/typbyval on SiftVec) */
+	SVEC_NUM256					/* SiftI256[n]: the scaled integer of a numeric product past 2^95 (agg/v6/v6_expr_num.h); only the groups of SUM and AVG read it */
 } SiftVecType;
 
 typedef struct __attribute__((aligned(16))) SiftI128
@@ -40,6 +42,12 @@ typedef struct __attribute__((aligned(16))) SiftI128
 	uint64		lo;
 	int64		hi;
 } SiftI128;
+
+/* a signed integer below 2^191 in two's complement, l[0] the low limb; l[3] only extends the sign of l[2] */
+typedef struct __attribute__((aligned(16))) SiftI256
+{
+	uint64		l[4];
+} SiftI256;
 
 typedef struct __attribute__((aligned(16))) SiftUuid16
 {
@@ -72,6 +80,7 @@ typedef struct __attribute__((aligned(16))) SiftStrView
 } SiftStrView;
 
 _Static_assert(sizeof(SiftI128) == 16, "SiftI128 is 16 bytes");
+_Static_assert(sizeof(SiftI256) == 32, "SiftI256 is 32 bytes");
 _Static_assert(sizeof(SiftUuid16) == 16, "SiftUuid16 is 16 bytes");
 _Static_assert(sizeof(SiftInterval16) == 16, "SiftInterval16 is 16 bytes");
 _Static_assert(sizeof(SiftStrView) == 16, "SiftStrView is 16 bytes");
@@ -100,6 +109,9 @@ typedef struct SiftVec
 	int16		scale;
 	const void *dict;
 	const uint64 *nan;			/* a numeric: bit set = the row holds a NaN, which valid says is NULL; NULL when no row of the batch does */
+	uint32		typid;			/* SVEC_DATUM: PostgreSQL Oid of the Datum values (InvalidOid for native vectors) */
+	int16		typlen;			/* SVEC_DATUM: pg_type.typlen */
+	bool		typbyval;		/* SVEC_DATUM: pg_type.typbyval */
 } SiftVec;
 
 /* The active rows of a batch of n_raw <= SIFT_VEC_LEN rows: the bitmap always, the selection vector once an operator asks for it */
@@ -155,6 +167,11 @@ typedef struct SiftArrayLayout
 	const uint32 *lengths;		/* [n_parents] */
 	const uint32 *offsets;		/* [n_parents + 1]: the prefix sums of lengths */
 } SiftArrayLayout;
+
+/* The kind of a member of an element of an array of objects, as the vector (SVEC_I64) of the members of a leaf gives it: it holds a value of the leaf's type, it is a JSON null, or it is missing; a member of another JSON type is no kind, the rows that have one are the consumer's to read from the heap */
+#define SIFT_ELEM_KIND_ABSENT	0
+#define SIFT_ELEM_KIND_VALUE	1
+#define SIFT_ELEM_KIND_JNULL	7
 
 /* out (SIFT_COL_NWORDS-free: ceil(n_elems / 64) words) = the elements whose parent is in parent_mask; returns the number of elements set */
 extern uint32 sift_array_elem_mask(uint64 *out, const SiftArrayLayout *lay, const uint64 *parent_mask);

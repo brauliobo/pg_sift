@@ -54,7 +54,7 @@ BEGIN
 	SELECT count(*) INTO n FROM ((SELECT r FROM fc_a EXCEPT ALL SELECT r FROM fc_c) UNION ALL (SELECT r FROM fc_c EXCEPT ALL SELECT r FROM fc_a)) d;
 	SELECT count(*) INTO m FROM ((SELECT r FROM fc_b EXCEPT ALL SELECT r FROM fc_c) UNION ALL (SELECT r FROM fc_c EXCEPT ALL SELECT r FROM fc_b)) d;
 	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || '/' || CASE WHEN m = 0 THEN 'same' ELSE 'DIFFERENT' END || ' ' ||
-		(SELECT count(*) FROM regexp_matches(plan, 'Custom Scan \(SiftAgg\)', 'g')) || ' SiftAgg, ' ||
+		(SELECT count(*) FROM regexp_matches(plan, 'Custom Scan \(SiftAgg', 'g')) || ' SiftAgg, ' ||
 		(SELECT count(*) FROM regexp_matches(plan, 'Search: ', 'g')) || ' searching, ' || (SELECT count(*) FROM fc_c) || ' rows';
 END $$;
 

@@ -20,7 +20,7 @@ array-append	src/core/f2/fsm/slab.c	order[n++] = &t->slab[i];	order is SIFT_FSM_
 array-append	src/core/maint_sched.c	dbs[n++] = m->worker[w].db;	dbs is SIFT_MAINT_MAX_WORKERS long, one for each worker slot
 cast-after-product	src/agg/par/split.c	return (uint32) (((uint64) (h * SPLIT_MUL) * n) >> 32);	a multiplicative hash of 32-bit values: the wrap is the hash
 array-append	src/agg/spill/stream.c	act[k++] = act[a];	the active list is compacted in place, k never passes the index being read
-array-append	src/agg/wide.c	dig[n++] = (uint16) (u % 10000);	the limbs of a 128-bit value in base 10^4: at most 10 of the 16
+array-append	src/col/v1/src_wide.c	dig[n++] = (uint16) (u % 10000);	the limbs of a 128-bit value in base 10^4: at most 10 of the 16
 array-append	src/bm25/livestream.c	dl[n++] = row[o];	a term is buffered only while its df is within STREAM_POSTINGS (the arrays' size), or a full batch is flushed before the next row
 array-append	src/bm25/livestream.c	s->dl[s->n++] = dl;	a term is buffered only while its df is within STREAM_POSTINGS (the arrays' size), or a full batch is flushed before the next row
 array-append	src/bm25/merge_ranges.c	segs[nlive++] = seg;	the segments are the input of the merge, at most MAX_MERGE_FANIN (checked before the worker starts)

@@ -83,6 +83,8 @@ struct SiftF2Pull
 	uint64	   *mbits[SIFT_F2_PULL_MAX_MASKS];
 	SiftF2ElemStream es;
 	SiftF2ExtBatch out;
+	uint16		slice_off;		/* the first row of the slice in the granule or the slab */
+	uint8	   *xtag[SIFT_F2_PULL_MAX_COLS];	/* the JSON type each row of the granule holds of a leaf of a key of a document, read when a payload is asked of the column */
 };
 
 static Size
@@ -265,6 +267,88 @@ poison_granule(SiftF2Pull *p)
 	memset(p->poison, 0xff, ((p->n + 63) / 64) * sizeof(uint64));
 }
 
+/* a value a vector of a column cannot hold: the rows of the granule are the consumer's when it reads arrays or poison rows, else the scan has no answer */
+static void
+unholdable(SiftF2Pull *p)
+{
+	if (p->spec.group_leaf < 0 && !p->spec.poison_rows)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
+				errhint("Read the column through a scan that decodes exceptions.")));
+	poison_granule(p);
+}
+
+static void
+put_patch(SiftF2Pull *p, SiftVec *v, uint16 j, const SiftColDeltaPatch *pt)
+{
+	const bool	isnull = (pt->flags & SIFT_CDCOL_IS_NULL) != 0;
+	const int64 i = isnull ? 0 : pt->val.i;
+
+	if ((pt->flags & SIFT_CDCOL_HAS_TAG) != 0 && pt->tag != 0)
+		unholdable(p);
+	switch (v->type)
+	{
+		case SVEC_BOOL:
+			((uint8 *) v->data)[j] = i != 0;
+			break;
+		case SVEC_I32:
+			((int32 *) v->data)[j] = (int32) i;
+			break;
+		case SVEC_I64:
+		case SVEC_NUM64:
+			((int64 *) v->data)[j] = i;
+			break;
+		case SVEC_F64:
+			((double *) v->data)[j] = isnull ? 0 : pt->val.f;
+			break;
+		case SVEC_STRVIEW:
+			((SiftStrView *) v->data)[j] = isnull ? (SiftStrView) {0} : sift_vstr_make(pt->val.s, pt->vlen);
+			break;
+		default:
+			unholdable(p);
+	}
+	if (isnull)
+		v->valid[j >> 6] &= ~(UINT64CONST(1) << (j & 63));
+	else
+		v->valid[j >> 6] |= UINT64CONST(1) << (j & 63);
+}
+
+/* the validity of the cells of column i in a bitmap of the pull, which a patch may write */
+static void
+own_valid(SiftF2Pull *p, int i, uint16 cnt)
+{
+	SiftVec    *v = &p->vec[i];
+
+	if (v->all_valid)
+		memset(p->valid[i], 0xff, SIFT_VEC_WORDS * sizeof(uint64));
+	else
+		memcpy(p->valid[i], v->valid, ((cnt + 63) / 64) * sizeof(uint64));
+	v->valid = p->valid[i];
+	v->all_valid = false;
+}
+
+/* the cells of the rows [off, off + cnt) of column i that the column deltas the snapshot sees changed, over the cells the granule holds; a cell the vector cannot hold is the consumer's */
+static void
+patch_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt)
+{
+	SiftVec    *v = &p->vec[i];
+	uint32		lo = 0,
+				hi = 0;
+
+	if (p->gm == NULL)
+		return;
+	sift_col_delta_patch_slice(p->gm, (int16) (p->spec.col[i].leaf + 1), &lo, &hi);
+	for (uint32 k = lo; k < hi; k++)
+	{
+		const SiftColDeltaPatch *pt = &p->gm->patches[k];
+
+		if (pt->row_ordinal < off || pt->row_ordinal >= off + cnt)
+			continue;
+		if (v->all_valid || v->valid != p->valid[i])
+			own_valid(p, i, cnt);
+		put_patch(p, v, pt->row_ordinal - off, pt);
+	}
+}
+
 /* an element column held as a dictionary in this granule: its codes, whole, and the dictionary they name; false when the chunk is no dictionary */
 static bool
 decode_child_codes(SiftF2Pull *p, int c)
@@ -315,6 +399,29 @@ decode_child_vec(SiftF2Pull *p, int c, SiftVecType type)
 	}
 }
 
+/* the value column of the leaf of the kind column c, decoded before it: what is not a value is a JSON null where the chunk keeps that kind, else missing */
+static void
+decode_child_kinds(SiftF2Pull *p, int c)
+{
+	const uint32 n = p->n_elems;
+	const int	leaf = p->spec.child[c].leaf;
+	int64	   *kind = palloc_aligned(Max((Size) n * sizeof(int64), 1) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	uint8	   *tag = palloc(Max(n, 1));
+	const uint64 *value = NULL;
+
+	for (int v = 0; v < c; v++)
+		if (p->spec.child[v].leaf == leaf && !p->spec.child[v].kind)
+			value = p->child_valid[v];
+	SIFT_INVARIANT(value != NULL, "the column of the values of an element leaf precedes its kinds");
+	sift_granule_tags(&p->gv, leaf, tag);
+	for (uint32 e = 0; e < n; e++)
+		kind[e] = ((value[e >> 6] >> (e & 63)) & 1) ? SIFT_ELEM_KIND_VALUE : tag[e] == SIFT_COLTAG_JNULL ? SIFT_ELEM_KIND_JNULL : SIFT_ELEM_KIND_ABSENT;
+	p->child_data[c] = kind;
+	p->child_valid[c] = palloc_aligned(((n + 63) / 64 + 1) * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+	memset(p->child_valid[c], 0xff, ((n + 63) / 64) * sizeof(uint64));
+	p->child_type[c] = SVEC_I64;
+}
+
 static void
 decode_children(SiftF2Pull *p)
 {
@@ -329,6 +436,8 @@ decode_children(SiftF2Pull *p)
 			p->child_data[c] = palloc0(SIFT_VEC_PAD);
 			p->child_valid[c] = palloc0(sizeof(uint64));
 		}
+		else if (p->spec.child[c].kind)
+			decode_child_kinds(p, c);
 		else if (dict && decode_child_codes(p, c))
 			p->stats.child_dict_granules++;
 		else
@@ -337,6 +446,39 @@ decode_children(SiftF2Pull *p)
 			p->stats.child_str_granules += dict;
 		}
 	}
+}
+
+/* a leaf of a key of a jsonb document the consumer reads holds, on some rows, a value of another type than its own (the payload of its exception): those rows are poison, the consumer reads them from the heap */
+static bool
+key_leaf_col(const SiftF2Pull *p, int i)
+{
+	return sift_f2_rel(p->index)->key_leaf[p->spec.col[i].leaf];
+}
+
+static void
+poison_key_rows(SiftF2Pull *p)
+{
+	uint8	   *tag = palloc(Max(p->n, 1));
+
+	for (int i = 0; i < p->spec.ncols; i++)
+	{
+		if (!key_leaf_col(p, i))
+			continue;
+		sift_granule_tags(&p->gv, p->spec.col[i].leaf, tag);
+		for (uint32 r = 0; r < p->n; r++)
+			p->poison[r >> 6] |= (uint64) (tag[r] != 0 && tag[r] != SIFT_COLTAG_JNULL) << (r & 63);
+	}
+}
+
+/* no array column: every row has its document, and a row is poison where a leaf of a key holds a value it cannot */
+static void
+begin_rows(SiftF2Pull *p)
+{
+	p->poison = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
+	p->doc_valid = palloc((((p->n + 63) / 64) + 1) * sizeof(uint64));
+	memset(p->doc_valid, 0xff, (((p->n + 63) / 64) + 1) * sizeof(uint64));
+	p->has_layout = false;
+	p->n_elems = 0;
 }
 
 static void
@@ -370,13 +512,14 @@ static void
 finish_live(SiftF2Pull *p, const uint64 *dead)
 {
 	const uint32 words = (p->n + 63) / 64;
+	const bool	any_tid = p->is_slab || sift_cdi_gran_remaps(p->gm) || (p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g]));
 
 	p->live = palloc0((words + 1) * sizeof(uint64));
 	for (uint32 r = 0; r < p->n; r++)
 	{
 		bool		ok = dead == NULL || !((dead[r >> 6] >> (r & 63)) & 1);
 
-		if (ok && p->px != NULL && (p->is_slab || sift_cdi_gran_remaps(p->gm) || sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g])) && sift_pdel_idx_has(p->px, p->tids[r]))
+		if (ok && p->px != NULL && any_tid && sift_pdel_idx_has(p->px, p->tids[r]))
 			ok = false;
 		p->live[r >> 6] |= (uint64) ok << (r & 63);
 	}
@@ -426,6 +569,7 @@ begin_granule(SiftF2Pull *p)
 
 	close_cursors(p);
 	MemoryContextReset(p->gcx);
+	memset(p->xtag, 0, sizeof(p->xtag));
 	old = MemoryContextSwitchTo(p->gcx);
 	p->is_slab = false;
 	sift_lazy_granule_open(p->index, p->part, p->g, &p->lg);
@@ -444,6 +588,8 @@ begin_granule(SiftF2Pull *p)
 	finish_live(p, any_dead ? dead : NULL);
 	if (p->spec.group_leaf >= 0)
 		begin_layout(p);
+	else if (p->spec.poison_rows)
+		begin_rows(p);
 	no_elems = elems_ruled_out(p);
 	if (no_elems && !live_poison(p))
 	{
@@ -457,6 +603,8 @@ begin_granule(SiftF2Pull *p)
 		p->stats.granules_elem_elided++;
 	}
 	sift_lazy_granule_load(p->index, &p->lg, chunks, body_chunks(p, chunks));
+	if (p->spec.group_leaf >= 0 || p->spec.poison_rows)
+		poison_key_rows(p);
 	p->stats.child_chunks += p->n_elems > 0 ? p->spec.nchild : 0;
 	if (p->spec.group_leaf >= 0 && p->has_layout)
 		decode_children(p);
@@ -494,6 +642,17 @@ begin_slab(SiftF2Pull *p)
 	MemoryContextSwitchTo(old);
 }
 
+/* Whether the sink of the spec answered the granule from what its part stores */
+static bool
+granule_answered(const SiftF2Pull *p)
+{
+	const SiftDvGran *dg = p->dv != NULL ? sift_dv_granule(p->dv, p->g) : NULL;
+
+	return p->spec.gran_sink != NULL &&
+		p->spec.gran_sink(p->spec.gran_arg, &(SiftF2GranOffer) {.rel = p->index,.part = p->part,.desc = p->pd,.schema = p->r->schema,.g = p->g,.gd = &p->dir[p->g],.dead = dg,.snap = p->snap,
+							.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g]),.px = p->px,.vis = SIFT_GVIS_HEAP});
+}
+
 /* the next granule, slab or part; false at the end of the index */
 static bool
 advance(SiftF2Pull *p)
@@ -502,7 +661,7 @@ advance(SiftF2Pull *p)
 	{
 		if (p->part != NULL && sift_f2_pull_prune_next(&p->prune, &p->g, &p->stats))
 		{
-			if (begin_granule(p))
+			if (!granule_answered(p) && begin_granule(p))
 				return true;
 			continue;
 		}
@@ -596,79 +755,6 @@ fill_granule_mask(SiftF2Pull *p, int m, uint16 off, uint16 cnt)
 	memset(p->mbits[m], st == SIFT_MASK_ALL_ONE ? 0xff : 0, SIFT_VEC_WORDS * sizeof(uint64));
 }
 
-/* a value its vector cannot hold, stored or patched: the consumer of an array column reads the rows of the granule from the heap */
-static void
-unholdable_value(SiftF2Pull *p)
-{
-	if (p->spec.group_leaf >= 0)
-		poison_granule(p);
-	else
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
-				errhint("Read the column through a scan that decodes exceptions.")));
-}
-
-static void
-put_patch(SiftF2Pull *p, SiftVec *v, uint16 j, const SiftColDeltaPatch *pt)
-{
-	const bool	isnull = (pt->flags & SIFT_CDCOL_IS_NULL) != 0;
-	const int64 i = isnull ? 0 : pt->val.i;
-
-	if ((pt->flags & SIFT_CDCOL_HAS_TAG) != 0 && pt->tag != 0)
-		unholdable_value(p);
-	switch (v->type)
-	{
-		case SVEC_BOOL:
-			((uint8 *) v->data)[j] = i != 0;
-			break;
-		case SVEC_I32:
-			((int32 *) v->data)[j] = (int32) i;
-			break;
-		case SVEC_I64:
-		case SVEC_NUM64:
-			((int64 *) v->data)[j] = i;
-			break;
-		case SVEC_F64:
-			((double *) v->data)[j] = isnull ? 0 : pt->val.f;
-			break;
-		case SVEC_STRVIEW:
-			((SiftStrView *) v->data)[j] = isnull ? (SiftStrView) {0} : sift_vstr_make(pt->val.s, pt->vlen);
-			break;
-		default:
-			unholdable_value(p);
-	}
-	if (isnull)
-		v->valid[j >> 6] &= ~(UINT64CONST(1) << (j & 63));
-	else
-		v->valid[j >> 6] |= UINT64CONST(1) << (j & 63);
-}
-
-/* the cells the column deltas the snapshot sees gave the rows of the slice, laid over what the granule holds of them */
-static void
-patch_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt)
-{
-	SiftVec    *v = &p->vec[i];
-	uint32		lo,
-				hi;
-
-	sift_col_delta_patch_slice(p->gm, (int16) (p->spec.col[i].leaf + 1), &lo, &hi);
-	for (uint32 k = lo; k < hi; k++)
-	{
-		const SiftColDeltaPatch *pt = &p->gm->patches[k];
-
-		if (pt->row_ordinal < off || pt->row_ordinal >= off + cnt)
-			continue;
-		if (v->all_valid)
-		{
-			memset(p->valid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
-			for (uint16 j = 0; j < cnt; j++)
-				p->valid[i][j >> 6] |= UINT64CONST(1) << (j & 63);
-			v->valid = p->valid[i];
-			v->all_valid = false;
-		}
-		put_patch(p, v, pt->row_ordinal - off, pt);
-	}
-}
-
 static void
 fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 {
@@ -690,8 +776,8 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 				p->cur_on[i] = true;
 			}
 			sift_vec_cursor_decode(&p->cur[i], off, cnt, &p->vec[i], &exc);
-			if (exc != NULL)
-				unholdable_value(p);
+			if (exc != NULL && !(p->spec.poison_rows && key_leaf_col(p, i)))
+				unholdable(p);
 			patch_col(p, i, off, cnt);
 		}
 	}
@@ -727,6 +813,39 @@ fill_elems(SiftF2Pull *p, uint16 off, uint16 cnt)
 	es->doc_valid = p->doc_valid + off / 64;
 }
 
+static bool
+holds_payload(uint8 tag)
+{
+	return tag >= SIFT_COLTAG_STRING && tag <= SIFT_COLTAG_ARRAY;
+}
+
+const char *
+sift_f2_pull_payload(SiftF2Pull *p, int i, uint16 row, uint32 *len)
+{
+	const int	c = p->spec.col[i].leaf;
+	const uint32 at = (uint32) p->slice_off + row;
+	const SiftVec *v = &p->vec[i];
+
+	if (v->valid == NULL || ((v->valid[row >> 6] >> (row & 63)) & 1))
+		return NULL;
+	if (p->is_slab)
+	{
+		if (p->rb->tag == NULL || p->rb->tag[c] == NULL || p->rb->xpay[c] == NULL || !holds_payload(p->rb->tag[c][at]))
+			return NULL;
+		*len = p->rb->xplen[c][at];
+		return p->rb->xpay[c][at];
+	}
+	if (p->xtag[i] == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(p->gcx);
+
+		p->xtag[i] = palloc(p->n);
+		sift_granule_tags(&p->gv, c, p->xtag[i]);
+		MemoryContextSwitchTo(old);
+	}
+	return holds_payload(p->xtag[i][at]) ? sift_granule_exc_payload(&p->gv, c, (int) at, len) : NULL;
+}
+
 const SiftF2ExtBatch *
 sift_f2_pull_next(SiftF2Pull *p)
 {
@@ -742,9 +861,10 @@ sift_f2_pull_next(SiftF2Pull *p)
 	off = (uint16) p->off;
 	cnt = (uint16) Min(SIFT_VEC_LEN, p->n - p->off);
 	p->off += cnt;
+	p->slice_off = off;
 	fill_slice(p, off, cnt);
 	p->out = (SiftF2ExtBatch) {.n = cnt,.col = p->vec,.masks = p->masks,.tid = p->tids + off,.live = p->live + off / 64};
-	if (p->spec.group_leaf >= 0)
+	if (p->spec.group_leaf >= 0 || p->spec.poison_rows)
 	{
 		fill_elems(p, off, cnt);
 		p->out.elem = &p->es;

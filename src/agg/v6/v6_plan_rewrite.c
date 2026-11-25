@@ -18,6 +18,7 @@
 #include "agg/v6/v6_expr_num.h"
 #include "agg/v6/v6_group_topk.h"
 #include "agg/v6/v6_plan_rewrite.h"
+#include "agg/v6/v6_datum.h"
 
 static bool
 func_named(Oid funcid, const char *name)
@@ -415,10 +416,10 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 		const SiftV6Derive *d = &s->derive[i];
 
 		ints = list_concat(ints, list_make5_int(d->kind, d->src.attno, (int) d->src.typid, d->ncond, d->else_len));
-		ints = list_concat(ints, list_make2_int((int) d->src.src, d->src.slot));
+		ints = list_concat(ints, list_make5_int((int) d->src.src, d->src.slot, d->src.scale, d->src.jleaf, (int) d->src.jtype));
 		ints = put64(lappend_int(ints, d->utf8), d->aux);
 		for (int c = 0; c < d->ncond; c++)
-			ints = put64(list_concat(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), list_make2_int((int) d->cond[c].src, d->cond[c].slot)), d->cval[c]);
+			ints = put64(list_concat(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), list_make4_int((int) d->cond[c].src, d->cond[c].slot, d->cond[c].jleaf, (int) d->cond[c].jtype)), d->cval[c]);
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)
 			ints = lappend_int(ints, d->else_bytes[b]);
 	}
@@ -426,12 +427,17 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 		ints = lappend_int(ints, s->key[i].derive);
 	for (int j = 0; j < s->naggs; j++)
 		ints = lappend_int(ints, s->agg[j].arg.derive);
+	for (int i = 0; i < s->nfcols; i++)
+		ints = lappend_int(ints, s->fcol[i].derive);
 	ints = lappend_int(lappend_int(ints, s->affine), (int) s->aff_type);
 	ints = put64(put64(ints, s->aff_lo), s->aff_hi);
 	ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, s->rows), (int) s->groups_est), (int) s->topk), s->ntopk);
 	for (int i = 0; i < s->ntopk; i++)
 		ints = list_concat(ints, list_make4_int(s->topk_item[i].pos, (int) s->topk_item[i].sortop, (int) s->topk_item[i].collid, s->topk_item[i].nulls_first));
-	return lappend_int(ints, (int) s->lock_k);
+	ints = lappend_int(ints, s->nout);
+	for (int i = 0; i < s->nout; i++)
+		ints = list_concat(ints, list_make2_int(s->out[i].from, s->out[i].at));
+	return lappend_int(lappend_int(ints, (int) s->lock_k), s->having);
 }
 
 void
@@ -443,16 +449,18 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 		SiftV6Derive *d = &s->derive[i];
 
 		d->kind = list_nth_int(ints, at);
-		d->src = (SiftV6Col) {.attno = list_nth_int(ints, at + 1),.typid = (Oid) list_nth_int(ints, at + 2),.src = (SiftV6Src) list_nth_int(ints, at + 5),.slot = list_nth_int(ints, at + 6)};
+		d->src = (SiftV6Col) {.attno = list_nth_int(ints, at + 1),.typid = (Oid) list_nth_int(ints, at + 2),.src = (SiftV6Src) list_nth_int(ints, at + 5),.slot = list_nth_int(ints, at + 6),
+			.scale = list_nth_int(ints, at + 7),.jleaf = list_nth_int(ints, at + 8),.jtype = list_nth_int(ints, at + 9) != 0};
 		d->ncond = list_nth_int(ints, at + 3);
 		d->else_len = list_nth_int(ints, at + 4);
-		d->utf8 = list_nth_int(ints, at + 7);
-		d->aux = get64(ints, at + 8);
-		at += 10;
-		for (int c = 0; c < d->ncond; c++, at += 6)
+		d->utf8 = list_nth_int(ints, at + 10);
+		d->aux = get64(ints, at + 11);
+		at += 13;
+		for (int c = 0; c < d->ncond; c++, at += 8)
 		{
-			d->cond[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),.slot = list_nth_int(ints, at + 3)};
-			d->cval[c] = get64(ints, at + 4);
+			d->cond[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),.slot = list_nth_int(ints, at + 3),
+			.jleaf = list_nth_int(ints, at + 4),.jtype = list_nth_int(ints, at + 5) != 0};
+			d->cval[c] = get64(ints, at + 6);
 		}
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)
 			d->else_bytes[b] = (uint8) list_nth_int(ints, at++);
@@ -462,6 +470,8 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 		s->key[i].derive = list_nth_int(ints, at++);
 	for (int j = 0; j < s->naggs; j++)
 		s->agg[j].arg.derive = list_nth_int(ints, at++);
+	for (int i = 0; i < s->nfcols; i++)
+		s->fcol[i].derive = list_nth_int(ints, at++);
 	s->affine = list_nth_int(ints, at);
 	s->aff_type = (Oid) list_nth_int(ints, at + 1);
 	s->aff_lo = get64(ints, at + 2);
@@ -474,19 +484,24 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 	at += 4;
 	for (int i = 0; i < s->ntopk; i++, at += 4)
 		s->topk_item[i] = (SiftV6TopKItem) {.pos = list_nth_int(ints, at),.sortop = (Oid) list_nth_int(ints, at + 1),.collid = (Oid) list_nth_int(ints, at + 2),.nulls_first = list_nth_int(ints, at + 3)};
+	s->nout = list_nth_int(ints, at++);
+	s->out = palloc(Max(s->nout, 1) * sizeof(SiftV6RowOut));
+	for (int i = 0; i < s->nout; i++, at += 2)
+		s->out[i] = (SiftV6RowOut) {.from = (SiftV6RowFrom) list_nth_int(ints, at),.at = list_nth_int(ints, at + 1)};
 	s->lock_k = (uint32) list_nth_int(ints, at);
+	s->having = list_nth_int(ints, at + 1);
 }
 
 /* ---- ORDER BY .. LIMIT of the groups ---- */
 
-/* LIMIT + OFFSET of constants of a query that has no DISTINCT, window function or set-returning function, at most max_k (0: the query has no such limit, or one the node cannot take) */
+/* LIMIT + OFFSET of constants of a query that has no DISTINCT or set-returning function, at most max_k (0: the query has no such limit, or one the node cannot take) */
 static uint32
 limit_plus_offset(const Query *q, int64 max_k)
 {
 	int64		limit,
 				offset = 0;
 
-	if (q->distinctClause != NIL || q->hasWindowFuncs || q->hasTargetSRFs || q->limitOption != LIMIT_OPTION_COUNT || q->limitCount == NULL || !IsA(q->limitCount, Const))
+	if (q->distinctClause != NIL || q->hasTargetSRFs || q->limitOption != LIMIT_OPTION_COUNT || q->limitCount == NULL || !IsA(q->limitCount, Const))
 		return 0;
 	if (((const Const *) q->limitCount)->constisnull)
 		return 0;
@@ -504,13 +519,20 @@ limit_plus_offset(const Query *q, int64 max_k)
 uint32
 sift_v6_topk_of(const Query *q)
 {
+	return q->sortClause == NIL || q->hasWindowFuncs ? 0 : limit_plus_offset(q, SIFT_TOPK_MAX_K);
+}
+
+/* the K of the best rows of the query: the same, window functions over the whole set (the node of the rows computes them) allowed */
+uint32
+sift_v6_rows_k_of(const Query *q)
+{
 	return q->sortClause == NIL ? 0 : limit_plus_offset(q, SIFT_TOPK_MAX_K);
 }
 
 uint32
 sift_v6_limit_of(const Query *q)
 {
-	if (q->sortClause != NIL || q->groupClause == NIL || q->groupingSets != NIL || q->havingQual != NULL || q->hasDistinctOn || q->setOperations != NULL || q->rowMarks != NIL)
+	if (q->sortClause != NIL || q->hasWindowFuncs || q->groupClause == NIL || q->groupingSets != NIL || q->havingQual != NULL || q->hasDistinctOn || q->setOperations != NULL || q->rowMarks != NIL)
 		return 0;
 	return limit_plus_offset(q, SIFT_LOCK_MAX_K);
 }
@@ -534,7 +556,7 @@ sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s)
 				break;
 			pos++;
 		}
-		if (!found)
+		if (!found || (pos < s->nkeys && sift_v6_key_generic(s->key[pos].typid)))
 			return false;
 		s->topk_item[s->ntopk++] = (SiftV6TopKItem) {.pos = pos,.sortop = sgc->sortop,.collid = exprCollation((const Node *) e),.nulls_first = sgc->nulls_first};
 	}
@@ -561,6 +583,7 @@ sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		if (s->nsets > 0 || s->topk > 0 || s->ext != NULL || s->nparts > 0 || s->par_strategy != 0 || cp->custom_paths != NIL || path->parallel_aware)
 			continue;
 		s->topk = k;
+		s->having = lthird(cp->custom_private) != NIL;
 		if (!sift_v6_topk_items(root->parse, lsecond(cp->custom_private), s))
 			continue;
 		top = makeNode(CustomPath);

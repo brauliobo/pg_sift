@@ -37,7 +37,7 @@ DECLARE l text; scans int := 0;
 BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg%')::int;
 	END LOOP;
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	RETURN CASE WHEN scans = 0 THEN 'normal' ELSE 'scan x' || scans END;

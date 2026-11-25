@@ -1,7 +1,7 @@
 /*
  * agg/v6/v6_par_radix.c - SV6P_RADIX_GROUPED and SV6P_RADIX_UNGROUPED_DIST of v6_par.h: many groups, or a count(DISTINCT) of no keys, so the merge is as parallel as the scan.
  *
- * Phase 0: every participant folds its morsels into a table that stays in its cache; when the table holds SIFT_PAR_LOCAL_GROUPS groups it hands them to the partitions, as records routed by the hash of the key (of
+ * Phase 0: every participant folds its morsels into a table that stays in its cache; when the table holds its share of the hash memory it hands its groups to the partitions, as records routed by the hash of the key (of
  * the value, for a count(DISTINCT) of no keys), and starts again. A partition holds every record of the groups it owns, the distinct values of a group with it. Barrier: all records are written.
  * Phase 1: every participant claims whole partitions from a shared cursor, merges the records of each into a table of its own (no other participant holds a key of it: no lock), finishes it, and emits its groups through
  * the Gather above: HAVING runs on them in the node, and no group is emitted twice. Nothing waits after the barrier, so a participant that stops (a LIMIT above, an interrupt) holds nobody.
@@ -14,8 +14,10 @@
 #include "agg/v6/v6_par.h"
 
 static void
-relief(SiftV6ParRun *r)
+relief(void *arg)
 {
+	SiftV6ParRun *r = arg;
+
 	if (r->eng->local_load(r->local) >= r->export_cap)
 		sift_v6_par_export(r);
 }
@@ -52,25 +54,23 @@ sift_v6_par_emit_parts(SiftV6ParRun *r, Datum *values, bool *isnull)
 }
 
 static void
+grouped_body(SiftV6ParRun *r)
+{
+	r->local = r->eng->local_new(r->eng->env, false);
+	r->rl = sift_radix_local_new_raw(r->coord);
+	sift_v6_par_scan(r, relief);
+	sift_v6_par_export(r);
+	r->eng->local_free(r->local);
+	r->local = NULL;
+	sift_v6_par_finish_stages(r);
+	BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
+}
+
+static void
 run_grouped(SiftV6ParRun *r)
 {
-	const int	phase = sift_v6_par_attach(r);
-
-	if (phase == 0)
-	{
-		PG_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
-		{
-			r->local = r->eng->local_new(r->eng->env, false);
-			r->rl = sift_radix_local_new_raw(r->coord);
-			sift_v6_par_scan(r, relief);
-			sift_v6_par_export(r);
-			r->eng->local_free(r->local);
-			r->local = NULL;
-			sift_v6_par_finish_stages(r);
-			BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
-		}
-		PG_END_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
-	}
+	if (sift_v6_par_attach(r) == 0)
+		sift_v6_par_guarded(r, grouped_body);
 	sift_v6_par_leave(r);
 	r->stage = SV6S_PARTS;
 }
@@ -118,6 +118,24 @@ final_state(SiftV6ParRun *r)
 }
 
 static void
+dist_body(SiftV6ParRun *r)
+{
+	r->local = r->eng->local_new(r->eng->env, false);
+	r->plocal = r->eng->local_new(r->eng->env, false);
+	r->rl = sift_radix_local_new_raw(r->coord);
+	sift_v6_par_scan(r, relief);
+	sift_v6_par_export(r);
+	sift_v6_par_export_plain(r);
+	sift_v6_par_finish_stages(r);
+	r->eng->local_free(r->local);
+	r->eng->local_free(r->plocal);
+	r->local = r->plocal = NULL;
+	BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
+	count_parts(r);
+	BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
+}
+
+static void
 run_dist(SiftV6ParRun *r)
 {
 	if (sift_v6_par_attach(r) != 0)
@@ -126,24 +144,8 @@ run_dist(SiftV6ParRun *r)
 		r->stage = SV6S_DONE;
 		return;
 	}
-	PG_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
-	{
-		r->local = r->eng->local_new(r->eng->env, false);
-		r->plocal = r->eng->local_new(r->eng->env, false);
-		r->rl = sift_radix_local_new_raw(r->coord);
-		sift_v6_par_scan(r, relief);
-		sift_v6_par_export(r);
-		sift_v6_par_export_plain(r);
-		sift_v6_par_finish_stages(r);
-		BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
-		count_parts(r);
-		BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
-	}
-	PG_END_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
+	sift_v6_par_guarded(r, dist_body);
 	sift_v6_par_leave(r);
-	r->eng->local_free(r->local);
-	r->eng->local_free(r->plocal);
-	r->local = r->plocal = NULL;
 	if (pg_atomic_exchange_u32(&r->hdr->final_emitter, 1) != 0)
 	{
 		r->stage = SV6S_DONE;

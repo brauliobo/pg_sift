@@ -43,7 +43,7 @@ static bool
 leaf_of_type(const SiftSrcLeaf *lf, Oid typid)
 {
 	if (lf->wide)
-		return lf->typid == typid && sift_aggwide_type(typid);
+		return lf->typid == typid && sift_srcwide_type(typid);
 	if (lf->vtype == SCV_CODE)
 		return sift_str_type(typid) && sift_str_type(lf->typid);
 	if (lf->typid != typid)
@@ -151,7 +151,7 @@ lookcol_cell_datum(ColNeed *nd, int64 i, bool *isnull)
 			uint32		len;
 			const char *str = sift_srcdict_str(v->dict, c, &len, buf);
 
-			nd->dval[c] = lf->wide ? sift_aggwide_datum(lf->typid, memcpy(palloc(len), str, len), len) :
+			nd->dval[c] = lf->wide ? sift_srcwide_datum(lf->typid, memcpy(palloc(len), str, len), len) :
 				PointerGetDatum(cstring_to_text_with_len(str, len));
 			nd->dmade[c] = true;
 			MemoryContextSwitchTo(old);

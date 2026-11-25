@@ -5,14 +5,32 @@
 #include "bm25/analyze.h"
 #include "col/codec_int.h"
 #include "col/compress.h"
-#include "core/damage.h"
 
 #define CC_TRAILER			8
 
-static void *
-rd_alloc(MemoryContext cx, size_t sz)
+MemoryContext
+cc_cx_open(MemoryContext parent)
 {
-	return MemoryContextAllocZero(cx, sz);
+	return sift_arena_scoped() ? NULL : AllocSetContextCreate(parent ? parent : CurrentMemoryContext, "sift column read", ALLOCSET_SMALL_SIZES);
+}
+
+void
+cc_cx_close(MemoryContext cx)
+{
+	if (cx != NULL)
+		MemoryContextDelete(cx);
+}
+
+void *
+cc_alloc(MemoryContext cx, size_t n)
+{
+	return cx != NULL ? MemoryContextAlloc(cx, n) : sift_alloc(n);
+}
+
+void *
+cc_alloc0(MemoryContext cx, size_t n)
+{
+	return cx != NULL ? MemoryContextAllocZero(cx, n) : sift_alloc0(n);
 }
 
 void
@@ -133,9 +151,9 @@ parse_rle(const CcParse *ps, CcNode *nd)
 	need(ps->avail, len);
 	nd->a = parse_sub(ps, CC_NHDR, vl, nd->nruns);
 	nd->b = parse_sub(ps, CC_NHDR + vl, ll, nd->nruns);
-	lens = rd_alloc(ps->cx, sizeof(uint32) * CC_CAP32(nd->nruns));
+	lens = cc_alloc0(ps->cx, sizeof(uint32) * CC_CAP32(nd->nruns));
 	nd_u32(nd->b, 0, lens);
-	nd->rstart = rd_alloc(ps->cx, sizeof(uint32) * (nd->nruns + 1));
+	nd->rstart = cc_alloc0(ps->cx, sizeof(uint32) * (nd->nruns + 1));
 	for (uint32 r = 0; r < nd->nruns; r++)
 	{
 		if (lens[r] == 0)
@@ -148,7 +166,7 @@ parse_rle(const CcParse *ps, CcNode *nd)
 	if (sum != n)
 		CC_CORRUPT("runs shorter than the chunk");
 	nd->rstart[nd->nruns] = n;
-	pfree(lens);
+	sift_free(lens);
 	return len;
 }
 
@@ -167,7 +185,7 @@ parse_dict(const CcParse *ps, CcNode *nd)
 	need(ps->avail, len);
 	nd->a = parse_sub(ps, CC_NHDR, dl, nd->d);
 	nd->b = parse_sub(ps, CC_NHDR + dl, cl, ps->n);
-	nd->dict = rd_alloc(ps->cx, sizeof(int64) * (nd->d + 8));
+	nd->dict = cc_alloc0(ps->cx, sizeof(int64) * (nd->d + 8));
 	nd_i64(nd->a, nd->dict);
 	for (uint32 i = 1; i < nd->d; i++)
 		if (nd->dict[i] <= nd->dict[i - 1])
@@ -179,18 +197,18 @@ parse_dict(const CcParse *ps, CcNode *nd)
 static void
 parse_alp_positions(const CcParse *ps, CcNode *nd, size_t off, uint32 len)
 {
-	int64	   *tmp = rd_alloc(ps->cx, sizeof(int64) * (nd->nexc + 8));
+	int64	   *tmp = cc_alloc0(ps->cx, sizeof(int64) * (nd->nexc + 8));
 
 	nd->b = parse_sub(ps, off, len, nd->nexc);
 	nd_i64(nd->b, tmp);
-	nd->pos = rd_alloc(ps->cx, sizeof(uint32) * nd->nexc);
+	nd->pos = cc_alloc0(ps->cx, sizeof(uint32) * nd->nexc);
 	for (uint32 i = 0; i < nd->nexc; i++)
 	{
 		if (tmp[i] < 0 || tmp[i] >= (int64) ps->n || (i && tmp[i] <= tmp[i - 1]))
 			CC_CORRUPT("exception positions out of order");
 		nd->pos[i] = (uint32) tmp[i];
 	}
-	pfree(tmp);
+	sift_free(tmp);
 }
 
 static size_t
@@ -256,12 +274,10 @@ parse_wrap(const CcParse *ps, CcNode *nd)
 	len = CC_NHDR + CC_RUP8(cl);
 	need(ps->avail, len);
 	if (!sift_colz_available(nd->alg))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("column chunk uses compression algorithm %d, which this build does not provide", nd->alg),
-						errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
+		SIFT_FAIL_UNSUPPORTED(CC_UPGRADE_HINT, "column chunk uses compression algorithm %d, which this build does not provide", nd->alg);
 	if (f1 < CC_NHDR || (f1 & 7) || f1 > (uint64) ps->n * 9 + 4096 + 64)
 		CC_CORRUPT("wrapped length out of range");
-	buf = rd_alloc(ps->cx, (size_t) f1 + SIFT_COL_PAD);
+	buf = cc_alloc0(ps->cx, (size_t) f1 + SIFT_COL_PAD);
 	if (!sift_colz_decompress(nd->alg, p + CC_NHDR, cl, buf, f1))
 		CC_CORRUPT("compressed stream is damaged");
 	nd->a = parse_node(ps->cx, ps->kind, buf, f1, ps->n, ps->depth + 1, &u);
@@ -280,7 +296,7 @@ parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t avail, uint
 	if (depth > SIFT_CC_MAXDEPTH)
 		CC_CORRUPT("nodes nested too deep");
 	need(avail, CC_NHDR);
-	nd = rd_alloc(cx, sizeof(CcNode));
+	nd = cc_alloc0(cx, sizeof(CcNode));
 	nd->tag = p[0];
 	nd->kind = (uint8) kind;
 	nd->n = n;
@@ -320,9 +336,7 @@ parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t avail, uint
 			*used = cc_parse_bss(p, avail, n, nd);
 			break;
 		default:
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							errmsg("column chunk uses encoding %d, which this build does not know", nd->tag),
-							errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
+			SIFT_FAIL_UNSUPPORTED(CC_UPGRADE_HINT, "column chunk uses encoding %d, which this build does not know", nd->tag);
 	}
 	return nd;
 }
@@ -335,16 +349,15 @@ sift_cc_open(MemoryContext mcxt, const uint8 *blob, Size len, bool verify)
 	size_t		used;
 
 	if (len < SIFT_CC_HDRLEN + CC_NHDR + CC_TRAILER || (len & 7) || ((uintptr_t) blob & 7) || blob[0] != SIFT_CC_MAGIC)
-		SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: bad header or misaligned blob"));
+		CC_CORRUPT("bad header or misaligned blob");
 	if (blob[1] != SIFT_CC_VERSION)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("column chunk has format version %d, this build reads %d", blob[1], SIFT_CC_VERSION),
-						errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
+		SIFT_FAIL_UNSUPPORTED(CC_UPGRADE_HINT, "column chunk has format version %d, this build reads %d", blob[1], SIFT_CC_VERSION);
 	if (blob[2] > SIFT_CC_F8)
 		CC_CORRUPT("unknown value kind");
 	if (verify && sift_term_hash((const char *) blob, (int) (len - CC_TRAILER)) != get32(blob + len - CC_TRAILER))
 		CC_CORRUPT("check word mismatch");
-	cx = AllocSetContextCreate(mcxt, "sift column chunk", ALLOCSET_SMALL_SIZES);
-	c = MemoryContextAllocZero(cx, sizeof(SiftCc));
+	cx = cc_cx_open(mcxt);
+	c = cc_alloc0(cx, sizeof(SiftCc));
 	c->mcxt = cx;
 	c->kind = (SiftCcKind) blob[2];
 	c->flags = blob[3];
@@ -369,14 +382,14 @@ SiftCc *
 sift_cc_open_rows(MemoryContext mcxt, const uint8 *blob, Size len, bool verify, uint32 nrows)
 {
 	if (len >= SIFT_CC_HDRLEN && get32(blob + 4) != nrows)
-		SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: the blob has %u values, the chunk %u", get32(blob + 4), nrows));
+		CC_CORRUPT("the blob has %u values, the chunk %u", get32(blob + 4), nrows);
 	return sift_cc_open(mcxt, blob, len, verify);
 }
 
 void
 sift_cc_close(SiftCc *c)
 {
-	MemoryContextDelete(c->mcxt);
+	cc_cx_close(c->mcxt);
 }
 
 SiftCcKind

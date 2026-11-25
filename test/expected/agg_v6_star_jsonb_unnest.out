@@ -71,10 +71,11 @@ EXPLAIN (COSTS OFF) SELECT d1.name, count(*), sum(sf.v) FROM sf JOIN d1 ON sf.k 
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 1
+   Lookup Joins: d1
    Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d1
-(6 rows)
+(7 rows)
 
 EXPLAIN (COSTS OFF) SELECT d1.name, d3.cat, count(*) FROM sf JOIN d1 ON sf.k = d1.k LEFT JOIN d3 ON sf.g = d3.g GROUP BY 1, 2;
                       QUERY PLAN                      
@@ -82,11 +83,12 @@ EXPLAIN (COSTS OFF) SELECT d1.name, d3.cat, count(*) FROM sf JOIN d1 ON sf.k = d
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 2
+   Lookup Joins: d1, d3 (left)
    Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d1
    ->  Seq Scan on d3
-(7 rows)
+(8 rows)
 
 EXPLAIN (COSTS OFF) SELECT u.e, count(*) FROM sf CROSS JOIN LATERAL unnest(sf.tags) AS u(e) GROUP BY u.e;
                       QUERY PLAN                      
@@ -113,10 +115,11 @@ EXPLAIN (COSTS OFF) SELECT d3.cat, sf.doc->>'t', sum((sf.doc->>'a')::float8) FRO
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 1
+   Lookup Joins: d3 (left)
    Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d3
-(6 rows)
+(7 rows)
 
 -- Q-C02. Inner and left star joins: NULL keys, keys with no dimension row, dimension rows with a NULL payload, an ON clause that only the dimension reads
 SELECT same(q) FROM unnest(ARRAY[
@@ -196,9 +199,9 @@ SELECT same(q) FROM unnest(ARRAY[
 
 -- the quals over jsonb stay with the table
 SELECT same('SELECT g, count(*) FROM sf WHERE doc->>''t'' = ''x'' GROUP BY g');
-                                  same                                   
--------------------------------------------------------------------------
- same normal SELECT g, count(*) FROM sf WHERE doc->>'t' = 'x' GROUP BY g
+                                 same                                  
+-----------------------------------------------------------------------
+ same node SELECT g, count(*) FROM sf WHERE doc->>'t' = 'x' GROUP BY g
 (1 row)
 
 -- a value the leaf cannot hold is read from the table, and a text that is not a float8 is the error of the table
@@ -253,7 +256,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT sf.g, u.e, count(*), sum(sf.x) FROM sf CROSS JOIN LATERAL unnest(sf.tags) AS u(e) GROUP BY 1, 2
 (8 rows)
 
--- Q-F01. FILTER over the fact table's columns and shredded scalars is the node's; a FILTER over a dimension, an unnest or a jsonb qual stays with the table
+-- Q-F01. FILTER over the fact table's columns, shredded scalars and the columns of an unnest is the node's; a FILTER over a dimension or a jsonb qual stays with the table
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT g, sum((doc->>''a'')::float8) FILTER (WHERE v > 20), count(doc->>''t'') FILTER (WHERE g > 2) FROM sf GROUP BY g',
 	'SELECT doc->>''t'', count(*) FILTER (WHERE v > 20), sum(v) FILTER (WHERE x > 5) FROM sf GROUP BY 1',
@@ -263,11 +266,11 @@ SELECT same(q) FROM unnest(ARRAY[
 ]) q;
                                                                    same                                                                    
 -------------------------------------------------------------------------------------------------------------------------------------------
- same node SELECT g, sum((doc->>'a')::float8) FILTER (WHERE v > 20), count(doc->>'t') FILTER (WHERE g > 2) FROM sf GROUP BY g
+ same normal SELECT g, sum((doc->>'a')::float8) FILTER (WHERE v > 20), count(doc->>'t') FILTER (WHERE g > 2) FROM sf GROUP BY g
  same node SELECT doc->>'t', count(*) FILTER (WHERE v > 20), sum(v) FILTER (WHERE x > 5) FROM sf GROUP BY 1
  same normal SELECT d1.name, sum(sf.v) FILTER (WHERE d1.w > 1), count(*) FILTER (WHERE sf.g = 2) FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
- same normal SELECT u.e, count(*) FILTER (WHERE sf.v > 20), sum(sf.v) FILTER (WHERE u.e = 'a') FROM sf, unnest(sf.tags) u(e) GROUP BY 1
- same normal SELECT d1.name, count(*) FILTER (WHERE sf.doc->>'t' = 'x') FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
+ same node SELECT u.e, count(*) FILTER (WHERE sf.v > 20), sum(sf.v) FILTER (WHERE u.e = 'a') FROM sf, unnest(sf.tags) u(e) GROUP BY 1
+ same node SELECT d1.name, count(*) FILTER (WHERE sf.doc->>'t' = 'x') FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
 (5 rows)
 
 -- Q-M01. Rows the index has not merged yet, updated and deleted rows, then VACUUM: the answers follow the table

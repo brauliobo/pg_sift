@@ -1,7 +1,7 @@
 /*
  * agg/vk/run.c - the run of a job: the granules in batches through two slots, so that the staging and the copy of one batch (on the
  * transfer queue when the device has one of its own) overlap the decode and the aggregation of the one before (on the compute queue);
- * the waits, cut in slices that call the interrupt; the finish (the compaction of the hash table, the read back); the top N in two passes.
+ * the waits, cut in slices that ask whether the query was cancelled; the finish (the compaction of the hash table, the read back); the top N in two passes.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +17,7 @@ typedef struct RunCtx
 	SiftVk	   *vk;
 	const SiftVkJob *job;
 	Plan		plan;
-	void		(*interrupt) (void);
+	bool		(*cancelled) (void);
 	SiftVkResult *res;
 	Slot	   *last;			/* the slot of the last batch: its control words are those of the job */
 	Batch		bt[NSLOT];
@@ -34,7 +34,7 @@ typedef struct RunCtx
 enum { FINISH_COMPACT, FINISH_COUNT, FINISH_DENSE_COUNT };
 
 bool
-wait_slot(SiftVk *vk, Slot *s, void (*interrupt) (void))
+wait_slot(SiftVk *vk, Slot *s, bool (*cancelled) (void))
 {
 	double		t0 = now_ms();
 	VkResult	r;
@@ -48,8 +48,11 @@ wait_slot(SiftVk *vk, Slot *s, void (*interrupt) (void))
 			break;
 		if (r == VK_TIMEOUT)
 		{
-			if (interrupt)
-				interrupt();
+			if (cancelled && cancelled())
+			{
+				vk->cancel = true;
+				return false;
+			}
 			if (now_ms() - t0 > WAIT_TOTAL_MS)
 			{
 				snprintf(vk->err, sizeof(vk->err), "a submission did not finish in %d ms", WAIT_TOTAL_MS);
@@ -390,7 +393,7 @@ run_scan(RunCtx *rc, uint32_t g0, uint32_t g1)
 
 		if (s->busy)
 		{
-			if (!wait_slot(vk, s, rc->interrupt))
+			if (!wait_slot(vk, s, rc->cancelled))
 				return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
 			if (!finish_batch(rc, b))
 				return SIFT_VK_DECODE;
@@ -401,7 +404,7 @@ run_scan(RunCtx *rc, uint32_t g0, uint32_t g1)
 		bs = batch_build(vk, s, rc->job, &rc->plan, g, g1, b);
 		if (bs == BUILD_NO_ROOM && vk->slot[k ^ 1].busy)
 		{
-			if (!wait_slot(vk, &vk->slot[k ^ 1], rc->interrupt))
+			if (!wait_slot(vk, &vk->slot[k ^ 1], rc->cancelled))
 				return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
 			if (!finish_batch(rc, &rc->bt[k ^ 1]))
 				return SIFT_VK_DECODE;
@@ -425,7 +428,7 @@ run_scan(RunCtx *rc, uint32_t g0, uint32_t g1)
 
 		if (s->busy)
 		{
-			if (!wait_slot(vk, s, rc->interrupt))
+			if (!wait_slot(vk, s, rc->cancelled))
 				return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
 			if (!finish_batch(rc, &rc->bt[k]))
 				return SIFT_VK_DECODE;
@@ -437,7 +440,7 @@ run_scan(RunCtx *rc, uint32_t g0, uint32_t g1)
 
 /* the second read back: the bytes of the groups or candidates the first one counted at from, from the device buffer of the job, into hout */
 static bool
-read_out(RunCtx *rc, uint64_t from, uint64_t bytes, void (*interrupt) (void))
+read_out(RunCtx *rc, uint64_t from, uint64_t bytes, bool (*cancelled) (void))
 {
 	SiftVk	   *vk = rc->vk;
 	Slot	   *s = &vk->slot[0];
@@ -458,7 +461,7 @@ read_out(RunCtx *rc, uint64_t from, uint64_t bytes, void (*interrupt) (void))
 		return fail(vk, "vkQueueSubmit", r);
 	s->busy = true;
 	vk->inflight = true;
-	return wait_slot(vk, s, interrupt);
+	return wait_slot(vk, s, cancelled);
 }
 
 /* the first bytes of the result in the buffer of the device as host memory: hout when it holds them, else the chunks of hout gathered in a buffer of the host */
@@ -469,7 +472,7 @@ read_result(RunCtx *rc, uint64_t bytes)
 	uint64_t	off = 0;
 
 	if (bytes <= vk->hout_cap)
-		return read_out(rc, 0, bytes, rc->interrupt) ? vk->hout.map : NULL;
+		return read_out(rc, 0, bytes, rc->cancelled) ? vk->hout.map : NULL;
 	if (vk->rbuf_cap < bytes)
 	{
 		void	   *b = realloc(vk->rbuf, bytes);
@@ -483,7 +486,7 @@ read_result(RunCtx *rc, uint64_t bytes)
 	{
 		const uint64_t n = bytes - off < vk->hout_cap ? bytes - off : vk->hout_cap;
 
-		if (!read_out(rc, off, n, rc->interrupt))
+		if (!read_out(rc, off, n, rc->cancelled))
 			return NULL;
 		memcpy((char *) vk->rbuf + off, vk->hout.map, n);
 		off += n;
@@ -560,7 +563,7 @@ topk_pass(RunCtx *rc)
 	barrier(vk, s->ccb, CS, SRW, TR, VK_ACCESS_TRANSFER_READ_BIT);
 	vk->vkCmdCopyBuffer(s->ccb, vk->res.b, vk->rhost.b, 1, &cp);
 	CK(vk->vkEndCommandBuffer(s->ccb));
-	return submit(vk, s, false) && wait_slot(vk, s, rc->interrupt);
+	return submit(vk, s, false) && wait_slot(vk, s, rc->cancelled);
 }
 
 /*
@@ -737,8 +740,17 @@ run_topn(RunCtx *rc, SiftVkResult *res)
 	return SIFT_VK_OK;
 }
 
+/* the chunks the batches in flight put in the cache are not checked (batch_check) by a run that leaves: they go, and the pins of the batches are dropped by the next run, which settles them first */
+static void
+abandon_inflight(RunCtx *rc)
+{
+	for (int k = 0; k < NSLOT; k++)
+		if (rc->vk->slot[k].busy)
+			batch_abandon(rc->vk, &rc->bt[k]);
+}
+
 SiftVkStatus
-sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkResult *res)
+sift_vk_run(SiftVk *vk, const SiftVkJob *job, bool (*cancelled) (void), SiftVkResult *res)
 {
 	RunCtx	   *rc;
 	SiftVkStatus st;
@@ -747,8 +759,10 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 	memset(res, 0, sizeof(*res));
 	if (!vk || vk->lost || !vk->usable)
 		return vk && vk->lost ? SIFT_VK_LOST : SIFT_VK_FAIL;
+	vk->cancel = false;
 	if (vk->inflight && !settle_all(vk))
 		return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
+	vk->done_batch = vk->batch;
 	free(vk->rbuf);
 	vk->rbuf = NULL;
 	vk->rbuf_cap = 0;
@@ -760,7 +774,7 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 		return SIFT_VK_FAIL;
 	rc->vk = vk;
 	rc->job = job;
-	rc->interrupt = interrupt;
+	rc->cancelled = cancelled;
 	rc->res = res;
 	if (!plan_job(vk, job, &rc->plan))
 	{
@@ -784,6 +798,11 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 		if (st == SIFT_VK_OK)
 			st = publish_tab(rc);
 	}
+	if (st == SIFT_VK_OK && !sift_vk_sums_finite(job, res))
+	{
+		snprintf(vk->err, sizeof(vk->err), "a sum of floats is not finite");
+		st = SIFT_VK_NONFINITE;
+	}
 	if (st == SIFT_VK_OK && vk->test_lost)
 	{
 		vk->lost = true;
@@ -795,6 +814,12 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 		vk->usable = false;
 		snprintf(vk->err, sizeof(vk->err), "a submission did not finish in time (injected)");
 		st = SIFT_VK_TIMEOUT;
+	}
+	if (st != SIFT_VK_OK && vk->cancel)
+	{
+		abandon_inflight(rc);
+		snprintf(vk->err, sizeof(vk->err), "the query was cancelled");
+		st = SIFT_VK_CANCELLED;
 	}
 	if (st != SIFT_VK_OK && st != SIFT_VK_PROG_ERROR)
 	{

@@ -5,6 +5,7 @@
 #define SIFT_AGG_PLAN_EXISTS_INT_H
 
 #include "utils/jsonb.h"
+#include "utils/jsonpath.h"
 #include "utils/numeric.h"
 
 #include "agg/plan_int.h"
@@ -41,6 +42,11 @@ extern bool lit_is_plain_text(const Lit *lit);
 
 /* agg/plan_path.c */
 extern bool jsonb_lit(const JsonbValue *v, Lit *lit);
+/* the pieces of a filter `@.key <op> literal` of a jsonpath: the SCMP_ operator of a comparison item (-1: not one), a literal or a variable of the vars constant, the name of the member @.key, the vars of a call (NULL: none; not ok: not a constant object) */
+extern int	jsonpath_cmp_op(JsonPathItemType t);
+extern bool jsonpath_lit(JsonPathItem *v, const Jsonb *vars, Lit *lit);
+extern char *jsonpath_key(JsonPathItem *v);
+extern const Jsonb *jsonpath_vars(Node *vars, bool *ok);
 extern SiftAggPred *compile_path_exists(AggCtx *c, Node *n);
 
 /* agg/plan_contains.c */

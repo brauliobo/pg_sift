@@ -1,0 +1,121 @@
+-- Format 1 on the unified aggregate scan (sift.test_unified_agg): the best rows of an ORDER BY .. LIMIT of one relation under quals a text compares (kind = 'cat_b', = ANY, <>) and quals of two
+-- columns, with the sort on an integer, a date and a float8 (the global order serves the first two, the batches the last), come from the rows the source's quals leave and are those the heap gives.
+-- Every statement is run with the node and without it (sift.enable_agg) and the answers are compared.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET sift.test_create_format1 = on;
+SET sift.test_unified_agg = on;
+SET sift.agg_force = on;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+CREATE TABLE t (id int PRIMARY KEY, ts date, kind text, amount float8, qty int, gone timestamptz);
+INSERT INTO t
+SELECT i, date '2024-01-01' + (i * 7) % 300, CASE WHEN i % 11 = 0 THEN NULL ELSE 'cat_' || chr(97 + i % 4) END, i % 17 + 0.25 * (i % 4), i % 9, CASE WHEN i % 37 = 0 THEN now() END
+FROM generate_series(1, 4000) i;
+CREATE INDEX t_col ON t USING sift_col (id, ts, kind, amount, qty, gone);
+VACUUM (FREEZE, ANALYZE) t;
+-- the node the plan of q has, and whether its rows are those of the heap (sift.enable_agg = off), in the order of the statement
+CREATE FUNCTION check_q(q text) RETURNS TABLE (node text, same bool) LANGUAGE plpgsql AS $$
+DECLARE l text; p text := ''; x text; y text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || l || E'\n'; END LOOP;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n''), '''') FROM (%s) r', q) INTO x;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n''), '''') FROM (%s) r', q) INTO y;
+	SET LOCAL sift.enable_agg = on;
+	node := coalesce((regexp_match(p, 'Custom Scan \((Sift\w+)\)'))[1], 'none');
+	same := x = y;
+	RETURN NEXT;
+END $$;
+-- a text equality and a NULL test, the sort on the date and the id (the plan-choice gate's top_rows_by_ts)
+SELECT * FROM check_q($$SELECT id, ts, amount FROM t WHERE gone IS NULL AND kind = 'cat_b' ORDER BY ts DESC, id DESC LIMIT 20$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT id, ts, amount FROM t WHERE kind = 'cat_b' ORDER BY ts, id LIMIT 20 OFFSET 7$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+-- a float8 sort is read from the batches
+SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind = 'cat_b' ORDER BY amount DESC, id LIMIT 10$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT id, amount FROM t WHERE gone IS NULL AND kind = 'cat_c' ORDER BY amount, id DESC LIMIT 15 OFFSET 4$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+-- a list of texts, a text that no row has, a text with a range of another column
+SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind = ANY (ARRAY['cat_a', 'cat_c']) ORDER BY amount DESC, id LIMIT 12$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT id, ts FROM t WHERE kind = 'none' ORDER BY ts, id LIMIT 5$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind = 'cat_d' AND ts >= date '2024-06-01' AND qty < 5 ORDER BY amount, id LIMIT 9$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+-- a text that differs, and a column against a column, are quals no scan key says
+SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind <> 'cat_a' ORDER BY amount DESC, id LIMIT 10$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind = 'cat_b' AND amount < qty + 8 ORDER BY amount DESC, id LIMIT 10$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT id, ts FROM t WHERE kind IS NULL ORDER BY ts DESC, id LIMIT 6$$);
+   node    | same 
+-----------+------
+ SiftAggV6 | t
+(1 row)
+
+-- the rows themselves of the first statement and of one of the batches, against the heap
+SELECT id, ts FROM t WHERE gone IS NULL AND kind = 'cat_b' ORDER BY ts DESC, id DESC LIMIT 5;
+  id  |     ts     
+------+------------
+ 3857 | 10-26-2024
+ 3557 | 10-26-2024
+ 3257 | 10-26-2024
+ 2957 | 10-26-2024
+ 2657 | 10-26-2024
+(5 rows)
+
+SELECT id, amount FROM t WHERE kind = ANY (ARRAY['cat_a', 'cat_c']) ORDER BY amount DESC, id LIMIT 5;
+ id  | amount 
+-----+--------
+  50 |   16.5
+ 118 |   16.5
+ 186 |   16.5
+ 254 |   16.5
+ 322 |   16.5
+(5 rows)
+
+DROP TABLE t;
+DROP FUNCTION check_q;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

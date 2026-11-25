@@ -68,6 +68,14 @@ sift_alloc(size_t n)
 }
 
 void *
+sift_alloc_huge(size_t n)
+{
+	SiftScope  *sc = sift_scope;
+
+	return likely(sc == NULL) ? palloc_extended(n, MCXT_ALLOC_HUGE) : scoped_alloc(sc, n, SIFT_ARENA_ALIGN);
+}
+
+void *
 sift_alloc0(size_t n)
 {
 	SiftScope  *sc = sift_scope;

@@ -682,7 +682,7 @@ DROP INDEX facts_col;
 SELECT label('EXECUTE kept') AS no_scope_index, same('EXECUTE kept') AS same_rows;
  no_scope_index | same_rows 
 ----------------+-----------
- normal plan    | t
+ join           | t
 (1 row)
 
 -- the legs on non-unique btrees (a pair in several rows of its relation): the UNION of the statement is the distinct pair set the units hold, so a join over it counts a fact once for each pair

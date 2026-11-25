@@ -777,13 +777,11 @@ sift_shred_poison(SiftShred *sh)
 	}
 }
 
-/* A scalar where a list or map is declared: null is its null, anything else cannot be a list */
+/* A scalar where an object is declared has none of its members; as an element of a list it is no object, which jsonb_to_recordset raises on, so the leaves cannot hold the element */
 static void
-scalar_in_container(SiftShred *sh, NodeP t, bool is_null)
+scalar_in_object(SiftShred *sh, NodeP t)
 {
-	if (is_null)
-		list_set(sh, t, SIFT_SHRED_NULL);
-	else
+	if (sh->nframes > 0 && sh->frames[sh->nframes - 1].node->kind != N_OBJ)
 		mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE, sh->evtag);
 }
 
@@ -795,12 +793,14 @@ sift_shred_null(SiftShred *sh)
 	sh->evtag = SIFT_COLTAG_UNKNOWN;
 	t = take_target(sh);
 
-	if (t == NULL || t->kind == N_OBJ)
+	if (t == NULL)
 		return;
-	if (t->kind == N_LEAF)
+	if (t->kind == N_OBJ)
+		scalar_in_object(sh, t);
+	else if (t->kind == N_LEAF)
 		leaf_set(sh, t, SIFT_SHRED_NULL, 0, SIFT_COLTAG_JNULL);
 	else
-		scalar_in_container(sh, t, true);
+		list_set(sh, t, SIFT_SHRED_NULL);
 }
 
 static void leaf_text(SiftShred *sh, NodeP t, const char *s, int len);
@@ -813,10 +813,12 @@ sift_shred_bool(SiftShred *sh, bool b)
 	sh->evtag = SIFT_COLTAG_BOOLEAN;
 	t = take_target(sh);
 
-	if (t == NULL || t->kind == N_OBJ)
+	if (t == NULL)
 		return;
-	if (t->kind != N_LEAF)
-		scalar_in_container(sh, t, false);
+	if (t->kind == N_OBJ)
+		scalar_in_object(sh, t);
+	else if (t->kind != N_LEAF)
+		mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE, sh->evtag);
 	else if (t->type == SIFT_SHRED_ASTEXT)
 		leaf_text(sh, t, b ? "true" : "false", b ? 4 : 5);
 	else if (t->type != SIFT_SHRED_BOOL)
@@ -870,10 +872,12 @@ sift_shred_string(SiftShred *sh, const char *s, int len)
 	{
 		if (!sift_test_no_roots && sift_shred_at_root(sh))
 			mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE, SIFT_COLTAG_NONE);
+		else
+			scalar_in_object(sh, t);
 		return;
 	}
 	if (t->kind != N_LEAF)
-		scalar_in_container(sh, t, false);
+		mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE, sh->evtag);
 	else
 		leaf_text(sh, t, s, len);
 }
@@ -904,10 +908,12 @@ sift_shred_number(SiftShred *sh, const char *text, int len)
 	sh->evtag = SIFT_COLTAG_NUMBER;
 	t = take_target(sh);
 
-	if (t == NULL || t->kind == N_OBJ)
+	if (t == NULL)
 		return;
-	if (t->kind != N_LEAF)
-		scalar_in_container(sh, t, false);
+	if (t->kind == N_OBJ)
+		scalar_in_object(sh, t);
+	else if (t->kind != N_LEAF)
+		mark_overflow(sh, t, SIFT_SHRED_OVF_SHAPE, sh->evtag);
 	else
 		leaf_number(sh, t, text, len);
 }

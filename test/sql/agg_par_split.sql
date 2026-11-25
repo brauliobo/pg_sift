@@ -52,7 +52,7 @@ DECLARE l text; r text := 'normal plan';
 BEGIN
 	PERFORM sp_set(mode);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'one process'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'one process'; END IF;
 		IF l ~ 'Workers Planned: [1-9]' THEN r := 'rows split'; END IF;
 		IF l ~ 'Groups Split By: ' THEN r := 'groups split by ' || substring(l from 'Groups Split By: (.*)$'); END IF;
 	END LOOP;
@@ -79,7 +79,7 @@ BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', '4', true);
 	PERFORM set_config('min_parallel_table_scan_size', '0', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'one process'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'one process'; END IF;
 		IF l ~ 'Workers Planned: [1-9]' THEN r := 'rows split'; END IF;
 		IF l ~ 'Groups Split By: ' THEN r := 'groups split by ' || substring(l from 'Groups Split By: (.*)$'); END IF;
 	END LOOP;

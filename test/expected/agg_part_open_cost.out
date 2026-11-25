@@ -154,7 +154,7 @@ CREATE FUNCTION pp_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'scan'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'scan'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -173,12 +173,12 @@ SELECT t, pp_plan(q) AS plan, pp_same(q) AS rows_same FROM (VALUES
 	('4 partitions of 50,000 rows: group', 'SELECT kind, count(*) FROM pp_few GROUP BY 1'),
 	('64 partitions of 300 rows: count', 'SELECT count(*) FROM pp_many'),
 	('64 partitions of 300 rows: group', 'SELECT kind, count(*) FROM pp_many GROUP BY 1')) v(t, q) ORDER BY 1;
-                 t                  |  plan  | rows_same 
-------------------------------------+--------+-----------
- 4 partitions of 50,000 rows: count | scan   | t
- 4 partitions of 50,000 rows: group | scan   | t
- 64 partitions of 300 rows: count   | normal | t
- 64 partitions of 300 rows: group   | normal | t
+                 t                  | plan | rows_same 
+------------------------------------+------+-----------
+ 4 partitions of 50,000 rows: count | scan | t
+ 4 partitions of 50,000 rows: group | scan | t
+ 64 partitions of 300 rows: count   | scan | t
+ 64 partitions of 300 rows: group   | scan | t
 (4 rows)
 
 DROP TABLE pp_few, pp_many;

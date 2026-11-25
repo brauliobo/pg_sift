@@ -40,7 +40,7 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		planned := planned OR l ~ 'Workers Planned: [1-9]';
 		split := split OR l ~ 'Groups Split By: ';
-		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg\)';
+		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg(V6)?\)';
 	END LOOP;
 	RETURN CASE WHEN NOT pushed THEN 'normal plan' WHEN split THEN 'workers split groups' WHEN planned THEN 'workers' ELSE 'one process' END;
 END $$;
@@ -48,14 +48,14 @@ SELECT t.tbl, q.class, pc_plan(format(q.sql, t.tbl)) AS plan
 FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_q q ORDER BY t.tbl DESC, q.class;
  tbl  |        class        |    plan     
 ------+---------------------+-------------
- pc_u | bucket_sum          | one process
+ pc_u | bucket_sum          | workers
  pc_u | category_count      | one process
  pc_u | count_distinct      | one process
  pc_u | expression_two_keys | workers
  pc_u | few_groups_filter   | one process
  pc_u | four_aggs_two_keys  | workers
  pc_u | many_groups         | one process
- pc_u | scalar              | workers
+ pc_u | scalar              | one process
  pc_u | scalar_many_aggs    | workers
  pc_u | semi_count          | one process
  pc_s | bucket_sum          | one process
@@ -68,14 +68,14 @@ FROM (VALUES ('pc_u'), ('pc_s'), ('pc_m')) t(tbl), pc_q q ORDER BY t.tbl DESC, q
  pc_s | scalar              | one process
  pc_s | scalar_many_aggs    | one process
  pc_s | semi_count          | one process
- pc_m | bucket_sum          | one process
+ pc_m | bucket_sum          | workers
  pc_m | category_count      | one process
  pc_m | count_distinct      | one process
  pc_m | expression_two_keys | workers
  pc_m | few_groups_filter   | one process
  pc_m | four_aggs_two_keys  | workers
  pc_m | many_groups         | one process
- pc_m | scalar              | workers
+ pc_m | scalar              | one process
  pc_m | scalar_many_aggs    | workers
  pc_m | semi_count          | one process
 (30 rows)

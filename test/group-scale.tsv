@@ -1,0 +1,21 @@
+# NAME	FORMAT	OPERATION	DIGEST -- test/group_scale.py: every measurement in a fresh backend, work_mem 1 MB, at N, 2N and 4N rows of the table {t} (id and k_hi unique, k_num numeric, k_uuid, k_iv interval, k_mid 5000 groups, k_lo 10 groups, txt 128 bytes, fl float8, amt)
+# FORMAT is the format of the sift_col index of {t} (2: the groups run in SiftAggV6, 1: in SiftAgg). {s} (id, k_st, amt) is analyzed while k_st is one value and then k_st is set to the id: a table whose groups the planner underestimates. DIGEST is the text of a row r the parity with PostgreSQL's aggregate is taken on (default r::text).
+# g2: generic keys and the text of MIN and MAX in the groups that spill. g3: percentile_cont. g4: generic and ordered-set aggregates. g5: a spill that is read back. g10: the dense integer keys of the legacy plan.
+g2_numeric	2	select k_num, count(*), sum(amt) from {t} group by 1	
+g2_uuid	2	select k_uuid, count(*) from {t} group by 1	
+g2_interval	2	select k_iv, count(*), sum(amt) from {t} group by 1	
+g2_minmax_text	2	select k_hi, min(txt), max(txt) from {t} group by 1	
+g4_gen_stale	2	select k_st, array_agg(amt) from {s} group by 1	r.k_st::text || '|' || cardinality(r.array_agg) || '|' || (select sum(x) from unnest(r.array_agg) x)	set sift.agg_force = on
+g4_gen_array_agg	2	select k_mid, array_agg(amt) from {t} group by 1	r.k_mid::text || '|' || cardinality(r.array_agg) || '|' || (select sum(x) from unnest(r.array_agg) x)	set work_mem = '128kB'
+g4_gen_sorted3	2	select k_mid, string_agg(txt, ',' order by amt, txt), array_agg(amt order by txt), jsonb_agg(amt order by amt desc, id) from {t} group by 1	r.k_mid::text || '|' || length(r.string_agg) || '|' || cardinality(r.array_agg) || '|' || jsonb_array_length(r.jsonb_agg)
+g5_unique_int	2	select k_hi, count(*), sum(amt), sum(k_lo), sum(k_mid) from {t} group by 1	
+g3_pct_unnest	2	select i.category, percentile_cont(0.5) within group (order by i.price) from {j} cross join lateral jsonb_to_recordset({j}.items) as i(category text, price float8) group by 1		set sift.agg_force = on; set work_mem = '128kB'
+g3_pct_unnest_one	2	select percentile_cont(0.5) within group (order by i.price) from {j} cross join lateral jsonb_to_recordset({j}.items) as i(category text, price float8)		set sift.agg_force = on
+g10_unique_int	1	select k_hi, count(*), sum(k_num) from {t} group by 1	
+g4_gen_jsonb_agg	2	select k_st, jsonb_agg(amt) from {s} group by 1	r.k_st::text || '|' || jsonb_array_length(r.jsonb_agg)	set sift.agg_force = on
+g4_gen_json_agg	2	select k_st, count(*), json_agg(amt) from {s} group by 1	r.k_st::text || '|' || r.count || '|' || json_array_length(r.json_agg)	set sift.agg_force = on
+g4_gen_distinct	2	select k_st, array_agg(distinct amt) from {s} group by 1	r.k_st::text || '|' || r.array_agg::text	set sift.agg_force = on
+g4_gen_orderby	2	select k_st, string_agg(amt::text, ',' order by amt desc, id) from {s} group by 1	r.k_st::text || '|' || r.string_agg	set sift.agg_force = on
+g4_gen_within	2	select k_st, percentile_disc(0.5) within group (order by amt), count(*) from {s} group by 1	r.k_st::text || '|' || r.percentile_disc || '|' || r.count	set sift.agg_force = on
+g4_gen_grand_total	2	select k_st, array_agg(distinct amt), count(*) from {s} group by grouping sets ((k_st), ())	coalesce(r.k_st::text, 'T') || '|' || r.array_agg::text || '|' || r.count	set sift.agg_force = on
+g4_gen_topn_lock	2	select k_st, jsonb_agg(amt) from {s} group by 1 limit 20000	'x'	set sift.agg_force = on

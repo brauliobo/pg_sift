@@ -52,15 +52,23 @@ array_of(const Node *e, ParamListInfo params, Datum *value)
 	return IsA(e, Param) && sift_v6_param_value(params, (const Param *) e, value, &isnull) && !isnull;
 }
 
+void
+sift_v6_array_elems(ArrayType *a, Datum **elems, bool **nulls, int *n)
+{
+	int16		len;
+	bool		byval;
+	char		align;
+
+	get_typlenbyvalalign(ARR_ELEMTYPE(a), &len, &byval, &align);
+	deconstruct_array(a, ARR_ELEMTYPE(a), len, byval, align, elems, nulls, n);
+}
+
 bool
 sift_v6_array_ints(MemoryContext keep, const Node *arr, Oid vartype, ParamListInfo params, const int64 **vals, int *n)
 {
 	Datum		d;
 	ArrayType  *a;
 	Oid			t;
-	int16		len;
-	bool		byval;
-	char		align;
 	Datum	   *el;
 	bool	   *nulls;
 	int			cnt,
@@ -80,14 +88,17 @@ sift_v6_array_ints(MemoryContext keep, const Node *arr, Oid vartype, ParamListIn
 		return IsA(arr, Param) && params == NULL;
 	}
 	a = DatumGetArrayTypeP(d);
-	get_typlenbyvalalign(t, &len, &byval, &align);
-	deconstruct_array(a, t, len, byval, align, &el, &nulls, &cnt);
+	sift_v6_array_elems(a, &el, &nulls, &cnt);
 	old = MemoryContextSwitchTo(keep);
 	v = palloc(Max(cnt, 1) * sizeof(int64));
 	MemoryContextSwitchTo(old);
 	for (int i = 0; i < cnt; i++)
 		if (!nulls[i])
 			v[out++] = as_int(t, el[i]);
+	pfree(el);
+	pfree(nulls);
+	if ((Pointer) a != DatumGetPointer(d))
+		pfree(a);
 	qsort(v, out, sizeof(int64), cmp_int64);
 	cnt = 0;
 	for (int i = 0; i < out; i++)

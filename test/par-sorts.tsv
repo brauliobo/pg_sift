@@ -1,0 +1,12 @@
+# The bounded-memory gate of scripts/par-sorts-gate.py (Spec 95 WS-95-3b): NAME KIND ROWS FIXTURE HASH_KB TMP_BYTES_PER_ROW SETTINGS OPERATION
+# kind mem: ROWS at 1x, 2x and 4x; a_mem <= 1.15, b_exact <= 2 B/row, b_rss <= 8 B/row, peak above the start <= 2.5 x HASH_KB + 4 MB, temp at once <= 2.5 x ROWS x TMP_BYTES_PER_ROW, no file left, no leak warning
+# kind files: ROWS once; TMP_BYTES_PER_ROW is the most files pg_ls_tmpdir() may hold at once; no file left, no leak warning
+# HASH_KB is work_mem x hash_mem_multiplier (the hash memory of the statement), in kB
+pairsort_many_runs	mem	200000	none	64	8		select sift._test_sorts('pair', {n}, 64);
+rowspsort_many_runs	mem	100000	none	64	16		select sift._test_sorts('rows', {n}, 64);
+pairsort_query_many_runs	mem	200000	p	128	8	set work_mem='64kB'; set max_parallel_workers_per_gather=0;	select sum(c) from (select k_mid, count(distinct k_hi) c from p{n} group by 1) s;
+par_group_unique_int	mem	50000	p	2048	0	set sift.test_unified_agg=on; set work_mem='1MB'; set max_parallel_workers_per_gather=2; set parallel_setup_cost=0; set parallel_tuple_cost=0; set min_parallel_table_scan_size=0;	select count(*), sum(c) from (select k_hi, count(*) c, sum(amount) from p{n} group by 1) s;
+du64g_sparse_groups	mem	200000	none	12288	0		select sift._test_sorts('du64g', {n}, 12288);
+hybrid_agg_rescan	mem	400	docs	2048	0	set enable_memoize=off; set max_parallel_workers_per_gather=0; set work_mem='1MB';	select count(*), sum(c.cnt) from args{n} a, lateral (select count(*) cnt, sum(amount) total from docs{n} where tenant = a.n and body @@> a.w) c;
+par_count_distinct_int	mem	50000	p	2048	0	set sift.test_unified_agg=on; set work_mem='1MB'; set max_parallel_workers_per_gather=2; set parallel_setup_cost=0; set parallel_tuple_cost=0; set min_parallel_table_scan_size=0;	select count(distinct k_hi) from p{n};
+par_group_radix_files	mem	100000	p	512	64	set sift.test_unified_agg=on; set work_mem='256kB'; set max_parallel_workers_per_gather=2; set parallel_setup_cost=0; set parallel_tuple_cost=0; set min_parallel_table_scan_size=0;	select count(*), sum(c) from (select k_hi, count(*) c, sum(amount) from p{n} group by 1) s;

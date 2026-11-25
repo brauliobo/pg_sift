@@ -6,12 +6,13 @@
 #define SIFT_AGG_V6_GROUP_NAN_H
 
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_batch.h"
 #include "core/popcount.h"
 
 static inline bool
 v6acc_nan_row(const SiftVec *v, uint16 r)
 {
-	return v->nan != NULL && ((v->nan[r >> 6] >> (r & 63)) & 1);
+	return sift_vec_nan_at(v, r);
 }
 
 /* the NaN rows among those a bitmap of n_raw rows takes */

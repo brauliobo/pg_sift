@@ -99,7 +99,7 @@ SELECT n, s.* FROM (VALUES
  n |       node        | rows | diff 
 ---+-------------------+------+------
  1 | SiftHybridScan OR |  400 |    0
- 2 | SiftHybridScan OR |   20 |    0
+ 2 | none              |   20 |    0
  3 | SiftHybridScan OR |    5 |    0
 (3 rows)
 

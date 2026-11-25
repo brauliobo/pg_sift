@@ -24,6 +24,7 @@
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_part_pin_scan.h"
+#include "col/f2/pin_win.h"
 #include "col/f2/f2_point_dir.h"
 #include "col/f2/f2_pull_prune.h"
 #include "col/f2/f2_scope_route.h"
@@ -77,24 +78,6 @@ emit(F2Scan *s, const SiftColSchema *schema, uint64 tid, Verdict v, const ColVie
 	s->ntids++;
 }
 
-static bool
-has_exceptions(const SiftVariantExcSummary *ex, int nex, uint32 g, int col)
-{
-	int			lo = 0,
-				hi = nex;
-
-	while (lo < hi)
-	{
-		int			mid = lo + ((hi - lo) >> 1);
-
-		if (ex[mid].granule < g || (ex[mid].granule == g && ex[mid].col < col))
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
-	return lo < nex && ex[lo].granule == g && ex[lo].col == col;
-}
-
 static int
 tid_cmp(const void *a, const void *b)
 {
@@ -102,27 +85,6 @@ tid_cmp(const void *a, const void *b)
 				y = *(const uint64 *) b;
 
 	return x < y ? -1 : x > y;
-}
-
-/* The rows of a leaf of a key of a document that hold a value of a JSON type it could not store: its value is the payload of their exception */
-static void
-decode_payloads(const SiftGranuleView *v, int c, int n, ColView *cv)
-{
-	const char **xp = NULL;
-	uint32	   *xl = NULL;
-
-	for (int r = 0; r < n; r++)
-		if (cv->isnull[r] && cv->tag[r] >= SIFT_COLTAG_STRING && cv->tag[r] <= SIFT_COLTAG_ARRAY)
-		{
-			if (xp == NULL)
-			{
-				xp = palloc0(n * sizeof(char *));
-				xl = palloc0(n * sizeof(uint32));
-			}
-			xp[r] = sift_granule_exc_payload(v, c, r, &xl[r]);
-		}
-	cv->xpay = xp;
-	cv->xplen = xl;
 }
 
 /* The zones of the leaf of every predicate from granule g0 of the part; NULL for a leaf when the part holds none */
@@ -140,7 +102,7 @@ pred_zones(Relation rel, const F2Scan *s, SiftF2PartPin *pin, uint32 g0)
 	return z;
 }
 
-/* Whether no row of a granule with this zone sorts strictly before the bound of the sink: a NULL cannot, unless NULLs sort first; a leaf a patch changed is not what the zone says */
+/* Whether no row of a granule with this zone sorts before the bound of the sink (nor ties with it, when a later sort column can tell them apart): a NULL cannot, unless NULLs sort first; a leaf a patch changed is not what the zone says */
 static bool
 bound_excludes(const SiftF2Bound *b, const SiftZone *z, bool exceptions)
 {
@@ -254,42 +216,51 @@ compile_preds(F2Scan *s, const SiftColSchema *schema)
 	s->compiled = true;
 }
 
-/* False when a predicate that no string of the dictionary of the part passes, on a leaf that no row of the part holds an exception of, rules out every row of the part */
-static bool
-part_preds(Relation rel, const F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const SiftVariantExcSummary *exc, int nexc, PartPreds *pp)
+bool
+sift_f2_part_cfilt(const SiftPartDicts *ds, const SiftColSchema *schema, const SiftVariantExcSummary *exc, int nexc, const SiftColPred *preds, int npreds, const bool *cf_ok,
+				   SiftCfiltPred *cf)
 {
-	const SiftPartDicts *ds = sift_part_dicts(rel, part);
 	bool		meets = true;
 	bool	   *col_has_exc = palloc0(schema->ncols);
 
 	for (int i = 0; i < nexc; i++)
 		col_has_exc[exc[i].col] = true;
+	for (int k = 0; k < npreds; k++)
+	{
+		const SiftColPred *p = &preds[k];
+		const SiftPartDict *dict = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_STR);
+
+		if (dict != NULL && (SIFT_COLOP_IS_EXT(p->op) || (cf_ok[k] && cf[k].str)))
+		{
+			SiftDictPredCache *dc = sift_dict_pred_prepare(p, dict->n, dict->off, dict->bytes);
+			cf[k].part = dc;
+			meets &= dc->n_matches + dc->n_maybe > 0 || col_has_exc[p->col];
+		}
+		else if (cf_ok[k] && cf[k].str && (p->op == SIFT_COLOP_EQ || p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_PREFIX))
+		{
+			const SiftPartDict *fd = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_FSST);
+
+			if (fd != NULL)
+				cf[k].fsst_part = sift_fsst_pred_prepare(fd->fsst, p);
+		}
+	}
+	return meets;
+}
+
+/* False when a predicate that no string of the dictionary of the part passes, on a leaf that no row of the part holds an exception of, rules out every row of the part */
+static bool
+part_preds(Relation rel, const F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const SiftVariantExcSummary *exc, int nexc, PartPreds *pp)
+{
+	const SiftPartDicts *ds = sift_part_dicts(rel, part);
+
 	pp->skip = sift_skip_open(rel, part);
 	pp->sq = palloc0(Max(s->npreds, 1) * sizeof(SiftSkipQuery *));
 	pp->cf = palloc(Max(s->npreds, 1) * sizeof(SiftCfiltPred));
 	if (s->npreds > 0)
 		memcpy(pp->cf, s->cf, s->npreds * sizeof(SiftCfiltPred));
 	for (int k = 0; k < s->npreds; k++)
-	{
-		const SiftColPred *p = &s->preds[k];
-		const SiftPartDict *dict = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_STR);
-
-		pp->sq[k] = sift_skip_query(pp->skip, &schema->cols[p->col], p, dict);
-		if (dict != NULL && (SIFT_COLOP_IS_EXT(p->op) || (s->cf_ok[k] && pp->cf[k].str)))
-		{
-			SiftDictPredCache *dc = sift_dict_pred_prepare(p, dict->n, dict->off, dict->bytes);
-			pp->cf[k].part = dc;
-			meets &= dc->n_matches + dc->n_maybe > 0 || col_has_exc[p->col];
-		}
-		else if (s->cf_ok[k] && pp->cf[k].str && (p->op == SIFT_COLOP_EQ || p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_PREFIX))
-		{
-			const SiftPartDict *fd = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_FSST);
-
-			if (fd != NULL)
-				pp->cf[k].fsst_part = sift_fsst_pred_prepare(fd->fsst, p);
-		}
-	}
-	return meets;
+		pp->sq[k] = sift_skip_query(pp->skip, &schema->cols[s->preds[k].col], &s->preds[k], sift_part_dict_find(ds, s->preds[k].col, SIFT_DICT_KIND_STR));
+	return sift_f2_part_cfilt(ds, schema, exc, nexc, s->preds, s->npreds, s->cf_ok, pp->cf);
 }
 
 /* What the skipping indexes say of the predicates the zones left, for granule g: false when a predicate rules the granule out */
@@ -344,7 +315,7 @@ granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const Si
 	bool	   *exceptions = palloc0(Max(s->npreds, 1));
 
 	for (int k = 0; k < s->npreds; k++)
-		exceptions[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
+		exceptions[k] = sift_f2_exc_has(exc, nexc, g, s->preds[k].col);
 	for (int k = 0; k < s->npreds && !skip; k++)
 	{
 		ZoneVerdict zv;
@@ -457,6 +428,8 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 	size_t		np = Max(s->npreds, 1);
 	GranuleWindow win = {.decided = palloc0((Size) SIFT_PF_WINDOW_GRANULES * np)};
 	uint16		cand[SIFT_GRANULE_ROWS / SIFT_NULL_SPARSE_MAX_DIV + 1];
+	const SiftZone **offer_zones = palloc0(np * sizeof(SiftZone *));
+	bool	   *offer_exc = palloc0(np);
 
 	for (uint32 g = g0; g < g1; g++)
 	{
@@ -485,19 +458,32 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 
 		if (wi == 0)
 			prune_window(rel, s, schema, part, pp, dir, dir, zones, g0, g, Min(SIFT_PF_WINDOW_GRANULES, g1 - g), (g - g0) / SIFT_PF_WINDOW_GRANULES, exc, nexc, tix, &win);
-		if (win.skipped[wi] || (bound_zones != NULL && bound_excludes(s->bound, &bound_zones[g], has_exceptions(exc, nexc, g, s->sink_leaves[s->bound_sink_leaf]))))
+		if (win.skipped[wi] || (bound_zones != NULL && bound_excludes(s->bound, &bound_zones[g], sift_f2_exc_has(exc, nexc, g, s->sink_leaves[s->bound_sink_leaf]))))
 			continue;
 		if (s->survey)
 		{
 			s->survey_granules++;
 			continue;
 		}
+		if (s->gran_sink != NULL && s->bridge == NULL && s->cands == NULL)
+		{
+			for (int k = 0; k < s->npreds; k++)
+			{
+				offer_zones[k] = zones[k] != NULL ? &zones[k][g - g0] : NULL;
+				offer_exc[k] = sift_f2_exc_has(exc, nexc, g, s->preds[k].col);
+			}
+			if (s->gran_sink(s->gran_arg, &(SiftF2GranOffer) {.rel = rel,.part = part,.desc = s->part,.schema = schema,.g = g,.gd = &dir[g],.dead = dg,.snap = snap,.preds = s->preds,.npreds = s->npreds,
+							 .decided = win.decided + (Size) wi * np,.zones = offer_zones,.exceptions = offer_exc,.pend_hit = pend_hit,.patched = sift_cdi_scan_granule_patched(s, g),.px = px,.vis = SIFT_GVIS_HEAP}))
+				continue;
+		}
+		if (s->pinwin != NULL && sift_pin_win_take(s->pinwin, rel, s, schema, pin, pp, g, win.decided + (Size) wi * np, px, snap))
+			continue;
 		old = MemoryContextSwitchTo(gcx);
 		sift_cfstr_memo_open(gcx);
 		decided = memcpy(palloc((Size) np), win.decided + (Size) wi * np, np);
 		exceptions = palloc0(np);
 		for (int k = 0; k < s->npreds; k++)
-			exceptions[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
+			exceptions[k] = sift_f2_exc_has(exc, nexc, g, s->preds[k].col);
 		F2_STAT(read);
 		ncand = s->cands != NULL ? sift_point_cands_rows(s->cands, g, cand, lengthof(cand)) : sparse_rows(rel, s, schema, part, dir != NULL ? &dir[g] : NULL, exceptions, decided, cand);
 		if (ncand >= 0)
@@ -566,7 +552,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 			if (views[leaf].isnull == NULL)
 				views[leaf] = sift_f2_decode_view(&schema->cols[leaf], &v, leaf, n, s->sink_dict != NULL && s->sink_dict[j], rows, nrows);
 			if (schema->cols[leaf].path[0] != '\0')
-				decode_payloads(&v, leaf, n, &views[leaf]);
+				sift_f2_decode_payloads(&v, leaf, n, &views[leaf]);
 		}
 		for (int k = 0; k < s->npreds && !few; k++)
 			if (!decided[k] && s->preds[k].op == SIFT_COLOP_KEY_EXISTS && views[s->preds[k].col].keyp == NULL)

@@ -8,17 +8,18 @@
 #include "utils/jsonb.h"
 
 #include "col/f2/f2.h"
+#include "col/f2/preagg_v2.h"
 #include "col/pg.h"
 #include "col/scope.h"
 
-static SiftCellKind
-cell_kind(const SiftColDef *d)
+SiftCellKind
+sift_f2_def_kind(const SiftColDef *d)
 {
 	return d->store == SIFT_COLS_INT ? SIFT_CELL_INT : (d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8) ? SIFT_CELL_F8 : SIFT_CELL_STR;
 }
 
-static uint8
-chunk_hint(const SiftColDef *d)
+uint8
+sift_f2_def_hint(const SiftColDef *d)
 {
 	if (d->store == SIFT_COLS_INT && d->type == SIFT_COLT_NUMERIC && d->lanes < 2)
 		return SIFT_CHINT_NUM64;
@@ -67,8 +68,8 @@ key_leaf(Relation index, const SiftColSchema *s, const char *name)
 }
 
 /* The key a leaf holds the values of at the top of its jsonb document: a path of the column's name, a dot and a plain key, with the [] of a list of objects */
-static bool
-top_level_key(const SiftColDef *d, const char **key, int *len)
+bool
+sift_f2_def_top_key(const SiftColDef *d, const char **key, int *len)
 {
 	size_t		nl;
 	int			k;
@@ -83,6 +84,15 @@ top_level_key(const SiftColDef *d, const char **key, int *len)
 		;
 	*len = k;
 	return k > 0 && ((*key)[k] == '\0' || strcmp(*key + k, "[]") == 0);
+}
+
+/* The leaf of the keys of a map: the text child of its group, named `<map>#key` */
+static bool
+is_map_key(const SiftColDef *d)
+{
+	const size_t n = d->path != NULL ? strlen(d->path) : 0;
+
+	return d->parent >= 0 && n > 4 && strcmp(d->path + n - 4, "#key") == 0;
 }
 
 static bool
@@ -114,20 +124,52 @@ time_leaves(SiftF2Rel *f, const SiftColSchema *schema)
 		}
 }
 
+/* What the option preagg of the index declares: the cubes it names (NULL: none, they are chosen from the data); *on is whether the parts get cubes at all */
+static const SiftPreaggDecl *
+sift_f2_preagg_decl(Relation index, const SiftColSchema *schema, bool *on)
+{
+	SiftPreaggDecl *decl = palloc0(sizeof(SiftPreaggDecl));
+	bool		off;
+	const char *bad = sift_preagg_decl_parse(sift_col_options_preagg(index), schema, false, decl, &off);
+
+	if (bad != NULL)
+		sift_col_option_error("preagg", sift_col_options_preagg(index), bad);
+	*on = !off;
+	return decl->ndims > 0 ? decl : NULL;
+}
+
+/* The options the declarations of the index name, read before its state: what they look up can take a lock that reloads the entry, which frees the cached state and the options (not the leaves) */
+static void
+f2_declared(Relation index, const SiftPreaggDecl **decl, bool *preagg, SiftF2KllCols *kll)
+{
+	*decl = sift_f2_preagg_decl(index, sift_col_rel(index)->schema, preagg);
+	sift_f2_kll_columns(index, sift_col_rel(index), sift_col_options_sketches(index), kll);
+}
+
 SiftF2Rel *
 sift_f2_rel(Relation index)
 {
-	/* check-memory: allow key_leaf reads the entry, no catalog */
-	SiftColRel *r = sift_col_rel(index);
-	const SiftColOptions *o = sift_col_options(index);
 	MemoryContext old;
+	const SiftPreaggDecl *decl;
+	const SiftColOptions *o;
+	SiftColRel *r;
+	SiftF2KllCols kll;
 	SiftF2Rel  *f;
 	int			n,
 				klen;
+	bool		preagg;
+	bool	   *map_key = NULL;
 
-	if (r->f2 != NULL)
-		return r->f2;
-	old = MemoryContextSwitchTo(GetMemoryChunkContext(r));
+	if (sift_col_rel(index)->f2 != NULL)
+		return sift_col_rel(index)->f2;
+	old = MemoryContextSwitchTo(index->rd_indexcxt);
+	f2_declared(index, &decl, &preagg, &kll);
+#ifdef SIFT_TESTING
+	sift_col_test_inval(index);	/* the lookups of the declarations can take a lock that reloads the entry */
+#endif
+	/* check-memory: allow key_leaf reads the entry, no catalog */
+	r = sift_col_rel(index);
+	o = sift_col_options(index);
 	n = r->nscope > 0 ? r->scope_first : r->schema->ncols;
 	f = palloc0(sizeof(SiftF2Rel));
 	f->ncols = n;
@@ -146,15 +188,20 @@ sift_f2_rel(Relation index)
 		f->parent[i] = d->parent;
 		f->has_groups |= d->kind == SIFT_COLK_GROUP;
 
-		if (r->json[d->attno] && top_level_key(d, &f->key[i], &klen))
+		if (r->json[d->attno] && sift_f2_def_top_key(d, &f->key[i], &klen))
 		{
 			f->key_leaf[i] = true;
 			f->key_len[i] = klen;
 			f->key_attno[i] = d->attno;
 			f->has_keys = true;
 		}
-		f->kinds[i] = cell_kind(d);
-		f->hints[i] = chunk_hint(d);
+		if (is_map_key(d))
+		{
+			map_key = map_key != NULL ? map_key : palloc0(n * sizeof(bool));
+			map_key[i] = true;
+		}
+		f->kinds[i] = sift_f2_def_kind(d);
+		f->hints[i] = sift_f2_def_hint(d);
 		f->scales[i] = d->scale;
 	}
 	for (int k = 0; k < o->ko_n; k++)
@@ -162,11 +209,8 @@ sift_f2_rel(Relation index)
 	if (r->shred != NULL)
 		sift_col_shred_keep_payloads(r->shred);
 	f->spec = (SiftPartSpec) {.ncols = n,.kinds = f->kinds,.nsort = f->nkey,.sort_cols = f->key_cols,.hints = f->hints,.scales = f->scales,.key_leaf = f->has_keys ? f->key_leaf : NULL,
-	.parent = f->has_groups ? f->parent : NULL};
+	.parent = f->has_groups ? f->parent : NULL,.preagg = preagg,.preagg_decl = decl,.map_key = map_key};
 	memcpy(f->spec.sort_flags, o->ko_flags, sizeof(f->spec.sort_flags));
-	SiftF2KllCols kll;
-
-	sift_f2_kll_columns(index, r, sift_col_options_sketches(index), &kll);
 	f->kll = kll.n > 0 ? memcpy(palloc(sizeof(kll)), &kll, sizeof(kll)) : NULL;
 	f->spec.kll = f->kll;
 	time_leaves(f, r->schema);
@@ -196,8 +240,8 @@ cell_tag(const SiftColValue *v)
 	return v->tag == SIFT_COLTAG_JNULL ? SIFT_COLTAG_JNULL : 0;
 }
 
-static SiftCell
-cell_of(const SiftF2Rel *f, int c, const SiftColValue *v)
+SiftCell
+sift_f2_value_cell(SiftCellKind kind, const SiftColValue *v)
 {
 	SiftCell	cell = {.isnull = v->isnull,.tag = cell_tag(v)};
 
@@ -207,9 +251,9 @@ cell_of(const SiftF2Rel *f, int c, const SiftColValue *v)
 		cell.xplen = v->xplen;
 		return cell;
 	}
-	if (f->kinds[c] == SIFT_CELL_INT)
+	if (kind == SIFT_CELL_INT)
 		cell.i = v->v.i;
-	else if (f->kinds[c] == SIFT_CELL_F8)
+	else if (kind == SIFT_CELL_F8)
 		cell.f = v->v.f;
 	else
 	{
@@ -229,7 +273,7 @@ sift_f2_key_of(const SiftColRel *r, const SiftF2Rel *f, SiftCell *cells, const I
 
 		if (!v.isnull)
 			sift_col_datum_values(d, values[d->attno - 1], r->name[d->attno], &v);
-		cells[f->key_cols[k]] = cell_of(f, f->key_cols[k], &v);
+		cells[f->key_cols[k]] = sift_f2_value_cell(f->kinds[f->key_cols[k]], &v);
 	}
 	sift_row_key(&f->spec, cells, sift_f2_tid(tid), key);
 }
@@ -293,7 +337,7 @@ sift_f2_row(Relation index, SiftF2Rel *f, MemoryContext rowcxt, const ItemPointe
 	keep_datums(index, r, rowcxt, values, isnull, &row);
 	for (int c = 0; c < f->ncols; c++)
 		if (f->parent[c] < 0)
-			cells[c] = cell_of(f, c, &row.val[c]);
+			cells[c] = sift_f2_value_cell(f->kinds[c], &row.val[c]);
 	if (f->has_keys)
 		tag_root_keys(f, r->natts, rowcxt, values, isnull, cells);
 	for (int c = 0; c < f->ncols; c++)
@@ -306,7 +350,7 @@ sift_f2_row(Relation index, SiftF2Rel *f, MemoryContext rowcxt, const ItemPointe
 		n = cells[g].isnull ? 0 : cells[g].i;
 		elem[c] = n > 0 ? MemoryContextAlloc(rowcxt, n * sizeof(SiftCell)) : NULL;
 		for (int64 j = 0; j < n; j++)
-			elem[c][j] = cell_of(f, c, &row.elem[c][j]);
+			elem[c][j] = sift_f2_value_cell(f->kinds[c], &row.elem[c][j]);
 	}
 	sift_row_key(&f->spec, cells, sift_f2_tid(tid), key);
 }

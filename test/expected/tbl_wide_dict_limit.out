@@ -1,5 +1,5 @@
--- A scan of a sift_table that reads a wide column (bytea, here) holds the distinct values of the rows of one unit in a dictionary: past the limit
--- wide_dict_bytes (1 GB) it fails naming the column. sift.test_limits lowers it to 64 kB, where 3000 values of 80 bytes do not fit and 7 do.
+-- A scan of a sift_table that counts the distinct values of a wide column (bytea, here) sorts the values the rows of a group hold, so that no dictionary of the rows of one unit
+-- is held and wide_dict_bytes (1 GB, lowered to 64 kB by sift.test_limits) is no limit of it: 3000 values of 80 bytes and 7 values of 16 bytes count the same at any limit.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -26,9 +26,9 @@ SELECT wl_distinct('many') AS default_limit;
 
 SET sift.test_limits = 'wide_dict_bytes=65536';
 SELECT wl_distinct('many') AS many_values;
-                                                                                            many_values                                                                                             
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- the distinct values of column "many" in the rows of one unit take more than N bytes / A unit holds up to N rows: values of a wide column that are that large and distinct cannot be read together.
+ many_values 
+-------------
+ ok 3000
 (1 row)
 
 SELECT wl_distinct('few') AS few_values;

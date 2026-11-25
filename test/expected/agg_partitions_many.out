@@ -23,7 +23,7 @@ DECLARE l text;
 BEGIN
 	scan := 'normal'; partitions_listed := 0; partitions_removed := 0;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || stmt LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN scan := 'SiftAgg'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN scan := 'SiftAgg'; END IF;
 		IF l LIKE '%Partitions:%' THEN partitions_listed := array_length(string_to_array(l, ','), 1); END IF;
 		IF l ~ '(\d+) partitions removed' THEN partitions_removed := substring(l from '(\d+) partitions removed')::int; END IF;
 	END LOOP;
@@ -70,9 +70,9 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d < 
 -- at the default page costs, partitions of a few rows each: opening 1,200 of them costs the scan more than the normal plan's Append
 RESET seq_page_cost; RESET random_page_cost;
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
-  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
---------+-------------------+--------------------+-------------+----------------
- normal |                 0 |                  0 |           7 |              0
+  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+---------+-------------------+--------------------+-------------+----------------
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 -- ... and the refusal is made before any partition's index is read: the opening alone is dearer than the normal plan
@@ -156,15 +156,15 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g
 
 SET sift.test_limits = 'partitions=99';
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
-  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
---------+-------------------+--------------------+-------------+----------------
- normal |                 0 |                  0 |           7 |              0
+  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+---------+-------------------+--------------------+-------------+----------------
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc WHERE d >= DATE ''2020-02-01'' + (current_date - current_date) AND d < DATE ''2020-02-04'' + (current_date - current_date) GROUP BY g');
-  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
---------+-------------------+--------------------+-------------+----------------
- normal |                 0 |                  0 |           7 |              0
+  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+---------+-------------------+--------------------+-------------+----------------
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';

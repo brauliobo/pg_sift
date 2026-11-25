@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "access/tupmacs.h"
 #include "catalog/pg_type_d.h"
 #include "fmgr.h"
 #include "utils/array.h"
@@ -624,4 +625,90 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 {
 	SIFT_INVARIANT(def->type != SIFT_COLT_OTHER, "sift_col: the image of an opaque leaf is read with the length of its attribute");
 	sift_col_datum_values_att(def, 0, false, d, name, v);
+}
+
+Datum
+sift_col_nan_numeric(void)
+{
+	return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+}
+
+static Datum
+image_datum(const SiftColValue *v, Size size, Size len, MemoryContext cx)
+{
+	return PointerGetDatum(memcpy(MemoryContextAllocZero(cx, size), v->v.s, len));
+}
+
+static Datum
+opaque_datum(int16 typlen, bool typbyval, const SiftColValue *v, MemoryContext cx)
+{
+	int64		word = 0;
+
+	if (!typbyval)
+		return image_datum(v, v->len, v->len, cx);
+	memcpy(&word, v->v.s, typlen);
+	return fetch_att(&word, true, typlen);
+}
+
+static Datum
+text_datum(Oid typid, const SiftColValue *v, MemoryContext cx)
+{
+	NameData   *name;
+
+	if (typid != NAMEOID)
+		return PointerGetDatum(cstring_to_text_with_len(v->v.s, v->len));
+	name = MemoryContextAllocZero(cx, NAMEDATALEN);
+	memcpy(NameStr(*name), v->v.s, Min(v->len, NAMEDATALEN - 1));
+	return NameGetDatum(name);
+}
+
+/* The datum of a leaf head of the attribute type typid (its lengths typlen, typbyval) from the values of its leaves, the inverse of sift_col_datum_values_att: v[0 .. sift_col_def_value_lanes) as the scan read them, allocated in cx */
+Datum
+sift_col_values_datum(const SiftColDef *def, Oid typid, int16 typlen, bool typbyval, const SiftColValue *v, MemoryContext cx)
+{
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	Datum		d;
+
+	switch (def->type)
+	{
+		case SIFT_COLT_MONEY:
+		case SIFT_COLT_TIME:
+			d = Int64GetDatum(v->v.i);
+			break;
+		case SIFT_COLT_ENUM:
+			d = ObjectIdGetDatum((Oid) v->v.i);
+			break;
+		case SIFT_COLT_NUMERIC:
+			d = v->isnull ? sift_col_nan_numeric()
+				: def->store == SIFT_COLS_STR ? sift_col_image_numeric((const uint8 *) v->v.s, v->len, (int32) v[1].v.i)
+				: def->lanes == 2 ? sift_col_w128_numeric(sift_col_wide_join(v[0].v.i, v[1].v.i), def->scale)
+				: sift_col_key_numeric(def->scale, v->v.i);
+			break;
+		case SIFT_COLT_INTERVAL:
+			d = IntervalPGetDatum(sift_col_lanes_interval(v[0].v.i, v[1].v.i, v[2].v.i));
+			break;
+		case SIFT_COLT_UUID:
+			d = image_datum(v, UUID_LEN, UUID_LEN, cx);
+			break;
+		case SIFT_COLT_MACADDR:
+			d = image_datum(v, sizeof(macaddr), sizeof(macaddr), cx);
+			break;
+		case SIFT_COLT_MACADDR8:
+			d = image_datum(v, sizeof(macaddr8), sizeof(macaddr8), cx);
+			break;
+		case SIFT_COLT_TIMETZ:
+			d = image_datum(v, sizeof(TimeTzADT), 12, cx);
+			break;
+		case SIFT_COLT_BYTEA:
+		case SIFT_COLT_VARLENA:
+			d = image_datum(v, v->len, v->len, cx);
+			break;
+		case SIFT_COLT_OTHER:
+			d = opaque_datum(typlen, typbyval, v, cx);
+			break;
+		default:
+			d = text_datum(typid, v, cx);
+	}
+	MemoryContextSwitchTo(old);
+	return d;
 }

@@ -47,7 +47,7 @@ BEGIN
 	PERFORM set_config('sift.agg_force', 'true', true);
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r OR l ~ 'Custom Scan \(SiftAgg\)';
+		r := r OR l ~ 'Custom Scan \(SiftAgg';
 	END LOOP;
 	RETURN r;
 END $$;

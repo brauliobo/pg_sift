@@ -132,7 +132,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | f        |           0
+ f      | t        |           0
 (1 row)
 
 -- EXPLAIN: the test, the lookup it resolves per element, and what the scan runs.
@@ -178,7 +178,7 @@ BEGIN
   SET LOCAL sift.enable_agg = on;
   BEGIN EXECUTE q; on_msg := 'no error'; EXCEPTION WHEN OTHERS THEN on_msg := SQLERRM; END;
   pushed := false;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
   same := on_msg = off_msg;
   message := on_msg;
   RETURN NEXT;

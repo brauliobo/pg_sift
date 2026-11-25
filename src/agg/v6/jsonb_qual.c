@@ -15,6 +15,7 @@
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 
+#include "agg/agg.h"
 #include "agg/group/ht.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_unnest_jsonb.h"
@@ -52,7 +53,14 @@ text_const(const Expr *e)
 	return c != NULL && IsA(c, Const) && !c->constisnull && c->consttype == TEXTOID ? TextDatumGetCString(c->constvalue) : NULL;
 }
 
-/* The column of the index (1-based) that holds the jsonb attribute e is, and is shredded */
+/* The leaves of the relation: those of its index, or of the store of its table */
+static const SiftColSchema *
+leaves_of(const SiftV6Rel *rel)
+{
+	return rel->table != NULL ? rel->table->leaves : rel->colrel != NULL ? rel->colrel->schema : NULL;
+}
+
+/* The column of the index (1-based) that holds the jsonb attribute e is, and is shredded; of a table, the attribute that has the leaves of declared paths */
 static bool
 doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 {
@@ -60,6 +68,11 @@ doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 
 	if (v == NULL || !IsA(v, Var) || v->varno != rel->relid || v->varlevelsup != 0 || v->vartype != JSONBOID)
 		return false;
+	if (rel->table != NULL)
+	{
+		*att = v->varattno;
+		return v->varattno > 0 && v->varattno <= rel->table->natts && rel->table->att_nleaves[v->varattno] > 1;
+	}
 	for (int i = 0; i < rel->index->ncolumns; i++)
 		if (rel->index->indexkeys[i] == v->varattno)
 		{
@@ -69,23 +82,120 @@ doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 	return false;
 }
 
-/* doc -> 'k' (fn F_JSONB_OBJECT_FIELD) or doc ->> 'k' (F_JSONB_OBJECT_FIELD_TEXT) of such a document, and the leaf of its key (-1: none keeps it) */
+/* the leaf of the format of the index that keeps whether the key is on the rows of the document attribute att (-1: none keeps it) */
 static int
-field_leaf(const SiftV6Rel *rel, const Expr *e, Oid fn, int *att, const char **key)
+key_leaf(const SiftV6Rel *rel, int att, const char *key)
 {
-	List	   *args;
+	const SiftJsonbOps *jsonb = rel->ops != NULL ? rel->ops->jsonb : NULL;
+
+	if (jsonb == NULL)
+		return -1;
+	if (rel->table != NULL)
+		return jsonb->table_key_leaf != NULL ? jsonb->table_key_leaf(rel->reloid, att, key, strlen(key)) : -1;
+	return jsonb->key_leaf(rel->index->indexoid, att, key, strlen(key));
+}
+
+/* the empty path '{}' of a #>> */
+static bool
+empty_path(const Expr *e)
+{
+	const Const *c = (const Const *) strip(e);
+
+	return c != NULL && IsA(c, Const) && !c->constisnull && c->consttype == TEXTARRAYOID && ARR_NDIM(DatumGetArrayTypeP(c->constvalue)) == 0;
+}
+
+/* the one key of a path of one element: '{k}' of #> and #>>, or the k of the variadic path of jsonb_extract_path(doc, 'k') and jsonb_extract_path_text(doc, 'k') */
+static const char *
+path_key(const Expr *e)
+{
+	const Expr *a = strip(e);
+	const Const *c = (const Const *) a;
+	Datum	   *el;
+	bool	   *nl;
+	int			n;
+
+	if (a != NULL && IsA(a, ArrayExpr) && list_length(((const ArrayExpr *) a)->elements) == 1)
+		return text_const(linitial(((const ArrayExpr *) a)->elements));
+	if (a == NULL || !IsA(a, Const) || c->constisnull || c->consttype != TEXTARRAYOID || ARR_NDIM(DatumGetArrayTypeP(c->constvalue)) != 1)
+		return NULL;
+	deconstruct_array_builtin(DatumGetArrayTypeP(c->constvalue), TEXTOID, &el, &nl, &n);
+	return n == 1 && !nl[0] ? TextDatumGetCString(el[0]) : NULL;
+}
+
+/* doc -> 'k' as a call with a path of one key: jsonb_extract_path(doc, 'k') or doc #> '{k}' (as_text false), jsonb_extract_path_text(doc, 'k') or doc #>> '{k}' (as_text true) */
+static bool
+path_member(const Expr *e, bool as_text, const Var **doc, const char **key)
+{
+	const List *args = e != NULL ? args_of(e) : NIL;
+
+	if (e == NULL || func_of(e) != (as_text ? F_JSONB_EXTRACT_PATH_TEXT : F_JSONB_EXTRACT_PATH) || list_length(args) != 2 || (*key = path_key(lsecond(args))) == NULL ||
+		strchr(" +-0123456789", (*key)[strspn(*key, " ")]) != NULL)
+		return false;
+	*doc = (const Var *) strip(linitial(args));
+	return *doc != NULL && IsA(*doc, Var);
+}
+
+bool
+sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **key)
+{
+	const List *args;
 
 	e = strip(e);
+	if (path_member(e, as_text, doc, key))
+		return true;
+	if (as_text && e != NULL && func_of(e) == F_JSONB_EXTRACT_PATH_TEXT && list_length(args_of(e)) == 2 && empty_path(lsecond(args_of(e))))
+	{
+		e = strip(linitial(args_of(e)));
+		as_text = false;
+	}
+	if (e != NULL && IsA(e, SubscriptingRef))
+	{
+		const SubscriptingRef *sr = (const SubscriptingRef *) e;
+
+		if (as_text || sr->refcontainertype != JSONBOID || sr->refassgnexpr != NULL || sr->reflowerindexpr != NIL || list_length(sr->refupperindexpr) != 1)
+			return false;
+		*doc = (const Var *) strip(sr->refexpr);
+		*key = text_const(linitial(sr->refupperindexpr));
+		return *doc != NULL && IsA(*doc, Var) && *key != NULL;
+	}
 	args = e != NULL ? args_of(e) : NIL;
-	if (e == NULL || func_of(e) != fn || list_length(args) != 2 || !doc_of(rel, linitial(args), att) || (*key = text_const(lsecond(args))) == NULL)
+	if (e == NULL || func_of(e) != (as_text ? F_JSONB_OBJECT_FIELD_TEXT : F_JSONB_OBJECT_FIELD) || list_length(args) != 2)
+		return false;
+	*doc = (const Var *) strip(linitial(args));
+	*key = text_const(lsecond(args));
+	return *doc != NULL && IsA(*doc, Var) && *key != NULL;
+}
+
+/* doc -> 'k' or doc['k'] (as_text false), doc ->> 'k' or its #>> '{}' (as_text true) of such a document, and the leaf of its key (-1: none keeps it) */
+static int
+field_leaf(const SiftV6Rel *rel, const Expr *e, bool as_text, int *att, const char **key)
+{
+	const Var  *doc;
+
+	if (!sift_v6_json_member(e, as_text, &doc, key) || !doc_of(rel, (const Expr *) doc, att))
 		return -1;
-	return sift_f2_key_leaf(rel->f2, *att, *key, strlen(*key));
+	return key_leaf(rel, *att, *key);
+}
+
+const Var *
+sift_v6_doc_chain(const Expr *e, List **path)
+{
+	*path = NIL;
+	for (e = strip(e); e != NULL && (func_of(e) == F_JSONB_OBJECT_FIELD || func_of(e) == F_JSONB_OBJECT_FIELD_TEXT) && list_length(args_of(e)) == 2; e = strip(linitial(args_of(e))))
+	{
+		const char *key = text_const(lsecond(args_of(e)));
+
+		if (key == NULL)
+			return NULL;
+		*path = lcons(makeString(pstrdup(key)), *path);
+	}
+	return e != NULL && IsA(e, Var) && ((const Var *) e)->vartype == JSONBOID ? (const Var *) e : NULL;
 }
 
 static bool
 scalar_leaf(const SiftV6Rel *rel, int leaf)
 {
-	return leaf >= 0 && rel->colrel->schema->cols[leaf].kind == SIFT_COLK_SCALAR;
+	return leaf >= 0 && leaves_of(rel)->cols[leaf].kind == SIFT_COLK_SCALAR;
 }
 
 static uint32
@@ -102,6 +212,14 @@ type_bit(const char *name)
 		if (strcmp(types[i].name, name) == 0)
 			return (uint32) 1 << types[i].tag;
 	return 0;
+}
+
+static bool
+types_exact(const SiftV6Rel *rel, int leaf, uint32 mask)
+{
+	const SiftJsonbOps *jsonb = rel->ops->jsonb;
+
+	return jsonb->types_exact == NULL || jsonb->types_exact(rel->table != NULL ? rel->reloid : rel->index->indexoid, rel->table != NULL, leaf, mask);
 }
 
 /* jsonb_typeof(..) = 'type' or = ANY (ARRAY['type', ..]): the call and the set of types */
@@ -160,14 +278,25 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 	if (func_of(clause) == F_JSONB_EXISTS && list_length(args_of(clause)) == 2)
 	{
 		key = text_const(lsecond(args_of(clause)));
-		if (key != NULL && doc_of(rel, linitial(args_of(clause)), &att) && sift_f2_key_leaf(rel->f2, att, key, strlen(key)) >= 0)
+		if (key != NULL && doc_of(rel, linitial(args_of(clause)), &att) && key_leaf(rel, att, key) >= 0)
 			return qual_of(JQ_EXISTS, att, key, 0);
 		return NIL;
 	}
-	if (typeof_test(clause, &call, &mask) && func_of(call) == F_JSONB_TYPEOF && list_length(args_of(call)) == 1 &&
-		scalar_leaf(rel, field_leaf(rel, linitial(args_of(call)), F_JSONB_OBJECT_FIELD, &att, &key)))
-		return qual_of(JQ_TYPE, att, key, mask);
+	if (typeof_test(clause, &call, &mask) && func_of(call) == F_JSONB_TYPEOF && list_length(args_of(call)) == 1)
+	{
+		const int	leaf = field_leaf(rel, linitial(args_of(call)), false, &att, &key);
+
+		if (scalar_leaf(rel, leaf) && types_exact(rel, leaf, mask))
+			return qual_of(JQ_TYPE, att, key, mask);
+	}
 	return NIL;
+}
+
+/* the format reads the values of the keys of a document as the heap does, or the statement runs on the unified scan alone, where a value no leaf holds is refused */
+bool
+sift_v6_values_exact(const SiftV6Rel *rel)
+{
+	return rel->ops != NULL && rel->ops->jsonb != NULL && (rel->ops->jsonb->exact_values || sift_agg_unified_only());
 }
 
 bool
@@ -186,11 +315,167 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 		typid = FLOAT8OID;
 		store = SIFT_COLS_F8;
 	}
-	leaf = field_leaf(rel, text, F_JSONB_OBJECT_FIELD_TEXT, &att, &key);
-	if (!scalar_leaf(rel, leaf) || rel->colrel->schema->cols[leaf].store != store)
+	leaf = field_leaf(rel, text, true, &att, &key);
+	if (!scalar_leaf(rel, leaf) || leaves_of(rel)->cols[leaf].store != store || !sift_v6_values_exact(rel))
 		return false;
 	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1};
 	return true;
+}
+
+bool
+sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path)
+{
+	const Expr *text = strip(e);
+	const Var  *doc;
+	int			att,
+				leaf;
+
+	if (text == NULL || !IsA(text, CoerceViaIO) || ((const CoerceViaIO *) text)->resulttype != FLOAT8OID)
+		return false;
+	text = strip(((const CoerceViaIO *) text)->arg);
+	if (text == NULL || func_of(text) != F_JSONB_OBJECT_FIELD_TEXT || (doc = sift_v6_doc_chain(text, path)) == NULL || list_length(*path) < 2 || !doc_of(rel, (const Expr *) doc, &att))
+		return false;
+	leaf = rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->member_leaf != NULL ? rel->ops->jsonb->member_leaf(rel->index->indexoid, att, *path) : -1;
+	if (leaf < 0)
+		return false;
+	*out = (SiftV6Col) {.attno = att,.typid = FLOAT8OID,.jleaf = leaf + 1};
+	return true;
+}
+
+/* jsonb_typeof(doc -> 'key') of a shredded scalar key: the leaf of the key (-1: the expression is no such call) */
+static int
+typeof_leaf(const SiftV6Rel *rel, const Node *n)
+{
+	const Expr *e = strip((const Expr *) n);
+	const char *key;
+	int			att,
+				leaf;
+
+	if (e == NULL || !IsA(e, FuncExpr) || func_of(e) != F_JSONB_TYPEOF || list_length(args_of(e)) != 1)
+		return -1;
+	leaf = field_leaf(rel, linitial(args_of(e)), false, &att, &key);
+	return scalar_leaf(rel, leaf) && sift_v6_values_exact(rel) ? leaf : -1;
+}
+
+/* The virtual attribute of what n reads of a shredded scalar key (the type, the `->>` text of a text leaf, its float8 cast of a float8 leaf), InvalidAttrNumber for any other expression */
+static int
+read_vatt(const SiftV6Rel *rel, const Node *n, bool values, Oid *typid)
+{
+	SiftV6Col	col;
+	int			leaf;
+
+	if ((leaf = typeof_leaf(rel, n)) >= 0)
+	{
+		*typid = TEXTOID;
+		return SIFT_V6_JTYPE_VATT + leaf;
+	}
+	if (!values || !sift_v6_json_read(rel, (const Expr *) n, &col))
+		return InvalidAttrNumber;
+	*typid = col.typid;
+	return sift_v6_col_input_attno(&col);
+}
+
+typedef struct VarsCtx
+{
+	const SiftV6Rel *rel;
+	bool		values;
+} VarsCtx;
+
+static Node *
+vars_mutator(Node *n, VarsCtx *ctx)
+{
+	Oid			typid;
+	int			vatt;
+
+	if (n == NULL)
+		return NULL;
+	if ((vatt = read_vatt(ctx->rel, n, ctx->values, &typid)) != InvalidAttrNumber)
+		return (Node *) makeVar(ctx->rel->relid, vatt, typid, -1, exprCollation(n), 0);
+	return expression_tree_mutator(n, vars_mutator, ctx);
+}
+
+Expr *
+sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values)
+{
+	VarsCtx		ctx = {rel, values};
+
+	return (Expr *) vars_mutator((Node *) e, &ctx);
+}
+
+bool
+sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out)
+{
+	const int	leaf = sift_v6_vatt_leaf(v->varattno);
+	const SiftColSchema *leaves = leaves_of(rel);
+	const bool	held = leaves != NULL && leaf < leaves->ncols;
+
+	if (held)
+		*out = sift_v6_vatt_col(v->varattno, leaves->cols[leaf].attno, v->vartype, 0);
+	return held;
+}
+
+typedef struct JsonLeaves
+{
+	Bitmapset  *value;			/* the leaves the statement reads the values of (`->>`, its float8 cast) */
+	Bitmapset  *type;			/* the leaves it reads the JSON type of, anywhere but in a scan key */
+} JsonLeaves;
+
+static void
+note_col(JsonLeaves *j, const SiftV6Col *c)
+{
+	if (c->jleaf > 0)
+	{
+		Bitmapset **set = c->jtype ? &j->type : &j->value;
+
+		*set = bms_add_member(*set, c->jleaf - 1);
+	}
+}
+
+static void
+note_vatt(JsonLeaves *j, int attno)
+{
+	Bitmapset **set = sift_v6_vatt_is_type(attno) ? &j->type : &j->value;
+
+	*set = bms_add_member(*set, sift_v6_vatt_leaf(attno));
+}
+
+static bool
+note_vars(Node *n, JsonLeaves *j)
+{
+	if (n != NULL && IsA(n, Var) && sift_v6_vatt_is_json(((const Var *) n)->varattno))
+		note_vatt(j, ((const Var *) n)->varattno);
+	return n != NULL && expression_tree_walker(n, note_vars, j);
+}
+
+/*
+ * PostgreSQL does not read the value of a row a test of its type leaves out (`FILTER (WHERE jsonb_typeof(d -> 'k') = 'number')` over `(d ->> 'k')::float8`), and the leaf cannot hold the strings among its
+ * numbers: a statement that reads both the type and the value of one key in the batches would raise for a row the heap skips. Only the scan keys of the type test (SiftV6Spec.jsonqual) drop those rows first.
+ */
+bool
+sift_v6_json_type_clash(const SiftV6Spec *s)
+{
+	JsonLeaves	j = {0};
+
+	for (int i = 0; i < s->nkeys; i++)
+		note_col(&j, &s->key[i]);
+	for (int a = 0; a < s->naggs; a++)
+	{
+		note_col(&j, &s->agg[a].arg);
+		note_col(&j, &s->agg[a].arg2);
+		for (int c = 0; c < s->agg[a].nxcols; c++)
+			note_col(&j, &s->agg[a].xcol[c]);
+	}
+	for (int f = 0; f < s->nfcols; f++)
+		note_col(&j, &s->fcol[f]);
+	for (int d = 0; d < s->nderive; d++)
+		note_col(&j, &s->derive[d].src);
+	foreach_ptr(List, item, s->pgexpr)
+		for (int i = 1; i < list_length(lsecond(item)); i += 3)
+			if (sift_v6_vatt_is_json(list_nth_int(lsecond(item), i)))
+				note_vatt(&j, list_nth_int(lsecond(item), i));
+	foreach_ptr(Node, clause, s->vqual)
+		note_vars(clause, &j);
+	return bms_overlap(j.value, j.type);
 }
 
 /*
@@ -228,18 +513,19 @@ sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op)
 	if (c == NULL || !IsA(c, Const) || c->constisnull || c->consttype != TEXTOID || !json_text_unambiguous(c) || !sift_v6_json_read(rel, l, &col) || col.typid != TEXTOID)
 		return NULL;
 	q = copyObject((OpExpr *) op);
-	q->args = list_make2(makeVar(INDEX_VAR, SIFT_V6_JLEAF_VATT + col.jleaf - 1, TEXTOID, -1, op->inputcollid, 0), copyObject((Node *) c));
+	q->args = list_make2(makeVar(INDEX_VAR, SIFT_V6_JTEXT_VATT + col.jleaf - 1, TEXTOID, -1, op->inputcollid, 0), copyObject((Node *) c));
 	return (Expr *) q;
 }
 
 void
 sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys)
 {
-	const SiftF2Rel *f = sift_f2_rel(index);
+	const SiftJsonbOps *ops;
 	ScanKey		all;
 
 	if (spec->jsonqual == NIL)
 		return;
+	ops = sift_store_ops_for_oid(RelationGetRelid(index), false)->jsonb;
 	all = palloc((*nkeys + list_length(spec->jsonqual)) * sizeof(ScanKeyData));
 	if (*nkeys > 0)
 		memcpy(all, *keys, *nkeys * sizeof(ScanKeyData));
@@ -247,7 +533,7 @@ sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int
 	{
 		const char *key = strVal(lthird(q));
 		const int	att = intVal(lsecond(q));
-		const int	leaf = sift_f2_key_leaf(f, att, key, strlen(key));
+		const int	leaf = ops->key_leaf(RelationGetRelid(index), att, key, strlen(key));
 
 		SIFT_INVARIANT(leaf >= 0, "the key of a jsonb qual of the aggregate scan is a leaf of the index");
 		all[(*nkeys)++] = intVal(linitial(q)) == JQ_EXISTS ?

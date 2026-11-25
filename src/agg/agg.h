@@ -52,9 +52,6 @@ sift_str_type(Oid t)
 	return t == TEXTOID || t == VARCHAROID;
 }
 
-/* The integer a numeric(p, s) with p at most 18 holds as scaled by 10^scale; an error for NaN and the infinities */
-extern int64 sift_numeric_scaled(Datum d, int scale);
-
 /* the types of a join key that the lookup compares by its bytes: a string, a uuid (16 bytes) */
 static inline bool
 sift_bytes_key_type(Oid t)
@@ -234,6 +231,14 @@ extern void sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, Rel
 /* the engine of the format 1 indexes of the table; agg/plan/format_ops.c dispatches sift_agg_upper_paths to the engine of each format */
 extern void sift_agg_v1_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel,
 								 RelOptInfo *output_rel, void *extra);
+
+/* The legacy Format 1 planner competes with SiftAggV6 for the statements with a Format 1 source until SiftAggV6 serves them all; the testing build can leave it out (sift.test_unified_agg), to see what SiftAggV6 alone serves */
+#ifdef SIFT_TESTING
+extern bool sift_test_unified_agg;
+#define sift_agg_unified_only() (sift_test_unified_agg)
+#else
+#define sift_agg_unified_only() false
+#endif
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_plan_methods;
 

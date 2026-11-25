@@ -40,11 +40,11 @@ sift_v6_par_strategy_name(int strategy)
 }
 
 SiftV6ParNode *
-sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, MemoryContext mcx, MemoryContext tuple_cx)
+sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, const SiftV6ScanSrc *sources, int nsources, Snapshot snap, MemoryContext mcx, MemoryContext tuple_cx)
 {
 	SiftV6ParNode *pn = MemoryContextAllocZero(mcx, sizeof(SiftV6ParNode));
 
-	*pn = (SiftV6ParNode) {.spec = spec,.desc = desc,.heap = heap,.index = index,.keys = keys,.nkeys = nkeys,.snap = snap,.mcx = mcx,.tuple_cx = tuple_cx};
+	*pn = (SiftV6ParNode) {.spec = spec,.desc = desc,.sources = sources,.nsources = nsources,.snap = snap,.mcx = mcx,.tuple_cx = tuple_cx};
 	return pn;
 }
 
@@ -59,7 +59,7 @@ sift_v6_par_node_summary(const SiftV6ParNode *pn, SiftV6ParSummary *out)
 {
 	*out = (SiftV6ParSummary) {.strategy = sift_v6_par_strategy_name(pn->spec->par_strategy),.ran = pn->have_total,.escalated = pn->escalated,
 		.morsels_stolen = pn->total.morsels_stolen,.radix_parts = pn->radix_parts,.partial_recs = pn->ring_recs,.partial_bytes = pn->ring_bytes,
-		.grans_scanned = pn->total.grans_scanned,.heap_vet_rows = pn->total.heap_vet_rows};
+		.grans_scanned = pn->total.grans_scanned,.grans_preagg = pn->total.grans_preagg,.grans_preagg_delta = pn->total.grans_preagg_delta,.heap_vet_rows = pn->total.heap_vet_rows};
 }
 
 static uint32
@@ -68,7 +68,7 @@ count_distinct(const SiftV6Spec *spec)
 	uint32		n = 0;
 
 	for (int j = 0; j < spec->naggs; j++)
-		n += spec->agg[j].kind == SV6_COUNT_DISTINCT;
+		n += sift_v6_kind_distinct(spec->agg[j].kind);
 	return n;
 }
 
@@ -100,19 +100,56 @@ chunk_budget(const SiftV6ParNode *pn, int nparticipants)
 	return Min((double) get_hash_memory_limit(), Max(bytes * (groups >= SIFT_PAR_POOL_BIG_GROUPS ? SIFT_PAR_POOL_BIG : SIFT_PAR_POOL_SMALL), (double) SIFT_PAR_MIN_POOL_BYTES));
 }
 
+/* The units of every source, one after the other, each tagged with its source, and the deletes of the transaction of every source with where each starts */
+static void
+list_units(SiftV6ParNode *pn)
+{
+	SiftV6ScanStats stats = {0};
+	SiftF2ParPlan *each = palloc(pn->nsources * sizeof(SiftF2ParPlan));
+	SiftV6Scan **scan = palloc(pn->nsources * sizeof(SiftV6Scan *));
+	uint32		nrefs = 0,
+				nstaged = 0;
+
+	for (int k = 0; k < pn->nsources; k++)
+	{
+		const SiftV6ScanSrc *src = &pn->sources[k];
+
+		scan[k] = src->ops->par->begin(pn->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, NULL, NULL);
+		src->ops->par->plan(scan[k], &each[k]);
+		nrefs += each[k].nrefs;
+		nstaged += each[k].nstaged;
+	}
+	pn->plan = (SiftF2ParPlan) {.refs = palloc(Max(nrefs, 1) * sizeof(SiftParPartRef)),.staged_dead = palloc(Max(nstaged, 1) * sizeof(uint64))};
+	pn->staged_start = palloc((pn->nsources + 1) * sizeof(uint64));
+	for (int k = 0; k < pn->nsources; k++)
+	{
+		pn->staged_start[k] = pn->plan.nstaged;
+		for (uint32 i = 0; i < each[k].nrefs; i++)
+		{
+			pn->plan.refs[pn->plan.nrefs] = each[k].refs[i];
+			pn->plan.refs[pn->plan.nrefs++].child_idx = (uint16) k;
+		}
+		if (each[k].nstaged > 0)
+			memcpy(pn->plan.staged_dead + pn->plan.nstaged, each[k].staged_dead, each[k].nstaged * sizeof(uint64));
+		pn->plan.nstaged += each[k].nstaged;
+		pfree(each[k].refs);
+		pn->sources[k].ops->par->end(scan[k]);
+	}
+	pn->staged_start[pn->nsources] = pn->plan.nstaged;
+	pfree(scan);
+	pfree(each);
+}
+
 /* The leader lists the units of the scan once; the block holds them for every participant */
 Size
 sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
 {
-	SiftV6ScanStats stats = {0};
 	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
-	SiftV6Scan *scan = sift_v6_scan_begin(pn->spec, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap, &stats, NULL, NULL);
 	const SiftV6Spec *spec = pn->spec;
 
-	sift_v6_scan_plan(scan, &pn->plan);
-	sift_v6_scan_end(scan);
+	list_units(pn);
 	pn->shape = (SiftV6ParShape) {.strategy = (SiftV6ParStrategy) spec->par_strategy,.nworkers = pcxt->nworkers,.n_parts = pn->plan.nrefs,.part_ref_bytes = sizeof(SiftParPartRef),
-		.n_staged_dead = pn->plan.nstaged,.n_aggs = (uint32) spec->naggs,.n_dist = count_distinct(spec),
+		.n_children = pn->nsources,.n_staged_dead = pn->plan.nstaged,.n_aggs = (uint32) spec->naggs,.n_dist = count_distinct(spec),
 		.max_chunks = sift_v6_par_chunks((SiftV6ParStrategy) spec->par_strategy, chunk_budget(pn, pcxt->nworkers + 1)),.radix_nparts = sift_v6_par_radix_parts((SiftV6ParStrategy) spec->par_strategy, pcxt->nworkers),
 		.plain_slot_bytes = (uint32) (sizeof(SiftV6RecHdr) + (Size) Max(spec->naggs, 1) * sizeof(V6Acc))};
 	MemoryContextSwitchTo(old);
@@ -138,7 +175,9 @@ sift_v6_par_node_initialize(SiftV6ParNode *pn, ParallelContext *pcxt, void *chun
 
 	pfree(granules);
 	memcpy((char *) h + h->parts_off, pn->plan.refs, (Size) pn->plan.nrefs * sizeof(SiftParPartRef));
-	memcpy((char *) h + h->staged_dead_off, pn->plan.staged_dead, (Size) pn->plan.nstaged * sizeof(uint64));
+	memcpy(sift_v6_par_staged_starts(h), pn->staged_start, (Size) (pn->nsources + 1) * sizeof(uint64));
+	if (pn->plan.nstaged > 0)
+		memcpy(sift_v6_par_staged_starts(h) + pn->nsources + 1, pn->plan.staged_dead, (Size) pn->plan.nstaged * sizeof(uint64));
 	pn->hdr = h;
 }
 
@@ -174,7 +213,7 @@ sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull)
 
 	if (pn->run == NULL)
 	{
-		sift_v6_par_engine_make(&pn->eng, pn->spec, pn->mcx, pn->tuple_cx, pn->desc, pn->hdr, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap);
+		sift_v6_par_engine_make(&pn->eng, pn->spec, pn->mcx, pn->tuple_cx, pn->desc, pn->hdr, pn->sources, pn->snap);
 		if (pn->spec->topk > 0)
 			pn->topk = sift_v6_par_topk_new(pn->mcx, pn->spec, pn->desc);
 		pn->run = sift_v6_par_run_new(pn->hdr, &pn->eng, pn->topk != NULL ? sift_v6_par_topk_heap(pn->topk) : NULL);

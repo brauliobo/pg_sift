@@ -6,7 +6,7 @@
 #ifndef SIFT_AGG_COLSRC_PROVIDER_H
 #define SIFT_AGG_COLSRC_PROVIDER_H
 
-#include "agg/colsrc/exec.h"
+#include "col/v1/src_exec.h"
 #include "core/range.h"
 
 struct SiftScopeRead;
@@ -110,7 +110,7 @@ typedef struct SiftSrcProvider
 	 * Optional (NULL: the source cannot be restricted to a match set, sift_colsrc_can_select says so to the planner). select, called before
 	 * `begin`, restricts the units `begin` starts to the rows whose key (blk << 16 | off) the filter has (NULL: all rows again): a unit
 	 * without such a row is not returned (it counts in units_pruned), and in the others `nrow`, `read`, `live` and `vet` are about the kept
-	 * rows only, which the source may renumber 0..nrow-1 in key order (docs/COL-SEARCH.md, src/agg/sel.h).
+	 * rows only, which the source may renumber 0..nrow-1 in key order (docs/COL-SEARCH.md, col/v1/src_sel.h).
 	 */
 	void		(*select) (void *impl, const SiftFilter *keep);
 	/* Optional (NULL: no unit has pre-aggregates), see SiftSrcUnitAgg; `preagg` is the planner's, over the index relation */

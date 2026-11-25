@@ -106,7 +106,8 @@ SELECT sift._test_explain_v6(4, 'json');
          "Pruned By Zone Map": 68,                                                     +
          "Pruned By Skip Index": 84,                                                   +
          "Pruned By Dictionary": 0,                                                    +
-         "Answered By Pre-aggregate": 0                                                +
+         "Answered By Pre-aggregate": 0,                                               +
+         "Corrected For Dead Rows": 0                                                  +
        },                                                                              +
        "SIP Filter": {                                                                 +
          "Filter Size": 65536,                                                         +
@@ -208,7 +209,7 @@ RESET client_min_messages;
 CREATE SCHEMA s4;
 GRANT USAGE ON SCHEMA s4 TO PUBLIC;
 SET search_path = s4, public;
--- Guided work queue of the parallel scans (src/agg/par/morsel.c): the leader and 0, 1, 2, 4 and 8 workers take every granule of
+-- Guided work queue of the parallel scans (src/core/par/morsel.c): the leader and 0, 1, 2, 4 and 8 workers take every granule of
 -- parts whose sizes are as skewed as a Zipf law (half of the granules in one part, a quarter in the next, some parts empty)
 -- from one cursor. Every granule is visited exactly once, every claim lies in one part and has the guided length (the part is
 -- shared by all the participants, not given to one), and the claim that ends the list is one granule.
@@ -352,7 +353,7 @@ CREATE FUNCTION ti_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'SiftAggV6|Text Index' THEN r := r || btrim(l) || '; '; END IF;
+		IF l ~ 'SiftAggV6|Search' THEN r := r || btrim(l) || '; '; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -376,11 +377,11 @@ BEGIN
 END $$;
 -- the plan reads the text index through the bridge
 SELECT name, ti_plan(q) FROM ti_q WHERE name IN ('group', 'filter', 'count') ORDER BY name;
-  name  |                   ti_plan                    
---------+----------------------------------------------
- count  | Custom Scan (SiftAggV6); Text Index: ti_bm; 
- filter | Custom Scan (SiftAggV6); Text Index: ti_bm; 
- group  | Custom Scan (SiftAggV6); Text Index: ti_bm; 
+  name  |                            ti_plan                            
+--------+---------------------------------------------------------------
+ count  | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid tok3'::text; 
+ filter | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid'::text; 
+ group  | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid'::text; 
 (3 rows)
 
 SELECT name, (ti_check(q)).* FROM ti_q ORDER BY name;

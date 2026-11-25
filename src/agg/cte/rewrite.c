@@ -7,6 +7,7 @@
 
 #include "access/genam.h"
 #include "access/relation.h"
+#include "catalog/pg_class_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -91,6 +92,14 @@ source_evict_all(void)
 
 static const SiftCacheKind source_kind = {"agg_cte_sources", source_oldest, source_evict_one, source_evict_all};
 
+/* a column index of a source: one it reads, or the partitioned index of its access method, which has no storage and whose partitions' indexes the source reads */
+static bool
+column_index(Oid indexoid)
+{
+	return sift_colsrc_reads_index(indexoid) || sift_agg_v6_live_owns_index(indexoid) ||
+		(get_rel_relkind(indexoid) == RELKIND_PARTITIONED_INDEX && sift_colsrc_is_index(get_rel_relam(indexoid)));
+}
+
 /* a table the aggregate scan reads: a sift_table, or a heap table with a column index */
 bool
 has_column_source(Oid relid)
@@ -111,7 +120,7 @@ has_column_source(Oid relid)
 	rel = relation_open(relid, AccessShareLock);
 	found = sift_colsrc_is_table(relid);
 	foreach_oid(ix, RelationGetIndexList(rel))
-		found |= sift_colsrc_reads_index(ix) || sift_agg_v6_live_owns_index(ix);
+		found |= column_index(ix);
 	relation_close(rel, AccessShareLock);
 	if (source_cache == NULL)
 	{

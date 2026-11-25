@@ -105,6 +105,7 @@ typedef enum SiftErrCode
 	SIFT_ERR_INVALID_PARAM,		/* 22023 */
 	SIFT_ERR_LIMIT,				/* 54000 */
 	SIFT_ERR_ARENA_FULL,		/* arg0: bytes asked, arg1: bytes left; the leader runs the work on the backend path */
+	SIFT_ERR_SERIAL,			/* what the worker holds is not for a worker (a value it does not fold): nothing of it is done, and the leader runs it on the backend path */
 	SIFT_ERR_WORK_MEM,			/* the leader spills */
 	SIFT_ERR_CANCEL				/* the leader checks for interrupts */
 } SiftErrCode;
@@ -213,6 +214,7 @@ extern void sift_throw(SiftErrCode code, const char *hint, const char *fmt,...) 
  * is full). sift_free of a pointer of the arena of a scope does nothing: the arena is rewound, not freed.
  */
 extern void *sift_alloc(size_t n);
+extern void *sift_alloc_huge(size_t n);
 extern void *sift_alloc0(size_t n);
 extern void *sift_alloc_aligned(size_t n, size_t align);
 extern void sift_free(void *p);

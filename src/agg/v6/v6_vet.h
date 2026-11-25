@@ -29,6 +29,8 @@ extern void sift_v6_vet_begin(SiftV6Vet *v, Relation heap, Snapshot snap, SiftV6
 extern void sift_v6_vet_end(SiftV6Vet *v);
 /* bs->mask holds the n rows to keep if the heap shows them, at tid[off + r] (none is looked at when visible: the page of every row is all-visible): the others are cleared; sets the counts of bs. Returns the rows left */
 extern uint16 sift_v6_vet_mask(SiftV6Vet *v, const uint64 *tid, int off, bool visible, int n, SiftBatchSel *bs);
+/* Clears the rows of bs whose heap row's ctid is not in the keys [lo, hi) (block << 16 | offset): the index holds the address of the root of a HOT chain, and the ctid is the visible version's, on the same page, so the rows of the blocks between those of lo and of hi pass and the rows of those two are fetched; a row the snapshot does not see is cleared */
+extern uint16 sift_v6_tid_mask(SiftV6Vet *v, uint64 lo, uint64 hi, const uint64 *tid, int off, int n, SiftBatchSel *bs);
 /* The heap row at the address into v->slot; false when the snapshot does not see it */
 extern bool sift_v6_vet_fetch(SiftV6Vet *v, uint64 addr);
 

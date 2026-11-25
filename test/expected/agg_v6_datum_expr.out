@@ -1,0 +1,196 @@
+-- SiftAggV6 keys and quals that are PostgreSQL expressions or types the native vectors do not hold: float and numeric group keys (a table of interned values: -0.0 with 0.0, every NaN together, NULL apart),
+-- expressions of columns as keys (text, integer, interval and array results) and as arguments, the quals of any Boolean expression over the columns that no scan key or native predicate says (LIKE, ILIKE, ~,
+-- IS DISTINCT FROM, ANY, CASE, a stable function), a group by of an expression that reads no column over no rows, and an expression that is evaluated for the rows the quals keep only.
+-- Every statement runs over the index and over a heap twin that has none (the truth) and the two answers are compared; each prints whether it ran as SiftAggV6.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+SET sift.test_create_format1 = off;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+CREATE TABLE dx (id int, g int, f8 float8, f4 float4, n numeric(12, 3), t text COLLATE "C", d date, ts timestamptz, b bool, i4 int) WITH (autovacuum_enabled = false);
+INSERT INTO dx
+SELECT i, i % 7,
+       CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN 'NaN' WHEN i % 83 = 0 THEN 'Infinity' WHEN i % 79 = 0 OR i % 73 = 0 THEN 0 ELSE (i * 7 % 300) * 0.5 END,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 40)::float4 / 4 END,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE ((i * 31) % 500)::numeric / 8 END,
+       CASE WHEN i % 17 = 0 THEN NULL ELSE 'Key' || (i % 23) || repeat('x', i % 5) END,
+       DATE '2024-01-01' + (i % 400), TIMESTAMPTZ '2024-01-01' + i * interval '7 hours', CASE WHEN i % 19 = 0 THEN NULL ELSE i % 3 = 0 END,
+       CASE WHEN i % 29 = 0 THEN 0 WHEN i % 31 = 0 THEN NULL ELSE i % 50 END
+FROM generate_series(1, 6000) i;
+CREATE TABLE dc (LIKE dx) WITH (autovacuum_enabled = false);
+INSERT INTO dc SELECT * FROM dx;
+CREATE INDEX dc_col ON dc USING sift_col (id, g, f8, f4, n, t, d, ts, b, i4);
+VACUUM (FREEZE, ANALYZE) dx;
+VACUUM (FREEZE, ANALYZE) dc;
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; line text; node boolean := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'dc') LOOP node := node OR line LIKE '%SiftAggV6%'; END LOOP;
+	EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', 'dc')) INTO a;
+	EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', 'dx')) INTO b;
+	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN node THEN 'node' ELSE 'normal' END) || ' ' || q;
+END $$;
+-- float and numeric keys
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT f8, count(*) FROM @T GROUP BY f8',
+	'SELECT f4, count(*), sum(i4) FROM @T GROUP BY f4',
+	'SELECT g, f8, count(*) FROM @T GROUP BY g, f8',
+	'SELECT f8, f4, n, count(*) FROM @T GROUP BY f8, f4, n',
+	'SELECT n, count(*), min(f8) FROM @T GROUP BY n',
+	'SELECT f8, g, count(*) FROM @T GROUP BY ROLLUP (f8, g)',
+	'SELECT f8, count(DISTINCT t) FROM @T GROUP BY f8',
+	'SELECT f4, count(*) FROM @T WHERE f8 > 10 GROUP BY f4'
+]) q;
+                               same                               
+------------------------------------------------------------------
+ same node SELECT f8, count(*) FROM @T GROUP BY f8
+ same node SELECT f4, count(*), sum(i4) FROM @T GROUP BY f4
+ same node SELECT g, f8, count(*) FROM @T GROUP BY g, f8
+ same node SELECT f8, f4, n, count(*) FROM @T GROUP BY f8, f4, n
+ same node SELECT n, count(*), min(f8) FROM @T GROUP BY n
+ same node SELECT f8, g, count(*) FROM @T GROUP BY ROLLUP (f8, g)
+ same node SELECT f8, count(DISTINCT t) FROM @T GROUP BY f8
+ same node SELECT f4, count(*) FROM @T WHERE f8 > 10 GROUP BY f4
+(8 rows)
+
+-- -0 and 0 are one group, every NaN is one group, NULL is its own
+SELECT f8::text, c FROM (SELECT f8, count(*) AS c FROM dc WHERE f8 IN (0, 'NaN', 'Infinity') OR f8 IS NULL GROUP BY f8) r ORDER BY 1 NULLS LAST;
+    f8    |  c  
+----------+-----
+ 0        | 176
+ Infinity |  72
+ NaN      |  67
+          |  61
+(4 rows)
+
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT count(*) FROM (SELECT CASE WHEN id % 2 = 0 THEN f8 ELSE -f8 END FROM @T WHERE f8 = 0 GROUP BY 1) r',
+	'SELECT count(*) FROM (SELECT CASE WHEN id % 2 = 0 THEN f8 ELSE ''NaN'' END FROM @T WHERE f8 = 0 OR f8 = ''NaN'' GROUP BY 1) r'
+]) q;
+                                                                same                                                                 
+-------------------------------------------------------------------------------------------------------------------------------------
+ same node SELECT count(*) FROM (SELECT CASE WHEN id % 2 = 0 THEN f8 ELSE -f8 END FROM @T WHERE f8 = 0 GROUP BY 1) r
+ same node SELECT count(*) FROM (SELECT CASE WHEN id % 2 = 0 THEN f8 ELSE 'NaN' END FROM @T WHERE f8 = 0 OR f8 = 'NaN' GROUP BY 1) r
+(2 rows)
+
+-- expressions as keys and arguments
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT lower(t), count(*) FROM @T GROUP BY 1',
+	'SELECT i4 % 7, count(*), sum(f8) FROM @T WHERE f8 < 1000 GROUP BY 1',
+	'SELECT CASE WHEN i4 < 10 THEN ''low'' WHEN i4 < 30 THEN t ELSE ''high'' END AS c, count(*) FROM @T GROUP BY 1',
+	'SELECT coalesce(i4, -1), g, count(*) FROM @T GROUP BY 1, 2',
+	'SELECT date_trunc(''month'', ts), count(*) FROM @T GROUP BY 1',
+	'SELECT extract(dow FROM d)::int, g, count(*) FROM @T GROUP BY 1, 2',
+	'SELECT substr(t, 1, 4), count(*) FROM @T GROUP BY 1',
+	'SELECT make_interval(days => g), count(*) FROM @T GROUP BY 1',
+	'SELECT ARRAY[g, i4 % 3], count(*) FROM @T GROUP BY 1',
+	'SELECT g, count(DISTINCT lower(t)), max(length(t) + 1) FROM @T GROUP BY g',
+	'SELECT upper(s), count(*) FROM (SELECT t AS s FROM @T) p GROUP BY ROLLUP (s)',
+	'SELECT (i4 * 0), count(*) FROM @T GROUP BY 1'
+]) q;
+                                                        same                                                         
+---------------------------------------------------------------------------------------------------------------------
+ same node SELECT lower(t), count(*) FROM @T GROUP BY 1
+ same node SELECT i4 % 7, count(*), sum(f8) FROM @T WHERE f8 < 1000 GROUP BY 1
+ same node SELECT CASE WHEN i4 < 10 THEN 'low' WHEN i4 < 30 THEN t ELSE 'high' END AS c, count(*) FROM @T GROUP BY 1
+ same node SELECT coalesce(i4, -1), g, count(*) FROM @T GROUP BY 1, 2
+ same node SELECT date_trunc('month', ts), count(*) FROM @T GROUP BY 1
+ same node SELECT extract(dow FROM d)::int, g, count(*) FROM @T GROUP BY 1, 2
+ same node SELECT substr(t, 1, 4), count(*) FROM @T GROUP BY 1
+ same node SELECT make_interval(days => g), count(*) FROM @T GROUP BY 1
+ same node SELECT ARRAY[g, i4 % 3], count(*) FROM @T GROUP BY 1
+ same node SELECT g, count(DISTINCT lower(t)), max(length(t) + 1) FROM @T GROUP BY g
+ same node SELECT upper(s), count(*) FROM (SELECT t AS s FROM @T) p GROUP BY ROLLUP (s)
+ same node SELECT (i4 * 0), count(*) FROM @T GROUP BY 1
+(12 rows)
+
+-- quals that no scan key says
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT count(*) FROM @T WHERE t LIKE ''Key1%'' OR t ~ ''^key2'' OR t ILIKE ''%X3%''',
+	'SELECT g, count(*) FROM @T WHERE i4 IS DISTINCT FROM 5 AND f8 IS DISTINCT FROM ''NaN'' GROUP BY g',
+	'SELECT count(*) FROM @T WHERE i4 = ANY (ARRAY[1, 2, 3, NULL]) OR g <> ALL (ARRAY[1, 2])',
+	'SELECT g, count(*) FROM @T WHERE CASE WHEN g < 3 THEN i4 > 10 ELSE t LIKE ''%1%'' END GROUP BY g',
+	'SELECT count(*) FROM @T WHERE to_char(ts, ''DD'') = ''15'' AND date_trunc(''month'', ts) >= TIMESTAMPTZ ''2024-06-01''',
+	'SELECT count(*) FROM @T WHERE n * 2 > f4 AND b IS NOT DISTINCT FROM true',
+	'SELECT g, sum(n) FROM @T WHERE length(t) + i4 % 3 > 6 GROUP BY g',
+	'SELECT count(*) FROM @T WHERE f8 > 10 AND t ~ ''x{2}$'' AND i4 % 2 = 0'
+]) q;
+                                                           same                                                           
+--------------------------------------------------------------------------------------------------------------------------
+ same node SELECT count(*) FROM @T WHERE t LIKE 'Key1%' OR t ~ '^key2' OR t ILIKE '%X3%'
+ same node SELECT g, count(*) FROM @T WHERE i4 IS DISTINCT FROM 5 AND f8 IS DISTINCT FROM 'NaN' GROUP BY g
+ same node SELECT count(*) FROM @T WHERE i4 = ANY (ARRAY[1, 2, 3, NULL]) OR g <> ALL (ARRAY[1, 2])
+ same node SELECT g, count(*) FROM @T WHERE CASE WHEN g < 3 THEN i4 > 10 ELSE t LIKE '%1%' END GROUP BY g
+ same node SELECT count(*) FROM @T WHERE to_char(ts, 'DD') = '15' AND date_trunc('month', ts) >= TIMESTAMPTZ '2024-06-01'
+ same node SELECT count(*) FROM @T WHERE n * 2 > f4 AND b IS NOT DISTINCT FROM true
+ same node SELECT g, sum(n) FROM @T WHERE length(t) + i4 % 3 > 6 GROUP BY g
+ same node SELECT count(*) FROM @T WHERE f8 > 10 AND t ~ 'x{2}$' AND i4 % 2 = 0
+(8 rows)
+
+-- constant groups: no group when no row is read
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT ''x'', count(*) FROM @T WHERE id < 0 GROUP BY 1',
+	'SELECT ''x'', count(*) FROM @T GROUP BY 1',
+	'SELECT (current_setting(''server_version_num'')::int > 0) AS k, count(*) AS n FROM @T WHERE f8 < -5 GROUP BY 1',
+	'SELECT (current_setting(''server_version_num'')::int > 0) AS k, count(*) AS n FROM @T GROUP BY 1',
+	'SELECT g, ''x'', count(*) FROM @T WHERE id < 0 GROUP BY 1, 2',
+	'SELECT count(*) FROM @T WHERE id < 0',
+	'SELECT f8, count(*) FROM @T WHERE id < 0 GROUP BY f8',
+	'SELECT f8, count(*) FROM @T WHERE id < 0 GROUP BY ROLLUP (f8)'
+]) q;
+                                                          same                                                          
+------------------------------------------------------------------------------------------------------------------------
+ same node SELECT 'x', count(*) FROM @T WHERE id < 0 GROUP BY 1
+ same node SELECT 'x', count(*) FROM @T GROUP BY 1
+ same node SELECT (current_setting('server_version_num')::int > 0) AS k, count(*) AS n FROM @T WHERE f8 < -5 GROUP BY 1
+ same node SELECT (current_setting('server_version_num')::int > 0) AS k, count(*) AS n FROM @T GROUP BY 1
+ same node SELECT g, 'x', count(*) FROM @T WHERE id < 0 GROUP BY 1, 2
+ same node SELECT count(*) FROM @T WHERE id < 0
+ same node SELECT f8, count(*) FROM @T WHERE id < 0 GROUP BY f8
+ same node SELECT f8, count(*) FROM @T WHERE id < 0 GROUP BY ROLLUP (f8)
+(8 rows)
+
+-- an expression is evaluated for the rows the quals keep: the rows with i4 = 0 would raise
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT 100 / i4, count(*) FROM @T WHERE i4 <> 0 GROUP BY 1',
+	'SELECT g, count(*) FROM @T WHERE i4 <> 0 AND 100 / i4 > 3 GROUP BY g'
+]) q;
+                                      same                                      
+--------------------------------------------------------------------------------
+ same node SELECT 100 / i4, count(*) FROM @T WHERE i4 <> 0 GROUP BY 1
+ same node SELECT g, count(*) FROM @T WHERE i4 <> 0 AND 100 / i4 > 3 GROUP BY g
+(2 rows)
+
+-- many groups: the table of keys holds past a spill of the groups
+SET work_mem = '64kB';
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT f8, n, count(*), sum(i4) FROM @T GROUP BY f8, n',
+	'SELECT lower(t) || id::text, count(*) FROM @T GROUP BY 1'
+]) q;
+                                same                                
+--------------------------------------------------------------------
+ same node SELECT f8, n, count(*), sum(i4) FROM @T GROUP BY f8, n
+ same node SELECT lower(t) || id::text, count(*) FROM @T GROUP BY 1
+(2 rows)
+
+RESET work_mem;
+-- a generic plan of a statement with a parameter in a qual and a float key
+CREATE FUNCTION generic_same(p int) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SELECT md5(string_agg(r::text, '|' ORDER BY r::text)) INTO a FROM (SELECT f8, count(*) FROM dc WHERE i4 % 5 = p GROUP BY f8) r;
+	SELECT md5(string_agg(r::text, '|' ORDER BY r::text)) INTO b FROM (SELECT f8, count(*) FROM dx WHERE i4 % 5 = p GROUP BY f8) r;
+	RETURN a = b;
+END $$;
+SET plan_cache_mode = force_generic_plan;
+SELECT generic_same(1), generic_same(2), generic_same(1);
+ generic_same | generic_same | generic_same 
+--------------+--------------+--------------
+ t            | t            | t
+(1 row)
+
+RESET plan_cache_mode;
+DROP TABLE dx, dc;
+DROP FUNCTION same(text), generic_same(int);
+DROP EXTENSION pg_sift;

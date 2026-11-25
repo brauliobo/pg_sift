@@ -29,8 +29,24 @@ typedef enum SiftV6JoinMode
 	SV6J_LEFT_EQUI,
 	SV6J_SEMI_EQUI,
 	SV6J_ANTI_EQUI,
-	SV6J_RANGE_SMALL
+	SV6J_RANGE_SMALL,
+	SV6J_RIGHT_EQUI,			/* the dimension is the preserved side: its rows no fact row matched come out once, with a NULL fact side */
+	SV6J_FULL_EQUI				/* both sides are preserved */
 } SiftV6JoinMode;
+
+/* The rows of the dimension are kept whether or not a fact row matches them: they are marked as the scan matches them and the ones left come out when it ends (v6_join_lookup.h) */
+static inline bool
+sift_star_preserves_dim(SiftV6JoinMode mode)
+{
+	return mode == SV6J_RIGHT_EQUI || mode == SV6J_FULL_EQUI;
+}
+
+/* The fact rows that match nothing stay, with a NULL dimension side */
+static inline bool
+sift_star_keeps_fact(SiftV6JoinMode mode)
+{
+	return mode == SV6J_LEFT_EQUI || mode == SV6J_FULL_EQUI;
+}
 
 typedef enum SiftStarCls
 {
@@ -64,6 +80,7 @@ typedef struct SiftStarShape
 	int			npay;
 	SiftStarCls pcls[SIFT_STAR_MAX_PAY];
 	bool		left;			/* SV6J_RANGE_SMALL: a left join (a fact row of no period is kept); the equi joins say it by their mode */
+	bool		on;				/* a condition of the join runs on the pairs (v6_join_lookup.h): sift_star_expand gives the pairs of the keys, whether or not a fact row has one, and the caller keeps the fact rows no pair passes */
 	bool		lo_inc;			/* SV6J_RANGE_SMALL: the bounds are in the period (BETWEEN) or not (< or >) */
 	bool		hi_inc;
 	uint64		budget;			/* the bytes the table may take: the work_mem a join may use; adding past it fails */
@@ -100,6 +117,7 @@ typedef struct SiftStarDim
 	uint32	   *tail;
 	uint32	   *next;			/* the next row of the same key, 0 at the last */
 	uint32		ndistinct;
+	uint64	   *matched;		/* a dimension of RIGHT or FULL join (sift_star_preserves_dim): bit i = row i (0-based) was matched by a fact row; allocated by sift_star_dim_finish */
 	int64	   *exact;			/* the distinct values of the first key, sorted: while nrows <= SIFT_STAR_EXACT_MAX and it is an integer */
 	uint32		nexact;
 } SiftStarDim;
@@ -136,6 +154,8 @@ extern uint16 sift_star_apply(const SiftStarDim *d, const uint32 *match, const u
 /* column pay of the dimension for each of n rows: dim_row[i] (1-based, 0: none, which is NULL); bits for an int or a float8, views for a string; valid_out is the rows that are not NULL */
 extern void sift_star_gather_bits(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, uint64 *out, uint64 *valid_out);
 extern void sift_star_gather_str(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, SiftStrView *out, uint64 *valid_out);
+/* the same for a payload column that holds the bytes of datums (a type no native vector holds, passed by reference): out[i] is the address of the value, aligned, valid while the dimension lives */
+extern void sift_star_gather_datum(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, uint64 *out, uint64 *valid_out);
 
 /* The pairs of a join that can match a row more than once, resumed where the last call ended */
 typedef struct SiftStarCursor

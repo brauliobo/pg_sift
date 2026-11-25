@@ -161,7 +161,7 @@ SELECT parity('SELECT sum(a * (1 - b) * (1 + c)), sum(a * (1 - b)) FROM @T WHERE
  t
 (1 row)
 
--- a product past 2^95 scaled (the rows of a sum of 2^32 rows add up in 128 bits) is refused, never answered wrongly
+-- a product past 2^95 scaled is answered (sums of 192 bits); one of 2^191 or more is refused, never answered wrongly
 CREATE FUNCTION refused(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE x text;
 BEGIN
@@ -175,15 +175,9 @@ SELECT refused('SELECT sum(w * w * w)::text FROM tc WHERE w IS NOT NULL') AS bey
  t
 (1 row)
 
-SELECT refused('SELECT sum(w * w)::text FROM tc WHERE w IS NOT NULL') AS beyond_2_95_refused;
- beyond_2_95_refused 
----------------------
- t
-(1 row)
-
-SELECT refused('SELECT sum(w * w)::text FROM tt WHERE w IS NOT NULL') AS beyond_2_95_refused_table;
- beyond_2_95_refused_table 
----------------------------
+SELECT parity('SELECT sum(w * w)::text, avg(w * w)::text FROM @T WHERE w IS NOT NULL') AS beyond_2_95_answered;
+ beyond_2_95_answered 
+----------------------
  t
 (1 row)
 
@@ -387,7 +381,7 @@ SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 1 ELSE 0 END) FROM @T 
  t
 (1 row)
 
-SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 2 ELSE 0 END), sum(CASE WHEN tag = ''R'' THEN f8 ELSE 0 END) FROM @T GROUP BY grp') AS case_not_rewritten_still_right;
+SELECT parity('SELECT grp, sum(CASE WHEN tag = ''R'' THEN 2 ELSE 0 END), round(sum(CASE WHEN tag = ''R'' THEN f8 ELSE 0 END)::numeric, 6) FROM @T GROUP BY grp') AS case_not_rewritten_still_right;
  case_not_rewritten_still_right 
 --------------------------------
  t
@@ -492,26 +486,13 @@ SELECT parity_text('SELECT sum(a * (1 - b))::text FROM @T') AS after_rollback;
  t
 (1 row)
 
--- ---- a NaN of a numeric: the engine refuses what it cannot fold, the executor answers it ----
-CREATE FUNCTION nan_refused(q text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text;
-BEGIN
-	EXECUTE q INTO x;
-	RETURN false;
-EXCEPTION WHEN feature_not_supported THEN RETURN true;
-END $$;
+-- ---- a NaN of a numeric: a product of it is NaN, a sum of that NaN ----
 INSERT INTO th VALUES (900001, 1, 'NaN', 0.5, 0.1, 1, date '2000-01-01', date '2000-01-02', 1, 1, 1, 'R');
 INSERT INTO tc SELECT * FROM th WHERE id = 900001;
 INSERT INTO tt SELECT * FROM th WHERE id = 900001;
-SELECT nan_refused('SELECT sum(a * (1 - b))::text FROM tc') AS nan_product_refused_index;
- nan_product_refused_index 
----------------------------
- t
-(1 row)
-
-SELECT nan_refused('SELECT sum(a * (1 - b))::text FROM tt') AS nan_product_refused_table;
- nan_product_refused_table 
----------------------------
+SELECT parity('SELECT sum(a * (1 - b))::text, avg(a * (1 - b))::text, count(a * (1 - b)) FROM @T') AS nan_product_answered;
+ nan_product_answered 
+----------------------
  t
 (1 row)
 
@@ -527,6 +508,6 @@ SELECT same_rows('SELECT count(*) FROM tt WHERE a > 1', 'SELECT count(*) FROM th
  t
 (1 row)
 
-DROP FUNCTION same_rows(text, text), parity(text), plan_ok(text), plan_index(text), parity_text(text), refused(text), nan_refused(text);
+DROP FUNCTION same_rows(text, text), parity(text), plan_ok(text), plan_index(text), parity_text(text), refused(text);
 DROP TABLE th, tc, tt;
 DROP EXTENSION pg_sift;

@@ -301,7 +301,7 @@ sift_v6_topk_run_offer_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual,
 	CountBar	bar;
 
 	count_bar(r, &bar);
-	if (g->store != NULL || set->nk == 0)
+	if (g->spilled || set->nk == 0)
 	{
 		while (sift_v6_group_next(g, r->values, r->isnull))
 		{

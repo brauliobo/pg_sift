@@ -1,0 +1,129 @@
+-- Format 1 behind the storage seam of the unified engine (core/store_ops.h, col/v1/v1_store_ops.c): the sift_col indexes and sift_table tables built in Format 1 (sift.test_create_format1,
+-- the testing build only) are opened as batches of SIFT_VEC_LEN rows, and the rows they give are the heap's own: the same rows, with the same tag (the TID), values and NULLs, after
+-- inserts, updates, deletes, a rollback and VACUUM, over integer, boolean, float, date, timestamp, numeric (narrow, NaN and wide), text and uuid columns, and with the quals of the engine.
+-- A relation of Format 2 is owned by the Format 2 ops, a heap and a btree index by none.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE FUNCTION sift._test_store_rows(rel regclass, is_table bool, atts int4[], qual_att int4, qual_gt int8)
+	RETURNS TABLE (batch int4, n int4, row_tid tid, vals text[], fetched text[]) AS '$libdir/pg_sift', 'sift_test_store_rows' LANGUAGE C;
+CREATE FUNCTION sift._test_store_ops(rel regclass, is_table bool, OUT owner text, OUT vec_types text, OUT live_rows float8, OUT stored_bytes int8, OUT allvis float8, OUT holds text)
+	RETURNS record AS '$libdir/pg_sift', 'sift_test_store_ops' LANGUAGE C STRICT;
+
+-- The rows the seam gives for the attributes atts of rel (exprs: the heap's text of each, in the same order) against the heap's rows where pred holds: the rows missing on either side, and
+-- the rows whose tag does not fetch the row's own values (the tag of an index row is the entry's, the root of the chain of versions of the heap row, not the ctid of the live one)
+CREATE FUNCTION diff(rel regclass, is_table bool, atts int4[], exprs text, pred text, qual_att int4 DEFAULT NULL, qual_gt int8 DEFAULT NULL, tbl regclass DEFAULT NULL) RETURNS int8
+LANGUAGE plpgsql AS $$
+DECLARE d int8; f int8;
+BEGIN
+	SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_seqscan = on;
+	EXECUTE format('SELECT count(*) FROM (
+		(SELECT vals FROM sift._test_store_rows(%1$L, %2$L, %3$L, %6$L, %7$L) EXCEPT ALL SELECT ARRAY[%4$s]::text[] FROM %8$s WHERE %5$s)
+		UNION ALL
+		(SELECT ARRAY[%4$s]::text[] FROM %8$s WHERE %5$s EXCEPT ALL SELECT vals FROM sift._test_store_rows(%1$L, %2$L, %3$L, %6$L, %7$L))) x',
+		rel, is_table, atts, exprs, pred, qual_att, qual_gt, coalesce(tbl, CASE WHEN is_table THEN rel ELSE (SELECT indrelid FROM pg_index WHERE indexrelid = rel) END)) INTO d;
+	EXECUTE format('SELECT count(*) FROM sift._test_store_rows(%L, %L, %L, %L, %L) WHERE fetched IS DISTINCT FROM vals', rel, is_table, atts, qual_att, qual_gt) INTO f;
+	RETURN d + f;
+END $$;
+
+-- The batches: how many, how many rows each holds, and that every one but the last holds SIFT_VEC_LEN
+CREATE FUNCTION batches(rel regclass, is_table bool, atts int4[]) RETURNS text LANGUAGE sql AS $$
+	SELECT count(*) || ' batches, ' || count(*) FILTER (WHERE n = 2048) || ' of 2048 rows, last ' || (array_agg(rows ORDER BY batch DESC))[1] || ', all rows ' || sum(rows) ||
+		CASE WHEN bool_and(rows = n) THEN ', sizes right' ELSE ', SIZES WRONG' END
+	FROM (SELECT batch, max(n) n, count(*) rows FROM sift._test_store_rows(rel, is_table, atts, NULL, NULL) GROUP BY batch) b $$;
+
+-- 1. A sift_col index of Format 1 over a heap: the planner's view of it
+SET sift.test_create_format1 = on;
+CREATE TABLE c1 (id int, g int2, b bool, big int8, f4 float4, f8 float8, d date, ts timestamptz, n numeric(12,2), s text, u uuid, w numeric(30,5));
+INSERT INTO c1 SELECT i, i % 10, i % 3 = 0, i * 1000000007::int8, i / 7.0, i / 3.0, DATE '2020-01-01' + i % 900, TIMESTAMPTZ '2021-01-01 00:00:00+00' + i * interval '97 seconds',
+	i / 8.0, 'row ' || i || repeat('x', i % 40), ('00000000-0000-4000-8000-' || lpad(to_hex(i), 12, '0'))::uuid, i / 13.0
+	FROM generate_series(1, 6000) i;
+INSERT INTO c1 SELECT i, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM generate_series(6001, 6100) i;
+INSERT INTO c1 VALUES (6101, 1, true, 1, 1.5, 'NaN', '2024-02-29', 'infinity', 'NaN', '', '00000000-0000-4000-8000-000000000000', 'NaN');
+CREATE INDEX c1_idx ON c1 USING sift_col (id, g, b, big, f4, f8, d, ts, n, s, u, w);
+SELECT sift._test_index_format('c1_idx') AS format_major;
+SELECT owner, vec_types, live_rows > 0 AS rows_known, stored_bytes > 0 AS bytes_known, allvis BETWEEN 0 AND 1 AS allvis_share, holds FROM sift._test_store_ops('c1_idx', false);
+
+-- 2. Its batches are the heap's rows, in batches of 2048
+SELECT batches('c1_idx', false, '{1,2,3}');
+SELECT diff('c1_idx', false, '{1,2,3,4,5,6}', 'id::text, g::text, b::text, big::text, f4::text, f8::text', 'true') AS ints_bool_floats;
+SELECT diff('c1_idx', false, '{7,8,9}', 'd::text, ts::text, n::text', 'true') AS date_ts_numeric;
+SELECT diff('c1_idx', false, '{10,11,12}', 's::text, u::text, w::text', 'true') AS text_uuid_wide;
+SELECT diff('c1_idx', false, '{1,10}', 'id::text, s::text', 'true') AS id_text;
+
+-- 3. Writes and VACUUM: the new rows, the new versions and the dead ones
+INSERT INTO c1 SELECT i, i % 10, false, i, i, i, DATE '2022-01-01', TIMESTAMPTZ '2022-01-01', i, 'new ' || i, NULL, i FROM generate_series(7001, 9000) i;
+UPDATE c1 SET g = g + 1, s = s || '!' WHERE id % 7 = 0;
+DELETE FROM c1 WHERE id % 11 = 0;
+SELECT batches('c1_idx', false, '{1,2,10}');
+SELECT diff('c1_idx', false, '{1,2,10,9}', 'id::text, g::text, s::text, n::text', 'true') AS after_writes;
+VACUUM c1;
+SELECT diff('c1_idx', false, '{1,2,10,9}', 'id::text, g::text, s::text, n::text', 'true') AS after_vacuum;
+UPDATE c1 SET w = w + 1 WHERE id % 5 = 0;
+VACUUM c1;
+SELECT diff('c1_idx', false, '{1,12,8,6}', 'id::text, w::text, ts::text, f8::text', 'true') AS after_second_vacuum;
+
+-- 4. The snapshot: a rolled back write, and the writes of this transaction, are what the heap shows
+BEGIN;
+INSERT INTO c1 SELECT i, 1, true, i, i, i, DATE '2023-01-01', TIMESTAMPTZ '2023-01-01', i, 'rolled ' || i, NULL, i FROM generate_series(20001, 20500) i;
+DELETE FROM c1 WHERE id < 100;
+SELECT diff('c1_idx', false, '{1,10}', 'id::text, s::text', 'true') AS own_writes;
+ROLLBACK;
+SELECT diff('c1_idx', false, '{1,10}', 'id::text, s::text', 'true') AS rolled_back;
+BEGIN;
+UPDATE c1 SET s = 'again ' || id WHERE id BETWEEN 3000 AND 3200;
+SAVEPOINT a;
+DELETE FROM c1 WHERE id BETWEEN 3100 AND 3150;
+ROLLBACK TO a;
+SELECT diff('c1_idx', false, '{1,10}', 'id::text, s::text', 'true') AS savepoint_rolled_back;
+COMMIT;
+
+-- 5. The quals of the engine run over the batches: the rows that pass are the heap's
+SELECT diff('c1_idx', false, '{1,2,10}', 'id::text, g::text, s::text', 'id > 4000', 1, 4000) AS int4_qual;
+SELECT diff('c1_idx', false, '{1,2,4}', 'id::text, g::text, big::text', 'big > 3000000000000', 4, 3000000000000) AS int8_qual;
+SELECT diff('c1_idx', false, '{1,2}', 'id::text, g::text', 'g > 5', 2, 5) AS int2_qual;
+
+-- 7. A sift_table of Format 1: the table itself
+CREATE TABLE t1 (id int, g int2, b bool, big int8, f4 float4, f8 float8, d date, ts timestamptz, n numeric(12,2), s text, u uuid, w numeric(30,5)) USING sift_table;
+INSERT INTO t1 SELECT * FROM c1 WHERE id <= 6101;
+ANALYZE t1;
+SELECT owner, vec_types, live_rows > 0 AS rows_known, stored_bytes > 0 AS bytes_known, allvis BETWEEN 0 AND 1 AS allvis_share, holds FROM sift._test_store_ops('t1', true);
+SELECT batches('t1', true, '{1,2,3}');
+SELECT diff('t1', true, '{1,2,3,4,5,6}', 'id::text, g::text, b::text, big::text, f4::text, f8::text', 'true') AS ints_bool_floats;
+SELECT diff('t1', true, '{7,8,9}', 'd::text, ts::text, n::text', 'true') AS date_ts_numeric;
+SELECT diff('t1', true, '{10,11,12}', 's::text, u::text, w::text', 'true') AS text_uuid_wide;
+INSERT INTO t1 SELECT i, i % 10, false, i, i, i, DATE '2022-01-01', TIMESTAMPTZ '2022-01-01', i, 'new ' || i, NULL, i FROM generate_series(7001, 9000) i;
+UPDATE t1 SET g = g + 1, s = s || '!' WHERE id % 7 = 0;
+DELETE FROM t1 WHERE id % 11 = 0;
+SELECT batches('t1', true, '{1,2,10}');
+SELECT diff('t1', true, '{1,2,10,9}', 'id::text, g::text, s::text, n::text', 'true') AS after_writes;
+VACUUM t1;
+SELECT diff('t1', true, '{1,2,10,9}', 'id::text, g::text, s::text, n::text', 'true') AS after_vacuum;
+BEGIN;
+INSERT INTO t1 SELECT i, 1, true, i, i, i, DATE '2023-01-01', TIMESTAMPTZ '2023-01-01', i, 'rolled ' || i, NULL, i FROM generate_series(20001, 20500) i;
+DELETE FROM t1 WHERE id < 100;
+SELECT diff('t1', true, '{1,10}', 'id::text, s::text', 'true') AS own_writes;
+ROLLBACK;
+SELECT diff('t1', true, '{1,10}', 'id::text, s::text', 'true') AS rolled_back;
+SELECT diff('t1', true, '{1,2,10}', 'id::text, g::text, s::text', 'id > 4000', 1, 4000) AS int4_qual;
+
+-- 8. What no Format 1 owner holds: a sift_col index and a sift_table of Format 2, a heap, a btree index
+SET sift.test_create_format1 = off;
+CREATE TABLE c2 (id int, s text);
+INSERT INTO c2 SELECT i, 'x' || i FROM generate_series(1, 100) i;
+CREATE INDEX c2_idx ON c2 USING sift_col (id, s);
+CREATE INDEX c2_bt ON c2 (id);
+CREATE TABLE t2 (id int, s text) USING sift_table;
+INSERT INTO t2 SELECT i, 'x' || i FROM generate_series(1, 100) i;
+SELECT 'f2 index' AS rel, owner FROM sift._test_store_ops('c2_idx', false)
+UNION ALL SELECT 'f2 table', owner FROM sift._test_store_ops('t2', true)
+UNION ALL SELECT 'btree', owner FROM sift._test_store_ops('c2_bt', false)
+UNION ALL SELECT 'heap', owner FROM sift._test_store_ops('c2', true)
+UNION ALL SELECT 'f1 index', owner FROM sift._test_store_ops('c1_idx', false)
+UNION ALL SELECT 'f1 table', owner FROM sift._test_store_ops('t1', true);
+
+DROP TABLE c1, c2, t1, t2;
+DROP FUNCTION diff, batches, sift._test_store_rows, sift._test_store_ops;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

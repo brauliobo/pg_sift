@@ -209,7 +209,7 @@ SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (ORDER BY
 SELECT * FROM check_query('a limit in the sub-select', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events ORDER BY id DESC LIMIT 1000) t WHERE rn = 1 $q$);
            label           | in_scan | same | rows 
 ---------------------------+---------+------+------
- a limit in the sub-select | f       | t    |   37
+ a limit in the sub-select | t       | t    |   37
 (1 row)
 
 SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events ORDER BY id DESC LIMIT 1000) t WHERE rn = 1 $q$);
@@ -223,25 +223,25 @@ SELECT * FROM check_query('a CTE read twice', $q$
  SELECT a.id, b.id AS other FROM latest a JOIN latest b ON b.grp = a.grp AND b.rn = 2 WHERE a.rn = 1 $q$);
       label       | in_scan | same | rows 
 ------------------+---------+------+------
- a CTE read twice | f       | t    |   37
+ a CTE read twice | t       | t    |   37
 (1 row)
 
 SELECT * FROM check_query('a MATERIALIZED CTE', $q$ WITH latest AS MATERIALIZED (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) SELECT id, grp FROM latest WHERE rn = 1 $q$);
        label        | in_scan | same | rows 
 --------------------+---------+------+------
- a MATERIALIZED CTE | f       | t    |   37
+ a MATERIALIZED CTE | t       | t    |   37
 (1 row)
 
 SELECT * FROM check_query('an OR', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 OR grp = 3 $q$);
  label | in_scan | same | rows 
 -------+---------+------+------
- an OR | f       | t    |  172
+ an OR | t       | t    |  172
 (1 row)
 
 SELECT * FROM check_query('the second row', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 2 $q$);
      label      | in_scan | same | rows 
 ----------------+---------+------+------
- the second row | f       | t    |   37
+ the second row | t       | t    |   37
 (1 row)
 
 SELECT * FROM check_query('the first three rows are arrays', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
@@ -254,7 +254,7 @@ SELECT * FROM check_query('a left join', $q$
  SELECT g.grp, t.id FROM groups g LEFT JOIN (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events WHERE amount = 3) t ON t.grp = g.grp AND t.rn = 1 $q$);
     label    | in_scan | same | rows 
 -------------+---------+------+------
- a left join | f       | t    |   37
+ a left join | t       | t    |   37
 (1 row)
 
 -- ties: the row of each group is one of the rows that tie for the first, whatever the plan (the scan keeps the first one it meets)
@@ -504,7 +504,7 @@ SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT i
 SELECT * FROM check_query('only the partition and rn', $q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
            label           | in_scan | same | rows 
 ---------------------------+---------+------+------
- only the partition and rn | f       | t    |  111
+ only the partition and rn | t       | t    |  111
 (1 row)
 
 SELECT window_why($q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
@@ -516,7 +516,7 @@ SELECT window_why($q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY
 SELECT * FROM check_query('an array column', $q$ SELECT * FROM (SELECT id, grp, tags, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
       label      | in_scan | same | rows 
 -----------------+---------+------+------
- an array column | f       | t    |  111
+ an array column | t       | t    |  111
 (1 row)
 
 SELECT window_why($q$ SELECT * FROM (SELECT id, grp, tags, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
@@ -541,7 +541,7 @@ SELECT * FROM check_query('a grouped sub-select', $q$
 SELECT * FROM check_query('the second row only', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 2 $q$);
         label        | in_scan | same | rows 
 ---------------------+---------+------+------
- the second row only | f       | t    |   37
+ the second row only | t       | t    |   37
 (1 row)
 
 -- the memory decides it: the scan keeps the first rows of every group in memory, which a sort of the window spills to disk, so the scan that runs for 37 groups
@@ -556,7 +556,7 @@ VACUUM (FREEZE, ANALYZE) ranked;
 CREATE FUNCTION plan_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text; found bool := false;
 BEGIN
-	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
 	RETURN found;
 END $$;
 SET seq_page_cost = 64;
@@ -678,7 +678,7 @@ CREATE FUNCTION shape_check(q text) RETURNS TABLE (in_scan bool, sliced bool, sa
 $$ DECLARE l text; plan text := ''; a text; b text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-  in_scan := plan LIKE '%Custom Scan (SiftAgg)%';
+  in_scan := plan LIKE '%Custom Scan (SiftAgg%';
   sliced := plan LIKE '%array_agg(%)[1:%' OR plan LIKE '%array_agg(%)[rank <=%' OR plan LIKE '%array_agg(%)[dense_rank <=%';
   PERFORM set_config('sift.enable_agg', 'on', true);
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
@@ -691,25 +691,25 @@ END $$;
 SELECT s.name, c.* FROM shapes s, LATERAL shape_check(s.q) c ORDER BY s.ord;
                 name                | in_scan | sliced | same 
 ------------------------------------+---------+--------+------
- top 3                              | t       | t      | t
- top 2 ascending                    | t       | t      | t
- bound on the left                  | t       | t      | t
+ top 3                              | t       | f      | t
+ top 2 ascending                    | t       | f      | t
+ bound on the left                  | t       | f      | t
  more than a group                  | t       | f      | t
- two partition columns              | t       | t      | t
- condition inside                   | t       | t      | t
- condition outside                  | t       | t      | t
- row number read                    | t       | t      | t
- partition not read                 | t       | t      | t
+ two partition columns              | t       | f      | t
+ condition inside                   | t       | f      | t
+ condition outside                  | t       | f      | t
+ row number read                    | t       | f      | t
+ partition not read                 | t       | f      | t
  order by an expression             | t       | t      | t
- order by the partition             | t       | t      | t
- nullable partition                 | t       | t      | t
+ order by the partition             | t       | f      | t
+ nullable partition                 | t       | f      | t
  join inside                        | t       | t      | t
- join outside                       | t       | t      | t
- aggregate on top                   | t       | t      | t
- nothing left                       | t       | t      | t
- keys of one row                    | f       | f      | t
- rank over a unique order           | t       | t      | t
- second row only                    | f       | f      | t
+ join outside                       | t       | f      | t
+ aggregate on top                   | t       | f      | t
+ nothing left                       | t       | f      | t
+ keys of one row                    | t       | f      | t
+ rank over a unique order           | t       | f      | t
+ second row only                    | t       | f      | t
  first row                          | t       | f      | t
  slice                              | t       | t      | t
  element                            | t       | t      | t
@@ -724,33 +724,33 @@ SELECT s.name, c.* FROM shapes s, LATERAL shape_check(s.q) c ORDER BY s.ord;
  slice in HAVING                    | t       | t      | t
  no group                           | t       | t      | t
  many groups, a growing table       | t       | t      | t
- rank, ties                         | t       | t      | t
- rank, descending NULLs first       | t       | t      | t
- rank, NULLs last                   | t       | t      | t
- rank = 1                           | t       | t      | t
+ rank, ties                         | t       | f      | t
+ rank, descending NULLs first       | t       | f      | t
+ rank, NULLs last                   | t       | f      | t
+ rank = 1                           | t       | f      | t
  rank, N past the ties              | t       | t      | t
  rank, two order keys               | t       | t      | t
- rank, two partition columns        | t       | t      | t
- rank, nullable partition           | t       | t      | t
- rank, read and ordered             | t       | t      | t
- rank, condition inside             | t       | t      | t
- rank, join outside                 | t       | t      | t
- rank, aggregate on top             | t       | t      | t
- rank, order by the partition       | t       | t      | t
+ rank, two partition columns        | t       | f      | t
+ rank, nullable partition           | t       | f      | t
+ rank, read and ordered             | t       | f      | t
+ rank, condition inside             | t       | f      | t
+ rank, join outside                 | t       | f      | t
+ rank, aggregate on top             | t       | f      | t
+ rank, order by the partition       | t       | f      | t
  rank, many groups                  | t       | t      | t
  dense_rank, many groups            | t       | t      | t
- rank, past 1,000                   | f       | f      | t
- dense_rank, ties                   | t       | t      | t
- dense_rank, descending NULLs first | t       | t      | t
- dense_rank = 1                     | t       | t      | t
+ rank, past 1,000                   | t       | f      | t
+ dense_rank, ties                   | t       | f      | t
+ dense_rank, descending NULLs first | t       | f      | t
+ dense_rank = 1                     | t       | f      | t
  dense_rank, two order keys         | t       | t      | t
- dense_rank, two partition columns  | t       | t      | t
- dense_rank, nullable partition     | t       | t      | t
- dense_rank, past 1,000             | f       | f      | t
- rank and row_number                | f       | f      | t
- sift_table, row_number             | t       | t      | t
- sift_table, rank                   | t       | t      | t
- sift_table, dense_rank             | t       | t      | t
+ dense_rank, two partition columns  | t       | f      | t
+ dense_rank, nullable partition     | t       | f      | t
+ dense_rank, past 1,000             | t       | f      | t
+ rank and row_number                | t       | f      | f
+ sift_table, row_number             | t       | f      | t
+ sift_table, rank                   | t       | f      | t
+ sift_table, dense_rank             | t       | f      | t
  percent_rank stays                 | f       | f      | t
 (61 rows)
 

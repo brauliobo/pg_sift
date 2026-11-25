@@ -1,0 +1,375 @@
+-- jsonb_to_recordset over an array of objects that an index keeps shredded (a column of its own, or a key of a document), when one row's document is not one: an array with an element that is no
+-- object (a number, a string, a boolean, null), a scalar, an object. PostgreSQL raises ("argument of jsonb_to_recordset must be an array of objects", "cannot call jsonb_to_recordset on a
+-- non-array") and so must the aggregate scan, whichever index holds the leaves: Format 2 sift_col, Format 2 sift_table, and Format 1 on the unified scan (sift.test_unified_agg).
+-- Each statement runs with the node and without it (sift.enable_agg); the answers, or the errors, are compared.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET sift.agg_force = on;
+SET max_parallel_workers_per_gather = 0;
+CREATE SCHEMA rn;
+SET search_path = rn, public;
+CREATE TABLE variants (n int, v text);
+INSERT INTO variants VALUES
+	(1, '[1, 2]'), (2, '"s"'), (3, '5'), (4, 'true'), (5, '[{"kind": "a"}, 2]'), (6, '[{"kind": "a"}, "s"]'), (7, '[{"kind": "a"}, null]'), (8, '[[1]]'),
+	(9, '{"kind": "a"}'), (10, '[null]'), (11, '[true]'), (12, '[{"kind": "a"}, true]'), (13, '[{"kind": "a"}, [1]]'), (14, '["x", "y"]'), (15, '[1.5]');
+CREATE TABLE forms (f text, q text);
+INSERT INTO forms VALUES
+	('column', 'SELECT e.kind, count(*) FROM @T f CROSS JOIN LATERAL jsonb_to_recordset(f.a) AS e(kind text, n int) GROUP BY 1'),
+	('key', 'SELECT e.kind, count(*) FROM @T f CROSS JOIN LATERAL jsonb_to_recordset(f.b -> ''k'') AS e(kind text, n int) GROUP BY 1'),
+	('left', 'SELECT e.kind, count(*) FROM @T f LEFT JOIN LATERAL jsonb_to_recordset(f.a) AS e(kind text, n int) ON true GROUP BY 1'),
+	('total', 'SELECT count(*), sum(e.n) FROM @T f CROSS JOIN LATERAL jsonb_to_recordset(f.a) AS e(kind text, n int)'),
+	('exists', 'SELECT count(*) FROM @T f WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.a) AS e(kind text, n int) WHERE e.kind = ''a'')');
+-- the rows of a table of a lane and a variant: 4,000 of one object each, the document of row 2,000 is the variant
+CREATE FUNCTION fill(t text, v text) RETURNS text LANGUAGE sql AS $$
+	SELECT format($f$INSERT INTO %s SELECT i, CASE WHEN i = 2000 THEN %L ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN %L ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i$f$, t, v, v) $$;
+CREATE FUNCTION outcome(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT coalesce(md5(string_agg(x::text, ''|'' ORDER BY x::text)), ''empty'') FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN RETURN 'ERROR: ' || SQLERRM;
+END $$;
+-- the node the plan has, whether the answer (or the error) with it is the one without it, and the error
+CREATE FUNCTION check_q(q text) RETURNS TABLE (node text, same bool, err text) LANGUAGE plpgsql AS $$
+DECLARE l text; p text := ''; a text; b text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || l || E'\n'; END LOOP;
+	a := outcome(q);
+	SET LOCAL sift.enable_agg = off;
+	b := outcome(q);
+	SET LOCAL sift.enable_agg = on;
+	node := coalesce((regexp_match(p, 'Custom Scan \((Sift\w+)\)'))[1], 'none');
+	same := a = b;
+	err := CASE WHEN b LIKE 'ERROR:%' THEN b ELSE 'none' END;
+	RETURN NEXT;
+END $$;
+-- the report of a lane: for each form, the variants run, those whose plan has a Sift node, and those whose answer or error is not the heap's
+CREATE FUNCTION lane_report(lane text) RETURNS TABLE (form text, variants int, on_node int, differ int, differing text) LANGUAGE sql AS $$
+	SELECT f.f, count(*)::int, (count(*) FILTER (WHERE c.node <> 'none'))::int, (count(*) FILTER (WHERE NOT c.same))::int,
+		coalesce(string_agg(v.n::text, ',' ORDER BY v.n) FILTER (WHERE NOT c.same), '')
+	FROM forms f, variants v, LATERAL check_q(replace(f.q, '@T', format('rt_%s_%s', lane, v.n))) c
+	GROUP BY f.f ORDER BY f.f $$;
+-- what PostgreSQL says of each variant
+SELECT v.n, v.v, c.err FROM variants v, LATERAL (SELECT outcome(format('SELECT count(*) FROM jsonb_to_recordset(%L::jsonb) AS e(kind text, n int)', v.v)) AS err) c ORDER BY v.n;
+ n  |           v           |                                err                                
+----+-----------------------+-------------------------------------------------------------------
+  1 | [1, 2]                | ERROR: argument of jsonb_to_recordset must be an array of objects
+  2 | "s"                   | ERROR: cannot call jsonb_to_recordset on a non-array
+  3 | 5                     | ERROR: cannot call jsonb_to_recordset on a non-array
+  4 | true                  | ERROR: cannot call jsonb_to_recordset on a non-array
+  5 | [{"kind": "a"}, 2]    | ERROR: argument of jsonb_to_recordset must be an array of objects
+  6 | [{"kind": "a"}, "s"]  | ERROR: argument of jsonb_to_recordset must be an array of objects
+  7 | [{"kind": "a"}, null] | ERROR: argument of jsonb_to_recordset must be an array of objects
+  8 | [[1]]                 | ERROR: argument of jsonb_to_recordset must be an array of objects
+  9 | {"kind": "a"}         | ERROR: cannot call jsonb_to_recordset on a non-array
+ 10 | [null]                | ERROR: argument of jsonb_to_recordset must be an array of objects
+ 11 | [true]                | ERROR: argument of jsonb_to_recordset must be an array of objects
+ 12 | [{"kind": "a"}, true] | ERROR: argument of jsonb_to_recordset must be an array of objects
+ 13 | [{"kind": "a"}, [1]]  | ERROR: argument of jsonb_to_recordset must be an array of objects
+ 14 | ["x", "y"]            | ERROR: argument of jsonb_to_recordset must be an array of objects
+ 15 | [1.5]                 | ERROR: argument of jsonb_to_recordset must be an array of objects
+(15 rows)
+
+-- Format 2 sift_col
+SET sift.test_create_format1 = off;
+SELECT format('CREATE TABLE rt_c_%s (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)', n) FROM variants \gexec
+CREATE TABLE rt_c_1 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_2 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_3 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_4 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_5 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_6 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_7 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_8 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_9 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_10 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_11 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_12 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_13 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_14 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_c_15 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+SELECT fill(format('rt_c_%s', n), v) FROM variants \gexec
+INSERT INTO rt_c_1 SELECT i, CASE WHEN i = 2000 THEN '[1, 2]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[1, 2]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_2 SELECT i, CASE WHEN i = 2000 THEN '"s"' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '"s"' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_3 SELECT i, CASE WHEN i = 2000 THEN '5' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '5' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_4 SELECT i, CASE WHEN i = 2000 THEN 'true' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN 'true' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_5 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, 2]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, 2]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_6 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, "s"]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, "s"]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_7 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, null]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, null]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_8 SELECT i, CASE WHEN i = 2000 THEN '[[1]]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[[1]]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_9 SELECT i, CASE WHEN i = 2000 THEN '{"kind": "a"}' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '{"kind": "a"}' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_10 SELECT i, CASE WHEN i = 2000 THEN '[null]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[null]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_11 SELECT i, CASE WHEN i = 2000 THEN '[true]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[true]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_12 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, true]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, true]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_13 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, [1]]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, [1]]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_14 SELECT i, CASE WHEN i = 2000 THEN '["x", "y"]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '["x", "y"]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_c_15 SELECT i, CASE WHEN i = 2000 THEN '[1.5]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[1.5]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+SELECT format($f$CREATE INDEX rt_c_%1$s_col ON rt_c_%1$s USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')$f$, n) FROM variants \gexec
+CREATE INDEX rt_c_1_col ON rt_c_1 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_2_col ON rt_c_2 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_3_col ON rt_c_3 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_4_col ON rt_c_4 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_5_col ON rt_c_5 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_6_col ON rt_c_6 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_7_col ON rt_c_7 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_8_col ON rt_c_8 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_9_col ON rt_c_9 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_10_col ON rt_c_10 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_11_col ON rt_c_11 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_12_col ON rt_c_12 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_13_col ON rt_c_13 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_14_col ON rt_c_14 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_c_15_col ON rt_c_15 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+SELECT format('VACUUM (FREEZE, ANALYZE) rt_c_%s', n) FROM variants \gexec
+VACUUM (FREEZE, ANALYZE) rt_c_1
+VACUUM (FREEZE, ANALYZE) rt_c_2
+VACUUM (FREEZE, ANALYZE) rt_c_3
+VACUUM (FREEZE, ANALYZE) rt_c_4
+VACUUM (FREEZE, ANALYZE) rt_c_5
+VACUUM (FREEZE, ANALYZE) rt_c_6
+VACUUM (FREEZE, ANALYZE) rt_c_7
+VACUUM (FREEZE, ANALYZE) rt_c_8
+VACUUM (FREEZE, ANALYZE) rt_c_9
+VACUUM (FREEZE, ANALYZE) rt_c_10
+VACUUM (FREEZE, ANALYZE) rt_c_11
+VACUUM (FREEZE, ANALYZE) rt_c_12
+VACUUM (FREEZE, ANALYZE) rt_c_13
+VACUUM (FREEZE, ANALYZE) rt_c_14
+VACUUM (FREEZE, ANALYZE) rt_c_15
+SELECT * FROM lane_report('c');
+  form  | variants | on_node | differ | differing 
+--------+----------+---------+--------+-----------
+ column |       15 |      15 |      0 | 
+ exists |       15 |      15 |      0 | 
+ key    |       15 |      15 |      0 | 
+ left   |       15 |      15 |      0 | 
+ total  |       15 |      15 |      0 | 
+(5 rows)
+
+-- Format 2 sift_table
+SELECT format('CREATE TABLE rt_t_%s (id int, a jsonb, b jsonb) USING sift_table', n) FROM variants \gexec
+CREATE TABLE rt_t_1 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_2 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_3 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_4 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_5 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_6 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_7 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_8 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_9 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_10 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_11 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_12 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_13 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_14 (id int, a jsonb, b jsonb) USING sift_table
+CREATE TABLE rt_t_15 (id int, a jsonb, b jsonb) USING sift_table
+SELECT format($f$DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_%1$s', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_%1$s', 'b', 'b->k[]{kind text, n int4}'); END $d$$f$, n) FROM variants \gexec
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_1', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_1', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_2', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_2', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_3', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_3', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_4', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_4', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_5', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_5', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_6', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_6', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_7', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_7', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_8', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_8', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_9', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_9', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_10', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_10', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_11', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_11', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_12', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_12', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_13', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_13', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_14', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_14', 'b', 'b->k[]{kind text, n int4}'); END $d$
+DO $d$ BEGIN PERFORM sift.table_set_paths('rt_t_15', 'a', 'a[]{kind text, n int4}'), sift.table_set_paths('rt_t_15', 'b', 'b->k[]{kind text, n int4}'); END $d$
+SELECT fill(format('rt_t_%s', n), v) FROM variants \gexec
+INSERT INTO rt_t_1 SELECT i, CASE WHEN i = 2000 THEN '[1, 2]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[1, 2]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_2 SELECT i, CASE WHEN i = 2000 THEN '"s"' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '"s"' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_3 SELECT i, CASE WHEN i = 2000 THEN '5' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '5' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_4 SELECT i, CASE WHEN i = 2000 THEN 'true' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN 'true' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_5 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, 2]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, 2]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_6 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, "s"]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, "s"]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_7 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, null]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, null]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_8 SELECT i, CASE WHEN i = 2000 THEN '[[1]]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[[1]]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_9 SELECT i, CASE WHEN i = 2000 THEN '{"kind": "a"}' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '{"kind": "a"}' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_10 SELECT i, CASE WHEN i = 2000 THEN '[null]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[null]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_11 SELECT i, CASE WHEN i = 2000 THEN '[true]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[true]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_12 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, true]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, true]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_13 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, [1]]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, [1]]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_14 SELECT i, CASE WHEN i = 2000 THEN '["x", "y"]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '["x", "y"]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_t_15 SELECT i, CASE WHEN i = 2000 THEN '[1.5]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[1.5]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+SELECT format('VACUUM rt_t_%s', n) FROM variants \gexec
+VACUUM rt_t_1
+VACUUM rt_t_2
+VACUUM rt_t_3
+VACUUM rt_t_4
+VACUUM rt_t_5
+VACUUM rt_t_6
+VACUUM rt_t_7
+VACUUM rt_t_8
+VACUUM rt_t_9
+VACUUM rt_t_10
+VACUUM rt_t_11
+VACUUM rt_t_12
+VACUUM rt_t_13
+VACUUM rt_t_14
+VACUUM rt_t_15
+SELECT * FROM lane_report('t');
+  form  | variants | on_node | differ | differing 
+--------+----------+---------+--------+-----------
+ column |       15 |       0 |      0 | 
+ exists |       15 |       0 |      0 | 
+ key    |       15 |       0 |      0 | 
+ left   |       15 |       0 |      0 | 
+ total  |       15 |       0 |      0 | 
+(5 rows)
+
+-- Format 1 on the unified scan
+SET sift.test_create_format1 = on;
+SET sift.test_unified_agg = on;
+SELECT format('CREATE TABLE rt_f_%s (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)', n) FROM variants \gexec
+CREATE TABLE rt_f_1 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_2 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_3 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_4 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_5 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_6 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_7 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_8 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_9 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_10 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_11 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_12 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_13 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_14 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+CREATE TABLE rt_f_15 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
+SELECT fill(format('rt_f_%s', n), v) FROM variants \gexec
+INSERT INTO rt_f_1 SELECT i, CASE WHEN i = 2000 THEN '[1, 2]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[1, 2]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_2 SELECT i, CASE WHEN i = 2000 THEN '"s"' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '"s"' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_3 SELECT i, CASE WHEN i = 2000 THEN '5' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '5' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_4 SELECT i, CASE WHEN i = 2000 THEN 'true' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN 'true' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_5 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, 2]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, 2]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_6 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, "s"]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, "s"]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_7 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, null]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, null]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_8 SELECT i, CASE WHEN i = 2000 THEN '[[1]]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[[1]]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_9 SELECT i, CASE WHEN i = 2000 THEN '{"kind": "a"}' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '{"kind": "a"}' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_10 SELECT i, CASE WHEN i = 2000 THEN '[null]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[null]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_11 SELECT i, CASE WHEN i = 2000 THEN '[true]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[true]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_12 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, true]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, true]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_13 SELECT i, CASE WHEN i = 2000 THEN '[{"kind": "a"}, [1]]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[{"kind": "a"}, [1]]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_14 SELECT i, CASE WHEN i = 2000 THEN '["x", "y"]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '["x", "y"]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+INSERT INTO rt_f_15 SELECT i, CASE WHEN i = 2000 THEN '[1.5]' ELSE '[{"kind": "a", "n": 1}]' END::jsonb,
+		jsonb_build_object('k', CASE WHEN i = 2000 THEN '[1.5]' ELSE '[{"kind": "b", "n": 2}]' END::jsonb) FROM generate_series(1, 4000) i
+SELECT format($f$CREATE INDEX rt_f_%1$s_col ON rt_f_%1$s USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')$f$, n) FROM variants \gexec
+CREATE INDEX rt_f_1_col ON rt_f_1 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_2_col ON rt_f_2 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_3_col ON rt_f_3 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_4_col ON rt_f_4 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_5_col ON rt_f_5 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_6_col ON rt_f_6 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_7_col ON rt_f_7 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_8_col ON rt_f_8 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_9_col ON rt_f_9 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_10_col ON rt_f_10 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_11_col ON rt_f_11 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_12_col ON rt_f_12 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_13_col ON rt_f_13 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_14_col ON rt_f_14 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+CREATE INDEX rt_f_15_col ON rt_f_15 USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')
+SELECT format('VACUUM (FREEZE, ANALYZE) rt_f_%s', n) FROM variants \gexec
+VACUUM (FREEZE, ANALYZE) rt_f_1
+VACUUM (FREEZE, ANALYZE) rt_f_2
+VACUUM (FREEZE, ANALYZE) rt_f_3
+VACUUM (FREEZE, ANALYZE) rt_f_4
+VACUUM (FREEZE, ANALYZE) rt_f_5
+VACUUM (FREEZE, ANALYZE) rt_f_6
+VACUUM (FREEZE, ANALYZE) rt_f_7
+VACUUM (FREEZE, ANALYZE) rt_f_8
+VACUUM (FREEZE, ANALYZE) rt_f_9
+VACUUM (FREEZE, ANALYZE) rt_f_10
+VACUUM (FREEZE, ANALYZE) rt_f_11
+VACUUM (FREEZE, ANALYZE) rt_f_12
+VACUUM (FREEZE, ANALYZE) rt_f_13
+VACUUM (FREEZE, ANALYZE) rt_f_14
+VACUUM (FREEZE, ANALYZE) rt_f_15
+SELECT * FROM lane_report('f');
+  form  | variants | on_node | differ | differing 
+--------+----------+---------+--------+-----------
+ column |       15 |      15 |      0 | 
+ exists |       15 |      15 |      0 | 
+ key    |       15 |      15 |      0 | 
+ left   |       15 |      15 |      0 | 
+ total  |       15 |      15 |      0 | 
+(5 rows)
+
+-- the variants as new versions of stored rows (Format 2 sift_col)
+SET sift.test_create_format1 = off;
+CREATE TABLE rw (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO rw SELECT i, '[{"kind": "a", "n": 1}]', '{"k": [{"kind": "b", "n": 2}]}' FROM generate_series(1, 4000) i;
+CREATE INDEX rw_col ON rw USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off');
+VACUUM (FREEZE, ANALYZE) rw;
+CREATE FUNCTION rewrite_report() RETURNS TABLE (n int, v text, node text, same bool, err text) LANGUAGE plpgsql AS $$
+DECLARE r record;
+BEGIN
+	FOR r IN SELECT * FROM variants ORDER BY variants.n LOOP
+		UPDATE rw SET a = r.v::jsonb, b = jsonb_build_object('k', r.v::jsonb) WHERE id = 2000;
+		SELECT r.n, r.v, c.node, c.same, c.err INTO n, v, node, same, err FROM check_q('SELECT e.kind, count(*) FROM rw f CROSS JOIN LATERAL jsonb_to_recordset(f.a) AS e(kind text, n int) GROUP BY 1') c;
+		RETURN NEXT;
+		SELECT r.n, r.v, c.node, c.same, c.err INTO n, v, node, same, err FROM check_q('SELECT e.kind, count(*) FROM rw f CROSS JOIN LATERAL jsonb_to_recordset(f.b -> ''k'') AS e(kind text, n int) GROUP BY 1') c;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT count(*) AS checks, count(*) FILTER (WHERE node <> 'none') AS on_node, count(*) FILTER (WHERE NOT same) AS differ, string_agg(n::text, ',' ORDER BY n) FILTER (WHERE NOT same) AS differing FROM rewrite_report();
+ checks | on_node | differ | differing 
+--------+---------+--------+-----------
+     30 |      30 |      0 | 
+(1 row)
+
+RESET search_path;
+DROP SCHEMA rn CASCADE;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

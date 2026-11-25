@@ -1,0 +1,236 @@
+-- A statement planned once (a generic plan, cached by PREPARE or by a PL/pgSQL function) over a sift_table and over a sift_col index reads the time zone of the session when it runs, not the one it was planned in:
+-- the same plans are run under several zones across the DST transitions of America/New_York, America/Sao_Paulo, Asia/Kathmandu (+05:45) and Australia/Lord_Howe (a 30 minute shift), and every answer is the heap twin's.
+-- requires: build col
+\set ON_ERROR_STOP on
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+CREATE SCHEMA tzs;
+SET search_path = tzs, public;
+CREATE TABLE tzh (id int PRIMARY KEY, ts timestamptz NOT NULL, v int NOT NULL);
+INSERT INTO tzh SELECT i * 100 + m, ts, (i + m) % 17 FROM generate_series(timestamptz '2025-03-07 00:00+00', timestamptz '2025-03-11 23:00+00', interval '5 minutes') WITH ORDINALITY g(ts, i), generate_series(1, 25) m;
+INSERT INTO tzh SELECT 1000000 + i * 100 + m, ts, (i + m) % 17 FROM generate_series(timestamptz '2025-10-31 00:00+00', timestamptz '2025-11-04 23:00+00', interval '5 minutes') WITH ORDINALITY g(ts, i), generate_series(1, 25) m;
+CREATE TABLE tzt (LIKE tzh INCLUDING ALL) USING sift_table;
+INSERT INTO tzt SELECT * FROM tzh;
+CREATE TABLE tzc (LIKE tzh INCLUDING ALL);
+INSERT INTO tzc SELECT * FROM tzh;
+CREATE INDEX tzc_col ON tzc USING sift_col (ts, v);
+ANALYZE tzh; ANALYZE tzt; ANALYZE tzc;
+-- the statements: %T is the table, arg the parameter (a zone name, or a timestamp of the zone of the session)
+CREATE TABLE stmts (name text PRIMARY KEY, body text NOT NULL, needs_ts boolean NOT NULL);
+INSERT INTO stmts VALUES
+	('by_day',     'SELECT date_trunc(''day'', ts)::text AS k, count(*) AS c, sum(v) AS s FROM %T GROUP BY 1', false),
+	('by_hour',    'SELECT date_trunc(''hour'', ts)::text AS k, count(*) AS c, sum(v) AS s FROM %T WHERE ts >= arg::timestamptz AND ts < arg::timestamptz + interval ''2 days'' GROUP BY 1', true),
+	('by_bin',     'SELECT date_bin(''1 hour'', ts, arg::timestamptz)::text AS k, count(*) AS c, sum(v) AS s FROM %T WHERE ts < arg::timestamptz + interval ''3 days'' GROUP BY 1', true),
+	('one_day',    'SELECT arg AS k, count(*) AS c, sum(v) AS s FROM %T WHERE date_trunc(''day'', ts) = arg::timestamptz', true),
+	('by_date',    'SELECT ts::date::text AS k, count(*) AS c, sum(v) AS s FROM %T GROUP BY 1', false),
+	('by_extract', 'SELECT extract(hour FROM ts)::int || '':'' || extract(dow FROM ts)::int AS k, count(*) AS c, sum(v) AS s FROM %T GROUP BY 1', false),
+	('by_local',   'SELECT (ts AT TIME ZONE ''Pacific/Auckland'')::date::text AS k, count(*) AS c, sum(v) AS s FROM %T GROUP BY 1', false),
+	('by_week',    'SELECT date_trunc(''week'', ts)::text AS k, count(*) AS c, sum(v) AS s FROM %T GROUP BY 1', false);
+-- one PL/pgSQL function per statement and table: its statement is planned on the first call and its plan is kept for the session
+SELECT format('CREATE FUNCTION run_%s_%s(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY %s; END $f$',
+              t.tag, s.name, replace(s.body, '%T', t.tbl)) AS ddl
+FROM stmts s, (VALUES ('h', 'tzh'), ('t', 'tzt'), ('c', 'tzc')) t(tag, tbl) \gexec
+CREATE FUNCTION run_h_by_day(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('day', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzh GROUP BY 1; END $f$
+CREATE FUNCTION run_t_by_day(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('day', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzt GROUP BY 1; END $f$
+CREATE FUNCTION run_c_by_day(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('day', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzc GROUP BY 1; END $f$
+CREATE FUNCTION run_h_by_hour(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('hour', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzh WHERE ts >= arg::timestamptz AND ts < arg::timestamptz + interval '2 days' GROUP BY 1; END $f$
+CREATE FUNCTION run_t_by_hour(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('hour', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzt WHERE ts >= arg::timestamptz AND ts < arg::timestamptz + interval '2 days' GROUP BY 1; END $f$
+CREATE FUNCTION run_c_by_hour(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('hour', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzc WHERE ts >= arg::timestamptz AND ts < arg::timestamptz + interval '2 days' GROUP BY 1; END $f$
+CREATE FUNCTION run_h_by_bin(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_bin('1 hour', ts, arg::timestamptz)::text AS k, count(*) AS c, sum(v) AS s FROM tzh WHERE ts < arg::timestamptz + interval '3 days' GROUP BY 1; END $f$
+CREATE FUNCTION run_t_by_bin(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_bin('1 hour', ts, arg::timestamptz)::text AS k, count(*) AS c, sum(v) AS s FROM tzt WHERE ts < arg::timestamptz + interval '3 days' GROUP BY 1; END $f$
+CREATE FUNCTION run_c_by_bin(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_bin('1 hour', ts, arg::timestamptz)::text AS k, count(*) AS c, sum(v) AS s FROM tzc WHERE ts < arg::timestamptz + interval '3 days' GROUP BY 1; END $f$
+CREATE FUNCTION run_h_one_day(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT arg AS k, count(*) AS c, sum(v) AS s FROM tzh WHERE date_trunc('day', ts) = arg::timestamptz; END $f$
+CREATE FUNCTION run_t_one_day(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT arg AS k, count(*) AS c, sum(v) AS s FROM tzt WHERE date_trunc('day', ts) = arg::timestamptz; END $f$
+CREATE FUNCTION run_c_one_day(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT arg AS k, count(*) AS c, sum(v) AS s FROM tzc WHERE date_trunc('day', ts) = arg::timestamptz; END $f$
+CREATE FUNCTION run_h_by_date(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT ts::date::text AS k, count(*) AS c, sum(v) AS s FROM tzh GROUP BY 1; END $f$
+CREATE FUNCTION run_t_by_date(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT ts::date::text AS k, count(*) AS c, sum(v) AS s FROM tzt GROUP BY 1; END $f$
+CREATE FUNCTION run_c_by_date(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT ts::date::text AS k, count(*) AS c, sum(v) AS s FROM tzc GROUP BY 1; END $f$
+CREATE FUNCTION run_h_by_extract(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT extract(hour FROM ts)::int || ':' || extract(dow FROM ts)::int AS k, count(*) AS c, sum(v) AS s FROM tzh GROUP BY 1; END $f$
+CREATE FUNCTION run_t_by_extract(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT extract(hour FROM ts)::int || ':' || extract(dow FROM ts)::int AS k, count(*) AS c, sum(v) AS s FROM tzt GROUP BY 1; END $f$
+CREATE FUNCTION run_c_by_extract(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT extract(hour FROM ts)::int || ':' || extract(dow FROM ts)::int AS k, count(*) AS c, sum(v) AS s FROM tzc GROUP BY 1; END $f$
+CREATE FUNCTION run_h_by_local(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT (ts AT TIME ZONE 'Pacific/Auckland')::date::text AS k, count(*) AS c, sum(v) AS s FROM tzh GROUP BY 1; END $f$
+CREATE FUNCTION run_t_by_local(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT (ts AT TIME ZONE 'Pacific/Auckland')::date::text AS k, count(*) AS c, sum(v) AS s FROM tzt GROUP BY 1; END $f$
+CREATE FUNCTION run_c_by_local(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT (ts AT TIME ZONE 'Pacific/Auckland')::date::text AS k, count(*) AS c, sum(v) AS s FROM tzc GROUP BY 1; END $f$
+CREATE FUNCTION run_h_by_week(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('week', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzh GROUP BY 1; END $f$
+CREATE FUNCTION run_t_by_week(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('week', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzt GROUP BY 1; END $f$
+CREATE FUNCTION run_c_by_week(arg text) RETURNS TABLE (k text, c bigint, s bigint) LANGUAGE plpgsql AS $f$ BEGIN RETURN QUERY SELECT date_trunc('week', ts)::text AS k, count(*) AS c, sum(v) AS s FROM tzc GROUP BY 1; END $f$
+CREATE FUNCTION check_zone(zone text, ts text) RETURNS TABLE (name text, h text, t text, c text) LANGUAGE plpgsql AS $$
+DECLARE s record; ah text; at text; ac text;
+BEGIN
+	PERFORM set_config('TimeZone', zone, false);
+	FOR s IN SELECT * FROM stmts ORDER BY name LOOP
+		EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM run_h_%s(%L) x', s.name, ts) INTO ah;
+		EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM run_t_%s(%L) x', s.name, ts) INTO at;
+		EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM run_c_%s(%L) x', s.name, ts) INTO ac;
+		name := s.name;
+		h := md5(ah);
+		t := CASE WHEN at = ah THEN 'same' ELSE 'DIFFERENT' END;
+		c := CASE WHEN ac = ah THEN 'same' ELSE 'DIFFERENT' END;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SET plan_cache_mode = force_generic_plan;
+-- the hash of the heap answer tells the zones apart: the same statement answers differently in each
+SELECT * FROM check_zone('UTC', '2025-03-08 00:00+00');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | 70b59c4ae920ad0941e911f74fd76542 | same | same
+ by_date    | 64dcccff7029e9dd04ca673f4579076a | same | same
+ by_day     | 2a18011f888f02f61a9bdf81e912d805 | same | same
+ by_extract | 097e6d956583208fcb3342a18183780e | same | same
+ by_hour    | b62936630b8f01865f223a7a78e753fb | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | afb2cd60b0730df484c9f2ec65071916 | same | same
+ one_day    | f0cea2a48361f26a88db34358730df7a | same | same
+(8 rows)
+
+SELECT * FROM check_zone('America/Sao_Paulo', '2025-03-08 00:00+00');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | 7740dbaf0ea8082d31f9166a073c036a | same | same
+ by_date    | c336344fb1d74a5d850d1d9865999fd6 | same | same
+ by_day     | efb73990fc5fcc6c2ab10f2e1035366a | same | same
+ by_extract | c9c1d271044f140e423d05f551d7656a | same | same
+ by_hour    | b55087f47aed5ba5b95eb42610b2ddcb | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | 3e1297a7fedaf84247a8c51416113b16 | same | same
+ one_day    | f2f4aedfa64aa6a462f9371b5262ba8a | same | same
+(8 rows)
+
+SELECT * FROM check_zone('America/New_York', '2025-03-09 00:00-05');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | 6fc6106d9be441a4372c3c0ca29c33a6 | same | same
+ by_date    | 2175ac39bc228c64860735b1d4a19bb1 | same | same
+ by_day     | 324b7d756dfff515a4e2888ba7c66d3c | same | same
+ by_extract | 4e901dd72b431cfa3f3926be8a88d54e | same | same
+ by_hour    | 278606c48f6371ada139f5375b0bb20d | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | 48104974b51e15b594e1f43c1614579e | same | same
+ one_day    | abd8d4f1d8ccfe3226958f5a57d65e6f | same | same
+(8 rows)
+
+SELECT * FROM check_zone('UTC', '2025-11-02 00:00+00');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | dbde9348d4cfc4938f87cc086e88e401 | same | same
+ by_date    | 64dcccff7029e9dd04ca673f4579076a | same | same
+ by_day     | 2a18011f888f02f61a9bdf81e912d805 | same | same
+ by_extract | 097e6d956583208fcb3342a18183780e | same | same
+ by_hour    | a8526a2ddcab8f70b45fe640ba5f842c | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | afb2cd60b0730df484c9f2ec65071916 | same | same
+ one_day    | 448297c362353cd553f2eb1ad626b281 | same | same
+(8 rows)
+
+SELECT * FROM check_zone('America/New_York', '2025-11-02 00:00-04');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | 3171d3c99a8c326b5b999b69a9bab69b | same | same
+ by_date    | 2175ac39bc228c64860735b1d4a19bb1 | same | same
+ by_day     | 324b7d756dfff515a4e2888ba7c66d3c | same | same
+ by_extract | 4e901dd72b431cfa3f3926be8a88d54e | same | same
+ by_hour    | 811314542e58dc9628fe2fc9dfb3a83c | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | 48104974b51e15b594e1f43c1614579e | same | same
+ one_day    | 29476774083a2b1ec0baf3102cea9bd2 | same | same
+(8 rows)
+
+SELECT * FROM check_zone('Asia/Kathmandu', '2025-03-09 00:00+05:45');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | cb16d7b9e6945b0c9887d308d74c6973 | same | same
+ by_date    | 8f8e0bfcbad22a42610e8b9fd339e6b2 | same | same
+ by_day     | d621bcf6321c558fe1d6d5bd88f65cab | same | same
+ by_extract | f40facaba9a9953a930c22f6868b213b | same | same
+ by_hour    | ec75cd2bb62a27d37ef5f277835d2ada | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | 89098ad7b939ac707b8f16223e6ae082 | same | same
+ one_day    | 39429d951c024f0b4488e1c004e098c5 | same | same
+(8 rows)
+
+SELECT * FROM check_zone('Australia/Lord_Howe', '2025-10-31 00:00+11');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | c1d0e8f2007f36026dfbbc5382a0f930 | same | same
+ by_date    | ae920cd6cc743c71b9eaf5a49d04aed3 | same | same
+ by_day     | 4c329dc883587d3f46476fce6e848375 | same | same
+ by_extract | 80cd16f81f6d878ccb80fde902e1594c | same | same
+ by_hour    | ea92fce34cfb2559a5813fe224be309b | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | 84062630687c047daa7bc6a899530108 | same | same
+ one_day    | 6383dedd01f504f5be02d13c250dbb1c | same | same
+(8 rows)
+
+SELECT * FROM check_zone('America/Sao_Paulo', '2025-11-01 00:00-03');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | b72ef689e04b0b0e327890a0fb7a4cf0 | same | same
+ by_date    | c336344fb1d74a5d850d1d9865999fd6 | same | same
+ by_day     | efb73990fc5fcc6c2ab10f2e1035366a | same | same
+ by_extract | c9c1d271044f140e423d05f551d7656a | same | same
+ by_hour    | a14049190b653d1bf353a4b78db28482 | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | 3e1297a7fedaf84247a8c51416113b16 | same | same
+ one_day    | faba9ecb47acb76e25442456e8588cc4 | same | same
+(8 rows)
+
+SELECT * FROM check_zone('America/New_York', '2025-03-09 00:00-05');
+    name    |                h                 |  t   |  c   
+------------+----------------------------------+------+------
+ by_bin     | 6fc6106d9be441a4372c3c0ca29c33a6 | same | same
+ by_date    | 2175ac39bc228c64860735b1d4a19bb1 | same | same
+ by_day     | 324b7d756dfff515a4e2888ba7c66d3c | same | same
+ by_extract | 4e901dd72b431cfa3f3926be8a88d54e | same | same
+ by_hour    | 278606c48f6371ada139f5375b0bb20d | same | same
+ by_local   | cb38e935d5960f9fb09cba810eef2316 | same | same
+ by_week    | 48104974b51e15b594e1f43c1614579e | same | same
+ one_day    | abd8d4f1d8ccfe3226958f5a57d65e6f | same | same
+(8 rows)
+
+-- the zone changes inside a transaction, between two runs of the same plan
+BEGIN;
+SET LOCAL TimeZone = 'UTC';
+SELECT count(*) FROM run_t_by_day('') x WHERE x.c > 0;
+ count 
+-------
+    10
+(1 row)
+
+SET LOCAL TimeZone = 'America/New_York';
+SELECT (SELECT string_agg(x::text, E'\n' ORDER BY x::text) FROM run_t_by_day('') x) = (SELECT string_agg(x::text, E'\n' ORDER BY x::text) FROM run_h_by_day('') x) AS new_york_by_day;
+ new_york_by_day 
+-----------------
+ t
+(1 row)
+
+SET LOCAL TimeZone = 'America/Sao_Paulo';
+SELECT (SELECT string_agg(x::text, E'\n' ORDER BY x::text) FROM run_t_by_day('') x) = (SELECT string_agg(x::text, E'\n' ORDER BY x::text) FROM run_h_by_day('') x) AS sao_paulo_by_day;
+ sao_paulo_by_day 
+------------------
+ t
+(1 row)
+
+COMMIT;
+-- the engines that answered: the table and the index
+RESET plan_cache_mode;
+CREATE FUNCTION engine(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text;
+BEGIN
+	FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF plan LIKE '%SiftAggV6%' THEN RETURN 'v6'; END IF;
+	END LOOP;
+	RETURN 'native';
+END $$;
+SELECT engine('SELECT date_trunc(''day'', ts), count(*), sum(v) FROM tzt GROUP BY 1') AS table_day,
+       engine('SELECT ts::date, count(*), sum(v) FROM tzt GROUP BY 1') AS table_date,
+       engine('SELECT date_trunc(''day'', ts), count(*), sum(v) FROM tzc GROUP BY 1') AS index_day;
+ table_day | table_date | index_day 
+-----------+------------+-----------
+ v6        | v6         | v6
+(1 row)
+
+RESET search_path;
+DROP SCHEMA tzs CASCADE;
+DROP EXTENSION pg_sift;

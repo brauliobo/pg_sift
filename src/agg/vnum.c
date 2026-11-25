@@ -13,7 +13,7 @@
  */
 #include "postgres.h"
 
-#include "col/v1/kern.h"
+#include "core/simd_kern.h"
 #include "agg/agg_int.h"
 #include "agg/leaf_int.h"
 #include "agg/vnum.h"
@@ -266,7 +266,7 @@ vnum_sum_update(AggExec *ex, int ai, const SiftAggNum *p, int nsel, const uint64
 			}
 			else
 				for (int j = 0; j < cnt; j++)
-					if (!okb || sift_colsrc_bit(okb, j))
+					if (!okb || sift_src_bit(okb, j))
 						agg_sum_add(acc, gid[j], x[j]);
 		}
 		else
@@ -277,7 +277,7 @@ vnum_sum_update(AggExec *ex, int ai, const SiftAggNum *p, int nsel, const uint64
 			{
 				uint32		g = gid[j];
 
-				if (okb && !sift_colsrc_bit(okb, j))
+				if (okb && !sift_src_bit(okb, j))
 					continue;
 				if (nx[j] == SIFT_NX_NAN)
 					acc->nf[g] = 1;

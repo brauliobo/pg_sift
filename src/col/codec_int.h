@@ -6,7 +6,7 @@
 #define SIFT_COLCODEC_INT_H
 
 #include "col/codec.h"
-#include "core/damage.h"
+#include "core/par/arena.h"
 
 extern const SiftCcKernels sift_cc_kernels_scalar;
 extern const SiftCcKernels sift_cc_kernels_avx2;
@@ -61,7 +61,20 @@ extern const float sift_cc_p10f[11];
 #define SIFT_CC_ALP_EMAX_F4	10
 
 #define CC_CORRUPT(...) \
-	SIFT_DAMAGE_DATA(NULL, errmsg("invalid column chunk: " __VA_ARGS__))
+	SIFT_FAIL_CORRUPT("invalid column chunk: " __VA_ARGS__)
+
+#define CC_UPGRADE_HINT \
+	"Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing)."
+
+/*
+ * The memory of what a read builds (the nodes of a chunk, the arrays of a string list) is a MemoryContext on a backend and the arena of the scope
+ * in a worker, which is the NULL context: cc_cx_open gives NULL in a scope, cc_alloc of NULL is sift_alloc, and the entrypoints *_a pass NULL where
+ * a read takes the context of its result. A parent of NULL is the current context.
+ */
+extern MemoryContext cc_cx_open(MemoryContext parent);
+extern void cc_cx_close(MemoryContext cx);
+extern void *cc_alloc(MemoryContext cx, size_t n);
+extern void *cc_alloc0(MemoryContext cx, size_t n);
 
 #define CC_BIT(tag)			(1 << (tag))
 #define CC_NHDR				16
@@ -147,7 +160,7 @@ typedef struct CcNode
 
 struct SiftCc
 {
-	MemoryContext mcxt;
+	MemoryContext mcxt;			/* NULL: the nodes are in the arena of the scope it was opened in */
 	SiftCcKind	kind;
 	uint32		n;
 	int64		min,

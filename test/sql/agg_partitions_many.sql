@@ -25,7 +25,7 @@ DECLARE l text;
 BEGIN
 	scan := 'normal'; partitions_listed := 0; partitions_removed := 0;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || stmt LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN scan := 'SiftAgg'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN scan := 'SiftAgg'; END IF;
 		IF l LIKE '%Partitions:%' THEN partitions_listed := array_length(string_to_array(l, ','), 1); END IF;
 		IF l ~ '(\d+) partitions removed' THEN partitions_removed := substring(l from '(\d+) partitions removed')::int; END IF;
 	END LOOP;

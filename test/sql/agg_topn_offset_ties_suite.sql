@@ -22,7 +22,7 @@ CREATE FUNCTION sk_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'other';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'scan'; ELSIF l LIKE '%Index Only Scan%' THEN r := 'index only'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'scan'; ELSIF l LIKE '%Index Only Scan%' THEN r := 'index only'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -135,7 +135,7 @@ DECLARE pl text; used bool := false; ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Custom Scan (SiftAgg%'; END LOOP;
 	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
 	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;

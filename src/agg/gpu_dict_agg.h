@@ -56,7 +56,7 @@ extern bool sift_gpu_unit_str(const SiftGpuPlan *p, const SiftGpuUnit *u, int sl
 static inline bool
 sift_gpu_slot_is_text(const SiftGpuQuery *q, int slot)
 {
-	return slot >= 0 && sift_gpu_dict_leaf_ok(q->store->kinds[q->leaf[slot]], q->store->hints[q->leaf[slot]]);
+	return slot >= 0 && sift_gpu_dict_leaf_ok(q->sch.leaf_kinds[q->leaf[slot]], q->sch.leaf_hints[q->leaf[slot]]);
 }
 /* The jobs the scan runs as: a piece of it with no row that can pass is none (a scan with no pieces is one job) */
 extern int	sift_gpu_units_to_run(const SiftGpuUnits *us);

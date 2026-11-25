@@ -42,7 +42,7 @@ BEGIN
 	SET LOCAL sift.enable_agg = on;
 	SET LOCAL sift.agg_force = on;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		s := s OR l LIKE '%Custom Scan (SiftAgg)%';
+		s := s OR l LIKE '%Custom Scan (SiftAgg%';
 	END LOOP;
 	RETURN s;
 END $$;

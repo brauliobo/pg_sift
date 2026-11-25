@@ -215,7 +215,7 @@ VACUUM (FREEZE, ANALYZE) ranked;
 CREATE FUNCTION plan_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text; found bool := false;
 BEGIN
-	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
 	RETURN found;
 END $$;
 SET seq_page_cost = 64;
@@ -337,7 +337,7 @@ CREATE FUNCTION shape_check(q text) RETURNS TABLE (in_scan bool, sliced bool, sa
 $$ DECLARE l text; plan text := ''; a text; b text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-  in_scan := plan LIKE '%Custom Scan (SiftAgg)%';
+  in_scan := plan LIKE '%Custom Scan (SiftAgg%';
   sliced := plan LIKE '%array_agg(%)[1:%' OR plan LIKE '%array_agg(%)[rank <=%' OR plan LIKE '%array_agg(%)[dense_rank <=%';
   PERFORM set_config('sift.enable_agg', 'on', true);
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;

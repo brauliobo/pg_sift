@@ -5,7 +5,7 @@
  * keeps the integer, date, timestamp, float8 and numeric columns of every row in memory, numbers the partitions by a hash table over the key values (NULL keys are equal to each other, as the
  * partitions of PostgreSQL are), and gives the rows back in the order of the partition numbers, the rows of one partition in the order they came. What the node needs of the keys is only
  * that the rows of a partition are together, which is all the partition sort of v6_win_partsort.h asks of its input; the sort inside each partition and the functions stay with them.
- * The rows are partitioned in memory: an input that needs more than max_bytes is an error (54000), never a wrong answer, and the planner does not choose it for an input it estimates to.
+ * The rows are partitioned in memory; an input that needs more than max_bytes (the planner does not choose it for one it estimates to) is sorted by the partition keys by v6_win_spill.h, which spills to files.
  */
 #ifndef SIFT_AGG_V6_WIN_PAR_H
 #define SIFT_AGG_V6_WIN_PAR_H

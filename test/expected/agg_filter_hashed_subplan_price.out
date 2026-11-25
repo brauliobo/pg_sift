@@ -27,7 +27,7 @@ INSERT INTO shapes VALUES
 CREATE FUNCTION plan_of(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal plan'; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'scan'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'scan'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -39,11 +39,11 @@ DECLARE r text; BEGIN
 	RETURN r;
 END $$;
 SELECT slug, plan_of(sql) AS plan FROM shapes ORDER BY slug;
-            slug            |    plan     
-----------------------------+-------------
+            slug            | plan 
+----------------------------+------
  not_in_few_values          | scan
- not_in_many_values         | normal plan
- not_in_many_values_grouped | normal plan
+ not_in_many_values         | scan
+ not_in_many_values_grouped | scan
 (3 rows)
 
 SELECT slug, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;

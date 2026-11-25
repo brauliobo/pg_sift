@@ -30,12 +30,12 @@ sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind)
 		return false;
 	if (strcmp(name, "count") == 0)
 		*kind = a->aggstar ? SV6_COUNT_STAR : a->aggdistinct != NIL ? SV6_COUNT_DISTINCT : SV6_COUNT;
+	else if (strcmp(name, "sum") == 0)
+		*kind = a->aggdistinct != NIL ? SV6_SUM_DISTINCT : SV6_SUM;
+	else if (strcmp(name, "avg") == 0)
+		*kind = a->aggdistinct != NIL ? SV6_AVG_DISTINCT : SV6_AVG;
 	else if (a->aggdistinct != NIL)
 		return false;
-	else if (strcmp(name, "sum") == 0)
-		*kind = SV6_SUM;
-	else if (strcmp(name, "avg") == 0)
-		*kind = SV6_AVG;
 	else if (strcmp(name, "min") == 0)
 		*kind = SV6_MIN;
 	else if (strcmp(name, "max") == 0)
@@ -57,8 +57,10 @@ sift_v6_kind_takes(SiftV6Kind kind, Oid typid)
 		case SV6_COUNT_DISTINCT:
 			return cls != SV6C_NONE;
 		case SV6_SUM:
+		case SV6_SUM_DISTINCT:
 			return typid != FLOAT4OID && (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64);
 		case SV6_AVG:
+		case SV6_AVG_DISTINCT:
 			return cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64;
 		case SV6_MIN:
 		case SV6_MAX:

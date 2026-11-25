@@ -17,7 +17,7 @@
 #include "col/f2/delvec.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_point_dir.h"
-#include "col/f2/preagg_delta.h"
+#include "col/f2/preagg_v2.h"
 #include "col/f2/f2_sink.h"
 #include "col/f2/f2_store.h"
 #include "col/f2/f2_tid_hash.h"
@@ -86,31 +86,35 @@ read_words(Relation rel, const SiftPart *part, const SiftSecDirEntry *sec, uint6
 	sift_part_read_section_bytes(rel, part, sec, off, (uint64) n * sizeof(uint32), dst);
 }
 
-/* The pre-aggregates: first[ngranules + 1], the number of the first cell of each granule from 0 and ascending, then the cells they count */
+/* The pre-aggregates: the header and cubes the reader validates, then for each cube first[ngranules + 1], the number of the first cell of each granule from 0 and ascending, and the cells they count */
 static void
 check_preagg(Relation rel, const SiftPart *part)
 {
 	const SiftSecDirEntry *sec = sift_part_section(part, SEC_PREAGG);
+	const SiftPreaggPart *pp = sift_preagg_part_open(rel, part);
 	const uint64 ng = part->hdr.ngranules;
 	uint32		w[SEC_WORDS];
-	uint32		prev = 0;
 
-	if (sec->len < MAXALIGN((ng + 1) * sizeof(uint32)))
-		SIFT_CORRUPT(rel, "Part %llu: the pre-aggregate section holds %llu bytes for %llu granules.", (unsigned long long) part->hdr.part_gen, (unsigned long long) sec->len, (unsigned long long) ng);
-	for (uint64 at = 0; at < ng + 1; at += SEC_WORDS)
+	for (int k = 0; k < pp->hdr.ncubes; k++)
 	{
-		uint32		n = Min((uint64) SEC_WORDS, ng + 1 - at);
+		const SiftPreaggCubeDesc *cd = &pp->cube[k];
+		uint32		prev = 0;
 
-		read_words(rel, part, sec, at * sizeof(uint32), n, w);
-		for (uint32 i = 0; i < n; i++)
+		for (uint64 at = 0; at < ng + 1; at += SEC_WORDS)
 		{
-			if ((at + i == 0 && w[i] != 0) || w[i] < prev)
-				SIFT_CORRUPT(rel, "Part %llu: the first pre-aggregate cell of granule %llu is %u after %u.", (unsigned long long) part->hdr.part_gen, (unsigned long long) (at + i), w[i], prev);
-			prev = w[i];
+			uint32		n = Min((uint64) SEC_WORDS, ng + 1 - at);
+
+			read_words(rel, part, sec, cd->gran_dir_off + at * sizeof(uint32), n, w);
+			for (uint32 i = 0; i < n; i++)
+			{
+				if ((at + i == 0 && w[i] != 0) || w[i] < prev)
+					SIFT_CORRUPT(rel, "Part %llu: the first cell of granule %llu in cube %d of the pre-aggregates is %u after %u.", (unsigned long long) part->hdr.part_gen, (unsigned long long) (at + i), k, w[i], prev);
+				prev = w[i];
+			}
 		}
+		if (cd->cells_off + (uint64) prev * sift_pag_cell_size(cd) > sec->len)
+			SIFT_CORRUPT(rel, "Part %llu: cube %d of the pre-aggregates counts %u cells and the section holds %llu bytes.", (unsigned long long) part->hdr.part_gen, k, prev, (unsigned long long) sec->len);
 	}
-	if (MAXALIGN((ng + 1) * sizeof(uint32)) + (uint64) prev * sizeof(SiftPreaggCell) > sec->len)
-		SIFT_CORRUPT(rel, "Part %llu: the pre-aggregate section counts %u cells and holds %llu bytes.", (unsigned long long) part->hdr.part_gen, prev, (unsigned long long) sec->len);
 }
 
 /* The point directory: for each key, the bucket ends ascend from 0 to its entries, and every entry is a row of a granule of the part */

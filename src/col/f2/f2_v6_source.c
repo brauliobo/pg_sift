@@ -25,6 +25,7 @@
 #include "col/f2/f2_store_scan.h"
 #include "col/f2/f2_store_schema.h"
 #include "col/f2/f2_v6_format.h"
+#include "col/f2/f2_v6_scan_int.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
 
@@ -75,11 +76,14 @@ typedef struct V6Src
 	SiftVec		vec[SIFT_V6_MAX_COLS];
 	void	   *data[SIFT_V6_MAX_COLS];
 	uint64	   *valid[SIFT_V6_MAX_COLS];
+	uint64	   *nan[SIFT_V6_MAX_COLS];	/* of a numeric column: the rows that hold a NaN, which valid says are NULL */
+	bool		has_nan[SIFT_V6_MAX_COLS];
 	SiftVexprMaskIn masks[SIFT_V6_MAX_MASKS];
 	uint64	   *mbits[SIFT_V6_MAX_MASKS];
 	uint64	   *mvalid[SIFT_V6_MAX_MASKS];
 	uint64		mask[SIFT_VEC_WORDS];
 	uint64		tag[SIFT_VEC_LEN];
+	MemoryContext strings;		/* the bytes of the long strings of the batch: the store's own go with the cursor that moves on */
 } V6Src;
 
 /* ---- the heap rows of an index ---- */
@@ -268,13 +272,33 @@ unreadable(const V6Src *s, int leaf)
 					errhint("Run the statement with sift.enable_agg = off.")));
 }
 
+static SiftStrView
+text_cell(V6Src *s, const ColView *cv, int r)
+{
+	SiftStrView v = sift_f2_v6_text_view(cv, r, s->in.is_table);
+
+	if (v.len > 12)
+	{
+		char	   *own = MemoryContextAlloc(s->strings, v.len);
+
+		memcpy(own, v.u.ptr, v.len);
+		v.u.ptr = own;
+	}
+	return v;
+}
+
 static void
 put_col(V6Src *s, int i, const ColView *cv, int r, int n)
 {
 	const bool	valid = !cv->isnull[r];
 
 	if (!valid && cv->tag != NULL && cv->tag[r] != 0)
-		unreadable(s, s->leaf[i]);
+	{
+		if (s->in.col[i].typid != NUMERICOID || cv->tag[r] != SIFT_COLTAG_UNSURE)
+			unreadable(s, s->leaf[i]);
+		s->nan[i][n >> 6] |= (uint64) 1 << (n & 63);
+		s->has_nan[i] = true;
+	}
 	s->valid[i][n >> 6] |= (uint64) valid << (n & 63);
 	switch (s->in.col[i].type)
 	{
@@ -283,6 +307,9 @@ put_col(V6Src *s, int i, const ColView *cv, int r, int n)
 			break;
 		case SVEC_F64:
 			((double *) s->data[i])[n] = valid ? cv->f[r] : 0;
+			break;
+		case SVEC_STRVIEW:
+			((SiftStrView *) s->data[i])[n] = valid ? text_cell(s, cv, r) : (SiftStrView) {0};
 			break;
 		default:
 			((int64 *) s->data[i])[n] = valid ? cv->i[r] : 0;
@@ -312,8 +339,13 @@ put_row(V6Src *s, const SiftF2Batch *b, int r, int n)
 static void
 batch_start(V6Src *s)
 {
+	MemoryContextReset(s->strings);
 	for (int i = 0; i < s->in.ncols; i++)
+	{
 		memset(s->valid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		memset(s->nan[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		s->has_nan[i] = false;
+	}
 	for (int m = 0; m < s->in.nmasks; m++)
 	{
 		memset(s->mbits[m], 0, SIFT_VEC_WORDS * sizeof(uint64));
@@ -336,7 +368,7 @@ batch_fill(V6Src *s)
 		merge_pop(s);
 	}
 	for (int i = 0; i < s->in.ncols; i++)
-		s->vec[i] = (SiftVec) {.data = s->data[i],.valid = s->valid[i],.len = (uint16) n,.all_valid = false,.dense = true,.type = s->in.col[i].type,.scale = s->in.col[i].scale};
+		s->vec[i] = (SiftVec) {.data = s->data[i],.valid = s->valid[i],.nan = s->has_nan[i] ? s->nan[i] : NULL,.len = (uint16) n,.all_valid = false,.dense = true,.type = s->in.col[i].type,.scale = s->in.col[i].scale};
 	return n;
 }
 
@@ -420,6 +452,17 @@ leaf_of(const SiftF2Store *st, AttrNumber attno)
 	return st->att_first[attno];
 }
 
+/* the leaves of the numeric columns, whose NaN the vectors carry */
+static bool *
+numeric_leaves(const V6Src *s)
+{
+	bool	   *nan_leaves = palloc0(Max(s->store->ncols, 1) * sizeof(bool));
+
+	for (int i = 0; i < s->in.ncols; i++)
+		nan_leaves[s->leaf[i]] = s->in.col[i].typid == NUMERICOID;
+	return nan_leaves;
+}
+
 /* the leaves the scan decodes: those of the columns and of the booleans of the input, and the key when the rows are merged by it */
 static int *
 scan_leaves(V6Src *s, int *nleaves)
@@ -445,10 +488,11 @@ vectors_new(V6Src *s)
 {
 	for (int i = 0; i < s->in.ncols; i++)
 	{
-		const size_t width = s->in.col[i].type == SVEC_I32 ? sizeof(int32) : sizeof(int64);
+		const size_t width = s->in.col[i].type == SVEC_I32 ? sizeof(int32) : s->in.col[i].type == SVEC_STRVIEW ? sizeof(SiftStrView) : sizeof(int64);
 
 		s->data[i] = palloc_aligned((SIFT_VEC_LEN + SIFT_VEC_PAD) * width, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 		s->valid[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+		s->nan[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 	}
 	for (int m = 0; m < s->in.nmasks; m++)
 	{
@@ -467,6 +511,7 @@ sift_f2_v6_source_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr 
 
 	s->cx = cx;
 	s->run_cx = sift_mem_allocset_create(cx, "sift v6 source run");
+	s->strings = sift_mem_allocset_create(cx, "sift v6 source strings");
 	s->in = *in;
 	s->sorted = sorted;
 	s->snap = estate->es_snapshot;
@@ -478,6 +523,7 @@ sift_f2_v6_source_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr 
 	s->mask_leaf = palloc(Max(in->nmasks, 1) * sizeof(int));
 	s->opts = (SiftStoreScanOpts) {.rel = s->rel,.store = s->store,.snap = s->snap};
 	s->opts.leaves = scan_leaves(s, &s->opts.nleaves);
+	s->opts.nan_leaves = numeric_leaves(s);
 	s->vet = in->is_table ? NULL : vet_new(cx, s->heap, s->snap);
 	s->fslot = table_slot_create(s->heap, NULL);
 	s->has_quals = quals != NULL;

@@ -19,9 +19,8 @@
 #define HASH_S2		UINT32_C(0xC2B2AE35)
 
 static uint32 crc_tab[8][256];
-static bool crc_tab_ready;
 
-static void
+__attribute__((constructor)) static void
 crc_tab_init(void)
 {
 	for (uint32 i = 0; i < 256; i++)
@@ -35,7 +34,6 @@ crc_tab_init(void)
 	for (uint32 i = 0; i < 256; i++)
 		for (int t = 1; t < 8; t++)
 			crc_tab[t][i] = (crc_tab[t - 1][i] >> 8) ^ crc_tab[0][crc_tab[t - 1][i] & 0xff];
-	crc_tab_ready = true;
 }
 
 static inline uint32
@@ -91,14 +89,7 @@ static inline bool
 have_crc(void)
 {
 #if defined(SIFT_CRC_X86)
-	static int	has = -1;
-
-	if (has < 0)
-	{
-		__builtin_cpu_init();
-		has = __builtin_cpu_supports("sse4.2") != 0;
-	}
-	return has;
+	return __builtin_cpu_supports("sse4.2") != 0;
 #else
 	return false;
 #endif
@@ -154,8 +145,6 @@ sift_aggk6_hash_bytes(const void *p, uint32 len)
 	if (have_crc())
 		return bytes_hw(p, len);
 #endif
-	if (!crc_tab_ready)
-		crc_tab_init();
 	return bytes_sw(p, len);
 }
 
@@ -166,8 +155,6 @@ sift_aggk6_hash_lenpfx(const void *p, uint32 len)
 	if (have_crc())
 		return lenpfx_hw(p, len);
 #endif
-	if (!crc_tab_ready)
-		crc_tab_init();
 	return lenpfx_sw(p, len);
 }
 
@@ -178,8 +165,6 @@ sift_aggk6_hash_wide_batch(uint64 *h, const uint8 *buf, const uint32 *off, const
 	if (have_crc())
 		return hash_wide_hw(h, buf, off, len, nulls, n);
 #endif
-	if (!crc_tab_ready)
-		crc_tab_init();
 	hash_wide_sw(h, buf, off, len, nulls, n);
 }
 
@@ -190,7 +175,5 @@ sift_aggk6_hash_str_batch(uint64 *h, const SiftStrView *v, const uint64 *valid, 
 	if (have_crc())
 		return hash_str_hw(h, v, valid, sel, n);
 #endif
-	if (!crc_tab_ready)
-		crc_tab_init();
 	hash_str_sw(h, v, valid, sel, n);
 }

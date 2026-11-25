@@ -235,36 +235,198 @@ i128_at(const SiftVec *v, uint32 r)
 	return (__int128) (((unsigned __int128) (uint64) ((const SiftI128 *) v->data)[r].hi << 64) | ((const SiftI128 *) v->data)[r].lo);
 }
 
-/* a row of a wide vector is below 2^95, so that 2^32 of them add up in the 128 bits of the sum of the groups */
-#define SUM_ROW_LIMIT	(((__int128) 1) << 95)
+static inline bool
+row_wanted(const uint64 *todo, uint32 r)
+{
+	return (todo[r >> 6] >> (r & 63)) & 1;
+}
 
-/* the rows of todo in 128 bits: an error when a product leaves them too */
-static void
+static inline __int128
+factor_wide(const Fac *f, uint32 r)
+{
+	return (__int128) f->m * f->x[r] + f->k;
+}
+
+/* the rows of todo in 128 bits; false when the product of a row leaves them */
+static bool
 eval128(const Fac *f, int nf, const SiftVec *pre, uint32 n, const uint64 *todo, SiftI128 *out)
 {
+	bool		ovf = false;
+
 	for (uint32 r = 0; r < n; r++)
 	{
-		__int128	v = 0;
-		bool		ovf = false;
+		__int128	v;
 		int			i = 0;
 
-		if (!((todo[r >> 6] >> (r & 63)) & 1))
+		if (!row_wanted(todo, r))
 			continue;
 		if (pre != NULL)
 			v = i128_at(pre, r);
 		else
-		{
-			v = (__int128) f[0].m * f[0].x[r] + f[0].k;
-			i = 1;
-		}
+			v = factor_wide(&f[i++], r);
 		for (; i < nf; i++)
-			ovf |= __builtin_mul_overflow(v, (__int128) f[i].m * f[i].x[r] + f[i].k, &v);
-		ovf |= v >= SUM_ROW_LIMIT || v <= -SUM_ROW_LIMIT;
-		if (ovf)
-			ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("a numeric expression is out of the range the aggregate scan computes"),
-							errhint("Run the statement with sift.enable_agg = off.")));
+			ovf |= __builtin_mul_overflow(v, factor_wide(&f[i], r), &v);
 		out[r] = (SiftI128) {.lo = (uint64) v,.hi = (int64) (v >> 64)};
 	}
+	return !ovf;
+}
+
+/* the magnitude of a product below 2^191, in 64-bit limbs, low first */
+typedef struct Mag
+{
+	uint64		l[3];
+} Mag;
+
+static inline unsigned __int128
+abs128(__int128 v)
+{
+	return v < 0 ? -(unsigned __int128) v : (unsigned __int128) v;
+}
+
+static Mag
+mag_of(__int128 v)
+{
+	const unsigned __int128 u = abs128(v);
+
+	return (Mag) {{(uint64) u, (uint64) (u >> 64), 0}};
+}
+
+/* m * f; false when the product is 2^191 or more */
+static bool
+mag_mul(Mag *m, unsigned __int128 f)
+{
+	const uint64 fl[2] = {(uint64) f, (uint64) (f >> 64)};
+	uint64		r[5] = {0};
+
+	for (int i = 0; i < 3; i++)
+	{
+		unsigned __int128 carry = 0;
+
+		for (int j = 0; j < 2; j++)
+		{
+			const unsigned __int128 t = (unsigned __int128) m->l[i] * fl[j] + r[i + j] + carry;
+
+			r[i + j] = (uint64) t;
+			carry = t >> 64;
+		}
+		r[i + 2] = (uint64) carry;
+	}
+	if (r[3] != 0 || r[4] != 0 || (r[2] >> 63) != 0)
+		return false;
+	memcpy(m->l, r, sizeof(m->l));
+	return true;
+}
+
+static SiftI256
+i256_of(bool neg, Mag m)
+{
+	SiftI256	o = {{m.l[0], m.l[1], m.l[2], 0}};
+
+	if (neg && (m.l[0] | m.l[1] | m.l[2]) != 0)
+	{
+		o.l[0] = -m.l[0];
+		o.l[1] = ~m.l[1] + (m.l[0] == 0);
+		o.l[2] = ~m.l[2] + (m.l[0] == 0 && m.l[1] == 0);
+		o.l[3] = ~UINT64CONST(0);
+	}
+	return o;
+}
+
+/* the sign and magnitude of row r of the vector of the first factors */
+static bool
+row_mag(const SiftVec *v, uint32 r, Mag *m)
+{
+	SiftI256	x;
+
+	if (v->type != SVEC_NUM256)
+	{
+		const __int128 i = i128_at(v, r);
+
+		*m = mag_of(i);
+		return i < 0;
+	}
+	x = ((const SiftI256 *) v->data)[r];
+	if ((int64) x.l[2] >= 0)
+		*m = (Mag) {{x.l[0], x.l[1], x.l[2]}};
+	else
+		*m = (Mag) {{-x.l[0], ~x.l[1] + (x.l[0] == 0), ~x.l[2] + (x.l[0] == 0 && x.l[1] == 0)}};
+	return (int64) x.l[2] < 0;
+}
+
+/* the rows of todo in 192 bits: an error when a product leaves them too (a numeric product of 57 digits is the most the scan computes) */
+static void
+eval256(const Fac *f, int nf, const SiftVec *pre, uint32 n, const uint64 *todo, SiftI256 *out)
+{
+	for (uint32 r = 0; r < n; r++)
+	{
+		Mag			m;
+		bool		neg;
+		int			i = 0;
+
+		if (!row_wanted(todo, r))
+			continue;
+		if (pre != NULL)
+			neg = row_mag(pre, r, &m);
+		else
+		{
+			const __int128 x = factor_wide(&f[i++], r);
+
+			m = mag_of(x);
+			neg = x < 0;
+		}
+		for (; i < nf; i++)
+		{
+			const __int128 x = factor_wide(&f[i], r);
+
+			neg ^= x < 0;
+			if (!mag_mul(&m, abs128(x)))
+				ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("a numeric expression is out of the range the aggregate scan computes"),
+								errhint("Run the statement with sift.enable_agg = off.")));
+		}
+		out[r] = i256_of(neg, m);
+	}
+}
+
+/*
+ * The rows of o that hold a value (o->valid: every factor has one) and the rows that are NaN (o->nan): a NULL factor makes the row NULL, else a NaN factor makes it NaN, as numeric_mul
+ * and numeric_add do. Returns whether a row is NaN; *all_valid whether every row has a value.
+ */
+static bool
+derive_validity(const SiftVec *const *used, int nused, uint32 n, SiftVxOut *o, bool *all_valid)
+{
+	const uint32 words = (n + 63) / 64;
+	uint64		known[SIFT_VEC_WORDS],
+				nan_any[SIFT_VEC_WORDS] = {0};
+	bool		has_nan = false;
+
+	memset(o->valid, 0, sizeof(o->valid));
+	memset(o->valid, 0xff, words * sizeof(uint64));
+	if (n & 63)
+		o->valid[words - 1] = (UINT64CONST(1) << (n & 63)) - 1;
+	memcpy(known, o->valid, sizeof(known));
+	*all_valid = true;
+	for (int i = 0; i < nused; i++)
+	{
+		if (!used[i]->all_valid)
+			*all_valid = false;
+		for (uint32 w = 0; w < words; w++)
+		{
+			const uint64 nan = used[i]->nan != NULL ? used[i]->nan[w] : 0;
+
+			if (!used[i]->all_valid)
+			{
+				o->valid[w] &= used[i]->valid[w];
+				known[w] &= used[i]->valid[w] | nan;
+			}
+			nan_any[w] |= nan;
+		}
+	}
+	for (uint32 w = 0; w < words; w++)
+	{
+		o->nan[w] = nan_any[w] & known[w];
+		has_nan |= o->nan[w] != 0;
+	}
+	return has_nan;
 }
 
 void
@@ -277,7 +439,8 @@ sift_vn_derive(const SiftV6Derive *d, SiftVec *const *cond, const SiftVec *prefi
 	const uint32 n = bs->n_raw,
 				words = (n + 63) / 64;
 	int			nused = 0;
-	bool		all_valid = true;
+	bool		all_valid,
+				has_nan;
 
 	for (int i = 0; i < nf; i++)
 	{
@@ -289,24 +452,18 @@ sift_vn_derive(const SiftV6Derive *d, SiftVec *const *cond, const SiftVec *prefi
 	}
 	if (prefix != NULL)
 		used[nused++] = prefix;
-	memset(o->valid, 0, sizeof(o->valid));
-	memset(o->valid, 0xff, words * sizeof(uint64));
-	if (n & 63)
-		o->valid[words - 1] = (UINT64CONST(1) << (n & 63)) - 1;
-	for (int i = 0; i < nused; i++)
-		if (!used[i]->all_valid)
-		{
-			all_valid = false;
-			for (uint32 w = 0; w < words; w++)
-				o->valid[w] &= used[i]->valid[w];
-		}
+	has_nan = derive_validity(used, nused, n, o, &all_valid);
 	for (uint32 w = 0; w < words; w++)
 		todo[w] = bs->mask[w] & o->valid[w];
-	o->vec = (SiftVec) {.data = o->data,.valid = all_valid ? NULL : o->valid,.len = n,.all_valid = all_valid,.dense = true,.type = SVEC_NUM64,.scale = (int16) d->aux};
-	if ((prefix == NULL || prefix->type != SVEC_NUM128) && eval64(f, nf, prefix != NULL ? prefix->data : NULL, n, o->data))
+	o->vec = (SiftVec) {.data = o->data,.valid = all_valid ? NULL : o->valid,.nan = has_nan ? o->nan : NULL,.len = n,.all_valid = all_valid,.dense = true,.type = SVEC_NUM64,
+						.scale = (int16) d->aux};
+	if ((prefix == NULL || prefix->type == SVEC_NUM64) && eval64(f, nf, prefix != NULL ? prefix->data : NULL, n, o->data))
 		return;
-	eval128(f, nf, prefix, n, todo, o->data);
 	o->vec.type = SVEC_NUM128;
+	if ((prefix == NULL || prefix->type != SVEC_NUM256) && eval128(f, nf, prefix, n, todo, o->data))
+		return;
+	eval256(f, nf, prefix, n, todo, o->data);
+	o->vec.type = SVEC_NUM256;
 }
 
 /* ---- CASE WHEN .. THEN .. END as a FILTER ---- */
@@ -344,6 +501,16 @@ const_is(const Expr *e, int64 n)
 	}
 }
 
+/* a numeric constant with digits after the point: a sum that adds it shows them, the sum of the values alone does not */
+static bool
+has_decimals(const Expr *e)
+{
+	int64		v;
+	int			scale;
+
+	return const_scaled((const Const *) e, &v, &scale) && scale > 0;
+}
+
 typedef struct CaseAgg
 {
 	Expr	   *cond;
@@ -369,7 +536,7 @@ case_agg_of(const Aggref *a, CaseAgg *ca)
 	*ca = (CaseAgg) {.cond = w->expr,.val = w->result,.type = ce->casetype};
 	if (ce->defresult == NULL || (IsA(ce->defresult, Const) && ((Const *) ce->defresult)->constisnull))
 		return true;
-	ca->else_zero = const_is(ce->defresult, 0);
+	ca->else_zero = const_is(ce->defresult, 0) && !has_decimals(ce->defresult);
 	return ca->else_zero;
 }
 
@@ -398,6 +565,32 @@ filtered(const Aggref *a, const CaseAgg *ca, bool count_star)
 		f->aggargtypes = list_make1_oid(exprType((Node *) ca->val));
 	}
 	return f;
+}
+
+Aggref *
+sift_vn_filter_to_case(const Aggref *a)
+{
+	Aggref	   *c;
+	CaseWhen   *w;
+	CaseExpr   *ce;
+	Expr	   *val;
+
+	if (a->aggfilter == NULL || a->aggdistinct != NIL || a->aggorder != NIL || a->aggkind != AGGKIND_NORMAL || a->aggvariadic || a->aggstar || list_length(a->args) != 1 ||
+		!(func_is(a->aggfnoid, "sum") || func_is(a->aggfnoid, "count")))
+		return NULL;
+	c = copyObject((Aggref *) a);
+	val = linitial_node(TargetEntry, c->args)->expr;
+	w = makeNode(CaseWhen);
+	w->expr = c->aggfilter;
+	w->result = val;
+	ce = makeNode(CaseExpr);
+	ce->casetype = exprType((Node *) val);
+	ce->casecollid = exprCollation((Node *) val);
+	ce->args = list_make1(w);
+	ce->defresult = (Expr *) makeNullConst(ce->casetype, exprTypmod((Node *) val), ce->casecollid);
+	linitial_node(TargetEntry, c->args)->expr = (Expr *) ce;
+	c->aggfilter = NULL;
+	return c;
 }
 
 /* CASE WHEN count(*) = 0 THEN NULL ELSE inner END: the sum of a group that has rows and no row for the filter is 0, that of no rows is NULL */

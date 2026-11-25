@@ -94,9 +94,16 @@ v6g_ext_fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *
 void
 v6g_ext_plain(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, const uint64 *take, uint16 n_raw)
 {
+	const bool	sorted = a->kind == SV6_PCT_CONT && g->budget != UINT64_MAX;
+
 	for (uint16 r = 0; r < n_raw; r++)
 		if (((take[r >> 6] >> (r & 63)) & 1) && is_valid(v, r))
-			v6g_ext_fold_row(g, a, acc, v, r);
+		{
+			if (sorted)
+				sift_v6_pct_add_sorted(&g->tx, acc, ((const double *) v->data)[r], g->pct_kb);
+			else
+				v6g_ext_fold_row(g, a, acc, v, r);
+		}
 }
 
 void

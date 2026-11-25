@@ -38,7 +38,7 @@ DECLARE l text;
 BEGIN
 	scan_nodes := 0; cte_scans := 0;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan_nodes := scan_nodes + 1; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN scan_nodes := scan_nodes + 1; END IF;
 		IF l ~ 'CTE Scan on part_rows' THEN cte_scans := cte_scans + 1; END IF;
 	END LOOP;
 	RETURN NEXT;

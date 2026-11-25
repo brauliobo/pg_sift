@@ -3,6 +3,7 @@
  */
 #include "core/host.h"
 
+#include "core/par/arena.h"
 #include "core/cpu.h"
 #include "core/fmv.h"
 #include "core/cmp.h"
@@ -314,7 +315,7 @@ set_bitmap(const SiftCfTest *t, int64 base, uint64 maxoff, const SiftCfBounds *r
 
 	if ((t->kind != SIFT_CFT_SET && t->kind != SIFT_CFT_NSET) || top >= SET_BITMAP_BITS)
 		return NULL;
-	bm = palloc0((top / 64 + 1) * sizeof(uint64));
+	bm = sift_alloc0((top / 64 + 1) * sizeof(uint64));
 	for (uint32 i = 0; i < t->nset; i++)
 	{
 		uint64		off = (uint64) t->set[i] - (uint64) base;
@@ -383,7 +384,7 @@ sift_cf_for(const SiftCfFor *c, const SiftCfTest *t, uint64 *out)
 		}
 		if (bm != NULL)
 		{
-			pfree(bm);
+			sift_free(bm);
 			if (t->kind == SIFT_CFT_NSET)
 				invert(out, c->n);
 		}
@@ -748,7 +749,7 @@ sift_cf_for_vert(const SiftCfForVert *c, const SiftCfTest *t, uint64 *out)
 	if (t->kind == SIFT_CFT_NRANGE || (bm != NULL && t->kind == SIFT_CFT_NSET))
 		invert(out, c->n);
 	if (bm != NULL)
-		pfree(bm);
+		sift_free(bm);
 	return finish(out, c->n);
 }
 
@@ -806,7 +807,7 @@ sift_cf_delta_vert(const SiftCfDeltaVert *c, const SiftCfTest *t, uint64 *out)
 	res = bounds_verdict(t, &c->range);
 	if (res != SIFT_CF_BITS)
 		return res;
-	first = palloc(nblks * sizeof(int64));
+	first = sift_alloc(nblks * sizeof(int64));
 	first[0] = c->first;
 	directed = asc || desc;
 	for (uint32 b = 1; b < nblks; b++)
@@ -857,9 +858,9 @@ sift_cf_delta_vert(const SiftCfDeltaVert *c, const SiftCfTest *t, uint64 *out)
 			out[(from + j) >> 6] |= (uint64) hit << ((from + j) & 63);
 		}
 	}
-	pfree(first);
+	sift_free(first);
 	if (bm != NULL)
-		pfree(bm);
+		sift_free(bm);
 	return finish(out, c->n);
 }
 

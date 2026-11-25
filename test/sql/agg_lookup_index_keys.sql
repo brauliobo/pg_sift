@@ -44,7 +44,7 @@ BEGIN
 	EXECUTE setup;
 	pushed := false;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+		pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
 		IF l LIKE '%Lookup: %' THEN lookup := regexp_replace(trim(l), ', [0-9]+ rows shared|, [0-9]+ % of the lookup tables'' pages all-visible| \(.*', '', 'g'); END IF;
 	END LOOP;
 	EXECUTE format('CREATE TEMP TABLE r_scan ON COMMIT DROP AS %s', q);

@@ -48,7 +48,7 @@ BEGIN
 	pushed := false;
 	restarted := 0;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+		pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
 		restarted := coalesce(substring(l from '(\d+) combo caches restarted')::int, restarted);
 	END LOOP;
 	DROP TABLE r_off, r_on;

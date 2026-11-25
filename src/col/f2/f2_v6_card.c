@@ -279,6 +279,23 @@ fold_scope(SiftCardStatsView *v, Relation index, const SiftPlanSnapshot *plan)
 	v->n_scope = m->hdr.nkeys;
 }
 
+/* what the parts of the index take that a scan of columns reads: the cubes of the pre-aggregates are read by the scans that answer from them only */
+static uint64
+column_bytes(const SiftPlanSnapshot *plan, const CardPart *chosen, int nchosen)
+{
+	double		cubes = 0,
+				bytes = 0;
+
+	for (int k = 0; k < nchosen; k++)
+	{
+		const SiftSecDirEntry *cube = sift_part_section(chosen[k].part, SEC_PREAGG);
+
+		cubes += cube != NULL ? (double) cube->len : 0;
+		bytes += (double) chosen[k].d->nbytes;
+	}
+	return bytes > 0 ? (uint64) ((double) plan->total_bytes * (1.0 - Min(cubes / bytes, 1.0))) : plan->total_bytes;
+}
+
 static SiftCardStatsView *
 build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 {
@@ -330,6 +347,7 @@ build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 	v->sample_zones = (SiftCardZone *) (base + off);
 	v->total_live_rows = live;
 	v->total_granules = granules;
+	v->total_bytes = column_bytes(plan, chosen, nchosen);
 	v->ncols = f->ncols;
 	v->nparts = plan->npartitions;
 	for (int i = 0; i < plan->npartitions; i++)

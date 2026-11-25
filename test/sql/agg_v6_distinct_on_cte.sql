@@ -1,0 +1,102 @@
+-- DISTINCT ON without a sorted index (SiftAggV6First) and the per-order arms over a CTE (SiftAggV6 with a column of the order that its key decides) on Format 2.0: each statement runs with the cost
+-- settings of the coverage proofs (a page costs 10000) and with sift.enable_agg = off, and the rows must be the same. The engine column is the plan of the first run; spilled says that the groups outgrew
+-- the hash memory of the node and went to partitions on temporary files.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET TimeZone = 'UTC';
+-- the library of the testing build creates the indexes of format major 1 by default; these are of format major 2, which the release library creates
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+
+CREATE TABLE o (id int PRIMARY KEY, tenant int, status text, placed date, total int, tags int[], note text, items jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO o
+SELECT i, 1 + i % 40, CASE WHEN i % 13 = 0 THEN NULL ELSE 's' || (i % 5) END, date '2024-01-01' + i % 70, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 97 END,
+       ARRAY[i % 3, i % 5], 'note ' || i || repeat('x', i % 40),
+       jsonb_build_array(jsonb_build_object('category', 'c' || (i % 5), 'qty', i % 7), jsonb_build_object('category', 'c' || (i % 3), 'qty', i % 4))
+FROM generate_series(1, 3000) i;
+CREATE INDEX o_col ON o USING sift_col (id, tenant, status, placed, total, items) WITH (paths = 'items[]{category text, qty int4}');
+VACUUM (FREEZE, ANALYZE) o;
+
+CREATE TABLE t (id int PRIMARY KEY, kind text);
+INSERT INTO t SELECT i, CASE WHEN i % 4 = 0 THEN 'outlet' ELSE 'shop' || i % 3 END FROM generate_series(1, 40) i;
+ANALYZE t;
+
+CREATE FUNCTION same(q text, forced boolean DEFAULT false) RETURNS TABLE (engine text, spilled boolean, result_rows bigint, vs_heap bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	engine := 'normal';
+	spilled := false;
+	SET LOCAL seq_page_cost = 10000;
+	SET LOCAL random_page_cost = 10000;
+	SET LOCAL enable_memoize = off;
+	IF forced THEN
+		SET LOCAL enable_sort = off;
+		SET LOCAL enable_incremental_sort = off;
+		SET LOCAL enable_indexscan = off;
+		SET LOCAL work_mem = '64kB';
+		SET LOCAL hash_mem_multiplier = 1;
+	END IF;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAggV6First)%' THEN engine := 'SiftAggV6First'; END IF;
+		IF l LIKE '%Custom Scan (SiftAggV6)%' AND engine = 'normal' THEN engine := 'SiftAggV6'; END IF;
+		IF l ~ 'Spilled Rows: [1-9]' THEN spilled := true; END IF;
+	END LOOP;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT x::text AS r FROM (%s) x', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS SELECT x::text AS r FROM (%s) x', q);
+	RESET sift.enable_agg;
+	IF forced THEN
+		RESET enable_sort;
+		RESET enable_incremental_sort;
+		RESET enable_indexscan;
+		RESET work_mem;
+		RESET hash_mem_multiplier;
+	END IF;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_heap := (SELECT count(*) FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x);
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+
+CREATE TABLE stmts (id int, forced boolean, q text);
+INSERT INTO stmts VALUES
+-- one key, the sort columns of mixed directions, ties broken by the primary key
+(1, false, 'SELECT DISTINCT ON (tenant) tenant, id, placed, total FROM o ORDER BY tenant, placed DESC, id'),
+(2, false, 'SELECT DISTINCT ON (tenant) tenant, id, placed FROM o ORDER BY tenant, placed, id DESC'),
+-- two keys listed in another order than the ORDER BY, a NULL in the sort column placed first and last
+(3, false, 'SELECT DISTINCT ON (status, tenant) tenant, status, id, total FROM o ORDER BY tenant, status, total NULLS FIRST, id'),
+(4, false, 'SELECT DISTINCT ON (tenant, status) tenant, status, id, total FROM o ORDER BY tenant, status, total DESC NULLS LAST, id'),
+-- NULL keys are one group; the key itself sorted DESC with the NULLs last
+(5, false, 'SELECT DISTINCT ON (status) status, id, total FROM o ORDER BY status DESC NULLS LAST, total DESC NULLS LAST, id'),
+(6, false, 'SELECT DISTINCT ON (status) status, id FROM o ORDER BY status NULLS FIRST, id DESC'),
+-- rows that tie in the ORDER BY: the select list holds the sort columns only
+(7, false, 'SELECT DISTINCT ON (tenant) tenant, placed FROM o ORDER BY tenant, placed DESC'),
+-- an array, expressions of the columns, a constant, a text sorted in the C collation
+(8, false, 'SELECT DISTINCT ON (tenant) tenant, id, tags, ARRAY[id, total] AS a, id * 2 AS dbl, coalesce(status, ''-'') AS st, upper(note) AS n, ''x'' AS k FROM o ORDER BY tenant, placed DESC, id'),
+(9, false, 'SELECT DISTINCT ON (tenant) tenant, id, note FROM o ORDER BY tenant, note COLLATE "C" DESC, id'),
+-- a column of a joined table as a value, a sort key and the DISTINCT ON column
+(10, false, 'SELECT DISTINCT ON (o.tenant) o.tenant, o.id, t.kind FROM o JOIN t ON t.id = o.tenant ORDER BY o.tenant, o.placed DESC, o.id'),
+(11, false, 'SELECT DISTINCT ON (o.status) o.status, o.id FROM o JOIN t ON t.id = o.tenant ORDER BY o.status, t.kind DESC, o.id'),
+(12, false, 'SELECT DISTINCT ON (t.kind) t.kind, o.id, o.total FROM o JOIN t ON t.id = o.tenant ORDER BY t.kind, o.total DESC NULLS LAST, o.id'),
+-- a WHERE, a LIMIT above the groups, a DISTINCT ON of an expression, no row at all
+(13, false, 'SELECT DISTINCT ON (tenant) tenant, id FROM o WHERE total > 50 ORDER BY tenant, total DESC, id LIMIT 7 OFFSET 2'),
+(14, false, 'SELECT DISTINCT ON (date_trunc(''month'', placed)) date_trunc(''month'', placed) AS m, id FROM o ORDER BY date_trunc(''month'', placed), total DESC NULLS LAST, id'),
+(15, false, 'SELECT DISTINCT ON (tenant) tenant, id FROM o WHERE tenant < 0 ORDER BY tenant, id'),
+-- groups beyond the hash memory (work_mem 64kB), the sorted plans off so that the node is the plan: they go to partitions
+(16, true, 'SELECT DISTINCT ON (id / 2) id / 2 AS g, id, status, placed, total, note FROM o ORDER BY id / 2, total DESC NULLS LAST, id'),
+(17, true, 'SELECT DISTINCT ON (id) id, tenant, status, placed, total, note FROM o ORDER BY id'),
+-- the arms of a CTE that group by the order and by a column of it (a column the key of the order decides), under an aggregate that counts the orders
+(18, false, 'WITH base AS (SELECT o.id AS order_id, o.status AS cc, i.category AS mc, i.qty FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) WHERE o.tenant < 30 AND o.total IS NOT NULL) '
+            'SELECT cc, count(DISTINCT order_id) AS orders, count(*) AS cells, sum(units) AS units FROM (SELECT order_id, cc, mc AS category, sum(qty) AS units FROM base GROUP BY order_id, cc, mc UNION ALL SELECT order_id, cc, NULL::text, sum(qty) FROM base GROUP BY order_id, cc) x GROUP BY cc ORDER BY cc NULLS FIRST'),
+(19, false, 'WITH base AS (SELECT o.id AS rid, o.tenant AS pid, i.category AS k, i.qty AS n FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) WHERE o.total IS NOT NULL) '
+            'SELECT k, avg(a) AS value, count(DISTINCT rid) AS items, count(DISTINCT pid) AS tenants FROM (SELECT rid, pid, k, avg(n) AS a FROM base GROUP BY rid, pid, k UNION ALL SELECT rid, pid, NULL::text, avg(n) FROM base GROUP BY rid, pid) x GROUP BY k ORDER BY k NULLS FIRST'),
+(20, false, 'SELECT o.id, o.status, i.category, sum(i.qty) AS qty FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) WHERE o.tenant < 8 GROUP BY o.id, i.category ORDER BY o.id, i.category');
+
+SELECT s.id, r.engine, r.spilled, r.result_rows, r.vs_heap FROM stmts s, LATERAL same(s.q, s.forced) r ORDER BY s.id;
+DROP FUNCTION same(text, boolean);
+DROP TABLE stmts, o, t;
+DROP EXTENSION pg_sift;

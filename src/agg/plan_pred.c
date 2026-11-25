@@ -558,7 +558,7 @@ compile_in(AggCtx *c, ScalarArrayOpExpr *sa)
 	/* the output of an ARRAY sub-select is read when the scan starts, as a parameter of the statement is */
 	if (!pseudo_const(r))
 	{
-		if (!IsA(r, Param) || ((Param *) r)->paramkind != PARAM_EXEC || !initplan_ok(c, (Param *) r))
+		if (!IsA(r, Param) || ((Param *) r)->paramkind != PARAM_EXEC || !initplan_ok(c->root, (Param *) r))
 			return NULL;
 		shown = r;
 	}

@@ -43,11 +43,15 @@ struct SiftDistinct
 	uint32		ncount;
 	SiftSpillSet *spill;
 	uint32		resident;
+	bool		by_prefix;		/* the partitions of the spill are those of the groups (a grouped set that held more than one when it first spilled) */
 	uint8	   *scratch;
 	uint32		scratch_cap;
 	bool		finished;
 	SiftDistinctGroupEmit emit;	/* a grouped set: the keys are [plen][prefix][value] and the counts go to emit */
 	void	   *emit_arg;
+	uint32		value_slots;	/* the slots whose keys go to value_visit when the set is finished */
+	SiftDistinctVisit value_visit;
+	void	   *value_arg;
 	SiftDistinctStats st;
 };
 
@@ -202,26 +206,110 @@ dist_tab_resize(SiftDistinct *d, uint32 ncap)
 	d->cap = ncap;
 }
 
-static void
-dist_scratch_rec(SiftDistinct *d, uint32 slot, const void *key, uint32 len)
+#define DIST_PACK_MAX		254
+
+/* A spilled record is its slot and key without the zero bytes (the integers of a key are mostly zeros): its length, a bitmap of the bytes that are not zero, and those. A longer one is kept whole after a byte of 255 */
+static uint32
+dist_pack(uint8 *out, const uint8 *in, uint32 n)
 {
-	if (len + sizeof(uint32) > d->scratch_cap)
+	const uint32 m = (n + 7) / 8;
+	uint32		o = 1 + m;
+
+	if (n > DIST_PACK_MAX)
+	{
+		out[0] = UINT8_MAX;
+		memcpy(out + 1, in, n);
+		return n + 1;
+	}
+	out[0] = (uint8) n;
+	memset(out + 1, 0, m);
+	for (uint32 i = 0; i < n; i++)
+		if (in[i] != 0)
+		{
+			out[1 + i / 8] |= (uint8) (1 << (i % 8));
+			out[o++] = in[i];
+		}
+	return o;
+}
+
+/* The n bytes of the record of len bytes dist_pack made: in rec (DIST_PACK_MAX bytes), or where they are when it is whole */
+static const uint8 *
+dist_unpack(const uint8 *in, uint32 len, uint8 *rec, uint32 *n)
+{
+	uint32		o;
+
+	if (in[0] == UINT8_MAX)
+	{
+		*n = len - 1;
+		return in + 1;
+	}
+	*n = in[0];
+	o = 1 + (*n + 7) / 8;
+	memset(rec, 0, *n);
+	for (uint32 i = 0; i < *n; i++)
+		if (in[1 + i / 8] & (1 << (i % 8)))
+			rec[i] = in[o++];
+	return rec;
+}
+
+static void
+dist_scratch(SiftDistinct *d, uint32 need)
+{
+	if (need > d->scratch_cap)
 	{
 		if (d->scratch != NULL)
 			pfree(d->scratch);
-		d->scratch_cap = Max(len + (uint32) sizeof(uint32), 256);
+		d->scratch_cap = Max(need, 256);
 		d->scratch = MemoryContextAlloc(d->cx, d->scratch_cap);
 	}
-	memcpy(d->scratch, &slot, sizeof(uint32));
-	if (len > 0)
-		memcpy(d->scratch + sizeof(uint32), key, len);
+}
+
+/* The partition of a key: a grouped set that holds several groups when it first spills keeps the keys of a group together, so that its count reaches emit once and a pass has few groups to count; one that holds a single group splits it by the whole key */
+static uint32
+dist_part(const SiftDistinct *d, uint64 h, const void *key)
+{
+	uint32		plen;
+
+	if (d->by_prefix)
+	{
+		memcpy(&plen, key, sizeof(plen));
+		h = hash_bytes_extended((const unsigned char *) key + sizeof(plen), (int) plen, d->level);
+	}
+	return sift_spill_part_of(h, sift_spill_nparts_of(d->spill));
+}
+
+static bool
+dist_has_groups(const DistEntry *tab, uint32 cap)
+{
+	const DistEntry *first = NULL;
+
+	for (uint32 i = 0; i < cap; i++)
+	{
+		uint32		plen;
+		uint32		fplen;
+
+		if (tab[i].key == NULL)
+			continue;
+		memcpy(&plen, tab[i].key, sizeof(plen));
+		if (first == NULL)
+			first = &tab[i];
+		memcpy(&fplen, first->key, sizeof(fplen));
+		if (plen != fplen || memcmp(tab[i].key + sizeof(plen), first->key + sizeof(fplen), plen) != 0)
+			return true;
+	}
+	return false;
 }
 
 static void
 dist_put_spill(SiftDistinct *d, uint32 part, uint32 slot, const void *key, uint32 len)
 {
-	dist_scratch_rec(d, slot, key, len);
-	sift_spill_put(d->spill, part, 0, d->scratch, len + (uint32) sizeof(uint32));
+	const uint32 n = len + (uint32) sizeof(uint32);
+
+	dist_scratch(d, 2 * n + n / 8 + 2);
+	memcpy(d->scratch, &slot, sizeof(uint32));
+	if (len > 0)
+		memcpy(d->scratch + sizeof(uint32), key, len);
+	sift_spill_put(d->spill, part, 0, d->scratch + n, dist_pack(d->scratch + n, d->scratch, n));
 }
 
 /*
@@ -237,22 +325,19 @@ dist_evict(SiftDistinct *d)
 	uint32		oldcap = d->cap;
 	DistChunk  *oldchunks = d->chunks;
 	uint64		kept = 0;
-	uint32		nparts;
 
 	if (d->spill == NULL)
 	{
-		nparts = sift_spill_nparts(d->expect ? d->expect : d->budget * 4, d->budget);
-		d->spill = sift_spill_create(d->cx, nparts);
-		d->resident = 0;
+		d->spill = sift_spill_create(d->cx, sift_spill_nparts(d->expect ? d->expect : d->budget * 4, d->budget));
+		d->by_prefix = d->emit != NULL && dist_has_groups(old, oldcap);		d->resident = 0;
 	}
 	else
 		d->resident = DIST_NO_PART;
 	keep = d->resident;
-	nparts = sift_spill_nparts_of(d->spill);
 	d->st.max_level = Max(d->st.max_level, d->level + 1);
 
 	for (uint32 i = 0; i < oldcap; i++)
-		if (old[i].key != NULL && sift_spill_part_of(old[i].hash, nparts) == keep)
+		if (old[i].key != NULL && dist_part(d, old[i].hash, old[i].key) == keep)
 			kept++;
 	d->tab = NULL;
 	d->cap = 0;
@@ -273,7 +358,7 @@ dist_evict(SiftDistinct *d)
 
 		if (e->key == NULL)
 			continue;
-		if (sift_spill_part_of(e->hash, nparts) == keep)
+		if (dist_part(d, e->hash, e->key) == keep)
 		{
 			DistEntry	ne = *e;
 
@@ -283,7 +368,7 @@ dist_evict(SiftDistinct *d)
 		}
 		else
 		{
-			dist_put_spill(d, sift_spill_part_of(e->hash, nparts), e->slot, e->key, e->len);
+			dist_put_spill(d, dist_part(d, e->hash, e->key), e->slot, e->key, e->len);
 			if (d->emit == NULL)
 				d->count[e->slot]--;
 		}
@@ -315,13 +400,13 @@ dist_reserve(SiftDistinct *d, uint64 hash, uint32 slot, const void *key, uint32 
 		extra = (grow ? (uint64) Max(d->cap * 2, DIST_MIN_CAP) * sizeof(DistEntry) : 0) + (chunk ? dist_chunk_alloc_size(d, len) : 0);
 		if (d->level < SIFT_DISTINCT_MAX_LEVEL && d->nent > 0 && dist_bytes(d) + extra > d->budget)
 		{
-			uint32		nparts;
+			uint32		part;
 
 			dist_evict(d);
-			nparts = sift_spill_nparts_of(d->spill);
-			if (sift_spill_part_of(hash, nparts) != d->resident)
+			part = dist_part(d, hash, key);
+			if (part != d->resident)
 			{
-				dist_put_spill(d, sift_spill_part_of(hash, nparts), slot, key, len);
+				dist_put_spill(d, part, slot, key, len);
 				return false;
 			}
 			continue;
@@ -354,7 +439,7 @@ dist_add_with(SiftDistinct *d, uint64 h, uint32 slot, const void *key, uint32 le
 	d->st.adds++;
 	if (d->spill != NULL)
 	{
-		uint32		part = sift_spill_part_of(h, sift_spill_nparts_of(d->spill));
+		uint32		part = dist_part(d, h, key);
 
 		if (part != d->resident)
 		{
@@ -407,6 +492,14 @@ sift_distinct_foreach(const SiftDistinct *d, SiftDistinctVisit visit, void *arg)
 	for (uint32 i = 0; i < d->cap; i++)
 		if (d->tab[i].key != NULL)
 			visit(arg, d->tab[i].slot, d->tab[i].key, d->tab[i].len);
+}
+
+void
+sift_distinct_visit_values(SiftDistinct *d, uint32 slots, SiftDistinctVisit visit, void *arg)
+{
+	d->value_slots = slots;
+	d->value_visit = visit;
+	d->value_arg = arg;
 }
 
 void
@@ -525,6 +618,14 @@ dist_group_emit(SiftDistinct *d)
 	pfree(tab);
 }
 
+static void
+dist_visit_values(const SiftDistinct *d)
+{
+	for (uint32 k = 0; k < d->cap; k++)
+		if (d->tab[k].key != NULL && (d->value_slots >> d->tab[k].slot) & 1)
+			d->value_visit(d->value_arg, d->tab[k].slot, d->tab[k].key, d->tab[k].len);
+}
+
 void
 sift_distinct_finish(SiftDistinct *d)
 {
@@ -537,6 +638,8 @@ sift_distinct_finish(SiftDistinct *d)
 	d->finished = true;
 	if (d->emit != NULL)
 		dist_group_emit(d);
+	if (d->value_slots != 0)
+		dist_visit_values(d);
 	if (d->spill == NULL)
 		return;
 	dist_free_table(d);
@@ -555,12 +658,18 @@ sift_distinct_finish(SiftDistinct *d)
 		c = dist_new(d->cx, d->level + 1, d->budget, 0);
 		c->emit = d->emit;
 		c->emit_arg = d->emit_arg;
+		c->value_slots = d->value_slots;
+		c->value_visit = d->value_visit;
+		c->value_arg = d->value_arg;
 		while (sift_spill_get(d->spill, p, &tag, &buf, &bufcap, &len))
 		{
+			uint8		rec[DIST_PACK_MAX];
+			uint32		n;
+			const uint8 *key = dist_unpack(buf, len, rec, &n);
 			uint32		slot;
 
-			memcpy(&slot, buf, sizeof(uint32));
-			dist_add_hashed(c, slot, buf + sizeof(uint32), len - (uint32) sizeof(uint32));
+			memcpy(&slot, key, sizeof(uint32));
+			dist_add_hashed(c, slot, key + sizeof(uint32), n - (uint32) sizeof(uint32));
 		}
 		sift_spill_drop(d->spill, p);
 		sift_distinct_finish(c);

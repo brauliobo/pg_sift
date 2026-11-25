@@ -40,6 +40,10 @@ typedef struct SiftStoreScanOpts
 	uint64	   *bridge_skipped;
 	const struct SiftPlanSnapshot *plan;	/* the manifest the caller made its own plan from: read as it is; NULL: the current one */
 	bool		emit_maybe;		/* the sink takes the rows no predicate could decide on the stored values (SiftF2Batch.maybe) */
+	struct SiftPinWin *pinwin;	/* a sift_table scan: the granules settled for the snapshot go to the window instead of the sink (col/f2/pin_win.h) */
+	void		(*pinwin_done) (void *sink_arg);	/* after the last granule, with the scan still open: the owner of the window runs it and the scan replays what the threads left */
+	SiftF2GranSink gran_sink;	/* a sift_table: offered each granule before it is loaded, as sift_f2_scan_set_gran_sink offers those of an index; NULL: none */
+	void	   *gran_arg;
 } SiftStoreScanOpts;
 
 /* The rows of the relation to the sink: granules of up to 8192 rows, as sift_f2_scan_sink hands them */
@@ -64,6 +68,16 @@ extern List *sift_f2_store_scan_next_run(SiftStoreScan *s, bool ordered);
 extern bool sift_f2_store_part_next(SiftStorePart *p, SiftF2Batch *b);
 
 extern void sift_f2_store_scan_close(SiftStoreScan *s);
+
+/*
+ * A parallel scan of a sift_table, as the one of a sift_col index (col/f2/f2_sink.h): the leader lists the units of the scan (the granules of a part the key ranges and the zone maps leave, each with
+ * the descriptor of its part) and the deletes of its own transaction that are not written yet (the staged_dead of the plan, which every participant is given in staged_dead of the morsel begin);
+ * every participant reads runs of granules [first, first + n) of a unit with the table's own versions, and hands the rows each predicate accepted exactly to the sink (closing the scan gives back the part it holds open). A transaction's rows not
+ * written yet are written by the listing, so the units hold them.
+ */
+extern void sift_f2_store_par_plan(SiftStoreScan *s, SiftF2ParPlan *out);
+extern void sift_f2_store_scan_morsel_begin(SiftStoreScan *s, const uint64 *staged_dead, uint32 nstaged);
+extern void sift_f2_store_scan_morsel(SiftStoreScan *s, const SiftParPartRef *ref, uint32 first, uint32 n, SiftF2Sink sink, void *arg);
 
 /* The key of a quals' comparison whose operand is a parameter: the value it has when the scan starts is the argument of key */
 typedef struct SiftStoreRuntimeKey

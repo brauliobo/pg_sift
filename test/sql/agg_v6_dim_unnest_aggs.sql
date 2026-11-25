@@ -1,0 +1,87 @@
+-- SiftAggV6 over the columns of the small tables a statement joins and over the elements it unnests: PostgreSQL's own aggregates (stddev, corr, array_agg(DISTINCT .. ORDER BY ..), string_agg, mode, sum of float4,
+-- interval and numeric) over a lookup-joined column or an expression of columns of the unnested items, count(DISTINCT parent id) with FILTER clauses on the items, a lookup join keyed by an unnested element,
+-- and the variance family under a page cost that prices every read of a table the cache holds as a read of the disk. Every statement runs over the heap twin (the truth) and the sift_col index; each prints
+-- whether they answer alike and whether the index ran as SiftAggV6. The plans come from PostgreSQL's own cost settings only, so the file runs on the release library too.
+-- The float statistics are rounded: the last digits of an accumulation depend on the order of the rows.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE du_h (id int PRIMARY KEY, tenant_id int NOT NULL, source text NOT NULL, status text, country_code varchar(2), total numeric(12, 2), discount numeric(12, 2), grp int NOT NULL, f4 float4, f8 float8,
+				   items jsonb NOT NULL, deleted_at timestamp) WITH (autovacuum_enabled = false);
+INSERT INTO du_h
+SELECT i, 1 + i % 44, (ARRAY['Apparel', 'Shoes', 'Toys', 'Food', 'Books', 'Misc'])[1 + i % 6], CASE WHEN i % 13 = 0 THEN NULL ELSE (ARRAY['paid', 'refunded', 'open'])[1 + i % 3] END,
+       (ARRAY['US', 'BR', 'DE', 'FR'])[1 + i % 4], (i % 90) / 4.0, CASE WHEN i % 7 = 0 THEN NULL ELSE (i % 12) / 4.0 END, i % 8, ((i % 64) / 4.0 - 3)::float4, (i % 50) / 4.0,
+       (SELECT jsonb_agg(jsonb_build_object('category', (ARRAY['Apparel', 'Shoes', 'Toys', 'Food', 'Gadgets'])[1 + (i + k) % 5], 'kind', 'k' || (k % 2), 'qty', 1 + (i + k) % 5,
+                                            'price', 1 + ((i * k) % 40) / 4.0, 'discount', CASE WHEN (i + k) % 3 = 0 THEN 0 ELSE ((i + k) % 8) / 4.0 END))
+        FROM generate_series(1, 1 + i % 4) k),
+       CASE WHEN i % 11 = 0 THEN TIMESTAMP '2024-01-01' + i * interval '1 hour' END
+FROM generate_series(1, 2000) i;
+CREATE TABLE du_i (LIKE du_h INCLUDING ALL) WITH (autovacuum_enabled = false);
+INSERT INTO du_i SELECT * FROM du_h;
+CREATE INDEX du_i_btree ON du_i USING btree (tenant_id, deleted_at);
+CREATE INDEX du_i_col ON du_i USING sift_col (id, tenant_id, source, status, country_code, total, discount, grp, f4, f8, items, deleted_at)
+	WITH (paths = 'items[]{category text, kind text, qty int4, price float8, discount float8}');
+
+CREATE TABLE du_tenants (id int PRIMARY KEY, kind text, country_code text, name text);
+INSERT INTO du_tenants SELECT i, (ARRAY['flagship', 'outlet', 'popup', 'online', 'warehouse'])[1 + i % 5], CASE WHEN i % 9 = 0 THEN NULL ELSE (ARRAY['US', 'BR', 'DE'])[1 + i % 3] END, 'tenant ' || i
+FROM generate_series(1, 40) i;
+CREATE TABLE du_vals (category text, label text, weight numeric(8, 2), factor float8, rank int, since date);
+INSERT INTO du_vals VALUES ('Apparel', 'A', 1.50, 0.5, 1, '2022-01-01'), ('Apparel', 'a', 2.25, 1.5, 2, NULL), ('Shoes', 'S', NULL, NULL, 3, '2023-05-05'), ('Toys', 'T', 4.00, 2.0, NULL, '2021-02-03'),
+	('Food', NULL, 0.75, 0.25, 5, '2020-12-31'), ('Misc', 'M', 3.10, 1.0, 6, '2024-04-04');
+CREATE TABLE du_nums (category text, i2 int2, i4 int4, i8 int8, f4 float4, iv interval);
+INSERT INTO du_nums VALUES ('Apparel', 1, 10, 4000000000, 1.5, '1 day 02:00'), ('Apparel', 2, NULL, 5, 2.25, '2 mons'), ('Shoes', NULL, 30, 6, NULL, NULL), ('Toys', 4, 40, NULL, 0.75, '36:00:00'),
+	('Food', 5, 50, 7, 3.5, '1 year 2 days'), ('Misc', 6, 60, 8, 1.25, '00:00:01');
+VACUUM (FREEZE, ANALYZE) du_h, du_i, du_tenants, du_vals, du_nums;
+
+-- q has a %s where the fact table goes
+CREATE FUNCTION answer(rel text, q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT md5(coalesce(string_agg(r, ''|'' ORDER BY r), '''')) FROM (SELECT row_to_json(x)::text r FROM (%s) x) y', format(q, rel)) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION ran(rel text, q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	FOR line IN EXECUTE format('EXPLAIN (COSTS OFF) %s', format(q, rel)) LOOP
+		IF line LIKE '%Custom Scan (SiftAggV6)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE TABLE cases (n serial, q text);
+INSERT INTO cases (q) VALUES
+ ('SELECT count(DISTINCT o.id) FROM %s o, jsonb_to_recordset(o.items) i(qty int)'),
+ ('SELECT i.category, count(*) AS items, count(DISTINCT o.id) AS orders, count(DISTINCT o.id) FILTER (WHERE i.discount > 0) AS discounted
+   FROM %s o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8, discount float8) WHERE o.tenant_id < 30 AND o.deleted_at IS NULL GROUP BY i.category'),
+ ('SELECT i.category, count(*) FILTER (WHERE i.kind = ''k1''), count(DISTINCT i.qty) FILTER (WHERE i.price > 5 AND i.qty IN (1, 3)), sum(i.qty) FILTER (WHERE i.discount IS NULL)
+   FROM %s o, jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8, discount float8) GROUP BY i.category'),
+ ('SELECT source, stddev(total), var_pop(tenant_id), variance(discount) FROM %s GROUP BY 1'),
+ ('SELECT grp, sum(f4) AS s4, round(stddev_samp(f8)::numeric, 9) AS sd, round(var_pop(f4)::numeric, 9) AS vp, round(corr(f8, f4)::numeric, 9) AS c, round(covar_samp(f8, f4)::numeric, 9) AS cov,
+          round(regr_slope(f8, f4)::numeric, 9) AS slope, regr_count(f8, f4) AS n FROM %s WHERE grp IN (1, 7) GROUP BY grp'),
+ ('SELECT o.status, sum(v.weight), avg(v.weight), min(v.weight), max(v.since) FROM %s o LEFT JOIN du_vals v ON v.category = o.source GROUP BY 1'),
+ ('SELECT i.category, count(m.label) AS c, count(DISTINCT m.label) AS d, min(m.label) AS lo, max(m.label) AS hi, sum(m.weight) AS sw, avg(m.weight) AS aw, sum(m.factor) AS sf, avg(m.factor) AS af,
+          min(m.rank) AS mr, max(m.since) AS ms, sum(m.weight * i.qty) AS wq, count(*) AS n
+   FROM %s o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8, discount float8) LEFT JOIN du_vals m ON m.category = i.category
+   WHERE o.tenant_id < 30 AND o.deleted_at IS NULL GROUP BY i.category'),
+ ('SELECT i.category, sum(m.i2) AS s2, avg(m.i2) AS a2, sum(m.i4) AS s4, avg(m.i4) AS a4, sum(m.i8) AS s8, avg(m.i8) AS a8, avg(m.f4) AS af, sum(m.f4) AS sf, sum(m.iv) AS si, avg(m.iv) AS ai, sum(m.i4 * i.qty) AS sq,
+          avg(m.i8 + i.qty) AS aq, max(m.iv) AS hi, count(m.i4) AS c, count(*) AS n
+   FROM %s o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8, discount float8) LEFT JOIN du_nums m ON m.category = i.category
+   WHERE o.tenant_id < 30 AND o.deleted_at IS NULL GROUP BY i.category ORDER BY i.category NULLS FIRST'),
+ ('SELECT s.kind, stddev(s.id), array_agg(DISTINCT s.country_code ORDER BY s.country_code) FROM %s o JOIN du_tenants s ON s.id = o.tenant_id GROUP BY 1'),
+ ('SELECT o.source, array_agg(s.kind ORDER BY o.id) AS kinds, string_agg(DISTINCT s.country_code, '','') AS ccs, min(s.name) AS lo, max(upper(s.kind)) AS hi,
+          string_agg(DISTINCT s.kind, '','' ORDER BY s.kind DESC) AS sorted_kinds, mode() WITHIN GROUP (ORDER BY s.country_code) AS mode_cc
+   FROM %s o LEFT JOIN du_tenants s ON s.id = o.tenant_id WHERE o.tenant_id < 38 GROUP BY o.source'),
+ ('SELECT sum(i.qty * (i.price - i.discount)) FROM %s o, jsonb_to_recordset(o.items) i(qty int, price float8, discount float8)'),
+ ('SELECT i.category, count(*) AS n, round(stddev_samp(i.qty * (i.price - i.discount))::numeric, 9) AS sd, round(corr(i.price, i.qty)::numeric, 9) AS c, max(upper(i.category) || o.country_code) AS mx, min(o.total * 2 - o.discount) AS lo,
+          variance(o.total) FILTER (WHERE i.qty > 2) AS vf, bool_and(i.price > o.total / 100) AS cheap
+   FROM %s o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8, discount float8) WHERE o.deleted_at IS NULL GROUP BY i.category ORDER BY i.category');
+SELECT n, answer('du_h', q) = answer('du_i', q) AS same, ran('du_i', q) AS v6 FROM cases ORDER BY n;
+
+DROP TABLE du_h, du_i, du_tenants, du_vals, du_nums, cases CASCADE;
+DROP FUNCTION answer(text, text), ran(text, text);
+DROP EXTENSION pg_sift;

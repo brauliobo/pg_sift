@@ -65,6 +65,7 @@ SET work_mem = '64kB';
 SELECT * FROM held('SELECT count(DISTINCT g), count(DISTINCT n) FROM dl');
 SELECT * FROM held('SELECT r, count(DISTINCT g) AS d, count(DISTINCT n) AS e, count(*) FROM dl GROUP BY r ORDER BY r');
 SELECT * FROM held('SELECT t, count(DISTINCT g) AS d, count(*) FROM dl GROUP BY t ORDER BY t');
+SELECT * FROM held('SELECT k, count(DISTINCT n) AS d, count(DISTINCT v) AS e, count(*) FROM dl GROUP BY k ORDER BY k NULLS FIRST');
 SELECT * FROM held('SELECT s, r, count(DISTINCT n) AS d, count(*) FROM dl GROUP BY s, r ORDER BY s, r');
 RESET work_mem;
 -- a LIMIT with no ORDER BY, and a rescan of the node

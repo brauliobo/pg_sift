@@ -84,7 +84,7 @@ CREATE FUNCTION scanned(sql text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; r bool := false; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
-		r := r OR l ~ 'Custom Scan \(SiftAgg\)';
+		r := r OR l ~ 'Custom Scan \(SiftAgg';
 	END LOOP;
 	RETURN r;
 END $$;

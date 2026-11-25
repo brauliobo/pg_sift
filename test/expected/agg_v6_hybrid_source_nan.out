@@ -1,0 +1,79 @@
+-- SiftHybridAgg over numerics that hold a NaN, an infinity or fifty digits, from a sift_col index and from a sift_table: the hits of a text query are folded from the store (the bridge) or, when few, from the
+-- heap's rows (the point path). Every statement is run as the hybrid node and as PostgreSQL's own plan (sift.enable_agg off): the answers are the same, with NULLs and rows of the write buffer among them.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SET max_parallel_workers_per_gather = 0;
+SET enable_nestloop = off;
+SET effective_cache_size = '8kB';
+CREATE TABLE hn (id int, g int, t int, nf numeric, nc numeric(10, 2), body text) WITH (autovacuum_enabled = false);
+INSERT INTO hn SELECT i, i % 5, i % 3000,
+       CASE i % 600 WHEN 0 THEN 'NaN' WHEN 1 THEN 'Infinity' WHEN 2 THEN '-Infinity' WHEN 3 THEN 12345678901234567890123456789012345678901234567890.5 WHEN 7 THEN NULL ELSE i / 8.0 END,
+       CASE i % 600 WHEN 0 THEN 'NaN' WHEN 4 THEN NULL ELSE (i % 500) / 8.0 END,
+       concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 6000 < 8 THEN 'rare' END, 'base')
+FROM generate_series(1, 30000) i;
+CREATE TABLE ht (LIKE hn) USING sift_table;
+INSERT INTO ht SELECT * FROM hn;
+CREATE INDEX hn_text ON hn USING sift (body);
+CREATE INDEX hn_col ON hn USING sift_col (id, g, t, nf, nc);
+CREATE INDEX ht_text ON ht USING sift (body);
+VACUUM (FREEZE, ANALYZE) hn, ht;
+INSERT INTO hn SELECT i, i % 5, i % 3000, CASE i % 3 WHEN 0 THEN 'NaN'::numeric WHEN 1 THEN '-Infinity'::numeric ELSE i::numeric END, CASE WHEN i % 2 = 0 THEN 'NaN'::numeric ELSE i / 4.0 END, 'rare late'
+FROM generate_series(30001, 30040) i;
+INSERT INTO ht SELECT * FROM hn WHERE id > 30000;
+DELETE FROM hn WHERE id IN (6000, 12001);
+DELETE FROM ht WHERE id IN (6000, 12001);
+CREATE FUNCTION answer(q text, agg boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT md5(coalesce(string_agg(r, ''|'' ORDER BY r), '''')) FROM (SELECT row_to_json(x)::text r FROM (%s) x) y', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION shape(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text; node text := 'none'; heap text := '';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF line LIKE '%Custom Scan (SiftHybridAgg)%' THEN node := 'hybrid'; END IF;
+		IF line LIKE '%Heap Rows: true%' THEN heap := ' point'; END IF;
+	END LOOP;
+	RETURN node || heap;
+END $$;
+CREATE TABLE cases (n serial, q text);
+INSERT INTO cases (q) VALUES
+ ('SELECT sum(nf), min(nf), max(nf), count(nf), count(*) FROM %s WHERE t < 3000 AND body @@> ''rare'''),
+ ('SELECT g, sum(nf), min(nf), max(nf), count(nf) FROM %s WHERE t < 3000 AND body @@> ''rare'' GROUP BY g'),
+ ('SELECT sum(nc), min(nc), max(nc), count(nc), count(*) FROM %s WHERE t < 3000 AND body @@> ''rare'''),
+ ('SELECT g, sum(nc), min(nc), max(nc), count(nc) FROM %s WHERE t < 3000 AND body @@> ''rare'' GROUP BY g'),
+ ('SELECT g, sum(nc), min(nc), max(nc), count(nc), sum(nf), max(nf) FROM %s WHERE t < 3000 AND body @@> ''rare'' GROUP BY g'),
+ ('SELECT g, sum(nf), min(nf), max(nf), count(nf) FROM %s WHERE t < 3000 AND body @@> ''common'' GROUP BY g'),
+ ('SELECT g, sum(nc), min(nc), max(nc), count(nc) FROM %s WHERE t < 3000 AND body @@> ''common'' GROUP BY g'),
+ ('SELECT nc IS NULL AS nul, count(*), max(nc) FROM %s WHERE t < 3000 AND body @@> ''rare'' GROUP BY 1');
+SELECT c.n, rel.name AS rel, shape(format(c.q, rel.name)) AS plan,
+       answer(format(c.q, rel.name), true) = answer(format(c.q, rel.name), false) AS same
+FROM cases c, (VALUES ('hn'), ('ht')) rel(name) ORDER BY c.n, rel.name;
+ n | rel |     plan     | same 
+---+-----+--------------+------
+ 1 | hn  | hybrid       | t
+ 1 | ht  | hybrid       | t
+ 2 | hn  | hybrid       | t
+ 2 | ht  | hybrid       | t
+ 3 | hn  | hybrid point | t
+ 3 | ht  | hybrid point | t
+ 4 | hn  | hybrid point | t
+ 4 | ht  | hybrid point | t
+ 5 | hn  | hybrid       | t
+ 5 | ht  | hybrid       | t
+ 6 | hn  | hybrid       | t
+ 6 | ht  | hybrid       | t
+ 7 | hn  | hybrid       | t
+ 7 | ht  | hybrid       | t
+ 8 | hn  | hybrid       | t
+ 8 | ht  | hybrid       | t
+(16 rows)
+
+DROP TABLE hn, ht, cases CASCADE;
+DROP FUNCTION answer(text, boolean), shape(text);
+DROP EXTENSION pg_sift;

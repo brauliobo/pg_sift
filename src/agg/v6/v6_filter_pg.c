@@ -6,12 +6,16 @@
 
 #include "access/stratnum.h"
 #include "catalog/pg_type_d.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
 #include "utils/date.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
 #include "agg/v6/v6_filter_pg.h"
+#include "agg/v6/v6_pg_expr.h"
+#include "agg/v6/v6_unnest_jsonb.h"
 
 typedef struct Build
 {
@@ -19,6 +23,8 @@ typedef struct Build
 	SiftV6Col  *fcol;
 	int		   *nfcols;
 	bool		add;
+	bool		or_ok;			/* an OR of preds is a conjunct (the clause of the elements of an unnest: its evaluation is sift_clause_eval alone) */
+	int			ngroups;
 	SiftBytes  *canon;
 } Build;
 
@@ -33,11 +39,11 @@ static int
 fcol_index(Build *b, const Var *v)
 {
 	for (int i = 0; i < *b->nfcols; i++)
-		if (b->fcol[i].attno == v->varattno)
+		if (b->fcol[i].derive == 0 && b->fcol[i].attno == v->varattno)
 			return i;
 	if (!b->add || *b->nfcols == SIFT_V6_MAX_FCOLS)
 		return -1;
-	b->fcol[*b->nfcols] = (SiftV6Col) {.attno = v->varattno,.typid = v->vartype};
+	b->fcol[*b->nfcols] = sift_v6_vatt_is_json(v->varattno) ? sift_v6_vatt_col(v->varattno, v->varattno, v->vartype, 0) : sift_v6_elem_vatt_col(v->varattno, v->vartype);
 	return (*b->nfcols)++;
 }
 
@@ -171,6 +177,30 @@ set_const(Build *b, SiftPred *p, Oid coltype, const Const *c)
 	}
 }
 
+/* text LIKE 'abc%': the pattern is literal bytes and one % at its end, which no collation or escape can read another way */
+static bool
+pred_prefix(Build *b, const OpExpr *op, SiftPred *p)
+{
+	const Var  *v;
+	const Const *c;
+	SiftPredStr pattern;
+
+	if (list_length(op->args) != 2 || !IsA(linitial(op->args), Var) || !IsA(lsecond(op->args), Const))
+		return false;
+	v = linitial(op->args);
+	c = lsecond(op->args);
+	if (v->vartype != TEXTOID || c->constisnull || c->consttype != TEXTOID)
+		return false;
+	pattern = str_of(b, c->constvalue);
+	if (pattern.len == 0 || pattern.bytes[pattern.len - 1] != '%' || memchr(pattern.bytes, '%', pattern.len - 1) != NULL ||
+		memchr(pattern.bytes, '_', pattern.len) != NULL || memchr(pattern.bytes, '\\', pattern.len) != NULL)
+		return false;
+	p->op = SPO_PREFIX;
+	p->kind = SPK_STR;
+	p->s = (SiftPredStr) {pattern.bytes, pattern.len - 1};
+	return (p->vec = fcol_index(b, v)) >= 0;
+}
+
 static bool
 pred_compare(Build *b, const OpExpr *op, SiftPred *p)
 {
@@ -235,6 +265,24 @@ pred_in(Build *b, const ScalarArrayOpExpr *sa, SiftPred *p)
 	return true;
 }
 
+/* a clause PostgreSQL evaluates over the datums of its columns (the planner's derivation, whose number is the constant of the test): the rows where the derived boolean is true */
+static bool
+pred_derived(Build *b, const BooleanTest *bt, SiftPred *p)
+{
+	int			derive;
+
+	if (bt->booltesttype != IS_TRUE || !IsA(bt->arg, Const))
+		return false;
+	derive = DatumGetInt32(((const Const *) bt->arg)->constvalue);
+	for (int i = 0; i < *b->nfcols; i++)
+		if (b->fcol[i].derive == derive)
+		{
+			*p = (SiftPred) {.op = SPO_EQ,.kind = SPK_INT,.vec = i,.i = 1};
+			return true;
+		}
+	return false;
+}
+
 static bool
 pred_null_test(Build *b, const NullTest *nt, SiftPred *p)
 {
@@ -249,9 +297,11 @@ canon_pred(Build *b, const SiftPred *p)
 {
 	const uint8 head[2] = {(uint8) p->op, (uint8) p->kind};
 	const int	attno = b->fcol[p->vec].attno;
+	const int	derive = b->fcol[p->vec].derive;
 
 	canon_put(b, head, sizeof(head));
 	canon_put(b, &attno, sizeof(attno));
+	canon_put(b, &derive, sizeof(derive));
 	canon_put(b, &p->i, sizeof(p->i));
 	canon_put(b, &p->f, sizeof(p->f));
 	canon_put(b, &p->s.len, sizeof(p->s.len));
@@ -266,37 +316,66 @@ canon_pred(Build *b, const SiftPred *p)
 	}
 }
 
+static bool add_pred(Build *b, const Node *q, int group, SiftClause *out);
+
+/* the arms of an OR (the ORs among them are its arms too) as the preds of one disjunction */
+static bool
+add_or(Build *b, const BoolExpr *q, int group, SiftClause *out)
+{
+	if (!b->or_ok || q->boolop != OR_EXPR)
+		return false;
+	if (group == 0)
+		group = ++b->ngroups;
+	foreach_ptr(Node, arm, q->args)
+		if (!add_pred(b, arm, group, out))
+			return false;
+	return true;
+}
+
+static bool
+add_pred(Build *b, const Node *q, int group, SiftClause *out)
+{
+	SiftPred   *p = &out->pred[out->npred];
+	bool		ok;
+
+	if (IsA(q, BoolExpr))
+		return add_or(b, (const BoolExpr *) q, group, out);
+	if (out->npred == SIFT_CLAUSE_MAX_PREDS)
+		return false;
+	*p = (SiftPred) {.group = group};
+	switch (nodeTag(q))
+	{
+		case T_OpExpr:
+			ok = get_opcode(((const OpExpr *) q)->opno) == F_TEXTLIKE ? pred_prefix(b, (const OpExpr *) q, p) : pred_compare(b, (const OpExpr *) q, p);
+			break;
+		case T_ScalarArrayOpExpr:
+			ok = pred_in(b, (const ScalarArrayOpExpr *) q, p);
+			break;
+		case T_NullTest:
+			ok = pred_null_test(b, (const NullTest *) q, p);
+			break;
+		case T_BooleanTest:
+			ok = pred_derived(b, (const BooleanTest *) q, p);
+			break;
+		default:
+			ok = false;
+	}
+	if (!ok)
+		return false;
+	if (group != 0)
+		canon_put(b, &group, sizeof(group));
+	canon_pred(b, p);
+	out->npred++;
+	return true;
+}
+
 static bool
 build(Build *b, const List *quals, SiftClause *out)
 {
 	*out = (SiftClause) {0};
-	if (list_length(quals) > SIFT_CLAUSE_MAX_PREDS)
-		return false;
 	foreach_ptr(Node, q, quals)
-	{
-		SiftPred   *p = &out->pred[out->npred];
-		bool		ok;
-
-		*p = (SiftPred) {0};
-		switch (nodeTag(q))
-		{
-			case T_OpExpr:
-				ok = pred_compare(b, (const OpExpr *) q, p);
-				break;
-			case T_ScalarArrayOpExpr:
-				ok = pred_in(b, (const ScalarArrayOpExpr *) q, p);
-				break;
-			case T_NullTest:
-				ok = pred_null_test(b, (const NullTest *) q, p);
-				break;
-			default:
-				ok = false;
-		}
-		if (!ok)
+		if (!add_pred(b, q, 0, out))
 			return false;
-		canon_pred(b, p);
-		out->npred++;
-	}
 	return true;
 }
 
@@ -304,6 +383,14 @@ bool
 sift_v6_clause_make(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon)
 {
 	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.canon = canon};
+
+	return build(&b, quals, out);
+}
+
+bool
+sift_v6_clause_make_or(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out)
+{
+	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.or_ok = true};
 
 	return build(&b, quals, out);
 }
@@ -317,4 +404,40 @@ sift_v6_clause_bind(MemoryContext cx, const List *quals, const SiftV6Spec *spec,
 
 	memcpy(fcol, spec->fcol, sizeof(SiftV6Col) * nfcols);
 	return build(&b, quals, out);
+}
+
+/*
+ * An aggregate whose FILTER (WHERE f) the executor evaluates (it reads an InitPlan or starts a sub-plan, which the constants of a native clause cannot say): the same aggregate of
+ * CASE WHEN f THEN arg END, which takes the rows f passes and skips the others as the NULLs of an aggregate are skipped; count(*) counts the 1 of the rows that pass
+ */
+Aggref *
+sift_v6_filter_fold(Aggref *a)
+{
+	Aggref	   *b = copyObject(a);
+	CaseExpr   *ce = makeNode(CaseExpr);
+	CaseWhen   *cw = makeNode(CaseWhen);
+	Expr	   *arg;
+
+	if (a->aggorder != NIL || a->aggdistinct != NIL || list_length(a->args) > 1 || !sift_v6_pgexpr_exec((Node *) a->aggfilter))
+		return NULL;
+	arg = a->aggstar ? (Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(1), false, true) : linitial_node(TargetEntry, a->args)->expr;
+	cw->expr = a->aggfilter;
+	cw->result = arg;
+	cw->location = -1;
+	ce->casetype = exprType((Node *) arg);
+	ce->casecollid = exprCollation((Node *) arg);
+	ce->args = list_make1(cw);
+	ce->defresult = (Expr *) makeNullConst(ce->casetype, exprTypmod((Node *) arg), ce->casecollid);
+	ce->location = -1;
+	b->aggfilter = NULL;
+	if (a->aggstar)
+	{
+		b->aggstar = false;
+		b->aggfnoid = F_COUNT_ANY;
+		b->aggargtypes = list_make1_oid(INT4OID);
+		b->args = list_make1(makeTargetEntry((Expr *) ce, 1, NULL, false));
+	}
+	else
+		linitial_node(TargetEntry, b->args)->expr = (Expr *) ce;
+	return b;
 }

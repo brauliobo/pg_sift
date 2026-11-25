@@ -6,6 +6,7 @@
 
 #include "access/htup_details.h"
 #include "access/relation.h"
+#include "access/table.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
 #include "lib/ilist.h"
@@ -277,6 +278,20 @@ sift_f2_store_open(Relation rel)
 	return e->store;
 }
 
+void
+sift_f2_store_invalidate(Relation rel)
+{
+	Relation	classrel = table_open(RelationRelationId, AccessShareLock);
+	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(rel)));
+
+	if (HeapTupleIsValid(tup))
+	{
+		CacheInvalidateHeapTuple(classrel, tup, NULL);
+		ReleaseSysCache(tup);
+	}
+	table_close(classrel, AccessShareLock);
+}
+
 SiftF2Store *
 sift_f2_store_cached(Oid relid)
 {
@@ -308,11 +323,11 @@ wide_cell(SiftCell *c, const char *image, uint32 image_len)
 }
 
 Datum
-sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryContext cx)
+sift_f2_bare_datum_of(Oid typid, const char *bytes, uint32 len, MemoryContext cx)
 {
 	struct varlena *v;
 
-	if (att->atttypid == NAMEOID)
+	if (typid == NAMEOID)
 		return NameGetDatum(memcpy(MemoryContextAllocZero(cx, NAMEDATALEN), bytes, len));
 	if (len < VARATT_SHORT_MAX)
 	{
@@ -327,6 +342,12 @@ sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryC
 		memcpy(VARDATA(v), bytes, len);
 	}
 	return PointerGetDatum(v);
+}
+
+Datum
+sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryContext cx)
+{
+	return sift_f2_bare_datum_of(att->atttypid, bytes, len, cx);
 }
 
 /* How the datum of an attribute becomes its cell, decided once from the attribute and the store and not for each value */
@@ -471,17 +492,11 @@ kind_of(Form_pg_attribute att)
 	return SIFT_CELL_STR;
 }
 
-void
-sift_f2_store_pack_row(Relation rel, SiftF2Store *store, MemoryContext row_cx, const ItemPointerData *tid, const Datum *values, const bool *isnull,
-					   bool spill_wide_blobs, SiftCell *cells, SiftCell **elem, uint8 *key)
+static void
+pack_columns(Relation rel, SiftF2Store *store, MemoryContext row_cx, const Datum *values, const bool *isnull, bool spill_wide_blobs, SiftCell *cells)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
 
-	if (store->host->host_kind == SIFT_F2_HOST_INDEX)
-	{
-		sift_f2_row(rel, ((SiftColRel *) store->host_data)->f2, row_cx, tid, values, isnull, cells, elem, key);
-		return;
-	}
 	if (store->packers == NULL)
 		packers_build(store, desc);
 	memset(cells, 0, sizeof(SiftCell) * store->ncols);
@@ -494,8 +509,55 @@ sift_f2_store_pack_row(Relation rel, SiftF2Store *store, MemoryContext row_cx, c
 		else
 			pack_cell(k, values[k->attr], row_cx, spill_wide_blobs, &cells[k->leaf]);
 	}
+}
+
+/* The leaves of the declared paths: what the shredder makes of the documents, a cell for each leaf of a row and for each element of a list */
+void
+sift_f2_store_pack_paths(const SiftF2Store *store, MemoryContext row_cx, const Datum *values, const bool *isnull, SiftCell *cells, SiftCell **elem)
+{
+	MemoryContext old = MemoryContextSwitchTo(row_cx);
+	SiftColRow	row = {.ncols = store->ncols,.val = palloc0(store->ncols * sizeof(SiftColValue)),.elem = palloc0(store->ncols * sizeof(SiftColValue *))};
+
+	SIFT_INVARIANT(elem != NULL || !store->has_groups, "the row of table %u has lists of declared paths and no room for their elements", store->relid);
+	sift_col_shred_row(store->paths, values, isnull, &row, store->path_first, row_cx);
+	for (int c = 0; c < store->ncols; c++)
+		if (sift_f2_leaf_is_path(store, c) && store->parent[c] < 0)
+			cells[c] = sift_f2_value_cell(store->kinds[c], &row.val[c]);
+	for (int c = 0; c < store->ncols; c++)
+	{
+		const int	g = store->parent[c];
+		int64		n = g < 0 || cells[g].isnull ? 0 : cells[g].i;
+
+		if (g < 0)
+			continue;
+		elem[c] = n > 0 ? palloc(n * sizeof(SiftCell)) : NULL;
+		for (int64 j = 0; j < n; j++)
+			elem[c][j] = sift_f2_value_cell(store->kinds[c], &row.elem[c][j]);
+	}
+	MemoryContextSwitchTo(old);
+}
+
+void
+sift_f2_store_pack_row(Relation rel, SiftF2Store *store, MemoryContext row_cx, const ItemPointerData *tid, const Datum *values, const bool *isnull,
+					   bool spill_wide_blobs, SiftCell *cells, SiftCell **elem, uint8 *key)
+{
+	if (store->host->host_kind == SIFT_F2_HOST_INDEX)
+	{
+		sift_f2_row(rel, ((SiftColRel *) store->host_data)->f2, row_cx, tid, values, isnull, cells, elem, key);
+		return;
+	}
+	pack_columns(rel, store, row_cx, values, isnull, spill_wide_blobs, cells);
 	if (elem != NULL)
 		memset(elem, 0, sizeof(SiftCell *) * store->ncols);
+	if (store->paths != NULL)
+		sift_f2_store_pack_paths(store, row_cx, values, isnull, cells, elem);
+	sift_row_key(&store->spec, cells, ((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid), key);
+}
+
+void
+sift_f2_store_pack_key(Relation rel, SiftF2Store *store, MemoryContext row_cx, const ItemPointerData *tid, const Datum *values, const bool *isnull, SiftCell *cells, uint8 *key)
+{
+	pack_columns(rel, store, row_cx, values, isnull, false, cells);
 	sift_row_key(&store->spec, cells, ((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid), key);
 }
 
@@ -503,4 +565,21 @@ SiftCellKind
 sift_f2_kind_of_attribute(Form_pg_attribute att)
 {
 	return kind_of(att);
+}
+
+bool
+sift_f2_leaf_is_path(const SiftF2Store *s, int leaf)
+{
+	return s->path_def != NULL && s->path_def[leaf].path != NULL;
+}
+
+const SiftPartColIdentity *
+sift_f2_unnamed_path_ids(const SiftF2Store *s)
+{
+	SiftPartColIdentity *ids = memcpy(palloc(s->spec.ncol_ids * sizeof(SiftPartColIdentity)), s->spec.col_ids, s->spec.ncol_ids * sizeof(SiftPartColIdentity));
+
+	for (int c = 0; c < s->spec.ncol_ids; c++)
+		if (sift_f2_leaf_is_path(s, c))
+			ids[c] = (SiftPartColIdentity) {.phys_kind = ids[c].phys_kind,.phys_hint = ids[c].phys_hint,.phys_scale = ids[c].phys_scale};
+	return ids;
 }

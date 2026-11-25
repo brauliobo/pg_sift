@@ -46,7 +46,7 @@ CFLAGS  += -std=gnu11 -O1 -g $(SAN) $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Wn
 LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon $(SIFT_PGLIBS)
 
 # every source the three targets decode with (the portable core, SRC/portable-col.list and portable.list members), and the stand-ins
-CORE     = col/codec/codec col/codec/filter col/codec/get col/codec_policy col/codec_write col/codec_parse col/codec_blob col/codec_cold col/codec_kern col/codec_avx2 col/codec_avx512 col/codec_neon col/compress col/v1/kern col/v1/kern_avx2 \
+CORE     = col/codec/codec col/codec/filter col/codec/get col/codec_policy col/codec_write col/codec_parse col/codec_blob col/codec_cold col/codec_kern col/codec_avx2 col/codec_avx512 col/codec_neon col/compress core/par/arena col/v1/kern col/v1/kern_avx2 \
            col/v1/kern_avx512 col/v1/kern_neon col/v1/enc col/schema col/v1/dict/dict col/v1/dict/order col/v1/dict/parse col/v1/dict/serialize col/v1/batch col/v1/batch_unit col/v1/chunk col/v1/ctest col/v1/unit col/v1/unit_find col/shred col/shred_spec col/shred_kern col/shred_kern_avx2 col/shred_kern_avx512 col/shred_kern_neon \
            bm25/kernels bm25/kernels_avx2 bm25/kernels_avx512 bm25/kernels_neon bm25/analyze bm25/analyze_config bm25/analyze_stem bm25/posting bm25/postw bm25/posblk bm25/pos bm25/bitmap bm25/blob bm25/bitmap_scalar \
            bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/bitmap_neon core/span core/par/arena

@@ -249,7 +249,7 @@ sift_agg_minmax_paths(PlannerInfo *root, RelOptInfo *rel)
 	Query	   *parse = root->parse;
 	Node	   *key;
 
-	if (!sift_enable_agg || rel->reloptkind != RELOPT_BASEREL || root->parent_root == NULL || root->parent_root->parent_root != NULL || root->upper_targets[UPPERREL_ORDERED] != NULL || parse->limitOffset != NULL ||
+	if (sift_agg_unified_only() || !sift_enable_agg || rel->reloptkind != RELOPT_BASEREL || root->parent_root == NULL || root->parent_root->parent_root != NULL || root->upper_targets[UPPERREL_ORDERED] != NULL || parse->limitOffset != NULL ||
 		parse->limitCount == NULL || !IsA(parse->limitCount, Const) || list_length(parse->sortClause) != 1 || parse->hasAggs || parse->jointree->quals == NULL ||
 		!IsA(parse->jointree->quals, List))
 		return;

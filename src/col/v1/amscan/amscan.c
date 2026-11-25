@@ -199,6 +199,9 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	keys = (ColKeys) {.defs = so->defs, .ndefs = r->meta.ncols, .first = so->first, .idesc = RelationGetDescr(scan->indexRelation)};
 	if (so->heap == NULL)
 		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
+#ifdef SIFT_TESTING
+	sift_col_test_inval(scan->indexRelation);	/* opening the heap can take a lock that reloads the entry */
+#endif
 	sat = scan_preds(scan, &keys, so->preds);
 	so->npreds = sat ? sift_col_preds_keep(so->preds, scan->numberOfKeys) : 0;
 	/*

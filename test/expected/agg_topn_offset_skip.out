@@ -34,7 +34,7 @@ BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		IF pl ~ 'Custom Scan \(SiftAgg\)' THEN seen := 'rows=' || substring(pl from 'actual rows=([0-9]+)'); END IF;
+		IF pl ~ 'Custom Scan \(SiftAgg' THEN seen := 'rows=' || substring(pl from 'actual rows=([0-9]+)'); END IF;
 	END LOOP;
 	EXECUTE format(rows, q) INTO ra;
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
@@ -86,7 +86,7 @@ SELECT sk_chk('SELECT * FROM (SELECT id, k FROM sk ORDER BY k, id LIMIT 100 OFFS
 	   sk_chk('SELECT id, k FROM sk ORDER BY k, id + 0 LIMIT 10 OFFSET 2100') AS ties_sorted_above;
  inner_and_outer_same | inner_then_resorted |   cte   | union_arms | condition | offset_expression | offset_null | limit_null | no_limit | with_ties | ties_sorted_above 
 ----------------------+---------------------+---------+------------+-----------+-------------------+-------------+------------+----------+-----------+-------------------
- rows=17              | rows=100            | rows=10 | rows=4     | rows=10   | rows=10           | native      | native     | native   | rows=30   | rows=2110
+ rows=17              | rows=100            | rows=10 | rows=4     | rows=10   | rows=10           | rows=10     | native     | native   | rows=30   | rows=2110
 (1 row)
 
 -- a parameter: the OFFSET of each execution is the one in force, in a custom plan and in a generic one, and a negative one raises the error of the Limit node

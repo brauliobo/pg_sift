@@ -170,6 +170,12 @@ SELECT * FROM held('SELECT t, count(DISTINCT g) AS d, count(*) FROM dl GROUP BY 
  t        | radix    | t
 (1 row)
 
+SELECT * FROM held('SELECT k, count(DISTINCT n) AS d, count(DISTINCT v) AS e, count(*) FROM dl GROUP BY k ORDER BY k NULLS FIRST');
+ parallel | strategy | same 
+----------+----------+------
+ t        | radix    | t
+(1 row)
+
 SELECT * FROM held('SELECT s, r, count(DISTINCT n) AS d, count(*) FROM dl GROUP BY s, r ORDER BY s, r');
  parallel | strategy | same 
 ----------+----------+------

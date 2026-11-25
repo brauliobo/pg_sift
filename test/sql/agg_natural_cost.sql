@@ -23,7 +23,7 @@ CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN n := n + 1; END IF;
 	END LOOP;
 	RETURN CASE n WHEN 0 THEN 'normal' WHEN 1 THEN 'SiftAgg' ELSE n || ' SiftAgg' END;
 END $$;

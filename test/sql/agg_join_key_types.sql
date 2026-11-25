@@ -45,7 +45,7 @@ CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'SiftAgg'; END IF;
 		IF l LIKE '%Lookup: %' THEN r := r || ',' || concat_ws(',', substring(l from '\d+ key filters'), substring(l from '\d+ semi tables'), substring(l from '\d+ key passes')); END IF;
 	END LOOP;
 	RETURN r;

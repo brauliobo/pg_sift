@@ -36,7 +36,7 @@ BEGIN
 	PERFORM set_config('max_parallel_workers', avail::text, true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || (SELECT q FROM n_q) LOOP
 		planned := planned OR l ~ 'Workers Planned: [1-9]';
-		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg\)';
+		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg';
 	END LOOP;
 	RETURN format('pushed %s, workers planned %s', pushed, planned);
 END $$;

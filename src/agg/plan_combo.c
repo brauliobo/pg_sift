@@ -476,7 +476,7 @@ combo_walker(Node *n, ComboWalk *w)
 		}
 		w->bad |= IsA(n, Var);
 	}
-	if (IsA(n, SubPlan) && lut_subplan_ok(w->c, (SubPlan *) n))
+	if (IsA(n, SubPlan) && lut_subplan_ok(w->c->root, (SubPlan *) n))
 	{
 		w->subparams = list_concat_copy(w->subparams, ((SubPlan *) n)->paramIds);
 		w->c->nsubplan++;

@@ -216,7 +216,7 @@ combo_fstep_resolve(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, 
 	}
 	for (int i = 0; i < n; i++)
 	{
-		if (alive && !sift_colsrc_bit(alive, i))
+		if (alive && !sift_src_bit(alive, i))
 		{
 			eid[i] = COMBO_NONE;
 			continue;

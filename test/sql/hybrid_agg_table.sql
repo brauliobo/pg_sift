@@ -77,8 +77,9 @@ SELECT name, (ha_same(q)).* FROM ha_q ORDER BY name;
 ROLLBACK;
 SELECT name, (ha_same(q)).* FROM ha_q WHERE name IN ('facet_wide', 'plain_aggs', 'no_qual') ORDER BY name;
 
-\echo -- text columns of a sift_table are not held by its store: the groups are PostgreSQL's, over the hybrid scan
+\echo -- a text column of a sift_table is a group key of the hybrid node, with the answers of the query the node refuses
 SELECT ha_node('SELECT body, count(*) FROM ha_docs WHERE tenant < 3 AND body @@> ''mid'' GROUP BY body') AS node;
+SELECT (ha_same('SELECT body, count(*) FROM ha_docs WHERE tenant < 3 AND body @@> ''mid'' GROUP BY body')).*;
 
 DROP FUNCTION ha_same(text), ha_cmp(text, text), ha_node(text);
 DROP TABLE ha_q;

@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "trapshim.h"
 
@@ -17,6 +18,15 @@
 			abort(); \
 		} \
 	} while (0)
+
+/* UNIT_ONLY=name runs the cases that name themselves with unit_wants and none of the others that do */
+static inline bool
+unit_wants(const char *name)
+{
+	const char *only = getenv("UNIT_ONLY");
+
+	return only == NULL || strcmp(only, name) == 0;
+}
 
 typedef struct UnitWorkers
 {

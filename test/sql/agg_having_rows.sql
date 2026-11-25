@@ -21,7 +21,7 @@ DECLARE l text;
 BEGIN
 	SET sift.enable_agg = on;
 	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;

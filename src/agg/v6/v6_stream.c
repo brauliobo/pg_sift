@@ -26,14 +26,16 @@
 #include "agg/agg.h"
 #include "agg/group/state.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_datebin_win_pg.h"
 #include "agg/v6/v6_plan_shape.h"
+#include "agg/v6/v6_fifo.h"
 #include "agg/v6/v6_stream.h"
 
 enum
 {
-	PRIV_INTS = 0,				/* indexoid, rti */
+	PRIV_INTS = 0,				/* the oid of the source, rti, the source is a sift_table */
 	PRIV_TLIST = 1,				/* the scan tlist: sift_v6_plan_scan reads it from here */
 	PRIV_KEYS = 2,
 	PRIV_AGGS = 3,
@@ -402,25 +404,44 @@ feed_next(void *p, SiftStreamBatch *out)
 	return true;
 }
 
-void
-sift_v6_stream_run(SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg)
+struct SiftV6StreamRun
 {
-	Feed	   *fd = palloc_aligned(sizeof(Feed), _Alignof(Feed), MCXT_ALLOC_ZERO);
+	Feed	   *fd;
 	SiftStreamExec se;
+};
+
+SiftV6StreamRun *
+sift_v6_stream_open(MemoryContext cx, SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg)
+{
+	SiftV6StreamRun *r = MemoryContextAllocAligned(cx, sizeof(SiftV6StreamRun), _Alignof(SiftV6StreamRun), MCXT_ALLOC_ZERO);
+	Feed	   *fd = MemoryContextAllocAligned(cx, sizeof(Feed), _Alignof(Feed), MCXT_ALLOC_ZERO);
 
 	fd->src = src;
 	fd->spec = spec;
 	fd->filters = filters;
-	fd->vctx = sift_vexpr_ctx_new(CurrentMemoryContext);
+	fd->vctx = sift_vexpr_ctx_new(cx);
 	for (int k = 0; k < spec->nbins; k++)
 	{
 		fd->bin[k] = (SiftDateBin) {.stride_us = spec->bin[k].stride_us,.origin = spec->bin[k].origin,.stride_status = SDB_OK};
-		fd->binout[k] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+		fd->binout[k] = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	}
-	sift_stream_init(&se, (uint8) spec->nkeys, false, false, 0, SIFT_STREAM_NO_LIMIT, emit, NULL, emit_arg);
-	sift_stream_add_source(&se, feed_next, fd);
-	sift_stream_run(&se);
-	sift_stream_free(&se);
+	r->fd = fd;
+	sift_stream_init(&r->se, (uint8) spec->nkeys, false, false, 0, SIFT_STREAM_NO_LIMIT, emit, NULL, emit_arg);
+	sift_stream_add_source(&r->se, feed_next, fd);
+	return r;
+}
+
+bool
+sift_v6_stream_step(SiftV6StreamRun *r)
+{
+	return sift_stream_step(&r->se);
+}
+
+void
+sift_v6_stream_close(SiftV6StreamRun *r)
+{
+	sift_stream_free(&r->se);
+	pfree(r);
 }
 
 /* ---- the planner ---- */
@@ -430,7 +451,7 @@ typedef struct StreamPlan
 	PlannerInfo *root;
 	RelOptInfo *rel;
 	RelOptInfo *out;
-	const IndexOptInfo *index;
+	const SiftV6RelSource *src;
 	GroupPathExtraData *extra;
 	List	   *keys;
 	List	   *aggs;
@@ -507,7 +528,7 @@ static const CustomPathMethods stream_path_methods = {"SiftAggV6Stream", sift_ag
 static bool
 stream_try(StreamPlan *p)
 {
-	SiftV6Input in;
+	SiftV6Input in = p->src->input;
 	SiftV6StreamSpec spec;
 	SiftV6Vexpr probe,
 				filters[SIFT_V6_STREAM_MAX_FILTERS];
@@ -516,27 +537,27 @@ stream_try(StreamPlan *p)
 	double		groups;
 	Cost		open,
 				scan;
-	const SiftCardStatsView *view;
+	const SiftCardStatsView *view = NULL;
 
 	if (!collect(p))
 		return false;
-	priv = list_make5(list_make2_int((int) p->index->indexoid, (int) p->rel->relid), p->scan_tlist, p->keys, p->aggs, (List *) p->extra->havingQual);
+	priv = list_make5(list_make3_int((int) p->src->reloid, (int) p->rel->relid, p->src->is_table), p->scan_tlist, p->keys, p->aggs, (List *) p->extra->havingQual);
 	priv = lappend(priv, p->quals);
-	sift_v6_input_init_info(&in, p->index);
 	if (!sift_v6_stream_spec(priv, &in, &spec) || !sift_v6_stream_filters(CurrentMemoryContext, &spec, NULL, &in, filters) ||
 		!sift_v6_vexpr_quals(CurrentMemoryContext, p->quals, p->rel->relid, NULL, &in, &probe))
 		return false;
 	for (int i = 0; i < spec.nkeys; i++)
 		atts[i] = in.col[spec.key_slot[i]].attno;
-	if (!sift_v6_format()->sorted_by(p->index->indexoid, atts, spec.nkeys))
+	if (!sift_v6_rel_sorted_by(p->src->reloid, p->src->is_table, atts, spec.nkeys))
 		return false;
-	view = sift_v6_format()->card_view != NULL ? sift_v6_format()->card_view(p->index->indexoid) : NULL;
-	groups = sift_v6_card_groups(p->root, p->rel, p->index, view, p->keys, p->rel->rows);
+	if (!p->src->is_table)
+		view = sift_v6_rel_card_view(p->src->reloid);
+	groups = sift_v6_card_groups(p->root, p->rel, p->src->ix, view, p->keys, p->rel->rows);
 	if (groups < 0)
 		groups = estimate_num_groups(p->root, p->keys, p->rel->rows, NULL, NULL);
-	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
-	scan += cpu_tuple_cost * groups + cpu_operator_cost * p->rel->rows * (1 + list_length(p->quals));
-	sift_v6_add_path(p->out, &stream_path_methods, open + (scan - open) / Max(groups, 1.0), scan, groups, p->root->group_pathkeys, priv);
+	sift_v6_source_scan_price(p->root, p->rel, p->src, 0, &open, &scan);
+	scan += cpu_tuple_cost * groups;
+	sift_v6_add_path(p->out, &stream_path_methods, open + (scan - open) / Max(groups, 1.0), scan, groups, p->root->group_pathkeys, priv, NIL);
 	return true;
 }
 
@@ -544,16 +565,19 @@ void
 sift_agg_v6_stream_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
 	const Query *q = root->parse;
+	SiftV6RelSource *src;
+	int			nsrc;
 
 	if (stage != UPPERREL_GROUP_AGG || !sift_enable_agg || q->hasTargetSRFs || q->groupingSets != NIL ||
 		root->processed_groupClause == NIL || !q->hasAggs || !sift_v6_base_rel_ok(root, input_rel))
 		return;
 	sift_v6_stage_target(root, stage, output_rel);
-	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
+	for (int i = 0; i < nsrc; i++)
 	{
-		StreamPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.extra = extra};
+		StreamPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.src = &src[i],.extra = extra};
 
-		if (agg_index_complete(ix) && sift_v6_format()->owns_rel(ix->indexoid, false) && stream_try(&p))
+		if (sift_v6_source_usable(&src[i]) && sift_v6_rel_ordered(src[i].reloid, src[i].is_table) && stream_try(&p))
 			return;
 	}
 }
@@ -561,7 +585,9 @@ sift_agg_v6_stream_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOp
 Plan *
 sift_agg_v6_stream_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
-	Plan	   *plan = sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_stream_plan_methods, (Oid) linitial_int(linitial(best->custom_private)));
+	const List *priv = best->custom_private;
+	Plan	   *plan = sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_stream_plan_methods, (Oid) linitial_int(linitial(priv)),
+										 (Node *) list_make3(list_nth(priv, PRIV_KEYS), list_nth(priv, PRIV_AGGS), list_nth(priv, PRIV_QUALS)));
 
 	plan->qual = list_nth(best->custom_private, PRIV_HAVING);
 	return plan;
@@ -574,12 +600,16 @@ typedef struct StreamState
 	CustomScanState css;
 	List	   *priv;
 	SiftV6StreamSpec spec;
+	MemoryContext cx;			/* one run of the engine */
 	SiftV6Source *src;
-	SiftV6Store out;
+	SiftV6StreamRun *run;
+	SiftV6Fifo	fifo;
 	int		   *entry;			/* of each entry of the scan tlist: its key (0 ..) or -1 - its aggregate */
 	Datum	   *vals;
 	bool	   *nulls;
 	uint64		groups;
+	bool		started;
+	bool		done;
 } StreamState;
 
 static void
@@ -594,6 +624,7 @@ stream_begin(CustomScanState *node, EState *estate, int eflags)
 	st->entry = palloc(list_length(tlist) * sizeof(int));
 	st->vals = palloc(list_length(tlist) * sizeof(Datum));
 	st->nulls = palloc(list_length(tlist) * sizeof(bool));
+	sift_v6_fifo_open(&st->fifo, estate->es_query_cxt);
 	foreach_node(TargetEntry, te, (List *) tlist)
 	{
 		int			j = 0;
@@ -628,7 +659,7 @@ stream_emit(void *arg, const SiftStreamGroup *g)
 {
 	StreamState *st = arg;
 	const int	n = list_length(list_nth(st->priv, PRIV_TLIST));
-	MemoryContext old = MemoryContextSwitchTo(st->out.row_cx);
+	MemoryContext old = MemoryContextSwitchTo(st->fifo.row_cx);
 
 	for (int i = 0; i < n; i++)
 	{
@@ -643,31 +674,32 @@ stream_emit(void *arg, const SiftStreamGroup *g)
 			st->nulls[i] = !sift_v6_stream_datum(&st->spec, -1 - e, g, &st->vals[i]);
 	}
 	MemoryContextSwitchTo(old);
-	sift_v6_store_put(&st->out, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
+	sift_v6_fifo_put(&st->fifo, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
 	st->groups++;
 }
 
 static void
-stream_run(StreamState *st, EState *estate)
+stream_start(StreamState *st, EState *estate)
 {
 	SiftV6Input in;
 	SiftV6Vexpr quals,
 				filters[SIFT_V6_STREAM_MAX_FILTERS];
 	bool		compiled;
 	List	   *where = list_nth(st->priv, PRIV_QUALS);
-	Relation	index = index_open((Oid) linitial_int(linitial(st->priv)), AccessShareLock);
+	const bool	is_table = list_nth_int(linitial(st->priv), 2);
+	Relation	source = sift_v6_source_open((Oid) linitial_int(linitial(st->priv)), is_table, AccessShareLock, &in);
 
-	sift_v6_store_start(&st->out, estate);
-	sift_v6_input_init_rel(&in, index);
+	sift_v6_source_enter(source, is_table, estate->es_snapshot);
+	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 run");
 	sift_v6_input_bind(&in, estate);
-	index_close(index, NoLock);
-	compiled = sift_v6_stream_spec(st->priv, &in, &st->spec) && sift_v6_stream_filters(st->out.cx, &st->spec, estate->es_param_list_info, &in, filters) &&
-		sift_v6_vexpr_quals(st->out.cx, where, st->spec.rti, estate->es_param_list_info, &in, &quals);
-	SIFT_INVARIANT(compiled, "the stream of groups of index %u is not compiled", st->spec.indexoid);
-	st->src = sift_v6_format()->open(estate, &in, where == NIL ? NULL : &quals, true);
+	sift_v6_source_close(source, is_table, NoLock);
+	compiled = sift_v6_stream_spec(st->priv, &in, &st->spec) && sift_v6_stream_filters(st->cx, &st->spec, estate->es_param_list_info, &in, filters) &&
+		sift_v6_vexpr_quals(st->cx, where, st->spec.rti, estate->es_param_list_info, &in, &quals);
+	SIFT_INVARIANT(compiled, "the stream of groups of relation %u is not compiled", st->spec.indexoid);
+	st->src = sift_v6_rel_open(estate, &in, where == NIL ? NULL : &quals, true);
+	st->run = sift_v6_stream_open(st->cx, st->src, &st->spec, filters, stream_emit, st);
 	st->groups = 0;
-	sift_v6_stream_run(st->src, &st->spec, filters, stream_emit, st);
-	st->out.ran = true;
+	st->started = true;
 }
 
 static TupleTableSlot *
@@ -675,9 +707,16 @@ stream_next(ScanState *ss)
 {
 	StreamState *st = (StreamState *) ss;
 
-	if (!st->out.ran)
-		stream_run(st, ss->ps.state);
-	return sift_v6_store_get(&st->out, ss->ss_ScanTupleSlot);
+	if (!st->started)
+		stream_start(st, ss->ps.state);
+	for (;;)
+	{
+		TupleTableSlot *slot = sift_v6_fifo_get(&st->fifo, ss->ss_ScanTupleSlot);
+
+		if (slot != NULL || st->done)
+			return slot;
+		st->done = !sift_v6_stream_step(st->run);
+	}
 }
 
 static bool
@@ -695,26 +734,35 @@ stream_exec(CustomScanState *node)
 static void
 stream_release(StreamState *st)
 {
+	if (st->run != NULL)
+		sift_v6_stream_close(st->run);
 	if (st->src != NULL)
 		st->src->close(st->src);
+	if (st->cx != NULL)
+		MemoryContextDelete(st->cx);
+	st->run = NULL;
 	st->src = NULL;
-	sift_v6_store_end(&st->out);
+	st->cx = NULL;
+	st->started = st->done = false;
 }
 
 static void
 stream_end(CustomScanState *node)
 {
-	stream_release((StreamState *) node);
+	StreamState *st = (StreamState *) node;
+
+	stream_release(st);
+	sift_v6_fifo_close(&st->fifo);
 }
 
+/* a scan again reads the input again: no tuple of the run is kept to be given twice */
 static void
 stream_rescan(CustomScanState *node)
 {
 	StreamState *st = (StreamState *) node;
 
-	if (node->ss.ps.chgParam != NULL && st->src != NULL)
-		stream_release(st);
-	sift_v6_store_rescan(&st->out, node->ss.ps.chgParam != NULL);
+	stream_release(st);
+	sift_v6_fifo_clear(&st->fifo);
 }
 
 static void
@@ -722,8 +770,8 @@ stream_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	StreamState *st = (StreamState *) node;
 
-	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)));
-	if (st->out.ran)
+	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), list_nth_int(linitial(st->priv), 2));
+	if (st->started)
 		sift_v6_explain_count(es, "Groups", (int64) st->groups);
 }
 

@@ -149,7 +149,7 @@ SELECT q.shape, q.name, c.* FROM q, LATERAL having_run(q.sql, q.ordered) c ORDER
  sub-select    | a sub-select that compares the count     | t      | sift    | f             | t                | t         |  5
  sub-select    | ANY of a sub-select of counts            | t      | sift    | f             | t                | t         |  3
  sub-select    | every count against a sub-select         | t      | sift    | f             | t                | t         |  1
- lateral       | a lateral group with its own HAVING      | t      | sift    | f             | t                | t         | 25
+ lateral       | a lateral group with its own HAVING      | t      | sift    | t             | t                | t         | 25
  DISTINCT      | DISTINCT of the counts                   | t      | sift    | f             | t                | t         |  7
  DISTINCT      | DISTINCT over CUBE                       | t      | sift    | f             | t                | t         | 16
  UNION         | two arms with a HAVING each              | t      | sift    | f             | t                | t         |  7
