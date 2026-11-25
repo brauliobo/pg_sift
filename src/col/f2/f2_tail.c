@@ -32,11 +32,24 @@ typedef struct Tail
 {
 	MemoryContext cx;
 	MemoryContext scan;
+	BlockNumber high_water;
+	BlockNumber slab_lo;		/* the first block of the metadata slabs that end the file, high_water when none does */
 	SiftTailSpan *span;
 	TailItem   *item;
 	int			n;
 	int			cap;
 } Tail;
+
+/* A slab goes back to the file when no page of it is in use, so a holder with a page in the slabs that end the file holds the end of the file, whatever block of them its page is */
+static BlockNumber
+slab_run_start(Relation rel, BlockNumber high_water)
+{
+	BlockNumber lo = high_water;
+
+	while (lo > 0 && sift_fsm_is_meta_block(rel, lo - 1))
+		lo--;
+	return lo;
+}
 
 static void
 tail_add(Relation rel, Tail *t, SiftTailKind kind, TailItem it, const SiftExtent *ext, int n, uint64 reserve)
@@ -46,7 +59,7 @@ tail_add(Relation rel, Tail *t, SiftTailKind kind, TailItem it, const SiftExtent
 	for (int i = 0; i < n; i++)
 	{
 		s.lo = Min(s.lo, ext[i].start);
-		s.hi = Max(s.hi, ext[i].start + ext[i].nblocks);
+		s.hi = Max(s.hi, ext[i].start >= t->slab_lo ? t->high_water : ext[i].start + ext[i].nblocks);
 		if (!sift_fsm_is_meta_block(rel, ext[i].start))
 			s.blocks += ext[i].nblocks;
 	}
@@ -123,7 +136,8 @@ static Tail
 collect(Relation rel, const SiftColMetaPageData *meta)
 {
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
-	Tail		t = {.cx = CurrentMemoryContext,.scan = sift_mem_allocset_create(CurrentMemoryContext, "sift tail holder")};
+	Tail		t = {.cx = CurrentMemoryContext,.scan = sift_mem_allocset_create(CurrentMemoryContext, "sift tail holder"),
+		.high_water = meta->high_water,.slab_lo = slab_run_start(rel, meta->high_water)};
 	int			nscope = sift_f2_store_open(rel)->host->host_kind == SIFT_F2_HOST_INDEX ? sift_col_rel(rel)->nscope : 0;
 
 	for (int i = 0; i < mr.n; i++)
