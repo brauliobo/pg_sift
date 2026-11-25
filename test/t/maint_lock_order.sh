@@ -23,12 +23,12 @@ node_start lo || bail "start failed"
 D=$(dir lo)
 sql lo "CREATE EXTENSION pg_sift" "CREATE EXTENSION injection_points" >/dev/null || bail "extensions failed"
 
-retired_guc_gone() { ! sql lo "SHOW sift.col_auto_merge" >/dev/null 2>&1; }
+retired_guc_gone() { [[ $(sql lo "SELECT current_setting('sift.col_auto_merge', true) IS NULL") == t ]]; }
 check "sift.async_maintenance is on" test "$(sql lo "SHOW sift.async_maintenance")" == on
 check "sift.col_auto_merge is not a setting any more" retired_guc_gone
 
 setup_f2() {
-	sql lo "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text)" \
+	sql lo "SET sift.test_create_format1 = off" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text)" \
 		"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 100) FROM generate_series(1, 100000) g" \
 		"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts" >/dev/null
 }
