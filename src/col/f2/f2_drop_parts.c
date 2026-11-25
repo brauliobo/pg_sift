@@ -143,12 +143,14 @@ flagged(const SiftPartGenIndex *by_gen, const uint64 *gens, int n, bool expired,
 	return out;
 }
 
-/* The bits of the vblocks a dropped part had rows in: the index entries of its rows stay until VACUUM, and a set bit would answer them from the index */
-static void
-clear_dropped_vm(Relation rel, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens)
+/* The bits of the vblocks a dropped part had rows in: the index entries of its rows stay until VACUUM, and a set bit would answer them from the index. A sift_col index has no map */
+void
+sift_drop_clear_vm(Relation rel, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens)
 {
 	SiftPartGenIndex by_gen;
 
+	if (!sift_tbl_is_table(rel))
+		return;
 	sift_part_gen_idx_init(&by_gen, parts, np);
 	for (int i = 0; i < ngens; i++)
 	{
@@ -183,7 +185,7 @@ commit_partition(Drop *d, const SiftPartitionEntry *e)
 		nrel = sift_drop_wide_extents(d->rel, d->store, (uint32) e->part_id, parts, np, plan->drop_gens, plan->ndrop, &rel_ext, nrel);
 		if (plan->ndrop > 0)
 		{
-			clear_dropped_vm(d->rel, parts, np, plan->drop_gens, plan->ndrop);
+			sift_drop_clear_vm(d->rel, parts, np, plan->drop_gens, plan->ndrop);
 			(void) sift_wal_snapshot_conflict(d->rel, InvalidBlockNumber, ReadNextFullTransactionId());
 		}
 		sift_manifest_commit(d->rel, &(SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.drop_gens = plan->drop_gens,.ndrop = plan->ndrop,

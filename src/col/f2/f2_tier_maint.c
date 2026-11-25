@@ -5,6 +5,10 @@
  * Every change of the parts of a partition holds the compaction lock of the partition (a compaction of it is skipped, never raced) and, from the read of the parts to the end of its commit, the
  * partition lock, so that a delete or a flush cannot land between the read and the write of the descriptors. A store that cannot be reached is a WARNING and the step ends: the tier is an
  * optional cold copy and must not stop the freezing and the compaction of the rest of the table.
+ *
+ * The parts of the TTL leave for good, as in TRUNCATE and sift.drop_parts_before: a snapshot of REPEATABLE READ or SERIALIZABLE that reads the relation keeps its lock to the end, so the drop
+ * of a partition is made only when AccessExclusiveLock is free at that moment, for the time of its commit; it is never waited for, and the parts it did not drop are planned again by the
+ * next pass. The visibility map bits of the dropped parts are cleared before the commit, so that no index-only scan answers a row that is gone.
  */
 #include "postgres.h"
 
@@ -87,6 +91,8 @@ ttl_commit(const Step *s, int slot, int64 cutoff, const SiftPartitionEntry *e)
 	SiftManifestEdit edit;
 	SiftPartGenIndex by_gen;
 
+	if (plan->ndrop > 0 && !ConditionalLockRelation(s->rel, AccessExclusiveLock))
+		plan->ndrop = 0;
 	sift_part_gen_idx_init(&by_gen, parts, np);
 	for (int i = 0; i < plan->nmark; i++)
 	{
@@ -107,13 +113,18 @@ ttl_commit(const Step *s, int slot, int64 cutoff, const SiftPartitionEntry *e)
 		edit = (SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.drop_gens = plan->drop_gens,.ndrop = plan->ndrop,.update_parts = upd,.nupdate = nupd,
 		.release = rel_ext,.nrelease = nrel};
 		if (plan->ndrop > 0)
+		{
+			sift_drop_clear_vm(s->rel, parts, np, plan->drop_gens, plan->ndrop);
 			(void) sift_wal_snapshot_conflict(s->rel, InvalidBlockNumber, ReadNextFullTransactionId());
+		}
 		SIFT_CRASH_POINT_IF(plan->ndrop > 0, f2_ttl_drop_pre_p2);
 		sift_manifest_commit(s->rel, &edit);
 		SIFT_CRASH_POINT_IF(plan->ndrop > 0, f2_ttl_drop_post_p2);
 		ereport(DEBUG1, (errmsg("sift: TTL of \"%s\" partition %llu: %d parts dropped, %d marked, %d unmarked", RelationGetRelationName(s->rel),
 								(unsigned long long) e->part_id, plan->ndrop, plan->nmark, plan->nunmark)));
 	}
+	if (plan->ndrop > 0)
+		UnlockRelation(s->rel, AccessExclusiveLock);
 	sift_ttl_plan_free(plan);
 }
 

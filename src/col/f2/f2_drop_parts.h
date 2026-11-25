@@ -45,6 +45,9 @@ extern SiftTtlPlan *sift_drop_plan(const SiftPartDesc *parts, int np, int slot, 
 struct SiftF2Store;
 extern int	sift_drop_wide_extents(Relation rel, struct SiftF2Store *store, uint32 part_id, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens, SiftExtent **release, int nrelease);
 
+/* The visibility map bits of the vblocks the dropped parts had rows in, cleared before the commit that drops them (nothing for a sift_col index) */
+extern void sift_drop_clear_vm(Relation rel, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens);
+
 /* One commit per partition of the parts older than the cutoff; the tally of all of them */
 extern SiftDropResult sift_f2_drop_parts_before(Relation rel, struct SiftF2Store *store, int slot, int64 cutoff, FullTransactionId horizon);
 
