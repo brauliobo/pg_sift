@@ -179,7 +179,6 @@ SIFT_STAR_MAX_PAY_COLS	the most items (columns, keys, filters, masks, operations
 SIFT_STREAM_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 SIFT_STREAM_MAX_VALS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 SIFT_STREAM_NO_LIMIT	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
-SIFT_TAIL_MAX_MOVES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
 SIFT_TBL_LOG_MAX_BYTES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
 SIFT_TIDB_MAX_OFFSET	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
 SIFT_TIER_MAX_REFS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
