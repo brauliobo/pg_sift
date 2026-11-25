@@ -441,7 +441,8 @@ sift_fsst_chunk_open(const SiftChunk *c, SiftFsstChunk *f)
 	uint32		avail = c->body_len,
 				at = 0,
 				hdr[2],
-				whole;
+				whole_raw;
+	uint64		whole;
 
 	*f = (SiftFsstChunk) {0};
 	if (c->ref->enc & SIFT_ENC_PART_DICT)
@@ -462,8 +463,8 @@ sift_fsst_chunk_open(const SiftChunk *c, SiftFsstChunk *f)
 	if (avail - at < 16)
 		return false;
 	memcpy(hdr, body + at, 8);
-	memcpy(&whole, body + at + 8, 4);
-	whole = 8 + MAXALIGN(whole);
+	memcpy(&whole_raw, body + at + 8, 4);
+	whole = 8 + MAXALIGN((uint64) whole_raw);
 	at += 8;
 	if (whole > avail - at || hdr[1] >= avail - at - whole)
 		return false;

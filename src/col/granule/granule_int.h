@@ -23,6 +23,8 @@ pad8(StringInfo s)
 		sift_sb_char(s, '\0');
 }
 
+/* The most bytes a chunk has raw when it is wrapped: what one palloc holds with the 8 bytes its reader adds, the most a writer can make one of in a StringInfo */
+#define SIFT_CHUNK_RAW_MAX	((uint64) MaxAllocSize - 8)
 #define SIFT_DICT_GRANULE_MAX	65536
 #define SIFT_ALP_RD_DICT		8
 #define SIFT_ALP_RD_MIN_LEFT	8

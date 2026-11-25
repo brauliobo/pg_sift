@@ -370,8 +370,11 @@ sift_fsst_read_table(SiftFsst *t, const uint8 *p, uint32 avail)
 		set_symbol(t, c, p + at, l);
 		at += l;
 	}
+	at = (at + 7) & ~(uint32) 7;
+	if (at > avail)
+		return 0;
 	index_table(t);
-	return (at + 7) & ~(uint32) 7;
+	return at;
 }
 
 /* The codes in [in, end) decoded to *outp: an escape needs its byte, which a string ends before when the pointer returned is past end */
@@ -383,7 +386,6 @@ decode_run(const SiftFsst *t, const uint8 *in, const uint8 *end, uint8 **outp)
 	while (in < end)
 	{
 		uint32		code = in[0];
-		uint8		esc;
 
 		if (in + 1 < end && code != SIFT_FSST_ESCAPE && in[1] != SIFT_FSST_ESCAPE)
 		{
@@ -396,12 +398,17 @@ decode_run(const SiftFsst *t, const uint8 *in, const uint8 *end, uint8 **outp)
 			in += 2;
 			continue;
 		}
-		esc = (uint8) -(code == SIFT_FSST_ESCAPE);
-
 		memcpy(out, t->sym[code], SIFT_FSST_SYMBOL_BYTES);
-		out[0] |= in[1] & esc;
+		if (code == SIFT_FSST_ESCAPE)
+		{
+			if (in + 1 >= end)
+				return end + 1;
+			out[0] |= in[1];
+			in += 2;
+		}
+		else
+			in += 1;
 		out += t->len[code];
-		in += 1 + (code == SIFT_FSST_ESCAPE);
 	}
 	*outp = out;
 	return in;

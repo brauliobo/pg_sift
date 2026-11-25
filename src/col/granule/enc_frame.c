@@ -101,7 +101,9 @@ sift_frames_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len
 		sift_frame_strs(c, f, &offs[f - f0], &bytes[f - f0]);
 		total += offs[f - f0][Min(SIFT_FRAME_ROWS, c->nnonnull - (int) (f * SIFT_FRAME_ROWS))];
 	}
-	all = palloc(Max(total, 1));
+	if (total > UINT32_MAX)
+		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the strings of %u frames are %llu bytes, more than a chunk holds", f1 - f0 + 1, (unsigned long long) total));
+	all = palloc_extended(Max(total, 1), MCXT_ALLOC_HUGE);
 	for (uint32 f = f0, at = 0; f <= f1; f++)
 	{
 		const int	base = (int) (f * SIFT_FRAME_ROWS),
@@ -138,12 +140,13 @@ sift_frames_block_strs(const SiftChunk *c, uint32 **offs, char **bytes)
 		sift_frames_strs(c, 0, nn, p, len, &all);
 	for (int k = 0; k < nn; k++)
 		total += len[k];
-	*bytes = palloc(Max(total, 1));
-	for (int k = 0, at = 0; k < nn; k++)
+	*bytes = palloc_extended(Max(total, 1), MCXT_ALLOC_HUGE);
+	for (int k = 0; k < nn; k++)
 	{
+		const uint32 at = k == 0 ? 0 : o[k - 1] + len[k - 1];
+
 		o[k] = at;
 		memcpy(*bytes + at, p[k], len[k]);
-		at += len[k];
 	}
 	o[nn] = (uint32) total;
 	*offs = o;

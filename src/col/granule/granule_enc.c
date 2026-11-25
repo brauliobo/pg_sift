@@ -818,9 +818,11 @@ wrap_chunk(StringInfo body, int alg, SiftChunkRef *ref, bool probe, bool deep)
 				clen;
 	char	   *buf;
 
-	if (alg <= 0 || body->len < (probe ? SIFT_WRAP_HOT_MIN : SIFT_WRAP_MIN) || !sift_colz_available(alg))
+	if (alg <= 0 || body->len < (probe ? SIFT_WRAP_HOT_MIN : SIFT_WRAP_MIN) || body->len > SIFT_CHUNK_RAW_MAX || !sift_colz_available(alg))
 		return;
 	cap = sift_colz_bound(alg, body->len);
+	if (cap == 0 || cap > MaxAllocSize)
+		return;
 	buf = sift_alloc(cap);
 	if (probe)
 	{

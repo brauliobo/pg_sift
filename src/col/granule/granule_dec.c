@@ -10,7 +10,14 @@
 #include "core/damage.h"
 #include "core/popcount.h"
 
-#define SIFT_CHUNK_RAW_MAX	(UINT64_C(64) << 20)
+/* p moved on by n bytes of the chunk of len bytes that starts at raw: what no part of the chunk reaches past */
+static const char *
+chunk_skip(const char *raw, uint32 len, const char *p, uint64 n, const char *what)
+{
+	if (n > len - (uint64) (p - raw))
+		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the %s of a chunk do not fit it", what));
+	return p + n;
+}
 
 /* The elements of the arrays of column col of the granule: the total its chunk of lengths records (0 for a column that is all NULL) */
 static int
@@ -126,19 +133,19 @@ sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c)
 			}
 			c->validity = bm;
 			c->owned |= SIFT_CHUNK_OWN_VALID;
-			p += MAXALIGN(2 + 2 * listed);
+			p = chunk_skip(c->raw, len, p, MAXALIGN(2 + 2 * listed), "listed rows");
 		}
 		else
 		{
 			c->validity = (const uint8 *) p;
-			p += MAXALIGN((c->nrows + 7) / 8);
+			p = chunk_skip(c->raw, len, p, MAXALIGN((c->nrows + 7) / 8), "validity bits");
 		}
 	}
 	if (ref->flags & (SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_HAS_KINDS))
 	{
 		const SiftExcHeader *stored = (const SiftExcHeader *) p;
 
-		if (len < sizeof(*stored) || stored->n_entries > SIFT_GRANULE_ROWS || c->nrows > SIFT_GRANULE_ROWS)
+		if (len - (p - c->raw) < sizeof(*stored) || stored->n_entries > SIFT_GRANULE_ROWS || c->nrows > SIFT_GRANULE_ROWS)
 			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a chunk has %u exceptions", stored->n_entries));
 		c->exc_len = SIFT_EXC_BLOCK_LEN(stored);
 		if ((uint64) (p - c->raw) + c->exc_len > len)
@@ -672,11 +679,12 @@ fsst_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len, void 
 	uint32		avail = c->body_len,
 				at = shared ? 0 : sift_fsst_read_table(t, body, avail),
 				hdr[2],
-				whole,
+				whole_raw,
 			   *off,
 			   *outoff;
+	uint64		whole,
+				cap;
 	int64	   *coded;
-	uint64		cap;
 	uint8	   *out;
 
 	if (k1 <= k0)
@@ -684,8 +692,8 @@ fsst_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len, void 
 	if (avail - at < 16 || (!shared && at == 0))
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the symbol table of a string chunk is damaged"));
 	memcpy(hdr, body + at, 8);
-	memcpy(&whole, body + at + 8, 4);
-	whole = 8 + MAXALIGN(whole);
+	memcpy(&whole_raw, body + at + 8, 4);
+	whole = 8 + MAXALIGN((uint64) whole_raw);
 	at += 8;
 	if (whole > avail - at || hdr[1] >= avail - at - whole || (uint64) hdr[1] > (uint64) hdr[0] * 2)
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the coded strings of a chunk do not fit it"));
@@ -765,13 +773,20 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 			break;
 		case SIFT_CENC_STR_INLINE:
 			{
-				const uint32 *offs = (const uint32 *) body;
-				const char *bytes = body + 4 * ((uint64) nn + 1);
+				const uint64 table = 4 * ((uint64) nn + 1);
+				const char *bytes = body + table;
 
+				if (table > c->body_len)
+					SIFT_DAMAGE_DATA(NULL, errmsg("sift: the offsets of the inline strings of a chunk do not fit it"));
 				for (int k = k0; k < k1; k++)
 				{
-					p[k - k0] = bytes + offs[k];
-					len[k - k0] = offs[k + 1] - offs[k];
+					uint32		range[2];
+
+					memcpy(range, body + 4 * (size_t) k, sizeof(range));
+					if (range[1] < range[0] || range[1] > c->body_len - table)
+						SIFT_DAMAGE_DATA(NULL, errmsg("sift: an inline string of a chunk is past its end"));
+					p[k - k0] = bytes + range[0];
+					len[k - k0] = range[1] - range[0];
 				}
 			}
 			break;

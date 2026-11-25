@@ -10,7 +10,7 @@
 #define SIFT_FSST_MAX_SYMBOLS	255
 #define SIFT_FSST_ESCAPE		255
 #define SIFT_FSST_SYMBOL_BYTES	8
-#define SIFT_FSST_SLACK			8		/* what a decode may write past the last byte it returns, and an input is read one byte past its end */
+#define SIFT_FSST_SLACK			8		/* what a decode may write past the last byte it returns */
 #define SIFT_FSST_SAMPLE_BYTES	16384
 
 typedef struct SiftFsst
@@ -41,7 +41,7 @@ extern void sift_fsst_put_table(StringInfo s, const SiftFsst *t);
 extern uint32 sift_fsst_read_table(SiftFsst *t, const uint8 *p, uint32 avail);
 
 /*
- * The n strings coded at enc, string i in [off[i], off[i + 1]) of it (enc is readable one byte past off[n]): written one after the other to out (cap bytes, which holds the
+ * The n strings coded at enc, string i in [off[i], off[i + 1]) of it: written one after the other to out (cap bytes, which holds the
  * SIFT_FSST_SLACK past their end) with their ends in outoff (n + 1 entries). false when a string is cut short in its escape or the output does not fit cap.
  */
 extern bool sift_fsst_decode_strs(const SiftFsst *t, const uint8 *enc, const uint32 *off, uint32 n, uint8 *out, uint64 cap, uint32 *outoff);
