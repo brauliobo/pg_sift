@@ -3,7 +3,8 @@
  * pins the mark above the space the ones below it left: a base part, a scope's summary, a projection part, or the pages of a projection directory. When that space is at least
  * SIFT_TAIL_RELOCATE_PCT of the file and the free extents hold the holder (f2_tail_plan.h), it is rewritten into free extents below it that sift_fsm_alloc_below reserves (a base part by the
  * copy on write of a compaction, a projection part by a copy of its granules, a directory by the commit that rewrites its pages), the old blocks are released, and the free run that is left
- * at the end goes with the next cut. A pass moves up to SIFT_TAIL_MAX_MOVES holders.
+ * at the end goes with the next cut. A pass starts with a cut, which matures what a compaction just freed (under the lock of the cut no reader of an older manifest can be there), and moves up to
+ * SIFT_TAIL_MAX_MOVES holders.
  */
 #include "core/host.h"
 
@@ -217,7 +218,7 @@ sift_f2_tail_relocate(Relation rel, const SiftF2Store *store, FullTransactionId 
 	MemoryContext pass = sift_mem_allocset_create(CurrentMemoryContext, "sift tail relocate");
 	MemoryContext old = MemoryContextSwitchTo(pass);
 
-	(void) sift_fsm_reclaim(rel);
+	(void) sift_fsm_tail_shrink(rel);
 	for (int moved = 0; moved < SIFT_TAIL_MAX_MOVES && relocate_top(rel, store, horizon, hot_cut); moved++)
 	{
 		(void) sift_fsm_tail_shrink(rel);
