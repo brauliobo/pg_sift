@@ -1,6 +1,6 @@
 # Scope key store
 
-The scope index of a text, varchar or uuid key ([COL-SCOPE](COL-SCOPE.md), "Key types") names each key by a code, an int8. The code is the position at which the writer of a segment (the build, a promotion, a merge) appended the key to the store of its column, and it never moves.
+The scope index of a text, varchar or uuid key ([SCOPES](SCOPES.md), "Which Format a Scope Gets") names each key by a code, an int8. The code is the position at which the writer of a segment (the build, a promotion, a merge) appended the key to the store of its column, and it never moves.
 
 ## What it is
 
