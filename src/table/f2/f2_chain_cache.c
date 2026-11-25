@@ -13,6 +13,7 @@
 #include "utils/rel.h"
 
 #include "core/cachebudget.h"
+#include "core/f2/meta.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "table/f2/f2_chain_cache.h"
@@ -47,6 +48,8 @@ typedef struct PageStamp
 	BlockNumber blk;
 	uint64		gen;
 	uint64		lsn;
+	uint16		used;
+	uint32		crc;
 } PageStamp;
 
 typedef struct Slot
@@ -227,7 +230,8 @@ slot_open(Relation rel, bool pending, uint64 part_id)
 static PageStamp
 stamp_of_page(const char *page, BlockNumber blk)
 {
-	return (PageStamp) {blk, SiftPageGetOpaque((Page) page)->gen, PageGetLSN((Page) page)};
+	return (PageStamp) {blk, SiftPageGetOpaque((Page) page)->gen, PageGetLSN((Page) page), (uint16) SiftPageGetUsed((Page) page),
+		*(const uint32 *) (SiftPageGetData((Page) page) + SIFT_PAGE_CRC_OFF)};
 }
 
 static PageStamp
@@ -243,7 +247,7 @@ stamp_read(Relation rel, BlockNumber blk)
 static bool
 stamp_same(const PageStamp *a, const PageStamp *b)
 {
-	return a->blk == b->blk && a->gen == b->gen && a->lsn == b->lsn;
+	return a->blk == b->blk && a->gen == b->gen && a->lsn == b->lsn && a->used == b->used && a->crc == b->crc;
 }
 
 /* ---- the pending deletes ---- */
