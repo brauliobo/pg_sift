@@ -14,7 +14,7 @@
 #include "utils/lsyscache.h"
 
 #include "col/v1/store_ops.h"
-#include "table/v1/tbl_ops.h"
+#include "table/v1/rel.h"
 
 static bool
 typed_leaf(Oid typid)

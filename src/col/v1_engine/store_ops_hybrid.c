@@ -12,17 +12,17 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "agg/v6/cost/model.h"
+#include "agg/cost/model.h"
 #include "agg/hybrid/hybrid.h"
-#include "agg/v6/v6.h"
-#include "agg/v6/vexpr.h"
+#include "agg/engine.h"
+#include "agg/vexpr.h"
 #include "agg/vexpr/str.h"
 #include "col/source_fold.h"
 #include "col/v1/reader.h"
 #include "col/v1/store_ops.h"
 #include "core/memtrack.h"
 #include "core/tidbridge.h"
-#include "table/v1/tbl_ops.h"
+#include "table/v1/rel.h"
 
 /* what the host asks of one leaf: the slot of the column in the input of the source, and what the leaf holds */
 typedef struct HybCol

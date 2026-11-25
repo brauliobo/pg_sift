@@ -8,7 +8,7 @@
 
 #include <math.h>
 
-#include "col/f2/v6/proj/pred.h"
+#include "col/f2/agg/proj/pred.h"
 #include "col/f2/proj/proj.h"
 
 /* Where the stored columns of a measure are in the layout of the part a row is absorbed from: found once for the layout, not for each row */

@@ -14,7 +14,7 @@
  * in the cache of their chiplet), and when its lane is empty it takes from the lane with the most granules left, so that the lists finish
  * together all the same. With one participant there is one lane and the list is read in order.
  *
- * A Top-N tournament over the granules (agg/topn_v6.h) shares what it has learned in topn_theta (a SiftAtomicBound), alone on its own cache line pair: the encoded
+ * A Top-N tournament over the granules (agg/topn/tourn.h) shares what it has learned in topn_theta (a SiftAtomicBound), alone on its own cache line pair: the encoded
  * bound of the K-th best row of the participant that is furthest along (0 = none yet). It only grows (a compare-and-swap that keeps the larger), and every
  * participant reads it before it takes a granule; once a granule cannot hold a row better than the bound, the rest of the list cannot either and
  * sift_morsel_stop ends it for all.

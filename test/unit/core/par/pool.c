@@ -13,7 +13,7 @@
 #include "core/par/radix.h"
 #include "core/par/topk.h"
 #include "miscadmin.h"
-#include "agg/v6/par/host.h"
+#include "agg/par/host.h"
 #include "test/common/pgshim.h"
 #include "test/common/check.h"
 

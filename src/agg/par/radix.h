@@ -27,10 +27,10 @@
 #define SIFT_AGG_PAR_RADIX_H
 
 #include "access/parallel.h"
-#include "agg/group/dist.h"
-#include "agg/group/rec.h"
+#include "agg/ht/dist.h"
+#include "agg/ht/rec.h"
 #include "core/par/morsel.h"
-#include "agg/group/ht.h"
+#include "agg/ht/ht.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"
 #include "storage/buffile.h"

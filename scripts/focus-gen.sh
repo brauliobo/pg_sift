@@ -23,7 +23,7 @@ unset SANITIZE SIFT_INITDB_TEMPLATE INITDB_TEMPLATE
 trap 'scripts/pgtest.sh stop >/dev/null 2>&1 || true; [[ -n ${KEEP:-} ]] || rm -rf "$WORK"' EXIT
 scripts/pgtest.sh install >"$WORK/build.log" 2>&1 || { tail -n 20 "$WORK/build.log" >&2; exit 1; }
 
-# the functions run since the counters were reset, as JSON on stdout: {"src/agg/v6/topn/topn.c": ["sift_v6_topn_explain", ...]}
+# the functions run since the counters were reset, as JSON on stdout: {"src/agg/topn/topn.c": ["sift_v6_topn_explain", ...]}
 executed() {
 	local f
 	f=$(find "$SIFT_BUILD_DIR/src" -name '*.gcda')

@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/radix_bench.c - the grouped aggregation and COUNT(DISTINCT) of agg/v6/par/ on 1, 2 and 4 threads: the time of the best of three runs of each workload, the speedup, and the check that every
+ * agg/par/radix_bench.c - the grouped aggregation and COUNT(DISTINCT) of agg/par/ on 1, 2 and 4 threads: the time of the best of three runs of each workload, the speedup, and the check that every
  * thread count gives the same answer (the groups, and the sum of their counts). The shapes are the ones of the ClickBench queries that these operators serve.
  */
 #include "postgres.h"

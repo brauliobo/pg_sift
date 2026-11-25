@@ -1,8 +1,8 @@
 # Sites of scripts/check-capacity.sh that are bounded some other way. RULE, PATH, the text of the line, the reason: one tab between them.
 # A line that matches no site fails the check, so this list shrinks with the code. A site that is not bounded is fixed, not listed.
-array-append	src/agg/hybrid/exec_agg.c	keys[n++] = sift_f2_tid(&hit);	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
-array-append	src/agg/hybrid/exec_agg.c	keys[n++] = key;	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
-array-append	src/agg/v6/group/dist.c	vals[n++] = (uint64) int_at(v, r);	vals is SIFT_VEC_LEN long and the loop visits the rows of one vector
+array-append	src/agg/hybrid/exec_fold.c	keys[n++] = sift_f2_tid(&hit);	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
+array-append	src/agg/hybrid/exec_fold.c	keys[n++] = key;	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
+array-append	src/agg/group/dist.c	vals[n++] = (uint64) int_at(v, r);	vals is SIFT_VEC_LEN long and the loop visits the rows of one vector
 array-append	src/bm25/tail.c	present[npresent++] = i;	present is nsegs + 1 long and i is one of the equal-term segments, each seen once
 array-append	src/col/f2/locate.c	stack[sp++] = (TreeWalk) {1, 0, t->leaves};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
 array-append	src/col/f2/locate.c	stack[sp++] = (TreeWalk) {2 * w.node, w.from, mid};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
@@ -54,21 +54,21 @@ blocknumber-sum	src/table/v1/feed.c	BlockNumber vblock = seg->vbase + p;	the vir
 blocknumber-sum	src/table/v1/promote.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
 array-append	src/col/granule/part/join.c	secs[nsec++] = (SiftSecInput) {.tag = SEC_GRANULES,.flags = SIFT_SEC_FLAG_REQUIRED,.len = gtotal,.fill = join_fill,.fill_arg = &fill};	one section for each tag of a part joined, at most twelve and the third of them here
 array-append	src/col/granule/enc.c	cnt[nv++] = 0;	nv counts the distinct left parts of the sn <= SIFT_F8_SAMPLE sampled values, and the arrays hold SIFT_F8_SAMPLE
-array-append	src/agg/v6/cost/card.c	d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);	the group expressions are at most SIFT_CARD_MAX_PREDS (checked above) and the array holds that many
-array-append	src/agg/v6/vexpr.c	if ((n->args[n->nargs++] = args[i]) == NULL)	nargs is checked against SIFT_VEXPR_MAX_ARGS before the loop
-array-append	src/agg/v6/vexpr.c	args[n++] = conv(c, (Node *) w->expr);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
-array-append	src/agg/v6/vexpr.c	args[n++] = conv(c, (Node *) w->result);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
-array-append	src/agg/v6/vexpr.c	args[n++] = conv(c, (Node *) ce->defresult);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
-array-append	src/agg/v6/vexpr.c	args[n++] = conv(c, arg);	the arguments are at most SIFT_VEXPR_MAX_ARGS (checked before the loop)
-array-append	src/agg/v6/vexpr.c	digits[n++] = (char) ('0' + (int) (cur % 10));	a 128-bit magnitude has at most 39 decimal digits and the array holds 48
-array-append	src/agg/v6/vexpr.c	text[o++] = '-';	the text holds the sign, at most 39 digits and a point: 64 bytes
-array-append	src/agg/v6/vexpr.c	text[o++] = digits[i];	the text holds the sign, at most 39 digits and a point: 64 bytes
-array-append	src/agg/v6/vexpr.c	text[o++] = '.';	the text holds the sign, at most 39 digits and a point: 64 bytes
+array-append	src/agg/cost/card.c	d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);	the group expressions are at most SIFT_CARD_MAX_PREDS (checked above) and the array holds that many
+array-append	src/agg/vexpr.c	if ((n->args[n->nargs++] = args[i]) == NULL)	nargs is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/vexpr.c	args[n++] = conv(c, (Node *) w->expr);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/vexpr.c	args[n++] = conv(c, (Node *) w->result);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/vexpr.c	args[n++] = conv(c, (Node *) ce->defresult);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/vexpr.c	args[n++] = conv(c, arg);	the arguments are at most SIFT_VEXPR_MAX_ARGS (checked before the loop)
+array-append	src/agg/vexpr.c	digits[n++] = (char) ('0' + (int) (cur % 10));	a 128-bit magnitude has at most 39 decimal digits and the array holds 48
+array-append	src/agg/vexpr.c	text[o++] = '-';	the text holds the sign, at most 39 digits and a point: 64 bytes
+array-append	src/agg/vexpr.c	text[o++] = digits[i];	the text holds the sign, at most 39 digits and a point: 64 bytes
+array-append	src/agg/vexpr.c	text[o++] = '.';	the text holds the sign, at most 39 digits and a point: 64 bytes
 blocknumber-sum	src/col/f2/part/format.c	BlockNumber blk = ext[e].start + b;	the extents are blocks of this relation that sift_bulk_extend has just extended it to, and PostgreSQL refuses a relation past MaxBlockNumber
 array-append	src/core/shm/combiner.c	lifo[n++] = i;	the stack holds each slot of the pool at most once and the array holds SIFT_COMB_POOL_SLOTS
 array-append	src/core/shm/combiner.c	ld->fin[ld->n++] = SIFT_COMB_RETRY;	the leader hands out the slots of one stack, at most SIFT_COMB_POOL_SLOTS, and the arrays hold that many
 blocknumber-sum	src/table/f2/blob.c	BlockNumber blk = ref->ext[e].start + b;	the extents of a blob reference are blocks of this relation written by this file, and sift_blk_read refuses a block past its end
-array-append	src/agg/v6/win/datebin.c	dig[nd++] = (char) ('0' + (int) (v % 10));	v is a 128-bit magnitude of at most 39 decimal digits and dig holds 1100
+array-append	src/agg/win/datebin.c	dig[nd++] = (char) ('0' + (int) (v % 10));	v is a 128-bit magnitude of at most 39 decimal digits and dig holds 1100
 cast-after-product	src/agg/vexpr/cal.c	d[i] = (int64) (q * per - bias + shift);	q is the floor of u / per, so q * per is at most u, which fits 64 bits
 cast-after-product	src/col/f2/maint.c	v[3] = Int64GetDatum(autovacuum_vac_thresh + (int64) (autovacuum_vac_scale * Max(tab->live_tuples, 0)));	a double: the scale (a GUC of at most 100) times a tuple count, far below 2^63
 array-append	src/col/f2/pack.c	rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};	one part is swapped and the array holds its one extent
@@ -92,4 +92,4 @@ array-append	src/col/granule/promo_prefix.c	tmp[k++] = '0' + (char) (v % 10);	a 
 array-append	src/col/f2/point_dir.c	k.leaf[k.nleaves++] = weak[i].col;	the mask has size bits set, size runs to SIFT_POINT_MAX_COMP, and leaf holds that many
 array-append	src/col/f2/uniq/slab.c	filters[nfilters++] = f;	filter_get makes room first: a full table gives up its last filter, so nfilters never passes SLAB_FILTERS
 array-append	src/col/f2/scan/rescan_cache.c	sc->leaf[sc->nleaf++] = leaf;	leaves is a mask over the columns of the schema and the schema has at most RC_MAX_LEAVES (tested before the state is made)
-array-append	src/agg/v6/cost/card_est.c	w = a->heap[a->nheap++] = palloc(p->nvals * sizeof(uint64)); /* check-memory: allow the values of one IN list of the query */	pred_vals runs once for each of the at most SIFT_CARD_MAX_PREDS predicates of an estimate and heap holds that many
+array-append	src/agg/cost/card_est.c	w = a->heap[a->nheap++] = palloc(p->nvals * sizeof(uint64)); /* check-memory: allow the values of one IN list of the query */	pred_vals runs once for each of the at most SIFT_CARD_MAX_PREDS predicates of an estimate and heap holds that many

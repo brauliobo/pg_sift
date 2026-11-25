@@ -1,6 +1,6 @@
 /*
  * agg/batch_source.h - what a storage format is asked for and gives back to the operators of SiftAggV6: the columns of a scan (SiftV6Input), the batches of rows (SiftV6Batch) and the source
- * that opens them (SiftV6Source). A format (col/v1/, col/f2/, a test store) includes this file and nothing of agg/v6/; the operators include it through agg/v6/vexpr.h.
+ * that opens them (SiftV6Source). A format (col/v1/, col/f2/, a test store) includes this file and nothing of agg/; the operators include it through agg/vexpr.h.
  */
 #ifndef SIFT_AGG_BATCH_SOURCE_H
 #define SIFT_AGG_BATCH_SOURCE_H

@@ -1,7 +1,7 @@
 /*
  * agg/hybrid/core.h - SiftHybridAgg without the executor: the rows of a ranked text match and a structured scan, folded into groups with no heap fetch where the store decides
  * visibility, and no score computed where the query never reads one. It drives the two directions of agg/hybrid/hybrid.h and hands every batch to a fold: the executor's fold is the
- * vectors and groups of agg/v6/, the test's a handful of accumulators. Portable (core/host.h).
+ * vectors and groups of agg/, the test's a handful of accumulators. Portable (core/host.h).
  *
  * B-Agg: the text scan streams its hits (unordered, unscored when no sift.score is read) in chunks that fit the byte budget; the store scan, bound to each chunk's bridge, folds the
  * rows of the bridge that its quals keep.

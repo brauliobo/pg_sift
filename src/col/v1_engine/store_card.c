@@ -1,5 +1,5 @@
 /*
- * col/v1_engine/store_card.c - SiftCardStatsView of a Format 1 index (agg/v6/cost/card_est.h), folded from the statistics of its leaves (SiftSrcStats) when the planner asks: the rows, the
+ * col/v1_engine/store_card.c - SiftCardStatsView of a Format 1 index (agg/cost/card_est.h), folded from the statistics of its leaves (SiftSrcStats) when the planner asks: the rows, the
  * NULLs, the range and the distinct values of each leaf, and the zones of the sample of units the planner already keeps. A segment records its stored bytes as a whole, not by leaf: the bytes
  * of a row of a leaf are the share of the index's bytes per row that the width of its values (its range, its dictionary, a float's 8 bytes) gives it.
  */
@@ -7,7 +7,7 @@
 
 #include <math.h>
 
-#include "agg/v6/cost/card_est.h"
+#include "agg/cost/card_est.h"
 #include "col/v1/store_ops.h"
 
 #define SAMPLE_UNITS	SIFT_CARD_SAMPLE_GRANULES

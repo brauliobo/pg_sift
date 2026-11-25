@@ -1,5 +1,5 @@
 /*
- * col/f2/sink/sink.h - the rows of a scan of an index of format major 2 handed to a consumer in place of being collected as addresses (the aggregate scan of agg/v6/).
+ * col/f2/sink/sink.h - the rows of a scan of an index of format major 2 handed to a consumer in place of being collected as addresses (the aggregate scan of agg/).
  */
 #ifndef SIFT_COL_F2_SINK_H
 #define SIFT_COL_F2_SINK_H

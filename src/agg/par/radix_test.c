@@ -17,8 +17,8 @@
 #include "funcapi.h"
 
 #include "access/parallel.h"
-#include "agg/v6/cost/model.h"
-#include "agg/group/state.h"
+#include "agg/cost/model.h"
+#include "agg/ht/state.h"
 #include "agg/par/radix.h"
 #include "core/testrng.h"
 #include "miscadmin.h"

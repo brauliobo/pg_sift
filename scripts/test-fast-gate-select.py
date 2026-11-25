@@ -17,7 +17,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(REPO, 'scripts', 'fast-gate.sh')
 ENV = {k: v for k, v in os.environ.items() if k != 'CI'}
 
-STAR, CLICK, COEXIST, JSONB = 'src/agg/v6/sip.c', 'src/agg/v6/group/fast.c', 'src/agg/v6/cost/model.c', 'src/col/shred/shred.c'
+STAR, CLICK, COEXIST, JSONB = 'src/agg/sip_scan.c', 'src/agg/group/fast.c', 'src/agg/cost/model.c', 'src/col/shred/shred.c'
 COL, TABLE, BM25, GPU, SQL, SMOKE = 'src/col/codec/int.h', 'src/table/am.c', 'src/bm25/amscan.c', 'src/agg/gpu/cfg.h', 'sql/pg_sift--1.0.sql', 'src/new_thing.c'
 REGRESS = 'test/sql/agg/bucket.sql'
 AREAS = 'star clickbench coexist jsonb col table bm25 gpu sql smoke all'.split()
@@ -66,7 +66,7 @@ def table():
     yield one('gpu', files(GPU), lambda p: p['areas'] == ['gpu'] and has(p, 'plangate', 'corpus') and cmd(p, 'corpus', r'agg'))
     yield one('sql', files(SQL), lambda p: p['areas'] == ['sql'] and has(p, 'surface_sweep', 'corpus') and lacks(p, 'coldiff', 'txn_fuzz'))
 
-    yield one('union: the areas of many paths, each once', files(STAR, CLICK, 'src/agg/v6/topn/topn.c'), lambda p: p['areas'] == ['star', 'clickbench'])
+    yield one('union: the areas of many paths, each once', files(STAR, CLICK, 'src/agg/topn/topn.c'), lambda p: p['areas'] == ['star', 'clickbench'])
     yield one('union: a stage runs once', files(STAR, CLICK, BM25, TABLE), lambda p: len(p['steps']) == len(set(p['steps'])))
     yield one('union: the slices merge into one plangate', files(STAR, CLICK), lambda p: cmd(p, 'plangate', r'--slice star,clickbench\b'))
     yield one('union: one shapes_matrix for the facts of two areas', files(STAR, BM25), lambda p: p['steps'].count('shapes_matrix') == 1)
@@ -111,7 +111,7 @@ def table():
     yield ('every area of the table plans a step', [area(a) for a in AREAS], lambda ps: all(p['rc'] == 0 and p['steps'] for p in ps))
     yield one('the format reaches the plan', files(STAR, extra=('--format', 'f1')), lambda p: 'format=f1' in p['out'] and has(p, 'plangate'))
 
-    yield one('--include-sql keeps the tests within 40 outside CI', files(STAR, CLICK, 'src/agg/v6/topn/topn.c', 'src/agg/v6/win/carry.c', extra=('--include-sql',)),
+    yield one('--include-sql keeps the tests within 40 outside CI', files(STAR, CLICK, 'src/agg/topn/topn.c', 'src/agg/win/carry.c', extra=('--include-sql',)),
               lambda p: p['rc'] == 0 and len(p['sql']) <= 40 and ('regress' in p['steps']) == bool(p['sql']))
     yield one('without --include-sql a src file runs no test/sql', files(STAR), lambda p: p['sql'] == [] and lacks(p, 'regress'))
     yield one('--include-sql runs the test/sql edited', files(REGRESS, extra=('--include-sql',)), lambda p: 'agg/bucket' in p['sql'])

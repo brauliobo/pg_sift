@@ -1,5 +1,5 @@
 /*
- * col/f2/scope/scope.h - the scope summaries of a relation of format major 2, a sift_col index or a sift_table (col/scope_v6/meta.h): one object for each declared scope, kept as a part of the
+ * col/f2/scope/scope.h - the scope summaries of a relation of format major 2, a sift_col index or a sift_table (col/f2/cube/meta.h): one object for each declared scope, kept as a part of the
  * relation (SIFT_PART_FLAG_SCOPE) that the scope directory of the metapage names. The entity parts are written once; the summary is built from their granules and holds every scope key's
  * aggregates, the newest rows of every key and the granules each key takes, so that a scope key never costs a copy of its rows.
  *
@@ -11,8 +11,8 @@
 
 #include "col/f2/f2.h"
 #include "col/scope/scope.h"
-#include "col/scope_v6/meta.h"
-#include "col/scope_v6/overlay.h"
+#include "col/f2/cube/meta.h"
+#include "col/f2/cube/overlay.h"
 
 /* The map of the codes of the key of scope ord (a text, varchar or uuid key; NULL for an integer key), the reader's own for a statement: made in the current memory context */
 extern SiftKeyMap *sift_f2_scope_keymap(Relation rel, int ord);

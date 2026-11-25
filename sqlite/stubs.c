@@ -2,7 +2,7 @@
  * stubs.c - the PostgreSQL-only collaborators of src/bm25/eval/eval.c, as a single-writer embedded database sees them:
  * no heap (every document is visible, no recheck against a snapshot), no TID bitmap filter. The index options are those of
  * the virtual table. No write buffers (documents are buffered in memory by build.c and written as an immutable segment
- * before they are searched) and no kept docmap directories: host/host_stubs.c.
+ * before they are searched) and no kept docmap directories: host/stubs.c.
  */
 #include "api.h"
 

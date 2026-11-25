@@ -12,7 +12,7 @@
 #include "col/f2/store/store.h"
 #include "col/f2/store/ops_int.h"
 #include "col/f2/store/scan.h"
-#include "col/f2/v6/scan.h"
+#include "col/f2/agg/scan.h"
 
 typedef struct HybridSinkArg
 {

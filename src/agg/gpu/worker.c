@@ -21,7 +21,7 @@
 #include "utils/wait_event.h"
 
 #include "agg/gpu/shm.h"
-#include "agg/gpu/v6.h"
+#include "agg/gpu/scan.h"
 #include "agg/vk/layout.h"
 #include "col/dsmreg.h"
 #include "core/memtrack.h"

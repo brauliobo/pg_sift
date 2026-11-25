@@ -31,7 +31,7 @@
 #include "core/memtrack.h"
 #include "core/store/ops.h"
 #include "core/tidbridge.h"
-#include "table/v1/tbl_ops.h"
+#include "table/v1/rel.h"
 
 /* ---- the leaves a scan decodes as they are stored ---- */
 

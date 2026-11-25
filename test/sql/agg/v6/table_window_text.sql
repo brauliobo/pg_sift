@@ -1,5 +1,5 @@
 -- The text quals of a window over a sift_table (a text =, <>, LIKE, IN or an OR of them in the WHERE of a window Top-N) are quals of the SiftAggV6Window scan: the machine of agg/vexpr/vexpr.h runs the
--- clauses over numbers, and the clauses over text narrow the batches the source gives (agg/v6/source_quals.h). Every check runs the statement on the table and on a heap twin holding the
+-- clauses over numbers, and the clauses over text narrow the batches the source gives (agg/source_quals.h). Every check runs the statement on the table and on a heap twin holding the
 -- same rows, compares the rows as text, and asserts the node that read the table.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;

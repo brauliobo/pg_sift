@@ -30,7 +30,7 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
-#include "agg/v6/v6.h"
+#include "agg/engine.h"
 #include "core/compat.h"
 #include "core/store/ops.h"
 

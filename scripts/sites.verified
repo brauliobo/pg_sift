@@ -1,8 +1,8 @@
 # scripts/sites.verified: FILE TAB FUNCTION TAB VERDICT TAB REASON. A catalog or relcache call that SQL can reach and whose result is not tested (scripts/check-sites.py), read: guarded (the reason says where the OID is checked or held), fixed (a regress case in surface_null_args), unreachable (why no dropped or invalid OID gets there).
 src/agg/approx.c	sift_approx_trans	guarded	the type is get_fn_expr_argtype of the call: a type the parser resolved; the function tests the hash function of the entry (OidIsValid) and raises when it has none
-src/agg/group/ht_generic.c	type_entry	guarded	the type is the result type of a key expression of the statement being planned, which the parser resolved; lookup_type_cache raises for an unknown type, it never returns NULL
+src/agg/ht/generic.c	type_entry	guarded	the type is the result type of a key expression of the statement being planned, which the parser resolved; lookup_type_cache raises for an unknown type, it never returns NULL
 src/agg/refuse.c	tables_have_sift_index	guarded	the OID is the relid of an RTE of the statement being planned or executed: the parser locked the relation, so it cannot be dropped before the statement ends
-src/col/f2/v6/scope/match.c	paths_exclusive	guarded	the relation is a leg of the scope of the index, which depends on it (sift_depend of col/scope/decl.c): DROP of the relation is refused while the index exists; table_open raises for a missing relation
+src/col/f2/agg/scope/match.c	paths_exclusive	guarded	the relation is a leg of the scope of the index, which depends on it (sift_depend of col/scope/decl.c): DROP of the relation is refused while the index exists; table_open raises for a missing relation
 src/bm25/facet/facet.c	sift_facet_counts	guarded	the heap is the heap of the facet index, which open_index checked (sift_rel_must_exist) and holds open
 src/bm25/funcs.c	keyed_indexes	guarded	the OID is the relid of an RTE of the statement being planned or executed: the parser locked the relation, so it cannot be dropped before the statement ends
 src/bm25/funcs.c	match_selectivity	guarded	the index OID is a member of the relation's index list in the planner (the relation is locked by the parser)
@@ -89,16 +89,16 @@ src/table/v1/seg.c	declared_paths	guarded	reloid is the OID of a table the calle
 src/table/v1/seg.c	sift_table_ddl_check	guarded	the OIDs come from the event trigger's object list of the command and from the open table; the relation is locked by the command
 src/table/v1/seg.c	sift_table_paths_check	fixed	the relation passes sift_rel_must_exist and is open; get_attnum is tested for InvalidAttrNumber; surface_null_args calls it with a dropped relation and NULL
 src/col/f2/track.c	ctx_make	unreachable	the call hashes a pg_class OID for the invalidation callback: it returns a hash and no pointer, whatever the OID
-src/agg/v6/argext/sql.c	state_new	guarded	lookup_type_cache never returns NULL (a type that does not exist is its own error) and the comparison function of the entry is tested with OidIsValid on the next line
-src/agg/v6/inset/inset.c	sift_v6_inset_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
-src/agg/v6/source_rel.c	sift_v6_source_open	guarded	the OID is the relid (or an index) of a relation of the planned or executing statement: its heap is locked by the parser or the plan locks, DROP INDEX locks the heap first and invalidates the plan through it
-src/col/f2/v6/proj/sort_plan.c	sort_begin	guarded	the OID is the relid (or an index) of a relation of the planned or executing statement: its heap is locked by the parser or the plan locks, DROP INDEX locks the heap first and invalidates the plan through it
-src/agg/v6/stream.c	bin_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
-src/agg/v6/vexpr.c	op_node	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
-src/agg/v6/vexpr.c	date_coerced	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
-src/agg/v6/vexpr.c	func_node	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
-src/agg/v6/win/func.c	kind_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
-src/agg/v6/win/x_glue.c	kind_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
+src/agg/argext/sql.c	state_new	guarded	lookup_type_cache never returns NULL (a type that does not exist is its own error) and the comparison function of the entry is tested with OidIsValid on the next line
+src/agg/inset/inset.c	sift_v6_inset_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
+src/agg/source_rel.c	sift_v6_source_open	guarded	the OID is the relid (or an index) of a relation of the planned or executing statement: its heap is locked by the parser or the plan locks, DROP INDEX locks the heap first and invalidates the plan through it
+src/col/f2/agg/proj/sort_plan.c	sort_begin	guarded	the OID is the relid (or an index) of a relation of the planned or executing statement: its heap is locked by the parser or the plan locks, DROP INDEX locks the heap first and invalidates the plan through it
+src/agg/stream.c	bin_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
+src/agg/vexpr.c	op_node	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
+src/agg/vexpr.c	date_coerced	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
+src/agg/vexpr.c	func_node	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
+src/agg/win/func.c	kind_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
+src/agg/win/x_glue.c	kind_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
 src/col/f2/drop/parts.c	time_slot_of	fixed	the attribute number is tested against InvalidAttrNumber before it is used; a regress case in surface_null_args covers the relation argument of sift.drop_parts_before
 src/col/f2/kll/sql.c	f2_index_with_column	guarded	sift_col_is_index_oid(indexoid) looks the OID up and returns false for one that is not a sift_col index, before the open; the OIDs come from the index list of a relation locked by the caller or from resolve_target, which made the argument exist
 src/col/f2/kll/sql.c	resolve_target	guarded	the relation argument goes through sift_rel_must_exist, and the attribute number is stored in heap_att and tested against InvalidAttrNumber on the next line
@@ -122,12 +122,12 @@ src/table/f2/upgrade.c	rewrite_as_format2	guarded	newid is the table make_new_he
 src/table/f2/upgrade.c	upgrade	guarded	relid went through sift_rel_must_exist in open_for_upgrade and the table is held under AccessExclusiveLock until the end of the call
 src/col/f2/store/store.c	sift_f2_rel_hash	guarded	GetSysCacheHashValue1 returns a hash value, not a tuple: the relation is open and locked by the caller (the store of a statement), and the value is kept to compare in the invalidation callback, where nothing may be looked up
 src/col/f2/store/store.c	store_att_hashes	guarded	GetSysCacheHashValue2 returns a hash value, not a tuple: the relation is the open relation of the store being made, and the values are kept to compare in the invalidation callback, where nothing may be looked up
-src/agg/v6/join/asof_run.c	sort_begin	guarded	the types are the vartypes of the fact Vars the parser resolved; the result is tested with OidIsValid and raises
-src/agg/v6/expr/num.c	numeric_op	guarded	the result of get_opname is assigned and tested against NULL in the same condition
-src/agg/v6/dim_cache.c	journal_index	guarded	the indexes are the relation's own index list (RelationGetIndexList of the heap of a scan the statement holds open and locked): DROP INDEX waits for the lock; index_open raises for a missing one
-src/agg/v6/dim_cache.c	readable	guarded	the index is the one journal_index opened and left locked for the statement: DROP INDEX waits for that lock; index_open raises for a missing one
-src/agg/v6/dim_cache.c	sift_dimcache_keep	guarded	GetSysCacheHashValue1 only hashes the OID of the table and of its locked index for the invalidation callback; it needs no tuple
-src/agg/v6/dim_cache.c	sift_dimcache_try	guarded	the index is the one journal_index found in the relation list of the scanned heap and left locked: DROP INDEX waits for that lock; index_open raises for a missing one
+src/agg/join/asof_run.c	sort_begin	guarded	the types are the vartypes of the fact Vars the parser resolved; the result is tested with OidIsValid and raises
+src/agg/expr/num.c	numeric_op	guarded	the result of get_opname is assigned and tested against NULL in the same condition
+src/agg/dim_cache.c	journal_index	guarded	the indexes are the relation's own index list (RelationGetIndexList of the heap of a scan the statement holds open and locked): DROP INDEX waits for the lock; index_open raises for a missing one
+src/agg/dim_cache.c	readable	guarded	the index is the one journal_index opened and left locked for the statement: DROP INDEX waits for that lock; index_open raises for a missing one
+src/agg/dim_cache.c	sift_dimcache_keep	guarded	GetSysCacheHashValue1 only hashes the OID of the table and of its locked index for the invalidation callback; it needs no tuple
+src/agg/dim_cache.c	sift_dimcache_try	guarded	the index is the one journal_index found in the relation list of the scanned heap and left locked: DROP INDEX waits for that lock; index_open raises for a missing one
 src/bm25/facet/rls.c	sift_facet_rls_begin	guarded	the heap is open, so its namespace exists and get_namespace_name returns its name
 src/bm25/funcs.c	sift_key_equal	guarded	lookup_type_cache never returns NULL (a type that does not exist is its own error) and eq_opr is tested with OidIsValid on the next line
 src/col/am/track.c	ops_serving	guarded	the hash of the oid of an index is a number for any oid, there is no result to test; a missing index is OidIsValid on the line below

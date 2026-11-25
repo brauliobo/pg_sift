@@ -67,7 +67,7 @@ $(OUT)/tests/%.o: $(HERE)/tests/%.c $(wildcard $(HERE)/tests/*.h) $(VKHDR)
 	@mkdir -p $(@D)
 	$(CC) $(TCFLAGS) -Wno-sign-compare -Wno-unused-function -c -o $@ $<
 
-$(OUT)/agg/gpu/emit.o: $(ROOT)/src/agg/gpu/emit.c $(ROOT)/src/agg/gpu/emit.h $(ROOT)/src/agg/gpu/v6.h
+$(OUT)/agg/gpu/emit.o: $(ROOT)/src/agg/gpu/emit.c $(ROOT)/src/agg/gpu/emit.h $(ROOT)/src/agg/gpu/scan.h
 	@mkdir -p $(@D)
 	$(CC) $(TCFLAGS) -Wno-sign-compare -Wno-unused-function -c -o $@ $<
 

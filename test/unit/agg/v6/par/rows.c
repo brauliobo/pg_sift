@@ -1,10 +1,10 @@
 /*
- * agg/v6/par/rows.c - agg/v6/par/rows.h: the K best rows of 1 to 4 threads are those of the rows sorted whole (integer and text columns, ascending and descending, NULLs first and last, ties of every
+ * agg/par/rows.c - agg/par/rows.h: the K best rows of 1 to 4 threads are those of the rows sorted whole (integer and text columns, ascending and descending, NULLs first and last, ties of every
  * column but the address), on threads that the trap shim flags as workers (no palloc, no ereport).
  */
 #include "postgres.h"
 
-#include "agg/v6/par/rows.h"
+#include "agg/par/rows.h"
 #include "core/hash.h"
 #include "core/par/pool.h"
 #include "host.h"

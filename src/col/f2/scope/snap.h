@@ -9,7 +9,7 @@
 #define SIFT_F2_SCOPE_SNAP_H
 
 #include "col/f2/scope/int.h"
-#include "col/scope_v6/overlay.h"
+#include "col/f2/cube/overlay.h"
 
 /* The cube a read of a key made for the same query and the same edits of the pairs of the key: it depends on the summary, on the rows kept, on the members whose pairs changed and whether the key holds them */
 typedef struct SiftF2ScopeRead

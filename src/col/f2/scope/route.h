@@ -8,7 +8,7 @@
 #include "access/relscan.h"
 
 #include "col/scope/scope.h"
-#include "col/scope_v6/mask.h"
+#include "col/f2/cube/mask.h"
 
 typedef struct SiftScopeRoutePart
 {

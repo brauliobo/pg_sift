@@ -61,9 +61,10 @@ for n, line in enumerate(read('scripts/refusals.allow').split('\n'), 1):
 
 seen = set()
 # the folders of src/agg/ hold the planner files that were split (cost, from, expr, plan ...); NO_REFUSAL_DIRS hold the code of the scan itself and the passes that rewrite a query before it is planned (flat), which name no refusal
-NO_REFUSAL_DIRS = {'blob', 'cte', 'dist', 'exec', 'flat', 'combo', 'group', 'lookup', 'part', 'preagg', 'topn', 'update', 'expr', 'gord', 'leaf', 'par', 'spill', 'vk', 'kern6', 'hybrid', 'gpu', 'vexpr'}
+NO_REFUSAL_DIRS = {'ht', 'par', 'vk', 'kern', 'hybrid', 'gpu', 'vexpr'}
+NO_REFUSAL_FILES = {'adaptive_test.c', 'approx.c', 'filter_adapt.c', 'refuse.c', 'sip.c', 'sip_test.c', 'stats.c', 'stream_exec.c', 'stream_test.c', 'window.c', 'window_test.c', 'topn/tourn.c'}
 folders = [d for d in glob.glob('src/agg/*/') if os.path.basename(d.rstrip('/')) not in NO_REFUSAL_DIRS]
-for path in sorted(glob.glob('src/agg/plan*.c') + glob.glob('src/agg/spec*.c') + [f for d in folders for f in glob.glob(d + '**/*.c', recursive=True) if '/v6/par/' not in f]):
+for path in sorted(f for f in glob.glob('src/agg/*.c') + [f for d in folders for f in glob.glob(d + '**/*.c', recursive=True)] if f[len('src/agg/'):] not in NO_REFUSAL_FILES):
     lines = read(path).split('\n')
     name = path[len('src/agg/'):]
     fn = None

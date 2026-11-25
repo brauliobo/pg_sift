@@ -1,13 +1,13 @@
 /*
  * agg/sip.c - the runtime join filter of agg/sip.h: the build, the finalize that decides which of the range, the exact keys and the Bloom filter
  * prune, and the two probes (a zone, a batch of keys). The Bloom filter is core/sbbf.c; the batch probe runs the slots of the active level of
- * agg/kern6/kern6.h, so that it is the same code, bit for bit, at every level.
+ * agg/kern/kern.h, so that it is the same code, bit for bit, at every level.
  */
 #include "postgres.h"
 
 #include "miscadmin.h"
 
-#include "agg/kern6/int.h"
+#include "agg/kern/int.h"
 #include "agg/sip.h"
 
 uint64

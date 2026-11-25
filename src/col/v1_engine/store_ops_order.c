@@ -1,6 +1,6 @@
 /*
  * col/v1_engine/store_ops_order.c - SiftOrderOps of Format 1 (core/store/ops.h). The files of col/v1_engine/ are the part of the Format 1 store that reads the engine's headers
- * (agg/v6/), which a file of col/v1/ may not include (scripts/check-format-isolation.sh); they move into col/v1/ once those headers are format-neutral.
+ * (agg/), which a file of col/v1/ may not include (scripts/check-format-isolation.sh); they move into col/v1/ once those headers are format-neutral.
  *
  * A Format 1 source gives the rows of its units as they are stored, so no prefix of attributes is an order of its batches (sorted_by is false and a sorted source is never asked for);
  * the lead key is the attribute its keyed units are cut by. scan_rows keeps the best rows of an ORDER BY .. LIMIT of one relation: from the global order of the first sort column when the
@@ -22,10 +22,10 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "agg/v6/v6.h"
-#include "agg/v6/topn/rows.h"
-#include "agg/v6/topn/topn.h"
-#include "agg/v6/vexpr.h"
+#include "agg/engine.h"
+#include "agg/topn/rows.h"
+#include "agg/topn/topn.h"
+#include "agg/vexpr.h"
 #include "col/source_fold.h"
 #include "col/v1/gorder/gorder.h"
 #include "col/v1/reader.h"
@@ -34,7 +34,7 @@
 #include "core/compat.h"
 #include "core/memtrack.h"
 #include "core/sift.h"
-#include "table/v1/tbl_ops.h"
+#include "table/v1/rel.h"
 
 static bool
 order_sorted_by(Oid relid, bool is_table, const int *atts, int n)

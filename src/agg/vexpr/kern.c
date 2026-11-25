@@ -8,7 +8,7 @@
 
 #include "utils/float.h"
 
-#include "agg/kern6/int.h"
+#include "agg/kern/int.h"
 #include "agg/vexpr/kern.h"
 #include "core/fmv.h"
 

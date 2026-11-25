@@ -1,4 +1,4 @@
--- Generic and ordered-set aggregates in SiftAggV6 (src/agg/v6/gen/gen.c): PostgreSQL's own transition, combine and final functions run over the values the scan decodes, with DISTINCT, ORDER BY and WITHIN GROUP
+-- Generic and ordered-set aggregates in SiftAggV6 (src/agg/gen/gen.c): PostgreSQL's own transition, combine and final functions run over the values the scan decodes, with DISTINCT, ORDER BY and WITHIN GROUP
 -- inputs sorted by one tuplesort, held to the answer of the heap for the same rows. Each parity check prints t; plan_ok prints t when the statement ran as SiftAggV6 over the index and over the table.
 -- The statements hold on the release library too, whose indexes have the one format.
 CREATE EXTENSION pg_sift;

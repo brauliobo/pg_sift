@@ -2,7 +2,7 @@
  * stubs.c - the collaborators of src/bm25/eval/eval.c that the PostgreSQL side provides, as this host sees them: the options of
  * the index, the documents the engine knows are dead (its own visibility, instead of a heap snapshot) and the filter of a
  * list of documents as the TID bitmap the shared filter builder reads. No write buffers and no kept docmap directories:
- * sqlite/host/host_stubs.c.
+ * sqlite/host/stubs.c.
  */
 #include "store.h"
 

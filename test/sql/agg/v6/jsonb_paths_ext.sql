@@ -1,4 +1,4 @@
--- jsonb arrays of objects as the elements of an unnest in SiftAggV6 (src/agg/v6/v6_unnest_*.c, src/col/f2/v6/unnest/run.c): tests of one element joined by OR, EXISTS over the elements of an array,
+-- jsonb arrays of objects as the elements of an unnest in SiftAggV6 (src/agg/v6/v6_unnest_*.c, src/col/f2/agg/unnest/run.c): tests of one element joined by OR, EXISTS over the elements of an array,
 -- group keys and arguments that are PostgreSQL expressions, and arrays that are a key of the document an index expression holds (doc_expr(doc) -> 'parts', its text columns held as astext) with a lookup
 -- join keyed by columns of the fact table and of the elements. Documents the leaves cannot hold (a number or an object where text is declared, a string where an int is, NULL members, missing keys, a
 -- missing or empty array, SQL NULL) are in the data and are decided from the heap. Every statement runs over the index and over a heap twin (the truth): the first word says they agree, the second

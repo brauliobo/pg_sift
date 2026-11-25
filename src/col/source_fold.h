@@ -1,7 +1,7 @@
 /*
  * col/source_fold.h - the aggregate scan of a format that gives batches (agg/batch_source.h): the columns the statement reads are asked of the source, and each batch it gives is folded into the
  * groups, the star pipe or the emit of a parallel participant, as the zone scan of Format 2 does with the chunks it decodes. Format 1 (col/v1/store_ops_zone.c, v1_store_ops_par.c) is its caller; the file
- * includes the operators of agg/v6/, which a format file may not (scripts/check-format-isolation.sh), so the formats reach them through this one.
+ * includes the operators of agg/, which a format file may not (scripts/check-format-isolation.sh), so the formats reach them through this one.
  */
 #ifndef SIFT_COL_SOURCE_FOLD_H
 #define SIFT_COL_SOURCE_FOLD_H
@@ -51,7 +51,7 @@ extern void sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b);
 /* The heap addresses of the rows of the batch the fold is folding: what its emit reads to tell the rows it keeps */
 extern const uint64 *sift_srcfold_tags(const SiftSrcFold *f);
 
-/* The arms of a cohort (agg/v6/fuse/fuse.h) read the same relation with the same keys: each arm folds its rows into its groups, those its gate takes; args gives the relation, quals and estate */
+/* The arms of a cohort (agg/fuse/fuse.h) read the same relation with the same keys: each arm folds its rows into its groups, those its gate takes; args gives the relation, quals and estate */
 extern void sift_srcfold_arms(struct SiftV6FuseCohort *cohort, const struct SiftV6ScanArm *arms, const SiftSrcFoldArgs *common, SiftSrcOpen open, void *open_arg);
 
 /* A conjunct of the quals that bounds an integer column of the input (its slot) to a closed range: a source may leave unread a unit that lies wholly outside it */

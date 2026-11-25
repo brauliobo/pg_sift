@@ -33,7 +33,7 @@
 #ifndef SIFT_AGG_VEXPR_H
 #define SIFT_AGG_VEXPR_H
 
-#include "agg/kern6/kern6.h"
+#include "agg/kern/kern.h"
 
 #define SIFT_VEXPR_MAX_REGS		16
 #define SIFT_VEXPR_MAX_MASKS	16

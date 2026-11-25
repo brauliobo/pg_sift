@@ -15,9 +15,9 @@
 #include <math.h>
 
 #include "access/xact.h"
-#include "agg/v6/cost/model.h"
-#include "agg/group/state.h"
-#include "agg/kern6/kern6.h"
+#include "agg/cost/model.h"
+#include "agg/ht/state.h"
+#include "agg/kern/kern.h"
 #include "agg/stream_exec.h"
 #include "utils/builtins.h"
 #include "utils/jsonb.h"

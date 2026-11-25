@@ -1,5 +1,5 @@
 /*
- * col/v1_engine/store_ops_unnest_keys.c - the members of a map a statement reads by key (SV6E_KEYS, agg/v6/ext.h) over Format 1: a row of the table is one pair, whose columns are the members its
+ * col/v1_engine/store_ops_unnest_keys.c - the members of a map a statement reads by key (SV6E_KEYS, agg/ext.h) over Format 1: a row of the table is one pair, whose columns are the members its
  * keys name in the keys and values of the SCL_OBJECT leaf of the map (or the typed leaf of a key of the document); a row whose map the leaves cannot hold, or whose member the column cannot take
  * as the statement casts it, is read from the heap row, where the expression of each column gives the value as PostgreSQL does, errors included.
  */

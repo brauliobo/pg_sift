@@ -1,11 +1,11 @@
 /*
- * agg/v6/par/distinct.c - agg/v6/par/distinct.c and keytab.c on 1, 2, 3 and 4 threads (the trap shim flags the helpers: no palloc, no ereport), against the rows sorted and counted: every shape of key (none,
+ * agg/par/distinct.c - agg/par/distinct.c and keytab.c on 1, 2, 3 and 4 threads (the trap shim flags the helpers: no palloc, no ereport), against the rows sorted and counted: every shape of key (none,
  * words, a text, both), integer and text values (a text of one part is another place than the same text of another), NULL values, the empty text and the value 0, mixed sums, skew, and arenas too small,
  * where the run says so and gives no answer. The key table is tried alone with a hash that every key shares.
  */
 #include "postgres.h"
 
-#include "agg/v6/par/keytab.h"
+#include "agg/par/keytab.h"
 #include "core/par/pool.h"
 #include "dist.h"
 #include "host.h"

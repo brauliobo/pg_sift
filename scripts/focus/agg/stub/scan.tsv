@@ -1,1 +1,1 @@
-agg/stub/scan	src/agg/v6/join/asof_run.c:merge_open
+agg/stub/scan	src/agg/join/asof_run.c:merge_open

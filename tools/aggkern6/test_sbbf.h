@@ -1,6 +1,6 @@
 /*
  * tools/aggkern6/test_sbbf.h - the checks of the split-block Bloom filter (core/sbbf.c) and of the slots made of it, the granule bitmap and the
- * dictionary pair (agg/kern6/sbbf.c), against references written out here: the membership of a hash by its bits, no false negative over a million
+ * dictionary pair (agg/kern/sbbf.c), against references written out here: the membership of a hash by its bits, no false negative over a million
  * keys at every level, the false positive rate against the expected one, the same bytes from every insert (atomic and concurrent included), and
  * the edges of the slots (an empty list, the range of keys, the bits past the last row). Included by test.c after its tables.
  */

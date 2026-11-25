@@ -1,11 +1,11 @@
 /*
- * test/scaling/cases/inset.c - agg/v6/inset/filter.c: `column = ANY (array)` tested per row. The rows are fixed (65536); the array grows 8x: a binary search per row, O(log V).
+ * test/scaling/cases/inset.c - agg/inset/filter.c: `column = ANY (array)` tested per row. The rows are fixed (65536); the array grows 8x: a binary search per row, O(log V).
  */
 #include "postgres.h"
 
 #include <stdlib.h>
 
-#include "agg/v6/inset/inset.h"
+#include "agg/inset/inset.h"
 #include "op_counters.h"
 
 #define ROWS	65536
@@ -42,6 +42,6 @@ run_inset(uint32_t v)
 }
 
 const ScalingCase case_inset = {
-	.name = "inset", .under_test = "agg/v6/v6_inset_filter.c, IN list x8, rows fixed", .n_small = 512, .factor = 8, .run = run_inset,
+	.name = "inset", .under_test = "agg/v6_inset_filter.c, IN list x8, rows fixed", .n_small = 512, .factor = 8, .run = run_inset,
 	GATES({OP_STEPS, 1.5, NULL}, {OP_CMPS, 1.5, NULL}, {OP_ALLOC_BYTES, 1.25, NULL}),
 };

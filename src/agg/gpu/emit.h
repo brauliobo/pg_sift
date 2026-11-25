@@ -4,7 +4,7 @@
 #ifndef SIFT_AGG_GPU_EMIT_H
 #define SIFT_AGG_GPU_EMIT_H
 
-#include "agg/gpu/v6.h"
+#include "agg/gpu/scan.h"
 #include "agg/vk/layout.h"
 
 #define SIFT_GPU_EMIT_OPS		64

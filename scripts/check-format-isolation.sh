@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# One format never reads another's files: the engines of Format 2 (a folder f2/, v6/, granule/, skip/ or scope_v6/) include nothing of Format 1 (a v1/ folder, core/v1_col/,
+# One format never reads another's files: the engines of Format 2 (a folder f2/, granule/ or skip/) include nothing of Format 1 (a v1/ folder, core/v1_col/,
 # the directory-chain store and the segment types of core/store/store.h), and Format 1 (col/v1/, core/v1_col/, table/v1/, agg/v1/) includes nothing of Format 2. Their shared
 # files (core/page_io.h, core/meta_peek.h, the codecs, memory and quarantine of core/) are in neither. A file that needs the other side's code gets it moved to the shared files.
-# The unit reader of Format 1 (v1_store_ops, v1_reader, v1_tbl_ops, v1_tbl_reader) reads units itself: it includes nothing of the aggregate engine's column source (agg/colsrc*, agg/col*) and calls none of its sift_colsrc_ functions, so that
+# The unit reader of Format 1 (col/v1/reader*, col/v1/store_ops*, table/v1/reader*, table/v1/rel*) reads units itself: it includes nothing of the aggregate engine's column source (agg/colsrc*, agg/col*) and calls none of its sift_colsrc_ functions, so that
 # deleting the engine's source leaves the reader as it is.
 # The table access method is a shell in table/ itself (am.c, dispatch.h, wal.c): it reaches a format through the table of table/dispatch.h and includes no file of table/v1/ or table/f2/.
 # The aggregate engine (src/agg/) names no format at all, in no file: it reaches a store through core/store/ops.h.
 #   scripts/check-format-isolation.sh [DIR]   check the tree under DIR (default: the repo)
 #   scripts/check-format-isolation.sh --selftest
 set -uo pipefail
-V2='(^|/)(f2|v6|granule|skip|scope_v6)/'
+V2='(^|/)(f2|granule|skip)/'
 V1='(^|/)(v1|v1_col)/'
 TBL_SHELL='^src/table/[^/]+$'
 AGG='^src/agg/'
 TBL_SHELL_BANNED='#include "table/(v1|f2)/'
 V2_BANNED='#include "[^"]*/v1/|#include "core/(store|dirchain|lane|live)\.h"|#include "core/v1_col/|SiftDirSnapshot|SiftColSegment|SiftTombLog|format_major == 1'
-V1_READER='(^|/)(v1_store_ops|v1_reader|v1_tbl_ops|v1_tbl_reader)[^/]*\.[ch]$'
+V1_READER='^src/(col/v1/(reader|store_ops)|table/v1/(rel|reader))[^/]*\.[ch]$'
 V1_READER_BANNED='#include "agg/(colsrc|col_int|col\.)|sift_colsrc_'
-V1_BANNED='#include "[^"]*/(f2|v6|scope_v6|granule|skip)/|#include "col/(granule|skip)'
-AGG_BANNED='#include "col/(f2|v1|granule|skip|scope_v6)/|#include "table/(f2|v1)/|SiftF2Store|SiftColSegment|SiftDirSnapshot|format_major'
+V1_BANNED='#include "[^"]*/(f2|granule|skip)/|#include "col/(granule|skip)'
+AGG_BANNED='#include "col/(f2|v1|granule|skip)/|#include "table/(f2|v1)/|SiftF2Store|SiftColSegment|SiftDirSnapshot|format_major'
 scan() { # DIR
 	(cd "$1" && {
 		local f v2=() v1=() tb=() ag=() rd=()
@@ -59,22 +59,22 @@ if [[ ${1:-} == --selftest ]]; then
 	printf '%s\n' '#include "table/v1/table.h"' >"$d/src/$tb/mutant.c"
 	[[ $(scan "$d") == "src/$tb/mutant.c:1:"* ]] || fail "a Format 1 include in the table shell is not found"
 	rm "$d/src/$tb/mutant.c"
-	printf '%s\n' '#include "agg/batch_source.h"' >"$d/src/$v1/v1_reader.c"
+	printf '%s\n' '#include "agg/batch_source.h"' >"$d/src/$v1/reader.c"
 	[[ -z $(scan "$d") ]] || fail "a clean reader is reported: $(scan "$d")"
-	printf '%s\n' '#include "agg/colsrc.h"' >"$d/src/$v1/v1_reader.c"
-	[[ $(scan "$d") == "src/$v1/v1_reader.c:1:"* ]] || fail "an engine column source include in the reader is not found"
-	printf '%s\n' 'sift_colsrc_next(s);' >"$d/src/$v1/v1_reader.c"
-	[[ $(scan "$d") == "src/$v1/v1_reader.c:1:"* ]] || fail "a sift_colsrc_ call in the reader is not found"
-	rm "$d/src/$v1/v1_reader.c"
+	printf '%s\n' '#include "agg/colsrc.h"' >"$d/src/$v1/reader.c"
+	[[ $(scan "$d") == "src/$v1/reader.c:1:"* ]] || fail "an engine column source include in the reader is not found"
+	printf '%s\n' 'sift_colsrc_next(s);' >"$d/src/$v1/reader.c"
+	[[ $(scan "$d") == "src/$v1/reader.c:1:"* ]] || fail "a sift_colsrc_ call in the reader is not found"
+	rm "$d/src/$v1/reader.c"
 	ag=agg
-	mkdir -p "$d/src/$ag/cte" "$d/src/$ag/v6" "$d/src/$ag/plan"
+	mkdir -p "$d/src/$ag/cte" "$d/src/$ag/group" "$d/src/$ag/plan"
 	printf '%s\n' '#include "core/store/ops.h"' >"$d/src/$ag/cte/ok.c"
-	printf '%s\n' '#include "core/simd_kern.h"' >"$d/src/$ag/v6/ok.c"
+	printf '%s\n' '#include "core/simd_kern.h"' >"$d/src/$ag/group/ok.c"
 	[[ -z $(scan "$d") ]] || fail "a clean src/agg is reported: $(scan "$d")"
-	for sub in $ag/cte $ag/v6 $ag $ag/plan; do
+	for sub in $ag/cte $ag/group $ag $ag/plan; do
 		mkdir -p "$d/src/$sub"
 		for bad in '#include "col/f2/f2.h"' '#include "col/v1/kern/kern.h"' '#include "col/granule/granule.h"' '#include "col/skip/skip.h"' \
-			'#include "col/scope_v6/scope.h"' '#include "table/f2/tbl.h"' '#include "table/v1/src.h"' \
+			'#include "col/f2/cube/cube.h"' '#include "table/f2/tbl.h"' '#include "table/v1/src.h"' \
 			'int x = sift_col_v2_ops.format_major;' 'static SiftF2Store *st;' 'SiftColSegment *seg;' 'SiftDirSnapshot *dir;'; do
 			printf '%s\n' "$bad" >"$d/src/$sub/mutant.c"
 			[[ $(scan "$d") == "src/$sub/mutant.c:1:"* ]] || fail "'$bad' in src/$sub is not found"

@@ -1,4 +1,4 @@
--- jsonb_typeof(doc -> 'key') of a shredded key as a column of the scan of SiftAggV6 (src/agg/v6/qual/jsonb.c): the type each row's chunk keeps of the key (a value of the leaf's own type, the tag of
+-- jsonb_typeof(doc -> 'key') of a shredded key as a column of the scan of SiftAggV6 (src/agg/qual/jsonb.c): the type each row's chunk keeps of the key (a value of the leaf's own type, the tag of
 -- a value the leaf could not hold, a JSON null) is a text the scan hands to a group key, an aggregate argument, a FILTER and any qual that no scan key says (<>, NOT IN, IS NULL, OR, CASE), and a
 -- statement that reads both the type and the value of one key apart from the scan keys keeps the normal plan. Documents that are no object (a number, a string, an array, a JSON null, SQL NULL),
 -- a missing key, a JSON null and a string among the numbers are in the data. Every statement runs over the index and over a heap twin (the truth): the first word says they agree, the second whether

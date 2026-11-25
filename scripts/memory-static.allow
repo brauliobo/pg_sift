@@ -56,8 +56,8 @@ defaultsizes	table/v1/load/write.c	1
 defaultsizes	table/v1/promote.c	1
 defaultsizes	table/v1/scan.c	1
 defaultsizes	table/v1/store.c	1
-defaultsizes	table/v1/tbl_reader.c	1
-defaultsizes	table/v1/tbl_reader_read.c	1
+defaultsizes	table/v1/reader.c	1
+defaultsizes	table/v1/reader_read.c	1
 huge	bm25/liveness.c	1
 huge	bm25/postw.c	1
 huge	col/granule/part/write.c	1

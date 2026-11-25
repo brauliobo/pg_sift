@@ -8,37 +8,37 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 
 | Limit | Default | At the limit | Tuned by | Source |
 |---|---|---|---|---|
-| parts one small relation of a star join is read in when it does not fit hash memory: each part is one more pass over the facts | `65,536 parts` | ERROR 54000 naming work_mem and hash_mem_multiplier | `work_mem, hash_mem_multiplier` | `agg/v6/star/run.c` `STAR_MAX_PARTS` |
+| parts one small relation of a star join is read in when it does not fit hash memory: each part is one more pass over the facts | `65,536 parts` | ERROR 54000 naming work_mem and hash_mem_multiplier | `work_mem, hash_mem_multiplier` | `agg/star/run.c` `STAR_MAX_PARTS` |
 | PARTITION BY keys, and ORDER BY keys, of a window the window operator runs | `4 keys` | normal plan | — | `agg/window.h` `SIFT_WIN_MAX_KEYS` |
 | window functions of one window the window operator runs | `8 functions` | normal plan | — | `agg/window.h` `SIFT_WIN_MAX_FUNCS` |
 | LAG and LEAD offset the window operator reads | `4,096 rows` | normal plan | — | `agg/window.h` `SIFT_WIN_MAX_OFFSET` |
-| rows a window of a SiftAgg scan holds while it puts them together by PARTITION BY (no array of them passes 1 GB; work_mem bounds them sooner at its default) | `67,108,863 rows` | ERROR 54000 naming work_mem | `work_mem` | `agg/v6/win/par.c` `RG_MAX_ROWS` |
-| partitions a window of a SiftAgg scan holds while it puts its rows together by PARTITION BY (no array of their keys passes 1 GB; work_mem bounds them sooner at its default) | `33,554,431 partitions` | ERROR 54000 naming work_mem | `work_mem` | `agg/v6/win/par.c` `RG_MAX_GROUPS` |
-| magnitude of the scaled integer a row of an exact numeric product takes in a SiftAgg scan (below 2^95, so that 2^32 rows add up in the 128 bits of a sum) | `95 bits` | ERROR 22003, the hint names sift.enable_agg = off | — | `agg/v6/expr/num.c` |
-| factors of an exact numeric product (a * b * c) of a SiftAgg scan, each a numeric column with a constant added and a constant multiplied | `3 factors` | normal plan | — | `agg/v6/expr/num.h` `SIFT_VN_MAX_FACTORS` |
-| different computed keys and arguments (length, extract, CASE, arithmetic, exact numeric products) of one SiftAgg scan | `8 expressions` | normal plan | — | `agg/v6/v6.h` `SIFT_V6_MAX_DERIVE` |
-| equalities ANDed in the WHEN of the CASE of a computed text key or argument of a SiftAgg scan (the columns of an arithmetic expression of an unnest are one more) | `4 conditions` | normal plan | — | `agg/v6/v6.h` `SIFT_V6_MAX_CASE` |
-| columns, constant and operators of an arithmetic expression of float8 columns in the scan of an unnest (postfix) | `32 tokens` | normal plan | — | `agg/v6/plan/rewrite.h` `SIFT_ARITH_MAX_TOKENS` |
-| operands an arithmetic expression of the scan of an unnest holds at once while it is computed | `8 values` | normal plan | — | `agg/v6/plan/rewrite.h` `SIFT_ARITH_MAX_STACK` |
-| ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan | `8 columns` | normal plan | — | `agg/v6/v6.h` `SIFT_V6_MAX_TOPK_ITEMS` |
-| LIMIT + OFFSET of the Top-K of the groups of a SiftAgg scan (ORDER BY .. LIMIT) | `65,536 rows` | normal plan (a Sort of the groups) | — | `agg/v6/group/topk.h` `SIFT_TOPK_MAX_K` |
-| LIMIT + OFFSET of a GROUP BY .. LIMIT with no ORDER BY, HAVING or DISTINCT ON, for which the group table stops taking new groups once it holds them | `4,096 rows` | the table takes every group, as without a LIMIT | — | `agg/v6/plan/rewrite.h` `SIFT_LOCK_MAX_K` |
+| rows a window of a SiftAgg scan holds while it puts them together by PARTITION BY (no array of them passes 1 GB; work_mem bounds them sooner at its default) | `67,108,863 rows` | ERROR 54000 naming work_mem | `work_mem` | `agg/win/par.c` `RG_MAX_ROWS` |
+| partitions a window of a SiftAgg scan holds while it puts its rows together by PARTITION BY (no array of their keys passes 1 GB; work_mem bounds them sooner at its default) | `33,554,431 partitions` | ERROR 54000 naming work_mem | `work_mem` | `agg/win/par.c` `RG_MAX_GROUPS` |
+| magnitude of the scaled integer a row of an exact numeric product takes in a SiftAgg scan (below 2^95, so that 2^32 rows add up in the 128 bits of a sum) | `95 bits` | ERROR 22003, the hint names sift.enable_agg = off | — | `agg/expr/num.c` |
+| factors of an exact numeric product (a * b * c) of a SiftAgg scan, each a numeric column with a constant added and a constant multiplied | `3 factors` | normal plan | — | `agg/expr/num.h` `SIFT_VN_MAX_FACTORS` |
+| different computed keys and arguments (length, extract, CASE, arithmetic, exact numeric products) of one SiftAgg scan | `8 expressions` | normal plan | — | `agg/engine.h` `SIFT_V6_MAX_DERIVE` |
+| equalities ANDed in the WHEN of the CASE of a computed text key or argument of a SiftAgg scan (the columns of an arithmetic expression of an unnest are one more) | `4 conditions` | normal plan | — | `agg/engine.h` `SIFT_V6_MAX_CASE` |
+| columns, constant and operators of an arithmetic expression of float8 columns in the scan of an unnest (postfix) | `32 tokens` | normal plan | — | `agg/plan/rewrite.h` `SIFT_ARITH_MAX_TOKENS` |
+| operands an arithmetic expression of the scan of an unnest holds at once while it is computed | `8 values` | normal plan | — | `agg/plan/rewrite.h` `SIFT_ARITH_MAX_STACK` |
+| ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan | `8 columns` | normal plan | — | `agg/engine.h` `SIFT_V6_MAX_TOPK_ITEMS` |
+| LIMIT + OFFSET of the Top-K of the groups of a SiftAgg scan (ORDER BY .. LIMIT) | `65,536 rows` | normal plan (a Sort of the groups) | — | `agg/group/topk.h` `SIFT_TOPK_MAX_K` |
+| LIMIT + OFFSET of a GROUP BY .. LIMIT with no ORDER BY, HAVING or DISTINCT ON, for which the group table stops taking new groups once it holds them | `4,096 rows` | the table takes every group, as without a LIMIT | — | `agg/plan/rewrite.h` `SIFT_LOCK_MAX_K` |
 | arms of the ORs of searches a scan takes: the product of the branches of its ORs (the plain matches and one branch of each OR, ANDed) | `16 arms` | the OR stays a filter of the scan | — | `agg/search.c` `SEARCH_MAX_ARMS` |
-| PARTITION BY keys, and ORDER BY keys, of a window of a SiftAgg scan | `4 keys` | normal plan | — | `agg/v6/win/datebin.h` `SIFT_WINX_MAX_KEYS` |
-| window functions of a window of a SiftAgg scan | `16 functions` | normal plan | — | `agg/v6/win/datebin.h` `SIFT_WINX_MAX_FUNCS` |
-| FILTER clauses of the window functions of a SiftAgg scan | `64 filters` | normal plan | — | `agg/v6/win/datebin.h` `SIFT_WINX_MAX_FILTERS` |
-| LAG and LEAD offset of a window of a SiftAgg scan | `4,096 rows` | normal plan | — | `agg/v6/win/datebin.h` `SIFT_WINX_MAX_OFFSET` |
+| PARTITION BY keys, and ORDER BY keys, of a window of a SiftAgg scan | `4 keys` | normal plan | — | `agg/win/datebin.h` `SIFT_WINX_MAX_KEYS` |
+| window functions of a window of a SiftAgg scan | `16 functions` | normal plan | — | `agg/win/datebin.h` `SIFT_WINX_MAX_FUNCS` |
+| FILTER clauses of the window functions of a SiftAgg scan | `64 filters` | normal plan | — | `agg/win/datebin.h` `SIFT_WINX_MAX_FILTERS` |
+| LAG and LEAD offset of a window of a SiftAgg scan | `4,096 rows` | normal plan | — | `agg/win/datebin.h` `SIFT_WINX_MAX_OFFSET` |
 | value registers of a compiled expression | `16 registers` | the expression is not compiled: normal plan | — | `agg/vexpr/vexpr.h` `SIFT_VEXPR_MAX_REGS` |
 | boolean slots of a compiled expression | `16 masks` | the expression is not compiled: normal plan | — | `agg/vexpr/vexpr.h` `SIFT_VEXPR_MAX_MASKS` |
 | operations of a compiled expression | `64 operations` | the expression is not compiled: normal plan | — | `agg/vexpr/vexpr.h` `SIFT_VEXPR_MAX_OPS` |
 | arguments of a call, and arms of a CASE, in a compiled expression | `17 arguments` | the expression is not compiled: normal plan | — | `agg/vexpr/vexpr.h` `SIFT_VEXPR_MAX_ARGS` |
-| aggregates one stream node folds | `16 aggregates` | normal plan | — | `agg/v6/stream.h` `SIFT_V6_STREAM_MAX_AGGS` |
-| distinct FILTER clauses one stream node folds | `4 filters` | normal plan | — | `agg/v6/stream.h` `SIFT_V6_STREAM_MAX_FILTERS` |
-| distinct FILTER clauses of the aggregates of one scan, evaluated once per batch | `64 filters` | normal plan | — | `agg/v6/filter/pivot.h` `SIFT_PIVOT_MAX_FILTERS` |
-| equality column pairs of a join of two SiftAgg scans | `8 columns` | normal plan | — | `agg/v6/join/join.c` `JOIN_MAX_KEYS` |
-| count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) aggregates of one scan a parallel plan runs | `32 aggregates` | the scan runs without parallel workers | — | `agg/v6/par/par.h` `SIFT_PAR_MAX_DIST` |
-| ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them) | `32 columns` | the normal plan sorts the rows and keeps the first of each group | — | `agg/v6/first/first.h` `SIFT_V6_FIRST_MAX_COLS` |
-| rows one group adds in the float8 sum or average of a Format Major 2 scan (its bins are 64-bit integer sums of 26-bit digits) | `137,438,953,472 rows` | an error (the float8 sum is over more rows than the bins hold) | — | `agg/v6/fsum.h` `V6FSUM_MAX_ROWS` |
+| aggregates one stream node folds | `16 aggregates` | normal plan | — | `agg/stream.h` `SIFT_V6_STREAM_MAX_AGGS` |
+| distinct FILTER clauses one stream node folds | `4 filters` | normal plan | — | `agg/stream.h` `SIFT_V6_STREAM_MAX_FILTERS` |
+| distinct FILTER clauses of the aggregates of one scan, evaluated once per batch | `64 filters` | normal plan | — | `agg/filter/pivot.h` `SIFT_PIVOT_MAX_FILTERS` |
+| equality column pairs of a join of two SiftAgg scans | `8 columns` | normal plan | — | `agg/join/join.c` `JOIN_MAX_KEYS` |
+| count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) aggregates of one scan a parallel plan runs | `32 aggregates` | the scan runs without parallel workers | — | `agg/par/par.h` `SIFT_PAR_MAX_DIST` |
+| ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them) | `32 columns` | the normal plan sorts the rows and keeps the first of each group | — | `agg/first/first.h` `SIFT_V6_FIRST_MAX_COLS` |
+| rows one group adds in the float8 sum or average of a Format Major 2 scan (its bins are 64-bit integer sums of 26-bit digits) | `137,438,953,472 rows` | an error (the float8 sum is over more rows than the bins hold) | — | `agg/fsum.h` `V6FSUM_MAX_ROWS` |
 
 ## Column index (`src/col`)
 
@@ -142,6 +142,6 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left) | `4,294,967,294 blocks` | ERROR 54000, VACUUM FULL renumbers them | — | `table/v1/wbuf.c` |
 | frames of 256 values of the strings and doubles of sift_table the cache of a backend keeps | `512 frames` | the oldest frame is dropped and inflated again when a row asks for it | — | `table/f2/gcache.h` `SIFT_F2_GCACHE_MAX_FRAMES` |
 | decoded granules of sift_table the cache of a backend keeps | `64 granules` | the oldest granule is dropped and read again when needed | — | `table/f2/gcache.h` `SIFT_F2_GCACHE_MAX_GRANULES` |
-| the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | `1,073,741,823 (~1024 MiB) bytes` | ERROR 54000 naming the column | — | `table/v1/tbl_reader_read.c` |
+| the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | `1,073,741,823 (~1024 MiB) bytes` | ERROR 54000 naming the column | — | `table/v1/reader_read.c` |
 | decoded row pack blocks of 64 rows of sift_table the cache of a backend keeps | `256 blocks` | the oldest block is dropped and read again when a row asks for it | — | `table/f2/gcache.h` `SIFT_F2_GCACHE_MAX_BLOCKS` |
 

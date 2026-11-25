@@ -12,7 +12,7 @@
 #include "core/par/morsel.h"
 #include "core/par/pool.h"
 #include "miscadmin.h"
-#include "agg/v6/par/host.h"
+#include "agg/par/host.h"
 #include "test/common/pgshim.h"
 #include "test/common/check.h"
 

@@ -1,11 +1,11 @@
 /*
- * agg/v6/par/tseries.c - agg/v6/par/tseries.c on 1 to 4 threads (the trap shim flags the helpers: no palloc, no ereport): GROUP BY date_bin(..) of a time series with an integer key beside it, against the same
+ * agg/par/tseries.c - agg/par/tseries.c on 1 to 4 threads (the trap shim flags the helpers: no palloc, no ereport): GROUP BY date_bin(..) of a time series with an integer key beside it, against the same
  * rows binned one at a time by the kernel of the serial scan and merged. Strides of every kind (the constant ones of a dashboard, a stride with no fast path, the month), origins before and after the data,
  * timestamps before 2000, NULL timestamps and NULL keys; and the rows the threads must leave to the scan: an infinite bin (the word of the NULL key), a bin that overflows, a NULL in a summed column.
  */
 #include "postgres.h"
 
-#include "agg/v6/par/tseries.h"
+#include "agg/par/tseries.h"
 #include "core/hash.h"
 #include "core/par/pool.h"
 #include "core/popcount.h"

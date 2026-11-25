@@ -21,7 +21,7 @@ double	col/v1/wbuf/lookup.c	out = repalloc(out, (cap *= 2) * sizeof(ItemPointerD
 double	core/reads.c	pending = pending ? repalloc(pending, cap * sizeof(Pending)) : MemoryContextAlloc(TopMemoryContext, cap * sizeof(Pending));	open: the same array as the lifetime row of this file
 double	core/lane.c	blks = repalloc(blks, (cap *= 2) * sizeof(BlockNumber));	bounded: the blocks of one lane, at most the pages of the relation
 double	table/v1/gscan/cache.c	g->cu = repalloc(g->cu, (cap *= 2) * sizeof(UnitTids));	bounded: units of one group scan of a sift_table, the memory of its fetch contexts
-double	col/scope_v6/topk.c	l->e = repalloc(l->e, sizeof(*l->e) * (l->cap = Max(l->cap * 2, l->n + n)));	bounded: the live rows of one scope key that hold one value of an order leaf (the tie at the cut of a query), at most the rows of the key
+double	col/f2/cube/topk.c	l->e = repalloc(l->e, sizeof(*l->e) * (l->cap = Max(l->cap * 2, l->n + n)));	bounded: the live rows of one scope key that hold one value of an order leaf (the tie at the cut of a query), at most the rows of the key
 int	col/v1/src_sel.c	b->data = MemoryContextAlloc(cxt, b->cap * 8);	bounded: cap is a size_t of the rows of a unit
 int	bm25/facet/facet.c	rows = MemoryContextAlloc(f->mcxt, n * ROW_BYTES);	bounded: n is the pages of a superblock (SIFT_PAGEMASK_WORDS * 64) times ROW_BYTES
 int	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: size is the length of one posting block
@@ -44,11 +44,11 @@ lifetime	table/v1/store.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryCon
 lifetime	table/v1/store.c	rel->rd_amcache = MemoryContextAlloc(CacheMemoryContext, sizeof(SiftTblRelHeader));	bounded: one entry per sift_table relation the backend opened, dropped with the relcache entry
 lifetime	core/cachebudget.c	cache_root = AllocSetContextCreate(TopMemoryContext, "SiftBackendCacheContext", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, CACHE_BLOCK_MAX);	bounded: the root of every cache of the backend: sift.backend_cache_kb, the oldest entry nobody holds goes first (sift_cache_room)
 lifetime	col/v1/maint/merge_pick.c	settled.gens = settled.gens ? repalloc(settled.gens, 2 * settled.cap * sizeof(uint64)) : MemoryContextAlloc(TopMemoryContext, 2 * settled.cap * sizeof(uint64));	bounded: the generations of the segments the last merges of one index wrote, at most 2 * SETTLED_MAX (a ring)
-loop	agg/v6/unnest/jsonb.c	for (uint32 k = 0; ts != NULL && tuplestore_gettupleslot(ts, true, false, f->slot); k++)	bounded: the members of the one document of a row, in the context of the batch that is reset for the next
+loop	agg/unnest/jsonb.c	for (uint32 k = 0; ts != NULL && tuplestore_gettupleslot(ts, true, false, f->slot); k++)	bounded: the members of the one document of a row, in the context of the batch that is reset for the next
 loop	bm25/cscan/exec.c	while (nset != SIFT_SEMI_OVER && table_scan_getnextslot(scan, ForwardScanDirection, slot))	bounded: the dimension set is capped at SIFT_SEMI_MAX_SET and the scan stops at it
 loop	bm25/liveness.c	for (; i < dm->nsb && used < rows; i++)	bounded: used < rows bounds the loop by the rows asked for
 loop	col/skip/build.c	for (int c = 0; c < rows->ncols; c++)	bounded: walks the columns of the schema, not rows
-loop	col/scope_v6/build.c	for (uint32 r = 0; r < rows.n; r++)	bounded: the row lists of one granule's keys, at most SIFT_GRANULE_ROW_BITS rows (8192) a key and freed when the granule is cut
+loop	col/f2/cube/build.c	for (uint32 r = 0; r < rows.n; r++)	bounded: the row lists of one granule's keys, at most SIFT_GRANULE_ROW_BITS rows (8192) a key and freed when the granule is cut
 loop	col/f2/scope/cells.c	for (int k = 0; k < nrows; k++)	bounded: the string cells of one scope refresh, one copy for each row of a granule (SIFT_GRANULE_ROWS at most) and string leaf, in the context of the refresh
 loop	core/sql/status.c	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)	bounded: one candidate for each sift index or sift_table of the database, none for any other row of pg_class
 loop	col/v1/seg/maint.c	for (uint32 r = 0; r < seg->sbdir[u].nrows; r++)	bounded: tmp is reused by every row and grows to the longest list of one key of the unit, at most its rows
@@ -63,12 +63,12 @@ double	col/f2/tier/cache.c	f = f ? repalloc(f, cap * sizeof(Found)) : palloc(cap
 double	col/f2/tier/sigv4.c	b->d = b->d ? repalloc(b->d, b->cap) : palloc(b->cap);	bounded: the canonical request of one signed HTTP call: the method, the path and a few headers, under a kilobyte
 double	col/f2/key/marks.c	b->bytes = b->bytes ? repalloc(b->bytes, (size_t) b->cap * stride) : palloc((size_t) b->cap * stride);	bounded: one mark for each granule of the part being built, which maintenance_work_mem holds
 double	col/f2/gpu/plan.c	pv->part = repalloc(pv->part, (cap *= 2) * sizeof(PlanPart));	bounded: the parts of the manifest of one relation (the manifest is one allocation under 1 GB), a few words each
-double	agg/gpu/v6.c	t->cand = repalloc(t->cand, (t->cap *= 2) * sizeof(SiftGpuCand));	bounded: at most k candidates (k up to SIFT_TOPN_MAX_ROWS) for each device batch of one scan
-double	agg/group/rec.c	b->p = b->p ? repalloc(b->p, b->cap) : palloc(b->cap);	bounded: the largest record of one group (its key and aggregate states), a few kilobytes
-double	col/f2/v6/scope/scope.c	p->spec.agg = p->spec.agg ? repalloc(p->spec.agg, (Size) p->cap_aggs * sizeof(SiftV6Agg)) : palloc((Size) p->cap_aggs * sizeof(SiftV6Agg));	bounded: the aggregates of one statement, one entry for each aggregate it names
-double	col/f2/v6/scope/run.c	st->vals = st->vals ? repalloc(st->vals, (Size) st->cap_rows * sizeof(Datum *)) : palloc((Size) st->cap_rows * sizeof(Datum *));	open: the result rows of one scope statement, one for each group the statement returns
-double	col/f2/v6/scope/run.c	st->nulls = st->nulls ? repalloc(st->nulls, (Size) st->cap_rows * sizeof(bool *)) : palloc((Size) st->cap_rows * sizeof(bool *));	open: the result rows of one scope statement, one for each group the statement returns
-double	agg/v6/group/fast.c	wb->buf = repalloc(wb->buf, wb->cap);	bounded: the bytes of the wide keys of one vector of SIFT_VEC_LEN rows, each key at most the size of a stored value
+double	agg/gpu/scan.c	t->cand = repalloc(t->cand, (t->cap *= 2) * sizeof(SiftGpuCand));	bounded: at most k candidates (k up to SIFT_TOPN_MAX_ROWS) for each device batch of one scan
+double	agg/ht/rec.c	b->p = b->p ? repalloc(b->p, b->cap) : palloc(b->cap);	bounded: the largest record of one group (its key and aggregate states), a few kilobytes
+double	col/f2/agg/scope/scope.c	p->spec.agg = p->spec.agg ? repalloc(p->spec.agg, (Size) p->cap_aggs * sizeof(SiftV6Agg)) : palloc((Size) p->cap_aggs * sizeof(SiftV6Agg));	bounded: the aggregates of one statement, one entry for each aggregate it names
+double	col/f2/agg/scope/run.c	st->vals = st->vals ? repalloc(st->vals, (Size) st->cap_rows * sizeof(Datum *)) : palloc((Size) st->cap_rows * sizeof(Datum *));	open: the result rows of one scope statement, one for each group the statement returns
+double	col/f2/agg/scope/run.c	st->nulls = st->nulls ? repalloc(st->nulls, (Size) st->cap_rows * sizeof(bool *)) : palloc((Size) st->cap_rows * sizeof(bool *));	open: the result rows of one scope statement, one for each group the statement returns
+double	agg/group/fast.c	wb->buf = repalloc(wb->buf, wb->cap);	bounded: the bytes of the wide keys of one vector of SIFT_VEC_LEN rows, each key at most the size of a stored value
 double	col/f2/del/delvec_delta.c	bs->b = repalloc(bs->b, bs->cap * sizeof(DeltaBucket));	bounded: one bucket for each group of granules the delta tail of one part changes; a fold of the tail ends it
 double	col/f2/del/delvec_delta.c	b->rows = repalloc(b->rows, b->cap * sizeof(DeltaRow));	bounded: the rows of the chunks of one delta tail, which a fold of the tail bounds
 double	col/f2/del/delvec_write.c	b->pay = repalloc(b->pay, cap);	bounded: the payload of the deletion vector of one part, at most one bitmap for each of its granules
@@ -78,5 +78,5 @@ double	col/f2/l0/stage.c	st->parts = st->parts ? repalloc(st->parts, st->cap_par
 double	col/f2/del/pend.c	blks = repalloc(blks, cap * sizeof(BlockNumber));	bounded: the pages of the pending buffer of one partition, which a fold into deletion vectors ends at SIFT_PEND_DEL_FOLD_PAGES
 double	col/f2/del/pend.c	chunk = repalloc(chunk, cap * sizeof(SiftPendDelRec *));	bounded: the pages of the pending buffer of one partition, which a fold into deletion vectors ends at SIFT_PEND_DEL_FOLD_PAGES
 double	col/f2/del/pend.c	nrecs = repalloc(nrecs, cap * sizeof(int));	bounded: the pages of the pending buffer of one partition, which a fold into deletion vectors ends at SIFT_PEND_DEL_FOLD_PAGES
-double	col/scope_v6/refresh.c	c->v = repalloc(c->v, sizeof(SiftScopeMemberKey) * (c->cap *= 2));	bounded: one entry for each changed member (at most REFRESH_MEMBERS_MAX) and each key of the roots or of its pairs
+double	col/f2/cube/refresh.c	c->v = repalloc(c->v, sizeof(SiftScopeMemberKey) * (c->cap *= 2));	bounded: one entry for each changed member (at most REFRESH_MEMBERS_MAX) and each key of the roots or of its pairs
 double	col/f2/del/delete.c	mk->v = mk->v ? repalloc(mk->v, mk->cap * sizeof(SiftDvMark)) : MemoryContextAlloc(mk->cx, mk->cap * sizeof(SiftDvMark));	bounded: the marks of a part are at most the delete records of one call, which the caller cuts at a quarter of the maintenance budget (DeadList.max in col/f2/write.c)

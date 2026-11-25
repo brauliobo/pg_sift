@@ -9,7 +9,7 @@
 #include "postgres.h"
 
 #include "col/f2/cache.h"
-#include "col/scope_v6/meta.h"
+#include "col/f2/cube/meta.h"
 
 /* The summary of scope ord that plan (the directory of the index as of now) names, NULL when there is none; valid, and held in the cache, until mcxt is reset */
 extern const SiftScopeMeta *sift_f2_scope_cache_get(Relation index, const SiftPlanSnapshot *plan, int ord, MemoryContext mcxt);

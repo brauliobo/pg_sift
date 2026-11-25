@@ -9,7 +9,7 @@
 #include "col/f2/rowbuf/rowbuf.h"
 #include "col/granule/granule.h"
 #include "col/keystore/keystore.h"
-#include "col/scope_v6/overlay.h"
+#include "col/f2/cube/overlay.h"
 #include "core/cmp.h"
 
 struct SiftF2Mem

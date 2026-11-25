@@ -1,5 +1,5 @@
 /*
- * agg/gpu/cfg.h - the four settings of the Vulkan path (agg/gpu/v6.h): sift.gpu, sift.gpu_min_rows, sift.gpu_device and sift.gpu_cache_mb
+ * agg/gpu/cfg.h - the four settings of the Vulkan path (agg/gpu/scan.h): sift.gpu, sift.gpu_min_rows, sift.gpu_device and sift.gpu_cache_mb
  */
 #ifndef SIFT_AGG_GPU_CFG_H
 #define SIFT_AGG_GPU_CFG_H

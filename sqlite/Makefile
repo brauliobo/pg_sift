@@ -46,7 +46,7 @@ LDLIBS := -lm -lpthread
 
 # the portable core, one list for every host and for the check (scripts/check-portable.sh); the vector files only when there are vector kernels
 PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)) $(X86_SIMD_SRC),$(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list))))
-OWN := host container mb spool regex regex_parse regex_exec host_stubs store dir stream stubs build merge vtab content cursor write auxfn auxfn_facets pscan init
+OWN := host/host host/container host/mb host/spool host/regex host/regex_parse host/regex_exec host/stubs store dir stream stubs build merge vtab content cursor write auxfn auxfn_facets pscan init
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
 all: $(B)/sift.so
@@ -74,9 +74,7 @@ $(B)/%.o: $(SRC)/%.c | $(B)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(B)/%.o: %.c | $(B)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-$(B)/%.o: host/%.c | $(B)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(B) $(B)/gen:

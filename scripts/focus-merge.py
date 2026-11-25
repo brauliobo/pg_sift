@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# The focus tables of scripts/focus/ (made by scripts/focus-gen.sh): one file NAME.tsv (NAME may hold folders: agg/v6/star.tsv) for each regression test and _hot.tsv, each a single line
+# The focus tables of scripts/focus/ (made by scripts/focus-gen.sh): one file NAME.tsv (NAME may hold folders: agg/star.tsv) for each regression test and _hot.tsv, each a single line
 # NAME<TAB>FILE:FUNCTION... with the tokens sorted and unique. A row depends only on its test's measured functions and on the hot set, so a file
 # is written only when its bytes change and the tests that were not measured keep their files.
 #

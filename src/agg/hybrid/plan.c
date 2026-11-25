@@ -35,11 +35,11 @@
 #include "agg/hybrid/core.h"
 #include "agg/hybrid/int.h"
 #include "agg/hybrid/quals.h"
-#include "agg/v6/v6.h"
+#include "agg/engine.h"
 #include "bm25/planner/planner.h"
 #include "bm25/planner/int.h"
 #include "col/am.h"
-#include "agg/v6/cost/model.h"
+#include "agg/cost/model.h"
 #include "core/store/ops.h"
 #include "table/dispatch.h"
 #include "core/sift.h"
@@ -697,7 +697,7 @@ sift_hybrid_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 
 const CustomPathMethods sift_hybrid_path_methods = {"SiftHybridScan", sift_hybrid_plan_path, NULL};
 
-/* ---- SiftHybridAgg: the groups folded from the rows of the store, where the statement is one the hybrid scan serves and its aggregates are those of agg/v6/ ---- */
+/* ---- SiftHybridAgg: the groups folded from the rows of the store, where the statement is one the hybrid scan serves and its aggregates are those of agg/ ---- */
 
 static bool
 is_exists_subplan(Node *n)

@@ -5,10 +5,10 @@
  */
 #include "postgres.h"
 
-#include "agg/gpu/dict_agg.h"
+#include "agg/gpu/dict.h"
 #include "agg/gpu/emit.h"
 #include "agg/vk/layout.h"
-#include "agg/v6/settings.h"
+#include "agg/settings.h"
 
 extern PGDLLIMPORT bool sift_agg_exact_float;
 

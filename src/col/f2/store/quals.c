@@ -13,7 +13,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "agg/v6/qual/qual.h"
+#include "agg/qual/qual.h"
 #include "col/am/preds.h"
 #include "col/am.h"
 #include "col/pg.h"

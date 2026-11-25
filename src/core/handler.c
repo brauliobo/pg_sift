@@ -27,7 +27,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-#include "col/f2/v6/format.h"
+#include "col/f2/agg/format.h"
 #include "col/f2/vacuum/run.h"
 #include "col/f2/l0/stage.h"
 #include "core/cachebudget.h"
@@ -44,7 +44,7 @@
 #include "core/maint/sched.h"
 #include "agg/agg.h"
 #include "agg/gpu/cfg.h"
-#include "col/f2/v6/proj/sort_plan.h"
+#include "col/f2/agg/proj/sort_plan.h"
 #include "bm25/am.h"
 #include "bm25/analyze/analyze.h"
 #include "bm25/bitmap/bitmap.h"
@@ -64,8 +64,8 @@
 #include "col/shred/shred.h"
 #include "core/sql/sql.h"
 #include "core/build_id.h"
-#include "agg/v6/settings.h"
-#include "agg/v6/test_gucs.h"
+#include "agg/settings.h"
+#include "agg/test_gucs.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_BUILD_ID);
 

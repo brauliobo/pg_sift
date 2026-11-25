@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/unnest.c - agg/v6/par/unnest.c on 1 to 4 threads (the trap shim flags the helpers: no palloc, no ereport): the pairs of (row, element) of arrays held as slots of 1024 rows, against the pairs a plain
+ * agg/par/unnest.c - agg/par/unnest.c on 1 to 4 threads (the trap shim flags the helpers: no palloc, no ereport): the pairs of (row, element) of arrays held as slots of 1024 rows, against the pairs a plain
  * loop makes. Integer and text elements (short ones in their views, long ones in the slot), NULL arrays, empty arrays and NULL elements, inner and left joins, rows the leader left out of the mask, integer
  * and text keys of the row beside the element; the two columns of a jsonb_to_recordset element (one of them left out of the slot when the statement does not read it) and the elements the quals of the
  * element keep; and what the threads must leave to the leader: a NULL in a summed column, more pairs than the sink holds. The slot the leader folds itself gives the same groups.
@@ -8,7 +8,7 @@
 
 #include "catalog/pg_type_d.h"
 
-#include "agg/v6/par/unnest.h"
+#include "agg/par/unnest.h"
 #include "agg/vexpr/str.h"
 #include "core/hash.h"
 #include "core/par/pool.h"

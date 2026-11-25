@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/ref.h - the answer that the operators of agg/v6/par/ must give: the rows sorted by key, with the equal ones merged (and the K best of them), and the records that a run's groups are collected in.
+ * agg/par/ref.h - the answer that the operators of agg/par/ must give: the rows sorted by key, with the equal ones merged (and the K best of them), and the records that a run's groups are collected in.
  */
 #ifndef SIFT_PAR_REF_H
 #define SIFT_PAR_REF_H

@@ -1,11 +1,11 @@
 /*
- * agg/v6/par/radix.c - agg/v6/par/group.c on 1, 2, 3 and 4 threads (the trap shim flags the helpers: no palloc, no ereport), against the rows sorted and merged: every shape of key (words,
+ * agg/par/radix_run.c - agg/par/group.c on 1, 2, 3 and 4 threads (the trap shim flags the helpers: no palloc, no ereport), against the rows sorted and merged: every shape of key (words,
  * a text, words and texts in any order, several texts), the two regimes, the K best, skew, and arenas too small, where what the run folded and the items it hands back must still make the same answer.
  */
 #include "postgres.h"
 
-#include "agg/v6/par/distinct.h"
-#include "agg/v6/par/group.h"
+#include "agg/par/distinct.h"
+#include "agg/par/group.h"
 #include "core/par/pool.h"
 #include "core/popcount.h"
 #include "ref.h"

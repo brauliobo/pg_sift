@@ -15,7 +15,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/numeric.h"
 
-#include "agg/kern6/int.h"
+#include "agg/kern/int.h"
 #include "agg/window.h"
 
 typedef struct FuncState

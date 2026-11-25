@@ -1,12 +1,12 @@
 /*
- * test/scaling/cases/cube.c - col/scope_v6/cube.c: a scope cube takes one row per distinct group in ascending key order, the order a part is written in: a binary search
+ * test/scaling/cases/cube.c - col/f2/cube/cube.c: a scope cube takes one row per distinct group in ascending key order, the order a part is written in: a binary search
  * and an append per row, O(G log G), and no tail shifted.
  */
 #include "postgres.h"
 
 #include <stdlib.h>
 
-#include "col/scope_v6/meta.h"
+#include "col/f2/cube/meta.h"
 #include "op_counters.h"
 
 static void
@@ -40,6 +40,6 @@ run_cube(uint32_t g)
 }
 
 const ScalingCase case_cube = {
-	.name = "cube", .under_test = "col/scope_v6/cube.c, groups added in key order", .n_small = 256, .factor = 8, .run = run_cube,
+	.name = "cube", .under_test = "col/f2/cube/cube.c, groups added in key order", .n_small = 256, .factor = 8, .run = run_cube,
 	GATES({OP_STEPS, 11.5, NULL}, {OP_CMPS, 11.5, NULL}, {OP_MOVE_BYTES, 9.0, NULL}, {OP_ALLOC_BYTES, 9.0, NULL}),
 };

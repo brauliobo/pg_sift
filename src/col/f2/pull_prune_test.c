@@ -1,7 +1,7 @@
 /*
  * col/f2/pull_prune_test.c - the test-only SQL function sift._test_f2_pull, compiled only with SIFT_TESTING: it reads an index of format major 2 through sift_f2_pull (col/f2/sink/ext.h) the way
  * the aggregate scan of an unnest does, tests every row and element itself, and gives the answer beside what the pull left unread (SiftF2PullStats), so that a test says both that the answer is the
- * heap's and that the pruning happened. Its modes are the ways a consumer reads the elements of an array column (agg/v6/unnest/unnest.h):
+ * heap's and that the pruning happened. Its modes are the ways a consumer reads the elements of an array column (agg/unnest/unnest.h):
  *   rows     the live rows that pass the predicates of the rows: a = rows passing, b = sum of the first column of the predicates over them, c = live rows seen
  *   weights  no element column is read: a = the pairs the parents passing give (sift_unnest_weights), b = those parents, d = sum of the first column times the weight of its parent; the weight of
  *            each parent is checked against the pairs sift_unnest_expand makes of it (it too reads the layout alone). weights_left: as for a LEFT JOIN LATERAL
@@ -23,7 +23,7 @@
 #include "utils/builtins.h"
 #include "utils/snapmgr.h"
 
-#include "agg/v6/unnest/unnest.h"
+#include "agg/unnest/unnest.h"
 #include "agg/vexpr/str.h"
 #include "core/catname.h"
 #include "col/am.h"

@@ -10,9 +10,9 @@
 #include "col/f2/f2.h"
 #include "col/f2/store/store.h"
 #include "col/f2/store/ops_int.h"
-#include "col/f2/v6/bridge.h"
-#include "col/f2/v6/scan.h"
-#include "col/f2/v6/unnest/run.h"
+#include "col/f2/agg/bridge.h"
+#include "col/f2/agg/scan.h"
+#include "col/f2/agg/unnest/run.h"
 
 static int
 order_lead_att(Oid relid, bool is_table)

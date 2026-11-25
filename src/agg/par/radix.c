@@ -1,7 +1,7 @@
 /*
  * agg/par/radix.c - the two-phase radix-partitioned parallel aggregation of agg/par/radix.h.
  *
- * The records of a block are those of agg/group/rec.h.
+ * The records of a block are those of agg/ht/rec.h.
  */
 #include "core/host.h"
 

@@ -6,7 +6,7 @@
 
 #include "utils/jsonb.h"
 
-#include "agg/v6/v6.h"
+#include "agg/engine.h"
 #include "col/v1/src_exec.h"
 #include "col/v1/store_ops.h"
 

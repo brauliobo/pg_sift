@@ -1,11 +1,11 @@
 /*
- * test/scaling/cases/months.c - col/scope_v6/cube.c: the table of month cubes of a scope, one cube per month in ascending order, then every month found again: O(M log M).
+ * test/scaling/cases/months.c - col/f2/cube/cube.c: the table of month cubes of a scope, one cube per month in ascending order, then every month found again: O(M log M).
  */
 #include "postgres.h"
 
 #include <stdlib.h>
 
-#include "col/scope_v6/meta.h"
+#include "col/f2/cube/meta.h"
 #include "op_counters.h"
 
 static void
@@ -26,6 +26,6 @@ run_months(uint32_t m)
 }
 
 const ScalingCase case_months = {
-	.name = "month_table", .under_test = "col/scope_v6/cube.c month table, months x8", .n_small = 128, .factor = 8, .run = run_months,
+	.name = "month_table", .under_test = "col/f2/cube/cube.c month table, months x8", .n_small = 128, .factor = 8, .run = run_months,
 	GATES({OP_STEPS, 12.0, NULL}, {OP_CMPS, 12.0, NULL}, {OP_MOVE_BYTES, 9.0, NULL}, {OP_ALLOC_BYTES, 9.5, NULL}),
 };

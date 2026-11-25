@@ -172,7 +172,7 @@ typedef struct SiftScopeOps
 /*
  * 5. BM25 hybrid: the scan of the store a text scan joins (SiftHybridScan names what it reads; the sink takes the rows as a SiftHybridBatch, agg/hybrid/hybrid.h), the survey of the granules
  * its quals leave, whether the predicates a sift_table compiled (zone.compile_quals) leave a scan to do, and the fold of the rows of a scan into the groups of an aggregate (SiftV6Fold,
- * agg/v6/v6.h): begin, the columns it reads, the batch with the scores of its hits, end. A format that reads through a SiftV6Source instead (Format 1) offers can_hybrid,
+ * agg/engine.h): begin, the columns it reads, the batch with the scores of its hits, end. A format that reads through a SiftV6Source instead (Format 1) offers can_hybrid,
  * open_hybrid with the match set and batch_scores, and leaves the entries above NULL.
  */
 typedef struct SiftHybridScan
@@ -213,7 +213,7 @@ typedef struct SiftHybridOps
 
 /*
  * 6. Vulkan: the parts of the relation the device reads (plan, then load and unload their chunks), what the CPU scan leaves out because the device read it, and where a granule of the plan
- * is in its part. The plan and its query are the engine's (agg/gpu/v6.h); the format fills them.
+ * is in its part. The plan and its query are the engine's (agg/gpu/scan.h); the format fills them.
  */
 typedef struct SiftGpuOps
 {

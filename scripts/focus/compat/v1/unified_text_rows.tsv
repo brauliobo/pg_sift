@@ -1,1 +1,1 @@
-compat/v1/unified_text_rows	src/agg/v6/plan/topn_rows.c:rows_served src/col/v1_engine/store_ops_order.c:order_scan_rows src/col/v1_engine/store_ops_order.c:rows_emit src/col/v1_engine/store_ops_order.c:rows_open
+compat/v1/unified_text_rows	src/agg/plan/topn_rows.c:rows_served src/col/v1_engine/store_ops_order.c:order_scan_rows src/col/v1_engine/store_ops_order.c:rows_emit src/col/v1_engine/store_ops_order.c:rows_open

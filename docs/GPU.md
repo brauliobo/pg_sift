@@ -107,7 +107,7 @@ Reading the table:
 
 ## Code layout
 
-`SiftAggV6` asks for the device once, before it scans: `sift_gpu_v6_agg` (`src/agg/gpu/v6.c`) gives back the groups the device made of the parts it could read, or NULL when the CPU runs everything, and the CPU scans the rest into the same groups. The settings are in `src/agg/gpu/cfg.h`, the device layer is `agg/vk/` and the chunk plans are in `src/col/gpu.c`. The persistent worker and the connection of a backend to it are `src/agg/gpu/worker.c`. A backend sees a narrow view of the scan and hands back exact sums. Without `VULKAN=1` the path is only the settings and the NOTICE.
+`SiftAggV6` asks for the device once, before it scans: `sift_gpu_v6_agg` (`src/agg/gpu/scan.c`) gives back the groups the device made of the parts it could read, or NULL when the CPU runs everything, and the CPU scans the rest into the same groups. The settings are in `src/agg/gpu/cfg.h`, the device layer is `agg/vk/` and the chunk plans are in `src/col/gpu.c`. The persistent worker and the connection of a backend to it are `src/agg/gpu/worker.c`. A backend sees a narrow view of the scan and hands back exact sums. Without `VULKAN=1` the path is only the settings and the NOTICE.
 
 ## Limits
 

@@ -1,7 +1,7 @@
 /*
  * col/f2/cost_model.h - the arithmetic of what a scan of an index of format major 2 costs, in the cost parameters of PostgreSQL itself (seq_page_cost, cpu_operator_cost, cpu_index_tuple_cost) and
  * nothing fitted to a machine: the share of the index the key marks and the time window leave, the bytes a scan reads when the columns of its filters are decoded first and the others only for the
- * rows that survive them (PREWHERE), the operators it spends on them, and what a star join adds. The scan of the index (f2_cost.c) and the aggregate path (agg/v6/cost/cost.c) both price through here.
+ * rows that survive them (PREWHERE), the operators it spends on them, and what a star join adds. The scan of the index (f2_cost.c) and the aggregate path (agg/cost/cost.c) both price through here.
  *
  * Portable: only core/host.h.
  */

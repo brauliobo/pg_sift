@@ -1,0 +1,50 @@
+/*
+ * agg/explain.h - the EXPLAIN lines of SiftAggV6 that name what the scan reads (v6_explain.c)
+ */
+#ifndef SIFT_AGG_V6_EXPLAIN_H
+#define SIFT_AGG_V6_EXPLAIN_H
+
+#include "postgres.h"
+
+#include "commands/explain.h"
+#include "utils/relcache.h"
+
+#include "agg/engine.h"
+#include "agg/ext.h"
+
+/* Filters (the quals of the scan: the index's and the batches') and Search (the text query of a sift index) of the scan of heap, read through index (NULL for a sift_table) */
+extern void sift_v6_explain_reads(const SiftV6Spec *spec, Relation heap, Relation index, ExplainState *es);
+/* Group Keys: the columns the groups are of, when the statement names them as they are */
+extern void sift_v6_explain_group_keys(const SiftV6Spec *spec, ExplainState *es);
+/* Lookup Joins: the relations the plans of the dimensions of a star join read */
+extern void sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es);
+
+/* Top-N: the sort keys and the limit of the groups (the spec of the aggregate scan, when it gives the best groups in order) */
+extern void sift_v6_explain_topn_groups(const SiftV6Spec *spec, ExplainState *es);
+
+/*
+ * The counters of a run of the Format 2.0 engine for EXPLAIN (ANALYZE): every worker counts in a struct of its own, with no atomic in a loop, and the leader merges
+ * them once at the end of the scan; sift_agg_explain_v6 prints them as the compact lines of the plan.
+ */
+typedef struct SiftExplainStatsV6
+{
+	uint64		parts_scanned, parts_pruned_key, parts_pruned_time, l0_slabs_read;
+	uint64		grans_scanned, grans_pruned_zone, grans_pruned_skip, grans_pruned_dict, grans_preagg, grans_preagg_delta;
+	uint64		cfilt_grans_total, cfilt_grans_hit;
+	uint64		cfilt_dict, cfilt_rle, cfilt_forbit, cfilt_delta, cfilt_fsst, cfilt_alp;
+	uint64		late_mat_early_exits, late_mat_saved_bytes, sparse_decodes, adapt_reorders;
+	uint64		aio_batches, aio_blocks;
+	uint64		sip_probes, sip_passed, sip_grans_pruned, sip_bytes;
+	uint64		bm25_hits, hybrid_col_grans;
+	uint64		peak_mem_bytes, budget_mem_bytes, spill_count, spill_bytes;
+	uint64		scope_l2_hits, scope_topk_ring_rows, scope_topk_spill_rows, heap_vet_rows;
+	const char *group_mode;		/* "dict-direct", "salted-ht", "radix-ht", "stream-sorted", "preagg-only" */
+	const char *par_strategy;	/* a parallel node: the strategy the planner chose; the counters are those of the participants once the node has shut down (par_ran) */
+	uint64		par_morsels_stolen, par_radix_parts, par_partial_recs, par_partial_bytes;
+	bool		par_ran, par_escalated;
+	const char *fallback_reason;	/* NULL, or why a faster path was not taken */
+} SiftExplainStatsV6;
+
+extern void sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *simd, int workers_launched, int workers_planned);
+
+#endif							/* SIFT_AGG_V6_EXPLAIN_H */

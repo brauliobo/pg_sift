@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/host.c - the backend of core/par/pool.c and core/par/morsel.c for the unit tests: the process flags the pool reads, the exit callbacks it registers (a test runs them as the backend does at
+ * agg/par/host.c - the backend of core/par/pool.c and core/par/morsel.c for the unit tests: the process flags the pool reads, the exit callbacks it registers (a test runs them as the backend does at
  * exit, and at FATAL), and the interrupt and error stack that a cancelled statement unwinds through (an interrupt jumps to the innermost PG_TRY, as ereport(ERROR) does).
  */
 #include "postgres.h"

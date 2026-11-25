@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/host.h - the controls of par_host.c.
+ * agg/par/host.h - the controls of par_host.c.
  */
 #ifndef SIFT_PAR_HOST_H
 #define SIFT_PAR_HOST_H

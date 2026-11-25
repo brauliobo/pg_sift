@@ -1,5 +1,5 @@
 /*
- * core/par/test.c - test-only SQL function of the pool, the driver and the grouped aggregation of core/par and agg/v6/par, compiled only with SIFT_TESTING and registered by the pg_sift_test
+ * core/par/test.c - test-only SQL function of the pool, the driver and the grouped aggregation of core/par and agg/par, compiled only with SIFT_TESTING and registered by the pg_sift_test
  * extension: `loops` runs of the aggregation of `rows` rows of `groups` groups on `workers` threads of the pool. Every run must give every group and every row once. The statement may be cancelled
  * (statement_timeout, pg_cancel_backend, or the leader's n-th unit when cancel_at is set), and the pool is then idle and its memory freed: the next call runs as the first did.
  */
@@ -9,7 +9,7 @@
 
 #include "funcapi.h"
 
-#include "agg/v6/par/group.h"
+#include "agg/par/group.h"
 #include "core/hash.h"
 #include "core/par/pool.h"
 #include "miscadmin.h"

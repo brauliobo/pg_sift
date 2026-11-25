@@ -1,10 +1,10 @@
 /*
- * agg/v6/gather.c - agg/v6/gather.h: the rows of a vector picked by an index list keep every byte of the element of the type of the vector (a 16 byte numeric, a 32 byte numeric product, a uuid,
+ * agg/gather.c - agg/gather.h: the rows of a vector picked by an index list keep every byte of the element of the type of the vector (a 16 byte numeric, a 32 byte numeric product, a uuid,
  * an interval, a string view as well as the 8 byte types), the validity of the rows and the dictionary of a vector of codes; a NONE index and a NULL row are NULL, whose bytes are zero.
  */
 #include "postgres.h"
 
-#include "agg/v6/gather.h"
+#include "agg/gather.h"
 #include "test/common/pgshim.h"
 #include "test/common/check.h"
 

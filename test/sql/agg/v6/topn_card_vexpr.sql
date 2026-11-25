@@ -1,4 +1,4 @@
--- The Top-N tournament (src/agg/topn_v6.c), the cardinality estimator (src/agg/v6/cost/card_est.c) and the numeric, calendar and boolean programs of the
+-- The Top-N tournament (src/agg/topn/tourn.c), the cardinality estimator (src/agg/cost/card_est.c) and the numeric, calendar and boolean programs of the
 -- expression machine (src/agg/vexpr*.c), each held to PostgreSQL's own answer over the same rows. The data is made by arithmetic, so that the output does
 -- not depend on the version.
 CREATE EXTENSION pg_sift;

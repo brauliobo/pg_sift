@@ -21,7 +21,7 @@
 #ifndef SIFT_AGG_SIP_H
 #define SIFT_AGG_SIP_H
 
-#include "agg/kern6/kern6.h"
+#include "agg/kern/kern.h"
 #include "core/adapt_pipe.h"
 
 #define SIFT_SIP_EXACT_MAX		64

@@ -10,7 +10,7 @@
 #include "col/am.h"
 #include "col/dictshm/dictshm.h"
 #include "col/v1/reader.h"
-#include "table/v1/tbl_reader.h"
+#include "table/v1/reader.h"
 #include "col/v1/pagg.h"
 #include "core/sql/sql.h"
 #endif							/* SIFT_TESTING */

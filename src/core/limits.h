@@ -138,7 +138,7 @@
 	X(eset_rows, "SIFT_ESET_ROWS", "col/v1/spool.h", SIFT_ESET_ROWS, "entries", \
 	  "the entries of one order array that a segment writer keeps in memory (16 bytes each, a leaf holds the entries of its values and of its NULL rows apart) before it writes them to a temp file as a sorted run", \
 	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk)", "-", 1) \
-	X(wide_dict_bytes, "-", "table/v1/tbl_reader_read.c", 1073741823, "bytes", \
+	X(wide_dict_bytes, "-", "table/v1/reader_read.c", 1073741823, "bytes", \
 	  "the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group", \
 	  "ERROR 54000 naming the column", "-", 1) \
 	X(max_segments, "SIFT_DIR_POLICY_MAX", "core/page.h", SIFT_DIR_POLICY_MAX, "segments", \
@@ -218,7 +218,7 @@
 	X(shm_epoch_slots, "SIFT_SHM_EPOCH_SLOTS", "core/shm/manifest.h", 1024, "backends", \
 	  "backends whose epoch the registry of the manifests in shared memory tracks: a snapshot is pinned without a lock by the backends numbered below it", \
 	  "a backend numbered above it pins a snapshot under the lock of its slot", "-", 0) \
-	X(star_join_parts, "STAR_MAX_PARTS", "agg/v6/star/run.c", 65536, "parts", \
+	X(star_join_parts, "STAR_MAX_PARTS", "agg/star/run.c", 65536, "parts", \
 	  "parts one small relation of a star join is read in when it does not fit hash memory: each part is one more pass over the facts", \
 	  "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 0) \
 	X(proj_cols, "SIFT_PROJ_MAX_COLS", "col/f2/proj/proj.h", SIFT_PROJ_MAX_COLS, "columns", \
@@ -251,49 +251,49 @@
 	X(win_offset, "SIFT_WIN_MAX_OFFSET", "agg/window.h", 4096, "rows", \
 	  "LAG and LEAD offset the window operator reads", \
 	  "normal plan", "-", 0) \
-	X(win_regroup_rows, "RG_MAX_ROWS", "agg/v6/win/par.c", 67108863, "rows", \
+	X(win_regroup_rows, "RG_MAX_ROWS", "agg/win/par.c", 67108863, "rows", \
 	  "rows a window of a SiftAgg scan holds while it puts them together by PARTITION BY (no array of them passes 1 GB; work_mem bounds them sooner at its default)", \
 	  "ERROR 54000 naming work_mem", "work_mem", 0) \
-	X(win_regroup_groups, "RG_MAX_GROUPS", "agg/v6/win/par.c", 33554431, "partitions", \
+	X(win_regroup_groups, "RG_MAX_GROUPS", "agg/win/par.c", 33554431, "partitions", \
 	  "partitions a window of a SiftAgg scan holds while it puts its rows together by PARTITION BY (no array of their keys passes 1 GB; work_mem bounds them sooner at its default)", \
 	  "ERROR 54000 naming work_mem", "work_mem", 0) \
-	X(num_expr_bits, "-", "agg/v6/expr/num.c", 95, "bits", \
+	X(num_expr_bits, "-", "agg/expr/num.c", 95, "bits", \
 	  "magnitude of the scaled integer a row of an exact numeric product takes in a SiftAgg scan (below 2^95, so that 2^32 rows add up in the 128 bits of a sum)", \
 	  "ERROR 22003, the hint names sift.enable_agg = off", "-", 0) \
-	X(num_factors, "SIFT_VN_MAX_FACTORS", "agg/v6/expr/num.h", 3, "factors", \
+	X(num_factors, "SIFT_VN_MAX_FACTORS", "agg/expr/num.h", 3, "factors", \
 	  "factors of an exact numeric product (a * b * c) of a SiftAgg scan, each a numeric column with a constant added and a constant multiplied", \
 	  "normal plan", "-", 0) \
-	X(v6_derived, "SIFT_V6_MAX_DERIVE", "agg/v6/v6.h", 8, "expressions", \
+	X(v6_derived, "SIFT_V6_MAX_DERIVE", "agg/engine.h", 8, "expressions", \
 	  "different computed keys and arguments (length, extract, CASE, arithmetic, exact numeric products) of one SiftAgg scan", \
 	  "normal plan", "-", 0) \
-	X(v6_case_conds, "SIFT_V6_MAX_CASE", "agg/v6/v6.h", 4, "conditions", \
+	X(v6_case_conds, "SIFT_V6_MAX_CASE", "agg/engine.h", 4, "conditions", \
 	  "equalities ANDed in the WHEN of the CASE of a computed text key or argument of a SiftAgg scan (the columns of an arithmetic expression of an unnest are one more)", \
 	  "normal plan", "-", 0) \
-	X(arith_tokens, "SIFT_ARITH_MAX_TOKENS", "agg/v6/plan/rewrite.h", 32, "tokens", \
+	X(arith_tokens, "SIFT_ARITH_MAX_TOKENS", "agg/plan/rewrite.h", 32, "tokens", \
 	  "columns, constant and operators of an arithmetic expression of float8 columns in the scan of an unnest (postfix)", \
 	  "normal plan", "-", 0) \
-	X(arith_stack, "SIFT_ARITH_MAX_STACK", "agg/v6/plan/rewrite.h", 8, "values", \
+	X(arith_stack, "SIFT_ARITH_MAX_STACK", "agg/plan/rewrite.h", 8, "values", \
 	  "operands an arithmetic expression of the scan of an unnest holds at once while it is computed", \
 	  "normal plan", "-", 0) \
-	X(v6_topk_items, "SIFT_V6_MAX_TOPK_ITEMS", "agg/v6/v6.h", 8, "columns", \
+	X(v6_topk_items, "SIFT_V6_MAX_TOPK_ITEMS", "agg/engine.h", 8, "columns", \
 	  "ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan", \
 	  "normal plan", "-", 0) \
-	X(v6_topk_k, "SIFT_TOPK_MAX_K", "agg/v6/group/topk.h", 65536, "rows", \
+	X(v6_topk_k, "SIFT_TOPK_MAX_K", "agg/group/topk.h", 65536, "rows", \
 	  "LIMIT + OFFSET of the Top-K of the groups of a SiftAgg scan (ORDER BY .. LIMIT)", \
 	  "normal plan (a Sort of the groups)", "-", 0) \
-	X(v6_lock_k, "SIFT_LOCK_MAX_K", "agg/v6/plan/rewrite.h", 4096, "rows", \
+	X(v6_lock_k, "SIFT_LOCK_MAX_K", "agg/plan/rewrite.h", 4096, "rows", \
 	  "LIMIT + OFFSET of a GROUP BY .. LIMIT with no ORDER BY, HAVING or DISTINCT ON, for which the group table stops taking new groups once it holds them", \
 	  "the table takes every group, as without a LIMIT", "-", 0) \
-	X(winx_keys, "SIFT_WINX_MAX_KEYS", "agg/v6/win/datebin.h", SIFT_WINX_MAX_KEYS, "keys", \
+	X(winx_keys, "SIFT_WINX_MAX_KEYS", "agg/win/datebin.h", SIFT_WINX_MAX_KEYS, "keys", \
 	  "PARTITION BY keys, and ORDER BY keys, of a window of a SiftAgg scan", \
 	  "normal plan", "-", 0) \
-	X(winx_funcs, "SIFT_WINX_MAX_FUNCS", "agg/v6/win/datebin.h", SIFT_WINX_MAX_FUNCS, "functions", \
+	X(winx_funcs, "SIFT_WINX_MAX_FUNCS", "agg/win/datebin.h", SIFT_WINX_MAX_FUNCS, "functions", \
 	  "window functions of a window of a SiftAgg scan", \
 	  "normal plan", "-", 0) \
-	X(winx_filters, "SIFT_WINX_MAX_FILTERS", "agg/v6/win/datebin.h", SIFT_WINX_MAX_FILTERS, "filters", \
+	X(winx_filters, "SIFT_WINX_MAX_FILTERS", "agg/win/datebin.h", SIFT_WINX_MAX_FILTERS, "filters", \
 	  "FILTER clauses of the window functions of a SiftAgg scan", \
 	  "normal plan", "-", 0) \
-	X(winx_offset, "SIFT_WINX_MAX_OFFSET", "agg/v6/win/datebin.h", SIFT_WINX_MAX_OFFSET, "rows", \
+	X(winx_offset, "SIFT_WINX_MAX_OFFSET", "agg/win/datebin.h", SIFT_WINX_MAX_OFFSET, "rows", \
 	  "LAG and LEAD offset of a window of a SiftAgg scan", \
 	  "normal plan", "-", 0) \
 	X(vexpr_regs, "SIFT_VEXPR_MAX_REGS", "agg/vexpr/vexpr.h", 16, "registers", \
@@ -308,16 +308,16 @@
 	X(vexpr_args, "SIFT_VEXPR_MAX_ARGS", "agg/vexpr/vexpr.h", 17, "arguments", \
 	  "arguments of a call, and arms of a CASE, in a compiled expression", \
 	  "the expression is not compiled: normal plan", "-", 0) \
-	X(stream_aggs, "SIFT_V6_STREAM_MAX_AGGS", "agg/v6/stream.h", 16, "aggregates", \
+	X(stream_aggs, "SIFT_V6_STREAM_MAX_AGGS", "agg/stream.h", 16, "aggregates", \
 	  "aggregates one stream node folds", \
 	  "normal plan", "-", 0) \
-	X(stream_filters, "SIFT_V6_STREAM_MAX_FILTERS", "agg/v6/stream.h", 4, "filters", \
+	X(stream_filters, "SIFT_V6_STREAM_MAX_FILTERS", "agg/stream.h", 4, "filters", \
 	  "distinct FILTER clauses one stream node folds", \
 	  "normal plan", "-", 0) \
-	X(pivot_filters, "SIFT_PIVOT_MAX_FILTERS", "agg/v6/filter/pivot.h", SIFT_PIVOT_MAX_FILTERS, "filters", \
+	X(pivot_filters, "SIFT_PIVOT_MAX_FILTERS", "agg/filter/pivot.h", SIFT_PIVOT_MAX_FILTERS, "filters", \
 	  "distinct FILTER clauses of the aggregates of one scan, evaluated once per batch", \
 	  "normal plan", "-", 0) \
-	X(v6_join_keys, "JOIN_MAX_KEYS", "agg/v6/join/join.c", 8, "columns", \
+	X(v6_join_keys, "JOIN_MAX_KEYS", "agg/join/join.c", 8, "columns", \
 	  "equality column pairs of a join of two SiftAgg scans", \
 	  "normal plan", "-", 0) \
 	X(maint_workers, "SIFT_MAINT_MAX_WORKERS", "core/maint/sched.h", SIFT_MAINT_MAX_WORKERS, "workers", \
@@ -335,13 +335,13 @@
 	X(zstd_dict_bytes, "SIFT_ZSTD_DICT_MAX_BYTES", "col/compress.h", SIFT_ZSTD_DICT_MAX_BYTES, "bytes", \
 	  "the dictionary of the zstd compression of a part", \
 	  "a larger dictionary is not written; the part is compressed without it", "-", 0) \
-	X(par_dist, "SIFT_PAR_MAX_DIST", "agg/v6/par/par.h", 32, "aggregates", \
+	X(par_dist, "SIFT_PAR_MAX_DIST", "agg/par/par.h", 32, "aggregates", \
 	  "count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) aggregates of one scan a parallel plan runs", \
 	  "the scan runs without parallel workers", "-", 0) \
-	X(first_cols, "SIFT_V6_FIRST_MAX_COLS", "agg/v6/first/first.h", SIFT_V6_FIRST_MAX_COLS, "columns", \
+	X(first_cols, "SIFT_V6_FIRST_MAX_COLS", "agg/first/first.h", SIFT_V6_FIRST_MAX_COLS, "columns", \
 	  "ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them)", \
 	  "the normal plan sorts the rows and keeps the first of each group", "-", 0) \
-	X(float_sum_rows, "V6FSUM_MAX_ROWS", "agg/v6/fsum.h", 137438953472, "rows", \
+	X(float_sum_rows, "V6FSUM_MAX_ROWS", "agg/fsum.h", 137438953472, "rows", \
 	  "rows one group adds in the float8 sum or average of a Format Major 2 scan (its bins are 64-bit integer sums of 26-bit digits)", \
 	  "an error (the float8 sum is over more rows than the bins hold)", "-", 0)
 

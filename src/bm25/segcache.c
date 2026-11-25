@@ -6,7 +6,7 @@
  * blob of a term (bm25/posting/posting.c) are kept under the file, the generation, what they are, where they start and how long they
  * are, up to SEGCACHE_BYTES per backend. The reader pins the entry it uses until its memory context goes (a callback), and
  * eviction takes the least recently used one that nobody pins. What does not fit is made in the reader's memory, as before. The
- * SQLite and MariaDB hosts keep nothing (host_stubs.c).
+ * SQLite and MariaDB hosts keep nothing (host/stubs.c).
  */
 #include "postgres.h"
 

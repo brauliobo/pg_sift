@@ -1,5 +1,5 @@
 /*
- * col/f2/gpu/plan.c - the parts of a Format 2.0 relation that the device reads, for a sift_col index and a sift_table alike (both are a SiftF2Store, agg/gpu/v6.h).
+ * col/f2/gpu/plan.c - the parts of a Format 2.0 relation that the device reads, for a sift_col index and a sift_table alike (both are a SiftF2Store, agg/gpu/scan.h).
  *
  * The plan lists the granules of the parts whose rows the snapshot sees without a test of each row (col/gpu.h): sealed inserters, and for an index whose heap decides visibility, every heap
  * block the part's addresses span all-visible. The rows the snapshot sees deleted, by the deletion vector of the part and by the pending deletes of its partition, become the mask of dead
@@ -19,7 +19,7 @@
 #include "utils/rel.h"
 
 #include "col/f2/gpu/dead.h"
-#include "agg/gpu/v6.h"
+#include "agg/gpu/scan.h"
 #include "col/f2/store/ops_int.h"
 #include "col/f2/f2.h"
 #include "col/f2/cache.h"
@@ -63,7 +63,7 @@ typedef struct PlanPart
 	int			nspans;
 } PlanPart;
 
-/* What the predicates of the scan leave of the key of the index: the key plan of its marks (agg/gpu/v6.h SiftGpuQuery.zone, in), the lead column's range, whether any row can pass */
+/* What the predicates of the scan leave of the key of the index: the key plan of its marks (agg/gpu/scan.h SiftGpuQuery.zone, in), the lead column's range, whether any row can pass */
 typedef struct KeyPrune
 {
 	SiftF2Rel	f;

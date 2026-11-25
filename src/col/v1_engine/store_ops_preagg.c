@@ -17,8 +17,8 @@
 #include "utils/rel.h"
 
 #include "agg/agg.h"
-#include "agg/v6/group/int.h"
-#include "agg/v6/cube.h"
+#include "agg/group/int.h"
+#include "agg/cube.h"
 #include "col/source_fold.h"
 #include "col/v1/store_ops.h"
 #include "core/memtrack.h"

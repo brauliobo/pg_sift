@@ -5,8 +5,8 @@
 #include "postgres.h"
 
 #include "col/f2/store/ops_int.h"
-#include "col/f2/v6/proj/exec.h"
-#include "col/f2/v6/proj/sort_plan.h"
+#include "col/f2/agg/proj/exec.h"
+#include "col/f2/agg/proj/sort_plan.h"
 
 static bool
 proj_serve(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, MemoryContext cx, SiftProjResult *out)

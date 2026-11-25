@@ -1,7 +1,7 @@
 /*
  * agg/vexpr/vexpr.c - the machine of agg/vexpr/vexpr.h: the register file, and one function per operation over the rows of a batch. The operations of arithmetic run
  * on every row (the wrapping builtins give the answer and the overflow bit of each row) and fail only for a live valid row, so a dead row never fails
- * the batch; the comparisons are the slots of agg/kern6/kern6.h of the active level, the bitmaps of the boolean operations are whole words. The errors are
+ * the batch; the comparisons are the slots of agg/kern/kern.h of the active level, the bitmaps of the boolean operations are whole words. The errors are
  * PostgreSQL's: the same messages, and for float8 the checks of utils/float.h. An operation does not raise: it notes the first row of the batch that has an
  * error (and of what kind), the later operations go on, and the batch raises the error of the lowest row, of the earliest operation for that row, once the
  * program is done: PostgreSQL meets the rows one after the other, so the error of a row that precedes another's is the one it raises, whichever operation of
@@ -11,7 +11,7 @@
 
 #include "utils/float.h"
 
-#include "agg/kern6/int.h"
+#include "agg/kern/int.h"
 #include "agg/vexpr/vexpr.h"
 #include "agg/vexpr/cal.h"
 #include "agg/vexpr/kern.h"

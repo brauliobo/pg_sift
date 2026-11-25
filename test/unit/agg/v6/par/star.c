@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/star.c - agg/v6/par/star.c on 1 to 4 threads (the trap shim flags the helpers: no palloc, no ereport): a star join of a fact table with dimensions that the leader read once, against the fact rows
+ * agg/par/star.c - agg/par/star.c on 1 to 4 threads (the trap shim flags the helpers: no palloc, no ereport): a star join of a fact table with dimensions that the leader read once, against the fact rows
  * joined one at a time by a linear look at the dimension. Inner and left joins, integer and text payload keys (short ones sit in their views, long ones in the table), NULL payloads, orphans that find no
  * dimension row, a dimension that holds a key more than once, a predicate that leaves a quarter of the rows; and what the threads must leave to the scan: a NULL in a summed column, a batch that expands past
  * the granule.
@@ -8,7 +8,7 @@
 
 #include "catalog/pg_type_d.h"
 
-#include "agg/v6/par/star.h"
+#include "agg/par/star.h"
 #include "core/hash.h"
 #include "core/par/pool.h"
 #include "core/popcount.h"

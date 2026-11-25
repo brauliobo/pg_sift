@@ -595,7 +595,7 @@ extern int64 sift_col_vet_offsets;	/* the row offsets decoded to check rows agai
 /* The strategies past those of a b-tree, 30 and 31 the last of the operator classes of sift_col (col/am/preds.h has the others): 30 ? (jsonb_exists) of sift.col_jsonb_ops, answered by an index of format major 2 from the rows each granule keeps of a key (SIFT_ENC_KEY_*); 31 && of sift.col_array_ops, of which the index gives the rows whose array is not NULL and the executor tests the rest */
 #define COL_STRAT_JSONB_EXISTS	30
 #define COL_STRAT_ARRAY_OVERLAP	31
-/* Not an operator of a class: the key of the aggregate scan of format major 2 (agg/v6/) for jsonb_typeof(document -> key) = type, whose argument is an int8 made by COL_JSON_TYPE_ARG */
+/* Not an operator of a class: the key of the aggregate scan of format major 2 (agg/) for jsonb_typeof(document -> key) = type, whose argument is an int8 made by COL_JSON_TYPE_ARG */
 #define COL_STRAT_JSONB_TYPE	32
 #define COL_JSON_TYPE_ARG(leaf, mask)	((((int64) (leaf)) << 16) | (mask))
 #define COL_JSON_TYPE_LEAF(arg)			((int) ((arg) >> 16))

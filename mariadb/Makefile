@@ -28,7 +28,7 @@ SERVER_SYMBOLS = my_printf_error mysql_real_data_home sql_service_handler
 
 # the portable core, one list for every host and for scripts/check-portable.sh
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
-HOSTC    := host container mb spool regex regex_parse regex_exec host_stubs
+HOSTC    := $(addprefix sqhost/,host container mb spool regex regex_parse regex_exec stubs)
 OWN      := store stubs
 GLUE     := engine docs persist delta query feed merge cfg_check
 UDFOBJS  := $(addprefix $(OUT)/,udf.o udf_host.o udf_query.o udf_drain.o)
@@ -45,8 +45,8 @@ $(OUT)/%.o: $(HERE)/host/%.c | $(OUT)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # the memory, error and string vocabulary of the SQLite host, its regular expression engine and its stubs, as they are
-SQHOSTOBJS := $(addprefix $(OUT)/,host container mb spool regex regex_parse regex_exec host_stubs)
-$(addsuffix .o,$(SQHOSTOBJS)): $(OUT)/%.o: $(SQHOST)/%.c | $(OUT)
+$(OUT)/sqhost/%.o: $(SQHOST)/%.c | $(OUT)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/%.o: $(HERE)/%.c $(HERE)/ix.h $(HERE)/engine.h | $(OUT)

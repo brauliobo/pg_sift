@@ -1,4 +1,4 @@
--- COUNT(DISTINCT) of a text column read as the codes of the dictionaries of its parts (src/agg/v6/dictseen.c, src/col/f2/build/build.c) in the serial and the parallel SiftAggV6, held to the heap's own
+-- COUNT(DISTINCT) of a text column read as the codes of the dictionaries of its parts (src/agg/dictseen.c, src/col/f2/build/build.c) in the serial and the parallel SiftAggV6, held to the heap's own
 -- aggregate with 0, 1, 2 and 4 workers. The columns are coded three ways: tc by a dictionary of the part (few distinct strings), tf by no dictionary (every string almost unique), tm by a dictionary
 -- in the first parts and by none in the rest; rows in the L0 slab, updated rows and deleted rows (so that the heap is asked about them) are in the data, and NULLs in every column. The data is made by
 -- arithmetic, so that the output does not depend on the version.

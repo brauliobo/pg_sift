@@ -62,7 +62,7 @@ mem-alloc-hot	src/col/v1/wbuf/batches.c	2	a census or a budget check; the call i
 mem-alloc-hot	src/table/f2/gcache.c	1	a census or a budget check; the call is not per row
 mem-alloc-hot	src/table/v1/gscan/cache.c	1	a census or a budget check; the call is not per row
 memmove-in-loop	src/agg/filter_adapt.c	1	bounded: at most SIFT_AFILT_MAX (64) entries, a shift of at most 128 bytes
-memmove-in-loop	src/agg/v6/fuse/fuse.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/agg/fuse/fuse.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/bm25/bitmap/bitmap.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/col/v1/build/build.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/col/v1/order/order.c	1	a bounded array shifted in a cold path
@@ -78,8 +78,8 @@ qsort-in-loop	src/bm25/facet/facet.c	1	one sort of a fresh temporary array per o
 qsort-in-loop	src/bm25/runs/runs.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/col/f2/compact/plan.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/col/f2/rowbuf/cluster.c	2	one sort of a fresh temporary array per outer bucket
-qsort-in-loop	src/col/scope_v6/assemble.c	1	one sort of a fresh temporary array per outer bucket
-qsort-in-loop	src/col/scope_v6/topk.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/col/f2/cube/assemble.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/col/f2/cube/topk.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/core/space/space.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/table/f2/am.c	1	one sort of the addresses of a window of the scan, the windows are disjoint: the total is N log of the window
 repalloc-additive	sqlite/auxfn_facets.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
@@ -87,7 +87,7 @@ repalloc-additive	src/agg/stream_exec.c	1	a bounded array or a sentinel slot; Sp
 repalloc-additive	src/col/f2/scope/build.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/f2/tail.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/f2/tier/policy.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
-repalloc-additive	src/col/scope_v6/refresh.c	2	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/cube/refresh.c	2	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/v1/batch/int.h	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/v1/build/from_index.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/v1/maint/scope.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites

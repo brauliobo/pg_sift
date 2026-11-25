@@ -8,7 +8,7 @@
 #include "storage/ipc.h"
 
 #include "agg/gpu/shm.h"
-#include "agg/gpu/v6.h"
+#include "agg/gpu/scan.h"
 #include "core/cachebudget.h"
 #include "test/common/check.h"
 

@@ -10,9 +10,9 @@ sift.sift_handler(internal)	*	index access method handler (internal result struc
 sift.col_handler(internal)	*	index access method handler (internal result struct): SQL cannot call it; every CREATE INDEX USING sift_col of the sweep runs it
 sift.table_handler(internal)	*	table access method handler (internal result struct): SQL cannot call it; every CREATE TABLE USING sift_table of the sweep runs it
 sift.values_handler(internal)	*	table access method handler of the value store (internal result struct): SQL cannot call it; the value store of every sift_col index of the sweep runs it
-sift_internal.argmax_trans(internal,anyelement,anycompatible)	*	internal state cannot be built from SQL; every call of the aggregate sift.arg_max runs it (test/sql/agg/v6/clickhouse_sql.sql)
+sift_internal.argmax_trans(internal,anyelement,anycompatible)	*	internal state cannot be built from SQL; every call of the aggregate sift.arg_max runs it (test/sql/agg/clickhouse_sql.sql)
 sift_internal.argmax_combine(internal,internal)	*	internal states cannot be built from SQL; runs only in a parallel aggregate plan of sift.arg_max
-sift_internal.argmin_trans(internal,anyelement,anycompatible)	*	internal state cannot be built from SQL; every call of the aggregate sift.arg_min runs it (test/sql/agg/v6/clickhouse_sql.sql)
+sift_internal.argmin_trans(internal,anyelement,anycompatible)	*	internal state cannot be built from SQL; every call of the aggregate sift.arg_min runs it (test/sql/agg/clickhouse_sql.sql)
 sift_internal.argmin_combine(internal,internal)	*	internal states cannot be built from SQL; runs only in a parallel aggregate plan of sift.arg_min
 sift_internal.argext_final(internal,anyelement,anycompatible)	*	internal state cannot be built from SQL; every call of the aggregates sift.arg_max and sift.arg_min runs it
 sift_internal.argext_serial(internal)	*	internal state cannot be built from SQL; runs only in a parallel aggregate plan of sift.arg_max or sift.arg_min

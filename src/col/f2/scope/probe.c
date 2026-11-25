@@ -20,7 +20,7 @@
 #include "col/f2/scope/int.h"
 #include "col/f2/scope/mem.h"
 #include "col/scope/scope.h"
-#include "col/scope_v6/probe.h"
+#include "col/f2/cube/probe.h"
 #include "core/cmp.h"
 #include "core/compat.h"
 #include "core/memtrack.h"

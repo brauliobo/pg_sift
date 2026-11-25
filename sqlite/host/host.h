@@ -5,7 +5,7 @@
  * reach it only through src/core/host.h (SIFT_HOST_SQLITE, -I sqlite/host).
  *
  * Memory is a context tree over malloc (host.c); ereport(ERROR) longjmps to the handler a caller pushed with
- * SQ_TRY (host.c), so no engine state needs unwinding. Pages, buffers and relations are in host_store.h.
+ * SQ_TRY (host.c), so no engine state needs unwinding. Pages, buffers and relations are in store.h.
  */
 #ifndef SQ_HOST_H
 #define SQ_HOST_H
@@ -235,7 +235,7 @@ typedef struct SqErrorFrame
 extern void sift_host_cache_lock(void);
 extern void sift_host_cache_unlock(void);
 
-/* The segment bytes the cache keeps under relation rel are never wanted again (host_stubs.c) */
+/* The segment bytes the cache keeps under relation rel are never wanted again (stubs.c) */
 extern void sift_host_segcache_drop_rel(Oid rel);
 
 extern _Thread_local SqErrorFrame *sq_error_top;
@@ -528,8 +528,8 @@ static inline void dsa_free(dsa_area *a, dsa_pointer p) { free((void *) (uintptr
 static inline Size add_size(Size a, Size b) { return a + b; }
 static inline Size mul_size(Size a, Size b) { return a * b; }
 
-/* ---------- pages, buffers and relations over SQLite rows: host_store.h ---------- */
+/* ---------- pages, buffers and relations over SQLite rows: store.h ---------- */
 
-#include "host_store.h"
+#include "store.h"
 
 #endif							/* SQ_HOST_H */

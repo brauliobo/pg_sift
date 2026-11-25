@@ -1,14 +1,14 @@
 /*
- * agg/v6/par/derive.c - agg/v6/par/derive.h: the keys and arguments the compute threads compute from columns (length, the host of an URL, extract, CASE) are what the serial scan computes
+ * agg/par/derive.c - agg/par/derive.h: the keys and arguments the compute threads compute from columns (length, the host of an URL, extract, CASE) are what the serial scan computes
  * (sift_vx_derive, over the same rows) and what the SQL definitions say (the regular expression written out, the floor of a division in 128 bits, a character count): on rows of every shape (empty,
  * multi-byte, around 12 and 32 bytes, no slash, a host of "www." alone), in plain and dictionary-coded text, with every pattern of active rows, SIMD on and off, on 1 to 4 threads that the
  * trap shim flags as workers (no palloc, no ereport; the derive takes no memory at all).
  */
 #include "postgres.h"
 
-#include "agg/group/ht.h"
-#include "agg/v6/par/run_int.h"
-#include "agg/v6/expr/str.h"
+#include "agg/ht/ht.h"
+#include "agg/par/run_int.h"
+#include "agg/expr/str.h"
 #include "core/cpu.h"
 #include "core/hash.h"
 #include "test/common/pgshim.h"

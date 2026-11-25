@@ -12,5 +12,5 @@ bm25/read/dict_ids	52
 table/basic	60
 # not yet measured under memcheck (startup of a test, about 35 s, plus 40 times the native run): format2_col_am, agg_v6_star_jsonb_unnest, m4_cache_budget
 col/f2/am	50
-agg/v6/star_jsonb_unnest	50
+agg/star_jsonb_unnest	50
 core/cache_budget	41

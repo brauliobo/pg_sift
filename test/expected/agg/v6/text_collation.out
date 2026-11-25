@@ -1,4 +1,4 @@
--- The table of strings of the aggregation (src/agg/group/ht.c) groups them by their bytes. That is PostgreSQL's grouping for every deterministic collation, and not
+-- The table of strings of the aggregation (src/agg/ht/ht.c) groups them by their bytes. That is PostgreSQL's grouping for every deterministic collation, and not
 -- for a nondeterministic one, which equates strings of different bytes: such a table is refused (0A000), so that the groups of PostgreSQL are never split.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

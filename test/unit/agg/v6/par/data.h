@@ -1,12 +1,12 @@
 /*
- * agg/v6/par/data.h - what agg/v6/par/radix.c and agg/v6/par/radix_bench.c share: the generators of the columns of a scan, and the scan that feeds the operators of agg/v6/par/ with them.
+ * agg/par/data.h - what agg/par/radix_run.c and agg/par/radix_bench.c share: the generators of the columns of a scan, and the scan that feeds the operators of agg/par/ with them.
  */
 #ifndef SIFT_PAR_DATA_H
 #define SIFT_PAR_DATA_H
 
 #include "postgres.h"
 
-#include "agg/v6/par/group.h"
+#include "agg/par/group.h"
 #include "core/hash.h"
 
 typedef struct Data

@@ -102,7 +102,7 @@ typedef struct SiftStoreQuals
 /* The same from the keys of an index scan of the table's attributes; out->keys is keys */
 extern void sift_f2_store_key_preds(Relation rel, const SiftF2Store *store, const ScanKeyData *keys, int nkeys, MemoryContext cx, SiftStoreQuals *out);
 
-/* quals: comparisons, IN lists and null tests of INDEX_VAR attributes (the attributes of the table) against constants or parameters, as agg/v6/plan/plan.c keeps them; allocated in cx */
+/* quals: comparisons, IN lists and null tests of INDEX_VAR attributes (the attributes of the table) against constants or parameters, as agg/plan/plan.c keeps them; allocated in cx */
 extern void sift_f2_store_compile_quals(Relation rel, const SiftF2Store *store, const List *quals, MemoryContext cx, SiftStoreQuals *out);
 
 /* The values of the parameters of the quals as the scan that starts now has them, and the predicates made from them: before each start of the scan, as ExecIndexEvalRuntimeKeys is for an index scan */

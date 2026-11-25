@@ -1,13 +1,13 @@
 /*
- * agg/v6/par/dist.h - what agg/v6/par/distinct.c and agg/v6/par/radix_bench.c share for COUNT(DISTINCT): the columns of a scan (keys that are words and a text, sums, and a counted word or text, with NULL values), the scan
- * that feeds agg/v6/par/distinct.h with them, and the answer it must give: the rows sorted by key and value, and counted.
+ * agg/par/dist.h - what agg/par/distinct.c and agg/par/radix_bench.c share for COUNT(DISTINCT): the columns of a scan (keys that are words and a text, sums, and a counted word or text, with NULL values), the scan
+ * that feeds agg/par/distinct.h with them, and the answer it must give: the rows sorted by key and value, and counted.
  */
 #ifndef SIFT_PAR_DIST_H
 #define SIFT_PAR_DIST_H
 
 #include "postgres.h"
 
-#include "agg/v6/par/distinct.h"
+#include "agg/par/distinct.h"
 #include "core/hash.h"
 
 #define DIST_COPIES		4

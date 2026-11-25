@@ -129,7 +129,7 @@ str_fill(int id, uint8 *b)
 		b[i] = (uint8) ('a' + (id == 6 && i == 12) + (i % 3));
 }
 
-/* The view of a string written out here, not by agg/kern6/cases.h */
+/* The view of a string written out here, not by agg/kern/cases.h */
 static SiftStrView
 make_view(const uint8 *b, uint32 len)
 {

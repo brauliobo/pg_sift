@@ -3,7 +3,7 @@
  *
  * A reader is opened on one relation with the scan's snapshot and read in superblock order: begin (which skips the units the zones exclude), then next gives the units, and for the unit it gave
  * live (the rows the tombstones leave) and vet (the rows the snapshot sees, when vet_needed) clear the bits of its rows in a bitmap of SIFT_COL_NWORDS(nrow) words, read decodes a leaf, tids names the
- * heap rows. select restricts the units begin starts to a match set. The index reader is col/v1/reader.c, the table's is table/v1/tbl_reader.c; the
+ * heap rows. select restricts the units begin starts to a match set. The index reader is col/v1/reader.c, the table's is table/v1/reader.c; the
  * layout and the statistics of a relation are read without opening a source.
  */
 #ifndef SIFT_COL_V1_V1_READER_H

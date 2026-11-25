@@ -1,1 +1,1 @@
-agg/stub/exists	src/agg/v6/qual/jsonb.c:path_key src/col/v1/kern/avx2.c:expand_parents_avx2
+agg/stub/exists	src/agg/qual/jsonb.c:path_key src/col/v1/kern/avx2.c:expand_parents_avx2

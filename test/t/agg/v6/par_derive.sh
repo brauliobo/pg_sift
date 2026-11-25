@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Keys and arguments that the scan computes from columns (length of a text, the host of an URL, extract of a timestamp, CASE over integer columns, a key plus a constant) on the compute threads
-# of the backend (agg/v6/par/derive.h). The text minimum and maximum of the groups of such a key are the distinct operator's (agg/v6/par/distinct.h). Every answer is compared with the heap executor on the same table (sift.enable_agg = off): texts of every shape (empty, multi-byte, long, no slash, a host
+# of the backend (agg/par/derive.h). The text minimum and maximum of the groups of such a key are the distinct operator's (agg/par/distinct.h). Every answer is compared with the heap executor on the same table (sift.enable_agg = off): texts of every shape (empty, multi-byte, long, no slash, a host
 # of "www." alone), timestamps before the epoch, groups that no K held back, a HAVING that the K best must not ignore, and the rows that the threads leave to the scan (a NULL in a column the
 # statement reads, an infinite timestamp, a first key that overflows its elided keys), which raise or answer exactly as the heap does.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"

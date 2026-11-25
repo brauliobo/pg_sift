@@ -10,9 +10,9 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 
-#include "agg/v6/win/datebin.h"
-#include "agg/v6/filter/pivot.h"
-#include "agg/v6/first/first.h"
+#include "agg/win/datebin.h"
+#include "agg/filter/pivot.h"
+#include "agg/first/first.h"
 #include "bm25/dict/dict.h"
 #include "bm25/query/query.h"
 #include "col/col.h"

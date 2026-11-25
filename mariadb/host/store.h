@@ -3,7 +3,7 @@
  * numbers of the page layout (src/core/page.h) address them.
  *
  * A segment is mapped MAP_PRIVATE; the block number of a page is slot << SIFT_SLOT_SHIFT | the block of the file, so the Buffer
- * of a block (host_store.h) is the pointer to its page and nothing is pinned or locked. A merge clears liveness bits in its
+ * of a block (store.h) is the pointer to its page and nothing is pinned or locked. A merge clears liveness bits in its
  * private copy of the pages only. The registry of mapped segments is guarded by a lock, every other piece of state the engine writes while it runs is per thread (sqlite/host/host.c).
  */
 #ifndef SIFT_MDB_STORE_H
@@ -20,7 +20,7 @@
 #define SIFT_DELTA2_SLOT	(SIFT_NSLOTS - 2)	/* the slot of its micro segment */
 #define SIFT_NGSLOTS		1024	/* segments mapped at once, shared by every index of the process */
 
-/* What SqStore is for this host (host_store.h declares it): the state of one index, whose RelationData is `rel` */
+/* What SqStore is for this host (store.h declares it): the state of one index, whose RelationData is `rel` */
 struct SqStore
 {
 	RelationData rel;

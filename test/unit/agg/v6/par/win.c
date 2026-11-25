@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/win.c - agg/v6/par/winpart.c on 1 to 4 threads (the trap shim flags the helpers: no palloc, no ereport): the partitions of an item sorted and run through the window functions, against a plain
+ * agg/par/win.c - agg/par/winpart.c on 1 to 4 threads (the trap shim flags the helpers: no palloc, no ereport): the partitions of an item sorted and run through the window functions, against a plain
  * reference that sorts each partition by insertion and folds every frame from its start. Random windows (0 to 3 order keys of int4, int8 and float8 with ties, NULLs, NaN, -0 and 0, each ascending or
  * descending with the NULLs first or last; eight of the functions of agg/window.h over int4, int8 and float8 arguments with NULLs, ROWS and RANGE, LAG and LEAD of every offset with and without a default)
  * over items of partitions of every size, from one row to a few thousand. The average of integers is checked against the division in 128 bits, and a float8 sum that overflows is the serial path's.
@@ -9,7 +9,7 @@
 #include <float.h>
 #include <math.h>
 
-#include "agg/v6/par/winpart.h"
+#include "agg/par/winpart.h"
 #include "core/hash.h"
 #include "core/testrng.h"
 #include "test/common/pgshim.h"

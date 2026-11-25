@@ -6,7 +6,7 @@
 
 #include "col/f2/scope/route.h"
 #include "col/f2/store/ops_int.h"
-#include "col/f2/v6/scope/int.h"
+#include "col/f2/agg/scope/int.h"
 
 static const struct SiftScopeRouter *
 scope_build_router(Relation index, int ord, Snapshot snap, const int64 *keys, int nkeys, MemoryContext cx)

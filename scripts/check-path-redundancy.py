@@ -216,7 +216,7 @@ def selftest():
 		'src/core/maint/maint_cut.c', 'src/bm25/runs/runs_priv.h', 'tools/vk-v6/tests/vk_v6_gen.c', 'src/col/f2/format2_test.c',
 	]
 	spec93_ok = [
-		'src/col/f2/f2.h', 'src/col/f2/scope/scope.c', 'src/col/f2/v6/proj/proj.c', 'src/agg/vk/int.h', 'src/col/f2/col_delta/idx.c',
+		'src/col/f2/f2.h', 'src/col/f2/scope/scope.c', 'src/col/f2/agg/proj/proj.c', 'src/agg/vk/int.h', 'src/col/f2/col_delta/idx.c',
 		'src/table/f2/lock/int.h', 'tools/vk-v6/tests/gen.c', 'src/col/f2/format.c', 'test/sql/col/f2_x.sql', 'src/col/v1/test/alloc_test.c',
 	]
 	for p in spec93_bad:

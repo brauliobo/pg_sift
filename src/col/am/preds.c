@@ -291,7 +291,7 @@ like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool in
 		k->recheck = true;
 }
 
-/* NOT LIKE '%lit%' is the rows that do not hold lit, NOT LIKE 'lit' those that differ from it: the aggregate scan sends no other pattern (agg/v6/qual/qual.c) */
+/* NOT LIKE '%lit%' is the rows that do not hold lit, NOT LIKE 'lit' those that differ from it: the aggregate scan sends no other pattern (agg/qual/qual.c) */
 static void
 not_like_pred(SiftColPred *p, SiftColValue *v)
 {

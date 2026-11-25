@@ -1,6 +1,6 @@
 /*
  * col/v1_engine/store_ops_unnest_test.c - the tests of the elements of a row's array (SiftV6Ext.test: EXISTS, jsonpath) over Format 1: the rows of a batch whose array the leaves hold are decided on the
- * element columns (agg/v6/unnest/test.h), each row once with a flag for each test; the others are decided from their heap row, which gives the answers and the errors of PostgreSQL.
+ * element columns (agg/unnest/test.h), each row once with a flag for each test; the others are decided from their heap row, which gives the answers and the errors of PostgreSQL.
  */
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
 #include "postgres.h"

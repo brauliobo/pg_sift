@@ -1,12 +1,12 @@
 /*
- * test/scaling/cases/card.c - agg/v6/cost/card_est.c: the planner's estimate of a windowed scan from the summary of the manifest. The partitions grow 8x with the window a quarter of them:
+ * test/scaling/cases/card.c - agg/cost/card_est.c: the planner's estimate of a windowed scan from the summary of the manifest. The partitions grow 8x with the window a quarter of them:
  * the estimate walks the partitions the window leaves once, O(P).
  */
 #include "postgres.h"
 
 #include <stdlib.h>
 
-#include "agg/v6/cost/card_est.h"
+#include "agg/cost/card_est.h"
 #include "op_counters.h"
 
 #define ROWS_PER_PART 1000
@@ -35,6 +35,6 @@ run_card(uint32_t nparts)
 }
 
 const ScalingCase case_card = {
-	.name = "card_est", .under_test = "agg/v6/v6_card_est.c, partitions x8, window a quarter", .n_small = 512, .factor = 8, .run = run_card,
+	.name = "card_est", .under_test = "agg/v6_card_est.c, partitions x8, window a quarter", .n_small = 512, .factor = 8, .run = run_card,
 	GATES({OP_STEPS, 9.5, NULL}, {OP_ALLOC_BYTES, 1.25, NULL}),
 };

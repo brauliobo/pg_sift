@@ -1,219 +1,251 @@
 /*
- * agg/group/rec.c - the records of agg/group/rec.h.
+ * agg/group/rec.c - the groups of SiftAggV6 that come as records, a key and the states of its aggregates (sift_v6_group_fold_rec). A record goes into the group table, which finds the group of its
+ * key and merges the states. The records of a parallel run have no two of one key, so they need no table: sift_v6_group_bulk_begin keeps them as they come, and when the groups are read they are
+ * the groups, at the price of the pass that reads them (a table of them costs a probe and a state block for each, and a second pass over the table to read them out). A group table that has groups
+ * of its own by then takes them in (v6g_bulk_settle).
  */
-#include "core/host.h"
+#include "postgres.h"
 
-#include <stdalign.h>
+#include "agg/gpu/scan.h"
+#include "agg/group/int.h"
+#include "agg/group/cmp.h"
+#include "agg/group/compact.h"
 
-#include "agg/group/rec.h"
-#include "agg/vec.h"
-
-enum
+typedef struct V6Bulk
 {
-	REC_STATE = 1,
-	REC_DISTINCT = 2,
-	REC_DISTINCT_BYTES = 3
-};
+	bool		open;			/* sift_v6_group_fold_rec adds to it */
+	uint64		n;
+	uint64		cap;
+	uint64		at;				/* the next record to read */
+	int64	   *key;			/* spec->nkeys of each record */
+	uint64	   *nulls;
+	V6Acc	   *acc;			/* spec->naggs of each */
+} V6Bulk;
 
-StaticAssertDecl(REC_DISTINCT_BYTES < SIFT_REC_OWN, "the kinds of a shape's own records follow those of this file");
-
-typedef struct RecHdr
+static V6Acc
+acc_of_in(const SiftV6Agg *a, const SiftV6AccIn *in)
 {
-	uint32		len;
-	uint32		kind;
-} RecHdr;
+	V6Acc		acc = {.n = in->n,.v0 = in->v0,.v1 = in->v1};
+	double		sum;
 
-#define REC_DIST_FIXED		(sizeof(RecHdr) + 8 + sizeof(SiftInlineKey16) + 8)
-#define REC_STATE_FIXED		(sizeof(RecHdr) + sizeof(SiftAggSlot64))
+	if (v6g_acc_op(a) != V6A_SUM_F64)
+		return acc;
+	memcpy(&sum, &in->v0, sizeof(sum));
+	return v6fsum_of_double(sum, in->n);
+}
 
-/* The key of the slot as the bytes a record carries after its fixed part: the wide key, or nothing */
-static const uint8 *
-slot_key_bytes(const SiftSaltedHT *ht, const SiftAggSlot64 *s, uint32 *len)
+/* ---- the group table ---- */
+
+/* The state of the group of the key, made when it is new (the one state of a set of no keys) */
+static uint8 *
+rec_state(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls)
 {
-	if (!ht->key_is_wide)
+	V6Set	   *set = &g->set[0];
+	SiftAggSlot64 *slot;
+
+	if (set->nk == 0)
+		return (uint8 *) set->plain;
+	v6g_table_only(g, set);
+	sift_ht_reserve(&set->ht, 1);
+	if (set->packed)
 	{
-		*len = 0;
-		return NULL;
+		int64		x[SIFT_PACK_MAX_KEYS];
+
+		for (int i = 0; i < set->nk; i++)
+			x[i] = key[set->kidx[i]];
+		g->hash[0] = sift_pack_key(&set->pack, x, key_nulls, &g->ikey[0]);
+		sift_ht_upsert_batch(&set->ht, g->hash, g->ikey, 1, g->slots);
+		slot = g->slots[0];
 	}
-	return sift_ht_wide_key(ht, s, len);
-}
-
-static void
-buf_reserve(SiftRecBuf *b, uint32 len)
-{
-	if (len > b->cap)
+	else if (set->wide)
 	{
-		b->cap = Max(len, Max(b->cap * 2, 1024));
-		b->p = b->p ? repalloc(b->p, b->cap) : palloc(b->cap);
-	}
-}
+		bool		found;
 
-static uint32
-build_state(SiftRecBuf *b, const SiftSaltedHT *ht, const SiftRadixShape *sh, const SiftAggSlot64 *s)
-{
-	uint32		klen;
-	const uint8 *kb = slot_key_bytes(ht, s, &klen);
-	const uint32 len = TYPEALIGN(8, REC_STATE_FIXED + ht->ext_stride + klen);
-	const RecHdr h = {len, REC_STATE};
-	uint8	   *at;
+		resetStringInfo(&g->kbuf);
+		for (int i = 0; i < set->nk; i++)
+			if (!((key_nulls >> i) & 1))
+			{
+				const SiftV6StrIn *s = str != NULL ? &str[set->kidx[i]] : NULL;
 
-	buf_reserve(b, len);
-	memset(b->p, 0, len);
-	memcpy(b->p, &h, sizeof(h));
-	memcpy(b->p + sizeof(h), s, sizeof(*s));
-	at = b->p + REC_STATE_FIXED;
-	if (ht->ext_stride)
-	{
-		memcpy(at, sift_ht_ext(ht, s), ht->ext_stride);
-		if (sh->ext_dist_off != SIFT_HT_NO_EXT)
-			memset(at + sh->ext_dist_off, 0, sizeof(SiftDistSet *));
-		at += ht->ext_stride;
-	}
-	if (klen)
-		memcpy(at, kb, klen);
-	return len;
-}
-
-/* A value record: the hash and key of the group, the value (an 8 byte image, or for bytes the length of the value), the key bytes, then the bytes of a wide value */
-static uint32
-build_distinct(SiftRecBuf *b, const SiftSaltedHT *ht, const SiftAggSlot64 *s, uint32 kind, uint64 v, const uint8 *vbytes, uint32 vlen)
-{
-	uint32		klen;
-	const uint8 *kb = slot_key_bytes(ht, s, &klen);
-	const uint32 len = TYPEALIGN(8, REC_DIST_FIXED + klen + vlen);
-	const RecHdr h = {len, kind};
-	uint8	   *at;
-
-	buf_reserve(b, len);
-	memset(b->p, 0, len);
-	at = b->p;
-	memcpy(at, &h, sizeof(h));
-	at += sizeof(h);
-	memcpy(at, &s->hash64, 8);
-	at += 8;
-	memcpy(at, &s->key, sizeof(SiftInlineKey16));
-	at += sizeof(SiftInlineKey16);
-	memcpy(at, &v, 8);
-	at += 8;
-	if (klen)
-		memcpy(at, kb, klen);
-	if (vlen)
-		memcpy(at + klen, vbytes, vlen);
-	return len;
-}
-
-void
-sift_rec_flush_ht(const SiftSaltedHT *ht, const SiftRadixShape *sh, SiftRecBuf *buf, SiftRecPut put, void *arg)
-{
-	SiftAggSlot64 *s;
-
-	if (sh->flush != NULL)
-	{
-		sh->flush(sh, ht, buf, put, arg);
-		return;
-	}
-	SIFT_HT_FOREACH(ht, s)
-	{
-		uint32		len = build_state(buf, ht, sh, s);
-
-		put(arg, s->hash64, buf->p, len);
-		if (sh->ext_dist_off != SIFT_HT_NO_EXT)
-		{
-			const SiftDistSet *set = *(SiftDistSet **) (sift_ht_ext(ht, s) + sh->ext_dist_off);
-			uint32		pos = 0,
-						vlen;
-			const uint8 *vbytes;
-			uint64		v;
-
-			if (set && set->wide)
-				while (sift_dist_next_bytes(set, &pos, &vbytes, &vlen))
-				{
-					len = build_distinct(buf, ht, s, REC_DISTINCT_BYTES, vlen, vbytes, vlen);
-					put(arg, s->hash64, buf->p, len);
-				}
-			else
-				while (set && sift_dist_next(set, &pos, &v))
-				{
-					len = build_distinct(buf, ht, s, REC_DISTINCT, v, NULL, 0);
-					put(arg, s->hash64, buf->p, len);
-				}
-		}
-	}
-}
-
-static SiftAggSlot64 *
-merge_group(SiftRecMerge *m, uint64 hash, const SiftInlineKey16 *key, const uint8 *kbytes, uint32 klen)
-{
-	SiftAggSlot64 *d;
-	bool		found;
-
-	d = m->shape->wide_key ? sift_ht_upsert_wide(m->ht, hash, kbytes, klen, key->wide.key_nulls, &found)
-		: sift_ht_upsert(m->ht, hash, key, &found);
-	if (!found && m->shape->init)
-		m->shape->init(m->shape, d, m->ht->ext_stride ? sift_ht_ext(m->ht, d) : NULL);
-	return d;
-}
-
-static const uint8 *
-aligned_ext(SiftRecMerge *m, const uint8 *ext)
-{
-	if (m->ht->ext_stride == 0)
-		return NULL;
-	if (m->ext_copy == NULL)
-		m->ext_copy = MemoryContextAllocAligned(m->ht->cxt, m->ht->ext_stride, alignof(SiftI128), 0);
-	return memcpy(m->ext_copy, ext, m->ht->ext_stride);
-}
-
-void
-sift_rec_merge(SiftRecMerge *m, const uint8 *rec)
-{
-	const SiftRadixShape *sh = m->shape;
-	RecHdr		h;
-
-	memcpy(&h, rec, sizeof(h));
-	if (h.kind >= SIFT_REC_OWN)
-		sh->merge_rec(sh, m, rec);
-	else if (h.kind == REC_STATE)
-	{
-		SiftAggSlot64 src;
-		const uint8 *ext = rec + REC_STATE_FIXED;
-		SiftAggSlot64 *d;
-
-		memcpy(&src, rec + sizeof(h), sizeof(src));
-		d = merge_group(m, src.hash64, &src.key, ext + m->ht->ext_stride, src.key.wide.key_len);
-		if (sh->merge)
-			sh->merge(sh, d, m->ht->ext_stride ? sift_ht_ext(m->ht, d) : NULL, &src, aligned_ext(m, ext));
+				if (s != NULL && s->p != NULL)
+					v6g_append_key_str(g, s->p, s->len);
+				else
+					appendBinaryStringInfo(&g->kbuf, (const char *) &key[set->kidx[i]], sizeof(int64));
+			}
+		slot = sift_ht_upsert_wide(&set->ht, sift_aggk6_hash1(sift_aggk6_hash_bytes(g->kbuf.data, g->kbuf.len) ^ key_nulls), g->kbuf.data, g->kbuf.len, key_nulls, &found);
 	}
 	else
 	{
-		SiftInlineKey16 key;
-		uint64		hash,
-					v;
-		const uint8 *at = rec + sizeof(h);
-		SiftAggSlot64 *d;
-		SiftDistSet **set;
-		uint64		before;
-		uint32		klen;
+		const int64 x = (key_nulls & 1) ? 0 : key[set->kidx[0]];
 
-		Assert(h.kind == REC_DISTINCT || h.kind == REC_DISTINCT_BYTES);
-		memcpy(&hash, at, 8);
-		memcpy(&key, at + 8, sizeof(key));
-		memcpy(&v, at + 8 + sizeof(key), 8);
-		klen = sh->wide_key ? key.wide.key_len : 0;
-		d = merge_group(m, hash, &key, at + 16 + sizeof(key), klen);
-		set = (SiftDistSet **) (sift_ht_ext(m->ht, d) + sh->ext_dist_off);
-		before = *set ? sift_dist_bytes(*set) : 0;
-		if (*set == NULL)
-		{
-			MemoryContext old = MemoryContextSwitchTo(m->ht->cxt);
-
-			*set = sift_dist_new();
-			MemoryContextSwitchTo(old);
-		}
-		if (h.kind == REC_DISTINCT_BYTES)
-			sift_dist_add_bytes(*set, at + 16 + sizeof(key) + klen, (uint32) v);
-		else
-			sift_dist_add(*set, v);
-		m->dist_bytes += sift_dist_bytes(*set) - before;
+		g->ikey[0].i64[0] = x;
+		g->ikey[0].i64[1] = key_nulls & 1;
+		g->hash[0] = sift_aggk6_hash1((uint64) x);
+		sift_ht_upsert_batch(&set->ht, g->hash, g->ikey, 1, g->slots);
+		slot = g->slots[0];
 	}
+	return sift_ht_ext(&set->ht, slot);
+}
+
+/* ---- the bulk records ---- */
+
+static uint64
+bulk_bytes(const SiftV6Spec *spec, uint64 n)
+{
+	return n * (spec->nkeys * sizeof(int64) + sizeof(uint64) + spec->naggs * sizeof(V6Acc));
+}
+
+bool
+sift_v6_group_bulk_begin(SiftV6Group *g, uint64 records)
+{
+	const SiftV6Spec *spec = g->spec;
+	V6Bulk	   *b;
+	MemoryContext old;
+
+	if (g->bulk != NULL || spec->nsets != 0 || g->set[0].nk != spec->nkeys || spec->nkeys == 0 || spec->topk != 0 || g->gkeys != NULL || g->ndist != 0 || g->nfilters != 0 ||
+		g->gen != NULL || g->slab != NULL || bulk_bytes(spec, records) > Min(g->budget, MaxAllocSize))
+		return false;
+	for (int k = 0; k < spec->nkeys; k++)
+		if (sift_v6_class(spec->key[k].typid) != SV6C_I32 && sift_v6_class(spec->key[k].typid) != SV6C_I64)
+			return false;
+	old = MemoryContextSwitchTo(g->cx);
+	g->bulk = b = palloc0(sizeof(V6Bulk));
+	b->cap = records;
+	/* check-memory: allow the records fit the budget of the group, which is under the largest allocation */
+	b->key = palloc(Max(records, 1) * spec->nkeys * sizeof(int64));
+	b->nulls = palloc(Max(records, 1) * sizeof(uint64));
+	b->acc = palloc(Max(records, 1) * spec->naggs * sizeof(V6Acc));
+	b->open = true;
+	MemoryContextSwitchTo(old);
+	return true;
+}
+
+void
+sift_v6_group_bulk_end(SiftV6Group *g)
+{
+	if (g->bulk != NULL)
+		g->bulk->open = false;
+}
+
+static void
+bulk_put(SiftV6Group *g, const int64 *key, uint64 key_nulls, const SiftV6AccIn *acc)
+{
+	V6Bulk	   *b = g->bulk;
+	const SiftV6Spec *spec = g->spec;
+	V6Acc	   *d = b->acc + b->n * spec->naggs;
+
+	Assert(b->n < b->cap);
+	memcpy(b->key + b->n * spec->nkeys, key, spec->nkeys * sizeof(int64));
+	b->nulls[b->n++] = key_nulls;
+	for (int j = 0; j < spec->naggs; j++)
+	{
+		const V6Acc in = acc_of_in(&spec->agg[j], &acc[j]);
+
+		d[j] = (V6Acc) {0};
+		v6g_merge_acc(g, &spec->agg[j], &d[j], &in);
+	}
+}
+
+uint64
+v6g_bulk_bytes(const SiftV6Group *g)
+{
+	return g->bulk == NULL ? 0 : bulk_bytes(g->spec, g->bulk->cap);
+}
+
+void
+v6g_bulk_free(SiftV6Group *g)
+{
+	if (g->bulk == NULL)
+		return;
+	pfree(g->bulk->key);
+	pfree(g->bulk->nulls);
+	pfree(g->bulk->acc);
+	pfree(g->bulk);
+	g->bulk = NULL;
+}
+
+/* The records into the group table */
+static void
+bulk_flush(SiftV6Group *g)
+{
+	const V6Bulk *b = g->bulk;
+	const SiftV6Spec *spec = g->spec;
+	MemoryContext old = MemoryContextSwitchTo(g->cx);
+
+	for (uint64 r = 0; r < b->n; r++)
+	{
+		uint8	   *state = rec_state(g, b->key + r * spec->nkeys, NULL, b->nulls[r]);
+
+		for (int j = 0; j < spec->naggs; j++)
+			v6g_merge_acc(g, &spec->agg[j], (V6Acc *) (state + g->off[j]), &b->acc[r * spec->naggs + j]);
+		v6g_spill_if_over(g);
+	}
+	MemoryContextSwitchTo(old);
+	v6g_bulk_free(g);
+}
+
+void
+v6g_bulk_settle(SiftV6Group *g)
+{
+	const V6Set *set = &g->set[0];
+
+	if (g->bulk != NULL && (set->ht.count != 0 || (set->cmp != NULL && set->cmp->count != 0) || g->spilled))
+		bulk_flush(g);
+}
+
+bool
+v6g_bulk_next(SiftV6Group *g, Datum *values, bool *isnull)
+{
+	V6Bulk	   *b = g->bulk;
+	const SiftV6Spec *spec = g->spec;
+	const V6Set *set = &g->set[0];
+	const int64 *key;
+	const V6Acc *acc;
+	uint64		nulls;
+
+	if (b->at == b->n)
+		return false;
+	key = b->key + b->at * spec->nkeys;
+	acc = b->acc + b->at * spec->naggs;
+	nulls = b->nulls[b->at++];
+	for (int i = 0; i < set->nk; i++)
+	{
+		const int	k = set->kidx[i];
+
+		isnull[k] = (nulls >> i) & 1;
+		values[k] = isnull[k] ? (Datum) 0 : v6g_int_datum(spec->key[k].typid, key[k]);
+	}
+	for (int j = 0; j < spec->naggs; j++)
+		values[spec->nkeys + j] = v6g_agg_datum(g, &spec->agg[j], &acc[j], set->mask, &isnull[spec->nkeys + j]);
+	return true;
+}
+
+/* ---- the records ---- */
+
+void
+sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls, const SiftV6AccIn *acc)
+{
+	MemoryContext old = MemoryContextSwitchTo(g->cx);
+	uint8	   *state;
+
+	Assert(g->spec->nsets == 0);
+	g->dist_done = true;		/* a record has the count of its distinct values: its group lives in the table, not in the set of pairs, and leaves with the table when it spills */
+	if (g->bulk != NULL && g->bulk->open)
+	{
+		bulk_put(g, key, key_nulls, acc);
+		MemoryContextSwitchTo(old);
+		return;
+	}
+	state = rec_state(g, key, str, key_nulls);
+	for (int j = 0; j < g->spec->naggs; j++)
+	{
+		const V6Acc in = acc_of_in(&g->spec->agg[j], &acc[j]);
+
+		if (acc[j].str != NULL)
+			sift_tslot_offer(&g->tx, (SiftTextSlot *) (state + g->off[j]), g->spec->agg[j].kind == SV6_MIN, (const char *) acc[j].str, acc[j].len, NULL, NULL);
+		else
+			v6g_merge_acc(g, &g->spec->agg[j], (V6Acc *) (state + g->off[j]), &in);
+	}
+	v6g_spill_if_over(g);
+	MemoryContextSwitchTo(old);
 }

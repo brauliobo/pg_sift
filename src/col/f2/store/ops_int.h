@@ -7,7 +7,7 @@
 
 #include "postgres.h"
 
-#include "agg/gpu/v6.h"
+#include "agg/gpu/scan.h"
 #include "core/store/ops.h"
 
 extern const SiftStoreOps sift_f2_store_ops;

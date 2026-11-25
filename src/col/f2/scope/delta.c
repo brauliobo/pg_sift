@@ -1,6 +1,6 @@
 /*
  * col/f2/scope/delta.c - the cube of a scope key from a summary that the pairs have moved under (f2_scope.h): the members the journal says changed for the key are told added, removed or
- * unchanged against the summary (col/scope_v6/overlay.c), their rows read from the entity parts under the pairs as they are now, and the rows the summary does not hold (slabs, parts it does
+ * unchanged against the summary (col/f2/cube/overlay.c), their rows read from the entity parts under the pairs as they are now, and the rows the summary does not hold (slabs, parts it does
  * not name) that the key owns now are added from the entity side of the summary (f2_scope_over.c). The rows of the named parts that the snapshot does not see are out of every read of them.
  */
 #include "postgres.h"

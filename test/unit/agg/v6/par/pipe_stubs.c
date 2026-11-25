@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/pipe_stubs.c - the server calls of agg/v6/pipe.c in a unit test of the join pipe: the base type of a type is the type (the tests use no domain), and the calls the pipe the tests build never makes
+ * agg/par/pipe_stubs.c - the server calls of agg/pipe.c in a unit test of the join pipe: the base type of a type is the type (the tests use no domain), and the calls the pipe the tests build never makes
  * (expression keys, residual quals, the unmatched rows of a lookup join) end the test; the pipe has no residual quals.
  */
 #include "postgres.h"
@@ -7,11 +7,11 @@
 #include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
 
-#include "agg/v6/datum.h"
-#include "agg/v6/expr/str.h"
-#include "agg/v6/join/lookup.h"
-#include "agg/v6/expr/pg.h"
-#include "agg/v6/topn/rows.h"
+#include "agg/datum.h"
+#include "agg/expr/str.h"
+#include "agg/join/lookup.h"
+#include "agg/expr/pg.h"
+#include "agg/topn/rows.h"
 
 #define SERVER_CALL() (fprintf(stderr, "unit: %s is a server call\n", __func__), abort())
 

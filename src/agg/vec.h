@@ -34,7 +34,7 @@ typedef enum SiftVecType
 	SVEC_DICT32,				/* uint32[n]: a dictionary code */
 	SVEC_INTERVAL,				/* SiftInterval16[n] */
 	SVEC_DATUM,					/* Datum[n]: arbitrary PostgreSQL type fallback (typid/typlen/typbyval on SiftVec) */
-	SVEC_NUM256					/* SiftI256[n]: the scaled integer of a numeric product past 2^95 (agg/v6/expr/num.h); only the groups of SUM and AVG read it */
+	SVEC_NUM256					/* SiftI256[n]: the scaled integer of a numeric product past 2^95 (agg/expr/num.h); only the groups of SUM and AVG read it */
 } SiftVecType;
 
 typedef struct __attribute__((aligned(16))) SiftI128

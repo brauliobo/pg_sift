@@ -57,10 +57,10 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
   table (one value per rowid, the same rowids) counts the matches: ordered by count then value; `nulls=1` adds a NULL row
   for matches without a value.
 - **Host implementation** (`host/`). The vocabulary of `src/core/host.h` over the C library: memory contexts over malloc, `ereport` as `siglongjmp`
-  (`SQ_TRY`), StringInfo, List, dynahash, UTF-8 helpers, BufFile on `tmpfile()`, `Page/Buffer/Relation` over SQLite rows (`host_store.h`),
+  (`SQ_TRY`), StringInfo, List, dynahash, UTF-8 helpers, BufFile on `tmpfile()`, `Page/Buffer/Relation` over SQLite rows (`store.h`),
   atomics/spin locks/dsa for `bm25/parallel.c` as threads of one process. There are no fake PostgreSQL headers: the portable files include only
   `core/host.h`, which `scripts/check-portable.sh` enforces. `store.c` implements the store interface of `src/core/store/store.h` (extent index, padding and
-  extent list come from the shared inline helpers and `core/stream.c`); `stubs.c` and `host/host_stubs.c` the collaborators SQLite has no use for (write buffers, visibility).
+  extent list come from the shared inline helpers and `core/stream.c`); `stubs.c` and `host/stubs.c` the collaborators SQLite has no use for (write buffers, visibility).
 - **Shared with the PostgreSQL host, not copied.** The merge policy (`sift_merge_pick`, the tiers start at 1 MiB here and at `write_buffer_limit` there), the run merge
   (`sift_run_from_segment`, `sift_runs_write`), the deletion
   of one document (`sift_seg_delete_key`, the code of VACUUM's `sift_seg_bulkdelete`), the live-term stream of facets (`sift_seg_stream`, the code of the

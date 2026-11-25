@@ -17,7 +17,7 @@
 #ifndef SIFT_AGG_STREAM_EXEC_H
 #define SIFT_AGG_STREAM_EXEC_H
 
-#include "agg/kern6/kern6.h"
+#include "agg/kern/kern.h"
 
 #define SIFT_STREAM_MAX_KEYS	4
 #define SIFT_STREAM_MAX_VALS	16

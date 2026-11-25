@@ -1,5 +1,5 @@
 /*
- * col/v1_engine/store_ops_unnest.c - the aggregate scan of a LATERAL unnest over Format 1 (agg/v6/v6_unnest_run.h). The columns of the table the statement reads come from the batches of the
+ * col/v1_engine/store_ops_unnest.c - the aggregate scan of a LATERAL unnest over Format 1 (agg/v6_unnest_run.h). The columns of the table the statement reads come from the batches of the
  * Format 1 source, which hands over only the rows the tombstones and the snapshot leave. When the index keeps the array shredded (an SCL_ARRAY leaf of the lengths and a child leaf for each column of the
  * element, or an SCL_OBJECT leaf of the keys and values of a map), the elements of the rows that pass the quals of the table are those of the leaves (v1_store_ops_elem.c); the rows the leaves cannot hold
  * (a NULL array or a document that is no array, an array cut by the shredder, an element that holds a value its column cannot or may be no object) have their array read from the heap row and taken apart as

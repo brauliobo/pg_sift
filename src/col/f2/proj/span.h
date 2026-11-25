@@ -1,5 +1,5 @@
 /*
- * col/f2/proj/span.h - the granules of a part a cursor reads: ascending, disjoint spans [lo, hi) (the whole part, or what the key marks leave to a statement, col/f2/v6/proj/seek.h), walked one
+ * col/f2/proj/span.h - the granules of a part a cursor reads: ascending, disjoint spans [lo, hi) (the whole part, or what the key marks leave to a statement, col/f2/agg/proj/seek.h), walked one
  * granule at a time. The cursor of f2_proj_scan.c and the tests of the seek walk them the same way.
  */
 #ifndef SIFT_F2_PROJ_SPAN_H

@@ -1,4 +1,4 @@
-# The dimension of a star join that a backend kept (agg/v6/dim_cache.h) is served to a statement only while the table of it is what the journal says: a writer of another session that has not
+# The dimension of a star join that a backend kept (agg/dim_cache.h) is served to a statement only while the table of it is what the journal says: a writer of another session that has not
 # committed, one that rolled back, one that committed, a snapshot that was taken before the commit and the backend's own open transaction, each against the answer of the heap.
 use strict;
 use warnings FATAL => 'all';

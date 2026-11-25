@@ -12,8 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "agg/group/ht.h"
-#include "agg/kern6/int.h"
+#include "agg/ht/ht.h"
+#include "agg/kern/int.h"
 
 #undef printf
 #undef fprintf
@@ -23,7 +23,7 @@ static void *xalloc(size_t n);
 
 #define AK6C_ALLOC(n)	xalloc(n)
 #define AK6C_FREE(p)	free(p)
-#include "agg/kern6/cases.h"
+#include "agg/kern/cases.h"
 #include "core/testrng.h"
 
 SiftCpu		sift_cpu;
@@ -513,7 +513,7 @@ case_groups(int n)
 #include "bench.h"
 #include "cases_wide.h"
 
-/* The compare of 16 control bytes of the probe loops (agg/group/ht.h): the lanes a walk of the mask visits are the lanes that match, in order */
+/* The compare of 16 control bytes of the probe loops (agg/ht/ht.h): the lanes a walk of the mask visits are the lanes that match, in order */
 static void
 case_probe(void)
 {

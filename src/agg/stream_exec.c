@@ -5,7 +5,7 @@
 
 #include <math.h>
 
-#include "agg/group/state.h"
+#include "agg/ht/state.h"
 #include "agg/stream_exec.h"
 
 void

@@ -183,12 +183,12 @@ n2: 3000 (heap allocation functions) malloc/new/new[], --alloc-fns, etc.
  n1: 2000 0x1: AllocSetAllocLarge (aset.c:1)
   n1: 2000 0x2: seg_buf (/w/src/col/v1/seg_write/add.c:77)
    n0: 2000 0x3: ExecutorRun (execMain.c:300)
- n0: 1000 0x4: lookup_load (/w/src/agg/v6/dim_cache.c:12)
+ n0: 1000 0x4: lookup_load (/w/src/agg/dim_cache.c:12)
 snapshot=4
 heap_tree=empty
 """
     sites = attribute(text.splitlines()[5:])
-    assert sites == {"seg_buf (/w/src/col/v1/seg_write/add.c:77)": 2000, "lookup_load (/w/src/agg/v6/dim_cache.c:12)": 1000}, sites
+    assert sites == {"seg_buf (/w/src/col/v1/seg_write/add.c:77)": 2000, "lookup_load (/w/src/agg/dim_cache.c:12)": 1000}, sites
     assert parse_peak(text) == sites
     assert growth({"a": 1024}, {"a": 4096, "b": 1024})[0][:1] == ("a",)
     print("massif-slope selftest: ok")

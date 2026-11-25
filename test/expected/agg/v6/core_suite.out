@@ -114,7 +114,7 @@ RESET client_min_messages;
 CREATE SCHEMA s3;
 GRANT USAGE ON SCHEMA s3 TO PUBLIC;
 SET search_path = s3, public;
--- Group table beyond 16 byte keys (src/agg/ht_test.c): the growth threshold at a load of 7/8 (written out in the test, so a
+-- Group table beyond 16 byte keys (src/agg/ht/test.c): the growth threshold at a load of 7/8 (written out in the test, so a
 -- changed constant fails it), wide keys and string views with state blocks of sums, minima, variance and a distinct set, and the
 -- distinct set alone, of 64-bit values and of the bytes of wide ones (hashes forced to collide, merged, shipped as records). Each is the number of failed cases.
 SELECT sift._test_ht_grow() AS grow_failures;
@@ -382,7 +382,7 @@ RESET client_min_messages;
 CREATE SCHEMA s7;
 GRANT USAGE ON SCHEMA s7 TO PUBLIC;
 SET search_path = s7, public;
--- 2048-row engine units (src/agg/v6/core_test.c): the salted hash table with its growth and its radix scatter and merge,
+-- 2048-row engine units (src/agg/core_test.c): the salted hash table with its growth and its radix scatter and merge,
 -- and the five-input cost of a SiftAgg path at the default planner costs.
 SELECT sift._test_salted_ht(11, 60) AS ht_failures;
  ht_failures 

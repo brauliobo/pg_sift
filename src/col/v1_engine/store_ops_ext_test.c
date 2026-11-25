@@ -29,17 +29,17 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
-#include "agg/v6/v6.h"
-#include "agg/v6/ext.h"
-#include "agg/v6/topn/rows.h"
-#include "agg/v6/vexpr.h"
+#include "agg/engine.h"
+#include "agg/ext.h"
+#include "agg/topn/rows.h"
+#include "agg/vexpr.h"
 #include "col/v1/store_ops.h"
 #include "core/catname.h"
 #include "core/compat.h"
 #include "core/filter.h"
 #include "col/v1/reader.h"
 #include "core/store/ops.h"
-#include "table/v1/tbl_ops.h"
+#include "table/v1/rel.h"
 
 PG_FUNCTION_INFO_V1(sift_test_v1_ops);
 PG_FUNCTION_INFO_V1(sift_test_v1_topn);

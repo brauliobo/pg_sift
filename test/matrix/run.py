@@ -3,7 +3,7 @@
 
 Every variant is a SELECT built from what the server and the source say: the key types come from pg_type (a type whose one-column sift_col index
 can be built), the aggregates from pg_aggregate, the volatile and stable functions from pg_proc, the sizes and key counts from SIFT_TOURN_* in
-src/agg/topn_v6.h, the join kinds from the grammar. A variant runs twice, with the pushdown off (the reference) and on, and counts as covered when
+src/agg/topn/tourn.h, the join kinds from the grammar. A variant runs twice, with the pushdown off (the reference) and on, and counts as covered when
 the plan has the node of its family (Top-N: or Custom Scan (SiftAgg*)) and the rows equal the reference's. A variant that keeps the normal plan is
 named by its refusal slug (SET sift.explain_refusals) and excluded from the percentage when the registry of src/agg/refuse.h marks that slug
 as by design; the rest are gaps.
@@ -43,7 +43,7 @@ def psql(db, text, check=True, timeout=120):
 
 
 def define(name):
-    m = re.search(rf'#define\s+{name}\s+(\d+)', open(f'{REPO}/src/agg/topn_v6.h').read())
+    m = re.search(rf'#define\s+{name}\s+(\d+)', open(f'{REPO}/src/agg/topn/tourn.h').read())
     return int(m.group(1))
 
 
@@ -124,8 +124,8 @@ def lit(col):
 
 
 def topn_key_types():
-    """the type names the Top-N scan orders as the rows of its table (int_order_type, table_key_type_ok of src/agg/v6/topn/topn.c), in the order of the source"""
-    src = open(f'{REPO}/src/agg/v6/topn/topn.c').read()
+    """the type names the Top-N scan orders as the rows of its table (int_order_type, table_key_type_ok of src/agg/topn/topn.c), in the order of the source"""
+    src = open(f'{REPO}/src/agg/topn/topn.c').read()
     names = []
     for fn in ('int_order_type', 'table_key_type_ok'):
         body = src[src.index(f'\n{fn}('):]

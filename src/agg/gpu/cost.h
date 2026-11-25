@@ -1,5 +1,5 @@
 /*
- * agg/gpu/cost.h - what the choice of sift.gpu = auto weighs (agg/gpu/v6.c): the time a scan takes on the CPU and on the Vulkan device, from the
+ * agg/gpu/cost.h - what the choice of sift.gpu = auto weighs (agg/gpu/scan.c): the time a scan takes on the CPU and on the Vulkan device, from the
  * shape of the query and the data. Plain C, no PostgreSQL headers; tests/cost.c holds the model to the measurements it was fitted to.
  */
 #ifndef SIFT_AGG_GPU_COST_H
