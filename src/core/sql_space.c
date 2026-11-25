@@ -11,6 +11,7 @@
 #include "funcapi.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "utils/builtins.h"
 
 #include "col/f2/col_meta.h"
@@ -52,14 +53,34 @@ static const Oid space_types[SPC_NCOLS] = {
 	TEXTOID, INT8OID, INT8OID, INT8OID, INT8OID, INT8OID, INT8OID, INT8OID, INT8OID, INT4OID, INT8OID, INT8OID, INT8OID, BOOLOID, TIMESTAMPTZOID, TEXTOID, INT8OID
 };
 
-/* A momentary probe of a page lock: held by a promotion, a merge, VACUUM or a worker while it runs */
+/* Whether a lock of the mode would have to wait for another session, read from the lock manager: a read-only scrape acquires nothing */
+static bool
+lock_busy(const LOCKTAG *tag, LOCKMODE mode)
+{
+	int			holders;
+
+	(void) GetLockConflicts(tag, mode, &holders);
+	return holders > 0;
+}
+
+/* The page lock that a promotion, a merge, VACUUM or a worker holds while it runs */
 static bool
 page_lock_busy(Relation rel, BlockNumber blk)
 {
-	if (!ConditionalLockPage(rel, blk, ExclusiveLock))
-		return true;
-	UnlockPage(rel, blk, ExclusiveLock);
-	return false;
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_PAGE(tag, rel->rd_lockInfo.lockRelId.dbId, rel->rd_lockInfo.lockRelId.relId, blk);
+	return lock_busy(&tag, ExclusiveLock);
+}
+
+/* The ShareUpdateExclusiveLock of the table that VACUUM and sift.maintain() hold */
+static bool
+maintenance_lock_busy(Relation rel)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_RELATION(tag, rel->rd_lockInfo.lockRelId.dbId, rel->rd_lockInfo.lockRelId.relId);
+	return lock_busy(&tag, ShareUpdateExclusiveLock);
 }
 
 static void
@@ -136,8 +157,6 @@ space_table_v1(const SiftApiRel *r, SiftApiSpace *s)
 {
 	SiftTblRel *st = sift_tbl_rel(r->rel);
 	SiftFreeStats fs = {0};
-	bool		idle = true;
-
 	sift_tbl_refresh_full(r->rel, st);
 	if (RelationGetNumberOfBlocks(r->rel) > 0)
 		fs = sift_store_free_stats(r->rel);
@@ -165,9 +184,7 @@ space_table_v1(const SiftApiRel *r, SiftApiSpace *s)
 	s->shrink_blocked_by = sift_api_shrink_blocked_by(st->dir->meta.shrink_blocked);
 	s->has_vblocks = true;
 	s->vblocks_left = (int64) MaxBlockNumber - (int64) SIFT_TBL_NEXT_VBLOCK(&st->dir->meta);
-	if (!RecoveryInProgress() && (idle = ConditionalLockRelationOid(RelationGetRelid(r->rel), ShareUpdateExclusiveLock)))
-		UnlockRelationOid(RelationGetRelid(r->rel), ShareUpdateExclusiveLock);
-	set_busy(s, !idle);
+	set_busy(s, !RecoveryInProgress() && maintenance_lock_busy(r->rel));
 }
 
 /* sift_col and sift_table of Format 2.0: the metapage, the allocator and the manifest */
