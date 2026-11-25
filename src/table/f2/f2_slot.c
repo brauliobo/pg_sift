@@ -34,7 +34,8 @@ typedef struct SiftF2Slot
 	const SiftRowPackRow *rp;	/* a row of the row pack of the part (in rowcx): the cells are read from it, and from the granule only when it is external */
 	SiftF2PartPin *pin;			/* referenced while rp is: the part the row is in */
 	uint32		granule_id;
-	uint64		decoded_mask;	/* the attributes (the first 64) a read of one attribute decoded ahead of the leading ones */
+	bool		decoded_any;	/* decoded_ahead has a bit set */
+	uint64		decoded_ahead[(MaxTupleAttributeNumber + 63) / 64];	/* the attributes a read of one attribute decoded ahead of the leading ones */
 } SiftF2Slot;
 
 /* Where the cells of a row are read from: its granule, or its row of a row pack with the granule it needs for an external cell, read when one is asked for */
@@ -247,7 +248,9 @@ slot_clear(TupleTableSlot *slot)
 
 	lazy_drop(ss);
 	ss->gm = NULL;
-	ss->decoded_mask = 0;
+	if (ss->decoded_any)
+		memset(ss->decoded_ahead, 0, sizeof(ss->decoded_ahead));
+	ss->decoded_any = false;
 	MemoryContextReset(ss->rowcx);
 	TTSOpsVirtual.clear(slot);
 }
@@ -259,9 +262,9 @@ slot_source(SiftF2Slot *ss)
 }
 
 static inline bool
-decoded_ahead(const SiftF2Slot *ss, int a)
+is_decoded_ahead(const SiftF2Slot *ss, int a)
 {
-	return a <= 64 && (ss->decoded_mask & (UINT64CONST(1) << (a - 1))) != 0;
+	return (ss->decoded_ahead[(a - 1) / 64] & (UINT64CONST(1) << ((a - 1) % 64))) != 0;
 }
 
 static void
@@ -275,7 +278,7 @@ f2_slot_getsomeattrs(TupleTableSlot *slot, int natts)
 
 	natts = Min(natts, slot->tts_tupleDescriptor->natts);
 	for (int a = slot->tts_nvalid + 1; a <= natts; a++)
-		if (!decoded_ahead(ss, a))
+		if (!is_decoded_ahead(ss, a))
 			decoded |= fill_att(ss->rel, store, &src, ss->gm, slot, a, ss->rowcx);
 	MemoryContextSwitchTo(old);
 	slot->tts_nvalid = natts;
@@ -288,13 +291,13 @@ sift_f2_slot_getattr_single(TupleTableSlot *slot, int attnum, bool *isnull)
 {
 	SiftF2Slot *ss = (SiftF2Slot *) slot;
 
-	if (attnum > slot->tts_nvalid && !decoded_ahead(ss, attnum))
+	if (attnum > slot->tts_nvalid && !is_decoded_ahead(ss, attnum))
 	{
 		const CellSource src = slot_source(ss);
 
 		(void) fill_att(ss->rel, sift_f2_store_open(ss->rel), &src, ss->gm, slot, attnum, ss->rowcx);
-		if (attnum <= 64)
-			ss->decoded_mask |= UINT64CONST(1) << (attnum - 1);
+		ss->decoded_ahead[(attnum - 1) / 64] |= UINT64CONST(1) << ((attnum - 1) % 64);
+		ss->decoded_any = true;
 	}
 	*isnull = slot->tts_isnull[attnum - 1];
 	return slot->tts_values[attnum - 1];
