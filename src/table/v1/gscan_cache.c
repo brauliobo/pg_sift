@@ -3,6 +3,8 @@
  */
 /* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "gscan_int.h"
+#include "core/cachebudget.h"
+#include "core/memtrack.h"
 
 /* The TIDs of every unit of superblock sb (ascending, one array per unit) */
 static void
@@ -175,25 +177,51 @@ fetch_kept(Relation rel, SiftTblRel *st, struct SiftTblGroupCache *c)
 	return true;
 }
 
-/* The slot of a new fetch scan: an empty one, else the least recently used; the scans are dropped, oldest first, while they hold more than SIFT_TBL_FETCH_BYTES */
+/* What the fetch scans of a table hold at most: work_mem, and never more than the caches of a backend */
+static Size
+fetch_budget(void)
+{
+	return Min(sift_mem_budget_bytes(SIFT_BUDGET_WORK_MEM, 1, 1), (Size) sift_backend_cache_kb * 1024);
+}
+
+/* What a fetch scan holds: its context and the unit records its segments keep a buffer for */
+static Size
+fetch_bytes(SiftTblGroupScan *g)
+{
+	Size		bytes = MemoryContextMemAllocated(g->cxt, true);
+
+	for (int k = 0; k < g->nsrc; k++)
+		bytes += sift_col_unit_bytes(g->s[k].src);
+	return bytes;
+}
+
+/* The slot of a new fetch scan: an empty one, else the least recently used; the scans are dropped, oldest first, until the new one, as large as the largest, fits fetch_budget() */
 static int
 fetch_victim(struct SiftTblGroupCache *c)
 {
 	for (;;)
 	{
-		Size		bytes = 0;
-		int			lru = -1;
+		Size		bytes = 0,
+					largest = 0,
+					held;
+		int			lru = -1,
+					empty = -1;
 
 		for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
 		{
 			if (c->fetch[i] == NULL)
-				return i;
-			bytes += MemoryContextMemAllocated(c->fetch[i]->cxt, true);
+			{
+				empty = i;
+				continue;
+			}
+			held = fetch_bytes(c->fetch[i]);
+			largest = Max(largest, held);
+			bytes += held;
 			if (lru < 0 || c->fetch_used[i] < c->fetch_used[lru])
 				lru = i;
 		}
-		if (bytes <= SIFT_TBL_FETCH_BYTES)
-			return lru;
+		if (lru < 0 || bytes + largest <= fetch_budget())
+			return empty >= 0 ? empty : lru;
 		sift_tbl_gscan_end(c->fetch[lru]);
 		c->fetch[lru] = NULL;
 	}

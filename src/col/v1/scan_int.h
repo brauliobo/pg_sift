@@ -345,6 +345,7 @@ struct SiftColSource
 	int			ocur;
 	uint32		heap_sbs;
 	ColUnit		cu;
+	SiftColSegment *unit_seg;	/* the segment whose unit record buffer holds the unit last returned: the next unit of another segment gives it back */
 	uint64		inl_seq;		/* ids of the dictionaries of inline chunks */
 	uint32		batch_seq;		/* in-memory units made by sift_col_unit_batch, for their dictionary ids */
 	MemoryContext sigcx;		/* the predicates of the last begin and the bitmaps the cursors made under them */

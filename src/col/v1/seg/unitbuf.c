@@ -49,10 +49,8 @@ unit_spare_evict_all(void)
 static const SiftCacheKind unit_spare_kind = {"col_unit_spare", unit_spare_oldest, unit_spare_evict_one, unit_spare_evict_all};
 
 static void
-unit_release(void *arg)
+unit_give_back(SegPriv *pv)
 {
-	SegPriv    *pv = arg;
-
 	if (pv->unitbuf == NULL)
 		return;
 	if (nunit_spare < UNIT_KEEP && pv->unitcap <= UNIT_KEEP_BYTES)
@@ -63,6 +61,26 @@ unit_release(void *arg)
 	}
 	else
 		pfree(pv->unitbuf);
+	pv->unitbuf = NULL;
+	pv->unitcap = 0;
+}
+
+static void
+unit_release(void *arg)
+{
+	unit_give_back(arg);
+}
+
+void
+sift_cseg_unit_release(SiftColSegment *seg)
+{
+	unit_give_back(PRIV(seg));
+}
+
+Size
+sift_cseg_unit_bytes(const SiftColSegment *seg)
+{
+	return PRIV(seg)->unitcap;
 }
 
 /* The buffer of a unit record holds len bytes and the SIFT_COL_PAD bytes the kernels read past the packed payload of its last chunk */
@@ -80,15 +98,15 @@ sift_cseg_unit_room(SiftColSegment *seg, SegPriv *pv, uint32 len)
 			unit_spare_cx = sift_cache_create_context("sift cache unit buffers");
 			sift_cache_register(&unit_spare_kind);
 		}
-		if (nunit_spare > 0 && pv->unitbuf == NULL)
-		{
-			pv->unitbuf = unit_spare[--nunit_spare].buf;
-			pv->unitcap = unit_spare[nunit_spare].cap;
-		}
 		cb = MemoryContextAlloc(seg->mcxt, sizeof(MemoryContextCallback));
 		*cb = (MemoryContextCallback) {unit_release, pv, NULL};
 		MemoryContextRegisterResetCallback(seg->mcxt, cb);
 		pv->unit_kept = true;
+	}
+	if (pv->unitbuf == NULL && nunit_spare > 0)
+	{
+		pv->unitbuf = unit_spare[--nunit_spare].buf;
+		pv->unitcap = unit_spare[nunit_spare].cap;
 	}
 	if (len + SIFT_COL_PAD > pv->unitcap)
 	{

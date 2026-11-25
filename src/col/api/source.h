@@ -258,6 +258,9 @@ extern void sift_col_view_export(const SiftColSource *src, void *buf);
 extern void *sift_col_count_view(Relation heap, Relation index, MemoryContext mcxt, Size *len, uint32 *heap_sbs);
 extern bool sift_col_view_sb_heap(const void *view);
 extern void sift_col_close(SiftColSource *src);
+
+/* the bytes the segments of the source keep for the unit records they read, held after sift_col_close */
+extern Size sift_col_unit_bytes(const SiftColSource *src);
 /* Makes a source that has begun no scan, counted no rows and set no count or super mode ready for another scan of the statement (the counters at zero, what the global order made forgotten); false when it has, or its directory changed: open again */
 extern bool sift_col_rescan(SiftColSource *src);
 extern bool sift_col_current(SiftColSource *src);

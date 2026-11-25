@@ -100,6 +100,7 @@ sift_test_unit_room_failure(PG_FUNCTION_ARGS)
 	SiftColSegment nseg = {.mcxt = next};
 	SegPriv		npv = {0};
 	const uint32 len = 100000;
+	bool		whole;
 
 	PG_TRY();
 	{
@@ -114,7 +115,8 @@ sift_test_unit_room_failure(PG_FUNCTION_ARGS)
 	MemoryContextDelete(failed);
 	sift_cseg_unit_room(&nseg, &npv, len);
 	memset(npv.unitbuf, 0x5a, npv.unitcap);
+	whole = npv.unitcap >= len + SIFT_COL_PAD;
 	MemoryContextDelete(next);
-	PG_RETURN_BOOL(npv.unitcap >= len + SIFT_COL_PAD);
+	PG_RETURN_BOOL(whole);
 }
 #endif

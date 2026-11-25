@@ -161,6 +161,8 @@ extern bool sift_col_unit_ref(const SiftColUnit *unit, SiftColSegment **seg, uin
 /* The keys (blk << 16 | off) of the rows of unit u in order, nrows entries */
 extern void sift_cseg_unit_keys(SiftColSegment *seg, uint32 u, SiftKey *keys);
 extern void sift_cseg_close(SiftColSegment *seg);		/* releases buffers only */
+extern void sift_cseg_unit_release(SiftColSegment *seg);	/* the unit record buffer goes back to the backend's spare ones: the unit it read is no longer the scan's */
+extern Size sift_cseg_unit_bytes(const SiftColSegment *seg);	/* what its unit record buffer holds, kept until the segment's context ends */
 
 /* The superblocks the immutable segments of the directory cover (an upper bound of their units) */
 extern uint64 sift_cseg_dir_units(const SiftDirSnapshot *dir);

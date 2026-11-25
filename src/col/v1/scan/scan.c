@@ -184,6 +184,16 @@ sift_col_close(SiftColSource *src)
 		UnregisterSnapshot(src->snap);
 }
 
+Size
+sift_col_unit_bytes(const SiftColSource *src)
+{
+	Size		bytes = 0;
+
+	for (int i = 0; i < src->nseg; i++)
+		bytes += sift_cseg_unit_bytes(src->seg[i].seg);
+	return bytes;
+}
+
 /* Does the source hold the segments a statement confined to keys (NULL: not confined) reads? */
 bool
 sift_col_covers(const SiftColSource *src, const SiftKeyRange *keys)
@@ -607,6 +617,9 @@ load_stored(ColUnit *cu, ColCursor *c, uint32 u)
 	SiftColSegment *seg = c->seg;
 	uint64		reads = pgBufferUsage.shared_blks_read;
 
+	if (src->unit_seg != NULL && src->unit_seg != seg)
+		sift_cseg_unit_release(src->unit_seg);
+	src->unit_seg = seg;
 	cu->seg = seg;
 	cu->u = u;
 	cu->sb = seg->sbdir[u].id;

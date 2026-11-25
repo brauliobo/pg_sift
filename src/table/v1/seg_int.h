@@ -38,7 +38,6 @@ typedef struct VerGroup
 
 /* An index scan over rows whose versions sit in different superblocks (updated rows) alternates between them: each needs its decoded unit and TIDs kept; a miss costs ~600k instructions */
 #define SIFT_TBL_FETCH_SCANS	256
-#define SIFT_TBL_FETCH_BYTES	(64 * 1024 * 1024)	/* what the scans of one table hold at most, a new scan first drops the oldest ones over this */
 
 struct SiftTblGroupCache
 {
