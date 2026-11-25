@@ -637,6 +637,7 @@ relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const in
 		SiftColDeltaEntryHdr h;
 		SiftF2Loc	loc;
 
+		CHECK_FOR_INTERRUPTS();
 		memcpy(&h, it->rec, sizeof(h));
 		if (sift_u64set_has(&gens, h.part_gen))
 			continue;
@@ -706,6 +707,7 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 		SiftColDeltaBatch b;
 		uint32		npages = 0;
 
+		CHECK_FOR_INTERRUPTS();
 		for (hi = lo; hi < nlive && cd->items[ord[hi]].part_id == part_id; hi++)
 			;
 		LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);

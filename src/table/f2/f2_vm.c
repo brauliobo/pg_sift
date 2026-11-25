@@ -11,6 +11,7 @@
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
+#include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -278,6 +279,7 @@ count_part(Relation rel, SiftF2Store *store, const Span *s, CountWindow *win, ui
 			const SiftGranuleDesc *gd = &pin->gdir[g];
 			MemoryContext old;
 
+			CHECK_FOR_INTERRUPTS();
 			if ((gd->tid_max >> 16) < win->base || (gd->tid_min >> 16) >= win->base + win->nvblocks)
 				continue;
 			old = MemoryContextSwitchTo(cx);
@@ -444,7 +446,10 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 		win.counts = palloc(sizeof(uint16) * win.nvblocks);
 		mr = sift_manifest_read_range(rel, NULL, NULL);
 		for (int i = 0; i < mr.n && !plan.incomplete; i++)
+		{
+			CHECK_FOR_INTERRUPTS();
 			plan_partition(rel, store, &mr.entries[i], oldest, freeze, &plan);
+		}
 		if (plan.incomplete)
 			ereport(WARNING, (errmsg("the visibility map of \"%s\" is left as it was: the parts take more memory than this VACUUM has", RelationGetRelationName(rel)),
 							  errhint("Raise maintenance_work_mem.")));
@@ -454,6 +459,7 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 				store_counts(rel, false, 0, 0, 0);
 			for (uint64 base = 0; base < plan.limit; base += SIFT_VM_BLOCKS_PER_PAGE)
 			{
+				CHECK_FOR_INTERRUPTS();
 				if (base % win.nvblocks == 0)
 					window_open(&win, base);
 				total += set_page(rel, store, &plan, base, &win);

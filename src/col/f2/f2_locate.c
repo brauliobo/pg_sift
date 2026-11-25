@@ -9,6 +9,7 @@
 #include "access/parallel.h"
 #include "access/xlog.h"
 #include "catalog/pg_class_d.h"
+#include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -344,7 +345,7 @@ f2_locate_invalidate_hits(uint32 hashvalue)
 static TidIndex
 tid_index_build(const SiftPlanSnapshot *v, MemoryContext parent)
 {
-	TidIndex	ix = {.locator = v->locator,.manifest_version = v->manifest_version,.cx = sift_mem_allocset_create(parent, "sift cache f2 tid index")};
+	TidIndex	ix = {.locator = v->locator,.manifest_version = v->manifest_version,.cx = sift_mem_allocset_create(CurrentMemoryContext, "sift cache f2 tid index")};
 	int			total = 0;
 	uint64	   *maxes;
 
@@ -353,6 +354,8 @@ tid_index_build(const SiftPlanSnapshot *v, MemoryContext parent)
 	ix.slots = MemoryContextAlloc(ix.cx, sizeof(TidSlot) * Max(total, 1));
 	ix.loose = MemoryContextAlloc(ix.cx, sizeof(TidSlot) * Max(total, 1));
 	for (int i = 0; i < v->npartitions; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
 		for (int j = 0; j < v->partlists[i].nparts; j++)
 		{
 			const SiftPartDesc *d = &v->partlists[i].parts[j];
@@ -363,12 +366,14 @@ tid_index_build(const SiftPlanSnapshot *v, MemoryContext parent)
 			else
 				ix.loose[ix.nloose++] = slot;
 		}
+	}
 	qsort(ix.slots, ix.n, sizeof(TidSlot), slot_cmp);
 	maxes = palloc(Max(ix.n, 1) * sizeof(uint64));
 	for (int k = 0; k < ix.n; k++)
 		maxes[k] = ix.slots[k].tid_max;
 	ix.tree = tree_build(ix.cx, maxes, ix.n);
 	pfree(maxes);
+	MemoryContextSetParent(ix.cx, parent);
 	return ix;
 }
 
