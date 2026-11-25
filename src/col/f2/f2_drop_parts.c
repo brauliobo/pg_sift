@@ -1,15 +1,18 @@
 /*
  * col/f2/f2_drop_parts.c - sift.drop_parts_before(rel, cutoff, col): the commit of the retention drop of col/f2/f2_drop_parts.h.
  *
- * The function runs as the caller and needs MAINTAIN on the table. It holds ShareUpdateExclusiveLock, so reads and writes go on and it is serialized against VACUUM and the other maintenance.
+ * The function runs as the caller and needs MAINTAIN on the table. The parts leave for good, as in TRUNCATE: it refuses a transaction block, which could roll back what is gone, and it holds
+ * AccessExclusiveLock, which waits for the transactions that read the table (a snapshot of REPEATABLE READ or SERIALIZABLE keeps its lock to the end) so that none of them sees rows vanish.
  * Every partition is changed under its compaction lock (a running compaction is skipped and its expired parts are counted unsettled) and its partition lock, from the read of its parts to the
- * end of the commit. The standby conflict is raised before the commit, and the blocks of the parts enter the free space map's quarantine with it: a standby that still reads them cancels or
- * waits as for any other cleanup, and nothing is reused before it has replayed the commit.
+ * end of the commit. The visibility map bits of the dropped parts are cleared first, so that no index-only scan answers a row that is gone. The standby conflict is raised before the commit,
+ * and the blocks of the parts enter the free space map's quarantine with it: a standby that still reads them cancels or waits as for any other cleanup, and nothing is reused before it has
+ * replayed the commit.
  */
 #include "postgres.h"
 
 #include "access/relation.h"
 #include "access/transam.h"
+#include "access/xact.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
@@ -37,6 +40,7 @@
 #include "col/f2/f2_scope.h"
 #include "table/dispatch.h"
 #include "table/f2/f2_tbl.h"
+#include "table/f2/f2_vm.h"
 #include "table/wal.h"
 
 PG_FUNCTION_INFO_V1(sift_drop_parts_before);
@@ -139,6 +143,23 @@ flagged(const SiftPartGenIndex *by_gen, const uint64 *gens, int n, bool expired,
 	return out;
 }
 
+/* The bits of the vblocks a dropped part had rows in: the index entries of its rows stay until VACUUM, and a set bit would answer them from the index */
+static void
+clear_dropped_vm(Relation rel, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens)
+{
+	SiftPartGenIndex by_gen;
+
+	sift_part_gen_idx_init(&by_gen, parts, np);
+	for (int i = 0; i < ngens; i++)
+	{
+		const SiftPartDesc *p = sift_part_gen_idx_find(&by_gen, gens[i]);
+
+		for (uint64 vblock = p->tid_min >> 16; p->tid_max != 0 && vblock <= p->tid_max >> 16; vblock++)
+			sift_tbl_vm_clear(rel, (BlockNumber) vblock);
+	}
+	sift_part_gen_idx_free(&by_gen);
+}
+
 static void
 commit_partition(Drop *d, const SiftPartitionEntry *e)
 {
@@ -161,7 +182,10 @@ commit_partition(Drop *d, const SiftPartitionEntry *e)
 		nrel = sift_tier_release_extents(d->rel, e->part_id, parts, np, plan->drop_gens, plan->ndrop, true, &rel_ext);
 		nrel = sift_drop_wide_extents(d->rel, d->store, (uint32) e->part_id, parts, np, plan->drop_gens, plan->ndrop, &rel_ext, nrel);
 		if (plan->ndrop > 0)
+		{
+			clear_dropped_vm(d->rel, parts, np, plan->drop_gens, plan->ndrop);
 			(void) sift_wal_snapshot_conflict(d->rel, InvalidBlockNumber, ReadNextFullTransactionId());
+		}
 		sift_manifest_commit(d->rel, &(SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.drop_gens = plan->drop_gens,.ndrop = plan->ndrop,
 		.update_parts = upd,.nupdate = plan->nmark + plan->nunmark,.release = rel_ext,.nrelease = nrel});
 	}
@@ -227,8 +251,9 @@ sift_f2_drop_parts_before(Relation rel, SiftF2Store *store, int slot, int64 cuto
 static Relation
 open_table(Oid relid)
 {
-	Relation	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(relid), AccessExclusiveLock);
 
+	sift_rel_reject_partitioned(rel);
 	if (rel->rd_rel->relkind == RELKIND_INDEX)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" is an index: dropping its parts would leave it without rows its table keeps", RelationGetRelationName(rel)),
 						errhint("Run sift.drop_parts_before on the sift_table, or delete the old rows of the heap table and let the index follow.")));
@@ -293,6 +318,7 @@ sift_drop_parts_before(PG_FUNCTION_ARGS)
 	Datum		values[5];
 	bool		nulls[5] = {false};
 
+	PreventInTransactionBlock(true, "sift.drop_parts_before()");
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("%s must not be null", PG_ARGISNULL(0) ? "rel" : "cutoff")));
 	cutoff = PG_GETARG_TIMESTAMPTZ(1);

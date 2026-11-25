@@ -7,6 +7,7 @@
 
 #include "postgres.h"
 
+#include "catalog/pg_class.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
@@ -25,6 +26,15 @@ sift_rel_must_exist(Oid relid)
 	if (!SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
 		sift_rel_missing(relid);
 	return relid;
+}
+
+/* A partitioned parent holds no rows and no parts: the commands on the parts of a sift_table are run on its partitions */
+static inline void
+sift_rel_reject_partitioned(Relation rel)
+{
+	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is a partitioned table, which holds no parts", RelationGetRelationName(rel)),
+						errhint("Run it on the partitions of \"%s\".", RelationGetRelationName(rel))));
 }
 
 static inline Relation
