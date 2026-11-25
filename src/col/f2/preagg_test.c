@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "core/horizon.h"
+#include "core/memtrack.h"
 
 #ifdef SIFT_TESTING
 
@@ -549,7 +550,7 @@ sift_test_f2_plan(PG_FUNCTION_ARGS)
 	int			n,
 				ng;
 	SiftPartDesc *parts = f2t_find_parts(rel, fcinfo, 1, 2, &n, &entry);
-	SiftCompactGroup *groups = sift_compact_plan(parts, n, (uint64) maintenance_work_mem * 1024 / 4, (sift_col_is_index(rel) && sift_col_format_major(rel) == SIFT_FORMAT2_MAJOR) ? sift_f2_hot_cut(sift_f2_rel(rel)) : PG_INT64_MIN, &ng);
+	SiftCompactGroup *groups = sift_compact_plan(parts, n, (uint64) sift_mem_maint_kb() * 1024 / 4, (sift_col_is_index(rel) && sift_col_format_major(rel) == SIFT_FORMAT2_MAJOR) ? sift_f2_hot_cut(sift_f2_rel(rel)) : PG_INT64_MIN, &ng);
 	StringInfoData out;
 
 	initStringInfo(&out);

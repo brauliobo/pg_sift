@@ -280,7 +280,7 @@ sift_f2_vacuum_progress_begin(Relation rel)
 {
 	pgstat_progress_start_command(PROGRESS_COMMAND_VACUUM, RelationGetRelid(rel));
 	pgstat_progress_update_multi_param(2, (const int[]) {PROGRESS_VACUUM_PHASE, PROGRESS_VACUUM_MAX_DEAD_TUPLE_BYTES},
-									   (const int64[]) {PROGRESS_VACUUM_PHASE_SCAN_HEAP, (int64) maintenance_work_mem * 1024});
+									   (const int64[]) {PROGRESS_VACUUM_PHASE_SCAN_HEAP, (int64) sift_mem_maint_kb() * 1024});
 }
 
 static BlockNumber vacuum_total_blocks;
