@@ -14,7 +14,7 @@ LIB      = $(SRC)/bm25/kernels/kernels.c $(SRC)/bm25/kernels/avx2.c $(SRC)/bm25/
            $(SRC)/col/shred/kern.c $(SRC)/col/shred/avx2.c $(SRC)/col/shred/avx512.c $(SRC)/col/shred/neon.c \
            $(SRC)/col/codec/kern.c $(SRC)/col/codec/avx2.c $(SRC)/col/codec/avx512.c $(SRC)/col/codec/neon.c \
            $(SRC)/bm25/bitmap/scalar.c $(SRC)/bm25/bitmap/avx2.c $(SRC)/bm25/bitmap/avx512.c $(SRC)/bm25/bitmap/neon.c
-HDR      = $(SRC)/bm25/kernels/kernels.h $(SRC)/bm25/kernels/int.h $(SRC)/col/v1/kern/kern.h $(SRC)/col/v1/kern/int.h $(SRC)/col/shred/shred.h $(SRC)/col/codec/codec.h $(SRC)/col/codec/int.h $(SRC)/col/codec/vec.h harness.h
+HDR      = $(SRC)/bm25/kernels/kernels.h $(SRC)/bm25/kernels/int.h $(SRC)/core/simd_kern.h $(SRC)/core/simd_kern_int.h $(SRC)/col/shred/shred.h $(SRC)/col/codec/codec.h $(SRC)/col/codec/int.h $(SRC)/col/codec/vec.h harness.h
 
 include ../tools.mk
 

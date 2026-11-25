@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 #include "core/hash.h"
 #include "core/limits.h"
 #include "core/page.h"

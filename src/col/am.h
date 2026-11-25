@@ -420,7 +420,7 @@ extern Datum sift_col_nan_numeric(void);
  * The other forms of numeric and the wide types. The constant of a predicate on a numeric of two lanes is scaled and
  * rounded like the narrow one and comes back as the two lane keys: 0 when it is inside the 128-bit range, -1 / 1 when it is below / above it
  * (the keys are then the least / greatest integer, which no value of a 38-digit column reaches), 2 for a NaN or an infinity. A numeric image is
- * the canonical bytes of the number (col/v1/wide.h) and its display scale; an interval is the lane keys of its total and its month and day counts.
+ * the canonical bytes of the number (core/wide_datum.h) and its display scale; an interval is the lane keys of its total and its month and day counts.
  */
 extern int	sift_col_numeric_wide_key(int scale, Datum value, SiftColRound round, int64 *hi, int64 *lo);
 extern Datum sift_col_w128_numeric(SiftCI128 v, int scale);

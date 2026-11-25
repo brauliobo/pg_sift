@@ -1,5 +1,5 @@
 /*
- * col/v1/kern/anc.h - the anc_match kernel of the column kernels (col/v1/kern/kern.h), written once with the GCC/Clang vector extensions at the width of the level
+ * col/v1/kern/anc.h - the anc_match kernel of the column kernels (core/simd_kern.h), written once with the GCC/Clang vector extensions at the width of the level
  * (SIFT_V_BYTES of core/simd_isa.h). Included by col/v1/kern/avx2.c, col/v1/kern/avx512.c and col/v1/kern/neon.c inside SIFT_VEC_PUSH / SIFT_VEC_POP after they define
  * SIFT_VEC_<level> and AN_FN(x), the kernel's name and storage. The tail is the specification's (sift_colk_anc_one).
  */

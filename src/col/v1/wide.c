@@ -2,7 +2,7 @@
  * col/v1/wide.c - the values of the wide leaf types. Portable: no allocation, no host type.
  */
 
-#include "col/v1/wide.h"
+#include "core/wide_datum.h"
 
 #define W128_MAXPOS	(((sift_wu128) 1 << 127) - 1)
 #define W128_MAXNEG	((sift_wu128) 1 << 127)		/* |-2^127| */

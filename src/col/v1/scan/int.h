@@ -413,7 +413,6 @@ extern SiftCDict *unit_dict(ColUnit *cu, int col);
 extern const uint64 *unit_allvisible(ColUnit *cu);
 extern const uint64 *unit_allvisible_vm(ColUnit *cu);
 extern ColGroup *unit_group(ColUnit *cu, int group);
-extern bool types_known(const ColUnit *cu, const SiftCChunk *c, uint32 mask, bool mixed, const uint64 *sel);
 
 static inline void
 make_test(SiftColSource *src, const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
@@ -475,7 +474,6 @@ extern bool unit_pages_allvisible(ColUnit *cu);
  */
 extern bool col_hf_page_clear(SiftColSource *src, const SiftColSegment *seg, BlockNumber blk);
 extern bool col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const uint64 *vm, const uint64 *pm);
-extern bool col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber lo, BlockNumber hi);
 extern void col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const BlockNumber *blocks, uint32 n, uint64 *bits);
 /* Opens the log of the source (before its first liveness read) */
 extern void col_hf_open(SiftColSource *src);

@@ -5,7 +5,7 @@
  */
 #include "harness.h"
 
-#include "col/v1/kern/int.h"
+#include "core/simd_kern_int.h"
 #include "col/codec/int.h"
 
 #define N			4096			/* rows of a filter call */

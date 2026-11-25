@@ -35,10 +35,6 @@ typedef struct SiftV1Idx
 	void		(*wide_dict) (struct SiftV1Idx *r, int leaf, SiftSrcWide *w, const SiftColVec *v, uint32 n);
 } SiftV1Idx;
 
-/* r is zeroed storage the caller owns; the reader's allocations live in mcxt */
-extern void sift_v1_idx_init(SiftV1Idx *r, Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys);
-extern void sift_v1_idx_wide_dict(SiftV1Idx *r, int leaf, SiftSrcWide *w, const SiftColVec *v, uint32 n);
-
 /* a leaf read through the per-unit dictionary of datums (col/v1/src_wide.h) */
 static inline bool
 sift_v1_idx_wide(const SiftV1Idx *r, int leaf)
@@ -46,19 +42,5 @@ sift_v1_idx_wide(const SiftV1Idx *r, int leaf)
 	return r->lay->leaf[leaf].wide && !r->raw[leaf];
 }
 
-extern void sift_v1_idx_close(void *impl);
-extern const SiftSrcLayout *sift_v1_idx_source_layout(const void *impl);
-extern uint32 sift_v1_idx_nsb(void *impl);
-extern void sift_v1_idx_select(void *impl, const SiftFilter *keep);
-extern bool sift_v1_idx_next(void *impl, SiftSrcUnit *unit);
-extern void sift_v1_idx_live(void *impl, const SiftSrcUnit *unit, uint64 *bits);
-extern bool sift_v1_idx_vet_needed(void *impl, const SiftSrcUnit *unit);
-extern void sift_v1_idx_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
-extern void sift_v1_idx_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
-extern int64 sift_v1_idx_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf);
-extern void sift_v1_idx_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
-extern void sift_v1_idx_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec);
-extern void sift_v1_idx_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
-extern void sift_v1_idx_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
 
 #endif							/* SIFT_COL_V1_V1_READER_INT_H */

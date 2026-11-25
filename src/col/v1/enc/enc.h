@@ -457,7 +457,7 @@ typedef struct SiftCTest
 	int64		hi;
 	const int64 *set;			/* palloc'd by sift_ctest_make */
 	uint32		nset;
-	bool		chain;			/* SET: the nodes on the way to a network (anc_match of col/v1/kern/kern.h with chain_c, chain_flip, chain_bmin, chain_bmax) */
+	bool		chain;			/* SET: the nodes on the way to a network (anc_match of core/simd_kern.h with chain_c, chain_flip, chain_bmin, chain_bmax) */
 	uint64		chain_c;
 	uint64		chain_flip;
 	uint64		chain_bmin;

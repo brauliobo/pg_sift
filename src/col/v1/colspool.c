@@ -12,7 +12,7 @@
 #include "col/compress.h"
 #include "col/v1/colspool.h"
 #include "col/v1/enc/enc.h"
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 
 #define CHUNK_ROWS_MIN	512				/* below it the chunks lose what the columns gain from many rows: the rows go to the row file */
 #define CHUNK_ROWS_MAX	Min(16384, SIFT_COL_UNIT_MAX_ROWS)	/* a chunk is a unit record: no more rows than a unit holds (2,328 on the 8-page test flavour) */

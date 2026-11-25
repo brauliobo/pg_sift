@@ -12,7 +12,7 @@
 #include "portability/instr_time.h"
 #include "utils/jsonb.h"
 
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 #include "col/shred/pg.h"
 
 PG_FUNCTION_INFO_V1(sift_test_shred_spec);

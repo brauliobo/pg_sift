@@ -17,30 +17,6 @@ extern bool sift_col_unit_whole(const SiftColUnit *unit, SiftColSegment **seg);
 extern bool sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k);
 
 /*
- * May the pre-aggregates of this unit stand for the rows a query without filters sees: the unit is stored, has no dead row and every page it
- * has rows on is all-visible to the snapshot (sift_col_unit_exact). When false the unit is scanned. Counts and sums are then exact over
- * exactly the rows of the unit; a predicate on top is the consumer's (zone cover test, docs/COL-PREAGG.md section 4).
- */
-extern bool sift_col_unit_preagg_ok(const SiftColUnit *unit);
-
-/*
- * The key presence of leaf col in a stored unit that is exact (col/v1/setsum.h, kind PRES): the key of bit 0 divided by 64, the words and their number, valid
- * until the next call on the segment. false for a superunit, a unit that is not exact or has no presence for the leaf.
- */
-extern bool sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p);
-extern bool sift_col_unit_dset(const SiftColUnit *unit, int cal, int col, int64 cell, SiftCPresence *p);
-/* The HyperLogLog sketch of col in an exact unit (col/hll.h), valid until the next call; false when the unit has none */
-extern bool sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob);
-
-/*
- * Exceptions (docs/COL-PREAGG.md 11): a stored exact unit may hold the cube and rollups of its rows where one leaf is not NULL. With leaf >= 0 and the unit
- * holding them for that leaf, this returns true and the next sift_col_unit_hist / sift_col_unit_rollup on the unit give the groups and tuples of the rows where
- * the leaf IS NULL: counts and sums net of the exceptions, no minimum or maximum, false when a float sum would lose more than 6 bits to the subtraction or the
- * unit lacks the dim; sift_col_unit_agg and sift_col_unit_presence refuse the unit. Leaf -1 (and true) returns it to its own rows. unit->except holds the leaf.
- */
-extern bool sift_col_unit_except(SiftColUnit *unit, int leaf);
-
-/*
  * A dirty unit net of its dead rows (col/v1/delta.c, docs/COL-PREAGG.md 12): when every page the unit has rows on is all-visible and no more than max_pct percent of its rows are dead, the
  * unit answers from its pre-aggregates minus the dead rows' for counts and sums, until it is given back with a negative max_pct. Returns the number of its dead rows, or -1 when
  * it cannot (and nothing changes). While on, sift_col_unit_preagg_ok holds, sift_col_unit_agg gives the live counts and sums with min and max that only bound (SIFT_CAGG_LOOSE),
@@ -67,17 +43,6 @@ extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);
  * source. false when the unit may not answer or has no histogram of dim (more groups than the cap, the byte budget, an overflow value, inline text).
  */
 extern bool sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out, SiftColDict *dict);
-
-/*
- * The rollup of a list in the unit (SiftCRollup, docs/COL-PREAGG.md): its tuples of the dims it holds. Arrays palloc'd in mcxt; dict[j] is the dictionary of a
- * STR dim j (set; zeroed for the other dims). false when the unit may not answer or has no rollup of the list.
- */
-/* the tuples of the unit's rollup of the list without decoding it (0: the unit has none) */
-extern uint32 sift_col_unit_rollup_tuples(const SiftColUnit *unit, int list);
-extern bool sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict);
-
-/* A scan reads the unit for lack of its rollup (missing, other dims, a measure it lacks): asks for the segment to be rewritten (sift_col_rollup_request) */
-extern bool sift_col_unit_rollup_miss(const SiftColUnit *unit);
 
 /* Per leaf of the index definition: the dims and measures a default or configured spec asks for (planner side, docs/COL-PREAGG.md section 3) */
 struct RelationData;

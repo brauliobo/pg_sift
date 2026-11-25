@@ -51,7 +51,7 @@
 #include "col/am.h"
 #include "col/f2/scan/ord_stream.h"
 #include "col/v1/store_ops.h"
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 #include "col/codec/codec.h"
 #include "core/cpu.h"
 #include "bm25/kernels/kernels.h"

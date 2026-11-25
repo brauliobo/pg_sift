@@ -1,5 +1,5 @@
 /*
- * col/v1/kern/int.h - shared between the per-level column kernel files.
+ * core/simd_kern_int.h - shared between the per-level column kernel files.
  */
 #ifndef SIFT_COL_KERN_INT_H
 #define SIFT_COL_KERN_INT_H

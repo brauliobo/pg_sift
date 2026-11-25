@@ -29,7 +29,7 @@
 #include "col/v1/setsum.h"
 #include "col/shred/shred.h"
 #include "col/keystore/keystore.h"
-#include "col/v1/wide.h"
+#include "core/wide_datum.h"
 #include "core/limits.h"
 #include "core/maint/sched.h"
 #include "core/sift.h"

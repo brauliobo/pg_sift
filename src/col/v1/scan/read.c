@@ -173,15 +173,6 @@ group_sel_elems(ColUnit *cu, ColGroup *g, const uint32 *idx, uint32 m)
 	}
 }
 
-int
-sift_col_key_order(const SiftColUnit *unit, int col)
-{
-	ColUnit    *cu = unit->priv;
-	SiftCChunk	c;
-
-	return cu->src->schema->cols[col].parent < 0 && unit_chunk(cu, col, &c) ? sift_cchunk_order(&c) : 0;
-}
-
 void
 sift_col_read_idx(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, SiftColVec *vec)
 {
@@ -376,44 +367,6 @@ sift_col_read_rows(const SiftColUnit *unit, int col, uint32 lo, uint32 m, SiftCo
 }
 
 uint32
-sift_col_jnull_bits(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, uint64 *bits, bool *known)
-{
-	ColUnit    *cu = unit->priv;
-	const SiftColDef *def = &cu->src->schema->cols[col];
-	ColGroup   *g = def->parent < 0 ? NULL : unit_group(cu, def->parent);
-	uint32		total = g ? g->nelems : cu->v.nrows,
-				n = total;
-	const uint32 *pos = idx;
-	SiftCChunk	c;
-	uint64	   *tagged;
-
-	if (idx && g)
-	{
-		uint32	   *offsets,
-				   *epos;
-
-		group_expand(cu->src->arena, g, idx, m, &offsets, &epos, &n);
-		pos = epos;
-	}
-	else if (idx)
-		n = m;
-	memset(bits, 0, SIFT_COL_NWORDS(n) * sizeof(uint64));
-	*known = true;
-	if (!unit_chunk(cu, col, &c))
-		return n;
-	if (c.n != total)
-		corrupt("The chunk of leaf %d holds %u values, %u expected.", col, c.n, total);
-	tagged = palloc(SIFT_COL_NWORDS(c.n) * sizeof(uint64));
-	sift_cchunk_tag_bits(&c, SIFT_COLTAG_JNULL, tagged);
-	for (uint32 k = 0; k < n; k++)
-		if (sift_col_bit_test(tagged, pos ? pos[k] : k))
-			sift_col_bit_set(bits, k);
-	pfree(tagged);
-	*known = types_known(cu, &c, 1U << SIFT_COLTAG_JNULL, false, NULL);
-	return n;
-}
-
-uint32
 sift_col_lane_n(const SiftColUnit *unit, int col)
 {
 	ColUnit    *cu = unit->priv;
@@ -523,21 +476,6 @@ sift_col_group_offsets(const SiftColUnit *unit, int col)
 	ColUnit    *cu = unit->priv;
 
 	return cu->src->schema->cols[col].kind == SIFT_COLK_GROUP ? unit_group(cu, col)->eoff : NULL;
-}
-
-void
-sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent, const uint32 **counts)
-{
-	ColUnit    *cu = unit->priv;
-	ColGroup   *g = unit_group(cu, group);
-
-	if (g->parent == NULL)
-	{
-		g->parent = MemoryContextAlloc(cu->src->arena, g->nelems * sizeof(uint32) + SIFT_COL_PAD);
-		sift_colk->expand_parents(g->eoff + 1, cu->v.nrows, g->parent);
-	}
-	*parent = g->parent;
-	*counts = g->counts;
 }
 
 bool

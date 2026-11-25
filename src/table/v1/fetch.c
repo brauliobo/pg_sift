@@ -14,7 +14,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 #include "core/errctx.h"
 #include "table/v1/table.h"
 #include "core/visibility/visibility.h"

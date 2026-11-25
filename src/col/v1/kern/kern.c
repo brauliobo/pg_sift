@@ -3,7 +3,7 @@
  * the dispatch. Baseline x86-64 code: bits are counted with SWAR, no vector instruction.
  */
 
-#include "col/v1/kern/int.h"
+#include "core/simd_kern_int.h"
 #include "core/popcount.h"
 
 const SiftColKernels *sift_colk = &sift_col_kernels_scalar;

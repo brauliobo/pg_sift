@@ -13,8 +13,8 @@
 
 #include "core/range.h"
 #include "core/varint.h"
-#include "col/v1/kern/kern.h"
-#include "col/v1/wide.h"
+#include "core/simd_kern.h"
+#include "core/wide_datum.h"
 #include "core/filter.h"
 
 struct SiftCGOrdBuf;

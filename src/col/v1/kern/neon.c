@@ -13,7 +13,7 @@
 #define SIFT_VEC_NEON
 #include "core/simd_isa.h"
 
-#include "col/v1/kern/int.h"
+#include "core/simd_kern_int.h"
 #include "core/neon.h"
 
 #if defined(SIFT_HAVE_NEON)

@@ -24,7 +24,7 @@
 PG_FUNCTION_INFO_V1(sift_col_unit_aggs_sql);
 PG_FUNCTION_INFO_V1(sift_col_unit_hists_sql);
 
-bool
+static bool
 sift_col_unit_preagg_ok(const SiftColUnit *unit)
 {
 	SiftColSegment *seg;
@@ -75,41 +75,6 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 	return !sift_col_unit_dead_on(unit) || agg_dead(unit, col, a);
 }
 
-bool
-sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p)
-{
-	SiftColSegment *seg;
-	uint32		u;
-
-	if (unit->except >= 0 || sift_col_unit_dead_on(unit) || sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
-		return false;
-	sift_col_unit_stored(unit, &seg, &u);
-	return sift_cseg_presence(seg, col, u, p);
-}
-
-/* The key presence of leaf col in the month of day cell of date leaf cal in a key group with id sets; false: the unit is no such group or has none of the leaf */
-bool
-sift_col_unit_dset(const SiftColUnit *unit, int cal, int col, int64 cell, SiftCPresence *p)
-{
-	SiftColSegment *seg;
-	uint32		k;
-
-	return sift_col_unit_super(unit, &seg, &k) && sift_cseg_super_dset(seg, k, cal, col, cell, p);
-}
-
-bool
-sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob)
-{
-	SiftColSegment *seg;
-	uint32		u,
-				len;
-
-	if (sift_col_unit_dead_on(unit) || sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
-		return false;
-	sift_col_unit_stored(unit, &seg, &u);
-	return (*blob = sift_cseg_hll(seg, col, u, &len)) != NULL;
-}
-
 static void
 corrupt_cube(SiftColSegment *seg, uint32 u)
 {
@@ -143,23 +108,6 @@ x_cube(SiftColSegment *seg, uint32 u, int *leaf, uint32 *len)
 	*leaf = (int) v;
 	*len = n - i;
 	return b + i;
-}
-
-bool
-sift_col_unit_except(SiftColUnit *unit, int leaf)
-{
-	SiftColSegment *seg;
-	uint32		u,
-				len;
-	int			xl;
-
-	unit->except = -1;
-	if (leaf < 0)
-		return true;
-	if (unit->nsu > 0 || !sift_col_unit_preagg_ok(unit) || !sift_col_unit_stored(unit, &seg, &u) || x_cube(seg, u, &xl, &len) == NULL || xl != leaf)
-		return false;
-	unit->except = leaf;
-	return true;
 }
 
 /*
@@ -260,90 +208,6 @@ hist_subtract(SiftCHistDim *h, const SiftCHistDim *x)
 				to++;
 			}
 		h->nmeas = to;
-	}
-	return true;
-}
-
-/* the order of tuple i of x against tuple t of r: the dims first to last, a NULL after the values */
-static int
-tuple_cmp(const SiftCRollup *r, uint32 t, const SiftCRollup *x, uint32 i)
-{
-	for (int j = 0; j < r->ndims; j++)
-	{
-		bool		rn = r->isnull[j] && r->isnull[j][t],
-					xn = x->isnull[j] && x->isnull[j][i];
-
-		if (rn != xn)
-			return rn ? 1 : -1;
-		if (!rn && r->key[j][t] != x->key[j][i])
-			return r->key[j][t] < x->key[j][i] ? -1 : 1;
-	}
-	return 0;
-}
-
-/* the same for the tuples of a rollup, which both hold with all their dims */
-static bool
-rollup_subtract(SiftCRollup *r, const SiftCRollup *x)
-{
-	int			slot[SIFT_PAGG_MAX_MEAS];
-	bool		bad[SIFT_PAGG_MAX_MEAS] = {false};
-	uint32		t = 0;
-
-	if (r->ndims != x->ndims)
-		return false;
-	for (int j = 0; j < r->ndims; j++)
-		if (r->dim[j] != x->dim[j] || r->key[j] == NULL || x->key[j] == NULL)
-			return false;
-	for (int m = 0; m < r->nmeas; m++)
-		bad[m] = true;
-	for (int m = 0; m < x->nmeas; m++)
-	{
-		slot[m] = 0;
-		while (slot[m] < r->nmeas && r->meas[slot[m]] != x->meas[m])
-			slot[m]++;
-		if (slot[m] == r->nmeas)
-			return false;
-		bad[slot[m]] = false;
-	}
-	for (uint32 i = 0; i < x->ntuples; i++)
-	{
-		while (t < r->ntuples && tuple_cmp(r, t, x, i) < 0)
-			t++;
-		if (t >= r->ntuples || tuple_cmp(r, t, x, i) != 0 || x->count[i] > r->count[t])
-			return false;
-		r->count[t] -= x->count[i];
-		for (int m = 0; m < x->nmeas; m++)
-		{
-			int			rm = slot[m];
-
-			if (bad[rm])
-				continue;
-			if (x->nn[m][i] > r->nn[rm][t])
-				return false;
-			r->nn[rm][t] -= x->nn[m][i];
-			if (r->sum[rm] && x->sum[m])
-				r->sum[rm][t] -= x->sum[m][i];
-			else if (r->sumf[rm] && x->sumf[m])
-				bad[rm] = !float_net(r->sumf[rm][t], x->sumf[m][i], r->nn[rm][t], &r->sumf[rm][t]);
-			else
-				bad[rm] = true;
-		}
-	}
-	{
-		int			to = 0;
-
-		for (int m = 0; m < r->nmeas; m++)
-			if (!bad[m])
-			{
-				r->meas[to] = r->meas[m];
-				r->nn[to] = r->nn[m];
-				r->sum[to] = r->sum[m];
-				r->sumf[to] = r->sumf[m];
-				r->min[to] = r->max[to] = NULL;
-				r->minf[to] = r->maxf[to] = NULL;
-				to++;
-			}
-		r->nmeas = to;
 	}
 	return true;
 }
@@ -475,100 +339,6 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const S
 	if (dict && dim < SIFT_PAGG_CAL && seg->schema->cols[dim].store == SIFT_COLS_STR)
 		sift_cdict_view(sift_cseg_dict(seg, dim), seg->entry.gen << 8 | dim, dict);
 	return true;
-}
-
-/* The rollup of the rows of key group k: the element blob of the group holds it as the one of a unit does */
-static const uint8 *
-super_rollup(SiftColSegment *seg, uint32 k, uint32 *len)
-{
-	uint32		elen;
-	const uint8 *e = sift_cseg_super_rollup(seg, k, &elen);
-
-	if (e == NULL)
-	{
-		*len = 0;
-		return NULL;
-	}
-	return sift_cpagg_elem_cube(seg->schema, e, elen, -1, len);
-}
-
-bool
-sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict)
-{
-	SiftColSegment *seg;
-	uint32		u,
-				len;
-	const uint8 *blob;
-
-	if (!sift_col_unit_preagg_ok(unit))
-		return false;
-	if (sift_col_unit_super(unit, &seg, &u))
-		blob = list < 0 ? super_rollup(seg, u, &len) : NULL;
-	else
-	{
-		sift_col_unit_stored(unit, &seg, &u);
-		blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len);
-	}
-	if (blob == NULL)
-		return false;
-	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, unit->except >= 0 || sift_col_unit_dead_on(unit) ? NULL : need, r) || r->list != list)
-		corrupt_cube(seg, u);
-	if (list < 0)
-	{
-		/* the tuples of the rollup of the rows hold every row of the unit once */
-		uint64		rows = 0;
-
-		for (uint32 t = 0; t < r->ntuples; t++)
-			rows += r->count[t];
-		if (rows != unit->nrows - sift_col_unit_net_dead(unit))
-			corrupt_cube(seg, u);
-	}
-	if (unit->except >= 0)
-	{
-		SiftCRollup x;
-
-		if (!x_rollup(seg, u, list, mcxt, &x) || !rollup_subtract(r, &x))
-			return false;
-	}
-	if (sift_col_unit_dead_on(unit) && !sift_col_unit_dead_rollup(unit, r))
-		return false;
-	memset(dict, 0, SIFT_PAGG_MAX_RDIMS * sizeof(*dict));
-	for (int j = 0; j < r->ndims; j++)
-		if (seg->schema->cols[r->dim[j]].store == SIFT_COLS_STR)
-			sift_cdict_view(sift_cseg_dict(seg, r->dim[j]), seg->entry.gen << 8 | r->dim[j], &dict[j]);
-	return true;
-}
-
-uint32
-sift_col_unit_rollup_tuples(const SiftColUnit *unit, int list)
-{
-	SiftColSegment *seg;
-	uint32		u,
-				len;
-	const uint8 *blob;
-
-	if (!sift_col_unit_preagg_ok(unit))
-		return 0;
-	if (sift_col_unit_super(unit, &seg, &u))
-		blob = list < 0 ? super_rollup(seg, u, &len) : NULL;
-	else
-	{
-		sift_col_unit_stored(unit, &seg, &u);
-		blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len);
-	}
-	if (blob == NULL)
-		return 0;
-	return sift_cpagg_rollup_tuples(blob, len);
-}
-
-bool
-sift_col_unit_rollup_miss(const SiftColUnit *unit)
-{
-	SiftColSegment *seg;
-	uint32		u;
-
-	/* a segment of minor 3 stays as written, readable by pg_sift 3.0: its rollups come with the merge that rewrites it */
-	return sift_col_unit_stored(unit, &seg, &u) && seg->entry.format >= SIFT_COL_FORMAT_TAGS && sift_col_rollup_request(seg->index, seg->entry.gen);
 }
 
 void

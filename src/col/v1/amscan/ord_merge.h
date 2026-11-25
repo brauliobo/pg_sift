@@ -47,7 +47,6 @@ extern SiftOrdMerge *sift_ordm_open(SiftColSource *src, int leaf, int rows, bool
 /* The same, for a scan that opens one merge after another over the same segments (the groups of a pair): the chunks prev decoded are the new merge's to start from, and prev gives them up (it may be released after) */
 extern SiftOrdMerge *sift_ordm_open_from(SiftOrdMerge *prev, SiftColSource *src, int leaf, int rows, bool desc, bool nulls_first, uint32 collid, const SiftOrdBound *bound, MemoryContext cxt);
 /* The string of the entry the last sift_ordm_next gave, of a text key (collid not 0 at the open): the key is then a rank in its source, not comparable with another's */
-extern const char *sift_ordm_str(const SiftOrdMerge *g, uint32 *len);
 /* The next entry: its key (isnull: the row has none) and heap address; false at the end. An entry that repeats the last one (a row in two sources) is skipped. */
 extern bool sift_ordm_next(SiftOrdMerge *g, int64 *key, bool *isnull, ItemPointerData *tid);
 /* What its source knows of the entry sift_ordm_next just gave (SIFT_GORD_EXACT: a row live and visible to every snapshot, the heap need not confirm it, as the first rows an OFFSET throws away; SIFT_GORD_DEAD: its segment lost the row,
@@ -55,8 +54,6 @@ extern bool sift_ordm_next(SiftOrdMerge *g, int64 *key, bool *isnull, ItemPointe
 extern int sift_ordm_state(const SiftOrdMerge *g, const ItemPointerData *tid);
 /* The sift_ordm_next just made dropped an entry that repeated the one it gave before */
 extern bool sift_ordm_repeated(const SiftOrdMerge *g);
-extern int	sift_ordm_src(const SiftOrdMerge *g);
-extern void sift_ordm_values(const SiftOrdMerge *g, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 /* An entry sift_ordm_skip took off the front that the heap has to confirm: the address, and its key when the block has it exactly (check) */
 typedef struct SiftOrdPend
 {
@@ -66,16 +63,10 @@ typedef struct SiftOrdPend
 	int			cur;			/* a text key: the source of the entry, whose string the key is the rank of (sift_ordm_pend_str) */
 } SiftOrdPend;
 /* Takes off the front of the sources the entries that are certainly among the first k of the scan: those of rows that need no check in the heap are counted (returned), the others are listed (sift_ordm_pending) for the caller to confirm; it throws the same number of rows away. Before the first sift_ordm_next */
-extern uint32 sift_ordm_skip(SiftOrdMerge *g, uint32 k);
 /* The string of the pending entry of a text key, valid until the next call */
-extern const char *sift_ordm_pend_str(SiftOrdMerge *g, const SiftOrdPend *p, uint32 *len);
-extern const SiftOrdPend *sift_ordm_pending(const SiftOrdMerge *g, uint32 *n);
-extern void sift_ordm_pending_done(SiftOrdMerge *g);
-extern void sift_ordm_rewind(SiftOrdMerge *g);
 /* Some source is the ends of a segment's order: the entries it has end where the segment's go on. The scan that reads them may find the order short of rows (sift_ordm_short) */
 extern bool sift_ordm_ends(const SiftOrdMerge *g);
 /* A source of the ends went through its last entry while the segment has more after it: the entries given so far are the order's, those it would give next are not known */
-extern bool sift_ordm_short(const SiftOrdMerge *g);
 /* Some source has compact chunks: the exact key of their entries costs a heap row apiece, and a scan that reads every entry does better sorting the rows of the units */
 extern bool sift_ordm_compact(const SiftOrdMerge *g);
 /* The leaf the arrays are grouped by, whose pinned value the scan reads the entries of; -1 when they are not grouped */

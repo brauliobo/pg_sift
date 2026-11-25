@@ -12,7 +12,7 @@ OUT     := $(OUT)-san
 endif
 N       ?= 1
 
-$(OUT)/test: test.c $(SRC)/col/v1/wide.c $(SRC)/col/v1/wide.h
+$(OUT)/test: test.c $(SRC)/col/v1/wide.c $(SRC)/core/wide_datum.h
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -o $@ test.c $(SRC)/col/v1/wide.c $(LDLIBS)
 

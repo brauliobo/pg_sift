@@ -10,7 +10,7 @@
  */
 
 #define SIFT_VEC_AVX512
-#include "col/v1/kern/int.h"
+#include "core/simd_kern_int.h"
 #include "core/simd_isa.h"
 
 #if defined(__x86_64__)

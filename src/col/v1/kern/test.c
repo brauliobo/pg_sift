@@ -22,7 +22,7 @@
 #endif
 
 #include "col/col.h"
-#include "col/v1/kern/int.h"
+#include "core/simd_kern_int.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_kernels);
 PG_FUNCTION_INFO_V1(sift_test_col_kernels_active);

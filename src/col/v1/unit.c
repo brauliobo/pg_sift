@@ -6,7 +6,7 @@
 
 #include "col/v1/enc/enc.h"
 #include "col/v1/enc/int.h"
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 #include "core/cmp.h"
 #include "core/popcount.h"
 #include "core/damage.h"

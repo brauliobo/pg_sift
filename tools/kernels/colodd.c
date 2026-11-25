@@ -1,14 +1,14 @@
 /*
  * colodd - the column kernels (src/col/v1/kern*.c) at the lengths where a vector loop meets its tail, on exact-size malloc'd buffers so
  * that ASan sees a read or write past what the contract grants: an input has SIFT_COL_PAD readable bytes after its n elements, an
- * output the room col/v1/kern/kern.h gives it and nothing more. Every level's table must give the scalar table's result on the bits that
+ * output the room core/simd_kern.h gives it and nothing more. Every level's table must give the scalar table's result on the bits that
  * are defined (below n).
  *   colodd [rounds]     rounds of random data per length and slot (default 20)
  */
 #include "harness.h"
 
 #include "col/col.h"
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 
 static const int lens[] = {0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257,
 						   511, 512, 513, 1023, 1024, 1025, 4095, 4096, 4097};

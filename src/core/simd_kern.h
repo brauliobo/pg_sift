@@ -1,5 +1,5 @@
 /*
- * col/v1/kern/kern.h - the kernels of the column index: filters on chunks, selection vectors, zone-map checks,
+ * core/simd_kern.h - the kernels of the column index: filters on chunks, selection vectors, zone-map checks,
  * dictionary LUTs and decoding, one dispatch table per SIMD level.
  *
  * The scalar table (col/v1/kern/kern.c) is the specification; the AVX2 and AVX-512 tables must give bit-identical results. Dispatch follows

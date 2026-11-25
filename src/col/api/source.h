@@ -197,14 +197,9 @@ extern void sift_col_super(SiftColSource *src, bool on);
 /* With a key leaf and the measures to read of it, the next unit may be a whole segment that has the key table of the leaf, with those measures (cu->nsu is its units): its histogram of the leaf, sift_col_unit_hist, is all it has; call after sift_col_super */
 extern void sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas);
 /* A count of the rows of a text leaf that pass one test (EQ, LT, LE, GT, GE, PREFIX against s, bytewise) and nothing else: a segment whose dictionary of the leaf holds row counts (option count_columns), and whose units are all exact (clean, every page all-visible), is handed over as one unit of cu->nsu units whose rows sift_col_unit_counted gives; call after sift_col_super */
-extern void sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len);
 /* ... or of an integer leaf with a global order (order_array_columns): a segment of exact units counts the rows of the range of the scan's comparisons, all on that leaf, from it */
-extern void sift_col_count_cmp(SiftColSource *src, int leaf);
 /* ... or of a text leaf with a global order of the collation of the comparisons (order_array_columns): the rows of the strings between two bounds (a NULL one: none), all the conditions of the scan, are the entries between their ranks */
-extern void sift_col_count_strs(SiftColSource *src, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl);
 /* A count of the rows that own one value of a list (the lone equality on an element leaf), answered by the point directory of a segment whose units are all exact; call after sift_col_super */
-extern void sift_col_count_elem(SiftColSource *src);
-extern bool sift_col_unit_counted(const SiftColUnit *unit, uint64 *rows);
 extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
 /* The superblocks a parallel range should span for a group of units to fit in it: several groups of the largest fan, whatever the number of segments that interleave */
 extern uint32 sift_col_super_span(SiftColSource *src);
@@ -262,7 +257,6 @@ extern void sift_col_close(SiftColSource *src);
 /* the bytes the segments of the source keep for the unit records they read, held after sift_col_close */
 extern Size sift_col_unit_bytes(const SiftColSource *src);
 /* Makes a source that has begun no scan, counted no rows and set no count or super mode ready for another scan of the statement (the counters at zero, what the global order made forgotten); false when it has, or its directory changed: open again */
-extern bool sift_col_rescan(SiftColSource *src);
 extern bool sift_col_current(SiftColSource *src);
 /* Does the source hold the segments a statement confined to keys (NULL: not confined) reads: it was opened for the same keys, or all of the directory */
 extern bool sift_col_covers(const SiftColSource *src, const SiftKeyRange *keys);
@@ -291,7 +285,6 @@ extern const SiftColDef *sift_col_def(const SiftColSource *src, int col);
 /* Superblocks of the heap now: the range [0, heap_sbs) for a morsel counter (a later insert may add rows past it: they are not visible to the snapshot) */
 extern uint32 sift_col_heap_sbs(const SiftColSource *src);
 /* Is the number of each stored unit the heap superblock of its rows? Not once a segment cuts its units by key or TID range */
-extern bool sift_col_sb_heap(const SiftColSource *src);
 
 /*
  * Starts (or restarts) the iteration over the units of superblocks [sb_lo, sb_hi) (sb_hi exclusive, PG_UINT32_MAX = to the end). Units whose
@@ -314,7 +307,6 @@ typedef struct SiftColPrune
 
 /* sift_col_begin, the units also kept by every one of the nzones tests */
 extern void sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi);
-extern bool sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 nspace, uint64 *kept, uint64 *rows, bool count);
 
 /*
  * Adds in-memory units to the source before sift_col_begin: each batch (one SB, rows in key order, all live) is read like a unit of a write
@@ -336,7 +328,6 @@ extern void sift_col_scope_delta(SiftColSource *src, const struct SiftScopeRead 
  */
 extern void sift_col_unit_batch(SiftColSource *src, struct SiftColBatch *b, SiftColUnit *unit);
 struct SiftColSchema;
-extern const struct SiftColSchema *sift_col_schema(const SiftColSource *src);
 
 /* The next candidate unit: ascending SB, immutable segments in directory order then the write buffer; false at the end. Invalidates the vectors of the previous unit. */
 extern bool sift_col_next(SiftColSource *src, SiftColUnit *unit);
@@ -514,16 +505,11 @@ extern bool sift_col_row_types(const SiftColUnit *unit, int col, uint8 deftag, b
  * stored). Returns the number of slots (SIFT_COL_NWORDS of them are written); *known is false when the unit was written without the kinds
  * and has a NULL slot, so that it cannot tell a JSON null from a missing key.
  */
-extern uint32 sift_col_jnull_bits(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, uint64 *bits, bool *known);
 
 /* The rows of the unit whose value of the top level leaf col overflowed, in bits (SIFT_COL_NWORDS(nrows) words); false, bits clear, when none did */
 extern bool sift_col_ovf_bits(const SiftColUnit *unit, int col, uint64 *bits);
 
 /* The overflow bits of the chunk of leaf col, *n slots (the rows of a top level leaf, the elements of the unit for a child leaf); NULL when the leaf holds no overflow value. Valid until the next unit */
-extern const uint64 *sift_col_ovf_slots(const SiftColUnit *unit, int col, uint32 *n);
-extern bool sift_col_unit_roots(const SiftColUnit *unit);
-extern bool sift_col_ovf_none_slots(const SiftColUnit *unit, int col, uint64 *bits);
-extern const uint64 *sift_col_null_slots(const SiftColUnit *unit, int col, uint32 *n);
 
 /* Array-element predicates with same-element semantics: keeps the rows with a satisfying element (or none, negate) */
 extern bool sift_col_filter_group(const SiftColUnit *unit, const SiftColGroupPred *gp, SiftColSel *sel);
@@ -597,7 +583,6 @@ extern void sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lan
 /* Per element of the unit's group: the ordinal of its row (nelems entries) and the element count of every row (nrows entries, NULL array = 0) */
 /* The element offsets of the rows of the unit's group (nrows + 1 entries), the ones the scan reads the elements by */
 extern const uint32 *sift_col_group_offsets(const SiftColUnit *unit, int col);
-extern void sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent, const uint32 **counts);
 
 /* The TIDs of the rows of sel (room for sel->count), in row order */
 extern void sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *tids);
@@ -625,14 +610,8 @@ typedef struct SiftCHeadEnt
 	uint64		addr;
 } SiftCHeadEnt;
 /* The head of the run found by sift_col_run_info: its H (0: the run has none), then nlo entries from the low end and nhi from the high end into out (2 H entries) */
-extern bool sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi);
-extern int	sift_col_run_heads(const SiftColUnit *unit, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi);
-extern bool sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull, uint64 *id);
 /* The order of the keys of leaf col in this unit in row order (sift_cc_order): 1 never decrease, -1 never increase, 2 unknown but a run of rows is cheap to decode, 0 neither. The NULL rows hold a filler that keeps the order */
-extern int	sift_col_key_order(const SiftColUnit *unit, int col);
 /* ... and whether that run is the rows in their own order (no entries stored) */
-extern bool sift_col_run_identity(const SiftColUnit *unit, int col);
-extern void sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords);
 
 /*
  * The zone of a leaf in the unit (no chunk read). sift_col_unit_exact: the zone describes exactly the rows a query without filters would

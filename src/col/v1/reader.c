@@ -13,7 +13,9 @@
 #include "col/v1/reader_int.h"
 #include "core/memtrack.h"
 
-void
+static void sift_v1_idx_wide_dict(SiftV1Idx *r, int leaf, SiftSrcWide *w, const SiftColVec *v, uint32 n);
+
+static void
 sift_v1_idx_init(SiftV1Idx *r, Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
@@ -65,25 +67,25 @@ idx_view_export(void *impl, void *buf)
 	sift_col_view_export(((SiftV1Idx *) impl)->cs, buf);
 }
 
-void
+static void
 sift_v1_idx_close(void *impl)
 {
 	sift_col_close(((SiftV1Idx *) impl)->cs);
 }
 
-const SiftSrcLayout *
+static const SiftSrcLayout *
 sift_v1_idx_source_layout(const void *impl)
 {
 	return ((const SiftV1Idx *) impl)->lay;
 }
 
-uint32
+static uint32
 sift_v1_idx_nsb(void *impl)
 {
 	return sift_col_heap_sbs(((SiftV1Idx *) impl)->cs);
 }
 
-void
+static void
 sift_v1_idx_select(void *impl, const SiftFilter *keep)
 {
 	((SiftV1Idx *) impl)->sel.keep = keep;
@@ -99,7 +101,7 @@ idx_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	sift_col_begin_zones(r->cs, preds, n, r->zones.zone, r->zones.nzone, sb_lo, sb_hi);
 }
 
-bool
+static bool
 sift_v1_idx_next(void *impl, SiftSrcUnit *unit)
 {
 	SiftV1Idx  *r = impl;
@@ -120,7 +122,7 @@ sift_v1_idx_next(void *impl, SiftSrcUnit *unit)
 	return true;
 }
 
-void
+static void
 sift_v1_idx_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	SiftV1Idx  *r = impl;
@@ -128,7 +130,7 @@ sift_v1_idx_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	sift_srcsel_live(&r->sel, &r->unit, bits);
 }
 
-void
+static void
 sift_v1_idx_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	SiftV1Idx  *r = impl;
@@ -136,14 +138,14 @@ sift_v1_idx_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	sift_srcsel_vet(&r->sel, r->cs, &r->unit, bits);
 }
 
-bool
+static bool
 sift_v1_idx_vet_needed(void *impl, const SiftSrcUnit *unit)
 {
 	return sift_srcsel_vet_needed(&((SiftV1Idx *) impl)->unit);
 }
 
 /* rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
-void
+static void
 sift_v1_idx_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
 {
 	SiftV1Idx  *r = impl;
@@ -163,15 +165,8 @@ sift_v1_idx_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n,
 
 /* ---- the reads ---- */
 
-/* of the unit as stored: a compacted unit of a match set yields fewer */
-int64
-sift_v1_idx_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
-{
-	return sift_col_lane_n(&((SiftV1Idx *) impl)->unit, leaf);
-}
-
 /* the dictionary of the wide leaf's rows (n of them) that a read returns: the entries of its distinct values */
-void
+static void
 sift_v1_idx_wide_dict(SiftV1Idx *r, int leaf, SiftSrcWide *w, const SiftColVec *v, uint32 n)
 {
 	w->cxt = r->cxt;
@@ -234,7 +229,7 @@ read_selected(SiftV1Idx *r, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
 }
 
 /* the leaf decoded by the engine into the caller's storage, in the lane of the leaf's vector type */
-void
+static void
 sift_v1_idx_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
 {
 	SiftV1Idx  *r = impl;
@@ -248,7 +243,7 @@ sift_v1_idx_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftS
 }
 
 /* read_into over the reader's own buffers of the leaf: valid until the next read of the leaf or the next unit */
-void
+static void
 sift_v1_idx_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 {
 	SiftV1Idx  *r = impl;
@@ -256,97 +251,6 @@ sift_v1_idx_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 
 	sift_srcsel_leaf_buf(r->cxt, b, sift_col_lane_n(&r->unit, leaf));
 	sift_v1_idx_read_into(impl, unit, leaf, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
-}
-
-/* The values of a read of the rows idx[0..m) of a unit of nrow rows, at their rows in the leaf's buffer; the other rows are zero */
-static void
-read_scatter(SiftV1Idx *r, int leaf, const SiftColVec *v, const uint32 *idx, size_t nrow, SiftSrcVec *vec)
-{
-	SiftSrcLeafBuf *b = &r->buf[leaf];
-
-	sift_srcsel_leaf_buf(r->cxt, b, nrow);
-	sift_srcsel_scatter(&r->lay->leaf[leaf], r->tol[leaf], v, idx, nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &r->dict[leaf], vec);
-}
-
-/*
- * The dictionary of a wide leaf for the rows of sel only, with their codes at their rows in the leaf's buffer (the other rows are zero): a
- * scan that keeps a few rows of a unit converts the values of those, not one per distinct value of the unit. It is not the dictionary of the
- * unit, so a whole read of the leaf in the same unit makes that one again.
- */
-static void
-wide_scatter(SiftV1Idx *r, int leaf, const SiftColSel *sel, const uint32 *idx, size_t nrow, SiftSrcVec *vec)
-{
-	SiftSrcWide *w = &r->wide[leaf];
-	const SiftColDef *def = sift_col_def(r->cs, leaf);
-	SiftColVec	v[SIFT_COL_MAX_LANES];
-	SiftSrcLeafBuf *b = &r->buf[leaf];
-	uint32	   *codes;
-
-	sift_srcsel_leaf_buf(r->cxt, b, nrow);
-	codes = b->data;
-	for (int k = 0; k < sift_col_def_value_lanes(def); k++)
-		sift_col_read(&r->unit, leaf + k, sel, &v[k]);
-	r->wide_dict(r, leaf, w, v, sel->count);
-	r->wgen[leaf] = 0;
-	memset(codes, 0, (nrow + SIFT_SRC_PAD) * sizeof(uint32));
-	if (w->has_null)
-		memset(b->isnull, 0, nrow);
-	for (uint32 k = 0; k < sel->count; k++)
-	{
-		codes[idx[k]] = w->codes[k];
-		if (w->has_null)
-			b->isnull[idx[k]] = w->isnull[k];
-	}
-	*vec = (SiftSrcVec) {.data = codes,.isnull = w->has_null ? b->isnull : NULL,.dict = &r->dict[leaf],.n = nrow};
-}
-
-void
-sift_v1_idx_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
-{
-	SiftV1Idx  *r = impl;
-	SiftColSel	sel;
-	SiftColVec	v;
-	uint32	   *idx;
-
-	if (r->sel.compact)			/* the rows of a compacted unit are not the engine's: the whole leaf */
-	{
-		sift_v1_idx_read(impl, unit, leaf, vec);
-		return;
-	}
-	sift_srcsel_bits(r->cs, unit->nrow, bits, &sel);
-	idx = MemoryContextAlloc(r->cxt, (sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
-	sift_col_sel_idx(&sel, idx);
-	if (sift_v1_idx_wide(r, leaf))
-		wide_scatter(r, leaf, &sel, idx, unit->nrow, vec);
-	else
-	{
-		sift_col_unit_lazy_dict(&r->unit, true);
-		sift_col_read(&r->unit, leaf, &sel, &v);
-		sift_col_unit_lazy_dict(&r->unit, false);
-		read_scatter(r, leaf, &v, idx, unit->nrow, vec);
-	}
-	pfree(idx);
-}
-
-/* the rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
-void
-sift_v1_idx_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
-{
-	SiftV1Idx  *r = impl;
-	uint32	   *ords;
-	SiftColVec	v;
-	SiftSrcLeafBuf *b = &r->buf[leaf];
-
-	sift_srcsel_leaf_buf(r->cxt, b, n);
-	if (sift_v1_idx_wide(r, leaf))
-	{
-		wide_fill(r, leaf, rows, n, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
-		return;
-	}
-	ords = sift_srcsel_ords(&r->sel, rows, n);
-	sift_col_read_idx(&r->unit, leaf, ords, n, &v);
-	sift_srcsel_fill(&r->sel, &r->lay->leaf[leaf], r->tol[leaf], &v, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &r->dict[leaf], vec);
-	pfree(ords);
 }
 
 static bool

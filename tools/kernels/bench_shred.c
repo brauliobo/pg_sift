@@ -9,7 +9,7 @@
  */
 #include "harness.h"
 
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 #include "col/codec/int.h"
 #include "col/shred/shred.h"
 

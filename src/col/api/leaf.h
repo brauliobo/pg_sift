@@ -31,7 +31,7 @@ typedef enum SiftColStore
 #define SIFT_COL_META_NEXT_VBLOCK(meta)		((meta)->sum_dl)
 
 #define SIFT_COL_MAX_SCALE		18	/* numeric precision (and so scale) the INT class holds exactly */
-#define SIFT_COL_MAX_LANES		3	/* SIFT_COL_MAX_WIDE_SCALE (col/v1/wide.h) is the same limit for a scaled 128-bit integer of two lanes */
+#define SIFT_COL_MAX_LANES		3	/* SIFT_COL_MAX_WIDE_SCALE (core/wide_datum.h) is the same limit for a scaled 128-bit integer of two lanes */
 
 #define SIFT_COLD_ASTEXT	0x0002	/* a shredded text leaf that holds the `->>` text of any scalar (astext): not the string a jsonpath or `@>` compares; set in the index definition, the segments are those of a text leaf */
 #define SIFT_COLD_NOIMAGE	0x0008	/* the image of an array that keeps its lengths is not stored: the head is NULL in every row (and lossy), the lanes and the elements hold the array; set in the index definition (option array_images) */

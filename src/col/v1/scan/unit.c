@@ -326,7 +326,7 @@ col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const ui
 	return true;
 }
 
-bool
+static bool
 col_range_allvisible(SiftColSource *src, const SiftColSegment *seg, BlockNumber lo, BlockNumber hi)
 {
 	if (sift_vis_range_allvisible(&src->vis, lo, hi))
@@ -479,109 +479,6 @@ unit_group(ColUnit *cu, int group)
 		g->ready = true;
 	}
 	return g;
-}
-
-bool
-sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull, uint64 *id)
-{
-	ColUnit    *cu = unit->priv;
-
-	if (cu->seg == NULL)
-		return false;
-	if (!cu->run.known || cu->run.col != col)
-	{
-		cu->run.col = col;
-		cu->run.known = true;
-		cu->run.found = sift_cseg_run(cu->seg, col, cu->u, &cu->run.r, &cu->run.at);
-	}
-	if (cu->run.found)
-	{
-		*nvals = cu->run.r.nvals;
-		*nnull = cu->run.r.nnull;
-		*id = cu->seg->entry.gen << 28 | cu->u;
-	}
-	return cu->run.found;
-}
-
-bool
-sift_col_run_identity(const SiftColUnit *unit, int col)
-{
-	ColUnit    *cu = unit->priv;
-
-	SIFT_INVARIANT(cu->run.known && cu->run.found && cu->run.col == col, "sift_col: the kind of a sorted run read without its info");
-	return cu->run.r.kind == SIFT_CRUN_IDENT;
-}
-
-/*
- * The head of the sorted run of col in the unit of superblock sb, when the unit need not be opened to know that every row of it is live and visible to the
- * snapshot: the only unit of the superblock (a write buffer holding rows of it is the caller's to rule out), of a segment with superunit summaries (the page
- * masks are there), with its pages all-visible and no dead row, in the order of col_super_take. False otherwise, then the unit is read.
- */
-bool
-sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi)
-{
-	SiftColSegment *seg = NULL;
-	uint32		u = 0;
-	SiftCSbHead h;
-
-	if (src->flags & COLO_TABLE)
-		return false;
-	for (int i = 0; i < src->nseg; i++)
-	{
-		SiftColSegment *s = src->seg[i].seg;
-		uint32		k;
-
-		/* a segment cut by key or TID range numbers its units by sequence: the blocks its units reach say whether it holds rows of the superblock, and then it is not the only unit */
-		if (sift_cseg_keyed(&s->entry))
-		{
-			if (sift_cseg_sb_in_spans(s, sb))
-				return false;
-			continue;
-		}
-		k = sift_cseg_unit_of_sb(s, sb);
-		if (k >= s->nsb)
-			continue;
-		if (seg != NULL)
-			return false;
-		seg = s;
-		u = k;
-	}
-	if (seg == NULL || !sift_cseg_sbhead(seg, u, col, &h))
-		return false;
-	if (!col_sb_covers(src, seg, sb, NULL, h.pm))
-		return false;
-	if (!segments_current(src))
-		return false;
-	SIFT_COL_JITTER();
-	if (!h.has || sift_cseg_dirty(seg, u))
-		return false;
-	*nlo = h.nlo;
-	*nhi = h.nhi;
-	memcpy(out, h.ent, (h.nlo + h.nhi) * sizeof(SiftCHeadEnt));
-	return true;
-}
-
-int
-sift_col_run_heads(const SiftColUnit *unit, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi)
-{
-	ColUnit    *cu = unit->priv;
-
-	SIFT_INVARIANT(cu->run.known && cu->run.found && cu->run.col == col, "sift_col: a sorted run head read without its info");
-	*nlo = *nhi = 0;
-	if (cu->run.r.heads == 0)
-		return 0;
-	sift_crun_head_counts(cu->run.r.heads, cu->run.r.n, nlo, nhi);
-	sift_cseg_run_heads(cu->seg, cu->run.at, &cu->run.r, out);
-	return cu->run.r.heads;
-}
-
-void
-sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords)
-{
-	ColUnit    *cu = unit->priv;
-
-	SIFT_INVARIANT(cu->run.known && cu->run.found && cu->run.col == col, "sift_col: a sorted run read without its info");
-	sift_cseg_run_read(cu->seg, cu->run.at, &cu->run.r, pos, cnt, ords);
 }
 
 void
@@ -908,15 +805,6 @@ sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k)
 		return false;
 	*seg = cu->seg;
 	return sift_cseg_super_of(cu->seg, cu->u, cu->nsu, k);
-}
-
-bool
-sift_col_unit_counted(const SiftColUnit *unit, uint64 *rows)
-{
-	ColUnit    *cu = unit->priv;
-
-	*rows = cu->crows;
-	return cu->counted;
 }
 
 bool

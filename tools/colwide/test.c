@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "col/v1/wide.h"
+#include "core/wide_datum.h"
 #include "core/testrng.h"
 
 static uint64 rng_s = 0x9E3779B97F4A7C15ULL;

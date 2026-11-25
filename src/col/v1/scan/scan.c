@@ -208,27 +208,6 @@ sift_col_current(SiftColSource *src)
 	return !(src->flags & COLO_TABLE) && segments_current(src);
 }
 
-bool
-sift_col_rescan(SiftColSource *src)
-{
-	if ((src->flags & COLO_TABLE) || src->begun || src->super || src->whole || src->pcnt || !segments_current(src))
-		return false;
-	if (src->gcx)
-		MemoryContextReset(src->gcx);
-	memset(src->gmem, 0, sizeof(src->gmem));
-	src->gb = NULL;
-	src->ngb = 0;
-	src->gfsrc = false;
-	memset(src->gfmem, 0, sizeof(src->gfmem));
-	src->gpin_leaf = -1;
-	src->galeaf1 = 0;
-	src->gpin_n = src->gper = 0;
-	memset(&src->cnt, 0, sizeof(src->cnt));
-	src->cnt.segments = src->nseg;
-	src->vis.heap_pages = 0;
-	return true;
-}
-
 void
 sift_col_unpin(SiftColSource *src)
 {
@@ -249,15 +228,6 @@ const SiftColDef *
 sift_col_def(const SiftColSource *src, int col)
 {
 	return &src->schema->cols[col];
-}
-
-bool
-sift_col_sb_heap(const SiftColSource *src)
-{
-	for (int i = 0; i < src->nseg; i++)
-		if (sift_cseg_keyed(&src->seg[i].seg->entry))
-			return false;
-	return true;
 }
 
 uint32
@@ -488,75 +458,6 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	qsort(src->order, src->norder, sizeof(ColMem *), mem_cmp);
 	src->ocur = 0;
 	MemoryContextSwitchTo(old);
-}
-
-/*
- * The superblocks that hold a unit no test prunes, for the whole scan at once: an aggregate begins for every morsel of units, and the begin of a morsel that the
- * zones clear costs as much as the tests of its units. Sets bit sb of kept for each such unit (and each batch of the write buffer), and adds the units the
- * tests prune, and those the summaries cleared, to *pruned and *set once for all when count (the participants of a parallel scan each build the map, one counts):
- * the cursors of the scan then leave them uncounted. Each unit is tested once,
- * through the cache of keep_cached. *rows adds the rows of the units it keeps. False (nothing to rely on) when the cache does not apply or a superblock lies past nspace.
- */
-bool
-sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 nspace, uint64 *kept, uint64 *rows, bool count)
-{
-	MemoryContext old;
-	bool		ok = true;
-
-	if (src->ahead_kept != NULL)
-		pfree(src->ahead_kept);
-	src->ahead_kept = NULL;
-	if (!scan_keep_cached(src, preds, npreds, zones))
-		return false;
-	MemoryContextReset(src->scan);
-	old = MemoryContextSwitchTo(src->scan);
-	scan_load_mem(src, preds, npreds);
-	for (int i = 0; i < src->nmem && ok; i++)
-		if (src->mem[i].b->nrows > 0)
-		{
-			ok = src->mem[i].b->sb < nspace;
-			if (ok)
-			{
-				sift_col_bit_set(kept, src->mem[i].b->sb);
-				*rows += src->mem[i].b->nrows;
-			}
-		}
-	for (int i = 0; i < src->nseg && ok; i++)
-	{
-		ColCursor  *c = &src->seg[i];
-		uint32		nsb = c->seg->nsb;
-
-		scan_prune_segment(src, c, preds, npreds, zones, nzones, 0, PG_UINT32_MAX, true);
-		ok = nsb == 0 || c->seg->sbdir[nsb - 1].id < nspace;
-		for (uint32 w = 0; w < (nsb + 63) / 64 && ok; w++)
-		{
-			uint64		bits = c->keep[w];
-
-			if (count)
-			{
-				src->cnt.units_pruned += Min(64, nsb - w * 64) - pg_popcount64(bits);
-				src->cnt.units_set += pg_popcount64(c->setcut[w] & ~bits);
-			}
-			for (; bits; bits &= bits - 1)
-			{
-				const SiftColSBRef *u = &c->seg->sbdir[w * 64 + pg_rightmost_one_pos64(bits)];
-
-				sift_col_bit_set(kept, u->id);
-				*rows += u->nrows;
-			}
-		}
-	}
-	MemoryContextSwitchTo(old);
-	src->counted = ok ? src->sig_gen : 0;
-	if (ok)
-	{
-		/* kept holds (nspace + 63) / 64 words, what the caller allocates; SIFT_COL_NWORDS rounds up to the words of a selection vector and read past it */
-		src->ahead_kept = MemoryContextAlloc(GetMemoryChunkContext(src), (nspace + 63) / 64 * sizeof(uint64));
-		memcpy(src->ahead_kept, kept, (nspace + 63) / 64 * sizeof(uint64));
-		for (int i = 0; i < src->nseg; i++)
-			src->seg[i].ahead = src->seg[i].ahead_end = 0;
-	}
-	return ok;
 }
 
 void
@@ -868,62 +769,6 @@ sift_col_super(SiftColSource *src, bool on)
 }
 
 void
-sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
-{
-	src->pcnt = leaf + 1;
-	src->pcnt_epoch++;
-	src->pcnt_int = src->pcnt_str = src->pcnt_elem = false;
-	src->pcnt_op = op;
-	src->pcnt_val = (SiftColValue) {.v.s = s, .len = len};
-	/* the strings that pass the test are those between two bounds in the order of the bytes (the test is bytewise: the C collation): a prefix is those from s up to, not including, the least string after them */
-	src->pcnt_alt = true;
-	memset(&src->pcnt_box, 0, sizeof(src->pcnt_box));
-	if (op == SIFT_COLOP_EQ || op == SIFT_COLOP_GT || op == SIFT_COLOP_GE || op == SIFT_COLOP_PREFIX)
-	{
-		src->pcnt_box.lo = s, src->pcnt_box.lolen = len, src->pcnt_box.lo_excl = op == SIFT_COLOP_GT;
-	}
-	if (op == SIFT_COLOP_EQ || op == SIFT_COLOP_LT || op == SIFT_COLOP_LE)
-	{
-		src->pcnt_box.hi = s, src->pcnt_box.hilen = len, src->pcnt_box.hi_excl = op == SIFT_COLOP_LT;
-	}
-	else if (op == SIFT_COLOP_PREFIX)
-	{
-		src->pcnt_box.hi = sift_cgord_prefix_end(s, len, &src->pcnt_box.hilen);
-		src->pcnt_box.hi_excl = true;
-	}
-}
-
-void
-sift_col_count_cmp(SiftColSource *src, int leaf)
-{
-	src->pcnt = leaf + 1;
-	src->pcnt_epoch++;
-	src->pcnt_int = true;
-	src->pcnt_str = src->pcnt_elem = false;
-}
-
-void
-sift_col_count_strs(SiftColSource *src, int leaf, uint32 collid, const char *lo, uint32 lolen, bool lo_excl, const char *hi, uint32 hilen, bool hi_excl)
-{
-	src->pcnt = leaf + 1;
-	src->pcnt_epoch++;
-	src->pcnt_int = src->pcnt_str = true;
-	src->pcnt_elem = false;
-	src->pcnt_box.lo = lo, src->pcnt_box.lolen = lolen, src->pcnt_box.lo_excl = lo_excl;
-	src->pcnt_box.hi = hi, src->pcnt_box.hilen = hilen, src->pcnt_box.hi_excl = hi_excl;
-	src->pcnt_box.collid = collid;
-}
-
-void
-sift_col_count_elem(SiftColSource *src)
-{
-	src->pcnt = 1;
-	src->pcnt_epoch++;
-	src->pcnt_int = src->pcnt_str = false;
-	src->pcnt_elem = true;
-}
-
-void
 sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas)
 {
 	src->whole = leaf + 1;
@@ -951,12 +796,6 @@ sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
 			src->seg[i].nosuper_to = cu->whole ? 0 : cu->u + cu->nsu;
 		}
 	src->cnt.units -= cu->nsu;
-}
-
-const SiftColSchema *
-sift_col_schema(const SiftColSource *src)
-{
-	return src->schema;
 }
 
 void

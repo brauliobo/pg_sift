@@ -23,7 +23,7 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
-#include "col/v1/kern/kern.h"
+#include "core/simd_kern.h"
 #include "col/v1/conn/conn.h"
 
 /* The keys asked are remembered up to this many, then forgotten: the batches of one segment repeat the keys of a parent that is small next to them */
