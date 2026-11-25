@@ -50,6 +50,35 @@ typedef struct ScopeSpec
 	SiftV6Agg  *agg;
 } ScopeSpec;
 
+/* The statement of the scope planner: the relations it joins, the scope that answers them and the spec the plan carries */
+typedef struct ScopePlan
+{
+	PlannerInfo *root;
+	RelOptInfo *fact;
+	RelOptInfo *pairs;
+	IndexOptInfo *index;		/* the sift_col index of the facts; NULL when the facts are a sift_table */
+	Relation	irel;			/* the index or the table that keeps the summary */
+	SiftF2ScopeLayout layout;
+	SiftScopeLeg leg;
+	Query	   *pairs_query;	/* the single-table sub-select or CTE the pairs are, NULL for the relation itself */
+	Query	   *pairs_raw;		/* a sub-select or CTE of another form: it is the pairs of a scope of two paths when scope_matches says so (pairs_query then stands for it) */
+	Expr	   *key_expr;
+	Expr	   *lo_expr;
+	Expr	   *hi_expr;
+	Expr	   *month_expr;
+	List	   *scan_tlist;
+	ScopeSpec	spec;
+	SiftV6Spec	v6;				/* a scan of the facts: its spec and the columns of its tuple */
+	List	   *v6_tlist;
+	int			cap_aggs;
+	bool		semi;			/* the pairs are the right side of a semi join: IN or EXISTS over them */
+} ScopePlan;
+
+extern int	sift_v6_scope_index_col(const ScopePlan *p, const Var *v);
+extern bool sift_v6_scope_topk_order(ScopePlan *p, SortGroupClause *sgc);
+extern bool sift_v6_scope_topk_tie(ScopePlan *p, SortGroupClause *sgc);
+extern bool sift_v6_scope_topk_output(ScopePlan *p, const PathTarget *target);
+
 /* A relation of the plain kind the scope planner reads: a table without inheritance, sampling or security quals */
 extern bool sift_v6_plain_table(const RangeTblEntry *rte);
 extern List *sift_v6_scope_spec_pack(const ScopeSpec *s);

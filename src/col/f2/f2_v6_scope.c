@@ -45,29 +45,6 @@
 #include "table/dispatch.h"
 #include "core/catname.h"
 
-typedef struct ScopePlan
-{
-	PlannerInfo *root;
-	RelOptInfo *fact;
-	RelOptInfo *pairs;
-	IndexOptInfo *index;		/* the sift_col index of the facts; NULL when the facts are a sift_table */
-	Relation	irel;			/* the index or the table that keeps the summary */
-	SiftF2ScopeLayout layout;
-	SiftScopeLeg leg;
-	Query	   *pairs_query;	/* the single-table sub-select or CTE the pairs are, NULL for the relation itself */
-	Query	   *pairs_raw;		/* a sub-select or CTE of another form: it is the pairs of a scope of two paths when scope_matches says so (pairs_query then stands for it) */
-	Expr	   *key_expr;
-	Expr	   *lo_expr;
-	Expr	   *hi_expr;
-	Expr	   *month_expr;
-	List	   *scan_tlist;
-	ScopeSpec	spec;
-	SiftV6Spec	v6;				/* a scan of the facts: its spec and the columns of its tuple */
-	List	   *v6_tlist;
-	int			cap_aggs;
-	bool		semi;			/* the pairs are the right side of a semi join: IN or EXISTS over them */
-} ScopePlan;
-
 static const CustomPathMethods scope_path_methods = {"SiftAggV6Scope", sift_agg_v6_scope_plan_path, NULL};
 
 /* The attribute of the pairs relation a Var of the pairs side is: its own, or the one the sub-select or CTE takes it from */
@@ -92,8 +69,8 @@ is_key_var(const ScopePlan *p, const Node *n)
 }
 
 /* The column of the relation that keeps the summary a Var of the facts is: the attribute of a table, the position in the index of an index */
-static int
-index_col_of(const ScopePlan *p, const Var *v)
+int
+sift_v6_scope_index_col(const ScopePlan *p, const Var *v)
 {
 	if (v->varno != p->fact->relid || v->varlevelsup != 0)
 		return -1;
@@ -120,7 +97,7 @@ opfamily_of(const ScopePlan *p, int col)
 static int
 measure_of(const ScopePlan *p, const Var *v)
 {
-	const int	col = index_col_of(p, v);
+	const int	col = sift_v6_scope_index_col(p, v);
 
 	for (int m = 0; col > 0 && m < p->layout.nmeas; m++)
 		if (p->layout.meas_col[m] == col)
@@ -315,7 +292,7 @@ compile_window_qual(ScopePlan *p, OpExpr *op)
 		opno = get_commutator(opno);
 	}
 	if (!OidIsValid(opno) || !IsA(l, Var) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) || !time_type_ok(((Var *) l)->vartype) ||
-		exprType(r) != ((Var *) l)->vartype || p->layout.time_col == 0 || index_col_of(p, (Var *) l) != p->layout.time_col)
+		exprType(r) != ((Var *) l)->vartype || p->layout.time_col == 0 || sift_v6_scope_index_col(p, (Var *) l) != p->layout.time_col)
 		return false;
 	strat = get_op_opfamily_strategy(opno, opfamily_of(p, p->layout.time_col));
 	p->spec.time_type = ((Var *) l)->vartype;
@@ -338,7 +315,7 @@ compile_window_qual(ScopePlan *p, OpExpr *op)
 static bool
 compile_soft_delete(ScopePlan *p, NullTest *nt)
 {
-	const int	col = IsA(nt->arg, Var) && !nt->argisrow ? index_col_of(p, (Var *) nt->arg) : -1;
+	const int	col = IsA(nt->arg, Var) && !nt->argisrow ? sift_v6_scope_index_col(p, (Var *) nt->arg) : -1;
 
 	if (nt->nulltesttype != IS_NULL || col < 1 || p->spec.excl_col != 0 || !sift_f2_scope_excl_ok(p->irel, p->spec.ord, col))
 		return false;
@@ -383,7 +360,7 @@ month_group(ScopePlan *p, Node *g)
 		return false;
 	if (IsA(arg, FuncExpr) && list_length(((FuncExpr *) arg)->args) == 1 && exprType(linitial(((FuncExpr *) arg)->args)) == DATEOID)
 		arg = linitial(((FuncExpr *) arg)->args);
-	if (!IsA(arg, Var) || index_col_of(p, (Var *) arg) != p->layout.time_col || !time_type_ok(((Var *) arg)->vartype))
+	if (!IsA(arg, Var) || sift_v6_scope_index_col(p, (Var *) arg) != p->layout.time_col || !time_type_ok(((Var *) arg)->vartype))
 		return false;
 	p->month_expr = (Expr *) g;
 	p->spec.by_month = true;
@@ -692,67 +669,6 @@ topk_shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 		root->limit_tuples <= SCOPE_TOPK_MAX && list_length(root->join_info_list) <= 1 && bms_num_members(input_rel->relids) == 2;
 }
 
-/* ORDER BY leaf DESC of a leaf of the index that can be a ring, and whether the ring (NULLS LAST) serves the way the statement puts the NULLs */
-static bool
-compile_order(ScopePlan *p, SortGroupClause *sgc)
-{
-	const Var  *v = (const Var *) get_sortgroupclause_expr(sgc, p->root->parse->targetList);
-	int			col = IsA(v, Var) ? index_col_of(p, v) : -1;
-
-	if (col < 1 || !sift_f2_scope_ring_eligible(p->irel, col) || get_op_opfamily_strategy(sgc->sortop, p->index->opfamily[col - 1]) != BTGreaterStrategyNumber)
-		return false;
-	p->spec.ring_col = col;
-	p->spec.nulls_first = sgc->nulls_first;
-	p->spec.leaf_not_null = bms_is_member(v->varattno, p->fact->notnullattnums);
-	return true;
-}
-
-/* The second ORDER BY leaf: an integer or a time that is never NULL, in either direction: the rows the ring leaf does not tell apart are ordered by it */
-static bool
-compile_tie(ScopePlan *p, SortGroupClause *sgc)
-{
-	const Var  *v = (const Var *) get_sortgroupclause_expr(sgc, p->root->parse->targetList);
-	const int	col = IsA(v, Var) ? index_col_of(p, v) : -1;
-	const int	strat = col > 0 ? get_op_opfamily_strategy(sgc->sortop, p->index->opfamily[col - 1]) : 0;
-
-	if (col < 1 || !bms_is_member(v->varattno, p->fact->notnullattnums) || (strat != BTLessStrategyNumber && strat != BTGreaterStrategyNumber))
-		return false;
-	switch (v->vartype)
-	{
-		case INT2OID:
-		case INT4OID:
-		case INT8OID:
-		case DATEOID:
-		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
-			break;
-		default:
-			return false;
-	}
-	p->spec.tie_col = col;
-	p->spec.tie_desc = strat == BTGreaterStrategyNumber;
-	return true;
-}
-
-/* The columns of the rows are columns of the index the scan decodes as they are stored (SiftV6Spec.key of the spec that follows the scope spec in the plan) */
-static bool
-compile_output(ScopePlan *p, const PathTarget *target)
-{
-	p->v6 = (SiftV6Spec) {.relid = RelationGetRelid(p->irel),.is_table = p->index == NULL};
-	p->v6.key = palloc(Max(list_length(target->exprs), 1) * sizeof(SiftV6Col));
-	foreach_ptr(Expr, e, target->exprs)
-	{
-		const Var  *v = (const Var *) e;
-		const int	col = IsA(e, Var) ? index_col_of(p, v) : -1;
-
-		if (col < 1 || p->v6.nkeys == SIFT_V6_MAX_KEYS || !sift_store_ops_for_oid(RelationGetRelid(p->irel), false)->leaf_holds(RelationGetRelid(p->irel), false, col, sift_v6_class(v->vartype)))
-			return false;
-		p->v6.key[p->v6.nkeys++] = (SiftV6Col) {.attno = col,.typid = v->vartype};
-		p->v6_tlist = lappend(p->v6_tlist, makeTargetEntry(copyObject(e), list_length(p->v6_tlist) + 1, NULL, false));
-	}
-	return true;
-}
-
 static bool
 compile_topk(ScopePlan *p, const PathTarget *target)
 {
@@ -764,8 +680,8 @@ compile_topk(ScopePlan *p, const PathTarget *target)
 		reset_spec(p, ord);
 		p->v6_tlist = NIL;
 		ok = scope_matches(p, ord) && compile_key_filter(p) && p->spec.key_given && !p->spec.key_array && compile_fact_quals(p) && !p->spec.ranged &&
-			compile_order(p, linitial_node(SortGroupClause, p->root->parse->sortClause)) &&
-			(list_length(p->root->parse->sortClause) == 1 || compile_tie(p, lsecond_node(SortGroupClause, p->root->parse->sortClause))) && compile_output(p, target) && semi_ok(p);
+			sift_v6_scope_topk_order(p, linitial_node(SortGroupClause, p->root->parse->sortClause)) &&
+			(list_length(p->root->parse->sortClause) == 1 || sift_v6_scope_topk_tie(p, lsecond_node(SortGroupClause, p->root->parse->sortClause))) && sift_v6_scope_topk_output(p, target) && semi_ok(p);
 	}
 	relation_close(p->irel, NoLock);
 	p->spec.topk = ok;
