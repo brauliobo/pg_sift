@@ -99,6 +99,9 @@ sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
 	s->possible = scan_preds(scan, &ck, s->preds);
 	scan->keyData = all;
 	scan->numberOfKeys = nall;
+#ifdef SIFT_TESTING
+	sift_col_test_inval(scan->indexRelation);	/* the catalog lookups of the quals can take a lock that reloads the entry */
+#endif
 	s->npreds = s->possible ? sift_f2_scan_append_ext(s, sift_col_preds_keep(s->preds, s->npreds)) : s->npreds;
 	for (int i = 0; s->possible && i < nrows && s->nrowcmp < SIFT_ROW_BOUNDS_MAX; i++)
 		if (row_bound(r, f, rows[i], &s->rowcmp[s->nrowcmp], &s->preds[s->npreds], MemoryContextAlloc(s->cx, sizeof(SiftColValue))))

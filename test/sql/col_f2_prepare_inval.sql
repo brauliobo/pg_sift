@@ -1,0 +1,51 @@
+-- The relcache entry of a sift_col index of format major 2 is invalidated while the preparation of its scan turns the quals into predicates (a numeric constant and a text collation read the catalogs,
+-- and a lock taken there reloads the entry, as a REINDEX CONCURRENTLY of another session does): the cached state of the entry is overwritten and freed. The scan reads the state the entry holds after the
+-- quals, so every answer is the heap twin's and no backend crashes.
+-- requires: build col
+\set ON_ERROR_STOP on
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+
+CREATE TABLE ph (id int, g int, v int, n numeric(12,2), tag text);
+INSERT INTO ph SELECT i, i % 7, i % 13, (i % 997) / 8.0, 'tag' || i % 5 FROM generate_series(1, 40000) i;
+CREATE TABLE pc (LIKE ph);
+INSERT INTO pc SELECT * FROM ph;
+CREATE INDEX pc_col ON pc USING sift_col (g, v, n, tag);
+ANALYZE ph; ANALYZE pc;
+
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE 'SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (' || q || ') x' INTO a;
+	EXECUTE 'SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (' || regexp_replace(q, '\mpc\M', 'ph', 'g') || ') x' INTO b;
+	RETURN CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+
+CREATE FUNCTION checks() RETURNS TABLE (shape text, answer text) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT 'numeric aggregate', same('SELECT tag, sum(n), avg(n) FROM pc WHERE n > 20 GROUP BY tag');
+	RETURN QUERY SELECT 'numeric list aggregate', same('SELECT g, count(*) FROM pc WHERE n IN (1.25, 2.5, 20) GROUP BY g');
+	RETURN QUERY SELECT 'text aggregate', same('SELECT g, count(*) FROM pc WHERE tag > ''tag2'' AND v < 9 GROUP BY g');
+	RETURN QUERY SELECT 'numeric scan', same('SELECT id, n FROM pc WHERE n > 120 AND g = 3');
+	RETURN QUERY SELECT 'index only scan', same('SELECT g, v FROM pc WHERE g = 3 AND v >= 11');
+END $$;
+
+SELECT * FROM checks();
+SET sift.test_col_rel_inval = on;
+SELECT * FROM checks();
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT * FROM checks();
+RESET enable_bitmapscan;
+SET sift.enable_agg = off;
+SELECT * FROM checks();
+RESET sift.enable_agg;
+RESET enable_seqscan;
+RESET sift.test_col_rel_inval;
+DROP TABLE ph, pc;
+DROP FUNCTION checks(), same(text);
+DROP EXTENSION pg_sift;
