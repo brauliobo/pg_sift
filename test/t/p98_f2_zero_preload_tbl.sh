@@ -23,33 +23,6 @@ same() { [[ $(digest t) == "$(digest h)" ]]; }
 problems() { sql zp "SELECT count(*) FROM sift.check('t', true)"; }
 errors() { sql zp "$1" 2>&1 | grep -c "$2"; }
 
-# session NAME: a psql session that reads its statements from a FIFO, the output in $D/NAME.out; say NAME STATEMENTS sends them; hang_up NAME ends it and waits for it
-declare -A SFD SPID
-session() {
-	local fd other
-	mkfifo "$D/$1.in"
-	(for other in "${SFD[@]}"; do exec {other}>&-; done
-	 exec psql -X -At -q -h "$D/sock" -p "$(port zp)" -U postgres -d postgres <"$D/$1.in" >"$D/$1.out" 2>&1) &
-	SPID[$1]=$!
-	exec {fd}>"$D/$1.in"
-	SFD[$1]=$fd
-}
-say() { echo "${*:2}" >&"${SFD[$1]}"; }
-hang_up() { local fd=${SFD[$1]}; exec {fd}>&-; wait "${SPID[$1]}"; rm -f "$D/$1.in"; }
-backends() { sql zp "SELECT count(*) FROM pg_stat_activity WHERE application_name = '$1' AND $2"; }
-# race FIRST SECOND: a session opens a transaction that runs FIRST, another runs SECOND, which waits for it or fails at once, and the first commits
-race() {
-	session ra; session rb
-	say ra "SET application_name = 'ra'; BEGIN; $1; \\echo done"
-	say rb "SET application_name = 'rb';"
-	wait_for "grep -q '^done\$' $D/ra.out && [[ \$(backends rb 'true') == 1 ]]" 60
-	say rb "$2; \\echo done"
-	wait_for "[[ \$(backends rb \"wait_event_type = 'Lock'\") == 1 ]] || grep -q '^done\$' $D/rb.out" 60
-	RACE_WAITED=$(backends rb "wait_event_type = 'Lock'")
-	say ra "COMMIT;"
-	hang_up ra; hang_up rb
-}
-
 check "pg_sift is not preloaded" test -z "$(sql zp "SHOW shared_preload_libraries")"
 sql zp "COPY (SELECT g, g % 13, g % 100, g % 5, md5(g::text) FROM generate_series(1, 20000) g) TO '$D/seed.csv' CSV" >/dev/null
 both "COPY @T FROM '$D/seed.csv' CSV" >/dev/null
@@ -70,7 +43,7 @@ sql zp "SELECT count(*) FROM sift.maintain('t')" >/dev/null
 check "sift.maintain runs in the session and the table verifies" test "$(problems)" == 0 -a "$(digest t)" == "$(digest h)"
 
 check "a duplicate key of the table is refused" test "$(errors "INSERT INTO t VALUES (1, 1, 1, 1, 'dup')" 'duplicate key')" == 1
-race "INSERT INTO t VALUES (900001, 1, 1, 1, 'first')" "INSERT INTO t VALUES (900001, 2, 2, 2, 'second')"
+race zp "INSERT INTO t VALUES (900001, 1, 1, 1, 'first')" "INSERT INTO t VALUES (900001, 2, 2, 2, 'second')"
 check "two sessions that insert one key of the table: the second waits for the first and fails with a duplicate key when it commits" test "$RACE_WAITED" == 1 \
 	-a "$(grep -c 'duplicate key' "$D/rb.out")" == 1 -a "$(sql zp "SELECT pad FROM t WHERE id = 900001")" == first
 sql zp "DELETE FROM t WHERE id = 900001" >/dev/null
@@ -78,7 +51,7 @@ sql zp "DELETE FROM t WHERE id = 900001" >/dev/null
 sql zp "INSERT INTO u VALUES (1, 1)" >/dev/null
 check "a duplicate key of a UNIQUE sift_col index is refused" test "$(errors "INSERT INTO u VALUES (1, 2)" 'duplicate key')" == 1
 rm -f "$D"/r?.out
-race "INSERT INTO u VALUES (5, 1)" "INSERT INTO u VALUES (5, 2)"
+race zp "INSERT INTO u VALUES (5, 1)" "INSERT INTO u VALUES (5, 2)"
 check "two sessions that insert one key of a UNIQUE sift_col index: one row, one refusal" test "$(sql zp "SELECT count(*) FROM u WHERE id = 5")" == 1 -a "$(grep -c 'duplicate key' "$D/rb.out")" == 1
 
 sql zp "BEGIN" "INSERT INTO t VALUES (910001, 1, 1, 1, 'p1')" "PREPARE TRANSACTION 'p1'" >/dev/null

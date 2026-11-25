@@ -271,6 +271,36 @@ sql() {
 		-p "$(port "$name")" -U postgres -d postgres "${@/#/--command=}"
 }
 
+# sess_open NODE NAME: a psql session of NODE that reads its statements from a FIFO (sess_say NAME STATEMENTS), the output in <node directory>/NAME.out; sess_close NAME ends it and waits for it
+declare -A SESS_FD=() SESS_PID=() SESS_DIR=()
+sess_open() {
+	local d=$(dir "$1") fd other
+	mkfifo "$d/$2.in"
+	(for other in "${SESS_FD[@]}"; do exec {other}>&-; done
+	 exec psql -X -At -q -h "$d/sock" -p "$(port "$1")" -U postgres -d postgres <"$d/$2.in" >"$d/$2.out" 2>&1) &
+	SESS_PID[$2]=$!
+	SESS_DIR[$2]=$d
+	exec {fd}>"$d/$2.in"
+	SESS_FD[$2]=$fd
+}
+sess_say() { echo "${*:2}" >&"${SESS_FD[$1]}"; }
+sess_close() { local fd=${SESS_FD[$1]}; exec {fd}>&-; wait "${SESS_PID[$1]}"; rm -f "${SESS_DIR[$1]}/$1.in"; }
+sess_count() { sql "$1" "SELECT count(*) FROM pg_stat_activity WHERE application_name = '$2' AND $3"; }
+# race NODE FIRST SECOND [END]: a session opens a transaction that runs FIRST, another runs SECOND, which waits for it or fails at once, and the first ends it with END (COMMIT);
+# RACE_WAITED is 1 when the second waited on a lock; the outputs are <node directory>/ra.out and rb.out
+race() {
+	local d=$(dir "$1")
+	sess_open "$1" ra; sess_open "$1" rb
+	sess_say ra "SET application_name = 'ra'; BEGIN; $2; \\echo done"
+	sess_say rb "SET application_name = 'rb';"
+	wait_for "grep -q '^done\$' $d/ra.out && [[ \$(sess_count $1 rb 'true') == 1 ]]" 60
+	sess_say rb "$3; \\echo done"
+	wait_for "[[ \$(sess_count $1 rb \"wait_event_type = 'Lock'\") == 1 ]] || grep -q '^done\$' $d/rb.out" 60
+	RACE_WAITED=$(sess_count "$1" rb "wait_event_type = 'Lock'")
+	sess_say ra "${4:-COMMIT};"
+	sess_close ra; sess_close rb
+}
+
 # The groups of the elements of orders.doc->'items' (the table of the sift_col tests) per category: from the column source and its
 # pre-aggregates ($2 = on) or from the normal plan ($2 = off), as one string; $3 = explain: the units the pre-aggregates answered
 ELEM_QUERY="SELECT e.category, count(*), sum(e.qty) FROM orders o CROSS JOIN LATERAL jsonb_to_recordset(o.doc->'items') e(category text, qty int) GROUP BY 1"
