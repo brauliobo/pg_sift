@@ -35,6 +35,7 @@ typedef enum SourceQuery
 /* vtab.c */
 extern SIFT_INTERNAL int fail(SqVtab *vt);
 extern SIFT_INTERNAL void load_settings(SqVtab *vt);
+extern SIFT_INTERNAL bool sq_setting_ok(const char *name, int64_t v);
 
 /* content.c */
 extern SIFT_INTERNAL char *shadow(const SqVtab *vt, const char *suffix);

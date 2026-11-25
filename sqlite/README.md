@@ -145,13 +145,13 @@ Indexing a rowid that is already indexed, without deleting it first, indexes the
 
 | option | default | meaning |
 |---|---|---|
-| `stemmer`, `positions`, `k1`, `b`, `case_fold`, `accent_fold`, `prefix_index`, `analyzer` | `english`, 1, 1.2, 0.75, ... | the engine's index options; `analyzer=keyword` indexes the whole value as one term (needs `stemmer=none`) |
+| `stemmer`, `positions`, `k1`, `b`, `case_fold`, `accent_fold`, `prefix_index`, `analyzer` | `english`, 1, 1.2, 0.75, ... | the engine's index options (`k1` is finite and not negative, `b` is from 0 to 1); `analyzer=keyword` indexes the whole value as one term (needs `stemmer=none`) |
 | `content` | internal | see [Content modes](#content-modes) |
 | `chunk` | 16384 | bytes per row of the shadow table `<t>_chunks`, fixed at `CREATE` (powers of two from 4096 to 65536) |
-| `cache_size` | 65536 | page cache of this connection, KiB |
-| `automerge` | 8 | segments of a tier that start a merge after a flush; 0 never (persistent) |
-| `pending_postings` | 64000000 | the in-memory buffer becomes a segment above this many postings (persistent) |
-| `parallel` | 0 | threads of a scan; below 2 the scan is serial |
+| `cache_size` | 65536 | page cache of this connection, KiB (0 to 16777216) |
+| `automerge` | 8 | segments of a tier that start a merge after a flush; 0 never, at most 1024 (persistent) |
+| `pending_postings` | 64000000 | the in-memory buffer becomes a segment above this many postings, at least 1000 (persistent) |
+| `parallel` | 0 | threads of a scan, 0 to 64; below 2 the scan is serial |
 
 ## Maintenance
 

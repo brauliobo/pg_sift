@@ -479,8 +479,8 @@ setting(SqVtab *vt, const char *cmd, sqlite3_value *arg)
 {
 	int64_t		n = arg_int(arg, -1);
 
-	if (n < 0)
-		elog(ERROR, "sift: '%s' needs a non-negative value in the rank column", cmd);
+	if (!sq_setting_ok(cmd, n))
+		elog(ERROR, "sift: '%s' does not accept %lld in the rank column", cmd, (long long) n);
 	if (strcmp(cmd, "cache-size") == 0)
 	{
 		vt->cache_kib = n;

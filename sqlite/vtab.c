@@ -14,6 +14,12 @@
 #include "vtab_int.h"
 
 #include <ctype.h>
+#include <errno.h>
+#include <float.h>
+#include <limits.h>
+#include <math.h>
+
+#include "store_int.h"
 
 SQLITE_EXTENSION_INIT3
 
@@ -101,6 +107,93 @@ replace(char **dst, char *val)
 	*dst = val;
 }
 
+/* The integer settings, as a table option (cache_size) and as a command of the rank column (cache-size) */
+typedef struct SqRange
+{
+	const char *option;
+	const char *command;
+	int64_t		lo;
+	int64_t		hi;
+} SqRange;
+
+static const SqRange ranges[] = {
+	{"cache_size", "cache-size", 0, 16777216},
+	{"automerge", "automerge", 0, 1024},
+	{"pending_postings", "pending-postings", 1000, INT64_MAX},
+	{"parallel", "parallel", 0, 64},
+};
+
+static const SqRange *
+range_of(const char *name)
+{
+	for (size_t i = 0; i < lengthof(ranges); i++)
+		if (strcmp(name, ranges[i].option) == 0 || strcmp(name, ranges[i].command) == 0)
+			return &ranges[i];
+	return NULL;
+}
+
+bool
+sq_setting_ok(const char *name, int64_t v)
+{
+	const SqRange *r = range_of(name);
+
+	if (strcmp(name, "chunk") == 0)
+		return v >= INT_MIN && v <= INT_MAX && chunk_size_ok((int) v);
+	return r != NULL && v >= r->lo && v <= r->hi;
+}
+
+static bool
+parse_int(const char *s, int64_t *n)
+{
+	char	   *end;
+
+	errno = 0;
+	*n = strtoll(s, &end, 10);
+	return end != s && *end == '\0' && errno == 0;
+}
+
+static bool
+parse_real(const char *s, double lo, double hi, double *out)
+{
+	char	   *end;
+	double		d;
+
+	errno = 0;
+	d = strtod(s, &end);
+	if (end == s || *end != '\0' || errno != 0 || !isfinite(d) || d < lo || d > hi)
+		return false;
+	*out = d;
+	return true;
+}
+
+static bool
+int_option(SqVtab *vt, const char *key, const char *val)
+{
+	int64_t		n;
+
+	if (!parse_int(val, &n) || !sq_setting_ok(key, n))
+		return false;
+	if (strcmp(key, "chunk") == 0)
+		vt->chunk_bytes = n;
+	else if (strcmp(key, "cache_size") == 0)
+		vt->cache_kib = n;
+	else if (strcmp(key, "automerge") == 0)
+		vt->automerge = n;
+	else if (strcmp(key, "pending_postings") == 0)
+		vt->pending_postings = n;
+	else
+		vt->parallel = n;
+	return true;
+}
+
+static bool
+is_int_option(const char *key)
+{
+	const SqRange *r = range_of(key);
+
+	return strcmp(key, "chunk") == 0 || (r != NULL && strcmp(key, r->option) == 0);
+}
+
 /* key=value: false when arg is a column name */
 static bool
 option_set(SqVtab *vt, const char *arg, char **err)
@@ -115,14 +208,22 @@ option_set(SqVtab *vt, const char *arg, char **err)
 	key = sqlite3_mprintf("%.*s", (int) (eq - arg), arg);
 	replace(&key, unquote(key));
 	val = unquote(eq + 1);
-	if (strcmp(key, "positions") == 0)
+	if (is_int_option(key))
+	{
+		if (!int_option(vt, key, val))
+			*err = sqlite3_mprintf("sift: option %s does not accept \"%s\"", key, val);
+	}
+	else if (strcmp(key, "positions") == 0)
 		o->base.positions = atoi(val) != 0;
 	else if (strcmp(key, "stemmer") == 0 && strlen(val) < sizeof(o->stemmer))
 		strcpy(o->stemmer, strcmp(val, "none") == 0 ? "" : val);
-	else if (strcmp(key, "k1") == 0)
-		o->base.k1 = atof(val);
-	else if (strcmp(key, "b") == 0)
-		o->base.b = atof(val);
+	else if (strcmp(key, "k1") == 0 || strcmp(key, "b") == 0)
+	{
+		bool		is_k1 = key[0] == 'k';
+
+		if (!parse_real(val, 0.0, is_k1 ? FLT_MAX : 1.0, is_k1 ? &o->base.k1 : &o->base.b))
+			*err = sqlite3_mprintf("sift: option %s does not accept \"%s\"", key, val);
+	}
 	else if (strcmp(key, "case_fold") == 0)
 		o->base.case_folding = atoi(val) != 0;
 	else if (strcmp(key, "accent_fold") == 0)
@@ -131,16 +232,6 @@ option_set(SqVtab *vt, const char *arg, char **err)
 		o->base.prefix_index = atoi(val);
 	else if (strcmp(key, "analyzer") == 0 && (strcmp(val, "text") == 0 || strcmp(val, "keyword") == 0))
 		o->base.analyzer = val[0] == 'k' ? SIFT_ANALYZER_KEYWORD : SIFT_ANALYZER_TEXT;
-	else if (strcmp(key, "chunk") == 0)
-		vt->chunk_bytes = atoi(val);
-	else if (strcmp(key, "cache_size") == 0)
-		vt->cache_kib = atoi(val);
-	else if (strcmp(key, "automerge") == 0)
-		vt->automerge = atoi(val);
-	else if (strcmp(key, "pending_postings") == 0)
-		vt->pending_postings = atoll(val);
-	else if (strcmp(key, "parallel") == 0)
-		vt->parallel = atoi(val);
 	else if (strcmp(key, "content") == 0)
 	{
 		vt->content = val[0] ? SQ_CONTENT_EXTERNAL : SQ_CONTENT_NONE;
@@ -213,8 +304,13 @@ declare(SqVtab *vt, char **pzErr)
 void
 load_settings(SqVtab *vt)
 {
-	vt->automerge = (int) sq_store_config_get(vt->st, "automerge", vt->automerge);
-	vt->pending_postings = sq_store_config_get(vt->st, "pending-postings", vt->pending_postings);
+	int64_t		automerge = sq_store_config_get(vt->st, "automerge", vt->automerge),
+				pending = sq_store_config_get(vt->st, "pending-postings", vt->pending_postings);
+
+	if (!sq_setting_ok("automerge", automerge) || !sq_setting_ok("pending-postings", pending))
+		elog(ERROR, "sift: table \"%s\" has an invalid automerge or pending-postings setting", vt->name);
+	vt->automerge = automerge;
+	vt->pending_postings = pending;
 }
 
 static char *

@@ -4,6 +4,10 @@
 (`v1.3.0` is `sift-sqlite` 1.3.0) and `sqlite/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
+## Unreleased
+
+- A table option or command outside its range (`chunk=0`, a negative `cache_size`, `k1=nan`) is an error instead of a crash or a huge allocation; LIMIT plus OFFSET no longer overflows into an unbounded scan.
+
 ## 4.1.4
 
 - Rebuilt with the PostgreSQL release 4.1.4.

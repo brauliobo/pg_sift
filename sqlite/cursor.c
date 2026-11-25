@@ -218,14 +218,13 @@ rows_next(SqCursor *c)
 		c->rowid = sqlite3_column_int64(c->rows, 0);
 }
 
-/* The rows the scan has to produce: LIMIT plus OFFSET, -1 for all */
+/* The rows the scan has to produce: LIMIT plus OFFSET up to SQ_RANK_ROWS_MAX, 0 for none, -1 for all */
 int64_t
 sq_rank_rows(int64_t limit, int64_t offset)
 {
-	int64_t		k = limit;
-
-	k += Max(offset, 0);
-	return k > 0 ? k : (k == 0 ? 1 : -1);
+	if (limit <= 0)
+		return limit < 0 ? -1 : 0;
+	return Min(Min(limit, SQ_RANK_ROWS_MAX) + Min(Max(offset, 0), SQ_RANK_ROWS_MAX), SQ_RANK_ROWS_MAX);
 }
 
 static int64_t
@@ -267,6 +266,11 @@ start_match(SqCursor *c, int idx, sqlite3_value **argv)
 		int64_t		k = ranked_limit(idx, &a, argv);
 
 		c->mode = SC_RANK;
+		if (k == 0)
+		{
+			c->eof = true;
+			return;
+		}
 		if (k > 0 && sq_par_available(vt, c->plan, texts, nmatch))
 			c->hits = sq_par_rank(vt, c->plan, texts, nmatch, k, &c->nhits);
 		if (c->hits == NULL)
