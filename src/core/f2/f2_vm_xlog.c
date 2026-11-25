@@ -42,6 +42,16 @@ sift_vm_page_word(Page page, int word)
 	return w;
 }
 
+/* No bit is set: the page is what the redo builds from nothing (PageInit, then the bits of the record) */
+static bool
+page_blank(Page page)
+{
+	for (int w = 0; w < SIFT_VM_WORDS_PER_PAGE; w++)
+		if (sift_vm_page_word(page, w) != 0)
+			return false;
+	return true;
+}
+
 static void
 page_or(Page page, const uint16 *word_idx, const uint64 *bit_or, int nwords)
 {
@@ -72,7 +82,7 @@ page_clear(Page page, BlockNumber vblock, uint8 flags)
 }
 
 static XLogRecPtr
-log_set(Relation rel, Buffer vmbuf, uint8 flags, TransactionId horizon, const uint16 *word_idx, const uint64 *bit_or, int nwords)
+log_set(Relation rel, Buffer vmbuf, uint8 flags, TransactionId horizon, const uint16 *word_idx, const uint64 *bit_or, int nwords, bool init)
 {
 	SiftXlVmSet rec = {.locator = rel->rd_locator,.vm_blkno = BufferGetBlockNumber(vmbuf),.snapshotConflictHorizon = horizon,.nwords = nwords,.flags = flags};
 
@@ -80,7 +90,7 @@ log_set(Relation rel, Buffer vmbuf, uint8 flags, TransactionId horizon, const ui
 	XLogRegisterData(&rec, sizeof(rec));
 	XLogRegisterData(word_idx, nwords * sizeof(uint16));
 	XLogRegisterData(bit_or, nwords * sizeof(uint64));
-	XLogRegisterBuffer(0, vmbuf, 0);
+	XLogRegisterBuffer(0, vmbuf, init ? REGBUF_WILL_INIT : 0);
 	return XLogInsert(SIFT_RMGR_ID, SIFT_XLOG_VM_SET);
 }
 
@@ -91,12 +101,12 @@ sift_vm_apply_set(Relation rel, Buffer vmbuf, uint8 flags, TransactionId horizon
 	uint16		idx[SIFT_VM_WORDS_PER_PAGE];
 	uint64		bits[SIFT_VM_WORDS_PER_PAGE];
 	int			n = 0;
+	bool		init;
 
 	SIFT_INVARIANT(nwords <= lengthof(idx), "a page of the map has no more words than its changes name");
 	LockBuffer(vmbuf, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(vmbuf);
-	if (PageIsNew(page))
-		PageInit(page, BLCKSZ, 0);
+	init = page_blank(page);
 	for (int i = 0; i < nwords; i++)
 		if ((sift_vm_page_word(page, word_idx[i]) | bit_or[i]) != sift_vm_page_word(page, word_idx[i]))
 		{
@@ -106,10 +116,12 @@ sift_vm_apply_set(Relation rel, Buffer vmbuf, uint8 flags, TransactionId horizon
 	if (n > 0)
 	{
 		START_CRIT_SECTION();
+		if (init)
+			PageInit(page, BLCKSZ, 0);
 		page_or(page, idx, bits, n);
 		MarkBufferDirty(vmbuf);
 		if (RelationNeedsWAL(rel))
-			PageSetLSN(page, log_set(rel, vmbuf, flags, horizon, idx, bits, n));
+			PageSetLSN(page, log_set(rel, vmbuf, flags, horizon, idx, bits, n, init));
 		END_CRIT_SECTION();
 	}
 	LockBuffer(vmbuf, BUFFER_LOCK_UNLOCK);
@@ -145,6 +157,13 @@ sift_vm_apply_clear(Relation rel, Buffer vmbuf, BlockNumber vblock)
 	return bits != 0;
 }
 
+/* The record builds the page it names (the first bits of a page of the map): redo zeroes it and sets the bits, with no image of the page */
+static bool
+builds_page(XLogReaderState *r)
+{
+	return (XLogRecGetBlock(r, 0)->flags & BKPBLOCK_WILL_INIT) != 0;
+}
+
 static void
 redo_set(XLogReaderState *r)
 {
@@ -156,7 +175,7 @@ redo_set(XLogReaderState *r)
 	/* the bits tell a query that a row is there for it without asking the table: one whose snapshot is not past every transaction they stand for must go first */
 	if (InHotStandby && TransactionIdIsValid(rec->snapshotConflictHorizon))
 		ResolveRecoveryConflictWithSnapshot(rec->snapshotConflictHorizon, false, rec->locator);
-	if (XLogReadBufferForRedoExtended(r, 0, RBM_ZERO_ON_ERROR, false, &buf) == BLK_NEEDS_REDO)
+	if (XLogReadBufferForRedoExtended(r, 0, builds_page(r) ? RBM_ZERO_AND_LOCK : RBM_ZERO_ON_ERROR, false, &buf) == BLK_NEEDS_REDO)
 	{
 		Page		page = BufferGetPage(buf);
 		uint64		bits[SIFT_VM_WORDS_PER_PAGE];
