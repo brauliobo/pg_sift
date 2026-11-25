@@ -11,8 +11,6 @@ src/core/writer.c	sift_nap(wt->delay_ms)	the cost delay of a throttled write
 src/core/worker.c	sift_nap(ms)	sift_worker_nap, the sleep of a worker between two looks
 src/table/v1/vacuum_maint.c	sift_worker_nap(Max(sift_maintenance_naptime / 4	the pause between the passes of a table worker (at most 20, ends after 3 idle passes)
 src/table/v1/vacuum.c	sift_nap(Min(ahead, 1000))	sleeps until the WAL rate allows the next page
-src/agg/par/items.c	pg_usleep(1000)	test hook sift_test_par_leader_wait only
-src/agg/lookshm.c	sift_nap(LOOKSHM_POLL_MS)	waits for the claim of a shared lookup that another backend builds, bounded by LOOKSHM_WAIT_MS
 src/col/v1/scan/scan.c	pg_usleep(pg_prng_uint64_range	test jitter, SIFT_TESTING only
 src/col/v1/maint/merge.c	pg_usleep(sift_test_col_refresh	test hook, SIFT_TESTING only
 src/core/waits.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, ms, s	sift_wait, the one latch wait of the named wait events: the callers named above and in their own rows pass the nap

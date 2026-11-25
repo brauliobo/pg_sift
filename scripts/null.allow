@@ -1,34 +1,4 @@
 # FILE<TAB>FUNCTION<TAB>RULE<TAB>REASON: a site that scripts/check-null.sh flags and that cannot be NULL (or empty). A new site is read, then fixed or listed here with the reason.
-src/agg/cte/price.c	cte_refs	list-first	ctePlanId of a CteScan and plan_id of a SubPlan are 1-based positions in the PlannedStmt subplans, which the planner appended the plan to
-src/agg/cte/price.c	shared_work	list-first	ctePlanId of a CteScan and plan_id of a SubPlan are 1-based positions in the PlannedStmt subplans, which the planner appended the plan to
-src/agg/expr/walk.c	initplan_ok	list-first	sp is a SubPlan of the plan: its plan_id is the 1-based position of its root in glob->subroots
-src/agg/flat/array_in.c	array_as_in	list-first	array_in_sublink matched an ARRAY sub-link before the call, and the parser gives ARRAY(SELECT ..) exactly one column
-src/agg/flat/decor.c	lookup_expression	list-first	g is the keys query of the lookup (d->lookup), built with its key as the first target entry
-src/agg/flat/exists_or.c	key_query	list-first	proto is the sub-select of an arm that the matcher accepted: one table in its FROM list
-src/agg/flat/invert.c	subtract_keys	list-first	q was accepted by analyze() (sift_agg_invert_parents): a one-column sub-select
-src/agg/flat/keypush.c	key_sublink	list-first	k->jointree is built two lines above with a one-entry FROM list of a RangeTblRef
-src/agg/flat/minmax.c	minmax_rewrite	list-first	the sub-select is a one-column scalar sub-link and min/max take one argument: the caller matched min(x)/max(x) of it
-src/agg/flat/partarms.c	leaf_oids	list-first	the caller returns false for a query with sortClause == NIL before asking for the leaves
-src/agg/flat/probe.c	not_in_safe	list-first	sub passed probe_sub (one table, one output column) before the call
-src/agg/flat/probe.c	tie_column	list-first	sub passed probe_sub (one table in its rtable) before the call
-src/agg/flat/pushagg.c	analyze	list-first	a Var of the GROUP RTE (PostgreSQL 18) numbers an entry of its groupexprs: varattno - 1 indexes it
-src/agg/from/part.c	hash_clause_handled	list-first	RelOptInfo.partexprs[k] holds at least the key expression of every partition key column, built by the planner for a partitioned base relation
-src/agg/from/part.c	part_key_pinned	list-first	RelOptInfo.partexprs[0] holds at least the key expression of the first partition key column; the key has one column here
-src/agg/init_table.c	join_filter_pred	list-first	attexprs has one entry for each attribute of the layout and attno is an attribute of it
-src/agg/latest.c	topn_array	list-first	top->jointree->fromlist is built two lines above with two RangeTblRef entries
-src/agg/lookcol.c	column_leaf_any	list-first	attexprs has one entry for each attribute of the layout and attno is an attribute of it
-src/agg/order/paths.c	topn_first_ties	list-first	the only caller reads it when nordered > 1: the query has at least two sort clauses
-src/agg/order/rank.c	rank_begin	list-first	custom_private is built by the rank plan of this file with the four lists att, op, coll and nf
-src/agg/order/rank.c	rank_explain	list-first	custom_private is built by the rank plan of this file with the four lists att, op, coll and nf
-src/agg/par/launch.c	par_launch	list-first	a join with params is a correlated child: its subplan is the 1-based plan_id of the planned statement's subplans
-src/agg/plan_child.c	function_query	list-first	fe is a copy of e, and list_length(e->functions) != 1 returns NULL before the read
-src/agg/plan_exists.c	compile_exists	list-first	exists_subquery accepted a sub-select over one function entry (x.rti) before this runs
-src/agg/plan_rows.c	rows_plan_path	list-first	custom_private of the rows path is built by the path creation of this file with two entries
-src/agg/plan_scope.c	initplan_rows	list-first	sp is an init plan of the root: its plan_id is the 1-based position of its plan in glob->subplans
-src/agg/two/spine.c	arm_input	planner-array	a singleton relid set is the one base relation of the query: agg_base takes the NULL of a relation without an entry
-src/agg/v6/scope_v6_match.c	first_path	list-first	select_only(a) was true: the query has exactly one target entry
-src/agg/v6/scope_v6_match.c	match_left	list-first	s is the Query this function builds, whose FROM list is the list_make1 of its one RangeTblRef
-src/agg/v6/scope_v6_match.c	second_path	list-first	select_only(b) was true: the query has exactly one target entry
 src/agg/v6/v6_join_push.c	push_begin	list-first	cs is the CustomScan of push_plan_path, whose custom_private is a list_make2 of the spec and the join
 src/agg/v6/v6_join_push.c	push_plan_path	list-first	best is a CustomPath of this node: its custom_private is the list_make4 of add_push_path (spec, scan tlist, quals, join)
 src/agg/v6/v6_plan_rewrite.c	sift_v6_topk_paths	list-first	cp is a CustomPath of sift_v6_group_path_methods, whose custom_private is the list_make3 of plan.c (spec, scan tlist, having)
@@ -40,7 +10,6 @@ src/bm25/planner_plan.c	sift_plan_scan	list-first	make_path builds custom_privat
 src/bm25/score_fallback.c	fb_begin	list-first	custom_private is the two lists (the any flags and the index oids, one of each for every clause) that the make_path of this file builds with list_make2 for the SiftScoreScan this state is created for
 src/bm25/planner_ties.c	private_int	list-first	every caller passes a SIFT_PRIV_ slot of a scan of this extension (cs->methods is tested first), which make_path fills
 src/bm25/planner_ties.c	ranked_scan	list-first	the list is read after cs->methods == &sift_scan_plan_methods: a scan of this extension, whose custom_private make_path fills
-src/agg/v6/scope_v6_run.c	scope_begin	list-first	custom_private is the packed spec that sift_agg_v6_scope_plan_path made, and custom_exprs holds the key and the window bounds exactly when the spec says it has them
 src/agg/v6/v6_star_plan.c	join_clause_keys	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
 src/agg/v6/v6_star_plan.c	try_fact	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
 src/agg/v6/v6_star_plan.c	try_facts	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
@@ -63,8 +32,6 @@ src/agg/v6/join.c	join_begin	list-first	custom_private is list_make1(ints), buil
 src/agg/v6/join_asof.c	asof_plan_path	list-first	custom_private of the path is list_make3(ints, vars, sub_attno), built by the path creation of this file
 src/agg/v6/join_asof.c	asof_begin	list-first	custom_private is list_make1(ints), built by the plan of this file from the ints of its path
 src/agg/v6/plan.c	sift_agg_v6_plan_path	list-first	custom_private of the path is list_make3(spec, scan tlist, having), built by the path creation of this file
-src/agg/v6/scope_v6.c	pairs_table	list-first	pairs_query is set only by pairs_subquery, which accepts a query of single_table_query: exactly one range table entry
-src/agg/v6/v6_proj_sort_plan.c	sort_plan_path	list-first	custom_private is sort_pack(): list_make5 whose first list is the ints, with the table flag and the index OID first
 src/agg/v6/v6_vexpr.c	sift_v6_plan_scan	list-first	custom_private is the list every caller of sift_v6_add_path passes (stream, window, SIP, top-N): a list of at least three, the scan tlist second
 src/agg/v6/v6_unnest_exists.c	exists_subplan	list-first	sp is a SubPlan of the plan: its plan_id is the 1-based position of its root in glob->subroots
 src/agg/v6/v6_unnest_jsonb.c	array_column	list-first	an index column whose indexkeys entry is 0 is an expression: the index has one indexprs entry for each of them, in order

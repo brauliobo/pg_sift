@@ -9,13 +9,10 @@ agg/batch_source.h
 agg/gpu_cfg.h
 agg/gpu_cost.c
 agg/gpu_cost.h
-agg/gpu_dead.c
-agg/gpu_dead.h
 agg/gpu_dict_agg.c
 agg/gpu_dict_agg.h
 agg/gpu_emit.c
 agg/gpu_emit.h
-agg/gpu_f2_plan.c
 agg/gpu_local.c
 agg/gpu_shm.h
 agg/gpu_v6.c
@@ -45,7 +42,6 @@ agg/refuse.h
 agg/sip.c
 agg/sip.h
 agg/sip_test.c
-agg/sorts_test.c
 agg/stats.c
 agg/stats.h
 agg/stream_exec.c
