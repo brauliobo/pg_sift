@@ -12,6 +12,7 @@
 #include "catalog/pg_type.h"
 #include "common/hashfn.h"
 #include "executor/spi.h"
+#include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/datum.h"
@@ -19,6 +20,8 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "catalog/namespace.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
 
 #include "col/f2/f2_store_schema.h"
@@ -392,12 +395,30 @@ sift_tbl_f2_ddl_after(Relation rel, Node *parsetree)
 		sift_tbl_f2_guard_publication(rel);
 }
 
+/* The options of the tables are rows of a catalog of the extension that only its owner writes: the table owner who renames a column is let write the rows that name it */
+static Oid
+option_table_owner(void)
+{
+	Oid			relid = get_relname_relid("table_option_values", get_namespace_oid("sift", false));
+	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	Oid			owner;
+
+	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for relation %u", relid);
+	owner = ((Form_pg_class) GETSTRUCT(tup))->relowner;
+	ReleaseSysCache(tup);
+	return owner;
+}
+
 void
 sift_tbl_f2_ddl_rename_column(Relation rel, const char *oldname, const char *newname)
 {
 	const SiftF2StoreOpts *o = &sift_f2_store_open(rel)->opts;
 	Oid			argtypes[3] = {TEXTOID, OIDOID, TEXTOID};
+	Oid			uid;
+	int			sec;
 
+	GetUserIdAndSecContext(&uid, &sec);
+	SetUserIdAndSecContext(option_table_owner(), sec | SECURITY_LOCAL_USERID_CHANGE);
 	SPI_connect();
 	for (int i = 0; i < TEXT_OPTS; i++)
 	{
@@ -413,5 +434,6 @@ sift_tbl_f2_ddl_rename_column(Relation rel, const char *oldname, const char *new
 		SIFT_INVARIANT(updated == SPI_OK_UPDATE, "could not rename the column in the options of table \"%s\"", RelationGetRelationName(rel));
 	}
 	SPI_finish();
+	SetUserIdAndSecContext(uid, sec);
 	CacheInvalidateRelcacheByRelid(RelationGetRelid(rel));
 }
