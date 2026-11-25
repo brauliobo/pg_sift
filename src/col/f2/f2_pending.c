@@ -18,9 +18,9 @@ addr_cmp(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
-/* The TIDs the snapshot sees deleted by a pending delete of the partition, sorted by address */
-uint64 *
-sift_f2_pending_dead(Relation rel, const SiftPartitionEntry *e, Snapshot snap, int *n)
+/* The TIDs the snapshot sees deleted by a pending delete of the partition, in the order of the chain */
+static uint64 *
+unsorted_pending_dead(Relation rel, const SiftPartitionEntry *e, Snapshot snap, int *n)
 {
 	int			nrecs = 0,
 				m = 0;
@@ -40,8 +40,18 @@ sift_f2_pending_dead(Relation rel, const SiftPartitionEntry *e, Snapshot snap, i
 			SIFT_INVARIANT(m < nrecs, "a pending deletion is offered once");
 			dead[m++] = recs[i].tid & SIFT_PD_TID_MASK;
 		}
-	qsort(dead, m, sizeof(uint64), addr_cmp);
 	*n = m;
+	return dead;
+}
+
+/* The TIDs the snapshot sees deleted by a pending delete of the partition, sorted by address */
+uint64 *
+sift_f2_pending_dead(Relation rel, const SiftPartitionEntry *e, Snapshot snap, int *n)
+{
+	uint64	   *dead = unsorted_pending_dead(rel, e, snap, n);
+
+	if (dead != NULL)
+		qsort(dead, *n, sizeof(uint64), addr_cmp);
 	return dead;
 }
 
@@ -57,7 +67,7 @@ SiftPendDelIndex *
 sift_f2_pending_index(Relation rel, const SiftPartitionEntry *e, Snapshot snap, const SiftPendDelIndex *staged_px)
 {
 	int			n;
-	uint64	   *dead = sift_f2_pending_dead(rel, e, snap, &n);
+	uint64	   *dead = unsorted_pending_dead(rel, e, snap, &n);
 	SiftPendDelIndex *px = sift_pdel_idx_chain(dead, n, staged_px);
 
 	if (dead != NULL)
