@@ -1,0 +1,18 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1del s2b s2at s3cp s2at s2c
+step s1del: BEGIN; DELETE FROM iso_aba WHERE id = 1; PREPARE TRANSACTION 'sift_aba';
+step s2b: BEGIN ISOLATION LEVEL READ COMMITTED;
+step s2at: SELECT id FROM iso_aba WHERE ctid = (SELECT addr FROM iso_aba_addr);
+id
+--
+ 1
+(1 row)
+
+step s3cp: COMMIT PREPARED 'sift_aba';
+step s2at: SELECT id FROM iso_aba WHERE ctid = (SELECT addr FROM iso_aba_addr);
+id
+--
+(0 rows)
+
+step s2c: COMMIT;

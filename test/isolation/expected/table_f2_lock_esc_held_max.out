@@ -1,0 +1,30 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1begin s1sp s1ex s1rb s1share s2share s1c
+busy
+----
+f   
+(1 row)
+
+step s1begin: BEGIN;
+step s1sp: SAVEPOINT a;
+step s1ex: SELECT id FROM iso_hm WHERE id = 1 FOR UPDATE;
+id
+--
+ 1
+(1 row)
+
+step s1rb: ROLLBACK TO a;
+step s1share: SELECT count(*) AS n FROM (SELECT id FROM iso_hm WHERE id BETWEEN 10 AND 5009 FOR SHARE) q;
+   n
+----
+5000
+(1 row)
+
+step s2share: SELECT id FROM iso_hm WHERE id = 9000 FOR SHARE;
+  id
+----
+9000
+(1 row)
+
+step s1c: COMMIT;
