@@ -467,6 +467,7 @@ promote_next(Relation index, bool propagate, uint64 *busy)
 typedef struct MergeSel
 {
 	int			n;
+	bool		cut;			/* the pick holds more segments than the merge reads at once: the rest wait for another */
 	int			cap;			/* the entries seg and busy have room for: those of the directory last read */
 	SiftSegEntry *seg;
 	int			nbusy;			/* generations others claimed: the policy leaves them out */
@@ -599,6 +600,7 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftMergeGoa
 
 	while (k < n && k < fanin && total + sel->seg[k].bytes <= hard && (k < 2 || total + sel->seg[k].bytes <= soft))
 		total += sel->seg[k++].bytes;
+	sel->cut = k < n;
 	return k < Min(n, 2) ? 0 : k;
 }
 
@@ -736,9 +738,9 @@ all_there(Relation index, const MergeSel *sel)
 	return all;
 }
 
-/* One merge of segments nobody else is at; busy: the generation of one that is, when that left nothing to merge */
-SiftStepResult
-merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy)
+/* One merge of segments nobody else is at; busy: the generation of one that is, when that left nothing to merge; cut: the merge left segments of the pick for another */
+static SiftStepResult
+merge_once(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy, bool *cut)
 {
 	SiftDirSnapshot *snap = NULL;
 	MergeSel   *sel = palloc0(sizeof(MergeSel));
@@ -768,6 +770,7 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 	}
 	if (r == SIFT_STEP_IDLE && sel->nbusy > 0)
 		*busy = sel->busy[0];
+	*cut = sel->cut;
 	if (sel->seg)
 	{
 		pfree(sel->seg);
@@ -775,5 +778,17 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 	}
 	pfree(sel);
 	pfree(snap);
+	return r;
+}
+
+/* One merge, or for force every merge it takes to bring all the immutable segments into one when the memory reads fewer at once */
+SiftStepResult
+merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy)
+{
+	bool		cut;
+	SiftStepResult r = merge_once(index, force, goal, propagate, busy, &cut);
+
+	while (force && cut && r == SIFT_STEP_DONE && merge_once(index, true, goal, propagate, busy, &cut) == SIFT_STEP_DONE)
+		CHECK_FOR_INTERRUPTS();
 	return r;
 }
