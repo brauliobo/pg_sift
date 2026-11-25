@@ -13,7 +13,6 @@
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "utils/snapmgr.h"
-#include "utils/tuplesort.h"
 
 #include "col/f2/f2.h"
 #include "col/f2/f2_store.h"
@@ -185,59 +184,74 @@ sift_f2_check_keys(Relation rel)
 	return psprintf("parts=%llu granules=%llu rows=%llu exact", (unsigned long long) parts, (unsigned long long) granules, (unsigned long long) rows);
 }
 
-/* The address of a row as an int8: a block of 32 bits and an offset of 16 never make it negative, so the order of the sort is the order of the addresses */
-static Datum
-tid_datum(const ItemPointerData *tid)
+/* A pass costs a scan of the whole index, so a window never holds less than the heap blocks that a megabyte of bits covers */
+#define HEAP_WINDOW_MIN_BYTES	(1024 * 1024)
+
+/* The rows of a window of heap blocks the index holds, one bit for each address the window can have: what a pass of the check keeps, however large the table is */
+typedef struct HeapWindow
 {
-	return Int64GetDatum((int64) (((uint64) ItemPointerGetBlockNumber(tid) << 16) | ItemPointerGetOffsetNumber(tid)));
+	uint8	   *seen;
+	BlockNumber from;
+	uint32		nblocks;
+	BlockNumber max_index_block;
+	Relation	index;
+} HeapWindow;
+
+static bool
+window_bit(const HeapWindow *w, const ItemPointerData *tid, uint32 *bit)
+{
+	BlockNumber blk = ItemPointerGetBlockNumber(tid);
+	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
+
+	if (blk < w->from || blk - w->from >= w->nblocks || off < FirstOffsetNumber || off > SIFT_MAX_OFFSET)
+		return false;
+	*bit = (blk - w->from) * SIFT_MAX_OFFSET + off - FirstOffsetNumber;
+	return true;
 }
 
 static void
 heap_tid_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive, void *state)
 {
-	if (alive)
-		tuplesort_putdatum(state, tid_datum(tid), false);
+	const HeapWindow *w = state;
+	uint32		bit;
+
+	if (alive && !(window_bit(w, tid, &bit) && (w->seen[bit / 8] & (1 << (bit % 8)))))
+		SIFT_CORRUPT(w->index, "The heap tuple (%u,%u) is visible to the snapshot and is not in the index.", ItemPointerGetBlockNumber(tid), (unsigned) ItemPointerGetOffsetNumber(tid));
 }
 
+/* The alive heap tuples of the blocks [from, from + span) that the window does not hold are not in the index (a heap scan stops at the end of the relation, the other table access methods count their own blocks) */
 static void
-heap_tids(Relation heap, Relation index, Snapshot snap, Tuplesortstate *sort)
+heap_window_check(Relation heap, Relation index, HeapWindow *w, BlockNumber span)
 {
 	IndexInfo  *info = BuildIndexInfo(index);
 
+	if (heap->rd_tableam == GetHeapamTableAmRoutine())
+	{
+		BlockNumber blocks = RelationGetNumberOfBlocks(heap);
+
+		if (w->from >= blocks)
+			return;
+		span = Min(span, blocks - w->from);
+	}
 	info->ii_Concurrent = true;
-	table_index_build_scan(heap, index, info, true, false, heap_tid_cb, sort, table_beginscan_strat(heap, snap, 0, NULL, true, false));
+	table_index_build_range_scan(heap, index, info, false, false, false, w->from, span, heap_tid_cb, w, NULL);
 }
 
 static void
-index_tids(Relation heap, Relation index, Snapshot snap, Tuplesortstate *sort)
+index_window_fill(Relation heap, Relation index, Snapshot snap, HeapWindow *w)
 {
 	IndexScanDesc scan = sift_index_beginscan(heap, index, snap, 0);
 	ItemPointer tid;
+	uint32		bit;
 
 	index_rescan(scan, NULL, 0, NULL, 0);
 	while ((tid = index_getnext_tid(scan, ForwardScanDirection)) != NULL)
-		tuplesort_putdatum(sort, tid_datum(tid), false);
+	{
+		w->max_index_block = Max(w->max_index_block, ItemPointerGetBlockNumber(tid));
+		if (window_bit(w, tid, &bit))
+			w->seen[bit / 8] |= 1 << (bit % 8);
+	}
 	index_endscan(scan);
-}
-
-static Tuplesortstate *
-tid_sort(void)
-{
-	int			kb = (int) Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2) / 1024, 64);
-
-	return tuplesort_begin_datum(INT8OID, Int8LessOperator, InvalidOid, false, kb, NULL, TUPLESORT_NONE);
-}
-
-static bool
-next_tid(Tuplesortstate *sort, uint64 *tid)
-{
-	Datum		d;
-	bool		isnull;
-
-	if (!tuplesort_getdatum(sort, true, false, &d, &isnull, NULL))
-		return false;
-	*tid = (uint64) DatumGetInt64(d);
-	return true;
 }
 
 /* Every row the heap shows to a snapshot is a live row of the index: the index may hold more, the versions that UPDATE, DELETE and aborted INSERTs left until its next VACUUM */
@@ -246,26 +260,20 @@ sift_f2_check_heap(Relation index)
 {
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	Snapshot	snap = RegisterSnapshot(GetTransactionSnapshot());
-	Tuplesortstate *want = tid_sort(),
-			   *have = tid_sort();
-	uint64		w,
-				h = 0;
-	bool		more_have;
+	Size		bytes = Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2), HEAP_WINDOW_MIN_BYTES);
+	/* check-memory: allow one window of the maintenance budget */
+	HeapWindow	w = {.seen = palloc(bytes),.nblocks = bytes * 8 / SIFT_MAX_OFFSET,.index = index};
 
-	heap_tids(heap, index, snap, want);
-	index_tids(heap, index, snap, have);
-	tuplesort_performsort(want);
-	tuplesort_performsort(have);
-	more_have = next_tid(have, &h);
-	while (next_tid(want, &w))
+	do
 	{
-		while (more_have && h < w)
-			more_have = next_tid(have, &h);
-		if (!more_have || h != w)
-			SIFT_CORRUPT(index, "The heap tuple (%u,%u) is visible to the snapshot and is not in the index.", (unsigned) (w >> 16), (unsigned) (w & 0xFFFF));
-	}
-	tuplesort_end(want);
-	tuplesort_end(have);
+		memset(w.seen, 0, bytes);
+		index_window_fill(heap, index, snap, &w);
+		heap_window_check(heap, index, &w, w.nblocks);
+		w.from += w.nblocks;
+	} while (w.from <= w.max_index_block);
+	w.nblocks = 0;
+	heap_window_check(heap, index, &w, InvalidBlockNumber);
+	pfree(w.seen);
 	UnregisterSnapshot(snap);
 	table_close(heap, AccessShareLock);
 }
