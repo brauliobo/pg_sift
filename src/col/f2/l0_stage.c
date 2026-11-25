@@ -15,6 +15,7 @@
 #include "col/f2/delete.h"
 #include "col/f2/f2_batch.h"
 #include "col/f2/f2_store.h"
+#include "col/f2/f2_uniq_shm.h"
 #include "col/f2/f2_vacuum_run.h"
 #include "col/f2/f2.h"
 #include "col/f2/l0_href.h"
@@ -139,13 +140,21 @@ sift_stage_find_delete(Relation rel, uint64 tid, TransactionId *xmax, CommandId 
 	return false;
 }
 
+/* The rows of the stage go to the partitions, and the keys of a UNIQUE index that the registry held for them with them: they are in the manifest now, and a stage that flushes at each full buffer must not fill the registry */
+static void
+flush_stage_rows(Relation rel, SiftTxnStage *st, bool at_end)
+{
+	sift_stage_flush_rows(rel, st, at_end);
+	sift_uniq_shm_release(&rel->rd_locator);
+}
+
 /* The rows first, then the deletes of what is staged: each delete keeps the xid of the (sub)transaction that made it, so that a rollback to its savepoint hides it by the status of that xid */
 static void
 flush_deletes_chunk(SiftTxnStage *st)
 {
 	Relation	rel = relation_open(st->relid, RowExclusiveLock);
 
-	sift_stage_flush_rows(rel, st, false);
+	flush_stage_rows(rel, st, false);
 	sift_stage_flush_deletes(rel, st, false);
 	relation_close(rel, NoLock);
 	del_htab_rebuild(st);
@@ -246,7 +255,7 @@ stage_xact(XactEvent event, void *arg)
 				continue;
 			if (RelFileLocatorEquals(st->locator, rel->rd_locator) && !sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
 			{
-				sift_stage_flush_rows(rel, st, true);
+				flush_stage_rows(rel, st, true);
 				sift_stage_flush_deletes(rel, st, true);
 			}
 			relation_close(rel, NoLock);
@@ -315,7 +324,7 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 		return st;
 	if (st != NULL)
 	{
-		sift_stage_flush_rows(rel, st, false);
+		flush_stage_rows(rel, st, false);
 		sift_stage_discard(RelationGetRelid(rel));
 	}
 	if (!callbacks_registered)
@@ -790,7 +799,7 @@ sift_stage_flush(Relation rel)
 	SiftTxnStage *st = stage_of(rel);
 
 	if (st != NULL)
-		sift_stage_flush_rows(rel, st, false);
+		flush_stage_rows(rel, st, false);
 }
 
 void
@@ -801,7 +810,7 @@ sift_stage_flush_all(void)
 		Relation	rel = relation_open(st->relid, RowExclusiveLock);
 
 		if (RelFileLocatorEquals(st->locator, rel->rd_locator))
-			sift_stage_flush_rows(rel, st, false);
+			flush_stage_rows(rel, st, false);
 		relation_close(rel, NoLock);
 	}
 }

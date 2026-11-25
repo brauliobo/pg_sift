@@ -498,15 +498,17 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 	for (;;)
 	{
 		Conflict	c;
+		bool		deferred;
 
 		LockPage(index, lock, ExclusiveLock);
 		find_conflict(&k, index, heap, info, &rk, values, isnull, heap_tid, &c);
-		if (c.found == FOUND_NONE && write)
+		deferred = c.found != FOUND_NONE && check == UNIQUE_CHECK_PARTIAL && !(c.found == FOUND_RUNNING && c.in_stage);
+		if (write && (c.found == FOUND_NONE || deferred))
 			write_row(index, &rk, values, isnull, heap_tid);
 		UnlockPage(index, lock, ExclusiveLock);
 		if (c.found == FOUND_NONE)
 			return true;
-		if (check == UNIQUE_CHECK_PARTIAL && !(c.found == FOUND_RUNNING && c.in_stage))
+		if (deferred)
 			return false;
 		if (c.found == FOUND_LIVE)
 			key_violation(index, heap, values, isnull, false);
