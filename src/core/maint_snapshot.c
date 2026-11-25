@@ -3,6 +3,8 @@
  */
 #include "core/maint_sched.h"
 
+#include "datatype/timestamp.h"
+
 static int
 row_order(const void *a, const void *b)
 {

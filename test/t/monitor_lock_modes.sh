@@ -23,7 +23,7 @@ rm -f "$D/locked" "$D/release"
 	echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; echo "COMMIT;"; } | sql ml >/dev/null &
 holder=$!
 wait_for "[[ -e $D/locked ]]" 60 || bail "the holder did not take its locks"
-scrape() { sql ml "SET lock_timeout = '500ms'" "$@" 2>&1 | paste -sd" "; }  # timeout-ok: the scrapes take no lock that could wait; the timeout is what the test asserts
+scrape() { sql ml "SET lock_timeout = '500ms'" "$@" 2>&1 | paste -sd' ' -; }  # timeout-ok: the scrapes take no lock that could wait; the timeout is what the test asserts
 out=$(scrape "SELECT count(*) FROM sift.space('c_idx')")
 check "sift.space of an index under a ShareUpdateExclusiveLock of its table" test "$out" = 1
 out=$(scrape "SELECT count(*) FROM sift.space('t')")

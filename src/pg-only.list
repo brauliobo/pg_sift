@@ -804,9 +804,13 @@ core/maint_int.h
 core/maint_pacer.c
 core/maint_pacer.h
 core/maint_pacer_test.c
+core/maint_db.c
+core/maint_drain.c
+core/maint_drain.h
 core/maint_sched.c
 core/maint_sched.h
 core/maint_sched_pg.c
+core/maint_snapshot.c
 core/maint_sql.c
 core/maint_step.c
 core/maint_step_test.c

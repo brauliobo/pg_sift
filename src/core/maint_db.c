@@ -3,6 +3,8 @@
  */
 #include "core/maint_sched.h"
 
+#include "datatype/timestamp.h"
+
 /* The entry of db: its own, else a free one or one whose backoff is over; NULL when all eight are held. The caller holds the lock of the table */
 static SiftMaintDbState *
 entry_of(SiftMaintShmem *m, Oid db, TimestampTz now)
