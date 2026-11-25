@@ -20,16 +20,6 @@ sift_manifest_find_entry(Relation rel, uint64 part_id, const uint8 *key_lo, Sift
 	return out->part_id == part_id;
 }
 
-/* A chain that patches a time column leaves the bounds of the parts unknown for it: the claim comes off every part, and the entry's bounds follow from the parts */
-void
-sift_mf_unclaim_patched_time(SiftPartDesc *parts, int n, const SiftColDeltaAnchor *a)
-{
-	uint16		patched = (uint16) (((a->flags & SIFT_CDLA_DIRTY_TIME0) != 0 ? SIFT_PART_FLAG_HAS_TIME0 : 0) | ((a->flags & SIFT_CDLA_DIRTY_TIME1) != 0 ? SIFT_PART_FLAG_HAS_TIME1 : 0));
-
-	for (int i = 0; i < n; i++)
-		parts[i].flags &= (uint16) ~patched;
-}
-
 /* An update replaces a descriptor as the caller prepared it: it must have been prepared from the descriptor the manifest holds now, or the blocks it frees were freed already */
 static void
 check_expected(Relation rel, const SiftPartDesc *now, const SiftPartDesc *expect)

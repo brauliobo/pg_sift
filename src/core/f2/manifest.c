@@ -701,7 +701,6 @@ build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("sift index \"%s\": partition %llu would keep a column delta chain and have no part", RelationGetRelationName(rel),
 																				 (unsigned long long) e->part_id),
 						errhint("The edit that drops the last part of a partition clears its chain.")));
-	sift_mf_unclaim_patched_time(parts, n, &anchor);
 	sift_mf_fold_entry(ent, parts, n);
 	if (sift_col_delta_anchor_has_chain(&anchor))
 		ent->flags |= SIFT_PARTENTRY_HAS_COL_DELTA;

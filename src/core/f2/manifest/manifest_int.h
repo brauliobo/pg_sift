@@ -187,7 +187,6 @@ sift_gen_map_free(SiftGenMap *m)
 }
 
 extern void sift_mf_blk_add(BlkVec *b, BlockNumber blk);
-extern void sift_mf_unclaim_patched_time(SiftPartDesc *parts, int n, const SiftColDeltaAnchor *a);
 extern int	sift_mf_drop_parts(Relation rel, SiftPartDesc *parts, int n, const SiftManifestEdit *e, uint64 **expire, int *nexpire);
 extern void sift_mf_apply_updates(Relation rel, const SiftPartitionEntry *ent, SiftPartDesc *parts, const SiftGenMap *map, const SiftManifestEdit *e);
 extern void sift_mf_collect_range(Relation rel, BlockNumber blk, int level, const uint8 *lo, const uint8 *hi, SiftManifestRead *out, int *cap);
