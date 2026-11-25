@@ -6,6 +6,7 @@
 #include "catalog/pg_type_d.h"
 #include "col/am.h"
 #include "col/f2/f2_kll.h"
+#include "col/f2/f2_store_schema.h"
 #include "col/granule/part_int.h"
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
@@ -63,13 +64,13 @@ sift_f2_kll_datum(Oid type, Datum d, double *out)
 			return true;
 		case FLOAT4OID:
 			*out = (double) DatumGetFloat4(d);
-			return !isnan(*out);
+			return isfinite(*out);
 		case FLOAT8OID:
 			*out = DatumGetFloat8(d);
-			return !isnan(*out);
+			return isfinite(*out);
 		case NUMERICOID:
 			*out = DatumGetFloat8(DirectFunctionCall1(numeric_float8_no_overflow, d));
-			return !isnan(*out);
+			return isfinite(*out);
 		case DATEOID:
 			*out = (double) DatumGetDateADT(d);
 			return !DATE_NOT_FINITE(DatumGetDateADT(d));
@@ -110,6 +111,15 @@ spec_columns(const char *sketches, SiftKllSpecCol *cols)
 	return n;
 }
 
+/* A numeric is a sketch's value when the index keeps it as one scaled int64 (numeric(p, s) of at most 18 digits): another one is the image of its digits, which is no number to add */
+static bool
+numeric_sketchable(Form_pg_attribute att)
+{
+	uint8		scale;
+
+	return att->atttypid != NUMERICOID || (sift_col_numeric_scale(att, &scale) && sift_f2_attr_num64(att, &scale));
+}
+
 void
 sift_f2_kll_columns(Relation index, const SiftColRel *r, const char *sketches, SiftF2KllCols *out)
 {
@@ -132,6 +142,9 @@ sift_f2_kll_columns(Relation index, const SiftColRel *r, const char *sketches, S
 		if (!sift_f2_kll_type_ok(TupleDescAttr(desc, att)->atttypid))
 			ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("column \"%.*s\" has a type of no quantile sketch", (int) cols[i].len, cols[i].name),
 							errhint("kll sketches int2, int4, int8, float4, float8, numeric, date, timestamp and timestamptz columns.")));
+		if (!numeric_sketchable(TupleDescAttr(desc, att)))
+			ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("column \"%.*s\" has a numeric type that has no quantile sketch", (int) cols[i].len, cols[i].name),
+							errhint("kll sketches numeric(p, s) columns of at most 18 digits; sift.approx_percentile answers the others exactly.")));
 		leaf = r->first[att + 1];
 		for (at = out->n++; at > 0 && out->col[at - 1] > leaf; at--)
 		{
@@ -192,8 +205,15 @@ sift_f2_kll_add_col(SiftF2KllBuild *b, int slot, const SiftColIn *c, uint32 nrow
 	for (int i = 0; i < c->scale; i++)
 		div *= 10.0;
 	for (uint32 r = 0; r < nrows; r++)
-		if (c->isnull == NULL || !c->isnull[r])
-			sift_kll_add(&b->sk[slot], c->kind == SIFT_CELL_F8 ? c->f[r] : (double) c->i[r] / div);
+	{
+		double		v;
+
+		if (c->isnull != NULL && c->isnull[r])
+			continue;
+		v = c->kind == SIFT_CELL_F8 ? c->f[r] : (double) c->i[r] / div;
+		if (isfinite(v))
+			sift_kll_add(&b->sk[slot], v);
+	}
 }
 
 void
