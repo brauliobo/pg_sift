@@ -484,6 +484,7 @@ orphan_pages_dead(Sweep *s, const ExtVec *orphans)
 			uint64		gen = !PageIsNew(p) && sift_page_layout_ok((const char *) p) ? SiftPageGetOpaque(p)->gen : 0;
 
 			UnlockReleaseBuffer(buf);
+			/* check-complexity: allow bsearch-in-seq-loop: one probe for each orphan page, which is read from disk by the same step */
 			if (gen != 0 && s->ngens > 0 && bsearch(&gen, s->gens, s->ngens, sizeof(uint64), gen_cmp) != NULL)
 				return give_up(s, "an orphan page carries the generation of a live object");
 		}

@@ -497,6 +497,7 @@ col/f2/l0_stage.c
 col/f2/l0_stage.h
 col/f2/l0_stage_flush.c
 col/f2/l0_stage_int.h
+col/f2/l0_stage_test.c
 col/f2/part_format.c
 col/f2/part_format.h
 col/f2/part_read.c
@@ -752,6 +753,7 @@ core/f2/fsm/fsm_int.h
 core/f2/fsm/reclaim.c
 core/f2/fsm/release_guard.c
 core/f2/fsm/slab.c
+core/f2/fsm/sweep.c
 core/f2/fsm_cache.c
 core/f2/io_stream.c
 core/f2/io_stream.h
