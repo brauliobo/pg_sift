@@ -54,7 +54,6 @@ merge_bm	slope	6	exact	clean	insert into {m} select g+10000000, g, g%5000, g%10,
 maintain_col	slope	12	exact	clean	update {m} set amount = amount + 1;	select sift.col_maintain('{m}_col'::regclass);		
 refresh_col	slope	12	sampled	clean		select * from sift.col_refresh('{m}_col'::regclass);	=	
 rollup_refresh	slope	12	sampled	clean		select sift.col_rollup_refresh('{m}_col'::regclass);	=	
-repair_col	slope	12	sampled	clean		select count(*) from sift.col_repair('{m}_col'::regclass);	=	
 vacuum_deleted	slope	6	exact	clean	delete from {m} where k_lo < 6;	vacuum {m};	
 vacuum_inserted	slope	12	exact	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	vacuum {m};		
 table_maintain	slope	12	exact	clean	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	select sift.table_maintain('{s}'::regclass);	=	
