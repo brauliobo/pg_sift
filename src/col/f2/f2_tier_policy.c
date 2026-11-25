@@ -43,7 +43,7 @@ typedef struct CatalogUser
 	bool		pushed;
 } CatalogUser;
 
-static Oid	policies_relid;
+static uint32 policies_relid_hash;	/* the hash of sift.tier_policies in the cache of pg_class */
 
 static void
 catalog_user_enter(CatalogUser *save)
@@ -52,7 +52,7 @@ catalog_user_enter(CatalogUser *save)
 	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
 
 	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for relation %u", relid);
-	policies_relid = relid;
+	policies_relid_hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid));
 	GetUserIdAndSecContext(&save->uid, &save->sec);
 	SetUserIdAndSecContext(((Form_pg_class) GETSTRUCT(tup))->relowner, save->sec | SECURITY_LOCAL_USERID_CHANGE);
 	ReleaseSysCache(tup);
@@ -248,9 +248,11 @@ static const SiftCacheKind policies_kind = {"tier_policies", policies_oldest, po
 
 /* A change to sift.tier_policies, or its drop with the extension, may have given the ids a session opened to other locations */
 static void
-policies_invalidated(Datum arg, Oid relid)
+policies_invalidated(Datum arg, int cacheid, uint32 hashvalue)
 {
-	if (relid == InvalidOid || relid == policies_relid)
+	(void) arg;
+	(void) cacheid;
+	if (hashvalue == 0 || hashvalue == policies_relid_hash)
 		policies_stale = true;
 }
 
@@ -261,7 +263,7 @@ policy_context(void)
 	{
 		policy_cx = sift_cache_create_context("sift cache tier policies");
 		sift_cache_register(&policies_kind);
-		CacheRegisterRelcacheCallback(policies_invalidated, (Datum) 0);
+		CacheRegisterSyscacheCallback(RELOID, policies_invalidated, (Datum) 0);
 	}
 	return policy_cx;
 }

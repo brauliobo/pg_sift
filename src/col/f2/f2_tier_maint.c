@@ -470,7 +470,7 @@ sift_f2_tier_maintain(Relation rel, SiftF2Store *store, FullTransactionId horizo
 	if (has_ttl && ttl_slot < 0)
 		ereport(WARNING, (errmsg("sift: the TTL column \"%s\" of \"%s\" is not a time column of the table: the TTL does not run", ttl.col, RelationGetRelationName(rel))));
 	if (ttl_slot >= 0 && sift_tbl_published(rel))
-		ereport(WARNING, (errmsg("sift: \"%s\" is in a logical publication: its TTL does not run, as its subscribers would keep the rows of the dropped parts", RelationGetRelationName(rel))));
+		ereport(WARNING, (errmsg("sift: \"%s\" is in a logical publication: its TTL does not run", RelationGetRelationName(rel))));
 	else if (ttl_slot >= 0)
 		ttl_step(&s, ttl_slot, sift_tier_cutoff(store, ttl_slot, s.now, ttl.retention_us));
 	if (has_tier && store->spec.time_cols[Max(ttl_slot, 0)] > 0 && ConditionalLockPage(rel, SIFT_F2_MAINT_LOCK_BLKNO, ExclusiveLock))

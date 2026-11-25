@@ -35,7 +35,7 @@ read_tier_chain(Relation rel, const SiftColMetaPageData *meta, int *ntier, BlkVe
 		const SiftTierDirPageData *d = TDIR(p);
 		const char *why = sift_tier_page_check(p, meta->tier_dir_gen);
 
-		if (why != NULL || n + d->nentries > meta->ntier_parts)
+		if (why != NULL || (uint32) n + d->nentries > meta->ntier_parts)
 			SIFT_CORRUPT(rel, "Block %u: %s (the metapage counts %u refs in all).", blk, why != NULL ? why : "the tier directory holds more refs", meta->ntier_parts);
 		memcpy(out + n, d->refs, d->nentries * sizeof(SiftTierPartRef));
 		n += d->nentries;
