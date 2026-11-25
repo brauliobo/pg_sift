@@ -17,6 +17,7 @@
 #include "storage/fd.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -42,6 +43,8 @@ typedef struct CatalogUser
 	bool		pushed;
 } CatalogUser;
 
+static Oid	policies_relid;
+
 static void
 catalog_user_enter(CatalogUser *save)
 {
@@ -49,6 +52,7 @@ catalog_user_enter(CatalogUser *save)
 	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
 
 	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for relation %u", relid);
+	policies_relid = relid;
 	GetUserIdAndSecContext(&save->uid, &save->sec);
 	SetUserIdAndSecContext(((Form_pg_class) GETSTRUCT(tup))->relowner, save->sec | SECURITY_LOCAL_USERID_CHANGE);
 	ReleaseSysCache(tup);
@@ -63,6 +67,45 @@ catalog_user_leave(const CatalogUser *save)
 	if (save->pushed)
 		PopActiveSnapshot();
 	SetUserIdAndSecContext(save->uid, save->sec);
+}
+
+typedef struct OwnerSql
+{
+	const char *sql;
+	int			nargs;
+	const Oid  *types;
+	const Datum *values;
+	const char *nulls;
+	bool		read_only;
+	long		limit;
+	int			expect;			/* the SPI_OK_ code of the statement */
+	void		(*rows) (void *out);	/* reads SPI_tuptable while the connection is open */
+	void	   *out;
+} OwnerSql;
+
+/* One statement on the policy tables as their owner: the user of the caller, the snapshot and the SPI connection are back whatever the statement does */
+static void
+owner_execute(const OwnerSql *q)
+{
+	CatalogUser save;
+
+	catalog_user_enter(&save);
+	PG_TRY();
+	{
+		int			rc;
+
+		SPI_connect();
+		rc = SPI_execute_with_args(q->sql, q->nargs, (Oid *) q->types, (Datum *) q->values, q->nulls, q->read_only, q->limit);
+		SIFT_INVARIANT(rc == q->expect, "sift: could not run a statement on the policy tables");
+		if (q->rows != NULL)
+			q->rows(q->out);
+	}
+	PG_FINALLY();
+	{
+		SPI_finish();
+		catalog_user_leave(&save);
+	}
+	PG_END_TRY();
 }
 
 static char *
@@ -82,39 +125,41 @@ int_col(int col)
 	return DatumGetInt64(d);
 }
 
-static bool
-policy_row(const char *where, Oid argtype, Datum arg, SiftTierPolicy *out)
+typedef struct PolicyRead
 {
-	MemoryContext cx = CurrentMemoryContext;
-	CatalogUser save;
-	StringInfoData sql;
-	int			rc;
-	bool		found,
-				isnull;
+	MemoryContext cx;
+	SiftTierPolicy *out;
+	bool		found;
+} PolicyRead;
 
-	initStringInfo(&sql);
-	appendStringInfoString(&sql, POLICY_SELECT);
-	appendStringInfoString(&sql, where);
-	catalog_user_enter(&save);
-	SPI_connect();
-	rc = SPI_execute_with_args(sql.data, 1, &argtype, &arg, NULL, true, 1);
-	SIFT_INVARIANT(rc == SPI_OK_SELECT, "sift: could not read sift.tier_policies");
-	found = SPI_processed == 1;
-	if (found)
-	{
-		*out = (SiftTierPolicy) {
+static void
+read_policy(void *arg)
+{
+	PolicyRead *r = arg;
+	bool		isnull;
+
+	r->found = SPI_processed == 1;
+	if (r->found)
+		*r->out = (SiftTierPolicy) {
 			.policy_id = (uint32) DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1, &isnull)),
-			.uri = text_col(cx, 2, &isnull),
-			.endpoint = text_col(cx, 3, &isnull),
+			.uri = text_col(r->cx, 2, &isnull),
+			.endpoint = text_col(r->cx, 3, &isnull),
 			.move_after_us = int_col(4),
 			.cache_mb = (uint32) DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 5, &isnull)),
 			.scope_id = (uint64) int_col(6)
 		};
-	}
-	SPI_finish();
-	catalog_user_leave(&save);
-	pfree(sql.data);
-	return found;
+}
+
+static bool
+policy_row(const char *where, Oid argtype, Datum arg, SiftTierPolicy *out)
+{
+	PolicyRead	r = {CurrentMemoryContext, out, false};
+	OwnerSql	q = {.sql = psprintf("%s%s", POLICY_SELECT, where),.nargs = 1,.types = &argtype,.values = &arg,.read_only = true,.limit = 1,.expect = SPI_OK_SELECT,
+	.rows = read_policy,.out = &r};
+
+	owner_execute(&q);
+	pfree((char *) q.sql);
+	return r.found;
 }
 
 bool
@@ -123,27 +168,35 @@ sift_tier_policy_of(Relation rel, SiftTierPolicy *out)
 	return policy_row("relid::oid = $1", OIDOID, ObjectIdGetDatum(RelationGetRelid(rel)), out);
 }
 
+typedef struct TtlRead
+{
+	MemoryContext cx;
+	SiftTtlPolicy *out;
+	bool		found;
+} TtlRead;
+
+static void
+read_ttl(void *arg)
+{
+	TtlRead    *r = arg;
+	bool		isnull;
+
+	r->found = SPI_processed == 1;
+	if (r->found)
+		*r->out = (SiftTtlPolicy) {.col = text_col(r->cx, 1, &isnull),.retention_us = int_col(2)};
+}
+
 bool
 sift_ttl_policy_of(Relation rel, SiftTtlPolicy *out)
 {
-	MemoryContext cx = CurrentMemoryContext;
 	Datum		arg = ObjectIdGetDatum(RelationGetRelid(rel));
 	Oid			argtype = OIDOID;
-	CatalogUser save;
-	int			rc;
-	bool		found,
-				isnull;
+	TtlRead		r = {CurrentMemoryContext, out, false};
+	OwnerSql	q = {.sql = "SELECT col, (extract(epoch FROM retention) * 1000000)::int8 FROM sift.ttl_policies WHERE relid::oid = $1",.nargs = 1,.types = &argtype,.values = &arg,
+	.read_only = true,.limit = 1,.expect = SPI_OK_SELECT,.rows = read_ttl,.out = &r};
 
-	catalog_user_enter(&save);
-	SPI_connect();
-	rc = SPI_execute_with_args("SELECT col, (extract(epoch FROM retention) * 1000000)::int8 FROM sift.ttl_policies WHERE relid::oid = $1", 1, &argtype, &arg, NULL, true, 1);
-	SIFT_INVARIANT(rc == SPI_OK_SELECT, "sift: could not read sift.ttl_policies");
-	found = SPI_processed == 1;
-	if (found)
-		*out = (SiftTtlPolicy) {.col = text_col(cx, 1, &isnull),.retention_us = int_col(2)};
-	SPI_finish();
-	catalog_user_leave(&save);
-	return found;
+	owner_execute(&q);
+	return r.found;
 }
 
 /* ---- what a session keeps ---- */
@@ -160,6 +213,7 @@ typedef struct Opened
 static Opened *opened;
 static int	nopened;
 static MemoryContext policy_cx;
+static bool policies_stale;
 
 /* What a policy opened is in use by the statement that asked for it, so the budget never drops it: the setting that keeps nothing does, between statements */
 static uint64
@@ -192,6 +246,14 @@ policies_evict_all(void)
 
 static const SiftCacheKind policies_kind = {"tier_policies", policies_oldest, policies_evict_one, policies_evict_all};
 
+/* A change to sift.tier_policies, or its drop with the extension, may have given the ids a session opened to other locations */
+static void
+policies_invalidated(Datum arg, Oid relid)
+{
+	if (relid == InvalidOid || relid == policies_relid)
+		policies_stale = true;
+}
+
 static MemoryContext
 policy_context(void)
 {
@@ -199,26 +261,63 @@ policy_context(void)
 	{
 		policy_cx = sift_cache_create_context("sift cache tier policies");
 		sift_cache_register(&policies_kind);
+		CacheRegisterRelcacheCallback(policies_invalidated, (Datum) 0);
 	}
 	return policy_cx;
 }
 
-static Opened *
-opened_for(const SiftTierPolicy *p)
+static bool
+same_location(const SiftTierPolicy *a, const SiftTierPolicy *b)
 {
+	return a->scope_id == b->scope_id && strcmp(a->uri, b->uri) == 0 && (a->endpoint == NULL ? b->endpoint == NULL : b->endpoint != NULL && strcmp(a->endpoint, b->endpoint) == 0);
+}
+
+/*
+ * The catalog says again what each id a session opened names. An id that names another location now (DROP EXTENSION and CREATE EXTENSION start the ids again at 1) is another policy: what was
+ * opened for the old one stays with the session, as a statement may still read through it, and the id is opened afresh.
+ */
+static void
+revalidate(void)
+{
+	policies_stale = false;
 	for (int i = 0; i < nopened; i++)
-		if (opened[i].policy_id == p->policy_id)
+	{
+		SiftTierPolicy now;
+		bool		same = policy_row("policy_id = $1", INT4OID, Int32GetDatum((int32) opened[i].policy_id), &now) && same_location(&now, &opened[i].policy);
+
+		if (!same)
+			opened[i] = (Opened) {.policy_id = opened[i].policy_id};
+	}
+}
+
+static Opened *
+opened_for(uint32 policy_id)
+{
+	if (policies_stale)
+		revalidate();
+	for (int i = 0; i < nopened; i++)
+		if (opened[i].policy_id == policy_id)
 			return &opened[i];
 	opened = opened == NULL ? MemoryContextAlloc(policy_context(), sizeof(Opened)) : repalloc(opened, (nopened + 1) * sizeof(Opened));
-	opened[nopened] = (Opened) {.policy_id = p->policy_id};
+	opened[nopened] = (Opened) {.policy_id = policy_id};
 	return &opened[nopened++];
 }
 
-/* The policy a ref names, read once per session: what an id names never changes */
+static void
+keep_policy(Opened *o, const SiftTierPolicy *p)
+{
+	MemoryContext cx = policy_context();
+
+	o->policy = (SiftTierPolicy) {.policy_id = p->policy_id,.uri = MemoryContextStrdup(cx, p->uri),.endpoint = p->endpoint != NULL ? MemoryContextStrdup(cx, p->endpoint) : NULL,
+	.move_after_us = p->move_after_us,.cache_mb = p->cache_mb,.scope_id = p->scope_id};
+	o->loaded = true;
+}
+
+/* The policy a ref names, read once per session: what an id names never changes while the table of the policies stands */
 void
 sift_tier_policy_by_id(Relation rel, uint32 policy_id, SiftTierPolicy *out)
 {
-	Opened	   *o = opened_for(&(SiftTierPolicy) {.policy_id = policy_id});
+	Opened	   *o = opened_for(policy_id);
 
 	if (!o->loaded)
 	{
@@ -236,9 +335,11 @@ sift_tier_policy_by_id(Relation rel, uint32 policy_id, SiftTierPolicy *out)
 SiftTierBackend *
 sift_tier_backend_try(const SiftTierPolicy *p, SiftTierErr *err)
 {
-	Opened	   *o = opened_for(p);
+	Opened	   *o = opened_for(p->policy_id);
 	MemoryContext old;
 
+	if (!o->loaded)
+		keep_policy(o, p);
 	if (o->backend == NULL)
 	{
 		old = MemoryContextSwitchTo(policy_context());
@@ -269,11 +370,13 @@ make_dir(const char *path)
 SiftTierCache *
 sift_tier_cache_try(const SiftTierPolicy *p, SiftTierErr *err)
 {
-	Opened	   *o = opened_for(p);
+	Opened	   *o = opened_for(p->policy_id);
 	char		root[MAXPGPATH],
 				dir[MAXPGPATH];
 	MemoryContext old;
 
+	if (!o->loaded)
+		keep_policy(o, p);
 	if (o->cache == NULL)
 	{
 		snprintf(root, sizeof(root), "%s/pg_sift_tier", DataDir);
@@ -371,15 +474,9 @@ sift_tier_cutoff(const SiftF2Store *store, int slot, TimestampTz now, int64 span
 static void
 write_as_owner(const char *sql, int nargs, const Oid *types, const Datum *values, const char *nulls, int expect)
 {
-	CatalogUser save;
-	int			rc;
+	OwnerSql	q = {.sql = sql,.nargs = nargs,.types = types,.values = values,.nulls = nulls,.expect = expect};
 
-	catalog_user_enter(&save);
-	SPI_connect();
-	rc = SPI_execute_with_args(sql, nargs, (Oid *) types, (Datum *) values, nulls, false, 0);
-	SIFT_INVARIANT(rc == expect, "sift: could not write the policy of a relation");
-	SPI_finish();
-	catalog_user_leave(&save);
+	owner_execute(&q);
 }
 
 void
@@ -430,30 +527,38 @@ sift_ttl_policy_delete(Relation rel)
 	write_as_owner("DELETE FROM sift.ttl_policies WHERE relid::oid = $1", 1, types, values, NULL, SPI_OK_DELETE);
 }
 
-SiftTierPolicyRow *
-sift_tier_policy_all(int *n)
+typedef struct AllRead
 {
-	MemoryContext cx = CurrentMemoryContext;
+	MemoryContext cx;
 	SiftTierPolicyRow *rows;
-	CatalogUser save;
-	int			rc;
+	int			n;
+} AllRead;
 
-	catalog_user_enter(&save);
-	SPI_connect();
-	rc = SPI_execute("SELECT relid::oid, uri, scope_id FROM sift.tier_policies ORDER BY policy_id", true, 0);
-	SIFT_INVARIANT(rc == SPI_OK_SELECT, "sift: could not read sift.tier_policies");
-	*n = (int) SPI_processed;
-	rows = MemoryContextAlloc(cx, Max(*n, 1) * sizeof(SiftTierPolicyRow));
-	for (int i = 0; i < *n; i++)
+static void
+read_all(void *arg)
+{
+	AllRead    *r = arg;
+
+	r->n = (int) SPI_processed;
+	r->rows = MemoryContextAlloc(r->cx, Max(r->n, 1) * sizeof(SiftTierPolicyRow));
+	for (int i = 0; i < r->n; i++)
 	{
 		bool		isnull;
 		HeapTuple	t = SPI_tuptable->vals[i];
 
-		rows[i].relid = DatumGetObjectId(SPI_getbinval(t, SPI_tuptable->tupdesc, 1, &isnull));
-		rows[i].uri = MemoryContextStrdup(cx, TextDatumGetCString(SPI_getbinval(t, SPI_tuptable->tupdesc, 2, &isnull)));
-		rows[i].scope_id = (uint64) DatumGetInt64(SPI_getbinval(t, SPI_tuptable->tupdesc, 3, &isnull));
+		r->rows[i].relid = DatumGetObjectId(SPI_getbinval(t, SPI_tuptable->tupdesc, 1, &isnull));
+		r->rows[i].uri = MemoryContextStrdup(r->cx, TextDatumGetCString(SPI_getbinval(t, SPI_tuptable->tupdesc, 2, &isnull)));
+		r->rows[i].scope_id = (uint64) DatumGetInt64(SPI_getbinval(t, SPI_tuptable->tupdesc, 3, &isnull));
 	}
-	SPI_finish();
-	catalog_user_leave(&save);
-	return rows;
+}
+
+SiftTierPolicyRow *
+sift_tier_policy_all(int *n)
+{
+	AllRead		r = {CurrentMemoryContext, NULL, 0};
+	OwnerSql	q = {.sql = "SELECT relid::oid, uri, scope_id FROM sift.tier_policies ORDER BY policy_id",.read_only = true,.expect = SPI_OK_SELECT,.rows = read_all,.out = &r};
+
+	owner_execute(&q);
+	*n = r.n;
+	return r.rows;
 }
