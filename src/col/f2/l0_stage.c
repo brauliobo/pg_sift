@@ -755,6 +755,15 @@ sift_stage_peek(Relation rel)
 	return stage_of(rel);
 }
 
+void
+sift_stage_rebind(Relation rel, const RelFileLocator *locator)
+{
+	SiftTxnStage *st = stage_of(rel);
+
+	if (st != NULL)
+		st->locator = *locator;
+}
+
 uint64 *
 sift_stage_dead(Relation rel, Snapshot snap, int *n)
 {

@@ -153,6 +153,9 @@ extern void sift_stage_rows_among(Relation rel, const uint64 *tids, int n, bool 
 /* What the transaction staged for the relation so far (NULL: nothing) */
 extern const SiftTxnStage *sift_stage_peek(Relation rel);
 
+/* The file the relation is copied to: what the transaction staged for it goes on under the new locator */
+extern void sift_stage_rebind(Relation rel, const RelFileLocator *locator);
+
 /* Writes everything the transaction staged for the relation; the rows staged afterwards start a new stage */
 extern void sift_stage_flush(Relation rel);
 #ifdef SIFT_TESTING
