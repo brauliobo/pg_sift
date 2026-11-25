@@ -27,6 +27,7 @@
 #include "col/f2/f2_store_schema.h"
 #include "core/f2/unit_queue.h"
 #include "core/cachebudget.h"
+#include "core/maint_pacer.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_gcache.h"
 #include "table/f2/f2_slot.h"
@@ -237,6 +238,9 @@ typedef struct SiftTblF2Scan
 	SiftTblF2Page *page;
 	BlockNumber sample_blk;
 	OffsetNumber sample_max;
+
+	bool		fg_sampled;		/* the pacer of the maintenance workers times this scan: it ends with the scan */
+	TimestampTz fg_t0;
 } SiftTblF2Scan;
 
 StaticAssertDecl(offsetof(SiftTblF2Scan, ops) == offsetof(SiftTblScanHeader, ops), "a scan starts with SiftTblScanHeader");
@@ -327,6 +331,7 @@ sift_tbl_f2_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKe
 	sift_tbl_f2_vis_begin(&s->vis, rel, snapshot);
 	s->delta = sift_col_delta_scan_begin(rel, &s->vis, s->cx);
 	sift_tbl_f2_predicate_scan(rel, snapshot);
+	s->fg_sampled = (flags & SO_TYPE_ANALYZE) == 0 && sift_pacer_fg_sample_begin(&s->fg_t0);
 	if (pscan != NULL)
 	{
 		s->par = (SiftTblF2Parallel *) pscan;
@@ -377,6 +382,8 @@ sift_tbl_f2_scan_end(TableScanDesc scan)
 {
 	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
 
+	if (s->fg_sampled)
+		sift_pacer_record_foreground(GetCurrentTimestamp() - s->fg_t0);
 	scan_release(s);
 #if PG_VERSION_NUM >= 180000
 	if ((scan->rs_flags & SO_TYPE_BITMAPSCAN) != 0 && !tbm_exhausted(&scan->st.rs_tbmiterator))
