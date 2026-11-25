@@ -105,6 +105,19 @@ require_no_remote_parts(Relation rel, const char *what)
 						errhint("A part leaves object storage when it expires (sift.set_ttl on a table) or when the relation is rewritten; sift.tier_status lists them.")));
 }
 
+/* The location of a policy is left to nothing the standbys may still read: a sweep that finds objects of the relation that wait for the end of their grace refuses */
+static void
+require_store_reclaimed(Relation rel, const SiftTierPolicy *old)
+{
+	int			left = sift_f2_tier_reclaim(rel, old);
+
+	if (left < 0)
+		ereport(ERROR, (errcode(ERRCODE_LOCK_NOT_AVAILABLE), errmsg("the maintenance of \"%s\" is running", RelationGetRelationName(rel)), errhint("Try again in a moment.")));
+	if (left > 0)
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("the object store of \"%s\" holds %d objects of parts that left the relation", RelationGetRelationName(rel), left),
+						errhint("A standby or a recovery may still read them; they are deleted once the grace of the standbys is over: try again then.")));
+}
+
 /* A location this build can use now: the scheme, the characters and, for an S3 or R2 store, libcurl and the credentials */
 static void
 check_location(const char *uri, const char *endpoint)
@@ -170,6 +183,7 @@ sift_set_tier_policy(PG_FUNCTION_ARGS)
 	else
 	{
 		require_no_remote_parts(rel, "the location of the policy cannot change until they are gone");
+		require_store_reclaimed(rel, &old);
 		sift_tier_policy_delete(rel);
 		sift_tier_policy_put(rel, uri, move_after, endpoint, new_scope_id());
 	}
@@ -189,6 +203,7 @@ sift_clear_tier_policy(PG_FUNCTION_ARGS)
 	if (had)
 	{
 		require_no_remote_parts(rel, "the policy cannot be cleared until they are gone");
+		require_store_reclaimed(rel, &old);
 		sift_tier_policy_delete(rel);
 	}
 	relation_close(rel, NoLock);

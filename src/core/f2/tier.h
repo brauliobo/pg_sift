@@ -77,6 +77,9 @@ sift_tier_ref_expire(const SiftTierPartRef *ref, TimestampTz now, int64 grace_us
 
 #define SIFT_TIER_DELETE_GRACE_US	(INT64CONST(3600) * 1000000)
 
+/* How long the object of a part that left the relation stays in the store, and with it every object a rewrite of the relation left: a standby that replays the change, or a recovery, may read it */
+extern int64 sift_tier_grace_us(void);
+
 /* The most refs a chain holds: the metapage counts them in a uint32 and the manifest bounds the parts of a relation far below it */
 #define SIFT_TIER_MAX_REFS		UINT32_C(16777216)
 

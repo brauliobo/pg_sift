@@ -78,6 +78,12 @@ extern int64 sift_tier_cutoff(const SiftF2Store *store, int slot, TimestampTz no
  */
 extern void sift_f2_tier_maintain(Relation rel, SiftF2Store *store, FullTransactionId horizon);
 
+/*
+ * What the object store of the policy of the relation still holds of it that no commit names, after one sweep: the objects that were just marked or wait for the end of their grace (what a rewrite
+ * of the relation left for the standbys). -1 when the maintenance of the relation runs. An ERROR when the store cannot be swept.
+ */
+extern int	sift_f2_tier_reclaim(Relation rel, const SiftTierPolicy *pol);
+
 /* Takes the SIFT_PART_EXT_EXPIRED mark off every part (sift.set_ttl with a NULL retention) */
 extern void sift_f2_ttl_unmark_all(Relation rel);
 

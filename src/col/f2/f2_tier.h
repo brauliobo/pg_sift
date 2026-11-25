@@ -312,10 +312,28 @@ extern void sift_tier_remote_close(SiftTierRemote *r);
 /* Bytes [off, off + len) of the stream. Each range of the object that holds any of them is read whole and matched with its checksum once per open part: bytes of the store that differ are SIFT_TIER_E_CORRUPT and are not kept in the cache */
 extern SiftTierStatus sift_tier_remote_read(SiftTierRemote *r, uint64 off, uint64 len, void *dst, SiftTierErr *err);
 
+/* When the sweep may delete: the clock and the WAL position now, the grace of the standbys, and the oldest WAL position a replication slot still needs (0: no slot keeps any) */
+typedef struct SiftTierSweepGate
+{
+	int64		now_s;
+	int64		grace_s;
+	uint64		lsn;
+	uint64		slots_lsn;
+} SiftTierSweepGate;
+
+typedef struct SiftTierSweepTally
+{
+	int			deleted;		/* objects (and the temporary files of a store that is a directory) that were deleted */
+	int			marked;			/* objects no commit names that got their mark now */
+	int			waiting;		/* objects with a mark whose grace is not over */
+} SiftTierSweepTally;
+
 /*
- * Deletes the objects of the relation (scope_id) that the directory does not name: what an upload that crashed before its commit leaves, and the temporary files of a store that is a directory.
- * Runs under the maintenance lock, which every upload holds too, so an object that is not named is not one in flight. Returns the count in *ndeleted.
+ * The objects of the relation (scope_id) that the directory does not name: what an upload that crashed before its commit leaves, and what a rewrite of the relation (TRUNCATE, VACUUM FULL,
+ * REINDEX) left that a standby or a recovery may still read. The first sweep that finds such an object marks it, a later one deletes it and its mark once the grace is over and every replication slot
+ * is past the mark (gate); the temporary files of a store that is a directory go at once. Runs under the maintenance lock, which every upload holds too, so an object that is not named is
+ * not one in flight.
  */
-extern SiftTierStatus sift_tier_sweep_orphans(SiftTierBackend *be, uint64 scope_id, const SiftTierPartRef *refs, int nrefs, int *ndeleted, SiftTierErr *err);
+extern SiftTierStatus sift_tier_sweep_orphans(SiftTierBackend *be, uint64 scope_id, const SiftTierPartRef *refs, int nrefs, const SiftTierSweepGate *gate, SiftTierSweepTally *tally, SiftTierErr *err);
 
 #endif							/* SIFT_F2_TIER_H */

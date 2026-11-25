@@ -9,6 +9,7 @@
 #include "postgres.h"
 
 #include "access/transam.h"
+#include "access/xlog.h"
 #include "storage/lmgr.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
@@ -359,18 +360,51 @@ delete_due(const Step *s, const TierRun *t)
 	return true;
 }
 
+static SiftTierSweepGate
+sweep_gate(const Step *s)
+{
+	return (SiftTierSweepGate) {.now_s = s->now / USECS_PER_SEC,.grace_s = sift_tier_grace_us() / USECS_PER_SEC,.lsn = GetXLogInsertRecPtr(),.slots_lsn = XLogGetReplicationSlotMinimumLSN()};
+}
+
+static SiftTierStatus
+sweep_store(const Step *s, const TierRun *t, SiftTierSweepTally *tally, SiftTierErr *err)
+{
+	int			n;
+	const SiftTierPartRef *refs = sift_tier_refs(s->rel, &n);
+	SiftTierSweepGate gate = sweep_gate(s);
+
+	return sift_tier_sweep_orphans(t->be, t->pol.scope_id, refs, n, &gate, tally, err);
+}
+
 static void
 sweep(const Step *s, const TierRun *t)
 {
-	int			n,
-				ndeleted = 0;
-	const SiftTierPartRef *refs = sift_tier_refs(s->rel, &n);
+	SiftTierSweepTally tally;
 	SiftTierErr err = {0};
 
-	if (sift_tier_sweep_orphans(t->be, t->pol.scope_id, refs, n, &ndeleted, &err) != SIFT_TIER_OK)
+	if (sweep_store(s, t, &tally, &err) != SIFT_TIER_OK)
 		warn_store("cannot sweep the object store", &err);
-	else if (ndeleted > 0)
-		ereport(LOG, (errmsg("sift: removed %d objects of \"%s\" that no commit names", ndeleted, RelationGetRelationName(s->rel))));
+	else if (tally.deleted > 0 || tally.marked > 0)
+		ereport(LOG, (errmsg("sift: \"%s\": %d objects that no commit names were deleted, %d are kept for the standbys", RelationGetRelationName(s->rel), tally.deleted,
+							 tally.marked + tally.waiting)));
+}
+
+int
+sift_f2_tier_reclaim(Relation rel, const SiftTierPolicy *pol)
+{
+	Step		s = {.rel = rel,.now = GetCurrentTimestamp()};
+	TierRun		t = {.pol = *pol,.be = sift_tier_backend(pol)};
+	SiftTierSweepTally tally;
+	SiftTierErr err = {0};
+	SiftTierStatus st;
+
+	if (!ConditionalLockPage(rel, SIFT_F2_MAINT_LOCK_BLKNO, ExclusiveLock))
+		return -1;
+	st = sweep_store(&s, &t, &tally, &err);
+	UnlockPage(rel, SIFT_F2_MAINT_LOCK_BLKNO, ExclusiveLock);
+	if (st != SIFT_TIER_OK)
+		sift_tier_raise(st, &err, "cannot sweep the object store");
+	return tally.marked + tally.waiting;
 }
 
 static void

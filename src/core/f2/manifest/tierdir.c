@@ -91,11 +91,11 @@ sift_mf_apply_tier(SiftColMetaPageData *m, const Change *ch)
 	m->common.compat_flags = ch->ntier_parts > 0 ? (m->common.compat_flags | SIFT_COMPAT_REMOTE_PARTS) : (m->common.compat_flags & ~SIFT_COMPAT_REMOTE_PARTS);
 }
 
-/* The longest a standby may be behind the primary in replaying the drop of a part before its object must still be there */
-static int64
-delete_grace_us(void)
+/* How long an object that left the relation stays: a day at least, and as long as a standby may be held back in replaying the change that made it leave */
+int64
+sift_tier_grace_us(void)
 {
-	return max_standby_streaming_delay < 0 ? SIFT_TIER_DELETE_GRACE_US * 24 : Max(SIFT_TIER_DELETE_GRACE_US, (int64) max_standby_streaming_delay * 1000);
+	return max_standby_streaming_delay < 0 ? SIFT_TIER_DELETE_GRACE_US * 24 * 7 : Max(SIFT_TIER_DELETE_GRACE_US * 24, (int64) max_standby_streaming_delay * 1000);
 }
 
 /*
@@ -122,7 +122,7 @@ build_tier_edit(Relation rel, Tree *t, Change *ch, const SiftManifestEdit *e, co
 
 		if (live == NULL || (live->flags & SIFT_TIER_DELETE_PENDING))
 			SIFT_CORRUPT(rel, "Part %llu is in object storage and the tier directory has no live ref for it.", (unsigned long long) expire_gens[i]);
-		set[nset++] = sift_tier_ref_expire(live, now, delete_grace_us());
+		set[nset++] = sift_tier_ref_expire(live, now, sift_tier_grace_us());
 	}
 	nall = sift_tier_refs_apply(all, cur, n, set, nset, e->drop_tier_gens, e->ndrop_tier);
 	why = nall < 0 ? "a ref is added twice or a ref that is dropped is not there" : nall > (int) SIFT_TIER_MAX_REFS ? "the directory would hold too many refs" : sift_tier_refs_check(all, nall);

@@ -378,7 +378,7 @@ ref_set_has(const RefSet *set, uint32 part_id, uint64 part_gen)
 
 /* The object a key names of a scope: the key sift_tier_object_key makes of that partition and generation, and no other spelling of them */
 static bool
-key_names_part(const RefSet *set, uint64 scope_id, const char *key)
+key_part(uint64 scope_id, const char *key, uint32 *part_id, uint64 *part_gen)
 {
 	char		canon[160];
 	char	   *end;
@@ -392,26 +392,143 @@ key_names_part(const RefSet *set, uint64 scope_id, const char *key)
 	if (id > PG_UINT32_MAX || end[0] != '-' || end[1] != 'g' || !isdigit((unsigned char) end[2]))
 		return false;
 	gen = strtoull(end + 2, &end, 10);
-	return sift_tier_object_key(canon, sizeof(canon), scope_id, (uint32) id, gen) > 0 && strcmp(canon, key) == 0 && ref_set_has(set, (uint32) id, gen);
+	if (sift_tier_object_key(canon, sizeof(canon), scope_id, (uint32) id, gen) <= 0 || strcmp(canon, key) != 0)
+		return false;
+	*part_id = (uint32) id;
+	*part_gen = gen;
+	return true;
+}
+
+/*
+ * The mark of an object that no commit names, "<object key>.orphan-<seconds>-<lsn>" (hex): when a sweep first found it and where the WAL was. The object is deleted by the sweep that finds the
+ * mark old enough and every replication slot past that position, so that a standby that replays the rewrite of the relation, or a recovery that was started before it, still finds the object.
+ */
+#define MARK_INFIX		".orphan-"
+
+static const char empty_sha256[] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+static bool
+mark_parse(const char *key, size_t *objlen, int64 *seconds, uint64 *lsn)
+{
+	const char *at = strstr(key, ".siftpart" MARK_INFIX);
+	unsigned long long s,
+				l;
+	int			len = 0;
+
+	if (at == NULL)
+		return false;
+	*objlen = (at - key) + strlen(".siftpart");
+	if (sscanf(at + strlen(".siftpart" MARK_INFIX), "%llx-%llx%n", &s, &l, &len) != 2 || at[strlen(".siftpart" MARK_INFIX) + len] != '\0')
+		return false;
+	*seconds = (int64) s;
+	*lsn = (uint64) l;
+	return true;
+}
+
+static int
+key_cmp(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *) a, *(const char *const *) b);
+}
+
+/* Whether a key of the sorted list starts with prefix */
+static bool
+has_prefixed(char *const *keys, int n, const char *prefix)
+{
+	int			lo = 0,
+				hi = n;
+
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo) / 2;
+
+		if (strcmp(keys[mid], prefix) < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo < n && strncmp(keys[lo], prefix, strlen(prefix)) == 0;
+}
+
+static bool
+mark_due(const SiftTierSweepGate *g, int64 seconds, uint64 lsn)
+{
+	return g->now_s - seconds >= g->grace_s && (g->slots_lsn == 0 || g->slots_lsn >= lsn);
+}
+
+static SiftTierStatus
+mark_put(SiftTierBackend *be, const char *objkey, const SiftTierSweepGate *g, SiftTierErr *err)
+{
+	char		key[240];
+	SiftTierSrc empty = {0};
+	SiftTierObjInfo info;
+
+	snprintf(key, sizeof(key), "%s" MARK_INFIX "%llx-%llx", objkey, (unsigned long long) g->now_s, (unsigned long long) g->lsn);
+	return be->ops->put(be, key, &empty, empty_sha256, &info, err);
+}
+
+/* A key of the scope that is not an object: a mark, whose object goes with it when its time has come, and anything else a store may hold of an upload that did not finish */
+static SiftTierStatus
+sweep_other(SiftTierBackend *be, uint64 scope_id, const RefSet *named, char **keys, int n, int i, const SiftTierSweepGate *g, SiftTierSweepTally *t, SiftTierErr *err)
+{
+	size_t		objlen;
+	int64		seconds;
+	uint64		lsn;
+	uint32		id;
+	uint64		gen;
+	char		objkey[160];
+	char	  **found;
+
+	if (!mark_parse(keys[i], &objlen, &seconds, &lsn) || objlen >= sizeof(objkey))
+	{
+		SiftTierStatus st = be->ops->del(be, keys[i], err);
+
+		t->deleted += st == SIFT_TIER_OK;
+		return st;
+	}
+	snprintf(objkey, sizeof(objkey), "%.*s", (int) objlen, keys[i]);
+	found = bsearch(&(const char *) {objkey}, keys, n, sizeof(char *), key_cmp);
+	if (found == NULL || !key_part(scope_id, objkey, &id, &gen) || ref_set_has(named, id, gen))
+		return be->ops->del(be, keys[i], err);
+	if (!mark_due(g, seconds, lsn))
+	{
+		t->waiting++;
+		return SIFT_TIER_OK;
+	}
+	if (be->ops->del(be, objkey, err) != SIFT_TIER_OK)
+		return err->code;
+	t->deleted++;
+	return be->ops->del(be, keys[i], err);
 }
 
 SiftTierStatus
-sift_tier_sweep_orphans(SiftTierBackend *be, uint64 scope_id, const SiftTierPartRef *refs, int nrefs, int *ndeleted, SiftTierErr *err)
+sift_tier_sweep_orphans(SiftTierBackend *be, uint64 scope_id, const SiftTierPartRef *refs, int nrefs, const SiftTierSweepGate *gate, SiftTierSweepTally *tally, SiftTierErr *err)
 {
 	char		prefix[32];
 	KeyList		l = {0};
 	SiftTierStatus st;
 	RefSet		named;
 
-	*ndeleted = 0;
+	*tally = (SiftTierSweepTally) {0};
 	snprintf(prefix, sizeof(prefix), "r%016llx/", (unsigned long long) scope_id);
 	ref_set_build(&named, refs, nrefs);
 	st = be->ops->list(be, prefix, keylist_add, &l, err);
+	if (l.n > 1)
+		qsort(l.keys, l.n, sizeof(char *), key_cmp);
 	for (int i = 0; i < l.n && st == SIFT_TIER_OK; i++)
 	{
+		uint32		id;
+		uint64		gen;
+		char		with_mark[200];
+
 		CHECK_FOR_INTERRUPTS();
-		if (!key_names_part(&named, scope_id, l.keys[i]) && (st = be->ops->del(be, l.keys[i], err)) == SIFT_TIER_OK)
-			(*ndeleted)++;
+		if (!key_part(scope_id, l.keys[i], &id, &gen))
+			st = sweep_other(be, scope_id, &named, l.keys, l.n, i, gate, tally, err);
+		else if (!ref_set_has(&named, id, gen) && snprintf(with_mark, sizeof(with_mark), "%s" MARK_INFIX, l.keys[i]) > 0 && !has_prefixed(l.keys, l.n, with_mark))
+		{
+			st = mark_put(be, l.keys[i], gate, err);
+			tally->marked += st == SIFT_TIER_OK;
+		}
 	}
 	pfree(named.slots);
 	for (int i = 0; i < l.n; i++)
