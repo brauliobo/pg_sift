@@ -114,10 +114,10 @@ StaticAssertDecl(sizeof(WorkerExtra) <= BGW_EXTRALEN, "bgw_extra holds the devic
 
 /* ---- running a job on a device: the worker's, or the backend's own ---- */
 
-static void
-interrupt_check(void)
+static bool
+query_cancelled(void)
 {
-	CHECK_FOR_INTERRUPTS();
+	return QueryCancelPending || ProcDiePending;
 }
 
 static void
@@ -287,13 +287,11 @@ wake(const SiftGpuSlot *slot)
 	SetLatch(&GetPGProcByNumber(slot->owner_procno)->procLatch);
 }
 
-static void
-worker_interrupt(void)
+static bool
+worker_cancelled(void)
 {
 	heartbeat(worker->shm);
-	if (pg_atomic_read_u32((pg_atomic_uint32 *) &worker->cur->cancelled) != 0)
-		ereport(ERROR, (errcode(ERRCODE_QUERY_CANCELED), errmsg("sift: the job of a backend that left is dropped")));
-	CHECK_FOR_INTERRUPTS();
+	return pg_atomic_read_u32((pg_atomic_uint32 *) &worker->cur->cancelled) != 0 || ProcDiePending;
 }
 
 static void
@@ -413,7 +411,7 @@ serve_run(WorkerState *w, SiftGpuSlot *s, char *stage)
 {
 	SiftVkJob	job = wire_unpack(stage, &s->job);
 	SiftVkResult res;
-	SiftVkStatus st = sift_vk_run(w->vk, &job, worker_interrupt, &res);
+	SiftVkStatus st = sift_vk_run(w->vk, &job, worker_cancelled, &res);
 	uint64		acc = (uint64) res.acc_words * 8,
 				cand = (uint64) res.ncand * 16;
 
@@ -892,9 +890,14 @@ remote_run(SiftGpuConn *c, const SiftVkJob *job, SiftVkResult *res)
 SiftVkStatus
 sift_gpu_conn_run(SiftGpuConn *c, const SiftVkJob *job, SiftVkResult *res)
 {
+	SiftVkStatus st;
+
 	if (c->shm != NULL)
 		return remote_run(c, job, res);
-	return sift_vk_run(c->vk, job, interrupt_check, res);
+	st = sift_vk_run(c->vk, job, query_cancelled, res);
+	if (st == SIFT_VK_CANCELLED)
+		CHECK_FOR_INTERRUPTS();
+	return st;
 }
 
 /* Which of the m keys the worker holds, asked through a slot; none when no slot is free */

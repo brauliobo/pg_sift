@@ -47,7 +47,8 @@ typedef enum SiftVkStatus
 	SIFT_VK_OVERFLOW,			/* the hash table or the candidate list was too small: run the scan on the CPU */
 	SIFT_VK_PROG_ERROR,			/* a live row raised an error of the program: res.err_* name the row, the CPU raises the error */
 	SIFT_VK_NEED_BYTES,			/* a chunk the job left out (bytes NULL) is not on the device: the caller sends it */
-	SIFT_VK_NONFINITE			/* a sum of floats is not finite: whether finite values overflowed (an error) or the table holds an infinity (a value) is the CPU's to tell: run the scan on the CPU */
+	SIFT_VK_NONFINITE,			/* a sum of floats is not finite: whether finite values overflowed (an error) or the table holds an infinity (a value) is the CPU's to tell: run the scan on the CPU */
+	SIFT_VK_CANCELLED			/* the query was cancelled while the run waited for the device: the caller checks for interrupts, and runs the scan on the CPU if none is raised */
 } SiftVkStatus;
 
 typedef enum SiftVkMode
@@ -263,10 +264,11 @@ extern void sift_vk_test_verify_tabs(SiftVk *vk, bool on);
 extern bool sift_vk_test_dcol(SiftVk *vk, const SiftVkKey *k, int64_t *vals, uint8_t *valid);
 
 /*
- * Runs the job. `interrupt` is called every few milliseconds while a submission is awaited (it may leave by a longjmp: the next call on the
- * device settles the submission first). The result is valid until the next call on the device. On any status but SIFT_VK_OK the result
- * holds nothing to use (except the error row of SIFT_VK_PROG_ERROR) and the caller runs the scan again on the CPU.
+ * Runs the job. `cancelled` (may be NULL) is asked every few milliseconds while a submission is awaited, and must return, never jump: the run that
+ * is cancelled frees what it holds and ends with SIFT_VK_CANCELLED, the submissions in flight are settled by the next call on the device. The
+ * result is valid until the next call on the device. On any status but SIFT_VK_OK the result holds nothing to use (except the error row of
+ * SIFT_VK_PROG_ERROR) and the caller runs the scan again on the CPU.
  */
-extern SiftVkStatus sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkResult *res);
+extern SiftVkStatus sift_vk_run(SiftVk *vk, const SiftVkJob *job, bool (*cancelled) (void), SiftVkResult *res);
 
 #endif							/* SIFT_AGGVK_H */
