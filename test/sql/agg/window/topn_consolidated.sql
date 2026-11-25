@@ -327,7 +327,7 @@ INSERT INTO shapes (name, q) VALUES
   ('dense_rank, two partition columns', $q$SELECT * FROM (SELECT id, grp, grp2, dense_rank() OVER (PARTITION BY grp, grp2 ORDER BY amount) rn FROM wt) t WHERE rn <= 2$q$),
   ('dense_rank, nullable partition', $q$SELECT * FROM (SELECT id, gn, amount, dense_rank() OVER (PARTITION BY gn ORDER BY amount) rn FROM wt) t WHERE rn <= 2$q$),
   ('dense_rank, past 1,000', $q$SELECT * FROM (SELECT id, grp, dense_rank() OVER (PARTITION BY grp ORDER BY amount) rn FROM wt) t WHERE rn <= 1500$q$),
-  ('rank and row_number',   $q$SELECT * FROM (SELECT id, grp, rank() OVER w rn, row_number() OVER w r2 FROM wt WINDOW w AS (PARTITION BY grp ORDER BY amount)) t WHERE rn <= 3$q$),
+  ('rank and row_number',   $q$SELECT * FROM (SELECT id, grp, rank() OVER w rn, row_number() OVER w r2 FROM wt WINDOW w AS (PARTITION BY grp ORDER BY amount, id)) t WHERE rn <= 3$q$),
   ('sift_table, row_number', $q$SELECT id, grp, memo, rn FROM (SELECT id, grp, memo, row_number() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST, id) rn FROM wtab) w WHERE rn <= 3$q$),
   ('sift_table, rank',      $q$SELECT id, grp, memo, rn FROM (SELECT id, grp, memo, rank() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST) rn FROM wtab) w WHERE rn <= 3$q$),
   ('sift_table, dense_rank', $q$SELECT id, grp, memo, rn FROM (SELECT id, grp, memo, dense_rank() OVER (PARTITION BY grp ORDER BY amount DESC NULLS LAST) rn FROM wtab) w WHERE rn <= 2$q$),
