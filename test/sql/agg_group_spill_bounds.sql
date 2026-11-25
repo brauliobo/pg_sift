@@ -123,3 +123,11 @@ SELECT is_v6('SELECT k_st, array_agg(amt) FROM gstale GROUP BY 1') AS v6_stale,
 SELECT is_v6('SELECT i.category, percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price) FROM gj CROSS JOIN LATERAL jsonb_to_recordset(gj.items) AS i(category text, price float8) GROUP BY 1') AS v6_pct,
        same_rows('SELECT i.category, round(percentile_cont(0.5) WITHIN GROUP (ORDER BY i.price)::numeric, 6) FROM gj CROSS JOIN LATERAL jsonb_to_recordset(gj.items) AS i(category text, price float8) GROUP BY 1') AS rows_pct,
        same_rows('SELECT round(percentile_cont(0.9) WITHIN GROUP (ORDER BY i.price)::numeric, 6) FROM gj CROSS JOIN LATERAL jsonb_to_recordset(gj.items) AS i(category text, price float8)') AS rows_pct_one_group;
+
+DROP FUNCTION is_v6(text);
+DROP FUNCTION rows_md5(text, boolean);
+DROP FUNCTION same_rows(text);
+DROP FUNCTION spills_of(text);
+DROP FUNCTION written_blocks(text);
+DROP TABLE want_spills, gj, gs, gstale;
+DROP EXTENSION pg_sift;
