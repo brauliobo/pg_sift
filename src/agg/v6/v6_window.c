@@ -621,7 +621,11 @@ sift_agg_v6_window_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOp
 Plan *
 sift_agg_v6_window_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
-	return sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_window_plan_methods, (Oid) list_nth_int(linitial(best->custom_private), 0));
+	const List *priv = best->custom_private;
+	List	   *quals = list_length(priv) > PRIV_BOUND + 1 ? list_nth(priv, PRIV_BOUND + 1) : NIL;
+
+	return sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_window_plan_methods, (Oid) list_nth_int(linitial(priv), 0),
+							 (Node *) list_make3(list_nth(priv, PRIV_BOUND), list_nth(priv, PRIV_FUNCS), quals));
 }
 
 /* ---- the node ---- */

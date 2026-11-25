@@ -345,10 +345,13 @@ push_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	cs->custom_plans = custom_plans;
 	cs->custom_scan_tlist = lsecond(best->custom_private);
 	cs->custom_private = list_make2(linitial(best->custom_private),
-									list_make4(linitial(join), makeInteger(resno), makeInteger(dim_var->vartype), makeInteger(scope == NIL ? 0 : intVal(linitial(scope)))));
+									list_make5(linitial(join), makeInteger(resno), makeInteger(dim_var->vartype), makeInteger(scope == NIL ? 0 : intVal(linitial(scope))),
+											   makeBoolean(scope != NIL)));
 	cs->custom_exprs = scope == NIL ? NIL : list_make1(lsecond(scope));
 	cs->methods = &sift_agg_v6_push_plan_methods;
 	cs->scan.plan.qual = lthird(best->custom_private);
+	sift_v6_collect_params((Node *) spec->indexqual, &cs->custom_exprs);
+	sift_v6_collect_params((Node *) spec->vqual, &cs->custom_exprs);
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->relid);
 	return &cs->scan.plan;
 }
@@ -390,7 +393,7 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 	st->resno = intVal(lsecond(join));
 	st->elemtype = (Oid) intVal(lthird(join));
 	st->scope_ord = intVal(lfourth(join));
-	if (cs->custom_exprs != NIL)
+	if (boolVal(list_nth(join, 4)))
 	{
 		st->scope_key = ExecInitExpr(linitial(cs->custom_exprs), &node->ss.ps);
 		st->scope_type = exprType(linitial(cs->custom_exprs));

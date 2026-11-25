@@ -585,7 +585,9 @@ sift_agg_v6_stream_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOp
 Plan *
 sift_agg_v6_stream_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
-	Plan	   *plan = sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_stream_plan_methods, (Oid) linitial_int(linitial(best->custom_private)));
+	const List *priv = best->custom_private;
+	Plan	   *plan = sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_stream_plan_methods, (Oid) linitial_int(linitial(priv)),
+										 (Node *) list_make3(list_nth(priv, PRIV_KEYS), list_nth(priv, PRIV_AGGS), list_nth(priv, PRIV_QUALS)));
 
 	plan->qual = list_nth(best->custom_private, PRIV_HAVING);
 	return plan;

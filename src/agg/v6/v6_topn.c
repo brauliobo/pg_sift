@@ -394,7 +394,9 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 Plan *
 sift_agg_v6_topn_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
-	return sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_topn_plan_methods, sift_v6_topn_spec_unpack(linitial(best->custom_private))->indexoid);
+	const SiftV6TopNSpec *spec = sift_v6_topn_spec_unpack(linitial(best->custom_private));
+
+	return sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_topn_plan_methods, spec->indexoid, (Node *) list_make3(spec->limit, spec->offset, lthird(best->custom_private)));
 }
 
 List *

@@ -309,6 +309,8 @@ sift_agg_v6_sip_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, 
 	cs->scan.scanrelid = rel->relid;
 	cs->flags = best->flags;
 	cs->custom_private = best->custom_private;
+	sift_v6_collect_params((Node *) list_nth(best->custom_private, PRIV_FACT_QUALS), &cs->custom_exprs);
+	sift_v6_collect_params((Node *) list_nth(best->custom_private, PRIV_DIM_QUALS), &cs->custom_exprs);
 	cs->methods = &sift_agg_v6_sip_plan_methods;
 	root->glob->relationOids = lappend_oid(lappend_oid(root->glob->relationOids, (Oid) list_nth_int(ints, 0)), (Oid) list_nth_int(ints, 2));
 	return &cs->scan.plan;

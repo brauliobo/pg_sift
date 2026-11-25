@@ -142,7 +142,10 @@ extern void sift_v6_stage_target(PlannerInfo *root, UpperRelationKind stage, Rel
 extern void sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private, List *custom_paths);
 
 /* The CustomScan of a path: tlist over the Vars of custom_private[1] (the scan tlist), the relation of the index recorded for the plan cache */
-extern Plan *sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const CustomScanMethods *methods, Oid indexoid);
+extern Plan *sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const CustomScanMethods *methods, Oid indexoid, const Node *exprs);
+
+/* The executor parameters of the expressions, appended to *out (a node's custom_exprs: PostgreSQL scans those for the parameters a node reads, so the node is scanned again when one changes); not those inside a sub-plan: it sets its own */
+extern bool sift_v6_collect_params(Node *n, List **out);
 
 /* The Vars an expression list reads of relid as the scan tlist (without duplicates), and the nodes of tag extra (T_Aggref, T_WindowFunc: a node of the operator), NIL when it reads anything else */
 extern List *sift_v6_scan_tlist(const List *exprs, Index relid, NodeTag extra);

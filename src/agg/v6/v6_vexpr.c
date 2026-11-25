@@ -850,8 +850,21 @@ sift_v6_stage_target(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *out
 	output_rel->reltarget = root->upper_targets[stage];
 }
 
+bool
+sift_v6_collect_params(Node *n, List **out)
+{
+	if (n == NULL || IsA(n, SubPlan))
+		return false;
+	if (IsA(n, Param))
+	{
+		*out = lappend(*out, n);
+		return false;
+	}
+	return expression_tree_walker(n, sift_v6_collect_params, out);
+}
+
 Plan *
-sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const CustomScanMethods *methods, Oid indexoid)
+sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const CustomScanMethods *methods, Oid indexoid, const Node *exprs)
 {
 	CustomScan *cs = makeNode(CustomScan);
 
@@ -860,6 +873,7 @@ sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const Custom
 	cs->flags = best->flags;
 	cs->custom_scan_tlist = lsecond(best->custom_private);
 	cs->custom_private = best->custom_private;
+	sift_v6_collect_params((Node *) exprs, &cs->custom_exprs);
 	cs->methods = methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, indexoid);
 	return &cs->scan.plan;
