@@ -13,6 +13,7 @@
 
 #include "core/maint.h"
 #include "core/maint_int.h"
+#include "core/maint_sched.h"
 #include "core/errctx.h"
 #include "core/live.h"
 #include "core/ops.h"
@@ -109,8 +110,8 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	return bd.stats;
 }
 
-/* The merges of VACUUM: until the policy asks for none, as a build that left many segments needs, or just one; stops at a failed step */
-static void
+/* The merges of VACUUM: until the policy asks for none, as a build that left many segments needs, or just one; stops at a failed step. True when the rewrite limit stopped them */
+static bool
 vacuum_merge(const SiftMaintOps *ops, Relation index)
 {
 	uint64		busy = 0;
@@ -121,8 +122,17 @@ vacuum_merge(const SiftMaintOps *ops, Relation index)
 	{
 		CHECK_FOR_INTERRUPTS();
 		if (ops->vacuum_budget && maint_written_bytes() - start >= limit)
-			break;
+			return true;
 	}
+	return false;
+}
+
+/* The merges that the rewrite limit left are the background maintenance's, which paces them; a temporary index is its session's alone */
+static void
+request_merges(Relation index)
+{
+	if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
+		(void) sift_maint_enqueue_here(&(SiftMaintReq) {.db = MyDatabaseId,.rel = RelationGetRelid(index),.kind = SIFT_MK_BM25_MERGE,.tier = SIFT_MAINT_TIER_DEFAULT});
 }
 
 typedef struct VacuumCleanup
@@ -146,7 +156,8 @@ vacuumcleanup_index(void *arg)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftDirSnapshot *snap;
 	SiftErrCtx	ctx;
-	bool		began;
+	bool		began,
+				limited;
 	SiftMemTracker mt_index_vacuum;
 
 	sift_mem_init_sub(&mt_index_vacuum, "index_vacuum", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
@@ -167,7 +178,7 @@ vacuumcleanup_index(void *arg)
 	if (ops->vacuum_net)
 		ops->vacuum_net(index);
 	sift_progress_phase(index, "merge");
-	vacuum_merge(ops, index);
+	limited = vacuum_merge(ops, index);
 	sift_mem_assert_within(&mt_index_vacuum);
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)
@@ -184,6 +195,8 @@ vacuumcleanup_index(void *arg)
 	sift_progress_end(began);
 	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);
+	if (limited && ops->worker == SIFT_WK_BM25_MAINT)
+		request_merges(index);
 	if (ops->vacuum_done)
 		ops->vacuum_done(index);
 	snap = sift_dir_read(index);
