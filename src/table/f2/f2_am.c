@@ -122,7 +122,10 @@ void
 sift_tbl_f2_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 {
 	SMgrRelation dstrel = smgropen(*newrlocator, rel->rd_backend);
+	SiftTxnStage *stage;
 
+	sift_stage_flush(rel);
+	stage = (SiftTxnStage *) sift_stage_peek(rel);
 	forget_caches(rel);
 	sift_fsm_cache_discard_rel(rel);
 	sift_tbl_rowlock_drop_rel(&rel->rd_locator);
@@ -140,6 +143,8 @@ sift_tbl_f2_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 		}
 	RelationDropStorage(rel);
 	smgrclose(dstrel);
+	if (stage != NULL)
+		stage->locator = *newrlocator;
 }
 
 uint64
