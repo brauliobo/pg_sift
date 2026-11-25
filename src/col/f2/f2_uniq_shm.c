@@ -16,8 +16,10 @@
 
 #include "col/dsmreg.h"
 #include "col/f2/f2_uniq_shm.h"
+#include "core/f2/f2_gate.h"
 #include "core/hash.h"
 
+#define UNIQ_ABORT_GATE		20	/* testing: a rolled back subtransaction has left the running xids and has not let go of its entries (the gates of core/f2/f2_gate.h are 10 to 14) */
 #define TABLE_NAME			"sift_f2_uniq_registry"
 #define TRANCHE_NAME		"SiftUniqReg"
 #define SLOTS_PER_STRIPE	(SIFT_UNIQ_SHM_SLOTS / SIFT_UNIQ_SHM_STRIPES)
@@ -263,7 +265,10 @@ static void
 uniq_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg pg_attribute_unused())
 {
 	if (event == SUBXACT_EVENT_ABORT_SUB)
+	{
+		SIFT_F2_GATE(UNIQ_ABORT_GATE);
 		owned_release_where(pick_sub, &mySubid);
+	}
 	else if (event == SUBXACT_EVENT_COMMIT_SUB)
 		for (int n = 0; n < nowned; n++)
 			if (owned[n].subid == mySubid)

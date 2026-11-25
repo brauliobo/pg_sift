@@ -566,6 +566,7 @@ TESTING_REGRESS += format2_marks_prewhere
 TESTING_REGRESS += format2_meta_marks_suite
 TESTING_REGRESS += format2_mutation
 TESTING_REGRESS += format2_mvcc_churn
+TESTING_REGRESS += col_f2_stage_spec_abort
 TESTING_REGRESS += format2_on63c_parity
 TESTING_REGRESS += format2_parallel_conc
 TESTING_REGRESS += format2_partitioned_agg_v6

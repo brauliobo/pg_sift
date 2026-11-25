@@ -1,0 +1,15 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2b s1b s1off s2on s1r s2c
+step s2b: BEGIN; SELECT count(*) AS n FROM iso_d;
+ n
+--
+10
+(1 row)
+
+step s1b: BEGIN;
+step s1off: ALTER INDEX iso_d_idx SET (track_changes = 'off');
+ERROR:  could not lock the table of index "iso_d_idx" to change its track_changes triggers
+step s2on: ALTER INDEX iso_d_idx RESET (track_changes);
+step s1r: ROLLBACK;
+step s2c: COMMIT;

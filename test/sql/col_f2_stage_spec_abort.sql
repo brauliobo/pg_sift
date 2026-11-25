@@ -1,0 +1,17 @@
+-- A speculative insertion (INSERT ... ON CONFLICT) that lost its race is withdrawn after the stage wrote its row: the stage keeps a delete of the row, dead to every snapshot at once, and the
+-- array of the deletes is written when it is full. That write empties the array, and the delete that was just added must not be named by the count it emptied (the element before the array
+-- is the allocator's, and must not get its xmax). The withdrawals run at the sizes around the one that fills the array (work_mem 64kB: 4096 deletes).
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET work_mem = '64kB';
+CREATE FUNCTION spec_abort_burst(index regclass, n int4, tid_base int8) RETURNS int4 LANGUAGE C STRICT AS 'pg_sift', 'sift_test_f2_stage_spec_abort';
+CREATE TABLE sa (v int);
+CREATE INDEX sa_idx ON sa USING sift_store_test (v);
+SELECT sift._test_f2_init('sa_idx');
+SELECT n, spec_abort_burst('sa_idx', n, 5000000 + 100000 * n) AS stray_writes FROM (VALUES (1), (4095), (4096), (4097), (8192)) v(n);
+SELECT sift._test_f2_check('sa_idx') ~ '^parts=' AS consistent;
+DROP TABLE sa;
+DROP FUNCTION spec_abort_burst(regclass, int4, int8);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

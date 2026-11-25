@@ -1,0 +1,81 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b_ios s2b_ios s1r_k s2r_k s1w_k s2w_k s1c s2c
+step s1b_ios: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s2b_ios: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s1r_k: SELECT count(*) AS n FROM iso_k WHERE grp = 1;
+n
+-
+0
+(1 row)
+
+step s2r_k: SELECT count(*) AS n FROM iso_k WHERE grp = 1;
+n
+-
+0
+(1 row)
+
+step s1w_k: INSERT INTO iso_k VALUES (100001, 1, 5);
+step s2w_k: INSERT INTO iso_k VALUES (200001, 1, 5);
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b_bmp s2b_bmp s1r_k s2r_k s1w_k s2w_k s1c s2c
+step s1b_bmp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL sift.enable_agg = off;
+step s2b_bmp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL sift.enable_agg = off;
+step s1r_k: SELECT count(*) AS n FROM iso_k WHERE grp = 1;
+n
+-
+0
+(1 row)
+
+step s2r_k: SELECT count(*) AS n FROM iso_k WHERE grp = 1;
+n
+-
+0
+(1 row)
+
+step s1w_k: INSERT INTO iso_k VALUES (100001, 1, 5);
+step s2w_k: INSERT INTO iso_k VALUES (200001, 1, 5);
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b_ord s2b_ord s1r_ord s2r_ord s1w_o s2w_o s1c s2c
+step s1b_ord: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s2b_ord: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s1r_ord: SELECT bal FROM iso_o WHERE grp = 1 ORDER BY grp;
+bal
+---
+(0 rows)
+
+step s2r_ord: SELECT bal FROM iso_o WHERE grp = 1 ORDER BY grp;
+bal
+---
+(0 rows)
+
+step s1w_o: INSERT INTO iso_o VALUES (100001, 1, 5);
+step s2w_o: INSERT INTO iso_o VALUES (200001, 1, 5);
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b_grp s2b_grp s1r_grp s2r_grp s1w_k s2w_k s1c s2c
+step s1b_grp: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b_grp: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1r_grp: SELECT grp, sum(bal) AS total FROM iso_k WHERE grp = 1 GROUP BY grp;
+grp|total
+---+-----
+(0 rows)
+
+step s2r_grp: SELECT grp, sum(bal) AS total FROM iso_k WHERE grp = 1 GROUP BY grp;
+grp|total
+---+-----
+(0 rows)
+
+step s1w_k: INSERT INTO iso_k VALUES (100001, 1, 5);
+step s2w_k: INSERT INTO iso_k VALUES (200001, 1, 5);
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
