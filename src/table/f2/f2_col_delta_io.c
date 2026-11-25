@@ -736,7 +736,7 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
 		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		if (npages >= SIFT_CDDIR_SOFT_FOLD_PAGES)
+		if (npages >= SIFT_COL_DELTA_FOLD_PAGES)
 			(void) sift_f2_maint_request(rel, SIFT_MK_COMPACT_PART, part_id);
 		sift_col_delta_batch_free(&b);
 		pfree(parts);
