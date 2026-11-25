@@ -37,6 +37,8 @@ extern bool sift_tbl_published(Relation rel);
 extern void sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old);
 extern void sift_tbl_log_key(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple key);
 extern HeapTuple sift_tbl_old_key(Relation rel, HeapTuple old);
+/* The same for the slot of the old row, without forming a tuple of all its columns first (a wide value the identity does not name is never copied); always a new tuple, or NULL */
+extern HeapTuple sift_tbl_slot_old_key(Relation rel, TupleTableSlot *old);
 /* The values of slot: its own array, or a copy with every external TOAST value expanded (no TOAST table exists for this AM, and the table the pointer names may be gone when the record is decoded) */
 extern Datum *sift_tbl_slot_values(TupleDesc desc, TupleTableSlot *slot);
 /* The row of slot as a MinimalTuple with no external value in it; *should_free: the caller frees it */

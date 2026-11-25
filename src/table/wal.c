@@ -79,13 +79,34 @@ sift_tbl_check_publication(Relation rel)
 	return true;
 }
 
-/* STOR[STOR-TBL-12]: logical WAL old_key dedup (avoids double HeapTuple filter + leak in f2_dml.c:104-126) */
-/* The replica identity part of an old row: all of it, the identity key columns, or nothing */
+/* The replica identity part of a row given as values: all of it, the identity key columns (the others are null, so no value of them is copied), or nothing */
+static HeapTuple
+identity_of_values(Relation rel, Datum *values, bool *isnull)
+{
+	TupleDesc	desc = RelationGetDescr(rel);
+	Bitmapset  *key;
+	bool	   *keyed;
+	HeapTuple	res;
+
+	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_NOTHING)
+		return NULL;
+	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
+		return heap_form_tuple(desc, values, isnull);
+	if (bms_is_empty(key = RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_IDENTITY_KEY)))
+		return NULL;
+	keyed = palloc(desc->natts * sizeof(bool));
+	for (int i = 0; i < desc->natts; i++)
+		keyed[i] = isnull[i] || !bms_is_member(i + 1 - FirstLowInvalidHeapAttributeNumber, key);
+	res = heap_form_tuple(desc, values, keyed);
+	pfree(keyed);
+	bms_free(key);
+	return res;
+}
+
 HeapTuple
 sift_tbl_old_key(Relation rel, HeapTuple old)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
-	Bitmapset  *key;
 	Datum	   *values;
 	bool	   *isnull;
 	HeapTuple	res;
@@ -94,18 +115,20 @@ sift_tbl_old_key(Relation rel, HeapTuple old)
 		return NULL;
 	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
 		return old;
-	if (bms_is_empty(key = RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_IDENTITY_KEY)))
-		return NULL;
 	values = palloc(desc->natts * sizeof(Datum));
 	isnull = palloc(desc->natts * sizeof(bool));
 	heap_deform_tuple(old, desc, values, isnull);
-	for (int i = 0; i < desc->natts; i++)
-		isnull[i] |= !bms_is_member(i + 1 - FirstLowInvalidHeapAttributeNumber, key);
-	res = heap_form_tuple(desc, values, isnull);
+	res = identity_of_values(rel, values, isnull);
 	pfree(values);
 	pfree(isnull);
-	bms_free(key);
 	return res;
+}
+
+HeapTuple
+sift_tbl_slot_old_key(Relation rel, TupleTableSlot *old)
+{
+	slot_getallattrs(old);
+	return identity_of_values(rel, old->tts_values, old->tts_isnull);
 }
 
 Datum *
