@@ -11,6 +11,7 @@
 
 plan 21
 node_init mp 71 "autovacuum = off
+sift.test_create_format1 = on
 sift.test_col_net = off
 sift.async_maintenance = on
 sift.maintenance_naptime = 200
@@ -90,6 +91,7 @@ check "and still no rewrite was made" test "$(rewrites)" == 0
 
 # (e) no slot: the session holds every slot of sift.max_maint_workers, so the worker its VACUUM asks for is refused, and the message says how many slots sift has and how many are running
 node_init ms 73 "autovacuum = off
+sift.test_create_format1 = on
 sift.test_col_net = off
 sift.async_maintenance = on"
 node_start ms || bail "start of ms failed"

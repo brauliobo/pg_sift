@@ -7,6 +7,7 @@
 
 plan 4
 node_init sy 74 "autovacuum = off
+sift.test_create_format1 = on
 sift.test_col_net = off
 sift.async_maintenance = on
 sift.maintenance_naptime = 2000"

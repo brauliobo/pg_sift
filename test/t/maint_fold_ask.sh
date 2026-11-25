@@ -6,6 +6,7 @@
 
 plan 5
 node_init fa 75 "autovacuum = off
+sift.test_create_format1 = on
 sift.test_col_net = off
 sift.async_maintenance = on
 sift.maintenance_naptime = 200
