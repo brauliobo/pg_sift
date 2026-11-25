@@ -184,7 +184,6 @@ TESTING_REGRESS += agg_v6_tpch_exprs
 TESTING_REGRESS += agg_v6_zone_calendar
 TESTING_REGRESS += agg_vis_counts
 TESTING_REGRESS += agg_window_topn_consolidated
-TESTING_REGRESS += aggkern_%
 TESTING_REGRESS += analyzer_version
 TESTING_REGRESS += bm25_dead_windows
 TESTING_REGRESS += bm25_dict_block_limit

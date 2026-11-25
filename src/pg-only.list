@@ -816,3 +816,8 @@ col/f2/f2_v6_scan.h
 col/f2/f2_v6_scan_arms.c
 col/f2/f2_v6_scan_fill.c
 col/f2/f2_v6_scan_table.c
+agg/v6/v6_unique_key.c
+agg/v6/v6_unique_key.h
+agg/v6/v6_jsonpath.c
+agg/v6/v6_jsonpath.h
+agg/v6/v6_distinct_u64_test.c

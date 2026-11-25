@@ -64,7 +64,7 @@ sift_test_sorts(PG_FUNCTION_ARGS)
 	char	   *kind = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	uint64		n = (uint64) PG_GETARG_INT64(1);
 	const uint64 mem = (uint64) PG_GETARG_INT32(2) * 1024;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift test sorts", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift test sorts", ALLOCSET_SMALL_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	uint64		got;
 

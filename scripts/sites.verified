@@ -10,7 +10,6 @@ src/col/am/conn_route.c	major_of	guarded	the OID is the parent index of a connec
 src/col/am/conn_route.c	sift_col_conn_state	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/v1/am_v1.c	sift_col_v1_flush_held	guarded	the OID is one this backend queued for a write (sift_cwbuf_pending) in a transaction that holds its lock; the pending list is cleared for an index dropped in the transaction (sift_cwbuf_discard)
 src/col/am/cache.c	sift_col_index_meta	guarded	heapoid is the heap of an open index (the caller holds the index and a lock on its heap)
-src/col/am/rel.c	sift_col_index_stale	guarded	its only caller (agg/scope_unread.c) passes the OID of an index of a table of the planned statement, from RelationGetIndexList under the table's lock
 src/col/v1/amscan/amscan.c	col_scan_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/v1/build/choices.c	sift_col_index_choices	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/v1/conn_decl.c	parent_index_for	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
@@ -130,7 +129,6 @@ src/agg/v6/v6_dim_cache.c	readable	guarded	the index is the one journal_index op
 src/agg/v6/v6_dim_cache.c	sift_dimcache_keep	guarded	GetSysCacheHashValue1 only hashes the OID of the table and of its locked index for the invalidation callback; it needs no tuple
 src/agg/v6/v6_dim_cache.c	sift_dimcache_try	guarded	the index is the one journal_index found in the relation list of the scanned heap and left locked: DROP INDEX waits for that lock; index_open raises for a missing one
 src/bm25/facet_rls.c	sift_facet_rls_begin	guarded	the heap is open, so its namespace exists and get_namespace_name returns its name
-src/table/f2/f2_options.c	read_rows	guarded	cfgid is tested with OidIsValid right above; table_open raises for a missing relation, it never returns NULL
 src/bm25/funcs.c	sift_key_equal	guarded	lookup_type_cache never returns NULL (a type that does not exist is its own error) and eq_opr is tested with OidIsValid on the next line
 src/col/am/track.c	ops_serving	guarded	the hash of the oid of an index is a number for any oid, there is no result to test; a missing index is OidIsValid on the line below
 src/table/f2/f2_vm_lease.c	lease_evict	guarded	the result is tested: a table dropped since its lease was taken opens as NULL and only the lease is given back

@@ -189,7 +189,6 @@ SIFT_PAR_TWO_STAGE_MAX_GROUPS	size of the table a participant of the two-stage p
 SIFT_PAR_WIDE_WORKERS	the number of parallel workers from which the radix strategy uses more partitions: a tuning bound, the rows are the same
 V6_NUMERIC_MAX_DIGITS	size of the digit buffer of a 128-bit numeric (the largest value of the format has 12 base-10000 digits): a representation size, not a limit a user reaches
 CHAIN_SLOTS	slots of the backend cache of the logs of pending deletes and column delta chains of partitions (table/f2/f2_chain_cache.c): past them the least recently used log is dropped and read again from the pages of the chain; the rows the statement reads are the same
-OSA_MAX_RUNS	sorted runs (temporary files) an ordered-set aggregate keeps while its scan goes on (agg/osa_runs.c): past it the OSA_FANIN smallest merge into one; the answer is the same
 PART_AUX_SLOTS	records of the parts a scan reads (the first row of each granule in SEC_VERS, the offsets of SEC_GRANULE_TSTRIDE) that a backend keeps (col/granule/part_read.c): the slots are taken in turn and the record that loses its slot is worked out again when asked for; the rows are the same
 PIN_CX_MAX_BLOCK	the largest block (16 kB) of the memory context of one cached part pin (col/f2/f2_gbuf.c): a larger request gets a block of its own; the pin holds the same data
 QUAR_CACHE_SLOTS	slots (512, for the 256 entries of QUAR_ENTRIES) of the open-addressing set a backend copies the confirmed quarantine entries into (core/quarantine.c): it holds every entry the registry can hold, so nothing is evicted; it is rebuilt when the generation of the registry moves
@@ -229,6 +228,4 @@ SIFT_KJ_SLOTS	the record pages a block of the connect journal names (col/f2/f2_j
 SIFT_MAINT_CONNECT_BACKOFF_MAX_US	the pause after a worker could not connect to its database: 60 s at most, a state of the queue that no setting names
 SIFT_PAR_MAX_THREADS	the threads of the pool of a statement, the backend included (core/par/pool.h): the use is capped at max_parallel_workers_per_gather + 1; the rows are the same
 SIFT_ROWLOCK_CHUNK_ENTRIES	the row lock entries of one chunk of dynamic shared memory (table/f2/f2_lock_ovf.h): a full stripe takes another chunk; no count is refused
-SIFT_COLSRC_MAX_FILTERS	array size of the planner spec structs (agg/spec/*.h) behind sift.explain_why and the f2 scope probe: no user-reachable bound
-SIFT_COLSRC_MAX_LEAVES	array size of the planner spec structs (agg/spec/*.h) behind sift.explain_why and the f2 scope probe: no user-reachable bound
 SIFT_VM_DIRTY_MAX_INTERVALS	the runs of dirty heap blocks a set of a visibility map pass keeps (col/f2/f2_vac_vm.h): past it the set skips nothing; no count is refused
