@@ -1,0 +1,115 @@
+-- sift_table with 300 columns: a read of an attribute past the 64th (alone, in a filter, in a sort, with the whole row, after a column delta) gives what a heap twin gives.
+CREATE EXTENSION pg_sift;
+CREATE FUNCTION make_wide(tbl text, am text, ncols int, nrows int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE cols text; vals text;
+BEGIN
+	SELECT string_agg(format('c%s %s', g, CASE g % 3 WHEN 0 THEN 'text' WHEN 1 THEN 'int' ELSE 'numeric' END), ', ' ORDER BY g),
+		   string_agg(CASE g % 3 WHEN 0 THEN format('''s'' || (%s * x %% 977)', g) WHEN 1 THEN format('(%s * x %% 1009)', g) ELSE format('((%s + x) %% 53)::numeric / 8', g) END, ', ' ORDER BY g)
+	INTO cols, vals FROM generate_series(1, ncols) g;
+	EXECUTE format('CREATE TABLE %I (id int, %s) USING %s', tbl, cols, am);
+	EXECUTE format('INSERT INTO %I SELECT x, %s FROM generate_series(1, %s) x', tbl, vals, nrows);
+END $$;
+-- the statement with @T for the table, run on both: whether what it returns is the same
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(x::text, '','' ORDER BY x::text)) FROM (%s) x', replace(q, '@T', 'wide_t')) INTO a;
+	EXECUTE format('SELECT md5(string_agg(x::text, '','' ORDER BY x::text)) FROM (%s) x', replace(q, '@T', 'wide_h')) INTO b;
+	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+SELECT make_wide('wide_t', 'sift_table', 300, 2000), make_wide('wide_h', 'heap', 300, 2000);
+ make_wide | make_wide 
+-----------+-----------
+           | 
+(1 row)
+
+VACUUM wide_t;
+SELECT count(*) AS columns FROM pg_attribute WHERE attrelid = 'wide_t'::regclass AND attnum > 0;
+ columns 
+---------
+     301
+(1 row)
+
+SELECT sum(rows) AS rows_in_parts FROM sift.parts('wide_t');
+ rows_in_parts 
+---------------
+          2000
+(1 row)
+
+SELECT same('SELECT c300, c150, c70 FROM @T WHERE id = 5');
+ same 
+------
+ same
+(1 row)
+
+SELECT same('SELECT c299 FROM @T');
+ same 
+------
+ same
+(1 row)
+
+SELECT same('SELECT id, c65, c130, c196, c299, c300 FROM @T WHERE c298 < 400');
+ same 
+------
+ same
+(1 row)
+
+SELECT same('SELECT count(*), sum(c250), max(c299), min(c300) FROM @T WHERE c299 > 3 AND c300 LIKE ''s1%''');
+ same 
+------
+ same
+(1 row)
+
+SELECT same('SELECT * FROM @T');
+ same 
+------
+ same
+(1 row)
+
+SELECT same('SELECT id, c299 FROM @T ORDER BY c299, c298, id LIMIT 50');
+ same 
+------
+ same
+(1 row)
+
+-- column deltas on columns past the 64th, then the same reads
+UPDATE wide_t SET c250 = c250 + 5, c299 = 1 WHERE id % 10 = 0;
+UPDATE wide_h SET c250 = c250 + 5, c299 = 1 WHERE id % 10 = 0;
+UPDATE wide_t SET c70 = 0 WHERE id <= 100;
+UPDATE wide_h SET c70 = 0 WHERE id <= 100;
+SELECT same('SELECT c250, c299, c70 FROM @T WHERE id <= 30');
+ same 
+------
+ same
+(1 row)
+
+SELECT same('SELECT count(*) FROM @T WHERE c250 > 600 OR c70 = 0');
+ same 
+------
+ same
+(1 row)
+
+SELECT same('SELECT * FROM @T');
+ same 
+------
+ same
+(1 row)
+
+DELETE FROM wide_t WHERE id > 1900;
+DELETE FROM wide_h WHERE id > 1900;
+VACUUM wide_t;
+SELECT same('SELECT * FROM @T');
+ same 
+------
+ same
+(1 row)
+
+SELECT count(*) FROM wide_t;
+ count 
+-------
+  1900
+(1 row)
+
+DROP FUNCTION same(text), make_wide(text, text, int, int);
+DROP TABLE wide_t, wide_h;
+DROP EXTENSION pg_sift;

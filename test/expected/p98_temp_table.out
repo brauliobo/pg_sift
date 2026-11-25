@@ -1,0 +1,232 @@
+-- TEMP sift_table and sift_col: a table with no block yet is Format 2.0 for every function of sift.*, and stays so after sift.maintain; ON COMMIT PRESERVE ROWS, DELETE ROWS and DROP,
+-- TRUNCATE inside a savepoint and DISCARD TEMP all give what a heap twin gives; a unique sift_col index of a temporary table still refuses a duplicate.
+CREATE EXTENSION pg_sift;
+-- an empty one: nothing to maintain, and the first insert still makes Format 2.0
+CREATE TEMP TABLE tmp_empty (id int, v text) USING sift_table;
+SELECT format_note, state FROM sift.status('tmp_empty');
+ format_note | state 
+-------------+-------
+ empty       | ready
+(1 row)
+
+SELECT busy, dead_rows, promoted, merged FROM sift.maintain('tmp_empty');
+ busy | dead_rows | promoted | merged 
+------+-----------+----------+--------
+ f    |         0 |        0 |      0
+(1 row)
+
+SELECT count(*) AS check_rows FROM sift.check('tmp_empty');
+ check_rows 
+------------
+          0
+(1 row)
+
+SELECT count(*) AS part_rows FROM sift.parts('tmp_empty');
+ part_rows 
+-----------
+         0
+(1 row)
+
+SELECT relation_blocks, parts FROM sift.space('tmp_empty');
+ relation_blocks | parts 
+-----------------+-------
+               0 |     0
+(1 row)
+
+SELECT busy, dead_rows, promoted, merged FROM sift.maintain('tmp_empty');
+ busy | dead_rows | promoted | merged 
+------+-----------+----------+--------
+ f    |         0 |        0 |      0
+(1 row)
+
+INSERT INTO tmp_empty SELECT g, 'x' || g FROM generate_series(1, 100) g;
+SELECT format_major, format_minor, format_note FROM sift.status('tmp_empty');
+ format_major | format_minor | format_note 
+--------------+--------------+-------------
+            2 |            0 | Format 2.0
+(1 row)
+
+SELECT busy, dead_rows, promoted, merged FROM sift.maintain('tmp_empty');
+ busy | dead_rows | promoted | merged 
+------+-----------+----------+--------
+ f    |         0 |        0 |      0
+(1 row)
+
+SELECT count(*) AS check_rows FROM sift.check('tmp_empty');
+ check_rows 
+------------
+          0
+(1 row)
+
+UPDATE tmp_empty SET v = 'y' WHERE id < 5;
+DELETE FROM tmp_empty WHERE id > 90;
+SELECT count(*), count(*) FILTER (WHERE v = 'y') AS updated FROM tmp_empty;
+ count | updated 
+-------+---------
+    90 |       4
+(1 row)
+
+TRUNCATE tmp_empty;
+SELECT format_note FROM sift.status('tmp_empty');
+ format_note 
+-------------
+ empty
+(1 row)
+
+SELECT busy, dead_rows, promoted, merged FROM sift.maintain('tmp_empty');
+ busy | dead_rows | promoted | merged 
+------+-----------+----------+--------
+ f    |         0 |        0 |      0
+(1 row)
+
+INSERT INTO tmp_empty SELECT g, 'z' || g FROM generate_series(1, 10) g;
+SELECT format_major, format_minor, format_note FROM sift.status('tmp_empty');
+ format_major | format_minor | format_note 
+--------------+--------------+-------------
+            2 |            0 | Format 2.0
+(1 row)
+
+SELECT count(*) FROM tmp_empty;
+ count 
+-------
+    10
+(1 row)
+
+DROP TABLE tmp_empty;
+-- ON COMMIT, against heap twins
+CREATE TEMP TABLE twin_preserve (id int, v text) ON COMMIT PRESERVE ROWS;
+CREATE TEMP TABLE twin_delete (id int, v text) ON COMMIT DELETE ROWS;
+CREATE TEMP TABLE sift_preserve (id int, v text) USING sift_table ON COMMIT PRESERVE ROWS;
+CREATE TEMP TABLE sift_delete (id int, v text) USING sift_table ON COMMIT DELETE ROWS;
+CREATE FUNCTION counts() RETURNS TABLE (tbl text, rows_sift bigint, rows_heap bigint) LANGUAGE sql AS $$
+	SELECT 'preserve', (SELECT count(*) FROM sift_preserve), (SELECT count(*) FROM twin_preserve)
+	UNION ALL SELECT 'delete', (SELECT count(*) FROM sift_delete), (SELECT count(*) FROM twin_delete) $$;
+BEGIN;
+CREATE TEMP TABLE sift_drop (id int, v text) USING sift_table ON COMMIT DROP;
+INSERT INTO sift_drop SELECT g, 'd' FROM generate_series(1, 50) g;
+INSERT INTO sift_preserve SELECT g, 'p' FROM generate_series(1, 50) g;
+INSERT INTO twin_preserve SELECT g, 'p' FROM generate_series(1, 50) g;
+INSERT INTO sift_delete SELECT g, 'x' FROM generate_series(1, 50) g;
+INSERT INTO twin_delete SELECT g, 'x' FROM generate_series(1, 50) g;
+SELECT * FROM counts();
+   tbl    | rows_sift | rows_heap 
+----------+-----------+-----------
+ preserve |        50 |        50
+ delete   |        50 |        50
+(2 rows)
+
+COMMIT;
+SELECT to_regclass('sift_drop') IS NULL AS dropped;
+ dropped 
+---------
+ t
+(1 row)
+
+SELECT * FROM counts();
+   tbl    | rows_sift | rows_heap 
+----------+-----------+-----------
+ preserve |        50 |        50
+ delete   |         0 |         0
+(2 rows)
+
+INSERT INTO sift_delete SELECT g, 'again' FROM generate_series(1, 7) g;
+INSERT INTO twin_delete SELECT g, 'again' FROM generate_series(1, 7) g;
+SELECT * FROM counts();
+   tbl    | rows_sift | rows_heap 
+----------+-----------+-----------
+ preserve |        50 |        50
+ delete   |         0 |         0
+(2 rows)
+
+SELECT format_major FROM sift.status('sift_delete');
+ format_major 
+--------------
+            2
+(1 row)
+
+-- a savepoint that truncates and rolls back; a truncate that commits, then the rows again
+BEGIN;
+INSERT INTO sift_preserve SELECT g, 'q' FROM generate_series(1, 20) g;
+INSERT INTO twin_preserve SELECT g, 'q' FROM generate_series(1, 20) g;
+SAVEPOINT s;
+TRUNCATE sift_preserve, twin_preserve;
+INSERT INTO sift_preserve SELECT g, 'r' FROM generate_series(1, 3) g;
+INSERT INTO twin_preserve SELECT g, 'r' FROM generate_series(1, 3) g;
+SELECT * FROM counts() WHERE tbl = 'preserve';
+   tbl    | rows_sift | rows_heap 
+----------+-----------+-----------
+ preserve |         3 |         3
+(1 row)
+
+ROLLBACK TO s;
+SELECT * FROM counts() WHERE tbl = 'preserve';
+   tbl    | rows_sift | rows_heap 
+----------+-----------+-----------
+ preserve |        70 |        70
+(1 row)
+
+COMMIT;
+BEGIN;
+TRUNCATE sift_preserve, twin_preserve;
+INSERT INTO sift_preserve SELECT g, 's' FROM generate_series(1, 9) g;
+INSERT INTO twin_preserve SELECT g, 's' FROM generate_series(1, 9) g;
+COMMIT;
+SELECT * FROM counts() WHERE tbl = 'preserve';
+   tbl    | rows_sift | rows_heap 
+----------+-----------+-----------
+ preserve |         9 |         9
+(1 row)
+
+SELECT count(DISTINCT ctid) = count(*) AS distinct_addresses FROM sift_preserve;
+ distinct_addresses 
+--------------------
+ t
+(1 row)
+
+DROP FUNCTION counts();
+-- a unique sift_col index of a temporary table
+CREATE TEMP TABLE tmp_uniq (id int, v int);
+CREATE UNIQUE INDEX tmp_uniq_i ON tmp_uniq USING sift_col (id, v);
+INSERT INTO tmp_uniq SELECT g, g FROM generate_series(1, 100) g;
+INSERT INTO tmp_uniq VALUES (5, 5);
+ERROR:  duplicate key value violates unique constraint "tmp_uniq_i"
+DETAIL:  Key (id, v)=(5, 5) already exists.
+SELECT count(*) FROM tmp_uniq;
+ count 
+-------
+   100
+(1 row)
+
+DROP TABLE tmp_uniq;
+-- DISCARD TEMP: the name is free again and the new table is not the old one
+CREATE TEMP TABLE tmp_again (id int, v text) USING sift_table;
+INSERT INTO tmp_again SELECT g, 'old' FROM generate_series(1, 30) g;
+SELECT count(*) FROM tmp_again;
+ count 
+-------
+    30
+(1 row)
+
+DISCARD TEMP;
+CREATE TEMP TABLE tmp_again (id int, v text) USING sift_table;
+SELECT count(*) FROM tmp_again;
+ count 
+-------
+     0
+(1 row)
+
+INSERT INTO tmp_again SELECT g, 'new' FROM generate_series(1, 5) g;
+SELECT count(*), min(v), max(v) FROM tmp_again;
+ count | min | max 
+-------+-----+-----
+     5 | new | new
+(1 row)
+
+SELECT format_major, format_note FROM sift.status('tmp_again');
+ format_major | format_note 
+--------------+-------------
+            2 | Format 2.0
+(1 row)
+
+DISCARD TEMP;
+DROP EXTENSION pg_sift;

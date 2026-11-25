@@ -1,0 +1,117 @@
+-- sift_table: TRUNCATE. A table made in the transaction keeps its file through the TRUNCATE, so the addresses its session reserved for the rows before it must not outlive it: the rows of
+-- another session after the commit, and of this one, never share an address. A table made earlier gets a new file, and a TRUNCATE that rolls back gives back the rows the transaction
+-- inserted before it. Heap twins say what the rows are.
+CREATE EXTENSION pg_sift;
+-- made and truncated in one transaction: 100 rows, TRUNCATE, 10 rows
+BEGIN;
+CREATE TABLE tr_t (id int, v text) USING sift_table;
+INSERT INTO tr_t SELECT g, 'a' FROM generate_series(1, 100) g;
+TRUNCATE tr_t;
+INSERT INTO tr_t SELECT g, 'b' FROM generate_series(1, 10) g;
+COMMIT;
+SELECT count(*), count(DISTINCT ctid) AS addresses FROM tr_t;
+ count | addresses 
+-------+-----------
+    10 |        10
+(1 row)
+
+SELECT 4294967294 - vblocks_left AS next_vblock FROM sift.space('tr_t');
+ next_vblock 
+-------------
+          16
+(1 row)
+
+-- another session after the commit, then this one again
+\c -
+INSERT INTO tr_t SELECT g, 'c' FROM generate_series(1, 200) g;
+SELECT count(*), count(DISTINCT ctid) AS addresses FROM tr_t;
+ count | addresses 
+-------+-----------
+   210 |       210
+(1 row)
+
+\c -
+INSERT INTO tr_t SELECT g, 'd' FROM generate_series(1, 5000) g;
+SELECT count(*), count(DISTINCT ctid) AS addresses FROM tr_t;
+ count | addresses 
+-------+-----------
+  5210 |      5210
+(1 row)
+
+UPDATE tr_t SET v = 'u' WHERE id = 5 AND v IN ('b', 'c');
+SELECT v, count(*) FROM tr_t GROUP BY v ORDER BY v;
+ v | count 
+---+-------
+ b |     9
+ c |   199
+ d |  5000
+ u |     2
+(4 rows)
+
+DROP TABLE tr_t;
+-- the same with a tablespace move that keeps the rows: the addresses go on from where they were
+CREATE TABLE ts_t (id int, v text) USING sift_table;
+INSERT INTO ts_t SELECT g, 'a' FROM generate_series(1, 100) g;
+BEGIN;
+ALTER TABLE ts_t SET TABLESPACE pg_default;
+INSERT INTO ts_t SELECT g, 'b' FROM generate_series(1, 10) g;
+COMMIT;
+\c -
+INSERT INTO ts_t SELECT g, 'c' FROM generate_series(1, 200) g;
+SELECT count(*), count(DISTINCT ctid) AS addresses FROM ts_t;
+ count | addresses 
+-------+-----------
+   310 |       310
+(1 row)
+
+DROP TABLE ts_t;
+-- TRUNCATE of a table made earlier, rolled back with the savepoint (or the transaction): the rows inserted before it are still there
+CREATE TABLE sp_t (id int, v text) USING sift_table;
+CREATE TABLE sp_h (id int, v text);
+INSERT INTO sp_t SELECT g, 'p' FROM generate_series(1, 50) g;
+INSERT INTO sp_h SELECT g, 'p' FROM generate_series(1, 50) g;
+BEGIN;
+INSERT INTO sp_t SELECT g, 'q' FROM generate_series(1, 20) g;
+INSERT INTO sp_h SELECT g, 'q' FROM generate_series(1, 20) g;
+SAVEPOINT s;
+TRUNCATE sp_t, sp_h;
+INSERT INTO sp_t SELECT g, 'r' FROM generate_series(1, 3) g;
+INSERT INTO sp_h SELECT g, 'r' FROM generate_series(1, 3) g;
+SELECT (SELECT count(*) FROM sp_t) AS in_savepoint_sift, (SELECT count(*) FROM sp_h) AS in_savepoint_heap;
+ in_savepoint_sift | in_savepoint_heap 
+-------------------+-------------------
+                 3 |                 3
+(1 row)
+
+ROLLBACK TO s;
+SELECT (SELECT count(*) FROM sp_t) AS after_rollback_sift, (SELECT count(*) FROM sp_h) AS after_rollback_heap;
+ after_rollback_sift | after_rollback_heap 
+---------------------+---------------------
+                  70 |                  70
+(1 row)
+
+COMMIT;
+SELECT (SELECT count(*) FROM sp_t) AS committed_sift, (SELECT count(*) FROM sp_h) AS committed_heap;
+ committed_sift | committed_heap 
+----------------+----------------
+             70 |             70
+(1 row)
+
+BEGIN;
+INSERT INTO sp_t SELECT g, 's' FROM generate_series(1, 20) g;
+INSERT INTO sp_h SELECT g, 's' FROM generate_series(1, 20) g;
+UPDATE sp_t SET v = 'u' WHERE id <= 5 AND v = 'p';
+UPDATE sp_h SET v = 'u' WHERE id <= 5 AND v = 'p';
+DELETE FROM sp_t WHERE id > 45 AND v = 'p';
+DELETE FROM sp_h WHERE id > 45 AND v = 'p';
+TRUNCATE sp_t, sp_h;
+ROLLBACK;
+SELECT (SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM sp_t x) = (SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM sp_h x) AS same_rows,
+	   (SELECT count(*) FROM sp_t) AS rows_sift, (SELECT count(*) FROM sp_h) AS rows_heap;
+ same_rows | rows_sift | rows_heap 
+-----------+-----------+-----------
+ t         |        70 |        70
+(1 row)
+
+DROP TABLE sp_t, sp_h;
+DROP EXTENSION pg_sift;

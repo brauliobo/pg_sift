@@ -1,0 +1,138 @@
+-- sift_table against heap twins on what PostgreSQL 17 and 18 added or leave untested: MERGE ... WHEN NOT MATCHED BY SOURCE, COPY ... ON_ERROR ignore, a row that moves to another partition
+-- and a partition detached CONCURRENTLY, a domain with CHECK constraints (and one added later), and classic INHERITS.
+CREATE EXTENSION pg_sift;
+
+CREATE FUNCTION digest(tbl regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT count(*) || '':'' || coalesce(md5(string_agg(x::text, '','' ORDER BY x::text)), '''') FROM %s x', tbl) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION same(a regclass, b regclass) RETURNS text LANGUAGE sql AS $$ SELECT CASE WHEN digest(a) = digest(b) THEN 'same: ' || split_part(digest(a), ':', 1) ELSE 'DIFFERENT' END $$;
+
+-- MERGE ... WHEN NOT MATCHED BY SOURCE, on rows that are in a part (column deltas) and rows that are staged
+CREATE TABLE mg_t (id int, v int, note text) USING sift_table;
+CREATE TABLE mg_h (id int, v int, note text);
+INSERT INTO mg_t SELECT g, g, 'n' FROM generate_series(1, 3000) g;
+INSERT INTO mg_h SELECT g, g, 'n' FROM generate_series(1, 3000) g;
+VACUUM mg_t;
+INSERT INTO mg_t SELECT g, g, 'staged' FROM generate_series(3001, 3100) g;
+INSERT INTO mg_h SELECT g, g, 'staged' FROM generate_series(3001, 3100) g;
+MERGE INTO mg_t t USING (SELECT g AS id, g * 2 AS v FROM generate_series(1000, 3500) g) s ON t.id = s.id
+	WHEN MATCHED AND s.id % 3 = 0 THEN UPDATE SET v = s.v
+	WHEN MATCHED AND s.id % 3 = 1 THEN DELETE
+	WHEN NOT MATCHED BY SOURCE AND t.id % 2 = 0 THEN UPDATE SET note = 'orphan'
+	WHEN NOT MATCHED BY SOURCE THEN DELETE
+	WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.v, 'new');
+MERGE INTO mg_h t USING (SELECT g AS id, g * 2 AS v FROM generate_series(1000, 3500) g) s ON t.id = s.id
+	WHEN MATCHED AND s.id % 3 = 0 THEN UPDATE SET v = s.v
+	WHEN MATCHED AND s.id % 3 = 1 THEN DELETE
+	WHEN NOT MATCHED BY SOURCE AND t.id % 2 = 0 THEN UPDATE SET note = 'orphan'
+	WHEN NOT MATCHED BY SOURCE THEN DELETE
+	WHEN NOT MATCHED THEN INSERT VALUES (s.id, s.v, 'new');
+SELECT same('mg_t', 'mg_h');
+SELECT note, count(*) FROM mg_t GROUP BY note ORDER BY note;
+VACUUM mg_t;
+SELECT same('mg_t', 'mg_h');
+DROP TABLE mg_t, mg_h;
+
+-- COPY ... ON_ERROR ignore: a line that does not parse is skipped, and the rows around it (past the size of a bulk batch) are all there
+CREATE TABLE cp_t (id int, v int, note text) USING sift_table;
+CREATE TABLE cp_h (id int, v int, note text);
+COPY cp_t FROM PROGRAM 'seq 1 12000 | awk ''{ printf "%d\t%s\tn%d\n", $1, ($1 % 997 == 0 ? "oops" : $1 * 2), $1 }''' WITH (ON_ERROR ignore);
+COPY cp_h FROM PROGRAM 'seq 1 12000 | awk ''{ printf "%d\t%s\tn%d\n", $1, ($1 % 997 == 0 ? "oops" : $1 * 2), $1 }''' WITH (ON_ERROR ignore);
+SELECT same('cp_t', 'cp_h');
+SELECT count(DISTINCT ctid) = count(*) AS distinct_addresses FROM cp_t;
+UPDATE cp_t SET v = v + 1 WHERE id % 5 = 0;
+UPDATE cp_h SET v = v + 1 WHERE id % 5 = 0;
+COPY cp_t FROM PROGRAM 'seq 12001 12100 | awk ''{ printf "%d\t%s\tn%d\n", $1, ($1 % 10 == 0 ? "bad" : $1), $1 }''' WITH (ON_ERROR ignore);
+COPY cp_h FROM PROGRAM 'seq 12001 12100 | awk ''{ printf "%d\t%s\tn%d\n", $1, ($1 % 10 == 0 ? "bad" : $1), $1 }''' WITH (ON_ERROR ignore);
+SELECT same('cp_t', 'cp_h');
+DROP TABLE cp_t, cp_h;
+
+-- a row that moves to another partition, and a partition that is detached CONCURRENTLY and attached again
+CREATE TABLE pt_t (id int, k int, v text) PARTITION BY RANGE (k);
+CREATE TABLE pt_a PARTITION OF pt_t FOR VALUES FROM (0) TO (1000) USING sift_table;
+CREATE TABLE pt_b PARTITION OF pt_t FOR VALUES FROM (1000) TO (2000) USING sift_table;
+CREATE TABLE pt_c PARTITION OF pt_t FOR VALUES FROM (2000) TO (3000) USING sift_table;
+CREATE TABLE ph_t (id int, k int, v text) PARTITION BY RANGE (k);
+CREATE TABLE ph_a PARTITION OF ph_t FOR VALUES FROM (0) TO (1000);
+CREATE TABLE ph_b PARTITION OF ph_t FOR VALUES FROM (1000) TO (2000);
+CREATE TABLE ph_c PARTITION OF ph_t FOR VALUES FROM (2000) TO (3000);
+INSERT INTO pt_t SELECT g, g % 3000, 'v' || g FROM generate_series(1, 6000) g;
+INSERT INTO ph_t SELECT g, g % 3000, 'v' || g FROM generate_series(1, 6000) g;
+VACUUM pt_t;
+UPDATE pt_t SET k = k + 1000 WHERE id % 4 = 0 AND k < 2000;
+UPDATE ph_t SET k = k + 1000 WHERE id % 4 = 0 AND k < 2000;
+UPDATE pt_t SET k = k - 1500, v = 'moved' WHERE id % 9 = 0 AND k >= 1500;
+UPDATE ph_t SET k = k - 1500, v = 'moved' WHERE id % 9 = 0 AND k >= 1500;
+SELECT same('pt_t', 'ph_t');
+SELECT tableoid::regclass AS partition, count(*) FROM pt_t GROUP BY 1 ORDER BY 1;
+SELECT tableoid::regclass AS partition, count(*) FROM ph_t GROUP BY 1 ORDER BY 1;
+ALTER TABLE pt_t DETACH PARTITION pt_a CONCURRENTLY;
+ALTER TABLE ph_t DETACH PARTITION ph_a CONCURRENTLY;
+SELECT same('pt_t', 'ph_t');
+SELECT same('pt_a', 'ph_a');
+INSERT INTO pt_a SELECT g, g % 1000, 'late' FROM generate_series(10001, 10100) g;
+INSERT INTO ph_a SELECT g, g % 1000, 'late' FROM generate_series(10001, 10100) g;
+ALTER TABLE pt_t ATTACH PARTITION pt_a FOR VALUES FROM (0) TO (1000);
+ALTER TABLE ph_t ATTACH PARTITION ph_a FOR VALUES FROM (0) TO (1000);
+SELECT same('pt_t', 'ph_t');
+DELETE FROM pt_t WHERE k < 500;
+DELETE FROM ph_t WHERE k < 500;
+SELECT same('pt_t', 'ph_t');
+DROP TABLE pt_t, ph_t;
+
+-- a domain with CHECK constraints: the column delta that violates one is refused, and one added later is checked against the rows that are there
+CREATE DOMAIN pos_int AS int CHECK (VALUE > 0);
+CREATE TABLE dm_t (id int, n pos_int, c1 int, c2 int, c3 int) USING sift_table;
+CREATE TABLE dm_h (id int, n pos_int, c1 int, c2 int, c3 int);
+INSERT INTO dm_t SELECT g, g, g, g, g FROM generate_series(1, 1000) g;
+INSERT INTO dm_h SELECT g, g, g, g, g FROM generate_series(1, 1000) g;
+VACUUM dm_t;
+INSERT INTO dm_t VALUES (2000, 0, 1, 1, 1);
+UPDATE dm_t SET n = 0 WHERE id = 5;
+UPDATE dm_t SET n = n + 1 WHERE id <= 10;
+UPDATE dm_h SET n = n + 1 WHERE id <= 10;
+SELECT same('dm_t', 'dm_h');
+ALTER DOMAIN pos_int ADD CONSTRAINT small CHECK (VALUE < 500);
+DELETE FROM dm_t WHERE n >= 500;
+DELETE FROM dm_h WHERE n >= 500;
+ALTER DOMAIN pos_int ADD CONSTRAINT small CHECK (VALUE < 500);
+UPDATE dm_t SET n = 600 WHERE id = 2;
+UPDATE dm_t SET n = 499 WHERE id = 2;
+UPDATE dm_h SET n = 499 WHERE id = 2;
+INSERT INTO dm_t VALUES (3000, 500, 1, 1, 1);
+SELECT same('dm_t', 'dm_h');
+ALTER DOMAIN pos_int DROP CONSTRAINT small;
+UPDATE dm_t SET n = 2000 WHERE id = 3;
+UPDATE dm_h SET n = 2000 WHERE id = 3;
+SELECT same('dm_t', 'dm_h');
+DROP TABLE dm_t, dm_h;
+DROP DOMAIN pos_int;
+
+-- classic inheritance: rows in the parent, rows in the child, and ONLY
+CREATE TABLE inh_p (id int, v int) USING sift_table;
+CREATE TABLE inh_c (extra text) INHERITS (inh_p) USING sift_table;
+CREATE TABLE ihh_p (id int, v int);
+CREATE TABLE ihh_c (extra text) INHERITS (ihh_p);
+INSERT INTO inh_p SELECT g, g FROM generate_series(1, 500) g;
+INSERT INTO ihh_p SELECT g, g FROM generate_series(1, 500) g;
+INSERT INTO inh_c SELECT g, g, 'c' FROM generate_series(501, 800) g;
+INSERT INTO ihh_c SELECT g, g, 'c' FROM generate_series(501, 800) g;
+VACUUM inh_p;
+UPDATE inh_p SET v = v + 1 WHERE id % 3 = 0;
+UPDATE ihh_p SET v = v + 1 WHERE id % 3 = 0;
+DELETE FROM inh_p WHERE id % 50 = 0;
+DELETE FROM ihh_p WHERE id % 50 = 0;
+SELECT count(*), sum(v) FROM inh_p;
+SELECT count(*), sum(v) FROM ihh_p;
+SELECT count(*), sum(v) FROM ONLY inh_p;
+SELECT count(*), sum(v) FROM ONLY ihh_p;
+SELECT same('inh_c', 'ihh_c');
+VACUUM inh_p, inh_c;
+SELECT count(*), sum(v) FROM inh_p;
+DROP TABLE inh_c, inh_p, ihh_c, ihh_p;
+
+DROP FUNCTION same(regclass, regclass), digest(regclass);
+DROP EXTENSION pg_sift;

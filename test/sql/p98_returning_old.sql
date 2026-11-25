@@ -1,0 +1,63 @@
+-- sift_table: RETURNING OLD / NEW (PostgreSQL 18) is the heap's on rows that live in a published part, where a narrow UPDATE is a column delta: UPDATE, MERGE, INSERT ... ON CONFLICT,
+-- DELETE, the same row twice in a transaction and a savepoint that rolls back. Every statement runs on a heap twin (the row another session changed meanwhile: test/t/p98_returning_old_concurrent.sh).
+-- Before 18 the statements are not valid SQL: the function runs none and says so.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE ro_t (id int PRIMARY KEY, c1 int, c2 int, c3 int, c4 int, c5 int, v int, note text) USING sift_table;
+CREATE TABLE ro_h (LIKE ro_t INCLUDING ALL);
+INSERT INTO ro_t SELECT g, g, g, g, g, g, g * 10, 'n' || g FROM generate_series(1, 2000) g;
+INSERT INTO ro_h SELECT * FROM ro_t;
+VACUUM ro_t;
+SELECT sum(rows) AS rows_in_parts FROM sift.parts('ro_t');
+
+-- the statement with @T for the table, run on both: what it returned, and whether the two agree
+CREATE FUNCTION same_returning(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	IF current_setting('server_version_num')::int < 180000 THEN
+		RETURN 'skipped before 18';
+	END IF;
+	EXECUTE format('WITH m AS (%s) SELECT string_agg(m::text, ''; '' ORDER BY m::text) FROM m', replace(q, '@T', 'ro_t')) INTO a;
+	EXECUTE format('WITH m AS (%s) SELECT string_agg(m::text, ''; '' ORDER BY m::text) FROM m', replace(q, '@T', 'ro_h')) INTO b;
+	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same: ' || coalesce(a, '') ELSE format('DIFFERENT sift=[%s] heap=[%s]', a, b) END;
+END $$;
+
+SELECT same_returning('UPDATE @T SET v = v + 100 WHERE id <= 3 RETURNING old.id, old.v, new.v');
+SELECT same_returning('UPDATE @T SET v = v + 100 WHERE id <= 3 RETURNING old.id, old.v, new.v');
+SELECT same_returning('UPDATE @T SET c1 = c1 + 1 WHERE id BETWEEN 10 AND 11 RETURNING old.*, new.*');
+SELECT same_returning('UPDATE @T SET v = -1, note = ''x'' WHERE id BETWEEN 20 AND 21 RETURNING old.v, new.v, old.note, new.note');
+SELECT same_returning('UPDATE @T SET c3 = 77 WHERE id BETWEEN 60 AND 61 RETURNING old.c3, new.c3, old.v');
+SELECT same_returning('MERGE INTO @T t USING (SELECT g AS id FROM generate_series(30, 32) g) s ON t.id = s.id
+	WHEN MATCHED THEN UPDATE SET v = t.v + 5 RETURNING merge_action(), old.id, old.v, new.v');
+SELECT same_returning('MERGE INTO @T t USING (SELECT g AS id FROM generate_series(30, 32) g) s ON t.id = s.id
+	WHEN MATCHED THEN UPDATE SET v = t.v + 5 RETURNING merge_action(), old.id, old.v, new.v');
+SELECT same_returning('DELETE FROM @T WHERE id BETWEEN 40 AND 41 RETURNING old.id, old.v, old.note');
+SELECT same_returning('INSERT INTO @T (id, v) VALUES (50, 1), (5000, 2) ON CONFLICT (id) DO UPDATE SET v = @T.v + 1000 RETURNING old.v, new.v, new.id');
+
+-- the same row twice in one transaction, a savepoint that rolls back between
+CREATE FUNCTION twice(t regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text := ''; o int; n int;
+BEGIN
+	IF current_setting('server_version_num')::int < 180000 THEN
+		RETURN 'skipped before 18';
+	END IF;
+	EXECUTE format('WITH u AS (UPDATE %s SET v = v + 1 WHERE id = 80 RETURNING old.v AS o, new.v AS n) SELECT o, n FROM u', t) INTO o, n;
+	r := r || o || '>' || n || ' ';
+	BEGIN
+		EXECUTE format('WITH u AS (UPDATE %s SET v = v + 1 WHERE id = 80 RETURNING old.v AS o, new.v AS n) SELECT o, n FROM u', t) INTO o, n;
+		r := r || o || '>' || n || ' ';
+		RAISE EXCEPTION 'undo';
+	EXCEPTION WHEN raise_exception THEN NULL;
+	END;
+	EXECUTE format('WITH u AS (UPDATE %s SET v = v + 10 WHERE id = 80 RETURNING old.v AS o, new.v AS n) SELECT o, n FROM u', t) INTO o, n;
+	RETURN r || o || '>' || n;
+END $$;
+SELECT twice('ro_t') AS sift, twice('ro_h') AS heap;
+SELECT twice('ro_t') = twice('ro_h') AS same_again;
+
+SELECT (SELECT count(*) FROM ro_t) = (SELECT count(*) FROM ro_h) AS same_count,
+	   (SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM ro_t x) = (SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM ro_h x) AS same_rows;
+
+DROP FUNCTION same_returning(text), twice(regclass);
+DROP TABLE ro_t, ro_h;
+DROP EXTENSION pg_sift;
