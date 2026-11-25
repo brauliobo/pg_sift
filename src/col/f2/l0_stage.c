@@ -591,7 +591,7 @@ sift_stage_set_bulk(SiftTxnStage *st, uint32 flush_rows, uint64 budget_bytes)
 }
 
 static void
-add_delete(SiftTxnStage *st, const uint8 *key, uint64 tid, uint64 succ_tid, bool is_update)
+add_delete(SiftTxnStage *st, const uint8 *key, uint64 tid, uint64 succ_tid, TransactionId xmax, bool is_update)
 {
 	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
 
@@ -601,7 +601,7 @@ add_delete(SiftTxnStage *st, const uint8 *key, uint64 tid, uint64 succ_tid, bool
 		st->dels = st->dels ? repalloc(st->dels, st->capdels * sizeof(SiftStageDel)) : palloc(st->capdels * sizeof(SiftStageDel));
 	}
 	MemoryContextSwitchTo(old);
-	st->dels[st->ndels] = (SiftStageDel) {.tid = tid,.succ_tid = succ_tid,.xmax = GetCurrentTransactionId(),.cmax = GetCurrentCommandId(false),
+	st->dels[st->ndels] = (SiftStageDel) {.tid = tid,.succ_tid = succ_tid,.xmax = xmax,.cmax = GetCurrentCommandId(false),
 		.subxid = GetCurrentSubTransactionId(),.is_update = is_update};
 	memcpy(st->dels[st->ndels++].key, key, SIFT_BOUND_BYTES);
 	if (st->del_htab == NULL || (uint32) st->ndels * 4 > st->del_htab_cap * 3)
@@ -615,20 +615,19 @@ add_delete(SiftTxnStage *st, const uint8 *key, uint64 tid, uint64 succ_tid, bool
 void
 sift_stage_delete(SiftTxnStage *st, const uint8 *key, uint64 tid)
 {
-	add_delete(st, key, tid, 0, false);
+	add_delete(st, key, tid, 0, GetCurrentTransactionId(), false);
 }
 
 void
 sift_stage_delete_update(SiftTxnStage *st, const uint8 *key, uint64 old_tid, uint64 new_tid)
 {
-	add_delete(st, key, old_tid, new_tid, true);
+	add_delete(st, key, old_tid, new_tid, GetCurrentTransactionId(), true);
 }
 
 void
 sift_stage_delete_spec_abort(SiftTxnStage *st, const uint8 *key, uint64 tid)
 {
-	add_delete(st, key, tid, 0, false);
-	st->dels[st->ndels - 1].xmax = FrozenTransactionId;
+	add_delete(st, key, tid, 0, FrozenTransactionId, false);
 }
 
 /* The row at the place goes (the table is valid): the table follows the rows the buffer moves */
