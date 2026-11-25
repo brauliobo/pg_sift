@@ -344,6 +344,16 @@ const_is(const Expr *e, int64 n)
 	}
 }
 
+/* a numeric constant with digits after the point: a sum that adds it shows them, the sum of the values alone does not */
+static bool
+has_decimals(const Expr *e)
+{
+	int64		v;
+	int			scale;
+
+	return const_scaled((const Const *) e, &v, &scale) && scale > 0;
+}
+
 typedef struct CaseAgg
 {
 	Expr	   *cond;
@@ -369,7 +379,7 @@ case_agg_of(const Aggref *a, CaseAgg *ca)
 	*ca = (CaseAgg) {.cond = w->expr,.val = w->result,.type = ce->casetype};
 	if (ce->defresult == NULL || (IsA(ce->defresult, Const) && ((Const *) ce->defresult)->constisnull))
 		return true;
-	ca->else_zero = const_is(ce->defresult, 0);
+	ca->else_zero = const_is(ce->defresult, 0) && !has_decimals(ce->defresult);
 	return ca->else_zero;
 }
 
