@@ -361,6 +361,8 @@ sift_esc_rel_is_escalated(const RelFileLocator *loc)
 	return rel_escalated(find_lock(loc, SIFT_ESC_PART_ALL));
 }
 
+static void note_transition(const SiftLocalLock *l);
+
 void
 sift_esc_note_tier1_acquire(const RelFileLocator *loc, uint64 part_id, LockTupleMode mode, bool new_row)
 {
@@ -370,6 +372,11 @@ sift_esc_note_tier1_acquire(const RelFileLocator *loc, uint64 part_id, LockTuple
 	Assert(pl != NULL && rl != NULL);
 	pl->tier1_rows += new_row;
 	rl->tier1_rows += new_row;
+	if ((int8) mode > pl->held_max || (int8) mode > rl->held_max)
+	{
+		note_transition(pl);
+		note_transition(rl);
+	}
 	pl->held_max = Max(pl->held_max, (int8) mode);
 	rl->held_max = Max(rl->held_max, (int8) mode);
 }
@@ -448,7 +455,8 @@ note_transition(const SiftLocalLock *l)
 	if (nsub == capsub)
 		grow_sublog();
 	sublog[nsub] = (SiftEscSubRecord) {.locator = l->loc,.part_id = l->part_id,.subxid = sub,.holder_xid = GetCurrentTransactionId(),
-		.prev_intent = l->intent_mode,.prev_esc = l->esc_mode,.took_split_pin = false};
+		.prev_intent = l->intent_mode,.prev_esc = l->esc_mode,.prev_held_max = l->held_max,.prev_esc_sub = l->esc_sub,
+		.took_split_pin = false};
 	sub_chain_push(nsub++);
 }
 
@@ -487,6 +495,8 @@ undo_record(const SiftEscSubRecord *r)
 	else if (r->prev_esc >= 0 && l->esc_mode != r->prev_esc && l->published)
 		dir_apply(DIR_MODE, &a);
 	l->esc_mode = r->prev_esc;
+	l->esc_sub = r->prev_esc_sub;
+	l->held_max = r->prev_held_max;
 	l->intent_mode = r->prev_intent;
 	if (r->took_split_pin && rl != NULL)
 		rl->split_pinned = false;

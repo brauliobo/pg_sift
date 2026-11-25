@@ -139,6 +139,8 @@ typedef struct SiftEscSubRecord
 	TransactionId holder_xid;
 	int8		prev_intent;	/* -1: none, else a LockTupleMode */
 	int8		prev_esc;		/* -1: not held coarsely, else a LockTupleMode */
+	int8		prev_held_max;	/* the strongest entry taken before, -1 for none */
+	SubTransactionId prev_esc_sub;	/* the (sub)transaction that held the coarse lock before */
 	bool		took_split_pin;	/* this one made the transaction hold SIFT_F2_SPLIT_LOCK_BLKNO */
 	uint32		chain;			/* the next record of its bucket, plus one: the log finds a record by a hash */
 } SiftEscSubRecord;
