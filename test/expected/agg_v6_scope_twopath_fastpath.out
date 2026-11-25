@@ -96,15 +96,15 @@ SELECT * FROM matrix();
       3 | latest_20_rows            | same scope, ring
       3 | sum_by_month              | same scope, summary
       3 | top_members               | same aggregate scan
-      4 | by_member                 | same aggregate scan
+      4 | by_member                 | same normal
       4 | count_by_kind             | same scope, scan of the facts (the members of the key)
-      4 | count_by_score            | same aggregate scan
+      4 | count_by_score            | same normal
       4 | date_range_count          | same scope, summary
-      4 | distinct_members_by_month | same aggregate scan
+      4 | distinct_members_by_month | same normal
       4 | filtered_count            | same scope, scan of the facts (the members of the key)
       4 | latest_20_rows            | same scope, ring
       4 | sum_by_month              | same scope, summary
-      4 | top_members               | same aggregate scan
+      4 | top_members               | same normal
 (36 rows)
 
 -- 2. the statement the view is written as: IN, EXISTS, a join to the view or to a sub-select of it, and the union written in the statement
@@ -164,15 +164,15 @@ SELECT * FROM matrix();
       3 | latest_20_rows            | same scope, ring
       3 | sum_by_month              | same scope, summary
       3 | top_members               | same aggregate scan
-      4 | by_member                 | same aggregate scan
+      4 | by_member                 | same normal
       4 | count_by_kind             | same scope, scan of the facts (the members of the key)
-      4 | count_by_score            | same aggregate scan
+      4 | count_by_score            | same normal
       4 | date_range_count          | same scope, summary
-      4 | distinct_members_by_month | same aggregate scan
+      4 | distinct_members_by_month | same normal
       4 | filtered_count            | same scope, scan of the facts (the members of the key)
       4 | latest_20_rows            | same scope, join (the summary is not exact for the snapshot)
       4 | sum_by_month              | same scope, join (the summary is not exact for the snapshot)
-      4 | top_members               | same aggregate scan
+      4 | top_members               | same normal
 (36 rows)
 
 -- 4. facts change: rows are added, moved to another member and deleted
@@ -196,7 +196,7 @@ SELECT * FROM matrix();
       2 | count_by_score            | same aggregate scan
       2 | date_range_count          | same scope, summary
       2 | distinct_members_by_month | same aggregate scan
-      2 | filtered_count            | same scope, scan of the facts (the members of the key)
+      2 | filtered_count            | same normal
       2 | latest_20_rows            | same scope, ring
       2 | sum_by_month              | same scope, join (the summary is not exact for the snapshot)
       2 | top_members               | same aggregate scan
@@ -209,12 +209,12 @@ SELECT * FROM matrix();
       3 | latest_20_rows            | same scope, ring
       3 | sum_by_month              | same scope, summary
       3 | top_members               | same aggregate scan
-      4 | by_member                 | same aggregate scan
+      4 | by_member                 | same normal
       4 | count_by_kind             | same scope, scan of the facts (the members of the key)
       4 | count_by_score            | same aggregate scan
       4 | date_range_count          | same scope, summary
       4 | distinct_members_by_month | same aggregate scan
-      4 | filtered_count            | same scope, scan of the facts (the members of the key)
+      4 | filtered_count            | same normal
       4 | latest_20_rows            | same scope, join (the summary is not exact for the snapshot)
       4 | sum_by_month              | same scope, join (the summary is not exact for the snapshot)
       4 | top_members               | same aggregate scan
@@ -251,7 +251,7 @@ SELECT * FROM matrix();
       3 | latest_20_rows            | same scope, ring
       3 | sum_by_month              | same scope, summary
       3 | top_members               | same aggregate scan
-      4 | by_member                 | same aggregate scan
+      4 | by_member                 | same normal
       4 | count_by_kind             | same scope, scan of the facts (the members of the key)
       4 | count_by_score            | same aggregate scan
       4 | date_range_count          | same scope, summary
