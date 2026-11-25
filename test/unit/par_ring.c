@@ -167,6 +167,7 @@ ring_may_feed(void *vc)
 static const SiftParOps throttle_ops = {.feed_slot = ring_feed,.release_slot = ring_release,.fallback_item = ring_replay,.phase1 = ring_phase1,.finish = ring_finish,
 	.overflow_drain = ring_drain,.may_feed = ring_may_feed,.release_emits = true};
 
+#ifndef __SANITIZE_THREAD__
 /* the statement is cancelled inside may_feed, as an error or a FATAL of the operator would end it */
 static bool
 ring_may_feed_cancelled(void *vc)
@@ -184,6 +185,7 @@ ring_may_feed_cancelled(void *vc)
 
 static const SiftParOps may_feed_cancel_ops = {.feed_slot = ring_feed,.release_slot = ring_release,.fallback_item = ring_replay,.phase1 = ring_phase1,
 	.finish = ring_finish,.overflow_drain = ring_drain,.may_feed = ring_may_feed_cancelled};
+#endif
 
 typedef struct RunArgs
 {

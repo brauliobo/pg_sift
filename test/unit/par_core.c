@@ -431,6 +431,7 @@ test_pool_nested(void)
 }
 
 /* a process forked while the pool has threads (COPY ... PROGRAM, a procedural language) has none of them: its pool is idle, and makes its own */
+#ifndef __SANITIZE_THREAD__
 static void
 test_pool_fork(void)
 {
@@ -460,6 +461,7 @@ test_pool_fork(void)
 	sift_par_pool_wait();
 	CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
+#endif
 
 static void
 test_pool_jobs(void)
@@ -796,8 +798,10 @@ main(void)
 		test_pool_faults();
 	if (unit_wants("pool_nested"))
 		test_pool_nested();
+#ifndef __SANITIZE_THREAD__
 	if (unit_wants("pool_fork"))
 		test_pool_fork();
+#endif
 	test_run_sums();
 	test_run_failures();
 	test_run_drain();
