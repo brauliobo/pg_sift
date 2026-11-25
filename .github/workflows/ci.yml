@@ -39,7 +39,7 @@ on:
         description: 'The PostgreSQL majors of the quick tier, e.g. 18 for a branch with a large diff'
         default: '17 18 19'
       only:
-        description: 'A regex on job names, e.g. ^(installcheck|tap-shell)-(col_scope_merge_end|agg_spill_contexts)$: run only those tests, one job for each major in `versions` and one on arm64 when 18 is in it, and no other job but lint'
+        description: 'A regex on job names, e.g. ^(installcheck|tap-shell)-(col/scope/merge_end|agg/spill_context)$: run only those tests, one job for each major in `versions` and one on arm64 when 18 is in it, and no other job but lint'
         default: ''
       formats:
         description: 'The formats of the quick tier: 2 (the default format of 6.0), 1 (Format 1.0, on the build of the Format 2.0 shards) or both'
@@ -431,7 +431,7 @@ jobs:
         run: |
           prefix="old-lib-$RUNNER_OS-$RUNNER_ARCH-pg${{ matrix.pg }}-gcc$(gcc -dumpfullversion)-shard${{ matrix.shard }}-"
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_*.sh', 'test/t/compat/old_lib_refusal.sh', 'test/t/compat/pg_upgrade/basic.sh', 'test/t/compat/upgrade/basic.sh', 'test/t/compat/upgrade/standby.sh', 'test/t/lib/compat.bash') }}" >> "$GITHUB_OUTPUT"
+          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat/**/*.sh', 'test/t/lib/compat.bash') }}" >> "$GITHUB_OUTPUT"
 
       - name: Cache the older releases
         id: oldlib-cache
@@ -571,7 +571,7 @@ jobs:
             test/regression.diffs
           if-no-files-found: ignore
 
-  # the hardened flavor (docs/SAFETY.md: stack protector, FORTIFY_SOURCE=3, zero-initialized locals, trap-mode UBSan) of PostgreSQL 18 on x86, built by the job and tested on the decoders and readers of stored bytes
+  # the hardened flavor (docs/ARCHITECTURE.md: stack protector, FORTIFY_SOURCE=3, zero-initialized locals, trap-mode UBSan) of PostgreSQL 18 on x86, built by the job and tested on the decoders and readers of stored bytes
   # (scripts/hardened.sh --quick: six tests; the whole list runs by hand). It has a job of its own so that no test shard waits for its build, and starts with `changes`
   hardened:
     name: Hardened build (PostgreSQL 18)
