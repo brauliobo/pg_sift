@@ -123,6 +123,9 @@ sift_spec_int_keys(const SiftPartSpec *spec)
 /* The 40 bytes that route a row to its partition and order it: its sort cells then its address; all zero for an unkeyed spec */
 extern void sift_row_key(const SiftPartSpec *spec, const SiftCell *cells, uint64 tid, uint8 *key);
 
+/* Row r moves to the address tid: its key follows when it holds the address (a key of more columns than a bound holds does not) */
+extern void sift_rowbuf_set_tid(SiftRowBuf *rb, int r, uint64 tid);
+
 /* The same bytes without the address: the sort cells only, the order a part keeps whatever order it gives rows that tie (sift_rowbuf_cluster) */
 extern void sift_row_key_prefix(const SiftPartSpec *spec, const SiftCell *cells, uint8 *key);
 

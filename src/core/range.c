@@ -113,6 +113,21 @@ sift_bound_push_tid(SiftBound *b, uint64_t tid)
 	return true;
 }
 
+bool
+sift_bound_set_tid(SiftBound *b, uint64_t tid)
+{
+	uint32_t	at = 0;
+
+	if (tid > SIFT_BOUND_TID_MAX)
+		return false;
+	while (at < b->len && b->bytes[at] != TAG_TID)
+		at += 1 + elem_bytes(b->bytes[at]);
+	if (at >= b->len)
+		return false;
+	put_be(&b->bytes[at + 1], tid, TID_BYTES);
+	return true;
+}
+
 void
 sift_bound_pack(const SiftBound *b, uint8_t *out)
 {

@@ -54,6 +54,8 @@ extern bool sift_bound_push_null(SiftBound *b);
 extern bool sift_bound_push_key_i64(SiftBound *b, int64_t v, unsigned flags);
 extern bool sift_bound_push_key_null(SiftBound *b, unsigned flags);
 extern bool sift_bound_push_tid(SiftBound *b, uint64_t tid);
+/* Replace the address a bound has: false (the bound unchanged) when it has none or the address is above SIFT_BOUND_TID_MAX */
+extern bool sift_bound_set_tid(SiftBound *b, uint64_t tid);
 
 /*
  * A bound as stored: the payload padded with zeros to SIFT_BOUND_BYTES, whose memcmp is the order of sift_bound_cmp (a tag is never 0, so a shorter bound sorts before its extensions). Unpacking

@@ -391,6 +391,16 @@ sift_row_key_prefix(const SiftPartSpec *spec, const SiftCell *cells, uint8 *key)
 }
 
 void
+sift_rowbuf_set_tid(SiftRowBuf *rb, int r, uint64 tid)
+{
+	SiftBound	b;
+
+	rb->tid[r] = tid;
+	if (sift_bound_unpack(rb->keys[r], &b) && sift_bound_set_tid(&b, tid))
+		sift_bound_pack(&b, rb->keys[r]);
+}
+
+void
 sift_rowbuf_add_granule(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map)
 {
 	sift_rowbuf_add_granule_mapped(rb, v, vers, spec, code_map, NULL);

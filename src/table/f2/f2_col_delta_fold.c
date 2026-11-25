@@ -408,7 +408,7 @@ fold_record(Fold *f, const RecIter *it, SiftRowBuf *rows, SiftExtent **release, 
 		rec_patches(it, &pt, k);
 		leaf = patch_leaf(f->store, pt.attnum);
 		if (pt.attnum == SIFT_CD_ATT_TID_REMAP)
-			rows->tid[pt.row_ordinal] = (uint64) pt.val.i;
+			sift_rowbuf_set_tid(rows, pt.row_ordinal, (uint64) pt.val.i);
 		else if (leaf >= 0 && sift_col_delta_fold_apply(rows, leaf, &pt, &old, &oldlen))
 			release_wide(f->rel, old, oldlen, release, nrelease);
 	}
