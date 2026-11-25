@@ -51,7 +51,7 @@
 #include "table/wal.h"
 
 #define SIFT_TBL_ROWS_PER_VBLOCK	MaxHeapTuplesPerPage
-#define SIFT_TBL_VBLOCK_FIRST_RESERVE 16	/* vblocks the first single-row refill of a session takes: 4,656 addresses */
+#define SIFT_TBL_VBLOCK_FIRST_RESERVE 1	/* vblocks the first single-row refill of a session takes: 291 addresses; each refill takes 4 times the last, up to SIFT_TBL_VBLOCK_RESERVE */
 #define SIFT_TBL_VBLOCK_RESERVE		1024	/* vblocks taken from the metapage at once: one Block 0 lock per 297,984 rows */
 #define SIFT_TBL_VBLOCK_BULK_RESERVE 8192	/* the same for a bulk insert: one Block 0 lock per 2,383,872 rows */
 #define SIFT_TBL_OFFMASK_WORDS		((SIFT_TBL_ROWS_PER_VBLOCK + 64) / 64)
@@ -236,7 +236,7 @@ extern bool sift_tbl_f2_attr_equal(Form_pg_attribute att, Datum a, bool anull, D
 extern void sift_tbl_f2_tid_next(Relation rel, SiftF2Store *store, ItemPointer tid);
 extern void sift_tbl_f2_tid_reset(SiftF2Store *store);
 
-/* Room for nrows addresses in the reserved range, taking SIFT_TBL_VBLOCK_BULK_RESERVE vblocks from the metapage when it has not (once for a bulk insert call, not for a row) */
+/* Room for nrows addresses in the reserved range, taking twice the vblocks of the rows, at most SIFT_TBL_VBLOCK_BULK_RESERVE, from the metapage when it has not (once for a bulk insert call, not for a row) */
 extern void sift_tbl_f2_tid_ensure(Relation rel, SiftF2Store *store, uint64 nrows);
 
 /* ---- bulk insert (f2_bulk_ins.c) ---- */

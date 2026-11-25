@@ -18,7 +18,7 @@ SELECT count(*), count(DISTINCT ctid) AS addresses FROM tr_t;
 SELECT 4294967294 - vblocks_left AS next_vblock FROM sift.space('tr_t');
  next_vblock 
 -------------
-          16
+           1
 (1 row)
 
 -- another session after the commit, then this one again

@@ -64,7 +64,7 @@ sift_tbl_f2_tid_next(Relation rel, SiftF2Store *store, ItemPointer tid)
 
 	if (p->next_vblock >= p->end_vblock)
 	{
-		/* STOR[STOR-TBL-11]: adaptive vblock TID reserve (16->1024 vblocks; tightens SEC_TID_INDEX delta width) */
+		/* STOR[STOR-TBL-11]: adaptive vblock TID reserve (1->4->16->64->256->1024 vblocks; tightens SEC_TID_INDEX delta width) */
 		p->refill_vblocks = Min(Max(p->refill_vblocks * 4, SIFT_TBL_VBLOCK_FIRST_RESERVE), SIFT_TBL_VBLOCK_RESERVE);
 		sift_tbl_vm_lease_open(rel);
 		tid_refill(rel, p, p->refill_vblocks);
@@ -86,8 +86,10 @@ sift_tbl_f2_tid_ensure(Relation rel, SiftF2Store *store, uint64 nrows)
 
 	if (left < nrows)
 	{
+		uint64		needed = sift_batch_vblocks(nrows, 1);
+
 		sift_tbl_vm_lease_open(rel);
-		tid_refill(rel, p, Max(sift_batch_vblocks(nrows, SIFT_TBL_VBLOCK_RESERVE), SIFT_TBL_VBLOCK_BULK_RESERVE));
+		tid_refill(rel, p, Max(needed, Min(SIFT_TBL_VBLOCK_BULK_RESERVE, needed * 2)));
 	}
 }
 
