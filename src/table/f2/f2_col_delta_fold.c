@@ -48,6 +48,7 @@ typedef struct Trail
 	BlockNumber *dir_blks;
 	int			ndir;
 	uint32		nrecords;
+	FullTransactionId min_xid;	/* the oldest writer of the pages (invalid with none) */
 	PGAlignedBlock page;		/* the page that was read last */
 } Trail;
 
@@ -95,12 +96,16 @@ trail_summarize(Trail *t, const BlockNumber *blks)
 	for (int i = 0; i < t->npages && why == NULL; i++)
 	{
 		SiftColDeltaBatch seen;
+		FullTransactionId page_min;
 
 		why = trail_read(t, blks[i]);
 		if (why == NULL)
 			why = sift_col_delta_check_link(t->page.data, i + 1, i == 0 ? InvalidBlockNumber : blks[i - 1]);
 		if (why != NULL)
 			break;
+		page_min = sift_col_delta_page_hdr(t->page.data)->min_xid;
+		if (FullTransactionIdIsValid(page_min) && (!FullTransactionIdIsValid(t->min_xid) || FullTransactionIdPrecedes(page_min, t->min_xid)))
+			t->min_xid = page_min;
 		sift_col_delta_page_summary(t->page.data, &seen);
 		t->pages[i] = (TrailPage) {blks[i], t->nrecords, seen.nentries, seen.part_gen, seen.granule_lo, seen.granule_hi};
 		t->nrecords += seen.nentries;
@@ -677,6 +682,19 @@ sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransac
 	pfree(live);
 	pfree(parts);
 	return gone;
+}
+
+FullTransactionId
+sift_col_delta_min_xid(Relation rel, const SiftPartitionEntry *entry)
+{
+	Trail		t;
+	FullTransactionId lo;
+
+	if (!trail_open(&t, rel, entry))
+		return InvalidFullTransactionId;
+	lo = t.min_xid;
+	trail_free(&t);
+	return lo;
 }
 
 /* ---- the parts VACUUM sends to the compaction ---- */

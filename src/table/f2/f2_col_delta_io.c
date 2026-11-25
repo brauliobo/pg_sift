@@ -860,19 +860,6 @@ sift_col_delta_stage_event(Relation rel, SiftTxnStage *st, SiftStageEvent ev, Su
 
 /* ---- vacuum ---- */
 
-FullTransactionId
-sift_col_delta_min_xid(Relation rel, const SiftPartitionEntry *entry)
-{
-	SiftColDeltaChain chain;
-	FullTransactionId lo;
-
-	if (!load_chain(rel, entry, 0, &chain))
-		return InvalidFullTransactionId;
-	lo = sift_col_delta_chain_min_xid(&chain);
-	sift_col_delta_chain_free(&chain);
-	return lo;
-}
-
 static int
 gen_cmp(const void *a, const void *b)
 {

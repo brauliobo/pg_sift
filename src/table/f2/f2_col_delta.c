@@ -584,21 +584,6 @@ sift_col_delta_chain_free(SiftColDeltaChain *c)
 }
 
 FullTransactionId
-sift_col_delta_chain_min_xid(const SiftColDeltaChain *c)
-{
-	FullTransactionId lo = InvalidFullTransactionId;
-
-	for (int i = 0; i < c->npages; i++)
-	{
-		FullTransactionId m = sift_col_delta_page_hdr(sift_col_delta_chain_page(c, i))->min_xid;
-
-		if (FullTransactionIdIsValid(m) && (!FullTransactionIdIsValid(lo) || FullTransactionIdPrecedes(m, lo)))
-			lo = m;
-	}
-	return lo;
-}
-
-FullTransactionId
 sift_col_delta_chain_max_xid(const SiftColDeltaChain *c)
 {
 	FullTransactionId hi = InvalidFullTransactionId;
