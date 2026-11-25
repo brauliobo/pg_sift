@@ -6,6 +6,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <unistd.h>
 
 #include "core/hash.h"
 #include "core/par/morsel.h"
@@ -19,6 +20,12 @@
 
 typedef struct RingCtx
 {
+	struct RingCtx *inner;		/* a run the leader makes from feed_slot, of the item inner_at */
+	uint32		inner_at;
+	uint32		cancel_in_may_feed_at;	/* the fed item at which may_feed is interrupted */
+	atomic_int	hang;			/* the first item a helper takes does not end until hang_release */
+	atomic_int	hang_taken;
+	atomic_int	hang_release;
 	pthread_t	leader;
 	uint32		slots;
 	uint32		nitems;
@@ -54,6 +61,8 @@ on_leader(const RingCtx *c)
 	CHECK(pthread_equal(pthread_self(), c->leader));
 }
 
+static void ring_nested(RingCtx *inner);
+
 static bool
 ring_feed(void *vc, uint32 item)
 {
@@ -61,6 +70,8 @@ ring_feed(void *vc, uint32 item)
 	const uint32 s = item % c->slots;
 
 	on_leader(c);
+	if (c->inner != NULL && item == c->inner_at)
+		ring_nested(c->inner);
 	CHECK(item == c->fed && c->slot_owner[s] == -1);
 	if (item == c->nitems)
 		return false;
@@ -111,6 +122,9 @@ ring_phase1(void *vc, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *d
 	CHECK(scratch->used == 0);
 	CHECK(c->slot_owner[s] == lo);
 	CHECK(c->slot_val[s] == value(lo));
+	if (t != 0 && atomic_load(&c->hang) && atomic_exchange(&c->hang_taken, 1) == 0)
+		while (!atomic_load(&c->hang_release))
+			usleep(1000);
 	*done = 0;
 	CHECK(sift_arena_alloc(scratch, 64, 8) != NULL);
 	if (lo == c->fail_at)
@@ -153,6 +167,24 @@ ring_may_feed(void *vc)
 static const SiftParOps throttle_ops = {.feed_slot = ring_feed,.release_slot = ring_release,.fallback_item = ring_replay,.phase1 = ring_phase1,.finish = ring_finish,
 	.overflow_drain = ring_drain,.may_feed = ring_may_feed,.release_emits = true};
 
+/* the statement is cancelled inside may_feed, as an error or a FATAL of the operator would end it */
+static bool
+ring_may_feed_cancelled(void *vc)
+{
+	RingCtx    *c = vc;
+
+	on_leader(c);
+	if (c->fed == c->cancel_in_may_feed_at)
+	{
+		InterruptPending = QueryCancelPending = true;
+		CHECK_FOR_INTERRUPTS();
+	}
+	return true;
+}
+
+static const SiftParOps may_feed_cancel_ops = {.feed_slot = ring_feed,.release_slot = ring_release,.fallback_item = ring_replay,.phase1 = ring_phase1,
+	.finish = ring_finish,.overflow_drain = ring_drain,.may_feed = ring_may_feed_cancelled};
+
 typedef struct RunArgs
 {
 	const SiftParOps *ops;
@@ -171,20 +203,39 @@ run_it(void *arg)
 }
 
 static RunArgs
-setup(RingCtx *c, uint32 nthreads, uint32 slots)
+ring_init(RingCtx *c, uint32 nthreads, uint32 slots)
 {
 	RunArgs		a = {.c = c,.cfg = {.mode = SIFT_PAR_RING,.nthreads = nthreads,.ring_slots = slots}};
 
-	pgshim_reset();
 	memset(c, 0, sizeof(*c));
 	c->leader = pthread_self();
 	c->slots = slots > 0 ? slots : Min(2 * nthreads, SIFT_PAR_RING_MAX);
 	c->nitems = ITEMS;
-	c->fail_at = c->cancel_at = UINT32_MAX;
+	c->fail_at = c->cancel_at = c->cancel_in_may_feed_at = UINT32_MAX;
 	for (int s = 0; s < SIFT_PAR_RING_MAX; s++)
 		c->slot_owner[s] = -1;
 	a.ar = sift_par_arenas_create(CurrentMemoryContext, nthreads, 64 << 10, 64 << 10, 64 << 10);
 	return a;
+}
+
+static RunArgs
+setup(RingCtx *c, uint32 nthreads, uint32 slots)
+{
+	pgshim_reset();
+	return ring_init(c, nthreads, slots);
+}
+
+/* what an operator's feed_slot may do on the leader: run a ring of its own, on the threads the pool has left for it */
+static void
+ring_nested(RingCtx *inner)
+{
+	const int	nthreads = sift_par_pool_threads();
+	RunArgs		b = ring_init(inner, nthreads, 0);
+
+	CHECK(nthreads == 1);
+	inner->nitems = 50;
+	run_it(&b);
+	CHECK(b.ok && inner->finished && inner->fed == 50);
 }
 
 static uint64
@@ -318,7 +369,109 @@ test_ring_throttle(void)
 	}
 }
 
+/* a run started from the callback of a run (the leader is in feed_slot, the pool is busy) runs on the leader alone, and the run around it goes on */
+static void
+test_ring_nested(void)
+{
+	static RingCtx c,
+				inner;
+
+	for (uint32 w = 2; w <= 4; w++)
+	{
+		RunArgs		a = setup(&c, w, 0);
+
+		c.inner = &inner;
+		c.inner_at = ITEMS / 3;
+		run_it(&a);
+		CHECK(a.ok && c.finished && c.fed == ITEMS && !sift_par_pool_busy());
+		check_all(&c, ITEMS);
+	}
+}
+
 #ifndef __SANITIZE_THREAD__
+/* the statement is cancelled inside may_feed: the leader does not hold the lock of the ring while it is in the operator, so the pool is stopped and the run unwinds */
+static void
+test_ring_may_feed_cancel(void)
+{
+	static RingCtx c;
+
+	alarm(60);
+	for (uint32 w = 2; w <= 4; w++)
+	{
+		RunArgs		a = setup(&c, w, 0);
+		bool		caught = false;
+
+		a.ops = &may_feed_cancel_ops;
+		c.cancel_in_may_feed_at = 700;
+		PG_TRY();
+		{
+			run_it(&a);
+		}
+		PG_CATCH();
+		{
+			caught = true;
+		}
+		PG_END_TRY();
+		CHECK(caught && !c.finished && !sift_par_pool_busy());
+		for (uint32 i = 0; i < c.fed; i++)
+			CHECK(atomic_load(&c.released[i]) == 1);
+	}
+	alarm(0);
+}
+
+typedef struct Canceller
+{
+	RingCtx    *c;
+	bool		taken;
+} Canceller;
+
+/* once a helper holds an item that does not end, cancels the statement and says whether the leader took the cancel before the item ended */
+static void *
+canceller_main(void *p)
+{
+	Canceller  *k = p;
+	const int	before = par_host_cancels_taken;
+
+	while (!atomic_load(&k->c->hang_taken))
+		usleep(1000);
+	usleep(200000);
+	InterruptPending = QueryCancelPending = true;
+	for (int i = 0; i < 3000 && par_host_cancels_taken == before; i++)
+		usleep(1000);
+	k->taken = par_host_cancels_taken > before;
+	atomic_store(&k->c->hang_release, 1);
+	return NULL;
+}
+
+/* a cancel reaches the leader while it waits for a helper that is in the middle of an item: the leader does not wait for the item to end */
+static void
+test_ring_leader_cancel(void)
+{
+	static RingCtx c;
+
+	for (uint32 w = 2; w <= 4; w += 2)
+	{
+		RunArgs		a = setup(&c, w, 0);
+		Canceller	k = {.c = &c};
+		pthread_t	tid;
+		bool		caught = false;
+
+		atomic_store(&c.hang, 1);
+		CHECK(pthread_create(&tid, NULL, canceller_main, &k) == 0);
+		PG_TRY();
+		{
+			run_it(&a);
+		}
+		PG_CATCH();
+		{
+			caught = true;
+		}
+		PG_END_TRY();
+		CHECK(pthread_join(tid, NULL) == 0);
+		CHECK(caught && k.taken && !c.finished && !sift_par_pool_busy());
+	}
+}
+
 /* a cancel of the leader in the middle of a run: the pool is stopped and waited for, every slot that was made is passed on */
 static void
 test_ring_cancel(void)
@@ -357,8 +510,14 @@ main(void)
 	test_ring_failure();
 	test_ring_overflow();
 	test_ring_throttle();
+	if (unit_wants("ring_nested"))
+		test_ring_nested();
 #ifndef __SANITIZE_THREAD__
 	test_ring_cancel();
+	if (unit_wants("ring_may_feed_cancel"))
+		test_ring_may_feed_cancel();
+	if (unit_wants("ring_leader_cancel"))
+		test_ring_leader_cancel();
 #endif
 	par_host_proc_exit();
 	puts("par_ring: ok");

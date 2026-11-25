@@ -14,6 +14,9 @@ bool		IsUnderPostmaster = true;
 BackendType MyBackendType = B_BACKEND;
 int			ParallelWorkerNumber = -1;
 int			max_parallel_workers_per_gather = 3;
+int			max_parallel_workers = 64;
+bool		sift_parallel_scan = true;
+volatile int par_host_cancels_taken;
 volatile sig_atomic_t InterruptPending = false;
 volatile sig_atomic_t QueryCancelPending = false;
 sigjmp_buf *PG_exception_stack = NULL;
@@ -63,6 +66,7 @@ ProcessInterrupts(void)
 	if (QueryCancelPending)
 	{
 		QueryCancelPending = false;
+		par_host_cancels_taken++;
 		siglongjmp(*PG_exception_stack, 1);
 	}
 }

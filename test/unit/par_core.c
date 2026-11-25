@@ -4,6 +4,8 @@
 #include "postgres.h"
 
 #include <math.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "core/hash.h"
 #include "core/par/morsel.h"
@@ -299,6 +301,7 @@ test_bound_keys(void)
 /* ---- pool: jobs on helper threads that have every signal blocked, cancel, the drain of a FATAL exit, the end of the threads ---- */
 
 extern int	max_parallel_workers_per_gather;
+extern bool sift_parallel_scan;
 extern bool IsUnderPostmaster;
 extern int	ParallelWorkerNumber;
 
@@ -308,7 +311,19 @@ typedef struct PoolJob
 	atomic_int	stop;
 	atomic_int	started;
 	atomic_int	blocked;
+	atomic_int	faults_open;
 } PoolJob;
+
+static const int fault_signals[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS, SIGTRAP};
+
+static bool
+faults_unblocked(const sigset_t *cur)
+{
+	for (size_t i = 0; i < sizeof(fault_signals) / sizeof(fault_signals[0]); i++)
+		if (sigismember(cur, fault_signals[i]))
+			return false;
+	return true;
+}
 
 static void
 job_count(int worker, void *ctx)
@@ -320,6 +335,8 @@ job_count(int worker, void *ctx)
 	pthread_sigmask(SIG_BLOCK, NULL, &cur);
 	if (sigismember(&cur, SIGINT) && sigismember(&cur, SIGTERM) && sigismember(&cur, SIGUSR1) && sigismember(&cur, SIGALRM))
 		atomic_fetch_add(&j->blocked, 1);
+	if (faults_unblocked(&cur))
+		atomic_fetch_add(&j->faults_open, 1);
 	atomic_fetch_add(&j->ran[worker], 1);
 }
 
@@ -365,6 +382,83 @@ test_pool_threads(void)
 	CHECK(!sift_par_pool_usable() && sift_par_pool_threads() == 1);
 	IsUnderPostmaster = true;
 	max_parallel_workers_per_gather = 3;
+}
+
+/* the settings that turn parallelism down turn the threads of the backend down: no worker may run, none is made */
+static void
+test_pool_settings(void)
+{
+	max_parallel_workers_per_gather = 8;
+	sift_parallel_scan = false;
+	CHECK(sift_par_pool_threads() == 1);
+	sift_parallel_scan = true;
+	max_parallel_workers = 0;
+	CHECK(sift_par_pool_threads() == 1);
+	max_parallel_workers = 2;
+	CHECK(sift_par_pool_threads() == 3);
+	max_parallel_workers = 64;
+	CHECK(sift_par_pool_threads() == 9);
+	max_parallel_workers_per_gather = 3;
+}
+
+/* the signals the hardware raises in the thread that faults are never blocked in a thread of the pool: blocking them is undefined, and a fault would hang or take the process without a report */
+static void
+test_pool_faults(void)
+{
+	static PoolJob j;
+
+	for (int n = 2; n <= 4; n++)
+	{
+		memset(&j, 0, sizeof(j));
+		sift_par_pool_start(n, job_count, job_stop, &j);
+		sift_par_pool_wait();
+		CHECK(atomic_load(&j.faults_open) == n - 1);
+	}
+}
+
+/* a job in flight owns the pool: what runs on the leader meanwhile (an operator's callback) gets one thread, never a second job */
+static void
+test_pool_nested(void)
+{
+	static PoolJob j;
+
+	memset(&j, 0, sizeof(j));
+	sift_par_pool_start(4, job_spin, job_stop, &j);
+	CHECK(sift_par_pool_threads() == 1);
+	job_stop(&j);
+	sift_par_pool_wait();
+	CHECK(sift_par_pool_threads() == 4);
+}
+
+/* a process forked while the pool has threads (COPY ... PROGRAM, a procedural language) has none of them: its pool is idle, and makes its own */
+static void
+test_pool_fork(void)
+{
+	static PoolJob j;
+	int			status;
+	pid_t		pid;
+
+	memset(&j, 0, sizeof(j));
+	sift_par_pool_start(4, job_spin, job_stop, &j);
+	while (atomic_load(&j.started) < 3)
+		;
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0)
+	{
+		alarm(20);
+		memset(&j, 0, sizeof(j));
+		CHECK(!sift_par_pool_busy());
+		sift_par_pool_start(3, job_count, job_stop, &j);
+		sift_par_pool_wait();
+		CHECK(atomic_load(&j.ran[1]) == 1 && atomic_load(&j.ran[2]) == 1);
+		par_host_before_shmem_exit();
+		par_host_proc_exit();
+		_exit(0);
+	}
+	job_stop(&j);
+	sift_par_pool_wait();
+	CHECK(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 static void
@@ -694,8 +788,16 @@ main(void)
 	test_topk(300, 1000);
 	test_topk(5000, 1);
 	test_pool_threads();
+	if (unit_wants("pool_settings"))
+		test_pool_settings();
 	test_pool_jobs();
 	test_pool_stop();
+	if (unit_wants("pool_faults"))
+		test_pool_faults();
+	if (unit_wants("pool_nested"))
+		test_pool_nested();
+	if (unit_wants("pool_fork"))
+		test_pool_fork();
 	test_run_sums();
 	test_run_failures();
 	test_run_drain();

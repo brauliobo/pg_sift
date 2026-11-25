@@ -645,6 +645,7 @@ TESTING_REGRESS += merge_heal
 TESTING_REGRESS += merge_parts
 TESTING_REGRESS += on_scaling_guards
 TESTING_REGRESS += par_core_pool
+TESTING_REGRESS += par_core_pool_limits
 TESTING_REGRESS += part_agg_parity
 TESTING_REGRESS += position_blocks
 TESTING_REGRESS += prod95_query_stream_join
