@@ -347,7 +347,7 @@ step_5(Word *w)
 int
 sift_analyze_stem_en(char *s, int len)
 {
-	Word		w = {s, len};
+	Word		w = {.w = s, .len = len, .p1 = 0, .p2 = 0};
 	bool		y_found;
 
 	for (int i = 0; i < len; i++)
