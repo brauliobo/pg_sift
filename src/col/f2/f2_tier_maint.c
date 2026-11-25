@@ -13,6 +13,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "col/f2/f2_drop_parts.h"
 #include "col/f2/f2_part_idx.h"
 #include "col/f2/f2_tier_host.h"
 #include "col/f2/part_format.h"
@@ -58,6 +59,15 @@ entry_locked(Relation rel, const SiftPartitionEntry *e, SiftManifestRead *mr)
 	return mr->n > 0 && mr->entries[0].part_id == e->part_id ? &mr->entries[0] : NULL;
 }
 
+/* The chain of column deltas of the partition patched the time column of the slot: the time bounds of its parts do not hold */
+static bool
+time_dirty(Relation rel, const SiftPartitionEntry *e, int slot)
+{
+	SiftColDeltaAnchor a = (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0 ? sift_manifest_read_col_delta(rel, e) : sift_col_delta_anchor_none();
+
+	return sift_drop_time_dirty(&a, slot);
+}
+
 /* ---- TTL ---- */
 
 static void
@@ -67,7 +77,7 @@ ttl_commit(const Step *s, int slot, int64 cutoff, const SiftPartitionEntry *e)
 				nupd = 0,
 				nrel;
 	SiftPartDesc *parts = sift_manifest_read_parts(s->rel, e, &np);
-	SiftTtlPlan *plan = sift_ttl_plan(parts, np, slot, cutoff, s->horizon);
+	SiftTtlPlan *plan = sift_ttl_plan(parts, np, slot, time_dirty(s->rel, e, slot) ? PG_INT64_MIN : cutoff, s->horizon);
 	SiftPartDesc *upd = palloc(Max(plan->nmark + plan->nunmark, 1) * sizeof(SiftPartDesc));
 	SiftExtent *rel_ext;
 	SiftManifestEdit edit;
@@ -295,9 +305,10 @@ tier_partition(const Step *s, const TierRun *t, const SiftPartitionEntry *listed
 	{
 		int			np;
 		SiftPartDesc *parts = sift_manifest_read_parts(s->rel, e, &np);
+		bool		dirty = time_dirty(s->rel, e, t->slot);
 
 		for (int i = 0; i < np && ok && *budget > 0; i++)
-			if (sift_tier_part_eligible(&parts[i], t->slot, t->cutoff))
+			if (sift_tier_part_eligible(&parts[i], t->slot, t->cutoff, dirty))
 			{
 				ok = tier_one(s, t, e, &parts[i]);
 				*budget -= ok;
