@@ -13,7 +13,7 @@ typedef struct SiftF2Build SiftF2Build;
 
 /* A participant's build state in the current memory context; the budget of a run is its share of maintenance_work_mem among nparticipants */
 extern SiftF2Build *sift_f2_build_begin(Relation heap, Relation index, int nparticipants);
-extern uint64 sift_f2_build_budget(int nparticipants);
+extern uint64 sift_f2_build_budget(int nparticipants, int noperators);
 
 /* Reads the heap (all of it for scan NULL, else the share of a parallel scan), writes the last run; the tuples the heap scan saw */
 extern double sift_f2_build_scan(SiftF2Build *bs, IndexInfo *info, TableScanDesc scan, bool progress);

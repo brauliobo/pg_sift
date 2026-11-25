@@ -94,6 +94,7 @@ write_run(BuildState *bs)
 	SiftColIn  *cols;
 	SiftRows	rows;
 	MemoryContext old;
+	Size		freed;
 
 	if (bs->rb->n == 0)
 		return;
@@ -113,7 +114,9 @@ write_run(BuildState *bs)
 	write_ended(bs);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(bs->runcx);
+	freed = bs->rb->mem_bytes;
 	sift_rowbuf_free(bs->rb);
+	sift_mem_release_os(freed);
 	old = MemoryContextSwitchTo(bs->cx);
 	bs->rb = sift_rowbuf_new(&bs->f->spec);
 	MemoryContextSwitchTo(old);
@@ -172,10 +175,10 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool tupl
 }
 
 uint64
-sift_f2_build_budget(int nparticipants)
+sift_f2_build_budget(int nparticipants, int noperators)
 {
-	/* MEM[MEM-COL-11]: f2 build run budget, the share of 3/4 of maintenance_work_mem of each participant (no floor; a run holds at least one granule) */
-	return (uint64) maintenance_work_mem * 1024 * 3 / 4 / Max(nparticipants, 1);
+	/* MEM[MEM-COL-11]: f2 build run budget, 3/4 of the share each of the noperators (the build, and the sort of a unique index) of each participant has of the maintenance budget */
+	return sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, nparticipants, noperators) * 3 / 4;
 }
 
 SiftF2Build *
@@ -193,8 +196,8 @@ sift_f2_build_begin(Relation heap, Relation index, int nparticipants)
 	bs->rb = sift_rowbuf_new(&bs->f->spec);
 	bs->slot = table_slot_create(heap, NULL);
 	bs->runcx = sift_mem_allocset_create(bs->cx, "sift f2 build run");
-	bs->budget = sift_f2_build_budget(nparticipants);
-	bs->unique = sift_f2_unique_build_begin(heap, index);
+	bs->budget = sift_f2_build_budget(nparticipants, index->rd_index->indisunique ? 2 : 1);
+	bs->unique = sift_f2_unique_build_begin(heap, index, nparticipants);
 	return bs;
 }
 

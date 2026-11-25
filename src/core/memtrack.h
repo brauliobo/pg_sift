@@ -56,6 +56,8 @@ typedef struct SiftMemTracker
 	Size		base;			/* what the tree held when the tracker began (sift_mem_rebase): not counted */
 } SiftMemTracker;
 
+/* the kB of SIFT_BUDGET_MAINT_MEM: autovacuum_work_mem in an autovacuum worker that has one, else maintenance_work_mem (for the callers whose API takes kB) */
+extern int	sift_mem_maint_kb(void);
 extern Size sift_mem_budget_bytes(SiftBudgetClass cls, int nparticipants, int noperators);
 
 /* a tracker over parent_cx itself (create_child false) or over a child of it that sift_mem_end() deletes, with the slice of cls that nparticipants processes and noperators operators leave */

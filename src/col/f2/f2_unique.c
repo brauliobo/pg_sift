@@ -530,7 +530,7 @@ struct SiftF2UniqueBuild
 };
 
 SiftF2UniqueBuild *
-sift_f2_unique_build_begin(Relation heap, Relation index)
+sift_f2_unique_build_begin(Relation heap, Relation index, int nparticipants)
 {
 	SiftF2UniqueBuild *u;
 	AttrNumber	cols[INDEX_MAX_KEYS];
@@ -553,7 +553,8 @@ sift_f2_unique_build_begin(Relation heap, Relation index)
 		TupleDescInitEntryCollation(u->desc, i + 1, u->key.collation[i]);
 	}
 	sift_tupdesc_finalize(u->desc);
-	u->sort = tuplesort_begin_heap(u->desc, u->key.n, cols, u->key.lt, u->key.collation, nulls_first, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	u->sort = tuplesort_begin_heap(u->desc, u->key.n, cols, u->key.lt, u->key.collation, nulls_first,
+								 (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, nparticipants, 2) / 1024), NULL, TUPLESORT_NONE);
 	u->put = MakeSingleTupleTableSlot(u->desc, &TTSOpsVirtual);
 	return u;
 }

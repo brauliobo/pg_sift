@@ -38,8 +38,8 @@ extern bool sift_f2_unique_lookup(IndexScanDesc scan, MemoryContext cx, SiftUniq
 
 typedef struct SiftF2UniqueBuild SiftF2UniqueBuild;
 
-/* The rows of a build, collected by their key in a sort bounded by maintenance_work_mem: NULL for an index that is not unique */
-extern SiftF2UniqueBuild *sift_f2_unique_build_begin(Relation heap, Relation index);
+/* The rows of a build, collected by their key in a sort bounded by the share of the maintenance budget of one of nparticipants and of the two operators of a unique build: NULL for an index that is not unique */
+extern SiftF2UniqueBuild *sift_f2_unique_build_begin(Relation heap, Relation index, int nparticipants);
 extern void sift_f2_unique_build_add(SiftF2UniqueBuild *u, const Datum *values, const bool *isnull);
 
 /* Sorts what was added and raises 23505 for two rows of one key; frees the sort */

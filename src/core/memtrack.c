@@ -7,6 +7,7 @@
 
 #include "executor/nodeHash.h"
 #include "miscadmin.h"
+#include "postmaster/autovacuum.h"
 #include "utils/memutils.h"
 
 #ifdef __GLIBC__
@@ -20,6 +21,18 @@
 #define TRIM_ACCUM_BYTES	((Size) 2 * 1024 * 1024)
 
 static Size trim_accum;
+
+static bool
+maint_is_autovacuum(void)
+{
+	return AmAutoVacuumWorkerProcess() && autovacuum_work_mem != -1;
+}
+
+int
+sift_mem_maint_kb(void)
+{
+	return maint_is_autovacuum() ? autovacuum_work_mem : maintenance_work_mem;
+}
 
 Size
 sift_mem_budget_bytes(SiftBudgetClass cls, int nparticipants, int noperators)
@@ -39,7 +52,7 @@ sift_mem_budget_bytes(SiftBudgetClass cls, int nparticipants, int noperators)
 			floor = SIFT_MEM_MIN_QUERY_BYTES;
 			break;
 		default:
-			raw = (Size) maintenance_work_mem * 1024;
+			raw = (Size) sift_mem_maint_kb() * 1024;
 			floor = SIFT_MEM_MIN_MAINT_BYTES;
 			break;
 	}
@@ -107,7 +120,7 @@ sift_mem_alloc(SiftMemTracker *t, MemoryContext cx, Size bytes)
 	if (bytes > MaxAllocSize || bytes > t->budget)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						errmsg("%s needs an allocation of %zu bytes, more than its memory budget of %zu bytes", t->name, bytes, t->budget),
-						errhint("Raise %s.", t->cls == SIFT_BUDGET_MAINT_MEM ? "maintenance_work_mem" : "work_mem")));
+						errhint("Raise %s.", t->cls != SIFT_BUDGET_MAINT_MEM ? "work_mem" : maint_is_autovacuum() ? "autovacuum_work_mem" : "maintenance_work_mem")));
 	return MemoryContextAlloc(cx, bytes);
 }
 

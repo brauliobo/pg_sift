@@ -109,7 +109,7 @@ compact_partition(Relation rel, const SiftPartSpec *spec, const SiftPartitionEnt
 	int			np,
 				ngroups;
 	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
-	SiftCompactGroup *groups = sift_compact_plan(parts, np, (uint64) maintenance_work_mem * 1024 / 4, hot_cut, &ngroups);
+	SiftCompactGroup *groups = sift_compact_plan(parts, np, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 4, 1), hot_cut, &ngroups);
 
 	for (int k = 0; k < ngroups; k++)
 	{
@@ -175,7 +175,7 @@ hand_off(Relation rel, const SiftF2Rel *f, const SiftManifestRead *mr, int64 hot
 					ngroups;
 		SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
 
-		(void) sift_compact_plan(parts, np, (uint64) maintenance_work_mem * 1024 / 4, hot_cut, &ngroups);
+		(void) sift_compact_plan(parts, np, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 4, 1), hot_cut, &ngroups);
 		if (e->l0_slab_blk != InvalidBlockNumber && !sift_f2_maint_request(rel, SIFT_MK_SLAB_FLUSH, e->part_id))
 			return false;
 		if ((ngroups > 0 || (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0) && !sift_f2_maint_request(rel, SIFT_MK_COMPACT_PART, e->part_id))
@@ -271,7 +271,7 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 		for (int i = 0; i < mr.n; i++)
 			if (!compact_partition(rel, &f->spec, &mr.entries[i], horizon, hot_cut, cx, budget, &written, false))
 				break;
-		sift_mem_release_os((Size) maintenance_work_mem * 1024);
+		sift_mem_release_os(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 		if (written < budget)
 		{
 			(void) sift_compact_merge_neighbours(rel);

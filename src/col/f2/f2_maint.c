@@ -497,7 +497,7 @@ f2_maintenance_due(FunctionCallInfo fcinfo)
 					n;
 		SiftPartDesc *pd = sift_manifest_read_parts(index, &mr.entries[i], &np);
 
-		(void) sift_compact_plan(pd, np, (uint64) maintenance_work_mem * 1024 / 4, sift_f2_hot_cut(f), &n);
+		(void) sift_compact_plan(pd, np, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 4, 1), sift_f2_hot_cut(f), &n);
 		groups += n;
 	}
 	index_close(index, AccessShareLock);
