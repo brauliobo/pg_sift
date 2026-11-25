@@ -303,7 +303,7 @@ ent_store(void *dst, const void *cand, SiftArena *str, const void *ctx)
 
 		if (sift_par_group_is_str(sp, j) && len != SIFT_STR_NULL && (e->buf[j] == NULL || len > e->scap[j]))
 		{
-			const uint32 cap = Max(64, pg_nextpower2_32(len));
+			const uint32 cap = pg_nextpower2_32(Max(64, len));
 			uint8	   *buf = sift_arena_alloc(str, cap, 8);
 
 			if (buf == NULL)
