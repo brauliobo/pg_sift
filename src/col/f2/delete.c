@@ -364,9 +364,8 @@ append_deltas(Relation rel, uint64 part_id, SiftPartDesc *parts, PartMarks *pm, 
 
 		if (pm[p].nm == 0 || pm[p].unaborted || !sift_dvd_part_takes(&parts[p]))
 			continue;
-		gran = palloc(pm[p].nm * sizeof(SiftDvDeltaGran));
+		gran = palloc0((pm[p].ngranules + pm[p].nm / SIFT_DV_DELTA_MAX_MARKS + 1) * sizeof(SiftDvDeltaGran));
 		rows = palloc(pm[p].nm * sizeof(uint16));
-		memset(gran, 0, pm[p].nm * sizeof(SiftDvDeltaGran));
 		dp[nd] = (SiftDvDeltaPart) {.desc = &parts[p],.gran = gran,.ngran = delta_grans(pm[p].marks, pm[p].nm, gran, rows)};
 		at[nd++] = p;
 	}

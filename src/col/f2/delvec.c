@@ -101,7 +101,7 @@ sift_dv_merge(const SiftDv *base, const SiftDvMark *marks, int n, uint64 part_ge
 	dv->part_gen = part_gen;
 	dv->dv_gen = dv_gen;
 	dv->ngranules = ngranules;
-	dv->gran = palloc0((nbase + n + 1) * sizeof(SiftDvGran));
+	dv->gran = palloc0((ngranules + 1) * sizeof(SiftDvGran));
 	while (b < nbase || i < n)
 	{
 		uint32		gid = b == nbase ? t[i].granule : i == n ? base->gran[b].granule_id : Min(base->gran[b].granule_id, t[i].granule);
