@@ -89,9 +89,6 @@ test/expected/col_skip_map_1.out	8e34e83ed753d32b8083aa0bdb2bfd821a0902ae	17 18 
 test/expected/col_skip_map_1.out	e5109153b15a7c8fecc365a3b3f702e68b611a10	17 18 18-arm64 19	sm_z | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
 test/expected/col_skip_map_1.out	ef2511451d8fb33dd89e74eae4a9d95250d2a627	17 18 18-arm64 19	sm_o | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
 test/expected/col_skip_map_1.out	f6c04dafc71d45625470833e31b521767c771f06	17 18 18-arm64 19	sm_o | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
-test/expected/col_topn_offset_1.out	3855a99e3a1312abe7e20e1bec123f6a0a95e425	19	confirmed | 74
-test/expected/col_topn_offset_1.out	5f3a76f93fb85af3330441f90a0bd7ac88fa9f31	19	result   | n
-test/expected/col_topn_offset_1.out	65f85ed967261617e3035128ac302bfb1b8195bd	19	confirmed | 95
 test/expected/col_unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	17	ERROR:  duplicate key value violates unique constraint "oc_t"
 test/expected/col_unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
 test/expected/col_unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
