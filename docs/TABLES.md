@@ -108,7 +108,7 @@ Ten options are documented: 5 core storage options, and 5 analytical options tha
 | `compression` | `''` (auto) | `auto`, `lz4`, `zstd`, `none`, `col=codec` | Compression codec override for L1/L2 parts |
 | `key_order` | `''` (auto) | `auto`, `off`, or 1..8 columns (`col [ASC\|DESC]`) | Online physical sort and partition key |
 | `paths` | `''` (auto) | `auto`, `off`, or path spec | JSONB shredding paths for the JSONB columns of the table |
-| `dead_rewrite_pct` | `0` (inherit) | `0..100` | Dead-row percentage triggering partition compaction (`0` inherits `sift.dead_rewrite_pct`, default `15`) |
+| `dead_rewrite_pct` | `0` (inherit) | `0..100` | Dead-row percentage triggering partition compaction (`0` inherits `sift.dead_rewrite_pct`, default `10`) |
 | `auto_defrag` | `on` | `true` / `false` | Enables background compaction (inherits `sift.async_maintenance`) |
 
 **Shared analytical options** (same grammar as `sift_col`)

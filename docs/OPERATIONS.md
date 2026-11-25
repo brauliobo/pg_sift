@@ -330,12 +330,12 @@ Set `sift.on_corruption = 'error'` if you prefer queries to fail fast rather tha
 ### 7.2 What `VACUUM` and Compaction Give Back
 
 - **Reuse, not return:** `VACUUM` and compaction free the extents of dead rows and replaced parts to `SiftFsm`; later writes of the same relation reuse them, so a steady churn does not grow the file. The file shrinks only at its tail.
-- **Tail shrink:** The relation is truncated when the free tail is at least 4 MB and 15% of the file and no standby, snapshot, or lock blocks it (`tail_shrink_blocked` in `sift.health()`, `shrink_blocked_by` in `sift.space()`). Free extents in the middle of the file stay in the file and are reused; `pg_relation_size` does not drop for them.
+- **Tail shrink:** The relation is truncated when the free tail is at least 4 MB and 15% of the file and no standby, snapshot, or lock blocks it (`tail_shrink_blocked` in `sift.health()`, `shrink_blocked_by` in `sift.space()`). The lock of the cut is tried every 5 ms and never queued for: a `VACUUM` tries it for up to 250 ms, autovacuum and the workers for up to 50 ms, so a reader that arrives is never made to wait behind the cut. Free extents in the middle of the file stay in the file and are reused; `pg_relation_size` does not drop for them.
 - **Cost:** Compaction writes a part only when it passes `dead_rewrite_pct` and reuses untouched granules as raw bytes, but a rewrite still writes WAL and a new part before the old one is freed, so allow transient space for the largest partition being compacted ([section 2](#2-disk-compression-and-wal-sizing)).
 
 ## 8. Self-Tuning Background Maintenance
 
-Maintenance needs no `pg_cron`, no manual `sift.maintain()` calls, and no extra settings. A commit, delete, or scan that finds work due enqueues it, and up to `sift.max_maint_workers` workers drain the queue; with `shared_preload_libraries = 'pg_sift'` a launcher starts at boot, and without it workers start on demand. Workers hold no transaction or snapshot while they wait, so they never pin the cluster's oldest transaction, and a worker that dies mid-step leaves only unreferenced extents that the next `VACUUM` or maintenance pass reclaims.
+Maintenance needs no `pg_cron`, no manual `sift.maintain()` calls, and no extra settings. A commit, delete, or scan that finds work due enqueues it, and up to `sift.max_maint_workers` workers (4 by default, never more than half of `max_worker_processes`) drain the queue of 2048 requests; with `shared_preload_libraries = 'pg_sift'` a launcher starts at boot, and without it workers start on demand. Workers hold no transaction or snapshot while they wait, so they never pin the cluster's oldest transaction, and a worker that dies mid-step leaves only unreferenced extents that the next `VACUUM` or maintenance pass reclaims.
 
 Work is ordered by four priority tiers, so a tiny flush never waits behind a large cold rewrite:
 

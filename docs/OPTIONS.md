@@ -28,7 +28,7 @@
 | `sift.async_maintenance` | `on` | `on`, `off` | superuser | Run the background maintenance scheduler: L0 flush, compaction, scope refresh, and sift_table defrag ([OPERATIONS.md](OPERATIONS.md#5-emergency-switches)) |
 | `sift.backend_cache_kb` | `16384` (16 MB) | `0..max` kB | superuser | Hard per-backend LRU cache cap (-1 unlimited removed in 6.0) ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
 | `sift.count_refusals` | `off` | `on`, `off` | superuser | Record aggregate refusal counts in sift.stats() ([ARCHITECTURE.md](ARCHITECTURE.md#refusal-slugs)) |
-| `sift.dead_rewrite_pct` | `15` | `1..100` | superuser | Default dead-row percentage triggering compaction of sift_col and sift_table (per relation: dead_rewrite_pct) ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
+| `sift.dead_rewrite_pct` | `10` | `1..100` | superuser | Default dead-row percentage triggering compaction of sift_col and sift_table (per relation: dead_rewrite_pct) ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
 | `sift.enable_agg` | `on` | `on`, `off` | session | Allow planner to select Custom Scan (SiftAgg) and Top-N pushdown ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `sift.enable_col_scan` | `on` | `on`, `off` | session | Allow planner to use sift_col bitmap and index-only scans ([ANALYTICS.md](ANALYTICS.md#6-bitmap-and-index-only-scans-siftcol__ops)) |
 | `sift.enable_scan` | `on` | `on`, `off` | session | Allow planner to use sift BM25 ranked and count(*) index scans ([SEARCH.md](SEARCH.md#1-creating-a-sift-index-and-include-filters)) |
@@ -43,7 +43,7 @@
 | `sift.maintenance_naptime` | `2000 ms` | `200..60000` ms | reload | Base interval and backoff floor for background maintenance workers ([OPERATIONS.md](OPERATIONS.md#5-emergency-switches)) |
 | `sift.maintenance_wal_rate` | `0` | `0..1048576` kB/s | superuser | Max WAL rate for background compaction and sift_table defrag ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
 | `sift.max_expansions` | `512` | `1..1000000` | superuser | Max terms expanded by a wildcard, prefix, regex, or fuzzy BM25 leaf before merging ([SEARCH.md](SEARCH.md#2-siftql-query-syntax)) |
-| `sift.max_maint_workers` | `2` | `0..8` | reload | Cap on the dynamic pool of background maintenance workers ([OPERATIONS.md](OPERATIONS.md#5-emergency-switches)) |
+| `sift.max_maint_workers` | `4` | `0..16` | reload | Cap on the dynamic pool of background maintenance workers ([OPERATIONS.md](OPERATIONS.md#5-emergency-switches)) |
 | `sift.on_corruption` | `quarantine` | `quarantine`, `error` | superuser | Quarantine damaged indexes and fall back to heap, or raise errors immediately ([OPERATIONS.md](OPERATIONS.md#6-quarantine-and-corruption-recovery)) |
 | `sift.parallel_scan` | `on` | `on`, `off` | session | Allow parallel scan, aggregation, build, and compaction plans (bounded by max_parallel_workers_per_gather) ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.rls_scores` | `off` | `on`, `off` | superuser | Permit BM25 ranked scans under row-level security ([SEARCH.md](SEARCH.md#8-row-level-security-siftrls_scores)) |
