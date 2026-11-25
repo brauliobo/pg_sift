@@ -13,6 +13,7 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "nodes/execnodes.h"
+#include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
@@ -280,6 +281,8 @@ sift_tbl_f2_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKe
 	if ((flags & SO_TYPE_ANALYZE) != 0)
 		snapshot = GetActiveSnapshot();
 	RelationIncrementReferenceCount(rel);
+	if ((flags & SO_TYPE_SEQSCAN) != 0)
+		pgstat_count_heap_scan(rel);
 	s->base.rs_rd = rel;
 	s->base.rs_snapshot = snapshot;
 	s->base.rs_nkeys = nkeys;

@@ -13,6 +13,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
+#include "pgstat.h"
 #include "utils/datum.h"
 #include "utils/rel.h"
 #include "utils/reltrigger.h"
@@ -181,6 +182,7 @@ sift_tbl_f2_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, Sift
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 	stage_row(rel, sift_f2_store_open(rel), slot, cid, false);
 	log_change(rel, SIFT_TBL_OP_INSERT, slot, NULL);
+	pgstat_count_heap_insert(rel, 1);
 }
 
 static bool
@@ -201,15 +203,16 @@ sift_tbl_f2_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, Comma
 	if (sift_batch_route(nslots, published, has_row_triggers(rel)) == SIFT_BATCH_DIRECT)
 	{
 		sift_tbl_f2_bulk_insert(rel, store, slots, nslots, cid);
-		return;
 	}
-	for (int i = 0; i < nslots; i++)
-	{
-		stage_row(rel, store, slots[i], cid, false);
-		if (published)
-			log_published(rel, SIFT_TBL_OP_INSERT, slots[i], NULL);
-		CHECK_FOR_INTERRUPTS();
-	}
+	else
+		for (int i = 0; i < nslots; i++)
+		{
+			stage_row(rel, store, slots[i], cid, false);
+			if (published)
+				log_published(rel, SIFT_TBL_OP_INSERT, slots[i], NULL);
+			CHECK_FOR_INTERRUPTS();
+		}
+	pgstat_count_heap_insert(rel, nslots);
 }
 
 void
@@ -229,6 +232,7 @@ sift_tbl_f2_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, Command
 	sift_tbl_rowlock_set_speculative(rel, tid, specToken, true);
 	if (sift_tbl_extra(store)->has_partial_or_expr_unique)
 		sift_stage_flush(rel);
+	pgstat_count_heap_insert(rel, 1);
 }
 
 void
@@ -249,6 +253,7 @@ sift_tbl_f2_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, uint3
 			key_of_slot(rel, store, slot, tid, key);
 			sift_stage_delete_spec_abort(st, key, tid);
 		}
+		pgstat_count_heap_delete(rel);
 		return;
 	}
 	if (need_flush)
@@ -314,6 +319,7 @@ sift_tbl_f2_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot 
 	sift_tbl_f2_record_delete(rel, packed, cid, changingPart);
 	log_change(rel, SIFT_TBL_OP_DELETE, NULL, old);
 	ExecDropSingleTupleTableSlot(old);
+	pgstat_count_heap_delete(rel);
 	return TM_Ok;
 }
 
@@ -419,6 +425,7 @@ sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, C
 	}
 	log_change(rel, SIFT_TBL_OP_UPDATE, slot, old);
 	ExecDropSingleTupleTableSlot(old);
+	pgstat_count_heap_update(rel, patch.reason == SIFT_CD_OK, false);
 	return TM_Ok;
 }
 
