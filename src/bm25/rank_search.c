@@ -2,6 +2,7 @@
  * bm25/rank_search.c - the ranked search: best-first over units and blocks, verification and the top-k.
  */
 #include "rank_int.h"
+#include "bm25/deadkeys.h"
 #include "core/memtrack.h"
 
 /* Index entry of a hit whose visible tuple sits elsewhere on the page (HOT chain) */
@@ -194,6 +195,16 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 		return;
 	if (vis != key)
 		hot_remember(r, vis, key);
+}
+
+void
+sift_rank_dead_tid(SiftRanker *r, ItemPointer tid)
+{
+	SiftKey		key = sift_key_from_tid(tid);
+
+	for (int s = 0; s < r->plan->nsegs; s++)
+		if (sift_seg_live_rank(r->plan->seg[s], key) >= 0)
+			sift_deadkeys_note(r->plan->seg[s], key);
 }
 
 /* Verifies the deferred candidates that tie with the final worst score and keeps the ones that pass */

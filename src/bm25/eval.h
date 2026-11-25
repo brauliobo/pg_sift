@@ -224,6 +224,8 @@ extern SiftRankStats sift_rank_stats;
 
 extern SiftRanker *sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg);
 extern bool sift_rank_next(SiftRanker *r, ItemPointer tid, float4 *score);
+/* The tuple at tid is dead to every snapshot, not only to the one of the statement: the ranker leaves its doc out of the next searches (bm25/deadkeys.h) */
+extern void sift_rank_dead_tid(SiftRanker *r, ItemPointer tid);
 extern float4 sift_rank_max_score(SiftRanker *r);	/* best verified score, runs the search */
 extern void sift_rank_end(SiftRanker *r);
 

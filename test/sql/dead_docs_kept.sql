@@ -1,0 +1,47 @@
+-- A delete leaves the document in its segment until a VACUUM of the index clears it, and a ranked search verifies in the heap every document that outscores its K-th hit: with the
+-- best documents deleted, every statement read their heap pages again. A document whose row is dead to every snapshot is kept by the backend, so the next searches leave it out;
+-- the rows are the heap's, with the dead documents verified or not, and after the VACUUM that clears them and the inserts that take their TIDs.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+
+CREATE TABLE d (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
+INSERT INTO d SELECT g, CASE WHEN g % 10 = 0 THEN 'alpha alpha alpha' ELSE 'alpha beta filler' || (g % 7) END FROM generate_series(1, 6000) g;
+SET client_min_messages = warning;
+CREATE INDEX d_idx ON d USING sift (body);
+RESET client_min_messages;
+VACUUM d;
+
+CREATE FUNCTION heap_checks(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'heap checks' THEN RETURN substring(l from '([0-9]+) heap checks')::int; END IF;
+	END LOOP;
+END $$;
+CREATE FUNCTION top20() RETURNS text LANGUAGE sql AS $$
+	SELECT string_agg(id::text, ',') FROM (SELECT id FROM d WHERE body @@> 'alpha' ORDER BY sift.score(ctid) DESC, id LIMIT 20) t
+$$;
+CREATE FUNCTION top20_heap() RETURNS text LANGUAGE sql AS $$
+	SELECT string_agg(id::text, ',') FROM (SELECT id FROM d WHERE body @@> 'alpha' ORDER BY sift.score(ctid) DESC, id LIMIT 20) t
+$$ SET sift.enable_scan = off;
+SET sift.enable_scan = on;
+
+\set q 'SELECT id FROM d WHERE body @@> $$alpha$$ ORDER BY sift.score(ctid) DESC LIMIT 20'
+SELECT heap_checks(:'q') AS clean \gset
+
+-- the 600 best documents deleted: the first search verifies them, the next ones do not
+DELETE FROM d WHERE id % 10 = 0;
+SELECT heap_checks(:'q') AS first \gset
+SELECT heap_checks(:'q') AS next \gset
+SELECT :first > 3 * :clean AS first_verifies_the_dead, :next <= 2 * :clean AS next_is_the_clean_search;
+SELECT top20() = top20_heap() AS same_rows_after_delete;
+
+-- the VACUUM clears them, and new documents take their TIDs
+VACUUM d;
+INSERT INTO d SELECT 100000 + g, 'alpha alpha alpha' FROM generate_series(1, 300) g;
+SELECT top20() = top20_heap() AS same_rows_after_vacuum_and_insert;
+SELECT count(*) FROM d WHERE body @@> 'alpha' AND id > 100000;
+
+DROP FUNCTION heap_checks(text), top20(), top20_heap();
+DROP TABLE d;
+DROP EXTENSION pg_sift;

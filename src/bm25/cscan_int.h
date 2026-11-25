@@ -131,6 +131,7 @@ typedef struct SiftScanState
 extern void load_semi(SiftScanState *ss);
 extern TupleTableSlot *fill_scan_slot(SiftScanState *ss, float4 score);
 extern bool scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc);
+extern bool ranked_tuple_visible(SiftScanState *ss, ItemPointer tid);
 extern void reset_iter(SiftScanState *ss);
 extern TupleTableSlot *next_row(SiftScanState *ss, ItemPointer entry);
 extern void keyed_search(SiftScanState *ss);

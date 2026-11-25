@@ -2,6 +2,7 @@
  * bm25/rank.c - the ranked search: term cursors, block bounds, accumulation and scoring of a block.
  */
 #include "rank_int.h"
+#include "bm25/deadkeys.h"
 
 #ifdef SIFT_TESTING
 bool		sift_test_block_tf_check = true;
@@ -710,6 +711,7 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 		if (!(live >> pg & 1))
 			memset(wk->res[pg], 0, sizeof(wk->res[pg]));
+	sift_deadkeys_clear(seg, dc->sb, b, wk->res);
 	if (fs && !filter_result(p, fs, b, wk))
 		return 0;
 	if (bsb && !bridge_result(p->bridge, bsb, b, wk))

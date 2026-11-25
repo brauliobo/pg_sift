@@ -276,7 +276,7 @@ keyed_next(SiftScanState *ss)
 			KeyRow	   *r = ss->krows[ss->kpos++];
 			ItemPointerData tid = r->tid;
 
-			if (sift_vis_fetch(&ss->vis, &tid, ss->heapslot))
+			if (ranked_tuple_visible(ss, &tid))
 				return fill_scan_slot(ss, r->score);
 		}
 		if (ss->kcomplete)

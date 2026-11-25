@@ -133,6 +133,21 @@ all_visible_candidate(SiftScanState *ss, ItemPointer tid)
  * Visible, passes the residual quals, and with want_doc yields the indexed text. A late scan checks both on the rows it hands out
  * (ranked_next) and asks the ranker for more when they drop some, so a candidate that needs no text is not fetched here too.
  */
+/* The heap check of a candidate or a hit of the ranker; a tuple dead to every snapshot is one the ranker keeps out of its next searches */
+bool
+ranked_tuple_visible(SiftScanState *ss, ItemPointer tid)
+{
+	bool		call_again = false,
+				all_dead = false;
+
+	ss->vis.heap_checks++;
+	if (table_index_fetch_tuple(ss->vis.fetch, tid, ss->vis.snapshot, ss->heapslot, &call_again, &all_dead))
+		return true;
+	if (all_dead && ss->rank)
+		sift_rank_dead_tid(ss->rank, tid);
+	return false;
+}
+
 bool
 scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 {
@@ -143,7 +158,7 @@ scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 		return true;
 	if (!want_doc && all_visible_candidate(ss, tid))
 		return true;
-	if (!sift_vis_fetch(&ss->vis, tid, ss->heapslot))
+	if (!ranked_tuple_visible(ss, tid))
 		return false;
 	if (ss->quals && !ss->late)
 	{
@@ -517,7 +532,7 @@ ranked_next(SiftScanState *ss)
 		if (!sift_rank_next(ss->rank, &tid, &score))
 			return NULL;
 		ss->nread++;
-		if (sift_vis_fetch(&ss->vis, &tid, ss->heapslot))
+		if (ranked_tuple_visible(ss, &tid))
 		{
 			ResetExprContext(econtext);
 			econtext->ecxt_scantuple = fill_scan_slot(ss, score);

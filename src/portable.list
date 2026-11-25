@@ -50,6 +50,7 @@ bm25/eval.c
 bm25/eval_fields.c
 bm25/tail.c
 bm25/wbind.c
+bm25/deadkeys.c
 bm25/wmemo.c
 bm25/phrase.c
 bm25/iter.c
@@ -110,6 +111,7 @@ core/ring.h
 bm25/posting.h
 bm25/posting_int.h
 bm25/prefix.h
+bm25/deadkeys.h
 bm25/wmemo.h
 bm25/hitspill.h
 bm25/runs/runs_priv.h
