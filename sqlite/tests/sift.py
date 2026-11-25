@@ -1,7 +1,7 @@
 """Functional tests of the sift SQLite extension: DML, transactions, merge, reopen, queries, errors, and an oracle
 (a brute-force BM25 over the same documents) for match sets and scores.
 
-    python3 -I tests/test_sift.py [-v]            (needs build/sift.so)
+    python3 -I tests/sift.py [-v]            (needs build/sift.so)
 """
 import math
 import os

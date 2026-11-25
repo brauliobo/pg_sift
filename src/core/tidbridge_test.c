@@ -1,6 +1,6 @@
 /*
  * core/tidbridge_test.c - the checks of core/tidbridge.h against an oracle that is a sorted array of keys, compiled only with SIFT_TESTING: the SQL function
- * sift._test_tidbridge_check of the pg_sift_test extension runs them in the server, sqlite/tests/tidbridge_test.c in a program of its own (the SQLite host, ASan and UBSan).
+ * sift._test_tidbridge_check of the pg_sift_test extension runs them in the server, sqlite/tests/tidbridge.c in a program of its own (the SQLite host, ASan and UBSan).
  *
  * A scenario builds a bridge from random keys in random order (with repeats) under an unlimited byte budget, a small one and none, and checks it against the oracle:
  * a TID that was added is never answered NO, an exact page answers NO for a TID that was not added, the page masks, blooms and key range are those of the oracle's pages,

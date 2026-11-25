@@ -1,7 +1,7 @@
 /*
  * core/hash.h - the multiply-fold mixers of the hash tables and group keys: the constants are written here once and the steps are inline.
  * The values are stored nowhere but decide the order in which an unordered group output comes out, so a change of a constant or a step changes results
- * (sqlite/tests/hash_test.c pins them). Portable (C library only).
+ * (sqlite/tests/hash.c pins them). Portable (C library only).
  */
 #ifndef SIFT_HASH_H
 #define SIFT_HASH_H

@@ -1,5 +1,5 @@
 /*
- * tidbridge_test.c - the checks of src/core/tidbridge_test.c (the TID bridge of src/core/tidbridge.h against an oracle of sorted keys) on the SQLite host, in a program of its
+ * tidbridge.c - the checks of src/core/tidbridge_test.c (the TID bridge of src/core/tidbridge.h against an oracle of sorted keys) on the SQLite host, in a program of its
  * own: no database, so the same build runs under ASan and UBSan. Every failure count must be 0 and every check count not.
  *   make tidbridge-test            make tidbridge-test-asan
  */

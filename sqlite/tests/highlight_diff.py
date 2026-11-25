@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_sift import EXT  # noqa: E402
+from sift import EXT  # noqa: E402
 
 CASES = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
 WORDS = ['alpha', 'beta', 'gamma', 'delta', 'running', 'runs', 'ran', 'quick', 'quickly', 'resume', 'cafe', 'naive', 'one', 'two', 'x1']

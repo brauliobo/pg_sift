@@ -1,5 +1,5 @@
 /*
- * hash_test.c - pins the outputs of the mixers of src/core/hash.h. Group keys hash through them and an unordered group output comes out in the
+ * hash.c - pins the outputs of the mixers of src/core/hash.h. Group keys hash through them and an unordered group output comes out in the
  * order of the hashes, so a changed constant or step changes results. The expected values were computed from the original spelling of each mixer.
  * C library only; built by the portable flags of sqlite/Makefile (make hash-test), run by test.sh.
  */

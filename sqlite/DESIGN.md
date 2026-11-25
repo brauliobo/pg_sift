@@ -71,9 +71,9 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
 - **pg_sift's evaluator** (same corpus, 3,044 queries: 1000 AND, 1000 OR, 1000 phrase plus 44 hand-written with NOT,
   groups, prefix, wildcard, regex, fuzzy, boosts): counts equal, top-100 ids equal in order, all 137,558 scores bit-equal
   as float32 (single merged segment, `stemmer=none`), rechecked on this version (`bench/compare_pg.py`).
-- **Brute force oracle** (`tests/test_sift.py`, 22 tests): independent BM25 over random documents, across inserts, updates,
+- **Brute force oracle** (`tests/sift.py`, 22 tests): independent BM25 over random documents, across inserts, updates,
   deletes, merges, rollbacks, savepoints and reopen.
-- **Product tests** (`tests/test_features.py`, 37 tests): a cache far smaller than the index (identical answers, 0 pins
+- **Product tests** (`tests/features.py`, 37 tests): a cache far smaller than the index (identical answers, 0 pins
   left, evictions > 0), chunk sizes, two connections, merge steps/automerge/optimize (identical answers), rollback of a
   merge, an injected error and a killed process in the middle of a merge, rolled back deletes in old segments, content
   modes and their protocol, highlights/snippets/bm25, facets against `GROUP BY` (with deletes), commands, integrity-check

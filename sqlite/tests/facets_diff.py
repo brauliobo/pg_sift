@@ -10,7 +10,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_sift import EXT, ids  # noqa: E402
+from sift import EXT, ids  # noqa: E402
 
 ROWS = int(sys.argv[1]) if len(sys.argv) > 1 else 20000
 VALUES = int(sys.argv[2]) if len(sys.argv) > 2 else 3000

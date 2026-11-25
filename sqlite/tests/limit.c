@@ -1,5 +1,5 @@
 /*
- * tests/limit_test.c - the rows a ranked scan has to produce for LIMIT and OFFSET (cursor.c sq_rank_rows): the sum never overflows, a bounded query stays
+ * tests/limit.c - the rows a ranked scan has to produce for LIMIT and OFFSET (cursor.c sq_rank_rows): the sum never overflows, a bounded query stays
  * bounded, LIMIT 0 is no rows (0) and a negative LIMIT is every row (-1).
  */
 #include <stdio.h>

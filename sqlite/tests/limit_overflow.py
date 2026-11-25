@@ -1,14 +1,14 @@
 """LIMIT + OFFSET of a ranked query must not overflow: a bounded query never becomes an unbounded scan, and LIMIT 0
 returns no rows.
 
-    python3 -I tests/test_limit_overflow.py [-v]           (needs build/sift.so)
+    python3 -I tests/limit_overflow.py [-v]           (needs build/sift.so)
 """
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_sift import TmpDb, connect  # noqa: E402
+from sift import TmpDb, connect  # noqa: E402
 
 INT64_MAX = 9223372036854775807
 RANKED = "SELECT rowid FROM t WHERE t MATCH 'alpha' ORDER BY rank LIMIT %s OFFSET %s"

@@ -2,7 +2,7 @@
 for DML and queries across a rename, repeated queries over a bounded segment cache, facets after deletes, and
 quantifiers of empty bodies.
 
-    python3 -I tests/test_port2.py [-v]           (needs build/sift.so)
+    python3 -I tests/port2.py [-v]           (needs build/sift.so)
 """
 import os
 import random
@@ -10,7 +10,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_sift import TmpDb, connect, ids, top  # noqa: E402
+from sift import TmpDb, connect, ids, top  # noqa: E402
 
 WORDS = ['w%d' % i for i in range(120)]
 

@@ -1,7 +1,7 @@
 """Tests of what makes the extension a product: the bounded cache, merging and crashes, content modes, snippets and
 facets, commands and loading.
 
-    python3 -I tests/test_features.py [-v]        (needs build/sift.so)
+    python3 -I tests/features.py [-v]        (needs build/sift.so)
 """
 import os
 import random
@@ -13,7 +13,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_sift import EXT, TmpDb, connect, ids, segs, top  # noqa: E402
+from sift import EXT, TmpDb, connect, ids, segs, top  # noqa: E402
 
 # the release version: sqlite/VERSION unless the build was given another (SIFT_VERSION, as the packaging does)
 VERSION = os.environ.get('SIFT_VERSION') or open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'VERSION')).read().strip()

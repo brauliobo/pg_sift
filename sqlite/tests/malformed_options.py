@@ -1,7 +1,7 @@
 """Malformed table options and commands must end in a clean SQL error, never a crash of the host process: every
 statement runs in a child interpreter, so a SIGFPE or a failed mmap shows as the child's exit status.
 
-    python3 -I tests/test_malformed_options.py [-v]           (needs build/sift.so)
+    python3 -I tests/malformed_options.py [-v]           (needs build/sift.so)
 """
 import os
 import subprocess
@@ -9,7 +9,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_sift import EXT, TmpDb  # noqa: E402
+from sift import EXT, TmpDb  # noqa: E402
 
 CHILD = """
 import sqlite3, sys

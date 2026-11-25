@@ -1,5 +1,5 @@
 /*
- * format_ux_test.c - pins the texts of src/core/format_ux.c: a duration, a size, a count and a ratio read the same in every message, and the summaries of the operations a user starts
+ * format_ux.c - pins the texts of src/core/format_ux.c: a duration, a size, a count and a ratio read the same in every message, and the summaries of the operations a user starts
  * are silent for a small quick one. C library only; built by the portable flags of sqlite/Makefile (make format-ux-test), run by test.sh.
  */
 #include <stdio.h>

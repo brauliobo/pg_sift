@@ -1,6 +1,6 @@
 #!/usr/bin/env python3 -I
 """Evil patterns on strings of growing length: the matcher of the SQLite and MariaDB hosts (sqlite/host/regex*.c; the driver
-mariadb/tests/regex_test.c matches whole words) answers every one (no budget error) and its time grows linearly with the string, under ASan+UBSan.
+mariadb/tests/regex.c matches whole words) answers every one (no budget error) and its time grows linearly with the string, under ASan+UBSan.
 
     python3 -I sqlite/tests/regex_scaling.py
 """
@@ -28,7 +28,7 @@ def main():
         host = os.path.join(ROOT, "host")
         subprocess.run(["gcc", "-std=gnu17", "-g", "-O1", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-D_GNU_SOURCE",
                         "-DSIFT_HOST_SQLITE", "-I" + host, "-I" + os.path.join(ROOT, "..", "src"), "-o", exe,
-                        os.path.join(ROOT, "..", "mariadb", "tests", "regex_test.c"), os.path.join(host, "regex.c"),
+                        os.path.join(ROOT, "..", "mariadb", "tests", "regex.c"), os.path.join(host, "regex.c"),
                         os.path.join(host, "regex_parse.c"), os.path.join(host, "regex_exec.c"), "-lm"], check=True)
         env = dict(os.environ, ASAN_OPTIONS="detect_leaks=0")
         bad = 0

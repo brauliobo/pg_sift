@@ -8,8 +8,8 @@
 #   make asan | tsan | tsan-run  sanitizer builds (build-asan/, build-tsan/); tsan-run also runs the C stress test on the TSan build
 #   make span-test               the unit and adversarial tests of src/core/span.h (docs/SAFETY.md); make span-test-asan under ASan+UBSan;
 #                                make SIMD=none B=build-scalar span-test with the vector-free flags
-#   make hybrid-test             the hybrid search choice and verify rules (tests/hybrid_test.c); make hybrid-test-asan under ASan+UBSan
-#   make topk-floor-test         the floor of the top-k of the ranked search (tests/topk_floor_test.c); make topk-floor-test-asan under ASan+UBSan
+#   make hybrid-test             the hybrid search choice and verify rules (tests/hybrid.c); make hybrid-test-asan under ASan+UBSan
+#   make topk-floor-test         the floor of the top-k of the ranked search (tests/topk_floor.c); make topk-floor-test-asan under ASan+UBSan
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
 # The sources of ../src listed in portable.list are compiled unmodified, against the host implementation in host/ (they include
 # only src/core/host.h, which selects it with -DSIFT_HOST_SQLITE), except one mechanical change: bm25/prefix.c's one entry point is renamed so that init.c can serialize it.
@@ -113,35 +113,35 @@ col-smoke: $(B)/col-smoke
 	$(B)/col-smoke
 
 # the checked reader of the portable core: C library only, no host, no database
-$(B)/span_test: tests/span_test.c $(SRC)/core/span.h $(SRC)/core/varint.h | $(B)
-	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -o $@ tests/span_test.c
+$(B)/span_test: tests/span.c $(SRC)/core/span.h $(SRC)/core/varint.h | $(B)
+	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -o $@ tests/span.c
 
 span-test: $(B)/span_test
 	$(B)/span_test
 
 # the multiply-fold mixers: their outputs are pinned (group output order depends on them)
-$(B)/hash_test: tests/hash_test.c $(SRC)/core/hash.h | $(B)
-	$(CC) $(CFLAGS) -Wextra -o $@ tests/hash_test.c
+$(B)/hash_test: tests/hash.c $(SRC)/core/hash.h | $(B)
+	$(CC) $(CFLAGS) -Wextra -o $@ tests/hash.c
 
 hash-test: $(B)/hash_test
 	$(B)/hash_test
 
 # the cost choice and the verify rules of the hybrid search, over the real core/tidbridge.c and an oracle
-$(B)/hybrid_test: tests/hybrid_test.c $(SRC)/agg/hybrid.c $(OBJS) | $(B)
+$(B)/hybrid_test: tests/hybrid.c $(SRC)/agg/hybrid.c $(OBJS) | $(B)
 	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(SRC)/agg/hybrid.c $(OBJS) $(LDLIBS)
 
 hybrid-test: $(B)/hybrid_test
 	$(B)/hybrid_test
 
-# the rows a ranked scan produces for LIMIT and OFFSET, over the real cursor.c (tests/limit_test.c)
-$(B)/limit_test: tests/limit_test.c $(OBJS) | $(B)
+# the rows a ranked scan produces for LIMIT and OFFSET, over the real cursor.c (tests/limit.c)
+$(B)/limit_test: tests/limit.c $(OBJS) | $(B)
 	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(OBJS) $(LDLIBS)
 
 limit-test: $(B)/limit_test
 	$(B)/limit_test
 
-# the floor of the top-k of bm25/kernels.c (tests/topk_floor_test.c)
-$(B)/topk_floor_test: tests/topk_floor_test.c $(OBJS) | $(B)
+# the floor of the top-k of bm25/kernels.c (tests/topk_floor.c)
+$(B)/topk_floor_test: tests/topk_floor.c $(OBJS) | $(B)
 	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(OBJS) $(LDLIBS)
 
 topk-floor-test: $(B)/topk_floor_test
