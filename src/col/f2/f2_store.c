@@ -38,7 +38,7 @@ static dlist_head store_lru = DLIST_STATIC_INIT(store_lru);
 static bool store_cache_registered = false;
 static uint64 store_invalidations = 0;	/* what a build that reads the catalogs finds out has changed under it */
 
-#define MAX_INVALIDATORS	4
+#define MAX_INVALIDATORS	5
 
 static SiftF2Invalidator invalidators[MAX_INVALIDATORS];
 static int	ninvalidators = 0;

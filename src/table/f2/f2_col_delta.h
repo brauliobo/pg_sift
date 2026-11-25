@@ -389,14 +389,22 @@ typedef struct SiftColDeltaPartMap
 	uint64	   *granule_dirty_bits;
 	SiftColDeltaGranMap *grans;	/* ascending by granule_id */
 	SiftColDeltaPatch *patch_pool;	/* the patches of every granule, which the maps of the granules point into */
-	char	   *page_arena;		/* the pages the strings of the patches point into */
+	char	   *strpool;		/* the bytes of the strings of the patches */
 	MemoryContext cx;			/* of a shared map: the context that holds all of it, under the cache of core/cachebudget.h; NULL for a map one owner frees */
 	uint32		refcnt;			/* of a shared map: its holders */
 } SiftColDeltaPartMap;
 
-/* The patches of part_gen the snapshot sees; takes the pages of the chain over. NULL when it sees none (the chain freed); why is set when a record names a granule past the part */
+/* The patches of part_gen the snapshot sees; frees the chain. NULL when it sees none; why is set when a record names a granule past the part */
 extern SiftColDeltaPartMap *sift_col_delta_build_part_map(SiftColDeltaChain *chain, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why);
 extern void sift_col_delta_part_map_free(SiftColDeltaPartMap *map);
+
+/* The patches of a part's records, collected a page at a time (the records after byte from_used of the page's data, 0: all of them), and merged into the map of the records before them: the newest wins */
+typedef struct SiftColDeltaCollector SiftColDeltaCollector;
+extern SiftColDeltaCollector *sift_col_delta_collector_new(void);
+extern void sift_col_delta_collector_free(SiftColDeltaCollector *c);
+extern bool sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 from_used, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why);
+extern int	sift_col_delta_collected(const SiftColDeltaCollector *c);
+extern SiftColDeltaPartMap *sift_col_delta_part_map_merge(const SiftColDeltaPartMap *old, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
 
 /* A shared map is immutable and lives in a context of its own: whoever holds a granule's patches (a scan, a slot, a page, a granule buffer) holds a reference, and the last one to give it back frees all of it at once */
 static inline SiftColDeltaPartMap *
@@ -756,6 +764,41 @@ extern const SiftColDeltaGranMap *sift_col_delta_scan_map(SiftColDeltaScan *ds, 
 
 /* The map the last sift_col_delta_scan_map read from, which owns the granule map it returned: a holder that outlives the next call takes a reference of it */
 extern SiftColDeltaPartMap *sift_col_delta_scan_part_map(const SiftColDeltaScan *ds);
+
+/*
+ * The map of the whole of part_gen for the snapshot of vis, from the cache of the maps of the parts the backend has read (f2_col_delta_mapcache.c): the one an earlier statement made, with the records
+ * the chain gained since over it. False when the cache cannot answer (the chain is short, a writer of a record is not settled for the snapshot, the map does not fit the budget): the caller reads the
+ * chain. create: a part the cache has no map of yet is read whole and kept; the map is a new reference, NULL when no record patches the part.
+ */
+extern bool sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, bool create, SiftColDeltaPartMap **map);
+
+/*
+ * What a cache of the records of a chain remembers of the chain it read (f2_col_delta_watch.c): the blocks of its pages and a copy of the newest. read visits the newest page the watch saw, from the
+ * byte it was seen to, and every page after it, oldest first, and says whether the chain is the watch's with pages added; r holds what set needs to make the watch cover the chain, until release.
+ */
+typedef struct SiftColDeltaWatch
+{
+	MemoryContext cx;
+	int			npages;
+	BlockNumber *blks;
+	char	   *head;
+} SiftColDeltaWatch;
+
+typedef struct SiftColDeltaWatchRead
+{
+	struct SiftColDeltaDirEntry *ent;
+	BlockNumber *dir_blks;
+	int			ndir;
+	char	   *last;
+} SiftColDeltaWatchRead;
+
+typedef bool (*SiftColDeltaPageVisit) (void *arg, const char *page, uint32 from_used);
+
+extern void sift_col_delta_watch_init(SiftColDeltaWatch *w, MemoryContext cx);
+extern void sift_col_delta_watch_reset(SiftColDeltaWatch *w);
+extern bool sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftColDeltaWatch *w, SiftColDeltaPageVisit visit, void *arg, SiftColDeltaWatchRead *r);
+extern void sift_col_delta_watch_set(SiftColDeltaWatch *w, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r);
+extern void sift_col_delta_watch_release(SiftColDeltaWatchRead *r);
 
 /* A modify of the row: what its latest patch makes of it for the statement cid and the snapshot, and the acknowledgement of EvalPlanQual */
 extern SiftColDeltaVerdict sift_col_delta_modify_verdict(Relation rel, const SiftF2Loc *loc, uint64 tid, CommandId cid, Snapshot snap);

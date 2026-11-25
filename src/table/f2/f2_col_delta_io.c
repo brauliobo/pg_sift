@@ -338,6 +338,41 @@ map_key_same(const MapKey *a, const MapKey *b)
 		a->curcid == b->curcid && a->subxid == b->subxid;
 }
 
+/* The map of the part the granule is in, read for the scan: whole when the scan is past its first granule of the part or holds the whole of it, else only the pages that can name the granule */
+static void
+scan_load_map(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const SiftF2GranuleBuf *gb)
+{
+	bool		same_part = ds->valid && ds->key.part_id == entry->part_id && ds->key.part_gen == gb->pin->part_gen;
+	bool		held = ds->retained && ds->key.part_id == entry->part_id && ds->key.part_gen == gb->pin->part_gen && (!ds->key.one_granule || ds->key.granule == gb->granule_id);
+	bool		whole = same_part || (held && !ds->key.one_granule);
+	MapKey		now;
+	bool		keyed = map_key_now(ds, entry, gb, !whole, &now);
+	MemoryContext map_cx;
+	MemoryContext old;
+	SiftColDeltaPrune prune = {.part_gen = gb->pin->part_gen,.by_granule = !whole,.granule_lo = gb->granule_id,.granule_hi = gb->granule_id,.attnum_bloom = ds->attnum_bloom};
+	bool		settled = true;
+	SiftColDeltaPartMap *loaded;
+
+	ds->valid = true;
+	if (held && keyed && map_key_same(&now, &ds->key))
+		return;
+	scan_drop_map(ds);
+	ds->valid = true;
+	if (sift_col_delta_mapcache_get(ds->rel, entry, gb->pin->part_gen, gb->pin->part->hdr.ngranules, ds->vis, whole, &loaded))
+		ds->map = loaded;
+	else
+	{
+		map_cx = sift_col_delta_part_map_context(ds->cx);
+		old = MemoryContextSwitchTo(map_cx);
+		settled = false;
+		loaded = load_part_map(ds->rel, entry, &prune, gb->pin->part->hdr.ngranules, ds->vis, 0, &settled);
+		MemoryContextSwitchTo(old);
+		ds->map = sift_col_delta_part_map_share(map_cx, loaded);
+	}
+	ds->key = keyed ? now : (MapKey) {.part_id = entry->part_id,.part_gen = gb->pin->part_gen,.one_granule = !whole,.granule = whole ? 0 : gb->granule_id};
+	ds->retained = keyed && settled;
+}
+
 /* The map is of the part the granule is in; a second granule of the part is a scan's, and reads the whole of it once. The first granule a scan asks of a part reads only the pages of the chain that can name it */
 const SiftColDeltaGranMap *
 sift_col_delta_scan_map(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const SiftF2GranuleBuf *gb)
@@ -345,31 +380,7 @@ sift_col_delta_scan_map(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, c
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 		return NULL;
 	if (!ds->valid || ds->key.part_id != entry->part_id || ds->key.part_gen != gb->pin->part_gen || (ds->key.one_granule && ds->key.granule != gb->granule_id))
-	{
-		bool		same_part = ds->valid && ds->key.part_id == entry->part_id && ds->key.part_gen == gb->pin->part_gen;
-		MapKey		now;
-		bool		keyed = map_key_now(ds, entry, gb, !same_part, &now);
-
-		if (ds->retained && keyed && map_key_same(&now, &ds->key))
-			ds->valid = true;
-		else
-		{
-			MemoryContext map_cx = sift_col_delta_part_map_context(ds->cx);
-			MemoryContext old = MemoryContextSwitchTo(map_cx);
-			SiftColDeltaPrune prune = {.part_gen = gb->pin->part_gen,.by_granule = !same_part,.granule_lo = gb->granule_id,.granule_hi = gb->granule_id,
-								   .attnum_bloom = ds->attnum_bloom};
-			bool		settled = false;
-			SiftColDeltaPartMap *loaded;
-
-			scan_drop_map(ds);
-			loaded = load_part_map(ds->rel, entry, &prune, gb->pin->part->hdr.ngranules, ds->vis, 0, &settled);
-			MemoryContextSwitchTo(old);
-			ds->map = sift_col_delta_part_map_share(map_cx, loaded);
-			ds->key = keyed ? now : (MapKey) {.part_id = entry->part_id,.part_gen = gb->pin->part_gen,.one_granule = !same_part,.granule = same_part ? 0 : gb->granule_id};
-			ds->retained = keyed && settled;
-			ds->valid = true;
-		}
-	}
+		scan_load_map(ds, entry, gb);
 	return ds->map != NULL ? sift_col_delta_gran_map(ds->map, gb->granule_id) : NULL;
 }
 
