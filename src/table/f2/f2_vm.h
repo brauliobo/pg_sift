@@ -20,8 +20,8 @@
 extern bool sift_tbl_vm_active(Relation rel);
 
 /*
- * The run of vblocks [lo, hi) a backend reserved for its inserts, and the vblock it fills now: the lease VACUUM reads. open takes the slot (an ERROR where the registry
- * cannot be had, before anything is changed); set publishes a run; roll moves lo as the vblock fills. The leases of a file that is gone are let go when the backend takes another.
+ * The run of vblocks [lo, hi) a backend reserved for its inserts, and the vblock it fills now: the lease VACUUM reads. open takes the slot (where the registry has none, the backend
+ * gives back its least recently used lease and run, or goes without a lease); set publishes a run; roll moves lo as the vblock fills. The leases of a file that is gone are let go when the backend takes another.
  */
 extern void sift_tbl_vm_lease_open(Relation rel);
 extern void sift_tbl_vm_lease_set(Relation rel, uint64 lo, uint64 hi);
