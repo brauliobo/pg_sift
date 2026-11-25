@@ -14,6 +14,7 @@
 #include "storage/standby.h"
 #include "utils/rel.h"
 
+#include "core/damage.h"
 #include "core/f2/vm_xlog.h"
 #include "core/host.h"
 
@@ -169,7 +170,7 @@ static const void *
 record_data(XLogReaderState *r, Size len)
 {
 	if (XLogRecGetDataLen(r) < len)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift visibility map record of %u bytes where %zu are needed", XLogRecGetDataLen(r), len)));
+		SIFT_DAMAGE_OTHER_DATA(errmsg("sift visibility map record of %u bytes where %zu are needed", XLogRecGetDataLen(r), len));
 	return XLogRecGetData(r);
 }
 
@@ -182,7 +183,7 @@ redo_set(XLogReaderState *r)
 	Buffer		buf;
 
 	if (rec->nwords > SIFT_VM_WORDS_PER_PAGE)
-		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift visibility map record with %u words", rec->nwords)));
+		SIFT_DAMAGE_OTHER_DATA(errmsg("sift visibility map record with %u words", rec->nwords));
 	(void) record_data(r, sizeof(SiftXlVmSet) + (Size) rec->nwords * (sizeof(uint16) + sizeof(uint64)));
 	word_idx = (const uint16 *) (rec + 1);
 	packed = (const char *) (word_idx + rec->nwords);
