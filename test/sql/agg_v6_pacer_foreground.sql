@@ -1,0 +1,53 @@
+-- The statements of SiftAggV6 are the foreground the maintenance pacer decides by: one run of the node in 16 of a backend (the first one always) feeds the averages of the pacer with the time
+-- it took, and the others read no clock. A telemetry that is empty has no foreground; after the runs of 32 statements of the node it has one, whatever the node (a sift_table and a
+-- sift_col index).
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+
+CREATE TABLE pf (id int, g int, k int) USING sift_table;
+INSERT INTO pf SELECT i, i % 7, i % 1000 FROM generate_series(1, 20000) i;
+CREATE TABLE pfc (id int, g int, k int);
+INSERT INTO pfc SELECT * FROM pf;
+CREATE INDEX pfc_col ON pfc USING sift_col (id, g, k);
+VACUUM (ANALYZE) pf, pfc;
+
+CREATE FUNCTION engine(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text[] := '{}';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan' THEN r := r || substring(l from 'Custom Scan \(([A-Za-z0-9]+)\)'); END IF;
+	END LOOP;
+	RETURN coalesce(nullif(array_to_string(r, ','), ''), 'normal');
+END $$;
+CREATE FUNCTION run_32(q text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	FOR i IN 1..32 LOOP
+		EXECUTE q;
+	END LOOP;
+END $$;
+CREATE FUNCTION foreground_seen() RETURNS bool LANGUAGE sql AS $$
+	SELECT split_part(sift._test_pacer_foreground(1, 0), ' ', 2)::int8 > 0
+$$;
+
+SELECT engine($$SELECT sum(k) FROM pf WHERE g = 3$$) AS table_aggregate, engine($$SELECT sum(k) FROM pfc WHERE g = 3$$) AS col_aggregate;
+SELECT sift._test_pacer_reset();
+SELECT foreground_seen() AS before_any_run;
+SELECT run_32($$SELECT sum(k) FROM pf WHERE g = 3$$);
+SELECT foreground_seen() AS after_table_runs;
+SELECT sift._test_pacer_reset();
+SELECT foreground_seen() AS reset_again;
+SELECT run_32($$SELECT sum(k) FROM pfc WHERE g = 3$$);
+SELECT foreground_seen() AS after_col_runs;
+
+DROP TABLE pf, pfc;
+DROP FUNCTION engine(text), run_32(text), foreground_seen();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

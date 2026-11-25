@@ -1,0 +1,44 @@
+-- A statement of SiftAggV6 that spills to temporary files (an exact COUNT(DISTINCT) over a work_mem it does not fit) says which of its files it was at when the file fails (temp_file_limit
+-- here, a full disk as well), and what to change: the context of the error names the partition and says that more work_mem spills less. The statement that is within the limit gives the
+-- rows of the normal plan. The numbers of the partitions are those of the hash of the rows, so the context is printed without them.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+
+CREATE TABLE sp (id int, g int, a int) USING sift_table;
+INSERT INTO sp SELECT i, i % 7, i % 100003 FROM generate_series(1, 300000) i;
+VACUUM (ANALYZE) sp;
+
+CREATE FUNCTION failure(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE ctx text;
+BEGIN
+	EXECUTE q;
+	RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+	GET STACKED DIAGNOSTICS ctx = PG_EXCEPTION_CONTEXT;
+	RETURN SQLSTATE || ': ' || regexp_replace(SQLERRM, '[0-9]+kB', 'NkB') || ' / ' || regexp_replace(split_part(ctx, E'\n', 1), '[0-9]+', 'N', 'g');
+END $$;
+
+CREATE FUNCTION answer(q text, sift_on bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', sift_on::text, true);
+	EXECUTE format('SELECT md5(string_agg(t::text, E''|'' ORDER BY t::text)) FROM (%s) t', q) INTO r;
+	RETURN r;
+END $$;
+
+SET work_mem = '64kB';
+SELECT answer($$SELECT g, count(DISTINCT a) FROM sp GROUP BY g$$, true) = answer($$SELECT g, count(DISTINCT a) FROM sp GROUP BY g$$, false) AS same_rows;
+SET temp_file_limit = '200kB';
+SELECT failure($$SELECT g, count(DISTINCT a) FROM sp GROUP BY g$$) AS spill_over_the_limit;
+
+DROP TABLE sp;
+DROP FUNCTION failure(text), answer(text, bool);
+DROP EXTENSION pg_sift;

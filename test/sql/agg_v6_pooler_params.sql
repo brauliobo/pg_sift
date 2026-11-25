@@ -1,0 +1,87 @@
+-- A pooled session runs prepared statements under a generic plan (plan_cache_mode = force_generic_plan: the parameter is not known when the plan is made) and a correlated sub-select
+-- is scanned again for each row of the outer one. Every statement runs with sift.enable_agg on and off, and the rows must be the same: a run condition on a window (rn < $1 is rn <= $1 - 1),
+-- a join whose fact filter is a parameter (the scan keys are made when the statement runs), a Top-N, a window, a stream of groups and a join of a sub-select scanned again with another outer
+-- value or NULL, a numeric parameter that no column can hold, and a LIMIT of 0, NULL or past the rows.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.agg_force = on;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+
+CREATE TABLE win (g int, k int, d int, n numeric(10,2)) USING sift_table;
+INSERT INTO win SELECT g % 5, g, g % 20 + 1, (g % 100)::numeric FROM generate_series(1, 500) g;
+CREATE TABLE win_dim (d int PRIMARY KEY, tag int) USING sift_table;
+INSERT INTO win_dim SELECT g, g % 3 FROM generate_series(1, 20) g;
+CREATE TABLE jev (id int PRIMARY KEY, entity int NOT NULL, qty int NOT NULL, amount int NOT NULL);
+INSERT INTO jev SELECT g, 1 + g % 300, g % 7, g % 977 FROM generate_series(1, 20000) g;
+CREATE INDEX jev_col ON jev USING sift_col (id, entity, qty, amount);
+CREATE TABLE jdim (entity int NOT NULL, parent int NOT NULL, PRIMARY KEY (entity, parent));
+INSERT INTO jdim SELECT e, 1 + e % 7 FROM generate_series(1, 300) e;
+VACUUM (ANALYZE) win, win_dim, jev;
+ANALYZE jdim;
+
+CREATE FUNCTION engine(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text[] := '{}';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan' THEN r := r || substring(l from 'Custom Scan \(([A-Za-z0-9]+)\)'); END IF;
+	END LOOP;
+	RETURN coalesce(nullif(array_to_string(r, ','), ''), 'normal');
+END $$;
+CREATE FUNCTION answer(q text, sift_on bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', sift_on::text, true);
+	EXECUTE format('CREATE TEMP TABLE got ON COMMIT DROP AS %s', q);
+	SELECT coalesce(string_agg(g::text, '|' ORDER BY g::text), '') INTO r FROM got g;
+	DROP TABLE got;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text;
+BEGIN
+	a := answer(q, true);
+	RETURN a = answer(q, false);
+END $$;
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE win_lt(int) AS SELECT count(*) FROM (SELECT row_number() OVER (PARTITION BY g ORDER BY k) rn FROM win) s WHERE rn < $1;
+PREPARE win_le(int) AS SELECT count(*) FROM (SELECT row_number() OVER (PARTITION BY g ORDER BY k) rn FROM win) s WHERE rn <= $1;
+PREPARE tn(int, int) AS SELECT k FROM win ORDER BY k DESC LIMIT $1 OFFSET $2;
+PREPARE push(int) AS SELECT kind, count(*), sum(amount) FROM (SELECT amount, qty AS kind FROM jev WHERE qty < $1 AND entity IN (SELECT entity FROM jdim WHERE parent IN (3, 4))) s GROUP BY kind;
+PREPARE num(numeric) AS SELECT count(*), sum(k) FROM win WHERE n > $1;
+
+SELECT stmt, args, engine(format('EXECUTE %s(%s)', stmt, args)) AS engine, same(format('EXECUTE %s(%s)', stmt, args)) AS same
+FROM (VALUES ('win_lt', '3'), ('win_lt', '1'), ('win_lt', 'NULL'), ('win_le', '3'), ('win_le', '1'),
+	('tn', '3, 0'), ('tn', '3, 495'), ('tn', '0, 0'), ('tn', 'NULL, NULL'), ('tn', '1000, 10'),
+	('push', '3'), ('push', '5'), ('push', 'NULL'), ('push', '0'),
+	('num', '50'), ('num', '''NaN'''), ('num', '''Infinity'''), ('num', '''-Infinity'''), ('num', '99999999999999999999')) s(stmt, args)
+ORDER BY stmt, args;
+SELECT count(*) AS lt_3 FROM (SELECT row_number() OVER (PARTITION BY g ORDER BY k) rn FROM win) s WHERE rn < 3;
+EXECUTE win_lt(3);
+EXECUTE win_le(3);
+EXECUTE push(3);
+EXECUTE push(5);
+
+-- a sub-select scanned again for each row of the outer one: another value, NULL, and back
+RESET plan_cache_mode;
+SELECT shape, engine(q) AS engine, same(q) AS same FROM (VALUES
+	('top-n by group',   'SELECT x.v, s.k FROM (VALUES (0), (NULL), (1), (2), (1)) x(v) LEFT JOIN LATERAL (SELECT k FROM win WHERE g = x.v ORDER BY k LIMIT 1) s ON true'),
+	('window run',       'SELECT x.v, s.k FROM (VALUES (1), (3), (2)) x(v) LEFT JOIN LATERAL (SELECT k FROM (SELECT k, row_number() OVER (PARTITION BY g ORDER BY k) rn FROM win) w WHERE rn <= x.v) s ON true'),
+	('join and filter',  'SELECT x.v, s.c FROM (VALUES (0), (NULL), (1), (2)) x(v) LEFT JOIN LATERAL (SELECT count(*) c FROM win JOIN win_dim ON win_dim.d = win.d WHERE win.g = x.v AND win_dim.tag = 1) s ON true'),
+	('aggregate',        'SELECT x.v, s.c FROM (VALUES (0), (NULL), (1), (2)) x(v) LEFT JOIN LATERAL (SELECT count(*) c FROM win WHERE g = x.v) s ON true')
+) t(shape, q) ORDER BY shape;
+SELECT x.v, s.k FROM (VALUES (0), (NULL), (1), (2), (1)) x(v) LEFT JOIN LATERAL (SELECT k FROM win WHERE g = x.v ORDER BY k LIMIT 1) s ON true;
+
+DEALLOCATE ALL;
+DROP TABLE win, win_dim, jev, jdim;
+DROP FUNCTION engine(text), answer(text, bool), same(text);
+DROP EXTENSION pg_sift;
