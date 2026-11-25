@@ -1,0 +1,81 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s2b s1bm s2bm s1i s1c s2i s2c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1bm: SET LOCAL sift.enable_scan = off; SELECT id FROM iso_ssi WHERE body @@> 'unicorn';
+id
+--
+(0 rows)
+
+step s2bm: SET LOCAL sift.enable_scan = off; SELECT id FROM iso_ssi WHERE body @@> 'unicorn';
+id
+--
+(0 rows)
+
+step s1i: INSERT INTO iso_ssi VALUES (101, 'unicorn');
+step s1c: COMMIT;
+step s2i: INSERT INTO iso_ssi VALUES (102, 'unicorn');
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s2c: COMMIT;
+
+starting permutation: s1b s2b s1ct s2ct s1i s1c s2i s2c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1ct: SELECT count(*) AS found FROM iso_ssi WHERE body @@> 'unicorn';
+found
+-----
+    0
+(1 row)
+
+step s2ct: SELECT count(*) AS found FROM iso_ssi WHERE body @@> 'unicorn';
+found
+-----
+    0
+(1 row)
+
+step s1i: INSERT INTO iso_ssi VALUES (101, 'unicorn');
+step s1c: COMMIT;
+step s2i: INSERT INTO iso_ssi VALUES (102, 'unicorn');
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s2c: COMMIT;
+
+starting permutation: s1b s2b s1rk s2rk s1i s1c s2i s2c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1rk: SELECT id FROM iso_ssi WHERE body @@> 'unicorn' ORDER BY sift.score(ctid) DESC LIMIT 3;
+id
+--
+(0 rows)
+
+step s2rk: SELECT id FROM iso_ssi WHERE body @@> 'unicorn' ORDER BY sift.score(ctid) DESC LIMIT 3;
+id
+--
+(0 rows)
+
+step s1i: INSERT INTO iso_ssi VALUES (101, 'unicorn');
+step s1c: COMMIT;
+step s2i: INSERT INTO iso_ssi VALUES (102, 'unicorn');
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s2c: COMMIT;
+
+starting permutation: s1b s2b s1bc s2bc s1d s1c s2i s2c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1bc: SET LOCAL sift.enable_scan = off; SELECT count(*) AS found FROM iso_ssi WHERE body @@> 'common word 1';
+found
+-----
+    1
+(1 row)
+
+step s2bc: SET LOCAL sift.enable_scan = off; SELECT count(*) AS found FROM iso_ssi WHERE body @@> 'common word 1';
+found
+-----
+    1
+(1 row)
+
+step s1d: DELETE FROM iso_ssi WHERE id = 1;
+step s1c: COMMIT;
+step s2i: INSERT INTO iso_ssi VALUES (102, 'unicorn');
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s2c: COMMIT;
