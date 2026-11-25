@@ -76,9 +76,7 @@ SELECT * FROM cube('SELECT count(DISTINCT grp) FROM ev');
 SELECT * FROM cube('SELECT kind, min(kind) FROM ev GROUP BY 1');
 SELECT * FROM cube('SELECT grp, kind, count(*) FROM ev GROUP BY 1, 2');
 SELECT * FROM cube('SELECT count(*) FROM ev WHERE amount % 2 = 0');
-SET sift.agg_preagg = off;
 SELECT * FROM cube('SELECT kind, count(*) FROM ev GROUP BY 1');
-RESET sift.agg_preagg;
 
 -- 3. dead rows and pending writes: the units they touch are read, the others are still answered
 UPDATE ev SET amount = amount + 1, kind = 'kind-of-event-9' WHERE id BETWEEN 100 AND 130;

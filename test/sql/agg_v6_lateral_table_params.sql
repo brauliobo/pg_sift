@@ -2,7 +2,6 @@
 -- row of the outer table, with the parameters of that row; the rows must be the heap's own (sift.enable_agg = off), on a table of Format 1 and of Format 2.0, with the scans of the heap forced off.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
-SET sift.test_unified_agg = on;
 SET max_parallel_workers_per_gather = 0;
 SET TimeZone = 'UTC';
 

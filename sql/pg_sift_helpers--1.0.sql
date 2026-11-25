@@ -376,7 +376,6 @@ END $$;
 CREATE FUNCTION sift_helpers.rows_agg_preagg_and_pushdown(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
 	PERFORM set_config('sift.enable_agg', push::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;

@@ -254,7 +254,7 @@ check "sift.verify and sift.col_verify pass on every index" quiet q new postgres
 AFTER=$(fingerprint new)
 check "BM25 answers and metrics_a are identical" test "$(head -n 1 <<<"$AFTER")" == "$(head -n 1 <<<"$BEFORE")"
 # the units of an index written by a release have no sketch and are read by their rows; those of this tree's have it: the same number as the normal plan either way
-check "sift.approx_count_distinct on the column index is what the normal plan gives" test "$(q new postgres "SET sift.agg_force = on" "SET sift.agg_preagg = on" "SELECT sift.approx_count_distinct(id) || ':' || sift.approx_count_distinct(g) FROM facts")" == \
+check "sift.approx_count_distinct on the column index is what the normal plan gives" test "$(q new postgres "SET sift.agg_force = on" "SELECT sift.approx_count_distinct(id) || ':' || sift.approx_count_distinct(g) FROM facts")" == \
 	"$(q new postgres "SET sift.enable_agg = off" "SELECT sift.approx_count_distinct(id) || ':' || sift.approx_count_distinct(g) FROM facts")"
 check "column aggregates are identical and equal the normal plan" test "$(sed -n 2,3p <<<"$AFTER")" == "$(sed -n 2,3p <<<"$BEFORE")"
 check "the tables answer as before, by the scan and the normal plan" test "$(sed -n 4,7p <<<"$AFTER")" == "$(sed -n 4,7p <<<"$BEFORE")"

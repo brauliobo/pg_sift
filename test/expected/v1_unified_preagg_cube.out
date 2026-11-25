@@ -108,14 +108,12 @@ SELECT * FROM cube('SELECT count(*) FROM ev WHERE amount % 2 = 0');
      0 | t
 (1 row)
 
-SET sift.agg_preagg = off;
 SELECT * FROM cube('SELECT kind, count(*) FROM ev GROUP BY 1');
  units | same 
 -------+------
      0 | t
 (1 row)
 
-RESET sift.agg_preagg;
 -- 3. dead rows and pending writes: the units they touch are read, the others are still answered
 UPDATE ev SET amount = amount + 1, kind = 'kind-of-event-9' WHERE id BETWEEN 100 AND 130;
 DELETE FROM ev WHERE id BETWEEN 10000 AND 10010;
