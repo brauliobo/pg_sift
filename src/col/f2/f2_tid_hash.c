@@ -114,7 +114,7 @@ sift_tid_hash_check(Relation rel, const SiftPart *part, uint64 nrows)
 				prev = 0;
 	SiftTidHashSlotV2 slots[CHECK_CHUNK];
 
-	for (uint64 at = 0; at <= nb; at += CHECK_CHUNK)
+	for (uint64 at = 0; at < nb + 1; at += CHECK_CHUNK)
 	{
 		const uint64 n = Min(CHECK_CHUNK, nb + 1 - at);
 
