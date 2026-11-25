@@ -26,7 +26,7 @@ check "a lease given back leaves no lock on its table" test "$out" == 0
 
 rm -f "$D/ready" "$D/locked" "$D/release"
 { echo "INSERT INTO le1 VALUES (1);"; echo "SELECT p98_fill(5000) > 0;"; echo "\\! touch '$D/ready'"; echo "\\! while [ ! -e '$D/locked' ]; do sleep 0.05; done"
-  echo "SET lock_timeout = '5s';"; echo "INSERT INTO le2 VALUES (1);"; echo "SELECT 'inserted';"; } | sql vl >"$D/evict.out" 2>&1 &
+  echo "SET lock_timeout = '5s';"; echo "INSERT INTO le2 VALUES (1);"; echo "SELECT 'inserted';"; } | sql vl >"$D/evict.out" 2>&1 &  # timeout-ok: the product waits for no lock, the timeout is the failure
 evictor=$!
 wait_for "[[ -e $D/ready ]]" 60 || bail "the writer did not fill the registry"
 { echo "BEGIN;"; echo "LOCK TABLE le1 IN ACCESS EXCLUSIVE MODE;"; echo "\\! touch '$D/locked'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql vl >/dev/null &
