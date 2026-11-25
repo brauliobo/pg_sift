@@ -156,6 +156,7 @@ unfit_unsettled(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, V
 		MemoryContextSwitchTo(keep);
 		span_of_tids(plan, rb->tid, rb->n, sizeof(uint64));
 		sift_rowbuf_free(rb);
+		sift_mem_release_os(MemoryContextMemAllocated(cx, true));
 		MemoryContextReset(cx);
 	}
 	if (e->pend_del_blk != InvalidBlockNumber)

@@ -420,6 +420,7 @@ sift_stage_reset_parts(SiftTxnStage *st)
 {
 	for (int i = 0; i < st->nparts; i++)
 		sift_rowbuf_free(st->parts[i].rb);
+	sift_mem_release_os(st->mem_bytes);
 	st->nparts = 0;
 	st->mem_bytes = 0;
 	st->total_rows = 0;
@@ -434,8 +435,10 @@ void
 sift_stage_renew_part(SiftTxnStage *st, SiftStagePart *p)
 {
 	MemoryContext old;
+	Size		freed = p->rb->mem_bytes;
 
 	sift_rowbuf_free(p->rb);
+	sift_mem_release_os(freed);
 	old = MemoryContextSwitchTo(TopTransactionContext);
 	p->rb = sift_rowbuf_new(&st->spec);
 	MemoryContextSwitchTo(old);
