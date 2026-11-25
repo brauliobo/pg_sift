@@ -125,7 +125,8 @@ sift_tail_cut_for(const SiftExtent *ext, int n, uint64 want, BlockNumber floor)
 	SiftExtent *ord = memcpy(palloc(Max(n, 1) * sizeof(SiftExtent)), ext, n * sizeof(SiftExtent));
 	BlockNumber cut = 0;
 
-	qsort(ord, n, sizeof(SiftExtent), sift_tail_ext_desc);
+	if (n > 1)
+		qsort(ord, n, sizeof(SiftExtent), sift_tail_ext_desc);
 	for (int i = 0; i < n; i++)
 	{
 		cut = ord[i].start;
