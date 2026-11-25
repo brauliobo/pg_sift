@@ -507,7 +507,8 @@ push_scan(PushState *st, EState *estate, ArrayType *ids)
 	else
 	{
 		ExecIndexBuildScanKeys(&st->css.ss.ps, st->index, quals, false, &keys, &nkeys, &rtkeys, &nrt, NULL, NULL);
-		SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
+		if (nrt > 0)
+			ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, rtkeys, nrt);
 		st->ops->zone->scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL, NULL);
 	}
 }
