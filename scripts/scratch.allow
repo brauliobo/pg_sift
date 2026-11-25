@@ -14,4 +14,4 @@ bench/steps/store.py	the default of the same cache directory
 bench/README.md	the text that names the cache directory
 scripts/check-complexity.sh	the sites of each source by its size and modification time, a few kB, read to skip a file that did not change
 bench/steps/perf_gate/anchor.py	the release anchor build of the perf gate, built once per commit and PostgreSQL major and read by every later run
-test/t/p98_f2_pg_upgrade.sh	the cached PostgreSQL server of the major before this one, read to upgrade from it
+test/t/col/f2/pg_upgrade.sh	the cached PostgreSQL server of the major before this one, read to upgrade from it

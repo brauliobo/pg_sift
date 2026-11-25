@@ -26,7 +26,6 @@ src/agg/par/	src/agg/par.c
 src/agg/vk/	src/agg/vk.c	
 src/bm25/runs/	src/bm25/runs.c	runs_
 src/col/v1/maint/merge_pick.c	src/col/v1/maint/merge.c	maint_
-
 src/agg/gpu/cfg.h	src/agg/gpu_cfg.h	
 src/agg/gpu/cost.c	src/agg/gpu_cost.c	
 src/agg/gpu/cost.h	src/agg/gpu_cost.h	
@@ -828,11 +827,9 @@ src/col/v1/gorder/read.c	src/col/v1/gorder_read.c
 src/col/v1/gorder/seek.c	src/col/v1/gorder_seek.c	
 src/col/v1/gorder/text.c	src/col/v1/gorder_text.c	
 src/col/v1/kern/kern.c	src/col/v1/kern.c	
-src/col/v1/kern/kern.h	src/col/v1/kern.h	
 src/col/v1/kern/anc.h	src/col/v1/kern_anc.h	
 src/col/v1/kern/avx2.c	src/col/v1/kern_avx2.c	
 src/col/v1/kern/avx512.c	src/col/v1/kern_avx512.c	
-src/col/v1/kern/int.h	src/col/v1/kern_int.h	
 src/col/v1/kern/neon.c	src/col/v1/kern_neon.c	
 src/col/v1/kern/test.c	src/col/v1/kern_test.c	
 src/col/v1/kern/vec.h	src/col/v1/kern_vec.h	
@@ -1075,3 +1072,11 @@ src/table/v1/vacuum/vacuum.c	src/table/v1/vacuum.c
 src/table/v1/vacuum/copy.c	src/table/v1/vacuum_copy.c	
 src/table/v1/vacuum/int.h	src/table/v1/vacuum_int.h	
 src/table/v1/vacuum/maint.c	src/table/v1/vacuum_maint.c	
+src/agg/topn/test.c	src/agg/v6/topn/test.c	
+src/agg/cost/card_est_test.c	src/agg/v6/cost/card_est_test.c	
+src/agg/kern/test.c	src/agg/kern6/test.c	
+src/agg/core_test.c	src/agg/v6/core_test.c	
+src/agg/ht/test.c	src/agg/ht_test.c	
+src/agg/safety.c	src/agg/v6/safety.c	
+src/agg/bridge_test.c	src/agg/v6/bridge_test.c	
+src/agg/distinct/u64_test.c	src/agg/v6/distinct/u64_test.c	

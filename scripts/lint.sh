@@ -85,7 +85,7 @@ CHECKS+=(
 	'arg-order	python3 -I scripts/check-arg-order.py --selftest && python3 -I scripts/check-arg-order.py'
 	'upper-paths	scripts/check-upper-paths.sh --selftest && scripts/check-upper-paths.sh'
 	'selftest-tools	scripts/lint-cache.sh selftest-tools scripts packaging bench/steps/cases.py bench/steps/cases -- bash -c '\''scripts/check-neutral.sh --selftest && scripts/package.sh --selftest && scripts/apt-install.sh --selftest && scripts/release.sh --selftest && scripts/plangate.sh --selftest && python3 -I bench/steps/cases.py cpus --selftest'\'
-	'tap-versions	v=$(sed -n "s/^default_version *= *.\(.*\).$/\1/p" pg_sift.control) && ! grep -nE "(extversion|version\(\)).*== *${v//./[.]}( |\"|$)" test/t/compat_*.sh'
+	'tap-versions	v=$(sed -n "s/^default_version *= *.\(.*\).$/\1/p" pg_sift.control) && f=$(git ls-files "test/t/compat/*.sh") && [ -n "$f" ] && ! grep -nE "(extversion|version\(\)).*== *${v//./[.]}( |\"|$)" $f'
 	'budgets	scripts/check-budgets.sh --selftest && scripts/check-budgets.sh'
 	'cache-kinds	[ "$(grep -rn "sift_cache_register(" src --include=*.c | grep -vc "^src/core/cachebudget")" -le "$(sed -n "s/^#define SIFT_CACHE_MAX_KINDS[[:space:]]*//p" src/core/cachebudget.h)" ] || { echo "more sift_cache_register() sites than SIFT_CACHE_MAX_KINDS (core/cachebudget.h): raise it with the new cache"; exit 1; }'
 	'tap-timeouts	scripts/check-tap-timeouts.sh --selftest && scripts/check-tap-timeouts.sh'
