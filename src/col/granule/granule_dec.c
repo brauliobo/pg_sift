@@ -7,7 +7,6 @@
 #include "col/compress.h"
 #include "col/fsst.h"
 #include "col/granule/granule_int.h"
-#include "core/damage.h"
 #include "core/popcount.h"
 
 /* p moved on by n bytes of the chunk of len bytes that starts at raw: what no part of the chunk reaches past */
@@ -15,7 +14,7 @@ static const char *
 chunk_skip(const char *raw, uint32 len, const char *p, uint64 n, const char *what)
 {
 	if (n > len - (uint64) (p - raw))
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the %s of a chunk do not fit it", what));
+		SIFT_FAIL_CORRUPT("sift: the %s of a chunk do not fit it", what);
 	return p + n;
 }
 
