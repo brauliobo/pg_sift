@@ -1,0 +1,38 @@
+-- sift_table: UPDATE and DELETE of a wide table (a high-cardinality text, a long text and a jsonb column) when sift.backend_cache_kb is far below what one granule decodes to.
+-- The cache keeps the frame it just built for the statement that asked for it, so the statements read the rows as they are, change them all and leave a directory that sift.check
+-- accepts, at 16MB and at 1MB. A fresh session for each step: nothing is cached from the build. About 5 s. Run on a build where new tables take Format 2.0.
+CREATE EXTENSION IF NOT EXISTS pg_sift CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+
+-- 131072 rows: below this the decoded granules of the table fit the cache and the statements never reach the frames they read (the crash needs 4 times the 32768 rows of a small table)
+CREATE TABLE wide USING sift_table AS
+SELECT g::bigint AS id, (g % 8)::int AS k_lo,
+	'k' || ((g::bigint * 2654435761) & 1048575) || '_' || repeat('abcdefgh', 7) AS txt,
+	repeat('seg=' || lpad((g % 16)::text, 2, '0') || '|grp=' || lpad((g % 128)::text, 3, '0') || '|pad=0123456789abcdef|', 8) AS payload,
+	jsonb_build_object('k', g % 64, 'tag', 't' || (g % 32), 'msg', repeat('json_payload_', 8) || (g % 1024)) AS doc
+FROM generate_series(1, 131072) g;
+
+CREATE FUNCTION wide_state() RETURNS TABLE (rows bigint, appended bigint, doc_kept bigint, bad bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE right(payload, 1) = 'u'), count(*) FILTER (WHERE (doc->>'k')::int = id % 64),
+		(SELECT count(*) FROM sift.check('wide'::regclass))
+	FROM wide
+$$;
+
+\c -
+SET sift.test_create_format1 = off;
+SET sift.backend_cache_kb = '16MB';
+UPDATE wide SET payload = payload || 'u';
+SELECT * FROM wide_state();
+
+\c -
+SET sift.backend_cache_kb = '1MB';
+UPDATE wide SET payload = payload || 'u', doc = jsonb_set(doc, '{k}', to_jsonb((id % 64)::int));
+SELECT * FROM wide_state();
+SELECT count(*) AS twice FROM wide WHERE right(payload, 2) = 'uu';
+
+\c -
+SET sift.backend_cache_kb = '1MB';
+DELETE FROM wide WHERE k_lo < 4;
+SELECT count(*) AS left_rows, count(*) FILTER (WHERE k_lo >= 4) AS kept, (SELECT count(*) FROM sift.check('wide'::regclass)) AS bad FROM wide;

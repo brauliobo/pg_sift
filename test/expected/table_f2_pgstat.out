@@ -1,0 +1,53 @@
+-- sift_table: pg_stat_user_tables counts what a statement did to the table as a heap table does (n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup, seq_scan), which is
+-- what autovacuum reads to start on dead rows. The same statements run on a heap table and a sift_table and the counters are compared. About 1 s.
+CREATE EXTENSION IF NOT EXISTS pg_sift CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE ps_heap (id int, k int, txt text);
+CREATE TABLE ps_sift (id int, k int, txt text) USING sift_table;
+CREATE FUNCTION ps_run(rel regclass) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('INSERT INTO %s SELECT g, g %% 8, ''t'' || g FROM generate_series(1, 8192) g', rel);
+	EXECUTE format('UPDATE %s SET txt = txt || ''u'' WHERE k = 0', rel);
+	EXECUTE format('DELETE FROM %s WHERE k IN (6, 7)', rel);
+END $$;
+SELECT ps_run('ps_heap'), ps_run('ps_sift');
+ ps_run | ps_run 
+--------+--------
+        | 
+(1 row)
+
+SELECT count(*) FROM ps_heap;
+ count 
+-------
+  6144
+(1 row)
+
+SELECT count(*) FROM ps_sift;
+ count 
+-------
+  6144
+(1 row)
+
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT relname, n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup, seq_scan
+FROM pg_stat_user_tables WHERE relname IN ('ps_heap', 'ps_sift') ORDER BY relname;
+ relname | n_tup_ins | n_tup_upd | n_tup_del | n_live_tup | n_dead_tup | seq_scan 
+---------+-----------+-----------+-----------+------------+------------+----------
+ ps_heap |      8192 |      1024 |      2048 |       6144 |       3072 |        3
+ ps_sift |      8192 |      1024 |      2048 |       6144 |       3072 |        3
+(2 rows)
+
+SELECT (SELECT (n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup, seq_scan) FROM pg_stat_user_tables WHERE relname = 'ps_heap')
+	= (SELECT (n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup, seq_scan) FROM pg_stat_user_tables WHERE relname = 'ps_sift') AS same_as_heap;
+ same_as_heap 
+--------------
+ t
+(1 row)
+
