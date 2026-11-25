@@ -354,6 +354,18 @@ sift_f2_track_install(Relation heap, Relation index, bool concurrent)
 	CommandCounterIncrement();
 }
 
+/* The table of the index, locked without a wait: the statement holds the index, and a statement that holds the table may be waiting for it */
+static Relation
+open_heap_briefly(Relation index, LOCKMODE lockmode)
+{
+	Oid			heapid = index->rd_index->indrelid;
+
+	if (!sift_col_hear_lock_briefly(heapid, lockmode))
+		ereport(ERROR, (errcode(ERRCODE_LOCK_NOT_AVAILABLE), errmsg("could not lock the table of index \"%s\" to change its track_changes triggers", RelationGetRelationName(index)),
+						errdetail("A statement holds it, and this one holds the index, which that statement may be waiting for."), errhint("Run the statement again.")));
+	return table_open(heapid, NoLock);
+}
+
 /*
  * The triggers of an index follow its option after ALTER INDEX: the row triggers that stage the deletes of a table, made when they are missing and dropped when the option is off. There is
  * no log and no baseline: a delete the triggers did not hear is the heap's to tell, which a scan of the index checks for every row anyway.
@@ -367,12 +379,12 @@ sift_f2_track_reconcile(Relation index)
 	{
 		if (sift_col_hear_find(index, false) == NIL)
 			return;
-		heap = table_open(index->rd_index->indrelid, AccessExclusiveLock);
+		heap = open_heap_briefly(index, AccessExclusiveLock);
 		sift_col_hear_remove(index);
 		table_close(heap, NoLock);
 		return;
 	}
-	heap = table_open(index->rd_index->indrelid, ShareRowExclusiveLock);
+	heap = open_heap_briefly(index, ShareRowExclusiveLock);
 	sift_f2_track_install(heap, index, false);
 	table_close(heap, NoLock);
 }
