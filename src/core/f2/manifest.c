@@ -220,11 +220,14 @@ SiftColDeltaAnchor
 sift_manifest_read_col_delta(Relation rel, const SiftPartitionEntry *entry)
 {
 	Page		p;
+	SiftColDeltaAnchor a;
 
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 		return sift_col_delta_anchor_none();
 	p = sift_mf_read_page(rel, entry->manifest_blk, SIFT_PT_PARTLIST, SIFT_PARTLIST_MAGIC, entry->manifest_gen, (uint32) entry->part_id, NULL);
-	return partlist_anchor(rel, PLIST(p), p);
+	a = partlist_anchor(rel, PLIST(p), p);
+	pfree(p);
+	return a;
 }
 
 bool
