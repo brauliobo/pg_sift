@@ -22,8 +22,8 @@ CREATE FUNCTION delta_pages(rel regclass) RETURNS int LANGUAGE sql AS $$
 -- the same table twice, a heap and a sift_table, with the same rows: the statements of a section run on both and the rows must agree
 CREATE FUNCTION make_pair(n int) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-	cols text := (SELECT string_agg(format('n%s int', i), ', ') FROM generate_series(6, 32) i);
-	vals text := (SELECT string_agg('i', ', ') FROM generate_series(6, 32) i);
+	cols text := (SELECT string_agg(format('n%s int', i), ', ') FROM generate_series(6, 40) i);
+	vals text := (SELECT string_agg('i', ', ') FROM generate_series(6, 40) i);
 BEGIN
 	EXECUTE format('CREATE TABLE o (id int PRIMARY KEY, customer_id int, region int, status int, amount int, %s, notes text) USING sift_table', cols);
 	EXECUTE format('CREATE TABLE oh (id int PRIMARY KEY, customer_id int, region int, status int, amount int, %s, notes text) USING heap', cols);
@@ -113,7 +113,7 @@ SELECT chk('a delta is seen through an index', count(*)::int, 1) FROM o WHERE cu
 (1 row)
 
 RESET enable_seqscan;
--- 2. what falls back to the row it was: an indexed column, more than 16 columns, a value over 1 KB
+-- 2. what falls back to the row it was: an indexed column, more than 32 columns, a value over 3,840 bytes
 SELECT ctid::text AS c2 FROM o WHERE id = 8 \gset
 WITH u AS (UPDATE o SET region = 99 WHERE id = 8 RETURNING ctid::text AS c) SELECT chk('an indexed column moves the row', c <> :'c2', true) FROM u;
                  chk                 
@@ -140,19 +140,19 @@ SELECT chk('eleven columns keep the row', c = :'c3', true) FROM u;
 
 UPDATE oh SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0 WHERE id = 9;
 SELECT ctid::text AS c3b FROM o WHERE id = 90 \gset
-WITH u AS (UPDATE o SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0, n19 = 0, n20 = 0, n21 = 0, n22 = 0, n23 = 0, n24 = 0 WHERE id = 90 RETURNING ctid::text AS c)
-SELECT chk('more than 16 columns moves the row', c <> :'c3b', true) FROM u;
+WITH u AS (UPDATE o SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0, n19 = 0, n20 = 0, n21 = 0, n22 = 0, n23 = 0, n24 = 0, n25 = 0, n26 = 0, n27 = 0, n28 = 0, n29 = 0, n30 = 0, n31 = 0, n32 = 0, n33 = 0, n34 = 0, n35 = 0, n36 = 0, n37 = 0, n38 = 0, n39 = 0, n40 = 0 WHERE id = 90 RETURNING ctid::text AS c)
+SELECT chk('more than 32 columns moves the row', c <> :'c3b', true) FROM u;
                   chk                   
 ----------------------------------------
- more than 16 columns moves the row: ok
+ more than 32 columns moves the row: ok
 (1 row)
 
-UPDATE oh SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0, n19 = 0, n20 = 0, n21 = 0, n22 = 0, n23 = 0, n24 = 0 WHERE id = 90;
+UPDATE oh SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0, n19 = 0, n20 = 0, n21 = 0, n22 = 0, n23 = 0, n24 = 0, n25 = 0, n26 = 0, n27 = 0, n28 = 0, n29 = 0, n30 = 0, n31 = 0, n32 = 0, n33 = 0, n34 = 0, n35 = 0, n36 = 0, n37 = 0, n38 = 0, n39 = 0, n40 = 0 WHERE id = 90;
 SELECT ctid::text AS c4 FROM o WHERE id = 10 \gset
-WITH u AS (UPDATE o SET notes = repeat('x', 5000) WHERE id = 10 RETURNING ctid::text AS c) SELECT chk('a value over 1 KB moves the row', c <> :'c4', true) FROM u;
-                 chk                 
--------------------------------------
- a value over 1 KB moves the row: ok
+WITH u AS (UPDATE o SET notes = repeat('x', 5000) WHERE id = 10 RETURNING ctid::text AS c) SELECT chk('a value over 3,840 bytes moves the row', c <> :'c4', true) FROM u;
+                    chk                     
+--------------------------------------------
+ a value over 3,840 bytes moves the row: ok
 (1 row)
 
 UPDATE oh SET notes = repeat('x', 5000) WHERE id = 10;

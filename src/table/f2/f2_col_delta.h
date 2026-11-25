@@ -36,11 +36,11 @@
 #define SIFT_COL_DELTA_MIN_LIVE_ATTRS	2		/* a table of one column writes a row about as small as a patch */
 #define SIFT_COL_DELTA_MAX_RATIO_NUM	1		/* changed columns : live columns, at most 1 : 4, and one column of a table of two or three */
 #define SIFT_COL_DELTA_MAX_RATIO_DEN	4
-#define SIFT_COL_DELTA_MAX_COLS_PER_REC	16		/* the changed columns of a sift_table record */
+#define SIFT_COL_DELTA_MAX_COLS_PER_REC	32		/* the changed columns of a sift_table record */
 #define SIFT_COL_DELTA_MAX_COLS_INDEX	8		/* the changed leaves of a sift_col record */
 #define SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR	(SIFT_COL_DELTA_MAX_COLS_INDEX + 1)	/* a record of a sift_col index also holds the new address of the row */
-#define SIFT_COL_DELTA_MAX_PAYLOAD		1024	/* the bytes of the column headers and values of one record, before the padding */
-#define SIFT_COL_DELTA_MAX_REC_BYTES	2048	/* what a record of the format may hold: the bound of a reader */
+#define SIFT_COL_DELTA_MAX_PAYLOAD		3840	/* the bytes of the column headers and values of one record, before the padding */
+#define SIFT_COL_DELTA_MAX_REC_BYTES	4096	/* what a record of the format may hold: the bound of a reader */
 #define SIFT_COL_DELTA_FOLD_PAGES		4		/* a chain of this many pages asks the maintenance worker for a fold */
 #define SIFT_COL_DELTA_STAGE_BYTES		(128 * 1024)
 #define SIFT_COL_DELTA_MAX_PAGES		60000	/* what the 16 bits of the anchor's page count can name (480 MB): no update is admitted to a chain that would pass it; a fold is asked for long before */
@@ -167,6 +167,8 @@ typedef struct SiftColDeltaColHdr
 } SiftColDeltaColHdr;
 
 StaticAssertDecl(sizeof(SiftColDeltaColHdr) == 4, "SiftColDeltaColHdr must be 4 bytes");
+StaticAssertDecl(sizeof(SiftColDeltaEntryHdr) + SIFT_COL_DELTA_MAX_PAYLOAD + 7 <= SIFT_COL_DELTA_MAX_REC_BYTES, "a record at the payload bound fits the bound of a reader");
+StaticAssertDecl(SIFT_COL_DELTA_MAX_REC_BYTES <= SIFT_COL_DELTA_PAGE_ROOM, "a record of the format fits an empty page");
 
 /* One changed column on its way into a record: the cell as sift_f2_cell_of_datum made it (a bare string or a varlena image, a fixed-length value as it is) */
 typedef struct SiftColDeltaCol
