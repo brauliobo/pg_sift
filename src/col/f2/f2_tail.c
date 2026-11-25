@@ -34,6 +34,7 @@ typedef struct Tail
 	MemoryContext scan;
 	BlockNumber high_water;
 	BlockNumber slab_lo;		/* the first block of the metadata slabs that end the file, high_water when none does */
+	bool		slab_pins;		/* slabs end the file and their pages in use do not fit in the free pages of the slabs below */
 	SiftTailSpan *span;
 	TailItem   *item;
 	SiftTailPart *part;			/* of each holder: what a move of the pieces of its stream needs */
@@ -170,6 +171,8 @@ collect(Relation rel, const SiftColMetaPageData *meta)
 	Tail		t = {.cx = CurrentMemoryContext,.scan = sift_mem_allocset_create(CurrentMemoryContext, "sift tail holder"),
 		.high_water = meta->high_water,.slab_lo = slab_run_start(rel, meta->high_water)};
 	int			nscope = sift_f2_store_open(rel)->host->host_kind == SIFT_F2_HOST_INDEX ? sift_col_rel(rel)->nscope : 0;
+
+	t.slab_pins = t.slab_lo < t.high_water && !sift_fsm_meta_fits_below(rel, t.slab_lo);
 
 	for (int i = 0; i < mr.n; i++)
 	{
@@ -362,7 +365,7 @@ relocate_pieces(Relation rel, const Tail *t, BlockNumber hw, uint64 free_blocks)
 	BlockNumber cut,
 				from = 0;
 
-	while (sift_tail_pick_cut(t->span, t->part, t->n, hw, free_blocks, SIFT_TAIL_SHRINK_MIN_BLOCKS, from, &cut))
+	while (sift_tail_pick_cut(t->span, t->part, t->n, hw, t->slab_pins, free_blocks, SIFT_TAIL_SHRINK_MIN_BLOCKS, from, &cut))
 	{
 		int			top = top_above(t, cut);
 		PiecesMove	moved = top < 0 ? PIECES_SKIPPED : move_pieces(rel, &t->item[top], cut);

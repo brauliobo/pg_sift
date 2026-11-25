@@ -178,4 +178,7 @@ extern void sift_fsm_cache_discard_rel(Relation rel);
 /* Is the block one of a metadata slab */
 extern bool sift_fsm_is_meta_block(Relation rel, BlockNumber blk);
 
+/* Whether the free pages of the metadata slabs that start below from hold the pages in use of the ones that start at or above it: a commit that rewrites them takes the lowest free page */
+extern bool sift_fsm_meta_fits_below(Relation rel, BlockNumber from);
+
 #endif							/* SIFT_FSM_H */

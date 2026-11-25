@@ -19,6 +19,24 @@ sift_fsm_is_meta_block(Relation rel, BlockNumber blk)
 	return is;
 }
 
+bool
+sift_fsm_meta_fits_below(Relation rel, BlockNumber from)
+{
+	Buffer		buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
+	const SiftFsmSlabTable *t = SLABS(BufferGetPage(buf));
+	uint32		used = 0,
+				room = 0;
+
+	sift_fsm_check_root(rel, buf);
+	for (uint32 i = 0; i < t->nslabs; i++)
+		if (t->slab[i].start >= from)
+			used += sift_fsm_slab_used(&t->slab[i]);
+		else
+			room += t->slab[i].nblocks - sift_fsm_slab_used(&t->slab[i]);
+	UnlockReleaseBuffer(buf);
+	return used <= room;
+}
+
 SiftFsmStats
 sift_fsm_check(Relation rel)
 {
