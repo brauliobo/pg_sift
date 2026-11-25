@@ -351,6 +351,17 @@ extern void sift_tbl_f2_index_fetch_end(struct IndexFetchTableData *data);
 extern bool sift_tbl_f2_index_fetch_tuple(struct IndexFetchTableData *scan, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *call_again, bool *all_dead);
 extern uint64 sift_tbl_f2_fetch_order(struct IndexFetchTableData *scan, const ItemPointerData *tid);
 extern bool sift_tbl_f2_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot);
+
+/* The callbacks of a row run in the context of the statement, where what a row allocates stays until the statement ends: each runs in a context of its own, gone with the row */
+typedef struct SiftTblRowScope
+{
+	MemoryContext caller;
+	MemoryContext cx;
+} SiftTblRowScope;
+
+extern SiftTblRowScope sift_tbl_f2_row_scope_enter(const char *name);
+extern void sift_tbl_f2_row_scope_leave(SiftTblRowScope scope);
+extern bool sift_tbl_f2_fetch_row_scoped(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot);
 extern bool sift_tbl_f2_tuple_tid_valid(TableScanDesc scan, ItemPointer tid);
 extern void sift_tbl_f2_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid);
 extern bool sift_tbl_f2_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot snapshot);

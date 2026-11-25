@@ -23,6 +23,7 @@
 #include "table/f2/f2_gcache.h"
 #include "table/f2/f2_tbl.h"
 #include "table/f2/f2_vm.h"
+#include "core/memtrack.h"
 
 /* ---- addresses ---- */
 
@@ -292,8 +293,33 @@ crosscheck_fails(Relation rel, ItemPointer tid, Snapshot crosscheck)
 	return !seen;
 }
 
-TM_Result
-sift_tbl_f2_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd, bool changingPart)
+SiftTblRowScope
+sift_tbl_f2_row_scope_enter(const char *name)
+{
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, name);
+
+	return (SiftTblRowScope) {MemoryContextSwitchTo(cx), cx};
+}
+
+void
+sift_tbl_f2_row_scope_leave(SiftTblRowScope scope)
+{
+	MemoryContextSwitchTo(scope.caller);
+	MemoryContextDelete(scope.cx);
+}
+
+bool
+sift_tbl_f2_fetch_row_scoped(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot)
+{
+	SiftTblRowScope scope = sift_tbl_f2_row_scope_enter("sift f2 fetch row");
+	bool		found = sift_tbl_f2_tuple_fetch_row_version(rel, tid, snapshot, slot);
+
+	sift_tbl_f2_row_scope_leave(scope);
+	return found;
+}
+
+static TM_Result
+delete_row(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd, bool changingPart)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	uint64		packed = sift_tbl_tid_pack(tid);
@@ -321,6 +347,16 @@ sift_tbl_f2_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot 
 	ExecDropSingleTupleTableSlot(old);
 	pgstat_count_heap_delete(rel);
 	return TM_Ok;
+}
+
+TM_Result
+sift_tbl_f2_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd, bool changingPart)
+{
+	SiftTblRowScope scope = sift_tbl_f2_row_scope_enter("sift f2 delete row");
+	TM_Result	res = delete_row(rel, tid, cid, snapshot, crosscheck, wait, tmfd, changingPart);
+
+	sift_tbl_f2_row_scope_leave(scope);
+	return res;
 }
 
 bool
@@ -364,9 +400,9 @@ key_intact(Relation rel, SiftF2Store *store, TupleTableSlot *old, TupleTableSlot
 	return true;
 }
 
-TM_Result
-sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
-						 LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
+static TM_Result
+update_row(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
+		   LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	uint64		old_packed = sift_tbl_tid_pack(otid),
@@ -427,6 +463,17 @@ sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, C
 	ExecDropSingleTupleTableSlot(old);
 	pgstat_count_heap_update(rel, patch.reason == SIFT_CD_OK, false);
 	return TM_Ok;
+}
+
+TM_Result
+sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
+						 LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
+{
+	SiftTblRowScope scope = sift_tbl_f2_row_scope_enter("sift f2 update row");
+	TM_Result	res = update_row(rel, otid, slot, cid, snapshot, crosscheck, wait, tmfd, lockmode, update_indexes);
+
+	sift_tbl_f2_row_scope_leave(scope);
+	return res;
 }
 
 /* ---- a rewrite ---- */
