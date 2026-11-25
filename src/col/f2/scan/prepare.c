@@ -30,9 +30,19 @@ return_columns(IndexScanDesc scan, F2Scan *s)
 }
 
 static int
-key_leaf(const void *f, int attno, const char *key, int len)
+key_leaf(const void *index, int attno, const char *key, int len)
 {
-	return sift_f2_key_leaf(f, attno, key, len);
+	return sift_f2_key_leaf(sift_f2_rel((Relation) index), attno, key, len);
+}
+
+/* A catalog lookup of a qual reloads the entry and frees the state struct (not its leaves): the quals keep the leaves and the index, never the state */
+static ColKeys
+col_keys(Relation index)
+{
+	/* check-memory: allow the leaves are read at once; they outlive the state */
+	const SiftColRel *r = sift_col_rel(index);
+
+	return (ColKeys) {.defs = r->schema->cols,.ndefs = r->schema->ncols,.first = r->first,.idesc = RelationGetDescr(index),.infix = true,.key_leaf = key_leaf,.key_leaf_arg = index};
 }
 
 /*
@@ -73,17 +83,36 @@ row_bound(const SiftColRel *r, const SiftF2Rel *f, const ScanKeyData *rk, SiftRo
 	return true;
 }
 
+/* The zones, the partitions and the key ranges of the predicates and the row comparisons, from the state the entry holds after the quals (their catalog lookups reload it) */
+static void
+plan_keys(IndexScanDesc scan, F2Scan *s, const ScanKeyData **rows, int nrows)
+{
+	const SiftF2Rel *f = sift_f2_rel(scan->indexRelation);
+	/* check-memory: allow nothing reads the catalog between the fetch and the keys */
+	const SiftColRel *r = sift_col_rel(scan->indexRelation);
+	SiftKeySpec spec;
+
+	for (int i = 0; s->possible && i < nrows && s->nrowcmp < SIFT_ROW_BOUNDS_MAX; i++)
+		if (row_bound(r, f, rows[i], &s->rowcmp[s->nrowcmp], &s->preds[s->npreds], MemoryContextAlloc(s->cx, sizeof(SiftColValue))))
+		{
+			s->npreds++;
+			s->nrowcmp++;
+		}
+	s->possible = s->possible && sift_f2_key_set(f, s->preds, s->npreds, &s->keys) && sift_f2_time_window(f, s->preds, s->npreds, &s->time);
+	if (s->possible)
+		sift_f2_key_plan(f, r->schema->cols, s->preds, s->npreds, &s->keyplan);
+	for (int i = 0; i < s->nrowcmp && sift_f2_rel_key_spec(f, &spec); i++)
+		sift_key_plan_row_bound(&spec, &s->keyplan, s->rowcmp[i].op, s->rowcmp[i].vals, s->rowcmp[i].n);
+	s->possible = s->possible && s->keyplan.state != SIFT_KEY_PLAN_EMPTY;
+}
+
 void
 sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
 {
-	/* check-memory: allow nothing reads the catalog between the fetch and the keys */
-	SiftColRel *r = sift_col_rel(scan->indexRelation);
-	SiftF2Rel  *f = sift_f2_rel(scan->indexRelation);
-	ColKeys		ck = {.defs = r->schema->cols,.ndefs = r->schema->ncols,.first = r->first,.idesc = RelationGetDescr(scan->indexRelation),.infix = true,.key_leaf = key_leaf,.key_leaf_arg = f};
+	ColKeys		ck = col_keys(scan->indexRelation);
 	ScanKey		all = scan->keyData,
 				plain = palloc(Max(scan->numberOfKeys, 1) * sizeof(ScanKeyData));
 	const ScanKeyData *rows[SIFT_KEY_COLS_MAX];
-	SiftKeySpec spec;
 	int			nall = scan->numberOfKeys,
 				nrows = 0;
 
@@ -103,18 +132,7 @@ sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
 	sift_col_test_inval(scan->indexRelation);	/* the catalog lookups of the quals can take a lock that reloads the entry */
 #endif
 	s->npreds = s->possible ? sift_f2_scan_append_ext(s, sift_col_preds_keep(s->preds, s->npreds)) : s->npreds;
-	for (int i = 0; s->possible && i < nrows && s->nrowcmp < SIFT_ROW_BOUNDS_MAX; i++)
-		if (row_bound(r, f, rows[i], &s->rowcmp[s->nrowcmp], &s->preds[s->npreds], MemoryContextAlloc(s->cx, sizeof(SiftColValue))))
-		{
-			s->npreds++;
-			s->nrowcmp++;
-		}
-	s->possible = s->possible && sift_f2_key_set(f, s->preds, s->npreds, &s->keys) && sift_f2_time_window(f, s->preds, s->npreds, &s->time);
-	if (s->possible)
-		sift_f2_key_plan(f, r->schema->cols, s->preds, s->npreds, &s->keyplan);
-	for (int i = 0; i < s->nrowcmp && sift_f2_rel_key_spec(f, &spec); i++)
-		sift_key_plan_row_bound(&spec, &s->keyplan, s->rowcmp[i].op, s->rowcmp[i].vals, s->rowcmp[i].n);
-	s->possible = s->possible && s->keyplan.state != SIFT_KEY_PLAN_EMPTY;
+	plan_keys(scan, s, rows, nrows);
 	return_columns(scan, s);
 	s->recheck_all = ck.recheck;
 	s->prepared = true;
