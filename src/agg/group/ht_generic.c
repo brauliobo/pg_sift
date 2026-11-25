@@ -12,6 +12,7 @@
 #include "utils/typcache.h"
 
 #include "agg/group/ht_generic.h"
+#include "core/memtrack.h"
 
 #define GEN_FIRST_TABLE	64
 
@@ -26,6 +27,7 @@ struct SiftGenKey
 	FmgrInfo	eq_fn;
 	FmgrInfo	cmp_fn;
 	MemoryContext cx;
+	MemoryContext vcx;			/* the copies of the values: reset with the interner */
 	uint32		count;
 	uint32		cap;			/* entries vals and hashes have room for */
 	Datum	   *vals;			/* the value of code c is vals[c - 1] */
@@ -69,6 +71,7 @@ sift_genkey_new(MemoryContext cx, Oid typid, Oid collid)
 	k->typlen = te->typlen;
 	k->typbyval = te->typbyval;
 	k->cx = cx;
+	k->vcx = sift_mem_allocset_create(cx, "sift generic key values");
 	fmgr_info_copy(&k->hash_fn, &te->hash_proc_finfo, cx);
 	fmgr_info_copy(&k->eq_fn, &te->eq_opr_finfo, cx);
 	if (OidIsValid(te->cmp_proc))
@@ -155,7 +158,7 @@ sift_genkey_intern(SiftGenKey *k, Datum value)
 	}
 	if (k->count == k->cap)
 		grow_values(k);
-	old = MemoryContextSwitchTo(k->cx);
+	old = MemoryContextSwitchTo(k->vcx);
 	k->vals[k->count] = datumCopy(value, k->typbyval, k->typlen);
 	MemoryContextSwitchTo(old);
 	k->hashes[k->count] = hash;
@@ -171,6 +174,31 @@ sift_genkey_datum(const SiftGenKey *k, uint32 code)
 {
 	Assert(code >= 1 && code <= k->count);
 	return k->vals[code - 1];
+}
+
+uint32
+sift_genkey_code_hash(const SiftGenKey *k, uint32 code)
+{
+	Assert(code >= 1 && code <= k->count);
+	return k->hashes[code - 1];
+}
+
+void
+sift_genkey_reset(SiftGenKey *k)
+{
+	MemoryContextReset(k->vcx);
+	if (k->vals != NULL)
+	{
+		pfree(k->vals);
+		pfree(k->hashes);
+	}
+	pfree(k->tab);
+	k->vals = NULL;
+	k->hashes = NULL;
+	k->count = k->cap = 0;
+	k->value_bytes = 0;
+	k->slots = GEN_FIRST_TABLE;
+	k->tab = MemoryContextAllocZero(k->cx, k->slots * sizeof(uint32));
 }
 
 int
@@ -202,9 +230,7 @@ sift_genkey_typid(const SiftGenKey *k)
 void
 sift_genkey_free(SiftGenKey *k)
 {
-	if (!k->typbyval)
-		for (uint32 c = 0; c < k->count; c++)
-			pfree(DatumGetPointer(k->vals[c]));
+	MemoryContextDelete(k->vcx);
 	if (k->vals != NULL)
 	{
 		pfree(k->vals);

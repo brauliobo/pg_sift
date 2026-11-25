@@ -11,6 +11,8 @@
 
 #include "postgres.h"
 
+#include "lib/stringinfo.h"
+
 #include "agg/group/ht_generic.h"
 #include "agg/v6/v6.h"
 #include "agg/vec.h"
@@ -67,6 +69,16 @@ extern SiftVec *const *sift_v6_genkeys_apply(SiftV6GenKeys *g, const SiftBatchSe
 /* values[k] of a key that is generic and not NULL: the value of the code the table holds there (only the keys whose bit of want is set) */
 extern void sift_v6_genkeys_resolve(const SiftV6GenKeys *g, Datum *values, const bool *isnull, uint32 want);
 extern uint64 sift_v6_genkeys_bytes(const SiftV6GenKeys *g);
+/*
+ * Key k as a value that leaves the interner, for the record of a group that goes to a spill: is key k generic; the hash of the value of a code (equal values share it, whatever the codes of the interner
+ * they have); the value of a code serialized onto out; and the code of the value serialized at *p (a value this interner meets for the first time gets a new one), *p after it. The interner emptied
+ * (sift_v6_genkeys_reset): no table holds a code of it.
+ */
+extern bool sift_v6_genkeys_is(const SiftV6GenKeys *g, int k);
+extern uint32 sift_v6_genkeys_hash(const SiftV6GenKeys *g, int k, int64 code);
+extern void sift_v6_genkeys_put(const SiftV6GenKeys *g, int k, int64 code, StringInfo out);
+extern int64 sift_v6_genkeys_get(SiftV6GenKeys *g, int k, const char **p);
+extern void sift_v6_genkeys_reset(SiftV6GenKeys *g);
 extern void sift_v6_genkeys_free(SiftV6GenKeys *g);
 
 #endif							/* SIFT_AGG_V6_DATUM_H */

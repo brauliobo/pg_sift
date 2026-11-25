@@ -129,7 +129,7 @@ compact_plan(const SiftV6Group *g, const V6Set *set, SiftCompact *c)
 {
 	const SiftV6Spec *spec = g->spec;
 
-	if (spec->nsets != 0 || g->nfilters != 0 || set->nk == 0 || set->ht.lock_at != 0)
+	if (spec->nsets != 0 || g->nfilters != 0 || set->nk == 0 || set->ht.lock_at != 0 || g->gkeys != NULL)
 		return false;
 	for (int j = 0; j < spec->naggs; j++)
 	{
@@ -546,9 +546,8 @@ typedef struct Flush
 	V6Set	   *set;
 	bool		spill;			/* the groups leave for the spill a run at a time, as the table is flushed because the memory is out */
 	uint32		run;
+	uint32		run_max;		/* the groups a quarter of the budget holds */
 } Flush;
-
-#define FLUSH_SPILL_RUN		65536
 
 static void
 flush_group(void *arg, const uint64 *slot)
@@ -557,20 +556,24 @@ flush_group(void *arg, const uint64 *slot)
 	V6Set	   *set = f->set;
 
 	v6g_compact_acc(set->owner, set, slot, (V6Acc *) sift_ht_ext(&set->ht, flush_upsert(set->owner, set, slot)));
-	if (f->spill && ++f->run % FLUSH_SPILL_RUN == 0)
-		v6g_spill_all(set->owner);
+	if (f->spill && ++f->run == f->run_max)
+	{
+		f->run = 0;
+		v6g_spill_sets(set->owner);
+	}
 }
 
 static void
 compact_flush(SiftV6Group *g, V6Set *set, bool spill)
 {
-	Flush		f = {set, spill && !set->cmp->has_gid, 0};
+	Flush		f = {set, spill && !set->cmp->has_gid, 0, 0};
 	MemoryContext old;
 
 	if (set->cmp == NULL)
 		return;
+	f.run_max = (uint32) Max(g->budget / 4 / (g->stride + sizeof(SiftAggSlot64) + 1), 1024);
 	old = MemoryContextSwitchTo(g->cx);
-	sift_ht_presize(&set->ht, (uint32) Min(set->cmp->count, f.spill ? FLUSH_SPILL_RUN : UINT32_MAX));
+	sift_ht_presize(&set->ht, (uint32) Min(set->cmp->count, f.spill ? f.run_max : UINT32_MAX));
 	if (set->cmp->has_gid)
 	{
 		by_gid_make(set->cmp, set);

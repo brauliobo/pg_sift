@@ -57,6 +57,8 @@ typedef struct V6Set
 	bool	   *flat_moved;
 	SiftDu64G **gflat;			/* a set of keys: the grouped flat set of each integer COUNT(DISTINCT), NULL once its pairs moved to dist */
 	bool	   *gflat_moved;
+	SiftGroupSpillIter *it;		/* the partitions of its spill read back, one at a time (v6g_spill_next): out is the table of the one it returns the groups of */
+	const SiftSaltedHT *out;
 	struct SiftCompact *cmp;	/* the compact group table the set has until something it cannot hold comes (v6_group_compact.h) */
 	bool		cmp_off;		/* it has none, and will not have */
 	SiftLockSet lock;			/* a set of keys of a statement with spec->lock_k: the first keys of the locked group table (v6_group_lock.h) */
@@ -110,9 +112,8 @@ struct SiftV6Group
 	uint64		dist_budget;	/* of budget: what the distinct sets of all the sets of keys may hold; the groups have the rest */
 	uint64		budget;
 	TupleDesc	desc;
-	Tuplestorestate *store;
-	TupleTableSlot *mslot;
 	bool		spilled;
+	bool		own_recs;		/* the groups go to the spill as records of their values: they point to codes and an arena that the spill gives back (v6_group_spill.c) */
 	StringInfoData kbuf;
 	SiftWideBatch wb;
 	SiftStrSlab *slab;			/* the strings of the minimum and maximum of text columns */
@@ -175,9 +176,15 @@ extern void v6g_ext_merge(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6
 extern Datum v6g_ext_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, bool *isnull);
 
 static inline bool
+v6g_is_text_mm(const SiftV6Agg *a)
+{
+	return (a->kind == SV6_MIN || a->kind == SV6_MAX) && sift_v6_class(a->arg.typid) == SV6C_TEXT;
+}
+
+static inline bool
 v6g_is_ext(const SiftV6Agg *a)
 {
-	return (a->kind >= SV6_STDDEV_POP && a->kind <= SV6_PCT_CONT) || ((a->kind == SV6_MIN || a->kind == SV6_MAX) && sift_v6_class(a->arg.typid) == SV6C_TEXT);
+	return (a->kind >= SV6_STDDEV_POP && a->kind <= SV6_PCT_CONT) || v6g_is_text_mm(a);
 }
 
 extern PGDLLIMPORT bool sift_agg_exact_float;
@@ -256,8 +263,20 @@ extern void v6g_merge_acc(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6
 
 /* the budget the tables of the groups may take: what the distinct sets do not */
 extern void v6g_spill_if_over(SiftV6Group *g);
-/* Every group table of the state to its spill, now */
+/* Every group table of the state to its spill, now, and the values its groups pointed to given back (no batch is in hand) */
 extern void v6g_spill_all(SiftV6Group *g);
+/* The same with those values kept, for the batch in hand that still holds their codes */
+extern void v6g_spill_sets(SiftV6Group *g);
+
+/* v6_group_spill.c: a state whose groups point to codes or to the text arena spills records of their values; the groups of a spill are read back a partition at a time */
+extern void v6g_spill_own(SiftV6Group *g);
+/* The group tables are given back and each set that spilled starts reading its partitions */
+extern void v6g_spill_open(SiftV6Group *g);
+/* The table of the next partition of the set (its groups are final), NULL after the last */
+extern const SiftSaltedHT *v6g_spill_next(V6Set *set);
+struct SiftV6StrIn;
+/* The slot in ht of the group of these keys (the integer or code of each, the strings of the text ones, bit i of nulls the i-th key of the set): what sift_v6_group_fold_rec folds a record into */
+extern SiftAggSlot64 *v6g_slot_of(SiftV6Group *g, V6Set *set, SiftSaltedHT *ht, const int64 *key, const struct SiftV6StrIn *str, uint64 nulls);
 
 /* group_filter.c */
 extern void v6g_filter_init(SiftV6Group *g);

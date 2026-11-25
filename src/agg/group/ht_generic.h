@@ -28,6 +28,10 @@ extern int	sift_genkey_cmp(SiftGenKey *k, Datum a, Datum b);
 extern uint32 sift_genkey_count(const SiftGenKey *k);
 extern uint64 sift_genkey_bytes(const SiftGenKey *k);
 extern Oid	sift_genkey_typid(const SiftGenKey *k);
+/* The hash of the value of a code: the one the interner compares by, which equal values share whatever their bytes */
+extern uint32 sift_genkey_code_hash(const SiftGenKey *k, uint32 code);
+/* The interner emptied, its values and tables given back: no code stands for anything */
+extern void sift_genkey_reset(SiftGenKey *k);
 extern void sift_genkey_free(SiftGenKey *k);
 
 #endif							/* SIFT_AGG_GROUP_HT_GENERIC_H */

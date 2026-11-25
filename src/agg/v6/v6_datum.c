@@ -5,6 +5,7 @@
 
 #include "catalog/pg_type_d.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
@@ -256,6 +257,8 @@ struct SiftV6GenKeys
 	SiftGenKey *gen[SIFT_V6_MAX_KEYS];
 	Oid			typid[SIFT_V6_MAX_KEYS];
 	int			scale[SIFT_V6_MAX_KEYS];
+	int16		typlen[SIFT_V6_MAX_KEYS];
+	bool		typbyval[SIFT_V6_MAX_KEYS];
 	int64	   *codes[SIFT_V6_MAX_KEYS];
 	uint64		valid[SIFT_V6_MAX_KEYS][SIFT_VEC_WORDS];
 	SiftVec		vec[SIFT_V6_MAX_KEYS];
@@ -283,6 +286,7 @@ sift_v6_genkeys_new(MemoryContext cx, const SiftV6Spec *spec)
 		g->typid[i] = getBaseType(spec->key[i].typid);
 		g->scale[i] = spec->key[i].scale;
 		g->gen[i] = sift_genkey_new(cx, g->typid[i], spec->key[i].collid);
+		get_typlenbyval(g->typid[i], &g->typlen[i], &g->typbyval[i]);
 		g->codes[i] = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		g->spec.key[i].typid = INT8OID;
 		g->spec.key[i].scale = 0;
@@ -330,6 +334,54 @@ sift_v6_genkeys_bytes(const SiftV6GenKeys *g)
 		if (g->gen[i] != NULL)
 			bytes += sift_genkey_bytes(g->gen[i]) + SIFT_VEC_LEN * sizeof(int64);
 	return bytes;
+}
+
+bool
+sift_v6_genkeys_is(const SiftV6GenKeys *g, int k)
+{
+	return g->gen[k] != NULL;
+}
+
+uint32
+sift_v6_genkeys_hash(const SiftV6GenKeys *g, int k, int64 code)
+{
+	return sift_genkey_code_hash(g->gen[k], (uint32) code);
+}
+
+void
+sift_v6_genkeys_put(const SiftV6GenKeys *g, int k, int64 code, StringInfo out)
+{
+	const Datum d = sift_genkey_datum(g->gen[k], (uint32) code);
+	const Size	room = datumEstimateSpace(d, false, g->typbyval[k], g->typlen[k]);
+	char	   *at;
+
+	enlargeStringInfo(out, room);
+	at = out->data + out->len;
+	datumSerialize(d, false, g->typbyval[k], g->typlen[k], &at);
+	out->len = (int) (at - out->data);
+}
+
+int64
+sift_v6_genkeys_get(SiftV6GenKeys *g, int k, const char **p)
+{
+	MemoryContext old = MemoryContextSwitchTo(g->scratch);
+	char	   *at = (char *) *p;
+	bool		isnull;
+	const Datum d = datumRestore(&at, &isnull);
+	const int64 code = sift_genkey_intern(g->gen[k], d);
+
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(g->scratch);
+	*p = at;
+	return code;
+}
+
+void
+sift_v6_genkeys_reset(SiftV6GenKeys *g)
+{
+	for (int i = 0; i < g->nkeys; i++)
+		if (g->gen[i] != NULL)
+			sift_genkey_reset(g->gen[i]);
 }
 
 void

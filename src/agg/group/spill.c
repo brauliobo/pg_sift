@@ -164,110 +164,175 @@ read_record(BufFile *f, SiftRecBuf *buf)
 	return true;
 }
 
-typedef struct ScanCtx
+typedef struct Frame
+{
+	SpillSet   *set;
+	uint32		next;
+} Frame;
+
+/* the partitions of the levels a scan is in: the explicit stack of the recursion into the levels below */
+struct SiftGroupSpillIter
 {
 	SiftGroupSpill *sp;
 	uint64		budget;
-	SiftGroupSpillVisit visit;
-	void	   *arg;
+	bool		consume;
 	SiftRecBuf	rec;
-} ScanCtx;
-
-static void merge_file(ScanCtx *sc, BufFile *f, uint32 depth);
+	Frame		stack[SIFT_SPILL_MAX_DEPTH + 1];
+	int			top;
+	SiftSaltedHT ht;
+	bool		live;
+};
 
 static void
-over_budget_error(const ScanCtx *sc)
+over_budget_error(const SiftGroupSpillIter *it)
 {
-	ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the groups of a partition take more than %lu bytes", (unsigned long) sc->budget),
+	ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the groups of a partition take more than %lu bytes", (unsigned long) it->budget),
 					errdetail("One group, or the distinct values of one group, does not fit after %d levels of partitions.", SIFT_SPILL_MAX_DEPTH),
 					errhint("Raise work_mem or hash_mem_multiplier.")));
 }
 
 static bool
-over_budget(const SiftRecMerge *m, uint64 budget)
+over_budget(const SiftGroupSpillIter *it, const SiftRecMerge *m)
 {
-	return sift_ht_bytes(m->ht) + m->dist_bytes > budget;
+	const SiftRadixShape *sh = m->shape;
+
+	return sift_ht_bytes(m->ht) + m->dist_bytes + (sh->held != NULL ? sh->held(sh) : 0) > it->budget;
 }
 
 /* The table into the next level: its groups leave it, and the records that follow go there */
 static SpillSet *
-split_table(ScanCtx *sc, SiftSaltedHT *ht, uint32 depth, uint64 *bytes)
+split_table(SiftGroupSpillIter *it, uint32 depth, uint64 *bytes)
 {
-	MemoryContext old = MemoryContextSwitchTo(sc->sp->cxt);
 	SpillSet   *sub = palloc(sizeof(SpillSet));
 	PutArg		a = {sub, bytes};
 
 	if (depth >= SIFT_SPILL_MAX_DEPTH)
-		over_budget_error(sc);
+		over_budget_error(it);
 	set_init(sub, depth + 1);
-	sc->sp->open[depth + 1] = sub;
-	MemoryContextSwitchTo(old);
-	sift_rec_flush_ht(ht, sc->sp->shape, &sc->rec, put_cb, &a);
-	sift_ht_destroy(ht);
+	it->sp->open[depth + 1] = sub;
+	sift_rec_flush_ht(&it->ht, it->sp->shape, &it->rec, put_cb, &a);
+	sift_ht_destroy(&it->ht);
 	return sub;
 }
 
-/* The partition of the file into a table; one that takes more than the budget is split by the bits of the next level */
-static void
-merge_file(ScanCtx *sc, BufFile *f, uint32 depth)
+/* The partition of the file into it->ht; one that takes more than the budget is split by the bits of the next level, which is then the next to read (false) */
+static bool
+iter_load(SiftGroupSpillIter *it, BufFile *f, uint32 depth)
 {
-	const SiftRadixShape *sh = sc->sp->shape;
-	SiftSaltedHT ht;
-	SiftRecMerge m = {.shape = sh, .ht = &ht};
+	const SiftRadixShape *sh = it->sp->shape;
+	SiftRecMerge m = {.shape = sh,.ht = &it->ht};
 	SpillSet   *sub = NULL;
 	uint64		bytes = 0;
 	uint32		n = 0;
 
-	sift_ht_init_ex(&ht, SIFT_HT_MIN_SLOTS, sh->wide_key, sh->ext_stride, sh->ext_dist_off);
+	if (sh->part_begin != NULL)
+		sh->part_begin(sh);
+	sift_ht_init_ex(&it->ht, SIFT_HT_MIN_SLOTS, sh->wide_key, sh->ext_stride, sh->ext_dist_off);
 	if (BufFileSeek(f, 0, 0, SEEK_SET) != 0)
 		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("could not rewind a spill file of the groups"),
 						errhint("Check the free space of the temporary tablespace.")));
-	while (read_record(f, &sc->rec))
+	while (read_record(f, &it->rec))
 	{
 		if (sub)
-			set_put(sub, sift_rec_hash(sc->rec.p), sc->rec.p, sift_rec_len(sc->rec.p), &bytes);
+			set_put(sub, sift_rec_hash(it->rec.p), it->rec.p, sift_rec_len(it->rec.p), &bytes);
 		else
 		{
-			sift_rec_merge(&m, sc->rec.p);
-			if (++n % 256 == 0)
+			sift_rec_merge(&m, it->rec.p);
+			if (++n % 64 == 0)
+			{
 				CHECK_FOR_INTERRUPTS();
-			if (n % 256 == 0 && over_budget(&m, sc->budget))
-				sub = split_table(sc, &ht, depth, &bytes);
+				if (over_budget(it, &m))
+					sub = split_table(it, depth, &bytes);
+			}
 		}
 	}
-	if (!sub && over_budget(&m, sc->budget))
-		sub = split_table(sc, &ht, depth, &bytes);
+	if (!sub && over_budget(it, &m))
+		sub = split_table(it, depth, &bytes);
 	if (!sub)
-	{
-		sc->visit(sc->arg, &ht);
-		sift_ht_destroy(&ht);
-		return;
-	}
-	sc->sp->depth = Max(sc->sp->depth, depth + 1);
+		return true;
+	it->sp->depth = Max(it->sp->depth, depth + 1);
 	set_seal(sub, &bytes);
-	for (uint32 p = 0; p < SIFT_SPILL_PARTS; p++)
-		if (sub->files[p])
+	it->stack[++it->top] = (Frame) {sub, 0};
+	return false;
+}
+
+SiftGroupSpillIter *
+sift_gspill_iter_begin(SiftGroupSpill *sp, uint64 budget, bool consume)
+{
+	MemoryContext old = MemoryContextSwitchTo(sp->cxt);
+	SiftGroupSpillIter *it = palloc0(sizeof(SiftGroupSpillIter));
+
+	it->sp = sp;
+	it->budget = budget;
+	it->consume = consume;
+	set_seal(&sp->top, &sp->bytes);
+	it->stack[0] = (Frame) {&sp->top, 0};
+	MemoryContextSwitchTo(old);
+	return it;
+}
+
+const SiftSaltedHT *
+sift_gspill_iter_next(SiftGroupSpillIter *it)
+{
+	SiftGroupSpill *sp = it->sp;
+	MemoryContext old = MemoryContextSwitchTo(sp->cxt);
+	const SiftSaltedHT *out = NULL;
+
+	if (it->live)
+		sift_ht_destroy(&it->ht);
+	it->live = false;
+	while (it->top >= 0 && out == NULL)
+	{
+		const int	at = it->top;
+		SpillSet   *set = it->stack[at].set;
+		uint32		p = it->stack[at].next;
+
+		while (p < SIFT_SPILL_PARTS && set->files[p] == NULL)
+			p++;
+		if (p == SIFT_SPILL_PARTS)
 		{
-			merge_file(sc, sub->files[p], depth + 1);
-			BufFileClose(sub->files[p]);
-			sub->files[p] = NULL;
+			if (at > 0)
+			{
+				sp->open[set->depth] = NULL;
+				set_free(set);
+				pfree(set);
+			}
+			it->top--;
+			continue;
 		}
-	set_free(sub);
-	sc->sp->open[depth + 1] = NULL;
-	pfree(sub);
+		it->stack[at].next = p + 1;
+		it->live = iter_load(it, set->files[p], set->depth);
+		if (it->consume || set->depth > 0)
+		{
+			BufFileClose(set->files[p]);
+			set->files[p] = NULL;
+		}
+		if (it->live)
+			out = &it->ht;
+	}
+	MemoryContextSwitchTo(old);
+	return out;
+}
+
+void
+sift_gspill_iter_end(SiftGroupSpillIter *it)
+{
+	if (it->live)
+		sift_ht_destroy(&it->ht);
+	if (it->rec.p)
+		pfree(it->rec.p);
+	pfree(it);
 }
 
 void
 sift_gspill_scan(SiftGroupSpill *sp, uint64 budget, SiftGroupSpillVisit visit, void *arg)
 {
-	ScanCtx		sc = {.sp = sp, .budget = budget, .visit = visit, .arg = arg};
+	SiftGroupSpillIter *it = sift_gspill_iter_begin(sp, budget, false);
+	const SiftSaltedHT *ht;
 
-	set_seal(&sp->top, &sp->bytes);
-	for (uint32 p = 0; p < SIFT_SPILL_PARTS; p++)
-		if (sp->top.files[p])
-			merge_file(&sc, sp->top.files[p], 0);
-	if (sc.rec.p)
-		pfree(sc.rec.p);
+	while ((ht = sift_gspill_iter_next(it)) != NULL)
+		visit(arg, (SiftSaltedHT *) ht);
+	sift_gspill_iter_end(it);
 }
 
 uint64

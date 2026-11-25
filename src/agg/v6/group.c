@@ -15,7 +15,6 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
-#include "utils/tuplestore.h"
 
 #include "agg/gpu_v6.h"
 #include "agg/group/ht.h"
@@ -476,7 +475,7 @@ v6g_merge_acc(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s)
 		v6_gen_combine(g->gen, (int) (a - g->spec->agg), d, s);
 	else if (v6g_is_ext(a))
 		v6g_ext_merge(g, a, d, s);
-	else if ((a->kind == SV6_MIN || a->kind == SV6_MAX) && sift_v6_class(a->arg.typid) == SV6C_TEXT)
+	else if (v6g_is_text_mm(a))
 	{
 		if (s->n != 0)
 			sift_strmm_merge((SiftStrMM *) d, (const SiftStrMM *) s, a->kind == SV6_MIN);
@@ -630,72 +629,17 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 		if (g->set[s].wide && g->wb.buf == NULL)
 			sift_wide_batch_init(&g->wb, cx, SIFT_VEC_LEN);
 	for (int j = 0; j < spec->naggs; j++)
-		if ((spec->agg[j].kind == SV6_MIN || spec->agg[j].kind == SV6_MAX) && sift_v6_class(spec->agg[j].arg.typid) == SV6C_TEXT && g->slab == NULL)
+		if (v6g_is_text_mm(&spec->agg[j]) && g->slab == NULL)
 			g->slab = sift_strslab_new(cx);
 	if (sift_v6_spec_has_gen(spec))
 	{
 		g->gen = v6_gen_new(spec, cx, g->budget);
 		g->budget = UINT64_MAX;
 	}
+	v6g_spill_own(g);
 	presize(g);
 	MemoryContextSwitchTo(old);
 	return g;
-}
-
-/* The bytes the groups hold now, as the allocator has them: the tables whole, the text arena, the code slots, and the table a batch would grow: old and new at once */
-static uint64
-group_bytes(const SiftV6Group *g)
-{
-	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch)) + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0);
-
-	for (int s = 0; s < g->nsets; s++)
-	{
-		const SiftSaltedHT *ht = &g->set[s].ht;
-
-		if (g->set[s].nk == 0)
-			continue;
-		bytes += sift_ht_bytes(ht);
-		if (ht->count + SIFT_VEC_LEN > ht->grow_at)
-			bytes += 2 * (uint64) ht->capacity * (sizeof(SiftAggSlot64) + 1);
-	}
-	return bytes;
-}
-
-void
-v6g_spill_all(SiftV6Group *g)
-{
-	for (int s = 0; s < g->nsets; s++)
-	{
-		V6Set	   *set = &g->set[s];
-
-		if (set->nk == 0 || set->ht.count == 0 || set->ht.lock_at != 0)
-			continue;
-		if (set->spill == NULL)
-		{
-			MemoryContext old = MemoryContextSwitchTo(g->cx);
-
-			set->spill = sift_gspill_new(&set->shape);
-			MemoryContextSwitchTo(old);
-		}
-		sift_gspill_put_ht(set->spill, &set->ht);
-		v6g_dist_gflat_flush(g, set);
-		sift_ht_clear(&set->ht);
-		sift_ht_shrink_to(&set->ht, SIFT_SPILL_LOCAL_CAP);
-	}
-	g->spilled = true;
-}
-
-/* MEM[MEM-AGG-02]: SiftV6Group spill budget check (group_bytes of allocated memory against budget - dist_budget; a spill leaves SIFT_SPILL_LOCAL_CAP slots per set; was count * 65B and the whole table kept) */
-void
-v6g_spill_if_over(SiftV6Group *g)
-{
-	if (g->gen != NULL)
-	{
-		if (group_bytes(g) > v6_gen_limit(g->gen))
-			v6_gen_no_spill(g->gen);
-	}
-	else if (group_bytes(g) > g->budget - g->dist_budget)
-		v6g_spill_all(g);
 }
 
 typedef struct V6Visit
@@ -782,29 +726,14 @@ finish_in_cx(SiftV6Group *g)
 	if (!g->spilled)
 		return;
 	v6g_spill_all(g);
-	/* MEM[MEM-AGG-02]: SiftV6Group spill-emit peak (tables destroyed before the merge scan; scan budget * 3/4 and a tuplestore of work_mem/4: was all three at once, about 3x work_mem) */
-	for (int s = 0; s < g->nsets; s++)
-		if (g->set[s].nk > 0)
-			sift_ht_destroy(&g->set[s].ht);
-	g->store = tuplestore_begin_heap(false, false, Max(work_mem / 4, 64));
-	g->mslot = MakeSingleTupleTableSlot(g->desc, &TTSOpsMinimalTuple);
-	for (int s = 0; s < g->nsets; s++)
-	{
-		V6Visit		v = {g, &g->set[s]};
-
-		if (g->set[s].nk == 0)
-		{
-			if (g->set[s].plain_row)
-				store_plain(g, &g->set[s]);
-		}
-		else if (g->set[s].spill != NULL)
-			sift_gspill_scan(g->set[s].spill, g->budget / 4 * 3, visit_merged, &v);
-	}
+	/* MEM[MEM-AGG-02]: SiftV6Group spill-emit peak (the tables are destroyed before the partitions are read, a budget * 3/4 table at a time; no store of the groups: each partition's are returned, and its file is gone) */
+	v6g_spill_open(g);
 }
 
 static const V6Acc *
 next_group(SiftV6Group *g, V6Set *set, Datum *values, bool *isnull)
 {
+	const SiftSaltedHT *ht = set->it != NULL ? set->out : &set->ht;
 	const SiftAggSlot64 *s;
 
 	if (set->nk == 0)
@@ -814,13 +743,18 @@ next_group(SiftV6Group *g, V6Set *set, Datum *values, bool *isnull)
 		set->emitted = true;
 		return set->plain;
 	}
-	while (set->emit_at < set->ht.capacity && !(set->ht.ctrl[set->emit_at] & 0x80))
-		set->emit_at++;
-	if (set->emit_at >= set->ht.capacity)
-		return NULL;
-	s = &set->ht.slots[set->emit_at++];
-	v6g_key_datums(g, set, &set->ht, s, values, isnull, V6_KEYS_ALL);
-	return (const V6Acc *) sift_ht_ext(&set->ht, s);
+	for (;;)
+	{
+		while (ht != NULL && set->emit_at < ht->capacity && !(ht->ctrl[set->emit_at] & 0x80))
+			set->emit_at++;
+		if (ht != NULL && set->emit_at < ht->capacity)
+			break;
+		if (set->it == NULL || (ht = v6g_spill_next(set)) == NULL)
+			return NULL;
+	}
+	s = &ht->slots[set->emit_at++];
+	v6g_key_datums(g, set, ht, s, values, isnull, V6_KEYS_ALL);
+	return (const V6Acc *) sift_ht_ext(ht, s);
 }
 
 bool
@@ -832,21 +766,6 @@ sift_v6_group_next(SiftV6Group *g, Datum *values, bool *isnull)
 		return v6g_bulk_next(g, values, isnull);
 	for (int s = 0; s < g->nsets; s++)
 		v6g_compact_flush(g, &g->set[s]);
-	if (g->store != NULL)
-	{
-		const int	n = spec->nkeys + spec->naggs;
-
-		MemoryContext old = MemoryContextSwitchTo(g->cx);
-		const bool	got = tuplestore_gettupleslot(g->store, true, false, g->mslot);
-
-		MemoryContextSwitchTo(old);
-		if (!got)
-			return false;
-		slot_getallattrs(g->mslot);
-		memcpy(values, g->mslot->tts_values, n * sizeof(Datum));
-		memcpy(isnull, g->mslot->tts_isnull, n * sizeof(bool));
-		return true;
-	}
 	for (; g->cur < g->nsets; g->cur++)
 	{
 		V6Set	   *set = &g->set[g->cur];
@@ -901,11 +820,11 @@ sift_v6_group_free(SiftV6Group *g)
 		sift_strslab_free(g->slab);
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].spill != NULL)
+		{
+			if (g->set[s].it != NULL)
+				sift_gspill_iter_end(g->set[s].it);
 			sift_gspill_free(g->set[s].spill);
-	if (g->mslot != NULL)
-		ExecDropSingleTupleTableSlot(g->mslot);
-	if (g->store != NULL)
-		tuplestore_end(g->store);
+		}
 	if (g->tx.buf != NULL)
 		pfree(g->tx.buf);
 	if (g->gkeys != NULL)
