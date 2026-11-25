@@ -8,7 +8,30 @@
 size_t
 sift_gather_width(SiftVecType t)
 {
-	return t == SVEC_STRVIEW ? sizeof(SiftStrView) : sizeof(uint64);
+	switch (t)
+	{
+		case SVEC_BOOL:
+			return sizeof(uint8);
+		case SVEC_I32:
+		case SVEC_DICT32:
+			return sizeof(uint32);
+		case SVEC_I64:
+		case SVEC_F64:
+		case SVEC_NUM64:
+		case SVEC_DATUM:
+			return sizeof(uint64);
+		case SVEC_NUM128:
+			return sizeof(SiftI128);
+		case SVEC_NUM256:
+			return sizeof(SiftI256);
+		case SVEC_UUID:
+			return sizeof(SiftUuid16);
+		case SVEC_INTERVAL:
+			return sizeof(SiftInterval16);
+		case SVEC_STRVIEW:
+			return sizeof(SiftStrView);
+	}
+	__builtin_unreachable();
 }
 
 static inline bool
@@ -35,7 +58,7 @@ sift_vec_gather(SiftVec *out, uint64 *out_valid, void *out_data, const SiftVec *
 			memset(dst + i * w, 0, w);
 		out_valid[i >> 6] |= (uint64) ok << (i & 63);
 	}
-	*out = (SiftVec) {.data = out_data,.valid = out_valid,.len = (uint16) n,.all_valid = false,.dense = true,.type = src->type,.scale = src->scale,.typid = src->typid,.typlen = src->typlen,.typbyval = src->typbyval};
+	*out = (SiftVec) {.data = out_data,.valid = out_valid,.len = (uint16) n,.all_valid = false,.dense = true,.type = src->type,.scale = src->scale,.dict = src->dict,.typid = src->typid,.typlen = src->typlen,.typbyval = src->typbyval};
 }
 
 void
