@@ -220,8 +220,10 @@ SELECT name, kind, state, rows FROM sift.projection_list() WHERE relation = 'tp'
 INSERT INTO tp SELECT i, date '2026-01-01' + i % 10, i FROM generate_series(1, 1000) i;
 VACUUM tp;
 SELECT name, kind, state, rows FROM sift.projection_list() WHERE relation = 'tp'::regclass;
+SET sift.enable_agg = off;
 SELECT p_uses('SELECT id, v FROM tp ORDER BY v DESC LIMIT 5', 'by_v');
 SELECT p_same_order('SELECT id, v FROM tp ORDER BY v DESC LIMIT 5', 'SELECT id, v FROM tp ORDER BY v + 0 DESC LIMIT 5');
+RESET sift.enable_agg;
 SELECT sift.drop_projection('tp', 'by_v');
 SET sift.test_create_format1 = on;
 CREATE TABLE tp1 (id int, v int) USING sift_table;
