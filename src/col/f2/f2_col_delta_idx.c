@@ -46,24 +46,20 @@ slot_cmp(const void *a, const void *b)
 static int
 new_cmp(const void *a, const void *b)
 {
-	uint64		x = ((const SiftCdRemap *) a)->new_tid,
-				y = ((const SiftCdRemap *) b)->new_tid;
+	const SiftCdRemap *x = a,
+			   *y = b;
 
-	return x < y ? -1 : x > y;
+	if (x->new_tid != y->new_tid)
+		return x->new_tid < y->new_tid ? -1 : 1;
+	return (x->seq > y->seq) - (x->seq < y->seq);
 }
-
-typedef struct Seen
-{
-	SiftCdRemap r;
-	uint32		seq;
-} Seen;
 
 static int
 seen_cmp(const void *a, const void *b)
 {
-	const Seen *x = a,
+	const SiftCdRemap *x = a,
 			   *y = b;
-	int			c = slot_cmp(&x->r, &y->r);
+	int			c = slot_cmp(x, y);
 
 	return c != 0 ? c : (x->seq > y->seq) - (x->seq < y->seq);
 }
@@ -137,7 +133,7 @@ remap_index(SiftCdRemapMap *m)
 SiftCdRemapMap *
 sift_cd_remap_build(const SiftColDeltaChain *chain, const SiftColDeltaOps *ops)
 {
-	Seen	   *v = NULL;
+	SiftCdRemap *v = NULL;
 	int			n = 0,
 				cap = 0,
 				m = 0;
@@ -162,9 +158,9 @@ sift_cd_remap_build(const SiftColDeltaChain *chain, const SiftColDeltaOps *ops)
 				if (n == cap)
 				{
 					cap = Max(16, cap * 2);
-					v = v != NULL ? repalloc(v, cap * sizeof(Seen)) : palloc(cap * sizeof(Seen));
+					v = v != NULL ? repalloc(v, cap * sizeof(SiftCdRemap)) : palloc(cap * sizeof(SiftCdRemap));
 				}
-				v[n++] = (Seen) {{h.part_gen, h.granule_id, h.row_ordinal, (uint64) col.val.i}, seq};
+				v[n++] = (SiftCdRemap) {h.part_gen, h.granule_id, h.row_ordinal, (uint64) col.val.i, seq};
 			}
 			seq++;
 			p += h.rec_bytes;
@@ -172,12 +168,12 @@ sift_cd_remap_build(const SiftColDeltaChain *chain, const SiftColDeltaOps *ops)
 	}
 	if (n == 0)
 		return NULL;
-	qsort(v, n, sizeof(Seen), seen_cmp);
+	qsort(v, n, sizeof(SiftCdRemap), seen_cmp);
 	map = palloc0(sizeof(SiftCdRemapMap));
 	map->slot = palloc(n * sizeof(SiftCdRemap));
 	for (int i = 0; i < n; i++)
-		if (i + 1 == n || slot_cmp(&v[i].r, &v[i + 1].r) != 0)
-			map->slot[m++] = v[i].r;
+		if (i + 1 == n || slot_cmp(&v[i], &v[i + 1]) != 0)
+			map->slot[m++] = v[i];
 	map->n = m;
 	map->by_new = memcpy(palloc(m * sizeof(SiftCdRemap)), map->slot, m * sizeof(SiftCdRemap));
 	qsort(map->by_new, m, sizeof(SiftCdRemap), new_cmp);
@@ -203,6 +199,25 @@ sift_cd_remap_free(SiftCdRemapMap *m)
 	pfree(m);
 }
 
+/* The last entry of by_new that has the address: the row the heap gave it to most recently */
+static const SiftCdRemap *
+latest_by_new(const SiftCdRemapMap *m, uint64 tid)
+{
+	int			a = 0,
+				b = m->n;
+
+	while (a < b)
+	{
+		int			mid = a + (b - a) / 2;
+
+		if (m->by_new[mid].new_tid <= tid)
+			a = mid + 1;
+		else
+			b = mid;
+	}
+	return a > 0 && m->by_new[a - 1].new_tid == tid ? &m->by_new[a - 1] : NULL;
+}
+
 /* The first entry of the slot-ordered array that is not before the place */
 static int
 slot_lower(const SiftCdRemapMap *m, const SiftCdRemap *key)
@@ -225,16 +240,16 @@ slot_lower(const SiftCdRemapMap *m, const SiftCdRemap *key)
 const SiftCdRemap *
 sift_cd_remap_by_new(const SiftCdRemapMap *m, uint64 tid)
 {
-	SiftCdRemap key = {.new_tid = tid};
+	const SiftCdRemap *latest = NULL;
 
 	if (m == NULL)
 		return NULL;
 	if (m->new_ht == NULL)
-		return bsearch(&key, m->by_new, m->n, sizeof(SiftCdRemap), new_cmp);
+		return latest_by_new(m, tid);
 	for (uint32 h = new_home(m, tid); m->new_ht[h] != 0; h = (h + 1) & m->ht_mask)
 		if (m->by_new[m->new_ht[h] - 1].new_tid == tid)
-			return &m->by_new[m->new_ht[h] - 1];
-	return NULL;
+			latest = &m->by_new[m->new_ht[h] - 1];
+	return latest;
 }
 
 uint64

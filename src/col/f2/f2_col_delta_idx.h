@@ -42,6 +42,7 @@ typedef struct SiftCdRemap
 	uint32		granule_id;
 	uint16		row;
 	uint64		new_tid;
+	uint32		seq;			/* the place of the change in the chain: of two rows that were given one address by the heap in turn, the greater has it now */
 } SiftCdRemap;
 
 /* What the address changes of a part, or of a granule of it, say of the heap blocks of the new addresses: their range and the bloom of their blocks (sift_tid_block_bit) */
@@ -64,7 +65,7 @@ typedef struct SiftCdRemapMap
 {
 	int			n;
 	SiftCdRemap *slot;			/* ascending by (part_gen, granule, row) */
-	SiftCdRemap *by_new;		/* ascending by new_tid */
+	SiftCdRemap *by_new;		/* ascending by (new_tid, seq) */
 	uint32	   *slot_ht;		/* the place in slot of the change of a row, plus one; NULL for few changes */
 	uint32	   *new_ht;			/* the place in by_new of the change that made an address, plus one */
 	uint32		ht_mask;
