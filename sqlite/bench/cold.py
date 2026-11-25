@@ -15,7 +15,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bench import query_text, statements  # noqa: E402
+from run import query_text, statements  # noqa: E402
 
 
 def drop_os_cache(path):

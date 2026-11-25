@@ -1,6 +1,6 @@
 """Latency and throughput of sift and FTS5 on the benchmark's query trace, one thread, warm cache.
 
-    python3 -I bench.py --engine sift|fts5 --db FILE --trace trace.tsv [--ext build/sift]
+    python3 -I run.py --engine sift|fts5 --db FILE --trace trace.tsv [--ext build/sift]
                         [--n 1000] [--classes and,or,phrase,count_and,count_or,count_phrase] [--table ft]
 
 Per class one pass over the first N subs to warm, one timed pass; one TSV row per class:

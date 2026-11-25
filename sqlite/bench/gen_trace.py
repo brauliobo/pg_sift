@@ -4,7 +4,7 @@ from random documents, each rendered as and / or / phrase.
     python3 -I gen_trace.py ARTICLES_DB NSUB > trace.tsv       (columns: sub, mode, terms)
 
 The benchmark itself draws them with hashint8 and ts_debug('simple'); the scripts here read that trace when a PostgreSQL
-export of it exists (bench.py --trace), and use this generator otherwise.
+export of it exists (run.py --trace), and use this generator otherwise.
 """
 import random
 import re

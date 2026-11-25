@@ -99,7 +99,7 @@ with block-max pruning, SiftQL, evaluator, merge policy) unmodified, against the
 
 ## Measurements
 
-Simple English Wikipedia, 218,058 articles (about 300 MB of text), the method of the table in [README.md](README.md#numbers-against-fts5) (one thread, no CPU pinning, warm cache, `nice`) on a **shared** machine, so figures are noisy (about +-10 percent, up to 1.6x between runs on the heavy OR class). Scripts (`bench/`): `build.py` (build time, size, RSS), `bench.py` (latency/qps per class, against FTS5), `cold.py` (first touch, cache, RSS), `merge.py` (merge time/RSS/identical answers), `readpath.c` (blob_read vs column_blob), `dml.py`, `compare_pg.py` (against pg_sift's evaluator), `golden.py`, `gen_trace.py`, `load_base.py`.
+Simple English Wikipedia, 218,058 articles (about 300 MB of text), the method of the table in [README.md](README.md#numbers-against-fts5) (one thread, no CPU pinning, warm cache, `nice`) on a **shared** machine, so figures are noisy (about +-10 percent, up to 1.6x between runs on the heavy OR class). Scripts (`bench/`): `build.py` (build time, size, RSS), `run.py` (latency/qps per class, against FTS5), `cold.py` (first touch, cache, RSS), `merge.py` (merge time/RSS/identical answers), `readpath.c` (blob_read vs column_blob), `dml.py`, `compare_pg.py` (against pg_sift's evaluator), `golden.py`, `gen_trace.py`, `load_base.py`.
 
 ### Memory and the page cache
 
@@ -152,7 +152,7 @@ user's own `articles`). Query speed is the same (AND 6.0k, OR 1.5k, phrase 4.2k 
 
 ### Parallel scans
 
-`parallel=N` on the 218k index, `bench/bench.py` classes and a heavy-query probe:
+`parallel=N` on the 218k index, `bench/run.py` classes and a heavy-query probe:
 
 | query | serial | 2 threads | 4 | 8 |
 |---|---|---|---|---|
