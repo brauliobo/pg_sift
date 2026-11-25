@@ -4,6 +4,11 @@
 (`v1.4.0` is `sift-mariadb` 1.4.0) and `mariadb/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extension in [../sqlite/CHANGELOG.md](../sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- An index definition is only taken in the forms sift_attach writes (the text expression is limited to the columns of the table, literals and string functions) and the routines of sift.sql run SQL SECURITY INVOKER with checked names: a user can no longer make the server run SQL of their choosing as itself.
+- NULL, negative and oversized arguments, a forged filter and a damaged manifest are SQL errors instead of crashes of the server; failed allocations are errors; a refused manifest no longer leaks its descriptor.
+
 ## 4.1.4
 
 - Rebuilt with the PostgreSQL release 4.1.4.

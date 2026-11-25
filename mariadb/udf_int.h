@@ -58,5 +58,6 @@ extern void ix_scope_end(SiftIdx **ixp);
 extern const SxHost host;
 extern void local_close(void);
 extern int host_queue(void *ctx, SiftIdx *ix, int64_t after, SxEvent **out, size_t *n, char *err, size_t errlen);
+extern int host_queue_probe(void *ctx, SiftIdx *ix, int64_t after, int64_t *max_seq, size_t *count, char *err, size_t errlen);
 
 #endif							/* SIFT_UDF_INT_H */

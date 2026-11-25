@@ -175,7 +175,8 @@ read_header(SiftIdx *ix, int fd, const char *path)
 static void
 load_manifest(SiftIdx *ix)
 {
-	char		path[600];
+	char		path[600],
+				why[256];
 	int			fd;
 	Manifest   *m = &ix->man;
 	size_t		segs_len;
@@ -191,6 +192,8 @@ load_manifest(SiftIdx *ix)
 		FAIL_CLOSING(fd, "sift: manifest %s is corrupted", path);
 	close(fd);
 	ix->cfg[m->cfg_len] = '\0';
+	if (!cfg_check(ix->name, ix->cfg, why, sizeof(why)))
+		fail("sift: index \"%s\" has a definition this build refuses (%s): rebuild it with sift_rebuild", ix->name, why);
 }
 
 /* Files the manifest does not name are leftovers of an interrupted drain or merge */

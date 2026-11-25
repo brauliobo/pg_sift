@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS sift_indexes (
 
 DROP PROCEDURE IF EXISTS sift_run//
 CREATE PROCEDURE sift_run(IN sql_text TEXT)
+SQL SECURITY INVOKER
 BEGIN
 	SET @sift_sql = sql_text;
 	PREPARE sift_st FROM @sift_sql;
@@ -45,9 +46,27 @@ BEGIN
 	DEALLOCATE PREPARE sift_st;
 END//
 
+-- Every routine runs with the privileges of its caller (SQL SECURITY INVOKER): attaching, syncing and searching need the
+-- privileges on sift_indexes, the table and the queue that the same statements would need typed by hand. The names that
+-- reach a statement are 1 to 56 letters, digits and underscores (sift_check_name) and identifiers are quoted (sift_qi).
+
+-- An identifier as SQL: in backticks, a backtick of the name doubled
+DROP FUNCTION IF EXISTS sift_qi//
+CREATE FUNCTION sift_qi(p_id VARCHAR(255)) RETURNS VARCHAR(520) DETERMINISTIC SQL SECURITY INVOKER
+	RETURN CONCAT('`', REPLACE(p_id, '`', '``'), '`')//
+
+DROP PROCEDURE IF EXISTS sift_check_name//
+CREATE PROCEDURE sift_check_name(IN p_name VARCHAR(255))
+SQL SECURITY INVOKER
+BEGIN
+	IF p_name IS NULL OR p_name NOT REGEXP '^[A-Za-z0-9_]{1,56}$' OR INSTR(p_name, CHAR(10)) > 0 THEN
+		SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'sift: an index name is 1 to 56 letters, digits or underscores';
+	END IF;
+END//
+
 -- The columns of a comma separated list written through a format: sift_colcat('a,b', 't.{c} = k.{c}', ' AND ')
 DROP FUNCTION IF EXISTS sift_colcat//
-CREATE FUNCTION sift_colcat(p_cols TEXT, p_fmt TEXT, p_sep VARCHAR(20)) RETURNS TEXT DETERMINISTIC
+CREATE FUNCTION sift_colcat(p_cols TEXT, p_fmt TEXT, p_sep VARCHAR(20)) RETURNS TEXT DETERMINISTIC SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_out TEXT DEFAULT '';
 	DECLARE v_i INT DEFAULT 1;
@@ -55,18 +74,19 @@ BEGIN
 
 	WHILE v_i <= v_n DO
 		SET v_out = CONCAT(v_out, IF(v_i > 1, p_sep, ''),
-			REPLACE(p_fmt, '{c}', CONCAT('`', TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(p_cols, ',', v_i), ',', -1)), '`')));
+			REPLACE(p_fmt, '{c}', sift_qi(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(p_cols, ',', v_i), ',', -1)))));
 		SET v_i = v_i + 1;
 	END WHILE;
 	RETURN v_out;
 END//
 
 DROP FUNCTION IF EXISTS sift_flag//
-CREATE FUNCTION sift_flag(p_v VARCHAR(10)) RETURNS INT DETERMINISTIC
+CREATE FUNCTION sift_flag(p_v VARCHAR(10)) RETURNS INT DETERMINISTIC SQL SECURITY INVOKER
 	RETURN IF(p_v IS NULL OR p_v IN ('true', '1'), 1, 0)//
 
 DROP PROCEDURE IF EXISTS sift_fail//
 CREATE PROCEDURE sift_fail(IN p_msg VARCHAR(200))
+SQL SECURITY INVOKER
 BEGIN
 	SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = p_msg;
 END//
@@ -75,7 +95,7 @@ END//
 -- dpp, k1, b, stemmer (en|none), case_folding, accent_folding, positions, prefix_index, fields, analyzer (text|keyword),
 -- merge_fanin, fresh (read the queue at query time), recheck (check the rows still exist)
 DROP FUNCTION IF EXISTS sift_options//
-CREATE FUNCTION sift_options(o TEXT, p_fields TEXT) RETURNS TEXT DETERMINISTIC
+CREATE FUNCTION sift_options(o TEXT, p_fields TEXT) RETURNS TEXT DETERMINISTIC SQL SECURITY INVOKER
 	RETURN CONCAT_WS(CHAR(10),
 		CONCAT('dpp=', IFNULL(JSON_VALUE(o, '$.dpp'), 256)),
 		CONCAT('k1=', IFNULL(JSON_VALUE(o, '$.k1'), '1.2')),
@@ -93,18 +113,25 @@ CREATE FUNCTION sift_options(o TEXT, p_fields TEXT) RETURNS TEXT DETERMINISTIC
 
 DROP PROCEDURE IF EXISTS sift_attach_opts//
 CREATE PROCEDURE sift_attach_opts(IN p_name VARCHAR(64), IN p_tbl VARCHAR(64), IN p_pk TEXT, IN p_text TEXT, IN p_opts TEXT)
+SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_db VARCHAR(64) DEFAULT DATABASE();
 	DECLARE v_o TEXT DEFAULT IF(p_opts IS NULL OR p_opts = '', '{}', p_opts);
 	DECLARE v_pk TEXT DEFAULT REPLACE(p_pk, ' ', '');
 	DECLARE v_npk INT DEFAULT 1 + LENGTH(REPLACE(p_pk, ' ', '')) - LENGTH(REPLACE(p_pk, ',', ''));
 	DECLARE v_found, v_int INT DEFAULT 0;
+	DECLARE v_made INT DEFAULT 0;
 	DECLARE v_text, v_fields, v_keyexpr, v_source, v_from, v_cfg, v_present TEXT;
-	DECLARE v_q VARCHAR(200) DEFAULT CONCAT('`', v_db, '`.`sift_q_', p_name, '`');
-	DECLARE v_k VARCHAR(200) DEFAULT CONCAT('`', v_db, '`.`sift_k_', p_name, '`');
-	DECLARE v_t VARCHAR(200) DEFAULT CONCAT('`', v_db, '`.`', p_tbl, '`');
+	DECLARE v_q, v_k, v_t TEXT;
 	DECLARE v_newkey, v_oldkey, v_ensure, v_chg, v_textchg, v_new, v_old, v_ins TEXT;
 
+	CALL sift_check_name(p_name);
+	IF v_db IS NULL THEN
+		CALL sift_fail('sift: select a database first');
+	END IF;
+	SET v_q = CONCAT(sift_qi(v_db), '.', sift_qi(CONCAT('sift_q_', p_name))),
+		v_k = CONCAT(sift_qi(v_db), '.', sift_qi(CONCAT('sift_k_', p_name))),
+		v_t = CONCAT(sift_qi(v_db), '.', sift_qi(p_tbl));
 	IF (SELECT COUNT(*) FROM sift_indexes WHERE name = p_name) > 0 THEN
 		CALL sift_fail('sift: an index of that name is attached');
 	END IF;
@@ -122,9 +149,9 @@ BEGIN
 			FROM JSON_TABLE(v_o, '$.fields[*]' COLUMNS (n FOR ORDINALITY, name VARCHAR(64) PATH '$.name', expr TEXT PATH '$.expr')) f;
 	END IF;
 	IF v_int THEN
-		SET v_keyexpr = CONCAT('t.`', v_pk, '`'), v_source = CONCAT(v_t, ' t'),
-			v_from = CONCAT(v_q, ' q LEFT JOIN ', v_t, ' t ON t.`', v_pk, '` = q.pk'),
-			v_newkey = CONCAT('NEW.`', v_pk, '`'), v_oldkey = CONCAT('OLD.`', v_pk, '`'), v_ensure = '';
+		SET v_keyexpr = CONCAT('t.', sift_qi(v_pk)), v_source = CONCAT(v_t, ' t'),
+			v_from = CONCAT(v_q, ' q LEFT JOIN ', v_t, ' t ON t.', sift_qi(v_pk), ' = q.pk'),
+			v_newkey = CONCAT('NEW.', sift_qi(v_pk)), v_oldkey = CONCAT('OLD.', sift_qi(v_pk)), v_ensure = '';
 	ELSE
 		SET v_keyexpr = 'k.kid', v_source = CONCAT(v_k, ' k JOIN ', v_t, ' t ON ', sift_colcat(v_pk, 't.{c} = k.{c}', ' AND ')),
 			v_from = CONCAT(v_q, ' q LEFT JOIN ', v_k, ' k ON k.kid = q.pk LEFT JOIN ', v_t, ' t ON ',
@@ -134,7 +161,7 @@ BEGIN
 			v_ensure = CONCAT('INSERT IGNORE INTO ', v_k, ' (', sift_colcat(v_pk, '{c}', ', '), ') VALUES (',
 				sift_colcat(v_pk, 'NEW.{c}', ', '), '); ');
 	END IF;
-	SET v_text = REPLACE(v_text, CHAR(10), ' '), v_present = CONCAT('t.`', SUBSTRING_INDEX(v_pk, ',', 1), '` IS NOT NULL');
+	SET v_text = REPLACE(v_text, CHAR(10), ' '), v_present = CONCAT('t.', sift_qi(SUBSTRING_INDEX(v_pk, ',', 1)), ' IS NOT NULL');
 	SET v_cfg = CONCAT_WS(CHAR(10), sift_options(v_o, v_fields), CONCAT('queue=', v_q), CONCAT('keyexpr=', v_keyexpr),
 		CONCAT('source=', v_source), CONCAT('textexpr=', v_text), CONCAT('database=', v_db), CONCAT('table=', p_tbl));
 	SET v_new = REGEXP_REPLACE(v_text, '\\bt\\.', 'NEW.'), v_old = REGEXP_REPLACE(v_text, '\\bt\\.', 'OLD.');
@@ -142,47 +169,85 @@ BEGIN
 	SET v_textchg = CONCAT('NOT ((', v_new, ') <=> (', v_old, '))');
 	SET v_ins = CONCAT('INSERT INTO ', v_q, ' (op, pk) VALUES ');
 
-	SELECT sift_create(p_name, v_cfg) INTO @sift_unused;
-	INSERT INTO sift_indexes (name, db, tbl, pkcols, keymode, qname, keyexpr, source, drain_from, present, textexpr, cfg)
-		VALUES (p_name, v_db, p_tbl, v_pk, IF(v_int, 'int', 'map'), v_q, v_keyexpr, v_source, v_from, v_present, v_text, v_cfg);
-	CALL sift_run(CONCAT('CREATE TABLE ', v_q, ' (seq BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, op CHAR(1) NOT NULL, ',
-		'pk BIGINT NOT NULL, ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB'));
-	IF NOT v_int THEN
-		CALL sift_run(CONCAT('CREATE TABLE ', v_k, ' (kid BIGINT NOT NULL AUTO_INCREMENT, PRIMARY KEY (kid)) ENGINE=InnoDB ',
-			'SELECT ', sift_colcat(v_pk, '{c}', ', '), ' FROM ', v_t, ' LIMIT 0'));
-		CALL sift_run(CONCAT('ALTER TABLE ', v_k, ' ADD UNIQUE KEY sift_uk (', sift_colcat(v_pk, '{c}', ', '), ')'));
+	-- the queue exists before the library accepts the definition (it checks the queue), and what a failed attach made is undone
+	BEGIN
+		DECLARE EXIT HANDLER FOR SQLEXCEPTION
+		BEGIN
+			CALL sift_unattach(p_name, v_made);
+			RESIGNAL;
+		END;
+		CALL sift_run(CONCAT('CREATE TABLE ', v_q, ' (seq BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, op CHAR(1) NOT NULL, ',
+			'pk BIGINT NOT NULL, ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB'));
+		SET v_made = 1;
+		IF NOT v_int THEN
+			CALL sift_run(CONCAT('CREATE TABLE ', v_k, ' (kid BIGINT NOT NULL AUTO_INCREMENT, PRIMARY KEY (kid)) ENGINE=InnoDB ',
+				'SELECT ', sift_colcat(v_pk, '{c}', ', '), ' FROM ', v_t, ' LIMIT 0'));
+			SET v_made = v_made | 2;
+			CALL sift_run(CONCAT('ALTER TABLE ', v_k, ' ADD UNIQUE KEY sift_uk (', sift_colcat(v_pk, '{c}', ', '), ')'));
+		END IF;
+		SELECT sift_create(p_name, v_cfg) INTO @sift_unused;
+		SET v_made = v_made | 4;
+		INSERT INTO sift_indexes (name, db, tbl, pkcols, keymode, qname, keyexpr, source, drain_from, present, textexpr, cfg)
+			VALUES (p_name, v_db, p_tbl, v_pk, IF(v_int, 'int', 'map'), v_q, v_keyexpr, v_source, v_from, v_present, v_text, v_cfg);
+		SET v_made = v_made | 8;
+		CALL sift_run(CONCAT('CREATE TRIGGER ', sift_qi(CONCAT('sift_ai_', p_name)), ' AFTER INSERT ON ', v_t, ' FOR EACH ROW BEGIN ',
+			v_ensure, v_ins, '(''I'', ', v_newkey, '); END'));
+		CALL sift_run(CONCAT('CREATE TRIGGER ', sift_qi(CONCAT('sift_au_', p_name)), ' AFTER UPDATE ON ', v_t, ' FOR EACH ROW BEGIN ',
+			'IF ', v_chg, ' THEN ', v_ensure, v_ins, '(''D'', ', v_oldkey, '); ', v_ins, '(''I'', ', v_newkey, '); ',
+			'ELSEIF ', v_textchg, ' THEN ', v_ins, '(''I'', ', v_newkey, '); END IF; END'));
+		CALL sift_run(CONCAT('CREATE TRIGGER ', sift_qi(CONCAT('sift_ad_', p_name)), ' AFTER DELETE ON ', v_t, ' FOR EACH ROW ',
+			v_ins, '(''D'', ', v_oldkey, ')'));
+		IF v_int THEN
+			CALL sift_run(CONCAT('INSERT INTO ', v_q, ' (op, pk) SELECT ''I'', ', sift_qi(v_pk), ' FROM ', v_t, ' ORDER BY ', sift_qi(v_pk)));
+		ELSE
+			CALL sift_run(CONCAT('INSERT IGNORE INTO ', v_k, ' (', sift_colcat(v_pk, '{c}', ', '), ') SELECT ',
+				sift_colcat(v_pk, '{c}', ', '), ' FROM ', v_t));
+			CALL sift_run(CONCAT('INSERT INTO ', v_q, ' (op, pk) SELECT ''I'', kid FROM ', v_k, ' ORDER BY kid'));
+		END IF;
+	END;
+END//
+
+-- What a failed sift_attach_opts had made (p_made: 1 the queue, 2 the key table, 4 the index and its row, 8 the triggers)
+DROP PROCEDURE IF EXISTS sift_unattach//
+CREATE PROCEDURE sift_unattach(IN p_name VARCHAR(64), IN p_made INT)
+SQL SECURITY INVOKER
+BEGIN
+	DECLARE CONTINUE HANDLER FOR SQLEXCEPTION BEGIN END;
+	IF p_made & 8 THEN
+		CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS ', sift_qi(CONCAT('sift_ai_', p_name))));
+		CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS ', sift_qi(CONCAT('sift_au_', p_name))));
+		CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS ', sift_qi(CONCAT('sift_ad_', p_name))));
 	END IF;
-	CALL sift_run(CONCAT('CREATE TRIGGER `sift_ai_', p_name, '` AFTER INSERT ON ', v_t, ' FOR EACH ROW BEGIN ',
-		v_ensure, v_ins, '(''I'', ', v_newkey, '); END'));
-	CALL sift_run(CONCAT('CREATE TRIGGER `sift_au_', p_name, '` AFTER UPDATE ON ', v_t, ' FOR EACH ROW BEGIN ',
-		'IF ', v_chg, ' THEN ', v_ensure, v_ins, '(''D'', ', v_oldkey, '); ', v_ins, '(''I'', ', v_newkey, '); ',
-		'ELSEIF ', v_textchg, ' THEN ', v_ins, '(''I'', ', v_newkey, '); END IF; END'));
-	CALL sift_run(CONCAT('CREATE TRIGGER `sift_ad_', p_name, '` AFTER DELETE ON ', v_t, ' FOR EACH ROW ',
-		v_ins, '(''D'', ', v_oldkey, ')'));
-	IF v_int THEN
-		CALL sift_run(CONCAT('INSERT INTO ', v_q, ' (op, pk) SELECT ''I'', `', v_pk, '` FROM ', v_t, ' ORDER BY `', v_pk, '`'));
-	ELSE
-		CALL sift_run(CONCAT('INSERT IGNORE INTO ', v_k, ' (', sift_colcat(v_pk, '{c}', ', '), ') SELECT ',
-			sift_colcat(v_pk, '{c}', ', '), ' FROM ', v_t));
-		CALL sift_run(CONCAT('INSERT INTO ', v_q, ' (op, pk) SELECT ''I'', kid FROM ', v_k, ' ORDER BY kid'));
+	IF p_made & 4 THEN
+		DELETE FROM sift_indexes WHERE name = p_name;
+		SELECT sift_drop(p_name) INTO @sift_unused;
+	END IF;
+	IF p_made & 2 THEN
+		CALL sift_run(CONCAT('DROP TABLE IF EXISTS ', sift_qi(CONCAT('sift_k_', p_name))));
+	END IF;
+	IF p_made & 1 THEN
+		CALL sift_run(CONCAT('DROP TABLE IF EXISTS ', sift_qi(CONCAT('sift_q_', p_name))));
 	END IF;
 END//
 
 DROP PROCEDURE IF EXISTS sift_attach//
 CREATE PROCEDURE sift_attach(IN p_name VARCHAR(64), IN p_tbl VARCHAR(64), IN p_pk TEXT, IN p_text TEXT, IN p_dpp INT)
+SQL SECURITY INVOKER
 BEGIN
 	CALL sift_attach_opts(p_name, p_tbl, p_pk, p_text, JSON_OBJECT('dpp', p_dpp));
 END//
 
 DROP PROCEDURE IF EXISTS sift_detach//
 CREATE PROCEDURE sift_detach(IN p_name VARCHAR(64))
+SQL SECURITY INVOKER
 BEGIN
-	CALL sift_run(CONCAT('DROP EVENT IF EXISTS `sift_ev_', p_name, '`'));
-	CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS `sift_ai_', p_name, '`'));
-	CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS `sift_au_', p_name, '`'));
-	CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS `sift_ad_', p_name, '`'));
-	CALL sift_run(CONCAT('DROP TABLE IF EXISTS `sift_q_', p_name, '`'));
-	CALL sift_run(CONCAT('DROP TABLE IF EXISTS `sift_k_', p_name, '`'));
+	CALL sift_check_name(p_name);
+	CALL sift_run(CONCAT('DROP EVENT IF EXISTS ', sift_qi(CONCAT('sift_ev_', p_name))));
+	CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS ', sift_qi(CONCAT('sift_ai_', p_name))));
+	CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS ', sift_qi(CONCAT('sift_au_', p_name))));
+	CALL sift_run(CONCAT('DROP TRIGGER IF EXISTS ', sift_qi(CONCAT('sift_ad_', p_name))));
+	CALL sift_run(CONCAT('DROP TABLE IF EXISTS ', sift_qi(CONCAT('sift_q_', p_name))));
+	CALL sift_run(CONCAT('DROP TABLE IF EXISTS ', sift_qi(CONCAT('sift_k_', p_name))));
 	DELETE FROM sift_indexes WHERE name = p_name;
 	IF sift_exists(p_name) THEN
 		SELECT sift_drop(p_name) INTO @sift_unused;
@@ -195,6 +260,7 @@ END//
 -- uses the barrier of an earlier round and the next call tries again.
 DROP PROCEDURE IF EXISTS sift_barrier//
 CREATE PROCEDURE sift_barrier(IN p_q TEXT)
+SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_timeout INT DEFAULT @@lock_wait_timeout;
 	DECLARE v_locked INT DEFAULT 1;
@@ -214,6 +280,7 @@ END//
 -- an interrupted drain is repeated harmlessly (the engine skips what the watermark covers).
 DROP PROCEDURE IF EXISTS sift_sync//
 CREATE PROCEDURE sift_sync(IN p_name VARCHAR(64))
+SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_q, v_from, v_text, v_present TEXT;
 	DECLARE v_pruned, v_d BIGINT;
@@ -224,6 +291,7 @@ BEGIN
 		RESIGNAL;
 	END;
 
+	CALL sift_check_name(p_name);
 	SELECT qname, drain_from, textexpr, present, pruned_to INTO v_q, v_from, v_text, v_present, v_pruned
 		FROM sift_indexes WHERE name = p_name;
 	IF v_q IS NULL THEN
@@ -243,7 +311,7 @@ BEGIN
 		CALL sift_run(CONCAT('SELECT IFNULL(MAX(seq), 0) INTO @sift_w FROM ', v_q, ' WHERE op = ''B'''));
 		SET @sift_rows = 0;
 		IF @sift_w > v_d THEN
-			CALL sift_run(CONCAT('SELECT sift_drain(''', p_name, ''', q.seq, q.op, q.pk, IF(', v_present,
+			CALL sift_run(CONCAT('SELECT sift_drain(', QUOTE(p_name), ', q.seq, q.op, q.pk, IF(', v_present,
 				', CONVERT(', v_text, ' USING utf8mb4), NULL)) INTO @sift_rows FROM ', v_from, ' WHERE q.seq > ', v_d, ' AND q.seq <= @sift_w'));
 		END IF;
 		DO RELEASE_LOCK(v_lock);
@@ -255,10 +323,12 @@ END//
 -- retention: a node that is further behind than that has to CALL sift_rebuild.
 DROP PROCEDURE IF EXISTS sift_prune//
 CREATE PROCEDURE sift_prune(IN p_name VARCHAR(64), IN p_seconds INT)
+SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_q TEXT;
 	DECLARE v_d BIGINT DEFAULT sift_watermark(p_name);
 
+	CALL sift_check_name(p_name);
 	SELECT qname INTO v_q FROM sift_indexes WHERE name = p_name;
 	IF v_q IS NULL THEN
 		CALL sift_fail('sift: no such index');
@@ -279,6 +349,7 @@ END//
 -- the queue rows after the barrier.
 DROP PROCEDURE IF EXISTS sift_rebuild//
 CREATE PROCEDURE sift_rebuild(IN p_name VARCHAR(64))
+SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_q, v_source, v_text, v_key, v_cfg TEXT;
 	DECLARE v_refused INT DEFAULT 0;
@@ -290,6 +361,7 @@ BEGIN
 		RESIGNAL;
 	END;
 
+	CALL sift_check_name(p_name);
 	SELECT qname, source, textexpr, keyexpr, cfg INTO v_q, v_source, v_text, v_key, v_cfg FROM sift_indexes WHERE name = p_name;
 	IF v_q IS NULL THEN
 		CALL sift_fail('sift: no such index');
@@ -312,7 +384,7 @@ BEGIN
 		END IF;
 		START TRANSACTION WITH CONSISTENT SNAPSHOT;
 		CALL sift_run(CONCAT('SELECT IFNULL(MAX(seq), 0) INTO @sift_w FROM ', v_q, ' WHERE op = ''B'''));
-		CALL sift_run(CONCAT('SELECT sift_load(''', p_name, ''', @sift_w, ', v_key, ', CONVERT(', v_text, ' USING utf8mb4)) INTO @sift_rows FROM ',
+		CALL sift_run(CONCAT('SELECT sift_load(', QUOTE(p_name), ', @sift_w, ', v_key, ', CONVERT(', v_text, ' USING utf8mb4)) INTO @sift_rows FROM ',
 			v_source));
 		COMMIT;
 		DO RELEASE_LOCK(v_lock);
@@ -323,9 +395,11 @@ END//
 -- The filter of a SQL predicate over the table (alias t): the keys of the rows that satisfy it, for sift_topk and friends
 DROP PROCEDURE IF EXISTS sift_filter//
 CREATE PROCEDURE sift_filter(IN p_name VARCHAR(64), IN p_where TEXT)
+SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_key, v_source TEXT;
 
+	CALL sift_check_name(p_name);
 	SELECT keyexpr, source INTO v_key, v_source FROM sift_indexes WHERE name = p_name;
 	IF v_key IS NULL THEN
 		CALL sift_fail('sift: no such index');
@@ -337,9 +411,11 @@ END//
 -- before they are scored, p_where NULL does not
 DROP PROCEDURE IF EXISTS sift_search//
 CREATE PROCEDURE sift_search(IN p_name VARCHAR(64), IN p_query TEXT, IN p_k INT, IN p_where TEXT)
+SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_key, v_source TEXT;
 
+	CALL sift_check_name(p_name);
 	SELECT keyexpr, source INTO v_key, v_source FROM sift_indexes WHERE name = p_name;
 	IF v_key IS NULL THEN
 		CALL sift_fail('sift: no such index');
@@ -348,7 +424,7 @@ BEGIN
 		CALL sift_filter(p_name, p_where);
 	END IF;
 	SET @sift_p = p_query;
-	CALL sift_run(CONCAT('SELECT t.*, j.s AS score FROM (SELECT sift_topk(''', p_name, ''', @sift_p, ', p_k,
+	CALL sift_run(CONCAT('SELECT t.*, j.s AS score FROM (SELECT sift_topk(', QUOTE(p_name), ', @sift_p, ', p_k,
 		IF(p_where IS NULL, '', ', @sift_f'), ') AS r) x, JSON_TABLE(x.r, ''$[*]'' COLUMNS (n FOR ORDINALITY, id BIGINT PATH ''$.id'', ',
 		's DOUBLE PATH ''$.s'')) j JOIN ', v_source, ' ON ', v_key, ' = j.id ORDER BY j.n'));
 END//
@@ -356,9 +432,11 @@ END//
 -- Counts of the matches of a query per value of an expression over the table (alias t), most frequent first
 DROP PROCEDURE IF EXISTS sift_facets//
 CREATE PROCEDURE sift_facets(IN p_name VARCHAR(64), IN p_query TEXT, IN p_expr TEXT, IN p_where TEXT)
+SQL SECURITY INVOKER
 BEGIN
 	DECLARE v_key, v_source TEXT;
 
+	CALL sift_check_name(p_name);
 	SELECT keyexpr, source INTO v_key, v_source FROM sift_indexes WHERE name = p_name;
 	IF v_key IS NULL THEN
 		CALL sift_fail('sift: no such index');
@@ -367,7 +445,7 @@ BEGIN
 		CALL sift_filter(p_name, p_where);
 	END IF;
 	SET @sift_p = p_query;
-	CALL sift_run(CONCAT('SELECT ', p_expr, ' AS value, COUNT(*) AS n FROM (SELECT sift_matches(''', p_name, ''', @sift_p',
+	CALL sift_run(CONCAT('SELECT ', p_expr, ' AS value, COUNT(*) AS n FROM (SELECT sift_matches(', QUOTE(p_name), ', @sift_p',
 		IF(p_where IS NULL, '', ', @sift_f'), ') AS r) x, JSON_TABLE(x.r, ''$[*]'' COLUMNS (id BIGINT PATH ''$'')) j JOIN ', v_source, ' ON ', v_key,
 		' = j.id GROUP BY value ORDER BY n DESC, value'));
 END//
@@ -375,9 +453,11 @@ END//
 -- Runs sift_sync and sift_prune every p_seconds in the event scheduler (SET GLOBAL event_scheduler = ON)
 DROP PROCEDURE IF EXISTS sift_schedule//
 CREATE PROCEDURE sift_schedule(IN p_name VARCHAR(64), IN p_seconds INT)
+SQL SECURITY INVOKER
 BEGIN
-	CALL sift_run(CONCAT('CREATE OR REPLACE EVENT `sift_ev_', p_name, '` ON SCHEDULE EVERY ', p_seconds,
-		' SECOND DO BEGIN CALL sift_sync(''', p_name, '''); CALL sift_prune(''', p_name, ''', 3600); END'));
+	CALL sift_check_name(p_name);
+	CALL sift_run(CONCAT('CREATE OR REPLACE EVENT ', sift_qi(CONCAT('sift_ev_', p_name)), ' ON SCHEDULE EVERY ', p_seconds,
+		' SECOND DO BEGIN CALL sift_sync(', QUOTE(p_name), '); CALL sift_prune(', QUOTE(p_name), ', 3600); END'));
 END//
 
 DELIMITER ;

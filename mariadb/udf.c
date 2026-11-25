@@ -155,24 +155,46 @@ sift_create_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 	return check_args(args, message, "sift_create(index, config)", 2, "ss");
 }
 
+/* The queue of a new index exists: whoever defines an index over a database has to be able to create tables in it. An index is
+ * dropped again when it does not: its definition would read tables of a database its creator has no part in. */
+static int
+create_checked(const char *name, const char *cfg, char *err, size_t errlen)
+{
+	SCOPED_IX	ix = NULL;
+	int64_t		max_seq;
+	size_t		pending;
+	int			rc;
+
+	if (sx_create(name, cfg, err, errlen) != 0)
+		return -1;
+	ix = sx_open(name, err, errlen);
+	rc = ix == NULL ? -1 : sx_cfg(ix, "queue") ? host_queue_probe(NULL, ix, 0, &max_seq, &pending, err, errlen) : 0;
+	local_close();
+	if (rc != 0)
+		sx_drop(name, NULL, 0);
+	return rc;
+}
+
 EXPORT char *
 sift_create(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
 	char		name[64],
-				err[512],
-			   *cfg;
+				err[512];
+	AUTO_FREE char *cfg = NULL;
 
 	pthread_once(&dirs_once, set_dirs);
 	if (arg_name(args, 0, name, sizeof(name), error) == NULL)
 		return NULL;
-	cfg = strndup(args->args[1], args->lengths[1]);
-	if (sx_create(name, cfg, err, sizeof(err)) != 0)
+	if (args->args[1] == NULL || (cfg = strndup(args->args[1], args->lengths[1])) == NULL)
 	{
-		free(cfg);
+		sx_raise("sift: an index needs a definition (the second argument)", error);
+		return NULL;
+	}
+	if (create_checked(name, cfg, err, sizeof(err)) != 0)
+	{
 		sx_raise(err, error);
 		return NULL;
 	}
-	free(cfg);
 	*length = snprintf(result, 255, "created %s", name);
 	return result;
 }

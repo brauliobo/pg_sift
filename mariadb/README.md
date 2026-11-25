@@ -237,6 +237,18 @@ is repeated harmlessly. Small drains make small segments; more than `merge_fanin
 `CALL sift_schedule('news', 1)` creates an `EVENT` that drains every second (`SET GLOBAL event_scheduler = ON`) and prunes
 drained queue rows older than an hour (`CALL sift_prune('news', seconds)`).
 
+Every routine of `sql/sift.sql` runs `SQL SECURITY INVOKER`: attaching, syncing, searching and detaching need the privileges
+on `sift_indexes`, the table and the queue that the same statements would need typed by hand, and an index name is 1 to 56 letters,
+digits or underscores. The UDFs read the queue and the table through a local connection of the server, which has no ACL of its
+own, so the library only takes an index definition (the `cfg` of `sift_create`) in the forms `sift_attach` writes: the queue
+`sift_q_<index>` of the database of the table (it must exist when the index is created), the key as `t.<column>` or through
+`sift_k_<index>`, and a text expression made of the columns of the table (`t.col`), literals and string functions (`CONCAT`,
+`CONCAT_WS`, `IFNULL`, `COALESCE`, `LOWER`, `SUBSTRING`, `REPLACE`, `CAST`, `CONVERT`, `JSON_VALUE`, ...); a sub-select, a comment, a
+variable or a function with side effects is refused. `tests/security.sh` and `tests/cfg_check_test.c` check it. An index made by an
+older build with another definition is refused with a message to `sift_rebuild` it. The UDFs themselves, like any UDF, are
+callable by every user of the server: grant access to the schema, not to the functions, and do not give untrusted users the
+accounts that run `sift_drain`, `sift_load` and `sift_drop`.
+
 You do not have to wait for the drain to see a change: see the next section.
 
 ## What a query sees

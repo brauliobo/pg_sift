@@ -42,7 +42,7 @@ mkdir -p "$T"
 
 build() {
   say "build"
-  nice make -C "$HERE" -j4 OUT="$SIFT_BUILD" >"$WORK/build.log" 2>&1 || { tail -20 "$WORK/build.log"; exit 1; }
+  nice make -C "$HERE" -j4 OUT="$SIFT_BUILD" all cfg-check-test >"$WORK/build.log" 2>&1 || { tail -20 "$WORK/build.log"; exit 1; }
   ls -l "$SIFT_BUILD/libsift_udf.so"
 }
 

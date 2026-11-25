@@ -187,24 +187,6 @@ sx_version(void)
 
 /* ------------------------------------------------ configuration */
 
-/* The value of key in the lines of cfg, malloc'd; NULL when absent */
-static char *
-cfg_value(const char *cfg, const char *key)
-{
-	size_t		kl = strlen(key);
-
-	for (const char *p = cfg; *p;)
-	{
-		const char *nl = strchr(p, '\n');
-		size_t		len = nl ? (size_t) (nl - p) : strlen(p);
-
-		if (len > kl && strncmp(p, key, kl) == 0 && p[kl] == '=')
-			return strndup(p + kl + 1, len - kl - 1);
-		p += len + (nl != NULL);
-	}
-	return NULL;
-}
-
 static double
 cfg_num(const char *cfg, const char *key, double def)
 {
@@ -218,10 +200,8 @@ cfg_num(const char *cfg, const char *key, double def)
 const char *
 sx_cfg(SiftIdx *ix, const char *key)
 {
-	static const char *const names[NMETA] = {"queue", "keyexpr", "source", "textexpr", "database", "table"};
-
 	for (int i = 0; i < NMETA; i++)
-		if (strcmp(key, names[i]) == 0)
+		if (strcmp(key, cfg_meta_names[i]) == 0)
 			return ix->meta[i];
 	return NULL;
 }
@@ -279,10 +259,8 @@ check_opts(const SiftRel *sr)
 static void
 set_meta(SiftIdx *ix)
 {
-	static const char *const names[NMETA] = {"queue", "keyexpr", "source", "textexpr", "database", "table"};
-
 	for (int i = 0; i < NMETA; i++)
-		ix->meta[i] = cfg_value(ix->cfg, names[i]);
+		ix->meta[i] = cfg_value(ix->cfg, cfg_meta_names[i]);
 	ix->fresh = cfg_num(ix->cfg, "fresh", 1) != 0 && ix->meta[0] != NULL;
 	ix->recheck = cfg_num(ix->cfg, "recheck", 1) != 0 && ix->meta[0] != NULL;
 	ix->fanin = (int) cfg_num(ix->cfg, "merge_fanin", 6);
@@ -340,7 +318,10 @@ do_create(const char *name, const char *dir, const char *cfg)
 	.next_gen = 1};
 	/* STOR[STOR-PORT-09]: default dpp 32->256 for new indexes (honors MANIFEST.dpp; -8x SB meta & -50% LIVE2) */
 	int			dpp = (int) cfg_num(cfg, "dpp", 256);
+	char		why[256];
 
+	if (!cfg_check(name, cfg, why, sizeof(why)))
+		fail("%s", why);
 	memcpy(m.magic, MAN_MAGIC, sizeof(m.magic));
 	if (dpp < 1 || dpp > 256)
 		fail("sift: documents per page must be between 1 and 256");

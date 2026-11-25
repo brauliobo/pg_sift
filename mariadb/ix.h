@@ -18,6 +18,7 @@
 
 #include "core/page.h"
 #include "bm25/segment.h"
+#include "cfg_check.h"
 #include "engine.h"
 #include "store.h"
 
@@ -33,7 +34,6 @@ extern __thread char sift_err_msg[1024];
 #define MAN_MAGIC		"SIFTMDB2"
 #define MDB_FORMAT		2
 #define MAX_SEGS		120		/* of the manifest: the rest of SIFT_DIR_POLICY_MAX is for the live segment */
-#define NMETA			6
 #define PAGE_LAYOUT_ID		((uint32) BLCKSZ << 8)
 
 typedef struct Ev

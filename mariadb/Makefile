@@ -30,7 +30,7 @@ SERVER_SYMBOLS = my_printf_error mysql_real_data_home sql_service_handler
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
 HOSTC    := host container mb spool regex regex_parse regex_exec host_stubs
 OWN      := store stubs
-GLUE     := engine docs persist delta query feed merge
+GLUE     := engine docs persist delta query feed merge cfg_check
 UDFOBJS  := $(addprefix $(OUT)/,udf.o udf_host.o udf_query.o udf_drain.o)
 OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLUE)))
 
@@ -73,6 +73,13 @@ $(OUT)/mdbq: $(HERE)/bench/mdbq.c | $(OUT)
 $(OUT)/stress: $(HERE)/tests/stress.c | $(OUT)
 	$(CC) -O2 -Wall -pthread -I$(MDB_CLI) -o $@ $< -lmariadb
 
+# the check of an index definition (cfg_check.c) against injection payloads and the forms sift_attach writes: no server
+$(OUT)/cfg_check_test: $(HERE)/tests/cfg_check_test.c $(HERE)/cfg_check.c $(HERE)/cfg_check.h | $(OUT)
+	$(CC) -O2 -g -Wall -Wextra -Werror -D_GNU_SOURCE -I$(HERE) -o $@ $< $(HERE)/cfg_check.c
+
+cfg-check-test: $(OUT)/cfg_check_test
+	$(OUT)/cfg_check_test
+
 mdb-inc:
 	@echo $(MDB_INC)
 
@@ -81,6 +88,6 @@ mdb-inc:
 isa-check: $(OUT)/libsift_udf.so
 	@HOST_SYMBOLS="$(SERVER_SYMBOLS)" sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o $(OUT)/*/*.o $(OUT)/*/*/*.o
 
-.PHONY: all mdb-inc isa-check
+.PHONY: all mdb-inc isa-check cfg-check-test
 
 -include $(wildcard $(OUT)/*.d $(OUT)/*/*.d $(OUT)/*/*/*.d)
