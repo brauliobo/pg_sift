@@ -314,13 +314,26 @@ v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 	return true;
 }
 
+/* a leaf that kept no value of some rows (a string or a bytea past the limits of its unit) leaves those rows' values in the heap: a scan of the leaf alone would read them as NULL */
+static bool
+leaf_complete(const SiftV1Rel *r, bool is_table, int att, const SiftSrcLeaf *l)
+{
+	SiftSrcStats st;
+
+	if (att >= SIFT_V6_JLEAF_VATT)
+		return true;
+	sift_v1_reader_of(is_table)->stats(r->rel, &st);
+	return !st.ovf[l->id];
+}
+
 static bool
 v1_leaf_holds(Oid relid, bool is_table, int att, int cls)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
 	const SiftSrcLayout *lay = sift_v1_reader_of(is_table)->layout(r.rel);
 	const SiftSrcLeaf *l = cls == SV6C_DATUM ? datum_head(lay, att) : sift_v1_att_leaf(lay, att);
-	const bool	holds = (cls == SV6C_DATUM && doc_holds(lay, att)) || (l != NULL && leaf_serves(l, sift_v1_att_typid(lay, att), (SiftV6Class) cls));
+	const bool	holds = (cls == SV6C_DATUM && doc_holds(lay, att)) ||
+		(l != NULL && leaf_serves(l, sift_v1_att_typid(lay, att), (SiftV6Class) cls) && leaf_complete(&r, is_table, att, l));
 
 	sift_v1_rel_close(&r);
 	return holds;

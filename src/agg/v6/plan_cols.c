@@ -73,18 +73,6 @@ host_attno(const V6Plan *p, AttrNumber attno)
 	return 0;
 }
 
-static const SiftColSchema *
-host_schema(const V6Plan *p)
-{
-	return p->is_table ? p->sch.leaves : p->colrel->schema;
-}
-
-static int
-host_first(const V6Plan *p, int att)
-{
-	return p->is_table ? p->sch.att_first[att] : p->colrel->first[att];
-}
-
 static int
 host_nleaves(const V6Plan *p, int att)
 {
@@ -155,13 +143,6 @@ sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	return column_of(p, e, numeric_ok, out);
 }
 
-/* The host holds attribute att whole in leaves the scan decodes as a datum: a table keeps the datum of every attribute in one cell, an index the leaves of its type (sift_col_def_datum_ok) */
-static bool
-datum_leaf_ok(const V6Plan *p, int att)
-{
-	return p->is_table ? host_nleaves(p, att) == 1 : sift_col_def_datum_ok(&host_schema(p)->cols[host_first(p, att)], host_nleaves(p, att));
-}
-
 /* A column of a type no native vector holds, or a numeric of any form: its values are read as datums, so a NaN, an infinity or a numeric of any digits is the value it is */
 static bool
 datum_column_of(V6Plan *p, const Expr *e, SiftV6Col *out)
@@ -172,7 +153,7 @@ datum_column_of(V6Plan *p, const Expr *e, SiftV6Col *out)
 	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || sift_v6_type_native(v->vartype) || v->vartype == JSONBOID)
 		return false;
 	att = host_attno(p, v->varattno);
-	if (att == 0 || !datum_leaf_ok(p, att))
+	if (att == 0 || !host_holds(p, att, SV6C_DATUM))
 		return false;
 	*out = (SiftV6Col) {.attno = att,.typid = v->vartype,.scale = SIFT_V6_SCALE_DATUM};
 	return true;
