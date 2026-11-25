@@ -6,8 +6,8 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE ti (id bigint, indexed_col bigint, txt text, payload text) USING sift_table;
--- 65536 rows: the statement writes its stage several times at work_mem 1MB, which is when the old row is read from a part the same statement wrote
 INSERT INTO ti SELECT g, g, 'k' || ((g * 2654435761) & 1048575) || '_' || repeat('abcdefgh', 7), repeat('seg=00|pad=0123456789abcdef|', 8)
+-- 65536 rows: the statement writes its stage several times at work_mem 1MB, which is when the old row is read from a part the same statement wrote
 FROM generate_series(1, 65536) g;
 CREATE INDEX ti_idx ON ti (indexed_col);
 

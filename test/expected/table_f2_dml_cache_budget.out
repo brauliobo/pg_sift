@@ -5,12 +5,12 @@ CREATE EXTENSION IF NOT EXISTS pg_sift CASCADE;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
--- 131072 rows: below this the decoded granules of the table fit the cache and the statements never reach the frames they read (the crash needs 4 times the 32768 rows of a small table)
 CREATE TABLE wide USING sift_table AS
 SELECT g::bigint AS id, (g % 8)::int AS k_lo,
 	'k' || ((g::bigint * 2654435761) & 1048575) || '_' || repeat('abcdefgh', 7) AS txt,
 	repeat('seg=' || lpad((g % 16)::text, 2, '0') || '|grp=' || lpad((g % 128)::text, 3, '0') || '|pad=0123456789abcdef|', 8) AS payload,
 	jsonb_build_object('k', g % 64, 'tag', 't' || (g % 32), 'msg', repeat('json_payload_', 8) || (g % 1024)) AS doc
+-- 131072 rows: below this the decoded granules of the table fit the cache and the statements never reach the frames they read (the crash needs 4 times the 32768 rows of a small table)
 FROM generate_series(1, 131072) g;
 CREATE FUNCTION wide_state() RETURNS TABLE (rows bigint, appended bigint, doc_kept bigint, bad bigint) LANGUAGE sql AS $$
 	SELECT count(*), count(*) FILTER (WHERE right(payload, 1) = 'u'), count(*) FILTER (WHERE (doc->>'k')::int = id % 64),
