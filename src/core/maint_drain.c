@@ -1,15 +1,18 @@
 /*
  * core/maint_drain.c - see maint_drain.h. A worker stays attached to its database through its naps, and the servers before 19 end only the autovacuum workers of a database that is dropped or
  * copied, so the statement would fail with "being accessed by other users" for as long as a worker naps. The hook holds the database (the launcher starts no worker for it), ends the workers of sift
- * that are attached to it with SIGTERM and waits for them to leave, then runs the statement.
+ * that are attached to it with SIGTERM and waits for them to leave, then runs the statement. DROP EXTENSION pg_sift drains the database the same way: a worker that napped on through it would
+ * read the catalogs of an extension that is gone. The jobs queued for the database are forgotten once the statement ran (a database that is copied keeps them).
  */
 #include "core/maint_sched.h"
 #include "core/maint_drain.h"
 
 #include <signal.h>
 
+#include "catalog/namespace.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
+#include "commands/extension.h"
 #include "miscadmin.h"
 #include "nodes/parsenodes.h"
 #include "pgstat.h"
@@ -21,17 +24,47 @@
 
 #include "core/waits.h"
 
+#define SIFT_EXTENSION	"pg_sift"
 #define DRAIN_WAIT_US	(5 * USECS_PER_SEC)
 #define DRAIN_POLL_MS	10
 
 static ProcessUtility_hook_type prev_utility;
 
-/* The database whose workers must leave before the statement runs: the one dropped, the one copied */
+static bool
+drops_sift(DropStmt *stmt)
+{
+	if (stmt->removeType == OBJECT_EXTENSION)
+		foreach_node(String, name, stmt->objects)
+			if (strcmp(strVal(name), SIFT_EXTENSION) == 0)
+				return true;
+	return false;
+}
+
+/* The schema of the extension holds the names that its functions and the library look up: it keeps its name */
+static void
+refuse_schema_rename(Node *stmt)
+{
+	RenameStmt *rename;
+	Oid			ext,
+				nsp;
+
+	if (!IsA(stmt, RenameStmt) || (rename = castNode(RenameStmt, stmt))->renameType != OBJECT_SCHEMA)
+		return;
+	ext = get_extension_oid(SIFT_EXTENSION, true);
+	nsp = get_namespace_oid(rename->subname, true);
+	if (OidIsValid(ext) && OidIsValid(nsp) && get_extension_schema(ext) == nsp)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("cannot rename schema \"%s\": it holds the objects of extension \"%s\"", rename->subname, SIFT_EXTENSION),
+						errdetail("The functions and the library of the extension look their objects up by the name of the schema.")));
+}
+
+/* The database whose workers must leave before the statement runs: the one dropped, the one copied, the one that loses the extension */
 static Oid
 target_db(Node *stmt)
 {
 	const char *name = NULL;
 
+	if (IsA(stmt, DropStmt))
+		return drops_sift(castNode(DropStmt, stmt)) ? MyDatabaseId : InvalidOid;
 	if (IsA(stmt, DropdbStmt))
 		name = castNode(DropdbStmt, stmt)->dbname;
 	else if (IsA(stmt, CreatedbStmt))
@@ -84,6 +117,7 @@ drain_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, Pr
 	Oid			db = target_db(pstmt->utilityStmt);
 	SiftMaintShmem *m = OidIsValid(db) ? sift_maint_table() : NULL;
 
+	refuse_schema_rename(pstmt->utilityStmt);
 	if (m == NULL)
 	{
 		(prev_utility ? prev_utility : standard_ProcessUtility) (pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
@@ -100,7 +134,7 @@ drain_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, Pr
 		sift_maint_db_hold(m, GetCurrentTimestamp(), db, false);
 	}
 	PG_END_TRY();
-	if (IsA(pstmt->utilityStmt, DropdbStmt))
+	if (!IsA(pstmt->utilityStmt, CreatedbStmt))
 		sift_maint_db_purge(m, db);
 }
 

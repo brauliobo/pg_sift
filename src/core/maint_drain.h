@@ -1,5 +1,6 @@
 /*
- * core/maint_drain.h - the maintenance workers of a database leave before DROP DATABASE and CREATE DATABASE ... TEMPLATE look for the sessions that use it.
+ * core/maint_drain.h - the maintenance workers of a database leave before DROP DATABASE and CREATE DATABASE ... TEMPLATE look for the sessions that use it, and before DROP EXTENSION pg_sift
+ * drops what they read. The schema of the extension is not renamed.
  */
 #ifndef SIFT_MAINT_DRAIN_H
 #define SIFT_MAINT_DRAIN_H
