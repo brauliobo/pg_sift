@@ -456,9 +456,9 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 		return;
 	(void) sift_ttl_rearm_rocompat(rel);
 	meta = sift_col_meta_read(rel);
-	plan.limit = meta.next_vblock;
+	plan.limit = Min(meta.next_vblock, InvalidBlockNumber);
 	plan.next = ReadNextFullTransactionId();
-	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) == 0 && sift_shm_tid_lease_floor(&rel->rd_locator, meta.next_vblock, &plan.floor) && plan.floor > 0)
+	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) == 0 && sift_shm_tid_lease_floor(&rel->rd_locator, plan.limit, &plan.floor) && plan.floor > 0)
 	{
 		const Size	budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);
 		CountWindow win = {.nvblocks = Max(budget / 4 / sizeof(uint16) / SIFT_VM_BLOCKS_PER_PAGE, 1) * SIFT_VM_BLOCKS_PER_PAGE};

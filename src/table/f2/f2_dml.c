@@ -33,12 +33,23 @@ static void
 tid_refill(Relation rel, SiftTblTidPool *p, uint64 vblocks)
 {
 	Buffer		buf = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
-	SiftXlog	x = sift_xlog_start(rel);
-	Page		p0 = sift_xlog_register(&x, buf, 0);
-	SiftColMetaPageData *m = SIFT_COL_META(p0);
+	uint64		left = (uint64) InvalidBlockNumber - Min(SIFT_COL_META(BufferGetPage(buf))->next_vblock, InvalidBlockNumber);
+	SiftXlog	x;
+	Page		p0;
+	SiftColMetaPageData *m;
 
+	if (left == 0)
+	{
+		UnlockReleaseBuffer(buf);
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_table \"%s\" has used all its virtual blocks", RelationGetRelationName(rel)),
+						errdetail("A virtual block is never used twice and a table has at most %u of them.", InvalidBlockNumber),
+						errhint("Copy the rows into a new table.")));
+	}
+	x = sift_xlog_start(rel);
+	p0 = sift_xlog_register(&x, buf, 0);
+	m = SIFT_COL_META(p0);
 	p->next_vblock = m->next_vblock;
-	m->next_vblock += vblocks;
+	m->next_vblock += Min(vblocks, left);
 	p->end_vblock = m->next_vblock;
 	p->next_off = FirstOffsetNumber;
 	sift_meta_seal(p0, m->common.struct_size);
