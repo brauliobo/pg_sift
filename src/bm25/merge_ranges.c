@@ -91,6 +91,13 @@ merge_alone(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, 
 	return nlive > 0;
 }
 
+/* Participants pay once a range outgrows the maintenance memory of one process: a merge below that is written by one, with no file of ranges */
+static uint64
+range_bytes(void)
+{
+	return TEST_KNOB(sift_test_range_bytes, Max(RANGE_BYTES, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1)));
+}
+
 int
 sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, const SiftScoreRef *ref, SiftSegEntry *neu)
 {
@@ -127,7 +134,7 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 		return 0;
 	}
 	cuts = palloc((MAX_RANGES - 1) * sizeof(SiftTermCut));
-	ncuts = sift_segs_cuts(segs, nlive, TEST_KNOB(sift_test_range_bytes, RANGE_BYTES), Min(MAX_RANGES, RANGES_PER_PARTICIPANT * (nworkers + 1)), cuts);
+	ncuts = sift_segs_cuts(segs, nlive, range_bytes(), Min(MAX_RANGES, RANGES_PER_PARTICIPANT * (nworkers + 1)), cuts);
 	if (ncuts == 0)
 	{
 		close_live(segs, nlive);
