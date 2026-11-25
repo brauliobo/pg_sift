@@ -1,6 +1,6 @@
 -- What the groups of SiftAggV6 hold and write when they spill (work_mem 1MB: hash memory 2MB): the groups of keys the table does not hold by their bytes (numeric, uuid, interval)
 -- and the strings of MIN and MAX of text leave the memory with the groups, so that the table spills as often as the groups of integer keys do; a spill is read back one partition at a time
--- and is the only thing the statement writes, so that a LIMIT writes no more than the full statement and the temp_file_limit is that of the spill; an aggregate whose groups the planner
+-- and the only thing the statement writes but for the partitions that do not fit the memory, which are split once, so that a LIMIT writes no more than the full statement and the temp_file_limit is that of the spill; an aggregate whose groups the planner
 -- underestimated spills instead of stopping; the values of percentile_cont over the elements of a JSON array are the values of PostgreSQL's aggregate; no file is left in the temporary directory.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -96,7 +96,7 @@ BEGIN
 END $$;
 SELECT (spills_of('SELECT k_int, count(*), sum(amt), sum(k_int), sum(id) FROM gs GROUP BY 1')).mb * 1048576 / 8192 AS spill_blocks \gset
 SELECT :spill_blocks > 0 AS spilled,
-       written_blocks('SELECT k_int, count(*), sum(amt), sum(k_int), sum(id) FROM gs GROUP BY 1') <= 1.15 * :spill_blocks + 32 AS written_is_the_spill_full,
+       written_blocks('SELECT k_int, count(*), sum(amt), sum(k_int), sum(id) FROM gs GROUP BY 1') <= 2.2 * :spill_blocks + 32 AS written_is_the_spill_twice,
        written_blocks('SELECT * FROM (SELECT k_int, count(*), sum(amt), sum(k_int), sum(id) FROM gs GROUP BY 1 OFFSET 0) y LIMIT 5') <= 1.15 * :spill_blocks + 32 AS written_is_the_spill_limit;
 
 -- the files of a statement are gone when it ends, however it ends
