@@ -85,10 +85,16 @@ timed_build() { # ENGINE VARIANT SETUP INDEX INDEXES: build row: engine, index b
   local e=$1 db size=0 i s heap0 t0 t1 t2
   db=$(edb "$e")
   heap0=$(PGDATABASE=$db q -c "SELECT pg_table_size('places')")
-  t0=$(now_ms); PGDATABASE=$db q -c "$3" >/dev/null; t1=$(now_ms); PGDATABASE=$db q -c "$4" >/dev/null; t2=$(now_ms)
-  PGDATABASE=$db q -c "VACUUM (ANALYZE) places" -c CHECKPOINT
+  t0=$(now_ms); PGDATABASE=$db q -c "$3" >/dev/null || return 1
+  t1=$(now_ms); PGDATABASE=$db q -c "$4" >/dev/null || return 1
+  t2=$(now_ms)
+  PGDATABASE=$db q -c "VACUUM (ANALYZE) places" -c CHECKPOINT || return 1
   # shellcheck disable=SC2086  # one index per word
-  for i in $5; do s=$(PGDATABASE=$db q -c "SELECT pg_relation_size('$i'::regclass)"); size=$(( size + ${s:-0} )); done
+  for i in $5; do
+    s=$(PGDATABASE=$db q -c "SELECT pg_relation_size('$i'::regclass)") || return 1
+    [[ $s =~ ^[0-9]+$ ]] || { echo "$e: index $i missing or empty size" >&2; return 1; }
+    size=$(( size + s ))
+  done
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$e" "$(elapsed_s "$t1" "$t2")" "$size" "$(( $(PGDATABASE=$db q -c "SELECT pg_table_size('places')") - heap0 ))" \
     "$(elapsed_s "$t0" "$t1")" "$2" >>"$RUN/builds.row"
 }
@@ -119,8 +125,8 @@ prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (o
   fi
   lane_start "$e"; ensure_places
   PGDATABASE=postgres q -c "DROP DATABASE IF EXISTS $(edb "$e") WITH (FORCE)" -c "CREATE DATABASE $(edb "$e") TEMPLATE places"
-  timed_build "$e" - "${PSETUP[$e]}" "${PINDEX[$e]}" "${PINDEXES[$e]}"
-  [[ -z ${PINDEX2[$e]} ]] || timed_build "$e" emulation "${PSETUP2[$e]}" "${PINDEX2[$e]}" "${PINDEXES2[$e]}"
+  timed_build "$e" - "${PSETUP[$e]}" "${PINDEX[$e]}" "${PINDEXES[$e]}" || return 1
+  [[ -z ${PINDEX2[$e]} ]] || timed_build "$e" emulation "${PSETUP2[$e]}" "${PINDEX2[$e]}" "${PINDEXES2[$e]}" || return 1
   PGDATABASE=$(edb "$e") q -c "CREATE EXTENSION IF NOT EXISTS pg_buffercache" >/dev/null
   lane_save "$e" "$key" "$RUN/builds.row"
 }

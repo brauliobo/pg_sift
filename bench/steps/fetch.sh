@@ -91,9 +91,13 @@ fetch_bm25() {
 
 fetch_pg_search() {
   local deb data root=$ENG/pg_search/root
+  rm -rf "$root"; mkdir -p "$root"
+  if [[ -f $SHAREDIR/extension/pg_search.control ]]; then
+    log "pg_search: the installed package is used ($(pacman -Q pg_search 2>/dev/null || echo "$SHAREDIR/extension/pg_search.control"))"
+    return 0
+  fi
   deb=$(dl pg_search "https://github.com/paradedb/paradedb/releases/download/v$PARADEDB_VERSION/postgresql-$PG_MAJOR-pg-search_$PARADEDB_VERSION-1PARADEDB-noble_amd64.deb")
   data=$(ar t "$deb" | grep '^data\.tar')
-  rm -rf "$root"; mkdir -p "$root"
   case $data in
     *.xz)  ar p "$deb" "$data" | tar -xJf - -C "$root" ;;
     *.zst) ar p "$deb" "$data" | tar --zstd -xf - -C "$root" ;;
@@ -135,7 +139,7 @@ fetch_key() {
     rum) echo "$RUM_VERSION $RUM_SHA256 $(pg_key)" ;;
     pg_ivm) echo "$PG_IVM_VERSION $PG_IVM_SHA256 $(pg_key)" ;;
     pg_textsearch) echo "$PG_TEXTSEARCH_VERSION $PG_TEXTSEARCH_SHA256 $(pg_key)" ;;
-    pg_search) echo "$PARADEDB_VERSION" ;;
+    pg_search) if [[ -f $SHAREDIR/extension/pg_search.control ]]; then echo "system $(pacman -Q pg_search 2>/dev/null || sha256sum "$SHAREDIR/extension/pg_search.control" | cut -c1-16) $(pg_key)"; else echo "$PARADEDB_VERSION"; fi ;;
     elasticsearch|tantivy) echo "$(xbench_key) $(cargo --version)" ;;
     *) return 1 ;;
   esac
