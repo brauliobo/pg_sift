@@ -6,6 +6,7 @@
 
 #include "access/genam.h"
 #include "access/xact.h"
+#include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "utils/rel.h"
@@ -13,6 +14,7 @@
 
 #include "bm25/am.h"
 #include "core/catname.h"
+#include "core/compat.h"
 #include "core/limits.h"
 #include "core/live.h"
 #include "core/maint.h"
@@ -42,6 +44,7 @@ bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallb
 	MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift bulkdelete segment");
 	SiftSegment *seg = sift_seg_open(index, e, segcx);
 
+	sift_vacuum_delay_point();
 	sift_seg_bulkdelete(seg, cb, cb_state, stats);
 	sift_seg_close(seg);
 	MemoryContextDelete(segcx);
@@ -72,6 +75,7 @@ refresh_dead_tables(Relation index)
 			MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift dead refresh segment");
 			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], segcx);
 
+			sift_vacuum_delay_point();
 			sift_seg_refresh_dead(seg);
 			sift_seg_close(seg);
 			MemoryContextDelete(segcx);

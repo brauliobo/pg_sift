@@ -17,6 +17,7 @@
 #include "port/pg_bswap.h"
 #include "storage/fd.h"
 #include "storage/lmgr.h"
+#include "commands/vacuum.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
 #include "utils/builtins.h"
@@ -410,6 +411,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	int			npages;
 	TimestampTz start = GetCurrentTimestamp();
 
+	sift_vacuum_delay_point();
 	sift_lane_flag_sealed(index, sealed);
 	pages = sift_lane_extents(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
@@ -691,7 +693,10 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	/* a long merge of the worker, the segments claimed */
 	SIFT_TEST_GATE(sift_test_merge_gate && MyBackendType == B_BG_WORKER, 4);
 	for (int i = 0; i < in->n; i++)
+	{
+		sift_vacuum_delay_point();
 		sift_wt_charge(wt, in->seg[i].bytes / BLCKSZ);	/* the read of each segment */
+	}
 	for (int i = 0; i < in->n && dt == NULL; i++)
 		if (!(in->seg[i].flags & SIFT_SEG_POSITIONS))
 			dt = sift_doctext_open(index);
