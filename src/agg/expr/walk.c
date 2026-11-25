@@ -187,7 +187,7 @@ lut_subplan_ok(PlannerInfo *root, SubPlan *sp)
  * sub-select with a plain select list may): the lookup table asks it once, under the same conditions as a hashed sub-plan. Another kind of initplan or one
  * of an outer query keeps the normal plan.
  */
-/* does the sub-select give one row at most whatever the data? aggregates with no GROUP BY give one; a table read by equalities to constants that hold a whole unique key gives one or none */
+/* does the sub-select give one row at most whatever the data? aggregates with no GROUP BY give one; a select with no FROM gives one; a table read by equalities to constants that hold a whole unique key gives one or none */
 static bool
 one_row_query(Query *q)
 {
@@ -199,6 +199,8 @@ one_row_query(Query *q)
 		return false;
 	if (q->hasAggs)
 		return q->groupClause == NIL;
+	if (list_length(q->rtable) == 1 && linitial_node(RangeTblEntry, q->rtable)->rtekind == RTE_RESULT)
+		return true;
 	if (q->groupClause != NIL || q->distinctClause != NIL || q->jointree == NULL || list_length(q->rtable) != 1 || q->jointree->quals == NULL)
 		return false;
 	t = linitial_node(RangeTblEntry, q->rtable);
