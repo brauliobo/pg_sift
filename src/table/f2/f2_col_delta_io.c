@@ -697,8 +697,8 @@ sift_col_delta_stage_plan(Relation rel, const SiftColDeltaPlan *plan, CommandId 
 
 /* ---- writing the stage ---- */
 
-static SiftPartitionEntry
-fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo)
+SiftPartitionEntry
+sift_col_delta_fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo)
 {
 	SiftPartitionEntry e;
 
@@ -742,26 +742,38 @@ relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const in
 	sift_u64set_free(&gens);
 }
 
-void
-sift_col_delta_write_chain(Relation rel, const SiftPartitionEntry *entry, SiftColDeltaBatch *batches, int nbatches, FullTransactionId next, SiftColDeltaAnchor *anchor)
+typedef struct ChainOut
 {
-	SiftColDeltaDiskChain d = {.rel = rel,.entry = entry,.capture = anchor};
-	SiftColDeltaWriter w = sift_col_delta_disk_writer(&d);
-	uint32		pages = 0;
+	SiftColDeltaDiskChain d;
+	SiftColDeltaWriter w;
+	SiftColDeltaAnchor *anchor;
+	FullTransactionId next;
+} ChainOut;
 
-	for (int i = 0; i < nbatches; i++)
-		pages += sift_col_delta_batch_pages(&batches[i]);
-	if (pages > 0)
+static void
+chain_out_page(void *ctx, SiftColDeltaBatch *page)
+{
+	ChainOut   *o = ctx;
+
+	sift_col_delta_chain_append(&o->w, o->anchor, page, o->next);
+	sift_col_delta_batch_free(page);
+}
+
+/* The records that stay never need more pages than the chain they stay of has: the generations of the pages are reserved once */
+void
+sift_col_delta_write_carry(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next,
+						   const SiftColDeltaRemap *remap, SiftColDeltaAnchor *anchor)
+{
+	ChainOut	o = {.d = {.rel = rel,.entry = entry,.capture = anchor},.anchor = anchor,.next = next};
+
+	o.w = sift_col_delta_disk_writer(&o.d);
+	if (src->npages > 0)
 	{
-		d.gen_next = sift_manifest_new_gen(rel, pages);
-		d.gen_left = pages;
+		o.d.gen_next = sift_manifest_new_gen(rel, src->npages);
+		o.d.gen_left = src->npages;
 	}
 	*anchor = sift_col_delta_anchor_none();
-	for (int i = 0; i < nbatches; i++)
-	{
-		sift_col_delta_chain_append(&w, anchor, &batches[i], next);
-		sift_col_delta_batch_free(&batches[i]);
-	}
+	sift_col_delta_compact_carry(plan, src, next, remap, chain_out_page, &o);
 }
 
 /* Everything of the batch into the chain of the partition, under its lock; the pages the chain has after */
@@ -797,7 +809,7 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 		for (hi = lo; hi < nlive && cd->items[ord[hi]].part_id == part_id; hi++)
 			;
 		LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		e = fresh_entry(rel, part_id, cd->items[ord[lo]].key_lo);
+		e = sift_col_delta_fresh_entry(rel, part_id, cd->items[ord[lo]].key_lo);
 		parts = sift_manifest_read_parts(rel, &e, &nparts);
 		relocate_stale(rel, store, cd, ord, lo, hi, parts, nparts);
 		b = sift_col_delta_stage_take_run(cd, ord, lo, hi, next);
@@ -890,83 +902,6 @@ sift_col_delta_horizon_status(void *ctx, TransactionId xid, FullTransactionId *f
 
 	*fxid = sift_xid_fxid_at(began_after ? ReadNextFullTransactionId() : hc->next, xid);
 	return sift_xid_horizon_status(hc, xid);
-}
-
-/* The records that stay, put on fewer pages than the chain has, in the one change of the manifest that replaces the chain; false when they would not take fewer */
-static bool
-shrink_chain(Relation rel, const SiftPartitionEntry *e, const SiftColDeltaChain *chain, const SiftColDeltaCompactPlan *plan)
-{
-	FullTransactionId next = ReadNextFullTransactionId();
-	SiftColDeltaAnchor anchor;
-	SiftColDeltaBatch *batches;
-	SiftExtent *release;
-	int			nbatches,
-				nrelease;
-
-	batches = sift_col_delta_compact_carry(plan, next, NULL, &nbatches);
-	if (nbatches >= chain->npages)
-	{
-		for (int i = 0; i < nbatches; i++)
-			sift_col_delta_batch_free(&batches[i]);
-		pfree(batches);
-		return false;
-	}
-	sift_col_delta_write_chain(rel, e, batches, nbatches, next, &anchor);
-	release = sift_col_delta_chain_extents(chain, &nrelease);
-	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.set_col_delta = true,.new_col_delta = anchor,.release = release,.nrelease = nrelease});
-	pfree(release);
-	pfree(batches);
-	return true;
-}
-
-/*
- * Every record is an aborted writer's or a gone part's: the pages go and the partition has no chain, and no row of any part is written. False when a record stays; the records that stay
- * are then written onto fewer pages when the chain holds dead ones.
- */
-bool
-sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransactionId oldest_fx)
-{
-	SiftPartitionEntry e;
-	SiftColDeltaChain chain;
-	SiftColDeltaCompactPlan plan;
-	SiftPartDesc *parts;
-	SiftExtent *release;
-	SiftXidHorizonCache hc;
-	SiftColDeltaHorizon hz = {.ctx = &hc,.status = sift_col_delta_horizon_status};
-	uint64	   *live;
-	int			nparts;
-	bool		gone;
-
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	e = fresh_entry(rel, part_id, key_lo);
-	if (!load_chain(rel, &e, 0, &chain))
-	{
-		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		return false;
-	}
-	parts = sift_manifest_read_parts(rel, &e, &nparts);
-	live = sift_col_delta_sorted_gens(parts, nparts);
-	sift_xid_horizon_init(&hc, oldest_fx);
-	sift_col_delta_compact_plan(&chain, NULL, 0, live, nparts, &hz, UINT32_MAX, &plan);
-	gone = plan.ncarry == 0;
-	if (gone)
-	{
-		SiftManifestEdit edit = {.part_id = part_id,.key_lo = e.key_lo,.set_col_delta = true,.new_col_delta = sift_col_delta_anchor_none()};
-
-		release = sift_col_delta_chain_extents(&chain, &edit.nrelease);
-		edit.release = release;
-		sift_manifest_commit(rel, &edit);
-		pfree(release);
-	}
-	/* STOR[STOR-TBL-08]: partial col_delta chain compaction (reclaim up to 31/32 dead 8KiB pages when ncarry>0) */
-	else if (plan.ndropped > 0)
-		(void) shrink_chain(rel, &e, &chain, &plan);
-	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	sift_col_delta_compact_plan_free(&plan);
-	sift_col_delta_chain_free(&chain);
-	pfree(live);
-	pfree(parts);
-	return gone;
 }
 
 /* The anchor and the entry flag say the same, and the chain they name is whole: what sift_manifest_check asks of a partition */

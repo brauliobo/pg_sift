@@ -641,34 +641,32 @@ extern SiftColDeltaPass *sift_col_delta_pass_begin(const uint64 *gens, int ngens
 extern SiftColDeltaClass sift_col_delta_pass_class(SiftColDeltaPass *pass, const uint8 *rec, uint32 seq, bool *settled, FullTransactionId *fxid);
 extern void sift_col_delta_pass_end(SiftColDeltaPass *pass);
 
-typedef struct SiftColDeltaCarry
-{
-	const uint8 *rec;			/* the record: in the pages of the chain, or in the plan when its pages were not kept */
-	bool		remap;			/* of a part being rewritten: its address changes */
-} SiftColDeltaCarry;
-
+/* What a plan holds of the records of a chain: a nibble for each, by its place in it (whether it stays, whether its address changes, whether its writer committed before the horizon) */
 typedef struct SiftColDeltaCompactPlan
 {
-	SiftColDeltaCarry *carry;	/* in the order of the chain */
-	int			ncarry;
+	uint8	   *fate;
+	uint32		nfate;			/* its bytes */
+	uint64	   *want;			/* the addresses the records that move name: ascending, no duplicate */
+	int			nwant;
+	int			ncarry;			/* the records that stay */
+	int			nmoved;			/* of them, those that give a row a new address */
 	int			nfolded;
 	int			ndropped;
 	int			nremap;			/* the records that move to another row, when the plan keeps none */
 	int			nrecords;
 	FullTransactionId stripped;	/* the greatest writer folded: what the standbys' snapshots must be told (core/wal_conflict.h) */
-	void	   *kept;			/* the bytes of the records of carry when the source's pages are not kept */
 } SiftColDeltaCompactPlan;
 
-/* The pages of a chain, oldest first, as a plan takes them: page i and the first records of it that count (UINT32_MAX: all); a page that is not stable is gone when the next is taken */
+/* The pages of a chain, oldest first, as a plan takes them: page i and the first records of it that count (UINT32_MAX: all); a page is gone when the next is taken */
 typedef struct SiftColDeltaPageSource
 {
 	void	   *ctx;
 	int			npages;
-	bool		stable;
 	const char *(*page) (void *ctx, int i, uint32 *nrecords);
 } SiftColDeltaPageSource;
 
-/* Classifies the records of the chain the source gives; the records that stay are made plan->carry, a record at a time, those of a page that is not stable copied */
+/* Classifies the records of the chain the source gives: the fate of each is held as bits, never the record. A record every attribute of which a later one of its row writes again is dropped (of the rows
+ * a bounded table remembers: a row it forgot keeps its records) */
 extern void sift_col_delta_compact_stream(const SiftColDeltaPageSource *src, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit,
 										  SiftColDeltaCompactPlan *plan);
 
@@ -690,8 +688,12 @@ typedef struct SiftColDeltaRemap
 	bool		(*locate) (void *ctx, uint64 tid, uint64 *part_gen, uint32 *granule_id, uint16 *row_ordinal);	/* false: the row is gone */
 } SiftColDeltaRemap;
 
-/* The records that stay as batches of one page each, those of the rewritten parts remapped (a row that is gone takes its records with it) */
-extern SiftColDeltaBatch *sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, FullTransactionId next, const SiftColDeltaRemap *remap, int *nbatches);
+/* A page of records the carry made: the taker writes it and frees it */
+typedef void (*SiftColDeltaEmit) (void *ctx, SiftColDeltaBatch *page);
+
+/* The records that stay, read again from the source, as pages of records in the order of the chain, those of the rewritten parts remapped (a row that is gone takes its records with it); remap
+ * may be NULL when the plan moves none */
+extern void sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next, const SiftColDeltaRemap *remap, SiftColDeltaEmit emit, void *ctx);
 
 /* ---- the server side (f2_col_delta_io.c) ---- */
 
@@ -721,8 +723,12 @@ extern void sift_col_delta_stage_event(Relation rel, SiftTxnStage *st, SiftStage
 extern uint64 *sift_col_delta_sorted_gens(const SiftPartDesc *parts, int nparts);
 extern SiftHorizonStatus sift_col_delta_horizon_status(void *ctx, TransactionId xid, FullTransactionId *fxid);
 
-/* A fresh chain of the batches (a page of records each); its anchor is the caller's to publish, in the manifest change of a compaction */
-extern void sift_col_delta_write_chain(Relation rel, const SiftPartitionEntry *entry, SiftColDeltaBatch *batches, int nbatches, FullTransactionId next, SiftColDeltaAnchor *anchor);
+/* A fresh chain of the records the plan carries, written a page at a time; its anchor is the caller's to publish, in the manifest change of a compaction */
+extern void sift_col_delta_write_carry(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next,
+									   const SiftColDeltaRemap *remap, SiftColDeltaAnchor *anchor);
+
+/* The entry of a partition as the manifest has it now */
+extern SiftPartitionEntry sift_col_delta_fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo);
 
 /* The parts of the entry that hold a record a compaction at the horizon would fold, added to gens (no duplicate); the new count. VACUUM names them to the compaction */
 extern int	sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, FullTransactionId horizon, bool aggressive, uint64 *gens, int ngens);

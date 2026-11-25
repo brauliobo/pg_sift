@@ -11,11 +11,13 @@
 
 #include "access/transam.h"
 #include "port/pg_bitutils.h"
+#include "storage/lmgr.h"
 
 #include "col/f2/compact.h"
 #include "core/crash_point.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "core/part_lock.h"
 #include "core/u64set.h"
 #include "core/xid_cache.h"
 #include "table/f2/f2_col_delta.h"
@@ -477,30 +479,6 @@ placed_at(void *ctx, uint64 tid, uint64 *part_gen, uint32 *granule_id, uint16 *r
 	return true;
 }
 
-/* The addresses the records that move name: sorted, no duplicate */
-static uint64 *
-wanted_tids(const SiftColDeltaCompactPlan *plan, int *n)
-{
-	uint64	   *v = palloc(sizeof(uint64) * Max(plan->ncarry, 1));
-	int			k = 0;
-
-	for (int i = 0; i < plan->ncarry; i++)
-	{
-		SiftColDeltaEntryHdr h;
-
-		if (!plan->carry[i].remap)
-			continue;
-		memcpy(&h, plan->carry[i].rec, sizeof(h));
-		v[k++] = sift_col_delta_hdr_tid(&h);
-	}
-	qsort(v, k, sizeof(uint64), gen_cmp);
-	*n = 0;
-	for (int i = 0; i < k; i++)
-		if (*n == 0 || v[*n - 1] != v[i])
-			v[(*n)++] = v[i];
-	return v;
-}
-
 static bool
 wanted_in(const uint64 *want, int n, uint64 lo, uint64 hi)
 {
@@ -570,16 +548,12 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 {
 	Fold	   *f = fold;
 	Trail		t;
-	SiftColDeltaPageSource src = {.ctx = &t,.stable = false,.page = trail_page};
+	SiftColDeltaPageSource src = {.ctx = &t,.page = trail_page};
 	SiftColDeltaCompactPlan plan;
-	SiftColDeltaBatch *batches;
 	SiftColDeltaAnchor anchor;
 	FullTransactionId next = ReadNextFullTransactionId();
-	uint64	   *live = sift_col_delta_sorted_gens(parts, nparts),
-			   *want;
-	int			nwant,
-				nbatches,
-				nfreed;
+	uint64	   *live = sift_col_delta_sorted_gens(parts, nparts);
+	int			nfreed;
 	SiftExtent *freed;
 	Placement	pl;
 	SiftColDeltaRemap remap;
@@ -598,11 +572,10 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 		return;
 	}
 	sift_col_delta_compact_stream(&src, f->gens, f->ngens, live, nparts, &f->hz, f->nrecords, &plan);
-	want = wanted_tids(&plan, &nwant);
-	pl = place_rows(f->rel, entry->part_id, out, nout, want, nwant);
+	pl = place_rows(f->rel, entry->part_id, out, nout, plan.want, plan.nwant);
 	remap = (SiftColDeltaRemap) {.ctx = &pl,.locate = placed_at};
-	batches = sift_col_delta_compact_carry(&plan, next, &remap, &nbatches);
-	sift_col_delta_write_chain(f->rel, entry, batches, nbatches, next, &anchor);
+	sift_col_delta_write_carry(f->rel, entry, &plan, &src, next, &remap, &anchor);
+	pfree(pl.v);
 	edit->set_col_delta = true;
 	edit->new_col_delta = anchor;
 	SIFT_CRASH_POINT(f2_col_delta_fold_pre_p2);
@@ -624,6 +597,86 @@ void
 sift_col_delta_fold_install(void)
 {
 	sift_compact_fold = &col_delta_fold;
+}
+
+/* ---- the records that no part has a use for ---- */
+
+static void
+count_page(void *ctx, SiftColDeltaBatch *page)
+{
+	(*(int *) ctx)++;
+	sift_col_delta_batch_free(page);
+}
+
+/* The records that stay, put on fewer pages than the chain has, in the one change of the manifest that replaces the chain; false when they would not take fewer */
+static bool
+shrink_chain(Relation rel, const SiftPartitionEntry *e, const Trail *t, const SiftColDeltaPageSource *src, const SiftColDeltaCompactPlan *plan)
+{
+	FullTransactionId next = ReadNextFullTransactionId();
+	SiftColDeltaAnchor anchor;
+	SiftExtent *release;
+	int			pages = 0,
+				nrelease;
+
+	sift_col_delta_compact_carry(plan, src, next, NULL, count_page, &pages);
+	if (pages >= t->npages)
+		return false;
+	sift_col_delta_write_carry(rel, e, plan, src, next, NULL, &anchor);
+	release = trail_extents(t, &nrelease);
+	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.set_col_delta = true,.new_col_delta = anchor,.release = release,.nrelease = nrelease});
+	pfree(release);
+	return true;
+}
+
+/*
+ * Every record is an aborted writer's or a gone part's: the pages go and the partition has no chain, and no row of any part is written. False when a record stays; the records that stay
+ * are then written onto fewer pages when the chain holds dead ones.
+ */
+bool
+sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransactionId oldest_fx)
+{
+	SiftPartitionEntry e;
+	Trail		t;
+	SiftColDeltaPageSource src = {.ctx = &t,.page = trail_page};
+	SiftColDeltaCompactPlan plan;
+	SiftPartDesc *parts;
+	SiftXidHorizonCache hc;
+	SiftColDeltaHorizon hz = {.ctx = &hc,.status = sift_col_delta_horizon_status};
+	uint64	   *live;
+	int			nparts;
+	bool		gone;
+
+	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	e = sift_col_delta_fresh_entry(rel, part_id, key_lo);
+	if (!trail_open(&t, rel, &e))
+	{
+		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+		return false;
+	}
+	src.npages = t.npages;
+	parts = sift_manifest_read_parts(rel, &e, &nparts);
+	live = sift_col_delta_sorted_gens(parts, nparts);
+	sift_xid_horizon_init(&hc, oldest_fx);
+	sift_col_delta_compact_stream(&src, NULL, 0, live, nparts, &hz, UINT32_MAX, &plan);
+	gone = plan.ncarry == 0;
+	if (gone)
+	{
+		int			nrelease;
+		SiftExtent *release = trail_extents(&t, &nrelease);
+
+		sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = part_id,.key_lo = e.key_lo,.set_col_delta = true,.new_col_delta = sift_col_delta_anchor_none(),.release = release,
+													   .nrelease = nrelease});
+		pfree(release);
+	}
+	/* STOR[STOR-TBL-08]: partial col_delta chain compaction (reclaim up to 31/32 dead 8KiB pages when ncarry>0) */
+	else if (plan.ndropped > 0)
+		(void) shrink_chain(rel, &e, &t, &src, &plan);
+	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	sift_col_delta_compact_plan_free(&plan);
+	trail_free(&t);
+	pfree(live);
+	pfree(parts);
+	return gone;
 }
 
 /* ---- the parts VACUUM sends to the compaction ---- */
