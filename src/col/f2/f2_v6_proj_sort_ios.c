@@ -1,12 +1,12 @@
 /*
- * agg/v6/v6_proj_sort_ios.c - the row of SiftProjSortScan from the cells of the projection (agg/v6/v6_proj_sort_ios.h).
+ * col/f2/f2_v6_proj_sort_ios.c - the row of SiftProjSortScan from the cells of the projection (col/f2/f2_v6_proj_sort_ios.h).
  */
 #include "postgres.h"
 
 #include "access/visibilitymap.h"
 #include "catalog/pg_type_d.h"
 
-#include "agg/v6/v6_proj_sort_ios.h"
+#include "col/f2/f2_v6_proj_sort_ios.h"
 
 bool
 sift_v6_sort_ios_type(Oid type)

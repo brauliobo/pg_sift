@@ -1,10 +1,10 @@
 /*
- * agg/v6/v6_proj_sort_ios.h - SiftProjSortScan without the relation: when every attribute a statement reads (its output and its quals) is an integer-class column (bool, int2, int4, int8, date,
+ * col/f2/f2_v6_proj_sort_ios.h - SiftProjSortScan without the relation: when every attribute a statement reads (its output and its quals) is an integer-class column (bool, int2, int4, int8, date,
  * timestamp, timestamptz) that the projection keeps, the row of an address whose page the visibility map of the relation says is all visible is built from the cells of the projection, and
  * the relation is read only for the addresses of the other pages (the contract of an index-only scan).
  */
-#ifndef SIFT_AGG_V6_PROJ_SORT_IOS_H
-#define SIFT_AGG_V6_PROJ_SORT_IOS_H
+#ifndef SIFT_COL_F2_V6_PROJ_SORT_IOS_H
+#define SIFT_COL_F2_V6_PROJ_SORT_IOS_H
 
 #include "postgres.h"
 
@@ -34,4 +34,4 @@ extern bool sift_v6_sort_ios_fill(TupleTableSlot *slot, const SortIosCols *cols,
 /* Whether the page of the address is all visible in rel; vmbuf is the page of the map in hand between calls (InvalidBuffer at first) */
 extern bool sift_v6_sort_ios_visible(Relation rel, uint64 addr, Buffer *vmbuf);
 
-#endif							/* SIFT_AGG_V6_PROJ_SORT_IOS_H */
+#endif							/* SIFT_COL_F2_V6_PROJ_SORT_IOS_H */

@@ -34,7 +34,7 @@
 
 #include "agg/plan/safety.h"
 #include "agg/plan/format_ops.h"
-#include "agg/v6/v6_proj_sort_ios.h"
+#include "col/f2/f2_v6_proj_sort_ios.h"
 #include "col/f2/f2_v6_proj_ctx.h"
 #include "col/f2/f2_v6_proj_key.h"
 #include "col/f2/f2_v6_proj_sort_exec.h"
