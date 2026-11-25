@@ -19,7 +19,7 @@ sift.maintenance_cost_delay	all	`0..100` ms	Sleep delay per maintenance I/O batc
 sift.maintenance_naptime	all	`200..60000` ms	Base interval and backoff floor for background maintenance workers	OPERATIONS.md#5-emergency-switches	1.0	
 sift.maintenance_wal_rate	all	`0..1048576` kB/s	Max WAL rate for background compaction and sift_table defrag	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1	
 sift.max_expansions	BM25	`1..1000000`	Max terms expanded by a wildcard, prefix, regex, or fuzzy BM25 leaf before merging	SEARCH.md#2-siftql-query-syntax	1.0	
-sift.max_maint_workers	all	`0..8`	Cap on the dynamic pool of background maintenance workers	OPERATIONS.md#5-emergency-switches	6.0	
+sift.max_maint_workers	all	`0..16`	Cap on the dynamic pool of background maintenance workers	OPERATIONS.md#5-emergency-switches	6.0	
 sift.on_corruption	all	`quarantine`, `error`	Quarantine damaged indexes and fall back to heap, or raise errors immediately	OPERATIONS.md#6-quarantine-and-corruption-recovery	5.0	
 sift.parallel_scan	all	`on`, `off`	Allow parallel scan, aggregation, build, and compaction plans (bounded by max_parallel_workers_per_gather)	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	1.1	
 sift.rls_scores	BM25	`on`, `off`	Permit BM25 ranked scans under row-level security	SEARCH.md#8-row-level-security-siftrls_scores	3.6	

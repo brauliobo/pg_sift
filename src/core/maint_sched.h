@@ -43,9 +43,9 @@ typedef enum SiftPacerTier
 #include "core/maint_pacer.h"
 #endif
 
-#define SIFT_MAINT_SLOTS			512
+#define SIFT_MAINT_SLOTS			2048
 #define SIFT_MAINT_HEAT				1024
-#define SIFT_MAINT_MAX_WORKERS		8
+#define SIFT_MAINT_MAX_WORKERS		16
 #define SIFT_MAINT_AGE_QUANTUM_US	(60 * USECS_PER_SEC)
 #define SIFT_MAINT_AGE_STEP			1000
 #define SIFT_MAINT_AGED_MAX			9999
@@ -223,7 +223,7 @@ typedef struct SiftMaintShmem
 			SiftShmLock lock;
 			pg_atomic_uint32 seq;			/* odd while a writer changes the table: the snapshot retries */
 			pg_atomic_uint32 active_workers;
-			pg_atomic_uint32 max_workers;	/* sift.max_maint_workers as the host configured it, 0..8 */
+			pg_atomic_uint32 max_workers;	/* sift.max_maint_workers as the host configured it, 0..SIFT_MAINT_MAX_WORKERS */
 			pg_atomic_uint32 launcher;		/* procno + 1 of the launcher, 0 when there is none */
 			uint32		naptime_ms;
 			uint32		nqueued;
@@ -250,7 +250,7 @@ typedef struct SiftMaintShmem
 		char		pad2[PG_CACHE_LINE_SIZE];
 	};
 	SiftMaintWorkerSlot worker[SIFT_MAINT_MAX_WORKERS];
-	uint8		pad3[64];
+	uint8		pad3[PG_CACHE_LINE_SIZE];
 	SiftStandbyHorizon horizon;		/* the primary's horizon as it was a minute ago: what a maintenance pass strips at (core/f2/f2_pace.h) */
 	uint8		pad4[3 * PG_CACHE_LINE_SIZE - sizeof(SiftStandbyHorizon)];
 	pg_atomic_uint32 heat[SIFT_MAINT_HEAT];	/* reads of a relation, sampled 1 in 128 */
@@ -262,7 +262,7 @@ typedef struct SiftMaintShmem
 	int16		hash_idx[SIFT_MAINT_HASH_SIZE];	/* open addressing over khash: the slot of a key, -1 where empty */
 	uint64		free_bits[SIFT_MAINT_FREE_WORDS];	/* 1 for a free slot */
 	SiftMaintDbState dbstate[SIFT_MAINT_DBSTATE];
-	uint8		pad5[48];
+	uint8		pad5[112];
 } SiftMaintShmem;
 
 typedef struct SiftMaintRow
@@ -338,7 +338,14 @@ extern int	sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host);
 /* The claims of a pid that exits: requeued, as a failed step when failed (it backs off), as one that never ran when not */
 extern int	sift_maint_release_pid(SiftMaintShmem *m, const SiftMaintHost *host, int pid, bool failed);
 
-/* The cap on workers of sift: Min(configured, max_worker_processes - Max(2, max_worker_processes / 4) - the bgworkers that are not ours); the reserve is left to parallel queries */
+/* The workers of sift that run at once: sift.max_maint_workers, never more than half of max_worker_processes (at least one), so that parallel queries and autovacuum keep their slots */
+static inline int
+sift_maint_workers_cap(int configured, int max_worker_processes)
+{
+	return Min(configured, Max(1, max_worker_processes / 2));
+}
+
+/* The cap on workers of sift: Min(sift_maint_workers_cap, max_worker_processes - Max(2, max_worker_processes / 4) - the bgworkers that are not ours); the reserve is left to parallel queries */
 extern int	sift_maint_effective_max(int configured, int max_worker_processes, int bgworkers_other);
 extern SiftMaintMode sift_maint_mode(bool async_maintenance, bool preloaded, bool table_ok, int effective_max);
 extern int	sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db);

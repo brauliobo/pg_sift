@@ -98,6 +98,6 @@ node_start ms || bail "start of ms failed"
 sql ms "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "CREATE TABLE t (id int, k int) WITH (autovacuum_enabled = false)" "INSERT INTO t SELECT g, g % 10 FROM generate_series(1, 2000) g" \
 	"CREATE INDEX t_idx ON t USING sift_col (id, k)" "ALTER DATABASE postgres SET sift.vacuum_rewrite_limit = 0" >/dev/null || bail "setup of ms failed"
 sql ms "SELECT sift._test_worker_slots(8)" "INSERT INTO t SELECT g, g % 10 FROM generate_series(2001, 4000) g" "VACUUM t" >/dev/null || bail "VACUUM of ms failed"
-refused() { grep -q 'no background worker for promote of index "public.t_idx"' "$(dir ms)/postgres.log" && grep -q 'DETAIL:  sift.max_maint_workers is 2 and 2 are running; max_worker_processes is 8' "$(dir ms)/postgres.log"; }
+refused() { grep -q 'no background worker for promote of index "public.t_idx"' "$(dir ms)/postgres.log" && grep -q 'DETAIL:  sift.max_maint_workers is 4 and 4 are running; max_worker_processes is 8' "$(dir ms)/postgres.log"; }
 check "a worker the server has no slot for names who holds the slots" refused
 finish

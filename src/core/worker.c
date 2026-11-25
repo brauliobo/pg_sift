@@ -139,7 +139,7 @@ refused_level(SiftJob job)
 	uint64		seen;
 	uint64		now = GetCurrentTimestamp();
 
-	/* MEM[MEM-SHM-12]: DSM worker refusal + slots sift_refused_2/sift_workers_2 (144 B fixed) */
+	/* MEM[MEM-SHM-12]: DSM worker refusal + slots sift_refused_2/sift_workers_2 (208 B fixed) */
 	if (last == NULL && (last = sift_dsm_try("sift_refused_2", sizeof(own), refused_init)) == NULL)
 		last = own;
 	seen = pg_atomic_read_u64(&last[job]);
@@ -152,11 +152,11 @@ refused_level(SiftJob job)
  * The registrar takes the slot and the worker gives it back when it ends, whatever the way; a worker that never gets as far (the postmaster could not fork it, the library did not
  * load) would keep it for good, so a slot whose worker is not up SLOT_START_LEASE_US after it was taken is free again for the next request.
  */
-#define WORKER_SLOTS		8
+#define WORKER_SLOTS		16
 #define SLOT_STARTED		1
 #define SLOT_START_LEASE_US	(30 * USECS_PER_SEC)
 
-static int	sift_max_maint_workers = 2;
+static int	sift_max_maint_workers = 4;
 
 #ifdef SIFT_TESTING
 int			sift_test_worker_lease_ms = 0;
@@ -217,6 +217,12 @@ slot_lapsed(uint64 word, TimestampTz now)
 
 static int slots_taken(void);
 
+static int
+workers_cap(void)
+{
+	return sift_maint_workers_cap(sift_max_maint_workers, max_worker_processes);
+}
+
 int
 sift_worker_legacy_active(void)
 {
@@ -229,7 +235,7 @@ slot_claim(uint64 *claim)
 	WorkerSlots *w = worker_slots();
 	TimestampTz now = GetCurrentTimestamp();
 
-	for (int i = 0; i < sift_max_maint_workers; i++)
+	for (int i = 0; i < workers_cap(); i++)
 	{
 		uint64		seen = pg_atomic_read_u64(&w->claim[i]);
 
@@ -240,7 +246,7 @@ slot_claim(uint64 *claim)
 		{
 			uint64		mine = *claim;
 
-			if (slots_taken() + sift_maint_active_workers() <= sift_max_maint_workers)
+			if (slots_taken() + sift_maint_active_workers() <= workers_cap())
 				return i;
 			pg_atomic_compare_exchange_u64(&w->claim[i], &mine, 0);
 			return -1;
@@ -408,7 +414,7 @@ sift_worker_init(void)
 							"The most background workers of sift (promotion, merge, tracking, rollup, table and quarantine workers) that run at once in the server.",
 							"A request that finds that many running is refused with a LOG line at most once an hour for its job, and its work is left to the inserting sessions, VACUUM and the next request. "
 							"The server's own max_worker_processes still bounds the sum.",
-							&sift_max_maint_workers, 2, 0, WORKER_SLOTS, PGC_SIGHUP, 0, NULL, sift_maint_assign_max_workers, NULL);
+							&sift_max_maint_workers, 4, 0, WORKER_SLOTS, PGC_SIGHUP, 0, NULL, sift_maint_assign_max_workers, NULL);
 }
 
 /* The type of this worker is "sift <job>": the job is what follows, the subject what follows the type in its name */

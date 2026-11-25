@@ -69,7 +69,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  lst_min_units       | LST_MIN_UNITS                   |                  64 | t         | t
  lst_share_div       | LST_SHARE_DIV                   |                  33 | t         | t
  maint_backoff_ms    | BACKOFF_MAX_MS                  |             3600000 | t         | f
- maint_workers       | SIFT_MAINT_MAX_WORKERS          |                   8 | t         | f
+ maint_workers       | SIFT_MAINT_MAX_WORKERS          |                  16 | t         | f
  max_segments        | SIFT_DIR_POLICY_MAX             |                 128 | t         | t
  merge_disk_peak     | -                               |                   2 | t         | f
  merge_fanin         | MERGE_MAX_FANIN                 |                  64 | t         | f

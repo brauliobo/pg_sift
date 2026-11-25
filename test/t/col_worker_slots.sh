@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The workers of sift are capped by sift.max_maint_workers (2 by default, one count for the whole server): with the promotions that three tables asked for held at the
+# The workers of sift are capped by sift.max_maint_workers (4 by default, 2 here, one count for the whole server): with the promotions that three tables asked for held at the
 # progress gate of a testing build, two workers run and a parallel query still gets its workers; what was declined says so in one line (for every kind of worker, once an hour,
 # with the count in the detail) and is asked for again by the next change; and a worker does not stay connected waiting: DROP DATABASE of a database whose table was just
 # promoted by a worker returns at once (it failed after 5 seconds, "being accessed by other users", while the worker napped between its looks).
@@ -10,6 +10,7 @@ node_init ws 65 "autovacuum = off
 max_worker_processes = 5
 max_parallel_workers = 4
 max_parallel_workers_per_gather = 2
+sift.max_maint_workers = 2
 sift.test_col_net = off
 sift.maintenance_naptime = 200"
 node_start ws || bail "start failed"

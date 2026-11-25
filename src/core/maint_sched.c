@@ -9,7 +9,7 @@
 #define MAINT_MAGIC		0x53464D51
 
 StaticAssertDecl(sizeof(SiftMaintSlot) == 128, "a slot is one 128 B line");
-StaticAssertDecl(sizeof(SiftMaintWorkerSlot) * SIFT_MAINT_MAX_WORKERS + 64 == 2 * PG_CACHE_LINE_SIZE, "the worker table fills two lines with its pad");
+StaticAssertDecl(offsetof(SiftMaintShmem, horizon) - offsetof(SiftMaintShmem, worker) == 4 * PG_CACHE_LINE_SIZE, "the worker table fills four lines with its pad");
 StaticAssertDecl(offsetof(SiftMaintShmem, stats) == PG_CACHE_LINE_SIZE, "the counters start on line 1");
 StaticAssertDecl(offsetof(SiftMaintShmem, fg_write_ops) % PG_CACHE_LINE_SIZE == 0, "the foreground counters have a line of their own");
 StaticAssertDecl(offsetof(SiftMaintShmem, heat) % PG_CACHE_LINE_SIZE == 0, "the heat counters are line aligned");
@@ -617,8 +617,14 @@ worker_free(SiftMaintShmem *m, int w)
 typedef struct Pids
 {
 	int			n;
-	int			pid[SIFT_MAINT_SLOTS + SIFT_MAINT_MAX_WORKERS];
+	int		   *pid;
 } Pids;
+
+static Pids
+pids_new(void)
+{
+	return (Pids) {.pid = palloc((SIFT_MAINT_SLOTS + SIFT_MAINT_MAX_WORKERS) * sizeof(int))};
+}
 
 static int
 pid_order(const void *a, const void *b)
@@ -665,26 +671,11 @@ owner_pids(SiftMaintShmem *m, TimestampTz now, Pids *p, bool *lapsed, uint32 *ge
 			p->pid[p->n++] = p->pid[k];
 }
 
-/*
- * Liveness is asked once for each distinct pid and outside the lock (the host may take locks of its own); what is given back is then taken in one pass over the table. A claim made after
- * the owners were read (a generation past gen_seen) is never taken for the claim of a pid that is gone: the number may be a new process's.
- */
-int
-sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
+static int
+reap_dead(SiftMaintShmem *m, TimestampTz now, const Pids *dead, uint32 gen_seen)
 {
-	TimestampTz now = host->now();
-	Pids		owners;
-	Pids		dead = {0};
-	bool		lapsed;
-	uint32		gen_seen;
 	int			n = 0;
 
-	owner_pids(m, now, &owners, &lapsed, &gen_seen);
-	for (int k = 0; k < owners.n; k++)
-		if (!host->pid_alive(owners.pid[k]))
-			dead.pid[dead.n++] = owners.pid[k];
-	if (dead.n == 0 && !lapsed)
-		return 0;
 	begin(m);
 	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
 	{
@@ -695,11 +686,11 @@ sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
 			worker_free(m, w);
 			m->stats.lease_lapsed++;
 		}
-		else if (ws->state == 2 && pids_has(&dead, ws->pid))
+		else if (ws->state == 2 && pids_has(dead, ws->pid))
 			worker_free(m, w);
 	}
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-		if (m->slot[i].state == SIFT_SLOT_CLAIMED && m->slot[i].gen <= gen_seen && pids_has(&dead, m->slot[i].pid))
+		if (m->slot[i].state == SIFT_SLOT_CLAIMED && m->slot[i].gen <= gen_seen && pids_has(dead, m->slot[i].pid))
 		{
 			m->nclaimed--;
 			m->slot[i].failures++;
@@ -712,12 +703,37 @@ sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
 	return n;
 }
 
+/*
+ * Liveness is asked once for each distinct pid and outside the lock (the host may take locks of its own); what is given back is then taken in one pass over the table. A claim made after
+ * the owners were read (a generation past gen_seen) is never taken for the claim of a pid that is gone: the number may be a new process's.
+ */
+int
+sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
+{
+	TimestampTz now = host->now();
+	Pids		owners = pids_new();
+	Pids		dead = pids_new();
+	bool		lapsed;
+	uint32		gen_seen;
+	int			n = 0;
+
+	owner_pids(m, now, &owners, &lapsed, &gen_seen);
+	for (int k = 0; k < owners.n; k++)
+		if (!host->pid_alive(owners.pid[k]))
+			dead.pid[dead.n++] = owners.pid[k];
+	if (dead.n > 0 || lapsed)
+		n = reap_dead(m, now, &dead, gen_seen);
+	pfree(owners.pid);
+	pfree(dead.pid);
+	return n;
+}
+
 int
 sift_maint_effective_max(int configured, int max_worker_processes, int bgworkers_other)
 {
 	int			reserve = Max(2, max_worker_processes / 4);
 
-	return Max(0, Min(Min(configured, SIFT_MAINT_MAX_WORKERS), max_worker_processes - reserve - bgworkers_other));
+	return Max(0, Min(Min(sift_maint_workers_cap(configured, max_worker_processes), SIFT_MAINT_MAX_WORKERS), max_worker_processes - reserve - bgworkers_other));
 }
 
 SiftMaintMode

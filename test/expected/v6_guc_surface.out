@@ -60,7 +60,7 @@ ORDER BY name COLLATE "C";
  sift.maintenance_naptime    | 2000       | 2000
  sift.maintenance_wal_rate   | 0          | 0
  sift.max_expansions         | 512        | 512
- sift.max_maint_workers      | 2          | 2
+ sift.max_maint_workers      | 4          | 4
  sift.on_corruption          | quarantine | quarantine
  sift.parallel_scan          | on         | on
  sift.rls_scores             | off        | off

@@ -39,7 +39,7 @@ report() {
 	function trim(s) { gsub(/^ +| +$/, "", s); return s }
 	function norm(v,   p, n, i, r) {
 		v = trim(v)
-		if (v == "WORKER_SLOTS") return "8"
+		if (v == "WORKER_SLOTS") return "16"
 		if (v == "1 << 20") return "1048576"
 		if (v == "GPU_CACHE_MB_DEFAULT") return "256"
 		if (v == "GPU_MIN_ROWS_DEFAULT") return "1000000"
