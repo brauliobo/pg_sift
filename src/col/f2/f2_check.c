@@ -15,6 +15,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/f2.h"
+#include "col/f2/f2_sink.h"
 #include "col/f2/f2_store.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -238,19 +239,30 @@ heap_window_check(Relation heap, Relation index, HeapWindow *w, BlockNumber span
 }
 
 static void
+mark_live_rows(void *arg, const SiftF2Batch *b)
+{
+	HeapWindow *w = arg;
+
+	for (int r = 0; r < b->n; r++)
+		if ((b->live[r >> 6] >> (r & 63)) & 1)
+		{
+			ItemPointerData tid;
+			uint32		bit;
+
+			sift_f2_tid_set(&tid, b->tid[r]);
+			w->max_index_block = Max(w->max_index_block, ItemPointerGetBlockNumber(&tid));
+			if (window_bit(w, &tid, &bit))
+				w->seen[bit / 8] |= 1 << (bit % 8);
+		}
+}
+
+static void
 index_window_fill(Relation heap, Relation index, Snapshot snap, HeapWindow *w)
 {
 	IndexScanDesc scan = sift_index_beginscan(heap, index, snap, 0);
-	ItemPointer tid;
-	uint32		bit;
 
 	index_rescan(scan, NULL, 0, NULL, 0);
-	while ((tid = index_getnext_tid(scan, ForwardScanDirection)) != NULL)
-	{
-		w->max_index_block = Max(w->max_index_block, ItemPointerGetBlockNumber(tid));
-		if (window_bit(w, tid, &bit))
-			w->seen[bit / 8] |= 1 << (bit % 8);
-	}
+	sift_f2_scan_sink(scan, mark_live_rows, w, NULL, 0);
 	index_endscan(scan);
 }
 
