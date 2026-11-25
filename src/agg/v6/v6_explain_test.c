@@ -1,5 +1,5 @@
 /*
- * agg/exec/explain_test.c - test-only SQL function of the Format 2.0 EXPLAIN lines (agg/exec/explain.c), compiled only with SIFT_TESTING and registered by
+ * agg/v6/v6_explain_test.c - test-only SQL function of the Format 2.0 EXPLAIN lines (agg/v6/v6_explain.c), compiled only with SIFT_TESTING and registered by
  * the pg_sift_test extension: sift._test_explain_v6(scenario, format) prints the lines of a run with the counters of one of four scenarios: 1 a scan of a
  * Format 2.0 index, 2 a scope top-N, 3 a hybrid BM25 and column scan, 4 a runtime hash-join filter with a spill and a fallback.
  */
@@ -11,11 +11,9 @@
 #include "optimizer/cost.h"
 #include "utils/builtins.h"
 
-#include "agg/wide.h"
-#include "agg/rows.h"
-#include "agg/stats.h"
 #include "core/explain.h"
-#include "agg/exec/int.h"
+
+#include "agg/v6/v6_explain.h"
 
 PG_FUNCTION_INFO_V1(sift_test_explain_v6);
 
