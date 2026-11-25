@@ -513,7 +513,29 @@ folds_any(void *fold, const SiftPartDesc **at, int n)
 	return false;
 }
 
-/* Phase 1: the rows of the inputs read and the output parts written, with no lock held: nothing of the output is reachable until the manifest takes it in. false: a deleter of a row is not settled */
+/* The vector an output carried over is replaced: the extents it had were never in a manifest */
+static void
+release_outputs_dv(Relation rel, const SiftPartDesc *out)
+{
+	if (out->dv_blk != InvalidBlockNumber)
+		sift_fsm_release(rel, &(SiftExtent) {out->dv_blk, out->dv_nblocks}, 1, InvalidFullTransactionId);
+}
+
+/* The output parts given back at once: no manifest ever held them */
+static void
+release_outputs(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout)
+{
+	for (int k = 0; k < nout; k++)
+	{
+		int			nb;
+		SiftExtent *blocks = sift_part_blocks(sift_part_open(rel, out[k].header_blk, out[k].part_gen, (uint32) part_id), &nb);
+
+		sift_fsm_release(rel, blocks, nb, InvalidFullTransactionId);
+		release_outputs_dv(rel, &out[k]);
+	}
+}
+
+/* Phase 1: the rows of the inputs read and the output parts written, with no lock held: nothing of the output is reachable until the manifest takes it in. false: a deleter of a row is not settled, and no output is left */
 static bool
 write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const SiftPartSpec *spec, int64 hot_cut, bool bounds_hold, SiftXidHorizonCache *hc, void *fold, SiftCompactResult *res,
 			  SiftExtent **rel_ext, int *nrel, SiftMemTracker *mem, SiftPartDesc **out, int *nout)
@@ -575,31 +597,11 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	}
 	if (adopt_cx != NULL)
 		MemoryContextDelete(adopt_cx);
-	*out = sink.out;
-	*nout = sink.nout;
+	if (!read)
+		release_outputs(rel, part_id, sink.out, sink.nout);
+	*out = read ? sink.out : NULL;
+	*nout = read ? sink.nout : 0;
 	return read;
-}
-
-/* The vector an output carried over is replaced: the extents it had were never in a manifest */
-static void
-release_outputs_dv(Relation rel, const SiftPartDesc *out)
-{
-	if (out->dv_blk != InvalidBlockNumber)
-		sift_fsm_release(rel, &(SiftExtent) {out->dv_blk, out->dv_nblocks}, 1, InvalidFullTransactionId);
-}
-
-/* The output parts given back at once: no manifest ever held them */
-static void
-release_outputs(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout)
-{
-	for (int k = 0; k < nout; k++)
-	{
-		int			nb;
-		SiftExtent *blocks = sift_part_blocks(sift_part_open(rel, out[k].header_blk, out[k].part_gen, (uint32) part_id), &nb);
-
-		sift_fsm_release(rel, blocks, nb, InvalidFullTransactionId);
-		release_outputs_dv(rel, &out[k]);
-	}
 }
 
 /* The rows an input holds dead now that were not dead in the vector the compaction read it with: their addresses and deleters */
