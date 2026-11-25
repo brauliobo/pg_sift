@@ -303,6 +303,8 @@ load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *registry)
 	const SiftShmManifestSnap *shm;
 	SiftManifestScopeRef *scopes;
 	int			nscopes;
+	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift plan snapshot read");
+	MemoryContext caller = MemoryContextSwitchTo(scratch);
 	SiftManifestRead mr = read_directory_of(rel, &at, &shm, &scopes, &nscopes);
 	/* MEM[MEM-IDLE-07]: cachebudget plan snapshot ctx (1 KB init + partitions + part lists + card view; evictable LRU) */
 	MemoryContext prev = MemoryContextSwitchTo(s->cx);
@@ -355,7 +357,8 @@ load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *registry)
 	s->total_rows = meta->total_rows;
 	s->total_dead = meta->total_dead;
 	s->total_bytes = meta->total_bytes;
-	MemoryContextSwitchTo(prev);
+	MemoryContextSwitchTo(caller);
+	MemoryContextDelete(scratch);
 	s->size = MemoryContextMemAllocated(s->cx, true);
 	if (shm != NULL)
 		sift_shm_snap_unpin(shm);
