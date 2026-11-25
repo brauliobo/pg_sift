@@ -11,7 +11,6 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 . "$(dirname "$0")/lib_upgrade.bash"
 
 OLD_REF=
-unset SIFT_BUILD_DIR SIFT_BUILD_ROOT   # the copy of the tree that build_old compiles for the old major links the objects of this directory when it is set: the library of the wrong major
 NEWCFG=$(command -v pg_config)
 OLDBIN=${SIFT_PG_OLD_BIN:-}
 if [[ -z $OLDBIN ]]; then

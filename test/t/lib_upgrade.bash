@@ -33,11 +33,11 @@ build_old() {
 	mkdir -p "$src"
 	if [[ -n $OLD_REF ]]; then git -C "$REPO" archive "$OLD_REF" | tar -x -C "$src"
 	else tar -C "$REPO" --exclude=.git --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude='*.dylib' --exclude='*.bc' --exclude=.build-flavor --exclude=bench/out -cf - . | tar -x -C "$src"; fi
-	nice make -C "$src" -j4 USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING=$testing >"$TAPDIR/old-build.log" 2>&1 || {
+	nice env -u SIFT_BUILD_DIR -u SIFT_BUILD_ROOT make -C "$src" -j4 USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING=$testing >"$TAPDIR/old-build.log" 2>&1 || {
 		[[ -n $OLD_REF ]] || return 1
 		echo "1..0 # SKIP the release $OLD_REF cannot be built for PostgreSQL $OLD_MAJOR"; return 77
 	}
-	make -C "$src" USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING=$testing DESTDIR="$2" install >>"$TAPDIR/old-build.log" 2>&1 || return 1
+	env -u SIFT_BUILD_DIR -u SIFT_BUILD_ROOT make -C "$src" USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING=$testing DESTDIR="$2" install >>"$TAPDIR/old-build.log" 2>&1 || return 1
 	[[ -z $cache ]] || { mkdir -p "${cache%/*}" && tmp=$(mktemp -d "${cache%/*}/.tmp.XXXXXX") && cp -a "$2/." "$tmp/" && { mv -T "$tmp" "$cache" 2>/dev/null || rm -rf "$tmp"; }; }
 }
 
