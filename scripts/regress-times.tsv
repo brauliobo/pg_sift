@@ -982,6 +982,7 @@ core_tidbridge	0.25
 count_scan	0.22
 ddl_hooks	0.10
 dead_counts	0.70
+dead_docs_kept	0.20
 dead_rewrite_pct	0.13
 dead_stale	0.48
 dead_terms	0.13
