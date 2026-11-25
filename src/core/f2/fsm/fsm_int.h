@@ -68,9 +68,9 @@ extern void sift_fsm_claim_slab(FsmCtx *c);
 extern BlockNumber sift_fsm_alloc_meta_locked(FsmCtx *c);
 
 static inline uint32
-sift_fsm_meta_reserve(const SiftFsmSlabTable *t)
+sift_fsm_meta_reserve(uint32 nslabs)
 {
-	return t->nslabs <= SIFT_FSM_KEEP_SLABS ? SIFT_FSM_SMALL_META_RESERVE : SIFT_FSM_META_RESERVE;
+	return nslabs <= SIFT_FSM_KEEP_SLABS ? SIFT_FSM_SMALL_META_RESERVE : SIFT_FSM_META_RESERVE;
 }
 
 /* Makes metadata blocks available: the matured pages of the queue go back to the bitmaps first, a new slab is claimed only when the free blocks are still under the reserve */

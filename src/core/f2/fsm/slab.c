@@ -117,6 +117,18 @@ all_free(const SiftFsmSlab *s)
 	return true;
 }
 
+/* The blocks of the slab up to and with its last page in use: what the slab cannot be cut below */
+static uint32
+used_prefix(const SiftFsmSlab *s)
+{
+	uint32		end = 0;
+
+	for (uint32 b = 0; b < s->nblocks; b++)
+		if ((s->free[b / 64] & (UINT64CONST(1) << (b % 64))) == 0)
+			end = b + 1;
+	return end;
+}
+
 static int
 slab_start_desc(const void *a, const void *b)
 {
@@ -127,62 +139,77 @@ slab_start_desc(const void *a, const void *b)
 }
 
 /*
- * The slabs with no page in use, the highest first, as many as leave SIFT_FSM_META_RESERVE free blocks in the others: their blocks are free space of the file. The first slab holds the root of the
- * partition directory and stays. The empty slabs are sorted once, highest first, and taken in that order.
+ * The blocks of the slabs that are free space of the file, the highest slab first: a slab with no page in use goes whole when the others keep the reserve free, and any slab gives up the
+ * blocks behind the pages it holds (and behind the free blocks of its own that the reserve still needs), keeping a power of two of blocks, as every slab has. The first slab holds the root of the partition
+ * directory and stays whole. A slab claimed in a burst is as big as the burst needed, so one that the burst left with a few pages, or with nothing but the reserve, is cut down to what they take.
  */
 void
 sift_fsm_slabs_idle(const SiftFsmSlabTable *t, uint32 meta_free, ExtVec *out)
 {
-	const SiftFsmSlab *empty[SIFT_FSM_MAX_SLABS];
+	const SiftFsmSlab *order[SIFT_FSM_MAX_SLABS];
 	int			n = 0;
+	uint32		left = t->nslabs;
 
 	for (uint32 i = 1; i < t->nslabs; i++)
-		if (all_free(&t->slab[i]))
-			empty[n++] = &t->slab[i];
-	qsort(empty, n, sizeof(empty[0]), slab_start_desc);
+		order[n++] = &t->slab[i];
+	qsort(order, n, sizeof(order[0]), slab_start_desc);
 	for (int i = 0; i < n; i++)
-		if (meta_free - empty[i]->nblocks >= sift_fsm_meta_reserve(t))
+	{
+		const SiftFsmSlab *s = order[i];
+		uint32		used = sift_fsm_slab_used(s),
+					elsewhere = meta_free - (s->nblocks - used),
+					need = sift_fsm_meta_reserve(left) > elsewhere ? sift_fsm_meta_reserve(left) - elsewhere : 0,
+					keep;
+
+		if (used == 0 && elsewhere >= sift_fsm_meta_reserve(left - 1))
 		{
-			sift_fsm_extvec_add(out, empty[i]->start, empty[i]->nblocks, InvalidFullTransactionId);
-			meta_free -= empty[i]->nblocks;
+			sift_fsm_extvec_add(out, s->start, s->nblocks, InvalidFullTransactionId);
+			meta_free -= s->nblocks;
+			left--;
+			continue;
 		}
+		keep = Min(s->nblocks, pg_nextpower2_32(Max(SIFT_FSM_SLAB_FIRST, Max(used_prefix(s), used + need))));
+		if (keep < s->nblocks)
+		{
+			sift_fsm_extvec_add(out, s->start + keep, s->nblocks - keep, InvalidFullTransactionId);
+			meta_free -= s->nblocks - keep;
+		}
+	}
 }
 
-static int
-ext_start_asc(const void *a, const void *b)
-{
-	BlockNumber x = ((const SiftFsmExtent *) a)->start,
-				y = ((const SiftFsmExtent *) b)->start;
-
-	return x < y ? -1 : x > y;
-}
-
-/* The slabs that idle names leave the root: one pass over the table, the slabs that stay keep their order */
+/* Takes the blocks that idle names from the slabs of the root page: a slab that idle names from its first block leaves the table, one that it names the end of is cut to what is before it */
 void
 sift_fsm_slabs_drop(Page root, const ExtVec *idle)
 {
 	SiftFsmSlabTable *t = SLABS(root);
-	SiftFsmExtent *starts;
 	uint32		kept = 0;
 
 	if (idle->n == 0)
 		return;
-	/* check-memory: allow the idle slabs, at most the slabs of the root page */
-	starts = palloc(idle->n * sizeof(SiftFsmExtent));
-	memcpy(starts, idle->v, idle->n * sizeof(SiftFsmExtent));
-	qsort(starts, idle->n, sizeof(SiftFsmExtent), ext_start_asc);
 	for (uint32 i = 0; i < t->nslabs; i++)
 	{
-		SiftFsmExtent key = {.start = t->slab[i].start};
+		SiftFsmSlab *s = &t->slab[i];
+		const SiftFsmExtent *cut = NULL;
 
-		if (bsearch(&key, starts, idle->n, sizeof(SiftFsmExtent), ext_start_asc) != NULL)
-			FSMM(root)->meta_free_count -= t->slab[i].nblocks;
+		for (int k = 0; k < idle->n && cut == NULL; k++)
+			if (idle->v[k].start >= s->start && idle->v[k].start < s->start + s->nblocks)
+				cut = &idle->v[k];
+		if (cut == NULL)
+			t->slab[kept++] = *s;
 		else
-			t->slab[kept++] = t->slab[i];
+		{
+			FSMM(root)->meta_free_count -= cut->nblocks;
+			if (cut->start > s->start)
+			{
+				s->nblocks = cut->start - s->start;
+				for (uint32 b = s->nblocks; b < SIFT_FSM_META_SLAB; b++)
+					s->free[b / 64] &= ~(UINT64CONST(1) << (b % 64));
+				t->slab[kept++] = *s;
+			}
+		}
 	}
 	memset(&t->slab[kept], 0, (t->nslabs - kept) * sizeof(SiftFsmSlab));
 	t->nslabs = kept;
-	pfree(starts);
 }
 
 static bool
@@ -251,7 +278,7 @@ sift_fsm_below_reserve(FsmCtx *c)
 {
 	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
 	Page		root = BufferGetPage(rootbuf);
-	bool		low = FSMM(root)->meta_free_count < sift_fsm_meta_reserve(SLABS(root));
+	bool		low = FSMM(root)->meta_free_count < sift_fsm_meta_reserve(SLABS(root)->nslabs);
 
 	UnlockReleaseBuffer(rootbuf);
 	return low;
