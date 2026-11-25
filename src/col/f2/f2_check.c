@@ -274,7 +274,7 @@ sift_f2_check_heap(Relation index)
 	Snapshot	snap = RegisterSnapshot(GetTransactionSnapshot());
 	Size		bytes = Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2), HEAP_WINDOW_MIN_BYTES);
 	/* check-memory: allow one window of the maintenance budget */
-	HeapWindow	w = {.seen = palloc(bytes),.nblocks = bytes * 8 / SIFT_MAX_OFFSET,.index = index};
+	HeapWindow	w = {.seen = palloc(bytes),.nblocks = (Size) bytes * 8 / SIFT_MAX_OFFSET,.index = index};
 
 	do
 	{
