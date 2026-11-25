@@ -76,7 +76,7 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM cases ORDER BY n;
  20 | join: the scanned table is the nullable side (rows missing) | plain same
  21 | join: a RIGHT JOIN that preserves the lookup                | plain same
  22 | join: a FULL JOIN                                           | plain same
- 23 | join: the lookup row, not the scanned table                 | plain same
+ 23 | join: the lookup row, not the scanned table                 | scan same
  24 | system column: max(ctid) keeps the normal plan              | plain same
 (24 rows)
 
