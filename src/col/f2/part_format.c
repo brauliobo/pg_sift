@@ -839,3 +839,149 @@ sift_pack_write(Relation rel, const SiftPackItem *items, int n)
 	sift_xlog_done(&x);
 	return blk;
 }
+
+/* ---- the part moved piece by piece ---- */
+
+static void
+add_piece(SiftExtent *ext, int *next, BlockNumber start, uint32 nblocks)
+{
+	if (*next > 0 && ext[*next - 1].start + ext[*next - 1].nblocks == start)
+		ext[*next - 1].nblocks += nblocks;
+	else
+		ext[(*next)++] = (SiftExtent) {start, nblocks};
+}
+
+static void
+copy_stream_page(Relation rel, SiftPartBulkWriter *w, const SiftPart *part, BlockNumber from, BlockNumber to)
+{
+	PGAlignedBlock img;
+	Buffer		buf = sift_blk_read(rel, from, BUFFER_LOCK_SHARE);
+
+	memcpy(img.data, BufferGetPage(buf), BLCKSZ);
+	UnlockReleaseBuffer(buf);
+	sift_page_expect(rel, img.data, from, SIFT_PT_DATA, part->hdr.part_gen, part->hdr.part_id);
+	memcpy(sift_bulk_page(w, to), img.data, BLCKSZ);
+}
+
+/* The extents of the stream in its order, the pieces at and above cut being those of `to` in turn; the blocks the pieces left are added to freed */
+static int
+move_stream_pieces(Relation rel, const SiftPart *part, BlockNumber cut, const SiftExtent *to, int nto, SiftExtent *ext, SiftExtent *freed, int *nfreed)
+{
+	SiftPartBulkWriter w;
+	int			next = 0,
+				at = 0;
+	uint32		used = 0;
+
+	sift_bulk_extend(rel, to, nto);
+	sift_bulk_begin(&w, rel);
+	for (uint32 i = 0; i < part->hdr.total_extents; i++)
+	{
+		SiftExtent	e = part->extents[i];
+		uint64		end = (uint64) e.start + e.nblocks;
+		BlockNumber moved_from = Max(e.start, cut);
+
+		if (e.start < cut)
+			add_piece(ext, &next, e.start, (uint32) (Min(end, (uint64) cut) - e.start));
+		if (end <= cut)
+			continue;
+		freed[(*nfreed)++] = (SiftExtent) {moved_from, (uint32) (end - moved_from)};
+		for (BlockNumber from = moved_from; from < end;)
+		{
+			uint32		take;
+
+			SIFT_INVARIANT(at < nto, "index \"%s\": the blocks reserved for the move of part %llu hold fewer pages than the stream has above block %u", RelationGetRelationName(rel),
+						   (unsigned long long) part->hdr.part_gen, cut);
+			take = (uint32) Min(end - from, (uint64) to[at].nblocks - used);
+
+			for (uint32 b = 0; b < take; b++)
+				copy_stream_page(rel, &w, part, from + b, to[at].start + used + b);
+			add_piece(ext, &next, to[at].start + used, take);
+			from += take;
+			used += take;
+			if (used == to[at].nblocks)
+			{
+				at++;
+				used = 0;
+			}
+		}
+	}
+	sift_bulk_end(&w);
+	SIFT_INVARIANT(at == nto, "index \"%s\": the blocks reserved for the move of part %llu hold more pages than the stream has above block %u", RelationGetRelationName(rel),
+				   (unsigned long long) part->hdr.part_gen, cut);
+	return next;
+}
+
+/* The header page of the part with the extents ext[0..next) in place of its own: the sections it keeps inline follow the extents it holds, the rest of the list goes to a chain of its own */
+static BlockNumber
+write_moved_header(Relation rel, const SiftPart *part, const SiftExtent *ext, int next, BlockNumber *extlist, uint32 *ninline_out)
+{
+	Page		page = read_page_copy(rel, part->header_blk);
+	SiftPartHeaderData *h = PHDR(page);
+	SiftSecDirEntry *dir = (SiftSecDirEntry *) (SiftPageGetData(page) + h->secdir_off);
+	uint32		fixed = h->extents_off,
+				old_meta = h->inline_meta_off,
+				ninline = Min((uint32) ((SIFT_PAGE_PAYLOAD - fixed - h->inline_meta_len) / sizeof(SiftExtent)), (uint32) next),
+				meta = h->inline_meta_len > 0 ? fixed + ninline * sizeof(SiftExtent) : 0;
+	SiftXlog	x;
+	BlockNumber blk;
+
+	*extlist = InvalidBlockNumber;
+	*ninline_out = ninline;
+	if (h->inline_meta_len > 0)
+	{
+		memmove(SiftPageGetData(page) + meta, SiftPageGetData(page) + old_meta, h->inline_meta_len);
+		for (int i = 0; i < h->nsec; i++)
+			if (dir[i].flags & SIFT_SEC_FLAG_INLINE)
+				dir[i].off = dir[i].off - old_meta + meta;
+	}
+	memcpy(SiftPageGetData(page) + fixed, ext, ninline * sizeof(SiftExtent));
+	if ((int) ninline < next)
+		*extlist = sift_extlist_write(rel, h->part_gen, h->part_id, ext + ninline, next - ninline);
+	h->total_extents = next;
+	h->ninline_extents = ninline;
+	h->extlist_blk = *extlist;
+	h->inline_meta_off = meta;
+	SiftPageSetUsed(page, fixed + ninline * sizeof(SiftExtent) + h->inline_meta_len);
+	sift_page_seal(page);
+	blk = sift_fsm_alloc_meta_page(rel);
+	x = sift_xlog_start(rel);
+	memcpy(sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE), page, BLCKSZ);
+	sift_xlog_done(&x);
+	return blk;
+}
+
+SiftPartMove
+sift_part_move_tail(Relation rel, const SiftPart *part, BlockNumber cut, const SiftExtent *to, int nto)
+{
+	int			n = part->hdr.total_extents,
+				next,
+				nfreed = 0,
+				nnew = 0,
+				nlist = 0;
+	/* check-memory: allow the extents of one part, which the size of the part bounds */
+	SiftExtent *ext = palloc((2 * n + nto + 1) * sizeof(SiftExtent));
+	SiftExtent *freed = palloc((n + part->nextlist_pages + 2) * sizeof(SiftExtent));
+	SiftPartMove mv = {0};
+	uint32		ninline;
+	BlockNumber extlist,
+			   *list_pages = NULL;
+
+	Assert(!part->is_packed && part->remote == NULL && n > 0);
+	next = move_stream_pieces(rel, part, cut, to, nto, ext, freed, &nfreed);
+	mv.header_blk = write_moved_header(rel, part, ext, next, &extlist, &ninline);
+	freed[nfreed++] = (SiftExtent) {part->header_blk, 1};
+	for (int i = 0; i < part->nextlist_pages; i++)
+		freed[nfreed++] = (SiftExtent) {part->extlist_pages[i], 1};
+	if (extlist != InvalidBlockNumber)
+		pfree(sift_extlist_read(rel, extlist, part->hdr.part_gen, part->hdr.part_id, next - (int) ninline, &list_pages, &nlist));
+	mv.made = palloc((1 + nlist + nto) * sizeof(SiftExtent));
+	mv.made[nnew++] = (SiftExtent) {mv.header_blk, 1};
+	for (int i = 0; i < nlist; i++)
+		mv.made[nnew++] = (SiftExtent) {list_pages[i], 1};
+	memcpy(mv.made + nnew, to, nto * sizeof(SiftExtent));
+	mv.nmade = nnew + nto;
+	mv.freed = freed;
+	mv.nfreed = nfreed;
+	pfree(ext);
+	return mv;
+}

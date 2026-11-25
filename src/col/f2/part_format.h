@@ -335,4 +335,21 @@ extern void sift_part_read_ranges(Relation rel, const SiftPart *part, const Sift
 /* The blocks the part owns, for the release of a dropped part: header page, extent-list pages and the extents of the stream (none for a packed part or a part in object storage) */
 extern SiftExtent *sift_part_blocks(const SiftPart *part, int *n);
 
+/*
+ * A part whose stream at and above block cut lies in other blocks: the extents `to` (what sift_fsm_alloc_below reserved, as many blocks as the stream has at or above cut) hold those pages as they
+ * are, in the order of the stream, and a header page and extent list of its own name them with the extents below cut that stay. The generation, the sections and every byte of the stream are
+ * those of the part, so a reader of the old header and one of the new read the same part; the descriptor of the manifest takes header_blk, and what the commit does not publish is given back
+ * through `made`. `freed` is what the old header named that the new one does not: the header page, its extent-list pages and the pieces of the stream at and above cut.
+ */
+typedef struct SiftPartMove
+{
+	BlockNumber header_blk;
+	SiftExtent *made;
+	int			nmade;
+	SiftExtent *freed;
+	int			nfreed;
+} SiftPartMove;
+
+extern SiftPartMove sift_part_move_tail(Relation rel, const SiftPart *part, BlockNumber cut, const SiftExtent *to, int nto);
+
 #endif							/* SIFT_PART_FORMAT_H */
