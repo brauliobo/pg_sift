@@ -212,7 +212,6 @@ SIFT_DICT_MAX_VALUES	distinct values (65,536) of a text key up to which the cost
 SIFT_WIN_CARRY_MAX_VARS	columns (8) a window of a SiftAgg scan carries from its batches to its output rows (agg/win/carry.h): past it nothing is carried and the columns of each row are fetched from the table; the rows are the same
 SORT_LOOKUP_MAX_ROWS	rows (10,000) a statement with no ORDER BY and no LIMIT may be estimated to return for a projection sort to seek them (agg/v6_proj_sort_plan.c): above it the projection sort is not planned for the statement; the rows are the same
 STAT_SLOTS	slots (1024) of the backend cache of the column totals of the parts, direct-mapped by part and column (agg/v6_colstat.c): the entry a new one replaces is read from the part again; the rows are the same
-SUM_ROW_LIMIT	2^95, the magnitude the scaled integer of a row of an exact numeric product may reach (agg/expr/num.c): the limit of the row num_expr_bits, a row above it is an ERROR 22003
 UNIQUE_LOCK_SLOTS	the page locks of the keys of a bm25 unique index (bm25/unique.c): the key is taken modulo it, so two keys may share a lock and wait for each other; no count is refused
 ENC_SLOTS	the size of the table of the encodings of a column (col/f2/choices.c): the enumeration of the encodings plus one; no count is refused
 TIER_SLOTS	the size of the table of the tiers of a part (col/f2/choices.c): the enumeration of the tiers plus one; no count is refused
@@ -228,3 +227,18 @@ SIFT_MAINT_CONNECT_BACKOFF_MAX_US	the pause after a worker could not connect to 
 SIFT_PAR_MAX_THREADS	the threads of the pool of a statement, the backend included (core/par/pool.h): the use is capped at max_parallel_workers_per_gather + 1; the rows are the same
 SIFT_ROWLOCK_CHUNK_ENTRIES	the row lock entries of one chunk of dynamic shared memory (table/f2/lock/ovf.h): a full stripe takes another chunk; no count is refused
 SIFT_VM_DIRTY_MAX_INTERVALS	the runs of dirty heap blocks a set of a visibility map pass keeps (col/f2/vacuum/vm.h): past it the set skips nothing; no count is refused
+FIRST_MAX_LEVEL	levels (4) of repartitioning of the groups of a DISTINCT ON first-row scan that outgrew its memory (agg/first/first.c): at the last level the pass stays in memory; the rows are the same
+KEYED_MAX_FRACTION	share (0.5) of the distinct keys a list of keys may be for the planner to take it as selective (agg/dim_keys.c): a cost heuristic, no count is refused
+MAP_SLOTS	slots (128) of the backend cache of the attribute maps of column delta chains, direct-mapped (table/f2/col_delta/mapcache.c): the entry a new one replaces is read again; the rows are the same
+ORACLE_MAX_GROUPS	groups (8192) of the oracle of the cube tests (col/f2/preagg/test.c): a bound of the test, built only in a SIFT_TESTING build
+PAG_AUTO_DIM_MAX_CARD	distinct values (256) up to which a column is made a dimension of an automatic cube (col/f2/preagg/v2.c): a column with more is left out; no count is refused
+PAG_AUTO_DIST_MAX_CARD	distinct values (4096) up to which a column is one whose distinct values an automatic cube counts (col/f2/preagg/v2.c): a column with more is left out; no count is refused
+SEEN_SLOTS	slots (2048) of the table of rows seen while a column delta chain is compacted (table/f2/col_delta/compact.c): a row that loses its slot is forgotten and its earlier records stay; the rows are the same
+SIFT_PIN_MAX_LEAVES	size (1024) of the scratch of the leaves of one granule a window reads (col/f2/pin_win.c): the leaves of an index of format major 2, a limit of the registry (SIFT_F2_MAX_COLS) of the same value
+SIFT_PREAGG_MAX_CUBES	cubes (8) a part builds from the columns of an index (col/f2/preagg/v2.c): the cubes past it are not built and the queries they answer read the columns; no count is refused
+SIFT_PREAGG_MAX_DIST	distinct-count columns (4) a cube of a part keeps (col/f2/preagg/v2.c): the best ranked are kept and the others are read from the columns; no count is refused
+SIFT_SRC_MAX_BOUNDS	bounds and lists of a scan that a source takes to skip units (col/source_fold.h): the sum of the limits of the program (SIFT_V6_MAX_BOUNDS and SIFT_V6_MAX_INSETS, held by a StaticAssert); the rows are the same
+SIFT_UN_SLOTS	slots of the vectors of an unnest pairs scan (agg/unnest/pairs.c): the registers of a compiled expression (a limit of the registry) and the element columns (SIFT_UN_ELEMS_MAX)
+SIFT_V1_MAX_ELEM_COLS	columns of the elements of a shredded array a Format 1 source reads (col/v1/store_ops.h): the value of SIFT_V6_XELEM_COLS of the engine
+SIFT_V1_MAX_TYPE_TESTS	JSON type and key tests of one aggregate scan of a sift_col index of format major 1 (col/v1/store_ops.h): a SIFT_INVARIANT of the scan holds the planner to it
+V6GEN_MAX_COLS	columns one aggregate of the general scan reads (agg/gen/gen.h): the columns of a COUNT(DISTINCT (a, b, ..)) of the engine (SIFT_V6_MAX_DCOLS) and one more

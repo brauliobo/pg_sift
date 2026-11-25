@@ -183,7 +183,7 @@ for r in rows:
         err('limits.h: %s has a sift_limit() site but its row is not hooked' % r['id'])
 
 # ---- the C side: the defaults the testing build reports are the values evaluated here ----
-exp = os.path.join(ROOT, 'test', 'expected', 'limits_registry.out')
+exp = os.path.join(ROOT, 'test', 'expected', 'core', 'limits_registry.out')
 c_vals = {}
 for line in read(exp).split('\n'):
     f = [x.strip() for x in line.split('|')]

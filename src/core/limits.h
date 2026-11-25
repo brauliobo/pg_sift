@@ -275,7 +275,7 @@
 	X(arith_stack, "SIFT_ARITH_MAX_STACK", "agg/plan/rewrite.h", 8, "values", \
 	  "operands an arithmetic expression of the scan of an unnest holds at once while it is computed", \
 	  "normal plan", "-", 0) \
-	X(v6_topk_items, "SIFT_V6_MAX_TOPK_ITEMS", "agg/engine.h", 8, "columns", \
+	X(v6_topk_items, "SIFT_V6_MAX_TOPK_ITEMS", "agg/engine.h", 12, "columns", \
 	  "ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan", \
 	  "normal plan", "-", 0) \
 	X(v6_topk_k, "SIFT_TOPK_MAX_K", "agg/group/topk.h", 65536, "rows", \
@@ -338,6 +338,19 @@
 	X(par_dist, "SIFT_PAR_MAX_DIST", "agg/par/par.h", 32, "aggregates", \
 	  "count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) aggregates of one scan a parallel plan runs", \
 	  "the scan runs without parallel workers", "-", 0) \
+	X(par_group_keys, "SIFT_PAR_GROUP_MAX_KEYS", "agg/par/group.h", 5, "keys", \
+	  "GROUP BY keys of a scan that a parallel plan groups", \
+	  "the scan runs without parallel workers", "-", 0) \
+	X(par_group_sums, "SIFT_PAR_GROUP_MAX_SUM", "agg/par/group.h", 6, "aggregates", \
+	  "sum and avg aggregates of int2 and int4 columns of one scan that a parallel plan groups", \
+	  "the scan runs without parallel workers", "-", 0) \
+	X(par_rows_keys, "SIFT_PAR_ROWS_MAX_KEYS", "agg/par/rows.h", 3, "columns", \
+	  "ORDER BY columns of a Top-N of rows that a parallel plan sorts", \
+	  "the scan runs without parallel workers", "-", 0) \
+	X(preagg_dims, "SIFT_PREAGG_MAX_DIMS", "col/f2/preagg/v2.h", 4, "dimensions", \
+	  "dimensions of the cube of a sift_col index of format major 2", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
+	X(preagg_meas, "SIFT_PREAGG_MAX_MEAS", "col/f2/preagg/v2.h", 8, "measures", \
+	  "measures of the cube of a sift_col index of format major 2", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
 	X(first_cols, "SIFT_V6_FIRST_MAX_COLS", "agg/first/first.h", SIFT_V6_FIRST_MAX_COLS, "columns", \
 	  "ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them)", \
 	  "the normal plan sorts the rows and keeps the first of each group", "-", 0) \

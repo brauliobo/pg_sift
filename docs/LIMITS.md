@@ -20,10 +20,9 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | equalities ANDed in the WHEN of the CASE of a computed text key or argument of a SiftAgg scan (the columns of an arithmetic expression of an unnest are one more) | `4 conditions` | normal plan | — | `agg/engine.h` `SIFT_V6_MAX_CASE` |
 | columns, constant and operators of an arithmetic expression of float8 columns in the scan of an unnest (postfix) | `32 tokens` | normal plan | — | `agg/plan/rewrite.h` `SIFT_ARITH_MAX_TOKENS` |
 | operands an arithmetic expression of the scan of an unnest holds at once while it is computed | `8 values` | normal plan | — | `agg/plan/rewrite.h` `SIFT_ARITH_MAX_STACK` |
-| ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan | `8 columns` | normal plan | — | `agg/engine.h` `SIFT_V6_MAX_TOPK_ITEMS` |
+| ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan | `12 columns` | normal plan | — | `agg/engine.h` `SIFT_V6_MAX_TOPK_ITEMS` |
 | LIMIT + OFFSET of the Top-K of the groups of a SiftAgg scan (ORDER BY .. LIMIT) | `65,536 rows` | normal plan (a Sort of the groups) | — | `agg/group/topk.h` `SIFT_TOPK_MAX_K` |
 | LIMIT + OFFSET of a GROUP BY .. LIMIT with no ORDER BY, HAVING or DISTINCT ON, for which the group table stops taking new groups once it holds them | `4,096 rows` | the table takes every group, as without a LIMIT | — | `agg/plan/rewrite.h` `SIFT_LOCK_MAX_K` |
-| arms of the ORs of searches a scan takes: the product of the branches of its ORs (the plain matches and one branch of each OR, ANDed) | `16 arms` | the OR stays a filter of the scan | — | `agg/search.c` `SEARCH_MAX_ARMS` |
 | PARTITION BY keys, and ORDER BY keys, of a window of a SiftAgg scan | `4 keys` | normal plan | — | `agg/win/datebin.h` `SIFT_WINX_MAX_KEYS` |
 | window functions of a window of a SiftAgg scan | `16 functions` | normal plan | — | `agg/win/datebin.h` `SIFT_WINX_MAX_FUNCS` |
 | FILTER clauses of the window functions of a SiftAgg scan | `64 filters` | normal plan | — | `agg/win/datebin.h` `SIFT_WINX_MAX_FILTERS` |
@@ -37,6 +36,9 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | distinct FILTER clauses of the aggregates of one scan, evaluated once per batch | `64 filters` | normal plan | — | `agg/filter/pivot.h` `SIFT_PIVOT_MAX_FILTERS` |
 | equality column pairs of a join of two SiftAgg scans | `8 columns` | normal plan | — | `agg/join/join.c` `JOIN_MAX_KEYS` |
 | count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) aggregates of one scan a parallel plan runs | `32 aggregates` | the scan runs without parallel workers | — | `agg/par/par.h` `SIFT_PAR_MAX_DIST` |
+| GROUP BY keys of a scan that a parallel plan groups | `5 keys` | the scan runs without parallel workers | — | `agg/par/group.h` `SIFT_PAR_GROUP_MAX_KEYS` |
+| sum and avg aggregates of int2 and int4 columns of one scan that a parallel plan groups | `6 aggregates` | the scan runs without parallel workers | — | `agg/par/group.h` `SIFT_PAR_GROUP_MAX_SUM` |
+| ORDER BY columns of a Top-N of rows that a parallel plan sorts | `3 columns` | the scan runs without parallel workers | — | `agg/par/rows.h` `SIFT_PAR_ROWS_MAX_KEYS` |
 | ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them) | `32 columns` | the normal plan sorts the rows and keeps the first of each group | — | `agg/first/first.h` `SIFT_V6_FIRST_MAX_COLS` |
 | rows one group adds in the float8 sum or average of a Format Major 2 scan (its bins are 64-bit integer sums of 26-bit digits) | `137,438,953,472 rows` | an error (the float8 sum is over more rows than the bins hold) | — | `agg/fsum.h` `V6FSUM_MAX_ROWS` |
 
@@ -51,6 +53,8 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | the mean distance between the positions of a group in a chunk of a grouped order array that the writer keeps positional (as many entries as two chunks of the plain order): farther apart, each entry a scan reads is in a chunk of the plain order of its own | `1,024 entries` | the chunk keeps the keys and addresses of its entries (the rows are the same) | — | `col/v1/gorder/gorder.h` `SIFT_CGORD_POS_MAX_GAP` |
 | rows a top-N, range or count by an order array sorts in memory for one source: the write buffers' and those of the segments the overlays left without the array (a text key under a locale: at least 16,384 or 8 for each row wanted) | `2,097,152 rows` | the scan reads the units, and the planner prices no walk of the array (the rows are the same) | — | `col/v1/gorder/gorder.h` `SIFT_CGORD_MEM_MAX` |
 | rows of the segments that keep no order array of a leaf (the overlays written lean) that a top-N, range or count by the array of the leaf decodes and sorts in memory once for the backend (the first scan; the next find the order kept) | `65,536 rows` | the scan reads the units, and the planner prices no walk of the array (the rows are the same) | — | `col/v1/gorder/gorder.h` `SIFT_CGORD_FREE_MAX` |
+| leaves of the layout of one scan | `128 leaves` | normal plan | — | `col/v1/src_meta.h` `SIFT_COLSRC_MAX_LEAVES` |
+| filters of a scan that skip units | `64 filters` | the others do not skip units | — | `col/v1/src_exec.h` `SIFT_COLSRC_MAX_FILTERS` |
 | disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back | `2 times the live index` | the step fails with PostgreSQL's disk-full error before it replaces a segment | — | `col/v1/maint/maint.c` |
 | leaf slots of a sift_col index of format major 1 and columns of a sift_table of format major 1 (127 are usable) | `128 leaves` | CREATE INDEX, CREATE TABLE or ALTER TABLE rejected | — | `col/api/format.h` `SIFT_COL_MAX_COLS` |
 | leaf slots (columns and shredded jsonb paths) of a sift_col index of format major 2 | `1,024 leaves` | CREATE INDEX rejected | — | `col/api/format.h` `SIFT_F2_MAX_COLS` |
@@ -104,6 +108,8 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | highest attribute number a part records the default of an added column for (the PostgreSQL limit of the columns of a table) | `1,664 attributes` | a record that names more is damage (the part is not read) | — | `col/f2/defaults.h` `SIFT_DEFAULTS_MAX_ATTNUM` |
 | the default of a text column added to a Format 2.0 table, which the parts record | `16,777,216 (16 MiB) bytes` | the default is refused: a default value is larger than a part keeps | — | `col/f2/defaults.h` `SIFT_DEFAULTS_MAX_VALUE` |
 | the dictionary of the zstd compression of a part | `16,384 (16 KiB) bytes` | a larger dictionary is not written; the part is compressed without it | — | `col/compress.h` `SIFT_ZSTD_DICT_MAX_BYTES` |
+| dimensions of the cube of a sift_col index of format major 2 | `4 dimensions` | option rejected at CREATE or ALTER INDEX | `cube option` | `col/f2/preagg/v2.h` `SIFT_PREAGG_MAX_DIMS` |
+| measures of the cube of a sift_col index of format major 2 | `8 measures` | option rejected at CREATE or ALTER INDEX | `cube option` | `col/f2/preagg/v2.h` `SIFT_PREAGG_MAX_MEAS` |
 
 ## Search index, storage and queries (`src/core`, `src/bm25`)
 
@@ -139,9 +145,9 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 
 | Limit | Default | At the limit | Tuned by | Source |
 |---|---|---|---|---|
+| the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | `1,073,741,823 (~1024 MiB) bytes` | ERROR 54000 naming the column | — | `table/v1/reader_read.c` |
 | virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left) | `4,294,967,294 blocks` | ERROR 54000, VACUUM FULL renumbers them | — | `table/v1/wbuf.c` |
 | frames of 256 values of the strings and doubles of sift_table the cache of a backend keeps | `512 frames` | the oldest frame is dropped and inflated again when a row asks for it | — | `table/f2/gcache.h` `SIFT_F2_GCACHE_MAX_FRAMES` |
 | decoded granules of sift_table the cache of a backend keeps | `64 granules` | the oldest granule is dropped and read again when needed | — | `table/f2/gcache.h` `SIFT_F2_GCACHE_MAX_GRANULES` |
-| the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | `1,073,741,823 (~1024 MiB) bytes` | ERROR 54000 naming the column | — | `table/v1/reader_read.c` |
 | decoded row pack blocks of 64 rows of sift_table the cache of a backend keeps | `256 blocks` | the oldest block is dropped and read again when a row asks for it | — | `table/f2/gcache.h` `SIFT_F2_GCACHE_MAX_BLOCKS` |
 
