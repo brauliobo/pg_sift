@@ -15,6 +15,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 #include "executor/tuptable.h"
+#include "miscadmin.h"
 #include "storage/sinval.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
@@ -523,7 +524,7 @@ sift_scope_changed(Relation index, int scope, const SiftConnStamp *stamp, Snapsh
 
 /*
  * The journals of the scopes of the index, as those of the parents of a connected child are (sift_conn_start): the writers of the scope relations are held out from here to the end of the
- * statement, and an index that has one already is not locked at all.
+ * statement, and an index that has one already is not locked at all. The restore of a binary upgrade starts none: the files of the indexes are the old cluster's, journals included.
  */
 void
 sift_scope_start(Relation heap, Relation index, bool read_after)
@@ -531,6 +532,8 @@ sift_scope_start(Relation heap, Relation index, bool read_after)
 	SiftScopeSpecs *specs = sift_scope_specs(index);
 	List	   *seen = NIL;
 
+	if (IsBinaryUpgrade)
+		return;
 	for (int i = 0; specs != NULL && i < specs->n; i++)
 	{
 		ScopeJournals J;

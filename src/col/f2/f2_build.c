@@ -291,7 +291,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	PG_END_TRY();
 	res->index_tuples += bs->rows;
 	sift_f2_build_end(bs);
-	if (sift_f2_scoped(index) && !info->ii_Concurrent)
+	if (sift_f2_scoped(index) && !info->ii_Concurrent && !IsBinaryUpgrade)
 	{
 		sift_f2_progress_scopes(heap, index);
 		sift_f2_scope_build(heap, index);

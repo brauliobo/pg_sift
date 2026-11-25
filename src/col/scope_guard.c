@@ -14,6 +14,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_depend.h"
 #include "catalog/pg_index.h"
+#include "miscadmin.h"
 #include "optimizer/optimizer.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -39,6 +40,7 @@ sift_scope_index_predicate(Oid indexoid)
  * The journal indexes of the scope relation: ready sift_col indexes of format major 1 (the key log is that format's) with track_changes = 'ctid' whose first column is the member and that hold the scope key; the lowest oid of those that hear of
  * every pair. A journal records the pairs a statement ends and inserts, so a partial one qualifies only when the predicate of the btree that defines the pairs implies its predicate (every pair
  * row is in it): else it never hears of a pair inserted outside its predicate and a read would take the member for unchanged.
+ * The restore of a binary upgrade makes the dumped journal an empty index of the new default format, whose file the old one replaces when the upgrade ends: its catalog entry says what it is.
  */
 static Oid
 journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree)
@@ -48,7 +50,7 @@ journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btr
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
 		Relation	idx = index_open(ioid, AccessShareLock);
-		bool		ok = sift_col_is_index(idx) && sift_col_format_major(idx) == SIFT_FORMAT_MAJOR && sift_index_ready(idx) && (idx->rd_index->indisvalid || sift_scope_journal_pending(ioid)) && sift_col_track_ctid(idx) &&
+		bool		ok = sift_col_is_index(idx) && (IsBinaryUpgrade || sift_col_format_major(idx) == SIFT_FORMAT_MAJOR) && sift_index_ready(idx) && (idx->rd_index->indisvalid || sift_scope_journal_pending(ioid)) && sift_col_track_ctid(idx) &&
 			idx->rd_index->indkey.values[0] == member && sift_conn_index_column(idx, scope_key) != InvalidAttrNumber;
 
 		if (ok)
