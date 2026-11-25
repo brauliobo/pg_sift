@@ -1,0 +1,22 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s2b s1r s2r s1w s2w s1c s2c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1r: SELECT count(*) AS n FROM iso_t WHERE grp = 1;
+n
+-
+0
+(1 row)
+
+step s2r: SELECT count(*) AS n FROM iso_t WHERE grp = 1;
+n
+-
+0
+(1 row)
+
+step s1w: INSERT INTO iso_t VALUES (100001, 1, 5);
+step s2w: INSERT INTO iso_t VALUES (200001, 1, 5);
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
