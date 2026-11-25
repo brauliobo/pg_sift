@@ -1,8 +1,9 @@
 /*
  * core/par/pool.c - the compute threads of a backend (core/par/pool.h).
  *
- * The pool is one static block: its threads are made with every signal blocked (the mask is inherited, the backend thread gets its own back at once), so a signal of the server is never taken by one
- * of them; they wait on a condition variable for a job and on another for the end of it, never on a timer. on_proc_exit joins them, so a backend leaves no thread behind.
+ * The pool is one static block: its threads are made with every signal blocked but the ones the hardware raises in the thread that faults (the mask is inherited, the backend thread gets its own
+ * back at once), so a signal of the server is never taken by one of them; they wait on a condition variable for a job and on another for the end of it, never on a timer. on_proc_exit joins them,
+ * so a backend leaves no thread behind, and a process forked from the backend (a program, a procedural language) starts with an idle pool of its own.
  */
 #include "postgres.h"
 
@@ -15,9 +16,12 @@
 #include "storage/ipc.h"
 
 #include "core/par/pool.h"
+#include "core/sift.h"
 
 #define POOL_STACK_BYTES	(1024 * 1024)
 #define POOL_FINI_MAX		4
+
+static const int fault_signals[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS, SIGTRAP};
 
 typedef struct SiftParPool
 {
@@ -52,24 +56,34 @@ sift_par_pool_usable(void)
 int
 sift_par_pool_threads(void)
 {
-	return sift_par_pool_usable() ? Min(max_parallel_workers_per_gather, SIFT_PAR_MAX_THREADS - 1) + 1 : 1;
+	if (!sift_par_pool_usable() || pool.busy || !sift_parallel_scan || max_parallel_workers <= 0)
+		return 1;
+	return Min(max_parallel_workers_per_gather, Min(max_parallel_workers, SIFT_PAR_MAX_THREADS - 1)) + 1;
 }
 
 void
 sift_par_pool_on_thread_exit(SiftParThreadFini fn)
 {
+	bool		known = false;
+
+	pthread_mutex_lock(&pool.mu);
 	for (int i = 0; i < pool.nfini; i++)
-		if (pool.fini[i] == fn)
-			return;
-	Assert(pool.nspawned == 0 && pool.nfini < POOL_FINI_MAX);
-	pool.fini[pool.nfini++] = fn;
+		known |= pool.fini[i] == fn;
+	if (!known)
+	{
+		Assert(pool.nfini < POOL_FINI_MAX);
+		pool.fini[pool.nfini++] = fn;
+	}
+	pthread_mutex_unlock(&pool.mu);
 }
 
 static void *
 pool_main(void *p)
 {
 	const int	id = *(const int *) p;
+	SiftParThreadFini fini[POOL_FINI_MAX];
 	uint64		seen = 0;
+	int			nfini;
 
 	pthread_mutex_lock(&pool.mu);
 	for (;;)
@@ -90,9 +104,11 @@ pool_main(void *p)
 		if (++pool.finished_n == pool.active_n - 1)
 			pthread_cond_broadcast(&pool.cv_done);
 	}
+	nfini = pool.nfini;
+	memcpy(fini, pool.fini, sizeof(fini));
 	pthread_mutex_unlock(&pool.mu);
-	for (int i = 0; i < pool.nfini; i++)
-		pool.fini[i]();
+	for (int i = 0; i < nfini; i++)
+		fini[i]();
 	return NULL;
 }
 
@@ -118,33 +134,75 @@ pool_exit(int code, Datum arg)
 	pool.nspawned = 0;
 }
 
+/* A forked process has none of the threads of the pool: its pool is idle, and the lock a thread of the parent held at the fork is free */
+static void
+pool_fork_prepare(void)
+{
+	pthread_mutex_lock(&pool.mu);
+}
+
+static void
+pool_fork_parent(void)
+{
+	pthread_mutex_unlock(&pool.mu);
+}
+
+static void
+pool_fork_child(void)
+{
+	pool.mu = (pthread_mutex_t) PTHREAD_MUTEX_INITIALIZER;
+	pool.cv_work = (pthread_cond_t) PTHREAD_COND_INITIALIZER;
+	pool.cv_done = (pthread_cond_t) PTHREAD_COND_INITIALIZER;
+	pool.nspawned = 0;
+	pool.active_n = 0;
+	pool.finished_n = 0;
+	pool.busy = false;
+}
+
+/* Makes the helpers up to helpers; 0, or the error of the system */
+static int
+pool_create(int helpers)
+{
+	pthread_attr_t attr;
+	sigset_t	mask,
+				old;
+	int			rc = pthread_attr_init(&attr);
+
+	if (rc != 0)
+		return rc;
+	if ((rc = pthread_attr_setstacksize(&attr, POOL_STACK_BYTES)) == 0)
+	{
+		sigfillset(&mask);
+		for (size_t i = 0; i < lengthof(fault_signals); i++)
+			sigdelset(&mask, fault_signals[i]);
+		pthread_sigmask(SIG_SETMASK, &mask, &old);
+		while (rc == 0 && pool.nspawned < helpers)
+		{
+			worker_id[pool.nspawned] = pool.nspawned + 1;
+			rc = pthread_create(&pool.thread[pool.nspawned], &attr, pool_main, &worker_id[pool.nspawned]);
+			if (rc == 0)
+				pool.nspawned++;
+		}
+		pthread_sigmask(SIG_SETMASK, &old, NULL);
+	}
+	pthread_attr_destroy(&attr);
+	return rc;
+}
+
 static void
 pool_spawn(int helpers)
 {
-	pthread_attr_t attr;
-	sigset_t	all,
-				old;
+	int			rc;
 
 	if (!pool.exit_registered)
 	{
 		before_shmem_exit(pool_drain, 0);
 		on_proc_exit(pool_exit, 0);
+		pthread_atfork(pool_fork_prepare, pool_fork_parent, pool_fork_child);
 		pool.exit_registered = true;
 	}
-	pthread_attr_init(&attr);
-	pthread_attr_setstacksize(&attr, POOL_STACK_BYTES);
-	sigfillset(&all);
-	pthread_sigmask(SIG_SETMASK, &all, &old);
-	for (; pool.nspawned < helpers; pool.nspawned++)
-	{
-		worker_id[pool.nspawned] = pool.nspawned + 1;
-		if (pthread_create(&pool.thread[pool.nspawned], &attr, pool_main, &worker_id[pool.nspawned]) != 0)
-			break;
-	}
-	pthread_sigmask(SIG_SETMASK, &old, NULL);
-	pthread_attr_destroy(&attr);
-	if (pool.nspawned < helpers)
-		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not start the compute threads of the backend")));
+	if ((rc = pool_create(helpers)) != 0)
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not start the compute threads of the backend"), errdetail("%s", strerror(rc))));
 }
 
 void

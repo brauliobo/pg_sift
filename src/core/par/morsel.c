@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include <pthread.h>
+#include <time.h>
 
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
@@ -166,6 +167,8 @@ sift_par_arenas_create(MemoryContext cx, uint32 nthreads, size_t scratch_bytes, 
 	return ar;
 }
 
+#define RING_POLL_NS	50000000	/* how long the leader waits for a thread before it looks at the interrupts */
+
 /* What a slot of the ring holds, by the item in it */
 enum
 {
@@ -327,6 +330,40 @@ ring_reclaim(SiftParRun *r)
 	}
 }
 
+/* The operator's say on making another item, asked without the lock of the ring: what it does may leave by an error, and the threads are stopped through that lock then (the lock is held on entry and on return) */
+static bool
+ring_may_feed(SiftParRun *r)
+{
+	SiftRing   *g = &r->ring;
+	bool		may;
+
+	if (r->ops->may_feed == NULL)
+		return true;
+	pthread_mutex_unlock(&g->mu);
+	may = r->ops->may_feed(r->ctx);
+	pthread_mutex_lock(&g->mu);
+	return may;
+}
+
+/* The leader waits for a thread to settle an item, and takes the interrupts meanwhile: a cancel is a flag the backend sets, it wakes nobody (the lock is held on entry and on return) */
+static void
+ring_wait(SiftRing *g)
+{
+	struct timespec until;
+
+	clock_gettime(CLOCK_REALTIME, &until);
+	until.tv_nsec += RING_POLL_NS;
+	until.tv_sec += until.tv_nsec / 1000000000;
+	until.tv_nsec %= 1000000000;
+	pthread_cond_timedwait(&g->cv, &g->mu, &until);
+	if (InterruptPending)
+	{
+		pthread_mutex_unlock(&g->mu);
+		CHECK_FOR_INTERRUPTS();
+		pthread_mutex_lock(&g->mu);
+	}
+}
+
 /* Thread 0: makes the items while there is room, takes one when the ring is full, passes the slots on; never waits while it has something to do */
 static void
 ring_leader(SiftParRun *r)
@@ -337,7 +374,7 @@ ring_leader(SiftParRun *r)
 	while (!halted(r))
 	{
 		ring_reclaim(r);
-		if (!g->eof && g->published - g->released < g->slots && (r->ops->may_feed == NULL || r->ops->may_feed(r->ctx)))
+		if (!g->eof && g->published - g->released < g->slots && ring_may_feed(r))
 		{
 			bool		made;
 
@@ -363,7 +400,7 @@ ring_leader(SiftParRun *r)
 		else if (g->eof && g->released == g->published)
 			break;
 		else
-			pthread_cond_wait(&g->cv, &g->mu);
+			ring_wait(g);
 	}
 	pthread_mutex_unlock(&g->mu);
 }
@@ -537,7 +574,7 @@ sift_par_run(const SiftParCfg *cfg, const SiftParOps *ops, void *ctx, SiftParAre
 	}
 	PG_FINALLY();
 	{
-		if (sift_par_pool_busy())
+		if (r.nthreads > 1 && sift_par_pool_busy())
 		{
 			job_stop(&r);
 			sift_par_pool_wait();

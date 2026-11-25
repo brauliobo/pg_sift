@@ -1,7 +1,7 @@
 /*
  * core/par/pool.h - the compute threads of a backend: POSIX threads that run pure C over memory the backend's own thread made, started the first time a statement asks for them.
  *
- * A thread of the pool never touches PostgreSQL: no palloc, no ereport, no buffer, no lock, no interrupt check. It has every signal blocked, so the signals of the server reach the thread of the
+ * A thread of the pool never touches PostgreSQL: no palloc, no ereport, no buffer, no lock, no interrupt check. It has every signal blocked but the ones the hardware raises in the thread that faults (SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS, SIGTRAP), so the signals of the server reach the thread of the
  * backend only. The backend thread owns every byte a job reads and writes, starts the job, and waits for it (sift_par_pool_wait) before it frees that memory or leaves by an error: a job is
  * always started inside PG_TRY and drained in PG_FINALLY (core/par/morsel.h does both). A FATAL error does not unwind the stack, so no PG_FINALLY runs there: the first job registers a
  * before_shmem_exit callback that stops the job and waits for it before ShutdownPostgres frees the memory the threads work in. The threads end with the backend (on_proc_exit), never in the postmaster.
@@ -24,7 +24,10 @@ typedef void (*SiftParThreadFini) (void);
 
 /* Whether this process may have pool threads: a backend, not a parallel worker (a thread of the pool and a fork of the postmaster never meet) */
 extern bool sift_par_pool_usable(void);
-/* The threads a statement may use, the backend's own included: max_parallel_workers_per_gather + 1, at most SIFT_PAR_MAX_THREADS; 1 when the pool is not usable here */
+/*
+ * The threads a statement may use, the backend's own included: max_parallel_workers_per_gather + 1, at most max_parallel_workers + 1 and SIFT_PAR_MAX_THREADS; 1 when the pool is not usable here,
+ * when sift.parallel_scan is off or max_parallel_workers is 0, and while a job is in flight (what runs on the backend thread meanwhile, a callback of the job's operator, runs alone)
+ */
 extern int	sift_par_pool_threads(void);
 
 extern void sift_par_pool_on_thread_exit(SiftParThreadFini fn);
