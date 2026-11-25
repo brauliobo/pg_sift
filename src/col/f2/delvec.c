@@ -188,20 +188,24 @@ sift_dv_mask(const SiftDvGran *g, uint8 *bitmap)
 		bitmap[g->rows[i] >> 3] |= 1 << (g->rows[i] & 7);
 }
 
+/* The deleters of an unsettled granule are a handful of transactions for thousands of rows: the log is asked once for each (xc, made for snap, is not used for a settled granule or no snapshot) */
 static inline bool
-dv_row_seen(const SiftDvGran *g, int i, Snapshot snap)
+dv_row_seen(const SiftDvGran *g, int i, Snapshot snap, SiftXidCache *xc)
 {
-	return snap == NULL || g->xmax == NULL || sift_vis_deleted(g->xmax[i].xmax, g->xmax[i].cmax, snap);
+	return snap == NULL || g->xmax == NULL || sift_vis_deleted_cached(xc, g->xmax[i].xmax, g->xmax[i].cmax);
 }
 
 uint16
 sift_dv_mask64(const SiftDvGran *g, Snapshot snap, uint64 *words128)
 {
 	uint16		n = 0;
+	SiftXidCache xc;
 
 	memset(words128, 0, SIFT_DV_MASK_WORDS * sizeof(uint64));
+	if (snap != NULL && g->xmax != NULL)
+		sift_xid_cache_init(&xc, snap);
 	for (int i = 0; i < g->ndead; i++)
-		if (dv_row_seen(g, i, snap))
+		if (dv_row_seen(g, i, snap, &xc))
 		{
 			words128[g->rows[i] >> 6] |= UINT64CONST(1) << (g->rows[i] & 63);
 			n++;
@@ -213,9 +217,12 @@ uint16
 sift_dv_visible_rows(const SiftDvGran *g, Snapshot snap, uint16 *out, uint16 max)
 {
 	uint16		n = 0;
+	SiftXidCache xc;
 
+	if (snap != NULL && g->xmax != NULL)
+		sift_xid_cache_init(&xc, snap);
 	for (int i = 0; i < g->ndead; i++)
-		if (dv_row_seen(g, i, snap))
+		if (dv_row_seen(g, i, snap, &xc))
 		{
 			if (n < max)
 				out[n] = g->rows[i];
