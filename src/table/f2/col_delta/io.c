@@ -794,6 +794,26 @@ append_locked(Relation rel, const SiftPartitionEntry *e, SiftColDeltaBatch *b, F
 	return a.npages;
 }
 
+static SiftColDeltaBatch
+run_batch(const SiftColDeltaStage *cd, const int *ord, int lo, int hi, FullTransactionId next)
+{
+	SiftColDeltaBatch b = {0};
+
+	for (int k = lo; k < hi; k++)
+		if (cd->items[ord[k]].rec != NULL)
+			sift_col_delta_batch_add(&b, next, cd->items[ord[k]].rec);
+	return b;
+}
+
+/* The records of a run leave the stage once the chain holds them: a flush that fails leaves them for the one that follows or for the abort of their subtransaction */
+static void
+release_run(SiftColDeltaStage *cd, const int *ord, int lo, int hi)
+{
+	for (int k = lo; k < hi; k++)
+		if (cd->items[ord[k]].rec != NULL)
+			sift_col_delta_stage_release(cd, ord[k]);
+}
+
 static void
 flush_stage(Relation rel, SiftColDeltaStage *cd)
 {
@@ -818,9 +838,10 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 		e = sift_col_delta_fresh_entry(rel, part_id, cd->items[ord[lo]].key_lo);
 		parts = sift_manifest_read_parts(rel, &e, &nparts);
 		relocate_stale(rel, store, cd, ord, lo, hi, parts, nparts);
-		b = sift_col_delta_stage_take_run(cd, ord, lo, hi, next);
+		b = run_batch(cd, ord, lo, hi, next);
 		if (b.nentries > 0)
 			npages = append_locked(rel, &e, &b, next);
+		release_run(cd, ord, lo, hi);
 		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
 		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);

@@ -911,20 +911,6 @@ sift_col_delta_stage_by_part(const SiftColDeltaStage *st, int *nlive)
 	return ord;
 }
 
-SiftColDeltaBatch
-sift_col_delta_stage_take_run(SiftColDeltaStage *st, const int *ord, int lo, int hi, FullTransactionId next)
-{
-	SiftColDeltaBatch b = {0};
-
-	for (int k = lo; k < hi; k++)
-		if (st->items[ord[k]].rec != NULL)
-		{
-			sift_col_delta_batch_add(&b, next, st->items[ord[k]].rec);
-			sift_col_delta_stage_release(st, ord[k]);
-		}
-	return b;
-}
-
 void
 sift_col_delta_stage_clear(SiftColDeltaStage *st)
 {
