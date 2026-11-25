@@ -198,6 +198,8 @@ set_options(SiftCurl *c, SiftCurlReq *r, Xfer *x, struct curl_slist *hdrs)
 {
 	CURLcode	rc = c->easy_setopt(c->easy, SC_URL, r->url);
 
+	rc = rc ? rc : c->easy_setopt(c->easy, SC_FOLLOWLOCATION, 0L);
+	rc = rc ? rc : c->easy_setopt(c->easy, SC_PROTOCOLS, SC_PROTO_HTTP_HTTPS);
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_NOSIGNAL, 1L);
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_CONNECTTIMEOUT, 10L);
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_LOW_SPEED_LIMIT, 1L);

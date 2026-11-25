@@ -31,7 +31,10 @@ struct curl_slist;
 #define SC_NOPROGRESS				43
 #define SC_NOBODY					44
 #define SC_UPLOAD					46
+#define SC_FOLLOWLOCATION			52
 #define SC_CONNECTTIMEOUT			78
+#define SC_PROTOCOLS				181
+#define SC_PROTO_HTTP_HTTPS			3L	/* CURLPROTO_HTTP | CURLPROTO_HTTPS */
 #define SC_NOSIGNAL					99
 #define SC_WRITEFUNCTION			20011
 #define SC_READFUNCTION				20012

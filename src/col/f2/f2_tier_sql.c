@@ -1,7 +1,7 @@
 /*
  * col/f2/f2_tier_sql.c - sift.set_tier_policy, sift.clear_tier_policy, sift.set_ttl and sift.tier_status.
  *
- * The functions run as the caller and need MAINTAIN on the table (tier_status: SELECT). The policy tables are written as their owner, so a caller needs no grant on them. The location of a policy
+ * The functions run as the caller and need MAINTAIN on the table (tier_status: SELECT); setting and clearing a tier policy needs a superuser too, as the location is a resource of the server. The policy tables are written as their owner, so a caller needs no grant on them. The location of a policy
  * holds no user, password or query, and the credentials of an S3 or R2 store are read from the environment of the server when a connection is made: nothing of them is stored or shown.
  */
 #include "postgres.h"
@@ -64,6 +64,15 @@ open_f2_rel(Oid relid)
 	if (pg_class_aclcheck(acl_relid(rel), GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
 		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 	return rel;
+}
+
+/* A location is a directory of the server host or an object store reached with the credentials of the server environment: the resources of its superusers, as a tablespace is */
+static void
+require_server_resource_owner(const char *what)
+{
+	if (!superuser())
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg("must be superuser to %s", what),
+						errdetail("A tier policy names a directory of the server or an object store that the server reaches with its own credentials.")));
 }
 
 static void
@@ -140,6 +149,7 @@ sift_set_tier_policy(PG_FUNCTION_ARGS)
 	require_arg(fcinfo, 1, "uri");
 	require_arg(fcinfo, 2, "move_after");
 	rel = open_f2_rel(PG_GETARG_OID(0));
+	require_server_resource_owner("set a tier policy");
 	uri = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	move_after = PG_GETARG_INTERVAL_P(2);
 	endpoint = PG_ARGISNULL(3) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(3));
@@ -172,8 +182,10 @@ sift_clear_tier_policy(PG_FUNCTION_ARGS)
 {
 	Relation	rel = open_f2_rel(PG_GETARG_OID(0));
 	SiftTierPolicy old;
-	bool		had = sift_tier_policy_of(rel, &old);
+	bool		had;
 
+	require_server_resource_owner("clear a tier policy");
+	had = sift_tier_policy_of(rel, &old);
 	if (had)
 	{
 		require_no_remote_parts(rel, "the policy cannot be cleared until they are gone");
