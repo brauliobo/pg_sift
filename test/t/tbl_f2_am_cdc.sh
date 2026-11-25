@@ -5,7 +5,7 @@
 # the oldest MultiXactId a row lock still holds, and a VACUUM that has a cost delay pays it (pg_stat_progress_vacuum.delay_time).
 . "$(dirname "$0")/lib.bash"
 
-plan 7
+plan 11
 node_init am 0 "wal_level = logical
 shared_preload_libraries = 'pg_sift'
 max_replication_slots = 4
@@ -54,11 +54,18 @@ check "VACUUM keeps relminmxid at the newest MultiXactId a row lock still holds"
 touch "$D/release"
 wait "${holders[@]}"
 
-sql am "CREATE TABLE slow (id int, a int, b text) USING sift_table" "INSERT INTO slow SELECT g, g, repeat('x', 40) FROM generate_series(1, 60000) g" \
+sql am "CREATE TABLE slow (id int, a int, b text) USING sift_table" "CREATE INDEX slow_a ON slow (a)" "INSERT INTO slow SELECT g, g, repeat('x', 40) FROM generate_series(1, 60000) g" \
 	"DELETE FROM slow WHERE id % 3 = 0" >/dev/null
-sql am "SET vacuum_cost_delay = 2" "SET vacuum_cost_limit = 1" "SET track_cost_delay_timing = on" "VACUUM slow" >/dev/null 2>&1 &
+sql am "SET vacuum_cost_delay = 2" "SET vacuum_cost_limit = 20" "SET track_cost_delay_timing = on" "VACUUM slow" >/dev/null 2>&1 &
 vac=$!
-delayed() { [[ $(sql am "SELECT coalesce(max(delay_time), 0) > 0 FROM pg_stat_progress_vacuum") == t ]]; }
-check "a VACUUM with a cost delay reports the time it slept" wait_for delayed 30
-kill "$vac" 2>/dev/null; wait "$vac" 2>/dev/null
+: >"$D/progress"
+while kill -0 "$vac" 2>/dev/null; do
+	sql am "SELECT phase, heap_blks_total, heap_blks_scanned, heap_blks_vacuumed, delay_time FROM pg_stat_progress_vacuum" >>"$D/progress"
+done
+wait "$vac"
+check "a VACUUM with a cost delay reports the time it slept" awk -F'|' '$5 + 0 > 0 { f = 1 } END { exit !f }' "$D/progress"
+check "the progress of a VACUUM counts more than one block" awk -F'|' '$2 + 0 > 1 { f = 1 } END { exit !f }' "$D/progress"
+check "the progress of a VACUUM scans part of the blocks before it has scanned them all" awk -F'|' '$3 + 0 > 0 && $3 + 0 < $2 + 0 { f = 1 } END { exit !f }' "$D/progress"
+check "a VACUUM goes through vacuuming indexes and vacuuming heap" test "$(grep -c '^vacuuming indexes' "$D/progress")" -gt 0 -a "$(grep -c '^vacuuming heap' "$D/progress")" -gt 0
+check "the blocks vacuumed of a VACUUM advance" awk -F'|' '$4 + 0 > 0 { f = 1 } END { exit !f }' "$D/progress"
 finish
