@@ -176,6 +176,12 @@ part_clean(const SiftPartDesc *d, bool deltas_settled, FullTransactionId oldest)
 	return inserts_sealed && deletes_cleaned && deltas_settled && (d->ext_flags & SIFT_PART_EXT_EXPIRED) == 0 && d->tid_max != 0;
 }
 
+static TransactionId
+newest_xid(TransactionId a, TransactionId b)
+{
+	return TransactionIdFollows(b, a) ? b : a;
+}
+
 static void
 plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, FullTransactionId oldest, FullTransactionId freeze, VmPlan *plan)
 {
@@ -183,6 +189,7 @@ plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Fu
 	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
 	SiftColDeltaAnchor chain = sift_manifest_read_col_delta(rel, e);
 	bool		deltas_settled = (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || (FullTransactionIdIsValid(chain.max_xid) && FullTransactionIdPrecedes(chain.max_xid, oldest));
+	TransactionId delta_xid = xid_of(chain.max_xid);
 
 	plan->bytes += sizeof(SiftPartDesc) * (Size) np;
 	unfit_unsettled(rel, store, e, plan);
@@ -200,7 +207,7 @@ plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Fu
 			span_add(plan, &plan->unfit, lo, hi, InvalidTransactionId, 0, NULL);
 		else
 		{
-			span_add(plan, &plan->clean, lo, hi, TransactionIdFollows(dv_xid, xid) ? dv_xid : xid, (uint32) e->part_id, d);
+			span_add(plan, &plan->clean, lo, hi, newest_xid(newest_xid(xid, dv_xid), delta_xid), (uint32) e->part_id, d);
 			if (!frozen)
 				span_add(plan, &plan->unfrozen, lo, hi, InvalidTransactionId, 0, NULL);
 		}
