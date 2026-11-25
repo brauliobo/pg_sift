@@ -136,12 +136,12 @@ SELECT n, pl_chk(q) FROM xq ORDER BY n;
  n | pl_chk  
 ---+---------
  1 | no scan
- 2 | no scan
- 3 | no scan
+ 2 | units
+ 3 | units
  4 | units
  5 | units
  6 | array
- 7 | no scan
+ 7 | units
 (7 rows)
 
 -- two-column key pinned by both: the constants prune to one partition
