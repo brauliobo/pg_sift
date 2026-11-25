@@ -272,6 +272,8 @@ get_row_compact(const char *p, const char *end, SiftRowBuf *rb, const SiftPartSp
 
 	if (first)
 	{
+		if (end - p < (ptrdiff_t) sizeof(uint64))
+			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a compact slab batch ends inside an address"));
 		memcpy(tid, p, sizeof(uint64));
 		p += sizeof(uint64);
 	}
@@ -279,6 +281,8 @@ get_row_compact(const char *p, const char *end, SiftRowBuf *rb, const SiftPartSp
 		*tid += (uint64) unzigzag(get_varint(&p, end));
 	for (int c = 0; c < rb->ncols; c++)
 		ntop += !sift_rowbuf_is_child(rb, c);
+	if (end - p < (2 * ntop + 7) / 8)
+		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a compact slab batch ends inside its null bits"));
 	mask = (const uint8 *) p;
 	p += (2 * ntop + 7) / 8;
 	for (int c = 0, k = 0; c < rb->ncols; c++)
@@ -295,11 +299,16 @@ get_row_compact(const char *p, const char *end, SiftRowBuf *rb, const SiftPartSp
 		{
 			int			c = rb->children[k];
 
+			if (cnt > (uint64) (end - p))
+				SIFT_DAMAGE_DATA(NULL, errmsg("sift: a compact slab batch holds %u elements in %ld bytes", cnt, (long) (end - p)));
 			elem[c] = palloc(Max(cnt, 1) * sizeof(SiftCell));
 			for (uint32 j = 0; j < cnt; j++)
 			{
-				int			state = (uint8) *p++;
+				int			state;
 
+				if (p >= end)
+					SIFT_DAMAGE_DATA(NULL, errmsg("sift: a compact slab batch ends inside an element"));
+				state = (uint8) *p++;
 				get_cell(&p, end, rb->kinds[c], state, &elem[c][j]);
 			}
 		}

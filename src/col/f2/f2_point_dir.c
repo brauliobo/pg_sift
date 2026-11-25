@@ -436,9 +436,11 @@ add_bucket(Relation rel, const SiftPart *part, const SiftPointDir *pd, const Sif
 	if (range[0] > range[1] || range[1] > col->nentries)
 		SIFT_DAMAGE_DATA(rel, errmsg("sift: a point directory bucket is past its entries"));
 	cnt = range[1] - range[0];
+	if ((uint64) pc->n + cnt > MaxAllocSize / sizeof(uint32))
+		SIFT_DAMAGE_DATA(rel, errmsg("sift: the buckets of a point directory name more rows than a lookup holds"));
 	if (pc->n + cnt > *cap)
 	{
-		*cap = Max(*cap * 2, pc->n + cnt);
+		*cap = (uint32) Min(Max((uint64) *cap * 2, (uint64) pc->n + cnt), MaxAllocSize / sizeof(uint32));
 		pc->ref = pc->ref != NULL ? repalloc(pc->ref, *cap * sizeof(uint32)) : palloc(*cap * sizeof(uint32));
 	}
 	if (cnt > 0)

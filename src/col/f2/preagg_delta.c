@@ -160,7 +160,7 @@ sift_part_read_preagg(Relation rel, const struct SiftPart *part, uint32 g, int *
 {
 	const SiftSecDirEntry *sec = sift_part_section(part, SEC_PREAGG);
 	uint32		ng = part->hdr.ngranules;
-	uint64		head = MAXALIGN((ng + 1) * sizeof(uint32));
+	uint64		head = MAXALIGN(((uint64) ng + 1) * sizeof(uint32));
 	uint32		span[2];
 	SiftPreaggCell *out;
 
@@ -169,9 +169,9 @@ sift_part_read_preagg(Relation rel, const struct SiftPart *part, uint32 g, int *
 	if (sec->len < head || g >= ng)
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The pre-aggregate section holds %llu bytes for %u granules.", (unsigned long long) sec->len, ng);
 	sift_part_read_section_bytes(rel, part, sec, g * sizeof(uint32), sizeof(span), span);
-	if (span[0] > span[1] || head + (uint64) span[1] * sizeof(SiftPreaggCell) > sec->len)
+	if (span[0] > span[1] || span[1] - span[0] > MaxAllocSize / sizeof(SiftPreaggCell) || head + (uint64) span[1] * sizeof(SiftPreaggCell) > sec->len)
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The pre-aggregate section holds %llu bytes for %u granules.", (unsigned long long) sec->len, ng);
-	*ncells = span[1] - span[0];
+	*ncells = (int) (span[1] - span[0]);
 	out = palloc(Max(*ncells, 1) * sizeof(SiftPreaggCell));
 	sift_part_read_section_bytes(rel, part, sec, head + (uint64) span[0] * sizeof(SiftPreaggCell), (uint64) *ncells * sizeof(SiftPreaggCell), out);
 	return out;
