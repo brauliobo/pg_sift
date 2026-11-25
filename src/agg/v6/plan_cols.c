@@ -26,6 +26,7 @@
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
+#include "utils/relcache.h"
 #include "utils/selfuncs.h"
 #include "utils/timestamp.h"
 
@@ -104,6 +105,10 @@ sift_v6_plan_table(V6Plan *p, Oid relid)
 {
 	p->ops = sift_store_ops_for_oid(relid, true);
 	p->is_table = p->ops != NULL && p->ops->schema(relid, true, &p->sch);
+#ifdef SIFT_TESTING
+	if (sift_test_col_rel_inval)
+		RelationCacheInvalidateEntry(relid);	/* the catalog lookups of the rest of the plan can take a lock that reloads the entry and drops its store */
+#endif
 	return p->is_table;
 }
 
@@ -114,6 +119,9 @@ sift_v6_plan_index(V6Plan *p, Relation irel)
 	p->ops = p->colrel->stale ? NULL : sift_store_ops_for_oid(RelationGetRelid(irel), false);
 	if (p->ops != NULL && !p->ops->schema(RelationGetRelid(irel), false, &p->sch))
 		p->ops = NULL;
+#ifdef SIFT_TESTING
+	sift_col_test_inval(irel);	/* the catalog lookups of the rest of the plan can take a lock that reloads the entry */
+#endif
 }
 
 static bool

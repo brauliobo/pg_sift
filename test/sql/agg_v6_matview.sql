@@ -1,0 +1,62 @@
+-- A materialized view stored in a sift_table is read by SiftAggV6 row for row as its heap twin is answered, before and after REFRESH MATERIALIZED VIEW and REFRESH MATERIALIZED VIEW CONCURRENTLY
+-- (which writes the difference of the old and the new rows into the view). Every check prints the engine that answered and whether the rows are the twin's.
+-- requires: build col
+\set ON_ERROR_STOP on
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+
+CREATE TABLE mb (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL, tag text NOT NULL, at timestamptz NOT NULL);
+INSERT INTO mb SELECT i, i % 13, i % 101, 'tag' || i % 5, timestamptz '2030-01-01' + i * interval '1 hour' FROM generate_series(1, 30000) i;
+CREATE MATERIALIZED VIEW mvt USING sift_table AS SELECT * FROM mb;
+CREATE UNIQUE INDEX mvt_pk ON mvt (id);
+CREATE MATERIALIZED VIEW mvh AS SELECT * FROM mb;
+CREATE UNIQUE INDEX mvh_pk ON mvh (id);
+ANALYZE mvt; ANALYZE mvh;
+
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; plan text; engine text := 'native';
+BEGIN
+	FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF plan LIKE '%SiftAggV6%' THEN engine := 'v6'; END IF;
+	END LOOP;
+	EXECUTE 'SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (' || q || ') x' INTO a;
+	EXECUTE 'SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (' || regexp_replace(q, '\mmvt\M', 'mvh', 'g') || ') x' INTO b;
+	RETURN engine || ' ' || CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+
+CREATE FUNCTION checks() RETURNS TABLE (shape text, answer text) LANGUAGE sql AS $$
+	SELECT 'table grouped', same('SELECT g, count(*), sum(v) FROM mvt GROUP BY g')
+	UNION ALL SELECT 'table filtered', same('SELECT tag, count(*), sum(v) FROM mvt WHERE g < 5 AND v > 20 GROUP BY tag')
+	UNION ALL SELECT 'table total', same('SELECT count(*), sum(v), min(at), max(at) FROM mvt')
+$$;
+
+SELECT * FROM checks();
+
+-- the base rows change: inserts, updates, deletes
+INSERT INTO mb SELECT i, i % 13, i % 101, 'tag' || i % 5, timestamptz '2030-01-01' + i * interval '1 hour' FROM generate_series(30001, 33000) i;
+UPDATE mb SET v = v + 7, g = (g + 1) % 13 WHERE id % 4 = 0;
+DELETE FROM mb WHERE id % 11 = 0;
+REFRESH MATERIALIZED VIEW mvh;
+REFRESH MATERIALIZED VIEW mvt;
+ANALYZE mvt; ANALYZE mvh;
+SELECT * FROM checks();
+
+-- CONCURRENTLY: the difference is written into the sift_table
+INSERT INTO mb SELECT i, i % 13, i % 101, 'tag' || i % 5, timestamptz '2030-01-01' + i * interval '1 hour' FROM generate_series(33001, 34000) i;
+UPDATE mb SET v = v + 3 WHERE id % 6 = 0;
+DELETE FROM mb WHERE id % 7 = 0;
+REFRESH MATERIALIZED VIEW mvh;
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvt;
+SELECT * FROM checks();
+SELECT count(*) AS problems FROM sift.check('mvt');
+
+-- the view with no row, and with the base rows deleted
+DELETE FROM mb;
+REFRESH MATERIALIZED VIEW mvh;
+REFRESH MATERIALIZED VIEW CONCURRENTLY mvt;
+SELECT * FROM checks();
+DROP MATERIALIZED VIEW mvt, mvh;
+DROP TABLE mb;
+DROP FUNCTION checks(), same(text);
+DROP EXTENSION pg_sift;
