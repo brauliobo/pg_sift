@@ -19,6 +19,29 @@
 #include "core/page_io.h"
 #include "table/f2/f2_row_pack.h"
 
+/* The most bytes of strings that a granule takes besides its first row: its record is one StringInfo, which cannot hold a gigabyte */
+#define SIFT_GRANULE_BYTES_MAX	((uint64) MaxAllocSize / 4)
+
+/* The granules of a part in the order of their directory: a part holds more than the 1 GB that a StringInfo can, so each granule is encoded into a buffer of its own and appended here */
+typedef struct PartBuf
+{
+	char	   *data;
+	uint64		len;
+	uint64		cap;
+} PartBuf;
+
+static void
+part_buf_append(PartBuf *b, const char *src, uint64 n)
+{
+	if (b->len + n > b->cap)
+	{
+		b->cap = Max(b->cap + b->cap / 2, b->len + n);
+		b->data = b->data != NULL ? repalloc_huge(b->data, b->cap) : MemoryContextAllocHuge(CurrentMemoryContext, b->cap);
+	}
+	memcpy(b->data + b->len, src, n);
+	b->len += n;
+}
+
 static void
 zone_add_float(SiftZone *z, double v)
 {
@@ -83,10 +106,28 @@ put_strides(StringInfo out, const SiftColIn *time, int cnt)
 	}
 }
 
+/* The bytes of the strings and of the payloads of the values of a row that the leaf cannot hold */
+static uint64
+row_string_bytes(const SiftRows *rows, int r)
+{
+	uint64		bytes = 0;
+
+	for (int c = 0; c < rows->ncols; c++)
+	{
+		const SiftColIn *col = &rows->cols[c];
+
+		if (col->eoff != NULL || col->group1 > 0)
+			continue;
+		bytes += (col->slen != NULL ? col->slen[r] : 0) + (col->xplen != NULL ? col->xplen[r] : 0);
+	}
+	return bytes;
+}
+
 int
 sift_rows_granule_len(const SiftRows *rows, int from)
 {
 	int			to = from;
+	uint64		bytes = 0;
 
 	while (to < rows->nrows && to - from < SIFT_GRANULE_ROWS)
 	{
@@ -94,7 +135,8 @@ sift_rows_granule_len(const SiftRows *rows, int from)
 
 		for (int c = 0; c < rows->ncols && fits; c++)
 			fits = rows->cols[c].eoff == NULL || rows->cols[c].eoff[to + 1] - rows->cols[c].eoff[from] <= SIFT_GRANULE_ROWS;
-		if (!fits)
+		bytes += row_string_bytes(rows, to);
+		if (!fits || (to > from && bytes > SIFT_GRANULE_BYTES_MAX))
 			break;
 		to++;
 	}
@@ -328,7 +370,8 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 				ng = 0,
 				nc = rows->ncols;
 	int		   *gstart;
-	StringInfoData gdata,
+	PartBuf		gdata = {0};
+	StringInfoData granule,
 				vers,
 				schema;
 	SiftGranuleDesc *dir;
@@ -386,7 +429,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 	zones = palloc0(Max(nc, 1) * ng * sizeof(SiftZone));
 	pa_first = palloc((ng + 1) * sizeof(uint32));
 	tstride_off = palloc((ng + 1) * sizeof(uint32));
-	initStringInfo(&gdata);
+	initStringInfo(&granule);
 	initStringInfo(&vers);
 	initStringInfo(&schema);
 	initStringInfo(&pa_cells);
@@ -438,10 +481,13 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		{
 			MemoryContext old = MemoryContextSwitchTo(granule_cx);
 
-			dir[g] = sift_granule_encode(&gdata, &gi);
+			resetStringInfo(&granule);
+			dir[g] = sift_granule_encode(&granule, &gi);
 			MemoryContextSwitchTo(old);
 			MemoryContextReset(granule_cx);
 		}
+		dir[g].data_off = gdata.len;
+		part_buf_append(&gdata, granule.data, granule.len);
 		pa_first[g] = pa_cells.len / sizeof(SiftPreaggCell);
 		if (want_preagg)
 		{

@@ -61,6 +61,7 @@ defaultsizes	table/v1/wide.c	1
 huge	agg/dist/psort.c	1
 huge	bm25/liveness.c	1
 huge	bm25/postw.c	1
+huge	col/granule/part_write.c	1
 huge	col/keystore/keystore_run.c	1
 huge	col/v1/amscan/ordered.c	1
 huge	col/v1/batch.c	31
