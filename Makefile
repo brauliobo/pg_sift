@@ -636,6 +636,7 @@ TESTING_REGRESS += p98_tier_orphans
 TESTING_REGRESS += p98_tier_policy_cache
 TESTING_REGRESS += p98_tier_privileges
 TESTING_REGRESS += p98_tier_wide
+TESTING_REGRESS += p98_autottl_rekey
 TESTING_REGRESS += p98_ddl_catalog_sync
 TESTING_REGRESS += p98_journal_ddl
 TESTING_REGRESS += p98_proj_ddl_acid

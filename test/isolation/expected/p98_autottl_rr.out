@@ -1,0 +1,84 @@
+Parsed test spec with 2 sessions
+
+starting permutation: rr tick rn rend tick2 rafter
+set_ttl
+-------
+t      
+(1 row)
+
+step rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n FROM iso_t;
+  n
+---
+200
+(1 row)
+
+step tick: VACUUM iso_t;
+step rn: SELECT count(*) AS n FROM iso_t;
+  n
+---
+200
+(1 row)
+
+step rend: COMMIT;
+step tick2: VACUUM iso_t;
+step rafter: SELECT count(*) AS n FROM iso_t;
+  n
+---
+100
+(1 row)
+
+
+starting permutation: rs tick rn rend tick2 rafter
+set_ttl
+-------
+t      
+(1 row)
+
+step rs: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) AS n FROM iso_t;
+  n
+---
+200
+(1 row)
+
+step tick: VACUUM iso_t;
+step rn: SELECT count(*) AS n FROM iso_t;
+  n
+---
+200
+(1 row)
+
+step rend: COMMIT;
+step tick2: VACUUM iso_t;
+step rafter: SELECT count(*) AS n FROM iso_t;
+  n
+---
+100
+(1 row)
+
+
+starting permutation: tick rr rn rend rafter
+set_ttl
+-------
+t      
+(1 row)
+
+step tick: VACUUM iso_t;
+step rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n FROM iso_t;
+  n
+---
+100
+(1 row)
+
+step rn: SELECT count(*) AS n FROM iso_t;
+  n
+---
+100
+(1 row)
+
+step rend: COMMIT;
+step rafter: SELECT count(*) AS n FROM iso_t;
+  n
+---
+100
+(1 row)
+
