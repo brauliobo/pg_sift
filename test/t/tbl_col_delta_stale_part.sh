@@ -6,9 +6,10 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 5
-node_init sp 97 "autovacuum = off
-sift.maintenance_naptime = 60000
-sift.test_create_format1 = off"
+CONF="autovacuum = off
+sift.maintenance_naptime = 60000"
+[[ -z ${SIFT_TESTING:-} ]] || CONF+=$'\nsift.test_create_format1 = off'
+node_init sp 97 "$CONF"
 node_start sp || bail "start failed"
 sql sp "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE cd (id bigint, a bigint, b text, c text, d text, e text) USING sift_table" \
