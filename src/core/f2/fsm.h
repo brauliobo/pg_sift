@@ -165,10 +165,14 @@ extern SiftFsmStats sift_fsm_check(Relation rel);
 /*
  * The free run at the end of the file given back: the matured extents are reclaimed (under the lock of the cut, the quarantined ones too: no reader of an older manifest can be there), and when at least SIFT_TAIL_SHRINK_FREE_PCT of the blocks are free (and at least
  * SIFT_TAIL_SHRINK_MIN_BLOCKS of them) the run that ends at the high-water mark is left out of the lists and the mark lowered to its start in one record, then the file is cut (P7).
- * The cut takes AccessExclusiveLock on the index without waiting: busy, nothing is cut and lock_skipped says so (a later pass tries again).
+ * The cut tries AccessExclusiveLock on the index without ever queueing for it, every SIFT_TAIL_SHRINK_WAIT_MS ms: SIFT_TAIL_SHRINK_FOREGROUND_TRIES times in a VACUUM of a session,
+ * SIFT_TAIL_SHRINK_BACKGROUND_TRIES times in autovacuum and in the workers of sift. Still busy, nothing is cut and lock_skipped says so (a later pass tries again).
  */
 #define SIFT_TAIL_SHRINK_FREE_PCT	3
 #define SIFT_TAIL_SHRINK_MIN_BLOCKS	4
+#define SIFT_TAIL_SHRINK_WAIT_MS	5
+#define SIFT_TAIL_SHRINK_FOREGROUND_TRIES	50
+#define SIFT_TAIL_SHRINK_BACKGROUND_TRIES	10
 
 typedef struct SiftTailShrinkResult
 {

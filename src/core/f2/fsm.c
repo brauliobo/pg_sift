@@ -8,8 +8,12 @@
 #include "core/host.h"
 
 #include "catalog/storage.h"
+#include "miscadmin.h"
+#include "postmaster/bgworker.h"
+#include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "utils/timestamp.h"
+#include "utils/wait_event.h"
 
 #include "col/f2/col_meta.h"
 #include "core/f2/fsm.h"
@@ -664,6 +668,23 @@ note_shrink(Relation rel, bool done)
 	sift_xlog_done(&x);
 }
 
+/* The lock of the cut is only ever tried, never queued for: a reader that arrives meanwhile never waits behind the cut, which slips into the first gap between the statements of the readers */
+static bool
+try_lock_truncate(Relation rel, bool foreground)
+{
+	int			attempts = foreground ? SIFT_TAIL_SHRINK_FOREGROUND_TRIES : SIFT_TAIL_SHRINK_BACKGROUND_TRIES;
+
+	while (!ConditionalLockRelation(rel, AccessExclusiveLock))
+	{
+		if (--attempts == 0)
+			return false;
+		CHECK_FOR_INTERRUPTS();
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, SIFT_TAIL_SHRINK_WAIT_MS, WAIT_EVENT_VACUUM_TRUNCATE);
+		ResetLatch(MyLatch);
+	}
+	return true;
+}
+
 SiftTailShrinkResult
 sift_fsm_tail_shrink(Relation rel)
 {
@@ -685,7 +706,7 @@ sift_fsm_tail_shrink(Relation rel)
 		free_blocks += st.class_blocks[k];
 	if ((free_blocks < SIFT_TAIL_SHRINK_MIN_BLOCKS || free_blocks * 100 < (uint64) hw * SIFT_TAIL_SHRINK_FREE_PCT) && RelationGetNumberOfBlocks(rel) <= hw)
 		return res;
-	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
+	if (!try_lock_truncate(rel, !AmAutoVacuumWorkerProcess() && MyBgworkerEntry == NULL))
 	{
 		res.lock_skipped = true;
 		note_shrink(rel, false);
