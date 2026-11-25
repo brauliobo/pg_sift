@@ -251,7 +251,7 @@ sift_f2_maint_request(Relation rel, SiftMaintKind kind, uint64 part_id)
 	foreach_ptr(SiftMaintReq, again, asked)
 		if (again->rel == req.rel && again->kind == kind && again->part_id == part_id)
 			return true;
-	old = MemoryContextSwitchTo(TopMemoryContext);
+	old = MemoryContextSwitchTo(TopTransactionContext);
 	asked = lappend(asked, memcpy(palloc(sizeof(req)), &req, sizeof(req)));
 	MemoryContextSwitchTo(old);
 	return true;
