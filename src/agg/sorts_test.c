@@ -15,6 +15,7 @@
 
 #include "agg/dist_int.h"
 #include "agg/rows_psort.h"
+#include "core/memtrack.h"
 #include "agg/v6/v6_distinct_u64.h"
 
 PG_FUNCTION_INFO_V1(sift_test_sorts);
@@ -132,7 +133,7 @@ sift_test_sorts(PG_FUNCTION_ARGS)
 	char	   *kind = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	uint64		n = (uint64) PG_GETARG_INT64(1);
 	const uint64 mem = (uint64) PG_GETARG_INT32(2) * 1024;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift test sorts", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift test sorts");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	uint64		got;
 

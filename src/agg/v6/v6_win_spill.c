@@ -217,7 +217,7 @@ spill_desc(const SiftWinSpill *sp)
 SiftWinSpill *
 sift_win_spill_begin(MemoryContext parent, const SiftWinPsSpec *spec, uint64 bytes)
 {
-	MemoryContext cx = AllocSetContextCreate(parent, "sift window spill", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(parent, "sift window spill");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftWinSpill *sp = palloc0(sizeof(SiftWinSpill));
 	const int	nkeys = 2 * spec->n_ord + 1;
