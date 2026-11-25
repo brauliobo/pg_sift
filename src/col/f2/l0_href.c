@@ -349,25 +349,23 @@ chain_takes(Relation rel, uint64 part_id, BlockNumber tail, uint32 n)
 	return ok;
 }
 
-/* A chain that has reached a limit is sealed, as a chain of batches is: the next write finds it so and writes a part */
+/* A chain that has reached a limit is sealed, as a chain of batches is: the next write finds it so and writes a part. The record is opened only for a tail that is full */
 static void
-seal_if_full(SiftHrefIo *h, BlockNumber tail)
+seal_if_full(Relation rel, uint64 part_id, BlockNumber tail)
 {
-	const SiftL0SlabPageData *sl;
-	char	   *pg;
-	bool		full;
+	Buffer		buf = sift_blk_read(rel, tail, BUFFER_LOCK_EXCLUSIVE);
+	const SiftL0SlabPageData *sl = (const SiftL0SlabPageData *) SiftPageGetData(BufferGetPage(buf));
+	SiftXlog	x;
 
-	h->io.record_begin(h);
-	pg = h->io.record_page(h, tail, false);
-	sl = (const SiftL0SlabPageData *) SiftPageGetData(pg);
-	full = sl->chain_rows >= SIFT_L0_HEAPREF_FLUSH_ROWS || sl->chain_pages >= SIFT_L0_HEAPREF_MAX_PAGES;
-	if (full)
+	sift_page_expect(rel, BufferGetPage(buf), tail, SIFT_PT_L0_SLAB, 0, (uint32) part_id);
+	if (sl->chain_rows < SIFT_L0_HEAPREF_FLUSH_ROWS && sl->chain_pages < SIFT_L0_HEAPREF_MAX_PAGES)
 	{
-		sift_l0_href_seal(pg);
-		h->io.record_done(h);
+		UnlockReleaseBuffer(buf);
+		return;
 	}
-	else
-		h->io.record_abort(h);
+	x = sift_xlog_start(rel);
+	sift_l0_href_seal(sift_xlog_register(&x, buf, 0));
+	sift_xlog_done(&x);
 }
 
 bool
@@ -402,7 +400,7 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 		if (tail != head)
 			sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = part_id,.key_lo = key_lo,.set_l0_slab = true,.new_l0_slab_blk = tail});
 	}
-	seal_if_full(&h, tail);
+	seal_if_full(rel, part_id, tail);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	return true;
 }

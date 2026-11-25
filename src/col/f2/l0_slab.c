@@ -462,28 +462,52 @@ place_batch(Page pg, const char *rec, int pages, uint32 nrows)
 	}
 }
 
-/* The chain at head (none: empty) is not sealed and nbatches more pages keep it within SIFT_L0_SLAB_MAX_PAGES */
-static bool
-chain_has_room(Relation rel, uint32 part_id, BlockNumber head, int nbatches)
+/* A chain of batches as an append finds it: read once, then kept up to date in memory as the append places its batches */
+typedef struct SlabChain
 {
-	BlockNumber tail;
-	int			pages = 0;
-	uint32		nrows;
+	BlockNumber tail;			/* InvalidBlockNumber: no chain */
+	int			pages;
+	uint32		rows;
+	bool		sealed;
+} SlabChain;
 
-	return (head == InvalidBlockNumber || !chain_totals(rel, part_id, head, &tail, &pages, &nrows)) && pages + nbatches <= SIFT_L0_SLAB_MAX_PAGES;
+static SlabChain
+chain_of(Relation rel, uint32 part_id, BlockNumber head)
+{
+	SlabChain	c = {.tail = InvalidBlockNumber};
+
+	if (head != InvalidBlockNumber)
+		c.sealed = chain_totals(rel, part_id, head, &c.tail, &c.pages, &c.rows);
+	return c;
+}
+
+/* The chain is not sealed and nbatches more pages keep it within SIFT_L0_SLAB_MAX_PAGES */
+static bool
+chain_has_room(const SlabChain *c, int nbatches)
+{
+	return !c->sealed && c->pages + nbatches <= SIFT_L0_SLAB_MAX_PAGES;
 }
 
 /*
  * A chain that holds as many rows or pages as it may is written out as an L0 part before the rows go on, so that the micro-slab turns over every SIFT_L0_SLAB_FLUSH_ROWS rows and the
  * commits that follow land in the fresh slab, where a transaction that found the chain full wrote a part and a manifest commit of its own. A chain of references is no chain of batches:
- * batches go behind none, so it is written out whatever it holds. The caller holds the lock of the partition.
+ * batches go behind none, so it is written out whatever it holds. The chain an append of nbatches batches finds behind head, none after a write; the caller holds the lock of the partition.
  */
-static bool
-rotate_full_chain(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber head, int nbatches)
+static SlabChain
+chain_to_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber head, int nbatches)
 {
-	if (head == InvalidBlockNumber || (!sift_l0_slab_is_href(rel, part_id, head) && chain_has_room(rel, (uint32) part_id, head, nbatches)))
-		return false;
-	return sift_l0_slab_flush(rel, part_id, key_lo, spec);
+	SlabChain	c = {.tail = InvalidBlockNumber};
+
+	if (head == InvalidBlockNumber)
+		return c;
+	if (!sift_l0_slab_is_href(rel, part_id, head))
+	{
+		c = chain_of(rel, (uint32) part_id, head);
+		if (chain_has_room(&c, nbatches))
+			return c;
+	}
+	(void) sift_l0_slab_flush(rel, part_id, key_lo, spec);
+	return (SlabChain) {.tail = InvalidBlockNumber};
 }
 
 bool
@@ -529,6 +553,61 @@ sift_l0_slab_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftRowBuf *
 	return true;
 }
 
+/* The batch in a page of its own behind the tail of the chain (none: the first page, which the entry of the partition names), the page and the link from the tail in one record */
+static void
+add_page(Relation rel, uint64 part_id, const uint8 *key_lo, SlabChain *c, const char *rec)
+{
+	BlockNumber blk = sift_fsm_alloc_meta_page(rel);
+	SiftXlog	x = sift_xlog_start(rel);
+	Page		pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
+
+	slab_init(pg, sift_manifest_new_gen(rel, 1), (uint32) part_id, InvalidBlockNumber);
+	slab_seal(pg, sizeof(SiftL0SlabPageData));
+	add_batch(pg, rec);
+	if (c->tail == InvalidBlockNumber)
+	{
+		SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.set_l0_slab = true,.new_l0_slab_blk = blk};
+
+		sift_xlog_done(&x);
+		sift_manifest_commit(rel, &e);
+	}
+	else
+	{
+		Page		prev = sift_xlog_register(&x, lock_slab(rel, c->tail, (uint32) part_id, BUFFER_LOCK_EXCLUSIVE), 0);
+
+		SL(prev)->next_blk = blk;
+		SL(prev)->flags |= SIFT_L0_SLAB_SEALED;
+		slab_seal(prev, SiftPageGetUsed(prev));
+		sift_xlog_done(&x);
+	}
+	c->tail = blk;
+	c->pages++;
+}
+
+/* The batch at the end of the tail page when it fits there, else in a page of its own; c follows the chain */
+static void
+place_or_add(Relation rel, uint64 part_id, const uint8 *key_lo, SlabChain *c, const char *rec)
+{
+	Buffer		buf = InvalidBuffer;
+
+	if (c->tail != InvalidBlockNumber)
+		buf = lock_slab(rel, c->tail, (uint32) part_id, BUFFER_LOCK_EXCLUSIVE);
+	if (BufferIsValid(buf) && batch_fits(BufferGetPage(buf), rec))
+	{
+		SiftXlog	x = sift_xlog_start(rel);
+
+		place_batch(sift_xlog_register(&x, buf, 0), rec, c->pages, c->rows);
+		sift_xlog_done(&x);
+	}
+	else
+	{
+		if (BufferIsValid(buf))
+			UnlockReleaseBuffer(buf);
+		add_page(rel, part_id, key_lo, c, rec);
+	}
+	c->rows += ((const SiftL0BatchHeader *) rec)->nrows;
+}
+
 bool
 sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftRowBuf *rows, const SiftPartSpec *spec)
 {
@@ -536,8 +615,7 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	StringInfo *recs = palloc((rows->n + 1) * sizeof(StringInfo));
 	int			nrecs;
 	SiftManifestRead mr;
-	BlockNumber head,
-				tail = InvalidBlockNumber;
+	SlabChain	c;
 
 	encode_batches(rows, recs, &nrecs);
 	for (int i = 0; i < nrecs; i++)
@@ -547,73 +625,14 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	if (mr.n == 0 || mr.entries[0].part_id != part_id)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	head = mr.entries[0].l0_slab_blk;
-	if (rotate_full_chain(rel, part_id, key_lo, spec, head, nrecs))
-		head = sift_manifest_read_range(rel, key_lo, NULL).entries[0].l0_slab_blk;
-	if (!chain_has_room(rel, (uint32) part_id, head, nrecs))
+	c = chain_to_append(rel, part_id, key_lo, spec, mr.entries[0].l0_slab_blk, nrecs);
+	if (c.pages + nrecs > SIFT_L0_SLAB_MAX_PAGES)
 	{
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 		return false;
 	}
 	for (int i = 0; i < nrecs; i++)
-	{
-		int			pages = 0;
-		uint32		nrows = 0;
-		bool		placed = false;
-
-		if (head != InvalidBlockNumber)
-		{
-			Buffer		buf;
-			Page		pg;
-			SiftXlog	x;
-
-			(void) chain_totals(rel, (uint32) part_id, head, &tail, &pages, &nrows);
-			buf = lock_slab(rel, tail, (uint32) part_id, BUFFER_LOCK_EXCLUSIVE);
-			x = sift_xlog_start(rel);
-			pg = sift_xlog_register(&x, buf, 0);
-			if (batch_fits(pg, recs[i]->data))
-			{
-				place_batch(pg, recs[i]->data, pages, nrows);
-				sift_xlog_done(&x);
-				placed = true;
-			}
-			else
-			{
-				sift_xlog_abort(&x);
-				UnlockReleaseBuffer(buf);
-			}
-		}
-		if (!placed)
-		{
-			BlockNumber blk = sift_fsm_alloc_meta_page(rel);
-			uint64		gen = sift_manifest_new_gen(rel, 1);
-			SiftXlog	x = sift_xlog_start(rel);
-			Page		pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
-
-			slab_init(pg, gen, (uint32) part_id, InvalidBlockNumber);
-			slab_seal(pg, sizeof(SiftL0SlabPageData));
-			add_batch(pg, recs[i]->data);
-			sift_xlog_done(&x);
-			if (head == InvalidBlockNumber)
-			{
-				SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.set_l0_slab = true,.new_l0_slab_blk = blk};
-
-				sift_manifest_commit(rel, &e);
-				head = blk;
-			}
-			else
-			{
-				Buffer		buf = lock_slab(rel, tail, (uint32) part_id, BUFFER_LOCK_EXCLUSIVE);
-				SiftXlog	x2 = sift_xlog_start(rel);
-				Page		pg2 = sift_xlog_register(&x2, buf, 0);
-
-				SL(pg2)->next_blk = blk;
-				SL(pg2)->flags |= SIFT_L0_SLAB_SEALED;
-				slab_seal(pg2, SiftPageGetUsed(pg2));
-				sift_xlog_done(&x2);
-			}
-		}
-	}
+		place_or_add(rel, part_id, key_lo, &c, recs[i]->data);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	return true;
 }
@@ -625,11 +644,13 @@ sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 	const SiftPartitionEntry *e;
 	SiftManifestEdit edit = {.part_id = part_id,.key_lo = key_lo};
 	SiftXlog	x;
+	BlockNumber head;
 	bool		fused;
 
 	LockPage(rel, lock, ExclusiveLock);
 	e = sift_plan_entry(sift_plan_cache_get(rel, CurrentMemoryContext), part_id);
-	if (rotate_full_chain(rel, part_id, key_lo, spec, e->l0_slab_blk, 1))
+	head = e->l0_slab_blk;
+	if (chain_to_append(rel, part_id, key_lo, spec, head, 1).tail == InvalidBlockNumber && head != InvalidBlockNumber)
 		e = sift_plan_entry(sift_plan_cache_get(rel, CurrentMemoryContext), part_id);
 	x = sift_xlog_start(rel);
 	fused = e->pend_del_blk == InvalidBlockNumber || sift_pend_del_place(&x, rel, part_id, e->pend_del_blk, dels, ndel);
