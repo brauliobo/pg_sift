@@ -117,11 +117,11 @@ FROM (VALUES
 	('sum per region', 'SELECT p.region, count(c.id), sum(c.v) FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id GROUP BY p.region ORDER BY 1'),
 	('whole row of the child', 'SELECT p.region, count(c) AS c, count(*) AS s FROM cf_parent p LEFT JOIN cf_child c ON c.parent_id = p.id AND c.v = 3 GROUP BY p.region ORDER BY 1')
 ) q (name, sql) ORDER BY q.name;
-          name          |           child_first_on            | child_first_off | on_equals_native | off_equals_native 
-------------------------+-------------------------------------+-----------------+------------------+-------------------
- count per parent       | Lookup Joins: cf_parent (preserved) | none            | t                | t
- sum per region         | Lookup Joins: cf_parent (preserved) | none            | t                | t
- whole row of the child | Lookup Joins: c (subquery) (left)   | none            | t                | t
+          name          |           child_first_on            |        child_first_off        | on_equals_native | off_equals_native 
+------------------------+-------------------------------------+-------------------------------+------------------+-------------------
+ count per parent       | Lookup Joins: cf_parent (preserved) | none                          | t                | t
+ sum per region         | Lookup Joins: cf_parent (preserved) | none                          | t                | t
+ whole row of the child | Lookup Joins: c (subquery) (left)   | Lookup Joins: cf_child (left) | t                | t
 (3 rows)
 
 DROP FUNCTION joins(text, bool), answer(text, bool, bool);

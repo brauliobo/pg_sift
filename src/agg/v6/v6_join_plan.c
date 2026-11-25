@@ -22,6 +22,7 @@
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 
+#include "agg/agg.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_dim_keys.h"
@@ -66,7 +67,7 @@ special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 		case JOIN_LEFT:
 			if (single_in(r, rest))
 				return sift_v6_join_add_dim(sh, r, SV6J_LEFT_EQUI);
-			return bms_equal(r, fact) && single_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_RIGHT_EQUI);
+			return sift_agg_child_first && bms_equal(r, fact) && single_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_RIGHT_EQUI);
 		case JOIN_FULL:
 			if (single_in(r, rest) && bms_equal(bms_intersect(sj->syn_lefthand, before), bms_del_members(bms_copy(before), r)))
 			{
