@@ -32,6 +32,7 @@
 #include "core/meta_peek.h"
 #include "core/quarantine.h"
 #include "core/quarantine_int.h"
+#include "core/shm_manifest.h"
 #include "core/sift.h"
 #include "core/sql.h"
 #include "core/worker.h"
@@ -259,7 +260,7 @@ quarantine_xact(XactEvent event, void *arg)
 {
 	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
 		return;
-	sift_quar_publish(shared);
+	sift_quar_publish(sift_quar_table());
 	for (int i = 0; i < nasks; i++)
 		if (ask_due(&asks[i].file))
 			(void) sift_maint_register_worker_oid(asks[i].index, SIFT_WK_QUARANTINE, asks[i].subject);
@@ -379,6 +380,8 @@ flag_index(Relation index)
 		else
 			sift_dir_update(index, &(SiftDirChange) {.fn = stamp_flag,.extra = InvalidBuffer});
 	}
+	if (peek.status == SIFT_FMT_V2)
+		sift_shm_manifest_invalidate(&index->rd_locator, true);
 	CacheInvalidateRelcacheByRelid(RelationGetRelid(index));
 	mark_persisted(index);
 }
@@ -490,7 +493,7 @@ record(Relation index)
 	was_out = overlay_has(index);
 	take(sift_quar_local, QUAR_LOCAL, &rec, RecoveryInProgress(), &(bool) {false});
 	unpublished = true;
-	sift_quar_publish(shared);
+	sift_quar_publish(sift_quar_table());
 	if (!was_out && overlay_has(index))
 		log_first_cause(index, &rec);
 	ask_persist(index);

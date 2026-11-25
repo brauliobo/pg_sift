@@ -755,14 +755,30 @@ sift_shm_snap_part_list_install(const SiftShmManifestSnap *snapshot, uint32 p, c
 
 /* ---------- writers ---------- */
 
-/* What a slot costs to give up: a dead one nothing, a live one its cache, a quarantined one the mark that keeps the index from being trusted */
+/* What a slot costs to give up: a dead one nothing, a live one its cache; a quarantined one is not given up, it keeps the index from being trusted */
 static int
 slot_value(SiftShmIndexSlot *s)
 {
-	return (s->meta.state_flags & SIFT_SHM_SLOT_DEAD) ? 0 : (s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED) ? 2 : 1;
+	return (s->meta.state_flags & SIFT_SHM_SLOT_DEAD) ? 0 : 1;
 }
 
-/* The slot of the locator for a writer (claim_lock held): the one it has, an empty one, or the one a full probe window gives up (a dead one first, then the least recently used, a quarantined one last) */
+/* The slot of the locator in the probe window, or NULL (claim_lock held) */
+static SiftShmIndexSlot *
+slot_find(Table *t, const RelFileLocator *loc)
+{
+	for (int i = 0; i < SIFT_SHM_MANIFEST_PROBES; i++)
+	{
+		SiftShmIndexSlot *s = slot_at(t, loc, i);
+
+		if (s->meta.state_flags == SIFT_SHM_SLOT_EMPTY)
+			break;
+		if (RelFileLocatorEquals(s->meta.locator, *loc))
+			return s;
+	}
+	return NULL;
+}
+
+/* The slot of the locator for a writer (claim_lock held): the one it has, an empty one, or the one a full probe window gives up (a dead one first, then the least recently used); NULL when the window holds nothing but quarantined indexes */
 static SiftShmIndexSlot *
 slot_claim(Table *t, const RelFileLocator *loc)
 {
@@ -774,11 +790,14 @@ slot_claim(Table *t, const RelFileLocator *loc)
 
 		if (s->meta.state_flags == SIFT_SHM_SLOT_EMPTY || RelFileLocatorEquals(s->meta.locator, *loc))
 			return s;
+		if (s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED)
+			continue;
 		if (victim == NULL || slot_value(s) < slot_value(victim) ||
 			(slot_value(s) == slot_value(victim) && pg_atomic_read_u64(&s->last_used_tick) < pg_atomic_read_u64(&victim->last_used_tick)))
 			victim = s;
 	}
-	sift_shm_note_eviction(SIFT_SHM_MANIFEST, 1);
+	if (victim != NULL)
+		sift_shm_note_eviction(SIFT_SHM_MANIFEST, 1);
 	return victim;
 }
 
@@ -812,7 +831,7 @@ sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *s
 		dp = snap_build(t, a, &meta->locator, spec);
 	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
 	s = slot_claim(t, &meta->locator);
-	if ((s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED) && RelFileLocatorEquals(s->meta.locator, meta->locator))
+	if (s == NULL || ((s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED) && RelFileLocatorEquals(s->meta.locator, meta->locator)))
 	{
 		LWLockRelease(&t->claim_lock);
 		if (dp != InvalidDsaPointer)
@@ -845,25 +864,23 @@ void
 sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine)
 {
 	Table	   *t;
-	SiftShmIndexSlot *s = NULL;
+	SiftShmIndexSlot *s;
 
 	if (!sift_shm_manifest_enabled() || (t = registry()) == NULL)
 		return;
 	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
-	for (int i = 0; i < SIFT_SHM_MANIFEST_PROBES && s == NULL; i++)
-	{
-		SiftShmIndexSlot *c = slot_at(t, locator, i);
-
-		if (c->meta.state_flags == SIFT_SHM_SLOT_EMPTY)
-			break;
-		if (RelFileLocatorEquals(c->meta.locator, *locator))
-			s = c;
-	}
+	s = quarantine ? slot_claim(t, locator) : slot_find(t, locator);
 	if (s != NULL)
 	{
-		SiftShmIndexMeta m = s->meta;
+		bool		mine = RelFileLocatorEquals(s->meta.locator, *locator);
+		SiftShmIndexMeta m = mine ? s->meta : (SiftShmIndexMeta) {.locator = *locator};
 
 		slot_drop_snap(t, s);
+		if (!mine)
+		{
+			pg_atomic_write_u64(&s->snap_hits, 0);
+			pg_atomic_write_u64(&s->snap_misses, 0);
+		}
 		m.state_flags = quarantine ? SIFT_SHM_SLOT_QUARANTINED : SIFT_SHM_SLOT_DEAD;
 		meta_write(s, &m);
 	}
