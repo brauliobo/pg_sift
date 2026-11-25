@@ -179,7 +179,7 @@ slot_at(Table *t, const RelFileLocator *loc, int probe)
 static void area_leave(int code, Datum arg);
 
 /*
- * The area, attached by this backend: made where there is none and create is true (NULL where the system has no memory for it); NULL where there is none and create is false.
+ * The area, attached by this backend: made where there is none and create is true; NULL where the system has no memory for it, or where there is none and create is false.
  * Takes area_lock, so a caller that holds claim_lock may call it.
  */
 static dsa_area *
@@ -187,6 +187,7 @@ area_attach(Table *t, bool create)
 {
 	MemoryContext old;
 	dsa_area   *a;
+	uint32		holdoff;
 
 	if (area != NULL)
 		return area;
@@ -195,6 +196,7 @@ area_attach(Table *t, bool create)
 		area_cx = sift_cache_create_context("sift cache manifest area");
 	old = MemoryContextSwitchTo(area_cx);
 	LWLockAcquire(&t->area_lock, LW_EXCLUSIVE);
+	holdoff = InterruptHoldoffCount;
 	PG_TRY();
 	{
 #ifdef SIFT_TESTING
@@ -217,10 +219,11 @@ area_attach(Table *t, bool create)
 		ErrorData  *e;
 		bool		shortage;
 
+		InterruptHoldoffCount = holdoff;
 		LWLockRelease(&t->area_lock);
 		MemoryContextSwitchTo(old);
 		e = CopyErrorData();
-		shortage = create && ERRCODE_TO_CATEGORY(e->sqlerrcode) == ERRCODE_INSUFFICIENT_RESOURCES;
+		shortage = ERRCODE_TO_CATEGORY(e->sqlerrcode) == ERRCODE_INSUFFICIENT_RESOURCES;
 		FreeErrorData(e);
 		if (!shortage)
 			PG_RE_THROW();
@@ -788,7 +791,9 @@ slot_drop_snap(Table *t, SiftShmIndexSlot *s)
 	if (pg_atomic_read_u64(&s->current_snap_dp) == InvalidDsaPointer)
 		return;
 	a = area_attach(t, false);
-	SIFT_INVARIANT(a != NULL, "a manifest snapshot is held by a slot while the area that holds it is gone");
+	if (a == NULL)
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift: the area of the manifest snapshots cannot be attached"),
+						errhint("Shared memory is short; the snapshots are held until a session that can attach the area drops them.")));
 	snap_retire(t, a, slot_swap_snap(s, InvalidDsaPointer));
 }
 
