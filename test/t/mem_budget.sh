@@ -6,6 +6,7 @@
 
 plan 19
 node_init mb 61 "autovacuum = off
+sift.test_create_format1 = on
 max_parallel_workers_per_gather = 0
 sift.async_maintenance = off"
 node_start mb || bail "start failed"
