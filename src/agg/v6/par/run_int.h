@@ -145,7 +145,7 @@ par_str_at(const ParLoad *ld, const ColView *cv, uint32 r)
 	const char *p = cv->dcode != NULL ? cv->dict->bytes + cv->dict->off[cv->dcode[r]] : cv->s[r];
 	const uint32 len = cv->dcode != NULL ? cv->dict->off[cv->dcode[r] + 1] - cv->dict->off[cv->dcode[r]] : cv->slen[r];
 
-	if (ld->table && !cv->isnull[r])
+	if (ld->table && cv->tag != NULL && cv->tag[r] == SIFT_COLTAG_WIDE_BLOB)
 		return (SiftStrRef) {(const uint8 *) VARDATA_ANY(p), VARSIZE_ANY_EXHDR(p)};
 	return (SiftStrRef) {(const uint8 *) p, len};
 }

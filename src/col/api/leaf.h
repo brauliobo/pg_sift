@@ -237,6 +237,7 @@ sift_col_def_datum_ok(const SiftColDef *d, int nleaves)
 #define SIFT_COLTAG_JNULL		7		/* JSON null: a NULL slot that is not a missing key (never an overflow value); its jsonb_typeof is 'null' */
 #define SIFT_COLTAG_OVF_MAX		SIFT_COLTAG_NONE	/* the last tag an overflow value has */
 #define SIFT_COLTAG_MAX			7
+#define SIFT_COLTAG_WIDE_BLOB	0xFE	/* a sift_table cell whose value is wide: the cell is its datum, not the bare bytes the other cells of a headerless table hold */
 #define SIFT_COLTAG_UNSURE		8		/* memory only: a legacy write-buffer slot did not preserve its kind */
 #define SIFT_COLTAG_ROOTKEY		9		/* format major 2: the document is an array or a string that holds the key of the leaf (jsonb_exists is true), the leaf has no value */
 
