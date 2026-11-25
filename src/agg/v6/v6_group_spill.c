@@ -20,6 +20,7 @@
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_gen.h"
+#include "agg/v6/v6_group_rows.h"
 #include "agg/v6/v6_pct.h"
 
 #define OWN_REC		SIFT_REC_OWN
@@ -486,10 +487,15 @@ v6g_spill_all(SiftV6Group *g)
 void
 v6g_spill_if_over(SiftV6Group *g)
 {
-	if (group_bytes(g) <= g->budget - g->dist_budget)
+	if (g->frozen || group_bytes(g) <= g->budget - g->dist_budget)
 		return;
 	if (g->gen != NULL && !gen_spills(g))
-		v6_gen_no_spill(g->gen);
+	{
+		if (!v6g_can_freeze(g))
+			v6_gen_no_spill(g->gen);
+		v6g_freeze(g);
+		return;
+	}
 	v6g_spill_all(g);
 }
 

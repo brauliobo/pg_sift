@@ -62,6 +62,7 @@ typedef struct V6Set
 	struct SiftCompact *cmp;	/* the compact group table the set has until something it cannot hold comes (v6_group_compact.h) */
 	bool		cmp_off;		/* it has none, and will not have */
 	SiftLockSet lock;			/* a set of keys of a statement with spec->lock_k: the first keys of the locked group table (v6_group_lock.h) */
+	bool		frozen;			/* the table has the groups it will have: the rows of the others go to g->rows (v6_group_rows.h) */
 } V6Set;
 
 /* The rows r < n of the bitmap mk that are set, in order, a word at a time: r is declared by the caller */
@@ -111,8 +112,8 @@ struct SiftV6Group
 	int		   *dslot;			/* the slot of each aggregate in a distinct set (-1 for the others) */
 	uint64		dist_budget;	/* of budget: what the distinct sets of all the sets of keys may hold; the groups have the rest */
 	uint64		budget;
-	TupleDesc	desc;
 	int			pct_kb;			/* the sort of each percentile_cont of a set of no keys: work_mem shared by them (v6_pct.h) */
+	TupleDesc	desc;
 	bool		spilled;
 	bool		own_recs;		/* the groups go to the spill as records of their values: they point to codes and an arena that the spill gives back (v6_group_spill.c) */
 	StringInfoData kbuf;
@@ -138,8 +139,10 @@ struct SiftV6Group
 	uint32		code_cap;
 	uint32		code_epoch_cur;
 	SiftTextArena tx;			/* the winners of MIN and MAX of text (group_ext.h) */
-	struct V6Gen *gen;			/* the generic and ordered-set aggregates (v6_gen.h); their groups never spill */
+	struct V6Gen *gen;			/* the generic and ordered-set aggregates (v6_gen.h) */
 	struct V6Bulk *bulk;		/* the groups of a record stream that no two share a key, kept as they came until they are read (group_rec.c) */
+	bool		frozen;			/* the tables of keys take no new group (v6_group_rows.h) */
+	struct V6Rows *rows;		/* the rows of the groups the frozen tables had no room for */
 };
 
 /* the Datums of the keys of a slot of a set of keys (only: just key number only, -1: all), and of an aggregate of its state */
@@ -271,6 +274,8 @@ extern void v6g_spill_sets(SiftV6Group *g);
 
 /* v6_group_spill.c: a state whose groups point to codes or to the text arena spills records of their values; the groups of a spill are read back a partition at a time */
 extern void v6g_spill_own(SiftV6Group *g);
+/* Rows of the batch to the groups of one set (-1: of every set), as sift_v6_group_update takes them */
+extern void v6g_update_set(SiftV6Group *g, int set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
 /* The group tables are given back and each set that spilled starts reading its partitions */
 extern void v6g_spill_open(SiftV6Group *g);
 /* The table of the next partition of the set (its groups are final), NULL after the last */

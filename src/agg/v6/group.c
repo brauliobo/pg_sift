@@ -27,6 +27,7 @@
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_gen.h"
 #include "agg/v6/v6_group_compact.h"
+#include "agg/v6/v6_group_rows.h"
 #include "agg/v6/v6_pct.h"
 #include "core/memtrack.h"
 
@@ -331,7 +332,7 @@ code_slots(SiftV6Group *g, V6Set *set, const SiftVec *kv, uint16 n)
 static inline bool
 locked(const V6Set *set)
 {
-	return set->ht.lock_at != 0 && set->ht.count >= set->ht.lock_at;
+	return set->ht.lock_at != 0 && !set->frozen && set->ht.count >= set->ht.lock_at;
 }
 
 /* The rows of the batch the groups take: those of the mask, and once the table is locked only those whose first key is one of its groups' (when that is an integer) */
@@ -402,7 +403,9 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 	n = batch_rows(g, set, bs, keyvec);
 	g->frows = g->nfilters > 0 ? sift_fmasks_rows(g->fmasks) : NULL;
 	v6g_grouped_slots(g, set, n, keyvec);
-	if (locked(set))
+	if (set->frozen)
+		n = v6g_rows_split(g, set, keyvec, argvec, n);
+	else if (locked(set))
 		n = sift_lock_compact(g->sel, g->slots, n);
 	for (int d = 0; d < g->ndist; d++)
 		v6g_dist_group_rows(g, set, g->dagg[d], argvec, n);
@@ -447,7 +450,7 @@ sift_v6_group_add_rows(SiftV6Group *g, uint64 n)
 }
 
 void
-sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+v6g_update_set(SiftV6Group *g, int only, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
 {
 	MemoryContext old;
 
@@ -458,7 +461,9 @@ sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *key
 	if (g->gkeys != NULL)
 		keyvec = sift_v6_genkeys_apply(g->gkeys, bs, keyvec);
 	for (int s = 0; s < g->nsets; s++)
-		if (g->set[s].nk == 0)
+		if (only >= 0 && s != only)
+			continue;
+		else if (g->set[s].nk == 0)
 		{
 			g->set[s].plain_row |= g->spec->constant_groups;
 			plain_batch(g, &g->set[s], bs, argvec);
@@ -467,6 +472,12 @@ sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *key
 			grouped_batch(g, &g->set[s], bs, keyvec, argvec);
 	v6g_spill_if_over(g);
 	MemoryContextSwitchTo(old);
+}
+
+void
+sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+{
+	v6g_update_set(g, -1, bs, keyvec, argvec);
 }
 
 void
@@ -587,6 +598,7 @@ sift_v6_group_scan_sink(SiftV6Group *g, SiftV6DistPut put, void *arg)
 void
 sift_v6_group_recycle(SiftV6Group *g)
 {
+	plain_pcts(g, false);
 	for (int s = 0; s < g->nsets; s++)
 	{
 		V6Set	   *set = &g->set[s];
@@ -598,7 +610,6 @@ sift_v6_group_recycle(SiftV6Group *g)
 		set->plain_row = false;
 		set->emitted = false;
 	}
-	plain_pcts(g, false);
 	v6g_dist_recycle(g);
 	v6g_bulk_free(g);
 	if (g->gen != NULL)
@@ -620,6 +631,7 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	SiftV6Group *g = MemoryContextAllocZero(cx, sizeof(SiftV6Group));
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	const uint32 all = spec->nkeys >= 32 ? UINT32_MAX : (((uint32) 1) << spec->nkeys) - 1;
+	int			npct = 0;
 
 	g->gkeys = sift_v6_genkeys_new(cx, spec);
 	g->spec = g->gkeys != NULL ? sift_v6_genkeys_spec(g->gkeys) : spec;
@@ -651,6 +663,9 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	for (int j = 0; j < spec->naggs; j++)
 		if (v6g_is_text_mm(&spec->agg[j]) && g->slab == NULL)
 			g->slab = sift_strslab_new(cx);
+	for (int j = 0; j < spec->naggs; j++)
+		npct += spec->agg[j].kind == SV6_PCT_CONT;
+	g->pct_kb = Max(work_mem / Max(npct, 1), 64);
 	if (sift_v6_spec_has_gen(spec))
 		g->gen = v6_gen_new(spec, cx, g->budget);
 	v6g_spill_own(g);
@@ -722,6 +737,7 @@ sift_v6_group_finish(SiftV6Group *g)
 
 	v6g_dist_finish(g);
 	v6g_bulk_settle(g);
+	plain_pcts(g, true);
 	for (int s = 0; s < g->nsets && g->spec->topk == 0; s++)
 		v6g_compact_flush(g, &g->set[s]);
 	v6g_spill_if_over(g);
@@ -734,7 +750,6 @@ sift_v6_group_finish(SiftV6Group *g)
 static void
 finish_in_cx(SiftV6Group *g)
 {
-	plain_pcts(g, true);
 	g->cur = 0;
 	for (int s = 0; s < g->nsets; s++)
 	{
@@ -784,19 +799,21 @@ sift_v6_group_next(SiftV6Group *g, Datum *values, bool *isnull)
 		return v6g_bulk_next(g, values, isnull);
 	for (int s = 0; s < g->nsets; s++)
 		v6g_compact_flush(g, &g->set[s]);
-	for (; g->cur < g->nsets; g->cur++)
-	{
-		V6Set	   *set = &g->set[g->cur];
-		const V6Acc *acc;
+	do
+		for (; g->cur < g->nsets; g->cur++)
+		{
+			V6Set	   *set = &g->set[g->cur];
+			const V6Acc *acc;
 
-		memset(isnull, true, spec->nkeys * sizeof(bool));
-		memset(values, 0, spec->nkeys * sizeof(Datum));
-		if ((acc = next_group(g, set, values, isnull)) == NULL)
-			continue;
-		for (int j = 0; j < spec->naggs; j++)
-			values[spec->nkeys + j] = v6g_agg_datum(g, &spec->agg[j], &acc[j], set->mask, &isnull[spec->nkeys + j]);
-		return true;
-	}
+			memset(isnull, true, spec->nkeys * sizeof(bool));
+			memset(values, 0, spec->nkeys * sizeof(Datum));
+			if ((acc = next_group(g, set, values, isnull)) == NULL)
+				continue;
+			for (int j = 0; j < spec->naggs; j++)
+				values[spec->nkeys + j] = v6g_agg_datum(g, &spec->agg[j], &acc[j], set->mask, &isnull[spec->nkeys + j]);
+			return true;
+		}
+	while (v6g_rows_replay(g));
 	return false;
 }
 
@@ -826,6 +843,7 @@ void
 sift_v6_group_free(SiftV6Group *g)
 {
 	plain_pcts(g, false);
+	v6g_rows_free(g);
 	for (int s = 0; s < g->nsets; s++)
 		v6g_compact_free(&g->set[s]);
 	v6g_dist_free(g);

@@ -705,6 +705,22 @@ v6_gen_free(V6Gen *gen)
 	MemoryContextDelete(gen->res);
 }
 
+void
+v6_gen_restart(V6Gen *gen)
+{
+	MemoryContext old = MemoryContextSwitchTo(gen->cx);
+
+	MemoryContextReset(gen->res);
+	v6_gen_release(gen);
+	for (int j = 0; j < gen->spec->naggs; j++)
+		if (gen->agg[j] != NULL && gen->agg[j]->sorted)
+		{
+			gen->agg[j]->nsid = 0;
+			gen->agg[j]->sort = v6_gen_sort_begin(gen->agg[j], gen->cx, sort_share_kb(gen->spec));
+		}
+	MemoryContextSwitchTo(old);
+}
+
 uint64
 v6_gen_limit(const V6Gen *gen)
 {

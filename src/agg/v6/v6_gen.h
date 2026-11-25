@@ -141,6 +141,8 @@ extern void v6_gen_state_put(V6Gen *gen, int j, const V6Acc *acc, StringInfo buf
 extern const char *v6_gen_state_take(V6Gen *gen, int j, V6Acc *dst, const V6Acc *src, const char *tail);
 /* every state of every group is dropped: the groups went elsewhere */
 extern void v6_gen_release(V6Gen *gen);
+/* the same after the scan has ended: the sorts of the sorted aggregates begin again, for the groups of the rows of another table */
+extern void v6_gen_restart(V6Gen *gen);
 /* a participant of a parallel run holds what it holds until it hands its groups over */
 extern void v6_gen_unbound(V6Gen *gen);
 /* the aggregates of the spec can run in workers: none sorts its inputs, each has a combine function and, for an internal state, serial and deserial functions, and all are parallel safe */
