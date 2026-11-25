@@ -9,6 +9,7 @@
 #include "core/compat.h"
 #include "core/f2/f2_pace.h"
 #include "core/f2/io_stream.h"
+#include "core/maint_pacer.h"
 
 #ifdef SIFT_TESTING
 bool		sift_test_io_read_stream = true;
@@ -50,32 +51,46 @@ stream_cb(ReadStream *stream, void *callback_private_data, void *per_buffer_data
 	return next_block(callback_private_data, meta) ? meta->blkno : InvalidBlockNumber;
 }
 
+/* A maintenance worker reads through the ring it has: what it brings into the shared buffers replaces the pages of its ring, never those of the queries */
+static BufferAccessStrategy
+strategy_of(SiftIoMode mode, bool ring)
+{
+	if (sift_maint_ring != NULL)
+		return sift_maint_ring;
+	switch (mode)
+	{
+		case SIFT_IOS_FULL_SEQ:
+		case SIFT_IOS_SELECTIVE:
+			return ring ? GetAccessStrategyWithSize(BAS_BULKREAD, SIFT_IOS_RING_KB) : NULL;
+		case SIFT_IOS_MAINT_SEQ:
+			return GetAccessStrategy(BAS_VACUUM);
+		default:
+			return NULL;
+	}
+}
+
 static void
 begin(SiftExtentReadStream *ios, SiftIoMode mode, uint64 nblocks)
 {
 	int			flags;
-	bool		ring = nblocks > SIFT_IOS_RING_MIN_BLOCKS;
 
 	switch (mode)
 	{
 		case SIFT_IOS_FULL_SEQ:
 			flags = READ_STREAM_FULL | READ_STREAM_SEQUENTIAL;
-			ios->bas = ring ? GetAccessStrategyWithSize(BAS_BULKREAD, SIFT_IOS_RING_KB) : NULL;
 			break;
 		case SIFT_IOS_MAINT_SEQ:
 			flags = READ_STREAM_FULL | READ_STREAM_MAINTENANCE | READ_STREAM_SEQUENTIAL;
-			ios->bas = GetAccessStrategy(BAS_VACUUM);
 			ios->paced = true;
 			break;
 		case SIFT_IOS_SELECTIVE:
 			flags = READ_STREAM_FULL;
-			ios->bas = ring ? GetAccessStrategyWithSize(BAS_BULKREAD, SIFT_IOS_RING_KB) : NULL;
 			break;
 		default:
 			flags = READ_STREAM_DEFAULT;
-			ios->bas = NULL;
 			break;
 	}
+	ios->bas = strategy_of(mode, nblocks > SIFT_IOS_RING_MIN_BLOCKS);
 	ios->stream = NULL;
 	if (IO_STREAM_ON)
 		ios->stream = read_stream_begin_relation(flags | SIFT_READ_STREAM_BATCHING, ios->bas, ios->rel, MAIN_FORKNUM, stream_cb, ios, sizeof(SiftIoBufMeta));
@@ -134,7 +149,7 @@ sift_ios_end(SiftExtentReadStream *ios)
 {
 	if (ios->stream != NULL)
 		read_stream_end(ios->stream);
-	if (ios->bas != NULL)
+	if (ios->bas != NULL && ios->bas != sift_maint_ring)
 		FreeAccessStrategy(ios->bas);
 }
 

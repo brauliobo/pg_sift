@@ -9,6 +9,7 @@
 #include "core/errctx.h"
 #include "core/extlock.h"
 #include "core/f2/meta.h"
+#include "core/maint_pacer.h"
 #include "core/sift.h"
 #include "core/store.h"
 
@@ -72,7 +73,7 @@ sift_extend_zeroed_to_bas(Relation rel, BlockNumber nblocks, BufferAccessStrateg
 Buffer
 sift_extend_zeroed_to(Relation rel, BlockNumber nblocks)
 {
-	return sift_extend_zeroed_to_bas(rel, nblocks, NULL);
+	return sift_extend_zeroed_to_bas(rel, nblocks, sift_maint_ring);
 }
 
 struct SiftBulkRun
