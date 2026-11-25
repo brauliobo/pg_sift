@@ -7,6 +7,7 @@
 #include "storage/read_stream.h"
 
 #include "core/compat.h"
+#include "core/f2/f2_pace.h"
 #include "core/f2/io_stream.h"
 
 #ifdef SIFT_TESTING
@@ -64,6 +65,7 @@ begin(SiftExtentReadStream *ios, SiftIoMode mode, uint64 nblocks)
 		case SIFT_IOS_MAINT_SEQ:
 			flags = READ_STREAM_FULL | READ_STREAM_MAINTENANCE | READ_STREAM_SEQUENTIAL;
 			ios->bas = GetAccessStrategy(BAS_VACUUM);
+			ios->paced = true;
 			break;
 		case SIFT_IOS_SELECTIVE:
 			flags = READ_STREAM_FULL;
@@ -103,6 +105,8 @@ sift_ios_next(SiftExtentReadStream *ios, SiftIoBufMeta *meta)
 	Buffer		buf;
 	SiftIoBufMeta m;
 
+	if (ios->paced)
+		sift_f2_pace_pages(1);
 	if (ios->stream != NULL)
 	{
 		void	   *per_buffer = NULL;

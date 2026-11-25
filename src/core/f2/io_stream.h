@@ -58,6 +58,7 @@ typedef struct SiftExtentReadStream
 	uint32		expect_part_id;
 
 	BufferAccessStrategy bas;
+	bool		paced;			/* a read of the maintenance (SIFT_IOS_MAINT_SEQ): each page is charged to the pacer of a paced worker (core/f2/f2_pace.h) */
 	struct ReadStream *stream;	/* NULL: every block is read at once, in the order the callback would give them */
 
 	const SiftExtent *extents;	/* a linear stream: the logical pages [cur_lpage, end_lpage) of extents laid one after the other, pagestart[i] the first page of extent i */
