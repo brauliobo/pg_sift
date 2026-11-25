@@ -11,6 +11,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "lib/ilist.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -54,6 +55,8 @@ struct SiftStoreScan
 	SiftF2Store *store;
 	const RowVis *vis;
 	MemoryContext cx;
+	dlist_head	live;			/* the parts that hold a pin */
+	MemoryContextCallback cb;	/* gives the pins back when the scan is abandoned */
 	SiftF2Rel	f;
 	SiftF2KeySet ks;
 	SiftKeyPlan plan;
@@ -83,7 +86,7 @@ struct SiftStoreScan
 struct SiftStorePart
 {
 	SiftStoreScan *s;
-	MemoryContextCallback cb;	/* gives the pin back when the scan is abandoned */
+	dlist_node	node;			/* in SiftStoreScan.live while the part is open */
 	const SiftPartitionEntry *e;
 	const SiftPartDesc *d;
 	const SiftPendDelIndex *px;
@@ -612,6 +615,7 @@ sift_f2_store_part_next(SiftStorePart *p, SiftF2Batch *b)
 static void
 part_close(SiftStorePart *p)
 {
+	dlist_delete(&p->node);
 	part_release_granule(p);
 	part_release_pin(p);
 	MemoryContextDelete(p->gcx);
@@ -621,9 +625,13 @@ part_close(SiftStorePart *p)
 }
 
 static void
-part_pin_gone(void *arg)
+scan_pins_gone(void *arg)
 {
-	part_release_pin(arg);
+	SiftStoreScan *s = arg;
+	dlist_iter	it;
+
+	dlist_foreach(it, &s->live)
+		part_release_pin(dlist_container(SiftStorePart, node, it.cur));
 }
 
 static SiftStorePart *
@@ -635,8 +643,7 @@ part_new(SiftStoreScan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, c
 	p->e = e;
 	p->d = d;
 	p->px = px;
-	p->cb = (MemoryContextCallback) {part_pin_gone, p, NULL};
-	MemoryContextRegisterResetCallback(s->cx, &p->cb);
+	dlist_push_head(&s->live, &p->node);
 	p->gcx = sift_mem_allocset_create(s->cx, "sift f2 store scan granule");
 	p->views = MemoryContextAllocZero(s->cx, sizeof(ColView) * s->store->ncols);
 	p->active = MemoryContextAlloc(s->cx, sizeof(int) * Max(s->ncheck, 1));
@@ -769,6 +776,9 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	s->o = o;
 	s->store = o->store;
 	s->cx = cx;
+	dlist_init(&s->live);
+	s->cb = (MemoryContextCallback) {scan_pins_gone, s, NULL};
+	MemoryContextRegisterResetCallback(cx, &s->cb);
 	s->vis = table ? &table_vis : &index_vis;
 	s->f = sift_f2_store_rel(o->store);
 	s->want = MemoryContextAllocZero(cx, sizeof(bool) * o->store->ncols);
