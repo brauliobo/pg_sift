@@ -211,10 +211,10 @@ leak_cluster() {
 	return $bad
 }
 
-# leak_after_stop DATA: a clean shutdown ends every backend, and each one removes its temporary files
+# leak_after_stop DATA: a clean shutdown ends every backend, and each one removes its temporary files (the chunks of the cache of the object store tier are kept for the next start by design)
 leak_after_stop() {
 	local f bad=0
-	for f in $(find "$1" -path '*/pgsql_tmp/*' -type f 2>/dev/null); do leak_finding "temporary file left after shutdown: $f"; bad=1; done
+	for f in $(find "$1" -path '*/pgsql_tmp/*' -type f ! -path '*/pgsql_tmp/pgsql_tmp_sift_tier.*/*.chk' 2>/dev/null); do leak_finding "temporary file left after shutdown: $f"; bad=1; done
 	return $bad
 }
 

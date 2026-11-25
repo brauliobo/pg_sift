@@ -8,6 +8,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -166,13 +167,29 @@ add(SiftTierCache *c, uint64 hi, uint64 lo, uint32 idx, uint32 bytes)
 }
 
 static void
-evict_to_budget(SiftTierCache *c)
+evict_down_to(SiftTierCache *c, uint64 bytes)
 {
-	while (c->st.resident_bytes > c->budget && c->lru != NULL)
+	while (c->st.resident_bytes > bytes && c->lru != NULL)
 	{
 		drop(c, c->lru);
 		c->st.evictions++;
 	}
+}
+
+static void
+evict_to_budget(SiftTierCache *c)
+{
+	evict_down_to(c, c->budget);
+}
+
+/* A temporary file of the cache that no live backend writes: the process whose id it names is gone (a name that does not carry one is nobody's) */
+static bool
+tmp_file_is_dead(const char *name)
+{
+	const char *at = strstr(name, ".tmp.");
+	long		pid = at != NULL ? strtol(at + 5, NULL, 10) : 0;
+
+	return pid <= 0 || (kill((pid_t) pid, 0) != 0 && errno == ESRCH);
 }
 
 typedef struct Found
@@ -193,7 +210,7 @@ found_cmp(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-/* The chunk files of the directory, oldest first; the temporary files a crashed backend left are removed */
+/* The chunk files of the directory, oldest first; the temporary files of backends that are gone are removed */
 static void
 adopt_directory(SiftTierCache *c)
 {
@@ -214,7 +231,10 @@ adopt_directory(SiftTierCache *c)
 
 		snprintf(path, sizeof(path), "%s/%s", c->dir, de->d_name);
 		if (strstr(de->d_name, ".tmp.") != NULL)
-			unlink(path);
+		{
+			if (tmp_file_is_dead(de->d_name))
+				unlink(path);
+		}
 		else if (sscanf(de->d_name, "%16llx%16llx-%8x.chk%n", &hi, &lo, &idx, &len) == 3 && de->d_name[len] == '\0' && stat(path, &st) == 0 && st.st_size > (off_t) sizeof(ChunkTrailer) &&
 				 st.st_size - sizeof(ChunkTrailer) <= c->chunk_bytes)
 		{
@@ -321,6 +341,30 @@ serve_hit(SiftTierCache *c, Chunk *e, uint32 from, uint32 n, char *dst, char *sc
 	return true;
 }
 
+/* The chunk written to tmp and renamed to path; false with errno set when the file system refused */
+static bool
+write_chunk_file(const char *tmp, const char *path, const char *payload, uint32 bytes, const ChunkTrailer *t)
+{
+	int			fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	bool		ok;
+	int			saved;
+
+	if (fd < 0)
+		return false;
+	ok = write(fd, payload, bytes) == (ssize_t) bytes && write(fd, t, sizeof(*t)) == (ssize_t) sizeof(*t);
+	saved = errno;
+	close(fd);
+	if (ok && rename(tmp, path) != 0)
+	{
+		saved = errno;
+		ok = false;
+	}
+	if (!ok)
+		unlink(tmp);
+	errno = saved;
+	return ok;
+}
+
 static void
 store_chunk(SiftTierCache *c, uint64 hi, uint64 lo, uint32 idx, const char *payload, uint32 bytes)
 {
@@ -329,22 +373,18 @@ store_chunk(SiftTierCache *c, uint64 hi, uint64 lo, uint32 idx, const char *payl
 				tmp[700];
 	ChunkTrailer t = {sift_tier_crc32c_extend(0, payload, bytes), CHUNK_MAGIC};
 	static uint32 serial;
-	int			fd;
 	bool		ok;
 
 	chunk_path(c, &probe, path, sizeof(path));
 	snprintf(tmp, sizeof(tmp), "%s.tmp.%d.%u", path, (int) getpid(), serial++);
-	fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
-	if (fd < 0)
+	ok = write_chunk_file(tmp, path, payload, bytes, &t);
+	if (!ok && (errno == ENOSPC || errno == EDQUOT))
 	{
-		c->store_errors++;
-		return;
+		evict_down_to(c, c->st.resident_bytes / 2);
+		ok = write_chunk_file(tmp, path, payload, bytes, &t);
 	}
-	ok = write(fd, payload, bytes) == (ssize_t) bytes && write(fd, &t, sizeof(t)) == (ssize_t) sizeof(t);
-	close(fd);
-	if (!ok || rename(tmp, path) != 0)
+	if (!ok)
 	{
-		unlink(tmp);
 		c->store_errors++;
 		return;
 	}

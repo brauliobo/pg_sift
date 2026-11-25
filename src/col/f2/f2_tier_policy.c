@@ -360,6 +360,9 @@ sift_tier_backend(const SiftTierPolicy *p)
 	return be;
 }
 
+/* The cache is ephemeral: in the directory of the temporary files of the server, whose contents a base backup leaves out and a restart removes by this name */
+#define TIER_CACHE_PREFIX	"pgsql_tmp_sift_tier."
+
 static void
 make_dir(const char *path)
 {
@@ -379,8 +382,8 @@ sift_tier_cache_try(const SiftTierPolicy *p, SiftTierErr *err)
 		keep_policy(o, p);
 	if (o->cache == NULL)
 	{
-		snprintf(root, sizeof(root), "%s/pg_sift_tier", DataDir);
-		snprintf(dir, sizeof(dir), "%s/%u-%u", root, MyDatabaseId, p->policy_id);
+		snprintf(root, sizeof(root), "%s/base/pgsql_tmp", DataDir);
+		snprintf(dir, sizeof(dir), "%s/%s%u-%u", root, TIER_CACHE_PREFIX, MyDatabaseId, p->policy_id);
 		make_dir(root);
 		make_dir(dir);
 		old = MemoryContextSwitchTo(policy_context());
