@@ -6,7 +6,7 @@
 #   scripts/gen-refusals.sh --check   check the sources and that the blocks are the generated ones (lint)
 #
 # The checks fail when
-#   - a `return false` of src/agg/plan*.c or spec*.c is neither a refusal (`return agg_refuse*(..)`, or `agg_refused*(..);` right before it) nor in a
+#   - a `return false` of a planner file of src/agg (not a test, nor the folders and files of the scan itself, NO_REFUSAL_DIRS and NO_REFUSAL_FILES below) is neither a refusal (`return agg_refuse*(..)`, or `agg_refused*(..);` right before it) nor in a
 #     function that scripts/refusals.allow lists with its reason (a walker, a predicate or a "try" whose caller names the refusal: a reason recorded in
 #     a try would be the first of the arm and hide the one that follows it),
 #   - scripts/refusals.allow lists a function that has no such `return false` any more (or does not exist),
@@ -61,10 +61,11 @@ for n, line in enumerate(read('scripts/refusals.allow').split('\n'), 1):
 
 seen = set()
 # the folders of src/agg/ hold the planner files that were split (cost, from, expr, plan ...); NO_REFUSAL_DIRS hold the code of the scan itself and the passes that rewrite a query before it is planned (flat), which name no refusal
-NO_REFUSAL_DIRS = {'ht', 'par', 'vk', 'kern', 'hybrid', 'gpu', 'vexpr'}
-NO_REFUSAL_FILES = {'adaptive_test.c', 'approx.c', 'filter_adapt.c', 'refuse.c', 'sip.c', 'sip_test.c', 'stats.c', 'stream_exec.c', 'stream_test.c', 'window.c', 'window_test.c', 'topn/tourn.c'}
+NO_REFUSAL_DIRS = {'ht', 'par', 'vk', 'kern', 'hybrid', 'gpu', 'vexpr', 'group'}
+NO_REFUSAL_FILES = {'adaptive_test.c', 'approx.c', 'filter_adapt.c', 'refuse.c', 'sip.c', 'sip_test.c', 'stats.c', 'stream_exec.c', 'stream_test.c', 'window.c', 'window_test.c', 'topn/tourn.c', 'gpu.c', 'vet.c', 'expr/num.c', 'first/first.c', 'gen/sort.c', 'join/asof_run.c', 'join/grace.c', 'win/par.c', 'win/partsort.c'}
+TEST_FILE = re.compile(r'(^|/)(test\.c|[^/]*_test[^/]*\.[ch])$')
 folders = [d for d in glob.glob('src/agg/*/') if os.path.basename(d.rstrip('/')) not in NO_REFUSAL_DIRS]
-for path in sorted(f for f in glob.glob('src/agg/*.c') + [f for d in folders for f in glob.glob(d + '**/*.c', recursive=True)] if f[len('src/agg/'):] not in NO_REFUSAL_FILES):
+for path in sorted(f for f in glob.glob('src/agg/*.c') + [f for d in folders for f in glob.glob(d + '**/*.c', recursive=True)] if f[len('src/agg/'):] not in NO_REFUSAL_FILES and not TEST_FILE.search(f)):
     lines = read(path).split('\n')
     name = path[len('src/agg/'):]
     fn = None
@@ -97,7 +98,7 @@ for id_, slug, _, _, _, _ in slugs:
 # ---- the EXPLAIN labels: every label the library raises is named in a document (README.md or docs/, but not the results, the perf notes and the release notes) ----
 labels = set()
 for path in glob.glob('src/**/*.[ch]', recursive=True):
-    if re.search(r'(^|/)(test\.c|[^/]*_test[^/]*\.[ch])$', path):
+    if TEST_FILE.search(path):
         continue
     labels.update(re.findall(r'\bExplainProperty(?:Integer|Text|Float|Bool|Unit|Bytes)?\(\s*"([^"]+)"', read(path)))
     labels.update(re.findall(r'\bsift_explain_(?:begin\([^,]+,[^,]+|int\([^,]+|ms\([^,]+),\s*"([^"]+)"', read(path)))
