@@ -16,6 +16,9 @@ Every case is measured in a fresh backend at 1x, 2x and 4x rows of one synthetic
 import os, re, shutil, subprocess, sys, tempfile, time
 from typing import NamedTuple
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'bench', 'steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
+
 ROWS = 32768                     # 4, 8 and 16 granules of 8192 rows: no step of a granule between the sizes
 RUNS = int(os.environ.get("AUX_SCALE_RUNS", "2"))
 MWM, WM = 2 * 1048576, 1048576
