@@ -10,7 +10,6 @@
 
 #include "core/format_ux.h"
 #include "core/memtrack.h"
-#include "bm25/maintmem.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_build_peak = 0;
@@ -281,7 +280,7 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	MemSet(shared, 0, sizeof(SiftBuildShared));
 	shared->common = (SiftParCommon) {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent};
 	shared->nparticipants = nworkers + 1;
-	shared->budget = sift_bm25_maint_bytes(nworkers + 1);
+	shared->budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, nworkers + 1, 1);
 	ConditionVariableInit(&shared->ranges.cv);
 	SharedFileSetInit(&shared->fileset, ldr->pcxt->seg);
 	SpinLockInit(&shared->mutex);
@@ -431,7 +430,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_analyzer_config_from_index(index, &cfg);
 		ldr = begin_parallel(heap, index, info);
 	}
-	bs = build_begin(index, sift_bm25_maint_bytes(ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1));
+	bs = build_begin(index, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1, 1));
 	old = MemoryContextSwitchTo(bs->cxt);
 	SiftMemTracker mt_bm25_build;
 
@@ -459,7 +458,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	{
 		add_counts(ldr->shared, res->heap_tuples, bs->indexed);
 		adopt_runs(ldr, bs, res);
-		bs->budget = sift_bm25_maint_bytes(1);
+		bs->budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1);
 	}
 	bs->scanned = true;
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) res->index_tuples);

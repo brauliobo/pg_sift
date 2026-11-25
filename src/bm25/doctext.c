@@ -38,7 +38,6 @@
 #include "core/varint.h"
 #include "core/visibility.h"
 #include "core/memtrack.h"
-#include "bm25/maintmem.h"
 #include "table/dispatch.h"
 #include "bm25/doctext.h"
 
@@ -211,7 +210,7 @@ sift_doctext_prime(DocText *d, DocCursor *c)
 {
 	const SiftKey key = c->key;
 	const bool	any = c->any;
-	const Size	limit = sift_bm25_maint_bytes(1) / 4;
+	const Size	limit = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 4;
 	Size		bytes = 0;
 	DocLoc	   *order;
 	uint32		n = 0;

@@ -5,7 +5,6 @@
 #include "core/host.h"
 
 #include "core/memtrack.h"
-#include "bm25/maintmem.h"
 #include "bm25/analyze.h"
 #include "bm25/bitmap.h"
 #include "bm25/kernels.h"
@@ -150,7 +149,7 @@ sift_seg_legacy_field_dl(SiftSegment *seg, int nf, MemoryContext mcxt)
 	char		lo = SIFT_FIELD_BASE,
 				hi = SIFT_FIELD_BASE + nf;
 
-	sift_budget_check(bytes, (int) (sift_bm25_maint_bytes(1) / 1024), "the field lengths of a segment of an older format", "maintenance_work_mem", NULL);
+	sift_budget_check(bytes, (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 1024), "the field lengths of a segment of an older format", "maintenance_work_mem", NULL);
 	lf.dl = MemoryContextAllocExtended(mcxt, bytes, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 	lf.cx = sift_mem_allocset_create(CurrentMemoryContext, "sift legacy field lengths");
 	lf.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));

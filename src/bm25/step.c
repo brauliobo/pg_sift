@@ -41,7 +41,6 @@
 #include "core/varint.h"
 #include "core/visibility.h"
 #include "core/memtrack.h"
-#include "bm25/maintmem.h"
 #include "table/dispatch.h"
 
 #define CLAIM_TRIES			8		/* picks of a step whose segments others replaced meanwhile */
@@ -269,7 +268,7 @@ static Tuplesortstate *
 sort_docs(Relation index, const SiftSegEntry *seg)
 {
 	SiftWbufReader *r = sift_wbuf_open(index, seg, CurrentMemoryContext, NULL, NULL);
-	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, (int) (sift_bm25_maint_bytes(1) / 2048),
+	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, sift_mem_maint_kb() / 2,
 												 NULL, TUPLESORT_RANDOMACCESS);
 	DocPacker	pk = {palloc(1024), 1024};
 	SiftWbufDoc	d;
@@ -289,7 +288,7 @@ static Size
 inv_budget(Tuplesortstate *sort)
 {
 	TuplesortInstrumentation st;
-	Size		budget = sift_bm25_maint_bytes(1);
+	Size		budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1);
 
 	tuplesort_get_stats(sort, &st);
 	if (st.sortMethod == SORT_TYPE_QUICKSORT)
@@ -573,7 +572,7 @@ merge_soft_cap(SiftMergeGoal goal)
 static int
 merge_fanin_cap(void)
 {
-	return Min(MAX_MERGE_FANIN, Max(2, sift_bm25_maint_bytes(1) / (2 * SIFT_SEG_CURSOR_MIN)));
+	return Min(MAX_MERGE_FANIN, Max(2, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / (2 * SIFT_SEG_CURSOR_MIN)));
 }
 
 /* The policy's choice (smallest first) cut to the smallest segments whose bytes fit one merge; a merge of fewer than two is none */
@@ -639,7 +638,7 @@ heal_runs(DocText *dt, SiftInvBuf *inv, SiftSegment *seg, RunList *runs)
 {
 	Heal		h = {.dt = dt,.inv = inv,.runs = runs};
 
-	sift_seg_stream(seg, sift_bm25_maint_bytes(1) / 2, &(SiftSegSink) {.docs = heal_docs}, &h);
+	sift_seg_stream(seg, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 2, &(SiftSegSink) {.docs = heal_docs}, &h);
 	if (!sift_inv_empty(h.inv))
 		runlist_push(runs, sift_inv_spill(h.inv));
 }
@@ -649,7 +648,7 @@ static bool
 merge_healing(Relation index, SiftWriteTarget *wt, const MergeSel *in, DocText *dt, MemoryContext cx, const SiftScoreRef *ref, SiftSegEntry *neu)
 {
 	RunList		runs = {.run = palloc(in->n * sizeof(SiftRun *)),.max = in->n};
-	SiftInvBuf *inv = inv_create_for(index, sift_bm25_maint_bytes(1) / 2, cx, true);
+	SiftInvBuf *inv = inv_create_for(index, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 2, cx, true);
 	bool		written;
 
 	for (int i = 0; i < in->n; i++)

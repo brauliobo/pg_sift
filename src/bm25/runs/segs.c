@@ -6,7 +6,6 @@
 #include "core/host.h"
 #include "bm25/runs/runs_priv.h"
 #include "core/memtrack.h"
-#include "bm25/maintmem.h"
 
 /*
  * bm25/runs/runs.c - the sorted runs and their merge into segments (bm25/runs.h). Portable: a run is a
@@ -232,7 +231,7 @@ sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext m
 	io_varint(&ds.io, ndocs);
 	io_varint(&ds.io, (seg->entry.flags & SIFT_SEG_POSITIONS) != 0);
 	io_varint(&ds.io, ds.nf);
-	sift_seg_stream(seg, sift_bm25_maint_bytes(1) / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &ds);
+	sift_seg_stream(seg, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &ds);
 	SIFT_INVARIANT(ds.ndocs == 0, "sift: segment %llu lists %llu live docs but streamed another number", ULL(seg->entry.gen), ULL(ndocs));
 	io_varint(&ds.io, 0);
 	io_flush(&ds.io);

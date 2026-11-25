@@ -5,7 +5,6 @@
  */
 #include "bm25/runs/runs_priv.h"
 #include "core/memtrack.h"
-#include "bm25/maintmem.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_run_docs = 0;
@@ -165,7 +164,7 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 				SiftSegEntry *entry)
 {
 	RunHome		tmp = {0};
-	Size		budget = sift_bm25_maint_bytes(1);
+	Size		budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1);
 	MemoryContext cxt;
 	MemoryContext old;
 	MergeOut	mo = {0};

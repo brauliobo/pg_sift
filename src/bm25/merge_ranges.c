@@ -12,7 +12,6 @@
 #include "core/store.h"
 #include "core/restrict.h"
 #include "core/memtrack.h"
-#include "bm25/maintmem.h"
 
 PGDLLEXPORT void sift_merge_worker(dsm_segment *seg, shm_toc *toc);
 
@@ -86,7 +85,7 @@ merge_alone(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, 
 	MemoryContextSwitchTo(old);
 	nlive = open_live(index, in, n, cxt, bas, segs, &ndocs, &sum_dl);
 	if (nlive > 0)
-		sift_segs_write(segs, nlive, sift_bm25_maint_bytes(1), wt, sift_store_new_gen(index), ref, neu);
+		sift_segs_write(segs, nlive, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1), wt, sift_store_new_gen(index), ref, neu);
 	close_live(segs, nlive);
 	MemoryContextDelete(cxt);
 	return nlive > 0;
@@ -152,7 +151,7 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 	MemSet(shared, 0, sizeof(SiftBuildShared));
 	shared->common = (SiftParCommon) {InvalidOid, RelationGetRelid(index), false};
 	shared->nparticipants = nworkers + 1;
-	shared->budget = sift_bm25_maint_bytes(nworkers + 1);
+	shared->budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, nworkers + 1, 1);
 	ConditionVariableInit(&shared->ranges.cv);
 	SharedFileSetInit(&shared->fileset, ldr->pcxt->seg);
 	SpinLockInit(&shared->mutex);
