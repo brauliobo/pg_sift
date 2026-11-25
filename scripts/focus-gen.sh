@@ -18,7 +18,7 @@ WORK=${SIFT_TMP:-/tmp/sift-focus-$$}/focus
 rm -rf "$WORK" && mkdir -p "$WORK/tree" "$WORK/cov"
 copy_git_sources "$REPO" "$WORK/tree"
 cd "$WORK/tree"
-export COPT=--coverage SHLIB_LINK=--coverage SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root SIFT_SUDO=
+export COPT=--coverage SHLIB_LINK=--coverage SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root SIFT_SUDO= SIFT_BUILD_DIR=$WORK/build
 unset SANITIZE SIFT_INITDB_TEMPLATE INITDB_TEMPLATE
 trap 'scripts/pgtest.sh stop >/dev/null 2>&1 || true; [[ -n ${KEEP:-} ]] || rm -rf "$WORK"' EXIT
 scripts/pgtest.sh install >"$WORK/build.log" 2>&1 || { tail -n 20 "$WORK/build.log" >&2; exit 1; }
@@ -26,7 +26,7 @@ scripts/pgtest.sh install >"$WORK/build.log" 2>&1 || { tail -n 20 "$WORK/build.l
 # the functions run since the counters were reset, as JSON on stdout: {"src/agg/cte/hook.c": ["cte_floor", ...]}
 executed() {
 	local f
-	f=$(find src -name '*.gcda')
+	f=$(find "$SIFT_BUILD_DIR/src" -name '*.gcda')
 	[[ -n $f ]] || { echo '{}'; return; }
 	# shellcheck disable=SC2086
 	gcov --json-format --stdout $f 2>/dev/null | python3 -I -c '
@@ -43,7 +43,7 @@ while True:
                 out.setdefault(f["file"], set()).add(re.sub(r"(\.(isra|constprop|part|cold|lto_priv)(\.[0-9]+)?)+$", "", fn["name"]))
 json.dump({k: sorted(v) for k, v in out.items()}, sys.stdout)'
 }
-reset() { find src -name '*.gcda' -delete; }
+reset() { find "$SIFT_BUILD_DIR/src" -name '*.gcda' -delete; }
 
 # measure OUT COMMAND...: the functions the command runs in a cluster life of its own, as JSON in OUT
 measure() {
