@@ -1,7 +1,7 @@
 -- sift._tbl_rmgr_registered(): whether this server registered the resource managers of sift_table, which only a library that was preloaded does. A published sift_table
 -- needs them (docs/COL-TAM.md section 5), so the check of a publication asks the server, not the text of shared_preload_libraries, which names the library by a path, a version
 -- or a link as well as by its name.
-CREATE FUNCTION sift._tbl_rmgr_registered() RETURNS boolean
+CREATE OR REPLACE FUNCTION sift._tbl_rmgr_registered() RETURNS boolean
 	AS 'MODULE_PATHNAME', 'sift_tbl_rmgr_registered' LANGUAGE C STABLE PARALLEL SAFE;
 COMMENT ON FUNCTION sift._tbl_rmgr_registered() IS 'Internal: whether the server registered the pg_sift resource managers, which only a preloaded library does. What sift.publication_check asks.';
 

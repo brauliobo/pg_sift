@@ -40,7 +40,8 @@ RETURNS TABLE (relation regclass, severity text, check_name text, detail text, a
 		FROM st s WHERE s.am = 'sift_table' AND s.format_major < 2 AND s.size_bytes > 0
 		UNION ALL
 		SELECT s.relation, 'error', 'index_quarantined', 'Quarantined: ' || coalesce(s.quarantine_reason, 'out of service'),
-			   format('REINDEX INDEX CONCURRENTLY %s;', s.relation)
+			   CASE WHEN s.am = 'sift_table' THEN format('SELECT * FROM sift.check(%L);', s.relation::text)
+					ELSE format('REINDEX INDEX CONCURRENTLY %s;', s.relation) END
 		FROM st s WHERE s.quarantined
 		UNION ALL
 		SELECT s.relation, 'error', 'index_invalid', 'Interrupted concurrent index build left an invalid index',

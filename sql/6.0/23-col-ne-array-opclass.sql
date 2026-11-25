@@ -26,5 +26,11 @@ $do$;
 
 -- && (strategy 31) of anyarray: the planner offers an index of format major 2 on an array column the clause col && ARRAY[..]; the index keeps the rows whose array is not NULL and the executor
 -- tests the elements. Opt-in like the classes above: CREATE INDEX ON t USING sift_col (id, tags sift.col_array_ops).
-CREATE OPERATOR CLASS sift.col_array_ops FOR TYPE anyarray USING sift_col AS OPERATOR 31 pg_catalog.&& (anyarray, anyarray);
+DO $do$
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_opclass WHERE opcname = 'col_array_ops' AND opcnamespace = 'sift'::regnamespace) THEN
+		CREATE OPERATOR CLASS sift.col_array_ops FOR TYPE anyarray USING sift_col AS OPERATOR 31 pg_catalog.&& (anyarray, anyarray);
+	END IF;
+END
+$do$;
 COMMENT ON OPERATOR CLASS sift.col_array_ops USING sift_col IS 'Lets the planner offer a sift_col index of format major 2 for array && array; the index keeps the rows whose array is not NULL and the executor tests the elements.';

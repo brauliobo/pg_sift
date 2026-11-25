@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS sift.projection_defs (rel sift.tblref NOT NULL, name 
 CREATE UNIQUE INDEX IF NOT EXISTS projection_defs_key ON sift.projection_defs (rel oid_ops, name);
 ALTER TABLE sift.projection_defs REPLICA IDENTITY USING INDEX projection_defs_key;
 SELECT pg_catalog.pg_extension_config_dump('sift.projection_defs', 'WHERE rel::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class)');
+-- the named projections of 5.0 name their table by its qualified name: a definition of a table that is gone is not dumped, as those of the tables above
+SELECT pg_catalog.pg_extension_config_dump('sift.projections', 'WHERE pg_catalog.to_regclass(source) IS NOT NULL');
 
 -- Skips the row of a table the database does not have: a restore without the table reads its name as 0, and the rows of two such tables that share a projection name would meet in the unique key
 CREATE OR REPLACE FUNCTION sift_internal.projection_defs_skip() RETURNS trigger

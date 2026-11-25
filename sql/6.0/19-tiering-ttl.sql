@@ -55,12 +55,12 @@ COMMENT ON EVENT TRIGGER sift_tier_policies_forget IS 'After DROP: removes the t
 -- endpoint is required by r2:// and names a compatible store for s3://). The parts keep their place and read through a bounded local cache. true when the policy was set or changed, false when it was the same.
 CREATE OR REPLACE FUNCTION sift.set_tier_policy(rel regclass, uri text, move_after interval DEFAULT '30 days', endpoint text DEFAULT NULL) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_set_tier_policy' LANGUAGE C VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
-COMMENT ON FUNCTION sift.set_tier_policy(regclass, text, interval, text) IS 'Moves the parts of a Format 2.0 sift_table or sift_col index whose newest row is older than move_after to object storage (file:///dir, s3://bucket/prefix or r2://bucket/prefix with endpoint). Needs MAINTAIN. S3 and R2 read the AWS_* variables of the server environment and need libcurl.so.4. The location cannot change while parts are stored. true when the policy was set or changed.';
+COMMENT ON FUNCTION sift.set_tier_policy(regclass, text, interval, text) IS 'Moves the parts of a Format 2.0 sift_table or sift_col index whose newest row is older than move_after to object storage (file:///dir, s3://bucket/prefix or r2://bucket/prefix with endpoint). Superuser only. S3 and R2 read the AWS_* variables of the server environment and need libcurl (libcurl.so.4, libcurl.4.dylib on macOS). The location cannot change while parts are stored.';
 
 -- Stops moving parts. Refused while parts are still in object storage: they leave it only when they expire (a table) or when the index is rebuilt.
 CREATE OR REPLACE FUNCTION sift.clear_tier_policy(rel regclass) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_clear_tier_policy' LANGUAGE C STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
-COMMENT ON FUNCTION sift.clear_tier_policy(regclass) IS 'Removes the object storage policy of a sift_table or sift_col index: true when there was one. Refused while parts are in object storage. Needs MAINTAIN on the table.';
+COMMENT ON FUNCTION sift.clear_tier_policy(regclass) IS 'Removes the object storage policy of a sift_table or sift_col index: true when there was one. Refused while parts are in object storage or objects of dropped parts wait to be deleted. Superuser only.';
 
 -- Drops the parts of a sift_table whose newest value of col is older than retention, in one commit per partition and without reading or deleting a row. A NULL retention clears the TTL.
 -- A sift_col index is refused: it would forget rows its table keeps, and the same query would answer differently through the index and through the table.

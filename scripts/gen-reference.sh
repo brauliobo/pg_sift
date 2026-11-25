@@ -182,10 +182,19 @@ def function(s, name, open_):
 first_types = {}   # function name -> the argument types of the first CREATE the scans met: the order of the scans is the order of the releases
 
 
+def unwrapped(stmts):
+    """the statements, and the operators and operator classes that a DO block creates when they are not there yet (the parts of a release can run again)"""
+    for s in stmts:
+        yield s
+        if re.match(r"DO\s+'", s):
+            for m in re.finditer(r'\bTHEN\s+(CREATE\s+OPERATOR\b[^;]*);', s, re.I):
+                yield m.group(1).strip()
+
+
 def scan(*paths):
     """-> objects {(kind, name): dict}, comments {(kind, name): text}, of the statements of the scripts in order"""
     objs, comments = {}, {}
-    for s in [s for path in paths for s in statements(read(path))]:
+    for s in [s for path in paths for s in unwrapped(statements(read(path)))]:
         has_internal_tag = '/*@internal*/' in s
         s_clean = s.replace('/*@internal*/', '').strip()
         m = re.match(r'DROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?sift\.(\w+)\s*\(', s_clean, re.I)
