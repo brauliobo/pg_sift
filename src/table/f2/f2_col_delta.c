@@ -598,6 +598,16 @@ sift_col_delta_chain_min_xid(const SiftColDeltaChain *c)
 	return lo;
 }
 
+FullTransactionId
+sift_col_delta_chain_max_xid(const SiftColDeltaChain *c)
+{
+	FullTransactionId hi = InvalidFullTransactionId;
+
+	for (int i = 0; i < c->npages; i++)
+		hi = sift_fxid_max(hi, sift_col_delta_page_hdr(sift_col_delta_chain_page(c, i))->max_xid);
+	return hi;
+}
+
 /* ---- the verdict of a modify ---- */
 
 /* MEM[MEM-TBL-07]: backend BSS EPQ ack ring epq_acks (~512 B; COW clean idle) */

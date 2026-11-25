@@ -356,6 +356,8 @@ extern SiftExtent *sift_col_delta_chain_extents(const SiftColDeltaChain *c, int 
 extern void sift_col_delta_page_summary(const char *page, SiftColDeltaBatch *seen);
 extern void sift_col_delta_chain_free(SiftColDeltaChain *c);
 extern FullTransactionId sift_col_delta_chain_min_xid(const SiftColDeltaChain *c);
+/* The newest writer of the chain as its pages say: exact, where the anchor's max_xid is as of the last manifest commit that changed the chain (a record that fits the newest page is appended without one) */
+extern FullTransactionId sift_col_delta_chain_max_xid(const SiftColDeltaChain *c);
 
 /* What the chain says of transactions: the snapshot of a reader, the state of a writer */
 typedef struct SiftColDeltaOps
