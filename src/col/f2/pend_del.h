@@ -16,6 +16,8 @@
 #define SIFT_PEND_DEL_SEALED	(UINT16_C(1) << 0)
 #define SIFT_PEND_DEL_SHARD_DIR	(UINT16_C(1) << 1)	/* the page is a shard directory's (col/f2/l0_shard_dir.h) */
 #define SIFT_PEND_DEL_REV		(UINT16_C(1) << 2)	/* prev_blk links the page to the older one and the entry names the newest: an append touches that page alone; without it next_blk links the head to the newer */
+#define SIFT_PEND_DEL_SETTLED	(UINT16_C(1) << 3)	/* the page holds pairs a fold kept: no fold resolves them again, only drops them once their deleter is past every horizon; no record is appended to it */
+#define SIFT_PEND_DEL_PLAIN		(UINT16_C(1) << 4)	/* the page holds a delete that is no update's: a fold has something to resolve in it */
 #define SIFT_PEND_DEL_FOLD_PAGES 4
 #define SIFT_PEND_DEL_PAGES_SHIFT	8
 #define SIFT_PEND_DEL_PAGES_MASK	UINT16_C(0xFF00)
@@ -92,6 +94,22 @@ extern SiftChainStamp sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNum
 
 /* The records of the chain at head, in order, and the blocks of its pages */
 extern SiftPendDelRec *sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, BlockNumber **pages, int *npages);
+
+/*
+ * The records a fold resolves and the pages that hold them: those above the settled pages (settled is the newest of them, InvalidBlockNumber when there are none or when the oldest of
+ * them holds a pair that can be dropped: the whole chain is read then).
+ */
+extern SiftPendDelRec *sift_pend_del_read_unsettled(Relation rel, uint64 part_id, BlockNumber head, BlockNumber *settled, int *n, BlockNumber **pages, int *npages);
+
+/* Whether a fold of the chain of the partition would resolve a plain delete or drop a pair: false while every record is a pair whose deleter some snapshot may still wait for */
+extern bool sift_pend_del_foldable(Relation rel, uint64 part_id, const uint8 *key_lo);
+
+/* How many of the pages, oldest first, hold nothing but pairs a fold keeps (nrecs: their records); they are settled in place, by sift_pend_del_settle_pages once the fold is made */
+extern int	sift_pend_del_settleable(Relation rel, uint64 part_id, const BlockNumber *pages, int npages, int *nrecs);
+extern void sift_pend_del_settle_pages(Relation rel, uint64 part_id, const BlockNumber *pages, int n);
+
+/* The pairs kept by a fold as settled pages above settled; the newest page (settled itself when there are none) */
+extern BlockNumber sift_pend_del_settle(Relation rel, uint64 part_id, BlockNumber settled, const SiftPendDelRec *recs, int n);
 #ifdef SIFT_TESTING
 extern uint64 sift_pend_del_reads;
 #endif

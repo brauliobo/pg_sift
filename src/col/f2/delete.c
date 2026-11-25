@@ -394,7 +394,11 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 				npend = 0,
 				npend_pages = 0,
 				nkeep,
+				nsettle,
+				npin,
+				nin_recs,
 				resolved = 0;
+	BlockNumber settled = InvalidBlockNumber;
 	SiftPendDelRec *recs,
 			   *keep,
 			   *pend = NULL;
@@ -417,13 +421,14 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
 	entry = mr.entries[0];
 	if (fold && entry.pend_del_blk != InvalidBlockNumber)
-		pend = sift_pend_del_read(rel, part_id, entry.pend_del_blk, &npend, &pend_pages, &npend_pages);
+		pend = sift_pend_del_read_unsettled(rel, part_id, entry.pend_del_blk, &settled, &npend, &pend_pages, &npend_pages);
 	recs = palloc((n_in + npend + 1) * sizeof(SiftPendDelRec));
-	memcpy(recs, recs_in, n_in * sizeof(SiftPendDelRec));
 	if (npend > 0)
-		memcpy(recs + n, pend, npend * sizeof(SiftPendDelRec));
-	n += npend;
-	n = sift_pend_del_unpair(recs, n, &keep, &nkeep);
+		memcpy(recs, pend, npend * sizeof(SiftPendDelRec));
+	memcpy(recs + npend, recs_in, n_in * sizeof(SiftPendDelRec));
+	n = sift_pend_del_unpair(recs, npend + n_in, &keep, &nkeep);
+	nsettle = fold ? nkeep : 0;
+	npin = sift_pend_del_settleable(rel, part_id, pend_pages, fold ? npend_pages : 0, &nin_recs);
 	done = palloc0(Max(n, 1) * sizeof(bool));
 	if (entry.l0_slab_blk != InvalidBlockNumber)
 	{
@@ -512,18 +517,19 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 		}
 		sift_dv_write_batch(rel, (uint32) part_id, (const SiftDv *const *) dvs, descs, ncow);
 	}
-	for (int i = 0; i < npend_pages; i++)
+	for (int i = npin; i < npend_pages; i++)
 		rel_ext[nrel++] = (SiftExtent) {pend_pages[i], 1};
 	e.update_parts = updated;
 	e.nupdate = ncow;
-	e.set_pend_del = npend_pages > 0;
-	e.new_pend_del_blk = InvalidBlockNumber;
+	e.new_pend_del_blk = fold ? sift_pend_del_settle(rel, part_id, npin > 0 ? pend_pages[npin - 1] : settled, keep + nin_recs, nsettle - nin_recs) : InvalidBlockNumber;
+	e.set_pend_del = fold && e.new_pend_del_blk != entry.pend_del_blk;
 	e.release = rel_ext;
 	e.nrelease = nrel;
 	if (e.nupdate > 0 || e.set_pend_del)
 		sift_manifest_commit(rel, &e);
-	if (nkeep > 0)
-		(void) sift_pend_del_append(rel, part_id, key_lo, keep, nkeep);
+	sift_pend_del_settle_pages(rel, part_id, pend_pages, npin);
+	if (nkeep > nsettle)
+		(void) sift_pend_del_append(rel, part_id, key_lo, keep + nsettle, nkeep - nsettle);
 	(void) sift_mem_used(mem);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	return resolved;
@@ -567,8 +573,10 @@ sift_del_route(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPend
 	else
 	{
 		int			pages = sift_pend_del_append(rel, part_id, key_lo, recs, n);
+		bool		forced = pages >= 4 * SIFT_PEND_DEL_FOLD_PAGES;
 
-		if (pages >= SIFT_PEND_DEL_FOLD_PAGES && (pages >= 4 * SIFT_PEND_DEL_FOLD_PAGES || !sift_f2_maint_request(rel, SIFT_MK_PEND_DEL_FOLD, part_id)))
+		if ((forced || (pages >= SIFT_PEND_DEL_FOLD_PAGES && sift_pend_del_foldable(rel, part_id, key_lo))) &&
+			(forced || !sift_f2_maint_request(rel, SIFT_MK_PEND_DEL_FOLD, part_id)))
 			(void) sift_del_bulk(rel, part_id, key_lo, NULL, 0, true, spec);
 	}
 	note_dead(rel, part_id, key_lo);
