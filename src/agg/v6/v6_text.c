@@ -13,6 +13,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -146,6 +147,7 @@ sift_v6_text_open(const SiftV6Spec *spec, MemoryContext parent)
 
 	t->cx = cx;
 	t->index = index_open(spec->text_indexoid, AccessShareLock);
+	pgstat_count_index_scan(t->index);
 	t->ist = sift_state_open(t->index, cx);
 	t->narms = list_length(spec->text_queries);
 	t->arm = palloc0(t->narms * sizeof(TextArm));

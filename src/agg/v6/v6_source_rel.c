@@ -9,6 +9,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
+#include "pgstat.h"
 #include "storage/predicate.h"
 
 #include "agg/plan/safety.h"
@@ -146,8 +147,13 @@ sift_v6_source_enter(Relation source, bool is_table, Snapshot snap)
 {
 	Relation	heap = source;
 
-	if (!is_table)
+	if (is_table)
+		pgstat_count_heap_scan(source);
+	else
+	{
 		sift_quarantine_net(source, sift_meta_peek_format(source).flags);
+		pgstat_count_index_scan(source);
+	}
 	if (!IsolationIsSerializable())
 		return;
 	if (!is_table)
