@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "commands/explain.h"
+#include "executor/instrument.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parsetree.h"
 #include "utils/builtins.h"
@@ -15,6 +16,7 @@
 #include "agg/v6/v6_explain.h"
 #include "agg/v6/v6_topn.h"
 #include "core/compat.h"
+#include "core/explain.h"
 
 /* The qual of an index scan reads the columns of the index and its parameters from the executor: as the statement wrote it, it reads those of the heap and prints its parameters as $n */
 static Node *
@@ -127,6 +129,51 @@ join_tag(SiftV6JoinMode mode)
 	}
 }
 
+typedef struct LookupReads
+{
+	double		read;
+	double		loaded;
+	double		index_scans;
+} LookupReads;
+
+/* the rows the scans of the lookup plans read, the rows they passed on and the index scans they ran, as the Lookup line of SiftAgg counts them */
+static bool
+lookup_reads(PlanState *ps, LookupReads *r)
+{
+	const Plan *plan = ps->plan;
+	Instrumentation *in = ps->instrument;
+
+	if (in != NULL)
+	{
+		InstrEndLoop(in);
+		if (IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan))
+		{
+			r->read += in->ntuples + in->nfiltered1 + in->nfiltered2;
+			r->loaded += in->ntuples;
+		}
+		if (IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapIndexScan))
+			r->index_scans += in->nloops;
+	}
+	return planstate_tree_walker(ps, lookup_reads, r);
+}
+
+static void
+explain_lookup_reads(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es)
+{
+	LookupReads r = {0};
+	SiftExplainLine ln;
+
+	if (!es->analyze)
+		return;
+	for (int d = 0; d < ext->ndims; d++)
+		lookup_reads(list_nth(css->custom_ps, d), &r);
+	sift_explain_begin(&ln, es, "Lookup");
+	sift_explain_int(&ln, "Lookup Rows Read", NULL, "rows read", (int64) r.read, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Lookup Rows Loaded", NULL, "rows loaded", (int64) r.loaded, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Lookup Index Scans", NULL, "index scans", (int64) r.index_scans, SIFT_XI_OPT);
+	sift_explain_end(&ln);
+}
+
 void
 sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es)
 {
@@ -143,6 +190,7 @@ sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, Explain
 	}
 	if (names != NIL)
 		ExplainPropertyList("Lookup Joins", names, es);
+	explain_lookup_reads(css, ext, es);
 }
 
 /* a column of the scan that the statement names as it is, by the name of the table: derived, jsonb, joined and index expression columns have no name, and print no line rather than a made-up one */
