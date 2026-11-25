@@ -213,11 +213,61 @@ sink_flush_due(Sink *s)
 	}
 }
 
+/* What the horizon and the deletion vector make of the rows of a granule read: the rows that are dead or whose inserter aborted go, the others are kept as the part will hold them (frozen when their inserter committed before the horizon) */
+typedef struct GranuleRows
+{
+	DeadBits	dead;
+	uint32		granule;
+	SiftXidHorizonCache *hc;
+	SiftCompactResult *res;
+} GranuleRows;
+
+static bool
+row_goes(SiftRowBuf *one, int r, void *arg)
+{
+	GranuleRows *gr = arg;
+	Inserter	ins = inserter_of(one->xmin[r], gr->hc, &gr->res->stripped);
+
+	gr->res->rows_in++;
+	if (bits_dead(gr->dead, gr->granule, (uint16) r))
+	{
+		gr->res->dead_dropped++;
+		return true;
+	}
+	if (ins == INS_DROP)
+	{
+		gr->res->aborted_dropped++;
+		return true;
+	}
+	if (ins == INS_FREEZE)
+	{
+		gr->res->frozen += TransactionIdIsNormal(one->xmin[r]);
+		one->xmin[r] = FrozenTransactionId;
+		one->cmin[r] = 0;
+	}
+	one->subxid[r] = 0;
+	return false;
+}
+
+/* The rows of a granule go to the sink: an empty buffer of the one side takes the granule's buffer as it is, the others copy its rows */
+static void
+sink_take(Sink *sink, SiftRowBuf *one, int64 hot_cut)
+{
+	if (!sink->split && sink->rb[0]->n == 0)
+	{
+		sift_rowbuf_free(sink->rb[0]);
+		sink->rb[0] = one;
+		return;
+	}
+	for (int r = 0; r < one->n; r++)
+		sift_rowbuf_copy_row(sink->rb[row_side(sink->spec, one, r, hot_cut)], one, r, one->xmin[r], one->cmin[r], 0);
+	sift_rowbuf_free(one);
+}
+
 static bool
 add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_id, Sink *sink, int64 hot_cut, const SiftPartSpec *spec, const SiftCodeMap *code_map,
 			  const SiftColRemap *remap, SiftXidHorizonCache *hc, void *fold, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel)
 {
-	SiftRowBuf *const *rb = sink->rb;
 	SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
 	uint16	   *grows = palloc(Max(part->hdr.ngranules, 1) * sizeof(uint16));
 	DeadBits	dead = NULL;
@@ -246,36 +296,23 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 	{
 		MemoryContext old = MemoryContextSwitchTo(granule_cx);
 		SiftGranuleDesc gd;
+		GranuleRows gr = {.dead = dead,.granule = g,.hc = hc,.res = res};
 
 		sift_vacuum_delay_point();
 		char	   *rec = sift_part_read_granule(rel, part, g, &gd);
 		SiftGranuleView v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
 		SiftRowVer *vers = sift_part_read_vers(rel, part, dir, g);
-		SiftRowBuf *one = sift_rowbuf_new(spec);
+		SiftRowBuf *one;
 
+		MemoryContextSwitchTo(sink->cx);
+		one = sift_rowbuf_new(spec);
+		MemoryContextSwitchTo(granule_cx);
 		sift_rowbuf_add_granule_mapped(one, &v, vers, spec, code_map, remap);
 		if (fold != NULL)
 			sift_compact_fold->apply(fold, d->part_gen, g, one, rel_ext, nrel);
-		for (int r = 0; r < one->n; r++)
-		{
-			Inserter	ins = inserter_of(one->xmin[r], hc, &res->stripped);
-
-			res->rows_in++;
-			if (bits_dead(dead, g, (uint16) r))
-			{
-				res->dead_dropped++;
-				continue;
-			}
-			if (ins == INS_DROP)
-			{
-				res->aborted_dropped++;
-				continue;
-			}
-			sift_rowbuf_copy_row(rb[row_side(spec, one, r, hot_cut)], one, r, ins == INS_FREEZE ? FrozenTransactionId : one->xmin[r], ins == INS_FREEZE ? 0 : one->cmin[r], 0);
-			res->frozen += ins == INS_FREEZE && TransactionIdIsNormal(one->xmin[r]);
-		}
+		(void) sift_rowbuf_drop_if(one, row_goes, &gr);
+		sink_take(sink, one, hot_cut);
 		(void) sift_mem_used(sink->mem);
-		sift_rowbuf_free(one);
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(granule_cx);
 		sink_flush_due(sink);
