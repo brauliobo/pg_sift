@@ -46,7 +46,8 @@ typedef enum SiftVkStatus
 	SIFT_VK_DECODE,				/* a chunk the device cannot decode: run the scan on the CPU */
 	SIFT_VK_OVERFLOW,			/* the hash table or the candidate list was too small: run the scan on the CPU */
 	SIFT_VK_PROG_ERROR,			/* a live row raised an error of the program: res.err_* name the row, the CPU raises the error */
-	SIFT_VK_NEED_BYTES			/* a chunk the job left out (bytes NULL) is not on the device: the caller sends it */
+	SIFT_VK_NEED_BYTES,			/* a chunk the job left out (bytes NULL) is not on the device: the caller sends it */
+	SIFT_VK_NONFINITE			/* a sum of floats is not finite: whether finite values overflowed (an error) or the table holds an infinity (a value) is the CPU's to tell: run the scan on the CPU */
 } SiftVkStatus;
 
 typedef enum SiftVkMode

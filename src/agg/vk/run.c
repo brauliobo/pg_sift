@@ -784,6 +784,11 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 		if (st == SIFT_VK_OK)
 			st = publish_tab(rc);
 	}
+	if (st == SIFT_VK_OK && !sift_vk_sums_finite(job, res))
+	{
+		snprintf(vk->err, sizeof(vk->err), "a sum of floats is not finite");
+		st = SIFT_VK_NONFINITE;
+	}
 	if (st == SIFT_VK_OK && vk->test_lost)
 	{
 		vk->lost = true;
