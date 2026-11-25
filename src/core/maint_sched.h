@@ -304,6 +304,7 @@ typedef struct SiftMaintHost
 	bool		(*defer_cold) (void);				/* the pacer: P2 and P3 wait for a quieter moment */
 	void		(*note_starved) (SiftPacerTier tier, TimestampTz now);
 	bool		(*should_yield) (SiftPacerTier tier, TimestampTz now);	/* the pacer: a higher tier found no worker free, this one leaves after its step */
+	void		(*pace) (SiftPacerTier tier);		/* the pacer: the worker sleeps what the load of the clients asks of the tier of the step it ended */
 	int			(*bgworkers_in_use) (void);
 	int			(*effective_max) (SiftMaintShmem *m);	/* the cap on workers now, asked only when a worker is to be started; NULL: sift.max_maint_workers */
 	int			(*other_workers) (void);			/* the workers of the other pool of the server (core/worker.h): sift.max_maint_workers counts them with these */
@@ -383,6 +384,9 @@ extern SiftMaintShmem *sift_maint_table(void);
 /* sift.async_maintenance, sift.max_maint_workers and sift.maintenance_naptime as the GUC hooks of worker.c give them */
 extern void sift_maint_configure(bool async_maintenance, int max_workers, int naptime_ms);
 extern SiftMaintEnq sift_maint_enqueue_here(const SiftMaintReq *req);
+
+/* Can a request made in this backend be served (the queue is on and a worker or a launcher is there)? */
+extern bool sift_maint_here_available(void);
 
 /* The workers of the queue that run or are about to (the workers of core/worker.h count them against sift.max_maint_workers too) */
 extern int sift_maint_active_workers(void);

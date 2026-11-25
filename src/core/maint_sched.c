@@ -550,6 +550,7 @@ sift_maint_run(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, int max_ste
 	while (n < max_steps && !*yielded && sift_maint_claim(m, host, db, !host->defer_cold(), &c))
 	{
 		sift_maint_complete(m, host, &c, step(&c, arg));
+		host->pace(c.tier);
 		*yielded = host->should_yield(c.tier, host->now()) || starved_elsewhere(m, host, db);
 		n++;
 	}

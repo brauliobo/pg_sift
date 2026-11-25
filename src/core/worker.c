@@ -172,6 +172,10 @@ static int	my_slot = -1;
 static uint64 my_claim;
 static SiftWorkerKind my_kind = SIFT_WK_N;
 
+/* The tier of the claim a worker of the queue (core/maint_sched.h) runs; no other worker has one */
+#define NOT_A_QUEUE_WORKER	(-1)
+static int	queue_tier = NOT_A_QUEUE_WORKER;
+
 static void
 slots_init(SIFT_DSM_INIT_ARGS)
 {
@@ -419,23 +423,46 @@ sift_worker_job(void)
 	return SIFT_JOB_NONE;
 }
 
+void
+sift_worker_queue_enter(void)
+{
+	queue_tier = SIFT_TIER_P0;
+	sift_maint_ring_open();
+}
+
+void
+sift_worker_queue_tier(SiftPacerTier tier)
+{
+	queue_tier = tier;
+}
+
+bool
+sift_worker_in_queue(void)
+{
+	return queue_tier != NOT_A_QUEUE_WORKER;
+}
+
 bool
 sift_worker_paced(void)
 {
 	SiftJob		job = sift_worker_job();
 
-	return job != SIFT_JOB_NONE && job != SIFT_JOB_ROLLUP;
+	return sift_worker_in_queue() || (job != SIFT_JOB_NONE && job != SIFT_JOB_ROLLUP);
 }
 
 int
 sift_worker_tier(void)
 {
+	if (sift_worker_in_queue())
+		return queue_tier;
 	return my_kind == SIFT_WK_N ? SIFT_TIER_P0 : kinds[my_kind].tier;
 }
 
 bool
 sift_worker_should_yield(void)
 {
+	if (sift_worker_in_queue())
+		return sift_pacer_should_yield(queue_tier, GetCurrentTimestamp());
 	return my_kind != SIFT_WK_N && sift_pacer_should_yield(kinds[my_kind].tier, GetCurrentTimestamp());
 }
 

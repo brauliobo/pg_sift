@@ -191,15 +191,26 @@ wal_pace(void)
 	}
 }
 
-void
-sift_f2_pace_pages(uint64 npages)
-{
-	static uint64 charged;
+static uint64 charged;
+static uint32 owed;
 
+void
+sift_f2_pace_pay(void)
+{
 	if (!sift_worker_paced())
 		return;
 	wal_pace();
-	for (uint32 u = sift_f2_pace_units(&charged, npages); u > 0; u--)
+	for (; owed > 0; owed--)
 		sift_pacer_pause((SiftPacerTier) sift_worker_tier());
+}
+
+void
+sift_f2_pace_pages(uint64 npages)
+{
+	if (!sift_worker_paced())
+		return;
+	owed += sift_f2_pace_units(&charged, npages);
+	if (!sift_worker_in_queue())
+		sift_f2_pace_pay();
 }
 #endif

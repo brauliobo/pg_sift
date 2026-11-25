@@ -22,6 +22,7 @@
 
 #include "col/dsmreg.h"
 #include "core/compat.h"
+#include "core/f2/f2_pace.h"
 #include "core/maint_drain.h"
 #include "core/waits.h"
 #include "core/worker.h"
@@ -164,6 +165,14 @@ host_should_yield(SiftPacerTier tier, TimestampTz now)
 	return sift_pacer_should_yield(tier, now);
 }
 
+/* A step is one unit of the pace of its tier, whatever it wrote: the steps that a stream of triggers asks for do not take the CPU of the clients */
+static void
+host_pace(SiftPacerTier tier pg_attribute_unused())
+{
+	sift_f2_pace_pages(SIFT_F2_PACE_UNIT_PAGES);
+	sift_f2_pace_pay();
+}
+
 static int
 host_other_workers(void)
 {
@@ -185,7 +194,7 @@ static int server_effective_max(SiftMaintShmem *m);
 
 const SiftMaintHost sift_maint_server_host = {
 	.now = host_now, .self_pid = host_self_pid, .pid_alive = host_pid_alive, .spawn = host_spawn, .wake = host_wake,
-	.defer_cold = host_defer_cold, .note_starved = host_note_starved, .should_yield = host_should_yield,
+	.defer_cold = host_defer_cold, .note_starved = host_note_starved, .should_yield = host_should_yield, .pace = host_pace,
 	.bgworkers_in_use = host_bgworkers_in_use, .other_workers = host_other_workers, .effective_max = server_effective_max,
 };
 
@@ -221,6 +230,12 @@ sift_maint_active_workers(void)
 	SiftMaintShmem *m = sift_maint_table();
 
 	return m != NULL ? (int) pg_atomic_read_u32(&m->active_workers) : 0;
+}
+
+bool
+sift_maint_here_available(void)
+{
+	return sift_maint_mode(cfg.async, launcher_registered, sift_maint_table() != NULL, cfg.max_workers) != SIFT_MAINT_MODE_OFF;
 }
 
 /* The entry of every trigger (a commit, a delete, a scan that finds maintenance due) */
@@ -296,6 +311,14 @@ nap(long ms)
 	CHECK_FOR_INTERRUPTS();
 }
 
+/* The pages a step reads and writes are paced at the tier of its claim (core/f2/f2_pace.c) */
+static SiftMaintStep
+paced_step(const SiftMaintClaim *claim, void *arg)
+{
+	sift_worker_queue_tier(claim->tier);
+	return stepper(claim, arg);
+}
+
 /* An ERROR of a step ends the transaction of the worker and hands its claim back as a failed step: the worker lives on */
 static int
 run_guarded(SiftMaintShmem *m, Oid db, bool *yielded)
@@ -304,7 +327,7 @@ run_guarded(SiftMaintShmem *m, Oid db, bool *yielded)
 
 	PG_TRY();
 	{
-		n = sift_maint_run(m, &sift_maint_server_host, db, 16, stepper, NULL, yielded);
+		n = sift_maint_run(m, &sift_maint_server_host, db, 16, paced_step, NULL, yielded);
 	}
 	PG_CATCH();
 	{
@@ -335,6 +358,7 @@ sift_maint_sched_worker_main(Datum main_arg)
 	before_shmem_exit(worker_exit_cb, Int32GetDatum(worker));
 	BackgroundWorkerInitializeConnectionByOid(db, InvalidOid, 0);
 	worker_connected = true;
+	sift_worker_queue_enter();
 	sift_maint_db_connected(m, db);
 	if (!sift_maint_worker_started(m, worker, MyProcPid, MyProcNumber))
 		proc_exit(0);

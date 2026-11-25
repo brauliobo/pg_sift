@@ -67,8 +67,12 @@ extern void sift_standby_horizon_attach(SiftStandbyHorizon *shared);
  */
 extern FullTransactionId sift_standby_safe_horizon(Relation index, bool urgent_freeze);
 
-/* Pages of a write of a paced maintenance worker: its pacer sleeps for each SIFT_F2_PACE_UNIT_PAGES and the WAL it wrote is kept to sift.maintenance_wal_rate; any other process is left alone */
+/*
+ * Pages of a write of a paced maintenance worker: its pacer sleeps for each SIFT_F2_PACE_UNIT_PAGES and the WAL it wrote is kept to sift.maintenance_wal_rate; any other process is left alone.
+ * The step of a worker of the queue holds locks of partitions that the writers of the clients wait for: what it owes the pacer is paid by sift_f2_pace_pay, between its steps and groups.
+ */
 extern void sift_f2_pace_pages(uint64 npages);
+extern void sift_f2_pace_pay(void);
 #endif
 
 #endif							/* SIFT_CORE_F2_PACE_H */

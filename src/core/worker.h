@@ -8,6 +8,8 @@
 #include "datatype/timestamp.h"
 #include "utils/rel.h"
 
+#include "core/maint_pacer.h"
+
 /* The entry points of the workers (pg_sift.so exports one: sift_worker_main), told apart by the kind in bgw_extra */
 typedef enum SiftWorkerKind
 {
@@ -80,6 +82,11 @@ extern void sift_worker_init(void);
 /* The job of this process when it is a worker of sift, else SIFT_JOB_NONE; and whether the writes of its steps are paced (every job but the rollup refresh) */
 extern SiftJob sift_worker_job(void);
 extern bool sift_worker_paced(void);
+
+/* The worker of the queue (core/maint_sched.h) is paced like the others: it enters once, after it connected, and sets the tier of each claim before its step */
+extern void sift_worker_queue_enter(void);
+extern void sift_worker_queue_tier(SiftPacerTier tier);
+extern bool sift_worker_in_queue(void);
 
 /* The tier of the steps of this worker (core/maint_pacer.h: 0 is P0, the first to be served and the last to give way); 0 for a process that is no worker */
 extern int	sift_worker_tier(void);
