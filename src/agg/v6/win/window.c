@@ -280,7 +280,7 @@ struct SiftV6WindowRun
 SiftV6WindowRun *
 sift_v6_window_open(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, SiftWinCarry *carry, SiftWinEmit emit, void *emit_arg)
 {
-	SiftV6WindowRun *r = MemoryContextAllocZero(cxt, sizeof(SiftV6WindowRun));
+	SiftV6WindowRun *r = MemoryContextAllocAligned(cxt, sizeof(SiftV6WindowRun), alignof(SiftV6WindowRun), MCXT_ALLOC_ZERO);
 
 	r->fd = (Feed) {.src = src,.spec = spec,.carry = carry};
 	r->w = sift_window_create(cxt, &spec->win, (uint64) work_mem * 1024 / 4, feed_next, src->skip != NULL ? feed_skip : NULL, &r->fd, emit, emit_arg);
