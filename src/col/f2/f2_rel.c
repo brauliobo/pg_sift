@@ -138,21 +138,38 @@ sift_f2_preagg_decl(Relation index, const SiftColSchema *schema, bool *on)
 	return decl->ndims > 0 ? decl : NULL;
 }
 
+/* The options the declarations of the index name, read before its state: what they look up can take a lock that reloads the entry, which frees the cached state and the options (not the leaves) */
+static void
+f2_declared(Relation index, const SiftPreaggDecl **decl, bool *preagg, SiftF2KllCols *kll)
+{
+	*decl = sift_f2_preagg_decl(index, sift_col_rel(index)->schema, preagg);
+	sift_f2_kll_columns(index, sift_col_rel(index), sift_col_options_sketches(index), kll);
+}
+
 SiftF2Rel *
 sift_f2_rel(Relation index)
 {
-	/* check-memory: allow key_leaf reads the entry, no catalog */
-	SiftColRel *r = sift_col_rel(index);
-	const SiftColOptions *o = sift_col_options(index);
 	MemoryContext old;
+	const SiftPreaggDecl *decl;
+	const SiftColOptions *o;
+	SiftColRel *r;
+	SiftF2KllCols kll;
 	SiftF2Rel  *f;
 	int			n,
 				klen;
+	bool		preagg;
 	bool	   *map_key = NULL;
 
-	if (r->f2 != NULL)
-		return r->f2;
-	old = MemoryContextSwitchTo(GetMemoryChunkContext(r));
+	if (sift_col_rel(index)->f2 != NULL)
+		return sift_col_rel(index)->f2;
+	old = MemoryContextSwitchTo(index->rd_indexcxt);
+	f2_declared(index, &decl, &preagg, &kll);
+#ifdef SIFT_TESTING
+	sift_col_test_inval(index);	/* the lookups of the declarations can take a lock that reloads the entry */
+#endif
+	/* check-memory: allow key_leaf reads the entry, no catalog */
+	r = sift_col_rel(index);
+	o = sift_col_options(index);
 	n = r->nscope > 0 ? r->scope_first : r->schema->ncols;
 	f = palloc0(sizeof(SiftF2Rel));
 	f->ncols = n;
@@ -191,15 +208,9 @@ sift_f2_rel(Relation index)
 		f->key_cols[f->nkey++] = key_leaf(index, r->schema, (const char *) o + o->ko_name[k]);
 	if (r->shred != NULL)
 		sift_col_shred_keep_payloads(r->shred);
-	bool		preagg;
-	const SiftPreaggDecl *decl = sift_f2_preagg_decl(index, r->schema, &preagg);
-
 	f->spec = (SiftPartSpec) {.ncols = n,.kinds = f->kinds,.nsort = f->nkey,.sort_cols = f->key_cols,.hints = f->hints,.scales = f->scales,.key_leaf = f->has_keys ? f->key_leaf : NULL,
 	.parent = f->has_groups ? f->parent : NULL,.preagg = preagg,.preagg_decl = decl,.map_key = map_key};
 	memcpy(f->spec.sort_flags, o->ko_flags, sizeof(f->spec.sort_flags));
-	SiftF2KllCols kll;
-
-	sift_f2_kll_columns(index, r, sift_col_options_sketches(index), &kll);
 	f->kll = kll.n > 0 ? memcpy(palloc(sizeof(kll)), &kll, sizeof(kll)) : NULL;
 	f->spec.kll = f->kll;
 	time_leaves(f, r->schema);
