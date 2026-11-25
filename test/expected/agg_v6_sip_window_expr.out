@@ -355,14 +355,20 @@ FROM dcase ORDER BY label;
  last wu batch 64 window       |     0
 (108 rows)
 
--- a window whose columns and first ring do not fit the budget is refused when it is created
+-- a window whose columns and first ring are more than the budget is made all the same
 SET work_mem = '64kB';
 SELECT count(*) FROM wd, sift._test_window(p, o, a, f, ARRAY['row_number']) AS e WHERE name = 'wp';
-ERROR:  the window needs more than 65536 bytes
-HINT:  Raise work_mem, or use a smaller offset.
+ count 
+-------
+ 20000
+(1 row)
+
 SELECT count(*) FROM wd, sift._test_window(p, o, a, f, ARRAY['lag:arg:4096']) AS e WHERE name = 'wp';
-ERROR:  the window needs more than 65536 bytes
-HINT:  Raise work_mem, or use a smaller offset.
+ count 
+-------
+ 20000
+(1 row)
+
 RESET work_mem;
 -- the output of DISTINCT ON and of a top-K stops at the first row of the partition, and the source passes over the granules of the rest of it
 SELECT count(*) AS rows_out FROM wd, sift._test_window(p, o, a, f, ARRAY['row_number'], mode => 'first', granule => 128) AS e WHERE name = 'wp';

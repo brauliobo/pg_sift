@@ -147,7 +147,7 @@ SELECT label, diff(format('SELECT e.tag, NULL::text[] FROM wd, sift._test_window
                           ds, CASE WHEN opts LIKE '%act%' THEN 'WHERE keep' ELSE '' END, CASE WHEN mode = 'last' THEN 'DESC' ELSE '' END, tail)) AS wrong
 FROM dcase ORDER BY label;
 
--- a window whose columns and first ring do not fit the budget is refused when it is created
+-- a window whose columns and first ring are more than the budget is made all the same
 SET work_mem = '64kB';
 SELECT count(*) FROM wd, sift._test_window(p, o, a, f, ARRAY['row_number']) AS e WHERE name = 'wp';
 SELECT count(*) FROM wd, sift._test_window(p, o, a, f, ARRAY['lag:arg:4096']) AS e WHERE name = 'wp';
