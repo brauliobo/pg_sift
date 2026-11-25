@@ -170,7 +170,8 @@ sift_tail_stream_hi(const SiftTailPart *p)
 /*
  * The block the file is cut at when the pieces of the streams that lie at or above it are copied into free blocks below it, from the lowest that the free space (free_blocks) can take them to
  * and that the others allow: whatever is not moved piece by piece holds the file to its end, a deletion vector is never moved, and the header of a part none of whose stream is moved stays
- * where it is. A cut under `from` is not asked for (the free space under it was found too scattered). Whether the file ends enough shorter at the cut.
+ * where it is. A cut under `from` is not asked for (the free space under it was found too scattered). No cut when no holder reaches the end of the file: what holds it is not a part (a
+ * metadata slab), and moving pieces would not shorten the file. Whether the file ends enough shorter at the cut.
  */
 static inline bool
 sift_tail_pick_cut(const SiftTailSpan *span, const SiftTailPart *part, int n, BlockNumber hw, uint64 free_blocks, BlockNumber min_gap, BlockNumber from, BlockNumber *cut)
@@ -179,13 +180,17 @@ sift_tail_pick_cut(const SiftTailSpan *span, const SiftTailPart *part, int n, Bl
 				c;
 	int			nall = 0,
 				k = 0;
+	bool		holds_end = false;
 	SiftExtent *all;
 
 	for (int i = 0; i < n; i++)
 	{
 		floor = Max(floor, part[i].nstream > 0 ? part[i].dv_hi : span[i].hi);
 		nall += part[i].nstream;
+		holds_end |= span[i].hi == hw;
 	}
+	if (!holds_end)
+		return false;
 	all = palloc(Max(nall, 1) * sizeof(SiftExtent));
 	for (int i = 0; i < n; i++)
 		for (int j = 0; j < part[i].nstream; j++)
