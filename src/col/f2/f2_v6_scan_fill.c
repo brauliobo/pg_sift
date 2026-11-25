@@ -11,6 +11,7 @@
 #include "agg/v6/v6_datebin_win_pg.h"
 #include "agg/v6/v6_expr_str.h"
 #include "col/f2/f2_v6_scan_int.h"
+#include "table/f2/f2_blob.h"
 
 static SiftStrView
 strview_of(const char *p, uint32 len)
@@ -45,7 +46,7 @@ any_null(const bool *isnull, int n)
 	return any != 0;
 }
 
-/* a sift_table keeps the datum of the attribute in its cell: the bytes of a text are the ones after its header */
+/* a sift_table keeps the bytes of a text in its cell, and the datum of a wide one (SIFT_COLTAG_WIDE_BLOB): its bytes are the ones after its header */
 SiftStrView
 sift_f2_v6_text_view(const ColView *cv, int row, bool table)
 {
@@ -55,7 +56,7 @@ sift_f2_v6_text_view(const ColView *cv, int row, bool table)
 		return strview_of(NULL, 0);
 	if (cv->dcode != NULL)
 		return strview_of(cv->dict->bytes + cv->dict->off[code], cv->dict->off[code + 1] - cv->dict->off[code]);
-	if (table)
+	if (table && cv->tag != NULL && cv->tag[row] == SIFT_COLTAG_WIDE_BLOB)
 		return strview_of(VARDATA_ANY(cv->s[row]), VARSIZE_ANY_EXHDR(cv->s[row]));
 	return strview_of(cv->s[row], cv->slen[row]);
 }
