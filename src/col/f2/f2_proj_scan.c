@@ -55,7 +55,7 @@ sift_proj_cursor_open(Relation rel, const SiftPartDesc *d, uint32 part_id, const
 	uint16	   *grows;
 
 	c->rel = rel;
-	c->part = sift_part_open(rel, d->header_blk, d->part_gen, part_id);
+	c->part = sift_part_open_desc(rel, d, part_id);
 	c->dir = sift_part_granule_dir(rel, c->part);
 	grows = palloc(Max(c->part->hdr.ngranules, 1) * sizeof(uint16));
 	for (uint32 g = 0; g < c->part->hdr.ngranules; g++)
