@@ -53,7 +53,7 @@ stock	in_constants	scan	0.16	0.63
 stock	in_expr_key	scan	0.12	0.49
 stock	join_active_filter	scan	0.12	0.48
 stock	join_filter_on_lookup_column	scan	0.12	0.48
-stock	join_month	normal	-	-
+stock	join_month	scan	0.13	0.52
 stock	join_other_fact_filter	scan	0.18	0.72
 stock	join_spans_values	scan	0.12	0.48
 stock	join_tier	scan	0.12	0.49
