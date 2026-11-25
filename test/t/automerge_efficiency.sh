@@ -103,14 +103,22 @@ run_scale() {
 	V[tbl_f2_delete.space_amp.$tag]=$(sql ae "SELECT round((SELECT relation_blocks FROM sift.space('t_del_$tag')) * 8192.0 / pg_relation_size('t_ref_$tag'), 2)")
 	work tbl_f2_delete "$tag" "$lsn0" "$temp0" "$dirty" "$S_BYTES"
 
-	# 3. sift_col with a scope: 25% of the rows deleted and 500 rows inserted, a slab with fewer rows than the 4096 that flush it
-	sql ae "CREATE TABLE t_col_$tag (id int8, grp int4, ts timestamptz, val int4, pad text)" \
-		"INSERT INTO t_col_$tag SELECT g, g % 4 + 1, timestamptz '2025-01-01' + g * interval '1 second', hashtext(g::text), md5(g::text) FROM generate_series(1, $n) g" \
-		"CREATE INDEX idx_col_$tag ON t_col_$tag USING sift_col (grp, ts, val, pad) WITH (key_order = 'grp, ts', scope = 'sc: grp -> pairs(member, scope_key)')" \
-		"VACUUM t_col_$tag" >/dev/null || bail "idx_col_$tag"
-	temp0=$(temp_bytes)
-	snap "idx_col_$tag" "DELETE FROM t_col_$tag WHERE id <= $q" "INSERT INTO t_col_$tag SELECT g + $n, 1, timestamptz '2025-02-01', g, md5(g::text) FROM generate_series(1, 500) g"
-	V[col_f2_churn.slabs0.$tag]=$S_SLABS; V[col_f2_churn.dead_pct0.$tag]=$S_DEAD; dirty=$S_BYTES; lsn0=$S_LSN
+	# 3. sift_col with a scope: 25% of the rows deleted and 500 rows inserted, a slab with fewer rows than the 4096 that flush it. The churn is read on a twin with sift.async_maintenance off (a worker
+	# that merges it before the read would hide what it left); the table of the case is churned with the workers on
+	col_churn() { # SUFFIX [SQL...]: the table and its index, then the churn in one session, then S_* of the index
+		local s=$1; shift
+		sql ae "CREATE TABLE t_col${s}_$tag (id int8, grp int4, ts timestamptz, val int4, pad text)" \
+			"INSERT INTO t_col${s}_$tag SELECT g, g % 4 + 1, timestamptz '2025-01-01' + g * interval '1 second', hashtext(g::text), md5(g::text) FROM generate_series(1, $n) g" \
+			"CREATE INDEX idx_col${s}_$tag ON t_col${s}_$tag USING sift_col (grp, ts, val, pad) WITH (key_order = 'grp, ts', scope = 'sc: grp -> pairs(member, scope_key)')" \
+			"VACUUM t_col${s}_$tag" >/dev/null || bail "idx_col${s}_$tag"
+		temp0=$(temp_bytes)
+		snap "idx_col${s}_$tag" "$@" "DELETE FROM t_col${s}_$tag WHERE id <= $q" "INSERT INTO t_col${s}_$tag SELECT g + $n, 1, timestamptz '2025-02-01', g, md5(g::text) FROM generate_series(1, 500) g"
+	}
+	col_churn x "SET sift.async_maintenance = off"
+	V[col_f2_churn.slabs0.$tag]=$S_SLABS; V[col_f2_churn.dead_pct0.$tag]=$S_DEAD
+	sql ae "DROP TABLE t_colx_$tag" >/dev/null || bail "t_colx_$tag"
+	col_churn ""
+	dirty=$S_BYTES; lsn0=$S_LSN
 	settle "idx_col_$tag" "t_col_$tag" -- "(SELECT l0_slabs = 0 AND dead_pct = 0 FROM sift.status('idx_col_$tag'))"
 	V[col_f2_churn.converged.$tag]=$CONV_OK; V[col_f2_churn.converge_ms.$tag]=$CONV_MS
 	snap "idx_col_$tag"
