@@ -543,7 +543,14 @@ check_same_mask(const Job *j, SiftCfiltResult res, const uint64 *mask, SiftCfilt
 		CHECK(!row_live(j, r) || row_passes(res, mask, r) == row_passes(want, want_mask, r));
 }
 
-/* A damaged chunk is what the backend path makes of it: the same result, or the same error as data (a worker never raises it) */
+/* The class a worker gives an error is the SQLSTATE the backend path raises for it */
+static SiftErrCode
+backend_err_code(void)
+{
+	return pgshim_sqlstate == ERRCODE_FEATURE_NOT_SUPPORTED ? SIFT_ERR_UNSUPPORTED : SIFT_ERR_CORRUPT;
+}
+
+/* A damaged chunk is what the backend path makes of it: the same result, or the same error as data, corrupt or unsupported (a worker never raises it) */
 static void
 test_damage(const Suite *s)
 {
@@ -560,11 +567,11 @@ test_damage(const Suite *s)
 		{
 			CHECK(t->ok[w] == backend_ok);
 			if (!backend_ok)
-				CHECK(t->err[w].code == SIFT_ERR_CORRUPT && strncmp(t->err[w].msg, pgshim_errmsg, sizeof(t->err[w].msg) - 1) == 0);
+				CHECK(t->err[w].code == backend_err_code() && strncmp(t->err[w].msg, pgshim_errmsg, sizeof(t->err[w].msg) - 1) == 0);
 			else
 				check_same_mask(t->job, t->res[w], t->mask[w], t->pg_res, t->pg_mask);
 		}
-		CHECK(backend_ok || pgshim_sqlstate == ERRCODE_DATA_CORRUPTED);
+		CHECK(backend_ok || pgshim_sqlstate == ERRCODE_DATA_CORRUPTED || pgshim_sqlstate == ERRCODE_FEATURE_NOT_SUPPORTED);
 		errors += !backend_ok;
 	}
 	CHECK(errors > 0);
