@@ -137,6 +137,9 @@ extern void sift_col_meta_init(Relation rel, SiftAmKind am, uint64 compat_flags,
 /* The init fork of an unlogged index, with the same pages */
 extern void sift_col_meta_init_fork(Relation rel, SiftAmKind am, uint64 compat_flags, uint32 schema_hash, uint32 state_flags);
 
+/* The hash of the leaves the parts were written for, as the leaves are named now (a renamed column): the parts are the same */
+extern void sift_col_meta_set_schema_hash(Relation rel, uint32 schema_hash);
+
 /*
  * The metapage of an index a scan, an insert or a vacuum is about to use, as a copy in *out: an index of column format major 1 (pg_sift 5.x) is refused with
  * ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE and the hint to REINDEX it, a damaged page is SIFT_CORRUPT.

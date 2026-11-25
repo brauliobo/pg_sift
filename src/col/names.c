@@ -125,7 +125,7 @@ follow_attribute(Oid indexoid, int pos, const SiftNameChange *c)
 	rename_attribute(indexoid, pos, c->to);
 	index = index_open(indexoid, AccessShareLock);
 	sift_col_set_options(index, renamed);
-	if (built && !sift_col_rekey(index))
+	if (built && !sift_col_rekey(index, pos + 1, c->from, c->to))
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": its segments cannot follow the rename of column \"%s\" to \"%s\"", sift_col_final_name(index), c->from, c->to),
 				 errdetail("They do not hold the leaves the index names now, so it stays stale: reads refuse it until it is built again."),

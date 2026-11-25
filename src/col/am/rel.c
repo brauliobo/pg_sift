@@ -460,34 +460,63 @@ segments_have_leaves(Relation index, const SiftColSchema *s)
 	return same;
 }
 
-/*
- * A column of the index was renamed and the options and attribute of the index say so (col/names.c). The leaves that are kept under the name of the column (the paths of a jsonb column,
- * the lengths of an array, the flag of a connection) are named after it in the schema the options give now, and the metapage has the hash of the schema the segments were written for.
- * The leaves are the same: when every segment has the leaves of the schema the options give, the metapage takes its hash and the segments keep the names they were written with. True
- * when the metapage names the leaves of the options now (it did, or it was written), false when the segments lack them: the index stays as stale as it was, a read says so and asks
- * for the REINDEX.
- */
-bool
-sift_col_rekey(Relation index)
+/* The schemas of the three layouts of presence leaves (sift_col_present_attrs) the index can have been written with, as its attributes and options name its columns now */
+static void
+layout_schemas(Relation index, MemoryContext cx, const SiftColSchema *schema[3])
 {
 	uint32		layout[3] = {sift_col_present_attrs(index, SIFT_COL_PRESENT_NULLABLE), 0, sift_col_present_attrs(index, SIFT_COL_PRESENT_ALL)};
+
+	for (int i = 0; i < 3; i++)
+		schema[i] = build_rel_with(index, cx, layout[i])->schema;
+}
+
+/*
+ * The hash the leaves of the schema had while the column at attno was called from: the leaves kept under the name of a column begin with it (the paths of a jsonb column, the lengths of an
+ * array, the flag of a connection), and a part names no column, so the hash is all a Format 2.0 index keeps of the names.
+ */
+static uint32
+hash_named_before(MemoryContext cx, const SiftColSchema *s, int attno, const char *from, const char *to)
+{
+	SiftColDef *defs = MemoryContextAlloc(cx, s->ncols * sizeof(SiftColDef));
+	size_t		tolen = strlen(to);
+
+	memcpy(defs, s->cols, s->ncols * sizeof(SiftColDef));
+	for (int i = 0; i < s->ncols; i++)
+		if (defs[i].attno == attno && strncmp(defs[i].path, to, tolen) == 0)
+			defs[i].path = psprintf("%s%s", from, defs[i].path + tolen);
+	return sift_cschema_create(cx, defs, s->ncols)->hash;
+}
+
+/*
+ * The column at attno of the index was renamed from "from" to "to" and the options and attribute of the index say so (col/names.c). The leaves that are kept under the name of the column are
+ * named after it in the schema the options give now, and the metapage has the hash of the schema the parts were written for. The leaves are the same: a Format 1 index takes the hash when
+ * every segment has the leaves of the schema the options give, a Format 2.0 index when its hash is that of the layout it had under the old name; the parts keep the names they were written
+ * with. True when the metapage names the leaves of the options now (it did, or it was written), false when the index was stale before: it stays as stale as it was, a read says so and asks for
+ * the REINDEX.
+ */
+bool
+sift_col_rekey(Relation index, int attno, const char *from, const char *to)
+{
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift col rekey", ALLOCSET_SMALL_SIZES);
+	bool		f2 = sift_meta_resolve_major(index) == SIFT_FORMAT2_MAJOR;
 	const SiftColSchema *schema[3];
 	uint32		hash,
 				flags;
 	bool		rekeyed = true;
 
-	if (sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG))
+	if (stored_layout(index, f2, &hash, &flags))
 	{
-		for (int i = 0; i < 3; i++)
-			schema[i] = build_rel_with(index, cx, layout[i])->schema;
+		layout_schemas(index, cx, schema);
 		if (schema[0]->hash != hash && schema[1]->hash != hash && schema[2]->hash != hash)
 		{
 			rekeyed = false;
 			for (int i = 0; i < 3 && !rekeyed; i++)
-				if (segments_have_leaves(index, schema[i]))
+				if (f2 ? hash_named_before(cx, schema[i], attno, from, to) == hash : segments_have_leaves(index, schema[i]))
 				{
-					sift_store_rekey_layout(index, schema[i]->hash);
+					if (f2)
+						sift_col_meta_set_schema_hash(index, schema[i]->hash);
+					else
+						sift_store_rekey_layout(index, schema[i]->hash);
 					rekeyed = true;
 				}
 		}

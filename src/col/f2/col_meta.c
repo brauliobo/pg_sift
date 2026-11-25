@@ -202,6 +202,19 @@ sift_col_meta_init_fork(Relation rel, SiftAmKind am, uint64 compat_flags, uint32
 	smgr_bulk_finish(bulk);
 }
 
+void
+sift_col_meta_set_schema_hash(Relation rel, uint32 schema_hash)
+{
+	Buffer		buf = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
+	SiftXlog	x = sift_xlog_start(rel);
+	Page		p0 = sift_xlog_register(&x, buf, 0);
+	SiftColMetaPageData *m = SIFT_COL_META(p0);
+
+	m->schema_hash = schema_hash;
+	sift_meta_seal(p0, m->common.struct_size);
+	sift_xlog_done(&x);
+}
+
 const SiftColMetaPageData *
 sift_col_open_meta(Relation rel, SiftColMetaPageData *out)
 {
