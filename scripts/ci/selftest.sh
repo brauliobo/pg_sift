@@ -370,7 +370,7 @@ if [[ $MODE == --selftest ]]; then
 			done
 			grep -qE '^installcheck-batch1 ' <<<"$f1" || { echo "FAIL: formats: the Format 1.0 $m plan has no regression batch"; bad=1; }
 			for j in release-library-regress hardened isa-baseline tools-build format-isolation regress-batch difftest-col-selftest tap-col/f2/wal tap-col/f2/minimal_wal tap-compat/v51_full \
-				tap-compat/v6_dump_restore_tablespace tap-shell-compat/pg_upgrade/basic tap-shell-compat/matrix tap-shell-compat/old_lib_refusal tap-shell-col/f2/standby; do
+				tap-compat/dump_restore_tablespace tap-shell-compat/pg_upgrade/basic tap-shell-compat/matrix tap-shell-compat/old_lib_refusal tap-shell-col/f2/standby; do
 				! grep -q "^$j " <<<"$f1" || { echo "FAIL: formats: the Format 1.0 $m plan queues $j"; bad=1; }
 			done
 			! grep -qE ' (format2_|table_f2_|stor_f2_|f2_|compat_v1_)' <<<"$f1" || { echo "FAIL: formats: the Format 1.0 $m plan names a test of Format 2.0 or one that sets Format 1 by itself: $(grep -oE ' (format2_|table_f2_|stor_f2_|f2_|compat_v1_)[a-z0-9_]*' <<<"$f1" | sort -u | head -3 | tr '\n' ' ')"; bad=1; }

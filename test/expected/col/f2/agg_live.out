@@ -1,4 +1,4 @@
--- SiftAggV6, live over an index of format major 2 (src/agg/v6/): the aggregate of one table whose sift_col index of format major 2 holds the columns it reads is answered by the
+-- SiftAggV6, live over an index of format major 2 (src/agg/): the aggregate of one table whose sift_col index of format major 2 holds the columns it reads is answered by the
 -- scan of the index (its pruning, filters on the stored values, deletion vectors and pending deletes) with the rows the heap does not show to the snapshot left out, and folded in batches
 -- into the groups. Every query is run with the node and without it (sift.enable_agg) and the two answers are compared; the first word says they agree, the second that the plan is the node's.
 CREATE EXTENSION pg_sift_test CASCADE;

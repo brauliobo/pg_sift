@@ -1,5 +1,5 @@
 # The tests of the Vulkan path that need no device: the device layer is linked with the entry points of the driver faked (agg/vk/wait), or replaced (agg/vk/local), so that
-# the loss of a device, the cancel of a query and a host without a driver are run on any machine. The real device is tools/vk-v6.
+# the loss of a device, the cancel of a query and a host without a driver are run on any machine. The real device is tools/vk.
 CFLAGS += -DSIFT_VULKAN
 
 VK_LAYER = agg/vk/run.c agg/vk/mem.c agg/vk/job.c agg/vk/tab.c agg/vk/cache.c agg/vk/pipe.c agg/vk/fast.c agg/vk/dev.c agg/vk/test.c agg/vk/fin.c agg/vk/seat.c

@@ -60,15 +60,15 @@ Commands
   scope-stock  the scope index against tuned stock PostgreSQL arms (the semi join, covering b-trees, copies kept by triggers, rollups, pg_ivm views, the entity index): nine classes, eight tenants,
              warm and cold, every answer md5-equal, the write cost of each arm, and the per-rival tally of cells won, tied and lost: `scope-stock [--size quick|standard] [--docs] [--arms LIST] [--keep] [--resume]` (steps/scope_stock.sh)
   scaling-io compute, cold I/O and writer scaling of pg_sift (1 to 8 workers, io_uring / worker / sync, 1 to 16 writers) on a throwaway cluster: `scaling-io [--rows N] [--workers L] [--clients L] [--suites A,B,C] [--quick] [--control] [--docs]`
-             (bench_scaling.sh; docs/results/v6-scaling.tsv)
+             (scaling.sh; docs/results/v6-scaling.tsv)
   v6-core    the 6.0 scaling ladder (10k, 40k, 160k rows: memory flatness, compression, WAL, soft delete, planning, idle memory) and its comparison with bench/baselines/v510.tsv: `v6-core [--docs] [--verify-diff] [--release-scale]` (run_round.sh, about 30 s; --verify-diff checks every Q1-Q8 and F4-F8 answer against the heap scan)
   v6-cases   the 48 cases of bench/cases.tsv (the 24 headline cases and 24 of the 6.0 themes: SIMD sums, high-cardinality groups, grouped distinct counts, jsonb, search with a column filter, semi joins, windows,
              zone pruning), as `cases`: `v6-cases [cases options]`
   cov-plan   every read query of docs/coverage.tsv (224) and test/plan/shapes.sql (135) on PostgreSQL 18, pg_sift v5.1.0 and this tree (release builds, stock planner costs, sift_col and sift_table, 1 and 4 workers):
-             results checked against PostgreSQL's, plan, buffers and instructions, interleaved wall clock, red-flag tables in summary.md: `cov-plan [--rows N] [--suites coverage,plan] [--storage col,table] [--workers 1,4] [--no-v510] [--v510-src PATH] [--filter REGEX] [--reps N] [--plan-only] [--out DIR] [--keep] [--selftest]` (steps/cov_plan_bench.py)
+             results checked against PostgreSQL's, plan, buffers and instructions, interleaved wall clock, red-flag tables in summary.md: `cov-plan [--rows N] [--suites coverage,plan] [--storage col,table] [--workers 1,4] [--no-v510] [--v510-src PATH] [--filter REGEX] [--reps N] [--plan-only] [--out DIR] [--keep] [--selftest]` (steps/cov_plan.py)
   v6-quick   `v6-release --quick`: v6-core and scaling-io at 500,000 rows on workers 1 and 4, about 90 s
   v6-release the post-6.0 release pass, six stages (store-analytics, search-bm25, scope-stock, v6-core, scaling-io, v6-cases) from the caches of rival engines, then scripts/gen-docs.py:
-             `v6-release [--docs] [--quick] [--stages LIST] [--remeasure-all] [--budget MIN] [--dry-run]` (steps/v6_release.sh; about 20 to 25 min cached, 45 to 50 min cold)
+             `v6-release [--docs] [--quick] [--stages LIST] [--remeasure-all] [--budget MIN] [--dry-run]` (steps/f2/release.sh; about 20 to 25 min cached, 45 to 50 min cold)
   scaling    the aggregates of the store orders by number of partitions (1 to 4096) and parallel workers, pg_sift against the normal plan; `scaling [--docs] [--ref TAG] [--partitions N,N] [--workers N,N] [--rows N]`
   duckdb     pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark, in two containers with equal limits, warm and cold, the heap and a Parquet file
              as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep] [--remeasure-all|--no-cache]` (steps/duckdb.sh; the rival lanes come from $RIVAL_CACHE/duckdb)
@@ -704,11 +704,11 @@ case $cmd in
   clickbench) exec python3 -I "$STEPS/clickbench.py" "$@" ;;
   duckdb) exec "$STEPS/duckdb.sh" "$@" ;;   # steps/duckdb.sh has its own options
   v6-core) exec "$HERE/run_round.sh" "$@" ;;            # the 6.0 scaling ladder: its own options
-  scaling-io) exec "$HERE/bench_scaling.sh" "$@" ;;     # compute, cold I/O and writer scaling: its own options
+  scaling-io) exec "$HERE/scaling.sh" "$@" ;;     # compute, cold I/O and writer scaling: its own options
   v6-cases) exec "$STEPS/cases.sh" "$@" ;;            # every case of the registry: the 48 of the 6.0 pass
-  cov-plan) exec python3 -I "$STEPS/cov_plan_bench.py" "$@" ;;   # coverage and plan-gate queries against PostgreSQL and v5.1.0: its own options
-  v6-quick) exec "$STEPS/v6_release.sh" --quick "$@" ;;
-  v6-release) exec "$STEPS/v6_release.sh" "$@" ;;       # the six stages of the post-6.0 pass: its own options
+  cov-plan) exec python3 -I "$STEPS/cov_plan.py" "$@" ;;   # coverage and plan-gate queries against PostgreSQL and v5.1.0: its own options
+  v6-quick) exec "$STEPS/f2/release.sh" --quick "$@" ;;
+  v6-release) exec "$STEPS/f2/release.sh" "$@" ;;       # the six stages of the post-6.0 pass: its own options
 esac
 parse "$@"
 case $cmd in

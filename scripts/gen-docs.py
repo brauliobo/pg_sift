@@ -9,7 +9,7 @@
 The options regions (scripts/gen-options.sh) are part of it, so `--check` covers them.
 Nothing here measures: a benchmark number comes from docs/results/ (written by `bench/bench ... --docs`, which runs this too), the rest from the tree.
 The parts:
-  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (v6_readme.py, v6_benchmarks.py, scope_stock_tables.py, clickbench.py report; readme_charts.py draws docs/charts) into
+  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (f2/readme.py, f2/benchmarks.py, scope_stock_tables.py, clickbench.py report; readme_charts.py draws docs/charts) into
                                                           README.md, docs/BENCHMARKS.md and docs/benchmarks/*.md; a block whose results file is missing or empty says it is not measured yet (the README
                                                           blocks: the committed baseline of readme_charts.py; the v6-* blocks of the docs pages keep their committed text without their results file, the 6.0 ones say TBD until v6-core.tsv exists)
   docs/charts/*.svg                                       drawn by readme_charts.py; every chart a page shows must exist, and every readme-*-light.svg has its readme-*-dark.svg
@@ -30,7 +30,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-# the results file behind each bench block that needs one (docs/results/, written by the bench command of BENCH_CMD with --docs); a block with a missing file is not rendered, it says so; the blocks of v6_readme.py
+# the results file behind each bench block that needs one (docs/results/, written by the bench command of BENCH_CMD with --docs); a block with a missing file is not rendered, it says so; the blocks of f2/readme.py
 # read what exists and fall back to the committed baseline of readme_charts.py, so they are always rendered
 RESULTS =dict.fromkeys(('scope-stock-tally', 'scope-stock-geomean', 'scope-stock-costs'), 'scope-stock.tsv')
 BENCH_CMD = dict.fromkeys(RESULTS, 'bench/bench scope-stock --docs')
@@ -275,8 +275,8 @@ def generate(root):
     if stamp and os.path.exists(stamp):
         print('gen-docs: the benchmark renderers are skipped (their files are as a run left them)', file=sys.stderr)
     else:
-        run(*py, os.path.join(steps, 'v6_readme.py'), '--root', '.')
-        run(*py, os.path.join(steps, 'v6_benchmarks.py'), '--root', '.')
+        run(*py, os.path.join(steps, 'f2/readme.py'), '--root', '.')
+        run(*py, os.path.join(steps, 'f2/benchmarks.py'), '--root', '.')
         run(*py, os.path.join(steps, 'readme_charts.py'), '--root', '.')
         if have(root, 'scope-stock-tally'):
             run(*py, os.path.join(steps, 'scope_stock_tables.py'), 'render', '--root', '.')

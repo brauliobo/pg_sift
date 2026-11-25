@@ -256,8 +256,8 @@ V6_GATES = [
 # Spec 28 gates verified by test suites, not by the harness TSV
 V6_SUITE_GATES = {
     "M3": "test/t/mem/slope.sh + scripts/check-memory.sh",
-    "P2": "bench_scaling.sh Suite B",
-    "P7": "opt_adaptive_bench.py + bench_scaling.sh Suite C",
+    "P2": "scaling.sh Suite B",
+    "P7": "opt_adaptive_bench.py + scaling.sh Suite C",
     "S1": "test/isolation/specs/f2_mvcc_abort_2pc.spec",
     "S2": "030_v6_crash_standby_torture.pl",
     "S3": "v6_mvcc_epq_trunc.spec",

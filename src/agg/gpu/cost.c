@@ -12,7 +12,7 @@
  *         a million groups, which does not scale past eight processes on this host. The scan of the executor is not faster than this.
  *
  * Calibrated again after the aggregates of Spec 63E made the CPU faster and the device got COUNT(DISTINCT) and the top K of the groups (1 million rows of the synthetic ClickBench `hits`, the same RTX 3060 with
- * its clocks up, the best of eight runs, tools/vk-v6 for the kernels): the kernel of a hash job costs by the bytes its table touches, not by the groups (1.0 ns a row for the 3 MB of 100 thousand pairs, 2.4 ns
+ * its clocks up, the best of eight runs, tools/vk for the kernels): the kernel of a hash job costs by the bytes its table touches, not by the groups (1.0 ns a row for the 3 MB of 100 thousand pairs, 2.4 ns
  * for the 56 MB of a million groups), and its table costs 0.3 to 0.5 ns a word clearing and reading it (Q32 224 MiB 9.5 ms, Q35 117 MiB 6.8 ms, Q4 64 MiB 2.2 ms); the CPU takes 25 ns a row for the
  * 5.6 MB of a table, 107 ns for 56 MB, and 91 ns for the pairs of a COUNT(DISTINCT) of a million of them.
  */

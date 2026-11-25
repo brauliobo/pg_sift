@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """A tracked file does not repeat in its name what the folders it is in already say.
 
-  src/agg/v6/v6_star.c           -> star.c           an ancestor (or its synonym: tbl/table, f2/format2, vk/gpu) as a prefix
+  src/agg/star/star_exec.c       -> exec.c           an ancestor (or its synonym: tbl/table, f2/format2, vk/gpu) as a prefix
   test/unit/f2_scaling_test.c    -> f2_scaling.c     ... or as a suffix
   test/mirror/mirror.sql         -> mirror.sql       the whole name is an ancestor (main, core, api, run, basic or common say more)
   test/sql/col/p98_decoders.sql  -> decoders.sql     tests are named by subsystem and behavior, never by a milestone (p98_, s55_, m4_, prod95_, on_)
+  src/agg/v6/star.c              a folder, or a name that starts or ends with v6 (the engine is src/agg/, its Format 2 side src/col/f2/agg/): name it by what it holds
   test/sql/col/f2/smoke.sql      a test of test/{sql,expected,t,isolation,unit} is in the folder of its src/ area (core bm25 col agg table compat fault maint mem quarantine lib mk)
 
 A regression test is at most 52 bytes with its folders (test/sql/NAME.sql): pg_regress names its session pg_regress/NAME, and the NOTICE of a name PostgreSQL cuts at 63 is in the output.
@@ -14,7 +15,7 @@ The exact names of the contract (Makefile, README.md, the control files, SiftTes
 
   scripts/check-path-redundancy.py [PATH...]            the findings (exit 1 when there are any) of src/ ports/ sqlite/ mariadb/ test/ scripts/ bench/ tools/, or of the PATHs
   scripts/check-path-redundancy.py --report [PATH...]   the count of findings by root and rule, exit 0 (the debt that is left)
-  scripts/check-path-redundancy.py --spec93 [PATH...]   only the gate of the folders of src/ and tools/vk-v6/tests/: no ancestor prefix, no format suffix (_f2 _v6 _v1), no priv.h; x/foo/foo.c stays
+  scripts/check-path-redundancy.py --spec93 [PATH...]   only the gate of the folders of src/ and tools/vk/tests/: no ancestor prefix, no format suffix (_f2 _v6 _v1), no priv.h; x/foo/foo.c stays
   scripts/check-path-redundancy.py --selftest
 """
 import os
@@ -23,8 +24,10 @@ import subprocess
 import sys
 
 ROOTS = ('src/', 'ports/', 'sqlite/', 'mariadb/', 'test/', 'scripts/', 'bench/', 'tools/')
-SPEC93_ROOTS = ('src/', 'tools/vk-v6/tests/')
-RULES = ('prefix', 'suffix', 'exact-stem', 'priv', 'milestone', 'area', 'folder', 'length')
+SPEC93_ROOTS = ('src/', 'tools/vk/tests/')
+V6_EXEMPT = ('docs/releases/', 'bench/test/records_samples/', 'test/col/fixtures/keys/')
+V6_NAME = re.compile(r'(^|[_-])v6($|[_-])')
+RULES = ('prefix', 'suffix', 'exact-stem', 'priv', 'milestone', 'area', 'folder', 'length', 'v6')
 MAX_TEST_NAME = 52
 CONTAINERS = {'src', 'ports', 'sql', 'expected', 'specs', 't', 'c', 'regress'}
 CONTRACT = {
@@ -84,7 +87,7 @@ def spec93_findings(path):
 	root = next((r for r in SPEC93_ROOTS if path.startswith(r)), None)
 	if root is None:
 		return
-	comps = path[len(root):].split('/')[:-1] if root == 'src/' else ['vk-v6']
+	comps = path[len(root):].split('/')[:-1] if root == 'src/' else ['vk']
 	if not comps:
 		return
 	base = os.path.basename(path)
@@ -160,6 +163,16 @@ def length_findings(path):
 		yield 'length', f'{len(name)} bytes with its folders, at most {MAX_TEST_NAME} (pg_regress names its session pg_regress/NAME, PostgreSQL cuts it at 63 bytes and prints a NOTICE)'
 
 
+def v6_findings(path):
+	if path.startswith(V6_EXEMPT):
+		return
+	names = path.split('/')[:-1] + [split_name(os.path.basename(path))[0]]
+	for n in names:
+		if V6_NAME.search(n.lower()):
+			yield 'v6', f"'{n}' names the engine's version: name it by what it holds (src/agg/ is the engine, src/col/f2/agg/ its Format 2 side)"
+			return
+
+
 def folder_findings(path):
 	for d in path.split('/')[:-1]:
 		if d.lower() in FUNCTION_WORDS:
@@ -181,6 +194,7 @@ def findings(path, spec93=False):
 		yield from area_findings(path)
 		yield from length_findings(path)
 	yield from folder_findings(path)
+	yield from v6_findings(path)
 	yield from (f for f in name_findings(path) if f[0] not in {rule for rule, _ in legacy})
 
 
@@ -213,11 +227,11 @@ def rules_of(path, spec93=False):
 def selftest():
 	spec93_bad = [
 		'src/col/f2/f2_scan.c', 'src/col/f2/track_f2.c', 'src/bm25/bm25_doc.c', 'src/agg/vk/shaders/vk_topn.comp',
-		'src/core/maint/maint_cut.c', 'src/bm25/runs/runs_priv.h', 'tools/vk-v6/tests/vk_v6_gen.c', 'src/col/f2/format2_test.c',
+		'src/core/maint/maint_cut.c', 'src/bm25/runs/runs_priv.h', 'tools/vk/tests/vk_gen.c', 'src/col/f2/format2_test.c',
 	]
 	spec93_ok = [
 		'src/col/f2/f2.h', 'src/col/f2/scope/scope.c', 'src/col/f2/agg/proj/proj.c', 'src/agg/vk/int.h', 'src/col/f2/col_delta/idx.c',
-		'src/table/f2/lock/int.h', 'tools/vk-v6/tests/gen.c', 'src/col/f2/format.c', 'test/sql/col/f2_x.sql', 'src/col/v1/test/alloc_test.c',
+		'src/table/f2/lock/int.h', 'tools/vk/tests/gen.c', 'src/col/f2/format.c', 'test/sql/col/f2_x.sql', 'src/col/v1/test/alloc_test.c',
 	]
 	for p in spec93_bad:
 		assert rules_of(p, True), f'--spec93 passes {p}'
@@ -225,9 +239,9 @@ def selftest():
 	for p in spec93_ok:
 		assert not rules_of(p, True), f'--spec93 refuses {p}: {rules_of(p, True)}'
 	bad = {
-		'prefix': ['src/agg/v6/v6_star.c', 'test/sql/col/topn/col_topn_arith.sql', 'tools/vk-v6/tests/vk_v6_cost.c', 'scripts/build/build-id.sh', 'bench/gpu/bench-pg.sh',
+		'prefix': ['src/agg/star/star_exec.c', 'test/sql/col/topn/col_topn_arith.sql', 'tools/vk/tests/vk_cost.c', 'scripts/build/build-id.sh', 'bench/gpu/bench-pg.sh',
 			'src/agg/gpu/vk_min.h', 'test/sql/table/tbl_bigtx.sql', 'test/sql/col/f2/format2_prune.sql', 'src/col/key_cut/keycut_x.c', 'test/t/col/scope/pairs/scope_pairs_x.sh'],
-		'suffix': ['test/unit/f2_scaling_test.c', 'src/agg/v6/topn/rows_topn.c', 'test/helpers/roles_helpers.sql', 'scripts/build/ci-build.sh', 'src/col/f2/track_f2.c',
+		'suffix': ['test/unit/f2_scaling_test.c', 'src/agg/topn/rows_topn.c', 'test/helpers/roles_helpers.sql', 'scripts/build/ci-build.sh', 'src/col/f2/track_f2.c',
 			'test/sql/table/bigtx_tbl.sql', 'sqlite/tests/hash_test.c'],
 		'exact-stem': ['src/agg/plan/plan.c', 'test/mirror/mirror.sql', 'tools/tools.mk', 'src/col/f2/f2.h', 'bench/churn/churn.sh', 'test/stress/stress.sql', 'src/agg/plan/planner.c'],
 		'priv': ['src/bm25/runs/priv.h', 'src/bm25/wbuf/page_priv.h'],
@@ -236,25 +250,27 @@ def selftest():
 		'area': ['test/sql/foo.sql', 'test/expected/foo.out', 'test/t/helpers.bash', 'test/sql/roles/ddl.sql', 'test/expected/zzz/x.out', 'test/isolation/specs/foo.spec',
 			'test/isolation/expected/hybrid/x.out', 'test/unit/unit.h', 'test/unit/helper/x.c'],
 		'folder': ['test/sql/col/or/x.sql', 'src/col/in/x.c', 'test/t/agg/on/x.sh'],
-		'length': ['test/sql/agg/v6/' + 'x' * 46 + '.sql', 'test/sql/' + 'x' * 53 + '.sql'],
+		'v6': ['src/agg/v6/star.c', 'test/sql/agg/v6/x.sql', 'scripts/focus/col/scope_v6/x.tsv', 'bench/v6_harness/run.py', 'tools/vk-v6/tests/gen.c', 'test/sql/core/v6_guc_surface.sql',
+			'test/sql/agg/vk/topn_v6.sql', 'test/sql/agg/vk/v6.sql', 'src/agg/v6.h'],
+		'length': ['test/sql/agg/' + 'x' * 49 + '.sql', 'test/sql/' + 'x' * 53 + '.sql'],
 	}
 	for rule, paths in bad.items():
 		for p in paths:
 			assert rule in rules_of(p), f'{p} is not refused as {rule}: {rules_of(p)}'
 	ok = [
-		'test/expected/agg/v6/star_1.out', 'test/expected/agg/v6/star_12.out', 'test/isolation/expected/col/f2/compact_snapshot_2.out', 'test/col/fixtures/topn/disj/search_not_or.sql',
-		'test/sql/agg/v6/star_plan.sql', 'test/sql/core/sql_security.sql', 'test/sql/col/f2/smoke.sql', 'test/t/col/f2/wal.pl', 'test/t/lib/common.bash', 'test/t/lib/SiftTest.pm',
+		'test/expected/agg/star_1.out', 'test/expected/agg/star_12.out', 'test/isolation/expected/col/f2/compact_snapshot_2.out', 'test/col/fixtures/topn/disj/search_not_or.sql',
+		'test/sql/agg/star_plan.sql', 'test/sql/core/sql_security.sql', 'test/sql/col/f2/smoke.sql', 'test/t/col/f2/wal.pl', 'test/t/lib/common.bash', 'test/t/lib/SiftTest.pm',
 		'test/t/fault/matrix.tsv', 'test/unit/mk/f2.mk', 'test/unit/Makefile', 'test/unit/core/par/arena.c', 'test/isolation/emulate.sql', 'test/isolation/specs/col/f2/lock.spec',
-		'test/sql/agg/v6/' + 'x' * 45 + '.sql', 'test/t/agg/v6/' + 'x' * 60 + '.sh', 'test/README.md', 'test/fixtures/compat30/pg_sift_test.out', 'test/fixtures/compat2x/foo_compat2x/foo_compat.dat', 'Makefile',
-		'sql/pg_sift--5.1--6.0.sql', 'sql/pg_sift_helpers--1.0.sql', 'src/col/f2/col_delta/idx.c', 'src/agg/vk/int.h', 'tools/vk-v6/tests/gen.c', 'src/col/f2/format.c',
-		'src/col/v1/test/alloc.c', 'scripts/check-path-redundancy.py', 'scripts/focus/agg/v6/star.tsv', 'scripts/focus/_hot.tsv',
+		'test/sql/agg/' + 'x' * 48 + '.sql', 'test/t/agg/' + 'x' * 60 + '.sh', 'docs/releases/v6.0.0.md', 'bench/test/records_samples/v6.tsv', 'test/col/fixtures/keys/v6.sql', 'test/README.md', 'test/fixtures/compat30/pg_sift_test.out', 'test/fixtures/compat2x/foo_compat2x/foo_compat.dat', 'Makefile',
+		'sql/pg_sift--5.1--6.0.sql', 'sql/pg_sift_helpers--1.0.sql', 'src/col/f2/col_delta/idx.c', 'src/agg/vk/int.h', 'tools/vk/tests/gen.c', 'src/col/f2/format.c',
+		'src/col/v1/test/alloc.c', 'scripts/check-path-redundancy.py', 'scripts/focus/agg/star.tsv', 'scripts/focus/_hot.tsv',
 		'scripts/ci/jobs.sh', 'bench/harness/scaling.sh', 'sqlite/tests/hash.c', 'src/col/granule/point.c', 'test/sql/bm25/reference.sql', 'test/fuzz/diff/fam/basic.py',
 	]
 	for p in ok:
 		assert not rules_of(p), f'{p} is refused: {rules_of(p)}'
-	found = list(violations(['test/sql/p98_x.sql', 'test/sql/agg/v6/star.sql', 'src/agg/v6/v6_star.c']))
-	assert {(p, r) for p, r, _ in found} >= {('test/sql/p98_x.sql', 'milestone'), ('test/sql/p98_x.sql', 'area'), ('src/agg/v6/v6_star.c', 'prefix')}, found
-	assert not [f for f in found if f[0] == 'test/sql/agg/v6/star.sql'], found
+	found = list(violations(['test/sql/p98_x.sql', 'test/sql/agg/star.sql', 'src/agg/star/star_exec.c']))
+	assert {(p, r) for p, r, _ in found} >= {('test/sql/p98_x.sql', 'milestone'), ('test/sql/p98_x.sql', 'area'), ('src/agg/star/star_exec.c', 'prefix')}, found
+	assert not [f for f in found if f[0] == 'test/sql/agg/star.sql'], found
 	print('check-path-redundancy: selftest ok')
 
 

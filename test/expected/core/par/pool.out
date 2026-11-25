@@ -1,4 +1,4 @@
--- The pool of compute threads, the driver and the grouped aggregation of core/par and agg/v6/par (src/core/par/test.c): every run gives every group and every row once, on one, two and four threads, in the
+-- The pool of compute threads, the driver and the grouped aggregation of core/par and agg/par (src/core/par/test.c): every run gives every group and every row once, on one, two and four threads, in the
 -- two regimes; and a statement that is cancelled (by the leader at its n-th unit, or by statement_timeout) leaves the pool idle and its memory freed, so that the next statement runs as the first did.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

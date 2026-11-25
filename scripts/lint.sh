@@ -31,7 +31,7 @@ CHECKS+=(
 	'syntax		for f in scripts/*.sh scripts/ci/*.sh $(git ls-files 'test/t/*.sh') bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
 	'runner		scripts/lint.sh --selftest'
 	'layout		scripts/restructure-src.sh --check'
-	'path-redundancy	python3 -I scripts/check-path-redundancy.py --selftest && python3 -I scripts/check-path-redundancy.py --spec93 && python3 -I scripts/check-path-redundancy.py test/ scripts/focus/ tools/vk-v6/ bench/test/ sqlite/tests/ mariadb/tests/'
+	'path-redundancy	python3 -I scripts/check-path-redundancy.py --selftest && python3 -I scripts/check-path-redundancy.py --spec93 && python3 -I scripts/check-path-redundancy.py test/ scripts/focus/ tools/vk/ bench/test/ sqlite/tests/ mariadb/tests/'
 	'tracked	! git ls-files | grep -E "(^|/)__pycache__/|[.]pyc$"'
 	'portable	scripts/lint-cache.sh portable src/portable.list src/portable-col.list $(grep -hvE '\''^[[:space:]]*(#|$)'\'' src/portable.list src/portable-col.list | sed '\''s#^#src/#'\'') src/core/host.h sqlite scripts/check-portable.sh -- scripts/check-portable.sh'
 	'classified	scripts/check-classified.sh --selftest && scripts/check-classified.sh'

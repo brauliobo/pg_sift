@@ -277,7 +277,7 @@ sql	col/f2/key_order.sql	1	predates the budget of test/README.md
 sql	col/f2/marks_prewhere.sql	3	predates the budget of test/README.md
 sql	col/f2/meta_marks_suite.sql	1	predates the budget of test/README.md
 sql	col/f2/parallel_conc.sql	1	predates the budget of test/README.md
-sql	col/f2/partitioned_agg_v6.sql	1	predates the budget of test/README.md
+sql	col/f2/partitioned_agg.sql	1	predates the budget of test/README.md
 sql	col/f2/point_v2.sql	2	predates the budget of test/README.md
 sql	col/f2/projections.sql	1	predates the budget of test/README.md
 sql	col/f2/prune.sql	1	predates the budget of test/README.md
@@ -285,10 +285,10 @@ sql	col/f2/size.sql	1	predates the budget of test/README.md
 sql	col/f2/storage_codec_suite.sql	7	predates the budget of test/README.md
 sql	bm25/fuzzy_seek.sql	1	predates the budget of test/README.md
 sql	agg/vk/basic.sql	1	predates the budget of test/README.md
-sql	agg/vk/v6.sql	1	predates the budget of test/README.md
-sql	agg/vk/v6_churn.sql	1	predates the budget of test/README.md
-sql	agg/vk/v6_dict.sql	1	predates the budget of test/README.md
-sql	agg/vk/topn_v6.sql	1	predates the budget of test/README.md
+sql	agg/vk/scan.sql	1	predates the budget of test/README.md
+sql	agg/vk/churn.sql	1	predates the budget of test/README.md
+sql	agg/vk/dict.sql	1	predates the budget of test/README.md
+sql	agg/vk/topn.sql	1	predates the budget of test/README.md
 sql	agg/hybrid/basic.sql	2	predates the budget of test/README.md
 sql	agg/hybrid/multimodal_facet.sql	2	predates the budget of test/README.md
 sql	agg/hybrid/tidbridge_bm25.sql	1	predates the budget of test/README.md

@@ -1,4 +1,4 @@
--- The eighteen queries of the archetype, each in its own block "-- Q-A<n>: <shape>" ended by a line with ";;". run_bench.py replaces @E, @N and @J with the tables of an arm and compares the md5 of every
+-- The eighteen queries of the archetype, each in its own block "-- Q-A<n>: <shape>" ended by a line with ";;". run.py replaces @E, @N and @J with the tables of an arm and compares the md5 of every
 -- result across the arms: the oracle is the arm on heap tables.
 -- Q-A1: count of every kind
 SELECT kind, count(*) FROM @E GROUP BY kind ORDER BY kind

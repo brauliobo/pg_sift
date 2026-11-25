@@ -950,7 +950,7 @@ col/f2/marks_prewhere	5.07
 col/f2/mutation	0.22
 col/f2/mvcc_churn	0.27
 col/f2/parallel_conc	1.48
-col/f2/partitioned_agg_v6	1.10
+col/f2/partitioned_agg	1.10
 col/f2/projections	0.78
 col/f2/prune	1.25
 col/f2/quarantine	0.19
@@ -965,8 +965,8 @@ col/f2/reloptions_deprecated	0.30
 col/f2/storage_codec_suite	0.00
 bm25/fuzzy_seek	1.69
 agg/vk/basic	1.07
-agg/vk/v6	4.72
-agg/vk/v6_churn	9.64
+agg/vk/scan	4.72
+agg/vk/churn	9.64
 agg/hybrid/basic	2.32
 agg/hybrid/cost	0.57
 agg/hybrid/score	0.69
@@ -1201,9 +1201,9 @@ table/workers	0.12
 table/writepath	25.31
 table/zone_prune	1.32
 compat/upgrade/path	0.26
-core/v6_guc_surface	0.16
+core/guc_surface	0.16
 table/attach_detach	0.26
-table/v6_virtual_generated	0.31
+table/virtual_parity	0.31
 bm25/vacuum/converge	0.33
 bm25/vacuum/segments	0.73
 bm25/vacuum/truncate	0.80

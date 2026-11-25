@@ -801,7 +801,7 @@ jobs:
       - name: make check (regression tests, the tests that tripped on macOS) under brew bash 5
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
-          SIFT_CI_JOBS: '^(installcheck-(agg/v6/star_jsonb_unnest|bm25/facets|bm25/filter/pushdown|col/f2/am|table/f2/parity)|tap-shell-(col/auto_merge/concurrent|col/refresh_crash|col/wbuf/batch|compat/pg_upgrade/basic|compat/pg_upgrade/v32|core/leakcheck_gate|core/scaling_slope|table/replica_mixed))$'
+          SIFT_CI_JOBS: '^(installcheck-(agg/star_jsonb_unnest|bm25/facets|bm25/filter/pushdown|col/f2/am|table/f2/parity)|tap-shell-(col/auto_merge/concurrent|col/refresh_crash|col/wbuf/batch|compat/pg_upgrade/basic|compat/pg_upgrade/v32|core/leakcheck_gate|core/scaling_slope|table/replica_mixed))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
           PATH="$(brew --prefix ccache)/libexec:$RUNNER_TEMP/gnu-timeout:$(brew --prefix)/bin:$(brew --prefix postgresql@18)/bin:$PATH"; export PATH
@@ -813,7 +813,7 @@ jobs:
       - name: make check (the same tests) on PostgreSQL 17
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci17
-          SIFT_CI_JOBS: '^(installcheck-(agg/v6/star_jsonb_unnest|bm25/facets|bm25/filter/pushdown|col/f2/am|table/f2/parity)|tap-shell-(col/auto_merge/concurrent|col/refresh_crash|col/wbuf/batch|compat/pg_upgrade/basic|compat/pg_upgrade/v32|core/leakcheck_gate|core/scaling_slope|table/replica_mixed))$'
+          SIFT_CI_JOBS: '^(installcheck-(agg/star_jsonb_unnest|bm25/facets|bm25/filter/pushdown|col/f2/am|table/f2/parity)|tap-shell-(col/auto_merge/concurrent|col/refresh_crash|col/wbuf/batch|compat/pg_upgrade/basic|compat/pg_upgrade/v32|core/leakcheck_gate|core/scaling_slope|table/replica_mixed))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
           PATH="$(brew --prefix ccache)/libexec:$RUNNER_TEMP/gnu-timeout:$(brew --prefix)/bin:$(brew --prefix postgresql@17)/bin:$PATH"; export PATH

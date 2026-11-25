@@ -1,4 +1,4 @@
-# Releases and checkouts of sift built once each for the benchmarks of steps/scaling.sh and steps/v6_release.sh (sourced; REPO is the checkout of the harness).
+# Releases and checkouts of sift built once each for the benchmarks of steps/scaling.sh and steps/f2/release.sh (sourced; REPO is the checkout of the harness).
 # A label is a tag or HEAD with its git worktree under $EXTRAS_SRC and its release install (pgtest.sh install, SIFT_TESTING= unset) under $EXTRAS_CACHE/LABEL/root:
 # v302 (v3.0.2), v310 (v3.1.0), v310-vk (v3.1.0 with VULKAN=1) and main (HEAD of this checkout); any other tag vX.Y.Z is labelled vXYZ.
 EXTRAS_SRC=${EXTRAS_SRC:-${BENCH_WORK:-/tmp/sift-bench}/builds}

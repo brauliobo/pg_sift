@@ -1,0 +1,115 @@
+-- The parallel SiftAggV6 (Spec 44: src/agg/v6_par_*.c, the F2 morsel scan of src/col/f2/scan/scan.c): every shape the planner gives a parallel strategy, run with no worker and with
+-- four, returns the same rows. The data is made by arithmetic with NULL keys and values, so that the output does not depend on the version. The plans themselves (a Gather over SiftAggV6,
+-- Parallel Strategy in EXPLAIN) are asserted in agg_v6_parallel_2stage_plan.sql, which needs the extension.
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers = 8;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+CREATE TABLE pe AS
+SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE (i * 7919) % 50021 END AS g, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 31) % 1000 END AS v,
+       (CASE WHEN i % 11 = 0 THEN NULL ELSE ((i * 104729) % 100000)::numeric / 8 END)::numeric(12,3) AS n, (i * 40503) % 977 AS d,
+       CASE WHEN i % 19 = 0 THEN NULL ELSE 'k' || (i * 7 % 311) END AS t, ((i * 40503) % 1009)::float8 / 16 AS f
+FROM generate_series(1::int8, 60000::int8) AS i;
+CREATE INDEX pe_col ON pe USING sift_col (g, v, n, d, t, f);
+ANALYZE pe;
+CREATE FUNCTION different_rows(a regclass, b regclass) RETURNS bigint LANGUAGE plpgsql AS $f$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SELECT (SELECT count(*) FROM (SELECT * FROM %1$s EXCEPT ALL SELECT * FROM %2$s) x) + (SELECT count(*) FROM (SELECT * FROM %2$s EXCEPT ALL SELECT * FROM %1$s) y)', a, b) INTO n;
+	RETURN n;
+END $f$;
+
+-- radix: one group per 4 rows, four aggregates, NULL keys and values
+CREATE VIEW v_q4 AS SELECT g, count(*) AS c, sum(v) AS s, min(v) AS mn, max(n) AS mx, avg(n) AS a FROM pe GROUP BY g;
+-- count(DISTINCT) of three columns with no key
+CREATE VIEW v_q5 AS SELECT count(DISTINCT d) AS dd, count(DISTINCT t) AS dt, count(DISTINCT g) AS dg FROM pe;
+-- two-stage: 311 groups
+CREATE VIEW v_low AS SELECT t, count(*) AS c, sum(n) AS s, min(d) AS mn, max(d) AS mx, avg(v) AS a FROM pe GROUP BY t;
+-- count(DISTINCT) of a number and of a text per group
+CREATE VIEW v_grouped_distinct AS SELECT t, count(DISTINCT g) AS dg, count(DISTINCT d) AS dd, count(*) AS c FROM pe GROUP BY t;
+-- two-stage with no keys
+CREATE VIEW v_ungrouped AS SELECT count(*) AS c, count(v) AS cv, sum(n) AS s, avg(v) AS a, min(n) AS mn, max(n) AS mx FROM pe;
+-- grouping sets with the empty set
+CREATE VIEW v_sets AS SELECT t, v, GROUPING(t, v) AS gr, count(*) AS c, sum(d) AS s FROM pe GROUP BY GROUPING SETS ((t), (v), (t, v), ());
+-- HAVING on a count
+CREATE VIEW v_having AS SELECT g, count(*) AS c FROM pe GROUP BY g HAVING count(*) > 1;
+-- FILTER (WHERE ..) clauses
+CREATE VIEW v_filter AS SELECT t, count(*) FILTER (WHERE d < 100) AS lo, sum(v) FILTER (WHERE d >= 100) AS hi FROM pe GROUP BY t;
+-- sum and avg of a float
+CREATE VIEW v_float AS SELECT t, sum(f) AS s, avg(f) AS a FROM pe GROUP BY t;
+-- the reference is the heap's own aggregate: no node of the extension, no worker
+SET sift.enable_agg = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE r_q4 AS SELECT * FROM v_q4;
+CREATE TABLE r_q5 AS SELECT * FROM v_q5;
+CREATE TABLE r_low AS SELECT * FROM v_low;
+CREATE TABLE r_grouped_distinct AS SELECT * FROM v_grouped_distinct;
+CREATE TABLE r_ungrouped AS SELECT * FROM v_ungrouped;
+CREATE TABLE r_sets AS SELECT * FROM v_sets;
+CREATE TABLE r_having AS SELECT * FROM v_having;
+CREATE TABLE r_filter AS SELECT * FROM v_filter;
+CREATE TABLE r_float AS SELECT * FROM v_float;
+SET sift.enable_agg = on;
+SET max_parallel_workers_per_gather = 4;
+CREATE TABLE p_q4 AS SELECT * FROM v_q4;
+CREATE TABLE p_q5 AS SELECT * FROM v_q5;
+CREATE TABLE p_low AS SELECT * FROM v_low;
+CREATE TABLE p_grouped_distinct AS SELECT * FROM v_grouped_distinct;
+CREATE TABLE p_ungrouped AS SELECT * FROM v_ungrouped;
+CREATE TABLE p_sets AS SELECT * FROM v_sets;
+CREATE TABLE p_having AS SELECT * FROM v_having;
+CREATE TABLE p_filter AS SELECT * FROM v_filter;
+CREATE TABLE p_float AS SELECT * FROM v_float;
+-- the rows that one answer has and the other does not (EXCEPT ALL both ways), and the number of groups
+SELECT shape, groups, different FROM (VALUES
+	('q4', (SELECT count(*) FROM r_q4), different_rows('r_q4', 'p_q4')),
+	('q5', (SELECT count(*) FROM r_q5), different_rows('r_q5', 'p_q5')),
+	('low', (SELECT count(*) FROM r_low), different_rows('r_low', 'p_low')),
+	('grouped_distinct', (SELECT count(*) FROM r_grouped_distinct), different_rows('r_grouped_distinct', 'p_grouped_distinct')),
+	('ungrouped', (SELECT count(*) FROM r_ungrouped), different_rows('r_ungrouped', 'p_ungrouped')),
+	('sets', (SELECT count(*) FROM r_sets), different_rows('r_sets', 'p_sets')),
+	('having', (SELECT count(*) FROM r_having), different_rows('r_having', 'p_having')),
+	('filter', (SELECT count(*) FROM r_filter), different_rows('r_filter', 'p_filter')),
+	('float', (SELECT count(*) FROM r_float), different_rows('r_float', 'p_float'))) AS t(shape, groups, different);
+-- no worker is launched: the leader runs the node alone
+SET max_parallel_workers = 0;
+CREATE TABLE p0_q4 AS SELECT * FROM v_q4;
+CREATE TABLE p0_q5 AS SELECT * FROM v_q5;
+SELECT different_rows('r_q4', 'p0_q4') AS q4_no_workers, different_rows('r_q5', 'p0_q5') AS q5_no_workers;
+SET max_parallel_workers = 8;
+-- the leader does not scan
+SET parallel_leader_participation = off;
+CREATE TABLE pl_q4 AS SELECT * FROM v_q4;
+CREATE TABLE pl_low AS SELECT * FROM v_low;
+CREATE TABLE pl_q5 AS SELECT * FROM v_q5;
+SELECT different_rows('r_q4', 'pl_q4') AS q4_no_leader, different_rows('r_low', 'pl_low') AS low_no_leader, different_rows('r_q5', 'pl_q5') AS q5_no_leader;
+SET parallel_leader_participation = on;
+-- a partition that does not fit the chunks goes to the files of the shared file set, and the distinct sets to temporary files
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+CREATE TABLE ps_q4 AS SELECT * FROM v_q4;
+CREATE TABLE ps_gd AS SELECT * FROM v_grouped_distinct;
+CREATE TABLE ps_q5 AS SELECT * FROM v_q5;
+SELECT different_rows('r_q4', 'ps_q4') AS q4_small_work_mem, different_rows('r_grouped_distinct', 'ps_gd') AS grouped_distinct_small_work_mem, different_rows('r_q5', 'ps_q5') AS q5_small_work_mem;
+RESET work_mem;
+RESET hash_mem_multiplier;
+-- the consumer stops early: a LIMIT over the groups is the same rows of the sorted answer
+SET sift.enable_agg = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE r_lim AS SELECT g, count(*) AS c FROM pe GROUP BY g ORDER BY g LIMIT 10;
+SET sift.enable_agg = on;
+SET max_parallel_workers_per_gather = 4;
+CREATE TABLE p_lim AS SELECT g, count(*) AS c FROM pe GROUP BY g ORDER BY g LIMIT 10;
+SELECT count(*) AS limited_groups, different_rows('r_lim', 'p_lim') AS different FROM p_lim;
+-- the exact float sum keeps its order of addition: the same bits whatever the number of workers
+SET sift.agg_exact_float = on;
+CREATE TABLE pf_float AS SELECT * FROM v_float;
+SELECT different_rows('r_float', 'pf_float') AS exact_float;
+RESET sift.agg_exact_float;
+DROP FUNCTION different_rows(regclass, regclass);
+DROP VIEW v_filter, v_float, v_grouped_distinct, v_having, v_low, v_q4, v_q5, v_sets, v_ungrouped;
+DROP TABLE p0_q4, p0_q5, p_filter, p_float, p_grouped_distinct, p_having, p_lim, p_low, p_q4, p_q5, p_sets, p_ungrouped, pe, pf_float, pl_low, pl_q4, pl_q5, ps_gd, ps_q4, ps_q5, r_filter, r_float, r_grouped_distinct, r_having, r_lim, r_low, r_q4, r_q5, r_sets, r_ungrouped;
+DROP EXTENSION pg_sift;

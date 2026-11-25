@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The probes of bench/bench_scaling.sh (Spec 14 section 4): warm compute scaling (suite A), cold I/O scaling (suite B) and concurrent writer scaling (suite C).
+"""The probes of bench/scaling.sh (Spec 14 section 4): warm compute scaling (suite A), cold I/O scaling (suite B) and concurrent writer scaling (suite C).
 
     scaling_io.py load    --rows N                         the wide `events` table, the sift_col index on it, the extensions
     scaling_io.py suite-a --rows N --workers 1,2,4,8       A1-A4 scans and group-bys, A5 parallel CREATE INDEX, A6 parallel VACUUM
@@ -30,7 +30,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import tmpfs  # noqa: E402
-from v6_harness import INDEX_COLS, INDEX_KEY_ORDER, INDEX_PATHS, PgClient, events_insert_sql, events_table_ddl  # noqa: E402
+from f2_harness import INDEX_COLS, INDEX_KEY_ORDER, INDEX_PATHS, PgClient, events_insert_sql, events_table_ddl  # noqa: E402
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 COLUMNS = ['suite', 'probe', 'io_method', 'workers', 'rows', 'median_ms', 'speedup', 'blks_read', 'blks_hit', 'gate_pass', 'read_stream', 'throughput', 'blk_read_ms', 'p99_ms', 'wal', 'wait_pct']

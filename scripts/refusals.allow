@@ -5,7 +5,7 @@
 
 plan_gen.c: gen_leaf_ok gen_walker slice_walker arg_joined mapped_type_differs compile_gen_arg spelling_free gen_eligible compile_gen # tests of a generic aggregate and its argument: compile_gen names the aggregate
 
-# The v6 planner and executor (src/agg/v6) and the plan helpers added in 6.0
+# The v6 planner and executor (src/agg) and the plan helpers added in 6.0
 bridge_test.c: core_batch core_fetch fmt_sorted_by src_next # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
 cost/card_est.c: mcv_find vals_ordered # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 exec.c: v6_next_row v6_serve_projection # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal

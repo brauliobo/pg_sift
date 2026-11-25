@@ -132,7 +132,7 @@ PART = denorm_ddl('events_p', f"CREATE TABLE events_p ({COPY_COLS}) PARTITION BY
 
 # name: (needs pg_sift, DDL, classes, SQL for the bytes of what the arm adds)
 ARMS = {
-    'stock_default': (False, sql_text('stock_default.sql'), semi_classes, "SELECT pg_relation_size('events_dim')"),
+    'stock_default': (False, sql_text('default.sql'), semi_classes, "SELECT pg_relation_size('events_dim')"),
     'semijoin': (False, sql_text('semijoin.sql'), lateral_classes, "SELECT pg_relation_size('events_cover') + pg_relation_size('events_filtered')"),
     'denorm_flat': (False, FLAT, lambda: copy_classes('events_t'),
                     "SELECT pg_total_relation_size('events_t') + pg_total_relation_size('pair_paths') + pg_total_relation_size('pairs') + pg_relation_size('events_dim')"),
@@ -144,7 +144,7 @@ ARMS = {
             "SELECT pg_total_relation_size('im_main') + pg_total_relation_size('im_score') + pg_total_relation_size('im_chan') + pg_total_relation_size('im_kind') "
             "+ pg_total_relation_size('pair_paths') + pg_total_relation_size('pairs') + pg_relation_size('events_dim')"),
     'sift_entity': (True, sql_text('sift_entity.sql'), semi_classes, "SELECT pg_relation_size('events_col')"),
-    'sift_scope': (True, sql_text('sift_scope.sql'), semi_classes,
+    'sift_scope': (True, sql_text('sift.sql'), semi_classes,
                    "SELECT pg_relation_size('events_col') + pg_relation_size('grants_by_member') + pg_relation_size('grants_by_group') + pg_relation_size('memberships_by_member')"),
 }
 ARMS.update({n: (False, ch.ddl(n), (lambda n=n: ch.statements(n, classes_of)), ch.size_sql(n)) for n in ch.SPECS})

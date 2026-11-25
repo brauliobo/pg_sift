@@ -103,37 +103,37 @@ test/expected/table/f2/parity_1.out	29ab438535f80cdb3c37f8ebd6f3673fb2a69b65	17	
 test/expected/table/f2/parity_1.out	55872b3b89fc20bd60611e6fb677b34f022bd1a9	17	chk
 test/expected/table/f2/parity_1.out	62fa207ae7b3d7158de6c589eb89609f6dc058bf	17	chk
 test/expected/table/f2/parity_1.out	bf2cb3484d22dce3fda98449aa927d45a8f066d6	17	chk
-test/expected/table/v6_virtual_generated_1.out	0291bf04a5a6af438f04fc1367f6ffaaa02a7d95	17	ERROR:  relation "vgb" does not exist
-test/expected/table/v6_virtual_generated_1.out	04e1fa807b1e4af68d1f9e091a5d7bfa6975d23e	17	stored_aggregate
-test/expected/table/v6_virtual_generated_1.out	1a6e36cac7ada63a8cd6bc4044108623d83bc36e	17	ERROR:  syntax error at or near "VIRTUAL"
-test/expected/table/v6_virtual_generated_1.out	1a911e27f6a4c9548b901ef37f98a1ca3d580427	17	ERROR:  relation "vgh" does not exist
-test/expected/table/v6_virtual_generated_1.out	2f6b5110a3a1b38bed2b7ebfc0e6f34ef3b19b38	17	sift_col_check_is_clean
-test/expected/table/v6_virtual_generated_1.out	38a862d951f0f3d1b360d504d95303ca871da26a	17	virtual_filter
-test/expected/table/v6_virtual_generated_1.out	3a996a98970413090cebc738754ca398e1eaeb5d	17	ERROR:  relation "vgb" does not exist
-test/expected/table/v6_virtual_generated_1.out	3d1d79268a12bf5baeaeb3392fdff6420dd563bb	17	ERROR:  relation "vgt" does not exist
-test/expected/table/v6_virtual_generated_1.out	49b7cfd8f69a385001696e5e88ac298d7532bf8f	17	table_virtual_aggregate
-test/expected/table/v6_virtual_generated_1.out	4cf4796d1fc21c9dfc06ffab453a24fd4cc04241	17	ERROR:  relation "vgb" does not exist
-test/expected/table/v6_virtual_generated_1.out	539cd1e580aed7cc0cfaf187021be1bab62ec856	17	bm25_with_virtual_columns
-test/expected/table/v6_virtual_generated_1.out	588deceb6f8444a7409791f2f668d46bc9842b4a	17	ERROR:  relation "vg" does not exist
-test/expected/table/v6_virtual_generated_1.out	5e2a6ac16d827ca768a2fc096ad56228f1b46d9e	17	virtual_after_writes
-test/expected/table/v6_virtual_generated_1.out	630ca907bac824038e4a0c476814977b736b581b	17	ERROR:  table "vg" does not exist
-test/expected/table/v6_virtual_generated_1.out	654c072bd52474919b85ac8dfa0587f44feb4689	17	table_virtual_filter
-test/expected/table/v6_virtual_generated_1.out	6b9de81dbc9c48916c620038824d6f18ae15c22e	17	table_stored_aggregate
-test/expected/table/v6_virtual_generated_1.out	6dee23dc7e6069f341b5df4cc8a14148e53f2616	17	0A000
-test/expected/table/v6_virtual_generated_1.out	6e4ead36a6f6adc36244723a8e64fc634d94fd2f	17	ERROR:  relation "vgt" does not exist
-test/expected/table/v6_virtual_generated_1.out	6e6fec581b231d29fc6490b65c39b6ab8e669ccf	17	ERROR:  relation "vg" does not exist
-test/expected/table/v6_virtual_generated_1.out	740b47fe9028121056a0143fb96baa99bfa057fa	17	sift_table_check_is_clean
-test/expected/table/v6_virtual_generated_1.out	801a4fd643a2c0345e31a069551ee471a3c39e56	17	ERROR:  relation "vg" does not exist
-test/expected/table/v6_virtual_generated_1.out	83e0a3a2422ba3d539d3b702256b67bf182d25d2	17	ERROR:  syntax error at or near "VIRTUAL"
-test/expected/table/v6_virtual_generated_1.out	854d2584967f40e9c2bf19c4513ee074ad59d33b	17	stored_after_writes
-test/expected/table/v6_virtual_generated_1.out	8f941b7ae3e39aa5686b860744a041c8780e1cef	17	ERROR:  relation "vgt" does not exist
-test/expected/table/v6_virtual_generated_1.out	9d30d238477804e862747d6335f39e66a6379911	17	ERROR:  relation "vgh" does not exist
-test/expected/table/v6_virtual_generated_1.out	b12442630ec38612b5e5967646f29ee5f207db38	17	table_virtual_after_writes
-test/expected/table/v6_virtual_generated_1.out	b89a22d4966e5bffbc44b48eced993c756a39dee	17	ERROR:  relation "vgh" does not exist
-test/expected/table/v6_virtual_generated_1.out	d2ed715d4d26252b01192bcbb5ef86f9cc744ff0	17	ERROR:  relation "vg" does not exist
-test/expected/table/v6_virtual_generated_1.out	d5f20affa6a2444ef69c1cf7483f8d3d98631ef5	17	bm25_with_virtual_columns_after_writes
-test/expected/table/v6_virtual_generated_1.out	d747795ee6befc81d434c0cd1d8029fe627138df	17	ERROR:  relation "vgt" does not exist
-test/expected/table/v6_virtual_generated_1.out	ea1ed796b556764c872554775dfb837759a0cd2c	17	table_stored_after_writes
-test/expected/table/v6_virtual_generated_1.out	f74a945404665096ed445239d93e99eae8b8271d	17	table_virtual_projection
-test/expected/table/v6_virtual_generated_1.out	fcddfa8fe48dd503f981643c028534ccf24072a9	17	ERROR:  relation "vgb" does not exist
-test/expected/table/v6_virtual_generated_1.out	ff84dcbfb922b62b6720e1e28f464cbc36aaac05	17	virtual_aggregate
+test/expected/table/virtual_parity_1.out	0291bf04a5a6af438f04fc1367f6ffaaa02a7d95	17	ERROR:  relation "vgb" does not exist
+test/expected/table/virtual_parity_1.out	04e1fa807b1e4af68d1f9e091a5d7bfa6975d23e	17	stored_aggregate
+test/expected/table/virtual_parity_1.out	1a6e36cac7ada63a8cd6bc4044108623d83bc36e	17	ERROR:  syntax error at or near "VIRTUAL"
+test/expected/table/virtual_parity_1.out	1a911e27f6a4c9548b901ef37f98a1ca3d580427	17	ERROR:  relation "vgh" does not exist
+test/expected/table/virtual_parity_1.out	2f6b5110a3a1b38bed2b7ebfc0e6f34ef3b19b38	17	sift_col_check_is_clean
+test/expected/table/virtual_parity_1.out	38a862d951f0f3d1b360d504d95303ca871da26a	17	virtual_filter
+test/expected/table/virtual_parity_1.out	3a996a98970413090cebc738754ca398e1eaeb5d	17	ERROR:  relation "vgb" does not exist
+test/expected/table/virtual_parity_1.out	3d1d79268a12bf5baeaeb3392fdff6420dd563bb	17	ERROR:  relation "vgt" does not exist
+test/expected/table/virtual_parity_1.out	49b7cfd8f69a385001696e5e88ac298d7532bf8f	17	table_virtual_aggregate
+test/expected/table/virtual_parity_1.out	4cf4796d1fc21c9dfc06ffab453a24fd4cc04241	17	ERROR:  relation "vgb" does not exist
+test/expected/table/virtual_parity_1.out	539cd1e580aed7cc0cfaf187021be1bab62ec856	17	bm25_with_virtual_columns
+test/expected/table/virtual_parity_1.out	588deceb6f8444a7409791f2f668d46bc9842b4a	17	ERROR:  relation "vg" does not exist
+test/expected/table/virtual_parity_1.out	5e2a6ac16d827ca768a2fc096ad56228f1b46d9e	17	virtual_after_writes
+test/expected/table/virtual_parity_1.out	630ca907bac824038e4a0c476814977b736b581b	17	ERROR:  table "vg" does not exist
+test/expected/table/virtual_parity_1.out	654c072bd52474919b85ac8dfa0587f44feb4689	17	table_virtual_filter
+test/expected/table/virtual_parity_1.out	6b9de81dbc9c48916c620038824d6f18ae15c22e	17	table_stored_aggregate
+test/expected/table/virtual_parity_1.out	6dee23dc7e6069f341b5df4cc8a14148e53f2616	17	0A000
+test/expected/table/virtual_parity_1.out	6e4ead36a6f6adc36244723a8e64fc634d94fd2f	17	ERROR:  relation "vgt" does not exist
+test/expected/table/virtual_parity_1.out	6e6fec581b231d29fc6490b65c39b6ab8e669ccf	17	ERROR:  relation "vg" does not exist
+test/expected/table/virtual_parity_1.out	740b47fe9028121056a0143fb96baa99bfa057fa	17	sift_table_check_is_clean
+test/expected/table/virtual_parity_1.out	801a4fd643a2c0345e31a069551ee471a3c39e56	17	ERROR:  relation "vg" does not exist
+test/expected/table/virtual_parity_1.out	83e0a3a2422ba3d539d3b702256b67bf182d25d2	17	ERROR:  syntax error at or near "VIRTUAL"
+test/expected/table/virtual_parity_1.out	854d2584967f40e9c2bf19c4513ee074ad59d33b	17	stored_after_writes
+test/expected/table/virtual_parity_1.out	8f941b7ae3e39aa5686b860744a041c8780e1cef	17	ERROR:  relation "vgt" does not exist
+test/expected/table/virtual_parity_1.out	9d30d238477804e862747d6335f39e66a6379911	17	ERROR:  relation "vgh" does not exist
+test/expected/table/virtual_parity_1.out	b12442630ec38612b5e5967646f29ee5f207db38	17	table_virtual_after_writes
+test/expected/table/virtual_parity_1.out	b89a22d4966e5bffbc44b48eced993c756a39dee	17	ERROR:  relation "vgh" does not exist
+test/expected/table/virtual_parity_1.out	d2ed715d4d26252b01192bcbb5ef86f9cc744ff0	17	ERROR:  relation "vg" does not exist
+test/expected/table/virtual_parity_1.out	d5f20affa6a2444ef69c1cf7483f8d3d98631ef5	17	bm25_with_virtual_columns_after_writes
+test/expected/table/virtual_parity_1.out	d747795ee6befc81d434c0cd1d8029fe627138df	17	ERROR:  relation "vgt" does not exist
+test/expected/table/virtual_parity_1.out	ea1ed796b556764c872554775dfb837759a0cd2c	17	table_stored_after_writes
+test/expected/table/virtual_parity_1.out	f74a945404665096ed445239d93e99eae8b8271d	17	table_virtual_projection
+test/expected/table/virtual_parity_1.out	fcddfa8fe48dd503f981643c028534ccf24072a9	17	ERROR:  relation "vgb" does not exist
+test/expected/table/virtual_parity_1.out	ff84dcbfb922b62b6720e1e28f464cbc36aaac05	17	virtual_aggregate

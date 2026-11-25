@@ -4,7 +4,7 @@ bench/examples/cluster.sh	benchmark or perf-gate cluster: it measures timings of
 bench/focus/lab.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
 bench/perf/test_launcher.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
 bench/steps/cluster.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
-bench/steps/v6_cluster.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+bench/steps/f2/cluster.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
 bench/steps/writecost.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
 bench/test/iolib.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
 scripts/musl-check.sh	the server of postgres:<major>-alpine runs the smoke test of the installed package (packaging/smoke.sql) and is stopped with the container: the leaks of a musl build are not a test of this tree's allocators
@@ -14,4 +14,4 @@ scripts/test-ci-build-fail.sh	a stub initdb in a copy of ci.sh: no server runs
 scripts/check-pg-bare.sh	starts no server: the commands are the text of its selftest
 test/t/lib/docker.bash	the nodes are containers of test/t/lib/common.bash: finish scans their logs (node_leakcheck here), the host process table the wait reads is not theirs
 test/t/lib/upgrade.bash	a layer of test/t/lib/common.bash: its nodes start through node_start and finish ends them with leak_end
-bench/steps/v6_cluster.sh	benchmark cluster of the 6.0 scaling ladder: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
+bench/steps/f2/cluster.sh	benchmark cluster of the 6.0 scaling ladder: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code

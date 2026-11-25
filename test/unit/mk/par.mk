@@ -1,4 +1,4 @@
-# The engine threads: the pool, the arena and the operators of src/agg/v6 that run on pool threads, on the host stand-in of agg/par/host.c.
+# The engine threads: the pool, the arena and the operators of src/agg that run on pool threads, on the host stand-in of agg/par/host.c.
 POOL_LIB     = core/par/arena.c core/par/morsel.c core/par/pool.c core/par/radix.c core/par/topk.c
 HOST         = $(B)/agg/par/host.o
 GROUP_LIB    = agg/par/group.c agg/par/group_key.c agg/group/cmp.c agg/distinct/u64.c agg/kern/hash.c
