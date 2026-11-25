@@ -32,6 +32,7 @@
 #include "col/pg.h"
 #include "core/compat.h"
 #include "core/errctx.h"
+#include "core/cachebudget.h"
 #include "core/f2/f2_pace.h"
 #include "core/f2/f2_progress.h"
 #include "core/f2/fsm.h"
@@ -221,6 +222,7 @@ shrink_tail(Relation rel, FullTransactionId horizon, int64 hot_cut)
  * come back later. What the transaction that aborts asked is not asked.
  */
 static List *asked;
+static MemoryContext asked_cx;
 
 static void
 ask_queue(XactEvent event, void *arg pg_attribute_unused())
@@ -251,7 +253,9 @@ sift_f2_maint_request(Relation rel, SiftMaintKind kind, uint64 part_id)
 	foreach_ptr(SiftMaintReq, again, asked)
 		if (again->rel == req.rel && again->kind == kind && again->part_id == part_id)
 			return true;
-	old = MemoryContextSwitchTo(TopTransactionContext);
+	if (asked_cx == NULL)
+		asked_cx = sift_cache_create_context("sift cache maintenance requests");
+	old = MemoryContextSwitchTo(asked_cx);
 	asked = lappend(asked, memcpy(palloc(sizeof(req)), &req, sizeof(req)));
 	MemoryContextSwitchTo(old);
 	return true;
