@@ -404,11 +404,11 @@ target_of(const SiftF2Loc *loc, uint64 tid)
 
 /* A chain the cache of the chains can keep whole in a quarter of its budget; a longer one is read for the records of other transactions only */
 static bool
-chain_fits_cache(Relation rel, const SiftPartitionEntry *entry)
+chain_fits_cache(const SiftColDeltaAnchor *anchor)
 {
 	uint64		pages = Max(SIFT_CDDIR_FLAT_PAGES, (uint64) sift_backend_cache_kb * 1024 / (4 * BLCKSZ));
 
-	return sift_manifest_read_col_delta(rel, entry).npages <= pages;
+	return anchor->npages <= pages;
 }
 
 static SiftColDeltaLast
@@ -417,12 +417,14 @@ latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid)
 	SiftColDeltaOps ops;
 	SiftColDeltaTarget t = target_of(loc, tid);
 	const SiftColDeltaLog *log;
+	SiftColDeltaAnchor anchor;
 
 	sift_col_delta_ops_init(&ops, NULL);
 	if ((loc->entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 		return (SiftColDeltaLast) {0};
-	if (!chain_fits_cache(rel, &loc->entry))
-		return sift_col_delta_foreign_latest(rel, &loc->entry, &t, &ops);
+	anchor = sift_manifest_read_col_delta(rel, &loc->entry);
+	if (!chain_fits_cache(&anchor))
+		return sift_col_delta_foreign_latest(rel, &loc->entry, &anchor, &t, &ops);
 	log = sift_col_delta_log(rel, &loc->entry);
 	if (log == NULL)
 		return (SiftColDeltaLast) {0};

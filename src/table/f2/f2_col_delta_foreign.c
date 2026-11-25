@@ -1,9 +1,13 @@
 /*
  * table/f2/f2_col_delta_foreign.c - what a modify asks of a column delta chain that is too long to keep whole in the cache of the chains (f2_chain_cache.h).
  *
- * The records that matter to a modify are the ones another transaction wrote: they say that the row changed under it. The records of the transaction itself are known to it (its row locks
- * name the rows it changed), and a statement that patches a million rows writes a chain of that many records. The log of such a chain keeps the headers of the records of the other
- * transactions only, read one page at a time, for the lifetime of the transaction: its memory is the records of the others, whatever this transaction writes.
+ * The records that matter to a modify are the ones another transaction wrote and whose writer is not past every snapshot: they say that the row changed under it. A writer older than the
+ * oldest transaction a snapshot can see is committed for all of them or never visible, and a modify finds the same without its record. The records of the transaction itself are known to it (its
+ * row locks name the rows it changed), and a statement that patches a million rows writes a chain of that many records. The log keeps the headers of the records left, and follows the chain
+ * from one statement to the next the way the watch of a chain does (f2_col_delta.h): it reads the pages the chain gained, not the chain. The records it left out for a transaction are read again
+ * when another one asks.
+ *
+ * check-memory: allow-allocs the log holds the headers of the records of the writers a snapshot may still tell apart, which is the chain written since the oldest running transaction began, and the budget of core/cachebudget.h bounds it
  */
 #include "postgres.h"
 
@@ -11,7 +15,9 @@
 #include "storage/bufmgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
+#include "core/cachebudget.h"
 #include "core/f2/col_delta_anchor.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -22,27 +28,9 @@
 typedef struct ForeignRec
 {
 	uint64		tid;
-	uint64		newer;			/* the larger, the newer the record */
+	uint64		seq;			/* the larger, the newer the record */
 	SiftColDeltaEntryHdr hdr;
 } ForeignRec;
-
-typedef struct ForeignLog
-{
-	MemoryContext cx;
-	RelFileLocator loc;
-	uint64		part_id;
-	BlockNumber anchor_blk;		/* what the anchor named when the log was read: a page added to the chain changes it */
-	uint32		anchor_pages;
-	BlockNumber head_blk;
-	uint64		head_gen;
-	XLogRecPtr	head_lsn;
-	uint32		head_used;
-	uint32		head_crc;
-	int			n;
-	ForeignRec *recs;			/* ascending by (tid, newer) */
-} ForeignLog;
-
-static ForeignLog *flog = NULL;
 
 typedef struct HeadStamp
 {
@@ -52,6 +40,28 @@ typedef struct HeadStamp
 	uint32		used;
 	uint32		crc;
 } HeadStamp;
+
+typedef struct ForeignLog
+{
+	MemoryContext cx;			/* NULL: no log; holds everything below */
+	RelFileLocator loc;
+	uint64		part_id;
+	SiftColDeltaWatch watch;	/* the pages of the chain the log has read */
+	HeadStamp	head;			/* the newest page as it was when the log was read */
+	BlockNumber anchor_blk;
+	uint32		anchor_pages;
+	uint64		seq;
+	int			n;
+	int			cap;
+	ForeignRec *recs;			/* ascending by (tid, seq) */
+	int			nskipped;
+	int			capskipped;
+	TransactionId *skipped;		/* the writers whose records the log left out because they were the transaction's */
+	uint64		tick;
+} ForeignLog;
+
+static MemoryContext foreign_cx = NULL;
+static ForeignLog flog;
 
 static HeadStamp
 stamp_of(const char *page, BlockNumber blk)
@@ -70,9 +80,9 @@ stamp_read(Relation rel, BlockNumber blk)
 }
 
 static bool
-stamp_is(const ForeignLog *l, const HeadStamp *st)
+stamp_same(const HeadStamp *a, const HeadStamp *b)
 {
-	return l->head_blk == st->blk && l->head_gen == st->gen && l->head_lsn == st->lsn && l->head_used == st->used && l->head_crc == st->crc;
+	return a->blk == b->blk && a->gen == b->gen && a->lsn == b->lsn && a->used == b->used && a->crc == b->crc;
 }
 
 static int
@@ -83,155 +93,193 @@ rec_cmp(const void *a, const void *b)
 
 	if (x->tid != y->tid)
 		return x->tid < y->tid ? -1 : 1;
-	return x->newer < y->newer ? -1 : x->newer > y->newer;
+	return x->seq < y->seq ? -1 : x->seq > y->seq;
+}
+
+/* ---- the log, a cache of the backend ---- */
+
+static void
+log_drop(void)
+{
+	if (flog.cx != NULL)
+		MemoryContextDelete(flog.cx);
+	memset(&flog, 0, sizeof(flog));
+}
+
+static uint64
+foreign_oldest(void)
+{
+	return flog.cx != NULL && !sift_cache_used_in_xact(flog.tick) ? flog.tick : UINT64_MAX;
+}
+
+static bool
+foreign_evict_one(void)
+{
+	if (flog.cx == NULL || sift_cache_used_in_xact(flog.tick))
+		return false;
+	log_drop();
+	return true;
 }
 
 static void
-log_gone(void *arg pg_attribute_unused())
+foreign_evict_all(void)
 {
-	flog = NULL;
+	foreign_evict_one();
 }
 
-static ForeignLog *
-log_new(Relation rel, uint64 part_id)
-{
-	MemoryContext cx = sift_mem_allocset_create(TopTransactionContext, "sift f2 delta foreign log");
-	MemoryContextCallback *cb = MemoryContextAlloc(cx, sizeof(*cb));
-	ForeignLog *l = MemoryContextAllocZero(cx, sizeof(ForeignLog));
+static const SiftCacheKind foreign_kind = {"table_f2_col_delta_foreign_log", foreign_oldest, foreign_evict_one, foreign_evict_all};
 
-	cb->func = log_gone;
-	cb->arg = NULL;
-	MemoryContextRegisterResetCallback(cx, cb);
-	l->cx = cx;
-	l->loc = rel->rd_locator;
-	l->part_id = part_id;
-	return l;
+static void
+log_open(Relation rel, uint64 part_id)
+{
+	if (foreign_cx == NULL)
+	{
+		foreign_cx = sift_cache_create_context("sift cache f2 column delta foreign log");
+		sift_cache_register(&foreign_kind);
+	}
+	log_drop();
+	flog.cx = sift_mem_allocset_create(foreign_cx, "sift cache f2 column delta foreign log entry");
+	flog.loc = rel->rd_locator;
+	flog.part_id = part_id;
+	sift_col_delta_watch_init(&flog.watch, flog.cx);
 }
 
 static void
-log_add(ForeignLog *l, int *cap, uint64 tid, uint64 newer, const SiftColDeltaEntryHdr *h)
+log_reset(void)
 {
-	if (l->n == *cap)
-	{
-		*cap = Max(64, *cap * 2);
-		l->recs = l->recs == NULL ? MemoryContextAlloc(l->cx, sizeof(ForeignRec) * *cap) : repalloc(l->recs, sizeof(ForeignRec) * *cap);
-	}
-	l->recs[l->n++] = (ForeignRec) {.tid = tid,.newer = newer,.hdr = *h};
+	flog.n = 0;
+	flog.seq = 0;
+	flog.nskipped = 0;
+	sift_col_delta_watch_reset(&flog.watch);
 }
 
-static BlockNumber
-newest_data(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor)
-{
-	return (anchor->flags & SIFT_CDLA_INDEXED_DIR) != 0 ? sift_cddir_io_newest_data(rel, (uint32) entry->part_id, anchor->delta_head_blkno) : anchor->delta_head_blkno;
-}
+/* ---- what the log keeps of a record ---- */
 
-/* The data pages of the chain, oldest first */
-static BlockNumber *
-chain_blocks(const SiftColDeltaAnchor *anchor, const SiftColDeltaPageReader *reader, Relation rel, uint64 part_id)
-{
-	BlockNumber *blks = palloc(sizeof(BlockNumber) * Max(anchor->npages, 1));
-
-	if ((anchor->flags & SIFT_CDLA_INDEXED_DIR) != 0)
-	{
-		SiftColDeltaDirEntry *ent;
-		BlockNumber *dir_blks;
-		int			ndir;
-		const char *why = sift_cddir_chain_entries(anchor, reader, &ent, &dir_blks, &ndir);
-
-		if (why != NULL)
-			SIFT_CORRUPT(rel, "%s (partition %llu).", why, (unsigned long long) part_id);
-		for (int i = 0; i < anchor->npages; i++)
-			blks[i] = ent[i].blkno;
-		pfree(ent);
-		pfree(dir_blks);
-		return blks;
-	}
-	return NULL;
-}
-
-/* The pages from the newest, each read once into one buffer; the records of this transaction are left out */
 static void
-log_fill(Relation rel, ForeignLog *l, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor)
+log_skip(TransactionId xmin)
 {
-	SiftColDeltaDiskReader d = {.rel = rel,.part_id = (uint32) entry->part_id};
-	SiftColDeltaPageReader reader = sift_col_delta_disk_reader(&d);
-	char	   *page = palloc(BLCKSZ);
-	BlockNumber *blks = chain_blocks(anchor, &reader, rel, entry->part_id);
-	BlockNumber blk = blks != NULL ? blks[anchor->npages - 1] : anchor->delta_head_blkno;
-	int			cap = 0;
-
-	l->n = 0;
-	l->anchor_blk = anchor->delta_head_blkno;
-	l->anchor_pages = anchor->npages;
-	for (uint32 walked = 0; walked < anchor->npages; walked++)
+	for (int i = 0; i < flog.nskipped; i++)
+		if (flog.skipped[i] == xmin)
+			return;
+	if (flog.nskipped == flog.capskipped)
 	{
-		const char *why = reader.read(reader.ctx, blk, page);
-		const uint8 *p,
-				   *end;
-		uint32		at = 0;
-
-		if (why == NULL)
-			why = sift_col_delta_page_check(page);
-		if (why != NULL)
-			SIFT_CORRUPT(rel, "%s (partition %llu).", why, (unsigned long long) entry->part_id);
-		if (walked == 0)
-		{
-			HeadStamp	st = stamp_of(page, blk);
-
-			l->head_blk = st.blk;
-			l->head_gen = st.gen;
-			l->head_lsn = st.lsn;
-			l->head_used = st.used;
-			l->head_crc = st.crc;
-		}
-		for (p = sift_col_delta_page_first(page), end = sift_col_delta_page_end(page); p < end;)
-		{
-			SiftColDeltaEntryHdr h;
-
-			memcpy(&h, p, sizeof(h));
-			if (!TransactionIdIsCurrentTransactionId(h.xmin))
-				log_add(l, &cap, sift_col_delta_hdr_tid(&h), ((uint64) (UINT32_MAX - walked) << 32) | at, &h);
-			at++;
-			p += h.rec_bytes;
-		}
-		blk = blks != NULL ? (walked + 1 < anchor->npages ? blks[anchor->npages - 2 - walked] : InvalidBlockNumber) : ((const SiftColDeltaPageData *) SiftPageGetData(page))->prev_blk;
-		CHECK_FOR_INTERRUPTS();
+		flog.capskipped = Max(4, flog.capskipped * 2);
+		flog.skipped = flog.skipped == NULL ? MemoryContextAlloc(flog.cx, sizeof(TransactionId) * flog.capskipped) : repalloc(flog.skipped, sizeof(TransactionId) * flog.capskipped);
 	}
-	pfree(page);
-	if (blks != NULL)
-		pfree(blks);
-	if (l->n > 1)
-		qsort(l->recs, l->n, sizeof(ForeignRec), rec_cmp);
+	flog.skipped[flog.nskipped++] = xmin;
+}
+
+static bool
+writer_settled(TransactionId xmin)
+{
+	return TransactionIdPrecedes(xmin, RecentXmin);
+}
+
+static void
+log_add(const SiftColDeltaEntryHdr *h)
+{
+	if (flog.n == flog.cap)
+	{
+		flog.cap = Max(64, flog.cap * 2);
+		flog.recs = flog.recs == NULL ? MemoryContextAlloc(flog.cx, sizeof(ForeignRec) * flog.cap) : repalloc(flog.recs, sizeof(ForeignRec) * flog.cap);
+	}
+	flog.recs[flog.n++] = (ForeignRec) {.tid = sift_col_delta_hdr_tid(h),.seq = flog.seq,.hdr = *h};
+}
+
+static bool
+log_visit(void *arg pg_attribute_unused(), const char *page, uint32 from_used)
+{
+	const uint8 *p = from_used > 0 ? (const uint8 *) SiftPageGetData(page) + from_used : sift_col_delta_page_first(page),
+			   *end = sift_col_delta_page_end(page);
+
+	while (p < end)
+	{
+		SiftColDeltaEntryHdr h;
+
+		memcpy(&h, p, sizeof(h));
+		if (TransactionIdIsCurrentTransactionId(h.xmin))
+			log_skip(h.xmin);
+		else if (!writer_settled(h.xmin))
+			log_add(&h);
+		flog.seq++;
+		p += h.rec_bytes;
+	}
+	CHECK_FOR_INTERRUPTS();
+	return true;
+}
+
+static void
+log_forget_settled(void)
+{
+	int			kept = 0;
+
+	for (int i = 0; i < flog.n; i++)
+		if (!writer_settled(flog.recs[i].hdr.xmin))
+			flog.recs[kept++] = flog.recs[i];
+	flog.n = kept;
+}
+
+/* ---- following the chain ---- */
+
+static bool
+log_skipped_gone(void)
+{
+	for (int i = 0; i < flog.nskipped; i++)
+		if (!TransactionIdIsCurrentTransactionId(flog.skipped[i]))
+			return true;
+	return false;
+}
+
+static void
+log_follow(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a)
+{
+	SiftColDeltaWatchRead r;
+
+	log_forget_settled();
+	if (!sift_col_delta_watch_read(rel, entry, a, &flog.watch, log_visit, NULL, &r))
+	{
+		log_reset();
+		if (!sift_col_delta_watch_read(rel, entry, a, &flog.watch, log_visit, NULL, &r))
+			SIFT_CORRUPT(rel, "the column delta chain of partition %llu cannot be read.", (unsigned long long) entry->part_id);
+	}
+	sift_col_delta_watch_set(&flog.watch, a, &r);
+	flog.head = stamp_of(r.last, r.ent[a->npages - 1].blkno);
+	flog.anchor_blk = a->delta_head_blkno;
+	flog.anchor_pages = a->npages;
+	sift_col_delta_watch_release(&r);
+	if (flog.n > 1)
+		qsort(flog.recs, flog.n, sizeof(ForeignRec), rec_cmp);
+}
+
+static bool
+log_current(Relation rel, const SiftColDeltaAnchor *anchor)
+{
+	HeadStamp	now;
+
+	if (flog.watch.npages != (int) anchor->npages || flog.anchor_blk != anchor->delta_head_blkno)
+		return false;
+	now = stamp_read(rel, flog.head.blk);
+	return stamp_same(&flog.head, &now);
 }
 
 static const ForeignLog *
-log_of(Relation rel, const SiftPartitionEntry *entry)
+log_of(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor)
 {
-	SiftColDeltaAnchor anchor = sift_manifest_read_col_delta(rel, entry);
-	HeadStamp	now = stamp_read(rel, newest_data(rel, entry, &anchor));
-
-	if (flog != NULL && (!RelFileLocatorEquals(flog->loc, rel->rd_locator) || flog->part_id != entry->part_id))
-	{
-		MemoryContextDelete(flog->cx);
-		flog = NULL;
-	}
-	if (flog != NULL && flog->anchor_blk == anchor.delta_head_blkno && flog->anchor_pages == anchor.npages && stamp_is(flog, &now))
-		return flog;
-	if (flog == NULL)
-		flog = log_new(rel, entry->part_id);
-	if (flog->recs != NULL)
-	{
-		pfree(flog->recs);
-		flog->recs = NULL;
-	}
-	log_fill(rel, flog, entry, &anchor);
-	return flog;
+	if (flog.cx == NULL || !RelFileLocatorEquals(flog.loc, rel->rd_locator) || flog.part_id != entry->part_id)
+		log_open(rel, entry->part_id);
+	if (log_skipped_gone())
+		log_reset();
+	if (!log_current(rel, anchor))
+		log_follow(rel, entry, anchor);
+	flog.tick = sift_cache_tick();
+	sift_cache_commit();
+	return &flog;
 }
 
 SiftColDeltaLast
-sift_col_delta_foreign_latest(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops)
+sift_col_delta_foreign_latest(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops)
 {
-	const ForeignLog *l = log_of(rel, entry);
+	const ForeignLog *l = log_of(rel, entry, anchor);
 	int			lo = 0,
 				hi = l->n;
 
