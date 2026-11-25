@@ -11,6 +11,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/index.h"
@@ -184,11 +185,99 @@ is_f2_target(Relation rel)
 	return sift_tbl_is_table(rel) && sift_meta_resolve_major(rel) == SIFT_FORMAT2_MAJOR;
 }
 
+/*
+ * The definition is a row of the catalog and follows the transaction; the directory of the relation does not. A projection a rolled-back create leaves in the directory has no definition and
+ * the next refresh drops it (f2_proj_build.c); a drop leaves the definition's removal to the transaction and takes the projection out of the directory when the transaction commits.
+ */
+typedef struct PendingDrop
+{
+	Oid			relid;
+	char		name[SIFT_PROJ_NAME_LEN];
+	SubTransactionId subid;
+} PendingDrop;
+
+static List *pending_drops;
+static bool drops_hooked;
+
+static void
+pending_forget(Oid relid, const char *name)
+{
+	ListCell   *lc;
+
+	foreach(lc, pending_drops)
+	{
+		const PendingDrop *p = lfirst(lc);
+
+		if (p->relid == relid && strcmp(p->name, name) == 0)
+			pending_drops = foreach_delete_current(pending_drops, lc);
+	}
+}
+
+static void
+drops_xact(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_PRE_PREPARE && pending_drops != NIL)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("cannot PREPARE a transaction that has dropped a projection"),
+						errhint("Commit the drop of the projection on its own, then prepare the transaction.")));
+	if (event == XACT_EVENT_PRE_COMMIT)
+		foreach_ptr(PendingDrop, p, pending_drops)
+		{
+			Relation	rel = try_relation_open(p->relid, ShareUpdateExclusiveLock);
+
+			if (rel != NULL)
+			{
+				(void) sift_proj_drop(rel, p->name);
+				relation_close(rel, NoLock);
+			}
+		}
+	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT)
+		pending_drops = NIL;
+}
+
+static void
+drops_subxact(SubXactEvent event, SubTransactionId mysubid, SubTransactionId parentsubid, void *arg)
+{
+	ListCell   *lc;
+
+	foreach(lc, pending_drops)
+	{
+		PendingDrop *p = lfirst(lc);
+
+		if (p->subid != mysubid)
+			continue;
+		if (event == SUBXACT_EVENT_ABORT_SUB)
+			pending_drops = foreach_delete_current(pending_drops, lc);
+		else if (event == SUBXACT_EVENT_COMMIT_SUB)
+			p->subid = parentsubid;
+	}
+}
+
+static void
+pending_add(Oid relid, const char *name)
+{
+	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+	PendingDrop *p = palloc0(sizeof(PendingDrop));
+
+	if (!drops_hooked)
+	{
+		RegisterXactCallback(drops_xact, NULL);
+		RegisterSubXactCallback(drops_subxact, NULL);
+		drops_hooked = true;
+	}
+	pending_forget(relid, name);
+	p->relid = relid;
+	strlcpy(p->name, name, sizeof(p->name));
+	p->subid = GetCurrentSubTransactionId();
+	pending_drops = lappend(pending_drops, p);
+	MemoryContextSwitchTo(old);
+}
+
 static Relation
 open_target(Oid relid, LOCKMODE lock)
 {
 	Relation	rel = relation_open(sift_rel_must_exist(relid), lock);
 
+	sift_rel_reject_partitioned(rel);
 	if (!is_f2_target(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift index or a sift_table of format major 2", RelationGetRelationName(rel)),
 						errhint("Projections belong to a relation of format major 2.")));
@@ -222,6 +311,7 @@ sift_create_projection(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_DUPLICATE_OBJECT), errmsg("relation \"%s\" already has a projection \"%s\"", RelationGetRelationName(rel), name)));
 	if (sift_proj_find(refs, nrefs, name) != NULL)
 		(void) sift_proj_drop(rel, name);
+	pending_forget(RelationGetRelid(rel), name);
 	def_insert(RelationGetRelid(rel), name, canonical);
 	sift_proj_create(rel, store, name, &spec, &cols, canonical);
 	relation_close(rel, NoLock);
@@ -233,13 +323,21 @@ sift_drop_projection(PG_FUNCTION_ARGS)
 {
 	Relation	rel = open_target(PG_GETARG_OID(0), ShareUpdateExclusiveLock);
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	bool		dropped;
+	SiftColMetaPageData meta;
+	SiftManifestProjRef *refs;
+	int			nrefs;
+	bool		listed,
+				dropped;
 
 	check_acl(rel, ACL_MAINTAIN);
+	meta = sift_col_meta_read(rel);
+	refs = sift_manifest_read_projs(rel, &meta, &nrefs);
+	listed = sift_proj_find(refs, nrefs, name) != NULL;
 	dropped = def_delete(RelationGetRelid(rel), name);
-	dropped |= sift_proj_drop(rel, name);
+	if (listed)
+		pending_add(RelationGetRelid(rel), name);
 	relation_close(rel, NoLock);
-	PG_RETURN_BOOL(dropped);
+	PG_RETURN_BOOL(dropped || listed);
 }
 
 static const char *
