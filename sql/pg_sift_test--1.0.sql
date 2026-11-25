@@ -266,20 +266,20 @@ CREATE FUNCTION sift._test_cache_stress(on_ bool) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_cache_stress' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_cache_register_dummies(n int4) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_cache_register_dummies' LANGUAGE C STRICT;
--- a unit buffer that cannot be made leaves nothing for the next segment (src/col/v1/test/alloc_test.c): true when the next segment reads and writes its whole buffer
+-- a unit buffer that cannot be made leaves nothing for the next segment (src/col/v1/test/alloc.c): true when the next segment reads and writes its whole buffer
 CREATE FUNCTION sift._test_unit_room_failure() RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_unit_room_failure' LANGUAGE C STRICT;
 
 -- n log lines, each reported under the error context of an index (test/mem-slope.tsv leak_errctx_report): the memory they leave in the backend
 CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_errctx_report' LANGUAGE C STRICT;
--- n questions whether an index tracks a key, asked in a context of their own (src/col/v1/test/alloc_test.c): the bytes that context holds, exact
+-- n questions whether an index tracks a key, asked in a context of their own (src/col/v1/test/alloc.c): the bytes that context holds, exact
 CREATE FUNCTION sift._test_row_key_bytes(idx regclass, n int) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_row_key_bytes' LANGUAGE C STRICT;
--- n syntax checks of the value of an option (preagg, rollup_leaves, calendar_columns), asked in a context of their own (src/col/v1/test/alloc_test.c): the bytes that context holds, exact
+-- n syntax checks of the value of an option (preagg, rollup_leaves, calendar_columns), asked in a context of their own (src/col/v1/test/alloc.c): the bytes that context holds, exact
 CREATE FUNCTION sift._test_option_syntax_bytes(option text, opt text, n int) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_option_syntax_bytes' LANGUAGE C STRICT;
--- whether sift_col_bits_any reads past the words of a vector of n bits (src/col/v1/test/alloc_test.c): true when it found a bit in the set words that follow
+-- whether sift_col_bits_any reads past the words of a vector of n bits (src/col/v1/test/alloc.c): true when it found a bit in the set words that follow
 CREATE FUNCTION sift._test_bits_any_bounds(n int) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_bits_any_bounds' LANGUAGE C STRICT;
 -- Memory trackers (src/core/memtrack.h): the trackers this backend ran and the most memory each held at a measurement; reset clears the marks.
@@ -402,7 +402,7 @@ CREATE FUNCTION sift._test_part_lock_blkno(part int4) RETURNS int8 AS 'MODULE_PA
 CREATE FUNCTION sift._test_wbuf_reads(index regclass, OUT walked int8, OUT ndocs int8, OUT due bool, OUT format int4) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_wbuf_reads' LANGUAGE C STRICT;
 
--- Column source (src/col/v1/test/test.c). preds: "leaf:op:v1|v2;..." (eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a
+-- Column source (src/col/v1/test/core.c). preds: "leaf:op:v1|v2;..." (eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a
 -- same-element predicate of group N ("gN!" none of the elements). flags: 1 skip the write buffers, 2 skip the visibility check.
 CREATE FUNCTION sift._test_col_tids(index regclass, preds text DEFAULT '', flags int4 DEFAULT 0, OUT tid tid, OUT sb int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_tids' LANGUAGE C STRICT;
@@ -421,10 +421,10 @@ CREATE FUNCTION sift._test_col_types(index regclass, leaf int4, tagmask int4, de
 CREATE FUNCTION sift._test_col_formats(index regclass, OUT gen int8, OUT format int4, OUT lstats bool, OUT roots bool) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_formats' LANGUAGE C STRICT;
 -- the ranges of the stream that the mirror of each segment keeps, and its bytes (src/col/v1/seg/mirror.c); a byte of the stream read as itself xor a mask
--- the units, rows and range of the first key leaf of every segment cut by a key (src/col/v1/test/test.c)
+-- the units, rows and range of the first key leaf of every segment cut by a key (src/col/v1/test/core.c)
 CREATE FUNCTION sift._test_col_segment_keys(index regclass, OUT gen int8, OUT units int4, OUT rows int8, OUT lo int8, OUT hi int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_segment_keys' LANGUAGE C STRICT;
--- the cut of every immutable segment: by a key (bykey) or by TID range (bytid), and the leaves it records (an empty array: none), src/col/v1/test/test.c
+-- the cut of every immutable segment: by a key (bykey) or by TID range (bytid), and the leaves it records (an empty array: none), src/col/v1/test/core.c
 CREATE FUNCTION sift._test_col_adopt(index regclass) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_col_adopt' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_part_damage(index regclass, k int4, how text) RETURNS void
@@ -907,7 +907,7 @@ CREATE FUNCTION sift._test_col_scope_floor(index regclass, OUT scope int4, OUT j
 CREATE FUNCTION sift._test_col_scope_unfill(index regclass) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_scope_unfill' LANGUAGE C STRICT;
 
--- Scope index (src/col/v1/test/scope_test.c): the marker of a scope read. A scan of the index takes it as its scope conjunct (agg/plan_scope.c); a statement the scan does not
+-- Scope index (src/col/v1/test/scope.c): the marker of a scope read. A scan of the index takes it as its scope conjunct (agg/plan_scope.c); a statement the scan does not
 -- take evaluates it as written: true when the scope relation of the scope key_name of the index has the pair (fk, key) in the snapshot of the statement.
 CREATE FUNCTION sift.in_scope(index regclass, key_name text, fk anyelement, key int8) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_in_scope' LANGUAGE C STABLE PARALLEL SAFE;

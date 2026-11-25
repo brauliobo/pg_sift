@@ -1,5 +1,5 @@
 /*
- * col/f2test/alloc_test.c - test-only SQL functions sift._test_f2_*: the allocator and the free space map, the dump of a part, the L0 stage and slab, the deletion vectors, the visibility rules and the pre-aggregates of a granule (col/format2_test.c has the shared helpers)
+ * col/f2/alloc_test.c - test-only SQL functions sift._test_f2_*: the allocator and the free space map, the dump of a part, the L0 stage and slab, the deletion vectors, the visibility rules and the pre-aggregates of a granule (col/f2/core_test.c has the shared helpers)
  */
 #include "postgres.h"
 
@@ -7,7 +7,7 @@
 
 #ifdef SIFT_TESTING
 
-#include "col/f2/f2test.h"
+#include "col/f2/test_int.h"
 #include "col/f2/f2_store.h"
 #include "core/catname.h"
 #include "core/horizon.h"

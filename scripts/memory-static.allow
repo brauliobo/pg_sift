@@ -35,7 +35,7 @@ defaultsizes	col/v1/seg/verify_super.c	1
 defaultsizes	col/v1/seg_maint.c	2
 defaultsizes	col/v1/seg_write/groups.c	1
 defaultsizes	col/v1/seg_write/summary.c	1
-defaultsizes	col/v1/test/alloc_test.c	1
+defaultsizes	col/v1/test/alloc.c	1
 defaultsizes	col/v1/test/cache.c	1
 defaultsizes	col/v1/test/cube_damage.c	1
 defaultsizes	col/v1/test/set_damage.c	1

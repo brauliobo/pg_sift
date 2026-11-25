@@ -1,5 +1,5 @@
 /*
- * col/f2test/preagg_test.c - test-only SQL functions sift._test_f2_*: the pre-aggregates of an index, the compaction, the time strides, the digest of a part, the order of the rows and the plan (col/format2_test.c has the shared helpers)
+ * col/f2/preagg_test.c - test-only SQL functions sift._test_f2_*: the pre-aggregates of an index, the compaction, the time strides, the digest of a part, the order of the rows and the plan (col/f2/core_test.c has the shared helpers)
  */
 #include "postgres.h"
 
@@ -10,7 +10,7 @@
 
 #include <math.h>
 
-#include "col/f2/f2test.h"
+#include "col/f2/test_int.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_preagg);
 PG_FUNCTION_INFO_V1(sift_test_f2_preagg_index);

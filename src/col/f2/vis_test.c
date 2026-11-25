@@ -1,5 +1,5 @@
 /*
- * col/f2test/vis_test.c - test-only SQL functions sift._test_f2_*: the seal of a part and the heap visibility map for the rows of its granules (core/vis_f2.h).
+ * col/f2/vis_test.c - test-only SQL functions sift._test_f2_*: the seal of a part and the heap visibility map for the rows of its granules (core/vis_f2.h).
  */
 #include "postgres.h"
 
@@ -7,7 +7,7 @@
 
 #include "access/table.h"
 
-#include "col/f2/f2test.h"
+#include "col/f2/test_int.h"
 #include "core/catname.h"
 #include "core/f2/vis_f2.h"
 #include "core/xid_cache.h"

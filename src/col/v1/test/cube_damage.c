@@ -9,7 +9,7 @@
 #include "col/v1/pagg.h"
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
-#include "col/v1/test/test_int.h"
+#include "col/v1/test/int.h"
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_cube_damage);

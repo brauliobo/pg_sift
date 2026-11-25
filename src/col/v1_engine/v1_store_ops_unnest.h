@@ -1,6 +1,6 @@
 /*
  * col/v1_engine/v1_store_ops_unnest.h - the state of one pass of the aggregate scan of a LATERAL unnest over Format 1 (v1_store_ops_unnest.c), shared with the emission of its pairs
- * (v1_store_ops_unnest_emit.c), the members of a map read by key (v1_store_ops_unnest_keys.c) and the tests of the elements of a row (v1_store_ops_unnest_test.c).
+ * (v1_store_ops_unnest_emit.c), the members of a map read by key (v1_store_ops_unnest_keys.c) and the tests of the elements of a row (col/v1_engine/store_ops_unnest_test.c).
  */
 #ifndef SIFT_COL_V1_ENGINE_V1_STORE_OPS_UNNEST_H
 #define SIFT_COL_V1_ENGINE_V1_STORE_OPS_UNNEST_H
@@ -30,7 +30,7 @@
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_unnest.h"
 #include "agg/v6/v6_unnest_jsonb.h"
-#include "agg/v6/v6_unnest_test.h"
+#include "agg/v6/unnest_test.h"
 #include "agg/v6/v6_vexpr.h"
 #include "agg/vexpr_str.h"
 #include "col/v1/v1_store_ops.h"

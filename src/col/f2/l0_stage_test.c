@@ -5,7 +5,7 @@
 
 #ifdef SIFT_TESTING
 
-#include "col/f2/f2test.h"
+#include "col/f2/test_int.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_stage_spec_abort);
 

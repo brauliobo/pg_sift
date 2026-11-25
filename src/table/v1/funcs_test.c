@@ -75,7 +75,7 @@ sift_test_tbl_promote_held(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_tbl_cube_damage);
 
-/* sift_test_cube_damage (col/v1/test/test.c) of the cube blob of the first units of the column segments of the table; with_calendar: blobs that hold a calendar dim */
+/* sift_test_cube_damage (col/v1/test/core.c) of the cube blob of the first units of the column segments of the table; with_calendar: blobs that hold a calendar dim */
 Datum
 sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 {

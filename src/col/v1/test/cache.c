@@ -14,14 +14,14 @@
 #include "col/v1/pagg.h"
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
-#include "col/v1/test/test_int.h"
+#include "col/v1/test/int.h"
 #include "core/cachebudget.h"
 #include "core/catname.h"
 #include "core/store.h"
 
 #ifdef SIFT_TESTING
 /*
- * col/v1/test/test.c - sift._test_col_*: the column source API (col/col.h section 3) from SQL, for the regression and differential tests.
+ * col/v1/test/core.c - sift._test_col_*: the column source API (col/col.h section 3) from SQL, for the regression and differential tests.
  * Predicates are written "leaf:op:v1|v2;..." (ops eq ne lt le gt ge in notin null notnull prefix); "gN:leaf:op:v" is a same-element
  * predicate of group N, "gN!" requires that no element satisfies the group's predicates.
  */

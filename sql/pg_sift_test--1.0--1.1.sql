@@ -100,7 +100,7 @@ CREATE FUNCTION sift._test_f2_key(nrows int4, nvalid int4, njnull int4 DEFAULT 0
 CREATE FUNCTION sift._test_f2_fsst(pattern text, nstrings int4, detail bool DEFAULT false) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_f2_fsst' LANGUAGE C STRICT;
 -- The format major of an index of either format, from its block 0 (core/meta_peek.c): 1 or 2, 0 while it has no block
 CREATE FUNCTION sift._test_index_format(index regclass) RETURNS int4 AS 'MODULE_PATHNAME', 'sift_test_index_format' LANGUAGE C STRICT;
--- The Top-N tournament (src/agg/topn_v6_test.c): the rows it outputs over arrays cut into granules, parts and partitions, and the units it did not read.
+-- The Top-N tournament (src/agg/v6/topn_test.c): the rows it outputs over arrays cut into granules, parts and partitions, and the units it did not read.
 CREATE FUNCTION sift._test_topn(k0 int8[], k1 int8[], k2 int8[], keep bool[], descs bool[], nulls_firsts bool[], granule_rows int4, granules_per_part int4,
 								parts_per_partition int4, slab_rows int4, lim int8, off int8, with_ties bool DEFAULT false, workers int4 DEFAULT 1,
 								frontier bool DEFAULT false) RETURNS TABLE(rank int4, idx int4)
@@ -124,7 +124,7 @@ CREATE FUNCTION sift._test_aggkern6_equiv(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_aggkern6_equiv' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_aggkern6_level() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_aggkern6_level' LANGUAGE C STRICT;
--- Salted hash table, array element masks and the cost of a SiftAgg path (src/agg/v6_test.c): the number of failed cases.
+-- Salted hash table, array element masks and the cost of a SiftAgg path (src/agg/v6/core_test.c): the number of failed cases.
 CREATE FUNCTION sift._test_salted_ht(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_salted_ht' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_array_elem_mask(seed int8, cases int4) RETURNS int8

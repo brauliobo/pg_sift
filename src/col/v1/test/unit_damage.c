@@ -11,7 +11,7 @@
 #include "col/v1/pagg.h"
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
-#include "col/v1/test/test_int.h"
+#include "col/v1/test/int.h"
 #include "core/inspect.h"
 #include "core/store.h"
 
