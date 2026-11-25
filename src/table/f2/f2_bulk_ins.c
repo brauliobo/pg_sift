@@ -60,7 +60,7 @@ SiftTxnStage *
 sift_tbl_f2_stage_bulk(Relation rel, SiftF2Store *store)
 {
 	SiftTxnStage *st = sift_stage_get(rel, &store->spec);
-	uint64		budget = (uint64) Max(work_mem, maintenance_work_mem / 4) * 1024;
+	uint64		budget = Max((uint64) work_mem * 1024, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4));
 
 	sift_stage_set_bulk(st, sift_batch_flush_rows(budget, row_bytes_of(store)), budget);
 	return st;
