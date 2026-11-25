@@ -138,11 +138,11 @@ typedef struct SiftV6Col
 	Oid			collid;			/* a key: the collation its type is grouped under (the interner of a generic key, v6_datum.h) */
 } SiftV6Col;
 
-/* How the scan decodes the column: SV6C_DATUM for a column the planner marked to be read as datums (v6_datum.h) */
+/* How the scan decodes the column: SV6C_DATUM for a column the planner marked to be read as datums (v6_datum.h) and for a whole jsonb document */
 static inline SiftV6Class
 sift_v6_col_class(const SiftV6Col *c)
 {
-	return c->scale == SIFT_V6_SCALE_DATUM ? SV6C_DATUM : sift_v6_class(c->typid);
+	return c->scale == SIFT_V6_SCALE_DATUM || c->typid == JSONBOID ? SV6C_DATUM : sift_v6_class(c->typid);
 }
 
 struct SiftV6Ext;
