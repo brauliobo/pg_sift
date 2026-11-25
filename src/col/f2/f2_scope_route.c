@@ -5,6 +5,7 @@
 
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_scope.h"
+#include "col/f2/f2_scope_int.h"
 #include "col/f2/f2_scope_cache.h"
 #include "col/f2/f2_scope_route.h"
 
@@ -56,7 +57,7 @@ sift_f2_scope_build_router(Relation rel, int ord, Snapshot snap, const int64 *ke
 	SiftScopeReadMask mask;
 	SiftScopeRouter *r;
 
-	if (meta == NULL || !keys_prune(meta, keys, nkeys) || (sc = sift_f2_scope_open_keys(rel, ord, snap, 0, keys, nkeys, km)) == NULL)
+	if (meta == NULL || !sift_f2s_schema_matches(sift_f2_store_open(rel), meta) || !keys_prune(meta, keys, nkeys) || (sc = sift_f2_scope_open_keys(rel, ord, snap, 0, keys, nkeys, km)) == NULL)
 		return NULL;
 	old = MemoryContextSwitchTo(mcxt);
 	sift_scope_rmask_build(&sc->meta, keys, nkeys, sc->changed, sc->nchanged, &sc->source, &mask);

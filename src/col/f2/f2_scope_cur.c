@@ -163,9 +163,9 @@ sift_f2s_pairs_unchanged(Relation rel, int ord, const SiftScopeMeta *m, Snapshot
 	return sift_f2s_pair_edits(rel, ord, m, snap, NULL, 0, NULL, &none, &n) && n == 0;
 }
 
-/* A summary of a table is of the leaves the table had when it was built: another schema (a column added, dropped or renamed since) is another set of cubes. The schema of an index is never altered */
-static bool
-schema_matches(const SiftF2Store *store, const SiftScopeMeta *m)
+/* The schema of an index is never altered */
+bool
+sift_f2s_schema_matches(const SiftF2Store *store, const SiftScopeMeta *m)
 {
 	return !sift_f2s_is_table(store) || m->hdr.schema_hash == store->schema->hash;
 }
@@ -179,7 +179,7 @@ scope_matches(Relation rel, const SiftF2Store *store, int ord, Snapshot snap, bo
 
 	if (!sift_f2s_object(rel, ord, &m, SIFT_SMETA_OPEN_LAZY_TOPK))
 		return false;
-	ok = schema_matches(store, &m) && parts_match(rel, &mr, &m, snap, settled) && sift_f2s_pairs_unchanged(rel, ord, &m, snap) && (!settled || sift_f2s_deltas_clear(rel, store, ord, &mr));
+	ok = sift_f2s_schema_matches(store, &m) && parts_match(rel, &mr, &m, snap, settled) && sift_f2s_pairs_unchanged(rel, ord, &m, snap) && (!settled || sift_f2s_deltas_clear(rel, store, ord, &mr));
 	sift_scope_meta_close(&m);
 	return ok;
 }

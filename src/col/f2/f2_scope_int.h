@@ -239,6 +239,9 @@ extern bool sift_f2s_object(Relation rel, int ord, SiftScopeMeta *m, uint32 open
 /* gm: the part generations the summary names -> their index in its part map */
 extern void sift_f2s_meta_map(const SiftScopeMeta *m, SiftGenMap *gm);
 extern bool sift_f2s_pairs_unchanged(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap);
+
+/* A summary of a table is of the leaves the table had when it was built: with another schema (a column added, dropped, renamed or changed in type since) it is another set of cubes and is not read */
+extern bool sift_f2s_schema_matches(const SiftF2Store *store, const SiftScopeMeta *m);
 /* The members whose pairs of the scope keys changed since the summary, ascending, palloc'd in *out (NULL: none); false when the journals cannot name them, or they are more than a read overlays. nkeys 0: every key, and any change is false */
 extern bool sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, int64 **out, uint32 *nout);
 /* Can this transaction not count the rows from the summary (a change of the relation that is not written, or SSI) */

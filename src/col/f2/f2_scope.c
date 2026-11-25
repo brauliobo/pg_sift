@@ -303,6 +303,13 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	meta = scope_object(rel, plan, ord, cx, live, &sc->meta);
 	if (meta == NULL)
 		return scope_abandon(cx, old, rel, heap);
+	if (!sift_f2s_schema_matches(store, meta))
+	{
+		if (live)
+			return scope_abandon(cx, old, rel, heap);
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("the summary of scope %d of \"%s\" is of the columns the table had before it was altered", ord, RelationGetRelationName(rel)),
+						errhint("Run VACUUM on the table: it builds the summary again.")));
+	}
 	if (meta != &sc->meta)
 	{
 		sc->meta = *meta;
