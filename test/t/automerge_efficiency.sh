@@ -125,10 +125,17 @@ run_scale() {
 	V[col_f2_churn.dead_pct.$tag]=$S_DEAD; V[col_f2_churn.slabs.$tag]=$S_SLABS
 	work col_f2_churn "$tag" "$lsn0" "$temp0" "$dirty" "$S_BYTES"
 
-	# 4. sift (BM25), exactly 25% of the documents deleted and the heap vacuumed, which marks the documents dead and merges nothing
-	V[bm25_delete_25.dead_pct0.$tag]=$(bm_dead_pct "idx_bm_$tag" "CREATE TABLE t_bm_$tag (id int8, body text)" \
-		"INSERT INTO t_bm_$tag SELECT g, 'alpha beta gamma doc' || g % 500 FROM generate_series(1, $n) g" "CREATE INDEX idx_bm_$tag ON t_bm_$tag USING sift (body)" \
-		"DELETE FROM t_bm_$tag WHERE id <= $q" "VACUUM t_bm_$tag")
+	# 4. sift (BM25), exactly 25% of the documents deleted and the heap vacuumed, which marks the documents dead and merges nothing. Read on a twin with sift.async_maintenance off, as the sift_col
+	# churn is: a worker that merges the documents before the read would hide what the VACUUM left
+	bm_churn() { # SUFFIX [SQL...]: the table, its index and the churn in one session; the pct of dead documents of the index
+		local s=$1; shift
+		bm_dead_pct "idx_bm${s}_$tag" "$@" "CREATE TABLE t_bm${s}_$tag (id int8, body text)" \
+			"INSERT INTO t_bm${s}_$tag SELECT g, 'alpha beta gamma doc' || g % 500 FROM generate_series(1, $n) g" "CREATE INDEX idx_bm${s}_$tag ON t_bm${s}_$tag USING sift (body)" \
+			"DELETE FROM t_bm${s}_$tag WHERE id <= $q" "VACUUM t_bm${s}_$tag"
+	}
+	V[bm25_delete_25.dead_pct0.$tag]=$(bm_churn x "SET sift.async_maintenance = off")
+	sql ae "DROP TABLE t_bmx_$tag" >/dev/null || bail "t_bmx_$tag"
+	bm_churn "" >/dev/null
 	settle "idx_bm_$tag" -- "(SELECT coalesce(sum(dead_docs), 0) * 100 < greatest(coalesce(sum(ndocs), 1), 1) * 25 FROM sift.segments('idx_bm_$tag'))"
 	V[bm25_delete_25.converged.$tag]=$CONV_OK; V[bm25_delete_25.converge_ms.$tag]=$CONV_MS; V[bm25_delete_25.dead_pct.$tag]=$(bm_dead_pct "idx_bm_$tag")
 }
