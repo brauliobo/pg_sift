@@ -527,6 +527,7 @@ TESTING_REGRESS += col_writer_terms_mem
 TESTING_REGRESS += col_zone_jnull
 TESTING_REGRESS += colcodec_%
 TESTING_REGRESS += compat_v1_scan_cache
+TESTING_REGRESS += compat_v1_scan_dict_memory
 TESTING_REGRESS += compat_v1_table_rewrite
 TESTING_REGRESS += compat_v1_tomb_work_mem
 TESTING_REGRESS += compat_v1_track_reindex

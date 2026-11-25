@@ -183,7 +183,7 @@ sift_cseg_look_str(DictLook *l, uint32 code, uint32 *len, char *buf)
 static inline BisectSlot *
 look_slot(const DictLook *l, uint32 pos)
 {
-	return l->bc ? &l->bc->slot[(pos * 0x9E3779B1u) >> 8 & l->bc->mask] : NULL;
+	return l->slots ? &l->slots->slot[(pos * 0x9E3779B1u) >> 8 & l->slots->mask] : NULL;
 }
 
 /* The k codes at places [from, from + k) of the byte order (u32 each, or perm_bits wide in a dictionary of column format minor 39) */
@@ -267,7 +267,11 @@ look_cache(DictLook *l)
 	{
 		l->bc_tried = true;
 		if (l->n >= BISECT_MIN && HEAD_CACHED())
-			l->bc = sift_cseg_bisect(l->seg, l->col, l->n);
+		{
+			if (l->bc == NULL)
+				l->bc = sift_cseg_bisect(l->seg, l->col);
+			l->slots = sift_cseg_bisect_slots(l->seg, l->col, l->n);
+		}
 	}
 }
 
@@ -513,7 +517,6 @@ look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
 	l->stub.look = &l->look;
 	l->searchable = true;
 	l->bc = bc;
-	l->bc_tried = true;
 	return l;
 }
 
@@ -614,12 +617,11 @@ sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bis
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 			l->searchable = true;
-			if (bisect && l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col, l->n)) != NULL)
+			if (bisect && l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col)) != NULL)
 			{
 				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->perm_bits, l->cum_at, l->hash_at, l->sig_at, l->sig_lg};
 				bc->have_head = true;
 				l->bc = bc;
-				l->bc_tried = true;
 			}
 		}
 		else if (l->blk_at + blen > off + len)

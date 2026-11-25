@@ -147,7 +147,13 @@ sift_cseg_sets_keep(SiftColSegment *seg, int col, MemoryContext cx, void *sets)
 
 /* no cache of the positions a dictionary search bisected: every search reads the dictionary */
 SiftCBisect *
-sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n)
+sift_cseg_bisect(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+SiftCBisectSlots *
+sift_cseg_bisect_slots(SiftColSegment *seg, int col, uint32 n)
 {
 	return NULL;
 }

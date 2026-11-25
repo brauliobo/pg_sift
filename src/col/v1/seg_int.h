@@ -308,9 +308,14 @@ typedef struct SiftCBisect
 	uint64		spent;			/* instructions the searches of the stream cost since the entry was made */
 	bool		have_head;		/* head: where the parts of the dictionary lie, so that the next query does not read them again */
 	DictLookHead head;
+} SiftCBisect;
+
+/* The positions a search of the stream looked at, made by the first search of a dictionary and not by the open of its segment: a merge or a scan that never searches holds none */
+typedef struct SiftCBisectSlots
+{
 	uint32		mask;
 	BisectSlot	slot[FLEXIBLE_ARRAY_MEMBER];
-} SiftCBisect;
+} SiftCBisectSlots;
 
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* the blocks look_block decompressed (sift._test_col_gdead_stats) */
@@ -354,7 +359,8 @@ typedef struct DictLook
 	uint32		reads;			/* strings read in place for sift_cseg_dict_lazy */
 	uint32		loads;			/* blocks decompressed for the strings of sift_cseg_dict_view_lazy */
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
-	SiftCBisect *bc;			/* the backend's cache of the positions bisected (NULL: none yet, or too few strings) */
+	SiftCBisect *bc;			/* what the backend kept of the searches of the dictionary (NULL: none yet, or too few strings) */
+	SiftCBisectSlots *slots;	/* the positions its searches looked at (NULL: no search yet) */
 	bool		bc_tried;
 	LookKept   *kept;			/* the last LOOK_KEEP compressed blocks read for a string by code, oldest replaced first (NULL: none yet) */
 	SiftRing	kept_ring;
@@ -653,7 +659,8 @@ extern void sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent);
 /* Adds add to what the checks of strings the hash of the dictionary found cost in this backend, and returns the sum: the dictionary is parsed once they cost what the parse does (DICT_PARSE_COST) */
 extern uint64 sift_cseg_dict_spent(SiftColSegment *seg, int col, uint64 add);
 /* The bisection cache of the dictionary of leaf col (n strings), pinned for the segment's context; made empty when the cache has none, NULL if it has no room */
-extern SiftCBisect *sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n);
+extern SiftCBisect *sift_cseg_bisect(SiftColSegment *seg, int col);
+extern SiftCBisectSlots *sift_cseg_bisect_slots(SiftColSegment *seg, int col, uint32 n);
 extern SiftCBisect *sift_cseg_bisect_find(SiftColSegment *seg, int col);
 
 /* The head is not kept while a test flips a byte of what is read: the flipped one must not be found by the next open, nor the next one skip the read */

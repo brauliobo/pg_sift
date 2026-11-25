@@ -442,6 +442,7 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
 #define SETS_UNIT	(UINT32_MAX - 3)
 #define PTS_UNIT	(UINT32_MAX - 4)
 #define GORDH_UNIT	(UINT32_MAX - 5)
+#define SLOTS_UNIT	(UINT32_MAX - 6)
 
 static void *
 leaf_find(SiftColSegment *seg, int col, uint32 unit)
@@ -745,29 +746,35 @@ sift_cseg_bisect_find(SiftColSegment *seg, int col)
 }
 
 SiftCBisect *
-sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n)
+sift_cseg_bisect(SiftColSegment *seg, int col)
 {
-	DictKey		k;
-	DictEnt    *e;
+	SiftCBisect *b = sift_cseg_bisect_find(seg, col);
 	MemoryContext cx;
-	SiftCBisect *b;
+
+	if (b != NULL)
+		return b;
+	cx = AllocSetContextCreate(seg->mcxt, "sift cache segment bisection", ALLOCSET_SMALL_SIZES);
+	b = MemoryContextAllocZero(cx, sizeof(SiftCBisect));
+	leaf_keep(seg, col, BISECT_UNIT, cx, b);
+	return b;
+}
+
+SiftCBisectSlots *
+sift_cseg_bisect_slots(SiftColSegment *seg, int col, uint32 n)
+{
+	SiftCBisectSlots *t = leaf_find(seg, col, SLOTS_UNIT);
+	MemoryContext cx;
 	uint32		slots = 256;
 
-	dict_key(&k, seg, col, BISECT_UNIT);
-	if (cache == NULL)
-		cache_init();
-	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
-	{
-		dict_pin(e, seg->mcxt);
-		return e->obj;
-	}
+	if (t != NULL)
+		return t;
 	while (slots < BISECT_SLOTS_MAX && slots < n / 4)
 		slots *= 2;
-	cx = AllocSetContextCreate(seg->mcxt, "sift cache segment bisection", ALLOCSET_SMALL_SIZES);
-	b = MemoryContextAllocZero(cx, offsetof(SiftCBisect, slot) + (Size) slots * sizeof(BisectSlot));
-	b->mask = slots - 1;
-	obj_keep(&k, cx, b, seg->mcxt);
-	return b;
+	cx = AllocSetContextCreate(seg->mcxt, "sift cache segment bisection slots", ALLOCSET_SMALL_SIZES);
+	t = MemoryContextAllocZero(cx, offsetof(SiftCBisectSlots, slot) + (Size) slots * sizeof(BisectSlot));
+	t->mask = slots - 1;
+	leaf_keep(seg, col, SLOTS_UNIT, cx, t);
+	return t;
 }
 
 const SiftCLens *
