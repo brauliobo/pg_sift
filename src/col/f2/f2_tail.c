@@ -414,6 +414,7 @@ relocate_run(Relation rel, const SiftF2Store *store, FullTransactionId horizon, 
 		(void) sift_fsm_tail_shrink(rel);
 		MemoryContextReset(pass);
 	}
+	(void) sift_fsm_tail_shrink(rel);
 	return sift_col_meta_read(rel).high_water < high_water;
 }
 
