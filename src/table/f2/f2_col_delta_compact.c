@@ -25,6 +25,7 @@ typedef struct Rec
 	SiftColDeltaEntryHdr h;
 	uint32		seq;
 	RecClass	cls;
+	bool		settled;		/* its writer committed before the horizon */
 	FullTransactionId fxid;
 } Rec;
 
@@ -91,6 +92,7 @@ enumerate(const SiftColDeltaChain *chain, const uint64 *gens, int ngens, const u
 				continue;
 			}
 			st = hz->status(hz->ctx, r->h.xmin, &r->fxid);
+			r->settled = st == SIFT_H_COMMITTED_OLD;
 			r->cls = class_of(r->seq < fold_limit, st, in_sorted(gens, ngens, r->h.part_gen));
 			(*n)++;
 		}
@@ -119,16 +121,12 @@ same_row(const Rec *a, const Rec *b)
 	return a->h.part_gen == b->h.part_gen && a->h.granule_id == b->h.granule_id && a->h.row_ordinal == b->h.row_ordinal;
 }
 
-/* Once a record of a row stays, the later ones do; done on a copy sorted by row, written back by seq */
+/* Once a record of a row stays, the later ones do; sorted: the records by row, v written back by seq */
 static void
-keep_later_records_of_a_blocked_row(Rec *v, int n)
+keep_later_records_of_a_blocked_row(Rec *v, const Rec *sorted, int n)
 {
-	/* MEM[MEM-TBL-01]: col_delta compact scratch (in-place sort; bounded <= MAX_PAGES) */
-	Rec		   *sorted = palloc(sizeof(Rec) * Max(n, 1));
 	bool		blocked = false;
 
-	memcpy(sorted, v, sizeof(Rec) * n);
-	qsort(sorted, n, sizeof(Rec), by_row);
 	for (int i = 0; i < n; i++)
 	{
 		blocked = i > 0 && same_row(&sorted[i - 1], &sorted[i]) ? blocked : false;
@@ -137,7 +135,60 @@ keep_later_records_of_a_blocked_row(Rec *v, int n)
 		else if (sorted[i].cls == REC_FOLD && blocked)
 			v[sorted[i].seq].cls = REC_CARRY_REMAP;
 	}
-	pfree(sorted);
+}
+
+#define ATT_BITS (INT16_MAX + 1)
+
+static bool
+stays_settled(const Rec *r)
+{
+	return r->settled && (r->cls == REC_CARRY_KEEP || r->cls == REC_CARRY_REMAP) && r->h.ncols > 0 && (r->h.flags & SIFT_CDENT_FLAG_LEAF_ADDR) == 0;
+}
+
+/* Every attribute of the record is set in seen; with set, the record's attributes are set in it */
+static bool
+all_seen(uint8 *seen, const Rec *r, bool set)
+{
+	const uint8 *p = r->rec + sizeof(SiftColDeltaEntryHdr),
+			   *end = r->rec + r->h.rec_bytes;
+	bool		all = true;
+
+	for (int k = 0; k < r->h.ncols; k++)
+	{
+		SiftColDeltaPatch col;
+
+		p = sift_col_delta_decode_col(p, end, &col);
+		SIFT_INVARIANT(p != NULL, "a column delta page was read before it was checked");
+		all &= (seen[col.attnum / 8] & (1 << (col.attnum % 8))) != 0;
+		if (set)
+			seen[col.attnum / 8] |= (uint8) (1 << (col.attnum % 8));
+	}
+	return all;
+}
+
+/*
+ * A record whose every attribute a later record of its row writes again is never read: both writers committed before the horizon, so every snapshot sees the later value. The rows are
+ * walked from the latest record to the first, and the attributes the later records of the row write are the ones seen.
+ */
+static void
+drop_superseded_records(Rec *v, const Rec *sorted, int n)
+{
+	uint8	   *seen = palloc0(ATT_BITS / 8);
+
+	for (int i = n - 1; i >= 0; i--)
+	{
+		Rec		   *r = &v[sorted[i].seq];
+
+		if (i < n - 1 && (!same_row(&v[sorted[i + 1].seq], r) || sift_col_delta_hdr_tid(&v[sorted[i + 1].seq].h) != sift_col_delta_hdr_tid(&r->h)))
+			memset(seen, 0, ATT_BITS / 8);
+		if (!stays_settled(r))
+			continue;
+		if (all_seen(seen, r, false))
+			r->cls = REC_DROP;
+		else
+			(void) all_seen(seen, r, true);
+	}
+	pfree(seen);
 }
 
 static int
@@ -232,7 +283,16 @@ sift_col_delta_compact_plan(const SiftColDeltaChain *chain, const uint64 *gens, 
 	plan->nrecords = n;
 	plan->carry = palloc(sizeof(SiftColDeltaCarry) * Max(n, 1));
 	if (n > 0)
-		keep_later_records_of_a_blocked_row(v, n);
+	{
+		/* MEM[MEM-TBL-01]: col_delta compact scratch (in-place sort; bounded <= MAX_PAGES) */
+		Rec		   *sorted = palloc(sizeof(Rec) * n);
+
+		memcpy(sorted, v, sizeof(Rec) * n);
+		qsort(sorted, n, sizeof(Rec), by_row);
+		keep_later_records_of_a_blocked_row(v, sorted, n);
+		drop_superseded_records(v, sorted, n);
+		pfree(sorted);
+	}
 	fold_records(plan, v, n);
 	carry_records(plan, v, n);
 	if (v != NULL)
