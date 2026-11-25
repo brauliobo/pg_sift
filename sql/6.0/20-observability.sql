@@ -31,6 +31,9 @@ RETURNS TABLE (relation regclass, severity text, check_name text, detail text, a
 			   'Format 1.x (fully supported; optional REINDEX INDEX CONCURRENTLY upgrades to Format 2.0)' AS detail,
 			   format('REINDEX INDEX CONCURRENTLY %s;', s.relation) AS action_sql
 		FROM st s WHERE s.am = 'sift_col' AND s.format_major < 2 AND s.size_bytes > 0 AND s.is_valid
+		  AND NOT EXISTS (SELECT 1 FROM pg_depend d JOIN pg_class u ON u.oid = d.objid AND u.relkind = 'i'
+						  WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid = s.relation::oid AND d.objsubid = 0 AND d.deptype = 'n'
+							AND EXISTS (SELECT 1 FROM unnest(u.reloptions) o WHERE o LIKE 'scope=%'))
 		UNION ALL
 		SELECT s.relation, 'info', 'format_upgrade_available', 'Format 1.x (fully supported; optional upgrade to Format 2.0)',
 			   format('SELECT * FROM sift.upgrade_table(%L);', s.relation::text)

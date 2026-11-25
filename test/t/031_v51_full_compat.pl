@@ -129,7 +129,8 @@ is(sql($node, "SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid =
 agree_with_heap($node, 'ev_col Format 2.0');
 
 sql($node, "REINDEX INDEX CONCURRENTLY $_") for qw(ev_trk pairs_journal sc_idx);
-is(format_of($node, $_), '2.0', "$_ is Format 2.0 after REINDEX INDEX CONCURRENTLY") for qw(ev_trk pairs_journal sc_idx);
+is(format_of($node, $_), '2.0', "$_ is Format 2.0 after REINDEX INDEX CONCURRENTLY") for qw(ev_trk sc_idx);
+is(format_of($node, 'pairs_journal'), $formats0->{pairs_journal}, 'pairs_journal, the journal of the scope of sc_idx, stays Format 1 after REINDEX INDEX CONCURRENTLY');
 is(format_of($node, $BM25), $formats0->{$BM25}, "$BM25 stays on the Format 1 minor v5.1.0 wrote");
 agree_with_heap($node, 'every sift_col Format 2.0');
 same_on_standby('sift_col Format 2.0');
@@ -153,11 +154,12 @@ sql($node, dml(3, @ALL_DML));
 vacuum_all($node);
 agree_with_heap($node, 'Format 2.0 and Format 1 writes');
 is(sql($node, "SELECT count(*) FROM sift.check(NULL, true)"), '0', 'sift.check(heapallindexed) finds no problem after the upgrades');
-is(sql($node, 'SELECT count(*) FROM sift.health()'), '0', 'sift.health() reports nothing: every Format 1 relation but the BM25 index is Format 2.0');
+my %format1 = map { $_ => 1 } ($BM25, 'pairs_journal');
+is(sql($node, 'SELECT count(*) FROM sift.health()'), '0', 'sift.health() reports nothing: every Format 1 relation but the BM25 index and the journal of the scope is Format 2.0');
 is(sql($node, "SELECT string_agg(relation::text || ' ' || format, ',' ORDER BY relation::text) FROM sift.indexes"),
-	join(',', map { "$_ " . ($_ eq $BM25 ? $formats0->{$BM25} : '2.0') } sort(@FORMAT1, $BM25)), 'sift.indexes: Format 2.0 everywhere, the v5.1.0 minor for the BM25 index');
+	join(',', map { "$_ " . ($format1{$_} ? $formats0->{$_} : '2.0') } sort(@FORMAT1, $BM25)), 'sift.indexes: Format 2.0 everywhere, the v5.1.0 minor for the BM25 index and the journal');
 same_on_standby('Format 2.0 and Format 1 writes');
-for my $rel (@FORMAT1) { is(format_of($standby, $rel), '2.0', "the standby has $rel on Format 2.0") }
+for my $rel (@FORMAT1) { is(format_of($standby, $rel), $format1{$rel} ? $formats0->{$rel} : '2.0', "the standby has $rel on " . ($format1{$rel} ? 'its Format 1 minor' : 'Format 2.0')) }
 
 $standby->stop;
 $node->stop;

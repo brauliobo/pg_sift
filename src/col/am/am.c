@@ -46,7 +46,7 @@ sift_col_flush_held(void)
 			format_ops[major]->flush_held();
 }
 
-/* What format major 2 does not hold stays in format major 1: the connections of an index of format major 1 (a child of it, or a parent it names, that is of format major 1) */
+/* What format major 2 does not hold stays in format major 1: the connections of an index of format major 1 (a child of it, or a parent it names, that is of format major 1), and the journal of a scope: scope reads find it as a key log of format major 1 only */
 static bool
 format1_only(Relation index)
 {

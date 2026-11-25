@@ -16,6 +16,7 @@
 #include "col/am/am_int.h"
 #include "col/am/conn_route.h"
 #include "col/am/format_ops.h"
+#include "col/scope.h"
 #include "core/meta_peek.h"
 
 /* ---- the journal of a parent index ---- */
@@ -172,7 +173,7 @@ sift_conn_route_format1(Relation heap, Relation index)
 	foreach_oid(child, children)
 		if (major_of(child) == SIFT_FORMAT_MAJOR)
 			return true;
-	return any_parent(heap, index, is_format1, NULL);
+	return (children != NIL && sift_scope_users(origin) != NIL) || any_parent(heap, index, is_format1, NULL);
 }
 
 static bool
