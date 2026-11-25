@@ -52,6 +52,9 @@ extern SIFT_INTERNAL int sqNext(sqlite3_vtab_cursor *cur);
 extern SIFT_INTERNAL int sqRowid(sqlite3_vtab_cursor *cur, sqlite3_int64 *pRowid);
 extern SIFT_INTERNAL int sqColumn(sqlite3_vtab_cursor *cur, sqlite3_context *ctx, int i);
 
+#define SQ_RANK_ROWS_MAX	INT32_MAX
+extern SIFT_INTERNAL int64_t sq_rank_rows(int64_t limit, int64_t offset);
+
 /* write.c */
 extern SIFT_INTERNAL int sqUpdate(sqlite3_vtab *pVtab, int argc, sqlite3_value **argv, sqlite3_int64 *pRowid);
 

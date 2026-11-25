@@ -219,22 +219,27 @@ rows_next(SqCursor *c)
 }
 
 /* The rows the scan has to produce: LIMIT plus OFFSET, -1 for all */
+int64_t
+sq_rank_rows(int64_t limit, int64_t offset)
+{
+	int64_t		k = limit;
+
+	k += Max(offset, 0);
+	return k > 0 ? k : (k == 0 ? 1 : -1);
+}
+
 static int64_t
 ranked_limit(int idx, int *a, sqlite3_value **argv)
 {
-	int64_t		k = -1;
+	int64_t		limit,
+				offset = 0;
 
-	if (idx & IDX_LIMIT)
-	{
-		k = sqlite3_value_int64(argv[(*a)++]);
-		if (idx & IDX_OFFSET)
-		{
-			int64_t		skip = sqlite3_value_int64(argv[(*a)++]);
-
-			k += Max(skip, 0);
-		}
-	}
-	return k > 0 ? k : (k == 0 ? 1 : -1);
+	if (!(idx & IDX_LIMIT))
+		return -1;
+	limit = sqlite3_value_int64(argv[(*a)++]);
+	if (idx & IDX_OFFSET)
+		offset = sqlite3_value_int64(argv[(*a)++]);
+	return sq_rank_rows(limit, offset);
 }
 
 static void

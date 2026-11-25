@@ -133,6 +133,13 @@ $(B)/hybrid_test: tests/hybrid_test.c $(SRC)/agg/hybrid.c $(OBJS) | $(B)
 hybrid-test: $(B)/hybrid_test
 	$(B)/hybrid_test
 
+# the rows a ranked scan produces for LIMIT and OFFSET, over the real cursor.c (tests/limit_test.c)
+$(B)/limit_test: tests/limit_test.c $(OBJS) | $(B)
+	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(OBJS) $(LDLIBS)
+
+limit-test: $(B)/limit_test
+	$(B)/limit_test
+
 # the floor of the top-k of bm25/kernels.c (tests/topk_floor_test.c)
 $(B)/topk_floor_test: tests/topk_floor_test.c $(OBJS) | $(B)
 	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(OBJS) $(LDLIBS)
@@ -178,4 +185,4 @@ clean:
 
 -include $(wildcard $(B)/*.d $(B)/*/*.d $(B)/*/*/*.d)
 
-.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan hash-test hybrid-test hybrid-test-asan topk-floor-test topk-floor-test-asan
+.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan hash-test hybrid-test hybrid-test-asan topk-floor-test topk-floor-test-asan limit-test

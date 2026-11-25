@@ -18,13 +18,15 @@ python3 -I tests/smoke.py build/sift "$(cat VERSION)"
 python3 -I tests/test_sift.py
 python3 -I tests/test_features.py
 python3 -I tests/test_port2.py
+python3 -I tests/test_malformed_options.py
+python3 -I tests/test_limit_overflow.py
 python3 -I tests/diff_fts5.py
 SIFT_SIMD=scalar python3 -I tests/test_sift.py
 SIFT_SIMD=scalar python3 -I tests/test_features.py
 SIFT_SIMD=scalar python3 -I tests/test_port2.py
 SIFT_SIMD=scalar python3 -I tests/diff_fts5.py
 nice make -j4 SIMD=none B=build-scalar
-nice make -j4 span-test hash-test col-smoke
+nice make -j4 span-test hash-test limit-test col-smoke
 nice make -j4 SIMD=none B=build-scalar span-test col-smoke
 SIFT_EXT="$PWD/build-scalar/sift" python3 -I tests/test_sift.py
 SIFT_EXT="$PWD/build-scalar/sift" python3 -I tests/test_features.py
