@@ -6,7 +6,7 @@
 #define SIFT_COLCODEC_INT_H
 
 #include "col/codec.h"
-#include "core/arena.h"
+#include "core/par/arena.h"
 
 extern const SiftCcKernels sift_cc_kernels_scalar;
 extern const SiftCcKernels sift_cc_kernels_avx2;

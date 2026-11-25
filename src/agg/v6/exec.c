@@ -193,12 +193,22 @@ text_end(SiftV6Text *text)
 }
 
 static void
-scan_with_text(V6State *st, const V6Source *src, Snapshot snap, SiftV6StarRun *star)
+scan_with_text(V6State *st, const SiftV6ScanSrc *src, Snapshot snap, SiftV6StarRun *star)
 {
 	SiftV6Text *text = text_begin(st);
 
 	src->ops->zone->scan_run(st->spec, st->group, src->heap, src->index, src->keys, src->nkeys, snap, st->gpu.skip, st->gpu.nskip, NULL, &st->stats, star,
 						 text ? sift_v6_text_chunk : NULL, text);
+	text_end(text);
+}
+
+static void
+scan_table_with_text(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
+{
+	SiftV6Text *text = text_begin(st);
+
+	src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats, NULL,
+							   text ? sift_v6_text_chunk : NULL, text);
 	text_end(text);
 }
 
@@ -275,8 +285,7 @@ v6_scan(V6State *st, Snapshot snap)
 		else if (src->index != NULL)
 			scan_with_text(st, src, snap, NULL);
 		else
-			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats, NULL,
-									 text ? sift_v6_text_chunk : NULL, text);
+			scan_table_with_text(st, src, snap);
 	}
 	sift_v6_group_finish(st->group);
 }

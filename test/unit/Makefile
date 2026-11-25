@@ -82,7 +82,7 @@ CODEC_SRC = col/codec/codec.c col/codec/filter.c col/codec/get.c col/codec_polic
             bm25/analyze_stem.c col/v1/kern.c col/v1/kern_avx2.c col/v1/kern_avx512.c col/v1/kern_neon.c bm25/bitmap_scalar.c \
             bm25/bitmap_avx2.c bm25/bitmap_avx512.c bm25/bitmap_neon.c
 TESTS += test_codec
-LIB_test_codec = core/arena.c $(CODEC_SRC)
+LIB_test_codec = core/par/arena.c $(CODEC_SRC)
 
 all: $(B)/test_codec
 test: $(B)/test_codec

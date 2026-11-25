@@ -146,6 +146,13 @@ row_verdict(const SiftStorePart *p, int r)
 
 /* ---- the columns of a granule ---- */
 
+static void
+unsupported_form(const SiftF2Store *store, int leaf)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a part of the table holds column \"%s\" in a form the aggregate does not read", store->schema->cols[leaf].name),
+					errhint("VACUUM (FREEZE) the table to rewrite its old parts, or run the statement with sift.enable_agg = off.")));
+}
+
 static ColView
 constant_view(SiftStorePart *p, int leaf, const SiftF2ColMap *map)
 {

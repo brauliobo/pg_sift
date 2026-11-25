@@ -1,6 +1,6 @@
 /*
  * col/codec_a.c - the reader of the chunk codec for a worker: each routine of col/codec.h that allocates or raises, run in the scope of an
- * arena (core/arena.h). The scratch of a call is rewound when it returns; the nodes of a chunk opened here and the arrays of a string list stay
+ * arena (core/par/arena.h). The scratch of a call is rewound when it returns; the nodes of a chunk opened here and the arrays of a string list stay
  * until the caller rewinds the arena, which also drops what a failed call left.
  */
 #include "col/codec_int.h"

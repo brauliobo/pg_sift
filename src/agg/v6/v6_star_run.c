@@ -265,7 +265,7 @@ find_kept(SiftV6StarRun *r, int d)
 {
 	SiftStarShape sh;
 
-	shape_of(&r->x->dim[d], r->budget, &sh);
+	shape_of(r->x, d, r->budget, &sh);
 	r->dc[d] = sift_dimcache_try(r->ps[d], &r->x->dim[d], &sh, r->cx);
 	if (r->dc[d] == NULL || !sift_dimcache_find(r->dc[d], r->budget, &r->dim[d]))
 		return false;

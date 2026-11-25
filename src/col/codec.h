@@ -21,7 +21,7 @@
 #include "core/sift.h"
 #include "core/cpu.h"
 #include "col/col.h"
-#include "core/arena.h"
+#include "core/par/arena.h"
 
 #define SIFT_CC_MAGIC		0xC5
 #define SIFT_CC_VERSION		1

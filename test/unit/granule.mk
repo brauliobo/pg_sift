@@ -10,7 +10,7 @@ GRANULE_WRITE = col/granule/granule_enc.c col/granule/enc_str.c col/granule/prom
 GRANULE_READ  = col/granule/granule.c col/granule/granule_dec.c col/granule/granule_codes.c col/granule/point_decode.c col/f2/f2_view.c \
                 col/granule/granule_filter.c col/granule/cfilt_str_simd.c col/granule/cfilt_cc.c col/granule/cfilt_kern.c \
                 col/like_simd.c col/like_simd_x86.c col/like_simd_neon.c
-GRANULE_LIB   = core/arena.c $(GRANULE_CODEC) $(GRANULE_WRITE) $(GRANULE_READ)
+GRANULE_LIB   = core/par/arena.c $(GRANULE_CODEC) $(GRANULE_WRITE) $(GRANULE_READ)
 GRANULE_FX    = $(B)/granule_fixture.o $(B)/granule_stubs.o $(B)/kshim.o
 GRANULE_TESTS += test_granule
 LIB_test_granule = $(GRANULE_LIB)
