@@ -10,7 +10,8 @@
 
 #include "bm25/analyze.h"
 #include "core/cpu.h"
-#include "../pgshim.h"
+#include "test/common/pgshim.h"
+#include "core/testrng.h"
 
 SiftCpu		sift_cpu;
 
@@ -115,8 +116,7 @@ static uint64 rng_state;
 static uint32
 rnd(uint32 n)
 {
-	rng_state = rng_state * 6364136223846793005ULL + 1442695040888963407ULL;
-	return (uint32) (rng_state >> 33) % n;
+	return (uint32) (sift_splitmix_next(&rng_state) >> 33) % n;
 }
 
 static int

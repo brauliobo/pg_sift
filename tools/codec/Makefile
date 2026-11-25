@@ -1,13 +1,12 @@
 # Standalone codec harness.  Build: nice make -j4; tests: make test; data: make data
-CC      ?= gcc
+include ../../test/common/rules.mk
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=gnu11 -ffp-contract=off -Wall -Wextra -Wno-unused-function $(SIFT_INC) -I$(shell pg_config --includedir-server)
-SRC      = ../../src
-include $(SRC)/areas.mk
+CFLAGS  += -std=gnu11 -ffp-contract=off -Wall -Wextra -Wno-unused-function $(SIFT_INC) $(SIFT_TEST_INC) -I$(PGINC)
+CFLAGS_cpushim = -DSIFT_CPUSHIM_DETECT_ONLY -DSIFT_CPUSHIM_NO_SIFT_K
 LIB      = $(SRC)/bm25/bitmap.c $(SRC)/bm25/blob.c $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c $(SRC)/bm25/bitmap_neon.c
 HDR      = $(SRC)/bm25/bitmap.h $(SRC)/bm25/bitmap_int.h $(SRC)/bm25/bitmap_kern.h
 OUT     ?= /tmp/sift-codec
-OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB)) $(OUT)/obj/stub.o $(OUT)/obj/cpu_stub.o
+OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB)) $(OUT)/obj/stub.o $(OUT)/obj/cpushim.o
 
 all: $(OUT)/test $(OUT)/bench $(OUT)/corpus $(OUT)/stats
 
@@ -15,9 +14,7 @@ $(OUT)/obj/%.o: $(SRC)/%.c $(HDR)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(OUT)/obj/cpu_stub.o: cpu_stub.c $(HDR)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(SIFT_INC) -c -o $@ $<
+$(eval $(call common_obj,$(OUT)/obj,cpushim))
 
 $(OUT)/obj/stub.o: stub.c $(HDR)
 	@mkdir -p $(@D)

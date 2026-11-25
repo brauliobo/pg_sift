@@ -39,6 +39,7 @@
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
 ^(test/unit/|scripts/unit-scaling\.sh)	-
 ^test/bench_on/	^(fuzz|hardened|tools-build)$|{ci}
+^test/common/	^(fuzz|hardened|tools-build)$|{ci}
 ^test/(agg_(helpers|having_helpers|preagg_helpers|preagg_units|check_query|check_pushed|probe_helpers|rows_helpers|same_helpers|cte_inline_fixture)|scope_multiset_helpers)\.sql$	^installcheck-(agg_|col_|tbl_agg)|{ci}
 ^test/sift_plan\.sql$	^installcheck-(count_scan|filter_pushdown|rank_)|{ci}
 ^test/roles_helpers\.sql$	^installcheck-roles_|{ci}

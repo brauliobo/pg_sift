@@ -1,14 +1,11 @@
 # The deterministic scaling gate of the C data structures (check_scaling_c.c). The sources under test are compiled with the coverage instrumentation that
 # op_counters.h reads; SAN=1 adds AddressSanitizer and UBSan. `make -C test/scaling run`, `run SAN=1`, `negative`.
-SRC     ?= ../../src
+include ../common/rules.mk
 OUT     ?= /tmp/sift-scaling-c$(if $(SAN),-san)
-CC      ?= gcc
 SHELL    = bash
-SERVER  := $(shell pg_config --includedir-server)
 COV      = -fsanitize-coverage=trace-pc,trace-cmp
-SANON    = -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-SANFLAGS = $(if $(SAN),$(SANON))
-CFLAGS   = -std=gnu11 -fno-pie -O2 -g -Wall -Wno-unused-parameter -Wno-sign-compare -I. -I$(SRC) -I$(SERVER) -D_GNU_SOURCE $(SANFLAGS)
+SANFLAGS = $(if $(SAN),$(SAN_ASAN))
+CFLAGS   = -std=gnu11 -fno-pie -O2 -g -Wall -Wno-unused-parameter -Wno-sign-compare -I. $(SIFT_INC) -I$(PGINC) -D_GNU_SOURCE $(SANFLAGS)
 LDFLAGS  = $(SANFLAGS) -no-pie -Wl,--wrap=memcpy,--wrap=memmove -Wl,--unresolved-symbols=ignore-all
 LDLIBS   = -lm
 

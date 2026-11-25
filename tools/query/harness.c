@@ -1,7 +1,7 @@
 /*
  * harness.c - standalone ASan/UBSan fuzz harness for bm25/query.c.
  *
- * Links src/bm25/query.c with frontend libpgcommon, tools/pgshim.c (palloc is plain malloc per chunk
+ * Links src/bm25/query.c with frontend libpgcommon, test/common/pgshim.c (palloc is plain malloc per chunk
  * so that ASan sees every overflow, ereport longjmps back to pgshim_try) and small shims for the
  * rest of the backend services it uses: the analyzer is an ASCII test double, and regexes compile
  * to "never matches" (regex paths are covered by the SQL tests). Reads COPY-escaped queries
@@ -21,7 +21,8 @@
 #include "regex/regex.h"
 
 #include "bm25/query.h"
-#include "../pgshim.h"
+#include "test/common/pgshim.h"
+#include "core/testrng.h"
 
 void
 check_stack_depth(void)
@@ -341,7 +342,7 @@ main(int argc, char **argv)
 {
 	char	   *line = NULL;
 	size_t		cap = 0;
-	unsigned	seed = 1;
+	uint64_t	seed = 1;
 
 	for (int f = 1; f < argc; f++)
 	{
@@ -361,8 +362,9 @@ main(int argc, char **argv)
 			/* the same query with one damaged byte: invalid UTF-8, NUL, cut sequence */
 			if (len > 0)
 			{
-				seed = seed * 1103515245 + 12345;
-				line[(seed >> 8) % len] = "\xff\x80\xc3\x00\xe2"[(seed >> 4) % 5];
+				uint64_t	r = sift_splitmix_next(&seed);
+
+				line[(r >> 8) % len] = "\xff\x80\xc3\x00\xe2"[(r >> 4) % 5];
 				check(line, len);
 				pgshim_reset();
 			}

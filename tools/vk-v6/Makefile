@@ -47,13 +47,13 @@ CODECLIBS = $(PGLIB) -lpgport $(SIFT_PGLIBS) -lzstd -llz4
 $(OUT)/codec/%.o: $(SRC)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CCFLAGS) -c -o $@ $<
-$(OUT)/codec/shim.o: $(WTI)/tools/kernels/shim.c
+$(OUT)/codec/shim.o: $(WTI)/test/common/cpushim.c
 	@mkdir -p $(@D)
 	$(CC) $(CCFLAGS) -c -o $@ $<
 $(OUT)/codec/ccshim.o: $(WTI)/tools/colcodec/ccshim.c
 	@mkdir -p $(@D)
-	$(CC) $(CCFLAGS) -I$(WTI)/tools/colcodec -c -o $@ $<
-$(OUT)/codec/pgshim.o: $(WTI)/tools/pgshim.c
+	$(CC) $(CCFLAGS) -I$(WTI)/tools/colcodec -I$(WTI) -c -o $@ $<
+$(OUT)/codec/pgshim.o: $(WTI)/test/common/pgshim.c
 	@mkdir -p $(@D)
 	$(CC) $(CCFLAGS) -c -o $@ $<
 

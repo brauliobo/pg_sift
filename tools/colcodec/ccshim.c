@@ -1,6 +1,6 @@
 /*
- * ccshim.c - the CPU dispatch of the chunk codec's standalone test and benchmark, on top of tools/pgshim.c (the backend symbols). The
- * cpu module is tools/kernels/shim.c.
+ * ccshim.c - the CPU dispatch of the chunk codec's standalone test and benchmark, on top of test/common/pgshim.c (the backend symbols). The
+ * cpu module is test/common/cpushim.c.
  */
 #include "postgres.h"
 

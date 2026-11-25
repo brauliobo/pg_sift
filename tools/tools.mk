@@ -1,20 +1,17 @@
-# The part of the Makefiles of tools/kernels and tools/aggkern (standalone harnesses, no backend linked) that they share.
+# The part of the Makefiles of tools/kernels and tools/aggkern (standalone harnesses, no backend linked) that they share, on test/common/rules.mk.
 # The includer sets, before including it: OUT (default), N (default), LIB (the src/ sources linked), HDR (extra header dependencies)
 # and, after it, the bench target and what else it builds. test and bench run under flock /tmp/sift-perf.lock.
-CC      ?= gcc
-SRC      = ../../src
-include $(SRC)/areas.mk
+include ../../test/common/rules.mk
 KT       = ../kernels
 # Same code generation flags as the extension (Makefile PG_CFLAGS)
 CFLAGS   = -std=gnu11 -O2 -g $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Wextra \
-           -Wno-unused-parameter -Wno-sign-compare $(SIFT_INC) -I$(shell pg_config --includedir-server) $(SIFT_PGCPP)
+           -Wno-unused-parameter -Wno-sign-compare $(SIFT_INC) -I$(PGINC) $(SIFT_PGCPP)
 LDLIBS   = -lm -lpthread
-FLOCK    = $(if $(shell command -v flock),flock /tmp/sift-perf.lock)
 ifdef SANITIZE
-CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
+CFLAGS  += $(SAN_ASAN)
 OUT     := $(OUT)-san
 endif
-OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/%.o,$(LIB)) $(OUT)/shim.o
+OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/%.o,$(LIB)) $(OUT)/cpushim.o
 
 all: $(OUT)/test $(OUT)/bench
 
@@ -26,9 +23,7 @@ $(OUT)/%.o: %.c $(HDR)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(OUT)/shim.o: $(KT)/shim.c $(HDR)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -c -o $@ $<
+$(eval $(call common_obj,$(OUT),cpushim))
 
 $(OUT)/test: $(OUT)/test.o $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)

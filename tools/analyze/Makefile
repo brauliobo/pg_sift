@@ -4,21 +4,19 @@
 # vocabulary, the exhaustive analyze(t) == [t] check, the invariant fuzzer
 # and the differential reference test;
 # `./harness bench FILE [MODE [STEM]]` measures throughput (one doc per line).
-SRC = ../../src
-include $(SRC)/areas.mk
-PGINC = $(shell pg_config --includedir-server)
-PGLIB = -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir)
-CFLAGS = -O2 -g $(SIFT_BASE_ISA) -Wall -Wno-unused-function $(SIFT_INC) -I$(PGINC) $(SIFT_PGCPP)
+include ../../test/common/rules.mk
+PGLIB += -L$(shell $(PG_CONFIG) --pkglibdir)
+CFLAGS = -O2 -g $(SIFT_BASE_ISA) -Wall -Wno-unused-function $(SIFT_INC) $(SIFT_TEST_INC) -I$(PGINC) $(SIFT_PGCPP)
 ifdef SANITIZE
 CFLAGS += -O1 -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
 endif
 LIBS = $(PGLIB) -lpgcommon -lpgport $(SIFT_PGLIBS) -lm
 DATA ?= data
-# LeakSanitizer is on: the stub frees its palloc arena at exit (../pgshim.c), so what it reports is a real malloc leak
+# LeakSanitizer is on: the stub frees its palloc arena at exit (test/common/pgshim.c), so what it reports is a real malloc leak
 
-harness: harness.c ../pgshim.c ../pgshim.h $(SRC)/bm25/analyze.c $(SRC)/bm25/analyze_config.c $(SRC)/bm25/analyze_stem.c $(SRC)/bm25/analyze.h \
+harness: harness.c $(COMMON)/pgshim.c $(COMMON)/pgshim.h $(SRC)/bm25/analyze.c $(SRC)/bm25/analyze_config.c $(SRC)/bm25/analyze_stem.c $(SRC)/bm25/analyze.h \
 		$(SRC)/bm25/analyze_tables.h $(wildcard $(SRC)/bm25/analyze_tables/*.h)
-	$(CC) $(CFLAGS) -o $@ harness.c ../pgshim.c $(SRC)/bm25/analyze.c $(SRC)/bm25/analyze_config.c $(SRC)/bm25/analyze_stem.c $(LIBS)
+	$(CC) $(CFLAGS) -o $@ harness.c $(COMMON)/pgshim.c $(SRC)/bm25/analyze.c $(SRC)/bm25/analyze_config.c $(SRC)/bm25/analyze_stem.c $(LIBS)
 
 check: harness
 	./harness stem $(DATA)/en_voc.txt $(DATA)/en_output.txt

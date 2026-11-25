@@ -1,5 +1,5 @@
 /*
- * fz_shim.h - the backend stand-in of the fuzz targets (tools/pgshim.c and fz_shim.c): the allocation, error and CPU symbols the
+ * fz_shim.h - the backend stand-in of the fuzz targets (test/common/pgshim.c and fz_shim.c): the allocation, error and CPU symbols the
  * decoders need, so that they link and run without a server, under AddressSanitizer and UBSan.
  */
 #ifndef FZ_SHIM_H
@@ -10,7 +10,7 @@
 #include "core/sift.h"
 #include "core/cpu.h"
 #include "bm25/kernels.h"
-#include "../../tools/pgshim.h"
+#include "test/common/pgshim.h"
 
 /* Once per process: CPU detection, dispatch tables of the kernels */
 extern void fz_init(void);

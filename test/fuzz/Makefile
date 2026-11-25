@@ -1,4 +1,4 @@
-# The fuzz targets of scripts/fuzz.sh (colchunk, bm25, shred; test/fuzz/README.md). No backend is linked: tools/pgshim.c and fz_shim.c stand in for it.
+# The fuzz targets of scripts/fuzz.sh (colchunk, bm25, shred; test/fuzz/README.md). No backend is linked: test/common/pgshim.c and fz_shim.c stand in for it.
 #   nice make -j4 -C test/fuzz OUT=/tmp/x all         build the three targets
 #   make FZ_DRIVER=1 ...                              the portable coverage-guided driver (fz_driver.c) instead of libFuzzer
 #
@@ -7,11 +7,9 @@
 # directory), so scripts/fuzz.sh does not care. Always ASan + UBSan, any report aborts (-fno-sanitize-recover=all). No -fwrapv: signed
 # overflow is a finding here, where the extension itself is built -fwrapv like the server.
 OUT     ?= /tmp/sift-fuzz-build
-SRC      = ../../src
-include $(SRC)/areas.mk
+include ../common/rules.mk
 KT       = ../../tools/kernels
-PGINC   := $(shell pg_config --includedir-server)
-PGLIB   := -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir)
+PGLIB   += -L$(shell $(PG_CONFIG) --pkglibdir)
 
 ifndef FZ_DRIVER
 FZ_CC   := $(shell command -v clang 2>/dev/null)
@@ -42,7 +40,7 @@ endif
 DEFS    ?= -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
 COLZ    ?= -lzstd -llz4
 CFLAGS  += -std=gnu11 -O1 -g $(SAN) $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Wno-unused-function -Wno-unused-parameter \
-           -Wno-sign-compare $(SIFT_INC) -I$(KT) -I. -I$(PGINC) $(SIFT_PGCPP) $(DEFS) -D_GNU_SOURCE
+           -Wno-sign-compare $(SIFT_INC) $(SIFT_TEST_INC) -I$(KT) -I. -I$(PGINC) $(SIFT_PGCPP) $(DEFS) -D_GNU_SOURCE
 LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon $(SIFT_PGLIBS)
 
 # every source the three targets decode with (the portable core, SRC/portable-col.list and portable.list members), and the stand-ins
@@ -50,8 +48,8 @@ CORE     = col/codec/codec col/codec/filter col/codec/get col/codec_policy col/c
            col/v1/kern_avx512 col/v1/kern_neon col/v1/enc col/schema col/v1/dict/dict col/v1/dict/order col/v1/dict/parse col/v1/dict/serialize col/v1/batch col/v1/batch_unit col/v1/chunk col/v1/ctest col/v1/unit col/v1/unit_find col/shred col/shred_spec col/shred_kern col/shred_kern_avx2 col/shred_kern_avx512 col/shred_kern_neon \
            bm25/kernels bm25/kernels_avx2 bm25/kernels_avx512 bm25/kernels_neon bm25/analyze bm25/analyze_config bm25/analyze_stem bm25/posting bm25/postw bm25/posblk bm25/pos bm25/bitmap bm25/blob bm25/bitmap_scalar \
            bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/bitmap_neon core/span core/par/arena
-OBJ      = $(addprefix $(OUT)/obj/,$(addsuffix .o,$(CORE))) $(OUT)/shim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o
-HDR      = $(wildcard $(SRC)/*/*.h $(SRC)/*/*/*.h) fz_shim.h ../../tools/pgshim.h Makefile
+OBJ      = $(addprefix $(OUT)/obj/,$(addsuffix .o,$(CORE))) $(OUT)/cpushim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o
+HDR      = $(wildcard $(SRC)/*/*.h $(SRC)/*/*/*.h) fz_shim.h $(COMMON)/pgshim.h Makefile
 ifndef FZ_LIBFUZZER
 DRIVER   = $(OUT)/fz_driver.o
 endif
@@ -66,15 +64,12 @@ $(OUT)/obj/%.o: %.c $(HDR)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(COV) -c -o $@ $<
 
-# the cpu stand-in of tools/kernels; its stub of sift_k would clash with the real one of bm25/bitmap.c
-$(OUT)/shim.o: $(KT)/shim.c $(HDR)
-	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) $(COV) -Dsift_k=fz_unused_sift_k -c -o $@ $<
+# the cpu stand-in of test/common, instrumented; it leaves sift_k to the real one of bm25/bitmap.c
+CFLAGS_cpushim = $(COV) -DSIFT_CPUSHIM_NO_SIFT_K
+$(eval $(call common_obj,$(OUT),cpushim))
 
 # the stand-ins are not instrumented
-$(OUT)/pgshim.o: ../../tools/pgshim.c $(HDR)
-	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -c -o $@ $<
+$(eval $(call common_obj,$(OUT),pgshim))
 
 $(OUT)/fz_shim.o: fz_shim.c $(HDR)
 	@mkdir -p $(OUT)
