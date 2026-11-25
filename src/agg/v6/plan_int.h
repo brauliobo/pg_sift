@@ -22,7 +22,7 @@ typedef struct V6Plan
 	RelOptInfo *out;
 	Oid			relid;			/* the relation scanned: the index, or the table */
 	IndexOptInfo *index;		/* a sift_col: its index; NULL for a sift_table */
-	const SiftColRel *colrel;
+	const SiftColRel *colrel;	/* a sift_col: the planner's own copy of the state of its index, which a reload of the relcache entry does not free; NULL for any other source */
 	const SiftStoreOps *ops;	/* the format of the relation; for an index NULL when it holds nothing (a stale index) */
 	bool		is_table;		/* a sift_table: sch is the schema of its store, as it is of an index, whose attributes are those of the table */
 	SiftStoreSchema sch;

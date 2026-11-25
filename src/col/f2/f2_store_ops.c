@@ -133,17 +133,27 @@ paths_shown(Oid relid, const SiftF2Store *st)
 	return ready;
 }
 
+static const void *
+dup_of(const void *src, Size len)
+{
+	return memcpy(palloc(len), src, len);
+}
+
+/* The schema is the caller's, in its memory context: the store it is read from is dropped when the relation is invalidated, which a lock taken later in the statement may cause */
 static bool
 f2_schema(Oid relid, bool is_table, SiftStoreSchema *out)
 {
 	const SiftF2Store *st = sift_f2_store_from_oid(relid);
 	const bool	paths = !is_table || paths_shown(relid, st);
+	const int	ncols = st->schema->ncols;
 	int		   *nleaves = palloc0((st->natts + 1) * sizeof(int));
 
 	for (int a = 1; a <= st->natts; a++)
 		nleaves[a] = !paths && st->path_first[a] >= 0 ? 1 : sift_f2_store_attr_leaves(st, a);
-	*out = (SiftStoreSchema) {.natts = st->natts,.is_table = is_table,.has_jsonb = st->has_jsonb,.leaves = st->schema,.att_first = st->att_first,
-		.att_nleaves = nleaves,.att_opfamily = st->opfamily,.leaf_kinds = st->kinds,.leaf_hints = st->hints};
+	*out = (SiftStoreSchema) {.natts = st->natts,.is_table = is_table,.has_jsonb = st->has_jsonb,.leaves = sift_cschema_create(CurrentMemoryContext, st->schema->cols, ncols),
+		.att_first = dup_of(st->att_first, (st->natts + 1) * sizeof(int)),.att_nleaves = nleaves,
+		.att_opfamily = st->opfamily != NULL ? dup_of(st->opfamily, (st->natts + 1) * sizeof(Oid)) : NULL,
+		.leaf_kinds = dup_of(st->kinds, ncols * sizeof(SiftCellKind)),.leaf_hints = dup_of(st->hints, ncols)};
 	return true;
 }
 

@@ -115,8 +115,8 @@ sift_v6_plan_table(V6Plan *p, Oid relid)
 void
 sift_v6_plan_index(V6Plan *p, Relation irel)
 {
-	p->colrel = sift_col_rel(irel);
-	p->ops = p->colrel->stale ? NULL : sift_store_ops_for_oid(RelationGetRelid(irel), false);
+	p->colrel = sift_col_is_index(irel) ? sift_col_rel_private(irel, CurrentMemoryContext) : NULL;
+	p->ops = p->colrel != NULL && p->colrel->stale ? NULL : sift_store_ops_for_oid(RelationGetRelid(irel), false);
 	if (p->ops != NULL && !p->ops->schema(RelationGetRelid(irel), false, &p->sch))
 		p->ops = NULL;
 #ifdef SIFT_TESTING
