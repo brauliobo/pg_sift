@@ -14,6 +14,7 @@
 #include "executor/spi.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
+#include "utils/datum.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -223,17 +224,21 @@ set_missing(SiftF2ColMap *m, const SiftF2Store *store, Relation rel, int c, Memo
 {
 	int			a = store->leaf_attno[c];
 	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(rel), a - 1);
+	Datum		raw;
 	bool		isnull;
+	MemoryContext old = MemoryContextSwitchTo(cx);
 
+	raw = getmissingattr(RelationGetDescr(rel), a, &isnull);
 	m->mode[c] = SIFT_CMAP_MISSING;
 	m->phys_col[c] = -1;
 	m->phys_kind[c] = (uint8) store->kinds[c];
 	m->has_missing = true;
-	m->missing_val[c] = getmissingattr(RelationGetDescr(rel), a, &isnull);
+	m->missing_val[c] = isnull ? raw : datumCopy(raw, att->attbyval, att->attlen);
 	m->missing_null[c] = isnull;
 	m->missing_cell[c].isnull = isnull;
 	if (!isnull)
 		sift_f2_cell_of_datum(store, att, m->missing_val[c], cx, false, &m->missing_cell[c]);
+	MemoryContextSwitchTo(old);
 }
 
 static void
