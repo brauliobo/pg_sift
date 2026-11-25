@@ -33,9 +33,9 @@ col_of(const SiftColDeltaPatch *p)
 	return c;
 }
 
-/* The columns of a record appended to cols (a later value of a column replaces the earlier one); false when they are more than a record holds */
+/* The columns of a record, in the ascending order of attribute it keeps them in */
 static bool
-add_columns(const uint8 *rec, SiftColDeltaCol *cols, int *n)
+decode_columns(const uint8 *rec, SiftColDeltaCol *cols, int *n)
 {
 	SiftColDeltaEntryHdr h;
 	const uint8 *p = rec + sizeof(h),
@@ -46,19 +46,39 @@ add_columns(const uint8 *rec, SiftColDeltaCol *cols, int *n)
 	end = rec + h.rec_bytes;
 	for (int k = 0; k < h.ncols; k++)
 	{
-		SiftColDeltaCol c;
-		int			at = 0;
-
 		p = sift_col_delta_decode_col(p, end, &patch);
-		if (p == NULL)
+		if (p == NULL || *n == SIFT_COL_DELTA_MAX_COLS_PER_REC)
 			return false;
-		c = col_of(&patch);
-		while (at < *n && cols[at].attnum != c.attnum)
-			at++;
-		if (at == *n && *n == SIFT_COL_DELTA_MAX_COLS_PER_REC)
+		cols[(*n)++] = col_of(&patch);
+	}
+	return true;
+}
+
+/* The columns of both records in ascending order of attribute, the later record's value where both hold one; false when they are more than a record holds */
+static bool
+merge_columns(const uint8 *first, const uint8 *second, SiftColDeltaCol *out, int *n)
+{
+	SiftColDeltaCol x[SIFT_COL_DELTA_MAX_COLS_PER_REC],
+				y[SIFT_COL_DELTA_MAX_COLS_PER_REC];
+	int			nx = 0,
+				ny = 0,
+				i = 0,
+				j = 0;
+
+	if (!decode_columns(first, x, &nx) || !decode_columns(second, y, &ny))
+		return false;
+	*n = 0;
+	while (i < nx || j < ny)
+	{
+		if (*n == SIFT_COL_DELTA_MAX_COLS_PER_REC)
 			return false;
-		cols[at] = c;
-		*n += at == *n;
+		if (j == ny || (i < nx && x[i].attnum < y[j].attnum))
+			out[(*n)++] = x[i++];
+		else
+		{
+			i += i < nx && x[i].attnum == y[j].attnum;
+			out[(*n)++] = y[j++];
+		}
 	}
 	return true;
 }
@@ -69,13 +89,13 @@ sift_col_delta_merge_records(uint8 *dst, uint32 cap, const uint8 *first, const u
 	SiftColDeltaEntryHdr a,
 				b;
 	SiftColDeltaCol cols[SIFT_COL_DELTA_MAX_COLS_PER_REC];
-	int			n = 0;
+	int			n;
 	SiftColDeltaTarget t;
 	uint8		flags;
 
 	memcpy(&a, first, sizeof(a));
 	memcpy(&b, second, sizeof(b));
-	if (!add_columns(first, cols, &n) || !add_columns(second, cols, &n))
+	if (!merge_columns(first, second, cols, &n))
 		return 0;
 	t = (SiftColDeltaTarget) {.part_gen = a.part_gen,.granule_id = a.granule_id,.row_ordinal = a.row_ordinal,.tid = ((uint64) a.tid_blk << 16) | a.tid_off};
 	flags = (uint8) (((a.flags | b.flags) & ~(SIFT_CDENT_FLAG_NOOP | SIFT_CDENT_FLAG_SUBXID)) | (n == 0 ? SIFT_CDENT_FLAG_NOOP : 0) | (b.flags & SIFT_CDENT_FLAG_SUBXID));
