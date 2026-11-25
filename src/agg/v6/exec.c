@@ -105,6 +105,17 @@ begin_star(V6State *st, CustomScanState *node, EState *estate, int eflags)
 	st->star = sift_v6_star_begin(st->spec->ext, children, estate->es_query_cxt);
 }
 
+/* After the quarantine net of sift_v6_source_enter, which says why an index is out: an index with no format left service some other way (REINDEX CONCURRENTLY marks the replaced one invalid) */
+static void
+require_formats(const V6State *st)
+{
+	for (int k = 0; k < st->nsources; k++)
+		if (st->sources[k].ops == NULL)
+			ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+							errmsg("sift index \"%s\" left service after the statement was planned; the statement must be planned again", RelationGetRelationName(st->sources[k].index != NULL ? st->sources[k].index : st->sources[k].heap)),
+							errhint("Run the statement again: it is planned without the index.")));
+}
+
 static bool
 v6_fusable(const V6State *st)
 {
@@ -160,6 +171,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		for (int k = 0; k < st->nsources; k++)
 			sift_v6_source_enter(st->sources[k].index != NULL ? st->sources[k].index : st->sources[k].heap, st->sources[k].index == NULL, estate->es_snapshot);
+	require_formats(st);
 	begin_arm(st, node, estate, eflags);
 	if (st->spec->par_strategy != 0)
 		begin_par(st, node, estate);
