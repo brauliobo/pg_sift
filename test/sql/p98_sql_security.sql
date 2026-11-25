@@ -1,0 +1,99 @@
+-- The SQL surface keeps tenants apart: every SQL and PL/pgSQL function of the extension fixes its search_path (pg_temp last), the registries that the views read return a role only the
+-- rows of the relations it may inspect, the server totals and the global sweep of the stores need the rights of a monitor and of a superuser, and the settings that spend the shared
+-- resources of the server (the device, the rewrite budget, the shared counters) are for superusers.
+CREATE EXTENSION pg_sift_test CASCADE;
+\set VERBOSITY terse
+SET client_min_messages = warning;
+SET sift.on_corruption = quarantine;
+SET max_parallel_workers_per_gather = 0;
+DROP ROLE IF EXISTS p98_a, p98_b, p98_mon;
+CREATE ROLE p98_a;
+CREATE ROLE p98_b;
+CREATE ROLE p98_mon IN ROLE pg_read_all_stats;
+GRANT USAGE ON SCHEMA sift, public TO p98_a, p98_b, p98_mon;
+
+CREATE TEMP VIEW p98_fns AS
+SELECT p.oid, p.proname, n.nspname, l.lanname, p.proconfig, p.proretset, p.provolatile, p.prorettype
+FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
+JOIN pg_depend d ON d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e' JOIN pg_extension e ON e.oid = d.refobjid AND e.extname = 'pg_sift'
+WHERE n.nspname IN ('sift', 'sift_internal');
+
+-- every function that the extension writes in SQL or PL/pgSQL names its search_path, and the path ends in pg_temp
+SELECT f.oid::regprocedure AS without_pinned_path FROM p98_fns f
+WHERE f.lanname IN ('sql', 'plpgsql') AND NOT EXISTS (SELECT 1 FROM unnest(coalesce(f.proconfig, '{}')) c WHERE c ~ '^search_path=.*, pg_temp$')
+ORDER BY f.oid::regprocedure::text;
+
+-- an empty path leaves them working
+SET search_path = '';
+SELECT count(*) >= 0 AS projection_listed_runs FROM sift.projection_listed();
+SELECT sift.scope_qualified('pg_catalog.pg_class'::regclass) AS scope_qualified_runs;
+SELECT sift.facet_cap(10) AS facet_cap_runs;
+RESET search_path;
+
+-- tenant A owns an index that is out of service
+CREATE TABLE p98_docs (id int, body text);
+INSERT INTO p98_docs SELECT i, 'alpha beta ' || (i % 10) || ' gamma' || (i % 3) FROM generate_series(1, 2000) i;
+CREATE INDEX p98_docs_idx ON p98_docs USING sift (body);
+ALTER TABLE p98_docs OWNER TO p98_a;
+SELECT sift._test_poke('p98_docs_idx', 2, 8176, 9, 2);
+DO $$ BEGIN PERFORM count(*) FROM p98_docs WHERE body @@> 'alpha 3'; EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'caught %', SQLSTATE; END $$;
+SELECT count(*) AS rows_of_the_registry_for_a_superuser FROM sift._quarantine() WHERE index = 'p98_docs_idx'::regclass::oid;
+
+SET ROLE p98_a;
+SELECT count(*) AS rows_of_the_registry_for_the_owner FROM sift._quarantine() WHERE index = 'p98_docs_idx'::regclass::oid;
+RESET ROLE;
+
+SET ROLE p98_b;
+SELECT count(*) AS rows_of_the_registry_for_another_tenant FROM sift._quarantine() WHERE index = 'p98_docs_idx'::regclass::oid;
+SELECT sift._meta_quarantined('p98_docs_idx'::regclass::oid) AS flag_of_another_tenant;
+SELECT count(*) AS server_counters_of_the_session FROM sift.stats(true);
+SELECT count(*) AS server_counters FROM sift.stats(false);
+SELECT count(*) AS server_counters_by_the_alias FROM sift.stats();
+SELECT sift._col_value_store_drop_unused();
+RESET ROLE;
+
+SET ROLE p98_mon;
+SELECT count(*) > 0 AS server_counters_for_a_monitor FROM sift.stats(false);
+SELECT sift._col_value_store_drop_unused();
+RESET ROLE;
+SELECT count(*) > 0 AS server_counters_for_a_superuser FROM sift.stats(false);
+SELECT sift._col_value_store_drop_unused() IS NOT NULL AS sweep_for_a_superuser;
+
+-- the settings that spend what the server shares are set by a superuser
+SET ROLE p98_b;
+SET sift.gpu_min_rows = 0;
+SET sift.vacuum_rewrite_limit = 0;
+SET sift.dead_rewrite_pct = 1;
+SET sift.count_refusals = on;
+SET sift.enable_agg = on;
+SET sift.explain_refusals = off;
+SET sift.parallel_scan = on;
+RESET ROLE;
+SELECT name, context FROM pg_settings WHERE name IN ('sift.gpu_min_rows', 'sift.vacuum_rewrite_limit', 'sift.dead_rewrite_pct', 'sift.count_refusals') ORDER BY name;
+SET sift.gpu_min_rows = 0;
+SET sift.vacuum_rewrite_limit = 0;
+SET sift.dead_rewrite_pct = 1;
+SET sift.count_refusals = on;
+RESET sift.gpu_min_rows;
+RESET sift.vacuum_rewrite_limit;
+RESET sift.dead_rewrite_pct;
+RESET sift.count_refusals;
+
+-- the functions that name no relation of the caller and are open to PUBLIC: what each of them returns is filtered by the rights of the caller (sift._may_inspect)
+SELECT f.oid::regprocedure AS public_internal_set_returning_function FROM p98_fns f
+WHERE f.lanname = 'c' AND f.proretset AND (f.proname LIKE '\_%' OR f.nspname = 'sift_internal') AND has_function_privilege(0, f.oid, 'EXECUTE')
+ORDER BY f.oid::regprocedure::text;
+SELECT has_function_privilege(0, 'sift._col_value_store_drop_unused()', 'EXECUTE') AS sweep_open_to_public;
+
+-- the action for a quarantined relation is one the access method accepts: REINDEX for an index, sift.check for a sift_table
+SELECT check_name, action_sql FROM sift_internal.health_over(jsonb_build_array(
+	jsonb_build_object('relation', 'p98_docs_idx'::regclass::oid, 'table_name', 'p98_docs'::regclass::oid, 'am', 'sift_col', 'format_major', 2, 'size_bytes', 8192, 'quarantined', true),
+	jsonb_build_object('relation', 'p98_docs'::regclass::oid, 'table_name', 'p98_docs'::regclass::oid, 'am', 'sift_table', 'format_major', 2, 'size_bytes', 8192, 'quarantined', true)))
+WHERE check_name = 'index_quarantined' ORDER BY action_sql;
+
+DROP VIEW p98_fns;
+DROP TABLE p98_docs;
+DROP OWNED BY p98_a, p98_b, p98_mon;
+DROP ROLE p98_a, p98_b, p98_mon;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

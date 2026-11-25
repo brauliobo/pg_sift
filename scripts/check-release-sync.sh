@@ -5,6 +5,8 @@
 #                   packaging/pgxman.yaml pgVersions = the postgresql@N dependencies of Formula/pg_sift.rb (less the majors Homebrew has no formula for: NO_BREW_PGS)
 #   architectures   scripts/package.sh ARCHES and AMZN_PGS = publish-repos.yml = build-apt-dnf-repo.sh; the docker matrix builds each architecture natively;
 #                   pgxman.yaml lists amd64 and arm64
+#   PKGBUILD        arch = ARCHES of scripts/package.sh, depends span the majors of PGS
+#   libcurl         S3 and R2 tiering load libcurl when they run: the PKGBUILD (optdepends), the Debian control and the spec (Recommends), the server image and the Formula name it
 #   images          release.yml pushes pg<N>, <X.Y.Z>-pg<N>, <X.Y>-pg<N> and <X>-pg<N> for the server and the -extension image; the Dockerfile labels the version
 #   tarballs        release.yml builds the sqlite and mariadb tarballs for linux x86_64 and aarch64 (the two ports are Linux-only) and publish counts two of each
 #   SECURITY.md     its table of supported versions is exactly `| MAJOR.MINOR.x | yes |` and `| older | no |` for the release (packaging/PKGBUILD), and the text that
@@ -39,6 +41,14 @@ check() { # ROOT: prints every mismatch; exits 1 if there is one
 		[[ $(dflt "$r/packaging/repo/build-apt-dnf-repo.sh" $f) == "$got" ]] || bad+=("build-apt-dnf-repo.sh $f is not '$got' (scripts/package.sh)")
 	done
 	grep -q '^  - amd64$' "$r/packaging/pgxman.yaml" && grep -q '^  - arm64$' "$r/packaging/pgxman.yaml" || bad+=("packaging/pgxman.yaml arch is not amd64 and arm64")
+	got=$(sed -n "s/^arch=(\(.*\))\$/\1/p" "$r/packaging/PKGBUILD" | tr -d "'" | set_of)
+	[[ $got == "$(dflt "$r/scripts/package.sh" ARCHES)" ]] || bad+=("packaging/PKGBUILD arch '$got' is not the ARCHES of scripts/package.sh")
+	grep -q "^depends=('postgresql>=${pgs%% *}' 'postgresql<$((${pgs##* } + 1))' " "$r/packaging/PKGBUILD" || bad+=("packaging/PKGBUILD depends do not span PostgreSQL ${pgs%% *} to ${pgs##* }")
+	for f in packaging/PKGBUILD:"^optdepends=('curl: " packaging/debian/control:'^Recommends:.*libcurl4' packaging/pg_sift.spec:'^Recommends:.*libcurl' Formula/pg_sift.rb:'^  depends_on "curl"$'; do
+		grep -q -- "${f#*:}" "$r/${f%%:*}" || bad+=("${f%%:*}: no libcurl, which S3 and R2 tiering loads at run time")
+	done
+	got=$(sed -n '/^FROM .* AS server$/,$p' "$r/packaging/docker/Dockerfile")
+	[[ $got == *libcurl4* ]] || bad+=("packaging/docker/Dockerfile: the server image installs no libcurl4, which S3 and R2 tiering loads at run time")
 	f=$r/.github/workflows/release.yml
 	grep -q 'for arch in x86_64 aarch64' "$f" || bad+=("release.yml: the docker matrix does not build x86_64 and aarch64 natively")
 	grep -q 'for v in "\$version" "\${version%.\*}" "\${version%%.\*}"' "$f" || bad+=("release.yml: the manifests lack the X.Y.Z-pgN, X.Y-pgN and X-pgN tags")
@@ -66,8 +76,9 @@ selftest() {
 	local repo expect=0 cur next
 	repo=$(cd "$(dirname "$0")/.." && pwd); cur=$(sed -n 's/^pkgver=//p' "$repo/packaging/PKGBUILD"); cur=${cur%.*}; next=${cur%%.*}.$((${cur#*.} + 1)); d=$(mktemp -d /tmp/sift-cbpkg-sync.XXXXXX); trap 'rm -rf "$d"' EXIT
 	fixture() { # DIR: the files the check reads
-		rm -rf "$1" && mkdir -p "$1/scripts" "$1/.github/workflows" "$1/packaging/docker" "$1/packaging/repo" "$1/Formula" "$1/docs"
-		(cd "$repo" && cp scripts/package.sh "$1/scripts/" && cp SECURITY.md "$1/" && cp packaging/PKGBUILD "$1/packaging/" && cp .github/workflows/release.yml .github/workflows/publish-repos.yml "$1/.github/workflows/" &&
+		rm -rf "$1" && mkdir -p "$1/scripts" "$1/.github/workflows" "$1/packaging/docker" "$1/packaging/debian" "$1/packaging/repo" "$1/Formula" "$1/docs"
+		(cd "$repo" && cp scripts/package.sh "$1/scripts/" && cp SECURITY.md "$1/" && cp packaging/PKGBUILD packaging/pg_sift.spec "$1/packaging/" && cp packaging/debian/control "$1/packaging/debian/" &&
+			cp .github/workflows/release.yml .github/workflows/publish-repos.yml "$1/.github/workflows/" &&
 			cp packaging/pgxman.yaml "$1/packaging/" && cp packaging/docker/build.sh packaging/docker/Dockerfile "$1/packaging/docker/" &&
 			cp packaging/repo/build-apt-dnf-repo.sh "$1/packaging/repo/" && cp Formula/pg_sift.rb "$1/Formula/" && cp Makefile "$1/") && echo ok >"$1/docs/INSTALL-REPOS.md"
 	}
@@ -85,6 +96,13 @@ selftest() {
 	mutate pgxman packaging/pgxman.yaml 's/^  - "19"$/  - "20"/'
 	mutate pgxman-arch packaging/pgxman.yaml 's/^  - arm64$//'
 	mutate formula Formula/pg_sift.rb 's/postgresql@18/postgresql@20/'
+	mutate formula-curl Formula/pg_sift.rb 's/depends_on "curl"/depends_on "zlib"/'
+	mutate pkgbuild-arch packaging/PKGBUILD "s/^arch=.*/arch=('x86_64')/"
+	mutate pkgbuild-pgs packaging/PKGBUILD "s/'postgresql<20'/'postgresql<19'/"
+	mutate pkgbuild-curl packaging/PKGBUILD '/^optdepends=/d'
+	mutate deb-curl packaging/debian/control '/^Recommends:/d'
+	mutate rpm-curl packaging/pg_sift.spec '/^Recommends:/d'
+	mutate docker-curl packaging/docker/Dockerfile 's/libcurl4/libcurl3/'
 	mutate manifest-tags .github/workflows/release.yml 's/"\${version%.\*}" //'
 	mutate label packaging/docker/Dockerfile 's/image.version=/image.v=/'
 	mutate tarball-arch .github/workflows/release.yml '0,/arch: \[x86_64, aarch64\]/s//arch: [x86_64]/'

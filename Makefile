@@ -643,6 +643,7 @@ TESTING_REGRESS += p98_proj_ddl_acid
 TESTING_REGRESS += p98_proj_tiered
 TESTING_REGRESS += p98_scope_ddl
 TESTING_REGRESS += p98_ttl_drop_acid
+TESTING_REGRESS += p98_sql_security
 TESTING_REGRESS += part_agg_parity
 TESTING_REGRESS += position_blocks
 TESTING_REGRESS += proj_%
