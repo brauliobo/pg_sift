@@ -542,6 +542,8 @@ typedef struct SiftScopeMemberKey
 	int64		key;
 } SiftScopeMemberKey;
 
+typedef struct SiftScopePairProbe SiftScopePairProbe;
+
 typedef struct SiftScopePairMap
 {
 	uint32		nmembers;
@@ -552,6 +554,7 @@ typedef struct SiftScopePairMap
 	uint32	   *key_ordinals;
 	int64	   *scope_keys;
 	uint32		cursor;
+	SiftScopePairProbe *probe;	/* the pairs are probed: no member_ids, offsets or key_ordinals but those of the last member found */
 	/* a patch (sift_spm_patched): own tables hold only the members of tomb_members, the rest is base's; keys past base_nkeys are extra_keys; read it through sift_spm_slice and sift_spm_key_of */
 	const struct SiftScopePairMap *base;
 	int64	   *tomb_members;

@@ -167,7 +167,7 @@ build_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg 
 	cfg.nrings = cfg.time_leaf >= 0 ? 1 : 0;
 	spec_init(rel, store, &cfg, snap, gen, &spec);
 	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, true);
-	pm = sift_f2s_load_pairs(heap, rel, &cfg, snap, sift_f2s_key_map(heap, rel, cfg.spec, true), true);
+	pm = sift_f2s_build_pairs(heap, rel, &cfg, snap, sift_f2s_key_map(heap, rel, cfg.spec, true));
 	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, false);
 	spec.flags |= cfg.mem != NULL ? SIFT_SMETA_CODED_MEM : 0;
 	p = sift_f2s_parts_new(rel, store, heap, &cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr));

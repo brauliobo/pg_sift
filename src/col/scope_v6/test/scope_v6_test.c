@@ -30,6 +30,7 @@ extern void scope_v6_scenario_primary(TCheck *t);
 extern void scope_v6_scenario_route(TCheck *t);
 extern void scope_v6_scenario_rings(TCheck *t);
 extern void scope_v6_scenario_union(TCheck *t);
+extern void scope_v6_scenario_probed(TCheck *t);
 extern void scope_v6_scenario_f8(TCheck *t);
 extern void scope_v6_scenario_inline(TCheck *t);
 extern void scope_v6_scenario_nullfilter(TCheck *t);
@@ -950,7 +951,7 @@ static const Scenario scenarios[] = {
 	{"edit", scope_v6_scenario_edit}, {"dedupe", scope_v6_scenario_dedupe}, {"format", scope_v6_scenario_format},
 	{"cubewire", scope_v6_scenario_cubewire}, {"heap", scope_v6_scenario_heap},
 	{"spill", scope_v6_scenario_spill}, {"delta", scope_v6_scenario_delta}, {"refresh", scope_v6_scenario_refresh}, {"compact", scope_v6_scenario_compact},
-	{"primary", scope_v6_scenario_primary}, {"route", scope_v6_scenario_route}, {"rings", scope_v6_scenario_rings}, {"union", scope_v6_scenario_union},
+	{"primary", scope_v6_scenario_primary}, {"route", scope_v6_scenario_route}, {"rings", scope_v6_scenario_rings}, {"union", scope_v6_scenario_union}, {"probed", scope_v6_scenario_probed},
 	{"f8", scope_v6_scenario_f8}, {"monthtz", scope_v6_scenario_monthtz}, {"inline", scope_v6_scenario_inline},
 	{"nullfilter", scope_v6_scenario_nullfilter}, {"mapedit", scope_v6_scenario_mapedit},
 };

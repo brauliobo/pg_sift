@@ -182,6 +182,8 @@ extern void sift_f2s_cfg(Relation rel, const SiftF2Store *store, int ord, SiftF2
 extern void sift_f2s_cfg_rings_of(SiftF2ScopeCfg *cfg, const SiftF2Store *store, const SiftScopeMeta *m);
 extern bool sift_f2s_int_type(Oid type);
 /* km: the map of the codes of the scope key (NULL: an integer key), the statement's own for a read; intern: km is a writer's (the build, the refresh), which gives the keys the store lacks a code */
+/* The pairs for a build: the keys of the scope, a member's keys asked of the btree (f2_scope_probe.c), or the load of all the pairs where that cannot be (a scope of two paths, a text member) */
+extern SiftScopePairMap *sift_f2s_build_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km);
 extern SiftScopePairMap *sift_f2s_load_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, bool intern);
 /* The map of the codes of the key of the scope: NULL for an integer key */
 extern SiftKeyMap *sift_f2s_key_map(Relation heap, Relation index, const SiftScopeSpec *spec, bool write);

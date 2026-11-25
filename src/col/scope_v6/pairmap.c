@@ -7,6 +7,7 @@
 
 #include "core/cmp.h"
 #include "col/scope_v6/meta.h"
+#include "col/scope_v6/probe.h"
 
 static int
 pair_cmp(const void *a, const void *b)
@@ -59,6 +60,42 @@ sift_spm_build(SiftScopeMemberKey *pairs, uint32 n, bool multiset)
 	}
 	pm->offsets[pm->nmembers] = n;
 	return pm;
+}
+
+SiftScopePairMap *
+sift_spm_probed(int64 *keys, uint32 nkeys, uint32 nmembers, uint32 npairs, SiftScopePairProbe *probe)
+{
+	SiftScopePairMap *pm = palloc0(sizeof(*pm));
+
+	pm->scope_keys = keys;
+	pm->nkeys = nkeys;
+	pm->nmembers = nmembers;
+	pm->npairs = npairs;
+	pm->probe = probe;
+	return pm;
+}
+
+/* The key ordinals of the member in the buffer of the probe, ascending: how many */
+static uint32
+probe_ords(const SiftScopePairMap *pm, int64 member)
+{
+	SiftScopePairProbe *pr = pm->probe;
+	const int64 *keys;
+	uint32		n = pr->member_keys(pr->arg, member, &keys);
+
+	if (n > pr->cap_ords)
+	{
+		pr->cap_ords = Max(n, pr->cap_ords * 2);
+		pr->ords = pr->ords == NULL ? MemoryContextAlloc(GetMemoryChunkContext(pr), sizeof(uint32) * pr->cap_ords) : repalloc(pr->ords, sizeof(uint32) * pr->cap_ords);
+	}
+	for (uint32 i = 0; i < n; i++)
+	{
+		int32		ord = sift_spm_key_ordinal(pm, keys[i]);
+
+		SIFT_INVARIANT(ord >= 0, "scope pairs: key %lld of member %lld is not a key of the scope", (long long) keys[i], (long long) member);
+		pr->ords[i] = (uint32) ord;
+	}
+	return n;
 }
 
 /* The first member at or after from whose id is >= member: galloping, then a binary search in the last step */
@@ -177,6 +214,16 @@ sift_spm_patched(const SiftScopePairMap *pm, const int64 *members, uint32 nm, co
 void
 sift_spm_free(SiftScopePairMap *pm)
 {
+	if (pm->probe != NULL)
+	{
+		pm->probe->close(pm->probe->arg);
+		if (pm->probe->ords != NULL)
+			pfree(pm->probe->ords);
+		pfree(pm->probe);
+		pfree(pm->scope_keys);
+		pfree(pm);
+		return;
+	}
 	pfree(pm->member_ids);
 	pfree(pm->offsets);
 	pfree(pm->key_ordinals);
@@ -195,6 +242,13 @@ sift_spm_find(SiftScopePairMap *pm, int64 member, uint32 *lo, uint32 *hi)
 {
 	uint32		at;
 
+	if (pm->probe != NULL)
+	{
+		*lo = 0;
+		*hi = probe_ords(pm, member);
+		pm->key_ordinals = pm->probe->ords;
+		return *hi > 0;
+	}
 	if (pm->cursor >= pm->nmembers || pm->member_ids[pm->cursor] > member)
 		pm->cursor = 0;			/* members did not arrive ascending: search again from the start */
 	at = member_lower_bound(pm, pm->cursor, member);
@@ -211,6 +265,12 @@ sift_spm_slice(const SiftScopePairMap *pm, int64 member, const uint32 **ords, ui
 {
 	uint32		at;
 
+	if (pm->probe != NULL)
+	{
+		*n = probe_ords(pm, member);
+		*ords = pm->probe->ords;
+		return *n > 0;
+	}
 	if (pm->base != NULL && bsearch(&member, pm->tomb_members, pm->ntomb, sizeof(int64), sift_cmp_i64) == NULL)
 		return sift_spm_slice(pm->base, member, ords, n);
 	at = member_lower_bound(pm, 0, member);
@@ -252,14 +312,22 @@ sift_spm_owns_key(const SiftScopePairMap *pm, int64 member, int64 key)
 bool
 sift_spm_range_hits(const SiftScopePairMap *pm, int64 lo, int64 hi)
 {
-	uint32		at = member_lower_bound(pm, 0, lo);
+	uint32		at;
 
+	if (pm->probe != NULL)
+		return pm->probe->range_hits(pm->probe->arg, lo, hi);
+	at = member_lower_bound(pm, 0, lo);
 	return at < pm->nmembers && pm->member_ids[at] <= hi;
 }
 
 bool
 sift_spm_first_multi(const SiftScopePairMap *pm, int64 *member)
 {
+	if (pm->probe != NULL)
+	{
+		*member = pm->probe->first_multi;
+		return pm->probe->has_multi;
+	}
 	for (uint32 i = 0; i < pm->nmembers; i++)
 		if (pm->offsets[i + 1] - pm->offsets[i] > 1)
 		{
@@ -286,8 +354,11 @@ sift_spm_single_pct(const SiftScopePairMap *pm)
 {
 	uint64		single = 0;
 
-	for (uint32 i = 0; i < pm->nmembers; i++)
-		single += pm->offsets[i + 1] - pm->offsets[i] == 1;
+	if (pm->probe != NULL)
+		single = pm->probe->nsingle;
+	else
+		for (uint32 i = 0; i < pm->nmembers; i++)
+			single += pm->offsets[i + 1] - pm->offsets[i] == 1;
 	return pm->nmembers == 0 ? 100 : (uint32) (single * 100 / pm->nmembers);
 }
 
@@ -303,6 +374,8 @@ sift_spm_cluster_flags(const SiftScopePairMap *pm)
 static bool
 pairs_repeat(const SiftScopePairMap *pm)
 {
+	if (pm->probe != NULL)
+		return pm->probe->repeat;
 	for (uint32 i = 0; i < pm->nmembers; i++)
 		for (uint32 q = pm->offsets[i] + 1; q < pm->offsets[i + 1]; q++)
 			if (pm->key_ordinals[q] == pm->key_ordinals[q - 1])
