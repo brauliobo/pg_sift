@@ -129,7 +129,7 @@ add_leaves(PlannerInfo *root, const RelOptInfo *parent, List **leaves)
 		if (leaf == NULL || IS_DUMMY_REL(leaf))
 			continue;
 		rte = planner_rt_fetch(leaf->relid, root);
-		if (rte->securityQuals != NIL || root->append_rel_array[leaf->relid]->parent_relid != parent->relid)
+		if (agg_rte_has_rls(root, rte) || root->append_rel_array[leaf->relid]->parent_relid != parent->relid)
 			return false;
 		if (rte->relkind == RELKIND_PARTITIONED_TABLE && rte->inh)
 		{

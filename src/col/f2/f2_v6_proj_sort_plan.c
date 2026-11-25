@@ -32,6 +32,7 @@
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
 
+#include "agg/plan/safety.h"
 #include "agg/plan/format_ops.h"
 #include "agg/v6/v6_proj_sort_ios.h"
 #include "col/f2/f2_v6_proj_ctx.h"
@@ -567,9 +568,9 @@ shape_ok(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	Query	   *q = root->parse;
 
 	return q->commandType == CMD_SELECT && (is_lookup(root) || ordered_limit(root)) && !q->hasAggs && !q->hasWindowFuncs && !q->hasTargetSRFs &&
-		q->groupClause == NIL && q->distinctClause == NIL && q->setOperations == NULL && !q->hasRowSecurity && q->rowMarks == NIL && rel->reloptkind == RELOPT_BASEREL &&
+		q->groupClause == NIL && q->distinctClause == NIL && q->setOperations == NULL && !agg_query_has_rls(root) && q->rowMarks == NIL && rel->reloptkind == RELOPT_BASEREL &&
 		bms_membership(root->all_baserels) == BMS_SINGLETON && rel->lateral_relids == NULL && rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh &&
-		rte->tablesample == NULL && rte->securityQuals == NIL;
+		rte->tablesample == NULL && agg_rel_security_ok(root, rel);
 }
 
 /* The statement on one owner (the table or one index); false when the owner cannot serve it */

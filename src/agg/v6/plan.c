@@ -30,6 +30,7 @@
 #include "utils/selfuncs.h"
 #include "utils/timestamp.h"
 
+#include "agg/plan/safety.h"
 #include "agg/agg.h"
 #include "agg/group/ht.h"
 #include "agg/v6/plan_int.h"
@@ -506,10 +507,10 @@ sift_v6_plan_fact_ok(PlannerInfo *root, RelOptInfo *rel)
 {
 	const RangeTblEntry *rte;
 
-	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || root->parse->hasRowSecurity)
+	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || agg_query_has_rls(root) || !agg_rel_security_ok(root, rel))
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && rte->securityQuals == NIL &&
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL &&
 		sift_v6_rel_has_source(root, rel);
 }
 
@@ -534,9 +535,9 @@ sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		(input_rel->reloptkind != RELOPT_BASEREL && input_rel->reloptkind != RELOPT_OTHER_MEMBER_REL))
 		return false;
 	rte = planner_rt_fetch(input_rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->tablesample == NULL && input_rel->lateral_relids == NULL && output_rel->reltarget != NULL &&
-		((rte->relkind == RELKIND_RELATION && !rte->inh && rte->securityQuals == NIL) ||
-		 (rte->relkind == RELKIND_PARTITIONED_TABLE && rte->inh && rte->securityQuals == NIL && input_rel->reloptkind == RELOPT_BASEREL && input_rel->part_scheme != NULL));
+	return rte->rtekind == RTE_RELATION && rte->tablesample == NULL && input_rel->lateral_relids == NULL && output_rel->reltarget != NULL && agg_rel_security_ok(root, input_rel) &&
+		((rte->relkind == RELKIND_RELATION && !rte->inh) ||
+		 (rte->relkind == RELKIND_PARTITIONED_TABLE && rte->inh && input_rel->reloptkind == RELOPT_BASEREL && input_rel->part_scheme != NULL));
 }
 
 bool

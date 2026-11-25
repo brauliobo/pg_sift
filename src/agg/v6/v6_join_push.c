@@ -25,6 +25,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
+#include "agg/plan/safety.h"
 #include "agg/agg.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6.h"
@@ -32,8 +33,8 @@
 #include "agg/v6/v6_dim_keys.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_join_push.h"
-#include "col/am.h"
 #include "agg/v6/v6_source_rel.h"
+#include "col/am.h"
 #include "col/col.h"
 #include "core/store_ops.h"
 #include "core/compat.h"
@@ -71,7 +72,7 @@ plain_table(PlannerInfo *root, RelOptInfo *rel)
 	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL)
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && rte->securityQuals == NIL;
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && agg_rel_security_ok(root, rel);
 }
 
 static bool
@@ -311,7 +312,7 @@ sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 	const int	a = bms_next_member(input_rel->relids, -1),
 				b = bms_next_member(input_rel->relids, a);
 
-	if (!sift_enable_agg || !parse->hasAggs || parse->hasRowSecurity || parse->hasDistinctOn || parse->hasTargetSRFs || parse->hasWindowFuncs || parse->groupingSets != NIL ||
+	if (!sift_enable_agg || !parse->hasAggs || agg_query_has_rls(root) || parse->hasDistinctOn || parse->hasTargetSRFs || parse->hasWindowFuncs || parse->groupingSets != NIL ||
 		bms_num_members(input_rel->relids) != 2 || out->reltarget == NULL ||
 		(root->join_info_list != NIL && !(list_length(root->join_info_list) == 1 && ((SpecialJoinInfo *) linitial(root->join_info_list))->jointype == JOIN_SEMI)))
 		return;
@@ -349,10 +350,10 @@ push_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 									list_make5(linitial(join), makeInteger(resno), makeInteger(dim_var->vartype), makeInteger(scope == NIL ? 0 : intVal(linitial(scope))),
 											   makeBoolean(scope != NIL)));
 	cs->custom_exprs = scope == NIL ? NIL : list_make1(lsecond(scope));
-	cs->methods = &sift_agg_v6_push_plan_methods;
-	cs->scan.plan.qual = lthird(best->custom_private);
 	sift_v6_collect_params((Node *) spec->indexqual, &cs->custom_exprs);
 	sift_v6_collect_params((Node *) spec->vqual, &cs->custom_exprs);
+	cs->methods = &sift_agg_v6_push_plan_methods;
+	cs->scan.plan.qual = lthird(best->custom_private);
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->relid);
 	return &cs->scan.plan;
 }
@@ -402,9 +403,9 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 	st->ops = sift_store_ops_for_oid(st->spec->relid, st->spec->is_table);
 	st->index = st->spec->is_table ? NULL : index_open(st->spec->relid, AccessShareLock);
 	st->heap = table_open(st->spec->is_table ? st->spec->relid : st->index->rd_index->indrelid, AccessShareLock);
-	foreach_ptr(Plan, child, cs->custom_plans)
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		sift_v6_source_enter(st->spec->is_table ? st->heap : st->index, st->spec->is_table, estate->es_snapshot);
+	foreach_ptr(Plan, child, cs->custom_plans)
 		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags));
 }
 

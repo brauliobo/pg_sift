@@ -15,6 +15,9 @@
 /* A policy, a security barrier or FORCE ROW LEVEL SECURITY applies to the relation or the sub-select the entry reads, for the invoking role or for the owner of the view it is read through */
 extern bool agg_rte_has_rls(PlannerInfo *root, const RangeTblEntry *rte);
 
+/* The relation is read with no policy, barrier or security level on it: none of its clauses (rel->baserestrictinfo) is one the planner keeps behind a clause of a lower level, the way it keeps the clause of the user of a view behind those of the view */
+extern bool agg_rel_security_ok(PlannerInfo *root, RelOptInfo *rel);
+
 /* The same for an entry of the range table of q (a sub-select of the query), whose permission info is q's, for the role PostgreSQL applies the policies of (the owner of the view the entry is read through) alone: for a read of a scope, which scans no column of the table */
 extern bool agg_query_rte_has_rls(const Query *q, const RangeTblEntry *rte);
 
