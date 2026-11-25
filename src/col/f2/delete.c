@@ -11,6 +11,7 @@
 #include "col/f2/f2_del_slab.h"
 #include "col/f2/f2_part_idx.h"
 #include "core/hash.h"
+#include "core/memtrack.h"
 #include "core/page_io.h"
 
 /* A row that is dead already is an older one whose address a later row took after a VACUUM: a delete of that address is for another row */
@@ -25,22 +26,39 @@ row_dead(const SiftDv *base, uint32 g, uint16 row)
 	return dead;
 }
 
-/* The rows the deletes name by the address their row has now (an address change of the column delta chain): the row is where the chain puts it, whatever raw address the part holds */
-static int
-locate_remapped(const SiftPart *part, const SiftCdRemapMap *rm, const SiftPendDelRec *recs, int n, bool *done, SiftDvMark *marks, const SiftDv *base)
+/* The marks of a part, grown as its rows are found in cx: a part that holds none of the targets allocates none */
+typedef struct Marks
 {
-	int			nm = 0;
+	SiftDvMark *v;
+	int			n;
+	int			cap;
+	MemoryContext cx;
+} Marks;
 
+static void
+marks_add(Marks *mk, SiftDvMark m)
+{
+	if (mk->n == mk->cap)
+	{
+		mk->cap = Max(16, mk->cap * 2);
+		mk->v = mk->v ? repalloc(mk->v, mk->cap * sizeof(SiftDvMark)) : MemoryContextAlloc(mk->cx, mk->cap * sizeof(SiftDvMark));
+	}
+	mk->v[mk->n++] = m;
+}
+
+/* The rows the deletes name by the address their row has now (an address change of the column delta chain): the row is where the chain puts it, whatever raw address the part holds */
+static void
+locate_remapped(const SiftPart *part, const SiftCdRemapMap *rm, const SiftPendDelRec *recs, int n, bool *done, Marks *mk, const SiftDv *base)
+{
 	for (int i = 0; i < n; i++)
 	{
 		const SiftCdRemap *m = done[i] ? NULL : sift_cd_remap_by_new(rm, recs[i].tid);
 
 		if (m == NULL || m->part_gen != part->hdr.part_gen || row_dead(base, m->granule_id, m->row))
 			continue;
-		marks[nm++] = (SiftDvMark) {m->granule_id, m->row, recs[i].xmax, recs[i].cmax};
+		marks_add(mk, (SiftDvMark) {m->granule_id, m->row, recs[i].xmax, recs[i].cmax});
 		done[i] = true;
 	}
-	return nm;
 }
 
 /* The targets by address, ties by their place in recs: what a granule or a part finds the ones in its range of addresses in */
@@ -178,8 +196,8 @@ by_target_cmp(const void *a, const void *b, void *arg)
 }
 
 /* The rows of the granule that the candidates name, marked in the order of the targets; a row that moved to another address has left its raw one, a dead one is an older row the heap gave the address to again */
-static int
-mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, const DelOrder *o, const uint32 *cand, int nc, bool *done, SiftDvMark *marks, const SiftDv *base, const SiftCdRemapMap *rm)
+static void
+mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, const DelOrder *o, const uint32 *cand, int nc, bool *done, Marks *mk, const SiftDv *base, const SiftCdRemapMap *rm)
 {
 	CandSet		cs;
 	int		   *row = palloc(nc * sizeof(int));
@@ -201,24 +219,24 @@ mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, cons
 	{
 		uint32		i = cand[emit[e]];
 
-		marks[e] = (SiftDvMark) {g, (uint16) row[emit[e]], o->recs[i].xmax, o->recs[i].cmax};
+		marks_add(mk, (SiftDvMark) {g, (uint16) row[emit[e]], o->recs[i].xmax, o->recs[i].cmax});
 		done[i] = true;
 	}
 	if (cs.slots != NULL)
 		pfree(cs.slots);
 	pfree(row);
 	pfree(emit);
-	return ne;
 }
 
-static int
-locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const DelOrder *o, bool *done, SiftDvMark *marks, const SiftDv *base, const SiftCdRemapMap *rm)
+static void
+locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const DelOrder *o, bool *done, Marks *mk, const SiftDv *base, const SiftCdRemapMap *rm)
 {
-	int			nm = rm != NULL ? locate_remapped(part, rm, o->recs, o->n, done, marks, base) : 0;
 	uint64		len;
 	const SiftTidIndexEntry *tix = sift_part_read_section(rel, part, SEC_TID_INDEX, &len);
 	uint32	   *cand = palloc(Max(o->n, 1) * sizeof(uint32));
 
+	if (rm != NULL)
+		locate_remapped(part, rm, o->recs, o->n, done, mk, base);
 	if (tix == NULL || len != (uint64) part->hdr.ngranules * sizeof(*tix))
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The part has no usable TID index.");
 	for (uint32 g = 0; g < part->hdr.ngranules; g++)
@@ -226,10 +244,14 @@ locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, c
 		int			nc = granule_candidates(o, &tix[g], done, cand);
 
 		if (nc > 0)
-			nm += mark_granule(part, g, sift_part_read_tids(rel, part, dir, g), dir[g].nrows, o, cand, nc, done, marks + nm, base, rm);
+		{
+			uint64	   *tids = sift_part_read_tids(rel, part, dir, g);
+
+			mark_granule(part, g, tids, dir[g].nrows, o, cand, nc, done, mk, base, rm);
+			pfree(tids);
+		}
 	}
 	pfree(cand);
-	return nm;
 }
 
 /* Marks the rows of the part that the unresolved TIDs name; the TIDs it marked are set in done. rm: the address changes of the partition's column delta chain, NULL when it has none */
@@ -237,10 +259,15 @@ int
 sift_del_locate(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const SiftPendDelRec *recs, int n, bool *done, SiftDvMark *marks, const SiftDv *base, const SiftCdRemapMap *rm)
 {
 	DelOrder	o = del_order(recs, n);
-	int			nm = locate_ordered(rel, part, dir, &o, done, marks, base, rm);
+	Marks		mk = {.cx = CurrentMemoryContext};
 
+	locate_ordered(rel, part, dir, &o, done, &mk, base, rm);
+	if (mk.n > 0)
+		memcpy(marks, mk.v, mk.n * sizeof(SiftDvMark));
 	pfree(o.ord);
-	return nm;
+	if (mk.v != NULL)
+		pfree(mk.v);
+	return mk.n;
 }
 
 /* Whether a target not yet found has an address of the envelope of the part */
@@ -352,8 +379,8 @@ index_unbuilt(Relation rel)
 	return rel->rd_rel->relkind == RELKIND_INDEX && !rel->rd_index->indisvalid;
 }
 
-int
-sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs_in, int n_in, bool fold, const SiftPartSpec *spec)
+static int
+del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs_in, int n_in, bool fold, const SiftPartSpec *spec, SiftMemTracker *mem)
 {
 	SiftManifestRead mr;
 	SiftPartitionEntry entry;
@@ -380,6 +407,7 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 	SiftPartDesc *updated;
 	SiftExtent *rel_ext;
 	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo};
+	MemoryContext part_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift del bulk part");
 
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
@@ -393,8 +421,7 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 	if (npend > 0)
 		memcpy(recs + n, pend, npend * sizeof(SiftPendDelRec));
 	n += npend;
-	keep = palloc(Max(2 * n, 1) * sizeof(SiftPendDelRec));
-	n = sift_pend_del_unpair(recs, n, keep, &nkeep);
+	n = sift_pend_del_unpair(recs, n, &keep, &nkeep);
 	done = palloc0(Max(n, 1) * sizeof(bool));
 	if (entry.l0_slab_blk != InvalidBlockNumber)
 	{
@@ -419,23 +446,38 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 		remaining += !done[i];
 	for (int p = 0; p < nparts && remaining > 0; p++)
 	{
+		MemoryContext outer = CurrentMemoryContext;
 		SiftPart   *part;
 		SiftGranuleDesc *dir;
+		Marks		mk = {.cx = outer};
 
 		if (!sift_u64_set_has(&remapped, parts[p].part_gen) && !part_may_hold(&order, &parts[p], done))
 			continue;
+		MemoryContextSwitchTo(part_cx);
 		part = sift_part_open_desc(rel, &parts[p], (uint32) part_id);
 		dir = sift_part_granule_dir(rel, part);
-
+		MemoryContextSwitchTo(outer);
 		pm[p].ngranules = part->hdr.ngranules;
 		pm[p].grows = granule_rows(dir, part->hdr.ngranules);
 		if (parts[p].dv_blk != InvalidBlockNumber)
 			pm[p].base = sift_dv_unabort(sift_dv_read(rel, &parts[p], (uint32) part_id, pm[p].grows), &pm[p].unaborted);
-		pm[p].marks = palloc(Max(n, 1) * sizeof(SiftDvMark));
-		pm[p].nm = locate_ordered(rel, part, dir, &order, done, pm[p].marks, pm[p].base, rm);
+		MemoryContextSwitchTo(part_cx);
+		locate_ordered(rel, part, dir, &order, done, &mk, pm[p].base, rm);
+		MemoryContextSwitchTo(outer);
+		MemoryContextReset(part_cx);
+		pm[p].marks = mk.v;
+		pm[p].nm = mk.n;
+		if (mk.n == 0)
+		{
+			pfree(pm[p].grows);
+			pm[p].grows = NULL;
+			pm[p].base = NULL;
+		}
 		resolved += pm[p].nm;
 		remaining -= pm[p].nm;
 	}
+	MemoryContextDelete(part_cx);
+	(void) sift_mem_used(mem);
 	sift_u64_set_free(&remapped);
 	sift_cd_remap_free(rm);
 	append_deltas(rel, part_id, parts, pm, nparts, recs, n, taken);
@@ -479,7 +521,24 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 		sift_manifest_commit(rel, &e);
 	if (nkeep > 0)
 		(void) sift_pend_del_append(rel, part_id, key_lo, keep, nkeep);
+	(void) sift_mem_used(mem);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	return resolved;
+}
+
+/* The rows are located and the vectors made in a context of their own, under the maintenance budget: what a flush of a bulk delete allocates is gone with it, whatever context the caller is in */
+int
+sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs_in, int n_in, bool fold, const SiftPartSpec *spec)
+{
+	SiftMemTracker mem;
+	MemoryContext old;
+	int			resolved;
+
+	sift_mem_init(&mem, "f2_bulkdelete", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 1, 1);
+	old = MemoryContextSwitchTo(mem.root_cx);
+	resolved = del_bulk(rel, part_id, key_lo, recs_in, n_in, fold, spec, &mem);
+	MemoryContextSwitchTo(old);
+	sift_mem_end(&mem);
 	return resolved;
 }
 

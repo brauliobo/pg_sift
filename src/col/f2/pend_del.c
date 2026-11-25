@@ -117,20 +117,30 @@ sift_pdel_idx_free(SiftPendDelIndex *px)
 	pfree(px);
 }
 
+static bool
+pair_kept(const SiftPendDelRec *recs, int i, int n)
+{
+	return (recs[i].tid & SIFT_PD_TID_UPDATED) != 0 && i + 1 < n && TransactionIdIsNormal(recs[i].xmax) && !GlobalVisCheckRemovableXid(NULL, recs[i].xmax);
+}
+
 int
-sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec *keep, int *nkeep)
+sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec **keep, int *nkeep)
 {
 	int			out = 0;
 
 	*nkeep = 0;
 	for (int i = 0; i < n; i++)
+		*nkeep += 2 * ((recs[i].tid & SIFT_PD_TID_SUCC) == 0 && pair_kept(recs, i, n));
+	*keep = palloc(Max(*nkeep, 1) * sizeof(SiftPendDelRec));
+	*nkeep = 0;
+	for (int i = 0; i < n; i++)
 	{
 		if ((recs[i].tid & SIFT_PD_TID_SUCC) != 0)
 			continue;
-		if ((recs[i].tid & SIFT_PD_TID_UPDATED) != 0 && i + 1 < n && TransactionIdIsNormal(recs[i].xmax) && !GlobalVisCheckRemovableXid(NULL, recs[i].xmax))
+		if (pair_kept(recs, i, n))
 		{
-			keep[(*nkeep)++] = recs[i];
-			keep[(*nkeep)++] = recs[i + 1];
+			(*keep)[(*nkeep)++] = recs[i];
+			(*keep)[(*nkeep)++] = recs[i + 1];
 		}
 		recs[out] = recs[i];
 		recs[out++].tid &= SIFT_PD_TID_MASK;

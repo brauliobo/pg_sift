@@ -95,13 +95,14 @@ granule_rows(const SiftGranuleDesc *dir, uint32 n)
 	return rows;
 }
 
-/* Collects the dead rows the callback of VACUUM names, in the list of a partition; the list leaves for the partition's parts when it holds a quarter of maintenance_work_mem */
+/* Collects the dead rows the callback of VACUUM names, in the list of a partition in cx; the list leaves for the partition's parts when it holds a quarter of the maintenance budget */
 typedef struct DeadList
 {
 	SiftPendDelRec *recs;
 	int			n;
 	int			cap;
 	int			max;
+	MemoryContext cx;
 	Relation	rel;
 	const SiftPartitionEntry *entry;
 	const SiftPartSpec *spec;
@@ -136,7 +137,7 @@ offer_tid(uint64 tid, IndexBulkDeleteCallback cb, void *state, DeadList *dead)
 	if (dead->n == dead->cap)
 	{
 		dead->cap = Min(Max(64, dead->cap * 2), dead->max);
-		dead->recs = dead->recs ? repalloc(dead->recs, dead->cap * sizeof(SiftPendDelRec)) : palloc(dead->cap * sizeof(SiftPendDelRec));
+		dead->recs = dead->recs ? repalloc(dead->recs, dead->cap * sizeof(SiftPendDelRec)) : MemoryContextAlloc(dead->cx, dead->cap * sizeof(SiftPendDelRec));
 	}
 	dead->recs[dead->n++] = rec;
 	if (dead->n == dead->max)
@@ -279,6 +280,9 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 	SiftF2Trace tr;
 	SiftVmDirtySet vm;
 	SiftHeapProbe probe;
+	MemoryContext part_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 bulkdelete part"),
+				partition_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 bulkdelete partition");
+	int			dead_max = (int) Max(64, Min(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 4, 1) / sizeof(SiftPendDelRec), INT_MAX / 2));
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
@@ -294,21 +298,31 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 	for (int i = 0; i < mr.n; i++)
 	{
 		const SiftPartitionEntry *e = &mr.entries[i];
+		MemoryContext old = MemoryContextSwitchTo(partition_cx);
 		SiftPartDesc *parts;
 		SiftCdRemapMap *rm = sift_cdi_remap_load(rel, e);
 		int			np;
-		DeadList	dead = {.max = Max(64, (int) Min((uint64) maintenance_work_mem * 1024 / 4 / sizeof(SiftPendDelRec), INT_MAX / 2)),.rel = rel,.entry = e,.spec = &f->spec,.stats = stats,.vm = &vm,
+		DeadList	dead = {.max = dead_max,.cx = partition_cx,.rel = rel,.entry = e,.spec = &f->spec,.stats = stats,.vm = &vm,
 			.rm = rm,.probe = info->report_progress ? &probe : NULL};
 
 		if (e->l0_slab_blk != InvalidBlockNumber)
 			stats->num_index_tuples += offer_slab(rel, e, &f->spec, callback, callback_state, &dead);
 		parts = sift_manifest_read_parts(rel, e, &np);
 		for (int p = 0; p < np; p++)
+		{
+			MemoryContextSwitchTo(part_cx);
 			stats->num_index_tuples += offer_part(rel, e, &parts[p], callback, callback_state, &dead);
+			MemoryContextSwitchTo(partition_cx);
+			MemoryContextReset(part_cx);
+		}
 		flush_dead(&dead);
-		sift_cd_remap_free(rm);
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(partition_cx);
 		sift_f2_trace_step(1, 0);
 	}
+	MemoryContextDelete(part_cx);
+	MemoryContextDelete(partition_cx);
+	sift_mem_release_os(dead_max * sizeof(SiftPendDelRec));
 	sift_vm_dirty_free(&vm);
 	if (info->report_progress)
 	{

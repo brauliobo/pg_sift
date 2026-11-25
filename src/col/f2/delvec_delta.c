@@ -6,6 +6,7 @@
 #include "col/f2/delvec_delta.h"
 #include "core/f2/meta.h"
 #include "core/hash.h"
+#include "core/memtrack.h"
 #include "core/xlog.h"
 
 #ifndef SIFT_HREF_STANDALONE
@@ -911,60 +912,89 @@ has_tail(Relation rel, const SiftPartDesc *d)
 	return tail;
 }
 
+typedef struct Folds
+{
+	SiftPartDesc *parts;
+	SiftExtent *old_ext;
+	SiftDv	  **dvs;
+	SiftPartDesc **descs;
+	int			n;
+} Folds;
+
+static void
+folds_commit(Relation rel, uint64 part_id, const uint8 *key_lo, Folds *f)
+{
+	uint64		gen = sift_manifest_new_gen(rel, f->n);
+	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.update_parts = f->parts,.nupdate = f->n,.release = f->old_ext,.nrelease = f->n};
+
+	for (int i = 0; i < f->n; i++)
+	{
+		f->dvs[i]->dv_gen = gen + i;
+		f->descs[i] = &f->parts[i];
+	}
+	sift_dv_write_batch(rel, (uint32) part_id, (const SiftDv *const *) f->dvs, f->descs, f->n);
+	sift_manifest_commit(rel, &e);
+	f->n = 0;
+}
+
+static int
+folds_flush(Relation rel, uint64 part_id, const uint8 *key_lo, Folds *f, MemoryContext held)
+{
+	int			n = f->n;
+
+	if (n > 0)
+		folds_commit(rel, part_id, key_lo, f);
+	MemoryContextReset(held);
+	return n;
+}
+
+static void
+folds_add(Relation rel, uint64 part_id, const SiftPartDesc *d, Folds *f, MemoryContext cx)
+{
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	SiftPart   *part = sift_part_open_desc(rel, d, (uint32) part_id);
+	SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
+	uint16	   *grows = palloc(Max(part->hdr.ngranules, 1) * sizeof(uint16));
+
+	for (uint32 g = 0; g < part->hdr.ngranules; g++)
+		grows[g] = dir[g].nrows;
+	f->dvs[f->n] = sift_dv_read(rel, d, (uint32) part_id, grows);
+	f->parts[f->n] = *d;
+	f->old_ext[f->n] = (SiftExtent) {d->dv_blk, d->dv_nblocks};
+	f->n++;
+	MemoryContextSwitchTo(old);
+}
+
 int
 sift_dv_consolidate(Relation rel, uint64 part_id, const uint8 *key_lo)
 {
 	SiftManifestRead mr;
-	SiftPartDesc *parts,
-			   *folded;
-	SiftExtent *rel_ext;
-	SiftDv	  **dvs;
-	SiftPartDesc **descs;
+	SiftPartDesc *parts;
+	SiftMemTracker mem;
+	Folds		f;
 	int			np,
-				nf = 0;
-	uint64		gen;
-	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo};
+				total = 0;
 
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	if (mr.n == 0 || mr.entries[0].part_id != part_id)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
 	parts = sift_manifest_read_parts(rel, &mr.entries[0], &np);
-	folded = palloc(Max(np, 1) * sizeof(SiftPartDesc));
-	rel_ext = palloc(Max(np, 1) * sizeof(SiftExtent));
-	dvs = palloc(Max(np, 1) * sizeof(SiftDv *));
-	descs = palloc(Max(np, 1) * sizeof(SiftPartDesc *));
+	f = (Folds) {palloc(Max(np, 1) * sizeof(SiftPartDesc)), palloc(Max(np, 1) * sizeof(SiftExtent)),
+				 palloc(Max(np, 1) * sizeof(SiftDv *)), palloc(Max(np, 1) * sizeof(SiftPartDesc *)), 0};
+	sift_mem_init(&mem, "f2_dv_consolidate", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 1, 1);
 	for (int p = 0; p < np; p++)
-		if (has_tail(rel, &parts[p]))
-		{
-			SiftPart   *part = sift_part_open_desc(rel, &parts[p], (uint32) part_id);
-			SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
-			uint16	   *grows = palloc(Max(part->hdr.ngranules, 1) * sizeof(uint16));
-
-			for (uint32 g = 0; g < part->hdr.ngranules; g++)
-				grows[g] = dir[g].nrows;
-			dvs[nf] = sift_dv_read(rel, &parts[p], (uint32) part_id, grows);
-			folded[nf] = parts[p];
-			rel_ext[nf] = (SiftExtent) {parts[p].dv_blk, parts[p].dv_nblocks};
-			nf++;
-		}
-	if (nf > 0)
 	{
-		gen = sift_manifest_new_gen(rel, nf);
-		for (int i = 0; i < nf; i++)
-		{
-			dvs[i]->dv_gen = gen + i;
-			descs[i] = &folded[i];
-		}
-		sift_dv_write_batch(rel, (uint32) part_id, (const SiftDv *const *) dvs, descs, nf);
-		e.update_parts = folded;
-		e.nupdate = nf;
-		e.release = rel_ext;
-		e.nrelease = nf;
-		sift_manifest_commit(rel, &e);
+		if (!has_tail(rel, &parts[p]))
+			continue;
+		folds_add(rel, part_id, &parts[p], &f, mem.root_cx);
+		if (sift_mem_pressure(&mem, true) != SIFT_MEM_OK)
+			total += folds_flush(rel, part_id, key_lo, &f, mem.root_cx);
 	}
+	total += folds_flush(rel, part_id, key_lo, &f, mem.root_cx);
+	sift_mem_end(&mem);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	return nf;
+	return total;
 }
 
 #endif							/* !SIFT_HREF_STANDALONE */
