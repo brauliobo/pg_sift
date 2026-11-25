@@ -384,8 +384,6 @@ undeclared_doc_walker(Node *n, const V6Plan *p)
 		return expression_tree_walker(n, undeclared_doc_walker, (void *) p);
 	if (p->ops->jsonb == NULL || p->ops->jsonb->path_declared == NULL)
 		return false;
-	if (!p->ops->jsonb->exact_values && !sift_agg_unified_only())
-		return true;
 	return path == NIL || !p->ops->jsonb->path_declared(p->relid, p->is_table, host_attno(p, doc->varattno), path);
 }
 

@@ -304,8 +304,7 @@ v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
 	SiftSrcStats st;
-	/* the legacy planner prices Format 1 on its own, so v6 does not undercut it with the card view unless it is the only planner */
-	const bool	priced =!is_table && sift_agg_unified_only();
+	const bool	priced = !is_table;
 
 	sift_v1_reader_of(is_table)->stats(r.rel, &st);
 	*out = (SiftStoreStats) {.live_rows = r.heap->rd_rel->reltuples >= 0 ? r.heap->rd_rel->reltuples : st.nrows,

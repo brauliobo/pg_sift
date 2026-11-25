@@ -26,6 +26,7 @@
 #include "agg/v6/v6_lateral_plan.h"
 #include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_pg_expr.h"
+#include "agg/v6/v6_unique_key.h"
 #include "core/compat.h"
 
 /* the query levels above the sub-select that its expressions read: its own columns are level 0 */
@@ -193,7 +194,7 @@ unique_key(const RangeTblEntry *rte, const Ties *t)
 
 	for (int k = 0; k < nkeys; k++)
 		atts[k] = ((const Var *) list_nth(t->keys, k))->varattno;
-	return sift_agg_unique_key(rte->relid, nkeys, 0, atts, NULL);
+	return sift_v6_unique_key(rte->relid, nkeys, 0, atts, NULL);
 }
 
 /* the column is read above the sub-select, or by a condition of its own relation (which the plan of the dimension applies to the rows of a key) */

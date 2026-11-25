@@ -384,7 +384,7 @@ array_column(const IndexOptInfo *ix, const Expr *array, bool exprs)
 static int
 rte_column(const V6Plan *p, const SiftV6ElemRte *rte, const char **key)
 {
-	const bool	exprs = p->ops->jsonb != NULL && (p->ops->jsonb->exact_values || sift_agg_unified_only());
+	const bool	exprs = p->ops->jsonb != NULL;
 	int			i = rte->key != NULL ? array_column(p->index, rte->base, exprs) : -1;
 
 	*key = rte->key;

@@ -16,7 +16,6 @@
 #include "utils/numeric.h"
 
 #include "agg/kern6.h"
-#include "agg/plan_exists_int.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_unnest_path.h"
 

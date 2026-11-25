@@ -7,7 +7,6 @@
 #include "utils/memutils.h"
 
 #include "agg/agg.h"
-#include "agg/spec/spec.h"
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/vexpr_str.h"

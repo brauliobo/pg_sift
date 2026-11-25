@@ -30,6 +30,9 @@
 #define SIFT_LIMITS(X) \
 	X(merge_fanin, "MERGE_MAX_FANIN", "col/v1/maint/maint_int.h", 64, "segments", \
 	  "segments a step of a merge of sift_col segments opens at once (fewer when maintenance_work_mem holds fewer inputs of 192 kB)", "the step merges the cheapest window of them; a forced merge goes on in passes", "maintenance_work_mem", 0) \
+	X(skip_pending, "GORD_PEND_MAX", "col/v1/amscan/ord_merge_int.h", 1048576, "entries", \
+	  "the entries an OFFSET over a global order leaves to the heap to confirm, and the entries of one group of an order read group after group that it checks at once (12 bytes each); a longer one is walked", \
+	  "the entries the skip leaves are read one by one, as without the skip (the rows are the same)", "-", 1) \
 	X(gord_seek_pct, "SIFT_CGORD_SEEK_MAX_PCT", "col/v1/gorder.h", 115, "percent", \
 	  "the bytes a seekable chunk of an order array (a fence key every 32 entries) may take, against the plain chunk of the same entries: the writer keeps the seekable form of a chunk up to this; 0 writes none", \
 	  "the chunk is written plain and read by the old walk (the rows are the same)", "-", 1) \
@@ -135,6 +138,9 @@
 	X(eset_rows, "SIFT_ESET_ROWS", "col/v1/spool.h", SIFT_ESET_ROWS, "entries", \
 	  "the entries of one order array that a segment writer keeps in memory (16 bytes each, a leaf holds the entries of its values and of its NULL rows apart) before it writes them to a temp file as a sorted run", \
 	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk)", "-", 1) \
+	X(wide_dict_bytes, "-", "table/v1/v1_tbl_reader_read.c", 1073741823, "bytes", \
+	  "the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group", \
+	  "ERROR 54000 naming the column", "-", 1) \
 	X(max_segments, "SIFT_DIR_POLICY_MAX", "core/page.h", SIFT_DIR_POLICY_MAX, "segments", \
 	  "directory entries a writer of a sift or sift_col index keeps it within (a sift_table has sift.table_max_segments for a test); a directory of more is a chain of pages, which holds 32,768", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \

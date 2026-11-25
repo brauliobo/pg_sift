@@ -292,11 +292,11 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 	return NIL;
 }
 
-/* the format reads the values of the keys of a document as the heap does, or the statement runs on the unified scan alone, where a value no leaf holds is refused */
+/* the format reads the values of the keys of a document as the heap does, or the scan runs alone, where a value no leaf holds is refused */
 bool
 sift_v6_values_exact(const SiftV6Rel *rel)
 {
-	return rel->ops != NULL && rel->ops->jsonb != NULL && (rel->ops->jsonb->exact_values || sift_agg_unified_only());
+	return rel->ops != NULL && rel->ops->jsonb != NULL;
 }
 
 bool

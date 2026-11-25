@@ -15,6 +15,7 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_exists_plan.h"
 #include "agg/v6/v6_lateral_plan.h"
+#include "agg/v6/v6_unique_key.h"
 
 typedef struct Exists
 {
@@ -304,7 +305,7 @@ sift_v6_exists_main_unique(PlannerInfo *root, const SiftV6JoinShape *sh)
 				return false;
 			atts[k] = jd->key[k]->varattno;
 		}
-		if (rte->rtekind != RTE_RELATION || !sift_agg_unique_key(rte->relid, jd->nkeys, 0, atts, NULL))
+		if (rte->rtekind != RTE_RELATION || !sift_v6_unique_key(rte->relid, jd->nkeys, 0, atts, NULL))
 			return false;
 	}
 	return true;
