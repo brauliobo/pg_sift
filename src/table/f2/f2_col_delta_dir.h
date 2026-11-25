@@ -19,7 +19,7 @@
 #define SIFT_CDDIR_VER					1
 #define SIFT_CDDIR_MAX_ENTRIES			250
 #define SIFT_CDDIR_FLAT_PAGES			4		/* a chain of this many pages or fewer has no directory */
-#define SIFT_CDDIR_SOFT_FOLD_PAGES		256		/* 2 MB of a partition: the maintenance worker folds it, no update waits for it */
+#define SIFT_CDDIR_SOFT_FOLD_PAGES		SIFT_COL_DELTA_FOLD_PAGES	/* the maintenance worker folds the chain, no update waits for it */
 
 #define SIFT_CDD_FLAG_TID_ONLY			(UINT16_C(1) << 0)	/* the page holds address changes only (SIFT_CD_ATT_TID_REMAP) */
 #define SIFT_CDD_FLAG_HAS_BATCH			(UINT16_C(1) << 1)	/* the page holds SIFT_CDENT_FLAG_BATCH records */

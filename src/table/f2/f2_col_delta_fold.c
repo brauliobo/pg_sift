@@ -283,6 +283,18 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 	return pl;
 }
 
+/* No record folds, goes or moves to another row: the parts rewritten have none, and writing the chain again would copy every page of it for nothing */
+static bool
+chain_stays_as_is(const SiftColDeltaCompactPlan *plan)
+{
+	if (plan->nfolds > 0 || plan->ndropped > 0)
+		return false;
+	for (int i = 0; i < plan->ncarry; i++)
+		if (plan->carry[i].remap)
+			return false;
+	return true;
+}
+
 static void
 fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, const SiftPartDesc *out, int nout, SiftManifestEdit *edit, SiftExtent **release,
 			int *nrelease, FullTransactionId *stripped)
@@ -308,6 +320,12 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 		return;
 	sift_xid_horizon_init(&f->hc, f->hc.horizon);
 	sift_col_delta_compact_plan(&chain, f->gens, f->ngens, live, nparts, &f->hz, f->nrecords, &plan);
+	if (chain_stays_as_is(&plan))
+	{
+		sift_col_delta_compact_plan_free(&plan);
+		sift_col_delta_chain_free(&chain);
+		return;
+	}
 	want = wanted_tids(&plan, &nwant);
 	pl = place_rows(f->rel, entry->part_id, out, nout, want, nwant);
 	remap = (SiftColDeltaRemap) {.ctx = &pl,.locate = placed_at};
@@ -348,14 +366,15 @@ sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const Si
 
 	if (!sift_col_delta_load_chain(rel, entry, 0, &chain))
 		return ngens;
-	/* STOR[STOR-TBL-09]: col_delta fold write-amp gate (avoid full L2 part rewrite below FOLD_PAGES=4 threshold) */
-	if (!aggressive && chain.npages < SIFT_COL_DELTA_FOLD_PAGES)
+	sift_xid_horizon_init(&hc, horizon);
+	sift_col_delta_compact_plan(&chain, live, nparts, live, nparts, &hz, UINT32_MAX, &plan);
+	/* STOR[STOR-TBL-09]: a short chain is folded only when the fold empties it: the parts it patches are rewritten once and the partition has no chain left */
+	if (!aggressive && chain.npages < SIFT_COL_DELTA_FOLD_PAGES && plan.ncarry > 0)
 	{
+		sift_col_delta_compact_plan_free(&plan);
 		sift_col_delta_chain_free(&chain);
 		return ngens;
 	}
-	sift_xid_horizon_init(&hc, horizon);
-	sift_col_delta_compact_plan(&chain, live, nparts, live, nparts, &hz, UINT32_MAX, &plan);
 	/* a part in object storage is not rewritten: its deltas stay in the chain and are applied when it is read */
 	sift_u64set_init(&listed, nparts + ngens + plan.nfolds);
 	for (int k = 0; k < ngens; k++)
