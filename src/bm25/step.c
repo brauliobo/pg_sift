@@ -222,7 +222,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
  * The live docs of a write buffer go through a tuplesort, so that promoting a segment of any size stays within
  * the maintenance memory (the excess spills to temporary files). A doc is packed as a bytea: its key and arrival number
  * first, big-endian, so that byte order is key order and the first record of a repeated tid comes first, then its
- * length, its terms' lengths, frequencies and hashes, then the bytes of the terms.
+ * length, its terms' lengths, frequencies and hashes, then the bytes of the terms (none when the terms come from its row).
  */
 #define PACK_HEAD	(VARHDRSZ + sizeof(uint64) + sizeof(uint32) + sizeof(uint16) + sizeof(uint32))
 
@@ -232,17 +232,19 @@ typedef struct DocPacker
 	Size		cap;
 } DocPacker;
 
+/* terms: the doc keeps its terms; a doc whose terms come from its row (DocText) is packed without them */
 static bytea *
-pack_doc(DocPacker *pk, SiftWbufDoc *d, uint32 seq)
+pack_doc(DocPacker *pk, SiftWbufDoc *d, uint32 seq, bool terms)
 {
 	Size		bytes = 0,
 				size;
+	uint32		nterms = terms ? d->nterms : 0;
 	uint64		key = pg_hton64(sift_key_from_tid(&d->tid));
 	char	   *p;
 
-	for (uint32 i = 0; i < d->nterms; i++)
+	for (uint32 i = 0; i < nterms; i++)
 		bytes += d->len[i];
-	size = PACK_HEAD + d->nterms * PACK_TERM + bytes;
+	size = PACK_HEAD + nterms * PACK_TERM + bytes;
 	if (size > pk->cap)
 		pk->buf = repalloc(pk->buf, pk->cap = size * 2);
 	seq = pg_hton32(seq);
@@ -250,9 +252,9 @@ pack_doc(DocPacker *pk, SiftWbufDoc *d, uint32 seq)
 	memcpy(p, &key, sizeof(key));
 	memcpy(p += sizeof(key), &seq, sizeof(seq));
 	memcpy(p += sizeof(seq), &d->dl, sizeof(d->dl));
-	memcpy(p += sizeof(d->dl), &d->nterms, sizeof(d->nterms));
-	p += sizeof(d->nterms);
-	for (uint32 i = 0; i < d->nterms; i++)
+	memcpy(p += sizeof(d->dl), &nterms, sizeof(nterms));
+	p += sizeof(nterms);
+	for (uint32 i = 0; i < nterms; i++)
 	{
 		*p++ = d->len[i];
 		*p++ = d->tf[i];
@@ -266,7 +268,7 @@ pack_doc(DocPacker *pk, SiftWbufDoc *d, uint32 seq)
 
 /* Sorts the live docs of a write buffer by key */
 static Tuplesortstate *
-sort_docs(Relation index, const SiftSegEntry *seg)
+sort_docs(Relation index, const SiftSegEntry *seg, const DocText *dt)
 {
 	SiftWbufReader *r = sift_wbuf_open(index, seg, CurrentMemoryContext, NULL, NULL);
 	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, sift_mem_maint_kb() / 2,
@@ -277,7 +279,7 @@ sort_docs(Relation index, const SiftSegEntry *seg)
 
 	while (sift_wbuf_next(r, &d))
 		if (!d.deleted)
-			tuplesort_putdatum(sort, PointerGetDatum(pack_doc(&pk, &d, seq++)), false);
+			tuplesort_putdatum(sort, PointerGetDatum(pack_doc(&pk, &d, seq++, dt == NULL)), false);
 	sift_wbuf_close(r);
 	pfree(pk.buf);
 	tuplesort_performsort(sort);
@@ -342,10 +344,9 @@ inv_create_for(Relation index, Size budget, MemoryContext cx, bool positions)
 
 /* Writes the sorted docs as one immutable segment, but for those whose row is gone (dead for every snapshot); false when there are none */
 static bool
-write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen, SiftSegEntry *entry)
+write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, DocText *dt, uint64 gen, SiftSegEntry *entry)
 {
 	SiftScoreRef ref = score_ref(index);
-	DocText    *dt = sift_doctext_open(index);
 	SiftInvBuf *inv = inv_create_for(index, inv_budget(sort), CurrentMemoryContext, dt != NULL);
 	RunList		runs = {.run = palloc(sizeof(SiftRun *)),.max = 1};
 	DocCursor	c = {.sort = sort,.terms = palloc(sizeof(SiftTermFreq)),.maxterms = 1};
@@ -405,6 +406,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 
 	sift_mem_init_sub(&mt_bm25_promote, "bm25_promote", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	Tuplesortstate *sort;
+	DocText    *dt = sift_doctext_open(index);
 	SiftSegEntry neu;
 	bool		any;
 	SiftExtent *pages;
@@ -415,9 +417,9 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	sift_lane_flag_sealed(index, sealed);
 	pages = sift_lane_extents(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
-	sort = sort_docs(index, sealed);
+	sort = sort_docs(index, sealed, dt);
 	sift_mem_assert_within(&mt_bm25_promote);
-	any = write_docs(index, wt, sort, sift_store_new_gen(index), &neu);
+	any = write_docs(index, wt, sort, dt, sift_store_new_gen(index), &neu);
 	sift_mem_assert_within(&mt_bm25_promote);
 	tuplesort_end(sort);
 	sift_wt_finish(wt);
