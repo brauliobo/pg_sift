@@ -70,3 +70,20 @@ sift_sw_write_file(SiftStreamWriter *sw, BufFile *file, uint64 len)
 	}
 	pfree(buf);
 }
+
+void
+sift_sw_write_spool(SiftStreamWriter *sw, SiftSpool *sp)
+{
+	uint64		len = sift_spool_len(sp);
+	char	   *buf = palloc(Min(len, SPOOL_CHUNK));
+
+	sift_spool_rewind(sp);
+	for (uint64 n; len > 0; len -= n)
+	{
+		n = Min(len, SPOOL_CHUNK);
+		sift_spool_read(sp, buf, n);
+		sift_sw_write(sw, buf, n);
+	}
+	pfree(buf);
+	sift_spool_close(sp);
+}

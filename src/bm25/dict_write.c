@@ -13,10 +13,10 @@ sift_dict_writer_begin(SiftStreamWriter *sw, bool packed, bool pos2)
 	w->sw = sw;
 	w->packed = packed;
 	w->pos2 = pos2;
-	w->spool = BufFileCreateTemp(false);
+	w->spool = sift_spool_begin();
 	w->post_end = sift_sw_tell(sw);
 	w->prevlen = -1;
-	w->idx = BufFileCreateTemp(false);
+	w->idx = sift_spool_begin();
 	w->maxroot = 64;
 	w->root = palloc(w->maxroot * sizeof(uint64));
 	initStringInfo(&w->blk);
@@ -40,8 +40,8 @@ flush_block(SiftDictWriter *w)
 	hdr[0] = len & 0xff;
 	hdr[1] = len >> 8;
 	hdr[2] = w->nblk | (w->packed ? SIFT_DICT_PACKED : 0) | (w->pos2 ? SIFT_DICT_POS2 : 0);
-	BufFileWrite(w->spool, hdr, p - hdr);
-	BufFileWrite(w->spool, w->blk.data, w->blk.len);
+	sift_spool_write(w->spool, hdr, p - hdr);
+	sift_spool_write(w->spool, w->blk.data, w->blk.len);
 	w->dict_len += len;
 	resetStringInfo(&w->blk);
 	w->nblk = 0;
@@ -153,7 +153,7 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 			}
 			w->root[w->nidx / SIFT_DICT_ROOT_FANOUT] = e.prefix;
 		}
-		BufFileWrite(w->idx, &e, sizeof(e));
+		sift_spool_write(w->idx, &e, sizeof(e));
 		w->nidx++;
 		w->blk_post = ALIGN4(w->post_end);
 	}
@@ -184,12 +184,10 @@ sift_dict_writer_finish(SiftDictWriter *w, SiftSegHeaderData *hdr)
 	hdr->nterms = w->nterms;
 	hdr->sections[SIFT_SEC_DICT].off = sift_sw_tell(w->sw);
 	hdr->sections[SIFT_SEC_DICT].len = w->dict_len;
-	sift_sw_write_file(w->sw, w->spool, w->dict_len);
-	BufFileClose(w->spool);
+	sift_sw_write_spool(w->sw, w->spool);
 	hdr->sections[SIFT_SEC_DICTIDX].off = sift_sw_tell(w->sw);
 	hdr->sections[SIFT_SEC_DICTIDX].len = w->nidx * sizeof(SiftDictIdx);
-	sift_sw_write_file(w->sw, w->idx, w->nidx * sizeof(SiftDictIdx));
-	BufFileClose(w->idx);
+	sift_sw_write_spool(w->sw, w->idx);
 	hdr->dictroot_off = sift_sw_tell(w->sw);
 	hdr->dictroot_n = (w->nidx + SIFT_DICT_ROOT_FANOUT - 1) / SIFT_DICT_ROOT_FANOUT;
 	sift_sw_write(w->sw, w->root, hdr->dictroot_n * sizeof(uint64));

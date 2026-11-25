@@ -38,6 +38,7 @@ PG_FUNCTION_INFO_V1(sift_test_raise);
 PG_FUNCTION_INFO_V1(sift_test_raise_extending);
 PG_FUNCTION_INFO_V1(sift_test_live_clear);
 PG_FUNCTION_INFO_V1(sift_test_live2_clear);
+PG_FUNCTION_INFO_V1(sift_test_spool);
 PG_FUNCTION_INFO_V1(sift_test_write);
 PG_FUNCTION_INFO_V1(sift_test_seghdr);
 PG_FUNCTION_INFO_V1(sift_test_churn);
@@ -479,7 +480,7 @@ sift_test_live2_clear(PG_FUNCTION_ARGS)
 				nslots = 4200;
 	uint64	   *reg;
 	uint8	   *dirty;
-	BufFile    *rows;
+	SiftSpool  *rows;
 	SiftLive	l = {.index = index, .nsb = nsb, .nbits = 64};
 	SiftLive2HeaderData h;
 	SiftWriteTarget *wt;
@@ -492,7 +493,7 @@ sift_test_live2_clear(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift._test_live2_clear: nsb must be 1 to 1000000 and sbidx below it")));
 	reg = palloc0((nsb + 1) * sizeof(uint64));
 	dirty = palloc0((nsb + 7) / 8);
-	rows = BufFileCreateTemp(false);
+	rows = sift_spool_begin();
 	l.index = index;
 	l.nsb = nsb;
 	MAINT_LOCK(index, ShareLock);
@@ -500,7 +501,6 @@ sift_test_live2_clear(PG_FUNCTION_ARGS)
 	wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 	sift_live2_write(wt, l.gen, nsb, nslots, reg, rows, &l.first, &l.npages);
 	sift_wt_finish(wt);
-	BufFileClose(rows);
 	sift_live_copy(&l, 0, sizeof(h), (uint8 *) &h);
 	bit = (h.tbl_off + (uint64) nslots * sizeof(uint32)) * 8 - 1;
 	sift_live2_clear(&l, sbidx, &bit, 1, 7);
@@ -523,6 +523,38 @@ sift_test_live2_clear(PG_FUNCTION_ARGS)
 	values[3] = Int64GetDatum(h.dead_dl);
 	relation_close(index, RowExclusiveLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
+}
+
+/*
+ * sift._test_spool(nbytes): a spool of nbytes of a counting pattern, written in chunks of 1 to 777 bytes and read back in chunks of 513: whether it reads back
+ * the same (a spool beyond its share of maintenance_work_mem is a temporary file, one within it takes none)
+ */
+Datum
+sift_test_spool(PG_FUNCTION_ARGS)
+{
+	uint64		total = PG_GETARG_INT64(0);
+	SiftSpool  *sp = sift_spool_begin();
+	uint8		buf[777];
+	bool		same;
+
+	for (uint64 at = 0, n; at < total; at += n)
+	{
+		n = Min(total - at, 1 + at % sizeof(buf));
+		for (uint64 i = 0; i < n; i++)
+			buf[i] = (at + i) * 31 + 7;
+		sift_spool_write(sp, buf, n);
+	}
+	same = sift_spool_len(sp) == total;
+	sift_spool_rewind(sp);
+	for (uint64 at = 0, n; at < total; at += n)
+	{
+		n = Min(total - at, 513);
+		sift_spool_read(sp, buf, n);
+		for (uint64 i = 0; i < n; i++)
+			same &= buf[i] == (uint8) ((at + i) * 31 + 7);
+	}
+	sift_spool_close(sp);
+	PG_RETURN_BOOL(same);
 }
 
 /*

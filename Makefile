@@ -540,6 +540,7 @@ TESTING_REGRESS += compat_v1_vacuum_cap
 TESTING_REGRESS += core_radix_sort
 TESTING_REGRESS += core_range
 TESTING_REGRESS += core_ring_wrap
+TESTING_REGRESS += core_spool
 TESTING_REGRESS += core_tidbridge
 TESTING_REGRESS += errors_hints
 TESTING_REGRESS += ext_recreate

@@ -38,7 +38,7 @@ struct SiftSegmentWriter
 	uint32		maxsb;
 	/* format 2: the live rows of every SB, spooled, and where each region starts (by SB from sb_lo) */
 	int			fmt;
-	BufFile    *liverows;
+	SiftSpool  *liverows;
 	uint64	   *reg;
 	uint32		nreg;
 	uint32		maxreg;
@@ -46,13 +46,13 @@ struct SiftSegmentWriter
 	SiftAttrSrc attr;
 	int64	   *av;				/* [col][page][MAXOFF] */
 	uint8	   *as;				/* the SiftAttrState of each */
-	BufFile    *arecs[SIFT_ATTR_MAXCOLS];	/* the records of each column */
+	SiftSpool  *arecs[SIFT_ATTR_MAXCOLS];	/* the records of each column */
 	uint64		arec_len[SIFT_ATTR_MAXCOLS];
 	SiftAttrRef *adir;			/* [SB][col] */
 	/* the length of each field of every doc (SIFT_SEGFMT_FIELDDL): the rows of the SB being accumulated, the records of the SBs flushed (SB by SB, field by field) and where they are */
 	int			nf;
 	uint16	   *fdl;			/* [field][page][MAXOFF] */
-	BufFile    *frecs;
+	SiftSpool  *frecs;
 	uint64		frec_len;
 	SiftFieldDlRef *fdir;		/* [SB][field] */
 	SiftFieldDlTrailer ft;
@@ -95,7 +95,7 @@ sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, Memory
 	w->sbdir = palloc(w->maxsb * sizeof(SiftDocSBRef));
 	if (w->fmt >= SIFT_SEGFMT_LIVEROWS)
 	{
-		w->liverows = BufFileCreateTemp(false);
+		w->liverows = sift_spool_begin();
 		w->maxreg = 64;
 		w->reg = palloc(w->maxreg * sizeof(uint64));
 	}
@@ -138,9 +138,9 @@ write_region(SiftSegmentWriter *w, const uint64 *om, int np)
 	}
 	/* entries up to idx are the end of the region before; idx + 1 is the end of this one */
 	w->reg[idx + 1] = w->reg[idx] + sizeof(r) + (uint64) np * r.w;
-	BufFileWrite(w->liverows, &r, sizeof(r));
+	sift_spool_write(w->liverows, &r, sizeof(r));
 	for (; k < np; k++)
-		BufFileWrite(w->liverows, om + SIFT_OFFMASK_WORDS * k, r.w);
+		sift_spool_write(w->liverows, om + SIFT_OFFMASK_WORDS * k, r.w);
 }
 
 /* STOR[STOR-BM25-07]: DOCMAP per-SB dl_code (1 doc dl>255 doubles 256-pg SB dl rows to 16b; v7 per-page) */
@@ -190,7 +190,7 @@ sift_segw_fields(SiftSegmentWriter *w, int nfields)
 	w->nf = nfields;
 	w->fmt = Max(w->fmt, SIFT_SEGFMT_FIELDDL);
 	w->fdl = palloc0((Size) nfields * SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
-	w->frecs = BufFileCreateTemp(false);
+	w->frecs = sift_spool_begin();
 	w->fdir = palloc(w->maxsb * nfields * sizeof(SiftFieldDlRef));
 	w->ft = (SiftFieldDlTrailer) {.magic = SIFT_FIELDDL_MAGIC,.nfields = nfields};
 	MemoryContextSwitchTo(old);
@@ -222,7 +222,7 @@ flush_fields(SiftSegmentWriter *w)
 			if (maxdl > 0)
 			{
 				bytes = dl_row_bytes(row, w->maxoff[p], ref.dlcode, buf, &len);
-				BufFileWrite(w->frecs, bytes, len);
+				sift_spool_write(w->frecs, bytes, len);
 				ref.len += len;
 			}
 			memset(row, 0, w->maxoff[p] * sizeof(uint16));
@@ -245,7 +245,7 @@ sift_segw_attrs(SiftSegmentWriter *w, const SiftAttrSrc *src)
 	w->av = palloc(n * sizeof(int64));
 	w->as = palloc0(n);
 	for (int c = 0; c < src->ncols; c++)
-		w->arecs[c] = BufFileCreateTemp(false);
+		w->arecs[c] = sift_spool_begin();
 	w->adir = palloc(w->maxsb * src->ncols * sizeof(SiftAttrRef));
 	MemoryContextSwitchTo(old);
 }
@@ -360,8 +360,8 @@ flush_attr(SiftSegmentWriter *w)
 		}
 		pad = ALIGN4(total) - total;
 		w->adir[(Size) w->nsb * w->attr.ncols + c] = (SiftAttrRef) {w->arec_len[c], (uint32) total, 0};
-		BufFileWrite(w->arecs[c], rec, total);
-		BufFileWrite(w->arecs[c], "\0\0\0", pad);
+		sift_spool_write(w->arecs[c], rec, total);
+		sift_spool_write(w->arecs[c], "\0\0\0", pad);
 		w->arec_len[c] += total + pad;
 		pfree(rec);
 	}
@@ -475,15 +475,9 @@ postw_open(SiftSegmentWriter *w)
 
 /* Appends the spooled records of one kind to the stream, where the directory entries that point into them (ref, each of stride bytes) get their offsets */
 static void
-copy_records(SiftSegmentWriter *w, BufFile *file, uint64 *start, uint64 len)
+copy_records(SiftSegmentWriter *w, SiftSpool *records, uint64 *start, uint64 len)
 {
-	char		buf[4096];
-	size_t		got;
-
-	SIFT_INVARIANT(BufFileSeek(file, 0, 0, SEEK_SET) == 0, "sift: could not rewind the records of a segment");
-	while ((got = BufFileRead(file, buf, sizeof(buf))) > 0)
-		sift_sw_write(w->sw, buf, got);
-	BufFileClose(file);
+	sift_sw_write_spool(w->sw, records);
 	*start += len;
 }
 
@@ -677,7 +671,6 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	{
 		sift_live2_write(w->wt, w->gen, w->hdr.sb_hi - w->hdr.sb_lo + 1, sift_dict_writer_nslots(w->dw), w->reg, w->liverows,
 						 &w->hdr.live_first, &w->hdr.live_npages);
-		BufFileClose(w->liverows);
 		pfree(w->reg);
 		w->liverows = NULL;
 	}

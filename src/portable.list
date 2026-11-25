@@ -33,6 +33,7 @@ bm25/walk.c
 bm25/fielddl.c
 bm25/livestream.c
 core/live.c
+core/spool.c
 bm25/runs/runs.c
 bm25/runs/cuts.c
 bm25/runs/merge.c
@@ -128,6 +129,7 @@ bm25/segment.h
 bm25/segment_int.h
 core/range.h
 core/span.h
+core/spool.h
 core/store.h
 core/varint.h
 core/visibility.h

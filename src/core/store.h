@@ -89,6 +89,7 @@
 #include "core/range.h"
 #include "core/xlog.h"
 #include "core/damage.h"
+#include "core/spool.h"
 
 #ifdef SIFT_TESTING
 /*
@@ -566,6 +567,8 @@ extern uint64 sift_sw_tell(const SiftStreamWriter *sw);
 extern void sift_sw_write(SiftStreamWriter *sw, const void *data, size_t len);
 /* The first len bytes of a temporary file (the spool of a section written out of order), from its start */
 extern void sift_sw_write_file(SiftStreamWriter *sw, BufFile *file, uint64 len);
+/* All of a spool, which is closed after */
+extern void sift_sw_write_spool(SiftStreamWriter *sw, SiftSpool *sp);
 
 /*
  * Zero-pads (align: power of two <= SIFT_SIMD_ALIGN) so the next byte's

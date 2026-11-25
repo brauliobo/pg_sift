@@ -389,7 +389,7 @@ emit_zeros(LiveEmit *e, uint64 len)
 }
 
 void
-sift_live2_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint32 nslots, const uint64 *reg, BufFile *rows,
+sift_live2_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint32 nslots, const uint64 *reg, SiftSpool *rows,
 				 BlockNumber *first, uint32 *npages)
 {
 	SiftLive2HeaderData h = {.nsb = nsb,.nslots = nslots};
@@ -405,13 +405,14 @@ sift_live2_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint32 nslots, con
 	emit(&e, &h, sizeof(h));
 	emit_zeros(&e, dirty_len);
 	emit(&e, reg, (uint64) (nsb + 1) * sizeof(uint64));
-	SIFT_INVARIANT(BufFileSeek(rows, 0, 0, SEEK_SET) == 0, "sift: could not rewind a spool file");
+	sift_spool_rewind(rows);
 	for (uint64 left = reg[nsb], n; left > 0; left -= n)
 	{
 		n = Min(left, SIFT_PAGE_PAYLOAD);
-		BufFileReadExact(rows, buf, n);
+		sift_spool_read(rows, buf, n);
 		emit(&e, buf, n);
 	}
+	sift_spool_close(rows);
 	emit_zeros(&e, (uint64) nslots * sizeof(uint32));
 	if (e.used > 0)
 		emit_flush(&e);

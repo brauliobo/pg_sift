@@ -100,9 +100,9 @@ extern void sift_live_repair(const SiftLive *l, const SiftLiveUnit *units, uint3
 
 /*
  * Writes the LIVE run of a new segment of format 2, all docs live and no SB dirty: reg[nsb + 1] are the region starts and the end
- * (reg[nsb] bytes long), rows the spool file holding the regions, nslots the terms with a slot (their counters are zero)
+ * (reg[nsb] bytes long), rows the spool holding the regions (closed after), nslots the terms with a slot (their counters are zero)
  */
-extern void sift_live2_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint32 nslots, const uint64 *reg, BufFile *rows,
+extern void sift_live2_write(SiftWriteTarget *wt, uint64 gen, uint32 nsb, uint32 nslots, const uint64 *reg, SiftSpool *rows,
 							 BlockNumber *first, uint32 *npages);
 
 /* The header, checked against the run (ERRCODE_INDEX_CORRUPTED when the run cannot hold what it lists) */

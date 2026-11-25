@@ -21,7 +21,7 @@ struct SiftDictWriter
 	SiftStreamWriter *sw;
 	bool		packed;			/* blocks of segment format 3 (bm25/dict.h) */
 	bool		pos2;			/* and of format 4 */
-	BufFile    *spool;			/* DICT bytes */
+	SiftSpool  *spool;			/* DICT bytes */
 	uint64		dict_len;
 	StringInfoData blk;			/* entries of the open block */
 	int			nblk;
@@ -31,7 +31,7 @@ struct SiftDictWriter
 	int			prevlen;
 	uint64		nterms;
 	uint32		nslots;			/* terms that are not inline */
-	BufFile    *idx;			/* DICTIDX bytes: one entry per block */
+	SiftSpool  *idx;			/* DICTIDX bytes: one entry per block */
 	uint64		nidx;
 	uint64	   *root;			/* the first prefix of every SIFT_DICT_ROOT_FANOUT entries */
 	uint64		maxroot;
