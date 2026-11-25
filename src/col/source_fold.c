@@ -388,19 +388,25 @@ take_gate(SiftSrcFold *f)
 }
 
 static void
+derive_rows(void *arg, int k, const SiftBatchSel *bs)
+{
+	SiftSrcFold *f = arg;
+	const FoldDerived *dv = &f->derived[k];
+
+	if (dv->d->kind == SVD_PG_EXPR)
+		sift_v6_pgexpr_derive(dv->pg, dv->pgin, bs, &f->derived[k].out);
+	else if (dv->d->kind == SVD_NUM_EXPR)
+		sift_vn_derive(dv->d, dv->cond, dv->prefix ? &dv->prefix->out.vec : NULL, dv->prefix ? dv->prefix->d->ncond : 0, bs, &f->derived[k].out);
+	else
+		sift_vx_derive(dv->d, dv->src, dv->cond, bs, &f->derived[k].out);
+}
+
+static void
 derive_columns(SiftSrcFold *f)
 {
-	for (int k = 0; k < f->nderived; k++)
-	{
-		const FoldDerived *dv = &f->derived[k];
+	const bool	to_group = f->a.emit == NULL && f->pipe == NULL;
 
-		if (dv->d->kind == SVD_PG_EXPR)
-			sift_v6_pgexpr_derive(dv->pg, dv->pgin, &f->bs, &f->derived[k].out);
-		else if (dv->d->kind == SVD_NUM_EXPR)
-			sift_vn_derive(dv->d, dv->cond, dv->prefix ? &dv->prefix->out.vec : NULL, dv->prefix ? dv->prefix->d->ncond : 0, &f->bs, &f->derived[k].out);
-		else
-			sift_vx_derive(dv->d, dv->src, dv->cond, &f->bs, &f->derived[k].out);
-	}
+	sift_v6_derive_batch(to_group ? f->a.group : NULL, f->nderived, &f->bs, f->argvec, derive_rows, f);
 	if (f->a.spec->affine)
 		sift_vx_affine_check(f->a.spec, f->keyvec[0], &f->bs);
 }

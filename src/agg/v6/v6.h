@@ -453,6 +453,9 @@ typedef struct SiftV6Group SiftV6Group;
 extern SiftV6Group *sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc);
 /* keyvec[i] is key i and argvec[j] the argument of aggregate j (NULL for count(*)); the rows are those of bs */
 extern void sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
+/* The derived columns of a batch that go to the groups g (NULL: elsewhere): derive(arg, k, rows) computes column k for rows. A column only the aggregates with a FILTER read is computed for the rows their clauses keep (group_derive.c) */
+typedef void (*SiftV6DeriveFn) (void *arg, int k, const SiftBatchSel *rows);
+extern void sift_v6_derive_batch(SiftV6Group *g, int nderive, const SiftBatchSel *bs, SiftVec *const *argvec, SiftV6DeriveFn derive, void *arg);
 /* Rows that no key or filter tells apart, for a statement of count(*) alone (sift_v6_spec_count_only) */
 extern bool sift_v6_spec_count_only(const SiftV6Spec *spec);
 extern void sift_v6_group_add_rows(SiftV6Group *g, uint64 n);

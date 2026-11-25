@@ -22,6 +22,7 @@ v6g_filter_init(SiftV6Group *g)
 	for (int f = 0; f < g->nfilters; f++)
 		if (!sift_v6_clause_bind(g->cx, list_nth(spec->filter, f), spec, &g->clause[f]))
 			SIFT_INVARIANT(false, "the FILTER clause %d of the aggregate scan of relation %u is not compiled", f, spec->relid);
+	v6g_derive_init(g);
 }
 
 typedef struct EvalCtx

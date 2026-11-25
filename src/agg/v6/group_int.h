@@ -129,6 +129,7 @@ struct SiftV6Group
 	SiftClause *clause;
 	SiftFilterMasks *fmasks;	/* their bitmaps for the batch */
 	const uint64 *frows;		/* bit f of frows[r]: row r passes clause f (a set of keys only) */
+	uint64		dclause[SIFT_V6_MAX_DERIVE];	/* the clauses whose rows the derived column is computed for; 0: every active row (group_derive.c) */
 	uint16		sel[SIFT_VEC_LEN + SIFT_SEL_SLACK];
 	uint64		hash[SIFT_VEC_LEN];
 	uint32		gid[SIFT_VEC_LEN];	/* the group number of each row of a batch of the compact table (v6_group_compact.h), which v6g_dist_group_rows takes when gid_direct */
@@ -287,6 +288,7 @@ struct SiftV6StrIn;
 extern SiftAggSlot64 *v6g_slot_of(SiftV6Group *g, V6Set *set, SiftSaltedHT *ht, const int64 *key, const struct SiftV6StrIn *str, uint64 nulls);
 
 /* group_filter.c */
+extern void v6g_derive_init(SiftV6Group *g);
 extern void v6g_filter_init(SiftV6Group *g);
 /* The rows of the batch that pass each clause; the vectors of the clauses' columns are in argvec */
 extern void v6g_filter_eval(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *argvec);
