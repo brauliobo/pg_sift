@@ -31,6 +31,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/format_ops.h"
+#include "agg/plan/safety.h"
 #include "agg/spec/spec.h"
 #include "agg/v6/v6_card.h"
 #include "col/f2/f2_v6_scope_int.h"
@@ -356,6 +357,8 @@ compile_fact_qual(ScopePlan *p, Expr *clause)
 static bool
 compile_fact_quals(ScopePlan *p)
 {
+	if (!agg_rel_security_ok(p->root, p->fact))
+		return false;
 	foreach_node(RestrictInfo, ri, p->fact->baserestrictinfo)
 		if (ri->pseudoconstant || !compile_fact_qual(p, ri->clause))
 			return false;
@@ -543,9 +546,9 @@ semi_ok(const ScopePlan *p)
 static bool
 pairs_ok(ScopePlan *p)
 {
-	const RelOptInfo *rel = p->pairs;
+	RelOptInfo *rel = p->pairs;
 
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL || planner_rt_fetch(rel->relid, p->root)->security_barrier)
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL || !agg_rel_security_ok(p->root, rel))
 		return false;
 	if (sift_v6_plain_table(planner_rt_fetch(rel->relid, p->root)))
 		return true;
