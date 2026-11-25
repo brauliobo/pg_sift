@@ -121,9 +121,9 @@ SELECT * FROM check_all('no key filters');
  no key filters |  9 | NOT EXISTS the ends of int8                | t         | t          | t     | 1 byte table
  no key filters | 10 | IN the whole table, a span past the table  | t         | t          | t     | 1 byte table
  no key filters | 11 | NOT IN a column without NULL               | t         | t          | t     | 0 byte table
- no key filters | 12 | IN int4 table, int8 leaf                   | t         | t          | t     | 1 byte table
+ no key filters | 12 | IN int4 table, int8 leaf                   | t         | t          | t     | 0 byte table
  no key filters | 13 | NOT EXISTS int4 table, int8 leaf           | t         | t          | t     | 1 byte table
- no key filters | 14 | IN int8 table, int4 leaf                   | t         | t          | t     | 1 byte table
+ no key filters | 14 | IN int8 table, int4 leaf                   | t         | t          | t     | 0 byte table
  no key filters | 15 | inner join, int8 unique key, no column     | t         | t          | t     | 1 byte table
  no key filters | 16 | IN an empty table                          | t         | t          | t     | 1 byte table
  no key filters | 17 | NOT EXISTS an empty table                  | t         | t          | t     | 1 byte table
