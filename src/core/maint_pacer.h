@@ -12,7 +12,8 @@
  *   THROTTLED  otherwise                             P0 0..2 ms   P1 20..50 ms, P2 and P3 do not start: they ask again after 5..30 s (mode DEFERRED while one waits)
  *
  * (a delay is per 16 pages, 128 kB, as sift.maintenance_cost_delay always was; the point in the range is the share of the way to the next regime). The telemetry is a few atomics in the
- * shared memory of the directory (col/dsmreg.h): the backends that finish a scan feed the averages (one scan of 64), and only a maintenance worker looks at the backends, once per 250 ms.
+ * shared memory of the directory (col/dsmreg.h): the backends that finish a scan feed the averages (one scan of 64, one operation of 16 for the engines of sift_pacer_fg_sample_begin), and only a maintenance worker looks at the backends, once per 250 ms. A foreground that
+ * stays silent for a second is over: the averages fall back to the usual, the backoff of a heavy regime ends with the load, and a read of the pacer after the workers have left looks again.
  * A request for a worker that finds none free marks its tier; the workers of a lower tier leave after the step they are in, so a P0 request is served before a P1 one, and so on.
  * The reads and writes of a worker go through a BAS_VACUUM ring, so a merge never takes the buffers of the queries. SIGTERM, a cancel and the end of the postmaster wake a sleep at once.
  */
@@ -23,6 +24,7 @@
 
 #include "datatype/timestamp.h"
 #include "storage/bufmgr.h"
+#include "utils/timestamp.h"
 
 #include "core/store.h"
 
@@ -66,6 +68,24 @@ extern int	sift_pacer_delay_ms(const SiftPaceDecision *d, SiftPacerTier tier, in
 
 /* A scan of the foreground took usecs: one in 64 feeds the averages */
 extern void sift_pacer_note_foreground(int64 usecs);
+
+/*
+ * The foreground of the engines feeds the averages with one operation in 16 of each backend, the first one always: a pooled session of a few statements reports too. The clock is read only for
+ * the operations that count: if (sift_pacer_fg_sample_begin(&t0)) { ...the operation...; sift_pacer_record_foreground(GetCurrentTimestamp() - t0); }
+ */
+extern uint32 sift_pacer_fg_ops;
+
+static inline bool
+sift_pacer_fg_sample_begin(TimestampTz *t0)
+{
+	if ((++sift_pacer_fg_ops & 15U) != 0)
+		return false;
+	*t0 = GetCurrentTimestamp();
+	return true;
+}
+
+/* An operation of the foreground took usecs: feeds both averages and marks the foreground as seen now */
+extern void sift_pacer_record_foreground(int64 usecs);
 
 /* A step of a worker could not take a lock that the foreground holds and gave way */
 extern void sift_pacer_note_lock_yield(void);
