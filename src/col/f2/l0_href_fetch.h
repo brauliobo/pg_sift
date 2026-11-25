@@ -93,6 +93,9 @@ extern bool sift_l0_slab_is_href(Relation rel, uint64 part_id, BlockNumber blk);
 /* Turns the chain of references at tail into a part of its rows and commits it, the chain released; the caller holds the lock of the partition and has found the chain at tail in its entry */
 extern void sift_l0_href_flush_chain(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber tail);
 
+/* A slab was started in the partition: asks a worker to write it out as a part (nothing when no worker is there: a later write or a flush of the caller's does) */
+extern void sift_l0_slab_request_flush(Relation rel, uint64 part_id);
+
 /* The references of the chain, oldest first, to offer to the VACUUM callback without a heap read (palloc'd) */
 extern SiftL0HeapRef *sift_l0_href_refs(Relation rel, uint64 part_id, BlockNumber tail, uint32 *n);
 

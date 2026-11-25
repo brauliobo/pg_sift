@@ -8,6 +8,7 @@
 #include "storage/lmgr.h"
 
 #include "col/f2/f2_cache.h"
+#include "col/f2/f2_vacuum_run.h"
 #include "col/f2/compact.h"
 #include "col/f2/l0_href_fetch.h"
 #include "col/f2/l0_slab.h"
@@ -616,6 +617,7 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	int			nrecs;
 	SiftManifestRead mr;
 	SlabChain	c;
+	bool		first;
 
 	encode_batches(rows, recs, &nrecs);
 	for (int i = 0; i < nrecs; i++)
@@ -626,6 +628,7 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	if (mr.n == 0 || mr.entries[0].part_id != part_id)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
 	c = chain_to_append(rel, part_id, key_lo, spec, mr.entries[0].l0_slab_blk, nrecs);
+	first = c.tail == InvalidBlockNumber;
 	if (c.pages + nrecs > SIFT_L0_SLAB_MAX_PAGES)
 	{
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
@@ -634,6 +637,8 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	for (int i = 0; i < nrecs; i++)
 		place_or_add(rel, part_id, key_lo, &c, recs[i]->data);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	if (first)
+		sift_l0_slab_request_flush(rel, part_id);
 	return true;
 }
 
@@ -679,6 +684,8 @@ sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 			UnlockReleaseBuffer(x.buf[i]);
 	}
 	UnlockPage(rel, lock, ExclusiveLock);
+	if (fused && edit.set_l0_slab)
+		sift_l0_slab_request_flush(rel, part_id);
 	return fused;
 }
 
@@ -808,6 +815,8 @@ sift_l0_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const Sift
 		sift_l0_href_flush_chain(rel, part_id, key_lo, spec, head);
 	else
 		flush_batches(rel, part_id, key_lo, spec, head);
+	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	sift_f2_maint_note_parts(rel, mr.entries, 1, NULL, NULL);
 	return true;
 }

@@ -375,10 +375,12 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	SiftHrefIo	h;
 	BlockNumber head,
 				tail;
+	bool		first;
 
 	sift_href_io_init(&h, rel, (uint32) part_id);
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	head = entry_of(rel, part_id, key_lo, &mr)->l0_slab_blk;
+	first = head == InvalidBlockNumber;
 	if (head != InvalidBlockNumber && !chain_takes(rel, part_id, head, n))
 	{
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
@@ -402,6 +404,8 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	}
 	seal_if_full(rel, part_id, tail);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	if (first)
+		sift_l0_slab_request_flush(rel, part_id);
 	return true;
 }
 
@@ -466,6 +470,8 @@ sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 			UnlockReleaseBuffer(x.buf[i]);
 	}
 	UnlockPage(rel, lock, ExclusiveLock);
+	if (fused && edit.set_l0_slab)
+		sift_l0_slab_request_flush(rel, part_id);
 	return fused;
 }
 

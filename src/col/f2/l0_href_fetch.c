@@ -21,6 +21,7 @@
 
 #include "col/am.h"
 #include "col/f2/f2.h"
+#include "col/f2/f2_vacuum_run.h"
 #include "core/damage.h"
 #include "core/f2/manifest.h"
 #include "core/page_io.h"
@@ -391,6 +392,12 @@ sift_l0_href_flush_chain(Relation rel, uint64 part_id, const uint8 *key_lo, cons
 	sift_l0_slab_publish(rel, part_id, key_lo, spec, rb, pages, (int) npages);
 	sift_rowbuf_free(rb);
 	pfree(refs);
+}
+
+void
+sift_l0_slab_request_flush(Relation rel, uint64 part_id)
+{
+	(void) sift_f2_maint_request(rel, SIFT_MK_SLAB_FLUSH, part_id);
 }
 
 #endif							/* !SIFT_HREF_STANDALONE */
