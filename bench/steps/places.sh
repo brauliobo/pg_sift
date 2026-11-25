@@ -82,13 +82,13 @@ phase 'setup'
 
 # --- the places and one engine's index, timed
 timed_build() { # ENGINE VARIANT SETUP INDEX INDEXES: build row: engine, index build s, index bytes, table growth bytes (stored columns), setup s, variant
-  local e=$1 db size=0 i heap0 t0 t1 t2
+  local e=$1 db size=0 i s heap0 t0 t1 t2
   db=$(edb "$e")
   heap0=$(PGDATABASE=$db q -c "SELECT pg_table_size('places')")
   t0=$(now_ms); PGDATABASE=$db q -c "$3" >/dev/null; t1=$(now_ms); PGDATABASE=$db q -c "$4" >/dev/null; t2=$(now_ms)
   PGDATABASE=$db q -c "VACUUM (ANALYZE) places" -c CHECKPOINT
   # shellcheck disable=SC2086  # one index per word
-  for i in $5; do size=$(( size + $(PGDATABASE=$db q -c "SELECT pg_relation_size('$i'::regclass)") )); done
+  for i in $5; do s=$(PGDATABASE=$db q -c "SELECT pg_relation_size('$i'::regclass)"); size=$(( size + ${s:-0} )); done
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$e" "$(elapsed_s "$t1" "$t2")" "$size" "$(( $(PGDATABASE=$db q -c "SELECT pg_table_size('places')") - heap0 ))" \
     "$(elapsed_s "$t0" "$t1")" "$2" >>"$RUN/builds.row"
 }
