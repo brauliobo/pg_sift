@@ -49,13 +49,18 @@ SELECT sift._test_shm_manifest_publish(900101, 11, 2, true) AS published, sift._
 SELECT sift._test_shm_manifest_read_stale(900101, 900101) AS own_snapshot, sift._test_shm_manifest_read_stale(900101, 900102) AS wrong_index, sift._test_shm_manifest_read_stale(900102, 900101) AS other_way;
 SELECT sift._test_shm_manifest_invalidate(900101, false), sift._test_shm_manifest_invalidate(900102, false);
 
+-- a thousand indexes (a thousand partitioned tables' worth of relations) fit: no slot is given up and every index is found again
+SELECT count(*) FILTER (WHERE sift._test_shm_manifest_publish(rel::oid, 1, 2, true)) AS published FROM generate_series(920000, 920999) AS rel;
+SELECT sift._test_shm_manifest_stat('evictions') - evictions AS evicted, (SELECT count(*) FROM generate_series(920000, 920999) AS rel WHERE sift._test_shm_manifest_peek(rel::oid) IS NOT NULL) AS found FROM base;
+SELECT count(sift._test_shm_manifest_invalidate(rel::oid, false)) AS invalidated FROM generate_series(920000, 920999) AS rel;
+
 -- more indexes than slots: the least used are given up, their snapshots with them, a quarantined one last; nothing is left when every index has been invalidated
 SELECT sift._test_shm_manifest_publish(900201, 1, 0, false) AS published;
 SELECT sift._test_shm_manifest_invalidate(900201, true);
-SELECT count(*) FILTER (WHERE sift._test_shm_manifest_publish(rel::oid, 1, 2, true)) AS published FROM generate_series(910000, 910799) AS rel;
-SELECT sift._test_shm_manifest_stat('slots_valid') <= 512 AS within_slots, sift._test_shm_manifest_stat('snaps_live') <= 512 AS snapshots_within_slots,
+SELECT count(*) FILTER (WHERE sift._test_shm_manifest_publish(rel::oid, 1, 2, true)) AS published FROM generate_series(910000, 912599) AS rel;
+SELECT sift._test_shm_manifest_stat('slots_valid') <= 2048 AS within_slots, sift._test_shm_manifest_stat('snaps_live') <= 2048 AS snapshots_within_slots,
   sift._test_shm_manifest_stat('evictions') - evictions > 0 AS evicted FROM base;
-SELECT count(sift._test_shm_manifest_invalidate(rel::oid, false)) AS invalidated FROM generate_series(910000, 910799) AS rel;
+SELECT count(sift._test_shm_manifest_invalidate(rel::oid, false)) AS invalidated FROM generate_series(910000, 912599) AS rel;
 SELECT sift._test_shm_manifest_publish(900201, 2, 0, false) AS published_over_quarantine;
 SELECT sift._test_shm_manifest_invalidate(900201, false);
 SELECT snaps AS snapshots, bytes AS bytes_left, pool AS pool_left FROM held();

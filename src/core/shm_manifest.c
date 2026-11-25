@@ -135,7 +135,7 @@ registry(void)
 {
 	if (table == NULL)
 	{
-		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (1024 epochs + 512 slots + 2048 vblock leases, fixed) */
+		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (1024 epochs + 2048 slots + 2048 vblock leases, fixed) */
 		void	   *raw = sift_dsm_try(REGISTRY_NAME, sizeof(Table) + PG_CACHE_LINE_SIZE, table_init);
 
 		if (raw == NULL)
@@ -800,7 +800,7 @@ slot_claim(Table *t, const RelFileLocator *loc)
 			(slot_value(s) == slot_value(victim) && pg_atomic_read_u64(&s->last_used_tick) < pg_atomic_read_u64(&victim->last_used_tick)))
 			victim = s;
 	}
-	if (victim != NULL)
+	if (victim != NULL && slot_value(victim) > 0)
 		sift_shm_note_eviction(SIFT_SHM_MANIFEST, 1);
 	return victim;
 }

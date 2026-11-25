@@ -43,7 +43,7 @@ ORDER BY name COLLATE "C";
 -----------------------------+------------+------------
  sift.agg_exact_float        | off        | off
  sift.async_maintenance      | on         | on
- sift.backend_cache_kb       | 16384      | 16384
+ sift.backend_cache_kb       | 32768      | 32768
  sift.count_refusals         | off        | off
  sift.dead_rewrite_pct       | 10         | 10
  sift.enable_agg             | on         | on
@@ -64,7 +64,7 @@ ORDER BY name COLLATE "C";
  sift.on_corruption          | quarantine | quarantine
  sift.parallel_scan          | on         | on
  sift.rls_scores             | off        | off
- sift.shared_cache_kb        | 65536      | 65536
+ sift.shared_cache_kb        | 131072     | 131072
  sift.simd                   | auto       | auto
  sift.standby_conflicts      | on         | on
  sift.vacuum_rewrite_limit   | 0          | 0

@@ -1,0 +1,7 @@
+-- The cache budgets are on by default and cost nothing while idle: sift.shared_cache_kb is a ledger over pools made on demand, sift.backend_cache_kb a cap on what a backend keeps.
+-- The defaults leave each shared pool room for a deployment of hundreds of partitions and a backend room for an analytical session over dozens of them.
+CREATE EXTENSION pg_sift;
+SELECT name, boot_val, unit FROM pg_settings WHERE name IN ('sift.backend_cache_kb', 'sift.shared_cache_kb') ORDER BY name;
+SHOW sift.shared_cache_kb;
+SHOW sift.backend_cache_kb;
+DROP EXTENSION pg_sift;

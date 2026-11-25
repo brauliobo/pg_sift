@@ -4,7 +4,7 @@ CREATE EXTENSION pg_sift;
 SELECT current_setting('sift.backend_cache_kb') AS default_budget;
  default_budget 
 ----------------
- 16MB
+ 32MB
 (1 row)
 
 SET max_parallel_workers_per_gather = 0;

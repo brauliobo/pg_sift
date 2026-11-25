@@ -26,7 +26,7 @@
 |---|---|---|---|---|
 | `sift.agg_exact_float` | `off` | `on`, `off` | session | Force bit-identical row-order float8 summation instead of parallel IEEE-754 sums ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.async_maintenance` | `on` | `on`, `off` | superuser | Run the background maintenance scheduler: L0 flush, compaction, scope refresh, and sift_table defrag ([OPERATIONS.md](OPERATIONS.md#5-emergency-switches)) |
-| `sift.backend_cache_kb` | `16384` (16 MB) | `0..max` kB | superuser | Hard per-backend LRU cache cap (-1 unlimited removed in 6.0) ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
+| `sift.backend_cache_kb` | `32768` (32 MB) | `0..max` kB | superuser | Hard per-backend LRU cache cap (-1 unlimited removed in 6.0) ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
 | `sift.count_refusals` | `off` | `on`, `off` | superuser | Record aggregate refusal counts in sift.stats() ([ARCHITECTURE.md](ARCHITECTURE.md#refusal-slugs)) |
 | `sift.dead_rewrite_pct` | `10` | `1..100` | superuser | Default dead-row percentage triggering compaction of sift_col and sift_table (per relation: dead_rewrite_pct) ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
 | `sift.enable_agg` | `on` | `on`, `off` | session | Allow planner to select Custom Scan (SiftAgg) and Top-N pushdown ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
@@ -47,7 +47,7 @@
 | `sift.on_corruption` | `quarantine` | `quarantine`, `error` | superuser | Quarantine damaged indexes and fall back to heap, or raise errors immediately ([OPERATIONS.md](OPERATIONS.md#6-quarantine-and-corruption-recovery)) |
 | `sift.parallel_scan` | `on` | `on`, `off` | session | Allow parallel scan, aggregation, build, and compaction plans (bounded by max_parallel_workers_per_gather) ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.rls_scores` | `off` | `on`, `off` | superuser | Permit BM25 ranked scans under row-level security ([SEARCH.md](SEARCH.md#8-row-level-security-siftrls_scores)) |
-| `sift.shared_cache_kb` | `65536` (64 MB) | `0..max` kB | superuser | Unified server-wide DSM cap across lookup tables, dim maps, dicts, and leaf stats ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
+| `sift.shared_cache_kb` | `131072` (128 MB) | `0..max` kB | superuser | Unified server-wide DSM cap across lookup tables, dim maps, dicts, and leaf stats ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
 | `sift.simd` | `auto` | `auto`, `scalar`, `avx2`, `avx512`, `neon` | session | Override runtime SIMD kernel selection for testing or diagnostics ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.standby_conflicts` | `on` | `on`, `off` | superuser | Delay extent reuse on primary to reduce retryable 40001 conflicts on standbys ([OPERATIONS.md](OPERATIONS.md#7-crash-safety-locks-and-replication)) |
 | `sift.vacuum_rewrite_limit` | `0` | `0..max` MB | superuser | Max MB an autovacuum pass rewrites (0 = unlimited); VACUUM FREEZE and a manual VACUUM are never capped ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |

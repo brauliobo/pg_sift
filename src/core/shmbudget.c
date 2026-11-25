@@ -14,7 +14,7 @@
 
 #define LEDGER_NAME		"sift_shm_ledger"
 
-int			sift_shared_cache_kb = 64 * 1024;
+int			sift_shared_cache_kb = 128 * 1024;
 
 /* the share of the limit of each pool, in percent */
 /* MEM[MEM-SHM-21]: shm_ledger 5-pool split (25/25/10/20/20% of sift.shared_cache_kb) */
@@ -63,7 +63,7 @@ sift_shm_budget_define_gucs(void)
 	DefineCustomIntVariable("sift.shared_cache_kb",
 							"Dynamic shared memory, for all backends together, that the shared caches of the extension keep (write-buffer references, joined-table rows, dimension maps, parsed dictionaries and index statistics) (0: none is shared).",
 							"The pools share it: 25% the manifests and write-buffer references, 20% the rows of joined tables, 20% the dimension maps, 25% the parsed dictionaries, 10% the statistics of the indexes. A pool that is full does without: a row is written with its values, a backend loads its own tables.",
-							&sift_shared_cache_kb, 64 * 1024, 0, MAX_KILOBYTES,
+							&sift_shared_cache_kb, 128 * 1024, 0, MAX_KILOBYTES,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 }
 

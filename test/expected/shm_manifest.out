@@ -160,6 +160,25 @@ SELECT sift._test_shm_manifest_invalidate(900101, false), sift._test_shm_manifes
                                | 
 (1 row)
 
+-- a thousand indexes (a thousand partitioned tables' worth of relations) fit: no slot is given up and every index is found again
+SELECT count(*) FILTER (WHERE sift._test_shm_manifest_publish(rel::oid, 1, 2, true)) AS published FROM generate_series(920000, 920999) AS rel;
+ published 
+-----------
+      1000
+(1 row)
+
+SELECT sift._test_shm_manifest_stat('evictions') - evictions AS evicted, (SELECT count(*) FROM generate_series(920000, 920999) AS rel WHERE sift._test_shm_manifest_peek(rel::oid) IS NOT NULL) AS found FROM base;
+ evicted | found 
+---------+-------
+       0 |  1000
+(1 row)
+
+SELECT count(sift._test_shm_manifest_invalidate(rel::oid, false)) AS invalidated FROM generate_series(920000, 920999) AS rel;
+ invalidated 
+-------------
+        1000
+(1 row)
+
 -- more indexes than slots: the least used are given up, their snapshots with them, a quarantined one last; nothing is left when every index has been invalidated
 SELECT sift._test_shm_manifest_publish(900201, 1, 0, false) AS published;
  published 
@@ -173,23 +192,23 @@ SELECT sift._test_shm_manifest_invalidate(900201, true);
  
 (1 row)
 
-SELECT count(*) FILTER (WHERE sift._test_shm_manifest_publish(rel::oid, 1, 2, true)) AS published FROM generate_series(910000, 910799) AS rel;
+SELECT count(*) FILTER (WHERE sift._test_shm_manifest_publish(rel::oid, 1, 2, true)) AS published FROM generate_series(910000, 912599) AS rel;
  published 
 -----------
-       800
+      2600
 (1 row)
 
-SELECT sift._test_shm_manifest_stat('slots_valid') <= 512 AS within_slots, sift._test_shm_manifest_stat('snaps_live') <= 512 AS snapshots_within_slots,
+SELECT sift._test_shm_manifest_stat('slots_valid') <= 2048 AS within_slots, sift._test_shm_manifest_stat('snaps_live') <= 2048 AS snapshots_within_slots,
   sift._test_shm_manifest_stat('evictions') - evictions > 0 AS evicted FROM base;
  within_slots | snapshots_within_slots | evicted 
 --------------+------------------------+---------
  t            | t                      | t
 (1 row)
 
-SELECT count(sift._test_shm_manifest_invalidate(rel::oid, false)) AS invalidated FROM generate_series(910000, 910799) AS rel;
+SELECT count(sift._test_shm_manifest_invalidate(rel::oid, false)) AS invalidated FROM generate_series(910000, 912599) AS rel;
  invalidated 
 -------------
-         800
+        2600
 (1 row)
 
 SELECT sift._test_shm_manifest_publish(900201, 2, 0, false) AS published_over_quarantine;

@@ -17,7 +17,7 @@
 #define CACHE_TRIM_BYTES	((Size) 256 * 1024)
 #define CACHE_IDLE_TRIM_FREE_BYTES	((Size) 128 * 1024)
 
-int			sift_backend_cache_kb = 16 * 1024;
+int			sift_backend_cache_kb = 32 * 1024;
 
 #ifdef SIFT_TESTING
 bool		sift_cache_stress;
@@ -229,6 +229,6 @@ sift_cache_budget_define_gucs(void)
 	DefineCustomIntVariable("sift.backend_cache_kb",
 							"Memory per backend that every cache of the extension keeps together for the next statement (0: no cache is kept).",
 							"The least recently used entry that no statement holds is dropped from whichever cache has it when another needs room; an entry that alone is larger than the total is not kept.",
-							&sift_backend_cache_kb, 16 * 1024, 0, MAX_KILOBYTES,
+							&sift_backend_cache_kb, 32 * 1024, 0, MAX_KILOBYTES,
 							PGC_SUSET, GUC_UNIT_KB, NULL, backend_cache_assign, NULL);
 }

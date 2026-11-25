@@ -1,7 +1,7 @@
 /*
  * core/shm_manifest.h - the one registry of the manifests of the indexes in shared memory.
  *
- * A table of 512 slots of two cache lines, in a table of the dynamic shared memory registry (col/dsmreg.h: no shared_preload_libraries is needed). Line 0 of a slot is the
+ * A table of 2048 slots of two cache lines, in a table of the dynamic shared memory registry (col/dsmreg.h: no shared_preload_libraries is needed). Line 0 of a slot is the
  * meta of the index in a seqlock: a reader copies it without a lock and without reading Block 0 (sift_shm_manifest_peek). Line 1 anchors an immutable snapshot
  * (the partition entries, the lazily loaded partition lists, the scope entries) in a shared dsa_area. The snapshot is counted by its readers and the registry, and freed by the last one
  * that lets go; its bytes are charged to the manifest pool of the ledger (core/shmbudget.h), so a snapshot that does not fit is not made and the caller reads the manifest itself.
@@ -19,8 +19,8 @@
 #include "storage/relfilelocator.h"
 #include "utils/dsa.h"
 
-#define SIFT_SHM_MANIFEST_SLOTS		512
-#define SIFT_SHM_MANIFEST_PROBES	8
+#define SIFT_SHM_MANIFEST_SLOTS		2048
+#define SIFT_SHM_MANIFEST_PROBES	32
 
 #define SIFT_SHM_SLOT_EMPTY			0U
 #define SIFT_SHM_SLOT_VALID			(1U << 0)
