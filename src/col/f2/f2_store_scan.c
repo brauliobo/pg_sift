@@ -662,6 +662,7 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	s->view = o->plan != NULL ? o->plan : sift_f2_view(o->rel, o->store, cx);
 	if (table)
 	{
+		sift_tbl_f2_predicate_scan(o->rel, o->snap);
 		sift_tbl_f2_vis_begin(&s->tvis, o->rel, o->snap);
 		s->delta = sift_col_delta_scan_begin(o->rel, &s->tvis, cx);
 	}
