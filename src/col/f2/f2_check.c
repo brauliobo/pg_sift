@@ -14,11 +14,15 @@
 #include "catalog/pg_type_d.h"
 #include "utils/snapmgr.h"
 
+#include "col/f2/delvec.h"
 #include "col/f2/f2.h"
+#include "col/f2/f2_point_dir.h"
+#include "col/f2/preagg_delta.h"
 #include "col/f2/f2_sink.h"
 #include "col/f2/f2_store.h"
 #include "col/f2/f2_tid_hash.h"
 #include "core/memtrack.h"
+#include "col/skip/skip_index.h"
 #include "core/page_io.h"
 #include "table/f2/f2_row_pack.h"
 
@@ -73,6 +77,99 @@ part_spec(Relation rel, const SiftPartSpec *spec, const SiftPart *part, uint16 *
 	return own;
 }
 
+/* The uint32s [from, from + n) of a section, as many as the buffer holds at a time */
+#define SEC_WORDS	4096
+
+static void
+read_words(Relation rel, const SiftPart *part, const SiftSecDirEntry *sec, uint64 off, uint32 n, uint32 *dst)
+{
+	sift_part_read_section_bytes(rel, part, sec, off, (uint64) n * sizeof(uint32), dst);
+}
+
+/* The pre-aggregates: first[ngranules + 1], the number of the first cell of each granule from 0 and ascending, then the cells they count */
+static void
+check_preagg(Relation rel, const SiftPart *part)
+{
+	const SiftSecDirEntry *sec = sift_part_section(part, SEC_PREAGG);
+	const uint64 ng = part->hdr.ngranules;
+	uint32		w[SEC_WORDS];
+	uint32		prev = 0;
+
+	if (sec->len < MAXALIGN((ng + 1) * sizeof(uint32)))
+		SIFT_CORRUPT(rel, "Part %llu: the pre-aggregate section holds %llu bytes for %llu granules.", (unsigned long long) part->hdr.part_gen, (unsigned long long) sec->len, (unsigned long long) ng);
+	for (uint64 at = 0; at < ng + 1; at += SEC_WORDS)
+	{
+		uint32		n = Min((uint64) SEC_WORDS, ng + 1 - at);
+
+		read_words(rel, part, sec, at * sizeof(uint32), n, w);
+		for (uint32 i = 0; i < n; i++)
+		{
+			if ((at + i == 0 && w[i] != 0) || w[i] < prev)
+				SIFT_CORRUPT(rel, "Part %llu: the first pre-aggregate cell of granule %llu is %u after %u.", (unsigned long long) part->hdr.part_gen, (unsigned long long) (at + i), w[i], prev);
+			prev = w[i];
+		}
+	}
+	if (MAXALIGN((ng + 1) * sizeof(uint32)) + (uint64) prev * sizeof(SiftPreaggCell) > sec->len)
+		SIFT_CORRUPT(rel, "Part %llu: the pre-aggregate section counts %u cells and holds %llu bytes.", (unsigned long long) part->hdr.part_gen, prev, (unsigned long long) sec->len);
+}
+
+/* The point directory: for each key, the bucket ends ascend from 0 to its entries, and every entry is a row of a granule of the part */
+static void
+check_point(Relation rel, const SiftPart *part)
+{
+	const SiftPointDir *pd = sift_point_dir_open(rel, part, CurrentMemoryContext);
+	uint32		w[SEC_WORDS];
+
+	for (int k = 0; pd != NULL && k < pd->hdr.ncols; k++)
+	{
+		const SiftPointCol *c = &pd->cols[k];
+		const uint64 nb = (UINT64CONST(1) << c->log2_buckets) + 1;
+		uint32		prev = 0;
+
+		for (uint64 at = 0; at < nb; at += SEC_WORDS)
+		{
+			uint32		n = Min((uint64) SEC_WORDS, nb - at);
+
+			read_words(rel, part, &pd->sec, c->off_buckets + at * sizeof(uint32), n, w);
+			for (uint32 i = 0; i < n; i++)
+			{
+				if ((at + i == 0 && w[i] != 0) || w[i] < prev)
+					SIFT_CORRUPT(rel, "Part %llu: the buckets of key %d of its point directory do not ascend from 0.", (unsigned long long) part->hdr.part_gen, k);
+				prev = w[i];
+			}
+		}
+		if (prev != c->nentries)
+			SIFT_CORRUPT(rel, "Part %llu: the buckets of key %d of its point directory end at %u and it has %u entries.", (unsigned long long) part->hdr.part_gen, k, prev, c->nentries);
+		for (uint64 at = 0; at < c->nentries; at += SEC_WORDS)
+		{
+			uint32		n = Min((uint64) SEC_WORDS, c->nentries - at);
+
+			read_words(rel, part, &pd->sec, c->off_entries + at * sizeof(uint32), n, w);
+			for (uint32 i = 0; i < n; i++)
+				if ((w[i] >> SIFT_POINT_ROW_BITS) >= part->hdr.ngranules)
+					SIFT_CORRUPT(rel, "Part %llu: an entry of key %d of its point directory names granule %u of %u.", (unsigned long long) part->hdr.part_gen, k, w[i] >> SIFT_POINT_ROW_BITS,
+								 part->hdr.ngranules);
+		}
+	}
+}
+
+static void
+check_sections(Relation rel, const SiftPartDesc *d, const SiftPart *part, uint32 part_id, const uint16 *granule_rows)
+{
+	if (sift_part_section(part, SEC_PREAGG) != NULL)
+		check_preagg(rel, part);
+	if (sift_part_section(part, SEC_POINT) != NULL)
+		check_point(rel, part);
+	if (sift_part_section(part, SEC_SKIP_INDEX) != NULL)
+		(void) sift_skip_open(rel, part);
+	if (d->dv_blk != InvalidBlockNumber)
+		(void) sift_dv_read(rel, d, part_id, granule_rows);
+	if (sift_part_section(part, SEC_TID_HASH) != NULL)
+		sift_tid_hash_check(rel, part, part->hdr.nrows);
+	if (sift_part_section(part, SEC_ROW_PACK) != NULL)
+		sift_row_pack_check(rel, part, part->hdr.nrows);
+}
+
 static void
 check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *e, const SiftPartDesc *d, uint64 *granules, uint64 *rows)
 {
@@ -89,6 +186,8 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 				key[SIFT_BOUND_BYTES] = {0},
 				prefix[SIFT_BOUND_BYTES];
 	bool		have_prev = false;
+	/* check-memory: allow one count for each granule of the part */
+	uint16	   *granule_rows = palloc(Max(part->hdr.ngranules, 1) * sizeof(uint16));
 
 	memset(least, 0xFF, sizeof(least));
 	const SiftSecDirEntry *zs = sift_part_section(part, SEC_ZONES);
@@ -150,6 +249,7 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 			if (zmin <= zmax ? (z.flags & SIFT_ZONE_NONE) || z.min != zmin || z.max != zmax : !(z.flags & SIFT_ZONE_NONE))
 				SIFT_CORRUPT(rel, "Part %llu: the zone of the lead key column of granule %u is not the range of its rows.", (unsigned long long) d->part_gen, g);
 		}
+		granule_rows[g] = gd.nrows;
 		*rows += gd.nrows;
 		(*granules)++;
 		MemoryContextSwitchTo(old);
@@ -159,10 +259,7 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 	if (have_prev && (memcmp(least, d->key_lo, SIFT_BOUND_BYTES) != 0 || memcmp(greatest, d->key_hi, SIFT_BOUND_BYTES) != 0))
 		SIFT_CORRUPT(rel, "Part %llu: its key range in the manifest is not that of its least and greatest row.", (unsigned long long) d->part_gen);
 	check_sketches(rel, spec, part, d);
-	if (sift_part_section(part, SEC_TID_HASH) != NULL)
-		sift_tid_hash_check(rel, part, part->hdr.nrows);
-	if (sift_part_section(part, SEC_ROW_PACK) != NULL)
-		sift_row_pack_check(rel, part, part->hdr.nrows);
+	check_sections(rel, d, part, (uint32) e->part_id, granule_rows);
 }
 
 char *
