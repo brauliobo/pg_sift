@@ -729,6 +729,16 @@ granule_fixture_col(const GranuleFixture *fx, const char *name)
 	return -1;
 }
 
+static SiftColDef
+col_def(int id, SiftCellKind kind)
+{
+	const bool	is_int = kind == SIFT_CELL_INT,
+				is_f8 = kind == SIFT_CELL_F8;
+
+	return (SiftColDef) {.id = id,.parent = -1,.store = is_int ? SIFT_COLS_INT : is_f8 ? SIFT_COLS_F8 : SIFT_COLS_STR,
+		.type = is_int ? SIFT_COLT_INT8 : is_f8 ? SIFT_COLT_FLOAT8 : SIFT_COLT_TEXT};
+}
+
 GranuleFixture *
 granule_fixture_build(int ngranules, uint32 seed)
 {
@@ -754,7 +764,7 @@ granule_fixture_build(int ngranules, uint32 seed)
 		cols[c] = colin(&specs[c], &data[c]);
 		if (specs[c].shape == S_I_LIST)
 			lens_col = c;
-		fx->defs[c] = (SiftColDef) {.id = c,.parent = -1,.store = specs[c].kind == SIFT_CELL_INT ? SIFT_COLS_INT : specs[c].kind == SIFT_CELL_F8 ? SIFT_COLS_F8 : SIFT_COLS_STR};
+		fx->defs[c] = col_def(c, specs[c].kind);
 		if (specs[c].part == FX_PART_DICT)
 			part_str_dict(fx, pc, c, &cols[c], rows);
 		else if (specs[c].part == FX_PART_FSST)
