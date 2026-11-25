@@ -264,10 +264,7 @@ wire_unpack(char *stage, const SiftGpuWireJob *wj)
 typedef struct WorkerState
 {
 	SiftGpuShm *shm;
-	SiftVk	   *vk;
-	char		device[64];
-	bool		software;
-	uint64		cache_bytes;
+	SiftVkSeat	seat;
 	MemoryContext jobcx;		/* NULL between jobs: nothing of the worker is a context of its own while it waits */
 	MemoryContext basecx;
 	const SiftGpuSlot *cur;
@@ -356,42 +353,40 @@ worker_exit(pg_attribute_unused() int code, Datum arg)
 		MemoryContextDelete(worker->jobcx);
 		worker->jobcx = NULL;
 	}
-	sift_vk_close(worker->vk);
-	worker->vk = NULL;
+	sift_vk_seat_close(&worker->seat);
 }
 
+/* The device the job asks for (agg/vk/seat.c): one that was lost or timed out, or that was opened for other settings, is opened again, a change of the cache resizes it (the worker runs one job at a time: no job is in flight) */
 static bool
 worker_open(WorkerState *w, const char *device, bool software, uint64 cache_bytes, char *err, size_t errlen)
 {
-	if (w->vk != NULL)
-		sift_vk_close(w->vk);
-	w->vk = sift_vk_open(device, software, cache_bytes, err, errlen);
-	if (w->vk == NULL)
+	const uint32 opens = w->seat.opens;
+	SiftVk	   *vk = sift_vk_seat_follow(&w->seat, device, software, cache_bytes);
+
+	if (vk == NULL)
+	{
+		snprintf(err, errlen, "%s", w->seat.err);
 		return false;
-	sift_vk_set_account(w->vk, account_to, &w->shm->host_bytes);
-	sift_vk_set_envelope(w->vk, SIFT_VK_VRAM_ENVELOPE, SIFT_VK_VRAM_FIXED);
-	strlcpy(w->device, device, sizeof(w->device));
-	w->software = software;
-	w->cache_bytes = cache_bytes;
-	w->shm->caps = *sift_vk_caps(w->vk);
+	}
+	if (w->seat.opens != opens)
+	{
+		sift_vk_set_account(vk, account_to, &w->shm->host_bytes);
+		sift_vk_set_envelope(vk, SIFT_VK_VRAM_ENVELOPE, SIFT_VK_VRAM_FIXED);
+		w->shm->caps = *sift_vk_caps(vk);
+	}
 	return true;
 }
 
-/* The device the job asks for: a change of device or of software leave reopens it, a change of the cache resizes it (the worker runs one job at a time: no job is in flight) */
 static bool
 worker_follow(WorkerState *w, const SiftGpuSlot *s, char *err, size_t errlen)
 {
-	uint64		bytes = (uint64) s->cache_mb << 20;
-
-	if (w->vk == NULL || strcmp(w->device, s->device) != 0 || (s->software && !w->software))
-		return worker_open(w, s->device, s->software, bytes, err, errlen);
-	if (!s->software && sift_vk_caps(w->vk)->software)
+	if (!worker_open(w, s->device, s->software, (uint64) s->cache_mb << 20, err, errlen))
+		return false;
+	if (!s->software && sift_vk_caps(w->seat.vk)->software)
 	{
 		snprintf(err, errlen, "the only device is a software one, which sift.gpu = on alone may use");
 		return false;
 	}
-	if (bytes != w->cache_bytes && sift_vk_set_cache(w->vk, bytes))
-		w->cache_bytes = bytes;
 	return true;
 }
 
@@ -401,9 +396,9 @@ serve_resident(WorkerState *w, SiftGpuSlot *s, char *stage)
 	const SiftVkKey *keys = (const SiftVkKey *) stage;
 	uint8	   *out = (uint8 *) stage + ALIGN8((Size) s->nkeys * sizeof(SiftVkKey));
 
-	s->status = sift_vk_fit_cache(w->vk, s->tables) ? SIFT_VK_OK : SIFT_VK_FAIL;
+	s->status = sift_vk_fit_cache(w->seat.vk, s->tables) ? SIFT_VK_OK : SIFT_VK_FAIL;
 	if (s->status == SIFT_VK_OK)
-		sift_vk_resident_batch(w->vk, keys, s->nkeys, out);
+		sift_vk_resident_batch(w->seat.vk, keys, s->nkeys, out);
 }
 
 static void
@@ -411,7 +406,7 @@ serve_run(WorkerState *w, SiftGpuSlot *s, char *stage)
 {
 	SiftVkJob	job = wire_unpack(stage, &s->job);
 	SiftVkResult res;
-	SiftVkStatus st = sift_vk_run(w->vk, &job, worker_cancelled, &res);
+	SiftVkStatus st = sift_vk_run(w->seat.vk, &job, worker_cancelled, &res);
 	uint64		acc = (uint64) res.acc_words * 8,
 				cand = (uint64) res.ncand * 16;
 
@@ -428,7 +423,7 @@ serve_run(WorkerState *w, SiftGpuSlot *s, char *stage)
 			memcpy(stage + ALIGN8(acc), res.cand, cand);
 	}
 	else if (st != SIFT_VK_PROG_ERROR && st != SIFT_GPU_NEED_BYTES)
-		strlcpy(s->error, sift_vk_error(w->vk), sizeof(s->error));
+		strlcpy(s->error, sift_vk_error(w->seat.vk), sizeof(s->error));
 	s->acc_bytes = acc;
 	s->cand_bytes = cand;
 	s->res = res;
@@ -498,8 +493,7 @@ worker_idle_release(WorkerState *w)
 {
 	const Size	page = sysconf(_SC_PAGESIZE);
 
-	sift_vk_close(w->vk);
-	w->vk = NULL;
+	sift_vk_seat_close(&w->seat);
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 		if (pg_atomic_read_u32(&w->shm->slot[i].state) == SIFT_GPU_S_FREE)
 			(void) madvise((void *) TYPEALIGN(page, sift_gpu_stage(w->shm, i)), SIFT_GPU_STAGE_BYTES - page, MADV_DONTNEED);
@@ -558,8 +552,7 @@ worker_loop(WorkerState *w, const WorkerExtra *extra)
 			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 1000, PG_WAIT_EXTENSION);
 		}
 	}
-	sift_vk_close(w->vk);
-	w->vk = NULL;
+	sift_vk_seat_close(&w->seat);
 }
 
 void

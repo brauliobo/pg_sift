@@ -234,6 +234,28 @@ extern int	sift_vk_list_devices(SiftVkDevInfo *out, int max, int *chosen, const 
  */
 extern SiftVk *sift_vk_open(const char *device, bool allow_software, uint64_t cache_bytes, char *err, size_t errlen);
 extern void sift_vk_close(SiftVk *vk);
+
+/* How long an open that failed is not tried again */
+#define SIFT_VK_RETRY_MS		30000
+
+/* The device a process holds: vk is NULL before the first open, after sift_vk_seat_close and after an open that failed (device and software are then the settings it failed for, err why) */
+typedef struct SiftVkSeat
+{
+	SiftVk	   *vk;
+	char		device[64];
+	bool		software;
+	uint64_t	cache_bytes;
+	uint32_t	opens;			/* the devices opened so far: a change tells the caller to set the new one up */
+	double		failed_ms;		/* the clock of the last open that failed (0: it did not) */
+	char		err[200];
+} SiftVkSeat;
+
+/*
+ * The device for these settings: the one the seat holds when it is usable and was opened for them (its cache resized to cache_bytes); a device that was lost or timed out, or was opened for other
+ * settings, is closed and a new one opened. NULL, with err, when there is none: an open that failed for the same settings less than SIFT_VK_RETRY_MS ago is not tried again.
+ */
+extern SiftVk *sift_vk_seat_follow(SiftVkSeat *seat, const char *device, bool software, uint64_t cache_bytes);
+extern void sift_vk_seat_close(SiftVkSeat *seat);
 /* Gives back the buffers of a device that is idle, and with cache its cache too (the next job makes them again); false when a submission cannot be waited for */
 extern bool sift_vk_release(SiftVk *vk, bool cache);
 extern const SiftVkCaps *sift_vk_caps(const SiftVk *vk);
