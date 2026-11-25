@@ -27,8 +27,8 @@
 | `sift.agg_exact_float` | `off` | `on`, `off` | session | Force bit-identical row-order float8 summation instead of parallel IEEE-754 sums ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.async_maintenance` | `on` | `on`, `off` | superuser | Run the background maintenance scheduler: L0 flush, compaction, scope refresh, and sift_table defrag ([OPERATIONS.md](OPERATIONS.md#5-emergency-switches)) |
 | `sift.backend_cache_kb` | `16384` (16 MB) | `0..max` kB | superuser | Hard per-backend LRU cache cap (-1 unlimited removed in 6.0) ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
-| `sift.count_refusals` | `off` | `on`, `off` | session | Record aggregate refusal counts in sift.stats() ([ARCHITECTURE.md](ARCHITECTURE.md#refusal-slugs)) |
-| `sift.dead_rewrite_pct` | `15` | `1..100` | session | Default dead-row percentage triggering compaction of sift_col and sift_table (per relation: dead_rewrite_pct) ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
+| `sift.count_refusals` | `off` | `on`, `off` | superuser | Record aggregate refusal counts in sift.stats() ([ARCHITECTURE.md](ARCHITECTURE.md#refusal-slugs)) |
+| `sift.dead_rewrite_pct` | `15` | `1..100` | superuser | Default dead-row percentage triggering compaction of sift_col and sift_table (per relation: dead_rewrite_pct) ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
 | `sift.enable_agg` | `on` | `on`, `off` | session | Allow planner to select Custom Scan (SiftAgg) and Top-N pushdown ([ANALYTICS.md](ANALYTICS.md#1-designing-a-sift_col-index)) |
 | `sift.enable_col_scan` | `on` | `on`, `off` | session | Allow planner to use sift_col bitmap and index-only scans ([ANALYTICS.md](ANALYTICS.md#6-bitmap-and-index-only-scans-siftcol__ops)) |
 | `sift.enable_scan` | `on` | `on`, `off` | session | Allow planner to use sift BM25 ranked and count(*) index scans ([SEARCH.md](SEARCH.md#1-creating-a-sift-index-and-include-filters)) |
@@ -37,7 +37,7 @@
 | `sift.gpu` | `off` | `off`, `auto`, `on` | superuser | Run the integer aggregates of a SiftAgg scan on a Vulkan device (opt-in; `make VULKAN=1`) ([GPU.md](GPU.md#settings)) |
 | `sift.gpu_cache_mb` | `256 MB` | `16..max` MB | superuser | Device memory per backend for column chunks kept on the Vulkan device between queries ([GPU.md](GPU.md#settings)) |
 | `sift.gpu_device` | `''` | index or name part | superuser | Vulkan device used by sift.gpu: its index or part of its name (empty: the best one) ([GPU.md](GPU.md#settings)) |
-| `sift.gpu_min_rows` | `1000000` | `0..max` | session | Index rows above which sift.gpu = auto sends a grouped aggregate to the device ([GPU.md](GPU.md#settings)) |
+| `sift.gpu_min_rows` | `1000000` | `0..max` | superuser | Index rows above which sift.gpu = auto sends a grouped aggregate to the device ([GPU.md](GPU.md#settings)) |
 | `sift.log_min_duration` | `1000 ms` | `-1..max` ms | superuser | Log background maintenance passes taking at least this long (-1 disables) ([OPERATIONS.md](OPERATIONS.md#5-emergency-switches)) |
 | `sift.maintenance_cost_delay` | `0` | `0..100` ms | superuser | Sleep delay per maintenance I/O batch to limit background CPU/disk impact ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
 | `sift.maintenance_naptime` | `2000 ms` | `200..60000` ms | reload | Base interval and backoff floor for background maintenance workers ([OPERATIONS.md](OPERATIONS.md#5-emergency-switches)) |
@@ -50,7 +50,7 @@
 | `sift.shared_cache_kb` | `65536` (64 MB) | `0..max` kB | superuser | Unified server-wide DSM cap across lookup tables, dim maps, dicts, and leaf stats ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
 | `sift.simd` | `auto` | `auto`, `scalar`, `avx2`, `avx512`, `neon` | session | Override runtime SIMD kernel selection for testing or diagnostics ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.standby_conflicts` | `on` | `on`, `off` | superuser | Delay extent reuse on primary to reduce retryable 40001 conflicts on standbys ([OPERATIONS.md](OPERATIONS.md#7-crash-safety-locks-and-replication)) |
-| `sift.vacuum_rewrite_limit` | `128 MB` | `0..1048576` MB | session | Max bytes VACUUM rewrites per pass on a single index (0 = unlimited) ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
+| `sift.vacuum_rewrite_limit` | `128 MB` | `0..1048576` MB | superuser | Max bytes VACUUM rewrites per pass on a single index (0 = unlimited) ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
 <!-- sift-settings:end -->
 
 ## Index Reloptions

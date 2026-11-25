@@ -51,7 +51,7 @@ sift_gpu_v6_init_gucs(void)
 	DefineCustomEnumVariable("sift.gpu", "Runs aggregates and top-N scans on a Vulkan device: off, auto (when it is cheaper) or on.", "A build without Vulkan (make VULKAN=1) runs on the CPU.",
 							 &sift_gpu_mode, SIFT_GPU_OFF, gpu_mode_options, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.gpu_min_rows", "Rows below which sift.gpu = auto runs on the CPU without asking what the device would cost.", NULL, &sift_gpu_min_rows,
-							GPU_MIN_ROWS_DEFAULT, 0, INT_MAX, PGC_USERSET, 0, NULL, NULL, NULL);
+							GPU_MIN_ROWS_DEFAULT, 0, INT_MAX, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomStringVariable("sift.gpu_device", "The Vulkan device sift.gpu uses: its index, a PCI bus and device (BB:DD), or a part of its name. Empty: the best one.", NULL, &sift_gpu_device, "",
 							   PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.gpu_cache_mb", "Device memory, in MB, for the decoded column chunks that stay on the Vulkan device between queries (shared by the server).", NULL,

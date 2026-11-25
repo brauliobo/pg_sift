@@ -39,7 +39,7 @@ sift_stage_define_gucs(void)
 {
 	DefineCustomIntVariable("sift.dead_rewrite_pct",
 							"The share of dead rows (percent) at which a part is rewritten without them.",
-							NULL, &sift_dead_rewrite_pct, 15, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
+							NULL, &sift_dead_rewrite_pct, 15, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
 }
 
 int

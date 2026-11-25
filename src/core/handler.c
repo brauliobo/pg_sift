@@ -206,7 +206,7 @@ define_gucs(void)
 							"Megabytes of segments a column VACUUM may rewrite to merge (past the first merge step), with a separate equal allowance to copy the end of the file into free blocks below it, "
 							"which holds the table or index under an exclusive lock; 0 keeps the one merge step and moves nothing.",
 							NULL, &sift_vacuum_rewrite_limit, 128, 0, 1048576,
-							PGC_USERSET, GUC_UNIT_MB, NULL, NULL, NULL);
+							PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
 	sift_handler_test_gucs();
 #endif

@@ -945,7 +945,7 @@ sift_agg_refuse_init(void)
 	DefineCustomBoolVariable("sift.count_refusals",
 							 "Counts in sift.stats() why queries kept the normal plan (refused.<slug>, limit.<id>), without the notice of sift.explain_refusals.",
 							 NULL, &count_refusals, false,
-							 PGC_USERSET, 0, NULL, assign_count, NULL);
+							 PGC_SUSET, 0, NULL, assign_count, NULL);
 }
 
 const char *

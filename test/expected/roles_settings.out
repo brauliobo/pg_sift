@@ -79,15 +79,15 @@ rs_user | ALTER ROLE rs_user RESET ALL
 rs_user | ALTER ROLE rs_grant SET sift.enable_scan = off
 rs_user | ALTER DATABASE postgres SET sift.enable_scan = off
 $$);
- n  |  role   |                              stmt                               |                                         result                                         
-----+---------+-----------------------------------------------------------------+----------------------------------------------------------------------------------------
+ n  |  role   |                              stmt                               |                                 result                                  
+----+---------+-----------------------------------------------------------------+-------------------------------------------------------------------------
   1 | rs_user | SET sift.enable_scan = off                                      | ok
   2 | rs_user | SET sift.enable_agg = off                                       | ok
   3 | rs_user | SET sift.enable_scan = off                                      | ok
   4 | rs_user | SET sift.enable_agg = off                                       | ok
   5 | rs_user | SET sift.simd = scalar                                          | ok
-  6 | rs_user | SET sift.dead_rewrite_pct = 25                                  | ok
-  7 | rs_user | SET sift.dead_rewrite_pct = 101                                 | ERROR: 101 is outside the valid range for parameter "sift.dead_rewrite_pct" (1 .. 100)
+  6 | rs_user | SET sift.dead_rewrite_pct = 25                                  | ERROR: permission denied to set parameter "sift.dead_rewrite_pct"
+  7 | rs_user | SET sift.dead_rewrite_pct = 101                                 | ERROR: permission denied to set parameter "sift.dead_rewrite_pct"
   8 | rs_user | SET sift.enable_scan = 'maybe'                                  | ERROR: parameter "sift.enable_scan" requires a Boolean value
   9 | rs_user | SET sift.rls_scores = on                                        | ERROR: permission denied to set parameter "sift.rls_scores"
  10 | rs_user | SET sift.maintenance_wal_rate = 1024                            | ERROR: permission denied to set parameter "sift.maintenance_wal_rate"

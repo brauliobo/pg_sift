@@ -15,11 +15,11 @@ sift.backend_cache_kb|KEEP|int;16384;0;MAX_KILOBYTES;PGC_SUSET|Spec 19 2.2 #1
 sift.shared_cache_kb|KEEP|int;65536;0;MAX_KILOBYTES;PGC_SUSET|Spec 19 2.2 #2
 sift.max_maint_workers|KEEP|int;2;0;8;PGC_SIGHUP|Spec 19 2.2 #3
 sift.maintenance_wal_rate|KEEP|int;0;0;1048576;PGC_SUSET|Spec 19 2.2 #4
-sift.vacuum_rewrite_limit|KEEP|int;128;0;1048576;PGC_USERSET|Spec 19 2.2 #5
+sift.vacuum_rewrite_limit|KEEP|int;128;0;1048576;PGC_SUSET|Spec 19 2.2 #5
 sift.async_maintenance|KEEP|bool;true;;;PGC_SUSET|Spec 19 2.2 #6
 sift.maintenance_naptime|KEEP|int;2000;200;60000;PGC_SIGHUP|Spec 19 2.2 #7
 sift.maintenance_cost_delay|KEEP|int;0;0;100;PGC_SUSET|Spec 19 2.2 #8
-sift.dead_rewrite_pct|KEEP|int;15;1;100;PGC_USERSET|Spec 19 2.2 #9
+sift.dead_rewrite_pct|KEEP|int;15;1;100;PGC_SUSET|Spec 19 2.2 #9
 sift.standby_conflicts|KEEP|bool;true;;;PGC_SUSET|Spec 19 2.2 #10
 sift.on_corruption|KEEP|enum;;;;PGC_SUSET|Spec 19 2.2 #11 (quarantine, error; default quarantine)
 sift.log_min_duration|KEEP|int;1000;-1;INT_MAX;PGC_SUSET|Spec 19 2.2 #12
@@ -30,12 +30,12 @@ sift.parallel_scan|KEEP|bool;true;;;PGC_USERSET|Spec 19 2.2 #16 (default flips f
 sift.filter_pushdown|KEEP|enum;;;;PGC_USERSET|Spec 19 2.2 #17 (off, on, force; default on)
 sift.agg_exact_float|KEEP|bool;false;;;PGC_USERSET|Spec 19 2.2 #18
 sift.explain_refusals|KEEP|bool;false;;;PGC_USERSET|Spec 19 2.2 #19
-sift.count_refusals|KEEP|bool;false;;;PGC_USERSET|Spec 19 2.2 #20
+sift.count_refusals|KEEP|bool;false;;;PGC_SUSET|Spec 19 2.2 #20
 sift.max_expansions|KEEP|int;512;1;1000000;PGC_SUSET|Spec 19 2.2 #21
 sift.rls_scores|KEEP|bool;false;;;PGC_SUSET|Spec 19 2.2 #22
 sift.simd|KEEP|enum;;;;PGC_USERSET|Spec 19 2.2 #23 (auto, scalar, avx2, avx512, neon; default auto)
 sift.gpu|KEEP|enum;;;;PGC_SUSET|Owner directive: Vulkan stays (off, auto, on; default off)
-sift.gpu_min_rows|KEEP|int;1000000;0;INT_MAX;PGC_USERSET|Owner directive: Vulkan stays
+sift.gpu_min_rows|KEEP|int;1000000;0;INT_MAX;PGC_SUSET|Owner directive: Vulkan stays
 sift.gpu_device|KEEP|string;;;;PGC_SUSET|Owner directive: Vulkan stays (default empty: the best device)
 sift.gpu_cache_mb|KEEP|int;256;16;1048576;PGC_SUSET|Owner directive: Vulkan stays
 #
