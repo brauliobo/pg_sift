@@ -924,7 +924,11 @@ main(int argc, char **argv)
 	check_coverage();
 	pgshim_keep();
 	c.rounds = 2;
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+	c.fuzz_rounds = 400;
+#else
 	c.fuzz_rounds = 4000;
+#endif
 	for (int l = 0; l < nlevels; l++)
 	{
 		set_level(lv[l]);

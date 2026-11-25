@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The fast-test budget of test/README.md ("Test budget"): a new test is small at birth, and the tests that are not yet are listed with the number of sites, which only goes down.
-#   unit   a test/unit/*.c with a ROWS constant above 4000 or a fuzz/rounds constant above 500, and no __SANITIZE_THREAD__ / __SANITIZE_ADDRESS__ guard in the file to scale it down
+#   unit   a test/unit/**/*.c (not a *_bench.c: a BENCHES target that no test run executes) with a ROWS constant above 4000 or a fuzz/rounds constant above 500, and no __SANITIZE_THREAD__ / __SANITIZE_ADDRESS__ guard in the file to scale it down
 #   sql    a generate_series of test/sql/*.sql of more than 50000 rows (upper bound minus a literal start) that has no comment (on its line or the line before) saying why the test needs that many rows
 #   slow   the number of names in SLOW_REGRESS (scripts/ci/weights.sh), the regress tests that are jobs of their own
 # scripts/test-budget.allow holds the sites that exist today: KIND TAB NAME TAB COUNT TAB REASON. A count that grew, a site that is not listed and a row that no longer matches (the
@@ -17,7 +17,7 @@ UNIT_ROWS=4000 UNIT_FUZZ=500 SQL_SERIES=50000
 # sites DIR: "unit|sql<TAB>file<TAB>count" for every file with sites over the budget, and "slow<TAB>-<TAB>names"
 sites() {
 	local dir=$1 units=() sqls=()
-	mapfile -t units < <(find "$dir/test/unit" -name '*.c' 2>/dev/null | LC_ALL=C sort)
+	mapfile -t units < <(find "$dir/test/unit" -name '*.c' ! -name '*_bench.c' 2>/dev/null | LC_ALL=C sort)
 	mapfile -t sqls < <(find "$dir/test/sql" -name '*.sql' 2>/dev/null | LC_ALL=C sort)
 	(( ${#units[@]} == 0 )) || awk -v rows="$UNIT_ROWS" -v fuzz="$UNIT_FUZZ" '
 		function flush() { if (n > 0 && !guarded) { f = file; sub(/^.*test\/unit\//, "", f); print "unit\t" f "\t" n } }
@@ -87,15 +87,20 @@ if [[ ${1:-} == --selftest ]]; then
 	printf 'gr->granule_rows = 8192;\n' >"$d/test/unit/field.c"
 	printf 'enum { ROWS_PRED = 100000 };\n' >"$d/test/unit/rows.c"
 	printf 'c.fuzz_rounds = 4000;\n' >"$d/test/unit/fuzz.c"
+	mkdir -p "$d/test/unit/sub" "$d/test/sql/sub"
+	printf 'enum { ROWS = 9000 };\n' >"$d/test/unit/sub/deep.c"
+	printf 'enum { ROWS = 9000 };\n' >"$d/test/unit/sub/deep_bench.c"
 	printf '#define MANY_ROWS 9000\n#ifdef __SANITIZE_THREAD__\n#define SMALL 1\n#endif\n' >"$d/test/unit/guarded.c"
 	printf '// ROWS = 99999\n/* fuzz_rounds = 99999 */\n' >"$d/test/unit/comment.c"
-	expect 'test/unit/rows.c'; expect 'test/unit/fuzz.c'; expect 'test/unit/shift.c'
+	expect 'test/unit/rows.c'; expect 'test/unit/fuzz.c'; expect 'test/unit/shift.c'; expect 'test/unit/sub/deep.c'
+	got=$(verify "$d" "$d/allow"); ! grep -q 'deep_bench' <<<"$got" || { echo "selftest: a *_bench.c is refused: $got"; exit 1; }
 	got=$(verify "$d" "$d/allow"); ! grep -qE 'unit/(ok|guarded|comment|field).c' <<<"$got" || { echo "selftest: a small, guarded or commented unit test is refused: $got"; exit 1; }
-	rm "$d"/test/unit/{rows,fuzz,shift}.c
+	rm "$d"/test/unit/{rows,fuzz,shift}.c "$d"/test/unit/sub/*.c
 	printf 'select 1 from generate_series(1, 50000);\nselect 1 from generate_series(1, 49999);\n-- why: the buffer spills at 60000\nselect 1 from generate_series(1, 60000);\nselect 1 from generate_series(1, 70000); -- the sort spills\n' >"$d/test/sql/ok.sql"
 	printf 'select 1 from generate_series(1, 60000);\nselect 1 from generate_series(1, 1e6);\nselect 1 from generate_series(1, 2000000);\n' >"$d/test/sql/big.sql"
 	printf 'select 1 from generate_series(1, :rows);\nselect 1 from generate_series(1, 10) g, generate_series(1, 10) h;\nselect 1 from generate_series(300001, 300300);\n' >"$d/test/sql/vars.sql"
 	expect 'test/sql/big.sql: 3 site'
+	printf 'select 1 from generate_series(1, 70000);\n' >"$d/test/sql/sub/deep.sql"; expect 'test/sql/sub/deep.sql: 1 site'; rm "$d/test/sql/sub/deep.sql"
 	got=$(verify "$d" "$d/allow"); ! grep -qE 'sql/(ok|vars).sql' <<<"$got" || { echo "selftest: a small, commented or variable series is refused: $got"; exit 1; }
 	printf 'slow\t-\t5\tx\nsql\tbig.sql\t3\tx\n' >"$d/allow"; expect none
 	printf 'slow\t-\t5\tx\nsql\tbig.sql\t2\tx\n' >"$d/allow"; expect 'test/sql/big.sql: 3 site(s), 2 allowed'
