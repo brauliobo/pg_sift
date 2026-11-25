@@ -859,6 +859,8 @@ typedef struct SiftScopeEntity
 	uint32		(*owns_count) (void *arg, int64 member, const int64 *keys, uint32 nkeys, bool semi);
 	/* member_cube for members (ascending, distinct) in one pass over the granules: out[i] is initialized, and has[i] set when it holds a row (NULL: member_cube for each) */
 	void		(*members_cubes) (void *arg, const int64 *members, uint32 n, SiftScopeSpan span, SiftScopeCubeAcc *out, bool *has);
+	/* the member belonged to the scope key in the pairs the object was built from (NULL: not known; the object's own nodes tell) */
+	bool		(*old_owns) (void *arg, int64 member, int64 scope_key);
 } SiftScopeEntity;
 
 /* The ring of a key, decoded from the compact or the wide slot: the entries newest first in out[0..SIFT_SCOPE_TOPK_CAP), the rest zero; returns how many are set */

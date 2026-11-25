@@ -189,8 +189,10 @@ extern SiftScopePairMap *sift_f2s_load_pairs(Relation heap, Relation rel, const 
 extern SiftKeyMap *sift_f2s_key_map(Relation heap, Relation index, const SiftScopeSpec *spec, bool write);
 extern SiftF2ScopeParts *sift_f2s_parts_new(Relation rel, SiftF2Store *store, Relation heap, const SiftF2ScopeCfg *sc, Snapshot snap, SiftScopePairMap *pm, int nparts);
 extern SiftF2ScopeSlot *sift_f2s_parts_add(SiftF2ScopeParts *p, const SiftPartDesc *d, uint64 part_id, uint32 base, uint32 ng);
-extern int	sift_f2s_parts_in_manifest(Relation rel, const SiftManifestRead *mr);
-extern void sift_f2s_parts_of_manifest(SiftF2ScopeParts *p, const SiftManifestRead *mr);
+/* The parts of an entry as the commit of edit (NULL: none) leaves them: the generations it drops out, the parts it replaces and adds in; the entity parts of a manifest read are those of its entries */
+extern SiftPartDesc *sift_f2s_entry_parts(Relation rel, const SiftPartitionEntry *e, const SiftManifestEdit *edit, int *np);
+extern int	sift_f2s_parts_in_manifest(Relation rel, const SiftManifestRead *mr, const SiftManifestEdit *edit);
+extern void sift_f2s_parts_of_manifest(SiftF2ScopeParts *p, const SiftManifestRead *mr, const SiftManifestEdit *edit);
 /* Does every part read as the cubes need: each leaf of the cubes in a chunk of its own form (leaf_direct), and no value the column could not hold; of an index always */
 extern bool sift_f2s_leaf_direct(SiftF2ScopeParts *p, int leaf);
 extern bool sift_f2s_reads_leaf(const SiftF2Store *store, const SiftF2ScopeCfg *sc, int leaf);

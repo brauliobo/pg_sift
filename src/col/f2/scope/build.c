@@ -137,22 +137,22 @@ physical_clustering(SiftF2ScopeParts *p, const SiftScopePairMap *pm)
 
 /* A summary of a table is built over parts whose leaves of the cubes read as the table's own and no column delta of which patches what the summary reads: of an index always */
 static bool
-buildable(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *cfg, const SiftManifestRead *mr, Snapshot snap)
+buildable(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *cfg, const SiftManifestRead *mr, const SiftManifestEdit *edit, Snapshot snap)
 {
 	SiftF2ScopeParts *p;
 	bool		ok;
 
 	if (!sift_f2s_is_table(store))
 		return true;
-	p = sift_f2s_parts_new(rel, store, heap, cfg, snap, NULL, sift_f2s_parts_in_manifest(rel, mr));
-	sift_f2s_parts_of_manifest(p, mr);
+	p = sift_f2s_parts_new(rel, store, heap, cfg, snap, NULL, sift_f2s_parts_in_manifest(rel, mr, edit));
+	sift_f2s_parts_of_manifest(p, mr, edit);
 	ok = sift_f2s_parts_exact(p) && sift_f2s_deltas_clear(rel, store, cfg->ord, mr);
 	MemoryContextDelete(p->gcx);
 	return ok;
 }
 
 static SiftManifestScopeRef
-build_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, Snapshot snap)
+build_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, const SiftManifestEdit *edit, Snapshot snap)
 {
 	SiftF2ScopeCfg cfg = *base;
 	SiftScopeBuildSpec spec;
@@ -170,8 +170,8 @@ build_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg 
 	pm = sift_f2s_build_pairs(heap, rel, &cfg, snap, sift_f2s_key_map(heap, rel, cfg.spec, true));
 	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, false);
 	spec.flags |= cfg.mem != NULL ? SIFT_SMETA_CODED_MEM : 0;
-	p = sift_f2s_parts_new(rel, store, heap, &cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr));
-	sift_f2s_parts_of_manifest(p, mr);
+	p = sift_f2s_parts_new(rel, store, heap, &cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr, edit));
+	sift_f2s_parts_of_manifest(p, mr, edit);
 	pick_rings(p, &cfg, store, &spec);
 	spec.flags |= physical_clustering(p, pm);
 	spec.nrows = 0;
@@ -191,15 +191,15 @@ build_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg 
 	return ref;
 }
 
-typedef SiftManifestScopeRef (*ScopeBuilder) (Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, Snapshot snap);
+typedef SiftManifestScopeRef (*ScopeBuilder) (Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, const SiftManifestEdit *edit, Snapshot snap);
 
 /* What one summary takes to build (the parts it opens, the pairs, the object) lives in a context of its own, the reference to the part it wrote is all that stays */
 static SiftManifestScopeRef
-build_scratch(ScopeBuilder one, Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, Snapshot snap)
+build_scratch(ScopeBuilder one, Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, const SiftManifestEdit *edit, Snapshot snap)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope summary"),
 				old = MemoryContextSwitchTo(cx);
-	SiftManifestScopeRef ref = one(heap, rel, store, base, mr, snap);
+	SiftManifestScopeRef ref = one(heap, rel, store, base, mr, edit, snap);
 
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -221,26 +221,36 @@ current_refs(Relation rel, int nscope)
 	return cur;
 }
 
-/* The directory names the new summaries; the blocks of the ones they replace are released in the same commit */
-static void
-commit_scopes(Relation rel, const SiftManifestRead *mr, SiftManifestScopeRef *refs, int nscope, const bool *replaced)
+/* The extents of the summaries the directory names now and the replaced ones hold: released by the commit that names their successors */
+static SiftExtent *
+replaced_extents(Relation rel, int nscope, const bool *replaced, int *nrel)
 {
 	SiftColMetaPageData meta = sift_col_meta_read(rel);
 	int			nold;
 	SiftManifestScopeRef *old = sift_manifest_read_scopes(rel, &meta, &nold);
 	SiftExtent *release = NULL;
-	int			nrel = 0;
 
+	*nrel = 0;
 	for (int i = 0; i < nold; i++)
 		if (old[i].header_blk != InvalidBlockNumber && old[i].scope_ord < nscope && replaced[old[i].scope_ord])
 		{
 			int			nb;
 			SiftExtent *ext = sift_part_blocks(sift_part_open(rel, old[i].header_blk, old[i].meta_gen, 0), &nb);
 
-			release = release ? repalloc(release, (nrel + nb) * sizeof(SiftExtent)) : palloc(nb * sizeof(SiftExtent));
-			memcpy(release + nrel, ext, nb * sizeof(SiftExtent));
-			nrel += nb;
+			release = release ? repalloc(release, (*nrel + nb) * sizeof(SiftExtent)) : palloc(nb * sizeof(SiftExtent));
+			memcpy(release + *nrel, ext, nb * sizeof(SiftExtent));
+			*nrel += nb;
 		}
+	return release;
+}
+
+/* The directory names the new summaries; the blocks of the ones they replace are released in the same commit */
+static void
+commit_scopes(Relation rel, const SiftManifestRead *mr, SiftManifestScopeRef *refs, int nscope, const bool *replaced)
+{
+	int			nrel;
+	SiftExtent *release = replaced_extents(rel, nscope, replaced, &nrel);
+
 	SIFT_F2_GATE(SIFT_F2_GATE_SCOPE);
 	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = mr->entries[0].part_id,.key_lo = mr->entries[0].key_lo,.update_scopes = refs,.nupdate_scopes = nscope,
 	.release = release,.nrelease = nrel});
@@ -265,7 +275,7 @@ sift_f2_scope_build(Relation heap, Relation rel)
 		if (!replaced[s])
 			continue;
 		sift_f2s_cfg(rel, store, s, &sc);
-		refs[s] = build_scratch(build_one, heap, rel, store, &sc, &mr, snap);
+		refs[s] = build_scratch(build_one, heap, rel, store, &sc, &mr, NULL, snap);
 	}
 	commit_scopes(rel, &mr, refs, nscope, replaced);
 	UnregisterSnapshot(snap);
@@ -308,9 +318,9 @@ part_shape(Relation rel, const SiftPartDesc *d, uint32 part_id, uint32 *ngranule
 }
 
 static void
-diff_parts(Relation rel, const SiftScopeMeta *old, const SiftManifestRead *mr, PartDiff *d)
+diff_parts(Relation rel, const SiftScopeMeta *old, const SiftManifestRead *mr, const SiftManifestEdit *edit, PartDiff *d)
 {
-	uint32		nman = (uint32) sift_f2s_parts_in_manifest(rel, mr);
+	uint32		nman = (uint32) sift_f2s_parts_in_manifest(rel, mr, edit);
 	bool	   *seen = palloc0(Max(old->hdr.nparts, 1));
 	SiftGenMap	named;
 
@@ -319,7 +329,7 @@ diff_parts(Relation rel, const SiftScopeMeta *old, const SiftManifestRead *mr, P
 	for (int k = 0; k < mr->n; k++)
 	{
 		int			np;
-		SiftPartDesc *parts = sift_manifest_read_parts(rel, &mr->entries[k], &np);
+		SiftPartDesc *parts = sift_f2s_entry_parts(rel, &mr->entries[k], edit, &np);
 
 		for (int j = 0; j < np; j++)
 		{
@@ -360,9 +370,9 @@ slot_by_base(const void *a, const void *b)
 
 /* The parts of the manifest where the summary numbers their granules: the ones it names at their bases, the new ones after its last */
 static SiftF2ScopeParts *
-refresh_parts(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *cfg, Snapshot snap, SiftScopePairMap *pm, const SiftManifestRead *mr, const SiftScopeMeta *old)
+refresh_parts(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *cfg, Snapshot snap, SiftScopePairMap *pm, const SiftManifestRead *mr, const SiftManifestEdit *edit, const SiftScopeMeta *old)
 {
-	SiftF2ScopeParts *p = sift_f2s_parts_new(rel, store, heap, cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr));
+	SiftF2ScopeParts *p = sift_f2s_parts_new(rel, store, heap, cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr, edit));
 	uint32		next = (uint32) old->hdr.total_granules;
 	SiftGenMap	named;
 
@@ -370,7 +380,7 @@ refresh_parts(Relation heap, Relation rel, SiftF2Store *store, const SiftF2Scope
 	for (int k = 0; k < mr->n; k++)
 	{
 		int			np;
-		SiftPartDesc *parts = sift_manifest_read_parts(rel, &mr->entries[k], &np);
+		SiftPartDesc *parts = sift_f2s_entry_parts(rel, &mr->entries[k], edit, &np);
 
 		for (int j = 0; j < np; j++)
 		{
@@ -439,7 +449,7 @@ refresh_object(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftSco
 }
 
 static SiftManifestScopeRef
-refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, Snapshot snap)
+refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, const SiftManifestEdit *edit, Snapshot snap)
 {
 	SiftScopeMeta old;
 	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS] = {0};
@@ -455,20 +465,20 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 	SiftManifestScopeRef ref;
 	bool		known;
 
-	if (!buildable(heap, rel, store, base, mr, snap))
+	if (!buildable(heap, rel, store, base, mr, edit, snap))
 		return (SiftManifestScopeRef) {0};
 	if (!sift_f2s_object(rel, base->ord, &old, 0))
 	{
 		sift_f2_scope_refreshes.full++;
-		return build_one(heap, rel, store, base, mr, snap);
+		return build_one(heap, rel, store, base, mr, edit, snap);
 	}
 	if (old.hdr.schema_hash != store->schema->hash)
 	{
 		sift_scope_meta_close(&old);
 		sift_f2_scope_refreshes.full++;
-		return build_one(heap, rel, store, base, mr, snap);
+		return build_one(heap, rel, store, base, mr, edit, snap);
 	}
-	diff_parts(rel, &old, mr, &diff);
+	diff_parts(rel, &old, mr, edit, &diff);
 	for (int j = 0; j < sift_scope_njournals(base->spec); j++)
 		memcpy(&stamp[j], old.hdr.stamps[j].raw, sizeof(SiftConnStamp));
 	known = sift_scope_vouch(rel, base->ord, stamp, snap) == SIFT_CONN_OK &&
@@ -482,7 +492,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 	{
 		sift_scope_meta_close(&old);
 		sift_f2_scope_refreshes.full++;
-		return build_one(heap, rel, store, base, mr, snap);
+		return build_one(heap, rel, store, base, mr, edit, snap);
 	}
 	sift_f2s_cfg_rings_of(&cfg, store, &old);
 	gen = sift_manifest_new_gen(rel, 1);
@@ -491,7 +501,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, true);
 	pm = sift_f2s_load_pairs(heap, rel, &cfg, snap, sift_f2s_key_map(heap, rel, cfg.spec, true), true);
 	cfg.mem = sift_f2s_mem_open(heap, rel, store, &cfg, false);
-	p = refresh_parts(heap, rel, store, &cfg, snap, pm, mr, &old);
+	p = refresh_parts(heap, rel, store, &cfg, snap, pm, mr, edit, &old);
 	src = sift_f2s_source(p);
 	initStringInfo(&out);
 	refresh_object(&old, &spec, pm, &diff, &changed, &src, &out);
@@ -532,7 +542,7 @@ sift_f2_scope_refresh(Relation rel)
 		if (!replaced[s])
 			continue;
 		sift_f2s_cfg(rel, store, s, &sc);
-		ref = build_scratch(refresh_one, heap, rel, store, &sc, &mr, snap);
+		ref = build_scratch(refresh_one, heap, rel, store, &sc, &mr, NULL, snap);
 		replaced[s] = ref.flags != 0;
 		stale -= !replaced[s];
 		if (replaced[s])
@@ -573,4 +583,68 @@ sift_f2_scope_move(Relation rel, int ord)
 	replaced[ord] = true;
 	refs[ord] = write_object(rel, ord, &obj, sift_manifest_new_gen(rel, 1), (uint32) part->hdr.nrows);
 	commit_scopes(rel, &mr, refs, nscope, replaced);
+}
+
+/* Whether the summary of scope ord names a part the edit drops: the compaction it belongs to leaves a summary that no part of the manifest answers for */
+static bool
+names_dropped(Relation rel, int ord, const SiftManifestEdit *edit)
+{
+	SiftScopeMeta old;
+	bool		named = false;
+
+	if (!sift_f2s_object(rel, ord, &old, 0))
+		return false;
+	for (uint32 i = 0; i < old.hdr.nparts && !named; i++)
+		for (int d = 0; d < edit->ndrop && !named; d++)
+			named = old.parts[i].part_gen == edit->drop_gens[d];
+	sift_scope_meta_close(&old);
+	return named;
+}
+
+void
+sift_f2_scope_refresh_for(Relation rel, SiftManifestEdit *e)
+{
+	SiftF2Store *store = sift_f2_store_open(rel);
+	const int	nscope = sift_f2s_nscopes(store);
+	SiftManifestScopeRef *news = current_refs(rel, nscope);
+	bool	   *replaced = palloc0(nscope * sizeof(bool));
+	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+	Snapshot	snap;
+	Relation	heap;
+	SiftExtent *release,
+			   *all;
+	int			nrel,
+				nreplaced = 0;
+
+	for (int s = 0; s < nscope; s++)
+		replaced[s] = sift_f2s_ready(rel, store, s) && names_dropped(rel, s, e);
+	heap = sift_f2s_is_table(store) ? rel : table_open(sift_scope_fact_oid(rel), AccessShareLock);
+	snap = RegisterSnapshot(GetLatestSnapshot());
+	for (int s = 0; s < nscope; s++)
+	{
+		SiftF2ScopeCfg sc;
+		SiftManifestScopeRef ref;
+
+		if (!replaced[s])
+			continue;
+		sift_f2s_cfg(rel, store, s, &sc);
+		ref = build_scratch(refresh_one, heap, rel, store, &sc, &mr, e, snap);
+		replaced[s] = ref.flags != 0;
+		nreplaced += replaced[s];
+		if (replaced[s])
+			news[s] = ref;
+	}
+	UnregisterSnapshot(snap);
+	if (heap != rel)
+		table_close(heap, NoLock);
+	if (nreplaced == 0)
+		return;
+	release = replaced_extents(rel, nscope, replaced, &nrel);
+	all = palloc((e->nrelease + nrel + 1) * sizeof(SiftExtent));
+	memcpy(all, e->release, e->nrelease * sizeof(SiftExtent));
+	memcpy(all + e->nrelease, release, nrel * sizeof(SiftExtent));
+	e->release = all;
+	e->nrelease += nrel;
+	e->update_scopes = news;
+	e->nupdate_scopes = nscope;
 }

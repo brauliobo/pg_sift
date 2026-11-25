@@ -602,6 +602,14 @@ ent_owns(void *arg, int64 member, int64 key)
 	return owns_member(arg, member, key);
 }
 
+static bool
+ent_old_owns(void *arg, int64 member, int64 key)
+{
+	SiftF2ScopeParts *p = arg;
+
+	return sift_spm_owns_key(p->pm_object, member, key);
+}
+
 /* The queried keys (ascending) a member belongs to: the shorter of its keys and the queried ones is looked up in the other */
 static uint32
 ent_owns_count(void *arg, int64 member, const int64 *keys, uint32 nkeys, bool semi)
@@ -893,7 +901,7 @@ SiftScopeEntity
 sift_f2s_entity(SiftF2ScopeParts *p)
 {
 	return (SiftScopeEntity) {p, ent_live, ent_strides, ent_scan_stride, sift_f2s_member_cube, ent_part_dirty, ent_dead_count, ent_dead_rows, ent_granule_rows, ent_granule_cube, ent_owns,
-							  ent_ring_zone, ent_scan_ring, p->added ? sift_f2s_added_cube : NULL, p->added ? sift_f2s_added_months : NULL, sift_f2s_gone_cube, ent_owns_count, sift_f2s_members_cubes};
+							  ent_ring_zone, ent_scan_ring, p->added ? sift_f2s_added_cube : NULL, p->added ? sift_f2s_added_months : NULL, sift_f2s_gone_cube, ent_owns_count, sift_f2s_members_cubes, p->pm_object != NULL ? ent_old_owns : NULL};
 }
 
 void
@@ -914,8 +922,35 @@ sift_f2s_granule_excl(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const u
 	return granule_excl(p, s, g, rows);
 }
 
+SiftPartDesc *
+sift_f2s_entry_parts(Relation rel, const SiftPartitionEntry *e, const SiftManifestEdit *edit, int *np)
+{
+	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, np);
+	int			kept = 0;
+
+	if (edit == NULL || edit->part_id != e->part_id)
+		return parts;
+	parts = repalloc(parts, Max(*np + edit->nadd, 1) * sizeof(SiftPartDesc));
+	for (int i = 0; i < *np; i++)
+	{
+		bool		dropped = false;
+
+		for (int d = 0; d < edit->ndrop && !dropped; d++)
+			dropped = parts[i].part_gen == edit->drop_gens[d];
+		if (dropped)
+			continue;
+		for (int u = 0; u < edit->nupdate; u++)
+			if (parts[i].part_gen == edit->update_parts[u].part_gen)
+				parts[i] = edit->update_parts[u];
+		parts[kept++] = parts[i];
+	}
+	memcpy(parts + kept, edit->add_parts, edit->nadd * sizeof(SiftPartDesc));
+	*np = kept + edit->nadd;
+	return parts;
+}
+
 int
-sift_f2s_parts_in_manifest(Relation rel, const SiftManifestRead *mr)
+sift_f2s_parts_in_manifest(Relation rel, const SiftManifestRead *mr, const SiftManifestEdit *edit)
 {
 	int			total = 0;
 
@@ -923,7 +958,7 @@ sift_f2s_parts_in_manifest(Relation rel, const SiftManifestRead *mr)
 	{
 		int			np;
 
-		(void) sift_manifest_read_parts(rel, &mr->entries[i], &np);
+		(void) sift_f2s_entry_parts(rel, &mr->entries[i], edit, &np);
 		total += np;
 	}
 	return total;
@@ -931,14 +966,14 @@ sift_f2s_parts_in_manifest(Relation rel, const SiftManifestRead *mr)
 
 /* The entity parts of the manifest, in the order the summary numbers their granules */
 void
-sift_f2s_parts_of_manifest(SiftF2ScopeParts *p, const SiftManifestRead *mr)
+sift_f2s_parts_of_manifest(SiftF2ScopeParts *p, const SiftManifestRead *mr, const SiftManifestEdit *edit)
 {
 	uint32		base = 0;
 
 	for (int i = 0; i < mr->n; i++)
 	{
 		int			np;
-		SiftPartDesc *parts = sift_manifest_read_parts(p->rel, &mr->entries[i], &np);
+		SiftPartDesc *parts = sift_f2s_entry_parts(p->rel, &mr->entries[i], edit, &np);
 
 		for (int k = 0; k < np; k++)
 		{

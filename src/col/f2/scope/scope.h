@@ -32,6 +32,9 @@ extern void sift_f2_scope_build(Relation heap, Relation rel);
 /* After a compaction, an insert or an edit of the pairs: the summaries that no longer describe the parts or the pairs are built again; the number of them. A table the summary of whose scope cannot be built now (no journal of its pairs, a column delta, a part of another schema) is left as it is */
 extern int	sift_f2_scope_refresh(Relation rel);
 
+/* A compaction names the summaries again in its own commit: for the edit e (part_id, drop_gens, add_parts and the rest set), the summaries that name a part it drops are refreshed against the parts the commit leaves, and e gets them as update_scopes and the extents of the ones they replace in release; call it before sift_manifest_commit(rel, e), with the partition locked. A summary that needs no refresh, or cannot be built now, is left as it is */
+extern void sift_f2_scope_refresh_for(Relation rel, SiftManifestEdit *e);
+
 /* The summary of scope ord written again as it is into the extents sift_part_prefer_extents holds, the blocks it was in released: the move of the part that holds the end of the file */
 extern void sift_f2_scope_move(Relation rel, int ord);
 

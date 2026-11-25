@@ -766,6 +766,7 @@ gone_rows(SiftF2ScopeParts *p, const struct GoneGranule *gran, uint32 ngran, uin
 {
 	struct SiftF2ScopeRowSet *a = rowset_new(p, false);
 
+	rowset_room(a, total);
 	for (uint32 k = 0; k < ngran; k++)
 	{
 		SiftScopeRows r = {0};

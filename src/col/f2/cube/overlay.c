@@ -18,12 +18,14 @@ typedef enum OldMember
 	OLD_MAYBE
 } OldMember;
 
-/* A node with a list of its members (no Bloom filter) answers exactly; a Bloom filter or a bare range only for "no" */
+/* The pairs the object was built from answer exactly when the entity holds them; else a node with a list of its members (no Bloom filter) does, and a Bloom filter or a bare range only for "no" */
 static OldMember
-old_member(const SiftScopeMeta *m, const SiftScopeL2Root *r, int64 member)
+old_member(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeEntity *e, int64 key, int64 member)
 {
 	OldMember	seen = OLD_NO;
 
+	if (r != NULL && e->old_owns != NULL)
+		return e->old_owns(e->arg, member, key) ? OLD_YES : OLD_NO;
 	for (uint32 i = 0; r != NULL && i < r->l1_count; i++)
 	{
 		const SiftScopeL1Node *nd = &m->nodes[r->l1_first + i];
@@ -53,7 +55,7 @@ sift_scope_overlay_classify(const SiftScopeMeta *m, const SiftScopeL2Root *r, in
 		if (kept != NULL && kept[i])
 			continue;
 		own = e->owns(e->arg, changed[i], key);
-		was = old_member(m, r, changed[i]);
+		was = old_member(m, r, e, key, changed[i]);
 		out->changed[out->nchanged++] = changed[i];
 		if (own)
 			out->own[out->nown++] = changed[i];
