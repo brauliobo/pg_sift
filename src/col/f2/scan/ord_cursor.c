@@ -210,8 +210,10 @@ cur_load(SiftOrdStream *os, OrdCursor *c, OrdReq q, bool fwd)
 	if ((c->e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 	{
 		int			nexc = c->pcx.pp.nexc;
+		const SiftVariantExcSummary *exc = sift_cdi_scan_exceptions(s, os->rel, os->schema, c->e, c->pin->part, os->snap, c->pcx.pp.exc, &nexc);
 
-		sift_cdi_scan_exceptions(s, os->rel, os->schema, c->e, c->pin->part, os->snap, c->pcx.pp.exc, &nexc);
+		if (exc != c->pcx.pp.exc)
+			pfree((void *) exc);
 	}
 	g = cur_granule(c, q.w.gi);
 	s->cands = c->cands;

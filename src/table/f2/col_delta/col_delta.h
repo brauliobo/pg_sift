@@ -35,7 +35,7 @@
 
 #define SIFT_COL_DELTA_MIN_LIVE_ATTRS	2		/* a table of one column writes a row about as small as a patch */
 #define SIFT_COL_DELTA_MAX_RATIO_NUM	1		/* changed columns : live columns, at most 1 : 4, and one column of a table of two or three */
-#define SIFT_COL_DELTA_MAX_RATIO_DEN	4
+#define SIFT_COL_DELTA_MAX_RATIO_DEN	2
 #define SIFT_COL_DELTA_MAX_COLS_PER_REC	32		/* the changed columns of a sift_table record */
 #define SIFT_COL_DELTA_MAX_COLS_INDEX	8		/* the changed leaves of a sift_col record */
 #define SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR	(SIFT_COL_DELTA_MAX_COLS_INDEX + 1)	/* a record of a sift_col index also holds the new address of the row */

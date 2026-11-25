@@ -69,7 +69,7 @@ time_bound(const TopSrc *s, int key, const int64 *tmin, const int64 *tmax)
 static bool
 part_time_known(const SiftPartDesc *d, int t)
 {
-	return (d->flags & (t == 0 ? SIFT_PART_FLAG_HAS_TIME0 : SIFT_PART_FLAG_HAS_TIME1)) && d->col_delta_blk == InvalidBlockNumber;
+	return d->flags & (t == 0 ? SIFT_PART_FLAG_HAS_TIME0 : SIFT_PART_FLAG_HAS_TIME1);
 }
 
 /* The leading key inside the keys [lo, hi] of a unit; a column delta may move a value, so a unit that has one is unknown */
@@ -85,12 +85,9 @@ lead_bound(const TopSrc *s, int key, const uint8 *lo, const uint8 *hi)
 }
 
 static bool
-list_stable(const SiftPlanPartList *list)
+patched(const SiftPartitionEntry *e)
 {
-	for (int j = 0; j < list->nparts; j++)
-		if (list->parts[j].col_delta_blk != InvalidBlockNumber)
-			return false;
-	return true;
+	return (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0;
 }
 
 static TopPartition *
@@ -265,7 +262,6 @@ top_seed(void *src, SiftTournament *t)
 	for (int i = 0; i < plan->npartitions; i++)
 	{
 		const SiftPartitionEntry *e = &plan->partitions[i];
-		const bool	stable = list_stable(&plan->partlists[i]);
 		const bool	dirty = f2v6_time_dirty(s->c, e);
 		SiftTournBound k0 = dirty ? unknown_bound : time_bound(s, 0, e->time_min, e->time_max),
 					k1 = s->spec.nkeys > 1 && !dirty ? time_bound(s, 1, e->time_min, e->time_max) : unknown_bound;
@@ -278,7 +274,7 @@ top_seed(void *src, SiftTournament *t)
 		for (int j = 0; j < plan->partlists[i].nparts; j++)
 			if (!part_time_known(&plan->partlists[i].parts[j], 0) || !part_time_known(&plan->partlists[i].parts[j], 1))
 				k0 = k1 = unknown_bound;
-		if (stable && !k0.known)
+		if (!patched(e) && !k0.known)
 			k0 = lead_bound(s, 0, e->key_lo, e->key_hi);
 		sift_tourn_push(t, STOK_PARTITION, (uint32) i, 0, 0, &k0, s->spec.nkeys > 1 ? &k1 : NULL);
 	}
@@ -306,7 +302,7 @@ top_expand(void *src, SiftTournament *t, const SiftTopNSchedTok *tok)
 				sift_f2_v6_eval_skips(s->ev)->parts++;
 				continue;
 			}
-			if (!k0.known && d->col_delta_blk == InvalidBlockNumber)
+			if (!k0.known && !patched(e))
 				k0 = lead_bound(s, 0, d->key_lo, d->key_hi);
 			sift_tourn_push(t, STOK_PART, tok->part_slot, 0, (uint32) j, &k0, s->spec.nkeys > 1 ? &k1 : NULL);
 		}
@@ -418,6 +414,7 @@ sift_f2_v6_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Inp
 	MemoryContext cx = sift_mem_allocset_create(estate->es_query_cxt, "sift f2 v6 topn");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	TopSrc	   *s = palloc0(sizeof(TopSrc));
+	const SiftColRel *rel;
 	const int  *evl;
 
 	s->cx = cx;
@@ -425,12 +422,13 @@ sift_f2_v6_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Inp
 	s->spec = *spec;
 	s->c = f2v6_begin(cx, estate->es_snapshot, spec->indexoid);
 	s->ev = sift_f2_v6_eval_new(cx, s->c, in, quals, false);
+	rel = sift_col_rel(s->c->index);
 	s->partitions = palloc0(Max(s->c->plan->npartitions, 1) * sizeof(TopPartition));
 	evl = sift_f2_v6_eval_leaves(s->ev, &s->nleaves);
 	memcpy(s->leaves, evl, s->nleaves * sizeof(int));
 	for (int k = 0; k < spec->nkeys; k++)
 	{
-		const SiftColDef *d = &s->c->schema->cols[s->c->rel->first[spec->key[k].attno]];
+		const SiftColDef *d = &rel->schema->cols[rel->first[spec->key[k].attno]];
 
 		if (d->lanes > 1 || (d->store != SIFT_COLS_INT && d->store != SIFT_COLS_F4 && d->store != SIFT_COLS_F8))
 		{
@@ -443,7 +441,7 @@ sift_f2_v6_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Inp
 		s->leaves[s->nleaves++] = s->key_leaf[k];
 		s->time_slot[k] = s->c->f->spec.time_cols[0] == s->key_leaf[k] + 1 ? 0 : s->c->f->spec.time_cols[1] == s->key_leaf[k] + 1 ? 1 : -1;
 	}
-	s->lead_key = s->c->f->nkey > 0 && s->key_leaf[0] == s->c->f->key_cols[0] && s->c->schema->cols[s->key_leaf[0]].store == SIFT_COLS_INT;
+	s->lead_key = s->c->f->nkey > 0 && s->key_leaf[0] == s->c->f->key_cols[0] && rel->schema->cols[s->key_leaf[0]].store == SIFT_COLS_INT;
 	s->lead_flags = s->c->f->spec.sort_flags[0];
 	MemoryContextSwitchTo(old);
 	*dst = (SiftV6TopNSource) {.ops = {.expand = top_expand,.frontier_next = top_frontier_next,.scan = top_scan},.src = s,.device = top_device,.seed = top_seed,.fetch = top_fetch,.close = top_close,.skips = sift_f2_v6_eval_skips(s->ev)};
