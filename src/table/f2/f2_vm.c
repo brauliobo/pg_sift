@@ -115,10 +115,15 @@ span_add(VmPlan *plan, Spans *s, uint64 lo, uint64 hi, TransactionId xid, uint32
 	s->v[s->n++] = (Span) {lo, hi, xid, part_id, part};
 }
 
+/* The 32 bits of a transaction id name one transaction only within 2^31 of the next one; an older transaction is older than every snapshot, and its low bits would read as a future one */
+#define XID_SPAN	(UINT64CONST(1) << 31)
+
 TransactionId
-sift_vm_horizon_xid(FullTransactionId fx, FullTransactionId next pg_attribute_unused())
+sift_vm_horizon_xid(FullTransactionId fx, FullTransactionId next)
 {
-	return FullTransactionIdIsValid(fx) ? XidFromFullTransactionId(fx) : InvalidTransactionId;
+	uint64		age = U64FromFullTransactionId(next) > U64FromFullTransactionId(fx) ? U64FromFullTransactionId(next) - U64FromFullTransactionId(fx) : 0;
+
+	return FullTransactionIdIsValid(fx) && age < XID_SPAN ? XidFromFullTransactionId(fx) : InvalidTransactionId;
 }
 
 static void

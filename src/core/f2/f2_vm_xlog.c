@@ -164,13 +164,28 @@ builds_page(XLogReaderState *r)
 	return (XLogRecGetBlock(r, 0)->flags & BKPBLOCK_WILL_INIT) != 0;
 }
 
+/* The data of the record, which holds at least len bytes */
+static const void *
+record_data(XLogReaderState *r, Size len)
+{
+	if (XLogRecGetDataLen(r) < len)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift visibility map record of %u bytes where %zu are needed", XLogRecGetDataLen(r), len)));
+	return XLogRecGetData(r);
+}
+
 static void
 redo_set(XLogReaderState *r)
 {
-	const SiftXlVmSet *rec = (const SiftXlVmSet *) XLogRecGetData(r);
-	const uint16 *word_idx = (const uint16 *) (rec + 1);
-	const char *packed = (const char *) (word_idx + rec->nwords);
+	const SiftXlVmSet *rec = record_data(r, sizeof(SiftXlVmSet));
+	const uint16 *word_idx;
+	const char *packed;
 	Buffer		buf;
+
+	if (rec->nwords > SIFT_VM_WORDS_PER_PAGE)
+		ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift visibility map record with %u words", rec->nwords)));
+	(void) record_data(r, sizeof(SiftXlVmSet) + (Size) rec->nwords * (sizeof(uint16) + sizeof(uint64)));
+	word_idx = (const uint16 *) (rec + 1);
+	packed = (const char *) (word_idx + rec->nwords);
 
 	/* the bits tell a query that a row is there for it without asking the table: one whose snapshot is not past every transaction they stand for must go first */
 	if (InHotStandby && TransactionIdIsNormal(rec->snapshotConflictHorizon))
@@ -180,8 +195,6 @@ redo_set(XLogReaderState *r)
 		Page		page = BufferGetPage(buf);
 		uint64		bits[SIFT_VM_WORDS_PER_PAGE];
 
-		if (rec->nwords > SIFT_VM_WORDS_PER_PAGE)
-			elog(PANIC, "sift visibility map record with %u words", rec->nwords);
 		for (int i = 0; i < rec->nwords; i++)
 		{
 			if (word_idx[i] >= SIFT_VM_WORDS_PER_PAGE)
@@ -201,7 +214,7 @@ redo_set(XLogReaderState *r)
 static void
 redo_clear(XLogReaderState *r)
 {
-	const SiftXlVmClear *rec = (const SiftXlVmClear *) XLogRecGetData(r);
+	const SiftXlVmClear *rec = record_data(r, sizeof(SiftXlVmClear));
 	Buffer		buf;
 
 	if (XLogReadBufferForRedoExtended(r, 0, RBM_ZERO_ON_ERROR, false, &buf) == BLK_NEEDS_REDO)
@@ -246,8 +259,11 @@ static void
 vm_desc(StringInfo buf, XLogReaderState *r)
 {
 	const char *rec = XLogRecGetData(r);
+	const bool	set = (XLogRecGetInfo(r) & ~XLR_INFO_MASK) == SIFT_XLOG_VM_SET;
 
-	if ((XLogRecGetInfo(r) & ~XLR_INFO_MASK) == SIFT_XLOG_VM_SET)
+	if (XLogRecGetDataLen(r) < (set ? sizeof(SiftXlVmSet) : sizeof(SiftXlVmClear)))
+		appendStringInfo(buf, "short record of %u bytes", XLogRecGetDataLen(r));
+	else if (set)
 	{
 		const SiftXlVmSet *s = (const SiftXlVmSet *) rec;
 
