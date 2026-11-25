@@ -9,6 +9,7 @@
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
@@ -22,19 +23,29 @@
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "col/am/preds.h"
 
-/* a constant, or a parameter the scan reads when it starts (and again when it is rescanned) */
+/* an expression of constants and stable functions: its value is the same for the whole scan, which reads it when it starts */
+static bool
+stable_operand(const Node *n)
+{
+	return !IsA(n, Const) && !IsA(n, Param) && !contain_var_clause((Node *) n) && !contain_volatile_functions((Node *) n) && !contain_subplans((Node *) n) &&
+		!expression_returns_set((Node *) n) && !agg_node_has_extern_param((Node *) n);
+}
+
+/* a constant, a parameter, or a stable expression the scan reads when it starts (and again when it is rescanned) */
 static bool
 operand_usable(const V6Plan *p, const Node *n)
 {
 	if (IsA(n, Param))
 		return !p->in_filter && (((const Param *) n)->paramkind == PARAM_EXTERN || ((const Param *) n)->paramkind == PARAM_EXEC);
+	if (stable_operand(n))
+		return !p->in_filter;
 	return IsA(n, Const) && !((const Const *) n)->constisnull;
 }
 
 static bool
 is_operand(const Node *n)
 {
-	return IsA(n, Const) || IsA(n, Param);
+	return IsA(n, Const) || IsA(n, Param) || stable_operand(n);
 }
 
 static Expr *
@@ -67,7 +78,7 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 	const bool	index = !p->is_table;
 	int			strat = get_op_opfamily_strategy(q->opno, family);
 
-	if (strat == 0 && (index || !text) && !p->in_filter)
+	if (strat == 0 && (index || !text) && !p->in_filter && !stable_operand(operand))
 		strat = sift_v6_qual_private_strategy(q->opno, family);
 	if (text && (p->is_table || !sift_text_bytes_equal(q->inputcollid)))
 		return 0;
