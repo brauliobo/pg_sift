@@ -234,6 +234,7 @@ struct SiftColDeltaScan
 	SiftTblVis *vis;
 	MemoryContext cx;
 	bool		valid;			/* map answers for the granule asked: no reset since it was made */
+	uint64		attnum_bloom;	/* 0: every attribute */
 	bool		retained;		/* key says what map was made for: after a reset it is used again when nothing it depends on changed */
 	MapKey		key;
 	SiftColDeltaPartMap *map;
@@ -277,6 +278,13 @@ scan_drop_map(SiftColDeltaScan *ds)
 	ds->map = NULL;
 	ds->retained = false;
 	ds->valid = false;
+}
+
+void
+sift_col_delta_scan_set_attnums(SiftColDeltaScan *ds, uint64 attnum_bloom)
+{
+	ds->attnum_bloom = attnum_bloom | sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP);
+	scan_drop_map(ds);
 }
 
 SiftColDeltaPartMap *
@@ -348,7 +356,8 @@ sift_col_delta_scan_map(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, c
 		{
 			MemoryContext map_cx = sift_col_delta_part_map_context(ds->cx);
 			MemoryContext old = MemoryContextSwitchTo(map_cx);
-			SiftColDeltaPrune prune = {.part_gen = gb->pin->part_gen,.by_granule = !same_part,.granule_lo = gb->granule_id,.granule_hi = gb->granule_id};
+			SiftColDeltaPrune prune = {.part_gen = gb->pin->part_gen,.by_granule = !same_part,.granule_lo = gb->granule_id,.granule_hi = gb->granule_id,
+								   .attnum_bloom = ds->attnum_bloom};
 			bool		settled = false;
 			SiftColDeltaPartMap *loaded;
 

@@ -745,6 +745,10 @@ extern SiftColDeltaPartMap *sift_col_delta_load_part_map(Relation rel, const Sif
 typedef struct SiftColDeltaScan SiftColDeltaScan;
 extern SiftColDeltaScan *sift_col_delta_scan_begin(Relation rel, SiftTblVis *vis, MemoryContext cx);
 extern void sift_col_delta_scan_reset(SiftColDeltaScan *ds);
+
+/* The attributes the scan reads (sift_cd_att_bit of each): the map leaves out the pages that patch none of them, and the row address changes always. Before the first map; none set: every attribute */
+extern void sift_col_delta_scan_set_attnums(SiftColDeltaScan *ds, uint64 attnum_bloom);
+
 extern void sift_col_delta_scan_attach(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, SiftF2GranuleBuf *gb);
 
 /* The patches of the granule the scan's snapshot sees, NULL for none: the map of the part is read once for the scan and stays while its granules change; the granule is not touched */

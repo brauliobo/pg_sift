@@ -637,6 +637,17 @@ sift_f2_store_scan_next_run(SiftStoreScan *s, bool ordered)
 
 /* ---- the scan ---- */
 
+static uint64
+wanted_attnum_bloom(const SiftStoreScan *s)
+{
+	uint64		bloom = 0;
+
+	for (int leaf = 0; leaf < s->store->ncols; leaf++)
+		if (s->want[leaf])
+			bloom |= sift_cd_att_bit(s->store->leaf_attno[leaf]);
+	return bloom;
+}
+
 SiftStoreScan *
 sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 {
@@ -671,6 +682,7 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 		sift_tbl_f2_predicate_scan(o->rel, o->snap);
 		sift_tbl_f2_vis_begin(&s->tvis, o->rel, o->snap);
 		s->delta = sift_col_delta_scan_begin(o->rel, &s->tvis, cx);
+		sift_col_delta_scan_set_attnums(s->delta, wanted_attnum_bloom(s));
 	}
 	else
 	{
