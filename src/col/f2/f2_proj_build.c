@@ -394,52 +394,6 @@ refresh_partition(Relation rel, const SiftF2Store *store, const SiftProjColumns 
 	return built;
 }
 
-int
-sift_proj_refresh(Relation rel, const SiftF2Store *store)
-{
-	SiftColMetaPageData meta = sift_col_meta_read(rel);
-	int			nrefs,
-				ndefs,
-				built = 0;
-	SiftProjColumns cols;
-	SiftProjDef *defs;
-	SiftManifestRead mr;
-	MemoryContext partition_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift projection partition");
-
-	if (meta.nprojs == 0)
-	{
-		MemoryContextDelete(partition_cx);
-		return 0;
-	}
-	(void) sift_manifest_read_projs(rel, &meta, &nrefs);
-	cols = sift_proj_columns_of_store(rel, store);
-	defs = sift_proj_defs_load(rel, &cols, &ndefs);
-	mr = sift_manifest_read_range(rel, NULL, NULL);
-	for (int i = 0; i < mr.n; i++)
-	{
-		MemoryContext old = MemoryContextSwitchTo(partition_cx);
-
-		built += refresh_partition(rel, store, &cols, defs, ndefs, &mr.entries[i]);
-		MemoryContextSwitchTo(old);
-		MemoryContextReset(partition_cx);
-	}
-	MemoryContextDelete(partition_cx);
-	sift_mem_release_os(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
-	return built;
-}
-
-bool
-sift_proj_relation_has(Relation rel)
-{
-	return sift_col_meta_read(rel).nprojs > 0;
-}
-
-SiftExtent *
-sift_proj_part_extents(Relation rel, const SiftPartDesc *d, int *n)
-{
-	return sift_part_blocks(sift_part_open(rel, d->header_blk, d->part_gen, SIFT_PROJ_PART_ID), n);
-}
-
 static SiftManifestEdit
 directory_edit(Relation rel, const SiftManifestProjUpdate *upd)
 {
@@ -461,8 +415,8 @@ free_proj_id(const SiftManifestProjRef *refs, int nrefs)
 	return id;
 }
 
-void
-sift_proj_create(Relation rel, const SiftF2Store *store, const char *name, const SiftProjSpec *spec, const SiftProjColumns *cols, const char *canonical)
+static uint16
+register_projection(Relation rel, const char *name, const SiftProjSpec *spec, uint32 spec_hash)
 {
 	SiftColMetaPageData meta = sift_col_meta_read(rel);
 	int			nrefs;
@@ -471,21 +425,96 @@ sift_proj_create(Relation rel, const SiftF2Store *store, const char *name, const
 	SiftManifestProjUpdate upd = {.deltas = &d, .ndeltas = 1};
 	SiftManifestEdit e;
 
-	(void) cols;
 	d.proj_id = free_proj_id(refs, nrefs);
 	d.ref.proj_id = d.proj_id;
 	d.ref.kind = spec->kind;
 	d.ref.state = SIFT_PROJ_BUILDING;
-	d.ref.spec_hash = sift_proj_spec_hash(canonical);
+	d.ref.spec_hash = spec_hash;
 	d.ref.flags = sift_proj_spec_flags(spec);
 	strlcpy(d.ref.name, name, sizeof(d.ref.name));
 	e = directory_edit(rel, &upd);
 	sift_manifest_commit(rel, &e);
-	(void) sift_proj_refresh(rel, store);
-	d = (SiftProjDelta) {.proj_id = d.proj_id, .set_state = true, .state = SIFT_PROJ_READY};
-	e = directory_edit(rel, &upd);
+	return d.proj_id;
+}
+
+static void
+set_ready(Relation rel, uint16 proj_id)
+{
+	SiftProjDelta d = {.proj_id = proj_id, .set_state = true, .state = SIFT_PROJ_READY};
+	SiftManifestProjUpdate upd = {.deltas = &d, .ndeltas = 1};
+	SiftManifestEdit e = directory_edit(rel, &upd);
+
 	SIFT_CRASH_POINT(f2_proj_build_pre_commit);
 	sift_manifest_commit(rel, &e);
+}
+
+/* The definitions of sift.projection_defs the directory has no projection of (a restore, a REINDEX or a rewrite of the relation, the reset of an unlogged one: the directory starts empty) are entered again, building */
+static int
+register_lost(Relation rel, const SiftProjDef *defs, int ndefs, uint16 *ids)
+{
+	SiftColMetaPageData meta = sift_col_meta_read(rel);
+	int			nrefs,
+				n = 0;
+	const SiftManifestProjRef *refs = sift_manifest_read_projs(rel, &meta, &nrefs);
+
+	for (int i = 0; i < ndefs; i++)
+		if (defs[i].spec_ok && sift_proj_find(refs, nrefs, defs[i].name) == NULL)
+			ids[n++] = register_projection(rel, defs[i].name, &defs[i].spec, defs[i].hash);
+	return n;
+}
+
+int
+sift_proj_refresh(Relation rel, const SiftF2Store *store)
+{
+	int			ndefs,
+				nlost,
+				built = 0;
+	SiftProjColumns cols = sift_proj_columns_of_store(rel, store);
+	SiftProjDef *defs = sift_proj_defs_load(rel, &cols, &ndefs);
+	uint16	   *lost = palloc(Max(ndefs, 1) * sizeof(uint16));
+	SiftManifestRead mr;
+	MemoryContext partition_cx;
+
+	nlost = register_lost(rel, defs, ndefs, lost);
+	if (sift_col_meta_read(rel).nprojs == 0)
+		return 0;
+	partition_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift projection partition");
+	mr = sift_manifest_read_range(rel, NULL, NULL);
+	for (int i = 0; i < mr.n; i++)
+	{
+		MemoryContext old = MemoryContextSwitchTo(partition_cx);
+
+		built += refresh_partition(rel, store, &cols, defs, ndefs, &mr.entries[i]);
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(partition_cx);
+	}
+	MemoryContextDelete(partition_cx);
+	for (int i = 0; i < nlost; i++)
+		set_ready(rel, lost[i]);
+	sift_mem_release_os(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
+	return built;
+}
+
+bool
+sift_proj_relation_has(Relation rel)
+{
+	return sift_col_meta_read(rel).nprojs > 0;
+}
+
+SiftExtent *
+sift_proj_part_extents(Relation rel, const SiftPartDesc *d, int *n)
+{
+	return sift_part_blocks(sift_part_open(rel, d->header_blk, d->part_gen, SIFT_PROJ_PART_ID), n);
+}
+
+void
+sift_proj_create(Relation rel, const SiftF2Store *store, const char *name, const SiftProjSpec *spec, const SiftProjColumns *cols, const char *canonical)
+{
+	uint16		proj_id = register_projection(rel, name, spec, sift_proj_spec_hash(canonical));
+
+	(void) cols;
+	(void) sift_proj_refresh(rel, store);
+	set_ready(rel, proj_id);
 }
 
 bool

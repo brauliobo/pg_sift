@@ -133,8 +133,7 @@ compact_partition(Relation rel, const SiftPartSpec *spec, const SiftPartitionEnt
 static void
 refresh_projections(Relation rel)
 {
-	if (sift_proj_relation_has(rel))
-		(void) sift_proj_refresh(rel, sift_f2_store_open(rel));
+	(void) sift_proj_refresh(rel, sift_f2_store_open(rel));
 }
 
 static void
