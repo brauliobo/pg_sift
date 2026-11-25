@@ -7,6 +7,7 @@
 #include "access/htup_details.h"
 #include "access/transam.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -22,6 +23,7 @@
 #include "col/f2/scan/scan_int.h"
 #include "core/hash.h"
 #include "core/xid_cache.h"
+#include "table/f2/f2_col_delta_dir.h"
 
 /* ---- what the chain asks of transactions ---- */
 
@@ -86,6 +88,31 @@ scan_state(F2Scan *s, const SiftColSchema *schema, Snapshot snap)
 	return s->cd;
 }
 
+/* The pages of the chain that can hold a patch of the part (those the directory of the chain names for it, or for no one part): the other parts' are not read */
+static bool
+part_chain_of(Relation rel, const SiftPartitionEntry *e, uint64 part_gen, SiftColDeltaChain *chain)
+{
+	SiftColDeltaDiskReader d = {.rel = rel,.part_id = (uint32) e->part_id};
+	SiftColDeltaPageReader reader = sift_col_delta_disk_reader(&d);
+	SiftColDeltaPrune prune = {.part_gen = part_gen};
+	SiftColDeltaAnchor anchor;
+	const char *why;
+
+	memset(chain, 0, sizeof(*chain));
+	if ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
+		return false;
+	anchor = sift_manifest_read_col_delta(rel, e);
+	why = sift_col_delta_chain_read_pruned(&anchor, &reader, &prune, chain);
+	if (why != NULL)
+	{
+		if (RecoveryInProgress())
+			ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), errmsg("sift index \"%s\": a column delta page was recycled during the scan, retry", RelationGetRelationName(rel)),
+							errhint("Set hot_standby_feedback = on, or keep sift.standby_conflicts on at the primary.")));
+		SIFT_CORRUPT(rel, "%s (partition %llu).", why, (unsigned long long) e->part_id);
+	}
+	return sift_col_delta_anchor_has_chain(&anchor);
+}
+
 SiftColDeltaPartMap *
 sift_cdi_part_map(Relation rel, const SiftPartitionEntry *e, const SiftPart *part, SiftXidCache *xc)
 {
@@ -94,7 +121,7 @@ sift_cdi_part_map(Relation rel, const SiftPartitionEntry *e, const SiftPart *par
 	const char *why;
 	SiftColDeltaPartMap *map = NULL;
 
-	if (chain_of(rel, e, &chain))
+	if (part_chain_of(rel, e, part->hdr.part_gen, &chain))
 	{
 		sift_col_delta_ops_make(&ops, xc, snapshot_sees);
 		map = sift_col_delta_build_part_map(&chain, part->hdr.part_gen, part->hdr.ngranules, &ops, &why);
