@@ -7,6 +7,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/index.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_authid_d.h"
 #include "access/htup_details.h"
@@ -34,6 +35,14 @@ sift_may_inspect(Oid heap)
 	if (has_privs_of_role(user, ROLE_PG_MONITOR))
 		return true;
 	return OidIsValid(heap) && pg_class_aclcheck_ext(heap, user, ACL_SELECT | ACL_MAINTAIN, &missing) == ACLCHECK_OK && !missing;
+}
+
+bool
+sift_may_inspect_rel(Oid rel)
+{
+	char		kind = get_rel_relkind(rel);
+
+	return sift_may_inspect(kind == RELKIND_INDEX || kind == RELKIND_PARTITIONED_INDEX ? IndexGetRelation(rel, true) : rel);
 }
 
 void

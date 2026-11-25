@@ -12,6 +12,7 @@
 #include "utils/rel.h"
 #include "utils/tuplestore.h"
 
+#include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/quarantine.h"
 #include "core/quarantine_int.h"
@@ -77,6 +78,8 @@ sift_quarantine_rows(PG_FUNCTION_ARGS)
 		Datum		v[11];
 		bool		nulls[11] = {false};
 
+		if (!sift_may_inspect_rel(copy[i].indexoid))
+			continue;
 		v[0] = ObjectIdGetDatum(copy[i].indexoid);
 		v[1] = ObjectIdGetDatum(copy[i].file.rel);
 		v[2] = TimestampTzGetDatum(copy[i].detected_at);
@@ -101,7 +104,7 @@ sift_meta_quarantined(PG_FUNCTION_ARGS)
 	Relation	rel;
 	bool		flagged = false;
 
-	if (!ConditionalLockRelationOid(indexoid, AccessShareLock))
+	if (!sift_may_inspect_rel(indexoid) || !ConditionalLockRelationOid(indexoid, AccessShareLock))
 		PG_RETURN_BOOL(false);
 	rel = try_relation_open(indexoid, NoLock);
 	if (rel != NULL && sift_quar_is_sift_index(rel))

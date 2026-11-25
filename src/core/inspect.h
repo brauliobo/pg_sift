@@ -10,6 +10,9 @@
 /* Whether the caller may look at the sift objects of the table: SELECT on it, a maintain right on it, or membership of pg_monitor */
 extern bool sift_may_inspect(Oid heap);
 
+/* sift_may_inspect of the table of an index, or of a table: what the registries of the server (quarantine, jobs, progress) filter their rows by */
+extern bool sift_may_inspect_rel(Oid rel);
+
 /* Errors unless sift_may_inspect: rel is a sift index, or a sift_table */
 extern void sift_check_inspect(Relation rel);
 

@@ -16,6 +16,7 @@
 
 #include "col/dsmreg.h"
 #include "core/f2/manifest.h"
+#include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/progress.h"
 #include "core/sql.h"
@@ -224,6 +225,8 @@ sift_progress_rows(PG_FUNCTION_ARGS)
 		Datum		v[8];
 		bool		nulls[8] = {false};
 
+		if (!sift_may_inspect_rel(copy[i].index))
+			continue;
 		v[0] = Int32GetDatum(copy[i].pid);
 		v[1] = ObjectIdGetDatum(copy[i].index);
 		v[2] = CStringGetTextDatum(sift_job_name(copy[i].job));

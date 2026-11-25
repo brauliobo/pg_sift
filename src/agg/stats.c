@@ -8,9 +8,12 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_authid_d.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "port/atomics.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
 
@@ -157,6 +160,10 @@ stats_rows(FunctionCallInfo fcinfo, bool local)
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	SharedStats *t = local ? NULL : table();
 
+	if (!local && !has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_STATS))
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE), errmsg("permission denied to read the counters of the server"),
+						errdetail("Only roles with the privileges of the \"%s\" role may read what every session of the server did.", "pg_read_all_stats"),
+						errhint("sift.stats(local => true) returns the counters of this session.")));
 	if (!local && t == NULL)
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift.stats: the counters of the server need shared memory"),
 						errdetail("%s", unavailable_why), errhint("sift.stats(local => true) returns the counters of this session.")));

@@ -11,6 +11,7 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 
+#include "core/inspect.h"
 #include "core/maint_pacer.h"
 #include "core/maint_sched.h"
 #include "core/sql.h"
@@ -87,7 +88,7 @@ sift_maint_queue(PG_FUNCTION_ARGS)
 		Datum		v[MQ_NCOLS] = {0};
 		bool		nulls[MQ_NCOLS] = {false};
 
-		if (q->db != MyDatabaseId)
+		if (q->db != MyDatabaseId || !sift_may_inspect_rel(q->rel))
 			continue;
 		nulls[MQ_PID] = q->queued;
 		v[MQ_PID] = Int32GetDatum(q->pid);
