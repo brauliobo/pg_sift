@@ -1,5 +1,5 @@
--- A text query (body @@> 'q') next to a lookup join: the star scan of SiftAggV6 reads its fact rows in passes of its own and takes no hits of a text index, so such a statement is not planned as one.
--- Each statement returns what the same statement does with a volatile qual (the plan of PostgreSQL), and no plan has a Search and Lookup Joins together.
+-- A text query (body @@> 'q') next to a lookup join: the star scan of SiftAggV6 takes the hits of the text index as the rows it reads (a Search line next to its Lookup Joins), except for a semi join.
+-- Each statement returns what the same statement does with a volatile qual (the plan of PostgreSQL), and the plan column says whether the scan has a Search and Lookup Joins together.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 SET sift.test_create_format1 = off;
