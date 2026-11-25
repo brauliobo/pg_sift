@@ -6,7 +6,7 @@
 #include "col/f2/f2.h"
 #include "col/f2/f2_pred.h"
 
-/* The text of a column held as a type (SIFT_ZONE_PROMO) is a literal of the type's spelling only when its value is in the zone: no other row can equal it, and a granule with a row that is not of the type is not ruled out */
+/* The text of a column held as a type (SIFT_ZONE_PROMO) is a literal of the type's spelling only when its value is in the zone: no other row can equal it, and a granule with a row that is not of the type is not ruled out (under a collation that equates other spellings, no literal is ruled out by its spelling) */
 static ZoneVerdict
 promo_verdict(const SiftZone *z, const SiftColPred *p)
 {
@@ -152,7 +152,7 @@ sift_f2_zone_verdict(const SiftColDef *d, const SiftColPred *p, const SiftZone *
 			return nulls ? Z_ALL : Z_NONE;
 		return z->nnull == 0 ? (nulls ? Z_NONE : Z_ALL) : Z_MAYBE;
 	}
-	if ((z->flags & SIFT_ZONE_PROMO) && d->store == SIFT_COLS_STR && d->parent < 0 && d->lane == 0 && (p->op == SIFT_COLOP_EQ || p->op == SIFT_COLOP_IN))
+	if ((z->flags & SIFT_ZONE_PROMO) && d->store == SIFT_COLS_STR && d->parent < 0 && d->lane == 0 && (p->op == SIFT_COLOP_EQ || p->op == SIFT_COLOP_IN) && !sift_f2_collation_undecided(p))
 		return promo_verdict(z, p);
 	if (d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8)
 		return exceptions || p->op == SIFT_COLOP_SHAPE ? Z_MAYBE : float_verdict(d, p, z, nrows);
