@@ -30,7 +30,7 @@ sift_seg_bytes_cmp(const void *a, const void *b)
 	return pg_cmp_u64(((const SiftSegEntry *) a)->bytes, ((const SiftSegEntry *) b)->bytes);
 }
 
-/* A segment of which more than dead_pct percent of the documents were deleted */
+/* A segment of which dead_pct percent or more of the documents were deleted */
 static bool
 mostly_dead(Relation index, const SiftSegEntry *e, int dead_pct)
 {
@@ -40,7 +40,7 @@ mostly_dead(Relation index, const SiftSegEntry *e, int dead_pct)
 	if (!(e->flags & SIFT_SEG_DIRTY))
 		return false;
 	seg = sift_seg_open(index, e, CurrentMemoryContext);
-	dead = sift_seg_live_docs(seg) * 100 < (uint64) e->ndocs * (100 - dead_pct);
+	dead = sift_seg_live_docs(seg) * 100 <= (uint64) e->ndocs * (100 - dead_pct);
 	sift_seg_close(seg);
 	return dead;
 }

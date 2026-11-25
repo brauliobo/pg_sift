@@ -17,12 +17,12 @@ SELECT repeat('x', 100),
         FROM generate_series(1, 6) j)
 FROM generate_series(1, 20000) i;
 
--- segments of all the documents, a fourth of them then deleted (the segments keep them, dead, until a merge)
+-- segments of all the documents, a fourth of them then deleted (the segments keep them, dead, until a merge: only a segment with no live document is rewritten by the VACUUM)
 SET client_min_messages = warning;
-CREATE INDEX m_pos ON m USING sift (body) WITH (build_segments = 4, vacuum_segments = 128);
+CREATE INDEX m_pos ON m USING sift (body) WITH (build_segments = 4, vacuum_segments = 128, dead_rewrite_pct = 100);
 RESET client_min_messages;
 SET client_min_messages = warning;
-CREATE INDEX m_nopos ON m USING sift (body) WITH (build_segments = 4, vacuum_segments = 128, positions = off);
+CREATE INDEX m_nopos ON m USING sift (body) WITH (build_segments = 4, vacuum_segments = 128, positions = off, dead_rewrite_pct = 100);
 RESET client_min_messages;
 DELETE FROM m WHERE id % 4 = 0;
 VACUUM m;
