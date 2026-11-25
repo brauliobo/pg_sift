@@ -303,14 +303,14 @@ typedef struct SiftTierRemote
 	SiftRemotePartHeader hdr;
 	uint8	   *image;
 	SiftRemoteRange *ranges;
+	uint8	   *verified;		/* a bit for each range whose checksum the bytes of the store matched */
 } SiftTierRemote;
 
 extern SiftTierStatus sift_tier_remote_open(SiftTierBackend *be, SiftTierCache *cache, const char *key, const SiftTierPartRef *ref, SiftTierRemote **out, SiftTierErr *err);
 extern void sift_tier_remote_close(SiftTierRemote *r);
 
-/* Bytes [off, off + len) of the stream, and the same checked against the checksums of the ranges that cover them whole */
+/* Bytes [off, off + len) of the stream. Each range of the object that holds any of them is read whole and matched with its checksum once per open part: bytes of the store that differ are SIFT_TIER_E_CORRUPT and are not kept in the cache */
 extern SiftTierStatus sift_tier_remote_read(SiftTierRemote *r, uint64 off, uint64 len, void *dst, SiftTierErr *err);
-extern SiftTierStatus sift_tier_remote_read_range(SiftTierRemote *r, uint32 range_idx, void *dst, SiftTierErr *err);
 
 /*
  * Deletes the objects of the relation (scope_id) that the directory does not name: what an upload that crashed before its commit leaves, and the temporary files of a store that is a directory.

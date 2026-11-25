@@ -204,6 +204,8 @@ remote_load(SiftTierRemote *r, SiftTierErr *err)
 	st = sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, r->hdr.footer_off, r->hdr.total_len - r->hdr.footer_off, tail, err);
 	if (st == SIFT_TIER_OK)
 		st = sift_tier_obj_parse_tail(&r->hdr, tail, &r->ranges, err);
+	if (st == SIFT_TIER_OK)
+		r->verified = palloc0(Max((r->hdr.nranges + 7) / 8, 1));
 	pfree(tail);
 	return st;
 }
@@ -241,34 +243,71 @@ sift_tier_remote_close(SiftTierRemote *r)
 		pfree(r->image);
 	if (r->ranges)
 		pfree(r->ranges);
+	if (r->verified)
+		pfree(r->verified);
 	pfree(r);
+}
+
+static uint64
+stream_base(const SiftTierRemote *r)
+{
+	return sizeof(SiftRemotePartHeader) + r->hdr.header_len;
+}
+
+static bool
+range_verified(const SiftTierRemote *r, uint32 i)
+{
+	return (r->verified[i / 8] & (1 << (i % 8))) != 0;
+}
+
+/* Range i whole from the cache or the store into buf, matched with its checksum: bytes that do not match leave no chunk behind */
+static SiftTierStatus
+range_verify(SiftTierRemote *r, uint32 i, void *buf, SiftTierErr *err)
+{
+	const SiftRemoteRange *g = &r->ranges[i];
+	SiftTierStatus st = sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, stream_base(r) + g->off, g->len, buf, err);
+
+	if (st != SIFT_TIER_OK)
+		return st;
+	if (sift_tier_crc32c_extend(0, buf, g->len) != g->crc32c)
+	{
+		sift_tier_cache_forget(r->cache, &r->ref, stream_base(r) + g->off, g->len);
+		return sift_tier_fail(err, SIFT_TIER_E_CORRUPT, "range %u of object %s has the wrong checksum", i, r->key);
+	}
+	r->verified[i / 8] |= 1 << (i % 8);
+	return SIFT_TIER_OK;
 }
 
 SiftTierStatus
 sift_tier_remote_read(SiftTierRemote *r, uint64 off, uint64 len, void *dst, SiftTierErr *err)
 {
+	uint32		first = 0,
+				n;
+	uint64		at = off;
+
 	if (off + len > r->hdr.stream_len || off + len < off)
 		return sift_tier_fail(err, SIFT_TIER_E_ARG, "the range [%llu, +%llu) is outside the stream of %llu bytes", (unsigned long long) off, (unsigned long long) len,
 							  (unsigned long long) r->hdr.stream_len);
-	return sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, sizeof(SiftRemotePartHeader) + r->hdr.header_len + off, len, dst, err);
-}
-
-SiftTierStatus
-sift_tier_remote_read_range(SiftTierRemote *r, uint32 range_idx, void *dst, SiftTierErr *err)
-{
-	const SiftRemoteRange *g;
-	SiftTierStatus st;
-
-	if (range_idx >= r->hdr.nranges)
-		return sift_tier_fail(err, SIFT_TIER_E_ARG, "the object has %u ranges, not %u", r->hdr.nranges, range_idx + 1);
-	g = &r->ranges[range_idx];
-	if ((st = sift_tier_remote_read(r, g->off, g->len, dst, err)) != SIFT_TIER_OK)
-		return st;
-	if (sift_tier_crc32c_extend(0, dst, g->len) != g->crc32c)
+	n = sift_tier_ranges_cover(r->ranges, r->hdr.nranges, off, len, &first);
+	for (uint32 i = first; i < first + n && r->ranges[i].off <= at; i++)
 	{
-		sift_tier_cache_forget(r->cache, &r->ref, sizeof(SiftRemotePartHeader) + r->hdr.header_len + g->off, g->len);
-		return sift_tier_fail(err, SIFT_TIER_E_CORRUPT, "range %u of object %s has the wrong checksum", range_idx, r->key);
+		const SiftRemoteRange *g = &r->ranges[i];
+		uint64		to = Min(off + len, g->off + g->len);
+		char	   *whole = range_verified(r, i) ? NULL : palloc(g->len);
+		SiftTierStatus st = whole != NULL ? range_verify(r, i, whole, err) :
+		sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, stream_base(r) + at, to - at, (char *) dst + (at - off), err);
+
+		if (st == SIFT_TIER_OK && whole != NULL)
+			memcpy((char *) dst + (at - off), whole + (at - g->off), to - at);
+		if (whole != NULL)
+			pfree(whole);
+		if (st != SIFT_TIER_OK)
+			return st;
+		at = to;
 	}
+	if (at < off + len)
+		return sift_tier_fail(err, SIFT_TIER_E_CORRUPT, "bytes %llu to %llu of the stream of object %s are in no range with a checksum", (unsigned long long) at,
+							  (unsigned long long) (off + len), r->key);
 	return SIFT_TIER_OK;
 }
 
