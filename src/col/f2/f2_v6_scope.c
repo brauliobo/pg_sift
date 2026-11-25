@@ -545,7 +545,7 @@ pairs_ok(ScopePlan *p)
 {
 	const RelOptInfo *rel = p->pairs;
 
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL)
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL || planner_rt_fetch(rel->relid, p->root)->security_barrier)
 		return false;
 	if (sift_v6_plain_table(planner_rt_fetch(rel->relid, p->root)))
 		return true;
@@ -569,7 +569,7 @@ shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 {
 	Query	   *parse = root->parse;
 
-	return sift_enable_agg && parse->hasAggs && !parse->hasRowSecurity && !parse->hasDistinctOn && !parse->hasTargetSRFs && !parse->hasWindowFuncs &&
+	return sift_enable_agg && parse->hasAggs && !parse->hasRowSecurity && root->qual_security_level == 0 && !parse->hasDistinctOn && !parse->hasTargetSRFs && !parse->hasWindowFuncs &&
 		parse->groupingSets == NIL && list_length(root->join_info_list) <= 1 && bms_num_members(input_rel->relids) == 2;
 }
 
@@ -685,7 +685,7 @@ topk_shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 	const bool	limited = q->limitCount != NULL && IsA(q->limitCount, Const) && (q->limitOffset == NULL || IsA(q->limitOffset, Const)) && q->limitOption == LIMIT_OPTION_COUNT &&
 		(list_length(q->sortClause) == 1 || list_length(q->sortClause) == 2);
 
-	return sift_enable_agg && q->commandType == CMD_SELECT && plain && limited && !q->hasRowSecurity && root->rowMarks == NIL && root->limit_tuples >= 1 &&
+	return sift_enable_agg && q->commandType == CMD_SELECT && plain && limited && !q->hasRowSecurity && root->qual_security_level == 0 && root->rowMarks == NIL && root->limit_tuples >= 1 &&
 		root->limit_tuples <= SCOPE_TOPK_MAX && list_length(root->join_info_list) <= 1 && bms_num_members(input_rel->relids) == 2;
 }
 
