@@ -183,6 +183,9 @@ extern void sift_f2_check_heap(Relation index);
 /* Checks the key invariants of every part (f2_check.c); ERROR when one fails, else a summary */
 extern char *sift_f2_check_keys(Relation index);
 
+/* Every block below the high-water mark has one owner: a part, a list, a chain or a free list (f2_check_blocks.c); ERROR when a block has two or none */
+extern void sift_f2_check_blocks(Relation rel);
+
 extern IndexBuildResult *sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info);
 extern void sift_f2_ambuildempty(Relation index);
 /* The row of a heap tuple in the stage of the transaction (col/f2/l0_stage.h) */

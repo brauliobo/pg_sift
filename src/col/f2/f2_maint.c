@@ -415,6 +415,7 @@ f2_verify(FunctionCallInfo fcinfo)
 	check_manifest(index);
 	check_col_delta(index);
 	sift_tier_check_remote(index);
+	sift_f2_check_blocks(index);
 	ereport(NOTICE, (errmsg("sift_col index \"%s\": %s", RelationGetRelationName(index), sift_f2_check_keys(index))));
 	if (PG_GETARG_BOOL(1))
 		sift_f2_check_heap(index);
@@ -436,6 +437,12 @@ check_remote(void *arg)
 }
 
 static void
+check_blocks(void *arg)
+{
+	sift_f2_check_blocks(arg);
+}
+
+static void
 check_keys(void *arg)
 {
 	(void) sift_f2_check_keys(arg);
@@ -451,7 +458,8 @@ void
 sift_f2_check_relation(SiftCheck *ck, Relation rel)
 {
 	if (sift_check_step(ck, SIFT_CHECK_WHOLE, check_fsm, rel) && sift_check_step(ck, SIFT_CHECK_WHOLE, check_manifest, rel) &&
-		sift_check_step(ck, SIFT_CHECK_WHOLE, check_col_delta, rel) && sift_check_step(ck, SIFT_CHECK_WHOLE, check_remote, rel))
+		sift_check_step(ck, SIFT_CHECK_WHOLE, check_col_delta, rel) && sift_check_step(ck, SIFT_CHECK_WHOLE, check_remote, rel) &&
+		sift_check_step(ck, SIFT_CHECK_WHOLE, check_blocks, rel))
 		(void) sift_check_step(ck, SIFT_CHECK_WHOLE, check_keys, rel);
 }
 
