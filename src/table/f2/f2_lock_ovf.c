@@ -9,6 +9,7 @@
 #include "storage/lwlock.h"
 #include "utils/memutils.h"
 
+#include "col/dsmreg.h"
 #include "table/f2/f2_lock_esc.h"
 #include "table/f2/f2_lock_ovf.h"
 
@@ -38,6 +39,10 @@ area_of(SiftRowLockTable *t, bool create)
 		if (t->area_handle == DSA_HANDLE_INVALID)
 		{
 			/* MEM[MEM-SHM-16]: DSM-backed dsa_create for the row lock entries of the stripes that are full (8 KB chunks, freed when empty) */
+#ifdef SIFT_TESTING
+			if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_rowlock_area") != NULL)
+				ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not create the area of the row lock chunks")));
+#endif
 			area = dsa_create(t->area_lock.tranche);
 			dsa_pin(area);
 			t->area_handle = dsa_get_handle(area);
