@@ -284,8 +284,8 @@ main(int argc, char **argv)
 {
 	u32			norders = 400000;
 	bool		verbose = false;
-	Table		ot = {"orders"},
-				it = {"items"};
+	Table		ot = {.name = "orders"},
+				it = {.name = "items"};
 	SiftSimdLevel lv[3];
 	int			nl;
 

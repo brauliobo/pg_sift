@@ -5,7 +5,6 @@
  * Inputs: random data, 50 % selection masks unless the row says otherwise (dens = fraction of rows selected). The bit vector and
  * integer column operations are slots of the column kernels (tools/kernels bench col).
  */
-#define _GNU_SOURCE
 #include "harness.h"
 
 #include <time.h>

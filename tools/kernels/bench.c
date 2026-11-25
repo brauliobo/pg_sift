@@ -7,7 +7,6 @@
  * A block is 16 heap pages of maxoff tuples; a term matches each tuple with
  * probability d. "L1 B/lane" counts the bytes a kernel touches per lane.
  */
-#define _GNU_SOURCE
 #include "harness.h"
 
 #if defined(__x86_64__)
