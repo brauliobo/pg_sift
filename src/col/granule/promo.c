@@ -12,7 +12,7 @@
 
 #include "common/shortest_dec.h"
 
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 #include "core/damage.h"
 
 #define SIFT_PROMO_SAMPLE		4096

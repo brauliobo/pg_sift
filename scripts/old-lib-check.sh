@@ -303,7 +303,7 @@ keyed() {
 	CY_SQL="SELECT md5(string_agg(tenant::text || ':' || n || ':' || s, ',' ORDER BY tenant)) FROM (SELECT tenant, count(*) n, sum(amount) s FROM kk WHERE amount < 700 OR tenant = 7 GROUP BY tenant) x"
 	CY_SETUP=("CREATE TABLE kk AS SELECT g AS id, g % 60 AS tenant, (g * 31) % 1000 AS amount FROM generate_series(1, 90000) g"
 		"CREATE INDEX kk_i ON kk USING sift_col (id, tenant, amount) WITH (key_cut = 'tenant')")
-	CY_FAST=("SET sift.agg_preagg = off" "SET sift.agg_force = on")
+	CY_FAST=("SET sift.agg_force = on")
 	CY_HEAP=("SET sift.enable_agg = off")
 	CY_INSERT="ALTER INDEX kk_i SET (point_tid_columns = 'off'); INSERT INTO kk SELECT g, g % 60, (g * 31) % 1000 FROM generate_series(90001, 130000) g"
 	CY_REFUSED="SET sift.agg_force = on; SELECT count(*) FROM kk WHERE tenant = 7"

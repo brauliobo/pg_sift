@@ -2,8 +2,8 @@
  * bm25/blob.c - term blob encoder, size bound and exhaustive checker (LIST and GROUPED).
  */
 #include <stdlib.h>
-#include "bm25/bitmap_kern.h"
-#include "bm25/bitmap_int.h"
+#include "bm25/bitmap/kern.h"
+#include "bm25/bitmap/int.h"
 #include "core/varint.h"
 
 /* ---- encoding ---- */

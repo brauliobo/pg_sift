@@ -16,8 +16,6 @@ logged() { grep -c "$1" "$D/postgres.log" || true; }
 q() { PGOPTIONS="-c client_min_messages=warning" sql dq "LOAD 'pg_sift'" "$@" 2>"$D/err"; }
 
 # the callers that cannot start a subtransaction, and the one that can
-L0=$(logged "are not shared with other backends")
-check "a lookup table in a parallel operation: no table, no error, one line in the log" test "$(q "SELECT sift._test_dsm_caller('lookup_rows', true)")|$(cat "$D/err")|$(($(logged "are not shared with other backends") - L0))" == "f||1"
 check "the dictionaries in a parallel worker: no table, no error" test "$(q "SELECT sift._test_dsm_caller('dictionary_worker', true)")|$(cat "$D/err")" == "f|"
 check "a cache outside a parallel operation goes without its table, with no error" test "$(q "SELECT sift._test_dsm_attach('dq_probe', 1024)")|$(cat "$D/err")" == "f|"
 L0=$(logged "references of the write buffers are not shared")

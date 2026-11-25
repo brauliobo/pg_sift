@@ -9,12 +9,12 @@
 #include "access/relscan.h"
 #include "utils/rel.h"
 
-#include "col/f2/key_enc.h"
-#include "core/f2/manifest.h"
+#include "col/f2/key/enc.h"
+#include "core/f2/manifest/manifest.h"
 
 struct SiftPlanSnapshot;
 
-/* A row comparison on the leading key columns, in the order of the values: (key 0, .., n - 1) op (vals), op one of SIFT_KOP_LT, LE, GT, GE (col/f2/key_plan.h) */
+/* A row comparison on the leading key columns, in the order of the values: (key 0, .., n - 1) op (vals), op one of SIFT_KOP_LT, LE, GT, GE (col/f2/key/plan.h) */
 typedef struct SiftRowBound
 {
 	int			op;

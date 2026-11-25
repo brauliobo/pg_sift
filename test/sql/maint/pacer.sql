@@ -1,4 +1,4 @@
--- The pacer of the maintenance worker (core/maint_pacer.h): how long a step sleeps for the pages it writes, whether a step of space or structure starts, and which worker leaves for a request of a
+-- The pacer of the maintenance worker (core/maint/pacer.h): how long a step sleeps for the pages it writes, whether a step of space or structure starts, and which worker leaves for a request of a
 -- tier before its own, all from the load of the foreground. The law and the priority run on the loads and the times the test gives: no clock, no sleep.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

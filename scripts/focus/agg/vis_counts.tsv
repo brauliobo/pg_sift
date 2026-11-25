@@ -1,1 +1,1 @@
-agg/vis_counts	src/col/v1/test/core.c:sift_test_vis_counts src/col/v1/tomblog.c:drop_keep src/core/v1_col/tomb.c:cmp_tomb src/core/v1_col/tomb.c:sift_tomb_forget src/core/visibility.c:vm_run_soft
+agg/vis_counts	src/col/v1/test/core.c:sift_test_vis_counts src/col/v1/tomblog.c:drop_keep src/core/v1_col/tomb/tomb.c:cmp_tomb src/core/v1_col/tomb/tomb.c:sift_tomb_forget src/core/visibility/visibility.c:vm_run_soft

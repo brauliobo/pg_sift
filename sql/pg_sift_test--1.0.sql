@@ -8,7 +8,7 @@ CREATE FUNCTION sift._test_limits(OUT id text, OUT macro text, OUT dflt int8, OU
 CREATE FUNCTION sift._test_reloptions(OUT am text, OUT name text, OUT type text, OUT dflt text)
 	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_reloptions' LANGUAGE C STRICT;
 
--- Store module (src/core/store_test.c). A sift_store_test index holds one test
+-- Store module (src/core/store/test.c). A sift_store_test index holds one test
 -- segment per heap row: v bytes written through a BULK target at build time.
 CREATE FUNCTION sift._test_am_handler(internal) RETURNS index_am_handler
 	AS 'MODULE_PATHNAME', 'sift_test_am_handler' LANGUAGE C STRICT;
@@ -63,7 +63,7 @@ CREATE FUNCTION sift._test_maint_wait_us() RETURNS int8
 -- directory updates of this process since sift.test_crash_dir was set (the named crash points of the matrix in test/t/crash_matrix.sh)
 CREATE FUNCTION sift._test_dir_updates() RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_dir_updates_count' LANGUAGE C STRICT;
--- the chained directory (core/dirchain_test.c): edit entries that name no storage (op ins|del|rev|set), list them, describe the directory, check the chain's blocks
+-- the chained directory (core/dirchain/test.c): edit entries that name no storage (op ins|del|rev|set), list them, describe the directory, check the chain's blocks
 CREATE FUNCTION sift._test_dir_edit(index regclass, op text, pos int4, n int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_dir_edit' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_dir_list(index regclass, OUT ord int4, OUT gen int8, OUT ndocs int8)
@@ -138,7 +138,7 @@ CREATE FUNCTION sift._test_live_repair(index regclass, nsb int4, sbs int4[], OUT
 CREATE FUNCTION sift._test_churn(index regclass, seed int8, maxbytes int8) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_churn' LANGUAGE C STRICT;
 
--- Kernels module (src/bm25/kernels_test.c): bit-exact SIMD checks through sift.simd.
+-- Kernels module (src/bm25/kernels/test.c): bit-exact SIMD checks through sift.simd.
 CREATE FUNCTION sift._test_kern_fmv_equiv(seed int8, iters int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_kern_fmv_equiv' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_kern_digest(seed int8, iters int4) RETURNS int8
@@ -153,7 +153,7 @@ CREATE FUNCTION sift._test_kern_bm25(tf int4, dl int4, k1 float4, b float4, avgd
 CREATE FUNCTION sift._test_kern_bound(tf int4, dl int4, k1 float4, b float4, avgdl float4) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_kern_bound' LANGUAGE C STRICT;
 
--- Column kernels (src/col/v1/kern_test.c): a digest of all kernel outputs on random inputs, per SIMD level and through sift.simd.
+-- Column kernels (src/col/v1/kern/test.c): a digest of all kernel outputs on random inputs, per SIMD level and through sift.simd.
 CREATE FUNCTION sift._test_col_kernels(level int4, seed int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_kernels' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_kernels_active(seed int4) RETURNS int8
@@ -163,26 +163,10 @@ CREATE FUNCTION sift._test_col_level() RETURNS text
 CREATE FUNCTION sift._test_simd_detected() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_simd_detected' LANGUAGE C STRICT;
 
--- Aggregation operators module (src/agg/kern_test.c): bit-exact SIMD checks through sift.simd.
-CREATE FUNCTION sift._test_aggkern_digest(seed int8, cases int4) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_aggkern_digest' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_aggkern_equiv(seed int8, cases int4) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_aggkern_equiv' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_aggkern_level() RETURNS text
-	AS 'MODULE_PATHNAME', 'sift_test_aggkern_level' LANGUAGE C STRICT;
--- Integer key ids (src/agg/intids_test.c): the table against a plain hash, over many shapes of keys.
-CREATE FUNCTION sift._test_intids(seed int8, cases int4, OUT bad int8, OUT paged int8, OUT hashed int8, OUT up int8, OUT down int8)
-	AS 'MODULE_PATHNAME', 'sift_test_intids' LANGUAGE C STRICT;
 
--- The plan spec of a parallel worker (src/agg/spec_pack_test.c): a double through pack, text and unpack, as its bits.
-CREATE FUNCTION sift._test_spec_pack_bits(bits int8) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_spec_pack_bits' LANGUAGE C STRICT;
 
--- The proof of a vector program of an aggregate argument (src/agg/vnum_test.c): whether it takes a postfix program given as the codes of its steps.
-CREATE FUNCTION sift._test_vnum_program_ok(steps int4[]) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_test_vnum_program_ok' LANGUAGE C STRICT;
 
--- Index build (src/bm25/segment_sql.c): every posting decoded from the index.
+-- Index build (src/bm25/segment/sql.c): every posting decoded from the index.
 CREATE FUNCTION sift._test_postings(index regclass, OUT gen int8, OUT term text, OUT tid tid,
 									OUT tf int4, OUT dl int4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_postings' LANGUAGE C STRICT;
@@ -201,7 +185,7 @@ CREATE FUNCTION sift._test_segment_formats(index regclass, OUT gen int8, OUT kin
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_segment_formats' LANGUAGE C STRICT;
 
--- Term blobs (src/bm25/segment_sql.c): a term's blob and dictionary lengths as the query reads them, and that read over bytes the test
+-- Term blobs (src/bm25/segment/sql.c): a term's blob and dictionary lengths as the query reads them, and that read over bytes the test
 -- damaged (the query path does not run the exhaustive checks of sift.verify, so it follows the blob's own lengths)
 CREATE FUNCTION sift._test_term_blob(index regclass, term text, OUT blob bytea, OUT flags int4, OUT df int4,
 									 OUT codec_len int4, OUT nnib int4)
@@ -239,7 +223,7 @@ CREATE FUNCTION sift._test_ring_sites(OUT site text, OUT takes int8, OUT wraps i
 CREATE FUNCTION sift._test_ring_walk(slots int4, steps int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_ring_walk' LANGUAGE C STRICT;
 
--- The pacer of the maintenance worker (src/core/maint_pacer_test.c): _test_pacer_decide runs the law on a load, _test_pacer_starve and _test_pacer_yield the priority of the tiers at the times
+-- The pacer of the maintenance worker (src/core/maint/pacer_test.c): _test_pacer_decide runs the law on a load, _test_pacer_starve and _test_pacer_yield the priority of the tiers at the times
 -- they are given, _test_pacer_foreground feeds the averages of the foreground, _test_pacer_snapshot reads what a worker last sampled, _test_pacer_reset empties the telemetry.
 CREATE FUNCTION sift._test_pacer_decide(active int4, slots int4, ewma_us int8, base_us int8, yields int4, base_delay_ms int4) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_pacer_decide' LANGUAGE C STRICT;
@@ -298,7 +282,7 @@ CREATE FUNCTION sift._test_read_stats(reset bool DEFAULT false, OUT key text, OU
 CREATE FUNCTION sift._test_bridge_search(idx regclass, q text, tids tid[], k int8, budget_kb int4, OUT ctid tid, OUT score float4) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_bridge_search' LANGUAGE C STRICT;
 
--- Column engine L1 (src/col/v1/enc_test.c): random batches, chunks, zones and predicates against a naive evaluation of the same rows.
+-- Column engine L1 (src/col/v1/enc/test.c): random batches, chunks, zones and predicates against a naive evaluation of the same rows.
 -- checks: how many comparisons ran; failures: how many differed (the first few are reported as warnings); encodings: bit mask of the
 -- chunk encodings written (CONST, PACK of up to 7 / 9..15 / 17..31 bits, FOR 8, 16, 32, 64; bit 8: a text leaf of 16-bit codes; bit 9: a blob of the chunk codec), 767 when all were seen.
 CREATE FUNCTION sift._test_col_enc_roundtrip(seed int4, nrows int4, rounds int4 DEFAULT 4, OUT checks int8, OUT failures int8, OUT encodings int8) RETURNS record
@@ -373,13 +357,13 @@ CREATE FUNCTION sift._test_arena_gc() RETURNS void
 CREATE FUNCTION sift._test_wbuf_format(index regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_wbuf_format' LANGUAGE C STRICT;
 
--- the ledger of the shared memory pools (src/core/shmbudget.c): what a caller reserves and gives back, and what the ledger holds for a pool (0 to 4) or for all
+-- the ledger of the shared memory pools (src/core/shm/budget.c): what a caller reserves and gives back, and what the ledger holds for a pool (0 to 4) or for all
 CREATE FUNCTION sift._test_shm_reserve(pool int4, bytes int8) RETURNS bool AS 'MODULE_PATHNAME', 'sift_test_shm_reserve' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_release(pool int4, bytes int8) RETURNS void AS 'MODULE_PATHNAME', 'sift_test_shm_release' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_pool_used(pool int4) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_shm_pool_used' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_total() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_shm_total' LANGUAGE C STRICT;
 
--- the registry of the manifests of the indexes in shared memory (src/core/shm_manifest.c) and the partition locks (src/core/part_lock.c); an index is named by its relation number
+-- the registry of the manifests of the indexes in shared memory (src/core/shm/manifest.c) and the partition locks (src/core/part_lock.c); an index is named by its relation number
 CREATE FUNCTION sift._test_shm_manifest_publish(rel oid, version int8, nparts int4, snapshot bool) RETURNS bool AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_publish' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_manifest_peek(rel oid) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_peek' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_manifest_invalidate(rel oid, quarantine bool) RETURNS void AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_invalidate' LANGUAGE C STRICT;
@@ -438,10 +422,10 @@ CREATE FUNCTION sift._test_col_part_shift(index regclass, k int4) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_col_part_shift' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_cuts(index regclass, OUT gen int8, OUT bykey bool, OUT bytid bool, OUT cut int4[]) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_cuts' LANGUAGE C STRICT;
--- the segments of unrecorded cut that merges of this backend have checked unit by unit (src/col/v1/order.c)
+-- the segments of unrecorded cut that merges of this backend have checked unit by unit (src/col/v1/order/order.c)
 CREATE FUNCTION sift._test_col_cut_probes() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_cut_probes' LANGUAGE C STRICT;
--- the rows the merges of this backend sorted by a sort that spills (the rows of an input that did not fit maintenance_work_mem), and the kB of temporary files it used (src/col/v1/order_sort.c)
+-- the rows the merges of this backend sorted by a sort that spills (the rows of an input that did not fit maintenance_work_mem), and the kB of temporary files it used (src/col/v1/order/sort.c)
 CREATE FUNCTION sift._test_col_cut_sort_rows() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_cut_sort_rows' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_cut_sort_disk_kb() RETURNS int8
@@ -504,7 +488,7 @@ CREATE FUNCTION sift._test_col_run_damage(index regclass, units int4, OUT blobs 
 CREATE FUNCTION sift._test_col_zone_flags(index regclass, OUT units int8, OUT jnull_units int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_zone_flags' LANGUAGE C STRICT;
 
--- Shredder (src/col/shred_test.c, docs/COL-SHRED.md)
+-- Shredder (src/col/shred/test.c, docs/COL-SHRED.md)
 CREATE FUNCTION sift._test_shred_spec(spec text) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_shred_spec' LANGUAGE C STRICT;
 -- kind: col (a slot), list (a list under a parent element: ord = first element, val = count), ovf (the overflow reasons of a column)
@@ -526,7 +510,7 @@ CREATE FUNCTION sift._test_shred_kern_equiv(seed int8, iters int4) RETURNS int8
 CREATE FUNCTION sift._test_shred_kern_rate(kernel text, n int4, iters int4) RETURNS float8
 	AS 'MODULE_PATHNAME', 'sift_test_shred_kern_rate' LANGUAGE C STRICT;
 
--- Column codec (src/col/codec_test.c): chunks through the backend, sift.simd and the build's LZ4/zstd.
+-- Column codec (src/col/codec/test.c): chunks through the backend, sift.simd and the build's LZ4/zstd.
 -- kind 0 integers, 1 float4 keys, 2 float8 keys; NULL elements are NULL slots (decode returns the filler there)
 CREATE FUNCTION sift._test_cc_encode(keys int8[], kind int4, policy text) RETURNS bytea
 	AS 'MODULE_PATHNAME', 'sift_test_cc_encode' LANGUAGE C STRICT;
@@ -553,59 +537,6 @@ CREATE FUNCTION sift._test_cc_equiv(seed int8, iters int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_cc_equiv' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_cc_corrupt(seed int8, iters int4, OUT raised int8, OUT decoded int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_cc_corrupt' LANGUAGE C STRICT;
-
--- sift_colstub (src/agg/stub*.c): an index access method without storage that carries the definition of a column index
--- (key columns, expressions, the `paths` option for jsonb columns) and a column source (src/agg/colsrc.h) that reads the heap
--- pages raw, so that the aggregate planner and executor can be tried before sift_col exists. Every row of a page is present
--- (no visibility check), the executor vets them. The index is never used by an ordinary plan.
-CREATE FUNCTION sift._test_aggstub_handler(internal) RETURNS index_am_handler
-	AS 'MODULE_PATHNAME', 'sift_aggstub_handler' LANGUAGE C STRICT;
-CREATE ACCESS METHOD sift_colstub TYPE INDEX HANDLER sift._test_aggstub_handler;
-CREATE OPERATOR CLASS sift.colstub_ops DEFAULT FOR TYPE anyelement USING sift_colstub AS STORAGE anyelement;
-
-CREATE FUNCTION sift._test_aggstub_is_index(relam oid) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_is_index' LANGUAGE C STRICT STABLE PARALLEL SAFE;
-CREATE FUNCTION sift._test_aggstub_layout(index regclass, OUT leaf int4, OUT attno int4, OUT parent int4, OUT kind text,
-										  OUT vtype text, OUT typid regtype, OUT path text, OUT name text, OUT expr text)
-	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_layout' LANGUAGE C STRICT PARALLEL SAFE;
--- one row per row of the unit; for a child leaf one per element (ord = the row it belongs to, elem = its number in the unit)
-CREATE FUNCTION sift._test_aggstub_dump(index regclass, leaf int4, sb_lo int4 DEFAULT 0, sb_hi int4 DEFAULT NULL,
-										OUT unit int4, OUT sb int4, OUT ord int4, OUT elem int4, OUT tid tid,
-										OUT code int8, OUT val text)
-	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_dump' LANGUAGE C PARALLEL SAFE;
-CREATE FUNCTION sift._test_aggstub_units(index regclass, sb_lo int4 DEFAULT 0, sb_hi int4 DEFAULT NULL,
-										 prune_leaf int4 DEFAULT NULL, prune_lo int8 DEFAULT NULL, prune_hi int8 DEFAULT NULL,
-										 OUT unit int4, OUT sb int4, OUT nrow int4, OUT first_tid tid, OUT last_tid tid,
-										 OUT all_live bool, OUT vetted bool)
-	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_units' LANGUAGE C PARALLEL SAFE;
-CREATE FUNCTION sift._test_aggstub_dicts(index regclass, only_leaf int4 DEFAULT NULL, OUT unit int4, OUT leaf int4, OUT id text,
-										 OUT n int4, OUT nbytes int4)
-	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_dicts' LANGUAGE C PARALLEL SAFE;
-CREATE FUNCTION sift._test_aggstub_counters(index regclass, sb_lo int4 DEFAULT 0, sb_hi int4 DEFAULT NULL,
-											prune_leaf int4 DEFAULT NULL, prune_lo int8 DEFAULT NULL, prune_hi int8 DEFAULT NULL,
-											OUT units int8, OUT units_pruned int8, OUT rows int8, OUT bytes int8)
-	RETURNS record
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_counters' LANGUAGE C PARALLEL SAFE;
-CREATE FUNCTION sift._test_aggstub_sb(index regclass, sb int4, OUT rows int8, OUT checksum int8, OUT in_worker bool)
-	RETURNS record
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_sb' LANGUAGE C STRICT PARALLEL SAFE;
-CREATE FUNCTION sift._test_aggstub_memory(index regclass, sb_lo int4 DEFAULT 0, sb_hi int4 DEFAULT NULL,
-										  OUT units int8, OUT peak_bytes int8, OUT max_rows int8)
-	RETURNS record
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_memory' LANGUAGE C PARALLEL SAFE;
-CREATE FUNCTION sift._test_pattern_lits(op text, pattern text) RETURNS text
-	AS 'MODULE_PATHNAME', 'sift_test_pattern_lits' LANGUAGE C STRICT PARALLEL SAFE;
-CREATE FUNCTION sift._test_prefilter(reset bool, OUT dicts int8, OUT skipped int8) RETURNS record
-	AS 'MODULE_PATHNAME', 'sift_test_prefilter' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_aggstub_stats(index regclass, OUT leaf int4, OUT nrows float8, OUT nunits float8,
-										 OUT allvisible_frac float8, OUT ndistinct float8, OUT min float8, OUT max float8,
-										 OUT elems_per_row float8)
-	RETURNS SETOF record
-	AS 'MODULE_PATHNAME', 'sift_test_aggstub_stats' LANGUAGE C STRICT PARALLEL SAFE;
 
 -- Table module (src/table/v1/load/refusal.c): why the bulk load of a sift_table keeps the write buffers (NULL: it qualifies)
 CREATE FUNCTION sift._test_tbl_bulk_refusal(tbl regclass) RETURNS text
@@ -688,20 +619,8 @@ CREATE FUNCTION sift._test_gorder_decoded(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_gorder_decoded' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_key_sorts(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_key_sorts' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_source_lookups(reset bool) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_source_lookups' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_prepass_nodes(reset bool) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_prepass_nodes' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_agg_outer_walks(reset bool) RETURNS int8[]
-	AS 'MODULE_PATHNAME', 'sift_test_agg_outer_walks' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_vis_counts(rel regclass, nblocks int8 DEFAULT -1) RETURNS int8[]
 	AS 'MODULE_PATHNAME', 'sift_test_vis_counts' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_agg_plan_passes(reset bool) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_agg_plan_passes' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_agg_workers_pay(instr float8, nworkers int4) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_test_agg_workers_pay' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_agg_key_lists(reset bool) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_agg_key_lists' LANGUAGE C STRICT;
 CREATE OPERATOR sift.=== (LEFTARG = int4, RIGHTARG = float4, FUNCTION = sift._test_eq, RESTRICT = sift._test_eq_sel);
 -- sift_col exists from pg_sift 3.0 on; extension_lifecycle creates this extension on 1.0
 DO $$ BEGIN
@@ -715,7 +634,7 @@ CREATE FUNCTION sift._test_col_dict_shared_hold(int4) RETURNS int4
 CREATE FUNCTION sift._test_posblk(seed int8, n int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_posblk' LANGUAGE C STRICT;
 
--- A dictionary that maps words to others and answers nothing for the rest (src/bm25/analyze_ts_test.c), to chain in front of a stemmer
+-- A dictionary that maps words to others and answers nothing for the rest (src/bm25/analyze/ts_test.c), to chain in front of a stemmer
 CREATE FUNCTION sift._test_syn_init(internal) RETURNS internal
 	AS 'MODULE_PATHNAME', 'sift_test_syn_init' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_syn_lexize(internal, internal, internal, internal) RETURNS internal
@@ -744,7 +663,7 @@ CREATE FUNCTION sift._test_col_log_records(index regclass, OUT xid xid, OUT cid 
 CREATE FUNCTION sift._test_col_log_format(index regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_col_log_format' LANGUAGE C STRICT;
 
--- the key journal of a connected parent index (col/v1/conn.c): make it, take the stamp of a derivation, ask for the keys changed since a stamp, read the generation
+-- the key journal of a connected parent index (col/v1/conn/conn.c): make it, take the stamp of a derivation, ask for the keys changed since a stamp, read the generation
 CREATE FUNCTION sift._test_conn_enable(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_conn_enable' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_conn_connect(child regclass, parent regclass) RETURNS void
@@ -764,7 +683,7 @@ CREATE FUNCTION sift._test_conn_gen(index regclass, OUT lineage int8, OUT record
 CREATE FUNCTION sift._test_member_hash(member anyelement) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_member_hash' LANGUAGE C STRICT;
 
--- the scope entries (ordinal in fks, scope key) of the member keys of fks, by the fill of a scope index (col/v1/scope_fill.c): rel is the scope relation, btree its unique index on (member, key)
+-- the scope entries (ordinal in fks, scope key) of the member keys of fks, by the fill of a scope index (col/v1/scope/fill.c): rel is the scope relation, btree its unique index on (member, key)
 CREATE FUNCTION sift._test_scope_expand(rel regclass, btree regclass, member text, key text, fks int8[], OUT ordinal int4, OUT key int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_expand' LANGUAGE C STRICT;
 
@@ -775,7 +694,7 @@ CREATE FUNCTION sift._test_col_scope_entries(index regclass, OUT gen int8, OUT u
 -- the journal of the scope relation of a scope (ordinal from 0) of a scope index: the stamp a derivation takes now, whether a stamp may be read by the snapshot, and the members whose pairs changed since it
 CREATE FUNCTION sift._test_scope_take(index regclass, scope int, OUT lineage int8, OUT horizon xid, OUT why text) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_take' LANGUAGE C STRICT;
--- the legs of a scope the planner is handed (col/scope.h SiftScopeLeg), one row each: the pair relation, its columns, the unique btree that defines the pairs and its predicate; a joined leg
+-- the legs of a scope the planner is handed (col/scope/scope.h SiftScopeLeg), one row each: the pair relation, its columns, the unique btree that defines the pairs and its predicate; a joined leg
 -- (a scope of two paths) also the relation that lists the members of its via column, its columns, its btree and predicate
 CREATE FUNCTION sift._test_scope_legs(index regclass, scope int, OUT leg int, OUT rel regclass, OUT member text, OUT key text, OUT btree regclass, OUT pred text,
 	OUT via_rel regclass, OUT via_join text, OUT via_member text, OUT via_btree regclass, OUT via_pred text) RETURNS SETOF record
@@ -792,7 +711,7 @@ CREATE FUNCTION sift._test_scope_journal_changes(index regclass, scope int, line
 	OUT why text, OUT key int8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_scope_journal_changes' LANGUAGE C STRICT;
 
--- the price of the units of a scope read and of the entity path for the counts of col/scope.h (pure: instructions), the counts as the planner or the executor has them
+-- the price of the units of a scope read and of the entity path for the counts of col/scope/scope.h (pure: instructions), the counts as the planner or the executor has them
 CREATE FUNCTION sift._test_scope_price(nkeys int, once bool, units int8, entries int8, preagg float8 DEFAULT 0, entry_instr float8 DEFAULT 0, drops int DEFAULT 0, key_pairs int8 DEFAULT 0,
 	changed int8 DEFAULT 0, patch_units int8 DEFAULT 0, patch_scan_rows int8 DEFAULT 0, delta_rows int8 DEFAULT 0, pairs int8 DEFAULT 0, path_rows int8 DEFAULT 0, path_units int8 DEFAULT 0, scan_pairs int8 DEFAULT 0,
 	topn bool DEFAULT false, walk_units int8 DEFAULT 0, group_frac float8 DEFAULT 0, group_units float8 DEFAULT 0, skip float8 DEFAULT 0, OUT units_price float8, OUT entity_price float8) RETURNS record
@@ -884,17 +803,10 @@ CREATE FUNCTION sift._test_log_chan(idx regclass, flags int8 DEFAULT NULL, base_
 CREATE FUNCTION sift._test_par_participants(rows int8, cols int, point_dir bool, maxp int) RETURNS int
 	AS 'MODULE_PATHNAME', 'sift_test_par_participants' LANGUAGE C STRICT;
 
-CREATE FUNCTION sift._test_segment_reads(reset bool DEFAULT false, OUT demand_blocks int8, OUT ahead_blocks int8, OUT advice_calls int8)
+CREATE FUNCTION sift._test_segment_reads(reset bool DEFAULT false, OUT demand_blocks int8, OUT ahead_blocks int8)
 	AS 'MODULE_PATHNAME', 'sift_test_segment_reads' LANGUAGE C STRICT;
 
--- What the direct probes of the backend did since the last reset (src/agg/combo/probe.h DStats): keys probed, keys compared with index tuples, the columns of those
--- compares, the compares through the opclass's order function, the pages read from the buffer manager, the compares that read the columns one by one (a NULL among the compared columns).
-CREATE FUNCTION sift._test_probe_stats(reset bool DEFAULT false, OUT probes int8, OUT tuple_compares int8, OUT column_compares int8, OUT generic_compares int8, OUT page_reads int8, OUT slow_compares int8)
-	RETURNS record AS 'MODULE_PATHNAME', 'sift_test_probe_stats' LANGUAGE C STRICT;
 
--- Executor end (src/agg/cte/hook.c): whether the check of the executor state's slot table accepts a slot made in the query context (false) or in a context of a node (true)
-CREATE FUNCTION sift._test_slot_owner(in_node_cxt bool) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_test_slot_owner' LANGUAGE C STRICT;
 
 -- The stamp each segment of a scope index holds for each scope (generation, family, scope of the segment, scope of the stamp, lineage, horizon); whether the floor of the stamps of the scope
 -- key_name (the one the reads go by) is set; the floor of each journal of each scope; and a clear of the floor, as an index that was never filled has it
@@ -953,6 +865,6 @@ CREATE FUNCTION sift._test_col_arena_status(OUT slots_in_use int4, OUT slots int
 											OUT seals_forced int8, OUT rows_rebuilt int8, OUT segments int4, OUT bytes_taken int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_arena_status' LANGUAGE C STRICT STABLE;
 
--- src/agg/sorts_test.c: the external sorts of the aggregation (agg/dist/psort.c, agg/rows_psort.c) over n pairs with mem_kb of memory
+-- src/agg/v6/distinct/u64_test.c: the external sorts of the aggregation over n pairs with mem_kb of memory
 CREATE FUNCTION sift._test_sorts(kind text, n int8, mem_kb int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_sorts' LANGUAGE C STRICT;

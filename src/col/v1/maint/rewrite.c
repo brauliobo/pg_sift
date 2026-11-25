@@ -5,7 +5,7 @@
 #include "postgres.h"
 #include <math.h>
 
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 #include "core/worker.h"
 #include "core/memtrack.h"
 

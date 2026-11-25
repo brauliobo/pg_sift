@@ -113,13 +113,13 @@ if [[ $MODE == --selftest ]]; then
 		read -r mv_new mv_old mv_pre < <(awk -F'\t' '!/^#/ && NF >= 2 { print $1, $2, $3; exit }' "$REPO/scripts/moved-sources.tsv")
 		mv_fn=$(cat $(find "$REPO/scripts/focus" -name "*.tsv") | grep -o "$mv_old:[A-Za-z_0-9]*" | head -1 | cut -d: -f2)
 		[[ -z $mv_fn || ( $(focus_regex "${mv_new}x.c:${mv_pre}${mv_fn}") == "$(focus_regex "$mv_old:$mv_fn")" && $(focus_regex "$mv_old:$mv_fn") != '^(coverage|isolation-emulated)$' ) ]] || { echo "FAIL: focus: a function of a file split into a folder does not select the tests of the row of the old file ($mv_old:$mv_fn)"; bad=1; }
-		[[ $(focus_regex src/agg/accum.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
+		[[ $(focus_regex src/agg/v6/acc.h:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 		# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
 		n=0; for f in $(cd "$REPO/test/sql" && find . -name "*.sql" | sed "s|^\./||" | LC_ALL=C sort); do [[ installcheck-${f%.sql} =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
 		(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
-		grep -qE "$ASSERT_MARK" "$REPO/src/agg/par/worker.c" || { echo "FAIL: src/agg/par/worker.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
+		grep -qE "$ASSERT_MARK" "$REPO/src/core/parbuild.c" || { echo "FAIL: src/core/parbuild.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 		# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
-		fast_agg=$(areas_fast_regex src/agg/exec/run.c) fast_core=$(areas_fast_regex src/core/ops.c)
+		fast_agg=$(areas_fast_regex src/agg/v6/exec.c) fast_core=$(areas_fast_regex src/core/ops.c)
 		plan_of quick 18
 		while read -r id _; do
 			[[ $id == installcheck-* ]] || continue
@@ -285,7 +285,7 @@ if [[ $MODE == --selftest ]]; then
 		# not in the scratch directory and the shard of the run that calls this: a shard may select no job and still builds, in the directory it removes first and at its end
 		out=$(env -u SIFT_CI_TMP -u SIFT_CI_SHARD SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
 		[[ $out == *'no test job selected'* ]] || { echo "FAIL: ci.sh does not say that no job is selected: $out"; bad=1; }
-		for f in "docs/ANALYTICS.md false" "docs/ARCHITECTURE.md false" "src/agg/update/upd.c true" "bench/scaling/scaling.py true"; do   # a job the fast tier cannot run does not build it
+		for f in "docs/ANALYTICS.md false" "docs/ARCHITECTURE.md false" "src/agg/v6/exec.c true" "bench/scaling/scaling.py true"; do   # a job the fast tier cannot run does not build it
 			fp=$("$0" affected --github --files ${f% *} | grep '^fastpg=')
 			[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
 		done

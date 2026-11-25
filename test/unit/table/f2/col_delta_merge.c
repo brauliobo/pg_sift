@@ -1,5 +1,5 @@
 /*
- * test/unit/table/f2/col_delta_merge.c - the merge of the records one transaction staged for one row (table/f2/f2_col_delta_coalesce.c): the record it makes is one the checks of a page accept
+ * test/unit/table/f2/col_delta_merge.c - the merge of the records one transaction staged for one row (table/f2/col_delta/coalesce.c): the record it makes is one the checks of a page accept
  * (the columns in ascending order of attribute) and holds the later value of every column, whatever order the two records touched their columns in.
  */
 #define SIFT_S49_STANDALONE 1
@@ -15,8 +15,8 @@
 
 bool		sift_test_col_delta = true;
 
-#include "table/f2/f2_col_delta.c"
-#include "table/f2/f2_col_delta_coalesce.c"
+#include "table/f2/col_delta/col_delta.c"
+#include "table/f2/col_delta/coalesce.c"
 
 enum { MAX_ATT = 24, ROUNDS = 400 };
 

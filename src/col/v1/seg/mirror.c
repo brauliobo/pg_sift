@@ -3,7 +3,7 @@
  * (seg_int.h "The mirror"), taken in the place of a read of the stream, and checked against it by sift.col_verify
  */
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* A multiplicative hash of the words of the block: a byte of it that is damaged changes the sum */
 uint64

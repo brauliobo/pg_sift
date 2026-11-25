@@ -3,7 +3,7 @@
  * reads: the global order and the point directory against the units
  * they were built from; run by the verify functions, never by a scan
  */
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* the groups of a grouped block are read and checked in windows of this many */
 #define VERIFY_GROUPS	1024

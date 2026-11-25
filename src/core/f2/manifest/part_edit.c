@@ -1,11 +1,11 @@
 /*
- * core/f2/manifest/part_edit.c - the checks and edits of the parts of one partition that a commit applies (core/f2/manifest.c), and the read of the live entry of a partition.
+ * core/f2/manifest/part_edit.c - the checks and edits of the parts of one partition that a commit applies (core/f2/manifest/manifest.c), and the read of the live entry of a partition.
  */
 #include "core/host.h"
 
-#include "col/f2/part_format.h"
-#include "core/f2/manifest.h"
-#include "core/f2/manifest/manifest_int.h"
+#include "col/f2/part/format.h"
+#include "core/f2/manifest/manifest.h"
+#include "core/f2/manifest/int.h"
 
 bool
 sift_manifest_find_entry(Relation rel, uint64 part_id, const uint8 *key_lo, SiftPartitionEntry *out)

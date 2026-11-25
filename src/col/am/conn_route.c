@@ -13,10 +13,10 @@
 #include "utils/lsyscache.h"
 
 #include "col/am.h"
-#include "col/am/am_int.h"
+#include "col/am/int.h"
 #include "col/am/conn_route.h"
 #include "col/am/format_ops.h"
-#include "col/scope.h"
+#include "col/scope/scope.h"
 #include "core/meta_peek.h"
 
 /* ---- the journal of a parent index ---- */

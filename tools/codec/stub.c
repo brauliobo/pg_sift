@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "bm25/bitmap.h"
+#include "bm25/bitmap/bitmap.h"
 
 void sift_codec_corrupt(const char *what)
 {

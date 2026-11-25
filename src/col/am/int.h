@@ -1,0 +1,38 @@
+/*
+ * col/am/int.h - what the files of the column access method share
+ * the statics one file calls from another
+ */
+#ifndef SIFT_COL_AM_INT_H
+#define SIFT_COL_AM_INT_H
+
+#include "col/v1/build.h"
+
+/* a string reloption: stored as an offset from the options struct, 0 when unset */
+#define COL_OPT_STR(fn, field, unset) \
+const char * \
+fn(Relation index) \
+{ \
+	const SiftColOptions *o = sift_col_options(index); \
+\
+	return o->field ? (const char *) o + o->field : (unset); \
+}
+
+/* ... and the value key_order stands for (ko: its offset field) while the option is not set: a string option with a default of '' has an offset of its own, so '' is not set */
+#define COL_OPT_STR_KO(fn, field, ko) \
+const char * \
+fn(Relation index) \
+{ \
+	const SiftColOptions *o = sift_col_options(index); \
+\
+	if (o->field && *((const char *) o + o->field)) \
+		return (const char *) o + o->field; \
+	return o->ko ? (const char *) o + o->ko : ""; \
+}
+
+extern uint64 am_leaf_plan;
+
+extern const char *	am_return_walk(const char *opt, SiftColRel *r, TupleDesc desc);
+
+extern bytea *	am_col_amoptions(Datum reloptions, bool validate);
+
+#endif

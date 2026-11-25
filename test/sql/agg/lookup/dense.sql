@@ -98,7 +98,6 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM report('workers');
 
 -- switched off with the load from the leaves: the rows are loaded one by one
-SET sift.agg_lookup_columns = off;
 SELECT * FROM report('lookup columns off');
 
 DROP FUNCTION report(text), classed(text), answer(text, bool);

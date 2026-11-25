@@ -1,6 +1,6 @@
 /*
  * tests/oracle.c - the scalar oracle of the aggregate kernels: the program of a job run row by row in plain C over the logical data
- * (the semantics of agg/vexpr.h: PostgreSQL's errors on the rows that are live, three-valued masks, the order of floats), with the
+ * (the semantics of agg/vexpr/vexpr.h: PostgreSQL's errors on the rows that are live, three-valued masks, the order of floats), with the
  * compiler's overflow builtins, 128-bit integers and the C library's calendar (gmtime, timegm) where the shaders compute by hand.
  */
 #include <math.h>

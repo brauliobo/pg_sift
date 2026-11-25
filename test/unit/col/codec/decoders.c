@@ -4,7 +4,7 @@
  */
 #include "postgres.h"
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
 #include "col/fsst.h"
 #include "test/common/pgshim.h"

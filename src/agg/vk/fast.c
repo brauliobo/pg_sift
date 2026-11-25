@@ -123,8 +123,8 @@ cast_reg(Analysis *an, uint32_t reg, uint32_t from, uint32_t to)
 	return false;
 }
 
-/* the program as loads of columns and constants, comparisons of a column with a constant and their conjunctions; false for anything else. The program is what agg/vexpr_compile.c makes (and
- * agg/gpu_emit.c renames): registers and mask slots are reused, a conjunction is made in place, and the rows an operation is live for (ACT_NOTFALSE) are no concern of a kernel that
+/* the program as loads of columns and constants, comparisons of a column with a constant and their conjunctions; false for anything else. The program is what agg/vexpr/compile.c makes (and
+ * agg/gpu/emit.c renames): registers and mask slots are reused, a conjunction is made in place, and the rows an operation is live for (ACT_NOTFALSE) are no concern of a kernel that
  * evaluates a comparison, which cannot fail, on every row */
 static bool
 analyze_program(const SiftVkJob *job, Analysis *an)

@@ -4,8 +4,8 @@
 #include "postgres.h"
 
 #include "access/transam.h"
-#include "col/v1/conn.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/conn/conn.h"
+#include "col/v1/scan/int.h"
 #include "col/v1/wbuf.h"
 
 /* the number of the connection whose flag that the parent row was found is the leaf, -1 for another leaf */

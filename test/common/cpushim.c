@@ -1,13 +1,13 @@
 /*
  * cpushim.c - the cpu module of the extension (core/cpu.c) for the standalone harnesses, with the same detection rules: sift_cpu is filled from the
- * hardware before main, kt_cpu_init() repeats it and builds the dispatch tables of the bm25 kernels. A harness that links no bm25/kernels.c
- * compiles it with -DSIFT_CPUSHIM_DETECT_ONLY, one that links bm25/bitmap.c (it defines sift_k) with -DSIFT_CPUSHIM_NO_SIFT_K.
+ * hardware before main, kt_cpu_init() repeats it and builds the dispatch tables of the bm25 kernels. A harness that links no bm25/kernels/kernels.c
+ * compiles it with -DSIFT_CPUSHIM_DETECT_ONLY, one that links bm25/bitmap/bitmap.c (it defines sift_k) with -DSIFT_CPUSHIM_NO_SIFT_K.
  */
 #include "postgres.h"
 
-#include "bm25/kernels_int.h"
+#include "bm25/kernels/int.h"
 
-#include "bm25/bitmap_kern.h"
+#include "bm25/bitmap/kern.h"
 #include "core/cpu.h"
 
 SiftCpu		sift_cpu;

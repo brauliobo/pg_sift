@@ -9,16 +9,16 @@
 #include "port/pg_bitutils.h"
 #include "utils/snapmgr.h"
 #include "core/limits.h"
-#include "core/maint_vacuum.h"
+#include "core/maint/vacuum.h"
 #include "core/memtrack.h"
 #include "core/ops.h"
 #include "core/worker.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "utils/timestamp.h"
-#include "col/v1/gorder.h"
+#include "col/v1/gorder/gorder.h"
 #include "col/v1/wbuf.h"
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 
 /* The automatic promotion and merge (sift.col_auto_merge*, registered in col/am/am.c) */
 

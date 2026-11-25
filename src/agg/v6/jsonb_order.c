@@ -11,8 +11,8 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 
-#include "agg/v6/plan_int.h"
-#include "agg/v6/v6_pg_expr.h"
+#include "agg/v6/plan/int.h"
+#include "agg/v6/expr/pg.h"
 
 static bool
 raising_attno(int attno)

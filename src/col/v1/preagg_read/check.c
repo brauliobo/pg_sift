@@ -3,7 +3,7 @@
  * byte comparison of the rebuilt blob, the excepts
  * used by sift.verify
  */
-#include "col/v1/preagg_read/preagg_read_int.h"
+#include "col/v1/preagg_read/int.h"
 
 static bool
 same_bytes(const StringInfoData *a, const uint8 *b, uint32 len)

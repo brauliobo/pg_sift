@@ -22,10 +22,10 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
-#include "core/maint.h"
+#include "core/maint/maint.h"
 #include "col/am.h"
-#include "col/v1/gorder.h"
-#include "col/v1/keycols/keycols_int.h"
+#include "col/v1/gorder/gorder.h"
+#include "col/v1/keycols/int.h"
 #include "core/restrict.h"
 #include "col/v1/ktab.h"
 #include "col/v1/setsum.h"

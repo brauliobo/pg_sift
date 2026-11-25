@@ -6,7 +6,7 @@
 /* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 #include "core/cmp.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 
 #define SIG_TEST_NVALS	64			/* a list of this many values is tested once for the statement, and the same array is the same values (the predicates are made once) */
 

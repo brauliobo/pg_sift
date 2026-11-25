@@ -21,16 +21,16 @@
 #include "utils/tuplesort.h"
 
 #include "col/am.h"
-#include "col/v1/order_bound.h"
+#include "col/v1/order/bound.h"
 #include "col/pg.h"
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/check.h"
 #include "core/cmp.h"
-#include "core/dirchain.h"
+#include "core/dirchain/dirchain.h"
 #include "core/errctx.h"
 #include "core/ops.h"
 #include "core/memtrack.h"
-#include "core/visibility.h"
+#include "core/visibility/visibility.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -598,7 +598,7 @@ verify_wbuf(ColVerify *cv, const SiftSegEntry *e)
 
 /*
  * One segment. The maintenance lock is held for this segment alone, so that a promotion or merge waits for the length of one and not of the index: the
- * segments that go while the others are verified stay readable, the registered snapshot keeps their blocks from being reused (P4 of core/store.h), as for a scan.
+ * segments that go while the others are verified stay readable, the registered snapshot keeps their blocks from being reused (P4 of core/store/store.h), as for a scan.
  */
 static void
 step_segment(void *arg)

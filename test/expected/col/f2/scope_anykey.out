@@ -1,5 +1,5 @@
 -- A scope whose key is a text, varchar or uuid column is built in format major 2 (not moved to format major 1): the codes of its keys are those of the scope key store of the key column
--- (col/scope_keys.c), the cubes of the summary are cut by them, and a statement names a key by its value. The summary composes with UNIQUE and INCLUDE, and every answer of the node is compared
+-- (col/scope/keys.c), the cubes of the summary are cut by them, and a statement names a key by its value. The summary composes with UNIQUE and INCLUDE, and every answer of the node is compared
 -- with the heap (sift.enable_agg = off): counts and sums of a key, the keys of a group, an IN list, the newest rows of a key, a key the pairs lack, the empty and the long keys, keys that
 -- differ in case, in a trailing blank or in an accent. The summary follows INSERT, UPDATE, DELETE, an aborted write, VACUUM, the maintenance step, REINDEX and CREATE INDEX CONCURRENTLY.
 CREATE EXTENSION pg_sift;

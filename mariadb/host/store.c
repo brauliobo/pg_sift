@@ -1,5 +1,5 @@
 /*
- * store.c - the storage layer of src/core/store.h on segment files instead of an index relation (store.h).
+ * store.c - the storage layer of src/core/store/store.h on segment files instead of an index relation (store.h).
  *
  * An index is a directory of immutable segment files, each a sequence of 8 KiB pages in the layout of src/core/page.h (block 0
  * unused). Each file is mapped on its own, at the address the kernel gives it, and the process keeps that address per mapped

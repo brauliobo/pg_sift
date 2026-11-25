@@ -154,7 +154,7 @@ CREATE FUNCTION sift_helpers.rows_agg_other_scans_off(q text, push bool) RETURNS
 CREATE FUNCTION sift_helpers.rows_agg_four_scans_error_text(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN RETURN sift_helpers.rows_agg_four_scans_or_no_rows(q, push); EXCEPTION WHEN OTHERS THEN RETURN 'ERROR: ' || SQLERRM; END $$;
 CREATE FUNCTION sift_helpers.rows_agg_preagg_and_pushdown(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN PERFORM set_config('sift.agg_preagg', pre::text, true); RETURN sift_helpers.rows_agg(q, push); END $$;
+BEGIN RETURN sift_helpers.rows_agg(q, push); END $$;
 CREATE FUNCTION sift_helpers.rows_agg_with_workers(q text, push bool, workers int, leader bool DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);

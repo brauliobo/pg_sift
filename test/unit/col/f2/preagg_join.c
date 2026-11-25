@@ -1,13 +1,13 @@
 /*
- * col/f2/preagg_join.c - col/f2/preagg_v2_read.c: the join of the pre-aggregate sections of parts reports a section whose header names bytes it does not have (the cubes, the sets of distinct values)
+ * col/f2/preagg_join.c - col/f2/preagg/v2_read.c: the join of the pre-aggregate sections of parts reports a section whose header names bytes it does not have (the cubes, the sets of distinct values)
  * as a damaged segment, and reads nothing past it.
  */
 #include "postgres.h"
 
 #include "utils/rel.h"
 
-#include "col/f2/part_format.h"
-#include "col/f2/preagg_v2.h"
+#include "col/f2/part/format.h"
+#include "col/f2/preagg/v2.h"
 #include "test/common/pgshim.h"
 #include "test/common/check.h"
 

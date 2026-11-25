@@ -4,7 +4,7 @@
  * directory says up to the end the leader counted, so the participants open their sources on that copy and that end, not on the table as it is.
  */
 #include "postgres.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 
 typedef struct ColView
 {

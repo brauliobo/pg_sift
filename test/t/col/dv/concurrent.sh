@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tap: pooled
-# Deletion records (core/v1_col/tomb_dv.h) under concurrent work: one session deletes scattered rows in statements large enough to write records and inserts as many, scanners compare the index with the
+# Deletion records (core/v1_col/tomb/dv.h) under concurrent work: one session deletes scattered rows in statements large enough to write records and inserts as many, scanners compare the index with the
 # heap inside one snapshot (a REPEATABLE READ transaction asks both), and the maintenance loop runs VACUUM, the fold of the log, the promotion of the write buffer and the forced merge, which carries the
 # records of the segments it replaces to marks under the tombstone lock. No scanner may see a row the heap does not, and no statement may fail.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"

@@ -1,11 +1,11 @@
 /*
  * col/v1/amscan/ordered.c - an index-only scan in the order of the first key column
  * The planner offers it (ordpath.c) for a query that reads that column alone and wants it sorted (ORDER BY, a merge join): the entries of the global order of the
- * column over the segments and the write buffers, merged (agg/gord.h), are the rows in order, where the units give them in the order of the heap and a Sort follows.
+ * column over the segments and the write buffers, merged (col/v1/amscan/ord_merge.h), are the rows in order, where the units give them in the order of the heap and a Sort follows.
  * The plan says it wants the order: the node of its path is marked (COL_ORDERED_MARK), and sift_col_ioss_want hands that to the scan.
  *
  * A pair (COL_ORDERED_PAIR_MARK) is the order of the first two columns, g and k: the second order of k grouped by g (a block of every row, exact keys) lists the rows of a group by k, so
- * the groups, ascending (descending: from the last, each group backwards), are read one after the other, each as the order of k with g pinned (agg/gord.h). A group costs its open, so a
+ * the groups, ascending (descending: from the last, each group backwards), are read one after the other, each as the order of k with g pinned (col/v1/amscan/ord_merge.h). A group costs its open, so a
  * table of many small groups is priced for it (cost.c); a table whose second order is not there, or compact, has its rows read from the units and sorted here.
  */
 #include "postgres.h"
@@ -20,8 +20,8 @@
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
 #include "col/am.h"
-#include "agg/gord.h"
-#include "col/v1/amscan/amscan_int.h"
+#include "col/v1/amscan/int.h"
+#include "col/v1/amscan/ord_merge.h"
 #include "col/v1/scan/gmem.h"
 
 /* the rows of 2^28 that the scan will ask the blocks of the order for: more than a block of the ends only answers */
@@ -33,8 +33,8 @@
 typedef struct ColOrd
 {
 	MemoryContext cxt;
-	SiftSrcSource *src;
-	SiftGOrd   *g;				/* the merge of the order; NULL: the order is not whole, the rows were sorted here (pairs) */
+	SiftColSource *src;
+	SiftOrdMerge   *g;				/* the merge of the order; NULL: the order is not whole, the rows were sorted here (pairs) */
 	bool		desc;
 	GOrdPair   *pairs;			/* the rows with a key, ascending by (key, address) */
 	uint32		npairs;
@@ -217,7 +217,7 @@ ord_open(IndexScanDesc scan, ColScanOpaque *so, ScanDirection dir)
 	o->pair = so->ordpair;
 	old = MemoryContextSwitchTo(o->cxt);
 	ord_tuples(scan, o);
-	o->src = sift_colsrc_open(so->heap, scan->indexRelation, scan->xs_snapshot, o->cxt, NULL, NULL);
+	o->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, o->cxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, NULL, NULL);
 	if (so->first == NULL)
 	{
 		int			n = sift_col_rel(scan->indexRelation)->natts + 1;
@@ -235,9 +235,9 @@ ord_open(IndexScanDesc scan, ColScanOpaque *so, ScanDirection dir)
 		return;
 	}
 	/* a descending scan has the NULL rows first, as the b-tree's default does */
-	o->g = sift_gord_open(o->src, so->first[1], ORD_ROWS, o->desc, o->desc, 0, NULL, o->cxt);
+	o->g = sift_ordm_open(o->src, so->first[1], ORD_ROWS, o->desc, o->desc, 0, NULL, o->cxt);
 	/* the order of a segment that keeps its ends only, or its keys rounded, is not read whole: the units give the rows faster than the heap the keys */
-	if (o->g != NULL && (sift_gord_ends(o->g) || sift_gord_compact(o->g)))
+	if (o->g != NULL && (sift_ordm_ends(o->g) || sift_ordm_compact(o->g)))
 		o->g = NULL;
 	MemoryContextSwitchTo(old);
 }
@@ -467,12 +467,12 @@ ord_sorted_next(ColOrd *o, int64 *g, int64 *k, bool *knull, ItemPointer tid)
 static bool
 ord_next_group(ColOrd *o)
 {
-	SiftGBound	b = {0};
-	SiftGOrd   *prev = o->g;
+	SiftOrdBound	b = {0};
+	SiftOrdMerge   *prev = o->g;
 
 	o->g = NULL;
 	o->ahead = false;
-	if (o->gcursor == NULL || !sift_colsrc_gorder_groups_next(o->src, o->gcursor, &o->gcur))
+	if (o->gcursor == NULL || !sift_col_gorder_groups_next(o->gcursor, &o->gcur))
 	{
 		MemoryContextReset(o->gcxt[o->gsel]);
 		return false;
@@ -481,9 +481,9 @@ ord_next_group(ColOrd *o)
 	b.pinleaf[0] = o->gleaf;
 	b.pinval[0] = o->gcur;
 	o->gsel ^= 1;
-	o->g = sift_gord_open_from(prev, o->src, o->kleaf, ORD_ROWS, o->desc, o->desc, 0, &b, o->gcxt[o->gsel]);
+	o->g = sift_ordm_open_from(prev, o->src, o->kleaf, ORD_ROWS, o->desc, o->desc, 0, &b, o->gcxt[o->gsel]);
 	MemoryContextReset(o->gcxt[o->gsel ^ 1]);
-	if (o->g == NULL || sift_gord_group(o->g) != o->gleaf || sift_gord_ends(o->g) || sift_gord_compact(o->g))
+	if (o->g == NULL || sift_ordm_group(o->g) != o->gleaf || sift_ordm_ends(o->g) || sift_ordm_compact(o->g))
 	{
 		o->bad = true;
 		o->g = NULL;
@@ -518,7 +518,7 @@ ord_pair_open(IndexScanDesc scan, ColScanOpaque *so)
 		o->bygroup = true;
 		return;
 	}
-	o->gcursor = sift_colsrc_gorder_groups_open(o->src, o->gleaf, o->kleaf, onlyp, o->desc, o->cxt);
+	o->gcursor = sift_col_gorder_groups_open(o->src, o->gleaf, o->kleaf, onlyp, o->desc, o->cxt);
 	if (o->gcursor != NULL)
 	{
 		o->bygroup = true;
@@ -734,7 +734,7 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 		}
 		else
 		{
-			while (o->g == NULL || !sift_gord_next(o->g, &key, &isnull, &tid))
+			while (o->g == NULL || !sift_ordm_next(o->g, &key, &isnull, &tid))
 			{
 				if (!o->pair || !ord_next_group(o))
 				{
@@ -742,7 +742,7 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 					return false;
 				}
 			}
-			st = sift_gord_state(o->g, &tid);
+			st = sift_ordm_state(o->g, &tid);
 		}
 		/*
 		 * A row its segment lost (dead) is an entry of no row, unless another source holds a row at that address with that key, which the merge dropped as the repeat of this
@@ -750,10 +750,10 @@ sift_col_ordered_next(IndexScanDesc scan, ScanDirection dir)
 		 */
 		if (st == SIFT_GORD_DEAD)
 		{
-			o->ahead = sift_gord_next(o->g, &o->a_key, &o->a_null, &o->a_tid);
+			o->ahead = sift_ordm_next(o->g, &o->a_key, &o->a_null, &o->a_tid);
 			if (o->ahead)
-				o->a_st = sift_gord_state(o->g, &o->a_tid);
-			if (!sift_gord_repeated(o->g))
+				o->a_st = sift_ordm_state(o->g, &o->a_tid);
+			if (!sift_ordm_repeated(o->g))
 				continue;
 		}
 		else if (st == SIFT_GORD_UNKNOWN)
@@ -784,11 +784,8 @@ sift_col_ordered_end(ColScanOpaque *so)
 		BufFileClose(so->ord->mfile);
 	if (so->ord->src != NULL)
 	{
-		SiftSrcCounters cc;
-
-		sift_colsrc_counters(so->ord->src, &cc);
-		so->dirty_rows += cc.dirty_rows;
-		sift_colsrc_close(so->ord->src);
+		so->dirty_rows += sift_col_counters(so->ord->src)->dirty_rows;
+		sift_col_close(so->ord->src);
 	}
 	MemoryContextDelete(so->ord->cxt);
 	so->ord = NULL;

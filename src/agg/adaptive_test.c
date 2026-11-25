@@ -6,8 +6,6 @@
  *   sift._test_apipe_filter a filter `a = 1 AND 1000 / b > 5` run through the pipeline over arrays: the division is by zero for rows that `a = 1` rejects, and a pipeline
  *                           that put it first would fail
  *   sift._test_sip_adapt    the circuit breaker of the batch probe of agg/sip.h over a stream of granules whose share of matching keys is given before and after a drift
- *   sift._test_group_tiers  the tiers of agg/group/tier.h under a budget, against the same groups in a table with no limit
- *   sift._test_rollup_spill the grouping sets of agg/group/rollup.h under a budget, against the same sets with no limit
  */
 #include "postgres.h"
 
@@ -19,8 +17,6 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 
-#include "agg/group/rollup.h"
-#include "agg/group/tier.h"
 #include "agg/sip.h"
 #include "core/adapt_pipe.h"
 #include "core/testrng.h"
@@ -28,8 +24,6 @@
 PG_FUNCTION_INFO_V1(sift_test_apipe);
 PG_FUNCTION_INFO_V1(sift_test_apipe_filter);
 PG_FUNCTION_INFO_V1(sift_test_sip_adapt);
-PG_FUNCTION_INFO_V1(sift_test_group_tiers);
-PG_FUNCTION_INFO_V1(sift_test_rollup_spill);
 
 static SiftRng rng;
 
@@ -315,196 +309,6 @@ sift_test_sip_adapt(PG_FUNCTION_ARGS)
 	/* the zone test is not stopped with the probe: a granule outside the keys is pruned whatever the state */
 	values[6] = BoolGetDatum(!sift_sip_probe_granule(sip, members + 10, members + 20, NULL) && sift_sip_probe_granule(sip, 5, 10, NULL));
 	values[7] = Int64GetDatum(missed);
-	PG_RETURN_DATUM(HeapTupleGetDatum(form_row(fcinfo, values)));
-}
-
-/* ---- the tiers of the groups ---- */
-
-typedef struct Sums
-{
-	int64		groups;
-	int64		rows;
-	uint64		mix;
-	int64		key_sum;
-	int64		sum_sum;
-} Sums;
-
-static void
-sums_add(void *arg, int64 key, const int64 agg[4])
-{
-	Sums	   *s = arg;
-
-	s->groups++;
-	s->rows += agg[0];
-	s->key_sum += key;
-	s->sum_sum += agg[1];
-	s->mix += sift_aggk6_hash1((uint64) key) ^ sift_aggk6_hash1((uint64) agg[0] * 31 + (uint64) agg[1] * 17 + (uint64) agg[2] * 7 + (uint64) agg[3]);
-}
-
-/* The key of row i: base + a mostly distinct one of domain, hot percent of the rows in 7 keys, skew percent of the rows with keys in the top partition of the hash */
-static int64
-tier_key(int64 i, int64 base, int64 domain, int hot, int skew)
-{
-	int64		k = (i % 100) < hot ? i % 7 : (i * 7919) % domain;
-
-	if (skew > 0 && (i % 100) < skew)
-		while ((sift_aggk6_hash1((uint64) (base + k)) >> 60) != 0)
-			k = (k + 7) % domain;
-	return base + k;
-}
-
-static void
-tier_run(SiftTierGroups *g, int64 n, int64 base, int64 domain, int hot, int skew)
-{
-	for (int64 i = 0; i < n; i++)
-		sift_tier_add(g, tier_key(i, base, domain, hot, skew), (i * 31) % 1000 - 500);
-}
-
-/*
- * sift._test_group_tiers(n int8, domain int8, base int8, start int4, budget int8, hot int4, skew int4, OUT groups int8, OUT rows int8, OUT key_sum int8,
- * OUT sum_sum int8, OUT mix int8, OUT tier int4, OUT visited int4, OUT spilled_bytes int8, OUT depth int4, OUT same bool)
- * The rows i < n with the key `base + (hot% of them: i % 7, the others: i * 7919 % domain)` and the value `i * 31 % 1000 - 500`: count, sum, min and max by key, in the tier
- * start (1 dict, 2 int, 3 table) with a span of 65536 from base, under budget bytes. same: the groups are those of a table with no limit.
- */
-Datum
-sift_test_group_tiers(PG_FUNCTION_ARGS)
-{
-	const int64 n = PG_GETARG_INT64(0),
-				domain = PG_GETARG_INT64(1),
-				base = PG_GETARG_INT64(2);
-	const int	hot = PG_GETARG_INT32(5),
-				skew = PG_GETARG_INT32(6);
-	SiftTierGroups *g = sift_tier_new((SiftGroupTier) PG_GETARG_INT32(3), base, SIFT_TIER_DIRECT_MAX, (uint64) PG_GETARG_INT64(4)),
-			   *ref = sift_tier_new(SIFT_GRP_SALTED_HT, 0, 0, UINT64CONST(1) << 40);
-	Sums		got = {0},
-				want = {0};
-	Datum		values[10];
-
-	sift_aggkern6_init();
-	tier_run(g, n, base, domain, hot, skew);
-	tier_run(ref, n, base, domain, hot, skew);
-	sift_tier_emit(g, sums_add, &got);
-	sift_tier_emit(ref, sums_add, &want);
-	values[0] = Int64GetDatum(got.groups);
-	values[1] = Int64GetDatum(got.rows);
-	values[2] = Int64GetDatum(got.key_sum);
-	values[3] = Int64GetDatum(got.sum_sum);
-	values[4] = Int64GetDatum((int64) got.mix);
-	values[5] = Int32GetDatum((int32) sift_tier_of(g));
-	values[6] = Int32GetDatum((int32) sift_tier_visited(g));
-	values[7] = Int64GetDatum((int64) sift_tier_spilled_bytes(g));
-	values[8] = Int32GetDatum((int32) sift_tier_spill_depth(g));
-	values[9] = BoolGetDatum(got.groups == want.groups && got.rows == want.rows && got.mix == want.mix && got.key_sum == want.key_sum &&
-							 got.sum_sum == want.sum_sum);
-	sift_tier_free(g);
-	sift_tier_free(ref);
-	PG_RETURN_DATUM(HeapTupleGetDatum(form_row(fcinfo, values)));
-}
-
-/* ---- the grouping sets under a budget ---- */
-
-static void
-group_sums(void *arg, const SiftRollupGroup *g)
-{
-	Sums	   *s = arg;
-	uint64		h = sift_aggk6_hash1(g->set + 1) ^ sift_aggk6_hash1(g->key_nulls + 3);
-
-	for (int k = 0; k < 3; k++)
-		h = sift_aggk6_hash1(h ^ (uint64) g->key[k]);
-	h = sift_aggk6_hash1(h ^ (uint64) g->rows);
-	for (int v = 0; v < 2; v++)
-		h = sift_aggk6_hash1(h ^ (uint64) g->val[v].nvals ^ g->val[v].sum.lo ^ (uint64) g->val[v].sum.hi ^ (uint64) g->val[v].min ^ ((uint64) g->val[v].max << 1));
-	h = sift_aggk6_hash1(h ^ g->distinct);
-	s->groups++;
-	s->mix += h;
-}
-
-static void
-rollup_run(SiftRollupTree *t, int64 n, int64 groups, bool skew)
-{
-	int64	   *col[4];
-	uint64	   *valid = palloc_aligned(SIFT_VEC_WORDS * 8 + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
-	SiftVec		vec[4];
-	SiftRollupBatch b = {0};
-
-	for (int c = 0; c < 4; c++)
-	{
-		col[c] = palloc_aligned(SIFT_VEC_LEN * 8 + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
-		vec[c] = (SiftVec) {.type = SVEC_I64,.dense = true,.all_valid = true,.data = col[c]};
-	}
-	for (int64 from = 0; from < n; from += SIFT_VEC_LEN)
-	{
-		b.n = (uint16) Min(SIFT_VEC_LEN, n - from);
-		for (int i = 0; i < b.n; i++)
-		{
-			const int64 r = from + i;
-			int64		k = (r * 7919) % groups;
-
-			if (skew && r % 2 == 0)
-				while ((sift_aggk6_hash1((uint64) k) >> 60) != 0)
-					k = (k + 16) % groups;
-			col[0][i] = k;
-			col[1][i] = (r / 3) % 5;
-			col[2][i] = (r * 31) % 1000 - 500;
-			col[3][i] = r % 97;
-		}
-		for (int c = 0; c < 4; c++)
-			vec[c].len = b.n;
-		b.keys[0] = &vec[0];
-		b.keys[1] = &vec[1];
-		b.vals[0] = &vec[2];
-		b.vals[1] = &vec[3];
-		sift_rollup_feed(t, &b);
-	}
-	pfree(valid);
-}
-
-/*
- * sift._test_rollup_spill(masks int8[], n int8, groups int8, max_bytes int8, skew bool, dist bool, OUT nodes_spilled int4, OUT bytes_spilled int8, OUT depth int4,
- * OUT groups_out int8, OUT same bool): n rows of `groups` keys in the first of two key columns (the second has 5 values) and two value columns, in the sets of masks under
- * max_bytes; skew: half of the keys have the top bits of their hash zero. same: the groups are those of the same sets with no limit.
- */
-Datum
-sift_test_rollup_spill(PG_FUNCTION_ARGS)
-{
-	Datum	   *md;
-	bool	   *mn;
-	int			nm;
-	SiftRollupSpec spec;
-	SiftRollupTree *t,
-			   *ref;
-	Sums		got = {0},
-				want = {0};
-	uint16		spilled;
-	uint64		bytes;
-	uint32		depth;
-	Datum		values[5];
-
-	sift_aggkern6_init();
-	deconstruct_array(PG_GETARG_ARRAYTYPE_P(0), INT8OID, 8, true, 'd', &md, &mn, &nm);
-	memset(&spec, 0, sizeof(spec));
-	spec.n_keys = 2;
-	spec.n_vals = 2;
-	spec.n_sets = (uint16) nm;
-	for (int s = 0; s < nm; s++)
-		spec.set_masks[s] = (uint64) DatumGetInt64(md[s]);
-	spec.count_distinct = PG_GETARG_BOOL(5);
-	t = sift_rollup_create(CurrentMemoryContext, &spec, (uint64) PG_GETARG_INT64(3));
-	ref = sift_rollup_create(CurrentMemoryContext, &spec, UINT64CONST(1) << 40);
-	rollup_run(t, PG_GETARG_INT64(1), PG_GETARG_INT64(2), PG_GETARG_BOOL(4));
-	rollup_run(ref, PG_GETARG_INT64(1), PG_GETARG_INT64(2), PG_GETARG_BOOL(4));
-	sift_rollup_finish(t);
-	sift_rollup_finish(ref);
-	sift_rollup_emit(t, group_sums, &got);
-	sift_rollup_emit(ref, group_sums, &want);
-	sift_rollup_spill_stats(t, &spilled, &bytes, &depth);
-	values[0] = Int32GetDatum(spilled);
-	values[1] = Int64GetDatum((int64) bytes);
-	values[2] = Int32GetDatum((int32) depth);
-	values[3] = Int64GetDatum(got.groups);
-	values[4] = BoolGetDatum(got.groups == want.groups && got.mix == want.mix);
-	sift_rollup_free(t);
-	sift_rollup_free(ref);
 	PG_RETURN_DATUM(HeapTupleGetDatum(form_row(fcinfo, values)));
 }
 

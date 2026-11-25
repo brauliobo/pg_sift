@@ -1,10 +1,9 @@
 -- The rewrite of a sift_col index that churn left scattered (sift.async_maintenance*, sift.col_maintain, sift.col_maintenance_due): a DELETE or UPDATE
--- spread over the table puts a dead row in every unit while far fewer than dead_rewrite_pct percent of the rows are dead, so VACUUM rewrites nothing
--- and no unit answers from its pre-aggregates. The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
+-- spread over the table puts a dead row in every unit while far fewer than dead_rewrite_pct percent of the rows are dead, so VACUUM rewrites nothing.
+-- The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
 -- in the write buffer. Nothing starts the rewrite but sift.col_maintain; the end state after it is the one of a REINDEX of the same table, and the answers never change.
 CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
-SET sift.test_agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -20,21 +19,15 @@ CREATE INDEX facts_b_col ON facts_b USING sift_col (id, key, kind, amount) WITH 
 CREATE INDEX facts_c_col ON facts_c USING sift_col (id, key, kind, amount) WITH (dead_rewrite_pct = 50);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts_a, facts_b, facts_c;
 
--- units of the SiftAgg node, those it answered from the pre-aggregates, and whether the three ways (pre-aggregates, scan, heap) agree
-CREATE FUNCTION fa_state(tbl text) RETURNS TABLE (units int, from_preagg int, same bool) LANGUAGE plpgsql AS $$
-DECLARE l text; u int; p int; q text := format('SELECT kind, count(*), sum(amount) FROM %s GROUP BY kind', tbl); a text; b text; c text;
+-- whether the three ways (pre-aggregates, scan, heap) agree
+CREATE FUNCTION fa_state(tbl text) RETURNS TABLE (same bool) LANGUAGE plpgsql AS $$
+DECLARE q text := format('SELECT kind, count(*), sum(amount) FROM %s GROUP BY kind', tbl); a text; b text; c text;
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		u := coalesce(substring(l from '^\s*Units: (\d+)')::int, u);
-		p := coalesce(substring(l from '(\d+) from pre-aggregates')::int, p);
-	END LOOP;
-	SET LOCAL sift.agg_preagg = on;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
-	SET LOCAL sift.agg_preagg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
-	RETURN QUERY SELECT u, p, a = b AND b = c;
+	RETURN QUERY SELECT a = b AND b = c;
 END $$;
 
 -- what the index holds: segments, buffer rows, units listed and the superblocks they cover

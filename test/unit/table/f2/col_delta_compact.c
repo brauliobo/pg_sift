@@ -1,5 +1,5 @@
 /*
- * test/unit/table/f2/col_delta_compact.c - the plan of a garbage collection of a column delta chain (table/f2/f2_col_delta_compact.c): a record every attribute of which a later record of the
+ * test/unit/table/f2/col_delta_compact.c - the plan of a garbage collection of a column delta chain (table/f2/col_delta/compact.c): a record every attribute of which a later record of the
  * row writes again is dropped when both writers committed before the horizon; one the later record does not cover, and one whose later writer is still in the horizon's reach, stays.
  */
 #define SIFT_S49_STANDALONE 1
@@ -15,8 +15,8 @@
 
 bool		sift_test_col_delta = true;
 
-#include "table/f2/f2_col_delta.c"
-#include "table/f2/f2_col_delta_compact.c"
+#include "table/f2/col_delta/col_delta.c"
+#include "table/f2/col_delta/compact.c"
 
 enum { PART = 7, RUNNING_FROM = 100 };
 

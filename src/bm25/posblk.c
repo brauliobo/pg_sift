@@ -1,18 +1,18 @@
 /*
- * bm25/posblk.c - the position stream of a term in blocks of SIFT_POS_EVERY postings (segment format 4; layout in bm25/posting.h):
+ * bm25/posblk.c - the position stream of a term in blocks of SIFT_POS_EVERY postings (segment format 4; layout in bm25/posting/posting.h):
  * the block is a byte of the width of the largest first position and whether a posting has several, then a bit stream (least
  * significant bit first): a flag a posting for the several, the first positions at that width, the Rice parameter of the block
  * (4 bits), for each posting with several its occurrences less one in Elias gamma, then the low bits of all the gaps less one
  * and the quotients of them in unary. A posting is read alone: its first position is at a fixed place, the gaps of the ones
  * before it are skipped by counting the ends of unary codes. The writer and the merge hold the records of a posting as LEB128
- * varints (bm25/analyze.h), the reader turns a block back into them (sift_posblk_leb) for what copies records.
+ * varints (bm25/analyze/analyze.h), the reader turns a block back into them (sift_posblk_leb) for what copies records.
  */
 #include "core/host.h"
 
 #include "core/varint.h"
 
-#include "bm25/posting.h"
-#include "bm25/posting_int.h"
+#include "bm25/posting/posting.h"
+#include "bm25/posting/int.h"
 
 #define BLK_WIDTH_MASK	0x3f
 #define BLK_MULTI		0x40

@@ -1,6 +1,6 @@
 /*
  * col/track_hear.h - the triggers of an index with track_changes as a set: one AFTER DELETE and one AFTER UPDATE on the table of the index and, for a statement trigger, on every table above it
- * (col/v1/track_hear.c). col/v1/track.c decides what the log may be taken for from them.
+ * (col/v1/track_hear.c). col/v1/track/track.c decides what the log may be taken for from them.
  */
 #ifndef SIFT_COL_TRACK_HEAR_H
 #define SIFT_COL_TRACK_HEAR_H

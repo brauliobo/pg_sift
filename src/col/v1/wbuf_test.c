@@ -27,12 +27,12 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 #include "col/v1/wbuf.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "col/v1/wbuf/int.h"
 #include "core/lane.h"
 #include "core/inspect.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_prepare);
 PG_FUNCTION_INFO_V1(sift_test_col_wbuf_append);
@@ -46,7 +46,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_dir_version);
 PG_FUNCTION_INFO_V1(sift_test_col_gkept_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_mem_encodes);
 PG_FUNCTION_INFO_V1(sift_test_col_set_stats);
-extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* declared in col/v1/seg_int.h, which cannot be included next to maint_int.h */
+extern PGDLLIMPORT uint64 sift_cseg_dict_blocks;	/* declared in col/v1/seg/int.h, which cannot be included next to maint_int.h */
 uint64		sift_cseg_dict_blocks;
 
 PG_FUNCTION_INFO_V1(sift_test_col_gdead_stats);

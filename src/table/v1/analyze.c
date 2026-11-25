@@ -19,9 +19,9 @@
 #include "utils/snapmgr.h"
 
 #include "optimizer/optimizer.h"
-#include "col/v1/kern.h"
+#include "col/v1/kern/kern.h"
 #include "core/errctx.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 #include "core/hash.h"
 #include "table/v1/scan_int.h"
 

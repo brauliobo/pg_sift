@@ -10,7 +10,7 @@
 #define SIFT_COL_COLSPOOL_H
 
 #include "nodes/pg_list.h"
-#include "col/v1/enc.h"
+#include "col/v1/enc/enc.h"
 
 typedef struct SiftChunkPlan SiftChunkPlan;
 typedef struct SiftChunkSpool SiftChunkSpool;

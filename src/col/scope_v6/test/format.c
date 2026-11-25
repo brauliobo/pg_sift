@@ -11,7 +11,7 @@
 #include "core/cmp.h"
 #include "col/compress.h"
 #include "col/scope_v6/int.h"
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/scope_v6/test/world.h"
 
 #define OUTL(t, ...)	do { appendStringInfo(&(t)->out, __VA_ARGS__); appendStringInfoChar(&(t)->out, '\n'); } while (0)

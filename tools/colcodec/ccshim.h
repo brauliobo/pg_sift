@@ -2,7 +2,7 @@
 #ifndef CC_CCSHIM_H
 #define CC_CCSHIM_H
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 
 #include "test/common/pgshim.h"
 

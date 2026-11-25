@@ -10,7 +10,7 @@
 #include "lib/stringinfo.h"
 
 #include "col/compress.h"
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 #include "core/damage.h"
 #include "core/popcount.h"
 #include "core/varint.h"

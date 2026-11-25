@@ -12,9 +12,9 @@
 #include "storage/spin.h"
 #include "utils/builtins.h"
 
-#include "core/shm_manifest.h"
-#include "core/shmbudget.h"
-#include "col/dictshm.h"
+#include "core/shm/manifest.h"
+#include "core/shm/budget.h"
+#include "col/dictshm/dictshm.h"
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
 
@@ -285,7 +285,7 @@ percent_numeric(uint64 used, uint64 limit)
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(psprintf(UINT64_FORMAT ".%02d", hundredths / 100, (int) (hundredths % 100))), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }
 
-/* sift.shared_memory_pools(): the five pools of the ledger in the order of SiftShmPoolId (core/shmbudget.h) */
+/* sift.shared_memory_pools(): the five pools of the ledger in the order of SiftShmPoolId (core/shm/budget.h) */
 Datum
 sift_shared_memory_pools(PG_FUNCTION_ARGS)
 {

@@ -3,7 +3,7 @@
  * text, or what agg/v6/par/derive.h computes from columns), and COUNT(*), COUNT(column), SUM and AVG of int2 and int4 columns or lengths and MIN and MAX of text columns next to the one distinct count
  * (agg/v6/par/distinct.h). With no distinct count, the groups of a key with the text minimums and maximums (the group kind has none) are this kind's too. A NULL in a key or in a column of a
  * sum is not for a thread (the scan does it); a NULL value is not counted, and its row is a row of its group; a NULL text is not a minimum or maximum. The plan takes a text MIN or MAX only of a
- * column in the C collation (agg/v6/plan.c), the order of the bytes that the threads compare by.
+ * column in the C collation (agg/v6/plan/plan.c), the order of the bytes that the threads compare by.
  */
 #include "postgres.h"
 

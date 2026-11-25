@@ -6,7 +6,7 @@
 #include "storage/bufmgr.h"
 
 #include "core/lane.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 
 /* Brings the page table of seg up to the header's now */
 void

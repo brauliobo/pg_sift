@@ -4,7 +4,7 @@
 #   scripts/check-threads.sh [--selftest]
 cd "$(git rev-parse --show-toplevel)" || exit 1
 check() { # ROOT: prints a line for each thread created outside the pool
-	git -C "$1" grep -nE '(^|[^[:alnum:]_])(pthread_create|thrd_create|std::thread)\(?' -- 'src/*.c' 'src/*.h' ':!src/core/par/pool.c' ':!src/*_test.c' ':!src/*/*_test.c' ':!src/*/test/*' |
+	git -C "$1" grep -nE '(^|[^[:alnum:]_])(pthread_create|thrd_create|std::thread)\(?' -- 'src/*.c' 'src/*.h' ':!src/core/par/pool.c' ':!src/*_test.c' ':!src/*/*_test.c' ':!src/*/test.c' ':!src/*/test_*' ':!src/*/test/*' |
 		grep -vE '^[^:]+:[0-9]+:[[:space:]]*(/?\*|//)' | while IFS=: read -r f n text; do
 			echo "$f:$n: a thread outside the pool:$text  (make the work an operator of core/par/morsel.h on the pool of core/par/pool.h)"
 		done

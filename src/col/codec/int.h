@@ -1,0 +1,213 @@
+/*
+ * col/codec/int.h - shared between col/codec/codec.c and the per-level kernel files (the vertical bit-packing layout and the tables), and between
+ * the files of the codec itself: codec.c (decode, filters), codec_parse.c, codec_write.c, codec_policy.c, codec_blob.c.
+ */
+#ifndef SIFT_COLCODEC_INT_H
+#define SIFT_COLCODEC_INT_H
+
+#include "col/codec/codec.h"
+#include "core/par/arena.h"
+
+extern const SiftCcKernels sift_cc_kernels_scalar;
+extern const SiftCcKernels sift_cc_kernels_avx2;
+extern const SiftCcKernels sift_cc_kernels_avx512;
+
+#if defined(SIFT_HAVE_NEON)
+extern const SiftCcKernels sift_cc_kernels_neon;
+extern void sift_cc_unpack32_neon(const uint32 *src, uint32 W, uint32 rows, uint32 base, uint32 *dst);
+extern void sift_cc_unpack_range32_neon(const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint32 span, uint64 *bits);
+extern void sift_cc_alp_keys_f4_neon(int64 *dst, const uint32 *u, uint32 n, int64 dbase, float div);
+extern void sift_cc_rle_expand32_neon(const uint32 *vals, const uint32 *lens, uint32 nruns, uint32 *dst);
+#endif
+
+/* Rows of 32 values for n values */
+#define SIFT_CC_ROWS(n)		(((uint64) (n) + 31) >> 5)
+
+/* u32 words of n values bit-packed at width W in the vertical layout: full blocks of 32 rows take 32 * W, a tail of R rows 32 * ceil(R * W / 32) */
+static inline uint64
+sift_cc_words(uint32 n, uint32 W)
+{
+	uint64		rows = SIFT_CC_ROWS(n),
+				w = (rows / 32) * 32 * W;
+
+	if (rows % 32)
+		w += 32 * (((rows % 32) * W + 31) / 32);
+	return w;
+}
+
+static inline uint32
+sift_cc_bits_of(uint64 x)
+{
+	uint32		w = 0;
+
+	for (; x; x >>= 1)
+		w++;
+	return w;
+}
+
+static inline uint32
+sift_cc_ld32(const uint32 *p)
+{
+	uint32		x;
+
+	memcpy(&x, p, sizeof(x));
+	return x;
+}
+
+/* The decimal exponents of the ALP node: 10^e exactly as double and float (e <= 18, resp. 10) */
+extern const double sift_cc_p10[19];
+extern const float sift_cc_p10f[11];
+#define SIFT_CC_ALP_EMAX_F8	18
+#define SIFT_CC_ALP_EMAX_F4	10
+
+#define CC_CORRUPT(...) \
+	SIFT_FAIL_CORRUPT("invalid column chunk: " __VA_ARGS__)
+
+#define CC_UPGRADE_HINT \
+	"Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing)."
+
+/*
+ * The memory of what a read builds (the nodes of a chunk, the arrays of a string list) is a MemoryContext on a backend and the arena of the scope
+ * in a worker, which is the NULL context: cc_cx_open gives NULL in a scope, cc_alloc of NULL is sift_alloc, and the entrypoints *_a pass NULL where
+ * a read takes the context of its result. A parent of NULL is the current context.
+ */
+extern MemoryContext cc_cx_open(MemoryContext parent);
+extern void cc_cx_close(MemoryContext cx);
+extern void *cc_alloc(MemoryContext cx, size_t n);
+extern void *cc_alloc0(MemoryContext cx, size_t n);
+
+#define CC_BIT(tag)			(1 << (tag))
+#define CC_NHDR				16
+#define CC_RUP8(x)			(((x) + 7) & ~(size_t) 7)
+#define CC_CAP32(n)			((size_t) SIFT_CC_CAP32(n))
+
+static inline uint32
+get32(const uint8 *p)
+{
+	uint32		x;
+
+	memcpy(&x, p, 4);
+	return x;
+}
+
+static inline int64
+get64(const uint8 *p)
+{
+	int64		x;
+
+	memcpy(&x, p, 8);
+	return x;
+}
+
+static inline void
+clear_tail(uint64 *bits, uint32 n)
+{
+	if (n % 64)
+		bits[n / 64] &= (UINT64CONST(1) << (n % 64)) - 1;
+}
+
+static inline uint32
+rows_for(uint32 n)
+{
+	return (uint32) SIFT_CC_ROWS(n);
+}
+
+typedef enum CcRole
+{
+	CCR_HOT,					/* streams a scan filters */
+	CCR_COLD					/* dictionaries, blobs, exception lists */
+} CcRole;
+
+typedef struct CcW
+{
+	const SiftCcPolicy *pol;
+	SiftCcKind	kind;			/* of the root node; children are plain integers */
+} CcW;
+
+typedef struct CcZTry
+{
+	int			alg;
+	char	   *buf;
+	Size		len;
+	double		cost;
+} CcZTry;
+
+typedef struct CcNode
+{
+	uint8		tag;
+	uint8		alg;
+	uint8		kind;
+	uint8		W,
+				B,
+				e;
+	uint32		n;
+	int64		base,			/* FORBIT, FORBYTE; CONST value; DELTA first */
+				mind,
+				dmin,
+				dmax;
+	uint32		nruns,
+				d,
+				nexc;
+	const uint8 *words;			/* packed words (FORBIT, DELTA) or bytes (FORBYTE) */
+	const uint8 *chk;
+	const uint8 *ekeys;
+	struct CcNode *a,
+			   *b;
+	uint32	   *rstart;			/* RLE: nruns + 1 */
+	int64	   *dict;			/* DICT: d, ascending */
+	uint32	   *pos;			/* ALP: nexc, ascending */
+} CcNode;
+
+struct SiftCc
+{
+	MemoryContext mcxt;			/* NULL: the nodes are in the arena of the scope it was opened in */
+	SiftCcKind	kind;
+	uint32		n;
+	int64		min,
+				max;
+	uint8		flags;
+	CcNode	   *root;
+};
+
+static inline const CcNode *
+unwrap(const CcNode *nd)
+{
+	while (nd->tag == SIFT_CCN_WRAP)
+		nd = nd->a;
+	return nd;
+}
+
+/* The writer (codec_write.c) the blobs use */
+extern void put32(StringInfo s, uint32 x);
+extern void pad8(StringInfo s);
+extern void check_policy(const SiftCcPolicy *pol);
+extern bool wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *best);
+extern bool wrap_choose_scan(const CcW *w, const uint8 *raw, uint32 rawlen, CcZTry *z, SiftCcScan *scan);
+extern int	enc_node(const CcW *w, StringInfo out, const int64 *v, uint32 n, int depth, CcRole role);
+extern void cc_put_head(StringInfo s, uint8 tag, uint8 aux, uint32 f1);
+extern void cc_put64(StringInfo s, int64 x);
+extern void cc_emit_forbyte(StringInfo out, const int64 *v, uint32 n, int64 base, uint32 B);
+extern void cc_emit_wrap(StringInfo out, const CcZTry *z, uint32 rawlen);
+
+/* The nodes DELTA_BYTE and BSS and the cold-tier choice of a leaf (codec_cold.c) */
+extern bool cc_cold_active(const CcW *w, CcRole role);
+extern int	cc_cold_leaf(const CcW *w, StringInfo out, int start, const int64 *v, uint32 n, int64 min, uint64 range, int tag, uint32 W, CcRole role);
+extern size_t cc_parse_delta_byte(const uint8 *p, size_t avail, uint32 n, CcNode *nd);
+extern size_t cc_parse_bss(const uint8 *p, size_t avail, uint32 n, CcNode *nd);
+extern void cc_delta_byte_decode(const CcNode *nd, int64 *dst);
+extern void cc_delta_byte_block(const CcNode *nd, uint32 b, uint32 upto, int64 *run);
+extern int64 cc_delta_byte_get(const CcNode *nd, uint32 i);
+extern void cc_bss_decode(const CcNode *nd, int64 *dst);
+extern int64 cc_bss_get(const CcNode *nd, uint32 i);
+
+/* The parser of a chunk (codec_parse.c) the blobs use */
+extern void need(size_t have, size_t want);
+extern CcNode *parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t avail, uint32 n, int depth, size_t *used);
+
+/* Decoding and the bit helpers (codec.c) the parser and the blobs use */
+extern void nd_u32(const CcNode *nd, int64 sub, uint32 *dst);
+extern void nd_i64(const CcNode *nd, int64 *dst);
+extern void forbyte_u32(const CcNode *nd, uint32 off, uint32 *dst);
+extern void sift_cc_set_ones(uint64 *bits, uint32 n);
+
+#endif							/* SIFT_COLCODEC_INT_H */

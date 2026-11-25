@@ -5,9 +5,9 @@
 
 #include <math.h>
 
-#include "bm25/eval.h"
-#include "bm25/eval_int.h"
-#include "bm25/segment.h"
+#include "bm25/eval/eval.h"
+#include "bm25/eval/int.h"
+#include "bm25/segment/segment.h"
 
 /* AND / OR of k >= 1 cursors; the single cursor itself for k = 1 */
 static sift_cur *

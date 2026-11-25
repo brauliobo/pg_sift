@@ -8,7 +8,7 @@
  * are all set. sift_sbbf_fpr gives the expected rate.
  *
  * Every SIMD level implements the same two operations over a hash, insert and the probe of a word of 64 hashes under a row mask, and returns the
- * bits of the scalar level (the specification): the batch probes are made of the word probe, and the kernel slots sbbf_probe_* of agg/kern6.h call
+ * bits of the scalar level (the specification): the batch probes are made of the word probe, and the kernel slots sbbf_probe_* of agg/kern6/kern6.h call
  * them. sift_sbbf_ops_for(level) never returns NULL (a level the CPU lacks falls back downwards). sift_sbbf_insert_atomic is for builders that share
  * a filter: the words are set by atomic OR, a probe that runs at the same time sees a subset of the bits of the keys being inserted.
  *

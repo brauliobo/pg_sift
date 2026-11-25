@@ -4,7 +4,6 @@
 CREATE EXTENSION pg_sift;
 SET work_mem = '256MB';
 
-SET sift.agg_preagg = off;
 SET extra_float_digits = 0;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

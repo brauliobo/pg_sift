@@ -1,5 +1,5 @@
 /*
- * col/granule.c - decode the granules of a part of format major 2 and the helpers of a part written from rows (col/granule.h). The record of a granule is written by col/granule/granule_put.c,
+ * col/granule.c - decode the granules of a part of format major 2 and the helpers of a part written from rows (col/granule.h). The record of a granule is written by col/granule/put.c,
  * the encoders of its chunks are in col/granule_enc.c, their decoders in col/granule_dec.c and the vector decoder in col/granule_vec.c; the parts built and read from granules are in col/granule/.
  */
 #include "core/host.h"
@@ -7,8 +7,8 @@
 #include "access/transam.h"
 #include "lib/stringinfo.h"
 
-#include "col/granule/granule_int.h"
-#include "col/f2/preagg_delta.h"
+#include "col/granule/int.h"
+#include "col/f2/preagg/delta.h"
 #include "core/cmp.h"
 #include "core/page_io.h"
 

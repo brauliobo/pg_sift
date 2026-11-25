@@ -8,9 +8,9 @@
 
 #include "core/host.h"
 
-#include "col/v1/enc.h"
-#include "col/codec.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/enc/enc.h"
+#include "col/codec/codec.h"
+#include "col/v1/seg/int.h"
 
 #define NROWS 5000
 

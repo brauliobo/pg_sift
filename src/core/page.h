@@ -52,8 +52,8 @@ typedef enum SiftPageType
 	SIFT_PT_PACKED_PART,		/* sealed container of up to 16 tiny inline parts (col/part_format.h) */
 	SIFT_PT_PROJDIR,			/* chained copy on write directory of the secondary projections of a relation ("PRJD", core/f2/proj.h) */
 	SIFT_PT_TIERDIR,			/* chained copy on write directory of the remote parts of a relation and their time to live ("TRDR", core/f2/tier.h) */
-	SIFT_PT_KEYJRNL,			/* the key journal of a parent index: its header and the pages of its records ("KJRN", col/f2/f2_journal.h) */
-	SIFT_PT_COL_DELTA_DIR		/* radix-indexed directory of SIFT_PT_COL_DELTA data pages ("CDDR", table/f2/f2_col_delta_dir.h) */
+	SIFT_PT_KEYJRNL,			/* the key journal of a parent index: its header and the pages of its records ("KJRN", col/f2/journal.h) */
+	SIFT_PT_COL_DELTA_DIR		/* radix-indexed directory of SIFT_PT_COL_DELTA data pages ("CDDR", table/f2/col_delta/dir.h) */
 } SiftPageType;
 
 StaticAssertDecl(SIFT_PT_SCOPEDIR == 41, "SIFT_PT_SCOPEDIR is page type 41");
@@ -105,7 +105,7 @@ sift_page_layout_ok(const char *page)
  * stops short of it, so the note reads as zeros), one that knows it extends pd_lower when it first writes the note.
  */
 #define SIFT_MAINT_ERRMSG_LEN	192
-/* The stamps of the metapage (col/scope.h, the floor of a scope index): 4 scopes of at most 3 journals; the layout is that of SiftConnStamp (col/api/meta.h) */
+/* The stamps of the metapage (col/scope/scope.h, the floor of a scope index): 4 scopes of at most 3 journals; the layout is that of SiftConnStamp (col/api/meta.h) */
 #define SIFT_META_STAMPS		12
 #define SIFT_META_SCOPES		4
 
@@ -154,7 +154,7 @@ typedef struct SiftMetaPageData
 	char		analyzer_config[SIFT_TSCONFIG_BYTES];
 	/* The floor of the stamps of a scope index: for each scope its journals' stamps (lineage 0: none), the oldest journal position its scope entries and its rows with no entry are exact as of; pd_lower covers it once one is set */
 	SiftMetaStamp scope_floor[SIFT_META_STAMPS];
-	/* What the reads of the server paid, for each scope, on top of the filled read, for the pairs changed since its floor, in instructions (col/v1/scope_paid.c); zero again in the switch that moves the floor */
+	/* What the reads of the server paid, for each scope, on top of the filled read, for the pairs changed since its floor, in instructions (col/v1/scope/paid.c); zero again in the switch that moves the floor */
 	uint64		scope_paid[SIFT_META_SCOPES];
 	/* What the reads of the server paid for what maintenance would spare them, for the segment generation each was paid under (core/reads.c): the open write buffer's rows decoded, the instructions of the tombstone log's marks, and the scans of the index */
 	SiftMetaReads reads[SIFT_META_READS];
@@ -169,7 +169,7 @@ typedef struct SiftMetaPageData
 } SiftMetaPageData;
 
 #define SIFT_META_FAILURES_MASK	0xFF
-/* The index found its own damage and is out of service until it is rebuilt (core/quarantine.h); the other flag bits are col/api/format.h and table/table.h */
+/* The index found its own damage and is out of service until it is rebuilt (core/quarantine/quarantine.h); the other flag bits are col/api/format.h and table/table.h */
 #define SIFT_META_QUARANTINED	0x00040000
 /* flags bit 8, set by sift_store_init_meta (the build of a sift index, BM25) from 5.0 on: a word over 255 bytes is stored as a prefix and a hash (3.3's rule). An earlier build leaves it clear, which does not say it cut a word */
 #define SIFT_META_LONG_WORDS	0x00000100
@@ -193,21 +193,21 @@ typedef enum SiftSegKind
 	SIFT_SEG_IMMUTABLE = 1,
 	SIFT_SEG_WBUF_OPEN,
 	SIFT_SEG_WBUF_SEALED,
-	SIFT_SEG_TOMB,				/* the tombstone log of a heap sift_col index (core/v1_col/tomb.h): a lane chain that is no write buffer */
-	SIFT_SEG_VALRUN				/* a run of values of a scope key store (col/keystore/keystore_run.c): reserved = epoch, sum_dl = first code, ndocs = values */
+	SIFT_SEG_TOMB,				/* the tombstone log of a heap sift_col index (core/v1_col/tomb/tomb.h): a lane chain that is no write buffer */
+	SIFT_SEG_VALRUN				/* a run of values of a scope key store (col/keystore/run.c): reserved = epoch, sum_dl = first code, ndocs = values */
 } SiftSegKind;
 
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
 #define SIFT_SEG_ROOTS	0x0004	/* a column segment whose documents were shredded with a string root stored as the overflow of every column below it, as an array root always was (shred.c): a column that tests doc ? 'k' is told a string document from an object without the key. No format minor: the bytes are the same, a reader that does not know the flag reads a string root as a missing key, and a merge by it drops the flag */
-#define SIFT_SEG_SCOPE	0x0008	/* a scope segment of a sift_col index with the reloption scope (col/scope.h): a key-cut segment whose rows are the fact rows replicated once per scope key; the entity readers skip it. Column format minor 45, so that an older library refuses the index */
+#define SIFT_SEG_SCOPE	0x0008	/* a scope segment of a sift_col index with the reloption scope (col/scope/scope.h): a key-cut segment whose rows are the fact rows replicated once per scope key; the entity readers skip it. Column format minor 45, so that an older library refuses the index */
 extern PGDLLIMPORT bool sift_test_wbuf_narrow;	/* testing: BM25 write buffers are opened in format 0 */
 extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag (a string document is a missing key, no entry has it) */
 #define SIFT_SEG_ROOTS_NOW (sift_test_no_roots ? 0 : SIFT_SEG_ROOTS)
 #define SIFT_SEG_KEYED	0x0800	/* a column segment whose units are cut by the range of the declared key; a segment written as column format minor 17 has no flag and is keyed too (sift_cseg_keyed) */
 #define SIFT_SEG_BYTID	0x0010	/* a keyed column segment cut by TID range (the floor's units, sift.col_unit_floor): its units follow each other in the order of the TIDs. No format minor: a reader that does not know the flag reads it as keyed */
 #define SIFT_SEG_BYKEY	0x0020	/* a keyed column segment cut by the range of a key: its units follow each other in the order of that key and each spans the heap. Neither flag: a keyed segment written before them, whose cut is the index's as far as anyone knows. Without SIFT_SEG_CUTREC the leaves are not recorded */
-#define SIFT_SEG_CUTREC	0x0080	/* with SIFT_SEG_BYKEY: the segment records the leaves it is cut by after its schema, before its stamps (col/v1/seg_int.h SEG_CUT_MAGIC). No format minor: a reader that does not know the flag parses the schema from its start and the stamps from the end of the section, and never looks at the record */
+#define SIFT_SEG_CUTREC	0x0080	/* with SIFT_SEG_BYKEY: the segment records the leaves it is cut by after its schema, before its stamps (col/v1/seg/int.h SEG_CUT_MAGIC). No format minor: a reader that does not know the flag parses the schema from its start and the stamps from the end of the section, and never looks at the record */
 #define SIFT_SEG_LSTATS	0x1000	/* a column segment with the leaf statistics block after its last section; no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_NET	0x2000	/* a column segment with the pre-aggregates of its dirty units net of their dead rows after the leaf statistics, in whole pages at the end of the stream, the last 16 bytes of which say where they start (col/v1/seg/net.c); no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_XSTAMP	0x4000	/* a segment of a heap sift_col index with track_changes whose entries were all inserted by transactions that committed before the xid in reserved (sift_seg_xstamp): a snapshot whose xmin is not below it sees every inserter as committed and finished; not with SIFT_SEG_VERS */

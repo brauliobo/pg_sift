@@ -13,7 +13,7 @@
 #include "storage/bufmgr.h"
 #include "storage/read_stream.h"
 #include "utils/rel.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 
 #define PROBE_BLOCKS	512			/* the blocks of each of the two reads, at most a quarter of the heap */
 #define COST_MIN_US		0.5			/* the range a measurement is clamped to: a read of a page in the memory of the system, and a seek of a disk that spins */

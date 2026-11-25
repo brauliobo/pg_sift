@@ -1,7 +1,7 @@
 /*
  * agg/v6/core_test.c - test-only SQL functions of the 2048-row engine, compiled only with SIFT_TESTING and registered by the pg_sift_test
  * extension: the salted hash table (agg/group/ht.c) against a sorted reference, with the growth and the radix scatter of a parallel
- * merge; the element mask of an array column (agg/array.c) against a per element loop; the cost of a path (agg/cost.c).
+ * merge; the element mask of an array column (agg/array.c) against a per element loop; the cost of a path (agg/v6/cost/model.c).
  */
 #include "postgres.h"
 
@@ -9,13 +9,12 @@
 
 #include "funcapi.h"
 
-#include "agg/cost.h"
+#include "agg/v6/cost/model.h"
 #include "agg/group/ht.h"
 #include "core/testrng.h"
 #include "utils/builtins.h"
 
 PG_FUNCTION_INFO_V1(sift_test_salted_ht);
-PG_FUNCTION_INFO_V1(sift_test_array_elem_mask);
 PG_FUNCTION_INFO_V1(sift_test_agg_cost);
 
 static SiftRng rng;
@@ -275,68 +274,6 @@ sift_test_salted_ht(PG_FUNCTION_ARGS)
 		bad += !ht_case();
 		for (int j = 0; j < 64; j++)
 			bad += !match16_case();
-	}
-	PG_RETURN_INT64(bad);
-}
-
-static void
-set_runs(uint64 *m, uint32 lo, uint32 hi)
-{
-	for (uint32 e = lo; e < hi; e++)
-		m[e >> 6] |= UINT64CONST(1) << (e & 63);
-}
-
-/* Number of failed cases */
-Datum
-sift_test_array_elem_mask(PG_FUNCTION_ARGS)
-{
-	int64		bad = 0;
-
-	sift_rng_seed(&rng, PG_GETARG_INT64(0));
-	for (int c = 0; c < PG_GETARG_INT32(1); c++)
-	{
-		const uint32 np = 1 + rnd() % 8192,
-					nb = (np + 63) / 64,
-					kind = rnd() % 4;
-		uint32	   *len = palloc(sizeof(uint32) * np),
-				   *off = palloc(sizeof(uint32) * (np + 1)),
-				   *boff = palloc(sizeof(uint32) * (nb + 1));
-		uint64	   *pm = palloc0(sizeof(uint64) * nb);
-		SiftArrayLayout lay;
-		uint32		ne = 0,
-					nref = 0;
-		uint64	   *out,
-				   *ref;
-
-		CHECK_FOR_INTERRUPTS();
-		for (uint32 p = 0; p < np; p++)
-		{
-			if ((p & 63) == 0)
-				boff[p >> 6] = ne;
-			off[p] = ne;
-			len[p] = kind == 0 ? 0 : kind == 1 ? rnd() % 3 : kind == 2 ? 1 + rnd() % 130 : (rnd() % 8 == 0 ? rnd() % 300 : 0);
-			ne += len[p];
-		}
-		off[np] = ne;
-		boff[nb] = ne;
-		for (uint32 b = 0; b < nb; b++)
-			pm[b] = rnd() % 3 == 0 ? ~UINT64CONST(0) : rnd() % 3 == 0 ? 0 : rnd() & rnd();
-		lay = (SiftArrayLayout) {np, ne, boff, len, off};
-		out = palloc(sizeof(uint64) * ((ne + 63) / 64 + 1));
-		ref = palloc0(sizeof(uint64) * ((ne + 63) / 64 + 1));
-		for (uint32 p = 0; p < np; p++)
-			if ((pm[p >> 6] >> (p & 63)) & 1)
-			{
-				set_runs(ref, off[p], off[p + 1]);
-				nref += len[p];
-			}
-		bad += !(sift_array_elem_mask(out, &lay, pm) == nref && !memcmp(out, ref, sizeof(uint64) * ((ne + 63) / 64)));
-		pfree(len);
-		pfree(off);
-		pfree(boff);
-		pfree(pm);
-		pfree(out);
-		pfree(ref);
 	}
 	PG_RETURN_INT64(bad);
 }

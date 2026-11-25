@@ -2,7 +2,7 @@
  * col/v1/seg_write/mirror.c - the copies of small ranges of the stream that the header page of the segment keeps (seg_int.h "The mirror"): taken as the structures are
  * written, the most useful kept when the page has no room for them all
  */
-#include "col/v1/seg_write/seg_write_int.h"
+#include "col/v1/seg_write/int.h"
 
 void
 segw_mirror(SiftColSegWriter *w, MirrorPrio prio, uint64 off, const void *data, Size len)

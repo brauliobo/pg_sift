@@ -42,32 +42,32 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(picked['plangate_lanes'], ['stock', 'stock-4t'])
 
     def test_single_star_edit(self):
-        self.check(['src/agg/v6/v6_sip.c'], ['star'])
-        self.check(['src/agg/v6/v6_star_plan.c'], ['star'])
+        self.check(['src/agg/v6/sip.c'], ['star'])
+        self.check(['src/agg/v6/star/plan.c'], ['star'])
 
     def test_single_clickbench_edit(self):
-        self.check(['src/agg/v6/v6_topn.c'], ['clickbench'])
+        self.check(['src/agg/v6/topn/topn.c'], ['clickbench'])
 
     def test_single_coexist_cost_edit(self):
         self.check(['src/agg/cost/cost.c'], ['coexist', 'smoke'])
 
     def test_single_jsonb_edit(self):
-        self.check(['src/col/shred.c'], ['jsonb'])
+        self.check(['src/col/shred/shred.c'], ['jsonb'])
 
     def test_single_table_edit(self):
-        self.check(['src/table/f2/f2_bulk_ins.c'], ['table'])
+        self.check(['src/table/f2/bulk_ins.c'], ['table'])
 
     def test_single_bm25_edit(self):
-        self.check(['src/bm25/rank_search.c'], ['bm25'])
+        self.check(['src/bm25/rank/search.c'], ['bm25'])
 
     def test_single_gpu_edit(self):
-        self.check(['src/agg/gpu_v6.c'], ['gpu'])
+        self.check(['src/agg/gpu/v6.c'], ['gpu'])
 
     def test_parallel_framework_edit(self):
         self.check(['src/agg/par/morsel.c'], ['star', 'clickbench'])
 
     def test_shared_core_bounded_smoke(self):
-        picked = self.check(['src/core/store.c', 'Makefile', 'sql/pg_sift--6.0.sql'], ['smoke'])
+        picked = self.check(['src/core/store/store.c', 'Makefile', 'sql/pg_sift--6.0.sql'], ['smoke'])
         self.assertEqual(picked['plangate_lanes'], ['stock', 'stock-4t'])
 
     def test_unmapped_new_src_failsafe(self):
@@ -75,7 +75,7 @@ class SelectionTest(unittest.TestCase):
         self.check(['src/agg/exec/run.c'], ['smoke'])
 
     def test_multi_subsystem_union(self):
-        self.check(['src/table/f2/f2_scan.c', 'src/col/shred.c', 'docs/USAGE.md'], ['jsonb', 'table'])
+        self.check(['src/table/f2/scan.c', 'src/col/shred/shred.c', 'docs/USAGE.md'], ['jsonb', 'table'])
 
     def test_harness_never_hides_a_source_change(self):
         self.check(['scripts/ci.sh', 'bench/perf/catalog.py', 'test/sql/col/search.sql', 'src/table/am.c'], ['table'])
@@ -110,18 +110,18 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(SELECT.commands(picked)['gate'], [['python3', '-I', 'scripts/perf/gate.py', '--all']])
 
     def test_scaling_checks_follow_the_files_that_need_them(self):
-        self.assertEqual(SELECT.select(['src/table/f2/f2_dml.c'], MAP)['scaling_checks'], ['check-scaling-ops.sh --sql-only'])
+        self.assertEqual(SELECT.select(['src/table/f2/dml.c'], MAP)['scaling_checks'], ['check-scaling-ops.sh --sql-only'])
         self.assertEqual(SELECT.select(['src/core/page.h'], MAP)['scaling_checks'], ['tap-shell-core/scaling_slope'])
-        self.assertEqual(SELECT.select(['src/agg/v6/v6_sip.c'], MAP)['scaling_checks'], [])
+        self.assertEqual(SELECT.select(['src/agg/v6/sip.c'], MAP)['scaling_checks'], [])
 
     def test_commands_run_only_the_area(self):
         gate = ['python3', '-I', 'scripts/perf/gate.py']
         for paths, expected in {
-            ('src/agg/v6/v6_sip.c',): {'gate': [gate + ['--areas', 'star']],
+            ('src/agg/v6/sip.c',): {'gate': [gate + ['--areas', 'star']],
                                        'plangate': [['scripts/plangate.sh', '--runs', '0', '--slice', 'star'],
                                                     ['scripts/plangate.sh', '--runs', '0', '--lane', 'stock-4t', '--slice', 'star']]},
-            ('src/table/f2/f2_scan.c',): {'gate': [gate + ['--areas', 'table']], 'plangate': [['scripts/plangate.sh', '--runs', '0', '--table', '--slice', 'table']]},
-            ('src/agg/gpu_v6.c',): {'gate': [gate + ['--areas', 'gpu']], 'plangate': [['scripts/plangate.sh', '--runs', '0', '--lane', 'gpu', '--slice', 'gpu']]},
+            ('src/table/f2/scan.c',): {'gate': [gate + ['--areas', 'table']], 'plangate': [['scripts/plangate.sh', '--runs', '0', '--table', '--slice', 'table']]},
+            ('src/agg/gpu/v6.c',): {'gate': [gate + ['--areas', 'gpu']], 'plangate': [['scripts/plangate.sh', '--runs', '0', '--lane', 'gpu', '--slice', 'gpu']]},
             ('src/agg/cost/cost.c',): {'gate': [gate + ['--areas', 'coexist'], gate + ['--smoke']],
                                        'plangate': [['scripts/plangate.sh', '--runs', '0', '--slice', 'coexist,smoke'],
                                                     ['scripts/plangate.sh', '--runs', '0', '--lane', 'stock-4t', '--slice', 'coexist,smoke']]},
@@ -130,13 +130,13 @@ class SelectionTest(unittest.TestCase):
                 self.assertEqual(SELECT.commands(SELECT.select(paths, MAP)), expected)
 
     def test_the_catalog_groups_of_the_paired_runs(self):
-        for path, expected in {'src/agg/v6/v6_sip.c': ['smoke', 'agg'], 'src/table/am.c': ['smoke', 'storage'], 'src/bm25/rank_search.c': ['smoke', 'bm25'],
-                               'src/core/store.c': ['smoke'], 'README.md': []}.items():
+        for path, expected in {'src/agg/v6/sip.c': ['smoke', 'agg'], 'src/table/am.c': ['smoke', 'storage'], 'src/bm25/rank/search.c': ['smoke', 'bm25'],
+                               'src/core/store/store.c': ['smoke'], 'README.md': []}.items():
             with self.subTest(path=path):
                 self.assertEqual(SELECT.select([path], MAP)['ab_groups'], expected)
 
     def test_ci_runs_the_perf_job_of_the_area_and_every_correctness_job_of_the_stack(self):
-        regex = bash(ROOT / 'scripts/ci.sh', '--areas-regex', MAP, 'src/agg/v6/v6_sip.c').strip()
+        regex = bash(ROOT / 'scripts/ci.sh', '--areas-regex', MAP, 'src/agg/v6/sip.c').strip()
         jobs = ['perf-gate-star', 'perf-gate-table', 'perf-gate-smoke', 'installcheck-agg/semi_lut', 'installcheck-col/search', 'installcheck-table/cap', 'difftest-col', 'isolation', 'fuzz']
         picked = bash('-c', 're=$1; shift; for j in "$@"; do [[ $j =~ $re ]] && echo "$j"; done; :', 'x', regex, *jobs).split()
         self.assertEqual(picked, ['perf-gate-star', 'installcheck-agg/semi_lut', 'installcheck-col/search', 'installcheck-table/cap', 'difftest-col', 'isolation'])
@@ -166,7 +166,7 @@ class SelectionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='perf-select-output-') as tmp:
             output = Path(tmp) / 'selection.json'
             for argv, groups in ((['--baseline-ref', sha, '--candidate-ref', sha], []), (['--baseline-ref', sha, '--candidate-ref', sha, '--tier', 'nightly'], SEVEN),
-                                 (['--files', 'src/agg/v6/v6_sip.c'], ['star']), (['--files', 'README.md'], [])):
+                                 (['--files', 'src/agg/v6/sip.c'], ['star']), (['--files', 'README.md'], [])):
                 with self.subTest(argv=argv):
                     stdout = subprocess.check_output(['python3', str(script), *argv, '--output', str(output)], text=True)
                     selection = json.loads(output.read_text())
@@ -220,7 +220,7 @@ class EreEngineTest(unittest.TestCase):
             self.assertEqual(self.run_map(groups, rows, 'sharedsharedshared', {'shared'}, keys)[0], ['bm', 'col', 'tbl'])
 
     def test_owners_are_printed_for_each_path(self):
-        out = bash(ROOT / 'scripts/areas.sh', '--owners', MAP, 'perf_star', 'perf_table', '--', 'src/agg/v6/v6_sip.c', 'README.md', 'src/table/am.c', 'src/core/store.c')
+        out = bash(ROOT / 'scripts/areas.sh', '--owners', MAP, 'perf_star', 'perf_table', '--', 'src/agg/v6/sip.c', 'README.md', 'src/table/am.c', 'src/core/store/store.c')
         self.assertEqual(out.split(), ['perf_star', '--', '-', '--', 'perf_table', '--', '*', '--'])
 
 

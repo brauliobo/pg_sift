@@ -9,7 +9,6 @@ SET enable_hashjoin = off;
 SET enable_mergejoin = off;
 SET enable_nestloop = off;
 SET client_min_messages = warning;
-SET sift.test_unified_agg = on;
 
 SET sift.test_create_format1 = on;
 CREATE TABLE dim (k int PRIMARY KEY, a int, b int, flag bool) WITH (autovacuum_enabled = false);

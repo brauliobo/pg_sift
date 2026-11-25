@@ -25,10 +25,10 @@
 #include "utils/typcache.h"
 
 #include "col/am.h"
-#include "col/v1/conn.h"
+#include "col/v1/conn/conn.h"
 #include "core/compat.h"
-#include "core/quarantine.h"
-#include "core/v1_col/tomb.h"
+#include "core/quarantine/quarantine.h"
+#include "core/v1_col/tomb/tomb.h"
 
 #ifdef SIFT_TESTING
 bool sift_test_no_supersede = false;
@@ -166,7 +166,7 @@ tomb_hold(Relation index, const SiftTomb *ent)
 		flush_slot(h);
 }
 
-/* The key journal of a connected parent (col/v1/conn.h): the key whose entry an update ended by writing a new version of the same key, held with the tombstones */
+/* The key journal of a connected parent (col/v1/conn/conn.h): the key whose entry an update ended by writing a new version of the same key, held with the tombstones */
 static void
 journal_hold(Relation index, Oid keytype, Datum key)
 {
@@ -176,7 +176,7 @@ journal_hold(Relation index, Oid keytype, Datum key)
 		tomb_hold(index, &rec);
 }
 
-/* A journal record of a scope relation's index (col/v1/conn.h), held with the tombstones of the transaction */
+/* A journal record of a scope relation's index (col/v1/conn/conn.h), held with the tombstones of the transaction */
 void
 sift_col_tomb_hold_rec(Relation index, const SiftTomb *rec)
 {

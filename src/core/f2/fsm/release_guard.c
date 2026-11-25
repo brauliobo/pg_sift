@@ -1,12 +1,12 @@
 /*
- * core/f2/fsm/release_guard.c - what a release of extents must hold before it is queued (core/f2/fsm.h): the extents are blocks of the file past the metapage and the root of the allocator, and no
+ * core/f2/fsm/release_guard.c - what a release of extents must hold before it is queued (core/f2/fsm/fsm.h): the extents are blocks of the file past the metapage and the root of the allocator, and no
  * block is named twice. A caller that releases a block it does not own is caught here, at the call that did it; later the queue can only say that two extents overlap (reclaim), not who put them.
  * A testing or assert build also checks the block against what is free or queued already.
  */
 #include "core/host.h"
 
-#include "core/f2/fsm.h"
-#include "core/f2/fsm/fsm_int.h"
+#include "core/f2/fsm/fsm.h"
+#include "core/f2/fsm/int.h"
 #include "core/f2/meta.h"
 
 static int

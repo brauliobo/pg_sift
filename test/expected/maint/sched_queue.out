@@ -1,4 +1,4 @@
--- The queue of the background maintenance (core/maint_sched.h): a request for an index of format major 2 is run by a worker of the server in a transaction of its own and leaves the queue empty;
+-- The queue of the background maintenance (core/maint/sched.h): a request for an index of format major 2 is run by a worker of the server in a transaction of its own and leaves the queue empty;
 -- with sift.async_maintenance off nothing is queued.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

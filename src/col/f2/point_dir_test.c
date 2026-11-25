@@ -10,7 +10,7 @@
 #include "lib/stringinfo.h"
 
 #include "col/f2/test_int.h"
-#include "col/f2/f2_point_dir.h"
+#include "col/f2/point_dir.h"
 #include "core/testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_s55_point_dir);

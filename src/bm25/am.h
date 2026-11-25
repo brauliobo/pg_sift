@@ -17,7 +17,7 @@
 /* core/handler.c: the IndexAmRoutine the handlers start from; they set the callbacks */
 extern IndexAmRoutine *sift_am_routine(int strategies, int support, bool multicol);
 
-/* bm25/build.c */
+/* bm25/build/build.c */
 extern IndexBuildResult *sift_ambuild(Relation heap, Relation index, struct IndexInfo *indexInfo);
 extern void sift_ambuildempty(Relation index);
 extern char *sift_ambuildphasename(int64 phase);
@@ -32,7 +32,7 @@ extern IndexBulkDeleteResult *sift_ambulkdelete(IndexVacuumInfo *info, IndexBulk
 												IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
 
-/* bm25/planner_path.c */
+/* bm25/planner/path.c */
 extern void sift_amcostestimate(struct PlannerInfo *root, struct IndexPath *path, double loop_count,
 								Cost *indexStartupCost, Cost *indexTotalCost,
 								Selectivity *indexSelectivity, double *indexCorrelation,

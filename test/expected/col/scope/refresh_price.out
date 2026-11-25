@@ -1,5 +1,5 @@
 -- The maintenance rewrites the scope segments of an index whose pairs changed since they were filled when the reads that pay for the changed members have paid half of what the rewrite costs (a read pays for
--- them every time: the journal, their pairs, the patch of their rows and the delta; col_scope_stale_price has the reads of a server that asks). The prices are pure (instructions, and the WAL of the entries as instructions, from the counts of col/scope.h): the refresh of the segments grows with the
+-- them every time: the journal, their pairs, the patch of their rows and the delta; col_scope_stale_price has the reads of a server that asks). The prices are pure (instructions, and the WAL of the entries as instructions, from the counts of col/scope/scope.h): the refresh of the segments grows with the
 -- entity rows and the entries it writes, a read with the changed members and the units they fall in. Then the decision on an index: a pair edit of one member leaves the segments as they are (md5 of
 -- the scope read equal to the plain join, the stamps unchanged), the edit of twenty more is refreshed by sift.col_maintain (new stamp, no member changed since, md5 equal). Counts and md5 only,
 -- no timings.

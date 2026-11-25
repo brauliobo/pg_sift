@@ -4,7 +4,7 @@
  * whoever fills the range holds nothing but that value.
  */
 #include "postgres.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 
 int
 colb_range_of_key(const ColRanges *g, int64 key)

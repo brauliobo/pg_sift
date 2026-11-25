@@ -1,1 +1,1 @@
-agg/par/pay	src/agg/cost/model.h:agg_workers_pay src/col/v1/test/core.c:sift_test_agg_workers_pay
+agg/par/pay	src/col/v1/test/core.c:sift_test_agg_workers_pay

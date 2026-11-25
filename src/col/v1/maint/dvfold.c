@@ -1,5 +1,5 @@
 /*
- * col/v1/maint/dvfold.c - the deletion records of the tombstone log (core/v1_col/tomb_dv.h) in maintenance: folded into the liveness runs when their transaction is older than every snapshot (what the
+ * col/v1/maint/dvfold.c - the deletion records of the tombstone log (core/v1_col/tomb/dv.h) in maintenance: folded into the liveness runs when their transaction is older than every snapshot (what the
  * fold of the marks does for the marks, col/v1/maint/fold.c), dropped from the log once every row they name is cleared, and carried to marks when a step replaces the segment they name
  */
 #include "postgres.h"
@@ -10,13 +10,13 @@
 #include "storage/procarray.h"
 #include "utils/memutils.h"
 
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 #include "core/cmp.h"
 #include "core/wal_conflict.h"
-#include "core/live.h"
+#include "core/live/live.h"
 #include "core/memtrack.h"
 #include "core/ops.h"
-#include "core/v1_col/tomb_dv.h"
+#include "core/v1_col/tomb/dv.h"
 
 typedef struct SegGen
 {

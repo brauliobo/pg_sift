@@ -5,7 +5,7 @@
 #ifndef SIFT_F2_SCAN_STREAM_H
 #define SIFT_F2_SCAN_STREAM_H
 
-#include "col/f2/scan/scan_int.h"
+#include "col/f2/scan/int.h"
 
 /* key is the address and the flag of recheck as the sort has them (address << 1 | recheck); false when the stream holds as many as work_mem allows and key was not taken */
 extern bool sift_f2_stream_put(F2Scan *s, uint64 key);

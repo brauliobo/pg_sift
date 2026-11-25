@@ -4,7 +4,7 @@
 #include "postgres.h"
 
 #include "agg/v6/par/run_int.h"
-#include "agg/v6/v6_expr_str.h"
+#include "agg/v6/expr/str.h"
 
 static inline __attribute__((always_inline)) bool
 extract_words(const ColView *cv, const ParLoad *ld, int64 unit_us, uint64 flip, uint64 *out)

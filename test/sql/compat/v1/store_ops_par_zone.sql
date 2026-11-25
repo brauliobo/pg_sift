@@ -1,4 +1,4 @@
--- Format 1 behind the zone and parallel scans of the storage seam (core/store_ops.h, col/v1/v1_store_ops_zone.c, v1_store_ops_par.c): the groups the aggregate scan of a sift_col index and of a
+-- Format 1 behind the zone and parallel scans of the storage seam (core/store/ops.h, col/v1/store_ops_zone.c, v1_store_ops_par.c): the groups the aggregate scan of a sift_col index and of a
 -- sift_table of Format 1 gives (count(*) and sum of an integer column by an integer or a text key, with a qual that prunes whole units), and the groups real parallel workers give over the
 -- superblocks of the index, are the heap's own after inserts, updates, deletes, a rollback and VACUUM. Format 1 keeps no dictionary a batch aggregates by its codes: it has none to offer.
 CREATE EXTENSION pg_sift_test CASCADE;

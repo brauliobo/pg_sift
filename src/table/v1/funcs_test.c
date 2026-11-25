@@ -7,8 +7,8 @@
 
 #include "access/table.h"
 #include "storage/procarray.h"
-#include "core/maint.h"
-#include "core/sql.h"
+#include "core/maint/maint.h"
+#include "core/sql/sql.h"
 #include "table/v1/seg_int.h"
 #include "core/catname.h"
 

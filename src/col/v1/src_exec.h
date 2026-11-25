@@ -76,8 +76,8 @@ typedef struct SiftSrcVec
 
 /*
  * Storage the caller owns for one leaf read (sift_colsrc_read_into): the leaf is decoded into it, with no copy between the decoder and the
- * caller's vector. Both have room for sift_colsrc_leaf_n() + SIFT_AGG_PAD values (data: of the leaf's vtype, SIFT_SIMD_ALIGN aligned;
- * isnull: bytes); the SIFT_AGG_PAD values after the last one are zero when the read returns.
+ * caller's vector. Both have room for sift_colsrc_leaf_n() + SIFT_SRC_PAD values (data: of the leaf's vtype, SIFT_SIMD_ALIGN aligned;
+ * isnull: bytes); the SIFT_SRC_PAD values after the last one are zero when the read returns.
  */
 typedef struct SiftSrcBuf
 {
@@ -215,7 +215,7 @@ typedef struct SiftSrcHist
 	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
 	const int64 *min[SIFT_SRC_MAX_MEAS];		/* integer measure: the smallest and largest value of each group, NULL when the unit does not store them; meaningless where nn is 0 */
 	const int64 *max[SIFT_SRC_MAX_MEAS];
-	int			grain;			/* a calendar dim: the grain of the cells (SIFT_CAL_*, in col/v1/preagg.h: 1 day, 2 month, 3 year), else 0 */
+	int			grain;			/* a calendar dim: the grain of the cells (SIFT_CAL_*, in col/v1/preagg/preagg.h: 1 day, 2 month, 3 year), else 0 */
 } SiftSrcHist;
 
 /*
@@ -351,7 +351,7 @@ typedef struct SiftSrcHead
 	uint64		addr;			/* block << 16 | offset */
 } SiftSrcHead;
 
-#define SIFT_SRC_PAD			64	/* the values after the last of a vector that a read leaves zero (SIFT_AGG_PAD of the kernels) */
+#define SIFT_SRC_PAD			64	/* the values after the last of a vector that a read leaves zero */
 
 /* The bytes of one value of each vector type, by SiftSrcVecType */
 extern const size_t sift_src_vtype_size[];

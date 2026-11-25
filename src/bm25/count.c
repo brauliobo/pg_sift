@@ -2,9 +2,9 @@
  * bm25/count.c - count(*) of the visible matches and their pages.
  */
 
-#include "bm25/eval.h"
-#include "bm25/eval_int.h"
-#include "bm25/segment.h"
+#include "bm25/eval/eval.h"
+#include "bm25/eval/int.h"
+#include "bm25/segment/segment.h"
 #include "core/memtrack.h"
 
 typedef struct CountCtx

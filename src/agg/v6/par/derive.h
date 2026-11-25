@@ -1,6 +1,6 @@
 /*
  * agg/v6/par/derive.h - the keys and arguments of the statement that the scan computes from columns (SiftV6Derive of agg/v6/v6.h) for the compute threads: the rows of a granule that pass, from the
- * leaves par_load decoded, in pure C (no memory is taken: a text is a view into the bytes of the column or into the spec). The kernels are those of the serial scan (agg/v6/v6_expr_str.h).
+ * leaves par_load decoded, in pure C (no memory is taken: a text is a view into the bytes of the column or into the spec). The kernels are those of the serial scan (agg/v6/expr/str.h).
  * A NULL in a column it reads is not for a thread: the caller refuses the granule before, and the one that extract gives for an infinite timestamp is its false.
  */
 #ifndef SIFT_AGG_V6_PAR_DERIVE_H

@@ -18,7 +18,7 @@
 
 #include "core/host.h"
 
-#include "core/f2/manifest.h"
+#include "core/f2/manifest/manifest.h"
 #include "core/page.h"
 
 #define SIFT_PROJDIR_MAGIC		0x50524A44U		/* "PRJD" */
@@ -149,7 +149,7 @@ typedef struct SiftManifestProjUpdate
 	int			ndrop;
 } SiftManifestProjUpdate;
 
-/* The blocks a projection part owns (its header page, extent-list pages and stream extents), for the release of a part that leaves; implemented where parts are opened (col/f2/f2_proj_build.c) */
+/* The blocks a projection part owns (its header page, extent-list pages and stream extents), for the release of a part that leaves; implemented where parts are opened (col/f2/proj/build.c) */
 extern SiftExtent *sift_proj_part_extents(Relation rel, const SiftPartDesc *d, int *n);
 
 /* The delta a commit that drops the base parts applies to every projection: the links of those parts go, and the projection parts they name */

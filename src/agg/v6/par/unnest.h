@@ -1,10 +1,10 @@
 /*
  * agg/v6/par/unnest.h - the pairs of (row, element) of a LATERAL unnest of an array column of the index, made and folded by the compute threads of the backend (core/par/pool.h), in pure C.
  *
- * The leader reads the batches of the index (col/f2/f2_sink_ext.h), decides which rows take part (the deletion vector, the WHERE clause of the table, the visibility of the heap row) and copies a batch of
+ * The leader reads the batches of the index (col/f2/sink/ext.h), decides which rows take part (the deletion vector, the WHERE clause of the table, the visibility of the heap row) and copies a batch of
  * up to SIFT_VEC_LEN rows into the slot of a ring: the columns of the rows, the lengths and elements of their arrays (one column for unnest, the declared columns of jsonb_to_recordset or the elements of
  * jsonb_array_elements over the shredded leaves of a jsonb document), the elements that pass the quals of the element, the rows whose array the index cannot hold left out (the leader reads those from the
- * heap, as the serial run does). A thread expands the slot into pairs (agg/v6/v6_unnest.h), gathers the columns beside the element and runs them through a pipe of its own (agg/v6/v6_unnest_pairs.h)
+ * heap, as the serial run does). A thread expands the slot into pairs (agg/v6/unnest/unnest.h), gathers the columns beside the element and runs them through a pipe of its own (agg/v6/unnest/pairs.h)
  * whose end is the words of agg/v6/par/wordsink.h; it knows nothing of the server. A slot a thread cannot fold exactly (a NULL in a counted or summed column, more pairs than its sink holds) is the leader's: it
  * expands the same slot into the pipe of the statement.
  */
@@ -14,8 +14,8 @@
 #include "postgres.h"
 
 #include "agg/v6/par/wordsink.h"
-#include "agg/v6/v6_unnest_pairs.h"
-#include "agg/vexpr.h"
+#include "agg/v6/unnest/pairs.h"
+#include "agg/vexpr/vexpr.h"
 
 #define SIFT_UN_COLS_MAX	SIFT_VEXPR_MAX_REGS
 #define SIFT_UN_PAIRS_MAX	(64 * SIFT_VEC_LEN)

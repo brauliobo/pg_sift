@@ -9,7 +9,7 @@
 #include "catalog/pg_type_d.h"
 
 #include "agg/v6/par/unnest.h"
-#include "agg/vexpr_str.h"
+#include "agg/vexpr/str.h"
 #include "core/hash.h"
 #include "core/par/pool.h"
 #include "host.h"

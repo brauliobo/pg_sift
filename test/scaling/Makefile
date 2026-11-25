@@ -11,7 +11,7 @@ LDLIBS   = -lm
 
 include cases.mk
 
-HARNESS  = $(OUT)/check_scaling_c.o $(OUT)/op_counters.o $(OUT)/pg_shim_ops.o
+HARNESS  = $(OUT)/runner.o $(OUT)/op_counters.o $(OUT)/pg_shim_ops.o
 INSTR    = $(patsubst %.c,$(OUT)/%.o,$(CASES)) $(patsubst $(SRC)/%.c,$(OUT)/src/%.o,$(TARGETS)) $(patsubst $(SRC)/../sqlite/host/%.c,$(OUT)/host/%.o,$(HOSTSRC))
 
 all: $(OUT)/check_scaling_c

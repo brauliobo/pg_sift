@@ -5,9 +5,9 @@
 #include "postgres.h"
 
 #include "core/cmp.h"
-#include "col/v1/conn.h"
-#include "col/v1/seg.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/conn/conn.h"
+#include "col/v1/seg/seg.h"
+#include "col/v1/scan/int.h"
 
 /* is key one of the members the source leaves out: a bit of the bitmap over their range, a bisection when the range is too wide for one */
 static bool

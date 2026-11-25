@@ -12,11 +12,11 @@
 #include "utils/snapmgr.h"
 #include "utils/varlena.h"
 #ifdef SIFT_TESTING
-#include "bm25/build.h"
+#include "bm25/build/build.h"
 #endif
-#include "col/v1/build/build_int.h"
-#include "col/v1/conn.h"
-#include "col/scope.h"
+#include "col/v1/build/int.h"
+#include "col/v1/conn/conn.h"
+#include "col/scope/scope.h"
 #include "col/v1/colspool.h"
 #include "core/memtrack.h"
 

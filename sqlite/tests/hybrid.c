@@ -1,5 +1,5 @@
 /*
- * tests/hybrid.c - agg/hybrid.c against the real core/tidbridge.c and an oracle, in a program of its own on the portable host (no database, so ASan and UBSan run it).
+ * tests/hybrid.c - agg/hybrid/hybrid.c against the real core/tidbridge.c and an oracle, in a program of its own on the portable host (no database, so ASan and UBSan run it).
  *
  * A model of 20000 rows (8 per heap page, so about ten superblocks) has a structured predicate, a text match with a score and a visibility. Direction A and direction B run over
  * it on a sift_col-like store (the heap decides visibility, dead rows are still in the store) and a sift_table-like one (the store decides), under an unlimited, a small and an
@@ -11,7 +11,7 @@
 #include <stdlib.h>
 
 #include "core/host.h"
-#include "agg/hybrid.h"
+#include "agg/hybrid/hybrid.h"
 
 #define N			20000
 #define PER_PAGE	8

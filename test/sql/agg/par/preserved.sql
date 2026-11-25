@@ -5,7 +5,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
-SET sift.agg_preagg = off;
 
 CREATE TABLE dates (day date PRIMARY KEY, label text);
 INSERT INTO dates SELECT d::date, 'd' || (d::date - '2026-01-01') FROM generate_series('2026-01-01'::date, '2026-02-10', '1 day') d;

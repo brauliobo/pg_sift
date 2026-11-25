@@ -5,7 +5,6 @@ CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 SET client_min_messages = warning;
 \set VERBOSITY terse
-SET sift.test_unified_agg = on;
 SET sift.agg_force = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

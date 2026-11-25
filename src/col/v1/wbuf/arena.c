@@ -32,10 +32,10 @@
 #include "utils/syscache.h"
 #include "utils/wait_event.h"
 
-#include "core/shmbudget.h"
+#include "core/shm/budget.h"
 #include "col/am.h"
 #include "col/dsmreg.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "col/v1/wbuf/int.h"
 #include "core/waits.h"
 
 #define ARENA_SLOTS			256

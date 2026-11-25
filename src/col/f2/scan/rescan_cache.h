@@ -3,14 +3,14 @@
  *
  * A scan rescanned with other keys (the inner side of a parameterized nested loop) finds the granule of each part its
  * key falls in decoded once for all later probes. A part never changes once written, so a decoded granule is kept with
- * the pin of its part (col/f2/f2_gbuf.h) and goes with it, under the budget of core/cachebudget.h. What depends on a
+ * the pin of its part (col/f2/gbuf/gbuf.h) and goes with it, under the budget of core/cachebudget.h. What depends on a
  * snapshot (deletion vector, pending deletes, the slab) is read again by each probe.
  */
 #ifndef SIFT_F2_RESCAN_CACHE_H
 #define SIFT_F2_RESCAN_CACHE_H
 
-#include "col/f2/f2_gbuf.h"
-#include "col/f2/scan/scan_int.h"
+#include "col/f2/gbuf/gbuf.h"
+#include "col/f2/scan/int.h"
 
 typedef struct SiftRescanScan SiftRescanScan;
 

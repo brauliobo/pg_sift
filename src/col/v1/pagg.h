@@ -1,15 +1,15 @@
 /*
  * col/v1/pagg.h - the pre-aggregates of a unit through the column source (docs/COL-PREAGG.md): what a consumer may ask of the unit it
- * holds from sift_col_next, with the visibility rule built in. PostgreSQL side of src/col/v1/preagg.h (the formats, portable).
+ * holds from sift_col_next, with the visibility rule built in. PostgreSQL side of src/col/v1/preagg/preagg.h (the formats, portable).
  */
 #ifndef SIFT_COL_PAGG_H
 #define SIFT_COL_PAGG_H
 
 #include "col/col.h"
-#include "col/v1/preagg.h"
-#include "col/v1/seg.h"
+#include "col/v1/preagg/preagg.h"
+#include "col/v1/seg/seg.h"
 
-/* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (col/v1/scan_unit.c) */
+/* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (col/v1/scan/unit.c) */
 extern bool sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u);
 /* A whole segment (sift_col_super_whole): the segment; its key tables are all it has */
 extern bool sift_col_unit_whole(const SiftColUnit *unit, SiftColSegment **seg);

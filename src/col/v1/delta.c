@@ -11,7 +11,7 @@
 #include "postgres.h"
 
 #include "col/v1/pagg.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 #include "core/popcount.h"
 #include "core/cmp.h"
 

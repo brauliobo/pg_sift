@@ -248,7 +248,7 @@ RESET client_min_messages;
 CREATE SCHEMA s4;
 GRANT USAGE ON SCHEMA s4 TO PUBLIC;
 SET search_path = s4, public;
--- The baseline of track_changes (col/v1/track.c) writes a tombstone for every address of the table that no version is live for. It reads no page that the visibility map says every
+-- The baseline of track_changes (col/v1/track/track.c) writes a tombstone for every address of the table that no version is live for. It reads no page that the visibility map says every
 -- transaction sees whole (such a page holds no dead version and no dead item), and looks at the versions of the others while it holds the page, so it costs the table one access
 -- of each of its pages that is not all-visible and none of the others, not one access of the heap for each row. The cost of the baseline is what REINDEX of the tracked index
 -- accesses in the heap more than REINDEX of the same index without track_changes, which is the build alone.

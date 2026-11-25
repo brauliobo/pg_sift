@@ -1,14 +1,14 @@
 /*
- * stubs.c - the collaborators of src/bm25/eval.c that the PostgreSQL side provides, as this host sees them: the options of
+ * stubs.c - the collaborators of src/bm25/eval/eval.c that the PostgreSQL side provides, as this host sees them: the options of
  * the index, the documents the engine knows are dead (its own visibility, instead of a heap snapshot) and the filter of a
  * list of documents as the TID bitmap the shared filter builder reads. No write buffers and no kept docmap directories:
  * sqlite/host/host_stubs.c.
  */
 #include "store.h"
 
-#include "bm25/bitmap.h"
-#include "bm25/analyze.h"
-#include "bm25/eval.h"
+#include "bm25/bitmap/bitmap.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/eval/eval.h"
 
 int			sift_max_expansions = 512;
 
@@ -38,7 +38,7 @@ sift_options_fields(const SiftOptions *opts)
 	return opts->fields ? (const char *) opts + opts->fields : "";
 }
 
-/* ---------- visibility (core/visibility.c): the engine's dead documents, in ascending lists a page is looked up in ---------- */
+/* ---------- visibility (core/visibility/visibility.c): the engine's dead documents, in ascending lists a page is looked up in ---------- */
 
 /* Calls fn for each dead docid of [lo, hi): one bisection per list, then the run of them in the range */
 static void

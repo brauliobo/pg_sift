@@ -3,8 +3,8 @@ include ../../test/common/rules.mk
 CFLAGS  ?= -O2 -g
 CFLAGS  += -std=gnu11 -ffp-contract=off -Wall -Wextra -Wno-unused-function $(SIFT_INC) $(SIFT_TEST_INC) -I$(PGINC)
 CFLAGS_cpushim = -DSIFT_CPUSHIM_DETECT_ONLY -DSIFT_CPUSHIM_NO_SIFT_K
-LIB      = $(SRC)/bm25/bitmap.c $(SRC)/bm25/blob.c $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c $(SRC)/bm25/bitmap_neon.c
-HDR      = $(SRC)/bm25/bitmap.h $(SRC)/bm25/bitmap_int.h $(SRC)/bm25/bitmap_kern.h
+LIB      = $(SRC)/bm25/bitmap/bitmap.c $(SRC)/bm25/blob.c $(SRC)/bm25/bitmap/scalar.c $(SRC)/bm25/bitmap/avx2.c $(SRC)/bm25/bitmap/avx512.c $(SRC)/bm25/bitmap/neon.c
+HDR      = $(SRC)/bm25/bitmap/bitmap.h $(SRC)/bm25/bitmap/int.h $(SRC)/bm25/bitmap/kern.h
 OUT     ?= /tmp/sift-codec
 OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB)) $(OUT)/obj/stub.o $(OUT)/obj/cpushim.o
 

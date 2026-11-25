@@ -7,13 +7,11 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_preagg = off;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET sift.test_agg_par_min_rows = 0;
 SET max_parallel_workers_per_gather = 2;
-SET sift.test_par_leader_wait = on;
 
 -- one path, integer key and member: 12 tenants, members in one to three of them
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
@@ -102,11 +100,8 @@ BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	one := rows_md5(q);
 	PERFORM set_config('max_parallel_workers_per_gather', '2', true);
-	-- the join the node runs when it costs less than the units
-	PERFORM set_config('sift.test_scope_join', 'on', true);
 	join_workers := (launched(q)).workers;
 	fallback := rows_md5(q);
-	PERFORM set_config('sift.test_scope_join', 'off', true);
 	PERFORM set_config('sift.agg_scope', 'off', true);
 	j := rows_md5(q);
 	PERFORM set_config('sift.agg_scope', 'on', true);

@@ -23,7 +23,7 @@ typedef struct ColKeys
 } ColKeys;
 
 /*
- * The strategies of the operator classes (6 <> and 9 NOT LIKE are the aggregate scan's own: no operator class has them, agg/v6/v6_qual.c builds those keys): btree's numbers (1 <, 2 <=, 3 =, 4 >=, 5 >) and, for text, 7 LIKE and 8 starts_with (^@). The default class also has the
+ * The strategies of the operator classes (6 <> and 9 NOT LIKE are the aggregate scan's own: no operator class has them, agg/v6/qual/qual.c builds those keys): btree's numbers (1 <, 2 <=, 3 =, 4 >=, 5 >) and, for text, 7 LIKE and 8 starts_with (^@). The default class also has the
  * containment operators of a range (10 @>, 11 <@, 12 &&, 13 <<, 14 >>, 15 &<, 16 &>, 17 -|-, 18 @> an element) and of a network (21 <<, 22 <<=, 23 >>, 24 >>=, 25 &&),
  * in the order of SIFT_COLW_R_* and SIFT_COLW_N_* (col/col.h), and 3 = for both.
  */

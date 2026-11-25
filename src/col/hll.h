@@ -7,8 +7,8 @@
 #ifndef SIFT_COL_HLL_H
 #define SIFT_COL_HLL_H
 
-#include "col/v1/enc.h"
-#include "col/v1/preagg.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/preagg/preagg.h"
 
 #define SIFT_HLL_P			14
 #define SIFT_HLL_M			(1 << SIFT_HLL_P)

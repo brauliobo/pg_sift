@@ -58,7 +58,7 @@ typedef struct SiftSrcLeaf
 	int			shape;			/* the head of a range (1) or a network (2) that also keeps the lanes its containment operators test (SIFT_COLW_R_*, SIFT_COLW_N_*; col/shape.c); else 0 */
 	Oid			wtypid;			/* a wide leaf: its SQL type, which only the source tests (SAP_WIDE); else InvalidOid */
 	bool		wide;			/* numeric of more than 18 digits or any other shape, interval: an SCV_CODE leaf whose dictionary entries are
-								 * not text (src/agg/wide.h): only an expression PostgreSQL evaluates reads it, no kernel, native aggregate, histogram or text test */
+								 * not text: only an expression PostgreSQL evaluates reads it, no kernel, native aggregate, histogram or text test */
 	bool		arrhead;		/* the image of an array that keeps its lengths: the leaves id + 1 and id + 2 are its arrlen lanes */
 	bool		noimage;		/* ... and the head is NULL for every array a list of one dimension from 1 holds (SIFT_COLD_NOIMAGE) */
 	int			arrlen;			/* 1: this leaf is cardinality(x) of the array whose image is leaf id - 1, 2: array_length(x, 1) of the one at id - 2; else 0 */

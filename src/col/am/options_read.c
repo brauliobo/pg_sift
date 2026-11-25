@@ -3,10 +3,10 @@
  */
 #include "postgres.h"
 #include "access/reloptions.h"
-#include "col/am/am_int.h"
+#include "col/am/int.h"
 #include "col/am/conn_route.h"
-#include "col/v1/conn.h"
-#include "col/scope.h"
+#include "col/v1/conn/conn.h"
+#include "col/scope/scope.h"
 #include "core/lane.h"
 #include "core/ops.h"
 

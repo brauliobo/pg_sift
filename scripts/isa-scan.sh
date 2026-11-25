@@ -94,7 +94,7 @@ if [[ ${1:-} == --budget-kib ]]; then budget=$2; shift 2; fi
 [[ $(uname -m) == x86_64 ]] || { echo "isa-scan: skipped, the POPCNT baseline is an x86-64 rule (NEON is part of the AArch64 baseline)"; exit 0; }
 bad=0
 for f in "$@"; do
-	case $f in *_avx2.o | *_avx512.o | *_popcnt.o) continue ;; esac
+	case $f in *_avx2.o | *_avx512.o | *_popcnt.o | */avx2.o | */avx2_*.o | */avx512.o | */avx512_*.o | */popcnt.o) continue ;; esac
 	case $f in *.so) scan "$f" "$(library_only)" || bad=1 ;; *) scan "$f" || bad=1 ;; esac
 	case $f in *.so) library_checks "$f" "$budget" || bad=1 ;; *) nm "$f" 2>/dev/null | grep ' U __popcount' >/dev/null && { echo "$f: calls a libgcc popcount helper"; bad=1; } || true ;; esac
 done

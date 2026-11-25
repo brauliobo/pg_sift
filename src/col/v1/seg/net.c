@@ -9,7 +9,7 @@
  */
 #include "core/host.h"
 #include "core/popcount.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 #define NET_MAGIC		0x5445474eU		/* "NGET" */
 #define NET_TRAILER		(2 * sizeof(uint64))

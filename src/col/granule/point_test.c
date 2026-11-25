@@ -10,7 +10,7 @@
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
 
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 #include "core/testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_s55_granule_point);

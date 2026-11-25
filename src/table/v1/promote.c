@@ -8,10 +8,10 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/lane.h"
-#include "core/maint.h"
-#include "table/v1/table_v1.h"
+#include "core/maint/maint.h"
+#include "table/v1/table.h"
 #include "table/v1/seg_int.h"
 
 typedef enum Fate

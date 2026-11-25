@@ -1,4 +1,4 @@
--- The price of a scope read (col/scope.h) is one pure function of the counts of the read: the units it opens (read row by row or answered from their pre-aggregates), the entries it reads, the pairs it lists
+-- The price of a scope read (col/scope/scope.h) is one pure function of the counts of the read: the units it opens (read row by row or answered from their pre-aggregates), the entries it reads, the pairs it lists
 -- when it counts a row once for several keys, the changed pairs it leaves out of its units, the patch and the delta of them. The executor takes the join as written where it costs less, and tells the reader how many
 -- changed pairs that join leaves it, so that a read that has more refuses before it lists them. The terms are those of the cells of three shapes (instructions of the backend, warm, one backend, the scope read forced:
 -- 30 keys of 111 rows, 500 of 3 rows, 110 of 55 rows with a tenth of them in two keys; the cells with changed pairs: 300,000 events of 2,500 members, 110 keys of 4,250 pairs, read at 1 and 30 keys), and the

@@ -4,7 +4,7 @@
  * in the order they were written
  */
 #include "postgres.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "col/v1/wbuf/int.h"
 
 /* A reader whose lanes are not yet located: wbuf_load_heads reads the header page for them */
 SiftCWbufReader *

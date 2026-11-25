@@ -6,8 +6,8 @@
 #ifdef SIFT_TESTING
 
 #include "col/compress.h"
-#include "col/v1/enc.h"
-#include "col/v1/enc_test_int.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/enc/test_int.h"
 
 static bool
 dict_is(const SiftCDict *d, uint32 code, const char *s, uint32 len)

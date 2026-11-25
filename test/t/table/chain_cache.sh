@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The column delta chain of a partition is kept by the backend for the writes to its rows (src/table/f2/f2_chain_cache.c). A chain that grows by one transaction after another is read from its
+# The column delta chain of a partition is kept by the backend for the writes to its rows (src/table/f2/chain_cache.c). A chain that grows by one transaction after another is read from its
 # newest page on, not whole each time: 40 transactions that each update 400 rows of a table whose chain grows by 3 pages read the pages of the chain once (sift._test_chain_cache_pages counts
 # them), a few hundred, and not the 2,000 that a whole read of the chain for each transaction costs. The rows are as exact as ever, whatever happens to the chain in between: a writer of
 # another session that adds pages to it, a VACUUM that folds it away and the writes that start a new one. The log of the pending deletes of a partition is read once when a transaction finds it

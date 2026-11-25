@@ -1,7 +1,7 @@
 /*
  * bm25/amscan.c - index scan callbacks. Queries are answered by bitmap scans, and ranked and ordered access go through the planner's custom
  * scan (M3). amgettuple answers one question, asked by the executor's pre-check of INSERT ... ON CONFLICT: the rows that hold the key of the row
- * to insert. The planner does not see it (core/quarantine_plan.c), so it never plans an index scan.
+ * to insert. The planner does not see it (core/quarantine/plan.c), so it never plans an index scan.
  */
 #include "postgres.h"
 
@@ -16,11 +16,11 @@
 #include "utils/timestamp.h"
 
 #include "bm25/am.h"
-#include "bm25/bm25_doc.h"
-#include "bm25/eval.h"
+#include "bm25/doc.h"
+#include "bm25/eval/eval.h"
 #include "core/errctx.h"
-#include "core/maint_pacer.h"
-#include "core/quarantine.h"
+#include "core/maint/pacer.h"
+#include "core/quarantine/quarantine.h"
 #include "core/memtrack.h"
 
 typedef struct SiftScanOpaque
@@ -90,7 +90,7 @@ add_page(TIDBitmap *tbm, const SiftPageMatch *pm, bool recheck)
 	return n;
 }
 
-/* The key columns of an index of several are sections of its text; a clause on one searches that section (bm25/analyze_config.c names them) */
+/* The key columns of an index of several are sections of its text; a clause on one searches that section (bm25/analyze/config.c names them) */
 static bool
 scope_to_field(SiftQNode *n, int field)
 {

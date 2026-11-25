@@ -4,7 +4,7 @@
  */
 #include "postgres.h"
 
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 static SiftLiveUnit *
 seg_units(SiftColSegment *seg)

@@ -13,7 +13,7 @@
  *   SIFT_DAMAGE_OTHER_INDEX(errmsg(...), ...)    damage found in an index that is not a sift index (a b-tree the planner reads)
  *
  * The arguments after the Relation are those of ereport (errmsg, errdetail, errhint). Damage of a sift index is recorded before the error is raised
- * (core/quarantine.h): with sift.on_corruption = quarantine the index leaves service, and the statements that follow run on the heap.
+ * (core/quarantine/quarantine.h): with sift.on_corruption = quarantine the index leaves service, and the statements that follow run on the heap.
  */
 #ifndef SIFT_DAMAGE_H
 #define SIFT_DAMAGE_H

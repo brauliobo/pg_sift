@@ -1,5 +1,5 @@
 /*
- * col/source_fold_test.c - test-only SQL functions sift._test_store_agg and sift._test_store_par, compiled only with SIFT_TESTING: the zone and parallel scans of the storage seam (core/store_ops.h) as
+ * col/source_fold_test.c - test-only SQL functions sift._test_store_agg and sift._test_store_par, compiled only with SIFT_TESTING: the zone and parallel scans of the storage seam (core/store/ops.h) as
  * the aggregate engine drives them, over whatever format owns the relation. _test_store_agg groups the rows of a sift_col index or a sift_table by one column with count(*) and sum(int column) and
  * an optional "column > value" qual, through the zone ops; _test_store_par does the same over a sift_col index through the parallel ops, with real workers claiming runs of the units of the plan,
  * and gives the groups of the key (an integer between 0 and 62; NULL is 63) and the workers launched. _test_store_dict says whether an attribute is dictionary-coded. The tests hold both to the heap's own answer.
@@ -32,7 +32,7 @@
 
 #include "agg/v6/v6.h"
 #include "core/compat.h"
-#include "core/store_ops.h"
+#include "core/store/ops.h"
 
 PG_FUNCTION_INFO_V1(sift_test_store_agg);
 PG_FUNCTION_INFO_V1(sift_test_store_par);

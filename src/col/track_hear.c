@@ -1,6 +1,6 @@
 /*
  * col/track_hear.c - the triggers of an index with track_changes as a set: which tables must be heard (the table of the index, and for a statement trigger every table above it), which triggers the index
- * has, what they lack, and the locks that making and dropping them take. The completeness of the log that they make is decided in col/v1/track.c (format major 1).
+ * has, what they lack, and the locks that making and dropping them take. The completeness of the log that they make is decided in col/v1/track/track.c (format major 1).
  */
 #include "postgres.h"
 

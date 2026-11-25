@@ -68,7 +68,7 @@ typedef struct SiftColFormatOps
 
 	Datum		(*sql) (SiftColSqlFn fn, FunctionCallInfo fcinfo);
 
-	/* The key journal of a parent index (col/am/conn_route.h); NULL: the format keeps it in the log of its tombstones (col/v1/conn.h) */
+	/* The key journal of a parent index (col/am/conn_route.h); NULL: the format keeps it in the log of its tombstones (col/v1/conn/conn.h) */
 	const struct SiftColJournalOps *journal;
 
 	/* sift.check: the steps of the verification of the index, reporting or raising by ck (core/check.h) */

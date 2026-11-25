@@ -34,7 +34,7 @@ typedef enum SiftVecType
 	SVEC_DICT32,				/* uint32[n]: a dictionary code */
 	SVEC_INTERVAL,				/* SiftInterval16[n] */
 	SVEC_DATUM,					/* Datum[n]: arbitrary PostgreSQL type fallback (typid/typlen/typbyval on SiftVec) */
-	SVEC_NUM256					/* SiftI256[n]: the scaled integer of a numeric product past 2^95 (agg/v6/v6_expr_num.h); only the groups of SUM and AVG read it */
+	SVEC_NUM256					/* SiftI256[n]: the scaled integer of a numeric product past 2^95 (agg/v6/expr/num.h); only the groups of SUM and AVG read it */
 } SiftVecType;
 
 typedef struct __attribute__((aligned(16))) SiftI128
@@ -173,7 +173,5 @@ typedef struct SiftArrayLayout
 #define SIFT_ELEM_KIND_VALUE	1
 #define SIFT_ELEM_KIND_JNULL	7
 
-/* out (SIFT_COL_NWORDS-free: ceil(n_elems / 64) words) = the elements whose parent is in parent_mask; returns the number of elements set */
-extern uint32 sift_array_elem_mask(uint64 *out, const SiftArrayLayout *lay, const uint64 *parent_mask);
 
 #endif							/* SIFT_AGG_VEC_H */

@@ -94,7 +94,7 @@
 #define SIFT_VK_CF_NULL_SPARSE	8u		/* the validity is a count and a list of the rows that are null */
 #define SIFT_VK_CF_NONNULL_SPARSE 16u	/* ... of the rows that hold a value */
 
-/* the operations of a program: those of SiftVecOpCode (agg/vexpr.h), and the membership of a set */
+/* the operations of a program: those of SiftVecOpCode (agg/vexpr/vexpr.h), and the membership of a set */
 enum SiftVkOp
 {
 	SIFT_VK_OP_LOAD_COL, SIFT_VK_OP_LOAD_CONST, SIFT_VK_OP_LOAD_NULL, SIFT_VK_OP_CAST, SIFT_VK_OP_ADD, SIFT_VK_OP_SUB,

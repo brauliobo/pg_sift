@@ -9,7 +9,7 @@
 #include "port/pg_bswap.h"
 #include "utils/tuplesort.h"
 #include "core/memtrack.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "col/v1/wbuf/int.h"
 
 /* A record in the sort, compared as bytes: its key and its order of reading (big endian: the first record of a repeated address comes first), then its address, its inserter and its payload */
 #define REC_SEQ		sizeof(SiftKey)

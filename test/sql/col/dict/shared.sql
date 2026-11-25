@@ -1,4 +1,4 @@
--- The parsed dictionaries of segments are shared between backends (col/dictshm.c): the first backend that parses a dictionary keeps it in shared memory, the
+-- The parsed dictionaries of segments are shared between backends (col/dictshm/dictshm.c): the first backend that parses a dictionary keeps it in shared memory, the
 -- next copies it. sift.test_col_dict_shared = 1 shares every dictionary, sift.shared_cache_kb = 0 none. Every shape must return the rows of the dictionaries parsed from the
 -- segment and of the stock plan, whichever backend parsed them, and a segment a merge or VACUUM rewrote (a new generation) must never be read from the bytes
 -- of the old one. \c is a new backend.
@@ -52,7 +52,7 @@ BEGIN
 	RETURN false;
 END $$;
 
--- a ring that threw out more than it found, as the tests before this one leave it, skips the next writes (src/col/dictshm.c): the backends below would keep nothing
+-- a ring that threw out more than it found, as the tests before this one leave it, skips the next writes (src/col/dictshm/dictshm.c): the backends below would keep nothing
 SELECT sift._test_col_dict_shared_hold(0) IS NOT NULL AS ring_open;
 
 -- not shared: nothing is kept or found

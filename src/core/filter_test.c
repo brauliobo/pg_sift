@@ -14,7 +14,7 @@
 #include "utils/builtins.h"
 
 #include "core/filter.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_filter);
 

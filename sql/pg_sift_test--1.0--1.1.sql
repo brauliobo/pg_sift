@@ -100,7 +100,7 @@ CREATE FUNCTION sift._test_f2_key(nrows int4, nvalid int4, njnull int4 DEFAULT 0
 CREATE FUNCTION sift._test_f2_fsst(pattern text, nstrings int4, detail bool DEFAULT false) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_f2_fsst' LANGUAGE C STRICT;
 -- The format major of an index of either format, from its block 0 (core/meta_peek.c): 1 or 2, 0 while it has no block
 CREATE FUNCTION sift._test_index_format(index regclass) RETURNS int4 AS 'MODULE_PATHNAME', 'sift_test_index_format' LANGUAGE C STRICT;
--- The Top-N tournament (src/agg/v6/topn_test.c): the rows it outputs over arrays cut into granules, parts and partitions, and the units it did not read.
+-- The Top-N tournament (src/agg/v6/topn/test.c): the rows it outputs over arrays cut into granules, parts and partitions, and the units it did not read.
 CREATE FUNCTION sift._test_topn(k0 int8[], k1 int8[], k2 int8[], keep bool[], descs bool[], nulls_firsts bool[], granule_rows int4, granules_per_part int4,
 								parts_per_partition int4, slab_rows int4, lim int8, off int8, with_ties bool DEFAULT false, workers int4 DEFAULT 1,
 								frontier bool DEFAULT false) RETURNS TABLE(rank int4, idx int4)
@@ -110,7 +110,7 @@ CREATE FUNCTION sift._test_topn_stats(OUT partitions_pruned int8, OUT parts_prun
 	AS 'MODULE_PATHNAME', 'sift_test_topn_stats' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f64_order(x float8) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_f64_order' LANGUAGE C STRICT;
--- The cardinality estimator (src/agg/plan/card_est_test.c): the estimate of predicates over the statistics folded from arrays.
+-- The cardinality estimator (src/agg/v6/cost/card_est_test.c): the estimate of predicates over the statistics folded from arrays.
 CREATE FUNCTION sift._test_card_est(c0 int8[], c1 int8[], c2 int8[], doc bool[], present bool[], preds text, granule_rows int4 DEFAULT 1024,
 									granules_per_partition int4 DEFAULT 16, sample int4 DEFAULT 64)
 	RETURNS TABLE(est_rows float8, selectivity float8, g_eff float8, g_total float8, confidence float8, exact_zero bool, used_scope bool, ndv_c1 float8)
@@ -119,7 +119,7 @@ CREATE FUNCTION sift._test_card_est(c0 int8[], c1 int8[], c2 int8[], doc bool[],
 CREATE FUNCTION sift._test_window_tail_tie(vals int8[], granule int4) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_window_tail_tie' LANGUAGE C STRICT;
 
--- 2048-row operators (src/agg/kern6_test.c): every SIMD level against scalar, through sift.simd.
+-- 2048-row operators (src/agg/kern6/test.c): every SIMD level against scalar, through sift.simd.
 CREATE FUNCTION sift._test_aggkern6_equiv(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_aggkern6_equiv' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_aggkern6_level() RETURNS text
@@ -127,8 +127,6 @@ CREATE FUNCTION sift._test_aggkern6_level() RETURNS text
 -- Salted hash table, array element masks and the cost of a SiftAgg path (src/agg/v6/core_test.c): the number of failed cases.
 CREATE FUNCTION sift._test_salted_ht(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_salted_ht' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_array_elem_mask(seed int8, cases int4) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_array_elem_mask' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_agg_cost(g_eff float8, b_dec float8, n_groups float8, f_join float8, selectivity float8, is_preagg bool,
 									is_streaming bool, max_workers int4, OUT workers int4, OUT startup float8, OUT total float8)
 	AS 'MODULE_PATHNAME', 'sift_test_agg_cost' LANGUAGE C STRICT;
@@ -150,10 +148,6 @@ CREATE FUNCTION sift._test_radix_par(seed int8, workers int4, granules int4, gro
 CREATE FUNCTION sift._test_morsel_par(seed int8, workers int4, parts int4, granules int4,
 									  OUT launched int4, OUT claims int8, OUT total int8, OUT wrong int8, OUT bad_claims int8, OUT max_run int4, OUT tail_run int4)
 	AS 'MODULE_PATHNAME', 'sift_test_morsel_par' LANGUAGE C STRICT;
--- Shared dimension table (src/agg/par/dim_shm_test.c): workers launched, buckets, probes answered, wrong answers and keys, fits the budget, bytes, microseconds of the build.
-CREATE FUNCTION sift._test_dim_shm(seed int8, workers int4, nrows int4, domain int4, probes int4,
-								   OUT launched int4, OUT buckets int4, OUT answered int8, OUT wrong int8, OUT fits bool, OUT bytes int8, OUT build_us int8)
-	AS 'MODULE_PATHNAME', 'sift_test_dim_shm' LANGUAGE C STRICT;
 -- Adaptive execution (src/agg/adaptive_test.c): the order of the conjuncts that the measures give, the circuit breaker of the join filter, the tiers of the groups and
 -- the grouping sets under a budget, each against the same work with no limit.
 CREATE FUNCTION sift._test_apipe(OUT moved_best_first bool, OUT barrier_violations int4, OUT reorders int4, OUT near_ranks_stable bool, OUT drift_followed bool,
@@ -165,27 +159,6 @@ CREATE FUNCTION sift._test_sip_adapt(granules int4, head_granules int4, head_mat
 									 OUT auto_disables int4, OUT auto_reenables int4, OUT disabled_at_end bool, OUT reject_after_reenable_pct int4,
 									 OUT level2_prunes bool, OUT missed int8)
 	AS 'MODULE_PATHNAME', 'sift_test_sip_adapt' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_group_tiers(n int8, domain int8, base int8, start int4, budget int8, hot int4, skew int4, OUT groups int8, OUT rows int8,
-									   OUT key_sum int8, OUT sum_sum int8, OUT mix int8, OUT tier int4, OUT visited int4, OUT spilled_bytes int8, OUT depth int4,
-									   OUT same bool)
-	AS 'MODULE_PATHNAME', 'sift_test_group_tiers' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_rollup_spill(masks int8[], n int8, groups int8, max_bytes int8, skew bool, dist bool, OUT nodes_spilled int4, OUT bytes_spilled int8,
-										OUT depth int4, OUT groups_out int8, OUT same bool)
-	AS 'MODULE_PATHNAME', 'sift_test_rollup_spill' LANGUAGE C STRICT;
--- The dimensions of a star join in one block (src/agg/par/star_shm_test.c): the rows of a fact table joined to categories, items (which point to the categories: a snowflake) and
--- regions through the filters and tables of the bundle that the leader and the workers built, and what the scan did.
-CREATE FUNCTION sift._test_star(f_item int8[], f_region int8[], i_id int8[], i_cat int8[], i_pay int8[], c_id int8[], c_pay int8[], r_id int8[], r_pay int8[],
-								kind_cat int4, kind_item int4, kind_region int4, cats_unique bool, items_unique bool, with_regions bool, workers int4,
-								granule int4 DEFAULT 1024)
-	RETURNS TABLE(ord int4, item_pay int8, cat_pay int8, region_pay int8)
-	AS 'MODULE_PATHNAME', 'sift_test_star' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_star_stats(OUT items_raw int4, OUT items_surviving int4, OUT cats_surviving int4, OUT any_empty bool, OUT fact_rows_read int8,
-									  OUT granules_total int4, OUT granules_pruned int4, OUT rows_probed int8, OUT auto_disables int4, OUT elided int4,
-									  OUT launched int4, OUT bundle_bytes int8)
-	AS 'MODULE_PATHNAME', 'sift_test_star_stats' LANGUAGE C STRICT;
--- Exception streams of JSONB paths and sorted streaming GROUP BY / Top-N (src/agg/stream_test.c): the number of failed cases.
-CREATE FUNCTION sift._test_variant_eval(seed int8, cases int4) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_variant_eval' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_stream_exec(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_stream_exec' LANGUAGE C STRICT;
 
@@ -202,7 +175,7 @@ CREATE FUNCTION sift._test_window(part int8[], ord int8[], arg int8[], argf floa
 CREATE FUNCTION sift._test_window_stats(OUT rows_in int8, OUT rows_looked int8, OUT rows_out int8, OUT skips int8, OUT max_pending int8,
 										OUT granules_read int8, OUT granules_total int8)
 	AS 'MODULE_PATHNAME', 'sift_test_window_stats' LANGUAGE C STRICT;
--- Vectorized expressions (src/agg/vexpr_test.c): a program written as a prefix expression over the columns of a table, the live rows' results as text.
+-- Vectorized expressions (src/agg/vexpr/test.c): a program written as a prefix expression over the columns of a table, the live rows' results as text.
 CREATE FUNCTION sift._test_vexpr(prog text, i int8[], j int8[], k int4[], x float8[], y float8[], m bool[], d jsonb[], act bool[] DEFAULT NULL,
 								 n int8[] DEFAULT NULL, w numeric[] DEFAULT NULL, t timestamp[] DEFAULT NULL, dt date[] DEFAULT NULL)
 	RETURNS TABLE(ord int4, res text)
@@ -211,20 +184,12 @@ CREATE FUNCTION sift._test_explain_v6(scenario int, format text, verbose bool DE
 	AS 'MODULE_PATHNAME', 'sift_test_explain_v6' LANGUAGE C;
 CREATE FUNCTION sift._test_vexpr_compiles(prog text) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_vexpr_compiles' LANGUAGE C STRICT;
--- Grouping sets in one pass (src/agg/rollup_test.c): the groups of every set, in the columns of the GROUPING SETS query that the SQL test compares them to.
-CREATE FUNCTION sift._test_rollup(ka int8[], kb int8[], kc int8[], va int8[], vb int8[], masks int8[], prehash bool DEFAULT false, batch int4 DEFAULT 2048,
-								  with_distinct bool DEFAULT false, act bool[] DEFAULT NULL)
-	RETURNS TABLE(set_idx int4, gset int4, k1 int8, k2 int8, k3 int8, n int8, c1 int8, s1 numeric, mn1 int8, mx1 int8, c2 int8, s2 numeric, mn2 int8,
-				  mx2 int8, dcnt int8)
-	AS 'MODULE_PATHNAME', 'sift_test_rollup' LANGUAGE C;
-CREATE FUNCTION sift._test_rollup_distinct(masks int8[], n int8, max_bytes int8, OUT errored bool, OUT retained int8)
-	AS 'MODULE_PATHNAME', 'sift_test_rollup_distinct' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_state_flags(index regclass) RETURNS int4 AS 'MODULE_PATHNAME', 'sift_test_f2_state_flags' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_pack_tails(index regclass) RETURNS int4 AS 'MODULE_PATHNAME', 'sift_test_f2_pack_tails' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_pack_info(index regclass, part_id int8, plo int8, OUT part_gen int8, OUT header_blk int8, OUT packed bool, OUT slot int4, OUT inline bool)
 	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_f2_pack_info' LANGUAGE C;
 CREATE FUNCTION sift._test_f2_compact_racing(index regclass, part_id int8, plo int8, gens int8[], deleted_meanwhile int4) RETURNS bool AS 'MODULE_PATHNAME', 'sift_test_f2_compact_racing' LANGUAGE C;
--- The guards of the planners of the aggregation (src/agg/plan/safety.c) and the bridges of SiftAggV6 (src/agg/v6/bridge_test.c): whether a rewritten query has row security or a security barrier; the guards on
+-- The guards of the planners of the aggregation (src/agg/v6/safety.c) and the bridges of SiftAggV6 (src/agg/v6/bridge_test.c): whether a rewritten query has row security or a security barrier; the guards on
 -- built nodes (the number of wrong answers); the ids of the rows the vector machine passes for a WHERE clause over the columns of the table of an index (NULL: it does not run it); what a query is as the
 -- planner and the executor give it with the bridges (the plan has the node, the rows are those of the normal plan: 'ok' or what differs); the clauses the cardinality bridge made of a query.
 CREATE FUNCTION sift._test_agg_guards() RETURNS int4
@@ -238,7 +203,7 @@ CREATE FUNCTION sift._test_v6_check(query text, node text, bridges text[], order
 CREATE FUNCTION sift._test_v6_card(query text, OUT npreds int4, OUT nrest int4, OUT replaced bool, OUT pg_rows float8, OUT rows float8, OUT calls int4)
 	AS 'MODULE_PATHNAME', 'sift_test_v6_card' LANGUAGE C STRICT;
 
--- The queue of the background maintenance (src/core/maint_step_test.c): _test_maint_enqueue requests a step of an index of format major 2 as a trigger does (kind 3 is the compaction of a part),
+-- The queue of the background maintenance (src/core/maint/step_test.c): _test_maint_enqueue requests a step of an index of format major 2 as a trigger does (kind 3 is the compaction of a part),
 -- _test_maint_stats reads the counters of the queue and how many requests it holds.
 CREATE FUNCTION sift._test_maint_enqueue(index regclass, kind int4) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_maint_enqueue' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_maint_stats(OUT enqueued int8, OUT coalesced int8, OUT completed int8, OUT spawned int8, OUT pending int4)
@@ -250,23 +215,23 @@ CREATE FUNCTION sift._test_worker_slots(n int4) RETURNS int4 AS 'MODULE_PATHNAME
 CREATE FUNCTION sift._test_maint_workers_hold(n int4) RETURNS int4 AS 'MODULE_PATHNAME', 'sift_test_maint_workers_hold' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_maint_workers(OUT other int4, OUT queue int4) RETURNS record AS 'MODULE_PATHNAME', 'sift_test_maint_workers' LANGUAGE C STRICT;
 
--- The flushes of a transaction's staged rows and deletes since the backend started (src/col/f2/l0_stage.c), for the tests that bound them.
+-- The flushes of a transaction's staged rows and deletes since the backend started (src/col/f2/l0/stage.c), for the tests that bound them.
 CREATE FUNCTION sift._test_stage_flushes() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_stage_flushes' LANGUAGE C STRICT;
 
--- The reads of a chain of pending deletes since the backend started (src/col/f2/pend_del.c): a fetch by address asks the cached log of the partition, not the chain, so a statement reads it a few times and not once for a row.
+-- The reads of a chain of pending deletes since the backend started (src/col/f2/del/pend.c): a fetch by address asks the cached log of the partition, not the chain, so a statement reads it a few times and not once for a row.
 CREATE FUNCTION sift._test_pend_del_reads() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_pend_del_reads' LANGUAGE C STRICT;
 
--- src/table/f2/f2_lock_ovf.c: the entries of the row locks of a sift_table in the table of shared memory and in the chunks of the stripes that filled
+-- src/table/f2/lock/ovf.c: the entries of the row locks of a sift_table in the table of shared memory and in the chunks of the stripes that filled
 CREATE FUNCTION sift._test_rowlock_stats(OUT in_table int8, OUT in_chunks int8, OUT chunks int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_rowlock_stats' LANGUAGE C STRICT;
 
--- The pages of column delta chains the cache of a sift_table's chains has read since the backend started (src/table/f2/f2_chain_cache.c): a chain that grew is read from its newest page on, not whole
+-- The pages of column delta chains the cache of a sift_table's chains has read since the backend started (src/table/f2/chain_cache.c): a chain that grew is read from its newest page on, not whole
 CREATE FUNCTION sift._test_chain_cache_pages() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_chain_cache_pages' LANGUAGE C STRICT;
 
--- The pool, the driver and the grouped aggregation of core/par and agg/v6/par (src/core/par/par_test.c): threads used, runs done, groups of the last run, runs that gave a wrong number of rows or groups. cancel_at: the leader cancels the statement at its n-th unit of work (0: never).
+-- The pool, the driver and the grouped aggregation of core/par and agg/v6/par (src/core/par/test.c): threads used, runs done, groups of the last run, runs that gave a wrong number of rows or groups. cancel_at: the leader cancels the statement at its n-th unit of work (0: never).
 CREATE FUNCTION sift._test_par_group(workers int4, rows int4, groups int4, loops int4, cancel_at int4,
 									 OUT threads int4, OUT runs int4, OUT out_groups int8, OUT bad int8)
 	AS 'MODULE_PATHNAME', 'sift_test_par_group' LANGUAGE C STRICT;
 
--- Every cube of every granule of every part of an index against the values it was made of: the parts, those with SEC_PREAGG, the cubes, the granules, the cubes that leave a granule out, the cells and the cells that differ (src/col/f2/preagg_test.c)
+-- Every cube of every granule of every part of an index against the values it was made of: the parts, those with SEC_PREAGG, the cubes, the granules, the cubes that leave a granule out, the cells and the cells that differ (src/col/f2/preagg/test.c)
 CREATE FUNCTION sift._test_preagg_v2_check(index regclass, OUT parts int4, OUT with_preagg int4, OUT cubes int4, OUT granules int4, OUT skipped int4, OUT cells int8, OUT mismatched int4) RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_preagg_v2_check' LANGUAGE C STRICT;

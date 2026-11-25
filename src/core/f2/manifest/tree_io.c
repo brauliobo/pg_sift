@@ -1,12 +1,12 @@
 /*
  * core/f2/manifest/tree_io.c - the partition directory as the manifest reads it: a page at a time, binary searched inside the page, and down a single path to the partition of a point
- * key (core/f2/manifest.c builds the changes of it).
+ * key (core/f2/manifest/manifest.c builds the changes of it).
  */
 #include "core/host.h"
 
-#include "col/f2/part_format.h"
-#include "core/f2/manifest.h"
-#include "core/f2/manifest/manifest_int.h"
+#include "col/f2/part/format.h"
+#include "core/f2/manifest/manifest.h"
+#include "core/f2/manifest/int.h"
 #include "core/page_io.h"
 
 Page

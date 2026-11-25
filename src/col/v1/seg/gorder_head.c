@@ -3,7 +3,7 @@
  * entry of a chunk checked as it is used
  */
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* Does the segment have a block for the slot col? The point directory's records say so: the block is not read */
 bool

@@ -9,7 +9,6 @@ SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 SET sift.backend_cache_kb = 0;
 SET sift.shared_cache_kb = 0;
-SET sift.test_agg_probe_rewrite = off;
 
 CREATE TABLE ev (id int, fk int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, 1 + i % 20000, i % 7 FROM generate_series(1, 100000) i;

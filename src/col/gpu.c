@@ -4,9 +4,9 @@
 #include "postgres.h"
 
 #include "agg/vk/layout.h"
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/gpu.h"
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 
 SiftVkKey
 sift_gpu_chunk_key(const RelFileLocator *loc, uint32 part_id, uint64 part_gen, uint32 phys, uint32 granule)

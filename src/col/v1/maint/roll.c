@@ -3,7 +3,7 @@
  */
 #include "postgres.h"
 #include "utils/timestamp.h"
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 
 /*
  * The rolling rewrite of a key-cut index in partitions, for the dead rows (or the stale connection) of its partitions: a step takes one partition, whichever has not been

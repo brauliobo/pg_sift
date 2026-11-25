@@ -44,14 +44,12 @@ setup
 		p jsonb;
 	BEGIN
 		PERFORM set_config('sift.agg_force', 'on', true);
-		PERFORM set_config('sift.agg_preagg', 'off', true);
 		PERFORM set_config('sift.test_scope_patch', 'on', true);
 		PERFORM set_config('max_parallel_workers_per_gather', '2', true);
 		PERFORM set_config('parallel_setup_cost', '0', true);
 		PERFORM set_config('parallel_tuple_cost', '0', true);
 		PERFORM set_config('min_parallel_table_scan_size', '0', true);
 		PERFORM set_config('sift.test_agg_par_min_rows', '0', true);
-		PERFORM set_config('sift.test_par_leader_wait', 'on', true);
 		PERFORM set_config('sift.test_col_open_gate', gate::text, true);
 		PERFORM set_config('sift.test_item_gate', item_gate::text, true);
 		PERFORM set_config('sift.test_par_gate', par_gate::text, true);

@@ -169,7 +169,7 @@ harness_path() {
 	esac
 }
 # owner_areas OWNER...: the areas of one path from the owners of scripts/areas.sh --owners: none of the groups (a core file, the Makefile, a new file of src/, a script) is smoke, `-` (a
-# path no job builds or runs: documentation) is nothing; the column index is its own area only when no other area owns the path (src/col/shred.c is jsonb, src/col/v1/amscan/cost.c coexist)
+# path no job builds or runs: documentation) is nothing; the column index is its own area only when no other area owns the path (src/col/shred/shred.c is jsonb, src/col/v1/amscan/cost.c coexist)
 owner_areas() {
 	local o=" $* " a=() g
 	REPLY=

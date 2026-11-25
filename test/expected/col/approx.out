@@ -114,7 +114,6 @@ CREATE FUNCTION ap_rows(q text, agg bool, preagg bool) RETURNS text LANGUAGE plp
 DECLARE r text;
 BEGIN
   EXECUTE format('SET LOCAL sift.enable_agg = %s', agg);
-  EXECUTE format('SET LOCAL sift.agg_preagg = %s', preagg);
   EXECUTE format('SET LOCAL sift.agg_force = %s', agg);
   EXECUTE 'SELECT string_agg(r::text, E''\n'' ORDER BY r::text) FROM (' || q || ') r' INTO r;
   RETURN r;

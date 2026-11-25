@@ -10,15 +10,15 @@
 #include "commands/defrem.h"
 #include "commands/extension.h"
 #include "col/am.h"
-#include "col/am/am_int.h"
+#include "col/am/int.h"
 #include "col/am/conn_route.h"
 #include "col/f2/f2.h"
 #include "col/pg.h"
 #include "bm25/am.h"
 #include "core/meta_peek.h"
-#include "core/f2/f2_progress.h"
+#include "core/f2/progress.h"
 #include "core/ops.h"
-#include "core/quarantine.h"
+#include "core/quarantine/quarantine.h"
 
 static const SiftColFormatOps *const format_ops[] = {[1] = &sift_col_v1_ops, [2] = &sift_col_v2_ops};
 
@@ -120,7 +120,7 @@ route_ambuildempty(Relation index)
 
 /*
  * A quarantined index is answered here, before sift_col_ops reads its block 0: a damaged metapage names no format, and the engine of no format may touch an index that left service
- * (core/quarantine.h). The write is not indexed and VACUUM goes on without the index.
+ * (core/quarantine/quarantine.h). The write is not indexed and VACUUM goes on without the index.
  */
 static bool
 route_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged,
@@ -173,7 +173,7 @@ route_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost
 		*correlation = 0.0;
 }
 
-/* The session that reads pg_stat_progress_create_index is not the one that builds: the number of the subphase alone says the format that names it (core/f2/f2_progress.h) */
+/* The session that reads pg_stat_progress_create_index is not the one that builds: the number of the subphase alone says the format that names it (core/f2/progress.h) */
 static char *
 route_ambuildphasename(int64 phase)
 {

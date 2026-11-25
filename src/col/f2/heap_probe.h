@@ -1,5 +1,5 @@
 /*
- * col/f2/heap_probe.h - which entries of an index the heap has no live version for (the validation pass of CREATE INDEX CONCURRENTLY, col/f2/f2_write.c)
+ * col/f2/heap_probe.h - which entries of an index the heap has no live version for (the validation pass of CREATE INDEX CONCURRENTLY, col/f2/write.c)
  */
 #ifndef SIFT_COL_F2_HEAP_PROBE_H
 #define SIFT_COL_F2_HEAP_PROBE_H
@@ -9,7 +9,7 @@
 #include "storage/buf.h"
 #include "utils/rel.h"
 
-#include "col/f2/pend_del.h"
+#include "col/f2/del/pend.h"
 
 typedef struct SiftHeapProbe
 {

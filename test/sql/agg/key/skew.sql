@@ -33,7 +33,6 @@ SELECT round(100 * count(*) FILTER (WHERE parent_id <= 5) / count(*)::numeric) A
 CREATE FUNCTION plan_of(q text, skew text DEFAULT 'on') RETURNS text LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
-	PERFORM set_config('sift.agg_key_skew', skew, true);
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
 	RETURN CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
 END $$;

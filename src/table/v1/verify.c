@@ -11,11 +11,11 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/check.h"
 #include "core/errctx.h"
-#include "core/sql.h"
-#include "table/v1/table_v1.h"
+#include "core/sql/sql.h"
+#include "table/v1/table.h"
 #include "core/catname.h"
 
 typedef struct TblVerify

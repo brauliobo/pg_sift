@@ -11,20 +11,20 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/varlena.h"
-#include "col/dictshm.h"
+#include "col/dictshm/dictshm.h"
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
 #include "col/v1/point.h"
 #include "col/hll.h"
 #include "col/kll.h"
 #include "col/v1/colspool.h"
-#include "col/v1/gorder.h"
+#include "col/v1/gorder/gorder.h"
 #include "col/v1/setsum.h"
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "col/am.h"
-#include "col/am/am_int.h"
-#include "col/v1/conn.h"
-#include "col/scope.h"
+#include "col/am/int.h"
+#include "col/v1/conn/conn.h"
+#include "col/scope/scope.h"
 #include "core/f2/io_stream.h"
 #include "core/lane.h"
 #include "core/f2/meta.h"
@@ -191,7 +191,7 @@ skip_index_syntax(const char *value)
 
 SYNTAX_VALIDATOR(skip_index, skip_index_syntax(value))
 
-/* 'fk -> parent(key)', or empty or off: the names are resolved where the connection is made (col/v1/conn_decl.c) */
+/* 'fk -> parent(key)', or empty or off: the names are resolved where the connection is made (col/v1/conn/decl.c) */
 static const char *
 connect_syntax(const char *value)
 {
@@ -204,7 +204,7 @@ connect_syntax(const char *value)
 
 SYNTAX_VALIDATOR(connect, connect_syntax(value))
 
-/* 'key_name: fk -> relation(member, scope_key)', or empty or off: the names are resolved where the declaration is made (col/scope_decl.c) */
+/* 'key_name: fk -> relation(member, scope_key)', or empty or off: the names are resolved where the declaration is made (col/scope/decl.c) */
 static const char *
 scope_syntax(const char *value)
 {
@@ -286,6 +286,7 @@ void
 sift_col_init(void)
 {
 	sift_col_stmt_loaded();
+	sift_col_executor_init();
 	DefineCustomBoolVariable("sift.enable_col_scan",
 							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
 							 "On by default: the planner chooses it by cost against the b-trees and the sequential scan; off keeps the aggregate scans of SiftAgg only, see docs/COL-SCAN.md.",

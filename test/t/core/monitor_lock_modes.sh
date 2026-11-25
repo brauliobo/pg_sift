@@ -6,7 +6,7 @@
 
 out=
 plan 6
-SRC=${SIFT_REPO:?}/src/core/sql_space.c
+SRC=${SIFT_REPO:?}/src/core/sql/space.c
 taken() { grep -E '\b(Conditional)?Lock(Page|Tuple|RelationOid|Relation)\(' "$SRC" | grep -v 'AccessShareLock'; }
 check "sql_space.c takes no heavyweight lock above AccessShareLock" test -z "$(taken)"
 

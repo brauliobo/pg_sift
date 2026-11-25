@@ -28,7 +28,7 @@
 #include "utils/lsyscache.h"
 #include "col/am.h"
 #include "col/pg.h"
-#include "col/v1/amscan/amscan_int.h"
+#include "col/v1/amscan/int.h"
 #include "core/ring.h"
 
 #if PG_VERSION_NUM < 170000

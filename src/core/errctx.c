@@ -10,7 +10,7 @@
 #include "utils/rel.h"
 
 #include "core/errctx.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 /* A background worker reports its failure after the transaction is gone, with its context still on the stack: no catalog is read then */
 char *

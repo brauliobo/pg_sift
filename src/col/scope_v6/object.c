@@ -9,7 +9,7 @@
 /* check-memory: allow-allocs the arrays follow the keys and level-1 nodes of one summary, which the build holds by design (88 bytes a node, 104 a key) */
 #include "core/host.h"
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
 #include "col/scope_v6/int.h"
 #include "col/scope_v6/wire.h"

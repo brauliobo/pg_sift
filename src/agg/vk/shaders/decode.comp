@@ -1,0 +1,662 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_decode.comp - the Format 2.0 chunk decoder: one workgroup of 64 invocations at a time decodes a chunk (validity, then the values of
+ * its body) into a decoded column of the cache arena (common_decode.glsl). The body is a blob of the column codec (col/codec/codec.h: constant,
+ * frame of reference bit-packed or in bytes, delta, run lengths, dictionary, decimal floats, scale, and the LZ4 wrapper of a stream), or
+ * a constant, the bits of a boolean, raw doubles or the split-bits doubles (ALP_RD). The nodes of the cascade are parsed by invocation 0
+ * into a table in shared memory, then evaluated children first, each into its own slot of the scratch of the workgroup.
+ */
+#define DECODE_SHADER
+#define ARENA_Q writeonly
+#include "common_decode.glsl"
+#include "common_lz4.glsl"
+
+layout(local_size_x = 64) in;
+
+#define JOB_WORDS	16u
+#define NMAX		10u
+#define SLOT_ROWS	8192u
+
+/* the encodings of a chunk (SiftChunkEnc) */
+#define ENC_INT_FOR		2u
+#define ENC_INT_DELTA	3u
+#define ENC_INT_CONST	4u
+#define ENC_DICT_CODE	5u
+#define ENC_FLOAT_RAW	7u
+#define ENC_ALL_NULL	9u
+#define ENC_BOOL_BITS	10u
+#define ENC_NUM64		11u
+#define ENC_RLE			15u
+#define ENC_ALP			16u
+#define ENC_ALP_RD		25u
+
+#define CF_LZ4			1u
+#define CF_ALL_VALID	2u
+#define CF_ALL_NULL		4u
+#define CF_NULL_SPARSE	8u
+#define CF_NONNULL_SPARSE 16u
+
+#define NODE_CONST	1u
+#define NODE_FORBIT	2u
+#define NODE_FORBYTE 3u
+#define NODE_DELTA	4u
+#define NODE_RLE	5u
+#define NODE_DICT	6u
+#define NODE_ALP	7u
+#define NODE_WRAP	8u
+#define NODE_SCALE	9u
+
+#define ST_LZ4		1u
+#define ST_FIT		2u
+#define ST_BLOB		3u
+#define ST_NODE		4u
+#define ST_LIMIT	5u
+#define ST_ENC		6u
+
+const double P10[19] = double[19](1.0lf, 1e1lf, 1e2lf, 1e3lf, 1e4lf, 1e5lf, 1e6lf, 1e7lf, 1e8lf, 1e9lf, 1e10lf, 1e11lf, 1e12lf,
+								  1e13lf, 1e14lf, 1e15lf, 1e16lf, 1e17lf, 1e18lf);
+
+shared uint vb[256];			/* the validity of the chunk, a bit per row */
+shared uint rk[257];			/* the values before each word of vb */
+shared uint ps[64];
+shared uint sn_cnt, sn_fail, sn_wrapb, sn_wrapreq, sn_wsrc, sn_wlen, sn_wdst, sn_wnode;
+shared uint sn_tag[NMAX], sn_off[NMAX], sn_n[NMAX], sn_a[NMAX], sn_b[NMAX], sn_slot[NMAX];
+shared uint64_t seg_sum[64];
+shared uint64_t seg_carry[64];
+
+uint scr0;						/* the scratch of the workgroup, in u64 */
+
+uint u32at(uint byteoff)
+{
+	return w32[byteoff >> 2];
+}
+
+uint64_t u64at(uint byteoff)
+{
+	return w64[byteoff >> 3];
+}
+
+uint u16at(uint byteoff)
+{
+	return uint(w8[byteoff]) | (uint(w8[byteoff + 1u]) << 8);
+}
+
+uint slot_base(uint s)
+{
+	return scr0 + s * SLOT_ROWS;
+}
+
+uint unpack_for(uint wbyte, uint W, uint k)
+{
+	if (W == 0u)
+		return 0u;
+	uint l = k & 31u, r = k >> 5, bk = r >> 5, rb = r & 31u;
+	uint bit = rb * W;
+	uint wi = (wbyte >> 2) + bk * 32u * W + (bit >> 5) * 32u + l;
+	uint sh = bit & 31u;
+	uint v = w32[wi] >> sh;
+
+	if (sh + W > 32u)
+		v |= w32[wi + 32u] << (32u - sh);
+	return W == 32u ? v : (v & ((1u << W) - 1u));
+}
+
+uint64_t get_bits(uint base, uint64_t at, uint w)
+{
+	uint byte = base + uint(at >> 3);
+	uint64_t acc = 0ul;
+
+	for (uint j = 0u; j < 8u; j++)
+		acc |= uint64_t(w8[byte + j]) << (8u * j);
+	return (acc >> uint(at & 7ul)) & ((1ul << w) - 1ul);
+}
+
+void add_child(uint parent, bool second, uint off, uint n)
+{
+	if (sn_cnt >= NMAX)
+	{
+		sn_fail = ST_LIMIT;
+		return;
+	}
+	uint c = sn_cnt++;
+
+	sn_off[c] = off;
+	sn_n[c] = n;
+	sn_slot[c] = c;
+	if (second)
+		sn_b[parent] = c;
+	else
+		sn_a[parent] = c;
+}
+
+/* invocation 0: the header of node i, its children made, or an unwrap asked for */
+void parse_node(uint i)
+{
+	uint p = sn_off[i], n = sn_n[i], tag = uint(w8[p]);
+
+	sn_tag[i] = tag;
+	sn_a[i] = NONE8;
+	sn_b[i] = NONE8;
+	if (tag == NODE_FORBIT)
+	{
+		uint W = uint(w8[p + 1u]);
+		if (W < 1u || W > 32u)
+			sn_fail = ST_NODE;
+	}
+	else if (tag == NODE_FORBYTE)
+	{
+		uint B = uint(w8[p + 1u]);
+		if (B < 1u || B > 8u)
+			sn_fail = ST_NODE;
+	}
+	else if (tag == NODE_DELTA)
+	{
+		if (n < 2u || uint(w8[p + 1u]) > 32u)
+			sn_fail = ST_NODE;
+	}
+	else if (tag == NODE_RLE)
+	{
+		uint nr = u32at(p + 4u), vl = u32at(p + 8u);
+		if (nr < 1u || nr > n)
+			sn_fail = ST_NODE;
+		else
+		{
+			add_child(i, false, p + 16u, nr);
+			add_child(i, true, p + 16u + vl, nr);
+		}
+	}
+	else if (tag == NODE_DICT)
+	{
+		uint d = u32at(p + 4u), dl = u32at(p + 8u);
+		if (d < 1u || d > n)
+			sn_fail = ST_NODE;
+		else
+		{
+			add_child(i, false, p + 16u, d);
+			add_child(i, true, p + 16u + dl, n);
+		}
+	}
+	else if (tag == NODE_ALP)
+	{
+		uint nexc = u32at(p + 4u), dl = u32at(p + 8u), e = uint(w8[p + 1u]);
+		if (e > 18u || nexc > n)
+			sn_fail = ST_NODE;
+		else
+		{
+			add_child(i, false, p + 32u, n);
+			if (nexc != 0u)
+				add_child(i, true, p + 32u + dl, nexc);
+		}
+	}
+	else if (tag == NODE_SCALE)
+		add_child(i, false, p + 24u, n);
+	else if (tag == NODE_WRAP)
+	{
+		uint f1 = u32at(p + 4u), cl = u32at(p + 8u);
+		if (uint(w8[p + 1u]) != 1u || f1 < 16u || (f1 & 7u) != 0u || f1 > n * 9u + 4160u || sn_wrapb + f1 > 262144u || sn_cnt >= NMAX)
+			sn_fail = ST_NODE;
+		else
+		{
+			sn_wsrc = p + 16u;
+			sn_wlen = cl;
+			sn_wdst = (scr0 + 10u * SLOT_ROWS) * 8u + sn_wrapb;
+			sn_wrapb += f1;
+			sn_wnode = f1;
+			sn_wrapreq = i + 1u;
+		}
+	}
+	else if (tag != NODE_CONST)
+		sn_fail = ST_NODE;
+}
+
+/* the node table of the blob at root, n values; false when a node is not one this decoder takes */
+bool build_tree(uint root, uint n)
+{
+	uint tid = gl_LocalInvocationID.x;
+
+	if (tid == 0u)
+	{
+		sn_cnt = 1u;
+		sn_off[0] = root;
+		sn_n[0] = n;
+		sn_slot[0] = 0u;
+		sn_fail = 0u;
+		sn_wrapb = 0u;
+		sn_wrapreq = 0u;
+	}
+	barrier();
+	for (uint i = 0u; i < sn_cnt; i++)
+	{
+		if (tid == 0u)
+			parse_node(i);
+		barrier();
+		if (sn_fail != 0u)
+			return false;
+		if (sn_wrapreq != 0u)
+		{
+			uint wsrc = sn_wsrc, wlen = sn_wlen, wdst = sn_wdst, wf1 = sn_wnode, wi = sn_wrapreq - 1u;
+			bool ok = lz4_block(wsrc, wlen, wdst, wf1);
+
+			if (tid == 0u)
+			{
+				if (!ok)
+					sn_fail = ST_LZ4;
+				else
+				{
+					uint c = sn_cnt++;
+					sn_off[c] = wdst;
+					sn_n[c] = sn_n[wi];
+					sn_slot[c] = sn_slot[wi];
+					sn_a[wi] = c;
+					sn_wrapreq = 0u;
+				}
+			}
+			barrier();
+			if (sn_fail != 0u)
+				return false;
+		}
+	}
+	return true;
+}
+
+void fail_job(uint job, uint code)
+{
+	if (gl_LocalInvocationID.x == 0u)
+		res[RES_DEC_OFF + job] = int64_t(code);
+}
+
+void eval_delta(uint i)
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint p = sn_off[i], n = sn_n[i], o = slot_base(sn_slot[i]);
+	uint W = uint(w8[p + 1u]);
+	uint64_t base = u64at(p + 8u), mind = u64at(p + 16u);
+	uint chk = p + 24u, words = chk + 8u * ((n - 1u) / 1024u);
+	uint nb = (n + 1023u) / 1024u;
+	uint b = tid >> 3, s = tid & 7u;
+	uint bfirst = b * 1024u, lo = bfirst + s * 128u, hi = min(min(n, bfirst + 1024u), lo + 128u);
+	bool act = b < nb && lo < n;
+	uint64_t sum = 0ul;
+
+	if (act)
+		for (uint k = lo; k < hi; k++)
+			if (k != bfirst)
+				sum += uint64_t(unpack_for(words, W, k)) + mind;
+	seg_sum[tid] = sum;
+	barrier();
+	uint64_t carry = 0ul;
+	if (act)
+	{
+		carry = b == 0u ? base : u64at(chk + 8u * (b - 1u));
+		for (uint j = 0u; j < s; j++)
+			carry += seg_sum[(b << 3) + j];
+		uint64_t v = carry;
+		for (uint k = lo; k < hi; k++)
+		{
+			if (k != bfirst)
+				v += uint64_t(unpack_for(words, W, k)) + mind;
+			else
+				v = carry;
+			w64[o + k] = v;
+		}
+	}
+}
+
+void eval_rle(uint i)
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint n = sn_n[i], o = slot_base(sn_slot[i]);
+	uint a = sn_a[i], b = sn_b[i], nr = sn_n[a];
+	uint ov = slot_base(sn_slot[a]), ol = slot_base(sn_slot[b]);
+	uint seg = (nr + 63u) / 64u, lo = min(nr, tid * seg), hi = min(nr, lo + seg);
+	uint sum = 0u;
+
+	for (uint r = lo; r < hi; r++)
+		sum += uint(w64[ol + r]);
+	ps[tid] = sum;
+	barrier();
+	if (tid == 0u)
+	{
+		uint run = 0u;
+		for (uint t = 0u; t < 64u; t++)
+		{
+			uint v = ps[t];
+			ps[t] = run;
+			run += v;
+		}
+		if (run != n)
+			sn_fail = ST_NODE;
+	}
+	barrier();
+	uint run = ps[tid];
+	for (uint r = lo; r < hi; r++)
+	{
+		uint l = uint(w64[ol + r]);
+		w64[ol + r] = uint64_t(run);
+		run += l;
+	}
+	memoryBarrierBuffer();
+	barrier();
+	for (uint k = tid; k < n; k += 64u)
+	{
+		uint l = 0u, h = nr - 1u;
+		while (l < h)
+		{
+			uint m = (l + h + 1u) >> 1;
+			if (uint(w64[ol + m]) <= k)
+				l = m;
+			else
+				h = m - 1u;
+		}
+		w64[o + k] = w64[ov + l];
+	}
+}
+
+void eval_node(uint i)
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint p = sn_off[i], n = sn_n[i], tag = sn_tag[i], o = slot_base(sn_slot[i]);
+
+	if (tag == NODE_CONST)
+	{
+		uint64_t base = u64at(p + 8u);
+		for (uint k = tid; k < n; k += 64u)
+			w64[o + k] = base;
+	}
+	else if (tag == NODE_FORBIT)
+	{
+		uint W = uint(w8[p + 1u]);
+		uint64_t base = u64at(p + 8u);
+		for (uint k = tid; k < n; k += 64u)
+			w64[o + k] = base + uint64_t(unpack_for(p + 16u, W, k));
+	}
+	else if (tag == NODE_FORBYTE)
+	{
+		uint B = uint(w8[p + 1u]);
+		uint64_t base = u64at(p + 8u);
+		for (uint k = tid; k < n; k += 64u)
+		{
+			uint64_t x = 0ul;
+			for (uint j = 0u; j < B; j++)
+				x |= uint64_t(w8[p + 16u + k * B + j]) << (8u * j);
+			w64[o + k] = base + x;
+		}
+	}
+	else if (tag == NODE_DELTA)
+		eval_delta(i);
+	else if (tag == NODE_RLE)
+		eval_rle(i);
+	else if (tag == NODE_DICT)
+	{
+		uint od = slot_base(sn_slot[sn_a[i]]), oc = slot_base(sn_slot[sn_b[i]]), d = sn_n[sn_a[i]];
+		for (uint k = tid; k < n; k += 64u)
+		{
+			uint64_t c = w64[oc + k];
+			if (c >= uint64_t(d))
+				sn_fail = ST_NODE;
+			else
+				w64[o + k] = w64[od + uint(c)];
+		}
+	}
+	else if (tag == NODE_ALP)
+	{
+		int64_t dmin = int64_t(u64at(p + 16u));
+		uint e = uint(w8[p + 1u]), nexc = u32at(p + 4u), dl = u32at(p + 8u), pl = u32at(p + 12u);
+		uint oa = slot_base(sn_slot[sn_a[i]]);
+		double div = P10[e];
+		for (uint k = tid; k < n; k += 64u)
+		{
+			uint dg = uint(uint64_t(int64_t(w64[oa + k]) - dmin));
+			double d = double(dmin + int64_t(dg)) / div;
+			w64[o + k] = uint64_t(f8_key(d));
+		}
+		memoryBarrierBuffer();
+		barrier();
+		if (nexc != 0u)
+		{
+			uint ob = slot_base(sn_slot[sn_b[i]]), ek = p + 32u + dl + pl;
+			for (uint j = tid; j < nexc; j += 64u)
+			{
+				uint pos = uint(w64[ob + j]);
+				if (pos < n)
+					w64[o + pos] = u64at(ek + 8u * j);
+			}
+		}
+	}
+	else if (tag == NODE_SCALE)
+	{
+		uint64_t base = u64at(p + 8u), mul = u64at(p + 16u);
+		uint oa = slot_base(sn_slot[sn_a[i]]);
+		for (uint k = tid; k < n; k += 64u)
+			w64[o + k] = base + mul * w64[oa + k];
+	}
+}
+
+bool eval_tree()
+{
+	uint cnt = sn_cnt;
+
+	for (uint i = cnt; i > 0u; i--)
+	{
+		eval_node(i - 1u);
+		memoryBarrierBuffer();
+		barrier();
+		if (sn_fail != 0u)
+			return false;
+	}
+	return true;
+}
+
+/* the blob of the codec at byte offset bb (its length word first): the root node, or ~0 when it is not a blob of nn values */
+uint blob_root(uint bb, uint nn, bool alp_ok)
+{
+	uint blen = u32at(bb), b = bb + 8u;
+
+	if (blen < 48u || uint(w8[b]) != 0xC5u || uint(w8[b + 1u]) != 1u || uint(w8[b + 2u]) > 2u || u32at(b + 4u) != nn)
+		return 0xFFFFFFFFu;
+	return b + 24u;
+}
+
+/* the order-preserving key of the double whose left bits are left and whose right bits are right (rb of them), and trailing zero bits tz */
+int64_t value_key(uint64_t left, uint64_t right, uint rb, uint tz)
+{
+	return f8_key(uint64BitsToDouble(((left << rb) | right) << tz));
+}
+
+/* the values of an ALP-RD blob in two phases: every value takes the left bits of its code, then each exception (the positions are the ones that have an own left part) overwrites its value, so that no value searches the list of the exceptions */
+void alp_rd_values(uint body, uint nn)
+{
+	uint tid = gl_LocalInvocationID.x, o = slot_base(0u);
+	uint lb = uint(w8[body]), nd = uint(w8[body + 1u]), tz = uint(w8[body + 2u]), n_exc = u32at(body + 4u);
+	uint rb = 64u - lb - tz;
+	uint codes = body + 24u;
+	uint clen = ((nn * 3u + 7u) / 8u + 7u) & ~7u;
+	uint rights = codes + clen;
+	uint rlen = ((nn * rb + 7u) / 8u + 7u) & ~7u;
+	uint exc = rights + rlen;
+
+	for (uint k = tid; k < nn; k += 64u)
+		w64[o + k] = value_key(uint64_t(u16at(body + 8u + 2u * uint(get_bits(codes, uint64_t(k) * 3ul, 3u)))), get_bits(rights, uint64_t(k) * uint64_t(rb), rb), rb, tz);
+	memoryBarrierBuffer();
+	barrier();
+	for (uint j = tid; j < n_exc; j += 64u)
+	{
+		uint k = u16at(exc + 2u * j);
+
+		w64[o + k] = value_key(uint64_t(u16at(exc + 2u * n_exc + 2u * j)), get_bits(rights, uint64_t(k) * uint64_t(rb), rb), rb, tz);
+	}
+}
+
+void main()
+{
+	uint tid = gl_LocalInvocationID.x;
+
+	scr0 = pc1 + gl_WorkGroupID.x * pc2;
+	for (uint job = gl_WorkGroupID.x; job < pc0; job += gl_NumWorkGroups.x)
+	{
+		uint jb = job * JOB_WORDS;
+		uint src = dj[jb], dst = dj[jb + 2u], enc = dj[jb + 4u], fl = dj[jb + 5u];
+		uint nrows = dj[jb + 6u], nn = dj[jb + 7u], vlen = dj[jb + 8u];
+		uint odata = dj[jb + 9u], ovalid = dj[jb + 10u], ow = dj[jb + 11u];
+		uint64_t obase = u64of(dj[jb + 12u], dj[jb + 13u]);
+		uint raw = (fl & CF_LZ4) != 0u ? dst : src;
+		uint nw = (nrows + 31u) >> 5;
+		uint code = 0u;
+
+		if ((fl & CF_LZ4) != 0u && res[RES_DEC_OFF + job] != 0l)
+		{
+			barrier();
+			continue;
+		}
+		for (uint w = tid; w < 256u; w += 64u)
+		{
+			uint v = 0u;
+			if (w < nw)
+			{
+				uint keep = (w == nw - 1u && (nrows & 31u) != 0u) ? ((1u << (nrows & 31u)) - 1u) : 0xFFFFFFFFu;
+				if ((fl & CF_ALL_VALID) != 0u)
+					v = keep;
+				else if ((fl & (CF_ALL_NULL | CF_NONNULL_SPARSE)) != 0u)
+					v = 0u;
+				else if ((fl & CF_NULL_SPARSE) != 0u)
+					v = keep;
+				else
+					v = w32[(raw >> 2) + w] & keep;
+			}
+			vb[w] = v;
+		}
+		barrier();
+		if ((fl & (CF_NULL_SPARSE | CF_NONNULL_SPARSE)) != 0u)
+		{
+			uint cnt = u16at(raw);
+			for (uint x = tid; x < cnt; x += 64u)
+			{
+				uint row = u16at(raw + 2u + 2u * x);
+				if (row < nrows)
+				{
+					if ((fl & CF_NULL_SPARSE) != 0u)
+						atomicAnd(vb[row >> 5], ~(1u << (row & 31u)));
+					else
+						atomicOr(vb[row >> 5], 1u << (row & 31u));
+				}
+			}
+			barrier();
+		}
+		uint wlo = min(nw, tid * 4u);
+		uint sum = 0u;
+		for (uint w = wlo; w < min(nw, wlo + 4u); w++)
+			sum += bitCount(vb[w]);
+		ps[tid] = sum;
+		barrier();
+		if (tid == 0u)
+		{
+			uint run = 0u;
+			for (uint t = 0u; t < 64u; t++)
+			{
+				uint v = ps[t];
+				ps[t] = run;
+				run += v;
+			}
+			sn_fail = (run != nn) ? ST_BLOB : 0u;
+		}
+		barrier();
+		uint run = ps[tid];
+		for (uint w = wlo; w < min(nw, wlo + 4u); w++)
+		{
+			rk[w] = run;
+			run += bitCount(vb[w]);
+		}
+		barrier();
+		if (sn_fail != 0u)
+		{
+			fail_job(job, sn_fail);
+			barrier();
+			continue;
+		}
+		if ((fl & CF_ALL_NULL) != 0u || enc == ENC_ALL_NULL || nn == 0u)
+		{
+			barrier();
+			continue;
+		}
+		uint body = raw + vlen;
+		bool ok = true;
+
+		if (enc == ENC_INT_CONST)
+		{
+			uint64_t v = u64at(body);
+			for (uint k = tid; k < nn; k += 64u)
+				w64[slot_base(0u) + k] = v;
+		}
+		else if (enc == ENC_BOOL_BITS)
+		{
+			for (uint k = tid; k < nn; k += 64u)
+				w64[slot_base(0u) + k] = uint64_t((uint(w8[body + (k >> 3)]) >> (k & 7u)) & 1u);
+		}
+		else if (enc == ENC_FLOAT_RAW)
+		{
+			for (uint k = tid; k < nn; k += 64u)
+				w64[slot_base(0u) + k] = uint64_t(f8_key(uint64BitsToDouble(u64at(body + 8u * k))));
+		}
+		else if (enc == ENC_ALP_RD)
+		{
+			uint lb = uint(w8[body]), nd = uint(w8[body + 1u]), tz = uint(w8[body + 2u]);
+			if (lb < 8u || lb > 16u || nd > 8u || tz > 48u || lb + tz >= 64u)
+				ok = false;
+			else
+				alp_rd_values(body, nn);
+			code = ST_ENC;
+		}
+		else if (enc == ENC_INT_FOR || enc == ENC_INT_DELTA || enc == ENC_RLE || enc == ENC_DICT_CODE || enc == ENC_ALP || enc == ENC_NUM64)
+		{
+			uint root = blob_root(enc == ENC_NUM64 ? body + 8u : body, nn, true);
+			ok = root != 0xFFFFFFFFu && build_tree(root, nn);
+			code = ST_BLOB;
+			if (ok)
+			{
+				ok = eval_tree();
+				code = ST_NODE;
+			}
+		}
+		else
+		{
+			ok = false;
+			code = ST_ENC;
+		}
+		memoryBarrierBuffer();
+		barrier();
+		if (!ok)
+		{
+			fail_job(job, code);
+			barrier();
+			continue;
+		}
+		uint o0 = slot_base(0u);
+		uint bad = 0u;
+
+		for (uint r = tid; r < nrows; r += 64u)
+		{
+			if (((vb[r >> 5] >> (r & 31u)) & 1u) == 0u)
+			{
+				if (ow == 1u) a8[odata * 4u + r] = uint8_t(0);
+				else if (ow == 2u) a16[odata * 2u + r] = uint16_t(0);
+				else if (ow == 4u) a32[odata + r] = 0u;
+				else if (ow == 8u) a64[(odata >> 1) + r] = 0ul;
+				continue;
+			}
+			uint k = rk[r >> 5] + bitCount(vb[r >> 5] & ((1u << (r & 31u)) - 1u));
+			uint64_t f = uint64_t(w64[o0 + k]) - obase;
+			if (ow == 1u) { a8[odata * 4u + r] = uint8_t(f); bad |= (f >> 8) != 0ul ? 1u : 0u; }
+			else if (ow == 2u) { a16[odata * 2u + r] = uint16_t(f); bad |= (f >> 16) != 0ul ? 1u : 0u; }
+			else if (ow == 4u) { a32[odata + r] = uint(f); bad |= (f >> 32) != 0ul ? 1u : 0u; }
+			else if (ow == 8u) a64[(odata >> 1) + r] = f;
+			else bad |= f != 0ul ? 1u : 0u;
+		}
+		if (ovalid != DC_ALL_VALID && ovalid != DC_ALL_NULL)
+			for (uint w = tid; w < nw; w += 64u)
+				a32[ovalid + w] = vb[w];
+		if (bad != 0u)
+			res[RES_DEC_OFF + job] = int64_t(ST_FIT);
+		barrier();
+	}
+}

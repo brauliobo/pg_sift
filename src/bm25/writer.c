@@ -1,12 +1,12 @@
 /*
- * bm25/writer.c - the segment writer: docmap, terms, header and directory entry (bm25/segment.h).
+ * bm25/writer.c - the segment writer: docmap, terms, header and directory entry (bm25/segment/segment.h).
  */
 #include "core/host.h"
 
-#include "core/live.h"
-#include "bm25/segment.h"
+#include "core/live/live.h"
+#include "bm25/segment/segment.h"
 
-#include "bm25/segment_int.h"
+#include "bm25/segment/int.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_segfmt = 0;

@@ -3,7 +3,7 @@
  *
  * A segment never changes, so what its relation file and generation hold is named for good (relation files are not reused, a
  * merge or a VACUUM that rewrites a segment names a new generation): the SB directory of its docmap (bm25/docdir.c) and the
- * blob of a term (bm25/posting.c) are kept under the file, the generation, what they are, where they start and how long they
+ * blob of a term (bm25/posting/posting.c) are kept under the file, the generation, what they are, where they start and how long they
  * are, up to SEGCACHE_BYTES per backend. The reader pins the entry it uses until its memory context goes (a callback), and
  * eviction takes the least recently used one that nobody pins. What does not fit is made in the reader's memory, as before. The
  * SQLite and MariaDB hosts keep nothing (host_stubs.c).
@@ -15,7 +15,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 #include "core/cachebudget.h"
 #include "core/limits.h"
 

@@ -9,22 +9,21 @@
 #include "access/genam.h"
 #include "fmgr.h"
 
-#include "bm25/build.h"
-#include "bm25/eval.h"
+#include "bm25/build/build.h"
+#include "bm25/eval/eval.h"
 #include "bm25/prefix.h"
 #include "core/catname.h"
 #include "core/crash_point.h"
 #include "core/format_ux.h"
 #include "core/meta_peek.h"
 #include "core/progress.h"
-#include "core/v1_col/tomb.h"
+#include "core/v1_col/tomb/tomb.h"
 #include "core/worker.h"
-#include "core/visibility.h"
+#include "core/visibility/visibility.h"
 #include "core/parbuild.h"
 #include "col/am.h"
-#include "table/f2/f2_tbl.h"
-#include "table/v1/table_v1.h"
-#include "agg/par_int.h"
+#include "table/f2/tbl.h"
+#include "table/v1/table.h"
 
 void
 sift_handler_test_gucs(void)
@@ -33,15 +32,6 @@ sift_handler_test_gucs(void)
 							"Testing: df from which a term's postings are GROUPED rather than LIST.",
 							NULL, &sift_grouped_min_df, SIFT_GROUPED_MIN_DF, SIFT_INLINE_MAX + 1, INT_MAX,
 							PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_split",
-							"Testing: the groups of a scan with workers (0 = by cost, 1 = the participants split the rows, 2 = they split the groups by a key where the scan can).",
-							NULL, &sift_test_split, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_par_leader_wait",
-							 "Testing: the leader of a scan with workers holds the first item it takes until the workers have taken the others.",
-							 NULL, &sift_test_par_leader_wait, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_item_gate",
-							"Testing: the participants of a parallel aggregate wait for the advisory lock of this number before each item (0 = none).",
-							NULL, &sift_test_item_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_segfmt",
 							"Testing: segment format a build, promotion or merge writes (0 = the newest, 1 to 3).",
 							NULL, &sift_test_segfmt, 0, 0, SIFT_SEGFMT_POSBLK, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

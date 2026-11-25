@@ -13,7 +13,7 @@
 #include "core/host.h"
 
 #include "agg/vec.h"
-#include "col/f2/part_format.h"
+#include "col/f2/part/format.h"
 
 #define SIFT_GRANULE_ROWS		8192
 #define SIFT_GRANULE_MAGIC		0x47524E32U		/* "GRN2" */
@@ -57,7 +57,7 @@ typedef enum SiftCompressTier
 #define SIFT_TIER_IS_COLD(t)	((t) >= SIFT_TIER_WARM_L1)
 
 /*
- * Every integer-class body is a self-describing blob of the column codec (col/codec.h: the vertical 32 x 32 bit-packing, whatever the CPU), except the constant (8 bytes) and the bits of a
+ * Every integer-class body is a self-describing blob of the column codec (col/codec/codec.h: the vertical 32 x 32 bit-packing, whatever the CPU), except the constant (8 bytes) and the bits of a
  * boolean; the enc names what the cascade chose. The bits above SIFT_ENC_MASK in SiftChunkRef.enc modify the encoding.
  */
 typedef enum SiftChunkEnc
@@ -601,7 +601,7 @@ extern int	sift_rows_granule_len(const SiftRows *rows, int from);
 /* Writes a part of format major 2 from the rows: granules, directory, TID index, zones and (unless every row is frozen) the version vectors; the descriptor for the manifest */
 extern SiftPartDesc sift_part_write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftCompressTier tier, const SiftRows *rows);
 
-/* The same part of level 0 and generation 0 made in memory and written nowhere: what a standby reads the rows of a micro-slab from (col/f2/f2_slab_view.c) */
+/* The same part of level 0 and generation 0 made in memory and written nowhere: what a standby reads the rows of a micro-slab from (col/f2/slab_view.c) */
 extern SiftPart *sift_part_rows_in_memory(Relation rel, uint32 part_id, SiftCompressTier tier, const SiftRows *rows, SiftPartDesc *d);
 
 /* The directory entry of granule g of an opened part, read without the others */

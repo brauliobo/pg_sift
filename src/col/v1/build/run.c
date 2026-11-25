@@ -11,7 +11,7 @@
 #include "pgstat.h"
 #ifdef SIFT_TESTING
 #endif
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 #include "col/v1/point.h"
 #include "core/limits.h"
 
@@ -243,7 +243,7 @@ colb_make_room(ColBuild *b)
 }
 
 /*
- * An index with key_cut: the rows held since the last run are sorted by the key and written as a segment of their own (col/v1/order.c), so the build holds
+ * An index with key_cut: the rows held since the last run are sorted by the key and written as a segment of their own (col/v1/order/order.c), so the build holds
  * about its budget however large the table is. The segments of the runs overlap in the key; compact streams them into larger ones when the directory is full.
  */
 void

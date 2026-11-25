@@ -1,40 +1,31 @@
 # Sites of scripts/check-capacity.sh that are bounded some other way. RULE, PATH, the text of the line, the reason: one tab between them.
 # A line that matches no site fails the check, so this list shrinks with the code. A site that is not bounded is fixed, not listed.
-array-append	src/agg/chunkfilter.c	fl->leaf[fl->n++] = f->leaf;	the conjuncts offered are cut at SIFT_COLSRC_MAX_FILTERS (agg/init_filter.c), the arrays are allocated for that many; the pair array holds the two ends of one range
-array-append	src/agg/chunkfilter.c	p[np++] = (SiftColPred) {r->col, SIFT_COLOP_GE, 1, &lov};	the conjuncts offered are cut at SIFT_COLSRC_MAX_FILTERS (agg/init_filter.c), the arrays are allocated for that many; the pair array holds the two ends of one range
-array-append	src/agg/chunkfilter.c	p[np++] = (SiftColPred) {r->col, SIFT_COLOP_LE, 1, &hiv};	the conjuncts offered are cut at SIFT_COLSRC_MAX_FILTERS (agg/init_filter.c), the arrays are allocated for that many; the pair array holds the two ends of one range
-array-append	src/agg/col.c	preds[n++] = src->flt.pred[i];	preds is COL_PREDS_MAX entries: the sum of the caps of the predicates that are copied into it
-array-append	src/agg/col.c	preds[n++] = src->spred[i];	preds is COL_PREDS_MAX entries: the sum of the caps of the predicates that are copied into it
-array-append	src/agg/col.c	preds[n++] = src->wpred[i];	preds is COL_PREDS_MAX entries: the sum of the caps of the predicates that are copied into it
-array-append	src/agg/hybrid_agg_exec.c	keys[n++] = sift_f2_tid(&hit);	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
-array-append	src/agg/hybrid_agg_exec.c	keys[n++] = key;	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
-array-append	src/agg/lookclass.c	m->idx[m->n++] = p;	each distinct need is added once, at most nneed <= MAX_NEED
-array-append	src/agg/v6/group_dist.c	vals[n++] = (uint64) int_at(v, r);	vals is SIFT_VEC_LEN long and the loop visits the rows of one vector
+array-append	src/agg/hybrid/exec_agg.c	keys[n++] = sift_f2_tid(&hit);	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
+array-append	src/agg/hybrid/exec_agg.c	keys[n++] = key;	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
+array-append	src/agg/v6/group/dist.c	vals[n++] = (uint64) int_at(v, r);	vals is SIFT_VEC_LEN long and the loop visits the rows of one vector
 array-append	src/bm25/tail.c	present[npresent++] = i;	present is nsegs + 1 long and i is one of the equal-term segments, each seen once
-array-append	src/col/f2/f2_locate.c	stack[sp++] = (TreeWalk) {1, 0, t->leaves};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
-array-append	src/col/f2/f2_locate.c	stack[sp++] = (TreeWalk) {2 * w.node, w.from, mid};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
-array-append	src/col/f2/f2_locate.c	stack[sp++] = (TreeWalk) {2 * w.node + 1, mid, w.to};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
+array-append	src/col/f2/locate.c	stack[sp++] = (TreeWalk) {1, 0, t->leaves};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
+array-append	src/col/f2/locate.c	stack[sp++] = (TreeWalk) {2 * w.node, w.from, mid};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
+array-append	src/col/f2/locate.c	stack[sp++] = (TreeWalk) {2 * w.node + 1, mid, w.to};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
 array-append	src/col/v1/scan/gorder.c	vals[m++] = pinval[k];	vals is SIFT_GORD_PIN_MAX long, the cap of the pins npin that the caller offered
 array-append	src/col/v1/scan/gorder.c	vals[u++] = vals[k];	u never passes k, the index of the value being compacted in place
 array-append	src/core/f2/fsm/slab.c	order[n++] = &t->slab[i];	order is SIFT_FSM_MAX_SLABS long, the cap of the slabs of a table
-array-append	src/core/maint_sched.c	dbs[n++] = m->worker[w].db;	dbs is SIFT_MAINT_MAX_WORKERS long, one for each worker slot
-cast-after-product	src/agg/par/split.c	return (uint32) (((uint64) (h * SPLIT_MUL) * n) >> 32);	a multiplicative hash of 32-bit values: the wrap is the hash
-array-append	src/agg/spill/stream.c	act[k++] = act[a];	the active list is compacted in place, k never passes the index being read
+array-append	src/core/maint/sched.c	dbs[n++] = m->worker[w].db;	dbs is SIFT_MAINT_MAX_WORKERS long, one for each worker slot
 array-append	src/col/v1/src_wide.c	dig[n++] = (uint16) (u % 10000);	the limbs of a 128-bit value in base 10^4: at most 10 of the 16
 array-append	src/bm25/livestream.c	dl[n++] = row[o];	a term is buffered only while its df is within STREAM_POSTINGS (the arrays' size), or a full batch is flushed before the next row
 array-append	src/bm25/livestream.c	s->dl[s->n++] = dl;	a term is buffered only while its df is within STREAM_POSTINGS (the arrays' size), or a full batch is flushed before the next row
-array-append	src/bm25/merge_ranges.c	segs[nlive++] = seg;	the segments are the input of the merge, at most MAX_MERGE_FANIN (checked before the worker starts)
-array-append	src/bm25/query_analyze.c	kids[nk++] = c;	allocated for the length of the list the loop walks
-blocknumber-sum	src/bm25/rank_search.c	BlockNumber blk = u->gid << SIFT_SB_SHIFT | (b * SIFT_BLK_PAGES + slot / SIFT_KERN_SLOTS);	the block of a page of a superblock of the heap: a heap block number, below 2^32 by PostgreSQL
+array-append	src/bm25/merge/ranges.c	segs[nlive++] = seg;	the segments are the input of the merge, at most MAX_MERGE_FANIN (checked before the worker starts)
+array-append	src/bm25/query/analyze.c	kids[nk++] = c;	allocated for the length of the list the loop walks
+blocknumber-sum	src/bm25/rank/search.c	BlockNumber blk = u->gid << SIFT_SB_SHIFT | (b * SIFT_BLK_PAGES + slot / SIFT_KERN_SLOTS);	the block of a page of a superblock of the heap: a heap block number, below 2^32 by PostgreSQL
 array-append	src/bm25/runs/merge.c	dl[n++] = top->ddl;	the batch is flushed at BATCH rows
 array-append	src/bm25/runs_int.h	v[n++] = (uint8) (x | 0x80);	a varint of 64 bits takes at most 10 bytes
 array-append	src/bm25/runs_int.h	v[n++] = (uint8) x;	a varint of 64 bits takes at most 10 bytes
 blocknumber-sum	src/bm25/walk.c	BlockNumber blk = dm->dir[i].sb * SIFT_SB_PAGES + p;	the heap block of a page of a superblock of the segment: a heap block number, below 2^32 by PostgreSQL
 array-append	src/bm25/writer.c	offs[n++] = k * 64 + __builtin_ctzll(m) + 1;	the offsets of one page: at most MaxHeapTuplesPerPage
-array-append	src/col/v1/am_v1.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
+array-append	src/col/v1/am.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
 array-append	src/col/v1/amscan/amscan.c	tids[m++] = tids[i];	a compaction in place of the TIDs read, m never passes i; an estimate of rows by a double ratio
 array-append	src/col/v1/build/run.c	pick[n++] = low;	two picks, the loop runs twice
-array-append	src/col/v1/gorder.c	anc[nan++] = kv[i];	the anchors are counted first and the writer returns when there are more than the array holds
+array-append	src/col/v1/gorder/gorder.c	anc[nan++] = kv[i];	the anchors are counted first and the writer returns when there are more than the array holds
 array-append	src/col/v1/gquant.c	pos[n++] = (uint8) i;	the loop runs over SIFT_GQ_MB positions, the array holds that many
 cast-after-product	src/col/v1/keycols/gorder.c	if ((double) sift_cdict_parsed_bytes((Size) (ndistinct * Min(width, 255)), (uint32) Min(ndistinct, (double) UINT32_MAX)) > (double) sift_cdict_cache_budget() * CDICT_CODES_PCT / 100.0)	ndistinct is a double estimate, the cast truncates it
 cast-after-product	src/col/v1/maint/merge.c	live_rows = Max((uint64) (live_rows * share), 1);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
@@ -42,17 +33,17 @@ cast-after-product	src/col/v1/maint/merge.c	live_units += (uint64) (units * live
 cast-after-product	src/col/v1/maint/merge.c	live_units = (uint64) (live_units * share);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
 cast-after-product	src/col/v1/maint/roll.c	return (uint64) (live * Max(hi - lo, 0.0) / ((double) v->khi[i] + 1 - (double) v->klo[i]));	a double estimate, the cast truncates it; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
 cast-after-product	src/col/v1/preagg/preagg.c	sumsq += (SiftCI128) (uint64) (k * k);	this branch is taken only when the zone lies within 2^31 of zero, so a square fits 62 bits
-cast-after-product	src/col/v1/scan_unit.c	sift_col_marks_note(src->index, src->hflog->gen, (uint64) (rows * COL_MARK_PREAGG_PRICE));	a double price, the cast truncates it
-array-append	src/col/v1/scope_rows.c	m.pages[m.nrel++] = RelationGetNumberOfBlocks(rel);	one entry for each hop of the scope, at most 3
-cast-after-product	src/col/v1/scope_sample.c	sift_scope_refuse(specs->s[s]->key_name, specs->s[s]->max_multiplicity, (uint64) (ratio * scaled_rows), scaled_rows, true, 0, 0);	a double ratio of rows, the cast truncates it
+cast-after-product	src/col/v1/scan/unit.c	sift_col_marks_note(src->index, src->hflog->gen, (uint64) (rows * COL_MARK_PREAGG_PRICE));	a double price, the cast truncates it
+array-append	src/col/v1/scope/rows.c	m.pages[m.nrel++] = RelationGetNumberOfBlocks(rel);	one entry for each hop of the scope, at most 3
+cast-after-product	src/col/v1/scope/sample.c	sift_scope_refuse(specs->s[s]->key_name, specs->s[s]->max_multiplicity, (uint64) (ratio * scaled_rows), scaled_rows, true, 0, 0);	a double ratio of rows, the cast truncates it
 array-append	src/col/v1/seg/points.c	s->cur[s->n++] = t;	the lists are counted first and the stream is not used when there are more than TCUR_MAX
 cast-after-product	src/col/v1/seg_write/summary.c	unit_agg_of(&w->zones[(Size) (k * fan + i) * ncols + c], sums ? &w->lagg[(Size) (k * fan + i) * ncols + c] : NULL, &ua[i]);	the index of a unit of the segment: nsb is a 32-bit count
 cast-after-product	src/col/v1/wbuf/arena.c	values[8] = Int64GetDatum((int64) (a->nsegs * ARENA_SEG_PAGES - a->pages_free) * ARENA_PAGE);	the pages of the arena: at most ARENA_SEGS * ARENA_SEG_PAGES
 array-append	src/col/v1/wide.c	digits[nd++] = (char) ('0' + (int) (u % 10));	the digits of a 128-bit value: at most 39 of SIFT_COL_W128_TEXT
-blocknumber-sum	src/core/live.c	BlockNumber blk = l->first + SIFT_PAYLOAD_PAGE(b);	the page index is compared with npages just below, before the page is read; sift_live_check holds npages to the bits of the run
-blocknumber-sum	src/core/live_repair.c	BlockNumber blk = l->first + i;	the loop runs over the npages of the run
+blocknumber-sum	src/core/live/live.c	BlockNumber blk = l->first + SIFT_PAYLOAD_PAGE(b);	the page index is compared with npages just below, before the page is read; sift_live_check holds npages to the bits of the run
+blocknumber-sum	src/core/live/repair.c	BlockNumber blk = l->first + i;	the loop runs over the npages of the run
 array-append	src/core/progress.c	copy[n++] = p->slot[i];	a loop over the PROGRESS_SLOTS slots
-array-append	src/core/quarantine_sql.c	ids[n++] = q->entry[i].indexoid;	a loop over the sift_quar_entries() entries of the registry, ids is QUAR_ENTRIES long
+array-append	src/core/quarantine/sql.c	ids[n++] = q->entry[i].indexoid;	a loop over the sift_quar_entries() entries of the registry, ids is QUAR_ENTRIES long
 blocknumber-sum	src/core/relocate.c	BlockNumber blk = plan.source[i].start + j;	the extents of a segment are validated at read: start + nblocks is at most MaxBlockNumber (core/reader.c)
 blocknumber-sum	src/core/relocate.c	BlockNumber top = run->start + run->nblocks;	the extents of a segment are validated at read: start + nblocks is at most MaxBlockNumber (core/reader.c)
 array-append	src/core/xlog.h	x->full[x->n++] = (flags & GENERIC_XLOG_FULL_IMAGE) != 0;	GenericXLogRegisterBuffer, called on the line above, raises its own error past MAX_GENERIC_XLOG_PAGES buffers
@@ -61,44 +52,44 @@ array-append	src/col/v1/maint/maint.c	moves[n++] = (SiftDvMove) {gen, start, PG_
 blocknumber-sum	src/table/v1/analyze.c	BlockNumber end = numblocks == InvalidBlockNumber ? InvalidBlockNumber : start_blockno + numblocks;	the range of blocks PostgreSQL gives the sample: its own block numbers
 blocknumber-sum	src/table/v1/feed.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
 blocknumber-sum	src/table/v1/promote.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
-array-append	src/col/granule/part_join.c	secs[nsec++] = (SiftSecInput) {.tag = SEC_GRANULES,.flags = SIFT_SEC_FLAG_REQUIRED,.len = gtotal,.fill = join_fill,.fill_arg = &fill};	one section for each tag of a part joined, at most twelve and the third of them here
-array-append	src/col/granule/granule_enc.c	cnt[nv++] = 0;	nv counts the distinct left parts of the sn <= SIFT_F8_SAMPLE sampled values, and the arrays hold SIFT_F8_SAMPLE
-array-append	src/agg/v6/v6_card.c	d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);	the group expressions are at most SIFT_CARD_MAX_PREDS (checked above) and the array holds that many
-array-append	src/agg/v6/v6_vexpr.c	if ((n->args[n->nargs++] = args[i]) == NULL)	nargs is checked against SIFT_VEXPR_MAX_ARGS before the loop
-array-append	src/agg/v6/v6_vexpr.c	args[n++] = conv(c, (Node *) w->expr);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
-array-append	src/agg/v6/v6_vexpr.c	args[n++] = conv(c, (Node *) w->result);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
-array-append	src/agg/v6/v6_vexpr.c	args[n++] = conv(c, (Node *) ce->defresult);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
-array-append	src/agg/v6/v6_vexpr.c	args[n++] = conv(c, arg);	the arguments are at most SIFT_VEXPR_MAX_ARGS (checked before the loop)
-array-append	src/agg/v6/v6_vexpr.c	digits[n++] = (char) ('0' + (int) (cur % 10));	a 128-bit magnitude has at most 39 decimal digits and the array holds 48
-array-append	src/agg/v6/v6_vexpr.c	text[o++] = '-';	the text holds the sign, at most 39 digits and a point: 64 bytes
-array-append	src/agg/v6/v6_vexpr.c	text[o++] = digits[i];	the text holds the sign, at most 39 digits and a point: 64 bytes
-array-append	src/agg/v6/v6_vexpr.c	text[o++] = '.';	the text holds the sign, at most 39 digits and a point: 64 bytes
-blocknumber-sum	src/col/f2/part_format.c	BlockNumber blk = ext[e].start + b;	the extents are blocks of this relation that sift_bulk_extend has just extended it to, and PostgreSQL refuses a relation past MaxBlockNumber
-array-append	src/core/shm_combiner.c	lifo[n++] = i;	the stack holds each slot of the pool at most once and the array holds SIFT_COMB_POOL_SLOTS
-array-append	src/core/shm_combiner.c	ld->fin[ld->n++] = SIFT_COMB_RETRY;	the leader hands out the slots of one stack, at most SIFT_COMB_POOL_SLOTS, and the arrays hold that many
-blocknumber-sum	src/table/f2/f2_blob.c	BlockNumber blk = ref->ext[e].start + b;	the extents of a blob reference are blocks of this relation written by this file, and sift_blk_read refuses a block past its end
-array-append	src/agg/v6/v6_datebin_win.c	dig[nd++] = (char) ('0' + (int) (v % 10));	v is a 128-bit magnitude of at most 39 decimal digits and dig holds 1100
-cast-after-product	src/agg/vexpr_cal.c	d[i] = (int64) (q * per - bias + shift);	q is the floor of u / per, so q * per is at most u, which fits 64 bits
-cast-after-product	src/col/f2/f2_maint.c	v[3] = Int64GetDatum(autovacuum_vac_thresh + (int64) (autovacuum_vac_scale * Max(tab->live_tuples, 0)));	a double: the scale (a GUC of at most 100) times a tuple count, far below 2^63
-array-append	src/col/f2/f2_pack.c	rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};	one part is swapped and the array holds its one extent
-array-append	src/col/f2/key_plan.c	k->set[k->nset++] = vs[i];	at most SET_CAP values are taken (n > SET_CAP narrows by range instead) and the set holds SET_CAP
-array-append	src/col/f2/key_plan.c	kept[nk++] = k->set[i];	the kept values are some of the at most SET_CAP of the set and kept holds SET_CAP
-array-append	src/col/f2/key_plan.c	k->set[m++] = v;	the values kept are some of those of the set, which holds at most SET_CAP
-array-append	src/col/f2/f2_proj_spec.c	name[len++] = *ps->p++;	the loop condition stops at len + 1 < sizeof(name)
-array-append	src/col/f2/f2_proj_spec.c	name[len++] = (char) tolower((unsigned char) *ps->p++);	the loop condition stops at len + 1 < sizeof(name)
-array-append	src/col/f2/f2_proj_spec.c	u[len++] = (char) tolower((unsigned char) *ps->p++);	the loop condition stops at len + 1 < sizeof(u)
-array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"host", b->host};	hdrs holds the five headers a request signs: host, content hash, date, token and range
-array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-content-sha256", payload_hash};	hdrs holds the five headers a request signs: host, content hash, date, token and range
-array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-date", date};	hdrs holds the five headers a request signs: host, content hash, date, token and range
-array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-security-token", b->token};	hdrs holds the five headers a request signs: host, content hash, date, token and range
-array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"range", range};	hdrs holds the five headers a request signs: host, content hash, date, token and range
-array-append	src/col/f2/f2_tier_s3.c	lines[nl++] = auth;	lines holds the authorization line and one line for each of the other four headers
-array-append	src/col/f2/f2_tier_s3.c	lines[nl++] = extra[i - 1];	lines holds the authorization line and one line for each of the other four headers
-array-append	src/col/f2/f2_col_delta_idx.c	cols[n++] = (SiftColDeltaCol) {.attnum = SIFT_CD_ATT_TID_REMAP,.kind = SIFT_CELL_INT,.cell = {.i = (int64) new_tid}};	the guard above refuses a record of more than SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR columns, the leaves and the address together
-array-append	src/col/f2/f2_col_delta_idx.c	cols[n++] = (SiftColDeltaCol) {.attnum = (int16) (leaf[i] + 1),.kind = kinds[leaf[i]],.cell = cell[i],.key_absent = key_absent != NULL && key_absent[i]};	the guard above refuses a record of more than SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR columns, the leaves and the address together
-array-append	src/col/f2/f2_proj_spec.c	t[len++] = *ps->p++;	the loop condition stops one byte short of sizeof(t), which the terminator takes
+array-append	src/col/granule/part/join.c	secs[nsec++] = (SiftSecInput) {.tag = SEC_GRANULES,.flags = SIFT_SEC_FLAG_REQUIRED,.len = gtotal,.fill = join_fill,.fill_arg = &fill};	one section for each tag of a part joined, at most twelve and the third of them here
+array-append	src/col/granule/enc.c	cnt[nv++] = 0;	nv counts the distinct left parts of the sn <= SIFT_F8_SAMPLE sampled values, and the arrays hold SIFT_F8_SAMPLE
+array-append	src/agg/v6/cost/card.c	d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);	the group expressions are at most SIFT_CARD_MAX_PREDS (checked above) and the array holds that many
+array-append	src/agg/v6/vexpr.c	if ((n->args[n->nargs++] = args[i]) == NULL)	nargs is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/v6/vexpr.c	args[n++] = conv(c, (Node *) w->expr);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/v6/vexpr.c	args[n++] = conv(c, (Node *) w->result);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/v6/vexpr.c	args[n++] = conv(c, (Node *) ce->defresult);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/v6/vexpr.c	args[n++] = conv(c, arg);	the arguments are at most SIFT_VEXPR_MAX_ARGS (checked before the loop)
+array-append	src/agg/v6/vexpr.c	digits[n++] = (char) ('0' + (int) (cur % 10));	a 128-bit magnitude has at most 39 decimal digits and the array holds 48
+array-append	src/agg/v6/vexpr.c	text[o++] = '-';	the text holds the sign, at most 39 digits and a point: 64 bytes
+array-append	src/agg/v6/vexpr.c	text[o++] = digits[i];	the text holds the sign, at most 39 digits and a point: 64 bytes
+array-append	src/agg/v6/vexpr.c	text[o++] = '.';	the text holds the sign, at most 39 digits and a point: 64 bytes
+blocknumber-sum	src/col/f2/part/format.c	BlockNumber blk = ext[e].start + b;	the extents are blocks of this relation that sift_bulk_extend has just extended it to, and PostgreSQL refuses a relation past MaxBlockNumber
+array-append	src/core/shm/combiner.c	lifo[n++] = i;	the stack holds each slot of the pool at most once and the array holds SIFT_COMB_POOL_SLOTS
+array-append	src/core/shm/combiner.c	ld->fin[ld->n++] = SIFT_COMB_RETRY;	the leader hands out the slots of one stack, at most SIFT_COMB_POOL_SLOTS, and the arrays hold that many
+blocknumber-sum	src/table/f2/blob.c	BlockNumber blk = ref->ext[e].start + b;	the extents of a blob reference are blocks of this relation written by this file, and sift_blk_read refuses a block past its end
+array-append	src/agg/v6/win/datebin.c	dig[nd++] = (char) ('0' + (int) (v % 10));	v is a 128-bit magnitude of at most 39 decimal digits and dig holds 1100
+cast-after-product	src/agg/vexpr/cal.c	d[i] = (int64) (q * per - bias + shift);	q is the floor of u / per, so q * per is at most u, which fits 64 bits
+cast-after-product	src/col/f2/maint.c	v[3] = Int64GetDatum(autovacuum_vac_thresh + (int64) (autovacuum_vac_scale * Max(tab->live_tuples, 0)));	a double: the scale (a GUC of at most 100) times a tuple count, far below 2^63
+array-append	src/col/f2/pack.c	rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};	one part is swapped and the array holds its one extent
+array-append	src/col/f2/key/plan.c	k->set[k->nset++] = vs[i];	at most SET_CAP values are taken (n > SET_CAP narrows by range instead) and the set holds SET_CAP
+array-append	src/col/f2/key/plan.c	kept[nk++] = k->set[i];	the kept values are some of the at most SET_CAP of the set and kept holds SET_CAP
+array-append	src/col/f2/key/plan.c	k->set[m++] = v;	the values kept are some of those of the set, which holds at most SET_CAP
+array-append	src/col/f2/proj/spec.c	name[len++] = *ps->p++;	the loop condition stops at len + 1 < sizeof(name)
+array-append	src/col/f2/proj/spec.c	name[len++] = (char) tolower((unsigned char) *ps->p++);	the loop condition stops at len + 1 < sizeof(name)
+array-append	src/col/f2/proj/spec.c	u[len++] = (char) tolower((unsigned char) *ps->p++);	the loop condition stops at len + 1 < sizeof(u)
+array-append	src/col/f2/tier/s3.c	hdrs[nh++] = (SiftSigHdr) {"host", b->host};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/tier/s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-content-sha256", payload_hash};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/tier/s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-date", date};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/tier/s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-security-token", b->token};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/tier/s3.c	hdrs[nh++] = (SiftSigHdr) {"range", range};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/tier/s3.c	lines[nl++] = auth;	lines holds the authorization line and one line for each of the other four headers
+array-append	src/col/f2/tier/s3.c	lines[nl++] = extra[i - 1];	lines holds the authorization line and one line for each of the other four headers
+array-append	src/col/f2/col_delta/idx.c	cols[n++] = (SiftColDeltaCol) {.attnum = SIFT_CD_ATT_TID_REMAP,.kind = SIFT_CELL_INT,.cell = {.i = (int64) new_tid}};	the guard above refuses a record of more than SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR columns, the leaves and the address together
+array-append	src/col/f2/col_delta/idx.c	cols[n++] = (SiftColDeltaCol) {.attnum = (int16) (leaf[i] + 1),.kind = kinds[leaf[i]],.cell = cell[i],.key_absent = key_absent != NULL && key_absent[i]};	the guard above refuses a record of more than SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR columns, the leaves and the address together
+array-append	src/col/f2/proj/spec.c	t[len++] = *ps->p++;	the loop condition stops one byte short of sizeof(t), which the terminator takes
 array-append	src/col/granule/promo_prefix.c	tmp[k++] = '0' + (char) (v % 10);	a 64-bit number has at most 20 decimal digits and tmp holds 24
-array-append	src/col/f2/f2_point_dir.c	k.leaf[k.nleaves++] = weak[i].col;	the mask has size bits set, size runs to SIFT_POINT_MAX_COMP, and leaf holds that many
-array-append	src/agg/plan/card_est.c	w = a->heap[a->nheap++] = palloc(p->nvals * sizeof(uint64)); /* check-memory: allow the values of one IN list of the query */	pred_vals runs once for each of the at most SIFT_CARD_MAX_PREDS predicates of an estimate and heap holds that many
-array-append	src/col/f2/f2_uniq_slab.c	filters[nfilters++] = f;	filter_get makes room first: a full table gives up its last filter, so nfilters never passes SLAB_FILTERS
+array-append	src/col/f2/point_dir.c	k.leaf[k.nleaves++] = weak[i].col;	the mask has size bits set, size runs to SIFT_POINT_MAX_COMP, and leaf holds that many
+array-append	src/col/f2/uniq/slab.c	filters[nfilters++] = f;	filter_get makes room first: a full table gives up its last filter, so nfilters never passes SLAB_FILTERS
 array-append	src/col/f2/scan/rescan_cache.c	sc->leaf[sc->nleaf++] = leaf;	leaves is a mask over the columns of the schema and the schema has at most RC_MAX_LEAVES (tested before the state is made)
+array-append	src/agg/v6/cost/card_est.c	w = a->heap[a->nheap++] = palloc(p->nvals * sizeof(uint64)); /* check-memory: allow the values of one IN list of the query */	pred_vals runs once for each of the at most SIFT_CARD_MAX_PREDS predicates of an estimate and heap holds that many

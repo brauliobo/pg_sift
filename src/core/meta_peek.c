@@ -6,7 +6,7 @@
 #include "storage/bufmgr.h"
 #include "utils/rel.h"
 
-#include "col/f2/col_meta.h"
+#include "col/f2/meta.h"
 #include "core/meta_peek.h"
 #include "core/ops.h"
 #include "core/page_io.h"

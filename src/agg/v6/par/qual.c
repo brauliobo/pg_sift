@@ -11,7 +11,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/v6/par/run_int.h"
-#include "agg/v6/v6_bqual.h"
+#include "agg/v6/qual/bqual.h"
 
 static bool
 op_of(const char *name, ParQualOp *op)

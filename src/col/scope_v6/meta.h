@@ -17,8 +17,8 @@
 
 #include "core/host.h"
 
-#include "col/f2/part_format.h"
-#include "col/codec.h"
+#include "col/f2/part/format.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
 #include "col/granule/granule.h"
 

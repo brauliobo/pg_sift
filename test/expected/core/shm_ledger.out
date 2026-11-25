@@ -1,4 +1,4 @@
--- The ledger of the shared memory pools (core/shmbudget.c): five pools that share sift.shared_cache_kb, counted with atomics. A request under 64 kB is taken from a credit
+-- The ledger of the shared memory pools (core/shm/budget.c): five pools that share sift.shared_cache_kb, counted with atomics. A request under 64 kB is taken from a credit
 -- the backend draws a batch at a time, so it touches no shared counter; a larger one, and the credit itself, is held by the pool up to its share of the setting and by the
 -- pools together up to the setting.
 CREATE EXTENSION pg_sift_test CASCADE;

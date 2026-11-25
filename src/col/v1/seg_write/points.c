@@ -5,7 +5,7 @@
  */
 #include "core/memtrack.h"
 #include "core/limits.h"
-#include "col/v1/seg_write/seg_write_int.h"
+#include "col/v1/seg_write/int.h"
 
 /* Appends len bytes of buf at the 8-aligned stream position; returns the offset */
 uint64

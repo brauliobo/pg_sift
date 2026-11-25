@@ -6,8 +6,8 @@
  * they are and no reader sees a different answer. The update is the directory's: a crash leaves the directory before it or after it.
  */
 #include "postgres.h"
-#include "col/v1/maint/maint_int.h"
-#include "col/v1/order_bound.h"
+#include "col/v1/maint/int.h"
+#include "col/v1/order/bound.h"
 #include "core/dirpart.h"
 
 typedef struct Adopt

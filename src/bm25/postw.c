@@ -1,12 +1,12 @@
 /*
  * bm25/postw.c - term blob writer: encodes the postings of a term, staging large terms in temporary files
- * (layout in bm25/posting.h).
+ * (layout in bm25/posting/posting.h).
  */
 #include "core/host.h"
 
-#include "bm25/kernels.h"
-#include "bm25/posting.h"
-#include "bm25/posting_int.h"
+#include "bm25/kernels/kernels.h"
+#include "bm25/posting/posting.h"
+#include "bm25/posting/int.h"
 #include "core/cmp.h"
 
 int			sift_grouped_min_df = SIFT_GROUPED_MIN_DF;

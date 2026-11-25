@@ -6,5 +6,5 @@ F2_TESTS = core/xid_cache col/f2/delta_locate col/f2/scaling col/f2/tier_guard t
 
 TESTS    += col/f2/preagg_join $(F2_TESTS)
 AUTOSTUB += $(F2_TESTS)
-LIB_col/f2/preagg_join = col/f2/preagg_v2_read.c
+LIB_col/f2/preagg_join = col/f2/preagg/v2_read.c
 $(foreach t,$(F2_TESTS),$(eval XFLAGS_$(t) = $(XFLAGS_BASE)))

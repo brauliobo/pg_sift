@@ -6,7 +6,7 @@
 /* check-memory: allow-allocs a dictionary is cut at SIFT_COL_DICT_MAX_BYTES (64 MiB): its slots are at most 512 MB */
 #include "core/limits.h"
 #include "core/hash.h"
-#include "col/v1/dict/dict_int.h"
+#include "col/v1/dict/int.h"
 
 SiftCDict *
 sift_cdict_create(MemoryContext mcxt)
@@ -203,7 +203,7 @@ sift_cdict_intern(SiftCDict *d, const char *s, uint32 len)
  * (col/dictcache.c), would pay them for one use. A dictionary of the write path has its table from the first intern.
  */
 #define DICT_HASH_AFTER		8
-/* ... or once when the table is shared (d->built: col/dictshm.c writes it to the ring when it is made), so that the cost is that of the server and not of each backend */
+/* ... or once when the table is shared (d->built: col/dictshm/dictshm.c writes it to the ring when it is made), so that the cost is that of the server and not of each backend */
 #define DICT_HASH_AFTER_SHARED	1
 
 int64

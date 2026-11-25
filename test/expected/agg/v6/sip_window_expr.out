@@ -1,5 +1,5 @@
--- The vectorized execution engines of the aggregation (src/core/sbbf.c, src/agg/sip.c, window.c, vexpr.c, group/rollup.c), each held to PostgreSQL's own
--- evaluation of the same query over the same rows: NULLs, edge values, ties, empty partitions, errors, the sets of a GROUPING SETS query.
+-- The vectorized execution engines of the aggregation (src/core/sbbf.c, src/agg/sip.c, window.c, vexpr.c), each held to PostgreSQL's own
+-- evaluation of the same query over the same rows: NULLs, edge values, ties, empty partitions, errors.
 -- The data is made by arithmetic, so that the output does not depend on the version.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -689,142 +689,6 @@ SELECT count(*) AS programs, count(*) FILTER (WHERE bad > 0) AS differ FROM (SEL
        90 |      0
 (1 row)
 
--- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- GROUPING SETS, ROLLUP and CUBE in one pass over the rows
--- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- rd: NULL keys and values, values whose sums do not fit an int8; rbig: 6000 rows of many groups; the arrays are what the executor is fed in batches
-CREATE TABLE rsrc AS
-SELECT 'rd' AS name, g AS id, CASE WHEN g % 11 = 0 THEN NULL ELSE g % 4 END::int8 AS k1, CASE WHEN g % 13 = 0 THEN NULL ELSE (g / 3) % 3 END::int8 AS k2,
-       CASE WHEN g % 7 = 0 THEN NULL ELSE g % 2 END::int8 AS k3, CASE WHEN g % 5 = 0 THEN NULL ELSE (g * 37) % 101 - 50 END::int8 AS v1,
-       CASE WHEN g % 6 = 0 THEN NULL ELSE (4611686018427387904 - g) * CASE WHEN g % 2 = 0 THEN 1 ELSE -1 END END::int8 AS v2, g % 9 <> 0 AS keep
-FROM generate_series(1, 600) AS g
-UNION ALL
-SELECT 'rbig', g, g % 500, (g / 7) % 40, g % 3, (g * 37) % 1001 - 500, g::int8 * 1000003, g % 4 <> 0 FROM generate_series(1, 6000) AS g;
-CREATE TABLE rda AS
-SELECT name, array_agg(k1 ORDER BY id) AS ka, array_agg(k2 ORDER BY id) AS kb, array_agg(k3 ORDER BY id) AS kc, array_agg(v1 ORDER BY id) AS va,
-       array_agg(v2 ORDER BY id) AS vb, array_agg(keep ORDER BY id) AS x FROM rsrc GROUP BY name;
-INSERT INTO rda VALUES ('empty', '{}', '{}', '{}', '{}', '{}', '{}');
-CREATE VIEW rrows AS SELECT name, k1, k2, k3, v1, v2, keep FROM rsrc UNION ALL SELECT 'empty', NULL, NULL, NULL, NULL, NULL, NULL WHERE false;
--- (the sets as bit masks of the keys, k1 the first bit; the same sets in SQL)
-CREATE TABLE rsets (sets text PRIMARY KEY, masks int8[] NOT NULL);
-INSERT INTO rsets VALUES ('ROLLUP (k1, k2, k3)', '{7,3,1,0}'), ('CUBE (k1, k2, k3)', '{7,6,5,3,4,2,1,0}'), ('GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ())', '{5,2,3,3,0}'),
-  ('GROUPING SETS ((k3), (k1, k2, k3), ())', '{4,7,0}'), ('GROUPING SETS (())', '{0}'), ('GROUPING SETS ((k2, k3), (k3))', '{6,4}'),
-  ('ROLLUP (k1, (k2, k3))', '{7,1,0}'), ('GROUPING SETS ((k1), (k2), (k3))', '{1,2,4}');
--- GROUPING() names grouping expressions: a key that no set of the query groups is NULL and omitted in every group
-CREATE FUNCTION rollup_diff(ds text, sets text, masks int8[], prehash bool, batch int, dist bool, act bool) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE n bigint; e text; p text; keys text := ''; g text := '';
-BEGIN
-	FOR i IN 1..3 LOOP
-		keys := keys || CASE WHEN position('k' || i IN sets) > 0 THEN format('k%s, ', i) ELSE 'NULL::int8, ' END;
-		g := g || CASE WHEN position('k' || i IN sets) > 0 THEN format('GROUPING(k%s) * %s + ', i, 1 << (3 - i)) ELSE format('%s + ', 1 << (3 - i)) END;
-	END LOOP;
-	e := format('SELECT gset, k1, k2, k3, n, c1, s1, mn1, mx1, c2, s2, mn2, mx2, dcnt FROM rda, sift._test_rollup(ka, kb, kc, va, vb, %L, prehash => %L, batch => %s, with_distinct => %L, act => %s) WHERE name = %L',
-	            masks, prehash, batch, dist, CASE WHEN act THEN 'x' ELSE 'NULL' END, ds);
-	p := format('SELECT %s0, %s count(*), count(v1), sum(v1), min(v1), max(v1), count(v2), sum(v2), min(v2), max(v2), %s FROM rrows WHERE name = %L %s GROUP BY %s',
-	            g, keys, CASE WHEN dist THEN 'count(DISTINCT v1)' ELSE '0::int8' END, ds, CASE WHEN act THEN 'AND keep' ELSE '' END, sets);
-	EXECUTE format('SELECT count(*) FROM (((%1$s) EXCEPT ALL (%2$s)) UNION ALL ((%2$s) EXCEPT ALL (%1$s))) AS d', e, p) INTO n;
-	RETURN n;
-END $$;
--- every sets x the rows that are fed in batches of 1, 7 and 2048 x the leaf sets or every set from the rows x with count(DISTINCT) or without x with a WHERE or without (each batch meets both values of each
--- of the three: the batch of the case is the number of its true flags, modulo 3)
-SELECT count(*) AS cases, count(*) FILTER (WHERE rollup_diff('rd', sets, masks, prehash, batch, dist, act) > 0) AS differ
-FROM rsets, unnest(ARRAY[1, 7, 2048]) WITH ORDINALITY AS b(batch, bi), (VALUES (false), (true)) AS p(prehash), (VALUES (false), (true)) AS d(dist), (VALUES (false), (true)) AS a(act)
-WHERE bi - 1 = (prehash::int + dist::int + act::int) % 3;
- cases | differ 
--------+--------
-    64 |      0
-(1 row)
-
--- many groups: the tables grow, count(DISTINCT) of values with many repeats
-SET work_mem = '64MB';
-SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, dist, true) AS wrong
-FROM rsets, (VALUES (false), (true)) AS p(prehash), (VALUES (false), (true)) AS d(dist)
-WHERE sets IN ('ROLLUP (k1, k2, k3)', 'CUBE (k1, k2, k3)', 'GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ())') AND (prehash::int + dist::int + hashtext(sets)) % 2 = 0
-ORDER BY sets, prehash, dist;
-                          sets                          | wrong 
---------------------------------------------------------+-------
- CUBE (k1, k2, k3)                                      |     0
- CUBE (k1, k2, k3)                                      |     0
- GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ()) |     0
- GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ()) |     0
- ROLLUP (k1, k2, k3)                                    |     0
- ROLLUP (k1, k2, k3)                                    |     0
-(6 rows)
-
-RESET work_mem;
--- the groups of the sets outgrow the budget of work_mem: the biggest sets go to temporary files and come back one partition at a time, and the answer is the same
-SET work_mem = '256kB';
-SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, dist, true) AS wrong
-FROM rsets, (VALUES (false), (true)) AS p(prehash), (VALUES (false), (true)) AS d(dist)
-WHERE sets IN ('ROLLUP (k1, k2, k3)', 'CUBE (k1, k2, k3)') AND (prehash::int + dist::int + hashtext(sets)) % 2 = 0
-ORDER BY sets, prehash, dist;
-        sets         | wrong 
----------------------+-------
- CUBE (k1, k2, k3)   |     0
- CUBE (k1, k2, k3)   |     0
- ROLLUP (k1, k2, k3) |     0
- ROLLUP (k1, k2, k3) |     0
-(4 rows)
-
-SET work_mem = '64kB';
-SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, false, true) AS wrong
-FROM rsets, (VALUES (false), (true)) AS p(prehash)
-WHERE sets IN ('CUBE (k1, k2, k3)', 'GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ())') ORDER BY sets, prehash;
-                          sets                          | wrong 
---------------------------------------------------------+-------
- CUBE (k1, k2, k3)                                      |     0
- CUBE (k1, k2, k3)                                      |     0
- GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ()) |     0
- GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ()) |     0
-(4 rows)
-
-RESET work_mem;
--- count(DISTINCT) is held to the budget in the grand total; the distinct set of a keyed group that outgrows it is sorted (no error), and a freed tree retains no distinct set
-SELECT masks, n, (r).errored, (r).retained < 65536 AS freed
-FROM (VALUES ('{0}'::int8[]), ('{1}')) AS m(masks), (VALUES (10000::int8, 1048576::int8), (200000, 1048576), (200000, 67108864)) AS b(n, max_bytes),
-     LATERAL (SELECT sift._test_rollup_distinct(masks, n, max_bytes) AS r) AS x ORDER BY masks, n, max_bytes;
- masks |   n    | errored | freed 
--------+--------+---------+-------
- {0}   |  10000 | f       | t
- {0}   | 200000 | t       | t
- {0}   | 200000 | f       | t
- {1}   |  10000 | f       | t
- {1}   | 200000 | f       | t
- {1}   | 200000 | f       | t
-(6 rows)
-
--- no row: the grand total is a group of no rows, no other set has a group
-SELECT sets, rollup_diff('empty', sets, masks, prehash, 2048, false, false) AS wrong, (SELECT count(*) FROM rda, sift._test_rollup(ka, kb, kc, va, vb, masks) WHERE name = 'empty') AS groups
-FROM rsets, (VALUES (false), (true)) AS p(prehash) ORDER BY sets, prehash;
-                          sets                          | wrong | groups 
---------------------------------------------------------+-------+--------
- CUBE (k1, k2, k3)                                      |     0 |      1
- CUBE (k1, k2, k3)                                      |     0 |      1
- GROUPING SETS (())                                     |     0 |      1
- GROUPING SETS (())                                     |     0 |      1
- GROUPING SETS ((k1), (k2), (k3))                       |     0 |      0
- GROUPING SETS ((k1), (k2), (k3))                       |     0 |      0
- GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ()) |     0 |      1
- GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ()) |     0 |      1
- GROUPING SETS ((k2, k3), (k3))                         |     0 |      0
- GROUPING SETS ((k2, k3), (k3))                         |     0 |      0
- GROUPING SETS ((k3), (k1, k2, k3), ())                 |     0 |      1
- GROUPING SETS ((k3), (k1, k2, k3), ())                 |     0 |      1
- ROLLUP (k1, (k2, k3))                                  |     0 |      1
- ROLLUP (k1, (k2, k3))                                  |     0 |      1
- ROLLUP (k1, k2, k3)                                    |     0 |      1
- ROLLUP (k1, k2, k3)                                    |     0 |      1
-(16 rows)
-
--- the same set twice is one table that is emitted twice
-SELECT set_idx, gset, count(*) AS groups FROM rda, sift._test_rollup(ka, kb, kc, va, vb, '{3,3,1}') WHERE name = 'rd' GROUP BY set_idx, gset ORDER BY set_idx;
- set_idx | gset | groups 
----------+------+--------
-       0 |    1 |     20
-       1 |    1 |     20
-       2 |    3 |      5
-(3 rows)
-
 -- a peer group that outgrows work_mem goes to a file and comes back in order: the results of the RANGE frames are PostgreSQL's, the ring holds a few rows
 CREATE TABLE wsrc_b AS
 SELECT g AS id, (g / 12000)::int8 AS part, ((g % 12000) / 4000 * 10)::int8 AS ord, (g * 7919 % 1000)::int8 AS arg, (g % 97)::float8 AS argf FROM generate_series(0, 35999) AS g;
@@ -884,9 +748,7 @@ FROM (SELECT vals, gr, (SELECT min((i - 1) / gr) FROM unnest(vals) WITH ORDINALI
   1440 |     0
 (1 row)
 
-DROP VIEW rrows;
-DROP TABLE sip_fact, sip_dim, sip_in, wsrc_u, wsrc_t, wsrc_p, wsrc_g, wsrc_b, bcase, wd, wcase, dcase, vd, vda, vprog, vgenerated, rsrc, rda, rsets;
-DROP FUNCTION diff(text, text), wrows(text), vexpr_run(text, int[]), vdiff(text, text), vexpr_error(text), lcg(), vgen(text, int, bool),
-              rollup_diff(text, text, int8[], bool, int, bool, bool);
+DROP TABLE sip_fact, sip_dim, sip_in, wsrc_u, wsrc_t, wsrc_p, wsrc_g, wsrc_b, bcase, wd, wcase, dcase, vd, vda, vprog, vgenerated;
+DROP FUNCTION diff(text, text), wrows(text), vexpr_run(text, int[]), vdiff(text, text), vexpr_error(text), lcg(), vgen(text, int, bool);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

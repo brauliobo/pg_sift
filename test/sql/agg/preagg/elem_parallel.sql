@@ -7,7 +7,6 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 -- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
-SET sift.test_agg_rollup_cost = 0;
 
 CREATE FUNCTION mk_items(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE WHEN g % 10 = 0 THEN NULL WHEN g % 10 = 1 THEN '[]' ELSE
@@ -43,7 +42,6 @@ CREATE FUNCTION p_rows(q text, push bool, pre bool) RETURNS text LANGUAGE plpgsq
 DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', push::text, true);
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
 END $$;
@@ -52,7 +50,6 @@ CREATE FUNCTION p_mode(q text, OUT mode text, OUT pre int) LANGUAGE plpgsql AS $
 DECLARE l text; gather bool := false; agg bool := false;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('sift.agg_preagg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		gather := gather OR l LIKE '%Workers Planned: 2%';
 		agg := agg OR l LIKE '%Custom Scan (SiftAgg%';

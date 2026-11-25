@@ -14,11 +14,11 @@
 
 #include "catalog/pg_index.h"
 
-#include "col/f2/f2_cache.h"
-#include "col/f2/f2_part_pin_scan.h"
-#include "col/f2/f2_pull_prune.h"
-#include "col/f2/key_plan.h"
-#include "col/f2/l0_stage.h"
+#include "col/f2/cache.h"
+#include "col/f2/part/pin_scan.h"
+#include "col/f2/pull_prune.h"
+#include "col/f2/key/plan.h"
+#include "col/f2/l0/stage.h"
 #include "col/f2/scan/ord_int.h"
 #include "col/f2/scan/ord_stream.h"
 #include "col/f2/scan/rescan_cache.h"

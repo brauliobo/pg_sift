@@ -3,7 +3,7 @@
  */
 #include "postgres.h"
 
-#include "col/f2/scan/scan_int.h"
+#include "col/f2/scan/int.h"
 #include "core/popcount.h"
 
 /* a numeric NaN is above every number and equals itself, whatever constant (a number) a comparison holds */

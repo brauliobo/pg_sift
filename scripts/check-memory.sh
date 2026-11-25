@@ -53,7 +53,7 @@ STATIC_RULES = {
 STATIC_EXEMPT = {"toplevel": {"core/cachebudget.c"}, "raw_mwm": {"core/memtrack.c"}}
 ROWBUF = re.compile(r"\bsift_rowbuf_new\s*\(")
 ROWBUF_BUDGET = re.compile(r"\b(mem_bytes|sift_mem_budget_bytes|sift_mem_pressure)\b")
-ROWBUF_OWNER = "col/f2/rowbuf.c"
+ROWBUF_OWNER = "col/f2/rowbuf/rowbuf.c"
 STRING = re.compile(r'"(?:\\.|[^"\\])*"')
 BLOCK_COMMENT = re.compile(r"/\*.*?(\*/|$)")
 STRICT_RULES = ("raw_mwm", "rowbuf_unbudgeted", "rowbuf_notrim")
@@ -99,7 +99,7 @@ def scan(src, allow=None, strict=False):
                 for rule, rx in STATIC_RULES.items():
                     if rx.search(BLOCK_COMMENT.sub("", code) if rule == "raw_mwm" else code) and rel not in STATIC_EXEMPT.get(rule, ()):
                         sites[(rule, rel)] += 1
-                if ROWBUF.search(code) and name.endswith(".c") and not name.endswith("_test.c") and rel != ROWBUF_OWNER and not (budgeted and trims):
+                if ROWBUF.search(code) and name.endswith(".c") and not name.endswith("_test.c") and name != "test.c" and rel != ROWBUF_OWNER and not (budgeted and trims):
                     sites[("rowbuf_unbudgeted" if not budgeted else "rowbuf_notrim", rel)] += 1
                 if amcache.search(code) and rel not in AMCACHE_FILES:
                     bad.append(f"{rel}:{i + 1}: rd_amcache outside its accessors ({', '.join(sorted(AMCACHE_FILES))}): the relcache frees it on every reload, ask the accessor where it is used")
@@ -155,7 +155,7 @@ def selftest_rules():
         "col/f2/b.c": "rb = sift_rowbuf_new(cx, n);\nif (rb->mem_bytes >= budget)\n\tflush(rb);\n",
         "col/f2/c.c": "rb = sift_rowbuf_new(cx, n);\nif (rb->mem_bytes >= budget)\n{\n\tflush(rb);\n\tsift_mem_release_os();\n}\n",
         "col/f2/d.c": "/* check-memory: allow bounded to one granule */\nrb = sift_rowbuf_new(cx, 8192);\n",
-        "col/f2/rowbuf.c": "sift_rowbuf *sift_rowbuf_new(MemoryContext cx, int n)\n",
+        "col/f2/rowbuf/rowbuf.c": "sift_rowbuf *sift_rowbuf_new(MemoryContext cx, int n)\n",
         "col/f2/e_test.c": "rb = sift_rowbuf_new(cx, n);\n",
         "col/v1/g.c": "w = maintenance_work_mem;\nrb = sift_rowbuf_new(cx, n);\n",
     }

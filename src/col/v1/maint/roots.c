@@ -15,7 +15,7 @@
 #include "utils/jsonb.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 #include "core/memtrack.h"
 #include "core/ops.h"
 

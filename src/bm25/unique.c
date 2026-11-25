@@ -1,5 +1,5 @@
 /*
- * bm25/unique.c - UNIQUE on a sift index. The key of a row is a term of its postings (bm25/bm25_doc.h), so the rows that may have the same key are the
+ * bm25/unique.c - UNIQUE on a sift index. The key of a row is a term of its postings (bm25/doc.h), so the rows that may have the same key are the
  * postings of one term; the heap says which of them are live and whether their key is the same (SnapshotDirty, as a btree waits for the transaction of
  * a row it finds that is not yet committed). Inserts of one key are serialized by a page lock of the index, taken from the check until the row's own
  * posting is written. The rows of a CREATE INDEX are told apart by a table of their keys instead, before anything is written.
@@ -23,9 +23,9 @@
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
-#include "bm25/bm25_doc.h"
-#include "bm25/eval.h"
-#include "bm25/query_int.h"
+#include "bm25/doc.h"
+#include "bm25/eval/eval.h"
+#include "bm25/query/int.h"
 #include "core/compat.h"
 
 #define UNIQUE_LOCK_BASE	0xFFFFD000U

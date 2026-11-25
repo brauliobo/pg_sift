@@ -40,9 +40,7 @@ CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no
 BEGIN
 	plan := plan_of(q);
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.agg_join_filter = off;
 	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
-	RESET sift.agg_join_filter;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	RESET sift.enable_agg;
@@ -57,7 +55,6 @@ END $$;
 CREATE FUNCTION scanned(q text, filter bool) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE l text; n bigint;
 BEGIN
-	EXECUTE format('SET LOCAL sift.agg_join_filter = %s', filter);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l ~ 'Rows: (\d+) scanned' THEN n := substring(l from 'Rows: (\d+) scanned')::bigint; END IF;
 	END LOOP;

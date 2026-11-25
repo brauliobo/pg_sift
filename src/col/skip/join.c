@@ -7,7 +7,7 @@
 
 #include "lib/stringinfo.h"
 
-#include "col/skip/skip_int.h"
+#include "col/skip/int.h"
 #include "core/page_io.h"
 
 typedef struct PartSkip

@@ -1,5 +1,5 @@
--- Adaptive execution and the dimensions of a star join (src/core/adapt_pipe.c, src/agg/sip.c, src/agg/group/{tier,spill,rollup}.c, src/agg/par/star_shm.c) and the
--- multi-core paths they stand on (src/agg/par/{dim_shm,morsel,radix}.c): each held to the same work with no limit, to PostgreSQL's own evaluation of the same query, or to
+-- Adaptive execution (src/core/adapt_pipe.c, src/agg/sip.c) and the
+-- multi-core paths they stand on (src/agg/par/{morsel,radix}.c): each held to the same work with no limit, to PostgreSQL's own evaluation of the same query, or to
 -- the invariant it exists for. The data is made by arithmetic, so that the output does not depend on the version.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -36,144 +36,6 @@ FROM sift._test_sip_adapt(216, 16, 95, 2) AS r;
 -- a stream that stays above the rate keeps the probe stopped after each look
 SELECT r.auto_disables, r.auto_reenables, r.disabled_at_end, r.rows_probed * 100 / r.rows_total < 10 AS few_probed FROM sift._test_sip_adapt(300, 300, 80, 80) AS r;
 
--- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- the tiers of the groups
--- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- keys below 65536 in a flat array, no table
-SELECT r.groups, r.rows, r.tier AS tier_now, r.visited AS tiers_visited, r.spilled_bytes, r.same
-FROM sift._test_group_tiers(50000, 20000, 0, 1, 33554432, 20, 0) AS r;
--- a key past the array: the array goes to the table
-SELECT r.groups, r.tier AS tier_now, r.visited AS tiers_visited, r.spilled_bytes, r.same
-FROM sift._test_group_tiers(50000, 120000, 0, 2, 33554432, 0, 0) AS r;
--- the array outgrows its share of a small budget: to the table, and the table outgrows it: to the files (dict, table, spill = 2 + 8 + 16)
-SELECT r.groups, r.tier AS tier_now, r.visited AS tiers_visited, r.spilled_bytes > 0 AS spilled, r.same
-FROM sift._test_group_tiers(50000, 30000, 0, 1, 65536, 0, 0) AS r;
--- the same groups as SQL's, by key: the count, the sum, the key sum and the groups
-SELECT r.groups = x.groups AND r.rows = x.rows AND r.key_sum = x.key_sum AND r.sum_sum = x.sum_sum AS equals_sql, r.spilled_bytes > 0 AS spilled
-FROM sift._test_group_tiers(50000, 30000, 0, 1, 65536, 0, 0) AS r,
-     (SELECT count(*) AS groups, sum(c) AS rows, sum(k) AS key_sum, sum(s) AS sum_sum
-      FROM (SELECT k, count(*) AS c, sum(v) AS s FROM (SELECT (i * 7919) % 30000 AS k, (i * 31) % 1000 - 500 AS v FROM generate_series(0::int8, 49999) AS i) AS t GROUP BY k) AS g) AS x;
--- groups that are a few hot keys and many cold: no spill when they fit
-SELECT r.groups, r.tier AS tier_now, r.spilled_bytes, r.same FROM sift._test_group_tiers(100000, 5000, 1000000, 3, 33554432, 60, 0) AS r;
--- half of the keys in one of the sixteen partitions of the first level: a second level makes them fit
-SELECT r.groups, r.tier AS tier_now, r.depth >= 1 AS split_again, r.same FROM sift._test_group_tiers(75000, 75000, 0, 3, 32768, 0, 60) AS r;
-
--- the grouping sets: the biggest set goes to files when the sets hold 80% of the budget, and the answer is the one with no limit
-SELECT m AS masks, b AS max_bytes, r.nodes_spilled > 0 AS spilled, r.groups_out, r.same
-FROM (VALUES ('{3,1,0}'::int8[]), ('{3,2,1,0}'), ('{1,2}')) AS ms(m), (VALUES (65536::int8), (262144)) AS bs(b),
-     LATERAL sift._test_rollup_spill(m, 30000, 15000, b, false, false) AS r ORDER BY masks, max_bytes;
--- count(DISTINCT) of the first value column in every set, and the keys of half of the groups in one partition of the first level
-SELECT r.nodes_spilled > 0 AS spilled, r.depth, r.same FROM sift._test_rollup_spill('{3,1,2,0}', 20000, 10000, 131072, true, true) AS r;
-SELECT r.nodes_spilled, r.depth >= 1 AS split_again, r.same FROM sift._test_rollup_spill('{3,1}', 100000, 75000, 65536, true, false) AS r;
--- nothing spills when it fits
-SELECT r.nodes_spilled, r.bytes_spilled, r.same FROM sift._test_rollup_spill('{3,1,0}', 5000, 300, 268435456, false, false) AS r;
-
--- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- the dimensions of a star join
--- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- categories (what the items point to), items and regions, already reduced by their predicates; the fact table joins the items and the regions
-CREATE TABLE s_cat AS SELECT g AS id, g % 5 AS dept FROM generate_series(1, 100) AS g;
-CREATE TABLE s_cat_dup AS SELECT g AS id, g % 5 AS dept FROM generate_series(1, 100) AS g UNION ALL SELECT g, 9 FROM generate_series(1, 20) AS g;
-CREATE TABLE s_item AS SELECT g AS id, 1 + (g - 1) / 30 AS cat, (g * 3) % 1000 AS pay FROM generate_series(1, 3000) AS g;
-CREATE TABLE s_item_dup AS SELECT g AS id, 1 + (g - 1) / 30 AS cat, (g * 3) % 1000 AS pay FROM generate_series(1, 3000) AS g
-  UNION ALL SELECT g, 1 + (g - 1) / 30, 1000 + g FROM generate_series(1, 3000, 7) AS g;
-CREATE TABLE s_reg AS SELECT g AS id, 100 + g % 7 AS pay FROM generate_series(1, 120) AS g;
--- fact rows in item order, some items and regions that have no row in the dimension
-CREATE TABLE s_fact AS SELECT g AS ord, 1 + (g * 3200) / 20000 AS item, 1 + (g * 13) % 140 AS reg FROM generate_series(0, 19999) AS g;
-UPDATE s_fact SET ord = ord + 1;
-
-CREATE FUNCTION star_diff(kc int, ki int, kr int, cat_t text, item_t text, uc bool, ui bool, wr bool, workers int, granule int DEFAULT 1024) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE n bigint; e text; p text; ti text; ij text; rj text := ''; rp text := 'NULL::int8'; w text := ''; kinds text[] := ARRAY['INNER', 'SEMI', 'LEFT', 'ANTI'];
-BEGIN
-	ti := CASE kc WHEN 0 THEN format('(SELECT i.id, i.pay, c.dept FROM %s i JOIN %s c ON i.cat = c.id)', item_t, cat_t)
-	              WHEN 1 THEN format('(SELECT i.id, i.pay, NULL::int AS dept FROM %s i WHERE EXISTS (SELECT 1 FROM %s c WHERE c.id = i.cat))', item_t, cat_t)
-	              WHEN 2 THEN format('(SELECT i.id, i.pay, c.dept FROM %s i LEFT JOIN %s c ON i.cat = c.id)', item_t, cat_t)
-	              ELSE format('(SELECT i.id, i.pay, NULL::int AS dept FROM %s i WHERE NOT EXISTS (SELECT 1 FROM %s c WHERE c.id = i.cat))', item_t, cat_t) END;
-	ij := CASE ki WHEN 0 THEN format('JOIN %s ti ON f.item = ti.id', ti) WHEN 2 THEN format('LEFT JOIN %s ti ON f.item = ti.id', ti)
-	              WHEN 1 THEN format('JOIN (SELECT DISTINCT id, NULL::int AS pay, NULL::int AS dept FROM %s x) ti ON f.item = ti.id', ti)
-	              ELSE format('LEFT JOIN (SELECT DISTINCT id, NULL::int AS pay, NULL::int AS dept FROM %s x) ti ON f.item = ti.id', ti) END;
-	IF ki = 3 THEN w := ' WHERE ti.id IS NULL'; END IF;
-	IF wr THEN
-		rj := CASE kr WHEN 0 THEN 'JOIN s_reg r ON f.reg = r.id' WHEN 2 THEN 'LEFT JOIN s_reg r ON f.reg = r.id'
-		              WHEN 1 THEN 'JOIN (SELECT DISTINCT id FROM s_reg) r ON f.reg = r.id' ELSE 'LEFT JOIN (SELECT DISTINCT id FROM s_reg) r ON f.reg = r.id' END;
-		IF kr = 3 THEN w := w || CASE WHEN w = '' THEN ' WHERE' ELSE ' AND' END || ' r.id IS NULL'; END IF;
-		rp := CASE WHEN kr IN (0, 2) THEN 'r.pay' ELSE 'NULL::int8' END;
-	END IF;
-	p := format('SELECT f.ord, %s::int8, %s::int8, %s::int8 FROM s_fact f %s %s %s',
-	            CASE WHEN ki IN (0, 2) THEN 'ti.pay' ELSE 'NULL' END, CASE WHEN ki IN (0, 2) AND kc IN (0, 2) THEN 'ti.dept' ELSE 'NULL' END, rp, ij, rj, w);
-	e := format($e$SELECT ord, item_pay, cat_pay, region_pay FROM
-	  (SELECT array_agg(item ORDER BY ord) AS fi, array_agg(reg ORDER BY ord) AS fr FROM s_fact) AS f,
-	  (SELECT array_agg(id ORDER BY id, cat, pay) AS ii, array_agg(cat ORDER BY id, cat, pay) AS ic, array_agg(pay ORDER BY id, cat, pay) AS ip FROM %s) AS i,
-	  (SELECT array_agg(id ORDER BY id, dept) AS ci, array_agg(dept ORDER BY id, dept) AS cp FROM %s) AS c,
-	  (SELECT array_agg(id ORDER BY id, pay) AS ri, array_agg(pay ORDER BY id, pay) AS rp FROM s_reg) AS r,
-	  LATERAL sift._test_star(f.fi, f.fr, i.ii, i.ic, i.ip, c.ci, c.cp, r.ri, r.rp, %s, %s, %s, %L, %L, %L, %s, %s)$e$,
-	  item_t, cat_t, kc, ki, kr, uc, ui, wr, workers, granule);
-	EXECUTE format('SELECT count(*) FROM (((%1$s) EXCEPT ALL (%2$s)) UNION ALL ((%2$s) EXCEPT ALL (%1$s))) AS d', e, p) INTO n;
-	RETURN n;
-END $$;
-
--- the categories are the ones the query keeps (department 1 and 2); the other dimensions are whole
-CREATE TABLE s_cat_f AS SELECT * FROM s_cat WHERE dept IN (1, 2);
-CREATE TABLE s_cat_f_dup AS SELECT * FROM s_cat_dup WHERE dept IN (1, 2, 9);
--- fact table x items x categories x regions, every kind of join of each against PostgreSQL's (every pair of kinds meets: the kind of the regions is (categories + items) mod 4), serial and with 4 workers by turns
--- (each kind of each join, and every kind of the regions, runs in both); rows, payloads and NULLs equal
-SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, kr, 's_cat_f', 's_item', true, true, true, workers) > 0) AS differ
-FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, LATERAL (SELECT (kc + ki) % 4 AS kr) AS k, (VALUES (0), (4)) AS w(workers)
-WHERE (kc / 2 + ki) % 2 * 4 = workers GROUP BY workers ORDER BY workers;
--- the same with no regions: the fact table, the items and the categories
-SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, 0, 's_cat_f', 's_item', true, true, false, workers) > 0) AS differ
-FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, (VALUES (0), (4)) AS w(workers)
-WHERE (kc / 2 + ki) % 2 * 4 = workers GROUP BY workers ORDER BY workers;
--- an item with several rows: the fact row has a row for each (a fan-out), the categories that are not unique are joined as semi or anti
-SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, kr, 's_cat_f', 's_item_dup', true, false, true, workers, 512) > 0) AS differ
-FROM generate_series(0, 3) AS kc, generate_series(0, 3) AS ki, LATERAL (SELECT (kc + ki) % 4 AS kr) AS k, (VALUES (0), (4)) AS w(workers)
-WHERE (kc / 2 + ki) % 2 * 4 = workers GROUP BY workers ORDER BY workers;
-SELECT workers, count(*) AS cases, count(*) FILTER (WHERE star_diff(kc, ki, 0, 's_cat_f_dup', 's_item_dup', false, false, true, workers, 2048) > 0) AS differ
-FROM (VALUES (1), (3)) AS k(kc), generate_series(0, 3) AS ki, (VALUES (0), (4)) AS w(workers)
-WHERE (kc / 2 + ki) % 2 * 4 = workers GROUP BY workers ORDER BY workers;
--- a parent that is not unique and joined by inner or left would multiply the rows: it is refused
-\set VERBOSITY terse
-SELECT star_diff(0, 0, 0, 's_cat_f_dup', 's_item', false, true, true, 0);
-\set VERBOSITY default
-
--- an empty inner dimension (no category of the department): the query has no row, and no fact row was read or probed
-SELECT * FROM sift._test_star((SELECT array_agg(item ORDER BY ord) FROM s_fact), (SELECT array_agg(reg ORDER BY ord) FROM s_fact),
-                              (SELECT array_agg(id ORDER BY id) FROM s_item), (SELECT array_agg(cat ORDER BY id) FROM s_item), (SELECT array_agg(pay ORDER BY id) FROM s_item),
-                              '{}', '{}', (SELECT array_agg(id ORDER BY id) FROM s_reg), (SELECT array_agg(pay ORDER BY id) FROM s_reg), 0, 0, 0, true, true, true, 2);
-SELECT any_empty, fact_rows_read, granules_total, rows_probed, cats_surviving, items_surviving FROM sift._test_star_stats();
--- the same with a left or anti category: the items stay
-SELECT count(*) AS rows_out, (SELECT any_empty FROM sift._test_star_stats()) AS any_empty
-FROM sift._test_star((SELECT array_agg(item ORDER BY ord) FROM s_fact), (SELECT array_agg(reg ORDER BY ord) FROM s_fact),
-                     (SELECT array_agg(id ORDER BY id) FROM s_item), (SELECT array_agg(cat ORDER BY id) FROM s_item), (SELECT array_agg(pay ORDER BY id) FROM s_item),
-                     '{}', '{}', (SELECT array_agg(id ORDER BY id) FROM s_reg), (SELECT array_agg(pay ORDER BY id) FROM s_reg), 3, 0, 0, true, true, true, 0);
-
--- the cascade: one category in a hundred is kept and nothing names the items or the fact table: the items that stay are the ones that point to it (<= 2%), and the filter built from
--- them prunes the granules of the fact table that the zone test tells have no such item (>= 90%)
-CREATE TABLE s_cat_one AS SELECT * FROM s_cat WHERE id = 7;
-SELECT count(*) AS rows_out FROM sift._test_star((SELECT array_agg(item ORDER BY ord) FROM s_fact), (SELECT array_agg(reg ORDER BY ord) FROM s_fact),
-        (SELECT array_agg(id ORDER BY id) FROM s_item), (SELECT array_agg(cat ORDER BY id) FROM s_item), (SELECT array_agg(pay ORDER BY id) FROM s_item),
-        (SELECT array_agg(id) FROM s_cat_one), (SELECT array_agg(dept) FROM s_cat_one), (SELECT array_agg(id ORDER BY id) FROM s_reg), (SELECT array_agg(pay ORDER BY id) FROM s_reg),
-        0, 0, 0, true, true, false, 4, 256);
-SELECT cats_surviving, items_raw, items_surviving, items_surviving * 100 <= items_raw * 2 AS items_within_2pct, granules_pruned * 100 >= granules_total * 90 AS pruned_90pct,
-       fact_rows_read * 10 <= 20000 AS read_a_tenth, launched FROM sift._test_star_stats();
-SELECT star_diff(0, 0, 0, 's_cat_one', 's_item', true, true, false, 4, 256) AS differ;
--- a semi dimension of a few keys and no payload is the filter alone, exact: no table
-SELECT count(*) AS rows_out, (SELECT elided FROM sift._test_star_stats()) AS elided
-FROM sift._test_star((SELECT array_agg(item ORDER BY ord) FROM s_fact), (SELECT array_agg(reg ORDER BY ord) FROM s_fact),
-        (SELECT array_agg(id ORDER BY id) FROM s_item), (SELECT array_agg(cat ORDER BY id) FROM s_item), (SELECT array_agg(pay ORDER BY id) FROM s_item),
-        (SELECT array_agg(id) FROM s_cat_one), (SELECT array_agg(dept) FROM s_cat_one), (SELECT array_agg(id ORDER BY id) FROM s_reg), (SELECT array_agg(pay ORDER BY id) FROM s_reg),
-        1, 0, 0, true, true, false, 2);
-SELECT star_diff(1, 0, 0, 's_cat_one', 's_item', true, true, false, 2) AS differ;
--- a filter that most rows pass is stopped by its probe in the scan of the fact table, and the rows are the same
-SELECT star_diff(0, 0, 2, 's_cat', 's_item', true, true, true, 0, 256) AS differ, (SELECT auto_disables > 0 FROM sift._test_star_stats()) AS stopped;
-
--- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- the participants of the parallel scans
--- ---------------------------------------------------------------------------------------------------------------------------------------------------
--- the shared dimension table built from histograms of the participants (up to 65536 buckets) and from atomic adds (more), with 8 workers and a skewed key
-SELECT w AS workers, n AS rows, d AS domain, r.launched = w AS launched_all, r.buckets, r.answered = 6000 AS all_probes, r.wrong
-FROM (VALUES (8, 1000, 100000), (8, 40000, 1000000), (8, 30000, 50), (8, 70000, 1000000000), (8, 70000, 3), (3, 65536, 7), (6, 12000, 12000)) AS v(w, n, d),
-     LATERAL sift._test_dim_shm(29, w, n, d, 6000) AS r ORDER BY w, n, d;
 -- the guided queue cut into lanes: the leader and 8 workers (more participants than the 8 lanes) take every granule once, and the ends of the lists are one granule
 SELECT w AS workers, p AS parts, r.launched = w AS launched_all, r.total, r.wrong AS granules_not_once, r.bad_claims, r.tail_run
 FROM (VALUES (8, 5), (8, 9), (8, 1), (3, 4)) AS v(w, p), LATERAL sift._test_morsel_par(31, w, p, 9000) AS r ORDER BY w, p;
@@ -181,7 +43,6 @@ FROM (VALUES (8, 5), (8, 9), (8, 1), (3, 4)) AS v(w, p), LATERAL sift._test_mors
 SELECT w AS workers, m AS mode, r.launched = w AS launched_all, r.bad AS wrong
 FROM (VALUES (8, 0), (8, 1), (8, 2), (8, 3)) AS v(w, m), LATERAL sift._test_radix_par(23, w, 24, 30000, m, 64, 0) AS r ORDER BY w, m;
 
-DROP FUNCTION star_diff(int, int, int, text, text, bool, bool, bool, int, int);
-DROP TABLE ap, s_cat, s_cat_dup, s_cat_f, s_cat_f_dup, s_cat_one, s_fact, s_item, s_item_dup, s_reg;
+DROP TABLE ap;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

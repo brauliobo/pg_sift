@@ -13,7 +13,7 @@
  */
 #include "core/host.h"
 
-#include "bm25/kernels.h"
+#include "bm25/kernels/kernels.h"
 #include "bm25/prefix.h"
 #include "core/cachebudget.h"
 #include "core/damage.h"

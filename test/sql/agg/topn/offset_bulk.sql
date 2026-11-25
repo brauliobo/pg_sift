@@ -17,7 +17,6 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 7919) % 700 END, CASE WHEN i 
 FROM generate_series(1, 20000) i;
 CREATE INDEX ob_i ON ob USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, t sift.col_text_ops, dt sift.col_date_ops, ts sift.col_timestamp_ops) WITH (order_array_columns = 'id, n, t');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ob;
-SET sift.test_topn_heads = off;
 
 -- the answer says DIFFERS with the query when the rows of the scan are not those of the plan without the extension or of the walk of every entry; 'bulk' when the scan used the global order
 CREATE FUNCTION ob_chk(q text) RETURNS text LANGUAGE plpgsql AS $$

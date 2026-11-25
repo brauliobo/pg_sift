@@ -1,6 +1,6 @@
 /*
  * col/v1_engine/store_ops_ext_test.c - test-only SQL functions sift._test_v1_*, compiled only with SIFT_TESTING and declared by the test that uses them: the order, jsonb and preagg sub-vtables of
- * the Format 1 store (core/store_ops.h) as the engine reaches them through sift_store_ops_for_oid. _test_v1_ops says what the owner hands over, _test_v1_topn runs scan_rows of an ORDER BY ..
+ * the Format 1 store (core/store/ops.h) as the engine reaches them through sift_store_ops_for_oid. _test_v1_ops says what the owner hands over, _test_v1_topn runs scan_rows of an ORDER BY ..
  * LIMIT of one column, _test_v1_unnest runs unnest_run of a LATERAL unnest to groups of (parent column, element), and _test_v1_match opens the source on a match set of heap addresses.
  *
  * check-memory: allow-allocs the arrays follow the rows of a test table, a few thousand
@@ -30,16 +30,16 @@
 #include "utils/tuplestore.h"
 
 #include "agg/v6/v6.h"
-#include "agg/v6/v6_ext.h"
-#include "agg/v6/v6_rows_topn.h"
-#include "agg/v6/v6_vexpr.h"
-#include "col/v1/v1_store_ops.h"
+#include "agg/v6/ext.h"
+#include "agg/v6/topn/rows.h"
+#include "agg/v6/vexpr.h"
+#include "col/v1/store_ops.h"
 #include "core/catname.h"
 #include "core/compat.h"
 #include "core/filter.h"
-#include "col/v1/v1_reader.h"
-#include "core/store_ops.h"
-#include "table/v1/v1_tbl_ops.h"
+#include "col/v1/reader.h"
+#include "core/store/ops.h"
+#include "table/v1/tbl_ops.h"
 
 PG_FUNCTION_INFO_V1(sift_test_v1_ops);
 PG_FUNCTION_INFO_V1(sift_test_v1_topn);

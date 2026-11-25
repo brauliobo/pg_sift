@@ -1,0 +1,190 @@
+/*
+ * bm25/merge/ranges.c - the merge of segments, written by several processes. The segments are read where they are: the leader merges their docs, and the terms, cut into ranges
+ * from the samples of the dictionaries, are written by the leader and max_parallel_maintenance_workers workers, each range from the
+ * postings of the input segments (build_ranges.c). The merged segment is the one a single process writes, byte for byte.
+ */
+#include "bm25/build/int.h"
+
+#include "access/xact.h"
+#include "storage/bufmgr.h"
+#include "utils/snapmgr.h"
+
+#include "core/store/store.h"
+#include "core/restrict.h"
+#include "core/memtrack.h"
+
+PGDLLEXPORT void sift_merge_worker(dsm_segment *seg, shm_toc *toc);
+
+void
+sift_merge_worker(dsm_segment *seg, shm_toc *toc)
+{
+	SiftParWorker w;
+	SiftBuildShared *shared;
+
+	sift_par_worker_begin(&w, toc);
+	shared = w.shared;
+	SharedFileSetAttach(&shared->fileset, seg);
+#ifdef SIFT_TESTING
+	mem_watch(AllocSetContextCreate(CurrentMemoryContext, "sift merge worker", ALLOCSET_SMALL_SIZES));
+#endif
+	sift_ranges_worker(shared, w.index);
+	sift_par_worker_end(&w);
+}
+
+/* The segments of the merge that have a live doc, opened, with what the merged segment's docs add up to */
+static int
+open_live(Relation index, const SiftSegEntry *in, int n, MemoryContext mcxt, BufferAccessStrategy bas, SiftSegment **segs, uint64 *ndocs, uint64 *sum_dl)
+{
+	int			nlive = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		SiftSegment *seg = sift_seg_open(index, &in[i], mcxt);
+		uint64		d,
+					dl;
+
+		sift_sr_set_strategy(&seg->sr, bas);
+		sift_seg_live_stats(seg, &d, &dl);
+		if (d == 0)
+		{
+			sift_seg_close(seg);
+			continue;
+		}
+		segs[nlive++] = seg;
+		*ndocs += d;
+		*sum_dl += dl;
+	}
+	return nlive;
+}
+
+/* Releases the buffers of the segments, which are read again when needed */
+static void
+close_live(SiftSegment **segs, int nlive)
+{
+	for (int i = 0; i < nlive; i++)
+		sift_seg_close(segs[i]);
+}
+
+/* One process merges the segments, each read where it is as in the merge by ranges: the docs, then the terms, with no run of any segment written first */
+static int
+merge_alone(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, const SiftScoreRef *ref, SiftSegEntry *neu)
+{
+	SiftSegment *segs[MAX_MERGE_FANIN];
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment merge");
+	MemoryContext old;
+	BufferAccessStrategy bas;
+	uint64		ndocs = 0,
+				sum_dl = 0;
+	int			nlive;
+
+#ifdef SIFT_TESTING
+	mem_watch(cxt);
+#endif
+	old = MemoryContextSwitchTo(cxt);
+	bas = GetAccessStrategy(BAS_BULKREAD);
+	MemoryContextSwitchTo(old);
+	nlive = open_live(index, in, n, cxt, bas, segs, &ndocs, &sum_dl);
+	if (nlive > 0)
+		sift_segs_write(segs, nlive, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1), wt, sift_store_new_gen(index), ref, neu);
+	close_live(segs, nlive);
+	MemoryContextDelete(cxt);
+	return nlive > 0;
+}
+
+/* Participants pay once a range outgrows the maintenance memory of one process: a merge below that is written by one, with no file of ranges */
+static uint64
+range_bytes(void)
+{
+	return TEST_KNOB(sift_test_range_bytes, Max(RANGE_BYTES, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1)));
+}
+
+int
+sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, const SiftScoreRef *ref, SiftSegEntry *neu)
+{
+	SiftSegment *segs[MAX_MERGE_FANIN];
+	SiftTermCut *cuts;
+	SiftParLeader *ldr;
+	SiftBuildShared *shared;
+	SiftSegmentWriter *sw;
+	MemoryContext cxt,
+				old;
+	BufferAccessStrategy bas;
+	uint64		ndocs = 0,
+				sum_dl = 0;
+	int			nlive,
+				ncuts,
+				nworkers = Min(max_parallel_maintenance_workers, MAX_RANGES - 1);
+	uint64		gen;
+
+	SIFT_INVARIANT(n <= MAX_MERGE_FANIN, "sift: a merge of %d segments, at most %d are merged at once", n, MAX_MERGE_FANIN);
+	/* the context of the workers needs a transaction id from before its parallel mode, which a parallel VACUUM's leader cannot take: one process merges */
+	if (nworkers < 1 || sift_xid_unassignable())
+		return merge_alone(index, wt, in, n, ref, neu);
+	cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment merge");
+#ifdef SIFT_TESTING
+	mem_watch(cxt);
+#endif
+	old = MemoryContextSwitchTo(cxt);
+	bas = GetAccessStrategy(BAS_BULKREAD);
+	MemoryContextSwitchTo(old);
+	nlive = open_live(index, in, n, cxt, bas, segs, &ndocs, &sum_dl);
+	if (nlive == 0)
+	{
+		MemoryContextDelete(cxt);
+		return 0;
+	}
+	cuts = palloc((MAX_RANGES - 1) * sizeof(SiftTermCut));
+	ncuts = sift_segs_cuts(segs, nlive, range_bytes(), Min(MAX_RANGES, RANGES_PER_PARTICIPANT * (nworkers + 1)), cuts);
+	if (ncuts == 0)
+	{
+		close_live(segs, nlive);
+		MemoryContextDelete(cxt);
+		return merge_alone(index, wt, in, n, ref, neu);
+	}
+	nworkers = Min(nworkers, ncuts);
+	/* the reads so far hold buffer locks (a reader keeps its page locked), and no worker starts while a process holds any */
+	close_live(segs, nlive);
+	/* the parallel mode takes no new transaction id and no new snapshot, and the workers start with the active one: the maintenance worker has neither */
+	GetCurrentTransactionId();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	ldr = sift_par_enter(false);
+	if (!sift_par_setup(ldr, "sift_merge_worker", nworkers, sizeof(SiftBuildShared), sizeof(int), false))
+	{
+		PopActiveSnapshot();
+		MemoryContextDelete(cxt);
+		return merge_alone(index, wt, in, n, ref, neu);
+	}
+	shared = ldr->shared;
+	MemSet(shared, 0, sizeof(SiftBuildShared));
+	shared->common = (SiftParCommon) {InvalidOid, RelationGetRelid(index), false};
+	shared->nparticipants = nworkers + 1;
+	shared->budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, nworkers + 1, 1);
+	ConditionVariableInit(&shared->ranges.cv);
+	SharedFileSetInit(&shared->fileset, ldr->pcxt->seg);
+	SpinLockInit(&shared->mutex);
+	shared->ranges.nsegs = nlive;
+	for (int i = 0; i < nlive; i++)
+		shared->ranges.seg[i] = segs[i]->entry;
+	memcpy(shared->ranges.cut, cuts, ncuts * sizeof(SiftTermCut));
+	shared->ranges.ref = *ref;
+	shared->ranges.ref.avgdl = (float4) ((double) sum_dl / ndocs);
+	if (!sift_par_launch(ldr, "sift merge for", index, nworkers))
+	{
+		PopActiveSnapshot();
+		MemoryContextDelete(cxt);
+		return merge_alone(index, wt, in, n, ref, neu);
+	}
+	gen = sift_store_new_gen(index);
+	sift_ranges_publish(shared, ncuts);
+	sw = sift_segs_write_docs(segs, nlive, shared->budget, wt, gen, ref, cxt);
+	/* a process that waits for the others holds no buffer lock: it would not hear of their errors */
+	close_live(segs, nlive);
+	sift_ranges_stitch(shared, index, sw);
+	sift_segw_finish(sw, neu);
+	sift_ranges_close(shared);
+	sift_par_wait(ldr);
+	sift_par_end(ldr);
+	PopActiveSnapshot();
+	MemoryContextDelete(cxt);
+	return 1;
+}

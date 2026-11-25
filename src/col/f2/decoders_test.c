@@ -11,17 +11,17 @@
 #include "utils/resowner.h"
 
 #include "col/f2/test_int.h"
-#include "col/f2/f2_tid_hash.h"
-#include "col/f2/preagg_v2.h"
+#include "col/f2/tid/hash.h"
+#include "col/f2/preagg/v2.h"
 #include "col/compress.h"
 #include "col/granule/granule.h"
-#include "col/f2/f2_point_dir.h"
-#include "col/f2/l0_slab.h"
-#include "col/granule/granule_int.h"
+#include "col/f2/point_dir.h"
+#include "col/f2/l0/slab.h"
+#include "col/granule/int.h"
 #include "core/f2/bulk_io.h"
-#include "table/f2/f2_col_delta_dir.h"
-#include "table/f2/f2_blob.h"
-#include "table/f2/f2_row_pack.h"
+#include "table/f2/col_delta/dir.h"
+#include "table/f2/blob.h"
+#include "table/f2/row/pack.h"
 
 PG_FUNCTION_INFO_V1(sift_test_dec_row_pack);
 PG_FUNCTION_INFO_V1(sift_test_dec_row_pack_check);

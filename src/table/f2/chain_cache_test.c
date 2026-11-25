@@ -7,7 +7,7 @@
 
 #include "fmgr.h"
 
-#include "table/f2/f2_chain_cache.h"
+#include "table/f2/chain_cache.h"
 
 PG_FUNCTION_INFO_V1(sift_test_chain_cache_pages);
 

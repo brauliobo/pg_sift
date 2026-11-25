@@ -4,7 +4,7 @@
 #ifndef SIFT_BM25_WMEMO_H
 #define SIFT_BM25_WMEMO_H
 
-#include "bm25/eval_int.h"
+#include "bm25/eval/int.h"
 
 /*
  * The blended df of the leaf and the largest bound of its terms in each segment, which a bind finds by merging the dictionaries of every segment over the

@@ -10,7 +10,7 @@
  *
  * A read adds to a small list of its backend, and the end of its statement writes the list in one record of the metapage alone (sift_meta_update: the directory is not touched, so no scan that holds a copy of it is told of a change).
  * A sum that already meets the rule (the caller's `met`, computed without the list) is not written again: more would be written for nothing, and a rule that cannot run (no worker) would otherwise make every read write.
- * A standby cannot write: its reads count nowhere. What the reads of a scope paid for its changed pairs is kept the same way (col/v1/scope_paid.c).
+ * A standby cannot write: its reads count nowhere. What the reads of a scope paid for its changed pairs is kept the same way (col/v1/scope/paid.c).
  *
  * The scans of a key-cut index are counted the same way (SIFT_READ_SCANS), for the weighing of the merge of its overlays (maint/rewrite.c): a count of every scan would write the metapage, which every scan reads,
  * once for each of them, so a scan is counted as many as the count says (SCANS_EXACT scans each, then a scan is sampled with the probability 1/k and counts k, k being 1 and one more for every SCANS_EXACT counted):
@@ -25,7 +25,7 @@
 
 #include "core/reads.h"
 #include "core/restrict.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 #define SCANS_EXACT		64
 

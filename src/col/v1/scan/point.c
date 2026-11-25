@@ -4,7 +4,7 @@
  * and the selection of the rows of a unit
  */
 #include "postgres.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 
 /* The lists of the segments are ascending runs: merging the runs takes a few passes over the addresses where a sort takes n log n comparisons */
 void

@@ -39,7 +39,6 @@ setup
 		END LOOP;
 		PERFORM set_config('sift.test_col_open_gate', gate::text, true);
 		PERFORM set_config('sift.test_item_gate', igate::text, true);
-		PERFORM set_config('sift.test_par_leader_wait', (gate > 0)::text, true);
 		EXECUTE 'SELECT string_agg(x::text, '' '') FROM (' || q || ') x' INTO a;
 		PERFORM set_config('sift.test_col_open_gate', '0', true);
 		PERFORM set_config('sift.test_item_gate', '0', true);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A delete that writes deletion records (core/v1_col/tomb_dv.h) holds the tombstone lock shared from before it finds the units of its rows until its records are appended; the merge that replaces
+# A delete that writes deletion records (core/v1_col/tomb/dv.h) holds the tombstone lock shared from before it finds the units of its rows until its records are appended; the merge that replaces
 # the segments takes the lock exclusive from the carry of the records to the switch of the directory. Held only around the append, the lock would let a delete find a segment, lose to a whole
 # merge, and then append a record for a segment that is gone: its rows would come back. The delete is held after its lookup (sift.test_phase_gate, gate SIFT_COL_GATE_DELETE = 8) with a merge started
 # behind it: the merge must wait for the delete, then carry its records, and every answer is the heap's.

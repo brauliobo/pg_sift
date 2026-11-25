@@ -4,7 +4,7 @@
  * next to it that names it
  */
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 #ifdef SIFT_TESTING
 /*
@@ -571,7 +571,7 @@ seg_points_read(SiftColSegment *seg)
 		memcpy(&at, recs + (uint64) i * SIFT_CPOINT_RECLEN + sizeof(rec), sizeof(at));
 		if (i >= hdr[2])
 		{
-			/* a global order block (col/v1/gorder.h): chunks, entries, values, 0, words of 8 bytes; its header and directory are checked when it is read */
+			/* a global order block (col/v1/gorder/gorder.h): chunks, entries, values, 0, words of 8 bytes; its header and directory are checked when it is read */
 			if (i == hdr[2])
 				prev = -1;
 			size = (uint64) rec[4] * 8;

@@ -1,4 +1,4 @@
-/* test/scaling/cases.h - the cases of check_scaling_c.c, one source each (cases.mk lists the files and the sources under test). */
+/* test/scaling/cases.h - the cases of runner.c, one source each (cases.mk lists the files and the sources under test). */
 #ifndef SIFT_SCALING_CASES_H
 #define SIFT_SCALING_CASES_H
 

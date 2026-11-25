@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The journal of the scope relation (col/scope_journal.c) is the tombstone log of its journal index: WAL-logged, so a hot standby has the records of the pairs changed on the primary
+# The journal of the scope relation (col/scope/journal.c) is the tombstone log of its journal index: WAL-logged, so a hot standby has the records of the pairs changed on the primary
 # and a crash of the primary keeps them. What must hold on every node whatever the verdict (the standby may say it cannot compare a stamp with its snapshots): the answer of a read of
 # the scope units is the answer of the join, and a read after a pair changed is never taken from the stored segments alone: it patches the changed members in from the entity rows, or
 # says why it does not read the units. The same holds for the scope of two paths (lib/twohop.bash: the grants by member, the grants by group and the memberships are three journals): the fixtures,

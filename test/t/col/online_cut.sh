@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # While a physical standby streams, VACUUM gives the free end of a sift_col file back under an ExclusiveLock, which a standby does not replay: the replay does not stall
-# behind a long query of the standby on the table. Only the blocks the horizon says no snapshot can read go (P7a in core/store.h): a build after a standby snapshot keeps
+# behind a long query of the standby on the table. Only the blocks the horizon says no snapshot can read go (P7a in core/store/store.h): a build after a standby snapshot keeps
 # its freed blocks in the file until the snapshot ends. A standby without feedback gets the recovery conflict of the reuse. A churn of scans, inserts and VACUUMs, and a kill
 # between the free list and the truncation, leave an index that agrees with its table on both servers.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"

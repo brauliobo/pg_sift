@@ -1,5 +1,5 @@
 # VACUUM does not mark a block all visible while a snapshot older than a narrow UPDATE is open: the xid bound of the column delta chain that
-# plan_partition (table/f2/f2_vm.c) settles on is the newest writer of the chain as its pages say, not the anchor's max_xid, which an UPDATE
+# plan_partition (table/f2/vm/vm.c) settles on is the newest writer of the chain as its pages say, not the anchor's max_xid, which an UPDATE
 # that fits the newest page leaves behind (core/f2/col_delta_anchor.h)
 use strict;
 use warnings FATAL => 'all';

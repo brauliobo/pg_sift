@@ -1,18 +1,18 @@
 /*
- * col/v1/build/scope.c - the scope families of the build of a scope index (col/scope.h)
+ * col/v1/build/scope.c - the scope families of the build of a scope index (col/scope/scope.h)
  *
- * The build of the entities scans the heap as for any sift_col index. Each batch of rows it completes is also expanded by the scope keys of the member key of each row (col/v1/scope_fill.c) and
+ * The build of the entities scans the heap as for any sift_col index. Each batch of rows it completes is also expanded by the scope keys of the member key of each row (col/v1/scope/fill.c) and
  * handed to a build of its own for each scope: a key-cut build whose units are cut by the derived key and then by time, that writes its segments flagged SIFT_SEG_SCOPE. A fact row
  * is in the segments of the entities once and in those of a scope once for each key of its member; a row with no pair is in none of them.
  *
- * A unit of a scope segment holds the rows of one scope key, or the whole runs of several small keys that share no fact (col/v1/order.c): a fact whose member is in two keys has two
+ * A unit of a scope segment holds the rows of one scope key, or the whole runs of several small keys that share no fact (col/v1/order/order.c): a fact whose member is in two keys has two
  * entries with one address, and a unit lists an address once.
  */
 #include "postgres.h"
 
-#include "col/v1/build/build_int.h"
-#include "col/scope.h"
-#include "col/v1/seg.h"
+#include "col/v1/build/int.h"
+#include "col/scope/scope.h"
+#include "col/v1/seg/seg.h"
 
 /* The cut of the units of a scope */
 void

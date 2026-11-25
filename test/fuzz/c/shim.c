@@ -11,10 +11,10 @@
 #include "storage/buffile.h"
 
 #include "core/sift.h"
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/col.h"
-#include "col/shred.h"
-#include "core/store.h"
+#include "col/shred/shred.h"
+#include "core/store/store.h"
 #include "shim.h"
 
 extern void kt_cpu_init(void);	/* test/common/cpushim.c */
@@ -145,36 +145,6 @@ fz_copy(const uint8 *data, size_t len, size_t pad, size_t align)
 }
 
 #define UNREACHED(name) fz_bad("%s reached: the fuzz target links no storage layer", name)
-
-BufFile *
-BufFileCreateTemp(bool interXact)
-{
-	UNREACHED("BufFileCreateTemp");
-}
-
-void
-BufFileClose(BufFile *f)
-{
-	UNREACHED("BufFileClose");
-}
-
-void
-BufFileWrite(BufFile *f, const void *p, size_t n)
-{
-	UNREACHED("BufFileWrite");
-}
-
-int
-BufFileSeek(BufFile *f, int fileno, pgoff_t offset, int whence)
-{
-	UNREACHED("BufFileSeek");
-}
-
-void
-BufFileReadExact(BufFile *f, void *p, size_t n)
-{
-	UNREACHED("BufFileReadExact");
-}
 
 uint64
 sift_sw_tell(const SiftStreamWriter *sw)

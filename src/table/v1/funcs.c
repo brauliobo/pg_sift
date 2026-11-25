@@ -16,11 +16,11 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/catname.h"
 #include "core/inspect.h"
-#include "core/sql.h"
-#include "table/v1/table_v1.h"
+#include "core/sql/sql.h"
+#include "table/v1/table.h"
 
 PG_FUNCTION_INFO_V1(sift_table_segments);
 PG_FUNCTION_INFO_V1(sift_table_space);

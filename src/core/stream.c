@@ -1,10 +1,10 @@
 /*
- * core/stream.c - what every store does the same way (core/store.h): the page layout of its pages and the padding of its byte
+ * core/stream.c - what every store does the same way (core/store/store.h): the page layout of its pages and the padding of its byte
  * streams, on top of PageInit, sift_sw_tell and sift_sw_write.
  */
 #include "core/host.h"
 
-#include "core/store.h"
+#include "core/store/store.h"
 
 /* The header page of a segment: the fixed part of h, its n extents and the extra bytes after them; the block it went to */
 BlockNumber

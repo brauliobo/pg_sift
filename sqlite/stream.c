@@ -1,5 +1,5 @@
 /*
- * stream.c - the stream reader, the write target and the stream writer of core/store.h over the page store of the SQLite table.
+ * stream.c - the stream reader, the write target and the stream writer of core/store/store.h over the page store of the SQLite table.
  */
 #include "store_int.h"
 

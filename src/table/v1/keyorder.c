@@ -11,8 +11,8 @@
 #include "utils/typcache.h"
 #include "utils/varlena.h"
 
-#include "col/v1/seg.h"
-#include "table/v1/table_v1.h"
+#include "col/v1/seg/seg.h"
+#include "table/v1/table.h"
 #include "table/v1/seg_int.h"
 
 /* The column names of spec, split as SQL splits identifiers (unquoted names fold to lower case) */

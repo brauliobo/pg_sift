@@ -1,6 +1,6 @@
 /*
  * col/jsonb.c - the jsonb attributes of a sift_col index: the "paths" reloption is parsed by the shredder
- * (col/shred.h), whose columns and groups become the index's leaves, and every tuple's jsonb values are shredded into the rows the engine
+ * (col/shred/shred.h), whose columns and groups become the index's leaves, and every tuple's jsonb values are shredded into the rows the engine
  * stores. One level of arrays and objects is held: a list (key[]) or map (key.*) group becomes a GROUP leaf with the group's columns as
  * children; a map also gets the member name as a text child. A path inside an array inside another (a[].b[].c) is no leaf: it stays in the
  * jsonb column, which a query that reads it takes from the heap with the normal plan.
@@ -15,7 +15,7 @@
 #include "utils/syscache.h"
 
 #include "col/v1/build.h"
-#include "col/shred_pg.h"
+#include "col/shred/pg.h"
 
 typedef enum LeafKind
 {
@@ -556,7 +556,7 @@ sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnu
 	sift_col_shred_row_rc(a, values, isnull, row, first, mcxt, NULL);
 }
 
-/* The recheck of the rows of the adapter's spec (col/shred_pg.h): how the query reads leaf i of attribute attno, a column or a list of the shredder */
+/* The recheck of the rows of the adapter's spec (col/shred/pg.h): how the query reads leaf i of attribute attno, a column or a list of the shredder */
 SiftShredRecheck *
 sift_col_shred_recheck_create(MemoryContext mcxt, const SiftColShredAdapter *a)
 {

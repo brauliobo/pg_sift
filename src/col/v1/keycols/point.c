@@ -9,7 +9,7 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "col/am.h"
-#include "col/v1/keycols/keycols_int.h"
+#include "col/v1/keycols/int.h"
 #include "col/v1/setsum.h"
 #include "col/v1/point.h"
 

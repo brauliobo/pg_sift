@@ -14,8 +14,8 @@
 #include "utils/snapshot.h"
 
 #include "col/am.h"
-#include "col/v1/enc.h"
-#include "col/v1/seg.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/seg/seg.h"
 
 #define SIFT_COL_PHASE_SCAN		2
 #define SIFT_COL_PHASE_WRITE	3
@@ -24,7 +24,7 @@
 #define SIFT_COL_GATE_TAIL		4
 #define SIFT_COL_GATE_FILL		5
 #define SIFT_COL_GATE_JOURNAL	6
-/* a delete that found the units of its rows, before it appends their deletion records (col/v1/track_dv.c) */
+/* a delete that found the units of its rows, before it appends their deletion records (col/v1/track/dv.c) */
 #define SIFT_COL_GATE_DELETE	8
 #endif
 

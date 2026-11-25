@@ -15,13 +15,13 @@
 
 #include "postgres.h"
 
-#include "core/shm_combiner.h"
+#include "core/shm/combiner.h"
 #include "storage/lmgr.h"
 #include "storage/lwlock.h"
 #include "storage/relfilelocator.h"
 #include "utils/rel.h"
 
-#define SIFT_LOCK_REL_BULK_BLKNO	0xFFFFE000U		/* a sift_table row locker's intention or coarse lock of the whole relation (table/f2/f2_lock_esc.h) */
+#define SIFT_LOCK_REL_BULK_BLKNO	0xFFFFE000U		/* a sift_table row locker's intention or coarse lock of the whole relation (table/f2/lock/esc.h) */
 #define SIFT_LOCK_PART_ESC_BASE		0xFFFFE001U		/* the same for one partition, one of SIFT_LOCK_PART_ESC_SLOTS by its number */
 #define SIFT_LOCK_PART_ESC_SLOTS	4095U
 #define SIFT_LOCK_PART_ESC_BLKNO(part_id) (SIFT_LOCK_PART_ESC_BASE + (BlockNumber) ((part_id) % SIFT_LOCK_PART_ESC_SLOTS))

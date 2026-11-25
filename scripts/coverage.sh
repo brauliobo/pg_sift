@@ -137,7 +137,7 @@ gen_pct() {
 			print "## Variant matrices\n"
 			print "A percentage is the share of a generated matrix of query variants (`test/matrix/run.py`) that the pushdown answers with the rows of the normal plan:"
 			print "covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,"
-			print "functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal"
+			print "functions from `pg_proc`, sizes from `src/agg/topn_v6.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal"
 			print "slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes"
 			print "them (the nightly job `coverage-pct` verifies the file), measured on " ab " (" dt ") against " bb ".\n"
 			for (i = 1; i <= n; i++) {

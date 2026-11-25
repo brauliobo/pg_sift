@@ -12,7 +12,7 @@
 
 #include <math.h>
 
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 #include "bm25/wmemo.h"
 #include "core/cachebudget.h"
 

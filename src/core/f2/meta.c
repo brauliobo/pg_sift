@@ -7,9 +7,9 @@
 
 #include "access/xlog.h"
 
-#include "col/f2/col_meta.h"
+#include "col/f2/meta.h"
 #include "core/extlock.h"
-#include "core/maint_pacer.h"
+#include "core/maint/pacer.h"
 #include "core/f2/meta.h"
 #include "core/page_io.h"
 

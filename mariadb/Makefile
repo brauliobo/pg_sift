@@ -86,8 +86,8 @@ mdb-inc:
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-mariadb.sh).
 isa-check: $(OUT)/libsift_udf.so
-	@HOST_SYMBOLS="$(SERVER_SYMBOLS)" sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o $(OUT)/*/*.o $(OUT)/*/*/*.o
+	@HOST_SYMBOLS="$(SERVER_SYMBOLS)" sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $$(find $(OUT) -name '*.o')
 
 .PHONY: all mdb-inc isa-check cfg-check-test
 
--include $(wildcard $(OUT)/*.d $(OUT)/*/*.d $(OUT)/*/*/*.d)
+-include $(wildcard $(OUT)/*.d $(OUT)/*/*.d $(OUT)/*/*/*.d $(OUT)/*/*/*/*.d)

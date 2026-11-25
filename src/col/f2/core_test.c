@@ -12,7 +12,7 @@
 #ifdef SIFT_TESTING
 
 #include "col/f2/test_int.h"
-#include "col/granule/cfilt_cc.h"
+#include "col/granule/cfilt/cc.h"
 #include "core/memtrack.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_init);
@@ -157,7 +157,7 @@ f2t_srf_put(ReturnSetInfo *rsi, Datum *values, bool *nulls)
 	tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
 }
 
-/* {exact, recheck, zone_skipped, read, sparse, skip_probed, skip_pruned, part_pruned, compressed, late_skipped, set tests run by the kernels of the stored form (col/granule/cfilt_cc.h), those they left to the codec, pages read ahead} of the scans since the last read (SiftF2ScanStats); the argument true resets them */
+/* {exact, recheck, zone_skipped, read, sparse, skip_probed, skip_pruned, part_pruned, compressed, late_skipped, set tests run by the kernels of the stored form (col/granule/cfilt/cc.h), those they left to the codec, pages read ahead} of the scans since the last read (SiftF2ScanStats); the argument true resets them */
 Datum
 sift_test_f2_scan_counters(PG_FUNCTION_ARGS)
 {

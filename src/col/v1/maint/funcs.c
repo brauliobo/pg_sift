@@ -17,9 +17,9 @@
 #include "core/inspect.h"
 #include "core/explain.h"
 #include "core/ops.h"
-#include "core/sql.h"
-#include "col/v1/maint/maint_int.h"
-#include "core/v1_col/tomb.h"
+#include "core/sql/sql.h"
+#include "col/v1/maint/int.h"
+#include "core/v1_col/tomb/tomb.h"
 
 /* The index that an inspector reads, for a role that may look at its table (core/inspect.c); bm25_use: the function that does the same for a sift index */
 Relation

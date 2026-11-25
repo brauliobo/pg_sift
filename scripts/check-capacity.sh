@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Capacity patterns of src/ that a grep can decide (needs no PostgreSQL and no build), the family of the page-generation incident (a count that outgrew the container it indexes):
 #   - cast-after-product: `(uint64) (a * b)` multiplies in the type of a and b and widens the wrapped result; widen an operand, `(uint64) a * b`;
-#   - blocknumber-sum: `BlockNumber x = a + b` wraps at 2^32 blocks (32 TB); add in 64 bits and compare with MaxBlockNumber, as core/freelist_alloc.c extend does;
+#   - blocknumber-sum: `BlockNumber x = a + b` wraps at 2^32 blocks (32 TB); add in 64 bits and compare with MaxBlockNumber, as core/freelist/alloc.c extend does;
 #   - array-append: `arr[n++] = v` into an array declared with a constant size needs a bound the reader can see within the 12 lines above (a comparison of n, an Assert or
 #     SIFT_INVARIANT, an error, Min, lengthof, a break), or a reason in scripts/capacity.allow.
 # A site that is bounded some other way (a loop over the directory entries, a count checked by the caller, a double estimate) is a line of scripts/capacity.allow:
@@ -17,7 +17,7 @@ CAST_AFTER_PRODUCT = re.compile(r"\((?:uint64|int64|Size|size_t|uint64_t|int64_t
 BLOCK_SUM = re.compile(r"\bBlockNumber\s+\w+\s*=[^;]*[^-+]\+[^+=][^;]*;")
 ARRAY_DECL = re.compile(r"^\s*(?:static\s+|const\s+)*[A-Za-z_][\w\s\*]*?\b(\w+)\[\s*([A-Z_][A-Z0-9_]*|\d+)\s*\](?:\[[^\]]*\])?\s*(?:=\s*\{[^;]*\})?;")
 APPEND = re.compile(r"\b(\w+)\[(\w+(?:->\w+|\.\w+)?)\+\+\]\s*=")
-SKIP = re.compile(r"_test|/test/|kern|_avx|_neon|/vk")
+SKIP = re.compile(r"[_/]test|kern|[_/]avx|[_/]neon|/vk")
 COMMENT = re.compile(r"^\s*(/?\*|//)")
 
 

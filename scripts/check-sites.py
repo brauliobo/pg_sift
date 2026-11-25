@@ -114,7 +114,7 @@ def origin(arg, body, k, params, entry_oid):
 
 def main():
     names = subprocess.run(['git', '-C', root, 'ls-files', 'src'], capture_output=True, text=True, check=True).stdout.split()
-    names = [f for f in names if f.endswith(('.c', '.h')) and not f.endswith('_test.c') and '/test/' not in f]
+    names = [f for f in names if f.endswith(('.c', '.h')) and not f.endswith(('_test.c', '/test.c')) and '/test/' not in f]
     funcs = {}
     for f in names:
         text = open(os.path.join(root, f), errors='replace').read()
@@ -199,7 +199,7 @@ def main():
             verified[(f[0], f[1])] = f
     need = {}
     for r in rows:
-        if r[6] == 'N' and r[7] in ('SQL', 'entry') and '/test/' not in r[0] and not r[0].endswith('_test.c'):
+        if r[6] == 'N' and r[7] in ('SQL', 'entry') and '/test/' not in r[0] and not r[0].endswith(('_test.c', '/test.c')):
             need.setdefault((r[0], r[2]), []).append(r)
     bad = [k for k in need if k not in verified]
     stale = [k for k in verified if k not in need]

@@ -9,8 +9,8 @@
 #include "storage/read_stream.h"
 
 #include "core/cmp.h"
-#include "core/store.h"
-#include "core/store_int.h"
+#include "core/store/store.h"
+#include "core/store/int.h"
 
 /* The streams whose callbacks only name blocks hand their reads to the device in batches (PostgreSQL 18 and later) */
 #if PG_VERSION_NUM >= 180000

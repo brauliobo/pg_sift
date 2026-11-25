@@ -7,8 +7,8 @@
 #include "core/memtrack.h"
 #include "col/hll.h"
 #include "col/v1/setsum.h"
-#include "col/v1/gorder.h"
-#include "col/v1/seg_write/seg_write_int.h"
+#include "col/v1/gorder/gorder.h"
+#include "col/v1/seg_write/int.h"
 
 /* The entry (key, address) of the next row with a value of the leaf: does it still follow the heap */
 static inline void

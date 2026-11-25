@@ -26,7 +26,7 @@ def selftest():
          'sift_col(zz_new) has no row'),
         ('an isset member in a relopt_parse_elt', dict(srcs={**srcs, 'core/handler.c': srcs['core/handler.c'].replace('offsetof(SiftOptions, accent_folding)}', 'offsetof(SiftOptions, accent_folding), offsetof(SiftOptions, accent_folding_set)}')}),
          'has a member after the offset'),
-        ('a new sift_table option', dict(srcs={**srcs, 'table/f2/f2_options.c': srcs['table/f2/f2_options.c'].replace('"skip_index",\n};', '"skip_index", "zz_opt",\n};', 1).replace('OPT_TEXT, OPT_TEXT,\n};', 'OPT_TEXT, OPT_TEXT, OPT_TEXT,\n};', 1)}),
+        ('a new sift_table option', dict(srcs={**srcs, 'table/f2/options.c': srcs['table/f2/options.c'].replace('"skip_index",\n};', '"skip_index", "zz_opt",\n};', 1).replace('OPT_TEXT, OPT_TEXT,\n};', 'OPT_TEXT, OPT_TEXT, OPT_TEXT,\n};', 1)}),
          'sift_table(zz_opt) has no row'),
         ('a deprecated option without its replacement', dict(notes_text=text.replace(old_row, set_cell(old_row, 'replacement', ''))), 'replacement must be set'),
         ('a replacement the description does not say', dict(notes_text=text.replace(old_row, set_cell(old_row, 'replacement', 'preagg'))), 'replacement is preagg but src/ says key_order'),

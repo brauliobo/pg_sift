@@ -12,7 +12,7 @@
 #include "core/sift.h"
 #include "core/filter.h"
 #include "core/page.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 #define SIFT_SLOT_SHIFT		19
 #define SIFT_NSLOTS			256		/* segment slots of one index (the block numbers in its manifest) */

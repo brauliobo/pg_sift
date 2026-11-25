@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/wordsink.h - the end of a pipe (agg/v6/v6_pipe.h) of a compute thread: the key and argument batches that leave its last stage as the words that agg/v6/par/group.h folds, in pure C.
+ * agg/v6/par/wordsink.h - the end of a pipe (agg/v6/pipe.h) of a compute thread: the key and argument batches that leave its last stage as the words that agg/v6/par/group.h folds, in pure C.
  *
  * A key is a 64-bit integer with its sign bit flipped (all ones is the NULL key), or a text (a NULL one has the length SIFT_STR_NULL). A NULL argument of COUNT(col), SUM or AVG is in the sums:
  * the validity of each argument is a sum of its own, so that the group says how many arguments were not NULL. What the words cannot say exactly is the scan's: a key whose word is the NULL one, and
@@ -12,7 +12,7 @@
 
 #include "agg/v6/par/group.h"
 #include "agg/v6/v6.h"
-#include "agg/v6/v6_batch.h"
+#include "agg/v6/batch.h"
 
 #define SIFT_PAR_WORD_AGGS	16
 

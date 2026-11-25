@@ -4,7 +4,7 @@
 #ifndef SIFT_BM25_DEADKEYS_H
 #define SIFT_BM25_DEADKEYS_H
 
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 
 /*
  * A delete leaves the doc in its segment, live, until a VACUUM of the index clears it, and a ranked search verifies in the heap every doc that outscores its K-th live hit:

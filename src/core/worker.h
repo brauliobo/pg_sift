@@ -8,7 +8,7 @@
 #include "datatype/timestamp.h"
 #include "utils/rel.h"
 
-#include "core/maint_pacer.h"
+#include "core/maint/pacer.h"
 
 /* The entry points of the workers (pg_sift.so exports one: sift_worker_main), told apart by the kind in bgw_extra */
 typedef enum SiftWorkerKind
@@ -65,7 +65,7 @@ extern PGDLLEXPORT void sift_worker_main(Datum main_arg);
  */
 extern bool sift_worker_register(SiftWorkerKind kind, const char *subject, Datum main_arg);
 
-/* The workers of the kinds above that run or are about to: with those of the queue (core/maint_sched.h) they are the workers sift.max_maint_workers allows */
+/* The workers of the kinds above that run or are about to: with those of the queue (core/maint/sched.h) they are the workers sift.max_maint_workers allows */
 extern int sift_worker_legacy_active(void);
 
 #ifdef SIFT_TESTING
@@ -83,12 +83,12 @@ extern void sift_worker_init(void);
 extern SiftJob sift_worker_job(void);
 extern bool sift_worker_paced(void);
 
-/* The worker of the queue (core/maint_sched.h) is paced like the others: it enters once, after it connected, and sets the tier of each claim before its step */
+/* The worker of the queue (core/maint/sched.h) is paced like the others: it enters once, after it connected, and sets the tier of each claim before its step */
 extern void sift_worker_queue_enter(void);
 extern void sift_worker_queue_tier(SiftPacerTier tier);
 extern bool sift_worker_in_queue(void);
 
-/* The tier of the steps of this worker (core/maint_pacer.h: 0 is P0, the first to be served and the last to give way); 0 for a process that is no worker */
+/* The tier of the steps of this worker (core/maint/pacer.h: 0 is P0, the first to be served and the last to give way); 0 for a process that is no worker */
 extern int	sift_worker_tier(void);
 
 /* Does this worker leave after its step, because a request of a tier before its own found no free worker? */

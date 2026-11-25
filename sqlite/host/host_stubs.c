@@ -1,14 +1,14 @@
 /*
- * host_stubs.c - the collaborators of src/bm25/eval.c that PostgreSQL provides and the embedded hosts (SQLite, MariaDB) do not
+ * host_stubs.c - the collaborators of src/bm25/eval/eval.c that PostgreSQL provides and the embedded hosts (SQLite, MariaDB) do not
  * need, the same on both: docmap directories are not kept between queries and there are no write buffers (the live
  * segment of a query is an immutable one built from the queue). Options, visibility and the TID bitmap are the host's own.
  */
 #include "core/host.h"
 
-#include "bm25/analyze.h"
+#include "bm25/analyze/analyze.h"
 #include "bm25/hitspill.h"
 #include "bm25/wbuf.h"
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 
 /* ---------- the heap (core/host.h): the embedded hosts leave it to the system ---------- */
 
@@ -46,7 +46,7 @@ sift_hitspill_end(SiftHitSpill *s)
 {
 }
 
-/* ---------- the name of an index in a hint (core/store.h): a table of the host has no schema ---------- */
+/* ---------- the name of an index in a hint (core/store/store.h): a table of the host has no schema ---------- */
 
 const char *
 sift_index_ident(Relation index)
@@ -54,7 +54,7 @@ sift_index_ident(Relation index)
 	return RelationGetRelationName(index);
 }
 
-/* ---------- text search configurations (bm25/analyze_ts.c): a PostgreSQL catalog object, so the hosts have none ---------- */
+/* ---------- text search configurations (bm25/analyze/ts.c): a PostgreSQL catalog object, so the hosts have none ---------- */
 
 SiftTsStem *
 sift_ts_open(const char *config, MemoryContext mcxt)
@@ -90,7 +90,7 @@ sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
  */
 #include <stdlib.h>
 
-#include "bm25/analyze.h"
+#include "bm25/analyze/analyze.h"
 #include "core/cachebudget.h"
 
 #define CACHE_BUCKETS		8192

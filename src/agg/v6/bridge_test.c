@@ -1,5 +1,5 @@
 /*
- * agg/v6/bridge_test.c - test-only SQL functions sift._test_v6_*, compiled only with SIFT_TESTING and registered by the pg_sift_test extension: the guards of agg/plan/safety.h and the
+ * agg/v6/bridge_test.c - test-only SQL functions sift._test_v6_*, compiled only with SIFT_TESTING and registered by the pg_sift_test extension: the guards of agg/v6/safety.h and the
  * bridges of SiftAggV6 (v6_topn.h, v6_window.h, v6_stream.h, v6_sip.h, v6_card.h, v6_vexpr.h) held to PostgreSQL's own answer.
  *
  * The format the bridges run over is a table: an index whose name ends in _v6 is one the test format owns, its columns are the columns of the table it names, the parts are the rows
@@ -36,12 +36,12 @@
 #include "utils/numeric.h"
 #include "utils/rel.h"
 
-#include "agg/plan/safety.h"
-#include "agg/v6/v6_card.h"
-#include "agg/v6/v6_sip.h"
-#include "agg/v6/v6_stream.h"
-#include "agg/v6/v6_topn.h"
-#include "agg/v6/v6_window.h"
+#include "agg/v6/safety.h"
+#include "agg/v6/cost/card.h"
+#include "agg/v6/sip.h"
+#include "agg/v6/stream.h"
+#include "agg/v6/topn/topn.h"
+#include "agg/v6/win/window.h"
 #include "core/catname.h"
 #include "core/memtrack.h"
 #include "core/compat.h"

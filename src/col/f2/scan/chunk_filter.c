@@ -1,14 +1,14 @@
 /*
- * col/f2/scan/chunk_filter.c - the predicates a scan runs on the chunks of a granule as they are stored, in the order the scan learned (col/f2/f2_lazy.h): which chunks are read, which
+ * col/f2/scan/chunk_filter.c - the predicates a scan runs on the chunks of a granule as they are stored, in the order the scan learned (col/f2/lazy.h): which chunks are read, which
  * predicate runs on them compressed, and the rows that pass.
  */
 #include "postgres.h"
 
 #include "portability/instr_time.h"
 
-#include "col/f2/scan/scan_int.h"
+#include "col/f2/scan/int.h"
 
-/* What the lazy filter driver (col/f2/f2_lazy.h) reads and tests in one granule of a scan */
+/* What the lazy filter driver (col/f2/lazy.h) reads and tests in one granule of a scan */
 typedef struct GranuleFilter
 {
 	Relation	rel;

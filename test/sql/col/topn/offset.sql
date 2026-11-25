@@ -18,7 +18,6 @@ FROM generate_series(1, 12000) i;
 CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, t sift.col_timestamp_ops, s sift.col_text_ops)
 	WITH (order_array_columns = 'id, a, b, c, t, s');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
-SET sift.test_topn_heads = off;
 
 -- the answer is right when its keys are the heap's, in order, and every row it names is a distinct row of the table with that key; the second field is the heap fetches
 -- of the scan: 'skipped' when it fetched no more rows than it gave out (no entry before the OFFSET was confirmed), 'confirmed' when it fetched more than the LIMIT and half

@@ -49,7 +49,7 @@ typedef struct SiftColLeafStats
 	double		point_rows;		/* ... and the rows they list */
 	double		point_tid_units;	/* ... of which the units of the segments whose lists hold heap addresses */
 	double		head_units;		/* the units of the segments whose sorted runs hold heads (column format minor 18) */
-	double		gord_rows;		/* the entries of the global order of the leaf (col/v1/gorder.h), over the segments that keep one ... */
+	double		gord_rows;		/* the entries of the global order of the leaf (col/v1/gorder/gorder.h), over the segments that keep one ... */
 	double		gord_bytes;		/* ... and their bytes */
 	double		gord_chunks;	/* ... the chunks of their blocks ... */
 	double		gord_compact_blocks;	/* ... the blocks with a compact chunk (order_layout; the chunks themselves are counted by sift_col_gorder_chunks, which reads the directories) ... */
@@ -101,11 +101,11 @@ typedef struct SiftColIndexMeta
 } SiftColIndexMeta;
 
 /*
- * What a value derived from another table is as of (a connected index, col/v1/conn.h): stored with the derived structure (a segment, a map), 16 bytes. Taken
+ * What a value derived from another table is as of (a connected index, col/v1/conn/conn.h): stored with the derived structure (a segment, a map), 16 bytes. Taken
  * BEFORE the parent's entries are read, with the snapshot it was taken for.
  */
 #define SIFT_CONN_MAX_CONNECTIONS	8		/* connections of one index */
-#define SIFT_SCOPE_MAX				4		/* scopes of one index (col/scope.h) */
+#define SIFT_SCOPE_MAX				4		/* scopes of one index (col/scope/scope.h) */
 #define SIFT_SCOPE_JOURNALS			3		/* journals a scope depends on: the pairs relation, and for two paths the joined relation and the via relation */
 
 typedef struct SiftConnStamp

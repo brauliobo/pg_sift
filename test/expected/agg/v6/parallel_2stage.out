@@ -1,4 +1,4 @@
--- The parallel SiftAggV6 (Spec 44: src/agg/v6/v6_par_*.c, the F2 morsel scan of src/col/f2/f2_scan.c): every shape the planner gives a parallel strategy, run with no worker and with
+-- The parallel SiftAggV6 (Spec 44: src/agg/v6/v6_par_*.c, the F2 morsel scan of src/col/f2/scan/scan.c): every shape the planner gives a parallel strategy, run with no worker and with
 -- four, returns the same rows. The data is made by arithmetic with NULL keys and values, so that the output does not depend on the version. The plans themselves (a Gather over SiftAggV6,
 -- Parallel Strategy in EXPLAIN) are asserted in agg_v6_parallel_2stage_plan.sql, which needs the extension.
 CREATE EXTENSION pg_sift;

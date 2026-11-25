@@ -6,7 +6,7 @@
 #include "access/parallel.h"
 #include "access/xact.h"
 #ifdef SIFT_TESTING
-#include "bm25/build.h"
+#include "bm25/build/build.h"
 #endif
 #include "miscadmin.h"
 #include "port/atomics.h"
@@ -15,7 +15,7 @@
 #include "utils/rel.h"
 #include "utils/wait_event.h"
 
-#include "table/v1/load/load_int.h"
+#include "table/v1/load/int.h"
 #include "core/memtrack.h"
 #include "core/waits.h"
 

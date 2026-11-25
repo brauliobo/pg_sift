@@ -4,7 +4,7 @@
  *
  * Each conjunct keeps, smoothed over the granules (an EWMA), the share of its input rows it passed, the nanoseconds it took for each of them, and the bytes of its column that a row costs to read.
  * Its rank is (cpu + w_io * io) / max(0.01, 1 - pass), with w_io for a warm or a cold read, and the order is that of ascending rank. Before a granule has taught anything the ranks come from what the
- * part says of its columns (col/f2/col_stats.h), so the order is a good one from granule 0.
+ * part says of its columns (col/f2/stats.h), so the order is a good one from granule 0.
  *
  *   - a conjunct changes places with its neighbour only when it is at least 15% better (hysteresis), and only at the 4th granule and every 16th after it;
  *   - a conjunct on a column that an earlier one reads is charged no read, so conjuncts of one column cluster;

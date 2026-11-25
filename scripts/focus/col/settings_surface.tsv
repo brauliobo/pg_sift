@@ -1,1 +1,1 @@
-col/settings_surface	src/col/v1/preagg_opt.c:sift_cpagg_name_take src/core/handler.c:refuse_second_load
+col/settings_surface	src/col/v1/preagg/opt.c:sift_cpagg_name_take src/core/handler.c:refuse_second_load

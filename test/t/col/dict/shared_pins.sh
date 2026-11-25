@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The dictionaries that backends read in place from the shared ring (col/dictshm.c): a record that a scan reads is not overwritten while the scan lives, however
+# The dictionaries that backends read in place from the shared ring (col/dictshm/dictshm.c): a record that a scan reads is not overwritten while the scan lives, however
 # many dictionaries the ring takes in meanwhile (a ring of 8 MB, 12 tables of about 2 MB of dictionary: it wraps twice); a backend gives the records back when its
 # transaction ends, when a statement fails and when the backend is terminated holding them.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }

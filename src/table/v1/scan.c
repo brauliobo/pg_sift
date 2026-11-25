@@ -3,8 +3,8 @@
  * and CREATE INDEX (docs/COL-TAM.md section 4). Every row returned goes through sift_tbl_visible.
  *
  * A scan reads, in order, the write buffers (a page copy at a time, rows in slot order) and the column groups (a unit of the
- * engine at a time, table/v1/gscan.c). It works on a private copy of the directory taken at begin, protected by its registered
- * snapshot (P4 of core/store.h). scan_next_version is the one iterator over the stored row versions; what to do with a version
+ * engine at a time, table/v1/gscan/gscan.c). It works on a private copy of the directory taken at begin, protected by its registered
+ * snapshot (P4 of core/store/store.h). scan_next_version is the one iterator over the stored row versions; what to do with a version
  * (visibility, index build verdict) is the caller's.
  */
 #include "postgres.h"
@@ -20,7 +20,7 @@
 
 #include "col/am.h"
 #include "core/errctx.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 #include "table/v1/scan_int.h"
 
 /*

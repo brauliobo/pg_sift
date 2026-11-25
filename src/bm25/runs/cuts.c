@@ -5,7 +5,7 @@
  */
 #include "core/host.h"
 #include "core/cmp.h"
-#include "bm25/runs/runs_priv.h"
+#include "bm25/runs/int.h"
 #include "core/memtrack.h"
 
 bool

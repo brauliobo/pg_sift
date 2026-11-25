@@ -7,7 +7,7 @@ include $(SRC)/areas.mk
 # SIFT_HARDEN, the PostgreSQL major...) built in the same checkout never rebuilds or overwrites them; unset, everything stays beside the sources. make clean removes DIR/src and DIR/gen alone.
 SIFT_OUT := $(if $(SIFT_BUILD_DIR),$(abspath $(SIFT_BUILD_DIR)))
 SIFT_OBJ := $(if $(SIFT_OUT),$(SIFT_OUT)/)
-OBJS = $(patsubst %.c,$(SIFT_OBJ)%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c $(SRC)/*/*/*/*.c))
+OBJS = $(patsubst %.c,$(SIFT_OBJ)%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c $(SRC)/*/*/*/*.c $(SRC)/*/*/*/*/*.c))
 # The update script of the release in progress is built from sql/<version>/NN-<context>.sql (scripts/sql-parts.sh): edit a part, never the generated file.
 SIFT_UPDATE_SQL := $(sort $(shell $(dir $(SIFT_MK))scripts/sql-parts.sh targets))
 DATA = $(sort $(wildcard sql/pg_sift--*.sql) $(SIFT_UPDATE_SQL))
@@ -17,6 +17,7 @@ PGFILEDESC = "pg_sift - Fast analytics for PostgreSQL: keep your queries, just a
 REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql test/sql/*/*.sql test/sql/*/*/*.sql test/sql/*/*/*/*.sql)))
 REGRESS_OPTS = --inputdir=test --outputdir=test
 REGRESS_PREP = regress-results-dirs
+.DEFAULT_GOAL := all
 .PHONY: regress-results-dirs
 regress-results-dirs: ; @mkdir -p $(sort $(addprefix test/results/,$(dir $(REGRESS))))
 
@@ -49,7 +50,7 @@ ifneq ($(or $(VULKAN),$(SIFT_VULKAN)),)
 PG_CPPFLAGS += -DSIFT_VULKAN
 SHLIB_LINK += -ldl
 endif
-EXTRA_CLEAN = $(if $(SIFT_OUT),$(SIFT_OUT)/$(SRC) $(SIFT_OUT)/gen .build-dir,$(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d src/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out)
+EXTRA_CLEAN = $(if $(SIFT_OUT),$(SIFT_OUT)/$(SRC) $(SIFT_OUT)/gen .build-dir,$(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d src/*/*/*/*.d src/*/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out)
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -63,27 +64,19 @@ endif
 TESTING_REGRESS =
 TESTING_REGRESS += agg/cal_paths
 TESTING_REGRESS += agg/child/input_bound
-TESTING_REGRESS += agg/child/warm
 TESTING_REGRESS += agg/clickbench_suite2_smoke
 TESTING_REGRESS += agg/combo/cap
 TESTING_REGRESS += agg/correlated/fanout
 TESTING_REGRESS += agg/cte/flat_f2
 TESTING_REGRESS += agg/cte/two_level_fuse
-TESTING_REGRESS += agg/cte/verdict_consolidated
 TESTING_REGRESS += agg/dict/blocks_lazy
 TESTING_REGRESS += agg/distinct/narrow
 TESTING_REGRESS += agg/facts_reread_plans
 TESTING_REGRESS += agg/flat_rewrites_consolidated
 TESTING_REGRESS += agg/flat_rewrites_consolidated_2
-TESTING_REGRESS += agg/float/step
 TESTING_REGRESS += agg/gord_group_skip_limit
-TESTING_REGRESS += agg/group/hash_probe
 TESTING_REGRESS += agg/group/nospill_run
-TESTING_REGRESS += agg/group/passes
-TESTING_REGRESS += agg/group/single_key
-TESTING_REGRESS += agg/group/spill
 TESTING_REGRESS += agg/group/spill_bounds
-TESTING_REGRESS += agg/group/spill_limits
 TESTING_REGRESS += agg/hybrid/basic
 TESTING_REGRESS += agg/hybrid/cost
 TESTING_REGRESS += agg/hybrid/multimodal_facet
@@ -92,7 +85,6 @@ TESTING_REGRESS += agg/hybrid/or_direct
 TESTING_REGRESS += agg/hybrid/score
 TESTING_REGRESS += agg/hybrid/table
 TESTING_REGRESS += agg/hybrid/tidbridge_bm25
-TESTING_REGRESS += agg/int_key_ids
 TESTING_REGRESS += agg/join/flip_probe_consolidated
 TESTING_REGRESS += agg/join/parity
 TESTING_REGRESS += agg/join/table_parity
@@ -103,9 +95,7 @@ TESTING_REGRESS += agg/jsonb/key_read
 TESTING_REGRESS += agg/jsonb/not_exist
 TESTING_REGRESS += agg/jsonb/typeof
 TESTING_REGRESS += agg/jsonpath_kinds
-TESTING_REGRESS += agg/kern/simd%
 TESTING_REGRESS += agg/key/cube_fallback
-TESTING_REGRESS += agg/key/list_once
 TESTING_REGRESS += agg/kll/nonfinite
 TESTING_REGRESS += agg/kll/quantiles
 TESTING_REGRESS += agg/lateral_flatten_f2
@@ -115,28 +105,17 @@ TESTING_REGRESS += agg/lookup/index_keys
 TESTING_REGRESS += agg/lookup/scan_memory
 TESTING_REGRESS += agg/mapped_direct_values
 TESTING_REGRESS += agg/mem_spill
-TESTING_REGRESS += agg/outer_walks_once
 TESTING_REGRESS += agg/par/blob_chunks
-TESTING_REGRESS += agg/par/join_split
 TESTING_REGRESS += agg/par/jsonb_unnest
 TESTING_REGRESS += agg/par/partitions
-TESTING_REGRESS += agg/par/pay
-TESTING_REGRESS += agg/par/split
 TESTING_REGRESS += agg/par/tseries_unnest
 TESTING_REGRESS += agg/par/universal
 TESTING_REGRESS += agg/par/window
 TESTING_REGRESS += agg/part/parity
 TESTING_REGRESS += agg/partitions
 TESTING_REGRESS += agg/partitions_many
-TESTING_REGRESS += agg/plan/passes
 TESTING_REGRESS += agg/plan/tables
-TESTING_REGRESS += agg/planner_state_error
-TESTING_REGRESS += agg/preagg/elem
 TESTING_REGRESS += agg/preagg/minmax
-TESTING_REGRESS += agg/preagg/rollup
-TESTING_REGRESS += agg/probe/direct
-TESTING_REGRESS += agg/probe/direct_columns
-TESTING_REGRESS += agg/probe/direct_race
 TESTING_REGRESS += agg/query_stream_join
 TESTING_REGRESS += agg/root_key_exists
 TESTING_REGRESS += agg/scaling_guards
@@ -162,15 +141,10 @@ TESTING_REGRESS += agg/scope/union_group
 TESTING_REGRESS += agg/scope/virtual_leaf
 TESTING_REGRESS += agg/scope/walk_kept
 TESTING_REGRESS += agg/scope/window_parity
-TESTING_REGRESS += agg/semi_lut
-TESTING_REGRESS += agg/semi_lut_int8
-TESTING_REGRESS += agg/slot_owner
-TESTING_REGRESS += agg/spec_pack
 TESTING_REGRESS += agg/spill/contexts
-TESTING_REGRESS += agg/stub/%
+TESTING_REGRESS += agg/spill/group
 TESTING_REGRESS += agg/text_absent_cost
 TESTING_REGRESS += agg/topn/offset_bulk
-TESTING_REGRESS += agg/topn/offset_ties_suite_testing
 TESTING_REGRESS += agg/two_level_cell_qual
 TESTING_REGRESS += agg/two_level_rows_consolidated
 TESTING_REGRESS += agg/two_level_rows_consolidated_2
@@ -204,6 +178,7 @@ TESTING_REGRESS += agg/v6/par/dist_lean
 TESTING_REGRESS += agg/v6/par/distinct_dict
 TESTING_REGRESS += agg/v6/par/distinct_dict_robust
 TESTING_REGRESS += agg/v6/par/topk_ext
+TESTING_REGRESS += agg/v6/par_min_rows
 TESTING_REGRESS += agg/v6/parallel_2stage
 TESTING_REGRESS += agg/v6/parallel_2stage_robust
 TESTING_REGRESS += agg/v6/parallel_col_delta
@@ -238,7 +213,6 @@ TESTING_REGRESS += agg/vis_counts
 TESTING_REGRESS += agg/vk/topn_v6
 TESTING_REGRESS += agg/vk/v6_churn
 TESTING_REGRESS += agg/vk/v6_dict
-TESTING_REGRESS += agg/vnum_program
 TESTING_REGRESS += agg/window/topn_consolidated
 TESTING_REGRESS += bm25/analyze/version
 TESTING_REGRESS += bm25/build/limits
@@ -311,7 +285,6 @@ TESTING_REGRESS += col/cube_priority
 TESTING_REGRESS += col/cube_rank
 TESTING_REGRESS += col/cut_aligned
 TESTING_REGRESS += col/damage
-TESTING_REGRESS += col/dead_delta
 TESTING_REGRESS += col/dead_keys_budget
 TESTING_REGRESS += col/dead_rewrite
 TESTING_REGRESS += col/delta_scoped
@@ -616,7 +589,6 @@ TESTING_REGRESS += col/tags
 TESTING_REGRESS += col/text/contains
 TESTING_REGRESS += col/text/ilike
 TESTING_REGRESS += col/text/patterns
-TESTING_REGRESS += col/text/prefilter
 TESTING_REGRESS += col/text/scanwrap
 TESTING_REGRESS += col/text/tsig
 TESTING_REGRESS += col/tomb/horizon
@@ -632,8 +604,6 @@ TESTING_REGRESS += col/topn/deep_limits
 TESTING_REGRESS += col/topn/enum
 TESTING_REGRESS += col/topn/expr
 TESTING_REGRESS += col/topn/func
-TESTING_REGRESS += col/topn/gorder
-TESTING_REGRESS += col/topn/gorder_filter_text
 TESTING_REGRESS += col/topn/interval
 TESTING_REGRESS += col/topn/numeric
 TESTING_REGRESS += col/topn/offset
@@ -779,10 +749,7 @@ TESTING_REGRESS += table/wide_rows
 TESTING_REGRESS += table/writepath
 # these assert the segments of a parallel build of an index with a key cut, which the release library builds in one process (build_pays in src/col/v1/build_par.c)
 TESTING_REGRESS += agg/numeric/in_list
-TESTING_REGRESS += agg/prepass_const_list
-TESTING_REGRESS += agg/shape_walks
 TESTING_REGRESS += agg/shape_widths
-TESTING_REGRESS += agg/source_cache
 TESTING_REGRESS += col/cost_keys_sorted_once
 TESTING_REGRESS += col/cost_selectivity_once
 # Listed although scripts/check-testing-regress.sh would not select them (each fails on the release library, so the stock-library jobs must not run it):
@@ -811,10 +778,8 @@ TESTING_REGRESS += table/vblocks
 TESTING_REGRESS += table/verify_frozen
 # an asserted value differs on the release library
 TESTING_REGRESS += agg/count_not_null
-TESTING_REGRESS += agg/preagg/basic
 TESTING_REGRESS += agg/preagg/distinct
 TESTING_REGRESS += agg/preagg/linear
-TESTING_REGRESS += agg/preagg/rows
 TESTING_REGRESS += agg/privileges
 TESTING_REGRESS += agg/refusals
 TESTING_REGRESS += agg/set_array
@@ -836,43 +801,16 @@ TESTING_REGRESS += table/agg/basic
 TESTING_REGRESS += col/f2/point_dir
 TESTING_REGRESS += col/granule/point
 # the tests of the Format 1 settings that sift.test_* settings replaced (the testing build has them, the release library has not)
-TESTING_REGRESS += agg/combo/hash
 TESTING_REGRESS += agg/cte/inline_band
 TESTING_REGRESS += agg/cte/inline_rows
-TESTING_REGRESS += agg/dense
-TESTING_REGRESS += agg/distinct/cost
-TESTING_REGRESS += agg/few_keys_handful_units
-TESTING_REGRESS += agg/inner_semi
-TESTING_REGRESS += agg/join/key_types
 TESTING_REGRESS += agg/lookup/basic
-TESTING_REGRESS += agg/lookup/gang
-TESTING_REGRESS += agg/lookup/in_keyed
-TESTING_REGRESS += agg/lookup/in_list
 TESTING_REGRESS += agg/lookup/keyed_crossover
-TESTING_REGRESS += agg/lookup/range_bounds
-TESTING_REGRESS += agg/par/cost
-TESTING_REGRESS += agg/plan/facts_cache
-TESTING_REGRESS += agg/plan/scale
-TESTING_REGRESS += agg/preagg/dimfilter
 TESTING_REGRESS += agg/preagg/elem_parallel
 TESTING_REGRESS += agg/preagg/exceptions
-TESTING_REGRESS += agg/preagg/filter
-TESTING_REGRESS += agg/preagg/int8
-TESTING_REGRESS += agg/preagg/measures
 TESTING_REGRESS += agg/preagg/super
-TESTING_REGRESS += agg/preagg/wide_key
-TESTING_REGRESS += agg/probe/direct_slot
-TESTING_REGRESS += agg/probe/set_pricing
-TESTING_REGRESS += agg/rollup_cost
-TESTING_REGRESS += agg/rows
-TESTING_REGRESS += agg/scalar/initplan
-TESTING_REGRESS += agg/scan_price
 TESTING_REGRESS += agg/stats
-TESTING_REGRESS += agg/visibility_refusal
-TESTING_REGRESS += agg/workers_guessed_keys
 TESTING_REGRESS += col/key_cut/advice
 TESTING_REGRESS += col/merge/levels
-TESTING_REGRESS += col/net_agg
 TESTING_REGRESS += col/overlay/lean
 TESTING_REGRESS += col/overlay/wide_units
 TESTING_REGRESS += col/search
@@ -1022,7 +960,7 @@ isa-check: all
 limits:
 	scripts/gen-limits.sh
 
-# Rebuilds src/agg/vk_spv.h from the shaders of src/agg/vk/shaders (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
+# Rebuilds src/agg/vk/spv.h from the shaders of src/agg/vk/shaders (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:
 	scripts/gen-aggvk-spv.sh
 	scripts/gen-aggvk-min.py

@@ -14,7 +14,7 @@ extern void sift_cwbuf_decoded_note(Relation index, uint64 gen, uint64 rows);
 extern uint64 sift_cwbuf_decoded(Relation index, const SiftMetaPageData *meta, uint64 gen);
 /*
  * The instructions the reads of the server paid for the marks of the tombstone log of generation loggen (a scan that read a unit page by page for a mark in its range of heap
- * blocks, or did without its pre-aggregate: col/v1/scan_unit.c), what the fold of the marks is weighed against (sift_col_fold_due); whether this backend paid some since the last call
+ * blocks, or did without its pre-aggregate: col/v1/scan/unit.c), what the fold of the marks is weighed against (sift_col_fold_due); whether this backend paid some since the last call
  */
 extern void sift_col_marks_note(Relation index, uint64 loggen, uint64 instr);
 extern uint64 sift_col_marks_paid(Relation index, const SiftMetaPageData *meta, uint64 loggen);

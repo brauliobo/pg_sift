@@ -5,7 +5,7 @@
 
 #include "core/sortruns.h"
 #ifdef SIFT_TESTING
-#include "bm25/build.h"
+#include "bm25/build/build.h"
 #endif
 
 typedef struct RunWriter

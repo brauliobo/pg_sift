@@ -3,8 +3,8 @@
  * the directory is then read for the partitions that may hold them (core/range.h sift_range_span), and the others are not opened
  */
 #include "postgres.h"
-#include "col/v1/seg.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/seg/seg.h"
+#include "col/v1/scan/int.h"
 
 typedef struct PredKeys
 {

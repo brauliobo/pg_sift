@@ -10,8 +10,8 @@
 #include "miscadmin.h"
 
 #include "agg/v6/par/run_int.h"
-#include "agg/v6/v6_datum.h"
-#include "agg/v6/v6_pg_expr.h"
+#include "agg/v6/datum.h"
+#include "agg/v6/expr/pg.h"
 #include "core/memtrack.h"
 #include "core/par/pool.h"
 

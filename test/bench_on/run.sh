@@ -1,5 +1,5 @@
 #!/bin/bash
-# test/bench_on/run.sh: the standalone harnesses of the header-only structures, built with ASan and UBSan and run: a1 (core/u64set.h), tbl_a3 (table/f2/f2_lock_touched.c) and v1_a4 (table/v1/keyidx.h)
+# test/bench_on/run.sh: the standalone harnesses of the header-only structures, built with ASan and UBSan and run: a1 (core/u64set.h), tbl_a3 (table/f2/lock/touched.c) and v1_a4 (table/v1/keyidx.h)
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 inc=$(pg_config --includedir-server)

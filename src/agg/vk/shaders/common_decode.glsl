@@ -1,5 +1,5 @@
 /*
- * common_decode.glsl - bindings, layouts and the access to the decoded columns of the Vulkan compute engine (agg/vk.h). Included by
+ * common_decode.glsl - bindings, layouts and the access to the decoded columns of the Vulkan compute engine (agg/vk/vk.h). Included by
  * every shader; the C side is agg/vk/layout.h, which must agree word for word.
  *
  * A decoded column (DCol) of a granule is the values of one column, row by row: value = base + field, the field w bytes wide (w = 0: the

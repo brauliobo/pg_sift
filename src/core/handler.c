@@ -27,44 +27,45 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-#include "col/f2/f2_v6_format.h"
-#include "col/f2/f2_vacuum_run.h"
-#include "col/f2/l0_stage.h"
+#include "col/f2/v6/format.h"
+#include "col/f2/vacuum/run.h"
+#include "col/f2/l0/stage.h"
 #include "core/cachebudget.h"
-#include "core/f2/f2_vm_xlog.h"
+#include "core/f2/vm_xlog.h"
 #include "core/memtrack.h"
-#include "core/shmbudget.h"
+#include "core/shm/budget.h"
 #include "core/sift.h"
 #include "core/explain.h"
 #include "core/limits.h"
-#include "core/quarantine.h"
+#include "core/quarantine/quarantine.h"
 #include "core/wal_conflict.h"
 #include "core/worker.h"
-#include "core/maint.h"
-#include "core/maint_sched.h"
+#include "core/maint/maint.h"
+#include "core/maint/sched.h"
 #include "agg/agg.h"
-#include "agg/gpu_cfg.h"
-#include "agg/stub.h"
-#include "col/f2/f2_v6_proj_sort_plan.h"
+#include "agg/gpu/cfg.h"
+#include "col/f2/v6/proj/sort_plan.h"
 #include "bm25/am.h"
-#include "bm25/analyze.h"
-#include "bm25/bitmap.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/bitmap/bitmap.h"
 #include "col/am.h"
 #include "col/f2/scan/ord_stream.h"
-#include "col/v1/v1_store_ops.h"
-#include "col/v1/kern.h"
-#include "col/codec.h"
+#include "col/v1/store_ops.h"
+#include "col/v1/kern/kern.h"
+#include "col/codec/codec.h"
 #include "core/cpu.h"
-#include "bm25/kernels.h"
-#include "bm25/merge.h"
+#include "bm25/kernels/kernels.h"
+#include "bm25/merge/merge.h"
 #include "core/ops.h"
 #include "bm25/prefix.h"
-#include "table/v1/table_v1.h"
-#include "core/visibility.h"
+#include "table/v1/table.h"
+#include "core/visibility/visibility.h"
 #include "bm25/pushdown.h"
-#include "col/shred.h"
-#include "core/sql.h"
+#include "col/shred/shred.h"
+#include "core/sql/sql.h"
 #include "core/build_id.h"
+#include "agg/v6/settings.h"
+#include "agg/v6/test_gucs.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_BUILD_ID);
 
@@ -343,7 +344,7 @@ _PG_init(void)
 	sift_hybrid_init();
 	sift_v6_proj_sort_plan_init();
 	sift_f2_ord_plan_init();
-	sift_agg_init();
+	sift_v6_define_gucs();
 	sift_f2_v6_format_init();
 	sift_v1_store_ops_init();
 	sift_gpu_v6_init_gucs();
@@ -354,7 +355,7 @@ _PG_init(void)
 	sift_leak_test_init();
 	sift_memcensus_init();
 	sift_memtrack_define_test_gucs();
-	sift_aggstub_init();
+	sift_v6_define_test_gucs();
 	sift_limits_init();
 #endif
 	/* after the last GUC is defined: a value set before the library loaded is applied to its GUC, not dropped with the placeholder */
@@ -398,7 +399,6 @@ sift_catalog(void)
 	catalog.am = get_index_am_oid("sift", true);
 	catalog.col_am = get_index_am_oid("sift_col", true);
 #ifdef SIFT_TESTING
-	catalog.colstub_am = get_index_am_oid(SIFT_COLSTUB_AM, true);
 #endif
 	nsp = get_namespace_oid("sift", true);
 	if (OidIsValid(nsp))

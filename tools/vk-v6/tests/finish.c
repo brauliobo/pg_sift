@@ -1,5 +1,5 @@
 /*
- * tests/finish.c - T12: the finishes of a hash job (agg/vk/shaders/vk_ht_compact.comp, vk_ht_topk.comp) against the scalar oracle over the same table of pairs or groups:
+ * tests/finish.c - T12: the finishes of a hash job (agg/vk/shaders/ht_compact.comp, vk_ht_topk.comp) against the scalar oracle over the same table of pairs or groups:
  *   COUNT(DISTINCT x)                       the number of pairs (the keys, x) whose x is not NULL (SIFT_VK_FIN_COUNT);
  *   ... by the dense group of the keys      the count of each group, and the pairs whose x is NULL apart (SIFT_VK_FIN_DENSE_COUNT);
  *   ORDER BY a count or a key LIMIT K       every group of the K best is a candidate, each candidate is a group of the table with its rows, and the ties with the K-th are all candidates

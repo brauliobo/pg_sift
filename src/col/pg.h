@@ -107,7 +107,7 @@ extern Relation sift_col_open_inspect(Oid relid, const char *bm25_use);
 extern PGDLLIMPORT int sift_col_format_minor;	/* the minor of the segments written: 4, or 3 to stay readable by 3.0 */
 
 /* ---------------------------------------------------------------------------
- * 4. Shred adapter (col/jsonb.c): the index's jsonb attributes, shredded by col-json's col/shred.h
+ * 4. Shred adapter (col/jsonb.c): the index's jsonb attributes, shredded by col-json's col/shred/shred.h
  * ------------------------------------------------------------------------- */
 
 typedef struct SiftColShredAdapter SiftColShredAdapter;
@@ -189,12 +189,12 @@ typedef struct SiftColOptions
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
-	int			connect;		/* offset of the "connect" string (the parent index this one is connected to, col/v1/conn.h), 0 = none */
-	int			scope;			/* offset of the "scope" string (the derived keys of the index, col/scope.h), 0 = none */
+	int			connect;		/* offset of the "connect" string (the parent index this one is connected to, col/v1/conn/conn.h), 0 = none */
+	int			scope;			/* offset of the "scope" string (the derived keys of the index, col/scope/scope.h), 0 = none */
 	int			projection;		/* offset of the "projection" string (the named projections the index holds or serves, sift.projection_index), 0 = none */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
-	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/v1/gorder.h), 0 = auto */
+	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/v1/gorder/gorder.h), 0 = auto */
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
 	int			key_order;		/* offset of the "key_order" string, 0 = none */

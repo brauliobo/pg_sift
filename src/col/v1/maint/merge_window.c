@@ -5,7 +5,7 @@
  * into and the empty batches it lends again, whatever the number of its inputs, and gives each unit's arrays back as soon as its rows are in the superblock.
  */
 #include "postgres.h"
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 #include "core/limits.h"
 #include "core/memtrack.h"
 

@@ -18,7 +18,7 @@
 #include "core/check.h"
 #include "core/meta_peek.h"
 #include "core/ops.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 #include "table/dispatch.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);

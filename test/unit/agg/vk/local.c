@@ -1,5 +1,5 @@
 /*
- * test_gpu_local - the device of a backend of its own (agg/gpu_local.c) on a host the driver is faked on: a device that was lost or did not answer is closed and opened again by the
+ * test_gpu_local - the device of a backend of its own (agg/gpu/local.c) on a host the driver is faked on: a device that was lost or did not answer is closed and opened again by the
  * next query, and a host with no driver is asked once for a while, not once per query.
  */
 #include "postgres.h"
@@ -7,8 +7,8 @@
 #include "access/xact.h"
 #include "storage/ipc.h"
 
-#include "agg/gpu_shm.h"
-#include "agg/gpu_v6.h"
+#include "agg/gpu/shm.h"
+#include "agg/gpu/v6.h"
 #include "core/cachebudget.h"
 #include "test/common/check.h"
 

@@ -6,9 +6,9 @@
 #include "access/htup_details.h"
 #include "access/xact.h"
 #ifdef SIFT_TESTING
-#include "bm25/build.h"
+#include "bm25/build/build.h"
 #endif
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/lmgr.h"
@@ -16,7 +16,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "table/v1/load/load_int.h"
+#include "table/v1/load/int.h"
 
 void
 load_publish_groups(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)

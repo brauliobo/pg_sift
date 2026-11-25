@@ -1,4 +1,4 @@
--- The lookup of the dead addresses of a statement reads the units of the partitions that may hold a key of the rows it deleted (col/v1/track_dv.c): the segments it opens are those of the keys between
+-- The lookup of the dead addresses of a statement reads the units of the partitions that may hold a key of the rows it deleted (col/v1/track/dv.c): the segments it opens are those of the keys between
 -- the least and the greatest of them, a statement that spans every key opens every segment, and rows without a key and rows that changed key end up as the heap says.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

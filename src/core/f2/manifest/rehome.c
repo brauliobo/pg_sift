@@ -1,10 +1,10 @@
 /*
- * core/f2/manifest/rehome.c - which pages of the manifest lie at or above a block (core/f2/manifest.h): the pages of the part lists and of the directory that a commit of a partition
+ * core/f2/manifest/rehome.c - which pages of the manifest lie at or above a block (core/f2/manifest/manifest.h): the pages of the part lists and of the directory that a commit of a partition
  * writes again, so that the partitions to commit for the pages to come down to the lowest free pages of the slabs are named without a page being written.
  */
 #include "core/host.h"
 
-#include "core/f2/manifest/manifest_int.h"
+#include "core/f2/manifest/int.h"
 #include "core/page_io.h"
 
 static BlockNumber

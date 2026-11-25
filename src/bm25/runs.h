@@ -18,8 +18,8 @@
 
 #include "core/host.h"
 
-#include "bm25/analyze.h"
-#include "bm25/segment.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/segment/segment.h"
 
 #ifdef SIFT_TESTING
 /* Testing knobs (sift.test_*, 0 = off): docs per run, merge fan-in, postings of a segment's largest term */

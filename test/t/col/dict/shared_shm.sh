@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The parsed dictionaries that backends share (col/dictshm.c) in a /dev/shm of a container (Docker's default is 64 MB; where /dev/shm is bigger than 1 GB the
+# The parsed dictionaries that backends share (col/dictshm/dictshm.c) in a /dev/shm of a container (Docker's default is 64 MB; where /dev/shm is bigger than 1 GB the
 # test uses sift.test_col_dict_shared = 2, which makes the table fail as a full one does): the table takes a quarter of /dev/shm at most, a second backend
 # copies what the first parsed to the same rows as the stock plan (also in a parallel query), a ring too small for the dictionaries asked stops writing instead
 # of churning, and a /dev/shm with no room for the table costs no error and no wrong row: the backend goes without it, as before.

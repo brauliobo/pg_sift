@@ -24,14 +24,14 @@ check_layout() {
 	local f dir area name rc=0
 	while read -r f; do
 		dir=${f#src/}; area=${dir%%/*}; name=${dir#*/}
-		if [[ $dir != */* || ( $name == */*/* && $dir != col/v1/*/* && $dir != table/v1/*/* && $dir != col/f2/*/* && $dir != core/f2/*/* && $dir != agg/vk/shaders/* && $dir != agg/v6/par/* && $dir != col/scope_v6/test/* ) || $dir == col/v1/*/*/* || $dir == table/v1/*/*/* || $dir == col/f2/*/*/* || $dir == core/f2/*/*/* ]] || [[ " $AREAS " != *" $area "* ]]; then echo "$f: not in a folder of src/ ($AREAS), or deeper than area/context/ (col/v1/context/, table/v1/context/, col/f2/context/, core/f2/context/)"; rc=1; continue; fi
+		if [[ $dir != */* || $name == */*/*/*/* ]] || [[ " $AREAS " != *" $area "* ]]; then echo "$f: not in a folder of src/ ($AREAS), or deeper than area/d1/d2/d3/ (four folders)"; rc=1; continue; fi
 		if [[ " $RENAMED " == *" $area "* && ${name##*/} == sift_* ]]; then echo "$f: a file of $area/ still has the sift_ prefix"; rc=1; fi
 	done < <(src_files)
 	return $rc
 }
 
 # the tracked text files whose references are checked
-EXCLUDE='^(releases/|results/|docs/results/|docs/releases/|docs/results/|bench/xbench/|LICENSE$|scripts/restructure-src\.sh$|scripts/test-perf-select\.py$)'
+EXCLUDE='^(releases/|results/|docs/results/|docs/releases/|docs/results/|bench/xbench/|LICENSE$|scripts/(restructure-src|refactor-subfolders|check-path-redundancy)\.|scripts/test-perf-select\.py$)'
 files() { git grep -I -l -e '' -- . | grep -Ev "$EXCLUDE" || true; }
 
 read -r -d '' PERL <<'EOF' || true
@@ -49,7 +49,7 @@ while (my $f = <STDIN>) {
 	close $in;
 	my $head = $text;
 	$head = $1 if $f =~ /CHANGELOG\.md$/ && $text =~ /^(.*?)(?=\n## [0-9])/s;
-	while ($head =~ m{\bsrc/($areas)/([A-Za-z0-9_.]+(?:/[A-Za-z0-9_.]+)?)}g) {
+	while ($head =~ m{\bsrc/($areas)/([A-Za-z0-9_.]+(?:/[A-Za-z0-9_.]+){0,4})}g) {
 		my ($a, $n, $pos) = ($1, $2, $-[0]);
 		next unless $n =~ /\.(?:c|h|comp|py)$/ && $n !~ /\.$/;
 		next if $f =~ m{^(?:scripts/(?:focus/\w+\.tsv|focus-pins\.tsv|moved-sources\.tsv)|sql/(?:pg_sift--[0-9.-]+|[0-9.]+/[\w-]+)\.sql)$} && $moved{"src/$a/$n"};	# the rows made for a file that was split into a folder (scripts/moved-sources.tsv), and the comments of a released script (frozen: scripts/released-sql.sha256), and a patch of the research notes (it applies to the tree it was made on)

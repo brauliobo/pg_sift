@@ -6,7 +6,7 @@
 #include "access/xact.h"
 #include "storage/proc.h"
 
-#include "core/f2/manifest/manifest_int.h"
+#include "core/f2/manifest/int.h"
 
 /*
  * Whether the blocks a commit releases wait for the xid of its own transaction. A VACUUM's xid is not in the snapshots of other backends (PROC_IN_VACUUM), and a worker of a parallel

@@ -1,5 +1,5 @@
 /*
- * core/parbuild.h - the parallel context of a parallel CREATE INDEX, shared by the BM25 build (bm25/build.c) and the column build
+ * core/parbuild.h - the parallel context of a parallel CREATE INDEX, shared by the BM25 build (bm25/build/build.c) and the column build
  * (col/v1/build_par.c): the leader's set-up of the dynamic shared memory (shared state, the workers' parts, their WAL and buffer
  * usage, the snapshot of a concurrent build, the query text), the launch, and the opening of the relations in a worker.
  *
@@ -15,7 +15,7 @@
 
 typedef struct SiftParCommon
 {
-	Oid			heaprelid;		/* InvalidOid: the merge of the segments of the index (bm25/merge_ranges.c), whose workers open no table */
+	Oid			heaprelid;		/* InvalidOid: the merge of the segments of the index (bm25/merge/ranges.c), whose workers open no table */
 	Oid			indexrelid;		/* InvalidOid: the workers write into the table (the load of a sift_table, table/load/write.c) and open no index */
 	bool		isconcurrent;
 } SiftParCommon;

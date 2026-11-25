@@ -5,7 +5,7 @@
  */
 #include "postgres.h"
 
-#include "col/f2/f2_col_delta_idx.h"
+#include "col/f2/col_delta/idx.h"
 #include "col/f2/scan/ord_int.h"
 #include "core/memtrack.h"
 

@@ -8,7 +8,7 @@
  */
 /* check-memory: allow-allocs a group holds at most SIFT_SUPER_KEY_ROWS rows of the leaves its cube reads */
 #include "core/host.h"
-#include "col/v1/seg_write/seg_write_int.h"
+#include "col/v1/seg_write/int.h"
 
 /*
  * The cube of a group: the dims of the segment's cube that are not calendar cells, lists or the histograms of a date or timestamp, with their integer measures (a float sum depends on the order of

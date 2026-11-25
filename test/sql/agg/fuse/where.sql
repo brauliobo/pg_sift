@@ -84,7 +84,6 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
-SET sift.agg_preagg = off;
 SELECT same(:'beyond') AS beyond_par_same, same(:'own') AS own_par_same, same(:'lines') AS lines_par_same, same(:'lines_row') AS lines_row_par_same;
 
 DROP FUNCTION arms_shared(text), same(text);

@@ -1,5 +1,5 @@
 /*
- * col/v1/test/scope.c - test hooks of a scope index: the fill (col/v1/scope_fill.c), the scope segments and the marker of a scope read (agg/plan_scope.c)
+ * col/v1/test/scope.c - test hooks of a scope index: the fill (col/v1/scope/fill.c), the scope segments and the marker of a scope read (agg/plan_scope.c)
  */
 /* check-memory: allow-allocs the arrays follow the keys of one call and the pairs of those keys, not the rows of a table */
 #include "postgres.h"
@@ -20,12 +20,12 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
-#include "core/maint.h"
+#include "core/maint/maint.h"
 #include "col/am.h"
-#include "col/scope.h"
+#include "col/scope/scope.h"
 #include "col/v1/test/int.h"
 #include "core/catname.h"
-#include "core/store.h"
+#include "core/store/store.h"
 #include "core/host.h"
 
 PG_FUNCTION_INFO_V1(sift_test_member_hash);
@@ -516,7 +516,7 @@ sift_test_scope_journal_changes(PG_FUNCTION_ARGS)
 }
 
 
-/* sift._test_scope_price(counts...): what the units of a read and the entity path cost for the counts (col/scope.h SiftScopeCounts), in instructions: the pure price the executor and the planner share */
+/* sift._test_scope_price(counts...): what the units of a read and the entity path cost for the counts (col/scope/scope.h SiftScopeCounts), in instructions: the pure price the executor and the planner share */
 Datum
 sift_test_scope_preagg_kept(PG_FUNCTION_ARGS)
 {
@@ -578,7 +578,7 @@ sift_test_scope_refresh(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_scope_paid);
 
-/* sift._test_scope_paid(index, scope): the instructions the reads of the server paid for the pairs changed since the floor of the scope, on top of the filled read: the metapage's and this backend's not yet written (col/v1/scope_paid.c) */
+/* sift._test_scope_paid(index, scope): the instructions the reads of the server paid for the pairs changed since the floor of the scope, on top of the filled read: the metapage's and this backend's not yet written (col/v1/scope/paid.c) */
 Datum
 sift_test_scope_paid(PG_FUNCTION_ARGS)
 {
@@ -620,7 +620,7 @@ sift_test_scope_balance(PG_FUNCTION_ARGS)
 
 PG_FUNCTION_INFO_V1(sift_test_scope_paid_flush);
 
-/* sift._test_scope_paid_flush(index): this backend's sum is written to the metapage now, as the look does once for each naptime (col/v1/scope_paid.c) */
+/* sift._test_scope_paid_flush(index): this backend's sum is written to the metapage now, as the look does once for each naptime (col/v1/scope/paid.c) */
 Datum
 sift_test_scope_paid_flush(PG_FUNCTION_ARGS)
 {

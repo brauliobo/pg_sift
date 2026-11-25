@@ -6,7 +6,7 @@
 
 #include <limits.h>
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
 
 #ifdef SIFT_HAVE_LZ4

@@ -5,7 +5,6 @@ CREATE EXTENSION pg_sift;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 
 SET client_min_messages = warning;
-SET sift.agg_preagg = off;
 
 CREATE TABLE dg (id int PRIMARY KEY, f int, g int, narrow numeric(8, 2), wide numeric(10, 2), nul numeric(8, 2)) WITH (autovacuum_enabled = off);
 INSERT INTO dg

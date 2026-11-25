@@ -20,7 +20,7 @@ extern void sift_progress_step(int64 done, uint64 bytes);
 
 /* The job ends (began: what sift_progress_begin said); an error that aborts the transaction ends it as well */
 extern void sift_progress_end(bool began);
-/* The slot of a job whose error was caught and not raised on (core/quarantine.h): given back like the abort of the transaction does */
+/* The slot of a job whose error was caught and not raised on (core/quarantine/quarantine.h): given back like the abort of the transaction does */
 extern void sift_progress_abort(void);
 
 #ifdef SIFT_TESTING

@@ -2,7 +2,7 @@
  * col/v1/seg/gorder_str.c - the strings of a text global order: the collation, the string of a rank and the rank of a string
  */
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* The collation of the strings of a text block (0: the leaf is not text, or the segment has no block) */
 uint32

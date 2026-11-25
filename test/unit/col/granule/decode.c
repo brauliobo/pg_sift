@@ -1,13 +1,13 @@
 /*
- * col/granule/decode.c - the decoders of col/granule and col/f2/f2_view.c on real granules (col/granule/fixture.h), run by 4 pool-like threads that each own a 2 MB arena: every column kind through the
+ * col/granule/decode.c - the decoders of col/granule and col/f2/view.c on real granules (col/granule/fixture.h), run by 4 pool-like threads that each own a 2 MB arena: every column kind through the
  * _a entrypoints, dense, point and as ColViews, bit for bit against the decode of the backend path; damaged chunks of every kind give the error of the backend path as data; an arena too
  * small for a chunk says so and is never overrun. The palloc/ereport trap of trapshim.h is armed on every worker.
  */
 #include "postgres.h"
 
 #include "col/compress.h"
-#include "col/f2/f2_view.h"
-#include "col/granule/granule_a.h"
+#include "col/f2/view.h"
+#include "col/granule/a.h"
 #include "core/testrng.h"
 #include "fixture.h"
 #include "test/common/pgshim.h"

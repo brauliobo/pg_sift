@@ -1,5 +1,5 @@
 /*
- * col/granule/filter.c - the filters of a granule on pool threads (col/granule/granule_filter_a.c): four workers filter every granule of the fixture by equality, IN, range, prefix, LIKE '%lit%', NOT
+ * col/granule/filter.c - the filters of a granule on pool threads (col/granule/filter_a.c): four workers filter every granule of the fixture by equality, IN, range, prefix, LIKE '%lit%', NOT
  * LIKE and the NULL tests, in an arena of their own that they rewind between granules, on zstd, LZ4, dictionary, FSST, view and integer chunks, at every SIMD level the CPU runs. The masks are
  * those of the backend path on the setup thread (and of a bytewise test of the decoded values), the strings the filter keeps are those of the decode, a damaged chunk is an error as data, and an
  * arena that is full is SIFT_ERR_ARENA_FULL, with the palloc/ereport trap of trapshim.h armed on every worker.
@@ -8,11 +8,11 @@
 
 #include "lib/stringinfo.h"
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
-#include "col/granule/cfilt_cc.h"
-#include "col/granule/cfilt_str_simd.h"
-#include "col/granule/granule_filter.h"
+#include "col/granule/cfilt/cc.h"
+#include "col/granule/cfilt/str_simd.h"
+#include "col/granule/filter.h"
 #include "core/par/arena.h"
 #include "core/cpu.h"
 #include "core/testrng.h"
@@ -547,7 +547,7 @@ worker_code(int sqlstate)
 	return sqlstate == ERRCODE_FEATURE_NOT_SUPPORTED ? SIFT_ERR_UNSUPPORTED : SIFT_ERR_CORRUPT;
 }
 
-/* A damaged chunk is what the backend path makes of it: the same result, or the same error as data (a worker never raises it) */
+/* A damaged chunk is what the backend path makes of it: the same result, or the same error as data, corrupt or unsupported (a worker never raises it) */
 static void
 test_damage(const Suite *s)
 {

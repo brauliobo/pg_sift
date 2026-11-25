@@ -1,1 +1,1 @@
-bm25/store/wal_flush	src/core/store.c:sift_wal_flush_inserted src/core/store_ops_test.c:sift_test_flush_wal
+bm25/store/wal_flush	src/core/store/ops_test.c:sift_test_flush_wal src/core/store/store.c:sift_wal_flush_inserted

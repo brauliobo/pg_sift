@@ -14,7 +14,7 @@
 #include "utils/uuid.h"
 #include "col/am.h"
 #include "col/am/preds.h"
-#include "col/like_simd.h"
+#include "col/like/simd.h"
 #include "core/hash.h"
 
 /* The constant of a key as a predicate value of the leaf: the key's own type is an integer, date, timestamp, boolean, float, text, char(n) or uuid (numeric: numeric_preds) */
@@ -291,7 +291,7 @@ like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool in
 		k->recheck = true;
 }
 
-/* NOT LIKE '%lit%' is the rows that do not hold lit, NOT LIKE 'lit' those that differ from it: the aggregate scan sends no other pattern (agg/v6/v6_qual.c) */
+/* NOT LIKE '%lit%' is the rows that do not hold lit, NOT LIKE 'lit' those that differ from it: the aggregate scan sends no other pattern (agg/v6/qual/qual.c) */
 static void
 not_like_pred(SiftColPred *p, SiftColValue *v)
 {

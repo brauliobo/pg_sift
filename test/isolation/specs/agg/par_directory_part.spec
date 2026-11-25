@@ -42,7 +42,6 @@ setup
 			parallel := parallel OR l ~ 'Workers Planned: ';
 		END LOOP;
 		PERFORM set_config('sift.test_col_open_gate', gate::text, true);
-		PERFORM set_config('sift.test_par_leader_wait', 'on', true);
 		EXECUTE 'SELECT string_agg(x::text, '' '') FROM (' || q || ') x' INTO a;
 		PERFORM set_config('sift.test_col_open_gate', '0', true);
 		PERFORM set_config('sift.enable_agg', 'off', true);

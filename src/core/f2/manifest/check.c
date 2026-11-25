@@ -3,8 +3,8 @@
  */
 #include "core/host.h"
 
-#include "core/f2/manifest/manifest_int.h"
-#include "col/f2/part_format.h"
+#include "core/f2/manifest/int.h"
+#include "col/f2/part/format.h"
 #include "core/page_io.h"
 
 /* A part an edit adds lies inside its partition and has a header page, or is in object storage and has none */

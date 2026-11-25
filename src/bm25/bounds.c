@@ -5,8 +5,8 @@
 
 #include <math.h>
 
-#include "rank_int.h"
-#include "bm25/kernels.h"
+#include "bm25/rank/int.h"
+#include "bm25/kernels/kernels.h"
 #include "core/cmp.h"
 #include "core/memtrack.h"
 

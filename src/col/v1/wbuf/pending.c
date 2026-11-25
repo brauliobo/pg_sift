@@ -9,7 +9,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "col/am.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "col/v1/wbuf/int.h"
 
 /*
  * Rows a backend has appended after the first of its transaction wait here, per index (PEND_SLOTS of them), and go to a lane in runs: a run is the

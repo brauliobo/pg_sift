@@ -28,7 +28,7 @@ typedef struct SiftTableFormatOps
 	void		(*ddl_rename_column) (Relation rel, const char *oldname, const char *newname);
 	/* the rows of sift.table_paths of the table are about to change: what the table holds under its old declaration is written out, and its store is replaced in every backend; NULL for a format whose layout is read with the relcache entry */
 	void		(*paths_changed) (Relation rel);
-	/* the rows of the virtual block of a table an index points into that the snapshot sees (core/visibility.c) */
+	/* the rows of the virtual block of a table an index points into that the snapshot sees (core/visibility/visibility.c) */
 	int			(*filter_page) (IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
 	/* where the row at an address lies, as a key that rows of one granule share the high bits of: fetching rows in the order of it reads each granule once; NULL for a format whose fetches are not dearer by their order */
 	uint64		(*fetch_order) (IndexFetchTableData *fetch, const ItemPointerData *tid);

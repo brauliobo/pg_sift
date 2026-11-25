@@ -11,22 +11,20 @@
 #include "funcapi.h"
 #include "storage/bufmgr.h"
 #include "utils/array.h"
-#include "agg/agg.h"
-#include "agg/cost/model.h"
-#include "core/maint.h"
+#include "core/maint/maint.h"
 #include "col/am.h"
-#include "col/v1/gorder.h"
-#include "col/v1/order_bound.h"
-#include "col/v1/order_sort.h"
+#include "col/v1/gorder/gorder.h"
+#include "col/v1/order/bound.h"
+#include "col/v1/order/sort.h"
 #include "col/v1/pagg.h"
 #include "core/dirpart.h"
-#include "core/sql.h"
-#include "core/visibility.h"
+#include "core/sql/sql.h"
+#include "core/visibility/visibility.h"
 #endif							/* SIFT_TESTING */
 #include "col/v1/test/int.h"
 #include "core/catname.h"
-#include "core/store.h"
-#include "core/store_test_int.h"
+#include "core/store/store.h"
+#include "core/store/test_int.h"
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_gorder);
@@ -62,16 +60,7 @@ PG_FUNCTION_INFO_V1(sift_test_vet_offsets);
 PG_FUNCTION_INFO_V1(sift_test_gorder_decoded);
 
 PG_FUNCTION_INFO_V1(sift_test_key_sorts);
-
-PG_FUNCTION_INFO_V1(sift_test_source_lookups);
-
-PG_FUNCTION_INFO_V1(sift_test_prepass_nodes);
-
-PG_FUNCTION_INFO_V1(sift_test_agg_outer_walks);
-PG_FUNCTION_INFO_V1(sift_test_agg_key_lists);
 PG_FUNCTION_INFO_V1(sift_test_vis_counts);
-PG_FUNCTION_INFO_V1(sift_test_agg_plan_passes);
-PG_FUNCTION_INFO_V1(sift_test_agg_workers_pay);
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 
@@ -232,7 +221,7 @@ shift_partition(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void
 	sift_dir_part_replace(gens, ps->n, &dir->segs[ps->first], ps->n, (const uint8 (*)[SIFT_BOUND_BYTES]) ps->lo);
 }
 
-/* sift._test_col_cut_near(held, due_at, slack_pct, open): is a segment of held bytes done after a unit (col/v1/order_bound.c) */
+/* sift._test_col_cut_near(held, due_at, slack_pct, open): is a segment of held bytes done after a unit (col/v1/order/bound.c) */
 Datum
 sift_test_col_cut_near(PG_FUNCTION_ARGS)
 {
@@ -365,7 +354,7 @@ sift_test_col_cut_probes(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(sift_test_cut_probes);
 }
 
-/* sift._test_col_cut_sort_rows() and _disk_kb(): the rows the merges of this backend sorted by the sort of col/v1/order_sort.c (the rows of an input that did not fit maintenance_work_mem) and the kB of temporary files it used */
+/* sift._test_col_cut_sort_rows() and _disk_kb(): the rows the merges of this backend sorted by the sort of col/v1/order/sort.c (the rows of an input that did not fit maintenance_work_mem) and the kB of temporary files it used */
 Datum
 sift_test_col_cut_sort_rows(PG_FUNCTION_ARGS)
 {
@@ -652,18 +641,6 @@ SIFT_TEST_COUNTER_FN(sift_test_gorder_decoded, sift_col_gorder_decoded)
 /* the sorts of an IN list by the cost estimates since the last read; the argument true resets the count */
 SIFT_TEST_COUNTER_FN(sift_test_key_sorts, sift_col_key_sorts)
 
-/* {the questions, the walks made to answer them} about references to a query above that the planner asked since the last read; the argument true resets the counts */
-Datum
-sift_test_agg_outer_walks(PG_FUNCTION_ARGS)
-{
-	Datum		d[2] = {Int64GetDatum(sift_agg_outer_asks), Int64GetDatum(sift_agg_outer_walks)};
-	ArrayType  *a = construct_array_builtin(d, 2, INT8OID);
-
-	if (PG_GETARG_BOOL(0))
-		sift_agg_outer_asks = sift_agg_outer_walks = 0;
-	PG_RETURN_ARRAYTYPE_P(a);
-}
-
 /*
  * {the all-visible pages, the clean superblocks} of the first nblocks pages of a table (the table's own size when nblocks is negative), by sift_vis_count and, as an oracle, page by page by
  * visibilitymap_get_status (a superblock is clean when every page it has is all-visible)
@@ -706,23 +683,4 @@ sift_test_vis_counts(PG_FUNCTION_ARGS)
 	a = construct_array_builtin(d, 4, INT8OID);
 	PG_RETURN_ARRAYTYPE_P(a);
 }
-
-/* the runs of PostgreSQL's planner that the hook made since the last read (a statement planned by one run is one; the variants of a shared CTE or a flattened form are more); the argument true resets the count */
-SIFT_TEST_COUNTER_FN(sift_test_agg_plan_passes, sift_agg_plan_passes)
-
-/* sift._test_agg_workers_pay(instr, nworkers): does a read of instr instructions launch its nworkers (the decision of a scope read at execution) */
-Datum
-sift_test_agg_workers_pay(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_BOOL(agg_workers_pay(PG_GETARG_FLOAT8(0), PG_GETARG_INT32(1)));
-}
-
-/* the selectivities of a list of keys that the planner computed since the last read; the argument true resets the count */
-SIFT_TEST_COUNTER_FN(sift_test_agg_key_lists, sift_agg_key_lists)
-
-/* the asks of has_column_source that went to the catalog since the last read; the argument true resets the count */
-SIFT_TEST_COUNTER_FN(sift_test_source_lookups, sift_source_lookups)
-
-/* the nodes the passes that rewrite a query before planning visited since the last read; the argument true resets the count */
-SIFT_TEST_COUNTER_FN(sift_test_prepass_nodes, sift_prepass_nodes)
 #endif							/* SIFT_TESTING */

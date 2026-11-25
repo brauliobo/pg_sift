@@ -12,7 +12,7 @@ LIMIT=1000
 FROZEN='^sql/pg_sift--[0-9]+[.][0-9]+[.]sql$'
 
 # Allowed for good: the generated Vulkan headers (scripts/gen-aggvk-spv.sh, scripts/gen-aggvk-min.py) are rebuilt from the shaders and the Khronos header, not edited.
-GENERATED='^src/agg/vk_(spv|min)[.]h$'
+GENERATED='^src/agg/vk/(spv|min)[.]h$'
 
 bad=0
 while IFS=$'\t' read -r f n; do

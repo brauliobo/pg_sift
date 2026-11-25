@@ -54,11 +54,11 @@ fi
 # the default list is the memory-sensitive paths that are cheap under memcheck (seconds measured in CI): store 33, table AM 9, shredder 154,
 # the relcache pointer of the column index 34 + 11, dictionary and lookup caches 16 + 21 + 32 + 116, write buffer 66 + 12, parallel build 58,
 # aggregation nodes 105 + 24. SIFT_VALGRIND_FULL=1 adds the slow ones: col_index_basic 289 (the assert lane runs it too), col_index_parallel 285,
-# col_index_dict_tests 283, agg_bucket 188, agg_dense 114.
+# col_index_dict_tests 283, agg_bucket 188, 114.
 if [[ -z $MASSIF ]] && (( ! ${#TESTS[@]} )); then
-	TESTS=(bm25/store/basic table/basic col/shred/values col/index/relcache bm25/verify/relcache col/dict/cache bm25/read/dict_ids agg/stub/dict
+	TESTS=(bm25/store/basic table/basic col/shred/values col/index/relcache bm25/verify/relcache col/dict/cache bm25/read/dict_ids
 		agg/lookup/pricing_suite col/wbuf/basic bm25/wbuf/lifecycle bm25/build/parallel agg/partial_index agg/distinct/basic)
-	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel col_index_dict_tests agg_bucket agg_dense)
+	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel col_index_dict_tests agg_bucket)
 	# SIFT_VALGRIND_ACCUM=1 adds the small tests of the paths that accumulate memory: merge, rewrite, fold and vacuum of a column index, the tombstone log,
 	# the scope journal, the value store, partitions, the lookup load and count(DISTINCT)
 	[[ -z ${SIFT_VALGRIND_ACCUM:-} ]] || TESTS+=(col_merge_force col_merge_levels col_merge_runs col_merge_memory col_rewrite_roll col_fold_marks col_dead_rewrite

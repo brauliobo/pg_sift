@@ -1,0 +1,209 @@
+/*
+ * bm25/segment/int.h - shared by the files of the segment code (segment.c, writer.c, liveness.c, walk.c, livestream.c).
+ */
+#ifndef SIFT_SEGMENT_INT_H
+#define SIFT_SEGMENT_INT_H
+
+#include "core/host.h"
+
+#include "core/live/live.h"
+#include "bm25/segment/segment.h"
+
+#define ALIGN4(x)		(((x) + 3) & ~(uint64) 3)
+#define ULL(x)			((unsigned long long) (x))
+#define MAXOFF			SIFT_MAX_OFFSET
+
+#define corrupt(seg, ...) SIFT_SEG_CORRUPT((seg)->index, (seg)->entry.gen, __VA_ARGS__)
+
+/*
+ * The dl rows of a DOCMAP record are 16 bits per slot, or in format 3 8 or 4 bits where the largest dl of the SB allows. The width is
+ * kept in bits 30-31 of the record's document count (SIFT_DL_CODE_SHIFT), so a record of format 2 and one of format 3 read alike.
+ */
+#define SIFT_DL_CODE_SHIFT	30
+#define SIFT_DL_CODE_BITS(code)	(16 >> (code))
+#define SIFT_DL_ROW_BYTES(code, n)	(((n) * SIFT_DL_CODE_BITS(code) + 7) / 8)
+
+#define ATTR_ROW_BYTES(n, width)	(((uint64) (n) * (width) + 7) / 8)
+
+/* The record of one column of a SB (SIFT_SEGFMT_ATTR): where it is and how long; the records are grouped by column and the trailer is SiftAttrRef[nsb][ncols], u64 recs_end, u32 ncols, u32 nsb */
+typedef struct SiftAttrRef
+{
+	uint64		off;
+	uint32		len;
+	uint32		reserved;
+} SiftAttrRef;
+
+/* The header of a column's record of a SB; the rows of its present pages follow */
+typedef struct SiftAttrColHdr
+{
+	int64		base;
+	uint64		unk;
+	uint32		reserved;
+	uint8		width;
+	uint8		flags;
+	uint16		pad;
+} SiftAttrColHdr;
+
+/*
+ * The length of every field of every doc (SIFT_SEGFMT_FIELDDL), in the DOCMAP after the INCLUDE records: per SB and field one record of the dl rows of
+ * the SB's present pages one after the other, in the width its dlcode says (the codes of the docmap's own rows), the length of the doc in that field
+ * (sift_field_dl). A record is empty (len 0) when no doc of the SB has a word in the field. The trailer is SiftDocSBRef[nsb], SiftAttrRef[nsb][ncols],
+ * SiftFieldDlRef[nsb][nfields], SiftFieldDlTrailer, then the footer of format 5 (u64 recs_end, u32 ncols, u32 nsb).
+ */
+#define SIFT_FIELDDL_MAGIC		UINT32_C(0x46444C32)	/* "FDL2" */
+#define SIFT_MAX_BM25_FIELDS	16
+
+typedef struct SiftFieldDlRef
+{
+	uint64		off;			/* stream offset of the record */
+	uint32		len;			/* its bytes */
+	uint8		dlcode;			/* SIFT_DL_CODE_BITS */
+	uint8		pad[3];
+} SiftFieldDlRef;
+
+StaticAssertDecl(sizeof(SiftFieldDlRef) == 16, "SiftFieldDlRef must be 16 bytes");
+
+typedef struct SiftFieldDlTrailer
+{
+	uint32		magic;			/* SIFT_FIELDDL_MAGIC */
+	uint32		nfields;		/* 1..SIFT_MAX_FIELDS */
+	uint64		fdir_off;		/* stream offset of SiftFieldDlRef[nsb][nfields] */
+	uint64		sum_dl[SIFT_MAX_BM25_FIELDS];	/* the length of each field over all docs of the segment, vacuumed ones included */
+	uint64		ndocs_nz[SIFT_MAX_BM25_FIELDS];	/* the docs that have a word in the field */
+} SiftFieldDlTrailer;
+
+StaticAssertDecl(sizeof(SiftFieldDlTrailer) == 272, "SiftFieldDlTrailer must be 272 bytes");
+
+/* Reader docmap state */
+typedef struct DocMap
+{
+	SiftDocSBRef *dir;
+	uint64	   *rank_base;
+	uint32		nsb;
+	uint64		dir_off;
+	uint64		recs_end;		/* where the SB records end: the directory, or the INCLUDE records after them */
+	uint32		ncols;			/* INCLUDE columns the segment holds */
+	SiftFieldDlTrailer *ft;		/* field lengths of the segment (SIFT_SEGFMT_FIELDDL), else NULL */
+	uint16	   *fxdl[SIFT_MAX_FIELDS];	/* the record of the field in SB fxsb, its rows expanded to 16 bits, one after the other (fxoff) */
+	Size		fxcap[SIFT_MAX_FIELDS];
+	int64		fxsb[SIFT_MAX_FIELDS];	/* its index in the SB directory, -1 none */
+	uint32		xslots;			/* slots of the expanded rows of the loaded SB (xoff of its pages), for fxdl */
+	uint8	   *frec;			/* scratch: a record as stored */
+	Size		freccap;
+	SiftAttrRef *adir;			/* their records, by SB, read once the query needs more than a few (attr_ref) */
+	SiftAttrRef atmp;			/* the one record read alone, valid until the next attr_ref */
+	int			areads;			/* records read alone so far */
+	int64		acur[SIFT_ATTR_MAXCOLS];	/* the SB whose record of the column is in arec, -1 none */
+	uint8	   *arec[SIFT_ATTR_MAXCOLS];
+	Size		arecap[SIFT_ATTR_MAXCOLS];
+	SiftAttrColHdr ahdr[SIFT_ATTR_MAXCOLS];
+	uint32		arow[SIFT_ATTR_MAXCOLS][SIFT_SB_PAGES];	/* where the row of each present page starts, from the record of the column */
+	int64		cur;			/* loaded SB (index into dir), -1 none */
+	uint8	   *rec;
+	Size		reccap;
+	uint64		reclen;			/* bytes of the loaded SB's record */
+	uint64		pagemask[SIFT_PAGEMASK_WORDS];
+	int			np;				/* present pages */
+	int			nwmax;			/* words of offsets of the fullest page */
+	uint64	   *om;				/* canonical offset masks of present pages */
+	const uint8 *row0;			/* the dl rows of the pages, after the chunk */
+	int			dlcode;			/* width of the dl rows (SIFT_DL_CODE_BITS) */
+	bool		indexed;		/* before, maskidx, rows and rowlen are set */
+	uint32		before[SIFT_SB_PAGES];	/* docs on earlier pages (present pages) */
+	uint8		maskidx[SIFT_SB_PAGES]; /* present-page index (present pages) */
+	const uint8 *rows[SIFT_SB_PAGES];	/* the stored dl row of each present page, NULL for the others */
+	uint16		rowlen[SIFT_SB_PAGES];	/* slots of the row: its page's highest present offset */
+	MemoryContext mcxt;
+	uint16	   *xdl;			/* narrow rows expanded to 16 bits, one after the other, for the pages in xdone */
+	Size		xcap;
+	uint32		xoff[SIFT_SB_PAGES];	/* where the row of the page starts in xdl */
+	uint64		xdone[SIFT_PAGEMASK_WORDS];
+	bool		live_ok;		/* live_bits holds the bits of SB live_sb */
+	uint32		live_sb;
+	uint8	   *live_bits;		/* the SB's docs, bit i for rank rank_base + i, from bit rank_base % 8 */
+	Size		live_cap;
+	bool		live_om_ok;		/* live_om holds the live offsets of the loaded SB's pages */
+	uint64	   *live_om;		/* nwmax words per present page, in the order of om */
+} DocMap;
+
+/*
+ * The dl of every doc of an SB, in the rows of its DOCMAP record, and which of them were vacuumed: what the postings of the SB
+ * look up. Terms come in dictionary order and each one runs through the SBs, so the SBs a term touches are kept (the most
+ * recently used within a budget) instead of the dl of the whole segment.
+ */
+typedef struct SBDocs
+{
+	struct SBDocs *newer;
+	struct SBDocs *older;
+	int64		at;				/* in the SB directory */
+	Size		size;
+	uint16	   *dl;				/* the rows of its pages one after the other */
+	uint8	   *dead;			/* a bit for each doc slot of dl: vacuumed (NULL in a clean SB) */
+	uint32		start[SIFT_SB_PAGES];	/* of the row of each page in dl */
+	uint16		len[SIFT_SB_PAGES];		/* 0: no docs on the page */
+} SBDocs;
+
+typedef struct DocCache
+{
+	SiftSegment *seg;
+	MemoryContext mcxt;
+	SBDocs	  **sb;				/* by position in the SB directory */
+	SBDocs	   *newest;
+	SBDocs	   *oldest;
+	Size		used;
+	Size		budget;
+	uint16	   *rows;			/* scratch of a build: SIFT_SB_PAGES * MAXOFF slots and their dead bits */
+	uint8	   *dead;
+} DocCache;
+
+/* livestream.c: the dl cache, for what looks the docs of the postings of a term up */
+extern SIFT_INTERNAL void doccache_init(DocCache *dc, SiftSegment *seg, MemoryContext mcxt, Size budget);
+extern SIFT_INTERNAL SBDocs *sbdocs_get(DocCache *dc, uint32 sb);
+extern SIFT_INTERNAL uint16 sbdocs_raw(DocCache *dc, const SBDocs *e, SiftKey key, uint32 *slot);
+
+/* The header of the LIVE run, and the region of one SB (its live offsets as a group of bitmaps) read last */
+typedef struct Live2
+{
+	SiftLive2HeaderData h;
+	bool		rok;			/* grp holds the region of SB rsb */
+	uint32		rsb;
+	uint64		rstart;			/* byte of the run where that region starts */
+	Size		rcap;
+	uint8	   *rbuf;			/* the region from byte 24, so that its rows start at 64 */
+	sift_grp	grp;
+} Live2;
+
+/* The liveness pages of a segment, as the shared module addresses them */
+static inline SiftLive
+seg_live(const SiftSegment *seg)
+{
+	return (SiftLive) {seg->index, seg->entry.gen, seg->hdr->live_first, seg->hdr->live_npages,
+		seg->hdr->sb_hi - seg->hdr->sb_lo + 1, seg->hdr->ndocs};
+}
+
+/* segment.c: the docmap of the reader */
+extern SIFT_INTERNAL DocMap *docmap(SiftSegment *seg);
+extern SIFT_INTERNAL void index_sb(SiftSegment *seg, DocMap *dm);
+extern SIFT_INTERNAL void load_sb(SiftSegment *seg, DocMap *dm, int64 i);
+extern SIFT_INTERNAL int64 sb_search(DocMap *dm, uint32 sb);
+extern SIFT_INTERNAL DocMap *loaded(SiftSegment *seg, const SiftDocChunk *dc);
+extern SIFT_INTERNAL DocMap *indexed(SiftSegment *seg, const SiftDocChunk *dc);
+extern SIFT_INTERNAL void expand_row(DocMap *dm, int page);
+
+/* The dl row of a present page of the indexed SB as 16 bits per slot: narrow rows are expanded on the first use */
+static inline const uint16 *
+dl_row(DocMap *dm, int page)
+{
+	if (dm->dlcode == 0)
+		return (const uint16 *) dm->rows[page];
+	if (!(dm->xdone[page / 64] >> (page % 64) & 1))
+		expand_row(dm, page);
+	return dm->xdl + dm->xoff[page];
+}
+
+/* liveness.c: the format 2 liveness rows and the dead postings */
+extern SIFT_INTERNAL Live2 *live2(SiftSegment *seg);
+extern SIFT_INTERNAL const sift_grp *live2_rows(SiftSegment *seg, uint32 sb);
+extern SIFT_INTERNAL void count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead);
+
+#endif							/* SIFT_SEGMENT_INT_H */

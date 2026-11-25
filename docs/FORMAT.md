@@ -133,7 +133,7 @@ A part gets the pack when the first 4 blocks, scaled to the part, are at most 40
 
 ## Reading
 
-The fetch of a row (`table/f2/f2_fetch.c`) takes the fast path for an MVCC snapshot when the snapshot sees the insert of the granule without a version of each row (the granule is frozen, the inserters of the part are settled, or its rows are of one transaction), the granule has no deletion vector and the row is not a pending delete; a column delta of the part is laid over the row. Any other row takes the granule path, which gives the same row. The decoded blocks are kept in a per-backend cache (`SIFT_F2_GCACHE_MAX_BLOCKS`), charged to `sift.backend_cache_kb` and dropped with the part, the table or a relcache invalidation.
+The fetch of a row (`table/f2/fetch.c`) takes the fast path for an MVCC snapshot when the snapshot sees the insert of the granule without a version of each row (the granule is frozen, the inserters of the part are settled, or its rows are of one transaction), the granule has no deletion vector and the row is not a pending delete; a column delta of the part is laid over the row. Any other row takes the granule path, which gives the same row. The decoded blocks are kept in a per-backend cache (`SIFT_F2_GCACHE_MAX_BLOCKS`), charged to `sift.backend_cache_kb` and dropped with the part, the table or a relcache invalidation.
 
 # Format 2.0 on-disk and WAL reference
 
@@ -141,18 +141,18 @@ Every Format 2.0 structure that is written to disk or to the log, with the size 
 
 ## sift_table visibility map
 
-A `sift_table` has the visibility map fork (`VISIBILITYMAP_FORKNUM`) that PostgreSQL's index-only scan reads. It is indexed by the **virtual block** of a row (`vblock`, the block number of its TID), never by a page of the main fork: the main fork holds the manifest, the parts and their extents, and `vblock` can be past its end. PostgreSQL's `visibilitymap_set()` is never called: its redo (`heap_xlog_visible`) sets `PD_ALL_VISIBLE` in the main fork block of the same number. The map is written by `core/f2/f2_vm_xlog.c` only.
+A `sift_table` has the visibility map fork (`VISIBILITYMAP_FORKNUM`) that PostgreSQL's index-only scan reads. It is indexed by the **virtual block** of a row (`vblock`, the block number of its TID), never by a page of the main fork: the main fork holds the manifest, the parts and their extents, and `vblock` can be past its end. PostgreSQL's `visibilitymap_set()` is never called: its redo (`heap_xlog_visible`) sets `PD_ALL_VISIBLE` in the main fork block of the same number. The map is written by `core/f2/vm_xlog.c` only.
 
 ### Compatibility bit and counters
 
 | Name | Where | Value |
 |---|---|---|
 | `SIFT_ROCOMPAT_TABLE_VM` | `SiftMetaCommon.ro_compat_flags` (`core/f2/meta.h`) | `1 << 5`. A reader that ignores the map reads correct rows. A writer that cannot clear the bits (an older build, or a server that does not preload `pg_sift`) refuses to delete or update. Set by the first VACUUM that sets a bit. |
-| `vm_all_visible_vblocks` | `SiftColMetaPageData` (`col/f2/col_meta.h`) | `uint32`: the vblocks that are all visible, counted in the map fork at the last VACUUM |
+| `vm_all_visible_vblocks` | `SiftColMetaPageData` (`col/f2/meta.h`) | `uint32`: the vblocks that are all visible, counted in the map fork at the last VACUUM |
 | `vm_all_frozen_vblocks` | `SiftColMetaPageData` | `uint32`: the vblocks that are all frozen |
 | `vm_total_vblocks` | `SiftColMetaPageData` | `uint64`: the vblocks that hold at least one row at the last VACUUM (the vblocks a compaction emptied and the ones nothing reserved are not counted) |
 
-`sizeof(SiftColMetaPageData) == 424` is unchanged: the counters sit in the bytes `maint_errmsg` gave up. The same three counters are copied into `SiftShmIndexMeta` (`core/shm_manifest.h`), whose slot stays two cache lines. A table that was never vacuumed has zeros: `allvisfrac = 0.0`.
+`sizeof(SiftColMetaPageData) == 424` is unchanged: the counters sit in the bytes `maint_errmsg` gave up. The same three counters are copied into `SiftShmIndexMeta` (`core/shm/manifest.h`), whose slot stays two cache lines. A table that was never vacuumed has zeros: `allvisfrac = 0.0`.
 
 The planner reads `allvisfrac = vm_all_visible_vblocks / vm_total_vblocks` (0 where the server cannot log the map) and `VACUUM` stores `relallvisible` and `relallfrozen` scaled to the blocks of the file, `rint(nblocks * allvisfrac)`, so that `pg_class` and `table_relation_estimate_size` agree.
 
@@ -208,7 +208,7 @@ A partition's `SiftColDeltaAnchor` (32 bytes, `core/f2/col_delta_anchor.h`) name
 | `SIFT_PT_COL_DELTA_DIR` | 47 | `core/page.h` |
 | `SIFT_COMPAT_COL_DELTA_DIR` | `1 << 7` of `compat_flags` | `core/f2/meta.h`; set by the manifest change that publishes the first anchor with `SIFT_CDLA_INDEXED_DIR`; a build that does not know it refuses to open the relation |
 | `SIFT_CDLA_INDEXED_DIR` | `1 << 4` of `SiftColDeltaAnchor.flags` | `anchor.delta_head_blkno` names the newest `SIFT_PT_COL_DELTA_DIR` page, not a data page; `anchor.npages` still counts data pages |
-| `SIFT_CDDIR_MAGIC` | `0x43444452` ("CDDR") | `table/f2/f2_col_delta_dir.h` |
+| `SIFT_CDDIR_MAGIC` | `0x43444452` ("CDDR") | `table/f2/col_delta/dir.h` |
 | `SIFT_CDDIR_MAX_ENTRIES` | 250 | entries of one directory page |
 | `SIFT_CDDIR_SOFT_FOLD_PAGES` | 256 | a flush that leaves a chain this long asks the maintenance worker for a fold of the partition; the update that flushed does not wait and is not refused |
 | `SIFT_COL_DELTA_MAX_PAGES` | 60000 | what the 16-bit `anchor.npages` can name; the only length at which an UPDATE is not admitted |

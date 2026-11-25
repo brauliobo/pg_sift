@@ -16,7 +16,6 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX pg_col ON pg USING sift_col (id, title, url, kind, uid, phrase);
 VACUUM ANALYZE pg;
 SET max_parallel_workers_per_gather = 0;
-SET sift.agg_preagg = off;
 SET sift.agg_force = on;
 
 CREATE TABLE s_q (name text, q text);

@@ -12,10 +12,10 @@
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
 #include "col/fsst.h"
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_enc);
 

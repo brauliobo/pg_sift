@@ -31,9 +31,9 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/restrict.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 #include "core/catname.h"
 
 typedef enum OptKind

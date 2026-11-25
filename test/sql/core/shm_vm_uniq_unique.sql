@@ -1,4 +1,4 @@
--- The registry of the keys a transaction holds in its stage (col/f2/f2_uniq_shm.c): an entry that cannot be listed for its transaction is not made, a stripe that dead transactions filled takes a
+-- The registry of the keys a transaction holds in its stage (col/f2/uniq/shm.c): an entry that cannot be listed for its transaction is not made, a stripe that dead transactions filled takes a
 -- new entry, the entries of the rows that a flush wrote to the partitions are let go, and the first check of a deferred constraint inserts the row it reports a conflict for.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;

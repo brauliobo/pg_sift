@@ -4,7 +4,7 @@
 #include "postgres.h"
 
 #include "col/am.h"
-#include "col/v1/preagg.h"
+#include "col/v1/preagg/preagg.h"
 #include "core/range.h"
 
 #define SYNTAX "a list of column names, each with an optional ASC or DESC and NULLS FIRST or NULLS LAST ('group, key' for two)"

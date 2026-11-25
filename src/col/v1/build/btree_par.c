@@ -14,7 +14,7 @@
 #include "storage/condition_variable.h"
 #include "utils/datum.h"
 #include "utils/rel.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 #include "core/memtrack.h"
 #include "core/parbuild.h"
 #include "core/waits.h"

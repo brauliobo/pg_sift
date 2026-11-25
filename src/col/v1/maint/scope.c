@@ -1,24 +1,24 @@
 /*
- * col/v1/maint/scope.c - the maintenance of the scope segments of a scope index (col/scope.h)
+ * col/v1/maint/scope.c - the maintenance of the scope segments of a scope index (col/scope/scope.h)
  * the scope segments a promotion writes beside its entity segment, in the same switch of the directory
  * the merge of the scope segments of one scope, by the range of its key
  *
  * The scope segments are copies of the rows of the entity segments, once for each scope key of the member of a row, with the address of the row. So a merge of entity segments
  * leaves them where they are (the addresses stay), a promotion must write them with the entity segment (the rows have no entries else), and a VACUUM ends the entries of a dead
- * address in every segment. The stamp the entries are exact as of is the floor of the index (col/v1/scope_floor.c), not held by its segments.
+ * address in every segment. The stamp the entries are exact as of is the floor of the index (col/v1/scope/floor.c), not held by its segments.
  */
 #include "postgres.h"
 #include "datatype/timestamp.h"
 #include "utils/timestamp.h"
 #include "core/ops.h"
-#include "bm25/merge.h"
+#include "bm25/merge/merge.h"
 #ifdef SIFT_TESTING
-#include "bm25/build.h"
+#include "bm25/build/build.h"
 #endif
 #include "col/v1/build.h"
-#include "col/v1/maint/maint_int.h"
-#include "col/v1/order_sort.h"
-#include "col/scope.h"
+#include "col/v1/maint/int.h"
+#include "col/v1/order/sort.h"
+#include "col/scope/scope.h"
 #include "core/hash.h"
 #include "core/limits.h"
 #include "core/memtrack.h"
@@ -257,7 +257,7 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 #define scope_sort_kb()		((int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 2 / 1024))
 
 /*
- * The sorts of a refill go by key ranges when their rows would not fit their memory (col/v1/order_sort.c): the keys the ranges are cut at, and the size of the rows, are those of a sample, the rows
+ * The sorts of a refill go by key ranges when their rows would not fit their memory (col/v1/order/sort.c): the keys the ranges are cut at, and the size of the rows, are those of a sample, the rows
  * of REFILL_SAMPLE_UNITS units spread over the entity segments (REFILL_SAMPLE_ENTRIES of the entries of each go to the sample), before the rows are read; and the sample is not made when even
  * the smallest entries of one for each row would fit (sift_colsort_may_range).
  */
@@ -649,7 +649,7 @@ scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSe
 }
 
 /*
- * One step of the merge of the scope segments (col/scope.h): the segments of the first scope that has some to merge, by the tiers of the policy (all of them when force is asked, or
+ * One step of the merge of the scope segments (col/scope/scope.h): the segments of the first scope that has some to merge, by the tiers of the policy (all of them when force is asked, or
  * after a parallel build, whose participants each left a run of every key), into one segment or partitions of the range of the key. The entities are not merged with them. The stamp of
  * the output is the oldest of the inputs'. False: nothing to do, or nothing that makes progress: a merge of segments that were chained and clean writes them again when it writes as many,
  * so the step goes on to the next scope. A scope that is merged and is not chained is chained after, one that is chained has fewer segments after, so a step that makes progress takes

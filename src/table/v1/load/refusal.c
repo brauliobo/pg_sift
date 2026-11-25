@@ -16,7 +16,7 @@
 #include "utils/relcache.h"
 #include "utils/syscache.h"
 
-#include "table/v1/load/load_int.h"
+#include "table/v1/load/int.h"
 
 /* Does the expression call a function (or operator) a user defined? Those can read the table; the built-in ones cannot */
 static bool

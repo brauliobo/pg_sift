@@ -4,7 +4,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
-SET sift.agg_preagg = off;
 
 CREATE TABLE facts (id int PRIMARY KEY, grp int, kind text, amount numeric(10,2), big bigint) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, i % 2000, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + i % 4],

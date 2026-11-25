@@ -11,7 +11,7 @@
 #include "utils/rel.h"
 
 #include "core/lane.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 #include "table/v1/seg_int.h"
 #include "table/v1/store_int.h"
 

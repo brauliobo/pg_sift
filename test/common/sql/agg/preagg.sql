@@ -1,12 +1,11 @@
 \set ECHO none
--- Shared by the agg_preagg* tests (\ir test/common/sql/agg/preagg.sql). pa_rows(q, pre, push) is the sorted rows of q, or its error, with sift.agg_preagg and
+-- Shared by the agg_preagg* tests (\ir test/common/sql/agg/preagg.sql). pa_rows(q, pre, push) is the sorted rows of q, or its error, with
 -- sift.enable_agg set. A snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the
 -- pages of rows written since from becoming all-visible, so the units stay scanned: pa_settle() waits for the conditions themselves, the queue drained
 -- and no such session.
 CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
 	PERFORM set_config('sift.enable_agg', push::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;

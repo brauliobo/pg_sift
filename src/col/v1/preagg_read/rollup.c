@@ -5,7 +5,7 @@
  */
 /* check-memory: allow-allocs a rollup holds at most SIFT_PAGG_ROLLUP_TUPLES (4096) tuples */
 #include "core/cmp.h"
-#include "col/v1/preagg_read/preagg_read_int.h"
+#include "col/v1/preagg_read/int.h"
 
 static bool
 need_dim(const SiftCRollupNeed *need, int leaf)

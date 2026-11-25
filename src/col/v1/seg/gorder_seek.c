@@ -1,9 +1,9 @@
 /*
- * col/v1/seg/gorder_seek.c - the reads of a seekable chunk of a global order (col/v1/gorder.h, SIFT_CGORD_SEEK): the sub-blocks a scan or a seek needs, decoded into the buffer's window.
+ * col/v1/seg/gorder_seek.c - the reads of a seekable chunk of a global order (col/v1/gorder/gorder.h, SIFT_CGORD_SEEK): the sub-blocks a scan or a seek needs, decoded into the buffer's window.
  */
 
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* The chunk c of a seekable or positional block, read and parsed into s, which points into the bytes returned (pfree them); point: it is read to find a place in it, not to go on from it, so the pages after it are not read ahead */
 static uint8 *

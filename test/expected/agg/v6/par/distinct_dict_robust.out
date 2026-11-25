@@ -1,4 +1,4 @@
--- COUNT(DISTINCT) of a text column read as dictionary codes (src/agg/v6/v6_dictseen.c) where the plan does not run to its end or runs again: a rescan of the node under a nested loop, a LIMIT, a statement
+-- COUNT(DISTINCT) of a text column read as dictionary codes (src/agg/v6/dictseen.c) where the plan does not run to its end or runs again: a rescan of the node under a nested loop, a LIMIT, a statement
 -- cancelled in the middle of the scan, of the export of the sets and of the merge, a node with no worker launched. After every one the session answers with the heap's own aggregate, and no temporary
 -- file or backend of the cancelled statement is left.
 CREATE EXTENSION pg_sift;

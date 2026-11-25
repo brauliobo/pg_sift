@@ -48,13 +48,11 @@ INSERT INTO cases (label, q) VALUES
   ('system column: max(ctid) keeps the normal plan', $q$SELECT grp, max(ctid) AS m FROM cw e GROUP BY 1$q$);
 -- This spec pins the count(e) of the normal plan. With the table scans off, the child-first plan of a LEFT JOIN (sift.agg_child_first, covered in agg_child_first_gate
 -- and agg_flat_disabled_nodes) has fewer disabled scans and wins on every major.
-SET sift.agg_child_first = off;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 SET enable_indexonlyscan = off;
 SELECT n, label, sift_helpers.agg_check_outcome(q) FROM cases ORDER BY n;
-RESET sift.agg_child_first;
 RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;

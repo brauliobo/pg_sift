@@ -13,7 +13,7 @@
 #include "portability/instr_time.h"
 #include "utils/builtins.h"
 
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 #include "core/testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_framed_chunks);

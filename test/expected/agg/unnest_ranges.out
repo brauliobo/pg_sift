@@ -22,7 +22,6 @@ DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev2_col');
 VACUUM ANALYZE ev, ev2;
 SET max_parallel_workers_per_gather = 0;
-SET sift.agg_preagg = off;
 SET sift.agg_force = on;
 CREATE TABLE s_q (name text, q text);
 INSERT INTO s_q SELECT 'kept ' || pct || ' %' || CASE WHEN el THEN ', element conjunct' ELSE '' END,

@@ -10,8 +10,8 @@
 #include <time.h>
 
 #include "col/compress.h"
-#include "col/granule/cfilt_str_simd.h"
-#include "col/granule/granule_filter.h"
+#include "col/granule/cfilt/str_simd.h"
+#include "col/granule/filter.h"
 #include "core/par/arena.h"
 #include "core/cpu.h"
 #include "fixture.h"

@@ -1,5 +1,5 @@
 /*
- * col/f2/scan/fetch.c - the scan of an index of format major 2 handed to the executor: the collected addresses as a bitmap or one tuple at a time (col/f2/f2_scan.c collects them).
+ * col/f2/scan/fetch.c - the scan of an index of format major 2 handed to the executor: the collected addresses as a bitmap or one tuple at a time (col/f2/scan/scan.c collects them).
  */
 #include "postgres.h"
 
@@ -8,9 +8,9 @@
 #include "nodes/tidbitmap.h"
 #include "utils/memutils.h"
 
-#include "col/f2/f2_scope_route.h"
+#include "col/f2/scope/route.h"
 #include "col/f2/scan/rescan_cache.h"
-#include "col/f2/scan/scan_int.h"
+#include "col/f2/scan/int.h"
 #include "col/f2/scan/stream.h"
 #include "core/errctx.h"
 

@@ -6,7 +6,7 @@
 #define SIFT_COL_ROWFILE_H
 
 #include "lib/stringinfo.h"
-#include "col/v1/enc.h"
+#include "col/v1/enc/enc.h"
 
 typedef struct SiftRowFile SiftRowFile;
 

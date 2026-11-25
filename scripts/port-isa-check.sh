@@ -23,7 +23,7 @@ shift
 
 bad=0; n=0
 for o do
-	case $o in *_avx2.o|*_avx512.o) continue;; esac
+	case $o in *_avx2.o|*_avx512.o|*/avx2.o|*/avx2_*.o|*/avx512.o|*/avx512_*.o) continue;; esac
 	n=$((n + 1))
 done
 "$(dirname "$0")/isa-scan.sh" --budget-kib 45 "$@" $library || bad=1

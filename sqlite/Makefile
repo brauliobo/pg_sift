@@ -24,17 +24,17 @@ ARCH := $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
 SIMD ?= auto
 # SIFT_ISA: the portable baseline (x86-64, or armv8-a on Linux), SIMD kernels opt in per function (see src/core/cpu.h); -ffp-contract=off keeps scores
 # bit-identical. On AArch64 NEON is the vector level and the x86 vector files are left out; other architectures have no vector kernels (SIMD=none): the vector
-# levels dispatch to the scalar tables, and the x86 CPU probes of bm25/bitmap.c answer "no"
+# levels dispatch to the scalar tables, and the x86 CPU probes of bm25/bitmap/bitmap.c answer "no"
 ifeq ($(ARCH),x86_64)
 ISA := -march=x86-64 -mtune=generic
 else ifeq ($(ARCH),aarch64)
 ISA := $(if $(filter Linux,$(shell uname -s)),-march=armv8-a -mtune=generic)
-X86_SIMD_SRC := bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/kernels_avx2 bm25/kernels_avx512
+X86_SIMD_SRC := bm25/bitmap/avx2 bm25/bitmap/avx512 bm25/kernels/avx2 bm25/kernels/avx512
 else
 SIMD := none
 CPUPROBE := '-D__builtin_cpu_init()=' '-D__builtin_cpu_supports(x)=0'
 endif
-SIMD_SRC := bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/kernels_avx2 bm25/kernels_avx512
+SIMD_SRC := bm25/bitmap/avx2 bm25/bitmap/avx512 bm25/kernels/avx2 bm25/kernels/avx512
 ifeq ($(SIMD),none)
 EXTRA += -DSQ_SIMD_NONE -DSIFT_FMV_DISABLE=1
 ALIASES := -Dsift_kern_avx2=sift_kern_scalar -Dsift_kern_avx512=sift_kern_scalar -Dsift_kernels_avx2=sift_kernels_scalar \
@@ -54,12 +54,12 @@ all: $(B)/sift.so
 $(B)/sift.so: $(OBJS)
 	$(CC) -shared $(EXTRA) -o $@ $(OBJS) $(LDLIBS)
 
-$(B)/bm25/bitmap.o: $(SRC)/bm25/bitmap.c | $(B)
+$(B)/bm25/bitmap/bitmap.o: $(SRC)/bm25/bitmap/bitmap.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 
 # SIMD=none: the dispatch tables of the vector levels are the scalar ones (the vector files are not built)
-$(B)/bm25/kernels.o: $(SRC)/bm25/kernels.c | $(B)
+$(B)/bm25/kernels/kernels.o: $(SRC)/bm25/kernels/kernels.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
 
@@ -88,7 +88,7 @@ check test: all
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-sqlite.sh).
 isa-check: all
-	@sh ../scripts/port-isa-check.sh $(B)/sift.so $(B)/*.o $(B)/*/*.o $(B)/*/*/*.o
+	@sh ../scripts/port-isa-check.sh $(B)/sift.so $$(find $(B) -name '*.o')
 
 # The C stress test: N threads, each with a connection, querying while one writes. The extension is linked in and
 # registered with sqlite3_auto_extension.
@@ -97,7 +97,7 @@ $(B)/stress: tests/stress.c $(OBJS) | $(B)
 
 # the column engine of src/portable-col.list, unmodified, against this host; SIMD=none leaves out its vector files and aliases their tables
 COLSRC := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable-col.list)))
-COLSRC := $(filter-out $(if $(filter none,$(SIMD)),$(foreach s,$(COLSRC),$(if $(filter %_avx2 %_avx512,$(s)),$(s)))),$(COLSRC))
+COLSRC := $(filter-out $(if $(filter none,$(SIMD)),$(foreach s,$(COLSRC),$(if $(filter %_avx2 %_avx512 %/avx2 %/avx2_% %/avx512 %/avx512_%,$(s)),$(s)))),$(COLSRC))
 COLOBJS := $(addprefix $(B)/,$(addsuffix .o,$(COLSRC)))
 COLALIASES := $(if $(filter none,$(SIMD)),$(foreach l,avx2 avx512,-Dsift_col_kernels_$(l)=sift_col_kernels_scalar -Dsift_cc_kernels_$(l)=sift_cc_kernels_scalar \
 	-Dsift_shred_kernels_$(l)=sift_shred_kernels_scalar -Dsift_aggkern_$(l)=sift_aggkern_scalar \
@@ -127,8 +127,8 @@ hash-test: $(B)/hash_test
 	$(B)/hash_test
 
 # the cost choice and the verify rules of the hybrid search, over the real core/tidbridge.c and an oracle
-$(B)/hybrid_test: tests/hybrid.c $(SRC)/agg/hybrid.c $(OBJS) | $(B)
-	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(SRC)/agg/hybrid.c $(OBJS) $(LDLIBS)
+$(B)/hybrid_test: tests/hybrid.c $(SRC)/agg/hybrid/hybrid.c $(OBJS) | $(B)
+	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(SRC)/agg/hybrid/hybrid.c $(OBJS) $(LDLIBS)
 
 hybrid-test: $(B)/hybrid_test
 	$(B)/hybrid_test
@@ -140,7 +140,7 @@ $(B)/limit_test: tests/limit.c $(OBJS) | $(B)
 limit-test: $(B)/limit_test
 	$(B)/limit_test
 
-# the floor of the top-k of bm25/kernels.c (tests/topk_floor.c)
+# the floor of the top-k of bm25/kernels/kernels.c (tests/topk_floor.c)
 $(B)/topk_floor_test: tests/topk_floor.c $(OBJS) | $(B)
 	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(OBJS) $(LDLIBS)
 
@@ -183,6 +183,6 @@ cross-objs: $(OBJS)
 clean:
 	rm -rf build build-asan build-tsan build-scalar build-aarch64
 
--include $(wildcard $(B)/*.d $(B)/*/*.d $(B)/*/*/*.d)
+-include $(wildcard $(B)/*.d $(B)/*/*.d $(B)/*/*/*.d $(B)/*/*/*/*.d)
 
 .PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan hash-test hybrid-test hybrid-test-asan topk-floor-test topk-floor-test-asan limit-test

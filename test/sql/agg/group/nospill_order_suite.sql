@@ -58,7 +58,6 @@ SET search_path = s2, public;
 -- order (the key columns, row by row), for text, numeric, date, float and jsonb keys, DESC, NULLS FIRST and LAST, a prefix of the group keys, and with workers.
 
 SET seq_page_cost = 10000;
-SET sift.agg_preagg = off;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
@@ -380,7 +379,6 @@ SET search_path = s4, public;
 -- the window's partition (a key of the window's order, an expression of two columns).
 
 SET seq_page_cost = 10000;
-SET sift.agg_preagg = off;
 
 CREATE TABLE s (id int, a text, e int, d date, j int, x float8) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO s

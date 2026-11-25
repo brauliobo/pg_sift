@@ -1,5 +1,5 @@
 /*
- * col/f2/scan/prepare.c - the quals of an index scan of format major 2 turned into the predicates, the key plan and the columns it returns (the scan of col/f2/f2_scan.c runs them).
+ * col/f2/scan/prepare.c - the quals of an index scan of format major 2 turned into the predicates, the key plan and the columns it returns (the scan of col/f2/scan/scan.c runs them).
  */
 #include "postgres.h"
 
@@ -10,9 +10,9 @@
 #include "utils/memutils.h"
 
 #include "col/f2/scan/par_int.h"
-#include "col/f2/scan/scan_int.h"
-#include "col/f2/f2_cache.h"
-#include "col/f2/f2_view.h"
+#include "col/f2/scan/int.h"
+#include "col/f2/cache.h"
+#include "col/f2/view.h"
 
 /* The attributes an index-only scan returns: those its plan node reads (every one the index can return when no node was seen), and the leaf each is held in */
 static void

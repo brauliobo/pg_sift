@@ -150,7 +150,7 @@ RESET client_min_messages;
 CREATE SCHEMA s3;
 GRANT USAGE ON SCHEMA s3 TO PUBLIC;
 SET search_path = s3, public;
--- The fill of a scope index expands the member keys of a batch of fact rows by the scope keys the scope relation has for them, under one snapshot (col/v1/scope_fill.c).
+-- The fill of a scope index expands the member keys of a batch of fact rows by the scope keys the scope relation has for them, under one snapshot (col/v1/scope/fill.c).
 -- Both ways to know the pairs (the relation read once, the btree probed per member) give the entries of the join, for members in 0..6 keys, NULL and unknown members.
 SET client_min_messages = warning;
 CREATE TABLE tenant_scope (member int, scope_key int, PRIMARY KEY (scope_key, member)) WITH (autovacuum_enabled = false);

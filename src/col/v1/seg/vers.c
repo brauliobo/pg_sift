@@ -3,7 +3,7 @@
  * keeps, their ranges and sums, and the unit that holds a row's version
  * what a snapshot reads to decide which rows it sees
  */
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* A group of 3.0.1: one transaction's one command wrote every row (entry.reserved = xid, header sum_dl = cid) */
 static bool

@@ -7,29 +7,30 @@
 #include "access/parallel.h"
 #include "access/table.h"
 #include "common/hashfn.h"
+#include "datatype/timestamp.h"
 #include "commands/explain.h"
 #include "executor/nodeIndexscan.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/timestamp.h"
 
 #include "agg/v6/v6.h"
-#include "agg/v6/v6_ext.h"
-#include "agg/v6/v6_explain.h"
-#include "agg/v6/v6_fuse.h"
-#include "agg/v6/v6_fuse_keys.h"
-#include "agg/v6/v6_gpu.h"
-#include "agg/v6/v6_open_scan.h"
-#include "agg/v6/v6_par_node.h"
-#include "agg/v6/v6_star_run.h"
-#include "agg/v6/v6_qual.h"
-#include "agg/v6/v6_scan_src.h"
-#include "agg/v6/v6_rows_topn.h"
-#include "agg/v6/v6_topk_run.h"
-#include "core/maint_pacer.h"
+#include "agg/v6/ext.h"
+#include "agg/v6/explain.h"
+#include "agg/v6/fuse/fuse.h"
+#include "agg/v6/fuse/keys.h"
+#include "agg/v6/gpu.h"
+#include "agg/v6/open_scan.h"
+#include "agg/v6/par/node.h"
+#include "agg/v6/star/run.h"
+#include "agg/v6/qual/qual.h"
+#include "agg/v6/scan_src.h"
+#include "agg/v6/topn/rows.h"
+#include "agg/v6/topn/topk_run.h"
+#include "core/maint/pacer.h"
 #include "access/tableam.h"
 #include "col/am.h"
-#include "agg/exec/int.h"
-#include "core/store_ops.h"
+#include "core/store/ops.h"
 #include "core/cpu.h"
 #include "core/errctx.h"
 #include "core/memtrack.h"
@@ -511,7 +512,7 @@ v6_run_scan(V6State *st, EState *estate)
 	MemoryContextSwitchTo(old);
 }
 
-/* One run of the node in 16 feeds the foreground averages the maintenance pacer decides by (core/maint_pacer.h) */
+/* One run of the node in 16 feeds the foreground averages the maintenance pacer decides by (core/maint/pacer.h) */
 static void
 v6_run(V6State *st, EState *estate)
 {

@@ -12,7 +12,7 @@
 /* check-memory: allow-allocs the rows of a key group, at most SIFT_SUPER_KEY_ROWS */
 #include "core/host.h"
 
-#include "col/v1/preagg.h"
+#include "col/v1/preagg/preagg.h"
 
 typedef struct DsetsHead
 {

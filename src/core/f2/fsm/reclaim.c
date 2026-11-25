@@ -1,13 +1,13 @@
 /*
- * core/f2/fsm/reclaim.c - the reclaim of the allocator of format major 2 (core/f2/fsm.h): the matured extents of the quarantine join the free lists, and the lists are written anew.
+ * core/f2/fsm/reclaim.c - the reclaim of the allocator of format major 2 (core/f2/fsm/fsm.h): the matured extents of the quarantine join the free lists, and the lists are written anew.
  */
 #include "core/host.h"
 
-#include "core/f2/fsm.h"
-#include "core/f2/f2_pace.h"
-#include "core/f2/fsm/fsm_int.h"
+#include "core/f2/fsm/fsm.h"
+#include "core/f2/pace.h"
+#include "core/f2/fsm/int.h"
 #include "core/horizon.h"
-#include "core/maint.h"
+#include "core/maint/maint.h"
 #include "core/page_io.h"
 #include "core/wal_conflict.h"
 

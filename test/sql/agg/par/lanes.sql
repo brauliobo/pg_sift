@@ -12,7 +12,6 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET seq_page_cost = 10000;
-SET sift.agg_preagg = off;
 SET extra_float_digits = 3;
 
 -- values of very different sizes: the sum of a group depends on the order of its additions

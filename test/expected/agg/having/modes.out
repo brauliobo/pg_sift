@@ -49,7 +49,6 @@ SELECT 'default' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, 
  default | top-N                   |       0 | t      | sift    | f             | t                | t         | 4
 (16 rows)
 
-SET sift.agg_preagg = off;
 SELECT 'rows, no pre-aggregates' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;
           mode           |          name           | workers | served | verdict | where_in_scan | having_on_groups | rows_same | n 
 -------------------------+-------------------------+---------+--------+---------+---------------+------------------+-----------+---
@@ -98,7 +97,6 @@ SELECT 'two workers' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM
 (16 rows)
 
 SET max_parallel_workers_per_gather = 0;
-RESET sift.agg_preagg;
 -- inserts, updates and deletes that move groups across the bounds: 15 goes from 5 to 8 rows and gets a value, 16 from 1 to 7, 17 loses a row, 18 is new, the biggest group loses seven rows
 INSERT INTO hv_events SELECT 40000 + i, 15, 2, 'k2', DATE '2026-02-05', 1, 3, 5, 2.50, 2.5, 'l3', true FROM generate_series(1, 3) i;
 INSERT INTO hv_events SELECT 41000 + i, 16, 2, 'k2', DATE '2026-02-02', 1, 9, 9, 9.00, 9.0, 'l1', true FROM generate_series(1, 6) i;
@@ -128,7 +126,6 @@ SELECT 'after writes' AS mode, q.name, having_workers(q.sql) AS workers, c.* FRO
  after writes | top-N                   |       0 | t      | sift    | f             | t                | t         | 4
 (16 rows)
 
-SET sift.agg_preagg = off;
 SET max_parallel_workers_per_gather = 2;
 SELECT 'after writes, two workers, rows' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;
               mode               |          name           | workers | served | verdict | where_in_scan | having_on_groups | rows_same | n 
@@ -152,7 +149,6 @@ SELECT 'after writes, two workers, rows' AS mode, q.name, having_workers(q.sql) 
 (16 rows)
 
 SET max_parallel_workers_per_gather = 0;
-RESET sift.agg_preagg;
 VACUUM (ANALYZE) hv_events;
 SELECT 'after VACUUM' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM q, LATERAL having_run(q.sql, q.name = 'top-N') c ORDER BY q.ord;
      mode     |          name           | workers | served | verdict | where_in_scan | having_on_groups | rows_same | n 

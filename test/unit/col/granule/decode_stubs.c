@@ -1,10 +1,10 @@
 /*
- * col/granule/decode_stubs.c - the predicate engine that col/granule/granule_filter.c calls and the decoder tests do not run (they link the file for the FSST chunk opener the point decode
- * uses), and the memory-context callbacks of the string memo of col/granule/cfilt_str_simd.c.
+ * col/granule/decode_stubs.c - the predicate engine that col/granule/filter.c calls and the decoder tests do not run (they link the file for the FSST chunk opener the point decode
+ * uses), and the memory-context callbacks of the string memo of col/granule/cfilt/str_simd.c.
  */
 #include "postgres.h"
 
-#include "col/f2/f2_pred.h"
+#include "col/f2/pred/pred.h"
 #include "core/f2/bitscatter.h"
 #include "test/common/pgshim.h"
 

@@ -2,8 +2,8 @@
  * col/v1/chunk.c - L1 of the column engine: reading a column chunk, its validation, tags and decoding.
  */
 
-#include "col/v1/enc.h"
-#include "col/v1/enc_int.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/enc/int.h"
 #include "core/popcount.h"
 #include "core/damage.h"
 

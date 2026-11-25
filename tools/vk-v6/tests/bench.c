@@ -15,7 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "ccshim.h"
 #include "common.h"
 

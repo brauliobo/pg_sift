@@ -4,7 +4,7 @@
 #include "core/host.h"
 
 #include "core/f2/extent.h"
-#include "core/f2/fsm.h"
+#include "core/f2/fsm/fsm.h"
 #include "core/page_io.h"
 
 #define EXTL(p)		((SiftExtentListPageData *) SiftPageGetData(p))

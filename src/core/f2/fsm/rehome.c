@@ -1,12 +1,12 @@
 /*
- * core/f2/fsm/rehome.c - the way down of the metadata that holds the end of the file (core/f2/fsm.h): a slab claimed at the end of the file while the blocks below were still held by what a
+ * core/f2/fsm/rehome.c - the way down of the metadata that holds the end of the file (core/f2/fsm/fsm.h): a slab claimed at the end of the file while the blocks below were still held by what a
  * compaction was replacing keeps whatever page was written to it last, and the pages of the slabs below, which a commit fills first, are free again by the time the compaction is over. The
  * pages in use of the slabs at the end are taken down into the free pages below them (the manifest and the part headers by a commit, the lists of the allocator here), after the slabs below
  * are given room for them out of the free extents under them; the slabs that are left with no page in use go with the next cut of the file (sift_fsm_slabs_idle).
  */
 #include "core/host.h"
 
-#include "core/f2/fsm/fsm_int.h"
+#include "core/f2/fsm/int.h"
 #include "core/page_io.h"
 
 bool

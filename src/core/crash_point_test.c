@@ -12,7 +12,7 @@
 #include "utils/guc.h"
 
 #include "core/crash_point.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 #define NO_CRASH_POINT	(-1)
 

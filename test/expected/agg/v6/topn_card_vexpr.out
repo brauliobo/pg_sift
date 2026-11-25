@@ -1,4 +1,4 @@
--- The Top-N tournament (src/agg/topn_v6.c), the cardinality estimator (src/agg/plan/card_est.c) and the numeric, calendar and boolean programs of the
+-- The Top-N tournament (src/agg/topn_v6.c), the cardinality estimator (src/agg/v6/cost/card_est.c) and the numeric, calendar and boolean programs of the
 -- expression machine (src/agg/vexpr*.c), each held to PostgreSQL's own answer over the same rows. The data is made by arithmetic, so that the output does
 -- not depend on the version.
 CREATE EXTENSION pg_sift;
@@ -335,7 +335,7 @@ BEGIN
 	RETURN 'no error';
 EXCEPTION WHEN others THEN RETURN SQLERRM;
 END $$;
--- EXTRACT of year and epoch of an infinity is the numeric Infinity in PostgreSQL: the machine raises for it, which the scan avoids (agg/vexpr.h)
+-- EXTRACT of year and epoch of an infinity is the numeric Infinity in PostgreSQL: the machine raises for it, which the scan avoids (agg/vexpr/vexpr.h)
 CREATE FUNCTION inf_error() RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
 	RAISE EXCEPTION 'EXTRACT of an infinite value is not run by the vectorized expressions';

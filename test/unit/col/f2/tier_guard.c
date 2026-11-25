@@ -1,5 +1,5 @@
 /*
- * test/unit/col/f2/tier_guard.c - which parts the tiering moves to the object store (col/f2/f2_tier.c): a settled part older than the cutoff, unless the column delta chain of its partition
+ * test/unit/col/f2/tier_guard.c - which parts the tiering moves to the object store (col/f2/tier/tier.c): a settled part older than the cutoff, unless the column delta chain of its partition
  * patched the time column of the slot, in which case the time bounds of its descriptor say nothing of the rows that read back.
  */
 #define SIFT_S49_STANDALONE 1
@@ -13,7 +13,7 @@
 
 #include "test/common/bench.h"
 
-#include "col/f2/f2_tier.c"
+#include "col/f2/tier/tier.c"
 
 enum { CUTOFF = 1000 };
 

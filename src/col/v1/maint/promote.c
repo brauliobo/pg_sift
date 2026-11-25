@@ -5,8 +5,8 @@
  */
 #include "postgres.h"
 #include "utils/timestamp.h"
-#include "col/v1/maint/maint_int.h"
-#include "col/scope.h"
+#include "col/v1/maint/int.h"
+#include "col/scope/scope.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_col_floor_sbs = 0;

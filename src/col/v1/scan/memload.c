@@ -2,7 +2,7 @@
  * col/v1/scan/memload.c - the write buffers a column scan reads: loaded whole, or, for a scan that asks for some keys, the pages that may hold them
  */
 #include "postgres.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 
 /*
  * The batches of the write buffers for a scan that asks for the rows with a key in *keys (NULL: every row). A buffer that has the range of the keys in the head of its pages

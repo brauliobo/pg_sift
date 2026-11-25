@@ -14,7 +14,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
-#include "table/v1/load/load_int.h"
+#include "table/v1/load/int.h"
 #include "core/memtrack.h"
 
 bool		sift_tbl_bulk_groups = true;

@@ -2,7 +2,7 @@
  * agg/v6/par/tseries.h - the batch of a time-bucket aggregation, in pure C: GROUP BY date_bin(stride, ts, origin) (or date_trunc('month', ts)) of a time series, with integer keys beside it and the sums
  * of integer columns, as the words that agg/v6/par/group.h folds.
  *
- * The bins are those of the serial scan (agg/v6/v6_datebin_win.h: the same quotient, the same infinite timestamps, the NULL bin of a NULL source). A key is the 64-bit value with its sign bit flipped,
+ * The bins are those of the serial scan (agg/v6/win/datebin.h: the same quotient, the same infinite timestamps, the NULL bin of a NULL source). A key is the 64-bit value with its sign bit flipped,
  * all ones is the NULL key. What the words cannot say exactly is the scan's: a bin that raises (the scan raises it only for a row that survives its predicates), a NULL in a counted or summed column, a key
  * whose word is the NULL one.
  */
@@ -13,7 +13,7 @@
 
 #include "agg/v6/par/cols.h"
 #include "agg/v6/par/group.h"
-#include "agg/v6/v6_datebin_win.h"
+#include "agg/v6/win/datebin.h"
 
 #define SIFT_TS_NULL_WORD		UINT64_MAX
 #define SIFT_TS_SIGN			(UINT64CONST(1) << 63)

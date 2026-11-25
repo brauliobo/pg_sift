@@ -24,8 +24,8 @@
 
 
 #include "col/col.h"
-#include "col/v1/enc.h"
-#include "col/codec.h"
+#include "col/v1/enc/enc.h"
+#include "col/codec/codec.h"
 #include "shim.h"
 #include "core/testrng.h"
 
@@ -37,7 +37,7 @@ ccg_next(CcgRng *r)
 	return sift_splitmix_next(r);
 }
 
-#include "col/codec_gen.h"
+#include "col/codec/gen.h"
 
 #define MAX_ROWS (1u << 20)		/* what a harness decodes: beyond it only the parse is exercised */
 #define NMODES 7

@@ -6,7 +6,7 @@
 #include "core/host.h"
 #include "core/limits.h"
 #include "core/memtrack.h"
-#include "col/v1/seg_write/seg_write_int.h"
+#include "col/v1/seg_write/int.h"
 
 #define LST_SHARE_DIV		33		/* the leaf statistics take at most 1/33 (3%) of the segment: units of a few rows and many leaves keep none */
 

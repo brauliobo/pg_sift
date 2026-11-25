@@ -1,0 +1,569 @@
+/*
+ * bm25/cscan/exec.c - executor side of SiftScan and SiftCount: the LIMIT hint, begin, exec, end, rescan, EXPLAIN and the parallel (DSM) hooks.
+ */
+/* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
+#include "postgres.h"
+
+#include <math.h>
+
+#include "access/table.h"
+#include "access/tableam.h"
+#include "catalog/index.h"
+#include "executor/executor.h"
+#include "nodes/extensible.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
+#include "storage/predicate.h"
+#include "utils/lsyscache.h"
+#include "utils/rel.h"
+#include "utils/ruleutils.h"
+#include "utils/sortsupport.h"
+
+#include "bm25/eval/eval.h"
+#include "bm25/planner/planner.h"
+#include "bm25/semi_cache.h"
+#include "bm25/cscan/int.h"
+#include "core/cmp.h"
+#include "core/compat.h"
+#include "core/errctx.h"
+#include "core/explain.h"
+#include "core/memtrack.h"
+
+#include "bm25/cscan/int.h"
+
+/* The most rows a LIMIT $n [OFFSET $m] asks of a generic plan, evaluated now that the parameters are known */
+static int64
+limit_hint(SiftScanState *ss, List *limit)
+{
+	int64		k = 0;
+
+	foreach_ptr(ExprState, e, limit)
+	{
+		bool		isnull;
+		int64		n = DatumGetInt64(ExecEvalExprSwitchContext(e, ss->css.ss.ps.ps_ExprContext, &isnull));
+
+		if (isnull || n < 0)
+			return 0;
+		k = Min(k + n, LIMIT_HINT_MAX);
+	}
+	return k;
+}
+
+/* The tests of INCLUDE columns, from the flat list the planner made (planner_attr.c): column, op, value, n and the n values of each */
+/* The floor the ranked scans of one LIMIT share lives in an exec param of the query: the first of them to start makes it */
+static void
+init_group_floor(SiftScanState *ss, int group, int eflags)
+{
+	ParamExecData *pe;
+
+	if (group == 0 || (eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		return;
+	pe = &ss->css.ss.ps.state->es_param_exec_vals[group - 1];
+	if (DatumGetPointer(pe->value) == NULL)
+	{
+		pe->value = PointerGetDatum(MemoryContextAlloc(ss->css.ss.ps.state->es_query_cxt, sizeof(float4)));
+		*(float4 *) DatumGetPointer(pe->value) = -INFINITY;
+	}
+	ss->group_floor = (float4 *) DatumGetPointer(pe->value);
+}
+
+static void
+init_attrs(SiftScanState *ss, List *flat)
+{
+	int			n = 0;
+	ListCell   *lc;
+
+	ss->attr = NULL;
+	ss->nattr = 0;
+	if (flat == NIL)
+		return;
+	ss->attr = palloc0(list_length(flat) / 4 * sizeof(SiftAttrTest));
+	lc = list_head(flat);
+	while (lc != NULL)
+	{
+		SiftAttrTest *t = &ss->attr[n++];
+		int64	   *set;
+
+		t->col = (int) DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		lc = lnext(flat, lc);
+		t->op = (int) DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		lc = lnext(flat, lc);
+		t->v = DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		lc = lnext(flat, lc);
+		t->nset = (int) DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		lc = lnext(flat, lc);
+		set = t->nset ? palloc(t->nset * sizeof(int64)) : NULL;
+		for (int i = 0; i < t->nset; i++, lc = lnext(flat, lc))
+			set[i] = DatumGetInt64(((Const *) lfirst(lc))->constvalue);
+		t->set = set;
+	}
+	ss->nattr = n;
+}
+
+static bool
+has_param(Node *node, void *context)
+{
+	return node != NULL && (IsA(node, Param) || expression_tree_walker(node, has_param, context));
+}
+
+/* A set that a later statement under the same snapshot can read again: the quals ask nothing that changes between two statements */
+static bool
+semi_cacheable(List *quals)
+{
+	return !contain_mutable_functions((Node *) quals) && !has_param((Node *) quals, NULL);
+}
+
+/* The sorted distinct keys of attno of the rows of dim that pass quals, or SIFT_SEMI_OVER when they are more than SIFT_SEMI_MAX_SET */
+static int
+read_semi(EState *estate, Relation dim, AttrNumber attno, List *quals, int64 **keys)
+{
+	Oid			keytype = TupleDescAttr(RelationGetDescr(dim), attno - 1)->atttypid;
+	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
+	ExprState  *qual = ExecPrepareQual(quals, estate);
+	ExprContext *econtext = CreateExprContext(estate);
+	TupleTableSlot *slot = table_slot_create(dim, NULL);
+	TableScanDesc scan = sift_table_beginscan(dim, estate->es_snapshot, 0, NULL);
+	int64	   *set = palloc(1024 * sizeof(int64));
+	int			nset = 0,
+				cap = 1024,
+				m = 0;
+
+	while (nset != SIFT_SEMI_OVER && table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		bool		isnull;
+		Datum		d;
+
+		econtext->ecxt_scantuple = slot;
+		if (!ExecQual(qual, econtext))
+			continue;
+		d = slot_getattr(slot, attno, &isnull);
+		if (isnull)
+			continue;
+		if (nset == cap && cap >= SIFT_SEMI_MAX_SET)
+			nset = SIFT_SEMI_OVER;
+		else
+		{
+			if (nset == cap)
+				set = repalloc(set, (cap *= 2) * sizeof(int64));
+			set[nset++] = sift_attr_datum(keytype, d);
+		}
+	}
+	table_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+	MemoryContextSwitchTo(old);
+	if (nset != SIFT_SEMI_OVER)
+	{
+		qsort(set, nset, sizeof(int64), sift_cmp_i64);
+		for (int j = 0; j < nset; j++)
+			if (m == 0 || set[m - 1] != set[j])
+				set[m++] = set[j];
+		nset = m;
+	}
+	*keys = set;
+	return nset;
+}
+
+/*
+ * The keys of the rows that pass the quals of each table the planner offered (SIFT_PRIV_SEMI), as one more IN test on the column they are joined
+ * to: the rows the join keeps of the scan are among them, whatever else it does. A table that holds more keys than SIFT_SEMI_MAX_SET adds none.
+ */
+void
+load_semi(SiftScanState *ss)
+{
+	EState	   *estate = ss->css.ss.ps.state;
+	int			n = list_length(ss->semi) / 4;
+
+	if (ss->semi_done || n == 0)
+		return;
+	ss->semi_done = true;
+	SIFT_REGROW(ss->attr, (ss->nattr + n) * sizeof(SiftAttrTest));
+	for (int i = 0; i < n; i++)
+	{
+		Oid			reloid = DatumGetObjectId(((Const *) list_nth(ss->semi, 4 * i))->constvalue);
+		int			col = (int) DatumGetInt64(((Const *) list_nth(ss->semi, 4 * i + 1))->constvalue);
+		AttrNumber	attno = (AttrNumber) DatumGetInt64(((Const *) list_nth(ss->semi, 4 * i + 2))->constvalue);
+		List	   *quals = (List *) list_nth(ss->semi, 4 * i + 3);
+		char	   *key = semi_cacheable(quals) ? nodeToString(quals) : NULL;
+		int64	   *set = NULL;
+		int			nset;
+
+		if (key == NULL || !sift_semi_cache_get(reloid, attno, key, estate->es_snapshot, estate->es_query_cxt, &set, &nset))
+		{
+			Relation	dim = table_open(reloid, AccessShareLock);
+
+			nset = read_semi(estate, dim, attno, quals, &set);
+			table_close(dim, AccessShareLock);
+			if (key != NULL)
+				sift_semi_cache_put(reloid, attno, key, estate->es_snapshot, set, nset);
+		}
+		if (nset != SIFT_SEMI_OVER)
+			ss->attr[ss->nattr++] = (SiftAttrTest) {.col = col, .op = SIFT_AT_IN, .set = set, .nset = nset};
+	}
+}
+
+/* The leading sort keys of a keyed scan: their expressions over the scan tuple, and how they compare */
+static void
+init_keys(SiftScanState *ss, CustomScan *cs)
+{
+	List	   *keys = lfourth_node(List, cs->custom_exprs),
+			   *ops = list_nth_node(List, cs->custom_private, SIFT_PRIV_KEYOPS);
+	int			i = 0;
+
+	ss->nkeys = list_length(keys);
+	ss->keyexpr = palloc(ss->nkeys * sizeof(ExprState *));
+	ss->keysort = palloc0(ss->nkeys * sizeof(SortSupportData));
+	ss->keylen = palloc(ss->nkeys * sizeof(int16));
+	ss->keybyval = palloc(ss->nkeys * sizeof(bool));
+	foreach_ptr(Expr, e, keys)
+	{
+		SortSupport ssup = &ss->keysort[i];
+
+		ss->keyexpr[i] = ExecInitExpr(e, &ss->css.ss.ps);
+		get_typlenbyval(exprType((Node *) e), &ss->keylen[i], &ss->keybyval[i]);
+		ssup->ssup_cxt = CurrentMemoryContext;
+		ssup->ssup_collation = DatumGetObjectId(list_nth_node(Const, ops, 3 * i + 1)->constvalue);
+		ssup->ssup_nulls_first = DatumGetBool(list_nth_node(Const, ops, 3 * i + 2)->constvalue);
+		PrepareSortSupportFromOrderingOp(DatumGetObjectId(list_nth_node(Const, ops, 3 * i)->constvalue), ssup);
+		i++;
+	}
+}
+
+static void
+sift_begin(CustomScanState *node, EState *estate, int eflags)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
+
+	ss->indexoid = DatumGetObjectId(((Const *) list_nth(cs->custom_private, SIFT_PRIV_INDEX_OID))->constvalue);
+	ss->mode = DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_MODE))->constvalue);
+	ss->k = DatumGetInt64(((Const *) list_nth(cs->custom_private, SIFT_PRIV_K))->constvalue);
+	ss->late_rows = DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_LATE))->constvalue);
+	ss->heapoid = DatumGetObjectId(((Const *) list_nth(cs->custom_private, SIFT_PRIV_HEAP_OID))->constvalue);
+	ss->gate = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE))->constvalue);
+	ss->gate_to = DatumGetFloat8(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GATE_TO))->constvalue);
+	ss->queries = ExecInitExprList(linitial_node(List, cs->custom_exprs), &node->ss.ps);
+	ss->query_any = palloc(Max(list_length(ss->queries), 1) * sizeof(bool));
+	foreach_ptr(Node, q, linitial_node(List, cs->custom_exprs))
+		ss->query_any[foreach_current_index(q)] = OidIsValid(get_element_type(exprType(q)));
+	ss->quals = ExecInitQual(lsecond_node(List, cs->custom_exprs), &node->ss.ps);
+	ss->cuts = ExecInitQual(list_nth_node(List, cs->custom_exprs, 4), &node->ss.ps);
+	ss->secure = list_length(cs->custom_exprs) > SIFT_EXPR_SECURE;
+	init_keys(ss, cs);
+	init_attrs(ss, list_nth_node(List, cs->custom_private, SIFT_PRIV_ATTR));
+	ss->semi = list_nth_node(List, cs->custom_private, SIFT_PRIV_SEMI);
+	ss->ties = DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_TIES))->constvalue) != 0;
+	init_group_floor(ss, DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GROUP))->constvalue), eflags);
+	if (ss->k == 0 && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		ss->k = limit_hint(ss, ExecInitExprList(lthird_node(List, cs->custom_exprs), &node->ss.ps));
+	ss->heap = node->ss.ss_currentRelation;
+	if (ss->heap == NULL)
+	{
+		ss->heap = table_open(ss->heapoid, AccessShareLock);
+		ss->heap_opened = true;
+	}
+	ss->index = index_open(ss->indexoid, AccessShareLock);
+	ss->iinfo = BuildIndexInfo(ss->index);
+	ss->heapslot = table_slot_create(ss->heap, &estate->es_tupleTable);
+	ss->cxt = sift_mem_allocset_create(estate->es_query_cxt, "sift scan");
+	/* beside ss->cxt, not in it: close_scan resets that one at every rescan, which deletes its children and leaves this pointer at a context that the next one created takes the place of */
+	ss->tmpcx = sift_mem_allocset_create(estate->es_query_cxt, "sift recheck");
+	ss->wd = SIFT_OFFMASK_WORDS;
+	ss->vm_sb = UINT32_MAX;
+	init_cols(ss, cs);
+	foreach_ptr(Plan, child, cs->custom_plans)
+		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags));
+	if (node->custom_ps)
+		ss->bitmap = linitial(node->custom_ps);
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		PredicateLockRelation(ss->heap, estate->es_snapshot);
+}
+
+/* a search holds one open segment per 165 kB of a 64 kB dictionary block, its header and its stream reader, and 8 MB of cursors, candidates and top-N besides, in work_mem */
+static void
+search_assert_within(MemoryContext cx)
+{
+	SiftMemTracker tr;
+
+	sift_mem_init_sub(&tr, "bm25_search", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_WORK_MEM, 1, 1));
+	sift_mem_assert_within(&tr);
+}
+
+static TupleTableSlot *
+sift_exec(CustomScanState *node)
+{
+	SiftErrCtx	ctx;
+	TupleTableSlot *slot;
+
+	sift_errctx_push(&ctx, ((SiftScanState *) node)->indexoid);
+	slot = epq_substituted((SiftScanState *) node) ? epq_next((SiftScanState *) node) : ExecScan(&node->ss, scan_next, scan_recheck);
+	sift_errctx_pop(&ctx);
+	if (TupIsNull(slot))
+		search_assert_within(((SiftScanState *) node)->cxt);
+	return slot;
+}
+
+
+
+static void
+sift_end(CustomScanState *node)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+
+	search_assert_within(ss->cxt);
+	close_scan(ss);
+	foreach_ptr(PlanState, child, node->custom_ps)
+		ExecEndNode(child);
+	index_close(ss->index, NoLock);
+	if (ss->heap_opened)
+		table_close(ss->heap, NoLock);
+	MemoryContextDelete(ss->tmpcx);
+	MemoryContextDelete(ss->cxt);
+}
+
+static void
+sift_rescan(CustomScanState *node)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+
+	close_scan(ss);
+	if (ss->group_floor)
+		*ss->group_floor = -INFINITY;
+	if (ss->bitmap)
+	{
+		if (node->ss.ps.chgParam != NULL)
+			UpdateChangedParamSet(ss->bitmap, node->ss.ps.chgParam);
+		if (ss->bitmap->chgParam == NULL)
+			ExecReScan(ss->bitmap);
+	}
+	ExecScanReScan(&node->ss);
+}
+
+/* The order a ranked scan hands up its rows in: its leading sort keys, if any, then the score */
+static char *
+order_text(SiftScanState *ss, CustomScan *cs, List *dctx)
+{
+	StringInfoData buf;
+	int			i = 0;
+
+	initStringInfo(&buf);
+	foreach_ptr(Node, e, lfourth_node(List, cs->custom_exprs))
+	{
+		const SortSupportData *k = &ss->keysort[i++];
+
+		appendStringInfoString(&buf, deparse_expression(e, dctx, false, false));
+		if (k->ssup_reverse)
+			appendStringInfoString(&buf, " DESC");
+		if (k->ssup_nulls_first != k->ssup_reverse)
+			appendStringInfoString(&buf, k->ssup_nulls_first ? " NULLS FIRST" : " NULLS LAST");
+		appendStringInfoString(&buf, ", ");
+	}
+	appendStringInfoString(&buf, "score DESC");
+	return buf.data;
+}
+
+/* The expressions as text, ANDed */
+static char *
+and_text(List *exprs, List *dctx)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	foreach_ptr(Node, e, exprs)
+		appendStringInfo(&buf, "%s%s", buf.len ? " AND " : "", deparse_expression(e, dctx, false, false));
+	return buf.data;
+}
+
+static void
+sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
+	List	   *dctx = set_deparse_context_plan(es->deparse_cxt, node->ss.ps.plan, ancestors);
+	SiftTotals	t = ss->tot;
+	SiftExplainLine ln;
+
+	ExplainPropertyText("Index", RelationGetRelationName(ss->index), es);
+	sift_explain_index(es, RelationGetRelid(ss->index));
+	ExplainPropertyText("Query", and_text(linitial_node(List, cs->custom_exprs), dctx), es);
+	if (list_nth_node(List, cs->custom_exprs, 4) != NIL)
+		ExplainPropertyText("Score Filter", and_text(list_nth_node(List, cs->custom_exprs, 4), dctx), es);
+	if (ss->mode == SIFT_MODE_RANKED)
+	{
+		ExplainPropertyText("Order", order_text(ss, cs, dctx), es);
+		if (ss->k > 0)
+			ExplainPropertyInteger("Limit Hint", NULL, ss->k, es);
+		if (ss->ties)
+			ExplainPropertyBool("Includes Ties", true, es);
+		if (DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GROUP))->constvalue) != 0)
+			ExplainPropertyBool("Shared Floor", true, es);
+		if (ss->nattr > 0 || ss->semi != NIL)
+			ExplainPropertyInteger("Include Tests", NULL, ss->semi_done ? ss->nattr : ss->nattr + list_length(ss->semi), es);
+		if (ss->bitmap && gated(ss) && es->verbose)
+		{
+			ExplainPropertyFloat("Filter Mask From Matches", NULL, ss->gate, 0, es);
+			if (!isinf(ss->gate_to))
+				ExplainPropertyFloat("Filter Mask Up To Matches", NULL, ss->gate_to, 0, es);
+		}
+	}
+	/* the counters of the index count the rows the policy hides too: the rows of the plan node are what the role may see */
+	if (!es->analyze || ss->secure)
+		return;
+	if (ss->plan)
+	{
+		const SiftPlanStats *s = sift_plan_stats(ss->plan);
+
+		t.searches += s->searches;
+		t.sb_scanned += s->sb_scanned;
+		t.blocks_scored += s->blocks_scored;
+		t.blocks_skipped += s->blocks_skipped;
+		t.candidates += s->candidates;
+		t.verified += s->verified;
+		t.heap_checks += ss->vis_open ? ss->vis.heap_checks : 0;
+		t.heap_pages += ss->vis_open ? ss->vis.heap_pages : 0;
+	}
+	if (ss->bitmap)
+	{
+		t.filter_sbs += ss->filter ? ss->filter->nsb : 0;
+		t.filter_exact += ss->filter ? ss->filter->exact_pages : 0;
+		t.filter_lossy += ss->filter ? ss->filter->lossy_pages : 0;
+	}
+	sift_explain_begin(&ln, es, "Scan");
+	sift_explain_int(&ln, "Index Searches", NULL, "index searches", ss->nsearches, SIFT_XI_KEEP);
+	if (ss->nkeys > 0)
+		sift_explain_int(&ln, "Key Passes", NULL, "key passes", ss->kpasses, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Superblocks", NULL, "superblocks", t.sb_scanned, SIFT_XI_KEEP);
+	if (ss->mode == SIFT_MODE_RANKED)
+	{
+		if (t.searches > 1)
+			sift_explain_int(&ln, "Ranker Searches", NULL, "ranker searches", t.searches, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Blocks Scored", NULL, "blocks scored", t.blocks_scored, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Blocks Skipped", NULL, "skipped", t.blocks_skipped, SIFT_XI_SUB | SIFT_XI_KEEP);
+	}
+	if (ss->mode != SIFT_MODE_COUNT || t.candidates > 0)
+		sift_explain_int(&ln, "Candidates", NULL, "candidates", t.candidates, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Heap Checks", NULL, "heap checks", t.heap_checks, 0);
+	sift_explain_int(&ln, "Heap Pages", NULL, "heap pages", t.heap_pages, 0);
+	sift_explain_end(&ln);
+	if (ss->bitmap)
+	{
+		sift_explain_begin(&ln, es, "Filter Mask");
+		sift_explain_int(&ln, "Filter Superblocks", NULL, "superblocks", t.filter_sbs, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Filter Pages Exact", NULL, "exact pages", t.filter_exact, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Filter Pages Lossy", NULL, "lossy pages", t.filter_lossy, SIFT_XI_KEEP);
+		sift_explain_end(&ln);
+	}
+}
+
+/* Superblocks of the heap as of now: what a snapshot taken before sees lies in them */
+static uint32
+heap_superblocks(SiftScanState *ss)
+{
+	return ((uint64) sift_vis_nblocks(ss->heap) + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
+}
+
+/*
+ * Ranked: binds once for everyone. The participants score from this bind
+ * (the leader too, when it runs the plan), so a writer cannot give them
+ * different statistics or directories.
+ */
+static void
+export_bind(SiftScanState *ss)
+{
+	MemoryContext tmp = sift_mem_allocset_create(CurrentMemoryContext, "sift parallel bind");
+	MemoryContext old = MemoryContextSwitchTo(tmp);
+	SiftIndexState *st = sift_state_open(ss->index, tmp);
+	SiftPlan   *plan = bind_queries(ss, st, NULL);
+
+	if (plan)
+	{
+		Size		len;
+		void	   *data = sift_plan_export(plan, &len);
+
+		sift_par_set_bind(ss->par.sh, ss->par.area, data, len);
+	}
+	sift_state_close(st);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
+}
+
+/* Unranked: the directory alone, the heap superblocks the ranges are of are the leader's too, and each participant binds its own query on it */
+static void
+export_dir(SiftScanState *ss)
+{
+	SiftDirSnapshot *dir = sift_dir_read(ss->index);
+	Size		len;
+	void	   *blob = sift_dir_export(dir, &len);
+
+	sift_par_set_bind(ss->par.sh, ss->par.area, blob, len);
+	pfree(blob);
+	pfree(dir);
+	SIFT_TEST_GATE(sift_test_export_gate, 5);
+}
+
+static void
+prepare_shared(SiftScanState *ss, int nworkers, bool rescan)
+{
+	if (rescan)
+		sift_par_reinit(ss->par.sh, ss->par.area, nworkers, heap_superblocks(ss));
+	else
+		sift_par_init(ss->par.sh, nworkers, heap_superblocks(ss));
+	if (ss->mode == SIFT_MODE_RANKED)
+		export_bind(ss);
+	else
+		export_dir(ss);
+}
+
+static Size
+sift_estimate_dsm(CustomScanState *node, ParallelContext *pcxt)
+{
+	return sift_par_estimate(pcxt->nworkers);
+}
+
+static void
+sift_initialize_dsm(CustomScanState *node, ParallelContext *pcxt, void *coordinate)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+
+	ss->par = (SiftPar) {.sh = coordinate, .area = node->ss.ps.state->es_query_dsa};
+	prepare_shared(ss, pcxt->nworkers, false);
+}
+
+static void
+sift_reinitialize_dsm(CustomScanState *node, ParallelContext *pcxt, void *coordinate)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+
+	ss->par.area = node->ss.ps.state->es_query_dsa;
+	prepare_shared(ss, pcxt->nworkers, true);
+}
+
+static void
+sift_initialize_worker(CustomScanState *node, shm_toc *toc, void *coordinate)
+{
+	SiftScanState *ss = (SiftScanState *) node;
+
+	ss->par = (SiftPar) {.sh = coordinate, .area = node->ss.ps.state->es_query_dsa};
+}
+
+static const CustomExecMethods sift_exec_methods = {
+	.CustomName = "SiftScan",
+	.BeginCustomScan = sift_begin,
+	.ExecCustomScan = sift_exec,
+	.EndCustomScan = sift_end,
+	.ReScanCustomScan = sift_rescan,
+	.ExplainCustomScan = sift_explain,
+	.EstimateDSMCustomScan = sift_estimate_dsm,
+	.InitializeDSMCustomScan = sift_initialize_dsm,
+	.ReInitializeDSMCustomScan = sift_reinitialize_dsm,
+	.InitializeWorkerCustomScan = sift_initialize_worker,
+};
+
+Node *
+sift_create_scan_state(CustomScan *cscan)
+{
+	SiftScanState *ss = (SiftScanState *) newNode(sizeof(SiftScanState), T_CustomScanState);
+
+	ss->css.methods = &sift_exec_methods;
+	ss->css.flags = cscan->flags;
+	return (Node *) ss;
+}

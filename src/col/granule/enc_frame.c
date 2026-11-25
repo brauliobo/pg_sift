@@ -4,10 +4,10 @@
  */
 #include "postgres.h"
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
 #include "col/granule/granule.h"
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 #include "core/par/sbuf.h"
 #include "core/damage.h"
 

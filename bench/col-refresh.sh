@@ -54,7 +54,7 @@ VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) bm;
 CREATE OR REPLACE FUNCTION bt(q text, push bool, pre bool, n int DEFAULT 5) RETURNS numeric LANGUAGE plpgsql AS \$f\$
 DECLARE t timestamptz; a numeric[] := '{}'; i int; r record;
 BEGIN
-  PERFORM set_config('sift.enable_agg', push::text, false); PERFORM set_config('sift.agg_preagg', pre::text, false);
+  PERFORM set_config('sift.enable_agg', push::text, false);
   PERFORM set_config('max_parallel_workers_per_gather', '0', false);
   FOR i IN 0..n LOOP
     t := clock_timestamp(); FOR r IN EXECUTE q LOOP NULL; END LOOP; IF i > 0 THEN a := a || extract(epoch FROM clock_timestamp() - t)::numeric * 1000; END IF;

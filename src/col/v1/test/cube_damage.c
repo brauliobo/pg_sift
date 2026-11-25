@@ -7,7 +7,7 @@
 #ifdef SIFT_TESTING
 #include "col/am.h"
 #include "col/v1/pagg.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 #endif							/* SIFT_TESTING */
 #include "col/v1/test/int.h"
 

@@ -78,7 +78,6 @@ SELECT * FROM lane_report('t');
 
 -- Format 1 on the unified scan
 SET sift.test_create_format1 = on;
-SET sift.test_unified_agg = on;
 SELECT format('CREATE TABLE rt_f_%s (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)', n) FROM variants \gexec
 SELECT fill(format('rt_f_%s', n), v) FROM variants \gexec
 SELECT format($f$CREATE INDEX rt_f_%1$s_col ON rt_f_%1$s USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b.k[]{kind text, n int4}', rollup_columns = 'off')$f$, n) FROM variants \gexec

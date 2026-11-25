@@ -15,13 +15,13 @@
 #include "utils/tuplestore.h"
 
 #include "col/dsmreg.h"
-#include "core/f2/manifest.h"
+#include "core/f2/manifest/manifest.h"
 #include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/progress.h"
-#include "core/sql.h"
-#include "core/store.h"
-#include "core/visibility.h"
+#include "core/sql/sql.h"
+#include "core/store/store.h"
+#include "core/visibility/visibility.h"
 
 PG_FUNCTION_INFO_V1(sift_progress_rows);
 

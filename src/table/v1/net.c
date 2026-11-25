@@ -11,10 +11,10 @@
 #include "utils/timestamp.h"
 
 #include "col/am.h"
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/memtrack.h"
 #include "core/ops.h"
-#include "vacuum_int.h"
+#include "table/v1/vacuum/int.h"
 
 /* The segment's own stream, then the sidecar's pages; the old sidecar's are released with the old header page */
 static uint64

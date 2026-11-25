@@ -1,5 +1,5 @@
 /*
- * tests/gen.c - the chunks of the tests: the real column codec (col/codec.h of the integration tree) encodes the values, the split-bits
+ * tests/gen.c - the chunks of the tests: the real column codec (col/codec/codec.h of the integration tree) encodes the values, the split-bits
  * doubles (ALP_RD) have an encoder of their own here (the layout of granule_enc.c put_alp_rd), and the record gets its validity, and an LZ4
  * wrapper when asked, as a granule stores a chunk. cpu_decode is the decoder of the codec on the same bytes, the oracle of the device's.
  */
@@ -7,7 +7,7 @@
 
 #include <lz4.h>
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "ccshim.h"
 #include "common.h"
 

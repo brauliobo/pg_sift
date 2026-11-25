@@ -53,9 +53,7 @@ CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no
 BEGIN
 	plan := plan_of(q);
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.agg_join_filter = off;
 	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
-	RESET sift.agg_join_filter;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	RESET sift.enable_agg;
@@ -120,9 +118,7 @@ SELECT * FROM same($$SELECT count(*) AS n, sum(amount / e.tier) AS s FROM ev JOI
 CREATE FUNCTION error_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN EXECUTE q; RETURN 'no error'; EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$;
 SELECT error_of($$SELECT sum(amount / e.tier) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 10$$) AS filter;
-SET sift.agg_join_filter = off;
 SELECT error_of($$SELECT sum(amount / e.tier) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 10$$) AS no_filter;
-RESET sift.agg_join_filter;
 SET sift.enable_agg = off;
 SELECT error_of($$SELECT sum(amount / e.tier) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 10$$) AS normal_plan;
 RESET sift.enable_agg;
@@ -137,9 +133,7 @@ RESET max_parallel_workers_per_gather;
 PREPARE by_country(int) AS SELECT e.country, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = $1 GROUP BY 1;
 EXECUTE by_country(3);
 EXECUTE by_country(4);
-SET sift.agg_join_filter = off;
 EXECUTE by_country(3);
-RESET sift.agg_join_filter;
 
 -- keys spread over more than 4 million values: a unit whose zone holds none of them is not read, though the range of the keys covers every zone
 CREATE TABLE ev_far (id int, dim_a_id int, amount numeric(10, 2));
@@ -164,9 +158,7 @@ END $$;
 SELECT agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.id IN (5, 4000) GROUP BY 1$$) <
        agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.id < 15000 GROUP BY 1$$) AS fewer_keys_cost_less;
 CREATE TEMP TABLE with_filter AS SELECT agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.id IN (5, 4000) GROUP BY 1$$) AS c;
-SET sift.agg_join_filter = off;
 SELECT agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.id IN (5, 4000) GROUP BY 1$$) > (SELECT c FROM with_filter) AS filter_costs_less;
-RESET sift.agg_join_filter;
 DROP TABLE with_filter;
 DROP FUNCTION agg_cost_of(text);
 

@@ -22,10 +22,10 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
-#include "col/v1/conn.h"
+#include "col/v1/conn/conn.h"
 #include "core/compat.h"
-#include "core/quarantine.h"
-#include "core/v1_col/tomb.h"
+#include "core/quarantine/quarantine.h"
+#include "core/v1_col/tomb/tomb.h"
 #include "core/catname.h"
 
 bool

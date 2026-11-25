@@ -13,7 +13,7 @@
 #include "utils/timestamp.h"
 #include "agg/stats.h"
 #include "col/am.h"
-#include "col/scope.h"
+#include "col/scope/scope.h"
 #include "col/v1/wbuf.h"
 #include "core/worker.h"
 

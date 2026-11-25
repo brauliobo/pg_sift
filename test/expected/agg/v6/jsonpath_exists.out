@@ -1,4 +1,4 @@
--- tests of the elements of an array column in SiftAggV6 (src/agg/v6/v6_unnest_exists.c, v6_unnest_path.c, src/agg/v6/unnest_test.c): jsonb_path_exists, @? and @> over the objects of the array, and EXISTS
+-- tests of the elements of an array column in SiftAggV6 (src/agg/v6/unnest/exists.c, v6_unnest_path.c, src/agg/v6/unnest/test.c): jsonb_path_exists, @? and @> over the objects of the array, and EXISTS
 -- and NOT EXISTS over jsonb_to_recordset that compare an element with a column of its row, in a WHERE and in an aggregate's FILTER. The data holds what the leaves tell apart: a member that is a JSON null, a missing
 -- one, one of another JSON type than the leaf's, an element that is no object, a document that is no array, a NULL one, and rows still in the slab of the index; the columns of the row have NULLs, a NaN and
 -- values that need a wider integer than the member's. Every statement runs over the index and over a heap twin (the truth): the first word says they agree, the second whether the plan is the node's.

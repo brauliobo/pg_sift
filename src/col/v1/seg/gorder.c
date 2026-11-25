@@ -3,10 +3,10 @@
  * units, the ranges and seeks a scan makes in it and the addresses a range lists
  */
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 #include "col/v1/gquant.h"
 
-/* ---- the global order of a leaf (col/v1/gorder.h) ---- */
+/* ---- the global order of a leaf (col/v1/gorder/gorder.h) ---- */
 
 /* The slot of the block of leaf col to read: the one sorted by group (the second slot, ncols + col; the first when it is grouped, as the user's order_array_group writes it) or the plain one; -1 when the segment has none */
 int

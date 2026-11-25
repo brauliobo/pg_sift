@@ -8,7 +8,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/v6/par/run_int.h"
-#include "agg/v6/v6_rows_topn.h"
+#include "agg/v6/topn/rows.h"
 #include "core/compat.h"
 
 #define ROW_BITS	16

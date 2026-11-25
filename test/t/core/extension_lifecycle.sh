@@ -412,8 +412,8 @@ if (( PG_MAJOR >= 18 )); then
 	SUQ="SELECT string_agg(grp || ':' || n || ':' || s, ',' ORDER BY grp) FROM (SELECT grp, count(*) n, sum(v) s FROM cols GROUP BY grp) g"
 	SUOFF=$(q life upg "SET sift.enable_agg = off" "$SUQ" | tail -n 1)
 	check "an index with minor 3 and minor 12 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols_col') WHERE kind = 'immutable') x")" == 3,12
-	check "the index with minor 3 and minor 12 segments verifies and answers as the heap, with and without the summaries" test "$(q life upg "SELECT sift.col_verify('cols_col', true)" \
-		"SET sift.enable_agg = on" "$SUQ" | tail -n 1)$(q life upg "SET sift.test_agg_super = off" "SET sift.enable_agg = on" "$SUQ" | tail -n 1)" == "$SUOFF$SUOFF"
+	check "the index with minor 3 and minor 12 segments verifies and answers as the heap" test "$(q life upg "SELECT sift.col_verify('cols_col', true)" \
+		"SET sift.enable_agg = on" "$SUQ" | tail -n 1)" == "$SUOFF"
 	# minor 15 segments (the key list or bitmap of an int leaf; opt-in) join an index of minor 3 segments: the units written before are scanned, the others answer count(DISTINCT) from their bitmap, the result is the heap's; REINDEX gives every unit its bitmap
 	q life upg "CREATE TABLE cols15 (id int, k int, v numeric(10,2))" "INSERT INTO cols15 SELECT g, g % $((N / 4)), g % 1000 / 8.0 FROM generate_series(1, $N) g" \
 		"SET sift.test_col_format_minor = 3" "CREATE INDEX cols15_col ON cols15 USING sift_col (id, k, v)" "RESET sift.test_col_format_minor" \

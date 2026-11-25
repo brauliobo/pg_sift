@@ -1,6 +1,6 @@
 -- The statements that join the scanned table to the UNION of the two paths of a scope and count a row for each pair: several keys, every key, the key as a group key, a key by a parameter.
--- The node holds the join over the union (a child plan of it) to run where the units cannot count a row for each pair or cost more. Every statement returns the rows of the join as
--- written (sift.agg_scope = off) and of the normal plan in every state of the pairs, with generic and custom plans, and with the held join run (sift.test_scope_join).
+-- Every statement returns the rows of the join as
+-- written (sift.agg_scope = off) and of the normal plan in every state of the pairs, with generic and custom plans.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -114,20 +114,8 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', false);
 	RETURN a = b AND b = c;
 END $$;
--- the held join run: the child plan of the union gives the join's rows
-CREATE FUNCTION held(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'not run';
-BEGIN
-	PERFORM set_config('sift.test_scope_join', 'on', false);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope Fallback' THEN r := 'join run'; END IF;
-	END LOOP;
-	r := r || CASE WHEN same(q) THEN ', same rows' ELSE ', ROWS DIFFER' END;
-	PERFORM set_config('sift.test_scope_join', 'off', false);
-	RETURN r;
-END $$;
-CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, plan text, same_rows bool, held_join text) LANGUAGE sql AS $$
-	SELECT note, f.name, label(f.q), same(f.q), CASE WHEN label(f.q) ~ '^scope read' THEN held(f.q) ELSE '-' END FROM forms f ORDER BY f.name
+CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, plan text, same_rows bool) LANGUAGE sql AS $$
+	SELECT note, f.name, label(f.q), same(f.q) FROM forms f ORDER BY f.name
 $$;
 
 SELECT * FROM states('built');
@@ -158,7 +146,7 @@ REINDEX INDEX facts_col;
 SELECT * FROM states('rebuilt');
 
 DEALLOCATE ALL;
-DROP FUNCTION states(text), held(text), same(text), rows_md5(text), label(text);
+DROP FUNCTION states(text), same(text), rows_md5(text), label(text);
 DROP TABLE forms;
 DROP VIEW tenant_pairs, tenant_pairs_all, tenant_pairs_barrier;
 DROP TABLE facts, grants, memberships, my_tenants;

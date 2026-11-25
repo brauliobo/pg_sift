@@ -22,9 +22,7 @@ DECLARE q text; a text; b text; c text;
 BEGIN
 	FOREACH q IN ARRAY ARRAY['SELECT grp, count(*), sum(amount) FROM fl GROUP BY grp', 'SELECT count(*), sum(amount) FROM fl WHERE ctid >= ''(800,1)'' AND ctid < ''(3000,1)'''] LOOP
 		SET LOCAL sift.enable_agg = on;
-		SET LOCAL sift.agg_preagg = on;
 		EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
-		SET LOCAL sift.agg_preagg = off;
 		EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 		SET LOCAL sift.enable_agg = off;
 		EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;

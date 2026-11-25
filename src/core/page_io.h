@@ -1,6 +1,6 @@
 /*
  * core/page_io.h - what every page of an index does the same way in every format: the standard page header with the special space of core/page.h, and the
- * report of a page, record or directory the format does not allow. Format-neutral: a file of a format that does not read the store of core/store.h includes this one.
+ * report of a page, record or directory the format does not allow. Format-neutral: a file of a format that does not read the store of core/store/store.h includes this one.
  */
 #ifndef SIFT_PAGE_IO_H
 #define SIFT_PAGE_IO_H

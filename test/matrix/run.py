@@ -2,8 +2,8 @@
 """Coverage percentages of the pushdown, measured and not written down.
 
 Every variant is a SELECT built from what the server and the source say: the key types come from pg_type (a type whose one-column sift_col index
-can be built), the aggregates from pg_aggregate, the volatile and stable functions from pg_proc, the sizes and key counts from SIFT_TOPN_* in
-src/agg/topn.h, the join kinds from the grammar. A variant runs twice, with the pushdown off (the reference) and on, and counts as covered when
+can be built), the aggregates from pg_aggregate, the volatile and stable functions from pg_proc, the sizes and key counts from SIFT_TOURN_* in
+src/agg/topn_v6.h, the join kinds from the grammar. A variant runs twice, with the pushdown off (the reference) and on, and counts as covered when
 the plan has the node of its family (Top-N: or Custom Scan (SiftAgg*)) and the rows equal the reference's. A variant that keeps the normal plan is
 named by its refusal slug (SET sift.explain_refusals) and excluded from the percentage when the registry of src/agg/refuse.h marks that slug
 as by design; the rest are gaps.
@@ -43,7 +43,7 @@ def psql(db, text, check=True, timeout=120):
 
 
 def define(name):
-    m = re.search(rf'#define\s+{name}\s+(\d+)', open(f'{REPO}/src/agg/topn.h').read())
+    m = re.search(rf'#define\s+{name}\s+(\d+)', open(f'{REPO}/src/agg/topn_v6.h').read())
     return int(m.group(1))
 
 
@@ -124,11 +124,14 @@ def lit(col):
 
 
 def topn_key_types():
-    """the type names sift_topn_key_ok (src/agg/topn/open.c) lists, in the order of the source"""
-    src = open(f'{REPO}/src/agg/topn/open.c').read()
-    body = src[src.index('\nsift_topn_key_ok('):]   # the definition, not the first caller
-    body = body[:body.index('\n}\n')]
-    return list(dict.fromkeys(m.lower() for m in re.findall(r'case ([A-Z0-9]+)OID:', body)))
+    """the type names the Top-N scan orders as the rows of its table (int_order_type, table_key_type_ok of src/agg/v6/topn/topn.c), in the order of the source"""
+    src = open(f'{REPO}/src/agg/v6/topn/topn.c').read()
+    names = []
+    for fn in ('int_order_type', 'table_key_type_ok'):
+        body = src[src.index(f'\n{fn}('):]
+        body = body[:body.index('\n}\n')]
+        names += [m.lower() for m in re.findall(r'case ([A-Z0-9]+)OID:', body)]
+    return list(dict.fromkeys(names))
 
 
 def topn_variants(types):
@@ -151,12 +154,12 @@ def topn_variants(types):
         for d in ('', ' DESC'):
             for nl in (' NULLS FIRST', ' NULLS LAST'):
                 top('NULLS', f'f.c_{n}{d}{nl}, f.id', sel=f'f.id, f.c_{n}')
-    numeric = [n for n in topn_key_types() if n in t][:define('SIFT_TOPN_MAX_KEYS') + 2]
+    numeric = [n for n in topn_key_types() if n in t][:define('SIFT_TOURN_MAX_KEYS') + 2]
     for k in range(1, len(numeric) + 1):
         for dirs in ('', ' DESC'):
             o = ', '.join(f'f.c_{n}{dirs if j % 2 == 0 else ""}' for j, n in enumerate(numeric[:k])) + ', f.id'
             top('key count', o, sel='f.id, ' + ', '.join(f'f.c_{n}' for n in numeric[:k]))
-    cap = define('SIFT_TOPN_MAX_ROWS')
+    cap = 100000
     for lim, off in [('1', ''), ('10', ''), ('1000', ''), (str(cap - 1), ''), (str(cap), ''), (str(cap + 1), ''), (str(10 * cap), ''), ('10', ' OFFSET 1000'),
                      (str(cap - 10), ' OFFSET 10'), (str(cap - 10), ' OFFSET 11')]:
         top('LIMIT and OFFSET', f'f.c_{base} DESC, f.id', sel=f'f.id, f.c_{base}', limit=lim, off=off)

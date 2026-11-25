@@ -4,7 +4,7 @@
  *
  * The leader reads the source (whose rows come with the rows of a partition together) and cuts it in items of whole partitions; a thread sorts the partitions of an item and runs the functions over them
  * (par/winpart.h); the leader gives the rows of each item to the node, in the order of the items, while the threads work on the next ones. The partitions in flight are bounded by work_mem (the
- * leader makes no item while the ones made hold the share of it). A partition that does not fit what agg/v6/v6_win_partsort.h holds is sorted by a tuplesort that spills to files and run by the engine
+ * leader makes no item while the ones made hold the share of it). A partition that does not fit what agg/v6/win/partsort.h holds is sorted by a tuplesort that spills to files and run by the engine
  * of the serial node over the sorted stream (par/winspill.h), when its item is released.
  *
  * What the threads do not run stays with the serial node, which gives the same rows: a function or a column type of agg/window.c that par/winpart.h has not (numeric and text columns, the average of an
@@ -13,8 +13,8 @@
 #ifndef SIFT_AGG_V6_PAR_WINRUN_H
 #define SIFT_AGG_V6_PAR_WINRUN_H
 
-#include "agg/v6/v6_window.h"
-#include "agg/v6/v6_win_carry.h"
+#include "agg/v6/win/window.h"
+#include "agg/v6/win/carry.h"
 
 /* The row of a result: its tag and the value of each function (NULL where the bit f of res_nulls is set) */
 typedef void (*SiftV6ParWinEmit) (void *arg, uint64 tag, const SiftWinVal *res, uint16 res_nulls);

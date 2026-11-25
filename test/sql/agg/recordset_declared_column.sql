@@ -4,7 +4,6 @@
 -- document PostgreSQL never gives to the function. Only whether the results agree is printed.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET sift.agg_preagg = off;
 CREATE TABLE docs (id int, doc jsonb);
 INSERT INTO docs
 SELECT i, jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', CASE WHEN i = 777 THEN 'z' ELSE 'a' || i % 3 END,

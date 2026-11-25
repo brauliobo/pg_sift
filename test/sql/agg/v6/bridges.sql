@@ -1,4 +1,4 @@
--- The guards the planners of the aggregation share (src/agg/plan/safety.c) and the bridges of SiftAggV6 (src/agg/v6/): the Top-N tournament, the window functions and DISTINCT ON, the stream of
+-- The guards the planners of the aggregation share (src/agg/v6/safety.c) and the bridges of SiftAggV6 (src/agg/v6/): the Top-N tournament, the window functions and DISTINCT ON, the stream of
 -- groups, the join filter, the cardinality estimate and the expression machine, each held to PostgreSQL's own answer to the same query over the same rows. The test format reads a table through an
 -- index whose name ends in _v6, with its rows sorted by the columns of the index. The data is made by arithmetic, so that the output does not depend on the version.
 CREATE EXTENSION pg_sift;

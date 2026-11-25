@@ -1,5 +1,5 @@
 # The emitters: every NOTICE, WARNING and INFO that src/ and sql/ can send to the client, read from the sources. Run into the namespace of main.py (exec).
-SKIP_C = re.compile(r'(^|/)(test|[^/]*_test[^/]*)(\.[ch]|/)')    # test-only files and directories (the build with SIFT_TESTING)
+SKIP_C = re.compile(r'(^|/)([^/]*_)?test(_[^/]*)?(\.[ch]|/)')    # test-only files and directories (the build with SIFT_TESTING)
 SKIP_SQL = re.compile(r'pg_sift_(helpers|test)--')                # the test helper extensions are never installed by a normal make install
 LEVELS = ('NOTICE', 'WARNING', 'INFO')
 C_CALL = re.compile(r'\b(ereport|elog)\(\s*([A-Za-z_][A-Za-z_0-9]*)')

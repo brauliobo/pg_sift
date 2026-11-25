@@ -6,8 +6,8 @@
 
 #include "core/cmp.h"
 #include "core/i64set.h"
-#include "col/v1/enc.h"
-#include "col/v1/enc_int.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/enc/int.h"
 #include "core/damage.h"
 
 /* ---------------------------------------------------------------------------

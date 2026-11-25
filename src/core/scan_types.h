@@ -1,6 +1,6 @@
 /*
  * core/scan_types.h - the views and plain structs a format hands the aggregate engine (agg/): the key ranges and time windows a scan is confined to, the bound of a row Top-N, the
- * dictionary of a chunk, the units of a parallel scan and the address of a heap tuple as a part stores it. They hold no format code; the engine reads them through core/store_ops.h.
+ * dictionary of a chunk, the units of a parallel scan and the address of a heap tuple as a part stores it. They hold no format code; the engine reads them through core/store/ops.h.
  */
 #ifndef SIFT_CORE_SCAN_TYPES_H
 #define SIFT_CORE_SCAN_TYPES_H
@@ -9,7 +9,7 @@
 
 #include "storage/itemptr.h"
 
-#include "core/f2/manifest.h"
+#include "core/f2/manifest/manifest.h"
 #include "core/range.h"
 
 /* The kind of cell a leaf holds */
@@ -63,7 +63,7 @@ typedef struct SiftParPartRef
 	uint16		flags;
 	uint16		child_idx;		/* a scan of the partitions of a table: the partition the unit is of, in the order the scan lists them */
 	uint32		entry_flags;	/* SIFT_PARTENTRY_* of its partition: a participant reads the column delta chain the partition has, as the serial scan does */
-	uint64		manifest_gen;	/* where the chain's anchor is read: the partition's list (core/f2/manifest.h) */
+	uint64		manifest_gen;	/* where the chain's anchor is read: the partition's list (core/f2/manifest/manifest.h) */
 	BlockNumber manifest_blk;
 	uint32		pad2[13];
 } SiftParPartRef;

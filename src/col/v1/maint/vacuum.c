@@ -4,10 +4,10 @@
  */
 #include "postgres.h"
 #include "access/parallel.h"
-#include "col/v1/maint/maint_int.h"
-#include "col/scope.h"
-#include "core/live.h"
-#include "core/quarantine.h"
+#include "col/v1/maint/int.h"
+#include "col/scope/scope.h"
+#include "core/live/live.h"
+#include "core/quarantine/quarantine.h"
 
 bool
 maint_is_col(Relation index)

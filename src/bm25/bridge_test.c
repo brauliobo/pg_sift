@@ -13,7 +13,7 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 
-#include "bm25/eval.h"
+#include "bm25/eval/eval.h"
 #include "core/catname.h"
 #include "core/tidbridge.h"
 #include "core/memtrack.h"
