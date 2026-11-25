@@ -3,7 +3,11 @@
  *
  * A stripe holds SIFT_ROWLOCK_BUCKETS entries in the table; the ones past them are chunks in a dynamic shared memory area, a list of the stripe that is filled and emptied at its head, so that an entry
  * is never refused for the room it needs (a refusal would make the writer hold the whole relation and wait for it). A chunk is given back as soon as its last entry goes, and the entries of the
- * stripe are one array to a caller: the last takes the place of the one removed, and the table always holds first, so a stripe with a chunk is full. Everything here runs under the lock of the stripe.
+ * stripe are one array to a caller: the last of the table (of the head chunk for an entry in a chunk) takes the place of the one removed, and a new entry goes to the table first. Everything here
+ * runs under the lock of the stripe.
+ *
+ * The end of a transaction (commit, abort, prepare) takes no memory and attaches no area: a read of the chunks finds the ones a backend that mapped the area sees, and a remove never needs the
+ * area for an entry of the table. A backend that mapped none holds every entry it has in the table.
  */
 #ifndef SIFT_TBL_F2_LOCK_OVF_H
 #define SIFT_TBL_F2_LOCK_OVF_H
@@ -32,7 +36,7 @@ typedef struct SiftRowLockTable
 	uint16		stripe_n[SIFT_ROWLOCK_PARTITIONS];	/* the entries in use of a stripe, beside it: a count inside would pad a stripe by a cache line */
 	dsa_pointer overflow[SIFT_ROWLOCK_PARTITIONS];	/* the head chunk of a stripe, or InvalidDsaPointer */
 	LWLock		area_lock;
-	dsa_handle	area_handle;	/* area_lock; the area is made once and lives as long as the server */
+	pg_atomic_uint32 area_handle;	/* a dsa_handle, written under area_lock with a barrier, read with one; the area is made once and lives as long as the server */
 } SiftRowLockTable;
 
 typedef struct SiftRowLockCount
@@ -44,7 +48,7 @@ typedef struct SiftRowLockCount
 
 extern void sift_rowlock_table_init(SiftRowLockTable *t, int tranche);
 
-/* This backend lets go of the area it mapped for the transaction; the chunks stay for the others */
+/* This backend lets go of the area it mapped for the transaction, at its end: while it runs the area stays, for the entries the backend has in the chunks; the chunks stay for the others */
 extern void sift_rowlock_area_detach(void);
 
 /* The entry of the key in the stripe, or NULL */
