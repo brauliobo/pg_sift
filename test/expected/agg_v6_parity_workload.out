@@ -93,8 +93,8 @@ SELECT same(q) FROM unnest(ARRAY[
 ]) q;
                                             same                                             
 ---------------------------------------------------------------------------------------------
- same normal SELECT g, sum(v), rank() OVER (ORDER BY sum(v)) FROM pw GROUP BY g
- same normal SELECT g, count(*), sum(count(*)) OVER () FROM pw GROUP BY g
+ same node SELECT g, sum(v), rank() OVER (ORDER BY sum(v)) FROM pw GROUP BY g
+ same node SELECT g, count(*), sum(count(*)) OVER () FROM pw GROUP BY g
  same normal SELECT DISTINCT ON (g) g, count(*) FROM pw GROUP BY g ORDER BY g, count(*) DESC
 (3 rows)
 

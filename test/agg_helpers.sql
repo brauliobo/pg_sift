@@ -15,7 +15,7 @@ CREATE OR REPLACE FUNCTION runs_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS
 DECLARE line text; found bool := false;
 BEGIN
   PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
   RETURN found;
 END $$;
 CREATE OR REPLACE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$

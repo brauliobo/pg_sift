@@ -65,7 +65,7 @@ LANGUAGE plpgsql AS $$
 DECLARE plan text; a text;
 BEGIN
   plan := having_plan(q);
-  served := plan LIKE '%Custom Scan (SiftAgg)%';
+  served := plan LIKE '%Custom Scan (SiftAgg%';
   where_in_scan := CASE WHEN served THEN plan ~ E'\n +Filters: ' END;
   having_on_groups := CASE WHEN served THEN plan ~ E'\n +Filter: ' END;
   verdict := CASE WHEN served THEN 'sift' ELSE (SELECT string_agg(arm || ':' || slug, ',' ORDER BY arm) FROM sift.explain_why(q) WHERE NOT used) END;
@@ -78,8 +78,8 @@ CREATE FUNCTION having_same(a text, b text, expect text DEFAULT 'same') RETURNS 
 LANGUAGE plpgsql AS $$
 DECLARE ra text;
 BEGIN
-  a_served := having_plan(a) LIKE '%Custom Scan (SiftAgg)%';
-  b_served := having_plan(b) LIKE '%Custom Scan (SiftAgg)%';
+  a_served := having_plan(a) LIKE '%Custom Scan (SiftAgg%';
+  b_served := having_plan(b) LIKE '%Custom Scan (SiftAgg%';
   ra := having_rows(a, true, false);
   a_vs_b := CASE WHEN ra = having_rows(b, true, false) THEN 'same' ELSE 'differs' END;
   as_expected := a_vs_b = expect;

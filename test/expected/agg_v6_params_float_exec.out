@@ -148,11 +148,11 @@ SELECT same(q) FROM unnest(ARRAY[
                                                                                                     same                                                                                                     
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  same node SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE n > l.k GROUP BY g) x
- same normal SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE f > l.k::float8 / 3 GROUP BY g) x
- same normal SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE f > l.k::float8 / 3 GROUP BY g ORDER BY c DESC, g LIMIT 2) x
- same normal SELECT l.k, x.* FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, sum(v), rank() OVER (ORDER BY sum(v)) FROM fp WHERE n > l.k GROUP BY g) x
+ same node SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE f > l.k::float8 / 3 GROUP BY g) x
+ same node SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE f > l.k::float8 / 3 GROUP BY g ORDER BY c DESC, g LIMIT 2) x
+ same node SELECT l.k, x.* FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, sum(v), rank() OVER (ORDER BY sum(v)) FROM fp WHERE n > l.k GROUP BY g) x
  same node SELECT l.k, x.label, x.c FROM generate_series(1000, 60000, 20000) l(k), LATERAL (SELECT d.label, count(*) c FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.v > l.k GROUP BY d.label) x
- same sip SELECT l.k, x.label, x.c FROM generate_series(1, 5) l(k), LATERAL (SELECT d.label, count(*) c FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.f > l.k * 10 GROUP BY d.label) x
+ same node SELECT l.k, x.label, x.c FROM generate_series(1, 5) l(k), LATERAL (SELECT d.label, count(*) c FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.f > l.k * 10 GROUP BY d.label) x
 (6 rows)
 
 -- PARAM_EXEC of a sub-select that runs before the scan

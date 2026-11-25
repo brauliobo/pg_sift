@@ -209,9 +209,9 @@ INSERT INTO v6_checks VALUES
     ('window: parts not sorted by the order are sorted by partition', 'SELECT g, a, row_number() OVER (PARTITION BY g ORDER BY b) AS rn FROM v6t ORDER BY g, b', 'SiftAggV6Window', 'window', true),
     ('window: parts not sorted by the key are put together', 'SELECT a, b, sum(b) OVER (PARTITION BY a ORDER BY b) AS s, lag(g) OVER (PARTITION BY a ORDER BY b) AS prev FROM v6t ORDER BY a, b', 'SiftAggV6Window', 'window', true),
     ('window: a partition key that is not a column stays with PostgreSQL', 'SELECT g, a, row_number() OVER (PARTITION BY g + 1 ORDER BY b) AS rn FROM v6t ORDER BY g, b', '', 'window', true),
-    ('window: DISTINCT ON the first row', 'SELECT DISTINCT ON (g) g, a FROM v6t ORDER BY g, a', 'SiftAggV6Window', 'window', true),
-    ('window: DISTINCT ON the last row', 'SELECT DISTINCT ON (g) g, a FROM v6t ORDER BY g, a DESC NULLS FIRST', 'SiftAggV6Window', 'window', true),
-    ('window: DISTINCT ON with a WHERE clause', 'SELECT DISTINCT ON (g, a) g, a FROM v6t WHERE b > 1000 ORDER BY g, a', 'SiftAggV6Window', 'window', true),
+    ('distinct: DISTINCT ON the first row hashed', 'SELECT DISTINCT ON (g) g, a FROM v6t ORDER BY g, a', 'SiftAggV6First', 'window', true),
+    ('distinct: DISTINCT ON the last row hashed', 'SELECT DISTINCT ON (g) g, a FROM v6t ORDER BY g, a DESC NULLS FIRST', 'SiftAggV6First', 'window', true),
+    ('distinct: DISTINCT ON with a WHERE clause hashed', 'SELECT DISTINCT ON (g, a) g, a FROM v6t WHERE b > 1000 ORDER BY g, a', 'SiftAggV6First', 'window', true),
     ('stream: one key', 'SELECT g, count(*), count(a), sum(a), min(a), max(a) FROM v6t GROUP BY g ORDER BY g', 'SiftAggV6Stream', 'stream', true),
     ('stream: two keys', 'SELECT g, a, count(*), sum(b) FROM v6t GROUP BY g, a ORDER BY g, a', 'SiftAggV6Stream', 'stream', true),
     ('stream: a WHERE clause and HAVING', 'SELECT g, count(*), max(b) FROM v6t WHERE b < 2000 AND f GROUP BY g HAVING count(*) > 5 ORDER BY g', 'SiftAggV6Stream', 'stream', true),
@@ -225,6 +225,9 @@ INSERT INTO v6_checks VALUES
 SELECT name, sift._test_v6_check(query, node, ARRAY[bridge], ordered) AS result FROM v6_checks ORDER BY name;
                                 name                                | result 
 --------------------------------------------------------------------+--------
+ distinct: DISTINCT ON the first row hashed                         | ok
+ distinct: DISTINCT ON the last row hashed                          | ok
+ distinct: DISTINCT ON with a WHERE clause hashed                   | ok
  sip: a condition on the fact table                                 | ok
  sip: a dimension that keeps few keys                               | ok
  sip: a dimension that keeps no key                                 | ok
@@ -245,9 +248,6 @@ SELECT name, sift._test_v6_check(query, node, ARRAY[bridge], ordered) AS result 
  topn: a timestamp descending                                       | ok
  topn: an expression key stays with PostgreSQL                      | ok
  topn: two keys                                                     | ok
- window: DISTINCT ON the first row                                  | ok
- window: DISTINCT ON the last row                                   | ok
- window: DISTINCT ON with a WHERE clause                            | ok
  window: a WHERE clause                                             | ok
  window: a partition key that is not a column stays with PostgreSQL | ok
  window: aggregates over peers                                      | ok
