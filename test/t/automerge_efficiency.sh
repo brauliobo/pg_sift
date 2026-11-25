@@ -39,12 +39,13 @@ ratio() { [[ $2 != 0 ]] || { echo "$NOT_MEASURED"; return; }; awk "BEGIN { print
 # the KB the worker keeps at 4x more than at 1x, per row more (not measured when no worker was seen at 1x)
 bytes_per_row() { [[ $1 != 0 ]] || { echo "$NOT_MEASURED"; return; }; awk "BEGIN { printf \"%.2f\", ($2 - $1) * 1024 / (65536 - 16384) }"; }
 le() { [[ $1 != "$NOT_MEASURED" && $2 != "$NOT_MEASURED" ]] && awk "BEGIN { exit !($1 <= $2) }"; }
-vmhwm_kb() { local p kb m=0; for p in ${1//,/ }; do kb=$(awk '/^VmHWM:/ { print $2 }' "/proc/$p/status" 2>/dev/null); (( ${kb:-0} <= m )) || m=$kb; done; echo "$m"; }
+# anon_kb PIDS: the private anonymous memory of the busiest of the processes, in kB (RssAnon: palloc and malloc, not the shared buffers the process maps)
+anon_kb() { local p kb m=0; for p in ${1//,/ }; do kb=$(awk '/^RssAnon:/ { print $2 }' "/proc/$p/status" 2>/dev/null); (( ${kb:-0} <= m )) || m=$kb; done; echo "$m"; }
 
 sql ae "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_walinspect" "CREATE TABLE pairs (member int4 NOT NULL, scope_key int4 NOT NULL)" "INSERT INTO pairs SELECT m, m % 3 + 1 FROM generate_series(1, 4) m" \
 	"CREATE UNIQUE INDEX pairs_pk ON pairs (member, scope_key)" >/dev/null || bail "setup failed"
 
-# settle REL... -- COND: waits until the queue holds no job of the relations and the SQL condition COND holds, at most CAP_MS; sets CONV_OK, CONV_MS and RSS_KB (the highest VmHWM of a sift worker seen)
+# settle REL... -- COND: waits until the queue holds no job of the relations and the SQL condition COND holds, at most CAP_MS; sets CONV_OK, CONV_MS and RSS_KB (the highest private peak of a sift worker seen)
 settle() {
 	local rels=() cond t0 out seen
 	while [[ $1 != -- ]]; do rels+=("'$1'::regclass"); shift; done
@@ -53,7 +54,7 @@ settle() {
 	t0=$(now_ms) RSS_KB=0 CONV_OK=0
 	while :; do
 		out=$(sql ae "SELECT ($cond) || '|' || coalesce((SELECT string_agg(pid::text, ',') FROM pg_stat_activity WHERE backend_type LIKE 'sift %'), '')")
-		seen=$(vmhwm_kb "${out#*|}")
+		seen=$(anon_kb "${out#*|}")
 		(( seen <= RSS_KB )) || RSS_KB=$seen
 		[[ ${out%%|*} != true ]] || { CONV_OK=1; break; }
 		(( $(now_ms) - t0 < CAP_MS )) || break
