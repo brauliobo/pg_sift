@@ -428,7 +428,7 @@ SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, false, true) AS wro
 FROM rsets, (VALUES (false), (true)) AS p(prehash)
 WHERE sets IN ('CUBE (k1, k2, k3)', 'GROUPING SETS ((k1, k3), (k2), (k1, k2), (k1, k2), ())') ORDER BY sets, prehash;
 RESET work_mem;
--- count(DISTINCT) is held to the budget in the grand total and in a keyed set alike, and a freed tree retains no distinct set
+-- count(DISTINCT) is held to the budget in the grand total; the distinct set of a keyed group that outgrows it is sorted (no error), and a freed tree retains no distinct set
 SELECT masks, n, (r).errored, (r).retained < 65536 AS freed
 FROM (VALUES ('{0}'::int8[]), ('{1}')) AS m(masks), (VALUES (10000::int8, 1048576::int8), (200000, 1048576), (200000, 67108864)) AS b(n, max_bytes),
      LATERAL (SELECT sift._test_rollup_distinct(masks, n, max_bytes) AS r) AS x ORDER BY masks, n, max_bytes;

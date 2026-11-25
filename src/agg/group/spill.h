@@ -7,8 +7,9 @@
  * Reading is a scan: each partition is merged into a table of its own, state by state and value by value, and handed to the caller as final groups, then
  * freed, so that one partition is in memory at a time. A partition that would take more than the budget goes to partitions one level deeper, by other bits of the
  * hash (the levels are SIFT_SPILL_MAX_DEPTH): the records read so far leave the table for them and the ones still to read go straight to them. A partition
- * whose groups all have the same bits in every level is one group (or one set of distinct values that has no end): it has no way to be smaller, and it is an
- * error with a message.
+ * whose groups all have the same bits in every level is one group (or a few of one hash, or one set of distinct values): it has no way to be smaller, so its records
+ * are sorted by hash in the memory of the budget (a tuplesort, which writes its runs to temporary files) and merged one hash at a time: a table never holds
+ * more than the groups of one hash and what the budget leaves, and no statement ends for the size of its groups.
  *
  * The tier of a table is one of those of SiftGroupTier; the spill is the last, and nothing is below it.
  */
@@ -20,7 +21,7 @@
 #define SIFT_SPILL_PARTS		16
 #define SIFT_SPILL_LOCAL_CAP	4096	/* slots of the table that gathers the groups of the rows while the rest are in the files: 256 KB, in the cache */
 #define SIFT_SPILL_STAGE_BYTES	4096	/* what a partition collects before it writes */
-#define SIFT_SPILL_MAX_DEPTH	3
+#define SIFT_SPILL_MAX_DEPTH	8
 #define SIFT_SPILL_SOFT_PERCENT	80		/* of its memory a table goes to the files */
 
 typedef struct SiftGroupSpill SiftGroupSpill;
