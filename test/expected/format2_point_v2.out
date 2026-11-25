@@ -3,26 +3,18 @@
 -- answer is the heap's, through the build, the writes after it and a text column of a collation that does not compare bytes (which the directory does not answer).
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
 CREATE FUNCTION point_keys(index regclass) RETURNS text LANGUAGE C AS 'pg_sift', 'sift_test_f2_point_keys';
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
-END $$;
 -- {exact, recheck, zones, read, sparse, ...}: whether every granule the scan of the index read was one a directory named for the rows it asked (so that a scan with no directory, or one that
 -- reads a granule for another reason, says false), and whether it read fewer granules than the index has
 CREATE FUNCTION granules(idx regclass, q text, OUT parity text, OUT by_directory bool, OUT fewer bool) LANGUAGE plpgsql AS $$
 DECLARE read int; named int;
 BEGIN
 	PERFORM sift._test_f2_scan_counters(true);
-	parity := f2_same(q);
+	parity := sift_helpers.f2_same(q, false);
 	SELECT c[4], c[5] INTO read, named FROM (SELECT sift._test_f2_scan_counters(true) AS c) s;
 	by_directory := read = named;
 	fewer := read < (SELECT sum(granules) FROM sift.parts(idx));
@@ -129,7 +121,7 @@ SELECT n, (granules('pt_i', q)).fewer FROM (VALUES (1, format('SELECT id FROM pt
 INSERT INTO pt SELECT i, (i * 7919) % 1000003, 'user-' || md5('t' || i), i % 250, i / 250, i % 5, 'Name' || (i % 3000), 'n' || (i % 7), sin(i * 0.7919 + 1), sin(i * 0.7919 + 2), sin(i * 0.7919 + 3), sin(i * 0.7919 + 4), sin(i * 0.7919 + 5), sin(i * 0.7919 + 6), sin(i * 0.7919 + 7), sin(i * 0.7919 + 8), sin(i * 0.7919 + 9), sin(i * 0.7919 + 10), sin(i * 0.7919 + 11), sin(i * 0.7919 + 12) FROM generate_series(80003, 80300) i;
 UPDATE pt SET ord = 777777, t = 'user-updated' WHERE id IN (1234, 56789, 80100);
 DELETE FROM pt WHERE id IN (2468, 33333, 4321);
-SELECT n, q, f2_same(q) AS parity FROM (VALUES
+SELECT n, q, sift_helpers.f2_same(q, false) AS parity FROM (VALUES
 	(1, 'SELECT id FROM pt WHERE ord = 777777'),
 	(2, format('SELECT id FROM pt WHERE ord IN (%s, %s, %s, 777777)', :o1, :o2, :o3)),
 	(3, 'SELECT id FROM pt WHERE t = ''user-updated'''),
@@ -156,7 +148,7 @@ SELECT sift._test_f2_check('pt_i') ~ '^parts=[0-9]+ ' AS consistent;
  t
 (1 row)
 
-SELECT n, q, f2_same(q) AS parity FROM (VALUES
+SELECT n, q, sift_helpers.f2_same(q, false) AS parity FROM (VALUES
 	(1, 'SELECT id FROM pt WHERE ord = 777777'),
 	(2, format('SELECT id FROM pt WHERE ord = %s', :o2)),
 	(3, 'SELECT id FROM pt WHERE tenant = 17 AND seq = 100'),
@@ -215,6 +207,7 @@ SELECT (granules('pu_i', format('SELECT id FROM pu WHERE u = %L', :'u1'))).fewer
 
 DROP TABLE pt, pu;
 DROP COLLATION ci;
-DROP FUNCTION shared_keys(regclass), point_keys(regclass), f2_same(text), granules(regclass, text);
+DROP FUNCTION shared_keys(regclass), point_keys(regclass), granules(regclass, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

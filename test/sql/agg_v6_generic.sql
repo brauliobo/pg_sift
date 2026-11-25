@@ -2,6 +2,7 @@
 -- inputs sorted by one tuplesort, held to the answer of the heap for the same rows. Each parity check prints t; plan_ok prints t when the statement ran as SiftAggV6 over the index and over the table.
 -- The statements hold on the release library too, whose indexes have the one format.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 SET timezone = 'UTC';
@@ -24,17 +25,9 @@ CREATE AGGREGATE sum_sq (float8) (sfunc = float8pl, stype = float8, initcond = '
 CREATE FUNCTION sq_add(s float8, x float8) RETURNS float8 LANGUAGE sql IMMUTABLE AS 'SELECT s + x * x';
 CREATE AGGREGATE sum_sq2 (float8) (sfunc = sq_add, stype = float8, initcond = '0');
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 -- @T is the heap twin, the sift_col index or the sift_table
 CREATE FUNCTION parity(q text, with_table boolean DEFAULT true) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(replace(q, '@T', 'gc'), replace(q, '@T', 'gh')) AND (NOT with_table OR same_rows(replace(q, '@T', 'gt'), replace(q, '@T', 'gh'))) $$;
+$$ SELECT sift_helpers.same_rows(replace(q, '@T', 'gc'), replace(q, '@T', 'gh')) AND (NOT with_table OR sift_helpers.same_rows(replace(q, '@T', 'gt'), replace(q, '@T', 'gh'))) $$;
 
 CREATE FUNCTION plan_ok(q text, with_table boolean DEFAULT true) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text; n int := 0;
@@ -101,7 +94,7 @@ BEGIN
 	PERFORM set_config('parallel_setup_cost', '0', true);
 	PERFORM set_config('parallel_tuple_cost', '0', true);
 	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-	RETURN same_rows(replace(q, '@T', 'gc'), replace(q, '@T', 'gh'));
+	RETURN sift_helpers.same_rows(replace(q, '@T', 'gc'), replace(q, '@T', 'gh'));
 END $$;
 SELECT par_ok('SELECT g, bit_or(a), bit_xor(a), regr_count(b, f), round(stddev_samp(b), 6) FROM @T GROUP BY g') AS combine_plan;
 SELECT par_same('SELECT g, bit_or(a), bit_xor(a), bit_and(a), regr_count(b, f), round(stddev_samp(b), 6), round(var_pop(a), 6) FROM @T GROUP BY g') AS combine_grouped;
@@ -109,9 +102,10 @@ SELECT par_same('SELECT bit_or(a), bit_xor(a), round(stddev(b), 6), round(sum_sq
 SELECT NOT par_ok('SELECT g, array_agg(a), string_agg(t, '','' ORDER BY id) FROM @T GROUP BY g') AS no_workers_for_ordered_or_growing;
 SELECT par_same('SELECT g, array_length(array_agg(a), 1), length(string_agg(t, '','' ORDER BY id)), percentile_disc(0.5) WITHIN GROUP (ORDER BY a) FROM @T GROUP BY g') AS serial_still_exact;
 
-DROP FUNCTION parity(text, boolean), plan_ok(text, boolean), par_ok(text), par_same(text), same_rows(text, text);
+DROP FUNCTION parity(text, boolean), plan_ok(text, boolean), par_ok(text), par_same(text);
 DROP AGGREGATE sum_sq (float8);
 DROP AGGREGATE sum_sq2 (float8);
 DROP FUNCTION sq_add(float8, float8);
 DROP TABLE gt, gc, gh;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

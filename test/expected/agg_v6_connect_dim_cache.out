@@ -2,6 +2,7 @@
 -- and the transaction's count of scans of the dimension shows that a hit reads nothing. Every write of the table, committed or not, and every DDL makes the next statement read the table again; every answer
 -- is compared with the heap's (sift.enable_agg = off). A table under row level security, a table of another user and a table that keeps no journal are never served from another statement's read.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET enable_hashagg = off;
@@ -23,12 +24,6 @@ CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES
  (1, $q$SELECT dim.a, count(*), sum(ev.v) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (2, $q$SELECT dim.a, plain.c, count(dim.flag), sum(ev.v) FROM ev JOIN plain ON plain.k2 = ev.k2 LEFT JOIN dim ON dim.k = ev.k AND dim.flag GROUP BY 1, 2 ORDER BY 1, 2$q$);
-CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
 CREATE FUNCTION cache(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
@@ -50,7 +45,7 @@ CREATE FUNCTION report(label text, upto int DEFAULT 1) RETURNS TABLE (stage text
 DECLARE s record; f text; ok bool; BEGIN
 	FOR s IN SELECT * FROM shapes WHERE n <= upto ORDER BY n LOOP
 		f := cache(s.sql);
-		ok := answer(s.sql, true) IS NOT DISTINCT FROM answer(s.sql, false);
+		ok := sift_helpers.answer(s.sql, true) IS NOT DISTINCT FROM sift_helpers.answer(s.sql, false);
 		RETURN QUERY SELECT label, s.n, f, ok, cache(s.sql);
 	END LOOP;
 END $$;
@@ -73,7 +68,7 @@ SELECT * FROM report('built', 2);
 UPDATE dim SET b = b WHERE k = 1;
 BEGIN;
 SELECT scans('dim') AS dim0, scans('plain') AS plain0 \gset
-SELECT answer((SELECT sql FROM shapes WHERE n = 2), true) IS NOT NULL AS first_statement;
+SELECT sift_helpers.answer((SELECT sql FROM shapes WHERE n = 2), true) IS NOT NULL AS first_statement;
  first_statement 
 -----------------
  t
@@ -85,7 +80,7 @@ SELECT scans('dim') - :dim0 AS dimension_scans, scans('plain') - :plain0 AS plai
                1 |           1
 (1 row)
 
-SELECT answer((SELECT sql FROM shapes WHERE n = 2), true) IS NOT NULL AS next_statement;
+SELECT sift_helpers.answer((SELECT sql FROM shapes WHERE n = 2), true) IS NOT NULL AS next_statement;
  next_statement 
 ----------------
  t
@@ -297,6 +292,7 @@ SELECT * FROM report('user b, policy off');
 RESET ROLE;
 DROP OWNED BY dcache_a, dcache_b;
 DROP ROLE dcache_a, dcache_b;
-DROP FUNCTION report(text, int), engaged(text), answer(text, bool), cache(text), scans(regclass);
+DROP FUNCTION report(text, int), engaged(text), cache(text), scans(regclass);
 DROP TABLE shapes, ev, plain, dim, rdim;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

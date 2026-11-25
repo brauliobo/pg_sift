@@ -4,6 +4,7 @@
 -- requires: build col
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET sift.agg_force = on;
 
@@ -25,17 +26,9 @@ INSERT INTO nt SELECT * FROM nh;
 CREATE INDEX nc_sift ON nc USING sift_col (id, grp, amount, qty);
 SELECT sift.table_maintain('nt') IS NOT NULL AS maintained;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 -- the same rows from the index, from the table and from the heap (the heap twin has no sift index, so it is the truth)
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(replace(q, '@T', 'nc'), replace(q, '@T', 'nh')) AND same_rows(replace(q, '@T', 'nt'), replace(q, '@T', 'nh')) $$;
+$$ SELECT sift_helpers.same_rows(replace(q, '@T', 'nc'), replace(q, '@T', 'nh')) AND sift_helpers.same_rows(replace(q, '@T', 'nt'), replace(q, '@T', 'nh')) $$;
 
 CREATE FUNCTION plan_ok(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text; n int := 0;
@@ -79,5 +72,6 @@ UPDATE nt SET amount = 'NaN' WHERE id IN (1, 2, 3);
 SELECT parity('SELECT count(amount), sum(amount), min(amount), max(amount), count(DISTINCT amount) FROM @T') AS after_dml;
 SELECT parity('SELECT grp, count(amount), sum(amount), min(amount), max(amount) FROM @T GROUP BY grp') AS after_dml_grouped;
 DROP TABLE nh, nc, nt;
-DROP FUNCTION refused(text), plan_ok(text), parity(text), same_rows(text, text);
+DROP FUNCTION refused(text), plan_ok(text), parity(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

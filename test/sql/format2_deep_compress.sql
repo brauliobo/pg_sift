@@ -2,20 +2,11 @@
 -- append-mostly table cost under a byte a row. (Doubles of no short decimal, bit for bit, are in format2_encodings; neighbouring partitions that merge, in format2_manifest; their parts joined
 -- by a compaction with pre-aggregates, in format2_compact.) Every value is the heap's.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
 SET max_parallel_maintenance_workers = 0;
-
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
-END $$;
 
 CREATE FUNCTION enc_count(idx regclass, enc text) RETURNS int LANGUAGE sql AS $$
 	SELECT coalesce(sum(m[1]::int), 0)::int FROM regexp_matches(sift._test_f2_encs(idx, 1, NULL), '[-0-9]+:' || enc || '\*([0-9]+)', 'g') AS m $$;
@@ -50,7 +41,7 @@ FROM (SELECT l.leaf, count(*) AS n, count(*) FILTER (WHERE l.val IS DISTINCT FRO
 	  FROM leaves l JOIN tel t ON t.ctid = l.tid GROUP BY l.leaf) q;
 SELECT leaf, count(*) AS other_shapes FROM leaves WHERE leaf IN ('d.amount', 'd.qty', 'd.day', 'd.seq', 'd.ok') AND val !~ '^(-?[0-9.]+|true|false|[0-9]{4}-[0-9-]+)$'
 GROUP BY leaf ORDER BY leaf;
-SELECT n, f2_same(q) AS parity FROM (VALUES
+SELECT n, sift_helpers.f2_same(q) AS parity FROM (VALUES
 	(1, 'SELECT count(*), sum(length(d->>''amount'')), count(DISTINCT d->>''ts'') FROM tel WHERE tenant >= 0'),
 	(2, 'SELECT id, d->>''amount'' FROM tel WHERE tenant = 3 AND d->>''amount'' = ''N/A'''),
 	(3, 'SELECT id, d->>''seq'', d->>''ok'' FROM tel WHERE tenant >= 0 AND (d->>''seq'' IN (''300003'', ''0300'', ''9'') OR d->>''ok'' = ''yes'')'),
@@ -71,7 +62,7 @@ CREATE INDEX ap_idx ON ap USING sift_col (id, v) WITH (key_order = 'id');
 INSERT INTO ap SELECT i, i % 10 FROM generate_series(1, 30000) i;
 INSERT INTO ap SELECT i, i % 10 FROM generate_series(30001, 60000) i;
 SELECT bytes_per_row < 1.0 AS tids_under_a_byte, bytes > 0 AS has_tids FROM sift.index_size_breakdown('ap_idx') WHERE category = 'granule_tid';
-SELECT f2_same('SELECT count(*), sum(v), max(id) FROM ap WHERE id > 20000') AS parity;
+SELECT sift_helpers.f2_same('SELECT count(*), sum(v), max(id) FROM ap WHERE id > 20000') AS parity;
 
 -- Decimals of fifteen digits that are no short decimal of a fixed scale are held as the doubles they are (a promoted path of type FLOAT64) and read back as the text of the heap
 CREATE TABLE fl (id bigint, d jsonb);
@@ -79,7 +70,7 @@ INSERT INTO fl SELECT i, jsonb_build_object('x', (i * 1.000000000000123)::float8
 CREATE INDEX fl_idx ON fl USING sift_col (id, d) WITH (key_order = 'id', paths = 'd.x astext, d.y astext');
 SELECT enc_count('fl_idx', 'STR_PROMO') >= 2 AS float_chunks_promoted;
 SELECT count(*) AS differ FROM sift._test_f2_leaves('fl_idx') l JOIN fl t ON t.ctid = l.tid WHERE l.leaf LIKE 'd.%' AND l.val IS DISTINCT FROM t.d->>substr(l.leaf, 3);
-SELECT f2_same('SELECT id, d->>''x'' FROM fl WHERE id BETWEEN 100 AND 200') AS parity;
+SELECT sift_helpers.f2_same('SELECT id, d->>''x'' FROM fl WHERE id BETWEEN 100 AND 200') AS parity;
 
 -- Parts joined by a compaction have their granules copied as they are, one at a time: what the writer holds is the metadata of the parts and a granule, not their bytes
 CREATE TABLE st (id bigint, tenant int, v float8);
@@ -101,9 +92,10 @@ BEGIN
 END $$;
 SELECT copied > 0 AS granules_stitched, writer_max > 0 AS writer_measured, writer_max <= 8 * 1024 * 1024 AS writer_within_8mb, rows_in = rows_out AS all_rows FROM st_stats;
 SELECT sift._test_f2_check_keys('st_idx');
-SELECT f2_same('SELECT count(*), sum(tenant) FROM st WHERE id > 20000') AS parity;
+SELECT sift_helpers.f2_same('SELECT count(*), sum(tenant) FROM st WHERE id > 20000') AS parity;
 
 DROP TABLE tel, ap, fl, st;
-DROP FUNCTION f2_same(text), enc_count(regclass, text);
+DROP FUNCTION enc_count(regclass, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

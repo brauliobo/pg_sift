@@ -4,14 +4,9 @@
 -- requires: build col
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
 SET max_parallel_workers_per_gather = 0;
-
-CREATE FUNCTION chk(name text, got anyelement, want anyelement) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	IF got IS DISTINCT FROM want THEN RAISE EXCEPTION 'FAILED %: got %, want %', name, got, want; END IF;
-	RETURN name || ': ok';
-END $$;
 
 CREATE FUNCTION same(name text, a regclass, b regclass) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE x text; y text;
@@ -41,7 +36,7 @@ CREATE TABLE th (id int, g int, a numeric(10,2), b numeric(10,0), c numeric(12,3
 INSERT INTO th SELECT i, i % 5, CASE WHEN i % 997 = 0 THEN 'NaN'::numeric WHEN i % 61 = 0 THEN NULL ELSE (i % 5000) / 8.0 END, i % 777, (i % 900) / 16.0, i / 4.0 FROM generate_series(1, 30000) i;
 CREATE TABLE tb (LIKE th) USING sift_table WITH (autovacuum_enabled = false);
 INSERT INTO tb SELECT * FROM th;
-SELECT chk('parts written', sift.table_maintain('tb') IS NOT NULL, true);
+SELECT sift_helpers.assert_eq('parts written', sift.table_maintain('tb') IS NOT NULL, true);
 SELECT same('before the ALTER', 'tb', 'th');
 
 SELECT on_both('ALTER TABLE %I ALTER COLUMN a TYPE numeric');
@@ -53,22 +48,23 @@ SELECT aggs_same('aggregates after the ALTER');
 VACUUM (FREEZE) tb;
 SELECT same('rows after the compaction', 'tb', 'th');
 SELECT aggs_same('aggregates after the compaction');
-SELECT chk('the compaction left every row', sift.table_verify('tb'), (SELECT count(*) FROM th));
-SELECT chk('NaN rows kept', (SELECT count(*) FROM tb WHERE a = 'NaN'), (SELECT count(*) FROM th WHERE a = 'NaN'));
-SELECT chk('NULL rows kept', (SELECT count(*) FROM tb WHERE a IS NULL), (SELECT count(*) FROM th WHERE a IS NULL));
-SELECT chk('display scale kept', (SELECT a::text FROM tb WHERE id = 3), (SELECT a::text FROM th WHERE id = 3));
+SELECT sift_helpers.assert_eq('the compaction left every row', sift.table_verify('tb'), (SELECT count(*) FROM th));
+SELECT sift_helpers.assert_eq('NaN rows kept', (SELECT count(*) FROM tb WHERE a = 'NaN'), (SELECT count(*) FROM th WHERE a = 'NaN'));
+SELECT sift_helpers.assert_eq('NULL rows kept', (SELECT count(*) FROM tb WHERE a IS NULL), (SELECT count(*) FROM th WHERE a IS NULL));
+SELECT sift_helpers.assert_eq('display scale kept', (SELECT a::text FROM tb WHERE id = 3), (SELECT a::text FROM th WHERE id = 3));
 
 INSERT INTO th SELECT 30000 + i, i % 5, (i % 4000 + 1) / 7.0::numeric, i % 100, i / 3.0, i / 5.0 FROM generate_series(1, 5000) i;
 INSERT INTO tb SELECT * FROM th WHERE id > 30000;
-SELECT chk('new parts beside the old', sift.table_maintain('tb') IS NOT NULL, true);
+SELECT sift_helpers.assert_eq('new parts beside the old', sift.table_maintain('tb') IS NOT NULL, true);
 SELECT on_both('DELETE FROM %I WHERE id %% 11 = 0');
 SELECT on_both('UPDATE %I SET a = a + 1.0001 WHERE id %% 13 = 0');
 SELECT same('rows with the new ones', 'tb', 'th');
 VACUUM (FREEZE) tb;
 SELECT same('rows after the second compaction', 'tb', 'th');
 SELECT aggs_same('aggregates after the second compaction');
-SELECT chk('rows verified', sift.table_verify('tb'), (SELECT count(*) FROM th));
+SELECT sift_helpers.assert_eq('rows verified', sift.table_verify('tb'), (SELECT count(*) FROM th));
 
 DROP TABLE tb, th;
-DROP FUNCTION chk(text, anyelement, anyelement), same(text, regclass, regclass), on_both(text), aggs_same(text);
+DROP FUNCTION same(text, regclass, regclass), on_both(text), aggs_same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

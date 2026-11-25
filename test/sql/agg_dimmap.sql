@@ -5,6 +5,7 @@
 -- the key itself that the query reads is the scanned column in an inner join (shape 4: it has a map) and no class's in a left join (shape 5: loaded row by row, never a map).
 -- A test of the table's columns (shape 8: a FILTER, a CASE) is a boolean column of the lookup table that the load computes (agg_lookup_tests): its map has a class for each outcome.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
@@ -34,12 +35,6 @@ INSERT INTO shapes VALUES
  (8, $q$SELECT ev.id % 4, count(*) FILTER (WHERE dim.a = 2), count(*) FILTER (WHERE dim.flag), count(DISTINCT ev.k) FILTER (WHERE dim.b = 1)
 		FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
-CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
 -- the maps the statement shared and the ones it made, from EXPLAIN ANALYZE
 CREATE FUNCTION maps(sql text, OUT shared int, OUT built int) LANGUAGE plpgsql AS $$
 DECLARE l text; BEGIN
@@ -51,7 +46,7 @@ DECLARE l text; BEGIN
 	END LOOP;
 END $$;
 CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, shared bool, built bool) LANGUAGE sql AS $$
-	SELECT stage, n, answer(sql, true) = answer(sql, false), m.shared > 0, m.built > 0 FROM shapes, LATERAL maps(sql) m ORDER BY n
+	SELECT stage, n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false), m.shared > 0, m.built > 0 FROM shapes, LATERAL maps(sql) m ORDER BY n
 $$;
 
 -- the first statement of a shape reads the leaves and keeps the map; the next ones share it
@@ -93,6 +88,7 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SELECT * FROM report('workers');
 
-DROP FUNCTION report(text), maps(text), answer(text, bool);
+DROP FUNCTION report(text), maps(text);
 DROP TABLE shapes, ev, dim, dim2;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

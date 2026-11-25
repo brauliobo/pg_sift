@@ -2,20 +2,11 @@
 -- live one; a text predicate is decided by bytes only where the collation says the bytes decide it; a table with more columns than leaves is read within its arrays; an index-only scan returns
 -- the values the rows were written with; a granule of one transaction and command keeps nothing in the version section; and the pages of a slab and of the pending deletes carry a generation.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET sift.enable_agg = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
-
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
-END $$;
 
 -- The rows of an index-only scan and of the heap alone, and what the scan read of the heap
 CREATE FUNCTION ios_same(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -37,7 +28,7 @@ INSERT INTO ul SELECT i, i % 10, i % 100, date '2020-01-01' + (i % 50) FROM gene
 CREATE INDEX ul_idx ON ul USING sift_col (id, g, v, d) WITH (key_order = 'id', compression = 'none');
 SELECT pg_relation_size('ul_idx', 'init') / current_setting('block_size')::int AS init_blocks;
 SELECT sift._test_f2_check('ul_idx') ~ '^parts=1 ' AS consistent;
-SELECT f2_same('SELECT id FROM ul WHERE g = 3 AND v < 50');
+SELECT sift_helpers.f2_same('SELECT id FROM ul WHERE g = 3 AND v < 50', true, false);
 CREATE UNLOGGED TABLE ul_empty (id int, g int);
 CREATE INDEX ul_empty_idx ON ul_empty USING sift_col (id, g) WITH (compression = 'none');
 SELECT pg_relation_size('ul_empty_idx', 'init') / current_setting('block_size')::int AS empty_init_blocks;
@@ -50,10 +41,10 @@ BEGIN;
 DELETE FROM d WHERE id % 2 = 0;
 UPDATE d SET v = v + 1 WHERE id % 3 = 0;
 CREATE INDEX d_idx ON d USING sift_col (id, g, v, f, b, t) WITH (key_order = 'id');
-SELECT f2_same('SELECT id, v FROM d WHERE g < 5');
+SELECT sift_helpers.f2_same('SELECT id, v FROM d WHERE g < 5', true, false);
 SELECT count(*), sum(v) FROM d WHERE g < 5;
 COMMIT;
-SELECT f2_same('SELECT id, v FROM d WHERE g < 5');
+SELECT sift_helpers.f2_same('SELECT id, v FROM d WHERE g < 5', true, false);
 SELECT count(*), sum(v) FROM d WHERE g < 5;
 SELECT nrows, ndead, flags & 512 = 0 AS not_sealed FROM sift._test_f2_parts('d_idx', 1, NULL);
 SELECT sift._test_f2_check('d_idx') ~ '^parts=1 ' AS consistent;
@@ -63,22 +54,22 @@ INSERT INTO dc SELECT i, i % 10, i FROM generate_series(1, 30000) i;
 DELETE FROM dc WHERE id % 2 = 0;
 UPDATE dc SET v = v + 1 WHERE id % 3 = 0;
 CREATE INDEX CONCURRENTLY dc_idx ON dc USING sift_col (id, g, v) WITH (key_order = 'id');
-SELECT f2_same('SELECT id, v FROM dc WHERE g < 5');
+SELECT sift_helpers.f2_same('SELECT id, v FROM dc WHERE g < 5', true, false);
 SELECT count(*), sum(v) FROM dc WHERE g < 5;
 DELETE FROM dc WHERE id % 5 = 0;
-SELECT f2_same('SELECT id, v FROM dc WHERE g < 5');
+SELECT sift_helpers.f2_same('SELECT id, v FROM dc WHERE g < 5', true, false);
 VACUUM dc;
-SELECT f2_same('SELECT id, v FROM dc WHERE g < 5');
+SELECT sift_helpers.f2_same('SELECT id, v FROM dc WHERE g < 5', true, false);
 
 -- Text under a collation whose equal strings are not equal bytes, or whose order is not the order of the bytes: the heap decides every row, the index answers as it does
 CREATE COLLATION ci_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 CREATE TABLE cs (id int, g int, s text COLLATE ci_nd, u text COLLATE "und-x-icu");
 INSERT INTO cs SELECT i, i % 5, CASE i % 3 WHEN 0 THEN 'Apple' WHEN 1 THEN 'apple' ELSE 'APPLE' END || (i % 7), CASE i % 4 WHEN 0 THEN 'zeta' ELSE 'Zeta' END || (i % 4) FROM generate_series(1, 20000) i;
 CREATE INDEX cs_idx ON cs USING sift_col (id, g, s sift.col_text_ops, u sift.col_text_ops) WITH (key_order = 'g');
-SELECT f2_same('SELECT id FROM cs WHERE s = ''apple3''');
-SELECT f2_same('SELECT id FROM cs WHERE s IN (''APPLE3'', ''Apple5'') AND g = 1');
-SELECT f2_same('SELECT id FROM cs WHERE u = ''Zeta1''');
-SELECT f2_same('SELECT id FROM cs WHERE u IN (''zeta0'', ''Zeta2'')');
+SELECT sift_helpers.f2_same('SELECT id FROM cs WHERE s = ''apple3''', true, false);
+SELECT sift_helpers.f2_same('SELECT id FROM cs WHERE s IN (''APPLE3'', ''Apple5'') AND g = 1', true, false);
+SELECT sift_helpers.f2_same('SELECT id FROM cs WHERE u = ''Zeta1''', true, false);
+SELECT sift_helpers.f2_same('SELECT id FROM cs WHERE u IN (''zeta0'', ''Zeta2'')', true, false);
 SELECT count(*) FROM cs WHERE s = 'apple3';
 SELECT count(*) FROM cs WHERE s = 'APPLE3' AND g = 1;
 SELECT count(*) FROM cs WHERE u = 'Zeta1';
@@ -89,7 +80,7 @@ INSERT INTO wd SELECT i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i, i
 	CASE i % 4 WHEN 0 THEN '["flag_a"]'::jsonb WHEN 1 THEN '{"flag_a": true}' WHEN 2 THEN '"flag_a"' ELSE '{"flag_b": 1}' END FROM generate_series(1, 3000) i;
 CREATE INDEX wd_idx ON wd USING sift_col (id, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, doc sift.col_jsonb_ops)
 	WITH (key_order = 'id', paths = 'doc.flag_a bool');
-SELECT f2_same('SELECT id FROM wd WHERE doc ? ''flag_a''');
+SELECT sift_helpers.f2_same('SELECT id FROM wd WHERE doc ? ''flag_a''', true, false);
 SELECT count(*) FROM wd WHERE doc ? 'flag_a';
 
 -- An index-only scan returns the values the rows were indexed with: integers, floats, booleans, dates, timestamps
@@ -120,13 +111,13 @@ INSERT INTO sx SELECT i, i % 10, i FROM generate_series(30001, 30100) i;
 INSERT INTO sx SELECT i, i % 10, i FROM generate_series(40001, 40100) i;
 COMMIT;
 SELECT sum(granules) AS granules, sum(single_xact) AS single_xact, sum(vers_bytes) AS vers_bytes FROM sift._test_f2_parts('sx_idx', 1, NULL) p, LATERAL sift._test_f2_vers('sx_idx', 1, NULL, p.part_gen) v;
-SELECT f2_same('SELECT id FROM sx WHERE g = 3 AND id > 29000');
+SELECT sift_helpers.f2_same('SELECT id FROM sx WHERE g = 3 AND id > 29000', true, false);
 SELECT count(*), sum(v) FROM sx;
 BEGIN;
 INSERT INTO sx SELECT i, i % 10, i FROM generate_series(50001, 50100) i;
-SELECT f2_same('SELECT id FROM sx WHERE id > 50000');
+SELECT sift_helpers.f2_same('SELECT id FROM sx WHERE id > 50000', true, false);
 ROLLBACK;
-SELECT f2_same('SELECT id FROM sx WHERE id > 50000');
+SELECT sift_helpers.f2_same('SELECT id FROM sx WHERE id > 50000', true, false);
 
 -- The pages of a slab and of the pending deletes of a partition carry a generation, and a reader refuses one that holds none
 CREATE TABLE sl (id int, g int, v int);
@@ -135,14 +126,14 @@ CREATE INDEX sl_idx ON sl USING sift_col (id, g, v) WITH (key_order = 'id', trac
 INSERT INTO sl SELECT i, i % 10, i FROM generate_series(5001, 5020) i;
 DELETE FROM sl WHERE id IN (3, 5, 7, 5005);
 UPDATE sl SET v = v + 1 WHERE id IN (11, 5010);
-SELECT f2_same('SELECT id, v FROM sl WHERE g < 3');
+SELECT sift_helpers.f2_same('SELECT id, v FROM sl WHERE g < 3', true, false);
 SELECT sift._test_f2_check('sl_idx') ~ '^parts=\d+ ' AS consistent;
 SELECT bool_or(has_slab) AS has_slab, bool_or(has_pending) AS has_pending FROM sift._test_f2_partitions('sl_idx');
-SELECT f2_same('SELECT id, v FROM sl WHERE g >= 3');
+SELECT sift_helpers.f2_same('SELECT id, v FROM sl WHERE g >= 3', true, false);
 
 DROP TABLE ul, ul_empty, d, dc, cs, wd, ix, sx, sl;
 DROP COLLATION ci_nd;
-DROP FUNCTION f2_same(text);
 DROP FUNCTION ios_same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

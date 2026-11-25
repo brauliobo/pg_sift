@@ -2,6 +2,7 @@
 -- parent column is answered by the scan of the parent with the child as its lookup table when both tables have a sift_col index. The answers are those of the normal
 -- plan, for children with a NULL key, children whose parent is gone and parents with none.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET work_mem = '64MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -30,12 +31,6 @@ INSERT INTO shapes VALUES
  ('right_join_children_count_by_group', $q$SELECT p.grp, count(c.id), count(*) FROM child c RIGHT JOIN parent p ON c.parent_id = p.id GROUP BY p.grp$q$),
  ('full_join_orphans_and_childless_count', $q$SELECT (p.id IS NULL), (c.id IS NULL), count(*) FROM parent p FULL JOIN child c ON c.parent_id = p.id GROUP BY 1, 2$q$);
 
-CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
 CREATE FUNCTION plan(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
@@ -45,8 +40,9 @@ DECLARE l text; r text := 'normal'; BEGIN
 	RETURN r;
 END $$;
 
-SELECT slug, plan(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
+SELECT slug, plan(sql), sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
 
-DROP FUNCTION answer(text, bool), plan(text);
+DROP FUNCTION plan(text);
 DROP TABLE shapes, child, parent;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

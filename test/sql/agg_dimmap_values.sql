@@ -2,6 +2,7 @@
 -- numeric NaN, NULLs, the empty string, strings that differ in bytes only, a multibyte string and one longer than a dictionary entry keeps inline. The answers are those of the normal
 -- plan, and every shape is served by a map but shape 7, whose five columns take more tuples of values than a class table holds (4,096): the rows are loaded.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -34,12 +35,6 @@ INSERT INTO shapes VALUES
  (7, $q$SELECT p.tx, p.vc, p.nm::text, p.f4::text, p.tm::text, count(*) FROM pe JOIN pf p ON p.k = pe.k GROUP BY 1, 2, 3, 4, 5 ORDER BY 1, 2, 3, 4, 5$q$),
  (8, $q$SELECT count(*) FILTER (WHERE p.tx = 'a'), count(*) FILTER (WHERE p.f8 > 1), count(DISTINCT p.vc), count(p.nm), max(p.tx), min(p.vc) FROM pe JOIN pf p ON p.k = pe.k$q$);
 
-CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
 CREATE FUNCTION served(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
@@ -51,7 +46,7 @@ DECLARE l text; r text := 'normal'; BEGIN
 	RETURN r;
 END $$;
 CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, served text) LANGUAGE sql AS $$
-	SELECT stage, n, answer(sql, true) = answer(sql, false), served(sql) FROM shapes ORDER BY n
+	SELECT stage, n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false), served(sql) FROM shapes ORDER BY n
 $$;
 
 SELECT * FROM report('first');
@@ -70,6 +65,7 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SELECT * FROM report('workers');
 
-DROP FUNCTION report(text), served(text), answer(text, bool);
+DROP FUNCTION report(text), served(text);
 DROP TABLE shapes, pe, pf;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -1,6 +1,7 @@
 -- Format major 2: a table of more than 128 columns and an index of the most leaves; index-only scans that return text, varchar, uuid and numeric columns exactly (NULL, empty, long,
 -- multibyte and NaN values) with no heap fetch; the columns an index cannot return; and the generated columns PostgreSQL 18 does not store.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
@@ -18,16 +19,6 @@ BEGIN
 				ELSE 'same, index-only, heap fetches ' || (regexp_match(plan, '"Heap Fetches": (\d+)'))[1] END;
 END $$;
 
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
-END $$;
-
 -- A table of 200 columns: the index holds the ones its queries read
 DO $$ BEGIN
 	EXECUTE 'CREATE TABLE w200 (id int, ' || (SELECT string_agg(format('c%s int', i), ', ' ORDER BY i) FROM generate_series(1, 199) i) || ')';
@@ -36,7 +27,7 @@ END $$;
 SELECT count(*) AS columns FROM pg_attribute WHERE attrelid = 'w200'::regclass AND attnum > 0;
 CREATE INDEX w200_idx ON w200 USING sift_col (id, c1, c100, c199) WITH (key_order = 'id');
 SELECT sift._test_f2_check_keys('w200_idx');
-SELECT f2_same('SELECT id, c199 FROM w200 WHERE c100 = 7 AND c1 = 1') AS wide_table;
+SELECT sift_helpers.f2_same('SELECT id, c199 FROM w200 WHERE c100 = 7 AND c1 = 1', true, false) AS wide_table;
 VACUUM w200;
 SELECT ios_same('SELECT id, c1, c100, c199 FROM w200 WHERE c199 < 5') AS wide_ios;
 
@@ -48,9 +39,9 @@ DO $$ BEGIN
 				   (SELECT string_agg('doc.k' || j || ' int', ', ' ORDER BY j) FROM generate_series(0, 1022) j));
 END $$;
 SELECT sift._test_f2_check_keys('wide_max');
-SELECT f2_same('SELECT id FROM wide WHERE (doc->>''k1022'')::int = 70') AS last_leaf,
-       f2_same('SELECT id FROM wide WHERE (doc->>''k0'')::int < 100') AS first_leaf,
-       f2_same('SELECT count(*), sum((doc->>''k511'')::int) FROM wide') AS aggregate;
+SELECT sift_helpers.f2_same('SELECT id FROM wide WHERE (doc->>''k1022'')::int = 70', true, false) AS last_leaf,
+       sift_helpers.f2_same('SELECT id FROM wide WHERE (doc->>''k0'')::int < 100', true, false) AS first_leaf,
+       sift_helpers.f2_same('SELECT count(*), sum((doc->>''k511'')::int) FROM wide', true, false) AS aggregate;
 DO $$ BEGIN
 	EXECUTE format('CREATE INDEX wide_over ON wide USING sift_col (id, doc) WITH (key_order = ''id'', paths = %L)',
 				   (SELECT string_agg('doc.k' || j || ' int', ', ' ORDER BY j) FROM generate_series(0, 1023) j));
@@ -122,14 +113,15 @@ INSERT INTO vg (id, doc) SELECT i, jsonb_build_object('a', i, 'b', 'k' || i % 5)
 CREATE INDEX vg_col ON vg USING sift_col (id, doubled);
 CREATE INDEX vg_expr ON vg USING sift_col (id, (doubled + 1));
 CREATE INDEX vg_stored ON vg USING sift_col (id, stored) WITH (key_order = 'id');
-SELECT f2_same('SELECT id, stored FROM vg WHERE stored < 60') AS stored_column;
-SELECT f2_same('SELECT id, doubled FROM vg WHERE doubled < 60') AS virtual_column_by_heap;
+SELECT sift_helpers.f2_same('SELECT id, stored FROM vg WHERE stored < 60', true, false) AS stored_column;
+SELECT sift_helpers.f2_same('SELECT id, doubled FROM vg WHERE doubled < 60', true, false) AS virtual_column_by_heap;
 SELECT sift.suggest_paths('vg', 'vdoc');
 SELECT sift.suggest_paths('vg', 'doc') IS NOT NULL AS suggest_stored_doc;
 DROP TABLE vg;
 \endif
 
 DROP TABLE w200, ios, ios2;
-DROP FUNCTION ios_same(text), f2_same(text);
+DROP FUNCTION ios_same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

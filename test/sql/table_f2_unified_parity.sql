@@ -2,6 +2,7 @@
 -- FILTER, date_bin, IN lists, null tests, rows updated by column deltas and rows deleted. A NaN is read back as it was written; a statement whose quals or columns meet a NaN is refused by the aggregate engine (sift.enable_agg = off lets the heap decide), so the row is deleted before the other checks. Every check prints t. Run: psql -X -v ON_ERROR_STOP=1 -f this file, on a build with sift_table.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 -- a testing build creates Format 1 relations unless told otherwise; a release build has no such setting
 DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
 
@@ -17,16 +18,8 @@ INSERT INTO ut VALUES (20001, 1, 'tag0', timestamptz '2030-02-01', date '2030-02
 INSERT INTO uh SELECT * FROM ut;
 SELECT sift.table_maintain('ut') IS NOT NULL AS maintained;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(replace(q, '@T', 'ut'), replace(q, '@T', 'uh')) $$;
+$$ SELECT sift_helpers.same_rows(replace(q, '@T', 'ut'), replace(q, '@T', 'uh')) $$;
 
 CREATE FUNCTION plan_has(q text, node text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text;
@@ -64,5 +57,6 @@ SELECT sift.table_maintain('ut') IS NOT NULL AS maintained_again;
 SELECT parity('SELECT grp, count(*), sum(qty) FROM @T GROUP BY grp') AS after_maintenance;
 
 DROP TABLE ut, uh;
-DROP FUNCTION parity(text), same_rows(text, text), plan_has(text, text);
+DROP FUNCTION parity(text), plan_has(text, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

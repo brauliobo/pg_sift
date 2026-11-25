@@ -4,6 +4,7 @@
 -- gives at most one key (a unique index whose columns the conditions all equate to constants or parameters). The table must be a plain table read as itself (no view, row-level security, inheritance,
 -- table the statement modifies) with conditions that read it only. Every near miss keeps the join and names its reason (sift.explain_why, arm scope). Rows are those of the join (sift.agg_scope = off) and of the normal plan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
@@ -108,23 +109,14 @@ BEGIN
 END $$;
 
 -- the rows of the statement as planned, with sift.agg_scope off and on the normal plan
-CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	DROP TABLE IF EXISTS scope_rows;
-	EXECUTE 'CREATE TEMP TABLE scope_rows AS ' || q;
-	SELECT md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) INTO r FROM scope_rows t;
-	DROP TABLE scope_rows;
-	RETURN r;
-END $$;
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text; c text;
 BEGIN
-	a := rows_md5(q);
+	a := sift_helpers.rows_md5(q);
 	PERFORM set_config('sift.agg_scope', 'off', false);
-	b := rows_md5(q);
+	b := sift_helpers.rows_md5(q);
 	PERFORM set_config('sift.enable_agg', 'off', false);
-	c := rows_md5(q);
+	c := sift_helpers.rows_md5(q);
 	PERFORM set_config('sift.agg_scope', 'on', false);
 	PERFORM set_config('sift.enable_agg', 'on', false);
 	RETURN a = b AND b = c;
@@ -188,10 +180,10 @@ BEGIN
 	form := f.name;
 	step := note;
 	run := run_of('EXECUTE q(' || f.args || ')');
-	a := rows_md5('EXECUTE q(' || f.args || ')');
+	a := sift_helpers.rows_md5('EXECUTE q(' || f.args || ')');
 	PERFORM set_config('sift.enable_agg', 'off', false);
 	EXECUTE 'PREPARE plain AS ' || f.body;
-	same_rows := a = rows_md5('EXECUTE plain(' || f.args || ')');
+	same_rows := a = sift_helpers.rows_md5('EXECUTE plain(' || f.args || ')');
 	DEALLOCATE plain;
 	PERFORM set_config('sift.enable_agg', 'on', false);
 	RETURN NEXT;
@@ -248,9 +240,10 @@ SET work_mem = '64kB';
 SELECT name || ', work_mem 64kB' AS name, run_of(q) AS run, same(q) AS same_rows FROM gforms ORDER BY name;
 RESET work_mem;
 
-DROP FUNCTION states(text), exec_state(pforms, text), same(text), rows_md5(text), run_of(text), label(text);
+DROP FUNCTION states(text), exec_state(pforms, text), same(text), run_of(text), label(text);
 DROP TABLE gforms, pforms, forms, facts, membership, my_groups, events, tenant_scope, my_tenants, user_home, user_tenants, my_tenants_big, users, my_tenants_part, tenants_rls, tenants_child,
 	tenants_parent, tenants_log CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS my_tenants_mv;
 DROP ROLE kt_user;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

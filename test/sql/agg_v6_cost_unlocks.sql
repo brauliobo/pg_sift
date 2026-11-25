@@ -3,6 +3,7 @@
 -- requires: build col
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET sift.agg_force = on;
 
@@ -20,16 +21,8 @@ SELECT sift.table_maintain('ux_t') IS NOT NULL AS maintained;
 ANALYZE ux_c;
 ANALYZE ux_t;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(replace(q, '@T', 'ux_c'), replace(q, '@T', 'ux_h')) AND same_rows(replace(q, '@T', 'ux_t'), replace(q, '@T', 'ux_h')) $$;
+$$ SELECT sift_helpers.same_rows(replace(q, '@T', 'ux_c'), replace(q, '@T', 'ux_h')) AND sift_helpers.same_rows(replace(q, '@T', 'ux_t'), replace(q, '@T', 'ux_h')) $$;
 
 CREATE FUNCTION plan_ok(q text, t text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text; n int := 0;
@@ -44,11 +37,12 @@ SELECT parity('SELECT grp, count(*), min(amount), max(amount) FROM @T WHERE amou
 SELECT parity('SELECT grp, count(*) FROM @T WHERE amount >= 24.75 GROUP BY grp') AS numeric_range_above_parity;
 
 SELECT plan_ok('SELECT qty + grp AS k, count(*) FROM ux_c WHERE amount > 1.00 GROUP BY 1', 'ux_c') AS expression_index_plan;
-SELECT same_rows('SELECT qty + grp AS k, count(*), sum(amount) FROM ux_c WHERE amount > 1.00 GROUP BY 1', 'SELECT qty + grp AS k, count(*), sum(amount) FROM ux_h WHERE amount > 1.00 GROUP BY 1') AS expression_index_parity;
+SELECT sift_helpers.same_rows('SELECT qty + grp AS k, count(*), sum(amount) FROM ux_c WHERE amount > 1.00 GROUP BY 1', 'SELECT qty + grp AS k, count(*), sum(amount) FROM ux_h WHERE amount > 1.00 GROUP BY 1') AS expression_index_parity;
 
 SELECT plan_ok('SELECT grp, count(*) FILTER (WHERE qty = 1) AS q1, sum(qty) FILTER (WHERE qty >= 2) AS q2 FROM @T GROUP BY grp', 'ux_t') AS filter_table_plan;
 SELECT parity('SELECT grp, count(*) FILTER (WHERE qty = 1) AS q1, sum(qty) FILTER (WHERE qty >= 2) AS q2 FROM @T GROUP BY grp') AS filter_table_parity;
 
 DROP TABLE ux_h, ux_c, ux_t;
-DROP FUNCTION same_rows(text, text), parity(text), plan_ok(text, text);
+DROP FUNCTION parity(text), plan_ok(text, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

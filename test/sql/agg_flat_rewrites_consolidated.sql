@@ -405,12 +405,6 @@ INSERT INTO shapes VALUES
  (4, $q$SELECT grp.id, count(DISTINCT child.id), count(DISTINCT par.id) FILTER (WHERE nullif(btrim(par.a), '') IS NOT NULL)
 		FROM child JOIN par ON par.id = child.par_id JOIN grp ON grp.id = child.foreign_id GROUP BY grp.id ORDER BY grp.id$q$);
 
-CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
 -- the groups the scan makes: one set of ids when the split is the plan, one for each filter otherwise
 CREATE FUNCTION chosen(sql text, OUT scan bool, OUT sets int) LANGUAGE plpgsql AS $$
 DECLARE l text; BEGIN
@@ -421,10 +415,10 @@ DECLARE l text; BEGIN
 	END LOOP;
 END $$;
 
-SELECT n, (c).scan AS scan, (c).sets AS distinct_sets, answer(sql, true) = answer(sql, false) AS same_answers
+SELECT n, (c).scan AS scan, (c).sets AS distinct_sets, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false) AS same_answers
 FROM (SELECT n, sql, chosen(sql) AS c FROM shapes) s ORDER BY n;
 
-DROP FUNCTION chosen(text), answer(text, bool);
+DROP FUNCTION chosen(text);
 DROP TABLE shapes, child, grp, par;
 RESET ALL;
 SET client_min_messages = warning;

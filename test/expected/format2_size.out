@@ -3,19 +3,11 @@
 -- transactions (compact slab batches, with their NULLs, tags and arrays) read back. The byte counts are bounds with room, the rows are compared with the heap.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 CREATE EXTENSION pg_walinspect;
 SET client_min_messages = warning;
 \set VERBOSITY terse
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
-END $$;
 CREATE TABLE ev (id bigint, ts timestamptz, tenant int, kind int, amount numeric(12, 2), score float8, status text, name text, uid uuid, flag bool, payload jsonb);
 INSERT INTO ev
 SELECT i, timestamptz '2026-01-01' + i * interval '7 seconds', i % 50, i % 12, (i % 100000) / 100.0 + 0.01, (i % 977) / 10.0,
@@ -73,8 +65,8 @@ SELECT (SELECT combined_size / 600.0 < 300 FROM pg_get_wal_stats((SELECT lsn FRO
  t
 (1 row)
 
-SELECT f2_same('SELECT id, tenant, status, name, amount FROM ev WHERE id BETWEEN 200000 AND 200600') AS slab_rows,
-	   f2_same('SELECT id FROM ev WHERE id > 200100 AND name = ''user-150''') AS slab_filter;
+SELECT sift_helpers.f2_same('SELECT id, tenant, status, name, amount FROM ev WHERE id BETWEEN 200000 AND 200600') AS slab_rows,
+	   sift_helpers.f2_same('SELECT id FROM ev WHERE id > 200100 AND name = ''user-150''') AS slab_filter;
  slab_rows | slab_filter 
 -----------+-------------
  same      | same
@@ -92,8 +84,8 @@ DO $$ BEGIN
 	END LOOP;
 END $$;
 INSERT INTO nul SELECT 100 + i, i, 'bulk' || i, i, jsonb_build_object('a', i) FROM generate_series(1, 20) i;
-SELECT f2_same('SELECT * FROM nul WHERE id < 200') AS whole, f2_same('SELECT id, n FROM nul WHERE n IS NULL') AS nulls, f2_same('SELECT id, t FROM nul WHERE t = ''text7''') AS text,
-	   f2_same('SELECT id FROM nul WHERE d->>''a'' = ''5''') AS path, f2_same('SELECT id FROM nul WHERE f > 3') AS floats;
+SELECT sift_helpers.f2_same('SELECT * FROM nul WHERE id < 200') AS whole, sift_helpers.f2_same('SELECT id, n FROM nul WHERE n IS NULL') AS nulls, sift_helpers.f2_same('SELECT id, t FROM nul WHERE t = ''text7''') AS text,
+	   sift_helpers.f2_same('SELECT id FROM nul WHERE d->>''a'' = ''5''') AS path, sift_helpers.f2_same('SELECT id FROM nul WHERE f > 3') AS floats;
  whole | nulls | text | path | floats 
 -------+-------+------+------+--------
  same  | same  | same | same | same
@@ -106,7 +98,7 @@ SELECT sift._test_f2_check_keys('nul_idx');
 (1 row)
 
 DROP TABLE ev, nul;
-DROP FUNCTION f2_same(text);
 DROP EXTENSION pg_walinspect;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

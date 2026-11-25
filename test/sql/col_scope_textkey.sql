@@ -2,6 +2,7 @@
 -- (IN, EXISTS, join, ANY, a list, a parameter, a table of keys) translates the keys it is given through the map of its statement. The rows are those of the join in every state the integer
 -- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (it has no stored unit, and its pairs are all delta), and for a key that left every pair.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
@@ -94,23 +95,14 @@ BEGIN
 END $$;
 
 -- the rows of the statement as planned, with sift.agg_scope off and with sift.enable_agg off (the normal plan)
-CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	DROP TABLE IF EXISTS scope_rows;
-	EXECUTE 'CREATE TEMP TABLE scope_rows AS ' || q;
-	SELECT md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), '')) INTO r FROM scope_rows t;
-	DROP TABLE scope_rows;
-	RETURN r;
-END $$;
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text; c text;
 BEGIN
-	a := rows_md5(q);
+	a := sift_helpers.rows_md5(q);
 	PERFORM set_config('sift.agg_scope', 'off', false);
-	b := rows_md5(q);
+	b := sift_helpers.rows_md5(q);
 	PERFORM set_config('sift.enable_agg', 'off', false);
-	c := rows_md5(q);
+	c := sift_helpers.rows_md5(q);
 	PERFORM set_config('sift.agg_scope', 'on', false);
 	PERFORM set_config('sift.enable_agg', 'on', false);
 	RETURN a = b AND b = c;
@@ -183,6 +175,7 @@ SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a ke
 
 SELECT sift.col_verify('events_col', true), sift.col_verify('var_events_col', true), sift.col_verify('uuid_events_col', true);
 
-DROP FUNCTION states(), same(text), rows_md5(text), run_of(text), label(text);
+DROP FUNCTION states(), same(text), run_of(text), label(text);
 DROP TABLE forms, events, tenant_scope, var_events, var_scope, uuid_events, uuid_scope, my_tenants CASCADE;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

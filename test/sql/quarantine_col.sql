@@ -1,13 +1,7 @@
 -- A sift_col index that finds its own damage leaves service: the statement that finds it fails once, the next ones are planned on the heap and give the rows the index gave,
 -- and REINDEX puts the index back. sift.on_corruption = error keeps failing.
 CREATE EXTENSION pg_sift_test CASCADE;
-CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE q;
-	RETURN 'ok';
-EXCEPTION WHEN OTHERS THEN
-	RETURN SQLSTATE || ': ' || SQLERRM;
-END $$;
+CREATE EXTENSION pg_sift_helpers;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	r text;
@@ -44,20 +38,20 @@ PREPARE by_v AS SELECT count(*) FROM t WHERE v = 3;
 EXECUTE by_v;
 
 SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_statement;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_statement;
 SELECT index, error_code, detections FROM sift.quarantine;
 SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_after;
 SELECT 'count' AS q, (SELECT count(*) FROM t WHERE v = 3)::text AS a
 UNION ALL SELECT 'sum', (SELECT sum(id) FROM t WHERE g = 1)::text
 UNION ALL SELECT 'groups', (SELECT string_agg(v || ':' || n, ',' ORDER BY v) FROM (SELECT v, count(*) n FROM t GROUP BY v) s)
 EXCEPT SELECT q, a FROM answers;
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS next_statement;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS next_statement;
 -- the plan made before the index left service is refused once, and the retry is planned without it
 -- the worker that flags the metapage invalidates the plan too: a plan that it did not reach is refused once, and one that it did is planned again
-SELECT expect($$ EXECUTE by_v $$) IN ('ok', '40001: sift index "t_idx" is out of service; the statement must be planned again') AS stale_plan_refused_or_replanned;
-SELECT expect($$ EXECUTE by_v $$) AS replanned;
+SELECT sift_helpers.statement_outcome($$ EXECUTE by_v $$, ': ') IN ('ok', '40001: sift index "t_idx" is out of service; the statement must be planned again') AS stale_plan_refused_or_replanned;
+SELECT sift_helpers.statement_outcome($$ EXECUTE by_v $$, ': ') AS replanned;
 EXECUTE by_v;
-SELECT expect($$ SELECT * FROM t WHERE id = 5 $$) AS point_lookup;
+SELECT sift_helpers.statement_outcome($$ SELECT * FROM t WHERE id = 5 $$, ': ') AS point_lookup;
 
 -- the error mode of a session that wants the failure: it ignores the quarantine and reads the index
 SET sift.on_corruption = error;
@@ -72,6 +66,7 @@ SELECT count(*) FROM t WHERE v = 3;
 
 DEALLOCATE by_v;
 DROP TABLE answers, t;
-DROP FUNCTION plan_of(text), expect(text);
+DROP FUNCTION plan_of(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

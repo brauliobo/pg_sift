@@ -1,19 +1,10 @@
 -- Compaction of format major 2 by level: a batch of 2048 rows or more is written as a part of level 1 at once, four parts of a level become one of the level above (never above level 2) with
 -- their granules copied as they are, and the bytes written over many batches stay a few times the bytes ingested.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
-
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
-END $$;
 
 CREATE TABLE c (id bigint, tenant int, status text, name text, amount numeric(12, 2), score float8);
 CREATE INDEX c_idx ON c USING sift_col (id, tenant, status, name, amount, score) WITH (key_order = 'id');
@@ -49,7 +40,7 @@ SELECT ingested > 0 AS ingested, written > 0 AS compacted, round((ingested + wri
 FROM batch_stats;
 SELECT sift._test_f2_check_keys('c_idx');
 SELECT level, count(*) AS parts, sum(nrows) AS rows FROM sift._test_f2_parts('c_idx', 1, NULL) GROUP BY level ORDER BY level;
-SELECT f2_same('SELECT id, name FROM c WHERE id BETWEEN 100000 AND 100500') AS range_read, f2_same('SELECT count(*), sum(tenant) FROM c WHERE status = ''open''') AS filter_read;
+SELECT sift_helpers.f2_same('SELECT id, name FROM c WHERE id BETWEEN 100000 AND 100500') AS range_read, sift_helpers.f2_same('SELECT count(*), sum(tenant) FROM c WHERE status = ''open''') AS filter_read;
 
 -- Four parts of the first level with ascending keys are one part of the second (the rows of a part written at level 1 are not frozen yet, so the merge writes them again)
 CREATE TABLE d (id bigint, tenant int, status text, v float8);
@@ -66,12 +57,12 @@ SELECT done, rows_in, rows_out
 FROM sift._test_f2_compact('d_idx', 1, NULL, (SELECT array_agg(part_gen)::int8[] FROM sift._test_f2_parts('d_idx', 1, NULL) WHERE level = 1));
 SELECT level, count(*) AS parts, sum(nrows) AS rows FROM sift._test_f2_parts('d_idx', 1, NULL) GROUP BY level ORDER BY level;
 SELECT sift._test_f2_check_keys('d_idx');
-SELECT f2_same('SELECT id, status, v FROM d WHERE id BETWEEN 15000 AND 25000') AS joined_range, f2_same('SELECT count(*) FROM d WHERE status = ''closed''') AS joined_filter;
+SELECT sift_helpers.f2_same('SELECT id, status, v FROM d WHERE id BETWEEN 15000 AND 25000') AS joined_range, sift_helpers.f2_same('SELECT count(*) FROM d WHERE status = ''closed''') AS joined_filter;
 
 -- The rows a vacuum finds dead are dropped when their part is rewritten
 DELETE FROM d WHERE id % 2 = 0;
 VACUUM d;
-SELECT f2_same('SELECT id FROM d WHERE id < 30000') AS after_vacuum;
+SELECT sift_helpers.f2_same('SELECT id FROM d WHERE id < 30000') AS after_vacuum;
 SELECT sift._test_f2_check_keys('d_idx');
 
 -- String columns that every input part codes by a dictionary of its part: the dictionaries are merged once and the rows are read as the codes of the merged dictionary (no string of a row is
@@ -98,8 +89,8 @@ FROM dr_run ORDER BY how;
 SELECT (SELECT bytes_out FROM dr_run WHERE how = 'codes') = (SELECT bytes_out FROM dr_run WHERE how = 'strings') AS same_size,
 	   sift._test_f2_part_digest('dr1_idx', 1, NULL) = sift._test_f2_part_digest('dr2_idx', 1, NULL) AS same_bytes;
 SELECT sift._test_f2_check_keys('dr1_idx');
-SELECT f2_same('SELECT id, status, name, note FROM dr1 WHERE id BETWEEN 15000 AND 25000') AS merged_range, f2_same('SELECT count(*), count(note) FROM dr1 WHERE status = ''batch2''') AS batch_string,
-	   f2_same('SELECT id FROM dr1 WHERE name = ''user-1234x'' AND note IS NULL') AS merged_name, f2_same('SELECT count(*) FROM dr1 WHERE note = ''n7x''') AS note_with_nulls;
+SELECT sift_helpers.f2_same('SELECT id, status, name, note FROM dr1 WHERE id BETWEEN 15000 AND 25000') AS merged_range, sift_helpers.f2_same('SELECT count(*), count(note) FROM dr1 WHERE status = ''batch2''') AS batch_string,
+	   sift_helpers.f2_same('SELECT id FROM dr1 WHERE name = ''user-1234x'' AND note IS NULL') AS merged_name, sift_helpers.f2_same('SELECT count(*) FROM dr1 WHERE note = ''n7x''') AS note_with_nulls;
 
 -- When the strings that are left no longer need a dictionary (the dead rows were most of the repeats) the part is written with none, as a build from them would
 CREATE TABLE dr3 (id bigint, tag text);
@@ -116,10 +107,10 @@ DELETE FROM dr3 WHERE id % 10 <> 0;
 VACUUM dr3;
 SELECT (SELECT bytes FROM sift.index_size_breakdown('dr3_idx') WHERE category = 'dicts') AS dictionary_bytes_after, count(*) AS rows_left FROM dr3;
 SELECT sift._test_f2_check_keys('dr3_idx') ~ ' exact$' AS keys_exact;
-SELECT f2_same('SELECT * FROM dr3 WHERE tag = ''v123x'''), f2_same('SELECT count(*) FROM dr3 WHERE id BETWEEN 30000 AND 50000');
+SELECT sift_helpers.f2_same('SELECT * FROM dr3 WHERE tag = ''v123x'''), sift_helpers.f2_same('SELECT count(*) FROM dr3 WHERE id BETWEEN 30000 AND 50000');
 
 DROP TABLE c, d, dr1, dr2, dr3;
 DROP PROCEDURE f2_batches(int, int), f2_dict_load(text);
-DROP FUNCTION f2_same(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

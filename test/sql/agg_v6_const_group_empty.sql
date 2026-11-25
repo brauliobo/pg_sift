@@ -4,6 +4,7 @@
 -- requires: build col
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
@@ -16,17 +17,9 @@ INSERT INTO ct SELECT * FROM ch;
 CREATE INDEX cc_sift ON cc USING sift_col (id, grp, total);
 SELECT sift.table_maintain('ct') IS NOT NULL AS maintained;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 -- the same rows from the index, from the table and from the heap (the heap twin has no sift index, so it is the truth)
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(replace(q, '@T', 'cc'), replace(q, '@T', 'ch')) AND same_rows(replace(q, '@T', 'ct'), replace(q, '@T', 'ch')) $$;
+$$ SELECT sift_helpers.same_rows(replace(q, '@T', 'cc'), replace(q, '@T', 'ch')) AND sift_helpers.same_rows(replace(q, '@T', 'ct'), replace(q, '@T', 'ch')) $$;
 
 CREATE FUNCTION plan_ok(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text; n int := 0;
@@ -47,5 +40,6 @@ SELECT parity('SELECT count(*) AS n FROM @T WHERE total < 0') AS global_empty;
 SELECT parity('SELECT count(*) AS n FROM @T WHERE total < 0 GROUP BY ()') AS global_empty_group_by_empty_set;
 SELECT plan_ok('SELECT grp, count(*) AS n FROM @T GROUP BY grp') AS real_key_plan;
 DROP TABLE ch, cc, ct;
-DROP FUNCTION plan_ok(text), parity(text), same_rows(text, text);
+DROP FUNCTION plan_ok(text), parity(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

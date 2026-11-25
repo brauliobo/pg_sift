@@ -1,6 +1,7 @@
 -- connect = 'fk -> parent(key)' on indexes of Format 2.0: the parent keeps a key journal (SIFT_PT_KEYJRNL) that the writes of the parent append to and the writes of the child do not, and the child
 -- (also with UNIQUE and INCLUDE) is built in Format 2.0. Every answer is compared with the heap's (sift.enable_agg = off) after the writes of the parent and the child.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET enable_hashagg = off;
@@ -65,12 +66,6 @@ INSERT INTO shapes VALUES
  (1, $q$SELECT dim.a, count(*), sum(ev.v) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (2, $q$SELECT dim.a, dim.b, count(*) FROM ev LEFT JOIN dim ON dim.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2$q$),
  (3, $q$SELECT ev.v, sum(dim.a), count(dim.flag), max(dim.b) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1 ORDER BY 1$q$);
-CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
 CREATE FUNCTION engaged(sql text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
@@ -80,7 +75,7 @@ DECLARE l text; BEGIN
 	RETURN false;
 END $$;
 CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, engine bool) LANGUAGE sql AS $$
-	SELECT stage, n, answer(sql, true) = answer(sql, false), engaged(sql) FROM shapes ORDER BY n
+	SELECT stage, n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false), engaged(sql) FROM shapes ORDER BY n
 $$;
 CREATE TABLE seen (records bigint);
 INSERT INTO seen VALUES (0);
@@ -408,6 +403,7 @@ SELECT count(*) AS child_indexes FROM pg_class WHERE relname IN ('ev_col', 'ev_u
              0
 (1 row)
 
-DROP FUNCTION report(text), journaled(text), engaged(text), answer(text, bool), problems(), state();
+DROP FUNCTION report(text), journaled(text), engaged(text), problems(), state();
 DROP TABLE shapes, seen, ev;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

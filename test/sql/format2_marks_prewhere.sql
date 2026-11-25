@@ -2,19 +2,10 @@
 -- predicates a scan tests on the chunks; a substring test (LIKE '%x%', ILIKE '%x%') runs over the strings of a dictionary in one pass. Every answer is the heap's, through parts the
 -- build wrote, the writes after it, and the part a merge joined of them.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
-
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
-END $$;
 
 -- the blocks of indexes a query touched (the catalog buffers it reads depend on the server build: an assertions server releases each catalog entry at its last unpin)
 CREATE FUNCTION idx_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
@@ -34,7 +25,7 @@ CREATE INDEX mk_idx ON mk USING sift_col (id, a, b, c, v, s) WITH (key_order = '
 SELECT count(*) > 0 AS marks_and_stats_kept FROM sift.index_size_breakdown('mk_idx') WHERE category = 'zones_tstride' AND bytes > 0;
 
 -- Equality on a prefix of the key, a range on the next column, IN lists, BETWEEN, NULLs
-SELECT q, f2_same(q) FROM unnest(ARRAY[
+SELECT q, sift_helpers.f2_same(q, false) FROM unnest(ARRAY[
 	'SELECT id FROM mk WHERE a = 3',
 	'SELECT id FROM mk WHERE a = 3 AND b = 7',
 	'SELECT id FROM mk WHERE a = 3 AND b = 7 AND c = 100',
@@ -64,7 +55,7 @@ CREATE TABLE mkd (id int, a int, b int, c int, d date, ts timestamptz, f bool);
 INSERT INTO mkd SELECT i, i % 50, CASE WHEN i % 41 = 0 THEN NULL ELSE i % 30 END, i % 700, date '2020-01-01' + (i % 400), timestamptz '2020-01-01' + (i % 9000) * interval '1 minute', i % 3 = 0
 FROM generate_series(1, 120000) i;
 CREATE INDEX mkd_idx ON mkd USING sift_col (id, a, b, c, d, ts, f) WITH (key_order = 'a DESC, b DESC NULLS FIRST, d, f');
-SELECT q, f2_same(q) FROM unnest(ARRAY[
+SELECT q, sift_helpers.f2_same(q, false) FROM unnest(ARRAY[
 	'SELECT id FROM mkd WHERE a = 7',
 	'SELECT id FROM mkd WHERE a = 7 AND b = 3',
 	'SELECT id FROM mkd WHERE a = 7 AND b IS NULL',
@@ -81,7 +72,7 @@ SELECT q, f2_same(q) FROM unnest(ARRAY[
 SELECT idx_blocks('SELECT id FROM mk WHERE a = 3 AND b = 7 AND c BETWEEN 10 AND 20') * 2 < idx_blocks('SELECT id FROM mk WHERE v = 5') AS key_scan_reads_less;
 
 -- Substring tests on the strings of a dictionary, in the case of the heap
-SELECT q, f2_same(q) FROM unnest(ARRAY[
+SELECT q, sift_helpers.f2_same(q, false) FROM unnest(ARRAY[
 	'SELECT id FROM mk WHERE s LIKE ''%k1%''',
 	'SELECT id FROM mk WHERE s LIKE ''%XyZ%''',
 	'SELECT id FROM mk WHERE s ILIKE ''%xyz%''',
@@ -97,7 +88,7 @@ SELECT q, f2_same(q) FROM unnest(ARRAY[
 CREATE TABLE mku (id int, a int, s text);
 INSERT INTO mku SELECT i, i % 4, (ARRAY['Kelvin K', U&'\212Aelvin', 'Istanbul', U&'\0130stanbul', 'plain ascii', 'caf' || U&'\00E9', 'KK', 'ik', U&'\00FCber'])[1 + i % 9] FROM generate_series(1, 9000) i;
 CREATE INDEX mku_idx ON mku USING sift_col (id, a, s) WITH (key_order = 'a');
-SELECT q, f2_same(q) FROM unnest(ARRAY[
+SELECT q, sift_helpers.f2_same(q, false) FROM unnest(ARRAY[
 	'SELECT id FROM mku WHERE s ILIKE ''%k%''',
 	'SELECT id FROM mku WHERE s ILIKE ''%I%''',
 	'SELECT id FROM mku WHERE s ILIKE ''%elvin%''',
@@ -117,9 +108,9 @@ INSERT INTO after_writes VALUES
 	('SELECT id FROM mk WHERE a = 5 AND b = 7 AND c BETWEEN 90 AND 110'),
 	('SELECT id FROM mk WHERE a IN (0, 9) AND b IS NULL'),
 	('SELECT id FROM mk WHERE a = 2 AND s LIKE ''%k3%''');
-SELECT q, f2_same(q) FROM after_writes ORDER BY q;
+SELECT q, sift_helpers.f2_same(q, false) FROM after_writes ORDER BY q;
 SELECT sift.maintain('mk_idx') IS NOT NULL AS maintained;
-SELECT q, f2_same(q) FROM after_writes ORDER BY q;
+SELECT q, sift_helpers.f2_same(q, false) FROM after_writes ORDER BY q;
 
 -- Batches whose keys do not overlap, frozen one after the other: the merge joins their granules as they are, and the marks of the part it makes are those of its inputs laid after each other
 CREATE TABLE mkj (id int, a int, b int, c int, v int, s text);
@@ -133,7 +124,7 @@ INSERT INTO mkj SELECT 300000 + i, 3, i / 1000, i % 1000, i % 97, 'k' || (i % 31
 VACUUM (FREEZE) mkj;
 SELECT sift.maintain('mkj_idx') IS NOT NULL AS maintained;
 SELECT count(*) AS parts, sum(rows) AS rows FROM sift.parts('mkj_idx');
-SELECT q, f2_same(q) FROM unnest(ARRAY[
+SELECT q, sift_helpers.f2_same(q, false) FROM unnest(ARRAY[
 	'SELECT id FROM mkj WHERE a = 0',
 	'SELECT id FROM mkj WHERE a = 1 AND b = 5',
 	'SELECT id FROM mkj WHERE a = 2 AND b = 30 AND c BETWEEN 100 AND 200',
@@ -152,7 +143,7 @@ CREATE INDEX mt_idx ON mt USING sift_col (id, g, u, n, v, s) WITH (key_order = '
 CREATE TABLE mtn (id int, g text, n numeric(12, 2), v int);
 INSERT INTO mtn SELECT i, 'g' || (i / 5000), CASE WHEN i % 1000 = 0 THEN 'NaN'::numeric ELSE ((i / 100) % 50)::numeric / 4 END, i % 97 FROM generate_series(1, 50000) i;
 CREATE INDEX mtn_idx ON mtn USING sift_col (id, g, n, v) WITH (key_order = 'g, n');
-SELECT q, f2_same(q) FROM unnest(ARRAY[
+SELECT q, sift_helpers.f2_same(q, false) FROM unnest(ARRAY[
 	'SELECT id FROM mt WHERE g = ''g03''',
 	'SELECT id FROM mt WHERE g = ''g03'' AND u = ''00000000-0000-0000-0000-000000000030''',
 	'SELECT id FROM mt WHERE g = ''g03'' AND u BETWEEN ''00000000-0000-0000-0000-000000000030'' AND ''00000000-0000-0000-0000-000000000040''',
@@ -196,22 +187,22 @@ INSERT INTO after_text_writes VALUES
 	('SELECT id FROM mtn WHERE g = ''g3'' AND n = 2.5'),
 	('SELECT id FROM mtn WHERE g = ''g5'' AND n > 5'),
 	('SELECT id FROM mtn WHERE n = ''NaN''');
-SELECT q, f2_same(q) FROM after_text_writes ORDER BY q;
+SELECT q, sift_helpers.f2_same(q, false) FROM after_text_writes ORDER BY q;
 SELECT sift.maintain('mt_idx') IS NOT NULL AS maintained;
 SELECT sift.maintain('mtn_idx') IS NOT NULL AS maintained;
-SELECT q, f2_same(q) FROM after_text_writes ORDER BY q;
+SELECT q, sift_helpers.f2_same(q, false) FROM after_text_writes ORDER BY q;
 VACUUM (FREEZE) mt;
 VACUUM (FREEZE) mtn;
 SELECT sift.maintain('mt_idx') IS NOT NULL AS maintained;
 SELECT sift.maintain('mtn_idx') IS NOT NULL AS maintained;
-SELECT q, f2_same(q) FROM after_text_writes ORDER BY q;
+SELECT q, sift_helpers.f2_same(q, false) FROM after_text_writes ORDER BY q;
 
 -- A key column with a collation of its own: the order of the part is the bytes', so a range or a prefix is the heap's, and an equality under a nondeterministic collation is too
 CREATE COLLATION mk_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 CREATE TABLE mc (id int, g text COLLATE "und-x-icu", h text COLLATE "C", v int);
 INSERT INTO mc SELECT i, (ARRAY['a', 'B', 'c', 'D', U&'\00E9', 'E', 'z', 'Z', 'b', 'A'])[1 + (i / 500) % 10], (ARRAY['x', 'Y', 'w', 'V'])[1 + i % 4], i % 13 FROM generate_series(1, 20000) i;
 CREATE INDEX mc_idx ON mc USING sift_col (id, g, h, v) WITH (key_order = 'g, h');
-SELECT q, f2_same(q) FROM unnest(ARRAY[
+SELECT q, sift_helpers.f2_same(q, false) FROM unnest(ARRAY[
 	'SELECT id FROM mc WHERE g = ''B''',
 	'SELECT id FROM mc WHERE g = ''b''',
 	'SELECT id FROM mc WHERE g > ''b''',
@@ -234,6 +225,7 @@ SELECT count(*) AS settings FROM pg_settings WHERE name ~ '^sift\.(key_marks|col
 
 DROP TABLE mk, mkd, mku, mkj, mt, mtn, mc, after_writes, after_text_writes;
 DROP COLLATION mk_nd;
-DROP FUNCTION f2_same(text), idx_blocks(text);
+DROP FUNCTION idx_blocks(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

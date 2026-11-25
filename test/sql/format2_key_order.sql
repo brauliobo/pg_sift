@@ -2,19 +2,10 @@
 -- last and those of a DESC column first unless it says otherwise). The rows of a part are stored in that order, the key bounds of the partitions keep it, and a scan whose conditions
 -- bound the first column reads the granules of that range from either end: the answers are the heap's and the blocks read stay a fraction of the index.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
-
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
-END $$;
 
 CREATE FUNCTION idx_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
@@ -60,7 +51,7 @@ BEGIN
 	step := 'stored order'; result := sift._test_f2_order('o_idx', 1, NULL); RETURN NEXT;
 	FOREACH q IN ARRAY ARRAY['a = 12345', 'a BETWEEN -100 AND 100', 'a < -249990', 'a > 249990', 'a >= 2147483647', 'a <= -2147483648', 'a IS NULL', 'a IS NOT NULL AND b = 3 AND v = 7',
 							 'a IN (1, 99999, -250000, 2147483647)', 'a IN (5, 6, 7)', 'a > 0 AND a < 1', 'a < 0 AND a > 5', 'a >= -1 AND a <= 1 AND b = 2', 'b = 4 AND v < 3'] LOOP
-		step := q; result := f2_same('SELECT * FROM o WHERE ' || q); RETURN NEXT;
+		step := q; result := sift_helpers.f2_same('SELECT * FROM o WHERE ' || q, false); RETURN NEXT;
 	END LOOP;
 	blocks := idx_blocks('SELECT * FROM o WHERE a = 12345');
 	everything := idx_blocks('SELECT * FROM o WHERE a >= -2147483648');
@@ -75,15 +66,15 @@ SELECT * FROM order_of('a DESC NULLS LAST');
 -- Three columns of three different orders: the first two make the bound of a partition, the third only the sort
 CREATE INDEX o_idx ON o USING sift_col (id, a, b, v) WITH (key_order = 'b DESC NULLS LAST, v NULLS FIRST, a DESC');
 SELECT sift._test_f2_check_keys('o_idx');
-SELECT f2_same('SELECT * FROM o WHERE b = 5'), f2_same('SELECT * FROM o WHERE b BETWEEN 3 AND 9'), f2_same('SELECT * FROM o WHERE b >= 12 AND v < 50'), f2_same('SELECT * FROM o WHERE b IS NULL');
+SELECT sift_helpers.f2_same('SELECT * FROM o WHERE b = 5', false), sift_helpers.f2_same('SELECT * FROM o WHERE b BETWEEN 3 AND 9', false), sift_helpers.f2_same('SELECT * FROM o WHERE b >= 12 AND v < 50', false), sift_helpers.f2_same('SELECT * FROM o WHERE b IS NULL', false);
 
 -- What is written later is ordered the same: rows staged and flushed, deletes, and the compaction that a vacuum makes
 INSERT INTO o SELECT 200000 + i, CASE WHEN i % 5 = 0 THEN NULL ELSE i * 3 END, i % 13, i % 100 FROM generate_series(1, 30000) i;
-SELECT f2_same('SELECT * FROM o WHERE b = 5'), f2_same('SELECT * FROM o WHERE b IS NULL AND v = 9');
+SELECT sift_helpers.f2_same('SELECT * FROM o WHERE b = 5', false), sift_helpers.f2_same('SELECT * FROM o WHERE b IS NULL AND v = 9', false);
 DELETE FROM o WHERE id % 3 = 0 OR b = 12;
 VACUUM o;
 SELECT sift._test_f2_check_keys('o_idx') ~ ' exact$' AS keys_exact;
-SELECT f2_same('SELECT * FROM o WHERE b = 5'), f2_same('SELECT * FROM o WHERE b = 12'), f2_same('SELECT * FROM o WHERE b IN (1, 2, 3) AND v > 90');
+SELECT sift_helpers.f2_same('SELECT * FROM o WHERE b = 5', false), sift_helpers.f2_same('SELECT * FROM o WHERE b = 12', false), sift_helpers.f2_same('SELECT * FROM o WHERE b IN (1, 2, 3) AND v > 90', false);
 DROP INDEX o_idx;
 
 -- The ordered index after the inserts, one row at a time (the slab of compact batches) and then a vacuum
@@ -95,12 +86,13 @@ DO $$ BEGIN
 		COMMIT;
 	END LOOP;
 END $$;
-SELECT f2_same('SELECT * FROM s WHERE a = 5'), f2_same('SELECT * FROM s WHERE a IS NULL'), f2_same('SELECT * FROM s WHERE a >= 90'), f2_same('SELECT * FROM s WHERE a < 10');
+SELECT sift_helpers.f2_same('SELECT * FROM s WHERE a = 5', false), sift_helpers.f2_same('SELECT * FROM s WHERE a IS NULL', false), sift_helpers.f2_same('SELECT * FROM s WHERE a >= 90', false), sift_helpers.f2_same('SELECT * FROM s WHERE a < 10', false);
 VACUUM s;
 SELECT sift._test_f2_check_keys('s_idx') AS keys, sift._test_f2_order('s_idx', 1, NULL) AS stored_order;
-SELECT f2_same('SELECT * FROM s WHERE a = 5'), f2_same('SELECT * FROM s WHERE a IS NULL'), f2_same('SELECT * FROM s WHERE a >= 90'), f2_same('SELECT * FROM s WHERE a < 10');
+SELECT sift_helpers.f2_same('SELECT * FROM s WHERE a = 5', false), sift_helpers.f2_same('SELECT * FROM s WHERE a IS NULL', false), sift_helpers.f2_same('SELECT * FROM s WHERE a >= 90', false), sift_helpers.f2_same('SELECT * FROM s WHERE a < 10', false);
 
 DROP TABLE k, k8, o, s;
-DROP FUNCTION f2_same(text), idx_blocks(text), try_order(text, text), order_of(text);
+DROP FUNCTION idx_blocks(text), try_order(text, text), order_of(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -2,13 +2,7 @@
 -- a sift scan say so
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
-CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE q;
-	RETURN 'ok';
-EXCEPTION WHEN OTHERS THEN
-	RETURN SQLSTATE || ': ' || SQLERRM;
-END $$;
+CREATE EXTENSION pg_sift_helpers;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	r text;
@@ -39,7 +33,7 @@ SELECT sift._test_poke('d_idx', 2, 8176, 9, 2);
  
 (1 row)
 
-SELECT expect($$ SELECT count(*) FROM d WHERE body @@> 'alpha 3' $$) AS detecting_statement;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM d WHERE body @@> 'alpha 3' $$, ': ') AS detecting_statement;
           detecting_statement           
 ----------------------------------------
  XX002: sift index "d_idx" is corrupted
@@ -64,7 +58,7 @@ EXCEPT SELECT q, a FROM answers;
 ---+---
 (0 rows)
 
-SELECT expect($$ SELECT sift.score(ctid) FROM d WHERE body @@> 'alpha 3' $$) AS score_without_the_index;
+SELECT sift_helpers.statement_outcome($$ SELECT sift.score(ctid) FROM d WHERE body @@> 'alpha 3' $$, ': ') AS score_without_the_index;
  score_without_the_index 
 -------------------------
  ok
@@ -84,6 +78,7 @@ SELECT plan_of('SELECT count(*) FROM d WHERE body @@> ''alpha 3''') AS plan_afte
 (1 row)
 
 DROP TABLE answers, d;
-DROP FUNCTION plan_of(text), expect(text);
+DROP FUNCTION plan_of(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -1,6 +1,7 @@
 -- A sift_table with no sift_col index is read by the semi-join pushdown, the Top-N, the streaming aggregate, the window and DISTINCT ON of SiftAggV6, row for row as its heap twin is answered. Every check prints t. Run: psql -X -v ON_ERROR_STOP=1 -f this file, on a build with sift_table.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 CREATE TABLE ot (id int PRIMARY KEY, grp int, k int, tag text, at timestamptz, amount numeric(12,2), note text)
@@ -28,14 +29,6 @@ INSERT INTO os SELECT g, (g * 7) % 14000, g % 17, timestamp '2030-01-01' + (g % 
 INSERT INTO osh SELECT * FROM os WHERE id > 40000;
 ANALYZE ot; ANALYZE oh; ANALYZE od; ANALYZE odh; ANALYZE os; ANALYZE osh;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 CREATE FUNCTION same_ordered(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE x text; y text;
 BEGIN
@@ -49,7 +42,7 @@ $$ SELECT CASE WHEN twin THEN replace(replace(replace(q, '@T', 'oh'), '@D', 'odh
 		ELSE replace(replace(replace(q, '@T', 'ot'), '@D', 'od'), '@S', 'os') END $$;
 
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(on_table(q, false), on_table(q, true)) $$;
+$$ SELECT sift_helpers.same_rows(on_table(q, false), on_table(q, true)) $$;
 
 CREATE FUNCTION parity_ordered(q text) RETURNS boolean LANGUAGE sql AS
 $$ SELECT same_ordered(on_table(q, false), on_table(q, true)) $$;
@@ -150,5 +143,6 @@ SELECT same_ordered('SELECT grp, count(*), sum(v) FROM ou GROUP BY grp ORDER BY 
 DROP TABLE ou, ouh;
 
 DROP TABLE ot, oh, od, odh, os, osh;
-DROP FUNCTION parity(text), parity_ordered(text), same_rows(text, text), same_ordered(text, text), on_table(text, boolean), plan_has(text, text);
+DROP FUNCTION parity(text), parity_ordered(text), same_ordered(text, text), on_table(text, boolean), plan_has(text, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -4,6 +4,7 @@
 -- Every check prints t.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -43,16 +44,8 @@ ANALYZE pf; ANALYZE ph; ANALYZE pc; ANALYZE pch; ANALYZE pd; ANALYZE pdup; ANALY
 CREATE FUNCTION on_table(q text, twin boolean) RETURNS text LANGUAGE sql AS
 $$ SELECT replace(replace(q, '@P', CASE WHEN twin THEN 'ph' ELSE 'pf' END), '@C', CASE WHEN twin THEN 'pch' ELSE 'pc' END) $$;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(on_table(q, false), on_table(q, true)) $$;
+$$ SELECT sift_helpers.same_rows(on_table(q, false), on_table(q, true)) $$;
 
 CREATE FUNCTION plan_has(q text, node text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text;
@@ -105,5 +98,6 @@ SELECT name, plan_has(q, 'Custom Scan (SiftAggV6') AS served_by_agg_v6 FROM case
 SELECT name, plan_has(q, 'Partitions: ') AS reads_the_partitions FROM cases WHERE q LIKE '%@P%' AND name <> 'distinct on' ORDER BY name;
 
 DROP TABLE cases, pf, ph, pc, pch, pd, pdup, pd2;
-DROP FUNCTION on_table(text, boolean), same_rows(text, text), parity(text), plan_has(text, text);
+DROP FUNCTION on_table(text, boolean), parity(text), plan_has(text, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

@@ -2,13 +2,7 @@
 -- brings the index back with the rows written while it was out
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
-CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE q;
-	RETURN 'ok';
-EXCEPTION WHEN OTHERS THEN
-	RETURN SQLSTATE || ': ' || SQLERRM;
-END $$;
+CREATE EXTENSION pg_sift_helpers;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	r text;
@@ -37,43 +31,43 @@ SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
  
 (1 row)
 
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_statement;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_statement;
           detecting_statement           
 ----------------------------------------
  XX002: sift index "t_idx" is corrupted
 (1 row)
 
-SELECT expect($$ UPDATE t SET v = 9 WHERE id <= 100 $$) AS update;
+SELECT sift_helpers.statement_outcome($$ UPDATE t SET v = 9 WHERE id <= 100 $$, ': ') AS update;
  update 
 --------
  ok
 (1 row)
 
-SELECT expect($$ DELETE FROM t WHERE id BETWEEN 200 AND 300 $$) AS delete_records;
+SELECT sift_helpers.statement_outcome($$ DELETE FROM t WHERE id BETWEEN 200 AND 300 $$, ': ') AS delete_records;
  delete_records 
 ----------------
  ok
 (1 row)
 
-SELECT expect($$ DELETE FROM t WHERE id BETWEEN 400 AND 405 $$) AS delete_marks;
+SELECT sift_helpers.statement_outcome($$ DELETE FROM t WHERE id BETWEEN 400 AND 405 $$, ': ') AS delete_marks;
  delete_marks 
 --------------
  ok
 (1 row)
 
-SELECT expect($$ UPDATE t SET id = id + 100000 WHERE id BETWEEN 500 AND 510 $$) AS update_the_key;
+SELECT sift_helpers.statement_outcome($$ UPDATE t SET id = id + 100000 WHERE id BETWEEN 500 AND 510 $$, ': ') AS update_the_key;
  update_the_key 
 ----------------
  ok
 (1 row)
 
-SELECT expect($$ INSERT INTO t VALUES (30000, 1) $$) AS insert;
+SELECT sift_helpers.statement_outcome($$ INSERT INTO t VALUES (30000, 1) $$, ': ') AS insert;
  insert 
 --------
  ok
 (1 row)
 
-SELECT expect($$ UPDATE t SET v = 8 WHERE id = 30000 $$) AS update_the_new_row;
+SELECT sift_helpers.statement_outcome($$ UPDATE t SET v = 8 WHERE id = 30000 $$, ': ') AS update_the_new_row;
  update_the_new_row 
 --------------------
  ok
@@ -139,7 +133,7 @@ SELECT sift._test_poke('w_idx', 2, 8176, 9, 2);
  
 (1 row)
 
-SELECT expect(format($$ %s $$, q)) AS first_write FROM unnest(ARRAY[
+SELECT sift_helpers.statement_outcome(format($$ %s $$, q), ': ') AS first_write FROM unnest(ARRAY[
 	'DELETE FROM u WHERE id BETWEEN 1 AND 300', 'UPDATE u SET id = id + 100000 WHERE id BETWEEN 301 AND 310', 'INSERT INTO u VALUES (30000, 1)',
 	'DELETE FROM w WHERE id BETWEEN 1 AND 300', 'UPDATE w SET v = 9 WHERE id BETWEEN 301 AND 310', 'INSERT INTO w VALUES (30000, 1)']) q;
               first_write               
@@ -156,13 +150,13 @@ SELECT index, skipped_writes > 0 AS skipped FROM sift.quarantine WHERE index = '
 ERROR:  invalid input syntax for type oid: "u_idx"
 LINE 1: ...s > 0 AS skipped FROM sift.quarantine WHERE index = 'u_idx';
                                                                ^
-SELECT expect($$ SELECT count(*) FROM w WHERE v = 3 $$) AS detecting_statement;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM w WHERE v = 3 $$, ': ') AS detecting_statement;
           detecting_statement           
 ----------------------------------------
  XX002: sift index "w_idx" is corrupted
 (1 row)
 
-SELECT expect($$ DELETE FROM w WHERE id BETWEEN 400 AND 700 $$) AS delete_after_detection;
+SELECT sift_helpers.statement_outcome($$ DELETE FROM w WHERE id BETWEEN 400 AND 700 $$, ': ') AS delete_after_detection;
  delete_after_detection 
 ------------------------
  ok
@@ -185,6 +179,7 @@ SELECT (SELECT count(*) FROM sift.check('u_idx', heapallindexed => true)) + (SEL
 
 DROP TABLE u, w;
 DROP TABLE t;
-DROP FUNCTION expect(text), plan_of(text);
+DROP FUNCTION plan_of(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

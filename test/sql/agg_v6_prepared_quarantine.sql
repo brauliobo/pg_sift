@@ -3,6 +3,7 @@
 -- runs). The node of SiftAggV6 that opens the index is refused with SQLSTATE 40001, the one a client retries, and the plans that name the index are dropped, so the retry is planned without
 -- it and gives the rows of PostgreSQL's plan. A node must not read the index under the plan of before. Each node has a table of its own: the refusal drops every plan of a table.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
@@ -14,13 +15,6 @@ DO $$ BEGIN
 	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
 		PERFORM set_config('sift.test_create_format1', 'off', false);
 	END IF;
-END $$;
-CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE q;
-	RETURN 'ok';
-EXCEPTION WHEN OTHERS THEN
-	RETURN SQLSTATE || ': ' || SQLERRM;
 END $$;
 CREATE FUNCTION engine(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text[] := '{}';
@@ -52,9 +46,9 @@ CREATE INDEX ev_win_col ON ev_win USING sift_col (id, k, v);
 VACUUM (FREEZE, ANALYZE) ev_agg, ev_top, ev_win;
 
 SET sift.on_corruption = quarantine;
-SELECT expect($$SELECT sift._test_raise_extending('ev_agg_col', 'index', false)$$) AS agg_damage,
-	expect($$SELECT sift._test_raise_extending('ev_top_col', 'index', false)$$) AS top_n_damage,
-	expect($$SELECT sift._test_raise_extending('ev_win_col', 'index', false)$$) AS window_damage;
+SELECT sift_helpers.statement_outcome($$SELECT sift._test_raise_extending('ev_agg_col', 'index', false)$$, ': ') AS agg_damage,
+	sift_helpers.statement_outcome($$SELECT sift._test_raise_extending('ev_top_col', 'index', false)$$, ': ') AS top_n_damage,
+	sift_helpers.statement_outcome($$SELECT sift._test_raise_extending('ev_win_col', 'index', false)$$, ': ') AS window_damage;
 SELECT index FROM sift.quarantine ORDER BY 1;
 
 SET sift.on_corruption = error;
@@ -62,13 +56,13 @@ PREPARE agg(int) AS SELECT v, count(*), sum(k) FROM ev_agg WHERE k < $1 GROUP BY
 PREPARE top_n(int) AS SELECT id FROM ev_top ORDER BY k DESC, id LIMIT $1;
 PREPARE win(int) AS SELECT count(*) FROM (SELECT row_number() OVER (PARTITION BY v ORDER BY k, id) rn FROM ev_win WHERE k < 3000) s WHERE rn <= $1;
 SELECT engine($$EXECUTE agg(1000)$$) AS agg_plan, engine($$EXECUTE top_n(5)$$) AS top_n_plan, engine($$EXECUTE win(3)$$) AS window_plan;
-SELECT expect($$EXECUTE agg(1000)$$) AS agg, expect($$EXECUTE top_n(5)$$) AS top_n, expect($$EXECUTE win(3)$$) AS window;
+SELECT sift_helpers.statement_outcome($$EXECUTE agg(1000)$$, ': ') AS agg, sift_helpers.statement_outcome($$EXECUTE top_n(5)$$, ': ') AS top_n, sift_helpers.statement_outcome($$EXECUTE win(3)$$, ': ') AS window;
 
 SET sift.on_corruption = quarantine;
-SELECT expect($$EXECUTE agg(1000)$$) AS agg_prepared;
-SELECT expect($$EXECUTE top_n(5)$$) AS top_n_prepared;
-SELECT expect($$EXECUTE win(3)$$) AS window_prepared;
-SELECT expect($$EXECUTE agg(1000)$$) AS agg_planned_again, expect($$EXECUTE top_n(5)$$) AS top_n_planned_again, expect($$EXECUTE win(3)$$) AS window_planned_again;
+SELECT sift_helpers.statement_outcome($$EXECUTE agg(1000)$$, ': ') AS agg_prepared;
+SELECT sift_helpers.statement_outcome($$EXECUTE top_n(5)$$, ': ') AS top_n_prepared;
+SELECT sift_helpers.statement_outcome($$EXECUTE win(3)$$, ': ') AS window_prepared;
+SELECT sift_helpers.statement_outcome($$EXECUTE agg(1000)$$, ': ') AS agg_planned_again, sift_helpers.statement_outcome($$EXECUTE top_n(5)$$, ': ') AS top_n_planned_again, sift_helpers.statement_outcome($$EXECUTE win(3)$$, ': ') AS window_planned_again;
 SELECT engine($$EXECUTE agg(1000)$$) AS agg_plan, engine($$EXECUTE top_n(5)$$) AS top_n_plan, engine($$EXECUTE win(3)$$) AS window_plan;
 SELECT answer($$EXECUTE agg(1000)$$, true) = answer($$EXECUTE agg(1000)$$, false) AS same_agg,
 	answer($$EXECUTE top_n(5)$$, true) = answer($$EXECUTE top_n(5)$$, false) AS same_top_n,
@@ -76,6 +70,7 @@ SELECT answer($$EXECUTE agg(1000)$$, true) = answer($$EXECUTE agg(1000)$$, false
 
 DEALLOCATE ALL;
 DROP TABLE ev_agg, ev_top, ev_win;
-DROP FUNCTION expect(text), engine(text), answer(text, bool);
+DROP FUNCTION engine(text), answer(text, bool);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

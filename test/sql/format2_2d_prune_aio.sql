@@ -2,19 +2,10 @@
 -- row does not widen the bounds of a hot part, the compaction splits the hot rows from the cold ones, the reads through a ReadStream answer as the reads one block at a time do, the
 -- allocator hands out the lowest free block first, the free run at the end of the file is given back, and block 0 keeps the summary of the partitions inline.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
-
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
-END $$;
 
 -- the parts a query opens and the parts its time window rules out, from the counters of the scan
 CREATE FUNCTION f2_window(q text, OUT result bigint, OUT parts_read int8, OUT parts_skipped int8) LANGUAGE plpgsql AS $$
@@ -60,9 +51,9 @@ SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE tenant = 7');
 
 -- the answers are those of the heap
-SELECT f2_same('SELECT count(*), sum(tenant) FROM ev WHERE updated_at >= ' || quote_literal(:'hot_cut'));
-SELECT f2_same('SELECT id FROM ev WHERE created_at >= ' || quote_literal(:'cold_lo') || ' AND created_at < ' || quote_literal(:'cold_hi') || ' AND tenant < 3');
-SELECT f2_same('SELECT count(*) FROM ev WHERE updated_at < ' || quote_literal(:'cold_hi'));
+SELECT sift_helpers.f2_same('SELECT count(*), sum(tenant) FROM ev WHERE updated_at >= ' || quote_literal(:'hot_cut'));
+SELECT sift_helpers.f2_same('SELECT id FROM ev WHERE created_at >= ' || quote_literal(:'cold_lo') || ' AND created_at < ' || quote_literal(:'cold_hi') || ' AND tenant < 3');
+SELECT sift_helpers.f2_same('SELECT count(*) FROM ev WHERE updated_at < ' || quote_literal(:'cold_hi'));
 
 -- a part the time bounds do not rule out is opened whether or not the rows pass: the window is about parts, the predicate about rows
 SELECT result FROM f2_window('SELECT count(*) FROM ev WHERE updated_at >= ' || quote_literal(:'hot_cut') || ' AND tenant = 39');
@@ -85,8 +76,8 @@ SELECT level, flags & 32 <> 0 AS hot, flags & 64 <> 0 AS cold, nrows FROM sift._
 SELECT sift._test_f2_check('ev_idx') ~ '^parts=3 ' AS consistent;
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE updated_at < ' || quote_literal(:'cold_hi'));
-SELECT f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
-SELECT f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at < ' || quote_literal(:'hot_cut'));
+SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
+SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at < ' || quote_literal(:'hot_cut'));
 
 -- A late row with an old time goes to the cold part at the next compaction, and the hot part keeps its bounds
 INSERT INTO ev SELECT 300000 + i, i % 40, now() - interval '120 days' + i * interval '1 second', now(), i FROM generate_series(1, 20000) i;
@@ -99,17 +90,17 @@ BEGIN
 END $$;
 SELECT level, flags & 32 <> 0 AS hot, flags & 64 <> 0 AS cold FROM sift._test_f2_parts('ev_idx', 1, NULL) ORDER BY hot DESC, cold DESC, level;
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
-SELECT f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
-SELECT f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'cold_lo') || ' AND created_at < ' || quote_literal(:'cold_hi'));
+SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
+SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'cold_lo') || ' AND created_at < ' || quote_literal(:'cold_hi'));
 
 -- The reads of a ReadStream or of ReadBuffer one block at a time answer alike: scans of many parts, a compaction and deletes
 CREATE FUNCTION f2_both_ways(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
 	SET LOCAL sift.test_io_read_stream = on;
-	a := f2_same(q);
+	a := sift_helpers.f2_same(q);
 	SET LOCAL sift.test_io_read_stream = off;
-	b := f2_same(q);
+	b := sift_helpers.f2_same(q);
 	RETURN CASE WHEN a = 'same' AND b = 'same' THEN 'same' ELSE 'DIFFERENT: ' || a || ' / ' || b END;
 END $$;
 CREATE TABLE rs (id bigint, tenant int, status text, created_at timestamptz, amount numeric(12, 2), note text);
@@ -175,6 +166,7 @@ SELECT inline_len > 0 AS inline, inline_parts, flagged FROM sift._test_f2_meta_i
 SELECT sift._test_f2_check('ev_idx') ~ '^parts=' AS consistent;
 
 DROP TABLE ev, rs, fs;
-DROP FUNCTION f2_same(text), f2_window(text), f2_both_ways(text);
+DROP FUNCTION f2_window(text), f2_both_ways(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

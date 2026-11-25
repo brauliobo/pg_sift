@@ -5,6 +5,7 @@
 -- requires: build col
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 DO $$ BEGIN
 	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
 		PERFORM set_config('sift.test_create_format1', 'off', false);
@@ -45,17 +46,9 @@ VACUUM (FREEZE, ANALYZE) wh, wr, wg, wt;
 SELECT count(*) AS rows, count(*) FILTER (WHERE n = 'NaN') AS nan_n, count(*) FILTER (WHERE n IS NULL) AS null_n, count(*) FILTER (WHERE m = 'NaN') AS nan_m,
 	count(*) FILTER (WHERE x = 'NaN') AS nan_x, count(*) FILTER (WHERE x = 'Infinity') AS inf_x FROM wh;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 -- the same rows from each sift twin and from the heap (which has no sift index, so it is the truth)
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(replace(q, '@T', 'wr'), replace(q, '@T', 'wh')) AND same_rows(replace(q, '@T', 'wg'), replace(q, '@T', 'wh')) AND same_rows(replace(q, '@T', 'wt'), replace(q, '@T', 'wh')) $$;
+$$ SELECT sift_helpers.same_rows(replace(q, '@T', 'wr'), replace(q, '@T', 'wh')) AND sift_helpers.same_rows(replace(q, '@T', 'wg'), replace(q, '@T', 'wh')) AND sift_helpers.same_rows(replace(q, '@T', 'wt'), replace(q, '@T', 'wh')) $$;
 
 CREATE FUNCTION plan_ok(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text; n int := 0;
@@ -129,5 +122,6 @@ UPDATE wh SET n = 'NaN' WHERE id % 89 = 0;
 SELECT parity('SELECT id, sum(n) OVER (PARTITION BY grp ORDER BY id), max(n) OVER (PARTITION BY grp ORDER BY id), lag(n) OVER (PARTITION BY grp ORDER BY id) FROM @T') AS after_dml;
 SELECT parity('SELECT id, row_number() OVER (PARTITION BY grp ORDER BY n DESC, id), rank() OVER (PARTITION BY grp ORDER BY n) FROM @T') AS after_dml_order;
 DROP TABLE wh, wr, wg, wt;
-DROP FUNCTION plan_ok(text), parity(text), same_rows(text, text);
+DROP FUNCTION plan_ok(text), parity(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

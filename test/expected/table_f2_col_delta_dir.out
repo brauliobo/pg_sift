@@ -2,6 +2,7 @@
 -- chain, the rows keep their ctid, a reader sees what its snapshot sees, and a fold gives the pages back. Every check raises on failure and prints one row (name, ok). About 30 s.
 CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION IF NOT EXISTS pageinspect;
 SET sift.test_create_format1 = off;
 SET check_function_bodies = off;
@@ -10,11 +11,6 @@ SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '240s';
 CREATE SCHEMA f2cdd;
 SET search_path = f2cdd, public;
-CREATE FUNCTION chk(name text, got anyelement, want anyelement) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	IF got IS DISTINCT FROM want THEN RAISE EXCEPTION 'FAILED %: got %, want %', name, got, want; END IF;
-	RETURN name || ': ok';
-END $$;
 -- the pages of the table of a page type: 42 SIFT_PT_COL_DELTA, 47 SIFT_PT_COL_DELTA_DIR
 CREATE FUNCTION pages_of(rel regclass, ptype int) RETURNS int LANGUAGE sql AS $$
 	SELECT count(*)::int FROM generate_series(0, pg_relation_size(rel) / 8192 - 1) n
@@ -29,22 +25,22 @@ CREATE FUNCTION same_rows() RETURNS bool LANGUAGE sql AS $$
 CREATE TABLE addr AS SELECT id, ctid::text AS c FROM o;
 CREATE FUNCTION moved() RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM o JOIN addr USING (id) WHERE o.ctid::text <> addr.c $$;
 -- 1. a short chain has no directory
-SELECT chk('no delta page yet', pages_of('o', 42), 0);
-          chk          
+SELECT sift_helpers.assert_eq('no delta page yet', pages_of('o', 42), 0);
+       assert_eq       
 -----------------------
  no delta page yet: ok
 (1 row)
 
 UPDATE o SET status = 1 WHERE id = 5;
 UPDATE oh SET status = 1 WHERE id = 5;
-SELECT chk('a short chain has pages', pages_of('o', 42) BETWEEN 1 AND 4, true);
-             chk             
+SELECT sift_helpers.assert_eq('a short chain has pages', pages_of('o', 42) BETWEEN 1 AND 4, true);
+          assert_eq          
 -----------------------------
  a short chain has pages: ok
 (1 row)
 
-SELECT chk('a short chain has no directory', pages_of('o', 47), 0);
-                chk                 
+SELECT sift_helpers.assert_eq('a short chain has no directory', pages_of('o', 47), 0);
+             assert_eq              
 ------------------------------------
  a short chain has no directory: ok
 (1 row)
@@ -52,26 +48,26 @@ SELECT chk('a short chain has no directory', pages_of('o', 47), 0);
 -- 2. one statement writes far more pages than the old cap of 32: no row leaves its address and the chain has a directory
 UPDATE o SET status = 2 WHERE id <= 30000;
 UPDATE oh SET status = 2 WHERE id <= 30000;
-SELECT chk('a bulk update writes more than 32 pages', pages_of('o', 42) > 32, true);
-                     chk                     
+SELECT sift_helpers.assert_eq('a bulk update writes more than 32 pages', pages_of('o', 42) > 32, true);
+                  assert_eq                  
 ---------------------------------------------
  a bulk update writes more than 32 pages: ok
 (1 row)
 
-SELECT chk('a long chain has a directory', pages_of('o', 47) >= 1, true);
-               chk                
+SELECT sift_helpers.assert_eq('a long chain has a directory', pages_of('o', 47) >= 1, true);
+            assert_eq             
 ----------------------------------
  a long chain has a directory: ok
 (1 row)
 
-SELECT chk('no row of the bulk update moved', moved()::int, 0);
-                 chk                 
+SELECT sift_helpers.assert_eq('no row of the bulk update moved', moved()::int, 0);
+              assert_eq              
 -------------------------------------
  no row of the bulk update moved: ok
 (1 row)
 
-SELECT chk('rows agree after the bulk update', same_rows(), true);
-                 chk                  
+SELECT sift_helpers.assert_eq('rows agree after the bulk update', same_rows(), true);
+              assert_eq               
 --------------------------------------
  rows agree after the bulk update: ok
 (1 row)
@@ -79,39 +75,39 @@ SELECT chk('rows agree after the bulk update', same_rows(), true);
 -- 3. a second one, over other rows: the directory grows, point reads and aggregates see both
 UPDATE o SET status = 3 WHERE id > 20000 AND id <= 50000;
 UPDATE oh SET status = 3 WHERE id > 20000 AND id <= 50000;
-SELECT chk('the chain passes the soft fold size', pages_of('o', 42) >= 256, true);
-                   chk                   
+SELECT sift_helpers.assert_eq('the chain passes the soft fold size', pages_of('o', 42) >= 256, true);
+                assert_eq                
 -----------------------------------------
  the chain passes the soft fold size: ok
 (1 row)
 
-SELECT chk('a second directory page', pages_of('o', 47) >= 2, true);
-             chk             
+SELECT sift_helpers.assert_eq('a second directory page', pages_of('o', 47) >= 2, true);
+          assert_eq          
 -----------------------------
  a second directory page: ok
 (1 row)
 
-SELECT chk('no row moved again', moved()::int, 0);
-          chk           
+SELECT sift_helpers.assert_eq('no row moved again', moved()::int, 0);
+       assert_eq        
 ------------------------
  no row moved again: ok
 (1 row)
 
-SELECT chk('point reads', (SELECT array_agg(status ORDER BY id) FROM o WHERE id IN (1, 5, 25000, 55000)), ARRAY[2, 2, 3, 0]);
-       chk       
+SELECT sift_helpers.assert_eq('point reads', (SELECT array_agg(status ORDER BY id) FROM o WHERE id IN (1, 5, 25000, 55000)), ARRAY[2, 2, 3, 0]);
+    assert_eq    
 -----------------
  point reads: ok
 (1 row)
 
-SELECT chk('group by a patched column', (SELECT array_agg(x ORDER BY status) FROM (SELECT status, count(*), sum(amount) FROM o GROUP BY status) x)::text,
+SELECT sift_helpers.assert_eq('group by a patched column', (SELECT array_agg(x ORDER BY status) FROM (SELECT status, count(*), sum(amount) FROM o GROUP BY status) x)::text,
 		   (SELECT array_agg(x ORDER BY status) FROM (SELECT status, count(*), sum(amount) FROM oh GROUP BY status) x)::text);
-              chk              
+           assert_eq           
 -------------------------------
  group by a patched column: ok
 (1 row)
 
-SELECT chk('rows agree after the second', same_rows(), true);
-               chk               
+SELECT sift_helpers.assert_eq('rows agree after the second', same_rows(), true);
+            assert_eq            
 ---------------------------------
  rows agree after the second: ok
 (1 row)
@@ -120,21 +116,21 @@ SELECT chk('rows agree after the second', same_rows(), true);
 SELECT pages_of('o', 42) AS before_pages \gset
 BEGIN;
 UPDATE o SET status = 9 WHERE id <= 15000;
-SELECT chk('the writer sees its patches', count(*)::int, 15000) FROM o WHERE status = 9;
-               chk               
+SELECT sift_helpers.assert_eq('the writer sees its patches', count(*)::int, 15000) FROM o WHERE status = 9;
+            assert_eq            
 ---------------------------------
  the writer sees its patches: ok
 (1 row)
 
 ROLLBACK;
-SELECT chk('a rollback leaves no patch', count(*)::int, 0) FROM o WHERE status = 9;
-              chk               
+SELECT sift_helpers.assert_eq('a rollback leaves no patch', count(*)::int, 0) FROM o WHERE status = 9;
+           assert_eq            
 --------------------------------
  a rollback leaves no patch: ok
 (1 row)
 
-SELECT chk('rows agree after the rollback', same_rows(), true);
-                chk                
+SELECT sift_helpers.assert_eq('rows agree after the rollback', same_rows(), true);
+             assert_eq             
 -----------------------------------
  rows agree after the rollback: ok
 (1 row)
@@ -142,8 +138,8 @@ SELECT chk('rows agree after the rollback', same_rows(), true);
 BEGIN;
 DECLARE c CURSOR FOR SELECT count(*) FILTER (WHERE status = 7) AS patched, count(*) AS n FROM o WHERE id BETWEEN 1 AND 40000;
 UPDATE o SET status = 7 WHERE id BETWEEN 1 AND 40000;
-SELECT chk('the writer sees its patches again', count(*)::int, 40000) FROM o WHERE status = 7;
-                  chk                  
+SELECT sift_helpers.assert_eq('the writer sees its patches again', count(*)::int, 40000) FROM o WHERE status = 7;
+               assert_eq               
 ---------------------------------------
  the writer sees its patches again: ok
 (1 row)
@@ -156,14 +152,14 @@ FETCH c;
 
 COMMIT;
 UPDATE oh SET status = 7 WHERE id BETWEEN 1 AND 40000;
-SELECT chk('rows agree after the cursor', same_rows(), true);
-               chk               
+SELECT sift_helpers.assert_eq('rows agree after the cursor', same_rows(), true);
+            assert_eq            
 ---------------------------------
  rows agree after the cursor: ok
 (1 row)
 
-SELECT chk('no row moved in the transactions', moved()::int, 0);
-                 chk                  
+SELECT sift_helpers.assert_eq('no row moved in the transactions', moved()::int, 0);
+              assert_eq               
 --------------------------------------
  no row moved in the transactions: ok
 (1 row)
@@ -228,31 +224,32 @@ SELECT busy FROM sift.table_maintain('o')
  f
 (1 row)
 
-SELECT chk('rounds of long chains and VACUUM do not grow the table', pg_relation_size('o') <= :first_size * 2, true);
-                            chk                             
+SELECT sift_helpers.assert_eq('rounds of long chains and VACUUM do not grow the table', pg_relation_size('o') <= :first_size * 2, true);
+                         assert_eq                          
 ------------------------------------------------------------
  rounds of long chains and VACUUM do not grow the table: ok
 (1 row)
 
-SELECT chk('rows agree after the rounds', same_rows(), true);
-               chk               
+SELECT sift_helpers.assert_eq('rows agree after the rounds', same_rows(), true);
+            assert_eq            
 ---------------------------------
  rows agree after the rounds: ok
 (1 row)
 
-SELECT chk('sift.check is clean', count(*)::int, 0) FROM sift.check('o'::regclass);
-           chk           
+SELECT sift_helpers.assert_eq('sift.check is clean', count(*)::int, 0) FROM sift.check('o'::regclass);
+        assert_eq        
 -------------------------
  sift.check is clean: ok
 (1 row)
 
-SELECT chk('no row moved in the rounds', moved()::int, 0);
-              chk               
+SELECT sift_helpers.assert_eq('no row moved in the rounds', moved()::int, 0);
+           assert_eq            
 --------------------------------
  no row moved in the rounds: ok
 (1 row)
 
 DROP SCHEMA f2cdd CASCADE;
 DROP EXTENSION pageinspect;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

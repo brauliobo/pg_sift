@@ -2,6 +2,7 @@
 -- numerics and texts. The values are those of the heap, the specials of the floats included (NaN, the infinities, -0, a denormal, NULL); a column of a type the load does not decode (uuid) is read
 -- from the heap and EXPLAIN (VERBOSE) says which column and why.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -34,12 +35,6 @@ INSERT INTO shapes VALUES
  (7, $q$SELECT count(*) FROM pc JOIN pf p ON p.id = pc.pid WHERE p.f8 IS NULL OR p.f4 < 0 OR p.t = '00:00:00'$q$),
  (8, $q$SELECT p.u IS NULL, count(*) FROM pc LEFT JOIN pf p ON p.id = pc.pid GROUP BY 1 ORDER BY 1$q$);
 
-CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
 -- how the scan read the joined table: 'leaves' (column loads), 'heap' (read, and the reason EXPLAIN gives when it has one), 'normal' without the scan
 CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
@@ -54,7 +49,7 @@ END $$;
 CREATE FUNCTION report(st text) RETURNS TABLE (stage text, shape int, read text, same_answers bool) LANGUAGE plpgsql AS $$
 DECLARE s record; BEGIN
 	FOR s IN SELECT n, sql FROM shapes ORDER BY n LOOP
-		RETURN QUERY SELECT st, s.n, got(s.sql), answer(s.sql, true) = answer(s.sql, false);
+		RETURN QUERY SELECT st, s.n, got(s.sql), sift_helpers.answer(s.sql, true) = sift_helpers.answer(s.sql, false);
 	END LOOP;
 END $$;
 
@@ -76,6 +71,7 @@ DELETE FROM pf WHERE id % 89 = 0;
 VACUUM pf;
 SELECT * FROM report('written');
 
-DROP FUNCTION report(text), got(text), answer(text, bool);
+DROP FUNCTION report(text), got(text);
 DROP TABLE shapes, pc, pf;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

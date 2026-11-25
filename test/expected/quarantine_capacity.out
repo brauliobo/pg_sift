@@ -2,13 +2,7 @@
 -- metapage and keeps the entry of one that has no flag (the index of a temporary table gets none): every damaged index stays out of service and the newest damage is listed
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
-CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE q;
-	RETURN 'ok';
-EXCEPTION WHEN OTHERS THEN
-	RETURN SQLSTATE || ': ' || SQLERRM;
-END $$;
+CREATE EXTENSION pg_sift_helpers;
 CREATE FUNCTION flagged_in(idx regclass, seconds int) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE
 	stop timestamptz := clock_timestamp() + make_interval(secs => seconds);
@@ -41,7 +35,7 @@ SELECT sift._test_poke('a_idx', 2, 8176, 9, 2);
  
 (1 row)
 
-SELECT expect($$ SELECT count(*) FROM a WHERE v = 3 $$) AS detecting_a;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM a WHERE v = 3 $$, ': ') AS detecting_a;
               detecting_a               
 ----------------------------------------
  XX002: sift index "a_idx" is corrupted
@@ -53,7 +47,7 @@ SELECT sift._test_poke('b_idx', 2, 8176, 9, 2);
  
 (1 row)
 
-SELECT expect($$ SELECT count(*) FROM b WHERE v = 3 $$) AS detecting_b;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM b WHERE v = 3 $$, ': ') AS detecting_b;
               detecting_b               
 ----------------------------------------
  XX002: sift index "b_idx" is corrupted
@@ -79,7 +73,7 @@ SELECT sift._test_poke('c_idx', 2, 8176, 9, 2);
  
 (1 row)
 
-SELECT expect($$ SELECT count(*) FROM c WHERE v = 3 $$) AS detecting_c;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM c WHERE v = 3 $$, ': ') AS detecting_c;
               detecting_c               
 ----------------------------------------
  XX002: sift index "c_idx" is corrupted
@@ -132,6 +126,7 @@ SELECT (SELECT count(*) FROM a WHERE v = 3) AS a_rows, (SELECT count(*) FROM b W
 
 RESET sift.test_limits;
 DROP TABLE a, b, c;
-DROP FUNCTION expect(text), flagged_in(regclass, int);
+DROP FUNCTION flagged_in(regclass, int);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

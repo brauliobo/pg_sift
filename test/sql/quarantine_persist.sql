@@ -1,12 +1,6 @@
 -- The flag of the metapage is written by a worker after the statement that found the damage: sift.quarantine says persisted when it is there, and a rebuilt index has none
 CREATE EXTENSION pg_sift_test CASCADE;
-CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE q;
-	RETURN 'ok';
-EXCEPTION WHEN OTHERS THEN
-	RETURN SQLSTATE || ': ' || SQLERRM;
-END $$;
+CREATE EXTENSION pg_sift_helpers;
 CREATE FUNCTION persisted_in(seconds int) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE
 	stop timestamptz := clock_timestamp() + make_interval(secs => seconds);
@@ -25,15 +19,16 @@ CREATE INDEX t_idx ON t USING sift_col (id, v, g);
 ANALYZE t;
 
 SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_statement;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_statement;
 SELECT index, persisted IS NOT NULL AS listed FROM sift.quarantine;
 SELECT persisted_in(20) AS flagged_by_worker;
-SELECT expect($$ INSERT INTO t VALUES (20001, 1, 1) $$) AS insert_after_flag;
+SELECT sift_helpers.statement_outcome($$ INSERT INTO t VALUES (20001, 1, 1) $$, ': ') AS insert_after_flag;
 
 REINDEX INDEX t_idx;
 SELECT count(*) AS listed_after_reindex FROM sift.quarantine;
 
 DROP TABLE t;
-DROP FUNCTION expect(text), persisted_in(int);
+DROP FUNCTION persisted_in(int);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -2,6 +2,7 @@
 -- (agg_lookup_dense), not from the heap row by row: a group by, a filter and a distinct count over them give the normal plan's answers, NULLs and numerics of other scales
 -- included. A column with more values than a table of classes holds is read from the heap as before.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -34,12 +35,6 @@ INSERT INTO shapes VALUES
  (8, $q$SELECT count(DISTINCT d.u), count(DISTINCT d.iv), count(DISTINCT d.big) FROM wf f JOIN wd d ON d.id = f.d$q$),
  (9, $q$SELECT d.many, count(*) FROM wf f JOIN wd d ON d.id = f.d GROUP BY 1$q$);
 
-CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN
-	PERFORM set_config('sift.enable_agg', scan::text, true);
-	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
 -- how the scan got the lookup table: 'classed' when it made the classes, 'heap' when the rows came from the heap, else 'loaded'
 CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'loaded'; BEGIN
@@ -50,8 +45,9 @@ DECLARE l text; r text := 'loaded'; BEGIN
 	RETURN r;
 END $$;
 
-SELECT n, got(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
+SELECT n, got(sql), sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false) AS same_answers FROM shapes ORDER BY n;
 
-DROP FUNCTION answer(text, bool), got(text);
+DROP FUNCTION got(text);
 DROP TABLE shapes, wf, wd;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

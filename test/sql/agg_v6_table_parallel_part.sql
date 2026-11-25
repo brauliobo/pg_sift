@@ -2,6 +2,7 @@
 -- with a sift_col index, is one SiftAggV6 over its partitions, and so is the parallel one that steals granules across all of them. Every answer is the heap twin's, also with rows, deletes and updates
 -- of the open transaction (and of a savepoint it rolled back) that the workers see through the transaction's own versions.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers = 8;
@@ -20,21 +21,13 @@ INSERT INTO th SELECT * FROM ts;
 ANALYZE ts;
 ANALYZE th;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
-CREATE FUNCTION same_rows_serial(a text, b text) RETURNS boolean LANGUAGE sql SET max_parallel_workers_per_gather = 0 AS $$ SELECT same_rows(a, b) $$;
+CREATE FUNCTION same_rows_serial(a text, b text) RETURNS boolean LANGUAGE sql SET max_parallel_workers_per_gather = 0 AS $$ SELECT sift_helpers.same_rows(a, b) $$;
 
 -- the query over the sift relation @T has the twin's rows, as it runs with workers and as it runs with none
 CREATE FUNCTION parity(q text, sift_rel text, twin_rel text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE par boolean; ser boolean;
 BEGIN
-	par := same_rows(replace(q, '@T', sift_rel), replace(q, '@T', twin_rel));
+	par := sift_helpers.same_rows(replace(q, '@T', sift_rel), replace(q, '@T', twin_rel));
 	ser := same_rows_serial(replace(q, '@T', sift_rel), replace(q, '@T', twin_rel));
 	RETURN par AND ser;
 END $$;
@@ -167,5 +160,6 @@ SELECT parity('SELECT a, count(*), sum(v) FROM @T GROUP BY a', 'pm', 'pmh') AS m
 ROLLBACK;
 
 DROP TABLE ts, th, pp, ph, pm, pmh;
-DROP FUNCTION parity(text, text, text), same_rows_serial(text, text), same_rows(text, text), plan_has(text, text), launched(text);
+DROP FUNCTION parity(text, text, text), same_rows_serial(text, text), plan_has(text, text), launched(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

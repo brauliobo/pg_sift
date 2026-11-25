@@ -2,12 +2,9 @@
 -- (equal values may differ in their bytes, which the btree, the store and the codes agree on); the same for a member (a text member qualifies, a char(n), a domain, a nondeterministic collation,
 -- an integer paired with a string do not); a scope of two paths takes a text key or member when its three journals and its group column are integers or of one type; a condition under a nondeterministic collation keeps the join as written.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
-
-CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
-$$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
-   EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
 
 CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 CREATE DOMAIN dom_text AS text;
@@ -72,7 +69,7 @@ INSERT INTO refusals VALUES
 	(13, 'char(n) fact column, text member', 'tenant_id: member_char -> pairs_member_text(member_text, tenant_id)'),
 	(14, 'nondeterministic collation, fact column', 'tenant_id: member_ci -> pairs_member_text(member_text, tenant_id)'),
 	(15, 'two paths, the member of the second path is another type', 'tenant_id: member_text -> grants_direct_text(member_text, tenant_id) | grants_group_int(group_id, tenant_id) via memberships(group_id, dim_a_id)');
-SELECT n, what, try(format('CREATE INDEX events_col_%s ON events USING sift_col (id, dim_a_id, member_text, member_char, member_ci, created_at, amount) WITH (scope = %L)', n, opt)) AS result FROM refusals ORDER BY n;
+SELECT n, what, sift_helpers.try_sql(format('CREATE INDEX events_col_%s ON events USING sift_col (id, dim_a_id, member_text, member_char, member_ci, created_at, amount) WITH (scope = %L)', n, opt)) AS result FROM refusals ORDER BY n;
 
 -- the text key that qualifies reads like the join, and a condition under a nondeterministic collation does not take the scope
 REINDEX INDEX events_col_1;
@@ -97,8 +94,9 @@ RESET sift.enable_agg;
 DROP FUNCTION ci_count();
 
 DROP INDEX events_col_1;
-DROP FUNCTION try(text), plan_of(text);
+DROP FUNCTION plan_of(text);
 DROP TABLE refusals, events, pairs_text, pairs_ci, pairs_char, pairs_bytea, pairs_member_text, pairs_member_char, pairs_member_ci, pairs_member_dom, grants_direct, grants_group, memberships, grants_direct_text, grants_group_int, memberships_text CASCADE;
 DROP DOMAIN dom_text;
 DROP COLLATION ci;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

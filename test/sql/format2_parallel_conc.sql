@@ -2,19 +2,10 @@
 -- or of CREATE INDEX CONCURRENTLY that reads the slab of a partition without writing it, the compaction that holds no partition lock while it writes (the deletes that reach its inputs
 -- meanwhile go into the vectors of its outputs), and a scan whose collected addresses are bounded by work_mem. Every answer is the heap's.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
-
-CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE via_index text; via_heap text;
-BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
-	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
-	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
-END $$;
 
 -- The rows an index scan (not a bitmap one) returns, and the temporary blocks the plan wrote: the addresses are collected in a sort that spills past work_mem
 CREATE FUNCTION idx_scan(q text, OUT n bigint, OUT temp_written bool) LANGUAGE plpgsql AS $$
@@ -58,8 +49,8 @@ SELECT (SELECT sum(total_rows) FROM sift._test_f2_partitions('pc_w0')) = (SELECT
 	   (SELECT sum(total_rows) FROM sift._test_f2_partitions('pc_w2')) = (SELECT count(*) FROM pc) AS rows_w2,
 	   (SELECT sum(total_rows) FROM sift._test_f2_partitions('pc_w4')) = (SELECT count(*) FROM pc) AS rows_w4;
 DROP INDEX pc_w0, pc_w2;
-SELECT f2_same('SELECT id, amount FROM pc WHERE tenant = 7'), f2_same('SELECT id FROM pc WHERE tenant BETWEEN 3 AND 9 AND status = ''open'''),
-	   f2_same('SELECT id, score FROM pc WHERE id BETWEEN 5000 AND 5400'), f2_same('SELECT tenant, count(*), sum(amount) FROM pc WHERE score > 90 GROUP BY tenant');
+SELECT sift_helpers.f2_same('SELECT id, amount FROM pc WHERE tenant = 7'), sift_helpers.f2_same('SELECT id FROM pc WHERE tenant BETWEEN 3 AND 9 AND status = ''open'''),
+	   sift_helpers.f2_same('SELECT id, score FROM pc WHERE id BETWEEN 5000 AND 5400'), sift_helpers.f2_same('SELECT tenant, count(*), sum(amount) FROM pc WHERE score > 90 GROUP BY tenant');
 
 -- CREATE INDEX CONCURRENTLY, in parallel
 DROP INDEX pc_w4;
@@ -67,17 +58,17 @@ SET sift.test_par_workers = 0;
 CREATE INDEX CONCURRENTLY pc_cic ON pc USING sift_col (id, tenant, status, amount, score) WITH (key_order = 'tenant, id');
 SELECT current_setting('sift.test_par_workers')::int AS workers_started, indisvalid FROM pg_index WHERE indexrelid = 'pc_cic'::regclass;
 SELECT sift._test_f2_check_keys('pc_cic') ~ ' exact$' AS keys_exact_cic;
-SELECT f2_same('SELECT id, amount FROM pc WHERE tenant = 7'), f2_same('SELECT id FROM pc WHERE id BETWEEN 70000 AND 70500'), f2_same('SELECT status, count(*) FROM pc GROUP BY status');
+SELECT sift_helpers.f2_same('SELECT id, amount FROM pc WHERE tenant = 7'), sift_helpers.f2_same('SELECT id FROM pc WHERE id BETWEEN 70000 AND 70500'), sift_helpers.f2_same('SELECT status, count(*) FROM pc GROUP BY status');
 
 -- The slab of a partition: single-row transactions stage rows in it, a few deletes wait in the pending buffer, and a vacuum offers the rows of the slab to the callback as they are
 SELECT format('INSERT INTO pc VALUES (%s, %s, ''open'', 1.5, 2.5, 0)', 200000 + i, i % 41) FROM generate_series(1, 12) i \gexec
 SELECT has_slab FROM sift._test_f2_partitions('pc_cic');
-SELECT f2_same('SELECT id FROM pc WHERE id > 199990');
+SELECT sift_helpers.f2_same('SELECT id FROM pc WHERE id > 199990');
 DELETE FROM pc WHERE id BETWEEN 200003 AND 200006;
 DELETE FROM pc WHERE id % 13 = 0 AND id < 3000;
 VACUUM pc;
 SELECT sift._test_f2_check_keys('pc_cic') ~ ' exact$' AS keys_exact_after_vacuum;
-SELECT f2_same('SELECT id FROM pc WHERE id > 199990'), f2_same('SELECT id, amount FROM pc WHERE tenant = 7');
+SELECT sift_helpers.f2_same('SELECT id FROM pc WHERE id > 199990'), sift_helpers.f2_same('SELECT id, amount FROM pc WHERE tenant = 7');
 SELECT (SELECT sum(total_rows - total_dead) FROM sift._test_f2_partitions('pc_cic')) = (SELECT count(*) FROM pc) AS index_rows_are_heap_rows;
 DROP INDEX pc_cic;
 
@@ -105,7 +96,7 @@ SELECT sift._test_f2_compact_racing('cm_i', 1, NULL, (SELECT array_agg(part_gen 
 SELECT count(*) AS parts_after, sum(nrows) AS rows_after, sum(ndead) AS dead_after FROM sift._test_f2_parts('cm_i', 1, NULL);
 SELECT sift._test_f2_check_keys('cm_i') ~ ' exact$' AS keys_exact_merged;
 SELECT (SELECT n FROM idx_scan('SELECT id FROM cm WHERE id >= 0')) AS index_rows_merged, (SELECT count(*) FROM cm) - 40 AS heap_rows_less_deleted;
-SELECT f2_same('SELECT id, v FROM cm WHERE tenant = 5 AND id > 17000');
+SELECT sift_helpers.f2_same('SELECT id, v FROM cm WHERE tenant = 5 AND id > 17000');
 DROP TABLE cc, cm;
 RESET sift.enable_agg;
 
@@ -114,8 +105,8 @@ CREATE INDEX pc_scan ON pc USING sift_col (id, tenant, status, amount, score) WI
 SET work_mem = '512kB';
 SELECT n AS index_scan_rows, temp_written AS sort_spilled FROM idx_scan('SELECT id FROM pc WHERE id >= 0');
 SELECT (SELECT n FROM idx_scan('SELECT id FROM pc WHERE id >= 0')) = (SELECT count(*) FROM pc) AS index_scan_is_heap;
-SELECT f2_same('SELECT id, amount FROM pc WHERE id >= 0 AND score >= 0');
-SELECT f2_same('SELECT tenant, count(*), sum(amount) FROM pc WHERE id >= 0 GROUP BY tenant');
+SELECT sift_helpers.f2_same('SELECT id, amount FROM pc WHERE id >= 0 AND score >= 0');
+SELECT sift_helpers.f2_same('SELECT tenant, count(*), sum(amount) FROM pc WHERE id >= 0 GROUP BY tenant');
 VACUUM pc;
 SET enable_seqscan = off; SET enable_bitmapscan = off; SET enable_indexscan = off; SET enable_indexonlyscan = on;
 SELECT count(*) AS ioss_rows, sum(id) AS ioss_sum, sum(tenant) AS ioss_tenants FROM pc WHERE id >= 0;
@@ -124,6 +115,7 @@ SELECT count(*) AS heap_rows, sum(id) AS heap_sum, sum(tenant) AS heap_tenants F
 RESET work_mem;
 
 DROP TABLE pc;
-DROP FUNCTION f2_same(text), idx_scan(text);
+DROP FUNCTION idx_scan(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

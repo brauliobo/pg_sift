@@ -2,6 +2,7 @@
 -- is answered: the dimension rows no table row matches are given once, the table rows no dimension matches keep their NULLs. Every check prints t.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET enable_seqscan = off;
@@ -20,16 +21,8 @@ ANALYZE jt; ANALYZE jh; ANALYZE jd;
 CREATE FUNCTION on_table(q text, twin boolean) RETURNS text LANGUAGE sql AS
 $$ SELECT replace(q, '@T', CASE WHEN twin THEN 'jh' ELSE 'jt' END) $$;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(on_table(q, false), on_table(q, true)) $$;
+$$ SELECT sift_helpers.same_rows(on_table(q, false), on_table(q, true)) $$;
 
 CREATE FUNCTION plan_has(q text, node text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text;
@@ -51,5 +44,6 @@ SELECT name, parity(q) AS same_as_heap FROM cases ORDER BY name;
 SELECT name, plan_has(q, 'Custom Scan (SiftAggV6)') AS served_by_agg_v6, plan_has(q, 'Table: jt') AS reads_the_table FROM cases ORDER BY name;
 
 DROP TABLE cases, jt, jh, jd;
-DROP FUNCTION on_table(text, boolean), same_rows(text, text), parity(text), plan_has(text, text);
+DROP FUNCTION on_table(text, boolean), parity(text), plan_has(text, text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

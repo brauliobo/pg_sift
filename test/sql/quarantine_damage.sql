@@ -1,11 +1,5 @@
 CREATE EXTENSION pg_sift_test CASCADE;
-CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	EXECUTE q;
-	RETURN 'ok';
-EXCEPTION WHEN OTHERS THEN
-	RETURN SQLSTATE || ': ' || SQLERRM;
-END $$;
+CREATE EXTENSION pg_sift_helpers;
 
 -- Damage found by a sift_col index is recorded in the registry of the server; sift.on_corruption = error records nothing; a function that reports damage does not record it;
 -- an index rebuilt by REINDEX is a new file and leaves the list
@@ -17,17 +11,17 @@ SELECT count(*) AS listed FROM sift.quarantine;
 
 -- the data page of the segment gets another page type
 SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
-SELECT expect($$ SELECT sift.col_verify('t_idx') $$);
+SELECT sift_helpers.statement_outcome($$ SELECT sift.col_verify('t_idx') $$, ': ');
 SELECT count(*) AS listed_after_verify FROM sift.quarantine;
 SELECT count(*) AS problems FROM sift.check('t_idx');
 SELECT count(*) AS listed_after_check FROM sift.quarantine;
 
 SET sift.on_corruption = error;
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$);
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ');
 SELECT count(*) AS listed_in_error_mode FROM sift.quarantine;
 
 SET sift.on_corruption = quarantine;
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$);
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ');
 SELECT index, error_code, reason, detections, skipped_writes, skipped_vacuums, refused_scans FROM sift.quarantine;
 
 REINDEX INDEX t_idx;
@@ -76,24 +70,24 @@ CREATE INDEX t_bm ON t USING btree (v);
 
 -- the magic number of the metapage
 SELECT sift._test_poke('t_idx', 0, 24, 0, 4);
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_statement;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_statement;
 SELECT index, error_code, reason FROM sift.quarantine;
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS next_statement;
-SELECT expect($$ INSERT INTO t VALUES (5001, 1) $$) AS insert;
-SELECT expect($$ UPDATE t SET v = 2 WHERE id = 7 $$) AS update;
-SELECT expect($$ DELETE FROM t WHERE id = 8 $$) AS delete;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS next_statement;
+SELECT sift_helpers.statement_outcome($$ INSERT INTO t VALUES (5001, 1) $$, ': ') AS insert;
+SELECT sift_helpers.statement_outcome($$ UPDATE t SET v = 2 WHERE id = 7 $$, ': ') AS update;
+SELECT sift_helpers.statement_outcome($$ DELETE FROM t WHERE id = 8 $$, ': ') AS delete;
 VACUUM t;
 SELECT count(*) AS problems FROM sift.check('t_idx');
 
 REINDEX INDEX t_idx;
 SELECT count(*) AS listed_after_reindex FROM sift.quarantine;
 SELECT sift._test_poke('t_idx', 0, 24, 0, 4);
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_again;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_again;
 REINDEX INDEX CONCURRENTLY t_idx;
 SELECT count(*) AS listed_after_concurrently FROM sift.quarantine;
 SELECT sift._test_poke('t_idx', 0, 24, 0, 4);
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_a_third_time;
-SELECT expect($$ DROP INDEX t_idx $$) AS drop_index;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_a_third_time;
+SELECT sift_helpers.statement_outcome($$ DROP INDEX t_idx $$, ': ') AS drop_index;
 SELECT count(*) AS listed_after_drop FROM sift.quarantine;
 
 DROP TABLE t;
@@ -114,14 +108,14 @@ SELECT relation, state FROM sift.indexes ORDER BY relation::text;
 
 -- the data of a segment of the column index
 SELECT sift._test_poke('t_col', 2, 8176, 9, 2);
-SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS detecting_statement;
+SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_statement;
 SELECT index, quarantined, quarantined_since IS NOT NULL AS since, left(quarantine_reason, 40) AS reason FROM sift.workers ORDER BY index::text;
 SELECT index, quarantined, quarantined_since IS NOT NULL AS since, left(quarantine_reason, 40) AS reason FROM sift.col_index_status;
 SELECT relation, state FROM sift.indexes ORDER BY relation::text;
 
 -- the metapage of the BM25 index: the views read it and still list the index
 SELECT sift._test_poke('t_bm25', 0, 24, 0, 4);
-SELECT left(expect($$ SELECT count(*) FROM t WHERE body @@> 'alpha' $$), 5) AS detecting_statement;
+SELECT left(sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE body @@> 'alpha' $$, ': '), 5) AS detecting_statement;
 SELECT index, quarantined FROM sift.workers ORDER BY index::text;
 SELECT relation, state FROM sift.indexes ORDER BY relation::text;
 
@@ -131,6 +125,6 @@ SELECT index, quarantined FROM sift.workers ORDER BY index::text;
 SELECT relation, state FROM sift.indexes ORDER BY relation::text;
 
 DROP TABLE t;
-DROP FUNCTION expect(text);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

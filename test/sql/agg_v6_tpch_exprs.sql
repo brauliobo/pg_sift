@@ -5,6 +5,7 @@
 -- requires: build col
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
 SET cpu_tuple_cost = 0.5;
 
@@ -30,16 +31,8 @@ CREATE INDEX tc_sift ON tc USING sift_col (id, grp, a, b, c, w, d1, d2, n4, i8, 
 SELECT sift.table_maintain('tt') IS NOT NULL AS maintained;
 ANALYZE th, tc, tt;
 
-CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE x text; y text;
-BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
-	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
-	RETURN x = y;
-END $$;
-
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(replace(q, '@T', 'tc'), replace(q, '@T', 'th')) AND same_rows(replace(q, '@T', 'tt'), replace(q, '@T', 'th')) $$;
+$$ SELECT sift_helpers.same_rows(replace(q, '@T', 'tc'), replace(q, '@T', 'th')) AND sift_helpers.same_rows(replace(q, '@T', 'tt'), replace(q, '@T', 'th')) $$;
 
 CREATE FUNCTION plan_ok(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text; n int := 0;
@@ -168,9 +161,10 @@ INSERT INTO th VALUES (900001, 1, 'NaN', 0.5, 0.1, 1, date '2000-01-01', date '2
 INSERT INTO tc SELECT * FROM th WHERE id = 900001;
 INSERT INTO tt SELECT * FROM th WHERE id = 900001;
 SELECT parity('SELECT sum(a * (1 - b))::text, avg(a * (1 - b))::text, count(a * (1 - b)) FROM @T') AS nan_product_answered;
-SELECT same_rows('SELECT count(*) FROM tc WHERE a > 1', 'SELECT count(*) FROM th WHERE a > 1') AS nan_qual_answered_on_an_index;
-SELECT same_rows('SELECT count(*) FROM tt WHERE a > 1', 'SELECT count(*) FROM th WHERE a > 1') AS nan_qual_answered_by_the_executor_on_a_table;
+SELECT sift_helpers.same_rows('SELECT count(*) FROM tc WHERE a > 1', 'SELECT count(*) FROM th WHERE a > 1') AS nan_qual_answered_on_an_index;
+SELECT sift_helpers.same_rows('SELECT count(*) FROM tt WHERE a > 1', 'SELECT count(*) FROM th WHERE a > 1') AS nan_qual_answered_by_the_executor_on_a_table;
 
-DROP FUNCTION same_rows(text, text), parity(text), plan_ok(text), plan_index(text), parity_text(text), refused(text);
+DROP FUNCTION parity(text), plan_ok(text), plan_index(text), parity_text(text), refused(text);
 DROP TABLE th, tc, tt;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
