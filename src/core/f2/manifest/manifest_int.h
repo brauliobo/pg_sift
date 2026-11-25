@@ -73,6 +73,7 @@ typedef struct Change
 	FullTransactionId new_min_xid;
 } Change;
 
+#define PLIST(p)	((SiftPartListPageData *) SiftPageGetData(p))
 #define PDIR(p)		((SiftPartDirPageData *) SiftPageGetData(p))
 #define LEAF(p)		((SiftPartitionEntry *) (SiftPageGetData(p) + sizeof(SiftPartDirPageData)))
 #define INTK(p)		((SiftPartDirKey *) (SiftPageGetData(p) + sizeof(SiftPartDirPageData)))

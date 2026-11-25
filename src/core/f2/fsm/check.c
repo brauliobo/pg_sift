@@ -19,22 +19,61 @@ sift_fsm_is_meta_block(Relation rel, BlockNumber blk)
 	return is;
 }
 
-bool
-sift_fsm_meta_fits_below(Relation rel, BlockNumber from)
+/* The slabs cut at block from: the pages in use of those that start at or above it, the free pages and the number of those below */
+typedef struct SlabSplit
+{
+	uint32		used;
+	uint32		room;
+	uint32		below;
+} SlabSplit;
+
+static SlabSplit
+split_slabs(Relation rel, BlockNumber from)
 {
 	Buffer		buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
 	const SiftFsmSlabTable *t = SLABS(BufferGetPage(buf));
-	uint32		used = 0,
-				room = 0;
+	SlabSplit	s = {0};
 
 	sift_fsm_check_root(rel, buf);
 	for (uint32 i = 0; i < t->nslabs; i++)
 		if (t->slab[i].start >= from)
-			used += sift_fsm_slab_used(&t->slab[i]);
+			s.used += sift_fsm_slab_used(&t->slab[i]);
 		else
-			room += t->slab[i].nblocks - sift_fsm_slab_used(&t->slab[i]);
+		{
+			s.room += t->slab[i].nblocks - sift_fsm_slab_used(&t->slab[i]);
+			s.below++;
+		}
 	UnlockReleaseBuffer(buf);
-	return used <= room;
+	return s;
+}
+
+BlockNumber
+sift_fsm_slab_start_ending_at(Relation rel, BlockNumber end)
+{
+	Buffer		buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
+	const SiftFsmSlab *s;
+	BlockNumber start;
+
+	sift_fsm_check_root(rel, buf);
+	s = sift_fsm_slab_ending_at(SLABS(BufferGetPage(buf)), end);
+	start = s != NULL ? s->start : InvalidBlockNumber;
+	UnlockReleaseBuffer(buf);
+	return start;
+}
+
+uint32
+sift_fsm_meta_used_from(Relation rel, BlockNumber from)
+{
+	return split_slabs(rel, from).used;
+}
+
+uint32
+sift_fsm_meta_short_below(Relation rel, BlockNumber from, bool for_move)
+{
+	SlabSplit	s = split_slabs(rel, from);
+	uint32		want = s.used + (for_move ? (s.used > 0 ? SIFT_FSM_REHOME_SLACK : 0) + sift_fsm_meta_reserve(s.below) : 0);
+
+	return want > s.room ? want - s.room : 0;
 }
 
 SiftFsmStats

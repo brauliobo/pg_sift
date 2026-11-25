@@ -1,5 +1,5 @@
 /*
- * core/f2/fsm/fsm_int.h - what the files of the allocator of format major 2 share (core/f2/fsm.c, fsm/slab.c, fsm/release_guard.c, fsm/check.c): the page layouts, the context of a call and the walk of a list.
+ * core/f2/fsm/fsm_int.h - what the files of the allocator of format major 2 share (core/f2/fsm.c, fsm/slab.c, fsm/rehome.c, fsm/release_guard.c, fsm/check.c): the page layouts, the context of a call and the walk of a list.
  */
 #ifndef SIFT_CORE_F2_FSM_INT_H
 #define SIFT_CORE_F2_FSM_INT_H
@@ -16,7 +16,8 @@
 /* STOR[STOR-F2-03]: FSM small-index meta reserve and multi-extent fallback (cuts EOF growth) */
 #define SIFT_FSM_META_RESERVE	16	/* free metadata blocks kept in the slabs: a step that writes a list page never finds none, and no slab is given back that would leave fewer */
 #define SIFT_FSM_SMALL_META_RESERVE	8	/* the same for a relation of at most SIFT_FSM_KEEP_SLABS slabs: it claims its next slab later and holds half the blocks idle */
-#define SIFT_FSM_KEEP_SLABS		2	/* the slabs a quiet relation keeps: the first, and one warm one so that a burst does not claim and give back a slab in turn */
+#define SIFT_FSM_REHOME_SLACK	4	/* the free pages the slabs below keep over the pages they take down: the pages one commit writes before the ones it replaces are reclaimed (the list of its partition, the leaf and the two interior pages of the directory) */
+#define SIFT_FSM_KEEP_SLABS		2/* the slabs a quiet relation keeps: the first, and one warm one so that a burst does not claim and give back a slab in turn */
 #define SIFT_FSM_SMALL_CLASS	2	/* the free extents of the classes below (1 and 2 blocks) are what a stream takes last before it extends the file */
 #define SIFT_FSM_REUSE_PIECES	16		/* a stream takes no more than this many extents of one class for what it still wants ... */
 #define SIFT_FSM_SMALL_PIECES	4		/* ... and of a class below SIFT_FSM_SMALL_CLASS, so that a part is never a run of single blocks */
@@ -29,6 +30,7 @@ typedef struct FsmCtx
 	Buffer		buf0;
 	bool		exclusive;		/* the caller holds AccessExclusiveLock on the relation: no scan, and so no reader of an older manifest, exists, whatever the safexid of a retired extent (core/freelist.c, space mode) */
 	bool		in_reclaim;		/* reclaim_locked is under way: it needs pages of the slabs itself and must not be asked to reclaim from inside */
+	bool		keep_empty;		/* the slabs with no page in use are not given back (sift_fsm_recycle_empty_slabs): the caller made them to fill them */
 	FullTransactionId horizon;	/* valid: the horizon computed anew, what the extents are matured against instead of the cached GlobalVis one */
 } FsmCtx;
 
@@ -49,6 +51,9 @@ extern int	sift_fsm_class_floor(uint64 nblocks);
 extern void sift_fsm_init_list_page(Page page, uint16 size_class, uint16 flags, BlockNumber next);
 extern void sift_fsm_list_seal(Page page);
 extern Buffer sift_fsm_lock_root(Relation rel);
+extern Buffer sift_fsm_lock_list_page(Relation rel, BlockNumber blk, uint16 size_class);
+extern FsmCtx sift_fsm_ctx_open(Relation rel);
+extern void sift_fsm_ctx_close(FsmCtx *c);
 extern void sift_fsm_root_seal(Page page);
 extern SiftFsmExtent sift_fsm_pop_class(FsmCtx *c, int cls);
 extern void sift_fsm_push_class(FsmCtx *c, int cls, const SiftFsmExtent *ext, int n);
@@ -65,6 +70,7 @@ extern uint32 sift_fsm_slab_used(const SiftFsmSlab *s);
 extern BlockNumber sift_fsm_slab_take(Page root);
 extern void sift_fsm_slab_put(Relation rel, Page root, BlockNumber blk);
 extern void sift_fsm_claim_slab(FsmCtx *c);
+extern void sift_fsm_adopt_slabs(FsmCtx *c, const SiftExtent *ext, int n);
 extern BlockNumber sift_fsm_alloc_meta_locked(FsmCtx *c);
 
 static inline uint32

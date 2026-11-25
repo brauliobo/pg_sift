@@ -4,7 +4,8 @@
  * SIFT_TAIL_RELOCATE_PCT of the file and the free extents hold the holder (f2_tail_plan.h), it is rewritten into free extents below it that sift_fsm_alloc_below reserves (a base part by the
  * copy on write of a compaction, a projection part by a copy of its granules, a directory by the commit that rewrites its pages), the old blocks are released, and the free run that is left
  * at the end goes with the next cut. A pass starts with a cut, which matures what a compaction just freed (under the lock of the cut no reader of an older manifest can be there), then
- * moves the holders of a plan one after the other, and plans again for as long as the file ends shorter.
+ * moves the holders of a plan one after the other, and plans again for as long as the file ends shorter. The metadata slab that ends the file is a holder too: its pages in use (part headers, the
+ * manifest, the lists of the allocator) are taken down into the slabs below (rehome_run) before each plan, so that the slab goes with the next cut.
  */
 #include "core/host.h"
 
@@ -88,13 +89,13 @@ tail_add(Relation rel, Tail *t, SiftTailKind kind, TailItem it, const SiftExtent
 	MemoryContextReset(t->scan);
 }
 
-/* A part with a stream of its own in blocks can have the pieces of it moved: where its header and extent list lie, and its deletion vector, hold the file at the end they reach */
+/* A part with a stream of its own in blocks can have the pieces of it moved: where its header and extent list lie, and its deletion vector, hold the file at the end they reach. A part with no stream (all of it in its header) has a header to move and no pieces */
 static SiftTailPart
 movable_part(const Tail *t, const SiftPart *p, const SiftPartDesc *d)
 {
 	SiftTailPart m = {0};
 
-	if (p == NULL || p->is_packed || p->hdr.total_extents == 0)
+	if (p == NULL || p->is_packed)
 		return m;
 	m.stream = p->extents;
 	m.nstream = (int) p->hdr.total_extents;
@@ -165,14 +166,14 @@ add_projections(Relation rel, Tail *t, const SiftColMetaPageData *meta)
 }
 
 static Tail
-collect(Relation rel, const SiftColMetaPageData *meta)
+collect(Relation rel, const SiftColMetaPageData *meta, BlockNumber slab_lo)
 {
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
 	Tail		t = {.cx = CurrentMemoryContext,.scan = sift_mem_allocset_create(CurrentMemoryContext, "sift tail holder"),
-		.high_water = meta->high_water,.slab_lo = slab_run_start(rel, meta->high_water)};
+		.high_water = meta->high_water,.slab_lo = slab_lo};
 	int			nscope = sift_f2_store_open(rel)->host->host_kind == SIFT_F2_HOST_INDEX ? sift_col_rel(rel)->nscope : 0;
 
-	t.slab_pins = t.slab_lo < t.high_water && !sift_fsm_meta_fits_below(rel, t.slab_lo);
+	t.slab_pins = t.slab_lo < t.high_water && sift_fsm_meta_short_below(rel, t.slab_lo, false) > 0;
 
 	for (int i = 0; i < mr.n; i++)
 	{
@@ -289,6 +290,8 @@ publish_move(Relation rel, const TailItem *it, const SiftPartDesc *planned, cons
 	return true;
 }
 
+#define HEADER_ONLY		MaxBlockNumber	/* a cut that no piece of a stream reaches: the move gives the part a new header and extent list and nothing else */
+
 typedef enum PiecesMove
 {
 	PIECES_MOVED,
@@ -302,11 +305,11 @@ move_pieces_locked(Relation rel, const TailItem *it, BlockNumber cut)
 {
 	SiftManifestRead mr;
 	int			at,
-				nto;
+				nto = 0;
 	SiftPartDesc *parts = find_part(rel, it, &mr, &at),
 				planned;
 	SiftPart   *part;
-	SiftExtent *to;
+	SiftExtent *to = NULL;
 	SiftPartMove mv;
 	uint64		want;
 
@@ -315,12 +318,15 @@ move_pieces_locked(Relation rel, const TailItem *it, BlockNumber cut)
 	planned = parts[at];
 	part = sift_part_open_desc(rel, &planned, (uint32) it->entry->part_id);
 	want = sift_tail_blocks_from(part->extents, part->hdr.total_extents, cut);
-	if (part->hdr.total_extents == 0 || want == 0)
+	if (want == 0 && cut != HEADER_ONLY)
 		return PIECES_SKIPPED;
-	to = palloc(Min(want, (uint64) SIFT_TAIL_MAX_PIECES) * sizeof(SiftExtent));
-	nto = sift_fsm_alloc_below(rel, want, cut, to, (int) Min(want, (uint64) SIFT_TAIL_MAX_PIECES));
-	if (nto == 0)
-		return PIECES_NO_ROOM;
+	if (want > 0)
+	{
+		to = palloc(Min(want, (uint64) SIFT_TAIL_MAX_PIECES) * sizeof(SiftExtent));
+		nto = sift_fsm_alloc_below(rel, want, cut, to, (int) Min(want, (uint64) SIFT_TAIL_MAX_PIECES));
+		if (nto == 0)
+			return PIECES_NO_ROOM;
+	}
 	mv = sift_part_move_tail(rel, part, cut, to, nto);
 	return publish_move(rel, it, &planned, &mv) ? PIECES_MOVED : PIECES_SKIPPED;
 }
@@ -381,7 +387,7 @@ static bool
 relocate_top(Relation rel, const SiftF2Store *store, FullTransactionId horizon, int64 hot_cut, int *left)
 {
 	SiftColMetaPageData meta = sift_col_meta_read(rel);
-	Tail		t = collect(rel, &meta);
+	Tail		t = collect(rel, &meta, slab_run_start(rel, meta.high_water));
 	SiftFsmStats st = sift_fsm_check(rel);
 	uint64		free_blocks = 0;
 	SiftTailPick pick;
@@ -418,6 +424,77 @@ relocate_run(Relation rel, const SiftF2Store *store, FullTransactionId horizon, 
 	return sift_col_meta_read(rel).high_water < high_water;
 }
 
+/* The parts whose header or extent list lies in the slabs that end the file are given new ones, which the commit puts in the lowest free pages of the slabs; the pages it replaced are reclaimed at once, so that the next commit finds them free */
+static void
+rehome_headers(Relation rel, const Tail *t)
+{
+	for (int i = 0; i < t->n; i++)
+		if (t->span[i].kind == TAIL_PART && t->part[i].meta_hi == t->high_water &&
+			move_pieces(rel, &t->item[i], HEADER_ONLY) == PIECES_MOVED)
+			(void) sift_fsm_reclaim_exclusive(rel);
+}
+
+static void
+rehome_manifest(Relation rel, BlockNumber lo)
+{
+	SiftManifestRead mr = sift_manifest_pages_from(rel, lo);
+
+	for (int i = 0; i < mr.n; i++)
+	{
+		(void) sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = mr.entries[i].part_id,.key_lo = mr.entries[i].key_lo});
+		(void) sift_fsm_reclaim_exclusive(rel);
+	}
+}
+
+/*
+ * The pages in use of the slab that ends the file are written below it, in room that the free extents under it give when the slabs there are full: the part headers, the manifest and the
+ * lists of the allocator. A slab with no page in use that the slabs below cannot spare the reserve for is given that room too. The relation is held, so that no reader keeps the pages replaced.
+ */
+static bool
+rehome_slabs(Relation rel)
+{
+	SiftColMetaPageData meta = sift_col_meta_read(rel);
+	BlockNumber top = sift_fsm_slab_start_ending_at(rel, meta.high_water);
+	Tail		t;
+
+	if (top == InvalidBlockNumber || (sift_fsm_meta_used_from(rel, top) == 0 && sift_fsm_meta_short_below(rel, top, true) == 0))
+		return false;
+	t = collect(rel, &meta, top);
+	if (!sift_fsm_slab_room_below(rel, top))
+		return false;
+	rehome_headers(rel, &t);
+	rehome_manifest(rel, top);
+	(void) sift_fsm_rehome_lists(rel, top);
+	return true;
+}
+
+/* The slabs are emptied, and the ones left with no page in use are cut off with the free run behind them */
+static void
+rehome_run(Relation rel)
+{
+	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
+		return;
+	if (rehome_slabs(rel))
+	{
+		(void) sift_fsm_tail_shrink(rel);
+		(void) sift_fsm_tail_shrink(rel);
+	}
+	UnlockRelation(rel, AccessExclusiveLock);
+}
+
+/* The slabs that end the file emptied and then the holders of its end moved, as the move of the one frees what pins the other: whether the file ended shorter */
+static bool
+tail_pass(Relation rel, const SiftF2Store *store, FullTransactionId horizon, int64 hot_cut, MemoryContext pass)
+{
+	BlockNumber high_water = sift_col_meta_read(rel).high_water;
+
+	CHECK_FOR_INTERRUPTS();
+	rehome_run(rel);
+	MemoryContextReset(pass);
+	(void) relocate_run(rel, store, horizon, hot_cut, pass);
+	return sift_col_meta_read(rel).high_water < high_water;
+}
+
 void
 sift_f2_tail_relocate(Relation rel, const SiftF2Store *store, FullTransactionId horizon, int64 hot_cut)
 {
@@ -425,7 +502,7 @@ sift_f2_tail_relocate(Relation rel, const SiftF2Store *store, FullTransactionId 
 	MemoryContext old = MemoryContextSwitchTo(pass);
 
 	(void) sift_fsm_tail_shrink(rel);
-	while (relocate_run(rel, store, horizon, hot_cut, pass))
+	while (tail_pass(rel, store, horizon, hot_cut, pass))
 		;
 	MemoryContextSwitchTo(old);
 	sift_mem_release_os(MemoryContextMemAllocated(pass, true));

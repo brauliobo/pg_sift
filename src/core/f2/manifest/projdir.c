@@ -10,7 +10,6 @@
 #include "core/page_io.h"
 
 #define PDIRP(p)	((SiftProjDirPageData *) SiftPageGetData(p))
-#define PLISTP(p)	((SiftPartListPageData *) SiftPageGetData(p))
 #define PNODE(p)	((SiftPartDirPageData *) SiftPageGetData(p))
 
 static void
@@ -109,7 +108,7 @@ read_part_list(Relation rel, const SiftManifestProjRef *ref, BlkVec *blocks, int
 	for (BlockNumber blk = e->manifest_blk; blk != InvalidBlockNumber;)
 	{
 		Page		p = sift_mf_read_page(rel, blk, SIFT_PT_PARTLIST, SIFT_PARTLIST_MAGIC, ref->manifest_gen, 1, pages);
-		SiftPartListPageData *l = PLISTP(p);
+		SiftPartListPageData *l = PLIST(p);
 
 		if (l->part_id != 1 || l->flags != 0 || l->manifest_gen != ref->manifest_gen || l->nparts == 0 || l->nparts > SIFT_PARTLIST_CAP || n + l->nparts > ref->nparts)
 			SIFT_CORRUPT(rel, "Block %u: the part list of projection \"%s\" holds %u parts, the directory says %u in all.", blk, ref->name, l->nparts, ref->nparts);
@@ -250,7 +249,7 @@ write_part_list(Relation rel, uint64 gen, const SiftPartDesc *parts, int n, BlkV
 		SiftPartListPageData *l;
 
 		sift_page_init_part(img.data, SIFT_PT_PARTLIST, gen, 1);
-		l = PLISTP(img.data);
+		l = PLIST(img.data);
 		l->magic = SIFT_PARTLIST_MAGIC;
 		l->nparts = cnt;
 		l->next_blk = p + 1 < npages ? blks[p + 1] : InvalidBlockNumber;

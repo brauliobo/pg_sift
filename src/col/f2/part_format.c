@@ -966,7 +966,7 @@ sift_part_move_tail(Relation rel, const SiftPart *part, BlockNumber cut, const S
 	BlockNumber extlist,
 			   *list_pages = NULL;
 
-	Assert(!part->is_packed && part->remote == NULL && n > 0);
+	Assert(!part->is_packed && part->remote == NULL);
 	next = move_stream_pieces(rel, part, cut, to, nto, ext, freed, &nfreed);
 	mv.header_blk = write_moved_header(rel, part, ext, next, &extlist, &ninline);
 	freed[nfreed++] = (SiftExtent) {part->header_blk, 1};

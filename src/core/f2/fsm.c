@@ -116,8 +116,8 @@ sift_fsm_lock_root(Relation rel)
 	return buf;
 }
 
-static Buffer
-lock_list_page(Relation rel, BlockNumber blk, uint16 size_class)
+Buffer
+sift_fsm_lock_list_page(Relation rel, BlockNumber blk, uint16 size_class)
 {
 	Buffer		buf = sift_blk_read(rel, blk, BUFFER_LOCK_EXCLUSIVE);
 	Page		page = BufferGetPage(buf);
@@ -184,7 +184,7 @@ sift_fsm_pop_class(FsmCtx *c, int cls)
 
 	if (head == InvalidBlockNumber || m->class_free_extents[cls] == 0)
 		SIFT_CORRUPT(c->rel, "The allocator has no free extent of class %d.", cls);
-	hbuf = lock_list_page(c->rel, head, cls);
+	hbuf = sift_fsm_lock_list_page(c->rel, head, cls);
 	hp = sift_xlog_register(&x, hbuf, 0);
 	e = FSMP(hp)->ext[--FSMP(hp)->nentries];
 	memset(&FSMP(hp)->ext[FSMP(hp)->nentries], 0, sizeof(SiftFsmExtent));
@@ -217,7 +217,7 @@ sift_fsm_push_class(FsmCtx *c, int cls, const SiftFsmExtent *ext, int n)
 
 		if (head != InvalidBlockNumber)
 		{
-			Buffer		hbuf = lock_list_page(c->rel, head, cls);
+			Buffer		hbuf = sift_fsm_lock_list_page(c->rel, head, cls);
 
 			page = sift_xlog_register(&x, hbuf, 0);
 			room = SIFT_FSM_PAGE_CAP - FSMP(page)->nentries;
@@ -278,7 +278,7 @@ peek_lowest(FsmCtx *c, int cls, BlockNumber *start)
 
 	if (found)
 	{
-		Buffer		hbuf = lock_list_page(c->rel, m->class_head[cls], cls);
+		Buffer		hbuf = sift_fsm_lock_list_page(c->rel, m->class_head[cls], cls);
 		Page		hp = BufferGetPage(hbuf);
 
 		*start = FSMP(hp)->ext[FSMP(hp)->nentries - 1].start;
@@ -364,14 +364,14 @@ alloc_locked(FsmCtx *c, uint32 nblocks)
 	return take_extent(c, find_class(c, class_ceil(nblocks)), nblocks);
 }
 
-static FsmCtx
-ctx_open(Relation rel)
+FsmCtx
+sift_fsm_ctx_open(Relation rel)
 {
 	return (FsmCtx) {.rel = rel,.buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE)};
 }
 
-static void
-ctx_close(FsmCtx *c)
+void
+sift_fsm_ctx_close(FsmCtx *c)
 {
 	UnlockReleaseBuffer(c->buf0);
 }
@@ -379,10 +379,10 @@ ctx_close(FsmCtx *c)
 SiftExtent
 sift_fsm_alloc(Relation rel, uint32 nblocks)
 {
-	FsmCtx		c = ctx_open(rel);
+	FsmCtx		c = sift_fsm_ctx_open(rel);
 	SiftExtent	e = alloc_locked(&c, nblocks);
 
-	ctx_close(&c);
+	sift_fsm_ctx_close(&c);
 	return e;
 }
 
@@ -408,7 +408,7 @@ find_below(FsmCtx *c, uint64 npages, BlockNumber max_blk, int *cls, int *from)
 int
 sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, SiftExtent *out, int max)
 {
-	FsmCtx		c = ctx_open(rel);
+	FsmCtx		c = sift_fsm_ctx_open(rel);
 	int			n = 0;
 
 	sift_fsm_reclaim_locked(&c, NULL);
@@ -432,7 +432,7 @@ sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, SiftExten
 		npages -= out[n].nblocks;
 		n++;
 	}
-	ctx_close(&c);
+	sift_fsm_ctx_close(&c);
 	return n;
 }
 
@@ -456,7 +456,7 @@ reuse_class(FsmCtx *c, uint64 nblocks, int cls, int room, int *from)
 int
 sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max)
 {
-	FsmCtx		c = ctx_open(rel);
+	FsmCtx		c = sift_fsm_ctx_open(rel);
 	int			n = 0;
 
 	while (nblocks > 0)
@@ -475,19 +475,19 @@ sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max)
 		nblocks -= out[n].nblocks;
 		n++;
 	}
-	ctx_close(&c);
+	sift_fsm_ctx_close(&c);
 	return n;
 }
 
 BlockNumber
 sift_fsm_alloc_meta_page(Relation rel)
 {
-	FsmCtx		c = ctx_open(rel);
+	FsmCtx		c = sift_fsm_ctx_open(rel);
 	BlockNumber blk = sift_fsm_alloc_meta_locked(&c);
 
 	if (sift_fsm_below_reserve(&c))
 		sift_fsm_grow_meta(&c);
-	ctx_close(&c);
+	sift_fsm_ctx_close(&c);
 	return blk;
 }
 
@@ -500,7 +500,7 @@ queue_tail_with_room(Relation rel, Page root, int n)
 
 	if (tail == InvalidBlockNumber)
 		return InvalidBuffer;
-	buf = lock_list_page(rel, tail, SIFT_FSM_CLASS_QUEUE);
+	buf = sift_fsm_lock_list_page(rel, tail, SIFT_FSM_CLASS_QUEUE);
 	if (SIFT_FSM_PAGE_CAP - FSMP(BufferGetPage(buf))->nentries >= (uint32) n)
 		return buf;
 	UnlockReleaseBuffer(buf);
@@ -528,7 +528,7 @@ queue_new_tail(FsmCtx *c)
 		}
 		if (m->quarantine_tail != InvalidBlockNumber)
 		{
-			Buffer		obuf = lock_list_page(c->rel, m->quarantine_tail, SIFT_FSM_CLASS_QUEUE);
+			Buffer		obuf = sift_fsm_lock_list_page(c->rel, m->quarantine_tail, SIFT_FSM_CLASS_QUEUE);
 			Page		old = sift_xlog_register(&x, obuf, 0);
 
 			FSMP(old)->next_blk = blk;
@@ -589,7 +589,7 @@ sift_fsm_release_in(Relation rel, SiftXlog *x, const SiftExtent *ext, int n, Ful
 void
 sift_fsm_release(Relation rel, const SiftExtent *ext, int n, FullTransactionId safexid)
 {
-	FsmCtx		c = ctx_open(rel);
+	FsmCtx		c = sift_fsm_ctx_open(rel);
 
 	while (n > 0)
 	{
@@ -603,7 +603,7 @@ sift_fsm_release(Relation rel, const SiftExtent *ext, int n, FullTransactionId s
 		ext += take;
 		n -= take;
 	}
-	ctx_close(&c);
+	sift_fsm_ctx_close(&c);
 }
 
 /* Every entry of the list that starts at head, with the blocks of its pages; the pages are checked as they are read */
@@ -612,7 +612,7 @@ sift_fsm_walk_list(Relation rel, BlockNumber head, uint16 size_class, ExtVec *ou
 {
 	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
 	{
-		Buffer		buf = lock_list_page(rel, blk, size_class);
+		Buffer		buf = sift_fsm_lock_list_page(rel, blk, size_class);
 		Page		page = BufferGetPage(buf);
 
 		for (uint32 i = 0; i < FSMP(page)->nentries; i++)
@@ -628,10 +628,23 @@ sift_fsm_walk_list(Relation rel, BlockNumber head, uint16 size_class, ExtVec *ou
 uint64
 sift_fsm_reclaim(Relation rel)
 {
-	FsmCtx		c = ctx_open(rel);
+	FsmCtx		c = sift_fsm_ctx_open(rel);
 	uint64		n = sift_fsm_reclaim_locked(&c, NULL);
 
-	ctx_close(&c);
+	sift_fsm_ctx_close(&c);
+	return n;
+}
+
+uint64
+sift_fsm_reclaim_exclusive(Relation rel)
+{
+	FsmCtx		c = sift_fsm_ctx_open(rel);
+	uint64		n;
+
+	c.exclusive = true;
+	c.keep_empty = true;
+	n = sift_fsm_reclaim_locked(&c, NULL);
+	sift_fsm_ctx_close(&c);
 	return n;
 }
 
@@ -670,7 +683,7 @@ sift_fsm_tail_shrink(Relation rel)
 	free_blocks = st.quarantine_blocks + st.meta_idle;
 	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
 		free_blocks += st.class_blocks[k];
-	if (free_blocks < SIFT_TAIL_SHRINK_MIN_BLOCKS || free_blocks * 100 < (uint64) hw * SIFT_TAIL_SHRINK_FREE_PCT)
+	if ((free_blocks < SIFT_TAIL_SHRINK_MIN_BLOCKS || free_blocks * 100 < (uint64) hw * SIFT_TAIL_SHRINK_FREE_PCT) && RelationGetNumberOfBlocks(rel) <= hw)
 		return res;
 	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
 	{
@@ -678,10 +691,10 @@ sift_fsm_tail_shrink(Relation rel)
 		note_shrink(rel, false);
 		return res;
 	}
-	c = ctx_open(rel);
+	c = sift_fsm_ctx_open(rel);
 	c.exclusive = true;
 	(void) sift_fsm_reclaim_locked(&c, &new_hw);
-	ctx_close(&c);
+	sift_fsm_ctx_close(&c);
 	nblocks = RelationGetNumberOfBlocks(rel);
 	if (nblocks > new_hw)
 	{

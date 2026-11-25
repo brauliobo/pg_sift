@@ -134,6 +134,9 @@ extern void sift_fsm_release_in(Relation rel, SiftXlog *x, const SiftExtent *ext
 /* Moves the extents whose safexid has passed the horizon to the free lists, coalesced and cut into classes again; returns the blocks that became free */
 extern uint64 sift_fsm_reclaim(Relation rel);
 
+/* The same for a caller that holds AccessExclusiveLock on the relation: no reader of an older manifest exists, so every extent of the queue is reclaimed; no empty slab is given back (the caller is filling the slabs it made) */
+extern uint64 sift_fsm_reclaim_exclusive(Relation rel);
+
 /*
  * Gives the extents that nothing names back to the allocator: what a crash, or a failure after the write of a part and before the commit that names it, leaves allocated. It has the relation to itself
  * (AccessExclusiveLock taken without waiting unless held, the load lock, no VACUUM reading the manifest; never while a standby streams) and frees nothing, DEBUG1 says why, when the relation holds
@@ -178,7 +181,23 @@ extern void sift_fsm_cache_discard_rel(Relation rel);
 /* Is the block one of a metadata slab */
 extern bool sift_fsm_is_meta_block(Relation rel, BlockNumber blk);
 
-/* Whether the free pages of the metadata slabs that start below from hold the pages in use of the ones that start at or above it: a commit that rewrites them takes the lowest free page */
-extern bool sift_fsm_meta_fits_below(Relation rel, BlockNumber from);
+/*
+ * The pages in use of the metadata slabs that start at or above from that the free pages of the slabs below it do not hold (0: all fit): a commit that rewrites a page takes the lowest free one.
+ * for_move: the pages that the commits which move them write, and the reserve the slabs must keep free for the ones above to be given back, are asked of the slabs below too.
+ */
+extern uint32 sift_fsm_meta_short_below(Relation rel, BlockNumber from, bool for_move);
+
+
+/* The first block of the metadata slab (not the first one) that ends at block end, InvalidBlockNumber when none does */
+extern BlockNumber sift_fsm_slab_start_ending_at(Relation rel, BlockNumber end);
+
+/* The pages in use of the metadata slabs that start at or above from */
+extern uint32 sift_fsm_meta_used_from(Relation rel, BlockNumber from);
+
+/* The free space under from becomes slabs as far as the slabs below it lack room for the pages of the ones at or above it to be moved down and for those to leave the file; false when the slabs below, with all the space that was there, still do not hold the pages in use above */
+extern bool sift_fsm_slab_room_below(Relation rel, BlockNumber from);
+
+/* The pages of the lists of the allocator (the free extents of each class and the queue) that lie at or above from are written to the lowest free pages of the slabs, when those are lower; the pages moved */
+extern uint32 sift_fsm_rehome_lists(Relation rel, BlockNumber from);
 
 #endif							/* SIFT_FSM_H */

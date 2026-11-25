@@ -281,6 +281,12 @@ extern SiftTierPartRef *sift_manifest_read_tier(Relation rel, const struct SiftC
 /* Applies the edit to its partition atomically; returns the version of the manifest it made */
 extern uint64 sift_manifest_commit(Relation rel, const SiftManifestEdit *edit);
 
+/*
+ * The partitions whose pages lie at or above block lo, so that an edit that changes nothing (a commit writes the pages of the part list of its partition and of the path from its leaf to the root
+ * anew, in the lowest free pages of the slabs) brings them below it: the partitions whose part list is there, and for each page of the directory there the first partition under it
+ */
+extern SiftManifestRead sift_manifest_pages_from(Relation rel, BlockNumber lo);
+
 /* Cuts the new partition [split_key, key_hi) off the end of a partition none of whose parts reaches split_key; returns its id */
 extern uint64 sift_manifest_split(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *split_key);
 

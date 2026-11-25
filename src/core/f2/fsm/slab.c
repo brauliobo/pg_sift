@@ -20,10 +20,18 @@ sift_fsm_slab_init(SiftFsmSlab *s, BlockNumber start, uint32 nblocks)
 		s->free[b / 64] |= UINT64CONST(1) << (b % 64);
 }
 
+/* In address order after the first slab, so that the slabs a quiet relation keeps are the lowest ones and the empty slab given back first is the highest */
 void
 sift_fsm_slab_add(Page root, BlockNumber start, uint32 nblocks)
 {
-	sift_fsm_slab_init(&SLABS(root)->slab[SLABS(root)->nslabs++], start, nblocks);
+	SiftFsmSlabTable *t = SLABS(root);
+	uint32		at = t->nslabs;
+
+	while (at > 1 && t->slab[at - 1].start > start)
+		at--;
+	memmove(&t->slab[at + 1], &t->slab[at], (t->nslabs - at) * sizeof(SiftFsmSlab));
+	sift_fsm_slab_init(&t->slab[at], start, nblocks);
+	t->nslabs++;
 	FSMM(root)->meta_free_count += nblocks;
 }
 
@@ -229,6 +237,14 @@ reclaim_before_claim(FsmCtx *c)
 		(void) sift_fsm_reclaim_locked(c, NULL);
 }
 
+static void
+check_slab_room(Relation rel, Page root, int n)
+{
+	if (SLABS(root)->nslabs + n > SIFT_FSM_MAX_SLABS)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift index \"%s\" has the most metadata slabs (%zu)", RelationGetRelationName(rel), (size_t) SIFT_FSM_MAX_SLABS),
+						errhint("REINDEX the index: a rebuild lays its metadata out afresh.")));
+}
+
 /* A new slab: a free extent of its class when there is one, else the end of the relation; never a split, which would need a page of a list */
 void
 sift_fsm_claim_slab(FsmCtx *c)
@@ -258,9 +274,7 @@ sift_fsm_claim_slab(FsmCtx *c)
 	x = sift_xlog_start(c->rel);
 	rootbuf = sift_fsm_lock_root(c->rel);
 	root = sift_xlog_register(&x, rootbuf, 0);
-	if (SLABS(root)->nslabs >= SIFT_FSM_MAX_SLABS)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift index \"%s\" has the most metadata slabs (%zu)", RelationGetRelationName(c->rel), (size_t) SIFT_FSM_MAX_SLABS),
-						errhint("REINDEX the index: a rebuild lays its metadata out afresh.")));
+	check_slab_room(c->rel, root, 1);
 	if (start == InvalidBlockNumber)
 	{
 		start = sift_fsm_high_water(c);
@@ -270,6 +284,21 @@ sift_fsm_claim_slab(FsmCtx *c)
 	sift_fsm_root_seal(root);
 	sift_xlog_finish(&x);
 	UnlockReleaseBuffer(rootbuf);
+}
+
+/* Extents the caller took out of the lists (each at most SIFT_FSM_META_SLAB blocks) become metadata slabs, in the one record of the root */
+void
+sift_fsm_adopt_slabs(FsmCtx *c, const SiftExtent *ext, int n)
+{
+	SiftXlog	x = sift_xlog_start(c->rel);
+	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
+	Page		root = sift_xlog_register(&x, rootbuf, 0);
+
+	check_slab_room(c->rel, root, n);
+	for (int i = 0; i < n; i++)
+		sift_fsm_slab_add(root, ext[i].start, ext[i].nblocks);
+	sift_fsm_root_seal(root);
+	sift_xlog_done(&x);
 }
 
 /* STOR[STOR-F2-03]: FSM small-index meta reserve and multi-extent fallback (cuts EOF growth) */

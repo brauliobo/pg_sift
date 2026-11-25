@@ -401,7 +401,7 @@ sift_fsm_reclaim_locked(FsmCtx *c, BlockNumber *new_hw)
 
 	c->in_reclaim = true;
 	freed = reclaim_pass(c, new_hw);
-	if (outer && new_hw == NULL)
+	if (outer && new_hw == NULL && !c->keep_empty)
 		(void) sift_fsm_recycle_empty_slabs(c);
 	c->in_reclaim = !outer;
 	return freed;

@@ -19,8 +19,6 @@
 #include "core/f2/manifest/manifest_int.h"
 #include "core/page_io.h"
 
-#define PLIST(p)	((SiftPartListPageData *) SiftPageGetData(p))
-
 void
 sift_mf_blk_add(BlkVec *b, BlockNumber blk)
 {
