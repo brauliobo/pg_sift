@@ -467,6 +467,7 @@ begin_slab(SiftF2Pull *p)
 	MemoryContextReset(p->gcx);
 	old = MemoryContextSwitchTo(p->gcx);
 	p->slab_pending = false;
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	p->rb = sift_rowbuf_new(&f->spec);
 	sift_l0_slab_read(p->index, p->e->part_id, p->e->l0_slab_blk, p->rb, &f->spec, p->snap, &pages, &npages);
 	p->is_slab = true;

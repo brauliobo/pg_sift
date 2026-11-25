@@ -22,6 +22,7 @@ statement_snapshot(void)
 static SiftRowBuf *
 first_rows(SiftRowBuf *rb, const SiftPartSpec *spec, int limit)
 {
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *kept = sift_rowbuf_new(spec);
 
 	for (int r = 0; r < limit; r++)
@@ -34,6 +35,7 @@ first_rows(SiftRowBuf *rb, const SiftPartSpec *spec, int limit)
 static SiftPart *
 slab_part(Relation rel, const SiftPartSpec *spec, uint64 part_id, BlockNumber head, int limit, SiftPartDesc *d)
 {
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(spec);
 	SiftColIn  *cols;
 	SiftRows	r;

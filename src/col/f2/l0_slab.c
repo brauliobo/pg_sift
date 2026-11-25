@@ -784,6 +784,7 @@ sift_l0_slab_publish(Relation rel, uint64 part_id, const uint8 *key_lo, const Si
 static void
 flush_batches(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber head)
 {
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(spec);
 	BlockNumber *pages;
 	int			npages;

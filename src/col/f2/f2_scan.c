@@ -764,6 +764,7 @@ scan_slab(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *sche
 {
 	MemoryContext slab_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 scan slab");
 	MemoryContext old = MemoryContextSwitchTo(slab_cx);
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(&f->spec);
 	BlockNumber *pages;
 	int			npages;

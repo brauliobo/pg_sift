@@ -234,6 +234,7 @@ f2v6_granule(F2V6Ctx *c, const F2V6Part *p, uint32 g, const int *leaves, int nle
 void
 f2v6_slab(F2V6Ctx *c, const SiftPartitionEntry *e, const SiftPendDelIndex *px, bool sorted, const int *leaves, int nleaves, F2V6Gran *out)
 {
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(&c->f->spec);
 	BlockNumber *pages;
 	int			npages;

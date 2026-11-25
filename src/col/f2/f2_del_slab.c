@@ -83,6 +83,7 @@ settled_deletes(const SiftPendDelRec *recs, int n, const bool *hit, bool *settle
 static bool
 slab_holds_deleted(Relation rel, uint64 part_id, BlockNumber head, const SiftPartSpec *spec, const SiftPendDelRec *recs, int n)
 {
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(spec);
 	uint64	   *tids;
 	bool	   *hit = palloc(Max(n, 1) * sizeof(bool));
@@ -134,6 +135,7 @@ sift_del_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 		return -1;
 	}
 	px = settled_deletes(recs, n, hit, settled, &nsettled);
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	rb = sift_rowbuf_new(spec);
 	sift_href_rows(rel, NULL, px, refs, nrefs, rb);
 	sift_l0_slab_publish(rel, part_id, key_lo, spec, rb, pages, (int) npages);

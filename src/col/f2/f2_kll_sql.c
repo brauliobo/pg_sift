@@ -169,6 +169,7 @@ chain_rows(Relation idx, const SiftF2Rel *f, const SiftPartitionEntry *e)
 
 	if (e->l0_slab_blk != InvalidBlockNumber)
 	{
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 		SiftRowBuf *rb = sift_rowbuf_new(&f->spec);
 
 		sift_l0_slab_read(idx, e->part_id, e->l0_slab_blk, rb, &f->spec, GetActiveSnapshot(), &pages, &npages);

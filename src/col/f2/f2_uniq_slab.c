@@ -186,6 +186,7 @@ static void
 refresh_batches(SlabFilter *f, Relation index, Relation heap, BlockNumber head, SiftUniqSlabKeyFn key_fp, void *arg)
 {
 	const SiftPartSpec *spec = &sift_f2_rel(index)->spec;
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(spec);
 	ItemPointerData *tids;
 

@@ -382,6 +382,7 @@ sift_l0_href_read(Relation rel, uint64 part_id, BlockNumber tail, SiftRowBuf *rb
 void
 sift_l0_href_flush_chain(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber tail)
 {
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(spec);
 	BlockNumber *pages;
 	uint32		n,

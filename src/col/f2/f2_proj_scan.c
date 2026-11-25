@@ -163,6 +163,7 @@ load_whole(SiftProjCursor *c)
 
 	if (c->keyed)
 		window_rows(c, &c->view, &r0, &r1);
+/* check-memory: allow bounded to one granule: SIFT_GRANULE_ROWS rows */
 	c->one = sift_rowbuf_new(c->spec);
 	sift_rowbuf_add_granule_rows(c->one, &c->view, c->spec, r0, r1, c->want);
 	c->r = 0;
@@ -258,12 +259,14 @@ load_window(SiftProjCursor *c, int lo, int hi)
 	c->nwin++;
 	if (hi - lo <= SIFT_POINT_ROWS_MAX && hi - lo < c->gn)
 	{
+/* check-memory: allow bounded to one granule: SIFT_GRANULE_ROWS rows */
 		c->one = sift_rowbuf_new(c->spec);
 		add_window(c, c->one, lo, hi);
 		c->r = 0;
 		c->r0 = lo;
 		return;
 	}
+/* check-memory: allow bounded to one granule: SIFT_GRANULE_ROWS rows */
 	c->one = sift_rowbuf_new(c->spec);
 	sift_rowbuf_add_granule_rows(c->one, &c->view, c->spec, 0, c->gn, c->want);
 	c->r = lo;
@@ -340,6 +343,7 @@ sift_proj_scan_granule(Relation rel, const SiftPart *part, uint32 g, const SiftP
 	SiftGranuleDesc gd;
 	char	   *rec = sift_part_read_granule(rel, part, g, &gd);
 	SiftGranuleView v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
+/* check-memory: allow bounded to one granule: SIFT_GRANULE_ROWS rows */
 	SiftRowBuf *rows = sift_rowbuf_new(spec);
 
 	sift_rowbuf_add_granule(rows, &v, NULL, spec, NULL);

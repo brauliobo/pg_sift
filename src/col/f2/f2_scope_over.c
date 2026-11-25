@@ -618,6 +618,7 @@ static bool
 added_slab_of(struct SiftF2ScopeRowSet **a, SiftF2ScopeParts *p, const SiftPartitionEntry *e, const SiftPendDelIndex *px, MemoryContext cx, uint64 *rows, uint64 max_rows)
 {
 	const SiftF2Rel *f = sift_f2_rel(p->rel);
+/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(&f->spec);
 	BlockNumber *pages;
 	int			npages;
