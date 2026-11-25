@@ -233,7 +233,7 @@ typedef struct SiftTierOpen
 	const char *uri;			/* file:///abs/dir, s3://bucket/prefix or r2://bucket/prefix: no user, password or query */
 	const char *endpoint;		/* http(s)://host[:port] of an S3 compatible store; required by r2:// */
 	const char *(*getenv_fn) (const char *name);	/* credentials and region; NULL: getenv */
-	const char *curl_soname;	/* NULL: libcurl.so.4 */
+	const char *curl_soname;	/* NULL: the libcurl of the platform */
 } SiftTierOpen;
 
 extern SiftTierBackend *sift_tier_open(const SiftTierOpen *o, SiftTierErr *err);

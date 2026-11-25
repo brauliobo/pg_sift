@@ -1,5 +1,5 @@
 /*
- * col/f2/f2_tier_curl.c - one HTTP request over a libcurl that is opened with dlopen("libcurl.so.4") the first time a s3:// or r2:// location is used: the build links no HTTP library, as it
+ * col/f2/f2_tier_curl.c - one HTTP request over a libcurl that is opened with dlopen("libcurl.so.4" or "libcurl.4.dylib") the first time a s3:// or r2:// location is used: the build links no HTTP library, as it
  * links no Vulkan, and a host without libcurl reads and writes file:// locations and gets one clear error for the others. Only the few entry points and option numbers of the easy interface
  * that the request needs are declared here (the values are those of curl.h, which tests/test_curl_abi.c compares with the header of the host when there is one).
  */
@@ -11,6 +11,7 @@
 
 #include "col/f2/f2_tier_curlabi.h"
 #include "col/f2/f2_tier_int.h"
+#include "core/waits.h"
 
 struct SiftCurl
 {
@@ -34,13 +35,62 @@ typedef struct Xfer
 	uint64		sent;
 	ErrorData  *held;
 	long		hdr_status;		/* the status line of the last response header block */
+	long		retry_after_s;	/* the Retry-After of the response, 0 when it has none */
 	bool		overflow;
 } Xfer;
+
+#define RETRY_ATTEMPTS		4
+#define BACKOFF_FIRST_MS	100
+#define BACKOFF_MAX_MS		5000
+#define GROW_MAX			(UINT64_C(64) << 20)
+
+/* The host's work that may raise, run where curl cannot be jumped out of: the error is kept to be raised again when curl is out of the way */
+static ErrorData *
+run_guarded(void (*fn) (void *arg), void *arg)
+{
+	ErrorData *volatile held = NULL;
+	MemoryContext cx = CurrentMemoryContext;
+
+	PG_TRY();
+	{
+		fn(arg);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(cx);
+		held = CopyErrorData();
+		FlushErrorState();
+	}
+	PG_END_TRY();
+	return held;
+}
+
+typedef struct GrowArg
+{
+	SiftCurlReq *r;
+	const char *src;
+	uint64		n;
+} GrowArg;
+
+static void
+grow_append(void *arg)
+{
+	GrowArg    *a = arg;
+	char	  **buf = a->r->grow;
+
+	*buf = *buf != NULL ? repalloc(*buf, a->r->grow_len + a->n + 1) : palloc(a->n + 1);
+	memcpy(*buf + a->r->grow_len, a->src, a->n);
+	(*buf)[a->r->grow_len + a->n] = '\0';
+}
 
 SiftTierStatus
 sift_curl_open(const char *soname, SiftCurl **out, SiftTierErr *err)
 {
+#ifdef __APPLE__
+	const char *name = soname ? soname : "libcurl.4.dylib";
+#else
 	const char *name = soname ? soname : "libcurl.so.4";
+#endif
 	SiftCurl   *c = palloc0(sizeof(SiftCurl));
 	struct
 	{
@@ -97,10 +147,17 @@ write_cb(char *ptr, size_t size, size_t nmemb, void *ud)
 
 	if (r->grow != NULL)
 	{
-		*r->grow = *r->grow ? repalloc(*r->grow, r->grow_len + n + 1) : palloc(n + 1);
-		memcpy(*r->grow + r->grow_len, ptr, n);
+		GrowArg		a = {r, ptr, n};
+
+		if (r->grow_len + n > GROW_MAX)
+		{
+			x->overflow = true;
+			return 0;
+		}
+		x->held = run_guarded(grow_append, &a);
+		if (x->held != NULL)
+			return 0;
 		r->grow_len += n;
-		(*r->grow)[r->grow_len] = '\0';
 	}
 	else if (r->dst != NULL && x->hdr_status / 100 != 2)
 		return n;
@@ -132,6 +189,8 @@ header_cb(char *ptr, size_t size, size_t nmemb, void *ud)
 		x->hdr_status = strtol(sp, NULL, 10);
 	else if (pg_strncasecmp(line, "content-length:", 15) == 0)
 		r->content_length = strtoull(line + 15, NULL, 10);
+	else if (pg_strncasecmp(line, "retry-after:", 12) == 0)
+		x->retry_after_s = strtol(line + 12, NULL, 10);
 	else if (pg_strncasecmp(line, "etag:", 5) == 0)
 	{
 		const char *v = line + 5;
@@ -146,25 +205,20 @@ header_cb(char *ptr, size_t size, size_t nmemb, void *ud)
 	return n;
 }
 
-/* The host's read of the bytes of the object, which may raise (a part that cannot be read): the error is kept to be raised again when curl is out of the way */
-static ErrorData *
-read_guarded(const SiftTierSrc *src, uint64 off, uint64 n, char *buf)
+typedef struct ReadArg
 {
-	ErrorData *volatile held = NULL;
-	MemoryContext cx = CurrentMemoryContext;
+	const SiftTierSrc *src;
+	uint64		off;
+	uint64		n;
+	char	   *buf;
+} ReadArg;
 
-	PG_TRY();
-	{
-		src->read(src->arg, off, n, buf);
-	}
-	PG_CATCH();
-	{
-		MemoryContextSwitchTo(cx);
-		held = CopyErrorData();
-		FlushErrorState();
-	}
-	PG_END_TRY();
-	return held;
+static void
+read_source(void *arg)
+{
+	ReadArg    *a = arg;
+
+	a->src->read(a->src->arg, a->off, a->n, a->buf);
 }
 
 static size_t
@@ -172,10 +226,11 @@ read_cb(char *buf, size_t size, size_t nitems, void *ud)
 {
 	Xfer	   *x = ud;
 	uint64		n = Min((uint64) size * nitems, x->r->upload->len - x->sent);
+	ReadArg		a = {x->r->upload, x->sent, n, buf};
 
 	if (n == 0)
 		return 0;
-	x->held = read_guarded(x->r->upload, x->sent, n, buf);
+	x->held = run_guarded(read_source, &a);
 	if (x->held != NULL)
 		return SC_READFUNC_ABORT;
 	x->sent += n;
@@ -229,8 +284,21 @@ set_options(SiftCurl *c, SiftCurlReq *r, Xfer *x, struct curl_slist *hdrs)
 	return SC_OK;
 }
 
-SiftTierStatus
-sift_curl_perform(SiftCurl *c, SiftCurlReq *r, SiftTierErr *err)
+static bool
+transient_error(CURLcode rc)
+{
+	return rc == SC_COULDNT_RESOLVE_HOST || rc == SC_COULDNT_CONNECT || rc == SC_OPERATION_TIMEDOUT || rc == SC_GOT_NOTHING || rc == SC_SEND_ERROR || rc == SC_RECV_ERROR;
+}
+
+static bool
+transient_status(long status)
+{
+	return status == 408 || status == 429 || status == 500 || status == 502 || status == 503 || status == 504;
+}
+
+/* One transfer; *again: the request may be sent again (a transient failure of the transport or of the store), *retry_after_s: what the store asked to wait */
+static SiftTierStatus
+perform_once(SiftCurl *c, SiftCurlReq *r, SiftTierErr *err, bool *again, long *retry_after_s)
 {
 	Xfer		x = {.r = r};
 	struct curl_slist *hdrs = NULL;
@@ -240,6 +308,8 @@ sift_curl_perform(SiftCurl *c, SiftCurlReq *r, SiftTierErr *err)
 	r->status = 0;
 	r->received = 0;
 	r->grow_len = 0;
+	if (r->grow != NULL && *r->grow != NULL)
+		(*r->grow)[0] = '\0';
 	r->content_length = UINT64_MAX;
 	r->etag[0] = '\0';
 	c->easy_reset(c->easy);
@@ -254,6 +324,8 @@ sift_curl_perform(SiftCurl *c, SiftCurlReq *r, SiftTierErr *err)
 		c->easy_getinfo(c->easy, SC_INFO_RESPONSE_CODE, &status);
 	c->slist_free_all(hdrs);
 	r->status = status;
+	*retry_after_s = x.retry_after_s;
+	*again = (rc == SC_OK && transient_status(status)) || transient_error(rc);
 	if (x.held != NULL)
 		ReThrowError(x.held);
 	if (rc == SC_ABORTED_BY_CALLBACK)
@@ -262,6 +334,21 @@ sift_curl_perform(SiftCurl *c, SiftCurlReq *r, SiftTierErr *err)
 		return sift_tier_fail(err, SIFT_TIER_E_IO, "the transfer was interrupted");
 	}
 	if (rc != SC_OK)
-		return sift_tier_fail(err, SIFT_TIER_E_IO, "the transfer failed: %s", x.overflow ? "the response is longer than the range asked for" : c->easy_strerror(rc));
+		return sift_tier_fail(err, SIFT_TIER_E_IO, "the transfer failed: %s", x.overflow ? "the response is longer than expected" : c->easy_strerror(rc));
 	return SIFT_TIER_OK;
+}
+
+SiftTierStatus
+sift_curl_perform(SiftCurl *c, SiftCurlReq *r, SiftTierErr *err)
+{
+	for (int attempt = 1;; attempt++)
+	{
+		bool		again;
+		long		retry_after_s;
+		SiftTierStatus st = perform_once(c, r, err, &again, &retry_after_s);
+
+		if (!again || attempt == RETRY_ATTEMPTS)
+			return st;
+		sift_wait(SIFT_WAIT_NAP, Max(Min((long) BACKOFF_FIRST_MS << (attempt - 1), BACKOFF_MAX_MS), Min(retry_after_s * 1000, BACKOFF_MAX_MS)));
+	}
 }

@@ -7,12 +7,15 @@
 
 #include <time.h>
 
+#include "miscadmin.h"
+
 #include "col/f2/f2_tier_int.h"
 
 typedef struct S3Be
 {
 	SiftTierBackend base;
 	SiftCurl   *curl;
+	const char *(*getenv_fn) (const char *name);
 	bool		path_style;
 	char		scheme[8];
 	char		host[256];		/* with the port when it is not the default one: what the Host header says */
@@ -83,6 +86,17 @@ parse_endpoint(const char *ep, char *scheme, size_t scap, char *host, size_t hca
 	return true;
 }
 
+static bool
+load_credentials(S3Be *b, const SiftTierOpen *o, SiftTierErr *err)
+{
+	err->code = SIFT_TIER_OK;
+	if (credential(o, "AWS_ACCESS_KEY_ID", b->access, sizeof(b->access), err) && credential(o, "AWS_SECRET_ACCESS_KEY", b->secret, sizeof(b->secret), err))
+		return credential(o, "AWS_SESSION_TOKEN", b->token, sizeof(b->token), err) || err->code == SIFT_TIER_OK;
+	if (err->code == SIFT_TIER_OK)
+		sift_tier_fail(err, SIFT_TIER_E_NO_CRED, "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (or their _FILE variants) are not set in the environment of the server");
+	return false;
+}
+
 static void
 amz_now(char *out)
 {
@@ -95,11 +109,10 @@ amz_now(char *out)
 
 /* One signed request for key (NULL: the bucket itself, outside the prefix of the location) with the canonical query; the headers and the signature are built here and nowhere else */
 static SiftTierStatus
-s3_request(S3Be *b, const char *method, const char *key, const char *query, uint64 range_off, uint64 range_len, const char *payload_hash, SiftCurlReq *r, SiftTierErr *err)
+s3_send(S3Be *b, const char *method, const char *key, const char *query, uint64 range_off, uint64 range_len, const char *payload_hash, SiftCurlReq *r, SiftTierErr *err)
 {
 	char		raw[1100],
 				uri[1400],
-				url[1900],
 				date[17],
 				range[64],
 				auth[800 + 16],
@@ -111,6 +124,7 @@ s3_request(S3Be *b, const char *method, const char *key, const char *query, uint
 	SiftSigV4In in;
 	SiftSigV4Out sig;
 	SiftTierStatus st;
+	char	   *url;
 	int			n = 0;
 
 	n += snprintf(raw + n, sizeof(raw) - n, "%s%s", b->path_style ? "/" : "", b->path_style ? b->bucket : "");
@@ -140,13 +154,45 @@ s3_request(S3Be *b, const char *method, const char *key, const char *query, uint
 		snprintf(extra[i - 1], sizeof(extra[i - 1]), "%s: %s", hdrs[i].name, hdrs[i].value);
 		lines[nl++] = extra[i - 1];
 	}
-	snprintf(url, sizeof(url), "%s://%s%s%s%s", b->scheme, b->host, uri, query[0] ? "?" : "", query);
+	url = psprintf("%s://%s%s%s%s", b->scheme, b->host, uri, query[0] ? "?" : "", query);
 	r->method = method;
 	r->url = url;
 	r->headers = lines;
 	r->nheaders = nl;
 	st = sift_curl_perform(b->curl, r, err);
 	sift_sigv4_out_free(&sig);
+	pfree(url);
+	return st;
+}
+
+/* The credentials of the environment of the server or of the files it names, read again: true when they are not the ones the backend signs with (a rotated token) */
+static bool
+reload_credentials(S3Be *b)
+{
+	SiftTierOpen o = {.getenv_fn = b->getenv_fn};
+	S3Be		fresh = *b;
+	SiftTierErr err = {0};
+	bool		changed = load_credentials(&fresh, &o, &err) && (strcmp(fresh.access, b->access) != 0 || strcmp(fresh.secret, b->secret) != 0 || strcmp(fresh.token, b->token) != 0);
+
+	if (changed)
+	{
+		memcpy(b->access, fresh.access, sizeof(b->access));
+		memcpy(b->secret, fresh.secret, sizeof(b->secret));
+		memcpy(b->token, fresh.token, sizeof(b->token));
+	}
+	memset(fresh.secret, 0, sizeof(fresh.secret));
+	memset(fresh.token, 0, sizeof(fresh.token));
+	return changed;
+}
+
+/* A store that refuses the credentials is asked again once with the ones the server has now */
+static SiftTierStatus
+s3_request(S3Be *b, const char *method, const char *key, const char *query, uint64 range_off, uint64 range_len, const char *payload_hash, SiftCurlReq *r, SiftTierErr *err)
+{
+	SiftTierStatus st = s3_send(b, method, key, query, range_off, range_len, payload_hash, r, err);
+
+	if (st == SIFT_TIER_OK && (r->status == 400 || r->status == 403) && reload_credentials(b))
+		st = s3_send(b, method, key, query, range_off, range_len, payload_hash, r, err);
 	return st;
 }
 
@@ -206,7 +252,7 @@ s3_get(SiftTierBackend *be, const char *key, uint64 off, uint64 len, void *dst, 
 		return st;
 	if (r.status == 416)
 		return sift_tier_fail(err, SIFT_TIER_E_CORRUPT, "object %s ends before byte %llu", key, (unsigned long long) off);
-	if (r.status != 206 && r.status != 200)
+	if (r.status != 206 && !(r.status == 200 && off == 0))
 		return http_fail(&r, err, "the GET", key);
 	if (r.received != len)
 		return sift_tier_fail(err, SIFT_TIER_E_CORRUPT, "object %s ends before byte %llu", key, (unsigned long long) (off + r.received));
@@ -224,14 +270,43 @@ s3_del(SiftTierBackend *be, const char *key, SiftTierErr *err)
 	return r.status / 100 == 2 || r.status == 404 ? SIFT_TIER_OK : http_fail(&r, err, "the DELETE", key);
 }
 
-/* The text between <tag> and </tag> after *at, which moves past it; NULL when there is none */
+/* The text with the five entities of XML read back */
+static void
+xml_unescape(char *s)
+{
+	static const struct
+	{
+		const char *entity;
+		char		ch;
+	}			entities[] = {{"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'}, {"&apos;", '\''}};
+	char	   *w = s;
+
+	while (*s)
+	{
+		size_t		i = 0;
+
+		while (*s == '&' && i < lengthof(entities) && strncmp(s, entities[i].entity, strlen(entities[i].entity)) != 0)
+			i++;
+		if (*s == '&' && i < lengthof(entities))
+		{
+			*w++ = entities[i].ch;
+			s += strlen(entities[i].entity);
+		}
+		else
+			*w++ = *s++;
+	}
+	*w = '\0';
+}
+
+/* A copy of the text between <tag> and </tag> after *at, which moves past it; NULL when there is none */
 static char *
-xml_next(char **at, const char *tag)
+xml_next(const char **at, const char *tag)
 {
 	char		open[32],
 				close[32];
-	char	   *s,
+	const char *s,
 			   *e;
+	char	   *text;
 
 	snprintf(open, sizeof(open), "<%s>", tag);
 	snprintf(close, sizeof(close), "</%s>", tag);
@@ -242,69 +317,93 @@ xml_next(char **at, const char *tag)
 	e = strstr(s, close);
 	if (e == NULL)
 		return NULL;
-	*e = '\0';
+	text = pnstrdup(s, e - s);
+	xml_unescape(text);
 	*at = e + strlen(close);
-	return s;
+	return text;
+}
+
+/* The query value of text, percent encoded; NULL (and err) when the encoding is refused */
+static char *
+query_value(const char *text, SiftTierErr *err)
+{
+	size_t		cap = strlen(text) * 3 + 1;
+	char	   *out = palloc(cap);
+
+	if (sift_sigv4_uri_encode(text, false, out, cap) < 0)
+	{
+		pfree(out);
+		sift_tier_fail(err, SIFT_TIER_E_ARG, "the name of an object or a continuation token of a listing cannot be encoded");
+		return NULL;
+	}
+	return out;
+}
+
+/* One page of a listing: the keys of it go to fn; *next is the token of the page after it, NULL after the last one */
+static SiftTierStatus
+list_page(S3Be *b, const char *query, const char *prefix, void (*fn) (void *arg, const char *key), void *arg, char **next, SiftTierErr *err)
+{
+	char	   *body = NULL;
+	SiftCurlReq r = {.grow = &body};
+	SiftTierStatus st = s3_request(b, "GET", NULL, query, 0, 0, EMPTY_SHA256, &r, err);
+	size_t		strip = b->prefix[0] ? strlen(b->prefix) + 1 : 0;
+	const char *at;
+	char	   *key;
+
+	*next = NULL;
+	if (st == SIFT_TIER_OK && r.status != 200)
+		st = http_fail(&r, err, "the listing", prefix);
+	at = body != NULL ? body : "";
+	if (st == SIFT_TIER_OK && strstr(at, "<IsTruncated>true</IsTruncated>") != NULL)
+	{
+		const char *from = at;
+
+		*next = xml_next(&from, "NextContinuationToken");
+		if (*next == NULL || (*next)[0] == '\0')
+			st = sift_tier_fail(err, SIFT_TIER_E_IO, "the listing of %s is cut short and names no continuation token", prefix);
+	}
+	while (st == SIFT_TIER_OK && (key = xml_next(&at, "Key")) != NULL)
+	{
+		if (strlen(key) > strip && sift_tier_key_ok(key + strip))
+			fn(arg, key + strip);
+		pfree(key);
+	}
+	if (body != NULL)
+		pfree(body);
+	return st;
 }
 
 static SiftTierStatus
 s3_list(SiftTierBackend *be, const char *prefix, void (*fn) (void *arg, const char *key), void *arg, SiftTierErr *err)
 {
 	S3Be	   *b = (S3Be *) be;
-	char		full[640],
-				enc[1400],
-				query[1900];
-	char		token[1024] = "";
-	size_t		strip = b->prefix[0] ? strlen(b->prefix) + 1 : 0;
+	char		full[640];
+	char	   *enc,
+			   *token = NULL;
+	SiftTierStatus st = SIFT_TIER_OK;
 
 	snprintf(full, sizeof(full), "%s%s%s", b->prefix, b->prefix[0] ? "/" : "", prefix);
-	for (;;)
+	enc = query_value(full, err);
+	if (enc == NULL)
+		return err->code;
+	do
 	{
-		char	   *body = NULL;
-		SiftCurlReq r = {.grow = &body};
-		SiftTierStatus st;
-		char	   *at,
-				   *key,
-				   *trunc;
+		char	   *tenc = token != NULL ? query_value(token, err) : NULL;
+		char	   *query = token == NULL ? psprintf("list-type=2&prefix=%s", enc) : tenc != NULL ? psprintf("continuation-token=%s&list-type=2&prefix=%s", tenc, enc) : NULL;
+		char	   *next = NULL;
 
-		sift_sigv4_uri_encode(full, false, enc, sizeof(enc));
-		if (token[0] != '\0')
-		{
-			char		tenc[1100];
-
-			sift_sigv4_uri_encode(token, false, tenc, sizeof(tenc));
-			snprintf(query, sizeof(query), "continuation-token=%s&list-type=2&prefix=%s", tenc, enc);
-		}
-		else
-			snprintf(query, sizeof(query), "list-type=2&prefix=%s", enc);
-		st = s3_request(b, "GET", NULL, query, 0, 0, EMPTY_SHA256, &r, err);
-		if (st == SIFT_TIER_OK && r.status != 200)
-			st = http_fail(&r, err, "the listing", prefix);
-		if (st != SIFT_TIER_OK)
-		{
-			if (body)
-				pfree(body);
-			return st;
-		}
-		at = body ? body : (char *) "";
-		trunc = strstr(at, "<IsTruncated>true</IsTruncated>");
-		token[0] = '\0';
-		if (trunc != NULL)
-		{
-			char	   *tp = at,
-					   *t = xml_next(&tp, "NextContinuationToken");
-
-			if (t != NULL && strlen(t) < sizeof(token))
-				snprintf(token, sizeof(token), "%s", t);
-		}
-		while ((key = xml_next(&at, "Key")) != NULL)
-			if (strlen(key) > strip && sift_tier_key_ok(key + strip))
-				fn(arg, key + strip);
-		if (body)
-			pfree(body);
-		if (token[0] == '\0')
-			return SIFT_TIER_OK;
-	}
+		st = query == NULL ? err->code : list_page(b, query, prefix, fn, arg, &next, err);
+		if (query != NULL)
+			pfree(query);
+		if (tenc != NULL)
+			pfree(tenc);
+		if (token != NULL)
+			pfree(token);
+		token = next;
+		CHECK_FOR_INTERRUPTS();
+	} while (st == SIFT_TIER_OK && token != NULL);
+	pfree(enc);
+	return st;
 }
 
 static void
@@ -357,17 +456,6 @@ set_addressing(S3Be *b, const SiftTierOpen *o, bool r2, SiftTierErr *err)
 	return true;
 }
 
-static bool
-load_credentials(S3Be *b, const SiftTierOpen *o, SiftTierErr *err)
-{
-	err->code = SIFT_TIER_OK;
-	if (credential(o, "AWS_ACCESS_KEY_ID", b->access, sizeof(b->access), err) && credential(o, "AWS_SECRET_ACCESS_KEY", b->secret, sizeof(b->secret), err))
-		return credential(o, "AWS_SESSION_TOKEN", b->token, sizeof(b->token), err) || err->code == SIFT_TIER_OK;
-	if (err->code == SIFT_TIER_OK)
-		sift_tier_fail(err, SIFT_TIER_E_NO_CRED, "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (or their _FILE variants) are not set in the environment of the server");
-	return false;
-}
-
 SiftTierBackend *
 sift_tier_s3_open(const SiftTierOpen *o, bool r2, const char *bucket, const char *prefix, SiftTierErr *err)
 {
@@ -382,6 +470,7 @@ sift_tier_s3_open(const SiftTierOpen *o, bool r2, const char *bucket, const char
 		sift_curl_close(b->curl);
 		goto fail;
 	}
+	b->getenv_fn = o->getenv_fn;
 	b->base.ops = &s3_ops;
 	return &b->base;
 

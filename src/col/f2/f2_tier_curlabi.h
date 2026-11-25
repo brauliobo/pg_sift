@@ -13,7 +13,13 @@ struct curl_slist;
 #endif
 
 #define SC_OK						0
+#define SC_COULDNT_RESOLVE_HOST		6
+#define SC_COULDNT_CONNECT			7
+#define SC_OPERATION_TIMEDOUT		28
 #define SC_ABORTED_BY_CALLBACK		42
+#define SC_GOT_NOTHING				52
+#define SC_SEND_ERROR				55
+#define SC_RECV_ERROR				56
 #define SC_GLOBAL_DEFAULT			3
 #define SC_READFUNC_ABORT			0x10000000
 #define SC_INFO_RESPONSE_CODE		0x200002
