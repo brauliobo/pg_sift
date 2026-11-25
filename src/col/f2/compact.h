@@ -107,6 +107,19 @@ extern uint64 *sift_compact_candidates(const SiftPartDesc *parts, int nparts, in
 extern SiftCompactGroup *sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, int *ngroups);
 
 /*
+ * What the column-delta chain of the partition adds to the plan: the parts it has records for (fold_gens) are taken with the others of their level, and the time bounds of the parts do not hold
+ * while it patches a time column (dirty_time, SIFT_CDLA_DIRTY_TIME0/1). The parts of the last level are not merged by count: a merge of them rewrites rows that are in place.
+ */
+typedef struct SiftCompactChain
+{
+	const uint64 *fold_gens;
+	int			nfold;
+	uint16		dirty_time;
+} SiftCompactChain;
+
+extern SiftCompactGroup *sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, const SiftCompactChain *chain, int *ngroups);
+
+/*
  * What a host folds into the parts a compaction rewrites besides their rows: a table, the column deltas of the partition (table/f2/f2_col_delta.h). The host installs it once; with none,
  * a compaction is what it was. A record may reach the partition while the outputs are written, so open serves every compaction and commit reads the host's records again under the lock.
  */

@@ -4,6 +4,7 @@
 #include "core/host.h"
 
 #include "access/transam.h"
+#include "commands/vacuum.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
 
@@ -15,7 +16,9 @@
 #include "col/f2/f2_dv_join.h"
 #include "col/f2/f2_kll.h"
 #include "col/f2/f2_store.h"
+#include "core/compat.h"
 #include "core/crash_point.h"
+#include "core/f2/col_delta_anchor.h"
 #include "core/f2/f2_gate.h"
 #include "core/page_io.h"
 #include "core/wal_conflict.h"
@@ -228,6 +231,8 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 	{
 		MemoryContext old = MemoryContextSwitchTo(granule_cx);
 		SiftGranuleDesc gd;
+
+		sift_vacuum_delay_point();
 		char	   *rec = sift_part_read_granule(rel, part, g, &gd);
 		SiftGranuleView v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
 		SiftRowVer *vers = sift_part_read_vers(rel, part, dir, g);
@@ -275,11 +280,11 @@ by_key(const void *a, const void *b)
  * The parts as one part of the level above, their granules copied as they are: possible when no row is dead, the keys of the parts ascend from one to the next, and the parts
  * share a schema, their dictionaries and have all rows frozen (so that the horizon has nothing to drop or freeze). false: the rows have to be read.
  */
-/* The side of the cut every row of the part is on: SIFT_PART_FLAG_TIME_HOT or _COLD; 0 when it straddles the cut or has no bounds. Without a time column or a cut every part is on the side 0 */
+/* The side of the cut every row of the part is on: SIFT_PART_FLAG_TIME_HOT or _COLD; 0 when it straddles the cut, has no bounds or its bounds do not hold (a chain patches the time column). Without a time column or a cut every part is on the side 0 */
 static uint32
-part_side(const SiftPartDesc *p, int64 hot_cut)
+part_side(const SiftPartDesc *p, int64 hot_cut, bool bounds_hold)
 {
-	if (!(p->flags & SIFT_PART_FLAG_HAS_TIME0))
+	if (!bounds_hold || !(p->flags & SIFT_PART_FLAG_HAS_TIME0))
 		return 0;
 	return p->time_min[0] >= hot_cut ? SIFT_PART_FLAG_TIME_HOT : p->time_max[0] < hot_cut ? SIFT_PART_FLAG_TIME_COLD : 0;
 }
@@ -308,11 +313,11 @@ carry_deletes(Relation rel, uint64 part_id, SiftPart *const *src, const SiftPart
 }
 
 static bool
-join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, int n, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon, SiftExtent **rel_ext, int *nrel, SiftCompactResult *res,
-		   SiftPartDesc *out)
+join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, int n, const SiftPartSpec *spec, int64 hot_cut, bool bounds_hold, FullTransactionId horizon, SiftExtent **rel_ext, int *nrel,
+		   SiftCompactResult *res, SiftPartDesc *out)
 {
 	bool		split = spec->time_cols[0] > 0 && hot_cut != PG_INT64_MIN;
-	uint32		side = split ? part_side(at[0], hot_cut) : 0;
+	uint32		side = split ? part_side(at[0], hot_cut, bounds_hold) : 0;
 
 	SiftPart  **src = palloc(n * sizeof(SiftPart *));
 	SiftPartDesc *sorted = palloc(n * sizeof(SiftPartDesc));
@@ -331,7 +336,7 @@ join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, int n, const S
 		uint32		tier = at[i]->flags & (SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD);
 
 		if ((i > 0 && memcmp(at[i - 1]->key_hi, at[i]->key_lo, SIFT_BOUND_BYTES) >= 0) ||
-			(split && (part_side(at[i], hot_cut) != side || (tier != 0 && tier != side))) || (!split && tier != (at[0]->flags & (SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD))))
+			(split && (part_side(at[i], hot_cut, bounds_hold) != side || (tier != 0 && tier != side))) || (!split && tier != (at[0]->flags & (SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD))))
 			return false;
 		sorted[i] = *at[i];
 		sorted[i].flags = (sorted[i].flags & ~(SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD)) | side;
@@ -400,6 +405,7 @@ write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const Sif
 	sift_dict_merge_finish(dm, rb, cols, res);
 	r.part_flags = tier;
 	r.adopt_dicts = adopt;
+	r.bulk_tail = true;
 	d = sift_part_write_rows(rel, part_id, gen, Min(level + 1, SIFT_MAX_PART_LEVEL), out_tier, &r);
 	res->new_gen = res->new_gen == 0 ? gen : res->new_gen;
 	res->granules_written += part_granules(rel, &d, part_id);
@@ -482,7 +488,7 @@ folds_any(void *fold, const SiftPartDesc **at, int n)
 
 /* Phase 1: the rows of the inputs read and the output parts written, with no lock held: nothing of the output is reachable until the manifest takes it in. false: a deleter of a row is not settled */
 static bool
-write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const SiftPartSpec *spec, int64 hot_cut, SiftXidHorizonCache *hc, void *fold, SiftCompactResult *res,
+write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const SiftPartSpec *spec, int64 hot_cut, bool bounds_hold, SiftXidHorizonCache *hc, void *fold, SiftCompactResult *res,
 			  SiftExtent **rel_ext, int *nrel, SiftMemTracker *mem, SiftPartDesc **out, int *nout)
 {
 	const SiftPartDesc **at = palloc(Max(ngens, 1) * sizeof(SiftPartDesc *));
@@ -511,7 +517,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	res->nparts_in = ngens;
 	for (int i = 0; i < ngens; i++)
 		retier |= sift_part_needs_retier(at[i]);
-	if (!mapped && !retier && !folds_any(fold, at, ngens) && join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, hot_cut, hc->horizon, rel_ext, nrel, res, &joined))
+	if (!mapped && !retier && !folds_any(fold, at, ngens) && join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, hot_cut, bounds_hold, hc->horizon, rel_ext, nrel, res, &joined))
 	{
 		*out = memcpy(palloc(sizeof(SiftPartDesc)), &joined, sizeof(SiftPartDesc));
 		*nout = 1;
@@ -709,7 +715,8 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	SiftXidHorizonCache hc;
 	SiftPartGenIndex by_gen = {0};
 	void	   *fold;
-	bool		packed;
+	bool		packed,
+				bounds_hold;
 
 	memset(res, 0, sizeof(*res));
 	sift_xid_horizon_init(&hc, horizon);
@@ -718,10 +725,11 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	if (mr.n == 0 || mr.entries[0].part_id != part_id)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
+	bounds_hold = (mr.entries[0].flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || (sift_manifest_read_col_delta(rel, &mr.entries[0]).flags & SIFT_CDLA_DIRTY_TIME0) == 0;
 	parts = sift_manifest_read_parts(rel, &mr.entries[0], &nparts);
 	in = read_inputs(rel, part_id, parts, nparts, gens, ngens);
 	fold = sift_compact_fold != NULL ? sift_compact_fold->open(rel, &mr.entries[0], parts, nparts, gens, ngens, horizon) : NULL;
-	if (!write_outputs(rel, part_id, in, ngens, spec, hot_cut, &hc, fold, res, &rel_ext, &nrel, mem, &out, &nout))
+	if (!write_outputs(rel, part_id, in, ngens, spec, hot_cut, bounds_hold, &hc, fold, res, &rel_ext, &nrel, mem, &out, &nout))
 	{
 		UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
 		return false;
@@ -854,6 +862,7 @@ sift_compact_merge_neighbours(Relation rel)
 			SiftPartitionEntry *a = &mr.entries[i],
 					   *b = &mr.entries[next[i]];
 
+			sift_vacuum_delay_point();
 			refresh_entry(rel, a);
 			refresh_entry(rel, b);
 			if (partition_idle(a) && partition_idle(b) && a->total_bytes + b->total_bytes < SIFT_PARTITION_MERGE_BYTES)

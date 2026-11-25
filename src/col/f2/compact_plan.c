@@ -4,16 +4,18 @@
 #include "core/host.h"
 
 #include "col/f2/compact.h"
+#include "core/f2/col_delta_anchor.h"
 
 int			sift_dead_rewrite_pct = 15;
 
-/* STOR[STOR-F2-07]: a part whose column-delta chain holds this many pages is folded by a compaction of its own (the chain grew until 15% of the rows were dead) */
-#define SIFT_COMPACT_COL_DELTA_BLOCKS	4
-
+/* A part the long column-delta chain of its partition has records for: the host's own list (SiftCompactChain), as the chain is the partition's and no part holds its address */
 static bool
-part_has_long_delta_chain(const SiftPartDesc *p)
+part_has_long_delta_chain(const SiftPartDesc *p, const SiftCompactChain *chain)
 {
-	return p->col_delta_blk != InvalidBlockNumber && p->col_delta_nblocks >= SIFT_COMPACT_COL_DELTA_BLOCKS;
+	for (int i = 0; chain != NULL && i < chain->nfold; i++)
+		if (chain->fold_gens[i] == p->part_gen)
+			return true;
+	return false;
 }
 
 static bool
@@ -49,11 +51,11 @@ part_is_cold(const SiftPartDesc *p)
 	return (p->flags & SIFT_PART_FLAG_TIME_COLD) != 0;
 }
 
-/* A hot part whose every row is older than the cut: it is rewritten so that its rows go cold */
+/* A hot part whose every row is older than the cut: it is rewritten so that its rows go cold. Its time bounds do not hold for rows a chain patches (SIFT_CDLA_DIRTY_TIME0) */
 static bool
-part_has_aged(const SiftPartDesc *p, int64 hot_cut)
+part_has_aged(const SiftPartDesc *p, int64 hot_cut, const SiftCompactChain *chain)
 {
-	return (p->flags & SIFT_PART_FLAG_TIME_HOT) && (p->flags & SIFT_PART_FLAG_HAS_TIME0) && p->time_max[0] < hot_cut;
+	return (p->flags & SIFT_PART_FLAG_TIME_HOT) && (p->flags & SIFT_PART_FLAG_HAS_TIME0) && (chain == NULL || (chain->dirty_time & SIFT_CDLA_DIRTY_TIME0) == 0) && p->time_max[0] < hot_cut;
 }
 
 /* A part in object storage is never an input of a compaction: it is read by range and dropped whole (col/f2/f2_ttl.h) */
@@ -145,6 +147,12 @@ plan_retier(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *parts, int 
 SiftCompactGroup *
 sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, int *ngroups)
 {
+	return sift_compact_plan_chained(parts, nparts, budget, hot_cut, NULL, ngroups);
+}
+
+SiftCompactGroup *
+sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, const SiftCompactChain *chain, int *ngroups)
+{
 	int			maxlevel = 0;
 	SiftCompactGroup *out;
 	const SiftPartDesc **at = palloc(Max(nparts, 1) * sizeof(SiftPartDesc *));
@@ -174,10 +182,10 @@ sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 ho
 				small += part_is_small(&parts[i]);
 				level_bytes += parts[i].nbytes;
 				dead += part_is_dead(&parts[i]);
-				aged += part_has_aged(&parts[i], hot_cut);
-				chained += part_has_long_delta_chain(&parts[i]);
+				aged += part_has_aged(&parts[i], hot_cut, chain);
+				chained += part_has_long_delta_chain(&parts[i], chain);
 			}
-		all = level == 0 ? l0_due(count, level_bytes, settled_bytes(parts, nparts, cold)) : count >= SIFT_COMPACT_FANOUT;
+		all = level == 0 ? l0_due(count, level_bytes, settled_bytes(parts, nparts, cold)) : level < SIFT_MAX_PART_LEVEL && count >= SIFT_COMPACT_FANOUT;
 		if (level == 0)
 			small = 0;
 		memset(taken, 0, Max(nparts, 1) * sizeof(bool));
@@ -185,7 +193,7 @@ sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 ho
 		{
 			for (int i = 0; i < nparts; i++)
 				if (plannable(&parts[i], level, cold) &&
-					((all && !part_is_consolidated(&parts[i])) || part_is_dead(&parts[i]) || part_has_aged(&parts[i], hot_cut) || part_has_long_delta_chain(&parts[i]) ||
+					((all && !part_is_consolidated(&parts[i])) || part_is_dead(&parts[i]) || part_has_aged(&parts[i], hot_cut, chain) || part_has_long_delta_chain(&parts[i], chain) ||
 					 (small >= 2 && part_is_small(&parts[i]))))
 				{
 					taken[i] = true;
