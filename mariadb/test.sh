@@ -127,7 +127,7 @@ inno() {
 functional() {
   say "functional tests (database ft)"
   local t failed=0
-  for t in functional fresh keys filters options version live stress regex_check repl; do
+  for t in functional fresh keys filters options version live stress regex_check repl security crash_inputs; do
     "$HERE/tests/$t.sh" || failed=1
   done
   [[ $failed == 0 ]] || { echo "some functional checks FAILED"; exit 1; }

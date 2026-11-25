@@ -9,6 +9,8 @@ fail=0 total=0
 
 sql() { "$SRV" sql -N -B "$DB" -e "$1"; }
 sqle() { "$SRV" sql -N -B "$DB" -e "$1" 2>&1; }   # with the error message, if any
+firsterr() { local o; o=$(cat); grep -m1 '^ERROR' <<<"$o" || printf '%s\n' "$o"; }   # the error line without the statement the client echoes
+sqlerr() { "$SRV" sql -N -B "$DB" -e "$1" 2>&1 | firsterr; }
 check() {   # name expected actual
   total=$((total + 1))
   if [[ $2 == "$3" ]]; then echo "ok   $1"; else echo "FAIL $1: expected [$2] got [$3]"; fail=$((fail + 1)); fi
