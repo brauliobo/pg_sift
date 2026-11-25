@@ -413,7 +413,7 @@ struct SiftV6StreamRun
 SiftV6StreamRun *
 sift_v6_stream_open(MemoryContext cx, SiftV6Source *src, const SiftV6StreamSpec *spec, const SiftV6Vexpr *filters, void (*emit) (void *, const SiftStreamGroup *), void *emit_arg)
 {
-	SiftV6StreamRun *r = MemoryContextAllocZero(cx, sizeof(SiftV6StreamRun));
+	SiftV6StreamRun *r = MemoryContextAllocAligned(cx, sizeof(SiftV6StreamRun), _Alignof(SiftV6StreamRun), MCXT_ALLOC_ZERO);
 	Feed	   *fd = MemoryContextAllocAligned(cx, sizeof(Feed), _Alignof(Feed), MCXT_ALLOC_ZERO);
 
 	fd->src = src;
