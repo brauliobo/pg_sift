@@ -62,6 +62,8 @@ typedef struct Sweep
 	int			gens_max;
 	uint32		named[NNAMED];	/* how many of each kind of block the sweep named, for DEBUG1 */
 	const char *why;			/* why the sweep gave up */
+	MemoryContext cx;			/* what the sweep keeps */
+	MemoryContext open_cx;		/* the part being named: reset when its blocks are held */
 } Sweep;
 
 /* How the pages of a chain link: where the next block sits in the payload, and the flags that make a chain one the sweep cannot follow */
@@ -205,22 +207,31 @@ hold_tree(Sweep *s, BlockNumber blk, uint32 level)
 	return true;
 }
 
-/* The blocks of an opened part: its header, extent lists and stream, or the packed page that holds its header */
+/* A part is opened in a context of its own, which hold_opened resets: the sweep keeps the blocks of every part, not the header page and the lists of each */
+static void
+open_part_begin(Sweep *s)
+{
+	MemoryContextSwitchTo(s->open_cx);
+}
+
+/* The blocks of the part opened after open_part_begin: its header, extent lists and stream, or the packed page that holds its header */
 static void
 hold_opened(Sweep *s, int kind, const SiftPart *part, uint64 gen)
 {
 	SiftExtent *ext;
 	int			n;
 
+	MemoryContextSwitchTo(s->cx);
 	hold_gen(s, gen);
 	if (part->is_packed)
-	{
 		sift_fsm_extvec_add(&s->packed, part->header_blk, 1, InvalidFullTransactionId);
-		return;
+	else
+	{
+		ext = sift_part_blocks(part, &n);
+		hold_extents(s, kind, ext, n);
+		pfree(ext);
 	}
-	ext = sift_part_blocks(part, &n);
-	hold_extents(s, kind, ext, n);
-	pfree(ext);
+	MemoryContextReset(s->open_cx);
 }
 
 static bool
@@ -233,6 +244,7 @@ hold_part(Sweep *s, const SiftPartDesc *d, uint32 part_id)
 		hold(s, NAMED_DV, d->dv_blk, d->dv_nblocks);
 		hold_gen(s, d->dv_gen);
 	}
+	open_part_begin(s);
 	hold_opened(s, NAMED_PART, sift_part_open_desc(s->rel, d, part_id), d->part_gen);
 	return true;
 }
@@ -302,7 +314,10 @@ hold_scopes(Sweep *s)
 	}
 	for (int i = 0; i < n; i++)
 		if ((refs[i].flags & SIFT_SCOPEREF_ACTIVE) && refs[i].header_blk != InvalidBlockNumber)
+		{
+			open_part_begin(s);
 			hold_opened(s, NAMED_SCOPE, sift_part_open(s->rel, refs[i].header_blk, refs[i].meta_gen, 0), refs[i].meta_gen);
+		}
 	return true;
 }
 
@@ -326,7 +341,10 @@ hold_projections(Sweep *s)
 		blk = sift_proj_one_dir_blocks(s->rel, &refs[i], &nb);
 		hold_blocks(s, NAMED_PROJ, blk, nb);
 		for (int k = 0; k < parts.nparts; k++)
+		{
+			open_part_begin(s);
 			hold_opened(s, NAMED_PROJ, sift_part_open(s->rel, parts.parts[k].header_blk, parts.parts[k].part_gen, SIFT_PROJ_PART_ID), parts.parts[k].part_gen);
+		}
 	}
 	return true;
 }
@@ -571,7 +589,8 @@ say_named(const Sweep *s, uint64 orphans)
 static uint64
 sweep_locked(Relation rel)
 {
-	Sweep		s = {.rel = rel,.meta = sift_col_meta_read(rel)};
+	Sweep		s = {.rel = rel,.meta = sift_col_meta_read(rel),.cx = CurrentMemoryContext,
+		.open_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift orphan sweep part")};
 	ExtVec		orphans = {0};
 	uint64		blocks = 0;
 
