@@ -199,6 +199,7 @@ extern void sift_f2_cell_of_datum(const SiftF2Store *store, Form_pg_attribute at
 
 /* The datum of a string cell of a headerless store: the varlena (a short header up to 126 bytes) or the zero padded name, in cx */
 extern Datum sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryContext cx);
+extern Datum sift_f2_bare_datum_of(Oid typid, const char *bytes, uint32 len, MemoryContext cx);
 
 /*
  * The relation invalidations of the Format 2.0 caches (the stores, the part pins, the address indexes, the granules): the backend takes one syscache callback on RELOID, whose

@@ -315,11 +315,11 @@ wide_cell(SiftCell *c, const char *image, uint32 image_len)
 }
 
 Datum
-sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryContext cx)
+sift_f2_bare_datum_of(Oid typid, const char *bytes, uint32 len, MemoryContext cx)
 {
 	struct varlena *v;
 
-	if (att->atttypid == NAMEOID)
+	if (typid == NAMEOID)
 		return NameGetDatum(memcpy(MemoryContextAllocZero(cx, NAMEDATALEN), bytes, len));
 	if (len < VARATT_SHORT_MAX)
 	{
@@ -334,6 +334,12 @@ sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryC
 		memcpy(VARDATA(v), bytes, len);
 	}
 	return PointerGetDatum(v);
+}
+
+Datum
+sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryContext cx)
+{
+	return sift_f2_bare_datum_of(att->atttypid, bytes, len, cx);
 }
 
 /* How the datum of an attribute becomes its cell, decided once from the attribute and the store and not for each value */

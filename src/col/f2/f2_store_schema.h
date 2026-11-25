@@ -67,9 +67,15 @@ sift_f2_attr_may_have_exceptions(Form_pg_attribute att)
 
 /* An attribute whose cell, in a headerless store, is the bare bytes of its value: text, varchar, char(n), bytea and name */
 static inline bool
+sift_f2_type_bare_bytes(Oid typid)
+{
+	return typid == TEXTOID || typid == VARCHAROID || typid == BPCHAROID || typid == BYTEAOID || typid == NAMEOID;
+}
+
+static inline bool
 sift_f2_attr_bare_bytes(Form_pg_attribute att)
 {
-	return att->atttypid == TEXTOID || att->atttypid == VARCHAROID || att->atttypid == BPCHAROID || att->atttypid == BYTEAOID || att->atttypid == NAMEOID;
+	return sift_f2_type_bare_bytes(att->atttypid);
 }
 
 /* Whether the leaf of a string attribute holds exactly its values, so that predicates and group keys are decided on the stored bytes: as in a sift_col index, a char without a length is not (its bytes are not its equality) */

@@ -10,7 +10,9 @@
 #include "utils/numeric.h"
 
 #include "col/am.h"
+#include "col/f2/f2_store_schema.h"
 #include "col/f2/f2_v6_scan_int.h"
+#include "table/f2/f2_blob.h"
 
 /* the NULL of a numeric that carries a tag is its NaN, the one value a scaled integer or an image cannot hold */
 static bool
@@ -103,7 +105,10 @@ table_datum(const V6Col *c, const ColView *cv, int r, MemoryContext cx, Datum *d
 			*d = c->typid == FLOAT4OID ? Float4GetDatum((float4) cv->f[r]) : Float8GetDatum(cv->f[r]);
 			break;
 		default:
-			*d = PointerGetDatum(memcpy(MemoryContextAlloc(cx, cv->slen[r]), cv->s[r], cv->slen[r]));
+			if (c->bare && !(cv->tag != NULL && cv->tag[r] == SIFT_COLTAG_WIDE_BLOB))
+				*d = sift_f2_bare_datum_of(c->typid, cv->s[r], cv->slen[r], cx);
+			else
+				*d = PointerGetDatum(memcpy(MemoryContextAlloc(cx, cv->slen[r]), cv->s[r], cv->slen[r]));
 	}
 	return true;
 }
