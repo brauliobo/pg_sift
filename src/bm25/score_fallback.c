@@ -5,7 +5,8 @@
  * The scan reads the heap twice. The first pass counts the corpus (the rows that pass the security quals and have a text) and the
  * document frequency of every leaf of the queries, and keeps the rows that pass the other quals; the second weighs the leaves with
  * the formulas of the index and scores the kept rows. Nothing but rows that pass the security quals is counted, so the scores
- * of a role never depend on the rows that a policy hides from it.
+ * of a role never depend on the rows that a policy hides from it. The kept rows are their TIDs (a tuplestore of them, that spills
+ * past work_mem only for tables of many millions of rows): the second pass fetches each under the snapshot of the first.
  */
 #include "postgres.h"
 
@@ -21,6 +22,7 @@
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
 #include "utils/array.h"
+#include "catalog/pg_type_d.h"
 #include "utils/lsyscache.h"
 #include "utils/tuplestore.h"
 
@@ -241,6 +243,27 @@ weigh_clause(FbClause *c)
 		c->leaf[i].w = sift_kern_term_weight(c->leaf[i].boost, sift_kern_idf(c->ndocs, c->leaf[i].df), c->bm.k1);
 }
 
+static TupleDesc
+tid_desc(void)
+{
+	TupleDesc	desc = CreateTemplateTupleDesc(1);
+
+	TupleDescInitEntry(desc, 1, "tid", TIDOID, -1, 0);
+	sift_tupdesc_finalize(desc);
+	return desc;
+}
+
+static void
+keep_tid(FbState *fb, ItemPointer tid)
+{
+	TupleTableSlot *slot = fb->rowslot;
+
+	ExecClearTuple(slot);
+	slot->tts_values[0] = ItemPointerGetDatum(tid);
+	slot->tts_isnull[0] = false;
+	tuplestore_puttupleslot(fb->rows, ExecStoreVirtualTuple(slot));
+}
+
 /* The first pass; with keep, the rows that pass the other quals are put aside for the second */
 static void
 load_rows(FbState *fb, bool keep)
@@ -261,7 +284,7 @@ load_rows(FbState *fb, bool keep)
 			continue;
 		count_row(fb, econtext);
 		if (keep && ExecQual(ss->quals, econtext))
-			tuplestore_puttupleslot(fb->rows, econtext->ecxt_scantuple);
+			keep_tid(fb, &fb->loadslot->tts_tid);
 	}
 	table_endscan(scan);
 	ss->heapslot = saved;
@@ -316,11 +339,19 @@ stamp_scores(const FbState *fb, TupleTableSlot *slot, float4 score)
 static bool
 next_kept(FbState *fb)
 {
-	TupleTableSlot *slot = fb->ss.css.ss.ss_ScanTupleSlot;
+	SiftScanState *ss = &fb->ss;
+	TupleTableSlot *saved = ss->heapslot;
+	bool		isnull;
+	ItemPointerData tid;
 
 	if (!tuplestore_gettupleslot(fb->rows, true, false, fb->rowslot))
 		return false;
-	ExecCopySlot(slot, fb->rowslot);
+	tid = *DatumGetItemPointer(slot_getattr(fb->rowslot, 1, &isnull));
+	SIFT_INVARIANT(table_tuple_fetch_row_version(ss->heap, &tid, ss->css.ss.ps.state->es_snapshot, fb->loadslot),
+				   "sift: the score scan lost a row it kept (%u,%u)", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
+	ss->heapslot = fb->loadslot;
+	fill_scan_slot(ss, 0);
+	ss->heapslot = saved;
 	return true;
 }
 
@@ -425,7 +456,7 @@ fb_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->heap = node->ss.ss_currentRelation;
 	ss->heapslot = table_slot_create(ss->heap, &estate->es_tupleTable);
 	fb->loadslot = table_slot_create(ss->heap, &estate->es_tupleTable);
-	fb->rowslot = MakeSingleTupleTableSlot(node->ss.ss_ScanTupleSlot->tts_tupleDescriptor, &TTSOpsMinimalTuple);
+	fb->rowslot = MakeSingleTupleTableSlot(tid_desc(), &TTSOpsMinimalTuple);
 	fb->secure = ExecInitQual(secure, &node->ss.ps);
 	ss->quals = ExecInitQual(list_concat_copy(secure, list_nth_node(List, cs->custom_exprs, 3)), &node->ss.ps);
 	ss->cuts = ExecInitQual(list_nth_node(List, cs->custom_exprs, 4), &node->ss.ps);
