@@ -146,6 +146,9 @@ typedef struct SiftF2Store
 extern SiftF2Store *sift_f2_store_open(Relation rel);
 extern SiftF2Store *sift_f2_store_from_oid(Oid relid);
 
+/* The store of the relation if this backend has it built, else NULL: no relation is opened, no lock is taken, nothing is built */
+extern SiftF2Store *sift_f2_store_cached(Oid relid);
+
 /* The cells of a row and its key for either host (the one conversion of aminsert, multi_insert and a build) */
 extern void sift_f2_store_pack_row(Relation rel, SiftF2Store *store, MemoryContext row_cx, const ItemPointerData *tid, const Datum *values, const bool *isnull,
 								   bool spill_wide_blobs, SiftCell *cells, SiftCell **elem, uint8 *key);

@@ -50,6 +50,7 @@ typedef struct Table
 	pg_atomic_uint64 clock;
 	pg_atomic_uint32 snaps_live;
 	pg_atomic_uint64 snap_bytes;
+	pg_atomic_uint32 unleased;	/* the runs of vblocks that backends fill with no lease slot */
 	pg_atomic_uint64 global_epoch pg_attribute_aligned(PG_CACHE_LINE_SIZE);	/* bumped when a snapshot is retired */
 	LWLock		retire_lock;
 	dsa_pointer retired_head;	/* the snapshots retired and not freed yet, newest first (retire_lock) */
@@ -103,11 +104,12 @@ table_init(SIFT_DSM_INIT_ARGS)
 	pg_atomic_init_u64(&t->clock, 1);
 	pg_atomic_init_u32(&t->snaps_live, 0);
 	pg_atomic_init_u64(&t->snap_bytes, 0);
+	pg_atomic_init_u32(&t->unleased, 0);
 	for (int i = 0; i < SIFT_SHM_TID_LEASES; i++)
 	{
 		pg_atomic_init_u32(&t->lease[i].owner, 0);
 		pg_atomic_init_u64(&t->lease[i].lo, 0);
-		pg_atomic_init_u64(&t->lease[i].hi, 0);
+		pg_atomic_init_u64(&t->lease[i].seq, 0);
 	}
 	for (int i = 0; i < SIFT_SHM_MANIFEST_SLOTS; i++)
 	{
@@ -837,14 +839,8 @@ sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *s
 		dp = snap_build(t, a, &meta->locator, spec);
 	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
 	s = slot_claim(t, &meta->locator);
-	if (s == NULL || ((s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED) && RelFileLocatorEquals(s->meta.locator, meta->locator)))
-	{
-		LWLockRelease(&t->claim_lock);
-		if (dp != InvalidDsaPointer)
-			snap_free(a, dsa_get_address(a, dp));
-		return false;
-	}
-	if ((s->meta.state_flags & SIFT_SHM_SLOT_VALID) && RelFileLocatorEquals(s->meta.locator, meta->locator) && s->meta.manifest_version > meta->manifest_version)
+	if (s == NULL || ((s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED) && RelFileLocatorEquals(s->meta.locator, meta->locator)) ||
+		((s->meta.state_flags & SIFT_SHM_SLOT_VALID) && RelFileLocatorEquals(s->meta.locator, meta->locator) && s->meta.manifest_version > meta->manifest_version))
 	{
 		LWLockRelease(&t->claim_lock);
 		if (dp != InvalidDsaPointer)
@@ -941,9 +937,9 @@ sift_shm_tid_lease_acquire(const RelFileLocator *locator)
 
 		if (!pg_atomic_compare_exchange_u32(&l->owner, &free_slot, SIFT_TID_LEASE_CLAIMING))
 			continue;
+		(void) pg_atomic_fetch_add_u64(&l->seq, 1);
 		l->locator = *locator;
 		pg_atomic_write_u64(&l->lo, 0);
-		pg_atomic_write_u64(&l->hi, 0);
 		pg_write_barrier();
 		pg_atomic_write_u32(&l->owner, (uint32) MyProcNumber + 1);
 		return i;
@@ -952,12 +948,9 @@ sift_shm_tid_lease_acquire(const RelFileLocator *locator)
 }
 
 void
-sift_shm_tid_lease_set(int slot, uint64 lo, uint64 hi)
+sift_shm_tid_lease_set(int slot, uint64 lo)
 {
-	SiftShmTidLease *l = &table->lease[slot];
-
-	pg_atomic_write_u64(&l->hi, hi);
-	pg_atomic_write_u64(&l->lo, lo);
+	pg_atomic_write_u64(&table->lease[slot].lo, lo);
 }
 
 void
@@ -967,23 +960,41 @@ sift_shm_tid_lease_release(int slot)
 }
 
 bool
+sift_shm_tid_unleased(int delta)
+{
+	Table	   *t = registry();
+
+	if (t != NULL)
+		pg_atomic_fetch_add_u32(&t->unleased, (uint32) delta);
+	return t != NULL;
+}
+
+bool
 sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint64 *floor)
 {
 	Table	   *t = registry();
 
 	if (t == NULL)
 		return false;
-	*floor = next_vblock;
+	*floor = pg_atomic_read_u32(&t->unleased) > 0 ? 0 : next_vblock;
 	for (int i = 0; i < SIFT_SHM_TID_LEASES; i++)
 	{
 		SiftShmTidLease *l = &t->lease[i];
+		uint64		seq = pg_atomic_read_u64(&l->seq),
+					lo;
 		uint32		owner = pg_atomic_read_u32(&l->owner);
+		bool		mine;
 
 		pg_read_barrier();
-		if (owner == SIFT_TID_LEASE_CLAIMING)
+		if (owner == 0)
+			continue;
+		mine = RelFileLocatorEquals(l->locator, *locator);
+		lo = pg_atomic_read_u64(&l->lo);
+		pg_read_barrier();
+		if (owner == SIFT_TID_LEASE_CLAIMING || pg_atomic_read_u64(&l->seq) != seq)
 			*floor = 0;
-		else if (owner != 0 && RelFileLocatorEquals(l->locator, *locator))
-			*floor = Min(*floor, pg_atomic_read_u64(&l->lo));
+		else if (mine)
+			*floor = Min(*floor, lo);
 	}
 	return true;
 }

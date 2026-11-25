@@ -88,7 +88,9 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmIndexSlot
 /*
  * The virtual blocks a backend may still put rows in (core/f2/f2_vm_xlog.h): a backend that inserts into a sift_table reserves a run of vblocks and keeps one slot for it, [lo, hi) with lo
  * the vblock it fills now. VACUUM marks a vblock all visible only below the least lo of the table, because a row that has not been written yet may still come to it. A slot is
- * taken for the life of the backend (or until its run is used up) and is claimed in two steps: while it is CLAIMING a reader takes it for a lease on every table from vblock 0.
+ * taken for the life of the backend (or until its run is used up) and is claimed in two steps: while it is CLAIMING a reader takes it for a lease on every table from vblock 0. A backend that
+ * inserts with no slot (all are taken) is counted instead, and while there is one VACUUM sets no bit of any table: the vblocks it fills are in no slot to be found.
+ * A reader of a slot reads its seq before its owner and again after its locator and lo: a slot that was claimed in between is read as a lease on every table.
  */
 #define SIFT_SHM_TID_LEASES			2048
 #define SIFT_TID_LEASE_CLAIMING		UINT32_MAX
@@ -98,7 +100,7 @@ typedef struct SiftShmTidLease
 	pg_atomic_uint32 owner;		/* 0: free; else the proc number + 1 of the backend, or SIFT_TID_LEASE_CLAIMING */
 	RelFileLocator locator;
 	pg_atomic_uint64 lo;
-	pg_atomic_uint64 hi;
+	pg_atomic_uint64 seq;		/* one more for each claim of the slot, before its locator is written */
 } SiftShmTidLease;
 
 StaticAssertDecl(sizeof(SiftShmTidLease) == 32, "a vblock lease is 32 bytes");
@@ -191,8 +193,10 @@ extern void sift_shm_manifest_stats(SiftShmManifestStats *stats);
 
 /* The lease slot of this backend for the table, or -1 where the registry cannot be had (the caller decides what that costs); a slot is released with the backend (or at once, sift_shm_tid_lease_release) */
 extern int	sift_shm_tid_lease_acquire(const RelFileLocator *locator);
-extern void sift_shm_tid_lease_set(int slot, uint64 lo, uint64 hi);
+extern void sift_shm_tid_lease_set(int slot, uint64 lo);
 extern void sift_shm_tid_lease_release(int slot);
+/* A backend takes up (delta 1) or lets go of (-1) a run of vblocks with no slot of the registry; the count is taken before the run is, so that VACUUM that sees the run sees the count. False, and nothing counted, where the registry cannot be had: VACUUM sets no bit there */
+extern bool sift_shm_tid_unleased(int delta);
 /* The vblock below which no backend may still put a row (the least lo of the leases of the table, at most next_vblock); false where the registry cannot be had */
 extern bool sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint64 *floor);
 

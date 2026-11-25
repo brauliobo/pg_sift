@@ -278,6 +278,14 @@ sift_f2_store_open(Relation rel)
 }
 
 SiftF2Store *
+sift_f2_store_cached(Oid relid)
+{
+	StoreEntry *e = store_cache == NULL ? NULL : hash_search(store_cache, &relid, HASH_FIND, NULL);
+
+	return e == NULL ? NULL : e->store;
+}
+
+SiftF2Store *
 sift_f2_store_from_oid(Oid relid)
 {
 	Relation	rel = relation_open(relid, AccessShareLock);

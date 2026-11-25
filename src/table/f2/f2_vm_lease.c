@@ -1,13 +1,13 @@
 /*
  * table/f2/f2_vm_lease.c - the vblocks a backend may still put rows in (table/f2/f2_vm.h): the run it reserved and the vblock it fills now, published in the registry of shared memory
  * (core/shm_manifest.h) where VACUUM reads the floor below which a vblock is closed. A backend keeps one lease for each table it inserts into and lets them all go when it exits. Where the registry
- * has no slot left the backend gives back its least recently used lease with the run it covered (the table takes a new run at its next row), and where it has none to give back, or the registry
- * cannot be had, the insert goes on without a lease: VACUUM sets no bit without a registry, and the vblocks of a run without a lease close with the rows that fill them.
+ * has no slot left the backend gives back its least recently used lease with the run it covered (the table takes a new run at its next row; no lock of the table is taken for it, the pool of its
+ * addresses is in the memory of this backend), and where it has none to give back, or the registry cannot be had, the insert goes on without a lease: VACUUM sets no bit without a registry, and
+ * none while a backend fills a run that has no slot (the registry counts them).
  */
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/relation.h"
 #include "access/xlog.h"
 #include "catalog/pg_class.h"
 #include "storage/ipc.h"
@@ -33,6 +33,7 @@ typedef struct VmLease
 	RelFileLocator locator;
 	Oid			relid;
 	int			slot;			/* -1: the registry had none to give */
+	bool		counted;		/* the registry counts this run of vblocks as one with no slot */
 	uint64		hi;
 	uint64		used;
 } VmLease;
@@ -51,11 +52,27 @@ lease_find(const RelFileLocator *locator)
 	return NULL;
 }
 
+/* The slot of the lease, and the count of the runs that have none kept as it says */
+static void
+lease_slot(VmLease *l, int slot)
+{
+	if (slot < 0 && !l->counted)
+		l->counted = sift_shm_tid_unleased(1);
+	else if (slot >= 0 && l->counted)
+	{
+		(void) sift_shm_tid_unleased(-1);
+		l->counted = false;
+	}
+	l->slot = slot;
+}
+
 static void
 lease_drop(VmLease *l)
 {
 	if (l->slot >= 0)
 		sift_shm_tid_lease_release(l->slot);
+	if (l->counted)
+		(void) sift_shm_tid_unleased(-1);
 	*l = leases[--nleases];
 }
 
@@ -90,18 +107,15 @@ static bool
 lease_evict(bool resident)
 {
 	VmLease    *victim = NULL;
-	Relation	rel;
+	SiftF2Store *store;
 
 	for (int i = 0; i < nleases; i++)
 		if ((!resident || leases[i].slot >= 0) && (victim == NULL || leases[i].used < victim->used))
 			victim = &leases[i];
 	if (victim == NULL)
 		return false;
-	if ((rel = try_relation_open(victim->relid, AccessShareLock)) != NULL)
-	{
-		sift_tbl_f2_tid_reset(sift_f2_store_open(rel));
-		relation_close(rel, NoLock);
-	}
+	if ((store = sift_f2_store_cached(victim->relid)) != NULL)
+		sift_tbl_f2_tid_reset(store);
 	lease_drop(victim);
 	return true;
 }
@@ -135,7 +149,7 @@ sift_tbl_vm_lease_open(Relation rel)
 		;
 	if ((l = lease_find(&rel->rd_locator)) == NULL)
 		l = lease_add(rel);
-	l->slot = slot;
+	lease_slot(l, slot);
 	l->used = ++clock_used;
 }
 
@@ -149,7 +163,7 @@ sift_tbl_vm_lease_set(Relation rel, uint64 lo, uint64 hi)
 	l->hi = hi;
 	l->used = ++clock_used;
 	if (l->slot >= 0)
-		sift_shm_tid_lease_set(l->slot, lo, hi);
+		sift_shm_tid_lease_set(l->slot, lo);
 }
 
 void
@@ -162,5 +176,5 @@ sift_tbl_vm_lease_roll(Relation rel, uint64 open_vblock)
 	if (open_vblock >= l->hi)
 		lease_drop(l);
 	else if (l->slot >= 0)
-		sift_shm_tid_lease_set(l->slot, open_vblock, l->hi);
+		sift_shm_tid_lease_set(l->slot, open_vblock);
 }
