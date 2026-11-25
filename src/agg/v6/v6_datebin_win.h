@@ -146,7 +146,7 @@ typedef struct SiftWinxSpec
 	int			nfuncs;
 	bool		range_frame;	/* the default frame with an ORDER BY: the peers of the row are in it; with no ORDER BY every row is a peer of every other */
 	SiftWinxFunc func[SIFT_WINX_MAX_FUNCS];
-	uint64		max_pending;	/* the most rows held for a peer group: more is an error (54000) */
+	uint64		max_pending;	/* the most rows of a peer group held in memory: the rest wait in a temp file, and LEAD's look-ahead is bounded by it */
 } SiftWinxSpec;
 
 typedef struct SiftWinxBatch

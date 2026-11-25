@@ -273,6 +273,8 @@ struct SiftWinx
 	WinxCell   *pcells;
 	uint64		npend;
 	uint64		pcap;
+	BufFile    *pspill;			/* the rows of a peer group past max_pending, (tag, row number, cells) each, in arrival order */
+	uint64		nspilled;
 	uint32		lcap;			/* the ring of the rows that wait for the rows a LEAD looks ahead to: max_lead + 1 of them */
 	uint32		lhead;
 	uint32		lcount;
@@ -755,19 +757,60 @@ winx_emit_row(SiftWinx *w, uint64 tag, uint64 row_number, const WinxCell *cells)
 }
 
 static void
+winx_spill_row(SiftWinx *w, uint64 tag, uint64 row_number, const WinxCell *cells)
+{
+	const uint64 head[2] = {tag, row_number};
+
+	if (w->pspill == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(w->cx);
+
+		w->pspill = BufFileCreateTemp(false);
+		MemoryContextSwitchTo(old);
+	}
+	BufFileWrite(w->pspill, head, sizeof(head));
+	BufFileWrite(w->pspill, cells, sizeof(WinxCell) * w->ncells);
+	if (++w->nspilled % 1024 == 0)
+		CHECK_FOR_INTERRUPTS();
+	w->st.max_pending = Max(w->st.max_pending, w->npend + w->nspilled);
+}
+
+static void
+winx_unspill(SiftWinx *w)
+{
+	WinxCell	cells[SIFT_WINX_MAX_FUNCS];
+	uint64		head[2];
+
+	SIFT_INVARIANT(BufFileSeek(w->pspill, 0, 0, SEEK_SET) == 0, "window: could not rewind the spill of a peer group");
+	for (uint64 i = 0; i < w->nspilled; i++)
+	{
+		BufFileReadExact(w->pspill, head, sizeof(head));
+		BufFileReadExact(w->pspill, cells, sizeof(WinxCell) * w->ncells);
+		winx_emit_row(w, head[0], head[1], cells);
+	}
+	BufFileClose(w->pspill);
+	w->pspill = NULL;
+	w->nspilled = 0;
+}
+
+static void
 winx_flush(SiftWinx *w)
 {
 	for (uint64 i = 0; i < w->npend; i++)
 		winx_emit_row(w, w->ptag[i], w->pnum[i], &w->pcells[i * w->ncells]);
 	w->npend = 0;
+	if (w->nspilled > 0)
+		winx_unspill(w);
 }
 
 static void
 winx_pend(SiftWinx *w, uint64 tag, uint64 row_number, const WinxCell *cells)
 {
 	if (w->npend >= w->spec.max_pending)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("window: a peer group of more than %llu rows", (unsigned long long) w->spec.max_pending),
-						errhint("Use a ROWS frame (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), which holds no peers, or raise work_mem.")));
+	{
+		winx_spill_row(w, tag, row_number, cells);
+		return;
+	}
 	if (w->npend == w->pcap)
 	{
 		w->pcap = Max(w->pcap * 2, 1024);
@@ -807,7 +850,7 @@ winx_batch(SiftWinx *w, const SiftWinxBatch *b)
 		int64		part[SIFT_WINX_MAX_KEYS], ord[SIFT_WINX_MAX_KEYS];
 		uint8		part_null = 0, ord_null = 0;
 		bool		new_part, new_peer = false;
-		uint64		tag = b->tag != NULL ? b->tag[r] : w->st.rows + w->npend + w->lcount;
+		uint64		tag = b->tag != NULL ? b->tag[r] : w->st.rows + w->npend + w->nspilled + w->lcount;
 		WinxCell	cells[SIFT_WINX_MAX_FUNCS];
 
 		if (b->mask != NULL && !mask_bit(b->mask, r))
@@ -876,6 +919,8 @@ sift_winx_free(SiftWinx *w)
 	for (int f = 0; f < w->spec.nfuncs; f++)
 		if (w->fs[f].ring != NULL)
 			pfree(w->fs[f].ring);
+	if (w->pspill != NULL)
+		BufFileClose(w->pspill);
 	if (w->ptag != NULL)
 		pfree(w->ptag);
 	if (w->pnum != NULL)
