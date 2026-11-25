@@ -156,6 +156,7 @@ DECLARE
 	r record;
 	o record;
 	maj int;
+	orphans int8;
 	mnr int;
 	reload boolean := false;
 	preload text;
@@ -254,6 +255,18 @@ BEGIN
 			RETURN NEXT;
 		END LOOP;
 	END IF;
+
+	-- the rows of the per-table definitions that name a table that is gone: pg_dump does not write them, so a dump and a restore lose them, and a restore without the table reads their key as 0
+	FOR r IN SELECT c.tbl, c.col FROM (VALUES ('sift.table_paths', 'relid'), ('sift.ttl_policies', 'relid'), ('sift.projection_defs', 'rel')) c(tbl, col)
+			 WHERE to_regclass(c.tbl) IS NOT NULL AND has_table_privilege(to_regclass(c.tbl), 'SELECT') ORDER BY 1
+	LOOP
+		EXECUTE format('SELECT count(*) FROM %s t WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = t.%I::pg_catalog.oid)', r.tbl, r.col) INTO orphans;
+		CONTINUE WHEN orphans = 0;
+		ord := 3; phase := 'post_cleanup'; object := r.tbl; kind := 'option'; detected := format('%s rows of a table that is gone', orphans); status := 'warn'; size_bytes := NULL;
+		advice := 'a table that was dropped left rows behind (or a restore met them without the table); a dump does not write them. Delete them';
+		action_sql := format('DELETE FROM %s t WHERE NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = t.%I::pg_catalog.oid);', r.tbl, r.col);
+		RETURN NEXT;
+	END LOOP;
 
 	-- 4. index and table: the format of what is written
 	FOR r IN SELECT c.oid AS relid, c.oid::regclass::text AS rel, a.amname::text AS am, pg_relation_size(c.oid) AS bytes, coalesce(i.indisvalid AND i.indisready, true) AS is_valid

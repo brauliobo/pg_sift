@@ -2,6 +2,9 @@
 -- statement) and sift.activity (what runs now). Each lists a relation of Format 1, a quarantined one, an invalid one and a locked one as a row, and none of them fails on those.
 -- A relation of Format Major 1 is fully supported: it is reported calmly (state ready, severity info) and never as an error.
 
+-- The declared paths of the sift_tables (5.0) are dumped like the other per-table definitions: a row of a table that is gone (a stale OID prints as a number) is never written
+SELECT pg_catalog.pg_extension_config_dump('sift.table_paths', 'WHERE relid::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class)');
+
 -- sift.health: one row per thing to do, error first, then warn, then info; no row when everything is as it should be. action_sql is a statement to run (or a setting to change).
 -- Format 1 is never an error: a sift_col index or sift_table of Format 1 is listed once as info, with the optional upgrade.
 -- The checks of sift.health over the rows of sift.status given as jsonb (one object per relation, relation and table_name as oids), so that a caller that has the rows already (sift.indexes) reads

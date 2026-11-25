@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS sift.ttl_policies (
 	retention	interval NOT NULL CHECK (retention > interval '0')
 );
 COMMENT ON TABLE sift.ttl_policies IS 'The TTL of each sift_table (set by sift.set_ttl), by relation OID.';
-SELECT pg_catalog.pg_extension_config_dump('sift.ttl_policies', '');
+-- dumped with the database; a row of a table that is gone (a stale OID prints as a number) is never written
+SELECT pg_catalog.pg_extension_config_dump('sift.ttl_policies', 'WHERE relid::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class)');
 
 -- A dropped relation takes its policies with it, so that an OID that PostgreSQL gives out again never meets a policy of the relation that had it. The objects of a dropped relation stay in the store
 -- (a DROP can be rolled back, an object cannot): the notice names where, for the operator who deletes them.

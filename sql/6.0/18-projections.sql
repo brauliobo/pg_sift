@@ -8,6 +8,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS projection_defs_key ON sift.projection_defs (r
 ALTER TABLE sift.projection_defs REPLICA IDENTITY USING INDEX projection_defs_key;
 SELECT pg_catalog.pg_extension_config_dump('sift.projection_defs', 'WHERE rel::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class)');
 
+-- Skips the row of a table the database does not have: a restore without the table reads its name as 0, and the rows of two such tables that share a projection name would meet in the unique key
+CREATE OR REPLACE FUNCTION sift_internal.projection_defs_skip() RETURNS trigger
+	LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $fn$
+BEGIN
+	IF NEW.rel::pg_catalog.oid = 0 THEN
+		RETURN NULL;
+	END IF;
+	RETURN NEW;
+END
+$fn$;
+COMMENT ON FUNCTION sift_internal.projection_defs_skip() IS 'Internal: BEFORE ROW trigger of sift.projection_defs, skips the row of a table that is not there (a restore without it)';
+CREATE OR REPLACE TRIGGER projection_defs_skip BEFORE INSERT OR UPDATE ON sift.projection_defs
+	FOR EACH ROW EXECUTE FUNCTION sift_internal.projection_defs_skip();
+
 -- SECURITY DEFINER: the owner who drops a table has no right on sift.projection_defs
 CREATE OR REPLACE FUNCTION sift_internal.projection_defs_drop() RETURNS event_trigger
 	LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$
