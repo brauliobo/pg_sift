@@ -108,15 +108,12 @@ raw_mwm	col/v1/maint/merge_pick.c	1
 raw_mwm	col/v1/maint/scope.c	2
 raw_mwm	col/v1/scope_fill.c	1
 raw_mwm	core/f2/f2_progress.c	1
-raw_mwm	table/f2/f2_am.c	1
 raw_mwm	table/f2/f2_bulk_ins.c	1
-raw_mwm	table/f2/f2_vacuum.c	1
 raw_mwm	table/v1/load/load.c	1
 raw_mwm	table/v1/load/ring.c	1
 raw_mwm	table/v1/vacuum.c	1
 raw_mwm	table/v1/vacuum_copy.c	4
 rowbuf_notrim	col/f2/l0_stage.c	1
-rowbuf_notrim	table/f2/f2_vm.c	1
 rowbuf_unbudgeted	col/f2/compact.c	3
 rowbuf_unbudgeted	col/f2/f2_del_slab.c	1
 rowbuf_unbudgeted	col/f2/f2_kll_sql.c	1

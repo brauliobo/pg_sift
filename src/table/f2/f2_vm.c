@@ -24,6 +24,7 @@
 #include "col/f2/l0_slab.h"
 #include "col/f2/pend_del.h"
 #include "col/f2/rowbuf.h"
+#include "core/compat.h"
 #include "core/f2/f2_vm_xlog.h"
 #include "core/memtrack.h"
 #include "core/shm_manifest.h"
@@ -279,7 +280,7 @@ count_part(Relation rel, SiftF2Store *store, const Span *s, CountWindow *win, ui
 			const SiftGranuleDesc *gd = &pin->gdir[g];
 			MemoryContext old;
 
-			CHECK_FOR_INTERRUPTS();
+			sift_vacuum_delay_point();
 			if ((gd->tid_max >> 16) < win->base || (gd->tid_min >> 16) >= win->base + win->nvblocks)
 				continue;
 			old = MemoryContextSwitchTo(cx);
@@ -447,7 +448,7 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 		mr = sift_manifest_read_range(rel, NULL, NULL);
 		for (int i = 0; i < mr.n && !plan.incomplete; i++)
 		{
-			CHECK_FOR_INTERRUPTS();
+			sift_vacuum_delay_point();
 			plan_partition(rel, store, &mr.entries[i], oldest, freeze, &plan);
 		}
 		if (plan.incomplete)
@@ -459,7 +460,7 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 				store_counts(rel, false, 0, 0, 0);
 			for (uint64 base = 0; base < plan.limit; base += SIFT_VM_BLOCKS_PER_PAGE)
 			{
-				CHECK_FOR_INTERRUPTS();
+				sift_vacuum_delay_point();
 				if (base % win.nvblocks == 0)
 					window_open(&win, base);
 				total += set_page(rel, store, &plan, base, &win);

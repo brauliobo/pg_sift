@@ -23,6 +23,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "core/compat.h"
 #include "core/f2/f2_progress.h"
 #include "col/f2/delvec_delta.h"
 #include "core/cmp.h"
@@ -222,7 +223,7 @@ collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const 
 			MemoryContextReset(gcx);
 			if (n > 0)
 				store->host->on_vacuum_dead_tids(vc, tids, n);
-			CHECK_FOR_INTERRUPTS();
+			sift_vacuum_delay_point();
 		}
 	}
 	PG_FINALLY();
@@ -376,6 +377,7 @@ collect_all(VacCtx *vc, SiftF2Store *store, const SiftManifestRead *mr, const st
 
 	for (int i = 0; i < mr->n; i++)
 	{
+		sift_vacuum_delay_point();
 		collect_partition(vc, store, &mr->entries[i], cutoffs, oldest_fx, aggressive);
 		MemoryContextReset(cx);
 		sift_f2_vacuum_progress_scanned(i + 1, mr->n);
@@ -652,6 +654,7 @@ settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const s
 		FullTransactionId rest = k + 1 < mr->n ? order[k + 1].oldest : oldest_fx;
 		FullTransactionId after;
 
+		sift_vacuum_delay_point();
 		settle_partition(rel, store, cand, oldest_fx, target_fx, aggressive, &rewrite_left);
 		after = oldest_held(rel, cand, oldest_fx);
 		settled = FullTransactionIdPrecedes(after, settled) ? after : settled;
