@@ -1,6 +1,6 @@
 -- A security barrier view is the statement's own to evaluate, in its own order: the scope node, which reads the summary of a scope or the scan of the facts, answers neither a statement over a
 -- barrier view of the pairs nor one over a barrier view of the facts, and answers the same statements over the views without the barrier. Each line is a statement: whether its rows are those of
--- the join as written (sift.enable_agg = off) and what the plan read.
+-- the join as written (sift.enable_agg = off) and what the plan read; the aggregate scan does not read a statement with a barrier view either, so the barrier is the statement's own wherever it stands.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
