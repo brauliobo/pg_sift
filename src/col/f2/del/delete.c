@@ -14,6 +14,7 @@
 #include "col/f2/vacuum/run.h"
 #include "core/compat.h"
 #include "core/hash.h"
+#include "core/maint/sched.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 
@@ -576,14 +577,27 @@ note_dead(Relation rel, uint64 part_id, const uint8 *key_lo)
 		sift_f2_maint_note_parts(rel, &e, 1, NULL, NULL);
 }
 
+/* The records do not fit the pages of the chain, and a page for them is the one that makes it SIFT_PEND_DEL_FOLD_PAGES long */
+static bool
+fills_last_page(Relation rel, uint64 part_id, const uint8 *key_lo, int n)
+{
+	SiftPartitionEntry e;
+	SiftChainStamp st;
+
+	if (!sift_manifest_find_entry(rel, part_id, key_lo, &e) || e.pend_del_blk == InvalidBlockNumber)
+		return false;
+	st = sift_pend_del_stamp(rel, part_id, e.pend_del_blk);
+	return st.pages + 1 >= SIFT_PEND_DEL_FOLD_PAGES && st.count + n > (uint64) st.pages * SIFT_PEND_DEL_CAP;
+}
+
 /*
  * A buffer of pending deletes that has SIFT_PEND_DEL_FOLD_PAGES pages is folded by the maintenance when it is there, not by the statement that filled it; a statement folds it itself when the queue
- * is not there or the buffer has grown to four times that.
+ * is not there or the buffer has grown to four times that. A statement that folds the buffer anyway does not write the page that makes it long enough first: the records go into the fold.
  */
 void
 sift_del_route(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs, int n, const SiftPartSpec *spec)
 {
-	if (n >= SIFT_BULK_DEL_MIN)
+	if (n >= SIFT_BULK_DEL_MIN || (!sift_maint_here_available() && fills_last_page(rel, part_id, key_lo, n) && sift_pend_del_foldable(rel, part_id, key_lo)))
 		(void) sift_del_bulk(rel, part_id, key_lo, recs, n, true, spec);
 	else
 	{

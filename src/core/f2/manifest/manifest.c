@@ -680,66 +680,92 @@ run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void
 	return version;
 }
 
-static void
-build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
+/* The list of a partition is written for the parts the edit changes; a commit that only moves a buffer of the entry (its slab of rows, its chain of pending deletes) keeps the list, which no commit rewrites in place */
+static bool
+edits_parts(const SiftManifestEdit *e)
 {
-	const SiftManifestEdit *e = arg;
-	SiftPartitionEntry before, *ent;
+	return e->ndrop > 0 || e->nadd > 0 || e->nupdate > 0 || e->set_col_delta;
+}
+
+typedef struct EditedParts
+{
 	SiftPartDesc *parts;
-	SiftColDeltaAnchor anchor;
 	int			n;
-	uint64		gen;
-	int			nexpire;
+	SiftColDeltaAnchor anchor;
 	uint64	   *expire;
+	int			nexpire;
+} EditedParts;
+
+static void
+edit_parts(Relation rel, Tree *t, Change *ch, const SiftPartitionEntry *ent, const SiftManifestEdit *e, EditedParts *ep)
+{
 	SiftGenMap	map;
 
-	read_leaves(rel, t, sift_mf_find_leaf(t, e->key_lo), 1, ch, 2);
-	ent = &ch->ents[find_entry(ch, e->part_id, e->key_lo)];
-	before = *ent;
-	parts = read_parts_chain(rel, ent, &n, &ch->old, &t->pages, &anchor);
-	parts = repalloc(parts, (n + e->nadd) * sizeof(SiftPartDesc));
-	n = sift_mf_drop_parts(rel, parts, n, e, &expire, &nexpire);
-	sift_gen_map_init(&map, parts, n, e->nadd);
-	sift_mf_apply_updates(rel, ent, parts, &map, e);
+	ep->parts = read_parts_chain(rel, ent, &ep->n, &ch->old, &t->pages, &ep->anchor);
+	ep->parts = repalloc(ep->parts, (ep->n + e->nadd) * sizeof(SiftPartDesc));
+	ep->n = sift_mf_drop_parts(rel, ep->parts, ep->n, e, &ep->expire, &ep->nexpire);
+	sift_gen_map_init(&map, ep->parts, ep->n, e->nadd);
+	sift_mf_apply_updates(rel, ent, ep->parts, &map, e);
 	for (int i = 0; i < e->nadd; i++)
 	{
 		sift_mf_check_added(rel, ent, &e->add_parts[i]);
 		if (sift_gen_map_find(&map, e->add_parts[i].part_gen) >= 0)
 			ereport(ERROR, (errcode(ERRCODE_UNIQUE_VIOLATION), errmsg("sift index \"%s\": partition %llu already has a part of generation %llu", RelationGetRelationName(rel),
 																	  (unsigned long long) e->part_id, (unsigned long long) e->add_parts[i].part_gen)));
-		parts[n] = e->add_parts[i];
-		sift_gen_map_add(&map, n++);
+		ep->parts[ep->n] = e->add_parts[i];
+		sift_gen_map_add(&map, ep->n++);
 		if (FullTransactionIdIsValid(e->add_parts[i].min_xid) && (!FullTransactionIdIsValid(ch->new_min_xid) || FullTransactionIdPrecedes(e->add_parts[i].min_xid, ch->new_min_xid)))
 			ch->new_min_xid = e->add_parts[i].min_xid;
 	}
 	sift_gen_map_free(&map);
+}
+
+static void
+write_edited_parts(Relation rel, Change *ch, BlkVec *created, SiftPartitionEntry *ent, const SiftManifestEdit *e, EditedParts *ep)
+{
+	if (e->set_col_delta)
+	{
+		ep->anchor = e->new_col_delta;
+		if (!sift_col_delta_anchor_sane(&ep->anchor))
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift index \"%s\": the column delta anchor of partition %llu is not valid", RelationGetRelationName(rel),
+																			(unsigned long long) e->part_id)));
+		if (FullTransactionIdIsValid(ep->anchor.min_xid) && (!FullTransactionIdIsValid(ch->new_min_xid) || FullTransactionIdPrecedes(ep->anchor.min_xid, ch->new_min_xid)))
+			ch->new_min_xid = ep->anchor.min_xid;
+		ch->set_cd_dir = (ep->anchor.flags & SIFT_CDLA_INDEXED_DIR) != 0;
+	}
+	if (sift_col_delta_anchor_has_chain(&ep->anchor) && ep->n == 0)
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("sift index \"%s\": partition %llu would keep a column delta chain and have no part", RelationGetRelationName(rel),
+																				 (unsigned long long) e->part_id),
+						errhint("The edit that drops the last part of a partition clears its chain.")));
+	sift_mf_fold_entry(ent, ep->parts, ep->n);
+	if (sift_col_delta_anchor_has_chain(&ep->anchor))
+		ent->flags |= SIFT_PARTENTRY_HAS_COL_DELTA;
+	else
+		ent->flags &= ~SIFT_PARTENTRY_HAS_COL_DELTA;
+	ent->manifest_gen = sift_manifest_new_gen(rel, 1);
+	ent->manifest_blk = write_partlist(rel, ent->part_id, ent->manifest_gen, ep->parts, ep->n, created, &ep->anchor);
+}
+
+static void
+build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
+{
+	const SiftManifestEdit *e = arg;
+	SiftPartitionEntry before, *ent;
+	EditedParts ep = {0};
+	bool		relist = edits_parts(e);
+
+	read_leaves(rel, t, sift_mf_find_leaf(t, e->key_lo), 1, ch, 2);
+	ent = &ch->ents[find_entry(ch, e->part_id, e->key_lo)];
+	before = *ent;
+	if (relist)
+		edit_parts(rel, t, ch, ent, e, &ep);
 	if (e->nupdate_scopes > 0)
 		sift_mf_build_scopes(rel, t, ch, e, created);
 	if (e->update_projs != NULL || e->ndrop > 0)
 		sift_mf_build_commit_projs(rel, t, ch, e->update_projs, e->drop_gens, e->ndrop, created);
-	sift_mf_build_tier(rel, t, ch, e, expire, nexpire, created);
-	if (e->set_col_delta)
-	{
-		anchor = e->new_col_delta;
-		if (!sift_col_delta_anchor_sane(&anchor))
-			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift index \"%s\": the column delta anchor of partition %llu is not valid", RelationGetRelationName(rel),
-																			(unsigned long long) e->part_id)));
-		if (FullTransactionIdIsValid(anchor.min_xid) && (!FullTransactionIdIsValid(ch->new_min_xid) || FullTransactionIdPrecedes(anchor.min_xid, ch->new_min_xid)))
-			ch->new_min_xid = anchor.min_xid;
-		ch->set_cd_dir = (anchor.flags & SIFT_CDLA_INDEXED_DIR) != 0;
-	}
-	if (sift_col_delta_anchor_has_chain(&anchor) && n == 0)
-		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("sift index \"%s\": partition %llu would keep a column delta chain and have no part", RelationGetRelationName(rel),
-																				 (unsigned long long) e->part_id),
-						errhint("The edit that drops the last part of a partition clears its chain.")));
-	sift_mf_fold_entry(ent, parts, n);
-	if (sift_col_delta_anchor_has_chain(&anchor))
-		ent->flags |= SIFT_PARTENTRY_HAS_COL_DELTA;
-	else
-		ent->flags &= ~SIFT_PARTENTRY_HAS_COL_DELTA;
-	gen = sift_manifest_new_gen(rel, 1);
-	ent->manifest_gen = gen;
-	ent->manifest_blk = write_partlist(rel, ent->part_id, gen, parts, n, created, &anchor);
+	sift_mf_build_tier(rel, t, ch, e, ep.expire, ep.nexpire, created);
+	if (relist)
+		write_edited_parts(rel, ch, created, ent, e, &ep);
 	if (e->set_l0_slab)
 		ent->l0_slab_blk = e->new_l0_slab_blk;
 	if (e->set_pend_del)
