@@ -413,7 +413,11 @@ finish_groups(AggExec *ex)
 static void
 group_tuple(AggExec *t, uint32 g, TupleTableSlot *slot)
 {
+	MemoryContext old;
+
 	ExecClearTuple(slot);
+	MemoryContextReset(t->rcxt);
+	old = MemoryContextSwitchTo(t->rcxt);
 	for (int j = 0; j < t->spec->nkeys; j++)
 		slot->tts_values[j] = key_datum(t, j, g, &slot->tts_isnull[j]);
 	for (int i = 0; i < t->spec->naggs; i++)
@@ -422,6 +426,7 @@ group_tuple(AggExec *t, uint32 g, TupleTableSlot *slot)
 
 		slot->tts_values[c] = agg_datum(t, i, g, &slot->tts_isnull[c]);
 	}
+	MemoryContextSwitchTo(old);
 	ExecStoreVirtualTuple(slot);
 }
 
@@ -578,6 +583,7 @@ engine_contexts(AggExec *ex, MemoryContext parent)
 	ex->cxt = sift_mem_allocset_create(parent, "sift agg");
 	ex->tcxt = sift_mem_allocset_create(ex->cxt, "sift agg table");
 	ex->ucxt = sift_mem_allocset_create(ex->cxt, "sift agg unit");
+	ex->rcxt = sift_mem_allocset_create(ex->cxt, "sift agg result");
 }
 
 void
