@@ -224,6 +224,8 @@ typedef struct SiftTblF2Scan
 	bool		loaded;
 
 	SiftF2GranuleBuf *gb;
+	uint64		pin_part_id;
+	SiftF2PartPin *pin;			/* the part of gb, kept from one of its granules to the next: opening it again asks the delete vector of the part for its length */
 	uint64		sel[SIFT_DV_MASK_WORDS];
 	SiftTblVis	vis;
 	SiftColDeltaScan *delta;
@@ -362,6 +364,26 @@ sift_tbl_f2_scan_set_snapshot(TableScanDesc scan, Snapshot snapshot)
 }
 
 static void
+drop_pin(SiftTblF2Scan *s)
+{
+	if (s->pin != NULL)
+		sift_f2_pin_release(s->pin);
+	s->pin = NULL;
+}
+
+static SiftF2PartPin *
+part_pin(SiftTblF2Scan *s, const ScanUnit *u)
+{
+	if (s->pin == NULL || s->pin_part_id != u->entry.part_id || s->pin->desc.part_gen != u->desc.part_gen || s->pin->desc.header_blk != u->desc.header_blk)
+	{
+		drop_pin(s);
+		s->pin_part_id = u->entry.part_id;
+		s->pin = sift_f2_pin_open(s->base.rs_rd, s->store, &u->desc, (uint32) u->entry.part_id);
+	}
+	return s->pin;
+}
+
+static void
 drop_granule(SiftTblF2Scan *s)
 {
 	if (s->gb != NULL)
@@ -374,6 +396,7 @@ static void
 scan_release(SiftTblF2Scan *s)
 {
 	drop_granule(s);
+	drop_pin(s);
 	if (s->page != NULL)
 		page_drop(s->page);
 }
@@ -462,14 +485,10 @@ load_granule(SiftTblF2Scan *s, int64 G)
 	uint16		n;
 
 	drop_granule(s);
-	pin = sift_f2_pin_open(s->base.rs_rd, s->store, &u->desc, (uint32) u->entry.part_id);
+	pin = part_pin(s, u);
 	if (s->has_range && (pin->tidx[g].tid_max < s->mintid || pin->tidx[g].tid_min > s->maxtid))
-	{
-		sift_f2_pin_release(pin);
 		return false;
-	}
 	s->gb = sift_f2_gbuf_load(s->base.rs_rd, s->store, pin, g);
-	sift_f2_pin_release(pin);
 	sift_col_delta_scan_attach(s->delta, &u->entry, s->gb);
 	select_pending(s, &u->entry);
 	n = sift_tbl_f2_vis_granule(&s->vis, s->gb, s->pdel, s->sel);
