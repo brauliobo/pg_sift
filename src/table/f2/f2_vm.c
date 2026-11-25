@@ -388,7 +388,7 @@ set_page(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, Coun
 
 /* ---- the counts ---- */
 
-/* Sets the bit that says a map may exist (before the first bit is set), or stores the counts of the map fork; the same counts go to the registry */
+/* Sets the bit that says a map may exist (before the first bit is set), or stores the counts of the map fork; the registry gets the metapage as it is */
 static void
 store_counts(Relation rel, bool counts, BlockNumber all_visible, BlockNumber all_frozen, uint64 total)
 {
@@ -407,7 +407,7 @@ store_counts(Relation rel, bool counts, BlockNumber all_visible, BlockNumber all
 	}
 	sift_meta_seal(p0, m->common.struct_size);
 	sift_xlog_done(&x);
-	if (counts && sift_shm_manifest_peek(&rel->rd_locator, &peek))
+	if (sift_shm_manifest_peek(&rel->rd_locator, &peek))
 	{
 		SiftColMetaPageData now = sift_col_meta_read(rel);
 		SiftShmIndexMeta shm = sift_col_meta_shm(rel, &now);
