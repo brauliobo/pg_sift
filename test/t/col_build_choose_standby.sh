@@ -26,7 +26,7 @@ GROUPS_Q="SELECT coalesce(string_agg(tenant_id || ':' || n || ':' || s, ',' ORDE
 TEMP="SELECT temp_bytes FROM pg_stat_database WHERE datname = current_database()"
 FLUSH="SELECT pg_stat_force_next_flush()" ; CLEAR="SELECT pg_stat_clear_snapshot()"
 answer() { sql "$1" "SET sift.enable_agg = $2" "SET max_parallel_workers_per_gather = 0" "$GROUPS_Q" | tail -1; }
-verified() { test -z "$(sql "$1" "SELECT sift.col_verify('orders_idx', true)" 2>&1)"; }
+verified() { tap_verified "$1" orders_idx; }
 # build STATEMENT...: the statements in one session; BUILT = the source the last one took its rows from (0 heap, 1 btree, 2 old index), TEMPDELTA = the temp_bytes it added to the database
 build() {
 	local out

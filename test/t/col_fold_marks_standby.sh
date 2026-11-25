@@ -24,7 +24,7 @@ catchup primary standby || bail "the standby did not catch up"
 
 Q="SELECT count(*) || '/' || sum(v) FROM fm"
 rows() { sql "$1" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = $2" "$Q"; }
-agree() { test "$(rows "$1" on)" == "$(rows "$1" off)"; }
+agree() { tap_same_answers "$1" "$Q"; }
 fold() { sql primary "SELECT sift._test_col_fold_marks('fm_c')"; }
 # a REPEATABLE READ session of the standby that holds its snapshot for a minute: its output is in $1 (ends by itself or when the conflict cancels it)
 reader() {

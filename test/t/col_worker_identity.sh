@@ -17,13 +17,8 @@ sql wi "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind tex
 
 churn() { sql wi "UPDATE facts SET amount = amount + 1 WHERE id % 100 = $1" "DELETE FROM facts WHERE id % 100 = $1 + 50" \
 	"INSERT INTO facts SELECT $1 * 100000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 600) g" >/dev/null; }
-hold() { # a session that holds the advisory lock of the progress gate (sift.test_progress_gate) until $D/release exists
-	rm -f "$D/locked" "$D/release"
-	{ echo "SELECT pg_advisory_lock(20983, 12);"; echo "\\! touch '$D/locked'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql wi >/dev/null &
-	HOLDER=$!
-	until [[ -e $D/locked ]]; do sleep 0.05; done
-}
-let_go() { touch "$D/release"; wait "$HOLDER"; }
+hold() { tap_tx_hold wi gate "SELECT pg_advisory_lock(20983, 12)"; }   # the advisory lock of the progress gate (sift.test_progress_gate)
+let_go() { tap_tx_release gate; }
 buffered() { sql wi "SELECT coalesce(sum(rows), 0) FROM sift.col_segments('facts_idx') WHERE kind <> 'immutable'"; }
 await_promotion() { for _ in $(seq 600); do [[ $(buffered) == 0 ]] && return 0; sleep 0.05; done; return 1; }
 worker_row() { sql wi "SELECT backend_type || '|' || state || '|' || query FROM pg_stat_activity WHERE datname = current_database() AND backend_type LIKE 'sift%' ORDER BY backend_start DESC LIMIT 1"; }

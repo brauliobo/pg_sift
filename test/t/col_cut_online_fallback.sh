@@ -65,7 +65,7 @@ vacuum_until() {
 	done
 	return 1
 }
-verified() { test -z "$(sql "$1" "SELECT sift.col_verify('t_idx', true)" 2>&1)"; }
+verified() { tap_verified "$1" t_idx; }
 answer() { sql "$1" "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5"; }
 agree() { test "$(answer primary)" == "$(sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SET sift.enable_col_scan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 5")"; }
 catchup() {

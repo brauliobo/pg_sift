@@ -16,20 +16,15 @@ sql wp "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind tex
 churn() { sql wp "UPDATE facts SET amount = amount + 1 WHERE id % 100 = $1" "DELETE FROM facts WHERE id % 100 = $1 + 50" \
 	"INSERT INTO facts SELECT $1 * 100000 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 600) g" >/dev/null; }
 rows() { sql wp "SELECT count(*) FROM sift.progress"; }
-hold() { # KEY: a session that holds the advisory lock of the gate until $D/release exists
-	rm -f "$D/locked" "$D/release"
-	{ echo "SELECT pg_advisory_lock(20983, $1);"; echo "\\! touch '$D/locked'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql wp >/dev/null &
-	HOLDER=$!
-	until [[ -e $D/locked ]]; do sleep 0.05; done
-}
-let_go() { touch "$D/release"; wait "$HOLDER"; }
+hold() { tap_tx_hold wp gate "SELECT pg_advisory_lock(20983, $1)"; }   # KEY: the advisory lock of the gate
+let_go() { tap_tx_release gate; }
 
 # 1. a maintenance worker held when it enters its promote phase (the first of its phases)
 hold 12
 sql wp "ALTER DATABASE $(node_db wp) SET sift.async_maintenance = on" "ALTER DATABASE $(node_db wp) SET sift.test_progress_gate = 1" >/dev/null
 churn 1
 sql wp "VACUUM facts" >/dev/null
-waiting() { [[ $(sql wp "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]]; }
+waiting() { tap_tx_blocked wp; }
 check "the maintenance worker waits at its promote phase" wait_for waiting 60
 out=$(sql wp "SELECT p.job, p.phase, p.index = 'facts_idx'::regclass, p.segments_done, p.segments_total >= 1, p.started IS NOT NULL, a.backend_type FROM sift.progress p JOIN pg_stat_activity a ON a.pid = p.pid")
 check "sift.progress lists it: job, phase, index, no segment promoted yet" test "$out" == "promote|promote|t|0|t|t|sift promote"

@@ -80,7 +80,7 @@ hold() {
 release() { touch "$D/unhold"; wait "$HOLDER"; }
 held_answer_ok() { test "$(grep after "$D/hold.out" | tr -d ' ')" == "after|$(answer primary)"; }
 no_failure() { ! grep -q -E 'ERROR|pgbench: error|failed transactions: [1-9]' "$1"; }
-verified() { test -z "$(sql "$1" "SELECT sift.col_verify('t_idx', true)" 2>&1)"; }
+verified() { tap_verified "$1" t_idx; }
 agree() { test "$(answer primary)" == "$(table_answer)"; }
 recovered() { verified primary && agree; }
 

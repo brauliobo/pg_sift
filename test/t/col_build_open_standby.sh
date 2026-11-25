@@ -27,7 +27,7 @@ Q="SELECT coalesce(string_agg(k || ':' || n || ':' || s, ',' ORDER BY k), '') FR
 TEMP="SELECT 'temp=' || temp_bytes FROM pg_stat_database WHERE datname = current_database()"
 FLUSH="SELECT pg_stat_force_next_flush()"; CLEAR="SELECT pg_stat_clear_snapshot()"
 answer() { sql "$1" "SET sift.enable_agg = $2" "SET max_parallel_workers_per_gather = 0" "$Q" | tail -1; }
-verified() { test -z "$(sql "$1" "SELECT sift.col_verify('ev_idx', true)" 2>&1)"; }
+verified() { tap_verified "$1" ev_idx; }
 same_everywhere() {
 	catchup primary standby || return 1
 	local heap

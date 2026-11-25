@@ -30,18 +30,8 @@ node_start standby || bail "standby start failed"
 D=$(dir standby)
 COUNT="SELECT count(*) FROM docs WHERE body @@> 'alpha OR beta'"
 
-# hold: the gate of the testing build (advisory lock 20983, 1) is held on the standby until $D/release exists
-hold() {
-	rm -f "$D/locked" "$D/release"
-	{
-		echo "SELECT pg_advisory_lock(20983, 1);"
-		echo "\\! touch '$D/locked'"
-		echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"
-	} | sql standby >/dev/null &
-	HOLDER=$!
-	until [[ -e $D/locked ]]; do sleep 0.05; done
-}
-waiting() { sql standby "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"; }
+# hold: the gate of the testing build (advisory lock 20983, 1) is held on the standby until tap_tx_release gate
+hold() { tap_tx_hold standby gate "SELECT pg_advisory_lock(20983, 1)"; }
 
 # race SETTING: three segments of the words are written, the count waits at its gate on the standby, the primary (with SETTING in its session)
 # merges everything and writes new segments over the blocks the merge freed. WANT: the count of the query's snapshot; REUSED: the index did
@@ -54,8 +44,7 @@ race() {
 	hold
 	sql standby "LOAD 'pg_sift'" "SET sift.test_count_gate = on" "SET enable_seqscan = off" "$COUNT" >"$D/count.out" 2>&1 &
 	COUNTER=$!
-	for _ in $(seq 400); do [[ $(waiting) -ge 1 ]] && break; sleep 0.05; done
-	[[ $(waiting) -ge 1 ]] || bail "the count did not reach its gate"
+	tap_tx_wait_blocked standby || bail "the count did not reach its gate"
 	sql primary "SET sift.async_maintenance = off" "SELECT sift.merge('docs_idx', true) > 0" >/dev/null || bail "merge failed"
 	hw=$(sql primary "SELECT high_water FROM sift.index_info('docs_idx')")
 	sql primary "$1" "SET sift.async_maintenance = off" \
@@ -66,7 +55,7 @@ race() {
 	sleep 2
 }
 replayed() { sql standby "SELECT pg_last_wal_replay_lsn() >= '$LSN'"; }
-release() { touch "$D/release"; wait "$HOLDER" "$COUNTER"; diag "count: $(head -1 "$D/count.out"); wanted $WANT, the index did not grow: $REUSED"; }
+release() { tap_tx_release gate; wait "$COUNTER"; diag "count: $(head -1 "$D/count.out"); wanted $WANT, the index did not grow: $REUSED"; }
 
 # the default: the replay waits for the query
 race "SELECT 1"

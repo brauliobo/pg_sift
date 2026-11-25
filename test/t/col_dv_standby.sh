@@ -22,7 +22,7 @@ catchup primary standby || bail "the standby did not catch up"
 
 Q="SELECT g, count(*), sum(v) FROM dv GROUP BY g ORDER BY g"
 rows() { sql "$1" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = $2" "$Q"; }
-agree() { test "$(rows "$1" on)" == "$(rows "$1" off)"; }
+agree() { tap_same_answers "$1" "$Q"; }
 records() { sql "$1" "SELECT count(*) FROM sift._test_col_log_records('dv_c')"; }
 fold() { sql primary "SELECT sift._test_col_fold_marks('dv_c')"; }
 reader() {

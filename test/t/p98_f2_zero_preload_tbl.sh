@@ -18,7 +18,7 @@ sql zp "CREATE EXTENSION pg_sift" "CREATE TABLE t ($COLS) USING sift_table" "CRE
 	"CREATE TABLE u (id int, v int)" "CREATE UNIQUE INDEX u_id ON u USING sift_col (id)" >/dev/null || bail "setup failed"
 
 both() { local s; for s in t h; do sql zp "${1//@T/$s}" || return; done; }
-digest() { sql zp "SELECT count(*) || ':' || coalesce(sum(v), 0) || ':' || md5(coalesce(string_agg(id || ',' || k || ',' || v || ',' || coalesce(a, 0) || ',' || pad, ';' ORDER BY id), '')) FROM $1"; }
+digest() { tap_digest zp "$1" id "id || ',' || k || ',' || v || ',' || coalesce(a, 0) || ',' || pad"; }
 same() { [[ $(digest t) == "$(digest h)" ]]; }
 problems() { sql zp "SELECT count(*) FROM sift.check('t', true)"; }
 errors() { sql zp "$1" 2>&1 | grep -c "$2"; }

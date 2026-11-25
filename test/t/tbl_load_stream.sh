@@ -32,7 +32,7 @@ catchup primary standby || bail "the standby did not catch up"
 SERIAL=("SET max_parallel_maintenance_workers = 0" "SET sift.test_load_unit_bytes = 128" "SET sift.test_par_workers = 0")
 RING=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.test_load_unit_bytes = 128" "SET sift.test_par_workers = 0")
 COPYSQL="COPY lt FROM '$D/load.csv' CSV"
-digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid::text || ':' || amount, ',' ORDER BY id, ctid)) FROM lt" | tail -1; }
+digest() { tap_digest "$1" lt "id, ctid" "id || ':' || ctid::text || ':' || amount"; }
 rows() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || grp || ':' || amount || ':' || pad, ',' ORDER BY id, grp, amount, pad)) FROM lt" | tail -1; }
 segments() { sql primary "SELECT count(*) || '/' || sum(units) FROM sift.table_segments('lt') WHERE kind = 'columns'"; }
 used() { sql primary "SELECT high_water - free_blocks FROM sift.table_space('lt')"; }

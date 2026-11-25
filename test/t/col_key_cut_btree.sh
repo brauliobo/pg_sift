@@ -27,7 +27,7 @@ BUILD="CREATE INDEX orders_idx ON orders USING sift_col (id, tenant_id, created_
 RESULT="SELECT current_setting('sift.test_col_pick_reads')::int > 0 AND current_setting('sift.test_col_spill_bytes')::int = 0, current_setting('sift.test_col_spill_bytes'), current_setting('sift.test_col_workers')"
 
 answer() { sql n "LOAD 'pg_sift'" "SET sift.enable_agg = $1" "SET max_parallel_workers_per_gather = 0" "$GROUPS_Q" | tail -1; }
-verified() { test -z "$(sql n "SELECT sift.col_verify('orders_idx', true)" 2>&1)"; }
+verified() { tap_verified n orders_idx; }
 valid() { [[ $(sql n "SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = 'orders_idx'::regclass") == t ]]; }
 # build WORKERS STATEMENT: the statement under the btree path forced, and what the build reports: "t|SPILL|WORKERS" (t: the choice took a btree and no spool wrote a file; the leader's own counters of entries do not say, the last range it scanned may be empty)
 build() {

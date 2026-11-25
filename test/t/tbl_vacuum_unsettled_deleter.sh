@@ -16,7 +16,7 @@ sql uw "CREATE TABLE u (id bigint, k int, payload text) USING sift_table" \
 	"INSERT INTO u SELECT g, g % 8, repeat('x', 200) FROM generate_series(1, 6000) g" \
 	"INSERT INTO u SELECT g, g % 8, repeat('x', 200) FROM generate_series(6001, 12000) g" >/dev/null || bail "load failed"
 size() { sql uw "SELECT pg_relation_size('u')"; }
-digest() { sql uw "SELECT count(*) || '/' || sum(id) FROM u"; }
+digest() { tap_digest uw u id; }
 vacuum() { sql uw "SET maintenance_work_mem = '1MB'" "VACUUM u" >/dev/null; }
 
 sql uw "DELETE FROM u WHERE id <= 1000" >/dev/null || bail "first delete failed"

@@ -26,15 +26,8 @@ sql rl "CREATE EXTENSION pg_sift_test CASCADE" \
 stats() { sql rl "SELECT $1 FROM sift._test_rowlock_stats()"; }
 bump() { echo "UPDATE $1 SET v = v + 1 WHERE k BETWEEN $2 AND $3"; }
 waiting() { [[ $(sql rl "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = $1") -ge 1 ]]; }
-hold() {
-	rm -f "$D/locked$1" "$D/release$1"
-	{ echo "SELECT pg_advisory_lock($1);"; echo "\\! touch '$D/locked$1'"; echo "\\! while [ ! -e '$D/release$1' ]; do sleep 0.05; done"; } | sql rl >/dev/null &
-	holders[$1]=$!
-	wait_for "[[ -e $D/locked$1 ]]" 60 || bail "the holder did not take the gate $1"
-}
-release() { touch "$D/release$1"; wait "${holders[$1]}"; }
+hold() { tap_tx_hold rl "$1" "SELECT pg_advisory_lock($1)"; }
 
-declare -A holders
 rc=()
 for end in COMMIT ROLLBACK; do
 	hold 7001
@@ -46,10 +39,10 @@ for end in COMMIT ROLLBACK; do
 	second=$!
 	wait_for "waiting 7002" 60 || bail "the second writer did not reach its gate"
 	[[ $(stats in_chunks) -gt 0 ]] || bail "the second writer did not fill a stripe"
-	release 7001
+	tap_tx_release 7001
 	wait "$first"
 	rc+=($?)
-	release 7002
+	tap_tx_release 7002
 	wait "$second"
 done
 check "the writer that never mapped the area commits" test "${rc[0]}" -eq 0

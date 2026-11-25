@@ -30,7 +30,7 @@ catchup primary standby || bail "the standby did not catch up"
 OPTS=("SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.test_load_unit_bytes = $(knob SIFT_LW_UNIT 0 128)" "SET sift.test_par_workers = 0")
 COPYSQL="COPY lt FROM '$D/load.csv' CSV"
 GATE=7000
-digest() { sql "$1" "SELECT count(*) || ':' || md5(string_agg(id || ':' || ctid::text || ':' || amount, ',' ORDER BY id)) FROM lt" | tail -1; }
+digest() { tap_digest "$1" lt id "id || ':' || ctid::text || ':' || amount"; }
 answers() { sql "$1" "SELECT count(*) || ':' || sum(amount) FROM lt WHERE grp = 7" "SELECT count(*) FROM lt WHERE pad @@> 'zzzz'" | tr '\n' ' '; }
 twin() { sql primary "SELECT count(*) || ':' || sum(amount) FROM src WHERE grp = 7" | tr '\n' ' '; }
 used() { sql primary "SELECT relation_blocks - free_blocks FROM sift.table_space('lt')"; }
