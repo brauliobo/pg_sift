@@ -26,6 +26,22 @@
 
 /* ---- fetches by TID ---- */
 
+/* What tells two snapshots apart for the transactions they see: the finished ones (the count of the completions of the server), the running ones at the time (xmin, xmax), the commands and subtransactions of this one */
+typedef struct SnapKey
+{
+	SnapshotType type;
+	uint64		completions;
+	TransactionId xmin;
+	TransactionId xmax;
+	CommandId	curcid;
+	uint32		xcnt;
+	int32		subxcnt;
+	bool		suboverflowed;
+	bool		own_xid;
+	bool		serializable;
+	SubTransactionId subid;
+} SnapKey;
+
 typedef struct SiftTblF2Fetch
 {
 	IndexFetchTableData base;
@@ -35,12 +51,41 @@ typedef struct SiftTblF2Fetch
 	MemoryContext rowcx;
 	SiftF2GranuleBuf *gb;
 	SiftPartitionEntry entry;
-	Snapshot	vis_snap;
+	SnapKey		vis_key;
 	SiftTblVis	vis;
 	SiftColDeltaScan *delta;
 } SiftTblF2Fetch;
 
 StaticAssertDecl(offsetof(SiftTblF2Fetch, ops) == offsetof(SiftTblFetchHeader, ops), "a fetch starts with SiftTblFetchHeader");
+
+static SnapKey
+snap_key(Snapshot snap)
+{
+	SnapKey		k;
+
+	memset(&k, 0, sizeof(k));
+	k.type = snap->snapshot_type;
+	if (k.type == SNAPSHOT_ANY)
+		return k;
+	k.completions = snap->snapXactCompletionCount;
+	k.xmin = snap->xmin;
+	k.xmax = snap->xmax;
+	k.curcid = snap->curcid;
+	k.xcnt = snap->xcnt;
+	k.subxcnt = snap->subxcnt;
+	k.suboverflowed = snap->suboverflowed;
+	k.own_xid = FullTransactionIdIsValid(GetTopFullTransactionIdIfAny());
+	k.serializable = IsolationIsSerializable();
+	k.subid = GetCurrentSubTransactionId();
+	return k;
+}
+
+/* Whether what the fetch learned of the transactions holds for the snapshot: SnapshotAny asks nothing of them, an MVCC snapshot of the same finished transactions, running ones and commands sees them alike. The address of a snapshot says nothing: the allocator gives a freed one's out again */
+static bool
+snap_same(const SnapKey *seen, const SnapKey *now)
+{
+	return memcmp(seen, now, sizeof(*seen)) == 0 && (now->type == SNAPSHOT_ANY || (now->type == SNAPSHOT_MVCC && now->completions != 0));
+}
 
 static SiftTblF2Fetch *
 fetch_new(Relation rel, MemoryContext parent)
@@ -183,15 +228,17 @@ fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot
 {
 	Relation	rel = f->base.rel;
 	const SiftColDeltaGranMap *gm;
+	SnapKey		key = snap_key(snapshot);
 	int			row;
 
-	if (f->vis_snap != snapshot)
+	if (!snap_same(&f->vis_key, &key))
 	{
 		fetch_drop_granule(f);
 		sift_tbl_f2_vis_begin(&f->vis, rel, snapshot);
-		f->vis_snap = snapshot;
+		f->vis_key = key;
 		sift_col_delta_scan_reset(f->delta);
 	}
+	f->vis.snap = f->vis.xc.snap = snapshot;
 	row = f->gb != NULL ? row_in_granule(f->gb, tid) : -1;
 	ExecClearTuple(slot);
 	MemoryContextReset(f->rowcx);
