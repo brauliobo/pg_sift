@@ -25,6 +25,7 @@
 #include "core/sift.h"
 #include "core/xlog.h"
 #include "table/dispatch.h"
+#include "table/wal.h"
 
 PG_FUNCTION_INFO_V1(sift_set_tier_policy);
 PG_FUNCTION_INFO_V1(sift_clear_tier_policy);
@@ -282,6 +283,9 @@ sift_set_ttl(PG_FUNCTION_ARGS)
 	else
 	{
 		require_positive(PG_GETARG_INTERVAL_P(2), "retention");
+		if (sift_tbl_check_publication(rel))
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" is in a logical publication: its subscribers would keep the rows of the dropped parts", RelationGetRelationName(rel)),
+							errhint("Remove the table from logical publications or use DELETE to replicate row deletions.")));
 		check_ttl_column(rel, sift_f2_store_open(rel), col);
 		if (had && strcmp(old.col, col) != 0)
 			sift_f2_ttl_unmark_all(rel);

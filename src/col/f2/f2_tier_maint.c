@@ -22,12 +22,14 @@
 #include "core/f2/f2_gate.h"
 #include "core/part_lock.h"
 #include "core/wal_conflict.h"
+#include "table/wal.h"
 
 #define RANGE_BYTES		(UINT32_C(1) << 20)
 
 typedef struct Step
 {
 	Relation	rel;
+	SiftF2Store *store;
 	FullTransactionId horizon;
 	TimestampTz now;
 } Step;
@@ -99,6 +101,8 @@ ttl_commit(const Step *s, int slot, int64 cutoff, const SiftPartitionEntry *e)
 	if (plan->ndrop + nupd > 0)
 	{
 		nrel = sift_tier_release_extents(s->rel, e->part_id, parts, np, plan->drop_gens, plan->ndrop, true, &rel_ext);
+		if (plan->ndrop > 0)
+			nrel = sift_drop_wide_extents(s->rel, s->store, (uint32) e->part_id, parts, np, plan->drop_gens, plan->ndrop, &rel_ext, nrel);
 		edit = (SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.drop_gens = plan->drop_gens,.ndrop = plan->ndrop,.update_parts = upd,.nupdate = nupd,
 		.release = rel_ext,.nrelease = nrel};
 		if (plan->ndrop > 0)
@@ -254,9 +258,15 @@ commit_tiered(const Step *s, const SiftPartitionEntry *listed, const SiftTierPar
 	sift_tier_unlock_part(s->rel, listed->part_id);
 }
 
-/* false: the store failed (a WARNING says how) and the step ends */
-static bool
-tier_one(const Step *s, const TierRun *t, const SiftPartitionEntry *e, const SiftPartDesc *d)
+typedef enum TierMove
+{
+	TIER_SKIPPED,				/* the part stays: its stream is in its header, it is packed, or its wide values are in blocks of the relation that no object holds */
+	TIER_MOVED,
+	TIER_STORE_FAILED			/* a WARNING says how, and the step ends */
+} TierMove;
+
+static TierMove
+move_part(const Step *s, const TierRun *t, const SiftPartitionEntry *e, const SiftPartDesc *d)
 {
 	SiftPart   *part = sift_part_open_desc(s->rel, d, (uint32) e->part_id);
 	LocalPart	lp = {s->rel, part};
@@ -270,25 +280,36 @@ tier_one(const Step *s, const TierRun *t, const SiftPartitionEntry *e, const Sif
 	char		key[160];
 	SiftTierStatus st;
 
-	if (part->is_packed || (part->hdr.flags & SIFT_PART_FLAG_INLINE_STREAM))
-		return true;
+	if (part->is_packed || (part->hdr.flags & SIFT_PART_FLAG_INLINE_STREAM) || sift_part_section(part, SEC_VARIANT_EXC) != NULL)
+		return TIER_SKIPPED;
 	image = object_image(part, &image_len);
 	ranges = object_ranges(&lp, &nranges);
 	src = (SiftTierPartSrc) {.part_gen = d->part_gen,.part_id = (uint32) e->part_id,.image = image,.image_len = image_len,.stream_len = part->hdr.stream_bytes,
 	.read_stream = read_local,.arg = &lp,.ranges = ranges,.nranges = nranges};
 	sift_tier_object_key(key, sizeof(key), t->pol.scope_id, (uint32) e->part_id, d->part_gen);
 	st = sift_tier_upload(t->be, key, &src, t->pol.policy_id, GetCurrentTimestamp(), &ref, &err);
-	pfree(image);
-	pfree(ranges);
 	if (st != SIFT_TIER_OK)
 	{
 		warn_store("cannot move a part to object storage", &err);
-		return false;
+		return TIER_STORE_FAILED;
 	}
 	SIFT_CRASH_POINT(f2_tier_upload_post_remote_pre_commit);
 	SIFT_F2_GATE(SIFT_F2_GATE_TIER);
 	commit_tiered(s, e, &ref);
-	return true;
+	return TIER_MOVED;
+}
+
+/* The part is read and uploaded in a context of its own, which the next part does not inherit */
+static TierMove
+tier_one(const Step *s, const TierRun *t, const SiftPartitionEntry *e, const SiftPartDesc *d)
+{
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift tier part", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	TierMove	move = move_part(s, t, e, d);
+
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	return move;
 }
 
 /* Moves the eligible parts of the partition while *budget lasts; false when the store failed */
@@ -438,7 +459,7 @@ tier_step(const Step *s, const SiftTierPolicy *pol, int slot)
 void
 sift_f2_tier_maintain(Relation rel, SiftF2Store *store, FullTransactionId horizon)
 {
-	Step		s = {.rel = rel,.horizon = horizon,.now = GetCurrentTimestamp()};
+	Step		s = {.rel = rel,.store = store,.horizon = horizon,.now = GetCurrentTimestamp()};
 	SiftTierPolicy tier;
 	SiftTtlPolicy ttl;
 	bool		has_tier = sift_tier_policy_of(rel, &tier),
@@ -447,7 +468,9 @@ sift_f2_tier_maintain(Relation rel, SiftF2Store *store, FullTransactionId horizo
 
 	if (has_ttl && ttl_slot < 0)
 		ereport(WARNING, (errmsg("sift: the TTL column \"%s\" of \"%s\" is not a time column of the table: the TTL does not run", ttl.col, RelationGetRelationName(rel))));
-	if (ttl_slot >= 0)
+	if (ttl_slot >= 0 && sift_tbl_published(rel))
+		ereport(WARNING, (errmsg("sift: \"%s\" is in a logical publication: its TTL does not run, as its subscribers would keep the rows of the dropped parts", RelationGetRelationName(rel))));
+	else if (ttl_slot >= 0)
 		ttl_step(&s, ttl_slot, sift_tier_cutoff(store, ttl_slot, s.now, ttl.retention_us));
 	if (has_tier && store->spec.time_cols[Max(ttl_slot, 0)] > 0 && ConditionalLockPage(rel, SIFT_F2_MAINT_LOCK_BLKNO, ExclusiveLock))
 	{
