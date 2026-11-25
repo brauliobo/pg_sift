@@ -312,6 +312,7 @@ map_key_now(const SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const S
 		return false;
 	buf = sift_blk_read(ds->rel, a.delta_head_blkno, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
+	sift_page_expect_snap(ds->rel, page, a.delta_head_blkno, (a.flags & SIFT_CDLA_INDEXED_DIR) != 0 ? SIFT_PT_COL_DELTA_DIR : SIFT_PT_COL_DELTA, 0, (uint32) entry->part_id, 0);
 	*k = (MapKey) {.part_id = entry->part_id,.part_gen = gb->pin->part_gen,.one_granule = one_granule,.granule = one_granule ? gb->granule_id : 0,.head_blk = a.delta_head_blkno,
 		.head_gen = SiftPageGetOpaque(page)->gen,.head_lsn = PageGetLSN(page),.head_used = SiftPageGetUsed(page),.head_crc = *(const uint32 *) (SiftPageGetData(page) + SIFT_PAGE_CRC_OFF),
 		.snap_xcc = snap->snapXactCompletionCount,.snap_xmin = snap->xmin,.snap_xmax = snap->xmax,.curcid = snap->curcid,.subxid = GetCurrentSubTransactionId()};
