@@ -8,6 +8,7 @@
 ROWS=$(knob SIFT_OC_ROWS 400000 200000)
 plan 8
 node_init primary 2 "wal_level = replica
+sift.test_create_format1 = on
 max_wal_senders = 4
 wal_keep_size = 512MB
 autovacuum = off

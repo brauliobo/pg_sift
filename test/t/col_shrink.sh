@@ -10,6 +10,7 @@ ROWS=$(knob SIFT_SH_ROWS 200000 60000)
 ROUNDS=$(knob SIFT_SH_ROUNDS 4 2)
 plan 29
 node_init primary 2 "wal_level = replica
+sift.test_create_format1 = on
 max_wal_senders = 4
 wal_keep_size = 512MB
 autovacuum = off

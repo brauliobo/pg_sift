@@ -10,7 +10,7 @@ use Test::More;
 use Time::HiRes ();
 
 my $node = sift_node('space_cache');
-$node->append_conf('postgresql.conf', "sift.async_maintenance = off\nmax_parallel_maintenance_workers = 0");
+$node->append_conf('postgresql.conf', "sift.test_create_format1 = on\nsift.async_maintenance = off\nmax_parallel_maintenance_workers = 0");
 $node->start;
 install_sift_test($node, 'publication error injection needs the testing build');
 sub fixture
