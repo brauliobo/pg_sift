@@ -600,11 +600,13 @@ sift_collation_deterministic(Oid collid)
 /* The comparison a RowCompareExpr makes: a CompareType (18), a RowCompareType before */
 #if PG_VERSION_NUM >= 180000
 #define ROWCMP_KIND(rc)	((rc)->cmptype)
+#define ROWCMP_EQ	COMPARE_EQ
 #define ROWCMP_LT	COMPARE_LT
 #define ROWCMP_LE	COMPARE_LE
 #define ROWCMP_GT	COMPARE_GT
 #else
 #define ROWCMP_KIND(rc)	((rc)->rctype)
+#define ROWCMP_EQ	ROWCOMPARE_EQ
 #define ROWCMP_LT	ROWCOMPARE_LT
 #define ROWCMP_LE	ROWCOMPARE_LE
 #define ROWCMP_GT	ROWCOMPARE_GT

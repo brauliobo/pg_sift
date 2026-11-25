@@ -87,9 +87,9 @@ log_set(Relation rel, Buffer vmbuf, uint8 flags, TransactionId horizon, const ui
 	SiftXlVmSet rec = {.locator = rel->rd_locator,.vm_blkno = BufferGetBlockNumber(vmbuf),.snapshotConflictHorizon = horizon,.nwords = nwords,.flags = flags};
 
 	XLogBeginInsert();
-	XLogRegisterData(&rec, sizeof(rec));
-	XLogRegisterData(word_idx, nwords * sizeof(uint16));
-	XLogRegisterData(bit_or, nwords * sizeof(uint64));
+	XLogRegisterData((char *) &rec, sizeof(rec));
+	XLogRegisterData((char *) word_idx, nwords * sizeof(uint16));
+	XLogRegisterData((char *) bit_or, nwords * sizeof(uint64));
 	XLogRegisterBuffer(0, vmbuf, init ? REGBUF_WILL_INIT : 0);
 	return XLogInsert(SIFT_RMGR_ID, SIFT_XLOG_VM_SET);
 }
@@ -147,7 +147,7 @@ sift_vm_apply_clear(Relation rel, Buffer vmbuf, BlockNumber vblock)
 		if (RelationNeedsWAL(rel))
 		{
 			XLogBeginInsert();
-			XLogRegisterData(&rec, sizeof(rec));
+			XLogRegisterData((char *) &rec, sizeof(rec));
 			XLogRegisterBuffer(0, vmbuf, 0);
 			PageSetLSN(page, XLogInsert(SIFT_RMGR_ID, SIFT_XLOG_VM_CLEAR));
 		}
