@@ -112,7 +112,7 @@ sift_proj_defs_load(Relation rel, const SiftProjColumns *cols, int *n)
 		if (d->spec_ok)
 		{
 			sift_proj_spec_canonical(&d->spec, cols, canon);
-			d->hash = sift_proj_spec_hash(canon);
+			d->hash = sift_proj_spec_hash(canon, &d->spec, cols);
 		}
 	}
 	return defs;

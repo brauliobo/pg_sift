@@ -138,6 +138,13 @@ build_row(BuildRows *b, const SiftRowBuf *rows, int r)
 	}
 }
 
+/* A base part written under another schema of the table (a column added, dropped or retyped since) holds its columns elsewhere than the leaves of the store: it is projected once a compaction has written it again */
+static bool
+has_schema_of_store(Relation rel, const SiftF2Store *store, const SiftPartDesc *base, uint32 part_id)
+{
+	return store->host->build_col_map == NULL || store->host->build_col_map(store, rel, sift_part_open_desc(rel, base, part_id), CurrentMemoryContext) == NULL;
+}
+
 /*
  * The projection part of one base part, written and its link made, in the memory context the caller resets after it. false when the base part has no row left to project, or when what the
  * projection holds before it is written passes the budget: no projection part is made then, the base part keeps none and a read takes its rows from the base part, until a compaction cuts it
@@ -228,7 +235,9 @@ refresh_projection(Relation rel, const SiftF2Store *store, const SiftProjColumns
 	for (int i = 0; i < plan.nbuild; i++)
 	{
 		MemoryContext old = MemoryContextSwitchTo(part_cx);
-		bool		made = write_part(rel, store, ref, spec, cols, pps, sift_part_gen_idx_find(&by_gen, plan.build_gens[i]), (uint32) base_part_id, budget, &out->parts[out->n], &out->links[out->n]);
+		const SiftPartDesc *base_part = sift_part_gen_idx_find(&by_gen, plan.build_gens[i]);
+		bool		made = has_schema_of_store(rel, store, base_part, (uint32) base_part_id) &&
+		write_part(rel, store, ref, spec, cols, pps, base_part, (uint32) base_part_id, budget, &out->parts[out->n], &out->links[out->n]);
 
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(part_cx);
@@ -448,15 +457,42 @@ set_ready(Relation rel, uint16 proj_id)
 	sift_manifest_commit(rel, &e);
 }
 
+/*
+ * The directory follows sift.projection_defs, which is transactional and the directory is not: a projection that no definition names is what a rolled-back sift.create_projection or a
+ * dropped definition leaves, and one whose definition parses to another spec or layout (the table changed a column it keeps) is a different projection. Both are dropped; the second is
+ * entered again below.
+ */
+static void
+drop_unmatched(Relation rel, const SiftProjDef *defs, int ndefs)
+{
+	SiftColMetaPageData meta = sift_col_meta_read(rel);
+	int			nrefs;
+	const SiftManifestProjRef *refs = sift_manifest_read_projs(rel, &meta, &nrefs);
+
+	for (int i = 0; i < nrefs; i++)
+	{
+		const SiftProjDef *def = NULL;
+
+		for (int k = 0; k < ndefs; k++)
+			if (strcmp(defs[k].name, refs[i].name) == 0)
+				def = &defs[k];
+		if (def == NULL || (def->spec_ok && def->hash != refs[i].spec_hash))
+			(void) sift_proj_drop(rel, refs[i].name);
+	}
+}
+
 /* The definitions of sift.projection_defs the directory has no projection of (a restore, a REINDEX or a rewrite of the relation, the reset of an unlogged one: the directory starts empty) are entered again, building */
 static int
 register_lost(Relation rel, const SiftProjDef *defs, int ndefs, uint16 *ids)
 {
-	SiftColMetaPageData meta = sift_col_meta_read(rel);
+	SiftColMetaPageData meta;
 	int			nrefs,
 				n = 0;
-	const SiftManifestProjRef *refs = sift_manifest_read_projs(rel, &meta, &nrefs);
+	const SiftManifestProjRef *refs;
 
+	drop_unmatched(rel, defs, ndefs);
+	meta = sift_col_meta_read(rel);
+	refs = sift_manifest_read_projs(rel, &meta, &nrefs);
 	for (int i = 0; i < ndefs; i++)
 		if (defs[i].spec_ok && sift_proj_find(refs, nrefs, defs[i].name) == NULL)
 			ids[n++] = register_projection(rel, defs[i].name, &defs[i].spec, defs[i].hash);
@@ -510,9 +546,8 @@ sift_proj_part_extents(Relation rel, const SiftPartDesc *d, int *n)
 void
 sift_proj_create(Relation rel, const SiftF2Store *store, const char *name, const SiftProjSpec *spec, const SiftProjColumns *cols, const char *canonical)
 {
-	uint16		proj_id = register_projection(rel, name, spec, sift_proj_spec_hash(canonical));
+	uint16		proj_id = register_projection(rel, name, spec, sift_proj_spec_hash(canonical, spec, cols));
 
-	(void) cols;
 	(void) sift_proj_refresh(rel, store);
 	set_ready(rel, proj_id);
 }

@@ -140,9 +140,9 @@ typedef struct SiftProjSpec
 /* false with the reason in err when the text is not a spec of a projection of these columns */
 extern bool sift_proj_spec_parse(const char *text, const SiftProjColumns *cols, SiftProjSpec *out, char *err, size_t errlen);
 
-/* The one text a spec has (keywords in capitals, names quoted when they need it), and its CRC32C: the spec of two projections is the same iff their texts are */
+/* The one text a spec has (keywords in capitals, names quoted when they need it), and its hash: the text and the columns of a part of the projection (sift_proj_layout), so that a part is another projection once the table changes a column it keeps */
 extern void sift_proj_spec_canonical(const SiftProjSpec *s, const SiftProjColumns *cols, char out[SIFT_PROJ_SPEC_MAX]);
-extern uint32 sift_proj_spec_hash(const char *canonical);
+extern uint32 sift_proj_spec_hash(const char *canonical, const SiftProjSpec *s, const SiftProjColumns *cols);
 
 /* The two predicates are the same test (the same column, operator and constants) */
 extern bool sift_proj_spec_pred_equal(const SiftProjSpecPred *a, const SiftProjSpecPred *b);

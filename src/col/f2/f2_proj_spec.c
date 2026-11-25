@@ -809,9 +809,19 @@ sift_proj_spec_canonical(const SiftProjSpec *s, const SiftProjColumns *cols, cha
 }
 
 uint32
-sift_proj_spec_hash(const char *canonical)
+sift_proj_spec_hash(const char *canonical, const SiftProjSpec *s, const SiftProjColumns *cols)
 {
-	return sift_crc32c(canonical, strlen(canonical));
+	SiftProjLayoutCol lay[SIFT_PROJ_LAYOUT_MAX];
+	int16		sig[SIFT_PROJ_LAYOUT_MAX][6];
+	const int	n = sift_proj_layout(s, cols, lay);
+
+	for (int i = 0; i < n; i++)
+	{
+		const SiftProjColumn *c = lay[i].leaf >= 0 ? &cols->col[lay[i].leaf] : NULL;
+
+		memcpy(sig[i], (int16[6]) {lay[i].role, lay[i].kind, lay[i].leaf, lay[i].measure, c == NULL ? 0 : c->time << 8 | c->scale, c == NULL ? 0 : c->numeric << 1 | c->boolean}, sizeof(sig[i]));
+	}
+	return sift_crc32c(canonical, strlen(canonical)) + sift_crc32c(sig, n * sizeof(sig[0])) * UINT32_C(0x9E3779B1);
 }
 
 uint32
