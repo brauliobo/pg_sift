@@ -3,6 +3,8 @@
  */
 #include "agg/v6/v6_spill.h"
 
+#define SIFT_SPILL_CHECK_EVERY	1024
+
 typedef struct SiftSpillRecHdr
 {
 	uint64		tag;
@@ -14,10 +16,36 @@ struct SiftSpillSet
 {
 	MemoryContext cx;
 	uint32		nparts;
+	uint32		ops;			/* records put or got: a cancel is looked for once in SIFT_SPILL_CHECK_EVERY */
 	BufFile   **file;
 	uint64	   *nrec;
 	uint64	   *nbytes;
 };
+
+typedef struct SpillWhere
+{
+	uint32		part;
+	uint32		nparts;
+} SpillWhere;
+
+static void
+spill_context(void *arg)
+{
+	const SpillWhere *w = arg;
+
+	errcontext("partition %u of %u of the spill files of an aggregate scan; more work_mem spills less", w->part, w->nparts);
+}
+
+/* the work on a partition: a cancel is seen between its records, and an error of its temporary file names the partition */
+static void
+spill_enter(SiftSpillSet *s, uint32 part, SpillWhere *w, ErrorContextCallback *cb)
+{
+	if (++s->ops % SIFT_SPILL_CHECK_EVERY == 0)
+		CHECK_FOR_INTERRUPTS();
+	*w = (SpillWhere) {.part = part,.nparts = s->nparts};
+	*cb = (ErrorContextCallback) {.callback = spill_context,.arg = w,.previous = error_context_stack};
+	error_context_stack = cb;
+}
 
 uint32
 sift_spill_nparts(uint64 expect_bytes, uint64 budget_bytes)
@@ -65,7 +93,10 @@ void
 sift_spill_put(SiftSpillSet *s, uint32 part, uint64 tag, const void *bytes, uint32 len)
 {
 	SiftSpillRecHdr h = {.tag = tag,.len = len};
+	SpillWhere	where;
+	ErrorContextCallback cb;
 
+	spill_enter(s, part, &where, &cb);
 	if (s->file[part] == NULL)
 		s->file[part] = spill_file_create(s);
 	BufFileWrite(s->file[part], &h, sizeof(h));
@@ -73,6 +104,7 @@ sift_spill_put(SiftSpillSet *s, uint32 part, uint64 tag, const void *bytes, uint
 		BufFileWrite(s->file[part], bytes, len);
 	s->nrec[part]++;
 	s->nbytes[part] += sizeof(h) + len;
+	error_context_stack = cb.previous;
 }
 
 void
@@ -86,9 +118,17 @@ bool
 sift_spill_get(SiftSpillSet *s, uint32 part, uint64 *tag, uint8 **buf, uint32 *cap, uint32 *len)
 {
 	SiftSpillRecHdr h;
+	SpillWhere	where;
+	ErrorContextCallback cb;
 
-	if (s->file[part] == NULL || BufFileReadMaybeEOF(s->file[part], &h, sizeof(h), true) == 0)
+	if (s->file[part] == NULL)
 		return false;
+	spill_enter(s, part, &where, &cb);
+	if (BufFileReadMaybeEOF(s->file[part], &h, sizeof(h), true) == 0)
+	{
+		error_context_stack = cb.previous;
+		return false;
+	}
 	if (h.len > *cap)
 	{
 		uint32		ncap = Max(h.len, *cap * 2);
@@ -102,6 +142,7 @@ sift_spill_get(SiftSpillSet *s, uint32 part, uint64 *tag, uint8 **buf, uint32 *c
 		BufFileReadExact(s->file[part], *buf, h.len);
 	*tag = h.tag;
 	*len = h.len;
+	error_context_stack = cb.previous;
 	return true;
 }
 
