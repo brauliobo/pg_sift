@@ -441,7 +441,7 @@ RESET client_min_messages;
 CREATE SCHEMA s7;
 GRANT USAGE ON SCHEMA s7 TO PUBLIC;
 SET search_path = s7, public;
--- 2048-row engine units (src/agg/v6_test.c): the salted hash table with its growth and its radix scatter and merge,
+-- 2048-row engine units (src/agg/v6/core_test.c): the salted hash table with its growth and its radix scatter and merge,
 -- the element mask of an array column, and the five-input cost of a SiftAgg path at the default planner costs.
 SELECT sift._test_salted_ht(11, 60) AS ht_failures;
  ht_failures 

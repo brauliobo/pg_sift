@@ -325,6 +325,7 @@ col/f2/compact.h
 col/f2/compact_dict.c
 col/f2/compact_plan.c
 col/f2/core_test.c
+col/f2/decoders_test.c
 col/f2/delete.c
 col/f2/delete.h
 col/f2/delvec.c
@@ -640,6 +641,7 @@ col/scope_v6/test/edit.c
 col/scope_v6/test/edit.h
 col/scope_v6/test/f8.c
 col/scope_v6/test/format.c
+col/scope_v6/test/probe.c
 col/scope_v6/test/prod.c
 col/scope_v6/test/refresh.c
 col/scope_v6/test/rings.c
