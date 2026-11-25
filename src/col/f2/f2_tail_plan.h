@@ -1,6 +1,6 @@
 /*
  * col/f2/f2_tail_plan.h - which part holds the end of the file in place and where the rewrite of it may go, from the extents everything in the file holds. The pass of f2_tail.c asks for
- * for a move, makes it, and asks again, at most SIFT_TAIL_MAX_MOVES times. Nothing here reads a page.
+ * for a move, makes it, and asks again until the holders of the first plan are moved. Nothing here reads a page.
  */
 #ifndef SIFT_F2_TAIL_PLAN_H
 #define SIFT_F2_TAIL_PLAN_H
@@ -9,7 +9,6 @@
 
 /* STOR[STOR-F2-04]: the tail is relocated once 10% of the file trails the holder (was 20%: up to 19.9% of trailing bloat survived every VACUUM) */
 #define SIFT_TAIL_RELOCATE_PCT	10
-#define SIFT_TAIL_MAX_MOVES		8
 
 typedef enum SiftTailKind
 {
@@ -31,6 +30,7 @@ typedef struct SiftTailSpan
 typedef struct SiftTailPick
 {
 	int			top;			/* the index of the span that holds the high-water mark */
+	int			run;			/* the holders that reach farthest and must all move for the cut: top is the first of them */
 	BlockNumber below_part;		/* its rewrite goes below this block: below the part itself and the others */
 	BlockNumber below_cut;		/* when the free space under the part does not hold it: below the block at which a cut saves the share the move already requires */
 } SiftTailPick;
@@ -54,7 +54,8 @@ sift_tail_by_hi_desc(const void *a, const void *b)
  * The holders at the end of the file are rewritten when the ones that reach farthest, k of them, alone pin the high-water mark: what lies between the highest of the others and the mark is at
  * least SIFT_TAIL_RELOCATE_PCT of the file and min_gap blocks, and the free extents hold the k. A directory or a projection part is a holder like any other, and a handful of them near the end
  * (a projection part and its directory pages for each part of a partition) is the usual way a file is pinned, so the pick looks past the first holder. The pick is the highest holder, to be
- * rewritten below below_part or, failing that, below below_cut; the pass asks again after each move, and makes at most SIFT_TAIL_MAX_MOVES of them.
+ * rewritten below below_part or, failing that, below below_cut; the pass asks again after each move and makes as many as the run it was first told (the small parts that a streaming
+ * compaction writes at the end of the file are a run of as many moves as it has parts).
  */
 static inline bool
 sift_tail_pick(const SiftTailSpan *span, int n, BlockNumber hw, uint64 free_blocks, BlockNumber min_gap, SiftTailPick *out)
@@ -79,6 +80,7 @@ sift_tail_pick(const SiftTailSpan *span, int n, BlockNumber hw, uint64 free_bloc
 		lo = Min(lo, span[ord[k - 1].idx].lo);
 		found = blocks <= free_blocks && (uint64) (hw - others) * 100 >= (uint64) hw * SIFT_TAIL_RELOCATE_PCT && hw - others >= min_gap;
 		out->top = ord[0].idx;
+		out->run = k;
 		out->below_part = Max(others, lo);
 		out->below_cut = hw - hw / 100 * SIFT_TAIL_RELOCATE_PCT;
 	}

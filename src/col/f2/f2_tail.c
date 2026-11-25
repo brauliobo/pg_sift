@@ -3,8 +3,8 @@
  * pins the mark above the space the ones below it left: a base part, a scope's summary, a projection part, or the pages of a projection directory. When that space is at least
  * SIFT_TAIL_RELOCATE_PCT of the file and the free extents hold the holder (f2_tail_plan.h), it is rewritten into free extents below it that sift_fsm_alloc_below reserves (a base part by the
  * copy on write of a compaction, a projection part by a copy of its granules, a directory by the commit that rewrites its pages), the old blocks are released, and the free run that is left
- * at the end goes with the next cut. A pass starts with a cut, which matures what a compaction just freed (under the lock of the cut no reader of an older manifest can be there), and moves up to
- * SIFT_TAIL_MAX_MOVES holders.
+ * at the end goes with the next cut. A pass starts with a cut, which matures what a compaction just freed (under the lock of the cut no reader of an older manifest can be there), then
+ * moves the holders of a plan one after the other, and plans again for as long as the file ends shorter.
  */
 #include "core/host.h"
 
@@ -198,7 +198,7 @@ move_below(Relation rel, const SiftF2Store *store, const SiftTailSpan *span, con
 }
 
 static bool
-relocate_top(Relation rel, const SiftF2Store *store, FullTransactionId horizon, int64 hot_cut)
+relocate_top(Relation rel, const SiftF2Store *store, FullTransactionId horizon, int64 hot_cut, int *left)
 {
 	SiftColMetaPageData meta = sift_col_meta_read(rel);
 	Tail		t = collect(rel, &meta);
@@ -208,8 +208,28 @@ relocate_top(Relation rel, const SiftF2Store *store, FullTransactionId horizon, 
 
 	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
 		free_blocks += st.class_blocks[k];
-	return sift_tail_pick(t.span, t.n, meta.high_water, free_blocks, SIFT_TAIL_SHRINK_MIN_BLOCKS, &pick) &&
-		move_below(rel, store, &t.span[pick.top], &t.item[pick.top], &pick, horizon, hot_cut);
+	if (!sift_tail_pick(t.span, t.n, meta.high_water, free_blocks, SIFT_TAIL_SHRINK_MIN_BLOCKS, &pick))
+		return false;
+	*left = *left < 0 ? pick.run : *left;
+	if (*left == 0 || !move_below(rel, store, &t.span[pick.top], &t.item[pick.top], &pick, horizon, hot_cut))
+		return false;
+	(*left)--;
+	return true;
+}
+
+/* The holders of one plan are moved one after the other, the plan asked again after each; whether the file ended shorter */
+static bool
+relocate_run(Relation rel, const SiftF2Store *store, FullTransactionId horizon, int64 hot_cut, MemoryContext pass)
+{
+	BlockNumber high_water = sift_col_meta_read(rel).high_water;
+	int			left = -1;
+
+	while (relocate_top(rel, store, horizon, hot_cut, &left))
+	{
+		(void) sift_fsm_tail_shrink(rel);
+		MemoryContextReset(pass);
+	}
+	return sift_col_meta_read(rel).high_water < high_water;
 }
 
 void
@@ -219,11 +239,8 @@ sift_f2_tail_relocate(Relation rel, const SiftF2Store *store, FullTransactionId 
 	MemoryContext old = MemoryContextSwitchTo(pass);
 
 	(void) sift_fsm_tail_shrink(rel);
-	for (int moved = 0; moved < SIFT_TAIL_MAX_MOVES && relocate_top(rel, store, horizon, hot_cut); moved++)
-	{
-		(void) sift_fsm_tail_shrink(rel);
-		MemoryContextReset(pass);
-	}
+	while (relocate_run(rel, store, horizon, hot_cut, pass))
+		;
 	MemoryContextSwitchTo(old);
 	sift_mem_release_os(MemoryContextMemAllocated(pass, true));
 	MemoryContextDelete(pass);
