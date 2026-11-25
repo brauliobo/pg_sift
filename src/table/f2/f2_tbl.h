@@ -58,10 +58,6 @@
 #define SIFT_TBL_SCAN_UNIT_GRANULES	16
 #define SIFT_TBL_PARALLEL_SLACK		64
 
-#ifndef SIFT_TBL_LOG_MAX_BYTES
-#define SIFT_TBL_LOG_MAX_BYTES		((uint64) (MaxAllocSize / 2))
-#endif
-
 /* ---- addresses ---- */
 
 static inline uint64
@@ -243,9 +239,6 @@ typedef struct SiftTblF2Bulk
 extern void sift_tbl_f2_bulk_begin(SiftTblF2Bulk *b, Relation rel, CommandId cid, bool frozen);
 extern void sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, ItemPointer tid);
 extern void sift_tbl_f2_bulk_end(SiftTblF2Bulk *b);
-
-/* EXT-05: ERROR 54000 when a logical replication record of the change would pass SIFT_TBL_LOG_MAX_BYTES */
-extern void sift_tbl_f2_log_guard(Relation rel, uint64 newlen, uint64 oldlen);
 
 /* ---- extents ---- */
 
