@@ -19,6 +19,7 @@
 #include "col/f2/f2_tier_host.h"
 #include "col/f2/part_format.h"
 #include "core/crash_point.h"
+#include "core/memtrack.h"
 #include "core/f2/f2_gate.h"
 #include "core/part_lock.h"
 #include "core/wal_conflict.h"
@@ -303,7 +304,7 @@ move_part(const Step *s, const TierRun *t, const SiftPartitionEntry *e, const Si
 static TierMove
 tier_one(const Step *s, const TierRun *t, const SiftPartitionEntry *e, const SiftPartDesc *d)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift tier part", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift tier part");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	TierMove	move = move_part(s, t, e, d);
 
