@@ -304,6 +304,8 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	{
 		sift_f2_progress_phase(SIFT_F2_PHASE_TRACK);
 		sift_f2_track_install(heap, index, info->ii_Concurrent);
+		if (!info->ii_Concurrent)
+			sift_f2_track_seal(heap, index);
 	}
 	sift_f2_connect_build(heap, index);
 	sift_scope_start(heap, index, info->ii_Concurrent);

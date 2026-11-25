@@ -70,6 +70,12 @@ extern void sift_f2_key_of(const SiftColRel *r, const SiftF2Rel *f, SiftCell *ce
 extern Datum sift_f2_track_trigger(PG_FUNCTION_ARGS);
 extern void sift_f2_track_reconcile(Relation index);
 extern void sift_f2_track_install(Relation heap, Relation index, bool concurrent);
+
+/* The build, which holds the writers out and left the trigger in place, tells the index that every delete from now on reaches it; a concurrent build never does */
+extern void sift_f2_track_seal(Relation heap, Relation index);
+
+/* Is every delete the snapshot sees committed in the deletion vectors and pending deletes of the index (SiftColFormatOps.deletes_heard) */
+extern bool sift_f2_deletes_heard(Relation index, Relation heap, Snapshot snap);
 extern Datum sift_f2_worker_history(FunctionCallInfo fcinfo);
 
 typedef enum ZoneVerdict

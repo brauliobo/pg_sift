@@ -63,6 +63,9 @@ typedef struct SiftColFormatOps
 	/* track_changes follows the address of each row, by one trigger for both events, whatever the option names but "off" (format major 2); else by a key column or ctid, a trigger for each event */
 	bool		tracks_addresses;
 
+	/* Is every delete that a read of the snapshot sees committed already told to the index, so that the rows of its settled parts need no look at the heap; NULL: the format cannot say */
+	bool		(*deletes_heard) (Relation index, Relation heap, Snapshot snap);
+
 	Datum		(*sql) (SiftColSqlFn fn, FunctionCallInfo fcinfo);
 
 	/* The key journal of a parent index (col/am/conn_route.h); NULL: the format keeps it in the log of its tombstones (col/v1/conn.h) */

@@ -79,6 +79,21 @@ sift_col_meta_read(Relation rel)
 	return copy;
 }
 
+void
+sift_col_meta_set_heard(Relation rel, bool heard, uint32 witness, TransactionId xid)
+{
+	Buffer		buf = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
+	SiftXlog	x = sift_xlog_start(rel);
+	Page		page = sift_xlog_register(&x, buf, 0);
+	SiftColMetaPageData *m = SIFT_COL_META(page);
+
+	m->state_flags = heard ? m->state_flags | SIFT_META_FLAG_DELETES_HEARD : m->state_flags & ~SIFT_META_FLAG_DELETES_HEARD;
+	m->track_witness = heard ? witness : 0;
+	m->track_xid = heard ? xid : InvalidTransactionId;
+	sift_meta_seal(page, m->common.struct_size);
+	sift_xlog_done(&x);
+}
+
 SiftColMetaPageData
 sift_col_meta_read_inline(Relation rel, SiftPartitionEntry **inline_entries, int *n)
 {

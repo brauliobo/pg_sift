@@ -14,6 +14,7 @@
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "catalog/index.h"
+#include "commands/trigger.h"
 #include "executor/executor.h"
 #include "storage/bufmgr.h"
 #include "storage/sinval.h"
@@ -23,12 +24,14 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#include "col/f2/col_meta.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_journal.h"
 #include "col/track_hear.h"
 #include "col/f2/l0_stage.h"
 #include "core/quarantine.h"
+#include "core/ring.h"
 
 static struct
 {
@@ -63,9 +66,16 @@ static struct
 	OffsetNumber roots[MaxHeapTuplesPerPage];
 } ctx;
 
+#ifdef SIFT_TESTING
+static Oid	muted_trigger;
+#endif
+
 static void
 ctx_reset(XactEvent event, void *arg)
 {
+#ifdef SIFT_TESTING
+	muted_trigger = InvalidOid;
+#endif
 	ctx.trigger = InvalidOid;
 	ctx.roots_read = false;
 	ctx.cells = NULL;
@@ -288,6 +298,25 @@ staged_as_delta(TriggerData *td, const ItemPointerData *tid)
 	return staged;
 }
 
+#ifdef SIFT_TESTING
+/* A statement that runs with the trigger muted ends versions the index is not told of: the word of the build that every delete reaches it is withdrawn */
+static void
+mute_channel(TriggerData *td)
+{
+	Oid			trigger = td->tg_trigger->tgoid;
+	Oid			indexoid = sift_col_track_trigger_index(trigger);
+	Relation	index;
+
+	if (muted_trigger == trigger || !OidIsValid(indexoid))
+		return;
+	index = index_open(indexoid, RowExclusiveLock);
+	if (sift_col_meta_read(index).state_flags & SIFT_META_FLAG_DELETES_HEARD)
+		sift_col_meta_set_heard(index, false, 0, InvalidTransactionId);
+	index_close(index, NoLock);
+	muted_trigger = trigger;
+}
+#endif
+
 /*
  * The row trigger: a tombstone for the address of the version the statement ended, held with the transaction's others. A version made by a HOT update has no entry and its predecessor's
  * entry stays right (the indexed columns are the same), so that update writes nothing; any other update writes the entry of its new version at its aminsert, which this delete ends the old one for.
@@ -302,7 +331,10 @@ sift_f2_track_trigger(PG_FUNCTION_ARGS)
 
 #ifdef SIFT_TESTING
 	if (sift_test_no_track)
+	{
+		mute_channel(td);
 		return PointerGetDatum(NULL);
+	}
 #endif
 	if (!ctx_ready(td))
 		return PointerGetDatum(NULL);
@@ -354,6 +386,87 @@ sift_f2_track_install(Relation heap, Relation index, bool concurrent)
 	CommandCounterIncrement();
 }
 
+/* The trigger is the one the option made, on the table alone and enabled for every role: the identity it has now */
+static bool
+trigger_whole(Relation heap, Relation index, uint32 *witness)
+{
+	Hear		h[2];
+
+	sift_col_hear_read(RelationGetRelid(heap), index, sift_col_hear_find(index, true), h);
+	*witness = h[0].witness;
+	return h[0].ok && h[1].ok && h[0].witness == h[1].witness;
+}
+
+/*
+ * What the build vouches for: it held the writers out (CREATE INDEX and REINDEX hold the table in a mode that conflicts with theirs, so a concurrent build never gets here), read every row the heap
+ * keeps for a snapshot and wrote those it knows ended as pending deletes, and left the trigger in place. Every version a statement ends from now on is told to the index by that trigger, and
+ * this transaction's xid and the trigger's identity are what a read checks it against (sift_f2_deletes_heard); the trigger dropped, disabled, enabled for the origin only or made again is another
+ * catalog row, which ends the word for good.
+ */
+void
+sift_f2_track_seal(Relation heap, Relation index)
+{
+	uint32		witness;
+
+	if (trigger_whole(heap, index, &witness) && sift_col_track_deaf(heap) == NULL)
+		sift_col_meta_set_heard(index, true, witness, GetTopTransactionId());
+}
+
+/*
+ * What the catalogs say of the trigger of an index (the table can be heard, and the identity of the trigger when it is the one the option made): 70,000 instructions of scans of pg_depend,
+ * pg_trigger and pg_subscription_rel, and the answer changes with DDL alone, which reaches a backend as a shared invalidation message and counts in SharedInvalidMessageCounter when the backend
+ * accepts it. The answer is kept for the counter it was read at, after the backend accepted what is queued (the lock of a table it holds from an earlier statement takes none), and not at all
+ * in a transaction that has an xid: its own DDL is not counted before it commits.
+ */
+#define TRIGGER_MEMO_N 4
+static struct TriggerMemo
+{
+	Oid			heap;
+	Oid			index;
+	uint64		gen;
+	bool		whole;
+	uint32		witness;
+} trigger_memo[TRIGGER_MEMO_N];
+static SiftRing trigger_memo_ring;
+
+static bool
+trigger_state(Relation heap, Relation index, uint32 *witness)
+{
+	bool		keep = !TransactionIdIsValid(GetTopTransactionIdIfAny());
+	struct TriggerMemo m = {RelationGetRelid(heap), RelationGetRelid(index)};
+
+	AcceptInvalidationMessages();
+	m.gen = SharedInvalidMessageCounter;
+	for (int i = 0; keep && i < TRIGGER_MEMO_N; i++)
+		if (trigger_memo[i].heap == m.heap && trigger_memo[i].index == m.index && trigger_memo[i].gen == m.gen)
+		{
+			*witness = trigger_memo[i].witness;
+			return trigger_memo[i].whole;
+		}
+	m.whole = sift_col_track_on(index) && sift_col_track_deaf(heap) == NULL && trigger_whole(heap, index, &m.witness);
+	if (keep)
+		trigger_memo[SIFT_RING_SLOT(trigger_memo_ring, TRIGGER_MEMO_N)] = m;
+	*witness = m.witness;
+	return m.whole;
+}
+
+/*
+ * A read of a snapshot may leave the heap out when the index was told of every delete: the build vouched for it and ended before the snapshot, the trigger is still the one it left, no statement
+ * of this transaction has ended versions of the table that the trigger has not heard (AfterTriggerPendingOnRel), and the snapshot is an MVCC one that no predicate lock follows.
+ */
+bool
+sift_f2_deletes_heard(Relation index, Relation heap, Snapshot snap)
+{
+	SiftColMetaPageData m;
+	uint32		witness;
+
+	if (snap->snapshot_type != SNAPSHOT_MVCC || IsolationIsSerializable())
+		return false;
+	m = sift_col_meta_read(index);
+	return (m.state_flags & SIFT_META_FLAG_DELETES_HEARD) && TransactionIdIsNormal(m.track_xid) && TransactionIdPrecedes(m.track_xid, snap->xmin) &&
+		!AfterTriggerPendingOnRel(RelationGetRelid(heap)) && !sift_quarantine_skips(index, SIFT_SKIP_WRITE) && trigger_state(heap, index, &witness) && witness == m.track_witness;
+}
+
 /* The table of the index, locked without a wait: the statement holds the index, and a statement that holds the table may be waiting for it */
 static Relation
 open_heap_briefly(Relation index, LOCKMODE lockmode)
@@ -367,8 +480,8 @@ open_heap_briefly(Relation index, LOCKMODE lockmode)
 }
 
 /*
- * The triggers of an index follow its option after ALTER INDEX: the row triggers that stage the deletes of a table, made when they are missing and dropped when the option is off. There is
- * no log and no baseline: a delete the triggers did not hear is the heap's to tell, which a scan of the index checks for every row anyway.
+ * The triggers of an index follow its option after ALTER INDEX: the row triggers that stage the deletes of a table, made when they are missing and dropped when the option is off. They give
+ * the index no word that every delete reaches it (sift_f2_track_seal is the build's): the deletes made before them are the heap's to tell, which a read of the index checks for every row.
  */
 void
 sift_f2_track_reconcile(Relation index)

@@ -38,6 +38,7 @@ const SiftColFormatOps sift_col_v2_ops = {
 	.track_trigger = sift_f2_track_trigger,
 	.track_reconcile = sift_f2_track_reconcile,
 	.tracks_addresses = true,
+	.deletes_heard = sift_f2_deletes_heard,
 	.sql = sift_col_v2_sql,
 	.check = sift_f2_check,
 	.journal = &sift_f2_journal_ops,

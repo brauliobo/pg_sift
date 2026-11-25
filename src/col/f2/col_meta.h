@@ -50,7 +50,7 @@ typedef struct SiftColMetaPageData
 	uint64		tier_dir_gen;	/* the generation of the chain: the pages carry it */
 
 	BlockNumber jrnl_blk;		/* the header SIFT_PT_KEYJRNL page of the key journal, or InvalidBlockNumber while no child index is connected to the index */
-	uint32		jrnl_pad;
+	uint32		track_witness;	/* SIFT_META_FLAG_DELETES_HEARD: the xmin of the catalog row of the track_changes trigger the build left in place */
 
 	TimestampTz maint_requested_at;
 	TimestampTz maint_ok_at;
@@ -69,7 +69,7 @@ typedef struct SiftColMetaPageData
 	uint64		vm_total_vblocks;		/* sift_table VM: high-water vblock watermark */
 	uint64		key_order_change_gen;	/* 0 if all live parts match active key_order; else part_gen threshold */
 	uint32		active_key_order_hash;	/* hash of active (attnum, sort_flags)[0..nsort-1] */
-	uint32		key_order_pad;			/* reserved 0 */
+	TransactionId track_xid;			/* SIFT_META_FLAG_DELETES_HEARD: the transaction of the build; a snapshot that began after it ended sees every row the build read as the heap shows it */
 	char		maint_errmsg[SIFT_COL_MAINT_ERR_LEN];
 } SiftColMetaPageData;
 
@@ -121,6 +121,9 @@ extern Buffer sift_col_meta_lock(Relation rel, int lockmode);
 
 /* A copy of the metapage as of now, for a reader */
 extern SiftColMetaPageData sift_col_meta_read(Relation rel);
+
+/* Records (heard) or ends (!heard) the word of the build that every delete is told to the index: the identity of its trigger and its transaction; one generic WAL record */
+extern void sift_col_meta_set_heard(Relation rel, bool heard, uint32 witness, TransactionId xid);
 
 /* The metapage and the partition entries its inline summary keeps, in one read of block 0; *inline_entries is NULL, *n 0, when it keeps none */
 extern SiftColMetaPageData sift_col_meta_read_inline(Relation rel, SiftPartitionEntry **inline_entries, int *n);

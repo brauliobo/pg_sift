@@ -53,6 +53,7 @@ typedef enum SiftAmKind
 #define SIFT_META_FLAG_QUARANTINED	(UINT32_C(1) << 0)
 #define SIFT_META_FLAG_UNKEYED		(UINT32_C(1) << 1)
 #define SIFT_META_FLAG_AUTO_PENDING	(UINT32_C(1) << 2)	/* format 2: built before the rows chose its jsonb paths: those leaves are not there and a qual on them is the heap's */
+#define SIFT_META_FLAG_DELETES_HEARD	(UINT32_C(1) << 3)	/* format 2: built under the lock that holds the writers out, with the track_changes trigger in place: track_witness and track_xid name it */
 
 typedef struct SiftMetaCommon
 {
