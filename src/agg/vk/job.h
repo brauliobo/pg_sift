@@ -55,6 +55,8 @@ void plan_free(Plan *p);
 BuildStatus batch_build(SiftVk *vk, Slot *s, const SiftVkJob *job, const Plan *p, uint32_t g0, uint32_t g1, Batch *b);
 bool batch_check(SiftVk *vk, Batch *b);
 void batch_abandon(SiftVk *vk, Batch *b);
+/* False when a sum of floats of the result is not finite: an overflow of finite values (an error of PostgreSQL) and the sum of an infinity of the table (a value) look the same to the device, so the CPU decides */
+bool sift_vk_sums_finite(const SiftVkJob *job, const SiftVkResult *res);
 
 #endif
 
