@@ -187,7 +187,7 @@ count_rows(const TData *d, const Pred *preds, int np)
 /* the query the server's translator is given, over the columns of the logical data */
 typedef struct T10Query
 {
-	SiftF2Store store;
+	SiftStoreSchema sch;
 	int			att_first[C_NCOLS + 2];
 	SiftCellKind kinds[C_NCOLS];
 	uint8		hints[C_NCOLS];
@@ -209,13 +209,12 @@ query_init(T10Query *x)
 		x->kinds[cols[c].c] = cols[c].kind;
 	for (int a = 0; a <= C_NCOLS; a++)
 		x->att_first[a] = a == 0 ? -1 : a - 1;
-	x->store.att_first = x->att_first;
-	x->store.kinds = x->kinds;
-	x->store.hints = x->hints;
-	x->store.ncols = C_NCOLS;
+	x->sch.att_first = x->att_first;
+	x->sch.leaf_kinds = x->kinds;
+	x->sch.leaf_hints = x->hints;
 	x->spec.key = x->key;
 	x->spec.agg = x->agg;
-	x->q = (SiftGpuQuery) {.store = &x->store, .spec = &x->spec, .ncols = C_NCOLS};
+	x->q = (SiftGpuQuery) {.sch = x->sch, .spec = &x->spec, .ncols = C_NCOLS};
 	for (int c = 0; c < C_NCOLS; c++)
 		x->q.leaf[c] = c;
 	sift_gpu_emit_init(&x->em);
