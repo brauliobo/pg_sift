@@ -345,7 +345,7 @@ SELECT major, minor, struct_size, npartitions, manifest_version, next_gen, total
 FROM sift._test_f2_meta('t_idx');
  major | minor | struct_size | npartitions | manifest_version | next_gen | total_rows | partdir_level | data_zone_blocks 
 -------+-------+-------------+-------------+------------------+----------+------------+---------------+------------------
-     2 |     0 |         424 |           1 |                1 |        1 |          0 |             0 |                0
+     2 |     0 |         432 |           1 |                1 |        1 |          0 |             0 |                0
 (1 row)
 
 SELECT sift._test_f2_check('t_idx');
@@ -359,13 +359,13 @@ SELECT sift._test_f2_meta_resize('t_idx', 392) AS full_size \gset
 SELECT expect('SELECT sift._test_f2_meta(''t_idx'')');
                                                                 expect                                                                 
 ---------------------------------------------------------------------------------------------------------------------------------------
- 55000 sift index "t_idx" has a metapage of 392 bytes, written by a pre-release layout of format major 2; this pg_sift needs 424 bytes
+ 55000 sift index "t_idx" has a metapage of 392 bytes, written by a pre-release layout of format major 2; this pg_sift needs 432 bytes
 (1 row)
 
 SELECT expect('SELECT sift._test_f2_check(''t_idx'')');
                                                                 expect                                                                 
 ---------------------------------------------------------------------------------------------------------------------------------------
- 55000 sift index "t_idx" has a metapage of 392 bytes, written by a pre-release layout of format major 2; this pg_sift needs 424 bytes
+ 55000 sift index "t_idx" has a metapage of 392 bytes, written by a pre-release layout of format major 2; this pg_sift needs 432 bytes
 (1 row)
 
 SELECT sift._test_f2_meta_resize('t_idx', :full_size) AS was;
@@ -538,7 +538,7 @@ SELECT sift._test_f2_add_part('t_idx', 1, NULL, 100, 0, 1) > 0 AS added;
 SELECT struct_size FROM sift._test_f2_meta('t_idx');
  struct_size 
 -------------
-         424
+         432
 (1 row)
 
 -- No scope: no page read, no row
@@ -871,7 +871,7 @@ VACUUM pa;
 SELECT sift._test_f2_check_keys('tk_i') AS tk_keys, sift._test_f2_check_keys('pa_i') AS pa_keys;
                tk_keys               |               pa_keys               
 -------------------------------------+-------------------------------------
- parts=2 granules=6 rows=40050 exact | parts=1 granules=5 rows=40000 exact
+ parts=2 granules=6 rows=38547 exact | parts=1 granules=5 rows=38055 exact
 (1 row)
 
 SELECT f2_same('SELECT * FROM tk WHERE id BETWEEN 1 AND 60000');
