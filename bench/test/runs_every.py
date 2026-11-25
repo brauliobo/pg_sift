@@ -1,5 +1,5 @@
 """Every test file of the harness runs all of its tests when it is run as a script (scripts/lint.sh runs `python3 -I FILE`): the `__main__` block is the last statement, so no class after it is
-skipped (20 tests of test_cases.py were not run for a while), and no class or test has the name of another (the later one replaces the earlier: SearchFig of test_triple.py was there twice)."""
+skipped (20 tests of cases.py were not run for a while), and no class or test has the name of another (the later one replaces the earlier: SearchFig of triple.py was there twice)."""
 import ast
 import collections
 import glob
@@ -9,7 +9,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-FILES = sorted(glob.glob(os.path.join(HERE, 'test_*.py')) + glob.glob(os.path.join(HERE, '..', 'scaling', 'test_*.py')))
+FILES = sorted(glob.glob(os.path.join(HERE, '*.py')) + glob.glob(os.path.join(HERE, '..', 'scaling', 'test_*.py')))
 
 
 class EveryTestRuns(unittest.TestCase):

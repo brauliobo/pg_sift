@@ -264,10 +264,10 @@ class Figures(Fixture):
         self.t.write('bench/claims.tsv', 'phrase\tstatement\trows\tarm\toption\tmetric\tvalue\n' + self.ROW)
         recs = os.path.join(self.t.root, 'recs.tsv')
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps', 'records'))
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
         import schema
-        import test_records
-        rs = [{k: v for k, v in r.items() if not k.startswith('_')} | dict(statement='case_a', rows=300000) for r in test_records.clean()]
+        import rows
+        rs = [{k: v for k, v in r.items() if not k.startswith('_')} | dict(statement='case_a', rows=300000) for r in rows.clean()]
         schema.write(recs, rs)
         self.assertEqual(self.figures(records=[recs]), [])
         self.t.write('bench/claims.tsv', 'phrase\tstatement\trows\tarm\toption\tmetric\tvalue\n' + self.ROW.replace('\t1\t', '\t9\t'))

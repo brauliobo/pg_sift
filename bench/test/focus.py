@@ -2,7 +2,7 @@
 """bench/focus: the pure parts of the focused write and read benches (class of a WAL record, the cells, the expectation check, the flags of compare.py,
 the phase-balanced statistics, the rotated key windows). No server: the benches themselves are run by hand or by bench/focus/run.sh.
 
-    python3 -I bench/test/test_focus.py
+    python3 -I bench/test/focus.py
 """
 import io
 import os

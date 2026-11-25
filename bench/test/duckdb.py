@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of the pure parts of the duckdb benchmark: the result comparison of steps/duckdb.py. Run: python3 -I bench/test/test_duckdb.py"""
+"""Tests of the pure parts of the duckdb benchmark: the result comparison of steps/duckdb.py. Run: python3 -I bench/test/duckdb.py"""
 import os, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))

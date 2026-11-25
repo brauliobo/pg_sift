@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of steps/triple.py, the `time · CPU · IO` cell of the benchmark tables. Run: python3 -I bench/test/test_triple.py"""
+"""Tests of steps/triple.py, the `time · CPU · IO` cell of the benchmark tables. Run: python3 -I bench/test/triple.py"""
 import os, sys, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps'))

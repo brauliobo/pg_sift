@@ -3,7 +3,7 @@
 throwaway cluster on tmpfs (about 10 s; skipped without initdb or pg_buffercache). It checks the cold run reads, the warm run after it does not, that EXPLAIN's blocks and pg_stat_io's
 bytes agree, and that a script EXPLAIN cannot wrap still reports its WAL and size.
 
-    python3 -I bench/test/test_iolib.py
+    python3 -I bench/test/iolib.py
 """
 import os
 import shutil
@@ -15,7 +15,7 @@ from unittest import mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'steps'))
 import iolib  # noqa: E402
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, 'lib'))
 import cluster  # noqa: E402
 from duckdb import Session  # noqa: E402
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The resume contract of bench/steps/lib.sh, checked by killing a run at random points: a synthetic run (stages of cells, rounds of cells.tsv) is started, killed with SIGKILL after a random number of results,
 # resumed until it finishes, and its results are compared with an uninterrupted run: the same files, the same contents, no duplicate rows, no half-written file. Also: a killed run is found out
-# as crashed by the next start, SIGTERM exits with 75 and records `interrupted`, and a run with another key starts over instead of mixing. Usage: bench/test/test_resume.sh [KILLS] (default 6)
+# as crashed by the next start, SIGTERM exits with 75 and records `interrupted`, and a run with another key starts over instead of mixing. Usage: bench/test/resume.sh [KILLS] (default 6)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 KILLS=${1:-6}

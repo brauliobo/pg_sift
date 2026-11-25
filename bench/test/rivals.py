@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """bench/steps/rivals.py without a server: the rival engines of a search run are planned, saved and assembled from the cache by the key of their adapter and context.
 
-    python3 -I bench/test/test_rivals.py
+    python3 -I bench/test/rivals.py
 """
 import argparse
 import os

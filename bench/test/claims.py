@@ -5,12 +5,12 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps', 'records'))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps'))
 import claims  # noqa: E402
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
-from test_records import BASE, CHURN, build_rows, clean, mutate  # noqa: E402
+from rows import BASE, CHURN, build_rows, clean, mutate  # noqa: E402
 
 
 LINE = '- Improved: pg_sift: a top 20 over a sorted key takes 1 ms and 5 million instructions where the heap took 40 ms.'

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests of the pure parts of the benchmark harness: bench/steps/benchlib.py (cache keys and rules, row replacement, comparison of two result sets) and the helpers of
-bench/steps/store.py that need no server. No docker, no PostgreSQL:  python3 -I bench/test/test_benchlib.py   (or  bench/bench test)"""
+bench/steps/store.py that need no server. No docker, no PostgreSQL:  python3 -I bench/test/benchlib.py   (or  bench/bench test)"""
 import json, os, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))

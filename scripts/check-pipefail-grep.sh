@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A script under pipefail must not pipe into `grep -q`: grep exits on its first match, the producer that still writes dies of SIGPIPE, and the pipeline fails with 141 whether or not
-# the pattern matched. It passes while the producer's output fits one pipe write and fails when the host is loaded enough to separate the writes (bench/test/test_resume.sh: "the
+# the pattern matched. It passes while the producer's output fits one pipe write and fails when the host is loaded enough to separate the writes (bench/test/resume.sh: "the
 # orphan of the killed run is not found by its environment"). Read the output into a variable ([[ $(cmd) == *x* ]]) or let grep read all of it (grep x >/dev/null).
 #
 #   scripts/check-pipefail-grep.sh             the shell files of the tree that set pipefail, and the parts scripts/ci.sh sources

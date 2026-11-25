@@ -1,5 +1,5 @@
 """The 6.0 docs generators: the README rows and the docs/BENCHMARKS.md blocks come from docs/results/ (the committed baseline without it), the read stream switch of the scaling probes
-exists only in SIFT_TESTING builds, and `scripts/gen-docs.py --check` renders new files of the worktree too. Run: python3 -I bench/test/test_v6_docs.py"""
+exists only in SIFT_TESTING builds, and `scripts/gen-docs.py --check` renders new files of the worktree too. Run: python3 -I bench/test/v6_docs.py"""
 import importlib.util
 import json
 import os

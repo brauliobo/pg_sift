@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Tests of steps/meter.py and of the CPU and buffers per transaction that steps/cell.py prints: the process tree on a shell with a busy child, and a throwaway
-Postgres cluster on tmpfs (about 5 s; skipped without initdb). Run: python3 -I bench/test/test_meter.py"""
+Postgres cluster on tmpfs (about 5 s; skipped without initdb). Run: python3 -I bench/test/meter.py"""
 import os, shutil, subprocess, sys, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STEPS = os.path.join(HERE, '..', 'steps')
 sys.path.insert(0, STEPS)
 import meter  # noqa: E402
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, 'lib'))
 import cluster  # noqa: E402
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of the pure parts of steps/cell.py: the script reader and the variable expansion of the persistent driver. Run: python3 -I bench/test/test_cell.py"""
+"""Tests of the pure parts of steps/cell.py: the script reader and the variable expansion of the persistent driver. Run: python3 -I bench/test/cell.py"""
 import importlib.util, os, sys, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))

@@ -2,7 +2,7 @@
 """bench/steps/scope_stock_arms.py and scope_stock_tables.py without a server: the classes are the files of bench/sql/scope_stock/queries, a run's raw tables become the one
 results file, the tally of cells won, tied and lost follows its margins, and the generated blocks are a function of the results file and fit the rules of the README tables.
 
-    python3 -I bench/test/test_scope_stock.py
+    python3 -I bench/test/scope_stock.py
 """
 import argparse
 import itertools

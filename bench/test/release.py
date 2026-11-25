@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests of the release run (bench/steps/release.sh): the preset `release`, its minutes against the budget, the stages it covers and the inputs key that lets the generic stage be carried.
-Run: python3 -I bench/test/test_release.py"""
+Run: python3 -I bench/test/release.py"""
 import os, re, subprocess, sys, unittest
 from types import SimpleNamespace
 

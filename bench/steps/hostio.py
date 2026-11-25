@@ -14,7 +14,7 @@ Three sources, each `None` where the host cannot say (the figure is then absent 
 
 `io_avg_kb_per_read` is the device's (sectors * 0.5 KB / reads), else the cgroup's, else the process's read_bytes / syscr (every read(2): sockets and pipes included, so only a
 rough figure). Cold runs are made cold by the caller (iolib.cool, or the drop of the page cache); `cache_dropped` is theirs to record. The `root` argument is the file system the
-files are read from ('/' except in bench/test/test_hostio.py, which builds a fake /proc and /sys).
+files are read from ('/' except in bench/test/hostio.py, which builds a fake /proc and /sys).
 """
 import argparse
 import json

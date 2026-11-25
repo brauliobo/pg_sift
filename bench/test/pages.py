@@ -33,7 +33,7 @@ class Pages(unittest.TestCase):
         hits = []
         for path in tracked:
             full = os.path.join(ROOT, path)
-            if path == 'bench/test/test_pages.py' or not os.path.isfile(full):
+            if path == 'bench/test/pages.py' or not os.path.isfile(full):
                 continue
             with open(full, errors='ignore') as f:
                 hits += [path for line in f if RETIRED.search(line)]

@@ -4,9 +4,9 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'steps', 'records'))
-import test_records as base  # noqa: E402  (its fixtures; the module, so that its tests are not found twice)
+import rows as base  # noqa: E402  (its fixtures; the module, so that its tests are not found twice)
 import collect  # noqa: E402
 import report  # noqa: E402
 import schema  # noqa: E402
