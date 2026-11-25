@@ -88,7 +88,13 @@ area_of(SiftRowLockTable *t, bool create)
 		LWLockRelease(&t->area_lock);
 	}
 	if (area == NULL && t->area_handle != DSA_HANDLE_INVALID)
+	{
+#ifdef SIFT_TESTING
+		if (!create && sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_rowlock_attach") != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not attach the area of the row lock chunks (test)")));
+#endif
 		area = create ? area_try(t, false) : dsa_attach(t->area_handle);
+	}
 	if (area != NULL)
 		dsa_pin_mapping(area);
 	MemoryContextSwitchTo(old);

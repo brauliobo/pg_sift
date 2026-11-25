@@ -27,6 +27,9 @@ extern void sift_tbl_vm_lease_open(Relation rel);
 extern void sift_tbl_vm_lease_set(Relation rel, uint64 lo, uint64 hi);
 extern void sift_tbl_vm_lease_roll(Relation rel, uint64 open_vblock);
 
+/* The 32 bits of the transaction of fx that a record of the map names as the newest one its bits hide from no snapshot; InvalidTransactionId where no snapshot can still need it to be waited for */
+extern TransactionId sift_vm_horizon_xid(FullTransactionId fx, FullTransactionId next);
+
 /* Clears the bits of the vblock before the delete or the update of a row of it is staged; an ERROR where the table has a map and the server cannot log it */
 extern void sift_tbl_vm_clear(Relation rel, BlockNumber vblock);
 

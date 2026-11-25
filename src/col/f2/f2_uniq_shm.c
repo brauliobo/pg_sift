@@ -294,6 +294,10 @@ owned_add(const SiftUniqKey *k, uint32 slot, TransactionId xid)
 		RegisterSubXactCallback(uniq_subxact, NULL);
 		registered = true;
 	}
+#ifdef SIFT_TESTING
+	if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_uniq_owned") != NULL)
+		ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("could not list the unique key entries of the transaction (test)")));
+#endif
 	if (owned == NULL)
 		owned = MemoryContextAlloc(TopTransactionContext, sizeof(Owned) * (capowned = 256));
 	else if (nowned == capowned)
@@ -330,3 +334,57 @@ sift_uniq_shm_reserve(const SiftUniqKey *k, TransactionId xid, ItemPointer tid)
 	owned_add(k, i, xid);
 	return true;
 }
+
+#ifdef SIFT_TESTING
+
+#include "fmgr.h"
+
+PG_FUNCTION_INFO_V1(sift_test_uniq_shm_active);
+PG_FUNCTION_INFO_V1(sift_test_uniq_shm_fill);
+PG_FUNCTION_INFO_V1(sift_test_uniq_shm_reserve_one);
+
+static bool
+reserve_test_key(int stripe, uint32 n, TransactionId xid)
+{
+	SiftUniqKey k;
+	ItemPointerData tid;
+
+	sift_uniq_key_begin(&k, &(RelFileLocator) {.spcOid = 1,.dbOid = 2,.relNumber = 990001}, (uint32) stripe | (n << 6), 1);
+	k.fp64 = n;
+	ItemPointerSet(&tid, 0, 1);
+	return sift_uniq_shm_reserve(&k, xid, &tid);
+}
+
+/* sift._test_uniq_shm_active(): the entries of the registry that hold a key */
+Datum
+sift_test_uniq_shm_active(PG_FUNCTION_ARGS)
+{
+	UniqShm    *u = registry();
+	int64		n = 0;
+
+	for (int i = 0; i < SIFT_UNIQ_SHM_SLOTS; i++)
+		n += u->slot[i].state == SIFT_UNIQ_ACTIVE;
+	PG_RETURN_INT64(n);
+}
+
+/* sift._test_uniq_shm_fill(stripe int, n int, xid int8): entries of the stripe for the transaction xid, until n or the stripe is full; the entries made */
+Datum
+sift_test_uniq_shm_fill(PG_FUNCTION_ARGS)
+{
+	int			made = 0;
+
+	while (made < PG_GETARG_INT32(1) && reserve_test_key(PG_GETARG_INT32(0), made, (TransactionId) PG_GETARG_INT64(2)))
+		made++;
+	PG_RETURN_INT32(made);
+}
+
+/* sift._test_uniq_shm_reserve_one(stripe int): an entry of the stripe for the current transaction, a key no other has; whether the stripe had room */
+Datum
+sift_test_uniq_shm_reserve_one(PG_FUNCTION_ARGS)
+{
+	static uint32 next = 1 << 20;
+
+	PG_RETURN_BOOL(reserve_test_key(PG_GETARG_INT32(0), next++, GetCurrentTransactionId()));
+}
+
+#endif							/* SIFT_TESTING */

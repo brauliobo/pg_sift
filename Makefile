@@ -630,6 +630,7 @@ TESTING_REGRESS += p98_decoders
 TESTING_REGRESS += p98_check_blockmap
 TESTING_REGRESS += p98_wide_part
 TESTING_REGRESS += p98_inspect_tiered
+TESTING_REGRESS += p98_shm_vm_uniq_%
 TESTING_REGRESS += part_agg_parity
 TESTING_REGRESS += position_blocks
 TESTING_REGRESS += proj_%

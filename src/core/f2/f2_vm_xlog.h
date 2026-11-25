@@ -70,4 +70,11 @@ extern bool sift_vm_apply_set(Relation rel, Buffer vmbuf, uint8 flags, Transacti
 /* Clears the bits of the vblock in the page of the map, logging it (permanent relations) before the caller logs the change they stood for; false where no bit was set */
 extern bool sift_vm_apply_clear(Relation rel, Buffer vmbuf, BlockNumber vblock);
 
+#ifdef SIFT_TESTING
+#include "access/xlogreader.h"
+
+/* Redo of a record, whether or not the library is preloaded */
+extern void sift_vm_redo_test(XLogReaderState *r);
+#endif
+
 #endif							/* SIFT_F2_VM_XLOG_H */

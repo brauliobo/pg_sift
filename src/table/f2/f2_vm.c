@@ -90,6 +90,7 @@ typedef struct VmPlan
 	Spans		unfrozen;		/* the vblocks that are visible but not frozen */
 	uint64		floor;
 	uint64		limit;			/* the vblocks reserved so far */
+	FullTransactionId next;		/* the next transaction of the server when the pass began: what the transaction ids of the plan are told apart from */
 	Size		bytes;			/* what the spans and the descriptors they point to take */
 	Size		budget;			/* what they may take: past it the plan is not whole, and no bit is set on it */
 	bool		incomplete;
@@ -114,8 +115,8 @@ span_add(VmPlan *plan, Spans *s, uint64 lo, uint64 hi, TransactionId xid, uint32
 	s->v[s->n++] = (Span) {lo, hi, xid, part_id, part};
 }
 
-static TransactionId
-xid_of(FullTransactionId fx)
+TransactionId
+sift_vm_horizon_xid(FullTransactionId fx, FullTransactionId next pg_attribute_unused())
 {
 	return FullTransactionIdIsValid(fx) ? XidFromFullTransactionId(fx) : InvalidTransactionId;
 }
@@ -210,7 +211,7 @@ plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Fu
 	FullTransactionId newest;
 	bool		loaded = col_delta_newest(rel, e, &newest);
 	bool		deltas_settled = loaded && ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || (FullTransactionIdIsValid(newest) && FullTransactionIdPrecedes(newest, oldest)));
-	TransactionId delta_xid = xid_of(newest);
+	TransactionId delta_xid = sift_vm_horizon_xid(newest, plan->next);
 
 	plan->bytes += sizeof(SiftPartDesc) * (Size) np;
 	unfit_unsettled(rel, store, e, plan);
@@ -219,8 +220,8 @@ plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Fu
 		const SiftPartDesc *d = &parts[i];
 		uint64		lo = d->tid_max != 0 ? d->tid_min >> 16 : 0,
 					hi = d->tid_max != 0 ? d->tid_max >> 16 : UINT64_MAX;
-		TransactionId xid = xid_of(d->max_xid),
-					dv_xid = xid_of(d->dv_max_xid);
+		TransactionId xid = sift_vm_horizon_xid(d->max_xid, plan->next),
+					dv_xid = sift_vm_horizon_xid(d->dv_max_xid, plan->next);
 		bool		frozen = (d->flags & SIFT_PART_FLAG_UNFROZEN) == 0 && d->dv_blk == InvalidBlockNumber &&
 			(!FullTransactionIdIsValid(d->max_xid) || FullTransactionIdPrecedes(d->max_xid, freeze));
 
@@ -456,6 +457,7 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 	(void) sift_ttl_rearm_rocompat(rel);
 	meta = sift_col_meta_read(rel);
 	plan.limit = meta.next_vblock;
+	plan.next = ReadNextFullTransactionId();
 	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) == 0 && sift_shm_tid_lease_floor(&rel->rd_locator, meta.next_vblock, &plan.floor) && plan.floor > 0)
 	{
 		const Size	budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);

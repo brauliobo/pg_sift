@@ -234,6 +234,14 @@ vm_redo(XLogReaderState *r)
 	}
 }
 
+#ifdef SIFT_TESTING
+void
+sift_vm_redo_test(XLogReaderState *r)
+{
+	vm_redo(r);
+}
+#endif
+
 static void
 vm_desc(StringInfo buf, XLogReaderState *r)
 {

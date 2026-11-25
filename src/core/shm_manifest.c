@@ -809,6 +809,10 @@ slot_drop_snap(Table *t, SiftShmIndexSlot *s)
 
 	if (pg_atomic_read_u64(&s->current_snap_dp) == InvalidDsaPointer)
 		return;
+#ifdef SIFT_TESTING
+	if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "manifest_drop_snap") != NULL)
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift test: the snapshot of the slot cannot be dropped (manifest_drop_snap)")));	/* check-errors: allow */
+#endif
 	a = area_attach(t, false);
 	if (a == NULL)
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift: the area of the manifest snapshots cannot be attached"),

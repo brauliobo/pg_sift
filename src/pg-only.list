@@ -458,6 +458,7 @@ col/f2/f2_tier_sql.c
 col/f2/f2_ttl.c
 col/f2/f2_ttl.h
 col/f2/f2_unique.c
+col/f2/f2_unique_test.c
 col/f2/f2_unique.h
 col/f2/f2_v6_bridge.c
 col/f2/f2_v6_bridge.h
