@@ -310,6 +310,7 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	in.sections = secs;
 	in.nsections = nsec;
 	in.inline_extent_cap = -1;
+	in.bulk_tail = true;
 	d = sift_part_write(rel, &in);
 	d.ext_flags = ext_flags;
 	if (fill.rec != NULL)
