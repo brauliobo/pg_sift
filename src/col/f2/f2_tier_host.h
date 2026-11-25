@@ -34,6 +34,8 @@ typedef struct SiftTtlPolicy
 extern bool sift_tier_policy_of(Relation rel, SiftTierPolicy *out);
 extern void sift_tier_policy_by_id(Relation rel, uint32 policy_id, SiftTierPolicy *out);
 extern bool sift_ttl_policy_of(Relation rel, SiftTtlPolicy *out);
+/* Sets the flag that makes writers and compaction enforce the TTL on a relation that has a policy but not the flag (a restored or reset relation); false when it needed nothing */
+extern bool sift_ttl_rearm_rocompat(Relation rel);
 
 /* The writes of the policy functions, as the owner of the tables: a relation has at most one policy of each kind */
 extern void sift_tier_policy_put(Relation rel, const char *uri, Interval *move_after, const char *endpoint, uint64 scope_id);

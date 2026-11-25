@@ -183,6 +183,7 @@ sift_clear_tier_policy(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(had);
 }
 
+/* Block 0 and the registry in shared memory, which the visibility map reads the flags from, agree on the flag */
 static void
 set_ttl_flag(Relation rel, bool on)
 {
@@ -190,10 +191,26 @@ set_ttl_flag(Relation rel, bool on)
 	SiftXlog	x = sift_xlog_start(rel);
 	Page		p0 = sift_xlog_register(&x, buf, 0);
 	SiftColMetaPageData *m = SIFT_COL_META(p0);
+	SiftColMetaPageData committed;
+	SiftShmIndexMeta shm;
 
 	m->common.ro_compat_flags = on ? (m->common.ro_compat_flags | SIFT_ROCOMPAT_TTL) : (m->common.ro_compat_flags & ~SIFT_ROCOMPAT_TTL);
 	sift_meta_seal(p0, m->common.struct_size);
+	committed = *m;
 	sift_xlog_done(&x);
+	shm = sift_col_meta_shm(rel, &committed);
+	(void) sift_shm_manifest_publish(&shm, NULL);
+}
+
+bool
+sift_ttl_rearm_rocompat(Relation rel)
+{
+	SiftTtlPolicy policy;
+
+	if (!sift_ttl_policy_of(rel, &policy) || (sift_col_meta_read(rel).common.ro_compat_flags & SIFT_ROCOMPAT_TTL) != 0)
+		return false;
+	set_ttl_flag(rel, true);
+	return true;
 }
 
 /* The time column the TTL runs on: one of the time columns of the manifest, and NOT NULL, because the time bounds of a part are those of its non-null values and a row without a time would be dropped with its part */
