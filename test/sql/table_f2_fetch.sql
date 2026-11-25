@@ -14,7 +14,10 @@ ALTER TABLE t ADD PRIMARY KEY (id);
 SELECT sift.table_set_option('t', 'key_order', 'cust, ts, id');
 INSERT INTO t SELECT * FROM h;
 SELECT sift.create_projection('t', 'p_cust', 'ORDER BY cust, ts DESC, id DESC INCLUDE (amt)') AS projection;
+-- a compaction writes a part for each quarter of maintenance_work_mem of rows: this one makes a single part of the table
+SET maintenance_work_mem = '256MB';
 VACUUM (FREEZE, ANALYZE) t;
+RESET maintenance_work_mem;
 ANALYZE h;
 
 -- the rows are told apart by their granule: the addresses of a granule spread over the table
