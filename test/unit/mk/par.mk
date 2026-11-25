@@ -34,3 +34,4 @@ FX_agg/v6/par/star        = $(HOST) $(B)/agg/v6/par/pipe_stubs.o
 LIB_agg/v6/par/unnest     = $(SINK_LIB) agg/v6/par/unnest.c agg/v6/v6_unnest.c agg/v6/v6_unnest_pairs.c
 FX_agg/v6/par/unnest      = $(HOST) $(B)/agg/v6/par/pipe_stubs.o
 LIB_agg/v6/par/win        = core/par/arena.c agg/v6/par/winpart.c $(WINDOW_LIB)
+FX_agg/v6/par/win         = $(HOST)

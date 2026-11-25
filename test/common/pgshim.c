@@ -11,6 +11,7 @@
 #include "access/transam.h"
 #include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
+#include "storage/buffile.h"
 
 #include "bm25/analyze.h"
 #include "core/damage.h"
@@ -444,4 +445,51 @@ int
 sift_damage_report(Relation index)
 {
 	return 0;
+}
+
+struct BufFile
+{
+	FILE	   *fp;
+};
+
+BufFile *
+BufFileCreateTemp(bool interXact)
+{
+	BufFile    *f = malloc(sizeof(BufFile));
+
+	(void) interXact;
+	if (!f || !(f->fp = tmpfile()))
+		pgshim_unreached("BufFileCreateTemp");
+	return f;
+}
+
+void
+BufFileClose(BufFile *file)
+{
+	if (!file)
+		return;
+	fclose(file->fp);
+	free(file);
+}
+
+void
+BufFileWrite(BufFile *file, const void *ptr, size_t size)
+{
+	if (size > 0 && fwrite(ptr, 1, size, file->fp) != size)
+		pgshim_unreached("BufFileWrite");
+}
+
+void
+BufFileReadExact(BufFile *file, void *ptr, size_t size)
+{
+	if (size > 0 && fread(ptr, 1, size, file->fp) != size)
+		pgshim_unreached("BufFileReadExact");
+}
+
+int
+BufFileSeek(BufFile *file, int fileno, off_t offset, int whence)
+{
+	if (fileno != 0)
+		pgshim_unreached("BufFileSeek");
+	return fseeko(file->fp, offset, whence);
 }
