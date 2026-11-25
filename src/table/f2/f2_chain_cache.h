@@ -38,4 +38,9 @@ extern const uint8 *sift_col_delta_log_rec(const SiftColDeltaLog *l, int i);
 /* The cache holds nothing of the relation any more (its files changed) */
 extern void sift_chain_cache_forget_rel(Oid relid);
 
+#ifdef SIFT_TESTING
+/* The pages of column delta chains the cache has read since the backend started (sift._test_chain_cache_pages) */
+extern uint64 sift_chain_cache_pages;
+#endif
+
 #endif							/* SIFT_TBL_F2_CHAIN_CACHE_H */

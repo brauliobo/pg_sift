@@ -74,6 +74,10 @@ typedef struct Slot
 static MemoryContext chain_cx = NULL;
 static Slot slots[CHAIN_SLOTS];
 
+#ifdef SIFT_TESTING
+uint64		sift_chain_cache_pages = 0;
+#endif
+
 /* ---- the index of a log by row ---- */
 
 static void
@@ -419,6 +423,9 @@ sift_col_delta_log(Relation rel, const SiftPartitionEntry *entry)
 
 		s->stamp = stamp_of_page(head, s->log.cd.chain.blks[s->log.cd.chain.npages - 1]);
 		cd_index(&s->log.cd);
+#ifdef SIFT_TESTING
+		sift_chain_cache_pages += s->log.cd.chain.npages;
+#endif
 	}
 	MemoryContextSwitchTo(old);
 	if (!has)

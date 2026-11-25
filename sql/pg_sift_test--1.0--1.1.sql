@@ -259,3 +259,6 @@ CREATE FUNCTION sift._test_pend_del_reads() RETURNS int8 AS 'MODULE_PATHNAME', '
 -- src/table/f2/f2_lock_ovf.c: the entries of the row locks of a sift_table in the table of shared memory and in the chunks of the stripes that filled
 CREATE FUNCTION sift._test_rowlock_stats(OUT in_table int8, OUT in_chunks int8, OUT chunks int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_rowlock_stats' LANGUAGE C STRICT;
+
+-- The pages of column delta chains the cache of a sift_table's chains has read since the backend started (src/table/f2/f2_chain_cache.c): a chain that grew is read from its newest page on, not whole
+CREATE FUNCTION sift._test_chain_cache_pages() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_chain_cache_pages' LANGUAGE C STRICT;
