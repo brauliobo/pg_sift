@@ -58,8 +58,9 @@ static bool
 lock_busy(const LOCKTAG *tag, LOCKMODE mode)
 {
 	int			holders;
+	VirtualTransactionId *conflicts = GetLockConflicts(tag, mode, &holders);
 
-	(void) GetLockConflicts(tag, mode, &holders);
+	pfree(conflicts);
 	return holders > 0;
 }
 
