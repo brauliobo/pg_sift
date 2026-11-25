@@ -79,6 +79,25 @@ settled_deletes(const SiftPendDelRec *recs, int n, const bool *hit, bool *settle
 	return px;
 }
 
+/* Some delete names a row of the inline slab: only then is the slab sorted into a part, so that the delete finds the row */
+static bool
+slab_holds_deleted(Relation rel, uint64 part_id, BlockNumber head, const SiftPartSpec *spec, const SiftPendDelRec *recs, int n)
+{
+	SiftRowBuf *rb = sift_rowbuf_new(spec);
+	uint64	   *tids;
+	bool	   *hit = palloc(Max(n, 1) * sizeof(bool));
+	int			nhit;
+
+	sift_l0_slab_read(rel, part_id, head, rb, spec, NULL, NULL, NULL);
+	tids = memcpy(palloc(Max(rb->n, 1) * sizeof(uint64)), rb->tid, rb->n * sizeof(uint64));
+	qsort(tids, rb->n, sizeof(uint64), tid_cmp);
+	nhit = sift_del_slab_hits(tids, (uint32) rb->n, recs, n, hit);
+	pfree(tids);
+	pfree(hit);
+	sift_rowbuf_free(rb);
+	return nhit > 0;
+}
+
 int
 sift_del_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber tail, const SiftPendDelRec *recs, int n, bool *done)
 {
@@ -97,7 +116,7 @@ sift_del_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	SiftRowBuf *rb;
 
 	if (!sift_l0_slab_is_href(rel, part_id, tail))
-		return sift_l0_slab_flush(rel, part_id, key_lo, spec) ? 0 : -1;
+		return slab_holds_deleted(rel, part_id, tail, spec, recs, n) && sift_l0_slab_flush(rel, part_id, key_lo, spec) ? 0 : -1;
 	sift_href_io_init(&h, rel, (uint32) part_id);
 	refs = sift_l0_href_chain_read(&h.io, tail, &nrefs, &pages, &npages, &why, &bad);
 	if (refs == NULL)
