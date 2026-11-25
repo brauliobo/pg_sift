@@ -12,6 +12,7 @@
 #include "access/tsmapi.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
+#include "datatype/timestamp.h"
 #include "executor/executor.h"
 #include "nodes/execnodes.h"
 #include "pgstat.h"
@@ -23,6 +24,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 
 #include "col/f2/f2_store_schema.h"
 #include "core/f2/unit_queue.h"

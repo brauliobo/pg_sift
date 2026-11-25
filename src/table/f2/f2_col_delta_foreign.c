@@ -13,6 +13,7 @@
 #include "utils/rel.h"
 
 #include "core/f2/col_delta_anchor.h"
+#include "core/memtrack.h"
 #include "core/page_io.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_col_delta_dir.h"
@@ -94,7 +95,7 @@ log_gone(void *arg pg_attribute_unused())
 static ForeignLog *
 log_new(Relation rel, uint64 part_id)
 {
-	MemoryContext cx = AllocSetContextCreate(TopTransactionContext, "sift f2 delta foreign log", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(TopTransactionContext, "sift f2 delta foreign log");
 	MemoryContextCallback *cb = MemoryContextAlloc(cx, sizeof(*cb));
 	ForeignLog *l = MemoryContextAllocZero(cx, sizeof(ForeignLog));
 
