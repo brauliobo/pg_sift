@@ -31,7 +31,7 @@ typedef struct SiftV6ScanSrc
 
 /*
  * Where an executor starts to read a source, opened by sift_v6_source_open: a plan made before the index went out of service is refused with SQLSTATE 40001 and planned again without it
- * (core/quarantine.h)
+ * (core/quarantine.h), and a SERIALIZABLE transaction takes the read lock of the whole table the scan reads, which a writer of another transaction is told about
  */
 extern void sift_v6_source_enter(Relation source, bool is_table, Snapshot snap);
 

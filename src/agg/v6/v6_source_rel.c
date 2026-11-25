@@ -5,9 +5,11 @@
 
 #include "access/genam.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
+#include "storage/predicate.h"
 
 #include "agg/plan/safety.h"
 #include "agg/v6/v6_card.h"
@@ -142,6 +144,15 @@ sift_v6_plan_bind(V6Plan *p, const SiftV6RelSource *s, Relation rel)
 void
 sift_v6_source_enter(Relation source, bool is_table, Snapshot snap)
 {
+	Relation	heap = source;
+
 	if (!is_table)
 		sift_quarantine_net(source, sift_meta_peek_format(source).flags);
+	if (!IsolationIsSerializable())
+		return;
+	if (!is_table)
+		heap = table_open(source->rd_index->indrelid, NoLock);
+	PredicateLockRelation(heap, snap);
+	if (!is_table)
+		table_close(heap, NoLock);
 }
