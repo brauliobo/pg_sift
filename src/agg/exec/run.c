@@ -785,7 +785,7 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	fuse_register(ex);
 }
 
-static void
+void
 agg_mem_checkpoint(const AggExec *ex)
 {
 	SiftMemTracker tr;

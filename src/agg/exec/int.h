@@ -18,6 +18,8 @@ extern const CustomExecMethods agg_exec_methods;
 extern void agg_shutdown(CustomScanState *node);
 extern void agg_explain(CustomScanState *node, List *ancestors, ExplainState *es);
 extern void run_counters(AggExec *c, SiftSrcCounters *cc);
+/* the group table holds no more than its memory: asserted where it is at its largest, at the end of a scan and of each of its passes */
+extern void agg_mem_checkpoint(const AggExec *ex);
 
 extern TupleTableSlot * topn_next(AggExec *ex, TupleTableSlot *slot);
 
