@@ -169,8 +169,12 @@ sift_test_f2_tail_relocate(PG_FUNCTION_ARGS)
 {
 	Relation	rel = f2t_open_index(fcinfo, RowExclusiveLock);
 
+	int64		nblocks;
+
 	sift_f2_tail_relocate(rel, sift_f2_store_open(rel), sift_horizon(rel), sift_f2_hot_cut(sift_f2_rel(rel)));
-	PG_RETURN_INT64(RelationGetNumberOfBlocks(rel));
+	nblocks = RelationGetNumberOfBlocks(rel);
+	index_close(rel, NoLock);
+	PG_RETURN_INT64(nblocks);
 }
 
 /* (index): what block 0 keeps inline: its offset and length, the partitions of the summary and whether the index says so; the check of the manifest fails when the summary is not the directory */
