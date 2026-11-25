@@ -382,16 +382,7 @@ sift_tbl_f2_guard_publication(Relation rel)
 void
 sift_tbl_f2_ddl_after(Relation rel, Node *parsetree)
 {
-	bool		moved = IsA(parsetree, AlterObjectSchemaStmt) && castNode(AlterObjectSchemaStmt, parsetree)->objectType == OBJECT_TABLE;
-
-	if (IsA(parsetree, AlterTableStmt))
-	{
-		ListCell   *lc;
-
-		foreach(lc, castNode(AlterTableStmt, parsetree)->cmds)
-			moved = moved || lfirst_node(AlterTableCmd, lc)->subtype == AT_AttachPartition;
-	}
-	if (moved)
+	if (IsA(parsetree, AlterObjectSchemaStmt) && castNode(AlterObjectSchemaStmt, parsetree)->objectType == OBJECT_TABLE)
 		sift_tbl_f2_guard_publication(rel);
 }
 

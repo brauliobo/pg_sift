@@ -1,6 +1,7 @@
 /*
  * table/utility.c - the statements on a sift_table that its format has to see around the server's own work (ALTER TABLE, SET SCHEMA and RENAME COLUMN): the hook finds the table of
- * the format and calls the callbacks it has (table/dispatch.h); a format without them (Format 1 follows through its event trigger) is left alone.
+ * the format and calls the callbacks it has (table/dispatch.h); a format without them (Format 1 follows through its event trigger) is left alone. A sift_table that becomes a partition
+ * (ATTACH PARTITION, CREATE TABLE ... PARTITION OF) is checked against the publications of the table it joins.
  */
 #include "postgres.h"
 
@@ -12,6 +13,7 @@
 #include "utils/rel.h"
 
 #include "table/dispatch.h"
+#include "table/wal.h"
 
 static ProcessUtility_hook_type prev_utility;
 
@@ -42,6 +44,38 @@ statement_table(Node *parse, LOCKMODE *lock)
 	return ours ? relid : InvalidOid;
 }
 
+/* A sift_table that is a partition of a published table is published, which the catalog says only once the statement has made it a partition */
+static void
+check_partition_publication(RangeVar *child)
+{
+	Oid			relid = RangeVarGetRelid(child, NoLock, true);
+	Relation	rel;
+
+	if (!OidIsValid(relid))
+		return;
+	rel = relation_open(relid, NoLock);
+	if (sift_tbl_is_table(rel))
+		sift_tbl_check_publication(rel);
+	relation_close(rel, NoLock);
+}
+
+static void
+check_new_partitions(Node *parse)
+{
+	ListCell   *lc;
+
+	if (IsA(parse, CreateStmt) && castNode(CreateStmt, parse)->partbound != NULL)
+		check_partition_publication(castNode(CreateStmt, parse)->relation);
+	else if (IsA(parse, AlterTableStmt))
+		foreach(lc, castNode(AlterTableStmt, parse)->cmds)
+		{
+			AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lc);
+
+			if (cmd->subtype == AT_AttachPartition)
+				check_partition_publication(castNode(PartitionCmd, cmd->def)->name);
+		}
+}
+
 static void
 tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtilityContext context, ParamListInfo params, QueryEnvironment *env, DestReceiver *dest, QueryCompletion *qc)
 {
@@ -63,6 +97,7 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 		prev_utility(pstmt, query, readonly, context, params, env, dest, qc);
 	else
 		standard_ProcessUtility(pstmt, query, readonly, context, params, env, dest, qc);
+	check_new_partitions(parse);
 	if (ops == NULL)
 		return;
 	rel = relation_open(relid, NoLock);
