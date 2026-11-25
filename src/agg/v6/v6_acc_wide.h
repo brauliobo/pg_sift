@@ -13,7 +13,7 @@
 
 #define V6W_NAN		PG_INT64_MIN
 
-extern pg_noreturn void sift_v6_wide_overflow(void);
+extern _Noreturn void sift_v6_wide_overflow(void);
 
 static inline bool
 v6acc_wide_is_nan(const V6Acc *a)
