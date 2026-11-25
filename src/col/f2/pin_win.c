@@ -44,6 +44,7 @@ typedef struct PinJob
 struct SiftPinWin
 {
 	MemoryContext cx;
+	MemoryContextCallback cb;	/* releases the pins of the parts with the window, a statement that fails included */
 	Relation	rel;
 	Snapshot	snap;
 	F2Scan	   *scan;			/* the scan of an index that listed the granules */
@@ -77,6 +78,15 @@ struct SiftPinWin
 	SiftPinSlot slot[SIFT_PIN_WIN_SLOTS_MAX];
 };
 
+static void
+pin_win_release(void *arg)
+{
+	const SiftPinWin *w = arg;
+
+	for (uint32 i = 0; i < w->nparts; i++)
+		sift_f2_pin_release(w->parts[i].pin);
+}
+
 SiftPinWin *
 sift_pin_win_new(Relation rel, Snapshot snap, const int *leaves, int nleaves, uint32 nslots, SiftPinPartOk part_ok, void *part_arg)
 {
@@ -85,6 +95,8 @@ sift_pin_win_new(Relation rel, Snapshot snap, const int *leaves, int nleaves, ui
 
 	Assert(nslots >= 1 && nslots <= SIFT_PIN_WIN_SLOTS_MAX);
 	w->cx = cx;
+	w->cb = (MemoryContextCallback) {pin_win_release, w, NULL};
+	MemoryContextRegisterResetCallback(cx, &w->cb);
 	w->rel = rel;
 	w->snap = snap;
 	w->nslots = nslots;
@@ -449,8 +461,6 @@ sift_pin_win_replay(SiftPinWin *w, uint32 jobno)
 void
 sift_pin_win_end(SiftPinWin *w)
 {
-	for (uint32 i = 0; i < w->nparts; i++)
-		sift_f2_pin_release(w->parts[i].pin);
 	MemoryContextDelete(w->cx);
 }
 

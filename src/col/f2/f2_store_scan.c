@@ -83,6 +83,7 @@ struct SiftStoreScan
 struct SiftStorePart
 {
 	SiftStoreScan *s;
+	MemoryContextCallback cb;	/* gives the pin back when the scan is abandoned */
 	const SiftPartitionEntry *e;
 	const SiftPartDesc *d;
 	const SiftPendDelIndex *px;
@@ -619,6 +620,12 @@ part_close(SiftStorePart *p)
 	pfree(p);
 }
 
+static void
+part_pin_gone(void *arg)
+{
+	part_release_pin(arg);
+}
+
 static SiftStorePart *
 part_new(SiftStoreScan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px)
 {
@@ -628,6 +635,8 @@ part_new(SiftStoreScan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, c
 	p->e = e;
 	p->d = d;
 	p->px = px;
+	p->cb = (MemoryContextCallback) {part_pin_gone, p, NULL};
+	MemoryContextRegisterResetCallback(s->cx, &p->cb);
 	p->gcx = sift_mem_allocset_create(s->cx, "sift f2 store scan granule");
 	p->views = MemoryContextAllocZero(s->cx, sizeof(ColView) * s->store->ncols);
 	p->active = MemoryContextAlloc(s->cx, sizeof(int) * Max(s->ncheck, 1));
