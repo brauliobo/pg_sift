@@ -228,8 +228,10 @@ sift_tbl_f2_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, Command
 									 uint32 specToken)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
-	uint64		tid = stage_row(rel, store, slot, cid, false);
+	uint64		tid;
 
+	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
+	tid = stage_row(rel, store, slot, cid, false);
 	sift_tbl_rowlock_set_speculative(rel, tid, specToken, true);
 	if (sift_tbl_extra(store)->has_partial_or_expr_unique)
 		sift_stage_flush(rel);

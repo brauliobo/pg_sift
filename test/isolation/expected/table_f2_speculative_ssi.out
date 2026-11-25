@@ -1,0 +1,22 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1begin s2begin s1read s2read s1add s2add s1c s2c
+step s1begin: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2begin: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1read: SELECT count(*) AS grp1 FROM iso_ssi WHERE grp = 1;
+grp1
+----
+   1
+(1 row)
+
+step s2read: SELECT count(*) AS grp2 FROM iso_ssi WHERE grp = 2;
+grp2
+----
+   1
+(1 row)
+
+step s1add: INSERT INTO iso_ssi VALUES (10, 2) ON CONFLICT (id) DO NOTHING;
+step s2add: INSERT INTO iso_ssi VALUES (11, 1) ON CONFLICT (id) DO NOTHING;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
