@@ -19,6 +19,8 @@ extern SiftKeyMap *sift_f2_scope_keymap(Relation rel, int ord);
 
 /* The scopes the relation declares, and whether it declares any */
 extern int	sift_f2_nscopes(Relation rel);
+/* The members of the pairs of scope ord of the index for the scope key, as the snapshot sees them (ascending, palloc'd in *out); how many */
+extern uint32 sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, int64 key, int64 **out);
 extern bool sift_f2_scoped(Relation rel);
 
 /* Does a scope of the index read one of the leaves: a column delta that patches none of them leaves every summary as it is */

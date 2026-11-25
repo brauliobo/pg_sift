@@ -36,10 +36,7 @@ typedef struct ScopeSpec
 	Oid			time_type;
 	int			excl_col;		/* column of the relation of `col IS NULL`: the rows where it is not NULL leave the cubes (0: none) */
 	bool		scan;			/* the facts are scanned, with the members of the key in the quals, for what no cube tells (a qual on other leaves): the spec of the scan follows in the plan */
-	Oid			pairs_rel;		/* scan: the relation of the pairs, its key and member attributes, and the index column of the member of the facts */
-	int			pairs_key_att;
-	int			pairs_member_att;
-	int			member_col;
+	int			member_col;		/* scan: the index column of the member of the facts */
 	bool		topk;			/* ORDER BY ring_col DESC LIMIT limit of the facts of the key: the newest rows of its ring of the summary; the columns of the rows are the keys of the spec of the scan that follows in the plan */
 	int			ring_col;
 	bool		nulls_first;

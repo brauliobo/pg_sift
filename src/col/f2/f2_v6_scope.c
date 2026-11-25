@@ -595,8 +595,7 @@ compile_scan(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
 	if (!compile_key_filter(p) || !p->spec.key_given || p->spec.key_array)
 		return false;
-	p->spec = (ScopeSpec) {.relid = p->spec.relid,.is_table = p->spec.is_table,.ord = p->spec.ord,.key_type = p->spec.key_type,.key_given = true,.scan = true,.pairs_rel = pairs_table(p),
-	.pairs_key_att = p->leg.key,.pairs_member_att = p->leg.member,.member_col = p->layout.member_col};
+	p->spec = (ScopeSpec) {.relid = p->spec.relid,.is_table = p->spec.is_table,.ord = p->spec.ord,.key_type = p->spec.key_type,.key_given = true,.scan = true,.member_col = p->layout.member_col};
 	return sift_v6_compile_fact(p->root, p->fact, out, p->index, extra, &p->v6, &p->v6_tlist);
 }
 
@@ -825,7 +824,7 @@ sift_v6_scope_spec_pack(const ScopeSpec *s)
 	ints = list_concat(ints, list_make5_int(s->ranged, s->lo_strat, s->hi_strat, (int) s->time_type, s->grouped_const));
 	ints = list_concat(ints, list_make5_int(s->by_month, (int) s->month_type, s->excl_col, s->ncols, s->naggs));
 	ints = lappend_int(ints, s->is_table);
-	ints = list_concat(ints, list_make5_int(s->scan, (int) s->pairs_rel, s->pairs_key_att, s->pairs_member_att, s->member_col));
+	ints = list_concat(ints, list_make2_int(s->scan, s->member_col));
 	ints = list_concat(ints, list_make5_int(s->topk, s->ring_col, s->nulls_first, s->leaf_not_null, s->limit));
 	ints = list_concat(ints, list_make3_int(s->key_array, s->tie_col, s->tie_desc));
 	for (int i = 0; i < s->ncols; i++)
@@ -839,7 +838,7 @@ ScopeSpec *
 sift_v6_scope_spec_unpack(const List *ints)
 {
 	ScopeSpec  *s = palloc0(sizeof(ScopeSpec));
-	int			at = 29;
+	int			at = 26;
 
 	s->relid = (Oid) list_nth_int(ints, 0);
 	s->ord = list_nth_int(ints, 1);
@@ -858,18 +857,15 @@ sift_v6_scope_spec_unpack(const List *ints)
 	s->naggs = list_nth_int(ints, 14);
 	s->is_table = list_nth_int(ints, 15);
 	s->scan = list_nth_int(ints, 16);
-	s->pairs_rel = (Oid) list_nth_int(ints, 17);
-	s->pairs_key_att = list_nth_int(ints, 18);
-	s->pairs_member_att = list_nth_int(ints, 19);
-	s->member_col = list_nth_int(ints, 20);
-	s->topk = list_nth_int(ints, 21);
-	s->ring_col = list_nth_int(ints, 22);
-	s->nulls_first = list_nth_int(ints, 23);
-	s->leaf_not_null = list_nth_int(ints, 24);
-	s->limit = list_nth_int(ints, 25);
-	s->key_array = list_nth_int(ints, 26);
-	s->tie_col = list_nth_int(ints, 27);
-	s->tie_desc = list_nth_int(ints, 28);
+	s->member_col = list_nth_int(ints, 17);
+	s->topk = list_nth_int(ints, 18);
+	s->ring_col = list_nth_int(ints, 19);
+	s->nulls_first = list_nth_int(ints, 20);
+	s->leaf_not_null = list_nth_int(ints, 21);
+	s->limit = list_nth_int(ints, 22);
+	s->key_array = list_nth_int(ints, 23);
+	s->tie_col = list_nth_int(ints, 24);
+	s->tie_desc = list_nth_int(ints, 25);
 	for (int i = 0; i < s->ncols; i++)
 		s->col[i] = list_nth_int(ints, at++);
 	s->agg = palloc(Max(s->naggs, 1) * sizeof(SiftV6Agg));

@@ -8,10 +8,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "catalog/pg_am.h"
-#include "catalog/pg_index.h"
 #include "catalog/pg_type.h"
-#include "utils/fmgroids.h"
 #include "utils/rel.h"
 #include "access/relation.h"
 #include "access/skey.h"
@@ -490,95 +487,20 @@ months_exact(const ScopeState *st)
 	return !st->spec->by_month || sift_scope_monthmap_tz_safe(st->spec->month_type == TIMESTAMPTZOID, zone_is_utc(session_timezone));
 }
 
-/* The members of the pairs of the key K, as the snapshot sees the relation of the pairs: the array the scan of the facts takes as the list of the member column */
-static Datum *
-push_member(Datum *vals, int n, int *cap, Datum m)
-{
-	if (n == *cap)
-	{
-		*cap *= 2;
-		sift_budget_check((Size) *cap * sizeof(Datum), work_mem, "the members of a scope key", "work_mem", NULL);
-		vals = repalloc(vals, (Size) *cap * sizeof(Datum));
-	}
-	vals[n] = m;
-	return vals;
-}
-
-/* The plain btree of the pairs that leads with the key column: the members of a key are one descent and a range of it */
-static Relation
-key_index(Relation pairs, AttrNumber key_att)
-{
-	foreach_oid(ixoid, RelationGetIndexList(pairs))
-	{
-		Relation	ix = index_open(ixoid, AccessShareLock);
-		const Form_pg_index f = ix->rd_index;
-
-		if (ix->rd_rel->relam == BTREE_AM_OID && f->indisvalid && f->indisready && !f->indisexclusion && f->indkey.values[0] == key_att &&
-			RelationGetIndexExpressions(ix) == NIL && RelationGetIndexPredicate(ix) == NIL)
-			return ix;
-		index_close(ix, AccessShareLock);
-	}
-	return NULL;
-}
-
-static Datum
-key_member_at(const ScopeState *st, TupleTableSlot *slot, int64 key, bool *member_null)
-{
-	bool		key_null;
-	const Datum k = slot_getattr(slot, st->spec->pairs_key_att, &key_null);
-	const Datum m = slot_getattr(slot, st->spec->pairs_member_att, member_null);
-
-	*member_null |= key_null || sift_scope_key_code(st->spec->key_type, st->km, k) != key;
-	return m;
-}
-
+/* The members of the pairs of the key K, as the snapshot sees them: the array the scan of the facts takes as the list of the member column */
 static ArrayType *
 key_members(ScopeState *st, EState *estate)
 {
-	const ScopeSpec *sp = st->spec;
-	Relation	pairs = table_open(sp->pairs_rel, AccessShareLock);
-	const Oid	member_type = TupleDescAttr(RelationGetDescr(pairs), sp->pairs_member_att - 1)->atttypid;
-	TupleTableSlot *slot = table_slot_create(pairs, NULL);
+	const Oid	member_type = TupleDescAttr(RelationGetDescr(st->rel), st->spec->member_col - 1)->atttypid;
 	bool		no_key;
 	const int64 key = key_value(st, &no_key);
-	Relation	ix = no_key ? NULL : key_index(pairs, sp->pairs_key_att);
-	Datum	   *vals = palloc(64 * sizeof(Datum));
-	int			n = 0,
-				cap = 64;
-	bool		skip;
+	int64	   *members = NULL;
+	const uint32 n = no_key ? 0 : sift_f2s_key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, key, &members);
+	Datum	   *vals = palloc(Max(n, 1) * sizeof(Datum));
 
-	if (ix != NULL)
-	{
-		IndexScanDesc scan = sift_index_beginscan(pairs, ix, estate->es_snapshot, 1);
-		ScanKeyData sk;
-
-		sift_scope_key_eq_init(&sk, 1, sp->key_type, TupleDescAttr(RelationGetDescr(pairs), sp->pairs_key_att - 1)->attcollation, sift_scope_key_datum(sp->key_type, st->km, key));
-		index_rescan(scan, &sk, 1, NULL, 0);
-		while (index_getnext_slot(scan, ForwardScanDirection, slot))
-		{
-			const Datum m = key_member_at(st, slot, key, &skip);
-
-			if (!skip)
-				vals = push_member(vals, n++, &cap, m);
-		}
-		index_endscan(scan);
-		index_close(ix, AccessShareLock);
-	}
-	else if (!no_key)
-	{
-		TableScanDesc scan = sift_table_beginscan(pairs, estate->es_snapshot, 0, NULL);
-
-		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-		{
-			const Datum m = key_member_at(st, slot, key, &skip);
-
-			if (!skip)
-				vals = push_member(vals, n++, &cap, m);
-		}
-		table_endscan(scan);
-	}
-	ExecDropSingleTupleTableSlot(slot);
-	table_close(pairs, AccessShareLock);
+	sift_budget_check((Size) n * sizeof(Datum), work_mem, "the members of a scope key", "work_mem", NULL);
+	for (uint32 i = 0; i < n; i++)
+		vals[i] = int_datum(member_type, members[i]);
 	st->members = n;
 	return construct_array_builtin(vals, n, member_type);
 }
