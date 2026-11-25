@@ -380,7 +380,7 @@ part_pin(SiftTblF2Scan *s, const ScanUnit *u)
 	{
 		drop_pin(s);
 		s->pin_part_id = u->entry.part_id;
-		s->pin = sift_f2_pin_open(s->base.rs_rd, s->store, &u->desc, (uint32) u->entry.part_id);
+		s->pin = sift_f2_pin_open_scan(s->base.rs_rd, s->store, &u->desc, (uint32) u->entry.part_id);
 	}
 	return s->pin;
 }

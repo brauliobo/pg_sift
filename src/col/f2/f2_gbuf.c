@@ -38,12 +38,15 @@ typedef struct PinEntry
 	SiftF2PartPin *pin;
 	dlist_node	lru_node;
 	bool		in_free_lru;
+	bool		in_scan_ring;
+	dlist_node	scan_node;
 	dlist_node	rel_node;
 } PinEntry;
 
 #define PIN_CACHE_MAX	256
 #define PIN_CACHE_INIT	32
 #define PIN_CX_MAX_BLOCK	(16 * 1024)
+#define PIN_SCAN_RING	4
 
 static struct
 {
@@ -51,6 +54,8 @@ static struct
 	HTAB	   *by_rel;			/* RelList of the pins of each relation */
 	MemoryContext cx;
 	dlist_head	free_lru;
+	dlist_head	scan_ring;		/* the pins sequential scans made, oldest first: a scan that meets every part of a table keeps PIN_SCAN_RING of them, not as many as the budget allows */
+	int			nscan;
 } pins;
 
 static PinEntry *
@@ -61,10 +66,21 @@ pin_victim(void)
 
 /* The pin of e goes: it is on no list of a walk that is under way */
 static void
+scan_ring_leave(PinEntry *e)
+{
+	if (!e->in_scan_ring)
+		return;
+	dlist_delete(&e->scan_node);
+	e->in_scan_ring = false;
+	pins.nscan--;
+}
+
+static void
 pin_free(PinEntry *e)
 {
 	PinKey		key = e->key;
 
+	scan_ring_leave(e);
 	if (e->in_free_lru)
 		dlist_delete(&e->lru_node);
 	MemoryContextDelete(e->pin->cx);
@@ -168,9 +184,26 @@ pin_forget(PinEntry *e)
 		pin_free(e);
 	else
 	{
+		scan_ring_leave(e);
 		hash_search(pins.by_key, &e->key, HASH_REMOVE, NULL);
 		pin->uncached = true;
 	}
+}
+
+static void
+pin_retire(PinEntry *e)
+{
+	rel_list_unlink(pins.by_rel, e->relid, &e->rel_node);
+	pin_forget(e);
+}
+
+static void
+scan_ring_admit(PinEntry *e)
+{
+	dlist_push_tail(&pins.scan_ring, &e->scan_node);
+	e->in_scan_ring = true;
+	if (++pins.nscan > PIN_SCAN_RING)
+		pin_retire(dlist_container(PinEntry, scan_node, dlist_head_node(&pins.scan_ring)));
 }
 
 void
@@ -219,6 +252,7 @@ pin_cache_init(void)
 	pins.by_key = hash_create("sift cache f2 table part pins", PIN_CACHE_INIT, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	pins.by_rel = rel_lists_create("sift cache f2 table part pins by relation", pins.cx);
 	dlist_init(&pins.free_lru);
+	dlist_init(&pins.scan_ring);
 	sift_cache_register(&pin_kind);
 	f2_gbuf_register_invalidation();
 }
@@ -294,23 +328,29 @@ slab_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 pa
 	return pin;
 }
 
-static SiftF2PartPin *pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id, bool current_dv);
+static SiftF2PartPin *pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id, bool current_dv, bool scan);
 
 /* In the context of the caller until the pin is whole: a build that fails leaves nothing in the cache budget */
 SiftF2PartPin *
 sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
-	return pin_open(rel, store, d, part_id, true);
+	return pin_open(rel, store, d, part_id, true, false);
+}
+
+SiftF2PartPin *
+sift_f2_pin_open_scan(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
+{
+	return pin_open(rel, store, d, part_id, true, true);
 }
 
 SiftF2PartPin *
 sift_f2_pin_open_header(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
-	return pin_open(rel, store, d, part_id, false);
+	return pin_open(rel, store, d, part_id, false, true);
 }
 
 static SiftF2PartPin *
-pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id, bool current_dv)
+pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id, bool current_dv, bool scan)
 {
 	PinKey		key;
 	PinEntry   *e;
@@ -338,6 +378,7 @@ pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id
 		e->relid = RelationGetRelid(rel);
 		e->relhash = sift_f2_rel_hash(rel);
 		e->in_free_lru = false;
+		e->in_scan_ring = false;
 		pin->entry = e;
 		MemoryContextSetParent(pin->cx, pins.cx);
 		rel_list_link(pins.by_rel, e->relid, e->relhash, &e->rel_node);
@@ -356,7 +397,11 @@ pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id
 		pin_load_dv(rel, e->pin, d);
 	e->pin->desc = *d;
 	if (built)
+	{
+		if (scan)
+			scan_ring_admit(e);
 		sift_cache_commit();
+	}
 	return e->pin;
 }
 

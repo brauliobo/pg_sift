@@ -102,7 +102,10 @@ extern void sift_f2_gbuf_forget(Relation rel);
 /* The part of the descriptor opened once (cached under sift.backend_cache_kb) and given back; the pin of a granule is held until it is released */
 extern SiftF2PartPin *sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
 
-/* The pin for what the header of the part says: its deletion vector is not brought up to date, for the caller that reads no row */
+/* The pin of a sequential scan: one it makes stays in the cache with the few the scans before it made, so that a scan of a table of many parts does not fill the cache with pins it will not meet again */
+extern SiftF2PartPin *sift_f2_pin_open_scan(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
+
+/* The pin for what the header of the part says (the units a sequential scan lists), like sift_f2_pin_open_scan: its deletion vector is not brought up to date, for the caller that reads no row */
 extern SiftF2PartPin *sift_f2_pin_open_header(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
 extern void sift_f2_pin_release(SiftF2PartPin *pin);
 
