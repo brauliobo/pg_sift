@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+#include "access/transam.h"
 #include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
 
@@ -375,6 +376,15 @@ pgshim_unreached(const char *what)
 {
 	fprintf(stderr, "%s reached: the harness links no storage layer\n", what);
 	abort();
+}
+
+/* the circular order of transam.c: the assertion of FullTransactionIdFromAllowableAt (transam.h) of a server built with assertions reads it */
+bool
+TransactionIdPrecedesOrEquals(TransactionId id1, TransactionId id2)
+{
+	if (!TransactionIdIsNormal(id1) || !TransactionIdIsNormal(id2))
+		return id1 <= id2;
+	return (int32) (id1 - id2) <= 0;
 }
 
 int
