@@ -37,6 +37,9 @@
 #include "table/f2/f2_tbl.h"
 #include "table/f2/f2_vm.h"
 
+/* The rows of an index build between two reports of its progress: a report is a write to the shared counters, which a parallel build pays for every row of every worker */
+#define SIFT_TBL_PROGRESS_ROWS	4096
+
 const TupleTableSlotOps *
 sift_tbl_f2_slot_callbacks(Relation rel pg_attribute_unused())
 {
@@ -268,9 +271,11 @@ sift_tbl_f2_index_build_range_scan(Relation table_rel, Relation index_rel, struc
 			continue;
 		FormIndexDatum(index_info, slot, estate, values, isnull);
 		callback(index_rel, &slot->tts_tid, values, isnull, true, callback_state);
-		if (progress)
+		if (progress && ((uint64) reltuples & (SIFT_TBL_PROGRESS_ROWS - 1)) == 0)
 			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) reltuples);
 	}
+	if (progress)
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) reltuples);
 	table_endscan(scan);
 	if (own_scan)
 		UnregisterSnapshot(snapshot);
