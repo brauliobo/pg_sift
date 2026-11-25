@@ -379,8 +379,10 @@ SiftDv *
 sift_dv_read_stream(Relation rel, const SiftPartDesc *desc, uint32 part_id, const uint16 *granule_rows, uint32 *stream_len)
 {
 	char	   *bytes = read_stream(rel, desc, stream_len);
+	SiftDv	   *dv = sift_dv_deserialize(rel, bytes, *stream_len, desc->part_gen, desc->dv_gen, granule_rows);
 
-	return sift_dv_deserialize(rel, bytes, *stream_len, desc->part_gen, desc->dv_gen, granule_rows);
+	pfree(bytes);
+	return dv;
 }
 
 SiftDv *

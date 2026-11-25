@@ -107,6 +107,9 @@ extern SiftF2PartPin *sift_f2_pin_open_scan(Relation rel, SiftF2Store *store, co
 
 /* The pin for what the header of the part says (the units a sequential scan lists), like sift_f2_pin_open_scan: its deletion vector is not brought up to date, for the caller that reads no row */
 extern SiftF2PartPin *sift_f2_pin_open_header(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
+
+/* A pin of the part that no other statement finds and the cache never counts: it holds its memory in the transaction until its last release, for the caller that reads a part once (a VACUUM pass) */
+extern SiftF2PartPin *sift_f2_pin_open_uncached(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
 extern void sift_f2_pin_release(SiftF2PartPin *pin);
 
 /* The addresses of the rows of granule g of the pin's part, ascending as the granule keeps them, in out (at most SIFT_GRANULE_ROWS of them); reads the address chunk only, in the current memory context */

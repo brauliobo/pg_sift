@@ -23,10 +23,14 @@ the ceiling is the largest of three runs plus 15 percent and there is no floor. 
   scripts/mem-slope.py compare FILE FILE                                       the SLOPE lines of two runs, the same rule
   scripts/mem-slope.py selftest
 
+A plain UPDATE or DELETE of {m} on the `sampled` basis (reported as `net_trigger`) is gated on what sift adds to PostgreSQL: the heap queues an AFTER ROW trigger event for every row it changes (16 B/row an UPDATE,
+12 B/row a DELETE) before any index reads it. The same statement runs on a heap copy {c} with a no-op row trigger and no sift index (CONTROL_SETUP), and the case passes when its slope less that control slope is
+at most min(ceiling, NET_CEILING) and the memory scopes of sift (exact) grow at most NET_SCOPES B/row; the ceilings are not raised.
+
 Kind `plateau`: a case whose memory rises to a bound within the first sizes and holds it (the VACUUM of a sift_table rises 80 B/row to 100,000 rows and then stays at 10.3 to 10.9 MB), measured by the slope between the
 second and the third size: the slope over all three is where the bend falls, which moves with the allocator and the host (15 to 20 B/row on x86, 26 on arm64, for 4 B/row beyond the bend).
 
-TSV columns: NAME KIND CEILING BASIS STATUS SETUP OPERATION [WARM] [REASON]; {f} {d} the tables of the case, {m} {s} a copy it may change, {n} its rows. Reads PGHOST, PGPORT,
+TSV columns: NAME KIND CEILING BASIS STATUS SETUP OPERATION [WARM] [REASON]; {f} {d} the tables of the case, {m} {s} a copy it may change, {c} a heap copy with a no-op row trigger, {n} its rows. Reads PGHOST, PGPORT,
 PGUSER, PGDATABASE like psql, MEM_SLOPE_MWM (maintenance_work_mem, 1MB), MEM_SLOPE_RUNS (2), MEM_SLOPE_SHARD (I/N) and MEM_SLOPE_TSV (another table of cases); needs Linux (/proc) and an installed pg_sift and
 pg_sift_test. Kind `leak` repeats a statement in one backend and asserts that the memory its contexts hold (pg_backend_memory_contexts) does not follow the number of statements.
 """
@@ -36,6 +40,9 @@ from typing import NamedTuple
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 60 repeats than after 10
 VARIANCE_ROWS, VARIANCE_PCT = 2.0, 0.15   # two runs of a case differ by at most max(2 B/row, 15%)
+NET_CEILING = 6            # bytes a row that sift adds to a heap UPDATE or DELETE, above PostgreSQL's own trigger queue
+NET_SCOPES = 2             # bytes a row of its memory scopes
+TRIGGER_DML = re.compile(r"\s*(update|delete\s+from)\s+\{m\}(?=[\s;]|$)", re.I)
 RUNS = int(os.environ.get("MEM_SLOPE_RUNS", "2"))
 ASYNC_OFF = "set sift.async_maintenance='off';\n"
 BUILD_SETTINGS = ASYNC_OFF + "set max_parallel_maintenance_workers=0;\n"
@@ -165,6 +172,17 @@ vacuum analyze m{n};
 """)
 
 
+def control_table(n):
+    script(BUILD_SETTINGS + f"""
+drop table if exists c{n} cascade;
+create table c{n} as select * from f{n};
+alter table c{n} add primary key (id);
+create or replace function mem_slope_noop() returns trigger language plpgsql as $$ begin return null; end $$;
+create trigger c{n}_noop after update or delete on c{n} for each row execute function mem_slope_noop();
+vacuum analyze c{n};
+""")
+
+
 def read_cases(only, shard=None):
     cases = []
     for l in open(TSV, encoding="utf-8").read().split("\n"):
@@ -207,13 +225,15 @@ def uses_copy(*sql):
     return any(k in s for s in sql for k in ("{m}", "{s}"))
 
 
-def slope_case(sizes, name, setup, warm, op, first=0):
+def slope_case(sizes, name, setup, warm, op, first=0, control=False):
     peaks, highs, exact, scopes = [], [], [], []
     for n in sizes:
-        fmt = dict(f=f"f{n}", d=f"d{n}", m=f"m{n}", s=f"s{n}", n=n)
+        fmt = dict(f=f"f{n}", d=f"d{n}", m=f"c{n}" if control else f"m{n}", s=f"s{n}", n=n)
         runs = []
         for _ in range(RUNS):
-            if uses_copy(setup, warm, op):
+            if control:
+                control_table(n)
+            elif uses_copy(setup, warm, op):
                 copy_table(n)
             runs.append(measure_mb(setup.removeprefix("@other ").format(**fmt), warm if warm == "=" else warm.format(**fmt), op.format(**fmt)))
         peaks.append(min(r[0] for r in runs))
@@ -244,11 +264,24 @@ def run_case(sizes, c):
         return ok, f"SLOPE {c.name} leak {grown} kB over 50 repeats, at most {LEAK_KB} kB {'PASS' if ok else 'FAIL'}", None, None, None, []
     first = 1 if c.kind == "plateau" else 0
     slope, peaks, highs, exact, scopes = slope_case(sizes, c.name, c.setup, c.warm, c.op, first)
-    v = verdict(gated(c.basis, slope, exact), c.ceiling, c.status)
+    net = trigger_net(sizes, c, slope)
+    v = verdict(gated(c.basis, slope, exact), c.ceiling, c.status) if net is None else net_verdict(slope - net, exact, c)
     shown = '/'.join(f'{p:.1f}' for p in peaks)
+    basis = c.basis if net is None else f"net_trigger (control {net:.0f} B/row, net {slope - net:.0f} B/row, at most {min(c.ceiling, NET_CEILING)}; scopes at most {NET_SCOPES})"
     return v == "PASS", (f"SLOPE {c.name} slope {slope:.0f} B/row (peaks {shown} MB at {'/'.join(str(s) for s in sizes)} rows{', slope from ' + str(sizes[1]) if c.kind == 'plateau' else ''}), "
-                         f"memory scopes {exact:.1f} B/row, ceiling {c.ceiling} [{c.status}] on {c.basis} {v}"), slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact, \
+                         f"memory scopes {exact:.1f} B/row, ceiling {c.ceiling} [{c.status}] on {basis} {v}"), slope, [f"{p:.1f}" if p == h else f"{p:.1f}-{h:.1f}" for p, h in zip(peaks, highs)], exact, \
         scope_breakdown(c.name, sizes, first, scopes) if v == "FAIL" and c.basis == "exact" else []
+
+
+def trigger_net(sizes, c, slope):
+    """the slope the same statement has on a heap with a no-op row trigger (PostgreSQL's own queue), or None for a case that is not a heap trigger DML"""
+    if c.kind != "slope" or c.basis != "sampled" or not TRIGGER_DML.match(c.op):
+        return None
+    return slope_case(sizes, c.name, c.setup, c.warm, c.op, control=True)[0]
+
+
+def net_verdict(net, exact, c):
+    return "PASS" if verdict(net, min(c.ceiling, NET_CEILING), c.status) == "PASS" and exact <= NET_SCOPES else "FAIL"
 
 
 def run_cases(sizes, cases):
@@ -340,6 +373,10 @@ def selftest():
     assert verdict(gated("sampled", 53, 73), 62, "open") == "PASS" and verdict(gated("exact", 53, 73), 62, "open") == "FAIL" and verdict(gated("exact", 53, 73), 84, "open") == "PASS"
     assert verdict(gated("exact", 3, 60), 61, "open") == "PASS" and verdict(gated("exact", 3, 62), 61, "open") == "FAIL" and verdict(gated("exact", 80, 4), 6, "clean") == "PASS"
     assert math.ceil(73.4 + allowance(73.4)) == 85 and allowance(4) == 2
+    case = Case("x", "slope", 12, "sampled", "clean", "", "update {m} set a = 1;", "", "")
+    assert net_verdict(6, 2, case) == "PASS" and net_verdict(7, 2, case) == "FAIL" and net_verdict(6, 3, case) == "FAIL"
+    assert trigger_net([], case._replace(basis="exact"), 0) is None and trigger_net([], case._replace(op="select 1"), 0) is None
+    assert [bool(TRIGGER_DML.match(s)) for s in ("update {m} set a = 1;", "delete from {m};", "update {s} set a = 1;", "select 1 from {m}")] == [True, True, False, False]
     cases = read_cases(None)
     names = [c.name for c in cases]
     assert len(names) == len(set(names)), "a case name twice"

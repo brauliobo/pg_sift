@@ -316,8 +316,8 @@ pin_build(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_i
 }
 
 /* The part of a micro-slab is made for the statement from the rows the slab holds now, so no other statement may find it: it lives until it is released, out of the cache */
-static SiftF2PartPin *
-slab_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
+SiftF2PartPin *
+sift_f2_pin_open_uncached(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
 	SiftF2PartPin *pin = pin_build(rel, store, d, part_id);
 
@@ -355,11 +355,12 @@ pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id
 	PinKey		key;
 	PinEntry   *e;
 	bool		built = false;
+	bool		reloaded = false;
 
 	if (pins.by_key == NULL)
 		pin_cache_init();
 	if (sift_f2_slab_desc(d))
-		return slab_pin_open(rel, store, d, part_id);
+		return sift_f2_pin_open_uncached(rel, store, d, part_id);
 	memset(&key, 0, sizeof(key));
 	key.locator = rel->rd_locator;
 	key.part_gen = d->part_gen;
@@ -394,14 +395,15 @@ pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id
 	e->pin->lru_tick = sift_cache_tick();
 	if (current_dv && (d->dv_gen != e->pin->dv_gen || (d->dv_blk != InvalidBlockNumber) != (e->pin->dv != NULL) ||
 					   (sift_dvd_part_takes(d) && sift_dv_stream_len(rel, d->dv_blk) != e->pin->dv_len)))
-		pin_load_dv(rel, e->pin, d);
-	e->pin->desc = *d;
-	if (built)
 	{
-		if (scan)
-			scan_ring_admit(e);
-		sift_cache_commit();
+		pin_load_dv(rel, e->pin, d);
+		reloaded = true;
 	}
+	e->pin->desc = *d;
+	if (built && scan)
+		scan_ring_admit(e);
+	if (built || reloaded)
+		sift_cache_commit();
 	return e->pin;
 }
 

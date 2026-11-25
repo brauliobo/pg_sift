@@ -378,11 +378,31 @@ stage_record(SiftTxnStage *st, CdCacheEntry *ent, const SiftPartitionEntry *e, c
 	{
 		st->host_stage = MemoryContextAllocZero(TopTransactionContext, sizeof(SiftColDeltaStage));
 		st->host_event = sift_col_delta_stage_event;
+		st->host_holds_in = sift_col_delta_stage_holds_in;
 	}
 	memcpy(&h, rec, sizeof(h));
 	sift_col_delta_stage_add(st->host_stage, e->part_id, e->key_lo, GetCurrentSubTransactionId(), rec);
 	ent->staged_bytes += h.rec_bytes;
 	st->host_pending++;
+}
+
+static void
+flush_stage_if_full(Relation index, SiftTxnStage *st)
+{
+	if (((const SiftColDeltaStage *) st->host_stage)->bytes < SIFT_COL_DELTA_STAGE_BYTES)
+		return;
+	sift_col_delta_stage_event(index, st, SIFT_STAGE_FLUSH, 0, 0);
+	sift_cdi_cache_staged_changed(st);
+}
+
+/* Only an update whose new row is still staged can become a column delta; one an earlier flush of the statement wrote takes the delete path, before any diff or part is read */
+static bool
+new_row_staged(Relation index, uint64 tid)
+{
+	bool		staged = false;
+
+	sift_stage_rows_among(index, &tid, 1, &staged);
+	return staged;
 }
 
 bool
@@ -398,8 +418,9 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 	bool		absent[SIFT_F2_DIFF_MAX_LEAVES];
 	uint8		rec[SIFT_COL_DELTA_MAX_REC_BYTES];
 	uint32		len;
+	const uint64 new_tid = sift_f2_tid(&newt->t_self);
 
-	if (sift_proj_relation_has(env->index) || env->index->rd_index->indisunique)
+	if (sift_proj_relation_has(env->index) || env->index->rd_index->indisunique || !new_row_staged(env->index, new_tid))
 		return false;
 	if (index_unchanged)
 		res = (SiftF2DiffResult) {.pred = SIFT_PRED_BOTH};
@@ -410,16 +431,17 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 		return false;
 	target = (SiftColDeltaTarget) {.part_gen = loc.gb->pin->part_gen,.granule_id = loc.gb->granule_id,.row_ordinal = loc.row,.tid = old_tid};
 	key_absent_of(f, &res.leaves, absent);
-	len = sift_cdi_encode(rec, sizeof(rec), &target, GetCurrentTransactionId(), GetCurrentCommandId(false), GetCurrentTransactionNestLevel() > 1, sift_cdi_time_flags(f->spec.time_cols, res.leaves.leaf, res.leaves.nchanged), sift_f2_tid(&newt->t_self), f->kinds,
+	len = sift_cdi_encode(rec, sizeof(rec), &target, GetCurrentTransactionId(), GetCurrentCommandId(false), GetCurrentTransactionNestLevel() > 1, sift_cdi_time_flags(f->spec.time_cols, res.leaves.leaf, res.leaves.nchanged), new_tid, f->kinds,
 						  res.leaves.leaf, res.leaves.cell, absent, res.leaves.nchanged);
 	in = (SiftF2AdmitIn) {.tracked = true,.pred = res.pred,.nchanged_leaves = res.leaves.nchanged,.total_leaves = f->ncols,.payload_bytes = len,
 		.chain_pages = ent->chain_npages,.staged_pages = stage_pages(st, ent)};
-	if (len == 0 || sift_f2_col_delta_admit_index(&in) != SIFT_F2A_OK || !sift_stage_cancel_tid(st, sift_f2_tid(&newt->t_self)))
+	if (len == 0 || sift_f2_col_delta_admit_index(&in) != SIFT_F2A_OK || !sift_stage_cancel_tid(st, new_tid))
 	{
 		sift_f2_gbuf_unref(loc.gb);
 		return false;
 	}
 	stage_record(st, ent, &loc.entry, rec);
 	sift_f2_gbuf_unref(loc.gb);
+	flush_stage_if_full(env->index, st);
 	return true;
 }
