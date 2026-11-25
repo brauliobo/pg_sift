@@ -256,7 +256,6 @@ SELECT * FROM lane_report('t');
 
 -- Format 1 on the unified scan
 SET sift.test_create_format1 = on;
-SET sift.test_unified_agg = on;
 SELECT format('CREATE TABLE rt_f_%s (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)', n) FROM variants \gexec
 CREATE TABLE rt_f_1 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)
 CREATE TABLE rt_f_2 (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false)

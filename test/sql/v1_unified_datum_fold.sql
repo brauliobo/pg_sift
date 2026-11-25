@@ -4,7 +4,6 @@ CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 \set VERBOSITY terse
 SET sift.test_create_format1 = on;
-SET sift.test_unified_agg = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
