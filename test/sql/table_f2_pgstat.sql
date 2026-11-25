@@ -25,3 +25,7 @@ FROM pg_stat_user_tables WHERE relname IN ('ps_heap', 'ps_sift') ORDER BY relnam
 
 SELECT (SELECT (n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup, seq_scan) FROM pg_stat_user_tables WHERE relname = 'ps_heap')
 	= (SELECT (n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup, seq_scan) FROM pg_stat_user_tables WHERE relname = 'ps_sift') AS same_as_heap;
+
+DROP FUNCTION ps_run(regclass);
+DROP TABLE ps_heap, ps_sift;
+DROP EXTENSION pg_sift;

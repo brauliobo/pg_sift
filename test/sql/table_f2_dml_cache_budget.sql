@@ -36,3 +36,7 @@ SELECT count(*) AS twice FROM wide WHERE right(payload, 2) = 'uu';
 SET sift.backend_cache_kb = '1MB';
 DELETE FROM wide WHERE k_lo < 4;
 SELECT count(*) AS left_rows, count(*) FILTER (WHERE k_lo >= 4) AS kept, (SELECT count(*) FROM sift.check('wide'::regclass)) AS bad FROM wide;
+
+DROP FUNCTION wide_state();
+DROP TABLE wide;
+DROP EXTENSION pg_sift;

@@ -51,3 +51,6 @@ SELECT count(*) AS left_rows, count(*) FILTER (WHERE k_lo >= 4) AS kept, (SELECT
      65536 | 65536 |   0
 (1 row)
 
+DROP FUNCTION wide_state();
+DROP TABLE wide;
+DROP EXTENSION pg_sift;

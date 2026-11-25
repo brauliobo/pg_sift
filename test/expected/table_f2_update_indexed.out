@@ -26,3 +26,5 @@ SELECT count(*) AS by_index FROM ti WHERE indexed_col BETWEEN 2 AND 65537;
     65536
 (1 row)
 
+DROP TABLE ti;
+DROP EXTENSION pg_sift;

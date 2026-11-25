@@ -18,3 +18,6 @@ UPDATE ti SET indexed_col = indexed_col + 1;
 SELECT count(*) AS rows, sum(indexed_col - id) AS shifted, (SELECT count(*) FROM sift.check('ti'::regclass)) AS bad FROM ti;
 SET enable_seqscan = off;
 SELECT count(*) AS by_index FROM ti WHERE indexed_col BETWEEN 2 AND 65537;
+
+DROP TABLE ti;
+DROP EXTENSION pg_sift;
