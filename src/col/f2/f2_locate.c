@@ -6,6 +6,7 @@
  */
 #include "postgres.h"
 
+#include "access/parallel.h"
 #include "access/xlog.h"
 #include "catalog/pg_class_d.h"
 #include "port/pg_bitutils.h"
@@ -473,7 +474,7 @@ tid_index_visit(const TidIndex *ix, uint64 lo, uint64 hi, TidSlotVisit visit, vo
 
 /* ---- the manifest ---- */
 
-/* The slabs of the partitions written out as parts; a standby writes nothing, so its view lists them as parts made in memory */
+/* The slabs of the partitions written out as parts; a standby and a parallel worker write nothing, so their view lists them as parts made in memory */
 static const SiftPlanSnapshot *
 slabs_flushed(Relation rel, SiftF2Store *store, const SiftPlanSnapshot *snap, MemoryContext mcxt)
 {
@@ -495,7 +496,7 @@ view_slabs_flushed(Relation rel, SiftF2Store *store, MemoryContext mcxt)
 	MemoryContext caller = MemoryContextSwitchTo(mcxt);
 	const SiftPlanSnapshot *snap = sift_plan_cache_get(rel, mcxt);
 
-	snap = RecoveryInProgress() ? sift_f2_slab_view(rel, store, snap, mcxt) : slabs_flushed(rel, store, snap, mcxt);
+	snap = RecoveryInProgress() || IsParallelWorker() ? sift_f2_slab_view(rel, store, snap, mcxt) : slabs_flushed(rel, store, snap, mcxt);
 	MemoryContextSwitchTo(caller);
 	return snap;
 }
