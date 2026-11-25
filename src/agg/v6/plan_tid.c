@@ -8,6 +8,7 @@
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/parsetree.h"
 #include "storage/itemptr.h"
 
 #include "agg/v6/plan_int.h"
@@ -71,7 +72,7 @@ narrow(SiftV6Spec *s, Oid opno, uint64 key)
 		s->tid_hi = Min(s->tid_hi, key + 1);
 }
 
-/* the range of the one table of a statement, read by its index: the rows of a sift_table are at the TIDs the engine gave them, and the scans of a join, an unnest or a search have their own batches */
+/* the range of the one table of a statement, read by its index: the rows of a sift_table are at the TIDs the engine gave them, the TIDs of a partitioned table are those of each partition, and the scans of a join, an unnest or a search have their own batches */
 bool
 sift_v6_tid_qual(V6Plan *p, const RestrictInfo *ri)
 {
@@ -79,7 +80,7 @@ sift_v6_tid_qual(V6Plan *p, const RestrictInfo *ri)
 	const bool	left = IsA(ri->clause, OpExpr) && list_length(op->args) == 2 && ctid_of(p, linitial(op->args));
 	Oid			opno;
 
-	if (p->is_table || p->xseed != NULL || p->in_filter || p->rel->reloptkind != RELOPT_BASEREL || bms_membership(p->root->all_baserels) != BMS_SINGLETON || !IsA(ri->clause, OpExpr) || list_length(op->args) != 2)
+	if (p->is_table || planner_rt_fetch(p->rel->relid, p->root)->inh || p->xseed != NULL || p->in_filter || p->rel->reloptkind != RELOPT_BASEREL || bms_membership(p->root->all_baserels) != BMS_SINGLETON || !IsA(ri->clause, OpExpr) || list_length(op->args) != 2)
 		return false;
 	if (!(left ? tid_const(lsecond(op->args)) : ctid_of(p, lsecond(op->args)) && tid_const(linitial(op->args))))
 		return false;
