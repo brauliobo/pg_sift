@@ -39,7 +39,7 @@ batch_weight() { awk -v l="$1" -v o="$REGRESS_BATCH_OVERHEAD" 'BEGIN { printf "%
 batch_weights() {
 	local i=0 t load names slow sel=()
 	slow=($SLOW_REGRESS)
-	for t in $(basename -a -s .sql "$REPO"/test/sql/*.sql); do [[ " ${slow[*]} " == *" $t "* ]] || regress_solo "$t" || sel+=("$t"); done
+	for t in $(tests sql .sql); do [[ " ${slow[*]} " == *" $t "* ]] || regress_solo "$t" || sel+=("$t"); done
 	while read -r load names; do W_BATCH[installcheck-batch$((++i))]=$(batch_weight "$load"); done < <(regress_pack "${sel[@]}")
 }
 AFTER_LANES=4   # the lanes of a hosted runner: a job that runs after the pool runs alone, so each second of it costs this many lane seconds of the shard

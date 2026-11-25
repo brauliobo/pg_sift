@@ -18,14 +18,15 @@ dups=$(printf '%s\n' "${pats[@]}" | sort | uniq -d)
 unsorted=$(LC_ALL=C awk '/^TESTING_REGRESS \+= / { if (prev != "" && $3 < prev) print $3 " after " prev; prev = $3; next } { prev = "" }' Makefile | LC_ALL=C sort)
 [[ -z $unsorted ]] || { echo "TESTING_REGRESS: not in byte order (LC_ALL=C sort): $unsorted"; bad=1; }
 # the tests that need the test-only build: one perl for all of them
+mapfile -t sqls < <(find test/sql -name '*.sql' | LC_ALL=C sort)
 mapfile -t needing < <(SHIPPED=$shipped perl -0777 -ne '
 	BEGIN { $shipped = qr/^(?:$ENV{SHIPPED})$/ }
 	if (/sift\._test_|^create extension (?:if not exists )?pg_sift_test/mi) { print "$ARGV\n"; next }
 	my %probed = map { $_ => 1 } /current_setting\(\s*\x27(sift\.test_\w+)\x27\s*,\s*true\s*\)/g;
 	for (/sift\.test_\w+/g) { if (!$probed{$_} && !/$shipped/) { print "$ARGV\n"; last } }
-' test/sql/*.sql)
+' "${sqls[@]}")
 for f in "${needing[@]}"; do
-	t=$(basename "$f" .sql)
+	t=${f#test/sql/}; t=${t%.sql}
 	for p in "${pats[@]}"; do [[ $t == ${p//%/*} ]] && continue 2; done
 	echo "$t calls a sift._test_ function, sets a sift.test_ setting or creates pg_sift_test: add it to TESTING_REGRESS in the Makefile"; bad=1
 done

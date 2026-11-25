@@ -13,7 +13,7 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 source "$REPO/scripts/source-snapshot.sh"
 TESTS=("$@")
-(( ${#TESTS[@]} )) || mapfile -t TESTS < <(cd "$REPO/test/sql" && ls ./*.sql | sed 's|^\./||; s|\.sql$||')
+(( ${#TESTS[@]} )) || mapfile -t TESTS < <(cd "$REPO/test/sql" && find . -name '*.sql' | sed 's|^\./||; s|\.sql$||' | LC_ALL=C sort)
 WORK=${SIFT_TMP:-/tmp/sift-focus-$$}/focus
 rm -rf "$WORK" && mkdir -p "$WORK/tree" "$WORK/cov"
 copy_git_sources "$REPO" "$WORK/tree"
@@ -57,8 +57,8 @@ measure() {
 }
 
 measure "$WORK/load.json" scripts/pgtest.sh psql -c 'CREATE EXTENSION pg_sift' -c 'DROP EXTENSION pg_sift'
-for t in "${TESTS[@]}"; do measure "$WORK/cov/$t.json" nice scripts/pgtest.sh regress "$t"; done
+for t in "${TESTS[@]}"; do mkdir -p "$WORK/cov/$(dirname "$t")"; measure "$WORK/cov/$t.json" nice scripts/pgtest.sh regress "$t"; done
 
-OLD=$REPO/scripts/focus ALL=$(( ${#TESTS[@]} == $(ls "$REPO/test/sql"/*.sql | wc -l) )) HOT_PCT=${HOT_PCT:-10} \
+OLD=$REPO/scripts/focus ALL=$(( ${#TESTS[@]} == $(find "$REPO/test/sql" -name '*.sql' | wc -l) )) HOT_PCT=${HOT_PCT:-10} \
 	python3 -I "$REPO/scripts/focus-merge.py" "$WORK" "${TESTS[@]}"
 echo "focus-gen: ${#TESTS[@]} tests measured"

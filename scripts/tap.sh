@@ -46,10 +46,10 @@ CONF
 [[ -z ${SIFT_SANITIZER:-} ]] || export ${SIFT_SANITIZER/LD_PRELOAD=/SIFT_PRELOAD=}
 
 cd "$REPO/test"
-(( $# )) || set -- t/*.pl
+if (( ! $# )); then set -- $(find t -name '*.pl' | LC_ALL=C sort); fi
 rc=0
 SIFT_TMP=$TAP TESTDATADIR=$TAP/data TESTLOGDIR=$TAP/log PG_TEST_PORT_DIR=${PG_TEST_PORT_DIR:-$TAP} TEMP_CONFIG=$TAP/sift.conf SIFT_REPO=$REPO \
 	PG_REGRESS=$PGXS_SRC/test/regress/pg_regress \
-	prove ${PROVE_FLAGS:-} -I "$PGXS_SRC/test/perl" -I "$PERL5" "$@" || rc=$?
+	prove ${PROVE_FLAGS:-} -I "$PGXS_SRC/test/perl" -I "$PERL5" -I "$REPO/test/t/lib" "$@" || rc=$?
 "$REPO/scripts/leakcheck.sh" scan "$TAP" || rc=1
 exit $rc

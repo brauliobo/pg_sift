@@ -23,7 +23,7 @@ DB=sift_iso_$MODE
 SLICE=1/1
 [[ ${1:-} == --slice ]] && { SLICE=$2; shift 2; }
 SPECS=("$@")
-(( ${#SPECS[@]} )) || SPECS=($(basename -s .spec "$REPO"/test/isolation/specs/*.spec))
+(( ${#SPECS[@]} )) || mapfile -t SPECS < <(cd "$REPO/test/isolation/specs" && find . -name '*.spec' | sed 's|^\./||; s|\.spec$||' | LC_ALL=C sort)
 SLICED=()
 for i in "${!SPECS[@]}"; do (( i % ${SLICE#*/} == ${SLICE%/*} - 1 )) && SLICED+=("${SPECS[i]}"); done
 SPECS=("${SLICED[@]}")
@@ -79,9 +79,10 @@ for s in "${SPECS[@]}"; do
 		echo "SKIP $s (not implemented yet: $(echo $missing))"
 		continue
 	fi
+	mkdir -p "$OUT/in/specs/$(dirname "$s")" "$OUT/in/expected/$(dirname "$s")" "$OUT/results/$(dirname "$s")"
 	translate <"$f" >"$OUT/in/specs/$s.spec"
 	for e in "$REPO/test/isolation/expected/$s.out" "$REPO/test/isolation/expected/${s}"_[0-9].out; do
-		[[ ! -f $e ]] || translate <"$e" >"$OUT/in/expected/${e##*/}"
+		[[ ! -f $e ]] || translate <"$e" >"$OUT/in/expected/${e#"$REPO/test/isolation/expected/"}"
 	done
 	run+=("$s")
 done

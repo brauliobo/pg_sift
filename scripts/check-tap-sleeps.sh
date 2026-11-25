@@ -10,9 +10,9 @@ cd "$(dirname "$0")/.." || exit 1
 
 sleeps() { # DIR: "FILE COUNT" of every shell or perl test with sleeps of 0.5 s or more outside comments
 	local f n
-	for f in "$1"/test/t/*.sh "$1"/test/t/*.pl; do
+	for f in $(find "$1/test/t" \( -name '*.sh' -o -name '*.pl' \) | LC_ALL=C sort); do
 		n=$(grep -vE '^[[:space:]]*#' "$f" | grep -cE '\bsleep[[:space:]]*\(?[[:space:]]*([1-9][0-9]*(\.[0-9]+)?|0\.[5-9][0-9]*)([[:space:]]|$|\)|;|&)')
-		(( n == 0 )) || echo "${f##*/} $n"
+		(( n == 0 )) || echo "${f#"$1/test/t/"} $n"
 	done
 }
 check() { # DIR ALLOW: the lines of the files that sleep more than their allowance

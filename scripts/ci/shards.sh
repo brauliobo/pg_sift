@@ -10,7 +10,7 @@
 pinned() { # ID: whether the job is one of them. Every job that compiles is the first shard's, so that the others install nothing but the server
 	local n
 	! needs_toolchain "$1" || return 0
-	[[ -n ${OLDLIB_TESTS:-} ]] || OLDLIB_TESTS=" $(grep -l -E 'build_old|old-lib-check' "$REPO"/test/t/*.sh 2>/dev/null | sed 's|.*/||; s|\.sh$||' | tr '\n' ' ')pg_upgrade "
+	[[ -n ${OLDLIB_TESTS:-} ]] || OLDLIB_TESTS=" $(grep -rl --include='*.sh' -E 'build_old|old-lib-check' "$REPO/test/t" 2>/dev/null | sed "s|^$REPO/test/t/||; s|\.sh$||" | tr '\n' ' ')pg_upgrade "
 	for n in $OLDLIB_TESTS; do [[ $1 == "tap-shell-$n" || $1 == "tap-shell-${n}_"* ]] && return 0; done
 	return 1
 }

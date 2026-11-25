@@ -85,8 +85,9 @@ def check(root, tables, pins, moved):
     bad = {}
     for table in tables:
         text = open(table, encoding="utf-8", newline="").read()
-        if not canonical(os.path.basename(table), text):
-            bad.setdefault((os.path.basename(table), "row", "is not one LF-ended line NAME<TAB>tokens, sorted and unique, as scripts/focus-merge.py writes it"), set()).add(text.partition("\t")[0])
+        name = os.path.relpath(table, os.path.join(root, "scripts", "focus"))
+        if not canonical(name, text):
+            bad.setdefault((name, "row", "is not one LF-ended line NAME<TAB>tokens, sorted and unique, as scripts/focus-merge.py writes it"), set()).add(text.partition("\t")[0])
         row, _, tokens = text.rstrip("\n").partition("\t")
         for token in tokens.split():
             path, _, fn = token.partition(":")
@@ -99,14 +100,14 @@ def check(root, tables, pins, moved):
                 why = "is defined in " + where(fn)
             else:
                 continue
-            bad.setdefault((os.path.basename(table), token, why), set()).add(row)
+            bad.setdefault((name, token, why), set()).add(row)
     for pin in pins:
         for line in open(pin, encoding="utf-8"):
             if line.strip() and not line.startswith("#") and parse(line.split("\t")[0]) is None and line.split("\t")[0] not in [r[1] for r in splits]:
                 bad.setdefault((os.path.basename(pin), line.split("\t")[0], "is not a file of src/"), set()).add("")
     ctx = set()
-    for f in glob.glob("test/expected/*.out"):
-        name = os.path.basename(f)[:-4]
+    for f in glob.glob("test/expected/**/*.out", recursive=True):
+        name = os.path.relpath(f, "test/expected")[:-4]
         if "CONTEXT:  sift " in open(f, encoding="utf-8").read():
             ctx.add(name if os.path.exists("test/sql/%s.sql" % name) else re.sub(r"_\d+$", "", name))
     if ctx:
@@ -123,13 +124,13 @@ def check(root, tables, pins, moved):
 
 def run(root):
     j = lambda *p: os.path.join(root, *p)
-    return check(root, sorted(glob.glob(j("scripts", "focus", "*.tsv"))), [j("scripts", "focus-pins.tsv")], j("scripts", "moved-sources.tsv"))
+    return check(root, sorted(glob.glob(j("scripts", "focus", "**", "*.tsv"), recursive=True)), [j("scripts", "focus-pins.tsv")], j("scripts", "moved-sources.tsv"))
 
 
 if mode == "--selftest":
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(d + "/src/a/split")
-        os.makedirs(d + "/scripts/focus")
+        os.makedirs(d + "/scripts/focus/a/b")
         open(d + "/src/a/one.c", "w").write("static int\nkept(void)\n{\n\treturn 1;\n}\n#define PASTE(n) int f_##n(void) { return 0; }\n")
         open(d + "/src/a/two.c", "w").write("int\nmoved_here(void)\n{\n\treturn 1;\n}\nPG_FUNCTION_INFO_V1(sift_x);\n")
         open(d + "/src/a/split/in.c", "w").write("int\nsplit_fn(void)\n{\n\treturn 1;\n}\n")
@@ -139,9 +140,11 @@ if mode == "--selftest":
         open(d + "/scripts/focus/t2.tsv", "w").write("t2\tsrc/a/missing.c:kept src/a/one.c:moved_here src/a/two.c:renamed\n")
         open(d + "/scripts/focus/t3.tsv", "w").write("t3\tsrc/a/two.c:b src/a/one.c:a\n")
         open(d + "/scripts/focus/t4.tsv", "w").write("t4\tsrc/a/one.c:a")
+        open(d + "/scripts/focus/a/b/t5.tsv", "w").write("a/b/t5\tsrc/a/one.c:kept\n")
+        open(d + "/scripts/focus/a/t6.tsv", "w").write("t6\tsrc/a/one.c:kept\n")
         found = run(d)
         got = {(t, w) for (_, t, w) in found}
-        assert {f for (f, t, _) in found if t == "row"} == {"t3.tsv", "t4.tsv"}, "the rows to write differently are t3 (unsorted) and t4 (no LF)"
+        assert {f for (f, t, _) in found if t == "row"} == {"t3.tsv", "t4.tsv", "a/t6.tsv"}, "the rows to write differently are t3 (unsorted), t4 (no LF) and t6 (not named after its folder)"
         want = {("src/a/one.c:moved_here", "is defined in src/a/two.c"), ("src/a/missing.c:kept", "is not a file of src/"), ("src/a/gone.c", "is not a file of src/"), ("row", "is not one LF-ended line NAME<TAB>tokens, sorted and unique, as scripts/focus-merge.py writes it")}
         if got != want:
             print("check-focus: selftest: got %s, want %s" % (sorted(got), sorted(want)), file=sys.stderr)
@@ -155,5 +158,5 @@ for (table, token, why), rows in sorted(bad.items()):
 if bad:
     print("check-focus: %d stale reference(s): scripts/focus-gen.sh NAME... makes the rows again" % len(bad), file=sys.stderr)
     sys.exit(1)
-print("check-focus: ok, %d rows" % sum(1 for t in glob.glob(repo + "/scripts/focus/*.tsv") for _ in open(t)))
+print("check-focus: ok, %d rows" % sum(1 for t in glob.glob(repo + "/scripts/focus/**/*.tsv", recursive=True) for _ in open(t)))
 PY

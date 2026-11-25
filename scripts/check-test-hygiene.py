@@ -47,7 +47,7 @@ def rows(path):
 
 def sql_tests(root):
     d = os.path.join(root, 'test/sql')
-    return {f[:-4] for f in os.listdir(d) if f.endswith('.sql')}
+    return {os.path.relpath(os.path.join(r, f), d)[:-4] for r, _, files in os.walk(d) for f in files if f.endswith('.sql')}
 
 
 def check_regress_times(root, tests):

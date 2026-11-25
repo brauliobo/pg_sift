@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# The focus tables of scripts/focus/ (made by scripts/focus-gen.sh): one file NAME.tsv for each regression test and _hot.tsv, each a single line
+# The focus tables of scripts/focus/ (made by scripts/focus-gen.sh): one file NAME.tsv (NAME may hold folders: agg/v6/star.tsv) for each regression test and _hot.tsv, each a single line
 # NAME<TAB>FILE:FUNCTION... with the tokens sorted and unique. A row depends only on its test's measured functions and on the hot set, so a file
 # is written only when its bytes change and the tests that were not measured keep their files.
 #
@@ -14,12 +14,22 @@ def render(name, tokens):
     return name + "\t" + " ".join(sorted(tokens)) + "\n"
 
 
+def table_files(directory):
+    return sorted(os.path.relpath(os.path.join(root, f), directory) for root, _, fs in os.walk(directory) for f in fs)
+
+
 def read_table(directory):
     rows = {}
-    for fname in sorted(os.listdir(directory)):
+    for fname in table_files(directory):
         name, _, tokens = open(os.path.join(directory, fname)).read().rstrip("\n").partition("\t")
         rows[HOT if fname == "_hot.tsv" else name] = set(tokens.split())
     return rows
+
+
+def prune_empty_dirs(directory):
+    for root, _, _ in os.walk(directory, topdown=False):
+        if root != directory and not os.listdir(root):
+            os.rmdir(root)
 
 
 def measured(work, test, load):
@@ -40,12 +50,14 @@ def merge(directory, work, tests, everything, hot_pct):
         rows[t] = tokens - rows.get(HOT, set())
     os.makedirs(directory, exist_ok=True)
     files = {("_hot" if name == HOT else name) + ".tsv": render(name, tokens) for name, tokens in rows.items()}
-    for fname in os.listdir(directory):
+    for fname in table_files(directory):
         if fname not in files:
             os.remove(os.path.join(directory, fname))
+    prune_empty_dirs(directory)
     for fname, text in files.items():
         path = os.path.join(directory, fname)
         if not os.path.exists(path) or open(path).read() != text:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             open(path, "w").write(text)
 
 
@@ -54,12 +66,13 @@ def selftest():
     import tmpfs  # noqa: F401  (tempfile on tmpfs)
 
     def snapshot(directory):
-        return {f: (open(os.path.join(directory, f)).read(), os.stat(os.path.join(directory, f)).st_mtime_ns) for f in os.listdir(directory)}
+        return {f: (open(os.path.join(directory, f)).read(), os.stat(os.path.join(directory, f)).st_mtime_ns) for f in table_files(directory)}
 
     def measure(work, covs):
         os.makedirs(work + "/cov", exist_ok=True)
         json.dump({"src/a.c": ["loaded"]}, open(work + "/load.json", "w"))
         for t, fns in covs.items():
+            os.makedirs(os.path.dirname("%s/cov/%s.json" % (work, t)), exist_ok=True)
             json.dump(fns, open("%s/cov/%s.json" % (work, t), "w"))
 
     with tempfile.TemporaryDirectory() as d:
@@ -84,7 +97,15 @@ def selftest():
         assert snapshot(out) == after
         os.remove(work + "/cov/t3.json")
         merge(out, work, ["t1", "t2"], True, 50)
-        assert sorted(os.listdir(out)) == ["_hot.tsv", "t1.tsv", "t2.tsv"], "a test without a measurement keeps its row"
+        assert table_files(out) == ["_hot.tsv", "t1.tsv", "t2.tsv"], "a test without a measurement keeps its row"
+        covs = {"a/b/t4": {"src/a.c": ["common", "k"]}, "t1": covs["t1"]}
+        measure(work, covs)
+        merge(out, work, ["a/b/t4", "t1"], False, 50)
+        assert table_files(out) == ["_hot.tsv", "a/b/t4.tsv", "t1.tsv", "t2.tsv"], "a test in a folder has its table in the folder"
+        assert read_table(out)["a/b/t4"] == {"src/a.c:k"}
+        merge(out, work, ["t1"], True, 50)
+        assert table_files(out) == ["_hot.tsv", "t1.tsv"], "a table that is not measured again goes, and its empty folders with it"
+        assert not os.path.exists(out + "/a")
     print("focus-merge: selftest ok: an unchanged test keeps its file, a measured test changes only its own, the order of names does not matter")
 
 

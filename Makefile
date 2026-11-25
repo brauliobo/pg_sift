@@ -14,8 +14,11 @@ DATA = $(sort $(wildcard sql/pg_sift--*.sql) $(SIFT_UPDATE_SQL))
 PGFILEDESC = "pg_sift - Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search"
 
 # New SQL tests are registered automatically; the test-only patterns below apply to them too.
-REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql)))
+REGRESS = $(patsubst test/sql/%.sql,%,$(sort $(wildcard test/sql/*.sql test/sql/*/*.sql test/sql/*/*/*.sql test/sql/*/*/*/*.sql)))
 REGRESS_OPTS = --inputdir=test --outputdir=test
+REGRESS_PREP = regress-results-dirs
+.PHONY: regress-results-dirs
+regress-results-dirs: ; @mkdir -p $(sort $(addprefix test/results/,$(dir $(REGRESS))))
 
 # Portable baseline: SIMD kernels opt in per function with target attributes.
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.

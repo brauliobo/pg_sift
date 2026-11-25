@@ -115,7 +115,7 @@ def main(a):
         return selftest()
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
     os.chdir(root)
-    files = a or sorted(glob.glob('test/expected/*.out'))
+    files = a or sorted(glob.glob('test/expected/**/*.out', recursive=True))
     allow = allowed('.')
     hits, seen = 0, {}
     for f in files:

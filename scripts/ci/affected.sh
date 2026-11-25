@@ -4,6 +4,8 @@
 # ---------- scripts/areas.tsv: the files a change touched -> the jobs it can break (the CI workflow and `affected` share it)
 source "$REPO/scripts/areas.sh"
 source "$REPO/scripts/ci/focus.sh"
+# tests DIR SUFFIX: the names of the files test/DIR/**/*SUFFIX (the path under test/DIR without the suffix), in byte order; the jobs, the weights and `affected` name tests so
+tests() { (cd "$REPO/test/$1" && find . -name "*$2" | sed "s|^\./||; s|$2\$||" | LC_ALL=C sort); }
 areas_load "$REPO/scripts/areas.tsv"
 # Static map API, also used by parity fixtures; never starts a suite.
 if [[ $MODE == --areas-regex ]]; then
@@ -95,7 +97,7 @@ if [[ $MODE == affected ]]; then
 	[[ $FASTRE == . ]] || FASTRE+='|^perf-gate-'
 	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_AFFECTED="$RE" SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()
-	for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $RE ]] && BATCHES=1; done
+	for f in $(tests sql .sql); do [[ installcheck-$f =~ $RE ]] && BATCHES=1; done
 	for id in "${JOBS_ALL[@]}"; do [[ $id == installcheck-batch* && -n ${BATCHES:-} || $id =~ $RE ]] && PICK+=("$id"); done
 	flag() { [[ gh:$1 =~ $RE ]] && echo true || echo false; }
 	cassert=false

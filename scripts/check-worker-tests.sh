@@ -22,7 +22,7 @@ violations() {
 	local f
 	for f in $(grep -liE "$ENABLES" "$@" || true); do
 		runs_worker "$f" && prints_worker_state "$f" || continue
-		t=$(basename "$f" .sql)
+		t=${f#test/sql/}; [[ $f == test/sql/* ]] || t=${f##*/}; t=${t%.sql}
 		grep -qE "^$t	." "$ALLOW" || echo "$t"
 	done
 }
@@ -40,7 +40,7 @@ selftest() {
 
 [[ ${1:-} != --selftest ]] || { selftest; exit 0; }
 bad=0
-for t in $(violations test/sql/*.sql); do
+for t in $(violations $(find test/sql -name '*.sql' | LC_ALL=C sort)); do
 	echo "$t turns the maintenance worker on and prints segments, store counts, advice or all-visible pages: keep the worker off in the test, or list it in $ALLOW with the reason its output does not depend on the worker's timing"
 	bad=1
 done

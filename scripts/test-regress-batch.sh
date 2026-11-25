@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `scripts/pgtest.sh regress` runs a batch of tests in one pg_regress run with one leak and one leftover check, and names the guilty test when the batch fails: a batch
 # of 20 tests with one that leaves a table behind, one whose output differs and one that leaves a table another test creates must each name exactly those tests,
-# and a clean batch passes; a batch of many reds is cut only until SIFT_BISECT_REDS of them are named. The tests are small fixtures in a directory of their own (SIFT_REGRESS_DIR) on a cluster of this script's own.
+# and a clean batch passes; the same holds for tests in folders (sub/a, a name past the 44 bytes of a database name); a batch of many reds is cut only until SIFT_BISECT_REDS of them are named. The tests are small fixtures in a directory of their own (SIFT_REGRESS_DIR) on a cluster of this script's own.
 #
 #   scripts/test-regress-batch.sh        (SIFT_PORT in 56100-56299, default 56100 + 7)
 set -uo pipefail
@@ -82,6 +82,47 @@ for t in t02 t04 t06 t08 t10 t12; do
 	printf 'CREATE TABLE tbl_%s (a int);\nINSERT INTO tbl_%s VALUES (1);\nSELECT a FROM tbl_%s;\nDROP TABLE tbl_%s;\n' "$t" "$t" "$t" "$t" >"$SIFT_REGRESS_DIR/sql/$t.sql"
 	printf 'CREATE TABLE tbl_%s (a int);\nINSERT INTO tbl_%s VALUES (1);\nSELECT a FROM tbl_%s;\n a \n---\n 1\n(1 row)\n\nDROP TABLE tbl_%s;\n' "$t" "$t" "$t" "$t" >"$SIFT_REGRESS_DIR/expected/$t.out"
 done
+
+# tests in folders: a name with / is a path under sql/ and expected/, its database and its output directory are the name as one identifier (safe_id), and a name past
+# the 44 bytes a database name leaves for it (19 are contrib_regression_) is cut and ends in a hash (a test name has 52 bytes at most: pg_regress names its session pg_regress/NAME,
+# and a name PostgreSQL truncates at 63 bytes prints a NOTICE in the output of the test)
+long=deep/in/a/folder/with/a/long_name_for_the_database
+nested=("$long" sub/a sub/b)
+nested_fixture() { # TEST TABLE: the fixture of the test TEST, which creates and drops TABLE
+	mkdir -p "$SIFT_REGRESS_DIR/sql/$(dirname "$1")" "$SIFT_REGRESS_DIR/expected/$(dirname "$1")"
+	printf 'CREATE TABLE %s (a int);\nINSERT INTO %s VALUES (1);\nSELECT a FROM %s;\nDROP TABLE %s;\n' "$2" "$2" "$2" "$2" >"$SIFT_REGRESS_DIR/sql/$1.sql"
+	printf 'CREATE TABLE %s (a int);\nINSERT INTO %s VALUES (1);\nSELECT a FROM %s;\n a \n---\n 1\n(1 row)\n\nDROP TABLE %s;\n' "$2" "$2" "$2" "$2" >"$SIFT_REGRESS_DIR/expected/$1.out"
+}
+n=0
+for t in "${nested[@]}"; do nested_fixture "$t" "tbl_n$((++n))"; done
+"$pg" regress "${nested[@]}" >"$tmp/out" 2>&1 || { echo "FAIL: a clean batch of tests in folders failed"; tail -n 20 "$tmp/out"; fail=1; }
+runs=$(grep -c 'using postmaster' "$tmp/out")
+[[ $runs == 1 ]] || { echo "FAIL: a clean batch of tests in folders took $runs pg_regress runs, want 1"; fail=1; }
+
+# sub/b leaves a table: the leftover is sub/b's, in a batch of three and alone, and the output of the first pass is in the directory of the first test as one identifier
+printf 'CREATE TABLE leaked_by_sub_b (a int);\n' >>"$SIFT_REGRESS_DIR/sql/sub/b.sql"
+printf 'CREATE TABLE leaked_by_sub_b (a int);\n' >>"$SIFT_REGRESS_DIR/expected/sub/b.out"
+"$pg" regress "${nested[@]}" >"$tmp/out" 2>&1 && { echo "FAIL: a batch of tests in folders with a leftover passed"; fail=1; }
+grep -q 'LEFTOVER sub/b: .*leaked_by_sub_b' "$tmp/out" || { echo "FAIL: the leftover is not attributed to sub/b"; tail -n 20 "$tmp/out"; fail=1; }
+! grep -qE 'LEFTOVER (sub/a|deep/)|not ok - (sub/a|deep/)' "$tmp/out" || { echo "FAIL: a test in a folder is blamed for the table sub/b left"; fail=1; }
+first=$(ls "$SIFT_TMP/regress" | grep -E '^deep__in__a' | grep -v report || true)
+[[ ${#first} -le 32 && -n $first ]] || { echo "FAIL: the output of the first pass is in '$first', want one directory of at most 32 bytes"; fail=1; }
+dbs=$("$pg" psql -d postgres -qAt -c "SELECT count(*) FROM pg_database WHERE datname ~ '^contrib_regression_(deep|sub)' AND datname <> 'contrib_regression_$first'")
+[[ $dbs == 0 ]] || { echo "FAIL: the cuts of the batch in folders left $dbs databases in the cluster"; fail=1; }
+
+# scripts/leftovers.allow names the test with its folders: the sed that reads it has / in the names, in a batch of one and of three
+printf 'sub/b: table leaked_by_sub_b # the fixture of test-regress-batch.sh keeps it\n' >"$tmp/allow"
+SIFT_LEFTOVERS_ALLOW=$tmp/allow "$pg" regress sub/b >"$tmp/out" 2>&1 || { echo "FAIL: a leftover listed in leftovers.allow for a test in a folder failed it"; tail -n 20 "$tmp/out"; fail=1; }
+SIFT_LEFTOVERS_ALLOW=$tmp/allow "$pg" regress "${nested[@]}" >"$tmp/out" 2>&1 || { echo "FAIL: a leftover listed for a test in a folder failed a batch of three"; tail -n 20 "$tmp/out"; fail=1; }
+nested_fixture sub/b tbl_n3
+
+# sub/a prints something else: it is named, with its folder, and its diffs are kept
+printf 'SELECT 2 AS two;\n' >>"$SIFT_REGRESS_DIR/sql/sub/a.sql"
+printf 'SELECT 3 AS two;\n two \n-----\n   3\n(1 row)\n\n' >>"$SIFT_REGRESS_DIR/expected/sub/a.out"
+"$pg" regress sub/a sub/b >"$tmp/out" 2>&1 && { echo "FAIL: a batch of tests in folders with a diff passed"; fail=1; }
+grep -qE '^diff .*/expected/sub/a\.out' "$tmp/out" || { echo "FAIL: the diff is not attributed to sub/a"; tail -n 20 "$tmp/out"; fail=1; }
+[[ -s $SIFT_TMP/regress/sub__a/regression.diffs ]] || { echo "FAIL: the first pass of the failed batch in folders lost its regression.diffs"; fail=1; }
+nested_fixture sub/a tbl_n2
 
 # the server is gone (the watchdog of the run stopped it at its cap): the cut says so once and stops, it does not run every half into a refused connection
 "$pg" stop >/dev/null 2>&1

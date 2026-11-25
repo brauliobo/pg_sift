@@ -121,12 +121,20 @@ resolve_am() {
 }
 
 # ---------- corpus ----------
+# fixture_name FILE: the name of a fixture is its path under test/col/fixtures without .sql (a file elsewhere, an analytics query, is its base name)
+fixture_name() {
+	local f=$1
+	if [[ $f == "$REPO/test/col/fixtures/"* ]]; then f=${f#"$REPO/test/col/fixtures/"}; else f=${f##*/}; fi
+	echo "${f%.sql}"
+}
+all_fixtures() { find "$REPO/test/col/fixtures" -name '*.sql' | LC_ALL=C sort; }
+
 # files FILE...: those whose name matches --corpus, and of them the Kth of every N (--slice K/N), one per line. The slices of a corpus are disjoint
 # and together all of it, so that N jobs with --slice 1/N .. N/N test what one job without it tests (scripts/ci.sh --selftest checks it)
 files() {
 	local f i=0
 	for f in "$@"; do
-		[[ -z $CORPUS || $(basename "$f" .sql) =~ $CORPUS ]] || continue
+		[[ -z $CORPUS || $(fixture_name "$f") =~ $CORPUS ]] || continue
 		(( i++ % SLICE_N == SLICE_K - 1 )) && echo "$f"
 	done
 	return 0
@@ -154,7 +162,7 @@ run_corpus() {
 			[[ -z ${SNAP_SYNC:-} ]] || { echo "\\! touch '$OUT/snap.taken'"; echo "\\! while [ ! -e '$OUT/snap.go' ]; do sleep 0.1; done"; }
 		}
 		for f in "$@"; do
-			name=$(basename "$f" .sql)
+			name=$(fixture_name "$f")
 			if [[ -n ${HELD:-} ]] && grep -q '^-- isolation:' "$f"; then continue; fi
 			names+=("$name")
 			echo "\\set f \`cat '$f'\`"
@@ -341,25 +349,28 @@ fast_files() {
 
 # fixture_files: the fixtures of --corpus and --slice, and of them the ones of --fast
 fixture_files() {
-	local all
-	mapfile -t all < <(files "$REPO"/test/col/fixtures/*.sql)
+	local all fx
+	mapfile -t fx < <(all_fixtures)
+	mapfile -t all < <(files "${fx[@]}")
 	(( ${#all[@]} )) || return 0
 	if [[ -n $FAST ]]; then fast_files "${all[@]}"; else printf '%s\n' "${all[@]}"; fi
 }
 
 # duplicates: a fixture runs for nothing when another has its statement (whitespace aside) and its tags; the comment and the shape label say nothing a run reads
 duplicates() {
+	local fx
+	mapfile -t fx < <(all_fixtures)
 	awk 'function flush(  i, j, t, k) {
 			if (name == "") return
 			for (i = 2; i <= nt; i++) { t = tag[i]; for (j = i - 1; j >= 1 && tag[j] > t; j--) tag[j + 1] = tag[j]; tag[j + 1] = t }
 			k = ""; for (i = 1; i <= nt; i++) k = k tag[i] "\n"
 			k = k body; names[k] = names[k] " " name; count[k]++
 		}
-		FNR == 1 { flush(); name = FILENAME; sub(/.*\//, "", name); nt = 0; body = "" }
+		FNR == 1 { flush(); name = FILENAME; sub(/.*test\/col\/fixtures\//, "", name); nt = 0; body = "" }
 		/^-- (shape|[^:]*[^a-z_:][^:]*):/ || /^--[^@]/ && !/^-- (sets|key|tol|name|expect|scenario|guc|prepare|args|requires|wrap|error|isolation|runs):/ { next }
 		/^-- / { tag[++nt] = $0; next }
 		{ gsub(/[ \t]+/, " "); body = body $0 " " }
-		END { flush(); for (k in count) if (count[k] > 1) { n++; print "duplicates:" names[k] } exit n > 0 }' "$REPO"/test/col/fixtures/*.sql
+		END { flush(); for (k in count) if (count[k] > 1) { n++; print "duplicates:" names[k] } exit n > 0 }' "${fx[@]}"
 }
 
 # sound WHEN: sift.check finds no problem in the fixture indexes and tables
@@ -505,7 +516,7 @@ analytics_suite() {
 # ---------- self-test ----------
 # plain against plain must pass, every mutation of the "on" results that a bug could cause must fail, the one inside the tolerance pass
 selftest() {
-	local kind want got applied files fl
+	local kind want got applied files fl fx
 	# plain against plain: one variant is all the harness needs to compare and to mutate (the others repeat the same plan)
 	NOINDEX=1 SCENARIOS=none VARIANT_ARRAY='{on}'
 	log "selftest: $FIXROWS orders, plain against plain"
@@ -513,7 +524,8 @@ selftest() {
 	sql -v n="$FIXROWS" -v seed="$SEED" -f "$REPO/test/col/fixture.sql" >/dev/null
 	fixture_indexes
 	sql -c "VACUUM (FREEZE, ANALYZE)" >/dev/null
-	mapfile -t fl < <(files "$REPO"/test/col/fixtures/*.sql | grep -E '/(metrics_summary|item_category_counts|month_series|store_topn|f_count_sum_minmax|f_group_source|f_scalar_paths|t_float8_nan_inf|t_sum_int4_wide|t_text_collation|n_empty_global)\.sql$')
+	mapfile -t fx < <(all_fixtures)
+	mapfile -t fl < <(files "${fx[@]}" | grep -E '/(metrics_summary|item_category_counts|month_series|store_topn|f_count_sum_minmax|f_group_source|f_scalar_paths|t_float8_nan_inf|t_sum_int4_wide|t_text_collation|n_empty_global)\.sql$')
 	for kind in none int float float-tiny text null rows dup order type cols; do
 		MUTATE=; [[ $kind == none ]] || MUTATE=$kind
 		want=FAIL; [[ $kind == none || $kind == float-tiny ]] && want=PASS
@@ -531,7 +543,7 @@ selftest() {
 }
 
 if [[ -n $DUPLICATES ]]; then duplicates; exit; fi
-if [[ -n $LIST ]]; then fixture_files | xargs -r -n1 basename; exit 0; fi
+if [[ -n $LIST ]]; then fixture_files | while IFS= read -r f; do echo "$(fixture_name "$f").sql"; done; exit 0; fi
 if [[ -n $SELFTEST ]]; then selftest; exit $FAILED; fi
 [[ $SUITE == analytics ]] || fixtures_suite
 [[ $SUITE == fixtures ]] || { stop_early && exit $FAILED; analytics_suite; }

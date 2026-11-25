@@ -270,7 +270,7 @@ clean() {
 regress() {
 	if (( ! $# )); then make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres; return; fi
 	batch_run "$@" && return 0
-	if (( $# == 1 )); then batch_report "$1" "$1"; return 1; fi
+	if (( $# == 1 )); then batch_report "$(batch_key "$1")" "$1"; return 1; fi
 	name_failures "$@"
 	return 1
 }
@@ -287,7 +287,8 @@ failed_tests() { [[ ! -f $TMP/regress/$1/regression.out ]] || sed -n 's/^not ok 
 #  - only diffs (no leak, no leftover): the tests that differ run alone; one that fails alone is guilty. If all of them pass alone, an earlier test of the batch bleeds into them, and the cuts find it
 #  - a leak or a leftover: the batch is cut in halves, because no test is named yet
 name_failures() {
-	local key=$1 report=$TMP/regress/$1.report failed first after rc=0
+	local key report failed first after rc=0
+	key=$(batch_key "$1") report=$TMP/regress/$key.report
 	failed=$(failed_tests "$key" | paste -sd' ' -) first=${failed%% *}
 	after=${failed#"$first"}
 	BISECT_NAMED=0
@@ -321,15 +322,22 @@ rerun_alone() {
 	(( BISECT_NAMED > 0 )) || return 1
 }
 
+# safe_id NAME: NAME as one identifier of a database and one directory: a test in a folder (col/f2/smoke) has its / as __, and a name past 32 bytes is cut and ends in 8 hex of its hash
+safe_id() {
+	local s=${1//\//__} h
+	(( ${#s} <= 32 )) || { h=$(printf '%s' "$1" | "$REPO/scripts/sha256.sh" | cut -c1-8); s=${s:0:23}_$h; }
+	printf '%s\n' "$s"
+}
+
 # batch_key TEST...: the name of the output of a batch in $TMP/regress: <first> for the whole batch, cut/<first>-<count> for a half or less of it (REGRESS_CUT is set)
-batch_key() { echo "${REGRESS_CUT:+cut/}$1${REGRESS_CUT:+-$#}"; }
+batch_key() { echo "${REGRESS_CUT:+cut/}$(safe_id "$1")${REGRESS_CUT:+-$#}"; }
 
 # batch_run TEST...: the batch in one pg_regress run and its checks; the findings (diffs, leaks, leftovers) go to $TMP/regress/<key>.report, not to the terminal
 # (a cut, REGRESS_CUT=1, also keeps the progress of pg_regress back, and drops its database and the output of a batch that passed). 0 when every test passed and left nothing
 batch_run() {
 	local key db rc=0
 	key=$(batch_key "$@")
-	db=contrib_regression_$1${REGRESS_CUT:+_$#}
+	db=contrib_regression_$(safe_id "$1")${REGRESS_CUT:+_$#}
 	batch_checks "$key" "$db" "$@" || rc=1
 	[[ -z ${REGRESS_CUT:-} ]] || dropdb -U postgres --force --if-exists "$db" || rc=1
 	(( rc )) || [[ -z ${REGRESS_CUT:-} ]] || rm -rf "$TMP/regress/$key" "$TMP/regress/$key.report"
@@ -349,14 +357,14 @@ batch_checks() {
 	(( rc == 0 )) || return 1
 	pats=$(IFS='|'; echo "$*")
 	now=$(db_left "$db")
-	left=$(grep -vEf <(sed -n "s/^\($pats\): \(.*[^ ]\) *# .*/\2/p" "$REPO/scripts/leftovers.allow") <<<"$now" || true)
+	left=$(grep -vEf <(sed -En "s@^($pats): (.*[^ ]) *# .*@\2@p" "${SIFT_LEFTOVERS_ALLOW:-$REPO/scripts/leftovers.allow}") <<<"$now" || true)
 	[[ -z $left ]] && return 0
 	{ sed "s/^/LEFTOVER: /" <<<"$left"; echo "not ok - leaves objects behind: end each test with the DROPs of what it creates (the extension last), or give the object and the reason in scripts/leftovers.allow"; } >>"$report"
 	return 1
 }
 
 # batch_report KEY TEST: what the failed run of the single TEST (output KEY) found, named after it
-batch_report() { sed "s/^LEFTOVER: /LEFTOVER $2: /; s/^not ok - /not ok - $2 /" "$TMP/regress/$1.report"; }
+batch_report() { sed "s@^LEFTOVER: @LEFTOVER $2: @; s@^not ok - @not ok - $2 @" "$TMP/regress/$1.report"; }
 
 # the failing tests the cuts of one batch have named: a batch is red with 4 named as with 20, and the cuts of 20 reds ran past CI_JOB_TIMEOUT, so they stop at SIFT_BISECT_REDS (4)
 BISECT_NAMED=0
@@ -388,9 +396,10 @@ db_left() { psql -U postgres -d "$1" -X -qAt -v cluster=off -f "$REPO/scripts/le
 
 # pg_regress OUTDIR DB TEST...: pg_regress in a database it creates, the output in a fresh OUTDIR
 pg_regress() {
-	local out=$1 db=$2
+	local out=$1 db=$2 t
 	shift 2
 	rm -rf "$out" && mkdir -p "$out"
+	for t; do [[ $t != */* ]] || mkdir -p "$out/results/${t%/*}"; done
 	# SIFT_FRESH: a psql that connects anew before every statement outside a transaction (scripts/fresh-psql.py) stands first in PATH, in this subshell only
 	# (FRESH_PSQL is the real psql, found before PATH changes: the shim refuses to run as its own psql or inside itself)
 	(
@@ -406,16 +415,16 @@ pg_regress() {
 # leftovers [TEST...]: each test alone in a database of its own (all of test/sql without names); prints "TEST: object" for what it left behind
 # (scripts/leftovers.sql: relations, functions, types, schemas, extensions, roles, ALTER SYSTEM...) and exits 1 when any test left something
 leftovers() {
-	local t db bad=0 before now left
-	(( $# )) || set -- $(cd "$REPO/test/sql" && ls *.sql | sed 's/\.sql$//')
+	local t safe db bad=0 before now left
+	(( $# )) || set -- $(cd "$REPO/test/sql" && find . -name '*.sql' | sed 's|^\./||; s|\.sql$||' | LC_ALL=C sort)
 	cluster_left() { psql -U postgres -d postgres -X -qAt -v cluster=on -f "$REPO/scripts/leftovers.sql" | { grep -E '^(role|ALTER SYSTEM) ' || true; }; }
 	before=$(cluster_left)
 	for t in "$@"; do
-		db=contrib_regression_$t
-		pg_regress "$TMP/regress/$t" "$db" "$t" >/dev/null 2>&1 || echo "$t: FAILED, what it left may come from that (diffs in $TMP/regress/$t)"
+		safe=$(safe_id "$t") db=contrib_regression_$safe
+		pg_regress "$TMP/regress/$safe" "$db" "$t" >/dev/null 2>&1 || echo "$t: FAILED, what it left may come from that (diffs in $TMP/regress/$safe)"
 		now=$(cluster_left)
 		left=$(db_left "$db"; grep -vxFf <(echo "$before") <<<"$now" || true)
-		[[ -z ${left//$'\n'/} ]] || { bad=1; echo "$left" >"$TMP/regress/$t/leftovers"; sed "s/^/$t: /" <<<"$left" | head -12; (( $(wc -l <<<"$left") <= 12 )) || echo "$t: ... all $(wc -l <<<"$left") in $TMP/regress/$t/leftovers"; }
+		[[ -z ${left//$'\n'/} ]] || { bad=1; echo "$left" >"$TMP/regress/$safe/leftovers"; sed "s@^@$t: @" <<<"$left" | head -12; (( $(wc -l <<<"$left") <= 12 )) || echo "$t: ... all $(wc -l <<<"$left") in $TMP/regress/$safe/leftovers"; }
 		before=$now
 		dropdb -U postgres --force "$db"
 	done
@@ -423,12 +432,12 @@ leftovers() {
 }
 
 tap() {
-	local tests=(test/t/*.sh)
-	[[ -n $1 ]] && tests=(test/t/$1.sh)
+	local tests
 	cd "$REPO"
+	if [[ -n $1 ]]; then tests=("test/t/$1.sh"); else tests=($(find test/t -name '*.sh' | LC_ALL=C sort)); fi
 	# the sanitizer runtime goes into the servers (SIFT_PRELOAD) and not into prove, bash or psql
 	( sanitizer_env; SIFT_PRELOAD=${LD_PRELOAD:-}; unset LD_PRELOAD; export SIFT_PRELOAD
-	  SIFT_TMP=$TMP SIFT_ROOT=$ROOT SIFT_PORT=$PORT prove ${PROVE_FLAGS:---failures --comments} --exec "$REPO/scripts/budget.sh tap" "${tests[@]}" )
+	  SIFT_REPO=$REPO SIFT_TMP=$TMP SIFT_ROOT=$ROOT SIFT_PORT=$PORT prove ${PROVE_FLAGS:---failures --comments} --exec "$REPO/scripts/budget.sh tap" "${tests[@]}" )
 }
 
 case ${1:-} in

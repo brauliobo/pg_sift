@@ -42,7 +42,7 @@ listed() { awk -F'\t' -v k="$1" '$1 == k' "$ALLOW" 2>/dev/null || true; }
 alternates() {
 	local f n
 	for f in $(git ls-files 'test/expected/*_[0-9]*.out'); do
-		n=${f##*/}; n=${n%.out}
+		n=${f#test/expected/}; n=${n%.out}
 		[[ $n =~ ^(.+)_[0-9]+$ && ! -f test/sql/$n.sql && -f test/expected/${BASH_REMATCH[1]}.out ]] && echo "$f" || true
 	done
 }
@@ -53,7 +53,7 @@ echoed() {
 import re, subprocess, sys
 for alt in sys.argv[1:]:
     main = re.sub(r'_[0-9]+\.out$', '.out', alt)
-    sql = 'test/sql/' + main.rsplit('/', 1)[1][:-4] + '.sql'
+    sql = 'test/sql/' + main[len('test/expected/'):-4] + '.sql'
     src = {l.rstrip() for l in open(sql) if len(l.strip()) >= 12}
     out = subprocess.run(['diff', '-U0', main, alt], capture_output=True, text=True).stdout.split('\n')[2:]
     n = sum(1 for l in out if l.startswith('-') and l[1:].rstrip() in src)
@@ -103,21 +103,21 @@ records() {
 check() {
 	local f n a
 	for f in $(git ls-files 'test/expected/*_[0-9]*.out'); do
-		n=${f##*/}; n=${n%.out}
+		n=${f#test/expected/}; n=${n%.out}
 		[[ $n =~ ^(.+)_[0-9]+$ && ! -f test/sql/$n.sql ]] || continue
 		[[ -f test/expected/${BASH_REMATCH[1]}.out ]] || echo "$f: an alternate, and test/expected/${BASH_REMATCH[1]}.out does not exist"
 	done
 	records
 	[[ -n $1 ]] || return 0
 	for f in $(git diff --name-only --no-renames --diff-filter=AM "$1" HEAD -- 'test/expected/*.out'); do
-		n=${f##*/}; n=${n%.out}
+		n=${f#test/expected/}; n=${n%.out}
 		git log --format=%B "$1..HEAD" | grep -E "^alt-unchanged: $n .+" >/dev/null && continue
 		for a in $(git ls-files "test/expected/${n}_[0-9]*.out" | grep -E "^test/expected/${n}_[0-9]+[.]out$"); do
 			git diff --quiet "$1" HEAD -- "$a" && echo "$f changed and $a did not: change the alternate, or say in a commit message \"alt-unchanged: $n <reason>\""
 		done
 	done
 	for f in $(git diff --name-only --no-renames --diff-filter=D "$1" HEAD -- 'test/expected/*_[0-9]*.out'); do
-		n=${f##*/}; n=${n%_*}
+		n=${f#test/expected/}; n=${n%_*}
 		[[ -f test/expected/$n.out ]] || continue
 		[[ -n $(listed removed | awk -F'\t' -v f="$f" '$2 == f') ]] || echo "$f was deleted and $ALLOW has no record of it: probe the test without the alternate on every major (scripts/probe-alternates.sh), then scripts/check-alternates.sh --removed --on ${MAJORS// /,} $f"
 	done

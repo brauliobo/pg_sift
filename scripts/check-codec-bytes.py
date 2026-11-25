@@ -188,14 +188,14 @@ def main(a):
     if a[:1] == ['--selftest']:
         return selftest()
     os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-    names = a or sorted(os.path.basename(f)[:-4] for f in glob.glob('test/expected/*.out'))
+    names = a or sorted(os.path.relpath(f, 'test/expected')[:-4] for f in glob.glob('test/expected/**/*.out', recursive=True))
     allow = allowed('.')
     seen, tap_hits, hits = {}, [], 0
     for t in names:
         sources, found = scan(read(f'test/sql/{t}.sql'), read(f'test/expected/{t}.out'))
         for n, col, cell in found:
             seen.setdefault(f'test/expected/{t}.out:{col}', []).append((n, cell, sources))
-    for f in sorted(glob.glob('test/t/*.sh')) if not a else []:
+    for f in sorted(glob.glob('test/t/**/*.sh', recursive=True)) if not a else []:
         tap_hits += [(f, n, l) for n, l in scan_tap(read(f))]
     for k, h in seen.items():
         if k in allow and allow[k][0] == len(h):

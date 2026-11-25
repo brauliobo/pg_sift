@@ -21,8 +21,9 @@ step build build env ${PREBUILT:+SIFT_PREBUILT_ROOT="$PREBUILT"} "$S/pgtest.sh" 
 step simd-level simd-level "$S/simd_level.sh" || cat "$LOG/simd-level.log"
 # the 8-page flavour (scripts/scaling-gate.sh) is a second full build of the library, 1.1 trillion instructions: built once here, not inside the first test that asks for it and its time budget
 if (( PG_MAJOR >= 18 )); then
-	for f in $(grep -l 'scaling-gate\.sh' "$REPO"/test/t/*.sh); do
-		[[ " ${J_ID[*]} " == *" tap-shell-$(basename "$f" .sh) "* ]] || continue
+	for f in $(grep -rl --include='*.sh' 'scaling-gate\.sh' "$REPO/test/t"); do
+		f=${f#"$REPO/test/t/"}
+		[[ " ${J_ID[*]} " == *" tap-shell-${f%.sh} "* ]] || continue
 		step sb-flavour sb-flavour "$S/scaling-gate.sh" build || { cat "$LOG/sb-flavour.log"; failed=1; exit 1; }
 		break
 	done

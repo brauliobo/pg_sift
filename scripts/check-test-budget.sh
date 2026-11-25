@@ -13,14 +13,14 @@
 set -euo pipefail
 
 UNIT_ROWS=4000 UNIT_FUZZ=500 SQL_SERIES=50000
-shopt -s nullglob
 
 # sites DIR: "unit|sql<TAB>file<TAB>count" for every file with sites over the budget, and "slow<TAB>-<TAB>names"
 sites() {
 	local dir=$1 units=() sqls=()
-	units=("$dir"/test/unit/*.c) sqls=("$dir"/test/sql/*.sql)
+	mapfile -t units < <(find "$dir/test/unit" -name '*.c' 2>/dev/null | LC_ALL=C sort)
+	mapfile -t sqls < <(find "$dir/test/sql" -name '*.sql' 2>/dev/null | LC_ALL=C sort)
 	(( ${#units[@]} == 0 )) || awk -v rows="$UNIT_ROWS" -v fuzz="$UNIT_FUZZ" '
-		function flush() { if (n > 0 && !guarded) { f = file; sub(/^.*\//, "", f); print "unit\t" f "\t" n } }
+		function flush() { if (n > 0 && !guarded) { f = file; sub(/^.*test\/unit\//, "", f); print "unit\t" f "\t" n } }
 		function number(def) { if (match(def, /1[ \t]*<<[ \t]*[0-9]+$/)) { sub(/^.*<<[ \t]*/, "", def); return 2 ^ def } match(def, /[0-9]+$/); return substr(def, RSTART) + 0 }
 		FNR == 1 { if (file != "") flush(); file = FILENAME; guarded = 0; n = 0 }
 		/^[ \t]*(\/\/|\/?\*)/ { next }
@@ -37,7 +37,7 @@ sites() {
 	' "${units[@]}"
 	(( ${#sqls[@]} == 0 )) || awk -v limit="$SQL_SERIES" '
 		FNR == 1 { if (file != "") flush(); file = FILENAME; n = 0; prev = "" }
-		function flush() { sub(/^.*\//, "", file); if (n > 0) print "sql\t" file "\t" n }
+		function flush() { sub(/^.*test\/sql\//, "", file); if (n > 0) print "sql\t" file "\t" n }
 		{
 			line = tolower($0); rest = line; big = 0
 			while (match(rest, /generate_series\([^,()]*,[ \t]*[0-9][0-9_]*(e[0-9]+)?/)) {

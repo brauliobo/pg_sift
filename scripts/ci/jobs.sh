@@ -28,10 +28,10 @@ flavor_job() {
 	(( PG_MAJOR >= 18 )) || [[ ! -v J_SUITE[$1] ]] || J_AFTER[$1]=1
 }
 named() { local n; for n in "$@"; do echo "$n"; done; }
-# rest DIR SUFFIX NAME...: the files test/DIR/*SUFFIX that are not named, so that a new test is queued without editing the lists
+# rest DIR SUFFIX NAME...: the files test/DIR/**/*SUFFIX that are not named, so that a new test is queued without editing the lists
 rest() {
 	local n
-	for n in $(basename -a -s "$2" "$REPO/test/$1"/*"$2"); do [[ " ${*:3} " == *" $n "* ]] || echo "$n"; done
+	for n in $(tests "$1" "$2"); do [[ " ${*:3} " == *" $n "* ]] || echo "$n"; done
 }
 # The scratch a job needs, in MB (scripts/scratch.tsv, measured by the runs). A job that is not in it counts JOB_MB.
 declare -A EST_MB=()
@@ -65,7 +65,7 @@ ISOLATION_SLICES=4
 isolation_slices() { local k; for (( k = 1; k <= ISOLATION_SLICES; k++ )); do job "isolation-$k" isolation 1 "$S/isolation.sh" --slice "$k/$ISOLATION_SLICES"; done; }
 # A shell test that says `# tap: pooled` (test/t/lib.bash: SIFT_POOLED_CLUSTER) runs in a database of the lane's cluster, not in a server of its own
 declare -A POOLED_TAP=()
-while IFS= read -r f; do f=${f##*/}; POOLED_TAP[${f%.sh}]=1; done < <(grep -lx '# tap: pooled' "$REPO"/test/t/*.sh)
+while IFS= read -r f; do f=${f#"$REPO/test/t/"}; POOLED_TAP[${f%.sh}]=1; done < <(grep -rlx --include='*.sh' '# tap: pooled' "$REPO/test/t")
 tap_shell() {
 	local f
 	for f in "$@"; do
