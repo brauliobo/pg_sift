@@ -184,9 +184,9 @@ setup_derived(SiftSrcFold *f)
 			if (sift_vn_prefix_of(&spec->derive[j], dv->d))
 				dv->prefix = &f->derived[j];
 		if (!sift_v6_pgexpr_sourceless(spec, dv->d))
-			dv->src = vec_for(f, dv->d->src, dv->d->kind == SVD_PG_EXPR);
+			dv->src = vec_for(f, dv->d->src, dv->d->kind == SVD_PG_EXPR || sift_vn_carries_nan(dv->d));
 		for (int i = 0; i < dv->d->ncond; i++)
-			dv->cond[i] = vec_for(f, dv->d->cond[i], false);
+			dv->cond[i] = vec_for(f, dv->d->cond[i], sift_vn_carries_nan(dv->d));
 		sift_vx_out_init(&dv->out, f->cx);
 	}
 	for (int i = 0; i < spec->nkeys; i++)

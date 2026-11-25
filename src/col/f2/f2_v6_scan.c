@@ -252,9 +252,9 @@ setup_derived(V6Scan *s, const int *first)
 			if (sift_vn_prefix_of(&spec->derive[j], dv->d))
 				dv->prefix = &s->derived[j];
 		if (!sift_v6_pgexpr_sourceless(spec, dv->d))
-			dv->src = &col_for(s, first, dv->d->src, false, dv->d->kind == SVD_PG_EXPR)->vec;
+			dv->src = &col_for(s, first, dv->d->src, false, dv->d->kind == SVD_PG_EXPR || sift_vn_carries_nan(dv->d))->vec;
 		for (int i = 0; i < dv->d->ncond; i++)
-			dv->cond[i] = &col_for(s, first, dv->d->cond[i], false, false)->vec;
+			dv->cond[i] = &col_for(s, first, dv->d->cond[i], false, sift_vn_carries_nan(dv->d))->vec;
 		sift_vx_out_init(&dv->out, CurrentMemoryContext);
 	}
 	for (int i = 0; i < spec->nkeys; i++)

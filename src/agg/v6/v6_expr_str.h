@@ -63,6 +63,7 @@ typedef struct SiftVxOut
 	SiftVec		vec;
 	void	   *data;
 	uint64		valid[SIFT_VEC_WORDS];
+	uint64		nan[SIFT_VEC_WORDS];	/* a numeric's NaN rows (vec.nan points here when there are any) */
 } SiftVxOut;
 
 extern void sift_vx_out_init(SiftVxOut *o, MemoryContext cx);

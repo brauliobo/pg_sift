@@ -267,6 +267,48 @@ eval128(const Fac *f, int nf, const SiftVec *pre, uint32 n, const uint64 *todo, 
 	}
 }
 
+/*
+ * The rows of o that hold a value (o->valid: every factor has one) and the rows that are NaN (o->nan): a NULL factor makes the row NULL, else a NaN factor makes it NaN, as numeric_mul
+ * and numeric_add do. Returns whether a row is NaN; *all_valid whether every row has a value.
+ */
+static bool
+derive_validity(const SiftVec *const *used, int nused, uint32 n, SiftVxOut *o, bool *all_valid)
+{
+	const uint32 words = (n + 63) / 64;
+	uint64		known[SIFT_VEC_WORDS],
+				nan_any[SIFT_VEC_WORDS] = {0};
+	bool		has_nan = false;
+
+	memset(o->valid, 0, sizeof(o->valid));
+	memset(o->valid, 0xff, words * sizeof(uint64));
+	if (n & 63)
+		o->valid[words - 1] = (UINT64CONST(1) << (n & 63)) - 1;
+	memcpy(known, o->valid, sizeof(known));
+	*all_valid = true;
+	for (int i = 0; i < nused; i++)
+	{
+		if (!used[i]->all_valid)
+			*all_valid = false;
+		for (uint32 w = 0; w < words; w++)
+		{
+			const uint64 nan = used[i]->nan != NULL ? used[i]->nan[w] : 0;
+
+			if (!used[i]->all_valid)
+			{
+				o->valid[w] &= used[i]->valid[w];
+				known[w] &= used[i]->valid[w] | nan;
+			}
+			nan_any[w] |= nan;
+		}
+	}
+	for (uint32 w = 0; w < words; w++)
+	{
+		o->nan[w] = nan_any[w] & known[w];
+		has_nan |= o->nan[w] != 0;
+	}
+	return has_nan;
+}
+
 void
 sift_vn_derive(const SiftV6Derive *d, SiftVec *const *cond, const SiftVec *prefix, int nprefix, const SiftBatchSel *bs, SiftVxOut *o)
 {
@@ -277,7 +319,8 @@ sift_vn_derive(const SiftV6Derive *d, SiftVec *const *cond, const SiftVec *prefi
 	const uint32 n = bs->n_raw,
 				words = (n + 63) / 64;
 	int			nused = 0;
-	bool		all_valid = true;
+	bool		all_valid,
+				has_nan;
 
 	for (int i = 0; i < nf; i++)
 	{
@@ -289,20 +332,11 @@ sift_vn_derive(const SiftV6Derive *d, SiftVec *const *cond, const SiftVec *prefi
 	}
 	if (prefix != NULL)
 		used[nused++] = prefix;
-	memset(o->valid, 0, sizeof(o->valid));
-	memset(o->valid, 0xff, words * sizeof(uint64));
-	if (n & 63)
-		o->valid[words - 1] = (UINT64CONST(1) << (n & 63)) - 1;
-	for (int i = 0; i < nused; i++)
-		if (!used[i]->all_valid)
-		{
-			all_valid = false;
-			for (uint32 w = 0; w < words; w++)
-				o->valid[w] &= used[i]->valid[w];
-		}
+	has_nan = derive_validity(used, nused, n, o, &all_valid);
 	for (uint32 w = 0; w < words; w++)
 		todo[w] = bs->mask[w] & o->valid[w];
-	o->vec = (SiftVec) {.data = o->data,.valid = all_valid ? NULL : o->valid,.len = n,.all_valid = all_valid,.dense = true,.type = SVEC_NUM64,.scale = (int16) d->aux};
+	o->vec = (SiftVec) {.data = o->data,.valid = all_valid ? NULL : o->valid,.nan = has_nan ? o->nan : NULL,.len = n,.all_valid = all_valid,.dense = true,.type = SVEC_NUM64,
+						.scale = (int16) d->aux};
 	if ((prefix == NULL || prefix->type != SVEC_NUM128) && eval64(f, nf, prefix != NULL ? prefix->data : NULL, n, o->data))
 		return;
 	eval128(f, nf, prefix, n, todo, o->data);
