@@ -124,13 +124,77 @@ is_sort_col(const SiftPartSpec *spec, int c)
 	return false;
 }
 
+/* The dictionary of column c of part k, which the part codes by one (physical column pc), or NULL */
+static const SiftPartDict *
+part_dict(Relation rel, const SiftPart *part, const SiftColRemap *remap, int c)
+{
+	int			pc = remap != NULL ? remap->phys[c] : c;
+
+	return pc >= 0 ? sift_part_dict_find(sift_part_dicts(rel, part), pc, SIFT_DICT_KIND_STR) : NULL;
+}
+
+/* The columns every input codes by a dictionary, with what their dictionaries take together, found one input at a time: only the input that is read is open */
+static Size *
+dict_sizes(Relation rel, uint32 part_id, const SiftPartDesc *const *at, int nparts, const SiftPartSpec *spec, const SiftColRemap *const *remaps, bool *candidate)
+{
+	Size	   *size = palloc0(Max(spec->ncols, 1) * sizeof(Size));
+
+	for (int k = 0; k < nparts; k++)
+	{
+		MemoryContext icx;
+		SiftPart   *part = sift_compact_open_input(rel, at[k], part_id, &icx);
+
+		for (int c = 0; c < spec->ncols; c++)
+		{
+			const SiftPartDict *d = candidate[c] ? part_dict(rel, part, remaps != NULL ? remaps[k] : NULL, c) : NULL;
+
+			candidate[c] = d != NULL;
+			size[c] += d != NULL ? (Size) d->off[d->n] + 2 * sizeof(uint32) * d->n : 0;
+		}
+		MemoryContextDelete(icx);
+	}
+	return size;
+}
+
+/* The dictionaries of the columns that are merged, copied out of the inputs one at a time: in[c * nparts + k] is that of column c of input k */
+static SiftPartDict *
+copy_dicts(Relation rel, uint32 part_id, const SiftPartDesc *const *at, int nparts, int ncols, const SiftColRemap *const *remaps, const bool *merged)
+{
+	SiftPartDict *copy = palloc0(Max(ncols * nparts, 1) * sizeof(SiftPartDict));
+
+	for (int k = 0; k < nparts; k++)
+	{
+		MemoryContext icx;
+		SiftPart   *part = sift_compact_open_input(rel, at[k], part_id, &icx);
+
+		for (int c = 0; c < ncols; c++)
+		{
+			const SiftPartDict *d = merged[c] ? part_dict(rel, part, remaps != NULL ? remaps[k] : NULL, c) : NULL;
+			SiftPartDict *to = &copy[c * nparts + k];
+
+			if (d != NULL)
+			{
+				*to = *d;
+				to->off = memcpy(palloc((d->n + 1) * sizeof(uint32)), d->off, (d->n + 1) * sizeof(uint32));
+				to->bytes = memcpy(palloc(Max(d->off[d->n], 1)), d->bytes, d->off[d->n]);
+			}
+		}
+		MemoryContextDelete(icx);
+	}
+	return copy;
+}
+
 SiftDictMerge *
-sift_dict_merge_plan(Relation rel, SiftPart *const *parts, int nparts, const SiftPartSpec *spec, const bool *keep_strings,
+sift_dict_merge_plan(Relation rel, uint32 part_id, const SiftPartDesc *const *at, int nparts, const SiftPartSpec *spec, const bool *keep_strings,
 					 const SiftColRemap *const *remaps, Size max_bytes)
 {
 	Size		held = 0;
 	SiftDictMerge *m = palloc0(sizeof(SiftDictMerge));
+	bool	   *merged = palloc0(Max(spec->ncols, 1));
 	const SiftPartDict **in = palloc(Max(nparts, 1) * sizeof(SiftPartDict *));
+	Size	   *size;
+	SiftPartDict *copy;
+	bool		any = false;
 
 	m->ncols = spec->ncols;
 	m->nparts = nparts;
@@ -138,21 +202,28 @@ sift_dict_merge_plan(Relation rel, SiftPart *const *parts, int nparts, const Sif
 	m->dict = palloc0(Max(spec->ncols, 1) * sizeof(SiftPartDict));
 	m->map = palloc0(Max(nparts * spec->ncols, 1) * sizeof(SiftCodeMap));
 	for (int c = 0; c < spec->ncols; c++)
+		merged[c] = sift_compact_dict_remap && (keep_strings == NULL || !keep_strings[c]) && !is_sort_col(spec, c) && spec->kinds[c] == SIFT_CELL_STR && nparts > 0;
+	size = dict_sizes(rel, part_id, at, nparts, spec, remaps, merged);
+	for (int c = 0; c < spec->ncols; c++)
 	{
-		bool		all = sift_compact_dict_remap && (keep_strings == NULL || !keep_strings[c]) && !is_sort_col(spec, c) && spec->kinds[c] == SIFT_CELL_STR && nparts > 0;
-
-		for (int k = 0; all && k < nparts; k++)
-		{
-			int			pc = remaps != NULL && remaps[k] != NULL ? remaps[k]->phys[c] : c;
-
-			all = pc >= 0 && (in[k] = sift_part_dict_find(sift_part_dicts(rel, parts[k]), pc, SIFT_DICT_KIND_STR)) != NULL;
-		}
-		for (int k = 0; all && k < nparts; k++)
-			held += (Size) in[k]->off[in[k]->n] + 2 * sizeof(uint32) * in[k]->n;
-		if (!all || held > max_bytes)
+		held += merged[c] ? size[c] : 0;
+		merged[c] = merged[c] && held <= max_bytes;
+		any |= merged[c];
+	}
+	copy = any ? copy_dicts(rel, part_id, at, nparts, spec->ncols, remaps, merged) : NULL;
+	for (int c = 0; c < spec->ncols; c++)
+	{
+		if (!merged[c])
 			continue;
+		for (int k = 0; k < nparts; k++)
+			in[k] = &copy[c * nparts + k];
 		merge_column(m, c, in);
 		m->kinds[c] = SIFT_CELL_INT;
+		for (int k = 0; k < nparts; k++)
+		{
+			pfree(copy[c * nparts + k].off);
+			pfree(copy[c * nparts + k].bytes);
+		}
 	}
 	pfree(in);
 	return m;

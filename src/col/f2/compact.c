@@ -69,6 +69,21 @@ release_part(const SiftPart *part, SiftExtent **rel_ext, int *nrel)
 	*nrel += nb;
 }
 
+/* An input is opened in a context of its own, which the caller deletes: a compaction holds the header, the extents and the dictionaries of the input it reads, not of all of them */
+SiftPart *
+sift_compact_open_input(Relation rel, const SiftPartDesc *d, uint32 part_id, MemoryContext *cx)
+{
+	MemoryContext old;
+	SiftPart   *part;
+
+	*cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compact input");
+	old = MemoryContextSwitchTo(*cx);
+	part = sift_part_open(rel, d->header_blk, d->part_gen, part_id);
+	MemoryContextSwitchTo(old);
+	part->io_mode = SIFT_IOS_MAINT_SEQ;
+	return part;
+}
+
 /* Which of the two buffers takes a row: 1, the cold one, when its first time column is older than the cut */
 static int
 row_side(const SiftPartSpec *spec, const SiftRowBuf *rb, int r, int64 hot_cut)
@@ -414,38 +429,46 @@ write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const Sif
 }
 
 
-/* What a compaction read of a part: its descriptor, its parts's deletion vector as it was then, and the rows of its granules */
+/* What a compaction keeps of a part it reads, which is opened for the one step that needs it: its descriptor, the rows of its granules, its deletion vector as it was then and how its columns map to the current ones */
 typedef struct CompactIn
 {
 	SiftPartDesc d;
-	SiftPart   *part;
-	SiftGranuleDesc *dir;
+	uint32		ngranules;
 	uint16	   *grows;
 	DeadBits	dead;			/* the rows its vector held dead at the read */
 	uint32		dv_len;			/* the bytes of the vector at the read: a delta tail changes them and not dv_gen */
+	const SiftColRemap *remap;
 } CompactIn;
 
 static CompactIn *
 read_inputs(Relation rel, uint64 part_id, const SiftPartDesc *parts, int nparts, const uint64 *gens, int ngens)
 {
 	CompactIn  *in = palloc0(Max(ngens, 1) * sizeof(CompactIn));
+	const SiftF2Store *store = sift_f2_store_open(rel);
 	SiftPartGenIndex by_gen;
 
 	sift_part_gen_idx_init(&by_gen, parts, nparts);
 	for (int i = 0; i < ngens; i++)
 	{
 		const SiftPartDesc *found = sift_part_gen_idx_find(&by_gen, gens[i]);
+		MemoryContext icx;
+		SiftPart   *part;
+		SiftGranuleDesc *dir;
 
 		if (found == NULL)
 			ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu has no part of generation %llu", (unsigned long long) part_id, (unsigned long long) gens[i])));
+		part = sift_compact_open_input(rel, found, (uint32) part_id, &icx);
+		dir = sift_part_granule_dir(rel, part);
 		in[i].d = *found;
-		in[i].part = sift_part_open(rel, found->header_blk, found->part_gen, (uint32) part_id);
-		in[i].part->io_mode = SIFT_IOS_MAINT_SEQ;
-		in[i].dir = sift_part_granule_dir(rel, in[i].part);
-		in[i].grows = palloc(Max(in[i].part->hdr.ngranules, 1) * sizeof(uint16));
-		for (uint32 g = 0; g < in[i].part->hdr.ngranules; g++)
-			in[i].grows[g] = in[i].dir[g].nrows;
+		in[i].ngranules = part->hdr.ngranules;
+		in[i].grows = palloc(Max(in[i].ngranules, 1) * sizeof(uint16));
+		for (uint32 g = 0; g < in[i].ngranules; g++)
+			in[i].grows[g] = dir[g].nrows;
+		pfree(dir);
 		in[i].dv_len = found->dv_blk != InvalidBlockNumber ? sift_dv_stream_len(rel, found->dv_blk) : 0;
+		if (store->host->build_col_remap != NULL)
+			in[i].remap = store->host->build_col_remap(store, rel, part, CurrentMemoryContext);
+		MemoryContextDelete(icx);
 		if (found->dv_blk != InvalidBlockNumber)
 		{
 			MemoryContext vector_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compact vector");
@@ -453,7 +476,7 @@ read_inputs(Relation rel, uint64 part_id, const SiftPartDesc *parts, int nparts,
 			SiftDv	   *dv = sift_dv_read(rel, found, (uint32) part_id, in[i].grows);
 
 			MemoryContextSwitchTo(keep);
-			in[i].dead = bits_of(dv, in[i].part->hdr.ngranules, in[i].grows, false, NULL, NULL, NULL);
+			in[i].dead = bits_of(dv, in[i].ngranules, in[i].grows, false, NULL, NULL, NULL);
 			MemoryContextDelete(vector_cx);
 		}
 	}
@@ -466,10 +489,14 @@ read_inputs(Relation rel, uint64 part_id, const SiftPartDesc *parts, int nparts,
 static void
 test_delete_meanwhile(Relation rel, uint64 part_id, const uint8 *key_lo, const CompactIn *in, const SiftPartSpec *spec)
 {
-	uint64	   *tids = sift_part_read_tids(rel, in->part, in->dir, 0);
-	int			n = Min(sift_test_compact_delete, in->dir[0].nrows);
+	MemoryContext icx;
+	SiftPart   *part = sift_compact_open_input(rel, &in->d, (uint32) part_id, &icx);
+	SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
+	uint64	   *tids = sift_part_read_tids(rel, part, dir, 0);
+	int			n = Min(sift_test_compact_delete, dir[0].nrows);
 	SiftPendDelRec *recs = palloc(Max(n, 1) * sizeof(SiftPendDelRec));
 
+	MemoryContextDelete(icx);
 	for (int i = 0; i < n; i++)
 		recs[i] = (SiftPendDelRec) {.tid = tids[i],.xmax = InvalidTransactionId,.cmax = 0};
 	sift_test_compact_delete = 0;
@@ -492,7 +519,6 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 			  SiftExtent **rel_ext, int *nrel, SiftMemTracker *mem, SiftPartDesc **out, int *nout)
 {
 	const SiftPartDesc **at = palloc(Max(ngens, 1) * sizeof(SiftPartDesc *));
-	SiftPart  **src = palloc(Max(ngens, 1) * sizeof(SiftPart *));
 	SiftDictMerge *dm;
 	SiftPartSpec mspec;
 	Sink		sink;
@@ -501,51 +527,57 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	uint16		level = 0;
 	uint64		total_rows = 0;
 	const SiftPartDicts *adopt = NULL;
-	const SiftF2Store *store = sift_f2_store_open(rel);
+	MemoryContext adopt_cx = NULL;
 	const SiftColRemap **remap = palloc0(Max(ngens, 1) * sizeof(SiftColRemap *));
 	bool		mapped = false,
-				retier = false;
+				retier = false,
+				read = true;
 
 	for (int i = 0; i < ngens; i++)
 	{
 		at[i] = &in[i].d;
-		src[i] = in[i].part;
+		remap[i] = in[i].remap;
 		level = Max(level, at[i]->level);
-		if (store->host->build_col_remap != NULL)
-			mapped |= (remap[i] = store->host->build_col_remap(store, rel, src[i], CurrentMemoryContext)) != NULL;
+		mapped |= remap[i] != NULL;
+		retier |= sift_part_needs_retier(at[i]);
 	}
 	res->nparts_in = ngens;
-	for (int i = 0; i < ngens; i++)
-		retier |= sift_part_needs_retier(at[i]);
 	if (!mapped && !retier && !folds_any(fold, at, ngens) && join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, hot_cut, bounds_hold, hc->horizon, rel_ext, nrel, res, &joined))
 	{
 		*out = memcpy(palloc(sizeof(SiftPartDesc)), &joined, sizeof(SiftPartDesc));
 		*nout = 1;
 		return true;
 	}
-	dm = sift_dict_merge_plan(rel, src, ngens, spec, fold != NULL ? sift_compact_fold->folded_leaves(fold) : NULL, remap, mem->budget / SIFT_COMPACT_DICT_SHARE);
+	dm = sift_dict_merge_plan(rel, (uint32) part_id, at, ngens, spec, fold != NULL ? sift_compact_fold->folded_leaves(fold) : NULL, remap, mem->budget / SIFT_COMPACT_DICT_SHARE);
 	mspec = sift_dict_merge_spec(dm, spec);
 	for (int i = 0; i < ngens; i++)
-		total_rows += src[i]->hdr.nrows;
+		total_rows += at[i]->nrows;
 	for (int i = 0; i < ngens; i++)
-		if (remap[i] == NULL && src[i]->hdr.nrows * 10 >= total_rows * 6)
-			adopt = sift_part_dicts(rel, src[i]);
+		if (remap[i] == NULL && at[i]->nrows * 10 >= total_rows * 6)
+			adopt = sift_part_dicts(rel, sift_compact_open_input(rel, at[i], (uint32) part_id, &adopt_cx));
 	sink = (Sink) {.rel = rel,.part_id = (uint32) part_id,.level = level,.spec = &mspec,.dm = dm,.adopt = adopt,.mem = mem,.flush_bytes = mem->budget / SIFT_COMPACT_FLUSH_SHARE,.split = split,
 		.res = res,.cx = CurrentMemoryContext};
 	sink.rb[0] = sift_rowbuf_new(&mspec);
 	sink.rb[1] = split ? sift_rowbuf_new(&mspec) : NULL;
-	for (int i = 0; i < ngens; i++)
-		if (!add_part_rows(rel, src[i], at[i], (uint32) part_id, &sink, hot_cut, &mspec, &dm->map[i * dm->ncols], remap[i], hc, fold, res, rel_ext, nrel))
-			return false;
-	for (int side = 0; side < (split ? 2 : 1); side++)
+	for (int i = 0; i < ngens && read; i++)
+	{
+		MemoryContext icx;
+		SiftPart   *part = sift_compact_open_input(rel, at[i], (uint32) part_id, &icx);
+
+		read = add_part_rows(rel, part, at[i], (uint32) part_id, &sink, hot_cut, &mspec, &dm->map[i * dm->ncols], remap[i], hc, fold, res, rel_ext, nrel);
+		MemoryContextDelete(icx);
+	}
+	for (int side = 0; read && side < (split ? 2 : 1); side++)
 	{
 		if (sink.rb[side]->n > 0)
 			sink_flush(&sink, side, false);
 		sift_rowbuf_free(sink.rb[side]);
 	}
+	if (adopt_cx != NULL)
+		MemoryContextDelete(adopt_cx);
 	*out = sink.out;
 	*nout = sink.nout;
-	return true;
+	return read;
 }
 
 /* The vector an output carried over is replaced: the extents it had were never in a manifest */
@@ -572,8 +604,12 @@ release_outputs(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout)
 
 /* The rows an input holds dead now that were not dead in the vector the compaction read it with: their addresses and deleters */
 static void
-dv_delta(Relation rel, const CompactIn *in, const SiftDv *now, SiftPendDelRec **recs, int *n, int *cap)
+dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, SiftPendDelRec **recs, int *n, int *cap)
 {
+	MemoryContext icx = NULL;
+	SiftPart   *part = NULL;
+	SiftGranuleDesc *dir = NULL;
+
 	for (int i = 0; i < now->ndirty; i++)
 	{
 		const SiftDvGran *dg = &now->gran[i];
@@ -583,8 +619,13 @@ dv_delta(Relation rel, const CompactIn *in, const SiftDv *now, SiftPendDelRec **
 		{
 			if (bits_dead(in->dead, dg->granule_id, dg->rows[k]))
 				continue;
+			if (part == NULL)
+			{
+				part = sift_compact_open_input(rel, &in->d, part_id, &icx);
+				dir = sift_part_granule_dir(rel, part);
+			}
 			if (tids == NULL)
-				tids = sift_part_read_tids(rel, in->part, in->dir, dg->granule_id);
+				tids = sift_part_read_tids(rel, part, dir, dg->granule_id);
 			if (*n == *cap)
 			{
 				*cap = Max(16, *cap * 2);
@@ -595,6 +636,8 @@ dv_delta(Relation rel, const CompactIn *in, const SiftDv *now, SiftPendDelRec **
 		if (tids != NULL)
 			pfree(tids);
 	}
+	if (icx != NULL)
+		MemoryContextDelete(icx);
 }
 
 /* The deletes that reached the inputs while the outputs were written, put into the deletion vectors of the outputs, which the commit makes the vectors of the parts that replace the inputs */
@@ -763,7 +806,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 			SiftDv	   *now = sift_dv_read(rel, now_d, (uint32) part_id, in[i].grows);
 
 			MemoryContextSwitchTo(keep);
-			dv_delta(rel, &in[i], now, &delta, &ndelta, &capdelta);
+			dv_delta(rel, (uint32) part_id, &in[i], now, &delta, &ndelta, &capdelta);
 			MemoryContextDelete(vector_cx);
 			in[i].d = *now_d;
 		}

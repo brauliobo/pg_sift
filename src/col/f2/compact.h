@@ -81,8 +81,11 @@ extern PGDLLIMPORT bool sift_compact_dict_remap;
 
 /* keep_strings (per leaf, NULL for none): the columns whose strings the compaction reads as strings, because its host writes values into them. The dictionaries of the columns that are merged
  * hold at most max_bytes together (what the parts' dictionaries and the maps of their codes take): the columns after that are read as strings */
-extern SiftDictMerge *sift_dict_merge_plan(Relation rel, SiftPart *const *parts, int nparts, const SiftPartSpec *spec, const bool *keep_strings,
+extern SiftDictMerge *sift_dict_merge_plan(Relation rel, uint32 part_id, const SiftPartDesc *const *at, int nparts, const SiftPartSpec *spec, const bool *keep_strings,
 											const SiftColRemap *const *remaps, Size max_bytes);
+
+/* An input of a compaction opened in a context of its own that the caller deletes: of all the inputs only the one that is read is held */
+extern SiftPart *sift_compact_open_input(Relation rel, const SiftPartDesc *d, uint32 part_id, MemoryContext *cx);
 extern SiftPartSpec sift_dict_merge_spec(const SiftDictMerge *m, const SiftPartSpec *spec);
 extern void sift_dict_merge_finish(const SiftDictMerge *m, const SiftRowBuf *rb, SiftColIn *cols, SiftCompactResult *res);
 
