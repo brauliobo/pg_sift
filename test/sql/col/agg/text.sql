@@ -6,7 +6,7 @@ SET cpu_tuple_cost = 0.5;
 
 CREATE TABLE ag (id int, g int, s text, f float8, n int);
 
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE agg_q (q text);
 INSERT INTO agg_q VALUES

@@ -4,7 +4,7 @@
 # and when the standby is promoted the damage is met again as on a primary: it leaves service and the metapage is flagged. Format 1 (a, b) and Format 2 (c, d): a and c are damaged on the
 # primary after the clone, b and d before it.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 17
 CONF="wal_level = replica

@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the agg_preagg* tests that read the plain counters (\ir test/agg_preagg_units.sql): pa_units(q) is the units of the SiftAgg node, those it
+-- Shared by the agg_preagg* tests that read the plain counters (\ir test/common/sql/agg/preagg_units.sql): pa_units(q) is the units of the SiftAgg node, those it
 -- answered from the pre-aggregates and the workers planned (NULL: the plan has no SiftAgg, or the query fails).
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT workers int) LANGUAGE plpgsql AS $$
 DECLARE l text;

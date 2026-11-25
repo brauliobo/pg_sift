@@ -1,5 +1,5 @@
 # The command line of the differential fuzz: seeds, the selftest and the totals.
-# The docstring of test/fuzz/diff_fuzz.py is its help text.
+# The docstring of test/fuzz/diff/cli.py is its help text.
 
 import argparse
 import os

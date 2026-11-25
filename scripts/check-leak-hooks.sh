@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Every driver that starts a server runs the leak check (scripts/leakcheck.sh: leak_before and leak_after around a unit of work, leak_end around a cluster) without the
-# test opting in: a driver that does not source scripts/leakcheck.sh, test/t/lib.bash or run scripts/pgtest.sh, which carry the hooks, fails here. A driver that
+# test opting in: a driver that does not source scripts/leakcheck.sh, test/t/lib/common.bash or run scripts/pgtest.sh, which carry the hooks, fails here. A driver that
 # starts a server and does not test sift (a benchmark cluster, an older release's library, a stub) is a row in scripts/leak-hooks.allow: FILE<TAB>reason. The
 # fix for a failing driver is to bracket its work with the hooks, not to add a row.
 #   scripts/check-leak-hooks.sh [--selftest]
 cd "$(git rev-parse --show-toplevel)" || exit 1
 allow=scripts/leak-hooks.allow
 DRIVER='^[^#]*(pg_ctl[^#|]* start|(^|[^_a-z-])initdb[ "]|pg_regress |pg_isolation_regress|Cluster->new|get_new_node)'
-HOOKED='^[^#]*(leak_(before|after|end)|leakcheck\.sh|lib\.bash|SiftTest|pgtest\.sh (start|stop|regress|tap|fresh))'
+HOOKED='^[^#]*(leak_(before|after|end)|leakcheck\.sh|lib/common\.bash|SiftTest|pgtest\.sh (start|stop|regress|tap|fresh))'
 check() { # ROOT: prints a line for each driver without the hooks and each row that is wrong
 	local root=$1 f
 	for f in $(git -C "$root" grep -lE "$DRIVER" -- scripts test bench tools ':!*.sql' ':!*.out' ':!*.md' ':!*.tsv' ':!*.allow' ':!scripts/check-leak-hooks.sh'); do

@@ -9,7 +9,7 @@ SET jit = off;
 SET work_mem = '256MB';
 SET sift.test_create_format1 = off;
 SET sift.agg_force = on;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION node_of(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;

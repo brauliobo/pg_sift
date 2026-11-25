@@ -4,10 +4,10 @@
 # the dump, the relation of the pairs and its unique btree (and the index that journals it) are made before the index that reads them (it depends on them), and the restore ends with the same index: the same
 # options, the dependency on the btree (DROP INDEX of it is refused), the scope segments written by the restore (the scope entries are the join of the facts and the pairs), and the reads of one key, a set
 # of keys counted once and per pair are the plain join's, with the reader's own verdict (the first scope index of a relation leaves its stamps unfilled until a REINDEX of it, which the restore does not do: those reads are the entity rows', and exact). A REINDEX of the restored index keeps all of it.
-# Two indexes with a scope of two paths (lib_twohop.bash) go through the same restores: the btree that the rule chooses for each of the three relations is chosen again by the CREATE INDEX of the restore
+# Two indexes with a scope of two paths (lib/twohop.bash) go through the same restores: the btree that the rule chooses for each of the three relations is chosen again by the CREATE INDEX of the restore
 # (a NOTICE for each), the one a `using` names is the one the dump says, and each restored index has the same edges to the three btrees and the three journals, the same entries and reads.
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_twohop.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 plan 26
 node_init scd 51 "$TWOHOP_CONF"

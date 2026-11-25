@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cancel and timeout torture of the cases of test/par-sorts.tsv (Spec 95 WS-95-3b).
+"""Cancel and timeout torture of the cases of test/scaling/par_sorts.tsv (Spec 95 WS-95-3b).
 
 Every case runs ITER times (20) at twice its rows in ONE backend: the even iterations under a statement_timeout of a few milliseconds, the odd ones cancelled by pg_cancel_backend from a second
 session after a few milliseconds. After each iteration the backend, back at its prompt, holds no temporary file (pg_ls_tmpdir()), has raised no leak warning, and is alive; at the end its anonymous

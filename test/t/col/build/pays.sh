@@ -3,7 +3,7 @@
 # When a parallel build pays (col/v1/build_par.c, build_pays). Without key_cut the participants' segments are the index and the scan is shared; with key_cut their segments overlap
 # and the merge that follows rewrites every row, in slices that each read every input again: that does not pay (1,000,000 rows of 13 columns, 4 workers: 3.8 s against 3.2 s alone),
 # so a key_cut index is built by one process (no worker launched), unless the test option sift.test_col_parallel_always asks for the participants (the tests of their merge).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init mc 22 "autovacuum = off

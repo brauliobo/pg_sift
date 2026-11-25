@@ -3,7 +3,7 @@
 # Promoting a write buffer stays within maintenance_work_mem whatever the size of the segment: a segment of 46 MB (limit
 # 1 GB) is promoted at a 4 MB budget in a process that takes under 130 MB of anonymous memory; the docs of the segment used to
 # be copied to memory, about six times its size (265 MB here, 800 MB for a segment of 138 MB).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 3
 node_init mem 11 "autovacuum = off"

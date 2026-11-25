@@ -2,7 +2,7 @@
 use strict;
 use warnings FATAL => 'all';
 use FindBin;
-use lib $FindBin::RealBin;
+use lib "$ENV{SIFT_REPO}/test/t/lib";
 use SiftTest;
 use PostgreSQL::Test::Cluster;
 use Test::More;

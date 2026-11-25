@@ -1,5 +1,5 @@
 -- The queries whose results are stored in expected.txt (scripts/make-compat-fixture.sh runs them on the 2.x
--- build, test/t/compat_2x_fixture.sh on the build under test): every one goes through the sift index.
+-- build, test/t/compat/2x_fixture.sh on the build under test): every one goes through the sift index.
 SET enable_seqscan = off;
 SET sift.enable_scan = on;
 SET sift.enable_count = on;

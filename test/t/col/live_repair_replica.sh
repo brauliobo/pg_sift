@@ -2,7 +2,7 @@
 # Physical streaming replica (pg_basebackup): sift.col_repair on the primary restores the liveness pages of a sift_col index that a VACUUM of 4.2.1 to 4.3.5 damaged in a
 # segment of more than 65,152 superblocks (the special space of the first page overwritten, a dirty bit lost), and the restored pages replay to bytes equal to the primary's.
 # The damage is made on the primary and written to disk by a checkpoint, so the base backup carries it to the standby.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 node_init primary 2 "wal_level = replica

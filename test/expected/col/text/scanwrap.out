@@ -6,7 +6,7 @@ CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.agg_force = on;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 \set ECHO none
 CREATE TABLE sw (id int, txt text, hx text, mid text) WITH (autovacuum_enabled = off);
 INSERT INTO sw SELECT i,

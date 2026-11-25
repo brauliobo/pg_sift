@@ -4,7 +4,7 @@
 # did not commit), the pending stamp that crash recovery and WAL replay give back as it was, and a hot standby whose snapshot is older than the commit that settled the stamp. Every
 # answer is compared with the same aggregate with the heap checking every page and with no sift plan at all. The primary runs with wal_consistency_checking = 'generic': crash recovery and the
 # standby compare every page they rebuild (the directory with the pending stamp, and the one that settles it) with the page the primary wrote.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 18
 ROWS=$(knob SIFT_HF_ROWS 20000 12000)

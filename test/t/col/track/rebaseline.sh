@@ -5,8 +5,8 @@
 # reads answer as the heap again; the standby that loads the library of 4.1.0 again reads the marked log (flags 3, which that library takes for incomplete) as the heap.
 # The release is built from its tag by scripts/old-lib-check.sh (PostgreSQL 18).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 newroot=$ROOT
 build_old v4.1.0; oldroot=$OLDROOT

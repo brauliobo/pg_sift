@@ -1,6 +1,6 @@
 -- Every backend that reads a sift_table keeps the tombstone log of the table sorted (64 bytes an entry with the scratch of a first look) up to what
 -- sift.backend_cache_kb allows, and the entries past it in sorted runs on temp files: a read and a statement of any number of rows complete, with the memory of the backend
--- following the setting and not the log (test/t/tbl_tomb_spill.sh compares the rows with a heap twin). The test lowers the setting to 16 kB, 256 entries.
+-- following the setting and not the log (test/t/table/tomb_spill.sh compares the rows with a heap twin). The test lowers the setting to 16 kB, 256 entries.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 

@@ -3,7 +3,7 @@
 # What an operator sees of the background workers of sift: a promotion worker says what it is and for which index in pg_stat_activity and in its process title
 # (backend_type "sift promote", query "sift promote of schema.index"), sift.workers keeps when the last step ended well, which job it was and how long it took,
 # and a failure counter that stays zero while the steps end well.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
 node_init wi 64 "autovacuum = off

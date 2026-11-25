@@ -2,7 +2,7 @@
 # An INSERT into a sift_table never fails for want of a vblock lease. A backend holds one slot of the 2048 of the registry for every table whose run of vblocks it still fills, so one session that
 # inserts into more tables than there are slots, and a server whose registry cannot be had (sift.test_dsm_fail = sift_shm_manifest: no registry, as with a full /dev/shm), used to end the INSERT with
 # "could not reserve a vblock lease". The rows are exact in both, and VACUUM still runs.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 TABLES=2100
 out=

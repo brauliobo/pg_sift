@@ -15,7 +15,7 @@ CREATE INDEX events_held_flag ON events USING sift_col (dim_a_id, kind, qty) WHE
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE kinds;
 SET app.status = 'open';
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 60);

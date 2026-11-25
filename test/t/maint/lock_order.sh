@@ -8,7 +8,7 @@
 # for each: (a) after it locked the table: DROP TABLE waits for the worker, it goes on and ends, DROP TABLE ends: no deadlock, no error;
 # (b) before it locked the table: DROP TABLE ends first, the worker finds the relation gone and ends without an error.
 # Both beside the assertions of the lock order (Assert in sift_try_open_index and sift_maint_open).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 pg_config --configure | grep -q -- --enable-injection-points || { echo "1..0 # SKIP PostgreSQL without injection points (scripts/pg-assert.sh --inject)"; exit 0; }
 # 17 names the wait of a point differently

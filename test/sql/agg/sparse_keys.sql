@@ -19,7 +19,7 @@ INSERT INTO sk_many SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE (i / 3) * 5000
 CREATE INDEX sk_many_col ON sk_many USING sift_col (id, set_id, score);
 VACUUM (FREEZE, ANALYZE) sk_facts, sk_runs, sk_many;
 
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 
 SELECT * FROM check_query('SELECT set_id, count(*) AS n, sum(score) AS total, count(DISTINCT kind) AS kinds FROM sk_facts GROUP BY set_id');
 SELECT * FROM check_query('SELECT set_id, kind, count(*) AS n, avg(score) AS mean FROM sk_facts WHERE id > 25000 GROUP BY set_id, kind');

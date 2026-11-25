@@ -12,7 +12,7 @@ FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at, items) WITH (paths = 'items[]{qty float8}');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 -- The top three kinds of a ranked aggregate whose own WITH holds the lookup tables of the scan.
 SELECT * FROM check_query($q$
  SELECT r.kind, r.n, r.rn FROM (

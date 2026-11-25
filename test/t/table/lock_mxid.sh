@@ -3,7 +3,7 @@
 # The holders of a row past the eight an entry has room for are the members of a MultiXactId. Ten sessions hold one row FOR KEY SHARE: a request that conflicts with them is refused and one that does
 # not is granted, and when the last of them ends the entry of the row is gone from shared memory, not kept for a MultiXactId nobody holds. A transaction that locks the same row in fifteen
 # savepoints it releases is one holder of it, and allocates no MultiXactId.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init lm 53 "autovacuum = off

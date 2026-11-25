@@ -3,7 +3,7 @@
 # insert that the snapshot cannot see all visible and sets their bits. The record that sets them carries the newest transaction it makes visible, and the standby ends the queries whose
 # snapshot is not past it before it applies the bits (ResolveRecoveryConflictWithSnapshot): the index-only scan of the old snapshot never skips the table for a row it must not see.
 # An insert-only workload: no deletion vector is settled, so the only record of the VACUUM that conflicts with a reader is the one of the map.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_VM_ROWS 30000 10000)
 plan 11

@@ -3,7 +3,7 @@
 # sift never writes a catalog row where a lazy VACUUM or a parallel worker is (core/restrict.h): the writers of core/restrict.c refuse there, as the VACUUM runs them (the process flag
 # PROC_IN_VACUUM set for the call) and in a worker of a parallel query, and write in a session, in a CREATE INDEX CONCURRENTLY and in a REINDEX, where a build chooses the options of the
 # index. An assert build stops at the guard (Assert), so the test needs a release build of the library.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 node_init cw 50 "autovacuum = off
 sift.async_maintenance = off"

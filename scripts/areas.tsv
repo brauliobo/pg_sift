@@ -10,17 +10,17 @@
 # the regression tests of its own area there, not of the whole stack above it; the push to main and a dispatch use the rows below, which run the stack.
 #
 # groups (a job may be in several: the stack col, agg and table is one chain of code, so a change of one runs the groups above it)
-=bm25	^(installcheck-(bm25_(multicol|nontext_unique|field_dl_bm25f|field_phrase|on_conflict|or_score|par_dsm_part|par_part_ranked|returning_score)|hybrid_multimodal_facet|scaling_ops_gate|bm25_lazy_tail_maxscore|bm25_tidbridge|core_tidbridge|hybrid_tidbridge_bm25|core_ring_wrap|extlock_errors|quarantine_|roles_|ddl_hooks|introspection_shapes|locks_view|shared_memory|shm_ledger|shm_manifest|upgrade_path|sift_basic|bm25_bitmap_recheck|bm25_wbuf_read_promote|bm25_wbuf_wide_bloom|bm25_budgets|bm25_dead_windows|bm25_dict_block_limit|bm25_rescan_context|bm25_stats|bm25_negation_dml_score|limits_|core_radix_sort|core_range|errors_hints|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|bm25_buffer_share|dirty_query|edge_|fuzzy_|facets|fields|filter_pushdown|include_|lang_|index_build_|insert_backpressure|kernels_|list_slice_|live_stats|maint_|merge_fanin|merge_heal|merge_parts|merge_ranges|merge_slope|ops_info|parallel_|phrase_|plan|position_|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12|22)_|tap-shell-(automerge_efficiency|automerge_oltp_isolation|churn_dml_amp|prod_viability_gate|bm25_delete_automerge|fault_matrix(-[0-9]+|-smoke)?|fault_matrix_standby(-smoke)?|fault_matrix_workers|mem_budget|quarantine_standby|quarantine_restart|quarantine_concurrent|quarantine_slots|quarantine_txstate|bm25_cold_stems|bm25_vacuum_bounds|churn_select_impact|compat_|library_loaded_twice|old_lib_refusal|extension_lifecycle|roles_|upgrade_check|upgrade_path|pg_upgrade|upgrade_settings|replica_mixed|publication_all_tables|index_|leakcheck_gate|leak_hooks|maint_|replication|store_|vacuum_count|vacuum_parallel_merge|vacuum_standby_cut)|difftest(-nopos|-mutants(-[123])?|-[12])?$|soak(-gin)?$)
-=col	^(installcheck-(p98_shm_vm_uniq_[a-z]+|p98_(autottl_rekey|ddl_catalog_sync|journal_ddl|proj_ddl_acid|proj_tiered|scope_ddl)|f2_check_heapallindexed|f2_default_nan_scan|f2_proj_rebuild|f2_pull_prune|scaling_ops_gate|cache_eviction_safety|m4_cache_budget|on_v1_cic_wide_wbuf|scope_(in5_parity|pair_edit_live|topn_(parity|ties))|stor_(f2_col_delta_chain|f2_vacuum_horizon|v1_vacuum_truncate)|proj_(analytics_parity|live_churn|tail_reclaim)|s55_(dict_group|granule_point|point_dir)|core_ring_wrap|extlock_errors|quarantine_|roles_|ddl_hooks|introspection_shapes|locks_view|shared_memory|shm_ledger|shm_manifest|settings_removed|reloption_aliases|col_|segfmt_mixed|facet_counts|colcodec_|format2_|format_v1_v2_compat|compat_v1_|shred_|cache_discard)|tap-02[45]_format2_(minimal_)?wal|tap-shell-(p98_shm_vm_uniq_[a-z]+|automerge_efficiency|automerge_oltp_isolation|churn_dml_amp|aux_reads_scale|prod_viability_gate|f2_stream_budget|f2_(crash_orphans|enospc_and_orphans|quarantine_zero_preload|standby)|fault_matrix(-[0-9]+|-smoke)?|fault_matrix_standby(-smoke)?|fault_matrix_workers|mem_slope|mem_idle_series|quarantine_standby|quarantine_restart|quarantine_concurrent|quarantine_slots|quarantine_txstate|quarantine_held_tombs|shm_manifest_faults|copy_first_statement|col_|reloption_alias_dump|maint_lock_order|lock_modes|bgw_database_lifecycle|bgw_multidb_fairness|monitor_lock_modes|leaf_stats_shared|compat_matrix|upgrade_compat(_standby)?|sb_mask_small)|tap-01[56]_space|tap-(02[45]_format2_|03[12]_|09[678]_)|soak-col$|difftest-(col|scope)|tap-033_format2_connect_journal$|tap-shell-f2_scope(_member)?_anykey$)
-=layout	^tap-shell-scaling_slope$
-=agg	^(installcheck-(par_core_pool|hybrid_agg|scaling_ops_gate|gpu_topn_v6|scope_window_parity|join_push_(table_)?parity|scope_(in5_parity|pair_edit_live|topn_(parity|ties))|kll_(quantiles|nonfinite)|part_agg_parity|scope_overlay_parity|core_ring_wrap|roles_|ddl_hooks|introspection_shapes|locks_view|shared_memory|shm_ledger|shm_manifest|slot_owner|explain_sift|agg|col_agg|col_topn|col_search|col_preagg|f2_preagg_table_par|col_tags|gpu_agg|on_scaling_guards|clickbench_suite2_smoke|hybrid_|part_agg_parity|proj_analytics_parity|scope_overlay_parity|format2_(parallel_conc|partitioned_agg_v6|agg_live|scope_live|cache_lifecycle))|tap-shell-(prod_viability_gate|mem_slope|mem_idle_series|lookup_shared_claim|agg_first_statement|agg_stats_shared|fresh_backend|interrupt_dict_filter|relcache_slots|vacuum_agg|topn_vacuum|leak_path_vets|sb_mask_small|verdict_shared|par_derive)|tap-0(18|20)_lookup_shared|tap-023_dimmap|difftest-(col|fuzz|txn(-shapes)?|bm25|scope)|shapes-(matrix|surface)|plan-gate|plan-budget|exec-budget|corpus|tap-034_agg_v6_connect_dim_cache$)
-=tbl	^(installcheck-(p98_shm_vm_uniq_[a-z]+|p98_autottl_rekey|p98_tier_|p98_ttl_drop_acid|scaling_ops_gate|m4_cache_budget|stor_f2_(col_delta_chain|vacuum_horizon)|s55_table_cache|table_f2_|p98_(returning_old|temp_table|temp_shm|truncate|wide_table|pg18_edge_matrix)|v6_(partitions_attach_detach|virtual_generated)|roles_|ddl_hooks|sql_search_path_pg_temp|introspection_shapes|locks_view|shared_memory|shm_ledger|shm_manifest|settings_removed|tbl_|table_f2_|segfmt_mixed|virtual_generated)|tap-shell-(p98_shm_vm_uniq_[a-z]+|p98_tier_(cache|corrupt|s3_faults|static|ttl_publication)|p98_(autottl|ttl_drop)_vm|automerge_efficiency|automerge_oltp_isolation|churn_dml_amp|aux_reads_scale|p98_(returning_old_concurrent|encoding|multitenant_scale)|tbl_chain_cache|tbl_lock_2pc_crash|tbl_lock_mxid|tbl_ttl_tier_time_delta|prod_viability_gate|old_lib_refusal|tbl_partition_publication|f2_crash_orphans|f2_fsm_orphan_sweep|f2_standby|table_rmgr_id|tbl_twin_fuzz(_[b-h])?|tbl_defrag_scans_durable|tbl_first_writer_crash|tbl_load_workers|tbl_lock_maint|tbl_maint_update_race|tbl_tomb_spill|tbl_tomb_diff|tbl_tomb_fault|tbl_tomb_hold|tbl_par_filter|copy_first_statement|tbl_load_ring|tbl_load_stream|tbl_options_cluster|tbl_key_order_cluster|tbl_vm(_standby|_wal|_delta_standby)?|tbl_delta_map_cache|tbl_f2_vacuum_chunk|tbl_vacuum_unsettled_deleter)|tap-0[0-9]+_(tbl|truncate|space)|tap-(02[45]_format2_|03[12]_|09[678]_)|difftest-col|difftest-fuzz-tbl|tap-shell-(tbl_lock_overflow(_shortage)?|vm_lease_exhaustion|tbl_assert_contract|tbl_parallel_add_pk|tbl_pdel_probe|tbl_pending_dead_update|tbl_col_delta_stale_part|tbl_f2_am_cdc|churn_select_impact)$)
+=bm25	^(installcheck-(bm25/.*|maint/.*|quarantine/.*|compat/upgrade/.*|core/roles/.*|agg/hybrid/multimodal_facet|agg/hybrid/tidbridge_bm25|col/segfmt_mixed|core/ddl_hooks|core/errors_hints|core/extlock_errors|core/introspection_shapes|core/limits_registry|core/locks_view|core/radix_sort|core/range|core/ring_wrap|core/scaling_ops_gate|core/shared_memory|core/shm_ledger|core/shm_manifest|core/tidbridge)|tap-(bm25/.*|core/.*)|tap-shell-(bm25/.*|compat/.*|fault/.*|maint/.*|quarantine/.*|agg/viability_gate|col/auto_merge/efficiency|col/auto_merge/oltp_isolation|core/extension_lifecycle|core/leak_hooks|core/leakcheck_gate|core/library_loaded_twice|core/replication|core/roles_cluster|mem/budget|table/f2/dml_amp|table/f2/select_impact|table/publication_all_tables|table/replica_mixed)|difftest(-nopos|-mutants(-[123])?|-[12])?$|soak(-gin)?$)
+=col	^(installcheck-(col/.*|quarantine/.*|core/roles/.*|table/v1/.*|agg/scope/in5_parity|agg/scope/pair_edit_live|agg/scope/topn_parity|agg/scope/topn_ties|bm25/facet_counts|compat/format_v1_v2|compat/v1/scan_cache|compat/v1/scan_dict_memory|compat/v1/table_rewrite|compat/v1/tomb_work_mem|compat/v1/track_reindex|compat/v1/vacuum_cap|core/cache_budget|core/cache_discard|core/cache_discard_all|core/cache_eviction_safety|core/ddl_hooks|core/extlock_errors|core/introspection_shapes|core/locks_view|core/ring_wrap|core/scaling_ops_gate|core/settings_removed|core/shared_memory|core/shm_ledger|core/shm_manifest|core/shm_vm_uniq_unique|core/shm_vm_uniq_vm|table/f2/autottl_rekey)|tap-(col/f2/minimal_wal|col/f2/wal)|tap-shell-(col/.*|fault/.*|mem/.*|quarantine/.*|agg/leaf_stats_shared|agg/viability_gate|compat/matrix|compat/upgrade/basic|compat/upgrade/standby|core/lock_modes|core/monitor_lock_modes|core/sb_mask_small|core/shm_manifest_faults|core/shm_vm_uniq_lease|core/shm_vm_uniq_manifest|core/shm_vm_uniq_rowlock|maint/bgw_database_lifecycle|maint/bgw_multidb_fairness|maint/lock_order|table/copy_first_statement|table/f2/dml_amp)|tap-(col/space|col/space_cache)|tap-(compat/.*|table/f2/.*|col/f2/logical_toast_identity|col/f2/minimal_wal|col/f2/wal)|soak-col$|difftest-(col|scope)|tap-(col/f2/connect_journal)$|tap-shell-(col/f2/scope_anykey|col/f2/scope_member_anykey)$)
+=layout	^tap-shell-(core/scaling_slope)$
+=agg	^(installcheck-(agg/.*|col/agg/.*|col/preagg/.*|col/topn/.*|core/par/.*|core/roles/.*|col/f2/agg_live|col/f2/cache_lifecycle|col/f2/parallel_conc|col/f2/partitioned_agg_v6|col/f2/preagg_table_par|col/f2/scope_live|col/proj/analytics_parity|col/search|col/tags|core/ddl_hooks|core/introspection_shapes|core/locks_view|core/ring_wrap|core/scaling_ops_gate|core/shared_memory|core/shm_ledger|core/shm_manifest)|tap-shell-(agg/.*|mem/.*|bm25/vacuum/agg_snapshot|bm25/vacuum/agg_stress|col/interrupt_dict_filter|col/topn_vacuum_scan|core/fresh_backend|core/leak_path_vets|core/relcache_slots|core/sb_mask_small)|tap-(agg/lookup_shared|agg/lookup_shared_concurrent)|tap-(agg/dimmap)|difftest-(col|fuzz|txn(-shapes)?|bm25|scope)|shapes-(matrix|surface)|plan-gate|plan-budget|exec-budget|corpus|tap-(agg/v6/.*)$)
+=tbl	^(installcheck-(table/.*|core/roles/.*|col/f2/delta_chain|col/f2/tier_orphans|col/f2/tier_policy_cache|col/f2/tier_privileges|col/f2/tier_wide|col/f2/vacuum_horizon|col/f2/wide_table|col/segfmt_mixed|core/cache_budget|core/ddl_hooks|core/introspection_shapes|core/locks_view|core/scaling_ops_gate|core/settings_removed|core/shared_memory|core/shm_ledger|core/shm_manifest|core/shm_vm_uniq_unique|core/shm_vm_uniq_vm|core/sql_search_path_pg_temp)|tap-shell-(table/.*|agg/viability_gate|col/auto_merge/efficiency|col/auto_merge/oltp_isolation|col/f2/aux_reads_scale|col/f2/crash_orphans|col/f2/encoding|col/f2/fsm_orphan_sweep|col/f2/standby|col/f2/tier_cache|col/f2/tier_corrupt|col/f2/tier_s3_faults|col/f2/tier_static|col/f2/tier_ttl_publication|compat/old_lib_refusal|core/shm_vm_uniq_lease|core/shm_vm_uniq_manifest|core/shm_vm_uniq_rowlock)|tap-(table/.*|col/space|col/space_cache)|tap-(compat/.*|table/f2/.*|col/f2/logical_toast_identity|col/f2/minimal_wal|col/f2/wal)|difftest-col|difftest-fuzz-tbl|tap-shell-(table/assert_contract|table/col_delta_stale_part|table/f2/am_cdc|table/f2/select_impact|table/lock_overflow|table/lock_overflow_shortage|table/parallel_add_pk|table/pdel_probe|table/pending_dead_update|table/vm_lease_exhaustion)$)
 =dec	^(fuzz|hardened|tools-build)$
-=any	^(regress-batch|release-library-regress(-[12])?|installcheck-(m4_cache_budget|v6_guc_surface|leak_planted|json_build_object|install_preload_hint|ext_recreate|p98_sql_security|surface_null_args)|tap-032_v6_dump_restore_tablespace|tap-shell-(ext_config_dump|p98_ext_lifecycle|zero_preload_workers|install_notice|ext_update_session)|coverage|coverage-pct|reference-live|options-live|isa-baseline|format-isolation|isolation(-[0-9]+|-emulated)?|static|fast-gate-(release|assert))$
+=any	^(regress-batch|release-library-regress(-[12])?|installcheck-(core/cache_budget|core/ext_recreate|core/install_preload_hint|core/json_build_object|core/leak_planted|core/sql_security|core/surface_null_args|core/v6_guc_surface)|tap-(compat/v6_dump_restore_tablespace)|tap-shell-(col/f2/zero_preload_workers|core/ext_config_dump|core/ext_lifecycle|core/ext_update_session|core/install_notice)|coverage|coverage-pct|reference-live|options-live|isa-baseline|format-isolation|isolation(-[0-9]+|-emulated)?|static|fast-gate-(release|assert))$
 # the format compatibility tiers: Format 1 beside the default Format 2.0, and the upgrade from a v5 cluster (scripts/ci/jobs.sh, format_checks)
-=compat	^(installcheck-(compat_v1_|upgrade_path|col_removed_options|format_v1_v2_compat|format2_index_format_compat|v1_store_ops|v1_store_ops_ext|v1_store_ops_par_zone|v1_unified_datum_fold|v1_unified_scan|v1_unified_preagg_cube|v1_unified_gorder_cursor|v1_unified_jsonb_typeof|v1_unified_rows_scankey|v1_unified_text_rows|v1_unified_star_keys|v1_unified_topn_rows)|tap-(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)|tap-031_v51_full_compat|tap-shell-(pg_upgrade(_3[123])?|upgrade_compat(_standby)?|upgrade_path|upgrade_check|v1_slope|col_(dv|track_drop|removed_options|partition_adopt)_upgrade)|format-isolation|compat-f1-fast-gate)$
+=compat	^(installcheck-(compat/.*|col/f2/index_format_compat|col/removed_options)|tap-(compat/.*|col/f2/minimal_wal|col/f2/wal)|tap-(compat/v51_full)|tap-shell-(compat/pg_upgrade/.*|compat/upgrade/.*|col/dv/upgrade|col/partition/adopt_upgrade|col/removed_options_upgrade|col/track/drop_upgrade|compat/v1_slope)|format-isolation|compat-f1-fast-gate)$
 # the search the other areas call
-=search	^installcheck-(col_search|tbl_bm25|aggstub_)
+=search	^installcheck-(agg/stub/.*|col/search|table/bm25|table/bm25_point_fetch)
 # the lanes of scripts/plangate.sh, each at 30000 and 250000 rows
 =plan_gate	^plan-gate(-4t|-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$
 # what the fast tier of a pull request runs besides the tests of the area: the proof of the coverage table and the emulated isolation tests (a few seconds each)
@@ -36,37 +36,37 @@
 ^(Makefile|BUILD_ID|\.gitattributes|scripts/(build-id|code-id)\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
 ^(scripts/(ci/|(ci|ci-build|pgtest|ccache-env|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib\.bash|lib_|lib/(common|sql|conc|col|compat|docker|names|twohop|upgrade)\.bash|lib/SiftTest\.pm|SiftTest)|\.github/workflows/ci\.yml)	.|{perf}
-^test/fixtures/	^tap-shell-compat_2x|{ci}
+^test/fixtures/	^tap-shell-(compat/2x_fixture)|{ci}
 ^(test/unit/|scripts/unit-scaling\.sh)	-
 ^test/bench_on/	^(fuzz|hardened|tools-build)$|{ci}
 ^test/common/	^(fuzz|hardened|tools-build)$|{ci}
-^test/(agg_(helpers|having_helpers|preagg_helpers|preagg_units|check_query|check_pushed|probe_helpers|rows_helpers|same_helpers|cte_inline_fixture)|scope_multiset_helpers)\.sql$	^installcheck-(agg_|col_|tbl_agg)|{ci}
-^test/sift_plan\.sql$	^installcheck-(count_scan|filter_pushdown|rank_)|{ci}
-^test/roles_helpers\.sql$	^installcheck-roles_|{ci}
-^test/ext_recreate_fixture\.sql$	^installcheck-ext_recreate$|{ci}
+^(test/common/sql/agg/.*|test/common/sql/col/scope/multiset\.sql)$	^installcheck-(agg/.*|col/.*|table/agg/.*)|{ci}
+^(test/common/sql/bm25/.*)$	^installcheck-(bm25/filter/.*|bm25/rank/.*|bm25/count_scan)|{ci}
+^(test/common/sql/core/roles\.sql)$	^installcheck-(core/roles/.*)|{ci}
+^(test/common/sql/core/ext_recreate\.sql)$	^installcheck-(core/ext_recreate)$|{ci}
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$|{ci}
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$|{ci}
 ^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
-^test/t/tbl_vm_iso/	^tap-shell-tbl_vm$|{ci}
-^(scripts/(mem-slope(-legacy)?\.py|mem-growth\.allow|memory-static\.allow)|test/mem-slope(-legacy)?\.tsv)$	^tap-shell-mem_slope(-[0-9]+|_order|_exact|_legacy)?$|{ci}
-^scripts/prod-viability-gate\.py$	^tap-shell-prod_viability_gate$|{ci}
-^test/t/aux_reads_scale\.py$	^tap-shell-aux_reads_scale$|{ci}
-^test/t/p98_s3_mock\.py$	^tap-shell-p98_tier_s3_faults$|{ci}
+^(test/t/table/vm_iso/.*)$	^tap-shell-(table/vm)$|{ci}
+^(scripts/(mem-slope(-legacy)?\.py|mem-growth\.allow|memory-static\.allow)|test/mem-slope(-legacy)?\.tsv)$|^(test/mem/slope-legacy\.tsv|test/mem/slope\.tsv)$	^tap-shell-(mem/.*)$|{ci}
+^scripts/prod-viability-gate\.py$	^tap-shell-(agg/viability_gate)$|{ci}
+^(test/t/col/f2/aux_reads_scale\.py)$	^tap-shell-(col/f2/aux_reads_scale)$|{ci}
+^(test/t/table/f2/object_store_mock\.py)$	^tap-shell-(col/f2/tier_s3_faults)$|{ci}
 ^test/col/	^difftest-col|{plan_gate}|^coverage$|{ci}
 ^test/matrix/	^coverage-pct$|{ci}
 ^test/plan/	{plan_gate}|{ci}
 ^test/diff/	^difftest|{ci}
-^test/fuzz/[^dtbcs]	^(fuzz|hardened|tools-build)$|{ci}
-^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl|-having)?(-[12])?$|{ci}
-^test/fuzz/tbl_twin_fuzz	^tap-shell-tbl_twin_fuzz(_[b-h])?$|{ci}
-^test/fuzz/col_twin_fuzz	^tap-shell-col_twin_fuzz(_b)?$|{ci}
-^test/fuzz/txn_fuzz	^difftest-(txn(-shapes)?|scope(-[12])?)$|{ci}
-^test/fuzz/col_scope_fuzz|^test/scope_helpers\.sql$	^tap-shell-col_scope_fuzz$|{ci}
-^test/col_scope_textmember_states\.sql$	^installcheck-col_scope_textmember(_collide)?$|{ci}
-^test/col_scope_texttwohop_states\.sql$	^installcheck-col_scope_texttwohop(_collide)?$|{ci}
-^test/fuzz/col_scope_textkey_fuzz	^tap-shell-col_scope_textkey_fuzz$|{ci}
-^test/fuzz/scope_oracle	^tap-shell-col_scope_oracle$|{ci}
-^test/fuzz/bm25_fuzz	^difftest-bm25$|{ci}
+^test/fuzz/[^dtbcs]|^(test/fuzz/c/.*|test/fuzz/schema\.sql)$	^(fuzz|hardened|tools-build)$|{ci}
+^(test/fuzz/diff/.*)$	^difftest-fuzz(-tbl|-having)?(-[12])?$|{ci}
+^(test/fuzz/tbl_twin\.py)$	^tap-shell-(table/twin_fuzz)$|{ci}
+^(test/fuzz/col_twin\.py)$	^tap-shell-(col/twin_fuzz)$|{ci}
+^(test/fuzz/txn/.*)$	^difftest-(txn(-shapes)?|scope(-[12])?)$|{ci}
+^(test/common/sql/col/scope/base\.sql|test/fuzz/col_scope\.py)$	^tap-shell-(col/scope/fuzz)$|{ci}
+^(test/common/sql/col/scope/textmember_states\.sql)$	^installcheck-(col/scope/text/member|col/scope/text/member_collide)$|{ci}
+^(test/common/sql/col/scope/texttwohop_states\.sql)$	^installcheck-(col/scope/text/twohop|col/scope/text/twohop_collide)$|{ci}
+^(test/fuzz/col_scope_textkey\.py)$	^tap-shell-(col/scope/text_key_fuzz)$|{ci}
+^test/fuzz/scope_oracle	^tap-shell-(col/scope/oracle)$|{ci}
+^(test/fuzz/bm25\.py)$	^difftest-bm25$|{ci}
 ^(test/fuzz/(shapes_matrix|surface_sweep)|scripts/surface\.allow)	^shapes-(matrix|surface)$|{ci}
 ^test/isolation/	^isolation|{ci}
 # the fast tier: the tests of the area of a source file (the stack above it, and the other versions, run on the push to main)
@@ -81,7 +81,7 @@
 ^src/bm25/	{bm25}|{dec}|{any}|{search}|gh:sqlite|gh:mariadb|gh:replication
 ^src/col/	{col}|{agg}|{tbl}|{dec}|{any}|gh:sqlite|gh:mariadb|gh:replication|gh:f1
 # the column format constants (the minor a build writes): the upgrade tests state the formats they expect
-^src/col/col\.h$	^tap-shell-(extension_lifecycle|upgrade_check)$
+^src/col/col\.h$	^tap-shell-(compat/upgrade/check|core/extension_lifecycle)$
 ^src/agg/	{agg}|{any}|gh:replication|gh:f1
 ^src/agg/	{col}|{tbl}|{ci}
 ^src/table/	{tbl}|{any}|gh:replication|gh:f1
@@ -112,24 +112,24 @@
 ^Formula/	gh:macos|{perf}
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow|since)$	-
-^(scripts/fresh-psql\.py|test/fresh/|test/t/fresh_backend\.sh)	tap-shell-fresh_backend
+^(scripts/fresh-psql\.py|test/fresh/|test/t/core/fresh_backend\.sh)|^(test/t/core/fresh_backend\.sh)$	tap-shell-(core/fresh_backend)
 ^scripts/(pgdg-repo|apt-install|check-codec-probe|formula-sha|lint-cache|check-neutral|check-pipefail-grep|check-release-sync|check-workflow-needs\.py|check-aarch64-baseline|check-testing-regress|check-test-settings|test-settings-shipped\.allow|check-errors|check-classified|check-fuzz-core|check-alignment|check-paging|check-locks|locks\.tsv|check-capacity|capacity\.allow|check-null|check-sites\.py|sites\.verified|null\.allow|check-focus|errctx\.tsv|check-guards|check-approx|check-catalog-writes|check-extlock|check-dir-snapshot|check-damage|check-format-isolation|check-no-ifunc|isa-scan|check-ring-counter|check-memory|check-mem-growth|mem-growth\.allow|check-pg-includes|check-undefined|check-alternates|probe-alternates|alternates\.allow|check-quick-skip|quick-skip\.allow|check-worker-tests|worker-tests\.allow|check-bench-fresh|check-slugs|check-scratch|check-hosted\.py|scratch\.allow|pg-includes\.tsv|check-readme-tables|gen-docs|gen-refusals|check-file-size|check-docs-steps|sql-parts|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|valgrind-sift\.supp|(valgrind-leaks\.(allow|tests)|leaks-asan\.sh)|mem-report|massif-slope|check-mem-growth|multibuild|build-bench|make-compat-fixture|merge-bytes|check-kernels|kernels\.allow|bench-cases\.allow|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|gen-messages|expected-messages-check\.py|genlib|options-released|limits\.allow|refusals\.allow)	-
-^(scripts/mem-slope(-legacy)?\.py|test/mem-slope(-legacy)?\.tsv)	tap-shell-mem_slope
-^scripts/rss-peak\.py$	^tap-shell-f2_stream_budget$
-^test/t/(crash_scenarios\.bash|lib/crash_scenarios\.bash|fault_matrix\.tsv)$	^tap-shell-(col_crash_matrix|fault_matrix(-[0-9]+|-smoke)?|fault_matrix_standby(-smoke)?|fault_matrix_workers)$|{ci}
-^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
-^scripts/old-lib-patches/	^tap-shell-old_lib_refusal$
-^(bench/scaling/|scripts/scaling-gate\.sh$)	^tap-shell-scaling_slope$
+^(scripts/mem-slope(-legacy)?\.py|test/mem-slope(-legacy)?\.tsv)|^(test/mem/slope-legacy\.tsv|test/mem/slope\.tsv)$	tap-shell-(mem/.*)
+^scripts/rss-peak\.py$	^tap-shell-(col/f2/stream_budget)$
+^test/t/(crash_scenarios\.bash|lib/crash_scenarios\.bash|fault_matrix\.tsv)$|^(test/t/fault/matrix\.tsv)$	^tap-shell-(fault/.*|col/crash_matrix)$|{ci}
+^scripts/old-lib-check\.sh$	^tap-shell-(compat/old_lib_refusal)$
+^scripts/old-lib-patches/	^tap-shell-(compat/old_lib_refusal)$
+^(bench/scaling/|scripts/scaling-gate\.sh$)	^tap-shell-(core/scaling_slope)$
 # the quick tier runs the scaling gate only for a change of what the geometry of a unit or a page depends on (the files that name SIFT_SB_SHIFT, the format and page headers: scripts/check-scaling-triggers.sh keeps this row whole); every col or agg change reaches it in the nightly
 ^(Makefile$|src/core/(sift|page|limits)\.h$|src/col/api/(format|meta)\.h$|src/(bm25/(count|cscan_exec|iter|planner_path|prefix|rank_search|writer)|col/v1/(build/(run|btree_par)|build_par|seg/(points|verify)|test/query))\.c$)	{layout}
-^src/core/visibility\.c$	^tap-shell-sb_mask_small$
-^scripts/(upgrade[-_]check\.sh|upgrade_check_(head|tail)\.sql)$	^tap-shell-upgrade_check$
+^src/core/visibility\.c$	^tap-shell-(core/sb_mask_small)$
+^scripts/(upgrade[-_]check\.sh|upgrade_check_(head|tail)\.sql)$	^tap-shell-(compat/upgrade/check)$
 ^scripts/(build-bench\.sql|lint\.sh|wt-tmpfs\.sh|check-tap-sleeps\.sh|tap-sleeps\.allow|check-test-budget\.sh|test-budget\.allow|check-versions\.sh|bench-tests\.sh|test-ci-claim\.sh|test-affected-untracked\.sh|test-affected-wide\.sh|test-ci-stop\.sh|test-build-id\.sh|test-ci-build-fail\.sh|test-ci-ready\.sh|test-scaling-gate\.sh|check-pg-bare\.sh|check-tap-timeouts\.sh|pg-bare\.allow|check-scaling-triggers\.sh|check-format-literals\.sh|check-compat-calls\.sh|check-relcache-slots\.sh|check-polling\.sh|polling\.allow|check-leak-hooks\.sh|check-raw-alloc\.sh|check-arg-order\.py|check-upper-paths\.sh|leak-hooks\.allow|check-package-text\.sh|check-expected-oracle\.py|expected-oracle\.allow|check-test-hygiene\.py|test-fast-gate-select\.py|check-codec-bytes\.py|codec-bytes\.allow|test-gen-docs-skip\.sh|test-gen-docs-public\.sh|format-literals\.tsv)	-
 ^(scripts/(check-complexity\.sh|complexity\.allow|check-scaling-ops\.sh|git-hooks/pre-commit)|test/scaling/)	-
 ^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
 ^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb
 # the focus table and its generator: read by `scripts/ci.sh affected --focus` only (a local shortcut; CI runs the jobs of the map above)
-^scripts/(focus(-gen\.sh|-merge\.py|-pins\.tsv|/[A-Za-z0-9_]+\.tsv)|moved-sources\.tsv)$	-
+^scripts/(focus(-gen\.sh|-merge\.py|-pins\.tsv|/[A-Za-z0-9_]+\.tsv)|moved-sources\.tsv)$|^(scripts/focus/agg/.*|scripts/focus/bm25/.*|scripts/focus/col/.*|scripts/focus/compat/.*|scripts/focus/core/.*|scripts/focus/maint/.*|scripts/focus/quarantine/.*|scripts/focus/table/.*)$	-
 # the landing script: run by people, by no job
 ^scripts/land(\.sh|-selftest\.sh|-union\.py)$	-
 
@@ -170,15 +170,15 @@
 ^(scripts/(apply-rename\.(py|sh)|private-overlay\.sh)|test/README\.md)$	-
 ^scripts/(budget\.sh|budgets\.tsv)$	.
 ^scripts/(check-budgets|stability)\.sh$|^scripts/stability\.tsv$	-
-^(scripts/mem-slope(-legacy)?\.py|test/mem-slope(-legacy)?\.tsv|test/idle-series\.tsv|scripts/mem-growth\.allow)$	^tap-shell-(mem_slope|mem_slope_legacy|mem_idle_series)$
+^(scripts/mem-slope(-legacy)?\.py|test/mem-slope(-legacy)?\.tsv|test/idle-series\.tsv|scripts/mem-growth\.allow)$|^(test/mem/idle-series\.tsv|test/mem/slope-legacy\.tsv|test/mem/slope\.tsv)$	^tap-shell-(mem/idle_series|mem/slope|mem/slope_legacy)$
 ^scripts/check-mem-growth\.sh$	-
 ^scripts/(audit-gucs\.(pl|sh)|guc-disposition\.psv|check-retired\.sh)$	-
 ^(scripts/build-v510-fixture\.sh|test/t/SiftCompat\.pm|test/t/lib/SiftCompat\.pm)$	{compat}|gh:f1
-^test/proj_helpers\.sql$	^installcheck-proj_|{ci}
+^(test/common/sql/col/proj/.*)$	^installcheck-(col/proj/analytics_parity|col/proj/live_churn|col/proj/tail_reclaim)|{ci}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	fast:{compat}|{cheap}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	{compat}|{any}|gh:f1
 ^scripts/(check-format-isolation\.sh|agg-isolation-v1\.allow)$	^format-isolation$
-^(test/sql/(compat_v1_|format_v1_v2_compat|format2_index_format_compat|v1_store_ops|v1_store_ops_ext|v1_store_ops_par_zone|v1_unified_datum_fold|v1_unified_scan|v1_unified_preagg_cube|v1_unified_gorder_cursor|v1_unified_jsonb_typeof|v1_unified_rows_scankey|v1_unified_text_rows|v1_unified_star_keys|v1_unified_topn_rows)|test/mem-slope-v1\.tsv|test/t/(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)\.pl|test/t/v1_slope\.sh)	{compat}|gh:f1
+^(test/mem/slope-v1\.tsv|test/sql/col/f2/index_format_compat\.sql|test/sql/compat/format_v1_v2\.sql|test/sql/compat/v1/scan_cache\.sql|test/sql/compat/v1/scan_dict_memory\.sql|test/sql/compat/v1/store_ops\.sql|test/sql/compat/v1/store_ops_ext\.sql|test/sql/compat/v1/store_ops_par_zone\.sql|test/sql/compat/v1/table_rewrite\.sql|test/sql/compat/v1/tomb_work_mem\.sql|test/sql/compat/v1/track_reindex\.sql|test/sql/compat/v1/unified_datum_fold\.sql|test/sql/compat/v1/unified_gorder_cursor\.sql|test/sql/compat/v1/unified_jsonb_typeof\.sql|test/sql/compat/v1/unified_preagg_cube\.sql|test/sql/compat/v1/unified_rows_scankey\.sql|test/sql/compat/v1/unified_scan\.sql|test/sql/compat/v1/unified_star_keys\.sql|test/sql/compat/v1/unified_text_rows\.sql|test/sql/compat/v1/unified_topn_rows\.sql|test/sql/compat/v1/vacuum_cap\.sql|test/t/col/f2/minimal_wal\.pl|test/t/col/f2/wal\.pl|test/t/compat/v1_slope\.sh|test/t/compat/v51_full\.pl|test/t/compat/v6_dump_restore_tablespace\.pl)$	{compat}|gh:f1
 # the Alpine (musl) build has no GNU IFUNC: `.` (the build, src/core/) runs it; these are what only it reads
 ^(scripts/(check-no-ifunc|musl-check)\.sh|packaging/docker/)	gh:musl
 ^scripts/docker-smoke\.sh$	-

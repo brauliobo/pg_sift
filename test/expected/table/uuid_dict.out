@@ -8,7 +8,7 @@ SET sift.agg_force = on;
 CREATE TABLE ud (id int, g int, u uuid) USING sift_table;
 INSERT INTO ud SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE md5((i % 3000)::text)::uuid END FROM generate_series(1, 30000) i;
 VACUUM (FREEZE, ANALYZE) ud;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 \set ECHO none
 CREATE FUNCTION top_stored(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;

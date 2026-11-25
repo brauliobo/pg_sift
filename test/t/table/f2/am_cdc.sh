@@ -3,7 +3,7 @@
 # A sift_table (Format 2.0) at the edges of the table access method: ALTER TABLE .. SET TABLESPACE copies the file with the staged deletes of the transaction in it (and an UNLOGGED table keeps its init
 # fork), a published table writes a change record that carries the value of a TOAST column of another table, VACUUM gives relminmxid
 # the oldest MultiXactId a row lock still holds, and a VACUUM that has a cost delay pays it (pg_stat_progress_vacuum.delay_time).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 11
 node_init am 0 "wal_level = logical

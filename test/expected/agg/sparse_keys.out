@@ -27,7 +27,7 @@ NOTICE:  sift_col index "sk_many_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sk_many_col');
 VACUUM (FREEZE, ANALYZE) sk_facts, sk_runs, sk_many;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 \set ECHO none
 SELECT * FROM check_query('SELECT set_id, count(*) AS n, sum(score) AS total, count(DISTINCT kind) AS kinds FROM sk_facts GROUP BY set_id');
  pushed | differences 

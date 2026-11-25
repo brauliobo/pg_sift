@@ -13,7 +13,7 @@ SELECT i, jsonb_build_object('items', jsonb_build_array(jsonb_build_object('cate
 FROM generate_series(1, 5000) i;
 CREATE INDEX docs_col ON docs USING sift_col (id, doc) WITH (paths = 'doc.items[]{category text, score float8}');
 VACUUM (FREEZE, ANALYZE) docs;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
 -- the element 'z' fails the EXISTS, so its score is never read
 SELECT same($q$

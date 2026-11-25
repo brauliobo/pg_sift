@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # tap: pooled
-# A database whose tables, columns and indexes were renamed after the sift_col indexes were built (lib_names.bash), restored from pg_dump: the custom archive serially and in parallel
+# A database whose tables, columns and indexes were renamed after the sift_col indexes were built (lib/names.bash), restored from pg_dump: the custom archive serially and in parallel
 # (four runs) and a plain dump through psql. The options that name a table or a column (connect, scope with its btree and its columns, paths, key_cut, rollup_columns, the definitions of a
 # projection, the columns of a follow) are the source's after every restore, the indexes verify, and the answers with the pushdown are the plain plans' and the source's. The restored
 # database takes writes, and a dump of what the source wrote after the renames goes through the same restore.
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_names.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/names.bash"
 
 plan 13
 node_init nd 56 "autovacuum = off"

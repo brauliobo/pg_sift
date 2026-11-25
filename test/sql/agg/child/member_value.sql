@@ -9,7 +9,7 @@ SELECT i, i % 40, CASE i % 3 WHEN 0 THEN '{"k": 12.50, "j": 1.0}'::jsonb WHEN 1 
 FROM generate_series(1, 3000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool) LANGUAGE plpgsql AS $$
 BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true);

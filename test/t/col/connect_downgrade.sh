@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # A connected pair made by this tree (the parent index keeps a key journal, column format minor 44) and a release that does not know the minor: the release refuses the maintenance of the index (VACUUM, merge, promotion) at the
 # directory, where a segment format it does not know is invalid; this tree reads the pair again. (Appends of tombstones by that release are not refused: see docs/COL-CONNECT.md.)
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 ref=$(git -C "$REPO" tag -l 'v4.[12].*' --sort=-v:refname | head -n 1)
 [[ -n $ref ]] || { echo '1..0 # SKIP no release tag v4.1.* or v4.2.*'; exit 0; }

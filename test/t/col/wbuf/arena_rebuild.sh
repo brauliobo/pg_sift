@@ -3,7 +3,7 @@
 # a standby (it replays the records, nobody fills its arena) and a standby that was promoted have none: the first reader builds the entries from the heap, one reader at a time, and every
 # reader after it takes them from the arena. The rows are a mix of what the heap does to tuples: committed, rolled back, savepoint rolled back, updated (HOT and not), deleted and pruned
 # without the index cleaned, frozen. At each step the answers of the engine are the heap's.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_ARENA_ROWS 6000 2000)
 plan 19

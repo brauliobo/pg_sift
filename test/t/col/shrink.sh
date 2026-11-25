@@ -4,7 +4,7 @@
 # live bytes with the last block live; the file is back near the live bytes in a few VACUUMs: with a standby query holding the table (the blocks it can read are not
 # reused, the file does not grow), with inserts, deletes, merges and scans running, and after a kill when the pages are copied and when the move is published.
 # maintenance_work_mem holds the whole index in one partition: VACUUM leaves a partition of free blocks in a key_cut index in partitions for its rolling rewrite (col_rewrite_roll).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_SH_ROWS 200000 60000)
 ROUNDS=$(knob SIFT_SH_ROUNDS 4 2)

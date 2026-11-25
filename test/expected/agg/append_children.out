@@ -20,7 +20,7 @@ VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dates;
 ANALYZE left_names;
 ANALYZE right_names;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 \set ECHO none
 -- The names of both tables for an entity: the same id may be in both arms, in one, or in none.
 SELECT * FROM check_query($q$

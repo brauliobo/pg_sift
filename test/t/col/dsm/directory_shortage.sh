@@ -3,7 +3,7 @@
 # in /dev/shm, no free segment) as an ordinary error, where no subtransaction can catch it (a parallel operation, a statement that writes, a background worker), and keeps an entry for the name that
 # the failed creation never filled. The room is made sure of first, in sift_dsm_try's own way, so that a shortage is "no table" for every caller: each goes without its table, with one line in the
 # log, and asks again later. sift.test_dsm_fail (in the configuration here, so that no session of the test makes the directory) fails the segment of the directory as a full /dev/shm does.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 9
 
 node_init dq 54 "autovacuum = off

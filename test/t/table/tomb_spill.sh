@@ -4,7 +4,7 @@
 # and an UPDATE of many more rows than the limit holds (256 entries at 16 kB) complete, with the same rows as the heap twin and as the same statements with the log in
 # memory; a new backend reads them back (first look in chunks), through the b-tree too (HOT chains, whose members are spilled as well); VACUUM rewrites the spilled log; a
 # statement that fails or a server that stops in the middle of a spilling statement leaves the table as it was.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_TS_ROWS 20000 6000)
 node_init primary 2 "autovacuum = off

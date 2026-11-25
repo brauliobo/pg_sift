@@ -1,4 +1,4 @@
--- a percentile fraction that is a stable expression (evaluated when the scan starts); a per-group column-valued one stays on the normal plan (o_percentile_array)
+-- a percentile fraction that is a stable expression (evaluated when the scan starts); a per-group column-valued one stays on the normal plan (ordered_set/percentile_array)
 -- shape: whole-percentiles-by-category
 -- expect: agg
 -- key: -

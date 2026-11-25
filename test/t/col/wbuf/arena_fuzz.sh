@@ -3,7 +3,7 @@
 # cleaned or not, FREEZE), promotions of the buffer, arena slots taken away and given back, a server that stops and starts, and a server that is killed, over one table. After every step
 # the answers of the engine are the heap's (the plan of the engine against the native plan of the same table), the index verifies, and once the arena has the rows (no restart since) the
 # heap is not read for them. SIFT_ARENA_SEEDS seeds (default 24, 3 quick) of SIFT_ARENA_STEPS steps (30, 12).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 SEEDS=$(knob SIFT_ARENA_SEEDS 24 3)
 STEPS=$(knob SIFT_ARENA_STEPS 30 12)

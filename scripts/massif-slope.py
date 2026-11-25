@@ -19,7 +19,7 @@ ALLOCATORS = ["palloc", "palloc0", "palloc_extended", "repalloc", "repalloc_huge
               "pnstrdup", "pstrdup", "psprintf", "datumCopy"]
 SIFT_FRAME = re.compile(r"/src/(agg|bm25|col|core|table)/")
 CASES = ["merge", "lookup_join_label", "count_distinct_text", "table_update_all", "scoped_cic_3"]
-EXTRA = {   # a case that is not in test/mem-slope.tsv: name -> (setup, operation); {m} a copy of the table, {n} its rows
+EXTRA = {   # a case that is not in test/mem/slope.tsv: name -> (setup, operation); {m} a copy of the table, {n} its rows
     "scoped_cic_3": ("drop table if exists p{n}; create table p{n} (member bigint not null, tenant int not null);"
                      "insert into p{n} select g, t from generate_series(1, {n}) g, generate_series(1, 3) t;"
                      "create index p{n}_j on p{n} (member, tenant);",

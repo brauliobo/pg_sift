@@ -2,7 +2,7 @@
 # Damage met while other work runs, with the gates of the testing build (advisory locks held by the test, no timing): (a) a background merge of a BM25 index holds its claimed segments while
 # another session meets the damage and quarantines the index: the worker ends without an error, the index stays out of service and the statements that follow are exact; (b) a scan of a
 # sift_col index held right after it opened is ended by statement_timeout (57014) and by lock_timeout (55P03): nothing is recorded and the next statement is planned on the index.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 11
 node_init qc 27 "autovacuum = off

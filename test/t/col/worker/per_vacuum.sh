@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One VACUUM of a session asks for at most one maintenance worker and for no rewrite: the postmaster at debug1 logs every background worker it starts, by name.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 1
 node_init pv 69 "autovacuum = off

@@ -6,7 +6,7 @@
 use strict;
 use warnings FATAL => 'all';
 use FindBin;
-use lib $FindBin::RealBin;
+use lib "$ENV{SIFT_REPO}/test/t/lib";
 use SiftTest;
 use IPC::Run qw(start finish);
 use Time::HiRes qw(usleep);

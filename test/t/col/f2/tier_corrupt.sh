@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A byte of the stream of a tiered part that changes in the store is found by the checksum of the range it is in (data_corrupted, XX001), and the bytes that were fetched are not kept in the local
 # cache: with the byte put back the same table reads as it did.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init tc 5 "autovacuum = off"

@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE tx (id int, g int, s text, k text, c char(6)) USING sift_table;
 INSERT INTO tx SELECT i, i % 7, CASE WHEN i % 13 = 0 THEN NULL ELSE 'seg_' || (i % 40) END, md5((i % 5000)::text), 'c' || (i % 9) FROM generate_series(1, 60000) i;
 VACUUM (FREEZE, ANALYZE) tx;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE tx_q (q text);
 INSERT INTO tx_q VALUES

@@ -2,7 +2,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # A VACUUM that stops on a deleter that is not settled (a snapshot older than the delete is open) rewrites nothing and keeps nothing: the output part it wrote before it found the deleter
 # is given back at once, so the file does not grow with each VACUUM that stops, and the VACUUM that follows the end of the snapshot settles every part and leaves the rows as they were.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 done_testing
 node_init uw 2 "autovacuum = off

@@ -9,8 +9,8 @@
 #            coldiff (col, table)      scripts/coldiff.sh --fast [--table]: DML, abort and VACUUM scenarios against the plain plan
 #   lane 2   surface_sweep             test/fuzz/surface_sweep.py --tier quick: every SQL function with hostile arguments, the roles
 #   lane 3   shapes_matrix             test/fuzz/shapes_matrix.py --tier quick
-#   lane 4   txn_fuzz                  test/fuzz/txn_fuzz.py --shapes: two sessions, savepoints, cursors, prepared statements
-#            tbl_twin_fuzz             test/fuzz/tbl_twin_fuzz.py: a sift_table against its heap twin
+#   lane 4   txn_fuzz                  test/fuzz/txn/cli.py --shapes: two sessions, savepoints, cursors, prepared statements
+#            tbl_twin_fuzz             test/fuzz/tbl_twin.py: a sift_table against its heap twin
 #            bm25_fuzz, diff_fuzz      only for an area or a harness that names them
 #   lane 5   regress                   scripts/pgtest.sh regress TEST...: the test/sql files of the change, on Format 1 (--include-sql, or a test/sql file edited)
 #   every lane ends with the leak gate of its cluster (scripts/leakcheck.sh, run by pgtest.sh stop)
@@ -161,10 +161,10 @@ harness_path() {
 			axis coldiff-table corpus '|' ALL; axis coldiff-table scenarios , dml,abort,vacuum ;;
 		test/fuzz/shapes_matrix*) axis shapes_matrix only '|' ALL; axis shapes_matrix facts , ALL ;;
 		test/fuzz/surface_sweep*) axis surface_sweep only '|' ALL ;;
-		test/fuzz/txn_fuzz*) want txn_fuzz ;;
-		test/fuzz/tbl_twin_fuzz*|test/t/tbl_twin_fuzz*) want tbl_twin_fuzz ;;
-		test/fuzz/diff_fuzz*) want diff_fuzz ;;
-		test/fuzz/bm25_fuzz*) want bm25_fuzz ;;
+		test/fuzz/txn*) want txn_fuzz ;;
+		test/fuzz/tbl_twin*|test/t/table/twin_fuzz*) want tbl_twin_fuzz ;;
+		test/fuzz/diff*) want diff_fuzz ;;
+		test/fuzz/bm25*) want bm25_fuzz ;;
 		*) return 1 ;;
 	esac
 }
@@ -199,7 +199,7 @@ route() {
 	gather_paths
 	for p in "${PATHS[@]}"; do
 		case $p in
-			test/sql/*.sql|test/expected/*.out) n=${p##*/}; n=${n%.*}
+			test/sql/*.sql|test/expected/*.out) n=${p#test/*/}; n=${n%.*}
 				[[ -f $REPO/test/sql/$n.sql && -f $REPO/test/expected/$n.out && " ${SQL_EDITED[*]-} " != *" $n "* ]] && SQL_EDITED+=("$n"); PATH_AREAS[$p]=test/sql ;;
 			*) if harness_path "$p"; then PATH_AREAS[$p]=harness; else rest+=("$p"); fi ;;
 		esac
@@ -275,14 +275,14 @@ build_plan() {
 		[[ $facts == ALL || ${#kept[@]} -gt 0 ]] || S_SKIP[-1]="shapes_matrix.py has no fact $facts yet"
 	fi
 	if [[ -n ${DEM[txn_fuzz]-} ]]; then
-		add_step txn_fuzz 4 test/fuzz/txn_fuzz.py - --shapes --seeds "$seeds" --stop-after 1
-		! supports --table test/fuzz/txn_fuzz.py || add_step txn_fuzz-table 4 test/fuzz/txn_fuzz.py - --shapes --seeds "$seeds" --stop-after 1 --table
+		add_step txn_fuzz 4 test/fuzz/txn/cli.py - --shapes --seeds "$seeds" --stop-after 1
+		! supports --table test/fuzz/txn/cli.py || add_step txn_fuzz-table 4 test/fuzz/txn/cli.py - --shapes --seeds "$seeds" --stop-after 1 --table
 	fi
-	[[ -z ${DEM[tbl_twin_fuzz]-} ]] || add_step tbl_twin_fuzz 4 test/fuzz/tbl_twin_fuzz.py - --seeds "$seeds" --seconds "$secs" $(supports --ddl test/fuzz/tbl_twin_fuzz.py && echo --ddl)
-	[[ -z ${DEM[bm25_fuzz]-} ]] || add_step bm25_fuzz 4 test/fuzz/bm25_fuzz.py - --seeds "$seeds" --queries 20 --stop-after 1
+	[[ -z ${DEM[tbl_twin_fuzz]-} ]] || add_step tbl_twin_fuzz 4 test/fuzz/tbl_twin.py - --seeds "$seeds" --seconds "$secs" $(supports --ddl test/fuzz/tbl_twin.py && echo --ddl)
+	[[ -z ${DEM[bm25_fuzz]-} ]] || add_step bm25_fuzz 4 test/fuzz/bm25.py - --seeds "$seeds" --queries 20 --stop-after 1
 	if [[ -n ${DEM[diff_fuzz]-} ]]; then
-		add_step diff_fuzz 4 test/fuzz/diff_fuzz.py - --seeds "$seeds" --queries 40 --rows 3000 --leader-on --stop-after 1
-		add_step diff_fuzz-table 4 test/fuzz/diff_fuzz.py - --seeds "$seeds" --queries 40 --rows 3000 --leader-on --stop-after 1 --table
+		add_step diff_fuzz 4 test/fuzz/diff/cli.py - --seeds "$seeds" --queries 40 --rows 3000 --leader-on --stop-after 1
+		add_step diff_fuzz-table 4 test/fuzz/diff/cli.py - --seeds "$seeds" --queries 40 --rows 3000 --leader-on --stop-after 1 --table
 	fi
 	if (( ${#SQL_TESTS[@]} )); then
 		add_step regress 5 scripts/pgtest.sh - regress "${SQL_TESTS[@]}"

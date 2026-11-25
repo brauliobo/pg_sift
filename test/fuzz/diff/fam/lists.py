@@ -1,8 +1,8 @@
 # Families of entity and list reports: pages, transaction mixes, trailing sort keys, two levels, same-table lookups and points.
 # Each family is a gen(r, ctx) and a render(parts).
 
-from .columns import EVENTS, aggs, keys, preds
-from .fam_basic import grouped
+from ..columns import EVENTS, aggs, keys, preds
+from .basic import grouped
 
 # ---------- a report over one entity or a few: a CTE of their ids as a literal, a lookup table filtered by a column, an unnest of the metrics, grouping sets ----------
 def gen_oneentity(r, ctx):

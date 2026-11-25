@@ -2,7 +2,7 @@
 # pg_repack of a heap table with a sift_col and a sift (BM25) index, with writers running: the copy is built with the index definitions, the log of the
 # writers is applied to it, the swap changes every ctid, and the rebuilt indexes answer as the heap does. The sift_table that pg_repack would destroy is refused.
 # Skipped where the pg_repack binary and extension are not installed (postgresql-NN-repack).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 24
 command -v pg_repack >/dev/null || { skip 24 "pg_repack is not installed"; finish; }

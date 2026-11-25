@@ -3,7 +3,7 @@
 # The delete of the version an UPDATE of a sift_table replaced is two records of the pending deletes of its partition: the address of the old version with a flag that says it was an UPDATE, and the
 # address of the new one with the flag of a successor. The set of addresses a snapshot sees deleted (the one a reader of the partition matches rows with) holds the address of each replaced version
 # and nothing else: no flag in an address, no address of a successor. The updated column is indexed: an UPDATE of a column no index holds is a column delta that keeps the address and replaces nothing.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 [[ -n ${SIFT_TESTING:-} ]] || { skip 4 "needs the pending deletes of the testing flavour"; finish; }

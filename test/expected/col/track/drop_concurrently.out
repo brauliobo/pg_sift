@@ -1,6 +1,6 @@
 -- The index depends on its two track_changes triggers (they do not depend on it), so DROP INDEX CONCURRENTLY has nothing to delete first and finds no transaction id; the transaction
 -- that deletes the index removes the triggers before it commits (inside that transaction they are still there: the state shown after a DROP INDEX in a block). Every way an index goes leaves no trigger behind and no trigger that fires into a missing index, a rollback leaves
--- them, and the writes of the table go on after each. The sessions that fail while a writer holds the table, and the writers beside a drop, are in test/t/col_track_drop_concurrently.sh.
+-- them, and the writes of the table go on after each. The sessions that fail while a writer holds the table, and the writers beside a drop, are in test/t/col/track/drop_concurrently.sh.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;

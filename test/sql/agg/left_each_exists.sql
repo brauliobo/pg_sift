@@ -8,7 +8,7 @@ SELECT i, i % 40, jsonb_build_object('k', i % 7), jsonb_build_object('a', i % 9,
 FROM generate_series(1, 4000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics, extra) WITH (paths = 'metrics.* float8, extra.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
 SELECT same($q$
  SELECT f.dim_a_id % 3 AS g, count(*) AS n, sum(CAST(r.value AS float)) AS total

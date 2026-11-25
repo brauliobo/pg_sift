@@ -5,7 +5,7 @@
 # the heap pages (all-visible) and the liveness of the unit. Stored units, a unit that was already dirty,
 # segments that a merge replaced before the VACUUM, the write buffer, and the lane next to stored units. The scan (sift._test_col_tids,
 # flag 4) waits for an advisory lock after it opens, which the test holds until the statements are done: no timing involved.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 13
 node_init vs 14 "autovacuum = off"

@@ -3,7 +3,7 @@
 # in the transaction; a VACUUM or a maintenance step that replaces the part of a staged row gives the flush of the stage a part to look the row up in, and that lookup must not flush the
 # stage it is flushing (it once did, to the end of the stack: the server crashed within seconds). No statement fails, the server does not restart, nothing is quarantined, the table checks,
 # and the aggregates answer what the rows of a scan do.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 SECS=$(knob SIFT_VW_SECS 10 5)

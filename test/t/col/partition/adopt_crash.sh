@@ -3,7 +3,7 @@
 # it) is adopted by one directory update, killed before it takes its locks, after it has written and logged the pages of the new chain and before the record that flips to them,
 # and after the record. After crash recovery the directory is the one before the update or the one after it, never a part of it: no partition or all of them, the segments the same
 # generations, units and bytes as before, every partition within its bounds, the index verifies and the adoption, run again, ends where a clean one does.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 POINTS=(before chain after)
 BASE=("SET sift.test_col_segment_kb = 1024" "SET sift.test_col_partition_kb = 512" "SET max_parallel_maintenance_workers = 0" "SET sift.async_maintenance = off")

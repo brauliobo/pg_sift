@@ -5,10 +5,10 @@
 # with pg_sift built for that major from a copy of this tree; otherwise to the same major in another data directory. pg_upgrade --check, then the upgrade by copy and, from the same old cluster, the
 # upgrade by link: each upgraded cluster answers the digests of the rows, the answers through the sift_col index and the SiftAgg scan as through the normal plan, the projections, the TTL and the
 # visibility map as before, sift.check finds nothing, and the writes, VACUUM (FREEZE), the maintenance and REINDEX that follow keep every table equal to its twin.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
-. "$(dirname "$0")/lib_upgrade.bash"
+REPO=${SIFT_REPO:?}
+. "${SIFT_REPO:?}/test/t/lib/upgrade.bash"
 
 OLD_REF=
 NEWCFG=$(command -v pg_config)

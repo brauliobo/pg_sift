@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# The bounded-memory gate of the external sorts, the parallel aggregate and the scans that spill (scripts/par-sorts-gate.py, test/par-sorts.tsv): every case at 1x, 2x and 4x rows in a fresh
+# The bounded-memory gate of the external sorts, the parallel aggregate and the scans that spill (scripts/par-sorts-gate.py, test/scaling/par_sorts.tsv): every case at 1x, 2x and 4x rows in a fresh
 # backend with a small work_mem. A case passes when its peak memory stays within 1.15 of the one at 1x, its growth is at most 2 bytes a row of the memory the scopes of sift count and 8 bytes a row
 # of the resident peak, its peak above the start of the backend is at most 2.5 times the hash memory and 4 MB, the temporary files it holds at once are at most 2.5 times what it spills and
 # a few files, and none is left (or leaks a resource) after it.
 # A server built with assertions is skipped: it checks every allocation, so its resident peaks are not those of a release server.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 node_init ps 34 "autovacuum = off

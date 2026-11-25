@@ -1,1 +1,1 @@
-col_wbuf_arena_conn	src/core/cachebudget.c:evict_begin src/core/cachebudget.c:evict_oldest
+col/wbuf/arena/conn	src/core/cachebudget.c:evict_begin src/core/cachebudget.c:evict_oldest

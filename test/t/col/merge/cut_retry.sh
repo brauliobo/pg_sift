@@ -3,7 +3,7 @@
 # The merge of a sift_col index cuts the free end it leaves, and a cut that finds the index locked (a transaction that planned a query holds an AccessShareLock on every
 # index of the table until it ends) is not lost: the next call of sift.col_merge, which has nothing to merge, cuts it. Before, only a call that merged looked at the end.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init mc 12 "autovacuum = off

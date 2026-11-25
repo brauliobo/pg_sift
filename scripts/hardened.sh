@@ -15,10 +15,10 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 source "$REPO/scripts/source-snapshot.sh"
 TMP=${SIFT_TMP:-/tmp/sift-hardened-$$}
 WORK=$TMP/hardened
-QUICK_TESTS=(colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors)
+QUICK_TESTS=(col/codec/basic col/enc bm25/kernels/simd col/shred/values bm25/verify/corrupt bm25/query/errors)
 if [[ ${1:-} == --quick ]]; then TESTS=("${QUICK_TESTS[@]}"); else TESTS=("$@"); fi
-(( ${#TESTS[@]} )) || TESTS=(colcodec_basic colcodec_simd col_enc col_kernels_simd kernels_simd kernels_filter shred_values shred_kernels shred_diff
-	verify_corrupt store_corrupt query_errors phrase_positions position_blocks index_build_postings tbl_basic tbl_agg)
+(( ${#TESTS[@]} )) || TESTS=(col/codec/basic col/codec/simd col/enc col/kernels_simd bm25/kernels/simd bm25/kernels/filter col/shred/values col/shred/kernels col/shred/diff
+	bm25/verify/corrupt bm25/store/corrupt bm25/query/errors bm25/phrase_positions bm25/position_blocks bm25/index/build_postings table/basic table/agg/basic)
 export SIFT_HARDEN=${SIFT_HARDEN:-1}
 # the trap flavor, not the ASan flavor scripts/ci.sh full exports
 unset SANITIZE

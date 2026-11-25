@@ -5,8 +5,8 @@
 # works and converges, the leftovers are repaired or dropped, the zoo goes through pg_dump into a fresh cluster. Then the other way as a smoke (this tree's files read by the release; reported).
 # SIFT_UPGRADE_OLD_REF names the release (default v5.0.0). One COMPAT line for each object kind, direction and shutdown, in the test output.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 VERSION=$(sed -n "s/^default_version = '\(.*\)'/\1/p" "$REPO/pg_sift.control")
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 OLD_REF=${SIFT_UPGRADE_OLD_REF:-v5.0.0}
@@ -16,7 +16,7 @@ newroot=$ROOT
 build_old "$OLD_REF"; oldroot=$OLDROOT
 OLD_VERSION=$(sed -n "s/^default_version = '\(.*\)'/\1/p" "$oldroot$(pg_config --sharedir)/extension/pg_sift.control")
 
-. "$(dirname "$0")/lib_compat.bash"
+. "${SIFT_REPO:?}/test/t/lib/compat.bash"
 
 # ---- the zoo, written by the release
 node_init old 20 "$CONF"

@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the search tests that print a plan (\ir test/sift_plan.sql): sift_plan(q) is the EXPLAIN (COSTS OFF) text of q.
+-- Shared by the search tests that print a plan (\ir test/common/sql/bm25/plan.sql): sift_plan(q) is the EXPLAIN (COSTS OFF) text of q.
 CREATE FUNCTION sift_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	l text;

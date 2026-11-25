@@ -28,7 +28,7 @@ REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) soft_pairs;
 
-\ir test/scope_multiset_helpers.sql
+\ir test/common/sql/col/scope/multiset.sql
 
 CREATE TABLE states (n int, label text, stmt text);
 INSERT INTO states VALUES

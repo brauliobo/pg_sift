@@ -5,7 +5,7 @@
 # with hot_standby_feedback off, and succeeds with it on. With sift.standby_conflicts on (the default), the primary logs the
 # reuse as a recovery conflict: the reader is waited for (max_standby_streaming_delay) or cancelled like any
 # standby query, whatever the feedback.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 SECS=$(knob SIFT_CHURN_SECS 15 3)
 # how long a standby reader holds its segment before it reads: the primary drops, recycles and rewrites it, and the standby replays that, inside this time

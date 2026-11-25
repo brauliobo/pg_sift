@@ -37,7 +37,7 @@
 #                       that need a heap (hot, recycle) are skipped and maint is VACUUM and VACUUM FULL (own database sift_coldiff_tbl);
 #                       `-- expect: plain` is not checked (a table answers shapes a column index declines), the results always are
 #   --col-paths SPEC    the `paths` reloption of the fixture index; --col-index FILE the DDL of the analytics index (default
-#                       test/col/col_index.sql, USING sift_col replaced by --col-am)
+#                       test/col/index.sql, USING sift_col replaced by --col-am)
 #   --scenario-slices N each scenario runs the scenario queries of one slice of N (query i is in slice i mod N), the slice moving from one scenario to
 #                       the next, so that every query meets a heap state and every state meets queries of every kind (default 1: all of them everywhere)
 #   --fixture-rows N    rows of the fixture table (default 4000), --seed N its generator seed; above 4000 the t_* tables grow with it
@@ -503,7 +503,7 @@ analytics_suite() {
 	sql -1 -v n="$ROWS" -v tenants="$STORES" -v order_by= -f "$ANALYTICS_DIR/schema.sql" -f "$ANALYTICS_DIR/gen.sql" >/dev/null
 	sql -f "$ANALYTICS_DIR/sets.sql" -f "$ANALYTICS_DIR/indexes.sql" >/dev/null
 	if [[ -z $NOINDEX ]]; then
-		col=${COL_INDEX:-$REPO/test/col/col_index.sql}
+		col=${COL_INDEX:-$REPO/test/col/index.sql}
 		if ! err=$(sed "s/USING sift_col\b/USING $AM/" "$col" | grep -v '^--' | sql -f - 2>&1); then skip "analytics: CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 0; fi
 	fi
 	sql -c "VACUUM (FREEZE, ANALYZE)" >/dev/null
@@ -525,7 +525,7 @@ selftest() {
 	fixture_indexes
 	sql -c "VACUUM (FREEZE, ANALYZE)" >/dev/null
 	mapfile -t fx < <(all_fixtures)
-	mapfile -t fl < <(files "${fx[@]}" | grep -E '/(metrics_summary|item_category_counts|month_series|store_topn|f_count_sum_minmax|f_group_source|f_scalar_paths|t_float8_nan_inf|t_sum_int4_wide|t_text_collation|n_empty_global)\.sql$')
+	mapfile -t fl < <(files "${fx[@]}" | grep -E '/fixtures/(jsonb/metrics/summary|jsonb/items/category_counts|series/month|topn/store_rank|flat/(count_sum_minmax|group_source|scalar_paths)|trap/(float8_nan_inf|sum_int4_wide|text_collation)|nulls/empty_global)\.sql$')
 	for kind in none int float float-tiny text null rows dup order type cols; do
 		MUTATE=; [[ $kind == none ]] || MUTATE=$kind
 		want=FAIL; [[ $kind == none || $kind == float-tiny ]] && want=PASS

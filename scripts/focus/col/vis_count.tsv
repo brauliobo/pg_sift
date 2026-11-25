@@ -1,1 +1,1 @@
-col_vis_count	src/col/v1/test/cache.c:sift_test_col_leaf_stats
+col/vis_count	src/col/v1/test/cache.c:sift_test_col_leaf_stats

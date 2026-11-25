@@ -4,7 +4,7 @@
 # EvalPlanQual), and a crash of the primary (kill -9, the WAL replayed) with a transaction in flight. On every node the answer of the heap-free read is the oracle's (no sift plan);
 # on the nodes whose log is complete it reads fewer heap pages than the read that checks every page. A session that writes no tombstone (sift.test_no_track) leaves a read that
 # gives other rows, which is what makes the checks mean something.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 20
 ROWS=$(knob SIFT_HF_ROWS 20000 12000)

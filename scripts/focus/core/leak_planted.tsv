@@ -1,1 +1,1 @@
-leak_planted	src/core/leak_test.c:sift_test_leak
+core/leak_planted	src/core/leak_test.c:sift_test_leak

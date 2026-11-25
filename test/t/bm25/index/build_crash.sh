@@ -4,7 +4,7 @@
 # an interrupted build leaves no index, a committed one replays from WAL and
 # passes sift.verify with the same postings, the UNLOGGED index is reset to
 # an empty one. SIFT_CRASH_ITERS (default 5, 2 quick), SIFT_ROWS (200000, 50000 quick).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ITERS=$(knob SIFT_CRASH_ITERS 5 2)
 ROWS=$(knob SIFT_ROWS 200000 50000)

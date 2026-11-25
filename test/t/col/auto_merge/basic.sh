@@ -3,7 +3,7 @@
 # buffer and promotes it, the incremental work, and never rewrites the index: the units with a dead row stay as they are, sift.col_maintenance_due names the reason, sift.col_maintenance_status
 # recommends REINDEX, and the explicit sift.col_maintain call (or REINDEX) rewrites every segment into one. With the setting off the worker does not run either; and with the maintenance lock
 # held (a VACUUM stopped at its cleanup gate, a testing build) the call is skipped while queries and inserts go on.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 12
 node_init am 20 "autovacuum = off

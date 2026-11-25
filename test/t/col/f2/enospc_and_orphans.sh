@@ -2,7 +2,7 @@
 # A full disk under Format 2 (sift.test_disk_blocks: the file of an index may not grow past that many blocks, an extension fails as ENOSPC does): a statement that fails gives back the blocks
 # it took, so that a retry after the space returns takes them (the used blocks, the high-water mark less the free ones, never grow with the number of failures); a rolled back savepoint leaves
 # no extension lock, and the statements after it in the same transaction run; sift.check finds nothing at any step; the rows are exact.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 13
 node_init en 93 "autovacuum = off

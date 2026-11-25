@@ -21,7 +21,7 @@ FROM generate_series(1, 4500) i;
 CREATE INDEX oe_docs_col ON oe_docs USING sift_col (id, set_id, doc) WITH (paths = 'doc.flag_a astext, doc.items[]{category text, score float8}');
 VACUUM (FREEZE, ANALYZE) oe_docs;
 
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 
 -- a key and an aggregate argument that depend on the key of the document, for the rows of its list
 SELECT * FROM check_query($q$

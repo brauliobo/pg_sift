@@ -4,8 +4,8 @@
 # segment that is not in the entity segments (col_scope_kill_writes found it at random). sift.test_crash_clear = n (the testing build) kills the process after the nth segment the pass has
 # visited, so every prefix of the pass is crashed in turn, with no dependence on timing: after the restart the index verifies against the heap, the scope reads are the join, and the VACUUM run
 # again leaves the same. The same pass clears a sift_col index without a scope and a BM25 index (sift_mops_bulkdelete), which verify after each of their prefixes.
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_twohop.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 node_init cc 54 "$TWOHOP_CONF
 sift.async_maintenance = off

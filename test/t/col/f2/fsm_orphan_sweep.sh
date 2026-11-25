@@ -5,7 +5,7 @@
 # that hold a scope, projections, a key journal, deletion vectors, micro-slabs, pending deletes and column delta chains it frees nothing until a block is leaked, and then exactly that block.
 # A leak is an extent the test functions allocate and never name, which is what a crash between the allocation and the commit leaves.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_SWEEP_ROWS 120000 60000)
 RICH=(zr_col tenant_scope_journal p_idx dim_col ev_col)

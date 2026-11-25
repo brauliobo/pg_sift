@@ -9,7 +9,7 @@
 #   - a row names a macro that its file does not define, or a literal value that differs from the #define,
 #   - a line of limits.allow names a macro that does not exist (or is registered),
 #   - a sift_limit(id, MACRO) site names an unknown id or a macro other than the row's, or a row is hooked without a site (or the reverse),
-#   - the defaults the SIFT_TESTING build reports (test/expected/limits_registry.out) differ from the values evaluated here.
+#   - the defaults the SIFT_TESTING build reports (test/expected/core/limits_registry.out) differ from the values evaluated here.
 # (Include guards, names ending in _H, are skipped.)
 # Values are evaluated from the #define bodies (the few PostgreSQL constants they use are listed below), so a macro written with another
 # PostgreSQL macro needs it added to CONST.
@@ -191,9 +191,9 @@ for line in read(exp).split('\n'):
         c_vals[f[0]] = int(f[2])
 for r in rows:
     if r['id'] not in c_vals:
-        err('test/expected/limits_registry.out: %s is not listed (run the test and accept its output)' % r['id'])
+        err('test/expected/core/limits_registry.out: %s is not listed (run the test and accept its output)' % r['id'])
     elif c_vals[r['id']] != r['v']:
-        err('test/expected/limits_registry.out: %s is %d in the build but %d by scripts/gen-limits.sh' % (r['id'], c_vals[r['id']], r['v']))
+        err('test/expected/core/limits_registry.out: %s is %d in the build but %d by scripts/gen-limits.sh' % (r['id'], c_vals[r['id']], r['v']))
 
 # ---- docs/LIMITS.md ----
 AREAS = [('agg', 'Aggregate pushdown (`src/agg`)'), ('col', 'Column index (`src/col`)'),

@@ -2,7 +2,7 @@
 # The free space of a sift_col index nothing changes goes back to the file system within a few VACUUMs, with a standby streaming and sift.async_maintenance on.
 # An index with no rewrite coming (the last pass of the runs of a build, a horizon that held the blocks of a rewrite and passed) has nothing to fill the holes, and
 # the server starts no rewrite by itself: VACUUM moves the segments that end the file down and cuts the end.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_VSI_ROWS 100000 100000)
 plan 6

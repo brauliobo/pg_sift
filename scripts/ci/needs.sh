@@ -6,7 +6,7 @@ TOOLCHAIN_USE='build_old|old-lib-check|scaling-gate|pg_upgrade|\bmake\b|\bgcc\b|
 # HISTORY_USE: what a test says when it reads a release tag or builds a release from it. pg_upgrade.sh builds the old side from a copy of the working tree unless SIFT_PG_OLD_REF names a
 # release (pg_upgrade_31, 32 and 33 do), so the test of the plain upgrade reads no tag
 HISTORY_USE='old-lib-check|git -C|git (archive|show|tag|describe)|build_old (v[0-9]|"\$ref)'
-NO_HISTORY_JOBS=' tap-shell-pg_upgrade '
+NO_HISTORY_JOBS=' tap-shell-compat/pg_upgrade/basic '
 # needs_toolchain ID: whether the job compiles (the compiler, the headers of the libraries): the fuzz harnesses and the analyzers, a test that builds an older release,
 # the 8-page flavour or pg_upgrade's target. Every other job runs on the staged roots of scripts/ci-build.sh
 declare -A NEEDS_TOOLCHAIN NEEDS_HISTORY

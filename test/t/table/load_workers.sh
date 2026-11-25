@@ -6,7 +6,7 @@
 # worker cancelled, a worker killed with kill -9 (the postmaster restarts the cluster), the statement timeout while the participants write, and the backend killed with kill -9. After
 # each the table is empty, VACUUM leaves the file as small as that of an empty table (no orphan group), the same load works and equals the heap twin, and the standby counts as the primary.
 # SIFT_LW_ROWS (300000, 20000 quick; quick sets sift.test_load_unit_bytes = 128 (SIFT_LW_UNIT) so that rows of 3 MB are enough for the workers).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_LW_ROWS 300000 20000)
 node_init primary 2 "wal_level = replica

@@ -27,7 +27,7 @@ CREATE FUNCTION arms(agg1 text, agg2 text) RETURNS text LANGUAGE sql AS $$
 	                                        SELECT item_id, NULL::text, %s FROM base GROUP BY item_id) q
 	                 GROUP BY k$q$, agg1, agg2)
 $$;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a bigint; n bigint;

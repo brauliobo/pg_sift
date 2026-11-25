@@ -14,7 +14,7 @@ CREATE INDEX kl_event_col ON kl_event USING sift_col (id, site_id, ts, kind);
 VACUUM (FREEZE, ANALYZE) kl_event;
 ANALYZE kl_site;
 RESET client_min_messages;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 -- n aggregates read one CTE of a list of 50 keys, joined one to the next
 CREATE FUNCTION kl_stmt(n int) RETURNS text LANGUAGE sql AS $f$ SELECT format($q$

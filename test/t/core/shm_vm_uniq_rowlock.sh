@@ -4,7 +4,7 @@
 # rolls back after another writer filled the stripes and the area cannot be attached (sift.test_dsm_fail = sift_rowlock_attach, as when /dev/shm is short). The end of a transaction that fails
 # is a PANIC of the whole server. The setup is that of tbl_lock_overflow.sh, with the gates of two advisory locks: the first holds the writer that locked few rows before its end, the second
 # the writer that locks more rows than the stripes take until the first has ended.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 out=
 plan 5

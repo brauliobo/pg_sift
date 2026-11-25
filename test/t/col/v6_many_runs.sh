@@ -2,7 +2,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # A partition of a Format 2 index that holds more parts than 64 is read whole by a source of the column engine that merges its parts by the key of the index (a window function): every part is a
 # run of the merge, and the runs past the 64th used to be left out without a word, so the window lost the rows of the newest parts.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 3
 [[ -n ${SIFT_TESTING:-} ]] || { skip 3 "needs the part listing of the testing flavour"; finish; }

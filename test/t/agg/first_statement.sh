@@ -3,8 +3,8 @@
 # without sift_planner: its CTE is not planned inline and the aggregates over it run the ordinary plan. The executor start plans that statement
 # again through the hook (agg/cte/hook.c), so it runs in the scan like the statements after it. A fresh psql is a fresh backend: nothing
 # is loaded before the statement under test, and sift.stats(local => true) reads the scans that backend ran.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 plan 21
 node_init af 27 "autovacuum = off

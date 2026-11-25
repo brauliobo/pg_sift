@@ -4,14 +4,14 @@
 import re
 
 from .db import BASE, usable
-from .fam_basic import gen_colcmp, gen_distleaf, gen_keys, gen_lookup, gen_numsum, gen_oneleaf, gen_partition, gen_placeholder, gen_preagg, gen_setkeys, gen_widew, render_lookup, render_oneleaf, render_partition, render_placeholder, render_preagg, render_setkeys
-from .fam_shapes import gen_corrsub, render_corrsub, gen_unusedlat, render_unusedlat, gen_decor, gen_dirty, gen_exists, gen_lateralagg, gen_latest, gen_leftlateral, gen_toplat, gen_toplook, gen_topn, gen_union, render_decor, render_dirty, render_exists, render_lateralagg, render_latest, render_leftlateral, render_toplat, render_toplook, render_topn, render_union
-from .fam_lists import gen_distinctrows, gen_listpage, gen_oneentity, gen_point, gen_pointagg, gen_same, gen_trail, gen_twolevel, gen_txnmix, render_distinctrows, render_listpage, render_oneentity, render_point, render_pointagg, render_same, render_trail, render_twolevel, render_txnmix
-from .fam_units import gen_arrlen, gen_dead, gen_floor, gen_keycut, gen_nullzone, gen_window, render_keycut, render_window
-from .fam_groups import gen_groupsplit, render_groupsplit
-from .fam_having import gen_having, render_having
-from .fam_scope import dml_scope, gen_scope, render_scope
-from .fam_cte import gen_ctecopies, gen_dictcount, gen_exceptions, gen_flatkeys, gen_gorder, gen_keylist, gen_keytable, gen_zonekey, render_ctecopies, render_exceptions, render_flatkeys, render_gorder, render_keylist
+from .fam.basic import gen_colcmp, gen_distleaf, gen_keys, gen_lookup, gen_numsum, gen_oneleaf, gen_partition, gen_placeholder, gen_preagg, gen_setkeys, gen_widew, render_lookup, render_oneleaf, render_partition, render_placeholder, render_preagg, render_setkeys
+from .fam.shapes import gen_corrsub, render_corrsub, gen_unusedlat, render_unusedlat, gen_decor, gen_dirty, gen_exists, gen_lateralagg, gen_latest, gen_leftlateral, gen_toplat, gen_toplook, gen_topn, gen_union, render_decor, render_dirty, render_exists, render_lateralagg, render_latest, render_leftlateral, render_toplat, render_toplook, render_topn, render_union
+from .fam.lists import gen_distinctrows, gen_listpage, gen_oneentity, gen_point, gen_pointagg, gen_same, gen_trail, gen_twolevel, gen_txnmix, render_distinctrows, render_listpage, render_oneentity, render_point, render_pointagg, render_same, render_trail, render_twolevel, render_txnmix
+from .fam.units import gen_arrlen, gen_dead, gen_floor, gen_keycut, gen_nullzone, gen_window, render_keycut, render_window
+from .fam.groups import gen_groupsplit, render_groupsplit
+from .fam.having import gen_having, render_having
+from .fam.scope import dml_scope, gen_scope, render_scope
+from .fam.cte import gen_ctecopies, gen_dictcount, gen_exceptions, gen_flatkeys, gen_gorder, gen_keylist, gen_keytable, gen_zonekey, render_ctecopies, render_exceptions, render_flatkeys, render_gorder, render_keylist
 
 def base_of(parts, nl):
     return BASE + (';enable_nestloop=off' if nl else '') + (';TimeZone=%s' % parts['tz'] if parts.get('tz') else '')

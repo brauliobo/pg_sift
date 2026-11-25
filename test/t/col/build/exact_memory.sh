@@ -9,8 +9,8 @@
 #  - a serial floor above half of maintenance_work_mem (the 64 MB of the shipped build, 2 MB here) is the budget of the runs, and the peak follows it and not the rows: under 2 times the floor + 6 MB
 #  - the same rows under the floor of the shipped build (64 MB for the serial build) are not held to maintenance_work_mem, and the same bound fails: the check proves the budget is what holds
 # The backend of each size is a new one; the maintenance worker and the merge of the build are off.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 root=$("$REPO/scripts/scaling-gate.sh" build 2>/dev/null)
 rc=$?

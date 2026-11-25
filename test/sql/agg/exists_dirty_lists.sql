@@ -10,7 +10,7 @@ SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 SET enable_indexonlyscan = off;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 -- the rows or the error must be the same, and the query is meant to be scanned
 CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$

@@ -74,7 +74,7 @@ sub install_sift
 	my ($node) = @_;
 	$node->safe_psql('postgres', 'CREATE EXTENSION pg_sift; CREATE EXTENSION amcheck;');
 	$node->safe_psql('postgres', '',
-		extra_params => [ '-v', 'sift_ref_lib=1', '-f', "$repo/test/sql/reference.sql" ]);
+		extra_params => [ '-v', 'sift_ref_lib=1', '-f', "$repo/test/sql/bm25/reference.sql" ]);
 }
 
 # install_sift and the testing extension; the test is skipped (why) when the build is not the testing one

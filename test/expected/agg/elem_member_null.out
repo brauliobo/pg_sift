@@ -4,7 +4,7 @@
 -- answer of the normal plan (the plan or the scan's error, whichever it is, is that of the cast read of the same member).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE TABLE ed (id int PRIMARY KEY, g int, doc jsonb);
 INSERT INTO ed

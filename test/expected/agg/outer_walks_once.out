@@ -15,7 +15,7 @@ CREATE TABLE ow_keys (k int PRIMARY KEY);
 INSERT INTO ow_keys SELECT g FROM generate_series(1, 30) g;
 VACUUM (FREEZE, ANALYZE) ow_fact, ow_keys;
 RESET client_min_messages;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 -- six aggregates over one CTE of the rows of a few keys, joined one to the next, in a derived table (the WITH is not the statement's own)
 CREATE FUNCTION ow_stmt(arms int, wrapped bool) RETURNS text LANGUAGE sql AS $f$ SELECT format($q$

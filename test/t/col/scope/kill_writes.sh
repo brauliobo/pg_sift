@@ -4,8 +4,8 @@
 # index of two paths runs. After each restart the two indexes verify against the heap, sift.col_scope_verify finds no differing key of either (a key it cannot vouch for is "unverified", not a difference),
 # the scope reads of every key are the join, and the maintenance and a REINDEX give back an index that reads its units. col_scope_crash kills at the named publications of the directory; this test kills
 # anywhere. SIFT_KILLW_ROUNDS (12, 4 quick) rounds, SIFT_KILLW_MAXSLEEP seconds at most (3) between the start of the storm and the kill.
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_twohop.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 ROUNDS=$(knob SIFT_KILLW_ROUNDS 12 4)
 MAXSLEEP=$(knob SIFT_KILLW_MAXSLEEP 3 2)

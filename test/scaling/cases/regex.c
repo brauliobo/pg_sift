@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_regex.c - sqlite/host/regex*.c: the regular expression engine of the SQLite and MariaDB hosts on the patterns that make a backtracking matcher take exponential time
+ * test/scaling/cases/regex.c - sqlite/host/regex*.c: the regular expression engine of the SQLite and MariaDB hosts on the patterns that make a backtracking matcher take exponential time
  * (nested repetition, an alternation under a star): the memo of the engine keeps the work polynomial in the length of the text.
  */
 #include "../sqlite/host/host.h"

@@ -23,7 +23,7 @@ SELECT 1 + g % 60, date '2025-01-01' + g % 400,
 FROM generate_series(1, 6000) g;
 CREATE INDEX entries_col ON entries USING sift_col (id, dim_b_id, day, doc, jsonb_exists(doc, 'resolved')) WITH (paths = 'doc.items[]{tag text, sub text, score float8}');
 VACUUM (FREEZE, ANALYZE) entries, tag_map, dim_b;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 \set ECHO none
 CREATE FUNCTION wq() RETURNS text LANGUAGE sql AS $$ SELECT $q$
  SELECT CASE WHEN jsonb_exists(e.doc, 'resolved') THEN o.tag ELSE m.to_tag END AS tag, CASE WHEN jsonb_exists(e.doc, 'resolved') THEN o.sub ELSE m.to_sub END AS sub,

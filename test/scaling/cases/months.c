@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_months.c - col/scope_v6/cube.c: the table of month cubes of a scope, one cube per month in ascending order, then every month found again: O(M log M).
+ * test/scaling/cases/months.c - col/scope_v6/cube.c: the table of month cubes of a scope, one cube per month in ascending order, then every month found again: O(M log M).
  */
 #include "postgres.h"
 

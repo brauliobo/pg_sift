@@ -2,7 +2,7 @@
 # A tombstone, and the transaction that made the log of track_changes complete, name transactions; the commit log is truncated up to what the tables are frozen up to, and neither is
 # counted in that. With the real truncation (about two million transactions, VACUUM FREEZE of every database): a read does not ask the log about a transaction it no longer keeps (no error),
 # it goes to the heap for the pages the tombstone is on, or for all of them when the transaction that made the log complete is gone, and every answer is the oracle's.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 14
 BURN=$(knob SIFT_HF_BURN 2200000 2200000)

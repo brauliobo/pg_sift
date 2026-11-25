@@ -22,7 +22,7 @@ VACUUM (FREEZE, ANALYZE) o_t;
 SELECT count(*) AS string_values, count(DISTINCT t.id) AS string_rows
 FROM o_t t, jsonb_array_elements(t.doc -> 'lines') l WHERE jsonb_typeof(l -> 'n') = 'string';
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 -- the rows with and without the pushdown are the same (and not empty)
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal_nonempty(q) $$;

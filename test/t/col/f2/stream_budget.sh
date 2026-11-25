@@ -8,8 +8,8 @@
 #   temp_bytes = the growth of pg_stat_database.temp_bytes         == 0
 #   alpha_disk = pg_relation_size / live bytes of the index      <= 2.0
 #   alpha_time = seconds(largest) / seconds(smallest), scaled to a 4x size ratio <= 5.5
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 SCALES=(32768 131072 524288)

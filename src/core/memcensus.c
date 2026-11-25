@@ -4,7 +4,7 @@
  * sift.test_memctx_census (kB, -1 = off) makes every backend that loads sift write, to the server log only, a line
  * "SIFTMEM stmt ..." for each top-level statement that grew its anonymous memory or its memory
  * long-lived contexts by at least that many kB (0: every statement), and "SIFTMEM exit ..." when it ends. scripts/pgtest.sh and
- * test/t/lib.bash switch it on for every cluster with SIFT_MEMCENSUS=KB; scripts/mem-report.py ranks the lines.
+ * test/t/lib/common.bash switch it on for every cluster with SIFT_MEMCENSUS=KB; scripts/mem-report.py ranks the lines.
  * Off, the cost of a statement is the read of the setting.
  *
  * Keys of a line: pid, db, ms, anon_kb (resident minus shared pages), d_anon_kb (its growth over the statement), d_hwm_kb (growth of the peak

@@ -7,7 +7,7 @@
 #   each key on the index pages, which is what the bottom-up deletion is asked about.
 # - a wait for the transaction that holds a row (an UPDATE or a SELECT FOR UPDATE that is blocked) names the row it waits on, as XactLockTableWait asks.
 # The checks are the same on a server without assertions; the abort is the failure on one with them.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 13
 node_init ac 70 "autovacuum = off

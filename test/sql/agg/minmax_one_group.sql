@@ -16,7 +16,7 @@ FROM generate_series(1, 20000) i;
 CREATE INDEX mo_col ON mo USING sift_col (id, a, b, d, ts, f, z, zn, n, k);
 VACUUM (FREEZE, ANALYZE) mo;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 SELECT w, pushed(q) AS scan, outcome(q, false) = outcome(q, true) AS same
 FROM (SELECT w, format('SELECT row(min(a), max(a), min(b), max(b), min(d), max(d), min(ts), max(ts), min(f), max(f), min(z), max(z), min(zn), max(zn), min(n), max(n), count(*))::text FROM mo WHERE %s', w) AS q

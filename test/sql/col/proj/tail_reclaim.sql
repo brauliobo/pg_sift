@@ -5,7 +5,7 @@ SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 SET maintenance_work_mem = '256MB';
 \set VERBOSITY terse
-\i test/proj_helpers.sql
+\i test/common/sql/col/proj/base.sql
 
 CREATE TABLE t (id bigint, g int, v bigint, pad text);
 CREATE INDEX t_idx ON t USING sift_col (id, g, v, pad) WITH (key_order = 'id');

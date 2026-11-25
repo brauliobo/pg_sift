@@ -4,7 +4,7 @@
 # with deletes, VACUUM and the exclusive SQL functions in between: no error, every row indexed, nothing leaked. A smoke of the interleavings, 4 clients: the claims and the exclusion of
 # the exclusive functions are pinned without timing by maint_lock.
 # Runs on the release build too (no test functions).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 SECS=$(knob SIFT_CHURN_SECS 20 4)
 plan 4

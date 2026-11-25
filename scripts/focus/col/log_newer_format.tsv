@@ -1,1 +1,1 @@
-col_log_newer_format	src/col/v1/test/tomblog.c:sift_test_col_log_entries
+col/log_newer_format	src/col/v1/test/tomblog.c:sift_test_col_log_entries

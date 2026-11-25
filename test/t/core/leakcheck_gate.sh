@@ -4,7 +4,7 @@
 # transaction) while a clean log passes. The deliberate findings of this node are set aside before finish, which runs the
 # gate on the node like on any other and must find it clean. Under SANITIZE=1 the malloc leak must be reported by
 # LeakSanitizer, and nothing else: PostgreSQL's own allocations are suppressed (scripts/lsan.supp).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 D=$(dir gate)
 asan=

@@ -2,7 +2,7 @@
 -- many below 4096, 4 times beyond), and the rows and their order stay those of the full ranking
 CREATE EXTENSION pg_sift;
 
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 
 CREATE TABLE ov (id int, body text);
 INSERT INTO ov SELECT i, repeat('alpha ', 1 + i % 5) || repeat('beta ', i % 4) || 'w' || i % 311 FROM generate_series(1, 6000) i;

@@ -1,1 +1,1 @@
-format2_reloptions_deprecated	src/col/am/options.c:sift_col_warn_f2_deprecated_relopts src/col/am/options_read.c:sift_col_alter_check src/col/f2/f2_build.c:sift_f2_ambuild
+col/f2/reloptions_deprecated	src/col/am/options.c:sift_col_warn_f2_deprecated_relopts src/col/am/options_read.c:sift_col_alter_check src/col/f2/f2_build.c:sift_f2_ambuild

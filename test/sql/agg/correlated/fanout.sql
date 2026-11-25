@@ -13,7 +13,7 @@ FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, amount, metrics, code) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 -- A UNION ALL of arms, one reading the item: every arm contributes a row, NULL items included.
 SELECT * FROM check_query($q$
  SELECT c.category, count(*) AS n, count(DISTINCT f.id) AS ids, sum(f.amount) AS total

@@ -10,7 +10,7 @@ INSERT INTO tf SELECT i, i % 100, CASE WHEN i % 9 = 0 THEN NULL ELSE i % 7 END, 
 UPDATE tf SET n = 'NaN' WHERE id % 1001 = 0;
 VACUUM (FREEZE, ANALYZE) tf;
 
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 CREATE FUNCTION in_source(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN

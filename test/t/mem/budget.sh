@@ -2,7 +2,7 @@
 # The memory trackers of the main paths (core/memtrack.h): at the scale 1 every tracker of a search index passes and is recorded by
 # sift._test_mem_highwater(); at sift.test_mem_budget_scale 0.0001 each class (build, merge, search, verify) fails with the tracker, the actual number and the budget.
 # The release build has no scope: the test needs the test build.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 19
 node_init mb 61 "autovacuum = off

@@ -25,7 +25,7 @@ CREATE TABLE lookup_values (kind text, bucket text, label text);
 INSERT INTO lookup_values VALUES ('a', 'x', 'first'), ('a', 'x', 'second'), ('a', 'x', 'third'), ('b', 'x', 'other');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE lookup_values;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 \set ECHO none
 -- Correlation itself uses the existing native LIMIT path, including duplicate candidates.
 SELECT * FROM check_query($q$

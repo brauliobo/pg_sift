@@ -258,7 +258,7 @@ CREATE INDEX ev_entity_day ON ev (dim_a_id, day);
 CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, unit_id, foreign_id, day, price, latest, ccy);
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE units; ANALYZE dim_c; ANALYZE links;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- the report of a scope: the ids as a CTE, joined and again in an IN list, the rows of a period by month and unit
 CREATE FUNCTION ls_stmt(form text, g int) RETURNS text LANGUAGE sql AS $f$ SELECT format(CASE form
  WHEN 'twice' THEN $q$

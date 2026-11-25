@@ -4,7 +4,7 @@
 # last, so the reader found the hole of block 0, kept it in shared buffers, and the build, its writers and its readers failed with "sift index ... is corrupted" (block 0 with lower, upper
 # and special 0) although the file was complete. The build is held before its metapage by sift.test_build_gate (a testing build): it waits for advisory lock (0x51F7, 8), which the test
 # holds, so no timing is involved.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init bu 15 "autovacuum = off"

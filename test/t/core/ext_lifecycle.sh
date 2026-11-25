@@ -3,9 +3,9 @@
 # objects they read (no worker naps on in a schema that is gone, and the jobs queued for the database are forgotten), a part of sql/6.0 that only defines functions, operators and
 # operator classes runs a second time without an error (the header of the parts says each one is safe to run again), and the dump of sift.projections writes no definition of a table that is
 # gone.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+REPO=${SIFT_REPO:?}
 PARTS=()
 for f in "$REPO"/sql/6.0/*.sql; do grep -qE 'pg_extension_config_dump|DROP FUNCTION' "$f" || PARTS+=("$f"); done
 out=

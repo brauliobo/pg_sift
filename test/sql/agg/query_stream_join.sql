@@ -172,7 +172,7 @@ SELECT * FROM same_rows($$SELECT p.id FROM hp p WHERE NOT EXISTS (SELECT 1 FROM 
 SELECT * FROM same_rows($$SELECT p.id, b.v FROM hp p JOIN hb b ON b.k = p.k WHERE p.id % 500 = 0$$);
 SELECT leftover();
 
--- no file is left after a LIMIT, a cursor that is closed before its end, or an error in the middle of the join (a cancel is test/prod95_scale.tsv's grace_cancel)
+-- no file is left after a LIMIT, a cursor that is closed before its end, or an error in the middle of the join (a cancel is test/scaling/stream_scale.tsv's grace_cancel)
 BEGIN;
 DECLARE c NO SCROLL CURSOR FOR SELECT p.id, b.v FROM jp p JOIN jb b ON b.k = p.k;
 FETCH 10 FROM c;

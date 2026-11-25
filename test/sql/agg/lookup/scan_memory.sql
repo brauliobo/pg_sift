@@ -11,7 +11,7 @@ INSERT INTO facts SELECT i, 1 + (hashint4(i + 1) & 2147483647) % 2000, (ARRAY['o
 CREATE TABLE links (id int PRIMARY KEY, parent_id int NOT NULL, label text NOT NULL, weight int NOT NULL, status smallint NOT NULL) USING sift_table;
 INSERT INTO links SELECT i, 1 + (hashint4(i + 1) & 2147483647) % 2000, 'lbl_' || i % 10, i / 7 % 3, i / 3 % 5 FROM generate_series(1, 120000) i;
 VACUUM (FREEZE, ANALYZE) facts, links;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 CREATE FUNCTION lookup_peak(q text) RETURNS TABLE (scan bool, same bool, under_budget bool) LANGUAGE plpgsql AS $$
 BEGIN

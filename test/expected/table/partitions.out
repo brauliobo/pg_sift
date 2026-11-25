@@ -23,7 +23,7 @@ VACUUM (FREEZE, ANALYZE) pt;
 INSERT INTO pt SELECT i, i % 11, DATE '2024-02-01' + i % 300, i % 1000, 'new' FROM generate_series(60001, 60500) i;
 DELETE FROM pt WHERE id % 97 = 0;
 UPDATE pt SET v = -1 WHERE id = 5;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 \set ECHO none
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_label_with_partitions_and_workers(q) $$;
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$

@@ -1,4 +1,4 @@
--- Data of the differential fuzz (test/fuzz/diff_fuzz.py): small tables with NULLs and duplicates, every row a function of its id and the seed.
+-- Data of the differential fuzz (test/fuzz/diff/cli.py): small tables with NULLs and duplicates, every row a function of its id and the seed.
 -- @SEED@ @ROWS@ @PARTS@ are replaced by the driver.
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 CREATE SCHEMA fz;

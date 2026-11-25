@@ -1,5 +1,5 @@
 /*
- * fz_bm25.c - fuzz target for the decoders of the BM25 side that read a term's stored bytes (docs/SAFETY.md, test/fuzz/README.md).
+ * bm25.c - fuzz target for the decoders of the BM25 side that read a term's stored bytes (docs/SAFETY.md, test/fuzz/README.md).
  * One input = one mode byte + 4 bytes of arguments + the bytes of one stored object:
  *
  *   0  term blob, as the query path reads it   sift_cur_blob and the cursor on bytes nobody checked (sift_post_open has verify = false),
@@ -22,7 +22,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "fz_shim.h"
+#include "shim.h"
 #include "bm25/bitmap.h"
 #include "bm25/dict.h"
 #include "bm25/posting.h"

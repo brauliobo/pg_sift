@@ -11,7 +11,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-\ir test/scope_helpers.sql
+\ir test/common/sql/col/scope/base.sql
 
 -- 12 keys, 300 entities in 1..6 keys (entity m: 1 + m % 6), entities 100..109 in none, 8,000 padded facts (some without an entity, some of an entity that is nowhere)
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);

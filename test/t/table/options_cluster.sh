@@ -3,8 +3,8 @@
 # left out of the dump, also a dump of one table), a row of a table that is gone (written by nobody: the event trigger removes it, with event triggers off the dump
 # skips it), crash recovery, a hot standby (the rows replay; a standby that read the options sees a change), and pg_upgrade (the options of every database
 # come across, and the tables keep the OIDs the rows are keyed by).
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 # every option the tables set, as one string: schema.table.name=value
 QO="SELECT coalesce(string_agg(format('%s.%s.%s=%s', n.nspname, c.relname, o.name, o.value), ',' ORDER BY n.nspname, c.relname, o.name), '')

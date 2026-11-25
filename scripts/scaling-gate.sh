@@ -4,7 +4,7 @@
 #
 #   scripts/scaling-gate.sh build      build or find the flavour; prints its root (PostgreSQL 18 or later: 77 when there is no extension_control_path to hold it)
 #
-# SIFT_SB_DIR (default ~/.cache/sift/sb-flavour/<key>, a symlink to tmpfs on a development host) says where it is kept. The test is test/t/scaling_slope.sh.
+# SIFT_SB_DIR (default ~/.cache/sift/sb-flavour/<key>, a symlink to tmpfs on a development host) says where it is kept. The test is test/t/core/scaling_slope.sh.
 set -uo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 SHIFT=3

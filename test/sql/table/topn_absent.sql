@@ -7,7 +7,7 @@ CREATE TABLE absent_t USING sift_table AS SELECT g AS id FROM generate_series(1,
 ALTER TABLE absent_t ADD COLUMN sku text;
 ALTER TABLE absent_t ADD COLUMN tag text DEFAULT 'none';
 VACUUM (FREEZE, ANALYZE) absent_t;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE absent_q (q text);
 INSERT INTO absent_q VALUES

@@ -2,7 +2,7 @@
 # tap: pooled
 # A VACUUM whose cut of the free end of a sift_col file waited for its lock in vain says so once, with the blocks the online cut moved and gave back instead: VACUUM VERBOSE reports it (INFO), and an
 # autovacuum that logs reports it in the server log (LOG). The reason is the lock another session holds on the table for the whole wait, and what the online cut did in its place.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_CS_ROWS 200000 100000)
 plan 5

@@ -5,7 +5,7 @@
 #   a worker starts and holds a slot (sift.maint_pacer) and a claim (sift.maint_queue); terminating it gives both back and the request waits in the queue;
 #   the next trigger starts a new worker that drains the queue, and it leaves after its idle naps with no slot held;
 #   with no worker slot to spare (max_worker_processes = 2) nothing fails: the request waits, sift.maintain() runs a step in the session, the server stays up.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 pg_config --configure | grep -q -- --enable-injection-points || { echo "1..0 # SKIP PostgreSQL without injection points (scripts/pg-assert.sh --inject)"; exit 0; }
 ((PG_MAJOR >= 18)) || { echo "1..0 # SKIP the wait of an injection point is named from PostgreSQL 18"; exit 0; }

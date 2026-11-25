@@ -42,7 +42,7 @@ sift_index_ready(Relation index)
 	return index->rd_index->indisready;
 }
 
-/* A named point of the code where a test of an injection-points build stops a backend (test/t/maint_lock_order.sh); nothing in a server built without them */
+/* A named point of the code where a test of an injection-points build stops a backend (test/t/maint/lock_order.sh); nothing in a server built without them */
 #if PG_VERSION_NUM >= 180000
 #define SIFT_POINT(name)	INJECTION_POINT(name, NULL)
 #else

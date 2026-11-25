@@ -5,7 +5,7 @@
 # Here: a REINDEX that stays open does not hold up the REINDEX of the other index; rounds of two REINDEX at once, of two REINDEX CONCURRENTLY and of one of each, under writers, end
 # without a deadlock of the extension's (the cycle that PostgreSQL has beside a REINDEX CONCURRENTLY is its own); the reads of the tracked indexes are the heap's answer and the log is complete after every round; a REINDEX of an index whose triggers were disabled or dropped
 # makes them again.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 8
 
 ROUNDS=$(knob SIFT_RL_ROUNDS 30 12)

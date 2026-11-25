@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The background pass of a sift_table is weighed against the scans the table has had, and those are a count in its metapage (core/reads.c), not the numscans of pg_stat:
 # pg_stat_reset(), a clean restart and a crash leave the decision as it was. A table nobody has read asks for no pass.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 6
 
 ROWS=$(knob SIFT_TDS_ROWS 30000 20000)

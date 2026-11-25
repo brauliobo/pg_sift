@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the agg_* tests that compare the rows of a query with the aggregate scan on and off (\ir test/agg_check_pushed.sql): check_query(q) says whether the
+-- Shared by the agg_* tests that compare the rows of a query with the aggregate scan on and off (\ir test/common/sql/agg/check_pushed.sql): check_query(q) says whether the
 -- cheapest plan has a Custom Scan (SiftAgg) and how many rows differ between the two results.
 CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
 DECLARE l text;

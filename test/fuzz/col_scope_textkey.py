@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Differential fuzz of a scope whose key or member is text, varchar or uuid (test/t/col_scope_textkey_fuzz.sh runs it).
+"""Differential fuzz of a scope whose key or member is text, varchar or uuid (test/t/col/scope/text_key_fuzz.sh runs it).
 
-  test/fuzz/col_scope_textkey_fuzz.py [--seeds 1-6] [--rows 8000] [--steps 8] [--hash-bits 0] [--two-paths]      needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
+  test/fuzz/col_scope_textkey.py [--seeds 1-6] [--rows 8000] [--steps 8] [--hash-bits 0] [--two-paths]      needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
 
 A seed (seed % 4: the key is text, varchar, uuid or an integer; seed // 4 % 4: the member is an integer, text, varchar facts with text pairs, or uuid; the string member columns are generated columns of an
 integer, so every churn step below moves them as it moves the integer; one of them is the empty string and some facts have none) builds events, a table of (member, key) pairs whose keys are strings that differ in their bytes (a case, an accent, a space, a long one), its journal index and a
@@ -16,7 +16,7 @@ the churn also adds, deletes and moves grants of groups and memberships; the thr
 import argparse, collections, hashlib, os, random, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT
+from col_twin import Sess, Fail, ERR, SETUP, OUT
 
 TWO = False
 FUZZ_SETUP = "LOAD 'pg_sift'; " + SETUP + " SET sift.agg_force = on; SET jit = off;"

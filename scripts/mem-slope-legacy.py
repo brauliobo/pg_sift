@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""The legacy memory gate: the kinds the slope gate of scripts/mem-slope.py does not measure, each in exact bytes of memory contexts, never a resident-memory peak (test/mem-slope-legacy.tsv): leakx, cap, evict, pinned, and the idle series.
-The memory of a merge against the rows is proven in exact bytes by test/t/col_merge_exact_memory.sh.
+"""The legacy memory gate: the kinds the slope gate of scripts/mem-slope.py does not measure, each in exact bytes of memory contexts, never a resident-memory peak (test/mem/slope-legacy.tsv): leakx, cap, evict, pinned, and the idle series.
+The memory of a merge against the rows is proven in exact bytes by test/t/col/merge/exact_memory.sh.
 
 Each case runs in a new backend with work_mem and maintenance_work_mem at 1 MB, on tables of N, 2N and 4N rows (50,000 by default). A clean leakx case has the ceiling 0 and may not grow
 the memory of the contexts of its backend by more than LEAK_KB over its repeats; an open one (a defect to fix, and its row goes to clean with the fix) keeps the ceiling in kB it was measured at, and a case far under it fails too,
 so that a fix is not left unrecorded.
 
   scripts/mem-slope-legacy.py run [--rows N] [--only RE]   one SLOPE line a case: SLOPE name kind result PASS|FAIL
-  scripts/mem-slope-legacy.py idle [--rows N] [--statements M] [--mode sift|off|plain] [--db NAME]   one backend runs the statements of test/idle-series.tsv in turn M times in all (12000): the memory its contexts hold
+  scripts/mem-slope-legacy.py idle [--rows N] [--statements M] [--mode sift|off|plain] [--db NAME]   one backend runs the statements of test/mem/idle-series.tsv in turn M times in all (12000): the memory its contexts hold
                                                           grows by under IDLE_CTX_KB in the last 1000 (a pooled backend is steady)
   scripts/mem-slope-legacy.py selftest
 
@@ -24,7 +24,7 @@ IDLE_CTX_KB = 1024        # kB its contexts may grow over the same statements
 IDLE_CACHE_KB = 4096      # sift.backend_cache_kb of the idle series: at the default 256 MB the caches fill about 1 kB a statement for the whole series (+620 kB over its last 1000 statements on one host, +1052 on a hosted one), which a window of 1000 statements does not tell from a leak; at 4 MB they are full long before it
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 25 repeats than after 10
 SETTINGS = f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
-TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope-legacy.tsv")
+TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem", "slope-legacy.tsv")
 os.environ["LC_ALL"] = "C"
 
 
@@ -238,7 +238,7 @@ def run(rows, only):
     return 1 if bad else 0
 
 
-IDLE_TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "idle-series.tsv")
+IDLE_TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem", "idle-series.tsv")
 PTC = """drop table if exists ptc cascade; create table ptc (id int, k int, cat text, amount numeric) partition by range (id);
 select format('create table ptc_%s partition of ptc for values from (%s) to (%s)', g, g*2, (g+1)*2) from generate_series(0, 999) g \\gexec
 insert into ptc select g, g % 100, 'c' || g % 7, g % 1000 from generate_series(0, 1999) g;
@@ -257,7 +257,7 @@ PLAIN_PTC = PTC.replace(" using sift_col (k, cat, amount)", " (k, cat)")
 
 
 def idle_series(rows, total, mode, db, cache_kb=IDLE_CACHE_KB):
-    """one backend, the statements of test/idle-series.tsv in turn (mode sift; off: the sift statements with sift.enable_scan and sift.enable_agg off, minus those that call sift functions; plain: in a database
+    """one backend, the statements of test/mem/idle-series.tsv in turn (mode sift; off: the sift statements with sift.enable_scan and sift.enable_agg off, minus those that call sift functions; plain: in a database
     without the extension, the forms of the PLAIN column): its anonymous memory, the memory of its contexts and (with the extension) what malloc has given out, every 50 statements. With the extension the backend gets no transparent
     huge pages: under THP=always its memory grows by steps of 2 MB (AnonHugePages reached 94 MB of 115 MB in a run) when the kernel has huge pages to give, and a step is the whole band"""
     n = rows * 2

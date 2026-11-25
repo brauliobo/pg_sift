@@ -3,7 +3,7 @@
 # The heap check the planner records for the paths it prices (agg/refuse.c) lives in one context a backend keeps for its life: with the visibility map
 # empty (a rewrite leaves it so) and sift.explain_refusals on, a refused CTE plan records it. The leak gate (finish) must find nothing left over after a
 # session that ends normally, and after one that is terminated in the middle of a statement.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 3
 node_init pv 29 "autovacuum = off

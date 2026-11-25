@@ -6,7 +6,7 @@
 # workers and the heap twin; a load of more units than one reservation holds (eight) is one segment, and one with a small budget several; a writer that takes the superblocks
 # after the first reservation while the load waits ends the segment there, a VACUUM leaves the blocks of the load alone, and a load that fails on its last row leaves nothing.
 # SIFT_LS_ROWS (60000, 20000 quick); the units are 128 kB (sift.test_load_unit_bytes) so that these rows fill more than eight of them.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_LS_ROWS 60000 20000)
 node_init primary 2 "wal_level = replica

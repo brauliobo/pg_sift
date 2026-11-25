@@ -2,9 +2,9 @@
 # The upgrade preflight of 6.0 (sift.upgrade_check, scripts/upgrade-check.sh): ok for what needs nothing, info for what is optional (a relation of Format Major 1, an option 6.0 no
 # longer documents), warn for what to look at (an extension older than the library, the test extension), blocker for what stops the update (a removed setting, a view that depends
 # on a function 6.0 recreates, an index the library refuses). --to RELEASE names what an older release cannot read: a relation of Format 2.0. The check leaves nothing behind.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+REPO=${SIFT_REPO:?}
 # QO: the options of the sessions of one q (QO="-c sift.test_create_format1=on" q db "CREATE INDEX ..." builds Format Major 1, as 5.1 did)
 q() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning ${QO:-}" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d "$db" "${@/#/--command=}"; }
 f1() { QO="-c sift.test_create_format1=on" q "$@"; }

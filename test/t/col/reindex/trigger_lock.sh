@@ -5,7 +5,7 @@
 # and the round does not depend on the speed of the host. A second gate (sift.test_col_track_decided_gate) holds both after each decided and before either goes on or ends, so that each decides
 # while the other still holds its ShareLock: without it the one that is first through ends and releases its lock before the other asks, which then finds no holder and makes the triggers. A REINDEX asks for the lock only when no other session holds one that conflicts with it, and otherwise leaves the triggers: the log is
 # not complete (the reads check the heap) until the maintenance worker makes missing triggers, or ALTER INDEX makes them.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 11
 
 ROUNDS=$(knob SIFT_RT_ROUNDS 30 10)

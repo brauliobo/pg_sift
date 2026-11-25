@@ -5,7 +5,7 @@
 -- bitmaps, partial and partitioned tables, and rows in every state (updates, deletes, inserts, vacuumed or not).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 \set ECHO none
 CREATE FUNCTION sift_scan_node(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE

@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_qset.c - core/quarantine_set.c: is this relation quarantined? A lookup per relation of the statement, against the set of Q quarantined relations (slots of one shared
+ * test/scaling/cases/qset.c - core/quarantine_set.c: is this relation quarantined? A lookup per relation of the statement, against the set of Q quarantined relations (slots of one shared
  * table, SIFT_QSET_SLOTS). The shared table is a plain array in this harness (sift_dsm_join).
  */
 #include "postgres.h"

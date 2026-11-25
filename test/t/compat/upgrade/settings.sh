@@ -5,8 +5,8 @@
 # (sift.async_maintenance on, no WAL rate), the update prints nothing about the maintenance and sift.col_maintenance_status answers for the old index,
 # CREATE INDEX says nothing about the maintenance (a default that is on needs no word), and pg_dump -C | psql (the stored settings of the database and of the role in it travel with the dump) brings
 # the same settings and a verifying index back.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 ref=$(git -C "$REPO" tag -l 'v3.2.*' --sort=-v:refname | head -n 1)
 [[ -n $ref ]] || { echo '1..0 # SKIP no release tag v3.2.*'; exit 0; }

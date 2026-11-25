@@ -4,7 +4,7 @@
 # primary logs the reuse as a recovery conflict (sift.standby_conflicts, on): the standby's replay waits for the query like it
 # does for a heap query, and the count is the one of its snapshot. With the setting off the query fails with the retryable
 # "segment recycled during scan"; with a short max_standby_streaming_delay the conflict cancels it like any standby query.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_STANDBY_ROWS 6000 3000)
 plan 7

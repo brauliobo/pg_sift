@@ -10,14 +10,14 @@
 pinned() { # ID: whether the job is one of them. Every job that compiles is the first shard's, so that the others install nothing but the server
 	local n
 	! needs_toolchain "$1" || return 0
-	[[ -n ${OLDLIB_TESTS:-} ]] || OLDLIB_TESTS=" $(grep -rl --include='*.sh' -E 'build_old|old-lib-check' "$REPO/test/t" 2>/dev/null | sed "s|^$REPO/test/t/||; s|\.sh$||" | tr '\n' ' ')pg_upgrade "
+	[[ -n ${OLDLIB_TESTS:-} ]] || OLDLIB_TESTS=" $(grep -rl --include='*.sh' -E 'build_old|old-lib-check' "$REPO/test/t" 2>/dev/null | sed "s|^$REPO/test/t/||; s|\.sh$||" | tr '\n' ' ')compat/pg_upgrade/basic "
 	for n in $OLDLIB_TESTS; do [[ $1 == "tap-shell-$n" || $1 == "tap-shell-${n}_"* ]] && return 0; done
 	return 1
 }
 # The CPU-bound jobs (the differential tests, the hardened build, the fuzzers, the release library run, the scaling slope) run 1.5 to 2 times their weight when several share the 4 cores of a
 # runner: in a hosted run the shard with four of them took 3568 lane seconds where its weights said 4600 and the shard with none 2082. They are spread first, to the shard with the fewest of them
 # (the lightest load breaks a tie), and the rest is cut by weight around them.
-HEAVY_JOBS='^(difftest|hardened|fuzz|release-library-regress|tap-shell-scaling_slope)'
+HEAVY_JOBS='^(difftest|hardened|fuzz|release-library-regress|tap-shell-core/scaling_slope)'
 # shard_loads N POOL: SHARD_OF[job] (0-based shard of the pool) and LOAD[k] for the jobs of the pool, heaviest first, ties in queue order
 declare -A SHARD_OF
 shard_loads() {

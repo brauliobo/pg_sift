@@ -11,6 +11,6 @@ SET sift.test_member_hash_bits = 3;
 
 SELECT max(sift._test_member_hash(v)) < 8 AS cut, count(DISTINCT sift._test_member_hash(v)) < 8 AS collide FROM (VALUES (''::text), ('a'), ('foobar'), ('tenant-4'), ('ténant-4'), ('acct-1'), ('acct-2'), ('acct-3'), ('acct-4'), ('acct-5'), ('acct-6')) t (v);
 
-\ir test/col_scope_textmember_states.sql
+\ir test/common/sql/col/scope/textmember_states.sql
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

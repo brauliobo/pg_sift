@@ -5,7 +5,7 @@
 #  - the build by workers, each scanning a range of the keys: every row once, no temporary file, as many workers as the cluster let go
 #  - CREATE INDEX CONCURRENTLY and REINDEX CONCURRENTLY under writers that update, insert and delete the whole time, serial and by workers
 # Each build is checked against the heap (col_verify) and the grouped aggregate from the index against the plain plan. SIFT_BB_ROWS (120000, 40000 quick).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_BB_ROWS 120000 40000)
 node_init n 2 "sift.col_build_source = auto

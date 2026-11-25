@@ -4,7 +4,7 @@
 # a window of dates reads and the rows it scans, a segment for each slice with no unit number in two of them, the file the live bytes, and the answers the table's.
 # It leaves nothing when it stops: a slice that PANICs after writing its segment and before the directory switch takes the server down, and crash recovery finds no
 # index (the CREATE INDEX never committed); a statement cancelled in the middle of the merge (a slice sleeps) rolls the build back.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 15
 node_init mc 22 "autovacuum = off

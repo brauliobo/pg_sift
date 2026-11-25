@@ -2,7 +2,7 @@
 # tap: pooled
 # pg_restore -j builds the indexes of one table at the same time: two sift_col indexes that write their automatic choices into their options both hold ShareLock on the table, and
 # the write asked for ShareUpdateExclusiveLock on it, which each waited for the other's ShareLock to give up (a deadlock in five restores of six). Six parallel restores, no error.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 1
 node_init r 56 "autovacuum = off"

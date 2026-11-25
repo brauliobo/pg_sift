@@ -1,4 +1,4 @@
--- seventeen combos: one more than j_combos_16 (eight joins and nine filters over other leaves)
+-- seventeen combos: one more than join/combos_16 (eight joins and nine filters over other leaves)
 -- shape: join
 -- expect: agg
 -- sets: K400

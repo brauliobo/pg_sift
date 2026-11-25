@@ -3,10 +3,10 @@
 # A backend that has used the objects of an older extension keeps working across ALTER EXTENSION UPDATE, which drops and makes functions, operators and event triggers
 # under new OIDs: the pushdown, the index read, a search and the index DDL find them again in the same session (what the session remembered of the catalog is dropped
 # with the objects; test ext_recreate does the same across DROP EXTENSION and CREATE EXTENSION). The library is the one of this tree over the SQL of 4.3.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
-VERSION=$(sed -n "s/^default_version = '\(.*\)'/\1/p" "$(dirname "$0")/../../pg_sift.control")
+VERSION=$(sed -n "s/^default_version = '\(.*\)'/\1/p" "${SIFT_REPO:?}/pg_sift.control")
 node_init eu 45 'autovacuum = off'
 node_start eu || bail "start failed"
 

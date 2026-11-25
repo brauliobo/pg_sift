@@ -5,7 +5,7 @@
 # (the rows of a joined table, the dimension maps, the write-buffer arena, the rollup state) passed it to the client. The registry name carries the size
 # asked, so the same name is never asked at two sizes; entries of an older release (their own names, other sizes) stay unused.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 node_init ds 77

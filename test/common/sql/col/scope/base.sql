@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the scope index tests (\ir test/scope_helpers.sql; the fuzz test/fuzz/col_scope_fuzz.py sends this file to its sessions): the statement of a scope read against the plain join, and
+-- Shared by the scope index tests (\ir test/common/sql/col/scope/base.sql; the fuzz test/fuzz/col_scope.py sends this file to its sessions): the statement of a scope read against the plain join, and
 -- the reasons the scan of a scope may give for reading the entity rows.
 --
 -- scope_reason_ok(why): whether a "Scope Fallback" reason is one of the documented ones (docs/COL-SCOPE.md).

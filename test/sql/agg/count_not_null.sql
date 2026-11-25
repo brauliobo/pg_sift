@@ -13,7 +13,7 @@ CREATE INDEX events_col ON events USING sift_col (dim_a_id, kind, amt);
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) dim_a;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- in_scan: the plan has a Custom Scan (SiftAgg); same: the rows are the plan's without the extension
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
 BEGIN

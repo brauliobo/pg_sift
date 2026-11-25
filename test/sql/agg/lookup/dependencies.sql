@@ -11,7 +11,7 @@ CREATE TABLE labels (code text, tag text);
 INSERT INTO labels VALUES ('c0', 'zero'), ('c1', 'one'), ('c1', 'duplicate'), ('c2', NULL), (NULL, 'null');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE dim_a; ANALYZE labels;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 SELECT * FROM check_query($q$
  SELECT l.tag, count(*) AS n, sum(f.amount) AS total
  FROM events f JOIN dim_a e ON e.id = f.dim_a_id JOIN labels l ON l.code = e.code

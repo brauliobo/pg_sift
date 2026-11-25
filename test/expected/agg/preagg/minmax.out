@@ -12,9 +12,9 @@ SET cpu_tuple_cost = 0.5;
 -- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
 -- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 7
 SET max_parallel_maintenance_workers = 0;
-\ir test/agg_preagg_helpers.sql
+\ir test/common/sql/agg/preagg.sql
 \set ECHO none
-\ir test/agg_preagg_units.sql
+\ir test/common/sql/agg/preagg_units.sql
 \set ECHO none
 CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES

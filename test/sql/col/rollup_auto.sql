@@ -7,7 +7,7 @@ SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET cpu_tuple_cost = 0.5;
-\ir test/agg_preagg_units.sql
+\ir test/common/sql/agg/preagg_units.sql
 
 -- a, b, c have 5, 7 and 11 values (385 combinations in a unit of about 6,000 rows, 600 cells), e has 97 (too many with them), h one per row
 CREATE TABLE ra (id int, v bigint, a int, b int, c int, e int, h int, pad text) WITH (autovacuum_enabled = off);

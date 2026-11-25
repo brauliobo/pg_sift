@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-\ir test/scope_helpers.sql
+\ir test/common/sql/col/scope/base.sql
 
 CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz, note text) WITH (autovacuum_enabled = false);
 CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
@@ -72,7 +72,7 @@ INSERT INTO key_sets SELECT k::text, '(' || k || ')' FROM generate_series(1, 6) 
 INSERT INTO key_sets VALUES ('ARRAY[1, 2, 3, 4, 5, 6]::int8[]', '(1, 2, 3, 4, 5, 6)'), ('ARRAY[2, 5]::int8[]', '(2, 5)');
 CREATE TABLE reads AS SELECT s.n, s.label, replace(s.q, 'KEYS', k.keys) AS q, replace(s.plain, 'LIST', k.list) AS plain FROM shapes s, key_sets k;
 
--- a read of the scope against its plain statement (scope_run of test/scope_helpers.sql also runs the marker as a row filter, which counts a row once: not the join of a statement that counts each pair).
+-- a read of the scope against its plain statement (scope_run of test/common/sql/col/scope/base.sql also runs the marker as a row filter, which counts a row once: not the join of a statement that counts each pair).
 -- A read of several keys that counts each pair and has a patched member in two of them has no entity path: it is refused with its reason, which is a documented one
 CREATE FUNCTION read_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT patched boolean, OUT path_ok boolean) LANGUAGE plpgsql AS $$
 DECLARE

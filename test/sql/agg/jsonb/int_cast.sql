@@ -15,7 +15,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, metrics) WITH
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- scan: the query runs in the scan; before PostgreSQL 18, where the cast of a JSON null raises, the cast keeps the normal plan and the column shows what 18 does
 CREATE FUNCTION check_query(name text, q text, in_scan bool DEFAULT true) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN

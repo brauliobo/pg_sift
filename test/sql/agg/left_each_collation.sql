@@ -9,7 +9,7 @@ SELECT i, i % 40, CASE i % 4 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN jsonb_build_obj
 FROM generate_series(1, 4000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
 SELECT same($q$
  SELECT f.dim_a_id % 3 AS g, count(*) AS n, count(CAST(r.value AS float)) AS dim_b, sum(CAST(r.value AS float)) AS total

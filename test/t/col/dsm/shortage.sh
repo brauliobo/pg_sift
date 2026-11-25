@@ -4,7 +4,7 @@
 # queue of the rollup refresh). sift_dsm_try (col/dsmreg.c) catches the shortage where the segment is made, gives the attempt a resource owner of its own (no "dynamic shared memory
 # leak" warning at the commit) and returns no table; each caller goes without it. sift.test_dsm_fail makes the segment of a table whose name has the given part fail with the error a full
 # /dev/shm raises, so the tables are the ones of a server that never had them: a fresh cluster, the failing cases first.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 18
 
 node_init sh 53 "autovacuum = off

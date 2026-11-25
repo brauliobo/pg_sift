@@ -1,4 +1,4 @@
-# The deterministic scaling gate of the C data structures (check_scaling_c.c). The sources under test are compiled with the coverage instrumentation that
+# The deterministic scaling gate of the C data structures (runner.c). The sources under test are compiled with the coverage instrumentation that
 # op_counters.h reads; SAN=1 adds AddressSanitizer and UBSan. `make -C test/scaling run`, `run SAN=1`, `negative`.
 include ../common/rules.mk
 OUT     ?= /tmp/sift-scaling-c$(if $(SAN),-san)

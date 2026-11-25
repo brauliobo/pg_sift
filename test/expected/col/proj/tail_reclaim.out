@@ -6,7 +6,7 @@ SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 SET maintenance_work_mem = '256MB';
 \set VERBOSITY terse
-\i test/proj_helpers.sql
+\i test/common/sql/col/proj/base.sql
 -- Helpers of the projection tests: the answer through the index against the answer of the heap, whether a projection was read, and a check that raises.
 CREATE FUNCTION p_check(label text, ok boolean) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN

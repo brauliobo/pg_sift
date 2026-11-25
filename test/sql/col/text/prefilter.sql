@@ -7,7 +7,7 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 -- the literals: of at least 3 bytes, the longest three, the folded ones for ILIKE and ~*; none for what is not read
 SELECT op, pat, sift._test_pattern_lits(op, pat) AS lits

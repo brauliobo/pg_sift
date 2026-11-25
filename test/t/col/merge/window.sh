@@ -4,7 +4,7 @@
 # the inputs, the batch they are folded into and the segments open (scope col_merge_window, test/mem-budgets.tsv) under 11 MB (13.1 MB when every input kept the arrays of
 # its largest unit), 48 inputs no more than 3 MB over that, and a merge cut by a key (the chunks of its inputs and the partition written, scope col_merge) under 44 MB
 # (47.8 MB). The rows come out as they went in.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init mw 61 "autovacuum = off

@@ -3,7 +3,7 @@
 # rows that the transaction had buffered for a sift_col index (the rows after its first) must reach the index when that subtransaction starts: they were taken for the rows of an index that
 # is gone, because the index (a copy that is made in the transaction) is not in the old catalogs, and cleared. Here a transaction that inserts into a table and decodes a slot in the same
 # transaction, with the index made in the transaction as well as an earlier one.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init d 40 "wal_level = logical

@@ -3,7 +3,7 @@
 -- partitioned and inheritance parents, with and without parallel scans and filter pushdown
 CREATE EXTENSION pg_sift;
 
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 
 -- the document tables hold the same rows; the ids the joined tables hold overlap in multiples of 105
 CREATE TABLE jd (id int PRIMARY KEY, tenant int, body text);

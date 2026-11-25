@@ -4,7 +4,7 @@
 # them), a few hundred, and not the 2,000 that a whole read of the chain for each transaction costs. The rows are as exact as ever, whatever happens to the chain in between: a writer of
 # another session that adds pages to it, a VACUUM that folds it away and the writes that start a new one. The log of the pending deletes of a partition is read once when a transaction finds it
 # changed (sift._test_pend_del_reads): 30 transactions that each delete a row and add it again read it fewer than 45 times, not the 60 of a read before and after the stamp of its last page.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 node_init cc 0 "autovacuum = off

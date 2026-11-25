@@ -5,7 +5,7 @@
 # the units, not the entity rows of the members ("unfilled"). The writers of the relation of pairs wait for the statement (the journal is made under a lock that holds them out), and a pair
 # written the moment the build ends is in the journal: the stamp of the build vouches for every change after the rows it read, whatever the build waited for. A concurrent build starts the journal at the end
 # of its build as before: its segments carry no stamp until the next REINDEX, and its reads are exact meanwhile.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init fs 62 "autovacuum = off"

@@ -2,7 +2,7 @@
 # tap: pooled
 # The second pass of CREATE INDEX CONCURRENTLY of a scope index sorts the rows it replicates through temporary files, so the index keeps only the segments it ends with (the blocks of intermediate runs, and of the
 # scope segments of the first pass that the second replaces, stayed in the file until a VACUUM), and no temporary file outlives the statement, whether it ends, fails, is cancelled or its backend is terminated.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 7
 
 node_init ct 57 "autovacuum = off

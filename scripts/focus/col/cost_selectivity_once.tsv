@@ -1,1 +1,1 @@
-col_cost_selectivity_once	src/col/v1/test/core.c:sift_test_eq_sel
+col/cost_selectivity_once	src/col/v1/test/core.c:sift_test_eq_sel

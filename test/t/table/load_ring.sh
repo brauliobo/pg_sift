@@ -8,7 +8,7 @@
 # while groups are written and none is published, and while some are published and the last are not, a COPY that fails on a row after the workers started, a savepoint rolled back
 # after the ring ran. After each the table is empty on the primary and the standby, VACUUM leaves the file as small as the empty table's and no orphan block, the store verifies,
 # and the same load works. SIFT_LR_ROWS (300000, 20000 quick; quick sets sift.test_load_unit_bytes = 128 (SIFT_LR_UNIT) so that rows of 3 MB are enough for the ring).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_LR_ROWS 300000 20000)
 # backtrace_functions: a request of an impossible size (the rerun after a power loss failed once on arm64 with one) logs the stack that made it, in the log of the node the report prints
@@ -154,9 +154,9 @@ power_loss "power loss with some groups published and the last not" 6
 # a VACUUM, a second COPY and an INSERT while groups are written and not published: the sweep leaves the blocks, the others go on
 start_load 5
 check "vacuum: the backend is about to publish" test -n "$victim"
-check "vacuum: a VACUUM during the load returns" test "$(timeout 120 bash -c ". '$(dirname "$0")/lib.bash'; sql primary 'VACUUM lt' && echo done" 2>&1 | tail -1)" == done
+check "vacuum: a VACUUM during the load returns" test "$(timeout 120 bash -c ". '${SIFT_REPO:?}/test/t/lib/common.bash'; sql primary 'VACUUM lt' && echo done" 2>&1 | tail -1)" == done
 check "an INSERT during the load" test "$(sql primary "INSERT INTO lt VALUES (-1, 0, 0, 'oltp')" "SELECT count(*) FROM lt WHERE id = -1" | tail -1)" == 1
-check "a second COPY during the load" test "$(timeout 300 bash -c ". '$(dirname "$0")/lib.bash'; sql primary \"COPY lt FROM '$D/load.csv' CSV\" && echo done" 2>&1 | tail -1)" == done
+check "a second COPY during the load" test "$(timeout 300 bash -c ". '${SIFT_REPO:?}/test/t/lib/common.bash'; sql primary \"COPY lt FROM '$D/load.csv' CSV\" && echo done" 2>&1 | tail -1)" == done
 release
 wait "$LOADER"; rc=$?
 check "the load that waited went on and ended" test "$rc" -eq 0

@@ -3,8 +3,8 @@
 # whose order arrays are compact (order_layout = 'compact', the chunks of the order keep the bucket of a key and read the exact one from the heap row), then crash recovery
 # and checks: every segment verifies, the segments are written compact, and the ordered reads (ASC and DESC, with an OFFSET and a range) return what the heap returns,
 # which the dead rows a crash orphans, the reused addresses and the pruned chains of the heap must not change. SIFT_COL_CRASH_ITERS (default 20, 3 quick).
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_col.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/col.bash"
 
 ITERS=$(knob SIFT_COL_CRASH_ITERS 20 3)
 plan $((ITERS + 4))

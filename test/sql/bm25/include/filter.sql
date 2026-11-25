@@ -24,7 +24,7 @@ CREATE INDEX docs_plain_cols ON docs_plain (category_id, created_at, active, cou
 CREATE INDEX docs_cols ON docs (category_id, created_at, active, counter_a, tier);
 VACUUM ANALYZE docs, docs_plain, categories;
 
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 CREATE FUNCTION top_of(tbl regclass, q text, flt text, k int, OUT metrics_a real[], OUT ids int[]) LANGUAGE plpgsql AS $$
 BEGIN
 	EXECUTE format('WITH r AS (SELECT id, sift.score(ctid) AS s FROM %s WHERE body @@> %L AND (%s) ORDER BY sift.score(ctid) DESC LIMIT %s)

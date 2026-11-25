@@ -1,4 +1,4 @@
-# The command line of the transaction fuzz. The docstring of test/fuzz/txn_fuzz.py is its help text.
+# The command line of the transaction fuzz. The docstring of test/fuzz/txn/cli.py is its help text.
 
 import argparse
 import json

@@ -9,9 +9,9 @@
 # COMPAT_FIXTURE names another fixture directory (compat_30_fixture.sh runs this test on the files of 3.0). The segments of the
 # fixture are older than segment format 3: they are read as they are, a promotion writes a segment of format 4 next to them (and
 # the first insert raises the metapage to 1.6, the write buffer of 4.2), and a merge or VACUUM-driven rewrite leaves nothing but format 4.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-FIX=$(cd "$(dirname "$0")/../fixtures/${COMPAT_FIXTURE:-compat2x}" && pwd)
+FIX=$(cd "${SIFT_REPO:?}/test/fixtures/${COMPAT_FIXTURE:-compat2x}" && pwd)
 SEGMENTS="SELECT gen, kind, ndocs, dirty, dead_docs FROM sift.segments('docs_idx') ORDER BY gen"
 fill() {
 	sql fx "INSERT INTO docs SELECT g, concat_ws(' ', 'alpha' || g % 7, 'beta' || g % 13, 'w' || g % 50,

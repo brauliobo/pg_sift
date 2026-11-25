@@ -5,7 +5,7 @@
 # not pile up: a package upgrade without a restart, or a setting that sets the size, makes a table nobody maps any more.
 # sift._test_dsm_layout(n, name, size) is the table `name` as the library of layout n asks for it; its result is stamp * 1000000 + calls.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 11
 node_init ds 79

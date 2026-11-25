@@ -21,9 +21,9 @@ SELECT d, (SELECT count(DISTINCT sb) FROM sift.col_unit_hist('cb_col', d)) >= (S
 FROM unnest(ARRAY['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8']) d ORDER BY d;
 SELECT sift.col_verify('cb_col', true);
 
-\ir test/agg_preagg_helpers.sql
+\ir test/common/sql/agg/preagg.sql
 
-\ir test/agg_preagg_units.sql
+\ir test/common/sql/agg/preagg_units.sql
 
 -- the last dimension: from the histograms of the units that have it, and the rows are those of the scan and of the plain plan
 SET cpu_tuple_cost = 0.5;

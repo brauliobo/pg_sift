@@ -5,9 +5,9 @@
 # nulls (overflow values with their JSON types in the chunks) and some documents lack it: jsonb_typeof filters (=, <>, 'null', IS NULL), a group key and FILTERs return the same on the standby, the primary and the heap.
 # The standby is then promoted and takes writes. key_cut is off: the rewrite chooses it again from the data (tenant_id here, 13 units), and the units of a cut
 # index are not answered net of exceptions (an IS NULL on the leaf that is mostly NULL scans them), which the check of the merged segment asks for.
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_col.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/col.bash"
+REPO=${SIFT_REPO:?}
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 25

@@ -1,1 +1,1 @@
-json_build_object	src/core/jsonbuild.c:jb_fill src/core/jsonbuild.c:jb_invalidate src/core/jsonbuild.c:jb_number src/core/jsonbuild.c:jb_value src/core/jsonbuild.c:sift_json_build_object
+core/json_build_object	src/core/jsonbuild.c:jb_fill src/core/jsonbuild.c:jb_invalidate src/core/jsonbuild.c:jb_number src/core/jsonbuild.c:jb_value src/core/jsonbuild.c:sift_json_build_object

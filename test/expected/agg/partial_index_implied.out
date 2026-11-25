@@ -24,7 +24,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE kinds;
 SET app.status = 'open';
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN

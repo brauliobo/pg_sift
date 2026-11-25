@@ -6,8 +6,8 @@
 # what the crash orphaned). The weight leaf holds numbers among strings, booleans, objects, arrays and JSON nulls (overflow values with their
 # JSON types in the chunks) and some documents lack it: jsonb_typeof filters (=, <>, 'null', IS NULL), a group key and FILTERs of the column source
 # return what the heap returns. SIFT_COL_CRASH_ITERS (default 40, 4 quick).
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_col.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/col.bash"
 
 ITERS=$(knob SIFT_COL_CRASH_ITERS 40 4)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)

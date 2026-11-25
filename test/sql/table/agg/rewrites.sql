@@ -11,7 +11,7 @@ CREATE INDEX items_owner ON items (set_id);
 VACUUM (FREEZE, ANALYZE) key_sets;
 VACUUM (FREEZE, ANALYZE) items;
 
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE rewrite_q (name text, q text);
 INSERT INTO rewrite_q VALUES

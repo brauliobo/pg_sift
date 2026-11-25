@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The bounded-memory gate of the sorts, the parallel aggregate and the scans that spill (test/par-sorts.tsv), at 1x, 2x and 4x rows.
+"""The bounded-memory gate of the sorts, the parallel aggregate and the scans that spill (test/scaling/par_sorts.tsv), at 1x, 2x and 4x rows.
 
 Every size is measured in a backend of its own (the way scripts/mem-slope.py does: the table is built by another session, the measured backend samples its own anonymous memory with
 sift._test_rss_peak_start, and sift._test_mem_highwater() gives the bytes the memory scopes of sift counted). A case is the statement, its settings and the rows of its 1x table; the
@@ -27,7 +27,7 @@ spec = importlib.util.spec_from_file_location("memslope", os.path.join(HERE, "me
 ms = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ms)
 
-TSV = os.environ.get("PAR_SORTS_TSV") or os.path.join(HERE, "..", "test", "par-sorts.tsv")
+TSV = os.environ.get("PAR_SORTS_TSV") or os.path.join(HERE, "..", "test", "scaling", "par_sorts.tsv")
 SCALES = (1, 2, 4)
 ALPHA_MAX, B_EXACT_MAX, B_RSS_MAX, TMP_X_MAX = 1.15, 2.0, 8.0, 2.5
 FIXED_BASE_MB = 4.0

@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "../
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SHIMS = ("test/common/pgshim.c", "test/fuzz/fz_shim.c", "test/common/cpushim.c")
+SHIMS = ("test/common/pgshim.c", "test/fuzz/c/shim.c", "test/common/cpushim.c")
 
 
 def listed(path):

@@ -8,8 +8,8 @@
 # scope index after a join read of the same keys returned older rows before the fix that stamps the walk with the source of its zones). Quick tier: seed 1 of 3 steps on 8,000 rows; full: seeds 1-6 of 8 steps on 60,000.
 # SIFT_ORACLE_SEEDS / SIFT_ORACLE_ROWS / SIFT_ORACLE_STEPS / SIFT_ORACLE_WINDOWS override; SIFT_ORACLE_MUTANT=on|off|only (default on) picks the seeds, the mutant check or both (scripts/stability.sh runs the seeds of a round in shards and the mutant once); SIFT_ORACLE_OFFSET moves the four nodes (ports SIFT_PORT + offset .. + 3). Not covered: crash recovery
 # (col_scope_crash.sh), cross-major pg_upgrade (col_scope_upgrade.sh).
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 SEEDS=$(knob SIFT_ORACLE_SEEDS 1-6 1)
 ROWS=$(knob SIFT_ORACLE_ROWS 60000 8000)

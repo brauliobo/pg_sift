@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The key_order option of a sift_table (docs/COL-TAM.md section 8.2) across what moves a table: a table of 4.3.0 read and updated unchanged, crash
 # recovery of the sorted rewrite (finished and cut), a hot standby that replays it, parallel scans of a sorted table, pg_dump | psql and pg_upgrade.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 ref=v4.3.0
 git -C "$REPO" rev-parse -q --verify "refs/tags/$ref" >/dev/null || { echo "1..0 # SKIP no release tag $ref"; exit 0; }

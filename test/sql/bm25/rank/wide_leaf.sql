@@ -5,7 +5,7 @@
 -- whose documents are scored again from their text.
 CREATE EXTENSION pg_sift;
 \set sift_ref_lib 1
-\ir test/sql/reference.sql
+\ir test/sql/bm25/reference.sql
 
 CREATE TABLE rw (id int PRIMARY KEY, body text);
 INSERT INTO rw

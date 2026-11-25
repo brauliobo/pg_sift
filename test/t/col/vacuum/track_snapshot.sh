@@ -5,7 +5,7 @@
 # row that a session deletes meanwhile leaves its page without the all-visible bit, which the heap-free read checks: the older snapshot must still read every row it saw.
 # The VACUUM stops (sift.test_cleanup_gate, a testing build) right after it took the id; a REPEATABLE READ session takes its snapshot, a second session deletes rows, the VACUUM goes on and
 # commits, and the older snapshot reads again, by the heap and by the heap-free scan.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 node_init vt 49 "autovacuum = off

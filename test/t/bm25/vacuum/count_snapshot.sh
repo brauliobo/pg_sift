@@ -6,7 +6,7 @@
 # dead tuples first and marks the pages all-visible after; a count that read the liveness (or the directory's dirty flag of the segment,
 # or the segments themselves) before the bit has to give the pages to the heap. The scan waits for an advisory lock before the read of the
 # map (sift.test_vis_pause, a testing build), which the test holds until the VACUUM is done: no timing involved.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 10
 node_init vc 16 "autovacuum = off

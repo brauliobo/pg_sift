@@ -3,7 +3,7 @@
 # the segments takes the lock exclusive from the carry of the records to the switch of the directory. Held only around the append, the lock would let a delete find a segment, lose to a whole
 # merge, and then append a record for a segment that is gone: its rows would come back. The delete is held after its lookup (sift.test_phase_gate, gate SIFT_COL_GATE_DELETE = 8) with a merge started
 # behind it: the merge must wait for the delete, then carry its records, and every answer is the heap's.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 G=7400

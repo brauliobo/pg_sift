@@ -2,7 +2,7 @@
 # The registry of the manifests in shared memory under pressure and damage: an index put out of service before the registry knows it cannot be published afterwards (a reader that never
 # saw the damage races the statement that met it); a reader that cannot attach the area of the snapshots (the memory of the system is short: sift.test_dsm_fail names manifest_area) is
 # not served a snapshot and reads the manifest from the buffers, it never fails for it.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init sf 94 "autovacuum = off

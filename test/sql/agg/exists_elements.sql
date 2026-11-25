@@ -28,7 +28,7 @@ VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dates;
 ANALYZE dim_a;
 ANALYZE mappings;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 -- The lookup-per-element shape: a lookup per element chosen by the entity's kind, the unmapped category of a document that is not mapped, the element's own otherwise.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n, avg(f.id) AS mean FROM facts f JOIN dim_a e ON e.id = f.dim_a_id

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# The exact basis of the memory slope gate (scripts/mem-slope.py, BASIS column of test/mem-slope.tsv): a row on the exact basis passes or fails on the bytes the memory scopes
+# The exact basis of the memory slope gate (scripts/mem-slope.py, BASIS column of test/mem/slope.tsv): a row on the exact basis passes or fails on the bytes the memory scopes
 # of sift counted (sift._test_mem_highwater()), whatever the resident gauge reads. The merge of the gate's table holds the string dictionary of its partition writer, a slope of tens of
 # bytes a row: its row recorded at exact + max(2 B/row, 15%) passes, the same case with a ceiling lower by that allowance (a leak that outgrew its record) fails, and so does it
 # under the clean ceiling; an update that holds nothing stays on its clean ceiling. Every ceiling is derived from the exact slope this run measured, no timer and no sampler decides.
 # The tables of the gate are built by one process: a parallel CREATE INDEX splits the heap blocks between its processes as they run, so the segments of the index (the
 # input of the merge, and how it cuts its output) came out different from build to build, and the exact slope of the merge with them (a hosted job read 66 B/row against 54.5).
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 node_init mx 39 "autovacuum = off
@@ -19,7 +19,7 @@ node_start mx || bail "start failed"
 sql mx "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"
 
 slope() { PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres PGDATABASE=postgres MEM_SLOPE_RUNS=1 MEM_SLOPE_TSV="$1" python3 -I "$REPO/scripts/mem-slope.py" run --rows 30000 2>"$(dir mx)/slope.err"; }
-row() { awk -F'\t' -v OFS='\t' -v src="$1" -v name="$2" -v ceiling="$3" -v basis="$4" -v status="$5" '$1 == src { $1 = name; $3 = ceiling; $4 = basis; $5 = status; print }' "$REPO/test/mem-slope.tsv"; }
+row() { awk -F'\t' -v OFS='\t' -v src="$1" -v name="$2" -v ceiling="$3" -v basis="$4" -v status="$5" '$1 == src { $1 = name; $3 = ceiling; $4 = basis; $5 = status; print }' "$REPO/test/mem/slope.tsv"; }
 
 copies() { PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres PGDATABASE=postgres python3 -I -c "
 import importlib.util as u

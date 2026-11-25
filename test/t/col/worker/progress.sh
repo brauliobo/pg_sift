@@ -2,7 +2,7 @@
 # tap: pooled
 # sift.progress: one row for each maintenance job that runs now. A maintenance worker held at the start of its promotion (sift.test_progress_gate, a testing build) is listed with its process,
 # index, job and phase and the segments it will replace; the merges of a VACUUM held at its cleanup gate are listed with the process of the session; both are gone when the job ends.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init wp 66 "autovacuum = off

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Differential fuzz of the BM25 `sift` index in the shapes that run a scan again and again (docs/AGG.md, "Transactions").
 
-  test/fuzz/bm25_fuzz.py [--seeds 1-20] [--queries 40] [--rows 600] [--out DIR] [--stop-after N] [--keep]
-  test/fuzz/bm25_fuzz.py --selftest
+  test/fuzz/bm25.py [--seeds 1-20] [--queries 40] [--rows 600] [--out DIR] [--stop-after N] [--keep]
+  test/fuzz/bm25.py --selftest
 
 Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT). A seed gives a table pd(id, grp, body) of random sentences over a small vocabulary with a BM25 index (English or German
 stemmer) and a list of statements: one query (word, phrase, NOT, OR, AND, prefix, a set of words) and the same query inside a correlated subquery, a LATERAL join, an EXISTS and an

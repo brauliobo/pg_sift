@@ -10,7 +10,7 @@ INSERT INTO nf SELECT i, i % 7, i % 100, 'v' || i % 13 FROM generate_series(1, 2
 CREATE INDEX nf_col ON nf USING sift_col (id, g, n, s);
 VACUUM ANALYZE nf;
 
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE agg_q (q text);
 INSERT INTO agg_q VALUES

@@ -10,7 +10,7 @@ CREATE TABLE zp (id int, k int, j int, v bigint) USING sift_table;
 INSERT INTO zp SELECT i, i, CASE WHEN i % 5000 < 1000 THEN NULL ELSE i % 100 END, i * 3 FROM generate_series(1, 400000) i;
 VACUUM (FREEZE, ANALYZE) zp;
 
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; pruned text := '0';
 BEGIN

@@ -19,7 +19,7 @@ NOTICE:  sift_col index "v_t_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('v_t_col');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) v_t;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal_nonempty(q) $$;
 -- the strings read as numbers, as the normal plan reads them

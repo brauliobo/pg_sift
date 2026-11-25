@@ -2,8 +2,8 @@
 # The partitions of a key-cut index of a release (5.0.0 records none) across a swap of the library: this tree reads the index as it is, its first maintenance step records the partitions
 # in one directory update that writes no segment and changes no generation, with deletion records pending on the units (the answers are the heap's before and after), the index verifies, and the
 # release library refuses the chained directory with the format error until the index is built again.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 ref=v5.0.0
 git -C "$REPO" rev-parse -q --verify "refs/tags/$ref" >/dev/null || { echo "1..0 # SKIP no release tag $ref"; exit 0; }

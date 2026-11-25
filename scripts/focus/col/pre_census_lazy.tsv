@@ -1,1 +1,1 @@
-col_pre_census_lazy	src/agg/cost/join.c:leaf_correlation src/agg/cte/hook.c:reads_indexed_plan src/agg/cte/hook.c:replan_query src/agg/order/shape.c:topn_heads_win src/agg/order/shape.c:topn_one_leaf src/col/v1/amscan/cost.c:probe_loops src/col/v1/test/unit_damage.c:sift_test_col_pre_folds
+col/pre_census_lazy	src/agg/cost/join.c:leaf_correlation src/agg/cte/hook.c:reads_indexed_plan src/agg/cte/hook.c:replan_query src/agg/order/shape.c:topn_heads_win src/agg/order/shape.c:topn_one_leaf src/col/v1/amscan/cost.c:probe_loops src/col/v1/test/unit_damage.c:sift_test_col_pre_folds

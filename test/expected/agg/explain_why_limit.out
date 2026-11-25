@@ -9,7 +9,7 @@ FROM generate_series(1, 200000) i;
 CREATE INDEX readings_device_ts ON readings (device, ts);
 CREATE INDEX readings_col ON readings USING sift_col (device, ts, value);
 VACUUM (FREEZE, ANALYZE) readings;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION topn_why(q text) RETURNS TABLE (used bool, slug text, says_limit bool) LANGUAGE sql AS
 $$ SELECT w.used, w.slug, w.reason LIKE '%the normal plan with the LIMIT%' FROM sift.explain_why(q) w WHERE w.arm = 'topn' $$;

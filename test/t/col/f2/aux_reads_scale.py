@@ -11,7 +11,7 @@ Every case is measured in a fresh backend at 1x, 2x and 4x rows of one synthetic
   temp_bytes   pg_stat_database.temp_bytes the statement added, with temp_file_limit 1 MB: 0 and no file left in pgsql_tmp (heapallindexed: sorts that spill, bounded)
   alpha_disk   bytes a row of the relation a creation wrote at 4x over 1x                                                                                    <= 1.15
 
-  test/t/aux_reads_scale.py [--rows N] [--only RE] [--selftest]       reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc), pg_sift and pg_sift_test installed
+  test/t/col/f2/aux_reads_scale.py [--rows N] [--only RE] [--selftest]       reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc), pg_sift and pg_sift_test installed
 """
 import os, re, shutil, subprocess, sys, tempfile, time
 from typing import NamedTuple

@@ -12,7 +12,7 @@
 # A scope over a relation of pairs that has no journal yet is built too, with neither the table nor the pairs having a journal: the journal is made inside the build, and the writers of both tables must
 # complete while it is made (gate 6), as they do when the journal exists.
 # SIFT_CL_KINDS: the kinds to run (default all).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 KINDS=${SIFT_CL_KINDS:-btree gin sift_plain sift_track sift_scope sift_scope_new_journal reindex_btree reindex_gin reindex_sift_scope}
 PT=pairs

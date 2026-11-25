@@ -33,8 +33,8 @@ class SelectionTest(unittest.TestCase):
         self.check([], [], run=False)
 
     def test_tests_and_harness_only_zero_work(self):
-        picked = self.check(['test/sql/agg_v6_core_suite.sql', 'scripts/ci.sh', 'scripts/perf/gate.py', 'scripts/perf/canaries.py', '.github/workflows/performance.yml',
-                             'bench/steps/perf_gate/run.py', 'scripts/perf-select.py', 'scripts/test-perf-select.py', 'scripts/areas.tsv', 'test/t/001_crash.pl'], [], run=False)
+        picked = self.check(['test/sql/agg/v6/core_suite.sql', 'scripts/ci.sh', 'scripts/perf/gate.py', 'scripts/perf/canaries.py', '.github/workflows/performance.yml',
+                             'bench/steps/perf_gate/run.py', 'scripts/perf-select.py', 'scripts/test-perf-select.py', 'scripts/areas.tsv', 'test/t/bm25/crash.pl'], [], run=False)
         self.assertEqual((picked['ab_groups'], picked['scaling_checks'], SELECT.commands(picked)), ([], [], {'gate': [], 'plangate': []}))
 
     def test_plan_files_run_the_plangate_smoke_slice_only(self):
@@ -78,7 +78,7 @@ class SelectionTest(unittest.TestCase):
         self.check(['src/table/f2/f2_scan.c', 'src/col/shred.c', 'docs/USAGE.md'], ['jsonb', 'table'])
 
     def test_harness_never_hides_a_source_change(self):
-        self.check(['scripts/ci.sh', 'bench/perf/catalog.py', 'test/sql/col_search.sql', 'src/table/am.c'], ['table'])
+        self.check(['scripts/ci.sh', 'bench/perf/catalog.py', 'test/sql/col/search.sql', 'src/table/am.c'], ['table'])
 
     def test_git_rename_deletion_no_renames(self):
         with tempfile.TemporaryDirectory(prefix='perf-select-test-') as tmp:
@@ -106,12 +106,12 @@ class SelectionTest(unittest.TestCase):
         picked = SELECT.select([], MAP, 'nightly')
         self.assertEqual((picked['groups'], picked['plangate_slices'], picked['run']), (SEVEN, SEVEN, True))
         self.assertEqual(picked['plangate_lanes'], list(SELECT.LANE_FLAGS))
-        self.assertEqual(picked['scaling_checks'], ['check-scaling-ops.sh --sql-only', 'tap-shell-scaling_slope'])
+        self.assertEqual(picked['scaling_checks'], ['check-scaling-ops.sh --sql-only', 'tap-shell-core/scaling_slope'])
         self.assertEqual(SELECT.commands(picked)['gate'], [['python3', '-I', 'scripts/perf/gate.py', '--all']])
 
     def test_scaling_checks_follow_the_files_that_need_them(self):
         self.assertEqual(SELECT.select(['src/table/f2/f2_dml.c'], MAP)['scaling_checks'], ['check-scaling-ops.sh --sql-only'])
-        self.assertEqual(SELECT.select(['src/core/page.h'], MAP)['scaling_checks'], ['tap-shell-scaling_slope'])
+        self.assertEqual(SELECT.select(['src/core/page.h'], MAP)['scaling_checks'], ['tap-shell-core/scaling_slope'])
         self.assertEqual(SELECT.select(['src/agg/v6/v6_sip.c'], MAP)['scaling_checks'], [])
 
     def test_commands_run_only_the_area(self):
@@ -137,9 +137,9 @@ class SelectionTest(unittest.TestCase):
 
     def test_ci_runs_the_perf_job_of_the_area_and_every_correctness_job_of_the_stack(self):
         regex = bash(ROOT / 'scripts/ci.sh', '--areas-regex', MAP, 'src/agg/v6/v6_sip.c').strip()
-        jobs = ['perf-gate-star', 'perf-gate-table', 'perf-gate-smoke', 'installcheck-agg_semi_lut', 'installcheck-col_search', 'installcheck-tbl_cap', 'difftest-col', 'isolation', 'fuzz']
+        jobs = ['perf-gate-star', 'perf-gate-table', 'perf-gate-smoke', 'installcheck-agg/semi_lut', 'installcheck-col/search', 'installcheck-table/cap', 'difftest-col', 'isolation', 'fuzz']
         picked = bash('-c', 're=$1; shift; for j in "$@"; do [[ $j =~ $re ]] && echo "$j"; done; :', 'x', regex, *jobs).split()
-        self.assertEqual(picked, ['perf-gate-star', 'installcheck-agg_semi_lut', 'installcheck-col_search', 'installcheck-tbl_cap', 'difftest-col', 'isolation'])
+        self.assertEqual(picked, ['perf-gate-star', 'installcheck-agg/semi_lut', 'installcheck-col/search', 'installcheck-table/cap', 'difftest-col', 'isolation'])
 
     def test_ci_runs_every_perf_job_for_the_gate_and_every_plan_lane_for_the_shapes(self):
         def picked(path, *jobs):
@@ -151,9 +151,9 @@ class SelectionTest(unittest.TestCase):
 
     def test_actual_ci_capture_expansion(self):
         for path, expected in {
-            'test/sql/col_search.sql': '^$|^installcheck-col_search$|(^gh:ci$)',
-            'test/t/001_crash.pl': r'^$|^tap(-shell)?-001_crash$|(^gh:ci$)',
-            'test/expected/count_scan_1.out': '^$|^installcheck-count_scan_1$|(^gh:ci$)|^installcheck-count_scan$|(^gh:ci$)',
+            'test/sql/col/search.sql': '^$|^installcheck-col/search$|(^gh:ci$)',
+            'test/t/bm25/crash.pl': r'^$|^tap(-shell)?-bm25/crash$|(^gh:ci$)',
+            'test/expected/bm25/count_scan_1.out': '^$|^installcheck-bm25/count_scan_1$|(^gh:ci$)|^installcheck-bm25/count_scan$|(^gh:ci$)',
             'scripts/source-snapshot.sh': '^$|^(hardened|assert|valgrind)$',
             'scripts/areas.sh': '^$|.|(^gh:perf$)',
         }.items():

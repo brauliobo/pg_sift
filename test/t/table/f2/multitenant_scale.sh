@@ -2,7 +2,7 @@
 # One tenant per partition, 600 partitions of one sift_table (more than the 512 manifest slots, the 256 pinned parts and the 128 column delta maps of a backend): a long-lived session
 # reads, aggregates and updates all of them under a small backend cache budget. What it keeps for the next statement stays inside the budget however many partitions it touched, what it
 # reads is what a heap twin and the plain plan read, and the locks it holds are the ones PostgreSQL takes for the partitions.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 PARTS=$(knob SIFT_SCALE_PARTS 600 600)
 # the 30 s are for the release speed: an assertion-enabled server (SIFT_SCALE_SECONDS=240) builds the same partitions an order of magnitude slower

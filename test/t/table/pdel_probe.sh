@@ -4,7 +4,7 @@
 # for each row: sift._test_pend_del_reads counts the reads, and 4 UPDATEs of 10,000 rows each in one transaction, which probe 40,000 times, read the chain fewer than 300 times; so does one UPDATE
 # of 60,000 rows, whose deletes are written twice while it runs and whose probes and row locks name the chain by two heads (the log of each head is kept). The answers are the same as ever: the
 # key of a row the transaction deleted (held in memory, or written) is free again for the transaction, a key that is alive is a duplicate, and the rows are exact.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 11
 node_init pp 60 "autovacuum = off

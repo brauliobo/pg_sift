@@ -6,7 +6,7 @@
 # and answers as the table does. Kills: a parallel worker held at the start of its scan (kill -9 of its pid), and the leader before the n-th directory update of the build and after the last
 # (sift.test_crash_dir: the publication of the segments, then each partition the merge into the gap writes). SIFT_BK_ROWS (400000, 150000 quick), SIFT_BK_POINTS
 # (most directory updates killed in the leader, 8, 4 quick).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_BK_ROWS 400000 150000)
 POINTS=$(knob SIFT_BK_POINTS 8 4)

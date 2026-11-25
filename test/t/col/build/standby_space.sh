@@ -4,7 +4,7 @@
 # The build now reserves a gap in front of the segments of its participants, merges them into it and cuts the file behind it, in the file no query of a standby can
 # hold before the commit: the file is the index right after CREATE INDEX and REINDEX, and nothing is left for the first VACUUM. Gap sizes: by the statistics (the
 # default), none (the space step brings the merge down), and one block-sized sliver (the output lands mostly above the segments it replaces).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_BSS_ROWS 1000000 500000)
 plan 19

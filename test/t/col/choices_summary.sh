@@ -4,9 +4,9 @@
 # of the test gets order arrays, key lists, key_cut, array lengths and track_changes (the 100,000 rows the order arrays ask for). The test counts the lines of each statement against
 # the limit of the table below, and proves that everything the summary names resolves: every name is a row of sift.index_choices(index), every row has its row of sift.help(slug), the
 # count of the first line is the number of automatic choices of the function, and client_min_messages = warning hides the summary.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+REPO=${SIFT_REPO:?}
 # psql FLAGS: the node, notices on (messages of every level go to the output)
 p() { PGOPTIONS="-c client_min_messages=notice" psql -X -q -h "$(node_sock ch)" -p "$(port ch)" -U postgres -d "$(node_db ch)" "$@" 2>&1; }
 # s STATEMENT...: the output of the statements, tuples only

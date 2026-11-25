@@ -270,7 +270,7 @@ CREATE FUNCTION sift._test_cache_register_dummies(n int4) RETURNS int4
 CREATE FUNCTION sift._test_unit_room_failure() RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_unit_room_failure' LANGUAGE C STRICT;
 
--- n log lines, each reported under the error context of an index (test/mem-slope.tsv leak_errctx_report): the memory they leave in the backend
+-- n log lines, each reported under the error context of an index (test/mem/slope.tsv leak_errctx_report): the memory they leave in the backend
 CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_errctx_report' LANGUAGE C STRICT;
 -- n questions whether an index tracks a key, asked in a context of their own (src/col/v1/test/alloc.c): the bytes that context holds, exact

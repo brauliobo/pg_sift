@@ -24,7 +24,7 @@ INSERT INTO groups SELECT i, 'g' || i FROM generate_series(0, 36) i;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) groups;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), (SELECT count(*) FROM jsonb_array_elements(outcome(q, true)::jsonb));
@@ -132,7 +132,7 @@ INSERT INTO plain_events SELECT i, i % 37, i FROM generate_series(1, 500) i;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) plain_events;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), (SELECT count(*) FROM jsonb_array_elements(outcome(q, true)::jsonb));

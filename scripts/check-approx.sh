@@ -17,7 +17,7 @@ for f in agg/plan_agg.c agg/spec_dist.c $(cd "$R/src" && ls agg/plan/*.c agg/dis
 	hits=$(grep -nEi 'approx|hll|sketch' "$R/src/$f" || true)
 	[[ -z $hits ]] || fail "src/$f is on the path of count(DISTINCT) and names the estimate: $hits"
 done
-grep -q 'count(DISTINCT' "$R/test/sql/col_approx.sql" && grep -q 'exact_with_option' "$R/test/sql/col_approx.sql" || fail "test/sql/col_approx.sql does not prove count(DISTINCT) exact with hll_columns on"
+grep -q 'count(DISTINCT' "$R/test/sql/col/approx.sql" && grep -q 'exact_with_option' "$R/test/sql/col/approx.sql" || fail "test/sql/col/approx.sql does not prove count(DISTINCT) exact with hll_columns on"
 for p in '0\.81%' 'not counted' 'mergeable' 'is exact in every plan'; do
 	grep -qE "$p" "$R/docs/ANALYTICS.md" || fail "docs/ANALYTICS.md lacks '$p' in its section on approximate distinct counts"
 done

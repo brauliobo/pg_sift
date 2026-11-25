@@ -63,7 +63,7 @@ format_checks() { [[ ! -x $S/check-format-isolation.sh ]] || job format-isolatio
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
 ISOLATION_SLICES=4
 isolation_slices() { local k; for (( k = 1; k <= ISOLATION_SLICES; k++ )); do job "isolation-$k" isolation 1 "$S/isolation.sh" --slice "$k/$ISOLATION_SLICES"; done; }
-# A shell test that says `# tap: pooled` (test/t/lib.bash: SIFT_POOLED_CLUSTER) runs in a database of the lane's cluster, not in a server of its own
+# A shell test that says `# tap: pooled` (test/t/lib/common.bash: SIFT_POOLED_CLUSTER) runs in a database of the lane's cluster, not in a server of its own
 declare -A POOLED_TAP=()
 while IFS= read -r f; do f=${f#"$REPO/test/t/"}; POOLED_TAP[${f%.sh}]=1; done < <(grep -rlx --include='*.sh' '# tap: pooled' "$REPO/test/t")
 tap_shell() {

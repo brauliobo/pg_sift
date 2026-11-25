@@ -7,7 +7,7 @@
 #   scripts/valgrind.sh --leaks [--major 17|18] [TEST...]   the leak gate: the curated tests of scripts/valgrind-leaks.tests (about ten minutes of memcheck) with leak checking, every definite
 #                                                       leak with a pg_sift frame failing the run unless a row of scripts/valgrind-leaks.allow (reviewed, one line of evidence each) covers it;
 #                                                       in scripts/ci.sh: SIFT_CI_LEAKS=1 scripts/ci.sh quick, or SIFT_CI_JOBS=valgrind-leaks scripts/ci.sh quick
-#   scripts/valgrind.sh --leaks-selftest                a planted leak (sift._test_leak('palloc'), test leak_planted) must fail that gate, and a planted context (planted.context = on) the per-test hooks of scripts/leakcheck.sh
+#   scripts/valgrind.sh --leaks-selftest                a planted leak (sift._test_leak('palloc'), test core/leak_planted) must fail that gate, and a planted context (planted.context = on) the per-test hooks of scripts/leakcheck.sh
 #
 # Memcheck is 20 to 50 times slower, so the default tests are the memory-sensitive paths (list below; SIFT_VALGRIND_FULL=1 adds the slow ones)
 # (`col_enc` alone takes over 30 minutes: name it to run it). The whole run is bounded by SIFT_VALGRIND_TIMEOUT seconds (default 3000; a run that hits it fails). The postmaster and every
@@ -37,9 +37,9 @@ source "$REPO/scripts/source-snapshot.sh"
 MASSIF=
 [[ ${1:-} != --massif ]] || { MASSIF=1; shift; }
 if [[ ${1:-} == --leaks-selftest ]]; then
-	out=$(PGOPTIONS="-c planted.context=on" "$0" --leaks leak_planted 2>&1) && { echo "valgrind: the planted leak did not fail the leak gate"; exit 1; }
+	out=$(PGOPTIONS="-c planted.context=on" "$0" --leaks core/leak_planted 2>&1) && { echo "valgrind: the planted leak did not fail the leak gate"; exit 1; }
 	grep -q 'FAIL: .*sift_test_leak' <<<"$out" || { echo "valgrind: the leak gate failed, but not on the planted leak:"; tail -n 20 <<<"$out"; exit 1; }
-	grep -q 'leak in regress-leak_planted: .*sift leak: memory context' <<<"$out" || { echo "valgrind: the per-test hooks did not fail the planted context:"; tail -n 20 <<<"$out"; exit 1; }
+	grep -q 'leak in regress-core-leak_planted: .*sift leak: memory context' <<<"$out" || { echo "valgrind: the per-test hooks did not fail the planted context:"; tail -n 20 <<<"$out"; exit 1; }
 	echo "valgrind: the planted leak fails the leak gate, and the planted context the per-test hooks"
 	exit 0
 fi
@@ -56,8 +56,8 @@ fi
 # aggregation nodes 105 + 24. SIFT_VALGRIND_FULL=1 adds the slow ones: col_index_basic 289 (the assert lane runs it too), col_index_parallel 285,
 # col_index_dict_tests 283, agg_bucket 188, agg_dense 114.
 if [[ -z $MASSIF ]] && (( ! ${#TESTS[@]} )); then
-	TESTS=(store_basic tbl_basic shred_values col_index_relcache verify_relcache col_dict_cache read_dict_ids aggstub_dict
-		agg_lookup_pricing_suite col_wbuf wbuf_lifecycle build_parallel agg_partial_index agg_distinct)
+	TESTS=(bm25/store/basic table/basic col/shred/values col/index/relcache bm25/verify/relcache col/dict/cache bm25/read/dict_ids agg/stub/dict
+		agg/lookup/pricing_suite col/wbuf/basic bm25/wbuf/lifecycle bm25/build/parallel agg/partial_index agg/distinct/basic)
 	[[ -z ${SIFT_VALGRIND_FULL:-} ]] || TESTS+=(col_index_basic col_index_parallel col_index_dict_tests agg_bucket agg_dense)
 	# SIFT_VALGRIND_ACCUM=1 adds the small tests of the paths that accumulate memory: merge, rewrite, fold and vacuum of a column index, the tombstone log,
 	# the scope journal, the value store, partitions, the lookup load and count(DISTINCT)

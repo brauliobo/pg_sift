@@ -2,7 +2,7 @@
 # A parallel build of a unique index on a sift_table: the participants scan the table with the snapshot PostgreSQL gives them, SnapshotAny for a build that holds off the writers (ADD PRIMARY KEY,
 # CREATE UNIQUE INDEX), which sees every version a commit has deleted until a merge drops it. The index gets the rows a serial build reads, so a key an UPDATE rewrote is once in it, and each
 # participant ends the scan it was given. Twelve rounds rewrite a third of the rows and add the primary key in parallel again; the log says each build was parallel and shows no leak.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init pk 80 "autovacuum = off

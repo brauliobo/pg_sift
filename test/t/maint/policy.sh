@@ -7,7 +7,7 @@
 # (c) REINDEX CONCURRENTLY of the child restores the fast path, clears the recommendation, and the answers are those of the index before it;
 # (d) the incremental work stays automatic: the rows of the write buffer are promoted;
 # (e) a worker the server has no slot for says so with the slots in the detail, by the job that holds them.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 21
 node_init mp 71 "autovacuum = off

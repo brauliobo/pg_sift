@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The deterministic scaling gate: no clock is read, so it does not flake under load. The cost of a data structure is its count of operations at n and at 8n, the cost of a statement is the
 # buffers it touches at 2,000 and at 16,000 rows (Spec 66).
-#   C     test/scaling/check_scaling_c.c runs the real code of src/ and sqlite/host under compiler instrumentation (op_counters.h) and fails a ratio above the ceiling of its class
-#   SQL   test/sql/scaling_ops_gate.sql: shared blocks, temp blocks and the nodes of the plan of eight shapes, through pg_regress
+#   C     test/scaling/runner.c runs the real code of src/ and sqlite/host under compiler instrumentation (op_counters.h) and fails a ratio above the ceiling of its class
+#   SQL   test/sql/core/scaling_ops_gate.sql: shared blocks, temp blocks and the nodes of the plan of eight shapes, through pg_regress
 # A gate marked pending in either names the lane that fixes the code: it must stay over its ceiling until then, and fails as stale once it does not.
 #
 #   scripts/check-scaling-ops.sh               the C gate plain and under ASan+UBSan, then the SQL gate
@@ -40,11 +40,11 @@ sql_gate() {
 		scripts/pgtest.sh install >/dev/null
 		scripts/pgtest.sh start >/dev/null
 	fi
-	scripts/pgtest.sh regress scaling_ops_gate
+	scripts/pgtest.sh regress core/scaling_ops_gate
 }
 
 expected_has_no_failing_row() {
-	! grep -nE '^ (FAIL|STALE) \|' test/expected/scaling_ops_gate.out
+	! grep -nE '^ (FAIL|STALE) \|' test/expected/core/scaling_ops_gate.out
 }
 
 selftest() {

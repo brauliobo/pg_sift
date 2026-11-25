@@ -27,7 +27,7 @@ CREATE INDEX docs_plain_idx ON docs_plain USING sift (body);
 CREATE INDEX docs_plain_cols ON docs_plain (category_id, created_at, active, counter_a, tier);
 CREATE INDEX docs_cols ON docs (category_id, created_at, active, counter_a, tier);
 VACUUM ANALYZE docs, docs_plain, categories;
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 \set ECHO none
 CREATE FUNCTION top_of(tbl regclass, q text, flt text, k int, OUT metrics_a real[], OUT ids int[]) LANGUAGE plpgsql AS $$
 BEGIN

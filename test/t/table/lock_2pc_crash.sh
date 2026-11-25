@@ -4,7 +4,7 @@
 # (FOR KEY SHARE, FOR SHARE, FOR NO KEY UPDATE, FOR UPDATE) while a session that holds another row in the partition keeps them from taking the partition, so that each one's lock is a row entry in shared
 # memory, which the crash empties. After the restart a request of each mode conflicts with each prepared lock as the matrix of the heap says, a wait ends with ROLLBACK PREPARED or COMMIT PREPARED,
 # and a SKIP LOCKED request that skips a row holds no lock on it.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 12
 node_init lc 52 "autovacuum = off

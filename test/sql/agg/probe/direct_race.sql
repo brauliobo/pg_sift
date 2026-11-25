@@ -9,7 +9,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100; SET random_page_cost = 4;
 SET enable_bitmapscan = off;
-\ir test/agg_probe_helpers.sql
+\ir test/common/sql/agg/probe.sql
 CREATE TABLE hook_log (stage int);
 -- the wide keys of a table of about 9 leaf pages under one root; a key sorts before the keys that extend it (the rows the hook adds)
 CREATE TABLE lk_race (k text, v text);

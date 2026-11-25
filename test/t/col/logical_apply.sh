@@ -2,7 +2,7 @@
 # The apply worker of a logical subscriber writes the changes of the publisher to tables with a sift_col index (with track_changes off and on) and a sift (BM25) index: a transaction of
 # several statements with rows after its first (the rows a sift_col index buffers), updates, deletes and an aborted one. Every index verifies on the subscriber, the groups read by the
 # column index are the heap's, and the tracked index does not read without the heap there (the apply worker fires no statement trigger).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 ROWS=$(knob SIFT_APPLY_ROWS 3000 1500)

@@ -4,8 +4,8 @@
 # exist) and the units a 51-key request reads in an arrival-order heap with an exact key summary (flat: bounded by the rows it asks for). Per-request work must stay flat (slope <= 0.5) and whole-table work linear (<= 1.15), so a change that makes a request cost more the more
 # units, groups or partitions exist fails here, in seconds, instead of at 10x. The library is the 8-page-unit flavour of scripts/scaling-gate.sh (thousands of
 # units on 1 GB of tmpfs); skipped on PostgreSQL 17.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 root=$("$REPO/scripts/scaling-gate.sh" build 2>/dev/null)
 rc=$?

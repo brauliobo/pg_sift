@@ -6,7 +6,7 @@
 # fork, and the sweep reclaims every orphan; freed space is reused, so the
 # node stays below SIFT_CRASH_MAX_MB (default 4096). SIFT_CRASH_ITERS
 # (default 100, 6 quick).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ITERS=$(knob SIFT_CRASH_ITERS 100 6)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)

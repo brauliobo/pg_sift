@@ -5,7 +5,7 @@
 # all-visible. A count that planned in between (the table is short) and finds it refreshed when it starts must not take its dfs: they
 # count the postings of the docs the VACUUM cleared. The count waits once its plan is made and the VACUUM before its cleanup refreshes
 # the table (sift.test_count_gate, sift.test_cleanup_gate: a testing build), so there is no timing involved.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 3
 node_init vd 19 "autovacuum = off

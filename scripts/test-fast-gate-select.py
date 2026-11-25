@@ -19,7 +19,7 @@ ENV = {k: v for k, v in os.environ.items() if k != 'CI'}
 
 STAR, CLICK, COEXIST, JSONB = 'src/agg/v6/v6_sip.c', 'src/agg/v6/v6_group_fast.c', 'src/agg/cost.c', 'src/col/shred.c'
 COL, TABLE, BM25, GPU, SQL, SMOKE = 'src/col/codec_int.h', 'src/table/am.c', 'src/bm25/amscan.c', 'src/agg/gpu_cfg.h', 'sql/pg_sift--1.0.sql', 'src/new_thing.c'
-REGRESS = 'test/sql/agg_bucket.sql'
+REGRESS = 'test/sql/agg/bucket.sql'
 AREAS = 'star clickbench coexist jsonb col table bm25 gpu sql smoke all'.split()
 
 
@@ -74,18 +74,18 @@ def table():
     yield one('union: five areas', files(STAR, TABLE, BM25, COL, SQL),
               lambda p: p['areas'] == ['star', 'col', 'table', 'bm25', 'sql'] and has(p, 'coldiff', 'coldiff-table', 'bm25_fuzz', 'surface_sweep'))
 
-    harnesses = (('test/fuzz/txn_fuzz.py', ['txn_fuzz', 'txn_fuzz-table']), ('test/fuzz/shapes_matrix.py', ['shapes_matrix']), ('test/fuzz/surface_sweep.py', ['surface_sweep']),
-                 ('test/fuzz/tbl_twin_fuzz.py', ['tbl_twin_fuzz']), ('test/fuzz/bm25_fuzz.py', ['bm25_fuzz']), ('test/fuzz/diff_fuzz.py', ['diff_fuzz', 'diff_fuzz-table']),
+    harnesses = (('test/fuzz/txn/cli.py', ['txn_fuzz', 'txn_fuzz-table']), ('test/fuzz/shapes_matrix.py', ['shapes_matrix']), ('test/fuzz/surface_sweep.py', ['surface_sweep']),
+                 ('test/fuzz/tbl_twin.py', ['tbl_twin_fuzz']), ('test/fuzz/bm25.py', ['bm25_fuzz']), ('test/fuzz/diff/cli.py', ['diff_fuzz', 'diff_fuzz-table']),
                  ('scripts/coldiff.sh', ['coldiff', 'coldiff-table']), ('scripts/plangate.sh', ['plangate', 'plangate-table', 'plangate-4t']),
                  ('test/plan/anything.sql', ['plangate', 'plangate-table', 'plangate-4t']), ('test/corpus/anything.sql', ['corpus', 'corpus-table']), ('scripts/corpus.sh', ['corpus', 'corpus-table']))
     for path, steps in harnesses:
         yield one(f'a harness edit runs itself, and only its stages: {path}', files(path),
                   lambda p, s=steps: p['areas'] == [] and sorted(p['steps'] + p['skipped']) == sorted(s))
 
-    yield one('a test/sql edit runs itself', files(REGRESS), lambda p: p['sql'] == ['agg_bucket'] and p['steps'] == ['regress'])
-    yield one('an expected file edit runs its test', files('test/expected/agg_bucket.out'), lambda p: p['sql'] == ['agg_bucket'])
+    yield one('a test/sql edit runs itself', files(REGRESS), lambda p: p['sql'] == ['agg/bucket'] and p['steps'] == ['regress'])
+    yield one('an expected file edit runs its test', files('test/expected/agg/bucket.out'), lambda p: p['sql'] == ['agg/bucket'])
     yield one('a test without its pair is not run', files('test/sql/no_such_test.sql'), lambda p: p['sql'] == [] and lacks(p, 'regress'))
-    yield one('the regression lane runs the tests named', files(REGRESS), lambda p: cmd(p, 'regress', r'pgtest\.sh regress agg_bucket$'))
+    yield one('the regression lane runs the tests named', files(REGRESS), lambda p: cmd(p, 'regress', r'pgtest\.sh regress agg/bucket$'))
     yield one('the release library skips the regression lane', files(REGRESS, extra=('--format', 'release')), lambda p: 'regress' in p['skipped'])
 
     yield one('unmapped src runs smoke', files(SMOKE), lambda p: p['areas'] == ['smoke'] and has(p, 'corpus', 'plangate', 'surface_sweep', 'txn_fuzz'))
@@ -94,7 +94,7 @@ def table():
     yield one('smoke beside an area', files(STAR, SMOKE), lambda p: p['areas'] == ['star', 'smoke'])
     yield one('smoke is the smoke slice', files(SMOKE), lambda p: cmd(p, 'plangate', r'--slice smoke\b'))
 
-    leak = [files(STAR), files(COL), files(SMOKE), files('test/fuzz/txn_fuzz.py'), files(REGRESS), area('all'), area('bm25')]
+    leak = [files(STAR), files(COL), files(SMOKE), files('test/fuzz/txn/cli.py'), files(REGRESS), area('all'), area('bm25')]
     yield 'every lane ends in the leak gate', leak, lambda ps: all(p['lanes'] and len(p['lanes']) == len(p['leaks']) for p in ps)
     yield one('no step, no lane, no leak gate', files('README.md'), lambda p: p['lanes'] == [] and p['leaks'] == [])
 
@@ -114,7 +114,7 @@ def table():
     yield one('--include-sql keeps the tests within 40 outside CI', files(STAR, CLICK, 'src/agg/v6/v6_topn.c', 'src/agg/v6/v6_win_carry.c', extra=('--include-sql',)),
               lambda p: p['rc'] == 0 and len(p['sql']) <= 40 and ('regress' in p['steps']) == bool(p['sql']))
     yield one('without --include-sql a src file runs no test/sql', files(STAR), lambda p: p['sql'] == [] and lacks(p, 'regress'))
-    yield one('--include-sql runs the test/sql edited', files(REGRESS, extra=('--include-sql',)), lambda p: 'agg_bucket' in p['sql'])
+    yield one('--include-sql runs the test/sql edited', files(REGRESS, extra=('--include-sql',)), lambda p: 'agg/bucket' in p['sql'])
 
     yield one('--diff HEAD plans', ('--diff', 'HEAD'), lambda p: p['rc'] == 0 and 'input=diff' in p['out'])
     for why, args in (('an unknown area', area('nope')), ('--area with --files', ('--area', 'star', '--files', 'README.md')), ('--files without a path', ('--files',)),

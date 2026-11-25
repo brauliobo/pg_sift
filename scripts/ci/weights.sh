@@ -1,9 +1,9 @@
 # shellcheck shell=bash
 # The constants of the plan that other parts read: the release-library smoke list and the job weights that cut the shards.
 # weight_of sets WEIGHT from scripts/weights-*.tsv. Sourced by scripts/ci.sh; not a script of its own.
-STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes tbl_basic edge_ddl ops_info"   # see release_library_tests
-SLOW_REGRESS="tbl_bigtx tbl_writepath build_large_docs index_build_postings filter_pushdown facets parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
-	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd col_kernels_simd col_enc parallel_build"   # the regression tests that are jobs of their own, longest first
+STOCK_SMOKE="bm25/sift_basic bm25/count_scan bm25/filter/pushdown_gate bm25/rank/score_shapes table/basic bm25/edge_ddl bm25/ops_info"   # see release_library_tests
+SLOW_REGRESS="table/bigtx table/writepath bm25/build/large_docs bm25/index/build_postings bm25/filter/pushdown bm25/facets bm25/parallel/scan bm25/insert_backpressure bm25/parallel/pushdown bm25/index/build_thresholds
+	bm25/edge_documents bm25/rank/semi_join bm25/analyze/invariant bm25/rank/join bm25/rank/prune bm25/phrase_positions bm25/kernels/simd col/kernels_simd col/enc bm25/parallel/build"   # the regression tests that are jobs of their own, longest first
 JOB_WEIGHT_DEFAULT=10
 REGRESS_BATCH_SECS=60 REGRESS_TEST_SECS=1
 declare -A REGRESS_SECS=()

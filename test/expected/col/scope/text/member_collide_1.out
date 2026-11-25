@@ -14,7 +14,7 @@ SELECT max(sift._test_member_hash(v)) < 8 AS cut, count(DISTINCT sift._test_memb
  t   | t
 (1 row)
 
-\ir test/col_scope_textmember_states.sql
+\ir test/common/sql/col/scope/textmember_states.sql
 -- shared by col_scope_textmember and col_scope_textmember_collide: the fixtures, the forms and the states of the pairs and of the facts
 CREATE TABLE events (id int PRIMARY KEY, account text, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 -- accounts 'acct-1' to 'acct-400', one in 97 with no account (NULL), one in 89 with the empty account

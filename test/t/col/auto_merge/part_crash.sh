@@ -3,7 +3,7 @@
 # once the first partition is written and before the directory switch that replaces the old segment with all of them. Crash recovery leaves the index consistent:
 # the segment is as it was, the answers are the heap's, the rewrite is still due (nothing else starts it), no block stays unaccounted for after the VACUUMs that sweep the orphan partition,
 # and the rewrite asked again completes into partitions. Then a second PANIC, in the rewrite of one dirty partition of those, leaves the others as they were.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 13
 node_init pc 25 "autovacuum = off

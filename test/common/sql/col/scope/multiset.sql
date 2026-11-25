@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the specs of a scope whose pairs may be several rows (\ir test/scope_multiset_helpers.sql; each spec drops probe, shapes, ms_run and changed_rows at its end): the read shapes of the scope
+-- Shared by the specs of a scope whose pairs may be several rows (\ir test/common/sql/col/scope/multiset.sql; each spec drops probe, shapes, ms_run and changed_rows at its end): the read shapes of the scope
 -- units against the statements they stand for, run over the events f of a scope index.
 --
 -- probe(tbl, idx, pairs): for each shape, the rows of the read of the scope units (the testing marker) against the plain statement over the relation of the pairs (a sub-select when the pairs

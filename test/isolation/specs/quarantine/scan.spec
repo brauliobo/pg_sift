@@ -1,6 +1,6 @@
 # Damage found while a scan runs. A scan holds on the test gate right after it opened the index; meanwhile another session meets the damage and takes the index out of service. The
 # scan that goes on fails once with the damage error and its hint, the statement after it is planned on the heap and gives the rows of the heap. A scan that is cancelled
-# (SQLSTATE 57014) leaves the index in service: nothing is recorded and the next statement is planned on the index. statement_timeout and lock_timeout at the same point are in test/t/quarantine_concurrent.sh.
+# (SQLSTATE 57014) leaves the index in service: nothing is recorded and the next statement is planned on the index. statement_timeout and lock_timeout at the same point are in test/t/quarantine/concurrent.sh.
 # requires: col gates
 
 setup

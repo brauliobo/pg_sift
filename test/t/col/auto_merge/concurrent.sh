@@ -3,7 +3,7 @@
 # in small transactions, VACUUM runs, the rewrite runs again and again (it is skipped while VACUUM holds the maintenance lock), and a reader compares in one
 # repeatable read snapshot the answer of the column scan with the heap's. They all go on until the rewrite has run three times (it waits for the snapshots that hold the
 # blocks of the last one, so how long that takes is not for a script to fix) and the reader has compared 30 snapshots. No answer differs, nothing fails, and the index verifies and ends clean.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init cc 23 "autovacuum = off

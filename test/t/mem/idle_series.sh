@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# A pooled backend is steady (scripts/mem-slope-legacy.py idle, test/idle-series.tsv): one backend runs 25 kinds of statements (aggregates, lookup joins, count distinct, search, partitions,
+# A pooled backend is steady (scripts/mem-slope-legacy.py idle, test/mem/idle-series.tsv): one backend runs 25 kinds of statements (aggregates, lookup joins, count distinct, search, partitions,
 # writes, VACUUM, merges, verify, index builds) in turn, and over its last 1000 statements the memory of its contexts (exact bytes) does not grow.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 node_init is 34 "autovacuum = off

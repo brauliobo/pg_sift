@@ -7,9 +7,9 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
-\ir test/agg_same_helpers.sql
+\ir test/common/sql/agg/same.sql
 
 -- a day is a unit apart: the dirty rows sit in days 900 and up, and in the days of the sources 7 and 8
 CREATE TABLE m_src (id int PRIMARY KEY, enabled bool);

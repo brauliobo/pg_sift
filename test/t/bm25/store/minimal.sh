@@ -2,7 +2,7 @@
 # wal_level=minimal: a build and SHARED writes in the creating transaction skip
 # WAL and are synced at commit (small relations by WAL-logging them, large ones
 # by fsync); both survive kill -9, as do later WAL-logged writes.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init min 5 "$WAL_CONF

@@ -5,7 +5,7 @@
 # budgets are lowered (sift.test_limits) so that maintenance_work_mem is what cuts the rows, as it is on a table of hundreds of millions of rows at the default. The build from the old
 # index writes the partitions the writer's memory allows, and reads each input one unit at a time: it holds no more than the build from the heap at any size, and stays under
 # maintenance_work_mem plus a constant.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 SIZES=(50000 100000 200000)
 MB=1024

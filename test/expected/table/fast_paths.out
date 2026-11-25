@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 3;
 SET jit = off;
 SET work_mem = '256MB';
 SET sift.agg_force = on;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION node_is(q text, node text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;

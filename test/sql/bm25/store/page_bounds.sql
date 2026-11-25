@@ -42,7 +42,7 @@ FROM (VALUES ('payload, in use', 24, 2), ('last payload byte, past pd_lower', 81
 			 ('the generation word', 8184, 1), ('past pd_lower', 200, 4), ('pd_lower', 12, 2), ('pd_upper', 14, 2),
 			 ('pd_special', 16, 2)) w (what, off, len);
 
--- an append edit inside the head it logs goes through (past it, or in the special space, the server restarts: test/t/store_edit_guard.sh)
+-- an append edit inside the head it logs goes through (past it, or in the special space, the server restarts: test/t/bm25/store/edit_guard.sh)
 SELECT expect($$ SELECT sift._test_write('t_idx', 1, 24, 2, true) $$);
 
 -- the refused changes left the page as it was

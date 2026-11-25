@@ -1,12 +1,12 @@
 -- HAVING on the RESULT OF AN AGGREGATE: a condition that applies AFTER the GROUP BY, to the groups, and so can not be tested before the rows are grouped (a WHERE
--- condition can; agg_having_vs_where sets the two side by side). Each statement runs with the scan on and off (having_run, test/agg_having_helpers.sql): `served` is the
+-- condition can; agg_having_vs_where sets the two side by side). Each statement runs with the scan on and off (having_run, test/common/sql/agg/having.sql): `served` is the
 -- plan with the scan node, `having_on_groups` that the node tests the condition on the aggregated groups, `where_in_scan` that a condition of the rows went to the scan
 -- (a key condition of a HAVING does: PostgreSQL moves it to the WHERE), `rows_same` that the rows are those of sift off. A group whose aggregate is NULL is dropped
 -- (NULL is not true), count is never NULL, and a group with no row is no group.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-\ir test/agg_having_helpers.sql
+\ir test/common/sql/agg/having.sql
 \set ECHO none
 CREATE FUNCTION hv_big(x bigint) RETURNS bool LANGUAGE sql IMMUTABLE AS 'SELECT x > 2000';
 CREATE FUNCTION hv_big_vol(x bigint) RETURNS bool LANGUAGE sql VOLATILE AS 'SELECT x > 2000';

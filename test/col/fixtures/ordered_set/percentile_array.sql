@@ -1,4 +1,4 @@
--- a per-group (column-valued) fraction keeps the normal plan, and so does the out of range constant of the same query (the last raises in both); the array form and a text argument are generic aggregates (g_ordered_set)
+-- a per-group (column-valued) fraction keeps the normal plan, and so does the out of range constant of the same query (the last raises in both); the array form and a text argument are generic aggregates (group/ordered_set)
 -- shape: trap
 -- expect: plain
 -- key: -

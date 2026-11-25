@@ -4,7 +4,7 @@
 # (sift.vacuum_rewrite_limit holds an autovacuum pass back, not that VACUUM), writes temporary files within 2.5 times the limit (the segments it merges are streamed, not dumped to runs), holds memory that does not follow the
 # rows (the same peak at 1x, 2x and 4x, slope at most 2 B/row of the counted scopes and 16 B/row of the resident peak, which counts the pages the rewrite touches), leaves the file within twice the live segments, copies at most
 # the limit of the file in the space step, and a merge that fails, is cancelled or whose backend is terminated leaves no temporary file; an autovacuum worker takes its budget from autovacuum_work_mem.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 22
 ROWS=$(knob SIFT_BMV_ROWS 50000 25000)

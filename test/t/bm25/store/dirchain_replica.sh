@@ -4,7 +4,7 @@
 # the same directory and the same chain; so do the splits, merges and rewrites of nested partitions (bounds of one to three key components and an address) on a third index, whose chain
 # is two levels deep, and a read of it by a prefix returns the same entries on the standby. Both nodes run with wal_consistency_checking = generic, so that the standby compares every page it replays
 # with the image the primary logged.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROUNDS=$(knob SIFT_DIRCHAIN_ROUNDS 12 4)
 plan $((ROUNDS * 3 + 4))

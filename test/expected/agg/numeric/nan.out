@@ -56,7 +56,7 @@ INSERT INTO shapes (shape, q) VALUES
 	('percentile', 'SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY n) AS p, mode() WITHIN GROUP (ORDER BY n) AS m FROM nn GROUP BY g'),
 	('floats', 'SELECT g, sum(n::float8) AS s, avg(n::float8) AS a, max(n::float8) AS hi FROM nn GROUP BY g'),
 	('combos', 'SELECT g, n % 3 AS k, sum(n / 3) AS s, count(*) FILTER (WHERE n > 1.5::float8) AS c FROM nn GROUP BY 1, 2');
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 -- the rows with and without the scan are the same (and not empty)
 CREATE FUNCTION same_rows(q text) RETURNS boolean LANGUAGE plpgsql AS $$

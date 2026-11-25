@@ -1,2 +1,2 @@
 # Tests that read SIFT_QUICK themselves, so the quick tier may not run their body (scripts/check-quick-skip.sh): path TAB reason.
-test/t/fault_matrix.sh	the quick tier runs one fault for each phase of each operation (the tier column of fault_matrix.tsv); the size is the same
+test/t/fault/matrix.sh	the quick tier runs one fault for each phase of each operation (the tier column of fault_matrix.tsv); the size is the same

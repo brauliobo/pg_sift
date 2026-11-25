@@ -3,8 +3,8 @@
 # The real update scripts of the patch releases of 4.2 (the ones in sql/; extension_lifecycle writes empty ones of its own): a database that starts at 4.2, 4.2.1 or 4.2.2 reaches the
 # default version with the objects of a fresh install, sift.table_find_stale_versions (4.2.2: plpgsql, STABLE, SQL only) is there after every path, and the way back to 4.2.1 (through
 # the empty script back to 4.2) and forward again works: the script that adds a function runs a second time, so it replaces it.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 EXT=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
 plan 12
 node_init ext 42 'autovacuum = off'

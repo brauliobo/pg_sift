@@ -1,1 +1,1 @@
-install_preload_hint	src/bm25/funcs.c:sift_build_info src/bm25/funcs.c:sift_version
+core/install_preload_hint	src/bm25/funcs.c:sift_build_info src/bm25/funcs.c:sift_version

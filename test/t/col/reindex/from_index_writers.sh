@@ -6,7 +6,7 @@
 # no VACUUM has taken. After every round the heap-free read, the checked read and the heap give one answer and the index passes its check. REINDEX CONCURRENTLY is built from the heap
 # (its writers change the index it would read), and so are the answers it gives. The rounds force the source (sift.test_col_from_index_forced): the entries of the dead versions no VACUUM
 # has taken stay in the index and the heap drops them, so after enough writes the build prices the heap read below the old index (part 4), whatever the speed of the writers.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 9
 
 SECS=$(knob SIFT_RIW_SECS 8 4)

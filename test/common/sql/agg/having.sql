@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the agg_having_* tests (\ir test/agg_having_helpers.sql): one fixture and the helpers that run a statement with the aggregate scan on and off.
+-- Shared by the agg_having_* tests (\ir test/common/sql/agg/having.sql): one fixture and the helpers that run a statement with the aggregate scan on and off.
 --
 -- Fixture: hv_events (30,000 rows, a sift_col index) with skewed and tied groups, NULL keys and NULL measures, duplicate-heavy columns, a text, a date and a numeric key;
 -- hv_tenants (a lookup with a NULL row) and hv_empty (no row). tenant_id 1 holds 40% of the rows; 6 and 13 tie at 990 rows, 8, 9, 11 are within one row of each other;

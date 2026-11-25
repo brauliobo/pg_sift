@@ -1,4 +1,4 @@
-# NAME	FORMAT	OPERATION	DIGEST -- test/group_scale.py: every measurement in a fresh backend, work_mem 1 MB, at N, 2N and 4N rows of the table {t} (id and k_hi unique, k_num numeric, k_uuid, k_iv interval, k_mid 5000 groups, k_lo 10 groups, txt 128 bytes, fl float8, amt)
+# NAME	FORMAT	OPERATION	DIGEST -- test/scaling/group_scale.py: every measurement in a fresh backend, work_mem 1 MB, at N, 2N and 4N rows of the table {t} (id and k_hi unique, k_num numeric, k_uuid, k_iv interval, k_mid 5000 groups, k_lo 10 groups, txt 128 bytes, fl float8, amt)
 # FORMAT is the format of the sift_col index of {t} (2: the groups run in SiftAggV6, 1: in SiftAgg). {s} (id, k_st, amt) is analyzed while k_st is one value and then k_st is set to the id: a table whose groups the planner underestimates. DIGEST is the text of a row r the parity with PostgreSQL's aggregate is taken on (default r::text).
 # g2: generic keys and the text of MIN and MAX in the groups that spill. g3: percentile_cont. g4: generic and ordered-set aggregates. g5: a spill that is read back. g10: the dense integer keys of the legacy plan.
 g2_numeric	2	select k_num, count(*), sum(amt) from {t} group by 1	

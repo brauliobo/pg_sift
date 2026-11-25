@@ -33,7 +33,7 @@ REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_pairs;
 
-\ir test/scope_multiset_helpers.sql
+\ir test/common/sql/col/scope/multiset.sql
 
 -- each state: the statements that make it (they accumulate), and then the reads; a pair that changed is a changed pair of the next reads until the index is rebuilt
 CREATE TABLE states (n int, label text, stmt text);

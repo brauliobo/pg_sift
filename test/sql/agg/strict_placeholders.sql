@@ -14,7 +14,7 @@ SELECT i, i % 37, date '2026-01-01' + i % 400,
 FROM generate_series(1, 8000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, day, metrics_a) WITH (paths = 'metrics_a.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 
 -- the report over a spine (the period 'none' matches no row) with `value` defined as `expr`; aggs reads `value`
 CREATE FUNCTION report(expr text, aggs text) RETURNS text LANGUAGE sql AS $f$

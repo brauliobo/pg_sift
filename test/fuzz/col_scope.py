@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Differential fuzz of the scope index (test/t/col_scope_fuzz.sh runs it).
+"""Differential fuzz of the scope index (test/t/col/scope/fuzz.sh runs it).
 
-  test/fuzz/col_scope_fuzz.py [--seeds 1-24] [--rows 12000] [--steps 8] [--family all|pairs|union|dups] [--twohop-strict] [--twohop-reason REGEX]
+  test/fuzz/col_scope.py [--seeds 1-24] [--rows 12000] [--steps 8] [--family all|pairs|union|dups] [--twohop-strict] [--twohop-reason REGEX]
                                                                            needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, SIFT_FUZZ_OUT
 
 A seed builds events (facts with an entity key, a time, a kind and a value), a table of (entity, tenant) pairs in which an entity is in 0 to 6 tenants, and a sift_col index with a scope on the pairs,
@@ -9,7 +9,7 @@ and draws steps: batches of fact INSERTs, DELETEs, UPDATEs (the value, and the e
 tenant of pairs, a reload of the pairs, HOT updates of a column no index holds (the entries of a row lead to the first version of its chain), rolled back transactions with savepoints, reads inside the transaction that edited, promotion, merge, VACUUM of the facts and of the pairs and REINDEX.
 After every step (a 'buffer' step leaves its rows in the write buffer, and the read of a key whose dim_b have some must take them as its delta) a battery is the plain join: through the scope path (sift.in_scope), through the planned plan and through the plain plan (sift.enable_agg off): one tenant, sets of tenants counted once
 (a fact once though its entity is in several), per pair, count/sum/distinct/top-N, and the joins as written. A read must be stored from the scope units or say a documented Scope Fallback reason (a read of every key grouped by its key, 'group key', raises it as the error that makes the join run)
-(scope_reason_ok in test/scope_helpers.sql); right after a build every read of one tenant that has pairs must be stored. A REPEATABLE READ reader opened before the churn must read, through the scope
+(scope_reason_ok in test/common/sql/col/scope/base.sql); right after a build every read of one tenant that has pairs must be stored. A REPEATABLE READ reader opened before the churn must read, through the scope
 path and through the plain plan, the rows of its first read. The seed draws the types of the keys, of the time column, the order of the columns of the unique pair index, the number of tenants per
 entity (0..6 evenly, a mostly-one profile, and 2..6 for every entity), the segment size, track_changes, key_cut by the member column and order arrays named for the columns
 (the entries of a fact repeat its address in the scope segments, which keep no order arrays, and the verification after every step covers both).
@@ -43,10 +43,10 @@ the reads of one tenant right after a build must be stored (journals all present
 import argparse, collections, os, random, re, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from col_twin_fuzz import Sess, Fail, ERR, SETUP, OUT, sqlstr
+from col_twin import Sess, Fail, ERR, SETUP, OUT, sqlstr
 
 TWOHOP_REASON = '^no journal for two paths$'   # the reason of a tree without the reader of the units of two paths
-HELPERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scope_helpers.sql')
+HELPERS = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'common', 'sql', 'col', 'scope', 'base.sql')
 FUZZ_SETUP = SETUP + " SET sift.agg_force = on; SET jit = off;"
 
 LIB = r"""

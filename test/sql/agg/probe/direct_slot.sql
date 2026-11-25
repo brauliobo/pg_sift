@@ -7,7 +7,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100; SET random_page_cost = 4;
 SET sift.agg_force = on;
-\ir test/agg_probe_helpers.sql
+\ir test/common/sql/agg/probe.sql
 CREATE TABLE lk_io (k int, v text, w int);
 INSERT INTO lk_io SELECT g, 'v' || g || '.' || r, r FROM generate_series(0, 299) g, generate_series(1, 3) r WHERE g % 7 <> 0 ORDER BY r, g;
 CREATE INDEX lk_io_kv ON lk_io (k, v);

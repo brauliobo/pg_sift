@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the agg_preagg* tests (\ir test/agg_preagg_helpers.sql). pa_rows(q, pre, push) is the sorted rows of q, or its error, with sift.agg_preagg and
+-- Shared by the agg_preagg* tests (\ir test/common/sql/agg/preagg.sql). pa_rows(q, pre, push) is the sorted rows of q, or its error, with sift.agg_preagg and
 -- sift.enable_agg set. A snapshot held by another session of this database (the refresh worker rewriting a segment, one that is still ending) keeps the
 -- pages of rows written since from becoming all-visible, so the units stay scanned: pa_settle() waits for the conditions themselves, the queue drained
 -- and no such session.

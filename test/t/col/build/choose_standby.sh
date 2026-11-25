@@ -2,7 +2,7 @@
 # The build chooser's three sources of rows replay on a physical hot standby: a CREATE INDEX of a key_cut index that reads the heap through a btree (no temporary file: the pg_stat_database
 # temp_bytes of the cluster do not move), a REINDEX that takes the rows of the index it replaces (no heap block), and the same CREATE INDEX with sift.col_build_source = heap (the key ranges'
 # files) give the same index on the standby: it verifies against the heap there and answers as the primary and the heap do.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 9
 
 ROWS=$(knob SIFT_BCS_ROWS 60000 30000)

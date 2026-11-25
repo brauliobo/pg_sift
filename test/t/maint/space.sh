@@ -3,7 +3,7 @@
 # The maintenance worker reuses the space of the segments it merged, step after step: 60 small
 # segments merged by the worker leave an index file of under twice the live segments (a worker that
 # kept one snapshot and transaction, and ran its steps on fragmented free space, left 2.6 times).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 node_init space 7 "autovacuum = off

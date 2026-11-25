@@ -22,7 +22,7 @@ VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) ev;
 CREATE TABLE ev_dim AS SELECT 'k' || k AS kind, 'L' || (k % 2) AS label FROM generate_series(0, 4) k;
 ANALYZE ev_dim;
 
-\ir test/agg_preagg_helpers.sql
+\ir test/common/sql/agg/preagg.sql
 
 -- the units of the SiftAgg node, those it answered from the rollups, and the line of the verbose plan that names why it did not (NULL: no SiftAgg node)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT why text) LANGUAGE plpgsql AS $$

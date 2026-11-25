@@ -5,7 +5,7 @@
 use strict;
 use warnings FATAL => 'all';
 use FindBin;
-use lib $FindBin::RealBin;
+use lib "$ENV{SIFT_REPO}/test/t/lib";
 use SiftTest;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
@@ -91,7 +91,7 @@ subtest 'sift: standby scan across merge and segment recycling' => sub {
 
 # with hot_standby_feedback the primary's horizon holds back VACUUM and recycling for the open scan: it always completes.
 # VACUUM's truncation of the end of the file is not held back by feedback, like a heap's: its exclusive lock cancels the scan
-# when the standby replays it (test/t/006_truncate.pl), so the index here keeps its file
+# when the standby replays it (test/t/table/truncate.pl), so the index here keeps its file
 subtest 'sift: hot_standby_feedback keeps a standby scan alive across merge and recycling' => sub {
 	my ($t, $idx) = ('feedback', 'feedback_idx');
 	load_corpus($primary, $t, 20000);

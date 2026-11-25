@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A sift_table that becomes a partition of a published table is published too, and logical replication of it needs the resource manager that only a preloaded library registers: ATTACH PARTITION
 # of an existing sift_table and CREATE TABLE ... PARTITION OF it are refused on a server without pg_sift in shared_preload_libraries, as an INSERT into a sift_table that is published is.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 8
 
 node_init p 0 "wal_level = logical

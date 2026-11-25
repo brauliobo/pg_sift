@@ -1,1 +1,1 @@
-tbl_page_corrupt	src/table/v1/funcs_test.c:page_rec_found src/table/v1/funcs_test.c:sift_test_tbl_page_rec src/table/v1/funcs_test.c:sift_test_tbl_page_rec_end src/table/v1/wbuf.c:sift_tbl_page_rec
+table/page_corrupt	src/table/v1/funcs_test.c:page_rec_found src/table/v1/funcs_test.c:sift_test_tbl_page_rec src/table/v1/funcs_test.c:sift_test_tbl_page_rec_end src/table/v1/wbuf.c:sift_tbl_page_rec

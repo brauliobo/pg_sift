@@ -3,7 +3,7 @@
 -- scan is at its end: one search, however large the group. The rows must be those of the sort of every match, across segments, write buffers, dead rows,
 -- cutoffs of the score, phrases and prefixes (whose scores the text decides: those candidates are verified as they come) and a consumer that drops hits.
 CREATE EXTENSION pg_sift;
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 -- no worker merges the promoted segments before the count of them below (a slow runner let it)
 SET sift.async_maintenance = off;
 SELECT sift.version() IS NOT NULL AS library_loaded;

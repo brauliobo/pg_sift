@@ -4,7 +4,7 @@
 # was used (a, b), not used (c), and not used for what is not committed before the snapshot: an older snapshot, a transaction in progress (prepared), a rolled back transaction
 # and a subtransaction. Also on a hot standby that replays the log, after VACUUM gave the addresses to new rows, with the triggers of b disabled, enabled again and
 # recreated, and on the subscriber of a real logical replication, which is no place for track_changes: the apply worker fires no statement trigger.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 35
 ROWS=$(knob SIFT_HF_ROWS 3000 1500)

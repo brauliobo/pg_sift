@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_cube.c - col/scope_v6/cube.c: a scope cube takes one row per distinct group in ascending key order, the order a part is written in: a binary search
+ * test/scaling/cases/cube.c - col/scope_v6/cube.c: a scope cube takes one row per distinct group in ascending key order, the order a part is written in: a binary search
  * and an append per row, O(G log G), and no tail shifted.
  */
 #include "postgres.h"

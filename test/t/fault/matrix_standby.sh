@@ -4,8 +4,7 @@
 # ERROR and by a SIGKILL of the backend (the server restarts and replays its WAL), the standby replays everything, and on the standby every sift index verifies (heapallindexed), the
 # store check passes and the answers through the indexes equal the plain plan's and what the table held before; the operation runs again on the primary and the standby follows. The
 # standby is promoted at the end and the same checks pass on it. SIFT_FAULT_ONLY (a regex of the operation names) picks the families.
-HERE=$(dirname "$0")
-. "$HERE/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 node_init cm 1 "wal_consistency_checking = 'generic'
 autovacuum = off
@@ -16,7 +15,7 @@ node_start cm || bail "start failed"
 D=$(dir cm)
 SIFT_TMP=$D leak_expect 400 'terminated by signal 9|terminating connection'
 sql cm "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"
-. "$HERE/crash_scenarios.bash"
+. "${SIFT_REPO:?}/test/t/lib/crash_scenarios.bash"
 node_clone cm sb 2 "sift.async_maintenance = off" || bail "standby failed"
 node_start sb || bail "standby start failed"
 

@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_inset.c - agg/v6/v6_inset_filter.c: `column = ANY (array)` tested per row. The rows are fixed (65536); the array grows 8x: a binary search per row, O(log V).
+ * test/scaling/cases/inset.c - agg/v6/v6_inset_filter.c: `column = ANY (array)` tested per row. The rows are fixed (65536); the array grows 8x: a binary search per row, O(log V).
  */
 #include "postgres.h"
 

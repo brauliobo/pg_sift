@@ -2,8 +2,8 @@
 # A publication FOR ALL TABLES publishes the tables of the extension too, and a published table that publishes deletes needs a replica identity: the sql_drop trigger of
 # sift.table_option_values (4.2.0 to 4.3.0) deleted from it without one, so every DROP of every relation failed. The update to 4.3.1 and 5.0 gives the table its identity: DROP INDEX, DROP TABLE and
 # DROP EXTENSION work with such a publication (after the update from 4.2.0 or from 4.3.0, and from a fresh install), and a subscriber receives the options.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 newroot=$ROOT
 ext=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi

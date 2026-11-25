@@ -1,1 +1,1 @@
-col_agg_nofilter	src/agg/dist/add.c:dist_narrow_bit src/agg/leaf_int.h:amap_id src/agg/leaf_int.h:kmap_id src/agg/update/select.c:amap_resolve src/agg/update/select.c:dict_amap
+col/agg/nofilter	src/agg/dist/add.c:dist_narrow_bit src/agg/leaf_int.h:amap_id src/agg/leaf_int.h:kmap_id src/agg/update/select.c:amap_resolve src/agg/update/select.c:dict_amap

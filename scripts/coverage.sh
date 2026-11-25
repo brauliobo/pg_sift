@@ -7,7 +7,7 @@
 #                                                                                   no test setting is set or read; test/col/format.sh)
 #   scripts/coverage.sh --gen                                                       write docs/COVERAGE.md and the coverage block of README.md when it has one
 #   scripts/coverage.sh --docs                                                      the checks that need no cluster: the table, the results file, the generated docs
-#   scripts/coverage.sh --pct [--tier quick|full] [--baseline REF]                  run the variant matrices (test/matrix/matrix.py) on this build and on the
+#   scripts/coverage.sh --pct [--tier quick|full] [--baseline REF]                  run the variant matrices (test/matrix/run.py) on this build and on the
 #                                                                                   build of REF (default: the newest release tag), write docs/results/coverage-pct.tsv
 #   scripts/coverage.sh --pct --verify                                              recompute this build's counts and fail when they differ from the file (nightly)
 #
@@ -135,7 +135,7 @@ gen_pct() {
 		}
 		END {
 			print "## Variant matrices\n"
-			print "A percentage is the share of a generated matrix of query variants (`test/matrix/matrix.py`) that the pushdown answers with the rows of the normal plan:"
+			print "A percentage is the share of a generated matrix of query variants (`test/matrix/run.py`) that the pushdown answers with the rows of the normal plan:"
 			print "covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,"
 			print "functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal"
 			print "slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes"
@@ -402,7 +402,7 @@ validate_pct() {
 
 # pct: the matrices on this build and, unless --verify, on the last release; the file is written by the full tier only
 pct() {
-	local out=$OUT/pct tip base root port=$((${SIFT_PORT:-56100} + 10)) m="$REPO/test/matrix/matrix.py" rows=$OUT/pct/rows.tsv
+	local out=$OUT/pct tip base root port=$((${SIFT_PORT:-56100} + 10)) m="$REPO/test/matrix/run.py" rows=$OUT/pct/rows.tsv
 	mkdir -p "$out"
 	# the file is measured on PostgreSQL 18; the plans of another major differ in places the matrices see
 	[[ -z $VERIFY ]] || (( $(SQLDB=postgres sql -c "SHOW server_version_num") / 10000 == 18 )) || { log "docs/results/coverage-pct.tsv is measured on PostgreSQL 18: not verified here"; return 0; }

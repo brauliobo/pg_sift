@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Differential fuzz of the order arrays of a sift_col index under churn (test/t/col_twin_fuzz.sh runs it).
+"""Differential fuzz of the order arrays of a sift_col index under churn (test/t/col/twin_fuzz.sh runs it).
 
-  test/fuzz/col_twin_fuzz.py [--format f2|f1|release] [--seeds 1-24] [--rows 30000] [--steps 10]    needs PGHOST / PGPORT of a cluster with pg_sift, SIFT_FUZZ_OUT, a directory for the logs
+  test/fuzz/col_twin.py [--format f2|f1|release] [--seeds 1-24] [--rows 30000] [--steps 10]    needs PGHOST / PGPORT of a cluster with pg_sift, SIFT_FUZZ_OUT, a directory for the logs
 
 A seed fills a table with keys of a chosen shape (many equal keys, a NULL region, scattered or arriving in order), builds two sift_col indexes (order arrays on four columns, and
 grouped by an entity) and b-tree twins, and draws steps: batches of INSERTs, DELETEs and UPDATEs of a random, newest or oldest window, upserts, updates that change a key and

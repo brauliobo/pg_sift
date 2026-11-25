@@ -1,7 +1,7 @@
 -- A consumer that drops most rows pulls past the scan's k hint: the search repeats with more hits (16 times as
 -- many below 4096, 4 times beyond), and the rows and their order stay those of the full ranking
 CREATE EXTENSION pg_sift;
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 \set ECHO none
 CREATE TABLE ov (id int, body text);
 INSERT INTO ov SELECT i, repeat('alpha ', 1 + i % 5) || repeat('beta ', i % 4) || 'w' || i % 311 FROM generate_series(1, 6000) i;

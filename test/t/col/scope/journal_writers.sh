@@ -5,7 +5,7 @@
 # for older snapshots does not wait for an idle READ COMMITTED transaction or a prepared one, so such a writer can commit after the stamp of the build, with an xid above the xmin of the stamp:
 # the read patches its pairs in from the records it made. This holds the build at its gates (sift.test_phase_gate + 4 before the journal window, + 6 before the validation snapshot, + 5 before
 # the stamp), leaves a writer open (committed, rolled back or prepared and committed) across each of them, and checks that every tenant reads as the join does, from the units of the index.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 32
 node_init jw 34 "autovacuum = off

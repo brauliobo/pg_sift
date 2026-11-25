@@ -4,7 +4,7 @@
 # index twice. The check stops at its test gate between the segments (an advisory lock a session holds, so no timing is involved), the VACUUM and the INSERT run, and the check goes on:
 # it finds nothing wrong. With the mutant that makes the VACUUM of the index clear nothing the same two statements leave a row in the index twice, and the check finds it, whether the
 # directory moved while it waited or not.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 12
 node_init cr 63 "autovacuum = off

@@ -2,7 +2,7 @@
 -- plan shapes and the statements sift.score() may appear in
 CREATE EXTENSION pg_sift;
 
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 CREATE FUNCTION sift_scan_node(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
 	j jsonb;

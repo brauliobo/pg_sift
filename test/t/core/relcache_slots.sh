@@ -4,7 +4,7 @@
 # that ends the session. sift must leave the others room: none of its paths takes a slot. A session first takes N slots (sift._test_relcache_burn),
 # then runs the statements of every sift path; the largest N it survives, against the one of a session that runs the same statements without sift,
 # is the number of slots sift took. Each attempt is a fresh psql, a fresh backend.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 3
 node_init rs 31 "autovacuum = off

@@ -1,7 +1,7 @@
 # Families of the basic shapes: pre-aggregates, partitions, lookups, placeholders and per-leaf aggregates.
 # Each family is a gen(r, ctx) and a render(parts).
 
-from .columns import COLUMNS, EVENTS, _in, aggs, keys, preds
+from ..columns import COLUMNS, EVENTS, _in, aggs, keys, preds
 
 # ---------- families: gen(r, ctx) -> parts, render(parts) -> (sql, ordered) ----------
 def select_list(p):

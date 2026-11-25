@@ -2,8 +2,8 @@
 # An index the real 3.7.1 library wrote, with a global order (order_array_columns, column format 38), is read by this library as before: it verifies, its ordered
 # reads (ASC and DESC, an OFFSET, a range) return the heap's, and it takes writes. order_layout = 'compact' then writes the compact order (column format 41) for the segments
 # a merge or a REINDEX writes from then on, next to the old whole ones in one index; the ordered reads stay the heap's over both layouts.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots; none supports 19 yet)'; exit 0; fi
 ref=v3.7.1
 if ! git -C "$REPO" rev-parse --verify -q "$ref^{commit}" >/dev/null; then

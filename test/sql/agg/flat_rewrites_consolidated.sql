@@ -88,7 +88,7 @@ CREATE INDEX items_owner ON items (set_id);
 VACUUM (FREEZE, ANALYZE) key_sets;
 VACUUM (FREEZE, ANALYZE) items;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- in_scan: the plan has a scan (planned with the table scans of the normal plan off); same: the normal plan's rows
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
 BEGIN
@@ -232,7 +232,7 @@ CREATE INDEX nothing_col ON nothing USING sift_col (id, set_id, amt);
 VACUUM (FREEZE, ANALYZE) key_sets;
 VACUUM (FREEZE, ANALYZE) items;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- in_scan: the plan has a scan (planned with the table scans of the normal plan off); same: the normal plan's rows
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
 BEGIN

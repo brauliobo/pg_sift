@@ -4,7 +4,7 @@
 # directory reaches the 112 entries where inserters merge. Whatever the fanin (2, the minimum, and 32, the maximum, whose merges
 # take 64 segments), no insert fails, the directory never fills (128 entries), every row is indexed, and the index settles within the bounds of the policy: fewer than fanin segments per tier, and no more entries
 # than greatest(32, 2 * fanin).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init fanin 12 "autovacuum = off"

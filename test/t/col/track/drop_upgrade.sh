@@ -2,8 +2,8 @@
 # The update that lets DROP INDEX CONCURRENTLY drop a tracked sift_col index (4.2.1): a database that an earlier release wrote has its two track_changes triggers depending on the index, which
 # that command cannot drop. After the library is replaced the triggers of such an index are found in their old form (a REINDEX keeps one pair of them); the update
 # makes the index depend on its triggers (sift.col_track_convert), and then the drops work, with writes on the table before and after, and no trigger is left that no index depends on.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 # 4.2.1 converts the triggers, so only a release before it is the "old" one: a later tag must not move this
 ref=v4.2.0

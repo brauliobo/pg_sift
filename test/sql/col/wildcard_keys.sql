@@ -6,9 +6,9 @@ SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
-\ir test/agg_same_helpers.sql
+\ir test/common/sql/agg/same.sql
 
 -- 3 units of about 1,000 documents (a document is about 1.6 kB): the first 16 keys fill the dictionary of 16, the second unit brings keys it has not
 -- seen, the third only those it has

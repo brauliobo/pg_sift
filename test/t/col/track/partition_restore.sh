@@ -4,7 +4,7 @@
 # the custom archive serially and in parallel (pg_restore -j makes the partitions, their indexes and their keys in any order), a plain dump through psql, and a dump whose indexes come before the keys.
 # Every restore must be without an error, keep every partition's index tracked with the triggers of its parent, answer as the heap does, and keep answering after updates, key changes that
 # move rows between partitions, and deletes through the parent.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 N=$(knob SIFT_RESTORE_TABLES 6 3)

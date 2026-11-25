@@ -3,7 +3,7 @@
 # then commits them under the lock: an UPDATE that commits in between puts its column deltas into a chain that names the parts the commit replaces, and the deltas of a part that is gone are dropped, so the
 # UPDATE is lost. The compaction is held after its outputs are written (sift.test_phase_gate, gate SIFT_F2_GATE_COMPACT = 11) while an UPDATE commits, then released: every row the UPDATE changed is changed.
 # Then writers that add one to rows beside the rewrite of the parts, and a churn of the rows beside them, end with the sum of the rows they updated and no statement failed.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 G=7600
 ROWS=${SIFT_RACE_ROWS:-16000}

@@ -6,7 +6,7 @@
 # need a record of them (col_scope_journal_standby holds the read that does not): the pass writes the pairs into the index and no journal record. Every pair written after the journal began is recorded by its own writer, whatever the
 # pass is doing meanwhile: this holds the pass at its gate (sift.test_phase_gate + 6, after the journal is ready for writes and before it reads), changes the pairs and the facts, and checks that
 # the log holds exactly the records of those changes, that the stamp (taken after the pass) sees them, and that the read of the scope is the join's.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 15
 node_init jv 30 "autovacuum = off"

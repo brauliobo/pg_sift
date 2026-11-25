@@ -3,7 +3,7 @@
 # the index (ambulkdelete) reads the slab and the part list of every partition while the writers and the maintenance replace them: it must never follow a pointer to a block that was
 # freed and reused (it once did: "expected page type 33 ... found type 38" while vacuuming the index, the index quarantined; and a double free in sift.maintain). No statement fails, the
 # server does not restart, nothing is quarantined, the index checks, and the aggregates answer what the rows of a scan do.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 SECS=$(knob SIFT_VW_SECS 10 5)

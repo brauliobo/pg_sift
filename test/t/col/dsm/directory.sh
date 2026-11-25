@@ -4,7 +4,7 @@
 # directory (1024 tables that backends map) is the same: a cache goes without its table, the rows of a write buffer are written with their values where the references have no
 # arena, and the tables are there again once the backends that mapped them are gone.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 10
 # a dynamic shared memory segment for each table: the control segment has 64 + 5 slots for each backend the server can have

@@ -11,7 +11,7 @@ NOTICE:  sift_col index "nf_col": 1 automatic choice (rollup_columns), 1 advice 
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, s
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nf_col');
 VACUUM ANALYZE nf;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 \set ECHO none
 CREATE TABLE agg_q (q text);
 INSERT INTO agg_q VALUES

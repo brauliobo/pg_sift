@@ -18,7 +18,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, document) WITH (pa
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;
 ANALYZE mappings;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 SELECT s.name, c.* FROM (VALUES
  ('grouped by the entity', $q$
   SELECT e.kind, count(*) AS n, avg(f.id) AS mean FROM facts f JOIN dim_a e ON e.id = f.dim_a_id

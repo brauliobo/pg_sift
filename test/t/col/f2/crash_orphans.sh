@@ -3,7 +3,7 @@
 # belong to no list and no part. They are not corruption: after the restart sift.check is clean for a sift_table and a sift_col index, the rows are those of the committed transactions in every
 # plan, VACUUM and the maintenance of the table go on, and the blocks are in use again (the file does not grow without bound over the cycles).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 CYCLES=$(knob SIFT_CRASH_CYCLES 6 3)
 plan $((4 * CYCLES + 1))
 

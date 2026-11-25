@@ -3,7 +3,7 @@
 # segments that end the file are moved into the reusable holes below them by the online shrink instead (sift_maint_shrink), and the online cut takes the blocks
 # they leave once no snapshot can read them: an index rewritten whole, whose one segment lies behind the blocks of the five it replaced (3.8 times the live bytes), comes back
 # to its live bytes, the replay does not stall behind a long query of the standby on the table, and the index agrees with the table on both servers.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_OC_ROWS 400000 200000)
 plan 8

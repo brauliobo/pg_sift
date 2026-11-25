@@ -13,7 +13,7 @@ import os, re, subprocess, sys
 root, arg = sys.argv[1], sys.argv[2]
 CMD = re.compile(r'(?:^|[;&|`]|\$\()\s*(?:\w+=\S+\s+)*(?:exec\s+)?(psql|createdb|dropdb|createuser|dropuser|pg_ctl|pg_isready|pg_dump|pg_dumpall|pg_restore|pg_basebackup|vacuumdb|reindexdb)\b')
 NAMED = re.compile(r'(^|\s)(-h|--host|-p|--port|-D)\b|host=|PGHOST|PGPORT|pgtest\.sh|\$SOCK')
-FILE_NAMES = re.compile(r'PGHOST|PGPORT|pgtest\.sh|lib\.bash|common\.bash')
+FILE_NAMES = re.compile(r'PGHOST|PGPORT|pgtest\.sh|lib/common\.bash|common\.bash')
 
 
 def bad(files, allow):

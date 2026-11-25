@@ -2,7 +2,7 @@
 # The WAL a sift_table writes where a reader would not look. The record of VACUUM that sets the bits of the visibility map names the newest transaction whose rows it makes visible to everyone
 # (the horizon a standby ends its queries at): that is the writer of a column delta of a row of the vblock as well as the writers of its parts. A parallel worker that scans a table with a row
 # in a micro-slab reads the slab where it is, as a standby does, and a query that only reads writes no WAL (in a worker the manifest is the leader's to write).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init vw 0 "shared_preload_libraries = 'pg_sift'

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The local cache of a tiered table is ephemeral: a base backup does not carry it, and a session that opens it removes the temporary files of dead backends only, never the one a live backend is writing.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init tk 6 "autovacuum = off"

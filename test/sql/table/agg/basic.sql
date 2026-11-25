@@ -6,7 +6,7 @@ SET cpu_tuple_cost = 0.5;
 
 CREATE TABLE agg_t (id int, g int, k text, v bigint, f float8, t timestamptz, d date, b bool, n numeric(10,2), c text, ch char(6), w8 numeric) USING sift_table;
 
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE agg_q (q text);
 INSERT INTO agg_q VALUES

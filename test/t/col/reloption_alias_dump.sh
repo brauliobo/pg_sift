@@ -3,7 +3,7 @@
 # The older names of the reloptions renamed in 4.2 (rollup is rollup_leaves, rollup_dims is rollup_columns) are kept in the catalog of an index that carries them, and pg_dump writes them
 # as they are: a restore (custom archive, plain script) must bring the index back with the same options and the same answers, ALTER INDEX SET and RESET of the old name must keep
 # working on the restored index, and REINDEX must not lose the rollups.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 10
 node_init a 37 "autovacuum = off"

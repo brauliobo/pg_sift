@@ -1,1 +1,1 @@
-sift_basic	src/core/handler.c:sift_amoptions
+bm25/sift_basic	src/core/handler.c:sift_amoptions

@@ -4,7 +4,7 @@
 # sift_col index, each held against a duplicate by one session and by two concurrent ones, two-phase commit (commit, rollback, and a transaction that stays prepared across a crash), the clean
 # refusal of a write to a published table (wal_level = logical), and a crash with its replay. The table answers what its twin answers at every step and sift.check finds nothing.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 20
 node_init zp 1 "shared_preload_libraries = ''

@@ -10,8 +10,8 @@
 # documented downgrade (docs/UPGRADING.md section 4) of all of it: the setting, the rewrite of what the preflight lists, and the release serves the lot.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots; none supports 19 yet)'; exit 0; fi
 # release | text kind of the jsonb path (3.0 has no astext) | sift_table (3.1 on) | newest column minor it reads
 # Every release tag of the 3.0 to 3.2 series, so that a new release joins the matrix with its tag; SIFT_COMPAT_EXTRA_REFS adds refs of a release in preparation

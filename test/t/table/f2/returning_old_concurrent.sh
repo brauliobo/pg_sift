@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # RETURNING OLD / NEW of a sift_table (PostgreSQL 18) for the row another session changed while this one waited for it: the statement that waited re-reads the row the other session
 # committed, and its OLD is that row, its NEW what it wrote, for an UPDATE (a column delta), a MERGE, a DELETE and an INSERT ... ON CONFLICT DO UPDATE. A heap twin gives the expected values.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 node_init ret 3 "shared_preload_libraries = 'pg_sift'
 sift.test_create_format1 = off

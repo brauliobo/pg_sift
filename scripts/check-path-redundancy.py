@@ -3,7 +3,7 @@
 
   src/agg/v6/v6_star.c           -> star.c           an ancestor (or its synonym: tbl/table, f2/format2, vk/gpu) as a prefix
   test/unit/f2_scaling_test.c    -> f2_scaling.c     ... or as a suffix
-  test/diff/diff.sql             -> harness.sql      the whole name is an ancestor (main, core, api, run, basic or common say more)
+  test/mirror/mirror.sql         -> mirror.sql       the whole name is an ancestor (main, core, api, run, basic or common say more)
   test/sql/col/p98_decoders.sql  -> decoders.sql     tests are named by subsystem and behavior, never by a milestone (p98_, s55_, m4_, prod95_, on_)
   test/sql/col/f2/smoke.sql      a test of test/{sql,expected,t,isolation,unit} is in the folder of its src/ area (core bm25 col agg table compat fault maint mem quarantine lib mk)
 
@@ -229,11 +229,11 @@ def selftest():
 			'src/agg/gpu/vk_min.h', 'test/sql/table/tbl_bigtx.sql', 'test/sql/col/f2/format2_prune.sql', 'src/col/key_cut/keycut_x.c', 'test/t/col/scope/pairs/scope_pairs_x.sh'],
 		'suffix': ['test/unit/f2_scaling_test.c', 'src/agg/v6/topn/rows_topn.c', 'test/helpers/roles_helpers.sql', 'scripts/build/ci-build.sh', 'src/col/f2/track_f2.c',
 			'test/sql/table/bigtx_tbl.sql', 'sqlite/tests/hash_test.c'],
-		'exact-stem': ['src/agg/plan/plan.c', 'test/diff/diff.sql', 'tools/tools.mk', 'src/col/f2/f2.h', 'bench/churn/churn.sh', 'test/fuzz/fuzz.sql', 'src/agg/plan/planner.c'],
+		'exact-stem': ['src/agg/plan/plan.c', 'test/mirror/mirror.sql', 'tools/tools.mk', 'src/col/f2/f2.h', 'bench/churn/churn.sh', 'test/stress/stress.sql', 'src/agg/plan/planner.c'],
 		'priv': ['src/bm25/runs/priv.h', 'src/bm25/wbuf/page_priv.h'],
 		'milestone': ['test/sql/col/p98_decoders.sql', 'test/sql/agg/prod95_query_stream_join.sql', 'test/sql/core/m4_cache_budget.sql', 'test/t/table/s55_granule.sh',
 			'test/sql/agg/on_scaling_guards.sql', 'test/expected/col/s55_point_1.out', 'scripts/focus/col/p98_decoders.tsv', 'test/sql/p98/x.sql', 'test/sql/agg/on63_x.sql', 'test/t/table/f2/s3_mock.py'],
-		'area': ['test/sql/foo.sql', 'test/expected/foo.out', 'test/t/lib.bash', 'test/sql/roles/ddl.sql', 'test/expected/zzz/x.out', 'test/isolation/specs/foo.spec',
+		'area': ['test/sql/foo.sql', 'test/expected/foo.out', 'test/t/helpers.bash', 'test/sql/roles/ddl.sql', 'test/expected/zzz/x.out', 'test/isolation/specs/foo.spec',
 			'test/isolation/expected/hybrid/x.out', 'test/unit/unit.h', 'test/unit/helper/x.c'],
 		'folder': ['test/sql/col/or/x.sql', 'src/col/in/x.c', 'test/t/agg/on/x.sh'],
 		'length': ['test/sql/agg/v6/' + 'x' * 46 + '.sql', 'test/sql/' + 'x' * 53 + '.sql'],

@@ -2,7 +2,7 @@
 # The adoption of the partitions of a key-cut index (col/v1/maint/adopt.c) replays on a hot standby: the primary records them with one directory update, the standby replays it to the same partitions
 # with the same bounds, reads the same segments and answers as the heap does. Both nodes run with wal_consistency_checking = generic, so that the standby compares every page it replays with the
 # image the primary logged.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 BASE=("SET sift.test_col_segment_kb = 1024" "SET sift.test_col_partition_kb = 512" "SET max_parallel_maintenance_workers = 0" "SET sift.async_maintenance = off")
 plan 5

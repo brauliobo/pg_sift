@@ -4,7 +4,7 @@
 # needs no ACCESS EXCLUSIVE lock on it. With triggers of its own the swap dropped the table's triggers with the old index: the writers queued behind that lock, deadlocked with the
 # index swap (1.4% of the transactions failed in this test) and a loop of reindexes did 4 in 40 s against 650.
 # A reindex cancelled in the middle leaves an invalid copy that owns no trigger; the dump of the result restores to the same answers.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 12
 
 SECS=$(knob SIFT_RC_SECS 12 6)

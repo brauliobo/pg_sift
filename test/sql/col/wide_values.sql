@@ -8,9 +8,9 @@ SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
-\ir test/agg_same_helpers.sql
+\ir test/common/sql/agg/same.sql
 
 CREATE TABLE wv (id int, grp int, payload text, note text, bin bytea) WITH (autovacuum_enabled = false);
 INSERT INTO wv SELECT i, i % 7, repeat(md5(i::text), 6), repeat(md5((i % 50)::text), 10), decode(repeat(md5(i::text), 8), 'hex')

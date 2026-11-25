@@ -11,7 +11,7 @@ INSERT INTO wn SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'k' || i % 5
 CREATE INDEX wn_col ON wn USING sift_col (id, g, k, d, n, v, c);
 VACUUM ANALYZE wn;
 
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 -- the plan without the line that names the window, which PostgreSQL 18 prints and 17 does not
 CREATE FUNCTION agg_plan(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$

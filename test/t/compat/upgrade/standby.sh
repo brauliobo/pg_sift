@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A physical standby and its primary on different libraries, the zoo of test/t/lib_compat.bash on both (every index kind; a release's WAL is PostgreSQL's own plus the custom
+# A physical standby and its primary on different libraries, the zoo of test/t/lib/compat.bash on both (every index kind; a release's WAL is PostgreSQL's own plus the custom
 # resource manager records of a published sift_table, which a patch release does not change). Both directions, with the writes of every kind and the maintenance in between:
 #   up:   the primary runs the release (SIFT_UPGRADE_OLD_REF, default v5.0.0), the standby this tree (the standby is updated first), then the primary is updated and restarted
 #   down: the primary runs this tree, the standby the release (a rollback of the standby, or a standby that is not updated yet)
@@ -7,9 +7,9 @@
 # writes that 5.0 cannot read (the deletion records of a tracked index: column format 52; the key-range pages of a key_cut write buffer: 1.7 with minor 55) must be refused by the older
 # standby with the format error, not read as damage, and the tables of those indexes, which every plan opens, are refused with them; the rest of the zoo is read as before.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_compat.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/compat.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 OLD_REF=${SIFT_UPGRADE_OLD_REF:-v5.0.0}
 ROWS=$(knob SIFT_COMPAT_ROWS 6000 2000)

@@ -2,7 +2,7 @@
 # An append edit (sift_page_edit_*, the delta record the write buffers use) changes the buffer before it logs anything, inside a critical section: a change that reaches the special space of the
 # page, or a region of the log record past the page, ends in a PANIC, the server restarts from the log that has none of the change, and the index verifies (core/lane.c edit_check). The change
 # inside the bytes the edit logs goes through.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 node_init eg 55
 node_start eg || bail "start failed"

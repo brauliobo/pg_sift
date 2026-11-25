@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One database that always has maintenance work does not keep another from getting a worker: with one worker allowed (sift.max_maint_workers = 1) and requests of a hot database that never run out,
 # the request of a quiet database is still served within a few naps.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 out=
 plan 3

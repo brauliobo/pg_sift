@@ -5,7 +5,7 @@
 # a table with a fifth of its rows dead, in every unit, rewrites it (the scans of the dirty units cost more than the rewrite, by a margin that a few percent of index size does not undo); with dead_rewrite_pct 50 it leaves the dead rows
 # and the server's own rule finds the index due, for col_maintain. The build is serial: one segment, which the VACUUM rewrites itself (the segments of a parallel build
 # are left to the worker, whose naptime here is 200 s).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init sl 24 "autovacuum = off

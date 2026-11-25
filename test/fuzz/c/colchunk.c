@@ -1,5 +1,5 @@
 /*
- * fz_colchunk.c - fuzz target for every decoder of the column engine that reads stored bytes (docs/SAFETY.md, test/fuzz/README.md).
+ * colchunk.c - fuzz target for every decoder of the column engine that reads stored bytes (docs/SAFETY.md, test/fuzz/README.md).
  * One input = one mode byte + the bytes of one stored object:
  *
  *   0  chunk codec blob       sift_cc_open (verify on/off), decode, off32, filter, sum, get, decode_sel at every SIMD level; levels must agree
@@ -26,7 +26,7 @@
 #include "col/col.h"
 #include "col/v1/enc.h"
 #include "col/codec.h"
-#include "fz_shim.h"
+#include "shim.h"
 #include "core/testrng.h"
 
 typedef uint64 CcgRng;

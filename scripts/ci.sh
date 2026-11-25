@@ -22,7 +22,7 @@
 #   the coverage table, a 15 s soak, an 18 s column-index soak (scripts/colsoak.sh) and a
 #   fuzz pass with shorter loops (scripts/fuzz.sh).
 # SANITIZE=1 makes quick run on the ASan build too (assert.yml runs the fuzzers and the leak set that way, one seed each, weekly). The long soaks (scripts/soak.sh, scripts/colsoak.sh), the 250,000 row
-# plan gates (scripts/plangate.sh --rows 250000) and the exhaustive fault matrix (SIFT_CI_JOBS=fault_matrix) are run by hand.
+# plan gates (scripts/plangate.sh --rows 250000) and the exhaustive fault matrix (SIFT_CI_JOBS=fault/matrix) are run by hand.
 #
 # The suites are cut into jobs (a regression test, a TAP file, a differential test...) that a pool of lanes takes from one
 # queue, longest first: SIFT_LANES lanes (default: the cores, at most 8), each with its own cluster (started when its first
@@ -33,7 +33,7 @@
 # the next run (the directories of dead pids), every postmaster under the directory is stopped and the directory removed: no run leaves a cluster behind. The ports are
 # SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (3072, the shard fails). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
-# (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
+# (installcheck-bm25/facets, tap-bm25/crash, tap-shell-bm25/store/crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
 # SLOW_REGRESS and the tests of roles and of the extension's recreation are jobs of their own, the others run 24 to a job, installcheck-batch1..., each one pg_regress run with one leak and
 # leftover check that names the failing test: scripts/pgtest.sh regress NAME... runs them).
 # SIFT_CI_AFFECTED, a regex on the job names, keeps the jobs that match (`affected` sets it from scripts/areas.tsv); SIFT_CI_SHARD=K/N runs the Kth of N slices of the queue.

@@ -39,11 +39,11 @@ checks then catch in assert-enabled builds. The standalone harnesses below use
 | `kernels` | kernels | `tools/kernels` randomized and exhaustive equivalence of SIMD and scalar kernels (`make SANITIZE=1`) |
 | `analyze` | analyze | `tools/analyze/harness fuzz N SEED`: random text through the tokenizer, checking its invariants |
 | `query` | query | `tools/query/gen.py --mode fuzz` corpus through the standalone parser harness, then through the server (`tools/query/fuzz.sql`: fixpoint deparse, same matches) |
-| `colchunk` | safety | `test/fuzz/fz_colchunk.c`: the column codec blobs, string and bit lists, unit chunks, unit records, segment dictionaries and schemas (7 modes in one input), at every SIMD level, levels must agree. Coverage guided, 6 s per `--scale` step |
-| `bm25` | safety | `test/fuzz/fz_bm25.c`, mode 1: `sift_blob_check` then every cursor on every ISA; an accepted blob must stay inside itself |
+| `colchunk` | safety | `test/fuzz/c/colchunk.c`: the column codec blobs, string and bit lists, unit chunks, unit records, segment dictionaries and schemas (7 modes in one input), at every SIMD level, levels must agree. Coverage guided, 6 s per `--scale` step |
+| `bm25` | safety | `test/fuzz/c/bm25.c`, mode 1: `sift_blob_check` then every cursor on every ISA; an accepted blob must stay inside itself |
 | `bm25-raw` | safety | the same target on the query path: bytes nobody verified (`sift_cur_blob`, `sift_post_open`, tf, positions). Clean since 2.0.2; opt-in |
-| `shred` | safety | `test/fuzz/fz_shred.c`: a path spec and a JSON text through the shredder's event interface, the produced document checked (ranges, states, parents at every level), spec deparse a fixed point |
-| `sql` | tests | `test/fuzz/fuzz.sql` in the server: hostile SiftQL to `sift.parse_query` (failures other than 42601/54000/2201B; disagreements with the SQL reference parser are reported, not fatal) and hostile text to `sift.tokenize` (invariants) |
+| `shred` | safety | `test/fuzz/c/shred.c`: a path spec and a JSON text through the shredder's event interface, the produced document checked (ranges, states, parents at every level), spec deparse a fixed point |
+| `sql` | tests | `test/fuzz/schema.sql` in the server: hostile SiftQL to `sift.parse_query` (failures other than 42601/54000/2201B; disagreements with the SQL reference parser are reported, not fatal) and hostile text to `sift.tokenize` (invariants) |
 
 `--scale` multiplies the iteration counts of every target (default 10, about
 3.5 minutes; `codec` runs 300 iterations and `kernels` 0.2 million per unit).

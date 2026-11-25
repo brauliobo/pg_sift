@@ -218,7 +218,7 @@ burn_inval(Datum arg, Oid relid)
 {
 }
 
-/* sift._test_relcache_burn(n): n relcache callback slots of this backend taken by a library that does nothing with them (test/t/relcache_slots.sh) */
+/* sift._test_relcache_burn(n): n relcache callback slots of this backend taken by a library that does nothing with them (test/t/core/relcache_slots.sh) */
 Datum
 sift_test_relcache_burn(PG_FUNCTION_ARGS)
 {

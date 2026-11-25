@@ -12,7 +12,7 @@ CREATE TABLE events (id int, dim_id int NOT NULL, ts date NOT NULL, kind text, a
 INSERT INTO events SELECT i, 1 + i % 300, date '2024-01-01' + i % 600, 'cat_' || chr(97 + i % 4), i % 13 + 0.5 FROM generate_series(1, 30000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind, amount);
 VACUUM (FREEZE, ANALYZE) events, dims;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
 -- the units the scan reads (NULL when the plan is not a scan)

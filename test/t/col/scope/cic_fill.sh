@@ -3,7 +3,7 @@
 # A scope index made with CREATE INDEX CONCURRENTLY has no stamp in its segments when its build is over (the journal of the first scope index of a relation starts at the end of its build, as
 # a concurrent build does not hold the writers out), so the end of the build fills them as the rewrite fills a stale set: the reads are from the scope units as soon as the index is there, with the
 # answers of the join, and nothing waits for the maintenance or a REINDEX.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 4
 
 node_init cf 54 "autovacuum = off

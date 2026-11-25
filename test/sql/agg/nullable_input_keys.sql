@@ -16,7 +16,7 @@ VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dates;
 ANALYZE countries;
 ANALYZE countries_null;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 -- The attribute of the day's facts as a JSON value, NULL for a country outside the list (and for a day without facts).
 SELECT * FROM check_query($q$
  SELECT d.day, f.attribute, count(f.id) AS n, sum(f.amount) AS total

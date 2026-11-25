@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the agg tests that compare the rows of a query with the aggregate scan off and on (\ir test/agg_same_helpers.sql, after test/agg_helpers.sql):
+-- Shared by the agg tests that compare the rows of a query with the aggregate scan off and on (\ir test/common/sql/agg/same.sql, after test/common/sql/agg/base.sql):
 -- same(q) is 'same' when runq(q, false) and runq(q, true) end alike (the rows or the error), else both outcomes cut to 200 characters.
 CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text := runq(q, false); b text := runq(q, true);

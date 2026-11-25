@@ -4,7 +4,7 @@
 # recovery: every row of a call that committed is there exactly once, every record matches its generator (checked in C), a row cut
 # short by the crash is skipped, nothing is flagged dead that the VACUUM pass did not name, batches and records agree, sift_cwbuf_verify
 # and the store check pass. Each round starts from a fresh index. SIFT_COLWBUF_ITERS (default 20, 2 quick).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ITERS=$(knob SIFT_COLWBUF_ITERS 20 2)
 CLIENTS=8

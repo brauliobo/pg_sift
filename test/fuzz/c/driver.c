@@ -1,5 +1,5 @@
 /*
- * fz_driver.c - a coverage-guided mutation fuzzer for the targets of this directory when libFuzzer is not there (gcc, an old clang):
+ * driver.c - a coverage-guided mutation fuzzer for the targets of this directory when libFuzzer is not there (gcc, an old clang):
  * main() for any LLVMFuzzerTestOneInput. The harnesses are built with -fsanitize-coverage=trace-pc; this file is not, and counts
  * the edges the callback reports in a 64K bitmap, keeping every input that reaches a new one. Same command line as libFuzzer, the
  * options that matter:

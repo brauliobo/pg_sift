@@ -22,7 +22,7 @@ SELECT make_tables('fmt1');
 SET sift.test_create_format1 = off;
 SELECT make_tables('fmt2');
 VACUUM (FREEZE, ANALYZE) fmt1.ev, fmt1.dm, fmt2.ev, fmt2.dm;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE TABLE shapes (n int, label text, sql text);
 INSERT INTO shapes VALUES
  (1, 'value of another type than its key', $q$SELECT ev.v, string_agg(dm.g::text, ',' ORDER BY dm.g) FROM ev JOIN dm ON dm.k = ev.k GROUP BY 1$q$),

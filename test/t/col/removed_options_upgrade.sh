@@ -2,8 +2,8 @@
 # key_cut_rows, point_columns and order_columns, deprecated in 4.3, are ignored since 5.0 and stay accepted: an index that the released 4.3.0
 # library wrote with each of them kept opens in this tree, answers as the heap, takes ALTER INDEX of another option, REINDEX and REINDEX CONCURRENTLY, survives
 # ALTER EXTENSION UPDATE, and the dump of the old database restores into this tree. RESET drops them.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 ref=v4.3.0
 git -C "$REPO" rev-parse -q --verify "refs/tags/$ref" >/dev/null || { echo "1..0 # SKIP no release tag $ref"; exit 0; }

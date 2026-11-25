@@ -1,5 +1,5 @@
 /*
- * fz_shim.h - the backend stand-in of the fuzz targets (test/common/pgshim.c and fz_shim.c): the allocation, error and CPU symbols the
+ * shim.h - the backend stand-in of the fuzz targets (test/common/pgshim.c and fz_shim.c): the allocation, error and CPU symbols the
  * decoders need, so that they link and run without a server, under AddressSanitizer and UBSan.
  */
 #ifndef FZ_SHIM_H

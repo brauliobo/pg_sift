@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The TTL drops parts without a row delete that logical decoding could carry, so a table in a logical publication gets no TTL: sift.set_ttl refuses it, and a publication made after the TTL
 # stops the drops (a warning in the log) instead of leaving the subscribers with rows the table has lost.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 node_init tp 4 "autovacuum = off

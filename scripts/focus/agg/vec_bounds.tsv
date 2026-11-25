@@ -1,1 +1,1 @@
-agg_vec_bounds	src/agg/pred.c:eval_pred src/agg/pred.c:set_rows src/agg/pred_in.c:eval_in
+agg/vec_bounds	src/agg/pred.c:eval_pred src/agg/pred.c:set_rows src/agg/pred_in.c:eval_in

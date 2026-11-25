@@ -258,7 +258,7 @@ worker() {
 	[[ $prc == 0 ]] || { head -n 5 <<<"$meta_hits"; red "privacy red (rc $prc)"; }
 	privacy_text <<<"$meta" >/dev/null 2>&1 || red "privacy red in the title or body of #$pr"
 	missing=
-	for t in $(git diff --name-only --diff-filter=A "$(git merge-base "origin/$base" "$cand")" "$cand" -- test/sql | sed 's#.*/##; s/\.sql$//'); do
+	for t in $(git diff --name-only --diff-filter=A "$(git merge-base "origin/$base" "$cand")" "$cand" -- test/sql | sed 's#^test/sql/##; s/\.sql$//'); do
 		git cat-file -e "$cand:scripts/focus/$t.tsv" 2>/dev/null || missing+="$t "
 	done
 	[[ -z $missing ]] || red "no scripts/focus/NAME.tsv for: $missing(run scripts/focus-gen.sh NAME... and commit scripts/focus/)"

@@ -5,7 +5,7 @@
 # VACUUMs with the readers running, a writer stalls for milliseconds, a kill while the pages are copied or when the move is published leaves an index that agrees with its
 # table, and a standby that replays it verifies the index.
 # maintenance_work_mem holds the whole index in one partition: VACUUM leaves a partition of free blocks in a key_cut index in partitions for its rolling rewrite (col_rewrite_roll).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_OF_ROWS 200000 100000)
 plan 8

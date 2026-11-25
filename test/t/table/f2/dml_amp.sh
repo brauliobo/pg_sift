@@ -6,7 +6,7 @@
 # (VACUUM and the maintenance step) and must be within 1.35 of its clean size and verify with the heap compared. A server of its own: wal_level = replica keeps the
 # standby-safe delay of the extent reuse in play.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 [[ -r /proc/self/status && -r /proc/self/sched ]] || { echo "1..0 # SKIP needs /proc/self/status and /proc/self/sched (Linux)"; exit 0; }
 
 done_testing

@@ -12,7 +12,7 @@ NOTICE:  sift_col index "wn_col": 1 automatic choice (rollup_columns), 1 advice 
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, k
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wn_col');
 VACUUM ANALYZE wn;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 \set ECHO none
 -- the plan without the line that names the window, which PostgreSQL 18 prints and 17 does not
 CREATE FUNCTION agg_plan(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$

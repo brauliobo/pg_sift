@@ -1,7 +1,7 @@
 -- The recheck context of a BM25 scan survives the rescan of the scan: a correlated subquery runs the scan once for each outer row, and a rescan resets
 -- the context of the scan, which deletes the contexts made inside it. The recheck context stood in it, and the next recheck (the phrase of the second row)
 -- worked in a context that was gone, which another context took the place of (the stem memo of the backend, reset by a recheck: a crash in the first
--- statement of a backend, test/t/bm25_cold_stems.sh).
+-- statement of a backend, test/t/bm25/cold_stems.sh).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 CREATE TABLE pd (id int PRIMARY KEY, body text);

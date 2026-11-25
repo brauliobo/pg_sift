@@ -3,7 +3,7 @@
 # A maintenance worker that leaves early does not drop a request that lands while it leaves. The worker holds a lock of its index while it is up and lets it go before its
 # last look; a seal that finds the lock held asks for no worker of its own, and the last look (made after the lock is free) promotes what it sealed. The worker is held at
 # sift.test_stay_gate between its last idle look and the release of the lock, so no timing is involved: the seal lands there, and the segment is promoted without a VACUUM or a later seal.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 node_init sy 74 "autovacuum = off

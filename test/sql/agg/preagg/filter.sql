@@ -10,9 +10,9 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 
-\ir test/agg_preagg_helpers.sql
+\ir test/common/sql/agg/preagg.sql
 
-\ir test/agg_preagg_units.sql
+\ir test/common/sql/agg/preagg_units.sql
 
 CREATE TABLE ev (id int, kind int, big bigint, grp text, val int, small int, amt numeric(12, 2), pad text) WITH (autovacuum_enabled = off);
 

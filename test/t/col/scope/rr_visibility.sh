@@ -3,7 +3,7 @@
 # An UPDATE that changes no leaf of the index but moves the row to another heap address is a record of the column delta chain: the part keeps the address the row had, and the delete of the row
 # that follows names it by the new one. The summary read of a scope matched the pending deletes with the addresses of the part, so a deleted row stayed in the cubes of every snapshot that sees
 # the delete, until the deletion vector of its part took it: a REPEATABLE READ read of the summary counted rows the heap had ended.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 2
 node_init rv 96 "autovacuum = off

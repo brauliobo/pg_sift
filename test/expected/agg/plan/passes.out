@@ -83,7 +83,7 @@ SELECT pp_plan(pp_list('20,21,22')) = :'plan_in_full' AS same_as_in_full;
 (1 row)
 
 -- the rows are those of the normal plan
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 SELECT runq(pp_list('1,2,3,40,41'), true) = runq(pp_list('1,2,3,40,41'), false) AS same_rows;
  same_rows 

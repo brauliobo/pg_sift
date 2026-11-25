@@ -4,7 +4,7 @@
 # its next statement are those of the last. What the map says changes in two ways, and the reader must see both: a writer appends a record to the head page of the chain and commits (on an UNLOGGED
 # table the page never gets a LSN, so the append leaves the chain looking as it did), and a writer whose records the map skipped commits without writing anything.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 3
 node_init dm 0 "autovacuum = off

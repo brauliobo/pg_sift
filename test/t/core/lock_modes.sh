@@ -4,7 +4,7 @@
 # RowExclusiveLock (ShareLock, ShareRowExclusiveLock, ExclusiveLock, AccessExclusiveLock) on the table or its indexes; then an INSERT, an UPDATE, a DELETE and a SELECT run on the table under
 # lock_timeout and none waits. The operations run again in a savepoint, an exception block and a cursor, whose resource owners are not the transaction's: the leak gate of finish fails
 # the test when a log has "you don't own a lock". A case is a row of CASES: a lock held in a transaction by the operation, or one that waits out a gate, is a defect to fix, not a row to loosen.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 # name | table | gate setting | lock the holder takes | operation
 CASES=(

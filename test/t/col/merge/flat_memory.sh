@@ -23,8 +23,8 @@
 # the same rows, each of a range of its own, of which a merge holds one at a time; sift.test_col_merge_eager, which opens every input at the first row, holds all 13 and fails the
 # bound, with the same segments). The per-row term fitted over the steps is that of the non-dictionary kinds only, which the budgets bound: it may not pass SLOPE_MAX; the bytes of the
 # dictionaries follow the bytes of the open inputs, which are the segments' size (the writer's budget when they were written), not the rows merged.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 root=$("$REPO/scripts/scaling-gate.sh" build 2>/dev/null)
 rc=$?

@@ -111,7 +111,7 @@ VACUUM (FREEZE, ANALYZE) docs;
 VACUUM (FREEZE, ANALYZE) dims;
 VACUUM (FREEZE, ANALYZE) tags;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- the plan reads what the pattern names in no node but the scan (docs, by default)
 CREATE FUNCTION reads_plan(q text, pat text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; found bool := false;
@@ -228,7 +228,7 @@ CREATE INDEX entries_col ON entries USING sift_col (id, foreign_id, day, metrics
 VACUUM (FREEZE, ANALYZE) entries;
 ANALYZE sources; ANALYZE labels;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
@@ -360,7 +360,7 @@ CREATE INDEX entries_col ON entries USING sift_col (id, dim_b_id, foreign_id, da
 CREATE INDEX entries_member ON entries (dim_b_id);
 VACUUM (FREEZE, ANALYZE) entries;
 ANALYZE dim_b; ANALYZE links; ANALYZE labels; ANALYZE sources; ANALYZE assigns;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 -- the members of a group that a subscription reaches, the entries of two periods with the labels of the unnested scores, and a spine of the periods
 SELECT * FROM check_query($q$
  WITH picked AS MATERIALIZED (SELECT DISTINCT m.id FROM dim_b m
@@ -528,7 +528,7 @@ CREATE INDEX events_col ON events USING sift_col (dim_a_id, kind, t0, t1, t2, n,
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) links_a;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- in_scan: arms of the plan run in the scan; same: the rows are the plan's without the extension
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
 BEGIN

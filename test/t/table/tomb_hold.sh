@@ -3,7 +3,7 @@
 # The time the rewrite of the tombstone log holds the exclusive lock of the log (the test build logs it) follows the entries appended while the new log is built, not the
 # entries of the log: VACUUM with a transaction open that keeps every entry (so the new log is as long as the old), the log in runs on temp files (sift.backend_cache_kb 1 MB),
 # at N and 4 N entries; then with the build held at its gate while 300 UPDATEs append. What the hold reads under the lock is counted, not timed (the log line says how many entries it read: those appended meanwhile): a rewrite that read the log again under the lock would read N or 4 N. SIFT_TH_ROWS: N (100000 in a full run; the 1.6 M case of the measurement is 16 x N). SIFT_TH_ROWS: N (100000 in a full run; the 1.6 M case of the measurement is 16 x N).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 N=$(knob SIFT_TH_ROWS 100000 20000)
 GATE=7000

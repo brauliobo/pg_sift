@@ -7,7 +7,7 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 \set rows 100000
-\ir test/agg_cte_inline_fixture.sql
+\ir test/common/sql/agg/cte_inline.sql
 -- The events, dims and maps tables, the statement of three arms over a shared CTE and the check of its rows against the normal plan, shared by
 -- agg_cte_inline_rows, _band and _horizon; psql variable rows is the number of events.
 \set ECHO none

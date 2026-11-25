@@ -17,7 +17,7 @@ NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 \set ECHO none
 -- the report over a spine (the period 'none' matches no row) with `value` defined as `expr`; aggs reads `value`
 CREATE FUNCTION report(expr text, aggs text) RETURNS text LANGUAGE sql AS $f$

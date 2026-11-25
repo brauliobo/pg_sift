@@ -2,8 +2,8 @@
 # Seekable order chunks (column format minor 44) beside plain ones (38) in one index: the ordered reads of top-N, OFFSET, range and IN list are the heap's over both, the index
 # verifies and takes writes; and a 4.2 release refuses the index at the metapage, whose tail holds the count of the rows promoted from the write buffers (every promotion writes it),
 # refuses to read the table with it (an error, no wrong answer), and this tree reads the index again.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 ref=$(git -C "$REPO" tag -l 'v4.2.*' --sort=-v:refname | head -n 1)
 [[ -n $ref ]] || { echo '1..0 # SKIP no release tag v4.2.*'; exit 0; }

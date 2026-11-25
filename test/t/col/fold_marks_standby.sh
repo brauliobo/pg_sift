@@ -3,7 +3,7 @@
 # may still read through an older snapshot. It tells the standby first, as the prune record of a VACUUM does: without feedback the standby session that holds a snapshot older than the
 # deletes is cancelled by the conflict (and the answers of the standby are the heap's afterwards); with feedback the primary sees the snapshot as the oldest one and folds nothing
 # until it ends.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init primary 2 "wal_level = replica

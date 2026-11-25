@@ -5,7 +5,7 @@
 # holds (2.0.2: about one query in 100000, a few per minute under 6 readers). Runs on the release build too (no test functions).
 # A time-boxed soak, not a size-bound test: it runs SIFT_CHURN_SECS (8 s, 6 s in a quick run) whatever the speed, and a totals
 # list of the tests keeps it apart.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 SECS=$(knob SIFT_CHURN_SECS 8 6)
 ROWS=10000

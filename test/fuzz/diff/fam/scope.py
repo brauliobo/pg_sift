@@ -6,8 +6,8 @@
 # array of 1 to 70 keys (the runtime choice between the scope read and the join as written is made for the keys of each execution), a NULL, an array of NULLs, an empty one). The scope is declared on the sift_col index of events (diff_fuzz_data.sql).
 # The btree of the pairs is unique in an even seed and not unique in an odd one, where the joins run as written (a pair may be several rows) and IN and EXISTS count a fact once.
 
-from .columns import EVENTS, aggs, keys, preds
-from .fam_basic import grouped
+from ..columns import EVENTS, aggs, keys, preds
+from .basic import grouped
 
 PARAM_FORMS = ['pjoin', 'pin', 'pany', 'pnull', 'pmany', 'pjoinmany', 'upin', 'upjoin', 'upany']
 UNION_FORMS = ['uin', 'uin', 'uinall', 'uexists', 'uview', 'ubarrier', 'ujoin', 'ujoin', 'ujoinm', 'ujoinall', 'ujoinkeys', 'ubranch', 'ukeys', 'ubare']

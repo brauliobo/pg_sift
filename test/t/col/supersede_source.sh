@@ -4,7 +4,7 @@
 # (col_supersede_source) cannot show: a row that two sessions update, one waiting for the other (the waiting statement updates the version the first wrote, whose entry the index got
 # while the first still ran), a key that one session gives up and another takes, a delete and the key coming back, and an update that is rolled back under the waiting one. After each
 # the heap-free read, which trusts the log, gives the same answer as no sift plan; a mutant that finds no address (sift.test_no_supersede with the trigger off) does not.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
 ROWS=$(knob SIFT_SS_ROWS 20000 12000)

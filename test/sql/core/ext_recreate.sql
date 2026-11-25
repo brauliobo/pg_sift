@@ -8,9 +8,9 @@ DECLARE l text; BEGIN
 	RETURN false;
 END $$;
 
-\ir test/ext_recreate_fixture.sql
+\ir test/common/sql/core/ext_recreate.sql
 DROP EXTENSION pg_sift CASCADE;
-\ir test/ext_recreate_fixture.sql
+\ir test/common/sql/core/ext_recreate.sql
 
 DROP FUNCTION plan_has(text, text);
 DROP TABLE re_t, re_doc, re_ev, re_pairs;

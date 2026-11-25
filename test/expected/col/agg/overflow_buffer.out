@@ -15,7 +15,7 @@ NOTICE:  sift_col index "b_t_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('b_t_col');
 VACUUM (FREEZE, ANALYZE) b_t;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 -- the rows of on_q with the pushdown and of off_q without it are the same (and not empty)
 CREATE FUNCTION same(on_q text, off_q text) RETURNS bool LANGUAGE plpgsql AS $$

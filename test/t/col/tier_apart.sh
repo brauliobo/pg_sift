@@ -5,7 +5,7 @@
 # after a VACUUM; a dead row in one of them makes the merge worth its bytes and they become one.
 # order_array_columns is off: the table is analyzed by the build and the formula gives the index order arrays (key, amount), which make a rewrite cost twice the instructions per row
 # (sift_col_mostly_dead, rewrite_pays), so that the 800 dead rows of 800,000 do not pay for it and the tier stays as it is: the test is about the tier, not about that price.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 node_init ta 25 "autovacuum = off

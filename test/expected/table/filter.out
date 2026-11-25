@@ -8,7 +8,7 @@ CREATE TABLE tf (id int, a int, b int, c bigint, n numeric(10, 2), d date, g int
 INSERT INTO tf SELECT i, i % 100, CASE WHEN i % 9 = 0 THEN NULL ELSE i % 7 END, i::bigint * 1000000000 % 7000000000, (i % 50) * 0.5, date '2024-01-01' + i % 90, i % 5 FROM generate_series(1, 60000) i;
 UPDATE tf SET n = 'NaN' WHERE id % 1001 = 0;
 VACUUM (FREEZE, ANALYZE) tf;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 \set ECHO none
 CREATE FUNCTION in_source(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';

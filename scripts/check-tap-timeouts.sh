@@ -2,7 +2,7 @@
 # A tap test that cancels or gives up at a short clock cuts the product wait it checks at a load-dependent point: on a loaded host the statement is slow for
 # reasons of the host, and the test fails for a reason that is in no commit. A `statement_timeout`, `lock_timeout` or shell `timeout` literal of 10 s or less in test/t
 # needs `# timeout-ok: <what bounds the product side>` on the same line (the bound is the point of the test: a lock_timeout the product has to honour, a cancel that is
-# the test); any other wait polls an observable condition (wait_for in test/t/lib.bash, SiftTest.pm) with a large cap.
+# the test); any other wait polls an observable condition (wait_for in test/t/lib/common.bash, SiftTest.pm) with a large cap.
 #   scripts/check-tap-timeouts.sh            test/t/
 #   scripts/check-tap-timeouts.sh --selftest
 set -euo pipefail

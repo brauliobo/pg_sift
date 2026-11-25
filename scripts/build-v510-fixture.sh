@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the v5.1.0 release library and SQL once, into a staged root that test/t/031_v51_full_compat.pl installs
+# Builds the v5.1.0 release library and SQL once, into a staged root that test/t/compat/v51_full.pl installs
 # under a throwaway server, so the Format 1 relations the test writes come from the real release.
 #
 #   scripts/build-v510-fixture.sh [--force] [OUT]

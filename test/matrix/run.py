@@ -8,8 +8,8 @@ the plan has the node of its family (Top-N: or Custom Scan (SiftAgg*)) and the r
 named by its refusal slug (SET sift.explain_refusals) and excluded from the percentage when the registry of src/agg/refuse.h marks that slug
 as by design; the rest are gaps.
 
-  test/matrix/matrix.py run --out FILE [--format f2|f1|release] [--tier quick|full] [--rows N] [--by-design FILE]
-  test/matrix/matrix.py tsv FILE... --build NAME         the rows of docs/results/coverage-pct.tsv
+  test/matrix/run.py run --out FILE [--format f2|f1|release] [--tier quick|full] [--rows N] [--by-design FILE]
+  test/matrix/run.py tsv FILE... --build NAME         the rows of docs/results/coverage-pct.tsv
 
 --format: the format of the indexes of the data: f2 (default, Format 2.0), f1 (Format 1, the testing build) or release (the release build,
 which defines no test setting: none is set or read).

@@ -4,7 +4,7 @@
 # sift.col_index_status read the metapage of every sift index, so such an index made both fail for the whole database ("could not read blocks", "invalid page layout"), and the
 # functions of an index answered with a corruption error. The views list the indexes that are ready, the functions say that the index is not ready to be read. The build is held
 # before it starts by a writer of the table that stays open, and the standby is paused before the build is replayed.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_BUILDING_ROWS 20000 5000)
 plan 10

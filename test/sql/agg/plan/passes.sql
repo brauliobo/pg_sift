@@ -57,7 +57,7 @@ RESET sift.test_agg_verdict_cache;
 SELECT pp_plan(pp_list('20,21,22')) = :'plan_in_full' AS same_as_in_full;
 
 -- the rows are those of the normal plan
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 SELECT runq(pp_list('1,2,3,40,41'), true) = runq(pp_list('1,2,3,40,41'), false) AS same_rows;
 
 DROP FUNCTION pp_passes, pp_plan, pp_list, runq, pushed, runs_in_scan, outcome(text, bool);

@@ -3,7 +3,7 @@
 # A child sift_col index with the reloption connect (two connections, two parents) and one that connected itself through a foreign key, restored from pg_dump: the custom archive serially and in parallel, and a plain dump through psql. The text of the option is in the dump,
 # the child index is made after the parent index (it depends on it), and the restore ends with the same connection: the dependency, the parent's journal, a stamp that is vouched and
 # the keys changed after it.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
 node_init r 37 "autovacuum = off"

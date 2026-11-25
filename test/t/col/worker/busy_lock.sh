@@ -3,7 +3,7 @@
 # A maintenance worker that finds the maintenance lock with an inserter (which promotes and leaves the merges to the worker) does not end with the merges undone: it looks again until
 # sift.maintenance_naptime after it started, and a seal inside that window of its request asks for no worker of its own. The lock is held by sift._test_col_hold_maint (a testing build)
 # until the test lets go of advisory lock (0x51F7, 11), so no timing is involved: the worker is seen waiting for the next look, and the merges follow once the lock is free.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init busy 47 "autovacuum = off

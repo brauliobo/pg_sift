@@ -16,7 +16,7 @@ FROM (SELECT i, 1 + i % 4 AS g FROM generate_series(1, 20000) i) s;
 CREATE INDEX fg_col ON fg USING sift_col (id, g, k, x, hid);
 VACUUM (FREEZE, ANALYZE) fg;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 SELECT w, pushed(q) AS scan, left(outcome(q, true), 60) AS answer, outcome(q, false) = outcome(q, true) AS same
 FROM (SELECT w, format('SELECT %s FROM fg WHERE %s', sel, cond) AS q

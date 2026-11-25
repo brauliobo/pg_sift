@@ -5,7 +5,7 @@
 CREATE EXTENSION pg_sift;
 \set VERBOSITY terse
 \set ECHO none
-\ir test/roles_helpers.sql
+\ir test/common/sql/core/roles.sql
 \set ECHO all
 SELECT rr_roles_drop('rm_');
 CREATE ROLE rm_own;

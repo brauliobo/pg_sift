@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Resource and memory leak gate shared by every suite. Nothing in a suite refers to it by test: the hooks sit on the
-# primitives all of them use (pgtest.sh conf/start/stop, test/t/lib.bash nodes, scripts/tap.sh, scripts/ci.sh), so a new
+# primitives all of them use (pgtest.sh conf/start/stop, test/t/lib/common.bash nodes, scripts/tap.sh, scripts/ci.sh), so a new
 # test is covered without editing it.
 #
 #   scripts/leakcheck.sh scan PATH...        fail on leak diagnostics in the server logs and sanitizer reports under PATH
@@ -22,7 +22,7 @@
 # assertion failures, crashes) as log lines, and an ASan/UBSan/LeakSanitizer build reports memory errors and malloc leaks
 # when each server process exits (LeakSanitizer needs the clean exit of a fast shutdown, an immediate one reports nothing).
 # SIFT_TESTING builds also log the sift memory contexts that outlive a backend (src/core/leak_test.c). Exit 1 on a finding.
-# Every driver brackets its unit of work with the same pair, leak_before and leak_after (scripts/pgtest.sh regress: a test; test/t/lib.bash: a node; one cluster
+# Every driver brackets its unit of work with the same pair, leak_before and leak_after (scripts/pgtest.sh regress: a test; test/t/lib/common.bash: a node; one cluster
 # for the drivers that have no smaller unit), and a driver without the pair fails scripts/check-leak-hooks.sh.
 # SIFT_MEMCENSUS=KB|on (pgtest.sh) makes the servers write SIFTMEM lines; SIFT_MEMCENSUS_DIR keeps them (leak_harvest) for scripts/mem-report.py.
 #

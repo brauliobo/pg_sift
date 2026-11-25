@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Oracle gate of the scope index: random workloads whose expected answer comes from stock PostgreSQL only (test/t/col_scope_oracle.sh runs it).
+"""Oracle gate of the scope index: random workloads whose expected answer comes from stock PostgreSQL only (test/t/col/scope/oracle.sh runs it).
 
   test/fuzz/scope_oracle.py [--format f2|f1|release] --primary SOCK:PORT --standby SOCK:PORT --stock SOCK:PORT --restore SOCK:PORT --out DIR [--seeds 1-3] [--rows 60000] [--steps 8] [--window 6]
 

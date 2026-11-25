@@ -2,7 +2,7 @@
 # tap: pooled
 # The reads of an index with marks in its log that no fold can clear yet (a snapshot older than their deletes is open) do not start a maintenance worker each
 # sift.maintenance_naptime: the fold is asked for when marks that it can clear exist, and none cleared a row here. Once the snapshot is gone the next reads ask, and the fold clears them.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init fa 75 "autovacuum = off

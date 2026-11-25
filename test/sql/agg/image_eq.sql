@@ -4,7 +4,7 @@
 -- operator and an array of an image type stay with the executor.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 CREATE TABLE im (id int, u uuid, b bytea, i inet, c cidr, m macaddr, m8 macaddr8, bt bit(6), vb varbit, ar uuid[]) WITH (autovacuum_enabled = false);
 INSERT INTO im

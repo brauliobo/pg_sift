@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 -- 'same' when the scan and the normal plan end alike (the rows or the error), else both outcomes
 CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$

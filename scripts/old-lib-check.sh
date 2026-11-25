@@ -36,7 +36,7 @@
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
 #
-# Prints PASS / FAIL / SKIP lines (test/t/old_lib_refusal.sh turns them into TAP); exit 0 when all pass, 1 on a FAIL, 77 when there is nothing
+# Prints PASS / FAIL / SKIP lines (test/t/compat/old_lib_refusal.sh turns them into TAP); exit 0 when all pass, 1 on a FAIL, 77 when there is nothing
 # to run (no older release in the repository, an older release than 3.2.0 on a CPU other than x86-64, PostgreSQL 17, which has no extension_control_path to hold two builds, PostgreSQL 19, which no release builds on, or no testing build).
 #
 # SIFT_OLD_REF (default v3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The crash matrix of the operations that publish a new directory of an index with a scope (test/t/col_crash_matrix.sh is the model): the build, a REINDEX, the promotion of a write buffer, a merge and a VACUUM
+# The crash matrix of the operations that publish a new directory of an index with a scope (test/t/col/crash_matrix.sh is the model): the build, a REINDEX, the promotion of a write buffer, a merge and a VACUUM
 # of the facts of a sift_col index whose rows are also cut by a scope key. Every publication (store_update) is a named point of the testing build: sift.test_crash_dir = n kills the process with SIGKILL before
 # the nth directory update (n > 0) or after it (n < 0), so that a scope segment is written and the directory is still the old one, or the directory is the new one and what follows did not run. The points are the
 # first and the last of the updates of each operation (more in the full run). After the restart (wal_consistency_checking = generic) the index verifies (heapallindexed), the store checks pass, the answers
@@ -7,12 +7,12 @@
 # fallback), and the operation, run again, completes and leaves the same, for the scope entries too: after a build, a REINDEX, a promotion and a merge the scope entries are the join of the
 # facts and the pairs (not after the VACUUM scenario, whose updates leave the new versions in the write buffer, nor the pairs scenario, which edits the pairs: the entries are those of the pairs as built). SIFT_CRASHMX_ITERS caps the number of crashes (default 40, 14 quick),
 # SIFT_CRASHMX_ONLY a regex of scenario names.
-# The matrix runs again for a scope of two paths (lib_twohop.bash: the grants of a member, the grants of a group and the memberships, three recorded btrees and three journals): the same operations, with edits of
+# The matrix runs again for a scope of two paths (lib/twohop.bash: the grants of a member, the grants of a group and the memberships, three recorded btrees and three journals): the same operations, with edits of
 # the three tables, and the answers are the join over the union of the paths. After a recovery and the operation run again the stamps of the three journals vouch (the segments are read as stored) or the read says
 # why it does not. Then SIFT_CRASHMX_STORMS (default 4, 2 quick) crashes cut a write storm on the three tables and the facts, the odd ones while a REINDEX of the scope index runs.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_twohop.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 ITERS=$(knob SIFT_CRASHMX_ITERS 40 14)
 STORMS=$(knob SIFT_CRASHMX_STORMS 4 2)
@@ -69,7 +69,7 @@ family_one() {
 		END LOOP; END \$\$"
 }
 
-# a scope of two paths: the fixtures of lib_twohop.bash without their index, and the same reads (the scope forms against the join over the union)
+# a scope of two paths: the fixtures of lib/twohop.bash without their index, and the same reads (the scope forms against the join over the union)
 family_two() {
 	IXN=hop_col DROPS="hop_events, grants, memberships CASCADE" UNITS=1
 	BASE=$(printf '%s; ' "${TWOHOP_BASE[@]}" "${TWOHOP_FUNCS[@]}")

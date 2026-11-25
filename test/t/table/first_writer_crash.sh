@@ -5,7 +5,7 @@
 # standby stops with "WAL contains references to invalid pages" and the primary's next recovery fails. The first writer's transaction is open when the power goes (the walwriter does not run
 # within the test), with a streaming standby under generic WAL consistency checking: the primary recovers, loads the table, crashes again with the load open, recovers again, and the standby
 # replays the same rows.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=10
 node_init primary 2 "wal_level = replica

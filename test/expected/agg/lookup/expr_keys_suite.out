@@ -298,7 +298,7 @@ DETAIL:  key_columns = dim_a_id, unit_id; rollup_columns = latest, ccy; track_ch
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE units; ANALYZE dim_c; ANALYZE links;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 -- the report of a scope: the ids as a CTE, joined and again in an IN list, the rows of a period by month and unit
 CREATE FUNCTION ls_stmt(form text, g int) RETURNS text LANGUAGE sql AS $f$ SELECT format(CASE form

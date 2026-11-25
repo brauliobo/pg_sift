@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Physical streaming replica (pg_basebackup) of a sift_col index with a scope (test/t/col_index_replica.sh is the model): the primary inserts, updates and deletes facts, edits the pairs of the scope relation
+# Physical streaming replica (pg_basebackup) of a sift_col index with a scope (test/t/col/index_replica.sh is the model): the primary inserts, updates and deletes facts, edits the pairs of the scope relation
 # (inserts, deletes, moves an entity between keys: entities in 0 to 6 keys), vacuums, promotes and merges, while readers on the standby run REPEATABLE READ transactions that read one key through the scope path and
 # through the plain join inside the same snapshot (they must agree; no failed transaction). After the replay the standby answers the scope forms (one key, a set counted once, per pair, top-N) as the primary's
 # plain join does, the index verifies there, a REINDEX of the primary (the scope segments written again) replays to a standby that reads them (stored where the reader may, exact always), and the promoted
 # standby takes fact and pair writes and its scope reads are the join. The reads are under the real verdict of the reader (the journal of the pairs says which entities changed; the first scope index of a relation
 # is made again by a REINDEX to take its stamps). SIFT_COL_REPLICA_SECS sets the churn (15 s, 3 quick).
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_twohop.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
+REPO=${SIFT_REPO:?}
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 19
@@ -132,7 +132,7 @@ check "after a REINDEX of the primary the scope entries of the standby are the j
 check "... and its reads are the join's" test "$(sql scs "$SC")" == t
 check "the index verifies on the standby after the REINDEX" test -z "$(sql scs "SELECT sift.col_verify('events_col', true)" 2>&1)"
 
-# the scope of two paths (lib_twohop.bash), made on the primary after the standby exists: edits of the three tables on the primary while readers of the standby compare the scope path and the join of the
+# the scope of two paths (lib/twohop.bash), made on the primary after the standby exists: edits of the three tables on the primary while readers of the standby compare the scope path and the join of the
 # union inside each REPEATABLE READ snapshot
 twohop_setup scp || bail "the fixtures of the scope of two paths failed"
 catchup scp scs

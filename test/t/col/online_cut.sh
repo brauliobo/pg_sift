@@ -3,7 +3,7 @@
 # behind a long query of the standby on the table. Only the blocks the horizon says no snapshot can read go (P7a in core/store.h): a build after a standby snapshot keeps
 # its freed blocks in the file until the snapshot ends. A standby without feedback gets the recovery conflict of the reuse. A churn of scans, inserts and VACUUMs, and a kill
 # between the free list and the truncation, leave an index that agrees with its table on both servers.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_OC_ROWS 400000 200000)
 plan 16

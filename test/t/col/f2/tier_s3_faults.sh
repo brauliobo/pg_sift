@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The s3:// backend against a store that fails the way a real one does: it throttles (503), it rotates its credentials (403 ExpiredToken), a proxy answers 200 to a Range request, and its listing
 # is long enough for pages with a long continuation token. The store is p98_s3_mock.py on 127.0.0.1; the credentials are read from files, as a pod with a rotating token has them.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 python3 -c 'import ctypes; ctypes.CDLL("libcurl.so.4")' 2>/dev/null || { echo "1..0 # SKIP python3 or libcurl.so.4 is not on this host"; exit 0; }
 plan 7
@@ -9,7 +9,7 @@ MOCK_PORT=$((SIFT_PORT + 8))
 D=$TAPDIR/s3creds
 rm -rf "$D"
 mkdir -p "$D"
-python3 "$(dirname "$0")/p98_s3_mock.py" "$MOCK_PORT" &
+python3 "${SIFT_REPO:?}/test/t/table/f2/object_store_mock.py" "$MOCK_PORT" &
 MOCK=$!
 trap 'kill $MOCK 2>/dev/null; cleanup' EXIT
 ctl() { curl -fsS "http://127.0.0.1:$MOCK_PORT/__ctl/$1"; }

@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 CREATE FUNCTION outcome(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text := runq(q, false); b text := runq(q, true);

@@ -2,7 +2,7 @@
 # tap: pooled
 # The cut of the free end of a sift_col file asks for its AccessExclusiveLock again for a few seconds, like the truncation of a heap, instead of once: a reader that
 # holds the table for a moment no longer keeps VACUUM from giving the free blocks back. lock_timeout ends the wait, and the file is cut by the next VACUUM once the reader is gone.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_CL_ROWS 200000 100000)
 plan 7

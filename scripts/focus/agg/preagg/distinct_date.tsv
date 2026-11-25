@@ -1,1 +1,1 @@
-agg_preagg_distinct_date	src/agg/dist/add.c:dist_narrow_bit src/agg/expr/nx.c:compile_int8_arith src/agg/expr/nx.c:int8_arith_op src/agg/plan_agg.c:minmax_kind src/agg/spec_preagg.c:cal_tests src/col/v1/build/choices.c:add_from_caps src/col/v1/rollup.c:leaf_label
+agg/preagg/distinct_date	src/agg/dist/add.c:dist_narrow_bit src/agg/expr/nx.c:compile_int8_arith src/agg/expr/nx.c:int8_arith_op src/agg/plan_agg.c:minmax_kind src/agg/spec_preagg.c:cal_tests src/col/v1/build/choices.c:add_from_caps src/col/v1/rollup.c:leaf_label

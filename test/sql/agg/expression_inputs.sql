@@ -12,7 +12,7 @@ INSERT INTO labels SELECT i, 'v' || i FROM generate_series(0, 6) i;
 INSERT INTO labels VALUES (1, 'duplicate'), (NULL, NULL);
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE labels;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 SELECT * FROM check_query($q$
  SELECT concat_ws(':', a, b, c, d) AS key, count(*) AS n, count(DISTINCT id) AS ids
  FROM events GROUP BY 1

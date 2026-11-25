@@ -10,8 +10,8 @@ import time
 import fmt
 from . import tablemode
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO = os.path.dirname(os.path.dirname(HERE))
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
 CLIENT_OPTIONS = f"-c client_min_messages=warning {os.environ.get('PGOPTIONS', '')}"
 ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres', PGOPTIONS=CLIENT_OPTIONS)
@@ -71,7 +71,7 @@ def create_db(name, template=None):
 
 
 def data_sql(seed, rows, parts):
-    t = open(f'{HERE}/diff_fuzz_data.sql').read()
+    t = open(f'{HERE}/data.sql').read()
     for mode, keep in (('table', tablemode.TABLE), ('heap', not tablemode.TABLE)):
         t = re.sub(rf'^-- @{mode}\n(.*?)^-- @end\n', (lambda m: m.group(1)) if keep else '', t, flags=re.S | re.M)
     t = re.sub(r'^(?:SET|RESET) (sift\.\w+)\b[^\n]*\n', lambda m: m.group(0) if knob(m.group(1)) else '', t, flags=re.M)    # the settings of the test library that this library or format lacks
@@ -82,4 +82,4 @@ def data_sql(seed, rows, parts):
 
 def build_base(name, seed, rows, parts):
     create_db(name)
-    psql(name, open(f'{REPO}/test/col/run.sql').read() + data_sql(seed, rows, parts) + open(f'{HERE}/diff_fuzz.sql').read())
+    psql(name, open(f'{REPO}/test/col/run.sql').read() + data_sql(seed, rows, parts) + open(f'{HERE}/schema.sql').read())

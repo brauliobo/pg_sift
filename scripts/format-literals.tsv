@@ -1,19 +1,19 @@
 # FILE, the literal, why: places that name a column format by number. Checked by scripts/check-format-literals.sh against src/col/api/format.h (pin below).
 # pin	16cabb9ffd7b82ca6948fd29a753c1b3d28e43b259e451f1417facdc5e3872c4
-test/sql/col_gorder_ends.sql	40	the ends block is column format 40 by definition (has_ends)
-test/sql/col_key_cut.sql	17	the first minor of key_cut, under the setting that writes no later one
-test/t/col_key_cut_merge.sh	34	the table-first unit of a key-cut merge; a later minor must be read here from the constant
-test/t/col_order_layout_compat.sh	38	what the real 3.7.1 library wrote (a fixed fact of that release)
-test/t/col_order_layout_compat.sh	41	the compact order array (column format 41), by definition
-test/t/col_order_layout_compat.sh	42	the text order array named by dictionary code (column format 42), by definition
-test/t/upgrade_check.sh	22	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	25	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	34	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	35	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	38	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	41	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	42	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	44	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	45	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	49	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
-test/t/upgrade_check.sh	50	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/sql/col/gorder/ends.sql	40	the ends block is column format 40 by definition (has_ends)
+test/sql/col/key_cut/basic.sql	17	the first minor of key_cut, under the setting that writes no later one
+test/t/col/key_cut/merge.sh	34	the table-first unit of a key-cut merge; a later minor must be read here from the constant
+test/t/col/order_layout_compat.sh	38	what the real 3.7.1 library wrote (a fixed fact of that release)
+test/t/col/order_layout_compat.sh	41	the compact order array (column format 41), by definition
+test/t/col/order_layout_compat.sh	42	the text order array named by dictionary code (column format 42), by definition
+test/t/compat/upgrade/check.sh	22	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	25	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	34	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	35	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	38	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	41	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	42	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	44	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	45	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	49	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)
+test/t/compat/upgrade/check.sh	50	the minor of the option the check is about, in the text of a check that matches a range (upgrade_check.sql reports the real one)

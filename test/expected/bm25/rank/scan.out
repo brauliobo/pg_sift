@@ -1,7 +1,7 @@
 -- Ranked top-k scans: exact BM25 scores through the custom scan, ties by ctid,
 -- plan shapes and the statements sift.score() may appear in
 CREATE EXTENSION pg_sift;
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 \set ECHO none
 CREATE FUNCTION sift_scan_node(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE

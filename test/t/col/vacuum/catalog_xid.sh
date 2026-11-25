@@ -7,7 +7,7 @@
 # by it, nor by a worker: the explicit rewrite chooses again and writes them. A VACUUM stopped at its cleanup gate (sift.test_cleanup_gate, a testing build, right after its merge) while a second session reads the index's
 # pg_class row: the VACUUM has no xid, no tuple of pg_class has a committed updater and XMAX_INVALID, the row is there once, VACUUM pg_class and a scan of pg_class end
 # without an error, and the choice the VACUUM saw is written by the explicit rewrite.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
 node_init vc 48 "autovacuum = off

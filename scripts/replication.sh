@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Replication test (test/t/replication.sh): a physical hot standby and a logical subscriber against the same primary, with
+# Replication test (test/t/core/replication.sh): a physical hot standby and a logical subscriber against the same primary, with
 # the results compared after every kind of write. Exit 1 on a failed check; the nodes and temporary files are removed.
 #
 #   scripts/replication.sh              nodes are clusters in a temp dir (pgtest.sh staging, unix sockets, free port range)
@@ -24,7 +24,7 @@ trap cleanup EXIT
 local_nodes() {
 	export SIFT_TMP=$TMP SIFT_PORT=${SIFT_PORT:-$((56100 + RANDOM % 60))}
 	"$REPO/scripts/pgtest.sh" install >/dev/null
-	"$REPO/scripts/pgtest.sh" tap replication
+	"$REPO/scripts/pgtest.sh" tap core/replication
 }
 
 # the image: PG_IMAGE plus the pg_sift sources of the working tree (tracked files), built and installed with make

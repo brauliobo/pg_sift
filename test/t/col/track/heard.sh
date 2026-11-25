@@ -4,7 +4,7 @@
 # read of a part whose inserters ended before the snapshot then leaves the heap alone (EXPLAIN heap_vet is 0) and still answers what the heap answers. The word ends, and the reads check the
 # heap again, when the trigger is disabled or made again (another catalog row), when a statement ran with the trigger muted, when the snapshot began before the build ended or is a
 # SERIALIZABLE one (its predicate locks are the heap's), and while a statement of the transaction that ended versions has not been heard yet. Every read here is compared with the heap plan.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 33
 node_init th 5 "autovacuum = off

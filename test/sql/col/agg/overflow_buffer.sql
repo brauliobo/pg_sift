@@ -14,7 +14,7 @@ FROM generate_series(1, 5000) i;
 CREATE INDEX b_t_col ON b_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8, s text(4)}');
 VACUUM (FREEZE, ANALYZE) b_t;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 -- the rows of on_q with the pushdown and of off_q without it are the same (and not empty)
 CREATE FUNCTION same(on_q text, off_q text) RETURNS bool LANGUAGE plpgsql AS $$

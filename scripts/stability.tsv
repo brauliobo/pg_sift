@@ -12,29 +12,29 @@
 @pool	col-twin	1-24
 @pool	scope-fuzz	1-24
 @pool	textkey	1-32
-oracle-1	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:0} scripts/pgtest.sh tap col_scope_oracle
-oracle-2	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:1} scripts/pgtest.sh tap col_scope_oracle
-oracle-3	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:2} scripts/pgtest.sh tap col_scope_oracle
-oracle-mutant	tap:col_scope_oracle	0	110	SIFT_ORACLE_MUTANT=only scripts/pgtest.sh tap col_scope_oracle
-diff-fuzz	fuzz:diff_fuzz.py	1	360	python3 -I test/fuzz/diff_fuzz.py --seeds {seeds:diff:4:0} --queries 300 --rows 6000 --leader-on --out $SIFT_TMP/fz
-diff-fuzz-table	fuzz:diff_fuzz.py	1	500	python3 -I test/fuzz/diff_fuzz.py --table --seeds {seeds:diff-table:4:0} --queries 300 --rows 6000 --leader-on --out $SIFT_TMP/fz
-txn-fuzz	fuzz:txn_fuzz.py	1	60	python3 -I test/fuzz/txn_fuzz.py --seeds {seeds:txn:20:0} --stop-after 3 --out $SIFT_TMP/fz
-txn-fuzz-shapes	fuzz:txn_fuzz.py	1	70	python3 -I test/fuzz/txn_fuzz.py --shapes --seeds {seeds:txn-shapes:20:0} --stop-after 3 --out $SIFT_TMP/fz
-bm25-fuzz	fuzz:bm25_fuzz.py	1	15	python3 -I test/fuzz/bm25_fuzz.py --seeds {seeds:bm25:20:0} --queries 40 --stop-after 3 --out $SIFT_TMP/fz
-tbl-twin-1	tap:tbl_twin_fuzz	0	375	SIFT_FUZZ_SEEDS={seeds:tbl-twin:3:0} scripts/pgtest.sh tap tbl_twin_fuzz
-tbl-twin-2	tap:tbl_twin_fuzz	0	375	SIFT_FUZZ_SEEDS={seeds:tbl-twin:3:1} scripts/pgtest.sh tap tbl_twin_fuzz
-col-twin	tap:col_twin_fuzz	0	190	SIFT_FUZZ_SEEDS={seeds:col-twin:12:0} scripts/pgtest.sh tap col_twin_fuzz
-scope-fuzz	tap:col_scope_fuzz	0	300	SIFT_FUZZ_SEEDS={seeds:scope-fuzz:12:0} SIFT_FUZZ_DUP_SEEDS={seeds:scope-fuzz:12:0} scripts/pgtest.sh tap col_scope_fuzz
-textkey-fuzz	tap:col_scope_textkey_fuzz	0	230	SIFT_FUZZ_TEXTKEY_SEEDS={seeds:textkey:16:0} SIFT_FUZZ_TWOPATH_SEEDS={seeds:textkey:16:0} scripts/pgtest.sh tap col_scope_textkey_fuzz
-wbuf-arena-fuzz	tap:col_wbuf_arena_fuzz	0	80	scripts/pgtest.sh tap col_wbuf_arena_fuzz
-kill-writes	tap:col_scope_kill_writes	0	100	scripts/pgtest.sh tap col_scope_kill_writes
-crash-matrix	tap:col_crash_matrix	0	170	scripts/pgtest.sh tap col_crash_matrix
-scope-crash	tap:col_scope_crash	0	60	scripts/pgtest.sh tap col_scope_crash
-index-crash	tap:col_index_crash	0	300	scripts/pgtest.sh tap col_index_crash
-wbuf-crash	tap:col_wbuf_crash	0	150	scripts/pgtest.sh tap col_wbuf_crash
-store-crash	tap:store_crash	0	365	scripts/pgtest.sh tap store_crash
-index-build-crash	tap:index_build_crash	0	225	scripts/pgtest.sh tap index_build_crash
-oracle-large	tap:col_scope_oracle	0	290	SIFT_ORACLE_ROWS=250000 SIFT_ORACLE_STEPS=2 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS=302 scripts/pgtest.sh tap col_scope_oracle
+oracle-1	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:0} scripts/pgtest.sh tap col/scope/oracle
+oracle-2	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:1} scripts/pgtest.sh tap col/scope/oracle
+oracle-3	tap:col_scope_oracle	0	260	SIFT_ORACLE_ROWS=20000 SIFT_ORACLE_STEPS=5 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS={seeds:oracle:1:2} scripts/pgtest.sh tap col/scope/oracle
+oracle-mutant	tap:col_scope_oracle	0	110	SIFT_ORACLE_MUTANT=only scripts/pgtest.sh tap col/scope/oracle
+diff-fuzz	fuzz:diff_fuzz.py	1	360	python3 -I test/fuzz/diff/cli.py --seeds {seeds:diff:4:0} --queries 300 --rows 6000 --leader-on --out $SIFT_TMP/fz
+diff-fuzz-table	fuzz:diff_fuzz.py	1	500	python3 -I test/fuzz/diff/cli.py --table --seeds {seeds:diff-table:4:0} --queries 300 --rows 6000 --leader-on --out $SIFT_TMP/fz
+txn-fuzz	fuzz:txn_fuzz.py	1	60	python3 -I test/fuzz/txn/cli.py --seeds {seeds:txn:20:0} --stop-after 3 --out $SIFT_TMP/fz
+txn-fuzz-shapes	fuzz:txn_fuzz.py	1	70	python3 -I test/fuzz/txn/cli.py --shapes --seeds {seeds:txn-shapes:20:0} --stop-after 3 --out $SIFT_TMP/fz
+bm25-fuzz	fuzz:bm25_fuzz.py	1	15	python3 -I test/fuzz/bm25.py --seeds {seeds:bm25:20:0} --queries 40 --stop-after 3 --out $SIFT_TMP/fz
+tbl-twin-1	tap:tbl_twin_fuzz	0	375	SIFT_FUZZ_SEEDS={seeds:tbl-twin:3:0} scripts/pgtest.sh tap table/twin_fuzz
+tbl-twin-2	tap:tbl_twin_fuzz	0	375	SIFT_FUZZ_SEEDS={seeds:tbl-twin:3:1} scripts/pgtest.sh tap table/twin_fuzz
+col-twin	tap:col_twin_fuzz	0	190	SIFT_FUZZ_SEEDS={seeds:col-twin:12:0} scripts/pgtest.sh tap col/twin_fuzz
+scope-fuzz	tap:col_scope_fuzz	0	300	SIFT_FUZZ_SEEDS={seeds:scope-fuzz:12:0} SIFT_FUZZ_DUP_SEEDS={seeds:scope-fuzz:12:0} scripts/pgtest.sh tap col/scope/fuzz
+textkey-fuzz	tap:col_scope_textkey_fuzz	0	230	SIFT_FUZZ_TEXTKEY_SEEDS={seeds:textkey:16:0} SIFT_FUZZ_TWOPATH_SEEDS={seeds:textkey:16:0} scripts/pgtest.sh tap col/scope/text_key_fuzz
+wbuf-arena-fuzz	tap:col_wbuf_arena_fuzz	0	80	scripts/pgtest.sh tap col/wbuf/arena_fuzz
+kill-writes	tap:col_scope_kill_writes	0	100	scripts/pgtest.sh tap col/scope/kill_writes
+crash-matrix	tap:col_crash_matrix	0	170	scripts/pgtest.sh tap col/crash_matrix
+scope-crash	tap:col_scope_crash	0	60	scripts/pgtest.sh tap col/scope/crash
+index-crash	tap:col_index_crash	0	300	scripts/pgtest.sh tap col/index_crash
+wbuf-crash	tap:col_wbuf_crash	0	150	scripts/pgtest.sh tap col/wbuf/crash
+store-crash	tap:store_crash	0	365	scripts/pgtest.sh tap bm25/store/crash
+index-build-crash	tap:index_build_crash	0	225	scripts/pgtest.sh tap bm25/index/build_crash
+oracle-large	tap:col_scope_oracle	0	290	SIFT_ORACLE_ROWS=250000 SIFT_ORACLE_STEPS=2 SIFT_ORACLE_VERIFY_EVERY=1 SIFT_ORACLE_MUTANT=off SIFT_ORACLE_SEEDS=302 scripts/pgtest.sh tap col/scope/oracle
 regress-1	regress:shard	1	650	scripts/pgtest.sh regress $(ls test/sql | sed -n "s/\.sql$//p" | awk "NR % 4 == 0")
 regress-2	regress:shard	1	650	scripts/pgtest.sh regress $(ls test/sql | sed -n "s/\.sql$//p" | awk "NR % 4 == 1")
 regress-3	regress:shard	1	650	scripts/pgtest.sh regress $(ls test/sql | sed -n "s/\.sql$//p" | awk "NR % 4 == 2")

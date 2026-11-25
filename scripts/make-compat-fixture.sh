@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates test/fixtures/compat2x (SIFT_FIXTURE_OUT=test/fixtures/compat30 for a checkout of 3.0, whose directory entry
 # kind is named buffer where 2.x says mutable): the relation files of a small table and of the sift index on it, written
-# by the 2.x library, which test/t/compat_2x_fixture.sh puts under the build being tested to prove that it still
+# by the 2.x library, which test/t/compat/2x_fixture.sh puts under the build being tested to prove that it still
 # reads (and maintains) indexes written by 2.x. Run it only to change the fixture; the files are committed.
 #
 #   SIFT_2X_REPO=/path/to/checkout-of-2.x SIFT_TMP=/tmp/sift-fixture SIFT_PORT=56280 scripts/make-compat-fixture.sh

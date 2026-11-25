@@ -2,9 +2,9 @@
 # The table of the planner's verdicts that backends share (agg/verdict.c): a new backend plans a statement with a shared CTE
 # from the verdict another backend made; two backends that plan the same new statement at once (one held at the gate between its lookup and its plan
 # in full) both succeed and leave one consistent entry, with the same plan; the table does not outlive a crash restart; a hot standby shares it among its
-# backends; a backend that cannot attach the table plans in full (sift.test_verdict_shm_fail). (The verdicts of one backend are test/sql/agg_cte_verdict_consolidated.sql.)
+# backends; a backend that cannot attach the table plans in full (sift.test_verdict_shm_fail). (The verdicts of one backend are test/sql/agg/cte/verdict_consolidated.sql.)
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 12
 node_init primary 2 "wal_level = replica

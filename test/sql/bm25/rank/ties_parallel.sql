@@ -2,7 +2,7 @@
 -- the participants' hits ends with the whole group tied with the k-th of all of them. The rows are those of the serial plan and of the sort of every match,
 -- for the leader alone, with the workers only, and under write buffers, dead rows and updates.
 CREATE EXTENSION pg_sift;
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 SELECT sift.version() IS NOT NULL AS library_loaded;
 
 -- about a thousand rows per superblock: a few superblocks to hand out, and documents of few distinct lengths: groups of thousands

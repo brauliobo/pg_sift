@@ -4,9 +4,9 @@
 # extension_control_path directory; 1.0 -> 3.0 and 1.2 -> 3.0 are compared with a fresh 3.0 install, 3.1 -> 3.2 with a fresh 3.2 install, 1.0, 3.0, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7 and 4.0 -> 4.1 with a fresh install of the version of the tree), installation through extension_control_path and dynamic_library_path
 # alone, and a same-major pg_upgrade that carries the index files over. Every step: sift.verify with
 # heapallindexed and index results equal to a sequential scan.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+REPO=${SIFT_REPO:?}
 # the extension version of this tree: the minor, or X.Y.N for a patch release (scripts/release.sh --ext-version)
 EXT=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
 N=$(knob SIFT_LIFE_ROWS 20000 4000)

@@ -52,7 +52,7 @@ if [[ $MODE == --selftest ]]; then
 		# upgrade test, on each major and architecture, and every name in it is a job
 		for fl in 17 arm 19; do
 			out=$(env SIFT_CI_JOBS="$COMPAT_JOBS" SIFT_CI_PG_MAJOR="${fl/arm/18}" FLAVOUR="$fl" "$0" --plan quick | awk '{ print $1 }') || { echo "FAIL: --plan quick with COMPAT_JOBS on $fl"; bad=1; continue; }
-			for want in installcheck-batch1 isolation-1 tap-001_crash tap-002_standby tap-shell-pg_upgrade; do
+			for want in installcheck-batch1 isolation-1 tap-bm25/crash tap-bm25/standby tap-shell-compat/pg_upgrade/basic; do
 				grep -qx "$want" <<<"$out" || { echo "FAIL: COMPAT_JOBS on $fl: the plan has no $want"; bad=1; }
 			done
 		done
@@ -80,8 +80,7 @@ if [[ $MODE == --selftest ]]; then
 				[[ $id == installcheck-batch* || $id =~ ${grouped%|} ]] || { echo "FAIL: areas: the $m job $id is in no group of scripts/areas.tsv"; bad=1; }
 			done <<<"$PLAN_OUT"
 		done
-		for f in "$REPO"/test/sql/*.sql; do
-			f=${f##*/}
+		for f in $(cd "$REPO/test/sql" && find . -name "*.sql" | sed "s|^\./||" | LC_ALL=C sort); do
 			[[ installcheck-${f%.sql} =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $f is in no group of scripts/areas.tsv"; bad=1; }
 		done
 	fi
@@ -101,22 +100,22 @@ if [[ $MODE == --selftest ]]; then
 		[[ $(areas_regex docs/ANALYTICS.md CHANGELOG.md README.md bench/README.md) == '^$' ]] || { echo "FAIL: areas: a change of documentation or benchmarks selects jobs"; bad=1; }
 		# the focus table (one file scripts/focus/NAME.tsv for each test, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
 		# tests that execute a function, the tests of the area for a hot function or a change outside functions
-		focus_rows=$(cat "$REPO"/scripts/focus/*.tsv | cut -f1 | grep -v '^=' | sort)
-		focus_missing=$(comm -23 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
+		focus_rows=$(cat $(find "$REPO/scripts/focus" -name "*.tsv") | cut -f1 | grep -v '^=' | sort)
+		focus_missing=$(comm -23 <((cd "$REPO/test/sql" && find . -name "*.sql" | sed "s|^\./||; s/\.sql$//") | sort) <(echo "$focus_rows"))
 		[[ -z $focus_missing ]] || { echo "FAIL: focus: no scripts/focus/NAME.tsv for $(echo $focus_missing) (scripts/focus-gen.sh NAME...)"; bad=1; }
-		focus_stale=$(comm -13 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
+		focus_stale=$(comm -13 <((cd "$REPO/test/sql" && find . -name "*.sql" | sed "s|^\./||; s/\.sql$//") | sort) <(echo "$focus_rows"))
 		[[ -z $focus_stale ]] || { echo "FAIL: focus: scripts/focus has files for $(echo $focus_stale), which are not tests"; bad=1; }
-		read -r focus_t focus_tok _ < <(awk -F'\t' '$1 != "=hot" && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' "$REPO"/scripts/focus/*.tsv)
+		read -r focus_t focus_tok _ < <(awk -F'\t' '$1 != "=hot" && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' $(find "$REPO/scripts/focus" -name "*.tsv"))
 		[[ -z $focus_t || installcheck-$focus_t =~ $(focus_regex "$focus_tok") ]] || { echo "FAIL: focus: $focus_tok does not select its test $focus_t"; bad=1; }
 		focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1]; exit }' "$REPO/scripts/focus/_hot.tsv")
 		[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
 		# a function of a file split into a folder (scripts/moved-sources.tsv) selects the tests of the row made for the old file, with and without the prefix a split gave it
 		read -r mv_new mv_old mv_pre < <(awk -F'\t' '!/^#/ && NF >= 2 { print $1, $2, $3; exit }' "$REPO/scripts/moved-sources.tsv")
-		mv_fn=$(cat "$REPO"/scripts/focus/*.tsv | grep -o "$mv_old:[A-Za-z_0-9]*" | head -1 | cut -d: -f2)
+		mv_fn=$(cat $(find "$REPO/scripts/focus" -name "*.tsv") | grep -o "$mv_old:[A-Za-z_0-9]*" | head -1 | cut -d: -f2)
 		[[ -z $mv_fn || ( $(focus_regex "${mv_new}x.c:${mv_pre}${mv_fn}") == "$(focus_regex "$mv_old:$mv_fn")" && $(focus_regex "$mv_old:$mv_fn") != '^(coverage|isolation-emulated)$' ) ]] || { echo "FAIL: focus: a function of a file split into a folder does not select the tests of the row of the old file ($mv_old:$mv_fn)"; bad=1; }
 		[[ $(focus_regex src/agg/accum.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 		# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
-		n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
+		n=0; for f in $(cd "$REPO/test/sql" && find . -name "*.sql" | sed "s|^\./||" | LC_ALL=C sort); do [[ installcheck-${f%.sql} =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
 		(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
 		grep -qE "$ASSERT_MARK" "$REPO/src/agg/par/worker.c" || { echo "FAIL: src/agg/par/worker.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 		# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
@@ -143,7 +142,7 @@ if [[ $MODE == --selftest ]]; then
 		plan_of quick 18
 		prod=$(grep '^release-library-regress ' <<<"$PLAN_OUT")
 		for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress jobs (no test of that name, a slow or test-only one)"; bad=1; }; done
-		n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
+		n=0; for f in $(cd "$REPO/test/sql" && find . -name "*.sql" | sed "s|^\./||" | LC_ALL=C sort); do [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
 		(( n == 8 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 8 it names"; bad=1; }
 	fi
 	if st_on shards-quick; then
@@ -187,19 +186,19 @@ if [[ $MODE == --selftest ]]; then
 	if st_on spread; then
 		# the jobs that build older releases are all in the first shard (the workflow caches those builds for each shard), in every tier and layout
 		for lay in quick:3 quick:4; do
-			bad_pin=$(for k in 2 3; do plan_of "${lay%:*}" 18 $k/${lay#*:}; awk '$1 ~ /^tap-shell-(compat_matrix|old_lib_refusal|replica_mixed|pg_upgrade)/ {print $1}' <<<"$PLAN_OUT"; done)
+			bad_pin=$(for k in 2 3; do plan_of "${lay%:*}" 18 $k/${lay#*:}; awk '$1 ~ /^tap-shell-(compat\/matrix|compat\/old_lib_refusal|table\/replica_mixed|compat\/pg_upgrade\/)/ {print $1}' <<<"$PLAN_OUT"; done)
 			[[ -z $bad_pin ]] || { echo "FAIL: the ${lay%:*} tier cut in ${lay#*:} shards puts jobs that build older releases outside the first shard: $bad_pin"; bad=1; }
 		done
 	fi
 	if st_on shards-quick; then
 		# a failed check of a TAP shell test shows what the test had captured in $out
-		out=$(SIFT_NODES=docker SIFT_TMP="$ST/tl" bash -c '. "$0/test/t/lib.bash"; out="line one"$'"'"'\n'"'"'"line two"; check "x" false; check "y" true' "$REPO" 2>&1)
-		[[ $out == *"# what the check read (out):"*"# line two"*"ok 2 - y"* ]] || { echo "FAIL: a failed check of test/t/lib.bash does not show the out of the test: $out"; bad=1; }
+		out=$(SIFT_NODES=docker SIFT_TMP="$ST/tl" bash -c '. "$0/test/t/lib/common.bash"; out="line one"$'"'"'\n'"'"'"line two"; check "x" false; check "y" true' "$REPO" 2>&1)
+		[[ $out == *"# what the check read (out):"*"# line two"*"ok 2 - y"* ]] || { echo "FAIL: a failed check of test/t/lib/common.bash does not show the out of the test: $out"; bad=1; }
 	fi
 	if st_on spread; then
 		# the CPU-bound jobs (HEAVY_JOBS of scripts/ci/shards.sh) are spread: no shard has two more of them than another, in every tier and layout
 		for lay in quick:3 quick:4; do
-			counts=$(for k in $(seq 1 "${lay#*:}"); do plan_of "${lay%:*}" 18 $k/${lay#*:}; awk '$1 ~ /^(difftest|hardened|fuzz|release-library-regress|tap-shell-scaling_slope)/ && $3 == "pool" {n++} END {print n + 0}' <<<"$PLAN_OUT"; done | sort -n)
+			counts=$(for k in $(seq 1 "${lay#*:}"); do plan_of "${lay%:*}" 18 $k/${lay#*:}; awk '$1 ~ /^(difftest|hardened|fuzz|release-library-regress|tap-shell-core\/scaling_slope)/ && $3 == "pool" {n++} END {print n + 0}' <<<"$PLAN_OUT"; done | sort -n)
 			lo=$(head -1 <<<"$counts"); hi=$(tail -1 <<<"$counts")
 			(( hi - lo <= 1 )) || { echo "FAIL: the ${lay%:*} tier cut in ${lay#*:} shards has $lo to $hi CPU-bound jobs in a shard (at most one apart)"; bad=1; }
 		done
@@ -255,7 +254,7 @@ if [[ $MODE == --selftest ]]; then
 			'stat (-c|--format)	a size: wc -c <FILE | tr -d " "'
 			"paste -sd('[^']*'|[^ ']*)([|);\"]|\$)	paste wants a file operand: paste -sd, -"
 			'seq -s	BSD seq ends the list with the separator: seq 1 N | tr "\n" " "'
-			'pg_sift\.so	the module of macOS is pg_sift.dylib: pg_sift$DLSUFFIX (test/t/lib.bash)'
+			'pg_sift\.so	the module of macOS is pg_sift.dylib: pg_sift$DLSUFFIX (test/t/lib/common.bash)'
 		)
 		for row in "${bsd[@]}"; do
 			IFS=$'\t' read -r re why <<<"$row"
@@ -291,9 +290,9 @@ if [[ $MODE == --selftest ]]; then
 			[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
 		done
 		# the scaling gate is a job of the quick tier only for the files of the geometry (scripts/areas.tsv); a col change alone does not pick it
-		[[ -z $(SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep scaling_slope) ]] || { echo "FAIL: tap-shell-scaling_slope is in the quick plan"; bad=1; }
+		[[ -z $(SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep scaling_slope) ]] || { echo "FAIL: tap-shell-core/scaling_slope is in the quick plan"; bad=1; }
 		for f in "src/core/sift.h 1" "src/col/v1/scan/gorder.c 0"; do
-			n=$("$0" affected --list --files ${f% *} | grep -c 'tap-shell-scaling_slope')
+			n=$("$0" affected --list --files ${f% *} | grep -c 'tap-shell-core/scaling_slope')
 			[[ $n == "${f#* }" ]] || { echo "FAIL: affected for ${f% *} picks the scaling gate $n times, not ${f#* }"; bad=1; }
 		done
 		# the reaper: a dead run's directory and its postmaster go, a live run's and a failed run's (kept) stay
@@ -313,10 +312,10 @@ if [[ $MODE == --selftest ]]; then
 		[[ -n $want && $cap == "$want" ]] || { echo "FAIL: the scratch cap of the quick tier (CI_MAX_MB '$cap' in scripts/ci/config.sh) is not the tmpfs budget of script:ci.sh in scripts/budgets.tsv ('$want')"; bad=1; }
 		# the scratch table (scripts/scratch.tsv): a row is a job of a plan and a number of MB, and scratch_table keeps the row of a job no summary has, replaces a measured one (plus 5%, to ten) and drops one
 		# measured under 150 MB; a job that failed only raises its row
-		known=$({ for pg in 17 18 19 arm; do plan_of quick $pg; echo "$PLAN_OUT"; done; env SIFT_CI_AFFECTED=. SIFT_CI_JOBS='fault_matrix|scaling_slope' SIFT_CI_PG_MAJOR=18 "$0" --plan quick; } | awk '{ print $1 }' | sort -u)
+		known=$({ for pg in 17 18 19 arm; do plan_of quick $pg; echo "$PLAN_OUT"; done; env SIFT_CI_AFFECTED=. SIFT_CI_JOBS='fault/matrix|scaling_slope' SIFT_CI_PG_MAJOR=18 "$0" --plan quick; } | awk '{ print $1 }' | sort -u)
 		stale=$(grep -v '^#' "$REPO/scripts/scratch.tsv" | cut -f1 | sort | comm -23 - <(echo "$known") | paste -sd' ' -)
 		[[ -z $stale ]] || { echo "FAIL: scripts/scratch.tsv has rows for jobs that are in no plan: $stale (scripts/ci.sh --scratch FILE... updates the table)"; bad=1; }
-		grep -v '^#' "$REPO/scripts/scratch.tsv" | grep -vE $'^[a-z0-9_-]+\t[0-9]+$' >/dev/null && { echo "FAIL: scripts/scratch.tsv has a row that is not job, tab, MB"; bad=1; }
+		grep -v '^#' "$REPO/scripts/scratch.tsv" | grep -vE $'^[a-z0-9_/-]+\t[0-9]+$' >/dev/null && { echo "FAIL: scripts/scratch.tsv has a row that is not job, tab, MB"; bad=1; }
 		printf '# header\nkept\t500\nreplaced\t900\nshrunk\t400\nraised\t300\nfailsmall\t300\n' >"$ST/table.tsv"
 		printf 'replaced\tPASS\t5\t1000\t0\t\nshrunk\tPASS\t5\t120\t0\t\nnew\tPASS\t5\t200\t0\t\nsmall\tPASS\t5\t90\t0\t\nreplaced\tPASS\t5\t800\t0\t\nkept\tFAIL\t5\t10\t0\t\nraised\tFAIL\t5\t700\t0\t\nfailsmall\tFAIL\t5\t200\t0\t\nnewfail\tFAIL\t5\t400\t0\t\n' >"$ST/runs.tsv"
 		[[ $(scratch_table "$ST/table.tsv" "$ST/runs.tsv" | paste -sd'|' -) == '# header|replaced	1050|raised	740|kept	500|newfail	420|failsmall	300|new	210' ]] ||
@@ -363,15 +362,15 @@ if [[ $MODE == --selftest ]]; then
 		for m in quick; do
 			plan_of $m 18; f2=$PLAN_OUT
 			f1=$(env SIFT_FORMAT=1 SIFT_CI_PG_MAJOR=18 FLAVOUR=18 "$0" --plan $m) || { echo "FAIL: formats: SIFT_FORMAT=1 --plan $m"; bad=1; continue; }
-			want=(coverage hardened tap-024_format2_wal tap-shell-pg_upgrade tap-shell-compat_matrix release-library-regress)
+			want=(coverage hardened tap-col/f2/wal tap-shell-compat/pg_upgrade/basic tap-shell-compat/matrix release-library-regress)
 			for j in "${want[@]}"; do has_job "$j" "$f2" || { echo "FAIL: formats: the Format 2.0 $m plan lacks $j"; bad=1; }; done
-			for t in format2_col_am table_f2_parity; do grep -qE " $t( |\$)" <<<"$f2" || { echo "FAIL: formats: the Format 2.0 $m plan runs no regression test $t"; bad=1; }; done
-			for j in coverage plan-gate plan-gate-tuned plan-gate-table plan-gate-table-tuned difftest-col difftest-col-tbl difftest-fuzz difftest-fuzz-tbl difftest-txn soak-col isolation tap-001_crash tap-002_standby tap-shell-store_crash; do
+			for t in col/f2/am table/f2/parity; do grep -qE " $t( |\$)" <<<"$f2" || { echo "FAIL: formats: the Format 2.0 $m plan runs no regression test $t"; bad=1; }; done
+			for j in coverage plan-gate plan-gate-tuned plan-gate-table plan-gate-table-tuned difftest-col difftest-col-tbl difftest-fuzz difftest-fuzz-tbl difftest-txn soak-col isolation tap-bm25/crash tap-bm25/standby tap-shell-bm25/store/crash; do
 				has_job "$j" "$f1" || { echo "FAIL: formats: the Format 1.0 $m plan lacks $j"; bad=1; }
 			done
 			grep -qE '^installcheck-batch1 ' <<<"$f1" || { echo "FAIL: formats: the Format 1.0 $m plan has no regression batch"; bad=1; }
-			for j in release-library-regress hardened isa-baseline tools-build format-isolation regress-batch difftest-col-selftest tap-024_format2_wal tap-025_format2_minimal_wal tap-031_v51_full_compat \
-				tap-032_v6_dump_restore_tablespace tap-shell-pg_upgrade tap-shell-compat_matrix tap-shell-old_lib_refusal tap-shell-f2_standby; do
+			for j in release-library-regress hardened isa-baseline tools-build format-isolation regress-batch difftest-col-selftest tap-col/f2/wal tap-col/f2/minimal_wal tap-compat/v51_full \
+				tap-compat/v6_dump_restore_tablespace tap-shell-compat/pg_upgrade/basic tap-shell-compat/matrix tap-shell-compat/old_lib_refusal tap-shell-col/f2/standby; do
 				! grep -q "^$j " <<<"$f1" || { echo "FAIL: formats: the Format 1.0 $m plan queues $j"; bad=1; }
 			done
 			! grep -qE ' (format2_|table_f2_|stor_f2_|f2_|compat_v1_)' <<<"$f1" || { echo "FAIL: formats: the Format 1.0 $m plan names a test of Format 2.0 or one that sets Format 1 by itself: $(grep -oE ' (format2_|table_f2_|stor_f2_|f2_|compat_v1_)[a-z0-9_]*' <<<"$f1" | sort -u | head -3 | tr '\n' ' ')"; bad=1; }

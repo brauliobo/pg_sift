@@ -23,4 +23,4 @@ on a host, each on a cluster of its own, and the tests of a run follow one anoth
 
 Cost: a connection per statement, about 2 ms with the unix socket, so a file of a few hundred statements takes a second or two longer. Run it over the files
 that touch `src/agg/exec`, `src/col/am` and `src/table` (the focus of `scripts/ci.sh affected`), and over the whole suite when the lazily attached state changes.
-Self-test: `test/t/fresh_backend.sh`; the crash class of a slot in the wrong context is the `slot_owner` test of the assert lane.
+Self-test: `test/t/core/fresh_backend.sh`; the crash class of a slot in the wrong context is the `slot_owner` test of the assert lane.

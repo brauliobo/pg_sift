@@ -1,4 +1,4 @@
--- sift.locks names the locks of pg_sift: the advisory locks of the extension, and nothing else (the page locks of an index are read in test/t/col_worker_busy_lock.sh, which holds one)
+-- sift.locks names the locks of pg_sift: the advisory locks of the extension, and nothing else (the page locks of an index are read in test/t/col/worker/busy_lock.sh, which holds one)
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 CREATE TABLE lk (id int PRIMARY KEY, body text, g int);

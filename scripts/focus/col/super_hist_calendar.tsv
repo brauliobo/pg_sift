@@ -1,1 +1,1 @@
-col_super_hist_calendar	src/agg/dist/add.c:dist_narrow_bit src/agg/spec_preagg.c:cal_tests src/col/types.c:sift_col_numeric_image src/col/v1/build/choices.c:add_from_caps src/col/v1/rollup.c:leaf_label src/col/v1/wide.c:sift_col_numimg_from_text
+col/super_hist_calendar	src/agg/dist/add.c:dist_narrow_bit src/agg/spec_preagg.c:cal_tests src/col/types.c:sift_col_numeric_image src/col/v1/build/choices.c:add_from_caps src/col/v1/rollup.c:leaf_label src/col/v1/wide.c:sift_col_numimg_from_text

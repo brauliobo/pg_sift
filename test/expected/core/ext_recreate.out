@@ -7,7 +7,7 @@ DECLARE l text; BEGIN
 	END LOOP;
 	RETURN false;
 END $$;
-\ir test/ext_recreate_fixture.sql
+\ir test/common/sql/core/ext_recreate.sql
 -- ext_recreate: one round of the objects a backend that lives across DROP EXTENSION and CREATE EXTENSION must find again: the session keeps the library, and
 -- with it whatever it remembered of the catalog of the extension that was dropped.
 CREATE EXTENSION pg_sift;
@@ -123,7 +123,7 @@ SELECT plan_has('SELECT g, count(*), sum(id) FROM re_t GROUP BY g', 'SiftAgg') A
 (1 row)
 
 DROP EXTENSION pg_sift CASCADE;
-\ir test/ext_recreate_fixture.sql
+\ir test/common/sql/core/ext_recreate.sql
 -- ext_recreate: one round of the objects a backend that lives across DROP EXTENSION and CREATE EXTENSION must find again: the session keeps the library, and
 -- with it whatever it remembered of the catalog of the extension that was dropped.
 CREATE EXTENSION pg_sift;

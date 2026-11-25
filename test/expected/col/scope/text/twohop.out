@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
-\ir test/col_scope_texttwohop_states.sql
+\ir test/common/sql/col/scope/texttwohop_states.sql
 -- shared by col_scope_texttwohop and col_scope_texttwohop_collide: a scope of two paths (the grants of a tenant on a member and on the groups of the member) with a text key, a text member, a uuid member
 -- and a varchar fact column, the forms of its pair set and the states of the three journals
 CREATE TABLE grants (id int PRIMARY KEY, tenant_id text NOT NULL, account text, group_id int, deleted_at timestamptz, note text) WITH (autovacuum_enabled = false);

@@ -5,7 +5,7 @@
 # of partition 1 is damaged", the index quarantined). The flusher is held before it starts (sift.test_phase_gate, SIFT_F2_GATE_SLAB_FLUSH = 15) for 30 ms at a time, while the writers go on.
 # No statement fails, no index is quarantined or damaged, the index verifies, and the column scan answers what the heap does. The release library has no test function and no gate: it runs the 16
 # writers alone, whose UPDATEs and DELETEs flush the slabs themselves.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 SECS=$(knob SIFT_SLAB_SECS 8 4)

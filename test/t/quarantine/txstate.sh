@@ -2,7 +2,7 @@
 # The processes that write or vacuum without a client session run the guard of the quarantine in their own transaction states, and a healthy index must see no difference: autovacuum
 # (VACUUM of a table whose sift_col and BM25 indexes are healthy, then damaged), the apply worker of a logical subscriber (multi-row transactions, with savepoints on the publisher side
 # changing nothing for it), and a promoted standby (multi-row INSERT with a SAVEPOINT in its first transactions). None of them may end a process, and the heap gets every row.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 12
 ROWS=$(knob SIFT_TXSTATE_ROWS 3000 1500)

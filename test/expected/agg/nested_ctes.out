@@ -15,7 +15,7 @@ DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 \set ECHO none
 -- The top three kinds of a ranked aggregate whose own WITH holds the lookup tables of the scan.
 SELECT * FROM check_query($q$

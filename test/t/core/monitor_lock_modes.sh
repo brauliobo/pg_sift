@@ -2,11 +2,11 @@
 # Reading the state of an index (sift.space, sift.status, sift.health, sift.indexes) takes no lock above AccessShareLock, not even for a moment: a scrape every few seconds is not a lock that
 # VACUUM, sift.maintain() or a DDL statement can wait for. The source of sift.space acquires no relation, page or tuple lock of its own (maintenance_busy is read from the lock manager), and the
 # scrapes finish under a lock_timeout while a session holds ShareUpdateExclusiveLock of the table.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 out=
 plan 6
-SRC=$(dirname "$0")/../../src/core/sql_space.c
+SRC=${SIFT_REPO:?}/src/core/sql_space.c
 taken() { grep -E '\b(Conditional)?Lock(Page|Tuple|RelationOid|Relation)\(' "$SRC" | grep -v 'AccessShareLock'; }
 check "sql_space.c takes no heavyweight lock above AccessShareLock" test -z "$(taken)"
 

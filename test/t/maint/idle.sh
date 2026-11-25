@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # What a maintenance worker costs when it has nothing more to do: it leaves after two looks that find nothing (not after sift.maintenance_naptime), its looks are spaced
 # at growing intervals, and it writes nothing to the log of the server. Measured as the transactions of the database for one promotion and the worker's looks.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 node_init mi 72 "autovacuum = off

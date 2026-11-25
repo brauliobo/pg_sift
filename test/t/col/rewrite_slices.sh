@@ -5,7 +5,7 @@
 # transaction id there, so the workers take no lock that needs one. What a query sees is what the merge of one process leaves: the rows, the answers and
 # nothing left to rewrite (the 3 segments are disjoint in the key: a rewrite does not take them again); a smaller input, or no worker, is merged by one process.
 # An output cut into partitions (sift.test_col_partition_kb) is a slice for each partition from 2, the workers no more than the slices less the backend.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 16
 node_init mc 22 "autovacuum = off

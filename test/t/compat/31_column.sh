@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Real released libraries write the input, including unpromoted records. No fixture produced by the new writer can prove this upgrade.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots; none supports 19 yet)'; exit 0; fi
 for ref in v3.0.1 v3.1.0; do
 	if ! git -C "$REPO" rev-parse --verify -q "$ref^{commit}" >/dev/null; then

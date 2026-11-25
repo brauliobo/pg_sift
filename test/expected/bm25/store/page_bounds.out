@@ -79,7 +79,7 @@ FROM (VALUES ('payload, in use', 24, 2), ('last payload byte, past pd_lower', 81
  pd_special                       | XX000: sift index "t_idx": a change of block 1 was refused | the page header's pd_special or pd_upper changed.
 (8 rows)
 
--- an append edit inside the head it logs goes through (past it, or in the special space, the server restarts: test/t/store_edit_guard.sh)
+-- an append edit inside the head it logs goes through (past it, or in the special space, the server restarts: test/t/bm25/store/edit_guard.sh)
 SELECT expect($$ SELECT sift._test_write('t_idx', 1, 24, 2, true) $$);
  expect 
 --------

@@ -6,7 +6,7 @@
 # insertion of the same key commits, the unique index finds it, and the heap row is killed without a word to the sift_col index. A read that trusted the entry would count the row.
 # The race is ordered, not timed: the upserting session waits on an advisory lock inside the expression of an index that comes first (a SQL function made VOLATILE after the index, so that the
 # planner inlines it and no statement starts), the other session inserts the key and the first one goes on when the lock is released.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 10
 node_init sr 84 "autovacuum = off

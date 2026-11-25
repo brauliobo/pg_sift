@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sift.stats() holds the counters of the whole server, summed over its backends (a table of the shared memory, no shared_preload_libraries), and sift.stats(local => true) those of the session:
 # what one session counts the other sees in the totals and not in its own list, sift.stats_reset() leaves the totals alone, and a restart or a crash starts them again (nothing decides on them).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 9
 
 node_init ss 81 "autovacuum = off

@@ -6,12 +6,12 @@ name: ci
 # `integration/` branch runs everything the diff can break, PostgreSQL 17, 18 and 19, the TAP, differential and
 # release-library stages and the other jobs; its base is the last green run of that branch, so a red or cancelled push is not forgotten by the next one.
 # A dispatch (of main, or of a branch before the merge of a risky change) runs every job of the quick tier ("Full scope" in the first job is
-# the mark the release tool looks for); `versions` filters every job, `formats` the formats. Every PostgreSQL 18 job installs pg_repack (PGDG ships 1.5.3) and pg_squeeze (PGDG ships 1.9.4, a few seconds), so test/t/col_pg_repack.sh and test/t/col_pg_squeeze.sh run in the shard that holds them and skip on 17 and 19.
+# the mark the release tool looks for); `versions` filters every job, `formats` the formats. Every PostgreSQL 18 job installs pg_repack (PGDG ships 1.5.3) and pg_squeeze (PGDG ships 1.9.4, a few seconds), so test/t/col/pg_repack.sh and test/t/col/pg_squeeze.sh run in the shard that holds them and skip on 17 and 19.
 # PostgreSQL 19 (the PGDG packages, like 17 and 18) runs whatever PostgreSQL 17 and 18 run, in the same shards, and fails the run like them.
 # Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a `ci-full` pull request, the quick tier
 # of a push and a dispatch.
 # The memory-debugging and sanitizer lanes (assert, valgrind, the ASan+UBSan fuzzers and leak set) are assert.yml, weekly. The long soaks and the 250,000 row plan gates are scripts of their own (scripts/soak.sh,
-# scripts/colsoak.sh, scripts/plangate.sh --rows 250000), the exhaustive fault matrix a dispatch with only='^tap-shell-fault_matrix$'.
+# scripts/colsoak.sh, scripts/plangate.sh --rows 250000), the exhaustive fault matrix a dispatch with only='^tap-shell-(fault/matrix)$'.
 # Two formats, one build: Format 2.0 is what the clusters create (`SIFT_FORMAT=2`, scripts/pgtest.sh), and the shards of Format 1.0 (`format: 1`, `SIFT_FORMAT=1`) install the very archive of the Format 2.0 shards,
 # the testing library creates either with sift.test_create_format1, so Format 1.0 costs no compilation. The Format 1.0 run is the plan of the Format 2.0 run less the jobs that format covers (scripts/ci/format1-skip.txt), the proof of the coverage
 # table, the plan gates, the differential tests, the isolation, crash and standby tests, the fuzzers and the soaks included. The `formats` input (default `2 1`) picks which of them a dispatch runs.
@@ -403,7 +403,7 @@ jobs:
           zstd -dc "$RUNNER_TEMP/bin-archive/sift-bin.tar.zst" | tar -C "$RUNNER_TEMP/bin" -xf -
           ls "$RUNNER_TEMP/bin"
 
-      # test/t/pg_upgrade.sh upgrades from the major before the server's when its binaries are in /usr/lib/postgresql/N-1 (17 to 18, 18 to 19) and builds
+      # test/t/compat/pg_upgrade/basic.sh upgrades from the major before the server's when its binaries are in /usr/lib/postgresql/N-1 (17 to 18, 18 to 19) and builds
       # pg_sift for it, so it needs the server and its headers. Only the entries whose share of the queue has the job install them; a major PGDG lacks
       # is a warning, and the test then upgrades within one major
       - name: Install the previous PostgreSQL major (pg_upgrade)
@@ -411,7 +411,7 @@ jobs:
         timeout-minutes: 10
         run: |
           plan=$(scripts/ci.sh --plan)
-          grep -q '^tap-shell-pg_upgrade ' <<<"$plan" || { echo "no pg_upgrade job in this entry"; exit 0; }
+          grep -q '^tap-shell-compat/pg_upgrade/basic ' <<<"$plan" || { echo "no pg_upgrade job in this entry"; exit 0; }
           prev=$(( ${{ matrix.pg }} - 1 ))
           scripts/apt-install.sh postgresql-$prev postgresql-server-dev-$prev ||
             echo "::warning::PostgreSQL $prev is not available from PGDG: pg_upgrade runs within one major"
@@ -431,7 +431,7 @@ jobs:
         run: |
           prefix="old-lib-$RUNNER_OS-$RUNNER_ARCH-pg${{ matrix.pg }}-gcc$(gcc -dumpfullversion)-shard${{ matrix.shard }}-"
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_*.sh', 'test/t/old_lib_refusal.sh', 'test/t/pg_upgrade.sh', 'test/t/upgrade_compat.sh', 'test/t/upgrade_compat_standby.sh', 'test/t/lib_compat.bash') }}" >> "$GITHUB_OUTPUT"
+          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_*.sh', 'test/t/compat/old_lib_refusal.sh', 'test/t/compat/pg_upgrade/basic.sh', 'test/t/compat/upgrade/basic.sh', 'test/t/compat/upgrade/standby.sh', 'test/t/lib/compat.bash') }}" >> "$GITHUB_OUTPUT"
 
       - name: Cache the older releases
         id: oldlib-cache
@@ -801,7 +801,7 @@ jobs:
       - name: make check (regression tests, the tests that tripped on macOS) under brew bash 5
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
-          SIFT_CI_JOBS: '^(installcheck-(facets|filter_pushdown|format2_col_am|table_f2_parity|agg_v6_star_jsonb_unnest)|tap-shell-(col_auto_merge_concurrent|col_refresh_crash|col_wbuf_batch|leakcheck_gate|pg_upgrade|pg_upgrade_32|replica_mixed|scaling_slope))$'
+          SIFT_CI_JOBS: '^(installcheck-(agg/v6/star_jsonb_unnest|bm25/facets|bm25/filter/pushdown|col/f2/am|table/f2/parity)|tap-shell-(col/auto_merge/concurrent|col/refresh_crash|col/wbuf/batch|compat/pg_upgrade/basic|compat/pg_upgrade/v32|core/leakcheck_gate|core/scaling_slope|table/replica_mixed))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
           PATH="$(brew --prefix ccache)/libexec:$RUNNER_TEMP/gnu-timeout:$(brew --prefix)/bin:$(brew --prefix postgresql@18)/bin:$PATH"; export PATH
@@ -813,7 +813,7 @@ jobs:
       - name: make check (the same tests) on PostgreSQL 17
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci17
-          SIFT_CI_JOBS: '^(installcheck-(facets|filter_pushdown|format2_col_am|table_f2_parity|agg_v6_star_jsonb_unnest)|tap-shell-(col_auto_merge_concurrent|col_refresh_crash|col_wbuf_batch|leakcheck_gate|pg_upgrade|pg_upgrade_32|replica_mixed|scaling_slope))$'
+          SIFT_CI_JOBS: '^(installcheck-(agg/v6/star_jsonb_unnest|bm25/facets|bm25/filter/pushdown|col/f2/am|table/f2/parity)|tap-shell-(col/auto_merge/concurrent|col/refresh_crash|col/wbuf/batch|compat/pg_upgrade/basic|compat/pg_upgrade/v32|core/leakcheck_gate|core/scaling_slope|table/replica_mixed))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
           PATH="$(brew --prefix ccache)/libexec:$RUNNER_TEMP/gnu-timeout:$(brew --prefix)/bin:$(brew --prefix postgresql@17)/bin:$PATH"; export PATH

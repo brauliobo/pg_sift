@@ -7,7 +7,7 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 \set rows 100000
-\ir test/agg_cte_inline_fixture.sql
+\ir test/common/sql/agg/cte_inline.sql
 -- the nodes of the scan in the plan, and the rows against the normal plan
 CREATE FUNCTION scan_nodes(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;

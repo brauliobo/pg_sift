@@ -8,7 +8,7 @@
  * matched by scripts/leakcheck.sh, which every suite runs through.
  *
  * sift._test_leak(kind, rel) (pg_sift_test) leaves a resource behind on purpose, to prove that scripts/leakcheck.sh
- * fails on each kind of leak (test/t/leakcheck_gate.sh).
+ * fails on each kind of leak (test/t/core/leakcheck_gate.sh).
  */
 #include "postgres.h"
 

@@ -1,6 +1,6 @@
 -- SQL-level fuzzing of sift.parse_query and sift.tokenize in the server (run
 -- it under ASan: see test/fuzz/README.md). Loaded by scripts/fuzz.sh after
--- test/sql/reference.sql and test/diff/diff.sql (query generator).
+-- test/sql/bm25/reference.sql and test/diff/harness.sql (query generator).
 --
 -- Findings (table sift_fuzz.findings):
 --   parse_error  parse_query failed with an SQLSTATE other than syntax/limit/regex errors

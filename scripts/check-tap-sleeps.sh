@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A shell test that sleeps a whole second or more for a state to arrive runs that second on every run, on a fast host too, and still fails on a slow one. The wait is
-# `wait_for CONDITION SECONDS` of test/t/lib.bash (10 ms polls, then 50 ms, the cap is only for a host that is far too slow): a test that waits for a worker, a standby,
+# `wait_for CONDITION SECONDS` of test/t/lib/common.bash (10 ms polls, then 50 ms, the cap is only for a host that is far too slow): a test that waits for a worker, a standby,
 # a vacuum or a connection names what it waits for. A sleep of 0.5 s or more in test/t/*.sh and test/t/*.pl counts against scripts/tap-sleeps.allow, which holds the number each file has
 # today (a file with a window that has no event: nothing may happen in it, a session is held open for the test). The number only goes down: a new sleep fails.
 #   scripts/check-tap-sleeps.sh [--selftest]
@@ -19,7 +19,7 @@ check() { # DIR ALLOW: the lines of the files that sleep more than their allowan
 	local f n have
 	while read -r f n; do
 		have=$(awk -F'\t' -v f="$f" '$1 == f { print $2 }' "$2")
-		(( n <= ${have:-0} )) || echo "$f: $n sleeps of 0.5 s or more, $((${have:-0})) allowed: wait on the state with wait_for (test/t/lib.bash) or poll_query_until (perl) instead of sleeping; if the test has a window in which nothing may happen, say so in scripts/tap-sleeps.allow"
+		(( n <= ${have:-0} )) || echo "$f: $n sleeps of 0.5 s or more, $((${have:-0})) allowed: wait on the state with wait_for (test/t/lib/common.bash) or poll_query_until (perl) instead of sleeping; if the test has a window in which nothing may happen, say so in scripts/tap-sleeps.allow"
 	done < <(sleeps "$1")
 }
 if [[ ${1:-} == --selftest ]]; then

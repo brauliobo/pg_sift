@@ -7,9 +7,9 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
-\ir test/agg_same_helpers.sql
+\ir test/common/sql/agg/same.sql
 
 -- the plan, and the rows the scan read again from the heap
 CREATE FUNCTION plan_of(q text, OUT scan bool, OUT gather bool, OUT reread bigint) LANGUAGE plpgsql AS $$

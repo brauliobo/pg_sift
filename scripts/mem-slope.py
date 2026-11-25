@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The memory slope gate: what an operation holds against the rows of its table, measured at 3 sizes in fresh backends (test/mem-slope.tsv).
+"""The memory slope gate: what an operation holds against the rows of its table, measured at 3 sizes in fresh backends (test/mem/slope.tsv).
 
 PostgreSQL's sorts, hashes and aggregates honour work_mem and its maintenance honours maintenance_work_mem, so the memory of a statement does not follow the table.
 The tables and their indexes are built by one process (max_parallel_maintenance_workers 0): a parallel build splits the heap between its processes as they run, so the segments the cases start from, and the slope of a merge or a VACUUM over them, differed from build to build.
@@ -40,7 +40,7 @@ RUNS = int(os.environ.get("MEM_SLOPE_RUNS", "2"))
 ASYNC_OFF = "set sift.async_maintenance='off';\n"
 BUILD_SETTINGS = ASYNC_OFF + "set max_parallel_maintenance_workers=0;\n"
 SETTINGS = ASYNC_OFF + f"set work_mem='1MB'; set maintenance_work_mem='{os.environ.get('MEM_SLOPE_MWM', '1MB')}'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0;\n"
-TSV = os.environ.get("MEM_SLOPE_TSV") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem-slope.tsv")
+TSV = os.environ.get("MEM_SLOPE_TSV") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test", "mem", "slope.tsv")
 STATUSES, KINDS, BASES = ("clean", "open", "noise"), ("slope", "plateau", "leak"), ("exact", "sampled", "contexts")
 
 

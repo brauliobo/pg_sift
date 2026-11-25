@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CREATE EXTENSION and ALTER EXTENSION UPDATE end with a notice and the exact ALTER DATABASE command when pg_sift is in neither shared_preload_libraries nor
 # session_preload_libraries; the command silences it; pg_sift.install_notice = off (the setting of the test clusters) silences it too.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 10
 
 node_init n 0

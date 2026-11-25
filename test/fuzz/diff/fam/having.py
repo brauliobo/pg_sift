@@ -5,7 +5,7 @@
 # raises is the generator's fault. The thresholds are drawn from the scale of the groups (the rows over the keys' values), floats only in < and >.
 # Spec: HAVING-FUZZ-SPEC of the coverage lane (test/sql/agg_having_*.sql are its fixed cases).
 
-from .columns import COLUMNS, EVENTS, preds
+from ..columns import COLUMNS, EVENTS, preds
 
 # (columns, expression, number of values, bare column or None, type)
 KEYS = [

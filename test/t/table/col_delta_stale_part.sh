@@ -3,7 +3,7 @@
 # A transaction updates a column no index holds, which stages a column delta for a row of a part; another session rewrites that part (VACUUM of rows deleted before the
 # transaction began) before the transaction commits. The commit finds the staged delta on a part that is gone and looks the row up in the part that replaced it: it must
 # neither take the stack of the backend (the lookup flushed the stage it was flushing) nor lose the update.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 CONF="autovacuum = off

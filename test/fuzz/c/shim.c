@@ -1,5 +1,5 @@
 /*
- * fz_shim.c - what the fuzz targets need beyond test/common/pgshim.c (test/fuzz/README.md): fz_try() sorts the errors of a decoder of untrusted
+ * shim.c - what the fuzz targets need beyond test/common/pgshim.c (test/fuzz/README.md): fz_try() sorts the errors of a decoder of untrusted
  * bytes by SQLSTATE (the answer it may give to corrupt bytes or a finding), the CPU dispatch, the stream the targets read and the storage
  * symbols they never reach.
  */
@@ -15,7 +15,7 @@
 #include "col/col.h"
 #include "col/shred.h"
 #include "core/store.h"
-#include "fz_shim.h"
+#include "shim.h"
 
 extern void kt_cpu_init(void);	/* test/common/cpushim.c */
 

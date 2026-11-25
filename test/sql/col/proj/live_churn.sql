@@ -4,7 +4,7 @@ CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
-\i test/proj_helpers.sql
+\i test/common/sql/col/proj/base.sql
 
 CREATE TABLE c (id bigint, tenant int, status text, amount bigint, day date, note text);
 CREATE INDEX c_idx ON c USING sift_col (id, tenant, status, amount, day) WITH (key_order = 'id');

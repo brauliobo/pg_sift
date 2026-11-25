@@ -3,7 +3,7 @@
 # they go in as one WAL record a page, not one a row, before the commit record; a hot standby replays them to the same index; a transaction that
 # rolls back, an error inside it, a prepared transaction and kill -9 with rows still buffered leave only the committed rows; writers in parallel (inserts,
 # savepoints that roll back, whole rollbacks) leave an index that verifies and answers as the heap does, on the primary and on the standby.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_BATCH_ROWS 20000 5000)
 SECS=$(knob SIFT_BATCH_SECS 15 4)

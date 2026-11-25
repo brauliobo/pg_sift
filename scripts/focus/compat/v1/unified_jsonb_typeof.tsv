@@ -1,1 +1,1 @@
-v1_unified_jsonb_typeof	src/agg/v6/plan_filter.c:derived_filter_quals src/col/source_fold.c:setup_derived
+compat/v1/unified_jsonb_typeof	src/agg/v6/plan_filter.c:derived_filter_quals src/col/source_fold.c:setup_derived

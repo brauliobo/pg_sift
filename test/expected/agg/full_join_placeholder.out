@@ -13,7 +13,7 @@ NOTICE:  sift_col index "facts_col": 1 automatic choice (rollup_columns), 1 advi
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_id, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts, dims;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
 SELECT same($q$

@@ -1,5 +1,5 @@
 -- Which sift_table qualifies for the bulk load into column groups: a table nothing reads while the load runs.
--- The refusal names why a table keeps the write buffers; a publication is covered by test/t/019_tbl_bulk_groups.pl (wal_level = logical).
+-- The refusal names why a table keeps the write buffers; a publication is covered by test/t/table/bulk_groups.pl (wal_level = logical).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 

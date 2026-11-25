@@ -28,7 +28,7 @@ for part in shards-quick spread areas-select tooling budgets flavors formats; do
 plan_check areas-files . "$PLAN_IN"
 plan_check portability test/t "scripts test/t '*.py'"
 CHECKS+=(
-	'syntax		for f in scripts/*.sh scripts/ci/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
+	'syntax		for f in scripts/*.sh scripts/ci/*.sh $(git ls-files 'test/t/*.sh') bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
 	'runner		scripts/lint.sh --selftest'
 	'layout		scripts/restructure-src.sh --check'
 	'tracked	! git ls-files | grep -E "(^|/)__pycache__/|[.]pyc$"'
@@ -132,9 +132,9 @@ CHECKS+=(
 	'gen-docs-skip	scripts/lint-cache.sh gen-docs-skip scripts bench/steps docs README.md -- scripts/test-gen-docs-skip.sh'
 	'gen-docs-public	scripts/lint-cache.sh gen-docs-public scripts bench/steps docs README.md -- scripts/test-gen-docs-public.sh'
 	'land		scripts/lint-cache.sh land scripts -- scripts/land.sh --selftest'
-	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'
-	'txn-fuzz	test/fuzz/txn_fuzz.py --selftest'
-	'bm25-fuzz	test/fuzz/bm25_fuzz.py --selftest'
+	'diff-fuzz	test/fuzz/diff/cli.py --selftest'
+	'txn-fuzz	test/fuzz/txn/cli.py --selftest'
+	'bm25-fuzz	test/fuzz/bm25.py --selftest'
 	'fast-gate	scripts/fast-gate.sh --selftest'
 	'fast-gate-select	python3 -I scripts/test-fast-gate-select.py'
 	'test-hygiene	python3 -I scripts/check-test-hygiene.py --selftest && python3 -I scripts/check-test-hygiene.py'

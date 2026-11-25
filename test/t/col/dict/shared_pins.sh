@@ -3,8 +3,8 @@
 # many dictionaries the ring takes in meanwhile (a ring of 8 MB, 12 tables of about 2 MB of dictionary: it wraps twice); a backend gives the records back when its
 # transaction ends, when a statement fails and when the backend is terminated holding them.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
-. "$(dirname "$0")/lib.bash"
+REPO=${SIFT_REPO:?}
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 node_init primary 2 "sift.shared_cache_kb = 32768"

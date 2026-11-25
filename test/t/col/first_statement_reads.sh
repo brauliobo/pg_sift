@@ -4,8 +4,8 @@
 # unit, read as one plan (sift_cseg_unit_plan), and the probes of a correlated child ask for the heap blocks of the entries they found, not for the lookup table. Counts only, never time: blocks read (pg_stat_io), read
 # requests (pg_stat_io reads), the share of the segment's blocks that a get waited for against those the plan or the read-ahead brought in first (sift._test_segment_reads), the blocks
 # of the same statement run again, and the blocks the probes asked for. A scratch cluster on tmpfs has no device latency.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 # pg_stat_io counts bytes from PostgreSQL 18 (read_bytes); before it, reads of op_bytes (8 kB)
 RB=read_bytes; ((PG_MAJOR >= 18)) || RB='reads * op_bytes'
 

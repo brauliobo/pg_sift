@@ -4,8 +4,8 @@
 # index that uses it) before the scope indexes that read it, and the restore, serial, in parallel (six runs) and through psql, ends with the same journals: the same names, comments and dependencies, none made twice, and
 # the scope indexes that read them. Dropping the restored scope indexes drops the journals, as in the source; a journal of the user's (no comment) stays. A scope of two paths (three journals) and two scope indexes that
 # share one journal go through the same restores.
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_twohop.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 plan 8
 node_init sjd 53 "$TWOHOP_CONF"

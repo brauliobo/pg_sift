@@ -3,7 +3,7 @@
 # progress gate of a testing build, two workers run and a parallel query still gets its workers; what was declined says so in one line (for every kind of worker, once an hour,
 # with the count in the detail) and is asked for again by the next change; and a worker does not stay connected waiting: DROP DATABASE of a database whose table was just
 # promoted by a worker returns at once (it failed after 5 seconds, "being accessed by other users", while the worker napped between its looks).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 node_init ws 65 "autovacuum = off

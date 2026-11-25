@@ -1,5 +1,5 @@
--- a shared CTE whose two arms each hold an ordered json_agg of text: the generic aggregates with ORDER BY are pushed down (a tuplesort per group, as g_order_by), so both arms are SiftAgg over the table and
--- the CTE is not materialized: faster than the materialized plan with the same rows (4,000 rows: 3.9 ms against 7.1). The materialized plan of arms the pushdown cannot take is c_shared_cte_volatile.
+-- a shared CTE whose two arms each hold an ordered json_agg of text: the generic aggregates with ORDER BY are pushed down (a tuplesort per group, as group/order_by), so both arms are SiftAgg over the table and
+-- the CTE is not materialized: faster than the materialized plan with the same rows (4,000 rows: 3.9 ms against 7.1). The materialized plan of arms the pushdown cannot take is series/shared_cte_volatile.
 -- shape: flat
 -- expect: agg
 -- key: -

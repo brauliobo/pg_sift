@@ -4,7 +4,7 @@
 # worker only, no sleep) and the worker that promotes a sealed buffer of a BM25 index held in its step (sift.test_progress_gate), each ended by a terminate of the worker and by an immediate
 # shutdown of the server. Afterwards nobody holds a lock, no progress slot is left, the index verifies, the answers through it are the table's, and the maintenance resumes: the next request
 # starts a worker that finishes what is due (no write buffer rows left in the sift_col index, no sealed buffer left of the BM25 index).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 node_init wk 1 "autovacuum = off
 sift.test_col_net = off

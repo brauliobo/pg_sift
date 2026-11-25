@@ -1,4 +1,4 @@
--- Differential testing of sift against the SQL reference (test/sql/reference.sql):
+-- Differential testing of sift against the SQL reference (test/sql/bm25/reference.sql):
 -- random corpora, random SiftQL queries, per-stage comparison, minimization.
 -- Driven by scripts/difftest.sh; load after reference.sql (\set sift_ref_lib 1).
 --

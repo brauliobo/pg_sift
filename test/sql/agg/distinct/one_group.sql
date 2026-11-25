@@ -14,7 +14,7 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX do1_col ON do1 USING sift_col (id, a, few, wide, d, n, k);
 VACUUM (FREEZE, ANALYZE) do1;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 SELECT w, pushed(q) AS scan, outcome(q, false) = outcome(q, true) AS same
 FROM (SELECT w, format('SELECT row(count(DISTINCT a), count(DISTINCT few), count(DISTINCT wide), count(DISTINCT d), count(DISTINCT n), count(DISTINCT k), count(*))::text FROM do1 WHERE %s', w) AS q

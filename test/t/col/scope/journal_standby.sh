@@ -2,11 +2,11 @@
 # The journal of the scope relation (col/scope_journal.c) is the tombstone log of its journal index: WAL-logged, so a hot standby has the records of the pairs changed on the primary
 # and a crash of the primary keeps them. What must hold on every node whatever the verdict (the standby may say it cannot compare a stamp with its snapshots): the answer of a read of
 # the scope units is the answer of the join, and a read after a pair changed is never taken from the stored segments alone: it patches the changed members in from the entity rows, or
-# says why it does not read the units. The same holds for the scope of two paths (lib_twohop.bash: the grants by member, the grants by group and the memberships are three journals): the fixtures,
+# says why it does not read the units. The same holds for the scope of two paths (lib/twohop.bash: the grants by member, the grants by group and the memberships are three journals): the fixtures,
 # the build, the REINDEX of the scope index and of a journal replay to the standby, the edits of each of the three tables are patched in or the units are not read, and the records of the three
 # journals and the stamps of the scope segments survive a crash of the primary.
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_twohop.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 plan 20
 node_init primary 2 "wal_level = replica

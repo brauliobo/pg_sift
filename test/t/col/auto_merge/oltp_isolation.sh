@@ -4,7 +4,7 @@
 # the p99 of the writers and of the readers with the merge on and a churn backlog is divided by their p99 with the merge off (R), and the stall of the double size (R - 1, at least 0.5, the noise
 # of a p99) by the stall of the single one (the growth factor): a lock or a buffer flood that costs the work of the table (O(N)) doubles it, a bounded one does not. R of the writers stays within 2.5, R of the readers within 2.0, the
 # growth factor within 1.25. The pacer (sift_internal.maint_pacer) must throttle the worker while they run, give the full speed back when they end, nothing fails, and sift.check finds no problem.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 19
 node_init iso 1 "shared_preload_libraries = 'pg_sift'

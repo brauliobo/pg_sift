@@ -1,1 +1,1 @@
-col_f2_stage_spec_abort	src/col/f2/l0_stage.c:add_delete src/col/f2/l0_stage.c:del_flush_cap src/col/f2/l0_stage.c:flush_deletes_chunk src/col/f2/l0_stage.c:sift_stage_delete_spec_abort src/col/f2/l0_stage.c:sift_stage_get src/col/f2/l0_stage_test.c:sift_test_f2_stage_spec_abort
+col/f2/stage_spec_abort	src/col/f2/l0_stage.c:add_delete src/col/f2/l0_stage.c:del_flush_cap src/col/f2/l0_stage.c:flush_deletes_chunk src/col/f2/l0_stage.c:sift_stage_delete_spec_abort src/col/f2/l0_stage.c:sift_stage_get src/col/f2/l0_stage_test.c:sift_test_f2_stage_spec_abort

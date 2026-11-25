@@ -4,7 +4,7 @@
 # cannot take less than the number of pages the merge reads and writes allows. The throttle is counted where it acts: a testing build logs each
 # nap of a throttled writer (src/core/writer.c), and the naps follow from the pages written, not from the clock or from a sample of the worker's waits, which
 # a loaded runner moves. Both leave the same, intact index, and a VACUUM (not the worker) is not throttled.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 node_init delay 13 "autovacuum = off

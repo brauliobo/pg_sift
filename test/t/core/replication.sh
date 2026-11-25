@@ -4,7 +4,7 @@
 # and takes writes once promoted. Logical: only table data replicates; the subscriber installs pg_sift and builds its own index
 # (before or after the initial sync) and the apply worker maintains it. Nodes are processes (scripts/pgtest.sh tap replication)
 # or containers (scripts/replication.sh --container).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_REPL_ROWS 20000 5000)
 # statement templates, one per line, @T@ is the table. The tables differ only in the replica identity: a primary key, or FULL without one

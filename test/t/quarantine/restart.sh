@@ -3,7 +3,7 @@
 # heap), and REINDEX puts it back. Format 1 (a): an autovacuum worker meets the damage, fails once, and the VACUUMs after it skip the index. Format 2 (b): a read meets it and fails once
 # (a VACUUM of Format 2 does not skip an index that is out of service yet, so autovacuum is off for b).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 14
 node_init p 72 "autovacuum = on

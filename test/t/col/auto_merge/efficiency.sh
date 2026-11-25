@@ -6,7 +6,7 @@
 # 8 bytes more per row, and a table at most 1.35 times the size of a fresh build of its survivors. When all of it has settled, a 3 s window in which a reader holds a lock sees no WAL,
 # no merge and no queued job. The CHURN_ROW comments are the table of the results: case.metric | 1x | 2x | 4x | growth factor | limit | verdict; each row is a check.
 # The idle window is the pg_sleep of the reader: nothing may happen in it, so there is no state to wait for.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 done_testing
 node_init ae 1 "autovacuum = off

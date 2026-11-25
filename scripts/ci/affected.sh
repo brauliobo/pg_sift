@@ -46,20 +46,20 @@ focus_regex() {
 # The family is one shard on every event: the tests that run workers or take snapshots, and the planner tests (cte, cost, scope, lateral, subplan, placeholder) whose asserts
 # (a foreach_node cast of the wrong node type) exist only in a server with assertions. The batches are cut to one for each lane (installcheck_batches), so the shard has no straggler.
 ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook|foreach_node|castNode|create_upper_paths_hook|sift_agg_v6_upper_paths'
-ASSERT_JOBS='^(installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel|cte_|plan_|nested_ctes|statement_cte|.*_cost$|.*_scope$|.*lateral|.*subplan|.*placeholder)|aggstub_parallel|col_.*parallel|col_topn_rescan_keep|parallel_|agg_(cte_verdict|flat_rewrites|join_flip_probe|window_topn|two_level_rows)_consolidated|agg_v6_|hybrid_|table_f2_plans|part_agg_parity|format2_(parallel_conc|partitioned_agg_v6|agg_live|scope_live)|proj_analytics_parity|scope_overlay_parity)|fast-gate-assert$)'
+ASSERT_JOBS='^(installcheck-(agg/cte/.*|agg/hybrid/.*|agg/par/.*|agg/plan/.*|agg/v6/.*|bm25/parallel/.*|agg/array/image_cost|agg/direct_combo_cost|agg/distinct/cost|agg/distinct/parallel|agg/empty_scope|agg/filter_hashed_subplan_price|agg/flat_rewrites_consolidated|agg/flat_rewrites_consolidated_2|agg/full_join_placeholder|agg/fuse/subplan_key|agg/hash_agg_cost|agg/in_keys_cost|agg/in_list_cost|agg/join/flip_probe_consolidated|agg/jsonb/parallel|agg/jsonb/typeof_parallel|agg/key/entries_cost|agg/lateral_flatten_f2|agg/left_lateral|agg/lookup/read_cost|agg/lookup/shared|agg/narrow_scope|agg/natural_cost|agg/nested_ctes|agg/output_subplan|agg/part/open_cost|agg/part/parity|agg/part/placeholder|agg/preagg/elem_parallel|agg/rollup_cost|agg/rows_parallel|agg/scope/cost|agg/scope/overlay_parity|agg/scoped_lookup_cost|agg/statement_cte_children|agg/strict_placeholders|agg/stub/parallel|agg/subplan_lookup_cost|agg/subplan_lut|agg/text_absent_cost|agg/two_level_cell_qual|agg/two_level_rows_consolidated|agg/two_level_rows_consolidated_2|agg/unkeyed_json_cost|agg/unused_lateral|agg/vet_dirty_cost|agg/wide/numeric_cost|agg/wildcard_key_cost|agg/window/topn_consolidated|agg/zone/cost|col/dirty_recheck_parallel|col/f2/agg_live|col/f2/parallel_conc|col/f2/partitioned_agg_v6|col/f2/scope_live|col/index/parallel|col/proj/analytics_parity|col/scope/parallel|col/topn/parallel|col/topn/rescan_keep|col/vacuum/parallel_baseline|col/vacuum/parallel_keys|table/f2/plans)|fast-gate-assert$)'
 # the tests the assertions build leaves to the other builds: the server releases each catalog entry at its last unpin (CATCACHE_FORCE_RELEASE), which makes every planning and every
 # jsonb_build_object call 40 to 100 times slower, and they plan hundreds of generated statements or load 100,000 documents. Two of them took 557 to 729 s (run 40193282663) and the
 # six others 122 to 249 s there, 3 to 26 s everywhere else; the planner paths they reach stay in the family through the tests beside them (agg_cte_inline_upper, agg_cte_hoist...)
-ASSERT_SKIP='^installcheck-(agg_cte_inline_(band|rows)|agg_cte_scope_lineage|agg_natural_cost|agg_join_flip_probe_consolidated|agg_(flat_rewrites|two_level_rows)_consolidated_2|agg_flat_rewrites_consolidated)$'
+ASSERT_SKIP='^installcheck-(agg/cte/inline_band|agg/cte/inline_rows|agg/cte/scope_lineage|agg/flat_rewrites_consolidated|agg/flat_rewrites_consolidated_2|agg/join/flip_probe_consolidated|agg/natural_cost|agg/two_level_rows_consolidated_2)$'
 # the Format 1 lane: the fast gate on Format 1 and the upgrade tests of the v5 formats (SIFT_CI_JOBS='$COMPAT_F1_JOBS' runs just those)
-COMPAT_F1_JOBS='^(compat-f1-fast-gate|tap-031_v51_full_compat|tap-032_v6_dump_restore_tablespace)$'
+COMPAT_F1_JOBS='^(compat-f1-fast-gate|tap-(compat/v51_full)|tap-(compat/v6_dump_restore_tablespace))$'
 # What a push runs on the compatibility entries (PostgreSQL 17, PostgreSQL 19, AArch64), the one shard each: what depends on the major or the architecture, the regression tests
 # (the SQL surface, the planner and executor hooks, the NEON kernels), the isolation specs, the crash, standby and upgrade tests, the corpus and the plan bands. The differential tests, the fuzzers,
 # the soaks and the slopes run on the PostgreSQL 18 x86 entry
-COMPAT_JOBS='^(installcheck-|isolation-[0-9]+$|isolation-emulated$|tap-(001_crash|002_standby|003_wal_minimal|005_parallel_crash|024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace|006_tbl|007_tbl_logical|020_lookup_shared_concurrent)$|tap-shell-(col_dict_shared_shm|fault_matrix-smoke|pg_upgrade|replica_mixed|replication|store_crash|store_replica|index_build_crash|col_index_crash|col_index_replica|col_crash_matrix|maint_standby|leakcheck_gate|tbl_load_workers)$|plan-gate(-table)?$|corpus$|difftest-col(-tbl|-selftest)?$|isa-baseline$|tools-build$|simd-level$)'
+COMPAT_JOBS='^(installcheck-|isolation-[0-9]+$|isolation-emulated$|tap-(agg/lookup_shared_concurrent|bm25/crash|bm25/parallel_crash|bm25/standby|bm25/wal_minimal|col/f2/minimal_wal|col/f2/wal|compat/v51_full|compat/v6_dump_restore_tablespace|table/basic|table/logical)$|tap-shell-(bm25/index/build_crash|bm25/store/crash|bm25/store/replica|col/crash_matrix|col/dict/shared_shm|col/index_crash|col/index_replica|compat/pg_upgrade/basic|core/leakcheck_gate|core/replication|fault/matrix-smoke|maint/standby|table/load_workers|table/replica_mixed)$|plan-gate(-table)?$|corpus$|difftest-col(-tbl|-selftest)?$|isa-baseline$|tools-build$|simd-level$)'
 # the entry of PostgreSQL 19 runs all of it; 17 has no pg_upgrade job (it upgrades from the major before 18), and AArch64 no mixed-version replication job, which builds the older release it replicates
 # from: only the PostgreSQL 18 x86 entry reads the history of the release tags
-COMPAT_JOBS_17=${COMPAT_JOBS/pg_upgrade|/} COMPAT_JOBS_ARM=${COMPAT_JOBS/pg_upgrade|replica_mixed|/}
+COMPAT_JOBS_17=${COMPAT_JOBS/compat\/pg_upgrade\/basic|/} COMPAT_JOBS_ARM=${COMPAT_JOBS_17/|table\/replica_mixed)/)}
 if [[ $MODE == affected ]]; then
 	shift
 	OUT=pick
@@ -103,15 +103,15 @@ if [[ $MODE == affected ]]; then
 	cassert=false
 	for f in ${FILES[@]+"${FILES[@]}"}; do [[ $f == src/*.c && -f $REPO/$f ]] && grep -qE "$ASSERT_MARK" "$REPO/$f" && cassert=true; done
 	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
-	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$|perf-gate-|tap-shell-prod_viability_gate$)'
+	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$|perf-gate-|tap-shell-(agg/viability_gate)$)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation-[0-9]+$'
-		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
+		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-core/scaling_slope$'
 		elif [[ $f == test/col/* ]]; then FAST+="|^difftest-col|${GROUP[plan_gate]}"
-		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
-		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-txn(-shapes)?$'
-		elif [[ $f == test/fuzz/bm25_fuzz* ]]; then FAST+='|^difftest-bm25$'
+		elif [[ $f == test/fuzz/diff* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
+		elif [[ $f == test/fuzz/txn* ]]; then FAST+='|^difftest-txn(-shapes)?$'
+		elif [[ $f == test/fuzz/bm25* ]]; then FAST+='|^difftest-bm25$'
 		elif [[ $f == test/fuzz/shapes_matrix* || $f == test/fuzz/surface_sweep* ]]; then FAST+='|^shapes-(matrix|surface)$'
 		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+="|${GROUP[plan_gate]}"; fi
 	done

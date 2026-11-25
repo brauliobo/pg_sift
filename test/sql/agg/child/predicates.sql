@@ -11,7 +11,7 @@ FROM generate_series(1, 50000) i;
 INSERT INTO events VALUES (50001, NULL, '{"m_total":8}');
 CREATE INDEX events_col ON events USING sift_col (id, day, metrics) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) events;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 SELECT * FROM check_query($q$
  SELECT p.label, count(*) AS n, count(DISTINCT e.id) AS ids, avg(r.value::float8) AS value
  FROM events e

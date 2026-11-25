@@ -2,7 +2,7 @@
 # A server that cannot make the dynamic shared memory area of the row lock chunks (sift.test_dsm_fail = sift_rowlock_area, as when /dev/shm is full) does not fail the statement that fills a stripe:
 # the row locks it cannot keep in shared memory go to the lock manager of PostgreSQL, both writers commit, and their rows are exact. The setup is that of tbl_lock_overflow.sh: two writers change 2,100
 # rows of two tables each, more than the stripes take, and a gate (an advisory lock a test holds) makes the second one reach a full stripe while the first still holds its rows.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 out=
 plan 4

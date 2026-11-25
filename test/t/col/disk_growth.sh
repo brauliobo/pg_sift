@@ -2,7 +2,7 @@
 # tap: pooled
 # What an operator reads when the file of a sift_col index stays long: sift.col_shrink_history gives shrink_blocked_by (why the last cut
 # left free blocks: a snapshot that may still read them) and last_shrink (when the file was last cut), kept in the metapage.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init wg 67 "autovacuum = off

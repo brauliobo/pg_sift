@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # No background worker slot is free when an index is quarantined: the registry holds it out of service, statements and writes run on the heap, the metapage is not flagged (persisted = false, one
 # LOG line says why); when a slot is free again the next plan that leaves the index out asks for the worker, the flag is written, and it keeps the index out after a restart.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 10
 node_init qs 28 "autovacuum = off

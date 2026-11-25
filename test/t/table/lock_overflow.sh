@@ -5,7 +5,7 @@
 # the stripes hold) and a gate (an advisory lock a test holds) makes the second one reach a full stripe while the first still has rows to lock: a writer that holds the relation for it waits for the
 # intention lock of the other, and the two are a deadlock. Then the rows are exact (a row held is skipped by SKIP LOCKED, NOWAIT refuses it), and the chunks are given back when the transaction
 # commits, rolls back to a savepoint, rolls back, prepares, and when its backend exits.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 18
 node_init lo 50 "autovacuum = off

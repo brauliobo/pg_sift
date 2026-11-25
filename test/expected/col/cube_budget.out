@@ -35,9 +35,9 @@ SELECT sift.col_verify('cb_col', true);
  
 (1 row)
 
-\ir test/agg_preagg_helpers.sql
+\ir test/common/sql/agg/preagg.sql
 \set ECHO none
-\ir test/agg_preagg_units.sql
+\ir test/common/sql/agg/preagg_units.sql
 \set ECHO none
 -- the last dimension: from the histograms of the units that have it, and the rows are those of the scan and of the plain plan
 SET cpu_tuple_cost = 0.5;

@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_negative.c - the planted regression of `check_scaling_c --negative-test`: a loop over every pair of elements where one pass is enough. The gate must fail it.
+ * test/scaling/cases/negative.c - the planted regression of `check_scaling_c --negative-test`: a loop over every pair of elements where one pass is enough. The gate must fail it.
  */
 #include "postgres.h"
 

@@ -3,8 +3,8 @@
 # in the merge of all of them, with overlays cut by TID range and by superblock among the inputs, leaves the index as it was (verifies, answers the heap's) and the merges,
 # asked again, complete. Replica: a hot standby replays the promotions and merges, answers as the primary does, a ctid range included (a unit cut by TID range is no
 # block range). Upgrade: the index the last release wrote is read, promoted into and merged by this one, which cuts the overlays by TID range from then on.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 node_init fl 26 "wal_level = replica
 max_wal_senders = 4

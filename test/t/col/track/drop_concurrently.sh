@@ -5,7 +5,7 @@
 # finds no transaction id. The writers beside it must not fail or deadlock (they skip an index the drop has marked dead, whose lock it holds), the copy of a swap must keep the
 # triggers of the index that stays, a drop that times out waiting for a writer leaves a valid-looking tracked table (the index invalid, its triggers in place) that drops on the next try,
 # and no run leaves a trigger that no index depends on.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 9
 
 SECS=$(knob SIFT_DC_SECS 12 6)

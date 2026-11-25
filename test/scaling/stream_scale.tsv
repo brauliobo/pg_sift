@@ -1,4 +1,4 @@
-# NAME	KIND	FIXTURE	SETTINGS	BASE_MB	TEMP	CAP_MB	OPERATION -- test/prod95_scale.py: every case in a fresh backend at 1x, 2x and 4x rows (P95_ROWS, 50,000) with work_mem as its SETTINGS say; BASE_MB the memory a sampler may miss, TEMP `0` | `max:BYTES_PER_ROW` | `any`, CAP_MB a bound of peak_4x (0: none).
+# NAME	KIND	FIXTURE	SETTINGS	BASE_MB	TEMP	CAP_MB	OPERATION -- test/scaling/stream_scale.py: every case in a fresh backend at 1x, 2x and 4x rows (P95_ROWS, 50,000) with work_mem as its SETTINGS say; BASE_MB the memory a sampler may miss, TEMP `0` | `max:BYTES_PER_ROW` | `any`, CAP_MB a bound of peak_4x (0: none).
 stream_limit10	mem	sg	set work_mem='1MB'; set temp_file_limit='1MB';	1.0	0	0	select id, count(*), sum(amount) from {t} group by id order by id limit 10;
 stream_full	mem	sg	set work_mem='1MB';	1.0	0	0	select id, count(*), sum(amount) from {t} group by id order by id;
 window_exact_limit10	memx	wg	set work_mem='1MB'; set temp_file_limit='1MB';	1.0	0	0	select grp, id, sum(c1) over (partition by grp order by id) from {t} limit 10;

@@ -5,7 +5,7 @@
 # (held back by the feedback of the standby) says no snapshot can read: what a rewrite released after the standby's transaction began is not reusable, and the segment the
 # rewrite wrote lies behind it, so the file stays as it is (col_online_cut.sh has the cut once the transaction ends).
 # Here the standby holds a transaction on the index with max_standby_streaming_delay = -1 (a stalled replay never gives up) and the primary churns and VACUUMs.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_CUT_ROWS 200000 100000)
 plan 6

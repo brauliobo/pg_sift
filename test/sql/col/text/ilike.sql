@@ -6,7 +6,7 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE ci (id int, s text, k text, c text COLLATE "C") WITH (autovacuum_enabled = off);
 INSERT INTO ci SELECT i, 'https://Shop' || (i % 50) || '.Example/ITEM/' || md5((i % 3500)::text), 'Key' || (i % 40), upper(md5(i::text))

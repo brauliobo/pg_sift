@@ -3,7 +3,7 @@
 # The reads of an index never ask for a rewrite (sift.async_maintenance). Rows deleted from one segment leave its units dirty after the VACUUM, and a dirty unit is not served from the
 # point directory: every read of a key in it reads the unit (60 keys: 0.90 M instructions before the VACUUM, 1.75 M after it). However many reads pay for it, no worker rewrites
 # the index: the units stay dirty, the answers are the table's, sift.col_maintenance_status recommends REINDEX, and the REINDEX is what makes the reads cheap again.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init rd 25 "autovacuum = off

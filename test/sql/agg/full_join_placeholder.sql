@@ -10,7 +10,7 @@ CREATE TABLE facts (id int, dim_id int, v int);
 INSERT INTO facts SELECT i, 1 + i % 40, i % 10 FROM generate_series(1, 3000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_id, v);
 VACUUM (FREEZE, ANALYZE) facts, dims;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
 SELECT same($q$
  SELECT d.nm, count(*) AS n, sum(f.v) AS total

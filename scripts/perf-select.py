@@ -14,7 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AREAS = ('star', 'clickbench', 'coexist', 'jsonb', 'table', 'bm25', 'gpu', 'smoke')
 OWNERS = tuple('perf_' + area for area in AREAS) + ('perf_plan', 'perf_scaling_ops', 'layout')
-SCALING = {'perf_scaling_ops': 'check-scaling-ops.sh --sql-only', 'layout': 'tap-shell-scaling_slope'}
+SCALING = {'perf_scaling_ops': 'check-scaling-ops.sh --sql-only', 'layout': 'tap-shell-core/scaling_slope'}
 LANE_FLAGS = {'stock': (), 'stock-4t': ('--lane', 'stock-4t'), 'table': ('--table',), 'tuned': ('--lane', 'tuned'), 'gpu': ('--lane', 'gpu')}
 SLICE_LANES = {'table': ('table',), 'gpu': ('gpu',)}
 DEFAULT_LANES = ('stock', 'stock-4t')

@@ -15,7 +15,7 @@ FROM generate_series(1, 3000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, deleted_at, metrics) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dates;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 
 -- the output of the grouped sub-select is filtered by the caller: the condition is pushed into its input (the NULL row of an empty day passes)
 SELECT * FROM check_query($q$

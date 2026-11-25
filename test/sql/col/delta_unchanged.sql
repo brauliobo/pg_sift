@@ -8,7 +8,7 @@ SET client_min_messages = warning;
 \set VERBOSITY terse
 CREATE SCHEMA unch;
 SET search_path = unch, public;
-\i test/proj_helpers.sql
+\i test/common/sql/col/proj/base.sql
 
 CREATE TABLE c (id bigint, tenant int, status text, amount bigint, other int, note text) WITH (autovacuum_enabled = false);
 CREATE TABLE ch (LIKE c) WITH (autovacuum_enabled = false);

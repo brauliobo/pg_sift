@@ -18,7 +18,7 @@ CREATE TABLE rl (id int, grp int, lines jsonb, tags jsonb, attrs jsonb, pad text
 -- a wide row: a superblock is 256 pages, so that 4,000 rows are eight of them
 ALTER TABLE rl ALTER COLUMN pad SET STORAGE PLAIN;
 
-\ir test/agg_preagg_helpers.sql
+\ir test/common/sql/agg/preagg.sql
 
 -- units of the SiftAgg node, those it answered from the pre-aggregates and the dims it read (NULL: the plan has no SiftAgg, or the query fails)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT dims text) LANGUAGE plpgsql AS $$

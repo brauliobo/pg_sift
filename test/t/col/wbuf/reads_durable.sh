@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # What the reads of the server paid for the open write buffer (rows decoded) and for the marks of the tombstone log is kept in the metapage of the index (core/reads.c): a restart, a crash
 # and a backend that ends keep it, a server with more indexes than the table of the shared memory had slots counts each of them, and a rule that is met does not make every read write.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 8
 
 node_init rd 58 "autovacuum = off

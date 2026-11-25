@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_card.c - agg/plan/card_est.c: the planner's estimate of a windowed scan from the summary of the manifest. The partitions grow 8x with the window a quarter of them:
+ * test/scaling/cases/card.c - agg/plan/card_est.c: the planner's estimate of a windowed scan from the summary of the manifest. The partitions grow 8x with the window a quarter of them:
  * the estimate walks the partitions the window leaves once, O(P).
  */
 #include "postgres.h"

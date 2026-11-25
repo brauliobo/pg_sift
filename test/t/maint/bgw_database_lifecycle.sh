@@ -2,7 +2,7 @@
 # The maintenance workers of a database never keep it from being dropped, copied or closed to connections. A worker that cannot connect (ALLOW_CONNECTIONS false) gives its slot back at once and is
 # not started again in a loop, and a worker that is attached to a database ends when DROP DATABASE or CREATE DATABASE ... TEMPLATE asks for it (no 55006 "being accessed by other users", whatever the
 # nap of the worker).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 out=
 plan 9

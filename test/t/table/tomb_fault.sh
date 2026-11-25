@@ -4,7 +4,7 @@
 # sift.test_phase_gate, no sleep): by an ERROR (cancel), by the end of its backend and by an immediate shutdown. Nothing is left in pgsql_tmp (after the backend ends,
 # and after the restart), the table is as it was and verifies, and the same statement runs after. A temp_file_limit lower than the runs stops the statement with the
 # error of that setting and leaves the table as it was.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_TF_ROWS 20000 6000)
 GATE=7000

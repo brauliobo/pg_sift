@@ -3,7 +3,7 @@
 # DROP TABLE locks the table and then the index, so each waited for the other ("deadlock detected" in the log of the server and in the DROP). The worker now locks the table first.
 # The worker is held at the point it asked for the table by sift.test_worker_gate (a testing build): it waits for advisory lock (0x51F7, 7), which the test holds, and the DROP is
 # started and seen waiting before the worker is let go, so no timing is involved.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init dt 9 "autovacuum = off

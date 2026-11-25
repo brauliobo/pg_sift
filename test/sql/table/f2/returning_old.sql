@@ -1,5 +1,5 @@
 -- sift_table: RETURNING OLD / NEW (PostgreSQL 18) is the heap's on rows that live in a published part, where a narrow UPDATE is a column delta: UPDATE, MERGE, INSERT ... ON CONFLICT,
--- DELETE, the same row twice in a transaction and a savepoint that rolls back. Every statement runs on a heap twin (the row another session changed meanwhile: test/t/p98_returning_old_concurrent.sh).
+-- DELETE, the same row twice in a transaction and a savepoint that rolls back. Every statement runs on a heap twin (the row another session changed meanwhile: test/t/table/f2/returning_old_concurrent.sh).
 -- Before 18 the statements are not valid SQL: the function runs none and says so.
 CREATE EXTENSION pg_sift;
 

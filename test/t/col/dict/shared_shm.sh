@@ -4,7 +4,7 @@
 # copies what the first parsed to the same rows as the stock plan (also in a parallel query), a ring too small for the dictionaries asked stops writing instead
 # of churning, and a /dev/shm with no room for the table costs no error and no wrong row: the backend goes without it, as before.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
 node_init primary 2 "sift.shared_cache_kb = 262144"

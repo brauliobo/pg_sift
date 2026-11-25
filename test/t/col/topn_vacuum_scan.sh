@@ -5,7 +5,7 @@
 # fetches the n winners from the heap by TID: a row of a tuple that VACUUM removed after the snapshot, on a page it made all-visible, would
 # be a winner that is not in the heap ("top-N row is not in the heap"). The scan (sift.test_agg_wait) waits for an advisory lock after it
 # opens, which the test holds until the statements are done: no timing involved. Stored units, a unit that was already dirty, the write buffer.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 node_init vs 14 "autovacuum = off"

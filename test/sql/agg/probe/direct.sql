@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100; SET random_page_cost = 4;
 -- the children are priced by what a probe takes (cost/join.c child_probe_ops): the 900 rows of a table are cheaper loaded, and the statements check the child runs
 SET sift.agg_force = on;
-\ir test/agg_probe_helpers.sql
+\ir test/common/sql/agg/probe.sql
 -- one lookup table per key type and opclass: the key of row g, and the key an item builds (the same function of its number n)
 CREATE TABLE types (ord serial, name text, coltype text, idxdef text, rowkey text, itemkey text, cond text);
 INSERT INTO types (name, coltype, idxdef, rowkey, itemkey) VALUES

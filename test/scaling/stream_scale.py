@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The scale gate of the streaming, window, ASOF, Grace join and DISTINCT ON nodes of SiftAggV6 (test/prod95_scale.tsv): every case runs at 1x, 2x and 4x rows in a fresh backend that first runs the statement over the 1x tables (what a backend takes once is not the statement's).
+"""The scale gate of the streaming, window, ASOF, Grace join and DISTINCT ON nodes of SiftAggV6 (test/scaling/stream_scale.tsv): every case runs at 1x, 2x and 4x rows in a fresh backend that first runs the statement over the 1x tables (what a backend takes once is not the statement's).
 
 A node that holds work_mem and not the table has the same peak at every size and writes no temporary file it need not. For each case the harness reports
 
@@ -12,8 +12,8 @@ temp_bytes within the case's rule (`0`, or `max:B` bytes a row of the 1x size), 
 Kind `memx`: the resident peak is reported and not judged, the peak is the exact one: the statement reads a sorted table, whose column layer holds the decoded granules of every part it merges in memory outside the memory contexts (it follows the parts of the table, not the node).
 Kind `cancel`: the statement runs under a statement_timeout of CANCEL_MS and must stop within CANCEL_SLACK_MS of it, with nothing left in pg_ls_tmpdir().
 
-  test/prod95_scale.py run [--rows N] [--only RE]     the table above, exit 1 when a case fails
-  test/prod95_scale.py list
+  test/scaling/stream_scale.py run [--rows N] [--only RE]     the table above, exit 1 when a case fails
+  test/scaling/stream_scale.py list
 
 Reads PGHOST, PGPORT, PGUSER like psql; creates the database p95 and the extensions pg_sift and pg_sift_test in it. TSV columns: NAME KIND FIXTURE SETTINGS BASE_MB TEMP CAP_MB OPERATION; {t} {u} the tables of the fixture at the size; CAP_MB (0: none) bounds peak_4x.
 """
@@ -24,7 +24,7 @@ SCALES = (1, 2, 4)
 A_MEM, B_EXACT, B_RSS, A_TIME, A_TIME_FLOOR, EXACT_SLACK_MB = 1.15, 2.0, 8.0, 5.5, 0.3, 0.5
 CANCEL_MS, CANCEL_SLACK_MS = 400, 700
 DB = os.environ.get("P95_DB", "p95")
-TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prod95_scale.tsv")
+TSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stream_scale.tsv")
 BASE = "set statement_timeout='180s'; set sift.async_maintenance='off'; set max_parallel_workers_per_gather=0; set max_parallel_maintenance_workers=0; set sift.agg_force=on;\n"
 FORCE = "set seq_page_cost=10000; set cpu_tuple_cost=100; set random_page_cost=10000; set enable_indexscan=off; set enable_indexonlyscan=off; set enable_bitmapscan=off;\n"
 JOIN = "set enable_hashjoin=off; set enable_mergejoin=off; set enable_nestloop=off;\n"

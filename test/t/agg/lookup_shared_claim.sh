@@ -4,7 +4,7 @@
 # looked for the rows before they were kept and asked for the claim after the loader dropped its own found no claim to wait for and loaded the table again: the
 # loader's claim ended between its two steps. An injection point (PostgreSQL built with --enable-injection-points: scripts/pg-assert.sh --inject) stops a session
 # between the two, without a sleep, while another session loads and keeps the rows to the end: the stopped session then reads those rows and loads none.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 pg_config --configure | grep -q -- --enable-injection-points || { echo "1..0 # SKIP PostgreSQL without injection points (scripts/pg-assert.sh --inject)"; exit 0; }
 ((PG_MAJOR >= 18)) || { echo "1..0 # SKIP the wait of an injection point is named from PostgreSQL 18"; exit 0; }

@@ -3,7 +3,7 @@
 # WAL checked against the page the replay makes (wal_consistency_checking = all). The standby replays the records that recycle the pages of a chain of column deltas while a statement reads
 # the head page of it to know whether the map it kept for the next fetch of a row still holds: a page that is not the one the map was made of is a retry (40001), never damage. No statement
 # of the primary fails, nothing of the standby is damaged or quarantined and the standby counts, afterwards, what the primary does.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_VS_ROWS 20000 10000)
 SECS=$(knob SIFT_VS_SECS 10 5)

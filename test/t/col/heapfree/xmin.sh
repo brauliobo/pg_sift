@@ -3,7 +3,7 @@
 # before the snapshot's xmin and of a write buffer whose records say the same, with the tombstone log for what was deleted. What the single-session test (col_heapfree_xmin)
 # cannot: a snapshot older than the commits, a transaction in doubt (prepared), a backend that keeps its cache of the log while VACUUM gives the addresses to new rows, and a
 # hot standby. Every answer is compared with the same aggregate with the heap checking every page and with no sift plan at all; the stamp mutant must be wrong where a stamp is needed.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 26
 ROWS=$(knob SIFT_HF_ROWS 20000 12000)

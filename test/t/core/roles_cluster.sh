@@ -3,7 +3,7 @@
 # (sift and sift_col indexes, a sift_table, partitions) takes a pg_dump of the schema and restores it with pg_restore into another database, moves
 # the tables and indexes to a tablespace it was given, and publishes tables with wal_level = logical while pg_sift is not preloaded (a published
 # sift_table is refused with the error of the extension, a heap table is not). A role without the privileges is refused each of them.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 22
 N=rl

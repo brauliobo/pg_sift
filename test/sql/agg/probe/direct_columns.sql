@@ -11,7 +11,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100; SET random_page_cost = 4;
 SET enable_bitmapscan = off;
 SET sift.agg_force = on;
-\ir test/agg_probe_helpers.sql
+\ir test/common/sql/agg/probe.sql
 -- the collation of the cases that are not the C collation: the cluster's, if it has one
 SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') AS coll \gset
 

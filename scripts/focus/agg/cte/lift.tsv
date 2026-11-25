@@ -1,1 +1,1 @@
-agg_cte_lift_aggregate	src/agg/cost/cte.c:key_list_lift src/agg/preinline.c:inlinable
+agg/cte/lift	src/agg/cost/cte.c:key_list_lift src/agg/preinline.c:inlinable

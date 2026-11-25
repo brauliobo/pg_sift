@@ -3,8 +3,8 @@
 # another session made, a write, the maintenance steps that race the background worker when it may run, the two merges) run forward, forward again and in reverse, each measurement in a fresh backend; the slope
 # of the bytes the memory scopes of sift counted (sift._test_mem_highwater(), exact) differs between the passes by no more than max(2 B/row, 15%). The resident peaks are printed beside them
 # but not compared: a sampler that another job keeps off the CPU for a few milliseconds misses a short peak (0.5 to 0.9 MB on hosted runs with four jobs at once, none alone).
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 node_init mo 34 "autovacuum = off

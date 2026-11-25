@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A session keeps the library it loaded first: a second file of pg_sift (the library of another path, which is what a session meets when the files are replaced in a
 # way the server resolves again) must fail with a message that says what happened and to reconnect, not with "attempt to redefine parameter".
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 3
 node_init a 37 "autovacuum = off"

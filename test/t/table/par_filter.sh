@@ -4,7 +4,7 @@
 # of the statement; a granule a pending delete of another transaction can touch, a snapshot that is serializable or a state the stored chunks cannot judge goes through the scan as it always
 # did. Every answer is compared with the heap executor on the same table (sift.enable_agg = off), and with a heap twin loaded with the same rows, under the states another session leaves:
 # uncommitted deletes, inserts and updates, those rolled back, and those committed after the snapshot of the statement.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 14
 node_init pf 63 "autovacuum = off"

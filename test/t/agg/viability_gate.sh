@@ -7,8 +7,8 @@
 # One GATE_ROW line a case (a comment, as the job log of a passing test keeps comments) and one check each. PROD_GATE_ONLY=RE runs the cases whose name matches, PROD_GATE_ROWS the
 # smallest size, PROD_GATE_LANES the cases that run side by side (2), PROD_GATE_CACHE the sift.backend_cache_kb of the operations (1MB).
 # A server built with assertions or run under a sanitizer judges everything but the resident memory (the shadow memory and the checks of an allocation move it).
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 NODE_CONF="autovacuum = off

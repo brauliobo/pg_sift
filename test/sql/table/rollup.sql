@@ -5,7 +5,7 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 
 CREATE TABLE tr (id int, g int, tag text, doc jsonb) USING sift_table;
 SELECT sift.table_set_paths('tr', 'doc', 'doc.items[]{k int4, p float8, s astext, n int4}');

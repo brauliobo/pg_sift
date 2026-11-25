@@ -5,7 +5,7 @@
 # or the one after it when the update was its last and the fault came after it; the chain is sound, its pages are on no free list, the pages a killed update
 # left are orphans that the sweep reclaims (the pages of a chain that was not flipped are in flight until the next update moves the version past them), every segment reads back byte-exact, and the rest of the sequence applied to it ends with the segments of an index
 # that was never killed. The primary runs with wal_consistency_checking = generic, so that every record of the flip is checked against the page it changes.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 OPS=(w w w w w w w "d 0" "d 3" w "d 1" w "d 0")
 POINTS=(before chain after)

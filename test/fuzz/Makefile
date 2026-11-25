@@ -1,8 +1,8 @@
-# The fuzz targets of scripts/fuzz.sh (colchunk, bm25, shred; test/fuzz/README.md). No backend is linked: test/common/pgshim.c and fz_shim.c stand in for it.
+# The fuzz targets of scripts/fuzz.sh (colchunk, bm25, shred; test/fuzz/README.md). No backend is linked: test/common/pgshim.c and c/shim.c stand in for it.
 #   nice make -j4 -C test/fuzz OUT=/tmp/x all         build the three targets
-#   make FZ_DRIVER=1 ...                              the portable coverage-guided driver (fz_driver.c) instead of libFuzzer
+#   make FZ_DRIVER=1 ...                              the portable coverage-guided driver (c/driver.c) instead of libFuzzer
 #
-# With clang (and its libFuzzer runtime) the targets are libFuzzer binaries; with gcc, or FZ_DRIVER=1, fz_driver.c is main() and the
+# With clang (and its libFuzzer runtime) the targets are libFuzzer binaries; with gcc, or FZ_DRIVER=1, c/driver.c is main() and the
 # edges come from -fsanitize-coverage=trace-pc. Both take the libFuzzer command line (-max_total_time=SEC, -runs=N, a corpus
 # directory), so scripts/fuzz.sh does not care. Always ASan + UBSan, any report aborts (-fno-sanitize-recover=all). No -fwrapv: signed
 # overflow is a finding here, where the extension itself is built -fwrapv like the server.
@@ -48,19 +48,15 @@ CORE     = col/codec/codec col/codec/filter col/codec/get col/codec_policy col/c
            col/v1/kern_avx512 col/v1/kern_neon col/v1/enc col/schema col/v1/dict/dict col/v1/dict/order col/v1/dict/parse col/v1/dict/serialize col/v1/batch col/v1/batch_unit col/v1/chunk col/v1/ctest col/v1/unit col/v1/unit_find col/shred col/shred_spec col/shred_kern col/shred_kern_avx2 col/shred_kern_avx512 col/shred_kern_neon \
            bm25/kernels bm25/kernels_avx2 bm25/kernels_avx512 bm25/kernels_neon bm25/analyze bm25/analyze_config bm25/analyze_stem bm25/posting bm25/postw bm25/posblk bm25/pos bm25/bitmap bm25/blob bm25/bitmap_scalar \
            bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/bitmap_neon core/span core/par/arena
-OBJ      = $(addprefix $(OUT)/obj/,$(addsuffix .o,$(CORE))) $(OUT)/cpushim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o
-HDR      = $(wildcard $(SRC)/*/*.h $(SRC)/*/*/*.h) fz_shim.h $(COMMON)/pgshim.h Makefile
+OBJ      = $(addprefix $(OUT)/obj/,$(addsuffix .o,$(CORE))) $(OUT)/cpushim.o $(OUT)/pgshim.o $(OUT)/c/shim.o
+HDR      = $(wildcard $(SRC)/*/*.h $(SRC)/*/*/*.h) c/shim.h $(COMMON)/pgshim.h Makefile
 ifndef FZ_LIBFUZZER
-DRIVER   = $(OUT)/fz_driver.o
+DRIVER   = $(OUT)/c/driver.o
 endif
 
 all: $(addprefix $(OUT)/,colchunk bm25 shred)
 
 $(OUT)/obj/%.o: $(SRC)/%.c $(HDR)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(COV) -c -o $@ $<
-
-$(OUT)/obj/%.o: %.c $(HDR)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(COV) -c -o $@ $<
 
@@ -71,26 +67,26 @@ $(eval $(call common_obj,$(OUT),cpushim))
 # the stand-ins are not instrumented
 $(eval $(call common_obj,$(OUT),pgshim))
 
-$(OUT)/fz_shim.o: fz_shim.c $(HDR)
-	@mkdir -p $(OUT)
+$(OUT)/c/shim.o: c/shim.c $(HDR)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(OUT)/fz_%.o: fz_%.c $(HDR)
-	@mkdir -p $(OUT)
+$(OUT)/c/%.o: c/%.c $(HDR)
+	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(COV) -c -o $@ $<
 
 # the driver is not instrumented: it is the callback
-$(OUT)/fz_driver.o: fz_driver.c
-	@mkdir -p $(OUT)
+$(OUT)/c/driver.o: c/driver.c
+	@mkdir -p $(@D)
 	$(CC) -O1 -g $(DSAN) -c -o $@ $<
 
-$(OUT)/colchunk: $(OUT)/fz_colchunk.o $(OBJ) $(DRIVER)
+$(OUT)/colchunk: $(OUT)/c/colchunk.o $(OBJ) $(DRIVER)
 	$(CC) $(CFLAGS) $(LINKFZ) -o $@ $^ $(LDLIBS)
 
-$(OUT)/bm25: $(OUT)/fz_bm25.o $(OBJ) $(DRIVER)
+$(OUT)/bm25: $(OUT)/c/bm25.o $(OBJ) $(DRIVER)
 	$(CC) $(CFLAGS) $(LINKFZ) -o $@ $^ $(LDLIBS)
 
-$(OUT)/shred: $(OUT)/fz_shred.o $(OBJ) $(DRIVER)
+$(OUT)/shred: $(OUT)/c/shred.o $(OBJ) $(DRIVER)
 	$(CC) $(CFLAGS) $(LINKFZ) -o $@ $^ $(LDLIBS)
 
 # every file of regress/ is an input that crashed a target before its fix, named TARGET-what: replays them, fails if one comes back

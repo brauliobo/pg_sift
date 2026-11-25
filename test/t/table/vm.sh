@@ -2,7 +2,7 @@
 # The visibility map of a sift_table (table/f2/f2_vm.h): after VACUUM an index-only scan of a secondary index answers from the index without a fetch of the table (Heap Fetches: 0),
 # chosen by the planner on its own; a delete or an update clears the bits first, so the same scan agrees with the table at every step; a prepared delete, a TRUNCATE, a crash
 # after the clear and the reset of an unlogged table leave no bit that is not true. Needs a preloading server (the records of the map are those of a resource manager).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_VM_ROWS 60000 20000)
 plan 25
@@ -58,10 +58,10 @@ check "a prepared delete is not seen before it commits" agree "$COUNT"
 sql primary "COMMIT PREPARED 'vm1'" >/dev/null || bail "commit prepared failed"
 check "and is seen after" agree "$COUNT"
 
-# the sessions of test/t/tbl_vm_iso/specs/tbl_vm.spec interleave INSERT, UPDATE, DELETE, a prepared DELETE, TRUNCATE and VACUUM with reads through the index and through the table
+# the sessions of test/t/table/vm_iso/specs/basic.spec interleave INSERT, UPDATE, DELETE, a prepared DELETE, TRUNCATE and VACUUM with reads through the index and through the table
 ISO=$(dirname "$(pg_config --pgxs)")/../test/isolation/pg_isolation_regress
 isolation() {
-	PGUSER=postgres "$ISO" --use-existing --dbname=postgres --host="$(dir primary)/sock" --port="$(port primary)" --inputdir="$(dirname "$0")/tbl_vm_iso" --outputdir="$(dir primary)/iso" --bindir= tbl_vm \
+	PGUSER=postgres "$ISO" --use-existing --dbname=postgres --host="$(dir primary)/sock" --port="$(port primary)" --inputdir="${SIFT_REPO:?}/test/t/table/vm_iso" --outputdir="$(dir primary)/iso" --bindir= tbl_vm \
 		>"$(dir primary)/iso.log" 2>&1 || { out=$(cat "$(dir primary)/iso/results/tbl_vm.out.diff" 2>/dev/null); return 1; }
 }
 check "isolation: index-only reads agree with the table across concurrent INSERT, UPDATE, DELETE, 2PC, TRUNCATE and VACUUM" isolation

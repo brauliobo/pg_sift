@@ -7,7 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 SET sift.backend_cache_kb = 1;
 SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1', false) IS NOT NULL AS lowered;
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE tg (id int, s text, k text) WITH (autovacuum_enabled = off);
 INSERT INTO tg SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text), CASE WHEN i % 7 = 0 THEN NULL ELSE 'key ' || (i % 90) END

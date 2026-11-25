@@ -12,7 +12,7 @@ SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 
-\ir test/scope_helpers.sql
+\ir test/common/sql/col/scope/base.sql
 
 -- 12 groups; member m is in 1 + m % 6 of them (1 to 6), members 100..109 are in none, members 301..320 have facts and no pair; 20,000 padded facts, some without a member
 CREATE TABLE membership (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));

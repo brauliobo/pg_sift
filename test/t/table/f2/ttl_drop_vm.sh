@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sift.drop_parts_before and the visibility map of a sift_table: the parts that leave the table take their bits with them, so an index-only scan of a secondary index never answers a row of a
 # dropped part; the function is not transactional and refuses a transaction block, so that a ROLLBACK cannot promise rows back that are gone. Needs a preloading server (the map is logged by a resource manager).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 DAYS=10
 ROWS=5000

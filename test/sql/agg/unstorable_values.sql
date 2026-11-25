@@ -6,9 +6,9 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
-\ir test/agg_same_helpers.sql
+\ir test/common/sql/agg/same.sql
 
 -- the scan answers where the normal plan does: no error of the scan, whatever the normal plan does
 CREATE FUNCTION answers(q text) RETURNS text LANGUAGE plpgsql AS $$

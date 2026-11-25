@@ -4,7 +4,7 @@
 # DML of a sift_table never waits for maintenance or for a load (audit-5.0.1 locks, findings 3 and 4): while the rewrite of the tombstone log that VACUUM makes is
 # in its build (the gate of sift.test_phase_gate, no sleep), a DELETE and an UPDATE complete under a lock_timeout; while a COPY writes the groups of its run (the gate
 # inside the group writer), an INSERT whose write buffer fills rotates it under the same lock_timeout. Afterwards both end and the rows are the heap twin's.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_LM_ROWS 20000 4000)
 GATE=7000

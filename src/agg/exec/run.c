@@ -381,7 +381,7 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 /* Windows of superblocks from the end the best values are at (agg/topn.h) */
 
 #ifdef SIFT_TESTING
-/* Testing (sift.test_agg_wait): lets a test run VACUUM or DML after the scan has opened its source (test/t/topn_vacuum_scan.sh) */
+/* Testing (sift.test_agg_wait): lets a test run VACUUM or DML after the scan has opened its source (test/t/col/topn_vacuum_scan.sh) */
 void
 agg_test_wait(void)
 {

@@ -15,137 +15,137 @@ test/expected/agg_flat_key_lookup_diff_1.out	86cda9922568e2635e1e5235f57c6ee7007
 test/expected/agg_flat_key_lookup_diff_1.out	ae01baff09ccae77746b588e6e2a8f20b69686e6	17	after dml group 1 periods | t    |   10
 test/expected/agg_flat_key_lookup_diff_1.out	eac90b83fc0808096a1c27e3dca9d9fbb79b0a58	17	after links group 1 periods | t    |   10
 test/expected/agg_flat_key_lookup_diff_1.out	f0f569f9655788bb6b59f007ae49f4b742db2455	17	after vacuum group 1 periods | t    |   10
-test/expected/agg_plan_tables_1.out	55fc321df3bd092db15a996db0656248b7376904	19	plan                       | result_rows | vs_normal_plan
-test/expected/agg_plan_tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
-test/expected/agg_plan_tables_1.out	b5ccafa27970a6d1ac47af6e914cd1539605803d	19	semi_limit
-test/expected/agg_plan_tables_1.out	ca1668186929bafd661088ed0aef3fb20f8725aa	19	QUERY PLAN
-test/expected/agg_scalar_dirty_1.out	04e2177fc4449c6ac87a22414d15172196161626	17	cast float8     | t      |     60 | same rows
-test/expected/agg_scalar_dirty_1.out	294d9e4bc2415f209f17e89f4d603cc926d16b8e	17	cast float8 raises    | t      | same ERR 22023 cannot cast jsonb string to typ
-test/expected/agg_scalar_dirty_1.out	3a02e2e359dab9074cb9aef22b7cc7b0ac5a7cb1	17	n        | pushed | reread |  outcome
-test/expected/agg_scalar_dirty_1.out	50f22d4942a479a5e9b35321b1895226c916b208	17	cast float8 deleted | t      | same ERR 22023 cannot cast jsonb string to type
-test/expected/agg_scalar_dirty_1.out	5a24ace01cfb970250772c8f393f79e96350b82c	17	key float8      | t      |     60 | same rows
-test/expected/agg_scalar_dirty_1.out	7c2028eb91978e157ec048eecae9ee12f14fa725	17	only the deleted    | t      | same rows
-test/expected/agg_scalar_dirty_1.out	e0c7a3f0b74c4b0ea4502180aa0f1b95df605633	17	dropped, cast         | t      | same ERR 22023 cannot cast jsonb string to typ
-test/expected/agg_scalar_dirty_where_1.out	85deccbce3c6f678aba7e333ab055b2dcb254183	17	sub-select         | normal | same ERR 22P02 invalid input syntax for type doub
-test/expected/agg_scope_param_keys_1.out	028afff94b99f0328aa857452b59e269a6ec0e66	19	latest 5, $1                                            | force_custom_plan  |
-test/expected/agg_scope_param_keys_1.out	1a7fee691f493a6d20207897c398bd9120aad8fe	19	CTE, $1                                                 | force_custom_plan  |
-test/expected/agg_scope_param_keys_1.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	19	IN, $1                                                  | force_custom_plan  |
-test/expected/agg_scope_param_keys_1.out	539b968e7a4145b3b6a4dac0c69d72f5778fbc0f	19	IN, a text $1 cast                                      | force_custom_plan  |
-test/expected/agg_scope_param_keys_1.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	19	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
-test/expected/agg_scope_param_keys_2.out	028afff94b99f0328aa857452b59e269a6ec0e66	17 18 18-arm64	latest 5, $1                                            | force_custom_plan  |
-test/expected/agg_scope_param_keys_2.out	1a7fee691f493a6d20207897c398bd9120aad8fe	17 18 18-arm64	CTE, $1                                                 | force_custom_plan  |
-test/expected/agg_scope_param_keys_2.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	17 18 18-arm64	IN, $1                                                  | force_custom_plan  |
-test/expected/agg_scope_param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438b	17 18 18-arm64	IN, a text $1 cast                                      | force_custom_plan  |
-test/expected/agg_scope_param_keys_2.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	17 18 18-arm64	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
-test/expected/agg_scope_recognition_1.out	6bc29cda1b6c0fc38b3e9ca4bfd892a238a51160	17 18 18-arm64 19	more changed pairs than the bound | latest 5         | Fallback: join is cheape
-test/expected/agg_scope_refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	17 18 18-arm64 19	CTE used twice                                          | join, a sub-select ov
-test/expected/agg_semi_same_table_1.out	9a7e5ed03b6bc1ea89fa5c47be860d9499e7834b	18 18-arm64	0 | t
-test/expected/agg_spill_contexts_1.out	a879aa77beb39ff57c76ae083c7b0174dfda0c5d	17	kind     | select_ |      insert_       |     volatile_
-test/expected/agg_subplan_lut_1.out	01841054a351688288ac808012bbf7f61517a2a1	19	plan          | result_rows | vs_normal_plan
-test/expected/agg_subplan_lut_1.out	14041d7151598025fefce12ddffde531149e5982	19	not_in
-test/expected/agg_subplan_lut_1.out	18f010d562e7cd0f6b312fc1d9d10bde0b3d257f	19	plan          | result_rows | vs_normal_plan
-test/expected/agg_subplan_lut_1.out	3d127528743883af12be144cfe49756f8b13c0e5	19	plan          | result_rows | vs_normal_plan
-test/expected/agg_subplan_lut_1.out	40a73829da2d83ee401199cd1b06b56c85683b01	19	not_hashed
-test/expected/agg_subplan_lut_1.out	4f429bbd87b4ee25b0ff6e32eae269f0232d9ff0	19	in_or
-test/expected/agg_subplan_lut_1.out	544909052b9e5fc43b40e2e645313adf1aa1890c	19	QUERY PLAN
-test/expected/agg_subplan_lut_1.out	5cd6066ffd60200085ba9119f05da55669486653	19	correlated
-test/expected/agg_subplan_lut_1.out	61ee54aac571645e1a24a555eff003c8b9344bb2	19	int8_leaf
-test/expected/agg_subplan_lut_1.out	64620189b8edcb78876437b8d343e065138d9a84	19	plan                  | result_rows | vs_normal_plan
-test/expected/agg_subplan_lut_1.out	769713299c92e8460efd8e32f04b768e312b11e7	19	volatile_subselect
-test/expected/agg_subplan_lut_1.out	7d4e144b47d2f983b0ec7e64f71941db864dbc07	19	plan                 | result_rows | vs_normal_plan
-test/expected/agg_subplan_lut_1.out	815d7098061ff3f9e35541640602d98512d2f6c6	19	plan          | result_rows | vs_normal_plan
-test/expected/agg_subplan_lut_1.out	8737b21d6426ffffda85e8c87f0247e3eda564d9	19	generic_plan
-test/expected/agg_subplan_lut_1.out	8865a0f650b1b6a0a40c031577460bc00cd911d5	19	plan          | result_rows | vs_normal_plan
-test/expected/agg_subplan_lut_1.out	8e4b2bd006cc4460a1b913e49ad1e815bab49a2d	19	row_valued
-test/expected/agg_subplan_lut_1.out	9f091d125d7ac4247abc29e8c3cdc12d9051624b	19	locking
-test/expected/agg_subplan_lut_1.out	aa6cc9989b11c764e71a69b687989ef2877582d2	19	after_drop
-test/expected/agg_subplan_lut_1.out	ba3c14d64ad8882d64f444bd73ccdb376ea36be5	19	with_subplan
-test/expected/agg_subplan_lut_1.out	d5ee762d3573a3bcaa0db2f6b1c6a3f90e6adc63	19	Filters: dim_a_id: (NOT (ANY (ev.dim_a_id = (hashed SubPlan 1).col1)))
-test/expected/agg_subplan_lut_1.out	e67128f7a4ef0d9e5e220f22a7c13547981b6f19	19	plan          | result_rows | vs_normal_plan
-test/expected/agg_subplan_lut_1.out	e7248545797ed2149f35d80e5693d6b0b9f4be4c	19	pushdown_off
-test/expected/agg_subplan_lut_1.out	e78e16e5116dbe6668acd8776b984acc39b99fc0	19	row_valued_in
-test/expected/agg_subplan_lut_1.out	eb43e0d6f621cf781fd23135e374e6bb88037161	19	before_drop
-test/expected/agg_subplan_lut_1.out	ee208c932140974d0cdcc51cf2166c3d5dc84436	19	nested_subplan
-test/expected/agg_subplan_lut_1.out	fb4b779dbfb651256a43e667dc8449c760f00be8	19	plan          | result_rows | vs_normal_plan
-test/expected/col_scope_textkey_1.out	6c58555face2d1d44e30fbaaa3c03d9b63dad22d	17 18 18-arm64 19	IN, no key the store has                    | scope read, once
-test/expected/col_scope_textkey_1.out	893491e2c5c91f8b40a672f9a7fdafc060055223	17 18 18-arm64 19	uuid key, a literal                         | scope read, once
-test/expected/col_scope_textkey_1.out	8c9d83a5155d72634f29e02cee2fcee1f4b770e4	17 18 18-arm64 19	EXISTS                                      | scope read, once
-test/expected/col_scope_textkey_1.out	bd65f16ac3efad89f8893beba14b9a444029e5c2	17 18 18-arm64 19	varchar key, a text parameter type          | scope read, once
-test/expected/col_scope_textkey_1.out	d33e6d8e6c15e3198bc910ff0c5438640ab47e6f	17 18 18-arm64 19	IN, a key only the pairs added later have   | scope read, once
-test/expected/col_scope_textkey_1.out	ea71ffea2b7e815d6507d1eca1ac95748ae5988a	17 18 18-arm64 19	IN, a long key                              | scope read, once
-test/expected/col_scope_textmember_1.out	14d8b4b0a58ec1b27af2e594b717378b97c86497	17 18 18-arm64 19	IN, one key                             | scope read, once
-test/expected/col_scope_textmember_1.out	99b2db9a04677b91aa0d5ac84efe85da31a87935	17 18 18-arm64 19	EXISTS                                  | scope read, once
-test/expected/col_scope_textmember_collide_1.out	14d8b4b0a58ec1b27af2e594b717378b97c86497	17 18 18-arm64 19	IN, one key                             | scope read, once
-test/expected/col_scope_textmember_collide_1.out	99b2db9a04677b91aa0d5ac84efe85da31a87935	17 18 18-arm64 19	EXISTS                                  | scope read, once
-test/expected/col_skip_map_1.out	1a946b21e6da3e67c2d462a3b68d45c34498ae8c	17 18 18-arm64 19	sm_z | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	25b96df3cbf4b831eec9465460ae43b4304b1b10	17 18 18-arm64 19	sm_o | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	29c8c731d006b5f73225798c82513c7965235355	17 18 18-arm64 19	sm_z | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	5a63a2f9592e4e3adf30f8aa444b0d152cb196cb	17 18 18-arm64 19	sm_o | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	60e43d0790fe1c87cba8d7be03bd8e618acc3324	17 18 18-arm64 19	sm   | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	632c7805145d659309106edb3c5e64f8b47d299b	17 18 18-arm64 19	sm   | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	6dc763e5266bc4e28ad77a95e7c4271e88e7b3e7	17 18 18-arm64 19	sm   | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	7407c5abffbb4187c7d17b05b2e1e59146f1d9dc	17 18 18-arm64 19	sm_z | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	8e34e83ed753d32b8083aa0bdb2bfd821a0902ae	17 18 18-arm64 19	sm   | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	e5109153b15a7c8fecc365a3b3f702e68b611a10	17 18 18-arm64 19	sm_z | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	ef2511451d8fb33dd89e74eae4a9d95250d2a627	17 18 18-arm64 19	sm_o | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
-test/expected/col_skip_map_1.out	f6c04dafc71d45625470833e31b521767c771f06	17 18 18-arm64 19	sm_o | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
-test/expected/col_topn_offset_1.out	3855a99e3a1312abe7e20e1bec123f6a0a95e425	19	confirmed | 74
-test/expected/col_topn_offset_1.out	5f3a76f93fb85af3330441f90a0bd7ac88fa9f31	19	result   | n
-test/expected/col_topn_offset_1.out	65f85ed967261617e3035128ac302bfb1b8195bd	19	confirmed | 95
-test/expected/col_unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	17	ERROR:  duplicate key value violates unique constraint "oc_t"
-test/expected/col_unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
-test/expected/col_unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
-test/expected/col_unique_include_2.out	4c74016e37a4e684f3b78adcff25e0d2f5c92942	19	LINE 1: ...INDEX inc_bad ON inc USING sift_col (k1) INCLUDE (c1_renamed...
-test/expected/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
-test/expected/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
-test/expected/explain_sift_1.out	6828e0176c1ed616697ed217d1a40490b1f94e87	17	sift_lines
-test/expected/explain_sift_1.out	7cd3fdcc53a76913cce007615af3b6d2a7b7063c	17	sift_lines
-test/expected/explain_sift_1.out	aa14f7ed610b34ab40fb563979f325db1dc9d01b	17	sift_lines
-test/expected/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17	sift_lines
-test/expected/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
-test/expected/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
-test/expected/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
-test/expected/format2_limits_ios_1.out	1e907d3890cd64d040f6cb4c12b9ac4986c17dc8	17	suggest_stored_doc
-test/expected/format2_limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	17	ERROR:  column "vdoc" is a virtual generated column: no row stores its documents
-test/expected/format2_limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
-test/expected/format2_limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
-test/expected/format2_limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
-test/expected/table_f2_fetch_1.out	8b73b2cbd394efecc960a1f90aa319b7d66cf1c3	17	sift_lines
-test/expected/table_f2_parity_1.out	29ab438535f80cdb3c37f8ebd6f3673fb2a69b65	17	chk
-test/expected/table_f2_parity_1.out	55872b3b89fc20bd60611e6fb677b34f022bd1a9	17	chk
-test/expected/table_f2_parity_1.out	62fa207ae7b3d7158de6c589eb89609f6dc058bf	17	chk
-test/expected/table_f2_parity_1.out	bf2cb3484d22dce3fda98449aa927d45a8f066d6	17	chk
-test/expected/v6_virtual_generated_1.out	0291bf04a5a6af438f04fc1367f6ffaaa02a7d95	17	ERROR:  relation "vgb" does not exist
-test/expected/v6_virtual_generated_1.out	04e1fa807b1e4af68d1f9e091a5d7bfa6975d23e	17	stored_aggregate
-test/expected/v6_virtual_generated_1.out	1a6e36cac7ada63a8cd6bc4044108623d83bc36e	17	ERROR:  syntax error at or near "VIRTUAL"
-test/expected/v6_virtual_generated_1.out	1a911e27f6a4c9548b901ef37f98a1ca3d580427	17	ERROR:  relation "vgh" does not exist
-test/expected/v6_virtual_generated_1.out	2f6b5110a3a1b38bed2b7ebfc0e6f34ef3b19b38	17	sift_col_check_is_clean
-test/expected/v6_virtual_generated_1.out	38a862d951f0f3d1b360d504d95303ca871da26a	17	virtual_filter
-test/expected/v6_virtual_generated_1.out	3a996a98970413090cebc738754ca398e1eaeb5d	17	ERROR:  relation "vgb" does not exist
-test/expected/v6_virtual_generated_1.out	3d1d79268a12bf5baeaeb3392fdff6420dd563bb	17	ERROR:  relation "vgt" does not exist
-test/expected/v6_virtual_generated_1.out	49b7cfd8f69a385001696e5e88ac298d7532bf8f	17	table_virtual_aggregate
-test/expected/v6_virtual_generated_1.out	4cf4796d1fc21c9dfc06ffab453a24fd4cc04241	17	ERROR:  relation "vgb" does not exist
-test/expected/v6_virtual_generated_1.out	539cd1e580aed7cc0cfaf187021be1bab62ec856	17	bm25_with_virtual_columns
-test/expected/v6_virtual_generated_1.out	588deceb6f8444a7409791f2f668d46bc9842b4a	17	ERROR:  relation "vg" does not exist
-test/expected/v6_virtual_generated_1.out	5e2a6ac16d827ca768a2fc096ad56228f1b46d9e	17	virtual_after_writes
-test/expected/v6_virtual_generated_1.out	630ca907bac824038e4a0c476814977b736b581b	17	ERROR:  table "vg" does not exist
-test/expected/v6_virtual_generated_1.out	654c072bd52474919b85ac8dfa0587f44feb4689	17	table_virtual_filter
-test/expected/v6_virtual_generated_1.out	6b9de81dbc9c48916c620038824d6f18ae15c22e	17	table_stored_aggregate
-test/expected/v6_virtual_generated_1.out	6dee23dc7e6069f341b5df4cc8a14148e53f2616	17	0A000
-test/expected/v6_virtual_generated_1.out	6e4ead36a6f6adc36244723a8e64fc634d94fd2f	17	ERROR:  relation "vgt" does not exist
-test/expected/v6_virtual_generated_1.out	6e6fec581b231d29fc6490b65c39b6ab8e669ccf	17	ERROR:  relation "vg" does not exist
-test/expected/v6_virtual_generated_1.out	740b47fe9028121056a0143fb96baa99bfa057fa	17	sift_table_check_is_clean
-test/expected/v6_virtual_generated_1.out	801a4fd643a2c0345e31a069551ee471a3c39e56	17	ERROR:  relation "vg" does not exist
-test/expected/v6_virtual_generated_1.out	83e0a3a2422ba3d539d3b702256b67bf182d25d2	17	ERROR:  syntax error at or near "VIRTUAL"
-test/expected/v6_virtual_generated_1.out	854d2584967f40e9c2bf19c4513ee074ad59d33b	17	stored_after_writes
-test/expected/v6_virtual_generated_1.out	8f941b7ae3e39aa5686b860744a041c8780e1cef	17	ERROR:  relation "vgt" does not exist
-test/expected/v6_virtual_generated_1.out	9d30d238477804e862747d6335f39e66a6379911	17	ERROR:  relation "vgh" does not exist
-test/expected/v6_virtual_generated_1.out	b12442630ec38612b5e5967646f29ee5f207db38	17	table_virtual_after_writes
-test/expected/v6_virtual_generated_1.out	b89a22d4966e5bffbc44b48eced993c756a39dee	17	ERROR:  relation "vgh" does not exist
-test/expected/v6_virtual_generated_1.out	d2ed715d4d26252b01192bcbb5ef86f9cc744ff0	17	ERROR:  relation "vg" does not exist
-test/expected/v6_virtual_generated_1.out	d5f20affa6a2444ef69c1cf7483f8d3d98631ef5	17	bm25_with_virtual_columns_after_writes
-test/expected/v6_virtual_generated_1.out	d747795ee6befc81d434c0cd1d8029fe627138df	17	ERROR:  relation "vgt" does not exist
-test/expected/v6_virtual_generated_1.out	ea1ed796b556764c872554775dfb837759a0cd2c	17	table_stored_after_writes
-test/expected/v6_virtual_generated_1.out	f74a945404665096ed445239d93e99eae8b8271d	17	table_virtual_projection
-test/expected/v6_virtual_generated_1.out	fcddfa8fe48dd503f981643c028534ccf24072a9	17	ERROR:  relation "vgb" does not exist
-test/expected/v6_virtual_generated_1.out	ff84dcbfb922b62b6720e1e28f464cbc36aaac05	17	virtual_aggregate
+test/expected/agg/plan/tables_1.out	55fc321df3bd092db15a996db0656248b7376904	19	plan                       | result_rows | vs_normal_plan
+test/expected/agg/plan/tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
+test/expected/agg/plan/tables_1.out	b5ccafa27970a6d1ac47af6e914cd1539605803d	19	semi_limit
+test/expected/agg/plan/tables_1.out	ca1668186929bafd661088ed0aef3fb20f8725aa	19	QUERY PLAN
+test/expected/agg/scalar/dirty_1.out	04e2177fc4449c6ac87a22414d15172196161626	17	cast float8     | t      |     60 | same rows
+test/expected/agg/scalar/dirty_1.out	294d9e4bc2415f209f17e89f4d603cc926d16b8e	17	cast float8 raises    | t      | same ERR 22023 cannot cast jsonb string to typ
+test/expected/agg/scalar/dirty_1.out	3a02e2e359dab9074cb9aef22b7cc7b0ac5a7cb1	17	n        | pushed | reread |  outcome
+test/expected/agg/scalar/dirty_1.out	50f22d4942a479a5e9b35321b1895226c916b208	17	cast float8 deleted | t      | same ERR 22023 cannot cast jsonb string to type
+test/expected/agg/scalar/dirty_1.out	5a24ace01cfb970250772c8f393f79e96350b82c	17	key float8      | t      |     60 | same rows
+test/expected/agg/scalar/dirty_1.out	7c2028eb91978e157ec048eecae9ee12f14fa725	17	only the deleted    | t      | same rows
+test/expected/agg/scalar/dirty_1.out	e0c7a3f0b74c4b0ea4502180aa0f1b95df605633	17	dropped, cast         | t      | same ERR 22023 cannot cast jsonb string to typ
+test/expected/agg/scalar/dirty_where_1.out	85deccbce3c6f678aba7e333ab055b2dcb254183	17	sub-select         | normal | same ERR 22P02 invalid input syntax for type doub
+test/expected/agg/scope/param_keys_1.out	028afff94b99f0328aa857452b59e269a6ec0e66	19	latest 5, $1                                            | force_custom_plan  |
+test/expected/agg/scope/param_keys_1.out	1a7fee691f493a6d20207897c398bd9120aad8fe	19	CTE, $1                                                 | force_custom_plan  |
+test/expected/agg/scope/param_keys_1.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	19	IN, $1                                                  | force_custom_plan  |
+test/expected/agg/scope/param_keys_1.out	539b968e7a4145b3b6a4dac0c69d72f5778fbc0f	19	IN, a text $1 cast                                      | force_custom_plan  |
+test/expected/agg/scope/param_keys_1.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	19	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
+test/expected/agg/scope/param_keys_2.out	028afff94b99f0328aa857452b59e269a6ec0e66	17 18 18-arm64	latest 5, $1                                            | force_custom_plan  |
+test/expected/agg/scope/param_keys_2.out	1a7fee691f493a6d20207897c398bd9120aad8fe	17 18 18-arm64	CTE, $1                                                 | force_custom_plan  |
+test/expected/agg/scope/param_keys_2.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	17 18 18-arm64	IN, $1                                                  | force_custom_plan  |
+test/expected/agg/scope/param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438b	17 18 18-arm64	IN, a text $1 cast                                      | force_custom_plan  |
+test/expected/agg/scope/param_keys_2.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	17 18 18-arm64	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
+test/expected/agg/scope/recognition_1.out	6bc29cda1b6c0fc38b3e9ca4bfd892a238a51160	17 18 18-arm64 19	more changed pairs than the bound | latest 5         | Fallback: join is cheape
+test/expected/agg/scope/refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	17 18 18-arm64 19	CTE used twice                                          | join, a sub-select ov
+test/expected/agg/semi_same_table_1.out	9a7e5ed03b6bc1ea89fa5c47be860d9499e7834b	18 18-arm64	0 | t
+test/expected/agg/spill/contexts_1.out	a879aa77beb39ff57c76ae083c7b0174dfda0c5d	17	kind     | select_ |      insert_       |     volatile_
+test/expected/agg/subplan_lut_1.out	01841054a351688288ac808012bbf7f61517a2a1	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	14041d7151598025fefce12ddffde531149e5982	19	not_in
+test/expected/agg/subplan_lut_1.out	18f010d562e7cd0f6b312fc1d9d10bde0b3d257f	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	3d127528743883af12be144cfe49756f8b13c0e5	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	40a73829da2d83ee401199cd1b06b56c85683b01	19	not_hashed
+test/expected/agg/subplan_lut_1.out	4f429bbd87b4ee25b0ff6e32eae269f0232d9ff0	19	in_or
+test/expected/agg/subplan_lut_1.out	544909052b9e5fc43b40e2e645313adf1aa1890c	19	QUERY PLAN
+test/expected/agg/subplan_lut_1.out	5cd6066ffd60200085ba9119f05da55669486653	19	correlated
+test/expected/agg/subplan_lut_1.out	61ee54aac571645e1a24a555eff003c8b9344bb2	19	int8_leaf
+test/expected/agg/subplan_lut_1.out	64620189b8edcb78876437b8d343e065138d9a84	19	plan                  | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	769713299c92e8460efd8e32f04b768e312b11e7	19	volatile_subselect
+test/expected/agg/subplan_lut_1.out	7d4e144b47d2f983b0ec7e64f71941db864dbc07	19	plan                 | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	815d7098061ff3f9e35541640602d98512d2f6c6	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	8737b21d6426ffffda85e8c87f0247e3eda564d9	19	generic_plan
+test/expected/agg/subplan_lut_1.out	8865a0f650b1b6a0a40c031577460bc00cd911d5	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	8e4b2bd006cc4460a1b913e49ad1e815bab49a2d	19	row_valued
+test/expected/agg/subplan_lut_1.out	9f091d125d7ac4247abc29e8c3cdc12d9051624b	19	locking
+test/expected/agg/subplan_lut_1.out	aa6cc9989b11c764e71a69b687989ef2877582d2	19	after_drop
+test/expected/agg/subplan_lut_1.out	ba3c14d64ad8882d64f444bd73ccdb376ea36be5	19	with_subplan
+test/expected/agg/subplan_lut_1.out	d5ee762d3573a3bcaa0db2f6b1c6a3f90e6adc63	19	Filters: dim_a_id: (NOT (ANY (ev.dim_a_id = (hashed SubPlan 1).col1)))
+test/expected/agg/subplan_lut_1.out	e67128f7a4ef0d9e5e220f22a7c13547981b6f19	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	e7248545797ed2149f35d80e5693d6b0b9f4be4c	19	pushdown_off
+test/expected/agg/subplan_lut_1.out	e78e16e5116dbe6668acd8776b984acc39b99fc0	19	row_valued_in
+test/expected/agg/subplan_lut_1.out	eb43e0d6f621cf781fd23135e374e6bb88037161	19	before_drop
+test/expected/agg/subplan_lut_1.out	ee208c932140974d0cdcc51cf2166c3d5dc84436	19	nested_subplan
+test/expected/agg/subplan_lut_1.out	fb4b779dbfb651256a43e667dc8449c760f00be8	19	plan          | result_rows | vs_normal_plan
+test/expected/col/scope/text/key_1.out	6c58555face2d1d44e30fbaaa3c03d9b63dad22d	17 18 18-arm64 19	IN, no key the store has                    | scope read, once
+test/expected/col/scope/text/key_1.out	893491e2c5c91f8b40a672f9a7fdafc060055223	17 18 18-arm64 19	uuid key, a literal                         | scope read, once
+test/expected/col/scope/text/key_1.out	8c9d83a5155d72634f29e02cee2fcee1f4b770e4	17 18 18-arm64 19	EXISTS                                      | scope read, once
+test/expected/col/scope/text/key_1.out	bd65f16ac3efad89f8893beba14b9a444029e5c2	17 18 18-arm64 19	varchar key, a text parameter type          | scope read, once
+test/expected/col/scope/text/key_1.out	d33e6d8e6c15e3198bc910ff0c5438640ab47e6f	17 18 18-arm64 19	IN, a key only the pairs added later have   | scope read, once
+test/expected/col/scope/text/key_1.out	ea71ffea2b7e815d6507d1eca1ac95748ae5988a	17 18 18-arm64 19	IN, a long key                              | scope read, once
+test/expected/col/scope/text/member_1.out	14d8b4b0a58ec1b27af2e594b717378b97c86497	17 18 18-arm64 19	IN, one key                             | scope read, once
+test/expected/col/scope/text/member_1.out	99b2db9a04677b91aa0d5ac84efe85da31a87935	17 18 18-arm64 19	EXISTS                                  | scope read, once
+test/expected/col/scope/text/member_collide_1.out	14d8b4b0a58ec1b27af2e594b717378b97c86497	17 18 18-arm64 19	IN, one key                             | scope read, once
+test/expected/col/scope/text/member_collide_1.out	99b2db9a04677b91aa0d5ac84efe85da31a87935	17 18 18-arm64 19	EXISTS                                  | scope read, once
+test/expected/col/skip_map_1.out	1a946b21e6da3e67c2d462a3b68d45c34498ae8c	17 18 18-arm64 19	sm_z | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	25b96df3cbf4b831eec9465460ae43b4304b1b10	17 18 18-arm64 19	sm_o | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	29c8c731d006b5f73225798c82513c7965235355	17 18 18-arm64 19	sm_z | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	5a63a2f9592e4e3adf30f8aa444b0d152cb196cb	17 18 18-arm64 19	sm_o | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	60e43d0790fe1c87cba8d7be03bd8e618acc3324	17 18 18-arm64 19	sm   | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	632c7805145d659309106edb3c5e64f8b47d299b	17 18 18-arm64 19	sm   | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	6dc763e5266bc4e28ad77a95e7c4271e88e7b3e7	17 18 18-arm64 19	sm   | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	7407c5abffbb4187c7d17b05b2e1e59146f1d9dc	17 18 18-arm64 19	sm_z | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	8e34e83ed753d32b8083aa0bdb2bfd821a0902ae	17 18 18-arm64 19	sm   | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	e5109153b15a7c8fecc365a3b3f702e68b611a10	17 18 18-arm64 19	sm_z | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	ef2511451d8fb33dd89e74eae4a9d95250d2a627	17 18 18-arm64 19	sm_o | avg(f)  | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
+test/expected/col/skip_map_1.out	f6c04dafc71d45625470833e31b521767c771f06	17 18 18-arm64 19	sm_o | sum(id) | 3 | k = 500               | SiftAgg read 0 pruned 100 |
+test/expected/col/topn/offset_1.out	3855a99e3a1312abe7e20e1bec123f6a0a95e425	19	confirmed | 74
+test/expected/col/topn/offset_1.out	5f3a76f93fb85af3330441f90a0bd7ac88fa9f31	19	result   | n
+test/expected/col/topn/offset_1.out	65f85ed967261617e3035128ac302bfb1b8195bd	19	confirmed | 95
+test/expected/col/unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	17	ERROR:  duplicate key value violates unique constraint "oc_t"
+test/expected/col/unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
+test/expected/col/unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
+test/expected/col/unique_include_2.out	4c74016e37a4e684f3b78adcff25e0d2f5c92942	19	LINE 1: ...INDEX inc_bad ON inc USING sift_col (k1) INCLUDE (c1_renamed...
+test/expected/agg/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
+test/expected/agg/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
+test/expected/agg/explain_sift_1.out	6828e0176c1ed616697ed217d1a40490b1f94e87	17	sift_lines
+test/expected/agg/explain_sift_1.out	7cd3fdcc53a76913cce007615af3b6d2a7b7063c	17	sift_lines
+test/expected/agg/explain_sift_1.out	aa14f7ed610b34ab40fb563979f325db1dc9d01b	17	sift_lines
+test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17	sift_lines
+test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
+test/expected/agg/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
+test/expected/agg/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
+test/expected/col/f2/limits_ios_1.out	1e907d3890cd64d040f6cb4c12b9ac4986c17dc8	17	suggest_stored_doc
+test/expected/col/f2/limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	17	ERROR:  column "vdoc" is a virtual generated column: no row stores its documents
+test/expected/col/f2/limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
+test/expected/col/f2/limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
+test/expected/col/f2/limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
+test/expected/table/f2/fetch_1.out	8b73b2cbd394efecc960a1f90aa319b7d66cf1c3	17	sift_lines
+test/expected/table/f2/parity_1.out	29ab438535f80cdb3c37f8ebd6f3673fb2a69b65	17	chk
+test/expected/table/f2/parity_1.out	55872b3b89fc20bd60611e6fb677b34f022bd1a9	17	chk
+test/expected/table/f2/parity_1.out	62fa207ae7b3d7158de6c589eb89609f6dc058bf	17	chk
+test/expected/table/f2/parity_1.out	bf2cb3484d22dce3fda98449aa927d45a8f066d6	17	chk
+test/expected/table/v6_virtual_generated_1.out	0291bf04a5a6af438f04fc1367f6ffaaa02a7d95	17	ERROR:  relation "vgb" does not exist
+test/expected/table/v6_virtual_generated_1.out	04e1fa807b1e4af68d1f9e091a5d7bfa6975d23e	17	stored_aggregate
+test/expected/table/v6_virtual_generated_1.out	1a6e36cac7ada63a8cd6bc4044108623d83bc36e	17	ERROR:  syntax error at or near "VIRTUAL"
+test/expected/table/v6_virtual_generated_1.out	1a911e27f6a4c9548b901ef37f98a1ca3d580427	17	ERROR:  relation "vgh" does not exist
+test/expected/table/v6_virtual_generated_1.out	2f6b5110a3a1b38bed2b7ebfc0e6f34ef3b19b38	17	sift_col_check_is_clean
+test/expected/table/v6_virtual_generated_1.out	38a862d951f0f3d1b360d504d95303ca871da26a	17	virtual_filter
+test/expected/table/v6_virtual_generated_1.out	3a996a98970413090cebc738754ca398e1eaeb5d	17	ERROR:  relation "vgb" does not exist
+test/expected/table/v6_virtual_generated_1.out	3d1d79268a12bf5baeaeb3392fdff6420dd563bb	17	ERROR:  relation "vgt" does not exist
+test/expected/table/v6_virtual_generated_1.out	49b7cfd8f69a385001696e5e88ac298d7532bf8f	17	table_virtual_aggregate
+test/expected/table/v6_virtual_generated_1.out	4cf4796d1fc21c9dfc06ffab453a24fd4cc04241	17	ERROR:  relation "vgb" does not exist
+test/expected/table/v6_virtual_generated_1.out	539cd1e580aed7cc0cfaf187021be1bab62ec856	17	bm25_with_virtual_columns
+test/expected/table/v6_virtual_generated_1.out	588deceb6f8444a7409791f2f668d46bc9842b4a	17	ERROR:  relation "vg" does not exist
+test/expected/table/v6_virtual_generated_1.out	5e2a6ac16d827ca768a2fc096ad56228f1b46d9e	17	virtual_after_writes
+test/expected/table/v6_virtual_generated_1.out	630ca907bac824038e4a0c476814977b736b581b	17	ERROR:  table "vg" does not exist
+test/expected/table/v6_virtual_generated_1.out	654c072bd52474919b85ac8dfa0587f44feb4689	17	table_virtual_filter
+test/expected/table/v6_virtual_generated_1.out	6b9de81dbc9c48916c620038824d6f18ae15c22e	17	table_stored_aggregate
+test/expected/table/v6_virtual_generated_1.out	6dee23dc7e6069f341b5df4cc8a14148e53f2616	17	0A000
+test/expected/table/v6_virtual_generated_1.out	6e4ead36a6f6adc36244723a8e64fc634d94fd2f	17	ERROR:  relation "vgt" does not exist
+test/expected/table/v6_virtual_generated_1.out	6e6fec581b231d29fc6490b65c39b6ab8e669ccf	17	ERROR:  relation "vg" does not exist
+test/expected/table/v6_virtual_generated_1.out	740b47fe9028121056a0143fb96baa99bfa057fa	17	sift_table_check_is_clean
+test/expected/table/v6_virtual_generated_1.out	801a4fd643a2c0345e31a069551ee471a3c39e56	17	ERROR:  relation "vg" does not exist
+test/expected/table/v6_virtual_generated_1.out	83e0a3a2422ba3d539d3b702256b67bf182d25d2	17	ERROR:  syntax error at or near "VIRTUAL"
+test/expected/table/v6_virtual_generated_1.out	854d2584967f40e9c2bf19c4513ee074ad59d33b	17	stored_after_writes
+test/expected/table/v6_virtual_generated_1.out	8f941b7ae3e39aa5686b860744a041c8780e1cef	17	ERROR:  relation "vgt" does not exist
+test/expected/table/v6_virtual_generated_1.out	9d30d238477804e862747d6335f39e66a6379911	17	ERROR:  relation "vgh" does not exist
+test/expected/table/v6_virtual_generated_1.out	b12442630ec38612b5e5967646f29ee5f207db38	17	table_virtual_after_writes
+test/expected/table/v6_virtual_generated_1.out	b89a22d4966e5bffbc44b48eced993c756a39dee	17	ERROR:  relation "vgh" does not exist
+test/expected/table/v6_virtual_generated_1.out	d2ed715d4d26252b01192bcbb5ef86f9cc744ff0	17	ERROR:  relation "vg" does not exist
+test/expected/table/v6_virtual_generated_1.out	d5f20affa6a2444ef69c1cf7483f8d3d98631ef5	17	bm25_with_virtual_columns_after_writes
+test/expected/table/v6_virtual_generated_1.out	d747795ee6befc81d434c0cd1d8029fe627138df	17	ERROR:  relation "vgt" does not exist
+test/expected/table/v6_virtual_generated_1.out	ea1ed796b556764c872554775dfb837759a0cd2c	17	table_stored_after_writes
+test/expected/table/v6_virtual_generated_1.out	f74a945404665096ed445239d93e99eae8b8271d	17	table_virtual_projection
+test/expected/table/v6_virtual_generated_1.out	fcddfa8fe48dd503f981643c028534ccf24072a9	17	ERROR:  relation "vgb" does not exist
+test/expected/table/v6_virtual_generated_1.out	ff84dcbfb922b62b6720e1e28f464cbc36aaac05	17	virtual_aggregate

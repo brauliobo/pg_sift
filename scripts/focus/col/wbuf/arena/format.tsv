@@ -1,1 +1,1 @@
-col_wbuf_arena_format	src/col/v1/seg/points.c:sift_cseg_point_check_tids src/col/v1/seg/points.c:tid_key_cmp src/col/v1/wbuf_test.c:read_dir src/col/v1/wbuf_test.c:sift_test_wbuf_format src/col/v1/xstamp.c:sift_xstamp_make src/col/v1/xstamp.c:sift_xstamp_pack
+col/wbuf/arena/format	src/col/v1/seg/points.c:sift_cseg_point_check_tids src/col/v1/seg/points.c:tid_key_cmp src/col/v1/wbuf_test.c:read_dir src/col/v1/wbuf_test.c:sift_test_wbuf_format src/col/v1/xstamp.c:sift_xstamp_make src/col/v1/xstamp.c:sift_xstamp_pack

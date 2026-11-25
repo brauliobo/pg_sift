@@ -17,7 +17,7 @@ IDX=$(git rev-parse --git-dir)/probe-alternates.index
 trap 'rm -f "$IDX"' EXIT
 ALL_MAJORS=17,18,19
 
-alternate_tests() { git ls-files 'test/expected/*_[0-9]*.out' | sed 's#.*/##; s#_[0-9]*\.out$##' | sort -u; }
+alternate_tests() { git ls-files 'test/expected/*_[0-9]*.out' | sed 's#^test/expected/##; s#_[0-9]*\.out$##' | sort -u; }
 
 make_probe() {
 	local tests tree
@@ -72,7 +72,7 @@ for art in sorted(glob.glob(f'{out}/raw/*')):
                 m = re.match(r'(not )?ok +\d+ +- (\S+)', l)
                 if m and 'installcheck-' + m.group(2) not in seen: ran.write(f'installcheck-{m.group(2)} {"FAIL" if m.group(1) else "PASS"}\n')
     for d in glob.glob(f'{art}/**/regression.diffs', recursive=True):
-        test = os.path.basename(os.path.dirname(d))
+        test = os.path.basename(os.path.dirname(d)).replace('__', '/')
         main = subprocess.run(['git', 'show', f'{os.environ["PROBE"]}~1:test/expected/{test}.out'], capture_output=True, text=True, check=True).stdout
         os.makedirs(f'{out}/actual/{label}', exist_ok=True)
         open(f'{out}/main_{test}.out', 'w').write(main)

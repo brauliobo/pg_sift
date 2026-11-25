@@ -7,7 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-\ir test/scope_helpers.sql
+\ir test/common/sql/col/scope/base.sql
 
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT m, 1 + m % 8 FROM generate_series(1, 100) m;

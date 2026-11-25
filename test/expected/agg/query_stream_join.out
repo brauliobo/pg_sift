@@ -382,7 +382,7 @@ SELECT leftover();
         0
 (1 row)
 
--- no file is left after a LIMIT, a cursor that is closed before its end, or an error in the middle of the join (a cancel is test/prod95_scale.tsv's grace_cancel)
+-- no file is left after a LIMIT, a cursor that is closed before its end, or an error in the middle of the join (a cancel is test/scaling/stream_scale.tsv's grace_cancel)
 BEGIN;
 DECLARE c NO SCROLL CURSOR FOR SELECT p.id, b.v FROM jp p JOIN jb b ON b.k = p.k;
 FETCH 10 FROM c;

@@ -3,7 +3,7 @@
 # the whole time, and that aborts some of its transactions: the index ends valid and ready, verifies against the heap (heapallindexed), answers the grouped aggregate as the plain
 # plan does through the aggregate pushdown, and so does the standby that replayed the build. The leak gate of every node runs at the end (finish).
 # SIFT_BC_ROWS (300000, 100000 quick).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_BC_ROWS 300000 100000)
 node_init primary 2 "wal_level = replica

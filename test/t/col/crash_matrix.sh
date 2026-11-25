@@ -9,7 +9,7 @@
 # the operation, run again, completes and leaves it the same. An index with a scope (the scope_* scenarios) also has the scope entries of every row of its entity segments after the restart: the
 # promotion, the merge and the refill of its scope segments are each one switch of the directory. SIFT_CRASHMX_ITERS caps the number of crashes (default 70, 20 quick: the first and the last update of every operation).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ITERS=$(knob SIFT_CRASHMX_ITERS 70 20)
 FULL=$(knob SIFT_CRASHMX_FULL 1 "")
@@ -24,7 +24,7 @@ D=$(dir cm)
 SIFT_TMP=$D leak_expect 200 'terminated by signal 9'
 sql cm "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"
 
-. "$(dirname "$0")/crash_scenarios.bash"
+. "${SIFT_REPO:?}/test/t/lib/crash_scenarios.bash"
 
 total=0
 for row in "${SCENARIOS[@]}"; do

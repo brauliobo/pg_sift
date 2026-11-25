@@ -3,8 +3,8 @@
 # exact one from the heap row): inserts, updates that change the key, deletes, VACUUM, promotion and merge on the primary replay to an index that verifies on the hot
 # standby and whose ordered reads (ASC and DESC, an OFFSET, a range) return what its heap returns and what the primary returns, while readers run on the standby. The
 # standby is then promoted and takes writes. SIFT_COL_REPLICA_SECS (default 15, 3 quick).
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_col.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/col.bash"
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 11

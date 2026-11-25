@@ -3,9 +3,9 @@
 
 import re
 
-from .db import COLLATE_C
-from .columns import EVENTS, KEYS, aggs, keys, preds
-from .fam_basic import grouped, where
+from ..db import COLLATE_C
+from ..columns import EVENTS, KEYS, aggs, keys, preds
+from .basic import grouped, where
 
 def gen_dirty(r, ctx):
     form = r.randrange(5)

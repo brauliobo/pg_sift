@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A backend has 10 relcache callback slots (MAX_RELCACHE_CALLBACKS) that every loaded library shares, and running out is a FATAL that ends the session: sift takes none (a syscache
-# callback has 64 slots of its own; test/t/relcache_slots.sh measures it, on the paths it runs, against the server's). This fails on a CacheRegisterRelcacheCallback call in src/ other than
+# callback has 64 slots of its own; test/t/core/relcache_slots.sh measures it, on the paths it runs, against the server's). This fails on a CacheRegisterRelcacheCallback call in src/ other than
 # the one of the test function that burns slots on purpose (src/core/store_ops_test.c).
 #   scripts/check-relcache-slots.sh [DIR]   check the tree under DIR (default: the repo)
 #   scripts/check-relcache-slots.sh --selftest   a call is found, a syscache callback and a comment are not

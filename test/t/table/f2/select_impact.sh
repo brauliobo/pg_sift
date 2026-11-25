@@ -9,7 +9,7 @@
 # Every case prints CHURN_ROW case | 1x | 2x | 4x | growth_factor | limit | verdict as a TAP comment. The limits are those of Spec 97: dirty reads <= 2.0x the clean ones (2.5x
 # for the pruned window), the third cycle <= 1.25x the first, and the settled reads <= 1.15x the clean ones. A time passes when its median or its best run is within the limit of the clean one plus 3 ms:
 # a read of a few milliseconds is not a measurement of the host that runs a test beside others.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 30
 node_init cs 76 "autovacuum = off

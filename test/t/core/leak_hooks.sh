@@ -2,9 +2,9 @@
 # The before and after hooks of the leak gate (scripts/leakcheck.sh leak_before, leak_after, leak_cluster) on planted leaks: every driver runs the same pair around its unit
 # of work (scripts/pgtest.sh regress: a test), so a unit that leaves a resource behind must fail it with the name of what leaked, and a clean unit must pass.
 # sift._test_leak leaves each kind on purpose. A palloc chunk in TopMemoryContext is the memcheck gate's (scripts/valgrind.sh --leaks-selftest), a malloc leak
-# LeakSanitizer's (test/t/leakcheck_gate.sh): neither is visible to a hook that reads the server log and the shared state. The deliberate findings of this node are set aside
+# LeakSanitizer's (test/t/core/leakcheck_gate.sh): neither is visible to a hook that reads the server log and the shared state. The deliberate findings of this node are set aside
 # before finish, which runs the gate on the node like on any other and must find it clean.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 D=$(dir hooks)
 plan 12

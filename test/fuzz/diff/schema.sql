@@ -1,4 +1,4 @@
--- Runner of the differential fuzz (test/fuzz/diff_fuzz.py). fz.ref runs a query under the settings of the reference, fz.var under those of a
+-- Runner of the differential fuzz (test/fuzz/diff/cli.py). fz.ref runs a query under the settings of the reference, fz.var under those of a
 -- variant, and compares with coldiff.compare (test/col/run.sql, the contract of docs/AGG.md "Differential suite": exact except floats,
 -- which are equal within 1e-12 + 1e-9 relative; rows by position when keycols is NULL, else sorted by keycols and then every column).
 -- A query that raises must raise the same SQLSTATE under every setting. Each call is a statement of its own, so statement_timeout, which the

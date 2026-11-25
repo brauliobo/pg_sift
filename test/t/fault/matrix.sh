@@ -9,7 +9,6 @@
 # dropped by DROP INDEX CONCURRENTLY and leaves no trigger of the log of changes behind, the operation run again completes, leaves the same state and grows the files by less than a half of what a clean run
 # makes, and the maintenance of every index has nothing due after sift.col_maintain. SIFT_FAULT_TIER=quick (SIFT_QUICK=1) runs the rows of the quick tier: one fault for each phase of each operation. SIFT_FAULT_SLICE=K/N runs the Kth of N slices of the operations, balanced by their rows.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-HERE=$(dirname "$0")
 SCENARIO_NAMES=(bm25_build col_build bm25_promote col_promote bm25_merge col_merge scope_build scope_promote scope_merge scope_refill vacuum col_roll tbl_seal
 	col_cic track_cic scope_cic scope_cic_nj reindex_col reindex_col_c reindex_scope_c tbl_tomb tbl_copy
 	alter_refresh alter_reloption col_repair)
@@ -51,7 +50,7 @@ MUTANTS
 	done
 }
 [[ ${1:-} != --gen ]] || { gen; exit 0; }
-. "$HERE/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 TIER=$(knob SIFT_FAULT_TIER full quick)
 ORPHAN_SECONDS=$(knob SIFT_FAULT_ORPHAN_SECONDS 30 10)
@@ -66,7 +65,7 @@ node_start cm || bail "start failed"
 D=$(dir cm)
 SIFT_TMP=$D leak_expect 400 'terminated by signal 9|terminating connection'
 sql cm "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"
-. "$HERE/crash_scenarios.bash"
+. "${SIFT_REPO:?}/test/t/lib/crash_scenarios.bash"
 
 declare -A SETUP OP KCOUNT SIZE0 DUE0
 for row in "${SCENARIOS[@]}"; do IFS='~' read -r name setup op <<<"$row"; SETUP[$name]=$setup; OP[$name]=$op; done
@@ -229,15 +228,15 @@ untamper() { # the slot of a dead process stays in shared memory until the serve
 
 # the selftest of the negative rows: every hook a mutant needs is in the source, every mutant has a tamper, and a run of the whole tier has all of them (a missing hook or tamper fails the
 # run here, and a mutant whose defect the invariants do not see fails its own row)
-mutants=$(awk -F'\t' '$5 == "mutant" {print $6}' "$HERE/fault_matrix.tsv" | sort -u)
+mutants=$(awk -F'\t' '$5 == "mutant" {print $6}' "${SIFT_REPO:?}/test/t/fault/matrix.tsv" | sort -u)
 SLICE=${SIFT_FAULT_SLICE:-1/1}
 [[ -n ${SIFT_FAULT_ONLY:-} || ${SLICE%/*} != 1 ]] || {
 	check "the tier has the eight mutants" test "$(wc -w <<<"$mutants")" == 8
-	for m in $mutants; do check "the mutant $m has its tamper" grep -q "^		$m) " "$HERE/fault_matrix.sh"; done
-	for k in 1 2; do check "the library has the hook of the mutant kind $k" grep -rq "SIFT_TEST_MUTANT($k," "$HERE/../../src"; done
+	for m in $mutants; do check "the mutant $m has its tamper" grep -q "^		$m) " "${SIFT_REPO:?}/test/t/fault/matrix.sh"; done
+	for k in 1 2; do check "the library has the hook of the mutant kind $k" grep -rq "SIFT_TEST_MUTANT($k," "${SIFT_REPO:?}/src"; done
 }
 
-mapfile -t ROWS < <(awk -F'\t' -v t="$TIER" 'NF >= 5 && $1 !~ /^#/ && (t == "full" || $5 == t || $5 == "mutant")' "$HERE/fault_matrix.tsv")
+mapfile -t ROWS < <(awk -F'\t' -v t="$TIER" 'NF >= 5 && $1 !~ /^#/ && (t == "full" || $5 == t || $5 == "mutant")' "${SIFT_REPO:?}/test/t/fault/matrix.tsv")
 ONLY=${SIFT_FAULT_ONLY:-}
 declare -A MINE   # the operations of this slice: the dearest first, each to the slice with the least cost so far (seconds a row: scope_cic_nj 20, col_promote 4, vacuum and col_roll 2, the others 1)
 while read -r op; do MINE[$op]=1; done < <(printf '%s\n' "${ROWS[@]}" | awk -F'\t' '

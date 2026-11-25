@@ -2,7 +2,7 @@
 # The merge of a parallel build by the participants (col_build_slices.sh) next to a streaming standby: a slice that PANICs after it wrote its segment and before the
 # directory switch takes the primary down, the build never committed, and neither the primary nor the standby has the index or any block of it; the build that follows
 # is replayed whole, the standby verifies it and answers as the heap does, and the file is the live bytes on both.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
 node_init primary 24 "wal_level = replica

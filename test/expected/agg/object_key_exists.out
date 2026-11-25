@@ -23,7 +23,7 @@ NOTICE:  sift_col index "oe_docs_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('oe_docs_col');
 VACUUM (FREEZE, ANALYZE) oe_docs;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 \set ECHO none
 -- a key and an aggregate argument that depend on the key of the document, for the rows of its list
 SELECT * FROM check_query($q$

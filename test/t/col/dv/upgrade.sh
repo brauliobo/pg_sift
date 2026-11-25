@@ -2,8 +2,8 @@
 # Deletion records (core/v1_col/tomb_dv.h, column format minor 52) across a swap of the library: a 5.0 library writes an index that tracks its changes and its marks; this tree reads that log unchanged
 # (a log of marks keeps its minor), writes records beside the old marks (the log is stamped 52 by the first record), folds and drops both; and the 5.0 library refuses the stamped log
 # with the format error until the index is built again.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 ref=v5.0.0
 git -C "$REPO" rev-parse -q --verify "refs/tags/$ref" >/dev/null || { echo "1..0 # SKIP no release tag $ref"; exit 0; }

@@ -1,5 +1,5 @@
 /*
- * test/scaling/check_scaling_c.c - the scaling gate of the C data structures (scripts/check-scaling-ops.sh).
+ * test/scaling/runner.c - the scaling gate of the C data structures (scripts/check-scaling-ops.sh).
  *
  * Each case runs the real code at n and at factor * n and compares the operation counts (op_counters.h), never a time. A ratio above the ceiling of the
  * complexity class (O(1) 1.25, O(log n) 1.5, O(n) 9.0, O(n log n) 11.5 at factor 8) fails. A gate marked pending names the lane that fixes the code: it

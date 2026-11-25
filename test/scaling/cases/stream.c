@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_stream.c - agg/stream_exec.c: the sorted GROUP BY and Top-N take one source per part of the partition, added one at a time (sift_stream_add_source): the cursors of
+ * test/scaling/cases/stream.c - agg/stream_exec.c: the sorted GROUP BY and Top-N take one source per part of the partition, added one at a time (sift_stream_add_source): the cursors of
  * P sources are P allocations' worth of bytes, O(P), not the P(P+1)/2 of growing by one cursor each time.
  */
 #include "core/host.h"

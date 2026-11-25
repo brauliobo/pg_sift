@@ -2,7 +2,7 @@
 # Self-maintaining background health: the defaults of the maintenance workers and of the dead-row rewrite, the queue that holds the requests of a server with many
 # relations, and the cut of the file end that finds the gap between the statements of a reader (it tries again for a few milliseconds without ever queueing, so no
 # reader waits behind it).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROUNDS=$(knob SIFT_SH_ROUNDS 6 4)
 REQUESTS=1500

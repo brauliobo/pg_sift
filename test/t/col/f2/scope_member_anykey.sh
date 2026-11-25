@@ -3,7 +3,7 @@
 # named by its code in the scope key store of the member column of the pairs relation, and every node answers the scoped statements as the plain join does. The primary adds a member that no summary
 # has, moves and drops pairs, inserts, updates and deletes facts, and vacuums; the standby replays the stores of the codes with the pages of the summary.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 15
 
 p=f2m_primary

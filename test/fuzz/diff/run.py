@@ -7,10 +7,10 @@ import re
 from . import tablemode
 from .db import REF, psql, settings
 from .tablemode import TABLE_SKIP
-from .fam_lists import dml_trail, dml_txn
-from .fam_groups import dml_groupsplit
-from .fam_scope import dml_scope
-from .fam_cte import dml_ctecopies, dml_dictcount, dml_exceptions, dml_flatkeys, dml_gorder, dml_keylist, dml_keytable
+from .fam.lists import dml_trail, dml_txn
+from .fam.groups import dml_groupsplit
+from .fam.scope import dml_scope
+from .fam.cte import dml_ctecopies, dml_dictcount, dml_exceptions, dml_flatkeys, dml_gorder, dml_keylist, dml_keytable
 from .registry import FAMILIES, prepared_variants, variants
 from .dml import dml, dml_arrlen, dml_dead, dml_floor, dml_kcut, dml_nullzone, dml_window
 

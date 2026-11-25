@@ -9,7 +9,7 @@
 # never stops a pass of VACUUM FREEZE: one pass freezes every part, the oldest transaction first, and pg_class.relfrozenxid follows; vm_span: the pass of the visibility map reads the addresses of a part that spans a
 # map page for each of the pages and not the columns (R1-VAC-02); cic_partial: the validation of CREATE INDEX CONCURRENTLY merges what the scan gave in windows of addresses and writes
 # no temp file (R1-CREATE-02); par_scan: the images of a parallel scan are freed once the scan is set up (R1-READ-01).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 N1=32768

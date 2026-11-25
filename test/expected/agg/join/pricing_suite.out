@@ -127,7 +127,7 @@ NOTICE:  sift_col index "few_col": 1 automatic choice (rollup_columns), 1 advice
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = k, v
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('few_col');
 VACUUM (FREEZE, ANALYZE) few;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 SELECT sub, pushed(q) AS scan, runq(q, false) = runq(q, true) AS same_rows
 FROM (SELECT sub, format('SELECT count(*), sum(v) FROM facts WHERE k IN (SELECT %s FROM keys)', sub) AS q

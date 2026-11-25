@@ -5,7 +5,7 @@
 # operation that held the update, or the one after it when the update was its last and the fault came after it, its chain is sound, a read by a prefix of 0 to 3 components, or of
 # 3 and an address, returns the entries of no partition and those of the partitions that may hold a key with the prefix (as the bounds of the directory say), and the rest of the
 # sequence applied to it ends where a clean run does. The primary runs with wal_consistency_checking = generic.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 OPS=("i 0 3" "n 3 0 0,70000,140000,3000000" "n 4 1 70000,70100" "n 3 2 0" "n 7 0 5000000" "n 5 1 140000,140001,140002" "n 4 1 70100,70101,70102,70103"
 	"n 3 4 0,200" "n 5 2 70103,70104,100000" "n 10 1 3000000,3000064" "n 12 1 5000000" "d 4 1" "n 3 1 0,1,2")

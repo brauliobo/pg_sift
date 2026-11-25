@@ -3,7 +3,7 @@
 # A filter on a text column is evaluated once for each entry of the column's dictionary (agg/pred_in.c dict_lut) before the scan reads a row. The
 # expression is the user's and can cost milliseconds an entry: the evaluation checks for interrupts, so a statement_timeout of 100 ms ends the statement
 # in well under a second, not when the last of the 150,000 entries is done (levenshtein of a 192-character name against 250 characters, about 30 us each, several seconds).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 3
 node_init idf 29 "autovacuum = off

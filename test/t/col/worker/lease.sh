@@ -2,7 +2,7 @@
 # A worker that the postmaster never starts does not keep its slot for good: with sift.max_maint_workers = 1 and the postmaster stopped, the request of one table takes the slot and its worker
 # is registered but never up, a request of another table is refused and says one is running, and after the lease of a slot (sift.test_worker_lease_ms in a testing build) the next request
 # takes the slot again; once the postmaster goes on, the workers start and the tables are promoted.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 LEASE_MS=2000

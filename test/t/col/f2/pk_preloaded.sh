@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Two sessions that insert one PRIMARY KEY value of a sift_table on a server that preloads pg_sift (the row lock table lives in shared memory): the second waits for the first, fails with a duplicate
 # key when the first commits and goes on when the first rolls back, as on a heap.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init pk 1 "shared_preload_libraries = 'pg_sift'"

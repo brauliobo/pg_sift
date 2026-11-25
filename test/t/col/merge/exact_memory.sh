@@ -5,7 +5,7 @@
 # D the dictionaries the inputs pin, C what the merge creates besides. The per-row term is the least-squares slope over the five steps and may not pass SLOPE_MAX; every
 # step stays under INTERCEPT_MAX + SLOPE_MAX * rows. A merge that keeps 64 more bytes of every index row passes neither.
 # The backend of each size is a new one with maintenance_work_mem at 1 MB; the shared dictionary ring and the maintenance worker are off, as in mem_slope_legacy.sh.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 SIZES=(8000 16000 24000 32000 40000)
 SLOPE_MAX_PLAIN=2 INTERCEPT_MAX_PLAIN=304128

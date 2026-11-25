@@ -8,12 +8,12 @@
 # binaries at the same absolute path under the test directory (a server finds its library and share directories relative to its binaries), with the
 # files of the system linked in and pg_sift of the staged install, or of the build for the other major, next to them. The clusters have data
 # checksums, which PostgreSQL 18 enables by default and pg_upgrade needs on both sides.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
-. "$(dirname "$0")/lib_upgrade.bash"
-. "$(dirname "$0")/lib_twohop.bash"
-. "$(dirname "$0")/lib_names.bash"
+REPO=${SIFT_REPO:?}
+. "${SIFT_REPO:?}/test/t/lib/upgrade.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
+. "${SIFT_REPO:?}/test/t/lib/names.bash"
 
 NEWCFG=$(command -v pg_config)
 OLDBIN=${SIFT_PG_OLD_BIN:-}
@@ -97,7 +97,7 @@ SELECT sift.projection_create('pwide', 'pev', ARRAY['a', 'k', '(q / 10)', 's'], 
 SELECT sift.projection_create('pnarrow', 'pev', ARRAY['a', 'k']);
 SELECT sift.projection_index('pev_wide', ARRAY['pwide'], '{\"track_changes\": \"off\"}');
 SELECT sift.projection_index('pev_again', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}');"
-# tables and columns renamed after the indexes were built (lib_names.bash; 5.0's): their files come through pg_upgrade with the leaves named as they were written
+# tables and columns renamed after the indexes were built (lib/names.bash; 5.0's): their files come through pg_upgrade with the leaves named as they were written
 NAMESSQL=
 [[ -n $OLD_REF ]] || NAMESSQL=$NAMES_SETUP
 # a scope with a text key (5.0's): the relation that holds the codes of its keys, with its own access method, and the index that depends on it
@@ -192,7 +192,7 @@ CREATE FUNCTION tblq_off(t regclass) RETURNS text LANGUAGE sql SET sift.enable_a
 SQL
 )
 qs old postgres <<<"$SETUP" >/dev/null || bail "the old cluster cannot be set up"
-# a scope of two paths (5.0's, column format 49; lib_twohop.bash): the grants of a member and of a group and the memberships, three recorded btrees and three journals under one scope index
+# a scope of two paths (5.0's, column format 49; lib/twohop.bash): the grants of a member and of a group and the memberships, three recorded btrees and three journals under one scope index
 HOPQ() { q "$1" postgres "${@:2}"; }
 TWOHOP_SQL=HOPQ
 HOPSTATE="SELECT string_agg(o, ' ') FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'hop_col' AND o LIKE 'scope=%'

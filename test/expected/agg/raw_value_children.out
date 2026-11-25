@@ -15,7 +15,7 @@ DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 \set ECHO none
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN

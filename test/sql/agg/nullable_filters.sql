@@ -21,7 +21,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at, d
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dates;
 ANALYZE dim_a;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 -- An EXISTS over the elements that PostgreSQL pulls up from a sub-select of its own (the sub-plan keeps the function with the dead entry of the sub-select before it).
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n

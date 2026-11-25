@@ -8,8 +8,8 @@
 #  - the choice of the path (scope col_btree_pick): the walk of the btree through a simulated cache of the heap blocks holds the same bytes whatever shared_buffers is (the cache is scaled
 #    down to 65,536 blocks), and under the budget of the scope
 # The backend of each size is a new one; the maintenance worker and the merge of the build are off.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 root=$("$REPO/scripts/scaling-gate.sh" build 2>/dev/null)
 rc=$?

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sift_table in a database that is not UTF8 (LATIN1, SQL_ASCII): strings with bytes above 127 are stored, read, changed by a column delta, indexed, grouped and compared as a heap twin does.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init enc 2 "shared_preload_libraries = 'pg_sift'

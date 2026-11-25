@@ -3,7 +3,7 @@
 # Pairs kept from a view (sift.scope_follow_pairs): two sessions that change different source tables of the view at once. A pair that depends on both changes (a tenant is assigned
 # a group in one session, an id joins that group in the other) is computed by neither refresh from the state it needs unless the later refresh waits for the commit of the earlier
 # and reads what it wrote: sift.scope_refresh_pairs takes a lock of the pair table for the transaction. Without it the pair is missing until the member or the key is refreshed again.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init sp 48

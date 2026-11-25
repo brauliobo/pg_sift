@@ -3,7 +3,7 @@
 # What leaves pages out of the visibility map after a plain VACUUM of a table with a sift_col index (the units over them answer from their rows, not their
 # pre-aggregates): with synchronous_commit on and no old snapshot, nothing; a snapshot older than the churn (a transaction anywhere in the cluster) keeps the
 # pages the churn touched out, and one more VACUUM after it ends sets them.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
 node_init vm 26 "autovacuum = off

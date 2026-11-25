@@ -14,9 +14,9 @@ SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE ap (id int, grp text, cat int, d date, amt numeric(10,2), qty int, big bigint, huge numeric(18, 0), f float8, ts timestamp, pad text) WITH (autovacuum_enabled = off);
 
-\ir test/agg_preagg_helpers.sql
+\ir test/common/sql/agg/preagg.sql
 
-\ir test/agg_preagg_units.sql
+\ir test/common/sql/agg/preagg_units.sql
 
 CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES

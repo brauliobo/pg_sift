@@ -4,7 +4,7 @@
 # which is the one that meets the damage when nothing is preloaded); the shared manifest of the index is out of service with the registry, so a reader that never saw the damage cannot be
 # served from it; writes and VACUUM skip the index; the flag in the metapage keeps it out after a restart; REINDEX puts it back. The rows are the heap's at every step.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 26
 declare -A CONF=([a]="shared_preload_libraries = 'pg_sift'" [b]="shared_preload_libraries = ''") OFFSET=([a]=91 [b]=92)

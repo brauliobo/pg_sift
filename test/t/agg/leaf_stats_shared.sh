@@ -3,7 +3,7 @@
 # its units into the statistics of the planner, the next backends take them from it and plan the same statement to the same plan; a rewrite of the index (a new
 # stamp) makes the next backend fold them again; the setting at 0 is the off switch; the table does not outlive a crash restart.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 10
 node_init primary 2

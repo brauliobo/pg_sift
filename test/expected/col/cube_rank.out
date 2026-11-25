@@ -8,7 +8,7 @@ SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET cpu_tuple_cost = 0.5;
-\ir test/agg_preagg_units.sql
+\ir test/common/sql/agg/preagg_units.sql
 \set ECHO none
 -- id, a measure, 14 columns of many values, then 3 of few and a text: 20 columns, 19 of them cube candidates for 16 dimensions; about 4 units
 CREATE TABLE cr (id int, v bigint, h1 int, h2 int, h3 int, h4 int, h5 int, h6 int, h7 int, h8 int, h9 int, h10 int, h11 int, h12 int, h13 int, h14 int,

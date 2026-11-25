@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The automatic TTL (the pass of VACUUM) and the visibility map of a sift_table: the parts that expire take their bits with them, so an index-only scan of a secondary index never answers a row
 # of a dropped part, as after sift.drop_parts_before. Needs a preloading server (the map is logged by a resource manager).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 DAYS=10
 ROWS=5000

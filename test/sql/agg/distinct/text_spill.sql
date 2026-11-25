@@ -13,7 +13,7 @@ FROM generate_series(1, 60000) i;
 CREATE INDEX dts_col ON dts USING sift_col (id, k, txt);
 VACUUM (FREEZE, ANALYZE) dts;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 CREATE TEMP TABLE queries (n int, q text);
 INSERT INTO queries VALUES

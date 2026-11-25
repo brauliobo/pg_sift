@@ -4,7 +4,7 @@
 # transaction (and an idle READ COMMITTED one) is not waited for, so the xmin of every later snapshot, the stamp's too, stays at or below its xid, and a hot standby waits for nobody.
 # What makes it safe is that a read reads the log only when its snapshot sees the transaction that made the journal as committed (sift_col_track_ok_log), which every writer of those pairs
 # finished before. A REPEATABLE READ snapshot on the standby taken before those writers committed does not see it: its read takes the heap, and its rows are the join's in that snapshot.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init pm 32 "wal_level = replica

@@ -10,7 +10,7 @@ INSERT INTO facts SELECT i, '2026-01-01'::date + (i % 15), 1 + (i * i) % 97, CAS
 CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at);
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 -- The entities of the top three of their kind: the semi join to the ranked sub-select, whose `rn <= 3` the window evaluates itself.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n

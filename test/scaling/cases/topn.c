@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_topn.c - agg/topn_v6.c: the Top-N tournament holds the best 64 rows of n offered in the worst order for it (every row beats the worst held), O(n log k).
+ * test/scaling/cases/topn.c - agg/topn_v6.c: the Top-N tournament holds the best 64 rows of n offered in the worst order for it (every row beats the worst held), O(n log k).
  */
 #include "postgres.h"
 

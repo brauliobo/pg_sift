@@ -2,7 +2,7 @@
 # The tail of a bulk load: the seals that fall inside the sift.maintenance_naptime window of the request that started the
 # background worker get no worker of their own, so the worker stays and promotes them; they are not left as sealed write buffers
 # until the next seal or a VACUUM. Runs on the release build too (no test functions).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init tail 12 "autovacuum = off

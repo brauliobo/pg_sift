@@ -4,7 +4,7 @@
 # (a trigger of an index that is not valid did nothing, and the validation pass only added the rows the first pass missed). The summary of the scope and the newest rows of a key count the stale
 # entries, and a version and the one that replaced it are both read. The build is held by sift.test_build_gate (a testing build) at two points, each by an advisory lock the test holds (0x51F7, 8:
 # after the first pass; 0x51F7, 20: after the validation pass has read the index), so no timing is involved.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init cg 95 "autovacuum = off

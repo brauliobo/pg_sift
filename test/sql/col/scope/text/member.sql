@@ -14,6 +14,6 @@ SELECT v, sift._test_member_hash(v) AS word FROM (VALUES (''::text), ('a'), ('fo
 SELECT sift._test_member_hash('foobar'::varchar) = sift._test_member_hash('foobar'::text) AS varchar_is_text,
        sift._test_member_hash('00000000-0000-0000-0000-000000000000'::uuid) AS zero_uuid, sift._test_member_hash('ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid) AS full_uuid;
 
-\ir test/col_scope_textmember_states.sql
+\ir test/common/sql/col/scope/textmember_states.sql
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

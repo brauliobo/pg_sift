@@ -14,7 +14,7 @@ CREATE TABLE ds_dim (g int, name text);
 INSERT INTO ds_dim SELECT i, 'g' || i % 3 FROM generate_series(0, 6) i;
 VACUUM ANALYZE ds;
 
-\ir test/agg_rows_helpers.sql
+\ir test/common/sql/agg/rows.sql
 
 CREATE TABLE agg_q (q text);
 INSERT INTO agg_q VALUES

@@ -49,7 +49,7 @@
 # (scripts/ccache-env.sh) is set up when CCACHE_DIR is not. start then preloads the sanitizer runtimes
 # into the server, with LeakSanitizer (scripts/lsan.supp); reports go to
 # $SIFT_TMP/sanitizer/ (sanitizer-report). SIFT_INITDB_TEMPLATE, a data directory made by `initdb-template`, is copied
-# instead of running initdb for every cluster (scripts/ci.sh makes one per run, test/t/lib.bash uses it too).
+# instead of running initdb for every cluster (scripts/ci.sh makes one per run, test/t/lib/common.bash uses it too).
 # Every cluster is under the leak gate of scripts/leakcheck.sh: start records the memory of the
 # long-lived processes, stop checks the cluster, stops it cleanly (fast, so that LeakSanitizer
 # reports) and scans the logs. Exit 1 on a finding.

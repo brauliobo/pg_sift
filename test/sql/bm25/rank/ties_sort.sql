@@ -2,7 +2,7 @@
 -- the k-th and the row after it. The scan under it keeps that group itself (the finished plan tells it, planner_ties.c), so a group of any size is read by one search.
 -- The answers must be those of the sort of every match.
 CREATE EXTENSION pg_sift;
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 
 -- tie groups of every size: the score of a one-term search is a function of the length of the document, and the lengths are 3 to 8 words, many of them equal
 CREATE TABLE docs (id int PRIMARY KEY, body text);

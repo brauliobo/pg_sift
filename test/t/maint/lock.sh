@@ -5,7 +5,7 @@
 # maintenance lock for promotion and merge, the inserter waited the whole merge (the 112 of 128 entries stall); now it
 # promotes and merges the other segments itself. The merge is held by sift.test_merge_gate (a testing build): the worker
 # waits for advisory lock (0x51F7, 4), which the test holds, so no timing is involved.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init lock 9 "autovacuum = off

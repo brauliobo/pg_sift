@@ -3,7 +3,7 @@
 # new segment is written and before it replaces the old one, a cancel between two segments, and a kill -9 of the whole cluster at random points of a refresh (three times, the options
 # switched each time), leave the index as it was or with the segments done: it verifies, its rows and answers are the heap's, and the refresh made
 # again completes and has nothing left to do. The options are switched back and forth so that each refresh has every segment to rewrite.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 25
 node_init primary 2 "autovacuum = off

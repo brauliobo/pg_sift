@@ -14,7 +14,7 @@ NOTICE:  sift_col index "events_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 VACUUM (FREEZE, ANALYZE) events;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 \set ECHO none
 SELECT * FROM check_query($q$
  SELECT p.label, count(*) AS n, count(DISTINCT e.id) AS ids, avg(r.value::float8) AS value

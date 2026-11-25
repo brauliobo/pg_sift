@@ -20,12 +20,12 @@ source "$REPO/scripts/source-snapshot.sh"
 PGA=(--inject)
 [[ ${1:-} != --major ]] || { PGA+=(--major "$2"); shift 2; }
 TESTS=("$@")
-(( ${#TESTS[@]} )) || TESTS=(store_basic store_corrupt index_build_postings phrase_positions verify_corrupt query_errors colcodec_basic col_enc
-	col_index_basic col_wbuf shred_values tbl_basic tbl_agg facets agg_numeric_const_cmp agg_subplan_lut
-	cache_discard verify_relcache col_key_columns_auto agg_visibility_refusal col_wbuf_scan_seal_suite slot_owner extlock_errors)
-TAPS=(${SIFT_ASSERT_TAP-t/001_crash.pl t/003_wal_minimal.pl})
+(( ${#TESTS[@]} )) || TESTS=(bm25/store/basic bm25/store/corrupt bm25/index/build_postings bm25/phrase_positions bm25/verify/corrupt bm25/query/errors col/codec/basic col/enc
+	col/index/basic col/wbuf/basic col/shred/values table/basic table/agg/basic bm25/facets agg/numeric/const_cmp agg/subplan_lut
+	core/cache_discard bm25/verify/relcache col/key/columns_auto agg/visibility_refusal col/wbuf/scan_seal_suite agg/slot_owner core/extlock_errors)
+TAPS=(${SIFT_ASSERT_TAP-t/001_crash.pl t/bm25/wal_minimal.pl})
 # the shell TAP tests (they skip themselves on a server without what they need): DROP TABLE beside a worker stopped by injection points
-SHTAPS=(${SIFT_ASSERT_SHTAP-maint_lock_order col_lock_order bm25_cold_stems lookup_shared_claim})
+SHTAPS=(${SIFT_ASSERT_SHTAP-maint/lock_order col/lock_order bm25/cold_stems agg/lookup_shared_claim})
 # the logs of the servers (TAP nodes included) must be clean of what the tests do not check
 BAD='TRAP: |detected write past chunk end|problem in alloc set|could not find block containing chunk|pfree called with invalid pointer|invalid memory alloc request|missing lock for relation'
 
@@ -56,7 +56,7 @@ scripts/pgtest.sh regress "${TESTS[@]}" || rc=1
 if (( ! rc && ${#TAPS[@]} )); then SIFT_QUICK=1 scripts/tap.sh "${TAPS[@]}" || rc=1; fi
 for t in "${SHTAPS[@]}"; do (( rc )) || SIFT_QUICK=1 scripts/pgtest.sh tap "$t" || rc=1; done
 # a maintenance worker that opens the index of the setup transaction as it commits (the lock order of sift_try_open_index)
-(( rc )) || scripts/isolation.sh merge_ranked || rc=1
+(( rc )) || scripts/isolation.sh bm25/merge_ranked || rc=1
 if grep -rEl "$BAD" "$SIFT_TMP" --include='*.log' 2>/dev/null | head -n 5 | grep .; then
 	grep -rEh "$BAD" "$SIFT_TMP" --include='*.log' | head -n 10
 	echo "assert: a server log has an assertion failure or a memory-context warning (files above)" >&2

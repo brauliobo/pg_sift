@@ -1,5 +1,5 @@
 -- Self-checking helpers for the isolation specs, loaded by scripts/isolation.sh
--- after test/sql/reference.sql. Steps print only booleans, so the expected
+-- after test/sql/bm25/reference.sql. Steps print only booleans, so the expected
 -- output does not depend on sift internals.
 
 -- Drains up to n rows of cursor cur (columns id [, score]) into the session's

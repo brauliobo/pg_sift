@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A read that takes its blocks from the file instead of the buffers pays for them as well: MAINT_BLOCK_READ (20,000 instructions, the weight of a block in the price of a unit of the rewrite) for each block past
 # the one of each unit it read. The same read, warm, pays the instructions of its arm alone and the same every time; after a restart (the buffers empty) its first run pays the blocks on top.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 3
 
 node_init pb 60 "autovacuum = off

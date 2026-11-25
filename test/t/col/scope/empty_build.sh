@@ -2,7 +2,7 @@
 # tap: pooled
 # A scope index built on an empty table has no segment, but it has its floor of stamps (the journal at the end of the build), so its reads are from the units from the start (none to read: the rows that
 # arrive are the write buffers', which no scope entry describes) and the first promotion of its rows writes the segments with no refill; the answers are the join's before and after.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 5
 
 node_init eb 55 "autovacuum = off

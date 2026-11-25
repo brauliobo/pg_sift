@@ -3,7 +3,7 @@
 
 from . import tablemode
 from .db import sets
-from .fam_units import KCUT_KEYS, WINDOW_COLS
+from .fam.units import KCUT_KEYS, WINDOW_COLS
 
 # ---------- DML (dirty rows and the write buffer) ----------
 def dml(r, ctx):

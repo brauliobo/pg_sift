@@ -193,7 +193,7 @@ FROM generate_series(1, 150000) i;
 CREATE INDEX customers_col ON customers USING sift_col (id, segment);
 CREATE INDEX sales_col ON sales USING sift_col (customer_id, ordered, shipped, amount);
 VACUUM (FREEZE, ANALYZE) customers, sales;
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- the index the Custom Scan (SiftAgg) of a plan reads
 CREATE FUNCTION scanned(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE line text; found text;

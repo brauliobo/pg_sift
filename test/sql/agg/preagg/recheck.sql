@@ -15,7 +15,7 @@ CREATE INDEX pr_clean_col ON pr_clean USING sift_col (id, items) WITH (paths = '
 CREATE INDEX pr_dirty_col ON pr_dirty USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4, score float8}', write_buffer_limit = 4096);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pr_clean, pr_dirty;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 -- whether a unit was answered from the rollup (NULL: the query fails)
 CREATE FUNCTION from_rollup(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;

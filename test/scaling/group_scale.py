@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The scale-growth gate of the groups of SiftAggV6 that spill (test/group-scale.tsv): what a GROUP BY holds in memory and writes to temp files at 1x, 2x and 4x rows, work_mem at 1 MB.
+"""The scale-growth gate of the groups of SiftAggV6 that spill (test/scaling/group_scale.tsv): what a GROUP BY holds in memory and writes to temp files at 1x, 2x and 4x rows, work_mem at 1 MB.
 
 Every measurement is a backend of its own on a table of N, 2N and 4N rows: the statement runs once in a session that disconnects (the warm run), then in the measured backend, which samples
 its own anonymous memory (sift._test_rss_peak_start) and counts the bytes of its memory scopes (sift._test_mem_highwater). A case passes when, across the three sizes,
@@ -9,8 +9,8 @@ its own anonymous memory (sift._test_rss_peak_start) and counts the bytes of its
   temp_bytes / input_bytes (the heap of the table)        <= 2.5 at every size
 and its rows are the rows of PostgreSQL's own aggregate (sift.enable_agg = off), by md5, with no file left in pg_ls_tmpdir() after the statement.
 
-  scripts: test/group_scale.py run [--rows N] [--only RE] [--runs R]    one RESULT line a case, then the table
-           test/group_scale.py list [--only RE]
+  scripts: test/scaling/group_scale.py run [--rows N] [--only RE] [--runs R]    one RESULT line a case, then the table
+           test/scaling/group_scale.py list [--only RE]
 
 TSV columns: NAME FORMAT OPERATION [DIGEST] [SET]: FORMAT 2 or 1 is the format of the sift_col index of the tables ({t}, and {j} for the one of jsonb documents); DIGEST is the SQL text of a row r of OPERATION
 that the parity is taken on (default r::text); SET is a statement the session of the case runs first.
@@ -25,7 +25,7 @@ spec.loader.exec_module(ms)
 
 ALPHA_MEM, BETA_EXACT, BETA_RSS, TEMP_RATIO = 1.15, 2.0, 8.0, 2.5
 RUNS = int(os.environ.get("GROUP_SCALE_RUNS", "3"))
-TSV = os.environ.get("GROUP_SCALE_TSV") or os.path.join(HERE, "group-scale.tsv")
+TSV = os.environ.get("GROUP_SCALE_TSV") or os.path.join(HERE, "group_scale.tsv")
 SETTINGS = ("set sift.async_maintenance='off'; set work_mem='1MB'; set hash_mem_multiplier=2; set max_parallel_workers_per_gather=0; "
             "set max_parallel_maintenance_workers=0;\n")
 EXTRA = ""

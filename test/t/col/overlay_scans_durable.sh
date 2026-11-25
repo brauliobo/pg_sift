@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The merge of the small overlays of a key-cut index is weighed against the scans the index has had, and those are a count in its metapage (core/reads.c), not the numscans of pg_stat: pg_stat_reset()
 # leaves the decision as it was, and so do a clean restart and a crash. An index nobody has read is not merged.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 7
 
 node_init ov 82 "autovacuum = off

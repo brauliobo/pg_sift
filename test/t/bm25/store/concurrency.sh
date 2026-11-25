@@ -4,7 +4,7 @@
 # (pgbench, 16 clients): no errors, no leaked block, every segment intact.
 # Then the horizon protocol on a primary: a reader holding an old directory
 # copy keeps a dropped segment's extents from being reused.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 SECS=$(knob SIFT_CHURN_SECS 30 5)
 plan 7

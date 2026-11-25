@@ -4,8 +4,8 @@
 # outside a transaction block, so a statement meets none of the caches, memory contexts and shared state an earlier statement of its backend left. The shim
 # starts a connection for every statement, so it refuses to run inside itself or without the psql it stands for: a shim that found itself as that psql started
 # itself without end (an out-of-memory host), and two fresh runs at once double the connections.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 SHIM=$REPO/scripts/fresh-psql.py
 
 plan 16

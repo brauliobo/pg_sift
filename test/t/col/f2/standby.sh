@@ -3,7 +3,7 @@
 # would hold it ("cannot make new WAL entries during recovery"). Every way to read a sift_table and a heap table with a sift_col index runs on the standby, with one row in the slab, with
 # more rows in its chain and with a part and a new slab, and the answers are those of the primary.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 10
 
 p=f2s_primary

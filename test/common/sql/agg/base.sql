@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the agg_* tests (\ir test/agg_helpers.sql): outcome(q, enabled) is the result of q, or its SQLSTATE and message, with the aggregate scan
+-- Shared by the agg_* tests (\ir test/common/sql/agg/base.sql): outcome(q, enabled) is the result of q, or its SQLSTATE and message, with the aggregate scan
 -- off (the table scans on) and on (the table scans off, so a Custom Scan (SiftAgg) runs when the query is one it can); runs_in_scan(q) tells whether it does.
 -- runq(q, agg) is the sorted rows of q as jsonb text, or its error, with the aggregate scan on or off; pushed(q) tells whether the plan has a Custom Scan (SiftAgg).
 CREATE OR REPLACE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$

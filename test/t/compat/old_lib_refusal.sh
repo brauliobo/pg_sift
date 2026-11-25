@@ -3,9 +3,9 @@
 # on-disk format 1.3) is refused with a format error, and returns no row, by a server that loads the older library (3.0.1, built from
 # the repository by scripts/old-lib-check.sh and kept in the build cache of old-lib-check.sh). Skipped when that library cannot be built here:
 # no v3.0.1 in the repository, or PostgreSQL 17 (no extension_control_path to hold two builds).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+REPO=${SIFT_REPO:?}
 # A cold released build must own its install, even inside a lane sharing the current root.
 # Reuse that build for the refusal and upgrade checks below.
 export SIFT_OLD_DIR="$TAPDIR/old-lib-cache"

@@ -1,5 +1,5 @@
 /*
- * test/scaling/case_plan.c - col/f2/compact_plan.c: what a compaction takes of the parts of a partition, from their descriptors. The parts spread over four levels and both tiers.
+ * test/scaling/cases/plan.c - col/f2/compact_plan.c: what a compaction takes of the parts of a partition, from their descriptors. The parts spread over four levels and both tiers.
  */
 #include "postgres.h"
 

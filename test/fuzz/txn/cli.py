@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Differential fuzz of transactions on a sift_col index or a sift_table (docs/AGG.md, "Transactions").
 
-  test/fuzz/txn_fuzz.py [--format f2|f1|release] [--table] [--seeds 1-20] [--actions 60] [--tracks auto,key,off,ctid] [--out DIR] [--stop-after N] [--budget SEC] [--no-shrink]
-  test/fuzz/txn_fuzz.py --shapes [--only cursor|prep|persist] [--parts 0|3] [--concurrently] [--variants scan,default,index,workers]   cursors, prepared statements, partitions, upserts with SPI (docs/AGG.md)
-  test/fuzz/txn_fuzz.py --repro DIR/txn_fuzz_N.json | --selftest
+  test/fuzz/txn/cli.py [--format f2|f1|release] [--table] [--seeds 1-20] [--actions 60] [--tracks auto,key,off,ctid] [--out DIR] [--stop-after N] [--budget SEC] [--no-shrink]
+  test/fuzz/txn/cli.py --shapes [--only cursor|prep|persist] [--parts 0|3] [--concurrently] [--variants scan,default,index,workers]   cursors, prepared statements, partitions, upserts with SPI (docs/AGG.md)
+  test/fuzz/txn/cli.py --repro DIR/txn_fuzz_N.json | --selftest
 
 Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT); max_prepared_transactions > 0 adds prepared transactions to the scripts.
 --table runs the same actions on a sift_table (no sift_col index; hash partitions of sift_tables with --shapes): savepoints, aborts, cursors, COPY, SPI, VACUUM and VACUUM FULL, and the plans
@@ -21,8 +21,8 @@ rows differ ends the run, and the script is cut down (delta debugging: actions, 
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from txn_fuzz import main  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from txn import main  # noqa: E402
 
 if __name__ == '__main__':
     sys.exit(main(__doc__))

@@ -2,7 +2,7 @@
 # A crash between the passes of the paced rewrite of overlapping runs (sift.test_col_pass_kb), and in the middle of a step of one: the PANIC comes after the
 # merge wrote its new segment and before it replaced the runs. Crash recovery leaves a valid index: the first pass is there, the runs the second was to replace are
 # as they were, the answers are the heap's, and the passes asked again go on from that directory and end with a key in one unit.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
 node_init cr 22 "autovacuum = off

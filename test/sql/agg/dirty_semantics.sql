@@ -6,7 +6,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 -- the rows or the error must be the same; expect_pushed says whether the query is meant to be scanned
 CREATE FUNCTION same(q text, expect_pushed bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$

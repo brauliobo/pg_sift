@@ -16,7 +16,7 @@ NOTICE:  sift_col index "rc_docs_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rc_docs_col');
 VACUUM (FREEZE, ANALYZE) rc_docs;
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 \set ECHO none
 -- the column alone: read again
 SELECT * FROM check_query($q$

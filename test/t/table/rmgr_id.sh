@@ -7,8 +7,8 @@
 #   standby: a 4.3 primary streams those records to a standby on this tree, which replays them.
 # The release is built from its tag by scripts/old-lib-check.sh (PostgreSQL 18).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots)'; exit 0; fi
 ref=$(git -C "$REPO" tag -l 'v4.3.*' --sort=-v:refname | head -n 1)
 [[ -n $ref ]] || { echo '1..0 # SKIP no release tag v4.3.*'; exit 0; }

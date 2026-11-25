@@ -4,7 +4,7 @@
 # of the index it ends with is complete for nobody: its witnesses name the triggers that went with the copy, the triggers that stay are the table's own. The reads check the heap (right, slower)
 # until the next VACUUM re-baselines the log (the maintenance worker and a read that has to check the heap do it as well, col_track_revouch.sh).
 # Skipped where pg_squeeze is not installed: SIFT_SQUEEZE_ROOT is the DESTDIR of a `make install` of pg_squeeze (never the system's directories), or it is in the server's own.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 11
 SQ=${SIFT_SQUEEZE_ROOT:-}

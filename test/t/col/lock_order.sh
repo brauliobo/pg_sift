@@ -5,7 +5,7 @@
 # when its deadlock_timeout ran out first). sift.col_tracking is held between their open and their use of the table by sift.test_col_open_gate (a testing
 # build): the function waits for advisory lock 4251, which the test holds, and the DROP TABLE is started and seen waiting before the function is let go, so no timing is involved.
 # Before the fix the function held only the index while it waited, the DROP got the table and waited for the index; now the function holds the table, and the DROP waits for it.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 node_init lo 46 "autovacuum = off
 deadlock_timeout = 200ms"

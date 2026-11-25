@@ -2,36 +2,36 @@
 # Tab separated: name, wall seconds, peak tmpfs MB, what and the measurement it rests on. A single run is at most 1800 s (aim 600-1200), an aggregate gate at most 2700 s, tmpfs at most 3072 MB.
 # name	wall_s	tmpfs_mb	what
 tap:default	1200	2000	any test/t file without its own row; the slowest measured 1-seed/-round passes are 400 s (tbl_twin_fuzz) and 900 s only under 4 parallel loops (col_auto_merge_dirty_reads: 152 s alone)
-tap:prod_viability_gate	180	600	the production viability gate: 27 cases of the four lifecycle classes at 32,768/65,536/131,072 rows in two lanes, the autovacuum_work_mem isolation, the temp_bytes of every case and 3 churns of disk amplification: 45-80 s, 300 MB of tmpfs
-tap:mem_slope	600	1800	the memory slope gate: 255 s whole (41 cases at 50,000/100,000/200,000 rows, the maintenance cases doing their work in the measured backend), 1.3 GB of tmpfs
-tap:mem_slope_exact	300	1500	the exact basis of the gate: the merge of the gate's table at its recorded exact slope, an allowance under it and under the clean ceiling, and an update that holds nothing, 30,000 rows, 40 s and 1.1 GB of tmpfs
-tap:mem_slope_order	300	1500	the gate does not depend on order: 7 cases forward, again and in reverse (four of them maintenance steps, two inserting rows first), 75 s and 1.1 GB of tmpfs (30 s of them the two merges, measured locally)
-tap:col_scope_oracle	1200	2500	4 nodes; one 20,000-row seed of 5 steps = 180-260 s (release), 350-490 s (cassert); the 10-seed chunks of 1400-2100 s are gone (scripts/stability.sh shards 1 seed a step)
-tap:col_auto_merge_dirty_reads	1200	2000	152 s alone, 760-907 s with three loops beside it
-tap:tbl_twin_fuzz	900	1500	3 seeds of 80 s = 330-400 s
-tap:col_twin_fuzz	900	1500	12 seeds = 185 s
-tap:col_scope_fuzz	900	1500	24 seeds = 296 s
-tap:col_scope_textkey_fuzz	900	1500	231 s
-tap:col_wbuf_arena_fuzz	600	1000	82 s
-tap:col_scope_kill_writes	600	1000	12 rounds = 92-98 s
-tap:col_crash_matrix	900	1500	170 s hosted
-tap:fault_matrix	1800	1500	quick tier 150 cases and full tier 349: run in two halves with SIFT_FAULT_ONLY (measured before the round-2 operations: quick 80 s + 144 s in two clusters, full 838 s + 883 s)
-tap:fault_matrix_standby	900	1500	15 families of 4 cases and 5 gates of 2 cases, a promotion at the end: 70 s for the gate families, about 250 s in all
-tap:fault_matrix_workers	900	1000	col and BM25 workers, terminate and immediate: 4 cases of 8 checks, 150 s measured
-tap:col_scope_crash	600	1000	60 s hosted
-tap:col_index_crash	900	1500	300-366 s hosted
-tap:col_wbuf_crash	600	1000	150 s hosted
-tap:store_crash	900	1500	365-391 s hosted
-tap:index_build_crash	900	1500	225-300 s hosted
-fuzz:diff_fuzz.py	900	2500	4 seeds x 300 queries x 6,000 rows: 357 s, peak 1.6-1.9 GB (base database 609 MB, the copy of each seed, WAL) (table mode 496 s); cassert 3 seeds x 100 x 3,000 = 553-615 s
-fuzz:txn_fuzz.py	600	1000	60 seeds = 162 s; --shapes 60 seeds = 122-179 s; cassert 12 seeds = 108-123 s
+tap:agg/viability_gate	180	600	the production viability gate: 27 cases of the four lifecycle classes at 32,768/65,536/131,072 rows in two lanes, the autovacuum_work_mem isolation, the temp_bytes of every case and 3 churns of disk amplification: 45-80 s, 300 MB of tmpfs
+tap:mem/slope	600	1800	the memory slope gate: 255 s whole (41 cases at 50,000/100,000/200,000 rows, the maintenance cases doing their work in the measured backend), 1.3 GB of tmpfs
+tap:mem/slope_exact	300	1500	the exact basis of the gate: the merge of the gate's table at its recorded exact slope, an allowance under it and under the clean ceiling, and an update that holds nothing, 30,000 rows, 40 s and 1.1 GB of tmpfs
+tap:mem/slope_order	300	1500	the gate does not depend on order: 7 cases forward, again and in reverse (four of them maintenance steps, two inserting rows first), 75 s and 1.1 GB of tmpfs (30 s of them the two merges, measured locally)
+tap:col/scope/oracle	1200	2500	4 nodes; one 20,000-row seed of 5 steps = 180-260 s (release), 350-490 s (cassert); the 10-seed chunks of 1400-2100 s are gone (scripts/stability.sh shards 1 seed a step)
+tap:col/auto_merge/dirty_reads	1200	2000	152 s alone, 760-907 s with three loops beside it
+tap:table/twin_fuzz	900	1500	3 seeds of 80 s = 330-400 s
+tap:col/twin_fuzz	900	1500	12 seeds = 185 s
+tap:col/scope/fuzz	900	1500	24 seeds = 296 s
+tap:col/scope/text_key_fuzz	900	1500	231 s
+tap:col/wbuf/arena_fuzz	600	1000	82 s
+tap:col/scope/kill_writes	600	1000	12 rounds = 92-98 s
+tap:col/crash_matrix	900	1500	170 s hosted
+tap:fault/matrix	1800	1500	quick tier 150 cases and full tier 349: run in two halves with SIFT_FAULT_ONLY (measured before the round-2 operations: quick 80 s + 144 s in two clusters, full 838 s + 883 s)
+tap:fault/matrix_standby	900	1500	15 families of 4 cases and 5 gates of 2 cases, a promotion at the end: 70 s for the gate families, about 250 s in all
+tap:fault/matrix_workers	900	1000	col and BM25 workers, terminate and immediate: 4 cases of 8 checks, 150 s measured
+tap:col/scope/crash	600	1000	60 s hosted
+tap:col/index_crash	900	1500	300-366 s hosted
+tap:col/wbuf/crash	600	1000	150 s hosted
+tap:bm25/store/crash	900	1500	365-391 s hosted
+tap:bm25/index/build_crash	900	1500	225-300 s hosted
+fuzz:diff/cli.py	900	2500	4 seeds x 300 queries x 6,000 rows: 357 s, peak 1.6-1.9 GB (base database 609 MB, the copy of each seed, WAL) (table mode 496 s); cassert 3 seeds x 100 x 3,000 = 553-615 s
+fuzz:txn/cli.py	600	1000	60 seeds = 162 s; --shapes 60 seeds = 122-179 s; cassert 12 seeds = 108-123 s
 fuzz:shapes_matrix.py	600	300	quick tier 4,192 statements 11,505 runs = 36 s; full tier 6,731 statements 20,491 runs = 78 s (one cluster, tiny tables)
 fuzz:surface_sweep.py	600	300	quick tier 165 functions 9,423 calls = 12 s; the option sweep is added to it
-fuzz:bm25_fuzz.py	300	500	40 seeds = 30 s
-fuzz:col_scope_fuzz.py	900	1500	run through tap:col_scope_fuzz
-fuzz:col_scope_textkey_fuzz.py	900	1500	run through tap:col_scope_textkey_fuzz
-fuzz:col_twin_fuzz.py	900	1500	run through tap:col_twin_fuzz
-fuzz:tbl_twin_fuzz.py	900	1500	run through tap:tbl_twin_fuzz
+fuzz:bm25.py	300	500	40 seeds = 30 s
+fuzz:col_scope.py	900	1500	run through tap:col_scope_fuzz
+fuzz:col_scope_textkey.py	900	1500	run through tap:col_scope_textkey_fuzz
+fuzz:col_twin.py	900	1500	run through tap:col_twin_fuzz
+fuzz:tbl_twin.py	900	1500	run through tap:tbl_twin_fuzz
 fuzz:scope_oracle.py	1200	2500	run through tap:col_scope_oracle
 gate:stability	2700	3072	scripts/stability.sh, 4 lanes; the steps of scripts/stability.tsv sum to about 4,400 s of one lane
 gate:release	2700	3072	preflight of the release: 33 steps on one box = 44 min 40 s (4 jobs at a time)
@@ -85,10 +85,10 @@ script:simd_level.sh	-	-	a helper of the entry points above, no run of its own
 script:test-ci-ready.sh	-	-	a helper of the entry points above, no run of its own
 script:test-perf-select.py	-	-	a helper of the entry points above, no run of its own
 regress:shard	1800	2000	one of 4 shards of the 1,265 regression tests (every fourth name) on a cluster of its own; serial: 2,459 s release / 5,556 s cassert, so a shard is ~620 s / ~1,400 s
-tap:mem_slope_legacy	1500	3000	the legacy memory slope gate (leakx, cap, evict, pinned): 180 s and 2.0 GB of tmpfs measured, one cluster at shared_buffers 64 MB
-tap:mem_idle_series	900	1500	12000 statements of 25 kinds in one backend at 100,000-row tables, 100 rows inserted a round: 224 s on one host, 210 to 290 s on the hosted fast tier (786 s at 200 rows under 4 parallel lanes), one cluster at shared_buffers 64 MB
-tap:col_build_exact_memory	120	300	the exact bytes of the col_build scope at three steps of 40,000 to 120,000 rows on the 8-page flavour, key_cut at 1, 8 and 16 MB, at 1 MB under a serial floor of 2 MB and plain at 36 and 40 MB, and the same rows under the shipped floor: 32 s with the 8-page flavour built beforehand (scripts/ci/run.sh), 7.5e10 user instructions, one cluster
-tap:col_merge_exact_memory	120	300	the exact bytes of the col_merge scope at five steps of 8,000 to 40,000 rows, plain and key_cut: 4 s, one cluster
-tap:upgrade_compat	1200	600	one zoo cluster of the release, two shutdowns, two copies opened by this tree and one by the release, one fresh cluster for the restore: 9 min on a loaded host, 3000 rows with SIFT_QUICK
-tap:upgrade_compat_standby	900	500	two directions of a primary and a standby on different libraries, 3 stages each: 5 min
-tap:prod_par_sorts	600	1500	the bounded-memory gate of the sorts, the parallel aggregate and the scans that spill (scripts/par-sorts-gate.py, test/par-sorts.tsv): 9 cases at 1x, 2x and 4x rows in fresh backends, one cluster at shared_buffers 64 MB
+tap:mem/slope_legacy	1500	3000	the legacy memory slope gate (leakx, cap, evict, pinned): 180 s and 2.0 GB of tmpfs measured, one cluster at shared_buffers 64 MB
+tap:mem/idle_series	900	1500	12000 statements of 25 kinds in one backend at 100,000-row tables, 100 rows inserted a round: 224 s on one host, 210 to 290 s on the hosted fast tier (786 s at 200 rows under 4 parallel lanes), one cluster at shared_buffers 64 MB
+tap:col/build/exact_memory	120	300	the exact bytes of the col_build scope at three steps of 40,000 to 120,000 rows on the 8-page flavour, key_cut at 1, 8 and 16 MB, at 1 MB under a serial floor of 2 MB and plain at 36 and 40 MB, and the same rows under the shipped floor: 32 s with the 8-page flavour built beforehand (scripts/ci/run.sh), 7.5e10 user instructions, one cluster
+tap:col/merge/exact_memory	120	300	the exact bytes of the col_merge scope at five steps of 8,000 to 40,000 rows, plain and key_cut: 4 s, one cluster
+tap:compat/upgrade/basic	1200	600	one zoo cluster of the release, two shutdowns, two copies opened by this tree and one by the release, one fresh cluster for the restore: 9 min on a loaded host, 3000 rows with SIFT_QUICK
+tap:compat/upgrade/standby	900	500	two directions of a primary and a standby on different libraries, 3 stages each: 5 min
+tap:agg/par_sorts	600	1500	the bounded-memory gate of the sorts, the parallel aggregate and the scans that spill (scripts/par-sorts-gate.py, test/scaling/par_sorts.tsv): 9 cases at 1x, 2x and 4x rows in fresh backends, one cluster at shared_buffers 64 MB

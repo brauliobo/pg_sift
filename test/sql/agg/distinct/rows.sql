@@ -22,7 +22,7 @@ CREATE UNIQUE INDEX facts_alt ON facts (alt_id);
 CREATE UNIQUE INDEX facts_pair ON facts (dim_a_id, id);
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, alt_id, day, metrics_a, parts) WITH (paths = 'metrics_a.* float8, parts[]{cat text, score float8}');
 VACUUM (FREEZE, ANALYZE) facts;
-\ir test/agg_check_query.sql
+\ir test/common/sql/agg/check_query.sql
 
 -- the aggregates the scan computes (a rows count shows as `count`, a set as `count(DISTINCT col)`), and the counters of what the group table did
 -- (PostgreSQL 17 qualifies the column of a grouping set's distinct count with its table, 18 does not: the qualifier is dropped)

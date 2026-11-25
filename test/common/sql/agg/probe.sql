@@ -1,5 +1,5 @@
 \set ECHO none
--- Shared by the agg_probe_direct tests (\ir test/agg_probe_helpers.sql): the facts the lookups are joined to, probe_check(q) (the rows of a query with the plan of the database, with the
+-- Shared by the agg_probe_direct tests (\ir test/common/sql/agg/probe.sql): the facts the lookups are joined to, probe_check(q) (the rows of a query with the plan of the database, with the
 -- child's plan run for every key and with the direct probe of the child's btree, and whether the probe ran), case_query() and step().
 CREATE TABLE entries (id serial, dim_b_id int, day date, doc jsonb);
 -- items carry a text tag, a second text, a number n (missing in every seventh item, so its key is NULL) and a score

@@ -18,7 +18,7 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX v_t_col ON v_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8}');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) v_t;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal_nonempty(q) $$;
 

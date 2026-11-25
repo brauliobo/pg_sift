@@ -3,7 +3,7 @@
 # arrive, change and go after the index was built. The subscriber cannot hear the apply worker's deletes (no statement trigger), so its scope read is declined and the aggregates of the facts run on the join of the pairs
 # journal: every read of the scope index on the subscriber, through the units and the join (counts, ordered string_aggs of the columns of both joined tables cast to text), is the publisher's plain answer, and the index verifies there
 # (sift.col_scope_verify on Format 1, sift.check on Format 2.0).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
 node_init scl_p 35 "wal_level = logical

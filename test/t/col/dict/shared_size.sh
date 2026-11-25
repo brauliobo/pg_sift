@@ -3,7 +3,7 @@
 # (one segment of that many bytes, made by the first backend that keeps a dictionary), a ring too small for the dictionary is never made, and a backend that sets another
 # size after the ring is made uses the ring as it is. The rows are those of the stock plan in every case. Observed through the segments of /dev/shm (dynamic_shared_memory_type = posix).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 [[ -d /dev/shm && -r /proc/self/maps ]] || { echo "1..0 # SKIP needs /dev/shm and /proc (Linux)"; exit 0; }
 plan 10

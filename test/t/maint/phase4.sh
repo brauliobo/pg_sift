@@ -5,7 +5,7 @@
 # waits at sift.test_release_gate (a testing build) once the xid is taken; the reader starts there and waits for its map (sift.test_vis_pause); the VACUUM
 # releases, new rows take every free extent, and the reader, let go, must find its segments as it left them. No timing is involved. The stress of the
 # same invariant, with inserters, deleters and VACUUM side by side, is maint_readers.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 STABLE=3000
 plan 4

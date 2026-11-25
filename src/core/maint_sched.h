@@ -383,7 +383,7 @@ extern int	sift_maint_snapshot(SiftMaintShmem *m, const SiftMaintHost *host, Sif
 extern const SiftMaintHost sift_maint_server_host;
 /*
  * How a step of a worker opens its relation: the table locked first, as a statement does (DROP TABLE locks the table and then its indexes), then the relation itself;
- * NULL when it is gone (the step answers SIFT_MSTEP_GONE). The points sift-maint-f2-before-table-lock and sift-maint-f2-after-table-lock stop a worker here in test/t/maint_lock_order.sh
+ * NULL when it is gone (the step answers SIFT_MSTEP_GONE). The points sift-maint-f2-before-table-lock and sift-maint-f2-after-table-lock stop a worker here in test/t/maint/lock_order.sh
  */
 extern Relation sift_maint_open(Oid relid, LOCKMODE lock);
 /* The table of this backend: the dynamic shared memory registry makes it for the first one; NULL where the registry has no room */

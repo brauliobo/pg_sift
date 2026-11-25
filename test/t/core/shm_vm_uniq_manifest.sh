@@ -3,7 +3,7 @@
 # The registry of the manifests in shared memory when the snapshot of a slot cannot be dropped (the memory of the system is short, or a session cannot attach the area of the snapshots): an index
 # put out of service is out of service, as damaged as the statement that met the damage said it is, and the snapshot a publication made for its commit is not left behind by a publication that
 # fails (sift.test_dsm_fail names manifest_area and manifest_drop_snap).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 out=
 plan 3

@@ -3,7 +3,7 @@
 # Between a library and the SQL of its database: sift.upgrade_commands() (the RESET and the REINDEX of an index that holds an option 6.0 retired; an index that
 # another session holds locked is listed as well, the call reads the catalogs and waits for nothing; a text index is never listed, with its mark or without it) and
 # the new library over the SQL of 4.3 (the shared value store stays off, with no catalog error, until ALTER EXTENSION UPDATE).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 q() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock up)" -p "$(port up)" -U postgres -d "$db" "${@/#/--command=}"; }
 

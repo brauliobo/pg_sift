@@ -3,8 +3,8 @@
 # A superblock of fewer than 64 pages (the 8-page flavour of scripts/scaling-gate.sh, which the sanitizer jobs build with ASan): the all-visible mask of a unit comes from
 # a map of 2 bytes, and the kernels that read 16 bytes for each mask word must not run past what the superblock has (sift_vis_sb_mask) nor see stray bits as pages. The
 # aggregates, with their pre-aggregates and without, answer as the native plan does, on a vacuumed table and with pages that are not all-visible.
-. "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+REPO=${SIFT_REPO:?}
 
 root=$("$REPO/scripts/scaling-gate.sh" build 2>/dev/null)
 rc=$?

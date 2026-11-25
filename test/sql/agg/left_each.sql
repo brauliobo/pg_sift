@@ -11,7 +11,7 @@ FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);

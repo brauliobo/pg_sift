@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The production viability gate: what an operation holds, writes to pgsql_tmp and costs against the rows of its table, at 1x, 2x and 4x (test/t/prod_viability_gate.sh).
+"""The production viability gate: what an operation holds, writes to pgsql_tmp and costs against the rows of its table, at 1x, 2x and 4x (test/t/agg/viability_gate.sh).
 
 27 cases across the four lifecycle classes (A creations, B writes, C maintenance, D reads, E error and cancel cleanup), each measured in fresh backends on tables of N, 2N and 4N rows
 (N = 32,768: whole granules of 8,192 rows, so no size is cut by a granule boundary). The tables are built with maintenance_work_mem 64 MB and the operation runs at 1 to 4 MB: a part

@@ -5,7 +5,7 @@
 # rewrite it asks for came after a quarter of the reads that pay it back. Checked as the ratio of the two, which does not depend on the speed of the host: measured, a count costs 0.53 of the group by (11.3 and 21.2
 # million instructions over the filled read); counted, it must be between 0.4 and 0.75 (0.91 before). The same for a read that took the join (the tenant of a tenth of the facts at 5%: 3.1 and 5.5 million over the filled
 # read, 0.56; the join was priced the same for both, 1.0 before).
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 6
 
 node_init pp 60 "autovacuum = off

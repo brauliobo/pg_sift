@@ -3,7 +3,7 @@
 # One workload of DELETE, UPDATE (of a column a b-tree reads: a HOT chain, and of its key), INSERT, VACUUM and reads, run on a heap table, on a sift_table with the
 # tombstone log in memory (sift.backend_cache_kb 8 GB) and on one whose log lives in runs on temp files (64 kB, 1,024 entries): after every step the three give the same
 # rows by a scan, by the b-tree and by an aggregate, and the store of the sift_tables verifies.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_TD_ROWS 20000 6000)
 ROUNDS=$(knob SIFT_TD_ROUNDS 6 4)
@@ -22,7 +22,7 @@ SET_lm="SET sift.backend_cache_kb = 8388608"
 SET_ls="SET sift.backend_cache_kb = 64"
 digest() { local s=SET_$1; sql primary "${!s}" "SELECT count(*) || ':' || md5(string_agg(id || ':' || grp || ':' || amount || ':' || pad, ',' ORDER BY id)) FROM $1" | tail -1; }
 by_index() { local s=SET_$1; sql primary "${!s}" "SET enable_seqscan = off" "SET enable_bitmapscan = off" "SELECT count(*) || ':' || sum(amount) || ':' || max(id) FROM $1 WHERE grp BETWEEN 10 AND 60" | tail -1; }
-agg() { local s=SET_$1; sql primary "${!s}" "SELECT grp, count(*), sum(amount) FROM $1 GROUP BY grp ORDER BY grp" | "$(dirname "$0")/../../scripts/sha256.sh" | cut -c1-32; }
+agg() { local s=SET_$1; sql primary "${!s}" "SELECT grp, count(*), sum(amount) FROM $1 GROUP BY grp ORDER BY grp" | "${SIFT_REPO:?}/scripts/sha256.sh" | cut -c1-32; }
 same() { # LABEL
 	local d=$(digest ht) i=$(by_index ht) a=$(agg ht) bad=
 	for t in lm ls; do

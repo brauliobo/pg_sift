@@ -1,4 +1,4 @@
--- trap: see t_lookup_missing_rows, as an inner join
+-- trap: see trap/lookup_missing_rows, as an inner join
 -- shape: trap
 -- expect: agg
 -- key: -

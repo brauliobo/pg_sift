@@ -116,7 +116,7 @@ INSERT INTO few SELECT i, i % 100, i % 10 FROM generate_series(1, 20000) i;
 CREATE INDEX few_col ON few USING sift_col (id, k, v);
 VACUUM (FREEZE, ANALYZE) few;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
 SELECT sub, pushed(q) AS scan, runq(q, false) = runq(q, true) AS same_rows
 FROM (SELECT sub, format('SELECT count(*), sum(v) FROM facts WHERE k IN (SELECT %s FROM keys)', sub) AS q

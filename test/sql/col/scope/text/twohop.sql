@@ -9,6 +9,6 @@ SET default_statistics_target = 1000;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/col_scope_texttwohop_states.sql
+\ir test/common/sql/col/scope/texttwohop_states.sql
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

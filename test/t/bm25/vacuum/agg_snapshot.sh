@@ -5,7 +5,7 @@
 # marks their pages all-visible in between must not leave them in the groups. The same for a column source that reads its own liveness
 # first (the sift_col index of the table, col/v1/scan/scan.c). The scan waits for an advisory lock before the read of the map
 # (sift.test_vis_pause, a testing build), which the test holds until the VACUUM is done: no timing involved.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
 node_init va 18 "autovacuum = off

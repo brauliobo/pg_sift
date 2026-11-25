@@ -14,7 +14,7 @@ FROM generate_series(1, 4000) i;
 CREATE INDEX rc_docs_col ON rc_docs USING sift_col (id, set_id, doc) WITH (paths = 'doc.items[]{category text, score float8}');
 VACUUM (FREEZE, ANALYZE) rc_docs;
 
-\ir test/agg_check_pushed.sql
+\ir test/common/sql/agg/check_pushed.sql
 
 -- the column alone: read again
 SELECT * FROM check_query($q$

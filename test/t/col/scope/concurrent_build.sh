@@ -3,11 +3,11 @@
 # options it decides (key_columns, key_cut, point_tid_columns, ...) with a catalog update of its index, which must not ask for a stronger lock on the table than the other session's ShareLock allows:
 # the two builds were a deadlock (the restore of two indexes of one table in parallel ran into it). The indexes do not track changes: the triggers that tracking installs ask the table for ShareRowExclusiveLock,
 # which two builds that hold ShareLock cannot both get (PostgreSQL takes that lock for CREATE TRIGGER). Both indexes are made, verify, and read as the join does.
-# The same under writers on the three relations of a scope of two paths (lib_twohop.bash): REINDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY of the scope index and REINDEX CONCURRENTLY of each of its three
+# The same under writers on the three relations of a scope of two paths (lib/twohop.bash): REINDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY of the scope index and REINDEX CONCURRENTLY of each of its three
 # journal indexes run in a loop while grants, memberships and facts change in transactions. No statement of the writers fails, no deadlock is detected, no invalid index is left, the scope index still depends on
 # the three btrees and the three journals, and its reads are the join over the union (after the writers: stored, with the three stamps vouching, once the scope index is rebuilt).
-. "$(dirname "$0")/lib.bash"
-. "$(dirname "$0")/lib_twohop.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
+. "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 plan 14
 node_init scb 52 "autovacuum = off"

@@ -1,4 +1,4 @@
--- The fixed part of the data of the variant matrices (test/matrix/matrix.py builds the fact tables, one column per key type the server takes):
+-- The fixed part of the data of the variant matrices (test/matrix/run.py builds the fact tables, one column per key type the server takes):
 -- the helpers, the dimension tables of the joins and a second indexed table. psql -f data.sql with :rows replaced by the size of the fact tables.
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 SET sift.async_maintenance = off;

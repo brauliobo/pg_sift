@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Differential fuzz of a sift_table against a plain heap twin (test/t/tbl_twin_fuzz.sh runs it).
+"""Differential fuzz of a sift_table against a plain heap twin (test/t/table/twin_fuzz.sh runs it).
 
-  test/fuzz/tbl_twin_fuzz.py [--format f2|f1|release] [--seeds 1-24] [--seconds 80] [--hold P] [--ddl | --no-ddl]    needs PGHOST / PGPORT of a cluster with pg_sift (and pg_sift_test
+  test/fuzz/tbl_twin.py [--format f2|f1|release] [--seeds 1-24] [--seconds 80] [--hold P] [--ddl | --no-ddl]    needs PGHOST / PGPORT of a cluster with pg_sift (and pg_sift_test
   for f2 and f1), and SIFT_FUZZ_OUT, a directory for the logs
 
 A seed drives two writers (own key ranges) that apply the same INSERT / UPDATE / DELETE / upsert / aborted-transaction statements to the table T (sift_table) and

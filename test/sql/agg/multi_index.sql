@@ -5,9 +5,9 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/agg_helpers.sql
+\ir test/common/sql/agg/base.sql
 
-\ir test/agg_same_helpers.sql
+\ir test/common/sql/agg/same.sql
 
 -- the index the pushdown scans, or native when the plan has no SiftAgg
 CREATE FUNCTION used_index(q text) RETURNS text LANGUAGE plpgsql AS $$

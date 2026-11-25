@@ -1,4 +1,4 @@
--- nine lookup joins: one more than j_joins_8, the same result as the normal plan
+-- nine lookup joins: one more than join/v8, the same result as the normal plan
 -- shape: join
 -- expect: agg
 -- sets: K400

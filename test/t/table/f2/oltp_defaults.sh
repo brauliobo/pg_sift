@@ -2,7 +2,7 @@
 # The OLTP defaults of a Format 2.0 sift_table: an UPDATE of half the columns or a 3 KB value is a column delta (the ctid stays, no index entry), a statement that locks 10,000 or 32,000 rows
 # does not hold the partition against a writer of another row, and a short session takes one virtual block, a bulk insert the virtual blocks of its rows and not 8,192.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 done_testing
 node_init od 1 "autovacuum = off

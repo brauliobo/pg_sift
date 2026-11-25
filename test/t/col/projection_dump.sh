@@ -5,7 +5,7 @@
 # the data of the definitions (a restore of the schema alone is what pg_upgrade runs), so the names are resolved by sift.projection_status and never by CREATE INDEX. The status,
 # the plan that reads the index that serves a projection and the guard of the definitions are the source's after every restore. DROP EXTENSION and ALTER EXTENSION UPDATE
 # (from 4.3, which has no projections) leave nothing behind and nothing broken. pg_upgrade of such a database is in pg_upgrade.sh.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 20
 node_init r 55 "autovacuum = off"

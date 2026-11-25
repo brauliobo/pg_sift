@@ -40,7 +40,7 @@ scripts/ci.sh affected --focus  # regression tests covering the changed C functi
 ## Catalog Writes and Locking
 
 - Never write catalog rows or assign XIDs inside `VACUUM` (`PROC_IN_VACUUM`) or parallel workers. Route all catalog mutations through `src/core/restrict.c` (`scripts/check-catalog-writes.sh`); let background maintenance workers perform deferred catalog writes.
-- Register every heavyweight lock and LWLock acquisition in `scripts/locks.tsv` (`scripts/check-locks.sh`). Maintenance operations must never conflict with `RowExclusiveLock` on user tables (`test/t/lock_modes.sh`).
+- Register every heavyweight lock and LWLock acquisition in `scripts/locks.tsv` (`scripts/check-locks.sh`). Maintenance operations must never conflict with `RowExclusiveLock` on user tables (`test/t/core/lock_modes.sh`).
 - Acquire relation extension locks exclusively through `sift_extension_lock` and `sift_extend_zeroed_to` in `src/core/extlock.c` (`scripts/check-extlock.sh`), which freeze error context names before locking.
 - PRs touching parallel workers or snapshot paths must pass on a `--enable-cassert` build (`make pg-assert`).
 

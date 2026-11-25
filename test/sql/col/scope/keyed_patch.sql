@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-\ir test/scope_helpers.sql
+\ir test/common/sql/col/scope/base.sql
 
 -- two paths: a tenant is granted a dim_a_id, or a group; a dim_a_id is in groups
 CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);

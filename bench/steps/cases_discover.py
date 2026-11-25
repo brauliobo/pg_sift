@@ -6,7 +6,7 @@
 Sources (any number):
   --shapes FILE    statements in the layout of test/plan/shapes.sql (`-- name: x`, optional `-- weight: n`, the statement ending in `;`), measured here on --db
                    (created from --setup, default test/plan/gen.sql, when it is missing). The default source is test/plan/shapes.sql, the neutral corpus of the plan gate.
-  --fuzz SEEDS    the query families of the differential fuzzer (test/fuzz/diff_fuzz.py): `1-3` seeds of --queries queries each on the fuzzer's own tables; the weight is the family's.
+  --fuzz SEEDS    the query families of the differential fuzzer (test/fuzz/diff/cli.py): `1-3` seeds of --queries queries each on the fuzzer's own tables; the weight is the family's.
   --results FILE  statements measured elsewhere, no server needed: TSV `id native_ms sift_ms [weight [shape]]` (or JSONL of an API-corpus run, `--lane NAME` the sift lane in `e`), so a
                   private corpus can be ranked without its SQL leaving the machine. The shape is the text before `--` in the id when there is none.
 Each statement runs with sift.enable_agg off (native) and on (sift), serial, the answers compared (a difference is listed first: it is a bug, not a candidate). A shape is the set of
@@ -85,7 +85,7 @@ def parse_results(path, lane):
 
 def fuzz_statements(seeds, queries, rows):
     sys.path.insert(0, os.path.join(REPO, 'test', 'fuzz'))
-    import diff_fuzz as df
+    import diff as df
     out = []
     for seed in seeds:
         db = 'discover_fz%d' % seed

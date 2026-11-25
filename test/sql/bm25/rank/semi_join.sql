@@ -6,7 +6,7 @@
 -- are those of the scan without a join under every plan.
 CREATE EXTENSION pg_sift;
 
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 
 -- rows the planner expects of a query against the rows it returns
 CREATE FUNCTION est_ratio(q text) RETURNS numeric LANGUAGE plpgsql AS $$

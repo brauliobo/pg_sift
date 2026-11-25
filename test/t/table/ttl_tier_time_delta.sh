@@ -3,7 +3,7 @@
 # bounds of the row it held, and the partition's chain says that they do not hold (the dirty time flag of its anchor). The old rows of a table that took such an UPDATE move to the present with the
 # chain, so no maintenance may drop the part they are in as expired or move it to the object store as cold: 100 rows of an old part updated to now, a snapshot that holds the chain unfolded while
 # VACUUM runs the TTL and the tiering, and then the VACUUM that folds the chain.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init tt 0 "autovacuum = off

@@ -2,7 +2,7 @@
 # The rebuild slot of a write buffer's arena (one reader builds the entries from the heap, the others wait): the reader that owns it releases it when its statement ends in an error,
 # wherever the error falls after it took the slot, and the readers that wait for it neither poll nor wait for the backend to exit. The owner stops at a test gate right after it took the
 # slot (an advisory lock a test holds, so no timing is involved) and is cancelled there; a second reader waits for the slot meanwhile.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
 node_init rr 33 "autovacuum = off

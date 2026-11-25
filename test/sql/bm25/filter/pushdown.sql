@@ -6,7 +6,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 
-\ir test/sift_plan.sql
+\ir test/common/sql/bm25/plan.sql
 CREATE FUNCTION sift_scan_node(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
 	j jsonb;

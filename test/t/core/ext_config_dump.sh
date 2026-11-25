@@ -3,7 +3,7 @@
 # or a restore that does not have the table must neither fail nor carry a dangling row: a restore without the table reads the key of sift.projection_defs as 0, so that two tables that are
 # missing with a projection of one name must not meet in its unique key; a row that names a table that is gone (a stale OID prints as a number) is not written to the dump, and the
 # preflight of an update names the tables that hold such rows.
-. "$(dirname "$0")/lib.bash"
+. "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 node_init ed 0 "autovacuum = off
