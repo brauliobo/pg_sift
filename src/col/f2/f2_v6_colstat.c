@@ -7,7 +7,9 @@
 #include "port/pg_bitutils.h"
 
 #include "agg/v6/group_int.h"
+#include "col/am.h"
 #include "col/f2/f2_v6_colstat.h"
+#include "col/f2/part_vis.h"
 #include "core/cachebudget.h"
 
 /* ---- the visibility map ---- */
@@ -29,6 +31,21 @@ vis_build(V6VisMap *m, Relation heap)
 	sift_vm_dirty_build(&m->dirty, heap, false);
 	MemoryContextSwitchTo(old);
 	m->built = true;
+}
+
+void
+sift_v6_vis_ask_index(SiftV6Vet *v, Relation index)
+{
+	const SiftColFormatOps *ops = sift_col_ops(index);
+
+	if (ops->deletes_heard != NULL && ops->deletes_heard(index, v->heap, v->snap))
+		v->heard_xmin = sift_vis_snap_xmin(v->snap);
+}
+
+bool
+sift_v6_vis_part_settled(const SiftV6Vet *v, const SiftPartDesc *d)
+{
+	return d != NULL && sift_vis_part_inserts_settled(d, v->heard_xmin);
 }
 
 bool

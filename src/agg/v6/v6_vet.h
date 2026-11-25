@@ -27,10 +27,6 @@ typedef struct SiftV6Vet
 } SiftV6Vet;
 
 extern void sift_v6_vet_begin(SiftV6Vet *v, Relation heap, Snapshot snap, SiftV6ScanStats *stats);
-/* Asks the index whether it was told of every delete the snapshot sees (SiftColFormatOps.deletes_heard) */
-extern void sift_v6_vet_ask_index(SiftV6Vet *v, Relation index);
-/* The rows of the part (NULL: a slab, which has none to say) are as the heap shows them to the snapshot, but for the deletes the index holds: its inserters ended before the snapshot and every delete was told to the index */
-extern bool sift_v6_vet_part_settled(const SiftV6Vet *v, const SiftPartDesc *d);
 extern void sift_v6_vet_end(SiftV6Vet *v);
 /* bs->mask holds the n rows to keep if the heap shows them, at tid[off + r] (none is looked at when visible: the page of every row is all-visible): the others are cleared; sets the counts of bs. Returns the rows left */
 extern uint16 sift_v6_vet_mask(SiftV6Vet *v, const uint64 *tid, int off, bool visible, int n, SiftBatchSel *bs);

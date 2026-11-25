@@ -10,7 +10,6 @@
 
 #include "agg/v6/v6_vet.h"
 #include "col/am.h"
-#include "col/f2/part_vis.h"
 
 void
 sift_v6_vet_begin(SiftV6Vet *v, Relation heap, Snapshot snap, SiftV6ScanStats *stats)
@@ -18,21 +17,6 @@ sift_v6_vet_begin(SiftV6Vet *v, Relation heap, Snapshot snap, SiftV6ScanStats *s
 	*v = (SiftV6Vet) {.heap = heap,.snap = snap,.stats = stats,.vm_blk = InvalidBlockNumber};
 	v->fetch = sift_table_index_fetch_begin(heap);
 	v->slot = table_slot_create(heap, NULL);
-}
-
-void
-sift_v6_vet_ask_index(SiftV6Vet *v, Relation index)
-{
-	const SiftColFormatOps *ops = sift_col_ops(index);
-
-	if (ops->deletes_heard != NULL && ops->deletes_heard(index, v->heap, v->snap))
-		v->heard_xmin = sift_vis_snap_xmin(v->snap);
-}
-
-bool
-sift_v6_vet_part_settled(const SiftV6Vet *v, const SiftPartDesc *d)
-{
-	return d != NULL && sift_vis_part_inserts_settled(d, v->heard_xmin);
 }
 
 void

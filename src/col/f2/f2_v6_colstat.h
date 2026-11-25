@@ -14,6 +14,7 @@
 #include "utils/rel.h"
 
 #include "agg/v6/v6.h"
+#include "agg/v6/v6_vet.h"
 #include "col/f2/f2_sink.h"
 #include "col/f2/f2_vac_vm.h"
 
@@ -31,6 +32,10 @@ extern bool sift_v6_vis_part_all_visible(V6VisMap *m, Relation heap, const SiftP
 /* The blocks of the addresses of the part that are not all-visible, at most max of them: how many, or -1 when the part has no address range or has more */
 extern int	sift_v6_vis_dirty_blocks(V6VisMap *m, Relation heap, const SiftPartDesc *d, BlockNumber *out, int max);
 extern void sift_v6_vis_free(V6VisMap *m);
+/* Asks the index whether it was told of every delete the snapshot of the vet sees (SiftColFormatOps.deletes_heard) */
+extern void sift_v6_vis_ask_index(SiftV6Vet *v, Relation index);
+/* The rows of the part (NULL: a slab, which has none to say) are as the heap shows them to the snapshot, but for the deletes the index holds: its inserters ended before the snapshot and every delete was told to the index */
+extern bool sift_v6_vis_part_settled(const SiftV6Vet *v, const SiftPartDesc *d);
 
 /* Whether every aggregate is a MIN or MAX of an integer column and nothing else is asked: the zones of a part answer it */
 extern bool sift_v6_spec_minmax_only(const SiftV6Spec *spec);
