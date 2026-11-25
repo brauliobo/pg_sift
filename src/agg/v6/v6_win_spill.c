@@ -6,6 +6,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/tupdesc.h"
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
@@ -171,7 +173,7 @@ key_same(KeyKind kind, Datum a, Datum b)
 		case KEY_INT8:
 			return DatumGetInt64(a) == DatumGetInt64(b);
 		case KEY_FLOAT8:
-			return DatumGetFloat8(a) == DatumGetFloat8(b);
+			return DatumGetFloat8(a) == DatumGetFloat8(b) || (isnan(DatumGetFloat8(a)) && isnan(DatumGetFloat8(b)));
 		default:
 			return VARSIZE_ANY_EXHDR(DatumGetPointer(a)) == VARSIZE_ANY_EXHDR(DatumGetPointer(b))
 				&& memcmp(VARDATA_ANY(DatumGetPointer(a)), VARDATA_ANY(DatumGetPointer(b)), VARSIZE_ANY_EXHDR(DatumGetPointer(a))) == 0;

@@ -9,6 +9,7 @@
 
 #include "agg/v6/par/winpart.h"
 #include "agg/v6/par/winrun.h"
+#include "agg/v6/par/winspill.h"
 #include "agg/v6/v6_batch.h"
 #include "core/memtrack.h"
 #include "core/par/morsel.h"
@@ -37,6 +38,7 @@ typedef struct WinSlot
 	uint64	   *otag;
 	SiftWinVal *res;
 	uint16	   *res_nulls;
+	SiftParWinSpill *spill;		/* the last partition of the item is more than max_part_bytes: its rows are here, and the leader runs them when the item is released */
 	SiftParWinItem item;
 } WinSlot;
 
@@ -69,6 +71,7 @@ typedef struct ParWin
 	uint64		budget;
 	uint64		inflight_bytes;
 	uint32		inflight;
+	uint32		nspill;			/* the items that hold a sort: one at a time, each holds up to max_part_bytes */
 	uint64		rows;
 } ParWin;
 
@@ -245,16 +248,69 @@ open_partition(ParWin *w, WinSlot *s, uint32 r)
 }
 
 static void
+spill_put_item_row(const ParWin *w, WinSlot *s, uint32 i)
+{
+	int64		ord[SIFT_WIN_MAX_KEYS],
+				arg[SIFT_WIN_MAX_FUNCS] = {0};
+	uint8		ord_null[SIFT_WIN_MAX_KEYS],
+				arg_null[SIFT_WIN_MAX_FUNCS] = {0};
+
+	for (int k = 0; k < w->ws.n_ord; k++)
+	{
+		ord[k] = s->ord[k][i];
+		ord_null[k] = s->ord_null[k][i];
+	}
+	for (int f = 0; f < w->ws.nfuncs; f++)
+		if (w->arg_slot[f] >= 0)
+		{
+			arg[f] = s->arg[f][i];
+			arg_null[f] = s->arg_null[f][i];
+		}
+	sift_par_win_spill_put(s->spill, s->tag[i], ord, ord_null, arg, arg_null);
+}
+
+static void
+spill_put_batch_row(const ParWin *w, WinSlot *s, uint32 r)
+{
+	int64		ord[SIFT_WIN_MAX_KEYS],
+				arg[SIFT_WIN_MAX_FUNCS] = {0};
+	uint8		ord_null[SIFT_WIN_MAX_KEYS],
+				arg_null[SIFT_WIN_MAX_FUNCS] = {0};
+
+	for (int k = 0; k < w->ws.n_ord; k++)
+		ord[k] = win_cell(&w->cur.col[w->ord_slot[k]], r, &ord_null[k]);
+	for (int f = 0; f < w->ws.nfuncs; f++)
+		if (w->arg_slot[f] >= 0)
+			arg[f] = win_cell(&w->cur.col[w->arg_slot[f]], r, &arg_null[f]);
+	sift_par_win_spill_put(s->spill, w->cur.tag[r], ord, ord_null, arg, arg_null);
+}
+
+/* the partition being read is more than max_part_bytes: its rows leave the item for a sort, and the rest of it goes there as it is read */
+static void
+open_spill(ParWin *w, WinSlot *s)
+{
+	const uint32 from = s->pstart[s->nparts - 1];
+
+	s->spill = sift_par_win_spill_open(w->cx, &w->ws, w->arg_slot, w->max_part_bytes);
+	w->nspill++;
+	for (uint32 i = from; i < s->n; i++)
+		spill_put_item_row(w, s, i);
+	s->n = from;
+	s->nparts--;
+}
+
+static void
 add_row(ParWin *w, WinSlot *s, uint32 r)
 {
 	const uint32 i = s->n;
 
+	if (s->spill != NULL)
+	{
+		spill_put_batch_row(w, s, r);
+		return;
+	}
 	if (i == s->cap)
 		in_grow(w, s, i + 1);
-	w->part_bytes += w->serial_row_bytes;
-	if (w->part_bytes > w->max_part_bytes)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("window: a partition of more than %llu bytes", (unsigned long long) w->max_part_bytes),
-						errhint("Raise work_mem, or order the window by the columns of the index.")));
 	s->tag[i] = w->cur.tag[r];
 	for (int k = 0; k < w->ws.n_ord; k++)
 		s->ord[k][i] = win_cell(&w->cur.col[w->ord_slot[k]], r, &s->ord_null[k][i]);
@@ -262,6 +318,9 @@ add_row(ParWin *w, WinSlot *s, uint32 r)
 		if (w->arg_slot[f] >= 0)
 			s->arg[f][i] = win_cell(&w->cur.col[w->arg_slot[f]], r, &s->arg_null[f][i]);
 	s->n++;
+	w->part_bytes += w->serial_row_bytes;
+	if (w->part_bytes > w->max_part_bytes)
+		open_spill(w, s);
 }
 
 static bool
@@ -283,7 +342,7 @@ next_batch(ParWin *w)
 	return true;
 }
 
-/* true: the item has reached its rows and the next row starts a partition */
+/* true: the item has reached its rows (or ends with the partition it sorts) and the next row starts a partition */
 static bool
 take_rows(ParWin *w, WinSlot *s)
 {
@@ -295,7 +354,7 @@ take_rows(ParWin *w, WinSlot *s)
 		if (!batch_row_active(&w->cur, r))
 			continue;
 		start = starts_partition(w, r);
-		if (start && s->n >= w->target)
+		if (start && (s->n >= w->target || s->spill != NULL))
 			return true;
 		if (start)
 			open_partition(w, s, r);
@@ -348,7 +407,7 @@ win_feed(void *ctx, uint32 item)
 			return true;
 		}
 	}
-	if (s->n == 0)
+	if (s->n == 0 && s->spill == NULL)
 		return false;
 	seal(w, s);
 	return true;
@@ -359,7 +418,7 @@ win_may_feed(void *ctx)
 {
 	const ParWin *w = ctx;
 
-	return w->inflight == 0 || w->inflight_bytes < w->budget;
+	return w->nspill == 0 && (w->inflight == 0 || w->inflight_bytes < w->budget);
 }
 
 static bool
@@ -368,10 +427,18 @@ win_phase1(void *ctx, int worker, uint32 lo, uint32 hi, SiftArena *scratch, uint
 	ParWin	   *w = ctx;
 	const WinSlot *s = &w->slot[lo % w->nslots];
 
-	if (!sift_par_win_run(&w->ws, &s->item, err))
+	if (s->item.n > 0 && !sift_par_win_run(&w->ws, &s->item, err))
 		return false;
 	*done = 1;
 	return true;
+}
+
+static void
+spill_emit(void *arg, const SiftWinRow *row)
+{
+	const ParWin *w = arg;
+
+	w->emit(w->emit_arg, row->tag, row->res, row->res_nulls);
 }
 
 static void
@@ -382,6 +449,13 @@ win_release(void *ctx, uint32 item)
 
 	for (uint32 o = 0; o < s->n; o++)
 		w->emit(w->emit_arg, s->otag[o], s->res + (size_t) o * w->ws.nfuncs, s->res_nulls[o]);
+	if (s->spill != NULL)
+	{
+		w->rows += sift_par_win_spill_rows(s->spill);
+		sift_par_win_spill_run(s->spill, w->max_part_bytes, spill_emit, w);
+		s->spill = NULL;
+		w->nspill--;
+	}
 	w->inflight_bytes -= s->bytes;
 	w->inflight--;
 	if (s->cap > 2 * w->target)

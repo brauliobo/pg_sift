@@ -4,7 +4,8 @@
  *
  * The leader reads the source (whose rows come with the rows of a partition together) and cuts it in items of whole partitions; a thread sorts the partitions of an item and runs the functions over them
  * (par/winpart.h); the leader gives the rows of each item to the node, in the order of the items, while the threads work on the next ones. The partitions in flight are bounded by work_mem (the
- * leader makes no item while the ones made hold the share of it), and a partition that does not fit what agg/v6/v6_win_partsort.h holds is the error it raises (54000).
+ * leader makes no item while the ones made hold the share of it). A partition that does not fit what agg/v6/v6_win_partsort.h holds is sorted by a tuplesort that spills to files and run by the engine
+ * of the serial node over the sorted stream (par/winspill.h), when its item is released.
  *
  * What the threads do not run stays with the serial node, which gives the same rows: a function or a column type of agg/window.c that par/winpart.h has not (numeric and text columns, the average of an
  * int8, a top-K of each partition), the windows that need no sort (the parts are in the order of the window), and a backend that has no threads.

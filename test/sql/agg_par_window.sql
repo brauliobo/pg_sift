@@ -73,6 +73,13 @@ INSERT INTO wb_h SELECT i, 1, timestamptz '2024-01-01' + (i * 7919 % 50000) * in
 CREATE TABLE wb_p AS TABLE wb_h;
 CREATE INDEX wb_p_col ON wb_p USING sift_col (grp, ts, id, v, f) WITH (rollup_columns = 'off', key_order = 'grp');
 VACUUM (FREEZE, ANALYZE) wb_h, wb_p;
+-- two partitions of 15000 rows whose float8 keys tie, with NaNs and NULLs among them
+CREATE TABLE wn_h (id int, grp int, ts timestamptz, v int, f float8) WITH (autovacuum_enabled = false);
+INSERT INTO wn_h SELECT i, 1 + i % 2, timestamptz '2024-01-01' + i * interval '1 second', CASE WHEN i % 13 = 0 THEN NULL ELSE i % 700 END,
+	CASE WHEN i % 7 = 0 THEN 'NaN' WHEN i % 11 = 0 THEN NULL ELSE (i % 50)::float8 END FROM generate_series(1, 30000) i;
+CREATE TABLE wn_p AS TABLE wn_h;
+CREATE INDEX wn_p_col ON wn_p USING sift_col (grp, ts, id, v, f) WITH (rollup_columns = 'off', key_order = 'grp');
+VACUUM (FREEZE, ANALYZE) wn_h, wn_p;
 SELECT (SELECT count(*) FROM ws_p) AS rows, (SELECT count(DISTINCT grp) FROM ws_p) AS groups, (SELECT count(*) FROM ws_p WHERE grp = 0) AS grp0;
 
 CREATE TABLE win_q (name text, q text, par bool);
@@ -111,14 +118,22 @@ SET work_mem = '16MB';
 SELECT c.* FROM (VALUES
 	('modest work_mem, regroup', 'SELECT id, sum(v) OVER w, rank() OVER w, lag(v) OVER w FROM ws_r WHERE grp <> 0 WINDOW w AS (PARTITION BY grp ORDER BY k, id)', true)) q(name, q, par), LATERAL check_win(q.name, q.q, q.par) c;
 
--- a partition that does not fit work_mem is the error of the serial node, with or without the threads
+-- a partition that does not fit work_mem is sorted by a spill and run over the sorted stream: the rows of the serial node and of PostgreSQL, with or without the threads, and no error
 SET work_mem = '512kB';
+SELECT c.* FROM (VALUES
+	('spilled partitions, rows frame', 'SELECT id, sum(v) OVER w, count(v) OVER w, min(f) OVER w, row_number() OVER w, lag(v) OVER w, lead(v, 2, -1) OVER w, first_value(f) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true),
+	('spilled partitions, peers', 'SELECT id, sum(v) OVER w, count(*) OVER w, rank() OVER w, dense_rank() OVER w, max(f) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY k NULLS FIRST)', true),
+	('spilled partitions, descending', 'SELECT id, sum(f) OVER w, avg(v) OVER w, min(ts) OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY ts DESC NULLS LAST, id DESC)', true),
+	('spilled partitions, float peers', 'SELECT id, count(*) OVER w, rank() OVER w, sum(v) OVER w FROM wn_p WINDOW w AS (PARTITION BY grp ORDER BY f)', true),
+	('spilled partitions, float order', 'SELECT id, sum(v) OVER w, rank() OVER w FROM ws_p WINDOW w AS (PARTITION BY grp ORDER BY f)', true),
+	('one huge partition', 'SELECT id, sum(v) OVER w, row_number() OVER w, min(f) OVER w, lag(v, 2) OVER w, rank() OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true)) q(name, q, par), LATERAL check_win(q.name, q.q, q.par) c;
 CREATE TEMP TABLE err_cmp (workers int, r text);
 SET max_parallel_workers_per_gather = 3;
 INSERT INTO err_cmp SELECT 3, win_rows('SELECT id, sum(v) OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true);
 SET max_parallel_workers_per_gather = 0;
 INSERT INTO err_cmp SELECT 0, win_rows('SELECT id, sum(v) OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', true);
-SELECT count(DISTINCT r) = 1 AS same_error, bool_and(r LIKE 'ERR 54000%') AS limit_error FROM err_cmp;
+INSERT INTO err_cmp SELECT -1, win_rows('SELECT id, sum(v) OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id)', false);
+SELECT count(DISTINCT r) = 1 AS same_rows, bool_and(r NOT LIKE 'ERR%') AS no_error, bool_and(r LIKE '% 40000') AS all_rows FROM err_cmp;
 SET max_parallel_workers_per_gather = 3;
 
 -- a float8 sum that overflows is the error of float8pl
@@ -129,7 +144,13 @@ CREATE INDEX wo_p_col ON wo_p USING sift_col (grp, id, f) WITH (rollup_columns =
 VACUUM (FREEZE, ANALYZE) wo_p;
 SELECT win_rows('SELECT id, sum(f) OVER w FROM wo_p WINDOW w AS (PARTITION BY grp ORDER BY id)', true) AS threads_error,
 	win_rows('SELECT id, sum(f) OVER w FROM wo_p WINDOW w AS (PARTITION BY grp ORDER BY id)', false) AS heap_error;
+-- the same in partitions that spill, and a LIMIT over a spilled partition: the sorts are gone with the statement
+SET work_mem = '64kB';
+SELECT win_rows('SELECT id, sum(f) OVER w FROM wo_p WINDOW w AS (PARTITION BY grp ORDER BY id)', true) AS spilled_threads_error,
+	win_rows('SELECT id, sum(f) OVER w FROM wo_p WINDOW w AS (PARTITION BY grp ORDER BY id)', false) AS spilled_heap_error;
+SELECT count(*) AS limited FROM (SELECT id, sum(v) OVER w FROM wb_p WINDOW w AS (PARTITION BY grp ORDER BY ts, id) LIMIT 10) t;
+SELECT count(*) = 0 AS no_temp_files FROM pg_ls_tmpdir();
 
 DROP FUNCTION check_win(text, text, bool), win_rows(text, bool), win_threads(text);
-DROP TABLE ws_h, ws_p, ws_r, ws_e, wt_h, wt_p, wb_h, wb_p, wo_p, win_q;
+DROP TABLE ws_h, ws_p, ws_r, ws_e, wt_h, wt_p, wb_h, wb_p, wn_h, wn_p, wo_p, win_q;
 DROP EXTENSION pg_sift;
