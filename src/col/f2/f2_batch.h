@@ -30,7 +30,7 @@ typedef enum SiftBatchRoute
 /* published and row_triggers are looked at once for the call, never for a row */
 extern SiftBatchRoute sift_batch_route(int nslots, bool published, bool row_triggers);
 
-/* Rows of the buffer of a partition that a budget of bytes holds at row_bytes each: a multiple of a granule, SIFT_BATCH_MIN_ROWS .. SIFT_BATCH_MAX_ROWS */
+/* Rows of the buffer of a partition that a budget of bytes holds at row_bytes each: a multiple of a granule, SIFT_BATCH_MIN_ROWS .. SIFT_BATCH_MAX_ROWS, and under a granule (down to SIFT_BATCH_RESET_ROWS) when the budget holds fewer */
 extern uint32 sift_batch_flush_rows(uint64 budget_bytes, uint64 row_bytes);
 
 /* The bytes a row of columns of the kinds takes in a buffer: a fixed width for each, string_bytes for each string column; the bookkeeping of a row included */

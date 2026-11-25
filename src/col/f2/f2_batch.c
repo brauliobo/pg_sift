@@ -27,9 +27,12 @@ uint32
 sift_batch_flush_rows(uint64 budget_bytes, uint64 row_bytes)
 {
 	uint64		rows = budget_bytes / Max(row_bytes, 1);
+	uint64		floor;
 
-	rows -= rows % SIFT_BATCH_GRANULE_ROWS;
-	return (uint32) Min(Max(rows, (uint64) SIFT_BATCH_MIN_ROWS), (uint64) SIFT_BATCH_MAX_ROWS);
+	if (rows >= SIFT_BATCH_GRANULE_ROWS)
+		rows -= rows % SIFT_BATCH_GRANULE_ROWS;
+	floor = Min((uint64) SIFT_BATCH_MIN_ROWS, Max(rows, (uint64) SIFT_BATCH_RESET_ROWS));
+	return (uint32) Min(Max(rows, floor), (uint64) SIFT_BATCH_MAX_ROWS);
 }
 
 uint64
