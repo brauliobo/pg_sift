@@ -382,6 +382,10 @@ typedef struct SiftProjDef
 
 extern SiftProjDef *sift_proj_defs_load(Relation rel, const SiftProjColumns *cols, int *n);
 
+/* The definitions of a table after a column was renamed, and the refusal to drop a column a definition names */
+extern void sift_proj_defs_rename_column(Relation rel, const char *from, const char *to);
+extern void sift_proj_defs_check_drop_column(Relation rel, const char *column);
+
 /* The rows of a part, granule by granule, as fn takes them: the live rows of its deletion vector, or with dead only the dead ones (the rows an AGG part still counts after the base part was given a deletion vector) */
 typedef void (*SiftProjRowFn) (void *arg, const SiftRowBuf *rows, int r);
 extern void sift_proj_scan_part(Relation rel, const SiftPartDesc *d, uint32 part_id, const SiftPartSpec *spec, bool dead, SiftProjRowFn fn, void *arg);

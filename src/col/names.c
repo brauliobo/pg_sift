@@ -40,6 +40,7 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
+#include "col/f2/f2_proj.h"
 #include "col/v1/enc.h"
 #include "col/names.h"
 #include "col/pg.h"
@@ -205,6 +206,44 @@ update_with(const char *sql, int nargs, Oid *argtypes, Datum *values)
 	SIFT_INVARIANT(SPI_execute_with_args(sql, nargs, argtypes, values, NULL, false, 0) >= 0, "sift: the update of a name failed");
 }
 
+typedef struct TableOption
+{
+	Oid			rel;
+	char	   *name;
+	char	   *value;
+} TableOption;
+
+/* The connect and scope options of the sift_tables name other tables and their columns as text, as those of an index do */
+static void
+follow_table_options(const SiftNameChange *c)
+{
+	List	   *options = NIL;
+	Oid			argtypes[3] = {TEXTOID, OIDOID, TEXTOID};
+
+	if (!catalog_exists("sift.table_option_values"))
+		return;
+	SIFT_INVARIANT(SPI_execute("SELECT rel::pg_catalog.oid, name, value FROM sift.table_option_values WHERE name IN ('connect', 'scope') ORDER BY 1, 2", true, 0) == SPI_OK_SELECT,
+				   "sift: table options failed");
+	for (uint64 i = 0; i < SPI_processed; i++)
+	{
+		HeapTuple	row = SPI_tuptable->vals[i];
+		TableOption *o = palloc(sizeof(TableOption));
+
+		o->rel = DatumGetObjectId(SPI_getbinval(row, SPI_tuptable->tupdesc, 1, &(bool) {false}));
+		o->name = SPI_getvalue(row, SPI_tuptable->tupdesc, 2);
+		o->value = SPI_getvalue(row, SPI_tuptable->tupdesc, 3);
+		options = lappend(options, o);
+	}
+	foreach_ptr(TableOption, o, options)
+	{
+		char	   *text = sift_names_renamed_option(o->name, o->value, o->rel, c);
+		Datum		args[3] = {text == NULL ? 0 : CStringGetTextDatum(text), ObjectIdGetDatum(o->rel), CStringGetTextDatum(o->name)};
+
+		if (text != NULL)
+			update_with("UPDATE sift.table_option_values SET value = $1 WHERE rel::pg_catalog.oid = $2 AND name = $3", 3, argtypes, args);
+	}
+}
+
 /*
  * The names a column renamed has in the catalog tables of the extension: sift.scope_follows (the column of the source that names the members or the keys, the column that expires pairs,
  * the columns of the pairs), the definitions of sift.projections (the columns, the filter and the rollups, written with the new name by the functions below) and the options of a
@@ -235,6 +274,15 @@ follow_catalogs_column(Oid heapoid, const SiftNameChange *c)
 	if (catalog_exists("sift.table_option_values"))
 		update_with("UPDATE sift.table_option_values SET value = sift._names_option(name, value, $2, $3) "
 					"WHERE rel::pg_catalog.oid = $1 AND name IN ('key_order', 'compression')", 3, argtypes, values);
+	if (catalog_exists("sift.ttl_policies"))
+		update_with("UPDATE sift.ttl_policies SET col = $3 WHERE relid::pg_catalog.oid = $1 AND col = $2", 3, argtypes, values);
+	if (catalog_exists("sift.projection_defs"))
+	{
+		Relation	heap = table_open(sift_rel_must_exist(heapoid), NoLock);
+
+		sift_proj_defs_rename_column(heap, c->from, c->to);
+		table_close(heap, NoLock);
+	}
 }
 
 /* The definitions of sift.projections of a table that was renamed or moved name it as schema.name */
@@ -307,6 +355,7 @@ follow(Node *stmt)
 
 				cc.relid = child;
 				follow_column(child, get_attnum(child, c.to), &cc);
+				follow_table_options(&cc);
 				follow_catalogs_column(child, &cc);
 				follow_references(&cc);
 			}
@@ -318,6 +367,7 @@ follow(Node *stmt)
 				follow_catalogs_table(c.relid, &c);
 			}
 			follow_references(&c);
+			follow_table_options(&c);
 		}
 	}
 }

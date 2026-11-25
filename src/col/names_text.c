@@ -348,6 +348,12 @@ scope_text(const char *text, Oid host, const SiftNameChange *c)
 	return changed ? out.data : NULL;
 }
 
+char *
+sift_names_renamed_option(const char *name, const char *text, Oid host, const SiftNameChange *c)
+{
+	return strcmp(name, "connect") == 0 ? connect_text(text, host, c) : strcmp(name, "scope") == 0 ? scope_text(text, host, c) : NULL;
+}
+
 List *
 sift_names_renamed_options(Relation index, const SiftNameChange *c)
 {

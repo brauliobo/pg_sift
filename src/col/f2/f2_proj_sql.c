@@ -284,6 +284,69 @@ open_target(Oid relid, LOCKMODE lock)
 	return rel;
 }
 
+/* The definitions of a table that name a column it renamed say the new name; the projection of such a definition is another one (its hash holds the name) and the next refresh builds it again */
+void
+sift_proj_defs_rename_column(Relation rel, const char *from, const char *to)
+{
+	SiftProjColumns now;
+	SiftProjColumn *before;
+	ListCell   *lc;
+
+	if (!is_f2_target(rel))
+		return;
+	now = sift_proj_columns_of_store(rel, sift_f2_store_open(rel));
+	before = palloc(Max(now.n, 1) * sizeof(SiftProjColumn));
+	memcpy(before, now.col, now.n * sizeof(SiftProjColumn));
+	for (int c = 0; c < now.n; c++)
+		if (strcmp(now.col[c].name, to) == 0)
+			before[c].name = from;
+	foreach(lc, defs_rows(RelationGetRelid(rel)))
+	{
+		const DefRow *r = lfirst(lc);
+		SiftProjSpec spec;
+		char		err[128];
+		char		canonical[SIFT_PROJ_SPEC_MAX];
+
+		if (!sift_proj_spec_parse(r->spec, &(SiftProjColumns) {now.n, before}, &spec, err, sizeof(err)))
+			continue;
+		sift_proj_spec_canonical(&spec, &now, canonical);
+		if (strcmp(canonical, r->spec) != 0)
+		{
+			(void) def_delete(RelationGetRelid(rel), r->name);
+			def_insert(RelationGetRelid(rel), r->name, canonical);
+		}
+	}
+}
+
+/* ERROR when a projection of the table names the column in its spec (a SORT projection that keeps every column names none of them): the column goes only once the projection does */
+void
+sift_proj_defs_check_drop_column(Relation rel, const char *column)
+{
+	SiftProjColumns cols;
+	bool	   *used;
+	int			ndefs;
+	SiftProjDef *defs;
+
+	if (!is_f2_target(rel))
+		return;
+	cols = sift_proj_columns_of_store(rel, sift_f2_store_open(rel));
+	used = palloc(Max(cols.n, 1) * sizeof(bool));
+	defs = sift_proj_defs_load(rel, &cols, &ndefs);
+	for (int i = 0; i < ndefs; i++)
+	{
+		SiftProjSpec named = defs[i].spec;
+
+		named.all_columns = false;
+		if (!defs[i].spec_ok)
+			continue;
+		sift_proj_spec_uses(&named, &cols, used);
+		for (int c = 0; c < cols.n; c++)
+			if (used[c] && strcmp(cols.col[c].name, column) == 0)
+				ereport(ERROR, (errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST), errmsg("cannot drop column \"%s\" of table \"%s\": the projection \"%s\" names it", column, RelationGetRelationName(rel), defs[i].name),
+								errhint("Drop the projection first with SELECT sift.drop_projection('%s'::regclass, '%s').", RelationGetRelationName(rel), defs[i].name)));
+	}
+}
+
 Datum
 sift_create_projection(PG_FUNCTION_ARGS)
 {

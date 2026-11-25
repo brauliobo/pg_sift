@@ -24,7 +24,9 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
 
+#include "col/f2/f2_proj.h"
 #include "col/f2/f2_store_schema.h"
+#include "col/f2/f2_tier_host.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_tbl.h"
 #include "core/damage.h"
@@ -342,6 +344,17 @@ check_drop_column(Relation rel, const SiftF2StoreOpts *o, const char *column)
 							errhint("Update or reset the option first with SELECT sift.table_reset_option('%s'::regclass, '%s').", RelationGetRelationName(rel), text_opts[i].name)));
 }
 
+/* The column of the TTL keeps the rows of an expired part together: a row without a time would be dropped with the part it is in, and a column that is gone ends the TTL without a word */
+static void
+check_ttl_column(Relation rel, const char *column, const char *what)
+{
+	SiftTtlPolicy ttl;
+
+	if (sift_ttl_policy_of(rel, &ttl) && strcmp(ttl.col, column) == 0)
+		ereport(ERROR, (errcode(ERRCODE_DEPENDENT_OBJECTS_STILL_EXIST), errmsg("cannot %s column \"%s\" of table \"%s\": its TTL names it", what, column, RelationGetRelationName(rel)),
+						errhint("Clear the TTL first with SELECT sift.set_ttl('%s'::regclass, '%s', NULL).", RelationGetRelationName(rel), column)));
+}
+
 void
 sift_tbl_f2_ddl_before(Relation rel, AlterTableStmt *stmt)
 {
@@ -355,8 +368,13 @@ sift_tbl_f2_ddl_before(Relation rel, AlterTableStmt *stmt)
 
 		switch (cmd->subtype)
 		{
+			case AT_DropNotNull:
+				check_ttl_column(rel, cmd->name, "drop NOT NULL of");
+				break;
 			case AT_DropColumn:
 				check_drop_column(rel, &store->opts, cmd->name);
+				check_ttl_column(rel, cmd->name, "drop");
+				sift_proj_defs_check_drop_column(rel, cmd->name);
 				fence = true;
 				break;
 			case AT_AddColumn:
