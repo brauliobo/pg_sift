@@ -5,7 +5,7 @@
 # a row is added by its line: the columns after OPERATION may be left out for a clean case that needs no warm-up.
 group_low	slope	12	sampled	clean		select k_lo, count(*), sum(amount) from {f} group by 1;	=	
 group_mid	slope	12	sampled	clean		select k_mid, count(*), sum(amount) from {f} group by 1;	=	
-group_unique_int	slope	28	sampled	open		select k_hi, count(*), sum(amount) from {f} group by 1;	=	one hash group a distinct integer key beyond work_mem; TODO: name the allocation site (scripts/valgrind.sh --massif); measured 24, 24, 24 B/row
+group_unique_int	slope	12	sampled	clean		select k_hi, count(*), sum(amount) from {f} group by 1;	=
 group_unique_text	slope	12	sampled	clean		select txt, count(*), sum(amount) from {f} group by 1;	=	
 group_two_keys	slope	12	sampled	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;	=	
 count_distinct_int	slope	12	sampled	clean		select count(distinct k_hi) from {f};	=	
@@ -33,11 +33,11 @@ delete_all	slope	12	sampled	clean		delete from {m};
 delete_scattered	slope	12	sampled	clean		delete from {m} where k_mid % 4 = 0;		
 read_deleted	slope	12	sampled	clean	delete from {m} where k_mid % 4 = 0;	select k_mid, count(*), sum(amount) from {m} group by 1;	=	
 insert_select	slope	12	sampled	clean		insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;		
-table_create_as	slope	134	sampled	open		create table {s} using sift_table as select * from {f} order by id;		grows with the rows loaded into a sift_table (the dictionary of the writer is spooled, no scope counts the rest); TODO: name the allocation site (scripts/valgrind.sh --massif); measured 113, 113, 114 B/row; gated on the memory scopes: 83.9 B/row on the rc and 83.9 on 5.0.2, ceiling 97 = that plus max(2 B/row, 15%)
-table_update_all	slope	106	sampled	open	create table {s} using sift_table as select * from {f} order by id;	set sift.backend_cache_kb = '1MB'; update {s} set amount = amount + 1;		grows with the rows a whole-table update of a sift_table changes; TODO: name the allocation site (scripts/valgrind.sh --massif); measured 92, 92 B/row (memory kept after the statement: the cache of the table, 11 B/row; the rest of the peak is the decoded unit)
-table_delete_part	slope	20	sampled	open	create table {s} using sift_table as select * from {f} order by id;	set sift.backend_cache_kb = '1MB'; delete from {s} where k_lo < 5;		TODO: 13 B/row in every run, over the noise ceiling: name the allocation site of a delete from a sift_table; measured 17, 17 B/row (the cache of the table keeps 12 B/row after the statement)
+table_create_as	slope	12	sampled	clean		create table {s} using sift_table as select * from {f} order by id;	
+table_update_all	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;	set sift.backend_cache_kb = '1MB'; update {s} set amount = amount + 1;	
+table_delete_part	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;	set sift.backend_cache_kb = '1MB'; delete from {s} where k_lo < 5;	
 table_vacuum	plateau	21	sampled	open	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	set sift.backend_cache_kb = '1MB'; vacuum {s};		TODO: 17 to 18 B/row from 100000 rows, over the clean ceiling: name the allocation site of the vacuum of a sift_table; measured 18, 18 B/row
-table_scan	slope	35	sampled	open	create table {s} using sift_table as select * from {f} order by id;	set sift.shared_cache_kb = 0; select count(*), sum(length(txt)) from {s};		the first scan of a text column of one string a row holds the unit's arrays of positions, keys and starts and the parsed dictionary at once (30 B/row in every run, peaks 2.7, 4.1 and 7.0 MB at 50,000 to 200,000 rows); the scan turns the shared dictionary ring off, because a ring that already holds the dictionary (an earlier run, an earlier case) spares the parse and moved the slope between 16 and 33 B/row from run to run
+table_scan	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;	set sift.shared_cache_kb = 0; select count(*), sum(length(txt)) from {s};	
 leak_aggregate	leak	0	contexts	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;		
 leak_distinct_text	leak	0	contexts	clean		select count(distinct txt) from {f};		
 leak_lookup_join	leak	0	contexts	clean		select d.cls, count(*) from {f} f join {d} d on d.id = f.k_hi group by 1;		
@@ -55,7 +55,7 @@ maintain_col	slope	12	exact	clean	update {m} set amount = amount + 1;	select sif
 refresh_col	slope	12	sampled	clean		select * from sift.col_refresh('{m}_col'::regclass);	=	
 rollup_refresh	slope	12	sampled	clean		select sift.col_rollup_refresh('{m}_col'::regclass);	=	
 repair_col	slope	12	sampled	clean		select count(*) from sift.col_repair('{m}_col'::regclass);	=	
-vacuum_deleted	slope	21	exact	open	delete from {m} where k_lo < 6;	vacuum {m};		the partition writer keeps the dictionary of its strings and the units' arrays until the segment ends (the promoted buffer is one segment); the write buffer is read in key order through a bounded sort and the blocks of the order arrays keep a share of the writer's budget; measured 17.8 B/row on the memory scopes; gated on the memory scopes: ceiling 21 = that plus max(2 B/row, 15%)
+vacuum_deleted	slope	6	exact	clean	delete from {m} where k_lo < 6;	vacuum {m};	
 vacuum_inserted	slope	12	exact	clean	insert into {m} select g+10000000, g, g%5000, g%10, 'DE', 'n'||g, 1, 1, now(), 'wireless charger w'||g from generate_series(1,{n}) g;	vacuum {m};		
 table_maintain	slope	12	exact	clean	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	select sift.table_maintain('{s}'::regclass);	=	
 table_scan_fresh_numbers_and_codes	slope	12	sampled	clean	@other set client_min_messages=warning; drop table if exists {s}; create table {s} using sift_table as select * from {f} order by id;	select count(*), sum(k_hi), sum(length(cat)) from {s};	=	
