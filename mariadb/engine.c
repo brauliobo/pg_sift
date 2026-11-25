@@ -136,7 +136,43 @@ void
 write_all(int fd, const void *p, size_t n, const char *what)
 {
 	if (write(fd, p, n) != (ssize_t) n)
-		fail("sift: could not write %s: %s", what, strerror(errno));
+	{
+		int			saved = errno;
+
+		close(fd);
+		fail("sift: could not write %s: %s", what, strerror(saved));
+	}
+}
+
+/* The allocations of the engine inside a call: running out of memory is an error of the call */
+void *
+xmalloc(size_t n)
+{
+	void	   *p = malloc(n ? n : 1);
+
+	if (p == NULL)
+		fail("sift: out of memory");
+	return p;
+}
+
+void *
+xcalloc(size_t n, size_t size)
+{
+	void	   *p = calloc(n ? n : 1, size ? size : 1);
+
+	if (p == NULL)
+		fail("sift: out of memory");
+	return p;
+}
+
+void *
+xrealloc(void *p, size_t n)
+{
+	void	   *q = realloc(p, n ? n : 1);
+
+	if (q == NULL)
+		fail("sift: out of memory");
+	return q;
 }
 
 const char *
@@ -443,6 +479,8 @@ new_idx(const char *name)
 	SiftIdx    *ix = calloc(1, sizeof(SiftIdx));
 	pthread_rwlockattr_t at;
 
+	if (ix == NULL)
+		return NULL;
 	pthread_rwlockattr_init(&at);
 	pthread_rwlockattr_setkind_np(&at, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
 	pthread_rwlock_init(&ix->rw, &at);
@@ -453,6 +491,31 @@ new_idx(const char *name)
 	dir_of(name, ix->dir, sizeof(ix->dir));
 	ix->refs = 1;
 	return ix;
+}
+
+/* Under the write lock of the registry: opens the index from its directory and registers it, NULL with err set when it cannot */
+static SiftIdx *
+open_new(const char *name, char *err, size_t errlen)
+{
+	SiftIdx    *ix = new_idx(name);
+
+	if (ix == NULL)
+		snprintf(sift_err_msg, sizeof(sift_err_msg), "sift: out of memory");
+	else if (nreg == lengthof(reg))
+		snprintf(sift_err_msg, sizeof(sift_err_msg), "sift: too many indexes open");
+	else if (SIFT_TRY(do_open(ix)) == 0)
+	{
+		reg[nreg++] = ix;
+		ix->refs++;
+		return ix;
+	}
+	finish_call(-1, err, errlen);
+	if (ix)
+	{
+		free_idx(ix);
+		destroy_idx(ix);
+	}
+	return NULL;
 }
 
 SiftIdx *
@@ -472,23 +535,7 @@ sx_open(const char *name, char *err, size_t errlen)
 	if ((ix = registered(name)) != NULL)
 		__atomic_add_fetch(&ix->refs, 1, __ATOMIC_RELAXED);
 	else
-	{
-		ix = new_idx(name);
-		if (nreg == lengthof(reg))
-			snprintf(sift_err_msg, sizeof(sift_err_msg), "sift: too many indexes open");
-		if (nreg < lengthof(reg) && SIFT_TRY(do_open(ix)) == 0)
-		{
-			reg[nreg++] = ix;
-			ix->refs++;
-		}
-		else
-		{
-			finish_call(-1, err, errlen);
-			free_idx(ix);
-			destroy_idx(ix);
-			ix = NULL;
-		}
-	}
+		ix = open_new(name, err, errlen);
 	pthread_rwlock_unlock(&reg_lock);
 	return ix;
 }
@@ -540,7 +587,7 @@ run_tokens(Tok *t)
 			appendStringInfoChar(&s, ' ');
 		appendBinaryStringInfo(&s, toks[i].str, toks[i].len);
 	}
-	t->out = strdup(s.data);
+	t->out = memcpy(xmalloc(s.len + 1), s.data, s.len + 1);
 }
 
 int

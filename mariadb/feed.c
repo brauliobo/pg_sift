@@ -67,6 +67,11 @@ sx_feed_begin(SiftIdx *ix, int64_t watermark, char *err, size_t errlen)
 	SiftFeed   *f = calloc(1, sizeof(SiftFeed));
 	int			rc;
 
+	if (f == NULL)
+	{
+		snprintf(err, errlen, "sift: out of memory");
+		return NULL;
+	}
 	thread_init();
 	f->ix = ix;
 	f->load = watermark >= 0;
@@ -104,7 +109,7 @@ static void
 feed_event(SiftFeed *f, int64 docid, int64 pk, char op)
 {
 	if (f->nev == f->capev)
-		f->ev = realloc(f->ev, (f->capev = f->capev ? f->capev * 2 : 4096) * sizeof(Ev));
+		f->ev = xrealloc(f->ev, (f->capev = f->capev ? f->capev * 2 : 4096) * sizeof(Ev));
 	f->ev[f->nev++] = (Ev) {docid, pk, op};
 }
 

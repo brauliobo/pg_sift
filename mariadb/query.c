@@ -89,7 +89,7 @@ build_filter(Qry *q)
 	SiftIdx    *ix = q->ix;
 	const SxIdSet *f = q->flt;
 	size_t		ndelta = q->dl ? delta_ndocs(q->dl) : 0;
-	int64	   *docs = malloc((f->n + ndelta + 1) * sizeof(int64));
+	int64	   *docs = xmalloc((f->n + ndelta + 1) * sizeof(int64));
 	size_t		nd = 0;
 
 	for (size_t i = 0; i < f->n; i++)
@@ -328,7 +328,7 @@ collect_page(void *arg, BlockNumber blk, const uint64 *offmask)
 			int64		docid = (int64) blk * q->sr->dpp + w * 64 + __builtin_ctzll(m);
 
 			if (q->npks == q->cappks)
-				q->pks = realloc(q->pks, (q->cappks = q->cappks ? q->cappks * 2 : 1024) * sizeof(int64));
+				q->pks = xrealloc(q->pks, (q->cappks = q->cappks ? q->cappks * 2 : 1024) * sizeof(int64));
 			q->pks[q->npks++] = live_pk_seq(q, docid);
 		}
 }

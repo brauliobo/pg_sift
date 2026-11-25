@@ -21,7 +21,11 @@ drain_init(UDF_INIT *initid, UDF_ARGS *args, char *message, int load)
 	if (load ? check_args(args, message, "sift_load(index, watermark, key, text)", 4, "siis")
 		: check_args(args, message, "sift_drain(index, seq, op, key, text)", 5, "sisis"))
 		return 1;
-	initid->ptr = (char *) (d = calloc(1, sizeof(Drain)));
+	if ((initid->ptr = (char *) (d = calloc(1, sizeof(Drain)))) == NULL)
+	{
+		snprintf(message, MYSQL_ERRMSG_SIZE, "sift: out of memory");
+		return 1;
+	}
 	d->load = load;
 	return 0;
 }
@@ -87,6 +91,16 @@ sift_load_clear(UDF_INIT *initid, char *is_null, char *error)
 	drain_clear(initid, is_null, error);
 }
 
+/* The seq (or the watermark of a load) and the key of a row are integers of the row: NULL is an error of the call, kept for the end */
+static sx_bool
+row_complete(Drain *d, UDF_ARGS *args)
+{
+	if (args->args[1] != NULL && args->args[d->load ? 2 : 3] != NULL)
+		return 1;
+	snprintf(d->err, sizeof(d->err), "sift: %s and the key of a row are never NULL", d->load ? "the watermark" : "seq");
+	return 0;
+}
+
 /* The row (seq, op, key, text) of a drain or (watermark, key, text) of a load */
 static void
 drain_add(UDF_INIT *initid, UDF_ARGS *args, char *error)
@@ -94,11 +108,13 @@ drain_add(UDF_INIT *initid, UDF_ARGS *args, char *error)
 	Drain	   *d = (Drain *) initid->ptr;
 	int			t = d->load ? 3 : 4;
 	const char *op = d->load ? "R" : args->args[2];
-	long long	seq = d->load ? 0 : *(long long *) args->args[1],
-				key = *(long long *) args->args[d->load ? 2 : 3];
+	long long	seq,
+				key;
 
-	if (d->err[0])
+	if (d->err[0] || !row_complete(d, args))
 		return;
+	seq = d->load ? 0 : *(long long *) args->args[1];
+	key = *(long long *) args->args[d->load ? 2 : 3];
 	if (d->ix == NULL && (d->ix = open_index(args, error)) == NULL)
 		return;
 	if (d->feed == NULL &&
@@ -127,7 +143,9 @@ sift_load_add(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 static void
 load_empty(Drain *d, UDF_ARGS *args, char *error)
 {
-	if (d->feed == NULL && d->err[0] == 0 && (d->ix = open_index(args, error)))
+	if (args->args[1] == NULL)
+		snprintf(d->err, sizeof(d->err), "sift: the watermark of a load is never NULL");
+	else if (d->feed == NULL && d->err[0] == 0 && (d->ix = open_index(args, error)))
 		d->feed = sx_feed_begin(d->ix, *(long long *) args->args[1], d->err, sizeof(d->err));
 }
 

@@ -43,7 +43,11 @@ sift_idset_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 	initid->max_length = 256 * 1024 * 1024;
 	if (check_args(args, message, "sift_idset(key)", 1, "i"))
 		return 1;
-	initid->ptr = calloc(1, sizeof(IdSet));
+	if ((initid->ptr = calloc(1, sizeof(IdSet))) == NULL)
+	{
+		snprintf(message, MYSQL_ERRMSG_SIZE, "sift: out of memory");
+		return 1;
+	}
 	return 0;
 }
 
@@ -74,7 +78,18 @@ sift_idset_add(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 	if (args->args[0] == NULL)
 		return;
 	if (s->n == s->cap)
-		s->ids = realloc(s->ids, (s->cap = s->cap ? s->cap * 2 : 1024) * sizeof(int64_t));
+	{
+		size_t		cap = s->cap ? s->cap * 2 : 1024;
+		int64_t    *ids = realloc(s->ids, cap * sizeof(int64_t));
+
+		if (ids == NULL)
+		{
+			sx_raise("sift: out of memory", error);
+			return;
+		}
+		s->ids = ids;
+		s->cap = cap;
+	}
 	s->ids[s->n++] = *(long long *) args->args[0];
 }
 
@@ -90,6 +105,11 @@ sift_idset(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length
 	n = s->n;
 	free(s->out);
 	out = s->out = malloc(16 + n * sizeof(int64_t));
+	if (out == NULL)
+	{
+		sx_raise("sift: out of memory", error);
+		return NULL;
+	}
 	memcpy(out, IDSET_MAGIC, 8);
 	memcpy(out + 8, &n, 8);
 	memcpy(out + 16, s->ids, n * sizeof(int64_t));
@@ -97,70 +117,88 @@ sift_idset(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length
 	return out;
 }
 
-/* The filter argument: an idset, or a JSON array of keys; the keys are in *ids (malloc'd) */
+/* A filter that is a sift_idset: the magic, the count and the keys; the count has to be what the length holds */
+static sx_bool
+parse_idset(const char *p, size_t len, SxIdSet *flt, int64_t **ids, char *error)
+{
+	int64_t		n;
+
+	memcpy(&n, p + 8, 8);
+	if (n < 0 || (uint64_t) n > (len - 16) / 8 || len != 16 + (size_t) n * 8)
+	{
+		sx_raise("sift: the filter is not a sift_idset", error);
+		return 1;
+	}
+	if ((*ids = malloc(n * 8 + 8)) == NULL)
+	{
+		sx_raise("sift: out of memory", error);
+		return 1;
+	}
+	memcpy(*ids, p + 16, n * 8);
+	*flt = (SxIdSet) {*ids, n};
+	return 0;
+}
+
+/* The integers of the first [...] of the text: the keys of a filter written as a JSON array */
+static sx_bool
+parse_json_keys(const char *p, size_t len, SxIdSet *flt, int64_t **ids, char *error)
+{
+	AUTO_FREE char *copy = strndup(p, len);
+	const char *q = copy;
+	size_t		n = 0,
+				cap = 64;
+
+	if (copy == NULL || (*ids = malloc(cap * 8)) == NULL)
+	{
+		sx_raise("sift: out of memory", error);
+		return 1;
+	}
+	while (*q && *q != '[')
+		q++;
+	if (*q != '[')
+	{
+		sx_raise("sift: the filter is a sift_idset or a JSON array of keys", error);
+		return 1;
+	}
+	for (q++; *q && *q != ']';)
+	{
+		char	   *end;
+		long long	v = strtoll(q, &end, 10);
+
+		if (end == q)
+		{
+			q++;
+			continue;
+		}
+		if (n == cap)
+		{
+			int64_t    *grown = realloc(*ids, (cap *= 2) * 8);
+
+			if (grown == NULL)
+			{
+				sx_raise("sift: out of memory", error);
+				return 1;
+			}
+			*ids = grown;
+		}
+		(*ids)[n++] = v;
+		q = end;
+	}
+	n = sort_unique(*ids, n);
+	*flt = (SxIdSet) {*ids, n};
+	return 0;
+}
+
+/* The filter argument: an idset, or a JSON array of keys; the keys are in *ids (malloc'd, also when the filter is refused: free it) */
 static sx_bool
 parse_filter(UDF_ARGS *args, int i, SxIdSet *flt, int64_t **ids, char *error)
 {
-	const char *p;
-	size_t		len;
-
 	*ids = NULL;
 	if ((unsigned) i >= args->arg_count || args->args[i] == NULL)
 		return 0;
-	p = args->args[i];
-	len = args->lengths[i];
-	if (len >= 16 && memcmp(p, IDSET_MAGIC, 8) == 0)
-	{
-		int64_t		n;
-
-		memcpy(&n, p + 8, 8);
-		if (n < 0 || len != 16 + (size_t) n * 8)
-		{
-			sx_raise("sift: the filter is not a sift_idset", error);
-			return 1;
-		}
-		*ids = malloc(n * 8 + 8);
-		memcpy(*ids, p + 16, n * 8);
-		*flt = (SxIdSet) {*ids, n};
-		return 0;
-	}
-	{
-		size_t		n = 0,
-					cap = 64;
-		char	   *end;
-		char	   *copy = strndup(p, len);
-		const char *q = copy;
-
-		*ids = malloc(cap * 8);
-		while (*q && *q != '[')
-			q++;
-		if (*q != '[')
-		{
-			free(copy);
-			free(*ids);
-			*ids = NULL;
-			sx_raise("sift: the filter is a sift_idset or a JSON array of keys", error);
-			return 1;
-		}
-		for (q++; *q && *q != ']';)
-		{
-			long long	v = strtoll(q, &end, 10);
-
-			if (end == q)
-			{
-				q++;
-				continue;
-			}
-			if (n == cap)
-				*ids = realloc(*ids, (cap *= 2) * 8);
-			(*ids)[n++] = v;
-			q = end;
-		}
-		free(copy);
-		n = sort_unique(*ids, n);
-		*flt = (SxIdSet) {*ids, n};
-	}
-	return 0;
+	if (args->lengths[i] >= 16 && memcmp(args->args[i], IDSET_MAGIC, 8) == 0)
+		return parse_idset(args->args[i], args->lengths[i], flt, ids, error);
+	return parse_json_keys(args->args[i], args->lengths[i], flt, ids, error);
 }
 
 /* ------------------------------------------------ sift_topk */
@@ -178,40 +216,51 @@ EXPORT char *
 sift_topk(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
 	SCOPED_IX	ix = NULL;
-	int			k = (int) *(long long *) args->args[2],
-				n = 0,
+	AUTO_FREE SxHit *hits = NULL;
+	AUTO_FREE int64_t *ids = NULL;
+	long long	k = args->args[2] ? *(long long *) args->args[2] : 0;
+	int			n = 0,
 				rc;
-	SxHit	   *hits;
 	char		err[512],
 			   *out;
 	size_t		w = 0;
 	SxIdSet		flt;
-	int64_t    *ids;
 
-	if (args->args[1] == NULL || k < 1 || (ix = open_index(args, error)) == NULL)
+	if (args->args[1] == NULL || k < 1)
+	{
+		*is_null = 1;
+		return NULL;
+	}
+	if (k > SX_MAX_K)
+	{
+		sx_raise("sift: sift_topk takes k from 1 to 1000000", error);
+		return NULL;
+	}
+	if ((ix = open_index(args, error)) == NULL)
 	{
 		*is_null = 1;
 		return NULL;
 	}
 	if (parse_filter(args, 3, &flt, &ids, error))
 		return NULL;
-	hits = malloc(sizeof(SxHit) * k);
+	if ((hits = malloc(sizeof(SxHit) * k)) == NULL)
+	{
+		sx_raise("sift: out of memory", error);
+		return NULL;
+	}
 	rc = sx_topk(ix, &host, args->args[1], args->lengths[1], k, ids ? &flt : NULL, hits, &n, err, sizeof(err));
 	local_close();
 	if (rc != 0)
 	{
-		free(hits);
-		free(ids);
 		sx_raise(err, error);
 		return NULL;
 	}
-	out = result_buf(initid, (size_t) n * 48 + 4);
+	if ((out = result_buf(initid, (size_t) n * 48 + 4, error)) == NULL)
+		return NULL;
 	out[w++] = '[';
 	for (int i = 0; i < n; i++)
 		w += sprintf(out + w, "%s{\"id\":%lld,\"s\":%.9g}", i ? "," : "", (long long) hits[i].pk, hits[i].score);
 	out[w++] = ']';
-	free(hits);
-	free(ids);
 	*length = w;
 	return out;
 }
@@ -235,10 +284,10 @@ EXPORT long long
 sift_count(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 {
 	SCOPED_IX	ix = NULL;
+	AUTO_FREE int64_t *ids = NULL;
 	int64_t		count;
 	char		err[512];
 	SxIdSet		flt;
-	int64_t    *ids;
 	int			rc;
 
 	if (args->args[1] == NULL || (ix = open_index(args, error)) == NULL)
@@ -250,7 +299,6 @@ sift_count(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 		return 0;
 	rc = sx_count(ix, &host, args->args[1], args->lengths[1], ids ? &flt : NULL, &count, err, sizeof(err));
 	local_close();
-	free(ids);
 	if (rc != 0)
 	{
 		sx_raise(err, error);
@@ -274,13 +322,13 @@ EXPORT char *
 sift_matches(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
 	SCOPED_IX	ix = NULL;
-	int64_t    *pks,
-				n;
+	AUTO_FREE int64_t *ids = NULL;
+	AUTO_FREE int64_t *pks = NULL;
+	int64_t		n;
 	char		err[512],
 			   *out;
 	size_t		w = 0;
 	SxIdSet		flt;
-	int64_t    *ids;
 	int			rc;
 
 	if (args->args[1] == NULL || (ix = open_index(args, error)) == NULL)
@@ -292,18 +340,17 @@ sift_matches(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *leng
 		return NULL;
 	rc = sx_matches(ix, &host, args->args[1], args->lengths[1], ids ? &flt : NULL, &pks, &n, err, sizeof(err));
 	local_close();
-	free(ids);
 	if (rc != 0)
 	{
 		sx_raise(err, error);
 		return NULL;
 	}
-	out = result_buf(initid, (size_t) n * 21 + 4);
+	if ((out = result_buf(initid, (size_t) n * 21 + 4, error)) == NULL)
+		return NULL;
 	out[w++] = '[';
 	for (int64_t i = 0; i < n; i++)
 		w += sprintf(out + w, "%s%lld", i ? "," : "", (long long) pks[i]);
 	out[w++] = ']';
-	free(pks);
 	*length = w;
 	return out;
 }

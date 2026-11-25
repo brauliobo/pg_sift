@@ -84,7 +84,7 @@ opens "a manifest with 4 G segments" "$ERR" 64 ffffffff
 opens "a manifest with a truncated header" "$ERR" 0 4142
 
 rm -rf "$SIFT/cm"
-size=$(stat -c %s "$SIFT/ci/MANIFEST")
+size=$(command stat -c %s "$SIFT/ci/MANIFEST")
 RANDOM=98
 for round in $(seq 1 40); do
   rm -rf "$SIFT/cm$round"; cp -r "$SIFT/ci" "$SIFT/cm$round"

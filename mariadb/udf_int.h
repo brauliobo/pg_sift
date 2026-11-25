@@ -31,10 +31,22 @@ _Static_assert(sizeof(my_bool) == 1, "my_bool changed");
 
 typedef char sx_bool;
 
+/* The most rows a top-k asks for: a result of that many hits is about 50 MB of JSON */
+#define SX_MAX_K		1000000
+
+/* A malloc'd pointer that is freed whichever way the function returns */
+static inline void
+free_ptr(void *p)
+{
+	free(*(void **) p);
+}
+#define AUTO_FREE		__attribute__((cleanup(free_ptr)))
+
 /* udf.c */
 extern sx_bool check_args(UDF_ARGS *args, char *message, const char *usage, unsigned nmin, const char *types);
 extern void sx_raise(const char *err, char *error);
-extern char *result_buf(UDF_INIT *initid, size_t need);
+/* The buffer of a result of need bytes, or NULL with the error raised */
+extern char *result_buf(UDF_INIT *initid, size_t need, char *error);
 extern void common_deinit(UDF_INIT *initid);
 extern SiftIdx *open_index(UDF_ARGS *args, char *error);
 

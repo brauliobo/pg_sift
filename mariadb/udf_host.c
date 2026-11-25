@@ -15,6 +15,7 @@ typedef struct Sql
 	char	   *sql;
 	size_t		len,
 				cap;
+	sx_bool		oom;
 } Sql;
 
 static void
@@ -27,7 +28,17 @@ sql_put(Sql *s, const char *fmt,...)
 	n = vsnprintf(NULL, 0, fmt, ap);
 	va_end(ap);
 	if (s->len + n + 1 > s->cap)
-		s->sql = realloc(s->sql, s->cap = (s->len + n + 1) * 2);
+	{
+		char	   *grown = realloc(s->sql, (s->len + n + 1) * 2);
+
+		if (grown == NULL)
+		{
+			s->oom = 1;
+			return;
+		}
+		s->sql = grown;
+		s->cap = (s->len + n + 1) * 2;
+	}
 	va_start(ap, fmt);
 	vsnprintf(s->sql + s->len, n + 1, fmt, ap);
 	va_end(ap);
@@ -58,6 +69,11 @@ sql_run(Sql *s, char *err, size_t errlen)
 {
 	MYSQL_RES  *r;
 
+	if (s->oom)
+	{
+		snprintf(err, errlen, "sift: out of memory");
+		return NULL;
+	}
 	if (call_conn == NULL)
 	{
 		call_conn = SQL(init) (NULL);
@@ -92,6 +108,30 @@ sql_done(MYSQL_RES *r, char *err, size_t errlen)
 /* A statement that waits for a metadata lock of a pending DDL would deadlock with the statement that called us */
 #define SQL_PREFIX		"SET STATEMENT lock_wait_timeout=5 FOR "
 
+/* The array *p of *cap elements of size bytes, doubled (1024 elements to begin with); 0 when there is no memory */
+static sx_bool
+grow(void *p, size_t *cap, size_t size)
+{
+	size_t		ncap = *cap ? *cap * 2 : 1024;
+	void	   *bigger = realloc(*(void **) p, ncap * size);
+
+	if (bigger == NULL)
+		return 0;
+	*(void **) p = bigger;
+	*cap = ncap;
+	return 1;
+}
+
+/* Ends the rows of sql_run: the error of the rows (err) stays when there is one, else the one of the stream */
+static int
+rows_done(MYSQL_RES *r, sx_bool broke, char *err, size_t errlen)
+{
+	char		stream_err[256];
+	int			rc = sql_done(r, broke ? stream_err : err, broke ? sizeof(stream_err) : errlen);
+
+	return broke ? -1 : rc;
+}
+
 int
 host_queue(void *ctx, SiftIdx *ix, int64_t after, SxEvent **out, size_t *n, char *err, size_t errlen)
 {
@@ -100,33 +140,33 @@ host_queue(void *ctx, SiftIdx *ix, int64_t after, SxEvent **out, size_t *n, char
 	MYSQL_ROW	row;
 	size_t		rows = 0,
 				cap = 0;
+	sx_bool		broke = 0;
 
+	*out = NULL;
+	*n = 0;
 	sql_put(&s, SQL_PREFIX "SELECT seq, op, pk FROM %s WHERE seq > %lld AND op <> 'B' ORDER BY seq", sx_cfg(ix, "queue"),
 			(long long) after);
 	r = sql_run(&s, err, errlen);
-	if (r == NULL)
-	{
-		sql_free(&s);
-		*out = NULL;
-		*n = 0;
-		return -1;
-	}
-	*out = NULL;
-	while ((row = SQL(fetch_row) (r)) != NULL)
-	{
-		if (rows == cap)
-			*out = realloc(*out, (cap = cap ? cap * 2 : 1024) * sizeof(SxEvent));
-		(*out)[rows++] = (SxEvent) {strtoll(row[0], NULL, 10), strtoll(row[2], NULL, 10), row[1][0]};
-	}
-	*n = rows;
 	sql_free(&s);
-	if (sql_done(r, err, errlen) != 0)
+	if (r == NULL)
+		return -1;
+	while (!broke && (row = SQL(fetch_row) (r)) != NULL)
+	{
+		broke = row[0] == NULL || row[1] == NULL || row[1][0] == '\0' || row[2] == NULL;
+		if (broke)
+			snprintf(err, errlen, "sift: the queue has a row without seq, op or key");
+		else if (rows == cap && (broke = !grow(out, &cap, sizeof(SxEvent))))
+			snprintf(err, errlen, "sift: out of memory");
+		else
+			(*out)[rows++] = (SxEvent) {strtoll(row[0], NULL, 10), strtoll(row[2], NULL, 10), row[1][0]};
+	}
+	if (rows_done(r, broke, err, errlen) != 0)
 	{
 		free(*out);
 		*out = NULL;
-		*n = 0;
 		return -1;
 	}
+	*n = rows;
 	return 0;
 }
 
@@ -136,6 +176,7 @@ host_queue_probe(void *ctx, SiftIdx *ix, int64_t after, int64_t *max_seq, size_t
 	Sql			s = {0};
 	MYSQL_RES  *r;
 	MYSQL_ROW	row;
+	sx_bool		broke;
 
 	sql_put(&s, SQL_PREFIX "SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM %s WHERE seq > %lld AND op <> 'B'", sx_cfg(ix, "queue"),
 			(long long) after);
@@ -144,10 +185,14 @@ host_queue_probe(void *ctx, SiftIdx *ix, int64_t after, int64_t *max_seq, size_t
 	if (r == NULL)
 		return -1;
 	row = SQL(fetch_row) (r);
-	*count = strtoull(row[0], NULL, 10);
-	*max_seq = strtoll(row[1], NULL, 10);
-	SQL(free_result) (r);
-	return 0;
+	if ((broke = row == NULL || row[0] == NULL || row[1] == NULL))
+		snprintf(err, errlen, "sift: the queue did not answer");
+	else
+	{
+		*count = strtoull(row[0], NULL, 10);
+		*max_seq = strtoll(row[1], NULL, 10);
+	}
+	return rows_done(r, broke, err, errlen);
 }
 
 static void
@@ -172,48 +217,83 @@ cmp_keyat(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
+/* The keys sorted with their positions, for the lookup of the keys the table answers with; NULL when n is 0 or there is no memory */
+static KeyAt *
+keys_sorted(const int64_t *pks, size_t n)
+{
+	KeyAt	   *ord = malloc((n ? n : 1) * sizeof(KeyAt));
+
+	for (size_t i = 0; ord && i < n; i++)
+		ord[i] = (KeyAt) {pks[i], i};
+	if (ord)
+		qsort(ord, n, sizeof(KeyAt), cmp_keyat);
+	return ord;
+}
+
 /* Keys in one IN list: a long one is a statement the server takes longer to plan than to run, and may not take at all (max_allowed_packet) */
 #define HOST_IN_CHUNK	2048
+
+/* Runs the statement in s with the keys as the end of its IN list; s is released */
+static MYSQL_RES *
+run_keys(Sql *s, const int64_t *pks, size_t n, char *err, size_t errlen)
+{
+	MYSQL_RES  *r;
+
+	put_keys(s, pks, n);
+	sql_put(s, ")");
+	r = sql_run(s, err, errlen);
+	sql_free(s);
+	return r;
+}
+
+/* The row of a lookup: the key of the answer in ord, or NULL when the table answered with a key that was not asked for */
+static const KeyAt *
+row_key(MYSQL_ROW row, const KeyAt *ord, size_t n)
+{
+	KeyAt		key = {row[0] ? strtoll(row[0], NULL, 10) : 0, 0};
+
+	return row[0] ? bsearch(&key, ord, n, sizeof(KeyAt), cmp_keyat) : NULL;
+}
 
 static int
 host_fetch(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, SxRow *rows, char *err, size_t errlen)
 {
-	KeyAt	   *ord = malloc(n * sizeof(KeyAt));
-	int			rc = 0;
+	KeyAt	   *ord = keys_sorted(pks, n);
+	int			rc = ord ? 0 : -1;
 
+	if (ord == NULL)
+		snprintf(err, errlen, "sift: out of memory");
 	for (size_t i = 0; i < n; i++)
-	{
 		rows[i] = (SxRow) {pks[i], NULL, 0};
-		ord[i] = (KeyAt) {pks[i], i};
-	}
-	qsort(ord, n, sizeof(KeyAt), cmp_keyat);
 	for (size_t off = 0; off < n && rc == 0; off += HOST_IN_CHUNK)
 	{
 		Sql			s = {0};
 		MYSQL_RES  *r;
 		MYSQL_ROW	row;
+		sx_bool		broke = 0;
 
 		sql_put(&s, SQL_PREFIX "SELECT %s, CONVERT(%s USING utf8mb4) FROM %s WHERE %s IN (", sx_cfg(ix, "keyexpr"),
 				sx_cfg(ix, "textexpr"), sx_cfg(ix, "source"), sx_cfg(ix, "keyexpr"));
-		put_keys(&s, pks + off, (n - off < HOST_IN_CHUNK ? n - off : HOST_IN_CHUNK));
-		sql_put(&s, ")");
-		r = sql_run(&s, err, errlen);
-		while (r && (row = SQL(fetch_row) (r)) != NULL)
+		r = run_keys(&s, pks + off, n - off < HOST_IN_CHUNK ? n - off : HOST_IN_CHUNK, err, errlen);
+
+		while (r && !broke && (row = SQL(fetch_row) (r)) != NULL)
 		{
-			KeyAt		key = {strtoll(row[0], NULL, 10), 0};
-			KeyAt	   *at = bsearch(&key, ord, n, sizeof(KeyAt), cmp_keyat);
+			const KeyAt *at = row_key(row, ord, n);
 
 			if (at && row[1])
 			{
 				unsigned long *len = SQL(fetch_lengths) (r);
 
-				rows[at->at].text = malloc(len[1] + 1);
-				memcpy(rows[at->at].text, row[1], len[1] + 1);
-				rows[at->at].len = len[1];
+				if ((broke = (rows[at->at].text = malloc(len[1] + 1)) == NULL))
+					snprintf(err, errlen, "sift: out of memory");
+				else
+				{
+					memcpy(rows[at->at].text, row[1], len[1] + 1);
+					rows[at->at].len = len[1];
+				}
 			}
 		}
-		rc = r ? sql_done(r, err, errlen) : -1;
-		sql_free(&s);
+		rc = r ? rows_done(r, broke, err, errlen) : -1;
 	}
 	free(ord);
 	return rc;
@@ -222,15 +302,12 @@ host_fetch(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, SxRow *rows, ch
 static int
 host_exists(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, uint8_t *present, char *err, size_t errlen)
 {
-	KeyAt	   *ord = malloc(n * sizeof(KeyAt));
-	int			rc = 0;
+	KeyAt	   *ord = keys_sorted(pks, n);
+	int			rc = ord ? 0 : -1;
 
-	for (size_t i = 0; i < n; i++)
-	{
-		present[i] = 0;
-		ord[i] = (KeyAt) {pks[i], i};
-	}
-	qsort(ord, n, sizeof(KeyAt), cmp_keyat);
+	if (ord == NULL)
+		snprintf(err, errlen, "sift: out of memory");
+	memset(present, 0, n);
 	for (size_t off = 0; off < n && rc == 0; off += HOST_IN_CHUNK)
 	{
 		Sql			s = {0};
@@ -239,19 +316,16 @@ host_exists(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, uint8_t *prese
 
 		sql_put(&s, SQL_PREFIX "SELECT %s FROM %s WHERE %s IN (", sx_cfg(ix, "keyexpr"), sx_cfg(ix, "source"),
 				sx_cfg(ix, "keyexpr"));
-		put_keys(&s, pks + off, (n - off < HOST_IN_CHUNK ? n - off : HOST_IN_CHUNK));
-		sql_put(&s, ")");
-		r = sql_run(&s, err, errlen);
+		r = run_keys(&s, pks + off, n - off < HOST_IN_CHUNK ? n - off : HOST_IN_CHUNK, err, errlen);
+
 		while (r && (row = SQL(fetch_row) (r)) != NULL)
 		{
-			KeyAt		key = {strtoll(row[0], NULL, 10), 0};
-			KeyAt	   *at = bsearch(&key, ord, n, sizeof(KeyAt), cmp_keyat);
+			const KeyAt *at = row_key(row, ord, n);
 
 			if (at)
 				present[at->at] = 1;
 		}
-		rc = r ? sql_done(r, err, errlen) : -1;
-		sql_free(&s);
+		rc = r ? rows_done(r, 0, err, errlen) : -1;
 	}
 	free(ord);
 	return rc;

@@ -107,7 +107,7 @@ latest_reserve(const SiftIdx *ix, size_t extra, size_t *cap, size_t *nused)
 		c *= 2;
 	while (c > 1024 && want * 2 < c)
 		c /= 2;
-	t = calloc(c, sizeof(Slot));
+	t = xcalloc(c, sizeof(Slot));
 	for (size_t i = 0; i < ix->caplatest; i++)
 		if (ix->latest[i].used && ix->latest[i].val)
 			*slot_find(t, c, ix->latest[i].key) = ix->latest[i];
@@ -166,15 +166,15 @@ apply_event(SiftIdx *ix, int64 docid, int64 pk, int64 op)
 	if (prev)
 	{
 		if (ix->ndead == ix->capdead)
-			ix->dead = realloc(ix->dead, (ix->capdead = ix->capdead ? ix->capdead * 2 : 1024) * sizeof(int64));
+			ix->dead = xrealloc(ix->dead, (ix->capdead = ix->capdead ? ix->capdead * 2 : 1024) * sizeof(int64));
 		ix->dead[ix->ndead++] = prev;
 	}
 	/* MEM[MEM-PORT-09]: MariaDB SiftIdx resident arrays (ids+pks 16-32B/doc + latest 48-96B/key + dead) */
 	if (op == 'I' && ix->ndoc == ix->capdoc)
 	{
 		ix->capdoc = ix->capdoc ? ix->capdoc + ix->capdoc / 2 : 1024;
-		ix->ids = realloc(ix->ids, ix->capdoc * sizeof(int64));
-		ix->pks = realloc(ix->pks, ix->capdoc * sizeof(int64));
+		ix->ids = xrealloc(ix->ids, ix->capdoc * sizeof(int64));
+		ix->pks = xrealloc(ix->pks, ix->capdoc * sizeof(int64));
 	}
 	apply_live(ix, docid, pk, op);
 }
@@ -183,7 +183,7 @@ apply_event(SiftIdx *ix, int64 docid, int64 pk, int64 op)
 static int64 *
 merge_dead(const SiftIdx *ix, const int64 *add, size_t nadd)
 {
-	int64	   *out = malloc((ix->ndead + nadd + 1) * sizeof(int64));
+	int64	   *out = xmalloc((ix->ndead + nadd + 1) * sizeof(int64));
 	size_t		i = 0,
 				j = 0,
 				k = 0;
@@ -204,11 +204,11 @@ prepare_events(const SiftIdx *ix, const Ev *ev, size_t n, Prep *p)
 				k = 0,
 				nins = 0;
 	Slot	   *ov;
-	int64	   *add = malloc((n + 1) * sizeof(int64));
+	int64	   *add = xmalloc((n + 1) * sizeof(int64));
 
 	while (ovcap < n * 2)
 		ovcap *= 2;
-	ov = calloc(ovcap, sizeof(Slot));		/* the keys of the events so far: what the table will say when they are applied */
+	ov = xcalloc(ovcap, sizeof(Slot));		/* the keys of the events so far: what the table will say when they are applied */
 	for (size_t i = 0; i < n; i++)
 	{
 		Slot	   *o = slot_find(ov, ovcap, ev[i].pk);
@@ -225,8 +225,8 @@ prepare_events(const SiftIdx *ix, const Ev *ev, size_t n, Prep *p)
 	if (ix->ndoc + nins > ix->capdoc)
 	{
 		p->capdoc = Max(Max(ix->capdoc + ix->capdoc / 2, ix->ndoc + nins), 1024);
-		p->ids = malloc(p->capdoc * sizeof(int64));
-		p->pks = malloc(p->capdoc * sizeof(int64));
+		p->ids = xmalloc(p->capdoc * sizeof(int64));
+		p->pks = xmalloc(p->capdoc * sizeof(int64));
 		memcpy(p->ids, ix->ids, ix->ndoc * sizeof(int64));
 		memcpy(p->pks, ix->pks, ix->ndoc * sizeof(int64));
 	}

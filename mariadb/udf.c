@@ -83,7 +83,7 @@ sx_raise(const char *err, char *error)
 
 /* A result in the buffer kept in initid->ptr, grown as needed */
 char *
-result_buf(UDF_INIT *initid, size_t need)
+result_buf(UDF_INIT *initid, size_t need, char *error)
 {
 	size_t		cap = initid->ptr ? *(size_t *) initid->ptr : 0;
 
@@ -92,6 +92,11 @@ result_buf(UDF_INIT *initid, size_t need)
 		free(initid->ptr);
 		cap = (need + sizeof(size_t) + 1) * 2;
 		initid->ptr = malloc(cap);
+		if (initid->ptr == NULL)
+		{
+			sx_raise("sift: out of memory", error);
+			return NULL;
+		}
 		*(size_t *) initid->ptr = cap;
 	}
 	return initid->ptr + sizeof(size_t);
@@ -234,10 +239,12 @@ stats_json(UDF_INIT *initid, SiftIdx *ix, unsigned long *length, char *error)
 {
 	SiftIdxStats st;
 	char		err[512],
-			   *out = result_buf(initid, 512);
+			   *out = result_buf(initid, 512, error);
 	SxEvent    *ev;
 	size_t		pending = 0;
 
+	if (out == NULL)
+		return NULL;
 	if (sx_stats(ix, &st, err, sizeof(err)) != 0)
 	{
 		sx_raise(err, error);
@@ -350,8 +357,9 @@ sift_tokens(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *lengt
 		return NULL;
 	}
 	*length = strlen(toks);
-	out = result_buf(initid, *length);
-	memcpy(out, toks, *length);
+	out = result_buf(initid, *length, error);
+	if (out)
+		memcpy(out, toks, *length);
 	free(toks);
 	return out;
 }
@@ -374,10 +382,23 @@ sift_ping_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 EXPORT char *
 sift_ping(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
-	int			k = (int) *(long long *) args->args[0];
-	char	   *out = result_buf(initid, (size_t) k * 48 + 4);
+	long long	k;
+	char	   *out;
 	size_t		w = 0;
 
+	if (args->args[0] == NULL)
+	{
+		*is_null = 1;
+		return NULL;
+	}
+	k = *(long long *) args->args[0];
+	if (k < 0 || k > SX_MAX_K)
+	{
+		sx_raise("sift: sift_ping takes k from 0 to 1000000", error);
+		return NULL;
+	}
+	if ((out = result_buf(initid, (size_t) k * 48 + 4, error)) == NULL)
+		return NULL;
 	out[w++] = '[';
 	for (int i = 0; i < k; i++)
 		w += sprintf(out + w, "%s{\"id\":%d,\"s\":%.9g}", i ? "," : "", 1000 + i * 37, 20.0 - i * 0.37);

@@ -130,7 +130,7 @@ drop_dead(SiftSegment *seg, const SiftRel *sr, const SiftSegEntry *e, const int6
 		if (!sift_seg_delete_key(seg, sift_docid_key(sr, dead[i])))
 			continue;
 		if (out->ndropped == out->capdropped)
-			out->dropped = realloc(out->dropped, (out->capdropped = out->capdropped ? out->capdropped * 2 : 1024) * sizeof(int64));
+			out->dropped = xrealloc(out->dropped, (out->capdropped = out->capdropped ? out->capdropped * 2 : 1024) * sizeof(int64));
 		out->dropped[out->ndropped++] = dead[i];
 	}
 }
@@ -192,9 +192,9 @@ filter_docs(const SiftIdx *ix, const Merged *mg, int64 **ids, int64 **pks, int64
 	size_t		n = 0,
 				nd = 0;
 
-	*ids = malloc((ix->ndoc + 1) * sizeof(int64));
-	*pks = malloc((ix->ndoc + 1) * sizeof(int64));
-	*dead = malloc((ix->ndead + 1) * sizeof(int64));
+	*ids = xmalloc((ix->ndoc + 1) * sizeof(int64));
+	*pks = xmalloc((ix->ndoc + 1) * sizeof(int64));
+	*dead = xmalloc((ix->ndead + 1) * sizeof(int64));
 	/* the ids and the dropped documents ascend: one pass over both; the dead ones are in the order of their deletion */
 	for (size_t i = 0, d = 0; i < ix->ndoc; i++)
 	{
@@ -302,7 +302,7 @@ merge_run(SiftIdx *ix, const Plan *plan)
 
 	RD_LOCK(ix);
 	ndead = ix->ndead;
-	dead = malloc((ndead + 1) * sizeof(int64));
+	dead = xmalloc((ndead + 1) * sizeof(int64));
 	memcpy(dead, ix->dead, ndead * sizeof(int64));
 	oldlog = ix->man.logno;
 	RD_UNLOCK(ix);
@@ -358,7 +358,7 @@ merge_sets(SiftIdx *ix, bool full)
 	pthread_mutex_lock(&ix->mergemu);
 	for (;;)
 	{
-		Plan	   *plan = malloc(sizeof(Plan));
+		Plan	   *plan = xmalloc(sizeof(Plan));
 		int			rc;
 
 		if (ix->dropped)

@@ -52,7 +52,7 @@ cmp_group(const void *a, const void *b)
 static size_t
 last_rows(const SxEvent *ev, size_t n, LastRow **out)
 {
-	LastRow	   *g = malloc((n + 1) * sizeof(LastRow));
+	LastRow	   *g = xmalloc((n + 1) * sizeof(LastRow));
 	size_t		ng = 0;
 
 	for (size_t i = 0; i < n; i++)
@@ -118,7 +118,7 @@ pk_map_build(Delta *d)
 	d->pk_cap = 16;
 	while (d->pk_cap < d->nd * 2)
 		d->pk_cap *= 2;
-	d->pk_map = calloc(d->pk_cap, sizeof(Slot));
+	d->pk_map = xcalloc(d->pk_cap, sizeof(Slot));
 	for (size_t i = 0; i < d->nd; i++)
 		*slot_find(d->pk_map, d->pk_cap, d->dpks[i]) = (Slot) {d->dpks[i], d->dids[i], 1};
 }
@@ -214,7 +214,7 @@ cmp_doc(const void *a, const void *b)
 static size_t
 union_ids(const int64 *a, size_t na, const int64 *b, size_t nb, int64 **out)
 {
-	int64	   *u = malloc((na + nb + 1) * sizeof(int64));
+	int64	   *u = xmalloc((na + nb + 1) * sizeof(int64));
 	size_t		i = 0,
 				j = 0,
 				n = 0;
@@ -240,7 +240,7 @@ union_ids(const int64 *a, size_t na, const int64 *b, size_t nb, int64 **out)
 static void
 delta_fill(SiftIdx *ix, Delta *d, const Delta *prev, const LastRow *g, size_t ng, const SxRow *rows)
 {
-	int64	   *ret = malloc((ng * 2 + 1) * sizeof(int64));
+	int64	   *ret = xmalloc((ng * 2 + 1) * sizeof(int64));
 	size_t		nret = 0;
 	DocRef	   *docs;
 	size_t		nprev = prev && prev->root ? prev->nd : 0;	/* the documents a micro segment holds already */
@@ -258,12 +258,12 @@ delta_fill(SiftIdx *ix, Delta *d, const Delta *prev, const LastRow *g, size_t ng
 	qsort(ret, nret, sizeof(int64), sift_cmp_i64);
 	d->ndead = union_ids(ret, nret, prev ? prev->dead : NULL, prev ? prev->ndead : 0, &d->dead);
 	free(ret);
-	docs = malloc((ng + nprev + 1) * sizeof(DocRef));
+	docs = xmalloc((ng + nprev + 1) * sizeof(DocRef));
 	for (size_t i = 0; i < nprev; i++)
 		if (!in_sorted(d->dead, d->ndead, prev->dids[i]))
 		{
 			size_t		len = prev->tlen[i];
-			char	   *t = malloc(len + 1);
+			char	   *t = xmalloc(len + 1);
 
 			memcpy(t, prev->text[i], len);
 			docs[d->nd++] = (DocRef) {prev->dids[i], prev->dpks[i], t, len};
@@ -272,10 +272,10 @@ delta_fill(SiftIdx *ix, Delta *d, const Delta *prev, const LastRow *g, size_t ng
 		if (g[i].op == 'I' && rows[i].text)
 			docs[d->nd++] = (DocRef) {g[i].seq + ix->man.docbase, g[i].pk, rows[i].text, rows[i].len};
 	qsort(docs, d->nd, sizeof(DocRef), cmp_doc);
-	d->dids = malloc((d->nd + 1) * sizeof(int64));
-	d->dpks = malloc((d->nd + 1) * sizeof(int64));
-	d->text = malloc((d->nd + 1) * sizeof(char *));
-	d->tlen = malloc((d->nd + 1) * sizeof(size_t));
+	d->dids = xmalloc((d->nd + 1) * sizeof(int64));
+	d->dpks = xmalloc((d->nd + 1) * sizeof(int64));
+	d->text = xmalloc((d->nd + 1) * sizeof(char *));
+	d->tlen = xmalloc((d->nd + 1) * sizeof(size_t));
 	for (size_t i = 0; i < d->nd; i++)
 	{
 		d->dids[i] = docs[i].did;
@@ -291,9 +291,9 @@ delta_fill(SiftIdx *ix, Delta *d, const Delta *prev, const LastRow *g, size_t ng
 static void
 delta_texts(SiftIdx *ix, const SxHost *h, const Delta *reuse, const LastRow *g, size_t ng, SxRow *rows)
 {
-	int64	   *cand = malloc((ng + 1) * sizeof(int64));
-	size_t	   *at = malloc((ng + 1) * sizeof(size_t));
-	SxRow	   *got = calloc(ng + 1, sizeof(SxRow));
+	int64	   *cand = xmalloc((ng + 1) * sizeof(int64));
+	size_t	   *at = xmalloc((ng + 1) * sizeof(size_t));
+	SxRow	   *got = xcalloc(ng + 1, sizeof(SxRow));
 	size_t		nc = 0;
 	char		err[512];
 
@@ -306,7 +306,7 @@ delta_texts(SiftIdx *ix, const SxHost *h, const Delta *reuse, const LastRow *g, 
 			continue;
 		if (reuse && delta_doc(reuse, g[i].seq + ix->man.docbase, &own, &k))
 		{
-			rows[i] = (SxRow) {g[i].pk, malloc(own->tlen[k] + 1), own->tlen[k]};
+			rows[i] = (SxRow) {g[i].pk, xmalloc(own->tlen[k] + 1), own->tlen[k]};
 			memcpy(rows[i].text, own->text[k], own->tlen[k]);
 			continue;
 		}
@@ -334,8 +334,8 @@ delta_make(SiftIdx *ix, const SxHost *h, const SxEvent *ev, size_t n, int64 afte
 {
 	LastRow	   *g;
 	size_t		ng = last_rows(ev, n, &g);
-	SxRow	   *rows = calloc(ng + 1, sizeof(SxRow));
-	Delta	   *d = calloc(1, sizeof(Delta));
+	SxRow	   *rows = xcalloc(ng + 1, sizeof(SxRow));
+	Delta	   *d = xcalloc(1, sizeof(Delta));
 
 	delta_texts(ix, h, prev, g, ng, rows);
 	RD_LOCK(ix);

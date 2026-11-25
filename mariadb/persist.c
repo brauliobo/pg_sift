@@ -19,6 +19,11 @@
 
 /* ------------------------------------------------ persistence */
 
+#define MAX_CFG		(1024 * 1024)
+
+/* fail() unwinds without running cleanups: the descriptor is closed before the error is raised */
+#define FAIL_CLOSING(fd, ...) do { int e_ = errno; close(fd); errno = e_; fail(__VA_ARGS__); } while (0)
+
 void
 write_manifest(SiftIdx *ix, const Manifest *m, const ManSeg *segs)
 {
@@ -35,7 +40,7 @@ write_manifest(SiftIdx *ix, const Manifest *m, const ManSeg *segs)
 	write_all(fd, segs, m->nsegs * sizeof(ManSeg), "the manifest");
 	write_all(fd, ix->cfg, m->cfg_len, "the manifest");
 	if (fsync(fd) != 0)
-		fail("sift: could not sync %s: %s", tmp, strerror(errno));
+		FAIL_CLOSING(fd, "sift: could not sync %s: %s", tmp, strerror(errno));
 	close(fd);
 	if (rename(tmp, final) != 0)
 		fail("sift: could not rename %s: %s", tmp, strerror(errno));
@@ -59,10 +64,10 @@ append_events(SiftIdx *ix, const Ev *ev, size_t n)
 	if (fd < 0)
 		fail("sift: could not open %s: %s", path, strerror(errno));
 	if (lseek(fd, ix->man.log_len, SEEK_SET) < 0 || ftruncate(fd, ix->man.log_len) != 0)
-		fail("sift: could not position %s: %s", path, strerror(errno));
+		FAIL_CLOSING(fd, "sift: could not position %s: %s", path, strerror(errno));
 	write_all(fd, ev, n * sizeof(Ev), path);
 	if (fsync(fd) != 0)
-		fail("sift: could not sync %s: %s", path, strerror(errno));
+		FAIL_CLOSING(fd, "sift: could not sync %s: %s", path, strerror(errno));
 	close(fd);
 }
 
@@ -83,7 +88,7 @@ replay_log(SiftIdx *ix)
 		ssize_t		got = read(fd, ev, Min(left, sizeof(ev)));
 
 		if (got <= 0 || got % sizeof(Ev))
-			fail("sift: event log %s is truncated", path);
+			FAIL_CLOSING(fd, "sift: event log %s is truncated", path);
 		for (size_t i = 0; i < got / sizeof(Ev); i++)
 			apply_event(ix, ev[i].docid, ev[i].pk, ev[i].op);
 		left -= got;
@@ -97,7 +102,7 @@ replay_log(SiftIdx *ix)
 static int64 *
 deleted_keys(const SiftIdx *ix, const int64 *pks, size_t nd, size_t *nkeys)
 {
-	int64	   *keys = malloc((nd + 1) * sizeof(int64));
+	int64	   *keys = xmalloc((nd + 1) * sizeof(int64));
 	size_t		n = 0;
 
 	for (size_t i = 0; i < nd; i++)
@@ -142,8 +147,29 @@ write_compact_log(SiftIdx *ix, uint32 logno, const int64 *ids, const int64 *pks,
 	write_all(fd, ev, n * sizeof(Ev), path);
 	*len += n * sizeof(Ev);
 	if (fsync(fd) != 0)
-		fail("sift: could not sync %s: %s", path, strerror(errno));
+		FAIL_CLOSING(fd, "sift: could not sync %s: %s", path, strerror(errno));
 	close(fd);
+}
+
+/* The header of the manifest of ix, read from fd; every refusal closes it */
+static void
+read_header(SiftIdx *ix, int fd, const char *path)
+{
+	Manifest   *m = &ix->man;
+
+	if (read(fd, m, sizeof(Manifest)) != sizeof(Manifest) || memcmp(m->magic, "SIFTMDB", 7) != 0)
+		FAIL_CLOSING(fd, "sift: manifest %s is corrupted", path);
+	if (memcmp(m->magic, MAN_MAGIC, 8) != 0 || m->format != MDB_FORMAT)
+		FAIL_CLOSING(fd, "sift: index \"%s\" was built by an incompatible version of sift for MariaDB (manifest format %c, "
+					 "this build reads %d): rebuild it with sift_rebuild", ix->name, m->magic[7], MDB_FORMAT);
+	if (m->sift_format >> 16 != SIFT_FORMAT_MAJOR || (m->sift_format & 0xFFFF) > SIFT_FORMAT_MINOR)
+		FAIL_CLOSING(fd, "sift: index \"%s\" has page format %u.%u, this build reads up to %d.%d: rebuild it with sift_rebuild",
+					 ix->name, m->sift_format >> 16, m->sift_format & 0xFFFF, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR);
+	if (m->page_layout != PAGE_LAYOUT_ID)
+		FAIL_CLOSING(fd, "sift: index \"%s\" has page layout %u, this build uses %u: rebuild it with sift_rebuild", ix->name,
+					 m->page_layout, (unsigned) PAGE_LAYOUT_ID);
+	if (m->nsegs > MAX_SEGS || m->cfg_len > MAX_CFG)
+		FAIL_CLOSING(fd, "sift: manifest %s is corrupted", path);
 }
 
 static void
@@ -152,29 +178,19 @@ load_manifest(SiftIdx *ix)
 	char		path[600];
 	int			fd;
 	Manifest   *m = &ix->man;
+	size_t		segs_len;
 
 	path_of(ix, path, sizeof(path), "MANIFEST");
 	fd = open(path, O_RDONLY);
 	if (fd < 0)
 		fail("sift: index \"%s\" does not exist (%s)", ix->name, path);
-	if (read(fd, m, sizeof(Manifest)) != sizeof(Manifest) || memcmp(m->magic, "SIFTMDB", 7) != 0)
-		fail("sift: manifest %s is corrupted", path);
-	if (memcmp(m->magic, MAN_MAGIC, 8) != 0 || m->format != MDB_FORMAT)
-		fail("sift: index \"%s\" was built by an incompatible version of sift for MariaDB (manifest format %c, this build "
-			 "reads %d): rebuild it with sift_rebuild", ix->name, m->magic[7], MDB_FORMAT);
-	if (m->sift_format >> 16 != SIFT_FORMAT_MAJOR || (m->sift_format & 0xFFFF) > SIFT_FORMAT_MINOR)
-		fail("sift: index \"%s\" has page format %u.%u, this build reads up to %d.%d: rebuild it with sift_rebuild",
-			 ix->name, m->sift_format >> 16, m->sift_format & 0xFFFF, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR);
-	if (m->page_layout != PAGE_LAYOUT_ID)
-		fail("sift: index \"%s\" has page layout %u, this build uses %u: rebuild it with sift_rebuild", ix->name,
-			 m->page_layout, (unsigned) PAGE_LAYOUT_ID);
-	ix->cfg = malloc(m->cfg_len + 1);
-	if (m->nsegs > MAX_SEGS ||
-		read(fd, ix->segs, m->nsegs * sizeof(ManSeg)) != (ssize_t) (m->nsegs * sizeof(ManSeg)) ||
-		read(fd, ix->cfg, m->cfg_len) != (ssize_t) m->cfg_len)
-		fail("sift: manifest %s is corrupted", path);
-	ix->cfg[m->cfg_len] = '\0';
+	read_header(ix, fd, path);
+	segs_len = m->nsegs * sizeof(ManSeg);
+	ix->cfg = xmalloc((size_t) m->cfg_len + 1);
+	if (read(fd, ix->segs, segs_len) != (ssize_t) segs_len || read(fd, ix->cfg, m->cfg_len) != (ssize_t) m->cfg_len)
+		FAIL_CLOSING(fd, "sift: manifest %s is corrupted", path);
 	close(fd);
+	ix->cfg[m->cfg_len] = '\0';
 }
 
 /* Files the manifest does not name are leftovers of an interrupted drain or merge */
