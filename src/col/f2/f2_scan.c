@@ -140,11 +140,11 @@ pred_zones(Relation rel, const F2Scan *s, SiftF2PartPin *pin, uint32 g0)
 	return z;
 }
 
-/* Whether no row of a granule with this zone sorts strictly before the bound of the sink: a NULL cannot, unless NULLs sort first */
+/* Whether no row of a granule with this zone sorts strictly before the bound of the sink: a NULL cannot, unless NULLs sort first; a leaf a patch changed is not what the zone says */
 static bool
-bound_excludes(const SiftF2Bound *b, const SiftZone *z)
+bound_excludes(const SiftF2Bound *b, const SiftZone *z, bool exceptions)
 {
-	if (!b->active || (z->flags & SIFT_ZONE_NONE) || (b->nulls_first && z->nnull > 0))
+	if (!b->active || exceptions || (z->flags & SIFT_ZONE_NONE) || (b->nulls_first && z->nnull > 0))
 		return false;
 	if (b->ties)
 		return b->desc ? z->max < b->value : z->min > b->value;
@@ -485,7 +485,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 
 		if (wi == 0)
 			prune_window(rel, s, schema, part, pp, dir, dir, zones, g0, g, Min(SIFT_PF_WINDOW_GRANULES, g1 - g), (g - g0) / SIFT_PF_WINDOW_GRANULES, exc, nexc, tix, &win);
-		if (win.skipped[wi] || (bound_zones != NULL && bound_excludes(s->bound, &bound_zones[g])))
+		if (win.skipped[wi] || (bound_zones != NULL && bound_excludes(s->bound, &bound_zones[g], has_exceptions(exc, nexc, g, s->sink_leaves[s->bound_sink_leaf]))))
 			continue;
 		if (s->survey)
 		{

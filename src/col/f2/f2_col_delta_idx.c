@@ -451,13 +451,13 @@ sift_cdi_patch_granule(const SiftColDeltaGranMap *gm, int ncols, ColView *views,
 	}
 }
 
-/* The leaf of a patch of a granule that a predicate reads and no patch of the granule before it names: the first of each, as the patches are ascending by leaf */
+/* The leaf of a patch of a granule that the scan prunes by and no patch of the granule before it names: the first of each, as the patches are ascending by leaf */
 static bool
-first_of_pred_leaf(const SiftColDeltaGranMap *gm, uint32 k, const bool *pred_leaf, int ncols)
+first_of_pruned_leaf(const SiftColDeltaGranMap *gm, uint32 k, const bool *pruned_leaf, int ncols)
 {
 	int			leaf = gm->patches[k].attnum - 1;
 
-	return leaf >= 0 && leaf < ncols && pred_leaf[leaf] && (k == 0 || gm->patches[k - 1].attnum != gm->patches[k].attnum);
+	return leaf >= 0 && leaf < ncols && pruned_leaf[leaf] && (k == 0 || gm->patches[k - 1].attnum != gm->patches[k].attnum);
 }
 
 /* The exception of the k-th patch of a granule, whose leaf a predicate reads */
@@ -475,7 +475,7 @@ exc_cmp(const SiftVariantExcSummary *a, const SiftVariantExcSummary *b)
 
 /* exc is ascending by (granule, col), and so are the granules of the map and the patches of a granule: one merge keeps the result ascending, an exception both name once */
 const SiftVariantExcSummary *
-sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary *exc, int nexc, const bool *pred_leaf, int ncols, int *nout)
+sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary *exc, int nexc, const bool *pruned_leaf, int ncols, int *nout)
 {
 	SiftVariantExcSummary *out;
 	int			extra = 0,
@@ -487,7 +487,7 @@ sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary 
 		return exc;
 	for (uint32 gi = 0; gi < map->ndirty_granules; gi++)
 		for (uint32 k = 0; k < map->grans[gi].npatches; k++)
-			extra += first_of_pred_leaf(&map->grans[gi], k, pred_leaf, ncols);
+			extra += first_of_pruned_leaf(&map->grans[gi], k, pruned_leaf, ncols);
 	if (extra == 0)
 		return exc;
 	out = palloc((nexc + extra) * sizeof(SiftVariantExcSummary));
@@ -497,7 +497,7 @@ sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary 
 			SiftVariantExcSummary cd;
 			int			c = 1;
 
-			if (!first_of_pred_leaf(&map->grans[gi], k, pred_leaf, ncols))
+			if (!first_of_pruned_leaf(&map->grans[gi], k, pruned_leaf, ncols))
 				continue;
 			cd = patch_exc(&map->grans[gi], k);
 			while (i < nexc && (c = exc_cmp(&exc[i], &cd)) < 0)

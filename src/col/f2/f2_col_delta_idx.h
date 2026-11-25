@@ -168,10 +168,10 @@ sift_cdi_gran_remaps(const SiftColDeltaGranMap *gm)
 }
 
 /*
- * The exceptions of a part with, for every granule the map patches in a leaf of a predicate (pred_leaf[leaf]), the exception that tells a scan that the stored column cannot decide for
+ * The exceptions of a part with, for every granule the map patches in a leaf the scan prunes by, a predicate's or the sort bound's (pruned_leaf[leaf]), the exception that tells a scan that the stored column cannot decide for
  * that leaf of that granule: its zones, its dictionary, its chunk filters and its skipping indexes are left out for it. exc[nexc] is returned as it is when nothing of it is patched.
  */
-extern const SiftVariantExcSummary *sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary *exc, int nexc, const bool *pred_leaf, int ncols, int *nout);
+extern const SiftVariantExcSummary *sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary *exc, int nexc, const bool *pruned_leaf, int ncols, int *nout);
 
 /* Whether the leaves of an update are any of the leaves (scope_leaf[leaf]) a scope summary of the index reads */
 static inline bool

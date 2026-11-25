@@ -65,7 +65,7 @@ sift_cdi_remap_load(Relation rel, const SiftPartitionEntry *entry)
 struct SiftCdiScan
 {
 	SiftXidCache xc;
-	bool	   *pred_leaf;
+	bool	   *pruned_leaf;
 	uint64		part_id;
 	uint64		part_gen;
 	SiftColDeltaPartMap *map;
@@ -80,9 +80,11 @@ scan_state(F2Scan *s, const SiftColSchema *schema, Snapshot snap)
 		return s->cd;
 	old = MemoryContextSwitchTo(s->cx);
 	s->cd = palloc0(sizeof(SiftCdiScan));
-	s->cd->pred_leaf = palloc0(schema->ncols * sizeof(bool));
+	s->cd->pruned_leaf = palloc0(schema->ncols * sizeof(bool));
 	for (int k = 0; k < s->npreds; k++)
-		s->cd->pred_leaf[s->preds[k].col] = true;
+		s->cd->pruned_leaf[s->preds[k].col] = true;
+	if (s->bound != NULL)
+		s->cd->pruned_leaf[s->sink_leaves[s->bound_sink_leaf]] = true;
 	sift_xid_cache_init(&s->cd->xc, snap);
 	MemoryContextSwitchTo(old);
 	return s->cd;
@@ -170,7 +172,7 @@ sift_cdi_scan_exceptions(F2Scan *s, Relation rel, const SiftColSchema *schema, c
 	if (map == NULL)
 		return exc;
 	old = MemoryContextSwitchTo(s->cx);
-	out = sift_cdi_exceptions(map, exc, *nexc, cd->pred_leaf, schema->ncols, nexc);
+	out = sift_cdi_exceptions(map, exc, *nexc, cd->pruned_leaf, schema->ncols, nexc);
 	MemoryContextSwitchTo(old);
 	return out;
 }
