@@ -2,10 +2,11 @@
 # The column delta chain of a partition is kept by the backend for the writes to its rows (src/table/f2/f2_chain_cache.c). A chain that grows by one transaction after another is read from its
 # newest page on, not whole each time: 40 transactions that each update 400 rows of a table whose chain grows by 3 pages read the pages of the chain once (sift._test_chain_cache_pages counts
 # them), a few hundred, and not the 2,000 that a whole read of the chain for each transaction costs. The rows are as exact as ever, whatever happens to the chain in between: a writer of
-# another session that adds pages to it, a VACUUM that folds it away and the writes that start a new one.
+# another session that adds pages to it, a VACUUM that folds it away and the writes that start a new one. The log of the pending deletes of a partition is read once when a transaction finds it
+# changed (sift._test_pend_del_reads): 30 transactions that each delete a row and add it again read it fewer than 45 times, not the 60 of a read before and after the stamp of its last page.
 . "$(dirname "$0")/lib.bash"
 
-plan 6
+plan 8
 node_init cc 0 "autovacuum = off
 sift.async_maintenance = off
 sift.test_create_format1 = off"
@@ -13,6 +14,8 @@ node_start cc || bail "start failed"
 sql cc "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE h (id int PRIMARY KEY, v bigint NOT NULL, pad text NOT NULL) USING sift_table" \
 	"CREATE TABLE hs (id int PRIMARY KEY, v bigint NOT NULL, pad text NOT NULL)" \
+	"CREATE TABLE p (k int PRIMARY KEY, v int NOT NULL) USING sift_table" \
+	"INSERT INTO p SELECT g, g FROM generate_series(1, 4000) g" \
 	"INSERT INTO h SELECT g, g, repeat('x', 40) FROM generate_series(1, 4000) g" \
 	"INSERT INTO hs SELECT g, g, repeat('x', 40) FROM generate_series(1, 4000) g" \
 	"VACUUM h" "SELECT sift.maintain('h')" >/dev/null || bail "setup failed"
@@ -48,4 +51,13 @@ check "the updates of a writer that adds pages between the statements of a sessi
 check "the updates after a VACUUM folded the chain away are all there" test "$(same_rows)" == 0
 out=$(sql cc "SELECT count(*) FROM sift.check('h', true)")
 check "and the chain verifies" test "$out" == 0
+
+out=$({
+	echo 'SELECT sift._test_pend_del_reads() AS r0 \gset'
+	for k in $(seq 30); do printf 'BEGIN;\nDELETE FROM p WHERE k = %d;\nINSERT INTO p VALUES (%d, 0);\nCOMMIT;\n' "$k" "$k"; done
+	echo 'SELECT sift._test_pend_del_reads() - :r0;'
+} | sql cc)
+check "30 transactions that each delete a row and add it again read the pending deletes fewer than 45 times, not 60" test "$out" -lt 45
+out=$(sql cc "SELECT count(*) || ' ' || sum(v) FROM p")
+check "and the rows are those they left" test "$out" == "4000 8001535"
 finish
