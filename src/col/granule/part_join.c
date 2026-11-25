@@ -9,6 +9,7 @@
 #include "col/granule/part_int.h"
 #include "col/f2/f2_kll.h"
 #include "col/f2/f2_marks.h"
+#include "col/f2/f2_tid_hash.h"
 #include "col/f2/preagg_delta.h"
 #include "col/skip/skip_index.h"
 #include "core/page_io.h"
@@ -17,7 +18,7 @@ bool
 sift_parts_joinable(Relation rel, SiftPart *const *src, int n)
 {
 	static const uint16 same[] = {SEC_SCHEMA, SEC_DICTS};
-	static const uint16 never[] = {SEC_VERS, SEC_PREAGG_SUPER, SEC_PREAGG_ROLLUP, SEC_PREAGG_EXCEPT, SEC_SETS, SEC_HLL, SEC_KTAB, SEC_RUNS, SEC_TID_HASH};
+	static const uint16 never[] = {SEC_VERS, SEC_PREAGG_SUPER, SEC_PREAGG_ROLLUP, SEC_PREAGG_EXCEPT, SEC_SETS, SEC_HLL, SEC_KTAB, SEC_RUNS, SEC_ROW_PACK};
 	void	   *base[lengthof(same)] = {NULL};
 	uint64		blen[lengthof(same)] = {0};
 	bool		ok = true;
@@ -74,6 +75,84 @@ joined_time_bounds(const SiftPartDesc *sdesc, int n, int64 *tmin, int64 *tmax)
 			tmin[s] = tmax[s] = 0;
 	}
 	return flags;
+}
+
+/* Whether a part has the address hash directory, which the joined part gets back, built from the addresses of its rows */
+static bool
+any_tid_hash(SiftPart *const *src, int n)
+{
+	for (int i = 0; i < n; i++)
+		if (sift_part_section(src[i], SEC_TID_HASH) != NULL)
+			return true;
+	return false;
+}
+
+/* One pass over the addresses of the rows of the joined part, the granule at a time: what each of the two passes of the directory reads */
+static void
+each_address(Relation rel, SiftPart *const *src, int n, const uint32 *first, const SiftGranuleDesc *dir, void (*visit) (void *arg, uint64 tid, const SiftGranuleDesc *gd, uint32 granule, uint32 row),
+			 void *arg)
+{
+	for (int i = 0; i < n; i++)
+	{
+		const SiftGranuleDesc *pdir = sift_part_granule_dir(rel, src[i]);
+
+		for (uint32 g = 0; g < src[i]->hdr.ngranules; g++)
+		{
+			uint64	   *tids = sift_part_read_tids(rel, src[i], pdir, g);
+
+			for (uint32 r = 0; r < dir[first[i] + g].nrows; r++)
+				visit(arg, tids[r], &dir[first[i] + g], first[i] + g, r);
+			pfree(tids);
+		}
+	}
+}
+
+typedef struct HashBuild
+{
+	uint32		log2_buckets;
+	uint32	   *start;
+	SiftTidHashSlotV2 *slots;
+} HashBuild;
+
+static void
+count_address(void *arg, uint64 tid, const SiftGranuleDesc *gd pg_attribute_unused(), uint32 granule pg_attribute_unused(), uint32 row pg_attribute_unused())
+{
+	HashBuild  *b = arg;
+
+	b->start[sift_tid_hash_bucket(tid, b->log2_buckets) + 1]++;
+}
+
+static void
+place_address(void *arg, uint64 tid, const SiftGranuleDesc *gd, uint32 granule, uint32 row)
+{
+	HashBuild  *b = arg;
+
+	b->slots[b->start[sift_tid_hash_bucket(tid, b->log2_buckets)]++] = (SiftTidHashSlotV2) {(uint32) (gd->row_base + row), sift_tid_hash_fp(tid), (uint16) granule};
+}
+
+/* The directory of the joined part as sift_tid_hash_build makes it from the rows, the addresses read from the granules: its entries are the memory it takes, a granule's addresses the rest */
+static void
+join_tid_hash(Relation rel, SiftPart *const *src, int n, const uint32 *first, const SiftGranuleDesc *dir, uint64 nrows, StringInfo out)
+{
+	HashBuild	b = {.log2_buckets = sift_tid_hash_log2(nrows, SIFT_TID_HASH_V2_LOAD)};
+	const uint32 nb = UINT32_C(1) << b.log2_buckets;
+	SiftTidHashHdr hdr = {SIFT_TID_HASH_MAGIC, SIFT_TID_HASH_VER_V2, 0, b.log2_buckets, (uint32) nrows};
+	uint32	   *begin;
+
+	b.start = palloc0((nb + 1) * sizeof(uint32));
+	each_address(rel, src, n, first, dir, count_address, &b);
+	for (uint32 k = 0; k < nb; k++)
+		b.start[k + 1] += b.start[k];
+	begin = memcpy(palloc((nb + 1) * sizeof(uint32)), b.start, (nb + 1) * sizeof(uint32));
+	appendBinaryStringInfo(out, (char *) &hdr, sizeof(hdr));
+	appendBinaryStringInfo(out, (char *) begin, (nb + 1) * sizeof(uint32));
+	enlargeStringInfo(out, nrows * sizeof(SiftTidHashSlotV2));
+	b.slots = (SiftTidHashSlotV2 *) (out->data + out->len);
+	each_address(rel, src, n, first, dir, place_address, &b);
+	out->len += nrows * sizeof(SiftTidHashSlotV2);
+	out->data[out->len] = '\0';
+	pfree(begin);
+	pfree(b.start);
 }
 
 /* The granules of the parts as the one section they become: asked for a range of its bytes, it reads the granule that holds it from its part (one at a time) and the padding between the granules is zero */
@@ -160,7 +239,7 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 				has_preagg = sift_part_section(src[0], SEC_PREAGG) != NULL;
 	FullTransactionId pmin = InvalidFullTransactionId,
 				pmax = InvalidFullTransactionId;
-	SiftSecInput secs[18];
+	SiftSecInput secs[20];
 	int			nsec = 0;
 	SiftPartIn in = {0};
 	SiftPartDesc d;
@@ -288,6 +367,14 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 		appendBinaryStringInfo(&ts, tstrides.data, tstrides.len);
 		sift_part_add_section(secs, &nsec, SEC_GRANULE_TSTRIDE, 0, ts.data, ts.len, false);
 	}
+	if (any_tid_hash(src, n))
+	{
+		StringInfoData th;
+
+		initStringInfo(&th);
+		join_tid_hash(rel, src, n, first, dir, nrows, &th);
+		sift_part_add_section(secs, &nsec, SEC_TID_HASH, 0, th.data, th.len, false);
+	}
 	if (excs.len > 0)
 		sift_part_add_section(secs, &nsec, SEC_VARIANT_EXC, 0, excs.data, excs.len, false);
 	if (n == 1 && (point = sift_part_read_section(rel, src[0], SEC_POINT, &len)) != NULL)
@@ -312,7 +399,7 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	in.inline_extent_cap = -1;
 	in.bulk_tail = true;
 	d = sift_part_write(rel, &in);
-	d.ext_flags = ext_flags;
+	d.ext_flags = ext_flags | (any_tid_hash(src, n) ? SIFT_PART_EXT_TID_HASH : 0);
 	if (fill.rec != NULL)
 		pfree(fill.rec);
 	*writer_bytes = fill.held_max + SIFT_PAGE_PAYLOAD;
