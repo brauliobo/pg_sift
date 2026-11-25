@@ -3,6 +3,8 @@
  */
 #include "core/host.h"
 
+#include "access/xloginsert.h"
+#include "miscadmin.h"
 #include "storage/bulk_write.h"
 
 #include "col/f2/col_meta.h"
@@ -148,6 +150,20 @@ build_pages(Page p0, Page p1, Page p2, SiftAmKind am, uint64 compat_flags, uint3
 	sift_fsm_build_root(p2, SIFT_FIRST_SLAB_BLKNO);
 }
 
+/* The last block of the zeroed first slab, logged: its replay extends the file of a standby or of a recovery to the high water mark the metapage names */
+static void
+log_extension_end(Relation rel, Buffer last)
+{
+	if (RelationNeedsWAL(rel))
+	{
+		START_CRIT_SECTION();
+		MarkBufferDirty(last);
+		log_newpage_buffer(last, false);
+		END_CRIT_SECTION();
+	}
+	UnlockReleaseBuffer(last);
+}
+
 void
 sift_col_meta_init(Relation rel, SiftAmKind am, uint64 compat_flags, uint32 schema_hash, uint32 state_flags)
 {
@@ -158,7 +174,7 @@ sift_col_meta_init(Relation rel, SiftAmKind am, uint64 compat_flags, uint32 sche
 	BlockNumber high_water = (BlockNumber) ((uint64) SIFT_FIRST_SLAB_BLKNO + SIFT_FIRST_SLAB_BLOCKS);
 
 	if (sift_main_nblocks(rel) < high_water)
-		UnlockReleaseBuffer(sift_extend_zeroed_to(rel, high_water));
+		log_extension_end(rel, sift_extend_zeroed_to(rel, high_water));
 	x = sift_xlog_start(rel);
 	p0 = sift_xlog_register(&x, sift_blk_new(rel, SIFT_METAPAGE_BLKNO), GENERIC_XLOG_FULL_IMAGE);
 	p1 = sift_xlog_register(&x, sift_blk_new(rel, SIFT_FIRST_SLAB_BLKNO), GENERIC_XLOG_FULL_IMAGE);
