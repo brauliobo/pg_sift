@@ -72,6 +72,25 @@ SELECT count(*) AS extents, max(start + nblocks_out) <= :lo + 16 AS below_bound
 SELECT count(*) AS extents FROM sift._test_f2_alloc_below('t_idx', 1000000, :lo + 16);
 SELECT sift._test_f2_check('t_idx');
 
+-- A stream of 5 blocks takes the free extents of 1 and 2 blocks, which no free extent of 4 blocks is there for, before it extends the file for the rest
+CREATE TABLE u (v int);
+CREATE INDEX u_idx ON u USING sift_store_test (v);
+SELECT sift._test_f2_init('u_idx');
+SELECT (a).start AS h1 FROM (SELECT sift._test_f2_alloc('u_idx', 1) AS a) q \gset
+SELECT sift._test_f2_alloc('u_idx', 1) IS NOT NULL AS pad_1;
+SELECT (a).start AS h2 FROM (SELECT sift._test_f2_alloc('u_idx', 2) AS a) q \gset
+SELECT sift._test_f2_alloc('u_idx', 1) IS NOT NULL AS pad_2;
+SELECT sift._test_f2_release('u_idx', :h1, 1, 'none');
+SELECT sift._test_f2_release('u_idx', :h2, 2, 'none');
+SELECT sift._test_f2_reclaim('u_idx');
+SELECT sift._test_f2_fsm('u_idx');
+SELECT count(*) AS extents, sum(nblocks_out) AS got, count(*) FILTER (WHERE start IN (:h1, :h2)) AS from_holes
+  FROM sift._test_f2_alloc_stream('u_idx', 5);
+SELECT sift._test_f2_fsm('u_idx');
+SELECT sift._test_f2_check('u_idx');
+
+DROP TABLE u;
+
 -- An extent past the largest class is refused
 SELECT sift._test_f2_alloc('t_idx', 2000);
 

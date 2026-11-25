@@ -7,21 +7,25 @@
 #include "core/f2/f2_pace.h"
 #include "core/f2/fsm/fsm_int.h"
 #include "core/horizon.h"
+#include "core/maint.h"
 #include "core/page_io.h"
 #include "core/wal_conflict.h"
 
-/* lag: the standby-safe horizon an extent's id must precede too; invalid when the quarantine holds over a quarter of the index, which is then released at the raw horizon */
+/* lag: the standby-safe horizon an extent's id must precede too; invalid while no physical standby streams, and when the quarantine holds over a tenth of the index, which is then released at the raw horizon */
 static FullTransactionId
 quarantine_lag(Relation rel, const ExtVec *queue)
 {
 	uint64		held = 0;
+
+	if (!sift_maint_standby_streams())
+		return InvalidFullTransactionId;
 	for (int i = 0; i < queue->n; i++)
 		held += queue->v[i].nblocks;
-	return held > RelationGetNumberOfBlocks(rel) / 4 ? InvalidFullTransactionId : sift_standby_safe_horizon(rel, false);
+	return held > RelationGetNumberOfBlocks(rel) / SIFT_FSM_LAG_PRESSURE_DIV ? InvalidFullTransactionId : sift_standby_safe_horizon(rel, false);
 }
 
 static bool
-matured(const FsmCtx *c, FullTransactionId safexid, FullTransactionId lag, bool vacuum_reading)
+matured(const FsmCtx *c, FullTransactionId safexid, FullTransactionId horizon, FullTransactionId lag, bool vacuum_reading)
 {
 	if (c->exclusive || !FullTransactionIdIsValid(safexid))
 		return true;
@@ -29,7 +33,7 @@ matured(const FsmCtx *c, FullTransactionId safexid, FullTransactionId lag, bool 
 		return false;
 	if (FullTransactionIdIsValid(lag) && !FullTransactionIdPrecedes(safexid, lag))
 		return false;
-	return FullTransactionIdIsValid(c->horizon) ? FullTransactionIdPrecedes(safexid, c->horizon) : sift_horizon_removable(c->rel, safexid);
+	return FullTransactionIdPrecedes(safexid, horizon);
 }
 
 /* The extents [start, start + n) cut into the largest classes that fit, each as the entry of its class */
@@ -180,17 +184,19 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 		BlockNumber cut = InvalidBlockNumber;
 		bool		vacuum_reading;
 		FullTransactionId max_matured = InvalidFullTransactionId,
+					horizon,
 					lag;
 
 		sift_fsm_walk_list(rel, m->quarantine_head, SIFT_FSM_CLASS_QUEUE, &queue, &pages);
 		lag = quarantine_lag(rel, &queue);
+		horizon = queue.n == 0 || FullTransactionIdIsValid(c->horizon) ? c->horizon : sift_horizon(rel);
 		vacuum_reading = !c->exclusive && queue.n > 0 && sift_horizon_vacuum_reading(rel);
 		for (int i = 0; i < queue.n; i++)
 		{
 			const SiftFsmExtent *q = &queue.v[i];
 			bool		meta = sift_fsm_slab_of(SLABS(root), q->start) != NULL;
 
-			if (!matured(c, q->safexid, lag, vacuum_reading))
+			if (!matured(c, q->safexid, horizon, lag, vacuum_reading))
 				sift_fsm_extvec_add(&pending, q->start, q->nblocks, q->safexid);
 			else if (meta_only && !meta)
 				sift_fsm_extvec_add(&pending, q->start, q->nblocks, InvalidFullTransactionId);

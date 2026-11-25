@@ -17,8 +17,10 @@
 #define SIFT_FSM_META_RESERVE	16	/* free metadata blocks kept in the slabs: a step that writes a list page never finds none, and no slab is given back that would leave fewer */
 #define SIFT_FSM_SMALL_META_RESERVE	8	/* the same for a relation of at most SIFT_FSM_KEEP_SLABS slabs: it claims its next slab later and holds half the blocks idle */
 #define SIFT_FSM_KEEP_SLABS		2	/* the slabs a quiet relation keeps: the first, and one warm one so that a burst does not claim and give back a slab in turn */
-#define SIFT_FSM_MIN_REUSE_CLASS	2	/* a stream takes free extents of 4 blocks and more before it extends the file */
-#define SIFT_FSM_REUSE_PIECES	16		/* ... and no more than this many extents of one class for what it still wants */
+#define SIFT_FSM_SMALL_CLASS	2	/* the free extents of the classes below (1 and 2 blocks) are what a stream takes last before it extends the file */
+#define SIFT_FSM_REUSE_PIECES	16		/* a stream takes no more than this many extents of one class for what it still wants ... */
+#define SIFT_FSM_SMALL_PIECES	4		/* ... and of a class below SIFT_FSM_SMALL_CLASS, so that a part is never a run of single blocks */
+#define SIFT_FSM_LAG_PRESSURE_DIV 10	/* a standby-safe quarantine holding more than 1/this of the index is released at the raw horizon */
 
 /* One call of the allocator: block 0 held exclusively by the caller */
 typedef struct FsmCtx

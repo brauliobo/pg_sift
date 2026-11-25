@@ -436,15 +436,15 @@ sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, SiftExten
 	return n;
 }
 
-/* The class of the smaller free extent a stream takes before it extends the file, when none of the class it wants is free: the largest that leaves at most SIFT_FSM_REUSE_PIECES extents of it for the n blocks still wanted and fits the room of the caller; the class of the free extent it is carved from in *from, -1 when there is none */
+/* The class of the smaller free extent a stream takes before it extends the file, when none of the class it wants is free: the largest that leaves at most SIFT_FSM_REUSE_PIECES extents of it (SIFT_FSM_SMALL_PIECES below SIFT_FSM_SMALL_CLASS) for the n blocks still wanted and fits the room of the caller; the class of the free extent it is carved from in *from, -1 when there is none */
 static int
 reuse_class(FsmCtx *c, uint64 nblocks, int cls, int room, int *from)
 {
-	for (int j = cls - 1; j >= SIFT_FSM_MIN_REUSE_CLASS; j--)
+	for (int j = cls - 1; j >= 0; j--)
 	{
 		uint64		pieces = (nblocks + SIFT_FSM_CLASS_BLOCKS(j) - 1) / SIFT_FSM_CLASS_BLOCKS(j);
 
-		if (pieces > SIFT_FSM_REUSE_PIECES)
+		if (pieces > (j < SIFT_FSM_SMALL_CLASS ? SIFT_FSM_SMALL_PIECES : SIFT_FSM_REUSE_PIECES))
 			break;
 		if (pieces <= (uint64) room && (*from = lowest_class(c, j)) < SIFT_FSM_NCLASSES)
 			return j;

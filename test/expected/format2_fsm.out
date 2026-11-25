@@ -155,19 +155,19 @@ SELECT sift._test_f2_release('t_idx', :q2, 1, 'now');
 SELECT sift._test_f2_reclaim('t_idx');
  _test_f2_reclaim 
 ------------------
-                0
+                1
 (1 row)
 
 SELECT sift._test_f2_fsm('t_idx');
                                    _test_f2_fsm                                    
 -----------------------------------------------------------------------------------
- c0=1 c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=2/2 meta_free=13/16
+ c0=0 c1=1 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=1/1 meta_free=13/16
 (1 row)
 
 SELECT sift._test_f2_check('t_idx');
              _test_f2_check              
 -----------------------------------------
- parts=0 quarantined=2/2 meta_free=13/16
+ parts=0 quarantined=1/1 meta_free=13/16
 (1 row)
 
 -- The metadata slabs grow when their blocks run low, and give blocks back
@@ -180,7 +180,7 @@ SELECT count(sift._test_f2_meta_alloc('t_idx')) AS pages FROM generate_series(1,
 SELECT sift._test_f2_check('t_idx');
               _test_f2_check               
 -------------------------------------------
- parts=0 quarantined=2/2 meta_free=209/512
+ parts=0 quarantined=1/1 meta_free=209/512
 (1 row)
 
 -- A stream is exactly the blocks it asks for, in extents cut off the end of the relation when no free extent holds them
@@ -205,7 +205,7 @@ SELECT sift._test_f2_release('t_idx', :hole, 100, 'none');
 SELECT sift._test_f2_reclaim('t_idx');
  _test_f2_reclaim 
 ------------------
-              101
+              100
 (1 row)
 
 SELECT sift._test_f2_fsm('t_idx');
@@ -273,6 +273,73 @@ SELECT sift._test_f2_check('t_idx');
  parts=0 quarantined=1/1 meta_free=208/512
 (1 row)
 
+-- A stream of 5 blocks takes the free extents of 1 and 2 blocks, which no free extent of 4 blocks is there for, before it extends the file for the rest
+CREATE TABLE u (v int);
+CREATE INDEX u_idx ON u USING sift_store_test (v);
+SELECT sift._test_f2_init('u_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+SELECT (a).start AS h1 FROM (SELECT sift._test_f2_alloc('u_idx', 1) AS a) q \gset
+SELECT sift._test_f2_alloc('u_idx', 1) IS NOT NULL AS pad_1;
+ pad_1 
+-------
+ t
+(1 row)
+
+SELECT (a).start AS h2 FROM (SELECT sift._test_f2_alloc('u_idx', 2) AS a) q \gset
+SELECT sift._test_f2_alloc('u_idx', 1) IS NOT NULL AS pad_2;
+ pad_2 
+-------
+ t
+(1 row)
+
+SELECT sift._test_f2_release('u_idx', :h1, 1, 'none');
+ _test_f2_release 
+------------------
+ 
+(1 row)
+
+SELECT sift._test_f2_release('u_idx', :h2, 2, 'none');
+ _test_f2_release 
+------------------
+ 
+(1 row)
+
+SELECT sift._test_f2_reclaim('u_idx');
+ _test_f2_reclaim 
+------------------
+                3
+(1 row)
+
+SELECT sift._test_f2_fsm('u_idx');
+                                   _test_f2_fsm                                    
+-----------------------------------------------------------------------------------
+ c0=1 c1=1 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=0/0 meta_free=13/16
+(1 row)
+
+SELECT count(*) AS extents, sum(nblocks_out) AS got, count(*) FILTER (WHERE start IN (:h1, :h2)) AS from_holes
+  FROM sift._test_f2_alloc_stream('u_idx', 5);
+ extents | got | from_holes 
+---------+-----+------------
+       3 |   5 |          2
+(1 row)
+
+SELECT sift._test_f2_fsm('u_idx');
+                                   _test_f2_fsm                                    
+-----------------------------------------------------------------------------------
+ c0=0 c1=0 c2=0 c3=0 c4=0 c5=0 c6=0 c7=0 c8=0 c9=0 c10=0 queue=0/0 meta_free=15/16
+(1 row)
+
+SELECT sift._test_f2_check('u_idx');
+             _test_f2_check              
+-----------------------------------------
+ parts=0 quarantined=0/0 meta_free=15/16
+(1 row)
+
+DROP TABLE u;
 -- An extent past the largest class is refused
 SELECT sift._test_f2_alloc('t_idx', 2000);
 ERROR:  sift: an extent of 2000 blocks is more than the 1024 of the largest size class
