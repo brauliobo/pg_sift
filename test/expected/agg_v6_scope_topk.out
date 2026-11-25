@@ -282,10 +282,10 @@ SELECT probe(q) || ' ' || q FROM unnest(ARRAY[
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5000
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC FETCH FIRST 5 ROWS WITH TIES
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC
- normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id ORDER BY e.updated_at DESC LIMIT 5
+ normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id ORDER BY e.updated_at DESC LIMIT 5
  node ring 0 SELECT e.id, e.updated_at FROM events e LEFT JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT (SELECT 5)
- normal - 2 SELECT DISTINCT e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
+ normal - 0 SELECT DISTINCT e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
 (14 rows)
 
 PREPARE topk_p(int, int) AS SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = $1 ORDER BY e.updated_at DESC LIMIT $2;
