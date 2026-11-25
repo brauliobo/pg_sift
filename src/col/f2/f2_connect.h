@@ -12,8 +12,8 @@
 /* Before the build of the child: the parents the option names are given the key it joins by, and the child depends on them (the parents must be of format major 2) */
 extern void sift_f2_connect_resolve(Relation heap, Relation index);
 
-/* After the build: the journal of each parent of the child (made under the lock that holds its writers out), and the journal of this index when a child is connected to it (not in a concurrent build) */
-extern void sift_f2_connect_build(Relation heap, Relation index, bool concurrent);
+/* After the build: the journal of each parent of the child (made under the lock that holds its writers out), and the journal of this index when a child is connected to it (also in the copy REINDEX CONCURRENTLY builds: the stamps of the old index are another lineage) */
+extern void sift_f2_connect_build(Relation heap, Relation index);
 
 /* ALTER INDEX of the child: the connections follow the option */
 extern void sift_f2_connect_alter(Relation heap, Relation index);

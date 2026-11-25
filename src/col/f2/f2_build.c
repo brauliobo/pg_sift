@@ -305,7 +305,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_f2_progress_phase(SIFT_F2_PHASE_TRACK);
 		sift_f2_track_install(heap, index, info->ii_Concurrent);
 	}
-	sift_f2_connect_build(heap, index, info->ii_Concurrent);
+	sift_f2_connect_build(heap, index);
 	sift_scope_start(heap, index, info->ii_Concurrent);
 	sift_f2_say_build(heap, index, start, res->index_tuples, choices);
 	(void) sift_compact_pack_tails(index);

@@ -206,6 +206,7 @@ typedef struct Held
 	Oid			index;
 	uint32		slot;
 	TransactionId xid;
+	SubTransactionId subid;
 	uint32		kind;
 	int64		key;
 } Held;
@@ -328,18 +329,38 @@ journal_xact(XactEvent event, void *arg)
 	}
 }
 
+/* The writes of a subtransaction that rolls back are no change: they leave with it, and those of one that commits are its parent's */
+static void
+journal_subxact(SubXactEvent event, SubTransactionId mysubid, SubTransactionId parentsubid, void *arg)
+{
+	int			kept = 0;
+
+	if (event != SUBXACT_EVENT_ABORT_SUB && event != SUBXACT_EVENT_COMMIT_SUB)
+		return;
+	for (int i = 0; i < held.n; i++)
+	{
+		if (held.recs[i].subid == mysubid && event == SUBXACT_EVENT_ABORT_SUB)
+			continue;
+		held.recs[kept] = held.recs[i];
+		held.recs[kept++].subid = held.recs[i].subid == mysubid ? parentsubid : held.recs[i].subid;
+	}
+	held.n = kept;
+}
+
 static void
 hold(Oid index, uint32 kind, int64 key)
 {
 	TransactionId xid = GetCurrentTransactionId();
+	SubTransactionId subid = GetCurrentSubTransactionId();
 	Held	   *last = held.n > 0 ? &held.recs[held.n - 1] : NULL;
 
 	if (!held.hooked)
 	{
 		RegisterXactCallback(journal_xact, NULL);
+		RegisterSubXactCallback(journal_subxact, NULL);
 		held.hooked = true;
 	}
-	if (kind == SIFT_KJ_ADD && last != NULL && last->kind == kind && last->index == index && last->xid == xid)
+	if (kind == SIFT_KJ_ADD && last != NULL && last->kind == kind && last->index == index && last->xid == xid && last->subid == subid)
 	{
 		last->key += key;
 		return;
@@ -351,7 +372,7 @@ hold(Oid index, uint32 kind, int64 key)
 		held.cap = held.cap == 0 ? 256 : held.cap * 2;
 		held.recs = held.recs == NULL ? MemoryContextAlloc(TopTransactionContext, held.cap * sizeof(Held)) : repalloc(held.recs, held.cap * sizeof(Held));
 	}
-	held.recs[held.n++] = (Held) {.index = index,.slot = xid % SIFT_KJ_SLOTS,.xid = xid,.kind = kind,.key = key};
+	held.recs[held.n++] = (Held) {.index = index,.slot = xid % SIFT_KJ_SLOTS,.xid = xid,.subid = subid,.kind = kind,.key = key};
 }
 
 static bool

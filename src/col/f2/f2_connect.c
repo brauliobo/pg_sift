@@ -67,14 +67,14 @@ sift_f2_connect_resolve(Relation heap, Relation index)
 }
 
 void
-sift_f2_connect_build(Relation heap, Relation index, bool concurrent)
+sift_f2_connect_build(Relation heap, Relation index)
 {
 	Oid			origin = RelationGetRelid(index);
 	bool		wanted = sift_conn_children(origin) != NIL;
 
 	if (!wanted && (origin = sift_col_swap_origin(heap, index, true)) != InvalidOid)
 		wanted = sift_conn_children(origin) != NIL;
-	if (wanted && !concurrent && sift_col_track_on(index))
+	if (wanted && sift_col_track_on(index))
 		(void) sift_f2_journal_make(heap, index);
 	each_parent(heap, index, enable_journal);
 }
