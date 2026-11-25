@@ -27,6 +27,7 @@
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_gen.h"
 #include "agg/v6/v6_group_compact.h"
+#include "agg/v6/v6_pct.h"
 #include "core/memtrack.h"
 
 /* sift.arg_max, sift.arg_min: n the rows with a cmp, v0 the order key of the best cmp, v1 its val, aux 1 when that val is NULL (v6_argext.h) */
@@ -553,6 +554,18 @@ v6g_presize_set(SiftV6Group *g, V6Set *set)
 		sift_ht_presize(&set->ht, (uint32) Min(est, room));
 }
 
+/* the sorts of the percentile_cont of the sets of no keys: their answers (finish), or their end (the state is dropped) */
+static void
+plain_pcts(SiftV6Group *g, bool finish)
+{
+	for (int s = 0; s < g->nsets; s++)
+		for (int j = 0; g->set[s].nk == 0 && j < g->spec->naggs; j++)
+			if (g->spec->agg[j].kind == SV6_PCT_CONT && finish)
+				sift_v6_pct_finish(&g->set[s].plain[j], g->spec->agg[j].frac);
+			else if (g->spec->agg[j].kind == SV6_PCT_CONT)
+				sift_v6_pct_release(&g->set[s].plain[j]);
+}
+
 /* The state of a participant of a parallel run: its rows of a COUNT(DISTINCT) go to put, and its table holds what a participant may hold before it hands its groups over, whatever work_mem says */
 void
 sift_v6_group_scan_sink(SiftV6Group *g, SiftV6DistPut put, void *arg)
@@ -585,6 +598,7 @@ sift_v6_group_recycle(SiftV6Group *g)
 		set->plain_row = false;
 		set->emitted = false;
 	}
+	plain_pcts(g, false);
 	v6g_dist_recycle(g);
 	v6g_bulk_free(g);
 	if (g->gen != NULL)
@@ -617,8 +631,14 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	v6g_dist_init(g);
 	v6g_filter_init(g);
 	g->off = palloc(Max(spec->naggs, 1) * sizeof(uint32));
+	int			npct = 0;
+
 	for (int j = 0; j < spec->naggs; j++)
+	{
 		g->off[j] = j * sizeof(V6Acc);
+		npct += spec->agg[j].kind == SV6_PCT_CONT;
+	}
+	g->pct_kb = Max(work_mem / Max(npct, 1), 64);
 	g->stride = Max(spec->naggs, 1) * sizeof(V6Acc);
 	g->nsets = Max(spec->nsets, 1);
 	g->set = palloc0(g->nsets * sizeof(V6Set));
@@ -714,6 +734,7 @@ sift_v6_group_finish(SiftV6Group *g)
 static void
 finish_in_cx(SiftV6Group *g)
 {
+	plain_pcts(g, true);
 	g->cur = 0;
 	for (int s = 0; s < g->nsets; s++)
 	{
@@ -804,6 +825,7 @@ sift_v6_group_spill_stats(const SiftV6Group *g, uint64 *puts, uint64 *bytes)
 void
 sift_v6_group_free(SiftV6Group *g)
 {
+	plain_pcts(g, false);
 	for (int s = 0; s < g->nsets; s++)
 		v6g_compact_free(&g->set[s]);
 	v6g_dist_free(g);

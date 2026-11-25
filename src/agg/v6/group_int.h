@@ -112,6 +112,7 @@ struct SiftV6Group
 	uint64		dist_budget;	/* of budget: what the distinct sets of all the sets of keys may hold; the groups have the rest */
 	uint64		budget;
 	TupleDesc	desc;
+	int			pct_kb;			/* the sort of each percentile_cont of a set of no keys: work_mem shared by them (v6_pct.h) */
 	bool		spilled;
 	bool		own_recs;		/* the groups go to the spill as records of their values: they point to codes and an arena that the spill gives back (v6_group_spill.c) */
 	StringInfoData kbuf;

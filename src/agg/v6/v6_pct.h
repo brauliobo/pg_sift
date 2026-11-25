@@ -20,6 +20,12 @@
 extern bool sift_v6_pct_cont_of(const Aggref *a, double *frac);
 
 extern void sift_v6_pct_add(SiftTextArena *ar, V6Acc *acc, double x);
+/* The same for the state of a set of no keys, whose values are not bounded by its groups: past a number of them they go to a tuplesort of sort_kb (the state of its last value on, until sift_v6_pct_finish) */
+extern void sift_v6_pct_add_sorted(SiftTextArena *ar, V6Acc *acc, double x, int sort_kb);
+/* The sort of a state ends with its answer in the state (sift_v6_pct_final gives it); a state that never sorted is as it was */
+extern void sift_v6_pct_finish(V6Acc *acc, double frac);
+/* The sort of a state that has not finished ends, for a state that is dropped */
+extern void sift_v6_pct_release(V6Acc *acc);
 extern void sift_v6_pct_merge(SiftTextArena *ar, V6Acc *d, const V6Acc *s);
 /* The values of a state, as the bytes that follow its record in a spill (buf), and the values of a state that came that way joining dst; the offsets of src mean nothing to dst */
 extern void sift_v6_pct_put(const SiftTextArena *ar, const V6Acc *acc, StringInfo buf);
