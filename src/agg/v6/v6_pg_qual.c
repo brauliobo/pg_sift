@@ -9,6 +9,7 @@
 
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_pg_qual.h"
+#include "core/popcount.h"
 
 struct SiftV6PgQual
 {
@@ -177,7 +178,7 @@ sift_v6_pgqual_filter(SiftV6PgQual *q, SiftBatchSel *bs, const SiftVec *const *s
 			keep |= (uint64) (!q->x->isnull[r] && DatumGetBool(q->x->vals[r])) << (r & 63);
 		}
 		bs->mask[w] = keep;
-		left += (uint16) __builtin_popcountll(keep);
+		left += (uint16) sift_pc64(keep);
 	}
 	bs->n_active = left;
 	bs->all_active = left == bs->n_raw;

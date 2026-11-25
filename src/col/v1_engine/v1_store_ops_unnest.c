@@ -9,6 +9,7 @@
 #include "postgres.h"
 
 #include "col/v1_engine/v1_store_ops_unnest.h"
+#include "core/popcount.h"
 
 /* the vector a column of the table is read as: a numeric as the scaled integers its leaf holds */
 static SiftVecType
@@ -357,7 +358,7 @@ run_batch(UnRun *u, const SiftV6Batch *b)
 		restrict_where(u, b);
 	compute_columns(u, b, bs);
 	for (int w = 0; w < words; w++)
-		u->stats->rows += __builtin_popcountll(bs->mask[w]);
+		u->stats->rows += sift_pc64(bs->mask[w]);
 	if (u->ntests > 0)
 		sift_v1_unnest_run_tests(u, b, eb);
 	else if (u->keyed)
