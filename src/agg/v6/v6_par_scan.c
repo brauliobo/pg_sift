@@ -74,11 +74,41 @@ sift_v6_par_leave(SiftV6ParRun *r)
 	BarrierDetach(&r->hdr->phase_barrier);
 }
 
-void
-sift_v6_par_run_abort(int code, Datum arg)
+static SiftV6ParRun *guarded_run;
+
+/* The exit of the process in a guarded run: the barrier of the others is not left waiting for it */
+static void
+guarded_exit(int code, Datum arg)
 {
-	(void) code;
-	sift_v6_par_leave((SiftV6ParRun *) arg);
+	if (guarded_run != NULL)
+		sift_v6_par_leave(guarded_run);
+}
+
+/* The hook is made once and never cancelled: a callback another part of the process registers inside the run (the first pin of a shared dictionary) cannot get between it and its cancel */
+void
+sift_v6_par_guarded(SiftV6ParRun *r, void (*body) (SiftV6ParRun *r))
+{
+	static bool hooked;
+	SiftV6ParRun *outer = guarded_run;
+
+	if (!hooked)
+	{
+		before_shmem_exit(guarded_exit, 0);
+		hooked = true;
+	}
+	guarded_run = r;
+	PG_TRY();
+	{
+		body(r);
+	}
+	PG_CATCH();
+	{
+		guarded_run = outer;
+		sift_v6_par_leave(r);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	guarded_run = outer;
 }
 
 void

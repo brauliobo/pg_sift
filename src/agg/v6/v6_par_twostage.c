@@ -63,39 +63,40 @@ hand_over_keeper(SiftV6ParRun *r)
 }
 
 static void
+run_body(SiftV6ParRun *r)
+{
+	const bool	keeper = scan_and_hand_over(r);
+
+	if (pg_atomic_read_u32(&r->hdr->escalated) == 0)
+	{
+		sift_v6_par_leave(r);
+		if (keeper)
+		{
+			merge_all_parts(r);
+			r->eng->local_finish(r->local);
+		}
+		r->stage = keeper ? SV6S_LOCAL : SV6S_DONE;
+	}
+	else
+	{
+		if (keeper)
+			hand_over_keeper(r);
+		BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
+		sift_v6_par_leave(r);
+		r->stage = SV6S_PARTS;
+	}
+}
+
+static void
 run(SiftV6ParRun *r)
 {
-	bool		keeper;
-
 	if (sift_v6_par_attach(r) != 0)
 	{
 		sift_v6_par_leave(r);
 		r->stage = SV6S_DONE;
 		return;
 	}
-	PG_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
-	{
-		keeper = scan_and_hand_over(r);
-		if (pg_atomic_read_u32(&r->hdr->escalated) == 0)
-		{
-			sift_v6_par_leave(r);
-			if (keeper)
-			{
-				merge_all_parts(r);
-				r->eng->local_finish(r->local);
-			}
-			r->stage = keeper ? SV6S_LOCAL : SV6S_DONE;
-		}
-		else
-		{
-			if (keeper)
-				hand_over_keeper(r);
-			BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
-			sift_v6_par_leave(r);
-			r->stage = SV6S_PARTS;
-		}
-	}
-	PG_END_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
+	sift_v6_par_guarded(r, run_body);
 }
 
 bool

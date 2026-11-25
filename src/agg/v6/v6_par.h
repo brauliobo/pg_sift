@@ -321,8 +321,8 @@ extern bool sift_v6_par_next(SiftV6ParRun *r, Datum *values, bool *isnull);
 extern bool sift_v6_par_local_next(SiftV6ParRun *r, void *local, Datum *values, bool *isnull);
 /* Leaves the barrier if this participant is still at it, publishes its counters, frees it */
 extern void sift_v6_par_run_end(SiftV6ParRun *r);
-/* The error cleanup of a run (PG_ENSURE_ERROR_CLEANUP): the barrier of the others is not left waiting for it */
-extern void sift_v6_par_run_abort(int code, Datum arg);
+/* Runs body, so that an error in it or the exit of the process leaves the barrier of the others at once, not waiting for this participant */
+extern void sift_v6_par_guarded(SiftV6ParRun *r, void (*body) (SiftV6ParRun *r));
 
 /* the pieces the strategies share (v6_par_scan.c) */
 extern int	sift_v6_par_attach(SiftV6ParRun *r);

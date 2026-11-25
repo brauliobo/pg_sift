@@ -54,25 +54,23 @@ sift_v6_par_emit_parts(SiftV6ParRun *r, Datum *values, bool *isnull)
 }
 
 static void
+grouped_body(SiftV6ParRun *r)
+{
+	r->local = r->eng->local_new(r->eng->env, false);
+	r->rl = sift_radix_local_new_raw(r->coord);
+	sift_v6_par_scan(r, relief);
+	sift_v6_par_export(r);
+	r->eng->local_free(r->local);
+	r->local = NULL;
+	sift_v6_par_finish_stages(r);
+	BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
+}
+
+static void
 run_grouped(SiftV6ParRun *r)
 {
-	const int	phase = sift_v6_par_attach(r);
-
-	if (phase == 0)
-	{
-		PG_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
-		{
-			r->local = r->eng->local_new(r->eng->env, false);
-			r->rl = sift_radix_local_new_raw(r->coord);
-			sift_v6_par_scan(r, relief);
-			sift_v6_par_export(r);
-			r->eng->local_free(r->local);
-			r->local = NULL;
-			sift_v6_par_finish_stages(r);
-			BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
-		}
-		PG_END_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
-	}
+	if (sift_v6_par_attach(r) == 0)
+		sift_v6_par_guarded(r, grouped_body);
 	sift_v6_par_leave(r);
 	r->stage = SV6S_PARTS;
 }
@@ -120,6 +118,24 @@ final_state(SiftV6ParRun *r)
 }
 
 static void
+dist_body(SiftV6ParRun *r)
+{
+	r->local = r->eng->local_new(r->eng->env, false);
+	r->plocal = r->eng->local_new(r->eng->env, false);
+	r->rl = sift_radix_local_new_raw(r->coord);
+	sift_v6_par_scan(r, relief);
+	sift_v6_par_export(r);
+	sift_v6_par_export_plain(r);
+	sift_v6_par_finish_stages(r);
+	r->eng->local_free(r->local);
+	r->eng->local_free(r->plocal);
+	r->local = r->plocal = NULL;
+	BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
+	count_parts(r);
+	BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
+}
+
+static void
 run_dist(SiftV6ParRun *r)
 {
 	if (sift_v6_par_attach(r) != 0)
@@ -128,23 +144,7 @@ run_dist(SiftV6ParRun *r)
 		r->stage = SV6S_DONE;
 		return;
 	}
-	PG_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
-	{
-		r->local = r->eng->local_new(r->eng->env, false);
-		r->plocal = r->eng->local_new(r->eng->env, false);
-		r->rl = sift_radix_local_new_raw(r->coord);
-		sift_v6_par_scan(r, relief);
-		sift_v6_par_export(r);
-		sift_v6_par_export_plain(r);
-		sift_v6_par_finish_stages(r);
-		r->eng->local_free(r->local);
-		r->eng->local_free(r->plocal);
-		r->local = r->plocal = NULL;
-		BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
-		count_parts(r);
-		BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
-	}
-	PG_END_ENSURE_ERROR_CLEANUP(sift_v6_par_run_abort, PointerGetDatum(r));
+	sift_v6_par_guarded(r, dist_body);
 	sift_v6_par_leave(r);
 	if (pg_atomic_exchange_u32(&r->hdr->final_emitter, 1) != 0)
 	{
