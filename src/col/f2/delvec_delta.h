@@ -48,8 +48,32 @@ typedef struct SiftDvOps
 /* The serialized form of the vector, with the palette where it pays: palloc'd, *len its bytes */
 extern char *sift_dvd_serialize(const SiftDv *dv, const SiftDvOps *ops, uint32 *len);
 
+/* The serialized form made one granule at a time, in ascending granule order: a granule of rows, or one whose entry and bytes are another stream's and are copied as they are */
+typedef struct SiftDvBuilder SiftDvBuilder;
+
+extern SiftDvBuilder *sift_dvb_new(const SiftDvOps *ops, uint32 ngranules, uint64 part_gen, uint64 dv_gen);
+extern void sift_dvb_gran(SiftDvBuilder *b, const SiftDvGran *g);
+extern void sift_dvb_raw(SiftDvBuilder *b, const SiftDvGranuleEntry *src, const char *bytes);
+
+/* The stream (palloc'd, *len its bytes); the builder is gone */
+extern char *sift_dvb_finish(SiftDvBuilder *b, uint32 *len);
+
 /* The vector of the stream, the delta tail merged; NULL with *why set when the stream is damaged (the checksum, a granule out of order or out of range, an index past the palette, a chunk with no magic) */
 extern SiftDv *sift_dvd_deserialize(const char *bytes, uint32 len, uint64 part_gen, uint64 dv_gen, const uint16 *granule_rows, const SiftDvOps *ops, const char **why);
+
+/* The parts of sift_dvd_deserialize that a reader of one granule at a time uses; each returns NULL, or what is wrong with the stream */
+
+/* The header against the part and the generation, and the checksum; *base_len is the stream without its delta tail */
+extern const char *sift_dvd_check_stream(const char *bytes, uint32 len, uint64 part_gen, uint64 dv_gen, uint32 *base_len);
+
+/* The granule of entry e in g (its rows and deleters palloc'd, the caller's), prev the entry before it (NULL for the first) */
+extern const char *sift_dvd_read_granule(SiftDvGran *g, const SiftDvGranuleEntry *e, const SiftDvGranuleEntry *prev, const SiftDvHeaderData *h, const char *bytes, uint32 end, const uint16 *granule_rows);
+
+/* The granules the delta tail (bytes from..len) names, as the granules of dv alone (dv starts empty) */
+extern const char *sift_dvd_read_tail(SiftDv *dv, const char *bytes, uint32 from, uint32 len, const uint16 *granule_rows, uint32 ngranules, const SiftDvOps *ops);
+
+/* The rows of t added to g (both ascending); a row g has keeps its deleter */
+extern void sift_dvd_gran_union(SiftDvGran *g, const SiftDvGran *t);
 
 /* The checksum a stream with a delta tail keeps: the base, the words that appends change read as zero */
 extern uint32 sift_dvd_base_crc(const char *bytes, uint32 base_len);
@@ -101,6 +125,17 @@ typedef struct SiftDvDeltaPart
  * descriptor, the room) is left alone and false is its entry in taken; the caller writes its vector whole.
  */
 extern void sift_dv_append_delta_batch(Relation rel, uint32 part_id, const SiftDvDeltaPart *parts, int n, TransactionId xmax, CommandId cmax, bool *taken);
+
+/* A vector as its stream (sift_dvd_serialize, sift_dvb_finish) and the generation its pages carry */
+typedef struct SiftDvStream
+{
+	char	   *bytes;
+	uint32		len;
+	uint64		dv_gen;
+} SiftDvStream;
+
+/* Writes the streams into extents of their own and fills in the dv fields of the descriptors: up to MAX_GENERIC_XLOG_PAGES one-page vectors to a record; the extents they replace are the caller's to release */
+extern void sift_dv_write_streams(Relation rel, uint32 part_id, const SiftDvStream *streams, SiftPartDesc **descs, int n);
 
 /* Writes the vectors whole, up to MAX_GENERIC_XLOG_PAGES one-page vectors to a record; dv_gen of each is its own, from one sift_manifest_new_gen(rel, n) the caller made; the extents it replaces are the caller's to release */
 extern void sift_dv_write_batch(Relation rel, uint32 part_id, const SiftDv *const *dvs, SiftPartDesc **descs, int n);

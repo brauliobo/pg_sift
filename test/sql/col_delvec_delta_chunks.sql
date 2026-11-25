@@ -43,6 +43,19 @@ VACUUM dv;
 SELECT * FROM dv_state();
 SELECT dv_same();
 
+-- a DELETE rolled back leaves its deleter aborted in the vector: the DELETEs after it rewrite the granules they touch over it and copy the others
+BEGIN;
+DELETE FROM dv WHERE id BETWEEN 20001 AND 26000;
+ROLLBACK;
+DELETE FROM dv WHERE id BETWEEN 24001 AND 40000;
+SELECT dv_same();
+DELETE FROM dv WHERE id % 7 = 0 AND id > 30000;
+SELECT * FROM dv_state();
+SELECT dv_same();
+VACUUM dv;
+SELECT * FROM dv_state();
+SELECT dv_same();
+
 DROP TABLE dv;
 DROP FUNCTION dv_state();
 DROP FUNCTION dv_same();

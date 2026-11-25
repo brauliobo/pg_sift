@@ -167,8 +167,17 @@ extern SiftDv *sift_dv_deserialize(Relation rel, const char *bytes, uint32 len, 
  */
 extern SiftDv *sift_dv_settle(const SiftDv *dv, FullTransactionId horizon, FullTransactionId *stripped);
 
-/* The vector without the rows whose deleter aborted (they are alive, and a delete that follows marks them again); *dropped says whether there were any */
-extern SiftDv *sift_dv_unabort(const SiftDv *dv, bool *dropped);
+/*
+ * The vector of a part as the stream it was read from, a granule decoded when asked: what a delete merges its marks into, so that what it holds is the stream (a few bytes for a granule that
+ * is all dead or has one deleter) and not the rows it stands for. The rows of an aborted delete are alive in it (a delete that follows marks them again): *unaborted says whether there were any.
+ */
+typedef struct SiftDvImage SiftDvImage;
+
+extern SiftDvImage *sift_dv_image_read(Relation rel, const SiftPartDesc *desc, const uint16 *granule_rows, bool *unaborted);
+extern bool sift_dv_image_dead(const SiftDvImage *img, uint32 granule, uint16 row);
+
+/* sift_dv_merge on the image (may be NULL): the stream of the vector, the granules no mark names copied as they are; *len its bytes */
+extern char *sift_dv_image_merge(const SiftDvImage *img, const SiftDvMark *marks, int n, uint64 part_gen, uint64 dv_gen, uint32 ngranules, const uint16 *granule_rows, uint32 *len);
 
 /* Writes the vector into an extent (class size in the returned extent) and fills in the dv fields of the descriptor of its part */
 extern SiftExtent sift_dv_write(Relation rel, const SiftDv *dv, uint32 part_id, SiftPartDesc *desc);

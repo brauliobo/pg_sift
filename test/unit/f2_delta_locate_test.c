@@ -212,9 +212,9 @@ tail_run_fix(int nchunks, bool verify)
 	tail_fix(&f, nchunks, 4000);
 	neu = copy_dv(f.base);
 	t0 = now_s();
-	why = read_tail(neu, f.bytes, 0, f.len, f.grows, 64, &test_ops);
+	why = sift_dvd_read_tail(neu, f.bytes, 0, f.len, f.grows, 64, &test_ops);
 	t0 = now_s() - t0;
-	CHECK(why == NULL, "read_tail: %s", why ? why : "");
+	CHECK(why == NULL, "sift_dvd_read_tail: %s", why ? why : "");
 	if (verify)
 	{
 		SiftDv	   *ref = copy_dv(f.base);
@@ -251,7 +251,7 @@ test_delta_tail(void)
 	for (int n = 1; n < 400; n = n * 2 + 1)
 		(void) tail_run_fix(n, true);
 	(void) tail_run_fix(500, true);
-	why = read_tail(dv, bad, 0, 16, grows, 64, &test_ops);
+	why = sift_dvd_read_tail(dv, bad, 0, 16, grows, 64, &test_ops);
 	CHECK(why != NULL, "a chunk with no magic is refused");
 	free_dv(dv);
 	report("delta tail merge", tail_run, 500, 20.0);

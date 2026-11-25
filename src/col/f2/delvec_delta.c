@@ -22,252 +22,6 @@
 
 #define DV_HDR(pg)	((SiftDvHeaderData *) SiftPageGetData(pg))
 
-/* ---- serialize ---- */
-
-static SiftDvKind
-kind_of(const SiftDvGran *g)
-{
-	if (g->ndead == g->granule_rows)
-		return SIFT_DV_ALL_DEAD;
-	return g->ndead > SIFT_DV_ARRAY_MAX ? SIFT_DV_BITMAP : SIFT_DV_ARRAY16;
-}
-
-static void
-put_bitmap(const SiftDvGran *g, uint8 *bitmap)
-{
-	memset(bitmap, 0, SIFT_DV_BITMAP_BYTES);
-	for (int r = 0; r < g->ndead; r++)
-		bitmap[g->rows[r] >> 3] |= (uint8) (1 << (g->rows[r] & 7));
-}
-
-static bool
-same_deleter(const SiftDvXmaxEntry *a, const SiftDvXmaxEntry *b)
-{
-	return a->xmax == b->xmax && a->cmax == b->cmax;
-}
-
-/* The deleters of the granule once each, in the order they first appear; the count stops one past the palette */
-static int
-palette_of(const SiftDvGran *g, SiftDvXmaxEntry *uniq)
-{
-	int			u = 0;
-
-	for (int r = 0; r < g->ndead; r++)
-	{
-		int			k = 0;
-
-		while (k < u && !same_deleter(&uniq[k], &g->xmax[r]))
-			k++;
-		if (k == u)
-		{
-			if (u > SIFT_DVG_RLE_MAX_UNIQ)
-				return u;
-			uniq[u++] = g->xmax[r];
-		}
-	}
-	return u;
-}
-
-static bool
-all_valid(const SiftDvGran *g)
-{
-	for (int r = 0; r < g->ndead; r++)
-		if (!TransactionIdIsValid(g->xmax[r].xmax))
-			return false;
-	return true;
-}
-
-static bool
-any_valid(const SiftDvGran *g)
-{
-	for (int r = 0; r < g->ndead; r++)
-		if (TransactionIdIsValid(g->xmax[r].xmax))
-			return true;
-	return false;
-}
-
-/* The bytes of the deleters of the granule in the form that is smallest: 0, one entry, a palette, or one entry for each row */
-typedef enum XmaxForm
-{
-	XM_NONE,
-	XM_SINGLE,
-	XM_RLE,
-	XM_ROWS
-} XmaxForm;
-
-static XmaxForm
-form_of(const SiftDvGran *g, int *nuniq)
-{
-	SiftDvXmaxEntry uniq[SIFT_DVG_RLE_MAX_UNIQ + 2];
-	int			u;
-
-	*nuniq = 0;
-	if (!any_valid(g))
-		return XM_NONE;
-	u = palette_of(g, uniq);
-	if (u == 1 && all_valid(g))
-		return XM_SINGLE;
-	if (u >= 2 && u <= SIFT_DVG_RLE_MAX_UNIQ && 4 + (uint32) u * sizeof(SiftDvXmaxEntry) + g->ndead < (uint32) g->ndead * sizeof(SiftDvXmaxEntry))
-	{
-		*nuniq = u;
-		return XM_RLE;
-	}
-	return XM_ROWS;
-}
-
-static uint32
-xmax_bytes(XmaxForm f, const SiftDvGran *g, int nuniq)
-{
-	switch (f)
-	{
-		case XM_SINGLE:
-			return sizeof(SiftDvXmaxEntry);
-		case XM_RLE:
-			return MAXALIGN(4 + nuniq * sizeof(SiftDvXmaxEntry) + g->ndead);
-		case XM_ROWS:
-			return g->ndead * sizeof(SiftDvXmaxEntry);
-		default:
-			return 0;
-	}
-}
-
-static void
-bounds(const SiftDvGran *g, const SiftDvOps *ops, FullTransactionId *lo, FullTransactionId *hi)
-{
-	*lo = *hi = InvalidFullTransactionId;
-	for (int r = 0; r < g->ndead; r++)
-		if (TransactionIdIsValid(g->xmax[r].xmax))
-		{
-			FullTransactionId f = ops->fxid(ops->ctx, g->xmax[r].xmax);
-
-			if (!FullTransactionIdIsValid(*lo) || FullTransactionIdPrecedes(f, *lo))
-				*lo = f;
-			if (!FullTransactionIdIsValid(*hi) || FullTransactionIdFollows(f, *hi))
-				*hi = f;
-		}
-}
-
-static void
-write_xmax(char *dst, XmaxForm f, const SiftDvGran *g, int nuniq)
-{
-	if (f == XM_SINGLE)
-		memcpy(dst, g->xmax, sizeof(SiftDvXmaxEntry));
-	else if (f == XM_ROWS)
-		memcpy(dst, g->xmax, g->ndead * sizeof(SiftDvXmaxEntry));
-	else if (f == XM_RLE)
-	{
-		SiftDvXmaxEntry uniq[SIFT_DVG_RLE_MAX_UNIQ + 2];
-		uint16		n = nuniq;
-		uint8	   *idx = (uint8 *) dst + 4 + nuniq * sizeof(SiftDvXmaxEntry);
-
-		(void) palette_of(g, uniq);
-		memcpy(dst, &n, sizeof(n));
-		memcpy(dst + 4, uniq, nuniq * sizeof(SiftDvXmaxEntry));
-		for (int r = 0; r < g->ndead; r++)
-		{
-			int			k = 0;
-
-			while (!same_deleter(&uniq[k], &g->xmax[r]))
-				k++;
-			idx[r] = (uint8) k;
-		}
-	}
-}
-
-char *
-sift_dvd_serialize(const SiftDv *dv, const SiftDvOps *ops, uint32 *len)
-{
-	uint32		off = sizeof(SiftDvHeaderData) + dv->ndirty * sizeof(SiftDvGranuleEntry);
-	SiftDvGranuleEntry *ent = palloc0(Max(dv->ndirty, 1) * sizeof(SiftDvGranuleEntry));
-	XmaxForm   *form = palloc(Max(dv->ndirty, 1) * sizeof(XmaxForm));
-	int		   *nuniq = palloc(Max(dv->ndirty, 1) * sizeof(int));
-	FullTransactionId xmin = InvalidFullTransactionId,
-				xmax = InvalidFullTransactionId;
-	uint64		ndead = 0;
-	uint16		flags = SIFT_DV_FLAG_ALL_SETTLED;
-	char	   *buf;
-	SiftDvHeaderData *h;
-
-	for (int i = 0; i < dv->ndirty; i++)
-	{
-		const SiftDvGran *g = &dv->gran[i];
-		SiftDvKind	kind = kind_of(g);
-		FullTransactionId lo;
-
-		ent[i].granule_id = g->granule_id;
-		ent[i].kind = kind;
-		ent[i].ndead = g->ndead;
-		ndead += g->ndead;
-		if (kind == SIFT_DV_ARRAY16)
-		{
-			ent[i].payload_off = off;
-			off += MAXALIGN(g->ndead * sizeof(uint16));
-		}
-		else if (kind == SIFT_DV_BITMAP)
-		{
-			ent[i].payload_off = off;
-			off += SIFT_DV_BITMAP_BYTES;
-		}
-		bounds(g, ops, &lo, &ent[i].xid_max);
-		form[i] = form_of(g, &nuniq[i]);
-		if (form[i] == XM_NONE)
-			continue;
-		flags |= SIFT_DV_FLAG_HAS_XMAX;
-		ent[i].xmax_off = off;
-		if (form[i] == XM_SINGLE)
-		{
-			ent[i].kind |= SIFT_DVG_SINGLE_XMAX;
-			flags |= SIFT_DV_FLAG_SINGLE_XMAX;
-		}
-		else if (form[i] == XM_RLE)
-		{
-			ent[i].kind |= SIFT_DVG_RLE_XMAX;
-			flags |= SIFT_DV_FLAG_RLE_XMAX;
-		}
-		off += xmax_bytes(form[i], g, nuniq[i]);
-		if (!FullTransactionIdIsValid(xmin) || FullTransactionIdPrecedes(lo, xmin))
-			xmin = lo;
-		if (!FullTransactionIdIsValid(xmax) || FullTransactionIdFollows(ent[i].xid_max, xmax))
-			xmax = ent[i].xid_max;
-		for (int r = 0; r < g->ndead; r++)
-			if (TransactionIdIsValid(g->xmax[r].xmax) && !ops->committed(ops->ctx, g->xmax[r].xmax))
-				flags &= ~SIFT_DV_FLAG_ALL_SETTLED;
-	}
-	buf = palloc0(off);
-	h = (SiftDvHeaderData *) buf;
-	h->magic = SIFT_DV_MAGIC;
-	h->version = SIFT_DV_VERSION;
-	h->flags = flags;
-	h->ngranules = dv->ngranules;
-	h->part_gen = dv->part_gen;
-	h->dv_gen = dv->dv_gen;
-	h->xid_min = xmin;
-	h->xid_max = xmax;
-	h->ndead_total = ndead;
-	h->ndirty_granules = dv->ndirty;
-	h->stream_len = off;
-	h->nextents = 1;
-	memcpy(buf + sizeof(SiftDvHeaderData), ent, dv->ndirty * sizeof(SiftDvGranuleEntry));
-	for (int i = 0; i < dv->ndirty; i++)
-	{
-		const SiftDvGran *g = &dv->gran[i];
-		uint16		kind = ent[i].kind & SIFT_DVG_KIND_MASK;
-
-		if (kind == SIFT_DV_ARRAY16)
-			memcpy(buf + ent[i].payload_off, g->rows, g->ndead * sizeof(uint16));
-		else if (kind == SIFT_DV_BITMAP)
-			put_bitmap(g, (uint8 *) buf + ent[i].payload_off);
-		if (ent[i].xmax_off != 0)
-			write_xmax(buf + ent[i].xmax_off, form[i], g, nuniq[i]);
-	}
-	h->crc32c = sift_crc32c(buf + 12, off - 12);
-	*len = off;
-	pfree(ent);
-	pfree(form);
-	pfree(nuniq);
-	return buf;
-}
-
 /* ---- the checksum of a stream with a delta tail ---- */
 
 uint32
@@ -425,28 +179,27 @@ bucket_settle(DeltaBucket *b)
 	b->n = k;
 }
 
-/* The granule of the vector with the rows of the bucket added (a row already dead keeps the deleter it has) */
-static void
-gran_merge(SiftDvGran *g, const DeltaBucket *b)
+void
+sift_dvd_gran_union(SiftDvGran *g, const SiftDvGran *t)
 {
-	uint16	   *nr = palloc((g->ndead + b->n) * sizeof(uint16));
-	SiftDvXmaxEntry *nx = palloc((g->ndead + b->n) * sizeof(SiftDvXmaxEntry));
+	uint16	   *nr = palloc((g->ndead + t->ndead) * sizeof(uint16));
+	SiftDvXmaxEntry *nx = palloc((g->ndead + t->ndead) * sizeof(SiftDvXmaxEntry));
 	int			a = 0,
 				i = 0,
 				k = 0;
 
-	while (a < g->ndead || i < b->n)
+	while (a < g->ndead || i < t->ndead)
 	{
-		if (i == b->n || (a < g->ndead && g->rows[a] <= b->rows[i].row))
+		if (i == t->ndead || (a < g->ndead && g->rows[a] <= t->rows[i]))
 		{
-			i += i < b->n && g->rows[a] == b->rows[i].row;
+			i += i < t->ndead && g->rows[a] == t->rows[i];
 			nr[k] = g->rows[a];
 			nx[k++] = g->xmax[a++];
 		}
 		else
 		{
-			nr[k] = b->rows[i].row;
-			nx[k++] = b->rows[i++].x;
+			nr[k] = t->rows[i];
+			nx[k++] = t->xmax[i++];
 		}
 	}
 	pfree(g->rows);
@@ -454,8 +207,8 @@ gran_merge(SiftDvGran *g, const DeltaBucket *b)
 	g->rows = nr;
 	g->xmax = nx;
 	g->ndead = k;
-	if (FullTransactionIdIsValid(b->xid_max) && (!FullTransactionIdIsValid(g->xid_max) || FullTransactionIdFollows(b->xid_max, g->xid_max)))
-		g->xid_max = b->xid_max;
+	if (FullTransactionIdIsValid(t->xid_max) && (!FullTransactionIdIsValid(g->xid_max) || FullTransactionIdFollows(t->xid_max, g->xid_max)))
+		g->xid_max = t->xid_max;
 }
 
 static SiftDvGran
@@ -489,7 +242,11 @@ buckets_apply(SiftDv *dv, DeltaBuckets *bs)
 			out[k++] = dv->gran[a++];
 		if (a < dv->ndirty && dv->gran[a].granule_id == bs->b[i].gid)
 		{
-			gran_merge(&dv->gran[a], &bs->b[i]);
+			SiftDvGran	t = gran_new(&bs->b[i]);
+
+			sift_dvd_gran_union(&dv->gran[a], &t);
+			pfree(t.rows);
+			pfree(t.xmax);
 			out[k++] = dv->gran[a++];
 		}
 		else
@@ -503,9 +260,8 @@ buckets_apply(SiftDv *dv, DeltaBuckets *bs)
 }
 
 static const char *
-read_granule(SiftDv *dv, const SiftDvGranuleEntry *e, const SiftDvHeaderData *h, const char *bytes, uint32 end, const uint16 *granule_rows)
+decode_granule(SiftDvGran *g, const SiftDvGranuleEntry *e, const SiftDvGranuleEntry *prev, const SiftDvHeaderData *h, const char *bytes, uint32 end, const uint16 *granule_rows)
 {
-	SiftDvGran *g = &dv->gran[dv->ndirty];
 	uint32		nr;
 	uint16		kind = e->kind & SIFT_DVG_KIND_MASK;
 	bool		single = (e->kind & SIFT_DVG_SINGLE_XMAX) != 0,
@@ -515,7 +271,7 @@ read_granule(SiftDv *dv, const SiftDvGranuleEntry *e, const SiftDvHeaderData *h,
 		return "a granule of the deletion vector has flags that no form of the vector has";
 	if ((single && (!(h->flags & SIFT_DV_FLAG_SINGLE_XMAX) || e->xmax_off == 0)) || (rle && (!(h->flags & SIFT_DV_FLAG_RLE_XMAX) || e->xmax_off == 0)))
 		return "a granule of the deletion vector keeps its deleters in a form the vector does not say it has";
-	if (e->granule_id >= h->ngranules || (dv->ndirty > 0 && e->granule_id <= dv->gran[dv->ndirty - 1].granule_id) || e->ndead == 0)
+	if (e->granule_id >= h->ngranules || (prev != NULL && e->granule_id <= prev->granule_id) || e->ndead == 0)
 		return "the deletion vector lists a granule out of order";
 	g->granule_id = e->granule_id;
 	g->granule_rows = nr = granule_rows[g->granule_id];
@@ -523,7 +279,6 @@ read_granule(SiftDv *dv, const SiftDvGranuleEntry *e, const SiftDvHeaderData *h,
 	g->xid_max = e->xid_max;
 	g->rows = palloc(g->ndead * sizeof(uint16));
 	g->xmax = palloc0(g->ndead * sizeof(SiftDvXmaxEntry));
-	dv->ndirty++;
 	if (kind == SIFT_DV_ALL_DEAD)
 	{
 		if ((uint32) g->ndead != nr)
@@ -579,8 +334,23 @@ read_granule(SiftDv *dv, const SiftDvGranuleEntry *e, const SiftDvHeaderData *h,
 	return NULL;
 }
 
-static const char *
-read_tail(SiftDv *dv, const char *bytes, uint32 from, uint32 len, const uint16 *granule_rows, uint32 ngranules, const SiftDvOps *ops)
+const char *
+sift_dvd_read_granule(SiftDvGran *g, const SiftDvGranuleEntry *e, const SiftDvGranuleEntry *prev, const SiftDvHeaderData *h, const char *bytes, uint32 end, const uint16 *granule_rows)
+{
+	const char *why;
+
+	*g = (SiftDvGran) {0};
+	why = decode_granule(g, e, prev, h, bytes, end, granule_rows);
+	if (why != NULL && g->rows != NULL)
+	{
+		pfree(g->rows);
+		pfree(g->xmax);
+	}
+	return why;
+}
+
+const char *
+sift_dvd_read_tail(SiftDv *dv, const char *bytes, uint32 from, uint32 len, const uint16 *granule_rows, uint32 ngranules, const SiftDvOps *ops)
 {
 	DeltaBuckets bs;
 	const char *why = NULL;
@@ -622,29 +392,34 @@ read_tail(SiftDv *dv, const char *bytes, uint32 from, uint32 len, const uint16 *
 	return why;
 }
 
+const char *
+sift_dvd_check_stream(const char *bytes, uint32 len, uint64 part_gen, uint64 dv_gen, uint32 *base_len)
+{
+	const SiftDvHeaderData *h = (const SiftDvHeaderData *) bytes;
+	bool		tail;
+
+	if (len < sizeof(SiftDvHeaderData) || h->magic != SIFT_DV_MAGIC || h->version != SIFT_DV_VERSION || h->stream_len != len)
+		return "the deletion vector has the wrong magic or size";
+	tail = (h->flags & SIFT_DV_FLAG_DELTA_TAIL) != 0;
+	if (tail && (h->pad < sizeof(SiftDvHeaderData) || h->pad > len || (h->pad & 3) != 0))
+		return "the delta tail of the deletion vector starts outside it";
+	*base_len = tail ? h->pad : len;
+	if (h->crc32c != (tail ? sift_dvd_base_crc(bytes, *base_len) : sift_crc32c(bytes + 12, len - 12)))
+		return "the deletion vector has the wrong checksum";
+	if (h->part_gen != part_gen || h->dv_gen != dv_gen || sizeof(SiftDvHeaderData) + (uint64) h->ndirty_granules * sizeof(SiftDvGranuleEntry) > *base_len)
+		return "the deletion vector belongs to another part or generation";
+	return NULL;
+}
+
 SiftDv *
 sift_dvd_deserialize(const char *bytes, uint32 len, uint64 part_gen, uint64 dv_gen, const uint16 *granule_rows, const SiftDvOps *ops, const char **why)
 {
 	const SiftDvHeaderData *h = (const SiftDvHeaderData *) bytes;
 	const SiftDvGranuleEntry *ent = (const SiftDvGranuleEntry *) (bytes + sizeof(SiftDvHeaderData));
 	SiftDv	   *dv;
-	bool		tail;
-	uint32		base_len;
+	uint32		base_len = 0;
 
-	*why = NULL;
-	if (len < sizeof(SiftDvHeaderData) || h->magic != SIFT_DV_MAGIC || h->version != SIFT_DV_VERSION || h->stream_len != len)
-		*why = "the deletion vector has the wrong magic or size";
-	else if ((h->flags & SIFT_DV_FLAG_DELTA_TAIL) != 0 && (h->pad < sizeof(SiftDvHeaderData) || h->pad > len || (h->pad & 3) != 0))
-		*why = "the delta tail of the deletion vector starts outside it";
-	if (*why != NULL)
-		return NULL;
-	tail = (h->flags & SIFT_DV_FLAG_DELTA_TAIL) != 0;
-	base_len = tail ? h->pad : len;
-	if (h->crc32c != (tail ? sift_dvd_base_crc(bytes, base_len) : sift_crc32c(bytes + 12, len - 12)))
-		*why = "the deletion vector has the wrong checksum";
-	else if (h->part_gen != part_gen || h->dv_gen != dv_gen || sizeof(SiftDvHeaderData) + (uint64) h->ndirty_granules * sizeof(SiftDvGranuleEntry) > base_len)
-		*why = "the deletion vector belongs to another part or generation";
-	if (*why != NULL)
+	if ((*why = sift_dvd_check_stream(bytes, len, part_gen, dv_gen, &base_len)) != NULL)
 		return NULL;
 	dv = palloc0(sizeof(SiftDv));
 	dv->part_gen = part_gen;
@@ -652,9 +427,12 @@ sift_dvd_deserialize(const char *bytes, uint32 len, uint64 part_gen, uint64 dv_g
 	dv->ngranules = h->ngranules;
 	dv->gran = palloc0(Max(h->ndirty_granules, 1) * sizeof(SiftDvGran));
 	for (uint32 i = 0; i < h->ndirty_granules && *why == NULL; i++)
-		*why = read_granule(dv, &ent[i], h, bytes, base_len, granule_rows);
-	if (*why == NULL && tail)
-		*why = read_tail(dv, bytes, base_len, len, granule_rows, h->ngranules, ops);
+	{
+		*why = sift_dvd_read_granule(&dv->gran[dv->ndirty], &ent[i], i > 0 ? &ent[i - 1] : NULL, h, bytes, base_len, granule_rows);
+		dv->ndirty += *why == NULL;
+	}
+	if (*why == NULL && base_len < len)
+		*why = sift_dvd_read_tail(dv, bytes, base_len, len, granule_rows, h->ngranules, ops);
 	if (*why != NULL)
 	{
 		for (int i = 0; i < dv->ndirty; i++)
@@ -825,18 +603,15 @@ write_queued(Relation rel, const QPage *q, int nq)
 }
 
 void
-sift_dv_write_batch(Relation rel, uint32 part_id, const SiftDv *const *dvs, SiftPartDesc **descs, int n)
+sift_dv_write_streams(Relation rel, uint32 part_id, const SiftDvStream *streams, SiftPartDesc **descs, int n)
 {
-	SiftDvHorizon hz;
 	QPage		q[MAX_GENERIC_XLOG_PAGES];
-	char	  **streams = palloc(Max(n, 1) * sizeof(char *));
 	int			nq = 0;
 
-	sift_dvd_horizon_open(&hz);
 	for (int i = 0; i < n; i++)
 	{
-		uint32		len;
-		char	   *bytes = streams[i] = sift_dvd_serialize(dvs[i], &hz.ops, &len);
+		const char *bytes = streams[i].bytes;
+		const uint32 len = streams[i].len;
 		const SiftDvHeaderData *h = (const SiftDvHeaderData *) bytes;
 		uint32		npages = SIFT_PAYLOAD_PAGES(len);
 		SiftExtent	ext = npages == 1 ? (SiftExtent) {sift_fsm_alloc_meta_page(rel), 1} : sift_fsm_alloc(rel, npages);
@@ -850,19 +625,34 @@ sift_dv_write_batch(Relation rel, uint32 part_id, const SiftDv *const *dvs, Sift
 				write_queued(rel, q, nq);
 				nq = 0;
 			}
-			q[nq++] = (QPage) {ext.start + p, bytes + from, Min(len - from, (uint32) SIFT_PAGE_PAYLOAD), dvs[i]->dv_gen, part_id};
+			q[nq++] = (QPage) {ext.start + p, bytes + from, Min(len - from, (uint32) SIFT_PAGE_PAYLOAD), streams[i].dv_gen, part_id};
 		}
 		descs[i]->dv_blk = ext.start;
 		descs[i]->dv_nblocks = ext.nblocks;
-		descs[i]->dv_gen = dvs[i]->dv_gen;
+		descs[i]->dv_gen = streams[i].dv_gen;
 		descs[i]->dv_max_xid = h->xid_max;
 		descs[i]->ndead = h->ndead_total;
 		descs[i]->flags = (descs[i]->flags & ~SIFT_PART_FLAG_DV_SETTLED) | ((h->flags & SIFT_DV_FLAG_ALL_SETTLED) ? SIFT_PART_FLAG_DV_SETTLED : 0);
 	}
 	if (nq > 0)
 		write_queued(rel, q, nq);
+}
+
+void
+sift_dv_write_batch(Relation rel, uint32 part_id, const SiftDv *const *dvs, SiftPartDesc **descs, int n)
+{
+	SiftDvHorizon hz;
+	SiftDvStream *streams = palloc(Max(n, 1) * sizeof(SiftDvStream));
+
+	sift_dvd_horizon_open(&hz);
 	for (int i = 0; i < n; i++)
-		pfree(streams[i]);
+	{
+		streams[i].bytes = sift_dvd_serialize(dvs[i], &hz.ops, &streams[i].len);
+		streams[i].dv_gen = dvs[i]->dv_gen;
+	}
+	sift_dv_write_streams(rel, part_id, streams, descs, n);
+	for (int i = 0; i < n; i++)
+		pfree(streams[i].bytes);
 	pfree(streams);
 }
 

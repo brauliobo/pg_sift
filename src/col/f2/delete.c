@@ -17,13 +17,23 @@
 #include "core/memtrack.h"
 #include "core/page_io.h"
 
+/* The rows that are dead already, in the stream of the vector of the part (a bulk delete) or in the vector in memory (a compaction), either may be NULL */
+typedef struct DeadRows
+{
+	const SiftDvImage *img;
+	const SiftDv *dv;
+} DeadRows;
+
 /* A row that is dead already is an older one whose address a later row took after a VACUUM: a delete of that address is for another row */
 static bool
-row_dead(const SiftDv *base, uint32 g, uint16 row)
+row_dead(const DeadRows *dead_rows, uint32 g, uint16 row)
 {
-	const SiftDvGran *dg = base ? sift_dv_granule(base, g) : NULL;
+	const SiftDvGran *dg;
 	bool		dead = false;
 
+	if (dead_rows->img != NULL)
+		return sift_dv_image_dead(dead_rows->img, g, row);
+	dg = dead_rows->dv ? sift_dv_granule(dead_rows->dv, g) : NULL;
 	if (dg != NULL)
 		(void) sift_dv_find(dg, row, &dead);
 	return dead;
@@ -51,13 +61,13 @@ marks_add(Marks *mk, SiftDvMark m)
 
 /* The rows the deletes name by the address their row has now (an address change of the column delta chain): the row is where the chain puts it, whatever raw address the part holds */
 static void
-locate_remapped(const SiftPart *part, const SiftCdRemapMap *rm, const SiftPendDelRec *recs, int n, bool *done, Marks *mk, const SiftDv *base)
+locate_remapped(const SiftPart *part, const SiftCdRemapMap *rm, const SiftPendDelRec *recs, int n, bool *done, Marks *mk, const DeadRows *dead_rows)
 {
 	for (int i = 0; i < n; i++)
 	{
 		const SiftCdRemap *m = done[i] ? NULL : sift_cd_remap_by_new(rm, recs[i].tid);
 
-		if (m == NULL || m->part_gen != part->hdr.part_gen || row_dead(base, m->granule_id, m->row))
+		if (m == NULL || m->part_gen != part->hdr.part_gen || row_dead(dead_rows, m->granule_id, m->row))
 			continue;
 		marks_add(mk, (SiftDvMark) {m->granule_id, m->row, recs[i].xmax, recs[i].cmax});
 		done[i] = true;
@@ -200,7 +210,7 @@ by_target_cmp(const void *a, const void *b, void *arg)
 
 /* The rows of the granule that the candidates name, marked in the order of the targets; a row that moved to another address has left its raw one, a dead one is an older row the heap gave the address to again */
 static void
-mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, const DelOrder *o, const uint32 *cand, int nc, bool *done, Marks *mk, const SiftDv *base, const SiftCdRemapMap *rm)
+mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, const DelOrder *o, const uint32 *cand, int nc, bool *done, Marks *mk, const DeadRows *dead_rows, const SiftCdRemapMap *rm)
 {
 	CandSet		cs;
 	int		   *row = palloc(nc * sizeof(int));
@@ -212,7 +222,7 @@ mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, cons
 		row[c] = -1;
 	for (int r = 0; r < nrows; r++)
 		for (int c = cand_first(&cs, tids[r]); c >= 0 && c < nc && o->recs[cand[c]].tid == tids[r]; c++)
-			if (row[c] < 0 && (rm == NULL || !sift_cd_remap_supersedes(rm, part->hdr.part_gen, g, r, tids[r])) && !row_dead(base, g, r))
+			if (row[c] < 0 && (rm == NULL || !sift_cd_remap_supersedes(rm, part->hdr.part_gen, g, r, tids[r])) && !row_dead(dead_rows, g, r))
 				row[c] = r;
 	for (int c = 0; c < nc; c++)
 		if (row[c] >= 0)
@@ -232,14 +242,14 @@ mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, cons
 }
 
 static void
-locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const DelOrder *o, bool *done, Marks *mk, const SiftDv *base, const SiftCdRemapMap *rm)
+locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const DelOrder *o, bool *done, Marks *mk, const DeadRows *dead_rows, const SiftCdRemapMap *rm)
 {
 	uint64		len;
 	const SiftTidIndexEntry *tix = sift_part_read_section(rel, part, SEC_TID_INDEX, &len);
 	uint32	   *cand = palloc(Max(o->n, 1) * sizeof(uint32));
 
 	if (rm != NULL)
-		locate_remapped(part, rm, o->recs, o->n, done, mk, base);
+		locate_remapped(part, rm, o->recs, o->n, done, mk, dead_rows);
 	if (tix == NULL || len != (uint64) part->hdr.ngranules * sizeof(*tix))
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The part has no usable TID index.");
 	for (uint32 g = 0; g < part->hdr.ngranules; g++)
@@ -250,7 +260,7 @@ locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, c
 		{
 			uint64	   *tids = sift_part_read_tids(rel, part, dir, g);
 
-			mark_granule(part, g, tids, dir[g].nrows, o, cand, nc, done, mk, base, rm);
+			mark_granule(part, g, tids, dir[g].nrows, o, cand, nc, done, mk, dead_rows, rm);
 			pfree(tids);
 		}
 	}
@@ -263,8 +273,9 @@ sift_del_locate(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, 
 {
 	DelOrder	o = del_order(recs, n);
 	Marks		mk = {.cx = CurrentMemoryContext};
+	const DeadRows dead_rows = {.dv = base};
 
-	locate_ordered(rel, part, dir, &o, done, &mk, base, rm);
+	locate_ordered(rel, part, dir, &o, done, &mk, &dead_rows, rm);
 	if (mk.n > 0)
 		memcpy(marks, mk.v, mk.n * sizeof(SiftDvMark));
 	pfree(o.ord);
@@ -303,7 +314,7 @@ typedef struct PartMarks
 {
 	SiftDvMark *marks;
 	int			nm;
-	SiftDv	   *base;
+	SiftDvImage *base;
 	uint16	   *grows;
 	uint32		ngranules;
 	bool		unaborted;
@@ -457,6 +468,7 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 		SiftPart   *part;
 		SiftGranuleDesc *dir;
 		Marks		mk = {.cx = outer};
+		DeadRows	dead_rows;
 
 		if (!sift_u64_set_has(&remapped, parts[p].part_gen) && !part_may_hold(&order, &parts[p], done))
 			continue;
@@ -468,9 +480,11 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 		pm[p].ngranules = part->hdr.ngranules;
 		pm[p].grows = granule_rows(dir, part->hdr.ngranules);
 		if (parts[p].dv_blk != InvalidBlockNumber)
-			pm[p].base = sift_dv_unabort(sift_dv_read(rel, &parts[p], (uint32) part_id, pm[p].grows), &pm[p].unaborted);
+			pm[p].base = sift_dv_image_read(rel, &parts[p], pm[p].grows, &pm[p].unaborted);
+		dead_rows.img = pm[p].base;
+		dead_rows.dv = NULL;
 		MemoryContextSwitchTo(part_cx);
-		locate_ordered(rel, part, dir, &order, done, &mk, pm[p].base, rm);
+		locate_ordered(rel, part, dir, &order, done, &mk, &dead_rows, rm);
 		MemoryContextSwitchTo(outer);
 		MemoryContextReset(part_cx);
 		pm[p].marks = mk.v;
@@ -500,7 +514,7 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 	if (ncow > 0)
 	{
 		uint64		gen = sift_manifest_new_gen(rel, ncow);
-		SiftDv	  **dvs = palloc(ncow * sizeof(SiftDv *));
+		SiftDvStream *streams = palloc(ncow * sizeof(SiftDvStream));
 		SiftPartDesc **descs = palloc(ncow * sizeof(SiftPartDesc *));
 		int			k = 0;
 
@@ -508,14 +522,15 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 		{
 			if (pm[p].nm == 0 || taken[p])
 				continue;
-			dvs[k] = sift_dv_merge(pm[p].base, pm[p].marks, pm[p].nm, parts[p].part_gen, gen + k, pm[p].ngranules, pm[p].grows);
+			streams[k].dv_gen = gen + k;
+			streams[k].bytes = sift_dv_image_merge(pm[p].base, pm[p].marks, pm[p].nm, parts[p].part_gen, gen + k, pm[p].ngranules, pm[p].grows, &streams[k].len);
 			updated[k] = parts[p];
 			descs[k] = &updated[k];
 			if (parts[p].dv_blk != InvalidBlockNumber)
 				rel_ext[nrel++] = (SiftExtent) {parts[p].dv_blk, parts[p].dv_nblocks};
 			k++;
 		}
-		sift_dv_write_batch(rel, (uint32) part_id, (const SiftDv *const *) dvs, descs, ncow);
+		sift_dv_write_streams(rel, (uint32) part_id, streams, descs, ncow);
 	}
 	for (int i = npin; i < npend_pages; i++)
 		rel_ext[nrel++] = (SiftExtent) {pend_pages[i], 1};

@@ -71,6 +71,43 @@ SELECT dv_same();
  same 84009 41958045 798045
 (1 row)
 
+-- a DELETE rolled back leaves its deleter aborted in the vector: the DELETEs after it rewrite the granules they touch over it and copy the others
+BEGIN;
+DELETE FROM dv WHERE id BETWEEN 20001 AND 26000;
+ROLLBACK;
+DELETE FROM dv WHERE id BETWEEN 24001 AND 40000;
+SELECT dv_same();
+          dv_same           
+----------------------------
+ same 68009 33966045 646045
+(1 row)
+
+DELETE FROM dv WHERE id % 7 = 0 AND id > 30000;
+SELECT * FROM dv_state();
+ dead  | quarantined 
+-------+-------------
+ 24571 | f
+(1 row)
+
+SELECT dv_same();
+          dv_same           
+----------------------------
+ same 59438 29685045 564625
+(1 row)
+
+VACUUM dv;
+SELECT * FROM dv_state();
+ dead | quarantined 
+------+-------------
+    0 | f
+(1 row)
+
+SELECT dv_same();
+          dv_same           
+----------------------------
+ same 59438 29685045 564625
+(1 row)
+
 DROP TABLE dv;
 DROP FUNCTION dv_state();
 DROP FUNCTION dv_same();
