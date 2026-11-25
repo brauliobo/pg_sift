@@ -126,7 +126,7 @@ begin_arm(V6State *st, CustomScanState *node, EState *estate, int eflags)
 	sift_v6_fuse_arm_add(estate, &st->arm);
 }
 
-/* The quals of a parallel scan are constants or parameters of the statement: the participants read them once, as the leader does */
+/* The quals of a parallel scan are constants, parameters or stable expressions of the statement: the participants read the values the leader read when the scan began */
 static void
 begin_par(V6State *st, CustomScanState *node, EState *estate)
 {
@@ -134,7 +134,6 @@ begin_par(V6State *st, CustomScanState *node, EState *estate)
 	{
 		if (st->sources[k].nrt > 0)
 			ExecIndexEvalRuntimeKeys(node->ss.ps.ps_ExprContext, st->sources[k].rtkeys, st->sources[k].nrt);
-		st->sources[k].nrt = 0;
 		if (st->sources[k].index == NULL)
 			st->sources[k].ops->zone->bind_quals(st->sources[k].heap, st->sources[k].quals, node->ss.ps.ps_ExprContext);
 	}

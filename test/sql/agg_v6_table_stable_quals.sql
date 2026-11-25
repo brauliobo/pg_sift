@@ -72,6 +72,12 @@ EXECUTE sp_push(now() - interval '30 days');
 EXECUTE sp_push_h(now() - interval '30 days');
 EXECUTE sp_push(now() - interval '250 days');
 EXECUTE sp_push_h(now() - interval '250 days');
+SET plan_cache_mode = force_generic_plan;
+EXECUTE sp_push(now() - interval '30 days');
+EXECUTE sp_push_h(now() - interval '30 days');
+EXECUTE sp_push(now() - interval '250 days');
+EXECUTE sp_push_h(now() - interval '250 days');
+RESET plan_cache_mode;
 
 -- a rescan: the inner side of a nested loop reads the key again for each outer row
 SET enable_hashjoin = off; SET enable_mergejoin = off; SET enable_material = off;

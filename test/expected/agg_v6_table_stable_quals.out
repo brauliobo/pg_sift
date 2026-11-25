@@ -54,8 +54,8 @@ SELECT same('SELECT count(*), sum(v) FROM sq WHERE d >= current_date - 7') AS da
 (1 row)
 
 SELECT same('SELECT count(*), sum(v) FROM sq WHERE d = current_date - 3') AS date_equal;
-  date_equal  
---------------
+ date_equal 
+------------
  v6 same
 (1 row)
 
@@ -66,8 +66,8 @@ SELECT same('SELECT count(*), sum(v) FROM sq WHERE ts >= current_setting(''app.t
 (1 row)
 
 SELECT same('SELECT count(*), sum(v) FROM sq WHERE v >= current_setting(''app.i'')::int') AS int_setting;
- int_setting  
---------------
+ int_setting 
+-------------
  v6 same
 (1 row)
 
@@ -158,20 +158,20 @@ EXECUTE sp_any_h(ARRAY[1, 2, 3, 70]);
 RESET plan_cache_mode;
 -- SiftAggV6Push: the values of the small side as the key of the scan, with a stable qual and a parameter on the fact
 SELECT same('SELECT count(*), sum(v) FROM sq WHERE e IN (SELECT e FROM sd WHERE grp IN (3, 4)) AND ts >= now() - interval ''30 days''') AS push_stable;
-  push_stable   
-----------------
+ push_stable 
+-------------
  push same
 (1 row)
 
 SELECT same('SELECT count(*), sum(v) FROM sq WHERE e IN (SELECT e FROM sd WHERE grp IN (3, 4)) AND d >= current_date - 7') AS push_date;
-   push_date    
-----------------
+ push_date 
+-----------
  push same
 (1 row)
 
 SELECT same('SELECT v % 5, count(*), sum(v) FROM sq WHERE e IN (SELECT e FROM sd WHERE grp IN (3, 4)) AND ts >= now() - interval ''100 days'' GROUP BY 1') AS push_grouped;
-  push_grouped  
-----------------
+ push_grouped 
+--------------
  push same
 (1 row)
 
@@ -207,6 +207,32 @@ EXECUTE sp_push_h(now() - interval '250 days');
  10750 | 479950
 (1 row)
 
+SET plan_cache_mode = force_generic_plan;
+EXECUTE sp_push(now() - interval '30 days');
+ count |  sum  
+-------+-------
+  1300 | 19050
+(1 row)
+
+EXECUTE sp_push_h(now() - interval '30 days');
+ count |  sum  
+-------+-------
+  1300 | 19050
+(1 row)
+
+EXECUTE sp_push(now() - interval '250 days');
+ count |  sum   
+-------+--------
+ 10750 | 479950
+(1 row)
+
+EXECUTE sp_push_h(now() - interval '250 days');
+ count |  sum   
+-------+--------
+ 10750 | 479950
+(1 row)
+
+RESET plan_cache_mode;
 -- a rescan: the inner side of a nested loop reads the key again for each outer row
 SET enable_hashjoin = off; SET enable_mergejoin = off; SET enable_material = off;
 SELECT same('SELECT o.d, x.c FROM (SELECT DISTINCT d FROM sq WHERE d >= current_date - 5) o, LATERAL (SELECT count(*) c FROM sq WHERE sq.d = o.d AND sq.ts >= now() - interval ''399 days'') x') AS rescan_lateral;
