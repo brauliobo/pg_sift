@@ -6,7 +6,7 @@
 #define SIFT_COL_RUNS_H
 
 
-#include "col/v1/preagg.h"
+#include "col/v1/preagg/preagg.h"
 
 #define SIFT_CRUN_HDR		16
 #define SIFT_CRUN_ORD		1		/* the ordinals, ascending by (key, ordinal) */

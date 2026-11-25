@@ -13,7 +13,7 @@
 #include <sched.h>
 #endif
 
-#include "bm25/kernels_int.h"
+#include "bm25/kernels/int.h"
 #include "core/testrng.h"
 
 /* libc, not libpgport */

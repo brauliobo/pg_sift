@@ -5,7 +5,7 @@
 #ifndef SIFT_ESTIMATE_H
 #define SIFT_ESTIMATE_H
 
-#include "bm25/eval.h"
+#include "bm25/eval/eval.h"
 
 /* sift_eval_estimate, with the last few answers of the backend kept */
 extern void sift_estimate_cached(Relation index, text **queries, int nqueries, SiftEstimate *est);

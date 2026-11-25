@@ -1,18 +1,18 @@
 /*
- * agg/vk/int.h - the Vulkan backend, inside agg/vk/ (the interface is agg/vk.h)
+ * agg/vk/int.h - the Vulkan backend, inside agg/vk/ (the interface is agg/vk/vk.h)
  */
 #ifndef SIFT_AGG_VK_DIR_INT_H
 #define SIFT_AGG_VK_DIR_INT_H
 
 #include <signal.h>
 
-#include "agg/vk.h"
+#include "agg/vk/vk.h"
 #include "agg/vk/fast.h"
 #include "agg/vk/layout.h"
 
 #ifdef SIFT_VULKAN
 
-#include "agg/vk_min.h"
+#include "agg/vk/min.h"
 
 #define VK_INSTANCE_FNS(X) \
 	X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceProperties2) \

@@ -4,7 +4,7 @@
  * the dump of a segment into a run
  */
 #include "core/host.h"
-#include "bm25/runs/runs_priv.h"
+#include "bm25/runs/int.h"
 #include "core/memtrack.h"
 
 /*

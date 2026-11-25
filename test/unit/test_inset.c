@@ -1,10 +1,10 @@
 /*
- * test_inset.c - agg/v6/v6_inset_filter.c: the set of a column = ANY (array) is tested per row by its bloom filter and table when they fit work_mem and by a binary search of the values when
+ * test_inset.c - agg/v6/inset/filter.c: the set of a column = ANY (array) is tested per row by its bloom filter and table when they fit work_mem and by a binary search of the values when
  * they do not, and the two answer alike.
  */
 #include "postgres.h"
 
-#include "agg/v6/v6_inset.h"
+#include "agg/v6/inset/inset.h"
 #include "core/hash.h"
 #include "pgshim.h"
 #include "unit.h"

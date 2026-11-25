@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What the reads of a scope index paid for the pairs that changed since its floor is kept in the metapage of the index (col/v1/scope_paid.c): a restart, a crash and a backend that ends keep it, a server with
+# What the reads of a scope index paid for the pairs that changed since its floor is kept in the metapage of the index (col/v1/scope/paid.c): a restart, a crash and a backend that ends keep it, a server with
 # more scope indexes than the table of the shared memory had slots counts each of them, and the rule says `stale scope` after a burst of reads that a restart split in two, none of the halves enough alone; no worker rewrites for it.
 . "$(dirname "$0")/lib.bash"
 plan 8

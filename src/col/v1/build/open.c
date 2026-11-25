@@ -8,7 +8,7 @@
  * the index before a merge opens every segment; a build with room for the files takes the files, which read as the key ranges' index does.
  */
 #include "postgres.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 #include "col/v1/rowfile.h"
 #include "core/memtrack.h"
 

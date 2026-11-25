@@ -17,7 +17,7 @@
 #include <pthread.h>
 
 #include "core/page.h"
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 #include "cfg_check.h"
 #include "engine.h"
 #include "store.h"

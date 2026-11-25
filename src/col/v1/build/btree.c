@@ -21,7 +21,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 #include "core/compat.h"
 
 #ifdef SIFT_TESTING

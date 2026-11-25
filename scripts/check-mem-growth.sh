@@ -35,7 +35,7 @@ mulint = re.compile(r"\w[\w>.\-\[\]]*\s*\*\s*[\w(]")
 sized = re.compile(r"\(Size\)|\(size_t\)|\(uint64\)|\(int64\)|\(Size \)|sizeof|MaxAllocSize|\bSize\b|\bsize_t\b")
 lifetime = re.compile(r"(?:AllocSetContextCreate|MemoryContextAlloc(?:Zero|Huge)?|MemoryContextSwitchTo|MemoryContextStrdup|\.hcxt\s*=|hcxt\s*=|MemoryContextAllocExtended)\s*\(?[^;]*"
                       r"\b(?:TopMemoryContext|CacheMemoryContext)\b|\bhcxt\s*=\s*(?:TopMemoryContext|CacheMemoryContext)\b")
-SKIP = ("_test", "/test/", "leak_test")
+SKIP = ("_test", "/test")
 
 
 def code_of(line):

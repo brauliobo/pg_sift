@@ -1,1 +1,1 @@
-v6_guc_surface	src/col/am/options.c:show_open_stats src/col/f2/f2_v6_scope.c:pairs_subquery
+v6_guc_surface	src/col/am/options.c:show_open_stats src/col/f2/v6/scope/scope.c:pairs_subquery

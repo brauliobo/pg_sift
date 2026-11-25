@@ -5,7 +5,7 @@
 #ifndef SIFT_COL_PREAGG_BUILD_INT_H
 #define SIFT_COL_PREAGG_BUILD_INT_H
 
-#include "col/v1/preagg_int.h"
+#include "col/v1/preagg/int.h"
 
 typedef struct GroupKey
 {

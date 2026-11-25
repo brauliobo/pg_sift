@@ -27,7 +27,7 @@
 #include "agg/agg.h"
 
 #include "core/sift.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 
 typedef struct JbSlot
 {

@@ -5,9 +5,9 @@
 
 #include <math.h>
 
-#include "agg/kern6_int.h"
+#include "agg/kern6/int.h"
 #include "agg/v6/par/winpart.h"
-#include "agg/v6/v6_datebin_win.h"
+#include "agg/v6/win/datebin.h"
 
 typedef unsigned __int128 u128;
 

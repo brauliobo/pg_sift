@@ -1,7 +1,7 @@
 /* col/v1/maint/overlay.c - the small segments (overlays) of a key-cut index that one merge takes together. */
 #include "postgres.h"
 #include "access/xlog.h"
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 
 typedef struct KeySpan
 {

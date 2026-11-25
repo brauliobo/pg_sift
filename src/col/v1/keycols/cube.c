@@ -8,9 +8,9 @@
 #include "access/heapam.h"
 #include "utils/lsyscache.h"
 #include "col/am.h"
-#include "col/v1/keycols/keycols_int.h"
-#include "col/scope.h"
-#include "col/shred_pg.h"
+#include "col/v1/keycols/int.h"
+#include "col/scope/scope.h"
+#include "col/shred/pg.h"
 #include "core/hash.h"
 
 /*

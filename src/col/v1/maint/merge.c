@@ -6,15 +6,15 @@
  */
 #include "postgres.h"
 #include "utils/timestamp.h"
-#include "bm25/merge.h"
+#include "bm25/merge/merge.h"
 #include "col/v1/build.h"
-#include "col/v1/maint/maint_int.h"
-#include "col/v1/order_bound.h"
+#include "col/v1/maint/int.h"
+#include "col/v1/order/bound.h"
 #include "col/v1/point.h"
-#include "core/maint_pacer.h"
+#include "core/maint/pacer.h"
 #include "core/memtrack.h"
 
-/* the key the rewrite is about to cut by is not the one the segments were written for: their rows are sorted again (col/v1/order.c) */
+/* the key the rewrite is about to cut by is not the one the segments were written for: their rows are sorted again (col/v1/order/order.c) */
 
 #ifdef SIFT_TESTING
 int			sift_test_col_rollup_panic_armed = 0;
@@ -423,7 +423,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		/*
 		 * An index with an order key: the live rows of the inputs, merged in the order of the key, are cut again into units of a key range, so the
 		 * overlays of promotions and of the churn since the last merge fold back into the range they belong to. One segment, written through the
-		 * throttled target of the maintenance worker like any merge; the rows are streamed (col/v1/order.c), not held. Without a key the rows are in the
+		 * throttled target of the maintenance worker like any merge; the rows are streamed (col/v1/order/order.c), not held. Without a key the rows are in the
 		 * order of the TIDs and the units are of sift.col_unit_floor rows.
 		 */
 		if (live_rows > 0)
@@ -727,7 +727,7 @@ maint_merge_step(Relation index, bool force, SiftMergeGoal goal, bool *again)
 	all = palloc(Max(total, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < total; i++)
 		nimm += snap->segs[i].kind == SIFT_SEG_IMMUTABLE && !(snap->segs[i].flags & SIFT_SEG_SCOPE);
-	/* the merge and the rewrite are of the entity segments: a scope segment (col/scope.h) is cut by another key, and the two are never mixed */
+	/* the merge and the rewrite are of the entity segments: a scope segment (col/scope/scope.h) is cut by another key, and the two are never mixed */
 	{
 		int keep = 0;
 		for (int i = 0; i < total; i++)

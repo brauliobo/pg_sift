@@ -20,7 +20,7 @@
 #include "storage/bufmgr.h"
 #include "utils/hsearch.h"
 #include "utils/rel.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 #include "core/memtrack.h"
 
 #ifdef SIFT_TESTING

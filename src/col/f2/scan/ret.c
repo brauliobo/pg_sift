@@ -13,9 +13,9 @@
 #include "catalog/pg_type_d.h"
 
 #include "col/am.h"
-#include "col/f2/scan/scan_int.h"
+#include "col/f2/scan/int.h"
 #include "col/f2/scan/stream.h"
-#include "core/quarantine.h"
+#include "core/quarantine/quarantine.h"
 
 /* The value of row r of a leaf the index returns (sift_col_amcanreturn); false when it is NULL. The NaN of a numeric is stored as a NULL with a tag, the only value such a leaf cannot hold */
 bool

@@ -1,4 +1,4 @@
-# Options read from C sources: DefineCustom*Variable(), add_*_reloption(), and the sift_table option name arrays (src/table/f2/f2_options.c).
+# Options read from C sources: DefineCustom*Variable(), add_*_reloption(), and the sift_table option name arrays (src/table/f2/options.c).
 # An option is deprecated when its source says so: a sift_col description that starts with 'Format 1 only (deprecated' or 'Deprecated', a
 # sift_table option of sift_tbl_f2_hidden_option_names[], or a name of DIAGNOSTIC (the BM25 options that exist for diagnostics, not for tuning).
 import csv
@@ -22,7 +22,7 @@ APPLIES = ['all', 'BM25', 'sift_col', 'sift_table']
 DIAGNOSTIC = {'sift(build_segments)'}
 DEPRECATED_PREFIX = ('Format 1 only (deprecated', 'Deprecated')
 TBL_KINDS = {'OPT_TEXT': 'string', 'OPT_BOOL': 'bool', 'OPT_PCT': 'int', 'OPT_SIZE': 'int'}
-TBL_SRC = 'table/f2/f2_options.c'
+TBL_SRC = 'table/f2/options.c'
 CTX = {'PGC_USERSET': 'session', 'PGC_SUSET': 'superuser', 'PGC_SIGHUP': 'reload', 'PGC_POSTMASTER': 'restart'}
 ARGS = {'Bool': ['name', 'short', 'long', 'var', 'default', 'ctx', 'flags'],
         'Int': ['name', 'short', 'long', 'var', 'default', 'lo', 'hi', 'ctx', 'flags'],

@@ -18,11 +18,11 @@
 #include "test/unit/pg_shim.h"
 #include "test/unit/harness.h"
 
-#include "col/f2/f2_pred.c"
-#include "col/f2/f2_pack.c"
-#include "col/f2/f2_col_delta_idx.c"
-#include "col/f2/f2_vac_vm.c"
-#include "col/f2/f2_part_idx.h"
+#include "col/f2/pred/pred.c"
+#include "col/f2/pack.c"
+#include "col/f2/col_delta/idx.c"
+#include "col/f2/vacuum/vm.c"
+#include "col/f2/part/idx.h"
 
 /* ---- [ON-F2-02] the constants of an IN list in a table ---- */
 

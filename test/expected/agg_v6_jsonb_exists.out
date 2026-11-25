@@ -1,5 +1,5 @@
--- SiftAggV6 over the keys of jsonb documents (src/agg/v6/jsonb_qual.c): `doc ? 'k'`, jsonb_exists, jsonb_typeof(doc -> 'k') = 'type' and the `->>` text and float8 cast of a key
--- are read from the leaves of the index of format major 2, a row whose value the leaf cannot hold from the payload of its exception, and the scope aggregate of a join (src/col/f2/f2_v6_scope.c)
+-- SiftAggV6 over the keys of jsonb documents (src/agg/v6/qual/jsonb.c): `doc ? 'k'`, jsonb_exists, jsonb_typeof(doc -> 'k') = 'type' and the `->>` text and float8 cast of a key
+-- are read from the leaves of the index of format major 2, a row whose value the leaf cannot hold from the payload of its exception, and the scope aggregate of a join (src/col/f2/v6/scope/scope.c)
 -- scans the facts of a scope key when a qual of the facts is not one the cubes tell. Every query is run with the node and without it (sift.enable_agg) and the answers are compared: the
 -- first word says they agree, the second that the plan is the node's, the third how many rows the node read again from the heap and how many scans of the table the plan runs.
 CREATE EXTENSION pg_sift_test CASCADE;

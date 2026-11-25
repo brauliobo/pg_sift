@@ -1,7 +1,7 @@
 /*
  * agg/v6/par/star.h - the batches of a star or snowflake join through its dimensions, in pure C, for the compute threads of the backend (agg/v6/par/pinrun.h).
  *
- * The leader reads every dimension once into the flat tables of agg/v6/v6_star.h (a hash of the keys, the columns of the payload) and makes a pipe (agg/v6/v6_pipe.h) of its own for each thread over
+ * The leader reads every dimension once into the flat tables of agg/v6/star/star.h (a hash of the keys, the columns of the payload) and makes a pipe (agg/v6/pipe.h) of its own for each thread over
  * the same, read-only tables: no thread builds a table, copies one, or writes to one. A thread takes the fact columns of a granule, probes the dimensions batch by batch of SIFT_VEC_LEN rows through its pipe
  * and gathers the payload columns the keys and arguments read; the batches that leave the last dimension are the words that agg/v6/par/group.h folds: a key or a sum of 64-bit integers (a key is the
  * value with its sign bit flipped, all ones is the NULL key), or one text key (a payload of a dimension, which a NULL join leaves NULL).
@@ -18,7 +18,7 @@
 #include "agg/v6/par/group.h"
 #include "agg/v6/par/wordsink.h"
 #include "agg/v6/v6.h"
-#include "agg/v6/v6_pipe.h"
+#include "agg/v6/pipe.h"
 
 /* Whether the statement is one the threads fold: its keys, aggregates and the columns of its dimensions are integers or (one key) text; a spec the planner made for the scan of the fact columns */
 extern bool sift_par_star_shape(const SiftV6Spec *spec, SiftParWordShape *sh);

@@ -12,8 +12,8 @@
 #include "agg/stats.h"
 #include "col/leafshm.h"
 #include "core/limits.h"
-#include "core/visibility.h"
-#include "col/am/am_int.h"
+#include "core/visibility/visibility.h"
+#include "col/am/int.h"
 #include "core/cachebudget.h"
 
 /*
@@ -34,7 +34,7 @@
 
 /*
  * What the planner reads of the immutable segments of one class: the entity segments, or the scope segments (SIFT_SEG_SCOPE) of an index that has a scope, whose units are cut by another key and so
- * have other zones, sections and pre-aggregates than the entity units a read of the entities reads (col/scope.h).
+ * have other zones, sections and pre-aggregates than the entity units a read of the entities reads (col/scope/scope.h).
  */
 typedef struct ClassStats
 {

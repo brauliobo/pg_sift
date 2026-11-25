@@ -6,10 +6,10 @@
 
 #include <stdalign.h>
 
-#include "agg/v6/v6_cost_model.h"
+#include "agg/v6/cost/model.h"
 #include "agg/v6/par/star.h"
-#include "agg/v6/v6_batch.h"
-#include "agg/vexpr_str.h"
+#include "agg/v6/batch.h"
+#include "agg/vexpr/str.h"
 #include "core/par/pool.h"
 #include "core/popcount.h"
 

@@ -7,9 +7,9 @@
 
 #include "access/table.h"
 
-#include "col/f2/f2test.h"
+#include "col/f2/test.h"
 #include "core/catname.h"
-#include "core/f2/vis_f2.h"
+#include "core/f2/vis.h"
 #include "core/xid_cache.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_seal);

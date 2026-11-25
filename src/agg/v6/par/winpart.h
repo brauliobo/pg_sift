@@ -1,7 +1,7 @@
 /*
  * agg/v6/par/winpart.h - window functions over whole partitions on the compute threads (core/par/pool.h), in pure C: no palloc, no ereport, and no memory of its own.
  *
- * An item is the rows of whole partitions, in the order the partitions arrived (agg/v6/v6_win_partsort.h sorts one at a time; a thread sorts the partitions of an item). The leader makes the arrays
+ * An item is the rows of whole partitions, in the order the partitions arrived (agg/v6/win/partsort.h sorts one at a time; a thread sorts the partitions of an item). The leader makes the arrays
  * of the input and of the results (the thread writes only the results and the scratch) and the thread gives each partition what agg/window.c gives it: the rows sorted by the window order (each key
  * ascending or descending, NULLs first or last, a float8 with NaN above everything; rows that tie keep their arrival order), the functions of agg/window.h with the frame PostgreSQL gives them, row by row
  * (ROWS) or by peer group (RANGE), and the same values: the sum of integers in 128 bits, the sum of a float8 in the order of the sorted rows with the overflow check of float8pl, the average of an int4 as

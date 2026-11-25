@@ -10,7 +10,7 @@
 #include "agg/v6/par/winpart.h"
 #include "agg/v6/par/winrun.h"
 #include "agg/v6/par/winspill.h"
-#include "agg/v6/v6_batch.h"
+#include "agg/v6/batch.h"
 #include "core/memtrack.h"
 #include "core/par/morsel.h"
 #include "core/par/pool.h"

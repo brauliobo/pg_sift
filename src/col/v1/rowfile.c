@@ -5,7 +5,7 @@
  */
 #include "postgres.h"
 #include "storage/buffile.h"
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/v1/colspool.h"
 #include "col/compress.h"
 #include "col/v1/rowfile.h"

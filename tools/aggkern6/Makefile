@@ -1,11 +1,11 @@
-# Standalone harness of the 2048-row operators (src/agg/kern6*.c, no backend linked).
+# Standalone harness of the 2048-row operators (src/agg/kern6/kern6*.c, no backend linked).
 #   nice make -j2 test [N=20]   N thousand random cases per level plus the length grid
 #   make SANITIZE=1 test        ASan + UBSan build (into $(OUT)-san)
 OUT     ?= /tmp/sift-aggkern6-tools
 N       ?= 20
 
-LIB      = $(addprefix $(SRC)/agg/,kern6.c kern6_hash.c kern6_cmp.c kern6_avx2.c kern6_avx2_cmp.c kern6_avx2_agg.c kern6_avx512.c kern6_avx512_cmp.c kern6_avx512_agg.c kern6_neon.c kern6_neon_cmp.c kern6_neon_agg.c kern6_sbbf.c) $(SRC)/core/sbbf.c
-HDR      = $(wildcard $(SRC)/agg/kern6*.h) $(SRC)/agg/vec.h $(wildcard bench.h cases_*.h test_*.h)
+LIB      = $(addprefix $(SRC)/agg/,kern6/kern6.c kern6/hash.c kern6/cmp.c kern6/avx2.c kern6/avx2_cmp.c kern6/avx2_agg.c kern6/avx512.c kern6/avx512_cmp.c kern6/avx512_agg.c kern6/neon.c kern6/neon_cmp.c kern6/neon_agg.c kern6/sbbf.c) $(SRC)/core/sbbf.c
+HDR      = $(wildcard $(SRC)/agg/kern6/kern6*.h) $(SRC)/agg/vec.h $(wildcard bench.h cases_*.h test_*.h)
 
 CC      ?= gcc
 SRC      = ../../src

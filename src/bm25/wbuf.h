@@ -7,8 +7,8 @@
 
 #include "core/host.h"
 
-#include "bm25/analyze.h"
-#include "core/store.h"
+#include "bm25/analyze/analyze.h"
+#include "core/store/store.h"
 
 #ifdef __SSE2__
 #include <emmintrin.h>

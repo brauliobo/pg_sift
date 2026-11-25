@@ -7,10 +7,10 @@
 # segments the partition rule would merge again) at maintenance_work_mem 1 MB, the least:
 #   n = inputs, U = SIFT_SB_PAGES * MaxHeapTuplesPerPage rows of a unit, R = bytes a decoded row of the batches holds (RB), F = the writer's budget (writer_min_budget), mwm = 1 MB
 #   k = the inputs open together: those whose key range holds the key the merge is at (a key_cut merge opens an input, decodes its first unit and parses its dictionaries, when
-#       its rows reach the lowest key of that input, from the zones of its first unit: col/v1/order.c wake_inputs; sift._test_col_stream_dicts() counts the dictionaries held at once)
+#       its rows reach the lowest key of that input, from the zones of its first unit: col/v1/order/order.c wake_inputs; sift._test_col_stream_dicts() counts the dictionaries held at once)
 #   window  <= max(mwm / 4, window_min_bytes) + 2 * n * U * R      the units of a step and the batch they are folded into (col/v1/maint/merge_window.c)
-#   chunks  <= (2 * k + 4) * U * R                                 key_cut: the loaded unit of each open input and the one before it (col/v1/order.c MergeChunk), the unit the cut writes and its
-#                                                                  window of references (col/v1/order.c cut_rows); 512 kB without a key (the merge's own state: its inputs' arrays, the cursors)
+#   chunks  <= (2 * k + 4) * U * R                                 key_cut: the loaded unit of each open input and the one before it (col/v1/order/order.c MergeChunk), the unit the cut writes and its
+#                                                                  window of references (col/v1/order/order.c cut_rows); 512 kB without a key (the merge's own state: its inputs' arrays, the cursors)
 #   writer  <= 6 * F                                               the partition in hand, with its dictionaries and point arrays (the kinds of the partition, col writer dict and col writer points): the budget of the merge is the larger of F and the rows of a partition times sift_colw_row_memory
 #                                                                  (col/v1/maint/merge.c), up to 4 F for these rows (a partition is sized by its bytes, 12 to 42 for each row of the inputs), and the
 #                                                                  allocator holds up to 1.5 of the writer's estimate

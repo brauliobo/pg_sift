@@ -9,7 +9,7 @@
 #ifndef SIFT_LANE_H
 #define SIFT_LANE_H
 
-#include "core/store.h"
+#include "core/store/store.h"
 
 typedef struct SiftLanePageHead
 {

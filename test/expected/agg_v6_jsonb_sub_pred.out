@@ -1,4 +1,4 @@
--- keys of a jsonb document inside PostgreSQL expressions, with and without an unnest, in SiftAggV6 (src/agg/v6/jsonb_qual.c, src/agg/v6/v6_pg_expr.c, src/col/f2/f2_v6_unnest_run.c): the `->>` text and
+-- keys of a jsonb document inside PostgreSQL expressions, with and without an unnest, in SiftAggV6 (src/agg/v6/qual/jsonb.c, src/agg/v6/expr/pg.c, src/col/f2/v6/unnest/run.c): the `->>` text and
 -- float8 cast of a key as an input of an expression, and as a key or an argument beside the elements of an array. A row whose document holds the key as another JSON type than its leaf's (a number, a boolean,
 -- an object or an array where text is declared, a numeric string where a float is), a JSON null, a missing key, a missing document and a row still in the slab of the index are in the data: the value of the
 -- exception is the one the heap gives. Every statement runs over the index and over a heap twin (the truth): the first word says they agree, the second whether the plan is the node's.

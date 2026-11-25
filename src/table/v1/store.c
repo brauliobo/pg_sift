@@ -1,6 +1,6 @@
 /*
  * table/v1/store.c - the layout of a sift_table relation (docs/COL-TAM.md section 2): the per-relation cache, write
- * buffers (row format) and the tombstone segment. Pages and the directory are those of core/store.h.
+ * buffers (row format) and the tombstone segment. Pages and the directory are those of core/store/store.h.
  *
  * The page chains (a write buffer's data pages, the tombstone log) are the lane 0 of the lane segments of core/lane.h, which also
  * seals them and takes the segment directory swaps; what differs from the record segments of the BM25 and column indexes is the
@@ -13,14 +13,14 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
-#include "core/maint.h"
+#include "core/maint/maint.h"
 #include "core/extlock.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "table/v1/keyidx.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 #include "table/v1/store_int.h"
 
 int			sift_tbl_write_buffer_limit = 4096;	/* kB */

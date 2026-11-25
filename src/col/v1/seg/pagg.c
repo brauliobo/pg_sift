@@ -5,7 +5,7 @@
  */
 #include "core/host.h"
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* ---------- pre-aggregates (docs/COL-PREAGG.md) ---------- */
 

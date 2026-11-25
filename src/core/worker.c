@@ -17,15 +17,15 @@
 
 #include "col/dsmreg.h"
 #include "core/errctx.h"
-#include "core/maint_pacer.h"
-#include "core/maint_sched.h"
+#include "core/maint/pacer.h"
+#include "core/maint/sched.h"
 #include "core/sift.h"
-#include "core/store.h"
+#include "core/store/store.h"
 #include "core/worker.h"
 #include "utils/backend_status.h"
 #include "pgstat.h"
 
-/* The job each kind of worker serves, and the tier of its steps (core/maint_pacer.h) */
+/* The job each kind of worker serves, and the tier of its steps (core/maint/pacer.h) */
 static const struct
 {
 	SiftJob		job;
@@ -172,7 +172,7 @@ static int	my_slot = -1;
 static uint64 my_claim;
 static SiftWorkerKind my_kind = SIFT_WK_N;
 
-/* The tier of the claim a worker of the queue (core/maint_sched.h) runs; no other worker has one */
+/* The tier of the claim a worker of the queue (core/maint/sched.h) runs; no other worker has one */
 #define NOT_A_QUEUE_WORKER	(-1)
 static int	queue_tier = NOT_A_QUEUE_WORKER;
 

@@ -22,12 +22,12 @@
 
 #include "agg/stats.h"
 #include "col/am.h"
-#include "col/dictshm.h"
+#include "col/dictshm/dictshm.h"
 #include "core/cachebudget.h"
 #include "core/hash.h"
 #include "core/ring.h"
 #include "core/limits.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 #define CDICT_CACHE_BYTES		((Size) sift_backend_cache_kb * 1024)
 /* what a lookup adds to a code, built lazily once the dictionary has been searched a few times: the open addressing table (up to 4 slots of 4 bytes) and the sorted order (4) */

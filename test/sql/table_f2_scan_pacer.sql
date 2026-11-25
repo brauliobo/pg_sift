@@ -1,4 +1,4 @@
--- sift_table: the scans of the foreground feed the pacer of the maintenance workers (core/maint_pacer.h), one operation in 16 of a backend: the average of their time is empty before and
+-- sift_table: the scans of the foreground feed the pacer of the maintenance workers (core/maint/pacer.h), one operation in 16 of a backend: the average of their time is empty before and
 -- is not after 32 scans of a table of Format 2.0. The fast average is the first value of the pair.
 CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 SET sift.test_create_format1 = off;

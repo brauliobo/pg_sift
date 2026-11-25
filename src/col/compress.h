@@ -4,7 +4,7 @@
  * The portable codec (col/codec/codec.c) layers these on streams of a column chunk (WRAP nodes). The implementation is the host's, resolved
  * at link time: src/col/compress.c for the PostgreSQL build (liblz4 and libzstd, each optional at build time), sqlite/host/colz.c answers "not
  * available". An algorithm that is not available makes the writer skip it and the reader raise ERRCODE_FEATURE_NOT_SUPPORTED for a chunk
- * that uses it. New algorithms are new ids in col/codec.h (SIFT_CC_ALG_*) and a case here.
+ * that uses it. New algorithms are new ids in col/codec/codec.h (SIFT_CC_ALG_*) and a case here.
  */
 #ifndef SIFT_COLZ_H
 #define SIFT_COLZ_H

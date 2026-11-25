@@ -1,4 +1,4 @@
-# The visibility map of a sift_table (table/f2/f2_vm.h) under concurrent sessions: an index-only scan of a secondary index must answer what the table does while INSERT, UPDATE (a
+# The visibility map of a sift_table (table/f2/vm/vm.h) under concurrent sessions: an index-only scan of a secondary index must answer what the table does while INSERT, UPDATE (a
 # column delta and a key change), DELETE, a prepared DELETE, TRUNCATE and VACUUM interleave. vm_ios() reads through the index only, vm_tbl() through the table only; the two
 # columns of a read are the same count unless a bit of the map is true of a row that is not. A snapshot that began before a delete keeps the rows it saw.
 # Run by test/t/tbl_vm.sh on a server that preloads pg_sift (the records of the map are those of a resource manager): a server that does not never sets a bit.

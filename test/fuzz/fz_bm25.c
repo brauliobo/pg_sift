@@ -23,9 +23,9 @@
 #include <unistd.h>
 
 #include "fz_shim.h"
-#include "bm25/bitmap.h"
-#include "bm25/dict.h"
-#include "bm25/posting.h"
+#include "bm25/bitmap/bitmap.h"
+#include "bm25/dict/dict.h"
+#include "bm25/posting/posting.h"
 #include "core/cmp.h"
 #include "core/popcount.h"
 #include "core/varint.h"

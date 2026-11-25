@@ -1,7 +1,7 @@
 /*
- * agg/v6/v6.h - SiftAggV6, the aggregate scan of an index of format major 2: the rows the scan of col/f2/f2_scan.c accepts (its pruning, its filters on the compressed
+ * agg/v6/v6.h - SiftAggV6, the aggregate scan of an index of format major 2: the rows the scan of col/f2/scan/scan.c accepts (its pruning, its filters on the compressed
  * chunks, its deletion vectors and pending deletes) are vetted against the heap in batches, decoded to the vectors of agg/vec.h and folded into the groups of agg/group/ht.h
- * by the kernels of agg/kern6.h; one tuple leaves for each group. The planner side adds the path for a single table whose sift_col index of format major 2 holds every
+ * by the kernels of agg/kern6/kern6.h; one tuple leaves for each group. The planner side adds the path for a single table whose sift_col index of format major 2 holds every
  * column the query reads.
  */
 #ifndef SIFT_AGG_V6_H
@@ -20,7 +20,7 @@
 #include "agg/vec.h"
 #include "core/tidbridge.h"
 #include "col/am.h"
-#include "core/store_ops.h"
+#include "core/store/ops.h"
 
 typedef enum SiftV6Kind
 {
@@ -120,7 +120,7 @@ typedef enum SiftV6Src
 /* The virtual attribute of the boolean flag of test i of the elements of a row's array (SiftV6Ext.test, v6_ext.h), which a FILTER reads */
 #define SIFT_V6_XFLAG_VATT		(3 << 12)
 
-/* The ints each input of an SiftV6Spec.pgexpr item has after its result type: its attribute, type, scale, source and slot (agg/v6/v6_pg_expr.c) */
+/* The ints each input of an SiftV6Spec.pgexpr item has after its result type: its attribute, type, scale, source and slot (agg/v6/expr/pg.c) */
 #define SIFT_V6_PGX_INTS		5
 
 typedef struct SiftV6Col
@@ -189,7 +189,7 @@ typedef struct SiftV6Bin
 	int64		origin;
 } SiftV6Bin;
 
-/* A key or an argument computed from columns of the row (agg/v6/v6_expr_str.h): the vector of the batch it is is made after the columns are decoded */
+/* A key or an argument computed from columns of the row (agg/v6/expr/str.h): the vector of the batch it is is made after the columns are decoded */
 typedef enum SiftV6DeriveKind
 {
 	SVD_NONE = 0,
@@ -198,7 +198,7 @@ typedef enum SiftV6DeriveKind
 	SVD_EXTRACT,				/* extract(minute or hour FROM src), src a timestamp; aux is the unit in microseconds */
 	SVD_CASE_STR,				/* CASE WHEN cond[0] = cval[0] AND .. THEN src ELSE the constant END, text */
 	SVD_ARITH,					/* + - * of float8 columns (src, cond[0..]) and a constant (aux): the postfix tokens in cval, v6_plan_rewrite.h; the batches of an unnest only */
-	SVD_NUM_EXPR,				/* the exact scaled-integer product of up to three affine factors of numeric columns (agg/v6/v6_expr_num.h) */
+	SVD_NUM_EXPR,				/* the exact scaled-integer product of up to three affine factors of numeric columns (agg/v6/expr/num.h) */
 	SVD_PG_EXPR					/* arbitrary PostgreSQL Expr evaluated over active rows via ExecEvalExpr with per-batch ResetExprContext */
 } SiftV6DeriveKind;
 
@@ -272,8 +272,8 @@ typedef struct SiftV6Spec
 	int			nbins;
 	SiftV6Bin	bin[SIFT_V6_MAX_KEYS];
 	List	   *jmembers;		/* of each member of a map of a document the scan reads (SiftV6Col.jmember), the list of its keys from the document, as String nodes */
-	List	   *jsonqual;		/* the quals on the keys of jsonb documents the clauses of an operator class cannot say (agg/v6/jsonb_qual.c) */
-	List	   *vqual;			/* the quals no scan key says (a column against a column, OR, a numeric against a constant), over the columns the scan decodes (agg/v6/v6_bqual.h): they narrow every batch */
+	List	   *jsonqual;		/* the quals on the keys of jsonb documents the clauses of an operator class cannot say (agg/v6/qual/jsonb.c) */
+	List	   *vqual;			/* the quals no scan key says (a column against a column, OR, a numeric against a constant), over the columns the scan decodes (agg/v6/qual/bqual.h): they narrow every batch */
 	struct SiftV6Ext *ext;		/* the dimensions of a star join or the array an unnest takes apart (v6_ext.h); NULL for the scan of the columns of one table */
 	Oid			text_indexoid;	/* a sift index whose text queries (the Consts of text_queries, the arms of an OR) keep the rows: their hits go to the scan as bridges (v6_text.c); InvalidOid without one */
 	List	   *text_queries;
@@ -377,7 +377,7 @@ typedef struct SiftV6Rel
 } SiftV6Rel;
 
 /*
- * agg/v6/jsonb_qual.c: `doc ? 'k'`, jsonb_exists(doc, 'k') and jsonb_typeof(doc -> 'k') = 'type' (or IN a list of types) over a document of the index whose key is a leaf, as the element of
+ * agg/v6/qual/jsonb.c: `doc ? 'k'`, jsonb_exists(doc, 'k') and jsonb_typeof(doc -> 'k') = 'type' (or IN a list of types) over a document of the index whose key is a leaf, as the element of
  * SiftV6Spec.jsonqual the scan keys are made from; and `doc ->> 'k'` and `(doc ->> 'k')::float8` as a column of the scan. NULL / false when the leaf does not hold what the query asks.
  */
 extern List *sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause);
@@ -425,7 +425,7 @@ extern void sift_v6_exec_begin(SiftV6Spec *spec, struct PlanState *ps);
 extern void sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 /*
- * The aggregate of the statement over the columns of index ix (open as irel) of rel, or of the store of a sift_table, without its WHERE quals, for a scan that brings its own rows (agg/hybrid_plan.c): the keys and aggregates in
+ * The aggregate of the statement over the columns of index ix (open as irel) of rel, or of the store of a sift_table, without its WHERE quals, for a scan that brings its own rows (agg/hybrid/plan.c): the keys and aggregates in
  * *spec, the entries of the rows the aggregate leaves in *scan_tlist (the keys, then the aggregates), the grouping expressions in *group_exprs; false when the index does not hold what the statement reads.
  * extra is the GroupPathExtraData of the upper path. sift_v6_plan_shape says whether the statement is of the shape the aggregate scan serves (one table, no windows or DISTINCT ON).
  */
@@ -481,7 +481,7 @@ typedef struct SiftV6ScanStats
 	uint64		rows;
 	uint64		heap_vet_rows;
 	uint64		heap_rows_dead;
-	uint64		grans_preagg;	/* granules answered from their pre-aggregates (col/f2/f2_v6_preagg.h) */
+	uint64		grans_preagg;	/* granules answered from their pre-aggregates (col/f2/v6/preagg.h) */
 	uint64		grans_preagg_delta;	/* ... of them, those corrected for dead rows */
 	uint64		heap_reread_rows;	/* rows of an unnest whose document the leaves cannot hold, which the function takes apart again from the heap */
 	uint64		chunks;			/* passes of a scan that takes the hits of a text query as bridges */
@@ -505,7 +505,7 @@ extern bool sift_v6_text_chunk(void *text, const SiftTidBridge **bridge);
 extern void sift_v6_text_close(SiftV6Text *t);
 
 /*
- * The fold of the rows of a scan into the groups, which the zone scan of the format (core/store_ops.h) drives with the rows of a scan of the index and a caller with the rows of its own (agg/hybrid_agg_exec.c): sift_v6_fold_batch
+ * The fold of the rows of a scan into the groups, which the zone scan of the format (core/store/ops.h) drives with the rows of a scan of the index and a caller with the rows of its own (agg/hybrid/exec_agg.c): sift_v6_fold_batch
  * takes a batch of rows (the ColView of each leaf, indexed by leaf; sift_v6_fold_cols are the ones to decode), the live ones decided by the stored values and the maybe ones they could not decide;
  * the recheck says whether the heap keeps a maybe row (visible, and passing the quals the scan holds). A fold lives in the memory context it began in.
  */

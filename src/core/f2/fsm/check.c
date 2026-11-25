@@ -1,10 +1,10 @@
 /*
- * core/f2/fsm/check.c - what the allocator of format major 2 says of its own metadata: whether a block is one of the metadata slabs and the check of every list against the counts of the root (core/f2/fsm.c).
+ * core/f2/fsm/check.c - what the allocator of format major 2 says of its own metadata: whether a block is one of the metadata slabs and the check of every list against the counts of the root (core/f2/fsm/fsm.c).
  */
 #include "core/host.h"
 
-#include "col/f2/col_meta.h"
-#include "core/f2/fsm/fsm_int.h"
+#include "col/f2/meta.h"
+#include "core/f2/fsm/int.h"
 #include "core/popcount.h"
 
 bool

@@ -16,8 +16,8 @@
  *   bits, atomics, spin locks, condition variables, dsa_*: the primitives of bm25/parallel.c, which a host without shared memory implements
  *                with threads and malloc
  *   temp files   BufFile (the sorted runs of bm25/runs/runs.c), SharedFileSet (only the PostgreSQL parallel build asks for one), binaryheap
- *   storage      the page/extent store of core/store.h: Relation, Buffer, ReadBuffer/ReleaseBuffer, GenericXLog and the
- *                stream reader/writer. This is a link-time interface (core/store.c in PostgreSQL, sqlite/store.c in
+ *   storage      the page/extent store of core/store/store.h: Relation, Buffer, ReadBuffer/ReleaseBuffer, GenericXLog and the
+ *                stream reader/writer. This is a link-time interface (core/store/store.c in PostgreSQL, sqlite/store.c in
  *                SQLite): the hot path (sift_sr_get) is a plain call, never a table of function pointers.
  *   options      sift_host_enum_option: a process setting with a fixed set of values (sift.simd)
  *

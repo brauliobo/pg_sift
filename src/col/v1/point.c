@@ -4,7 +4,7 @@
 #include "core/hash.h"
 
 #include "col/v1/point.h"
-#include "col/v1/preagg.h"
+#include "col/v1/preagg/preagg.h"
 #include "col/v1/setsum.h"
 #include "core/cmp.h"
 

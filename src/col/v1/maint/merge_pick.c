@@ -3,8 +3,8 @@
  * dead rows, shared superblocks, the end state of an index, the windows of the rewrite of a key-cut index
  */
 #include "postgres.h"
-#include "bm25/merge.h"
-#include "col/v1/maint/maint_int.h"
+#include "bm25/merge/merge.h"
+#include "col/v1/maint/int.h"
 #include "col/v1/point.h"
 #include "core/cmp.h"
 #include "core/memtrack.h"

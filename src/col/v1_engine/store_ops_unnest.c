@@ -1,0 +1,489 @@
+/*
+ * col/v1_engine/store_ops_unnest.c - the aggregate scan of a LATERAL unnest over Format 1 (agg/v6/v6_unnest_run.h). The columns of the table the statement reads come from the batches of the
+ * Format 1 source, which hands over only the rows the tombstones and the snapshot leave. When the index keeps the array shredded (an SCL_ARRAY leaf of the lengths and a child leaf for each column of the
+ * element, or an SCL_OBJECT leaf of the keys and values of a map), the elements of the rows that pass the quals of the table are those of the leaves (v1_store_ops_elem.c); the rows the leaves cannot hold
+ * (a NULL array or a document that is no array, an array cut by the shredder, an element that holds a value its column cannot or may be no object) have their array read from the heap row and taken apart as
+ * PostgreSQL does, with the errors it raises. Without the leaves every array is read from its heap row. The pairs of (row, element) go through the pipe of the engine into the groups.
+ */
+/* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
+#include "postgres.h"
+
+#include "col/v1_engine/store_ops_unnest.h"
+#include "core/popcount.h"
+
+/* the vector a column of the table is read as: a numeric as the scaled integers its leaf holds */
+static SiftVecType
+col_vec_type(const UnCol *c)
+{
+	return c->typid == NUMERICOID ? SVEC_NUM64 : un_vec_type(c->cls);
+}
+
+static bool
+key_is_month(const SiftV6Spec *spec, int key)
+{
+	for (int b = 0; b < spec->nbins; b++)
+		if (spec->bin[b].key == key)
+			return true;
+	return false;
+}
+
+/* the column is the flag of a test of the elements of a row (the virtual attribute a FILTER reads it by) */
+static bool
+is_flag(const SiftV6Col *c)
+{
+	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->attno >= SIFT_V6_XFLAG_VATT && c->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS;
+}
+
+/* the column of the table the statement names, when it is one the batches hold */
+static bool
+reads_batch(const SiftV6Col *c)
+{
+	return c->src == SV6SRC_ATTR && !is_flag(c);
+}
+
+/* the column of the batches a column of the statement is read from */
+int
+sift_v1_unnest_col_index(UnRun *u, const SiftV6Col *col, bool month)
+{
+	const SiftV6Col *c = col;
+	SiftV6Col	json;
+	SiftV6Class cls;
+	int			attno;
+
+	if (sift_v6_vatt_is_json(c->attno))
+	{
+		json = sift_v6_vatt_col(c->attno, c->attno, c->typid, c->scale);
+		c = &json;
+	}
+	cls = sift_v6_class(c->typid);
+	attno = c->jleaf > 0 ? SIFT_V6_JLEAF_VATT + c->jleaf - 1 : c->attno;
+	if (c->jtype || (c->attno >= SIFT_V6_JLEAF_VATT && c->jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE || (c->typid == NUMERICOID && c->scale == SIFT_V6_SCALE_DATUM))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the aggregate scan of an unnest over Format 1 reads no column of type %u", c->typid),
+						errhint("Group by and aggregate integer, numeric, date, timestamp, float8 or text columns of the table that is unnested.")));
+	for (int i = 0; i < u->ncols; i++)
+		if (u->cols[i].attno == attno && u->cols[i].month == month)
+			return i;
+	if (u->ncols == SIFT_V6_MAX_COLS)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_V6_MAX_COLS),
+						errhint("Aggregate fewer columns of the table that is unnested.")));
+	u->cols[u->ncols] = (UnCol) {.attno = attno,.typid = c->typid,.scale = c->scale,.cls = cls,.month = month};
+	return u->ncols++;
+}
+
+/* the column of the batch that is leaf `leaf` of a key of a document, which is the source of the value of a member of a map the statement reads by key */
+static int
+source_col(UnRun *u, int leaf)
+{
+	const SiftV6Col c = {.attno = 1,.typid = FLOAT8OID,.jleaf = leaf + 1};
+
+	return sift_v1_unnest_col_index(u, &c, false);
+}
+
+/* the vector of the pipe a column of the statement is read from: a column of the table, the column of the element, or what the pairs compute from them */
+static int
+slot_of(UnRun *u, const SiftV6Col *c, bool month)
+{
+	if (is_flag(c))
+	{
+		u->flag_used[c->attno - SIFT_V6_XFLAG_VATT] = true;
+		return flag_slot(u, c->attno - SIFT_V6_XFLAG_VATT);
+	}
+	if (c->derive > 0)
+		return u->ncols + u->nel + c->derive - 1;
+	if (c->src == SV6SRC_DIM)
+		return sift_v6_pipe_dim_slot(u->pipe, c->dim, c->slot);
+	if (c->src == SV6SRC_ELEM)
+	{
+		u->eused[c->slot] = true;
+		return u->ncols + c->slot;
+	}
+	return sift_v1_unnest_col_index(u, c, month);
+}
+
+static void
+setup_cols(UnRun *u)
+{
+	const SiftV6Spec *spec = u->spec;
+
+	for (int i = 0; i < spec->nkeys; i++)
+		if (reads_batch(&spec->key[i]) && spec->key[i].derive == 0)
+			sift_v1_unnest_col_index(u, &spec->key[i], key_is_month(spec, i));
+	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
+		if (sift_v6_vec_col(spec, v) != NULL && reads_batch(sift_v6_vec_col(spec, v)) && sift_v6_vec_col(spec, v)->derive == 0)
+			sift_v1_unnest_col_index(u, sift_v6_vec_col(spec, v), false);
+	for (int d = 0; d < u->x->ndims; d++)
+		for (int k = 0; k < u->x->dim[d].nkeys; k++)
+			if (sift_v6_xdim_key_is_col(&u->x->dim[d], k) && u->x->dim[d].fsrc[k] == SV6SRC_ATTR)
+			{
+				const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
+
+				sift_v1_unnest_col_index(u, &key, false);
+			}
+	for (int i = 0; i < u->x->nrcol; i++)
+		if (u->x->rcol[i].src == SV6SRC_ATTR)
+			sift_v1_unnest_col_index(u, &u->x->rcol[i], false);
+	for (int k = 0; k < spec->nderive; k++)
+	{
+		const SiftV6Derive *d = &spec->derive[k];
+
+		for (int c = 0; c <= d->ncond; c++)
+			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR)
+				sift_v1_unnest_col_index(u, c == 0 ? &d->src : &d->cond[c - 1], false);
+		if (d->kind == SVD_PG_EXPR)
+		{
+			SiftV6PgItem it;
+
+			sift_v6_pgexpr_item(spec, d, &it);
+			for (int c = 0; c < it.nin; c++)
+				if (reads_batch(&it.col[c]))
+					sift_v1_unnest_col_index(u, &it.col[c], false);
+		}
+	}
+	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
+		if (reads_batch(&spec->fcol[i]))
+			sift_v1_unnest_col_index(u, &spec->fcol[i], false);
+	for (int k = 0; k < u->ntests; k++)
+		for (int c = 0; c < u->x->test[k].ncmps; c++)
+		{
+			const SiftV6XCmp *cmp = &u->x->test[k].cmp[c];
+			const SiftV6Col outer = {.attno = cmp->outer,.typid = cmp->outer_type};
+
+			u->outer_slot[k * SIFT_V6_XCMPS + c] = sift_v1_unnest_col_index(u, &outer, false);
+		}
+}
+
+static SiftVecType
+pg_vec_type(const SiftV6Spec *spec, const SiftV6Derive *d)
+{
+	SiftV6PgItem it;
+
+	sift_v6_pgexpr_item(spec, d, &it);
+	return sift_v6_result_vec_type(it.restype);
+}
+
+/* the evaluator of the derivation k, over the vectors of the pairs of its inputs */
+static void
+bind_pg(UnRun *u, int k)
+{
+	SiftV6PgItem it;
+	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
+
+	sift_v6_pgexpr_item(u->spec, &u->spec->derive[k], &it);
+	for (int c = 0; c < it.nin; c++)
+	{
+		u->pgslot[k][c] = slot_of(u, &it.col[c], false);
+		pin[c] = (SiftV6PgIn) {.typid = it.col[c].typid,.scale = it.col[c].scale};
+	}
+	u->pg[k] = sift_v6_pgexpr_open(CurrentMemoryContext, NULL, it.expr, it.nin, pin);
+	u->pg[k]->restype = it.restype;
+	sift_vx_out_init(&u->pgout[k], CurrentMemoryContext);
+}
+
+static void
+setup_pipe(UnRun *u, SiftV6Group *g, const SiftV6StarRun *star)
+{
+	const SiftV6Spec *spec = u->spec;
+	SiftVecType type[OUT_SLOTS];
+	const int	nslots = u->ncols + u->nel + spec->nderive + u->ntests + (u->x->elem.semi ? 1 : 0);
+
+	for (int i = 0; i < u->ncols; i++)
+		type[i] = col_vec_type(&u->cols[i]);
+	for (int c = 0; c < u->nel; c++)
+		type[u->ncols + c] = u->etype[c];
+	for (int k = 0; k < spec->nderive; k++)
+		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? pg_vec_type(spec, &spec->derive[k]) : SVEC_F64;
+	for (int k = 0; k < u->ntests; k++)
+		type[flag_slot(u, k)] = SVEC_I64;
+	if (u->x->elem.semi)
+		type[u->row_slot = nslots - 1] = SVEC_I64;
+	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, NULL, nslots, type);
+	if (u->row_slot >= 0)
+		sift_v6_pipe_semi(u->pipe, u->row_slot);
+	if (star != NULL)
+		sift_v6_star_attach(star, u->pipe);
+	for (int d = 0; d < u->x->ndims; d++)
+		for (int k = 0; k < u->x->dim[d].nkeys; k++)
+			if (sift_v6_xdim_key_is_col(&u->x->dim[d], k))
+			{
+				const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
+
+				u->pipe->fslot[d][k] = slot_of(u, &key, false);
+			}
+	for (int i = 0; i < u->x->nrcol; i++)
+		u->pipe->rslot[i] = slot_of(u, &u->x->rcol[i], false);
+	for (int i = 0; i < spec->nkeys; i++)
+		u->pipe->key_slot[i] = slot_of(u, &spec->key[i], key_is_month(spec, i));
+	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
+	{
+		const SiftV6Col *c = sift_v6_vec_col(spec, v);
+
+		u->pipe->arg_slot[v] = c == NULL ? -1 : slot_of(u, c, false);
+	}
+	for (int k = 0; k < spec->nderive; k++)
+	{
+		const SiftV6Derive *d = &spec->derive[k];
+		UnArith    *ar = &u->arith[k];
+
+		if (d->kind == SVD_PG_EXPR)
+		{
+			bind_pg(u, k);
+			continue;
+		}
+		ar->nin = d->ncond + 1;
+		for (int c = 0; c < ar->nin; c++)
+		{
+			const SiftV6Col *col = c == 0 ? &d->src : &d->cond[c - 1];
+
+			ar->in[c] = slot_of(u, col, false);
+			ar->f64[c] = col->typid == FLOAT8OID;
+		}
+	}
+	for (int s = 0; s < nslots; s++)
+	{
+		u->out_data[s] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sift_gather_width(type[s]) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+		u->out_valid[s] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
+		u->out[s] = &u->outv[s];
+	}
+}
+
+static int32
+month_of(UnRun *u, int32 day)
+{
+	uint32		at = ((uint32) day * 2654435761u) >> 20;
+
+	for (uint32 probe = 0; probe < MONTH_SLOTS; probe++, at = (at + 1) % MONTH_SLOTS)
+	{
+		if (u->month_val[at] == 0 && u->month_key[at] == 0)
+		{
+			const Datum ts = DirectFunctionCall1(date_timestamptz, DateADTGetDatum(day));
+			const Datum m = DirectFunctionCall2(timestamptz_trunc, CStringGetTextDatum("month"), ts);
+
+			u->month_key[at] = day;
+			u->month_val[at] = DatumGetDateADT(DirectFunctionCall1(timestamptz_date, m));
+			return u->month_val[at];
+		}
+		if (u->month_key[at] == day)
+			return u->month_val[at];
+	}
+	return DatumGetDateADT(DirectFunctionCall1(timestamptz_date, DirectFunctionCall2(timestamptz_trunc, CStringGetTextDatum("month"), DirectFunctionCall1(date_timestamptz, DateADTGetDatum(day)))));
+}
+
+/* the columns of the rows of the batch the statement computes from them, for the rows it keeps */
+static void
+compute_columns(UnRun *u, const SiftV6Batch *b, const SiftBatchSel *bs)
+{
+	for (int i = 0; i < u->ncols; i++)
+	{
+		const SiftVec *src = &b->col[i];
+
+		u->fv[i] = *src;
+		if (!u->cols[i].month)
+			continue;
+		memset(u->mvalid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		for (uint32 w = 0; w < (uint32) ((b->n + 63) / 64); w++)
+			for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
+			{
+				const uint32 r = w * 64 + (uint32) __builtin_ctzll(bits);
+
+				if (src->all_valid || (src->valid[r >> 6] >> (r & 63)) & 1)
+				{
+					u->mdata[i][r] = month_of(u, (int32) ((const int64 *) src->data)[r]);
+					u->mvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
+				}
+			}
+		u->fv[i] = (SiftVec) {.data = u->mdata[i],.valid = u->mvalid[i],.len = b->n,.all_valid = false,.dense = true,.type = SVEC_I64};
+	}
+}
+
+static void
+restrict_where(UnRun *u, const SiftV6Batch *b)
+{
+	SiftBatchSel *bs = &u->bs;
+	uint64		keep[SIFT_VEC_WORDS];
+
+	for (int i = 0; i < u->spec->nfcols; i++)
+		u->wvecs[i] = u->wcol[i] < 0 ? NULL : (SiftVec *) &b->col[u->wcol[i]];
+	sift_clause_eval(&u->where, u->wvecs, b->n, keep);
+	for (int w = 0; w < (b->n + 63) / 64; w++)
+		bs->mask[w] &= keep[w];
+}
+
+/* the pairs of the rows of the batch whose elements the leaves hold; the rows they cannot hold (poison) are read from their heap row */
+static void
+emit_elems(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
+{
+	SiftVec		ev[SIFT_V6_XELEM_COLS];
+	SiftUnnestIn in = {.lay = &eb->layout,.parent_mask = u->bs.mask,.poison = eb->poison,.doc_valid = eb->doc_valid,.left = u->x->elem.left};
+	SiftUnnestCursor cur = {0};
+	uint64		fallback[SIFT_VEC_WORDS] = {0};
+
+	MemoryContextReset(u->bcx);
+	for (int c = 0; c < u->nel; c++)
+		ev[c] = (SiftVec) {.type = u->etype[c],.data = (void *) eb->child_data[c],.valid = (uint64 *) eb->child_valid[c],.all_valid = false};
+	if (u->eev != NULL)
+	{
+		uint64	   *keep = MemoryContextAllocZero(u->bcx, ((eb->layout.n_elems + 63) / 64 + 1) * sizeof(uint64));
+
+		sift_v6_elem_eval(u->eev, ev, 0, eb->layout.n_elems, keep);
+		in.elem_mask = keep;
+	}
+	while (!sift_unnest_done(&in, &cur))
+	{
+		const uint32 m = sift_unnest_expand(&in, &cur, u->pidx, u->eidx, SIFT_VEC_LEN, fallback);
+
+		if (m > 0)
+			sift_v1_unnest_emit_pairs(u, u->fv, ev, m);
+	}
+	for (int w = 0; w < (b->n + 63) / 64; w++)
+		for (uint64 bits = fallback[w]; bits != 0; bits &= bits - 1)
+			sift_v1_unnest_emit_heap_row(u, b, w * 64 + (uint32) __builtin_ctzll(bits));
+}
+
+static void
+run_batch(UnRun *u, const SiftV6Batch *b)
+{
+	SiftBatchSel *bs = &u->bs;
+	const int	words = (b->n + 63) / 64;
+	const SiftV1ElemBatch *eb = u->has_elems ? sift_v1_source_elems(u->src) : NULL;
+
+	u->stats->batches++;
+	if (u->row_slot >= 0)
+		sift_v6_pipe_semi_reset(u->pipe);
+	memset(bs->mask, 0, sizeof(bs->mask));
+	for (int w = 0; w < words; w++)
+		bs->mask[w] = b->mask != NULL ? b->mask[w] : ~UINT64CONST(0);
+	if (b->n & 63)
+		bs->mask[words - 1] &= (UINT64CONST(1) << (b->n & 63)) - 1;
+	if (u->has_where)
+		restrict_where(u, b);
+	compute_columns(u, b, bs);
+	for (int w = 0; w < words; w++)
+		u->stats->rows += sift_pc64(bs->mask[w]);
+	if (u->ntests > 0)
+		sift_v1_unnest_run_tests(u, b, eb);
+	else if (u->keyed)
+		sift_v1_unnest_run_keyed(u, b, eb);
+	else if (eb != NULL)
+		emit_elems(u, b, eb);
+	else
+		for (int w = 0; w < words; w++)
+			for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
+				sift_v1_unnest_emit_heap_row(u, b, w * 64 + (uint32) __builtin_ctzll(bits));
+}
+
+static void
+setup_clauses(UnRun *u)
+{
+	const SiftV6Spec *spec = u->spec;
+	bool		bound;
+
+	if (u->x->where != NIL)
+	{
+		u->has_where = true;
+		bound = sift_v6_clause_bind(CurrentMemoryContext, u->x->where, spec, &u->where);
+		SIFT_INVARIANT(bound, "the WHERE clause of the aggregate scan of an unnest compiled when it was planned");
+		u->wvecs = palloc(Max(spec->nfcols, 1) * sizeof(SiftVec *));
+		u->wcol = palloc(Max(spec->nfcols, 1) * sizeof(int));
+		for (int i = 0; i < spec->nfcols; i++)
+			u->wcol[i] = reads_batch(&spec->fcol[i]) ? sift_v1_unnest_col_index(u, &spec->fcol[i], false) : -1;
+	}
+	if (u->x->pair_where != NIL)
+	{
+		u->has_pwhere = true;
+		bound = sift_v6_unnest_elem_clause(CurrentMemoryContext, u->x->pair_where, &u->pwhere, u->pcol, &u->npvec);
+		SIFT_INVARIANT(bound, "the quals over the members of the keys of the aggregate scan compiled when it was planned");
+	}
+	if (u->x->elem_where != NIL)
+		u->eev = sift_v6_elem_eval_open(CurrentMemoryContext, u->x->elem_where);
+	sift_v1_unnest_setup_tests(u);
+}
+
+static void
+open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
+{
+	SiftV6Input in;
+	const SiftSrcLayout *lay = sift_v1_reader_of(u->spec->is_table)->layout(u->spec->is_table ? heap : index);
+	SiftVecType type[SIFT_V6_XELEM_COLS];
+	int			leaf[SIFT_V6_XELEM_COLS];
+	SiftV1Scan	scan = {0};
+
+	if (u->spec->is_table)
+		sift_v6_input_init_table(&in, heap);
+	else
+		sift_v6_input_init_rel(&in, index);
+	for (int i = 0; i < u->ncols; i++)
+		in.col[i] = (SiftV6InCol) {.attno = u->cols[i].attno,.typid = u->cols[i].typid,.scale = u->cols[i].scale,.type = col_vec_type(&u->cols[i])};
+	in.ncols = u->ncols;
+	memcpy(type, u->etype, sizeof(type));
+	memcpy(leaf, u->x->elem.col_leaf, sizeof(leaf));
+	if (u->keyed)
+	{
+		leaf[0] = u->x->elem.key_leaf;
+		leaf[1] = u->x->elem.val_leaf;
+		type[0] = SVEC_STRVIEW;
+		type[1] = SVEC_F64;
+	}
+	u->has_elems = sift_v1_elem_spec(lay, u->x->elem.group_leaf, u->keyed ? 2 : u->nel, leaf, type, u->keyed ? NULL : u->x->elem.col_kind, &u->espec);
+	u->espec.objects = u->x->elem.fn == SV6E_RECORDSET || u->x->elem.fn == SV6E_PATH;
+	scan.elem = u->has_elems ? &u->espec : NULL;
+	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, NULL, &scan);
+}
+
+void
+sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+{
+	UnRun		run = {0};
+	UnRun	   *u = &run;
+	SiftV6Batch b;
+
+	u->spec = spec;
+	u->row_slot = -1;
+	u->x = spec->ext;
+	u->index = index;
+	u->stats = stats;
+	u->keyed = u->x->elem.fn == SV6E_KEYS;
+	u->nel = u->x->elem.ncols;
+	u->ntests = u->x->ntests;
+	for (int c = 0; c < u->nel; c++)
+		u->etype[c] = un_vec_type(sift_v6_class(u->x->elem.col_type[c]));
+	if (!u->keyed)
+		u->heap_att = un_heap_column(u, u->x->elem.attno);
+	if (u->x->elem.fn == SV6E_UNNEST)
+		get_typlenbyvalalign(u->x->elem.type, &u->typlen, &u->typbyval, &u->typalign);
+	else if (!u->keyed && u->x->elem.fn != SV6E_PATH)
+		u->rec = sift_v6_recfn_new(CurrentMemoryContext, u->x);
+	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 unnest heap rows");
+	u->pidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
+	u->eidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
+	u->month_key = palloc0(MONTH_SLOTS * sizeof(int32));
+	u->month_val = palloc0(MONTH_SLOTS * sizeof(int32));
+	sift_v1_unnest_heap_open(u, heap);
+	if (u->x->elem_array != NIL)
+		u->arr = sift_v1_unnest_heap_expr(u, linitial(u->x->elem_array));
+	else if (!u->keyed)
+		sift_v1_unnest_heap_att(u, u->heap_att);
+	for (int c = 0; u->keyed && c < u->nel; c++)
+	{
+		u->cexpr[c] = sift_v1_unnest_heap_expr(u, list_nth(u->x->col_expr, c));
+		u->kidx[c] = palloc(SIFT_VEC_LEN * sizeof(uint32));
+		u->elem_of[c] = palloc(SIFT_VEC_LEN * sizeof(uint32));
+	}
+	setup_cols(u);
+	setup_clauses(u);
+	for (int c = 0; c < u->nel; c++)
+		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, u->x->elem.col_leaf[c]) : -1;
+	setup_pipe(u, g, star);
+	for (int i = 0; i < u->ncols; i++)
+		if (u->cols[i].month)
+		{
+			u->mdata[i] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+			u->mvalid[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
+		}
+	open_source(u, heap, index, snap);
+	while (u->src->next(u->src, &b))
+		run_batch(u, &b);
+	u->src->close(u->src);
+	sift_v6_pipe_finish(u->pipe);
+	sift_v1_unnest_heap_close(u);
+	MemoryContextDelete(u->bcx);
+}

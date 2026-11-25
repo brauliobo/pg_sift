@@ -1,5 +1,5 @@
 -- A scope above sift.scope_max_multiplicity is refused, and a build of millions of rows should not write its scope segments first: the build estimates the multiplicity from a sample of the table
--- (src/col/v1/scope_sample.c) and refuses at once a scope whose estimate less 3.5 standard errors is over the limit. The sample is taken from 2,048 blocks of a table; sift.test_scope_sample_blocks lowers it.
+-- (src/col/v1/scope/sample.c) and refuses at once a scope whose estimate less 3.5 standard errors is over the limit. The sample is taken from 2,048 blocks of a table; sift.test_scope_sample_blocks lowers it.
 -- Every scope not clearly over the limit is built and the exact figure after the build decides, so a borderline scope is never refused by a sample.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;

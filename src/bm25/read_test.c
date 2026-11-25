@@ -12,16 +12,16 @@
 
 #include "access/genam.h"
 #include "col/v1/wbuf.h"
-#include "bm25/dict.h"
-#include "core/maint.h"
+#include "bm25/dict/dict.h"
+#include "core/maint/maint.h"
 #include "bm25/wbuf.h"
-#include "bm25/posting.h"
-#include "bm25/segment.h"
+#include "bm25/posting/posting.h"
+#include "bm25/segment/segment.h"
 #include "core/cachebudget.h"
 #include "bm25/prefix.h"
-#include "bm25/eval.h"
+#include "bm25/eval/eval.h"
 #include "core/inspect.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 PG_FUNCTION_INFO_V1(sift_test_read_stats);
 PG_FUNCTION_INFO_V1(sift_test_wbuf_reads);

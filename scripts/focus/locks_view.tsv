@@ -1,1 +1,1 @@
-locks_view	src/bm25/planner.c:carry_parent_scores
+locks_view	src/bm25/planner/planner.c:carry_parent_scores

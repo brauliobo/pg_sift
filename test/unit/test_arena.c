@@ -10,7 +10,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
 #include "core/par/arena.h"
 #include "pgshim.h"

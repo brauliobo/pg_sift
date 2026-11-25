@@ -11,10 +11,10 @@
 #include "storage/buffile.h"
 
 #include "core/sift.h"
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/col.h"
-#include "col/shred.h"
-#include "core/store.h"
+#include "col/shred/shred.h"
+#include "core/store/store.h"
 #include "fz_shim.h"
 
 extern void kt_cpu_init(void);	/* tools/kernels/shim.c */

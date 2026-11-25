@@ -12,7 +12,7 @@
 #include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
 
-#include "bm25/analyze.h"
+#include "bm25/analyze/analyze.h"
 #include "core/damage.h"
 #include "core/sift.h"
 #include "pgshim.h"

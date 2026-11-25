@@ -10,7 +10,7 @@
 
 #include "col/compress.h"
 #include "col/fsst.h"
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 #include "core/par/sbuf.h"
 
 #define SIFT_FSST_MIN_BYTES		4096	/* a column of fewer bytes keeps the codec's list: the table (up to 2.3 kB) would not pay */

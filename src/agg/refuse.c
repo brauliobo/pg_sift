@@ -38,7 +38,7 @@
 #include "agg/agg.h"
 #include "agg/refuse.h"
 #include "agg/stats.h"
-#include "agg/v6/v6_settings.h"
+#include "agg/v6/settings.h"
 #include "core/limits.h"
 #include "core/cachebudget.h"
 #include "core/sift.h"

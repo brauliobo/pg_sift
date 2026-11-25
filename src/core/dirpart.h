@@ -4,8 +4,8 @@
 #ifndef SIFT_DIRPART_H
 #define SIFT_DIRPART_H
 
-#include "core/dirchain.h"
-#include "core/store.h"
+#include "core/dirchain/dirchain.h"
+#include "core/store/store.h"
 
 /* The partition an entry is in, by generation: the lineage and the bound of the partition */
 typedef struct SiftPartOf

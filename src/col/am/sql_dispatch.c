@@ -11,12 +11,12 @@
 #include "col/am/format_ops.h"
 #include "col/am.h"
 #include "col/f2/f2.h"
-#include "col/f2/f2_choices.h"
+#include "col/f2/choices.h"
 #include "col/pg.h"
 #include "core/check.h"
 #include "core/errctx.h"
 #include "core/meta_peek.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 #include "table/dispatch.h"
 
 PG_FUNCTION_INFO_V1(sift_col_tracking);

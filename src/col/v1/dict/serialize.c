@@ -4,14 +4,14 @@
  * written by the segment writer
  */
 #include "col/compress.h"
-#include "col/v1/dict/dict_int.h"
+#include "col/v1/dict/int.h"
 
 /*
  * A serialized dictionary starts with u32 form, u32 n. The plain form (0) goes on with u32 off[n + 1] and the bytes; the string list form
  * (1) with the codec's list (the lengths as an integer cascade, the bytes under the cold wrapper rule), which starts 8-aligned.
  */
 
-/* The rows of the codes in byte order, by block: the layout of DICT_LOOKUP_COUNT (col/v1/enc.h) */
+/* The rows of the codes in byte order, by block: the layout of DICT_LOOKUP_COUNT (col/v1/enc/enc.h) */
 static void
 put_counts(const SiftCDict *d, StringInfo out)
 {

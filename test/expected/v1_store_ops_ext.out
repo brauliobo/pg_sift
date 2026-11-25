@@ -1,4 +1,4 @@
--- The order, jsonb and preagg sub-vtables of Format 1 (core/store_ops.h, col/v1_engine/v1_store_ops_ext.c and v1_store_ops_jsonb.c), reached as the engine reaches them, through the registry: what the
+-- The order, jsonb and preagg sub-vtables of Format 1 (core/store/ops.h, col/v1_engine/store_ops_ext.c and v1_store_ops_jsonb.c), reached as the engine reaches them, through the registry: what the
 -- owner says (no source order, the lead key a keyed index is cut by, no key leaf of a document, the stored cube), the rows scan_rows keeps for an ORDER BY .. LIMIT of one column against the heap's
 -- own, the groups unnest_run makes of a LATERAL unnest of an array (or jsonb_to_recordset) column against the heap's own, NULL, empty and NULL-element arrays and a document that is no array included,
 -- and the source opened on a match set of heap addresses.

@@ -4,7 +4,7 @@
 #ifndef SIFT_SCAN_INT_H
 #define SIFT_SCAN_INT_H
 
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 
 typedef struct SiftTblParSeg
 {

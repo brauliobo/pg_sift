@@ -1,1 +1,1 @@
-col_ordered_part	src/bm25/planner.c:carry_parent_scores src/bm25/planner.c:check_partition_scores src/col/v1/amscan/ordpath.c:sift_col_ordered_whole
+col_ordered_part	src/bm25/planner/planner.c:carry_parent_scores src/bm25/planner/planner.c:check_partition_scores src/col/v1/amscan/ordpath.c:sift_col_ordered_whole

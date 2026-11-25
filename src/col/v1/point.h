@@ -8,14 +8,14 @@
 #ifndef SIFT_COL_POINT_H
 #define SIFT_COL_POINT_H
 
-#include "col/v1/enc.h"
+#include "col/v1/enc/enc.h"
 
 #define SIFT_CPOINT_MAGIC	0x4B4C4F43		/* "COLK" */
 #define SIFT_CPOINT_VERSION_ROWS	2		/* the frame of a segment whose tables all list rows (minor 14) */
 #define SIFT_CPOINT_VERSION_ORD	4			/* the frame of a segment that also has global order blocks (minor 21): the header's last word counts their records, which follow those of the tables */
 #define SIFT_CPOINT_VERSION	3			/* the frame of a segment with a table of heap addresses (minor 16): its records carry the mode of the table */
 #define SIFT_CPOINT_MODE_ROWS	0		/* record word 5: the slots list the rows of the segment (the other modes of the frame) */
-#define SIFT_CPOINT_MODE_ORDER	2		/* ... or the record is the global order block of the leaf (col/v1/gorder.h): chunks, entries, values, 0, words of 8 bytes */
+#define SIFT_CPOINT_MODE_ORDER	2		/* ... or the record is the global order block of the leaf (col/v1/gorder/gorder.h): chunks, entries, values, 0, words of 8 bytes */
 #define SIFT_CPOINT_MODE_TIDS	1		/* ... or the heap addresses of the rows */
 #define SIFT_CPOINT_MODE_ZROWS	3		/* ... or the slots list rows as the table of addresses lists them: a list is {u32 count, u32 bytes, the first row then the differences in LEB128} (the values of a list) */
 #define SIFT_CPOINT_EXACT	0x100		/* in record word 5 with a mode: the table has ceil(keys * 4 / 3) slots, not a power of two, and a key starts at the position the high 32 bits of its hash scale to (column format minor 33) */

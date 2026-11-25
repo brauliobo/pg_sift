@@ -3,7 +3,7 @@
  */
 #include "postgres.h"
 #include "core/cmp.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 #include "col/v1/scan/gmem.h"
 
 /* a stored segment: the groups of its table, read one by one from `at` in the direction of the scan (the table is not held, whatever its size) */

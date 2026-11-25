@@ -1,1 +1,1 @@
-agg_keys_plan	src/col/v1/gorder.c:sift_cgord_pay src/col/v1/gorder_leaf.c:sift_cgord_leaf_numeric
+agg_keys_plan	src/col/v1/gorder/gorder.c:sift_cgord_pay src/col/v1/gorder/leaf.c:sift_cgord_leaf_numeric

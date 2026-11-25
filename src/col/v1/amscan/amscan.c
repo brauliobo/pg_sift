@@ -12,10 +12,10 @@
 #include "optimizer/optimizer.h"
 #include "utils/uuid.h"
 #include "col/am.h"
-#include "col/v1/amscan/amscan_int.h"
+#include "col/v1/amscan/int.h"
 #include "core/errctx.h"
-#include "core/quarantine.h"
-#include "core/v1_col/tomb.h"
+#include "core/quarantine/quarantine.h"
+#include "core/v1_col/tomb/tomb.h"
 
 
 IndexScanDesc

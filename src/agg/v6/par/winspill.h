@@ -1,6 +1,6 @@
 /*
  * agg/v6/par/winspill.h - a partition of the window node on the compute threads (par/winrun.h) that is more than a thread may hold: its rows go to a sort that spills to files past work_mem
- * (agg/v6/v6_win_spill.h), and the functions run over the sorted stream in the engine of the serial node (agg/window.h), which carries the state of the frame from one batch to the next. The rows
+ * (agg/v6/win/spill.h), and the functions run over the sorted stream in the engine of the serial node (agg/window.h), which carries the state of the frame from one batch to the next. The rows
  * are the ones the threads would have run (the same order keys, ties in arrival order, the same frames), so the results are the same.
  */
 #ifndef SIFT_AGG_V6_PAR_WINSPILL_H

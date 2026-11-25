@@ -1,14 +1,14 @@
 /*
  * col/gpu_unwrap.c - a blob of the column codec as the device reads it (col/gpu.h): the device unwraps LZ4, so a node wrapped in zstd (what a cold part writes for a stream that shrinks by a
  * few percent: low cardinality columns, dates, small integers) is replaced here by the node it holds, and the nodes a cold part writes under that layer only (DELTA_BYTE, BSS) by a
- * frame of reference of whole bytes, which is what they decode to. The layout of the nodes is the codec's (col/codec_write.c): a node is a multiple of 8 bytes
+ * frame of reference of whole bytes, which is what they decode to. The layout of the nodes is the codec's (col/codec/write.c): a node is a multiple of 8 bytes
  * and the byte lengths of the children of RLE, DICT, ALP and SCALE are in the node, so no leaf has to be measured.
  */
 #include "postgres.h"
 
 #include "lib/stringinfo.h"
 
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/compress.h"
 #include "col/gpu.h"
 

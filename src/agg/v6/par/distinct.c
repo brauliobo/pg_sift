@@ -4,7 +4,7 @@
 #include "postgres.h"
 
 #include "agg/v6/par/distinct_int.h"
-#include "agg/v6/v6_distinct_u64.h"
+#include "agg/v6/distinct/u64.h"
 #include "core/popcount.h"
 
 static inline uint32

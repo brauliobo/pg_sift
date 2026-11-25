@@ -1,4 +1,4 @@
--- The scope summaries of an index of format major 2, live (col/f2/f2_scope.c): CREATE INDEX with a scope writes the entity parts once and, from their granules, one summary for each scope that
+-- The scope summaries of an index of format major 2, live (col/f2/scope/scope.c): CREATE INDEX with a scope writes the entity parts once and, from their granules, one summary for each scope that
 -- holds every scope key's aggregates, instead of a copy of every fact row for each key. The cube of every key (the rows and the sums of the measures: the integer and float leaves of the
 -- index) is read back through the entity side a query reads (deletion vectors, strides) and compared with a join of the facts with the pairs of the scope over the heap; so are the newest rows
 -- of a key and the cube of a month. The summary follows the pairs (an INSERT, UPDATE or DELETE of the mapping table) and the rows (INSERT, UPDATE, DELETE, VACUUM, the compaction it does)

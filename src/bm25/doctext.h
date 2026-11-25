@@ -10,7 +10,7 @@
 #include "executor/executor.h"
 #include "utils/tuplesort.h"
 
-#include "bm25/analyze.h"
+#include "bm25/analyze/analyze.h"
 #include "bm25/wbuf.h"
 
 #define PACK_TERM	(2 + sizeof(uint32))

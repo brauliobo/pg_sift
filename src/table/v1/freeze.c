@@ -10,11 +10,11 @@
 #include "utils/timestamp.h"
 
 #include "col/am.h"
-#include "col/v1/seg.h"
-#include "core/maint.h"
+#include "col/v1/seg/seg.h"
+#include "core/maint/maint.h"
 #include "core/memtrack.h"
-#include "bm25/merge.h"
-#include "table/v1/table_v1.h"
+#include "bm25/merge/merge.h"
+#include "table/v1/table.h"
 #include "table/v1/seg_int.h"
 #include "core/u64set.h"
 

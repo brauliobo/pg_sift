@@ -31,11 +31,11 @@
 
 #include "col/am.h"
 #include "col/dsmreg.h"
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "col/v1/setsum.h"
-#include "core/maint.h"
+#include "core/maint/maint.h"
 #include "core/ops.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 #include "core/worker.h"
 
 #define ROLLUP_QUEUE		64		/* segments waiting */

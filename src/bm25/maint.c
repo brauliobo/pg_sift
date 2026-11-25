@@ -1,5 +1,5 @@
 /*
- * bm25/maint.c - what the maintenance of a BM25 index adds to the shared one (core/maint.c): the callbacks of its kind, the cost of walking its write buffer, and its
+ * bm25/maint.c - what the maintenance of a BM25 index adds to the shared one (core/maint/maint.c): the callbacks of its kind, the cost of walking its write buffer, and its
  * background worker
  */
 #include "postgres.h"
@@ -16,15 +16,15 @@
 #include "core/catname.h"
 #include "core/compat.h"
 #include "core/limits.h"
-#include "core/live.h"
-#include "core/maint.h"
-#include "core/maint_int.h"
-#include "bm25/merge.h"
+#include "core/live/live.h"
+#include "core/maint/maint.h"
+#include "core/maint/int.h"
+#include "bm25/merge/merge.h"
 #include "bm25/wbuf.h"
 #include "core/memtrack.h"
 #include "core/ops.h"
 #include "core/progress.h"
-#include "core/quarantine.h"
+#include "core/quarantine/quarantine.h"
 #include "core/reads.h"
 #include "core/worker.h"
 

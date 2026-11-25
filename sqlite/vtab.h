@@ -7,7 +7,7 @@
 
 #include "api.h"
 
-#include "bm25/eval.h"
+#include "bm25/eval/eval.h"
 
 typedef enum SqContent
 {

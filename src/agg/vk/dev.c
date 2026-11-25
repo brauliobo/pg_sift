@@ -13,7 +13,7 @@
 #include <strings.h>
 
 #include "agg/vk/int.h"
-#include "agg/vk_spv.h"
+#include "agg/vk/spv.h"
 
 #ifdef SIFT_VULKAN
 

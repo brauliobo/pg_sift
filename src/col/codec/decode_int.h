@@ -5,7 +5,7 @@
 #ifndef SIFT_COL_CODEC_DECODE_INT_H
 #define SIFT_COL_CODEC_DECODE_INT_H
 
-#include "col/codec_int.h"
+#include "col/codec/int.h"
 
 extern int64	cc_alp_key(const CcNode *nd, int64 d);
 

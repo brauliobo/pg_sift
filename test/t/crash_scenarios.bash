@@ -149,7 +149,7 @@ SCENARIOS+=(
 	"f2_reindex~$F2@@$COL~$F2@@REINDEX INDEX docs_col"
 	"f2_vacuum~$F2@@$COL@@DELETE FROM docs WHERE id % 3 = 0@@UPDATE docs SET n = n + 1 WHERE id % 7 = 0~$F2@@VACUUM docs"
 )
-# Format 2, the other durable steps (gates of core/f2/f2_gate.h): the compaction of a VACUUM, the move of an old part to the object store, the summaries of a scope (build, refill) and the column deltas of a
+# Format 2, the other durable steps (gates of core/f2/gate.h): the compaction of a VACUUM, the move of an old part to the object store, the summaries of a scope (build, refill) and the column deltas of a
 # sift_table (a table of eight columns, of which an UPDATE changes one)
 F2TIER="$F2@@ALTER TABLE docs ADD COLUMN ts timestamp, ADD COLUMN pad text@@UPDATE docs SET ts = timestamp '2020-01-01' + id * interval '1 hour', pad = md5(id::text)"
 F2TIER+="@@COPY (SELECT 1) TO PROGRAM 'rm -rf $D/tier && mkdir -p $D/tier'@@CREATE INDEX docs_col ON docs USING sift_col (id, g, n, ts, pad)"
@@ -164,7 +164,7 @@ SCENARIOS+=(
 	"f2_scope_refill~$F2@@$GP@@$SCOPEIX@@$(more 6001 8000)~$F2@@UPDATE gp SET t = t@@SELECT sift.col_maintain('docs_sc')"
 	"f2_col_delta~$F2DELTA~$F2@@UPDATE tbl SET n = n + 1 WHERE id % 50 = 0; UPDATE tbl_h SET n = n + 1 WHERE id % 50 = 0"
 )
-# deletion records (core/v1_col/tomb_dv.h): a committed statement deletes a fifth of the rows of an index that tracks its changes, so that the log holds records; the VACUUM and the fold clear their rows and drop them, the merge carries them to marks
+# deletion records (core/v1_col/tomb/dv.h): a committed statement deletes a fifth of the rows of an index that tracks its changes, so that the log holds records; the VACUUM and the fold clear their rows and drop them, the merge carries them to marks
 DVSET="ALTER TABLE docs ADD PRIMARY KEY (id); CREATE INDEX docs_col ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'id')"
 SCENARIOS+=(
 	"dv_vacuum~$DVSET; DELETE FROM docs WHERE id % 5 = 0~VACUUM docs"

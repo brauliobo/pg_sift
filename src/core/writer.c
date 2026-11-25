@@ -17,10 +17,10 @@
 #include "utils/wait_event.h"
 
 #include "core/compat.h"
-#include "core/store.h"
-#include "core/store_int.h"
-#include "core/visibility.h"
-#include "core/maint_pacer.h"
+#include "core/store/store.h"
+#include "core/store/int.h"
+#include "core/visibility/visibility.h"
+#include "core/maint/pacer.h"
 #include "core/waits.h"
 
 #define RUN_MIN				16

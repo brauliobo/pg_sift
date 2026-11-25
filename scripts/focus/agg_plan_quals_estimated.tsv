@@ -1,1 +1,1 @@
-agg_plan_quals_estimated	src/agg/stats.c:sift_stats src/agg/stats.c:sift_stats_reset src/bm25/planner_match.c:score_operand
+agg_plan_quals_estimated	src/agg/stats.c:sift_stats src/agg/stats.c:sift_stats_reset src/bm25/planner/match.c:score_operand

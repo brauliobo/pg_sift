@@ -3,9 +3,9 @@
  */
 #include "postgres.h"
 
-#include "agg/kern6.h"
+#include "agg/kern6/kern6.h"
 #include "agg/v6/par/keytab.h"
-#include "agg/v6/v6_distinct_u64.h"
+#include "agg/v6/distinct/u64.h"
 
 #define KEYTAB_FIRST	32
 

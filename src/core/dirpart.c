@@ -6,7 +6,7 @@
  */
 #include "core/host.h"
 
-#include "core/store_int.h"
+#include "core/store/int.h"
 #include "core/dirpart.h"
 
 /* The partitions of the update in hand, for sift_dir_part_replace: the mutators run inside it and are not passed it */

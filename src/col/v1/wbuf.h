@@ -8,10 +8,10 @@
 
 #include "core/host.h"
 
-#include "col/v1/enc.h"
+#include "col/v1/enc/enc.h"
 #include "col/v1/xstamp.h"
 #include "core/reads.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 /* Per-relation state the caller keeps (the relcache entry's rd_amcache holds it for the AM): the active segment and lane tails last seen */
 typedef struct SiftCWbufHint

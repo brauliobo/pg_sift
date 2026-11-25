@@ -20,14 +20,14 @@
 #include "utils/timestamp.h"
 
 #include "core/sift.h"
-#include "bm25/analyze.h"
+#include "bm25/analyze/analyze.h"
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/keystore/keystore.h"
 #include "core/errctx.h"
 #include "core/format_ux.h"
 #include "core/ops.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 int			sift_log_min_duration = 1000;
 

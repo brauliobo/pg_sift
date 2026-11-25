@@ -5,7 +5,7 @@
  */
 #include "col/v1/setsum.h"
 #include "core/popcount.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* The smallest minimum and largest maximum of each word of 64 units, and the words with a unit whose zone does not describe its values (overflow, inline strings) */
 static void

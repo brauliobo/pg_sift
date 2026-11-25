@@ -3,37 +3,37 @@
 # and that no file with such a message is missing here. "-" is a gap: the entry points that read it push no scope yet.
 # A file whose message does name the index (SIFT_CORRUPT, SIFT_SEG_CORRUPT) is not listed.
 src/col/v1/src_wide.c	
-src/bm25/dict_int.h	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
-src/bm25/pos.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
-src/bm25/posting.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
-src/col/v1/batch_unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/v1/chunk.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/codec_int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/v1/ctest.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/v1/order.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/v1/scan/gfree.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/v1/scan/scope_segrows.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/v1/scan_int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/types.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
-src/col/v1/unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/bm25/dict/int.h	src/bm25/amscan.c src/bm25/cscan/exec.c src/bm25/estimate.c src/core/maint/maint.c
+src/bm25/pos.c	src/bm25/amscan.c src/bm25/cscan/exec.c src/bm25/estimate.c src/core/maint/maint.c
+src/bm25/posting/posting.c	src/bm25/amscan.c src/bm25/cscan/exec.c src/bm25/estimate.c src/core/maint/maint.c
+src/col/v1/batch/unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/v1/chunk.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/codec/int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/v1/ctest.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/v1/order/order.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/v1/scan/gfree.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/v1/scan/scope_segrows.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/v1/scan/int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/types.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
+src/col/v1/unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint/maint.c
 src/core/span.c	src/col/v1/amscan/amscan.c src/bm25/amscan.c
 src/table/v1/wbuf.c	src/table/v1/analyze.c src/table/v1/fetch.c src/table/v1/scan.c
-src/col/granule/granule.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/granule/granule_dec.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/granule/point_decode.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/granule/promo.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/granule/promo_prefix.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/granule/tid.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/granule/granule_vec.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/f2/l0_slab.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/granule/granule_filter.c	src/col/f2/scan/fetch.c
-src/col/granule/cfilt_str_simd.c	src/col/f2/scan/fetch.c
-src/table/f2/f2_ddl.c	-
-src/col/f2/f2_point_dir.c	src/col/f2/scan/fetch.c
-src/col/granule/granule_codes.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/granule/enc_frame.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
-src/col/f2/f2_tid_hash.c	-
-src/table/f2/f2_row_pack.c	-
-src/col/f2/f2_locate.c	-
-src/core/f2/f2_vm_xlog.c	-
-src/col/granule/point_decode.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/granule/granule.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/granule/dec.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/granule/point_decode.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/granule/promo.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/granule/promo_prefix.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/granule/tid.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/granule/vec.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/f2/l0/slab.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/granule/filter.c	src/col/f2/scan/fetch.c
+src/col/granule/cfilt/str_simd.c	src/col/f2/scan/fetch.c
+src/table/f2/ddl.c	-
+src/col/f2/point_dir.c	src/col/f2/scan/fetch.c
+src/col/granule/codes.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/granule/enc_frame.c	src/col/f2/scan/fetch.c src/col/f2/write.c
+src/col/f2/tid/hash.c	-
+src/table/f2/row/pack.c	-
+src/col/f2/locate.c	-
+src/core/f2/vm_xlog.c	-
+src/col/granule/point_decode.c	src/col/f2/scan/fetch.c src/col/f2/write.c

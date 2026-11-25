@@ -7,9 +7,9 @@
 
 #include <pthread.h>
 
-#include "bm25/bitmap.h"
+#include "bm25/bitmap/bitmap.h"
 #include "core/cpu.h"
-#include "bm25/kernels.h"
+#include "bm25/kernels/kernels.h"
 #include "bm25/prefix.h"
 
 SQLITE_EXTENSION_INIT1

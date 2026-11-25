@@ -4,7 +4,7 @@
  */
 #include "postgres.h"
 
-#include "core/f2/manifest.h"
+#include "core/f2/manifest/manifest.h"
 #include "col/gpu.h"
 #include "unit.h"
 

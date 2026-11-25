@@ -7,7 +7,7 @@
 #include <math.h>
 #include <time.h>
 #include "data.h"
-#include "../../src/bm25/bitmap.h"
+#include "../../src/bm25/bitmap/bitmap.h"
 #include "../../src/core/cmp.h"
 #include "baselines.h"
 #ifdef HAVE_ROARING

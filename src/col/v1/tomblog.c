@@ -1,5 +1,5 @@
 /*
- * col/v1/tomblog.c - the tombstone log of a heap column index with track_changes (docs/COL-TAM.md section 2.4 holds the log; core/v1_col/tomb.h is its code):
+ * col/v1/tomblog.c - the tombstone log of a heap column index with track_changes (docs/COL-TAM.md section 2.4 holds the log; core/v1_col/tomb/tomb.h is its code):
  * the entry of a heap address that stopped being live, with the transaction and command that said so. The cache of the log a backend reads
  * is kept apart from the cached state of the index (SiftColRel): a relcache invalidation frees that, and the log is read incrementally.
  */
@@ -18,9 +18,9 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
-#include "col/v1/maint/maint_int.h"
-#include "core/v1_col/tomb.h"
-#include "core/v1_col/tomb_dv.h"
+#include "col/v1/maint/int.h"
+#include "core/v1_col/tomb/tomb.h"
+#include "core/v1_col/tomb/dv.h"
 #include "core/cachebudget.h"
 #include "core/memtrack.h"
 
@@ -416,7 +416,7 @@ drop_keep(SiftTomb *t, void *arg)
 	if (t->kind == SIFT_TOMB_DVEC || t->kind == SIFT_TOMB_DVEC_BODY)
 		return true;
 	/*
-	 * A journal record (col/v1/conn.h) names no heap address and is never frozen: a stamp older than the oldest transaction any snapshot can have still compares its horizon with
+	 * A journal record (col/v1/conn/conn.h) names no heap address and is never frozen: a stamp older than the oldest transaction any snapshot can have still compares its horizon with
 	 * the record's transaction. It goes when its transaction aborted, and when it is so old that the comparison would wrap (the journal then vouches from the horizon on).
 	 */
 	if (SIFT_TOMB_IS_JOURNAL(t->kind))

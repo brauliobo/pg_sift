@@ -6,8 +6,8 @@
 
 #ifdef SIFT_TESTING
 
-#include "col/v1/enc.h"
-#include "col/v1/enc_test_int.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/enc/test_int.h"
 #include "core/popcount.h"
 
 /* bits 0..7: CONST, PACK of up to 7 / 9..15 / 17..31 bits, FOR 8 / 16 / 32 / 64; bit 8: a text leaf with codes of 16 bits or more */

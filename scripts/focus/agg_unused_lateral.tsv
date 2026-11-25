@@ -1,1 +1,1 @@
-agg_unused_lateral	src/bm25/planner.c:carry_parent_scores src/bm25/planner.c:reads_score src/bm25/planner_match.c:score_operand src/col/v1/ktab.c:sift_ktab_decode
+agg_unused_lateral	src/bm25/planner/match.c:score_operand src/bm25/planner/planner.c:carry_parent_scores src/bm25/planner/planner.c:reads_score src/col/v1/ktab.c:sift_ktab_decode

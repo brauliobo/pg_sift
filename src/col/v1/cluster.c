@@ -20,7 +20,7 @@
 
 #include "col/am.h"
 #include "col/pg.h"
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/cmp.h"
 
 /* sift.cluster_advice: read by the SQL function sift.cluster_advice() through current_setting */

@@ -1,7 +1,7 @@
 /*
  * col/v1/text_vec.h - the text kernels of the column index, written once with the GCC/Clang vector extensions and compiled by each level file at its
- * width (SIFT_V_BYTES of core/simd_isa.h). Included by col/v1/kern_avx2.c, col/v1/kern_avx512.c and col/v1/kern_neon.c inside SIFT_VEC_PUSH / SIFT_VEC_POP after
- * they define SIFT_VEC_<level> and TV_FN(x), the kernels' names and storage. The tails are the scalar kernels' (col/v1/kern.c).
+ * width (SIFT_V_BYTES of core/simd_isa.h). Included by col/v1/kern/avx2.c, col/v1/kern/avx512.c and col/v1/kern/neon.c inside SIFT_VEC_PUSH / SIFT_VEC_POP after
+ * they define SIFT_VEC_<level> and TV_FN(x), the kernels' names and storage. The tails are the scalar kernels' (col/v1/kern/kern.c).
  */
 
 typedef uint8 tv_b __attribute__((vector_size(SIFT_V_BYTES), aligned(1), may_alias));

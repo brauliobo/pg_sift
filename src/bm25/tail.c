@@ -14,10 +14,10 @@
 
 #include <math.h>
 
-#include "bm25/eval.h"
-#include "bm25/eval_int.h"
+#include "bm25/eval/eval.h"
+#include "bm25/eval/int.h"
 #include "bm25/prefix.h"
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 #include "bm25/wmemo.h"
 #include "bm25/wbuf.h"
 

@@ -1,5 +1,5 @@
 /*
- * core/f2/col_delta_anchor.h - where a partition's chain of per-column update pages (SIFT_PT_COL_DELTA, table/f2/f2_col_delta.h) starts.
+ * core/f2/col_delta_anchor.h - where a partition's chain of per-column update pages (SIFT_PT_COL_DELTA, table/f2/col_delta/col_delta.h) starts.
  *
  * The anchor sits in the first SIFT_PT_PARTLIST page of the partition, right after parts[nparts], in the bytes that a full page leaves unused (a page holds at most
  * SIFT_PARTLIST_CAP parts and the 32 bytes of the anchor fit behind the last of them for every size of SiftPartDesc). SIFT_PARTLIST_FLAG_COL_DELTA says it is there and

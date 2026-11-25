@@ -1,13 +1,13 @@
 /*
- * stubs.c - the PostgreSQL-only collaborators of src/bm25/eval.c, as a single-writer embedded database sees them:
+ * stubs.c - the PostgreSQL-only collaborators of src/bm25/eval/eval.c, as a single-writer embedded database sees them:
  * no heap (every document is visible, no recheck against a snapshot), no TID bitmap filter. The index options are those of
  * the virtual table. No write buffers (documents are buffered in memory by build.c and written as an immutable segment
  * before they are searched) and no kept docmap directories: host/host_stubs.c.
  */
 #include "api.h"
 
-#include "bm25/analyze.h"
-#include "bm25/eval.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/eval/eval.h"
 
 /* ---------- options (core/handler.c) ---------- */
 
@@ -35,7 +35,7 @@ sift_options_fields(const SiftOptions *opts)
 	return ((const SqOptions *) opts)->fields;
 }
 
-/* ---------- visibility (core/visibility.c): everything the index holds is visible ---------- */
+/* ---------- visibility (core/visibility/visibility.c): everything the index holds is visible ---------- */
 
 void
 sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)

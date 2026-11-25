@@ -19,7 +19,7 @@
 #include "utils/wait_event.h"
 
 #ifdef SIFT_TESTING
-#include "bm25/build.h"
+#include "bm25/build/build.h"
 #endif
 #include "col/v1/build.h"
 #include "core/limits.h"

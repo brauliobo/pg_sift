@@ -1,7 +1,7 @@
 /*
  * col/v1/gquant.h - the quantized keys of a compact chunk of a global order
  *
- * A compact chunk (col/v1/gorder.h, version 4) keeps the exact key of its first entry in the directory and, for every other entry i, the bucket
+ * A compact chunk (col/v1/gorder/gorder.h, version 4) keeps the exact key of its first entry in the directory and, for every other entry i, the bucket
  * q_i = (key_i - first) >> sh of its key (non-decreasing): the key lies in [kmin_i, kmax_i] = first + (q_i << sh) + [0, 2^sh - 1].
  * Blob: byte 0 sh, then one mini-block for every 32 entries (the last one padded with zero differences): a byte w (bit 7: some differences are patched), the differences
  * d_i = q_i - q_(i-1) (d_0 = 0) of its 32 entries in w bits each, LSB first, 4 * w bytes, and, if patched, the number n of patched ones, the width e of what they hold above the w bits, their

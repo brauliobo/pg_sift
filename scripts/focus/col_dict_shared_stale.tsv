@@ -1,1 +1,1 @@
-col_dict_shared_stale	src/col/dictshm.c:bucket src/col/dictshm.c:ring_take src/col/dictshm.c:unpin src/col/dictshm_test.c:sift_dictshm_pinned src/col/dictshm_test.c:sift_test_col_dict_shared_stale src/col/dictshm_test.c:stale_dict
+col_dict_shared_stale	src/col/dictshm/dictshm.c:bucket src/col/dictshm/dictshm.c:ring_take src/col/dictshm/dictshm.c:unpin src/col/dictshm/test.c:sift_dictshm_pinned src/col/dictshm/test.c:sift_test_col_dict_shared_stale src/col/dictshm/test.c:stale_dict

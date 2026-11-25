@@ -6,7 +6,7 @@
 
 #include "postgres.h"
 
-#include "col/v1/gorder.h"
+#include "col/v1/gorder/gorder.h"
 #include "col/v1/amscan/ord_merge.h"
 
 #define GORD_TREE_MIN	4			/* more sources than this are merged by a tournament, as many as this by the scan of their heads */

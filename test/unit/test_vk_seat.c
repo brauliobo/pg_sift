@@ -4,7 +4,7 @@
  */
 #include "postgres.h"
 
-#include "agg/vk.h"
+#include "agg/vk/vk.h"
 #include "unit.h"
 
 struct SiftVk

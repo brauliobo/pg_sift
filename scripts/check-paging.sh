@@ -2,7 +2,7 @@
 # The offset of a byte of a page is computed in one place (core/page.h SIFT_PAYLOAD_*, core/xlog.h): a bitmap or table that spans pages must put its logical byte b on page
 # b / payload, and the writer that put a bit at `header + sbidx / 8` of the first page of a bitmap of 134,850 bits wrote into the special space of the page (the incident that made this check).
 #   - `/ SIFT_PAGE_PAYLOAD`, `% SIFT_PAGE_PAYLOAD` and `* SIFT_PAGE_PAYLOAD` stay in core/page.h: elsewhere SIFT_PAYLOAD_PAGE, _OFF, _PAGES and _BYTES;
-#   - `SiftPageGetData(page)[...]` (a byte of a payload by an index) is read in core/live.c only, through sift_live_byte; a record is a struct at an offset the caller checked against the room;
+#   - `SiftPageGetData(page)[...]` (a byte of a payload by an index) is read in core/live/live.c only, through sift_live_byte; a record is a struct at an offset the caller checked against the room;
 #   - a page changes through sift_xlog_* (core/xlog.h), which refuses a write that reaches the special space: no file but core/xlog.h and the host stubs names GenericXLogStart,
 #     GenericXLogRegisterBuffer, GenericXLogFinish or GenericXLogAbort.
 #
@@ -17,7 +17,7 @@ check() {
 	awk '
 		/^[ \t]*(\/?\*|\/\/)/ { next }
 		FILENAME !~ /core\/page\.h$/ && /[\/%*] *\(?SIFT_PAGE_PAYLOAD/ { print FILENAME ":" FNR ": paging arithmetic on SIFT_PAGE_PAYLOAD: use SIFT_PAYLOAD_PAGE/_OFF/_PAGES/_BYTES (core/page.h)"; next }
-		FILENAME !~ /core\/live\.c$/ && /SiftPageGetData\([^)]*\)\[/ { print FILENAME ":" FNR ": a payload byte by index: only core/live.c reads the bytes of a bitmap, through sift_live_byte"; next }
+		FILENAME !~ /core\/live\/live\.c$/ && /SiftPageGetData\([^)]*\)\[/ { print FILENAME ":" FNR ": a payload byte by index: only core/live/live.c reads the bytes of a bitmap, through sift_live_byte"; next }
 		FILENAME !~ /core\/xlog\.h$/ && /GenericXLog(Start|RegisterBuffer|Finish|Abort)/ { print FILENAME ":" FNR ": generic WAL not through sift_xlog_* (core/xlog.h)" }
 	' "$@"
 }

@@ -1,12 +1,12 @@
 /*
- * core/f2/fsm/slab.c - the metadata slabs of the allocator of format major 2 (core/f2/fsm.h): the bitmaps, the claim of a slab, and the way back: pages of the queue that matured are reclaimed
+ * core/f2/fsm/slab.c - the metadata slabs of the allocator of format major 2 (core/f2/fsm/fsm.h): the bitmaps, the claim of a slab, and the way back: pages of the queue that matured are reclaimed
  * before a slab is claimed, and a slab whose every block is free goes back to the data zone, so that the number of slabs follows the live metadata and not the history of the writes.
  */
 #include "core/host.h"
 
-#include "col/f2/col_meta.h"
-#include "core/f2/fsm.h"
-#include "core/f2/fsm/fsm_int.h"
+#include "col/f2/meta.h"
+#include "core/f2/fsm/fsm.h"
+#include "core/f2/fsm/int.h"
 #include "core/horizon.h"
 #include "core/page_io.h"
 

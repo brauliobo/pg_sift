@@ -1,4 +1,4 @@
--- The window rewrites of src/agg/v6/v6_window.c, one segment each, in a schema of its own: row_number() = 1 as DISTINCT ON, row_number() <= N as an array cut,
+-- The window rewrites of src/agg/v6/win/window.c, one segment each, in a schema of its own: row_number() = 1 as DISTINCT ON, row_number() <= N as an array cut,
 -- and the tie order under lag() and lead(). Every query runs as the rewrite and as the normal plan (sift.enable_agg off). Replaces four tests of one fixture each.
 CREATE EXTENSION pg_sift;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;

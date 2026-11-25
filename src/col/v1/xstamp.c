@@ -4,7 +4,7 @@
 #include "postgres.h"
 
 #include "col/v1/xstamp.h"
-#include "core/v1_col/tomb.h"
+#include "core/v1_col/tomb/tomb.h"
 
 /* The steps from lo up to hi, -1 when they are SIFT_XSTAMP_OPEN_MAX or more */
 static int

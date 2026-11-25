@@ -10,11 +10,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "bm25/analyze.h"
-#include "bm25/bitmap.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/bitmap/bitmap.h"
 #include "core/cmp.h"
 #include "core/cpu.h"
-#include "bm25/kernels.h"
+#include "bm25/kernels/kernels.h"
 #include "bm25/prefix.h"
 
 /* ------------------------------------------------ persistence */

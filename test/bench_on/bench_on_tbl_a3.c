@@ -1,5 +1,5 @@
 /*
- * bench_on_tbl_a3.c - the touched rows of a transaction (table/f2/f2_lock_touched.c) against a model: random adds, removals by position (as release_tier1 walks them) and forgets keep the
+ * bench_on_tbl_a3.c - the touched rows of a transaction (table/f2/lock/touched.c) against a model: random adds, removals by position (as release_tier1 walks them) and forgets keep the
  * list of the subtransaction, the dense array and the hash of it in step, and the cost per operation does not grow with the rows held. Standalone: the file is included, with the
  * calls of the server it makes provided here; test/bench_on/run.sh builds it with ASan and UBSan.
  */
@@ -12,7 +12,7 @@
 #undef printf
 #undef fprintf
 
-#include "../../src/table/f2/f2_lock_touched.c"
+#include "../../src/table/f2/lock/touched.c"
 
 static MemoryContext txn_cx = NULL;
 

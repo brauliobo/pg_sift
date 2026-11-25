@@ -1,1 +1,1 @@
-agg_part_open_cost	src/bm25/planner.c:carry_parent_scores src/bm25/planner.c:check_partition_scores src/col/v1/scan/scan.c:sift_col_unpin
+agg_part_open_cost	src/bm25/planner/planner.c:carry_parent_scores src/bm25/planner/planner.c:check_partition_scores src/col/v1/scan/scan.c:sift_col_unpin

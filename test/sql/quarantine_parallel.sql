@@ -1,6 +1,6 @@
 -- Damage that a parallel worker meets: the leader that runs no part of the plan (parallel_leader_participation = off) gets the damage error once, from the worker, and the statements that
 -- follow are planned on the heap and give its rows. The worker records the index in the registry; the metapage is flagged by the worker that the next plan asks for, as the leader
--- did not see the damage itself. Both workers open the index: the one that opens it after the other recorded the damage refuses the plan (40001, retry, core/quarantine.c), and the leader
+-- did not see the damage itself. Both workers open the index: the one that opens it after the other recorded the damage refuses the plan (40001, retry, core/quarantine/quarantine.c), and the leader
 -- reads the error of the first worker that failed, so the statement fails once with either code; the registry holds the damage code in both.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE FUNCTION diag(q text) RETURNS text LANGUAGE plpgsql AS $$

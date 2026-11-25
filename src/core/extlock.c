@@ -9,9 +9,9 @@
 #include "core/errctx.h"
 #include "core/extlock.h"
 #include "core/f2/meta.h"
-#include "core/maint_pacer.h"
+#include "core/maint/pacer.h"
 #include "core/sift.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 static const char extend_owner;
 static LockRelId last_locked;

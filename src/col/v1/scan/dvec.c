@@ -1,5 +1,5 @@
 /*
- * col/v1/scan/dvec.c - the deletion records of the tombstone log (core/v1_col/tomb_dv.h) as the liveness a scan reads: the rows of a unit that a record ends for the snapshot are cleared in what the scan
+ * col/v1/scan/dvec.c - the deletion records of the tombstone log (core/v1_col/tomb/dv.h) as the liveness a scan reads: the rows of a unit that a record ends for the snapshot are cleared in what the scan
  * sees of the unit, so a unit with records is one dirty unit (one record to find and one vector to take away) where marks make it leave the clean path row by row
  */
 #include "postgres.h"
@@ -7,12 +7,12 @@
 #include "access/xact.h"
 #include "utils/memutils.h"
 
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 #include "col/v1/wbuf.h"
 #include "core/damage.h"
 #include "core/memtrack.h"
 #include "core/popcount.h"
-#include "core/v1_col/tomb_dv.h"
+#include "core/v1_col/tomb/dv.h"
 
 /* The rows the records end in the unit asked about last: a caller looks at the unit it asked about and never keeps the answer past the next, so nothing grows with the units of a scan */
 typedef struct ColDvOv

@@ -21,7 +21,7 @@ typedef enum LshmKind
 
 /*
  * The records of an index are of two classes: the segments a read of the entities reads, and the scope segments (SIFT_SEG_SCOPE) a read of a scope reads, whose units are cut by another key and
- * have other zones and sections (col/scope.h). scope: the record of the second.
+ * have other zones and sections (col/scope/scope.h). scope: the record of the second.
  * st[ncols] and the arrays of *zs (as many as the leaves with a sample) are filled from what another backend kept for the index under the stamp; false: none, or none that is whole
  */
 extern bool sift_col_leafshm_read(RelFileNumber rel, bool scope, uint64 stamp, int ncols, SiftColLeafStats *st, SiftColZones *zs);

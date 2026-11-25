@@ -1,1 +1,1 @@
-agg_left_each_exists	src/col/jsonb.c:set_key src/col/shred.c:intern_key src/col/v1/preagg_read/preagg_read.c:cpread_skip_f8
+agg_left_each_exists	src/col/jsonb.c:set_key src/col/shred/shred.c:intern_key src/col/v1/preagg_read/preagg_read.c:cpread_skip_f8

@@ -1,5 +1,5 @@
 /*
- * tests/topk_floor_test.c - the floor of bm25/kernels.c's top-k: the K-th score of a search that read fewer terms bounds the K-th score of one that reads more,
+ * tests/topk_floor_test.c - the floor of bm25/kernels/kernels.c's top-k: the K-th score of a search that read fewer terms bounds the K-th score of one that reads more,
  * and a search that starts at that floor returns the hits of one that starts at none. A program of its own on the portable host (no database, so ASan and UBSan run it).
  *
  * Scores are small multiples of an eighth, so that ties are everywhere and the tie-break on the key is exercised. Pass one scores a random subset of the documents; pass two
@@ -10,7 +10,7 @@
 #include <stdlib.h>
 
 #include "core/host.h"
-#include "bm25/kernels.h"
+#include "bm25/kernels/kernels.h"
 
 #define N		3000
 #define ROUNDS	400

@@ -8,7 +8,7 @@
  */
 #include "postgres.h"
 
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 
 int			sift_docdir_min_sb = 128;
 

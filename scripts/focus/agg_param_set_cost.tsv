@@ -1,1 +1,1 @@
-agg_param_set_cost	src/col/v1/amscan/ordpath.c:sift_col_ordered_pair_mode src/col/v1/gorder.c:sift_cgord_pay src/col/v1/gorder_leaf.c:sift_cgord_leaf_numeric
+agg_param_set_cost	src/col/v1/amscan/ordpath.c:sift_col_ordered_pair_mode src/col/v1/gorder/gorder.c:sift_cgord_pay src/col/v1/gorder/leaf.c:sift_cgord_leaf_numeric

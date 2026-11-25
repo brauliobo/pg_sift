@@ -6,7 +6,7 @@
 #ifndef SIFT_COL_SETSUM_H
 #define SIFT_COL_SETSUM_H
 
-#include "col/v1/preagg.h"
+#include "col/v1/preagg/preagg.h"
 
 #define SIFT_CSET_EXACT			1		/* the sorted distinct keys, as offsets from the smallest in 1, 2, 4 or 8 bytes each */
 #define SIFT_CSET_BLOOM			2		/* a bloom filter of the keys */

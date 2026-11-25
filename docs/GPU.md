@@ -31,7 +31,7 @@ VULKAN=1 scripts/pgtest.sh install
 ```
 
 - Only `-ldl` is linked. `libvulkan.so.1` is opened with `dlopen` the first time a backend uses the device, never in the postmaster. A host without a Vulkan loader or driver runs the CPU path and says so once (NOTICE).
-- Vulkan declarations are a generated subset of the Khronos `vulkan_core.h` (`src/agg/vk_min.h`) and the shader is checked in as SPIR-V (`src/agg/vk_spv.h`): no Vulkan SDK or shader compiler needed. After editing `src/agg/vk/shaders/` (needs `glslc`) or `agg/vk/`, `make gpu-shaders` regenerates both; `scripts/gen-aggvk-min.py --check` and `scripts/gen-aggvk-spv.sh --check` report stale files.
+- Vulkan declarations are a generated subset of the Khronos `vulkan_core.h` (`src/agg/vk/min.h`) and the shader is checked in as SPIR-V (`src/agg/vk/spv.h`): no Vulkan SDK or shader compiler needed. After editing `src/agg/vk/shaders/` (needs `glslc`) or `agg/vk/`, `make gpu-shaders` regenerates both; `scripts/gen-aggvk-min.py --check` and `scripts/gen-aggvk-spv.sh --check` report stale files.
 - Without `VULKAN=1` the settings below exist and are forced off: `SET sift.gpu = on` gives one NOTICE per session and the query runs on the CPU, never an error. Packages and CI build without it; no job builds with `VULKAN=1`.
 
 ## Settings
@@ -107,7 +107,7 @@ Reading the table:
 
 ## Code layout
 
-`SiftAggV6` asks for the device once, before it scans: `sift_gpu_v6_agg` (`src/agg/gpu_v6.c`) gives back the groups the device made of the parts it could read, or NULL when the CPU runs everything, and the CPU scans the rest into the same groups. The settings are in `src/agg/gpu_cfg.h`, the device layer is `agg/vk/` and the chunk plans are in `src/col/gpu.c`. The persistent worker and the connection of a backend to it are `src/agg/gpu_worker.c`. A backend sees a narrow view of the scan and hands back exact sums. Without `VULKAN=1` the path is only the settings and the NOTICE.
+`SiftAggV6` asks for the device once, before it scans: `sift_gpu_v6_agg` (`src/agg/gpu/v6.c`) gives back the groups the device made of the parts it could read, or NULL when the CPU runs everything, and the CPU scans the rest into the same groups. The settings are in `src/agg/gpu/cfg.h`, the device layer is `agg/vk/` and the chunk plans are in `src/col/gpu.c`. The persistent worker and the connection of a backend to it are `src/agg/gpu/worker.c`. A backend sees a narrow view of the scan and hands back exact sums. Without `VULKAN=1` the path is only the settings and the NOTICE.
 
 ## Limits
 

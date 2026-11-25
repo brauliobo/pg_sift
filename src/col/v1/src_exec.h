@@ -215,7 +215,7 @@ typedef struct SiftSrcHist
 	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
 	const int64 *min[SIFT_SRC_MAX_MEAS];		/* integer measure: the smallest and largest value of each group, NULL when the unit does not store them; meaningless where nn is 0 */
 	const int64 *max[SIFT_SRC_MAX_MEAS];
-	int			grain;			/* a calendar dim: the grain of the cells (SIFT_CAL_*, in col/v1/preagg.h: 1 day, 2 month, 3 year), else 0 */
+	int			grain;			/* a calendar dim: the grain of the cells (SIFT_CAL_*, in col/v1/preagg/preagg.h: 1 day, 2 month, 3 year), else 0 */
 } SiftSrcHist;
 
 /*

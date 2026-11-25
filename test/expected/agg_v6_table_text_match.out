@@ -1,5 +1,5 @@
 -- A text query (body @@> 'q') among the quals of an aggregate of a sift_table with a sift text index: the scan of the table reads the rows of the hits only, the hits of the query going to it in heap
--- order as the chunks of a bridge (agg/v6/v6_text.c), as they go to the scan of a sift_col index. Every check compares the statement with the same statement that carries a volatile qual (which
+-- order as the chunks of a bridge (agg/v6/text.c), as they go to the scan of a sift_col index. Every check compares the statement with the same statement that carries a volatile qual (which
 -- keeps the text query out of the scan) and asserts the node that read the table and, where the text intake is the point, the text index it names. A scan of an unnest or a star join takes no
 -- text intake: those statements are not planned on SiftAggV6. A text query that hits no row or a few rows is left to the text index's own scan by the cost model.
 -- requires: build col

@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/group_key.h - the key of a group of agg/v6/par/group.h in the three places it is held: a slot of the compact table (agg/v6/v6_group_cmp.h), a record of a partition stream
+ * agg/v6/par/group_key.h - the key of a group of agg/v6/par/group.h in the three places it is held: a slot of the compact table (agg/v6/group/cmp.h), a record of a partition stream
  * (core/par/radix.h) and a row for the consumer. Word j of a slot is key j when it is a word, or the number of its text in the strings of the table (CMP_NO_ID: NULL); a text key alone with no sum
  * is held by the table itself (strm). A record of a stream has, for each key in order, its word or the header of its text (the length and the hash) and its bytes padded to 8, then the count (of a
  * partial aggregate) and the sums; a record of words only is fixed in size, so that a chunk is read by stride.
@@ -10,7 +10,7 @@
 #include "postgres.h"
 
 #include "agg/v6/par/group.h"
-#include "agg/v6/v6_group_cmp.h"
+#include "agg/v6/group/cmp.h"
 #include "core/par/radix.h"
 
 /* The layout of the slots of the tables of the spec in proto; false when a slot would pass 8 words */

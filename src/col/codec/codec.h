@@ -1,0 +1,295 @@
+/*
+ * col/codec/codec.h - the chunk codec of the column engine.
+ *
+ * A chunk is the values of one column for the rows (or array elements) of one unit, as signed 64-bit keys: integers as they are,
+ * floats as the order-preserving key of their IEEE bits (sift_col_f8_key of col/col.h; float4 keys are the keys of the promoted double), dictionary
+ * codes as integers. sift_cc_encode() picks the smallest lightweight cascade (constant, frame of reference with bit-packing or plain
+ * bytes, delta, run-length, sorted dictionary, decimal floats) per chunk from exact sizes and layers LZ4 or zstd on the streams where
+ * the cost rule of the policy allows it; the result is a self-describing blob. The reader (sift_cc_open) validates the blob, and every
+ * operation after that (decode, filter on the encoded form, value at a row) is memory safe on any bytes that passed it; a blob that
+ * fails is ERRCODE_DATA_CORRUPTED, one that needs an algorithm this build lacks is ERRCODE_FEATURE_NOT_SUPPORTED.
+ *
+ * What is written never depends on the CPU: the format is the same bytes at every SIMD level and the chooser reads no CPU state. What is
+ * read gives the same values at every level: the kernel tables follow the design notes (the scalar table is the specification, AVX2 and
+ * AVX-512 are bit-identical, dispatch follows sift.simd through sift_cpu_register()). Filters, widening and dictionary gathers run on
+ * the column engine's table (sift_colk, col/kern.h); the table below holds what only the codec needs (the vertical bit-packing, prefix
+ * sums, run expansion, decimal floats). Portable except for the compression library wrapper col/compress.h: core/host.h and portable files.
+ */
+#ifndef SIFT_COLCODEC_H
+#define SIFT_COLCODEC_H
+
+#include "core/sift.h"
+#include "core/cpu.h"
+#include "col/col.h"
+#include "core/par/arena.h"
+
+#define SIFT_CC_MAGIC		0xC5
+#define SIFT_CC_VERSION		1
+#define SIFT_CC_HDRLEN		24		/* magic, version, kind, flags, u32 n, i64 min, i64 max; then the root node, then u32 check */
+#define SIFT_CC_MAXDEPTH	4		/* nodes nested below the root node (a wrapper counts); the writer cascades MAXDEPTH - 1 levels, then wraps a leaf */
+#define SIFT_CC_MAXROWS		(1 << 24)
+
+typedef enum SiftCcKind
+{
+	SIFT_CC_INT = 0,			/* keys are the integers */
+	SIFT_CC_F4 = 1,				/* keys of promoted float4 values */
+	SIFT_CC_F8 = 2				/* keys of float8 values */
+} SiftCcKind;
+
+#define SIFT_CCF_OFF32		0x1		/* header flag: max - min < 2^32, so offsets from min fit u32 */
+
+/* Node tags (one byte). 12..31 are reserved for new encodings, 32..255 for experiments; an unknown tag is ERRCODE_FEATURE_NOT_SUPPORTED. */
+#define SIFT_CCN_CONST		1
+#define SIFT_CCN_FORBIT		2
+#define SIFT_CCN_FORBYTE	3
+#define SIFT_CCN_DELTA		4
+#define SIFT_CCN_RLE		5
+#define SIFT_CCN_DICT		6
+#define SIFT_CCN_ALP		7
+#define SIFT_CCN_WRAP		8
+#define SIFT_CCN_SCALE		9		/* base + g * child: common divisor of the offsets from the minimum */
+#define SIFT_CCN_DELTA_BYTE	10		/* first value, smallest step, checkpoints, then the steps above the smallest in 1..4 bytes each: written under a general-purpose layer only */
+#define SIFT_CCN_BSS		11		/* base, then plane b of byte b of every offset: written under a general-purpose layer only */
+
+/* General-purpose algorithm ids of a WRAP node (the decoder is the id, the level is writer-side only). 4..15 reserved. */
+#define SIFT_CC_ALG_NONE	0
+#define SIFT_CC_ALG_LZ4		1
+#define SIFT_CC_ALG_ZSTD	2
+#define SIFT_CC_ALG_ZSTD_DICT	3	/* only the bytes of a string list (sift_cc_encode_strs_dict): zstd with the dictionary of the part, which the reader hands in */
+#define SIFT_CC_ALG_AUTO	0xFF	/* policy only: LZ4 or zstd, whichever the cost rule accepts */
+
+/* ---------- cost rule of the general-purpose layer ---------- */
+
+#define SIFT_CC_NS_LZ4		0.25	/* measured ns per output byte of an unwrap */
+#define SIFT_CC_NS_ZSTD		0.70
+#define SIFT_CC_RHO_HOT		1.0		/* bytes one ns of per-scan decode must save: streams a scan filters */
+#define SIFT_CC_RHO_COLD	0.15	/* dictionaries, string blobs, exception lists, checkpoint arrays */
+#define SIFT_CC_MIN_GAIN	0.03	/* an explicit lz4/zstd policy still needs this share of the stream saved */
+#define SIFT_CC_MIN_WRAP	128		/* streams below this many bytes are never wrapped */
+
+/*
+ * The strings of a leaf stored as text (ISTR chunks) are unwrapped by every test of the column, so their wrapper follows the default formula and not the
+ * cold rule: B = R log2(S) / log2(1.05) against C = G / 3, with S the instructions a substring test reads a byte of the strings with (the kernel plus the unwrap)
+ * and G the growth of the strings in percent (the stream alone, the most it can be of the index). The unwrap of zstd costs by compressed byte (Huffman and
+ * sequence decoding), that of LZ4 mostly by compressed byte too and a little by output byte (copies): measured on the strings of five text columns of a public
+ * web log and corpus, 3 to 16 instructions an output byte for zstd (40 to 53 a compressed byte) and 1.3 to 3.8 for LZ4
+ */
+#define SIFT_CC_IPB_KERNEL	1.8		/* instructions a byte of the strings costs a substring test with no wrapper */
+#define SIFT_CC_IPB_LZ4		0.5		/* ... and the unwrap of LZ4, by output byte */
+#define SIFT_CC_IPC_LZ4		5.5		/* ... and by compressed byte */
+#define SIFT_CC_IPC_ZSTD	45.0	/* the unwrap of zstd, by compressed byte */
+#define SIFT_CC_SCAN_R		1.0		/* relevance of the class: any test of a text column unwraps its strings */
+
+/* What the formula looked at for the strings of a chunk or of a dictionary: LZ4 against the zstd of the cold rule */
+typedef struct SiftCcScan
+{
+	bool		seen;			/* LZ4 was tried against zstd: the bytes below are filled */
+	bool		lz4;			/* LZ4 replaced the zstd */
+	double		raw,			/* bytes of the strings */
+				z,				/* ... with zstd */
+				l;				/* ... with LZ4 */
+} SiftCcScan;
+
+/* What was looked at in a dictionary or a leaf, summed: n items with these bytes */
+typedef struct SiftCcScanSum
+{
+	uint64		n;
+	double		raw,
+				z,
+				l;
+} SiftCcScanSum;
+
+static inline void
+sift_cc_scan_add(SiftCcScanSum *sum, const SiftCcScan *s)
+{
+	sum->n++;
+	sum->raw += s->raw;
+	sum->z += s->z;
+	sum->l += s->l;
+}
+
+typedef enum SiftCcMode
+{
+	SIFT_CCM_AUTO = 0,			/* cascade + cost rule */
+	SIFT_CCM_NONE,				/* FORBYTE at the natural width, no wrapper: the engine's plain FOR chunk */
+	SIFT_CCM_LAYER				/* cascade + the named algorithm on every stream that shrinks by SIFT_CC_MIN_GAIN */
+} SiftCcMode;
+
+typedef struct SiftCcPolicy
+{
+	uint8		mode;			/* SiftCcMode */
+	uint8		alg;			/* SIFT_CC_ALG_*; with AUTO mode and ALG_AUTO the rule picks */
+	uint8		level;			/* algorithm level, 0 = the default (lz4 1, zstd 3) */
+	uint8		explicit_encs;	/* 1: only the encodings in encs (plus CONST and FORBYTE) */
+	uint16		encs;			/* bit (1 << tag) per allowed lightweight encoding when explicit_encs */
+	uint8		fast_decode;	/* a rule that picks: LZ4 (which decodes five times faster) unless zstd is a quarter smaller on a stream of at least SIFT_CC_ZSTD_MIN_RAW bytes, or half the size of a shorter one */
+} SiftCcPolicy;
+
+#define SIFT_CC_ZSTD_MIN_RAW	32768
+#define SIFT_CC_ZSTD_PCT		75
+#define SIFT_CC_ZSTD_SMALL_PCT	50
+
+/*
+ * Parses one policy: auto | none | lz4[:N] | zstd[:N] | ENC[+ENC...][+lz4|zstd[:N]] with ENC in for, delta, rle, dict, alp, scale. Returns NULL
+ * and fills *p, or an error message (a constant string) for the caller's ereport (ERRCODE_INVALID_PARAMETER_VALUE).
+ */
+extern const char *sift_cc_policy_parse(const char *spec, SiftCcPolicy *p);
+/* The column option list "policy" or "policy; col=policy; ...": the policy of colname (the first entry without '=' is the default). */
+extern const char *sift_cc_policy_for_column(const char *spec, const char *colname, SiftCcPolicy *p);
+/* Text of a policy as sift_cc_policy_parse() reads it (palloc'd). */
+extern char *sift_cc_policy_name(const SiftCcPolicy *p);
+extern void sift_cc_policy_default(SiftCcPolicy *p);
+
+typedef struct SiftCcInfo
+{
+	uint32		n;
+	int64		min;			/* of the non-NULL keys; 0 when all NULL */
+	int64		max;
+	uint32		nnull;
+	uint8		tag;			/* root node tag (8 = wrapped) */
+	uint8		inner;			/* tag of the lightweight encoding under a wrapper */
+	uint32		bytes;			/* length of the blob */
+} SiftCcInfo;
+
+/*
+ * Appends the blob of keys[0..n) to out. nulls (bit set = NULL, whole 64-bit words, may be NULL) only tells the writer which slots are free:
+ * they are overwritten by the previous non-NULL value so runs and deltas survive, and decode returns that filler there (the caller masks).
+ * n <= SIFT_CC_MAXROWS. info may be NULL.
+ */
+extern void sift_cc_encode(StringInfo out, SiftCcKind kind, const int64 *keys, uint32 n, const uint64 *nulls, const SiftCcPolicy *pol,
+						   SiftCcInfo *info);
+
+typedef struct SiftCc SiftCc;
+
+/* Validates the blob (header, lengths, widths, tags, sums; the check word when verify) and unwraps general-purpose layers into mcxt. */
+extern SiftCc *sift_cc_open(MemoryContext mcxt, const uint8 *blob, Size len, bool verify);
+extern SiftCc *sift_cc_open_rows(MemoryContext mcxt, const uint8 *blob, Size len, bool verify, uint32 nrows);	/* the same, for a blob of exactly nrows values */
+extern void sift_cc_close(SiftCc *c);			/* frees what open allocated */
+extern SiftCcKind sift_cc_kind(const SiftCc *c);
+extern uint32 sift_cc_nrows(const SiftCc *c);
+extern int64 sift_cc_min(const SiftCc *c);
+extern int64 sift_cc_max(const SiftCc *c);
+extern uint8 sift_cc_tag(const SiftCc *c);		/* tag of the root node under any wrapper */
+
+/* dst[0..n) = the keys; dst needs n + SIFT_COL_PAD/8 slots */
+extern void sift_cc_decode(const SiftCc *c, int64 *dst);
+/* dst[0..w) = the first w keys (all of them when w >= n); dst needs the slots of a decode of n keys */
+extern void sift_cc_decode_head(const SiftCc *c, uint32 w, int64 *dst);
+/* dst[i] = the low 32 bits of key i (the keys of an int4, a date, a dictionary code); dst needs SIFT_CC_CAP32(n) slots */
+extern void sift_cc_decode_u32(const SiftCc *c, uint32 *dst);
+/* dst[i] = the double whose key (sift_col_f8_key) is key i, of a F4 or F8 chunk; an ALP chunk never forms the keys; dst needs n + SIFT_COL_PAD/8 slots */
+extern void sift_cc_decode_f8(const SiftCc *c, double *dst);
+/* dst[k] = key of row idx[k], k < m (idx ascending or not, all < n) */
+extern void sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst);
+extern int64 sift_cc_get(const SiftCc *c, uint32 row);
+/*
+ * 1 when the keys never decrease in row order, -1 when they never increase (a delta chunk whose smallest step says so; the slots of NULL rows hold a filler that keeps it),
+ * 2 when neither is known but a run of rows decodes in time of its rows (a delta or bit-packed chunk), 0 for any other chunk
+ */
+extern int	sift_cc_order(const SiftCc *c);
+/* The offsets key - min as u32 when SIFT_CCF_OFF32 (returns false otherwise, dst untouched); dst needs SIFT_CC_CAP32(n) slots. */
+extern bool sift_cc_decode_off32(const SiftCc *c, uint32 *dst);
+/* An upper bound of the offsets that writes, from the root node alone (what the blob holds is not read); UINT32_MAX when the nodes do not tell */
+extern uint32 sift_cc_off32_bound(const SiftCc *c);
+/*
+ * bits = rows whose key is in [lo, hi] (signed), (n + 63) / 64 words, bits past n zero; bits has room for SIFT_COL_NWORDS(n) words, the column
+ * kernels it runs on write the padded vector (the words past the first are zero). NULL slots hold the filler, the caller
+ * ANDs the non-NULL bits. Runs on the encoded form: constants and run-length chunks never expand, bit-packed chunks are unpacked and compared in
+ * registers, dictionaries translate the range to codes, decimal floats to digits.
+ */
+extern void sift_cc_filter(const SiftCc *c, int64 lo, int64 hi, uint64 *bits);
+/* Number of rows with bit set (all rows when bits is NULL) and the sum of their keys as wrapping int64; run-length and constant chunks never expand. */
+/* bits = the rows whose key is a member of the set of the integers [0, nmember) that member holds a bit for (a key outside it is none); the nodes of runs, one value and a dictionary are tested once for their runs and values, not once for each row */
+extern void sift_cc_filter_member(const SiftCc *c, const uint64 *member, uint32 nmember, uint64 *bits);
+extern uint64 sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum);
+
+/* Slots of a u32 array that takes the writes of every kernel for n values: whole rows of 32 values plus the pad (SIFT_COL_PAD bytes) */
+#define SIFT_CC_CAP32(n)	((((uint64) (n) + 31) / 32) * 32 + SIFT_COL_PAD / 4)
+
+/* A list of n strings (the dictionary of a string leaf): lengths cascade + concatenated bytes, the bytes wrapped under the cold rule, or, when scan is not NULL (the strings of an inline text chunk), under the formula above. */
+/* Whether strings that the cold rule stores in zlen bytes of zstd are better stored in llen of LZ4 (rawlen bytes) by the formula above; *scan gets S and G */
+/* The terms of the formula for LZ4 (l bytes) against zstd (z bytes) over raw bytes of strings: instructions a byte of text with each, S their ratio, G percent more bytes, B, C */
+typedef struct SiftCcScanTerms
+{
+	double		zipb,
+				lipb,
+				speedup,
+				growth,
+				benefit,
+				cost;
+} SiftCcScanTerms;
+extern void sift_cc_scan_terms(double z, double l, double raw, SiftCcScanTerms *t);
+extern bool sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen);
+extern void sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan);
+/* The same list, its bytes compressed with a dictionary of zstd (cdict: a handle of sift_colz_zstd_create_cdict) when that makes them at least a twentieth smaller; whether it did */
+extern bool sift_cc_encode_strs_dict(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, const void *cdict);
+/* The list of exactly n strings (its count is compared before anything is allocated for it); off[n + 1] and bytes palloc'd in mcxt, with room for at least min_n strings and min_bytes bytes (a caller that keeps the arrays as they are asks for the room its owner needs) */
+extern void sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 min_n, Size min_bytes, uint32 **off, char **bytes);
+/* A list written by sift_cc_encode_strs_dict: ddict is the decompression handle of the dictionary of its writer (NULL for a list that did not use one) */
+extern void sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 min_n, Size min_bytes, uint32 **off, char **bytes, const void *ddict);
+/* A bit vector of nbits: constant, raw words, or the positions of the minority bit as an integer cascade. */
+extern void sift_cc_encode_bits(StringInfo out, const uint64 *words, uint32 nbits, const SiftCcPolicy *pol);
+extern void sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words);
+
+/*
+ * The same reads for a worker (col/codec/a.c): the memory is the arena, a failure is false with the SiftErr (SIFT_ERR_CORRUPT, SIFT_ERR_UNSUPPORTED, SIFT_ERR_ARENA_FULL), and the
+ * result goes through the last pointers. A chunk opened here lives in the arena until the caller rewinds it; the other calls rewind their scratch, and a failed call leaves its scratch to the caller.
+ */
+extern bool sift_cc_open_a(SiftArena *a, SiftErr *err, const uint8 *blob, Size len, bool verify, SiftCc **cc);
+extern bool sift_cc_open_rows_a(SiftArena *a, SiftErr *err, const uint8 *blob, Size len, bool verify, uint32 nrows, SiftCc **cc);
+extern bool sift_cc_decode_a(SiftArena *a, SiftErr *err, const SiftCc *c, int64 *dst);
+extern bool sift_cc_decode_head_a(SiftArena *a, SiftErr *err, const SiftCc *c, uint32 w, int64 *dst);
+extern bool sift_cc_decode_u32_a(SiftArena *a, SiftErr *err, const SiftCc *c, uint32 *dst);
+extern bool sift_cc_decode_f8_a(SiftArena *a, SiftErr *err, const SiftCc *c, double *dst);
+extern bool sift_cc_decode_sel_a(SiftArena *a, SiftErr *err, const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst);
+extern bool sift_cc_get_a(SiftArena *a, SiftErr *err, const SiftCc *c, uint32 row, int64 *key);
+/* *fits: whether sift_cc_decode_off32 wrote dst */
+extern bool sift_cc_decode_off32_a(SiftArena *a, SiftErr *err, const SiftCc *c, uint32 *dst, bool *fits);
+extern bool sift_cc_filter_a(SiftArena *a, SiftErr *err, const SiftCc *c, int64 lo, int64 hi, uint64 *bits);
+extern bool sift_cc_filter_member_a(SiftArena *a, SiftErr *err, const SiftCc *c, const uint64 *member, uint32 nmember, uint64 *bits);
+/* *count and *sum: what sift_cc_sum returns and writes */
+extern bool sift_cc_sum_a(SiftArena *a, SiftErr *err, const SiftCc *c, const uint64 *bits, int64 *sum, uint64 *count);
+/* off[n + 1 or min_n + 1] and bytes are in the arena */
+extern bool sift_cc_decode_strs_dict_a(SiftArena *a, SiftErr *err, const uint8 *blob, Size len, uint32 n, uint32 min_n, Size min_bytes, uint32 **off,
+									   char **bytes, const void *ddict);
+extern bool sift_cc_decode_bits_a(SiftArena *a, SiftErr *err, const uint8 *blob, Size len, uint32 nbits, uint64 *words);
+
+/* ---------- kernels ---------- */
+
+/*
+ * FORBIT layout: blocks of 1024 values = 32 rows of 32 lanes; value i is row i / 32, lane i % 32; lane l is a bit stream of its rows (LSB
+ * first, W bits each), word k of lane l is src[32 * k + l]. A full block takes 32 * W words, a tail of R < 32 rows takes 32 * ceil(R * W / 32).
+ * "rows" below is the number of rows of 32 values (n / 32 rounded up); values past n are padding.
+ */
+typedef struct SiftCcKernels
+{
+	/* dst[i] = base + value i, i < 32 * rows (wrapping u32); W 0..32; dst needs 32 * rows slots */
+	void		(*unpack32) (const uint32 *src, uint32 W, uint32 rows, uint32 base, uint32 *dst);
+	/* bit i of bits = ((value i - lo) <= span) unsigned wrapping, i < 32 * rows; writes ceil(32 * rows / 64) whole words */
+	void		(*unpack_range32) (const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint32 span, uint64 *bits);
+	/* dst[0] = first; dst[i] = dst[i - 1] + a[i] + add (wrapping), 1 <= i < n; a[0] is ignored */
+	void		(*prefix32) (const uint32 *a, uint32 n, uint32 *dst, uint32 first, uint32 add);
+	void		(*prefix64) (const uint32 *a, uint32 n, int64 *dst, int64 first, int64 add);
+	/* max of a (0 when n is 0): the reader checks the codes of a dictionary against its size before the column kernels gather with them */
+	uint32		(*max32) (const uint32 *a, uint32 n);
+	/* dst[i] = key of ((double) (dbase + u[i])) / div, resp. the float4 ((float) (dbase + u[i])) / (float) div promoted to double */
+	void		(*alp_keys_f8) (int64 *dst, const uint32 *u, uint32 n, int64 dbase, double div);
+	void		(*alp_keys_f4) (int64 *dst, const uint32 *u, uint32 n, int64 dbase, float div);
+	/* dst = the runs expanded: lens[r] copies of vals[r]; the total is exactly the caller's n (checked) */
+	void		(*rle_expand32) (const uint32 *vals, const uint32 *lens, uint32 nruns, uint32 *dst);
+	/* a[i] = base + mul * a[i], i < n, wrapping: the SCALE node on the 32-bit and the 64-bit domain */
+	void		(*scale32) (uint32 *a, uint32 n, uint32 base, uint32 mul);
+	void		(*scale64) (int64 *a, uint32 n, int64 base, int64 mul);
+	/* the doubles alp_keys_f8 / alp_keys_f4 give the keys of: dst[i] = ((double) (dbase + u[i])) / div, resp. the float4 division promoted */
+	void		(*alp_f8) (double *dst, const uint32 *u, uint32 n, int64 dbase, double div);
+	void		(*alp_f4) (double *dst, const uint32 *u, uint32 n, int64 dbase, float div);
+} SiftCcKernels;
+
+/* Rebound by the cpu module on the backend, never while a worker decodes: workers read it as a constant */
+extern PGDLLIMPORT const SiftCcKernels *sift_cck;
+/* A level's table, for tests; never NULL, falls back downwards for a level the CPU lacks */
+extern const SiftCcKernels *sift_cc_kernels_for(SiftSimdLevel level);
+/* Registers the rebind with the cpu module; _PG_init */
+extern void sift_cc_kernels_init(void);
+
+#endif							/* SIFT_COLCODEC_H */

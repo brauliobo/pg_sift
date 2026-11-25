@@ -1,4 +1,4 @@
--- The registry of the manifests of the indexes in shared memory (core/shm_manifest.c) and the locks of the partitions (core/part_lock.c). A slot is read without a lock between two reads of its
+-- The registry of the manifests of the indexes in shared memory (core/shm/manifest.c) and the locks of the partitions (core/part_lock.c). A slot is read without a lock between two reads of its
 -- seqlock; the snapshot of a manifest is in a shared area, counted by its readers and freed by the last; its bytes are charged to the manifest pool of the ledger. An index is named by a relation number.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"

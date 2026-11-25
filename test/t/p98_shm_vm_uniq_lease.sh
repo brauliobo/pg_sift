@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# The vblock leases of a backend (table/f2/f2_vm_lease.c) with the registry full: the lease that a backend gives back to take another is a lease of its own, so it takes no lock of the table it
+# The vblock leases of a backend (table/f2/vm/lease.c) with the registry full: the lease that a backend gives back to take another is a lease of its own, so it takes no lock of the table it
 # belonged to (a lock held to the end of the transaction, or waited for with a concurrent TRUNCATE holding the table), and a writer that has no lease at all holds back every bit of the visibility
 # map of every table until it ends (VACUUM sets a bit below the least vblock of the leases, and an insert with no lease has none to put there).
 . "$(dirname "$0")/lib.bash"

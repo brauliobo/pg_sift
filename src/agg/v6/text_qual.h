@@ -9,7 +9,7 @@
 
 #include "nodes/primnodes.h"
 
-#include "col/like_simd.h"
+#include "col/like/simd.h"
 
 typedef struct SiftTextQual
 {

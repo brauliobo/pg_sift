@@ -10,9 +10,9 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "col/am.h"
-#include "col/v1/gorder.h"
+#include "col/v1/gorder/gorder.h"
 #include "core/cmp.h"
-#include "col/v1/amscan/amscan_int.h"
+#include "col/v1/amscan/int.h"
 
 #define COL_SCAN_GORD_CHUNK	10.0	/* a chunk of the sorted keys of a segment (1,024 entries): its directory entry and its two blobs, for the bounds and each chunk between them */
 

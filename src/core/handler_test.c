@@ -9,21 +9,21 @@
 #include "access/genam.h"
 #include "fmgr.h"
 
-#include "bm25/build.h"
-#include "bm25/eval.h"
+#include "bm25/build/build.h"
+#include "bm25/eval/eval.h"
 #include "bm25/prefix.h"
 #include "core/catname.h"
 #include "core/crash_point.h"
 #include "core/format_ux.h"
 #include "core/meta_peek.h"
 #include "core/progress.h"
-#include "core/v1_col/tomb.h"
+#include "core/v1_col/tomb/tomb.h"
 #include "core/worker.h"
-#include "core/visibility.h"
+#include "core/visibility/visibility.h"
 #include "core/parbuild.h"
 #include "col/am.h"
-#include "table/f2/f2_tbl.h"
-#include "table/v1/table_v1.h"
+#include "table/f2/tbl.h"
+#include "table/v1/table.h"
 
 void
 sift_handler_test_gucs(void)

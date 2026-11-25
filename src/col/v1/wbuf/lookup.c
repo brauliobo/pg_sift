@@ -5,7 +5,7 @@
  */
 #include "postgres.h"
 #include "col/v1/point.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "col/v1/wbuf/int.h"
 #include "core/cachebudget.h"
 
 static int

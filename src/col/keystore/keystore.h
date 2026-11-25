@@ -1,7 +1,7 @@
 /*
  * col/keystore/keystore.h - the scope key store of a column: the relation <table>_<column>_sift_values that holds the keys of a text, varchar or uuid scope
  * key (docs/COL-SCOPE.md "Key types") and gives each the code, an int8, by which the scope machinery names it. It has the table access method sift_values
- * (no rows: the pages are the store layout of core/store.h) and depends on its table; the scope index that uses it depends on it.
+ * (no rows: the pages are the store layout of core/store/store.h) and depends on its table; the scope index that uses it depends on it.
  */
 #ifndef SIFT_COL_KEYSTORE_H
 #define SIFT_COL_KEYSTORE_H
@@ -11,8 +11,8 @@
 #include "storage/lockdefs.h"
 #include "utils/relcache.h"
 
-#include "col/codec.h"
-#include "col/v1/enc.h"
+#include "col/codec/codec.h"
+#include "col/v1/enc/enc.h"
 
 #define SIFT_KEYSTORE_AM_NAME		"sift_values"
 #define SIFT_KEYSTORE_LABEL			"sift_values"
@@ -37,7 +37,7 @@ extern void sift_keystore_init(void);
 extern void sift_keystore_note_drop(Oid relid);
 
 /*
- * The keys of a store (col/keystore/keystore_run.c). A store is opened with a lock for the length of the call that uses it; the view of its keys
+ * The keys of a store (col/keystore/run.c). A store is opened with a lock for the length of the call that uses it; the view of its keys
  * is kept by the backend and read up to the newest run when it is asked for.
  */
 typedef struct SiftKeyStore SiftKeyStore;

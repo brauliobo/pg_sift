@@ -3,7 +3,7 @@
  * the write of the segment from runs, the close
  * the readers, the merge and the cuts are in the files next to it
  */
-#include "bm25/runs/runs_priv.h"
+#include "bm25/runs/int.h"
 #include "core/memtrack.h"
 
 #ifdef SIFT_TESTING

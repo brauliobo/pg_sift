@@ -3,7 +3,7 @@
  * the superblocks and key ranges they hold, which of them are overlays, and which hold found flags a rewrite would fill again
  */
 #include "postgres.h"
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 #include "core/dirpart.h"
 
 SbSpans

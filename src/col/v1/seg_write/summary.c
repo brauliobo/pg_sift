@@ -4,7 +4,7 @@
  * written after the units they summarize
  */
 #include "core/limits.h"
-#include "col/v1/seg_write/seg_write_int.h"
+#include "col/v1/seg_write/int.h"
 
 /* The sums and the zone of a unit's INT leaf as the reader returns them (sift_cseg_agg) */
 static void

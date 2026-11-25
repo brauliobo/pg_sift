@@ -5,10 +5,10 @@
 #define SIFT_SEG_INT_H
 
 #include "table/v1/keyidx.h"
-#include "col/codec.h"
+#include "col/codec/codec.h"
 #include "col/pg.h"
 #include "core/memtrack.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 
 struct SiftTblLayout
 {

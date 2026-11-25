@@ -8,7 +8,7 @@
 
 #include "core/host.h"
 
-#include "bm25/kernels.h"
+#include "bm25/kernels/kernels.h"
 
 typedef struct SiftHitSpill SiftHitSpill;
 

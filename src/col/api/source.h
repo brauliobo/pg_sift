@@ -35,13 +35,13 @@ typedef enum SiftColOp
 	SIFT_COLOP_SHAPE,			/* the head of a range or a network: vals[0].v.s is the SiftColWTest of a containment operator (col/shape.c), made by the access method scan */
 	SIFT_COLOP_KEY_EXISTS,		/* format major 2: the leaf of a top-level key of a jsonb document; the rows where jsonb_exists(document, key) holds (col -1: no leaf keeps the key, the heap decides every row) */
 	SIFT_COLOP_JSON_TYPE,		/* format major 2: the leaf of a top-level key of a jsonb document; vals[0].v.i is a set of JSON types (bit t for SIFT_COLTAG_t): the rows where jsonb_typeof(document -> key) is one of them */
-	SIFT_COLOP_IPREFIX,			/* format major 2, STR: lower(value) starts with vals[0], ASCII in lower case (lower(col) LIKE 'abc%'); vals[1].v.i is 1 when the pattern has an i or a k (col/f2/f2_pred_ext.h) */
+	SIFT_COLOP_IPREFIX,			/* format major 2, STR: lower(value) starts with vals[0], ASCII in lower case (lower(col) LIKE 'abc%'); vals[1].v.i is 1 when the pattern has an i or a k (col/f2/pred/ext.h) */
 	SIFT_COLOP_IEQ,				/* format major 2, STR: lower(value) = vals[0], the same pattern (lower(col) = 'abc') */
-	SIFT_COLOP_ARR_OVERLAP,		/* format major 2, VARLENA image of int4[], int8[] or text[]: && the array of vals[0].v.s, a SiftArrQuery (col/f2/f2_pred_ext.h) */
+	SIFT_COLOP_ARR_OVERLAP,		/* format major 2, VARLENA image of int4[], int8[] or text[]: && the array of vals[0].v.s, a SiftArrQuery (col/f2/pred/ext.h) */
 	SIFT_COLOP_ARR_CONTAINS		/* format major 2, VARLENA image of an array: @> the same */
 } SiftColOp;
 
-/* The operators of the hybrid scan (agg/hybrid.h) that no index qual makes: the scan is given them with sift_f2_scan_set_ext_preds */
+/* The operators of the hybrid scan (agg/hybrid/hybrid.h) that no index qual makes: the scan is given them with sift_f2_scan_set_ext_preds */
 #define SIFT_COLOP_IS_EXT(op) ((op) >= SIFT_COLOP_IPREFIX)
 
 /* The STR tests that read every string of a dictionary, in code order, and not a run of its sorted order */
@@ -143,7 +143,7 @@ typedef struct SiftColZone
 #define SIFT_COLO_POINT_TIDS	0x0020	/* ... and the heap addresses of a directory that lists them are returned as they are, without reading a unit (sift_col_point_tids): the caller wants no values of the rows, only the addresses, and has the heap check the condition again */
 #define SIFT_COLO_POINT_ROWS	0x0040	/* ... and a unit comes narrowed to the rows the directory lists (sift_col_point_narrow): the caller tests every predicate again on them, as it does on the rows of a unit */
 #define SIFT_COLO_POINT_LAZY	0x0080	/* ... and with SIFT_COLO_POINT_TIDS, the addresses of a lookup are handed over as the caller asks for them (sift_col_point_next), not all at the begin: a scan that stops after a few rows decodes a few */
-#define SIFT_COLO_SCOPE		0x0100	/* the source reads the scope segments of the index (col/scope.h) and nothing else: no entity segment, no write buffer; without it the source never sees a scope segment */
+#define SIFT_COLO_SCOPE		0x0100	/* the source reads the scope segments of the index (col/scope/scope.h) and nothing else: no entity segment, no write buffer; without it the source never sees a scope segment */
 #define SIFT_COLO_POINTS		0x0010	/* the scan may answer an equality or a short IN list from the point directory of a segment, whose rows are the fingerprint's: the caller has the heap check the condition again (sift_col_filter_points) */
 #define SIFT_COLO_SNAP_HELD		0x0004	/* the caller keeps the snapshot registered while the source is open: one registration for the thousands of sources of a partitioned table's scan (a resource owner holding that many registrations of one snapshot takes quadratic time to add and forget them) */
 
@@ -365,7 +365,7 @@ extern ItemPointerData *sift_col_wbuf_lookup(SiftColSource *src, const SiftColPr
 extern bool sift_col_point_lazy(const SiftColSource *src);
 extern uint32 sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max);
 /*
- * The global order of leaf col (col/v1/gorder.h) as sources of sorted entries, for an ORDER BY .. LIMIT that has the heap say which rows are live: the number of
+ * The global order of leaf col (col/v1/gorder/gorder.h) as sources of sorted entries, for an ORDER BY .. LIMIT that has the heap say which rows are live: the number of
  * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _head: the first w entries of
  * the chunk that holds entry p, from the entry *at, as keys and heap addresses, each SIFT_CGORD_CAP slots; the count returned.
  */
@@ -670,7 +670,7 @@ sift_col_put_varint(StringInfo out, uint64 v)
 
 /* The index-bound declarations (relcache, planner expressions, shredder adapter, options, SQL entry points): col/pg.h, PostgreSQL only */
 
-/* The right hand side of && and @> over an array leaf (SIFT_COLOP_ARR_OVERLAP, SIFT_COLOP_ARR_CONTAINS); the tests over a stored image are col/f2/f2_pred_ext.h */
+/* The right hand side of && and @> over an array leaf (SIFT_COLOP_ARR_OVERLAP, SIFT_COLOP_ARR_CONTAINS); the tests over a stored image are col/f2/pred/ext.h */
 typedef enum SiftArrKind
 {
 	SIFT_ARR_TEXT = 1,

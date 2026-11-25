@@ -24,14 +24,14 @@
 #include "utils/selfuncs.h"
 
 #include "core/sift.h"
-#include "bm25/analyze.h"
+#include "bm25/analyze/analyze.h"
 #include "bm25/estimate.h"
-#include "bm25/eval.h"
+#include "bm25/eval/eval.h"
 #include "core/ops.h"
-#include "bm25/planner.h"
-#include "bm25/query.h"
-#include "core/quarantine.h"
-#include "core/sql.h"
+#include "bm25/planner/planner.h"
+#include "bm25/query/query.h"
+#include "core/quarantine/quarantine.h"
+#include "core/sql/sql.h"
 
 #ifdef SIFT_HAVE_LZ4
 #include <lz4.h>

@@ -3,9 +3,9 @@
  * the global order, the dictionary or the point directory answer count(*) for the units that are exact; the others are read
  */
 #include "postgres.h"
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/cmp.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 
 /*
  * The range of keys that the comparisons of an integer leaf (sift_col_count_cmp) select, all on that leaf: false when a test is of another leaf or is not a range

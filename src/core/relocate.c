@@ -8,9 +8,9 @@
 #include "miscadmin.h"
 
 #include "core/lane.h"
-#include "core/store.h"
-#include "core/store_int.h"
-#include "core/visibility.h"
+#include "core/store/store.h"
+#include "core/store/int.h"
+#include "core/visibility/visibility.h"
 #include "core/damage.h"
 
 /* the shortest free run a piece of a data run is moved into (fewer, longer extents in the header) */

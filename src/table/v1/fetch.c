@@ -14,10 +14,10 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
-#include "col/v1/kern.h"
+#include "col/v1/kern/kern.h"
 #include "core/errctx.h"
-#include "table/v1/table_v1.h"
-#include "core/visibility.h"
+#include "table/v1/table.h"
+#include "core/visibility/visibility.h"
 #include "table/v1/scan_int.h"
 
 typedef struct SiftTblFetch

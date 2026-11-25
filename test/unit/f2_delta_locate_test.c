@@ -1,5 +1,5 @@
 /*
- * test/unit/f2_delta_locate_test.c - the merge of the delta tail of a deletion vector (col/f2/delvec_delta.c) and the interval tree that locates a row among the parts (col/f2/f2_locate.c),
+ * test/unit/f2_delta_locate_test.c - the merge of the delta tail of a deletion vector (col/f2/del/delvec_delta.c) and the interval tree that locates a row among the parts (col/f2/locate.c),
  * each compared with the plain algorithm it replaced on randomized input and timed at N and 8N (see test/unit/f2_scaling_test.c).
  */
 #define SIFT_S49_STANDALONE 1
@@ -14,8 +14,8 @@
 #include "test/unit/pg_shim.h"
 #include "test/unit/harness.h"
 
-#include "col/f2/delvec_delta.c"
-#include "col/f2/f2_locate.c"
+#include "col/f2/del/delvec_delta.c"
+#include "col/f2/locate.c"
 
 /* ---- [ON-F2-08] the delta tail of a deletion vector ---- */
 

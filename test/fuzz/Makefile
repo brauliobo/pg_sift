@@ -46,10 +46,10 @@ CFLAGS  += -std=gnu11 -O1 -g $(SAN) $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Wn
 LDLIBS   = -lm $(COLZ) $(PGLIB) -lpgport -lpgcommon $(SIFT_PGLIBS)
 
 # every source the three targets decode with (the portable core, SRC/portable-col.list and portable.list members), and the stand-ins
-CORE     = col/codec/codec col/codec/filter col/codec/get col/codec_policy col/codec_write col/codec_parse col/codec_blob col/codec_cold col/codec_kern col/codec_avx2 col/codec_avx512 col/codec_neon col/compress core/par/arena col/v1/kern col/v1/kern_avx2 \
-           col/v1/kern_avx512 col/v1/kern_neon col/v1/enc col/schema col/v1/dict/dict col/v1/dict/order col/v1/dict/parse col/v1/dict/serialize col/v1/batch col/v1/batch_unit col/v1/chunk col/v1/ctest col/v1/unit col/v1/unit_find col/shred col/shred_spec col/shred_kern col/shred_kern_avx2 col/shred_kern_avx512 col/shred_kern_neon \
-           bm25/kernels bm25/kernels_avx2 bm25/kernels_avx512 bm25/kernels_neon bm25/analyze bm25/analyze_config bm25/analyze_stem bm25/posting bm25/postw bm25/posblk bm25/pos bm25/bitmap bm25/blob bm25/bitmap_scalar \
-           bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/bitmap_neon core/span core/par/arena
+CORE     = col/codec/codec col/codec/filter col/codec/get col/codec/policy col/codec/write col/codec/parse col/codec/blob col/codec/cold col/codec/kern col/codec/avx2 col/codec/avx512 col/codec/neon col/compress core/par/arena col/v1/kern/kern col/v1/kern/avx2 \
+           col/v1/kern/avx512 col/v1/kern/neon col/v1/enc/enc col/schema col/v1/dict/dict col/v1/dict/order col/v1/dict/parse col/v1/dict/serialize col/v1/batch/batch col/v1/batch/unit col/v1/chunk col/v1/ctest col/v1/unit col/v1/unit_find col/shred/shred col/shred/spec col/shred/kern col/shred/avx2 col/shred/avx512 col/shred/neon \
+           bm25/kernels/kernels bm25/kernels/avx2 bm25/kernels/avx512 bm25/kernels/neon bm25/analyze/analyze bm25/analyze/config bm25/analyze/stem bm25/posting/posting bm25/postw bm25/posblk bm25/pos bm25/bitmap/bitmap bm25/blob bm25/bitmap/scalar \
+           bm25/bitmap/avx2 bm25/bitmap/avx512 bm25/bitmap/neon core/span core/par/arena
 OBJ      = $(addprefix $(OUT)/obj/,$(addsuffix .o,$(CORE))) $(OUT)/shim.o $(OUT)/pgshim.o $(OUT)/fz_shim.o
 HDR      = $(wildcard $(SRC)/*/*.h $(SRC)/*/*/*.h) fz_shim.h ../../tools/pgshim.h Makefile
 ifndef FZ_LIBFUZZER
@@ -66,7 +66,7 @@ $(OUT)/obj/%.o: %.c $(HDR)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(COV) -c -o $@ $<
 
-# the cpu stand-in of tools/kernels; its stub of sift_k would clash with the real one of bm25/bitmap.c
+# the cpu stand-in of tools/kernels; its stub of sift_k would clash with the real one of bm25/bitmap/bitmap.c
 $(OUT)/shim.o: $(KT)/shim.c $(HDR)
 	@mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $(COV) -Dsift_k=fz_unused_sift_k -c -o $@ $<

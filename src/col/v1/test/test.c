@@ -11,20 +11,20 @@
 #include "funcapi.h"
 #include "storage/bufmgr.h"
 #include "utils/array.h"
-#include "core/maint.h"
+#include "core/maint/maint.h"
 #include "col/am.h"
-#include "col/v1/gorder.h"
-#include "col/v1/order_bound.h"
-#include "col/v1/order_sort.h"
+#include "col/v1/gorder/gorder.h"
+#include "col/v1/order/bound.h"
+#include "col/v1/order/sort.h"
 #include "col/v1/pagg.h"
 #include "core/dirpart.h"
-#include "core/sql.h"
-#include "core/visibility.h"
+#include "core/sql/sql.h"
+#include "core/visibility/visibility.h"
 #endif							/* SIFT_TESTING */
-#include "col/v1/test/test_int.h"
+#include "col/v1/test/int.h"
 #include "core/catname.h"
-#include "core/store.h"
-#include "core/store_test_int.h"
+#include "core/store/store.h"
+#include "core/store/test_int.h"
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_gorder);
@@ -221,7 +221,7 @@ shift_partition(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void
 	sift_dir_part_replace(gens, ps->n, &dir->segs[ps->first], ps->n, (const uint8 (*)[SIFT_BOUND_BYTES]) ps->lo);
 }
 
-/* sift._test_col_cut_near(held, due_at, slack_pct, open): is a segment of held bytes done after a unit (col/v1/order_bound.c) */
+/* sift._test_col_cut_near(held, due_at, slack_pct, open): is a segment of held bytes done after a unit (col/v1/order/bound.c) */
 Datum
 sift_test_col_cut_near(PG_FUNCTION_ARGS)
 {
@@ -354,7 +354,7 @@ sift_test_col_cut_probes(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(sift_test_cut_probes);
 }
 
-/* sift._test_col_cut_sort_rows() and _disk_kb(): the rows the merges of this backend sorted by the sort of col/v1/order_sort.c (the rows of an input that did not fit maintenance_work_mem) and the kB of temporary files it used */
+/* sift._test_col_cut_sort_rows() and _disk_kb(): the rows the merges of this backend sorted by the sort of col/v1/order/sort.c (the rows of an input that did not fit maintenance_work_mem) and the kB of temporary files it used */
 Datum
 sift_test_col_cut_sort_rows(PG_FUNCTION_ARGS)
 {

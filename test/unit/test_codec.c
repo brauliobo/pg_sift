@@ -1,6 +1,6 @@
 /*
  * test_codec.c - the chunk codec on pool threads: chunks written by the real encoder (every encoding of the cascade, LZ4, zstd and zstd with a
- * dictionary, string lists, bit vectors) are opened, decoded and filtered by the *_a entrypoints of col/codec.h on 4 threads, each in an arena of its own,
+ * dictionary, string lists, bit vectors) are opened, decoded and filtered by the *_a entrypoints of col/codec/codec.h on 4 threads, each in an arena of its own,
  * and must equal what the backend routines give on the set-up thread, bit for bit, at every SIMD level; damaged blobs end in a SiftErr and never in a
  * crash or a leak; an arena too small ends in SIFT_ERR_ARENA_FULL; the errors of a worker are those of the backend path. The palloc/ereport trap
  * of trapshim.h is armed on every worker.
@@ -9,7 +9,7 @@
 
 #include <stdatomic.h>
 
-#include "col/codec_int.h"
+#include "col/codec/int.h"
 #include "col/compress.h"
 #include "col/fsst.h"
 #include "core/testrng.h"
@@ -18,7 +18,7 @@
 
 typedef SiftRng CcgRng;
 #define ccg_next sift_rng_next
-#include "col/codec_gen.h"
+#include "col/codec/gen.h"
 
 extern void kt_cpu_init(void);
 

@@ -2,8 +2,8 @@
  * col/v1/wbuf/xst.c - what is known of the inserter of a write buffer record when the record is read
  */
 #include "postgres.h"
-#include "core/v1_col/tomb.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "core/v1_col/tomb/tomb.h"
+#include "col/v1/wbuf/int.h"
 
 static TransactionId xst_last = InvalidTransactionId;
 static uint8 xst_last_st;

@@ -1,12 +1,12 @@
 /*
- * col/v1/test/bits_test.c - the reads of a bit vector stay inside the words a batch allocates for it (the memcheck lane saw one run past them: col/v1/kern.h sift_col_bits_any)
+ * col/v1/test/bits_test.c - the reads of a bit vector stay inside the words a batch allocates for it (the memcheck lane saw one run past them: col/v1/kern/kern.h sift_col_bits_any)
  */
 #include "postgres.h"
 #ifdef SIFT_TESTING
 #include "fmgr.h"
 
-#include "col/v1/kern.h"
-#include "col/v1/test/test_int.h"
+#include "col/v1/kern/kern.h"
+#include "col/v1/test/int.h"
 
 PG_FUNCTION_INFO_V1(sift_test_bits_any_bounds);
 

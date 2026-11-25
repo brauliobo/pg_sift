@@ -1,20 +1,20 @@
 # FILE	text of the line	why the wait is a timer (a new row needs a reason that an event cannot do the work)
 src/col/v1/wbuf/arena.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT	1 ms poll while another backend rebuilds the arena slot; the rebuilder should set the latch of its waiters
 src/col/track_hear.c	pg_usleep(PARENT_LOCK_NAP_US)	at most 20 tries of 10 ms for a lock that a deadlock would otherwise cancel
-src/core/space.c	pg_usleep(CUT_LOCK_NAP_MS	bounded retries for the lock of the cut of the file
-src/core/maint.c	sift_nap(FREED_WAIT_MS)	waits for the extents a merge freed to be reusable (a horizon, not an event of ours)
-src/core/maint.c	sift_worker_nap(Min(left	the stay window of the maintenance worker: it looks again every sift.maintenance_naptime/20 until the window ends
-src/core/visibility.c	pg_usleep(pg_prng_uint64_range	test jitter, SIFT_TESTING only
+src/core/space/space.c	pg_usleep(CUT_LOCK_NAP_MS	bounded retries for the lock of the cut of the file
+src/core/maint/maint.c	sift_nap(FREED_WAIT_MS)	waits for the extents a merge freed to be reusable (a horizon, not an event of ours)
+src/core/maint/maint.c	sift_worker_nap(Min(left	the stay window of the maintenance worker: it looks again every sift.maintenance_naptime/20 until the window ends
+src/core/visibility/visibility.c	pg_usleep(pg_prng_uint64_range	test jitter, SIFT_TESTING only
 src/core/writer.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT	sift_nap, the one sleep of the cost delay and the WAL rate
 src/core/writer.c	sift_nap(Min(ahead, 1000))	sleeps until the WAL rate allows the next page
 src/core/writer.c	sift_nap(wt->delay_ms)	the cost delay of a throttled write
 src/core/worker.c	sift_nap(ms)	sift_worker_nap, the sleep of a worker between two looks
-src/table/v1/vacuum_maint.c	sift_worker_nap(Max(sift_maintenance_naptime / 4	the pause between the passes of a table worker (at most 20, ends after 3 idle passes)
-src/table/v1/vacuum.c	sift_nap(Min(ahead, 1000))	sleeps until the WAL rate allows the next page
+src/table/v1/vacuum/maint.c	sift_worker_nap(Max(sift_maintenance_naptime / 4	the pause between the passes of a table worker (at most 20, ends after 3 idle passes)
+src/table/v1/vacuum/vacuum.c	sift_nap(Min(ahead, 1000))	sleeps until the WAL rate allows the next page
 src/col/v1/scan/scan.c	pg_usleep(pg_prng_uint64_range	test jitter, SIFT_TESTING only
 src/col/v1/maint/merge.c	pg_usleep(sift_test_col_refresh	test hook, SIFT_TESTING only
 src/core/waits.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, ms, s	sift_wait, the one latch wait of the named wait events: the callers named above and in their own rows pass the nap
-src/core/maint_sched_pg.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT	the naptime of the launcher and of the workers of the queue: a request sets their latch, the timeout is the periodic reap of the claims of dead processes and the count of idle naps that ends a worker
-src/agg/gpu_worker.c	WL_EXIT_ON_PM_DEATH, 1000, PG_WAIT_EXTENSION	the idle look of the GPU worker: a backend that posts a job sets its latch, the second bounds the idle exit (SIFT_GPU_IDLE_US) and keeps the heartbeat the waiting backends read
-src/agg/gpu_worker.c	WL_EXIT_ON_PM_DEATH, WAIT_SLICE_MS, PG_WAIT_EXTENSION	a backend waiting for the GPU worker (to start, for a slot, for its job): the party that changes the slot sets the latch, the slice lets the waiter see a worker that died or stopped beating, which sets no latch
-src/core/maint_drain.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT	a statement that drops or copies a database waits at most 5 s for its workers to leave: nothing announces the exit of another process, the server polls the same way (CountOtherDBBackends)
+src/core/maint/sched_pg.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT	the naptime of the launcher and of the workers of the queue: a request sets their latch, the timeout is the periodic reap of the claims of dead processes and the count of idle naps that ends a worker
+src/agg/gpu/worker.c	WL_EXIT_ON_PM_DEATH, 1000, PG_WAIT_EXTENSION	the idle look of the GPU worker: a backend that posts a job sets its latch, the second bounds the idle exit (SIFT_GPU_IDLE_US) and keeps the heartbeat the waiting backends read
+src/agg/gpu/worker.c	WL_EXIT_ON_PM_DEATH, WAIT_SLICE_MS, PG_WAIT_EXTENSION	a backend waiting for the GPU worker (to start, for a slot, for its job): the party that changes the slot sets the latch, the slice lets the waiter see a worker that died or stopped beating, which sets no latch
+src/core/maint/drain.c	WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT	a statement that drops or copies a database waits at most 5 s for its workers to leave: nothing announces the exit of another process, the server polls the same way (CountOtherDBBackends)

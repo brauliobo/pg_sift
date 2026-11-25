@@ -6,7 +6,7 @@
 #include "core/host.h"
 #include "core/cmp.h"
 #include "core/varint.h"
-#include "bm25/runs/runs_priv.h"
+#include "bm25/runs/int.h"
 
 /* Read buffer of each of nruns readers: what half the budget leaves after their file buffers, at most IO_BUF */
 static int
@@ -170,7 +170,7 @@ record_varint(RunReader *rd)
 	}
 }
 
-/* The position record of the current posting (see bm25/analyze.h) into rd->prec */
+/* The position record of the current posting (see bm25/analyze/analyze.h) into rd->prec */
 static void
 read_record(RunReader *rd)
 {

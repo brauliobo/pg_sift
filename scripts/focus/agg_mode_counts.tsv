@@ -1,1 +1,1 @@
-agg_mode_counts	src/col/codec_parse.c:parse_alp_positions src/col/v1/scan/prune.c:prune_zone src/col/v1/src_zone.c:zone_tree src/core/errctx.c:errctx_callback src/core/errctx.c:sift_errctx_name
+agg_mode_counts	src/col/codec/parse.c:parse_alp_positions src/col/v1/scan/prune.c:prune_zone src/col/v1/src_zone.c:zone_tree src/core/errctx.c:errctx_callback src/core/errctx.c:sift_errctx_name

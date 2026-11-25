@@ -11,8 +11,8 @@
 #include "col/am.h"
 #include "col/fsst.h"
 #include "col/granule/granule.h"
-#include "col/granule/granule_filter.h"
-#include "col/granule/granule_int.h"
+#include "col/granule/filter.h"
+#include "col/granule/int.h"
 
 bool
 sift_granule_point_str(const SiftGranuleView *v, int col, uint16 row, const char **p, uint32 *len)

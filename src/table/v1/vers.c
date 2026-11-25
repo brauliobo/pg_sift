@@ -6,8 +6,8 @@
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 
-#include "col/v1/seg.h"
-#include "table/v1/table_v1.h"
+#include "col/v1/seg/seg.h"
+#include "table/v1/table.h"
 #include "table/v1/seg_int.h"
 #include "core/cmp.h"
 #include "core/u64set.h"

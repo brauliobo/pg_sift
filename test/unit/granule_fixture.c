@@ -10,7 +10,7 @@
 
 #include "col/compress.h"
 #include "col/fsst.h"
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 #include "granule_fixture.h"
 
 enum

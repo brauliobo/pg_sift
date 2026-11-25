@@ -9,11 +9,11 @@
 #include "funcapi.h"
 #include "col/am.h"
 #include "col/v1/pagg.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 #endif							/* SIFT_TESTING */
-#include "col/v1/test/test_int.h"
+#include "col/v1/test/int.h"
 #include "core/inspect.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_damage);

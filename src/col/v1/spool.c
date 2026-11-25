@@ -5,7 +5,7 @@
 #include "core/cmp.h"
 #include "core/limits.h"
 #include "core/memtrack.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 static inline int
 ent_cmp(const SiftEnt *x, const SiftEnt *y)

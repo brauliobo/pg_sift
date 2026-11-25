@@ -28,7 +28,7 @@ sift_const_list(Node *n)
 #define SIFT_SKIP_CONST_LIST(n, ret) \
 	do { if (sift_const_list(n)) return ret; } while (0)
 
-/* agg/hybrid_plan.c: registers the path hook of SiftHybridScan, after sift_planner_init: the path competes with the best paths of a scored query */
+/* agg/hybrid/plan.c: registers the path hook of SiftHybridScan, after sift_planner_init: the path competes with the best paths of a scored query */
 extern void sift_hybrid_init(void);
 
 #endif							/* SIFT_AGG_H */

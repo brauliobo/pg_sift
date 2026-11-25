@@ -9,7 +9,7 @@
 #include "utils/relcache.h"
 #include "core/cmp.h"
 #include "col/am.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 #include "core/catname.h"
 
 int64		sift_col_probe_dead;

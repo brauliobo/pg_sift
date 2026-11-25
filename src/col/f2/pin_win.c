@@ -3,12 +3,12 @@
  */
 #include "postgres.h"
 
-#include "col/f2/f2_col_delta_idx.h"
-#include "col/f2/f2_part_pin_scan.h"
-#include "col/f2/f2_view.h"
+#include "col/f2/col_delta/idx.h"
+#include "col/f2/part/pin_scan.h"
+#include "col/f2/view.h"
 #include "col/f2/pin_win.h"
 #include "col/f2/scan/par_int.h"
-#include "col/granule/cfilt_str_simd.h"
+#include "col/granule/cfilt/str_simd.h"
 #include "core/memtrack.h"
 #include "core/popcount.h"
 #include "utils/memutils.h"

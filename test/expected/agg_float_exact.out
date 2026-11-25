@@ -1,7 +1,7 @@
 -- The pushed float aggregates give PostgreSQL's bits, not only its values: random inputs, many fractions, every group size, each query run with sift on and off and
 -- the rows compared as text (the shortest exact float8 output). `engaged` counts the queries whose plan runs in the scan. A server built with fused multiply-add
 -- (aarch64, or x86-64 for a newer CPU) rounds `lo + p * (hi - lo)` and `p * (n - 1) - first` once, one built without it twice, and its function for an array of
--- fractions may differ from the scalar one: the scan finds out how this server does each (agg/v6/v6_osa_round.c). A sum next to a percentile is not compared: the normal
+-- fractions may differ from the scalar one: the scan finds out how this server does each (agg/v6/osa/round.c). A sum next to a percentile is not compared: the normal
 -- plan sorts the rows of the group by the percentile's argument, and the order of the rows is that of the sum.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;

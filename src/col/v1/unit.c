@@ -4,9 +4,9 @@
 /* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "core/host.h"
 
-#include "col/v1/enc.h"
-#include "col/v1/enc_int.h"
-#include "col/v1/kern.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/enc/int.h"
+#include "col/v1/kern/kern.h"
 #include "core/cmp.h"
 #include "core/popcount.h"
 #include "core/damage.h"

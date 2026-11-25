@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kernel coverage: which slots of the kernel tables (agg/kern.h, col/v1/kern.h, bm25/kernels.h) a SIMD level binds to the scalar function, and is every slot run by the
+"""Kernel coverage: which slots of the kernel tables (agg/kern.h, col/v1/kern/kern.h, bm25/kernels/kernels.h) a SIMD level binds to the scalar function, and is every slot run by the
 equality test of its family. A slot that a level leaves scalar needs a line in scripts/kernels.allow (family, level, slot, reason: a measurement or a property of the
 operation), a line for a slot that is no longer scalar fails too, so the list is the gap list and cannot go stale.
 
@@ -10,15 +10,15 @@ import re, sys, os, collections
 
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAMILIES = {
-    'col': dict(header='src/core/simd_kern.h', struct='SiftColKernels', test='src/col/v1/kern_test.c',
-                tables={'avx2': ('src/col/v1/kern_avx2.c', 'sift_col_kernels_avx2'), 'avx512': ('src/col/v1/kern_avx512.c', 'sift_col_kernels_avx512'),
-                        'neon': ('src/col/v1/kern.c', 'sift_col_kernels_neon')}),
-    'bm25': dict(header='src/bm25/kernels.h', struct='SiftKernels', test='src/bm25/kernels_test.c',
-                 tables={'avx2': ('src/bm25/kernels_avx2.c', 'sift_kernels_avx2'), 'avx512': ('src/bm25/kernels_avx512.c', 'sift_kernels_avx512'),
-                         'neon': ('src/bm25/kernels_neon.c', 'sift_kernels_neon')}),
-    'shred': dict(header='src/col/shred.h', struct='SiftShredKernels', test='src/col/shred_test.c',
-                  tables={'avx2': ('src/col/shred_kern_avx2.c', 'sift_shred_kernels_avx2'), 'avx512': ('src/col/shred_kern_avx512.c', 'sift_shred_kernels_avx512'),
-                          'neon': ('src/col/shred_kern.c', 'sift_shred_kernels_neon')}),
+    'col': dict(header='src/core/simd_kern.h', struct='SiftColKernels', test='src/col/v1/kern/test.c',
+                tables={'avx2': ('src/col/v1/kern/avx2.c', 'sift_col_kernels_avx2'), 'avx512': ('src/col/v1/kern/avx512.c', 'sift_col_kernels_avx512'),
+                        'neon': ('src/col/v1/kern/kern.c', 'sift_col_kernels_neon')}),
+    'bm25': dict(header='src/bm25/kernels/kernels.h', struct='SiftKernels', test='src/bm25/kernels/test.c',
+                 tables={'avx2': ('src/bm25/kernels/avx2.c', 'sift_kernels_avx2'), 'avx512': ('src/bm25/kernels/avx512.c', 'sift_kernels_avx512'),
+                         'neon': ('src/bm25/kernels/neon.c', 'sift_kernels_neon')}),
+    'shred': dict(header='src/col/shred/shred.h', struct='SiftShredKernels', test='src/col/shred/test.c',
+                  tables={'avx2': ('src/col/shred/avx2.c', 'sift_shred_kernels_avx2'), 'avx512': ('src/col/shred/avx512.c', 'sift_shred_kernels_avx512'),
+                          'neon': ('src/col/shred/kern.c', 'sift_shred_kernels_neon')}),
 }
 
 

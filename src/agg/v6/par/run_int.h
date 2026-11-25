@@ -7,7 +7,7 @@
 
 #include "postgres.h"
 
-#include "agg/gpu_v6.h"
+#include "agg/gpu/v6.h"
 #include "agg/v6/par/derive.h"
 #include "agg/v6/par/distinct.h"
 #include "agg/v6/par/group.h"

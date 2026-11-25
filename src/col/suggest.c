@@ -27,7 +27,7 @@
 
 #include "col/am.h"
 #include "col/pg.h"
-#include "col/shred.h"
+#include "col/shred/shred.h"
 #include "core/memtrack.h"
 #include "core/catname.h"
 

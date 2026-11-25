@@ -12,7 +12,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "bm25/analyze.h"
+#include "bm25/analyze/analyze.h"
 #include "bm25/runs.h"
 
 /* MEM[MEM-PORT-13]: MariaDB feed BUILD_BUDGET (512MiB hardcoded + unbounded ev[] accumulation) */

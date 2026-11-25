@@ -1,1 +1,1 @@
-agg_ordered_flat	src/agg/v6/join_asof.c:merge_open
+agg_ordered_flat	src/agg/v6/join/asof_run.c:merge_open

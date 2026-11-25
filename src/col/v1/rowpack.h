@@ -6,7 +6,7 @@
 #define SIFT_COL_ROWPACK_H
 
 #include "lib/stringinfo.h"
-#include "col/v1/enc.h"
+#include "col/v1/enc/enc.h"
 
 /* Appends the row to out: its TID, the values of the top level leaves, then the elements of the arrays */
 extern void sift_colrow_pack(StringInfo out, const SiftColSchema *sc, const SiftColRow *row);

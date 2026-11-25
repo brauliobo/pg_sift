@@ -3,8 +3,8 @@
 # DROP TABLE beside a maintenance worker (the race between the lock order of the statements, table first and then its indexes, and a worker that opens an index
 # for the table): an injection point stops the worker without a sleep (PostgreSQL built with --enable-injection-points: scripts/pg-assert.sh --inject), under
 # sift.async_maintenance = on, the one switch of the background maintenance of 6.0 (sift.col_auto_merge is gone):
-#   Format 2.0 (sift_col): the unified worker of src/core/maint_sched_pg.c, points sift-maint-f2-{before,after}-table-lock of sift_maint_open
-#   Format 1.7 (BM25 sift): the worker of src/core/maint.c, points sift-maint-{before,after}-table-lock of open_index_table_first
+#   Format 2.0 (sift_col): the unified worker of src/core/maint/sched_pg.c, points sift-maint-f2-{before,after}-table-lock of sift_maint_open
+#   Format 1.7 (BM25 sift): the worker of src/core/maint/maint.c, points sift-maint-{before,after}-table-lock of open_index_table_first
 # for each: (a) after it locked the table: DROP TABLE waits for the worker, it goes on and ends, DROP TABLE ends: no deadlock, no error;
 # (b) before it locked the table: DROP TABLE ends first, the worker finds the relation gone and ends without an error.
 # Both beside the assertions of the lock order (Assert in sift_try_open_index and sift_maint_open).

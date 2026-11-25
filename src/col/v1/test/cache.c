@@ -8,16 +8,16 @@
 #include "access/relation.h"
 #include "funcapi.h"
 #include "col/am.h"
-#include "col/dictshm.h"
-#include "col/v1/v1_reader.h"
-#include "table/v1/v1_tbl_reader.h"
+#include "col/dictshm/dictshm.h"
+#include "col/v1/reader.h"
+#include "table/v1/tbl_reader.h"
 #include "col/v1/pagg.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 #endif							/* SIFT_TESTING */
-#include "col/v1/test/test_int.h"
+#include "col/v1/test/int.h"
 #include "core/cachebudget.h"
 #include "core/catname.h"
-#include "core/store.h"
+#include "core/store/store.h"
 
 #ifdef SIFT_TESTING
 /*

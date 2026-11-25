@@ -13,7 +13,7 @@
 #include <string.h>
 
 #include "agg/group/ht.h"
-#include "agg/kern6_int.h"
+#include "agg/kern6/int.h"
 
 #undef printf
 #undef fprintf
@@ -23,7 +23,7 @@ static void *xalloc(size_t n);
 
 #define AK6C_ALLOC(n)	xalloc(n)
 #define AK6C_FREE(p)	free(p)
-#include "agg/kern6_cases.h"
+#include "agg/kern6/cases.h"
 
 SiftCpu		sift_cpu;
 

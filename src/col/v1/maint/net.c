@@ -7,8 +7,8 @@
  */
 #include "postgres.h"
 #include "utils/timestamp.h"
-#include "col/v1/maint/maint_int.h"
-#include "core/maint_int.h"
+#include "col/v1/maint/int.h"
+#include "core/maint/int.h"
 #include "core/ops.h"
 
 typedef struct NetStep

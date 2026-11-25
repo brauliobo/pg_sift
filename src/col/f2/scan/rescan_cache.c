@@ -8,8 +8,8 @@
 
 #include "utils/memutils.h"
 
-#include "col/f2/f2_part_pin_scan.h"
-#include "col/f2/f2_pred.h"
+#include "col/f2/part/pin_scan.h"
+#include "col/f2/pred/pred.h"
 #include "col/f2/scan/rescan_cache.h"
 #include "core/cachebudget.h"
 #include "core/memtrack.h"

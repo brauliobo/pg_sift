@@ -7,8 +7,8 @@
 
 #ifdef SIFT_TESTING
 
-#include "col/f2/f2test.h"
-#include "col/f2/f2_store.h"
+#include "col/f2/test.h"
+#include "col/f2/store/store.h"
 #include "core/catname.h"
 #include "core/horizon.h"
 

@@ -1,1 +1,1 @@
-agg_stat_kernels	src/col/codec_parse.c:parse_alp_positions src/core/errctx.c:errctx_callback src/core/errctx.c:sift_errctx_name
+agg_stat_kernels	src/col/codec/parse.c:parse_alp_positions src/core/errctx.c:errctx_callback src/core/errctx.c:sift_errctx_name

@@ -18,7 +18,7 @@
 #include "storage/spin.h"
 
 #include "core/cmp.h"
-#include "core/shmbudget.h"
+#include "core/shm/budget.h"
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
 

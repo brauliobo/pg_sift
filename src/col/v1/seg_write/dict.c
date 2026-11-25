@@ -5,7 +5,7 @@
  */
 #include "core/limits.h"
 #include "core/memtrack.h"
-#include "col/v1/seg_write/seg_write_int.h"
+#include "col/v1/seg_write/int.h"
 
 #define CDICT_TSIG_MIN_KB	1024
 

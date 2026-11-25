@@ -10,7 +10,7 @@
 #include "commands/tablespace.h"
 #include "storage/buffile.h"
 #include "storage/fd.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 #include "col/v1/colspool.h"
 #include "col/v1/rowfile.h"
 #include "col/v1/runs.h"
@@ -46,7 +46,7 @@ struct ColSpill
 	StringInfoData scratch;		/* the blocks of the files are compressed into it, and read back through it */
 };
 
-/* The key a row sorts by (the chunk's key of col/v1/order.c) */
+/* The key a row sorts by (the chunk's key of col/v1/order/order.c) */
 int64
 colb_key_of(const SiftColDef *def, const SiftColValue *v)
 {

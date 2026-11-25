@@ -1,10 +1,10 @@
 /*
- * col/v1/unit_find.c - L1 of the column engine: the rows of a key-cut unit at given heap addresses (the lookup of the dead addresses of a statement, col/v1/track_dv.c).
+ * col/v1/unit_find.c - L1 of the column engine: the rows of a key-cut unit at given heap addresses (the lookup of the dead addresses of a statement, col/v1/track/dv.c).
  */
-/* check-memory: allow-allocs the index holds the addresses of one statement, which col/v1/track_dv.c holds at most SIFT_ADDR_IDX_SPAN blocks for each of, and the statement keeps them in its own accounted context */
+/* check-memory: allow-allocs the index holds the addresses of one statement, which col/v1/track/dv.c holds at most SIFT_ADDR_IDX_SPAN blocks for each of, and the statement keeps them in its own accounted context */
 #include "core/host.h"
 
-#include "col/v1/enc.h"
+#include "col/v1/enc/enc.h"
 #include "core/cmp.h"
 
 /* The first index of [lo, n) at which keys are not below the first address of heap block blk */

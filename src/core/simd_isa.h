@@ -1,6 +1,6 @@
 /*
  * core/simd_isa.h - the instructions of a SIMD level that the GCC/Clang vector extensions cannot express, once for every kernel family that writes its
- * loops with the extensions (agg/kern_vec.h, col/shred_vec.h). The including file defines SIFT_VEC_AVX2, SIFT_VEC_AVX512 or SIFT_VEC_NEON, and brackets
+ * loops with the extensions (agg/kern_vec.h, col/shred/vec.h). The including file defines SIFT_VEC_AVX2, SIFT_VEC_AVX512 or SIFT_VEC_NEON, and brackets
  * the vector code with SIFT_VEC_PUSH / SIFT_VEC_POP (the target options of the level; NEON needs none). The operands are vectors of the level's width
  * of any element type: the macros cast them.
  *

@@ -1,10 +1,10 @@
 /*
  * col/f2/scan/survey.c - the granules a scan of an index of format major 2 would read, counted from the zones and the skipping indexes of its parts before any is read: what a hybrid
- * scan (agg/hybrid_exec.c) weighs the structured side by once its values are bound.
+ * scan (agg/hybrid/exec.c) weighs the structured side by once its values are bound.
  */
 #include "postgres.h"
 
-#include "col/f2/scan/scan_int.h"
+#include "col/f2/scan/int.h"
 #include "core/errctx.h"
 
 uint64

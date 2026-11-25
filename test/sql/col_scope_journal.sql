@@ -1,4 +1,4 @@
--- The journal of the scope relation (src/col/scope_journal.c, INTERFACE section 5, docs/COL-CONNECT.md "The rule"): a sift_col index of the relation with track_changes = 'ctid' and the
+-- The journal of the scope relation (src/col/scope/journal.c, INTERFACE section 5, docs/COL-CONNECT.md "The rule"): a sift_col index of the relation with track_changes = 'ctid' and the
 -- member key first keeps a KEYCHG record for the member of every pair an UPDATE, DELETE or key change ended and a KEYADD record for the member of every pair inserted. The scope segments
 -- are read as stored only while the journal vouches for their stamp; the members that changed since are read through the entity rows (a top-N reads the entity rows of all the members), every
 -- other state of the journal reads them all, with the same answer as the join. The verdicts are the journal's.

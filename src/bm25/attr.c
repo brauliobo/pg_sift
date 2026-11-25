@@ -1,6 +1,6 @@
 /*
  * bm25/attr.c - the values of the first SIFT_ATTR_MAXCOLS INCLUDE columns of a sift index, read from the table row of each doc when a segment is
- * written (bm25/segment.h, SIFT_SEGFMT_ATTR). A row never changes under its tid (an update that changes an indexed column gives the row a new one),
+ * written (bm25/segment/segment.h, SIFT_SEGFMT_ATTR). A row never changes under its tid (an update that changes an indexed column gives the row a new one),
  * so the value a doc had when its segment was written is the one it keeps; a row that is gone (pruned, not yet removed from the index) leaves the doc
  * "unknown", which passes every test and is checked on the table as before. The columns past the first ones are checked on the table.
  */
@@ -15,9 +15,9 @@
 #include "storage/bufmgr.h"
 #include "utils/rel.h"
 
-#include "bm25/planner.h"
-#include "bm25/segment.h"
-#include "core/store.h"
+#include "bm25/planner/planner.h"
+#include "bm25/segment/segment.h"
+#include "core/store/store.h"
 
 typedef struct HeapAttrs
 {

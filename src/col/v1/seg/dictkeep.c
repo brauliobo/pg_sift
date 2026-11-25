@@ -2,7 +2,7 @@
  * col/v1/seg/dictkeep.c - the blocks of a dictionary read for a string by code: their load (the offsets of blocks read in turn come from one window), and the last
  * LOOK_KEEP compressed ones kept
  */
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 #include "col/compress.h"
 
 #define BOFF_WIN	256		/* block offsets read at once when blocks are read in turn: a page of them */

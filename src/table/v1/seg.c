@@ -1,7 +1,7 @@
 /*
  * table/v1/seg.c - the column groups of a sift_table: the glue to the column engine (docs/COL-TAM.md sections 6, 7 and 12).
  *
- * A sealed write buffer becomes a column segment of the engine (col/v1/seg.h) with the same TIDs: one leaf per column (typed when
+ * A sealed write buffer becomes a column segment of the engine (col/v1/seg/seg.h) with the same TIDs: one leaf per column (typed when
  * the engine stores the type natively, SIFT_COLS_VAR holding the exact datum image otherwise) and one VAR leaf of exceptions, the
  * exact images of the values a typed leaf cannot hold (a numeric NaN or infinity, a NaN payload of a float that the order
  * preserving key would alter). Rows of a group have no xmin: they are frozen; their deletion is the tombstone log's, by TID.
@@ -40,10 +40,10 @@
 #include "col/pg.h"
 #include "col/v1/runs.h"
 #include "col/am.h"
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/limits.h"
 #include "core/meta_peek.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 #include "table/v1/seg_int.h"
 #include "core/catname.h"
 

@@ -1,5 +1,5 @@
 /*
- * core/f2/fsm/sweep.c - the orphan sweep of format major 2 (core/f2/fsm.h): the extents that a crash, or a failure after the write of a part and before the commit that names it, left allocated
+ * core/f2/fsm/sweep.c - the orphan sweep of format major 2 (core/f2/fsm/fsm.h): the extents that a crash, or a failure after the write of a part and before the commit that names it, left allocated
  * and named by nothing go back to the allocator.
  *
  * The sweep names everything the relation holds from the metapage down (the directory of the partitions with its lists, the parts with their extent lists and deletion vectors, the micro-slab and
@@ -15,20 +15,20 @@
 #include "storage/lmgr.h"
 #include "utils/timestamp.h"
 
-#include "col/f2/col_meta.h"
-#include "col/f2/f2_journal.h"
-#include "col/f2/l0_slab.h"
-#include "col/f2/part_format.h"
-#include "col/f2/pend_del.h"
-#include "core/f2/fsm.h"
-#include "core/f2/fsm/fsm_int.h"
-#include "core/f2/manifest.h"
+#include "col/f2/meta.h"
+#include "col/f2/journal.h"
+#include "col/f2/l0/slab.h"
+#include "col/f2/part/format.h"
+#include "col/f2/del/pend.h"
+#include "core/f2/fsm/fsm.h"
+#include "core/f2/fsm/int.h"
+#include "core/f2/manifest/manifest.h"
 #include "core/f2/proj.h"
-#include "core/maint.h"
+#include "core/maint/maint.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "core/part_lock.h"
-#include "table/f2/f2_col_delta_dir.h"
+#include "table/f2/col_delta/dir.h"
 
 #define SIFT_FSM_SWEEP_MAX_PCT	50		/* the share of the index the orphans may be: more is a reference the sweep missed, not a leak */
 

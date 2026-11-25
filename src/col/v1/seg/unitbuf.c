@@ -1,7 +1,7 @@
 /*
  * col/v1/seg/unitbuf.c - the buffer a segment reads a unit record into, kept by the backend between statements (core/cachebudget.h).
  */
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 #include "core/cachebudget.h"
 
 /*

@@ -5,7 +5,7 @@
  *   - the lists (key_cut, key_columns, rollup_columns, ..): a name between separators; a few of them have words of their own (order_layout: compact, whole; compression: the codecs);
  *   - the heads of paths (paths, rollup_leaves): the column that a path or the leaf of an array starts with (doc.k, doc->k, items[].kind, tags#1);
  *   - connect and scope: the column of the index that holds the key, the columns of the other table, the table with its schema, the btree a scope uses. They are parsed by the parsers
- *     of the options (col/v1/conn_decl.c, col/scope_parse.c), changed as specs and written again, so no name is ever found by looking at text.
+ *     of the options (col/v1/conn/decl.c, col/scope/parse.c), changed as specs and written again, so no name is ever found by looking at text.
  * An unqualified table of connect or scope is in the schema of the table of the index: the table of the index that moves to another schema keeps the schema its names had.
  */
 #include "postgres.h"
@@ -20,9 +20,9 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
-#include "col/v1/conn.h"
+#include "col/v1/conn/conn.h"
 #include "col/names.h"
-#include "col/scope.h"
+#include "col/scope/scope.h"
 #include "core/catname.h"
 
 typedef enum NamesMode

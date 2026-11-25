@@ -167,7 +167,7 @@ def array_store(m, l):
 
 
 def hits(path, text):
-    test_code = path.endswith('_test.c') or '/test/' in path
+    test_code = re.search(r'[_/]test(_[^/]*)?\.c$|/test/', path)
     lines = text.split('\n')
     cl = clean(lines)
     found = []

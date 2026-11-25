@@ -27,20 +27,20 @@
 #include "utils/tuplesort.h"
 #include "utils/timestamp.h"
 
-#include "bm25/analyze.h"
-#include "bm25/bm25_doc.h"
-#include "bm25/build.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/doc.h"
+#include "bm25/build/build.h"
 #include "bm25/doctext.h"
 #include "core/compat.h"
 #include "core/lane.h"
-#include "core/maint_pacer.h"
-#include "core/quarantine.h"
-#include "core/maint.h"
-#include "core/maint_int.h"
-#include "bm25/merge.h"
+#include "core/maint/pacer.h"
+#include "core/quarantine/quarantine.h"
+#include "core/maint/maint.h"
+#include "core/maint/int.h"
+#include "bm25/merge/merge.h"
 #include "bm25/wbuf.h"
 #include "core/varint.h"
-#include "core/visibility.h"
+#include "core/visibility/visibility.h"
 #include "core/memtrack.h"
 #include "table/dispatch.h"
 
@@ -498,7 +498,7 @@ is_busy(const MergeSel *sel, uint64 gen)
 }
 
 /*
- * The segments to merge, by the policy shared with the other hosts (bm25/merge.h); tiers start at the write buffer limit.
+ * The segments to merge, by the policy shared with the other hosts (bm25/merge/merge.h); tiers start at the write buffer limit.
  * dead_only: just a segment mostly dead, as an index with no entries over vacuum_segments has no merge for the count to make.
  */
 static int

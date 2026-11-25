@@ -5,7 +5,7 @@
 #ifndef SIFT_COL_SCAN_GMEM_H
 #define SIFT_COL_SCAN_GMEM_H
 
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 
 typedef struct GOrdPair
 {

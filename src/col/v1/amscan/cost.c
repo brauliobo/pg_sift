@@ -19,7 +19,7 @@
 #include "utils/selfuncs.h"
 #include "col/pg.h"
 #include "col/am.h"
-#include "col/v1/amscan/amscan_int.h"
+#include "col/v1/amscan/int.h"
 #include "core/errctx.h"
 
 /* the price of a scan of an index whose segments another leaf list wrote (col/am.h, stale): the path is never the cheapest, whatever the table */

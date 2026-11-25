@@ -11,8 +11,8 @@
 #include "lib/stringinfo.h"
 #include "storage/relfilelocator.h"
 
-#include "agg/vk.h"
-#include "col/f2/part_vis.h"
+#include "agg/vk/vk.h"
+#include "col/f2/part/vis.h"
 #include "col/granule/granule.h"
 
 /* A part is immutable, a rewrite is a new part_gen and TRUNCATE a new relation file: a cached chunk is never stale */
@@ -28,9 +28,9 @@ sift_gpu_dict_leaf_ok(SiftCellKind kind, uint8 hint)
 }
 
 /*
- * Whether the immutable part can be read for the snapshot on the device: false with the reason for a level 0 part. *cls is how its rows are seen by the snapshot (col/f2/part_vis.h):
+ * Whether the immutable part can be read for the snapshot on the device: false with the reason for a level 0 part. *cls is how its rows are seen by the snapshot (col/f2/part/vis.h):
  * SIFT_VIS_PER_ROW leaves the decision to its granules (sift_gpu_granule_eligible). The deleters of a part (its deletion vector, the pending deletes of its partition) are no reason to
- * refuse it: the device is handed the rows the snapshot sees deleted as a mask (col/f2/f2_gpu_dead.h). The column deltas of its partition are decided by the plan (col/f2/f2_gpu_plan.c), by the
+ * refuse it: the device is handed the rows the snapshot sees deleted as a mask (col/f2/gpu/dead.h). The column deltas of its partition are decided by the plan (col/f2/gpu/plan.c), by the
  * columns the query reads.
  */
 extern bool sift_gpu_part_eligible(const SiftPartDesc *d, FullTransactionId snap_xmin, SiftVisClass *cls, const char **why);

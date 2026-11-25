@@ -4,7 +4,7 @@
  * and the checks of their hashes and counts
  */
 #include "col/compress.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* Where the dictionary of leaf col lies in the stream: offset and length (up to the next dictionary or the end of the section) */
 void
@@ -522,7 +522,7 @@ look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
 
 /*
  * The searchable form of the dictionary at stream offset off, len bytes (the forms 0, 2, 3 and 5), NULL for the compact form, which is read whole. The segment is whatever
- * the stream belongs to: a segment, or a run of a scope key store (col/keystore/keystore_run.c), whose dictionary starts after its header
+ * the stream belongs to: a segment, or a run of a scope key store (col/keystore/run.c), whose dictionary starts after its header
  */
 DictLook *
 sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bisect)

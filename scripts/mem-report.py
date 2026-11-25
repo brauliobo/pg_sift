@@ -264,10 +264,10 @@ def selftest():
         assert regressions(rep, prev) and not regressions(rep, json.loads(json.dumps(rep)))
         open(f"{d}/vg/2.log", "w").write("==2== VALGRINDERROR-BEGIN\n==2== 30 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==2==    at 0x3: malloc (vg.c:2)\n==2==    by 0x4: relation_open (relation.c:58)\n==2==    by 0x5: add_parents (/w/src/col/track_hear.c:40)\n==2== VALGRINDERROR-END\n")
         assert [v["sift_frame"] for v in parse_valgrind(f"{d}/vg/2.log")] == [None]
-        open(f"{d}/vg/3.log", "w").write("==3== VALGRINDERROR-BEGIN\n==3== 16 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==3==    at 0x3: palloc (mcxt.c:1)\n==3==    by 0x4: standard_planner (planner.c:1)\n==3==    by 0x5: sift_planner (/w/src/bm25/planner.c:609)\n==3== VALGRINDERROR-END\n")
+        open(f"{d}/vg/3.log", "w").write("==3== VALGRINDERROR-BEGIN\n==3== 16 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==3==    at 0x3: palloc (mcxt.c:1)\n==3==    by 0x4: standard_planner (planner.c:1)\n==3==    by 0x5: sift_planner (/w/src/bm25/planner/planner.c:609)\n==3== VALGRINDERROR-END\n")
         assert [v["sift_frame"] for v in parse_valgrind(f"{d}/vg/3.log")] == [None]
         for n, pg in ((5, "lookup_ts_dictionary_cache (ts_cache.c:316)"), (6, "mdopenfork (md.c:689)")):
-            open(f"{d}/vg/{n}.log", "w").write(f"==5== VALGRINDERROR-BEGIN\n==5== 12 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==5==    at 0x3: palloc (mcxt.c:1)\n==5==    by 0x4: {pg}\n==5==    by 0x5: sift_probe (/w/src/core/store.c:324)\n==5== VALGRINDERROR-END\n")
+            open(f"{d}/vg/{n}.log", "w").write(f"==5== VALGRINDERROR-BEGIN\n==5== 12 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==5==    at 0x3: palloc (mcxt.c:1)\n==5==    by 0x4: {pg}\n==5==    by 0x5: sift_probe (/w/src/core/store/store.c:324)\n==5== VALGRINDERROR-END\n")
             assert [v["sift_frame"] for v in parse_valgrind(f"{d}/vg/{n}.log")] == [None], "a block the server's caches allocate is theirs, not the sift frame below"
             os.unlink(f"{d}/vg/{n}.log")
         os.unlink(f"{d}/vg/3.log")

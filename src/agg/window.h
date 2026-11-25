@@ -4,7 +4,7 @@
  * parts merged in that order), a partition ends where a key changes, so there is no sort and no tuplestore, and a function needs only its running state.
  *
  * Input: batches of up to SIFT_VEC_LEN rows, the key columns and the argument columns of the functions as vectors of int4, int8 or (arguments)
- * float8, with the rows of a mask taken and the others skipped. The key columns of a batch are compared with stream_run_ne_i64 (agg/kern6.h) in one
+ * float8, with the rows of a mask taken and the others skipped. The key columns of a batch are compared with stream_run_ne_i64 (agg/kern6/kern6.h) in one
  * pass, so that the rows of a partition are not looked at one by one when only its first row is wanted; NULL keys are equal to each other (the
  * peers and the partitions of PostgreSQL). Output: one row per input row in input order, with the results of the functions, to a callback.
  *
@@ -29,7 +29,7 @@
 #ifndef SIFT_AGG_WINDOW_H
 #define SIFT_AGG_WINDOW_H
 
-#include "agg/kern6.h"
+#include "agg/kern6/kern6.h"
 
 #define SIFT_WIN_MAX_KEYS		4
 #define SIFT_WIN_MAX_FUNCS		8

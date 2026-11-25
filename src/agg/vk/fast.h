@@ -4,7 +4,7 @@
 #ifndef SIFT_AGG_VK_FAST_H
 #define SIFT_AGG_VK_FAST_H
 
-#include "agg/vk.h"
+#include "agg/vk/vk.h"
 
 #define FAST_PRED_MAX	8							/* comparisons with constants of a fast kernel: 8 nibbles of SC_PCOL and SC_POP, 8 words of constants at J_FAST_IMM */
 #define FAST_NSC		13							/* specialization constants of a fast kernel (shaders/common_fast.glsl) */

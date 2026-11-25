@@ -17,7 +17,7 @@
 #ifndef SIFT_AGG_GROUP_HT_H
 #define SIFT_AGG_GROUP_HT_H
 
-#include "agg/kern6.h"
+#include "agg/kern6/kern6.h"
 
 #if defined(__x86_64__)
 #include <emmintrin.h>

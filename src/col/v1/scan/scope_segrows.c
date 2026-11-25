@@ -7,12 +7,12 @@
 
 #include "common/int.h"
 #include "core/cmp.h"
-#include "col/v1/seg.h"
-#include "core/visibility.h"
-#include "col/v1/conn.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/seg/seg.h"
+#include "core/visibility/visibility.h"
+#include "col/v1/conn/conn.h"
+#include "col/v1/scan/int.h"
 #include "col/v1/scan/scope_pairs.h"
-#include "col/scope.h"
+#include "col/scope/scope.h"
 #include "col/v1/wbuf.h"
 #include "core/damage.h"
 
@@ -452,7 +452,7 @@ unit_rows_of(SegMembers *sm, SiftColSegment *seg, uint32 u, int fk, const uint32
 
 /*
  * The rows of the decoded batches that are of a member (the directory may list a row of another key), as two buffers that share the batches: those on pages the map holds all-visible (read after the
- * rows were: core/visibility.h), which the scan may take as it takes a stored unit's, and the others, which it checks against the heap
+ * rows were: core/visibility/visibility.h), which the scan may take as it takes a stored unit's, and the others, which it checks against the heap
  */
 static void
 add_split(SiftScopeBuffer *out, int *nout, SiftVis *vis, SiftColBatch **bs, int64 **ids, int nb, uint32 flags, int fk, const int64 *m, uint32 n, SiftKeyMap *mm, const Members *mem)

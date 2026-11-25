@@ -3,7 +3,7 @@
  */
 #include "col/compress.h"
 #include "col/keystore/keystore.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /*
  * The dictionary of form DICT_REF (column format minor 46 of 5.x): five words (the form, n, the bits of a code of the store, the store, its epoch), the codes of the store of the

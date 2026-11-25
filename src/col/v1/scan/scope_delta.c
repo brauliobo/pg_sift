@@ -1,5 +1,5 @@
 /*
- * col/v1/scan/scope_delta.c - the rows no scope entry describes, as rows of the scope units of a scope index (col/scope.h)
+ * col/v1/scan/scope_delta.c - the rows no scope entry describes, as rows of the scope units of a scope index (col/scope/scope.h)
  *
  * No scope entry describes a row of a write buffer, nor a row of a member whose pairs changed since the stamp of the scope units (its stored entries are left out of the read): a scan of
  * the scope units reads them from the buffers and from the entity segments, each live row whose member has a pair among those the reader listed (the pairs under the statement
@@ -13,12 +13,12 @@
 
 #include "common/int.h"
 #include "core/cmp.h"
-#include "col/v1/seg.h"
-#include "core/visibility.h"
-#include "col/v1/conn.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/seg/seg.h"
+#include "core/visibility/visibility.h"
+#include "col/v1/conn/conn.h"
+#include "col/v1/scan/int.h"
 #include "col/v1/scan/scope_pairs.h"
-#include "col/scope.h"
+#include "col/scope/scope.h"
 #include "col/v1/wbuf.h"
 
 /* the copies of one key make one unit up to this many rows */

@@ -5,7 +5,7 @@
  */
 #include "core/host.h"
 #include "core/cmp.h"
-#include "col/v1/dict/dict_int.h"
+#include "col/v1/dict/int.h"
 
 #define DICT_SORT_AFTER		16
 #define DICT_SORT_AFTER_SHARED	1		/* the sorted order of a dictionary that is shared (d->built) is made for the server, not for the backend */

@@ -3,8 +3,8 @@
  */
 #include "postgres.h"
 
-#include "col/f2/f2_part_pin_scan.h"
-#include "col/f2/scan/scan_int.h"
+#include "col/f2/part/pin_scan.h"
+#include "col/f2/scan/int.h"
 
 /* Whether the sink takes the part from the dictionaries of its leaves: the rows of the part are all of it, and each leaf the sink takes as codes has one */
 bool

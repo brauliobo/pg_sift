@@ -11,14 +11,14 @@
 #include "utils/memutils.h"
 #include "miscadmin.h"
 #include "storage/procarray.h"
-#include "col/v1/maint/maint_int.h"
+#include "col/v1/maint/int.h"
 #include "core/wal_conflict.h"
-#include "core/live.h"
+#include "core/live/live.h"
 #include "core/memtrack.h"
 #include "core/ops.h"
 #include "col/v1/wbuf.h"
-#include "core/v1_col/tomb.h"
-#include "core/v1_col/tomb_dv.h"
+#include "core/v1_col/tomb/tomb.h"
+#include "core/v1_col/tomb/dv.h"
 
 /*
  * What a fold costs, in instructions and WAL in instructions (MAINT_WAL_BYTE: a MB of WAL weighs 0.6 G instructions, as in the price of a row of the rewrite): the segments are opened and the directory of

@@ -7,7 +7,7 @@
  * scatters its rows (the key words and the arguments, and the bytes of the text keys) by the top bits of the hash of the key into the partitions of core/par/radix.h. Phase 2, every thread takes whole
  * partitions from the shared cursor, folds the W streams of a partition into a table that fits the L2 cache (no other thread holds a key of it: no lock) and offers its groups to the K best that
  * the thread keeps, or (no K) to a stream of its own that the leader hands to the consumer, which gets each group once. A thread whose table of a few groups outgrows them goes on in the second regime, its groups handed to the partitions as partial
- * aggregates. The table is the compact group table of the backend (agg/v6/v6_group_cmp.h): the same slots, the same hashes, in the arena of a thread; its layout of a key is agg/v6/par/group_key.h.
+ * aggregates. The table is the compact group table of the backend (agg/v6/group/cmp.h): the same slots, the same hashes, in the arena of a thread; its layout of a key is agg/v6/par/group_key.h.
  *
  * The key is nk columns, each a word of the caller (a NULL is a word of its own: the table never sees one) or a text (the length SIFT_STR_NULL is the NULL one), in the order of the statement: a
  * column that the caller computes (a derived key) is one more word or one more text. The aggregates are the count of the rows and nsum sums of 64-bit arguments, which the rows carry. The order of the

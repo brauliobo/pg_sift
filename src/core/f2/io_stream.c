@@ -7,9 +7,9 @@
 #include "storage/read_stream.h"
 
 #include "core/compat.h"
-#include "core/f2/f2_pace.h"
+#include "core/f2/pace.h"
 #include "core/f2/io_stream.h"
-#include "core/maint_pacer.h"
+#include "core/maint/pacer.h"
 
 #ifdef SIFT_TESTING
 bool		sift_test_io_read_stream = true;

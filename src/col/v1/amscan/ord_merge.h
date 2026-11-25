@@ -1,5 +1,5 @@
 /*
- * col/v1/amscan/ord_merge.h - the merge of the global order of a leaf (col/v1/gorder.h) over the sources of a scan: the entries (key, heap address) of the stored segments and the
+ * col/v1/amscan/ord_merge.h - the merge of the global order of a leaf (col/v1/gorder/gorder.h) over the sources of a scan: the entries (key, heap address) of the stored segments and the
  * rows of the write buffers, in the order of an ORDER BY on the leaf. The entries are of rows that may have died or changed since: whoever reads them has the
  * heap say which are live and what they hold.
  */
@@ -11,7 +11,7 @@
 #include "storage/itemptr.h"
 
 #include "col/col.h"
-#include "col/v1/gorder.h"
+#include "col/v1/gorder/gorder.h"
 
 typedef struct SiftOrdMerge SiftOrdMerge;
 

@@ -1,10 +1,10 @@
 /*
  * bm25/pos.c - position records of a term blob: the checkpoints, the windowed reads and the record decoder
- * (layout in bm25/posting.h).
+ * (layout in bm25/posting/posting.h).
  */
 
-#include "bm25/posting.h"
-#include "bm25/posting_int.h"
+#include "bm25/posting/posting.h"
+#include "bm25/posting/int.h"
 #include "core/damage.h"
 
 static void

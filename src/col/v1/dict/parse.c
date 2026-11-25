@@ -4,7 +4,7 @@
  * the inverse of serialize.c
  */
 #include "col/compress.h"
-#include "col/v1/dict/dict_int.h"
+#include "col/v1/dict/int.h"
 
 StaticAssertDecl(SIFT_COL_DICT_MAX_ENTRY == UINT8_MAX, "the length byte of a block entry is the whole range of an entry");
 

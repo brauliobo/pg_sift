@@ -1,7 +1,7 @@
 /*
  * col/am/lock.c - the lock a CREATE INDEX of a sift_col index takes first
  *
- * The build installs the triggers of the change log of its index when it has read the table (col/v1/track.c), which takes ShareRowExclusiveLock on the table, and CREATE INDEX holds ShareLock
+ * The build installs the triggers of the change log of its index when it has read the table (col/v1/track/track.c), which takes ShareRowExclusiveLock on the table, and CREATE INDEX holds ShareLock
  * on it all the while: two builds of indexes of one table that run at the same time (a parallel restore) each wait for the other's ShareLock. The event trigger before the statement takes the
  * stronger lock, that conflicts with itself, before the statement takes its own, so the second build waits for the first at the start and holds nothing.
  */

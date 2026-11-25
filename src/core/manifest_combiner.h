@@ -9,7 +9,7 @@
 #ifndef SIFT_MANIFEST_COMBINER_H
 #define SIFT_MANIFEST_COMBINER_H
 
-#include "core/shm_combiner.h"
+#include "core/shm/combiner.h"
 
 #include "storage/block.h"
 #include "storage/relfilelocator.h"

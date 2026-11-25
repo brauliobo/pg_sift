@@ -1,12 +1,12 @@
 /*
- * test/scaling/case_card.c - agg/v6/v6_card_est.c: the planner's estimate of a windowed scan from the summary of the manifest. The partitions grow 8x with the window a quarter of them:
+ * test/scaling/case_card.c - agg/v6/cost/card_est.c: the planner's estimate of a windowed scan from the summary of the manifest. The partitions grow 8x with the window a quarter of them:
  * the estimate walks the partitions the window leaves once, O(P).
  */
 #include "postgres.h"
 
 #include <stdlib.h>
 
-#include "agg/v6/v6_card_est.h"
+#include "agg/v6/cost/card_est.h"
 #include "op_counters.h"
 
 #define ROWS_PER_PART 1000

@@ -287,7 +287,7 @@ slice_varint(const SiftInvBuf *b, SliceReader *r, PosChunk *pc)
 	}
 }
 
-/* Copies the position record at the reader to the chunk (see bm25/analyze.h); returns its length */
+/* Copies the position record at the reader to the chunk (see bm25/analyze/analyze.h); returns its length */
 static uint32
 slice_record(const SiftInvBuf *b, SliceReader *r, PosChunk *pc)
 {

@@ -1,1 +1,1 @@
-agg_part_final	src/bm25/planner.c:carry_parent_scores src/bm25/planner.c:check_partition_scores src/col/codec/filter.c:filter_scale src/col/v1/scan/scan.c:sift_col_unpin
+agg_part_final	src/bm25/planner/planner.c:carry_parent_scores src/bm25/planner/planner.c:check_partition_scores src/col/codec/filter.c:filter_scale src/col/v1/scan/scan.c:sift_col_unpin

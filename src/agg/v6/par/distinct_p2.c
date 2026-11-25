@@ -7,7 +7,7 @@
 #include "port/pg_bitutils.h"
 
 #include "agg/v6/par/distinct_int.h"
-#include "agg/v6/v6_distinct_u64.h"
+#include "agg/v6/distinct/u64.h"
 
 #define DIST_TILE		256
 #define DIST_FIRST_CAP	1024

@@ -6,9 +6,9 @@
 /* check-memory: allow-allocs every array here follows the columns, the granules or the predicates of one part, whose rows are bounded by the build buffer, not the rows of the table */
 #include "postgres.h"
 
-#include "col/f2/f2_pred.h"
-#include "col/granule/granule_filter.h"
-#include "col/skip/skip_int.h"
+#include "col/f2/pred/pred.h"
+#include "col/granule/filter.h"
+#include "col/skip/int.h"
 #include "core/cmp.h"
 #include "core/page_io.h"
 

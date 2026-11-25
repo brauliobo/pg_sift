@@ -1,5 +1,5 @@
 /*
- * store.c - core/store.h over SQLite. A "relation" is the page file of one virtual table: the 8 KiB engine
+ * store.c - core/store/store.h over SQLite. A "relation" is the page file of one virtual table: the 8 KiB engine
  * blocks are laid end to end in the shadow table <name>_chunks, chunk_bytes per row. A unit of the cache is one chunk
  * (or one block when the rows are smaller than a block): a bounded set of 64-byte aligned slots filled straight from the
  * row with sqlite3_blob_read (one copy), evicted by CLOCK, never while pinned. Pointers into pages are handed out

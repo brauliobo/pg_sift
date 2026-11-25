@@ -1,16 +1,16 @@
 /*
- * col/f2/scan/bridge.c - a scan of an index of format major 2 that has a TID bridge or predicates of a hybrid scan (agg/hybrid.h), bound to the scan of f2_scan.c: the part and the slab the
+ * col/f2/scan/bridge.c - a scan of an index of format major 2 that has a TID bridge or predicates of a hybrid scan (agg/hybrid/hybrid.h), bound to the scan of f2_scan.c: the part and the slab the
  * bridge misses are not read, the _tid chunk of a granule is probed before any other chunk is loaded, and the predicates of a faceted search (f2_pred_ext.h) join those of the index quals.
  * The rules are in bridge_core.c.
  */
 #include "postgres.h"
 
-#include "col/f2/delvec.h"
-#include "col/f2/f2_col_delta_idx.h"
-#include "col/f2/pend_del.h"
+#include "col/f2/del/delvec.h"
+#include "col/f2/col_delta/idx.h"
+#include "col/f2/del/pend.h"
 #include "col/f2/scan/bridge_core.h"
-#include "col/f2/scan/scan_int.h"
-#include "core/f2/manifest.h"
+#include "col/f2/scan/int.h"
+#include "core/f2/manifest/manifest.h"
 
 static bool
 pend_dead(void *arg, uint64 tid)

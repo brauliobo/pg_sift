@@ -20,7 +20,7 @@
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
 #include "col/am.h"
-#include "col/v1/amscan/amscan_int.h"
+#include "col/v1/amscan/int.h"
 #include "col/v1/amscan/ord_merge.h"
 #include "col/v1/scan/gmem.h"
 

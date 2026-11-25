@@ -601,7 +601,7 @@ sift_mem_pressure(SiftMemTracker *t, bool exact)
 }
 
 /* the dictionaries of a 5.x shared value store (col/v1/seg/dict_ref.c) are read by the PostgreSQL host only: this host holds no 5.x index */
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 SiftCDict *
 seg_dict_ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryContext mcxt)

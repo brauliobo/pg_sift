@@ -17,8 +17,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(REPO, 'scripts', 'fast-gate.sh')
 ENV = {k: v for k, v in os.environ.items() if k != 'CI'}
 
-STAR, CLICK, COEXIST, JSONB = 'src/agg/v6/v6_sip.c', 'src/agg/v6/v6_group_fast.c', 'src/agg/v6/v6_cost_model.c', 'src/col/shred.c'
-COL, TABLE, BM25, GPU, SQL, SMOKE = 'src/col/codec_int.h', 'src/table/am.c', 'src/bm25/amscan.c', 'src/agg/gpu_cfg.h', 'sql/pg_sift--1.0.sql', 'src/new_thing.c'
+STAR, CLICK, COEXIST, JSONB = 'src/agg/v6/sip.c', 'src/agg/v6/group/fast.c', 'src/agg/v6/cost/model.c', 'src/col/shred/shred.c'
+COL, TABLE, BM25, GPU, SQL, SMOKE = 'src/col/codec/int.h', 'src/table/am.c', 'src/bm25/amscan.c', 'src/agg/gpu/cfg.h', 'sql/pg_sift--1.0.sql', 'src/new_thing.c'
 REGRESS = 'test/sql/agg_bucket.sql'
 AREAS = 'star clickbench coexist jsonb col table bm25 gpu sql smoke all'.split()
 
@@ -59,14 +59,14 @@ def table():
     yield one('star', files(STAR), lambda p: p['areas'] == ['star'] and has(p, 'plangate', 'shapes_matrix') and lacks(p, 'coldiff', 'tbl_twin_fuzz'))
     yield one('clickbench', files(CLICK), lambda p: p['areas'] == ['clickbench'] and has(p, 'corpus', 'plangate', 'shapes_matrix'))
     yield one('coexist', files(COEXIST), lambda p: p['areas'] == ['coexist'] and has(p, 'plangate'))
-    yield one('jsonb owns src/col/shred.c, not the column index', files(JSONB), lambda p: p['areas'] == ['jsonb'] and has(p, 'coldiff'))
+    yield one('jsonb owns src/col/shred/shred.c, not the column index', files(JSONB), lambda p: p['areas'] == ['jsonb'] and has(p, 'coldiff'))
     yield one('col', files(COL), lambda p: p['areas'] == ['col'] and has(p, 'coldiff', 'surface_sweep', 'txn_fuzz') and lacks(p, 'coldiff-table', 'tbl_twin_fuzz'))
     yield one('table', files(TABLE), lambda p: p['areas'] == ['table'] and has(p, 'coldiff-table', 'plangate-table', 'tbl_twin_fuzz') and 'shapes_matrix' in p['steps'] + p['skipped'])
     yield one('bm25', files(BM25), lambda p: p['areas'] == ['bm25'] and has(p, 'plangate', 'shapes_matrix', 'bm25_fuzz') and lacks(p, 'coldiff'))
     yield one('gpu', files(GPU), lambda p: p['areas'] == ['gpu'] and has(p, 'plangate', 'corpus') and cmd(p, 'corpus', r'agg'))
     yield one('sql', files(SQL), lambda p: p['areas'] == ['sql'] and has(p, 'surface_sweep', 'corpus') and lacks(p, 'coldiff', 'txn_fuzz'))
 
-    yield one('union: the areas of many paths, each once', files(STAR, CLICK, 'src/agg/v6/v6_topn.c'), lambda p: p['areas'] == ['star', 'clickbench'])
+    yield one('union: the areas of many paths, each once', files(STAR, CLICK, 'src/agg/v6/topn/topn.c'), lambda p: p['areas'] == ['star', 'clickbench'])
     yield one('union: a stage runs once', files(STAR, CLICK, BM25, TABLE), lambda p: len(p['steps']) == len(set(p['steps'])))
     yield one('union: the slices merge into one plangate', files(STAR, CLICK), lambda p: cmd(p, 'plangate', r'--slice star,clickbench\b'))
     yield one('union: one shapes_matrix for the facts of two areas', files(STAR, BM25), lambda p: p['steps'].count('shapes_matrix') == 1)
@@ -111,7 +111,7 @@ def table():
     yield ('every area of the table plans a step', [area(a) for a in AREAS], lambda ps: all(p['rc'] == 0 and p['steps'] for p in ps))
     yield one('the format reaches the plan', files(STAR, extra=('--format', 'f1')), lambda p: 'format=f1' in p['out'] and has(p, 'plangate'))
 
-    yield one('--include-sql keeps the tests within 40 outside CI', files(STAR, CLICK, 'src/agg/v6/v6_topn.c', 'src/agg/v6/v6_win_carry.c', extra=('--include-sql',)),
+    yield one('--include-sql keeps the tests within 40 outside CI', files(STAR, CLICK, 'src/agg/v6/topn/topn.c', 'src/agg/v6/win/carry.c', extra=('--include-sql',)),
               lambda p: p['rc'] == 0 and len(p['sql']) <= 40 and ('regress' in p['steps']) == bool(p['sql']))
     yield one('without --include-sql a src file runs no test/sql', files(STAR), lambda p: p['sql'] == [] and lacks(p, 'regress'))
     yield one('--include-sql runs the test/sql edited', files(REGRESS, extra=('--include-sql',)), lambda p: 'agg_bucket' in p['sql'])

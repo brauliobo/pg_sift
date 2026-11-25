@@ -4,7 +4,7 @@
 #ifndef SIFT_PREFIX_H
 #define SIFT_PREFIX_H
 
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 
 /*
  * The term a wide leaf reads as in one segment: the documents that have a word matched by m, tf the most

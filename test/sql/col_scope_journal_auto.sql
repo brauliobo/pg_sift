@@ -1,4 +1,4 @@
--- The journal index of a relation of pairs is made by CREATE INDEX of the scope index when the relation has none (src/col/scope_make.c, docs/COL-SCOPE.md "The journal index"): named by the rule, owned by
+-- The journal index of a relation of pairs is made by CREATE INDEX of the scope index when the relation has none (src/col/scope/make.c, docs/COL-SCOPE.md "The journal index"): named by the rule, owned by
 -- the owner of the table, marked by its comment, with the dependency of the scope index on it, and dropped with the last scope index that uses it. A journal made by hand, or whose comment was
 -- changed, is the user's and stays. A role that does not own the pairs cannot make it.
 CREATE EXTENSION pg_sift;

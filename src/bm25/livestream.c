@@ -3,10 +3,10 @@
  */
 #include "core/host.h"
 
-#include "bm25/kernels.h"
-#include "bm25/segment.h"
+#include "bm25/kernels/kernels.h"
+#include "bm25/segment/segment.h"
 
-#include "bm25/segment_int.h"
+#include "bm25/segment/int.h"
 #include "core/memtrack.h"
 
 static void

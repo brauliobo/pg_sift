@@ -8,7 +8,7 @@
 
 #include "mb/pg_wchar.h"
 
-#include "bm25/analyze.h"
+#include "bm25/analyze/analyze.h"
 #include "core/cpu.h"
 #include "../pgshim.h"
 

@@ -9,7 +9,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/v6/par/run_int.h"
-#include "agg/v6/v6_expr_str.h"
+#include "agg/v6/expr/str.h"
 #include "core/compat.h"
 #include "core/popcount.h"
 

@@ -4,7 +4,7 @@
  */
 /* check-memory: allow-allocs the keys of a lookup are at most SIFT_CORDER_MAX_KEYS (512), a probe finds few slots and a stream marks one bit for each slot of a segment of at most 16M rows */
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /*
  * Is the second order of leaf col (a complete block grouped by leaf gcol) there to read: the slot to read it through, -1 when the segment has none

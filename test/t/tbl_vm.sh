@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The visibility map of a sift_table (table/f2/f2_vm.h): after VACUUM an index-only scan of a secondary index answers from the index without a fetch of the table (Heap Fetches: 0),
+# The visibility map of a sift_table (table/f2/vm/vm.h): after VACUUM an index-only scan of a secondary index answers from the index without a fetch of the table (Heap Fetches: 0),
 # chosen by the planner on its own; a delete or an update clears the bits first, so the same scan agrees with the table at every step; a prepared delete, a TRUNCATE, a crash
 # after the clear and the reset of an unlogged table leave no bit that is not true. Needs a preloading server (the records of the map are those of a resource manager).
 . "$(dirname "$0")/lib.bash"

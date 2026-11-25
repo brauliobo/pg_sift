@@ -1,1 +1,1 @@
-agg_freekey_text	src/col/jsonb.c:set_key src/col/shred.c:intern_key
+agg_freekey_text	src/col/jsonb.c:set_key src/col/shred/shred.c:intern_key

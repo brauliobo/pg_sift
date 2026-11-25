@@ -1,4 +1,4 @@
--- A merge copies a run of rows of one segment at a time when the rows of the other segments come after it (src/col/v1/batch.c): the integer, float and date leaves, NULLs, jsonb
+-- A merge copies a run of rows of one segment at a time when the rows of the other segments come after it (src/col/v1/batch/batch.c): the integer, float and date leaves, NULLs, jsonb
 -- paths with overflow values and rows of an UPDATE that land among the old ones are all in the merged index as they were in the segments.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The size of the ring of shared dictionaries (a quarter of sift.shared_cache_kb, col/dictshm.c): 0 makes no segment and shares nothing, a size is four times the size of the ring
+# The size of the ring of shared dictionaries (a quarter of sift.shared_cache_kb, col/dictshm/dictshm.c): 0 makes no segment and shares nothing, a size is four times the size of the ring
 # (one segment of that many bytes, made by the first backend that keeps a dictionary), a ring too small for the dictionary is never made, and a backend that sets another
 # size after the ring is made uses the ring as it is. The rows are those of the stock plan in every case. Observed through the segments of /dev/shm (dynamic_shared_memory_type = posix).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }

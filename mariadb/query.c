@@ -17,11 +17,11 @@
 
 #include <unistd.h>
 
-#include "bm25/analyze.h"
-#include "bm25/bitmap.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/bitmap/bitmap.h"
 #include "core/cmp.h"
-#include "bm25/eval.h"
-#include "bm25/kernels.h"
+#include "bm25/eval/eval.h"
+#include "bm25/kernels/kernels.h"
 #include "bm25/runs.h"
 
 #define RETRIES			8

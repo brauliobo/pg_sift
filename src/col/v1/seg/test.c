@@ -5,7 +5,7 @@
  */
 #include "col/v1/ktab.h"
 #include "col/v1/setsum.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 #ifdef SIFT_TESTING
 bool

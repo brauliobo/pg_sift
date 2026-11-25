@@ -1,4 +1,4 @@
--- Format 1 behind the storage seam of the unified engine (core/store_ops.h, col/v1/v1_store_ops.c): the sift_col indexes and sift_table tables built in Format 1 (sift.test_create_format1,
+-- Format 1 behind the storage seam of the unified engine (core/store/ops.h, col/v1/store_ops.c): the sift_col indexes and sift_table tables built in Format 1 (sift.test_create_format1,
 -- the testing build only) are opened as batches of SIFT_VEC_LEN rows, and the rows they give are the heap's own: the same rows, with the same tag (the TID), values and NULLs, after
 -- inserts, updates, deletes, a rollback and VACUUM, over integer, boolean, float, date, timestamp, numeric (narrow, NaN and wide), text and uuid columns, and with the quals of the engine.
 -- A relation of Format 2 is owned by the Format 2 ops, a heap and a btree index by none.

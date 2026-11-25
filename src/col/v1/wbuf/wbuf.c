@@ -6,7 +6,7 @@
 #include "postgres.h"
 #include "utils/inval.h"
 #include "col/am.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "col/v1/wbuf/int.h"
 
 StaticAssertDecl(sizeof(SiftColRecHead) == 12, "the record head is 12 bytes");
 

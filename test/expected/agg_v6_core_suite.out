@@ -556,7 +556,7 @@ RESET client_min_messages;
 CREATE SCHEMA s10;
 GRANT USAGE ON SCHEMA s10 TO PUBLIC;
 SET search_path = s10, public;
--- date_trunc of a date (src/agg/vexpr_cal.c vcal_date_to_ts, src/agg/vexpr.c op_calendar), held to PostgreSQL's own function to the microsecond. date_trunc has no form for a date: PostgreSQL reads the
+-- date_trunc of a date (src/agg/vexpr/cal.c vcal_date_to_ts, src/agg/vexpr/vexpr.c op_calendar), held to PostgreSQL's own function to the microsecond. date_trunc has no form for a date: PostgreSQL reads the
 -- date as a timestamptz, at its midnight in the zone of the session (a timestamp, in none), so a zone that skipped a midnight gives the instant after it. Every unit, in zones with and without daylight
 -- saving time and with a change at midnight, over the days around the first and the last date a timestamp holds, the infinities, and the range that has a change of every zone of the list.
 SET sift.test_create_format1 = off;

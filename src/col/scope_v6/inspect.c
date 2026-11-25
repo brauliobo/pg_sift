@@ -12,11 +12,11 @@
 #include "funcapi.h"
 #include "storage/lmgr.h"
 
-#include "col/f2/col_meta.h"
-#include "col/f2/f2_scope.h"
-#include "col/scope.h"
+#include "col/f2/meta.h"
+#include "col/f2/scope/scope.h"
+#include "col/scope/scope.h"
 #include "core/damage.h"
-#include "core/sql_api.h"
+#include "core/sql/api.h"
 
 PG_FUNCTION_INFO_V1(sift_scope_stats);
 

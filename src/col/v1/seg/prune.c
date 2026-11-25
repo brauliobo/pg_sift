@@ -4,7 +4,7 @@
  * stale and what the planner learns from them before it opens a unit
  */
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 uint32
 sift_cseg_preagg_units(SiftColSegment *seg)

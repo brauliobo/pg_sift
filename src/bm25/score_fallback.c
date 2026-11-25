@@ -26,15 +26,15 @@
 #include "utils/lsyscache.h"
 #include "utils/tuplestore.h"
 
-#include "bm25/analyze.h"
-#include "bm25/cscan_int.h"
-#include "bm25/kernels.h"
-#include "bm25/planner_int.h"
-#include "bm25/query.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/cscan/int.h"
+#include "bm25/kernels/kernels.h"
+#include "bm25/planner/int.h"
+#include "bm25/query/query.h"
 #include "bm25/score_fallback.h"
 #include "core/memtrack.h"
 #include "core/sift.h"
-#include "core/sql.h"
+#include "core/sql/sql.h"
 #include "storage/predicate.h"
 
 /* A word the scores count: a term, or a leaf that matches several words, and the phrase that has to hold for it */

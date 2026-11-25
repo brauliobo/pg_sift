@@ -1,1 +1,1 @@
-agg_dimmap_values	src/col/v1/conn_decl.c:sift_conn_find src/col/v1/preagg_read/rollup.c:sift_cpagg_rollup_decode src/col/v1/tomblog.c:drop_keep src/core/v1_col/tomb.c:sift_tomb_forget
+agg_dimmap_values	src/col/v1/conn/decl.c:sift_conn_find src/col/v1/preagg_read/rollup.c:sift_cpagg_rollup_decode src/col/v1/tomblog.c:drop_keep src/core/v1_col/tomb/tomb.c:sift_tomb_forget

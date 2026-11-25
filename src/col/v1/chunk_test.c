@@ -7,8 +7,8 @@
 
 #include <math.h>
 
-#include "col/v1/enc.h"
-#include "col/v1/enc_test_int.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/enc/test_int.h"
 #include "core/popcount.h"
 
 static int64

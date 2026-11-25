@@ -7,7 +7,7 @@
  *   2. the TID index of the part is loaded whenever there is a bridge, not only when a pending delete is (a part that no delete touched has the index too);
  *   3. a granule whose envelope, blocks or pages miss the bridge is not read;
  *   4. of a granule that is read, only the _tid chunk is decoded first: the dead rows leave, then the rows of the bridge, and when none is left no other chunk is loaded.
- * The addresses of a row are those the column delta chain gave it (col/f2/f2_col_delta_idx.h), never the ones the part stored: a part or a granule with a moved row is judged on the rows' addresses.
+ * The addresses of a row are those the column delta chain gave it (col/f2/col_delta/idx.h), never the ones the part stored: a part or a granule with a moved row is judged on the rows' addresses.
  */
 #ifndef SIFT_F2_SCAN_BRIDGE_CORE_H
 #define SIFT_F2_SCAN_BRIDGE_CORE_H

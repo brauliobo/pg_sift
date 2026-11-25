@@ -1,8 +1,8 @@
 /*
- * col/v1/kern.h - the kernels of the column index: filters on chunks, selection vectors, zone-map checks,
+ * col/v1/kern/kern.h - the kernels of the column index: filters on chunks, selection vectors, zone-map checks,
  * dictionary LUTs and decoding, one dispatch table per SIMD level.
  *
- * The scalar table (col/v1/kern.c) is the specification; the AVX2 and AVX-512 tables must give bit-identical results. Dispatch follows
+ * The scalar table (col/v1/kern/kern.c) is the specification; the AVX2 and AVX-512 tables must give bit-identical results. Dispatch follows
  * sift.simd through the cpu module's rebind registry (sift_cpu_register), never the build flags. Kernels take plain arrays: no
  * Relation, no allocation, no error. A bit vector ("bits") is an array of uint64 words, bit i of the vector is word i / 64, bit i % 64;
  * a kernel that fills a bit vector of n bits (range, lut, zone_range) writes all its SIFT_COL_NWORDS(n) words, the bits past n zero; one
@@ -10,7 +10,7 @@
  * readable bytes past their last used byte (contents irrelevant); bit vectors are allocated in multiples of SIFT_COL_SELWORDS words.
  *
  * This is the one table of the generic operations on bit vectors, selections and integer columns: the aggregation executor
- * (agg/kern.h) and the JSON shredder (col/shred.h) call these slots instead of keeping their own.
+ * (agg/kern.h) and the JSON shredder (col/shred/shred.h) call these slots instead of keeping their own.
  */
 #ifndef SIFT_COL_KERN_H
 #define SIFT_COL_KERN_H

@@ -1,1 +1,1 @@
-col_tomb_sync_mem	src/col/v1/test/tomblog_test.c:sift_test_col_log_entries src/col/v1/tomblog.c:log_synced src/core/v1_col/tomb.c:sift_tomb_sync src/core/v1_col/tomb.c:tomb_add src/core/v1_col/tomb.c:tomb_sync
+col_tomb_sync_mem	src/col/v1/test/tomblog_test.c:sift_test_col_log_entries src/col/v1/tomblog.c:log_synced src/core/v1_col/tomb/tomb.c:sift_tomb_sync src/core/v1_col/tomb/tomb.c:tomb_add src/core/v1_col/tomb/tomb.c:tomb_sync

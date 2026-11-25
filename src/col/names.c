@@ -11,7 +11,7 @@
  *   - the names in sift.scope_follows (the source column, the columns of the pairs), in sift.projections (the columns, the filter and the rollups of a definition) and in the options of a
  *     sift_table (sift.table_paths, sift.table_option_values) follow.
  * A table that is renamed or moved to another schema, and an index that is renamed: the options connect and scope of every sift_col index that name it follow, the definitions of
- * sift.projections, and the scope key stores of the table (col/keystore/keystore_rel.c), as the relations a restore adopts are found by the name the table gives them.
+ * sift.projections, and the scope key stores of the table (col/keystore/rel.c), as the relations a restore adopts are found by the name the table gives them.
  */
 #include "postgres.h"
 
@@ -40,13 +40,13 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
-#include "col/f2/f2_proj.h"
-#include "col/v1/enc.h"
+#include "col/f2/proj/proj.h"
+#include "col/v1/enc/enc.h"
 #include "col/names.h"
 #include "col/pg.h"
 #include "col/keystore/keystore.h"
 #include "core/restrict.h"
-#include "core/store.h"
+#include "core/store/store.h"
 #include "core/catname.h"
 
 /* The table that ALTER TABLE .. SET SCHEMA is about to move, with the schema and the name it has until then: the event after the command does not tell */

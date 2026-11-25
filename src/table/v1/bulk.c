@@ -8,9 +8,9 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "col/v1/seg.h"
+#include "col/v1/seg/seg.h"
 #include "core/memtrack.h"
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 #include "table/v1/seg_int.h"
 
 struct SiftTblBulk

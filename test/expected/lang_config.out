@@ -1,4 +1,4 @@
--- stemmer = a text search configuration (src/bm25/analyze_ts.c): the words are the ones to_tsvector indexes (the same
+-- stemmer = a text search configuration (src/bm25/analyze/ts.c): the words are the ones to_tsvector indexes (the same
 -- stems, the same stop words dropped, stop words keeping their position), for German, French, Spanish, Russian, English,
 -- 'simple' and a configuration created here; phrases, prefixes, maintenance, INCLUDE columns and builds with workers
 -- answer as to_tsvector @@ (plain|phrase)to_tsquery does.

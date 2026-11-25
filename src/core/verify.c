@@ -7,10 +7,10 @@
 #include "nodes/bitmapset.h"
 #include "storage/lmgr.h"
 
-#include "core/store.h"
-#include "core/store_int.h"
+#include "core/store/store.h"
+#include "core/store/int.h"
 #include "core/u64set.h"
-#include "core/visibility.h"
+#include "core/visibility/visibility.h"
 
 typedef struct BlockMap
 {

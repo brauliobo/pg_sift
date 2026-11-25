@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "../../src/bm25/bitmap.h"
+#include "../../src/bm25/bitmap/bitmap.h"
 #include "../../src/core/cmp.h"
 
 #define PAD 64

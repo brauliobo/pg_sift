@@ -1,1 +1,1 @@
-agg_child_member_value	src/col/jsonb.c:set_key src/col/shred.c:intern_key src/col/v1/kern_avx2.c:expand_parents_avx2 src/col/v1/preagg_read/preagg_read.c:cpread_skip_f8
+agg_child_member_value	src/col/jsonb.c:set_key src/col/shred/shred.c:intern_key src/col/v1/kern/avx2.c:expand_parents_avx2 src/col/v1/preagg_read/preagg_read.c:cpread_skip_f8

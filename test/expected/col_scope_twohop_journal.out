@@ -1,4 +1,4 @@
--- The journals of a scope of two paths (src/col/scope_journal.c): the grants keyed by member, the grants keyed by group and the memberships keyed by member, each a sift_col index with
+-- The journals of a scope of two paths (src/col/scope/journal.c): the grants keyed by member, the grants keyed by group and the memberships keyed by member, each a sift_col index with
 -- track_changes = 'ctid' that starts when the scope index is built or rebuilt. A scope with one of them missing is refused when it is declared (col_scope_twohop_declare), so its stamps
 -- are those of the three journals from the first build. A journal rebuilt (another lineage) leaves the stamps of the others standing and the scope unvouched until its own REINDEX. Refresh counts the members a
 -- changed group has as it counts the changed members. An index whose scopes all have one path keeps column format 45 and one stamp for each scope, one with two paths writes 49 and three, and a

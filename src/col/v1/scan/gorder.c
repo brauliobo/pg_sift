@@ -7,9 +7,9 @@
 #include "storage/bufmgr.h"
 #include "col/v1/point.h"
 #include "core/cmp.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 
-/* ---- the global order of a leaf as a source of sorted entries (col/v1/gorder.h): the stored segments and the rows of the write buffers ---- */
+/* ---- the global order of a leaf as a source of sorted entries (col/v1/gorder/gorder.h): the stored segments and the rows of the write buffers ---- */
 
 #include "col/v1/scan/gmem.h"
 

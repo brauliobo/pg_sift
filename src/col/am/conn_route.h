@@ -1,13 +1,13 @@
 /*
  * col/am/conn_route.h - the connections of a sift_col index by the format of the index: the key journal of a parent index and the checks that keep a child and its parents in one format.
- * A format that keeps a journal of its own gives its table (SiftColFormatOps.journal); format major 1 has none, and its journal is the one of col/v1/conn.h.
+ * A format that keeps a journal of its own gives its table (SiftColFormatOps.journal); format major 1 has none, and its journal is the one of col/v1/conn/conn.h.
  *
- * The protocol is the one of col/v1/conn.h: a derived value for a parent key is read as stored for a snapshot when the journal vouches for its stamp and the key is not in changed(S, X).
+ * The protocol is the one of col/v1/conn/conn.h: a derived value for a parent key is read as stored for a snapshot when the journal vouches for its stamp and the key is not in changed(S, X).
  */
 #ifndef SIFT_COL_CONN_ROUTE_H
 #define SIFT_COL_CONN_ROUTE_H
 
-#include "col/v1/conn.h"
+#include "col/v1/conn/conn.h"
 
 typedef struct SiftColJournalOps
 {

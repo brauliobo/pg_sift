@@ -12,7 +12,7 @@
 #include "storage/procarray.h"
 #include "utils/snapmgr.h"
 
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 
 bool
 sift_tbl_xid_aborted(TransactionId xid)

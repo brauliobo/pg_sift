@@ -7,7 +7,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
-#include "core/maint.h"
+#include "core/maint/maint.h"
 
 const char *
 sift_shrink_block_name(SiftShrinkBlock why)

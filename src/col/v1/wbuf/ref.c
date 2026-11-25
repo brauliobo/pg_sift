@@ -21,8 +21,8 @@
 #include "utils/snapmgr.h"
 #include "col/am.h"
 #include "core/compat.h"
-#include "core/visibility.h"
-#include "col/v1/wbuf/wbuf_int.h"
+#include "core/visibility/visibility.h"
+#include "col/v1/wbuf/int.h"
 
 static int
 tid_cmp(const void *a, const void *b)

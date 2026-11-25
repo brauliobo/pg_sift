@@ -7,7 +7,7 @@ col_layout < cached_facts	bounded-cache	the layout of a partition index read aga
 path_below < cached_facts	bounded-cache	the key-name buffer of a leaf path inside the layout above: same context, same bound
 read_facts < cached_facts	bounded-cache	the pre-aggregate block of the same re-read facts: same context, same bound
 sift_aggpart_pack_stats < cached_facts	bounded-cache	the packed statistics of the same re-read facts: same context, same bound
-lex < build_rel_with	entry-lifetime	the words of the shredder spec parser, in the context of the index relcache entry that holds the spec (col/shred_spec.c): bounded by the bytes of the paths option, freed when the entry is rebuilt
+lex < build_rel_with	entry-lifetime	the words of the shredder spec parser, in the context of the index relcache entry that holds the spec (col/shred/spec.c): bounded by the bytes of the paths option, freed when the entry is rebuilt
 parse_items < build_rel_with	entry-lifetime	the path steps of the same parse: same context, same bound
 take_image_marks < build_rel_with	entry-lifetime	the paths text of the shredder, copied once per relcache entry (col/jsonb.c)
 leading_key < build_rel_with	entry-lifetime	the first key of a path of the same parse: same context, same bound

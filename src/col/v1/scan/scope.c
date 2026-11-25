@@ -1,5 +1,5 @@
 /*
- * col/v1/scan/scope.c - what the reader of a scope index asks of the index and of its scope relation (col/scope.h)
+ * col/v1/scan/scope.c - what the reader of a scope index asks of the index and of its scope relation (col/scope/scope.h)
  *
  * A scan that has a scope conjunct reads the scope units of its keys, less the members that changed in the scope relation since the stamp of the units, plus the rows no scope entry describes
  * (the delta): those of the write buffers and, read by member key from the entity segments, those of the changed members that have a pair with a key now (the patch), each expanded by the pairs
@@ -26,8 +26,8 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
-#include "col/v1/seg.h"
-#include "col/scope.h"
+#include "col/v1/seg/seg.h"
+#include "col/scope/scope.h"
 #include "col/v1/wbuf.h"
 
 /* a key whose units leave members out is one conjunct of the scan: the keys of an IN list that have them are at most this many */
@@ -560,7 +560,7 @@ sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Rela
 /* ---- what the segments of the index say ---- */
 
 /*
- * The stamps the entries of the scope are exact as of, one for each journal of the scope: the floor of the index (col/v1/scope_floor.c), read with the directory the read goes by, so that the stamp
+ * The stamps the entries of the scope are exact as of, one for each journal of the scope: the floor of the index (col/v1/scope/floor.c), read with the directory the read goes by, so that the stamp
  * and the segments are those of one switch. The reason it cannot be read: none (the index is not filled: a concurrent build the maintenance has not filled yet, journals that could not vouch).
  */
 static const char *

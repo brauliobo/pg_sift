@@ -7,7 +7,7 @@
 
 #include "lib/stringinfo.h"
 
-#include "col/granule/granule_int.h"
+#include "col/granule/int.h"
 #include "core/damage.h"
 
 #define SIFT_PREFIX_SAMPLE		64

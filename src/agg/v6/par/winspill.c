@@ -7,8 +7,8 @@
 #include "miscadmin.h"
 
 #include "agg/v6/par/winspill.h"
-#include "agg/v6/v6_batch.h"
-#include "agg/v6/v6_win_spill.h"
+#include "agg/v6/batch.h"
+#include "agg/v6/win/spill.h"
 #include "core/memtrack.h"
 
 struct SiftParWinSpill

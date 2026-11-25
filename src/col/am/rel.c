@@ -13,15 +13,15 @@
 #include "col/f2/f2.h"
 #include "col/v1/point.h"
 #include "col/hll.h"
-#include "col/v1/gorder.h"
+#include "col/v1/gorder/gorder.h"
 #include "col/v1/setsum.h"
 #include "core/limits.h"
 #include "core/meta_peek.h"
-#include "core/quarantine.h"
-#include "col/am/am_int.h"
+#include "core/quarantine/quarantine.h"
+#include "col/am/int.h"
 #include "core/cachebudget.h"
-#include "col/v1/conn.h"
-#include "col/scope.h"
+#include "col/v1/conn/conn.h"
+#include "col/scope/scope.h"
 
 Oid			sift_col_building = InvalidOid;
 

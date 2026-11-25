@@ -13,8 +13,8 @@
 #include "storage/proc.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
-#include "col/v1/keycols/keycols_int.h"
-#include "core/store.h"
+#include "col/v1/keycols/int.h"
+#include "core/store/store.h"
 #include "core/restrict.h"
 #include "core/catname.h"
 

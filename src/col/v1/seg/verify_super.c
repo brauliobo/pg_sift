@@ -3,8 +3,8 @@
  * its units or, for the key groups of a scope segment (docs/COL-SCOPE.md), the cube of their rows. Run by sift.col_verify, never by a scan.
  */
 /* check-memory: allow-allocs a key group holds at most SIFT_SUPER_MAX_FAN units of the leaves its cube reads */
-#include "col/v1/preagg.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/preagg/preagg.h"
+#include "col/v1/seg/int.h"
 
 /*
  * The cube of a key group is the merge of the cubes of its units, which the writer's own function recomputes, and apart the dims that are what the rows of the units give with the

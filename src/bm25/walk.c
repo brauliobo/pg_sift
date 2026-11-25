@@ -3,13 +3,13 @@
  */
 #include "core/host.h"
 
-#include "bm25/analyze.h"
-#include "bm25/kernels.h"
-#include "core/live.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/kernels/kernels.h"
+#include "core/live/live.h"
 #include "core/popcount.h"
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 
-#include "bm25/segment_int.h"
+#include "bm25/segment/int.h"
 #include "core/cmp.h"
 #include "core/memtrack.h"
 
@@ -251,7 +251,7 @@ varint_len(uint64 x)
 	return n;
 }
 
-/* The bytes of one term in the parts of SiftPartStats, as the writers lay them out (bm25/dict.h, bm25/posting.h) */
+/* The bytes of one term in the parts of SiftPartStats, as the writers lay them out (bm25/dict/dict.h, bm25/posting/posting.h) */
 static void
 account_term(SiftPartStats *ps, bool packed, int shared, int len, const SiftTermInfo *info, const SiftPostingCursor *c)
 {

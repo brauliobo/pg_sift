@@ -1,4 +1,4 @@
--- The pull of an index of format major 2 (sift_f2_pull, col/f2/f2_sink_ext.h) and the unnest primitives of the aggregate scan (agg/v6/v6_unnest.h), through sift._test_f2_pull: the rows and the
+-- The pull of an index of format major 2 (sift_f2_pull, col/f2/sink/ext.h) and the unnest primitives of the aggregate scan (agg/v6/unnest/unnest.h), through sift._test_f2_pull: the rows and the
 -- elements a consumer reads, tested by the test itself, beside what the pull left unread. Each check says whether the answer is the heap's and whether the pruning happened.
 --   rows     key marks (SEC_KEY_MARKS), zones of a leaf, a key no part holds
 --   weights  the pairs of a parent from the layout alone: no element chunk is read

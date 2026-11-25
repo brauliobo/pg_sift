@@ -1,1 +1,1 @@
-agg_multi_index	src/col/jsonb.c:sift_col_shred_recheck_create src/col/jsonb.c:sift_col_shred_recheck_set src/col/shred_recheck.c:sift_shred_recheck_create src/col/v1/build/choices.c:shared_columns src/col/v1/track_drop.c:legacy_index src/core/restrict.c:sift_drop_object
+agg_multi_index	src/col/jsonb.c:sift_col_shred_recheck_create src/col/jsonb.c:sift_col_shred_recheck_set src/col/shred/recheck.c:sift_shred_recheck_create src/col/v1/build/choices.c:shared_columns src/col/v1/track/drop.c:legacy_index src/core/restrict.c:sift_drop_object

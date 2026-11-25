@@ -1,0 +1,175 @@
+/*
+ * bm25/dict/dict.h - per-segment term dictionary.
+ *
+ * DICT: front-coded blocks of SIFT_DICT_BLOCK terms in byte order. Block:
+ *   u16 block bytes, u8 nterms (| SIFT_DICT_PACKED in segment format 3), varint post_base (offset of the block's first
+ *   term blob), then per term: u8 shared prefix, u8 suffix length, suffix,
+ *   varint df, u8 flags, u8 max_bound, and either the inline postings
+ *   (varint key0 [, varint key1 - key0], tf bytes unless SIFT_TERM_ALL_TF1,
+ *   then if SIFT_TERM_POS varint pos_len and the position records of the postings)
+ *   or varint post_len, varint post_len - codec_len, [varint nnib unless
+ *   SIFT_TERM_ALL_TF1] [varint pos_len if SIFT_TERM_POS]. Term blobs follow each other in term
+ *   order, each at the next 4-byte aligned offset, so post_off is implied.
+ *   A PACKED block's head is u8 shared | (suffix length - 1) << 4 (a nibble of 15: a byte with the value follows), suffix,
+ *   u8 flags | min(df, 15) << 4 (15: varint df - 15 follows), u8 max_bound, and the inline keys are
+ *   (blk << 9 | off - 1) in the two varints; the rest is as above.
+ * DICTIDX: SiftDictIdx per block (slot_base: the number of terms with a counter slot before the block, see SiftTermInfo.slot; 0 in
+ * segments written before format 2, whose terms have no slot); every 256th prefix forms the root array
+ * (u64[dictroot_n]) kept in memory with the opened dictionary. A lookup
+ * touches the root array, <= 1 DICTIDX page (binary search) and one block.
+ */
+#ifndef SIFT_DICT_H
+#define SIFT_DICT_H
+
+#include "core/sift.h"
+#include "bm25/query/query.h"
+#include "core/store/store.h"
+
+#define SIFT_DICT_BLOCK			32
+#define SIFT_DICT_BLOCK_MAX_BYTES	PG_UINT16_MAX	/* the length of a block is the first two bytes of it */
+#define SIFT_DICT_ROOT_FANOUT	256
+#define SIFT_INLINE_MAX			2	/* df <= this: postings inline in the entry */
+#define SIFT_INLINE_POS_MAX		256	/* longer position records are dropped: a dictionary block stays under 64 KB */
+
+#define SIFT_DICT_PACKED		0x80	/* in the term count byte of a block: entries of segment format 3 */
+#define SIFT_DICT_POS2			0x40	/* ... the position streams of its terms are coded in blocks (segment format 4) */
+
+#define SIFT_TERM_SPARSE		0x01	/* LIST codec blob (no group scores) */
+#define SIFT_TERM_INLINE		0x02	/* postings in inline_keys/inline_tf */
+#define SIFT_TERM_ALL_TF1		0x04	/* every tf == 1: no tf stream */
+#define SIFT_TERM_POS2			0x10	/* not stored: SIFT_TERM_POS of a block with SIFT_DICT_POS2, blob not inline */
+#define SIFT_TERM_POS			0x08	/* the postings have position records (bm25/posting/posting.h): at the end of the term blob, or inline */
+
+/* A segment's DICT section starts its last block within this many bytes (offsets are uint32); sift.test_dict_max lowers it in SIFT_TESTING builds */
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_dict_max;
+#define SIFT_DICT_MAX	((uint64) (sift_test_dict_max > 0 ? sift_test_dict_max : PG_UINT32_MAX))
+#else
+#define SIFT_DICT_MAX	((uint64) PG_UINT32_MAX)
+#endif
+
+/* The key of an inline posting in a PACKED block: blk << 9 | off - 1 (offsets are at most 291), 2 bytes fewer as a varint once the table has 4,096 blocks */
+static inline uint64
+sift_dict_pack_key(SiftKey k)
+{
+	return (k >> 16) << 9 | ((k & 0xFFFF) - 1);
+}
+
+static inline SiftKey
+sift_dict_unpack_key(uint64 v)
+{
+	return (v >> 9) << 16 | ((v & 511) + 1);
+}
+
+typedef struct SiftTermInfo
+{
+	uint32		df;
+	uint32		ldf;			/* df of the live docs: the dictionary's df until sift_seg_term_stats takes the vacuumed postings off */
+	uint64		post_off;		/* term blob in the POSTINGS section */
+	uint32		post_len;
+	uint32		codec_len;		/* codec blob at the start of the term blob */
+	uint32		nnib;			/* L1 members (tf > 1) */
+	uint32		pos_len;		/* SIFT_TERM_POS: bytes at the end of the term blob, or of inline_pos */
+	const uint8 *inline_pos;	/* inline term: its records back to back, in the dictionary block or the writer */
+	SiftKey		inline_keys[SIFT_INLINE_MAX];
+	uint8		inline_tf[SIFT_INLINE_MAX];
+	uint8		flags;
+	uint8		max_bound;		/* u8 bound over all postings */
+	int32		slot;			/* of the term in the segment's dead-postings table, -1 for an inline term (see sift_dict_track_slots) */
+} SiftTermInfo;
+
+/* On-disk DICTIDX entry */
+typedef struct SiftDictIdx
+{
+	uint64		prefix;			/* first term's first 8 bytes, big-endian, zero padded */
+	uint32		block_off;		/* from the DICT section start */
+	uint32		slot_base;		/* terms with a slot before the block (0 before segment format 2) */
+} SiftDictIdx;
+
+/*
+ * Writer: terms must arrive in strictly increasing byte order, right after
+ * their postings (term blobs back to back from the stream position at
+ * begin). DICT bytes are spooled to a temporary file (bounded memory) and
+ * copied into sw by finish.
+ */
+typedef struct SiftDictWriter SiftDictWriter;
+
+extern SiftDictWriter *sift_dict_writer_begin(SiftStreamWriter *sw, bool packed, bool pos2);
+extern void sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *info);
+
+/* Terms added so far that are not inline: each has a slot (0, 1, ...) in dictionary order */
+extern uint32 sift_dict_writer_nslots(const SiftDictWriter *w);
+
+/* Writes DICT then DICTIDX then the root array into sw; fills the header fields */
+extern void sift_dict_writer_finish(SiftDictWriter *w, SiftSegHeaderData *hdr);
+
+/* Reader, opened per segment by sift_seg_open() (allocates in mcxt) */
+typedef struct SiftDict SiftDict;
+
+extern SiftDict *sift_dict_open(SiftStreamReader *sr, const SiftSegHeaderData *hdr, MemoryContext mcxt);
+extern bool sift_dict_lookup(SiftDict *d, const char *term, int len, SiftTermInfo *info);
+
+/*
+ * Lookups give a term's slot (SiftTermInfo.slot) only when asked to, which the segments with vacuumed docs of format 2 do: the others
+ * read the same entries without counting them. Scans always give it.
+ */
+extern void sift_dict_track_slots(SiftDict *d);
+
+/*
+ * Visits terms in [lo, hi) (lo NULL = from the start, hi NULL = unbounded)
+ * in byte order; return false from fn to stop. fn may use the stream
+ * reader (blocks are copied before the visit).
+ */
+typedef bool (*SiftDictVisit) (void *arg, const char *term, int len, const SiftTermInfo *info);
+extern void sift_dict_scan(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen,
+						   SiftDictVisit fn, void *arg);
+
+/*
+ * The same scan, one term at a time: next gives the terms from lo (NULL = the first) in byte order and false at the end. The term
+ * and info stay valid until the next call (a term of a block is decoded from a copy of it).
+ */
+typedef struct SiftDictIter SiftDictIter;
+
+extern SiftDictIter *sift_dict_iter(SiftDict *d, const char *lo, int lolen, MemoryContext mcxt);
+extern bool sift_dict_iter_next(SiftDictIter *it, const char **term, int *len, SiftTermInfo *info);
+
+/*
+ * Calls fn for the first term of about max_samples blocks of the dictionary, evenly spaced, with the offset of the postings that start
+ * there (the stream offset of the first blob of the block) and the terms from there to the next sample: where a merge cuts the terms
+ * into ranges of about the same work.
+ */
+typedef void (*SiftDictSample) (void *arg, const char *term, int len, uint64 post_off, uint64 nterms);
+extern void sift_dict_samples(SiftDict *d, int max_samples, SiftDictSample fn, void *arg);
+
+/*
+ * The same scan, asking skip about every term in the range before fn sees it: true says no term from `term` up to *next (> term, in
+ * byte order; *nextlen 0: none above) is wanted, and the scan seeks there instead of decoding the blocks between. A seek costs a
+ * bisection of the block index and the terms of one block, so a skip pays when it passes a block or more.
+ */
+typedef bool (*SiftDictSkip) (void *arg, const char *term, int len, const char **next, int *nextlen);
+extern void sift_dict_scan_skipping(SiftDict *d, const char *lo, int lolen, const char *hi, int hilen,
+									SiftDictSkip skip, SiftDictVisit fn, void *arg);
+
+/*
+ * Term matchers for expansion leaves (SQ_PREFIX, SQ_WILDCARD, SQ_REGEX,
+ * SQ_FUZZY, also SQ_TERM). bounds give the byte range implied by the
+ * literal prefix (NULL: unbounded); allocates in CurrentMemoryContext.
+ */
+#ifdef SIFT_TESTING
+/* Blocks a term lookup read to find its block (sift._test_read_stats) */
+extern uint64 sift_dict_probes;
+/* Blocks the dictionary scans decoded */
+extern uint64 sift_dict_scan_blocks;
+#endif
+
+typedef struct SiftTermMatcher SiftTermMatcher;
+
+extern SiftTermMatcher *sift_matcher_create(const SiftQNode *leaf);
+extern void sift_matcher_bounds(const SiftTermMatcher *m, const char **lo, int *lolen,
+								const char **hi, int *hilen);
+extern bool sift_matcher_match(const SiftTermMatcher *m, const char *term, int len);
+/* The leaf rules out the terms that start with a prefix (fuzzy): sift_dict_scan_skipping asks sift_matcher_skip for it */
+extern bool sift_matcher_skips(const SiftTermMatcher *m);
+extern bool sift_matcher_skip(SiftTermMatcher *m, const char *term, int len, const char **next, int *nextlen);
+
+#endif							/* SIFT_DICT_H */

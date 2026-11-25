@@ -1,5 +1,5 @@
 /*
- * common_vexpr.glsl - the expression machine of the aggregate kernels: the program of agg/vexpr.h (SiftVexprProg) as 8-word operations run
+ * common_vexpr.glsl - the expression machine of the aggregate kernels: the program of agg/vexpr/vexpr.h (SiftVexprProg) as 8-word operations run
  * for one row by one invocation. Registers are 16 values (an int64, or the bits of a double) with a valid bit each, and 16 three-valued
  * boolean slots (a true bit and a known bit); an operation that raises an error in PostgreSQL does so here only on a row that is live for
  * it (its act slot is true), and then the row's evaluation stops with the error code. Operation 0..32 are those of SiftVecOpCode, 40 is the

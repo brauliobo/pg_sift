@@ -226,7 +226,7 @@ SELECT sift.col_verify('events_col', true);
  
 (1 row)
 
--- keys of a few rows share units of the scope segment (col/v1/order.c): a key's rows are told from the other keys' by the test of the derived key, and the units of the other keys are still skipped
+-- keys of a few rows share units of the scope segment (col/v1/order/order.c): a key's rows are told from the other keys' by the test of the derived key, and the units of the other keys are still skipped
 CREATE TABLE small_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO small_scope SELECT m, 1 + (m * 7) % 150 FROM generate_series(1, 1500) m;
 INSERT INTO small_scope SELECT m, 1 + (m * 7 + 11) % 150 FROM generate_series(1, 1500) m WHERE m % 10 = 0 ON CONFLICT DO NOTHING;

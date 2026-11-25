@@ -9,9 +9,9 @@
  */
 #include "harness.h"
 
-#include "col/v1/kern.h"
-#include "col/codec_int.h"
-#include "col/shred.h"
+#include "col/v1/kern/kern.h"
+#include "col/codec/int.h"
+#include "col/shred/shred.h"
 
 #undef snprintf
 

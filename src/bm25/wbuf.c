@@ -17,10 +17,10 @@
 #include "utils/rel.h"
 
 #include "bm25/am.h"
-#include "bm25/bm25_doc.h"
+#include "bm25/doc.h"
 #include "core/lane.h"
-#include "core/quarantine.h"
-#include "core/maint.h"
+#include "core/quarantine/quarantine.h"
+#include "core/maint/maint.h"
 #include "bm25/wbuf.h"
 
 bool		sift_test_wbuf_narrow = false;

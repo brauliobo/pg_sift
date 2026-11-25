@@ -85,7 +85,7 @@ SITE = re.compile(r'\b(repalloc(?:0|_huge|_extended)?|qsort_arg|qsort|pg_qsort|h
 BRACKETS = re.compile(r'[()\[\]{},]')
 FN_NAME = re.compile(r'(\w+)\s*\(')
 ALLOW_COMMENT = re.compile(r'check-complexity:\s*allow\s+([a-z0-9-]+)')
-SKIP_FILE = re.compile(r'_test\.c$|/test/|_spv\.h$')
+SKIP_FILE = re.compile(r'[_/]test\.c$|/test/|/spv\.h$')
 
 GEOMETRIC = re.compile(r'\*=\s*2|<<=\s*1|\*\s*2\b|\b2\s*\*|<<\s*1\b|next_pow2|nextpower2|SIFT_REGROW|\bcap\w*|\w*cap\b|alloc\w*')
 GROWTH_CONTEXT = re.compile(r'\*=\s*2|<<=\s*1|=\s*\w+\s*\*\s*2\b|\*\s*2\s*:|SIFT_REGROW|next_pow2|pg_nextpower2')

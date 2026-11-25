@@ -5,10 +5,10 @@
 
 #include "core/host.h"
 
-#include "bm25/eval.h"
-#include "bm25/eval_int.h"
+#include "bm25/eval/eval.h"
+#include "bm25/eval/int.h"
 #include "bm25/wmemo.h"
-#include "bm25/kernels.h"
+#include "bm25/kernels/kernels.h"
 #include "bm25/wbuf.h"
 
 /*

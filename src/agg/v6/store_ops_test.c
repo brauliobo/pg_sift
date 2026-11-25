@@ -1,6 +1,6 @@
 /*
  * agg/v6/store_ops_test.c - test-only SQL functions sift._test_store_*, compiled only with SIFT_TESTING and declared by the tests that use them: the storage seam of the unified engine
- * (core/store_ops.h) as the engine uses it, over whatever format owns the relation. _test_store_rows opens the source of the relation for some of its attributes, as the batches
+ * (core/store/ops.h) as the engine uses it, over whatever format owns the relation. _test_store_rows opens the source of the relation for some of its attributes, as the batches
  * the engine reads, and gives back the rows with the size of their batch, their tag and the text of their values, to be held to the heap's own answer; _test_store_ops gives what the owner
  * tells the planner.
  *
@@ -31,8 +31,8 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 
-#include "agg/v6/v6_vexpr.h"
-#include "core/store_ops.h"
+#include "agg/v6/vexpr.h"
+#include "core/store/ops.h"
 
 PG_FUNCTION_INFO_V1(sift_test_store_rows);
 PG_FUNCTION_INFO_V1(sift_test_store_ops);

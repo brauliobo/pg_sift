@@ -6,7 +6,7 @@
 #ifndef SIFT_COL_KTAB_H
 #define SIFT_COL_KTAB_H
 
-#include "col/v1/preagg.h"
+#include "col/v1/preagg/preagg.h"
 
 #define SIFT_KTAB_HEADER_BYTES 16
 #define SIFT_KTAB_MAX_GROUPS	16384	/* the keys of a leaf in a segment beyond which it has no table */

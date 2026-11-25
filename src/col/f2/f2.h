@@ -17,10 +17,10 @@
 
 #include "col/am.h"
 #include "col/am/format_ops.h"
-#include "col/f2/col_meta.h"
+#include "col/f2/meta.h"
 #include "core/scan_types.h"
-#include "col/f2/f2_kll.h"
-#include "col/f2/rowbuf.h"
+#include "col/f2/kll/kll.h"
+#include "col/f2/rowbuf/rowbuf.h"
 
 /* What a relation of format major 2 derives from its leaves, kept with the leaves (SiftColRel.f2) */
 typedef struct SiftF2Rel
@@ -160,7 +160,7 @@ extern void sift_f2_check_blocks(Relation rel);
 
 extern IndexBuildResult *sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info);
 extern void sift_f2_ambuildempty(Relation index);
-/* The row of a heap tuple in the stage of the transaction (col/f2/l0_stage.h) */
+/* The row of a heap tuple in the stage of the transaction (col/f2/l0/stage.h) */
 extern void sift_f2_stage_row(Relation index, const Datum *values, const bool *isnull, ItemPointer heap_tid);
 extern bool sift_f2_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo);
 extern IndexBulkDeleteResult *sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback, void *callback_state);

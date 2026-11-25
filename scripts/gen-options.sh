@@ -11,7 +11,7 @@
 #   scripts/gen-options.sh --missing   report missing option rows (compact 6.0 schema)
 #   scripts/gen-options.sh --snapshot  print scripts/options-released.tsv for the current sources
 #
-# Defaults and ranges come from DefineCustom*Variable(), add_*_reloption(), and the option name arrays of src/table/f2/f2_options.c; purpose, values overrides,
+# Defaults and ranges come from DefineCustom*Variable(), add_*_reloption(), and the option name arrays of src/table/f2/options.c; purpose, values overrides,
 # applies, links, since, and the replacement of a deprecated option live in docs/options.tsv. An option is deprecated when src/ says so (a description that starts
 # with 'Format 1 only (deprecated' or 'Deprecated', a hidden sift_table option, or a diagnostic). The check fails when:
 #   - an option of src/ has no row in docs/options.tsv, or a row names an option that does not exist,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A crash in the middle of the pass of a VACUUM that clears the liveness bits of the segments of an index (core/store.h P8). Each unit of a segment is cleared by a record of its own, so a crash
+# A crash in the middle of the pass of a VACUUM that clears the liveness bits of the segments of an index (core/store/store.h P8). Each unit of a segment is cleared by a record of its own, so a crash
 # keeps a prefix of the pass; a scope segment holds copies of rows of the entity segments, so the prefix must not end a row and keep its copy: sift.col_verify would find the row of a scope
 # segment that is not in the entity segments (col_scope_kill_writes found it at random). sift.test_crash_clear = n (the testing build) kills the process after the nth segment the pass has
 # visited, so every prefix of the pass is crashed in turn, with no dependence on timing: after the restart the index verifies against the heap, the scope reads are the join, and the VACUUM run

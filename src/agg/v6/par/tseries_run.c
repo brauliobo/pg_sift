@@ -6,7 +6,7 @@
 
 #include "agg/v6/par/tseries.h"
 #include "agg/v6/par/tseries_run.h"
-#include "agg/v6/v6_datum.h"
+#include "agg/v6/datum.h"
 
 #define SCRATCH_BYTES	(2u << 20)
 

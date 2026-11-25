@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # One format never reads another's files: the engines of Format 2 (a folder f2/, v6/, granule/, skip/ or scope_v6/) include nothing of Format 1 (a v1/ folder, core/v1_col/,
-# the directory-chain store and the segment types of core/store.h), and Format 1 (col/v1/, core/v1_col/, table/v1/, agg/v1/) includes nothing of Format 2. Their shared
+# the directory-chain store and the segment types of core/store/store.h), and Format 1 (col/v1/, core/v1_col/, table/v1/, agg/v1/) includes nothing of Format 2. Their shared
 # files (core/page_io.h, core/meta_peek.h, the codecs, memory and quarantine of core/) are in neither. A file that needs the other side's code gets it moved to the shared files.
 # The unit reader of Format 1 (v1_store_ops, v1_reader, v1_tbl_ops, v1_tbl_reader) reads units itself: it includes nothing of the aggregate engine's column source (agg/colsrc*, agg/col*) and calls none of its sift_colsrc_ functions, so that
 # deleting the engine's source leaves the reader as it is.
 # The table access method is a shell in table/ itself (am.c, dispatch.h, wal.c): it reaches a format through the table of table/dispatch.h and includes no file of table/v1/ or table/f2/.
-# The aggregate engine (src/agg/) names no format at all, in no file: it reaches a store through core/store_ops.h.
+# The aggregate engine (src/agg/) names no format at all, in no file: it reaches a store through core/store/ops.h.
 #   scripts/check-format-isolation.sh [DIR]   check the tree under DIR (default: the repo)
 #   scripts/check-format-isolation.sh --selftest
 set -uo pipefail
@@ -46,7 +46,7 @@ if [[ ${1:-} == --selftest ]]; then
 	printf '%s\n' '#include "core/page_io.h"' >"$d/src/$f2/ok.c"
 	printf '%s\n' '#include "col/am.h"' >"$d/src/$v1/ok.c"
 	[[ -z $(scan "$d") ]] || fail "a clean tree is reported: $(scan "$d")"
-	printf '%s\n' '#include "col/v1/seg.h"' >"$d/src/$f2/mutant.c"
+	printf '%s\n' '#include "col/v1/seg/seg.h"' >"$d/src/$f2/mutant.c"
 	[[ $(scan "$d") == "src/$f2/mutant.c:1:"* ]] || fail "a Format 1 include in f2/ is not found"
 	rm "$d/src/$f2/mutant.c"
 	printf '%s\n' '#include "col/f2/f2.h"' >"$d/src/$v1/mutant.c"
@@ -56,7 +56,7 @@ if [[ ${1:-} == --selftest ]]; then
 	mkdir -p "$d/src/$tb"
 	printf '%s\n' '#include "table/dispatch.h"' >"$d/src/$tb/ok.c"
 	[[ -z $(scan "$d") ]] || fail "a clean shell is reported: $(scan "$d")"
-	printf '%s\n' '#include "table/v1/table_v1.h"' >"$d/src/$tb/mutant.c"
+	printf '%s\n' '#include "table/v1/table.h"' >"$d/src/$tb/mutant.c"
 	[[ $(scan "$d") == "src/$tb/mutant.c:1:"* ]] || fail "a Format 1 include in the table shell is not found"
 	rm "$d/src/$tb/mutant.c"
 	printf '%s\n' '#include "agg/batch_source.h"' >"$d/src/$v1/v1_reader.c"
@@ -68,12 +68,12 @@ if [[ ${1:-} == --selftest ]]; then
 	rm "$d/src/$v1/v1_reader.c"
 	ag=agg
 	mkdir -p "$d/src/$ag/cte" "$d/src/$ag/v6" "$d/src/$ag/plan"
-	printf '%s\n' '#include "core/store_ops.h"' >"$d/src/$ag/cte/ok.c"
+	printf '%s\n' '#include "core/store/ops.h"' >"$d/src/$ag/cte/ok.c"
 	printf '%s\n' '#include "core/simd_kern.h"' >"$d/src/$ag/v6/ok.c"
 	[[ -z $(scan "$d") ]] || fail "a clean src/agg is reported: $(scan "$d")"
 	for sub in $ag/cte $ag/v6 $ag $ag/plan; do
 		mkdir -p "$d/src/$sub"
-		for bad in '#include "col/f2/f2.h"' '#include "col/v1/kern.h"' '#include "col/granule/granule.h"' '#include "col/skip/skip.h"' \
+		for bad in '#include "col/f2/f2.h"' '#include "col/v1/kern/kern.h"' '#include "col/granule/granule.h"' '#include "col/skip/skip.h"' \
 			'#include "col/scope_v6/scope.h"' '#include "table/f2/tbl.h"' '#include "table/v1/src.h"' \
 			'int x = sift_col_v2_ops.format_major;' 'static SiftF2Store *st;' 'SiftColSegment *seg;' 'SiftDirSnapshot *dir;'; do
 			printf '%s\n' "$bad" >"$d/src/$sub/mutant.c"
@@ -82,10 +82,10 @@ if [[ ${1:-} == --selftest ]]; then
 		done
 		rm "$d/src/$sub/mutant.c"
 	done
-	printf '%s\n' '#include "col/v1/conn.h"' >"$d/src/$ag/plan/legacy.c"
+	printf '%s\n' '#include "col/v1/conn/conn.h"' >"$d/src/$ag/plan/legacy.c"
 	[[ $(scan "$d") == "src/$ag/plan/legacy.c:1:"* ]] || fail "a file of the engine of Format 1 is exempt"
 	echo "format-isolation selftest ok"; exit 0
 fi
 out=$(scan "${1:-$(cd "$(dirname "$0")/.." && pwd)}")
-[[ -z $out ]] || { echo "$out"; echo "format isolation: a Format 1 file includes Format 2 code or the other way round, the table shell includes a format, the aggregate engine names a format, or the unit reader of Format 1 uses the aggregate engine's column source; move what they need into the shared files of core/ and col/, the dispatch table or core/store_ops.h, do not include across" >&2; exit 1; }
+[[ -z $out ]] || { echo "$out"; echo "format isolation: a Format 1 file includes Format 2 code or the other way round, the table shell includes a format, the aggregate engine names a format, or the unit reader of Format 1 uses the aggregate engine's column source; move what they need into the shared files of core/ and col/, the dispatch table or core/store/ops.h, do not include across" >&2; exit 1; }
 echo "format isolation ok"

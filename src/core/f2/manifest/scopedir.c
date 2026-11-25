@@ -3,8 +3,8 @@
  */
 #include "core/host.h"
 
-#include "col/f2/col_meta.h"
-#include "core/f2/manifest/manifest_int.h"
+#include "col/f2/meta.h"
+#include "core/f2/manifest/int.h"
 #include "core/page_io.h"
 
 #define SDIR(p)		((SiftScopeDirPageData *) SiftPageGetData(p))

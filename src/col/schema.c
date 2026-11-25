@@ -2,8 +2,8 @@
  * col/schema.c - L1 of the column engine: the schema, the leaf list of an index.
  */
 
-#include "col/v1/enc.h"
-#include "col/v1/enc_int.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/enc/int.h"
 
 #define COLS_MAGIC		0x534C4F43	/* bytes 'C' 'O' 'L' 'S' */
 
@@ -177,7 +177,7 @@ sift_cschema_create(MemoryContext mcxt, const SiftColDef *defs, int n)
 	return schema_build(mcxt, defs, n);
 }
 
-/* The connections a schema has leaves for: one flag leaf "<fk>#found" each (col/v1/conn.h) */
+/* The connections a schema has leaves for: one flag leaf "<fk>#found" each (col/v1/conn/conn.h) */
 int
 sift_cschema_nconn(const SiftColSchema *s)
 {
@@ -190,7 +190,7 @@ sift_cschema_nconn(const SiftColSchema *s)
 	return n;
 }
 
-/* ... and the scopes: one derived key leaf "<key_name>#scope" each (col/scope.h) */
+/* ... and the scopes: one derived key leaf "<key_name>#scope" each (col/scope/scope.h) */
 int
 sift_cschema_nscope(const SiftColSchema *s)
 {

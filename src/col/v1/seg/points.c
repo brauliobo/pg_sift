@@ -6,7 +6,7 @@
 /* check-memory: allow-allocs the keys of a lookup are at most SIFT_CORDER_MAX_KEYS (512), a probe finds few slots and a stream marks one bit for each slot of a segment of at most 16M rows */
 #include "core/host.h"
 #include "core/cmp.h"
-#include "col/v1/seg_int.h"
+#include "col/v1/seg/int.h"
 
 /* a[0, n) ascending: insertion for a short chunk, else a radix sort of bytes (a callback sort costs ten times the instructions on the codes of a chunk) */
 static void

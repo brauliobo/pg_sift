@@ -12,16 +12,16 @@
 
 #include "col/pg.h"
 #include "col/am/format_ops.h"
-#include "col/v1/seg.h"
-#include "col/v1/enc.h"
-#include "col/v1/preagg.h"
+#include "col/v1/seg/seg.h"
+#include "col/v1/enc/enc.h"
+#include "col/v1/preagg/preagg.h"
 #include "core/memtrack.h"
 #include "core/range.h"
-#include "core/visibility.h"
+#include "core/visibility/visibility.h"
 #include "col/v1/wbuf.h"
-#include "col/v1/conn.h"
+#include "col/v1/conn/conn.h"
 #include "col/v1/xstamp.h"
-#include "col/scope.h"
+#include "col/scope/scope.h"
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
 
@@ -30,16 +30,16 @@ typedef struct SiftColRel
 	SiftColRelHeader hdr;		/* first: sift_col_ops reads the format of the relcache entry from it */
 	SiftColSchema *schema;
 	SiftColIndexMeta meta;		/* cols point into schema->cols; stats zero */
-	bool		out;			/* the metapage said the index is out of service when this state was made (core/quarantine.h); the invalidation of the worker that sets the flag makes it again */
+	bool		out;			/* the metapage said the index is out of service when this state was made (core/quarantine/quarantine.h); the invalidation of the worker that sets the flag makes it again */
 	int			natts;			/* the attributes of the index, the INCLUDE columns after the key ones */
 	int			nkeyatts;		/* the key attributes: the ones the scan keys, the unique check and key_order's automatic choice read */
 	int16	   *attlen;			/* [natts + 1] typlen and typbyval of each attribute: the image of an opaque leaf is cut by them */
 	bool	   *attbyval;
 	int			conn_first;	/* the leaves from this id on are the found flags of the connections (SIFT_COLD_FOUND); none when it is ncols */
-	int			nconn;			/* connections of the index (col/v1/conn.h) and the leaves of each */
+	int			nconn;			/* connections of the index (col/v1/conn/conn.h) and the leaves of each */
 	int			conn_found[SIFT_CONN_MAX_CONNECTIONS];	/* the leaf of the found flag of each connection */
 	int			scope_first;	/* the leaves from this id on are the derived keys of the scopes (SIFT_COLD_SCOPE); none when it is ncols */
-	int			nscope;			/* scopes of the index (col/scope.h) and the leaf of each */
+	int			nscope;			/* scopes of the index (col/scope/scope.h) and the leaf of each */
 	int			scope_leaf[SIFT_SCOPE_MAX];	/* the leaf of the derived key of each scope */
 	bool		scope_cols[SIFT_SCOPE_MAX][SIFT_COL_MAX_COLS];	/* the leaves the scope segments of each scope keep values of (cols(..) of its declaration); the others have no chunk in them */
 	int		   *first;			/* [natts] id of the first leaf of attribute i */
@@ -58,14 +58,14 @@ typedef struct SiftColRel
 	bool		rowkey;			/* the option track_changes names a column of the index: its attribute */
 	bool		track;			/* the index tracks changes: by a key column (rowkey) or by the address of the rows (track_changes = ctid) */
 	int			rowkey_attno;
-	bool		journal_known;	/* journal_lineage (col/v1/conn.c) is read: the relcache frees this state with the entry when it invalidates it */
+	bool		journal_known;	/* journal_lineage (col/v1/conn/conn.c) is read: the relcache frees this state with the entry when it invalidates it */
 	uint64		journal_lineage;
 	uint16		journal_tagatt;	/* the column the records of the journal are tagged by (SIFT_TOMB_KEYS_TAGATT): 0 for none */
 	struct SiftF2Rel *f2;		/* what an index of format major 2 derives from the leaves (col/f2/f2.h), made by its first use */
 	MemoryContext rowcxt;		/* made by the first aminsert of the backend (sift_col_rel_rowcxt), reset after each */
 } SiftColRel;
 
-/* The tombstone log of a heap index with track_changes, synced with what is appended (core/v1_col/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
+/* The tombstone log of a heap index with track_changes, synced with what is appended (core/v1_col/tomb/tomb.h); NULL when the index keeps none. sift_col_log_create adds the segment */
 struct SiftTombLog;
 extern struct SiftTombLog *sift_col_log(Relation index);
 /* ... with the header alone read (completeness, key journal): for what asks what the log vouches for, and holds none of its entries in memory */
@@ -93,7 +93,7 @@ extern Oid sift_col_row_key_unique(Relation heap, AttrNumber att);
 extern void sift_col_tomb_dead_keys(Relation index, Relation heap, Relation old_rel, struct Tuplestorestate *old_rows);
 
 /*
- * The addresses a statement left dead in the index, held until it is done with them and then written to the log (col/v1/track_dv.c): as deletion records for the units that hold enough of them, as
+ * The addresses a statement left dead in the index, held until it is done with them and then written to the log (col/v1/track/dv.c): as deletion records for the units that hold enough of them, as
  * marks for the rest
  */
 typedef struct SiftColDead SiftColDead;
@@ -104,7 +104,7 @@ extern void sift_col_dead_add(SiftColDead *d, uint64 key);
 extern void sift_col_dead_end(SiftColDead *d);
 extern AttrNumber sift_col_row_key_attno(Relation index, Relation rel);
 extern AttrNumber sift_col_index_attno_in(Relation index, int att, Relation rel);
-/* The option track_changes (col/v1/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
+/* The option track_changes (col/v1/track/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern const char *sift_col_track_deaf(Relation heap);
 extern void sift_col_track_init(void);
 extern void sift_col_track_dropping(Oid relid);
@@ -362,7 +362,7 @@ extern uint32 sift_colk_unit_rows(uint32 aim);
 extern uint32 sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n);
 /* the rows of a unit of a key that fills at least two such units and is sorted by a second leaf (below ~2,000 the per-unit bytes outgrow what a narrower zone saves) */
 #define SIFT_COLK_SECOND_ROWS	4096
-/* the rows below which a scope key shares its unit with the keys after it (col/v1/order.c): the most rows a read of one small key tests */
+/* the rows below which a scope key shares its unit with the keys after it (col/v1/order/order.c): the most rows a read of one small key tests */
 #define SIFT_COLK_SCOPE_FLOOR	2048
 extern uint32 sift_colk_aim_rows(Relation index);
 extern uint64 sift_colk_heap_sbs(Relation index);
@@ -390,7 +390,7 @@ typedef struct SiftColSorter SiftColSorter;
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
 							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg,
 							int slice, int nslices, uint32 unit_base, const bool *stream, const SiftColWindow *win, SiftColSorter *sorted, SiftMemTracker *inputs);
-/* sorted: a sort (col/v1/order_sort.h) of rows whose order is the merge's, already over (the merge ends it): they are the one input, and n is 0. stream[i]: whether a merge that reads the order of the leaves leaf[nleaf] (the TIDs for none) takes input seg[i] as a stream; the rows of an input that is not are sorted again, loaded whole when they fit memory_kb and else by a sort that spills (col/v1/order_sort.c). An input cut like the merge reads is; one cut another way is not; one that does not record its cut (SIFT_SEG_CUTREC) is checked unit by unit (cut unknown), unless resort says the cut changed since it was written. Returns whether some keyed input is not a stream */
+/* sorted: a sort (col/v1/order/sort.h) of rows whose order is the merge's, already over (the merge ends it): they are the one input, and n is 0. stream[i]: whether a merge that reads the order of the leaves leaf[nleaf] (the TIDs for none) takes input seg[i] as a stream; the rows of an input that is not are sorted again, loaded whole when they fit memory_kb and else by a sort that spills (col/v1/order/sort.c). An input cut like the merge reads is; one cut another way is not; one that does not record its cut (SIFT_SEG_CUTREC) is checked unit by unit (cut unknown), unless resort says the cut changed since it was written. Returns whether some keyed input is not a stream */
 /* Is every one of the n segments cut by the key_cut of the index, as its record says? */
 extern bool sift_colk_recorded(Relation index, const SiftSegEntry *sel, int n);
 /* The order of row ra of batch a and row rb of batch b by the leaves, then by address, as the cut sorts the rows */

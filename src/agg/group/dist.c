@@ -5,7 +5,7 @@
 
 #include "agg/group/dist.h"
 #include "agg/group/ht.h"
-#include "agg/kern6.h"
+#include "agg/kern6/kern6.h"
 
 #define DIST_MIN_CELLS	16
 /* MEM[MEM-AGG-07]: DSet distinct string arena (a set starts at DIST_MIN_ARENA=128B and doubles to a chunk of DIST_CHUNK_MAX=512MiB, then adds a chunk; no huge allocation; was 4096B for every group and one huge array) */

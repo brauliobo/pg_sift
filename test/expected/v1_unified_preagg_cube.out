@@ -1,4 +1,4 @@
--- Format 1 on the unified aggregate scan (sift.test_unified_agg) answers the stored units of a sift_col index and a sift_table from their pre-aggregates (col/v1_engine/v1_store_ops_preagg.c): a unit
+-- Format 1 on the unified aggregate scan (sift.test_unified_agg) answers the stored units of a sift_col index and a sift_table from their pre-aggregates (col/v1_engine/store_ops_preagg.c): a unit
 -- whose rows are all the snapshot sees is answered from its cube or its zone, one whose zones do not decide every test of the statement, or with a dead row, a page not all-visible or a pending
 -- write, is read as it was. Every answer is the heap's (sift.enable_agg = off), after DML, an aborted insert and VACUUM alike, and the units the cubes answered are counted by EXPLAIN ANALYZE.
 CREATE EXTENSION pg_sift_test CASCADE;

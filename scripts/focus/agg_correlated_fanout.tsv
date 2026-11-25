@@ -1,1 +1,1 @@
-agg_correlated_fanout	src/col/jsonb.c:set_key src/col/shred.c:intern_key src/col/v1/conn_decl.c:sift_conn_find src/col/v1/preagg_read/preagg_read.c:cpread_skip_f8
+agg_correlated_fanout	src/col/jsonb.c:set_key src/col/shred/shred.c:intern_key src/col/v1/conn/decl.c:sift_conn_find src/col/v1/preagg_read/preagg_read.c:cpread_skip_f8

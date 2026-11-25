@@ -6,7 +6,7 @@
 /* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 #include "col/v1/point.h"
-#include "col/v1/scan_int.h"
+#include "col/v1/scan/int.h"
 #include "core/damage.h"
 
 /* No unit of the range is kept: the tests that follow cannot change what a begin reads, and its other columns' zones are not touched */

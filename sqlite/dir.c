@@ -1,6 +1,6 @@
 /*
  * dir.c - the directory of a SQLite table's page store: the manifest (<name>_segs, <name>_meta), its refresh, publish and
- * retire, and core/store.h's directory calls.
+ * retire, and core/store/store.h's directory calls.
  */
 #include "store_int.h"
 
@@ -318,7 +318,7 @@ sq_store_set_flags(SqStore *st, uint64 gen, uint16 flags)
 	persist_meta(st, false);
 }
 
-/* ---------- core/store.h: pages, directory ---------- */
+/* ---------- core/store/store.h: pages, directory ---------- */
 
 void
 sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)

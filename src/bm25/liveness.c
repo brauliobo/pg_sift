@@ -2,14 +2,14 @@
  * bm25/liveness.c - segment liveness: live rows and bits, counts, the dead postings of each term, VACUUM and deletes of single docs.
  */
 
-#include "bm25/kernels.h"
+#include "bm25/kernels/kernels.h"
 #include "core/cmp.h"
-#include "core/live.h"
+#include "core/live/live.h"
 #include "core/memtrack.h"
 #include "core/popcount.h"
-#include "bm25/segment.h"
+#include "bm25/segment/segment.h"
 
-#include "bm25/segment_int.h"
+#include "bm25/segment/int.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_dead_windows = 0;

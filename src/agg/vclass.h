@@ -1,5 +1,5 @@
 /*
- * agg/vclass.h - the class of a column a scan decodes, shared by the operators of SiftAggV6 and the storage formats that answer for it (agg/batch_source.h, core/store_ops.h).
+ * agg/vclass.h - the class of a column a scan decodes, shared by the operators of SiftAggV6 and the storage formats that answer for it (agg/batch_source.h, core/store/ops.h).
  */
 #ifndef SIFT_AGG_VCLASS_H
 #define SIFT_AGG_VCLASS_H

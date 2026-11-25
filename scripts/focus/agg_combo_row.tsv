@@ -1,1 +1,1 @@
-agg_combo_row	src/col/v1/scan_read.c:sel_positions src/col/v1/src_sel.c:sift_srcsel_bits src/col/v1/src_sel.c:sift_srcsel_scatter src/col/v1/v1_reader.c:read_scatter src/col/v1/v1_reader.c:sift_v1_idx_read_sel
+agg_combo_row	src/col/v1/reader.c:read_scatter src/col/v1/reader.c:sift_v1_idx_read_sel src/col/v1/scan/read.c:sel_positions src/col/v1/src_sel.c:sift_srcsel_bits src/col/v1/src_sel.c:sift_srcsel_scatter

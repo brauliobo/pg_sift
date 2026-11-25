@@ -1,4 +1,4 @@
--- The delta tail of a deletion vector (src/col/f2/delvec_delta.h) holds at most SIFT_DV_DELTA_MAX_MARKS marks in a chunk: a DELETE that kills more rows of one granule than that, once an
+-- The delta tail of a deletion vector (src/col/f2/del/delvec_delta.h) holds at most SIFT_DV_DELTA_MAX_MARKS marks in a chunk: a DELETE that kills more rows of one granule than that, once an
 -- earlier DELETE gave the part a vector that takes deltas, writes the marks of the granule as several chunks. The vector reads back whole, VACUUM does not quarantine the index, and the
 -- aggregate and the heap agree before and after it.
 CREATE EXTENSION pg_sift;

@@ -1,5 +1,5 @@
 /*
- * bm25/attr.h - the values of the INCLUDE columns of a sift index as the ranker tests them (bm25/segment.h describes how a segment holds them).
+ * bm25/attr.h - the values of the INCLUDE columns of a sift index as the ranker tests them (bm25/segment/segment.h describes how a segment holds them).
  */
 #ifndef SIFT_ATTR_H
 #define SIFT_ATTR_H

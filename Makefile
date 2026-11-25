@@ -7,7 +7,7 @@ include $(SRC)/areas.mk
 # SIFT_HARDEN, the PostgreSQL major...) built in the same checkout never rebuilds or overwrites them; unset, everything stays beside the sources. make clean removes DIR/src and DIR/gen alone.
 SIFT_OUT := $(if $(SIFT_BUILD_DIR),$(abspath $(SIFT_BUILD_DIR)))
 SIFT_OBJ := $(if $(SIFT_OUT),$(SIFT_OUT)/)
-OBJS = $(patsubst %.c,$(SIFT_OBJ)%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c $(SRC)/*/*/*/*.c))
+OBJS = $(patsubst %.c,$(SIFT_OBJ)%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c $(SRC)/*/*/*/*.c $(SRC)/*/*/*/*/*.c))
 # The update script of the release in progress is built from sql/<version>/NN-<context>.sql (scripts/sql-parts.sh): edit a part, never the generated file.
 SIFT_UPDATE_SQL := $(sort $(shell $(dir $(SIFT_MK))scripts/sql-parts.sh targets))
 DATA = $(sort $(wildcard sql/pg_sift--*.sql) $(SIFT_UPDATE_SQL))
@@ -46,7 +46,7 @@ ifneq ($(or $(VULKAN),$(SIFT_VULKAN)),)
 PG_CPPFLAGS += -DSIFT_VULKAN
 SHLIB_LINK += -ldl
 endif
-EXTRA_CLEAN = $(if $(SIFT_OUT),$(SIFT_OUT)/$(SRC) $(SIFT_OUT)/gen .build-dir,$(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d src/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out)
+EXTRA_CLEAN = $(if $(SIFT_OUT),$(SIFT_OUT)/$(SRC) $(SIFT_OUT)/gen .build-dir,$(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d src/*/*/*/*.d src/*/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out)
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -953,7 +953,7 @@ isa-check: all
 limits:
 	scripts/gen-limits.sh
 
-# Rebuilds src/agg/vk_spv.h from the shaders of src/agg/vk/shaders (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
+# Rebuilds src/agg/vk/spv.h from the shaders of src/agg/vk/shaders (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:
 	scripts/gen-aggvk-spv.sh
 	scripts/gen-aggvk-min.py

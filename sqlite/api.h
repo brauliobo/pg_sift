@@ -1,6 +1,6 @@
 /*
  * api.h - the interface between the SQLite virtual table (vtab.c), the segment builder (build.c), the streaming
- * merge (merge.c) and the page store (store.c), which stands in for core/store.c.
+ * merge (merge.c) and the page store (store.c), which stands in for core/store/store.c.
  */
 #ifndef SQAPI_H
 #define SQAPI_H
@@ -11,11 +11,11 @@
 
 #include "core/sift.h"
 #include "core/page.h"
-#include "core/store.h"
-#include "bm25/analyze.h"
-#include "bm25/posting.h"
-#include "bm25/segment.h"
-#include "bm25/merge.h"
+#include "core/store/store.h"
+#include "bm25/analyze/analyze.h"
+#include "bm25/posting/posting.h"
+#include "bm25/segment/segment.h"
+#include "bm25/merge/merge.h"
 
 /* rowid <-> document key: block = rowid >> SQ_ROWID_SHIFT, offset = (rowid & mask) + 1; rowids 0 .. 2^37 - 1 */
 /* STOR[STOR-PORT-04]: SQ_ROWID_SHIFT=5 (32 docs/pg -> 8x SBs + 50% zero-padded LIVE2 bitmaps; v7 shift=8) */

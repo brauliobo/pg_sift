@@ -12,11 +12,11 @@
 
 #include "postgres.h"
 
-#include "agg/gpu_v6.h"
+#include "agg/gpu/v6.h"
 #include "agg/v6/par/group.h"
 #include "agg/v6/par/wordsink.h"
 #include "agg/v6/v6.h"
-#include "agg/v6/v6_pipe.h"
+#include "agg/v6/pipe.h"
 #include "core/par/pin.h"
 
 typedef struct SiftV6PinRun SiftV6PinRun;

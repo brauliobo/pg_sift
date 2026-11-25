@@ -9,7 +9,7 @@
 
 #include "core/sift.h"
 #include "core/cpu.h"
-#include "bm25/kernels.h"
+#include "bm25/kernels/kernels.h"
 #include "../../tools/pgshim.h"
 
 /* Once per process: CPU detection, dispatch tables of the kernels */

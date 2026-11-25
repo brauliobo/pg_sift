@@ -4,7 +4,7 @@
 #include "core/host.h"
 
 #include "core/f2/bulk_io.h"
-#include "core/f2/f2_pace.h"
+#include "core/f2/pace.h"
 #include "core/extlock.h"
 #include "core/f2/meta.h"
 #include "core/page_io.h"

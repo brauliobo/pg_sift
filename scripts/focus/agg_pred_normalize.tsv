@@ -1,1 +1,1 @@
-agg_pred_normalize	src/bm25/planner_match.c:score_operand src/col/v1/pagg.c:sift_col_unit_except src/col/v1/pagg.c:x_cube src/col/v1/scan/count.c:col_count_segment src/col/v1/scan/scan.c:sift_col_count_cmp
+agg_pred_normalize	src/bm25/planner/match.c:score_operand src/col/v1/pagg.c:sift_col_unit_except src/col/v1/pagg.c:x_cube src/col/v1/scan/count.c:col_count_segment src/col/v1/scan/scan.c:sift_col_count_cmp

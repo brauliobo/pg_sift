@@ -1,0 +1,387 @@
+/*
+ * bm25/kernels/test.c - test-only SQL functions sift._test_kern_*, compiled
+ * only with SIFT_TESTING and registered by the pg_sift_test extension. The
+ * standalone harness (tools/kernels) is the exhaustive check; these run the
+ * kernels inside the backend, through the sift.simd dispatch.
+ */
+#include "postgres.h"
+
+#ifdef SIFT_TESTING
+
+#include "common/pg_prng.h"
+#include "fmgr.h"
+
+#include "bm25/kernels/int.h"
+
+PG_FUNCTION_INFO_V1(sift_test_kern_digest);
+PG_FUNCTION_INFO_V1(sift_test_kern_equiv);
+PG_FUNCTION_INFO_V1(sift_test_kern_attr_equiv);
+PG_FUNCTION_INFO_V1(sift_test_kern_fmv_equiv);
+PG_FUNCTION_INFO_V1(sift_test_kern_bm25);
+PG_FUNCTION_INFO_V1(sift_test_kern_bound);
+
+#define NPAGES		4
+#define NSLOTS		(NPAGES * SIFT_KERN_SLOTS)
+#define NTF			3000
+
+/* Random inputs of every kernel */
+typedef struct Case
+{
+	uint64		mask[NPAGES * SIFT_OFFMASK_WORDS];
+	uint64		cand[NPAGES * SIFT_OFFMASK_WORDS];
+	float4		kn[NSLOTS];
+	float4		sc[NSLOTS];
+	float4		other[NSLOTS];
+	uint16		dl[NPAGES][SIFT_KERN_SLOTS];
+	uint8		tf[NSLOTS + SIFT_KERN_PAD];
+	uint8		stream[NTF * 2 + SIFT_KERN_PAD];
+	SiftTfPos	p0;
+	uint32		count;
+	uint32		l1n;
+	uint32		nibn;
+	SiftBm25	bm;
+	float4		w;
+	float4		theta;
+	uint64		base[8];
+	uint64		rank[8];
+	uint8		vm[64];
+	uint8		bounds[64];
+} Case;
+
+/* Every kernel output; tails past the used length are zeroed before comparing */
+typedef struct Out
+{
+	float4		kn[NSLOTS];
+	float4		sc[NSLOTS];
+	float4		sc1[NSLOTS];
+	float4		sel[NSLOTS];
+	float4		mx[NSLOTS];
+	float4		vals[NSLOTS];
+	uint16		slot[NSLOTS];
+	uint8		tf[NTF + SIFT_KERN_PAD];
+	uint64		ex[8];
+	uint64		pm[4];
+	uint64		pc[NPAGES * SIFT_OFFMASK_WORDS];
+	float4		ub[64];
+	SiftTfPos	pos;
+	int32		r;
+	int32		r1;
+	int32		rs;
+	int32		npr;
+	int32		nsel;
+	int32		nex;
+} Out;
+
+static void
+gen_case(pg_prng_state *rs, Case *c)
+{
+	double		d = pg_prng_double(rs);
+	uint8		tf[NTF];
+
+	memset(c, 0, sizeof(*c));
+	for (int s = 0; s < NSLOTS; s++)
+	{
+		if (pg_prng_double(rs) < d && s % SIFT_KERN_SLOTS < 300)
+			c->mask[s / 64] |= UINT64CONST(1) << (s % 64);
+		if (pg_prng_double(rs) < 0.5)
+			c->cand[s / 64] |= UINT64CONST(1) << (s % 64);
+		c->kn[s] = (float4) pg_prng_double(rs);
+		c->sc[s] = (float4) (pg_prng_double(rs) * 100);
+		c->other[s] = (float4) (pg_prng_double(rs) * 100);
+		c->dl[s / SIFT_KERN_SLOTS][s % SIFT_KERN_SLOTS] = pg_prng_uint32(rs) % 2000;
+		c->tf[s] = pg_prng_uint32(rs) % 4 ? 1 : 1 + pg_prng_uint32(rs) % 255;
+	}
+	c->count = pg_prng_uint32(rs) % NTF;
+	/* one draw per statement: the order of the operands of a call or an initializer is the compiler's, and the digest of the regress test is pinned */
+	c->p0.rank = pg_prng_uint32(rs) % 64;
+	c->p0.nib = pg_prng_uint32(rs) % 64;
+	c->p0.esc = pg_prng_uint32(rs) % 16;
+	c->l1n = (c->p0.rank + c->count + 7) / 8;
+	c->nibn = (c->p0.nib + c->count + 1) / 2;
+	for (uint32 i = 0; i < c->count; i++)
+		tf[i] = pg_prng_uint32(rs) % 4 ? 1 : 1 + pg_prng_uint32(rs) % 255;
+	{
+		SiftTfPos	p = c->p0;
+
+		sift_kern_tf_encode(c->stream, c->stream + c->l1n, c->stream + c->l1n + c->nibn, &p, tf, c->count);
+	}
+	{
+		const float4 avgdl = (float4) (1 + pg_prng_double(rs) * 500);
+		const float4 b = (float4) pg_prng_double(rs);
+		const float4 k1 = (float4) (pg_prng_double(rs) * 3);
+
+		sift_kern_bm25_init(&c->bm, k1, b, avgdl);
+	}
+	c->w =(float4) (pg_prng_double(rs) * 50);
+	c->theta = c->sc[pg_prng_uint32(rs) % NSLOTS];
+	for (int i = 0; i < 8; i++)
+	{
+		c->base[i] = pg_prng_uint64(rs) & pg_prng_uint64(rs);
+		c->rank[i] = pg_prng_uint64(rs);
+	}
+	for (int i = 0; i < 64; i++)
+	{
+		c->vm[i] = (uint8) pg_prng_uint32(rs);
+		c->bounds[i] = (uint8) pg_prng_uint32(rs);
+	}
+}
+
+static void
+run_case(const SiftKernels *k, const Case *c, Out *o)
+{
+	const uint16 *rows[NPAGES];
+	SiftTfPos	p = c->p0;
+
+	memset(o, 0, sizeof(*o));
+	for (int i = 0; i < NPAGES; i++)
+		rows[i] = c->dl[i];
+	memcpy(o->kn, c->kn, sizeof(o->kn));
+	k->knorm(o->kn, rows, c->mask, NPAGES, &c->bm);
+	memcpy(o->sc, c->sc, sizeof(o->sc));
+	memcpy(o->sc1, c->sc, sizeof(o->sc1));
+	o->r = k->bm25_accum(o->sc, c->mask, NPAGES, c->tf, o->kn, c->w);
+	o->r1 = k->bm25_accum(o->sc1, c->mask, NPAGES, NULL, o->kn, c->w);
+	memcpy(o->sel, c->sc, sizeof(o->sel));
+	o->rs = k->bm25_sel(o->sel, c->mask, c->cand, NPAGES, c->tf, o->kn, c->w);
+	memcpy(o->pc, c->cand, sizeof(o->pc));
+	o->npr = k->prune_gt(o->pc, c->sc, NPAGES, c->theta);
+	memcpy(o->mx, o->sc, sizeof(o->mx));
+	k->max_merge(o->mx, c->other, c->mask, NPAGES);
+	o->nsel = k->select_gt(o->slot, o->vals, o->sc, c->mask, NPAGES, c->theta);
+	memset(o->slot + o->nsel, 0, (NSLOTS - o->nsel) * sizeof(uint16));
+	memset(o->vals + o->nsel, 0, (NSLOTS - o->nsel) * sizeof(float4));
+	k->tf_decode(o->tf, c->stream, c->stream + c->l1n, c->stream + c->l1n + c->nibn, &p, c->count);
+	memset(o->tf + c->count, 0, sizeof(o->tf) - c->count);
+	o->pos = p;
+	o->nex = k->expand(o->ex, c->mask, c->base, c->rank, c->p0.nib, 8);
+	k->vm_allvisible(o->pm, c->vm);
+	k->ub_accum(o->ub, c->bounds, c->w, 61);
+}
+
+static Case *
+alloc_case(Out **o)
+{
+	*o = palloc_aligned(sizeof(Out), SIFT_SIMD_ALIGN, 0);
+	return palloc_aligned(sizeof(Case), SIFT_SIMD_ALIGN, 0);
+}
+
+/* Hash of every output of the active kernels over iters seeded random cases */
+Datum
+sift_test_kern_digest(PG_FUNCTION_ARGS)
+{
+	pg_prng_state rs;
+	Out		   *o;
+	Case	   *c = alloc_case(&o);
+	uint64		h = UINT64CONST(0xCBF29CE484222325);
+
+	pg_prng_seed(&rs, PG_GETARG_INT64(0));
+	for (int i = 0; i < PG_GETARG_INT32(1); i++)
+	{
+		gen_case(&rs, c);
+		run_case(sift_kern, c, o);
+		for (size_t j = 0; j < sizeof(*o); j++)
+			h = (h ^ ((const uint8 *) o)[j]) * UINT64CONST(0x100000001B3);
+	}
+	PG_RETURN_INT64((int64) h);
+}
+
+/* Cases where a SIMD level the CPU supports differs from scalar */
+Datum
+sift_test_kern_equiv(PG_FUNCTION_ARGS)
+{
+	pg_prng_state rs;
+	Out		   *ref,
+			   *o = palloc_aligned(sizeof(Out), SIFT_SIMD_ALIGN, 0);
+	Case	   *c = alloc_case(&ref);
+	const SiftKernels *tabs[] = {sift_kernels_for(SIFT_SIMD_AVX2), sift_kernels_for(SIFT_SIMD_AVX512),
+#if defined(__x86_64__)
+		sift_kernels_for(SIFT_SIMD_AVX2) ? &sift_kernels_avx2_nopdep : NULL,
+#endif
+	};
+	int64		bad = 0;
+
+	pg_prng_seed(&rs, PG_GETARG_INT64(0));
+	for (int i = 0; i < PG_GETARG_INT32(1); i++)
+	{
+		gen_case(&rs, c);
+		run_case(&sift_kernels_scalar, c, ref);
+		for (int t = 0; t < lengthof(tabs); t++)
+		{
+			if (!tabs[t])
+				continue;
+			run_case(tabs[t], c, o);
+			bad += memcmp(o, ref, sizeof(*o)) != 0;
+		}
+	}
+	PG_RETURN_INT64(bad);
+}
+
+/* Cases where a SIMD level's attr_mask differs from scalar: random widths, slot counts, ranges, tables and masks */
+Datum
+sift_test_kern_attr_equiv(PG_FUNCTION_ARGS)
+{
+	pg_prng_state rs;
+	uint8		row[512 * 7 + SIFT_KERN_PAD];
+	uint8		table[(1 << 16) + SIFT_KERN_PAD];
+	const SiftKernels *tabs[] = {sift_kernels_for(SIFT_SIMD_AVX2), sift_kernels_for(SIFT_SIMD_AVX512)};
+	int64		bad = 0;
+
+	pg_prng_seed(&rs, PG_GETARG_INT64(0));
+	for (int i = 0; i < PG_GETARG_INT32(1); i++)
+	{
+		bool		use_table = i % 3 == 0;
+		int			width = 1 + pg_prng_uint32(&rs) % (use_table ? 16 : i % 4 == 0 ? 56 : 25),
+					nslots = 1 + pg_prng_uint32(&rs) % 512;
+		uint64		unk = (pg_prng_uint64(&rs) % ((UINT64CONST(1) << width) - 1)) + 1,
+					lo[2],
+					hi[2];
+		SiftAttrCodes c;
+		uint64		orig[SIFT_OFFMASK_WORDS],
+					want[SIFT_OFFMASK_WORDS];
+
+		for (size_t j = 0; j < sizeof(row); j++)
+			row[j] = (uint8) pg_prng_uint32(&rs);
+		for (int r = 0; r < 2; r++)
+		{
+			lo[r] = pg_prng_uint64(&rs) % (unk + 2);
+			hi[r] = lo[r] + pg_prng_uint64(&rs) % (unk + 2 - lo[r]);
+		}
+		if (pg_prng_uint32(&rs) % 4 == 0)
+			lo[1] = hi[1] = unk + 1;
+		for (int k = 0; k < (1 << 16) + SIFT_KERN_PAD; k++)
+			table[k] = pg_prng_uint32(&rs) % 3 == 0;
+		c = (SiftAttrCodes) {lo[0], hi[0], lo[1], hi[1], unk, use_table ? table : NULL};
+		for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
+			orig[w] = want[w] = pg_prng_uint64(&rs);
+		sift_kernels_scalar.attr_mask(want, row, width, nslots, &c);
+		for (int t = 0; t < lengthof(tabs); t++)
+		{
+			uint64		got[SIFT_OFFMASK_WORDS];
+
+			if (!tabs[t])
+				continue;
+			memcpy(got, orig, sizeof(got));
+			tabs[t]->attr_mask(got, row, width, nslots, &c);
+			bad += memcmp(got, want, sizeof(got)) != 0;
+		}
+	}
+	PG_RETURN_INT64(bad);
+}
+
+/* The tf stream as the plain loop writes it: every posting takes a rank, those with tf above 1 a bit, a nibble and, from tf 17, an escape byte */
+static void
+tf_encode_reference(uint8 *l1, uint8 *nib, uint8 *esc, SiftTfPos *pos, const uint8 *tf, uint32 count)
+{
+	for (uint32 i = 0; i < count; i++, pos->rank++)
+	{
+		uint32		n;
+
+		if (tf[i] <= 1)
+			continue;
+		l1[pos->rank >> 3] |= 1 << (pos->rank & 7);
+		n = Min(tf[i] - 2, 15);
+		nib[pos->nib >> 1] |= n << ((pos->nib & 1) * 4);
+		pos->nib++;
+		if (n == 15)
+			esc[pos->esc++] = tf[i] - 17;
+	}
+}
+
+#define TFN		2048
+#define TF_L1	(TFN / 8 + 16)
+#define TF_NIB	(TFN / 2 + 40)
+#define TF_ALL	(TF_L1 + TF_NIB + TFN + 16)
+
+/*
+ * The loops of the multi-versioned functions (core/fmv.h) against what they replaced and against their baseline body: ub_accum on random bounds, and the tf stream of postings that
+ * come in runs of tf 1 of every length up to 300 (the run skip of sift_kern_tf_encode) with the clones the CPU has and with the baseline body (sift.simd = scalar). Returns the mismatches.
+ */
+Datum
+sift_test_kern_fmv_equiv(PG_FUNCTION_ARGS)
+{
+	pg_prng_state rs;
+	const SiftSimdLevel active = sift_cpu.active;
+	int64		bad = 0;
+	float4	   *ub = palloc_aligned(256 * sizeof(float4), SIFT_SIMD_ALIGN, 0),
+			   *ref = palloc_aligned(256 * sizeof(float4), SIFT_SIMD_ALIGN, 0),
+			   *base = palloc_aligned(256 * sizeof(float4), SIFT_SIMD_ALIGN, 0);
+	uint8		bounds[256],
+				tf[TFN + SIFT_KERN_PAD];
+
+	pg_prng_seed(&rs, PG_GETARG_INT64(0));
+	for (int it = 0; it < PG_GETARG_INT32(1); it++)
+	{
+		int			n = pg_prng_uint32(&rs) % 257;
+		float4		w = (float4) (pg_prng_double(&rs) * 50);
+		uint32		count = 0;
+		uint8	   *s[3];
+		SiftTfPos	pos[3] = {{pg_prng_uint32(&rs) % 64, pg_prng_uint32(&rs) % 64, pg_prng_uint32(&rs) % 16}};
+
+		for (int i = 0; i < 256; i++)
+		{
+			bounds[i] = (uint8) pg_prng_uint32(&rs);
+			ub[i] = ref[i] = base[i] = (float4) pg_prng_double(&rs);
+		}
+		for (int i = 0; i < n; i++)
+			ref[i] += w * (float4) bounds[i];
+		sift_kern_ub_accum(ub, bounds, w, n);
+		sift_cpu.active = SIFT_SIMD_SCALAR;
+		sift_kern_ub_accum(base, bounds, w, n);
+		sift_cpu.active = active;
+		bad += memcmp(ub, ref, n * sizeof(float4)) != 0 || memcmp(base, ref, n * sizeof(float4)) != 0;
+
+		while (count < TFN)
+		{
+			uint32		run = pg_prng_uint32(&rs) % 300,
+						k = pg_prng_uint32(&rs) % 4 + 1;
+
+			for (uint32 i = 0; i < run && count < TFN; i++)
+				tf[count++] = 1;
+			for (uint32 i = 0; i < k && count < TFN; i++)
+				tf[count++] = pg_prng_uint32(&rs) % 4 ? 2 + pg_prng_uint32(&rs) % 14 : 1 + pg_prng_uint32(&rs) % 255;
+		}
+		count = pg_prng_uint32(&rs) % (TFN + 1);
+		pos[1] = pos[2] = pos[0];
+		for (int v = 0; v < 3; v++)
+			s[v] = palloc0(TF_ALL);
+		tf_encode_reference(s[0], s[0] + TF_L1, s[0] + TF_L1 + TF_NIB, &pos[0], tf, count);
+		sift_kern_tf_encode(s[1], s[1] + TF_L1, s[1] + TF_L1 + TF_NIB, &pos[1], tf, count);
+		sift_cpu.active = SIFT_SIMD_SCALAR;
+		sift_kern_tf_encode(s[2], s[2] + TF_L1, s[2] + TF_L1 + TF_NIB, &pos[2], tf, count);
+		sift_cpu.active = active;
+		bad += memcmp(s[0], s[1], TF_ALL) != 0 || memcmp(s[0], s[2], TF_ALL) != 0 ||
+			memcmp(&pos[0], &pos[1], sizeof(SiftTfPos)) != 0 || memcmp(&pos[0], &pos[2], sizeof(SiftTfPos)) != 0;
+		for (int v = 0; v < 3; v++)
+			pfree(s[v]);
+	}
+	PG_RETURN_INT64(bad);
+}
+
+/* One BM25 term score through the active knorm and bm25_accum */
+Datum
+sift_test_kern_bm25(PG_FUNCTION_ARGS)
+{
+	uint64		mask[SIFT_OFFMASK_WORDS] = {1};
+	uint16		dl = PG_GETARG_INT32(1);
+	const uint16 *row = &dl;
+	uint8		tf[1 + SIFT_KERN_PAD] = {PG_GETARG_INT32(0)};
+	float4	   *kn = palloc_aligned(SIFT_KERN_SLOTS * sizeof(float4), SIFT_SIMD_ALIGN, 0),
+			   *sc = palloc_aligned(SIFT_KERN_SLOTS * sizeof(float4), SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
+	SiftBm25	bm;
+
+	sift_kern_bm25_init(&bm, PG_GETARG_FLOAT4(2), PG_GETARG_FLOAT4(3), PG_GETARG_FLOAT4(4));
+	sift_kern->knorm(kn, &row, mask, 1, &bm);
+	sift_kern->bm25_accum(sc, mask, 1, tf, kn, PG_GETARG_FLOAT4(5));
+	PG_RETURN_FLOAT4(sc[0]);
+}
+
+Datum
+sift_test_kern_bound(PG_FUNCTION_ARGS)
+{
+	SiftBm25	ref;
+
+	sift_kern_bm25_init(&ref, PG_GETARG_FLOAT4(2), PG_GETARG_FLOAT4(3), PG_GETARG_FLOAT4(4));
+	PG_RETURN_INT32(sift_kern_bound_u8(&ref, PG_GETARG_INT32(0), PG_GETARG_INT32(1)));
+}
+
+#endif							/* SIFT_TESTING */

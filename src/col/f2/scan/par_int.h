@@ -4,11 +4,11 @@
 #ifndef SIFT_COL_F2_SCAN_PAR_INT_H
 #define SIFT_COL_F2_SCAN_PAR_INT_H
 
-#include "col/f2/scan/scan_int.h"
-#include "col/f2/f2_cache.h"
-#include "col/f2/f2_gbuf.h"
-#include "col/f2/pend_del.h"
-#include "col/f2/f2_point_dir.h"
+#include "col/f2/scan/int.h"
+#include "col/f2/cache.h"
+#include "col/f2/gbuf/gbuf.h"
+#include "col/f2/del/pend.h"
+#include "col/f2/point_dir.h"
 
 /* The part a scan has open: its pin, and what the scan knows of its predicates; a run of granules of the part reads through it, and so does the next run of the same part */
 typedef struct PartCx

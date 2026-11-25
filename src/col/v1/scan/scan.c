@@ -11,9 +11,9 @@
 #include "utils/acl.h"
 #include "core/cmp.h"
 #include "core/lane.h"
-#include "core/quarantine.h"
-#include "col/v1/gorder.h"
-#include "col/v1/scan_int.h"
+#include "core/quarantine/quarantine.h"
+#include "col/v1/gorder/gorder.h"
+#include "col/v1/scan/int.h"
 
 #ifdef SIFT_TESTING
 /*

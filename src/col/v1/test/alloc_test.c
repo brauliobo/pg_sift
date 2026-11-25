@@ -11,9 +11,9 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
-#include "col/v1/preagg.h"
-#include "col/v1/seg_int.h"
-#include "col/v1/test/test_int.h"
+#include "col/v1/preagg/preagg.h"
+#include "col/v1/seg/int.h"
+#include "col/v1/test/int.h"
 #include "core/catname.h"
 
 PG_FUNCTION_INFO_V1(sift_test_row_key_bytes);

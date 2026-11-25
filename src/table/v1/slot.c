@@ -18,7 +18,7 @@
 #include "utils/rel.h"
 #include "utils/relcache.h"
 
-#include "table/v1/table_v1.h"
+#include "table/v1/table.h"
 #include "core/catname.h"
 
 typedef struct SiftTblSlot

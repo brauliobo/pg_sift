@@ -1,1 +1,1 @@
-bm25_dict_block_limit	src/col/v1/am_v1.c:conflict_root src/col/v1/preagg_opt.c:sift_cpagg_name_take src/core/handler.c:refuse_second_load src/core/store_test.c:crash_clear_assign
+bm25_dict_block_limit	src/col/v1/am.c:conflict_root src/col/v1/preagg/opt.c:sift_cpagg_name_take src/core/handler.c:refuse_second_load src/core/store/test.c:crash_clear_assign

@@ -19,10 +19,10 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/portal.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 #include "col/v1/build/choices_gen.h"
 #include "agg/refuse.h"
-#include "col/scope.h"
+#include "col/scope/scope.h"
 
 #define SUMMARY_LINE	100		/* characters of the first line of the summary */
 #define DETAIL_LINE		112		/* ... and of a line of its values (two lines) */

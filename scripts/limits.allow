@@ -64,22 +64,22 @@ SIFT_CACHE_MAX_KINDS	the table of the kinds of cache that register with the back
 SIFT_MEM_MAX_BLOCK	the largest block (256 kB) a transient allocation of a tracked context takes, so that freeing it returns whole blocks to the allocator
 SIFT_PART_LOCK_SLOTS	the virtual page locks of the partitions of a relation (core/part_lock.h): a part id is taken modulo it, so two partitions may share a lock and wait for each other; no count is refused
 SIFT_UNIQUE_LOCK_SLOTS	the virtual page locks of the keys of a unique index (core/part_lock.h): the hash of a key is taken modulo it, so two keys may share a lock and wait for each other; no count is refused
-SIFT_SHM_MANIFEST_SLOTS	the slots of the manifest registry (core/shm_manifest.h): an index the registry has no slot for is read from its pages, and the least used slot is given up; no count is refused
+SIFT_SHM_MANIFEST_SLOTS	the slots of the manifest registry (core/shm/manifest.h): an index the registry has no slot for is read from its pages, and the least used slot is given up; no count is refused
 SIFT_F2_MAX_RANGES	key ranges of one predicate that the zones of a part prune: a speed threshold, the rows are the same
 SIFT_FSM_CLASS_QUEUE	the tag of the queue of released extents among the lists of the allocator (a list is told by it), not a bound
 SIFT_FSM_MAX_EXTENT	the largest size class of the allocator of format major 2: derived from the number of classes
-SIFT_TAIL_MAX_PIECES	the extents the free space below a cut may be cut into for the pieces of a part that move below it (col/f2/f2_tail_plan.h): a free space in more pieces would give the part more extents than the file gains
+SIFT_TAIL_MAX_PIECES	the extents the free space below a cut may be cut into for the pieces of a part that move below it (col/f2/tail_plan.h): a free space in more pieces would give the part more extents than the file gains
 SIFT_FSM_MAX_SLABS	the metadata slabs the root page of the allocator holds (core/fsm.h): a bound of the page layout, each slab holds 256 metadata pages
 SIFT_L0_SLAB_MAX_PAGES	the pages of the L0 slab of a partition (col/l0_slab.h): a micro-part is made from the slab before it grows past it, so no table reaches it
 SIFT_NULL_SPARSE_MAX_DIV	the share of nulls from which a list of them is not written: an encoding choice with no visible effect
 SIFT_PARTDIR_MAX_LEVEL	the levels of the partition directory above its leaves (core/manifest.h): a bound of the page layout, millions of partitions away
-SIFT_QSET_SLOTS	the relations the shared set of quarantined indexes holds (core/quarantine_set.h): past it the quarantine is refused with a hint to REINDEX
+SIFT_QSET_SLOTS	the relations the shared set of quarantined indexes holds (core/quarantine/set.h): past it the quarantine is refused with a hint to REINDEX
 SIFT_FSST_MAX_PERMILLE	the share of its raw bytes a string chunk may take coded for the coding to be kept: a size choice of the writer, the strings read back are the same
 SIFT_FSST_MAX_SYMBOLS	array size of the symbol table of a string chunk: a property of the coding, not a setting
 SIFT_META_INLINE_MAX_PARTS	the parts of a partition that its manifest entry keeps inline: a layout threshold, the rows are the same either way
 SIFT_TRIGRAM_MAX_BLOCKS	the most blocks of the substring filter of one granule: a size bound of a summary, a granule that needs more keeps none and is read
 SIFT_ALP_RD_MAX_LEFT	the widest left part (bits) of a split of a double in the ALP RD coding of a granule: a property of the coding, the values read back are the same
-SIFT_MAX_PART_LEVEL	the levels of the parts of a partition above level 0 (col/f2/compact.h): a compaction policy, no part is rewritten past it and the rows are the same
+SIFT_MAX_PART_LEVEL	the levels of the parts of a partition above level 0 (col/f2/compact/compact.h): a compaction policy, no part is rewritten past it and the rows are the same
 SIFT_VSTR_MAX_STEPS	array size of the steps of one text program: held by an assertion where a step is added
 AK6_GID_MAX_NOSEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 BIAS_LIMIT	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
@@ -188,44 +188,44 @@ SIFT_PAR_RING_MAX_BYTES	memory bound of the chunks of the two-stage parallel str
 SIFT_PAR_TWO_STAGE_MAX_GROUPS	size of the table a participant of the two-stage parallel strategy keeps before it hands it over (the direct-table bound of the cost model): a speed choice, the rows are the same
 SIFT_PAR_WIDE_WORKERS	the number of parallel workers from which the radix strategy uses more partitions: a tuning bound, the rows are the same
 V6_NUMERIC_MAX_DIGITS	size of the digit buffer of a 128-bit numeric (the largest value of the format has 12 base-10000 digits): a representation size, not a limit a user reaches
-CHAIN_SLOTS	slots of the backend cache of the logs of pending deletes and column delta chains of partitions (table/f2/f2_chain_cache.c): past them the least recently used log is dropped and read again from the pages of the chain; the rows the statement reads are the same
-PART_AUX_SLOTS	records of the parts a scan reads (the first row of each granule in SEC_VERS, the offsets of SEC_GRANULE_TSTRIDE) that a backend keeps (col/granule/part_read.c): the slots are taken in turn and the record that loses its slot is worked out again when asked for; the rows are the same
-PIN_CX_MAX_BLOCK	the largest block (16 kB) of the memory context of one cached part pin (col/f2/f2_gbuf.c): a larger request gets a block of its own; the pin holds the same data
-QUAR_CACHE_SLOTS	slots (512, for the 256 entries of QUAR_ENTRIES) of the open-addressing set a backend copies the confirmed quarantine entries into (core/quarantine.c): it holds every entry the registry can hold, so nothing is evicted; it is rebuilt when the generation of the registry moves
-SIFT_F2S_EXCL_SLOTS	granules whose excluded rows an open scope keeps (col/f2/f2_scope_int.h), direct-mapped by granule and slot: the entry a new one replaces is worked out again when asked for; the rows are the same
-SIFT_PACK_MAX_BYTES	bytes (12) of the packed group key of a SiftAggV6 scan, the fixed-width integer keys of a group set in one inline key (agg/v6/v6_group_fast.c): a set that needs more is not packed and its keys are hashed as they are; the rows are the same
-SIFT_PACK_MAX_KEYS	keys (12) of a group set a SiftAggV6 scan packs into one inline key (agg/v6/v6_group_fast.c): a set with more is not packed; the rows are the same
-SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS	members whose pairs the journals may name as changed since the summary of a scope, for the keys of a read (col/scope_v6/overlay.h, col/f2/f2_scope_cur.c): past it the scope is not opened and the statement does not use the summary
-SIFT_TOPK_MAX_ITEMS	array size of the sort column positions of the Top-K heap of the groups (agg/v6/v6_group_topk.c), equal to SIFT_V6_MAX_TOPK_ITEMS, whose row bounds the sort columns when the plan is made
-SNAP_MAX_READS	cubes of keys the settled change of a scope summary keeps for the statements that follow (col/f2/f2_scope_snap.c), a ring: the oldest is freed and a key asked for again is read again; the rows are the same
+CHAIN_SLOTS	slots of the backend cache of the logs of pending deletes and column delta chains of partitions (table/f2/chain_cache.c): past them the least recently used log is dropped and read again from the pages of the chain; the rows the statement reads are the same
+PART_AUX_SLOTS	records of the parts a scan reads (the first row of each granule in SEC_VERS, the offsets of SEC_GRANULE_TSTRIDE) that a backend keeps (col/granule/part/read.c): the slots are taken in turn and the record that loses its slot is worked out again when asked for; the rows are the same
+PIN_CX_MAX_BLOCK	the largest block (16 kB) of the memory context of one cached part pin (col/f2/gbuf/gbuf.c): a larger request gets a block of its own; the pin holds the same data
+QUAR_CACHE_SLOTS	slots (512, for the 256 entries of QUAR_ENTRIES) of the open-addressing set a backend copies the confirmed quarantine entries into (core/quarantine/quarantine.c): it holds every entry the registry can hold, so nothing is evicted; it is rebuilt when the generation of the registry moves
+SIFT_F2S_EXCL_SLOTS	granules whose excluded rows an open scope keeps (col/f2/scope/int.h), direct-mapped by granule and slot: the entry a new one replaces is worked out again when asked for; the rows are the same
+SIFT_PACK_MAX_BYTES	bytes (12) of the packed group key of a SiftAggV6 scan, the fixed-width integer keys of a group set in one inline key (agg/v6/group/fast.c): a set that needs more is not packed and its keys are hashed as they are; the rows are the same
+SIFT_PACK_MAX_KEYS	keys (12) of a group set a SiftAggV6 scan packs into one inline key (agg/v6/group/fast.c): a set with more is not packed; the rows are the same
+SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS	members whose pairs the journals may name as changed since the summary of a scope, for the keys of a read (col/scope_v6/overlay.h, col/f2/scope/cur.c): past it the scope is not opened and the statement does not use the summary
+SIFT_TOPK_MAX_ITEMS	array size of the sort column positions of the Top-K heap of the groups (agg/v6/group/topk.c), equal to SIFT_V6_MAX_TOPK_ITEMS, whose row bounds the sort columns when the plan is made
+SNAP_MAX_READS	cubes of keys the settled change of a scope summary keeps for the statements that follow (col/f2/scope/snap.c), a ring: the oldest is freed and a key asked for again is read again; the rows are the same
 INV_MAX_BUDGET	the most memory (256 MB) the bm25 build buffer takes, whatever maintenance_work_mem or the build budget say (bm25/inv.c): the buffer spills to a run at it, so that no array of it passes 1 GB; the index is the same
-ROUTE_MAX_SHARE_PCT	percent (60) of the granules of a scope summary the keys of a read may take for a router to be built (col/f2/f2_scope_route.c): above it no router is built and the scan reads the granules; the rows are the same
-SET_INIT_SLOTS	slots (64) the group table of a grouping set of a SiftAggV6 scan starts with (agg/v6/group.c): it grows with its groups
-CARRY_FIRST_SLOTS	slots (4096) the carry table of a window of a SiftAgg scan starts with, and the least its cap may be (agg/v6/v6_win_carry.c): it doubles while it fits a quarter of work_mem, then a row that finds no room is not carried and its columns are fetched from the table; the rows are the same
-CMP_MAX_KW	keys (4) of a group set the compact group table of a SiftAggV6 scan takes (agg/v6/v6_group_compact.c): a set with more uses the normal group table; the rows are the same
-CMP_MAX_WORDS	words (8) of a slot of the compact group table of a SiftAggV6 scan, for the key, the count, the sums and the group id (agg/v6/v6_group_cmp.h, v6_group_compact.c): a set that needs more uses the normal group table; the rows are the same
-MONTH_MAX_DAYS	the days added to the first day of a month to land in the next one, whatever its length (31, the longest month), to bound the span of the month of a timestamp (agg/v6/v6_tseries_fast.c): a calendar fact
+ROUTE_MAX_SHARE_PCT	percent (60) of the granules of a scope summary the keys of a read may take for a router to be built (col/f2/scope/route.c): above it no router is built and the scan reads the granules; the rows are the same
+SET_INIT_SLOTS	slots (64) the group table of a grouping set of a SiftAggV6 scan starts with (agg/v6/group/group.c): it grows with its groups
+CARRY_FIRST_SLOTS	slots (4096) the carry table of a window of a SiftAgg scan starts with, and the least its cap may be (agg/v6/win/carry.c): it doubles while it fits a quarter of work_mem, then a row that finds no room is not carried and its columns are fetched from the table; the rows are the same
+CMP_MAX_KW	keys (4) of a group set the compact group table of a SiftAggV6 scan takes (agg/v6/group/compact.c): a set with more uses the normal group table; the rows are the same
+CMP_MAX_WORDS	words (8) of a slot of the compact group table of a SiftAggV6 scan, for the key, the count, the sums and the group id (agg/v6/group/cmp.h, v6_group_compact.c): a set that needs more uses the normal group table; the rows are the same
+MONTH_MAX_DAYS	the days added to the first day of a month to land in the next one, whatever its length (31, the longest month), to bound the span of the month of a timestamp (agg/v6/tseries_fast.c): a calendar fact
 MONTH_SLOTS	slots of the memo of the month of each distinct date in an unnest group (agg/v6/v6_unnest_run.c): a date that finds all of them taken has its month worked out by date_trunc again; the rows are the same
 OUT_SLOTS	size of the arrays of output vectors of an unnest group scan (agg/v6/v6_unnest_run.c): the sum of the columns the pull reads, the element columns and the derived expressions, each bounded on its own
-RG_FIRST_SLOTS	partitions (1024) a regrouped window of a SiftAgg scan starts with (agg/v6/v6_win_par.c): the table doubles up to the room work_mem leaves, at most RG_MAX_GROUPS
+RG_FIRST_SLOTS	partitions (1024) a regrouped window of a SiftAgg scan starts with (agg/v6/win/par.c): the table doubles up to the room work_mem leaves, at most RG_MAX_GROUPS
 SEMI_ENTRIES	key sets (16) of the small tables a ranked scan tests an INCLUDE column against that a backend keeps for the next statement (bm25/semi_cache.c): past it the least recently used set is dropped and read again; the rows are the same
-SIFT_DICT_MAX_VALUES	distinct values (65,536) of a text key up to which the cost model of the parallel plan prices the key as dictionary codes, not as strings (agg/v6/v6_par_path.c): it changes the price of a plan, not its rows
-SIFT_WIN_CARRY_MAX_VARS	columns (8) a window of a SiftAgg scan carries from its batches to its output rows (agg/v6/v6_win_carry.h): past it nothing is carried and the columns of each row are fetched from the table; the rows are the same
+SIFT_DICT_MAX_VALUES	distinct values (65,536) of a text key up to which the cost model of the parallel plan prices the key as dictionary codes, not as strings (agg/v6/par/path.c): it changes the price of a plan, not its rows
+SIFT_WIN_CARRY_MAX_VARS	columns (8) a window of a SiftAgg scan carries from its batches to its output rows (agg/v6/win/carry.h): past it nothing is carried and the columns of each row are fetched from the table; the rows are the same
 SORT_LOOKUP_MAX_ROWS	rows (10,000) a statement with no ORDER BY and no LIMIT may be estimated to return for a projection sort to seek them (agg/v6/v6_proj_sort_plan.c): above it the projection sort is not planned for the statement; the rows are the same
 STAT_SLOTS	slots (1024) of the backend cache of the column totals of the parts, direct-mapped by part and column (agg/v6/v6_colstat.c): the entry a new one replaces is read from the part again; the rows are the same
-SUM_ROW_LIMIT	2^95, the magnitude the scaled integer of a row of an exact numeric product may reach (agg/v6/v6_expr_num.c): the limit of the row num_expr_bits, a row above it is an ERROR 22003
+SUM_ROW_LIMIT	2^95, the magnitude the scaled integer of a row of an exact numeric product may reach (agg/v6/expr/num.c): the limit of the row num_expr_bits, a row above it is an ERROR 22003
 UNIQUE_LOCK_SLOTS	the page locks of the keys of a bm25 unique index (bm25/unique.c): the key is taken modulo it, so two keys may share a lock and wait for each other; no count is refused
-ENC_SLOTS	the size of the table of the encodings of a column (col/f2/f2_choices.c): the enumeration of the encodings plus one; no count is refused
-TIER_SLOTS	the size of the table of the tiers of a part (col/f2/f2_choices.c): the enumeration of the tiers plus one; no count is refused
-SIFT_CDDIR_MAX_ENTRIES	the entries of one page of the directory of a column delta chain (table/f2/f2_col_delta_dir.h): a StaticAssert holds it to the page; a chain with more pages has the next directory page, no count is refused
-SIFT_COL_DELTA_MAX_COLS_INDEX	changed leaves (8) of one record of the column delta chain of a sift_col index (table/f2/f2_col_delta.h): an UPDATE that changes more takes the tombstone and a new entry; a speed threshold, the rows are the same
-SIFT_MAX_BM25_FIELDS	the capacity (16) of the field length arrays of a segment (bm25/segment_int.h), at least the fields an index may have (SIFT_MAX_FIELDS, 14, a limit of the registry): a layout bound, no count is refused
-SIFT_UNIQ_SHM_SLOTS	the entries of the shared registry of the staged keys of unique sift_col indexes (col/f2/f2_uniq_shm.h): a stripe with no entry free sends the stage of the transaction to the partition and the entries go; no count is refused
-SLAB_SLOTS	the hashes of the rows of a slab a probe of a unique key keeps (col/f2/f2_uniq_slab.c): a slab with more distinct hashes than half of it is not filtered and is probed as it is; the rows are the same
+ENC_SLOTS	the size of the table of the encodings of a column (col/f2/choices.c): the enumeration of the encodings plus one; no count is refused
+TIER_SLOTS	the size of the table of the tiers of a part (col/f2/choices.c): the enumeration of the tiers plus one; no count is refused
+SIFT_CDDIR_MAX_ENTRIES	the entries of one page of the directory of a column delta chain (table/f2/col_delta/dir.h): a StaticAssert holds it to the page; a chain with more pages has the next directory page, no count is refused
+SIFT_COL_DELTA_MAX_COLS_INDEX	changed leaves (8) of one record of the column delta chain of a sift_col index (table/f2/col_delta/col_delta.h): an UPDATE that changes more takes the tombstone and a new entry; a speed threshold, the rows are the same
+SIFT_MAX_BM25_FIELDS	the capacity (16) of the field length arrays of a segment (bm25/segment/int.h), at least the fields an index may have (SIFT_MAX_FIELDS, 14, a limit of the registry): a layout bound, no count is refused
+SIFT_UNIQ_SHM_SLOTS	the entries of the shared registry of the staged keys of unique sift_col indexes (col/f2/uniq/shm.h): a stripe with no entry free sends the stage of the transaction to the partition and the entries go; no count is refused
+SLAB_SLOTS	the hashes of the rows of a slab a probe of a unique key keeps (col/f2/uniq/slab.c): a slab with more distinct hashes than half of it is not filtered and is probed as it is; the rows are the same
 RC_SLOTS	the granules a pin of the rescan cache keeps (col/f2/scan/rescan_cache.c): a full pin evicts the oldest; the rows are the same
 RC_MAX_LEAVES	the integer leaves the rescan cache holds for one scan (col/f2/scan/rescan_cache.c): a table with more columns is not served from the cache and scans as before; the rows are the same
-SIFT_KJ_SLOTS	the record pages a block of the connect journal names (col/f2/f2_journal.h): a layout bound of the page, no count is refused
+SIFT_KJ_SLOTS	the record pages a block of the connect journal names (col/f2/journal.h): a layout bound of the page, no count is refused
 SIFT_MAINT_CONNECT_BACKOFF_MAX_US	the pause after a worker could not connect to its database: 60 s at most, a state of the queue that no setting names
 SIFT_PAR_MAX_THREADS	the threads of the pool of a statement, the backend included (core/par/pool.h): the use is capped at max_parallel_workers_per_gather + 1; the rows are the same
-SIFT_ROWLOCK_CHUNK_ENTRIES	the row lock entries of one chunk of dynamic shared memory (table/f2/f2_lock_ovf.h): a full stripe takes another chunk; no count is refused
-SIFT_VM_DIRTY_MAX_INTERVALS	the runs of dirty heap blocks a set of a visibility map pass keeps (col/f2/f2_vac_vm.h): past it the set skips nothing; no count is refused
+SIFT_ROWLOCK_CHUNK_ENTRIES	the row lock entries of one chunk of dynamic shared memory (table/f2/lock/ovf.h): a full stripe takes another chunk; no count is refused
+SIFT_VM_DIRTY_MAX_INTERVALS	the runs of dirty heap blocks a set of a visibility map pass keeps (col/f2/vacuum/vm.h): past it the set skips nothing; no count is refused

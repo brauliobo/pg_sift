@@ -15,12 +15,12 @@
 
 #include "postgres.h"
 
-#include "col/f2/delvec.h"
-#include "col/f2/f2_gbuf.h"
-#include "col/f2/f2_sink.h"
-#include "col/f2/pend_del.h"
+#include "col/f2/del/delvec.h"
+#include "col/f2/gbuf/gbuf.h"
+#include "col/f2/sink/sink.h"
+#include "col/f2/del/pend.h"
 #include "col/granule/granule.h"
-#include "col/granule/granule_filter.h"
+#include "col/granule/filter.h"
 #include "core/par/arena.h"
 #include "core/par/pin.h"
 

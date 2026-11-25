@@ -1,7 +1,7 @@
 /*
- * test/scaling/case_pack.c - col/f2/f2_pack.c: first fit decreasing of the small parts of a partition into the pages that hold them (assign_bins, static: the source is included).
+ * test/scaling/case_pack.c - col/f2/pack.c: first fit decreasing of the small parts of a partition into the pages that hold them (assign_bins, static: the source is included).
  */
-#include "col/f2/f2_pack.c"
+#include "col/f2/pack.c"
 
 #include <stdlib.h>
 

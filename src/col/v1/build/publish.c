@@ -8,7 +8,7 @@
 #ifdef SIFT_TESTING
 #endif
 #include "core/cmp.h"
-#include "col/v1/build/build_int.h"
+#include "col/v1/build/int.h"
 
 typedef struct ColPublish
 {

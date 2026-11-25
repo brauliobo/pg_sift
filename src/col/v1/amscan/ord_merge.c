@@ -5,7 +5,7 @@
 #include "postgres.h"
 
 #include "col/am.h"
-#include "col/v1/gorder.h"
+#include "col/v1/gorder/gorder.h"
 #include "col/v1/amscan/ord_merge_int.h"
 #include "core/cmp.h"
 #include "core/limits.h"

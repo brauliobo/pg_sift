@@ -4,7 +4,7 @@
 #ifndef SIFT_SCOPE_PAIRS_H
 #define SIFT_SCOPE_PAIRS_H
 
-#include "col/scope.h"
+#include "col/scope/scope.h"
 
 /* The first pair of the member in the pairs (ascending by member), n if it has none */
 static inline uint32

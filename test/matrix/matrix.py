@@ -124,8 +124,8 @@ def lit(col):
 
 
 def topn_key_types():
-    """the type names the Top-N scan orders as the rows of its table (int_order_type, table_key_type_ok of src/agg/v6/v6_topn.c), in the order of the source"""
-    src = open(f'{REPO}/src/agg/v6/v6_topn.c').read()
+    """the type names the Top-N scan orders as the rows of its table (int_order_type, table_key_type_ok of src/agg/v6/topn/topn.c), in the order of the source"""
+    src = open(f'{REPO}/src/agg/v6/topn/topn.c').read()
     names = []
     for fn in ('int_order_type', 'table_key_type_ok'):
         body = src[src.index(f'\n{fn}('):]

@@ -83,7 +83,7 @@ gquant() {
 	build -C "$REPO/tools/gquant" SANITIZE=1 OUT="$OUT/gquant" "$OUT/gquant/test" && "$OUT/gquant/test" "${FZ_GQUANT_N:-$SCALE}"
 }
 
-# the header-only structures (core/u64set.h, table/f2/f2_lock_touched.c, table/v1/keyidx.h) against the scans they replace, under ASan and UBSan (test/bench_on)
+# the header-only structures (core/u64set.h, table/f2/lock/touched.c, table/v1/keyidx.h) against the scans they replace, under ASan and UBSan (test/bench_on)
 bench_on() { "$REPO/test/bench_on/run.sh"; }
 
 analyze() {

@@ -1,5 +1,5 @@
 -- A scope whose member is a text, varchar or uuid column is summarized in format major 2 (sift.status: format_major = 2, scopes > 0): the cubes are cut by the scope key as for an integer member, and
--- the member is named by its code in the scope key store of the member column of the pairs relation (col/f2/f2_scope_mem.c). Every answer of the node is compared with the heap
+-- the member is named by its code in the scope key store of the member column of the pairs relation (col/f2/scope/mem.c). Every answer of the node is compared with the heap
 -- (sift.enable_agg = off): counts and sums of a key, the keys of a group, an IN list, the newest rows, a key the pairs lack, the members that are empty, long, differ in case, in a trailing blank or in
 -- an accent, members no pair has, NULL members. The summary follows INSERT, UPDATE, DELETE, an aborted write, VACUUM, the maintenance step, REINDEX and CREATE INDEX CONCURRENTLY, and composes with UNIQUE and INCLUDE.
 CREATE EXTENSION pg_sift;

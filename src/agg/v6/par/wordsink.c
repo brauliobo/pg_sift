@@ -5,8 +5,8 @@
 #include "postgres.h"
 
 #include "agg/v6/par/wordsink.h"
-#include "agg/v6/v6_pipe.h"
-#include "agg/vexpr_str.h"
+#include "agg/v6/pipe.h"
+#include "agg/vexpr/str.h"
 #include "core/par/pool.h"
 
 #define SIGN_FLIP		(UINT64CONST(1) << 63)
