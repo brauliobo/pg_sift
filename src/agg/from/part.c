@@ -30,7 +30,7 @@ part_readable(AggCtx *c, RelOptInfo *leaf)
 static bool
 part_is_table(AggCtx *c, RelOptInfo *leaf)
 {
-	return get_rel_relam(planner_rt_fetch(leaf->relid, c->root)->relid) != HEAP_TABLE_AM_OID;
+	return sift_colsrc_is_table(planner_rt_fetch(leaf->relid, c->root)->relid);
 }
 
 static bool
