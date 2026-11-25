@@ -8,6 +8,7 @@
  */
 #include "postgres.h"
 
+#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/xact.h"
 #include "executor/executor.h"
@@ -102,34 +103,63 @@ sift_tbl_f2_log_guard(Relation rel, uint64 newlen, uint64 oldlen)
 						errhint("Use a primary key REPLICA IDENTITY instead of FULL, keep values above 256 MB out of published sift_table columns, or exclude the table from logical publications.")));
 }
 
+/* Only the replica identity of the old row is formed: the other columns (a blob of any size) are not read into the tuple */
 static HeapTuple
 identity_of_old(Relation rel, TupleTableSlot *old)
 {
-	HeapTuple	full,
-				key;
+	TupleDesc	desc = RelationGetDescr(rel);
+	Bitmapset  *key = NULL;
+	bool	   *isnull;
+	HeapTuple	tuple;
 
 	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_NOTHING)
 		return NULL;
+	if (rel->rd_rel->relreplident != REPLICA_IDENTITY_FULL && bms_is_empty(key = RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_IDENTITY_KEY)))
+		return NULL;
 	slot_getallattrs(old);
-	full = heap_form_tuple(RelationGetDescr(rel), old->tts_values, old->tts_isnull);
-	key = sift_tbl_old_key(rel, full);
-	if (key != full)
-		heap_freetuple(full);
-	return key;
+	isnull = palloc(sizeof(bool) * desc->natts);
+	for (int i = 0; i < desc->natts; i++)
+		isnull[i] = old->tts_isnull[i] || (key != NULL && !bms_is_member(i + 1 - FirstLowInvalidHeapAttributeNumber, key));
+	tuple = heap_form_tuple(desc, old->tts_values, isnull);
+	pfree(isnull);
+	bms_free(key);
+	return tuple;
+}
+
+/* The row of the change record: a value that lives in the TOAST table of another relation is expanded, the record has to stand on its own once that relation is gone */
+static MinimalTuple
+record_row(Relation rel, TupleTableSlot *slot)
+{
+	TupleDesc	desc = RelationGetDescr(rel);
+	Datum	   *values = palloc(sizeof(Datum) * desc->natts);
+	MinimalTuple row;
+
+	slot_getallattrs(slot);
+	memcpy(values, slot->tts_values, sizeof(Datum) * desc->natts);
+	for (int i = 0; i < desc->natts; i++)
+		if (!slot->tts_isnull[i] && TupleDescAttr(desc, i)->attlen == -1 && VARATT_IS_EXTERNAL(DatumGetPointer(values[i])))
+			values[i] = PointerGetDatum(detoast_external_attr((struct varlena *) DatumGetPointer(values[i])));
+#if PG_VERSION_NUM >= 180000
+	row = heap_form_minimal_tuple(desc, values, slot->tts_isnull, 0);
+#else
+	row = heap_form_minimal_tuple(desc, values, slot->tts_isnull);
+#endif
+	for (int i = 0; i < desc->natts; i++)
+		if (values[i] != slot->tts_values[i])
+			pfree(DatumGetPointer(values[i]));
+	pfree(values);
+	return row;
 }
 
 static void
 log_published(Relation rel, SiftTblOp op, TupleTableSlot *newslot, TupleTableSlot *oldslot)
 {
-	bool		free_new = false;
-	MinimalTuple newrow = NULL;
+	MinimalTuple newrow = newslot != NULL ? record_row(rel, newslot) : NULL;
 	HeapTuple	old = oldslot != NULL ? identity_of_old(rel, oldslot) : NULL;
 
-	if (newslot != NULL)
-		newrow = ExecFetchSlotMinimalTuple(newslot, &free_new);
 	sift_tbl_f2_log_guard(rel, newrow != NULL ? newrow->t_len : 0, old != NULL ? old->t_len : 0);
 	sift_tbl_log_key(rel, op, newrow, old);
-	if (free_new)
+	if (newrow != NULL)
 		pfree(newrow);
 	if (old != NULL)
 		heap_freetuple(old);
