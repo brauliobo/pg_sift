@@ -118,6 +118,17 @@ sift_proj_defs_load(Relation rel, const SiftProjColumns *cols, int *n)
 	return defs;
 }
 
+static bool
+def_exists(Oid relid, const char *name)
+{
+	ListCell   *lc;
+
+	foreach(lc, defs_rows(relid))
+		if (strcmp(((DefRow *) lfirst(lc))->name, name) == 0)
+			return true;
+	return false;
+}
+
 static void
 def_insert(Oid relid, const char *name, const char *canonical)
 {
@@ -207,17 +218,10 @@ sift_create_projection(PG_FUNCTION_ARGS)
 	sift_proj_spec_canonical(&spec, &cols, canonical);
 	meta = sift_col_meta_read(rel);
 	refs = sift_manifest_read_projs(rel, &meta, &nrefs);
+	if (def_exists(RelationGetRelid(rel), name))
+		ereport(ERROR, (errcode(ERRCODE_DUPLICATE_OBJECT), errmsg("relation \"%s\" already has a projection \"%s\"", RelationGetRelationName(rel), name)));
 	if (sift_proj_find(refs, nrefs, name) != NULL)
-	{
-		bool		defined = false;
-		ListCell   *lc;
-
-		foreach(lc, defs_rows(RelationGetRelid(rel)))
-			defined |= strcmp(((DefRow *) lfirst(lc))->name, name) == 0;
-		if (defined)
-			ereport(ERROR, (errcode(ERRCODE_DUPLICATE_OBJECT), errmsg("relation \"%s\" already has a projection \"%s\"", RelationGetRelationName(rel), name)));
 		(void) sift_proj_drop(rel, name);
-	}
 	def_insert(RelationGetRelid(rel), name, canonical);
 	sift_proj_create(rel, store, name, &spec, &cols, canonical);
 	relation_close(rel, NoLock);
@@ -250,7 +254,53 @@ state_name(uint8 state)
 	return state == SIFT_PROJ_READY ? "ready" : state == SIFT_PROJ_BUILDING ? "building" : "stale";
 }
 
-/* One row for each projection of each relation the invoker may read that has a definition or a directory entry */
+static void
+put_row(ReturnSetInfo *rsi, Oid relid, const char *name, uint8 kind, uint8 state, const char *spec, const SiftManifestProjRef *ref)
+{
+	Datum		v[8] = {ObjectIdGetDatum(relid), CStringGetTextDatum(name), CStringGetTextDatum(kind_name(kind)), CStringGetTextDatum(state_name(state)),
+		CStringGetTextDatum(spec), Int64GetDatum(ref ? (int64) ref->total_rows : 0), Int64GetDatum(ref ? (int64) ref->total_bytes : 0),
+		Int64GetDatum(ref ? (int64) ref->synced_version : 0)};
+	bool		n[8] = {false, false, false, false, false, false, false, false};
+
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
+}
+
+static void
+list_relation(ReturnSetInfo *rsi, Relation rel)
+{
+	SiftF2Store *store = sift_f2_store_open(rel);
+	SiftProjColumns cols = sift_proj_columns_of_store(rel, store);
+	SiftColMetaPageData meta = sift_col_meta_read(rel);
+	int			nrefs,
+				ndefs;
+	SiftManifestProjRef *refs = sift_manifest_read_projs(rel, &meta, &nrefs);
+	SiftProjDef *defs = sift_proj_defs_load(rel, &cols, &ndefs);
+
+	for (int i = 0; i < nrefs; i++)
+	{
+		const SiftProjDef *def = NULL;
+		char		canonical[SIFT_PROJ_SPEC_MAX] = "";
+
+		for (int k = 0; k < ndefs; k++)
+			if (strcmp(defs[k].name, refs[i].name) == 0 && defs[k].spec_ok && defs[k].hash == refs[i].spec_hash)
+				def = &defs[k];
+		if (def != NULL)
+			sift_proj_spec_canonical(&def->spec, &cols, canonical);
+		put_row(rsi, RelationGetRelid(rel), refs[i].name, refs[i].kind, def != NULL ? refs[i].state : SIFT_PROJ_STALE, canonical, &refs[i]);
+	}
+	for (int k = 0; k < ndefs; k++)
+	{
+		char		canonical[SIFT_PROJ_SPEC_MAX] = "";
+
+		if (sift_proj_find(refs, nrefs, defs[k].name) != NULL)
+			continue;
+		if (defs[k].spec_ok)
+			sift_proj_spec_canonical(&defs[k].spec, &cols, canonical);
+		put_row(rsi, RelationGetRelid(rel), defs[k].name, defs[k].spec.kind, defs[k].spec_ok ? SIFT_PROJ_BUILDING : SIFT_PROJ_STALE, canonical, NULL);
+	}
+}
+
+/* One row for each projection of each relation the invoker may read that has a definition or a directory entry: a definition the directory does not hold yet (a restored, reindexed or reset relation) is building */
 Datum
 sift_projection_list(PG_FUNCTION_ARGS)
 {
@@ -264,53 +314,13 @@ sift_projection_list(PG_FUNCTION_ARGS)
 	{
 		Oid			relid = ((DefRow *) lfirst(lc))->rel;
 		Relation	rel;
-		SiftF2Store *store;
-		SiftProjColumns cols;
-		SiftColMetaPageData meta;
-		SiftManifestProjRef *refs;
-		SiftProjDef *defs;
-		int			nrefs,
-					ndefs;
 
 		if (list_member_oid(seen, relid) || !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
 			continue;
 		seen = lappend_oid(seen, relid);
 		rel = open_target(relid, AccessShareLock);
-		if (pg_class_aclcheck(heap_of(rel), GetUserId(), ACL_SELECT) != ACLCHECK_OK)
-		{
-			relation_close(rel, AccessShareLock);
-			continue;
-		}
-		store = sift_f2_store_open(rel);
-		cols = sift_proj_columns_of_store(rel, store);
-		meta = sift_col_meta_read(rel);
-		refs = sift_manifest_read_projs(rel, &meta, &nrefs);
-		defs = sift_proj_defs_load(rel, &cols, &ndefs);
-		for (int i = 0; i < nrefs; i++)
-		{
-			const SiftProjDef *def = NULL;
-			char		canonical[SIFT_PROJ_SPEC_MAX] = "";
-			Datum		v[8];
-			bool		n[8] = {false, false, false, false, false, false, false, false};
-			uint8		state = refs[i].state;
-
-			for (int k = 0; k < ndefs; k++)
-				if (strcmp(defs[k].name, refs[i].name) == 0 && defs[k].spec_ok && defs[k].hash == refs[i].spec_hash)
-					def = &defs[k];
-			if (def != NULL)
-				sift_proj_spec_canonical(&def->spec, &cols, canonical);
-			else
-				state = SIFT_PROJ_STALE;
-			v[0] = ObjectIdGetDatum(relid);
-			v[1] = CStringGetTextDatum(refs[i].name);
-			v[2] = CStringGetTextDatum(kind_name(refs[i].kind));
-			v[3] = CStringGetTextDatum(state_name(state));
-			v[4] = CStringGetTextDatum(canonical);
-			v[5] = Int64GetDatum((int64) refs[i].total_rows);
-			v[6] = Int64GetDatum((int64) refs[i].total_bytes);
-			v[7] = Int64GetDatum((int64) refs[i].synced_version);
-			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
-		}
+		if (pg_class_aclcheck(heap_of(rel), GetUserId(), ACL_SELECT) == ACLCHECK_OK)
+			list_relation(rsi, rel);
 		relation_close(rel, AccessShareLock);
 	}
 	return (Datum) 0;
