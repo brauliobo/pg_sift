@@ -126,8 +126,9 @@ is_sort_col(const SiftPartSpec *spec, int c)
 
 SiftDictMerge *
 sift_dict_merge_plan(Relation rel, SiftPart *const *parts, int nparts, const SiftPartSpec *spec, const bool *keep_strings,
-					 const SiftColRemap *const *remaps)
+					 const SiftColRemap *const *remaps, Size max_bytes)
 {
+	Size		held = 0;
 	SiftDictMerge *m = palloc0(sizeof(SiftDictMerge));
 	const SiftPartDict **in = palloc(Max(nparts, 1) * sizeof(SiftPartDict *));
 
@@ -146,7 +147,9 @@ sift_dict_merge_plan(Relation rel, SiftPart *const *parts, int nparts, const Sif
 
 			all = pc >= 0 && (in[k] = sift_part_dict_find(sift_part_dicts(rel, parts[k]), pc, SIFT_DICT_KIND_STR)) != NULL;
 		}
-		if (!all)
+		for (int k = 0; all && k < nparts; k++)
+			held += (Size) in[k]->off[in[k]->n] + 2 * sizeof(uint32) * in[k]->n;
+		if (!all || held > max_bytes)
 			continue;
 		merge_column(m, c, in);
 		m->kinds[c] = SIFT_CELL_INT;

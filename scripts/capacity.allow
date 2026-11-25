@@ -62,7 +62,6 @@ blocknumber-sum	src/table/v1/analyze.c	BlockNumber end = numblocks == InvalidBlo
 blocknumber-sum	src/table/v1/feed.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
 blocknumber-sum	src/table/v1/promote.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
 array-append	src/col/granule/part_join.c	secs[nsec++] = (SiftSecInput) {.tag = SEC_GRANULES,.flags = SIFT_SEC_FLAG_REQUIRED,.len = gtotal,.fill = join_fill,.fill_arg = &fill};	one section for each tag of a part joined, at most twelve and the third of them here
-array-append	src/col/f2/compact.c	out[n++] = (SiftExtent) {pages[i], 1};	pages holds at most one packed page for each of the ngens inputs, and the caller made room for 2 * ngens + 1 extents after the ones it holds
 array-append	src/col/granule/granule_enc.c	cnt[nv++] = 0;	nv counts the distinct left parts of the sn <= SIFT_F8_SAMPLE sampled values, and the arrays hold SIFT_F8_SAMPLE
 array-append	src/agg/v6/v6_card.c	d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);	the group expressions are at most SIFT_CARD_MAX_PREDS (checked above) and the array holds that many
 array-append	src/agg/v6/v6_vexpr.c	if ((n->args[n->nargs++] = args[i]) == NULL)	nargs is checked against SIFT_VEXPR_MAX_ARGS before the loop

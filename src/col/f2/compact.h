@@ -79,9 +79,10 @@ typedef struct SiftDictMerge
 /* Off, a compaction reads the strings of every column (what the tests compare the remapped codes with) */
 extern PGDLLIMPORT bool sift_compact_dict_remap;
 
-/* keep_strings (per leaf, NULL for none): the columns whose strings the compaction reads as strings, because its host writes values into them */
+/* keep_strings (per leaf, NULL for none): the columns whose strings the compaction reads as strings, because its host writes values into them. The dictionaries of the columns that are merged
+ * hold at most max_bytes together (what the parts' dictionaries and the maps of their codes take): the columns after that are read as strings */
 extern SiftDictMerge *sift_dict_merge_plan(Relation rel, SiftPart *const *parts, int nparts, const SiftPartSpec *spec, const bool *keep_strings,
-											const SiftColRemap *const *remaps);
+											const SiftColRemap *const *remaps, Size max_bytes);
 extern SiftPartSpec sift_dict_merge_spec(const SiftDictMerge *m, const SiftPartSpec *spec);
 extern void sift_dict_merge_finish(const SiftDictMerge *m, const SiftRowBuf *rb, SiftColIn *cols, SiftCompactResult *res);
 
