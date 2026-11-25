@@ -1,0 +1,136 @@
+-- An UPDATE of an indexed column of a row of a published part is a column delta record (the part is not rewritten, no row goes to the buffer). A predicate, a bound or a sort on the column
+-- that the UPDATE changed must be decided on the new value, not on the zones and time bounds of the part: a value moved past the stored least or greatest, into a range from outside it and out
+-- of it. Every query runs on a plain heap table with a sift_col index (the index scan and SiftAggV6), on a sift_table and on a partitioned heap table with the index on the parent, and
+-- the rows must be those of the heap twin the same UPDATEs ran on (no index, no sift settings).
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+
+CREATE TABLE t (id int NOT NULL, ts timestamp NOT NULL, v int);
+CREATE TABLE th (LIKE t);
+CREATE TABLE s (id int PRIMARY KEY, ts timestamp NOT NULL, v int) USING sift_table;
+CREATE TABLE p (id int NOT NULL, tenant int NOT NULL, ts timestamp NOT NULL, v int) PARTITION BY HASH (tenant);
+CREATE TABLE p_0 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+CREATE TABLE p_1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+CREATE TABLE ph (LIKE p);
+CREATE TABLE k (id int NOT NULL, doc jsonb, tag text, v int);
+CREATE TABLE kh (LIKE k);
+
+INSERT INTO t SELECT i, timestamp '2025-01-01' + i * interval '1 second', i % 50 FROM generate_series(1, 20000) i;
+INSERT INTO th SELECT * FROM t;
+INSERT INTO s SELECT * FROM t;
+INSERT INTO p SELECT i, i % 40, timestamp '2025-01-01' + i * interval '1 second', i % 50 FROM generate_series(1, 12000) i;
+INSERT INTO ph SELECT * FROM p;
+INSERT INTO k SELECT i, jsonb_build_object('n', i % 10), 'tag' || (i % 3), i % 50 FROM generate_series(1, 20000) i;
+INSERT INTO kh SELECT * FROM k;
+CREATE INDEX k_c ON k USING sift_col (id, doc, tag, v) WITH (paths = 'doc.flag text, doc.n int');
+CREATE INDEX t_c ON t USING sift_col (id, ts, v) WITH (order_array_columns = 'ts');
+CREATE INDEX p_c ON p USING sift_col (id, tenant, ts, v) WITH (order_array_columns = 'ts', order_array_group = 'tenant');
+VACUUM (FREEZE, ANALYZE) t, th, p, ph, k, kh;
+ANALYZE s;
+SELECT busy FROM sift.table_maintain('s');
+
+-- the updates, each one a column delta: later than every stored ts, earlier than every one, into the middle of the table from outside it, and a v past the stored greatest
+CREATE FUNCTION patch(rel text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('UPDATE %s SET ts = timestamp ''2030-01-01'' + id * interval ''1 second'' WHERE id %% 3500 = 0', rel);
+	EXECUTE format('UPDATE %s SET ts = timestamp ''2020-01-01'' + id * interval ''1 second'' WHERE id %% 4999 = 0', rel);
+	EXECUTE format('UPDATE %s SET ts = timestamp ''2025-01-01 02:00:00'' + id * interval ''1 millisecond'' WHERE id %% 6001 = 0', rel);
+	EXECUTE format('UPDATE %s SET v = 1000 + id %% 7 WHERE id %% 2503 = 0', rel);
+END $$;
+SELECT patch(r) FROM unnest(ARRAY['t', 'th', 's', 'p', 'ph']) r;
+-- a document that gains a key no stored one has, and a string no stored one is
+UPDATE k SET doc = jsonb_build_object('n', 1, 'flag', 'a') WHERE id % 3500 = 0;
+UPDATE kh SET doc = jsonb_build_object('n', 1, 'flag', 'a') WHERE id % 3500 = 0;
+UPDATE k SET tag = 'zzz' || id WHERE id % 4999 = 0;
+UPDATE kh SET tag = 'zzz' || id WHERE id % 4999 = 0;
+SELECT dirty_rows, l2_parts FROM sift.status('t_c');
+
+-- 'same' when the rows of q on rel are those of q on twin, in order; 'DIFFERS qN', or 'no scan qN' when the plan is not the one the mode asks for
+CREATE FUNCTION chk(n int, q text, rel text, twin text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', (mode = 'agg')::text, true);
+	PERFORM set_config('sift.agg_force', (mode = 'agg')::text, true);
+	PERFORM set_config('enable_seqscan', (mode = 'heap' OR rel = 's')::text, true);
+	PERFORM set_config('enable_indexscan', (mode = 'index')::text, true);
+	PERFORM set_config('enable_indexonlyscan', (mode = 'index')::text, true);
+	PERFORM set_config('enable_bitmapscan', 'false', true);
+	PERFORM set_config('enable_sort', (mode <> 'agg')::text, true);
+	FOR pl IN EXECUTE 'EXPLAIN (COSTS off) ' || format(q, rel) LOOP
+		used := used OR (mode = 'agg' AND pl LIKE '%Custom Scan (SiftAgg%') OR (mode = 'index' AND pl LIKE '%Index%Scan using%') OR rel = 's';
+	END LOOP;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || format(q, rel) || ') r) x' INTO ra;
+	PERFORM set_config('sift.enable_agg', 'false', true);
+	PERFORM set_config('enable_seqscan', 'true', true);
+	PERFORM set_config('enable_indexscan', 'true', true);
+	PERFORM set_config('enable_indexonlyscan', 'true', true);
+	PERFORM set_config('enable_sort', 'true', true);
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || format(q, twin) || ') r) x' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS q' || n WHEN NOT used THEN 'no scan q' || n ELSE 'same' END;
+END $$;
+
+CREATE TABLE q (n int, q text);
+INSERT INTO q VALUES
+	-- a value later than the greatest stored, earlier than the least, a point on a moved value, a range that the moved values enter, one they leave, the greatest and least of a range
+	(1, 'SELECT count(*) FROM %1$s WHERE ts > timestamp ''2029-01-01'''),
+	(2, 'SELECT count(*) FROM %1$s WHERE ts < timestamp ''2024-01-01'''),
+	(3, 'SELECT count(*), sum(id) FROM %1$s WHERE ts = timestamp ''2030-01-01 00:58:20'''),
+	(4, 'SELECT count(*) FROM %1$s WHERE ts BETWEEN timestamp ''2029-01-01'' AND timestamp ''2031-01-01'''),
+	(5, 'SELECT count(*), sum(v) FROM %1$s WHERE ts BETWEEN timestamp ''2025-01-01 02:00:00'' AND timestamp ''2025-01-01 02:00:20'''),
+	(6, 'SELECT count(*), sum(v) FROM %1$s WHERE ts BETWEEN timestamp ''2025-01-01 01:23:00'' AND timestamp ''2025-01-01 01:24:00'''),
+	(7, 'SELECT count(*) FROM %1$s WHERE ts IN (timestamp ''2030-01-01 00:58:20'', timestamp ''2025-01-01 00:00:10'', timestamp ''2020-01-01 01:23:19'')'),
+	(8, 'SELECT count(*), sum(v) FROM %1$s WHERE ts >= timestamp ''2025-01-01 05:00:00'''),
+	(9, 'SELECT count(*), sum(v) FROM %1$s WHERE ts <= timestamp ''2025-01-01 05:00:00'''),
+	-- a v past the stored greatest, with a predicate on ts and without
+	(10, 'SELECT count(*), sum(v) FROM %1$s WHERE v > 999'),
+	(11, 'SELECT count(*), sum(id) FROM %1$s WHERE v = 1004'),
+	(12, 'SELECT count(*), sum(v) FROM %1$s WHERE v > 49 AND ts > timestamp ''2025-01-01 01:00:00'''),
+	(13, 'SELECT sum(v), min(ts), max(ts) FROM %1$s'),
+	(14, 'SELECT count(*) FROM %1$s WHERE ts > timestamp ''2029-01-01'' AND v < 10'),
+	-- the top and the bottom of an order: the moved values are the first
+	(15, 'SELECT id, ts FROM %1$s ORDER BY ts DESC, id LIMIT 5'),
+	(16, 'SELECT id, ts FROM %1$s ORDER BY ts, id LIMIT 5'),
+	(17, 'SELECT id, ts FROM %1$s WHERE v < 10 ORDER BY ts DESC, id LIMIT 5'),
+	(18, 'SELECT id, ts FROM %1$s WHERE ts > timestamp ''2025-01-01 05:00:00'' ORDER BY ts, id LIMIT 4'),
+	(19, 'SELECT id, ts FROM %1$s WHERE ts BETWEEN timestamp ''2025-01-01 01:23:00'' AND timestamp ''2025-01-01 01:24:00'' ORDER BY ts DESC, id LIMIT 3'),
+	(20, 'SELECT id, v FROM %1$s ORDER BY v DESC, id LIMIT 5'),
+	(21, 'SELECT id, ts FROM %1$s WHERE ts > timestamp ''2029-01-01'' ORDER BY ts, id LIMIT 10'),
+	-- no later key orders the equal rows: a granule whose stored zone cannot beat the worst row kept is not read, unless a patch of it can
+	(22, 'SELECT v FROM %1$s ORDER BY v DESC LIMIT 5'),
+	(23, 'SELECT ts FROM %1$s ORDER BY ts LIMIT 5'),
+	(24, 'SELECT ts FROM %1$s ORDER BY ts DESC LIMIT 8'),
+	(25, 'SELECT id, ts FROM %1$s WHERE ts < timestamp ''2029-01-01'' ORDER BY ts DESC, id LIMIT 5'),
+	(26, 'SELECT id, v FROM %1$s WHERE v < 1000 ORDER BY v DESC, id LIMIT 5'),
+	(27, 'SELECT id, v, ts FROM %1$s WHERE id > 5 AND ts > timestamp ''2025-01-01'' ORDER BY v DESC LIMIT 5'),
+	(28, 'SELECT id, v, ts FROM %1$s WHERE id > 5 AND v >= 0 ORDER BY ts DESC LIMIT 5'),
+	(29, 'SELECT id, v, ts FROM %1$s WHERE id > 5 AND v >= 0 ORDER BY ts LIMIT 5');
+
+CREATE TABLE pq (n int, q text);
+INSERT INTO pq VALUES
+	(31, 'SELECT count(*) FROM %1$s WHERE ts > timestamp ''2029-01-01'''),
+	(32, 'SELECT count(*), sum(v) FROM %1$s WHERE ts < timestamp ''2024-01-01'''),
+	(33, 'SELECT id, ts FROM %1$s ORDER BY ts DESC, id LIMIT 5'),
+	(34, 'SELECT id, ts FROM %1$s WHERE tenant = 20 ORDER BY ts DESC, id LIMIT 5'),
+	(35, 'SELECT id, ts FROM %1$s WHERE tenant = 20 ORDER BY ts, id LIMIT 5'),
+	(36, 'SELECT id, ts FROM %1$s WHERE tenant = 20 AND ts BETWEEN timestamp ''2025-01-01 01:00:00'' AND timestamp ''2025-01-01 03:00:00'' ORDER BY ts DESC, id LIMIT 5');
+
+CREATE TABLE kq (n int, q text);
+INSERT INTO kq VALUES
+	(41, 'SELECT count(*) FROM %1$s WHERE doc ? ''flag'''),
+	(43, 'SELECT count(*) FROM %1$s WHERE tag = ''zzz4999'''),
+	(44, 'SELECT count(*) FROM %1$s WHERE tag IN (''zzz4999'', ''zzz9998'', ''tag1'')');
+
+SELECT rel, mode, result, count(*) FROM (
+	SELECT 't' AS rel, mode, chk(n, q, 't', 'th', mode) AS result FROM q, unnest(ARRAY['agg', 'index']) mode
+	UNION ALL SELECT 's', mode, chk(n, q, 's', 'th', mode) FROM q, unnest(ARRAY['agg', 'heap']) mode
+	UNION ALL SELECT 'p', mode, chk(n, pq.q, 'p', 'ph', mode) FROM pq, unnest(ARRAY['agg', 'index']) mode WHERE mode = 'index' OR n < 33
+	UNION ALL SELECT 'k', mode, chk(n, kq.q, 'k', 'kh', mode) FROM kq, unnest(ARRAY['agg', 'index']) mode WHERE mode = 'agg' OR n > 41
+) r GROUP BY rel, mode, result ORDER BY rel, mode, result;
+
+DROP FUNCTION patch(text), chk(int, text, text, text, text);
+DROP TABLE q, pq, kq, t, th, s, p, ph, k, kh;
+DROP EXTENSION pg_sift CASCADE;
