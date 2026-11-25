@@ -358,6 +358,7 @@ sift_tbl_f2_scan_set_snapshot(TableScanDesc scan, Snapshot snapshot)
 
 	s->base.rs_snapshot = snapshot;
 	sift_tbl_f2_vis_begin(&s->vis, s->base.rs_rd, snapshot);
+	sift_tbl_f2_predicate_scan(s->base.rs_rd, snapshot);
 }
 
 static void
