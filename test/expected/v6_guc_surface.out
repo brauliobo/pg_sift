@@ -45,7 +45,7 @@ ORDER BY name COLLATE "C";
  sift.async_maintenance      | on         | on
  sift.backend_cache_kb       | 16384      | 16384
  sift.count_refusals         | off        | off
- sift.dead_rewrite_pct       | 15         | 15
+ sift.dead_rewrite_pct       | 10         | 10
  sift.enable_agg             | on         | on
  sift.enable_col_scan        | on         | on
  sift.enable_scan            | on         | on

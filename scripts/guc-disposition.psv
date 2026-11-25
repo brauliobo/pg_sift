@@ -19,7 +19,7 @@ sift.vacuum_rewrite_limit|KEEP|int;0;0;INT_MAX;PGC_SUSET|Spec 19 2.2 #5
 sift.async_maintenance|KEEP|bool;true;;;PGC_SUSET|Spec 19 2.2 #6
 sift.maintenance_naptime|KEEP|int;2000;200;60000;PGC_SIGHUP|Spec 19 2.2 #7
 sift.maintenance_cost_delay|KEEP|int;0;0;100;PGC_SUSET|Spec 19 2.2 #8
-sift.dead_rewrite_pct|KEEP|int;15;1;100;PGC_SUSET|Spec 19 2.2 #9
+sift.dead_rewrite_pct|KEEP|int;10;1;100;PGC_SUSET|Spec 19 2.2 #9
 sift.standby_conflicts|KEEP|bool;true;;;PGC_SUSET|Spec 19 2.2 #10
 sift.on_corruption|KEEP|enum;;;;PGC_SUSET|Spec 19 2.2 #11 (quarantine, error; default quarantine)
 sift.log_min_duration|KEEP|int;1000;-1;INT_MAX;PGC_SUSET|Spec 19 2.2 #12

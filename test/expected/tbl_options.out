@@ -193,14 +193,14 @@ SELECT name, value, source, default_value FROM sift.table_options('ot3') WHERE n
        name       | value | source  | default_value 
 ------------------+-------+---------+---------------
  compression      |       | default | 
- dead_rewrite_pct | 15    | default | 15
+ dead_rewrite_pct | 10    | default | 10
 (2 rows)
 
 SET sift.dead_rewrite_pct = 25;
 SELECT name, value, source, default_value FROM sift.table_options('ot3') WHERE name = 'dead_rewrite_pct';
        name       | value | source  | default_value 
 ------------------+-------+---------+---------------
- dead_rewrite_pct | 25    | setting | 15
+ dead_rewrite_pct | 25    | setting | 10
 (1 row)
 
 SELECT name, value, source, default_value FROM sift.table_options('ot2') WHERE name = 'dead_rewrite_pct';
@@ -224,7 +224,7 @@ SELECT sift.table_get_option('ot3', 'dead_rewrite_pct');
 SELECT name, value, source, default_value FROM sift.table_options('ot3') WHERE name = 'dead_rewrite_pct';
        name       | value | source | default_value 
 ------------------+-------+--------+---------------
- dead_rewrite_pct | 40    | table  | 15
+ dead_rewrite_pct | 40    | table  | 10
 (1 row)
 
 SELECT sift.table_reset_option('ot3', 'dead_rewrite_pct');
@@ -243,7 +243,7 @@ RESET sift.dead_rewrite_pct;
 SELECT sift.table_get_option('ot3', 'dead_rewrite_pct');
  table_get_option 
 ------------------
- 15
+ 10
 (1 row)
 
 DROP TABLE ot3;

@@ -6,7 +6,7 @@
 #include "col/f2/compact.h"
 #include "core/f2/col_delta_anchor.h"
 
-int			sift_dead_rewrite_pct = 15;
+int			sift_dead_rewrite_pct = 10;
 
 /* A part the long column-delta chain of its partition has records for: the host's own list (SiftCompactChain), as the chain is the partition's and no part holds its address */
 static bool
