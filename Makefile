@@ -546,6 +546,7 @@ TESTING_REGRESS += errors_hints
 TESTING_REGRESS += ext_recreate
 TESTING_REGRESS += extlock_errors
 TESTING_REGRESS += f2_check_heapallindexed
+TESTING_REGRESS += f2_col_delta_unnest_pull
 TESTING_REGRESS += f2_default_nan_scan
 TESTING_REGRESS += f2_proj_rebuild
 TESTING_REGRESS += f2_pull_prune
