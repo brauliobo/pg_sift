@@ -29,10 +29,13 @@
 /*
  * The record for the row at target (its address then is target->tid) whose new address is new_tid and whose leaves in leaf[0..nleaf) now hold cell[]: the bytes, 0 when they do not fit. kinds:
  * the kind of each leaf of the index; key_absent: per changed leaf, when the leaf is of a top-level key of a document and the document has none (NULL: none is). subxid: the writer is a
- * subtransaction; dirty_scope: a leaf a scope summary of the index reads is among them.
+ * subtransaction; time_flags: SIFT_CDENT_FLAG_HAS_TIME0/1 for each time column of the index among the leaves (sift_cdi_time_flags).
  */
-extern uint32 sift_cdi_encode(uint8 *dst, uint32 cap, const SiftColDeltaTarget *target, TransactionId xmin, CommandId cid, bool subxid, bool dirty_scope, uint64 new_tid, const SiftCellKind *kinds,
+extern uint32 sift_cdi_encode(uint8 *dst, uint32 cap, const SiftColDeltaTarget *target, TransactionId xmin, CommandId cid, bool subxid, uint8 time_flags, uint64 new_tid, const SiftCellKind *kinds,
 							  const int16 *leaf, const SiftCell *cell, const bool *key_absent, int nleaf);
+
+/* The time flags of a record that changes leaf[0..nleaf): the time bounds of the parts do not hold for a time column a patch changes (time_cols: 1 + the leaf of each, 0: none) */
+extern uint8 sift_cdi_time_flags(const int *time_cols, const int16 *leaf, int nleaf);
 
 /* ---- the address changes of a chain ---- */
 

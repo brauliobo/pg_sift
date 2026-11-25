@@ -8,12 +8,25 @@
 
 /* ---- the records ---- */
 
+uint8
+sift_cdi_time_flags(const int *time_cols, const int16 *leaf, int nleaf)
+{
+	uint8		flags = 0;
+
+	for (int i = 0; i < nleaf; i++)
+	{
+		flags |= time_cols[0] == leaf[i] + 1 ? SIFT_CDENT_FLAG_HAS_TIME0 : 0;
+		flags |= time_cols[1] == leaf[i] + 1 ? SIFT_CDENT_FLAG_HAS_TIME1 : 0;
+	}
+	return flags;
+}
+
 uint32
-sift_cdi_encode(uint8 *dst, uint32 cap, const SiftColDeltaTarget *target, TransactionId xmin, CommandId cid, bool subxid, bool dirty_scope, uint64 new_tid, const SiftCellKind *kinds,
+sift_cdi_encode(uint8 *dst, uint32 cap, const SiftColDeltaTarget *target, TransactionId xmin, CommandId cid, bool subxid, uint8 time_flags, uint64 new_tid, const SiftCellKind *kinds,
 				const int16 *leaf, const SiftCell *cell, const bool *key_absent, int nleaf)
 {
 	SiftColDeltaCol cols[SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR];
-	uint8		flags = SIFT_CDENT_FLAG_LEAF_ADDR | (subxid ? SIFT_CDENT_FLAG_SUBXID : 0) | (dirty_scope ? SIFT_CDENT_FLAG_DIRTY_SCOPE : 0);
+	uint8		flags = SIFT_CDENT_FLAG_LEAF_ADDR | time_flags | (subxid ? SIFT_CDENT_FLAG_SUBXID : 0);
 	int			n = 0;
 
 	if (nleaf + 1 > SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR)

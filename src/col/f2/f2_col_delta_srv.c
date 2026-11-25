@@ -401,7 +401,7 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 		return false;
 	target = (SiftColDeltaTarget) {.part_gen = loc.gb->pin->part_gen,.granule_id = loc.gb->granule_id,.row_ordinal = loc.row,.tid = old_tid};
 	key_absent_of(f, &res.leaves, absent);
-	len = sift_cdi_encode(rec, sizeof(rec), &target, GetCurrentTransactionId(), GetCurrentCommandId(false), GetCurrentTransactionNestLevel() > 1, false, sift_f2_tid(&newt->t_self), f->kinds,
+	len = sift_cdi_encode(rec, sizeof(rec), &target, GetCurrentTransactionId(), GetCurrentCommandId(false), GetCurrentTransactionNestLevel() > 1, sift_cdi_time_flags(f->spec.time_cols, res.leaves.leaf, res.leaves.nchanged), sift_f2_tid(&newt->t_self), f->kinds,
 						  res.leaves.leaf, res.leaves.cell, absent, res.leaves.nchanged);
 	in = (SiftF2AdmitIn) {.tracked = true,.pred = res.pred,.nchanged_leaves = res.leaves.nchanged,.total_leaves = f->ncols,.payload_bytes = len,
 		.chain_pages = ent->chain_npages,.staged_pages = stage_pages(st, ent)};
