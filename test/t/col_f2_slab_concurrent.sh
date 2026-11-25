@@ -13,8 +13,10 @@ GATE=7300
 node_init sc 24 "autovacuum = off
 sift.log_min_duration = 0"
 node_start sc || bail "start failed"
-TESTING=$(sql sc "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_phase_gate'")
-sql sc "CREATE EXTENSION $([[ $TESTING == 1 ]] && echo pg_sift_test || echo pg_sift) CASCADE" "CREATE TABLE facts (id bigint, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
+sql sc "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
+TESTING=$(sql sc "LOAD 'pg_sift'" "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_phase_gate'")
+if [[ $TESTING == 1 ]]; then sql sc "CREATE EXTENSION pg_sift_test" >/dev/null || bail "test extension failed"; fi
+sql sc "CREATE TABLE facts (id bigint, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
 	"CREATE SEQUENCE facts_seq START 30001" \
 	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 40) FROM generate_series(1, 30000) g" \
 	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM facts" >/dev/null || bail "setup failed"
