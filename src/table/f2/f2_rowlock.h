@@ -83,6 +83,7 @@ typedef struct SiftRowLockResult
 	CommandId	cid;
 	uint64		updated_tid;
 	bool		stripe_full;
+	bool		added;			/* the (sub)transaction did not hold the row before: the request made it a holder */
 } SiftRowLockResult;
 
 /* Takes the lock of the mode on the row of the partition for the current (sub)transaction unless it conflicts: the caller waits for the xid of a TM_BeingModified result and asks again */
