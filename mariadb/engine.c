@@ -235,6 +235,8 @@ check_opts(const SiftRel *sr)
 
 	MemoryContextSwitchTo(cx);
 	sift_analyzer_config_from_options(&sr->opts, &acfg);
+	if (acfg.stemmer == SIFT_STEM_TS)
+		sift_ts_open(acfg.tsconfig, cx);
 	op_end(cx);
 }
 
