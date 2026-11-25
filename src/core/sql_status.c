@@ -357,7 +357,8 @@ tally_partitions(Relation rel, F2Tally *t)
 			t->l1_parts += pd[p].level == 1;
 			t->l2_parts += pd[p].level >= 2;
 			t->cold_parts += (pd[p].flags & SIFT_PART_FLAG_TIME_COLD) != 0;
-			part_sizes(sift_part_open_desc(rel, &pd[p], (uint32) e->part_id), t);
+			if (!(pd[p].ext_flags & SIFT_PART_EXT_REMOTE))
+				part_sizes(sift_part_open_desc(rel, &pd[p], (uint32) e->part_id), t);
 		}
 		partition_due(t, e, pd, np);
 		MemoryContextSwitchTo(old);

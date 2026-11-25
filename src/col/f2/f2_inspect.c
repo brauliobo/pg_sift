@@ -40,6 +40,8 @@ typedef enum SizeCat
 	CAT_TID_INDEX,
 	CAT_DELVEC_PENDDEL,
 	CAT_L0_SLAB,
+	CAT_COL_DELTA,
+	CAT_DIRECTORIES,
 	CAT_MANIFEST_META,
 	CAT_FSM_FREE,
 	CAT_PAGE_SLACK,
@@ -48,7 +50,7 @@ typedef enum SizeCat
 
 static const char *const cat_names[CAT_COUNT] = {
 	"granule_tid", "granule_int", "granule_float", "granule_num", "granule_str", "granule_uuid", "granule_exc", "dicts", "zones_tstride", "preagg", "scope_meta", "tid_index",
-	"delvec_penddel", "l0_slab", "manifest_meta", "fsm_free", "page_slack"
+	"delvec_penddel", "l0_slab", "col_delta", "directories", "manifest_meta", "fsm_free", "page_slack"
 };
 
 static SizeCat
@@ -132,6 +134,13 @@ page_cat(uint16 type)
 			return CAT_DELVEC_PENDDEL;
 		case SIFT_PT_L0_SLAB:
 			return CAT_L0_SLAB;
+		case SIFT_PT_COL_DELTA:
+		case SIFT_PT_COL_DELTA_DIR:
+			return CAT_COL_DELTA;
+		case SIFT_PT_TIERDIR:
+		case SIFT_PT_PROJDIR:
+		case SIFT_PT_KEYJRNL:
+			return CAT_DIRECTORIES;
 		default:
 			return CAT_MANIFEST_META;
 	}
@@ -146,9 +155,12 @@ census(Relation rel, uint64 *bytes)
 
 	for (BlockNumber b = 0; b < nblocks; b++)
 	{
-		Buffer		buf = sift_blk_read(rel, b, BUFFER_LOCK_SHARE);
-		Page		page = BufferGetPage(buf);
+		Buffer		buf;
+		Page		page;
 
+		CHECK_FOR_INTERRUPTS();
+		buf = sift_blk_read(rel, b, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
 		if (PageIsNew(page) || !sift_page_layout_ok((const char *) page) || SiftPageGetOpaque(page)->type == SIFT_PT_FREE)
 			bytes[CAT_FSM_FREE] += BLCKSZ;
 		else if (SiftPageGetOpaque(page)->type == SIFT_PT_DATA)
@@ -174,10 +186,13 @@ granule_bytes(Relation rel, const SiftPart *part, uint64 *bytes, uint64 *leaf, i
 	for (uint32 g = 0; g < part->hdr.ngranules; g++)
 	{
 		SiftGranuleDesc gd;
-		char	   *rec = sift_part_read_granule(rel, part, g, &gd);
-		SiftGranuleView v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
+		char	   *rec;
+		SiftGranuleView v;
 		uint64		chunks = 0;
 
+		CHECK_FOR_INTERRUPTS();
+		rec = sift_part_read_granule(rel, part, g, &gd);
+		v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
 		for (int i = 0; i < v.hdr->nchunks; i++)
 		{
 			SiftChunk	c;
@@ -238,18 +253,15 @@ size_census(Relation rel, const SiftColMetaPageData *meta, uint64 *bytes, uint64
 		SiftPartDesc *parts = sift_manifest_read_parts(rel, &all.entries[i], &n);
 
 		for (int j = 0; j < n; j++)
-		{
-			SiftPart   *part = sift_part_open_desc(rel, &parts[j], (uint32) all.entries[i].part_id);
-
-			live_pages += stream_bytes(rel, part, bytes, leaf, nleaf);
-		}
+			if (!(parts[j].ext_flags & SIFT_PART_EXT_REMOTE))
+				live_pages += stream_bytes(rel, sift_part_open_desc(rel, &parts[j], (uint32) all.entries[i].part_id), bytes, leaf, nleaf);
 	}
 	scopes = sift_manifest_read_scopes(rel, meta, &nscopes);
 	for (int i = 0; i < nscopes; i++)
 		if ((scopes[i].flags & SIFT_SCOPEREF_ACTIVE) && scopes[i].header_blk != InvalidBlockNumber)
 			live_pages += stream_bytes(rel, sift_part_open(rel, scopes[i].header_blk, scopes[i].meta_gen, 0), bytes, leaf, nleaf);
 	data_pages = census(rel, bytes);
-	bytes[CAT_FSM_FREE] += (data_pages - live_pages) * BLCKSZ;
+	bytes[CAT_FSM_FREE] += (data_pages - Min(data_pages, live_pages)) * BLCKSZ;
 	return (uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ;
 }
 

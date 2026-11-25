@@ -44,7 +44,7 @@ SELECT sum(bytes) = pg_relation_size('ev_idx') AS adds_up, count(*) AS categorie
 FROM sift.index_size_breakdown('ev_idx');
  adds_up | categories | waste_under_5_pct | per_row 
 ---------+------------+-------------------+---------
- t       |         17 | t                 | t
+ t       |         19 | t                 | t
 (1 row)
 
 SELECT category FROM sift.index_size_breakdown('ev_idx') WHERE bytes > 0 AND category LIKE 'granule%' ORDER BY category;
