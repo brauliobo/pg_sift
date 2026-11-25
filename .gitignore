@@ -20,6 +20,8 @@ tmp_check_iso/
 core
 core.[0-9]*
 !/src/core/
+!/test/**/core/
+!/scripts/focus/core/
 vgcore.*
 perf.data*
 .idea/
