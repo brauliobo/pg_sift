@@ -380,8 +380,8 @@ SELECT name, ti_plan(q) FROM ti_q WHERE name IN ('group', 'filter', 'count') ORD
   name  |                            ti_plan                            
 --------+---------------------------------------------------------------
  count  | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid tok3'::text; 
- filter | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid'::text;      
- group  | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid'::text;      
+ filter | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid'::text; 
+ group  | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid'::text; 
 (3 rows)
 
 SELECT name, (ti_check(q)).* FROM ti_q ORDER BY name;
