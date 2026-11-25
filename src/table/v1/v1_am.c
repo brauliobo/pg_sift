@@ -15,7 +15,6 @@
 #include "access/htup_details.h"
 #include "access/multixact.h"
 #include "access/tableam.h"
-#include "access/detoast.h"
 #include "access/xact.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
@@ -59,41 +58,6 @@ tbl_slot_callbacks(Relation rel)
 	return sift_tbl_slot_ops();
 }
 
-/* The values of slot: its own, or a copy with every external TOAST value expanded (no TOAST table exists for this AM) */
-static Datum *
-slot_values(TupleDesc desc, TupleTableSlot *slot)
-{
-	Datum	   *values;
-
-	slot_getallattrs(slot);
-	values = slot->tts_values;
-	for (int i = 0; i < desc->natts; i++)
-		if (!slot->tts_isnull[i] && TupleDescAttr(desc, i)->attlen == -1 &&
-			VARATT_IS_EXTERNAL(DatumGetPointer(values[i])))
-		{
-			if (values == slot->tts_values)
-			{
-				values = palloc(desc->natts * sizeof(Datum));
-				memcpy(values, slot->tts_values, desc->natts * sizeof(Datum));
-			}
-			values[i] = PointerGetDatum(detoast_external_attr((struct varlena *) DatumGetPointer(values[i])));
-		}
-	return values;
-}
-
-/* The row of slot as a MinimalTuple */
-static MinimalTuple
-form_mtuple(Relation rel, TupleTableSlot *slot)
-{
-	TupleDesc	desc = RelationGetDescr(rel);
-	Datum	   *values = slot_values(desc, slot);
-	MinimalTuple mtup = sift_tbl_form_minimal_tuple(desc, values, slot->tts_isnull);
-
-	if (values != slot->tts_values)
-		pfree(values);
-	return mtup;
-}
-
 static TransactionId
 insert_xmin(SiftTamOptions options)
 {
@@ -105,18 +69,20 @@ insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions opt
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 	MinimalTuple mtup;
-	bool		logical;
+	bool		logical,
+				free_mtup;
 
 	sift_tbl_ensure_init(rel);
 	sift_tbl_layout_ready(rel, st);
 	logical = sift_tbl_check_publication(rel);
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-	mtup = form_mtuple(rel, slot);
+	mtup = sift_tbl_detoast_slot_tuple(rel, slot, &free_mtup);
 	sift_tbl_append(rel, st, mtup, insert_xmin(options), cid, token, &slot->tts_tid);
 	slot->tts_tableOid = RelationGetRelid(rel);
 	if (logical && token == 0)
 		sift_tbl_log_change(rel, SIFT_TBL_OP_INSERT, mtup, NULL);
-	heap_free_minimal_tuple(mtup);
+	if (free_mtup)
+		heap_free_minimal_tuple(mtup);
 	pgstat_count_heap_insert(rel, 1);
 }
 
@@ -137,7 +103,7 @@ insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions op
 	if (!sift_tbl_load_wanted(rel, st, (options & TABLE_INSERT_FROZEN) != 0))
 		return false;
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-	values = slot_values(RelationGetDescr(rel), slot);
+	values = sift_tbl_slot_values(RelationGetDescr(rel), slot);
 	sift_tbl_load_row(rel, st, values, slot->tts_isnull, cid, &slot->tts_tid);
 	slot->tts_tableOid = RelationGetRelid(rel);
 	if (values != slot->tts_values)
@@ -171,10 +137,12 @@ tbl_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, uint32 specTo
 		pgstat_count_heap_delete(rel);
 	else if (sift_tbl_check_publication(rel))
 	{
-		MinimalTuple mtup = form_mtuple(rel, slot);
+		bool		free_mtup;
+		MinimalTuple mtup = sift_tbl_detoast_slot_tuple(rel, slot, &free_mtup);
 
 		sift_tbl_log_change(rel, SIFT_TBL_OP_INSERT, mtup, NULL);
-		heap_free_minimal_tuple(mtup);
+		if (free_mtup)
+			heap_free_minimal_tuple(mtup);
 	}
 }
 
@@ -385,7 +353,8 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 	}
 	if (result == TM_Ok)
 	{
-		MinimalTuple mtup = form_mtuple(rel, slot);
+		bool		free_mtup;
+		MinimalTuple mtup = sift_tbl_detoast_slot_tuple(rel, slot, &free_mtup);
 		bool		hot = index_columns_kept(rel, st, &old, mtup);
 
 		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
@@ -393,7 +362,8 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 		slot->tts_tableOid = RelationGetRelid(rel);
 		if (logical)
 			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, &old, mtup);
-		heap_free_minimal_tuple(mtup);
+		if (free_mtup)
+			heap_free_minimal_tuple(mtup);
 		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(&old), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
 							 hot ? SIFT_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
 		if (hot)

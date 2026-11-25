@@ -8,8 +8,15 @@
 #include "core/host.h"
 
 #include "access/htup.h"
+#include "executor/tuptable.h"
 #include "fmgr.h"
+#include "utils/memutils.h"
 #include "utils/relcache.h"
+
+/* The most a change record of a published table may hold (EXT-05): the log record is one allocation, and PostgreSQL refuses one past MaxAllocSize */
+#ifndef SIFT_TBL_LOG_MAX_BYTES
+#define SIFT_TBL_LOG_MAX_BYTES		((uint64) (MaxAllocSize / 2))
+#endif
 
 typedef enum SiftTblOp
 {
@@ -30,5 +37,9 @@ extern bool sift_tbl_published(Relation rel);
 extern void sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old);
 extern void sift_tbl_log_key(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple key);
 extern HeapTuple sift_tbl_old_key(Relation rel, HeapTuple old);
+/* The values of slot: its own array, or a copy with every external TOAST value expanded (no TOAST table exists for this AM, and the table the pointer names may be gone when the record is decoded) */
+extern Datum *sift_tbl_slot_values(TupleDesc desc, TupleTableSlot *slot);
+/* The row of slot as a MinimalTuple with no external value in it; *should_free: the caller frees it */
+extern MinimalTuple sift_tbl_detoast_slot_tuple(Relation rel, TupleTableSlot *slot, bool *should_free);
 
 #endif

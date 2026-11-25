@@ -36,6 +36,21 @@ subtest 'R1-01: a table that writes no WAL reads the deletes and the updates it 
 	}
 };
 
+subtest 'R1-04: the change record of a row copied from a heap table holds its values, not a pointer into that table (format 1)' => sub {
+	$primary->safe_psql('postgres', q{
+		SET sift.test_create_format1 = on;
+		CREATE TABLE heap_src (id int PRIMARY KEY, big text);
+		ALTER TABLE heap_src ALTER COLUMN big SET STORAGE EXTERNAL;
+		INSERT INTO heap_src SELECT 1, string_agg(md5(g::text), '') FROM generate_series(1, 4000) g;
+		CREATE TABLE pub_t (id int PRIMARY KEY, big text) USING sift_table;
+		CREATE PUBLICATION pub_t_all FOR TABLE pub_t;
+		SELECT pg_create_logical_replication_slot('toast_slot', 'pgoutput');
+		INSERT INTO pub_t SELECT * FROM heap_src;
+		DROP TABLE heap_src;});
+	my $changes = q{SELECT count(*) FROM pg_logical_slot_get_binary_changes('toast_slot', NULL, NULL, 'proto_version', '1', 'publication_names', 'pub_t_all') WHERE length(data) > 128000};
+	is($primary->safe_psql('postgres', $changes), 1, 'the insert is decoded with the whole value');
+};
+
 subtest 'R1-15: the first bits of a page of the visibility map are logged without an image of the page' => sub {
 	my $from = $primary->safe_psql('postgres', 'SELECT pg_current_wal_insert_lsn()');
 	$primary->safe_psql('postgres', q{

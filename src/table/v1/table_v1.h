@@ -47,13 +47,6 @@
 			 errmsg(__VA_ARGS__), \
 			 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")))
 
-/* PostgreSQL 18 gave the minimal tuple constructors an `extra` size */
-#if PG_VERSION_NUM >= 180000
-#define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull, 0)
-#else
-#define sift_tbl_form_minimal_tuple(desc, values, isnull)	heap_form_minimal_tuple(desc, values, isnull)
-#endif
-
 #define SIFT_TBL_META_FLAG		0x00020000	/* SiftMetaPageData.flags: this relation is a sift_table */
 #define SIFT_TBL_WBUF_MAGIC	0x444C5441	/* "DLTA" */
 #define SIFT_TBL_MAX_OFF		MaxHeapTuplesPerPage

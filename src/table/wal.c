@@ -11,12 +11,14 @@
  */
 #include "postgres.h"
 
+#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xloginsert.h"
 #include "access/xlogreader.h"
 #include "catalog/pg_publication.h"
+#include "executor/executor.h"
 #include "miscadmin.h"
 #include "replication/decode.h"
 #include "replication/logical.h"
@@ -102,7 +104,63 @@ sift_tbl_old_key(Relation rel, HeapTuple old)
 	res = heap_form_tuple(desc, values, isnull);
 	pfree(values);
 	pfree(isnull);
+	bms_free(key);
 	return res;
+}
+
+Datum *
+sift_tbl_slot_values(TupleDesc desc, TupleTableSlot *slot)
+{
+	Datum	   *values;
+
+	slot_getallattrs(slot);
+	values = slot->tts_values;
+	for (int i = 0; i < desc->natts; i++)
+		if (!slot->tts_isnull[i] && TupleDescAttr(desc, i)->attlen == -1 && VARATT_IS_EXTERNAL(DatumGetPointer(values[i])))
+		{
+			if (values == slot->tts_values)
+			{
+				values = palloc(desc->natts * sizeof(Datum));
+				memcpy(values, slot->tts_values, desc->natts * sizeof(Datum));
+			}
+			values[i] = PointerGetDatum(detoast_external_attr((struct varlena *) DatumGetPointer(values[i])));
+		}
+	return values;
+}
+
+MinimalTuple
+sift_tbl_detoast_slot_tuple(Relation rel, TupleTableSlot *slot, bool *should_free)
+{
+	TupleDesc	desc = RelationGetDescr(rel);
+	Datum	   *values = sift_tbl_slot_values(desc, slot);
+	TupleTableSlot *expanded;
+	MinimalTuple mtup;
+
+	if (values == slot->tts_values)
+		return ExecFetchSlotMinimalTuple(slot, should_free);
+	expanded = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	memcpy(expanded->tts_values, values, desc->natts * sizeof(Datum));
+	memcpy(expanded->tts_isnull, slot->tts_isnull, desc->natts * sizeof(bool));
+	ExecStoreVirtualTuple(expanded);
+	mtup = ExecFetchSlotMinimalTuple(expanded, should_free);
+	ExecDropSingleTupleTableSlot(expanded);
+	pfree(values);
+	return mtup;
+}
+
+static void
+log_guard(Relation rel, uint64 newlen, uint64 oldlen)
+{
+	uint64		total = newlen + oldlen + 64;
+
+	if (total > SIFT_TBL_LOG_MAX_BYTES)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						errmsg("logical replication WAL record for sift_table \"%s\" is %llu bytes, exceeding the %llu-byte limit", RelationGetRelationName(rel),
+							   (unsigned long long) total, (unsigned long long) SIFT_TBL_LOG_MAX_BYTES),
+						errdetail("sift_table stores wide rows without TOAST; a logical replication change record must fit within %llu bytes (new=%llu, old=%llu).",
+								  (unsigned long long) SIFT_TBL_LOG_MAX_BYTES, (unsigned long long) newlen, (unsigned long long) oldlen),
+						errhint("Use a primary key REPLICA IDENTITY instead of FULL, keep values above %llu MB out of published sift_table columns, or exclude the table from logical publications.",
+								(unsigned long long) (SIFT_TBL_LOG_MAX_BYTES / (1024 * 1024)))));
 }
 
 void
@@ -111,8 +169,10 @@ sift_tbl_log_key(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple key)
 	static const uint8 info[] = {[SIFT_TBL_OP_INSERT] = XLOG_SIFT_TBL_INSERT,[SIFT_TBL_OP_UPDATE] = XLOG_SIFT_TBL_UPDATE,
 	[SIFT_TBL_OP_DELETE] = XLOG_SIFT_TBL_DELETE};
 	SiftTblChange hdr = {.rlocator = rel->rd_locator};
-	HeapTuple	newtup = newrow ? heap_tuple_from_minimal_tuple(newrow) : NULL;
+	HeapTuple	newtup;
 
+	log_guard(rel, newrow ? newrow->t_len : 0, key ? key->t_len : 0);
+	newtup = newrow ? heap_tuple_from_minimal_tuple(newrow) : NULL;
 	hdr.newlen = newtup ? newtup->t_len : 0;
 	hdr.oldlen = key ? key->t_len : 0;
 	XLogBeginInsert();
