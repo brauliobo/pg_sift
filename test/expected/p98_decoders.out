@@ -1,0 +1,118 @@
+-- The decoders of Format 2.0 on bytes that came from disk: a damaged section, chunk or wide value is refused with a data-corruption error and never read past its end, and the
+-- verifier of an index sees what its manifest says that the rows do not: each case builds one damaged input and the reader answers "ok" or the error it raised.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET sift.test_create_format1 = off;
+CREATE FUNCTION dec_row_pack(regclass, int) RETURNS text AS '$libdir/pg_sift', 'sift_test_dec_row_pack' LANGUAGE C STRICT;
+CREATE FUNCTION dec_row_pack_check(regclass, int) RETURNS text AS '$libdir/pg_sift', 'sift_test_dec_row_pack_check' LANGUAGE C STRICT;
+CREATE FUNCTION dec_blob(regclass, int) RETURNS text AS '$libdir/pg_sift', 'sift_test_dec_blob' LANGUAGE C STRICT;
+CREATE FUNCTION dec_chunk(int) RETURNS text AS '$libdir/pg_sift', 'sift_test_dec_chunk' LANGUAGE C STRICT;
+CREATE FUNCTION dec_schema_nsort(regclass, int) RETURNS text AS '$libdir/pg_sift', 'sift_test_dec_schema_nsort' LANGUAGE C STRICT;
+CREATE FUNCTION dec_tid_hash(regclass, int) RETURNS text AS '$libdir/pg_sift', 'sift_test_dec_tid_hash' LANGUAGE C STRICT;
+CREATE FUNCTION dec_preagg(regclass, int) RETURNS text AS '$libdir/pg_sift', 'sift_test_dec_preagg' LANGUAGE C STRICT;
+CREATE FUNCTION dec_meta_totals(regclass, bigint) RETURNS void AS '$libdir/pg_sift', 'sift_test_dec_meta_totals' LANGUAGE C STRICT;
+CREATE TABLE dec (id int, v text);
+INSERT INTO dec SELECT i, md5(i::text) FROM generate_series(1, 200) i;
+CREATE INDEX dec_idx ON dec USING sift_col (id, v);
+-- a row pack: an integer column of 8 bytes is read; a column of a kind or a width the writer never makes, and a block that claims more bytes than its rows can hold, are damage
+SELECT m, dec_row_pack('dec_idx', m) FROM generate_series(0, 4) m ORDER BY m;
+ m |                         dec_row_pack                         
+---+--------------------------------------------------------------
+ 0 | ok
+ 1 | XX001 sift: column 0 of a row pack is of kind 7 and width 8
+ 2 | XX001 sift: column 0 of a row pack is of kind 1 and width 64
+ 3 | XX001 sift: column 0 of a row pack is of kind 1 and width 3
+ 4 | XX001 sift: a row pack block does not match its entry
+(5 rows)
+
+-- a wide value: its length is the bytes its extents hold unless they are compressed, and no value is longer than a palloc
+SELECT m, dec_blob('dec_idx', m) FROM generate_series(0, 3) m ORDER BY m;
+ m |                            dec_blob                             
+---+-----------------------------------------------------------------
+ 0 | ok
+ 1 | XX001 table "dec_idx" holds a damaged reference to a wide value
+ 2 | XX001 table "dec_idx" holds a damaged reference to a wide value
+ 3 | XX001 table "dec_idx" holds a damaged reference to a wide value
+(4 rows)
+
+-- the chunks of a granule: a chunk of 100 MiB (a row that wide) opens; strings whose offsets leave their chunk, and a chunk shorter than the validity of its rows, are damage
+SELECT m, dec_chunk(m) FROM generate_series(0, 2) m ORDER BY m;
+ m |                        dec_chunk                        
+---+---------------------------------------------------------
+ 0 | ok
+ 1 | XX001 sift: an inline string of a chunk is past its end
+ 2 | XX001 sift: the validity bits of a chunk do not fit it
+(3 rows)
+
+-- the address hash: the granule and the row of an entry are the part's
+SELECT m, dec_tid_hash('dec_idx', m) FROM generate_series(0, 2) m ORDER BY m;
+ m |                                 dec_tid_hash                                  
+---+-------------------------------------------------------------------------------
+ 0 | ok
+ 1 | XX001 sift: an address hash directory names a row that its part does not have
+ 2 | XX001 sift: an address hash directory names a row that its part does not have
+(3 rows)
+
+-- the pre-aggregates: a part of 2^32 - 1 granules has no table of them that fits a 32-bit count
+SELECT m, dec_preagg('dec_idx', m) FROM generate_series(0, 1) m ORDER BY m;
+ m |                     dec_preagg                     
+---+----------------------------------------------------
+ 0 | ok
+ 1 | XX002 sift index "dec_idx" segment 12 is corrupted
+(2 rows)
+
+-- the sort columns that the schema of a part records fit the spec of the index
+SELECT m, dec_schema_nsort('dec_idx', m) FROM (VALUES (1), (200)) v(m) ORDER BY m;
+  m  |            dec_schema_nsort             
+-----+-----------------------------------------
+   1 | ok
+ 200 | XX002 sift index "dec_idx" is corrupted
+(2 rows)
+
+-- the check of an index reads the row pack of each of its parts (an index for each case: a part written stays in its manifest)
+CREATE TABLE rpa (id int, v text);
+INSERT INTO rpa SELECT i, md5(i::text) FROM generate_series(1, 200) i;
+CREATE INDEX rpa_idx ON rpa USING sift_col (id, v);
+CREATE TABLE rpb (id int, v text);
+INSERT INTO rpb SELECT i, md5(i::text) FROM generate_series(1, 200) i;
+CREATE INDEX rpb_idx ON rpb USING sift_col (id, v);
+SELECT dec_row_pack_check('rpa_idx', 0);
+ dec_row_pack_check 
+--------------------
+ ok
+(1 row)
+
+SELECT dec_row_pack_check('rpb_idx', 2);
+                      dec_row_pack_check                      
+--------------------------------------------------------------
+ XX001 sift: column 0 of a row pack is of kind 1 and width 64
+(1 row)
+
+DROP TABLE rpa, rpb;
+-- sift.check reads the manifest: the totals of the metapage are the sums of the partitions (an index of its own, which the cases above did not write to)
+CREATE TABLE chk (id int, v text);
+INSERT INTO chk SELECT i, md5(i::text) FROM generate_series(1, 200) i;
+CREATE INDEX chk_idx ON chk USING sift_col (id, v);
+SELECT count(*) AS problems_before FROM sift.check('chk_idx');
+ problems_before 
+-----------------
+               0
+(1 row)
+
+SELECT dec_meta_totals('chk_idx', 5);
+ dec_meta_totals 
+-----------------
+ 
+(1 row)
+
+SELECT count(*) > 0 AS totals_found, bool_or(detail LIKE '%totals of the metapage%') AS totals_named FROM sift.check('chk_idx');
+ totals_found | totals_named 
+--------------+--------------
+ t            | t
+(1 row)
+
+DROP TABLE chk;
+DROP TABLE dec;
+DROP FUNCTION dec_row_pack(regclass, int), dec_row_pack_check(regclass, int), dec_blob(regclass, int), dec_chunk(int), dec_schema_nsort(regclass, int), dec_tid_hash(regclass, int), dec_preagg(regclass, int), dec_meta_totals(regclass, bigint);
+DROP EXTENSION pg_sift;

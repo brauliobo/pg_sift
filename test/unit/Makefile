@@ -15,9 +15,10 @@ FLOCK    = $(if $(shell command -v flock),flock /tmp/sift-perf.lock)
 OUT     ?= /tmp/sift-unit
 MODE    ?= plain
 
-TESTS   = test_arena
+TESTS   = test_arena test_decoders
 BENCHES = bench_arena
 LIB_test_arena  = core/par/arena.c col/compress.c
+LIB_test_decoders = core/par/arena.c col/fsst.c col/compress.c
 LIB_bench_arena = core/par/arena.c
 
 OPT_plain = -O2
