@@ -141,6 +141,14 @@ grow_tids(VacCtx *vc, uint32 max)
 	vc->tids = vc->tids == NULL ? MemoryContextAlloc(vc->cx, sizeof(uint64) * vc->cap) : repalloc(vc->tids, sizeof(uint64) * vc->cap);
 }
 
+static void
+drop_tids(VacCtx *vc)
+{
+	pfree(vc->tids);
+	vc->tids = NULL;
+	vc->cap = 0;
+}
+
 void
 sift_tbl_f2_vacuum_dead_tids(void *vac_ctx, const uint64 *tids, uint32 ntids)
 {
@@ -738,6 +746,8 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	collect_all(&vc, store, &mr, &cutoffs, oldest_fx, aggressive);
 	sift_f2_vacuum_progress_scanned(1, 1);
 	flush_batch(&vc);
+	if (vc.tids != NULL)
+		drop_tids(&vc);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_VACUUM_HEAP);
 	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive, vc.nblocks);
 	sift_f2_tier_maintain(rel, store, oldest_fx);
