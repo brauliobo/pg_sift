@@ -12,14 +12,14 @@ Every allocation in `pg_sift` 6.0 belongs to one of three strictly enforced budg
 |---|---|---:|---|
 | Query execution | `work_mem`, `hash_mem_multiplier` | PG defaults | `SiftAgg` hash tables, radix spills, lookup joins, Top-N heaps, set filters |
 | Maintenance & builds | `maintenance_work_mem` | PG default | `CREATE INDEX`, `REINDEX`, `VACUUM`, compaction, `sift.check(..., true)` |
-| Backend cache | `sift.backend_cache_kb` | `16384` (16 MB) | Per-backend LRU across BM25 prefixes, manifests, decoded granules, dicts |
-| Shared cache | `sift.shared_cache_kb` | `65536` (64 MB) | Server-wide DSM cap across lookup tables, dim maps, dicts, leaf stats |
+| Backend cache | `sift.backend_cache_kb` | `32768` (32 MB) | Per-backend LRU across BM25 prefixes, manifests, decoded granules, dicts |
+| Shared cache | `sift.shared_cache_kb` | `131072` (128 MB) | Server-wide DSM cap across lookup tables, dim maps, dicts, leaf stats |
 
 ### Connection Pooling Math
 
 Because `sift.backend_cache_kb` is a hard ceiling (`-1` unlimited is removed in 6.0), worst-case extension memory is bounded linearly by active pooled connections:
 
-- **200 pooled backends** at default `sift.backend_cache_kb = '16MB'` and `sift.shared_cache_kb = '64MB'` stay under **~3.3 GB** cache memory (`200 × 16 MB + 64 MB`), regardless of how many tables or billions of rows each backend touches.
+- **200 pooled backends** at default `sift.backend_cache_kb = '32MB'` and `sift.shared_cache_kb = '128MB'` stay under **~6.5 GB** cache memory (`200 × 32 MB + 128 MB`), regardless of how many tables or billions of rows each backend touches.
 - **High-connection pools (500+ connections):** Lower `sift.backend_cache_kb` to `4MB`–`8MB` at the database or role level and raise `sift.shared_cache_kb` to `128MB`–`256MB` so backends share dictionaries and lookup tables instead of duplicating them.
 
 ## 2. Disk, Compression, and WAL Sizing

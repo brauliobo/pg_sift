@@ -11,8 +11,8 @@
 | `key_order` (`sift_col` / `sift_table`) | `''` | Set 1..8 sort/partition columns (`tenant_id, created_at`) for date-range or tenant pruning |
 | `paths` (`sift_col` / `sift_table`) | `''` | Declare typed JSONB paths (`'auto'` or explicit) to shred JSONB into columnar leaves |
 | `scope` (`sift_col` / `sift_table`) | `''` | Declare M:N tenant/hierarchy scopes (`name: fk -> rel(member, key) [cluster]`) |
-| `sift.backend_cache_kb` | `16384` (16 MB) | Lower to `4096`–`8192` for 500+ pooled connections; raise for heavy analytical sessions |
-| `sift.shared_cache_kb` | `65536` (64 MB) | Raise to `128MB`–`256MB` when many backends share lookup tables and string dictionaries |
+| `sift.backend_cache_kb` | `32768` (32 MB) | Lower to `4096`–`8192` for 500+ pooled connections; raise for heavy analytical sessions |
+| `sift.shared_cache_kb` | `131072` (128 MB) | Raise to `256MB`–`512MB` when many backends share lookup tables and string dictionaries |
 | `sift.enable_agg` | `on` | Set `off` per session to verify native PG equivalence or bypass `SiftAgg` in an incident |
 | `sift.explain_refusals` | `off` | Set `on` (or use `EXPLAIN (SIFT)` on PG 18+) to diagnose why a query stayed on the heap |
 | `sift.maintenance_wal_rate` | `0` (unlimited) | Throttle background merge/defrag WAL generation (kB/s) on write-heavy replicas |

@@ -110,7 +110,7 @@ SELECT count(*) FROM orders WHERE title @@> 'wireless headphones';
 |---|---:|---|
 | `sift.enable_agg` | `on` | Set `off` in a session to compare results or bypass `SiftAgg` immediately |
 | `sift.explain_refusals` | `off` | Set `on` (or use `EXPLAIN (SIFT)` on PG 18+) to see why a query stayed on the heap |
-| `sift.backend_cache_kb` | `16384` (16 MB) | Lower for high connection counts; raise for analytical sessions with wide schemas |
+| `sift.backend_cache_kb` | `32768` (32 MB) | Lower for high connection counts; raise for analytical sessions with wide schemas |
 
 ## 6. Benchmark on Your Machine and Clean Up
 
