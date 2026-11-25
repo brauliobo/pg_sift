@@ -51,12 +51,18 @@ col_holds(Oid typid, int32 typmod, const SiftColDef *d)
 bool
 sift_v6_unnest_rte(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, SiftV6ElemRte *out)
 {
+	return rel->joininfo == NIL && sift_v6_unnest_rte_joined(root, fact, rel, out);
+}
+
+bool
+sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, SiftV6ElemRte *out)
+{
 	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
 	const RangeTblFunction *rtf;
 	const FuncExpr *fe;
 	const Var  *v;
 
-	if (rel->reloptkind != RELOPT_BASEREL || rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 || rel->joininfo != NIL ||
+	if (rel->reloptkind != RELOPT_BASEREL || rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 ||
 		!bms_equal(rel->lateral_relids, bms_make_singleton(fact->relid)))
 		return false;
 	rtf = linitial(rte->functions);

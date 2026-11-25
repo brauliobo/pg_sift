@@ -33,8 +33,8 @@ typedef struct StarDim
 	const Var  *dvar[SIFT_STAR_MAX_KEYS];
 } StarDim;
 
-static const Var *
-plain_var(const Node *n)
+const Var *
+sift_v6_plain_var(const Node *n)
 {
 	while (n != NULL && IsA(n, RelabelType))
 		n = (const Node *) ((const RelabelType *) n)->arg;
@@ -54,8 +54,8 @@ text_type(Oid t)
 }
 
 /* the join of the keys is one of the bytes' equality of one class: the same type, or two integer types, or two texts of a collation whose equality is the bytes' */
-static bool
-keys_agree(const Var *f, const Var *d)
+bool
+sift_v6_keys_agree(const Var *f, const Var *d)
 {
 	if (text_type(f->vartype) && text_type(d->vartype))
 		return sift_text_bytes_equal(f->varcollid) && sift_text_bytes_equal(d->varcollid);
@@ -79,7 +79,7 @@ add_key(StarDim *d, const Var *f, const Var *v)
 	for (int k = 0; k < d->nkeys; k++)
 		if (d->fvar[k]->varattno == f->varattno && d->dvar[k]->varattno == v->varattno)
 			return true;
-	if (d->nkeys == SIFT_STAR_MAX_KEYS || !keys_agree(f, v))
+	if (d->nkeys == SIFT_STAR_MAX_KEYS || !sift_v6_keys_agree(f, v))
 		return false;
 	d->fvar[d->nkeys] = f;
 	d->dvar[d->nkeys++] = v;
@@ -100,7 +100,7 @@ equivalence_keys(PlannerInfo *root, Relids base, Index fact, StarDim *dims, int 
 			continue;
 		foreach_node(EquivalenceMember, em, ec->ec_members)
 		{
-			const Var  *v = plain_var((Node *) em->em_expr);
+			const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
 			Relids		vr = bms_intersect(pull_varnos(root, (Node *) em->em_expr), base);
 
 			if (em->em_is_child)
@@ -116,7 +116,7 @@ equivalence_keys(PlannerInfo *root, Relids base, Index fact, StarDim *dims, int 
 			return false;
 		foreach_node(EquivalenceMember, em, ec->ec_members)
 		{
-			const Var  *v = plain_var((Node *) em->em_expr);
+			const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
 			const int	d = v != NULL && !em->em_is_child ? dim_of(dims, nd, v->varno) : -1;
 
 			if (d >= 0 && !dims[d].left && !add_key(&dims[d], fvar, v))
@@ -137,8 +137,8 @@ clause_key(RestrictInfo *ri, Index fact, StarDim *dims, int nd)
 
 	if (!IsA(ri->clause, OpExpr) || list_length(op->args) != 2 || ri->has_clone || ri->is_clone || !op_hashjoinable(op->opno, exprType(linitial(op->args))))
 		return false;
-	a = plain_var(linitial(op->args));
-	b = plain_var(lsecond(op->args));
+	a = sift_v6_plain_var(linitial(op->args));
+	b = sift_v6_plain_var(lsecond(op->args));
 	if (a == NULL || b == NULL)
 		return false;
 	if (b->varno == fact)
@@ -215,20 +215,26 @@ joins_ok(PlannerInfo *root, StarDim *dims, int nd)
 	return true;
 }
 
-static bool
-dim_rte_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
+/* a relation whose plan (any plan of it that takes no parameter) the node reads whole: a table, a VALUES list, a CTE, a sub-select, or the result of a join of such relations (a join tree under a semi or anti join) */
+bool
+sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
 {
-	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
-
-	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->cheapest_total_path == NULL || rel->cheapest_total_path->param_info != NULL)
+	if (rel->lateral_relids != NULL || rel->cheapest_total_path == NULL || rel->cheapest_total_path->param_info != NULL)
 		return false;
-	if (rte->rtekind != RTE_RELATION && rte->rtekind != RTE_VALUES && rte->rtekind != RTE_CTE && rte->rtekind != RTE_SUBQUERY)
+	if (rel->reloptkind == RELOPT_BASEREL)
+	{
+		const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+
+		if (rte->rtekind != RTE_RELATION && rte->rtekind != RTE_VALUES && rte->rtekind != RTE_CTE && rte->rtekind != RTE_SUBQUERY)
+			return false;
+	}
+	else if (rel->reloptkind != RELOPT_JOINREL)
 		return false;
 	return rel->rows * (rel->reltarget->width + 48.0) <= (double) budget;
 }
 
-static bool
-in_target(const RelOptInfo *rel, AttrNumber attno)
+bool
+sift_v6_in_target(const RelOptInfo *rel, AttrNumber attno)
 {
 	foreach_ptr(Node, n, rel->reltarget->exprs)
 		if (IsA(n, Var) && ((Var *) n)->varattno == attno)
@@ -253,7 +259,7 @@ seed_dims(V6Plan *p, StarDim *dims, int nd)
 			SiftV6Col	col;
 
 			if (!sift_v6_plan_column(p, (const Expr *) dims[d].fvar[k], false, &col) || !(sift_v6_class(col.typid) == SV6C_I32 || sift_v6_class(col.typid) == SV6C_I64 ||
-				sift_v6_class(col.typid) == SV6C_TEXT) || !in_target(dims[d].rel, dims[d].dvar[k]->varattno))
+				sift_v6_class(col.typid) == SV6C_TEXT) || !sift_v6_in_target(dims[d].rel, dims[d].dvar[k]->varattno))
 				return false;
 			xd->fatt[k] = col.attno;
 			xd->ftype[k] = col.typid;
@@ -283,7 +289,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 
 		if (rel == fact)
 			continue;
-		if (!dim_rte_ok(root, rel, budget))
+		if (!sift_v6_dim_rel_ok(root, rel, budget))
 			return;
 		dims[n++].rel = rel;
 	}
@@ -339,7 +345,7 @@ sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *o
 bool
 sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 {
-	const Var  *v = plain_var((const Node *) e);
+	const Var  *v = sift_v6_plain_var((const Node *) e);
 	SiftV6Ext  *x = p->spec.ext;
 	int			d = -1,
 				c;
@@ -353,7 +359,7 @@ sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	if (d < 0)
 		return false;
 	xd = &x->dim[d];
-	if (!in_target(list_nth(p->dim_rels, d), v->varattno))
+	if (!sift_v6_in_target(list_nth(p->dim_rels, d), v->varattno))
 		return false;
 	for (c = 0; c < xd->npay && xd->pcol[c] != v->varattno; c++)
 		;

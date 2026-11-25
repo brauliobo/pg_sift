@@ -89,7 +89,14 @@ extern void agg_force_price(Path *p);
 /* The columns the planners of joins and unnests answer for plan.c: false when the expression is not one of theirs */
 extern bool sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out);
 extern bool sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out);
+/* The pieces of the planner of a star join that the planner of the other joins (v6_join_plan.h) reuses */
+extern const Var *sift_v6_plain_var(const Node *n);
+extern bool sift_v6_keys_agree(const Var *f, const Var *d);
+extern bool sift_v6_in_target(const RelOptInfo *rel, AttrNumber attno);
+extern bool sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget);
 extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
+extern bool sift_v6_unnest_ready(V6Plan *p);
+extern Cost sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel);
 extern void sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 
 /* The paths for a partitioned table: one SiftAggV6 over the live partitions, whose indexes all lay the statement out alike */

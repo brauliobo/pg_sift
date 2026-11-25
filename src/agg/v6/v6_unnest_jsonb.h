@@ -31,6 +31,8 @@ typedef struct SiftV6ElemRte
 
 /* elem_rel is the relation of unnest(col) or jsonb_to_recordset(col) of a column of fact; false for any other relation, or a function this scan cannot take apart */
 extern bool sift_v6_unnest_rte(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *elem_rel, SiftV6ElemRte *out);
+/* the same for a relation that other relations join (a lookup keyed by its columns): the join clauses are the caller's to read */
+extern bool sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *elem_rel, SiftV6ElemRte *out);
 /* e is date_trunc('month', c)::date of a date column c of the fact table in a statement that unnests: k is c */
 extern bool sift_v6_unnest_month_key(V6Plan *p, const Expr *e, SiftV6Col *k);
 /* The Ext of the unnest, p->xseed: the leaves of the column of the index the function takes apart, false when the index does not keep all of them as columns */

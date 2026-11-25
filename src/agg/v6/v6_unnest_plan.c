@@ -84,12 +84,19 @@ where_clause(V6Plan *p)
 	return true;
 }
 
+/* what the unnest scan needs of the compiled statement besides its columns: the quals of the element and of the table run on the batches */
+bool
+sift_v6_unnest_ready(V6Plan *p)
+{
+	return computes_only_months(&p->spec) && p->spec.jsonqual == NIL && !reads_json(&p->spec) && sift_v6_unnest_elem_quals(p) && where_clause(p);
+}
+
 /* one operator per pair, and each group of a distinct count or a percentile keeps the values it sees (7 times a pair that folds into a counter, as measured on 3.7M pairs in 60,000 groups) */
 #define HEAVY_AGG_PAIR_FACTOR	6
 
 /* the pairs of the whole table: the batches of the scan come from every granule of the index (the pull prunes none by the quals of the table), so a selective statement costs what the table does */
-static Cost
-pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
+Cost
+sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
 {
 	const double sel = Max(clauselist_selectivity(p->root, p->rel->baserestrictinfo, 0, JOIN_INNER, NULL), 1.0e-6);
 	int			heavy = 0;
@@ -116,9 +123,8 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOp
 			continue;
 		irel = index_open(ix->indexoid, AccessShareLock);
 		sift_v6_plan_index(&p, irel);
-		if (p.ops != NULL && sift_v6_unnest_seed(&p, elem_rel, &rte, left) && sift_v6_compile_on(&p, extra, group_exprs) && computes_only_months(&p.spec) && p.spec.jsonqual == NIL &&
-			!reads_json(&p.spec) && sift_v6_unnest_elem_quals(&p) && where_clause(&p))
-			sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, pairs_cost(&p, input_rel), input_rel->rows);
+		if (p.ops != NULL && sift_v6_unnest_seed(&p, elem_rel, &rte, left) && sift_v6_compile_on(&p, extra, group_exprs) && sift_v6_unnest_ready(&p))
+			sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, sift_v6_unnest_pairs_cost(&p, input_rel), input_rel->rows);
 		index_close(irel, NoLock);
 	}
 }
