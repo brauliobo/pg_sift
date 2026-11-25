@@ -32,5 +32,8 @@ LABEL org.opencontainers.image.title="pg_sift" \
       org.opencontainers.image.description="PostgreSQL with the pg_sift extension installed" \
       org.opencontainers.image.source="https://github.com/brauliobo/pg_sift" \
       org.opencontainers.image.licenses="PostgreSQL"
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libcurl4 \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/usr/ /usr/
 COPY packaging/docker/initdb.sql /docker-entrypoint-initdb.d/10-pg_sift.sql

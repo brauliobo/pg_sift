@@ -4,10 +4,11 @@ pkgname=pg_sift
 pkgver=6.0.0
 pkgrel=1
 pkgdesc='Columnar analytics, column tables, and BM25 full-text search for PostgreSQL'
-arch=('x86_64')
+arch=('x86_64' 'aarch64')
 url='https://github.com/brauliobo/pg_sift'
 license=('PostgreSQL')
-depends=('postgresql>=18' 'postgresql<19' 'lz4' 'zstd')
+depends=('postgresql>=17' 'postgresql<20' 'lz4' 'zstd')
+optdepends=('curl: tiering to S3 and R2 object storage')
 install=pg_sift.install
 makedepends=('git' 'make' 'gcc')
 source=("pg_sift::git+$url.git#tag=v$pkgver")

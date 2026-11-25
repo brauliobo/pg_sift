@@ -31,7 +31,7 @@ Set `PG_TAG=17` (with `/var/lib/postgresql/data`) to run PostgreSQL 17.
 
 ### Option A: Image-Volume Extension (PostgreSQL 18+, Recommended)
 
-The `extension` target builds a `FROM scratch` image containing only `lib/pg_sift.so` and `share/extension/`, matching CloudNativePG's Image Volume Extensions layout. Build on the exact PostgreSQL major, OS, and architecture of your `Cluster` image:
+The `extension` target builds a `FROM scratch` image containing only `lib/pg_sift.so` and `share/extension/`, matching CloudNativePG's Image Volume Extensions layout. Build on the exact PostgreSQL major, OS, and architecture of your `Cluster` image. The image holds no shared library: tiering to S3 or R2 loads `libcurl` in the operand image (`libcurl4` on Debian and Ubuntu), and tiering to a `file://` location needs none.
 
 ```sh
 packaging/docker/build.sh -e 18-trixie

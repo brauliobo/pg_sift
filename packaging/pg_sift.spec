@@ -24,6 +24,7 @@ Source0:        pg_sift-%{version}.tar.gz
 ExclusiveArch:  x86_64 aarch64
 BuildRequires:  gcc, make, redhat-rpm-config, %{pgdevel}, lz4-devel, libzstd-devel, libicu-devel
 Requires:       postgresql%{pgmajor}-server, lz4-libs, libzstd
+Recommends:     libcurl
 
 %description
 pg_sift answers counts, sums, distinct counts, group-bys and top-N from compressed columns, with the queries you already have: a

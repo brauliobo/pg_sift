@@ -9,6 +9,7 @@ Homepage: https://github.com/brauliobo/pg_sift
 Package: postgresql-@PG@-pg-sift
 Architecture: any
 Depends: postgresql-@PG@, ${misc:Depends}, ${shlibs:Depends}
+Recommends: libcurl4 | libcurl4t64
 Description: Columnar analytics, column tables, and BM25 full-text search for PostgreSQL
  pg_sift answers counts, sums, distinct counts, group-bys and top-N from
  compressed columns, with the queries you already have: a sift_col index on a
