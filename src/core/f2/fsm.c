@@ -662,6 +662,8 @@ sift_fsm_tail_shrink(Relation rel)
 				nblocks;
 	FsmCtx		c;
 
+	if (sift_fsm_sweep_due(rel))
+		(void) sift_fsm_sweep_orphans(rel);
 	(void) sift_fsm_reclaim(rel);
 	st = sift_fsm_check(rel);
 	hw = sift_col_meta_read(rel).high_water;

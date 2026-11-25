@@ -84,6 +84,9 @@ extern uint32 sift_fsm_recycle_empty_slabs(FsmCtx *c);
 extern void sift_fsm_slabs_idle(const SiftFsmSlabTable *t, uint32 meta_free, ExtVec *out);
 extern void sift_fsm_slabs_drop(Page root, const ExtVec *idle);
 
+/* fsm/sweep.c: whether this server has not swept the orphans of the relation yet */
+extern bool sift_fsm_sweep_due(Relation rel);
+
 /* fsm/release_guard.c: a release that names a block twice, or one that is no data or metadata block, is an error at the caller that made it */
 extern void sift_fsm_release_guard(Relation rel, Page root, const SiftExtent *ext, int n);
 

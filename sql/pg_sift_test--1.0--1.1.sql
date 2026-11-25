@@ -58,6 +58,7 @@ CREATE FUNCTION sift._test_f2_alloc_below(index regclass, nblocks int8, max_blk 
 CREATE FUNCTION sift._test_f2_meta_alloc(index regclass) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_f2_meta_alloc' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_release(index regclass, start int8, nblocks int4, safe text) RETURNS void AS 'MODULE_PATHNAME', 'sift_test_f2_release' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_reclaim(index regclass) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_f2_reclaim' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_f2_sweep(index regclass) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_f2_sweep' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_extend_file(index regclass, blocks int8) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_f2_extend_file' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_tail_shrink(index regclass, OUT blocks_truncated int8, OUT lock_skipped bool, OUT high_water int8, OUT file_blocks int8) RETURNS record AS 'MODULE_PATHNAME', 'sift_test_f2_tail_shrink' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_tail_relocate(index regclass) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_f2_tail_relocate' LANGUAGE C STRICT;

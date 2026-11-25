@@ -19,6 +19,7 @@ PG_FUNCTION_INFO_V1(sift_test_f2_alloc_stream);
 PG_FUNCTION_INFO_V1(sift_test_f2_alloc_below);
 PG_FUNCTION_INFO_V1(sift_test_f2_release);
 PG_FUNCTION_INFO_V1(sift_test_f2_reclaim);
+PG_FUNCTION_INFO_V1(sift_test_f2_sweep);
 PG_FUNCTION_INFO_V1(sift_test_f2_extend_file);
 PG_FUNCTION_INFO_V1(sift_test_f2_tail_shrink);
 PG_FUNCTION_INFO_V1(sift_test_f2_tail_relocate);
@@ -134,6 +135,17 @@ sift_test_f2_reclaim(PG_FUNCTION_ARGS)
 	uint64		n = sift_fsm_reclaim(rel);
 
 	index_close(rel, NoLock);
+	PG_RETURN_INT64(n);
+}
+
+/* (index or sift_table): the blocks the orphan sweep frees; 0 when it does not run */
+Datum
+sift_test_f2_sweep(PG_FUNCTION_ARGS)
+{
+	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	uint64		n = sift_fsm_sweep_orphans(rel);
+
+	relation_close(rel, NoLock);
 	PG_RETURN_INT64(n);
 }
 

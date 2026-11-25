@@ -38,7 +38,7 @@ typedef struct SiftFsmMetaPageData
 	uint32		pad;
 	BlockNumber class_head[SIFT_FSM_NCLASSES];			/* the head SIFT_PT_FSM_PAGE of the free extents of each class, or InvalidBlockNumber */
 	uint32		class_free_extents[SIFT_FSM_NCLASSES];
-	BlockNumber pad1;
+	uint32		swept_start;	/* the start time of the server that swept the orphans last (core/f2/fsm/sweep.c); 0: never */
 	uint32		meta_free_count;	/* free blocks over all slabs */
 	BlockNumber quarantine_head;	/* oldest page of the queue of released extents */
 	BlockNumber quarantine_tail;	/* the page that takes the next one */
@@ -133,6 +133,13 @@ extern void sift_fsm_release_in(Relation rel, SiftXlog *x, const SiftExtent *ext
 
 /* Moves the extents whose safexid has passed the horizon to the free lists, coalesced and cut into classes again; returns the blocks that became free */
 extern uint64 sift_fsm_reclaim(Relation rel);
+
+/*
+ * Gives the extents that nothing names back to the allocator: what a crash, or a failure after the write of a part and before the commit that names it, leaves allocated. It has the relation to itself
+ * (AccessExclusiveLock taken without waiting unless held, the load lock, no VACUUM reading the manifest; never while a standby streams) and frees nothing, DEBUG1 says why, when the relation holds
+ * what it cannot name (core/f2/fsm/sweep.c); the blocks freed. sift_fsm_tail_shrink, which every VACUUM ends with, runs it once for each relation and server start.
+ */
+extern uint64 sift_fsm_sweep_orphans(Relation rel);
 
 typedef struct SiftFsmStats
 {
