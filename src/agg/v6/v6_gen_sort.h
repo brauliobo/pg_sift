@@ -11,7 +11,7 @@
 
 typedef struct V6GenSort V6GenSort;
 
-extern V6GenSort *v6_gen_sort_begin(V6GenAgg *ga, MemoryContext cx);
+extern V6GenSort *v6_gen_sort_begin(V6GenAgg *ga, MemoryContext cx, int mem_kb);
 /* an input of group sid: its arguments (the constants of the call are not kept) */
 extern void v6_gen_sort_put(V6GenSort *s, uint32 sid, const Datum *args, const bool *nulls);
 /* every group of the sort in turn goes through the transition function, then the final function; accs[sid] is the state of group sid */

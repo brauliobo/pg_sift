@@ -61,7 +61,7 @@ number_columns(const V6GenAgg *ga, int *vcol)
 }
 
 V6GenSort *
-v6_gen_sort_begin(V6GenAgg *ga, MemoryContext cx)
+v6_gen_sort_begin(V6GenAgg *ga, MemoryContext cx, int mem_kb)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	V6GenSort  *s = palloc0(sizeof(V6GenSort));
@@ -111,12 +111,12 @@ v6_gen_sort_begin(V6GenAgg *ga, MemoryContext cx)
 		}
 	}
 	sift_tupdesc_finalize(desc);
-	/* MEM[MEM-AGG-26]: the inputs of the DISTINCT, ORDER BY and WITHIN GROUP aggregates of a scan (one tuplesort each, work_mem, spilled to disk beyond it; the distinct inputs of the
+	/* MEM[MEM-AGG-26]: the inputs of the DISTINCT, ORDER BY and WITHIN GROUP aggregates of a scan (one tuplesort each, an equal part of work_mem, spilled to disk beyond it; the distinct inputs of the
 	 * previous tuple in a context of their own) */
 	s->pcx = AllocSetContextCreate(cx, "sift agg v6 distinct", ALLOCSET_SMALL_SIZES);
 	s->put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	s->get = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
-	s->ts = tuplesort_begin_heap(desc, nk, att, ops, coll, nf, work_mem, NULL, TUPLESORT_NONE);
+	s->ts = tuplesort_begin_heap(desc, nk, att, ops, coll, nf, mem_kb, NULL, TUPLESORT_NONE);
 	MemoryContextSwitchTo(old);
 	return s;
 }

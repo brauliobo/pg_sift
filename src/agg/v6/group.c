@@ -632,10 +632,7 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 		if (v6g_is_text_mm(&spec->agg[j]) && g->slab == NULL)
 			g->slab = sift_strslab_new(cx);
 	if (sift_v6_spec_has_gen(spec))
-	{
 		g->gen = v6_gen_new(spec, cx, g->budget);
-		g->budget = UINT64_MAX;
-	}
 	v6g_spill_own(g);
 	presize(g);
 	MemoryContextSwitchTo(old);

@@ -10,6 +10,7 @@
 
 #include "postgres.h"
 
+#include "lib/stringinfo.h"
 #include "nodes/primnodes.h"
 
 #include "agg/v6/group_ext.h"
@@ -20,6 +21,9 @@ extern bool sift_v6_pct_cont_of(const Aggref *a, double *frac);
 
 extern void sift_v6_pct_add(SiftTextArena *ar, V6Acc *acc, double x);
 extern void sift_v6_pct_merge(SiftTextArena *ar, V6Acc *d, const V6Acc *s);
+/* The values of a state, as the bytes that follow its record in a spill (buf), and the values of a state that came that way joining dst; the offsets of src mean nothing to dst */
+extern void sift_v6_pct_put(const SiftTextArena *ar, const V6Acc *acc, StringInfo buf);
+extern const char *sift_v6_pct_take(SiftTextArena *ar, V6Acc *dst, const V6Acc *src, const char *tail);
 /* The percentile of the values of a state with at least one value */
 extern double sift_v6_pct_final(const SiftTextArena *ar, const V6Acc *acc, double frac);
 

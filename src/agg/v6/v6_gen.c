@@ -9,6 +9,7 @@
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -573,7 +574,7 @@ init_arguments(V6Gen *gen, V6GenAgg *ga, const SiftV6Agg *a)
 }
 
 static V6GenAgg *
-agg_new(V6Gen *gen, int j, Aggref *ref)
+agg_new(V6Gen *gen, int j, Aggref *ref, int sort_kb)
 {
 	V6GenAgg   *ga = MemoryContextAllocZero(gen->cx, sizeof(V6GenAgg));
 	const SiftV6Agg *a = &gen->spec->agg[j];
@@ -625,8 +626,19 @@ agg_new(V6Gen *gen, int j, Aggref *ref)
 	ga->pertrans.aggshared = false;
 	ga->peragg.aggref = ref;
 	if (ga->sorted)
-		ga->sort = v6_gen_sort_begin(ga, gen->cx);
+		ga->sort = v6_gen_sort_begin(ga, gen->cx, sort_kb);
 	return ga;
+}
+
+/* the sorted aggregates share work_mem: each sort holds an equal part of it, and spills to disk beyond */
+static int
+sort_share_kb(const SiftV6Spec *spec)
+{
+	int			sorted = 0;
+
+	foreach_node(Aggref, a, spec->genref)
+		sorted += a->aggkind != AGGKIND_NORMAL || a->aggdistinct != NIL || a->aggorder != NIL;
+	return Max(work_mem / Max(sorted, 1), 64);
 }
 
 /* the row the expressions read: attributes no argument reads are NULL integers, the others have the type of their column */
@@ -653,6 +665,7 @@ v6_gen_new(const SiftV6Spec *spec, MemoryContext cx, uint64 limit)
 {
 	V6Gen	   *gen;
 	MemoryContext old = MemoryContextSwitchTo(cx);
+	const int	sort_kb = sort_share_kb(spec);
 	int			at = 0;
 
 	gen = palloc0(sizeof(V6Gen));
@@ -667,7 +680,7 @@ v6_gen_new(const SiftV6Spec *spec, MemoryContext cx, uint64 limit)
 	for (int j = 0; j < spec->naggs; j++)
 		if (v6g_is_gen(&spec->agg[j]))
 		{
-			gen->agg[j] = agg_new(gen, j, list_nth_node(Aggref, spec->genref, at++));
+			gen->agg[j] = agg_new(gen, j, list_nth_node(Aggref, spec->genref, at++), sort_kb);
 			gen->sorted |= gen->agg[j]->sorted;
 		}
 	if (gen->natts > 0)
@@ -696,6 +709,30 @@ uint64
 v6_gen_limit(const V6Gen *gen)
 {
 	return gen->limit;
+}
+
+uint64
+v6_gen_bytes(const V6Gen *gen)
+{
+	uint64		bytes = MemoryContextMemAllocated(gen->res, true);
+
+	for (int j = 0; j < gen->spec->naggs; j++)
+		if (gen->agg[j] != NULL)
+			bytes += MemoryContextMemAllocated(gen->agg[j]->cx->ecxt_per_tuple_memory, true);
+	return bytes;
+}
+
+bool
+v6_gen_can_spill(const V6Gen *gen)
+{
+	for (int j = 0; j < gen->spec->naggs; j++)
+	{
+		const V6GenAgg *ga = gen->agg[j];
+
+		if (ga != NULL && (ga->sorted || !ga->has_combine || (ga->transtype == INTERNALOID && (ga->sfc == NULL || ga->dfc == NULL))))
+			return false;
+	}
+	return true;
 }
 
 /* a group table that cannot spill holds more than its memory: the planner's estimate of the groups was far off */

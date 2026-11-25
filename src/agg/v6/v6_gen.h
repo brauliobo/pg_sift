@@ -4,8 +4,9 @@
  * The aggregate runs as ExecAgg runs it: the state of a group is a Datum of the transition type, made by aggtransfn through fmgr with an AggState as its context
  * (AggCheckCallContext, AggGetAggref, AggRegisterCallback), in memory that lives as long as the scan. A state is the 32 bytes of a V6Acc: n the flags below, v0 the state
  * (the result once V6GEN_DONE), v1 the number of the group's sort (+ 1, 0: none yet), aux the inputs the sort holds for the group. DISTINCT, ORDER BY and WITHIN GROUP aggregates
- * put their inputs through one tuplesort (v6_gen_sort.h), and the states of their groups are made from it, group by group, when the scan ends. The groups of a statement with
- * such an aggregate never spill: the statement is planned only when the groups the planner expects fit the memory of the group table, and stops when they do not.
+ * put their inputs through one tuplesort (v6_gen_sort.h; the aggregates share work_mem), and the states of their groups are made from it, group by group, when the scan ends. The
+ * groups of a statement whose aggregates all take their inputs as they come and combine (array_agg, string_agg, ...) spill as states, serialized as a parallel run's. The groups of
+ * any other statement never spill: it is planned only when the groups the planner expects fit the memory of the group table, and stops when they do not.
  */
 #ifndef SIFT_AGG_V6_GEN_H
 #define SIFT_AGG_V6_GEN_H
@@ -145,6 +146,10 @@ extern void v6_gen_unbound(V6Gen *gen);
 /* the aggregates of the spec can run in workers: none sorts its inputs, each has a combine function and, for an internal state, serial and deserial functions, and all are parallel safe */
 extern bool sift_v6_gen_parallel_ok(const SiftV6Spec *spec);
 extern uint64 v6_gen_limit(const V6Gen *gen);
+/* the memory the states and the results of all groups hold */
+extern uint64 v6_gen_bytes(const V6Gen *gen);
+/* the states of the groups can leave for a spill and come back: every aggregate takes its inputs as they come and has a combine function and, for an internal state, serial and deserial ones */
+extern bool v6_gen_can_spill(const V6Gen *gen);
 
 /* the AggState the functions are called with names the aggregate (or its final function) they run for */
 extern void v6_gen_call_context(V6Gen *gen, V6GenAgg *ga, bool final);

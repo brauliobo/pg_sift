@@ -20,6 +20,7 @@
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_gen.h"
+#include "agg/v6/v6_pct.h"
 
 #define OWN_REC		SIFT_REC_OWN
 #define OWN_HDR		24			/* len and kind, the hash, the nulls of the keys */
@@ -32,6 +33,8 @@ group_bytes(const SiftV6Group *g)
 {
 	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch)) + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0);
 
+	if (g->gen != NULL)
+		bytes += v6_gen_bytes(g->gen);
 	if (g->slab != NULL)
 		bytes += sift_strslab_bytes(g->slab);
 	for (int s = 0; s < g->nsets; s++)
@@ -252,6 +255,11 @@ own_flush(const SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, Sif
 			if (same < 0)
 				appendBinaryStringInfo(&out, g->tx.buf + ((const SiftTextSlot *) acc)->v0, (int) acc->v1);
 		}
+		for (int j = 0; j < spec->naggs; j++)
+			if (spec->agg[j].kind == SV6_PCT_CONT)
+				sift_v6_pct_put(&g->tx, (const V6Acc *) (ext + g->off[j]), &out);
+			else if (g->gen != NULL && g->gen->agg[j] != NULL)
+				v6_gen_state_put(g->gen, j, (const V6Acc *) (ext + g->off[j]), &out);
 		while (out.len % 8 != 0)
 			appendStringInfoChar(&out, '\0');
 		len = (uint32) out.len;
@@ -326,7 +334,12 @@ own_merge(const SiftRadixShape *sh, SiftRecMerge *m, const uint8 *rec)
 		}
 	dst = sift_ht_ext(m->ht, v6g_slot_of(g, set, m->ht, key, str, nulls));
 	for (int j = 0; j < spec->naggs; j++)
-		v6g_merge_acc(g, &spec->agg[j], (V6Acc *) (dst + g->off[j]), &src[j]);
+		if (spec->agg[j].kind == SV6_PCT_CONT)
+			at = sift_v6_pct_take(&g->tx, (V6Acc *) (dst + g->off[j]), &src[j], at);
+		else if (g->gen != NULL && g->gen->agg[j] != NULL)
+			at = v6_gen_state_take(g->gen, j, (V6Acc *) (dst + g->off[j]), &src[j], at);
+		else
+			v6g_merge_acc(g, &spec->agg[j], (V6Acc *) (dst + g->off[j]), &src[j]);
 }
 
 /* The winners of the text MIN and MAX of the sets of no keys outlive the arena they are in: they are copied out and set again in the one that is empty */
@@ -372,6 +385,8 @@ values_reset(SiftV6Group *g)
 			return;
 	if (g->gkeys != NULL)
 		sift_v6_genkeys_reset(g->gkeys);
+	if (g->gen != NULL)
+		v6_gen_release(g->gen);
 	tx_reset(g);
 }
 
@@ -386,21 +401,44 @@ own_held(const SiftRadixShape *sh)
 {
 	const SiftV6Group *g = SET_OF(sh)->owner;
 
-	return g->tx.cap + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0);
+	return g->tx.cap + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0) + (g->gen != NULL ? v6_gen_bytes(g->gen) : 0);
+}
+
+/* every group is in a table that spills */
+static bool
+all_keyed(const SiftV6Group *g)
+{
+	for (int s = 0; s < g->nsets; s++)
+		if (g->set[s].nk == 0 || g->set[s].ht.lock_at != 0)
+			return false;
+	return true;
+}
+
+static bool
+pct_of(const SiftV6Group *g)
+{
+	for (int j = 0; j < g->spec->naggs; j++)
+		if (g->spec->agg[j].kind == SV6_PCT_CONT)
+			return true;
+	return false;
+}
+
+/* The states of the generic aggregates leave with the groups when every group is in a table that spills, and every aggregate combines */
+static bool
+gen_spills(const SiftV6Group *g)
+{
+	return all_keyed(g) && v6_gen_can_spill(g->gen);
 }
 
 void
 v6g_spill_own(SiftV6Group *g)
 {
 	const SiftV6Spec *spec = g->spec;
-	bool		text = false;
+	bool		values = g->gkeys != NULL || g->gen != NULL;
 
 	for (int j = 0; j < spec->naggs; j++)
-		text |= v6g_is_text_mm(&spec->agg[j]);
-	for (int j = 0; j < spec->naggs; j++)
-		if (spec->agg[j].kind == SV6_PCT_CONT)
-			return;
-	if ((g->gkeys == NULL && !text) || g->ndist > 0 || g->gen != NULL)
+		values |= v6g_is_text_mm(&spec->agg[j]) || spec->agg[j].kind == SV6_PCT_CONT;
+	if (!values || g->ndist > 0 || (g->gen != NULL && !gen_spills(g)) || (pct_of(g) && !all_keyed(g)))
 		return;
 	g->own_recs = true;
 	for (int s = 0; s < g->nsets; s++)
@@ -448,13 +486,11 @@ v6g_spill_all(SiftV6Group *g)
 void
 v6g_spill_if_over(SiftV6Group *g)
 {
-	if (g->gen != NULL)
-	{
-		if (group_bytes(g) > v6_gen_limit(g->gen))
-			v6_gen_no_spill(g->gen);
-	}
-	else if (group_bytes(g) > g->budget - g->dist_budget)
-		v6g_spill_all(g);
+	if (group_bytes(g) <= g->budget - g->dist_budget)
+		return;
+	if (g->gen != NULL && !gen_spills(g))
+		v6_gen_no_spill(g->gen);
+	v6g_spill_all(g);
 }
 
 void

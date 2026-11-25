@@ -114,6 +114,30 @@ sift_v6_pct_merge(SiftTextArena *ar, V6Acc *d, const V6Acc *s)
 	d->n += s->n;
 }
 
+void
+sift_v6_pct_put(const SiftTextArena *ar, const V6Acc *acc, StringInfo buf)
+{
+	for (uint64 off = acc->n > 0 ? acc->v0 : 0; off != 0; off = chunk_at(ar, off - 1)->next)
+	{
+		const PctChunk *c = chunk_at(ar, off - 1);
+
+		appendBinaryStringInfo(buf, (const char *) (c + 1), (int) (c->n * sizeof(double)));
+	}
+}
+
+const char *
+sift_v6_pct_take(SiftTextArena *ar, V6Acc *dst, const V6Acc *src, const char *tail)
+{
+	for (int64 i = 0; i < src->n; i++, tail += sizeof(double))
+	{
+		double		x;
+
+		memcpy(&x, tail, sizeof(x));
+		sift_v6_pct_add(ar, dst, x);
+	}
+	return tail;
+}
+
 /* the order of PostgreSQL's float8 sort: every NaN is above +Infinity and equal to the others */
 static int
 float8_order(const void *a, const void *b, void *arg)
