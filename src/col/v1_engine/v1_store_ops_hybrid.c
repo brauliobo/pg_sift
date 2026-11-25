@@ -282,6 +282,7 @@ typedef struct HybFold
 	void	   *recheck_arg;
 	int			ncols;
 	int			leaf[SIFT_V6_MAX_COLS];
+	int			scale[SIFT_V6_MAX_COLS];	/* the digits after the point of the scaled integer a numeric leaf holds */
 	SiftVec		vec[SIFT_V6_MAX_COLS];
 	int			npub;
 	SiftV6FoldCol *pub;
@@ -301,7 +302,7 @@ hybrid_fold_begin(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation
 	vf->cx = cx;
 	vf->recheck = recheck;
 	vf->recheck_arg = recheck_arg;
-	vf->f = sift_srcfold_new(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.host = index != NULL ? index : heap}, sift_mem_allocset_create(cx, "sift v1 fold"));
+	vf->f = sift_srcfold_new(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.host = index != NULL ? index : heap,.is_table = index == NULL}, sift_mem_allocset_create(cx, "sift v1 fold"));
 	in = sift_srcfold_input(vf->f);
 	vf->ncols = in->ncols;
 	vf->pub = palloc(Max(in->ncols, 1) * sizeof(SiftV6FoldCol));
@@ -311,6 +312,7 @@ hybrid_fold_begin(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation
 		const SiftSrcLeaf *l = c->attno == SIFT_V6_SCORE_ATTNO ? NULL : sift_v1_att_leaf(lay, c->attno);
 
 		vf->leaf[i] = l != NULL ? l->id : -1;
+		vf->scale[i] = l != NULL ? l->scale : 0;
 		vf->vec[i] = (SiftVec) {.data = MemoryContextAllocAligned(cx, (SIFT_VEC_LEN + 1) * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO),
 			.valid = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO),.dense = true,.type = c->type,.typid = c->typid,.scale = c->scale};
 		if (c->attno != SIFT_V6_SCORE_ATTNO)
@@ -333,8 +335,16 @@ hybrid_fold_cols(const struct SiftV6Scan *f, int *n)
 	return vf->pub;
 }
 
+static Datum
+numeric_cell(const ColView *cv, int row, int scale)
+{
+	const int64 x = cv->i[row];
+
+	return sift_v6_scaled_numeric((SiftI128) {.lo = (uint64) x,.hi = x < 0 ? -1 : 0}, scale);
+}
+
 static void
-fill_vec(SiftVec *v, const ColView *cv, const float4 *score, int off, int n, bool is_score)
+fill_vec(SiftVec *v, const ColView *cv, int scale, const float4 *score, int off, int n, bool is_score)
 {
 	v->len = n;
 	v->all_valid = true;
@@ -353,6 +363,9 @@ fill_vec(SiftVec *v, const ColView *cv, const float4 *score, int off, int n, boo
 				break;
 			case SVEC_STRVIEW:
 				((SiftStrView *) v->data)[r] = sift_vstr_make(cv->s[off + r], cv->slen[off + r]);
+				break;
+			case SVEC_DATUM:
+				((Datum *) v->data)[r] = cv->isnull != NULL && cv->isnull[off + r] ? (Datum) 0 : numeric_cell(cv, off + r, scale);
 				break;
 			default:
 				((int64 *) v->data)[r] = cv->i[off + r];
@@ -382,7 +395,7 @@ fold_slice(HybFold *vf, const uint64 *tid, const uint64 *live, const uint64 *may
 	if (n & 63)
 		mask[n / 64] &= (UINT64CONST(1) << (n & 63)) - 1;
 	for (int i = 0; i < vf->ncols; i++)
-		fill_vec(&vf->vec[i], in->col[i].attno == SIFT_V6_SCORE_ATTNO ? NULL : &cols[vf->leaf[i]], score, off, n, in->col[i].attno == SIFT_V6_SCORE_ATTNO);
+		fill_vec(&vf->vec[i], in->col[i].attno == SIFT_V6_SCORE_ATTNO ? NULL : &cols[vf->leaf[i]], vf->scale[i], score, off, n, in->col[i].attno == SIFT_V6_SCORE_ATTNO);
 	sift_srcfold_batch(vf->f, &b);
 }
 
