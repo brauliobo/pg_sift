@@ -33,7 +33,7 @@
  * when no reader announces an epoch up to it and none holds it: a reader that read the pointer before the swap cannot find the memory gone. A reader that counts itself in a snapshot
  * that is retired gives its count back and reads the pointer again.
  */
-#define SIFT_SHM_EPOCH_SLOTS		256
+#define SIFT_SHM_EPOCH_SLOTS		1024
 #define SIFT_EPOCH_ACTIVE_BIT		(UINT64CONST(1) << 63)
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftEpochSlot

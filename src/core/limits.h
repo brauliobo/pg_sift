@@ -299,7 +299,7 @@
 	X(prefetch_blocks, "SIFT_PREFETCH_MAX_BLKS", "core/store.h", 512, "blocks", \
 	  "blocks of segment pages one wave of the read-ahead of a ranked query asks for", \
 	  "the next wave starts after the blocks of this one", "-", 0) \
-	X(shm_epoch_slots, "SIFT_SHM_EPOCH_SLOTS", "core/shm_manifest.h", 256, "backends", \
+	X(shm_epoch_slots, "SIFT_SHM_EPOCH_SLOTS", "core/shm_manifest.h", 1024, "backends", \
 	  "backends whose epoch the registry of the manifests in shared memory tracks: a snapshot is pinned without a lock by the backends numbered below it", \
 	  "a backend numbered above it pins a snapshot under the lock of its slot", "-", 0) \
 	X(star_join_parts, "STAR_MAX_PARTS", "agg/v6/v6_star_run.c", 65536, "parts", \

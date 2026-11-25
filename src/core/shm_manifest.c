@@ -38,6 +38,8 @@ typedef struct ListHdr
 	uint64		pad;
 } ListHdr;
 
+StaticAssertDecl(sizeof(ListHdr) % MAXIMUM_ALIGNOF == 0, "the list of a partition after its header is aligned for the entries a reader casts it to");
+
 typedef struct Table
 {
 	int			tranche;
@@ -131,7 +133,7 @@ registry(void)
 {
 	if (table == NULL)
 	{
-		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (256 epochs + 512 slots + 2048 vblock leases, fixed) */
+		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (1024 epochs + 512 slots + 2048 vblock leases, fixed) */
 		void	   *raw = sift_dsm_try(REGISTRY_NAME, sizeof(Table) + PG_CACHE_LINE_SIZE, table_init);
 
 		if (raw == NULL)
@@ -854,7 +856,17 @@ sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *s
 		pg_atomic_write_u64(&s->snap_hits, 0);
 		pg_atomic_write_u64(&s->snap_misses, 0);
 	}
-	slot_drop_snap(t, s);
+	PG_TRY();
+	{
+		slot_drop_snap(t, s);
+	}
+	PG_CATCH();
+	{
+		if (dp != InvalidDsaPointer)
+			snap_free(a, dsa_get_address(a, dp));
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	m.state_flags = SIFT_SHM_SLOT_VALID | (dp != InvalidDsaPointer ? SIFT_SHM_SLOT_HAS_SNAP : 0);
 	meta_write(s, &m);
 	pg_atomic_write_u64(&s->last_used_tick, pg_atomic_fetch_add_u64(&t->clock, 1));
@@ -879,7 +891,6 @@ sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine)
 		bool		mine = RelFileLocatorEquals(s->meta.locator, *locator);
 		SiftShmIndexMeta m = mine ? s->meta : (SiftShmIndexMeta) {.locator = *locator};
 
-		slot_drop_snap(t, s);
 		if (!mine)
 		{
 			pg_atomic_write_u64(&s->snap_hits, 0);
@@ -887,6 +898,7 @@ sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine)
 		}
 		m.state_flags = quarantine ? SIFT_SHM_SLOT_QUARANTINED : SIFT_SHM_SLOT_DEAD;
 		meta_write(s, &m);
+		slot_drop_snap(t, s);
 	}
 	LWLockRelease(&t->claim_lock);
 }

@@ -172,7 +172,7 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | scoring leaves of a top-k query up to which the batched block-max ranking is used | `4 terms` | normal plan: the query is ranked by max-score over the superblocks instead | — | `bm25/bounds.c` `RANK_BATCH_MAX_LEAVES` |
 | ranking units of a top-k query up to which the batched block-max ranking is used | `2,048 units` | normal plan: the query is ranked by max-score over the superblocks instead | — | `bm25/bounds.c` `RANK_BATCH_MAX_UNITS` |
 | blocks of segment pages one wave of the read-ahead of a ranked query asks for | `512 blocks` | the next wave starts after the blocks of this one | — | `core/store.h` `SIFT_PREFETCH_MAX_BLKS` |
-| backends whose epoch the registry of the manifests in shared memory tracks: a snapshot is pinned without a lock by the backends numbered below it | `256 backends` | a backend numbered above it pins a snapshot under the lock of its slot | — | `core/shm_manifest.h` `SIFT_SHM_EPOCH_SLOTS` |
+| backends whose epoch the registry of the manifests in shared memory tracks: a snapshot is pinned without a lock by the backends numbered below it | `1,024 backends` | a backend numbered above it pins a snapshot under the lock of its slot | — | `core/shm_manifest.h` `SIFT_SHM_EPOCH_SLOTS` |
 | background maintenance workers the scheduler runs at one time | `8 workers` | a larger sift.max_maint_workers runs this many | `sift.max_maint_workers` | `core/maint_sched.h` `SIFT_MAINT_MAX_WORKERS` |
 
 ## `sift_table` (`src/table`)

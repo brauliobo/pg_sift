@@ -115,7 +115,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  set_keys            | SIFT_CSET_LIMIT                 |                  32 | t         | f
  set_keys_max        | SIFT_CSET_LIMIT_MAX             |                1024 | t         | f
  shared_tables       | DIR_ENTRIES                     |                1024 | t         | f
- shm_epoch_slots     | SIFT_SHM_EPOCH_SLOTS            |                 256 | t         | f
+ shm_epoch_slots     | SIFT_SHM_EPOCH_SLOTS            |                1024 | t         | f
  shred_elems         | SIFT_SHRED_DEFAULT_ELEMS        |             1048576 | t         | t
  shred_groups        | SIFT_SHRED_MAX_GROUPS           |                 256 | t         | f
  shred_key_bytes     | SIFT_SHRED_MAX_KEY_BYTES        |                 255 | t         | f
