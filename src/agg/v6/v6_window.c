@@ -117,7 +117,6 @@ bound_value(const List *bound, ParamListInfo params)
 		const ParamExternData *prm = params->paramFetch != NULL ? params->paramFetch(params, id, false, &work) : &params->params[id - 1];
 
 		k = prm->isnull ? 0 : prm->ptype == INT4OID ? DatumGetInt32(prm->value) : DatumGetInt64(prm->value);
-		k += strict;
 	}
 	return k - strict;
 }
