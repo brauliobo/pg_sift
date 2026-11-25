@@ -471,6 +471,7 @@ merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest, uint64 cap)
 	{
 		bytes += done;
 		steps++;
+		sift_mem_trim_os();
 		pass_delay();
 	}
 	merge_capped = bytes >= cap;
