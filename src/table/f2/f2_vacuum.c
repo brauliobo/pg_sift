@@ -712,8 +712,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 		sift_f2_vacuum_progress_indexes(vc.nindexes, i + 1);
 	}
 	vac_close_indexes(vc.nindexes, vc.indexes, NoLock);
-	if (sift_proj_relation_has(rel))
-		(void) sift_proj_refresh(rel, store);
+	(void) sift_proj_refresh(rel, store);
 	if (store->nscopes > 0)
 		(void) sift_f2_scope_refresh(rel);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_FINAL_CLEANUP);
