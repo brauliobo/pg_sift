@@ -8,6 +8,7 @@
 
 #include "storage/lwlock.h"
 #include "utils/memutils.h"
+#include "utils/resowner.h"
 
 #include "col/dsmreg.h"
 #include "table/f2/f2_lock_esc.h"
@@ -24,7 +25,53 @@ sift_rowlock_table_init(SiftRowLockTable *t, int tranche)
 	LWLockInitialize(&t->area_lock, tranche);
 }
 
-/* The one area of the table, in the memory of the transaction: it is made here when create and nobody has made it */
+/* The area made or attached, with the attempt in a resource owner of its own (the descriptor that a failed one leaves is released here); NULL where the system has no dynamic shared memory for it */
+static dsa_area *
+area_try(SiftRowLockTable *t, bool make)
+{
+	MemoryContext cx = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner,
+				attempt = ResourceOwnerCreate(owner, "sift row lock area");
+	dsa_area   *a = NULL;
+	uint32		holdoff = InterruptHoldoffCount;
+
+	CurrentResourceOwner = attempt;
+	PG_TRY();
+	{
+#ifdef SIFT_TESTING
+		if (make && sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_rowlock_area") != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not create the area of the row lock chunks (test)")));
+#endif
+		/* MEM[MEM-SHM-16]: DSM-backed dsa_create for the row lock entries of the stripes that are full (8 KB chunks, freed when empty) */
+		a = make ? dsa_create(t->area_lock.tranche) : dsa_attach(t->area_handle);
+		if (make)
+			dsa_pin(a);
+		dsa_pin_mapping(a);
+	}
+	PG_CATCH();
+	{
+		ErrorData  *e;
+
+		MemoryContextSwitchTo(cx);
+		e = CopyErrorData();
+		if (ERRCODE_TO_CATEGORY(e->sqlerrcode) != ERRCODE_INSUFFICIENT_RESOURCES)
+		{
+			FreeErrorData(e);
+			PG_RE_THROW();
+		}
+		FlushErrorState();
+		InterruptHoldoffCount = holdoff;
+		ResourceOwnerRelease(attempt, RESOURCE_RELEASE_BEFORE_LOCKS, false, false);
+		FreeErrorData(e);
+		a = NULL;
+	}
+	PG_END_TRY();
+	CurrentResourceOwner = owner;
+	ResourceOwnerDelete(attempt);
+	return a;
+}
+
+/* The one area of the table, in the memory of the transaction: made here when create and nobody has made it. NULL only where create and the server has no memory for it: the caller then keeps the lock in the lock manager of PostgreSQL */
 static dsa_area *
 area_of(SiftRowLockTable *t, bool create)
 {
@@ -36,22 +83,14 @@ area_of(SiftRowLockTable *t, bool create)
 	if (create && t->area_handle == DSA_HANDLE_INVALID)
 	{
 		LWLockAcquire(&t->area_lock, LW_EXCLUSIVE);
-		if (t->area_handle == DSA_HANDLE_INVALID)
-		{
-			/* MEM[MEM-SHM-16]: DSM-backed dsa_create for the row lock entries of the stripes that are full (8 KB chunks, freed when empty) */
-#ifdef SIFT_TESTING
-			if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_rowlock_area") != NULL)
-				ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not create the area of the row lock chunks")));
-#endif
-			area = dsa_create(t->area_lock.tranche);
-			dsa_pin(area);
+		if (t->area_handle == DSA_HANDLE_INVALID && (area = area_try(t, true)) != NULL)
 			t->area_handle = dsa_get_handle(area);
-		}
 		LWLockRelease(&t->area_lock);
 	}
-	if (area == NULL)
-		area = dsa_attach(t->area_handle);
-	dsa_pin_mapping(area);
+	if (area == NULL && t->area_handle != DSA_HANDLE_INVALID)
+		area = create ? area_try(t, false) : dsa_attach(t->area_handle);
+	if (area != NULL)
+		dsa_pin_mapping(area);
 	MemoryContextSwitchTo(old);
 	return area;
 }
@@ -105,7 +144,8 @@ sift_rowlock_add(SiftRowLockTable *t, int si)
 		return &t->stripes[si].entries[t->stripe_n[si]++];
 	if (!sift_rowlock_has_room(t, si))
 	{
-		dsa_pointer p = dsa_allocate_extended(area_of(t, true), sizeof(SiftRowLockChunk), DSA_ALLOC_NO_OOM);
+		dsa_area   *a = area_of(t, true);
+		dsa_pointer p = a == NULL ? InvalidDsaPointer : dsa_allocate_extended(a, sizeof(SiftRowLockChunk), DSA_ALLOC_NO_OOM);
 
 		if (p == InvalidDsaPointer)
 			return NULL;
