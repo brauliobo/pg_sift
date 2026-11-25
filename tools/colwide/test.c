@@ -9,20 +9,15 @@
 #include <string.h>
 
 #include "col/v1/wide.h"
+#include "core/testrng.h"
 
-static uint64 rng_s[2] = {0x9E3779B97F4A7C15ULL, 0xD1B54A32D192ED03ULL};
+static uint64 rng_s = 0x9E3779B97F4A7C15ULL;
 static long fails, checks;
 
 static uint64
 rnd(void)
 {
-	uint64		a = rng_s[0],
-				b = rng_s[1];
-
-	rng_s[0] = b;
-	a ^= a << 23;
-	rng_s[1] = a ^ b ^ (a >> 18) ^ (b >> 5);
-	return rng_s[1] + b;
+	return sift_splitmix_next(&rng_s);
 }
 
 #define CHECK(cond, ...) \

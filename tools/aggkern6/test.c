@@ -24,6 +24,7 @@ static void *xalloc(size_t n);
 #define AK6C_ALLOC(n)	xalloc(n)
 #define AK6C_FREE(p)	free(p)
 #include "agg/kern6_cases.h"
+#include "core/testrng.h"
 
 SiftCpu		sift_cpu;
 
@@ -63,10 +64,7 @@ static uint64 rng_s = 0x9E3779B97F4A7C15;
 static uint64
 rnd(void)
 {
-	rng_s ^= rng_s << 13;
-	rng_s ^= rng_s >> 7;
-	rng_s ^= rng_s << 17;
-	return rng_s * UINT64CONST(0x2545F4914F6CDD1D);
+	return sift_splitmix_next(&rng_s);
 }
 
 static long nchecks,

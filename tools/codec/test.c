@@ -5,14 +5,14 @@
 #include <string.h>
 #include "../../src/bm25/bitmap.h"
 #include "../../src/core/cmp.h"
+#include "core/testrng.h"
 
 #define MAXN 200000
 
 static uint64_t rng = 0x9e3779b97f4a7c15ull;
 static uint64_t rnd(void)
 {
-	rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
-	return rng;
+	return sift_splitmix_next(&rng);
 }
 static uint32_t rndn(uint32_t n) { return (uint32_t)(rnd() % n); }
 

@@ -12,6 +12,7 @@
 #include "baselines.h"
 #ifdef HAVE_ROARING
 #include "roaring.h"
+#include "core/testrng.h"
 #endif
 
 static double now(void)
@@ -24,8 +25,7 @@ static double now(void)
 static uint64_t rng = 0x2545f4914f6cdd1dull;
 static uint64_t rnd(void)
 {
-	rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
-	return rng;
+	return sift_splitmix_next(&rng);
 }
 
 static corpus C;

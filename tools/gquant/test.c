@@ -7,6 +7,7 @@
  */
 #include "core/host.h"
 #include "col/v1/gquant.h"
+#include "core/testrng.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,10 +56,7 @@ static uint64 rs = 88172645463325252ULL;
 static uint64
 rnd(void)
 {
-	rs ^= rs << 13;
-	rs ^= rs >> 7;
-	rs ^= rs << 17;
-	return rs;
+	return sift_splitmix_next(&rs);
 }
 
 static int

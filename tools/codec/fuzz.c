@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include "../../src/bm25/bitmap.h"
 #include "../../src/core/cmp.h"
+#include "core/testrng.h"
 
 #define PAD 64
 #define MAXN 20000
@@ -24,8 +25,7 @@
 static uint64_t rng;
 static uint64_t rnd(void)
 {
-	rng ^= rng << 13, rng ^= rng >> 7, rng ^= rng << 17;
-	return rng;
+	return sift_splitmix_next(&rng);
 }
 static uint32_t rndn(uint32_t n) { return (uint32_t)(rnd() % n); }
 

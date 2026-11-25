@@ -20,10 +20,7 @@ static long ncase;
 static uint64
 rnd64(void)
 {
-	rs ^= rs << 13;
-	rs ^= rs >> 7;
-	rs ^= rs << 17;
-	return rs;
+	return sift_splitmix_next(&rs);
 }
 
 static uint64
