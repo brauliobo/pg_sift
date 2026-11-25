@@ -216,17 +216,50 @@ sift_manifest_read_parts(Relation rel, const SiftPartitionEntry *entry, int *npa
 	return read_parts_chain(rel, entry, nparts, NULL, NULL, NULL);
 }
 
+/* A list page is written once, under a generation no other page has, and replaced by a page of a new one: the anchor of an entry is what the backend read from its page, until the entry changes */
+typedef struct AnchorMemo
+{
+	RelFileLocator loc;
+	uint64		part_id;
+	uint64		gen;
+	BlockNumber blk;
+	SiftColDeltaAnchor anchor;
+} AnchorMemo;
+
+#define ANCHOR_MEMOS	8
+
+static AnchorMemo anchor_memo[ANCHOR_MEMOS];
+static int	anchor_memo_next;
+
+static const AnchorMemo *
+anchor_memo_find(Relation rel, const SiftPartitionEntry *e)
+{
+	for (int i = 0; i < ANCHOR_MEMOS; i++)
+	{
+		const AnchorMemo *m = &anchor_memo[i];
+
+		if (m->gen == e->manifest_gen && m->blk == e->manifest_blk && m->part_id == e->part_id && RelFileLocatorEquals(m->loc, rel->rd_locator))
+			return m;
+	}
+	return NULL;
+}
+
 SiftColDeltaAnchor
 sift_manifest_read_col_delta(Relation rel, const SiftPartitionEntry *entry)
 {
+	const AnchorMemo *m;
 	Page		p;
 	SiftColDeltaAnchor a;
 
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 		return sift_col_delta_anchor_none();
+	if (entry->manifest_gen != 0 && (m = anchor_memo_find(rel, entry)) != NULL)
+		return m->anchor;
 	p = sift_mf_read_page(rel, entry->manifest_blk, SIFT_PT_PARTLIST, SIFT_PARTLIST_MAGIC, entry->manifest_gen, (uint32) entry->part_id, NULL);
 	a = partlist_anchor(rel, PLIST(p), p);
 	pfree(p);
+	anchor_memo[anchor_memo_next] = (AnchorMemo) {.loc = rel->rd_locator,.part_id = entry->part_id,.gen = entry->manifest_gen,.blk = entry->manifest_blk,.anchor = a};
+	anchor_memo_next = (anchor_memo_next + 1) % ANCHOR_MEMOS;
 	return a;
 }
 
