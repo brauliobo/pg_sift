@@ -172,6 +172,7 @@ extern void sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s);
 extern bool sift_f2_part_dicts_answer(Relation rel, F2Scan *s, const SiftPartitionEntry *e, SiftF2PartPin *pin, const SiftPendDelIndex *px);
 extern bool sift_f2_zones_answer(Relation rel, F2Scan *s, SiftF2PartPin *pin, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px);
 extern void sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s);
+extern void sift_f2_scan_count(IndexScanDesc scan);
 extern void sift_f2_scan_sort_put(F2Scan *s, const SiftColSchema *schema, uint64 tid, bool maybe, const ColView *views, int r);
 extern void sift_f2_scan_sort_end(F2Scan *s);
 extern HeapTuple sift_f2_returned_tuple(IndexScanDesc scan, F2Scan *s);

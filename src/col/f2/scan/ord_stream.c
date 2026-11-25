@@ -238,6 +238,7 @@ ord_begin(IndexScanDesc scan, bool fwd)
 	int			nstaged;
 	uint64	   *staged;
 
+	sift_f2_scan_count(scan);
 	if (!s->prepared)
 		sift_f2_scan_prepare(scan, s);
 	os->s = s;

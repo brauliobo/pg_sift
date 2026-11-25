@@ -13,6 +13,7 @@
 #include "access/stratnum.h"
 #include "catalog/pg_type_d.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "portability/instr_time.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
@@ -923,6 +924,17 @@ stage_for_scan(IndexScanDesc scan, F2Scan *s, const SiftColSchema *schema)
 		sift_stage_flush(scan->indexRelation);
 }
 
+/* pg_stat_*_indexes.idx_scan and the Index Searches of EXPLAIN: a scan counts once, when it starts reading */
+void
+sift_f2_scan_count(IndexScanDesc scan)
+{
+	pgstat_count_index_scan(scan->indexRelation);
+#if PG_VERSION_NUM >= 180000
+	if (scan->instrument)
+		scan->instrument->nsearches++;
+#endif
+}
+
 void
 sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s)
 {
@@ -931,6 +943,7 @@ sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s)
 	int			nstaged;
 	uint64	   *staged;
 
+	sift_f2_scan_count(scan);
 	s->collected = true;
 	if (!s->possible)
 		return;

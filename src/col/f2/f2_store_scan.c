@@ -11,6 +11,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "pgstat.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -671,6 +672,7 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 		int			nstaged;
 		uint64	   *staged = sift_stage_dead(o->rel, o->snap, &nstaged);
 
+		pgstat_count_index_scan(o->rel);
 		s->staged_px = sift_f2_staged_index(staged, nstaged);
 	}
 	return s;
