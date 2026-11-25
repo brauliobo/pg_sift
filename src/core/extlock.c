@@ -121,6 +121,13 @@ sift_bulk_run_write(SiftBulkRun *run, BlockNumber blk, Page page)
 }
 
 void
+sift_bulk_run_abort(SiftBulkRun *run)
+{
+	sift_extension_unlock(run->rel);
+	pfree(run);
+}
+
+void
 sift_bulk_run_end(SiftBulkRun *run)
 {
 	smgr_bulk_finish(run->state);

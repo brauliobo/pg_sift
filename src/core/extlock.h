@@ -59,4 +59,7 @@ extern Page sift_bulk_run_page(SiftBulkRun *run);
 extern void sift_bulk_run_write(SiftBulkRun *run, BlockNumber blk, Page page);
 extern void sift_bulk_run_end(SiftBulkRun *run);
 
+/* The run of a write that failed: the pages queued in bulk memory are dropped and the lock is given back before anything else takes a lock of the relation (the error has not reached the abort that would release it) */
+extern void sift_bulk_run_abort(SiftBulkRun *run);
+
 #endif							/* SIFT_EXTLOCK_H */

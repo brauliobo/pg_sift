@@ -50,11 +50,18 @@ preferred_of(Relation rel)
 	return npreferred > 0 && RelFileLocatorEquals(preferred_locator, rel->rd_locator);
 }
 
-/* The extents live in the memory of the transaction that took them: at its end they are gone whatever the move did */
+/* The extents live in the memory of the transaction that took them: at its end, or at the abort of the subtransaction that was running the move, they are gone whatever the move did */
 static void
 preferred_xact_end(XactEvent event, void *arg)
 {
 	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT)
+		preferred_clear();
+}
+
+static void
+preferred_subxact_end(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
+{
+	if (event == SUBXACT_EVENT_ABORT_SUB)
 		preferred_clear();
 }
 
@@ -64,6 +71,7 @@ sift_part_prefer_extents(Relation rel, const SiftExtent *ext, int n)
 	if (!preferred_callback_registered)
 	{
 		RegisterXactCallback(preferred_xact_end, NULL);
+		RegisterSubXactCallback(preferred_subxact_end, NULL);
 		preferred_callback_registered = true;
 	}
 	preferred = MemoryContextAlloc(TopTransactionContext, Max(n, 1) * sizeof(SiftExtent));
@@ -140,43 +148,53 @@ write_stream(Relation rel, const SiftPartIn *in, const SiftSecInput *secs, SiftS
 
 	for (int i = 0; i < nsec; i++)
 		INIT_CRC32C(crc[i]);
-	if (run == NULL)
-		sift_bulk_extend(rel, ext, next);
-	sift_bulk_begin(&w, rel);
-	for (int e = 0; e < next && g < npages; e++)
-		for (uint32 b = 0; b < ext[e].nblocks && g < npages; b++, g++)
-		{
-			BlockNumber blk = ext[e].start + b;
-			bool		fresh = run != NULL && sift_bulk_run_fresh(run, blk);
-			Page		pg = fresh ? sift_bulk_run_page(run) : sift_bulk_page(&w, blk);
-			uint64		from = SIFT_PAYLOAD_BYTES(g),
-						n = Min(stream_bytes - from, (uint64) SIFT_PAGE_PAYLOAD);
-
-			sift_page_init_part(pg, SIFT_PT_DATA, in->part_gen, in->part_id);
-			memset(SiftPageGetData(pg), 0, n);
-			for (int i = 0; i < nsec; i++)
+	PG_TRY();
+	{
+		if (run == NULL)
+			sift_bulk_extend(rel, ext, next);
+		sift_bulk_begin(&w, rel);
+		for (int e = 0; e < next && g < npages; e++)
+			for (uint32 b = 0; b < ext[e].nblocks && g < npages; b++, g++)
 			{
-				uint64		lo = Max(from, (uint64) dir[i].off),
-							hi = Min(from + n, (uint64) dir[i].off + secs[i].len);
-				char	   *to = SiftPageGetData(pg) + (lo - from);
+				BlockNumber blk = ext[e].start + b;
+				bool		fresh = run != NULL && sift_bulk_run_fresh(run, blk);
+				Page		pg = fresh ? sift_bulk_run_page(run) : sift_bulk_page(&w, blk);
+				uint64		from = SIFT_PAYLOAD_BYTES(g),
+							n = Min(stream_bytes - from, (uint64) SIFT_PAGE_PAYLOAD);
 
-				if (secs[i].inline_in_header || lo >= hi)
-					continue;
-				if (secs[i].fill == NULL)
-					memcpy(to, (const char *) secs[i].data + (lo - dir[i].off), hi - lo);
-				else
+				sift_page_init_part(pg, SIFT_PT_DATA, in->part_gen, in->part_id);
+				memset(SiftPageGetData(pg), 0, n);
+				for (int i = 0; i < nsec; i++)
 				{
-					secs[i].fill(secs[i].fill_arg, lo - dir[i].off, hi - lo, to);
-					COMP_CRC32C(crc[i], to, hi - lo);
+					uint64		lo = Max(from, (uint64) dir[i].off),
+								hi = Min(from + n, (uint64) dir[i].off + secs[i].len);
+					char	   *to = SiftPageGetData(pg) + (lo - from);
+
+					if (secs[i].inline_in_header || lo >= hi)
+						continue;
+					if (secs[i].fill == NULL)
+						memcpy(to, (const char *) secs[i].data + (lo - dir[i].off), hi - lo);
+					else
+					{
+						secs[i].fill(secs[i].fill_arg, lo - dir[i].off, hi - lo, to);
+						COMP_CRC32C(crc[i], to, hi - lo);
+					}
 				}
+				SiftPageSetUsed(pg, n);
+				if (fresh)
+					sift_bulk_run_write(run, blk, pg);
 			}
-			SiftPageSetUsed(pg, n);
-			if (fresh)
-				sift_bulk_run_write(run, blk, pg);
-		}
-	sift_bulk_end(&w);
-	if (run != NULL)
-		sift_bulk_run_end(run);
+		sift_bulk_end(&w);
+		if (run != NULL)
+			sift_bulk_run_end(run);
+	}
+	PG_CATCH();
+	{
+		if (run != NULL)
+			sift_bulk_run_abort(run);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	for (int i = 0; i < nsec; i++)
 		if (secs[i].fill != NULL)
 		{
@@ -284,6 +302,28 @@ part_desc(const SiftPartIn *in, BlockNumber header_blk, uint64 nbytes)
 	return d;
 }
 
+/*
+ * The blocks a part took from the allocator and failed to write (a full disk, a cancel) are given back: its stream extents, the pages of its extent list and its header page. The extents a move
+ * prefers are the move's, and none of these blocks is in a manifest. The error is held while the allocator is asked, which takes locks and logs: no lock of the allocator is held where the
+ * write can fail (the allocation is done), and the lock of the extension is given back by write_stream before this runs.
+ */
+static void
+part_abandon(Relation rel, const SiftPartIn *in, const SiftExtent *ext, int n, BlockNumber extlist, int nlisted, BlockNumber hdr_blk)
+{
+	BlockNumber *pages = NULL;
+	int			npages = 0;
+	SiftExtent *back;
+
+	if (extlist != InvalidBlockNumber)
+		(void) sift_extlist_read(rel, extlist, in->part_gen, in->part_id, nlisted, &pages, &npages);
+	back = palloc((n + npages + 1) * sizeof(SiftExtent));
+	memcpy(back, ext, n * sizeof(SiftExtent));
+	for (int i = 0; i < npages; i++)
+		back[n + i] = (SiftExtent) {pages[i], 1};
+	back[n + npages] = (SiftExtent) {hdr_blk, 1};
+	sift_fsm_release(rel, back, n + npages + 1, InvalidFullTransactionId);
+}
+
 SiftPartDesc
 sift_part_write(Relation rel, const SiftPartIn *in)
 {
@@ -306,6 +346,8 @@ sift_part_write(Relation rel, const SiftPartIn *in)
 	BlockNumber extlist = InvalidBlockNumber;
 	SiftXlog	x;
 	BlockNumber hdr_blk;
+	int			taken;
+	MemoryContext cx;
 
 	memcpy(secs, in->sections, nsec * sizeof(SiftSecInput));
 	qsort(secs, nsec, sizeof(SiftSecInput), secin_cmp);
@@ -333,6 +375,11 @@ sift_part_write(Relation rel, const SiftPartIn *in)
 			stream_bytes += secs[i].len;
 		}
 	}
+	fixed = sizeof(SiftPartHeaderData) + nsec * sizeof(SiftSecDirEntry);
+	if (fixed + inline_bytes > SIFT_PAGE_PAYLOAD)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the inline sections and the section table of a part take %u bytes, a header page holds %zu",
+																		fixed + inline_bytes, (size_t) SIFT_PAGE_PAYLOAD),
+						errhint("Write the larger sections as data extents, not inline.")));
 	npages = SIFT_PAYLOAD_PAGES(stream_bytes);
 	remaining = npages;
 	ext = palloc((npages + 1) * sizeof(SiftExtent));
@@ -343,6 +390,7 @@ sift_part_write(Relation rel, const SiftPartIn *in)
 		next += take_preferred(rel, &want, chunk, ext + next);
 		remaining = want;
 	}
+	taken = next;
 	while (remaining > 0)
 	{
 		uint64		want = Min(remaining, chunk);
@@ -350,14 +398,6 @@ sift_part_write(Relation rel, const SiftPartIn *in)
 		next += sift_fsm_alloc_stream(rel, want, ext + next, (int) (npages + 1) - next);
 		remaining -= want;
 	}
-	if (npages > 0)
-		write_stream(rel, in, secs, dir, nsec, stream_bytes, ext, next);
-
-	fixed = sizeof(SiftPartHeaderData) + nsec * sizeof(SiftSecDirEntry);
-	if (fixed + inline_bytes > SIFT_PAGE_PAYLOAD)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the inline sections and the section table of a part take %u bytes, a header page holds %zu",
-																		fixed + inline_bytes, (size_t) SIFT_PAGE_PAYLOAD),
-						errhint("Write the larger sections as data extents, not inline.")));
 	ninline = (SIFT_PAGE_PAYLOAD - fixed - inline_bytes) / sizeof(SiftExtent);
 	ninline = Min(ninline, (uint32) next);
 	if (in->inline_extent_cap >= 0)
@@ -365,44 +405,61 @@ sift_part_write(Relation rel, const SiftPartIn *in)
 	if ((int) ninline < next)
 		extlist = sift_extlist_write(rel, in->part_gen, in->part_id, ext + ninline, next - ninline);
 
-	sift_page_init_part(page, SIFT_PT_PARTHDR, in->part_gen, in->part_id);
-	h = PHDR(page);
-	h->magic = SIFT_PARTHDR_MAGIC;
-	h->version = SIFT_PARTHDR_VERSION;
-	h->nsec = nsec;
-	h->flags = in->flags | (inline_stream ? SIFT_PART_FLAG_INLINE_STREAM : 0);
-	h->part_gen = in->part_gen;
-	h->part_id = in->part_id;
-	h->level = in->level;
-	h->ncols = in->ncols;
-	h->nrows = in->nrows;
-	h->stream_bytes = stream_bytes;
-	h->ngranules = in->ngranules;
-	h->granule_rows = in->granule_rows;
-	h->min_xid = in->min_xid;
-	h->max_xid = in->max_xid;
-	h->total_extents = next;
-	h->ninline_extents = ninline;
-	h->extlist_blk = extlist;
-	h->secdir_off = sizeof(SiftPartHeaderData);
-	h->extents_off = fixed;
-	h->inline_meta_off = inline_bytes > 0 ? fixed + ninline * sizeof(SiftExtent) : 0;
-	h->inline_meta_len = inline_bytes;
-	for (int i = 0; i < nsec; i++)
-		if (secs[i].inline_in_header)
-			dir[i].off += h->inline_meta_off;
-	memcpy(SiftPageGetData(page) + h->secdir_off, dir, nsec * sizeof(SiftSecDirEntry));
-	memcpy(SiftPageGetData(page) + h->extents_off, ext, ninline * sizeof(SiftExtent));
-	for (int i = 0; i < nsec; i++)
-		if (secs[i].inline_in_header)
-			memcpy(SiftPageGetData(page) + dir[i].off, secs[i].data, secs[i].len);
-	SiftPageSetUsed(page, fixed + ninline * sizeof(SiftExtent) + inline_bytes);
-	sift_page_seal(page);
-
 	hdr_blk = sift_fsm_alloc_meta_page(rel);
-	x = sift_xlog_start(rel);
-	memcpy(sift_xlog_register(&x, sift_blk_new(rel, hdr_blk), GENERIC_XLOG_FULL_IMAGE), page, BLCKSZ);
-	sift_xlog_done(&x);
+	cx = CurrentMemoryContext;
+	PG_TRY();
+	{
+		if (npages > 0)
+			write_stream(rel, in, secs, dir, nsec, stream_bytes, ext, next);
+		sift_page_init_part(page, SIFT_PT_PARTHDR, in->part_gen, in->part_id);
+		h = PHDR(page);
+		h->magic = SIFT_PARTHDR_MAGIC;
+		h->version = SIFT_PARTHDR_VERSION;
+		h->nsec = nsec;
+		h->flags = in->flags | (inline_stream ? SIFT_PART_FLAG_INLINE_STREAM : 0);
+		h->part_gen = in->part_gen;
+		h->part_id = in->part_id;
+		h->level = in->level;
+		h->ncols = in->ncols;
+		h->nrows = in->nrows;
+		h->stream_bytes = stream_bytes;
+		h->ngranules = in->ngranules;
+		h->granule_rows = in->granule_rows;
+		h->min_xid = in->min_xid;
+		h->max_xid = in->max_xid;
+		h->total_extents = next;
+		h->ninline_extents = ninline;
+		h->extlist_blk = extlist;
+		h->secdir_off = sizeof(SiftPartHeaderData);
+		h->extents_off = fixed;
+		h->inline_meta_off = inline_bytes > 0 ? fixed + ninline * sizeof(SiftExtent) : 0;
+		h->inline_meta_len = inline_bytes;
+		for (int i = 0; i < nsec; i++)
+			if (secs[i].inline_in_header)
+				dir[i].off += h->inline_meta_off;
+		memcpy(SiftPageGetData(page) + h->secdir_off, dir, nsec * sizeof(SiftSecDirEntry));
+		memcpy(SiftPageGetData(page) + h->extents_off, ext, ninline * sizeof(SiftExtent));
+		for (int i = 0; i < nsec; i++)
+			if (secs[i].inline_in_header)
+				memcpy(SiftPageGetData(page) + dir[i].off, secs[i].data, secs[i].len);
+		SiftPageSetUsed(page, fixed + ninline * sizeof(SiftExtent) + inline_bytes);
+		sift_page_seal(page);
+
+		x = sift_xlog_start(rel);
+		memcpy(sift_xlog_register(&x, sift_blk_new(rel, hdr_blk), GENERIC_XLOG_FULL_IMAGE), page, BLCKSZ);
+		sift_xlog_done(&x);
+	}
+	PG_CATCH();
+	{
+		ErrorData  *e;
+
+		MemoryContextSwitchTo(cx);
+		e = CopyErrorData();
+		FlushErrorState();
+		part_abandon(rel, in, ext + taken, next - taken, extlist, next - (int) ninline, hdr_blk);
+		ReThrowError(e);
+	}
+	PG_END_TRY();
 
 	return part_desc(in, hdr_blk, inline_stream ? fixed + inline_bytes : stream_bytes);
 }
