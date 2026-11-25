@@ -8,6 +8,8 @@
 #include "col/f2/f2_marks.h"
 #include "col/f2/f2_pull_prune.h"
 #include "col/f2/part_format.h"
+#include "core/f2/manifest.h"
+#include "table/f2/f2_col_delta.h"
 
 void
 sift_f2_pull_prune_begin(SiftF2PullPrune *pr, Relation index, const SiftF2PullSpec *spec)
@@ -19,20 +21,39 @@ sift_f2_pull_prune_begin(SiftF2PullPrune *pr, Relation index, const SiftF2PullSp
 	pr->possible = sift_f2_key_set(sift_f2_rel(index), pr->pred, pr->npred, &pr->keys) && sift_f2_time_window(sift_f2_rel(index), pr->pred, pr->npred, &pr->win) && pr->plan.state != SIFT_KEY_PLAN_EMPTY;
 }
 
+SiftF2TimeWin
+sift_f2_time_window_clean(Relation index, const SiftPartitionEntry *e, const SiftF2TimeWin *w)
+{
+	SiftF2TimeWin clean = *w;
+	uint16		dirty = (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0 ? sift_manifest_read_col_delta(index, e).flags : 0;
+
+	clean.use[0] &= (dirty & SIFT_CDLA_DIRTY_TIME0) == 0;
+	clean.use[1] &= (dirty & SIFT_CDLA_DIRTY_TIME1) == 0;
+	return clean;
+}
+
 bool
 sift_f2_pull_prune_entry(const SiftF2PullPrune *pr, const SiftPartitionEntry *e)
 {
+	SiftF2TimeWin win;
+
 	if (pr->npred == 0)
 		return false;
 	if (!pr->possible || !sift_manifest_overlaps(e->key_lo, e->key_hi, pr->keys.hull.has_lo ? pr->keys.hull.lo : NULL, pr->keys.hull.has_hi ? pr->keys.hull.hi : NULL))
 		return true;
-	return e->l0_slab_blk == InvalidBlockNumber && !sift_f2_entry_meets_time(e, &pr->win);
+	win = sift_f2_time_window_clean(pr->index, e, &pr->win);
+	return e->l0_slab_blk == InvalidBlockNumber && !sift_f2_entry_meets_time(e, &win);
 }
 
 bool
-sift_f2_pull_prune_part(const SiftF2PullPrune *pr, const SiftPartDesc *d)
+sift_f2_pull_prune_part(const SiftF2PullPrune *pr, const SiftPartitionEntry *e, const SiftPartDesc *d)
 {
-	return pr->npred > 0 && (!pr->possible || !sift_f2_part_overlaps(d, &pr->keys) || !sift_f2_part_meets_time(d, &pr->win));
+	SiftF2TimeWin win;
+
+	if (pr->npred == 0)
+		return false;
+	win = sift_f2_time_window_clean(pr->index, e, &pr->win);
+	return !pr->possible || !sift_f2_part_overlaps(d, &pr->keys) || !sift_f2_part_meets_time(d, &win);
 }
 
 static bool

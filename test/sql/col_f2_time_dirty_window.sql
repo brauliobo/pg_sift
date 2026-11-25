@@ -1,0 +1,36 @@
+-- A row moved in time by an UPDATE (a column delta of the partition patches the time column) is found by a time window of every read of a sift_col index of format major 2: the
+-- bitmap scan, the ordered index scan and the aggregate scan answer the rows of the heap, whatever the time bounds of the parts of the partition say.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE w (id int PRIMARY KEY, ts timestamptz NOT NULL, grp int, v int);
+INSERT INTO w SELECT g, '2026-01-01'::timestamptz + (g / 500) * interval '1 day', g % 8, g % 100 FROM generate_series(1, 4000) g;
+CREATE INDEX w_col ON w USING sift_col (id, ts, grp, v) WITH (key_order = 'ts, id', track_changes = 'ctid');
+VACUUM (ANALYZE) w;
+UPDATE w SET ts = '2026-01-07 12:00'::timestamptz WHERE id IN (3, 11, 700);
+UPDATE w SET ts = ts + interval '3 days' WHERE id = 1500;
+UPDATE w SET v = v + 1 WHERE id % 9 = 0;
+
+CREATE FUNCTION w_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_agg text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = on; SET LOCAL enable_indexscan = on; SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on;
+	EXECUTE format('SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (%s) r', q) INTO via_agg;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off; SET LOCAL sift.enable_scan = off;
+	EXECUTE format('SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap AND via_agg = via_heap THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+
+SELECT w_same($$SELECT id, ts FROM w WHERE ts >= '2026-01-07' AND ts < '2026-01-08'$$);
+SELECT w_same($$SELECT count(*), sum(v) FROM w WHERE ts >= '2026-01-07' AND ts < '2026-01-08'$$);
+SELECT w_same($$SELECT grp, count(*) FROM w WHERE ts >= '2026-01-04' AND ts < '2026-01-05' GROUP BY grp$$);
+SELECT w_same($$SELECT id FROM w WHERE ts >= '2026-01-02' AND ts < '2026-01-03' ORDER BY ts, id LIMIT 30$$);
+
+DROP TABLE w;
+DROP FUNCTION w_same(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

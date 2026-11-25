@@ -16,6 +16,7 @@
 
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_part_pin_scan.h"
+#include "col/f2/f2_pull_prune.h"
 #include "col/f2/key_plan.h"
 #include "col/f2/l0_stage.h"
 #include "col/f2/scan/ord_int.h"
@@ -92,7 +93,8 @@ part_cursors(SiftOrdStream *os, int idx)
 	F2Scan	   *s = os->s;
 	const SiftPartitionEntry *e = &os->plan->partitions[idx];
 	const SiftPlanPartList *list = &os->plan->partlists[idx];
-	const bool	in_window = sift_f2_entry_meets_time(e, &s->time);
+	const SiftF2TimeWin win = sift_f2_time_window_clean(os->rel, e, &s->time);
+	const bool	in_window = sift_f2_entry_meets_time(e, &win);
 	MemoryContext old;
 	MemoryContextCallback *cb;
 	const SiftPendDelIndex *px;
@@ -114,7 +116,7 @@ part_cursors(SiftOrdStream *os, int idx)
 		const SiftPartDesc *d = &list->parts[p];
 		OrdCursor  *c = &os->cur[os->ncur];
 
-		if (!in_window || !sift_f2_part_overlaps(d, &s->keys) || !sift_f2_part_meets_time(d, &s->time))
+		if (!in_window || !sift_f2_part_overlaps(d, &s->keys) || !sift_f2_part_meets_time(d, &win))
 			continue;
 		ord_cur_init(os, c, e, d, px);
 		os->ncur++;

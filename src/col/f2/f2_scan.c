@@ -25,6 +25,7 @@
 #include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_part_pin_scan.h"
 #include "col/f2/f2_point_dir.h"
+#include "col/f2/f2_pull_prune.h"
 #include "col/f2/f2_scope_route.h"
 #include "col/f2/f2_unique.h"
 #include "col/f2/f2_view.h"
@@ -862,7 +863,8 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 		const SiftPartitionEntry *e = &plan->partitions[i];
 		const SiftPlanPartList *list = &plan->partlists[i];
 		SiftPendDelIndex *px = NULL;
-		bool		in_window = sift_f2_entry_meets_time(e, &s->time);
+		SiftF2TimeWin win = sift_f2_time_window_clean(rel, e, &s->time);
+		bool		in_window = sift_f2_entry_meets_time(e, &win);
 
 		if (!sift_manifest_overlaps(e->key_lo, e->key_hi, NULL, hi))
 			break;
@@ -880,7 +882,7 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 		{
 			if (!sift_f2_part_overlaps(&list->parts[p], &s->keys) || part_skipped(s, list->parts[p].part_gen) || sift_f2_scan_bridge_part_skip(s, e, &list->parts[p]))
 				continue;
-			if (!in_window || !sift_f2_part_meets_time(&list->parts[p], &s->time))
+			if (!in_window || !sift_f2_part_meets_time(&list->parts[p], &win))
 				F2_STAT(parts_time_skipped);
 			else
 				fn(s, rel, &(F2Unit) {e, &list->parts[p], px}, arg);

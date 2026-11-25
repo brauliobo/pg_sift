@@ -38,9 +38,12 @@ typedef struct SiftF2PullPrune
 
 extern void sift_f2_pull_prune_begin(SiftF2PullPrune *pr, Relation index, const SiftF2PullSpec *spec);
 
-/* Whether the partition (its slab and its parts) or a part cannot hold a row the predicates leave */
+/* The window without the time columns a column delta of the partition patches: the time bounds of its parts do not hold for them (SIFT_CDLA_DIRTY_TIME0/1) */
+extern SiftF2TimeWin sift_f2_time_window_clean(Relation index, const SiftPartitionEntry *e, const SiftF2TimeWin *w);
+
+/* Whether the partition (its slab and its parts) or a part of it cannot hold a row the predicates leave */
 extern bool sift_f2_pull_prune_entry(const SiftF2PullPrune *pr, const SiftPartitionEntry *e);
-extern bool sift_f2_pull_prune_part(const SiftF2PullPrune *pr, const SiftPartDesc *d);
+extern bool sift_f2_pull_prune_part(const SiftF2PullPrune *pr, const SiftPartitionEntry *e, const SiftPartDesc *d);
 
 /* The part to read next: the granules its key marks leave, and the zones of the leaves of the predicates, kept in the current memory context until the next part is opened. Counts the granules outside the key marks in st */
 extern void sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const SiftPart *part, const SiftGranuleDesc *dir, SiftF2PullStats *st);

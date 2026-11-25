@@ -504,7 +504,7 @@ advance(SiftF2Pull *p)
 		}
 		if (p->e != NULL && p->pi < p->list->nparts)
 		{
-			if (sift_f2_pull_prune_part(&p->prune, &p->list->parts[p->pi]))
+			if (sift_f2_pull_prune_part(&p->prune, p->e, &p->list->parts[p->pi]))
 			{
 				p->pi++;
 				p->stats.parts_skipped++;
