@@ -38,3 +38,4 @@ src/col/granule/enc_frame.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/f2/f2_tid_hash.c	-
 src/table/f2/f2_row_pack.c	-
 src/col/f2/f2_locate.c	-
+src/core/f2/f2_vm_xlog.c	-
