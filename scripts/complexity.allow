@@ -39,7 +39,6 @@ manifest-unbounded	src/col/f2/f2_tier_maint.c	2	maintenance or inspection of a w
 manifest-unbounded	src/col/f2/f2_vacuum_run.c	4	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/f2_write.c	3	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/l0_href.c	1	maintenance or inspection of a whole relation
-manifest-unbounded	src/col/f2/l0_href_fetch.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/l0_slab.c	3	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/l0_stage.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/l0_stage_flush.c	3	maintenance or inspection of a whole relation
