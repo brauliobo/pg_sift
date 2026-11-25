@@ -590,6 +590,8 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	uint64		total_rows = 0;
 	const SiftPartDicts *adopt = NULL;
 	MemoryContext adopt_cx = NULL;
+	SiftPart   *dominant_part = NULL;
+	int			dominant = -1;
 	const SiftColRemap **remap = palloc0(Max(ngens, 1) * sizeof(SiftColRemap *));
 	bool		mapped = false,
 				retier = false,
@@ -621,18 +623,21 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 		total_rows += at[i]->nrows;
 	for (int i = 0; i < ngens; i++)
 		if (remap[i] == NULL && at[i]->nrows * 10 >= total_rows * 6)
-			adopt = sift_part_dicts(rel, sift_compact_open_input(rel, at[i], (uint32) part_id, &adopt_cx));
+			dominant = i;
+	if (dominant >= 0)
+		adopt = sift_part_dicts(rel, dominant_part = sift_compact_open_input(rel, at[dominant], (uint32) part_id, &adopt_cx));
 	sink = (Sink) {.rel = rel,.part_id = (uint32) part_id,.level = level,.spec = &mspec,.dm = dm,.adopt = adopt,.mem = mem,.flush_bytes = mem->budget / SIFT_COMPACT_FLUSH_SHARE,.split = split,
 		.res = res,.cx = CurrentMemoryContext};
 	sink.rb[0] = sift_rowbuf_new(&mspec);
 	sink.rb[1] = split ? sift_rowbuf_new(&mspec) : NULL;
 	for (int i = 0; i < ngens && read; i++)
 	{
-		MemoryContext icx;
-		SiftPart   *part = sift_compact_open_input(rel, at[i], (uint32) part_id, &icx);
+		MemoryContext icx = NULL;
+		SiftPart   *part = i == dominant ? dominant_part : sift_compact_open_input(rel, at[i], (uint32) part_id, &icx);
 
 		read = add_part_rows(rel, part, at[i], (uint32) part_id, &sink, hot_cut, &mspec, &dm->map[i * dm->ncols], remap[i], hc, fold, res, rel_ext, nrel);
-		MemoryContextDelete(icx);
+		if (icx != NULL)
+			MemoryContextDelete(icx);
 	}
 	for (int side = 0; read && side < (split ? 2 : 1); side++)
 	{
