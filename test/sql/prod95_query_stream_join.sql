@@ -202,3 +202,7 @@ SELECT has_node($$SELECT DISTINCT ON (k) k, ts, txt FROM fg ORDER BY k, ts DESC$
 SELECT * FROM same_rows($$SELECT DISTINCT ON (k) k, ts, txt FROM fg ORDER BY k, ts DESC, id$$);
 SELECT leftover();
 RESET enable_sort;
+
+DROP TABLE sg, wg, wt, wn, rg, af_d, af, jp, jb, hp, hb, fg;
+DROP FUNCTION leftover(), has_node(text, text), same_rows(text), no_temp(text), regroup_spill();
+DROP EXTENSION pg_sift;

@@ -466,3 +466,6 @@ SELECT leftover();
 (1 row)
 
 RESET enable_sort;
+DROP TABLE sg, wg, wt, wn, rg, af_d, af, jp, jb, hp, hb, fg;
+DROP FUNCTION leftover(), has_node(text, text), same_rows(text), no_temp(text), regroup_spill();
+DROP EXTENSION pg_sift;
