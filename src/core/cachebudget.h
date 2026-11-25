@@ -50,6 +50,9 @@ extern bool sift_cache_room(Size need);
 /* after an entry is in (stamped with sift_cache_tick() last): drops the oldest others, never that entry, until the tree is under the limit again (the allocator rounds up to blocks); false when it still is not, and the entry is the statement's alone */
 extern bool sift_cache_commit(void);
 
+/* drops every entry nobody pins, from every cache, and gives the freed memory back to the system: what DISCARD ALL asks of a backend that goes to another client */
+extern void sift_cache_discard_all(void);
+
 extern Size sift_cache_total_bytes(void);
 
 #endif

@@ -185,6 +185,26 @@ cache_xact_event(XactEvent event, void *arg)
 }
 
 static void
+evict_all_kinds(void)
+{
+	Size		before = sift_cache_total_bytes();
+
+	for (int i = 0; i < nkinds; i++)
+		kinds[i]->evict_all();
+	reclaimed += before - Min(before, sift_cache_total_bytes());
+}
+
+void
+sift_cache_discard_all(void)
+{
+	if (cache_root == NULL)
+		return;
+	evict_all_kinds();
+	sift_mem_trim_os();
+	reclaimed = 0;
+}
+
+static void
 backend_cache_assign(int newval, void *extra)
 {
 	EvictRun	run;
@@ -192,13 +212,7 @@ backend_cache_assign(int newval, void *extra)
 	if (cache_root == NULL)
 		return;
 	if (newval == 0)
-	{
-		Size		before = sift_cache_total_bytes();
-
-		for (int i = 0; i < nkinds; i++)
-			kinds[i]->evict_all();
-		reclaimed += before - Min(before, sift_cache_total_bytes());
-	}
+		evict_all_kinds();
 	else
 	{
 		evict_begin(&run);

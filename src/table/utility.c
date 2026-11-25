@@ -1,7 +1,7 @@
 /*
  * table/utility.c - the statements on a sift_table that its format has to see around the server's own work (ALTER TABLE, SET SCHEMA and RENAME COLUMN): the hook finds the table of
  * the format and calls the callbacks it has (table/dispatch.h); a format without them (Format 1 follows through its event trigger) is left alone. A sift_table that becomes a partition
- * (ATTACH PARTITION, CREATE TABLE ... PARTITION OF) is checked against the publications of the table it joins.
+ * (ATTACH PARTITION, CREATE TABLE ... PARTITION OF) is checked against the publications of the table it joins, and DISCARD ALL empties the caches of the extension.
  */
 #include "postgres.h"
 
@@ -12,6 +12,7 @@
 #include "tcop/utility.h"
 #include "utils/rel.h"
 
+#include "core/cachebudget.h"
 #include "table/dispatch.h"
 #include "table/wal.h"
 
@@ -98,6 +99,8 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	else
 		standard_ProcessUtility(pstmt, query, readonly, context, params, env, dest, qc);
 	check_new_partitions(parse);
+	if (IsA(parse, DiscardStmt) && castNode(DiscardStmt, parse)->target == DISCARD_ALL)
+		sift_cache_discard_all();
 	if (ops == NULL)
 		return;
 	rel = relation_open(relid, NoLock);
