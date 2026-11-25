@@ -11,21 +11,19 @@
 
 #include "agg/cost.h"
 #include "agg/group/ht.h"
+#include "core/testrng.h"
 #include "utils/builtins.h"
 
 PG_FUNCTION_INFO_V1(sift_test_salted_ht);
 PG_FUNCTION_INFO_V1(sift_test_array_elem_mask);
 PG_FUNCTION_INFO_V1(sift_test_agg_cost);
 
-static uint64 rng_state;
+static SiftRng rng;
 
 static uint64
 rnd(void)
 {
-	rng_state ^= rng_state << 13;
-	rng_state ^= rng_state >> 7;
-	rng_state ^= rng_state << 17;
-	return rng_state * UINT64CONST(0x2545F4914F6CDD1D);
+	return sift_rng_next(&rng);
 }
 
 typedef struct Row
@@ -270,7 +268,7 @@ sift_test_salted_ht(PG_FUNCTION_ARGS)
 {
 	int64		bad = 0;
 
-	rng_state = PG_GETARG_INT64(0) * UINT64CONST(0x9E3779B97F4A7C15) | 1;
+	sift_rng_seed(&rng, PG_GETARG_INT64(0));
 	for (int i = 0; i < PG_GETARG_INT32(1); i++)
 	{
 		CHECK_FOR_INTERRUPTS();
@@ -294,7 +292,7 @@ sift_test_array_elem_mask(PG_FUNCTION_ARGS)
 {
 	int64		bad = 0;
 
-	rng_state = PG_GETARG_INT64(0) * UINT64CONST(0x9E3779B97F4A7C15) | 1;
+	sift_rng_seed(&rng, PG_GETARG_INT64(0));
 	for (int c = 0; c < PG_GETARG_INT32(1); c++)
 	{
 		const uint32 np = 1 + rnd() % 8192,

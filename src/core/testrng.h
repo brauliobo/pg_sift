@@ -29,6 +29,13 @@ sift_splitmix_next(uint64_t *s)
 	return z;
 }
 
+/* The next output of the stream whose state is *s, 47 bits: a product with a small factor stays inside int64 */
+static inline uint64_t
+sift_splitmix_next47(uint64_t *s)
+{
+	return sift_splitmix_next(s) >> 17;
+}
+
 typedef struct SiftRng
 {
 	uint64_t	s[4];

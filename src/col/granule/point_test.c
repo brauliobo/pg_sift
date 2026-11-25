@@ -11,15 +11,9 @@
 #include "utils/builtins.h"
 
 #include "col/granule/granule_int.h"
+#include "core/testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_s55_granule_point);
-
-static uint64
-rnd(uint64 *s)
-{
-	*s = *s * UINT64CONST(6364136223846793005) + UINT64CONST(1442695040888963407);
-	return *s >> 17;
-}
 
 /* The codes of the rows from the point decoder against those of the whole column: both say the column is not coded, or agree on the dictionary, the nulls and the codes */
 static int
@@ -63,7 +57,7 @@ case_failures(int kind, int pattern, int n, bool nulls, uint64 *rs)
 
 	for (int r = 0; r < n; r++)
 	{
-		const int64 x = pattern == 0 ? 7 : pattern == 1 ? r * 3 : pattern == 2 ? (int64) (rnd(rs) % 6) : (int64) (rnd(rs) % 1000003);
+		const int64 x = pattern == 0 ? 7 : pattern == 1 ? r * 3 : pattern == 2 ? (int64) (sift_splitmix_next47(rs) % 6) : (int64) (sift_splitmix_next47(rs) % 1000003);
 
 		tid[r] = ((uint64) (r / 100) << 16) | (uint64) (r % 100 + 1);
 		nl[r] = nulls && r % 5 == 2;
@@ -89,14 +83,14 @@ case_failures(int kind, int pattern, int n, bool nulls, uint64 *rs)
 	v = sift_granule_open(NULL, raw, desc.data_len, &desc);
 	for (int round = 0; round < 20; round++)
 	{
-		const int	m = 1 + (int) (rnd(rs) % Min(n, SIFT_POINT_ROWS_MAX));
-		const int	stride = 1 + (int) (rnd(rs) % (round % 2 == 0 ? 3 : 400));
+		const int	m = 1 + (int) (sift_splitmix_next47(rs) % Min(n, SIFT_POINT_ROWS_MAX));
+		const int	stride = 1 + (int) (sift_splitmix_next47(rs) % (round % 2 == 0 ? 3 : 400));
 		uint16	   *rows = palloc(m * sizeof(uint16));
 		bool	   *sn = palloc(m),
 				   *fn = palloc(n);
 		int			k = 0;
 
-		for (int r = (int) (rnd(rs) % 7); r < n && k < m; r += 1 + (int) (rnd(rs) % stride))
+		for (int r = (int) (sift_splitmix_next47(rs) % 7); r < n && k < m; r += 1 + (int) (sift_splitmix_next47(rs) % stride))
 			rows[k++] = r;
 		if (kind == 0)
 		{

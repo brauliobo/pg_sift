@@ -11,6 +11,7 @@
 
 #include "col/f2/test_int.h"
 #include "col/f2/f2_point_dir.h"
+#include "core/testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_s55_point_dir);
 PG_FUNCTION_INFO_V1(sift_test_f2_point_keys);
@@ -115,19 +116,20 @@ sift_test_s55_point_dir(PG_FUNCTION_ARGS)
 		vals[c] = palloc(n * sizeof(int64));
 	for (int r = 0; r < n; r++)
 	{
-		rs = rs * UINT64CONST(6364136223846793005) + UINT64CONST(1442695040888963407);
+		const uint64 x = sift_splitmix_next(&rs);
+
 		vals[UNIQUE][r] = r * 7919 + 13;
-		vals[WIDE][r] = (int64) ((rs >> 20) % (uint64) (n / 2 + 1));
-		vals[NARROW][r] = (int64) ((rs >> 20) % 9);
+		vals[WIDE][r] = (int64) ((x >> 20) % (uint64) (n / 2 + 1));
+		vals[NARROW][r] = (int64) ((x >> 20) % 9);
 		vals[TIMELIKE][r] = r * 1000;
 		vals[TAGGED][r] = r;
-		vals[NULLY][r] = (int64) ((rs >> 24) % (uint64) (n / 2 + 1));
+		vals[NULLY][r] = (int64) ((x >> 24) % (uint64) (n / 2 + 1));
 		vals[PAIR_A][r] = r % 211;
 		vals[PAIR_B][r] = r / 211;
 		nulls[r] = r % 3 == 0;
 		tags[r] = r == n - 1 ? 1 : 0;
-		snprintf(text[r], 16, "k%010d", (int) ((rs >> 20) % (uint64) n));
-		memcpy(uuid[r], &rs, 8);
+		snprintf(text[r], 16, "k%010d", (int) ((x >> 20) % (uint64) n));
+		memcpy(uuid[r], &x, 8);
 		memcpy(uuid[r] + 8, &r, 4);
 		memset(uuid[r] + 12, 0x5A, 4);
 		textp[r] = text[r];

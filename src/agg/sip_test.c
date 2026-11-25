@@ -16,19 +16,17 @@
 #include "utils/memutils.h"
 
 #include "agg/sip.h"
+#include "core/testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_sip);
 PG_FUNCTION_INFO_V1(sift_test_sip_filter);
 
-static uint64 rng_state;
+static SiftRng rng;
 
 static uint64
 rnd(void)
 {
-	rng_state ^= rng_state << 13;
-	rng_state ^= rng_state >> 7;
-	rng_state ^= rng_state << 17;
-	return rng_state * UINT64CONST(0x2545F4914F6CDD1D);
+	return sift_rng_next(&rng);
 }
 
 static int
@@ -268,7 +266,7 @@ sift_test_sip(PG_FUNCTION_ARGS)
 	int64		bad = empty_hash_case();
 
 	sift_aggkern6_init();
-	rng_state = (uint64) PG_GETARG_INT64(0) * UINT64CONST(0x9E3779B97F4A7C15) | 1;
+	sift_rng_seed(&rng, PG_GETARG_INT64(0));
 	for (int i = 0; i < PG_GETARG_INT32(1); i++)
 	{
 		CHECK_FOR_INTERRUPTS();

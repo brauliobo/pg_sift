@@ -17,6 +17,7 @@
 #include "access/parallel.h"
 #include "access/xact.h"
 #include "agg/par/dim_shm.h"
+#include "core/testrng.h"
 #include "miscadmin.h"
 #include "portability/instr_time.h"
 #include "storage/buffile.h"
@@ -58,19 +59,10 @@ typedef struct Ref
 	uint32		row;
 } Ref;
 
-static uint64
-splitmix(uint64 x)
-{
-	x += UINT64CONST(0x9E3779B97F4A7C15);
-	x = (x ^ (x >> 30)) * UINT64CONST(0xBF58476D1CE4E5B9);
-	x = (x ^ (x >> 27)) * UINT64CONST(0x94D049BB133111EB);
-	return x ^ (x >> 31);
-}
-
 static int64
 key_of(const Params *p, uint32 row)
 {
-	return (int64) (splitmix(p->seed + row * UINT64CONST(0x9E3779B97F4A7C15)) % p->domain) - (int64) (p->domain / 2);
+	return (int64) (sift_mix64(p->seed + row * SIFT_FIB64) % p->domain) - (int64) (p->domain / 2);
 }
 
 static void
@@ -84,7 +76,7 @@ gen_keys(void *arg, uint32 first, uint32 n, int64 *keys)
 static int64
 probe_key(const Params *p, uint32 i)
 {
-	const uint64 x = splitmix(p->seed ^ ((uint64) i << 20));
+	const uint64 x = sift_mix64(p->seed ^ ((uint64) i << 20));
 
 	switch (i % 3)
 	{

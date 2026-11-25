@@ -14,6 +14,7 @@
 #include "utils/builtins.h"
 
 #include "col/granule/granule_int.h"
+#include "core/testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_framed_chunks);
 PG_FUNCTION_INFO_V1(sift_test_f2_frame_point_us);
@@ -29,13 +30,6 @@ typedef struct FramedCase
 	bool	   *nl;
 } FramedCase;
 
-static uint64
-rnd(uint64 *s)
-{
-	*s = *s * UINT64CONST(6364136223846793005) + UINT64CONST(1442695040888963407);
-	return *s >> 17;
-}
-
 static FramedCase
 make_case(bool str, int n, bool nulls, int family, uint64 *rs)
 {
@@ -49,12 +43,12 @@ make_case(bool str, int n, bool nulls, int family, uint64 *rs)
 			continue;
 		if (str)
 		{
-			k.sv[r] = psprintf("row-%lu-%lu-%s", (unsigned long) rnd(rs), (unsigned long) r, family % 2 == 0 ? "a-longer-tail-of-text" : "t");
+			k.sv[r] = psprintf("row-%lu-%lu-%s", (unsigned long) sift_splitmix_next47(rs), (unsigned long) r, family % 2 == 0 ? "a-longer-tail-of-text" : "t");
 			k.sl[r] = strlen(k.sv[r]);
 		}
 		else
 		{
-			const double x = (double) (rnd(rs) % 1000000007);
+			const double x = (double) (sift_splitmix_next47(rs) % 1000000007);
 
 			k.fv[r] = family == 0 ? x / 1e9 + sin((double) r) * 1e-3 : family == 1 ? x / 7.0 : family == 2 ? sin((double) r) * 1e6 : 1.0 + x * 1e-12;
 		}

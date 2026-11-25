@@ -20,6 +20,7 @@
 #include "agg/cost.h"
 #include "agg/group/state.h"
 #include "agg/par/radix.h"
+#include "core/testrng.h"
 #include "miscadmin.h"
 #include "portability/instr_time.h"
 #include "utils/builtins.h"
@@ -74,20 +75,11 @@ typedef struct Gen
 	uint64		d;
 } Gen;
 
-static uint64
-splitmix(uint64 x)
-{
-	x += UINT64CONST(0x9E3779B97F4A7C15);
-	x = (x ^ (x >> 30)) * UINT64CONST(0xBF58476D1CE4E5B9);
-	x = (x ^ (x >> 27)) * UINT64CONST(0x94D049BB133111EB);
-	return x ^ (x >> 31);
-}
-
 static Gen
 gen_row(const Params *p, uint64 r)
 {
-	const uint64 x = splitmix(p->seed + r * UINT64CONST(0x9E3779B97F4A7C15)),
-				y = splitmix(x);
+	const uint64 x = sift_mix64(p->seed + r * SIFT_FIB64),
+				y = sift_mix64(x);
 	Gen			g;
 
 	g.id = x % p->groups + 1;
@@ -109,7 +101,7 @@ inline_key(uint64 id)
 static void
 wide_key(uint64 id, uint8 *buf, uint64 *nulls)
 {
-	const uint64 b = id * UINT64CONST(0x9E3779B97F4A7C15),
+	const uint64 b = id * SIFT_FIB64,
 				c = id ^ UINT64CONST(0xABCDEF0123456789);
 
 	memcpy(buf, &id, 8);

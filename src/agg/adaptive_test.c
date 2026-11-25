@@ -23,6 +23,7 @@
 #include "agg/group/tier.h"
 #include "agg/sip.h"
 #include "core/adapt_pipe.h"
+#include "core/testrng.h"
 
 PG_FUNCTION_INFO_V1(sift_test_apipe);
 PG_FUNCTION_INFO_V1(sift_test_apipe_filter);
@@ -30,15 +31,12 @@ PG_FUNCTION_INFO_V1(sift_test_sip_adapt);
 PG_FUNCTION_INFO_V1(sift_test_group_tiers);
 PG_FUNCTION_INFO_V1(sift_test_rollup_spill);
 
-static uint64 rng_state;
+static SiftRng rng;
 
 static uint64
 rnd(void)
 {
-	rng_state ^= rng_state << 13;
-	rng_state ^= rng_state >> 7;
-	rng_state ^= rng_state << 17;
-	return rng_state * UINT64CONST(0x2545F4914F6CDD1D);
+	return sift_rng_next(&rng);
 }
 
 static HeapTuple
@@ -134,7 +132,7 @@ sift_test_apipe(PG_FUNCTION_ARGS)
 				followed,
 				explored = false;
 
-	rng_state = UINT64CONST(0x9E3779B97F4A7C15);
+	sift_rng_seed(&rng, UINT64CONST(0x9E3779B97F4A7C15));
 	build_pipe(&p);
 	bad = violations(&p, sim, 200);
 	reorders = p.reorders;
@@ -269,7 +267,7 @@ sift_test_sip_adapt(PG_FUNCTION_ARGS)
 	Datum		values[8];
 	uint32		reenables_seen = 0;
 
-	rng_state = UINT64CONST(0xD1B54A32D192ED03);
+	sift_rng_seed(&rng, UINT64CONST(0xD1B54A32D192ED03));
 	sift_aggkern6_init();
 	for (int64 k = 0; k < members; k++)
 		sift_sip_insert_i64(sip, k);
