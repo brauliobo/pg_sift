@@ -8,7 +8,7 @@
 -- them once. rel names the relation the rows are of (NULL: every one), which is what the two checks that are not of a relation ask.
 CREATE OR REPLACE FUNCTION sift_internal.health_over(statuses jsonb, rel regclass DEFAULT NULL)
 RETURNS TABLE (relation regclass, severity text, check_name text, detail text, action_sql text)
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $fn$
 	WITH cfg AS (
 		SELECT coalesce((SELECT setting FROM pg_settings WHERE name = 'sift.async_maintenance'), 'on') = 'off' AS async_off,
 			   coalesce((SELECT setting::int8 FROM pg_settings WHERE name = 'sift.shared_cache_kb'), 65536) AS shared_kb
@@ -94,7 +94,7 @@ COMMENT ON FUNCTION sift_internal.health_over(jsonb, regclass) IS 'Internal: the
 
 CREATE OR REPLACE FUNCTION sift.health(rel regclass DEFAULT NULL)
 RETURNS TABLE (relation regclass, severity text, check_name text, detail text, action_sql text)
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $fn$
 	SELECT f.relation, f.severity, f.check_name, f.detail, f.action_sql
 	FROM sift_internal.health_over((SELECT coalesce(jsonb_agg(to_jsonb(s) || jsonb_build_object('relation', s.relation::oid, 'table_name', s.table_name::oid)), '[]') FROM sift.status(rel) s), rel) f
 	ORDER BY CASE f.severity WHEN 'error' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END, f.relation::text NULLS LAST, f.check_name
@@ -108,7 +108,7 @@ RETURNS TABLE (kind text, pid int4, relation regclass, part_id int8, job text, p
 			   bytes_written int8, elapsed_ms int8, throughput_mb_s numeric(8,2), eta_s numeric(10,1), started_at timestamptz, wait_event text,
 			   workers_active int4, workers_max int4, pacer_mode text, pacer_delay_ms int4, oltp_active_backends int4,
 			   shm_used_bytes int8, shm_limit_bytes int8, shm_util_pct numeric(5,2), shm_refusals int8)
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $fn$
 	WITH pc AS (
 		SELECT * FROM sift_internal.maint_pacer()
 	), shm AS (

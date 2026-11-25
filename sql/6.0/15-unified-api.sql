@@ -99,12 +99,12 @@ COMMENT ON FUNCTION sift.shared_memory_pools() IS 'The five pools of the shared 
 
 CREATE OR REPLACE FUNCTION sift.approx_percentile(rel regclass, col text, p float8, where_sql text DEFAULT NULL)
 RETURNS float8
-	AS 'MODULE_PATHNAME', 'sift_approx_percentile' LANGUAGE C STABLE PARALLEL RESTRICTED;
+	AS 'MODULE_PATHNAME', 'sift_approx_percentile' LANGUAGE C STABLE PARALLEL RESTRICTED SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
 COMMENT ON FUNCTION sift.approx_percentile(regclass, text, float8, text) IS 'The least value of a column whose share of the rows is at least p (0 to 1): read from the quantile sketches of the sift_col index when it keeps them (sketches = ''kll(col)'') and at most 1% of the rows are dead, pending or in a part without one, else exact; where_sql is a filter and always answers exactly. NaN, NULL and infinite floats, dates and timestamps are no values.';
 
 CREATE OR REPLACE FUNCTION sift.approx_quantiles(rel regclass, col text, ps float8[], where_sql text DEFAULT NULL)
 RETURNS float8[]
-	AS 'MODULE_PATHNAME', 'sift_approx_quantiles' LANGUAGE C STABLE PARALLEL RESTRICTED;
+	AS 'MODULE_PATHNAME', 'sift_approx_quantiles' LANGUAGE C STABLE PARALLEL RESTRICTED SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
 COMMENT ON FUNCTION sift.approx_quantiles(regclass, text, float8[], text) IS 'sift.approx_percentile for each fraction of ps, from one pass over the sketches (or one exact query); the array has one value for each fraction, in order.';
 
 -- The options of the format of a sift_table, a row each: the text the table stores (NULL when it sets none), what its format has for a table that sets none, and the setting of the cluster that stands for
@@ -116,7 +116,7 @@ COMMENT ON FUNCTION sift._table_options(regclass) IS 'The options of the format 
 
 CREATE OR REPLACE FUNCTION sift.table_options(tbl regclass DEFAULT NULL)
 	RETURNS TABLE (rel regclass, name text, value text, source text, default_value text)
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	WITH t AS MATERIALIZED (
 		SELECT c.oid AS relid, c.oid::regclass AS rel
 		FROM pg_class c

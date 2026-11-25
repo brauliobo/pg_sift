@@ -7,7 +7,7 @@ GRANT USAGE ON SCHEMA sift_internal TO PUBLIC;
 
 -- The calm wording for a relation whose on-disk format is Format Major 1: fully supported, upgrading is optional.
 CREATE OR REPLACE FUNCTION sift_internal.format_note(am text, major int, size_bytes int8) RETURNS text
-	LANGUAGE sql IMMUTABLE PARALLEL SAFE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql IMMUTABLE PARALLEL SAFE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT CASE WHEN size_bytes = 0 OR major IS NULL THEN 'empty'
 				WHEN major >= 2 THEN 'Format 2.0'
 				WHEN am = 'sift' THEN 'Format 1.7 (current)'
@@ -24,7 +24,7 @@ COMMENT ON FUNCTION sift_internal.check_raise(regclass, bool) IS 'Internal: rais
 -- The ALTER DATABASE command that preloads the library for the database, or NULL when the library is preloaded already or the caller may not read the two settings
 -- (they are for pg_read_all_settings: a monitoring role must get a health report, not an error, so it is told nothing about this).
 CREATE OR REPLACE FUNCTION sift_internal.preload_hint() RETURNS text
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT CASE WHEN count(*) = 2 AND count(s.setting) = 2
 				 AND NOT EXISTS (SELECT 1 FROM unnest(string_to_array(string_agg(s.setting, ','), ',')) l
 								 WHERE regexp_replace(regexp_replace(btrim(l, E' \t"'), '^.*/', ''), '[.](so|dylib|dll)$', '') = 'pg_sift')
@@ -37,7 +37,7 @@ COMMENT ON FUNCTION sift_internal.preload_hint() IS 'Internal: the command that 
 
 -- The relation kind a deprecated function of 5.1 serves: any other relation gets the error it got in 5.1. want is sift_col, sift_table or sift (a sift or a sift_col index).
 CREATE OR REPLACE FUNCTION sift_internal.require_am(rel regclass, want text) RETURNS void
-	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog AS $fn$
+	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $fn$
 BEGIN
 	IF NOT EXISTS (SELECT 1 FROM pg_class WHERE oid = rel) THEN
 		RAISE EXCEPTION 'relation with OID % does not exist', rel::oid USING ERRCODE = 'undefined_table';
@@ -53,7 +53,7 @@ COMMENT ON FUNCTION sift_internal.require_am(regclass, text) IS 'Internal: raise
 
 -- The right the inspectors of a sift_col index ask for: the caller may read the table of the index, maintain it, or is a member of pg_monitor (sift.col_segments, sift.col_index_info).
 CREATE OR REPLACE FUNCTION sift_internal.require_inspect(index regclass) RETURNS void
-	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
+	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $fn$
 DECLARE
 	heap regclass := (SELECT indrelid FROM pg_index WHERE indexrelid = index);
 BEGIN

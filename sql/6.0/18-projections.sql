@@ -26,14 +26,14 @@ END $$;
 COMMENT ON EVENT TRIGGER sift_projection_defs_drop IS 'After a DROP: removes the rows of sift.projection_defs of the tables that went';
 
 CREATE OR REPLACE FUNCTION sift.create_projection(rel regclass, name text, spec text) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_create_projection' LANGUAGE C VOLATILE STRICT SECURITY INVOKER SET search_path = pg_catalog, sift;
+	AS 'MODULE_PATHNAME', 'sift_create_projection' LANGUAGE C VOLATILE STRICT SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
 
 CREATE OR REPLACE FUNCTION sift.drop_projection(rel regclass, name text) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_drop_projection' LANGUAGE C VOLATILE STRICT SECURITY INVOKER SET search_path = pg_catalog, sift;
+	AS 'MODULE_PATHNAME', 'sift_drop_projection' LANGUAGE C VOLATILE STRICT SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
 
 CREATE OR REPLACE FUNCTION sift.projection_list()
 RETURNS TABLE (relation regclass, name text, kind text, state text, spec text, rows bigint, bytes bigint, synced_version bigint)
-	AS 'MODULE_PATHNAME', 'sift_projection_list' LANGUAGE C STABLE SECURITY INVOKER SET search_path = pg_catalog, sift;
+	AS 'MODULE_PATHNAME', 'sift_projection_list' LANGUAGE C STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
 
 CREATE OR REPLACE VIEW sift.secondary_projections WITH (security_invoker = true) AS SELECT * FROM sift.projection_list();
 GRANT SELECT ON sift.secondary_projections TO PUBLIC;

@@ -9,7 +9,7 @@ CREATE SCHEMA IF NOT EXISTS sift_internal;
 
 -- The sift.* lines of the configuration files, for the roles that may read pg_file_settings (superusers and pg_read_all_settings); any other role gets no rows, not a permission error.
 CREATE OR REPLACE FUNCTION sift_internal.file_settings() RETURNS TABLE (name text, setting text, sourcefile text, sourceline int4)
-LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog AS $fn$
+LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $fn$
 BEGIN
 	IF pg_has_role(current_user, 'pg_read_all_settings', 'USAGE') THEN
 		RETURN QUERY SELECT f.name, f.setting, f.sourcefile, f.sourceline FROM pg_file_settings f WHERE f.name LIKE 'sift.%';
@@ -19,7 +19,7 @@ $fn$;
 
 CREATE OR REPLACE FUNCTION sift_internal.upgrade_findings(target text DEFAULT NULL)
 RETURNS TABLE (ord int, phase text, object text, kind text, detected text, status text, advice text, action_sql text, size_bytes int8)
-LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
+LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $fn$
 DECLARE
 	-- the settings that 6.0 no longer has, each with what replaces it: the 90 settings of 5.1 that 6.0 removes or folds (the GPU settings stay: Vulkan is kept), and the three that 4.2 and 5.0 removed
 	removed CONSTANT jsonb := '{
@@ -367,7 +367,7 @@ COMMENT ON FUNCTION sift_internal.upgrade_findings(text) IS 'Internal: the findi
 -- status: blocker, warn, info or ok. target, a release such as 5.1, asks what that release could not read: a relation in Format 2.0 is a blocker there. NULL is 6.0.
 CREATE OR REPLACE FUNCTION sift.upgrade_check(target text DEFAULT NULL)
 RETURNS TABLE (object text, kind text, detected text, status text, advice text)
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT f.object, f.kind, f.detected, f.status, f.advice FROM sift_internal.upgrade_findings(target) f ORDER BY f.ord, f.object
 $$;
 COMMENT ON FUNCTION sift.upgrade_check(text) IS 'What to look at before ALTER EXTENSION pg_sift UPDATE TO 6.0, a library swap or a downgrade, one row per finding (object, kind, detected, status blocker, warn, info or ok, advice). A relation of Format 1 and the options of 5.1 are info: 6.0 reads and writes them. A removed setting is a blocker. A target release such as 5.1 asks what that release could not read.';
@@ -378,7 +378,7 @@ COMMENT ON FUNCTION sift.upgrade_check(text) IS 'What to look at before ALTER EX
 --   psql -At -c "SELECT action_sql FROM sift.migrate_plan() WHERE phase LIKE 'pre\_%' AND action_sql IS NOT NULL ORDER BY step"
 CREATE OR REPLACE FUNCTION sift.migrate_plan(target text DEFAULT '6.0')
 RETURNS TABLE (step int4, phase text, object text, kind text, severity text, reason text, action_sql text)
-	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
+	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $fn$
 BEGIN
 	IF target !~ '^6\.[0-9]+' THEN
 		RAISE EXCEPTION 'migrate_plan: the plan is for 6.0, not "%"', target USING ERRCODE = 'invalid_parameter_value', HINT = 'sift.upgrade_check(target) tells what an older release cannot read';

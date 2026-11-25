@@ -13,7 +13,7 @@ CREATE OR REPLACE FUNCTION sift.col_verify(index regclass, heapallindexed bool D
 
 -- @deprecated sift.check; the live rows of the table as before
 CREATE OR REPLACE FUNCTION sift.table_verify(tbl regclass) RETURNS bigint
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	PERFORM sift_internal.require_am(tbl, 'sift_table');
 	PERFORM sift_internal.check_raise(tbl, false);
@@ -22,12 +22,12 @@ END $$;
 
 -- @deprecated sift.promote
 CREATE OR REPLACE FUNCTION sift.col_promote(index regclass) RETURNS int4
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN PERFORM sift_internal.require_am(index, 'sift_col'); RETURN sift.promote(index); END $$;
 
 -- @deprecated sift.merge
 CREATE OR REPLACE FUNCTION sift.col_merge(index regclass, force bool DEFAULT false) RETURNS int4
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN PERFORM sift_internal.require_am(index, 'sift_col'); RETURN sift.merge(index, force); END $$;
 
 -- @deprecated sift.maintain: the entry point of 5.1, which answers for Format 1 (true when the index was rewritten) and Format 2.0
@@ -37,7 +37,7 @@ CREATE OR REPLACE FUNCTION sift.col_maintain(index regclass) RETURNS bool
 -- @deprecated sift.maintain
 CREATE OR REPLACE FUNCTION sift.table_maintain(tbl regclass, OUT busy bool, OUT dead_rows int8, OUT promoted int4, OUT merged int4,
 											   OUT blocks_before int8, OUT blocks_after int8) RETURNS record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	PERFORM sift_internal.require_am(tbl, 'sift_table');
 	SELECT m.busy, m.dead_rows, m.promoted, m.merged, m.blocks_before, m.blocks_after
@@ -49,7 +49,7 @@ END $$;
 CREATE OR REPLACE FUNCTION sift.index_info(index regclass, OUT relation_blocks int8, OUT high_water int8, OUT free_blocks int8, OUT reusable_blocks int8,
 										   OUT free_extents int8, OUT segments int4, OUT max_segments int4, OUT ndocs int8, OUT sum_dl int8,
 										   OUT maintenance_busy bool) RETURNS record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	SELECT s.relation_blocks, s.high_water, s.free_blocks, s.reusable_blocks, s.free_extents, s.parts, NULL::int4, s.rows, NULL::int8, s.maintenance_busy
 	INTO index_info.relation_blocks, index_info.high_water, index_info.free_blocks, index_info.reusable_blocks, index_info.free_extents,
@@ -73,7 +73,7 @@ CREATE OR REPLACE FUNCTION sift.col_space(index regclass, OUT relation_blocks in
 -- @deprecated sift.space
 CREATE OR REPLACE FUNCTION sift.table_space(tbl regclass, OUT relation_blocks int8, OUT high_water int8, OUT free_blocks int8, OUT reusable_blocks int8,
 											OUT free_extents int8, OUT vblocks_left int8) RETURNS record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	SELECT s.relation_blocks, s.high_water, s.free_blocks, s.reusable_blocks, s.free_extents, s.vblocks_left
 	INTO table_space.relation_blocks, table_space.high_water, table_space.free_blocks, table_space.reusable_blocks, table_space.free_extents, table_space.vblocks_left
@@ -84,7 +84,7 @@ END $$;
 CREATE OR REPLACE FUNCTION sift.col_segments(index regclass, OUT gen int8, OUT kind text, OUT rows int8, OUT bytes int8, OUT sb_lo int4, OUT sb_hi int4,
 											 OUT units int4, OUT dirty bool, OUT dead_rows int8, OUT extents int4, OUT format int4, OUT preagg_bytes int8)
 	RETURNS SETOF record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	PERFORM sift_internal.require_am(index, 'sift_col');
 	IF (SELECT f.major FROM sift.index_format(index) f) = 2 THEN
@@ -100,7 +100,7 @@ END $$;
 CREATE OR REPLACE FUNCTION sift.table_segments(tbl regclass, OUT gen int8, OUT kind text, OUT rows int8, OUT bytes int8, OUT sb_lo int4, OUT sb_hi int4,
 											   OUT units int4, OUT dead_rows int8, OUT format int4, OUT unfrozen bool, OUT min_xid xid, OUT max_xid xid)
 	RETURNS SETOF record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	PERFORM sift_internal.require_am(tbl, 'sift_table');
 	IF (SELECT f.major FROM sift.index_format(tbl) f) = 2 THEN
@@ -114,17 +114,17 @@ END $$;
 
 -- @deprecated sift.refusal_slugs
 CREATE OR REPLACE FUNCTION sift.refusal_actions(OUT slug text, OUT action text) RETURNS SETOF record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN RETURN QUERY SELECT r.slug, r.action FROM sift.refusal_slugs() r; END $$;
 
 -- @deprecated sift.stats(false); the 0-argument form reads the totals of the server, as it did
 CREATE OR REPLACE FUNCTION sift.stats(OUT name text, OUT value int8) RETURNS SETOF record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN RETURN QUERY SELECT s.name, s.value FROM sift.stats(false) s; END $$;
 
 -- @deprecated sift.migrate_plan, sift.upgrade_check: after the update nothing is required, and what is optional is listed, cheapest first
 CREATE OR REPLACE FUNCTION sift.upgrade_commands(OUT kind text, OUT object regclass, OUT reason text, OUT command text, OUT required bool) RETURNS SETOF record
-	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	RETURN QUERY SELECT CASE f.kind WHEN 'index' THEN 'reindex' WHEN 'table' THEN 'rewrite' ELSE 'reset' END, f.object::regclass, f.advice, f.action_sql, false
 				 FROM sift_internal.upgrade_findings('6.0') f
@@ -140,13 +140,13 @@ END $$;
 -- @deprecated sift.status: the arena of write buffers kept as references is gone
 CREATE OR REPLACE FUNCTION sift.col_arena_status(OUT slots_in_use int4, OUT slots int4, OUT bytes_in_use int8, OUT rows_stored int8, OUT put_fallbacks int8,
 												 OUT seals_forced int8, OUT rows_rebuilt int8, OUT segments int4, OUT bytes_taken int8) RETURNS record
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT 0, 0, 0::int8, 0::int8, 0::int8, 0::int8, 0::int8, 0, 0::int8
 $$;
 
 -- @deprecated sift.parts: Format 1 keeps a stamp per segment, Format 2.0 none
 CREATE OR REPLACE FUNCTION sift.col_stamps(index regclass, OUT gen bigint, OUT entries bigint, OUT stamp xid) RETURNS SETOF record
-	LANGUAGE plpgsql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	PERFORM sift_internal.require_am(index, 'sift_col');
 	PERFORM sift_internal.require_inspect(index);
@@ -176,19 +176,19 @@ CREATE OR REPLACE FUNCTION sift.col_unit_hist(index regclass, dim text, measure 
 -- @deprecated sift.activity: pre-aggregates are rewritten by the maintenance step, no request queue is kept
 CREATE OR REPLACE FUNCTION sift.col_rollup_counters(OUT requested int8, OUT refreshed int8, OUT skipped int8, OUT dropped int8, OUT queued int4,
 												   OUT refreshing int4) RETURNS record
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT 0::int8, 0::int8, 0::int8, 0::int8, 0, 0
 $$;
 
 -- @deprecated sift.activity
 CREATE OR REPLACE FUNCTION sift.col_rollup_queue(OUT index regclass, OUT segment int8, OUT units int4, OUT requested_at timestamptz, OUT state text) RETURNS SETOF record
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT NULL::regclass, NULL::int8, NULL::int4, NULL::timestamptz, NULL::text WHERE false
 $$;
 
 -- @deprecated sift.maintain
 CREATE OR REPLACE FUNCTION sift.col_rollup_refresh(index regclass) RETURNS int4
-	LANGUAGE sql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$ SELECT 0 $$;
+	LANGUAGE sql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$ SELECT 0 $$;
 
 -- @deprecated sift.explain_why: the scans of this session the pre-aggregates did not answer
 CREATE OR REPLACE FUNCTION sift.col_rollup_misses(OUT rel regclass, OUT reason text, OUT fixable bool, OUT scans int8, OUT units int8) RETURNS SETOF record
@@ -196,7 +196,7 @@ CREATE OR REPLACE FUNCTION sift.col_rollup_misses(OUT rel regclass, OUT reason t
 
 -- @deprecated sift.space
 CREATE OR REPLACE FUNCTION sift.col_shrink_history(index regclass, OUT shrink_blocked_by text, OUT last_shrink timestamptz) RETURNS record
-	LANGUAGE plpgsql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE plpgsql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 BEGIN
 	SELECT s.shrink_blocked_by, s.last_shrink INTO col_shrink_history.shrink_blocked_by, col_shrink_history.last_shrink FROM sift.space(index) s;
 END $$;
@@ -204,14 +204,14 @@ END $$;
 -- @deprecated sift.index_choices: the advice machinery of 5.1 is gone, the build says what it chose
 CREATE OR REPLACE FUNCTION sift.index_advice(index regclass, OUT leaf text, OUT kind text, OUT held text, OUT sampled int4, OUT share int4, OUT advice text)
 	RETURNS SETOF record
-	LANGUAGE sql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT NULL::text, NULL::text, NULL::text, NULL::int4, NULL::int4, NULL::text WHERE false
 $$;
 
 -- @deprecated sift.index_choices: key_cut was replaced by key_order = 'auto'
 CREATE OR REPLACE FUNCTION sift.key_cut_decision(index regclass, OUT leaf text, OUT units float8, OUT sampled float8, OUT reads float8, OUT ideal float8,
 												 OUT growth_pct float8, OUT decision text, OUT reason text) RETURNS record
-	LANGUAGE sql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STRICT STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT NULL::text, NULL::float8, NULL::float8, NULL::float8, NULL::float8, NULL::float8, 'none', 'key_cut was replaced by key_order = ''auto'', which sift.index_choices reports'
 $$;
 
@@ -220,20 +220,20 @@ $$;
 
 -- @deprecated: no shared value store is kept; no rows
 CREATE OR REPLACE FUNCTION sift.col_value_store_usage(store regclass, OUT epoch int8, OUT member regclass, OUT segments int4, OUT codes int8, OUT total_codes int8) RETURNS SETOF record
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT NULL::int8, NULL::regclass, NULL::int4, NULL::int8, NULL::int8 WHERE false
 $$;
 
 -- @deprecated: no shared value store is kept; no rows
 CREATE OR REPLACE FUNCTION sift.col_value_store_members(OUT index_name regclass, OUT table_name regclass, OUT column_name text, OUT state text, OUT key_order text, OUT duplicate_bytes float8)
 	RETURNS SETOF record
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
+	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$
 	SELECT NULL::regclass, NULL::regclass, NULL::text, NULL::text, NULL::text, NULL::float8 WHERE false
 $$;
 
 -- @deprecated: no shared value store is kept; nothing to compact, 0 runs removed
 CREATE OR REPLACE FUNCTION sift.col_value_store_compact(tbl regclass, col name) RETURNS int8
-	LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$ SELECT 0::int8 $$;
+	LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $$ SELECT 0::int8 $$;
 
 COMMENT ON FUNCTION sift.verify(regclass, bool) IS 'Deprecated: sift.check. Raises the first problem of the index.';
 COMMENT ON FUNCTION sift.col_verify(regclass, bool) IS 'Deprecated: sift.check. Raises the first problem of the index.';

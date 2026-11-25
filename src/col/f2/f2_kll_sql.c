@@ -119,13 +119,13 @@ value_expr(Oid type, const char *col, const char **finite_only)
 	switch (type)
 	{
 		case DATEOID:
-			*finite_only = psprintf(" AND isfinite(%s)", col);
+			*finite_only = psprintf(" AND pg_catalog.isfinite(%s)", col);
 			return psprintf("(%s - DATE '2000-01-01')::float8", col);
 		case TIMESTAMPOID:
-			*finite_only = psprintf(" AND isfinite(%s)", col);
+			*finite_only = psprintf(" AND pg_catalog.isfinite(%s)", col);
 			return psprintf("(extract(epoch FROM (%s - TIMESTAMP '2000-01-01')) * 1000000)::float8", col);
 		case TIMESTAMPTZOID:
-			*finite_only = psprintf(" AND isfinite(%s)", col);
+			*finite_only = psprintf(" AND pg_catalog.isfinite(%s)", col);
 			return psprintf("(extract(epoch FROM (%s - TIMESTAMPTZ '2000-01-01 00:00:00+00')) * 1000000)::float8", col);
 		default:
 			return psprintf("(%s)::float8", col);
@@ -146,7 +146,7 @@ exact_answer(const KllTarget *t, const char *where, bool scalar, Datum ps, Datum
 
 	sift_rel_must_exist(t->heap);
 	initStringInfo(&q);
-	appendStringInfo(&q, "SELECT percentile_disc($1) WITHIN GROUP (ORDER BY v) FROM (SELECT %s AS v FROM %s WHERE (%s)%s) s WHERE v < 'Infinity'::float8 AND v > '-Infinity'::float8", expr,
+	appendStringInfo(&q, "SELECT pg_catalog.percentile_disc($1) WITHIN GROUP (ORDER BY v) FROM (SELECT %s AS v FROM %s WHERE (%s)%s) s WHERE v < 'Infinity'::float8 AND v > '-Infinity'::float8", expr,
 					 quote_qualified_identifier(get_namespace_name(get_rel_namespace(t->heap)), get_rel_name(t->heap)), where, finite);
 	SPI_connect();
 	if (SPI_execute_with_args(q.data, 1, &argtype, &ps, NULL, true, 1) != SPI_OK_SELECT || SPI_processed != 1)
