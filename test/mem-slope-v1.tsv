@@ -1,4 +1,4 @@
 # NAME	KIND	CEILING	BASIS	STATUS	SETUP	OPERATION	WARM	REASON -- scripts/mem-slope.py with MEM_SLOPE_TSV: the operations of Format 1 relations that keep memory of the rows (test/t/v1_slope.sh) with the default sift.backend_cache_kb; columns as test/mem-slope.tsv
-v1_table_update_all	slope	120	sampled	open	create table {s} using sift_table as select * from {f} order by id;	update {s} set amount = amount + 1;		bounded and not at work_mem: the scans that read the rows of a whole-table UPDATE hold three arenas of 4 MB, a dictionary cache and a write buffer, which the first 400,000 rows fill (23.5 MB at 400,000 rows, the same at 1,600,000); its tombstones follow work_mem; measured 105, 105, 105 B/row
+v1_table_update_all	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;	update {s} set amount = amount + 1;		
 v1_table_delete_part	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;	delete from {s} where k_lo < 5;		
 v1_table_vacuum	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	vacuum {s};		
