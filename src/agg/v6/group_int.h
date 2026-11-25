@@ -153,8 +153,7 @@ struct SiftV6Group
 #define V6_KEYS_ALL		UINT32_MAX
 extern void v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want);
 /* The Datum of an integer key or value of a column of type typid */
-extern Datum v6g_int_datum(Oid typid, int64 x);
-extern Datum v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mask, bool *isnull);
+extern Datum v6g_int_datum(Oid typid, int64 x);extern Datum v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mask, bool *isnull);
 
 static inline bool
 is_valid(const SiftVec *v, uint16 r)
@@ -222,11 +221,19 @@ v6g_acc_of_f64_sum(double hi, double lo, int64 n)
 	return acc;
 }
 
+/* SUM or AVG of a numeric the scan derives (a product of columns): its rows can pass the 128 bits of the sums of the other arguments, so its state is the 192-bit sum of v6_acc_wide.h */
+static inline bool
+v6g_sum_wide(const SiftV6Agg *a)
+{
+	return (a->kind == SV6_SUM || a->kind == SV6_AVG) && a->arg.derive > 0 && a->arg.typid == NUMERICOID;
+}
+
 /* How the states of aggregate a combine: the one operation of v6_acc.h for the merge of the spill of a serial run and the partitions of a parallel one */
 static inline V6AccOp
 v6g_acc_op(const SiftV6Agg *a)
 {
 	const bool	f64 = sift_v6_class(a->arg.typid) == SV6C_F64;
+	const V6AccOp sum = !f64 ? V6A_SUM_INT : sift_agg_exact_float ? V6A_SUM_F64_ROW : V6A_SUM_F64;
 
 	switch (a->kind)
 	{
@@ -237,9 +244,10 @@ v6g_acc_op(const SiftV6Agg *a)
 			return V6A_COUNT_PIECE;
 		case SV6_SUM:
 		case SV6_AVG:
+			return v6g_sum_wide(a) ? V6A_SUM_WIDE : sum;
 		case SV6_SUM_DISTINCT:
 		case SV6_AVG_DISTINCT:
-			return !f64 ? V6A_SUM_INT : sift_agg_exact_float ? V6A_SUM_F64_ROW : V6A_SUM_F64;
+			return sum;
 		case SV6_MIN:
 			return f64 ? V6A_MIN_F64 : V6A_MIN_INT;
 		case SV6_MAX:

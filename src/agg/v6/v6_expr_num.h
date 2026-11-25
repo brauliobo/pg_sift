@@ -4,8 +4,8 @@
  * where a factor is a column, or a column plus or minus a constant, and every column is a scaled integer (value * 10^scale, up to 18 digits) of the index. The product of scales is the sum of the
  * scales, as numeric_mul gives it, and a sum of scales aligns to the larger one, as numeric_add does: the result is the integer PostgreSQL's numeric holds, at the scale of its display.
  *
- * A batch is computed in int64 with the overflow of every operation checked, and again in 128 bits only when one of its rows leaves int64 (the vector is then SVEC_NUM128); a value past 128 bits is an
- * error the statement can avoid with sift.enable_agg = off. A factor of one derivation that is the first factors of another (the discounted price of the charge) is computed once: the longer one multiplies
+ * A batch is computed in int64 with the overflow of every operation checked, and again in 128 bits only when one of its rows leaves int64 (the vector is then SVEC_NUM128), and in 192 bits when one
+ * leaves those (SVEC_NUM256: the sums of SUM and AVG are 192-bit too, v6_acc_wide.h); a product of 2^191 or more (57 digits) is an error the statement can avoid with sift.enable_agg = off. A factor of one derivation that is the first factors of another (the discounted price of the charge) is computed once: the longer one multiplies
  * the vector of the shorter. A NULL column makes the row NULL, else a NaN one makes it NaN (the vector's nan bitmap, as for a column): the scan lets the NaN of these columns through.
  *
  * A factor is stored in the fields of SiftV6Derive that the plan carries: cond[i] its column, cval[i] its constant k (at the scale s of the factor) and four bytes of else_bytes: negated (the factor is

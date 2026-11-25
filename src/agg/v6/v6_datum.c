@@ -147,9 +147,10 @@ sift_v6_native_datum(const SiftVec *v, uint16 r, Oid typid, int scale)
 		case SVEC_DATUM:
 			return ((const Datum *) v->data)[r];
 		case SVEC_DICT32:
+		case SVEC_NUM256:
 			break;
 	}
-	SIFT_INVARIANT(false, "a vector of dictionary codes is not turned into datums");
+	SIFT_INVARIANT(false, "a vector of dictionary codes or of a numeric product past 128 bits is not turned into datums");
 	return (Datum) 0;
 }
 

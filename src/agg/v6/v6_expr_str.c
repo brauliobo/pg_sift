@@ -115,7 +115,7 @@ void
 sift_vx_out_init(SiftVxOut *o, MemoryContext cx)
 {
 	*o = (SiftVxOut) {0};
-	o->data = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	o->data = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftI256) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 }
 
 static inline bool

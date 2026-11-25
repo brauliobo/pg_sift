@@ -235,35 +235,155 @@ i128_at(const SiftVec *v, uint32 r)
 	return (__int128) (((unsigned __int128) (uint64) ((const SiftI128 *) v->data)[r].hi << 64) | ((const SiftI128 *) v->data)[r].lo);
 }
 
-/* a row of a wide vector is below 2^95, so that 2^32 of them add up in the 128 bits of the sum of the groups */
-#define SUM_ROW_LIMIT	(((__int128) 1) << 95)
+static inline bool
+row_wanted(const uint64 *todo, uint32 r)
+{
+	return (todo[r >> 6] >> (r & 63)) & 1;
+}
 
-/* the rows of todo in 128 bits: an error when a product leaves them too */
-static void
+static inline __int128
+factor_wide(const Fac *f, uint32 r)
+{
+	return (__int128) f->m * f->x[r] + f->k;
+}
+
+/* the rows of todo in 128 bits; false when the product of a row leaves them */
+static bool
 eval128(const Fac *f, int nf, const SiftVec *pre, uint32 n, const uint64 *todo, SiftI128 *out)
 {
+	bool		ovf = false;
+
 	for (uint32 r = 0; r < n; r++)
 	{
-		__int128	v = 0;
-		bool		ovf = false;
+		__int128	v;
 		int			i = 0;
 
-		if (!((todo[r >> 6] >> (r & 63)) & 1))
+		if (!row_wanted(todo, r))
 			continue;
 		if (pre != NULL)
 			v = i128_at(pre, r);
 		else
+			v = factor_wide(&f[i++], r);
+		for (; i < nf; i++)
+			ovf |= __builtin_mul_overflow(v, factor_wide(&f[i], r), &v);
+		out[r] = (SiftI128) {.lo = (uint64) v,.hi = (int64) (v >> 64)};
+	}
+	return !ovf;
+}
+
+/* the magnitude of a product below 2^191, in 64-bit limbs, low first */
+typedef struct Mag
+{
+	uint64		l[3];
+} Mag;
+
+static inline unsigned __int128
+abs128(__int128 v)
+{
+	return v < 0 ? -(unsigned __int128) v : (unsigned __int128) v;
+}
+
+static Mag
+mag_of(__int128 v)
+{
+	const unsigned __int128 u = abs128(v);
+
+	return (Mag) {{(uint64) u, (uint64) (u >> 64), 0}};
+}
+
+/* m * f; false when the product is 2^191 or more */
+static bool
+mag_mul(Mag *m, unsigned __int128 f)
+{
+	const uint64 fl[2] = {(uint64) f, (uint64) (f >> 64)};
+	uint64		r[5] = {0};
+
+	for (int i = 0; i < 3; i++)
+	{
+		unsigned __int128 carry = 0;
+
+		for (int j = 0; j < 2; j++)
 		{
-			v = (__int128) f[0].m * f[0].x[r] + f[0].k;
-			i = 1;
+			const unsigned __int128 t = (unsigned __int128) m->l[i] * fl[j] + r[i + j] + carry;
+
+			r[i + j] = (uint64) t;
+			carry = t >> 64;
+		}
+		r[i + 2] = (uint64) carry;
+	}
+	if (r[3] != 0 || r[4] != 0 || (r[2] >> 63) != 0)
+		return false;
+	memcpy(m->l, r, sizeof(m->l));
+	return true;
+}
+
+static SiftI256
+i256_of(bool neg, Mag m)
+{
+	SiftI256	o = {{m.l[0], m.l[1], m.l[2], 0}};
+
+	if (neg && (m.l[0] | m.l[1] | m.l[2]) != 0)
+	{
+		o.l[0] = -m.l[0];
+		o.l[1] = ~m.l[1] + (m.l[0] == 0);
+		o.l[2] = ~m.l[2] + (m.l[0] == 0 && m.l[1] == 0);
+		o.l[3] = ~UINT64CONST(0);
+	}
+	return o;
+}
+
+/* the sign and magnitude of row r of the vector of the first factors */
+static bool
+row_mag(const SiftVec *v, uint32 r, Mag *m)
+{
+	SiftI256	x;
+
+	if (v->type != SVEC_NUM256)
+	{
+		const __int128 i = i128_at(v, r);
+
+		*m = mag_of(i);
+		return i < 0;
+	}
+	x = ((const SiftI256 *) v->data)[r];
+	if ((int64) x.l[2] >= 0)
+		*m = (Mag) {{x.l[0], x.l[1], x.l[2]}};
+	else
+		*m = (Mag) {{-x.l[0], ~x.l[1] + (x.l[0] == 0), ~x.l[2] + (x.l[0] == 0 && x.l[1] == 0)}};
+	return (int64) x.l[2] < 0;
+}
+
+/* the rows of todo in 192 bits: an error when a product leaves them too (a numeric product of 57 digits is the most the scan computes) */
+static void
+eval256(const Fac *f, int nf, const SiftVec *pre, uint32 n, const uint64 *todo, SiftI256 *out)
+{
+	for (uint32 r = 0; r < n; r++)
+	{
+		Mag			m;
+		bool		neg;
+		int			i = 0;
+
+		if (!row_wanted(todo, r))
+			continue;
+		if (pre != NULL)
+			neg = row_mag(pre, r, &m);
+		else
+		{
+			const __int128 x = factor_wide(&f[i++], r);
+
+			m = mag_of(x);
+			neg = x < 0;
 		}
 		for (; i < nf; i++)
-			ovf |= __builtin_mul_overflow(v, (__int128) f[i].m * f[i].x[r] + f[i].k, &v);
-		ovf |= v >= SUM_ROW_LIMIT || v <= -SUM_ROW_LIMIT;
-		if (ovf)
-			ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("a numeric expression is out of the range the aggregate scan computes"),
-							errhint("Run the statement with sift.enable_agg = off.")));
-		out[r] = (SiftI128) {.lo = (uint64) v,.hi = (int64) (v >> 64)};
+		{
+			const __int128 x = factor_wide(&f[i], r);
+
+			neg ^= x < 0;
+			if (!mag_mul(&m, abs128(x)))
+				ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("a numeric expression is out of the range the aggregate scan computes"),
+								errhint("Run the statement with sift.enable_agg = off.")));
+		}
+		out[r] = i256_of(neg, m);
 	}
 }
 
@@ -337,10 +457,13 @@ sift_vn_derive(const SiftV6Derive *d, SiftVec *const *cond, const SiftVec *prefi
 		todo[w] = bs->mask[w] & o->valid[w];
 	o->vec = (SiftVec) {.data = o->data,.valid = all_valid ? NULL : o->valid,.nan = has_nan ? o->nan : NULL,.len = n,.all_valid = all_valid,.dense = true,.type = SVEC_NUM64,
 						.scale = (int16) d->aux};
-	if ((prefix == NULL || prefix->type != SVEC_NUM128) && eval64(f, nf, prefix != NULL ? prefix->data : NULL, n, o->data))
+	if ((prefix == NULL || prefix->type == SVEC_NUM64) && eval64(f, nf, prefix != NULL ? prefix->data : NULL, n, o->data))
 		return;
-	eval128(f, nf, prefix, n, todo, o->data);
 	o->vec.type = SVEC_NUM128;
+	if ((prefix == NULL || prefix->type != SVEC_NUM256) && eval128(f, nf, prefix, n, todo, o->data))
+		return;
+	eval256(f, nf, prefix, n, todo, o->data);
+	o->vec.type = SVEC_NUM256;
 }
 
 /* ---- CASE WHEN .. THEN .. END as a FILTER ---- */

@@ -31,6 +31,48 @@
 #include "agg/v6/v6_pct.h"
 #include "core/memtrack.h"
 
+/* NaN rows a numeric aggregate folds: counted in aux, but the sum of a derived numeric is NaN for good (v6_acc_wide.h) */
+static inline void
+fold_nan(const SiftV6Agg *a, V6Acc *acc, uint64 rows)
+{
+	if (rows == 0)
+		return;
+	if (v6g_sum_wide(a))
+		v6acc_wide_set_nan(acc);
+	else
+		acc->aux += rows;
+}
+
+static void
+wide_row(V6Acc *acc, const SiftVec *v, uint16 r)
+{
+	switch (v->type)
+	{
+		case SVEC_NUM256:
+			v6acc_wide_add_i256(acc, &((const SiftI256 *) v->data)[r]);
+			break;
+		case SVEC_NUM128:
+			v6acc_wide_add_i128(acc, ((const SiftI128 *) v->data)[r]);
+			break;
+		default:
+			v6acc_wide_add_i64(acc, int_at(v, r));
+			break;
+	}
+}
+
+/* the rows of mk (all with a value) of a derived numeric: a vector of int64 is summed by the kernel (2048 of them fit 128 bits), the others a row at a time */
+static void
+wide_batch(V6Acc *acc, const SiftVec *v, const uint64 *mk, uint16 n_raw)
+{
+	uint32		r;
+
+	if (v->type == SVEC_NUM64)
+		v6acc_wide_add_i128(acc, sift_aggk6->sum_i64_to_i128(v->data, mk, n_raw, (SiftI128) {0}));
+	else
+		V6_FOR_EACH_ROW(mk, n_raw, r)
+			wide_row(acc, v, (uint16) r);
+}
+
 /* sift.arg_max, sift.arg_min: n the rows with a cmp, v0 the order key of the best cmp, v1 its val, aux 1 when that val is NULL (v6_argext.h) */
 static void
 fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, const SiftVec *v2, uint16 r)
@@ -50,7 +92,7 @@ fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, const
 		return;
 	if (!is_valid(v, r))
 	{
-		acc->aux += sift_v6_agg_takes_nan(a) && v6acc_nan_row(v, r);
+		fold_nan(a, acc, sift_v6_agg_takes_nan(a) && v6acc_nan_row(v, r));
 		return;
 	}
 	if (v6g_is_ext(a))
@@ -67,6 +109,8 @@ fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, const
 		case SV6_AVG:
 			if (v->type == SVEC_F64)
 				v6g_sum_f64(acc, ((const double *) v->data)[r]);
+			else if (v6g_sum_wide(a))
+				wide_row(acc, v, r);
 			else
 			{
 				SiftI128	s = v6acc_i128(acc);
@@ -146,7 +190,7 @@ plain_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *
 			continue;
 		}
 		if (v->nan != NULL && sift_v6_agg_takes_nan(a))
-			acc->aux += v6acc_nan_rows(v, mk, bs->n_raw);
+			fold_nan(a, acc, v6acc_nan_rows(v, mk, bs->n_raw));
 		if (sift_v6_kind_distinct(a->kind))
 		{
 			v6g_dist_plain(g, set, j, bs->n_raw, mk, argvec);
@@ -187,6 +231,8 @@ plain_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *
 					V6_FOR_EACH_ROW(mk, bs->n_raw, r)
 						v6g_sum_f64(acc, ((const double *) v->data)[r]);
 				}
+				else if (v6g_sum_wide(a))
+					wide_batch(acc, v, mk, bs->n_raw);
 				else if (v->type == SVEC_NUM128)
 					v6acc_set_i128(acc, sift_aggk6->sum_i128(v->data, mk, bs->n_raw, v6acc_i128(acc)));
 				else if (v->type == SVEC_I32)

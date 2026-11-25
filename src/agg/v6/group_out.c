@@ -39,23 +39,13 @@ sum_f64_datum(const SiftV6Agg *a, const V6Acc *acc, bool *isnull)
 	return Float8GetDatum(sift_v6_kind_base(a->kind) == SV6_SUM ? sum : sum / (double) n);
 }
 
+/* the numeric of the n decimal digits rev (least significant first, at least scale + 1 of them): scale of them are after the point */
 static Datum
-scaled_numeric_text(SiftI128 v, int scale)
+numeric_of_digits(const char *rev, int n, bool neg, int scale)
 {
-	char		rev[48],
-				out[64];
-	int			n = 0,
-				o = 0;
-	unsigned __int128 u = ((unsigned __int128) (uint64) v.hi << 64) | v.lo;
-	const bool	neg = v.hi < 0;
+	char		out[96];
+	int			o = 0;
 
-	if (neg)
-		u = -u;
-	do
-	{
-		rev[n++] = '0' + (int) (u % 10);
-		u /= 10;
-	} while (u != 0 || n <= scale);
 	if (neg)
 		out[o++] = '-';
 	for (int i = n - 1; i >= 0; i--)
@@ -66,6 +56,70 @@ scaled_numeric_text(SiftI128 v, int scale)
 	}
 	out[o] = '\0';
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(out), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+}
+
+static Datum
+scaled_numeric_text(SiftI128 v, int scale)
+{
+	char		rev[48];
+	int			n = 0;
+	unsigned __int128 u = ((unsigned __int128) (uint64) v.hi << 64) | v.lo;
+	const bool	neg = v.hi < 0;
+
+	if (neg)
+		u = -u;
+	do
+	{
+		rev[n++] = '0' + (int) (u % 10);
+		u /= 10;
+	} while (u != 0 || n <= scale);
+	return numeric_of_digits(rev, n, neg, scale);
+}
+
+/* the numeric of the 192-bit sum of a V6A_SUM_WIDE state: the 128-bit path when it fits, else its decimal digits */
+static Datum
+wide_numeric(const V6Acc *acc, int scale)
+{
+	const bool	neg = acc->aux < 0;
+	uint64		m[3] = {acc->v0, (uint64) acc->v1, (uint64) acc->aux};
+	char		rev[72];
+	int			n = 0;
+
+	if (v6acc_wide_fits_i128(acc))
+		return sift_v6_scaled_numeric(v6acc_i128(acc), scale);
+	if (neg)
+	{
+		m[0] = -m[0];
+		m[1] = ~m[1] + (m[0] == 0);
+		m[2] = ~m[2] + (m[0] == 0 && m[1] == 0);
+	}
+	do
+	{
+		unsigned __int128 rem = 0;
+
+		for (int i = 2; i >= 0; i--)
+		{
+			const unsigned __int128 cur = (rem << 64) | m[i];
+
+			m[i] = (uint64) (cur / 10);
+			rem = cur % 10;
+		}
+		rev[n++] = '0' + (int) rem;
+	} while ((m[0] | m[1] | m[2]) != 0 || n <= scale);
+	return numeric_of_digits(rev, n, neg, scale);
+}
+
+static Datum
+wide_sum_datum(const SiftV6Agg *a, const V6Acc *acc, bool *isnull)
+{
+	if (v6acc_wide_is_nan(acc))
+		return sift_v6_numeric_nan();
+	*isnull = acc->n == 0;
+	if (acc->n == 0)
+		return (Datum) 0;
+	if (sift_v6_kind_base(a->kind) == SV6_AVG)
+		return DirectFunctionCall2(numeric_div, wide_numeric(acc, a->arg.scale), NumericGetDatum(int64_to_numeric(acc->n)));
+	return wide_numeric(acc, a->arg.scale);
 }
 
 /* The digits of PostgreSQL's numeric straight from the 128-bit integer (v6_acc.h), through its wire format: no decimal string is made and parsed; only a value too wide for them takes the text */
@@ -159,6 +213,8 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 		case SV6_AVG_DISTINCT:
 			if (sift_v6_class(a->arg.typid) == SV6C_F64)
 				return sum_f64_datum(a, acc, isnull);
+			if (v6g_sum_wide(a))
+				return wide_sum_datum(a, acc, isnull);
 			if (v6acc_is_nan(a, acc))
 				return sift_v6_numeric_nan();
 			*isnull = acc->n == 0;

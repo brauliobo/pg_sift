@@ -1,7 +1,7 @@
 /*
  * agg/v6/v6_acc.h - the accumulator of an aggregate of SiftAggV6 (32 bytes: n, v0, v1, aux), how two partial states of it combine, and the base-10000 digits of a scaled 128-bit sum.
  *
- * The combine is exact and associative for every kind: counts add, integer sums add as 128-bit integers, a minimum or maximum keeps the better (a float with PostgreSQL's order: every NaN above
+ * The combine is exact and associative for every kind: counts add, integer sums add as 128-bit integers (the sum of a derived numeric as a 192-bit one), a minimum or maximum keeps the better (a float with PostgreSQL's order: every NaN above
  * +Infinity), the argument of arg_max/arg_min keeps the better key, and the count of a COUNT(DISTINCT) is a piece of the count (the groups are disjoint across partitions) that adds. group.c folds
  * the rows of a batch into these states and the partitions of a parallel run combine them with sift_v6_acc_combine: one function for both, so a parallel answer is the serial one.
  */
@@ -17,6 +17,7 @@
 #include "agg/group/state.h"
 #include "agg/v6/v6_argext.h"
 #include "agg/v6/v6_acc_type.h"
+#include "agg/v6/v6_acc_wide.h"
 #include "agg/v6/v6_fsum.h"
 
 
@@ -27,6 +28,7 @@ typedef enum V6AccOp
 	V6A_COUNT,					/* count(*), count(x): n adds */
 	V6A_COUNT_PIECE,			/* count(DISTINCT x) of disjoint groups: v0 adds */
 	V6A_SUM_INT,				/* sum, avg of an integer or a scaled numeric: the 128-bit sum in v0, v1 and the count in n */
+	V6A_SUM_WIDE,				/* sum, avg of a derived numeric: the 192-bit sum in v0, v1, aux and the count in n (v6_acc_wide.h) */
 	V6A_SUM_F64,				/* sum, avg of a float: the three bins of v6_fsum.h */
 	V6A_SUM_F64_ROW,			/* sift.agg_exact_float: the running double sum, in the order of the rows */
 	V6A_MIN_INT,
@@ -104,6 +106,9 @@ sift_v6_acc_combine(V6AccOp op, V6Acc *d, const V6Acc *s)
 				d->n += s->n;
 				d->aux += s->aux;
 			}
+			break;
+		case V6A_SUM_WIDE:
+			v6acc_wide_combine(d, s);
 			break;
 		case V6A_MIN_INT:
 		case V6A_MAX_INT:

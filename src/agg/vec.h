@@ -33,7 +33,8 @@ typedef enum SiftVecType
 	SVEC_STRVIEW,				/* SiftStrView[n] */
 	SVEC_DICT32,				/* uint32[n]: a dictionary code */
 	SVEC_INTERVAL,				/* SiftInterval16[n] */
-	SVEC_DATUM					/* Datum[n]: arbitrary PostgreSQL type fallback (typid/typlen/typbyval on SiftVec) */
+	SVEC_DATUM,					/* Datum[n]: arbitrary PostgreSQL type fallback (typid/typlen/typbyval on SiftVec) */
+	SVEC_NUM256					/* SiftI256[n]: the scaled integer of a numeric product past 2^95 (agg/v6/v6_expr_num.h); only the groups of SUM and AVG read it */
 } SiftVecType;
 
 typedef struct __attribute__((aligned(16))) SiftI128
@@ -41,6 +42,12 @@ typedef struct __attribute__((aligned(16))) SiftI128
 	uint64		lo;
 	int64		hi;
 } SiftI128;
+
+/* a signed integer below 2^191 in two's complement, l[0] the low limb; l[3] only extends the sign of l[2] */
+typedef struct __attribute__((aligned(16))) SiftI256
+{
+	uint64		l[4];
+} SiftI256;
 
 typedef struct __attribute__((aligned(16))) SiftUuid16
 {
@@ -73,6 +80,7 @@ typedef struct __attribute__((aligned(16))) SiftStrView
 } SiftStrView;
 
 _Static_assert(sizeof(SiftI128) == 16, "SiftI128 is 16 bytes");
+_Static_assert(sizeof(SiftI256) == 32, "SiftI256 is 32 bytes");
 _Static_assert(sizeof(SiftUuid16) == 16, "SiftUuid16 is 16 bytes");
 _Static_assert(sizeof(SiftInterval16) == 16, "SiftInterval16 is 16 bytes");
 _Static_assert(sizeof(SiftStrView) == 16, "SiftStrView is 16 bytes");
