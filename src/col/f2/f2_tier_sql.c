@@ -57,6 +57,7 @@ open_f2_rel(Oid relid)
 {
 	Relation	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
 
+	sift_rel_reject_partitioned(rel);
 	if (!is_col_index(rel) && !sift_tbl_is_table(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table or a sift_col index", RelationGetRelationName(rel))));
 	if (sift_meta_resolve_major(rel) != SIFT_FORMAT2_MAJOR)
