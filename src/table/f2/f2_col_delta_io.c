@@ -219,7 +219,7 @@ typedef struct MapKey
 	XLogRecPtr	head_lsn;
 	uint32		head_used;
 	uint32		head_crc;
-	Snapshot	snap;
+	uint64		snap_xcc;		/* the transactions that had completed when the snapshot was taken: an MVCC snapshot with the same count sees the same writers, however its address is reused */
 	TransactionId snap_xmin;
 	TransactionId snap_xmax;
 	CommandId	curcid;
@@ -308,13 +308,13 @@ map_key_now(const SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const S
 	Buffer		buf;
 	Page		page;
 
-	if (snap->snapshot_type != SNAPSHOT_MVCC && snap->snapshot_type != SNAPSHOT_ANY)
+	if (snap->snapshot_type != SNAPSHOT_ANY && (snap->snapshot_type != SNAPSHOT_MVCC || snap->snapXactCompletionCount == 0))
 		return false;
 	buf = sift_blk_read(ds->rel, a.delta_head_blkno, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
 	*k = (MapKey) {.part_id = entry->part_id,.part_gen = gb->pin->part_gen,.one_granule = one_granule,.granule = one_granule ? gb->granule_id : 0,.head_blk = a.delta_head_blkno,
 		.head_gen = SiftPageGetOpaque(page)->gen,.head_lsn = PageGetLSN(page),.head_used = SiftPageGetUsed(page),.head_crc = *(const uint32 *) (SiftPageGetData(page) + SIFT_PAGE_CRC_OFF),
-		.snap = snap,.snap_xmin = snap->xmin,.snap_xmax = snap->xmax,.curcid = snap->curcid,.subxid = GetCurrentSubTransactionId()};
+		.snap_xcc = snap->snapXactCompletionCount,.snap_xmin = snap->xmin,.snap_xmax = snap->xmax,.curcid = snap->curcid,.subxid = GetCurrentSubTransactionId()};
 	UnlockReleaseBuffer(buf);
 	return true;
 }
@@ -323,7 +323,7 @@ static bool
 map_key_same(const MapKey *a, const MapKey *b)
 {
 	return a->part_id == b->part_id && a->part_gen == b->part_gen && a->one_granule == b->one_granule && a->granule == b->granule && a->head_blk == b->head_blk &&
-		a->head_gen == b->head_gen && a->head_lsn == b->head_lsn && a->head_used == b->head_used && a->head_crc == b->head_crc && a->snap == b->snap && a->snap_xmin == b->snap_xmin && a->snap_xmax == b->snap_xmax &&
+		a->head_gen == b->head_gen && a->head_lsn == b->head_lsn && a->head_used == b->head_used && a->head_crc == b->head_crc && a->snap_xcc == b->snap_xcc && a->snap_xmin == b->snap_xmin && a->snap_xmax == b->snap_xmax &&
 		a->curcid == b->curcid && a->subxid == b->subxid;
 }
 
