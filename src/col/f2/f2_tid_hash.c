@@ -71,7 +71,7 @@ read_header(Relation rel, const SiftPart *part, const SiftSecDirEntry *se, uint6
 
 	sift_part_read_section_bytes(rel, part, se, 0, sizeof(hdr), &hdr);
 	slot_bytes = hdr.version == SIFT_TID_HASH_VER_V2 ? sizeof(SiftTidHashSlotV2) : sizeof(uint32);
-	if (hdr.magic != SIFT_TID_HASH_MAGIC || (hdr.version != SIFT_TID_HASH_VER_V1 && hdr.version != SIFT_TID_HASH_VER_V2) || hdr.nrows != nrows || hdr.log2_buckets == 0 || hdr.log2_buckets > 32 ||
+	if (hdr.magic != SIFT_TID_HASH_MAGIC || (hdr.version != SIFT_TID_HASH_VER_V1 && hdr.version != SIFT_TID_HASH_VER_V2) || hdr.nrows != nrows || hdr.log2_buckets == 0 || hdr.log2_buckets > 30 ||
 		se->len != sizeof(hdr) + ((UINT64_C(1) << hdr.log2_buckets) + 1) * sizeof(uint32) + nrows * slot_bytes)
 		SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory is not the size of its part"));
 	return hdr;
@@ -99,6 +99,51 @@ hits_v2(const SiftTidHashSlotV2 *slots, uint32 n, uint16 fp, SiftTidHashHit *hit
 	return k;
 }
 
+#define CHECK_CHUNK		4096
+
+/* The whole directory: its buckets start at 0, never descend and end at the rows of the part, and every entry names a granule and a row of the part */
+void
+sift_tid_hash_check(Relation rel, const SiftPart *part, uint64 nrows)
+{
+	const SiftSecDirEntry *se = sift_part_section(part, SEC_TID_HASH);
+	const SiftTidHashHdr hdr = read_header(rel, part, se, nrows);
+	const bool	v2 = hdr.version == SIFT_TID_HASH_VER_V2;
+	const uint64 nb = UINT64_C(1) << hdr.log2_buckets,
+				entries_at = sizeof(hdr) + (nb + 1) * sizeof(uint32);
+	uint32		starts[CHECK_CHUNK],
+				prev = 0;
+	SiftTidHashSlotV2 slots[CHECK_CHUNK];
+
+	for (uint64 at = 0; at <= nb; at += CHECK_CHUNK)
+	{
+		const uint64 n = Min(CHECK_CHUNK, nb + 1 - at);
+
+		sift_part_read_section_bytes(rel, part, se, sizeof(hdr) + at * sizeof(uint32), n * sizeof(uint32), starts);
+		for (uint64 i = 0; i < n; i++)
+		{
+			if (starts[i] < prev || starts[i] > nrows || (at + i == 0 && starts[i] != 0))
+				SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory has buckets that do not follow one another"));
+			prev = starts[i];
+		}
+	}
+	if (prev != nrows)
+		SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory holds %u entries for the %llu rows of its part", prev, (unsigned long long) nrows));
+	for (uint64 at = 0; at < nrows; at += CHECK_CHUNK)
+	{
+		const uint64 n = Min(CHECK_CHUNK, nrows - at);
+
+		CHECK_FOR_INTERRUPTS();
+		sift_part_read_section_bytes(rel, part, se, entries_at + at * (v2 ? sizeof(SiftTidHashSlotV2) : sizeof(uint32)), n * (v2 ? sizeof(SiftTidHashSlotV2) : sizeof(uint32)), slots);
+		for (uint64 i = 0; i < n; i++)
+		{
+			const uint32 granule = v2 ? slots[i].granule_id : ((const uint32 *) slots)[i] >> SIFT_TID_HASH_ROW_BITS;
+
+			if (granule >= part->hdr.ngranules || (v2 && slots[i].row_idx >= nrows))
+				SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory names a row that its part does not have"));
+		}
+	}
+}
+
 int
 sift_tid_hash_find(Relation rel, const SiftPart *part, uint64 nrows, uint64 tid, SiftTidHashHit **hits)
 {
@@ -112,13 +157,16 @@ sift_tid_hash_find(Relation rel, const SiftPart *part, uint64 nrows, uint64 tid,
 	int			n;
 
 	sift_part_read_section_bytes(rel, part, se, sizeof(hdr) + (uint64) sift_tid_hash_bucket(tid, hdr.log2_buckets) * sizeof(uint32), sizeof(span), span);
-	if (span[0] > span[1] || span[1] > nrows)
+	if (span[0] > span[1] || span[1] > nrows || span[1] - span[0] > MaxAllocSize / sizeof(SiftTidHashHit))
 		SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory has a bucket past its entries"));
 	raw = palloc(Max(span[1] - span[0], 1) * slot_bytes);
 	*hits = palloc(Max(span[1] - span[0], 1) * sizeof(SiftTidHashHit));
 	sift_part_read_section_bytes(rel, part, se, entries_at + (uint64) span[0] * slot_bytes, (uint64) (span[1] - span[0]) * slot_bytes, raw);
 	n = v2 ? hits_v2(raw, span[1] - span[0], sift_tid_hash_fp(tid), *hits) : hits_v1(raw, span[1] - span[0], *hits);
 	pfree(raw);
+	for (int i = 0; i < n; i++)
+		if ((*hits)[i].granule_id >= part->hdr.ngranules || (v2 && (*hits)[i].row_idx >= nrows))
+			SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory names a row that its part does not have"));
 #ifdef SIFT_TESTING
 	lookups++;
 	granules += n;

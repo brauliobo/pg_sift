@@ -17,8 +17,10 @@
 #include "col/f2/f2.h"
 #include "col/f2/f2_sink.h"
 #include "col/f2/f2_store.h"
+#include "col/f2/f2_tid_hash.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "table/f2/f2_row_pack.h"
 
 static void
 cells_of_row(const SiftPartSpec *spec, int nint, int64 *const *ints, bool *const *nulls, int r, SiftCell *cells)
@@ -57,9 +59,13 @@ part_spec(Relation rel, const SiftPartSpec *spec, const SiftPart *part, uint16 *
 	uint16		hdr[2];
 	Size		off;
 
+	if (len < sizeof(hdr))
+		SIFT_CORRUPT(rel, "Part %llu: its schema is %llu bytes.", (unsigned long long) part->hdr.part_gen, (unsigned long long) len);
 	memcpy(hdr, schema, sizeof(hdr));
 	own.nsort = hdr[1] & 0x00FF;
 	off = (4 + (Size) hdr[0] + 1) & ~(Size) 1;
+	if (own.nsort > SIFT_KEY_ORDER_MAX || off + (Size) own.nsort * (sizeof(uint16) + 1) > len)
+		SIFT_CORRUPT(rel, "Part %llu: its schema names %u sort columns, which it does not hold or the spec does not take.", (unsigned long long) part->hdr.part_gen, (unsigned) own.nsort);
 	memcpy(sort_cols, schema + off, own.nsort * sizeof(uint16));
 	memcpy(own.sort_flags, schema + off + own.nsort * sizeof(uint16), own.nsort);
 	own.sort_cols = sort_cols;
@@ -153,6 +159,10 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 	if (have_prev && (memcmp(least, d->key_lo, SIFT_BOUND_BYTES) != 0 || memcmp(greatest, d->key_hi, SIFT_BOUND_BYTES) != 0))
 		SIFT_CORRUPT(rel, "Part %llu: its key range in the manifest is not that of its least and greatest row.", (unsigned long long) d->part_gen);
 	check_sketches(rel, spec, part, d);
+	if (sift_part_section(part, SEC_TID_HASH) != NULL)
+		sift_tid_hash_check(rel, part, part->hdr.nrows);
+	if (sift_part_section(part, SEC_ROW_PACK) != NULL)
+		sift_row_pack_check(rel, part, part->hdr.nrows);
 }
 
 char *

@@ -27,6 +27,7 @@
 #include "col/f2/f2_scope.h"
 #include "col/f2/f2_tier_host.h"
 #include "col/granule/granule_int.h"
+#include "table/f2/f2_col_delta.h"
 #include "core/catname.h"
 #include "core/check.h"
 #include "core/cpu.h"
@@ -387,6 +388,21 @@ f2_leaves(FunctionCallInfo fcinfo)
 	return (Datum) 0;
 }
 
+static void
+check_manifest(void *arg)
+{
+	(void) sift_manifest_check(arg);
+}
+
+static void
+check_col_delta(void *arg)
+{
+	SiftManifestRead mr = sift_manifest_read_range(arg, NULL, NULL);
+
+	for (int i = 0; i < mr.n; i++)
+		sift_col_delta_check(arg, &mr.entries[i]);
+}
+
 static Datum
 f2_verify(FunctionCallInfo fcinfo)
 {
@@ -396,6 +412,9 @@ f2_verify(FunctionCallInfo fcinfo)
 	sift_errctx_push_diagnostic(&ctx, RelationGetRelid(index));
 	sift_check_maintain(index);
 	(void) sift_fsm_check(index);
+	check_manifest(index);
+	check_col_delta(index);
+	sift_tier_check_remote(index);
 	ereport(NOTICE, (errmsg("sift_col index \"%s\": %s", RelationGetRelationName(index), sift_f2_check_keys(index))));
 	if (PG_GETARG_BOOL(1))
 		sift_f2_check_heap(index);
@@ -431,7 +450,8 @@ check_heap(void *arg)
 void
 sift_f2_check_relation(SiftCheck *ck, Relation rel)
 {
-	if (sift_check_step(ck, SIFT_CHECK_WHOLE, check_fsm, rel) && sift_check_step(ck, SIFT_CHECK_WHOLE, check_remote, rel))
+	if (sift_check_step(ck, SIFT_CHECK_WHOLE, check_fsm, rel) && sift_check_step(ck, SIFT_CHECK_WHOLE, check_manifest, rel) &&
+		sift_check_step(ck, SIFT_CHECK_WHOLE, check_col_delta, rel) && sift_check_step(ck, SIFT_CHECK_WHOLE, check_remote, rel))
 		(void) sift_check_step(ck, SIFT_CHECK_WHOLE, check_keys, rel);
 }
 

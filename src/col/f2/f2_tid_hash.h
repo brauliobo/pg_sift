@@ -90,4 +90,7 @@ extern bool sift_tid_hash_build(const SiftRows *rows, uint16 level, const int *g
 /* The rows of the part that may hold the address, ascending: *hits is a palloc'd array of them (n), from the two pages of the section the address names. A version 2 section names the rows whose tag is the address's; a version 1 section names the granules of a bucket (no row) */
 extern int	sift_tid_hash_find(Relation rel, const SiftPart *part, uint64 nrows, uint64 tid, SiftTidHashHit **hits);
 
+/* Every bucket and entry of the directory of the part (nrows rows) is as a writer makes it: SIFT_DAMAGE_DATA otherwise */
+extern void sift_tid_hash_check(Relation rel, const SiftPart *part, uint64 nrows);
+
 #endif							/* SIFT_F2_TID_HASH_H */
