@@ -36,7 +36,7 @@ insert_select	slope	12	sampled	clean		insert into {m} select g+10000000, g, g%50
 table_create_as	slope	12	sampled	clean		create table {s} using sift_table as select * from {f} order by id;	
 table_update_all	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;	set sift.backend_cache_kb = '1MB'; update {s} set amount = amount + 1;	
 table_delete_part	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;	set sift.backend_cache_kb = '1MB'; delete from {s} where k_lo < 5;	
-table_vacuum	plateau	16	sampled	open	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	set sift.backend_cache_kb = '1MB'; vacuum {s};		TODO: 12 to 14 B/row from 100000 rows, over the clean ceiling: the fold of the column deltas holds no record (65 B/row before), the same VACUUM of a sift_table with no update grows 12 B/row in the compaction scope (col/f2/compact.c); measured 12, 14, 13 B/row
+table_vacuum	slope	8	sampled	clean	create table {s} using sift_table as select * from {f} order by id;update {s} set amount = amount + 1 where k_lo < 3;	set sift.backend_cache_kb = '1MB'; vacuum {s};		
 table_scan	slope	12	sampled	clean	create table {s} using sift_table as select * from {f} order by id;	set sift.shared_cache_kb = 0; select count(*), sum(length(txt)) from {s};	
 leak_aggregate	leak	0	contexts	clean		select k_mid, cat, count(*), avg(amount) from {f} group by 1,2;		
 leak_distinct_text	leak	0	contexts	clean		select count(distinct txt) from {f};		
