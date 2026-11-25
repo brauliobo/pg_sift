@@ -72,7 +72,7 @@ plain_table(PlannerInfo *root, RelOptInfo *rel)
 	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL)
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && agg_rel_security_ok(root, rel);
+	return sift_v6_rte_stored(rte) && !rte->inh && rte->tablesample == NULL && agg_rel_security_ok(root, rel);
 }
 
 static bool

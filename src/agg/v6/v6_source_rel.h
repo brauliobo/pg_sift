@@ -7,6 +7,7 @@
 
 #include "postgres.h"
 
+#include "catalog/pg_class_d.h"
 #include "nodes/pathnodes.h"
 #include "storage/lockdefs.h"
 #include "utils/rel.h"
@@ -24,6 +25,13 @@ typedef struct SiftV6RelSource
 	SiftV6Input input;			/* its columns, as the batches of the scan give them */
 	IndexOptInfo *ix;			/* the index; NULL for a sift_table */
 } SiftV6RelSource;
+
+/* The range table entry is a relation that stores its rows: a table or a materialized view */
+static inline bool
+sift_v6_rte_stored(const RangeTblEntry *rte)
+{
+	return rte->rtekind == RTE_RELATION && (rte->relkind == RELKIND_RELATION || rte->relkind == RELKIND_MATVIEW);
+}
 
 /* The room of the sources of a relation: the table and every index of it */
 #define SIFT_V6_REL_SOURCE_CAP(rel)	(1 + list_length((rel)->indexlist))

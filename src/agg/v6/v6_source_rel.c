@@ -50,7 +50,7 @@ sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel)
 	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || agg_query_has_rls(root))
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && sift_v6_rel_has_source(root, rel);
+	return sift_v6_rte_stored(rte) && !rte->inh && rte->tablesample == NULL && sift_v6_rel_has_source(root, rel);
 }
 
 bool

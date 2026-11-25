@@ -169,7 +169,7 @@ join_of(PlannerInfo *root, RelOptInfo *rel, const Node *l, const Node *r, SipJoi
 	if (j->dim == NULL || j->dim->reloptkind != RELOPT_BASEREL || !plain_inner(root, rel->relid, j->dim->relid))
 		return false;
 	rte = planner_rt_fetch(j->dim->relid, root);
-	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->inh || rte->tablesample != NULL || agg_rte_has_rls(root, rte) ||
+	if (!sift_v6_rte_stored(rte) || rte->inh || rte->tablesample != NULL || agg_rte_has_rls(root, rte) ||
 		j->dim->rows > SIFT_V6_SIP_DIM_ROWS || j->dim->rows > SIFT_V6_SIP_DIM_KEEP * j->dim->tuples)
 		return false;
 	foreach_node(RestrictInfo, ri, j->dim->baserestrictinfo)

@@ -8,6 +8,8 @@ DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THE
 
 CREATE TABLE mb (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL, tag text NOT NULL, at timestamptz NOT NULL);
 INSERT INTO mb SELECT i, i % 13, i % 101, 'tag' || i % 5, timestamptz '2030-01-01' + i * interval '1 hour' FROM generate_series(1, 30000) i;
+CREATE TABLE md (g int PRIMARY KEY, label text NOT NULL);
+INSERT INTO md SELECT g, 'label ' || g FROM generate_series(0, 12) g;
 CREATE MATERIALIZED VIEW mvt USING sift_table AS SELECT * FROM mb;
 CREATE UNIQUE INDEX mvt_pk ON mvt (id);
 CREATE MATERIALIZED VIEW mvh AS SELECT * FROM mb;
@@ -28,10 +30,22 @@ END $$;
 CREATE FUNCTION checks() RETURNS TABLE (shape text, answer text) LANGUAGE sql AS $$
 	SELECT 'table grouped', same('SELECT g, count(*), sum(v) FROM mvt GROUP BY g')
 	UNION ALL SELECT 'table filtered', same('SELECT tag, count(*), sum(v) FROM mvt WHERE g < 5 AND v > 20 GROUP BY tag')
+	UNION ALL SELECT 'table joined', same('SELECT md.label, count(*), sum(v) FROM mvt JOIN md USING (g) WHERE md.g < 9 GROUP BY md.label')
+	UNION ALL SELECT 'table semi', same('SELECT count(*), sum(v) FROM mvt WHERE g IN (SELECT g FROM md WHERE g > 8)')
 	UNION ALL SELECT 'table total', same('SELECT count(*), sum(v), min(at), max(at) FROM mvt')
 $$;
 
 SELECT * FROM checks();
+
+-- a view with no data is refused as PostgreSQL does, whatever scans it
+CREATE MATERIALIZED VIEW mvn USING sift_table AS SELECT * FROM mb WITH NO DATA;
+\set ON_ERROR_STOP off
+SELECT g, count(*) FROM mvn GROUP BY g;
+SELECT count(*) FROM mvn;
+\set ON_ERROR_STOP on
+REFRESH MATERIALIZED VIEW mvn;
+SELECT g, count(*) FROM mvn GROUP BY g ORDER BY g LIMIT 3;
+DROP MATERIALIZED VIEW mvn;
 
 -- the base rows change: inserts, updates, deletes
 INSERT INTO mb SELECT i, i % 13, i % 101, 'tag' || i % 5, timestamptz '2030-01-01' + i * interval '1 hour' FROM generate_series(30001, 33000) i;
@@ -57,6 +71,6 @@ REFRESH MATERIALIZED VIEW mvh;
 REFRESH MATERIALIZED VIEW CONCURRENTLY mvt;
 SELECT * FROM checks();
 DROP MATERIALIZED VIEW mvt, mvh;
-DROP TABLE mb;
+DROP TABLE mb, md;
 DROP FUNCTION checks(), same(text);
 DROP EXTENSION pg_sift;

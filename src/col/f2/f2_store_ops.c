@@ -30,7 +30,7 @@ f2_owns_rel(Oid relid, bool is_table)
 	const char	relkind = get_rel_relkind(relid);
 
 	if (is_table)
-		return relkind == RELKIND_RELATION && sift_tbl_is_f2_oid(relid);
+		return (relkind == RELKIND_RELATION || relkind == RELKIND_MATVIEW) && sift_tbl_is_f2_oid(relid);
 	return relkind == RELKIND_INDEX && sift_col_index_oid_engine(relid) == SIFT_FORMAT2_MAJOR && !sift_col_index_stale(relid);
 }
 

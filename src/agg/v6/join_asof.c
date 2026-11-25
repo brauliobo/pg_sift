@@ -42,6 +42,7 @@
 #include "agg/v6/v6_batch.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_plan_shape.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_vexpr.h"
 
 typedef struct Idiom
@@ -136,7 +137,7 @@ describe(const RelOptInfo *outerrel, const Query *sub, Idiom *id)
 	if (!id->shape.single_table)
 		return true;
 	rte = linitial(sub->rtable);
-	id->shape.single_table = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !has_subclass(rte->relid) && rte->tablesample == NULL;
+	id->shape.single_table = sift_v6_rte_stored(rte) && !has_subclass(rte->relid) && rte->tablesample == NULL;
 	limit = (const Const *) eval_const_expressions(NULL, sub->limitCount);
 	id->shape.limit_one = limit != NULL && IsA(limit, Const) && !limit->constisnull && limit->consttype == INT8OID && DatumGetInt64(limit->constvalue) == 1 &&
 		sub->limitOption == LIMIT_OPTION_COUNT;

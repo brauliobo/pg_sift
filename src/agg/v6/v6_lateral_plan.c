@@ -24,6 +24,7 @@
 #include "agg/agg.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_lateral_plan.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_pg_expr.h"
 #include "core/compat.h"
 
@@ -160,7 +161,7 @@ one_row_table(const Query *q)
 		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 || q->jointree->quals == NULL || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
 		return NULL;
 	rte = linitial_node(RangeTblEntry, q->rtable);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && rte->tablesample == NULL && !agg_query_rte_has_rls(q, rte) && !has_subclass(rte->relid) &&
+	return sift_v6_rte_stored(rte) && rte->tablesample == NULL && !agg_query_rte_has_rls(q, rte) && !has_subclass(rte->relid) &&
 		!contain_volatile_functions((Node *) q->targetList) && !contain_volatile_functions((Node *) q->jointree) ? rte : NULL;
 }
 

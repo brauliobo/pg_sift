@@ -510,8 +510,7 @@ sift_v6_plan_fact_ok(PlannerInfo *root, RelOptInfo *rel)
 	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || agg_query_has_rls(root) || !agg_rel_security_ok(root, rel))
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL &&
-		sift_v6_rel_has_source(root, rel);
+	return sift_v6_rte_stored(rte) && !rte->inh && rte->tablesample == NULL && sift_v6_rel_has_source(root, rel);
 }
 
 Relids
@@ -536,7 +535,7 @@ sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		return false;
 	rte = planner_rt_fetch(input_rel->relid, root);
 	return rte->rtekind == RTE_RELATION && rte->tablesample == NULL && input_rel->lateral_relids == NULL && output_rel->reltarget != NULL && agg_rel_security_ok(root, input_rel) &&
-		((rte->relkind == RELKIND_RELATION && !rte->inh) ||
+		((sift_v6_rte_stored(rte) && !rte->inh) ||
 		 (rte->relkind == RELKIND_PARTITIONED_TABLE && rte->inh && input_rel->reloptkind == RELOPT_BASEREL && input_rel->part_scheme != NULL));
 }
 
