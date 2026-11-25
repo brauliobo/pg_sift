@@ -45,7 +45,7 @@ metric_of(const SiftV6Spec *sp, const SiftV6TopKItem *m, ParShape *sh)
 	const SiftV6Agg *a;
 	Oid			opfamily,
 				opcintype;
-	CompareType cmptype;
+	SiftCmpStrategy cmptype;
 	int			sum = 0;
 
 	if (m->pos >= sp->nkeys + sp->naggs)
@@ -60,7 +60,7 @@ metric_of(const SiftV6Spec *sp, const SiftV6TopKItem *m, ParShape *sh)
 	else
 		return false;
 	get_ordering_op_properties(m->sortop, &opfamily, &opcintype, &cmptype);
-	sh->gs.desc = cmptype == COMPARE_GT;
+	sh->gs.desc = cmptype == SIFT_CMP_GT;
 	return true;
 }
 
@@ -70,10 +70,10 @@ key_item(const SiftV6TopKItem *it, int key, const ParShape *sh)
 {
 	Oid			opfamily,
 				opcintype;
-	CompareType cmptype;
+	SiftCmpStrategy cmptype;
 
 	get_ordering_op_properties(it->sortop, &opfamily, &opcintype, &cmptype);
-	return it->pos == key && cmptype == COMPARE_LT && !it->nulls_first && (!sift_par_group_is_str(&sh->gs, key) || sift_collate_is_c(it->collid));
+	return it->pos == key && cmptype == SIFT_CMP_LT && !it->nulls_first && (!sift_par_group_is_str(&sh->gs, key) || sift_collate_is_c(it->collid));
 }
 
 /* The K best groups, by the metric of the first item of ORDER BY (none: by the keys alone) and then by the keys, ascending, after it */

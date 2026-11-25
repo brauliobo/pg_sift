@@ -21,13 +21,13 @@ sort_key(const SiftV6Spec *sp, int i, ParShape *sh, const int *first)
 	const SiftV6Class cls = sift_v6_class(c->typid);
 	Oid			opfamily,
 				opcintype;
-	CompareType cmptype;
+	SiftCmpStrategy cmptype;
 
 	sh->rs.str[i] = cls == SV6C_TEXT;
 	if (!par_plain_col(c) || it->pos != i || !(cls == SV6C_I32 || cls == SV6C_I64 || (sh->rs.str[i] && sift_collate_is_c(it->collid))))
 		return false;
 	get_ordering_op_properties(it->sortop, &opfamily, &opcintype, &cmptype);
-	sh->rs.desc[i] = cmptype == COMPARE_GT;
+	sh->rs.desc[i] = cmptype == SIFT_CMP_GT;
 	sh->rs.nulls_first[i] = it->nulls_first;
 	sh->rkey_at[i] = par_add_leaf(sh, par_leaf_of(first, c), false);
 	return true;
