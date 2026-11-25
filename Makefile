@@ -627,6 +627,7 @@ TESTING_REGRESS += merge_heal
 TESTING_REGRESS += merge_parts
 TESTING_REGRESS += on_scaling_guards
 TESTING_REGRESS += p98_decoders
+TESTING_REGRESS += p98_check_blockmap
 TESTING_REGRESS += p98_inspect_tiered
 TESTING_REGRESS += part_agg_parity
 TESTING_REGRESS += position_blocks

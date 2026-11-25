@@ -14,8 +14,11 @@
 #include "col/f2/f2_tid_hash.h"
 #include "col/compress.h"
 #include "col/granule/granule.h"
+#include "col/f2/f2_point_dir.h"
+#include "col/f2/l0_slab.h"
 #include "col/granule/granule_int.h"
 #include "core/f2/bulk_io.h"
+#include "table/f2/f2_col_delta_dir.h"
 #include "table/f2/f2_blob.h"
 #include "table/f2/f2_row_pack.h"
 
@@ -27,6 +30,9 @@ PG_FUNCTION_INFO_V1(sift_test_dec_schema_nsort);
 PG_FUNCTION_INFO_V1(sift_test_dec_tid_hash);
 PG_FUNCTION_INFO_V1(sift_test_dec_preagg);
 PG_FUNCTION_INFO_V1(sift_test_dec_meta_totals);
+PG_FUNCTION_INFO_V1(sift_test_dec_own);
+PG_FUNCTION_INFO_V1(sift_test_dec_damage);
+PG_FUNCTION_INFO_V1(sift_test_dec_section);
 
 typedef struct Case
 {
@@ -423,6 +429,172 @@ sift_test_dec_meta_totals(PG_FUNCTION_ARGS)
 	MarkBufferDirty(buf);
 	UnlockReleaseBuffer(buf);
 	index_close(rel, NoLock);
+	PG_RETURN_VOID();
+}
+
+/* ---- sift.check on a relation whose blocks, chains or sections are damaged ---- */
+
+typedef struct Found
+{
+	SiftPartitionEntry entry;
+	SiftPartDesc part;
+} Found;
+
+/* The first part of the relation that the test names, or the first one */
+static Found
+first_part(Relation rel, bool (*want) (const SiftPartitionEntry *, const SiftPartDesc *))
+{
+	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+
+	for (int i = 0; i < mr.n; i++)
+	{
+		int			np;
+		SiftPartDesc *pd = sift_manifest_read_parts(rel, &mr.entries[i], &np);
+
+		for (int p = 0; p < np; p++)
+			if (want == NULL || want(&mr.entries[i], &pd[p]))
+				return (Found) {mr.entries[i], pd[p]};
+	}
+	elog(ERROR, "no such part");
+	pg_unreachable();
+}
+
+static bool
+has_dv(const SiftPartitionEntry *e, const SiftPartDesc *d)
+{
+	return d->dv_blk != InvalidBlockNumber;
+}
+
+static BlockNumber
+first_slab(Relation rel)
+{
+	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+
+	for (int i = 0; i < mr.n; i++)
+		if (mr.entries[i].l0_slab_blk != InvalidBlockNumber)
+			return mr.entries[i].l0_slab_blk;
+	elog(ERROR, "no micro-slab");
+	pg_unreachable();
+}
+
+static void
+damage_page(Relation rel, BlockNumber blk, void (*fn) (char *payload, void *arg), void *arg)
+{
+	Buffer		buf = sift_blk_read(rel, blk, BUFFER_LOCK_EXCLUSIVE);
+
+	fn(SiftPageGetData(BufferGetPage(buf)), arg);
+	MarkBufferDirty(buf);
+	UnlockReleaseBuffer(buf);
+}
+
+static void
+flip_byte(char *payload, void *arg)
+{
+	payload[*(int *) arg] ^= 0x55;
+}
+
+static void
+slab_batch(char *payload, void *arg)
+{
+	SiftL0BatchHeader *b = (SiftL0BatchHeader *) (payload + sizeof(SiftL0SlabPageData));
+
+	if (*(int *) arg == 0)
+		b->nrows += 500;
+	else
+		b->bytes = SIFT_L0_COMPACT_HDR + 8;
+}
+
+/* mode 0: an extent of a live part is also on the free lists; 1: an extent that nothing names is allocated; the relation is a sift_col index or a sift_table */
+Datum
+sift_test_dec_own(PG_FUNCTION_ARGS)
+{
+	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+
+	if (PG_GETARG_INT32(1) == 0)
+	{
+		Found		f = first_part(rel, NULL);
+		SiftPart   *part = sift_part_open_desc(rel, &f.part, (uint32) f.entry.part_id);
+		SiftExtent	ext = {part->header_blk, 1};
+		int			n;
+
+		if (!part->is_packed)
+			ext = sift_part_blocks(part, &n)[0];
+		sift_fsm_release(rel, &ext, 1, InvalidFullTransactionId);
+	}
+	else
+		(void) sift_fsm_alloc(rel, 1);
+	relation_close(rel, NoLock);
+	PG_RETURN_VOID();
+}
+
+/* mode 0: a byte of the first page of a column delta chain; 1: of a deletion vector; 2 and 3: the slab batch of a sift_table that claims rows it does not hold, and one cut short */
+Datum
+sift_test_dec_damage(PG_FUNCTION_ARGS)
+{
+	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	int			mode = PG_GETARG_INT32(1);
+	int			off = 64;
+
+	if (mode == 0)
+	{
+		SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+		SiftColDeltaAnchor a = sift_manifest_read_col_delta(rel, &mr.entries[0]);
+
+		damage_page(rel, a.delta_head_blkno, flip_byte, &off);
+	}
+	else if (mode == 1)
+		damage_page(rel, first_part(rel, has_dv).part.dv_blk, flip_byte, &off);
+	else
+	{
+		int			which = mode - 2;
+
+		damage_page(rel, first_slab(rel), slab_batch, &which);
+	}
+	relation_close(rel, NoLock);
+	PG_RETURN_VOID();
+}
+
+static StringInfoData
+point_section(int mode)
+{
+	StringInfoData s;
+	SiftPointHdr hdr = {SIFT_POINT_MAGIC, SIFT_POINT_VERSION, 1};
+	SiftPointCol col = {.leaves = {0, SIFT_POINT_NO_LEAF, SIFT_POINT_NO_LEAF, SIFT_POINT_NO_LEAF},.nleaves = 1,.log2_buckets = 1,.nentries = 1,
+	.off_buckets = sizeof(hdr) + sizeof(col),.off_entries = sizeof(hdr) + sizeof(col) + 3 * sizeof(uint32)};
+	uint32		buckets[3] = {0, mode == 0 ? 1 : 0, mode == 0 ? 7 : 1};
+	uint32		entry = mode == 0 ? 0 : (uint32) 1 << SIFT_POINT_ROW_BITS;
+
+	initStringInfo(&s);
+	appendBinaryStringInfo(&s, (char *) &hdr, sizeof(hdr));
+	appendBinaryStringInfo(&s, (char *) &col, sizeof(col));
+	appendBinaryStringInfo(&s, (char *) buckets, sizeof(buckets));
+	appendBinaryStringInfo(&s, (char *) &entry, sizeof(entry));
+	return s;
+}
+
+/* A part of no granule with a damaged section, in the manifest: mode 0 and 1, SEC_POINT whose buckets end past its entries and whose entry names a granule the part does not have; 2 and 3, SEC_PREAGG
+ * shorter than the numbers of its granules and one that counts cells it does not hold */
+Datum
+sift_test_dec_section(PG_FUNCTION_ARGS)
+{
+	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	const int	mode = PG_GETARG_INT32(1);
+	const uint16 schema[8] = {4, 1};
+	const uint32 preagg[2] = {mode == 3 ? 7 : 0, 0};
+	StringInfoData pt = point_section(mode);
+	SiftSecInput secs[2];
+	SiftPartDesc d;
+	SiftManifestEdit e = {.part_id = 1};
+	uint8		lo[SIFT_BOUND_BYTES] = {0};
+
+	secs[0] = sec(SEC_SCHEMA, schema, sizeof(schema));
+	secs[1] = mode < 2 ? sec(SEC_POINT, pt.data, pt.len) : sec(SEC_PREAGG, preagg, mode == 2 ? 4 : sizeof(preagg));
+	(void) write_part_desc(rel, 1, 0, 1, secs, 2, &d);
+	e.key_lo = lo;
+	e.add_parts = &d;
+	e.nadd = 1;
+	sift_manifest_commit(rel, &e);
+	relation_close(rel, NoLock);
 	PG_RETURN_VOID();
 }
 
