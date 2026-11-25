@@ -26,6 +26,7 @@
 #define SIFT_SHM_SLOT_VALID			(1U << 0)
 #define SIFT_SHM_SLOT_QUARANTINED	(1U << 1)
 #define SIFT_SHM_SLOT_HAS_SNAP		(1U << 2)
+#define SIFT_SHM_SLOT_PRIVATE		(1U << 3)	/* a temporary relation: no other backend reads it, so the registry never holds it */
 
 /*
  * Reclamation by epochs (quiescent states): a reader that pins a snapshot without the lock of its slot announces, in a cache line of its own, the epoch it entered, for the few

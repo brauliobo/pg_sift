@@ -34,7 +34,8 @@ sift_col_meta_shm(const Relation rel, const SiftColMetaPageData *m)
 		.scope_dir_blk = m->scope_dir_blk, .partdir_level = m->partdir_level, .nscopes = m->nscopes, .npartitions = m->npartitions, .total_rows = m->total_rows,
 		.total_dead = m->total_dead, .total_bytes = m->total_bytes, .oldest_active_xid = XidFromFullTransactionId(m->oldest_active_xid), .meta_flags = m->state_flags,
 		.compat_flags = m->common.compat_flags, .ro_compat_flags = m->common.ro_compat_flags, .inline_off = m->inline_off, .inline_len = m->inline_len,
-		.vm_all_visible_vblocks = m->vm_all_visible_vblocks, .vm_all_frozen_vblocks = m->vm_all_frozen_vblocks, .vm_total_vblocks = m->vm_total_vblocks
+		.vm_all_visible_vblocks = m->vm_all_visible_vblocks, .vm_all_frozen_vblocks = m->vm_all_frozen_vblocks, .vm_total_vblocks = m->vm_total_vblocks,
+		.state_flags = rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP ? SIFT_SHM_SLOT_PRIVATE : 0
 	};
 }
 

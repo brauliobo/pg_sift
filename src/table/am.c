@@ -93,7 +93,8 @@ sift_tbl_check(SiftCheck *ck, Oid relid)
 {
 	Relation	rel = sift_tbl_open_verifiable(relid);
 
-	sift_tbl_ops(rel)->check(ck, rel);
+	if (sift_meta_peek_format(rel).status != SIFT_FMT_EMPTY)
+		sift_tbl_ops(rel)->check(ck, rel);
 	table_close(rel, AccessShareLock);
 }
 

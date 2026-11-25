@@ -833,7 +833,7 @@ sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *s
 	SiftShmIndexSlot *s;
 	SiftShmIndexMeta m = *meta;
 
-	if (!sift_shm_manifest_enabled() || (t = registry()) == NULL)
+	if ((meta->state_flags & SIFT_SHM_SLOT_PRIVATE) != 0 || !sift_shm_manifest_enabled() || (t = registry()) == NULL)
 		return false;
 	if (spec != NULL && (a = area_attach(t, true)) != NULL)
 		dp = snap_build(t, a, &meta->locator, spec);

@@ -263,7 +263,7 @@ sift_maintain(PG_FUNCTION_ARGS)
 		maintain_col_f2(&r, &res);
 	else if (r.f2)
 		maintain_table_f2(&r, &res);
-	else if (r.am == SIFT_API_TABLE)
+	else if (r.am == SIFT_API_TABLE && r.peek.status == SIFT_FMT_V1)
 		maintain_table_v1(&r, &res);
 	else if (r.peek.status == SIFT_FMT_V1)
 		maintain_directory(&r, &res);
