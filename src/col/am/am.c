@@ -6,6 +6,8 @@
 #include "utils/rel.h"
 #include "access/genam.h"
 #include "access/table.h"
+#include "catalog/pg_type_d.h"
+#include "commands/defrem.h"
 #include "commands/extension.h"
 #include "col/am.h"
 #include "col/am/am_int.h"
@@ -252,6 +254,12 @@ col_translatecmptype(CompareType cmptype, Oid opfamily)
 }
 #endif
 
+static bool
+offers_order(void)
+{
+	return !creating_extension && OidIsValid(GetDefaultOpClass(ANYELEMENTOID, get_index_am_oid("sift_col", true)));
+}
+
 Datum
 sift_col_handler(PG_FUNCTION_ARGS)
 {
@@ -281,11 +289,11 @@ sift_col_handler(PG_FUNCTION_ARGS)
 	 * No flag of backward scans: an index of format major 1 cannot turn its scan round, and a cursor that scrolls reads over a Materialize instead (the ordered scans of format major 2 go backward on their own).
 	 * Only an index of format major 2 whose key_order is the order of its columns has an order to give: the planner is told which (sift_f2_ord_plan_init). An access method that orders wants a
 	 * comparison function with two arguments in the first member of every class, and the default class of the released scripts (which a fresh install runs again) has a placeholder with one:
-	 * the scripts that create classes run before the order is offered.
+	 * the scripts that create classes run before the order is offered, and so does the restore of a binary upgrade, which creates the class outside the extension.
 	 */
-	am->amcanorder = !creating_extension;
+	am->amcanorder = offers_order();
 #if PG_VERSION_NUM >= 180000
-	am->amconsistentordering = !creating_extension;
+	am->amconsistentordering = am->amcanorder;
 	am->amtranslatestrategy = col_translatestrategy;
 	am->amtranslatecmptype = col_translatecmptype;
 #endif
