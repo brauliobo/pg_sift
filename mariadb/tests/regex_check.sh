@@ -8,8 +8,8 @@
 set -eu
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-W=/tmp/sift-mdb-rx
-PORT=56310
+W=${SIFT_MDB_RX:-/tmp/sift-mdb-rx}
+PORT=${SIFT_MDB_RX_PORT:-56310}
 PG_INC=$(pg_config --includedir-server)
 PSQL="env -u PGUSER -u PGHOST -u PGPORT psql -h $W -p $PORT -d postgres -XAtq -v ON_ERROR_STOP=1"
 

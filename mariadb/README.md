@@ -344,6 +344,8 @@ the binlog (`binlog_format=ROW`); the triggers fire on the source only, and the 
 
 * MariaDB only. One text expression per index (a `CONCAT_WS` or `fields`), over one table; no partition awareness; no
   `ALTER TABLE` story for the indexed table (detach, alter, attach).
+* `fields` match the keys pg_sift matches, but the score normalizes by the length of the document, not by the length of each
+  field as pg_sift does since 6.0: the order of the results can differ.
 * Triggers are the change feed: `TRUNCATE`, bulk loads with `SET unique_checks`... that skip triggers, and foreign key cascades
   do not reach the queue. A cascaded or truncated row is never returned (the existence check), but a `TRUNCATE` leaves the
   documents in the index until `CALL sift_rebuild`; rows added by a trigger-less load need the same.
