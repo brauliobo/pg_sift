@@ -55,7 +55,7 @@ settle() {
 		out=$(sql ae "SELECT ($cond) || '|' || coalesce((SELECT string_agg(pid::text, ',') FROM pg_stat_activity WHERE backend_type LIKE 'sift %'), '')")
 		seen=$(vmhwm_kb "${out#*|}")
 		(( seen <= RSS_KB )) || RSS_KB=$seen
-		[[ ${out%%|*} != t ]] || { CONV_OK=1; break; }
+		[[ ${out%%|*} != true ]] || { CONV_OK=1; break; }
 		(( $(now_ms) - t0 < CAP_MS )) || break
 		sleep 0.05
 	done
