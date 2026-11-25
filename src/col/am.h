@@ -455,6 +455,8 @@ extern int64 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern bool sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir);
 extern void sift_col_ammarkpos(IndexScanDesc scan);
 extern void sift_col_amrestrpos(IndexScanDesc scan);
+/* The ExecutorStart and ExecutorFinish hooks of the access method (col/am/exec_hooks.c) */
+extern void sift_col_executor_init(void);
 /* After ExecutorStart: the index-only scans of sift_col indexes in the plan form their tuples from the columns the plan reads */
 extern void sift_col_ioss_want(QueryDesc *queryDesc);
 extern void sift_col_stmt_start(QueryDesc *queryDesc);
