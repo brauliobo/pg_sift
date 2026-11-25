@@ -1,0 +1,23 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1set s2set s2begin s1upd s2other s2same s2c s2v
+step s1set: SET sift.backend_cache_kb = '1MB';
+step s2set: SET sift.backend_cache_kb = '1MB';
+step s2begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS rows FROM iso_ll;
+rows
+----
+6000
+(1 row)
+
+step s1upd: UPDATE iso_ll SET c = 'one' WHERE id = 5;
+step s2other: UPDATE iso_ll SET d = 'two' WHERE id = 6;
+step s2same: UPDATE iso_ll SET d = 'two' WHERE id = 5;
+ERROR:  could not serialize access due to concurrent update
+step s2c: COMMIT;
+step s2v: SELECT id, c = 'one' AS c_one, d = 'two' AS d_two FROM iso_ll WHERE id IN (5, 6) ORDER BY id;
+id|c_one|d_two
+--+-----+-----
+ 5|t    |f    
+ 6|f    |f    
+(2 rows)
+

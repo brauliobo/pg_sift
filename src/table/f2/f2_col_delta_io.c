@@ -21,6 +21,7 @@
 #include "utils/rel.h"
 
 #include "col/f2/col_meta.h"
+#include "core/cachebudget.h"
 #include "core/crash_point.h"
 #include "core/f2/f2_gate.h"
 #include "core/f2/fsm.h"
@@ -33,6 +34,7 @@
 #include "table/f2/f2_chain_cache.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_col_delta_dir.h"
+#include "table/f2/f2_col_delta_io.h"
 #include "table/f2/f2_gcache.h"
 
 #ifdef SIFT_TESTING
@@ -380,16 +382,30 @@ target_of(const SiftF2Loc *loc, uint64 tid)
 	return (SiftColDeltaTarget) {.part_gen = loc->gb->pin->part_gen,.granule_id = loc->gb->granule_id,.row_ordinal = loc->row,.tid = tid};
 }
 
+/* A chain the cache of the chains can keep whole in a quarter of its budget; a longer one is read for the records of other transactions only */
+static bool
+chain_fits_cache(Relation rel, const SiftPartitionEntry *entry)
+{
+	uint64		pages = Max(SIFT_CDDIR_FLAT_PAGES, (uint64) sift_backend_cache_kb * 1024 / (4 * BLCKSZ));
+
+	return sift_manifest_read_col_delta(rel, entry).npages <= pages;
+}
+
 static SiftColDeltaLast
 latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid)
 {
-	const SiftColDeltaLog *log = sift_col_delta_log(rel, &loc->entry);
 	SiftColDeltaOps ops;
 	SiftColDeltaTarget t = target_of(loc, tid);
+	const SiftColDeltaLog *log;
 
+	sift_col_delta_ops_init(&ops, NULL);
+	if ((loc->entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
+		return (SiftColDeltaLast) {0};
+	if (!chain_fits_cache(rel, &loc->entry))
+		return sift_col_delta_foreign_latest(rel, &loc->entry, &t, &ops);
+	log = sift_col_delta_log(rel, &loc->entry);
 	if (log == NULL)
 		return (SiftColDeltaLast) {0};
-	sift_col_delta_ops_init(&ops, NULL);
 	for (int i = sift_col_delta_log_newest(log, tid); i >= 0; i = sift_col_delta_log_prev(log, i))
 	{
 		SiftColDeltaEntryHdr h;
