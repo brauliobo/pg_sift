@@ -3,7 +3,9 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
 #include "port/pg_bitutils.h"
+#include "utils/memutils.h"
 
 #include "agg/v6/v6_inset.h"
 
@@ -47,6 +49,8 @@ sift_v6_inset_index(MemoryContext keep, SiftV6InSet *s)
 		words *= 2;
 	while (cap < 2 * (uint32) s->n)
 		cap *= 2;
+	if ((Size) cap * sizeof(int64) > Min(MaxAllocSize, (Size) work_mem * 1024))
+		return;
 	s->bloom = MemoryContextAllocZero(keep, (Size) words * sizeof(uint64));
 	s->bloom_mask = words - 1;
 	s->table = MemoryContextAlloc(keep, (Size) cap * sizeof(int64));

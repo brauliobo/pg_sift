@@ -621,9 +621,6 @@ any_node(Comp *c, const ScalarArrayOpExpr *sa)
 	const Node *left = linitial(sa->args);
 	const Const *arr = lsecond(sa->args);
 	ArrayType  *a;
-	int16		len;
-	bool		byval;
-	char		align;
 	Datum	   *el;
 	bool	   *nulls;
 	int			n;
@@ -633,10 +630,9 @@ any_node(Comp *c, const ScalarArrayOpExpr *sa)
 		get_func_namespace(get_opcode(sa->opno)) != PG_CATALOG_NAMESPACE)
 		return NULL;
 	a = DatumGetArrayTypeP(arr->constvalue);
-	get_typlenbyvalalign(ARR_ELEMTYPE(a), &len, &byval, &align);
-	deconstruct_array(a, ARR_ELEMTYPE(a), len, byval, align, &el, &nulls, &n);
-	if (n > SIFT_V6_ANY_MAX || domain_of(exprType(left)) == DOM_NONE || domain_of(exprType(left)) != domain_of(ARR_ELEMTYPE(a)))
+	if (ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a)) > SIFT_V6_ANY_MAX || domain_of(exprType(left)) == DOM_NONE || domain_of(exprType(left)) != domain_of(ARR_ELEMTYPE(a)))
 		return NULL;
+	sift_v6_array_elems(a, &el, &nulls, &n);
 	if (n == 0)
 	{
 		acc = node_new(c, SVX_BOOL_CONST, SVEC_BOOL);

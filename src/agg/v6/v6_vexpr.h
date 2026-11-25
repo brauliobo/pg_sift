@@ -19,6 +19,7 @@
 #include "nodes/params.h"
 #include "utils/tuplestore.h"
 #include "nodes/pathnodes.h"
+#include "utils/array.h"
 
 #include "agg/batch_source.h"
 #include "agg/plan/card_est.h"
@@ -90,6 +91,9 @@ extern int	sift_v6_input_add_text(SiftV6Input *in, const Var *v);
  * the values of this execution (none while the path is made, which no row passes): the set goes to out, the column to the input; false for any other conjunct. keep: where the values live.
  */
 extern bool sift_v6_inset_of(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6InSet *out);
+
+/* The elements of an array of any element type, each read at the width and alignment its type says (the arrays of the caller's context, to free) */
+extern void sift_v6_array_elems(ArrayType *a, Datum **elems, bool **nulls, int *n);
 
 /* The integers of a constant or parameter array of the integer class for a column of vartype, ascending, NULL elements left out (in keep); the empty set while the path is made (no parameters); false for any other array */
 extern bool sift_v6_array_ints(MemoryContext keep, const Node *arr, Oid vartype, ParamListInfo params, const int64 **vals, int *n);

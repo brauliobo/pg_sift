@@ -27,7 +27,7 @@ typedef struct SiftV6InSet
 
 #define SIFT_V6_INSET_EMPTY	PG_INT64_MIN
 
-/* the index of a set of vals[0 .. n) (ascending, distinct) in the memory context keep */
+/* the index of a set of vals[0 .. n) (ascending, distinct) in the memory context keep; a set whose table would not fit work_mem has none, and its values are searched */
 extern void sift_v6_inset_index(MemoryContext keep, SiftV6InSet *s);
 
 /* The rows of out (a bitmap over the n rows of col) whose column is in the set stay; left: the rows of out on entry; the rows left on return */

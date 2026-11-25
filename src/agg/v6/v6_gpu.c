@@ -15,6 +15,7 @@
 #include "agg/gpu_v6.h"
 #include "agg/v6/v6_gpu.h"
 #include "agg/v6/v6_topn.h"
+#include "agg/v6/v6_vexpr.h"
 #include "core/compat.h"
 
 typedef struct GpuQuery
@@ -360,7 +361,7 @@ add_in_list(GpuQuery *g, const ScalarArrayOpExpr *sa)
 	dom = domain_of(v->vartype);
 	if (dom == DOM_NONE || dom == DOM_F64 || dom != domain_of(elemtype) || g->q.nin == SIFT_VK_MAXCOLS)
 		return false;
-	deconstruct_array(arr, elemtype, get_typlen(elemtype), get_typbyval(elemtype), TYPALIGN_INT, &elems, &nulls, &n);
+	sift_v6_array_elems(arr, &elems, &nulls, &n);
 	if (n == 0)
 		return false;
 	vals = MemoryContextAlloc(g->cx, n * sizeof(int64));

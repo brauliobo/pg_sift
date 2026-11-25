@@ -23,6 +23,7 @@ typedef struct SiftV6CardQuery
 	SiftCardPred preds[SIFT_CARD_MAX_PREDS];
 	uint64	   *vals;
 	uint32		nvals;
+	uint32		cap;			/* the values vals has room for */
 	SiftCardQuery q;
 	List	   *rest;
 } SiftV6CardQuery;

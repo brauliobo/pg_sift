@@ -181,9 +181,9 @@ in_pred(SiftV6CardQuery *o, const ScalarArrayOpExpr *sa, Index relid, const Inde
 		const uint32 first = o->nvals;
 		int64		c;
 
-		if (ARR_NDIM(a) > 1)
+		if (ARR_NDIM(a) > 1 || (uint64) o->nvals + ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a)) > o->cap)
 			return false;
-		deconstruct_array(a, ARR_ELEMTYPE(a), get_typlen(ARR_ELEMTYPE(a)), get_typbyval(ARR_ELEMTYPE(a)), 'i', &elems, &nulls, &n);
+		sift_v6_array_elems(a, &elems, &nulls, &n);
 		if ((p = pred_add(o, SCP_IN, leaf)) == NULL)
 			return false;
 		for (int i = 0; i < n; i++)
@@ -215,23 +215,24 @@ const_array_len(const Node *e)
 	return ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a));
 }
 
-/* every equality and every constant list of the clauses fit one array of values: a list holds at most the elements of its array */
+/* every equality and every constant list of the clauses fit one array of values: a list holds at most the elements of its array, and the array of values at most what one allocation holds (a list that does not fit is left to the executor) */
 static uint32
 values_bound(const List *clauses)
 {
-	uint32		n = list_length(clauses);
+	uint64		n = list_length(clauses);
 
 	foreach_ptr(RestrictInfo, ri, (List *) clauses)
 		if (IsA(ri->clause, ScalarArrayOpExpr))
 			n += const_array_len(lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
-	return n;
+	return (uint32) Min(n, MaxAllocSize / sizeof(uint64));
 }
 
 void
 sift_v6_card_query(const List *clauses, Index relid, const IndexOptInfo *ix, SiftV6CardQuery *out)
 {
 	*out = (SiftV6CardQuery) {0};
-	out->vals = palloc(Max(values_bound(clauses), 1) * sizeof(uint64));
+	out->cap = values_bound(clauses);
+	out->vals = palloc(Max(out->cap, 1) * sizeof(uint64));
 	foreach_ptr(RestrictInfo, ri, (List *) clauses)
 	{
 		const Node *e = (Node *) ri->clause;
