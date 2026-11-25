@@ -346,7 +346,8 @@ typedef enum PickMode
 {
 	PICK_BEST,					/* the highest aged score, the older first */
 	PICK_FAIR,					/* the oldest request that has aged a quantum, of any tier */
-	PICK_UNSERVED				/* as PICK_BEST, among the databases that have no worker */
+	PICK_UNSERVED,				/* as PICK_BEST, among the databases that have no worker and are not held or backing off */
+	PICK_STARVED				/* the oldest request, among those databases, that waited SIFT_MAINT_STARVED_NAPS naps; db is the one that does not count (the one being served) */
 } PickMode;
 
 static int
@@ -375,17 +376,24 @@ pick(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now, PickMode
 	int			best = -1;
 	uint32		best_score = 0;
 	Oid			dbs[SIFT_MAINT_MAX_WORKERS];
-	int			ndbs = mode == PICK_UNSERVED ? active_dbs(m, dbs) : 0;
+	bool		spawn = mode == PICK_UNSERVED || mode == PICK_STARVED;
+	int			ndbs = spawn ? active_dbs(m, dbs) : 0;
 
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
 	{
 		const SiftMaintSlot *s = &m->slot[i];
 		uint32		score;
 
-		if (m->khash[i] == 0 || !runnable(s, db, allow_cold, now))
+		if (m->khash[i] == 0 || !runnable(s, mode == PICK_STARVED ? InvalidOid : db, allow_cold, now))
 			continue;
-		if (ndbs > 0 && served(dbs, ndbs, s->db))
+		if (spawn && (served(dbs, ndbs, s->db) || sift_maint_db_held(m, s->db, now) || (mode == PICK_STARVED && s->db == db)))
 			continue;
+		if (mode == PICK_STARVED)
+		{
+			if (now - s->enqueued_at >= SIFT_MAINT_STARVED_NAPS * (TimestampTz) m->naptime_ms * 1000 && (best < 0 || s->enqueued_at < m->slot[best].enqueued_at))
+				best = i;
+			continue;
+		}
 		if (mode == PICK_FAIR)
 		{
 			if (now - s->enqueued_at >= SIFT_MAINT_AGE_QUANTUM_US && (best < 0 || s->enqueued_at < m->slot[best].enqueued_at))
@@ -519,6 +527,19 @@ sift_maint_progress(SiftMaintShmem *m, const SiftMaintClaim *claim, SiftMaintPha
 	end(m);
 }
 
+/* A request of another database has waited SIFT_MAINT_STARVED_NAPS naps without a worker: the worker that serves db leaves and the next one goes to that database */
+static bool
+starved_elsewhere(SiftMaintShmem *m, const SiftMaintHost *host, Oid db)
+{
+	TimestampTz now = host->now();
+	bool		starved;
+
+	sift_shm_lock(&m->lock);
+	starved = pick(m, db, !host->defer_cold(), now, PICK_STARVED) >= 0;
+	sift_shm_unlock(&m->lock);
+	return starved;
+}
+
 int
 sift_maint_run(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, int max_steps, SiftMaintStepFn step, void *arg, bool *yielded)
 {
@@ -529,7 +550,7 @@ sift_maint_run(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, int max_ste
 	while (n < max_steps && !*yielded && sift_maint_claim(m, host, db, !host->defer_cold(), &c))
 	{
 		sift_maint_complete(m, host, &c, step(&c, arg));
-		*yielded = host->should_yield(c.tier, host->now());
+		*yielded = host->should_yield(c.tier, host->now()) || starved_elsewhere(m, host, db);
 		n++;
 	}
 	return n;
@@ -811,6 +832,32 @@ sift_maint_worker_exit(SiftMaintShmem *m, int worker, int pid)
 	end(m);
 }
 
+void
+sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, int worker, Oid db)
+{
+	TimestampTz now = host->now();
+
+	begin(m);
+	if (m->worker[worker].state == 1 && m->worker[worker].db == db)
+		worker_free(m, worker);
+	end(m);
+	if (sift_maint_db_connect_failed(m, now, db) >= SIFT_MAINT_CONNECT_GIVE_UP)
+		sift_maint_db_purge(m, db);
+}
+
+void
+sift_maint_db_purge(SiftMaintShmem *m, Oid db)
+{
+	begin(m);
+	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
+		if (m->khash[i] != 0 && m->slot[i].state == SIFT_SLOT_QUEUED && m->slot[i].db == db)
+		{
+			m->nqueued--;
+			slot_free(m, i);
+		}
+	end(m);
+}
+
 /* Wakes the worker of the database that has the best request waiting and starts one for a database that has none: the cap on workers is asked of the host only when that is to be done */
 SiftMaintKick
 sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
@@ -831,7 +878,9 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 	}
 	if ((j = worker_for(m, m->slot[i].db)) >= 0 && m->worker[j].state == 2)
 		procno = m->worker[j].procno;
-	if ((j = pick(m, InvalidOid, cold_ok, now, PICK_UNSERVED)) >= 0)
+	if ((j = pick(m, InvalidOid, cold_ok, now, PICK_STARVED)) < 0)
+		j = pick(m, InvalidOid, cold_ok, now, PICK_UNSERVED);
+	if (j >= 0)
 	{
 		db = m->slot[j].db;
 		tier = (SiftPacerTier) m->slot[j].tier;
@@ -912,73 +961,4 @@ sift_maint_fg_note(SiftMaintShmem *m, bool write)
 
 	if ((++ops & 63) == 0)
 		pg_atomic_fetch_add_u64(write ? &m->fg_write_ops : &m->fg_read_ops, 1);
-}
-
-static int
-row_order(const void *a, const void *b)
-{
-	const SiftMaintRow *x = a, *y = b;
-
-	if (x->queued != y->queued)
-		return x->queued ? 1 : -1;
-	return x->priority != y->priority ? (x->priority < y->priority ? 1 : -1) : (x->rel > y->rel) - (x->rel < y->rel);
-}
-
-static int
-copy_rows(const SiftMaintShmem *m, TimestampTz now, SiftMaintRow rows[SIFT_MAINT_SLOTS], SiftMaintStatus *st)
-{
-	int			n = 0;
-
-	memset(st, 0, sizeof(*st));
-	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-	{
-		const SiftMaintSlot *s = &m->slot[i];
-
-		if (m->khash[i] == 0 || s->state == SIFT_SLOT_FREE)
-			continue;
-		rows[n++] = (SiftMaintRow) {
-			.pid = s->pid, .db = s->db, .rel = s->rel, .part_id = s->part_id, .kind = (SiftMaintKind) s->kind,
-			.tier = (SiftPacerTier) s->tier, .phase = (SiftMaintPhase) s->phase, .done = s->done, .total = s->total,
-			.bytes_written = s->bytes_written, .queued = s->state == SIFT_SLOT_QUEUED,
-			.priority = s->state == SIFT_SLOT_QUEUED ? sift_maint_aged_score(s->score, (SiftPacerTier) s->tier, s->enqueued_at, now) : s->score,
-			.started_at = s->state == SIFT_SLOT_QUEUED ? s->enqueued_at : s->claimed_at};
-		if (s->state == SIFT_SLOT_QUEUED)
-			st->queued[s->tier]++;
-		else
-			st->claimed++;
-	}
-	st->stats = m->stats;
-	return n;
-}
-
-int
-sift_maint_snapshot(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintRow rows[SIFT_MAINT_SLOTS], SiftMaintStatus *status)
-{
-	TimestampTz now = host->now();
-	int			n = -1;
-
-	for (int t = 0; t < SIFT_MAINT_SNAP_TRIES && n < 0; t++)
-	{
-		uint32		seq = pg_atomic_read_u32(&m->seq);
-		int			got;
-
-		if (seq & 1)
-			continue;
-		pg_read_barrier();
-		got = copy_rows(m, now, rows, status);
-		pg_read_barrier();
-		if (pg_atomic_read_u32(&m->seq) == seq)
-			n = got;
-	}
-	if (n < 0)
-	{
-		sift_shm_lock(&m->lock);
-		n = copy_rows(m, now, rows, status);
-		sift_shm_unlock(&m->lock);
-	}
-	status->workers_active = pg_atomic_read_u32(&m->active_workers);
-	status->workers_max = pg_atomic_read_u32(&m->max_workers);
-	status->cold_deferred = host->defer_cold();
-	qsort(rows, n, sizeof(SiftMaintRow), row_order);
-	return n;
 }

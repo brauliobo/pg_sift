@@ -22,6 +22,7 @@
 
 #include "col/dsmreg.h"
 #include "core/compat.h"
+#include "core/maint_drain.h"
 #include "core/waits.h"
 #include "core/worker.h"
 
@@ -253,12 +254,29 @@ sift_maint_open(Oid relid, LOCKMODE lock)
 	}
 }
 
+static Oid	worker_db;
+static bool worker_connected;
+static volatile sig_atomic_t worker_terminated;
+
+/* SIGTERM of the administrator or of a statement that drops or copies the database: the worker ends and its claim goes back to the queue as one that never ran */
+static void
+worker_term(SIGNAL_ARGS)
+{
+	worker_terminated = true;
+	die(postgres_signal_arg);
+}
+
 static void
 worker_exit_cb(int code, Datum arg)
 {
 	int			worker = DatumGetInt32(arg);
 
-	sift_maint_release_pid(table, &sift_maint_server_host, MyProcPid, code != 0);
+	if (!worker_connected)
+	{
+		sift_maint_worker_unconnected(table, &sift_maint_server_host, worker, worker_db);
+		return;
+	}
+	sift_maint_release_pid(table, &sift_maint_server_host, MyProcPid, code != 0 && !worker_terminated);
 	sift_maint_worker_exit(table, worker, MyProcPid);
 	if (code == 0)
 		sift_maint_kick(table, &sift_maint_server_host);
@@ -309,13 +327,18 @@ sift_maint_sched_worker_main(Datum main_arg)
 	int			worker;
 
 	memcpy(&worker, MyBgworkerEntry->bgw_extra, sizeof(worker));
-	pqsignal(SIGTERM, die);
+	worker_db = db;
+	pqsignal(SIGTERM, worker_term);
 	BackgroundWorkerUnblockSignals();
+	if ((m = sift_maint_table()) == NULL)
+		proc_exit(0);
+	before_shmem_exit(worker_exit_cb, Int32GetDatum(worker));
 	BackgroundWorkerInitializeConnectionByOid(db, InvalidOid, 0);
-	if ((m = sift_maint_table()) == NULL || !sift_maint_worker_started(m, worker, MyProcPid, MyProcNumber))
+	worker_connected = true;
+	sift_maint_db_connected(m, db);
+	if (!sift_maint_worker_started(m, worker, MyProcPid, MyProcNumber))
 		proc_exit(0);
 	Assert(stepper != NULL);
-	before_shmem_exit(worker_exit_cb, Int32GetDatum(worker));
 	for (int idle = 0; idle < SIFT_MAINT_IDLE_NAPS && !yielded;)
 	{
 		idle = run_guarded(m, db, &yielded) > 0 ? 0 : idle + 1;
@@ -332,6 +355,7 @@ sift_maint_launcher_register(void)
 	BackgroundWorker bw = {0};
 
 	launcher_registered = true;
+	sift_maint_drain_install();
 	bw.bgw_flags = BGWORKER_SHMEM_ACCESS;
 	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	bw.bgw_restart_time = 10;

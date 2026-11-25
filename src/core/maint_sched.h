@@ -58,6 +58,12 @@ typedef enum SiftPacerTier
 #define SIFT_MAINT_TIER_DEFAULT		(-1)
 #define SIFT_MAINT_HASH_SIZE		(2 * SIFT_MAINT_SLOTS)
 #define SIFT_MAINT_FREE_WORDS		(SIFT_MAINT_SLOTS / 64)
+#define SIFT_MAINT_DBSTATE			8
+#define SIFT_MAINT_CONNECT_BACKOFF_US	(2 * USECS_PER_SEC)
+#define SIFT_MAINT_CONNECT_BACKOFF_MAX_US	(60 * USECS_PER_SEC)
+#define SIFT_MAINT_CONNECT_GIVE_UP	3
+#define SIFT_MAINT_HELD				PG_INT64_MAX
+#define SIFT_MAINT_STARVED_NAPS		2
 
 typedef enum SiftMaintKind
 {
@@ -184,6 +190,14 @@ typedef struct SiftMaintWorkerSlot
 	TimestampTz lease_until;
 } SiftMaintWorkerSlot;
 
+/* A database that gets no new worker until `until`: it refused the connection of the last `failures` (a backoff of 2 s doubling to 60 s), or SIFT_MAINT_HELD while a statement of the server waits for its workers to leave */
+typedef struct SiftMaintDbState
+{
+	Oid			db;
+	uint32		failures;
+	TimestampTz until;
+} SiftMaintDbState;
+
 typedef struct SiftMaintStats
 {
 	uint64		enqueued;
@@ -247,6 +261,7 @@ typedef struct SiftMaintShmem
 	uint32		bgw_pad;
 	int16		hash_idx[SIFT_MAINT_HASH_SIZE];	/* open addressing over khash: the slot of a key, -1 where empty */
 	uint64		free_bits[SIFT_MAINT_FREE_WORDS];	/* 1 for a free slot */
+	SiftMaintDbState dbstate[SIFT_MAINT_DBSTATE];
 	uint8		pad5[48];
 } SiftMaintShmem;
 
@@ -329,6 +344,17 @@ extern int	sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *hos
 /* False when the slot was given up (its lease lapsed) and taken by another: the worker must exit */
 extern bool sift_maint_worker_started(SiftMaintShmem *m, int worker, int pid, int procno);
 extern void sift_maint_worker_exit(SiftMaintShmem *m, int worker, int pid);
+/* A worker that could not connect to db (dropped, closed to connections): its slot goes back at once, db is not tried again for a while, and its queued requests go after SIFT_MAINT_CONNECT_GIVE_UP failures in a row */
+extern void sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, int worker, Oid db);
+/* The state of a database for the launcher (core/maint_db.c): the lock of the table is not held by the caller, except for sift_maint_db_held */
+extern bool sift_maint_db_held(const SiftMaintShmem *m, Oid db, TimestampTz now);
+extern uint32 sift_maint_db_connect_failed(SiftMaintShmem *m, TimestampTz now, Oid db);
+extern void sift_maint_db_connected(SiftMaintShmem *m, Oid db);
+/* Keeps new workers from db (hold) until it is let go; a statement that drops or copies the database holds it while its workers leave */
+extern void sift_maint_db_hold(SiftMaintShmem *m, TimestampTz now, Oid db, bool hold);
+extern int	sift_maint_db_workers(SiftMaintShmem *m, Oid db);
+/* The requests of db that are still queued are dropped: the database is gone */
+extern void sift_maint_db_purge(SiftMaintShmem *m, Oid db);
 extern SiftMaintKick sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host);
 /* Enqueue, then start or wake what drains it as the mode says */
 extern SiftMaintEnq sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode mode, const SiftMaintReq *req);
