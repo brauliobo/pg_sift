@@ -160,8 +160,10 @@ sift_v1_reader_of(bool is_table)
 static bool
 v1_owns_rel(Oid relid, bool is_table)
 {
+	const char	relkind = get_rel_relkind(relid);
+
 	if (is_table)
-		return get_rel_relkind(relid) == RELKIND_RELATION && sift_v1_tbl_owns(relid);
+		return (relkind == RELKIND_RELATION || relkind == RELKIND_MATVIEW) && sift_v1_tbl_owns(relid);
 	return OidIsValid(sift_col_am_oid()) && get_rel_relam(relid) == sift_col_am_oid() &&
 		sift_col_index_oid_engine(relid) == SIFT_FORMAT_MAJOR && !sift_col_index_stale(relid);
 }
