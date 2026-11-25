@@ -18,6 +18,11 @@
 #include "storage/smgr.h"
 #include "utils/rel.h"
 
+#ifdef SIFT_TESTING
+/* Testing knob (sift.test_disk_blocks, 0 = off): the blocks a relation file may grow to before an extension fails as a full disk does */
+extern PGDLLIMPORT int sift_test_disk_blocks;
+#endif
+
 extern void sift_extension_lock(Relation rel);
 extern void sift_extension_unlock(Relation rel);
 

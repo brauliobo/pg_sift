@@ -380,6 +380,7 @@ CREATE FUNCTION sift._test_shm_total() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_
 CREATE FUNCTION sift._test_shm_manifest_publish(rel oid, version int8, nparts int4, snapshot bool) RETURNS bool AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_publish' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_manifest_peek(rel oid) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_peek' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_manifest_invalidate(rel oid, quarantine bool) RETURNS void AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_invalidate' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_shm_manifest_served(index regclass) RETURNS bool AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_served' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_manifest_read(rel oid, part int4, list_bytes int8) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_read' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_manifest_read_stale(found oid, expected oid) RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_read_stale' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_shm_manifest_announce_epoch() RETURNS void AS 'MODULE_PATHNAME', 'sift_test_shm_manifest_announce_epoch' LANGUAGE C STRICT;

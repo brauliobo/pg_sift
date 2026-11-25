@@ -6,16 +6,19 @@
 
 #ifdef SIFT_TESTING
 
+#include "access/relation.h"
 #include "fmgr.h"
 #include "miscadmin.h"
 #include "utils/builtins.h"
 
+#include "core/catname.h"
 #include "core/part_lock.h"
 #include "core/shm_manifest.h"
 
 PG_FUNCTION_INFO_V1(sift_test_shm_manifest_publish);
 PG_FUNCTION_INFO_V1(sift_test_shm_manifest_peek);
 PG_FUNCTION_INFO_V1(sift_test_shm_manifest_invalidate);
+PG_FUNCTION_INFO_V1(sift_test_shm_manifest_served);
 PG_FUNCTION_INFO_V1(sift_test_shm_manifest_read);
 PG_FUNCTION_INFO_V1(sift_test_shm_manifest_overlap);
 PG_FUNCTION_INFO_V1(sift_test_shm_manifest_stat);
@@ -107,6 +110,18 @@ sift_test_shm_manifest_invalidate(PG_FUNCTION_ARGS)
 
 	sift_shm_manifest_invalidate(&loc, PG_GETARG_BOOL(1));
 	PG_RETURN_VOID();
+}
+
+/* sift._test_shm_manifest_served(index regclass): whether a reader is served the manifest of the file of the index (an index the registry does not hold, or holds out of service: false) */
+Datum
+sift_test_shm_manifest_served(PG_FUNCTION_ARGS)
+{
+	Relation	index = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
+	SiftShmIndexMeta meta;
+	bool		served = sift_shm_manifest_peek(&index->rd_locator, &meta);
+
+	relation_close(index, AccessShareLock);
+	PG_RETURN_BOOL(served);
 }
 
 /* The snapshot holds what its version published: the entries, the scopes, the counts */

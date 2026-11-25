@@ -15,6 +15,20 @@
 static const char extend_owner;
 static LockRelId last_locked;
 
+#ifdef SIFT_TESTING
+int			sift_test_disk_blocks = 0;
+
+/* A full disk: the file of a relation of sift may not grow past sift.test_disk_blocks blocks */
+static void
+test_disk_full(BlockNumber nblocks)
+{
+	if (sift_test_disk_blocks > 0 && nblocks > (BlockNumber) sift_test_disk_blocks)
+		ereport(ERROR, (errcode(ERRCODE_DISK_FULL), errmsg("sift test: no space left on device")));	/* check-errors: allow */
+}
+#else
+#define test_disk_full(nblocks) ((void) 0)
+#endif
+
 void
 sift_extension_lock(Relation rel)
 {
@@ -48,6 +62,7 @@ sift_extend_zeroed_to_bas(Relation rel, BlockNumber nblocks, BufferAccessStrateg
 {
 	Buffer		buf;
 
+	test_disk_full(nblocks);
 	sift_errctx_freeze(&extend_owner);
 	buf = ExtendBufferedRelTo(BMR_REL(rel), MAIN_FORKNUM, bas, 0, nblocks, RBM_ZERO_AND_LOCK);
 	sift_errctx_thaw(&extend_owner);
@@ -100,6 +115,7 @@ sift_bulk_run_page(SiftBulkRun *run)
 void
 sift_bulk_run_write(SiftBulkRun *run, BlockNumber blk, Page page)
 {
+	test_disk_full(blk + 1);
 	/* STOR[STOR-WAL-01]: smgr_bulk_write page_std=true (omits 3-7 KB empty hole from WAL) */
 	smgr_bulk_write(run->state, blk, (BulkWriteBuffer) page, true);
 }

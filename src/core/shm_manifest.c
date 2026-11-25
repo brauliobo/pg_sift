@@ -197,6 +197,10 @@ area_attach(Table *t, bool create)
 	LWLockAcquire(&t->area_lock, LW_EXCLUSIVE);
 	PG_TRY();
 	{
+#ifdef SIFT_TESTING
+		if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "manifest_area") != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift test: the area of the manifests cannot be attached (manifest_area)")));	/* check-errors: allow */
+#endif
 		if (t->area_handle != DSA_HANDLE_INVALID)
 			a = dsa_attach(t->area_handle);
 		else if (create)

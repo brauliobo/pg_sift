@@ -24,6 +24,7 @@
 #include "core/damage.h"
 #include "executor/instrument.h"
 #include "core/catname.h"
+#include "core/extlock.h"
 #include "core/inspect.h"
 #include "core/dirchain.h"
 
@@ -53,6 +54,9 @@ sift_store_test_init(void)
 	DefineCustomIntVariable("sift.test_fail_pages",
 							"Testing: pages a promotion or merge writes before it fails (0 = never).",
 							NULL, &sift_test_fail_pages, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_disk_blocks",
+							"Testing: blocks a relation file may grow to before an extension fails as a full disk does (0 = never).",
+							NULL, &sift_test_disk_blocks, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_merge_max_kb",
 							"Testing: kB of segments one merge may read (0 = 16 GB).",
 							NULL, &sift_test_merge_max_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
