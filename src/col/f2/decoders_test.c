@@ -18,6 +18,7 @@
 #include "col/f2/point_dir.h"
 #include "col/f2/l0/slab.h"
 #include "col/granule/int.h"
+#include "core/catname.h"
 #include "core/f2/bulk_io.h"
 #include "table/f2/col_delta/dir.h"
 #include "table/f2/blob.h"
@@ -508,7 +509,7 @@ slab_batch(char *payload, void *arg)
 Datum
 sift_test_dec_own(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), RowExclusiveLock);
 
 	if (PG_GETARG_INT32(1) == 0)
 	{
@@ -531,7 +532,7 @@ sift_test_dec_own(PG_FUNCTION_ARGS)
 Datum
 sift_test_dec_damage(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), RowExclusiveLock);
 	int			mode = PG_GETARG_INT32(1);
 	int			off = 64;
 
@@ -577,7 +578,7 @@ point_section(int mode)
 Datum
 sift_test_dec_section(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), RowExclusiveLock);
 	const int	mode = PG_GETARG_INT32(1);
 	const uint16 schema[8] = {4, 1};
 	const uint32 preagg[2] = {mode == 3 ? 7 : 0, 0};

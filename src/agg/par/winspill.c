@@ -52,6 +52,7 @@ sift_par_win_spill_open(MemoryContext cx, const SiftParWinSpec *ws, const int *a
 	memcpy(s->win.funcs, ws->func, sizeof(SiftWinFuncSpec) * ws->nfuncs);
 	for (int k = 0; k < ws->n_ord; k++)
 	{
+		SIFT_INVARIANT(s->ncols < SIFT_V6_MAX_COLS, "window: too many columns to spill");
 		s->type[s->ncols] = ws->ord[k].f64 ? SVEC_F64 : SVEC_I64;
 		ps.ord[k] = (SiftWinPsKey) {.slot = s->ncols,.desc = ws->ord[k].desc,.nulls_first = ws->ord[k].nulls_first};
 		s->ncols++;
@@ -59,10 +60,11 @@ sift_par_win_spill_open(MemoryContext cx, const SiftParWinSpec *ws, const int *a
 	for (int f = 0; f < ws->nfuncs; f++)
 	{
 		s->arg_col[f] = arg_slot[f] >= 0 ? s->ncols : -1;
-		if (arg_slot[f] >= 0)
-			s->type[s->ncols++] = column_type(ws->func[f].arg_type);
+		if (arg_slot[f] < 0)
+			continue;
+		SIFT_INVARIANT(s->ncols < SIFT_V6_MAX_COLS, "window: too many columns to spill");
+		s->type[s->ncols++] = column_type(ws->func[f].arg_type);
 	}
-	SIFT_INVARIANT(s->ncols <= SIFT_V6_MAX_COLS, "window: too many columns to spill");
 	ps.ncols = s->ncols;
 	memcpy(ps.type, s->type, sizeof(ps.type));
 	for (int c = 0; c < s->ncols; c++)

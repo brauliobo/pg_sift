@@ -119,7 +119,7 @@ sift_v6_par_win_wanted(const SiftV6WindowSpec *spec, const SiftV6Input *in)
 static void *
 grow_array(ParWin *w, void *p, uint32 oldcap, uint32 cap, size_t esz)
 {
-	return oldcap == 0 ? MemoryContextAlloc(w->cx, esz * cap) : repalloc(p, esz * cap);
+	return oldcap == 0 ? MemoryContextAlloc(w->cx, esz * (Size) cap) : repalloc(p, esz * (Size) cap);
 }
 
 static void

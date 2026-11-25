@@ -141,7 +141,10 @@ fill_keys(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDist
 			b->kstr = out;
 		}
 		else if (par_src_ints(&sh->key_src[i], ld, 0, out))
+		{
+			SIFT_INVARIANT(word < SIFT_PAR_GROUP_MAX_KEYS, "parallel distinct: more keys than the batch holds");
 			b->key[word++] = out;
+		}
 		else
 			return par_serial(err, "a timestamp with no field to extract");
 	}

@@ -16,6 +16,7 @@
 
 #include "col/f2/meta.h"
 #include "col/f2/store/store.h"
+#include "core/catname.h"
 #include "core/f2/vm_xlog.h"
 #include "core/shm/manifest.h"
 #include "table/f2/tbl.h"
@@ -31,7 +32,7 @@ PG_FUNCTION_INFO_V1(sift_test_vm_lease_floor);
 Datum
 sift_test_tbl_set_next_vblock(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), AccessExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessExclusiveLock);
 	Buffer		buf = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
 	SiftXlog	x = sift_xlog_start(rel);
 	Page		p0 = sift_xlog_register(&x, buf, 0);
@@ -97,7 +98,7 @@ sift_test_vm_lease_fill(PG_FUNCTION_ARGS)
 Datum
 sift_test_vm_lease_floor(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	uint64		floor = 0;
 	bool		have = sift_shm_tid_lease_floor(&rel->rd_locator, PG_GETARG_INT64(1), &floor);
 

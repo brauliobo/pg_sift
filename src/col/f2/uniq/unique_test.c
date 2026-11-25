@@ -14,6 +14,7 @@
 #include "utils/rel.h"
 
 #include "col/f2/l0/stage.h"
+#include "core/catname.h"
 
 PG_FUNCTION_INFO_V1(sift_test_unique_partial_insert);
 
@@ -21,7 +22,7 @@ PG_FUNCTION_INFO_V1(sift_test_unique_partial_insert);
 Datum
 sift_test_unique_partial_insert(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	index = index_open(sift_rel_must_exist(PG_GETARG_OID(0)), RowExclusiveLock);
 	Relation	heap = table_open(index->rd_index->indrelid, RowExclusiveLock);
 	IndexInfo  *info = BuildIndexInfo(index);
 	Datum		values[1] = {Int32GetDatum(PG_GETARG_INT32(1))};
