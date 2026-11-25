@@ -21,6 +21,7 @@
 
 #include "col/f2/col_meta.h"
 #include "col/f2/f2_gbuf.h"
+#include "col/f2/f2_tier_host.h"
 #include "col/f2/l0_slab.h"
 #include "col/f2/pend_del.h"
 #include "col/f2/rowbuf.h"
@@ -28,6 +29,7 @@
 #include "core/f2/f2_vm_xlog.h"
 #include "core/memtrack.h"
 #include "core/shm_manifest.h"
+#include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_tbl.h"
 #include "table/f2/f2_vm.h"
 
@@ -178,6 +180,21 @@ part_clean(const SiftPartDesc *d, bool deltas_settled, FullTransactionId oldest)
 	return inserts_sealed && deletes_cleaned && deltas_settled && (d->ext_flags & SIFT_PART_EXT_EXPIRED) == 0 && d->tid_max != 0;
 }
 
+static bool
+col_delta_newest(Relation rel, const SiftPartitionEntry *e, FullTransactionId *newest)
+{
+	SiftColDeltaChain chain;
+
+	*newest = InvalidFullTransactionId;
+	if ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
+		return true;
+	if (!sift_col_delta_load_chain(rel, e, 0, &chain))
+		return false;
+	*newest = sift_col_delta_chain_max_xid(&chain);
+	sift_col_delta_chain_free(&chain);
+	return true;
+}
+
 static TransactionId
 newest_xid(TransactionId a, TransactionId b)
 {
@@ -189,9 +206,10 @@ plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Fu
 {
 	int			np;
 	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
-	SiftColDeltaAnchor chain = sift_manifest_read_col_delta(rel, e);
-	bool		deltas_settled = (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || (FullTransactionIdIsValid(chain.max_xid) && FullTransactionIdPrecedes(chain.max_xid, oldest));
-	TransactionId delta_xid = xid_of(chain.max_xid);
+	FullTransactionId newest;
+	bool		loaded = col_delta_newest(rel, e, &newest);
+	bool		deltas_settled = loaded && ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || (FullTransactionIdIsValid(newest) && FullTransactionIdPrecedes(newest, oldest)));
+	TransactionId delta_xid = xid_of(newest);
 
 	plan->bytes += sizeof(SiftPartDesc) * (Size) np;
 	unfit_unsettled(rel, store, e, plan);
@@ -434,6 +452,7 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 
 	if (!sift_tbl_vm_active(rel) || !ConditionalLockRelation(rel, ShareLock))
 		return;
+	(void) sift_ttl_rearm_rocompat(rel);
 	meta = sift_col_meta_read(rel);
 	plan.limit = meta.next_vblock;
 	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) == 0 && sift_shm_tid_lease_floor(&rel->rd_locator, meta.next_vblock, &plan.floor) && plan.floor > 0)
