@@ -515,6 +515,8 @@ float_sum_acc(const SiftPreaggMeasure *pm)
 		return v6g_acc_of_f64_sum(get_float8_infinity(), 0, pm->count_nonnull);
 	if (pm->flags & SIFT_PM_HAS_NINF)
 		return v6g_acc_of_f64_sum(-get_float8_infinity(), 0, pm->count_nonnull);
+	if (!isfinite(pm->u.f.sum_hi) || !isfinite(pm->u.f.sum_lo))
+		float_overflow_error();
 	return v6g_acc_of_f64_sum(pm->u.f.sum_hi, pm->u.f.sum_lo, pm->count_nonnull);
 }
 
