@@ -2,8 +2,9 @@
  * col/preagg_delta.h - the pre-aggregate of a granule and its correction for deleted rows.
  *
  * SEC_PREAGG keeps, for each granule of a compacted part, the cube of its rows by one integer dimension: for each value the count, the sum, the sum of squares, the least and
- * the greatest of an integer measure. A granule with deleted rows is not given up: when few of its rows are dead (at most 5%, 64 at most) their values are read, and subtracted
- * from the cells they fall in, which costs the dead rows and not the granule. A dead row that is the least or the greatest of its cell cannot be subtracted from the extremes: the
+ * the greatest of an integer measure. A granule with deleted rows is not given up: when few of its rows are dead (at most 15%, 1228 at most) their values are read, and subtracted
+ * from the cells they fall in, which costs the dead rows and not the granule. A granule is given up past the share of dead rows at which a compaction rewrites its part (15%), so that every
+ * granule a compaction leaves alone is still corrected. A dead row that is the least or the greatest of its cell cannot be subtracted from the extremes: the
  * caller then scans the granule with the deletion vector, as it does when more rows are dead.
  */
 #ifndef SIFT_PREAGG_DELTA_H
@@ -25,15 +26,15 @@ typedef struct SiftPreaggCell
 
 StaticAssertDecl(sizeof(SiftPreaggCell) == 48, "SiftPreaggCell must be 48 bytes");
 
-#define SIFT_PREAGG_DEAD_MAX	64
-#define SIFT_PREAGG_DEAD_PCT	5
+#define SIFT_PREAGG_DEAD_MAX	1228
+#define SIFT_PREAGG_DEAD_PCT	15
 #define SIFT_PREAGG_SPARSE_PRED_MAX 128
 
 /* The cells of a granule (ascending key); rows with a null dimension are left out */
 extern SiftPreaggCell *sift_preagg_build(const SiftGranuleView *v, int dim_col, int measure_col, int *ncells);
 
 /*
- * Whether a granule of nrows rows may be corrected by taking nexcl rows out of its cells instead of being scanned: at most 5% of its rows and 64 rows, or 128 while the only rows to take out
+ * Whether a granule of nrows rows may be corrected by taking nexcl rows out of its cells instead of being scanned: at most 15% of its rows and 1228 rows, or 128 while the only rows to take out
  * are those that one WHERE col IS NULL predicate excludes (ndead == 0, n_is_null_preds == 1): a sparse column is not null on a few rows of most granules and the cube stays the answer there.
  */
 static inline bool

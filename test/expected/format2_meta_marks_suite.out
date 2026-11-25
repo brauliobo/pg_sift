@@ -478,7 +478,7 @@ SELECT granule, kind, ndead FROM sift._test_f2_dv('t_idx', 1, NULL, :g);
 SELECT sift._test_f2_preagg('t_idx', 1, NULL, :g, 0);
              _test_f2_preagg             
 -----------------------------------------
- fallback ndead=364 rows=8192 delta_ok=0
+ fallback ndead=364 rows=8192 delta_ok=1
 (1 row)
 
 -- A part made by compaction carries its pre-aggregate
@@ -836,21 +836,21 @@ DELETE FROM pa WHERE id % 100 = 50 AND id BETWEEN 100 AND 39000;
 SELECT 'one percent' AS dead, parts, granules, with_dead, corrected, rescanned, mismatched FROM sift._test_f2_preagg_index('pa_i', 1, 2);
     dead     | parts | granules | with_dead | corrected | rescanned | mismatched 
 -------------+-------+----------+-----------+-----------+-----------+------------
- one percent |     1 |        5 |         5 |         1 |         4 |          0
+ one percent |     1 |        5 |         5 |         5 |         0 |          0
 (1 row)
 
 UPDATE pa SET v = v + 5 WHERE id % 50 = 25 AND id BETWEEN 100 AND 39000;
 SELECT 'one percent deleted, two updated' AS dead, parts, granules, with_dead, corrected, rescanned, mismatched FROM sift._test_f2_preagg_index('pa_i', 1, 2);
                dead               | parts | granules | with_dead | corrected | rescanned | mismatched 
 ----------------------------------+-------+----------+-----------+-----------+-----------+------------
- one percent deleted, two updated |     1 |        5 |         5 |         1 |         4 |          0
+ one percent deleted, two updated |     1 |        5 |         5 |         5 |         0 |          0
 (1 row)
 
 DELETE FROM pa WHERE id % 25 = 7 AND id BETWEEN 100 AND 39000;
 SELECT 'about five percent' AS dead, parts, granules, with_dead, corrected, rescanned, mismatched FROM sift._test_f2_preagg_index('pa_i', 1, 2);
         dead        | parts | granules | with_dead | corrected | rescanned | mismatched 
 --------------------+-------+----------+-----------+-----------+-----------+------------
- about five percent |     1 |        5 |         5 |         0 |         5 |          0
+ about five percent |     1 |        5 |         5 |         3 |         2 |          0
 (1 row)
 
 SELECT f2_same('SELECT g, count(*), sum(v) FROM pa WHERE id BETWEEN 1 AND 39500 GROUP BY g');
