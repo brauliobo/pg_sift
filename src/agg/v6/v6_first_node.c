@@ -22,6 +22,7 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_first.h"
 #include "agg/v6/v6_first_node.h"
+#include "agg/v6/v6_settings.h"
 #include "core/memtrack.h"
 
 #define FIRST_ENTRY_OVERHEAD	48
