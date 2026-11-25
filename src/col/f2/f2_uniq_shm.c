@@ -42,6 +42,7 @@ typedef struct UniqShm
 typedef struct Owned
 {
 	uint32		slot;
+	TransactionId xid;
 	SubTransactionId subid;
 	RelFileLocator locator;
 } Owned;
@@ -199,6 +200,10 @@ sift_uniq_shm_probe(const SiftUniqKey *k, SiftUniqHits *hits)
 	LWLockRelease(&s->lock);
 }
 
+/*
+ * A (sub)transaction is out of the running xids before the callbacks of its end run, and a probe that finds an entry of such an xid frees it (and a writer may take its slot): the owner lets go
+ * of an entry only while the slot still holds the entry of its xid, which no one makes again once that xid has ended
+ */
 static void
 owned_release_where(bool (*pick) (const Owned *, void *), void *arg)
 {
@@ -208,10 +213,12 @@ owned_release_where(bool (*pick) (const Owned *, void *), void *arg)
 	{
 		if (pick(&owned[n], arg))
 		{
-			Stripe	   *s = stripe_of(shm, shm->slot[owned[n].slot].key_hash);
+			const SiftShmUniqEntry *e = &shm->slot[owned[n].slot];
+			Stripe	   *s = stripe_of(shm, e->key_hash);
 
 			LWLockAcquire(&s->lock, LW_EXCLUSIVE);
-			entry_free(shm, owned[n].slot);
+			if (e->state == SIFT_UNIQ_ACTIVE && e->xid == owned[n].xid)
+				entry_free(shm, owned[n].slot);
 			LWLockRelease(&s->lock);
 		}
 		else
@@ -276,7 +283,7 @@ uniq_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId pare
 }
 
 static void
-owned_add(const SiftUniqKey *k, uint32 slot)
+owned_add(const SiftUniqKey *k, uint32 slot, TransactionId xid)
 {
 	static bool registered;
 
@@ -291,7 +298,7 @@ owned_add(const SiftUniqKey *k, uint32 slot)
 		owned = MemoryContextAlloc(TopTransactionContext, sizeof(Owned) * (capowned = 256));
 	else if (nowned == capowned)
 		owned = repalloc(owned, sizeof(Owned) * (capowned = Min(capowned * 2, SIFT_UNIQ_SHM_SLOTS)));
-	owned[nowned++] = (Owned) {.slot = slot,.subid = GetCurrentSubTransactionId(),.locator = k->locator};
+	owned[nowned++] = (Owned) {.slot = slot,.xid = xid,.subid = GetCurrentSubTransactionId(),.locator = k->locator};
 }
 
 bool
@@ -320,6 +327,6 @@ sift_uniq_shm_reserve(const SiftUniqKey *k, TransactionId xid, ItemPointer tid)
 	memcpy(u->slot[i].inline_key, k->bytes, sizeof(k->bytes));
 	*head = i + 1;
 	LWLockRelease(&s->lock);
-	owned_add(k, i);
+	owned_add(k, i, xid);
 	return true;
 }
