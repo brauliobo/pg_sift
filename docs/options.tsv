@@ -26,7 +26,7 @@ sift.rls_scores	BM25	`on`, `off`	Permit BM25 ranked scans under row-level securi
 sift.shared_cache_kb	all	`0..max` kB	Unified server-wide DSM cap across lookup tables, dim maps, dicts, and leaf stats	OPERATIONS.md#1-the-3-budget-o1-memory-model	6.0	
 sift.simd	all	`auto`, `scalar`, `avx2`, `avx512`, `neon`	Override runtime SIMD kernel selection for testing or diagnostics	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	3.0	
 sift.standby_conflicts	all	`on`, `off`	Delay extent reuse on primary to reduce retryable 40001 conflicts on standbys	OPERATIONS.md#7-crash-safety-locks-and-replication	1.1	
-sift.vacuum_rewrite_limit	all	`0..1048576` MB	Max bytes VACUUM rewrites per pass on a single index (0 = unlimited)	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1	
+sift.vacuum_rewrite_limit	all	`0..max` MB	Max MB an autovacuum pass rewrites (0 = unlimited); VACUUM FREEZE and a manual VACUUM are never capped	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1	
 sift_col(compression)	sift_col	`auto`, `lz4`, `zstd`, `none`, `col=codec`	Compression codec override for L1/L2 parts	ARCHITECTURE.md#2-two-tier-adaptive-compression-and-shared-value-store	3.0	
 sift_col(connect)	sift_col	`'fk -> [schema.]parent(key)'`	Connect up to 32 parent sift_col indexes for heap-free parent joins	ANALYTICS.md#5-joins-set-filters-and-connect	4.3	
 sift_col(dead_rewrite_pct)	sift_col	`0..100`	Dead-row percentage triggering compaction (0 inherits sift.dead_rewrite_pct, 100 = never)	OPERATIONS.md#2-disk-compression-and-wal-sizing	3.0	

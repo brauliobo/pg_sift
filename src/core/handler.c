@@ -119,7 +119,7 @@ bool		sift_async_maintenance = true;
 int			sift_maintenance_naptime = 2000;
 int			sift_maintenance_cost_delay = 0;
 int			sift_maintenance_wal_rate = 0;
-int			sift_vacuum_rewrite_limit = 128;
+int			sift_vacuum_rewrite_limit = 0;
 
 static relopt_kind sift_relopt_kind;
 static SiftCatalog catalog;
@@ -204,9 +204,10 @@ define_gucs(void)
 							&sift_maintenance_wal_rate, 0, 0, 1048576,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.vacuum_rewrite_limit",
-							"Megabytes of segments a column VACUUM may rewrite to merge (past the first merge step), with a separate equal allowance to copy the end of the file into free blocks below it, "
-							"which holds the table or index under an exclusive lock; 0 keeps the one merge step and moves nothing.",
-							NULL, &sift_vacuum_rewrite_limit, 128, 0, 1048576,
+							"Maximum MB of parts rewritten per non-aggressive background VACUUM pass (0 = unlimited).",
+							"VACUUM FREEZE, anti-wraparound autovacuum and a VACUUM someone runs are never cut short; a round of the move of the end of the file "
+							"into free blocks below it, which holds the table or index under an exclusive lock, copies at most this much.",
+							&sift_vacuum_rewrite_limit, 0, 0, INT_MAX,
 							PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
 #ifdef SIFT_TESTING
 	sift_handler_test_gucs();

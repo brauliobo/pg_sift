@@ -114,14 +114,14 @@ A 5.x relation that stays on Format Major 1 keeps its 5.x layout. The 6.0 librar
 
 | Operation | Bound |
 |---|---|
-| `VACUUM` of a `sift_table` | The merges rewrite segments up to `sift.vacuum_rewrite_limit` (128 MB by default; the first merge step always runs), as the `VACUUM` of a `sift_col` index does. The dirty segments it did not reach wait for the next `VACUUM`: a table with many dead rows takes several (autovacuum repeats them), not one rewrite of the whole table |
+| `VACUUM` of a `sift_table` | A `VACUUM` someone runs, and `VACUUM FREEZE`, rewrite every dirty segment in one pass, as the `VACUUM` of a `sift_col` index does. `sift.vacuum_rewrite_limit` (0, no limit, by default) holds an autovacuum pass back to that many MB: the dirty segments it did not reach wait for the next pass |
 | Reading the tombstones of a `sift_table` after a bulk `UPDATE` or `DELETE` | A backend keeps up to half of `work_mem` of the log (never more than `sift.backend_cache_kb`) and reads the rest from sorted runs in temporary files |
 | Merges, scope refills, `VACUUM` batches, `CLUSTER` sorts and bulk loads | Sized from the maintenance memory: `maintenance_work_mem`, and `autovacuum_work_mem` in an autovacuum worker |
 
 **Guardrails while a relation is on Format 1**
 
 - Set `autovacuum_work_mem` explicitly (for example `64MB` to `256MB`): each autovacuum worker may hold that much, so it times `autovacuum_max_workers` is the memory autovacuum may take.
-- Keep `sift.vacuum_rewrite_limit` at `64` to `128` (MB): it bounds the I/O, the temporary space and the time under lock of one `VACUUM`.
+- Leave `sift.vacuum_rewrite_limit` at `0` (no limit), or set it (for example `64` to `128` MB) to bound the I/O and the temporary space of one autovacuum pass and the time under lock of a round of the space step; it never cuts `VACUUM FREEZE` or a `VACUUM` someone runs short.
 - Set `temp_file_limit` to a fraction of the free disk of the temporary tablespace (10 to 25 percent): a statement that goes over it fails and its temporary files go. The tombstones of a bulk write spill past `work_mem`, so `pg_stat_database.temp_bytes` rises with a bulk `UPDATE` or `DELETE` of a Format 1 table; that is the bound at work, not a leak.
 
 **Move to Format 2.0**

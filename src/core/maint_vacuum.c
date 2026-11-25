@@ -7,6 +7,7 @@
 #include "access/genam.h"
 #include "access/xact.h"
 #include "miscadmin.h"
+#include "postmaster/autovacuum.h"
 #include "storage/lmgr.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -14,6 +15,7 @@
 #include "core/maint.h"
 #include "core/maint_int.h"
 #include "core/maint_sched.h"
+#include "core/maint_vacuum.h"
 #include "core/errctx.h"
 #include "core/live.h"
 #include "core/ops.h"
@@ -110,19 +112,44 @@ sift_mops_bulkdelete(const SiftMaintOps *ops, IndexVacuumInfo *info, IndexBulkDe
 	return bd.stats;
 }
 
+uint64
+sift_vacuum_rewrite_cap(void)
+{
+	return sift_vacuum_rewrite_limit > 0 ? (uint64) sift_vacuum_rewrite_limit << 20 : UINT64_MAX;
+}
+
+uint64
+sift_vacuum_rewrite_budget(bool aggressive)
+{
+	return aggressive || !AmAutoVacuumWorkerProcess() ? UINT64_MAX : sift_vacuum_rewrite_cap();
+}
+
+void
+sift_vacuum_say_deferred(int message_level, uint64 written)
+{
+	ereport(message_level == INFO ? INFO : DEBUG1,
+			(errmsg("sift: VACUUM stopped at sift.vacuum_rewrite_limit after rewriting " UINT64_FORMAT " bytes", written),
+			 errdetail("The parts left wait for the next pass.")));
+}
+
 /* The merges of VACUUM: until the policy asks for none, as a build that left many segments needs, or just one; stops at a failed step. True when the rewrite limit stopped them */
 static bool
-vacuum_merge(const SiftMaintOps *ops, Relation index)
+vacuum_merge(const SiftMaintOps *ops, Relation index, int message_level)
 {
 	uint64		busy = 0;
 	uint64		start = maint_written_bytes();
-	uint64		limit = (uint64) sift_vacuum_rewrite_limit << 20;
+	uint64		limit = sift_vacuum_rewrite_budget(false);
+	uint64		written;
 
 	while (ops->merge_next(index, false, SIFT_GOAL_VACUUM, false, &busy) == SIFT_STEP_DONE && ops->vacuum_to_fixed_point)
 	{
 		CHECK_FOR_INTERRUPTS();
-		if (ops->vacuum_budget && maint_written_bytes() - start >= limit)
+		written = maint_written_bytes() - start;
+		if (ops->vacuum_budget && written >= limit)
+		{
+			sift_vacuum_say_deferred(message_level, written);
 			return true;
+		}
 	}
 	return false;
 }
@@ -178,7 +205,7 @@ vacuumcleanup_index(void *arg)
 	if (ops->vacuum_net)
 		ops->vacuum_net(index);
 	sift_progress_phase(index, "merge");
-	limited = vacuum_merge(ops, index);
+	limited = vacuum_merge(ops, index, info->message_level);
 	sift_mem_assert_within(&mt_index_vacuum);
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)
@@ -189,7 +216,7 @@ vacuumcleanup_index(void *arg)
 	if (ops->vacuum_truncate && ops->vacuum_truncate(index))
 	{
 		(void) online_shrink(ops, index, info->message_level);
-		sift_maint_space_rounds(index, NULL, info->message_level, (uint64) sift_vacuum_rewrite_limit << 20);
+		sift_maint_space_rounds(index, NULL, info->message_level, sift_vacuum_rewrite_cap());
 		online_fallback(ops, index, info->message_level);
 	}
 	sift_progress_end(began);

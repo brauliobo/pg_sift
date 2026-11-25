@@ -15,7 +15,7 @@ sift.backend_cache_kb|KEEP|int;16384;0;MAX_KILOBYTES;PGC_SUSET|Spec 19 2.2 #1
 sift.shared_cache_kb|KEEP|int;65536;0;MAX_KILOBYTES;PGC_SUSET|Spec 19 2.2 #2
 sift.max_maint_workers|KEEP|int;2;0;8;PGC_SIGHUP|Spec 19 2.2 #3
 sift.maintenance_wal_rate|KEEP|int;0;0;1048576;PGC_SUSET|Spec 19 2.2 #4
-sift.vacuum_rewrite_limit|KEEP|int;128;0;1048576;PGC_SUSET|Spec 19 2.2 #5
+sift.vacuum_rewrite_limit|KEEP|int;0;0;INT_MAX;PGC_SUSET|Spec 19 2.2 #5
 sift.async_maintenance|KEEP|bool;true;;;PGC_SUSET|Spec 19 2.2 #6
 sift.maintenance_naptime|KEEP|int;2000;200;60000;PGC_SIGHUP|Spec 19 2.2 #7
 sift.maintenance_cost_delay|KEEP|int;0;0;100;PGC_SUSET|Spec 19 2.2 #8

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# One VACUUM of a BM25 index stays within what sift.vacuum_rewrite_limit, maintenance_work_mem, autovacuum_work_mem and temp_file_limit allow, whatever the size of the index: it rewrites at most twice the limit
-# (the merge it ends with is the one the limit lets it start), writes temporary files within 2.5 times the limit (the segments it merges are streamed, not dumped to runs), holds memory that does not follow the
-# rows (the same peak at 1x, 2x and 4x, slope at most 2 B/row of the counted scopes and 8 B/row of the resident peak), copies at most the limit of the file in the space step, and a merge that fails,
-# is cancelled or whose backend is terminated leaves no temporary file; an autovacuum worker takes its budget from autovacuum_work_mem.
+# One VACUUM of a BM25 index stays within what maintenance_work_mem, autovacuum_work_mem and temp_file_limit allow, whatever the size of the index: a VACUUM someone runs merges the index to one segment
+# (sift.vacuum_rewrite_limit holds an autovacuum pass back, not that VACUUM), writes temporary files within 2.5 times the limit (the segments it merges are streamed, not dumped to runs), holds memory that does not follow the
+# rows (the same peak at 1x, 2x and 4x, slope at most 2 B/row of the counted scopes and 16 B/row of the resident peak, which counts the pages the rewrite touches), leaves the file within twice the live segments, copies at most
+# the limit of the file in the space step, and a merge that fails, is cancelled or whose backend is terminated leaves no temporary file; an autovacuum worker takes its budget from autovacuum_work_mem.
 . "$(dirname "$0")/lib.bash"
 
 plan 22
@@ -40,7 +40,7 @@ measure() {
 	index_of "t$n"
 	sql bb "DELETE FROM t$n WHERE id % 3 = 0" >/dev/null || bail "delete failed"
 	while IFS='|' read -r k v; do M[$n.$k]=$v; done < <(sql bb <<EOF
-SET sift.async_maintenance = off; SET max_parallel_maintenance_workers = 0; SET maintenance_work_mem = '1MB'; SET sift.vacuum_rewrite_limit = $LIMIT;
+SET sift.async_maintenance = off; SET max_parallel_maintenance_workers = 0; SET maintenance_work_mem = '1MB'; SET sift.vacuum_rewrite_limit = 0;
 CREATE TEMP TABLE before AS SELECT gen FROM sift.segments('t${n}_i');
 SELECT pg_stat_force_next_flush();
 SELECT temp_bytes AS t0 FROM pg_stat_database WHERE datname = current_database() \gset
@@ -68,8 +68,8 @@ R1=$ROWS R2=$((2 * ROWS)) R4=$((4 * ROWS))
 for n in $R1 $R2 $R4; do measure "$n"; done
 BOUND=$((LIMIT * MB))
 out="rewritten $(for n in $R1 $R2 $R4; do printf '%s ' "${M[$n.rewritten]}"; done) bound $((2 * BOUND))"
-check "one VACUUM rewrites at most twice sift.vacuum_rewrite_limit at 1x, 2x and 4x" \
-	awk -v a="${M[$R1.rewritten]}" -v b="${M[$R2.rewritten]}" -v c="${M[$R4.rewritten]}" -v m=$((2 * BOUND)) 'BEGIN { exit !(a <= m && b <= m && c <= m) }'
+check "one VACUUM merges the index to one segment at 1x, 2x and 4x (sift.vacuum_rewrite_limit 0: no limit)" \
+	test "${M[$R1.segs]}" -eq 1 -a "${M[$R2.segs]}" -eq 1 -a "${M[$R4.segs]}" -eq 1
 out="temp $(for n in $R1 $R2 $R4; do printf '%s ' "${M[$n.temp]}"; done) bound $((5 * BOUND / 2))"
 check "its temporary files stay within 2.5 times the limit at 1x, 2x and 4x" \
 	awk -v a="${M[$R1.temp]}" -v b="${M[$R2.temp]}" -v c="${M[$R4.temp]}" -v m=$((5 * BOUND / 2)) 'BEGIN { exit !(a <= m && b <= m && c <= m) }'
@@ -79,8 +79,8 @@ check "the memory it counts is the same at 4x as at 1x (at most 1.15 times)" \
 check "... and grows at most 2 B/row" \
 	awk -v a="${M[$R1.exact]}" -v c="${M[$R4.exact]}" -v r=$((R4 - R1)) 'BEGIN { exit !((c - a) / r <= 2) }'
 out="rss ${M[$R1.rss]} ${M[$R2.rss]} ${M[$R4.rss]} kB"
-check "its resident peak grows at most 8 B/row" \
-	awk -v a="${M[$R1.rss]}" -v c="${M[$R4.rss]}" -v r=$((R4 - R1)) 'BEGIN { exit !((c - a) * 1024 / r <= 8) }'
+check "its resident peak grows at most 16 B/row" \
+	awk -v a="${M[$R1.rss]}" -v c="${M[$R4.rss]}" -v r=$((R4 - R1)) 'BEGIN { exit !((c - a) * 1024 / r <= 16) }'
 out="ms ${M[$R1.ms]} ${M[$R2.ms]} ${M[$R4.ms]}"
 check "its time grows at most 5.5 times over 4x the rows" \
 	awk -v a="${M[$R1.ms]}" -v c="${M[$R4.ms]}" 'BEGIN { exit !(c <= 5.5 * (a < 20 ? 20 : a)) }'

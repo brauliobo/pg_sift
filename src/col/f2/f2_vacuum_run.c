@@ -3,8 +3,8 @@
  *
  * What a vacuum needs of the index before it can finish is metadata work: the stage is written, the matured extents are given back, the slabs that are due become parts, the parts
  * every inserter of which is settled are sealed. The rewriting of parts (compaction, a merge, the scope summaries, the tail of the file) is handed to the maintenance workers as
- * requests of SiftMaintShmem when there is one, so that a vacuum of the heap does not wait for it; without one, or for sift.col_maintain(), it is done here, a vacuum's within
- * sift.vacuum_rewrite_limit.
+ * requests of SiftMaintShmem when an autovacuum worker runs it and there is one, so that a vacuum of the heap does not wait for it; a VACUUM someone runs, a server without the queue
+ * and sift.col_maintain() do all of it here before they return, an autovacuum's within sift.vacuum_rewrite_limit.
  */
 #include "postgres.h"
 
@@ -13,6 +13,7 @@
 #include "access/xact.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
+#include "postmaster/autovacuum.h"
 #include "storage/lmgr.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
@@ -39,6 +40,7 @@
 #include "core/horizon.h"
 #include "core/maint_pacer.h"
 #include "core/maint_sched.h"
+#include "core/maint_vacuum.h"
 #include "core/memtrack.h"
 #include "core/sift.h"
 #include "core/worker.h"
@@ -108,61 +110,19 @@ settle_due(Relation rel, const SiftPartSpec *spec, FullTransactionId horizon)
 	return changed ? sift_manifest_read_range(rel, NULL, NULL) : mr;
 }
 
-static uint64
-rewrite_budget(void)
-{
-	return sift_vacuum_rewrite_limit > 0 ? (uint64) sift_vacuum_rewrite_limit << 20 : UINT64_MAX;
-}
-
-/* The groups the plan makes for a partition: with the parts its column-delta chain has records for, when the chain is long enough to fold (SIFT_COL_DELTA_FOLD_PAGES) */
+/* The groups the plan makes for a partition: with the parts its column-delta chain has records for, when the chain is long enough to fold (SIFT_COL_DELTA_FOLD_PAGES) or the VACUUM someone runs leaves none */
 static SiftCompactGroup *
-plan_partition(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *parts, int np, FullTransactionId horizon, int64 hot_cut, int *ngroups)
+plan_partition(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *parts, int np, FullTransactionId horizon, int64 hot_cut, bool fold_short, int *ngroups)
 {
 	uint64	   *folds = palloc(Max(np, 1) * sizeof(uint64));
 	SiftCompactChain chain = {.fold_gens = folds};
 
 	if ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 	{
-		chain.nfold = sift_col_delta_fold_gens(rel, e, parts, np, horizon, false, folds, 0);
+		chain.nfold = sift_col_delta_fold_gens(rel, e, parts, np, horizon, fold_short, folds, 0);
 		chain.dirty_time = sift_manifest_read_col_delta(rel, e).flags & (SIFT_CDLA_DIRTY_TIME0 | SIFT_CDLA_DIRTY_TIME1);
 	}
 	return sift_compact_plan_chained(parts, np, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 4, 1), hot_cut, &chain, ngroups);
-}
-
-/* A file whose free blocks (the matured ones reclaimed) are enough to cut: what sift_fsm_tail_shrink asks before it takes the lock */
-static bool
-tail_worth_cutting(Relation rel)
-{
-	SiftFsmStats st;
-	uint64		free_blocks;
-
-	(void) sift_fsm_reclaim(rel);
-	st = sift_fsm_check(rel);
-	free_blocks = st.quarantine_blocks + st.meta_idle;
-	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
-		free_blocks += st.class_blocks[k];
-	return free_blocks >= SIFT_TAIL_SHRINK_MIN_BLOCKS && free_blocks * 100 >= (uint64) sift_col_meta_read(rel).high_water * SIFT_TAIL_SHRINK_FREE_PCT;
-}
-
-/*
- * The lock of the cut is tried before sift_fsm_tail_shrink is, so that a file that is read leaves the metapage alone: the cut that finds it busy writes nothing and is asked again. With the
- * lock held no reader of an older manifest is there, which frees the quarantine at once
- */
-static SiftTailShrinkResult
-cut_tail(Relation rel)
-{
-	SiftTailShrinkResult shrink = {0};
-
-	if (!tail_worth_cutting(rel))
-		return shrink;
-	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
-	{
-		shrink.lock_skipped = true;
-		return shrink;
-	}
-	shrink = sift_fsm_tail_shrink(rel);
-	UnlockRelation(rel, AccessExclusiveLock);
-	return shrink;
 }
 
 /*
@@ -176,7 +136,7 @@ compact_partition(Relation rel, const SiftPartSpec *spec, const SiftPartitionEnt
 	int			np,
 				ngroups;
 	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
-	SiftCompactGroup *groups = plan_partition(rel, e, parts, np, horizon, hot_cut, &ngroups);
+	SiftCompactGroup *groups = plan_partition(rel, e, parts, np, horizon, hot_cut, !paced && !AmAutoVacuumWorkerProcess(), &ngroups);
 	SiftMaintStep r = SIFT_MSTEP_DONE;
 	uint64		before = *written;
 
@@ -212,9 +172,9 @@ refresh_projections(Relation rel)
 static SiftTailShrinkResult
 shrink_tail(Relation rel, FullTransactionId horizon, int64 hot_cut)
 {
-	(void) cut_tail(rel);
+	(void) sift_fsm_tail_shrink(rel);
 	sift_f2_tail_relocate(rel, sift_f2_store_open(rel), horizon, hot_cut);
-	return cut_tail(rel);
+	return sift_fsm_tail_shrink(rel);
 }
 
 /*
@@ -284,7 +244,7 @@ sift_f2_maint_note_parts(Relation rel, const SiftPartitionEntry *entries, int n,
 static bool
 hand_off(Relation rel, const SiftF2Rel *f, const SiftManifestRead *mr, FullTransactionId horizon, int64 hot_cut)
 {
-	if (!sift_async_maintenance)
+	if (!sift_async_maintenance || !AmAutoVacuumWorkerProcess())
 		return false;
 	for (int i = 0; i < mr->n; i++)
 	{
@@ -293,7 +253,7 @@ hand_off(Relation rel, const SiftF2Rel *f, const SiftManifestRead *mr, FullTrans
 					ngroups;
 		SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
 
-		(void) plan_partition(rel, e, parts, np, horizon, hot_cut, &ngroups);
+		(void) plan_partition(rel, e, parts, np, horizon, hot_cut, false, &ngroups);
 		if (e->l0_slab_blk != InvalidBlockNumber && !sift_f2_maint_request(rel, SIFT_MK_SLAB_FLUSH, e->part_id))
 			return false;
 		if (ngroups > 0 && !sift_f2_maint_request(rel, SIFT_MK_COMPACT_PART, e->part_id))
@@ -409,7 +369,8 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 	SiftF2Trace tr;
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compaction");
 	uint64		written = 0,
-				budget = force_sync_full ? UINT64_MAX : rewrite_budget();
+				budget = force_sync_full ? UINT64_MAX : sift_vacuum_rewrite_budget(false);
+	bool		within;
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
@@ -435,20 +396,24 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 			if (compact_partition(rel, &f->spec, &mr.entries[i], horizon, hot_cut, cx, budget, &written, false) == SIFT_MSTEP_MORE)
 				break;
 		sift_mem_release_os(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
-		if (written < budget)
+		within = written < budget;
+		if (within)
 		{
 			(void) sift_compact_merge_neighbours(rel);
 			refresh_projections(rel);
 			sift_f2_tail_relocate(rel, sift_f2_store_open(rel), horizon, hot_cut);
-			if (sift_f2_scoped(rel))
-			{
-				sift_f2_trace_phase(&tr, "scope");
-				(void) sift_f2_scope_refresh(rel);
-			}
-			(void) sift_compact_pack_tails(rel);
-			sift_f2_trace_phase(&tr, "shrink");
-			shrink = sift_fsm_tail_shrink(rel);
 		}
+		else
+			sift_vacuum_say_deferred(info->message_level, written);
+		if (sift_f2_scoped(rel))
+		{
+			sift_f2_trace_phase(&tr, "scope");
+			(void) sift_f2_scope_refresh(rel);
+		}
+		if (within)
+			(void) sift_compact_pack_tails(rel);
+		sift_f2_trace_phase(&tr, "shrink");
+		shrink = sift_fsm_tail_shrink(rel);
 	}
 	MemoryContextDelete(cx);
 	(void) sift_col_open_meta(rel, &meta);

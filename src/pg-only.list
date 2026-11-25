@@ -883,6 +883,7 @@ core/maint_sql.c
 core/maint_step.c
 core/maint_step_test.c
 core/maint_vacuum.c
+core/maint_vacuum.h
 core/manifest_combiner.c
 core/manifest_combiner.h
 core/memcensus.c

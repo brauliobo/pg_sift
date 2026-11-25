@@ -37,6 +37,7 @@
 #include "core/quarantine.h"
 #include "core/maint.h"
 #include "core/maint_int.h"
+#include "core/maint_vacuum.h"
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
 #include "core/varint.h"
@@ -570,7 +571,7 @@ merge_hard_cap(void)
 static uint64
 merge_soft_cap(SiftMergeGoal goal)
 {
-	return goal == SIFT_GOAL_VACUUM && sift_vacuum_rewrite_limit > 0 ? (uint64) sift_vacuum_rewrite_limit << 20 : PG_UINT64_MAX;
+	return goal == SIFT_GOAL_VACUUM ? sift_vacuum_rewrite_budget(false) : PG_UINT64_MAX;
 }
 
 /* The segments one merge reads at once: a cursor of SIFT_SEG_CURSOR_MIN each within half the maintenance memory */

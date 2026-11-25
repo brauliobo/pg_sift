@@ -1,5 +1,5 @@
--- A VACUUM of a Format 1 sift_table (the 5.x layout) merges segments past its first step only up to sift.vacuum_rewrite_limit: the dirty segments it does not reach wait for the next
--- VACUUM, which rewrites more, until none is left. Without the limit one VACUUM of an upgraded table of 50 GB rewrote all of it. 40,000 rows a batch: one segment of about 0.9 MB and one of 0.2 MB.
+-- A VACUUM someone runs of a Format 1 sift_table (the 5.x layout) merges every dirty segment in one pass, whatever sift.vacuum_rewrite_limit says: the limit holds back an autovacuum pass
+-- only, and the passes of VACUUM FREEZE and of a VACUUM of a person are never cut short. 40,000 rows a batch: one segment of about 0.9 MB and one of 0.2 MB.
 CREATE EXTENSION pg_sift;
 SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
@@ -18,15 +18,8 @@ DELETE FROM cap WHERE id % 2 = 0;
 SET sift.vacuum_rewrite_limit = 1;
 VACUUM cap;
 SELECT count(*) FILTER (WHERE gen NOT IN (SELECT gen FROM before)) > 0 AS rewrote_some,
-       count(*) FILTER (WHERE gen IN (SELECT gen FROM before)) > 0 AS left_for_the_next
+       count(*) FILTER (WHERE gen IN (SELECT gen FROM before)) = 0 AS rewrote_all_in_one_pass
   FROM sift.table_segments('cap') WHERE kind = 'columns';
-VACUUM cap;
-VACUUM cap;
-VACUUM cap;
-VACUUM cap;
-VACUUM cap;
-VACUUM cap;
-SELECT count(*) FILTER (WHERE gen IN (SELECT gen FROM before)) = 0 AS all_rewritten_in_the_end FROM sift.table_segments('cap') WHERE kind = 'columns';
 SELECT count(*), sum(id) FROM cap;
 DROP TABLE cap;
 DROP EXTENSION pg_sift;

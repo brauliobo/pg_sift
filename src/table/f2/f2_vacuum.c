@@ -17,6 +17,7 @@
 #include "commands/progress.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "postmaster/autovacuum.h"
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "storage/read_stream.h"
@@ -27,6 +28,7 @@
 #include "core/f2/f2_progress.h"
 #include "col/f2/delvec_delta.h"
 #include "core/cmp.h"
+#include "core/maint_vacuum.h"
 #include "core/memtrack.h"
 #include "core/wal_conflict.h"
 #include "core/u64set.h"
@@ -535,7 +537,7 @@ settle_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *can
 	if ((e.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 	{
 		gens = gens == NULL ? palloc(sizeof(uint64) * np) : gens;
-		ngens = sift_col_delta_fold_gens(rel, &e, parts, np, oldest_fx, aggressive, gens, ngens);
+		ngens = sift_col_delta_fold_gens(rel, &e, parts, np, oldest_fx, aggressive || !AmAutoVacuumWorkerProcess(), gens, ngens);
 	}
 	if (ngens > 0)
 		compact_chunks(rel, store, &e, parts, np, gens, ngens, oldest_fx, rewrite_left);
@@ -673,14 +675,15 @@ oldest_held(Relation rel, const SiftPartitionEntry *cand, FullTransactionId lowe
  */
 static void
 settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const struct VacuumCutoffs *cutoffs, FullTransactionId oldest_fx, FullTransactionId target_fx, bool aggressive,
-		   BlockNumber nblocks)
+		   BlockNumber nblocks, int elevel)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum partition");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	Held	   *order = MemoryContextAlloc(old, sizeof(Held) * Max(mr->n, 1));
 	FullTransactionId settled = oldest_fx,
 				published = oldest_fx;
-	uint64		rewrite_left = sift_vacuum_rewrite_limit > 0 ? (uint64) sift_vacuum_rewrite_limit << 20 : UINT64_MAX;
+	const uint64 rewrite_budget = sift_vacuum_rewrite_budget(aggressive);
+	uint64		rewrite_left = rewrite_budget;
 
 	for (int i = 0; i < mr->n; i++)
 	{
@@ -708,6 +711,8 @@ settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const s
 			advance_frozenxid(rel, published, cutoffs);
 		}
 	}
+	if (rewrite_left == 0)
+		sift_vacuum_say_deferred(elevel, rewrite_budget);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	pfree(order);
@@ -749,7 +754,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	if (vc.tids != NULL)
 		drop_tids(&vc);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_VACUUM_HEAP);
-	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive, vc.nblocks);
+	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive, vc.nblocks, elevel);
 	sift_f2_tier_maintain(rel, store, oldest_fx);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_INDEX_CLEANUP);
 	sift_f2_vacuum_progress_indexes(vc.nindexes, 0);

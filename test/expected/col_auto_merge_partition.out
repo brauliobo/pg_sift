@@ -26,7 +26,8 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) items, items_plain;
 -- the rewrite of the worker is what is looked at: neither the rewrite of a lone mostly dead segment nor the moves of VACUUM's space step may change the segments
 ALTER INDEX items_col SET (dead_rewrite_pct = 100);
 ALTER INDEX items_plain_col SET (dead_rewrite_pct = 100);
-SET sift.vacuum_rewrite_limit = 0;
+ALTER INDEX items_col SET (vacuum_truncate = false);
+ALTER INDEX items_plain_col SET (vacuum_truncate = false);
 -- whether none, some or all the units of the SiftAgg node were answered from the pre-aggregates, and whether the three ways (pre-aggregates, scan, heap) agree
 CREATE FUNCTION pt_state(tbl text) RETURNS TABLE (from_preagg text, same bool) LANGUAGE plpgsql AS $$
 DECLARE l text; u int; p int; q text := format('SELECT kind, count(*), sum(amount) FROM %s GROUP BY kind', tbl); a text; b text; c text;

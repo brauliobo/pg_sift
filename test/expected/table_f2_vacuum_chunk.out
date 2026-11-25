@@ -1,4 +1,4 @@
--- VACUUM of a sift_table settles a partition in chunks of the maintenance budget: a part that holds more than the budget is compacted alone, the parts the budget holds together are compacted together, sift.vacuum_rewrite_limit stops a pass of VACUUM FREEZE with the oldest transaction frozen first and relfrozenxid moves with every pass. CREATE INDEX CONCURRENTLY validates the rows of a sift_table in windows of addresses with no temp file, and the images of a parallel scan are freed once the scan is set up.
+-- VACUUM of a sift_table settles a partition in chunks of the maintenance budget: a part that holds more than the budget is compacted alone, the parts the budget holds together are compacted together, sift.vacuum_rewrite_limit never stops a pass of VACUUM FREEZE: one pass freezes every part, the oldest transaction first, and relfrozenxid follows. CREATE INDEX CONCURRENTLY validates the rows of a sift_table in windows of addresses with no temp file, and the images of a parallel scan are freed once the scan is set up.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
@@ -92,7 +92,7 @@ SELECT digest('joined') = :'rows_before' AS rows_kept, count(*) = 1 AS parts_joi
  t         | t            |        0
 (1 row)
 
--- sift.vacuum_rewrite_limit stops a pass of VACUUM FREEZE after the parts of the oldest transaction, and relfrozenxid follows
+-- sift.vacuum_rewrite_limit never stops a pass of VACUUM FREEZE: one pass freezes every part and relfrozenxid follows
 CREATE TABLE aged (id bigint, k_lo int, payload text) USING sift_table WITH (autovacuum_enabled = false);
 SET maintenance_work_mem = '64MB';
 SELECT load('aged', 1, 20000);
@@ -123,10 +123,10 @@ SELECT digest('aged') AS aged_rows, frozen_xid('aged') AS xid0, unfrozen('aged')
 SET maintenance_work_mem = '2MB';
 SET sift.vacuum_rewrite_limit = 1;
 VACUUM FREEZE aged;
-SELECT unfrozen('aged') > 0 AS stopped_at_the_limit, unfrozen('aged') < :unfrozen0 AS made_progress, frozen_xid('aged') > :xid0 AS relfrozenxid_moved FROM (SELECT 1) s;
- stopped_at_the_limit | made_progress | relfrozenxid_moved 
-----------------------+---------------+--------------------
- t                    | t             | t
+SELECT unfrozen('aged') = 0 AS frozen_in_one_pass, unfrozen('aged') < :unfrozen0 AS made_progress, frozen_xid('aged') > :xid0 AS relfrozenxid_moved FROM (SELECT 1) s;
+ frozen_in_one_pass | made_progress | relfrozenxid_moved 
+--------------------+---------------+--------------------
+ t                  | t             | t
 (1 row)
 
 SELECT frozen_xid('aged') AS xid1 \gset

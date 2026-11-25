@@ -67,7 +67,7 @@ ORDER BY name COLLATE "C";
  sift.shared_cache_kb        | 65536      | 65536
  sift.simd                   | auto       | auto
  sift.standby_conflicts      | on         | on
- sift.vacuum_rewrite_limit   | 128        | 128
+ sift.vacuum_rewrite_limit   | 0          | 0
 (27 rows)
 
 SELECT count(*) = 27 AS the_27_settings_are_registered FROM pg_settings WHERE name IN (SELECT name FROM release_gucs);

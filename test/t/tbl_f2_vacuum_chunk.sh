@@ -6,7 +6,7 @@
 #   beta_rss   = the slope of the anonymous memory of the backend; at most 8 B/row                    temp_bytes = pg_stat_database.temp_bytes the case wrote; none
 #   alpha_disk = the table after the case over the table before it; at most 2 (the parts that a VACUUM writes are beside the ones they replace)     alpha_time = time(4x) / time(1x); at most 5.5
 # vacuum_dead / vacuum_freeze: VACUUM and VACUUM FREEZE settle a partition of parts that each hold more than the budget in chunks of the budget (PROD-95-01); freeze_cap: sift.vacuum_rewrite_limit
-# stops a pass of VACUUM FREEZE, the oldest transaction first, and pg_class.relfrozenxid moves with every pass; vm_span: the pass of the visibility map reads the addresses of a part that spans a
+# never stops a pass of VACUUM FREEZE: one pass freezes every part, the oldest transaction first, and pg_class.relfrozenxid follows; vm_span: the pass of the visibility map reads the addresses of a part that spans a
 # map page for each of the pages and not the columns (R1-VAC-02); cic_partial: the validation of CREATE INDEX CONCURRENTLY merges what the scan gave in windows of addresses and writes
 # no temp file (R1-CREATE-02); par_scan: the images of a parallel scan are freed once the scan is set up (R1-READ-01).
 . "$(dirname "$0")/lib.bash"
@@ -128,7 +128,7 @@ for kind in vacuum_dead vacuum_freeze; do
 	verdict "$kind" "${DISK[4]:--}"
 done
 
-# ---- freeze_cap: a pass of VACUUM FREEZE stops at sift.vacuum_rewrite_limit and relfrozenxid moves with every pass
+# ---- freeze_cap: a pass of VACUUM FREEZE is not stopped by sift.vacuum_rewrite_limit and relfrozenxid moves with it
 CAP=freeze_cap
 sql vc "SET maintenance_work_mem = '64MB'" "CREATE TABLE $CAP (id bigint, k_lo int, payload text) USING sift_table" >/dev/null || bail "create $CAP failed"
 for q in 0 1 2 3; do
@@ -136,6 +136,7 @@ for q in 0 1 2 3; do
 done
 want_cap=$(digest $CAP)
 xid=$(relfrozen $CAP)
+xid0=$xid
 monotonic=1
 first_left=
 rewritten_max=0
@@ -151,11 +152,11 @@ while [[ $(unfrozen $CAP) != 0 && $passes -lt 12 ]]; do
 	((written > rewritten_max)) && rewritten_max=$written
 	[[ -n $first_left ]] || first_left=$(unfrozen $CAP)
 done
-diag "freeze_cap: $passes passes, first pass left $first_left unfrozen parts, at most $rewritten_max bytes written by a pass, relfrozenxid $xid"
-check "freeze_cap: the first pass stops at sift.vacuum_rewrite_limit and leaves parts for the next" test "${first_left:-0}" -gt 0
-check "freeze_cap: no pass writes more than twice the limit ($rewritten_max bytes)" test "$rewritten_max" -le 2097152
-check "freeze_cap: relfrozenxid never goes back and every pass can move it" test "$monotonic" == 1
-check "freeze_cap: the passes end with every part frozen and the rows as they were" test "$(unfrozen $CAP)" == 0 -a "$(digest $CAP)" == "$want_cap"
+diag "freeze_cap: $passes passes, first pass left $first_left unfrozen parts, $rewritten_max bytes written by a pass, relfrozenxid $xid"
+check "freeze_cap: the first pass freezes every part whatever sift.vacuum_rewrite_limit says" test "${first_left:-1}" -eq 0
+check "freeze_cap: one pass is enough ($passes)" test "$passes" -eq 1
+check "freeze_cap: relfrozenxid never goes back and the pass moves it" test "$monotonic" == 1 -a "$xid" -gt "$xid0"
+check "freeze_cap: the pass ends with every part frozen and the rows as they were" test "$(unfrozen $CAP)" == 0 -a "$(digest $CAP)" == "$want_cap"
 
 # ---- vm_span: R1-VAC-02, a part that spans 8, 16 and 32 pages of the visibility map (a session that rolls back a COPY takes 8192 virtual blocks of the table for good; 4 of them are a page of the map)
 for s in "${SCALES[@]}"; do

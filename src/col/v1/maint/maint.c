@@ -9,6 +9,7 @@
 #include "port/pg_bitutils.h"
 #include "utils/snapmgr.h"
 #include "core/limits.h"
+#include "core/maint_vacuum.h"
 #include "core/memtrack.h"
 #include "core/ops.h"
 #include "core/worker.h"
@@ -48,7 +49,7 @@ maint_pass_limit(void)
 int
 maint_part_kb_for(uint64 bytes)
 {
-	int			kb = bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
+	int			kb = bytes > sift_vacuum_rewrite_cap() ? Min(sift_vacuum_rewrite_limit, INT_MAX / 1024) * 1024 : 0;
 	uint64		mem_kb = (uint64) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) * 2 / 5 / 1024 / MAINT_MEM_RATIO);
 
 #ifdef SIFT_TESTING

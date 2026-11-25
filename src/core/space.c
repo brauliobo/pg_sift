@@ -23,6 +23,7 @@
 #include "core/maint_pacer.h"
 #include "core/maint.h"
 #include "core/maint_int.h"
+#include "core/maint_vacuum.h"
 #include "core/ops.h"
 #include "core/restrict.h"
 #include "core/waits.h"
@@ -808,7 +809,7 @@ sift_maint_shrink(Relation rel, int elevel)
 
 	if (!online_cut_wanted(rel))
 		return 0;
-	budget = Min((uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ / SHRINK_SHARE, (uint64) sift_vacuum_rewrite_limit << 20);
+	budget = Min((uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ / SHRINK_SHARE, sift_vacuum_rewrite_cap());
 	while (budget > 0)
 	{
 		SiftExtent *ext;
@@ -878,7 +879,7 @@ sift_maint_space_worth(int64 blocks, BlockNumber nblocks)
 void
 sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel)
 {
-	sift_maint_space_budget(rel, relocate_page, elevel, (uint64) sift_vacuum_rewrite_limit << 20);
+	sift_maint_space_budget(rel, relocate_page, elevel, sift_vacuum_rewrite_cap());
 }
 
 /*
@@ -935,6 +936,7 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 	if (online_cut_wanted(rel))
 		return online_cut(rel, elevel);
 	nblocks = RelationGetNumberOfBlocks(rel);
+	budget = Min(budget, (uint64) nblocks * BLCKSZ);
 	/*
 	 * nothing to cut and not enough free blocks to be worth gathering (what this VACUUM released is not reusable yet, but is once the
 	 * relation is locked): do not stop the relation for it
@@ -971,8 +973,10 @@ void
 sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
 {
 	uint64		copied = 0;
-	uint64		quantum = Max(SPACE_QUANTUM, budget / SPACE_ROUNDS);
+	uint64		quantum;
 
+	budget = Min(budget, (uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ);
+	quantum = Max(SPACE_QUANTUM, budget / SPACE_ROUNDS);
 	space_resume = false;
 	for (int round = 0; round < SPACE_ROUNDS; round++)
 	{

@@ -7,6 +7,7 @@
 #include "col/v1/maint/maint_int.h"
 #include "col/v1/point.h"
 #include "core/cmp.h"
+#include "core/maint_vacuum.h"
 #include "core/memtrack.h"
 #include "core/dirpart.h"
 
@@ -189,7 +190,7 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 			return false;
 		bytes += sel[i].bytes;
 	}
-	if (bytes <= ((uint64) sift_vacuum_rewrite_limit << 20))
+	if (bytes <= sift_vacuum_rewrite_cap())
 		return false;
 	scx = maint_segment_cx();
 	old = MemoryContextSwitchTo(scx);

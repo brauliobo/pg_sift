@@ -6,6 +6,7 @@
 #include "utils/timestamp.h"
 
 #include "col/v1/wbuf.h"
+#include "core/maint_vacuum.h"
 #include "core/worker.h"
 
 void
@@ -14,7 +15,7 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 	VacState	v = {0};
 	SiftTblRel *st = sift_tbl_rel(rel);
 	TransactionId oldest = GetOldestNonRemovableTransactionId(rel);
-	uint64		budget = (uint64) sift_vacuum_rewrite_limit << 20;
+	uint64		budget = sift_vacuum_rewrite_cap();
 
 	*r = (SiftTblMaintain) {.blocks_before = RelationGetNumberOfBlocks(rel)};
 	r->blocks_after = r->blocks_before;

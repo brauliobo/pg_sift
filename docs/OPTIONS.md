@@ -50,7 +50,7 @@
 | `sift.shared_cache_kb` | `65536` (64 MB) | `0..max` kB | superuser | Unified server-wide DSM cap across lookup tables, dim maps, dicts, and leaf stats ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
 | `sift.simd` | `auto` | `auto`, `scalar`, `avx2`, `avx512`, `neon` | session | Override runtime SIMD kernel selection for testing or diagnostics ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.standby_conflicts` | `on` | `on`, `off` | superuser | Delay extent reuse on primary to reduce retryable 40001 conflicts on standbys ([OPERATIONS.md](OPERATIONS.md#7-crash-safety-locks-and-replication)) |
-| `sift.vacuum_rewrite_limit` | `128 MB` | `0..1048576` MB | superuser | Max bytes VACUUM rewrites per pass on a single index (0 = unlimited) ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
+| `sift.vacuum_rewrite_limit` | `0` | `0..max` MB | superuser | Max MB an autovacuum pass rewrites (0 = unlimited); VACUUM FREEZE and a manual VACUUM are never capped ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |
 <!-- sift-settings:end -->
 
 ## Index Reloptions

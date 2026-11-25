@@ -17,9 +17,9 @@ SELECT sift._test_space('i') AS copied_pages \gset
 SELECT :copied_pages BETWEEN 1 AND 128 AS bounded;
 SELECT bool_and(sift._test_seg_read('i', gen) = payload) AS intact FROM sift._test_segments('i');
 SELECT sift._test_check('i') = 0 AS accounted;
--- Zero disables moves, while retaining ordinary free-tail truncation.
+-- Zero is no limit: the moves are not capped.
 SET sift.vacuum_rewrite_limit = 0;
-SELECT sift._test_space('i') = 0 AS no_copy;
+SELECT sift._test_space('i') > 0 AS copies_without_a_limit;
 DROP INDEX i;
 CREATE INDEX i ON t USING sift_store_test(v);
 -- Fragmented 16-block holes and a larger tail segment. Split DATA extents across the smaller holes while preserving their logical

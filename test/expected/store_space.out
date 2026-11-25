@@ -53,11 +53,11 @@ SELECT sift._test_check('i') = 0 AS accounted;
  t
 (1 row)
 
--- Zero disables moves, while retaining ordinary free-tail truncation.
+-- Zero is no limit: the moves are not capped.
 SET sift.vacuum_rewrite_limit = 0;
-SELECT sift._test_space('i') = 0 AS no_copy;
- no_copy 
----------
+SELECT sift._test_space('i') > 0 AS copies_without_a_limit;
+ copies_without_a_limit 
+------------------------
  t
 (1 row)
 

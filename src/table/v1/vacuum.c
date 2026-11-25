@@ -4,6 +4,7 @@
  */
 #include "vacuum_int.h"
 #include "utils/timestamp.h"
+#include "core/maint_vacuum.h"
 #include "core/memtrack.h"
 
 /* A worker's limits, from sift.table_auto_defrag_max_active and sift.table_auto_defrag_wal_rate (a VACUUM of a session has none): clients running a statement above which the merges of a pass stop, and the WAL bytes per second it may average since the worker started */
@@ -19,6 +20,8 @@ uint64 space_cap = PG_UINT64_MAX;
 /* The bytes the merge steps of a pass may rewrite (a worker lowers it to sift.table_auto_defrag_budget), and whether the last run of steps stopped at a limit with merges left */
 uint64 merge_cap = PG_UINT64_MAX;
 bool merge_capped = false;
+static uint64 merge_bytes;
+
 /* The cost delay, then the sleep that brings the WAL the worker wrote back to its rate */
 static void
 pass_delay(void)
@@ -475,6 +478,7 @@ merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest, uint64 cap)
 		pass_delay();
 	}
 	merge_capped = bytes >= cap;
+	merge_bytes = bytes;
 	return steps;
 }
 
@@ -485,13 +489,17 @@ merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest, uint64 cap)
  * segments that end the file are written again into the free blocks below them and the cut finds the end free.
  */
 static void
-vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int elevel)
+vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, bool aggressive, int elevel)
 {
+	uint64		budget = sift_vacuum_rewrite_budget(aggressive);
+
 	(void) sift_tbl_drop_dead_groups(rel, st);
 	sift_tbl_close_wbuf(rel, st, VACUUM_CLOSE_PAGES);
 	(void) sift_tbl_promote(rel, st, v->oldest, true);
 	(void) sift_tbl_freeze_groups(rel, st, v->oldest);
-	(void) merge_steps(rel, st, v->oldest, Min(merge_cap, (uint64) sift_vacuum_rewrite_limit << 20));
+	(void) merge_steps(rel, st, v->oldest, Min(merge_cap, budget));
+	if (merge_capped && budget < merge_cap)
+		sift_vacuum_say_deferred(elevel, merge_bytes);
 	sift_tbl_net_refresh(rel, st);
 	if (tomb_changes(st, v))
 	{
@@ -501,7 +509,7 @@ vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int eleve
 	(void) sift_recycle(rel);
 	(void) sift_maint_orphan_sweep(rel);
 	if (truncate)
-		sift_maint_space_budget(rel, relocate_page, elevel, Min((uint64) sift_vacuum_rewrite_limit << 20, space_cap));
+		sift_maint_space_budget(rel, relocate_page, elevel, Min(sift_vacuum_rewrite_cap(), space_cap));
 }
 
 /* Step 6, with the counts of a heap: reltuples and the live rows, the recently dead ones for autovacuum */
@@ -530,8 +538,8 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 	SiftTblRel *st = sift_tbl_rel(rel);
 	TimestampTz start = GetCurrentTimestamp();
 	int			elevel = (params->options & VACOPT_VERBOSE) ? INFO : DEBUG2;
+	bool		aggressive = vacuum_get_cutoffs(rel, params, &cutoffs);
 
-	(void) vacuum_get_cutoffs(rel, params, &cutoffs);
 	v.st = st;
 	v.oldest = cutoffs.OldestXmin;
 	v.newest_kept = cutoffs.OldestXmin;
@@ -549,7 +557,7 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 		if (st->initialized)
 		{
 			/* STOR[STOR-TBL-14]: v1 vacuum tail truncate gate: vacuum_rel passes the resolved ENABLED/DISABLED, so the gate stays as it is (shrink of the free file tail) */
-			vacuum_space(rel, st, &v, params->truncate == VACOPTVALUE_ENABLED, elevel);
+			vacuum_space(rel, st, &v, params->truncate == VACOPTVALUE_ENABLED, aggressive, elevel);
 			note_groups(st, &v);
 		}
 	}
