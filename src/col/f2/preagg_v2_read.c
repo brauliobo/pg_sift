@@ -12,6 +12,16 @@
 
 #define CORRUPT(rel, part, what) SIFT_SEG_CORRUPT(rel, (part)->hdr.part_gen, "The pre-aggregate section of a part is damaged: %s.", what)
 
+/* The cubes and the sets of distinct values the header names are inside the len bytes of the section */
+static void
+check_places(Relation rel, const SiftPart *part, const SiftPreaggSecHdr *hdr, uint64 len)
+{
+	if (hdr->ncubes < 1 || hdr->ncubes > SIFT_PREAGG_MAX_CUBES || hdr->cubes_off > len || (uint64) hdr->ncubes * sizeof(SiftPreaggCubeDesc) > len - hdr->cubes_off)
+		CORRUPT(rel, part, "its cubes");
+	if (hdr->dist_off > len)
+		CORRUPT(rel, part, "its distinct values");
+}
+
 static void
 check_cubes(Relation rel, const SiftPart *part, const SiftPreaggSecHdr *hdr, const SiftPreaggCubeDesc *cube, uint64 len)
 {
@@ -41,8 +51,7 @@ sift_preagg_part_open(Relation rel, const SiftPart *part)
 	if (sec->len < sizeof(pp->hdr))
 		CORRUPT(rel, part, "its size");
 	sift_part_read_section_bytes(rel, part, sec, 0, sizeof(pp->hdr), &pp->hdr);
-	if (pp->hdr.ncubes < 1 || pp->hdr.ncubes > SIFT_PREAGG_MAX_CUBES || pp->hdr.cubes_off + pp->hdr.ncubes * sizeof(SiftPreaggCubeDesc) > sec->len)
-		CORRUPT(rel, part, "its cubes");
+	check_places(rel, part, &pp->hdr, sec->len);
 	sift_part_read_section_bytes(rel, part, sec, pp->hdr.cubes_off, pp->hdr.ncubes * sizeof(SiftPreaggCubeDesc), pp->cube);
 	check_cubes(rel, part, &pp->hdr, pp->cube, sec->len);
 	return pp;
@@ -167,6 +176,7 @@ sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, uint64 *len)
 
 		if (sec == NULL || slen < sizeof(*hdr))
 			CORRUPT(rel, src[i], "its size");
+		check_places(rel, src[i], hdr, slen);
 		cd = (const SiftPreaggCubeDesc *) (sec + hdr->cubes_off);
 		check_cubes(rel, src[i], hdr, cd, slen);
 		if (i == 0)
