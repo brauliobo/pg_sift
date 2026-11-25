@@ -208,16 +208,6 @@ sift_col_current(SiftColSource *src)
 	return !(src->flags & COLO_TABLE) && segments_current(src);
 }
 
-void
-sift_col_unpin(SiftColSource *src)
-{
-	if (src->flags & COLO_TABLE)
-		return;
-	for (int i = 0; i < src->nseg; i++)
-		sift_cseg_close(src->seg[i].seg);
-	sift_vis_unpin(&src->vis);
-}
-
 int
 sift_col_ncols(const SiftColSource *src)
 {
@@ -390,8 +380,6 @@ cursor_ahead(void *arg, uint64 *off, uint64 *len)
 	const SiftColSegment *seg = c->seg;
 	uint32		u = Max(c->ahead, c->cur);
 
-	if (c->src->super || c->src->whole || c->src->pcnt)
-		return false;
 	for (u = next_ahead_unit(c, u); u < seg->nsb; u = next_ahead_unit(c, u))
 	{
 		if (u >= c->ahead_end)
@@ -444,7 +432,7 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 
 		scan_prune_segment(src, c, preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
 		c->src = src;
-		if (src->ahead_kept != NULL && !src->super && !src->whole && !src->pcnt)
+		if (src->ahead_kept != NULL)
 			sift_sr_ahead(&c->seg->sr, cursor_ahead, c, sift_cseg_units_len(c->seg));
 	}
 	if (src->ptid_unsorted)
@@ -676,7 +664,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		load_memory(cu, src->order[src->ocur++]);
 		src->cnt.wbuf_rows += cu->v.nrows;
 	}
-	else if (!((src->super || src->whole || src->pcnt) && !src->sx_on && col_super_take(src, best, cu)))
+	else
 	{
 		load_stored(cu, best, best->cur);
 		if (sift_cseg_dirty(best->seg, best->cur))
@@ -694,7 +682,6 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 				hi++;
 			cu->nprow = hi - lo;
 			cu->ppred = best->ppred;
-			cu->pexact = best->pexact;
 		}
 		else if (best->ptidv != NULL)
 		{
@@ -712,22 +699,16 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		best->cur++;
 	}
 	if (!mem)
-	{
-		best->full = false;
 		src->hstale = true;
-	}
 	SIFT_COL_JITTER();
-	if (cu->nsu == 0)
-	{
-		cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
-		src->cnt.rows_scanned += cu->v.nrows;
-	}
-	src->cnt.units += Max(cu->nsu, 1);
+	cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
+	src->cnt.rows_scanned += cu->v.nrows;
+	src->cnt.units++;
 	unit->src = src;
 	unit->sb = bsb;
 	unit->nrows = cu->v.nrows;
 	unit->in_wbuf = mem;
-	unit->nsu = cu->nsu;
+	unit->nsu = 0;
 	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
@@ -757,45 +738,6 @@ sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
 	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
-}
-
-void
-sift_col_super(SiftColSource *src, bool on)
-{
-	src->super = on;
-	src->whole = 0;
-	src->pcnt = 0;
-	src->pcnt_int = src->pcnt_str = src->pcnt_elem = false;
-}
-
-void
-sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas)
-{
-	src->whole = leaf + 1;
-	src->nwmeas = nmeas;
-	memcpy(src->wmeas, meas, nmeas * sizeof(int));
-}
-
-void
-sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
-{
-	ColUnit    *cu = unit->priv;
-
-	Assert(cu->nsu > 0);
-	/* the table could not answer: the segment's own superunits and units, and no other segment is tried */
-	if (cu->whole)
-		src->whole = 0;
-	if (cu->counted)
-		src->pcnt = 0;
-	for (int i = 0; i < src->nseg; i++)
-		if (src->seg[i].seg == cu->seg)
-		{
-			src->seg[i].cur = cu->u;
-			COL_HEAD_RESET(src);
-			src->seg[i].full = false;
-			src->seg[i].nosuper_to = cu->whole ? 0 : cu->u + cu->nsu;
-		}
-	src->cnt.units -= cu->nsu;
 }
 
 void

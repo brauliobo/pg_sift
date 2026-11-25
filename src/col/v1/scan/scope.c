@@ -520,18 +520,6 @@ sift_scope_groups(Relation heap, Relation index, int ord, SiftKeyMap *km, Snapsh
 	return groups;
 }
 
-SiftKeyMap *
-sift_scope_keymap(Relation heap, Relation index, const char *key_name)
-{
-	PairScan	ps = {0};
-	SiftKeyMap *km;
-
-	(void) scope_relation(heap, index, scope_ordinal(sift_scope_specs(index), key_name), NULL, NULL, &ps, NULL, 0, NULL);
-	km = sift_keymap_open(ps.rel, ps.skey, false);
-	table_close(ps.rel, NoLock);
-	return km;
-}
-
 int64 *
 sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
 {
@@ -540,21 +528,6 @@ sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyM
 	ScopePairs	pairs = scope_pairs(heap, index, scope_ordinal_named(index, key_name), km, NULL, snap, sorted, nk, NULL, 0, 0);
 
 	return pair_values(&pairs, false, n);
-}
-
-Oid
-sift_scope_pairs_index(Relation heap, Relation index, const char *key_name, Relation *rel, AttrNumber *member, AttrNumber *skey)
-{
-	PairScan	ps = {0};
-	int			ord = scope_ordinal_named(index, key_name);
-
-	scope_relation(heap, index, ord, NULL, NULL, &ps, NULL, 0, NULL);
-	*rel = ps.rel;
-	*member = ps.member;
-	*skey = ps.skey;
-	/* the leaves of one journal list the pairs of one relation; the members of a scope of two paths are listed by sift_scope_members, and the leaves hold the strings of a text key, not its codes */
-	return sift_scope_specs(index)->s[ord]->joined != NULL || ps.kma != NULL || sift_keymap_type(get_atttype(RelationGetRelid(ps.rel), ps.skey)) ? InvalidOid :
-		sift_scope_pairs_journal(ps.rel, ps.member, ps.skey, ps.btree);
 }
 
 /* ---- what the segments of the index say ---- */

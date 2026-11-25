@@ -44,57 +44,6 @@ scan_view_load(SiftColSource *src, Relation heap, const void *view, const SiftKe
 	return false;
 }
 
-/* The superblocks of the units of the segments a declared key cut are numbered by key range, past the end of the table when it has more of them */
-static uint32
-keyed_sbs(Relation index, const SiftDirSnapshot *dir, uint32 heap_sbs)
-{
-	MemoryContext cx = NULL;
-
-	for (int i = 0; i < dir->nsegs; i++)
-	{
-		SiftColSegment *seg;
-
-		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE || !sift_cseg_keyed(&dir->segs[i]))
-			continue;
-		if (cx == NULL)
-			cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col keyed ends", ALLOCSET_SMALL_SIZES);
-		seg = sift_cseg_open(index, &dir->segs[i], cx);
-		heap_sbs = Max(heap_sbs, seg->sbdir[seg->nsb - 1].id + 1);
-		sift_cseg_close(seg);
-	}
-	if (cx != NULL)
-		MemoryContextDelete(cx);
-	return heap_sbs;
-}
-
-void *
-sift_col_count_view(Relation heap, Relation index, MemoryContext mcxt, Size *len, uint32 *heap_sbs)
-{
-	SiftDirSnapshot *dir;
-	ColView    *v;
-
-	*heap_sbs = view_read(heap, index, false, NULL, &dir);
-	*heap_sbs = keyed_sbs(index, dir, *heap_sbs);
-	*len = offsetof(ColView, dir) + sift_dir_bytes(dir);
-	v = MemoryContextAlloc(mcxt, *len);
-	v->heap_sbs = *heap_sbs;
-	v->ends = true;
-	memcpy(v->dir, dir, sift_dir_bytes(dir));
-	pfree(dir);
-	return v;
-}
-
-bool
-sift_col_view_sb_heap(const void *view)
-{
-	const SiftDirSnapshot *dir = (const SiftDirSnapshot *) ((const ColView *) view)->dir;
-
-	for (int i = 0; i < dir->nsegs; i++)
-		if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE && sift_cseg_keyed(&dir->segs[i]))
-			return false;
-	return true;
-}
-
 /* The view of the source of the scope segments that reads the directory dir (read by sift_scope_read), and the end of the table now: the source then reads what the scope read took its rows from */
 void *
 sift_col_scope_view(Relation heap, const SiftDirSnapshot *dir)

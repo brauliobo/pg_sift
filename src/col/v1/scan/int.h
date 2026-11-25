@@ -44,21 +44,9 @@ typedef struct ColCursor
 	uint32		ahead;			/* the next unit cursor_ahead looks at */
 	uint32		ahead_end;		/* the units below this one are in the cluster cursor_ahead is on, which it reads ahead (ahead_skip false) or leaves to the kernel */
 	bool		ahead_skip;
-	bool		full;			/* the scan covers every unit of the segment, and the cursor has handed none over yet: its key table may stand for them (SiftColSource.whole) */
-	uint32		cmemo_epoch;	/* the count of the segment (count_rows, count_unit_rows) answered for the scan numbered cmemo_epoch of SiftColSource.pcnt_epoch, in cmemo_seg at cmemo_gen: the prune of a scan runs more than once */
-	SiftColSegment *cmemo_seg;
-	uint64		cmemo_gen;
-	uint64		cmemo_rows;
-	uint64		cmemo_unit_rows;
-	bool		count_ok;		/* the whole segment is exact and its dictionary counts the rows that pass SiftColSource.pcnt (col_count_segment): the first unit handed over is the segment, with count_rows of them */
-	uint64		count_rows;
-	uint32		count_unit_rows;	/* the rows of the segment's units */
-	uint64	   *count_dirty;	/* count_ok with units that are not exact: those (bit u) are read after the counted unit, which counts the rows of the others (col_count_segment) */
-	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
 	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
 	uint32		nprow;
 	int			ppred;
-	uint64		pexact;			/* the predicates (bit i: preds[i], i < 64) whose rows prow is exactly: an element test of a list leaf the directory answered, which the caller need not test again */
 	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
 	bool		gends;			/* its block of the global order holds the ends only (minor 40): gwin and gcuts are the part this scan reads (sift_col_gorder_open) */
 	uint32		gwin[4];		/* ... the value entries [0, 1) and the NULL ones [2, 3) of it */
@@ -82,16 +70,6 @@ typedef struct ColCursor
 	uint64	   *pkept;
 	uint64	   *ppend;
 } ColCursor;
-
-/* Did every unit [first, first + n) pass the zone tests */
-static inline bool
-keep_all(const ColCursor *c, uint32 first, uint32 n)
-{
-	for (uint32 i = 0; i < n; i++)
-		if (!sift_col_bit_test(c->keep, first + i))
-			return false;
-	return true;
-}
 
 /* a cursor moved, or its kept units changed, other than by the unit sift_col_next read from it: the heap of heads is made again */
 #define COL_HEAD_RESET(src)	((src)->hvalid = false)
@@ -176,10 +154,6 @@ typedef struct ColUnit
 	SiftColSource *src;
 	SiftColSegment *seg;		/* NULL for an in-memory unit */
 	uint32		u;
-	uint32		nsu;			/* a superunit: the units [u, u + nsu) of seg; v.nrows is their rows and nothing else of the unit is loaded */
-	bool		whole;			/* ... of the whole segment, which has only the key table of src->whole - 1 (col/v1/ktab.h) */
-	bool		counted;		/* ... of the whole segment, which has only the rows that pass the test of sift_col_count_range: crows of them */
-	uint64		crows;
 	uint32		sb;
 	uint32		memid;
 	uint8	   *loaded;			/* [ncols] the chunk's bytes are in the unit buffer (a stored unit reads the chunks it needs) */
@@ -193,7 +167,6 @@ typedef struct ColUnit
 	const uint32 *prow;			/* the rows of this unit the point directory lists (segment rows), when the cursor has one: ppred is its predicate */
 	uint32		nprow;
 	int			ppred;
-	uint64		pexact;
 	const SiftKey *ptid;		/* the addresses of ptidv that lie in this unit's superblock, when the cursor has some (nptid may be 0 only for a unit the directory lists nothing in) */
 	uint32		nptid;
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
@@ -268,13 +241,6 @@ struct SiftColSource
 	bool		begun;			/* a begin ran: sift_col_rescan refuses */
 	MemoryContext gxcx;		/* the exactness of the units (sift_col_gorder_exact: their dead rows and all-visible pages), which sift_col_rescan keeps; made on first use */
 	MemoryContext gcx;			/* what sift_col_gorder_open and the reads of the global order make (the lists of dead rows, the orders of the write buffers and their holds), reset by sift_col_rescan; made on first use */
-	bool		super;			/* sift_col_super */
-	SiftColSuperTest *suptest;	/* sift_col_super_tests: what a group of units must lie inside to be tried, in mcxt */
-	int			nsuptest;
-	int			supdim;			/* the leaves the histograms answer for the tests above */
-	int			suphdim;
-	uint64		supsets;		/* ... or the id sets by month of these leaves (bit l: leaf l) */
-	bool		suprows;		/* ... and the groups tried are those that hold the rollup of the rows */
 	int64	   *sx;				/* a scope source (sift_col_scope_delta): the members whose stored entries the scan leaves out, ascending, in mcxt; no unit may answer from its pre-aggregates then, nor a segment from its summaries */
 	uint32		nsx;
 	uint64	   *sxb;			/* ... as a bitmap over their range when it is not too wide (NULL: bisect sx), sx_span bits */
@@ -289,27 +255,6 @@ struct SiftColSource
 	int			nsd;
 	int			sd_leaf;		/* the leaf of the scope segments that holds the scope key */
 	struct SiftKeyMap *sd_map;
-	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
-	uint32		pcnt_epoch;		/* counts the scans that ask for a count (the setters below): a cursor answers its count once for each */
-	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
-	SiftColOp	pcnt_op;
-	bool		pcnt_int;		/* ... an integer or text leaf: the rows whose key lies in the range its comparisons give, counted by its global order (sift_col_count_cmp, sift_col_count_strs) */
-	bool		pcnt_str;		/* ... the key of a text leaf: the rows whose string lies between the bounds of pcnt_box, counted by the ranks of its global order (sift_col_count_strs) */
-	struct
-	{
-		const char *lo;			/* NULL: no lower bound */
-		const char *hi;
-		uint32		lolen;
-		uint32		hilen;
-		uint32		collid;
-		bool		lo_excl;
-		bool		hi_excl;
-	}			pcnt_box;
-	bool		pcnt_alt;		/* ... a prefix (sift_col_count_range): a segment whose dictionary holds no row counts counts the strings between the bounds of pcnt_box by the ranks of its global order */
-	bool		pcnt_elem;		/* ... the rows that own the value of the only test, an element of a list, counted by its point directory (sift_col_count_elem) */
-	SiftColValue pcnt_val;
-	int			nwmeas;			/* ... and the measures it must keep */
-	int			wmeas[SIFT_PAGG_MAX_MEAS];
 	uint32	   *chunk_units;	/* [ncols] in how many stored units of this source the leaf's chunk was read (unit_chunk_raw); NULL: none yet */
 	uint32		units_loaded;	/* the stored units this source loaded (load_stored) */
 	uint8	   *plan_want;		/* [ncols] scratch of load_stored: the leaves every earlier unit read */
@@ -376,12 +321,6 @@ struct SiftColSource
 	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
 };
 
-/* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
-extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
-extern bool col_super_inside(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n);
-extern bool col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds);
-extern bool units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n);
-extern bool units_clean(SiftColSegment *seg, uint32 first, uint32 n, uint32 *rows);
 /* scan.c: sel narrowed to the rows of the unit that the point directory lists, and the index of the predicate it answers; -1: the unit has none */
 extern int sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel);
 
@@ -404,7 +343,6 @@ set_ones(uint64 *bits, uint32 n)
 	} while (0)
 
 extern void seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const SiftColPred *p, SiftCTest *t);
-extern bool col_count_elem(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *n);
 extern bool unit_chunk_raw(ColUnit *cu, int col, SiftCChunk *c);
 extern bool unit_chunk(ColUnit *cu, int col, SiftCChunk *c);
 extern bool unit_chunk_sel(ColUnit *cu, int col, const uint32 *idx, uint32 m, SiftCChunk *c);
@@ -473,7 +411,6 @@ extern bool unit_pages_allvisible(ColUnit *cu);
  * buffer batch): the map alone.
  */
 extern bool col_hf_page_clear(SiftColSource *src, const SiftColSegment *seg, BlockNumber blk);
-extern bool col_sb_covers(SiftColSource *src, const SiftColSegment *seg, uint32 sb, const uint64 *vm, const uint64 *pm);
 extern void col_blocks_allvisible(SiftColSource *src, const SiftColSegment *seg, const BlockNumber *blocks, uint32 n, uint64 *bits);
 /* Opens the log of the source (before its first liveness read) */
 extern void col_hf_open(SiftColSource *src);
@@ -510,7 +447,6 @@ typedef struct PruneRange
 } PruneRange;
 
 extern void	scan_load_wbuf(SiftColSource *src);
-extern void	scan_load_wbuf_keys(SiftColSource *src, const SiftCWbufKeys *keys);
 extern void	scan_load_mem(SiftColSource *src, const SiftColPred *preds, int npreds);
 /* A batch of memory as a unit of the scan; lane: its rows are those of a write buffer, stamped xstamp, which the heap check vets */
 extern void	scan_add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp, bool roots);
@@ -519,7 +455,6 @@ extern void	segments_pin(SiftColSource *src, uint32 flags);
 extern bool scan_view_load(SiftColSource *src, Relation heap, const void *view, const SiftKeyRange *keys);
 extern MemoryContext gorder_cx(SiftColSource *src);
 extern bool	scan_window_empty(const uint64 *keep, const PruneRange *pr);
-extern int64 *	scan_point_keys(const SiftCTest *t, int *nkeys);
 extern bool	scan_prune_group_tids(SiftColSource *src, ColCursor *c, int i, int col, int gcol, int64 group, int64 lo, int64 hi, uint64 *keep);
 extern bool	scan_prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo, int64 hi, uint64 *keep);
 extern bool	scan_prune_set_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *set, uint32 nset, uint64 *keep);

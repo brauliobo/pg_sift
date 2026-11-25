@@ -9,7 +9,7 @@
  * (SIFT_COL_FORMAT_WBUFKEY) is read page by page for the rows that may have one when that costs less than reading it whole (sift_cwbuf_batches_keys): the batches are then
  * partial, without tokens (what a cache of the scan keys on is a kept set), and mem_partial says so.
  */
-void
+static void
 scan_load_wbuf_keys(SiftColSource *src, const SiftCWbufKeys *keys)
 {
 	bool		own = src->nwtok >= 0,

@@ -11,10 +11,6 @@
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (col/v1/scan/unit.c) */
 extern bool sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u);
-/* A whole segment (sift_col_super_whole): the segment; its key tables are all it has */
-extern bool sift_col_unit_whole(const SiftColUnit *unit, SiftColSegment **seg);
-/* A superunit (sift_col_super): its segment and the index of its group there; false for any other unit */
-extern bool sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k);
 
 /*
  * A dirty unit net of its dead rows (col/v1/delta.c, docs/COL-PREAGG.md 12): when every page the unit has rows on is all-visible and no more than max_pct percent of its rows are dead, the

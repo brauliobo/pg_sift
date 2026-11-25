@@ -661,29 +661,6 @@ sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, i
 	return lo;
 }
 
-bool
-sift_col_gorder_before(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, SiftCGOrdBuf *memo)
-{
-	int			vv,
-				j = gorder_src(src, i, &vv);
-	ColGOrdMem *g = gorder_mem(src, j, vv);
-	uint32		lo = vs,
-				hi = ve;
-
-	if (j < src->nseg)
-		return sift_cseg_gorder_before(src->seg[j].seg, gorder_slot(src, j, col), vs, ve, v, desc, clo, chi, memo);
-	/* the write buffer's entries are sorted in memory: the count of those that may come first is exact, and none of them is certainly a row (it is not in the heap's all-visible pages yet), so none is given up */
-	if (g->raw != NULL)
-		lo = Max(vs, Min(ve, gmem_rank(g, v, desc)));
-	else if (!desc)
-		SIFT_BISECT(uint32, mid, lo, hi, g->key[mid] < v);
-	else
-		SIFT_BISECT(uint32, mid, lo, hi, g->key[mid] <= v);
-	*chi = desc ? ve - lo : lo - vs;
-	*clo = 0;
-	return true;
-}
-
 void
 sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf)
 {
@@ -790,7 +767,7 @@ sift_col_gorder_clean(SiftColSource *src, int i)
  * What is known of the entry of the global order of stored segment i at heap address tid: 1 if it is of a row that is live and visible to every snapshot, so that nothing needs
  * the heap to confirm it (an OFFSET throws it away unread): its page is all-visible and its row not among the dead rows of its unit; -1 if the row is among them; 0 if the unit holds it
  * live on a page that is not all-visible, which the heap confirms for the snapshot; -2 if the unit cannot say. The dead rows of a unit are listed once for the unit, in the
- * order of col_super_take: the map, the directory, the liveness. A segment cut by key has no unit of the superblock of the page: the page is looked up in the map by block
+ * order of unit_pages_allvisible: the map, the directory, the liveness. A segment cut by key has no unit of the superblock of the page: the page is looked up in the map by block
  * and the dead rows of the segment (those of its units that have any) are one list. The scan asks the heap about a dead row: a vacuumed address may hold a row of another
  * source with the same key, which the merge of the sources has already dropped as the repeat of this entry; the skip of an OFFSET counts it for none, as that row is another source's.
  */
@@ -891,81 +868,4 @@ sift_col_gorder_exact(SiftColSource *src, int i, SiftKey tid)
 			return 1;
 	}
 	return av[pg / 64] >> (pg % 64) & 1 ? 1 : 0;
-}
-
-/* The values of leaf col at n heap addresses, sorted by (source, address) in ord for one pass over the units */
-typedef struct ValPair
-{
-	int			seg;
-	SiftKey		tid;
-	uint32		at;
-} ValPair;
-
-#define VAL_PAIR_LESS(x, y) ((x)->seg != (y)->seg ? (x)->seg < (y)->seg : (x)->tid < (y)->tid)
-SIFT_DEFINE_SORT(val_pairs, ValPair, VAL_PAIR_LESS)
-
-/* The m rows of unit u at keys (ascending): false when the unit cannot say (a key-cut unit, a row not found, a chunk that is not plain integers) */
-static bool
-unit_values(SiftColSegment *seg, uint32 u, int col, const SiftKey *keys, uint32 m, int64 *val, uint8 *st)
-{
-	SiftCUnitView v;
-	SiftCChunk	c;
-	uint32	   *rows = palloc(m * sizeof(uint32));
-
-	if (seg->schema->cols[col].store != SIFT_COLS_INT || !sift_cseg_unit_view(seg, u, &v) || v.keyed ||
-		sift_cunit_find_rows(&v, sift_block_sb(sift_key_block(keys[0])), keys, m, rows) != m)
-		return false;
-	if (v.chunk_len[col] > 0)
-		sift_cseg_unit_fill(seg, u, v.chunk_off[col], v.chunk_len[col]);
-	if (!sift_cunit_chunk(&v, col, &c))
-		memset(st, 2, m);		/* no chunk: every value of the unit is NULL */
-	else
-	{
-		if (c.n != v.nrows)
-			return false;
-		sift_cchunk_decode_sel(&c, rows, m, val);
-		for (uint32 k = 0; k < m; k++)
-			st[k] = c.ovf != NULL && sift_col_bit_test(c.ovf, rows[k]) ? 0 : c.nulls != NULL && sift_col_bit_test(c.nulls, rows[k]) ? 2 : 1;
-	}
-	pfree(rows);
-	return true;
-}
-
-/*
- * The value of integer leaf col of the rows at the heap addresses tid[k] of the segment seg[k], read from the units (the caller has them from sift_col_gorder_exact: live, on all-visible
- * pages, so the unit's value is the row's): st[k] 1 with val[k], 2 a NULL, 0 not read (a source that is not a segment, a key-cut unit, a value the leaf cannot hold): the heap has it.
- */
-void
-sift_col_gorder_values(SiftColSource *src, int col, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st)
-{
-	ValPair    *pr = palloc(n * sizeof(ValPair));
-	int64	   *uv = palloc((n + SIFT_COL_PAD / 8) * sizeof(int64));
-	uint8	   *us = palloc(n);
-	SiftKey	   *keys = palloc(n * sizeof(SiftKey));
-
-	memset(st, 0, n);
-	for (uint32 k = 0; k < n; k++)
-		pr[k] = (ValPair) {.seg = seg[k], .tid = tid[k], .at = k};
-	val_pairs(pr, n);
-	for (uint32 a = 0, b; a < n; a = b)
-	{
-		uint32		sb = sift_block_sb(sift_key_block(pr[a].tid)),
-					u;
-
-		for (b = a; b < n && pr[b].seg == pr[a].seg && sift_block_sb(sift_key_block(pr[b].tid)) == sb; b++)
-			keys[b - a] = pr[b].tid;
-		if (pr[a].seg >= src->nseg || (src->flags & COLO_TABLE) || sift_cseg_keyed(&src->seg[pr[a].seg].seg->entry) ||
-			(u = sift_cseg_unit_of_sb(src->seg[pr[a].seg].seg, sb)) >= src->seg[pr[a].seg].seg->nsb ||
-			!unit_values(src->seg[pr[a].seg].seg, u, col, keys, b - a, uv, us))
-			continue;
-		for (uint32 k = a; k < b; k++)
-		{
-			val[pr[k].at] = uv[k - a];
-			st[pr[k].at] = us[k - a];
-		}
-	}
-	pfree(pr);
-	pfree(uv);
-	pfree(us);
-	pfree(keys);
 }

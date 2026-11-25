@@ -179,48 +179,13 @@ typedef struct SiftColUnit
 	uint32		sb;
 	uint32		nrows;
 	bool		in_wbuf;		/* rows of a write buffer (chunks encoded in memory) */
-	uint32		nsu;			/* a superunit (sift_col_super): the units it stands for, whose merged pre-aggregates are all it has; 0 for a unit */
+	uint32		nsu;
 	int			except;			/* sift_col_unit_except: the leaf whose NULL rows the histograms and rollups of the unit answer for; -1: the unit's own rows */
 	void	   *priv;
 } SiftColUnit;
 
 /* Whether the next sift_col_read and sift_col_read_idx of the unit may give a STR leaf a dictionary that stays in the segment (get, no off and bytes): for a reader that asks for the strings of a few codes */
 extern void sift_col_unit_lazy_dict(const SiftColUnit *unit, bool on);
-
-/*
- * Superunits (docs/COL-PREAGG.md section 10). With sift_col_super(src, true), a source whose next unit starts a group of units of a segment that
- * holds a summary of the group hands over the group as one unit, when every unit of the group passed the zone tests and is exact (clean,
- * every page all-visible to the snapshot). It has pre-aggregates only (sift_col_unit_agg, sift_col_unit_hist): a consumer that cannot answer
- * from them calls sift_col_unit_split, and the next calls return the units of the group one by one.
- */
-extern void sift_col_super(SiftColSource *src, bool on);
-/* With a key leaf and the measures to read of it, the next unit may be a whole segment that has the key table of the leaf, with those measures (cu->nsu is its units): its histogram of the leaf, sift_col_unit_hist, is all it has; call after sift_col_super */
-extern void sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas);
-/* A count of the rows of a text leaf that pass one test (EQ, LT, LE, GT, GE, PREFIX against s, bytewise) and nothing else: a segment whose dictionary of the leaf holds row counts (option count_columns), and whose units are all exact (clean, every page all-visible), is handed over as one unit of cu->nsu units whose rows sift_col_unit_counted gives; call after sift_col_super */
-/* ... or of an integer leaf with a global order (order_array_columns): a segment of exact units counts the rows of the range of the scan's comparisons, all on that leaf, from it */
-/* ... or of a text leaf with a global order of the collation of the comparisons (order_array_columns): the rows of the strings between two bounds (a NULL one: none), all the conditions of the scan, are the entries between their ranks */
-/* A count of the rows that own one value of a list (the lone equality on an element leaf), answered by the point directory of a segment whose units are all exact; call after sift_col_super */
-extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
-/* The superblocks a parallel range should span for a group of units to fit in it: several groups of the largest fan, whatever the number of segments that interleave */
-extern uint32 sift_col_super_span(SiftColSource *src);
-/* The first superblock at or after sb that no key group of a segment straddles: ranges cut there take a group whole (the end of one range is the start of the next) */
-extern uint32 sift_col_super_align(SiftColSource *src, uint32 sb);
-/*
- * The comparisons of a statement a group of units must lie inside to answer it (the zone of the leaf in every unit, no NULL), all but those of the leaves the histograms answer (dim, hdim; -1: none):
- * a group the units of which are not inside them is not tried, which costs the reads of its summary and a split. The tests are copied.
- */
-typedef struct SiftColSuperTest
-{
-	int			leaf;
-	int64		lo;
-	int64		hi;
-	int			nvals;
-	const int64 *vals;
-} SiftColSuperTest;
-/* rollup: the statement is answered from the rollup of the rows, which only a key group of a scope segment holds: no other group is tried */
-#define SIFT_SUPER_NEED_ROWS	1		/* the groups tried hold the rollup of the rows */
-#define SIFT_SUPER_NEED_SETS(leaf)	((leaf) < 63 ? UINT64CONST(2) << (leaf) : 0)	/* ... or the id sets by calendar month of the leaf (or them or'ed) */
-extern void sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, uint64 need);
 
 /*
  * The keys of the key_cut that a conjunction of predicates confines a scan to, when it confines it: the leading cut leaves each equal to a value (or NULL) and the next one in a range or
@@ -246,22 +211,14 @@ extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snap
  */
 extern Size sift_col_view_size(const SiftColSource *src);
 extern void sift_col_view_export(const SiftColSource *src, void *buf);
-/*
- * What a source opened now would export, without opening one: the directory as a view (len bytes in mcxt) and the end of the superblocks the source would number. A scan of
- * many partitions counts them all before it reads one, and opens each on its view when it reaches it. sift_col_view_sb_heap: are the superblocks of a source opened on the view all heap pages.
- */
-extern void *sift_col_count_view(Relation heap, Relation index, MemoryContext mcxt, Size *len, uint32 *heap_sbs);
-extern bool sift_col_view_sb_heap(const void *view);
 extern void sift_col_close(SiftColSource *src);
 
 /* the bytes the segments of the source keep for the unit records they read, held after sift_col_close */
 extern Size sift_col_unit_bytes(const SiftColSource *src);
-/* Makes a source that has begun no scan, counted no rows and set no count or super mode ready for another scan of the statement (the counters at zero, what the global order made forgotten); false when it has, or its directory changed: open again */
+/* Makes a source that has begun no scan, counted no rows ready for another scan of the statement (the counters at zero, what the global order made forgotten); false when it has, or its directory changed: open again */
 extern bool sift_col_current(SiftColSource *src);
 /* Does the source hold the segments a statement confined to keys (NULL: not confined) reads: it was opened for the same keys, or all of the directory */
 extern bool sift_col_covers(const SiftColSource *src, const SiftKeyRange *keys);
-/* Releases the buffers the source keeps pinned between units (a partitioned table's scan leaves a partition for good); reading on takes them again */
-extern void sift_col_unpin(SiftColSource *src);
 
 /*
  * The one hook between the engine and the table it indexes: which rows of a unit are visible. The index glue installs the
@@ -373,23 +330,17 @@ extern bool sift_col_gorder_clean(SiftColSource *src, int i);
 typedef struct SiftColGroups SiftColGroups;
 extern SiftColGroups *sift_col_gorder_groups_open(SiftColSource *src, int gcol, int kcol, const int64 *only, bool desc, MemoryContext cxt);
 extern bool sift_col_gorder_groups_next(SiftColGroups *c, int64 *group);
-extern void sift_col_gorder_values(SiftColSource *src, int col, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st);
 extern void sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern bool sift_col_gorder_groups(SiftColSource *src, int i, int col, uint32 *ngroups);
 extern void sift_col_gorder_group_at(SiftColSource *src, int i, int col, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
-extern bool sift_col_gorder_before(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo);
 extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);
-/* the predicates (bit i: preds[i] of the begin) the rows of the unit's point directory answer exactly (SIFT_COLO_POINT_ROWS) */
-extern uint64 sift_col_point_exact(const SiftColUnit *unit);
 /*
  * sift_col_filter for a source opened with SIFT_COLO_POINTS: a unit may come with the rows that a point directory lists for one predicate of the begin
  * (the rows whose fingerprint matches). Then sel is narrowed to them, that predicate is left out of the filter, and *used is true: the caller has the heap
  * check the condition again. A unit without such rows (a write buffer, a segment without a directory) is filtered by every predicate, *used false.
  */
 extern void sift_col_point_narrow(const SiftColUnit *unit, SiftColSel *sel);
-/* the predicates (bit i: preds[i] of the begin) the rows of the unit's point directory answer exactly (SIFT_COLO_POINT_ROWS) */
-extern uint64 sift_col_point_exact(const SiftColUnit *unit);
 extern bool sift_col_filter_points(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel, bool *used);
 
 /*
@@ -618,17 +569,6 @@ typedef struct SiftCHeadEnt
  * see, i.e. the unit is clean and every row is on an all-visible page: then count(col), sum, min and max need no chunk.
  */
 extern void sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone);
-/* The zone of leaf col over every unit of the superblocks [sb_lo, sb_hi) as stored (a write buffer unit in the range makes it unbounded), from the segment headers: no unit is opened. Returns the units counted */
-extern uint32 sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
-extern uint32 sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
-typedef struct SiftColWalkStamp
-{
-	Oid			index;
-	uint32		file;
-	uint32		version;
-	uint32		scope;			/* the zones are those of the scope segments, not of the entity segments */
-} SiftColWalkStamp;
-extern bool sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem);
 extern bool sift_col_unit_exact(const SiftColUnit *unit);
 /* Is every page of the unit all-visible: sift_col_vet has nothing to check */
 extern bool sift_col_unit_allvisible(const SiftColUnit *unit);

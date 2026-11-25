@@ -10,62 +10,6 @@
 
 #define SIG_TEST_NVALS	64			/* a list of this many values is tested once for the statement, and the same array is the same values (the predicates are made once) */
 
-/*
- * The rows of the segment that own the one value the only test names, from the list of the point directory of its element leaf: false when the test is not
- * the lone equality of a list leaf with a directory, the value has no list (too common to be listed, or no row owns it: the units are pruned instead), or a
- * unit flags an overflow value in the leaf or its group (a row whose list the index cannot read is the executor's). It is asked before the units are looked at
- * (their visibility costs more than the pruning of a value no row owns); the caller then needs every unit clean and all-visible.
- */
-bool
-col_count_elem(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *n)
-{
-	const SiftColDef *def;
-	SiftCTest	t;
-	int64	   *keys;
-	int			nkeys;
-	uint32	   *rows,
-				nrows;
-	bool		ok;
-
-	if (npreds != 1)
-		return false;
-	def = &seg->schema->cols[preds[0].col];
-	if (def->parent < 0 || sift_cseg_point_is_tid(seg, preds[0].col) || sift_cseg_point_count(seg, preds[0].col) == 0)
-		return false;
-	if (def->store == SIFT_COLS_STR)
-		seg_test(src, seg, def, &preds[0], &t);
-	else
-		make_test(src, def, NULL, &preds[0], &t);
-	if ((keys = scan_point_keys(&t, &nkeys)) == NULL)
-		return false;
-	if (nkeys != 1)
-	{
-		pfree(keys);
-		return false;
-	}
-	for (uint32 u = 0; u < seg->nsb; u++)
-	{
-		SiftCZone	ze,
-					zg;
-
-		sift_cseg_zone(seg, preds[0].col, u, &ze);
-		sift_cseg_zone(seg, def->parent, u, &zg);
-		if ((ze.flags | zg.flags) & SIFT_COLZ_OVERFLOW)
-		{
-			pfree(keys);
-			return false;
-		}
-	}
-	ok = sift_cseg_point_rows(seg, preds[0].col, keys, 1, &rows, &nrows);
-	if (ok)
-	{
-		*n = nrows;
-		pfree(rows);
-	}
-	pfree(keys);
-	return ok;
-}
-
 /* The ranged predicates of one leaf together, in one pass: first[i] is the first ranged predicate of the leaf of i, and l and h hold the bounds of all of them at it */
 typedef struct RangeCols
 {
@@ -501,41 +445,6 @@ prune_new_words(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int 
 	}
 }
 
-/* A scan that reads the id sets of key groups takes a group whole: the units of a group one of which the zones keep are all kept (the cells of the group hold the tests of its date) */
-static void
-prune_keep_groups(SiftColSource *src, SiftColSegment *seg, uint64 *keep, uint32 ulo, uint32 uhi)
-{
-	uint32		kept = 0;
-
-	/* a group has two units or more: no block is read for a segment that keeps fewer */
-	for (uint32 w = ulo / 64; src->supsets && w * 64 < uhi && kept < SIFT_SUPER_MIN_FAN; w++)
-	{
-		uint64		bits = keep[w];
-
-		if (w == ulo / 64)
-			bits &= ~UINT64CONST(0) << (ulo % 64);
-		if (uhi < (w + 1) * 64)
-			bits &= (UINT64CONST(1) << (uhi % 64)) - 1;
-		kept += pg_popcount64(bits);
-	}
-	if (kept < SIFT_SUPER_MIN_FAN)
-		return;
-	for (uint32 k = 0; k < sift_cseg_super_count(seg); k++)
-	{
-		uint32		first,
-					n;
-		bool		any = false;
-
-		sift_cseg_super_range(seg, k, &first, &n);
-		if (!sift_cseg_super_has_dsets(seg, k, src->supsets) || first < ulo || first + n > uhi)
-			continue;
-		for (uint32 u = first; !any && u < first + n; u++)
-			any = sift_col_bit_test(keep, u);
-		for (uint32 u = first; any && u < first + n; u++)
-			sift_col_bit_set(keep, u);
-	}
-}
-
 void
 scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi, bool cached)
 {
@@ -546,52 +455,13 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	PruneRange	zr;
 
 	zr = pr;
-	c->nosuper_to = 0;
 	COL_HEAD_RESET(src);
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
-	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;
 	c->ps = NULL;
-	c->count_ok = false;
-	c->count_dirty = NULL;
-	if (src->pcnt && c->full && c->cmemo_epoch == src->pcnt_epoch && c->cmemo_seg == seg && c->cmemo_gen == seg->entry.gen)
-	{
-		c->count_ok = true;
-		c->count_rows = c->cmemo_rows;
-		c->count_unit_rows = c->cmemo_unit_rows;
-	}
-	if (c->count_ok || (src->pcnt && c->full && col_count_segment(src, c, preds, npreds)))
-	{
-		if (c->count_dirty == NULL)
-		{
-			c->cmemo_epoch = src->pcnt_epoch;
-			c->cmemo_seg = seg;
-			c->cmemo_gen = seg->entry.gen;
-			c->cmemo_rows = c->count_rows;
-			c->cmemo_unit_rows = c->count_unit_rows;
-		}
-		/* the dictionary answers for the segment: no zone, summary or directory is read for its units */
-		c->prow = NULL;
-		c->pexact = 0;
-		c->ptids = false;
-		c->ptidv = NULL;
-		c->nptidv = 0;
-		c->keep = palloc(nw * sizeof(uint64));
-		if (c->count_dirty != NULL)
-			memcpy(c->keep, c->count_dirty, nw * sizeof(uint64));
-		else
-		{
-			memset(c->keep, 0xFF, nw * sizeof(uint64));
-			if (seg->nsb % 64)
-				c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
-		}
-		c->setcut = palloc0(nw * sizeof(uint64));
-		return;
-	}
 	if (!cached || c->cgen != src->sig_gen || c->cseg != seg || c->cseg_gen != seg->entry.gen)
 	{
 		c->prow = NULL;
-		c->pexact = 0;
 		c->ptids = false;
 		c->ptidv = NULL;
 		c->nptidv = 0;
@@ -623,7 +493,6 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 		}
 		/* the words of units the range holds that no begin has tested yet, each run of them at once */
 		prune_new_words(src, c, preds, npreds, zones, nzones, pr.ulo / 64, (pr.uhi + 63) / 64);
-		prune_keep_groups(src, seg, c->ckeep, pr.ulo, pr.uhi);
 		c->keep = c->ckeep;
 		c->setcut = c->csetcut;
 		return;
@@ -638,102 +507,6 @@ scan_prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, i
 	prune_preds(src, seg, preds, npreds, c->keep, &pr, false);
 	for (int i = 0; i < nzones; i++)
 		prune_zone(src, seg, &zones[i], c->keep, &zr);
-	prune_keep_groups(src, seg, c->keep, pr.ulo, pr.uhi);
 	c->setcut = pr.setcut;
-}
-
-uint32
-sift_col_super_span(SiftColSource *src)
-{
-	uint32		fan = 0,
-				extent = 0;
-
-	for (int i = 0; i < src->nseg; i++)
-	{
-		SiftColSegment *seg = src->seg[i].seg;
-
-		/* the fan is the index's (one setting for every segment written): a read of the id sets takes the first block found, and a lone unit of a small key reads no other */
-		if (fan == 0 || !src->supsets)
-			fan = Max(fan, sift_cseg_super_fan(seg));
-		if (seg->nsb > 0)
-			extent = Max(extent, seg->sbdir[seg->nsb - 1].id - seg->sbdir[0].id + 1);
-	}
-	/* a segment the key table answers for lies in one item: four times its superblocks, as a scan with workers shares the span of four */
-	return Max(fan * 4 * Max(src->nseg, 1), (src->flags & COLO_TABLE) && src->whole ? extent * 4 : 0);
-}
-
-uint32
-sift_col_super_align(SiftColSource *src, uint32 sb)
-{
-	uint32		at = sb;
-
-	for (int i = 0; i < src->nseg; i++)
-	{
-		SiftColSegment *seg = src->seg[i].seg;
-		uint32		u = sift_cseg_unit_lower_bound(seg, sb);
-		uint32		e = sift_cseg_super_align(seg, u);
-
-		if (e > u)
-			at = Max(at, e < seg->nsb ? seg->sbdir[e].id : seg->sbdir[seg->nsb - 1].id + 1);
-	}
-	return at;
-}
-
-void
-sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int dim, int hdim, uint64 need)
-{
-	if (src->suptest != NULL)
-		pfree(src->suptest);
-	Size		nvals = 0;
-	int64	   *pool;
-
-	for (int k = 0; k < nt; k++)
-		nvals += t[k].nvals;
-	src->suptest = nt > 0 ? MemoryContextAlloc(src->mcxt, nt * sizeof(SiftColSuperTest) + nvals * sizeof(int64)) : NULL;
-	pool = (int64 *) (src->suptest + nt);
-	if (nt > 0)
-		memcpy(src->suptest, t, nt * sizeof(SiftColSuperTest));
-	for (int k = 0; k < nt; k++)
-		if (t[k].nvals > 1)
-		{
-			memcpy(pool, t[k].vals, t[k].nvals * sizeof(int64));
-			sift_sort_i64(pool, t[k].nvals);
-			src->suptest[k].vals = pool;
-			pool += t[k].nvals;
-		}
-	src->nsuptest = nt;
-	src->supdim = dim;
-	src->suphdim = hdim;
-	src->suprows = need & SIFT_SUPER_NEED_ROWS;
-	src->supsets = need >> 1;
-}
-
-/* Does the zone of every leaf the statement compares lie inside the comparison in each unit [first, first + n), as the consumer asks of the summary of the group (preagg_zones)? */
-bool
-col_super_inside(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n)
-{
-	for (int k = 0; k < src->nsuptest; k++)
-	{
-		const SiftColSuperTest *t = &src->suptest[k];
-
-		if (t->leaf == src->supdim || t->leaf == src->suphdim)
-			continue;
-		for (uint32 i = 0; i < n; i++)
-		{
-			SiftCZone	z;
-			int			a = 0,
-						b = t->nvals;
-
-			sift_cseg_zone(seg, t->leaf, first + i, &z);
-			if (z.nnull > 0 || z.nvals == 0 || z.min < t->lo || z.max > t->hi)
-				return false;
-			if (t->nvals == 0)
-				continue;
-			SIFT_BISECT(int, m, a, b, t->vals[m] < z.min);
-			if (z.min != z.max || a == t->nvals || t->vals[a] != z.min)
-				return false;
-		}
-	}
-	return true;
 }
 

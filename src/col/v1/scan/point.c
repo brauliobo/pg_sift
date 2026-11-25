@@ -259,11 +259,3 @@ sift_col_point_narrow(const SiftColUnit *unit, SiftColSel *sel)
 	cu->src->cnt.point_units++;
 	cu->src->cnt.point_rows += sift_col_sel_count(sel);
 }
-
-uint64
-sift_col_point_exact(const SiftColUnit *unit)
-{
-	const ColUnit *cu = unit->priv;
-
-	return cu->prow != NULL ? cu->pexact : 0;
-}

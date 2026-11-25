@@ -235,9 +235,6 @@ extern void sift_conn_alter(Relation child_index);
  * found and the sift_col index of the parent that serves it. -1 when the index has no such connection.
  */
 extern int	sift_conn_find(Relation heap, Relation index, AttrNumber fk, Oid parent_relid, AttrNumber parent_key, int *found, Oid *parent_index);
-/* The flag of the connection as a statement may read it for every row of the source (col/v1/scan/proof.c): NULL, with the oldest stamp of its segments and whether every segment is clean (SIFT_CONN_STAMP_CLEAN), or why not */
-struct SiftColSource;
-extern const char *sift_col_source_proof(struct SiftColSource *src, int found_leaf, SiftConnStamp *oldest, bool *clean);
 
 /*
  * ---- the found flags of a segment ----

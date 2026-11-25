@@ -31,7 +31,7 @@ scan_window_empty(const uint64 *keep, const PruneRange *pr)
 }
 
 /* The keys a test can match, when they are few (palloc'd, *nkeys of them): the keys of the point directory to probe. NULL: the units answer */
-int64 *
+static int64 *
 scan_point_keys(const SiftCTest *t, int *nkeys)
 {
 	int64	   *keys;
@@ -422,9 +422,6 @@ prune_keys(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col
 	c->prow = rows;
 	c->nprow = nrows;
 	c->ppred = i;
-	/* the directory of a list leaf holds each value's rows exactly (no two values share a fingerprint, or it was not written) */
-	if (seg->schema->cols[col].parent >= 0 && i < 64)
-		c->pexact |= UINT64CONST(1) << i;
 	return true;
 }
 
