@@ -9,6 +9,7 @@
 
 plan 9
 node_init va 18 "autovacuum = off
+sift.test_create_format1 = on
 sift.async_maintenance = off"
 node_start va || bail "start failed"
 D=$(dir va)
