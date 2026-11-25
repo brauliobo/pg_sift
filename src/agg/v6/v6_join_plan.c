@@ -793,7 +793,7 @@ join_compile(V6Plan *p, const void *arg)
 
 	p->sub_qual = js->sh->sub_qual;
 	return seed_dims(p, js->sh, &rc) && sift_v6_compile_on(p, js->extra, js->group_exprs) &&
-		(js->sh->elem != NULL ? sift_v6_unnest_ready(p) : p->spec.nbins == 0) && seed_resid(js->sh, &rc);
+		(js->sh->elem == NULL || sift_v6_unnest_ready(p)) && seed_resid(js->sh, &rc);
 }
 
 static void

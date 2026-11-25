@@ -173,21 +173,27 @@ read_by_code_only(const SiftV6Spec *spec, int attno)
 	return distinct;
 }
 
+/* the slot of a lane after the head of a datum: the head's vector carries the value, so the join gathers nothing for it */
+static SiftVec no_vec;
+
 static void
 setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 {
 	const SiftV6Spec *spec = s->spec;
 	const SiftV6Ext *x = spec->ext;
-	const int	nfact = s->ncols + s->nderived + (s->rows != NULL);
+	const int	nbin = s->ncols + s->nderived;
+	const int	nfact = nbin + s->nbins + (s->rows != NULL);
 	SiftVecType *type = palloc(nfact * sizeof(SiftVecType));
 
 	for (int i = 0; i < s->ncols; i++)
 		type[i] = s->cols[i].vec.type;
 	for (int k = 0; k < s->nderived; k++)
 		type[s->ncols + k] = sift_v6_derive_vec_type(spec, s->derived[k].d);
+	for (int b = 0; b < s->nbins; b++)
+		type[nbin + b] = SVEC_I64;
 	if (s->rows != NULL)
 	{
-		type[s->ncols + s->nderived] = SVEC_I64;
+		type[nfact - 1] = SVEC_I64;
 		s->tidvec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(uint64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	}
 	s->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, s->group, s->rows, nfact, type);
@@ -204,15 +210,19 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 		s->pipe->rslot[i] = sift_f2_v6_slot_of(s, first, &x->rcol[i], false);
 	for (int i = 0; i < spec->nkeys; i++)
 		s->pipe->key_slot[i] = sift_f2_v6_slot_of(s, first, &spec->key[i], spec->rows);
+	for (int b = 0; b < s->nbins; b++)
+		s->pipe->key_slot[s->bins[b].key] = nbin + b;
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
 		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : sift_f2_v6_slot_of(s, first, sift_v6_vec_col(spec, v), vec_takes_nan(spec, v));
 	s->fact = palloc(nfact * sizeof(SiftVec *));
 	for (int i = 0; i < s->ncols; i++)
-		s->fact[i] = &s->cols[i].vec;
+		s->fact[i] = s->cols[i].lane ? &no_vec : &s->cols[i].vec;
 	for (int k = 0; k < s->nderived; k++)
 		s->fact[s->ncols + k] = &s->derived[k].out.vec;
+	for (int b = 0; b < s->nbins; b++)
+		s->fact[nbin + b] = &s->bins[b].vec;
 	if (s->rows != NULL)
-		s->fact[s->ncols + s->nderived] = &s->tidvec;
+		s->fact[nfact - 1] = &s->tidvec;
 }
 
 /* the heap addresses of the n rows of the batch, as the slot of the pipe that the pairs of a join carry to the heap of the best rows */

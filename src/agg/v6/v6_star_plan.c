@@ -296,7 +296,7 @@ star_compile(V6Plan *p, const StarGoal *goal)
 {
 	if (goal->topk > 0)
 		return sift_v6_rows_compile(p, goal->topk);
-	return sift_v6_compile_on(p, goal->extra, goal->group_exprs) && p->spec.nbins == 0;
+	return sift_v6_compile_on(p, goal->extra, goal->group_exprs);
 }
 
 static void

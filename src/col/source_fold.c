@@ -107,6 +107,12 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 	return &f->col[f->nfold++];
 }
 
+static bool
+sourceless(const SiftSrcFold *f, const SiftV6Col *c)
+{
+	return c->derive > 0 && sift_v6_pgexpr_sourceless(f->a.spec, &f->a.spec->derive[c->derive - 1]);
+}
+
 static SiftVec *
 vec_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 {
@@ -116,6 +122,8 @@ vec_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 static int
 slot_of(SiftSrcFold *f, const SiftV6Col *c)
 {
+	if (c->derive > 0)
+		return f->in.ncols + c->derive - 1;
 	return c->src == SV6SRC_DIM ? sift_v6_pipe_dim_slot(f->pipe, c->dim, c->slot) : col_for(f, *c, false)->slot;
 }
 
@@ -124,11 +132,17 @@ setup_pipe(SiftSrcFold *f)
 {
 	const SiftV6Spec *spec = f->a.spec;
 	const SiftV6Ext *x = spec->ext;
-	SiftVecType *type = palloc(Max(f->in.ncols, 1) * sizeof(SiftVecType));
+	const int	nbin = f->in.ncols + f->nderived;
+	const int	nfact = nbin + f->nbins;
+	SiftVecType *type = palloc(Max(nfact, 1) * sizeof(SiftVecType));
 
 	for (int i = 0; i < f->in.ncols; i++)
 		type[i] = f->in.col[i].type;
-	f->pipe = sift_v6_pipe_new(f->cx, spec, f->a.group, NULL, f->in.ncols, type);
+	for (int k = 0; k < f->nderived; k++)
+		type[f->in.ncols + k] = sift_v6_derive_vec_type(spec, f->derived[k].d);
+	for (int b = 0; b < f->nbins; b++)
+		type[nbin + b] = SVEC_I64;
+	f->pipe = sift_v6_pipe_new(f->cx, spec, f->a.group, NULL, nfact, type);
 	sift_v6_star_attach(f->a.star, f->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
@@ -142,11 +156,17 @@ setup_pipe(SiftSrcFold *f)
 		f->pipe->rslot[i] = slot_of(f, &x->rcol[i]);
 	for (int i = 0; i < spec->nkeys; i++)
 		f->pipe->key_slot[i] = slot_of(f, &spec->key[i]);
+	for (int b = 0; b < f->nbins; b++)
+		f->pipe->key_slot[f->bins[b].key] = nbin + b;
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
 		f->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : slot_of(f, sift_v6_vec_col(spec, v));
-	f->fact = palloc(Max(f->in.ncols, 1) * sizeof(SiftVec *));
+	f->fact = palloc(Max(nfact, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < f->in.ncols; i++)
 		f->fact[i] = &f->vec[i];
+	for (int k = 0; k < f->nderived; k++)
+		f->fact[f->in.ncols + k] = &f->derived[k].out.vec;
+	for (int b = 0; b < f->nbins; b++)
+		f->fact[nbin + b] = &f->bins[b].vec;
 }
 
 static void
@@ -163,7 +183,8 @@ setup_derived(SiftSrcFold *f)
 		for (int j = 0; j < k && dv->prefix == NULL; j++)
 			if (sift_vn_prefix_of(&spec->derive[j], dv->d))
 				dv->prefix = &f->derived[j];
-		dv->src = vec_for(f, dv->d->src, false);
+		if (!sift_v6_pgexpr_sourceless(spec, dv->d))
+			dv->src = vec_for(f, dv->d->src, dv->d->kind == SVD_PG_EXPR);
 		for (int i = 0; i < dv->d->ncond; i++)
 			dv->cond[i] = vec_for(f, dv->d->cond[i], false);
 		sift_vx_out_init(&dv->out, f->cx);
@@ -290,11 +311,15 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 	if (!f->count_only)
 	{
 		for (int i = 0; i < spec->nkeys; i++)
-			if (spec->key[i].src != SV6SRC_DIM)
+			if (spec->key[i].src != SV6SRC_DIM && !sourceless(f, &spec->key[i]))
 				f->keyvec[i] = vec_for(f, spec->key[i], false);
 		for (int v = 0; v < nvec; v++)
-			if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src != SV6SRC_DIM)
-				f->argvec[v] = vec_for(f, *sift_v6_vec_col(spec, v), vec_takes_nan(spec, v));
+		{
+			const SiftV6Col *c = sift_v6_vec_col(spec, v);
+
+			if (c != NULL && c->src != SV6SRC_DIM && !sourceless(f, c))
+				f->argvec[v] = vec_for(f, *c, vec_takes_nan(spec, v));
+		}
 		for (int d = 0; spec->ext != NULL && d < spec->ext->ndims; d++)
 			for (int k = 0; k < spec->ext->dim[d].nkeys; k++)
 				if (sift_v6_xdim_key_is_col(&spec->ext->dim[d], k) && spec->ext->dim[d].fsrc[k] == SV6SRC_ATTR)

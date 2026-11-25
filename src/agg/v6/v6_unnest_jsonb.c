@@ -557,7 +557,7 @@ sift_v6_unnest_month_key(V6Plan *p, const Expr *e, SiftV6Col *k)
 			   *cast;
 	const Const *unit;
 
-	if (p->xseed == NULL || !IsA(e, FuncExpr) || out->funcid != F_DATE_TIMESTAMPTZ || !IsA(linitial(out->args), FuncExpr))
+	if (p->xseed == NULL || !p->xseed->unnest || !IsA(e, FuncExpr) || out->funcid != F_DATE_TIMESTAMPTZ || !IsA(linitial(out->args), FuncExpr))
 		return false;
 	trunc = linitial(out->args);
 	if (trunc->funcid != F_DATE_TRUNC_TEXT_TIMESTAMPTZ || list_length(trunc->args) != 2 || !IsA(linitial(trunc->args), Const) || !IsA(lsecond(trunc->args), FuncExpr))

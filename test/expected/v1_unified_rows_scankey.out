@@ -45,22 +45,22 @@ SELECT * FROM check_q($$SELECT id, ts, amount FROM t WHERE kind = 'cat_b' ORDER 
 
 -- a float8 sort is read from the batches
 SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind = 'cat_b' ORDER BY amount DESC, id LIMIT 10$$);
- node | same 
-------+------
- none | t
+   node    | same 
+-----------+------
+ SiftAggV6 | t
 (1 row)
 
 SELECT * FROM check_q($$SELECT id, amount FROM t WHERE gone IS NULL AND kind = 'cat_c' ORDER BY amount, id DESC LIMIT 15 OFFSET 4$$);
- node | same 
-------+------
- none | t
+   node    | same 
+-----------+------
+ SiftAggV6 | t
 (1 row)
 
 -- a list of texts, a text that no row has, a text with a range of another column
 SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind = ANY (ARRAY['cat_a', 'cat_c']) ORDER BY amount DESC, id LIMIT 12$$);
- node | same 
-------+------
- none | t
+   node    | same 
+-----------+------
+ SiftAggV6 | t
 (1 row)
 
 SELECT * FROM check_q($$SELECT id, ts FROM t WHERE kind = 'none' ORDER BY ts, id LIMIT 5$$);
@@ -70,22 +70,22 @@ SELECT * FROM check_q($$SELECT id, ts FROM t WHERE kind = 'none' ORDER BY ts, id
 (1 row)
 
 SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind = 'cat_d' AND ts >= date '2024-06-01' AND qty < 5 ORDER BY amount, id LIMIT 9$$);
- node | same 
-------+------
- none | t
+   node    | same 
+-----------+------
+ SiftAggV6 | t
 (1 row)
 
 -- a text that differs, and a column against a column, are quals no scan key says
 SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind <> 'cat_a' ORDER BY amount DESC, id LIMIT 10$$);
- node | same 
-------+------
- none | t
+   node    | same 
+-----------+------
+ SiftAggV6 | t
 (1 row)
 
 SELECT * FROM check_q($$SELECT id, amount FROM t WHERE kind = 'cat_b' AND amount < qty + 8 ORDER BY amount DESC, id LIMIT 10$$);
- node | same 
-------+------
- none | t
+   node    | same 
+-----------+------
+ SiftAggV6 | t
 (1 row)
 
 SELECT * FROM check_q($$SELECT id, ts FROM t WHERE kind IS NULL ORDER BY ts DESC, id LIMIT 6$$);
