@@ -78,6 +78,7 @@ TESTING_REGRESS += agg_group_nospill_run
 TESTING_REGRESS += agg_group_passes
 TESTING_REGRESS += agg_group_single_key
 TESTING_REGRESS += agg_group_spill
+TESTING_REGRESS += agg_group_spill_bounds
 TESTING_REGRESS += agg_group_spill_limits
 TESTING_REGRESS += agg_int_key_ids
 TESTING_REGRESS += agg_join_flip_probe_consolidated
