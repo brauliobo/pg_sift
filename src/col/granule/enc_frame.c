@@ -81,7 +81,7 @@ sift_frame_strs(const SiftChunk *c, uint32 f, uint32 **off, char **bytes)
 	memcpy(&len, p, 4);
 	if (len > avail - 8)
 		SIFT_FAIL_CORRUPT("sift: a frame of strings of %u bytes does not fit its chunk of %u", len, avail);
-	sift_cc_decode_strs_dict(CurrentMemoryContext, (const uint8 *) p + 8, len, cnt, cnt, 0, off, bytes, NULL);
+	sift_cc_decode_strs_dict(NULL, (const uint8 *) p + 8, len, cnt, cnt, 0, off, bytes, NULL);
 }
 
 void
