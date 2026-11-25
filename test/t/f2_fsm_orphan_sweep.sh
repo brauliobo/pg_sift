@@ -45,7 +45,9 @@ read -r -u "${HOLD[0]}" ready
 held=$(used)
 check "the extents allocated by a session that has not committed are in use ($base -> $held blocks)" test "$held" -ge $((base + LEAKED))
 sql "$p" "VACUUM h" >/dev/null
-check "a VACUUM while another session holds the index frees nothing ($held blocks in use)" test "$(used)" -ge "$held"
+# the compaction of the VACUUM puts the blocks of the parts it replaced in the quarantine until the open transaction ends: they are no longer in use, and the leaked ones are
+held_total=$(sql "$p" "SELECT used_blocks + pending_blocks FROM sift.space('h_col')")
+check "a VACUUM while another session holds the index frees nothing ($held blocks in use, $held_total with the quarantine)" test "$held_total" -ge "$held"
 printf '%s\n' "COMMIT;" '\q' >&"${HOLD[1]}"
 wait "$HOLD_PID"
 sql "$p" "VACUUM h" >/dev/null
