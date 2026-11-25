@@ -663,9 +663,8 @@ sift_v6_group_path_methods(void)
 void
 sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
 {
-	RangeTblEntry *rte = planner_rt_fetch(input_rel->relid, root);
-	List	   *having = sift_v6_having(extra);
-	Relation	heap = table_open(rte->relid, AccessShareLock);
+	int			nsrc;
+	SiftV6RelSource *src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
 
 	for (int i = 0; i < nsrc; i++)
 		sift_v6_source_group_path(root, input_rel, output_rel, &src[i], extra, group_exprs);
