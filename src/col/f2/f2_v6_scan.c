@@ -517,32 +517,8 @@ zone_offer(void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone)
 static void
 fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *tid, uint64 part_gen, int off, int n)
 {
-	if (s->batch_cx != NULL)
-		MemoryContextReset(s->batch_cx);
-	for (int i = 0; i < s->ncols; i++)
-	{
-		if (s->cols[i].lane)
-			continue;
-		if (s->cols[i].attno == SIFT_V6_SCORE_ATTNO)
-		{
-			sift_f2_v6_fill_score(&s->cols[i], score, off, n);
-			continue;
-		}
-		if (s->cols[i].jtype)
-		{
-			sift_f2_v6_fill_type(&s->cols[i], &views[s->cols[i].leaf], off, n);
-			continue;
-		}
-		if (s->cols[i].cls == SV6C_DATUM)
-		{
-			sift_f2_v6_fill_datum(&s->cols[i], views, off, n, s->batch_cx, s->bs.mask);
-			continue;
-		}
-		sift_f2_v6_fill_col(&s->cols[i], &views[s->cols[i].leaf], off, n, part_gen, s->bs.n_active * 2 < n ? s->bs.mask : NULL);
-		sift_f2_v6_refuse_nan(&s->cols[i], &s->bs);
-		if (s->cols[i].json)
-			sift_f2_v6_fill_exceptions(s, &s->cols[i], &views[s->cols[i].leaf], off, n);
-	}
+	sift_f2_v6_fill_cols(s, views, score, part_gen, off, n);
+	sift_f2_v6_refuse_nans(s);
 	if (s->bq != NULL)
 	{
 		sift_v6_bq_filter(s->bq, &s->bs);

@@ -24,6 +24,23 @@ typedef struct V6Arms
 	uint64		live[SIFT_VEC_WORDS];
 } V6Arms;
 
+static void
+arms_select(const V6Arms *a, V6Scan *s, const uint64 *mask, uint16 n_active)
+{
+	memcpy(s->bs.mask, mask, SIFT_VEC_WORDS * sizeof(uint64));
+	s->bs.n_raw = a->n;
+	s->bs.n_active = n_active;
+	s->bs.all_active = n_active == a->n;
+	s->bs.has_sel = false;
+}
+
+static void
+arms_fill(const V6Arms *a, V6Scan *s, const uint64 *mask, uint16 n_active)
+{
+	arms_select(a, s, mask, n_active);
+	sift_f2_v6_fill_cols(s, a->b->views, NULL, a->b->part != NULL ? a->b->part->part_gen : 0, a->off, a->n);
+}
+
 /* the rows of the pass the arm takes: all of them when the arms have the keys of the leader, else those its gate allows */
 static uint16
 arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
@@ -38,8 +55,7 @@ arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
 		memcpy(out, live, SIFT_VEC_WORDS * sizeof(uint64));
 		return a->n_live;
 	}
-	for (int i = 0; i < s->ncols; i++)
-		sift_f2_v6_fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0, NULL);
+	arms_fill(a, s, live, a->n_live);
 	sift_clause_eval(s->gate, s->argvec + sift_v6_spec_fvec(s->spec), a->n, allowed);
 	for (int w = 0; w < SIFT_VEC_WORDS; w++)
 		n += pg_popcount64(out[w] = live[w] & allowed[w]);
@@ -53,13 +69,10 @@ arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
 	V6Scan	   *s = &a->s[arm];
 
 	if (s->gate == NULL)
-		for (int i = 0; i < s->ncols; i++)
-			sift_f2_v6_fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0, NULL);
-	memcpy(s->bs.mask, mask, SIFT_VEC_WORDS * sizeof(uint64));
-	s->bs.n_raw = a->n;
-	s->bs.n_active = n_active;
-	s->bs.all_active = n_active == a->n;
-	s->bs.has_sel = false;
+		arms_fill(a, s, mask, n_active);
+	else
+		arms_select(a, s, mask, n_active);
+	sift_f2_v6_refuse_nans(s);
 	sift_f2_v6_derive_columns(s);
 	sift_f2_v6_bin_keys(s);
 	sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);

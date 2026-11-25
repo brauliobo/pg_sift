@@ -143,7 +143,8 @@ extern void sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQu
 /* The view of the text of row of the column: the bytes stay where the view of the store holds them */
 extern SiftStrView sift_f2_v6_text_view(const ColView *cv, int row, bool table);
 extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
-extern void sift_f2_v6_refuse_nan(const V6Col *c, const SiftBatchSel *bs);
+extern void sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint64 part_gen, int off, int n);
+extern void sift_f2_v6_refuse_nans(const V6Scan *s);
 /* f2_v6_datum.c: the datums of a column of a type no native vector holds: the rows of mask (all n when it is NULL) made in cx */
 extern void sift_f2_v6_fill_datum(V6Col *c, const ColView *views, int off, int n, MemoryContext cx, const uint64 *mask);
 extern void sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int n);

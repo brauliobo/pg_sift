@@ -151,8 +151,8 @@ sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen
 }
 
 /* A NaN that no aggregate folds (a count of the distinct values, a filter, an argument of sift.arg_max) is not left out as a NULL would be: the statement is refused */
-void
-sift_f2_v6_refuse_nan(const V6Col *c, const SiftBatchSel *bs)
+static void
+refuse_nan(const V6Col *c, const SiftBatchSel *bs)
 {
 	if (c->vec.nan == NULL || c->nan_ok)
 		return;
@@ -235,4 +235,41 @@ sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n)
 	v->len = n;
 	v->dense = true;
 	v->sel = NULL;
+}
+
+/* The vectors of the columns of the n rows from off of a batch: the rows of the selection s->bs are the ones that matter */
+void
+sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint64 part_gen, int off, int n)
+{
+	if (s->batch_cx != NULL)
+		MemoryContextReset(s->batch_cx);
+	for (int i = 0; i < s->ncols; i++)
+	{
+		V6Col	   *c = &s->cols[i];
+		const ColView *cv = &views[c->leaf];
+
+		if (c->lane)
+			continue;
+		if (c->attno == SIFT_V6_SCORE_ATTNO)
+			sift_f2_v6_fill_score(c, score, off, n);
+		else if (c->jtype)
+			sift_f2_v6_fill_type(c, cv, off, n);
+		else if (c->cls == SV6C_DATUM)
+			sift_f2_v6_fill_datum(c, views, off, n, s->batch_cx, s->bs.mask);
+		else
+		{
+			sift_f2_v6_fill_col(c, cv, off, n, part_gen, s->bs.n_active * 2 < n ? s->bs.mask : NULL);
+			if (c->json)
+				sift_f2_v6_fill_exceptions(s, c, cv, off, n);
+		}
+	}
+}
+
+/* The columns that hold a NaN no aggregate folds, for the rows the selection s->bs keeps */
+void
+sift_f2_v6_refuse_nans(const V6Scan *s)
+{
+	for (int i = 0; i < s->ncols; i++)
+		if (!s->cols[i].lane && s->cols[i].attno != SIFT_V6_SCORE_ATTNO && !s->cols[i].jtype && s->cols[i].cls != SV6C_DATUM)
+			refuse_nan(&s->cols[i], &s->bs);
 }
