@@ -526,7 +526,7 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 	Placement	pl = {.v = palloc(sizeof(Placed) * Max(nwant, 1))};
 	/* MEM[MEM-TBL-02]: col_delta fold per-granule scratch ctx (reset each granule in place_rows) */
 	MemoryContext pcx = sift_mem_allocset_create(CurrentMemoryContext, "sift column delta fold part"),
-				gcx = sift_mem_allocset_create(pcx, "sift column delta fold granule"),
+				gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift column delta fold granule"),
 				outer = CurrentMemoryContext;
 
 	for (int k = 0; k < nout && nwant > 0; k++)
@@ -558,6 +558,7 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 		MemoryContextSwitchTo(outer);
 		MemoryContextReset(pcx);
 	}
+	MemoryContextDelete(gcx);
 	MemoryContextDelete(pcx);
 	qsort(pl.v, pl.n, sizeof(Placed), placed_cmp);
 	return pl;
