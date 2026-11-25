@@ -25,6 +25,7 @@
 #include "agg/v6/v6_scan_src.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_topk_run.h"
+#include "core/maint_pacer.h"
 #include "access/tableam.h"
 #include "col/am.h"
 #include "agg/exec/int.h"
@@ -157,10 +158,10 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 			begin_index(st, node, &st->sources[k], sift_v6_spec_part_oid(st->spec, k));
 	if (st->spec->ext != NULL && st->spec->ext->ndims > 0)
 		begin_star(st, node, estate, eflags);
-	begin_arm(st, node, estate, eflags);
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		for (int k = 0; k < st->nsources; k++)
 			sift_v6_source_enter(st->sources[k].index != NULL ? st->sources[k].index : st->sources[k].heap, st->sources[k].index == NULL, estate->es_snapshot);
+	begin_arm(st, node, estate, eflags);
 	if (st->spec->par_strategy != 0)
 		begin_par(st, node, estate);
 }
@@ -459,7 +460,7 @@ v6_next_row(V6State *st, TupleTableSlot *slot)
 }
 
 static void
-v6_run(V6State *st, EState *estate)
+v6_run_scan(V6State *st, EState *estate)
 {
 	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
 	SiftV6FuseCohort *c;
@@ -497,6 +498,18 @@ v6_run(V6State *st, EState *estate)
 			sift_v6_topk_run_groups(st->topk, st->group, ps->qual, ps->ps_ExprContext, slot);
 	}
 	MemoryContextSwitchTo(old);
+}
+
+/* One run of the node in 16 feeds the foreground averages the maintenance pacer decides by (core/maint_pacer.h) */
+static void
+v6_run(V6State *st, EState *estate)
+{
+	TimestampTz t0;
+	const bool	sampled = sift_pacer_fg_sample_begin(&t0);
+
+	v6_run_scan(st, estate);
+	if (sampled)
+		sift_pacer_record_foreground(GetCurrentTimestamp() - t0);
 }
 
 /* A parallel node with its shared block runs the participants' scan; a Gather that made no block (no worker could start) leaves the node to the serial run */
