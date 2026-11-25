@@ -84,9 +84,11 @@ Custom Scan (SiftAgg)
 
 ## Failure and safety
 
-- **No device, no driver, an unusable device:** one NOTICE per session, the query runs on the CPU.
-- **Device lost, a submission longer than 10 s, a failed allocation:** the scan is run again from its first item on the CPU, the device is not used again in that session, one NOTICE (never a WARNING or an ERROR), no partial result.
-- **Cancel and timeout:** the wait for the device is made in 5 ms slices that call `CHECK_FOR_INTERRUPTS`; a cancelled query leaves the device in a state the next call settles first.
+- **No device, no driver, an unusable device:** one NOTICE per session, the query runs on the CPU; a device that failed to open is not looked for again for 30 s, so a host with no driver loads no library per query.
+- **Device lost, a submission longer than 10 s, a failed allocation:** the scan is run again from its first item on the CPU, one NOTICE (never a WARNING or an ERROR), no partial result; the next query closes the device and opens it again (the worker and the backend that has a device of its own), and runs on the CPU for 30 s when that fails.
+- **Cancel and timeout:** the wait for the device is made in 5 ms slices that ask whether the query was cancelled; the run that is cancelled frees what it holds and returns to its caller, which raises the cancel, and the submissions it left are settled by the next call.
+- **Float sums:** a sum or average of floats that the device reports as an infinity or a NaN runs again on the CPU, which raises `value out of range: overflow` for finite values that overflow and returns the infinity a table holds.
+- **Tiered parts:** a part in object storage is read on the CPU; the parts of the table that are local stay on the device.
 - **Resources:** the device context is released at backend exit (`on_proc_exit`); nothing is created in the postmaster. Error paths drop the staged chunks, so an `ERROR` between staging and running leaves nothing half uploaded in the cache.
 - **Signals:** instance creation and queue submission run with signals blocked, because the driver's threads inherit the mask.
 - **Same answers:** the regress test `gpu_agg` runs every eligible shape and the shapes left to the CPU with `sift.gpu` on and off and prints whether the rows are equal; its output is the same without Vulkan, without a device and with a device (`VK_DRIVER_FILES=/nonexistent` simulates none).
