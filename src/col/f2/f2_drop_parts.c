@@ -97,6 +97,17 @@ release_granule_blobs(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint
 	sift_f2_gbuf_unref(gb);
 }
 
+void
+sift_part_wide_extents(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, SiftExtVec *v)
+{
+	int			ng;
+	uint32	   *g = exception_granules(rel, pin->part, &ng);
+
+	for (int k = 0; k < ng; k++)
+		release_granule_blobs(rel, store, pin, g[k], v);
+	pfree(g);
+}
+
 int
 sift_drop_wide_extents(Relation rel, SiftF2Store *store, uint32 part_id, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens, SiftExtent **release, int nrelease)
 {
@@ -107,12 +118,8 @@ sift_drop_wide_extents(Relation rel, SiftF2Store *store, uint32 part_id, const S
 	for (int i = 0; i < ngens && sift_tbl_extra(store)->has_wide; i++)
 	{
 		SiftF2PartPin *pin = sift_f2_pin_open(rel, store, sift_part_gen_idx_find(&by_gen, gens[i]), part_id);
-		int			ng;
-		uint32	   *g = exception_granules(rel, pin->part, &ng);
 
-		for (int k = 0; k < ng; k++)
-			release_granule_blobs(rel, store, pin, g[k], &v);
-		pfree(g);
+		sift_part_wide_extents(rel, store, pin, &v);
 		sift_f2_pin_release(pin);
 	}
 	sift_part_gen_idx_free(&by_gen);

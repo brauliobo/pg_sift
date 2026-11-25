@@ -144,6 +144,9 @@ extern uint64 sift_fsm_reclaim_exclusive(Relation rel);
  */
 extern uint64 sift_fsm_sweep_orphans(Relation rel);
 
+/* Whether every extent of the relation has a name that a pass over its parts finds: a sift_table keeps its wide values in extents that only a granule or a micro-slab names, so a table with a column of variable length has not */
+extern bool sift_fsm_names_all_extents(Relation rel);
+
 typedef struct SiftFsmStats
 {
 	uint64		class_blocks[SIFT_FSM_NCLASSES];

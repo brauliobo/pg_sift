@@ -41,8 +41,13 @@ extern bool sift_drop_time_dirty(const SiftColDeltaAnchor *anchor, int slot);
  */
 extern SiftTtlPlan *sift_drop_plan(const SiftPartDesc *parts, int np, int slot, int64 cutoff, FullTransactionId horizon, bool time_dirty, SiftDropResult *tally);
 
-/* The extents of the wide values the dropped parts own, appended to the vector (release grown as needed); the count after the append */
+/* The extents of the wide values the rows of a part refer to, appended to the vector: the references are in the granules that keep an exception stream */
 struct SiftF2Store;
+struct SiftF2PartPin;
+struct SiftExtVec;
+extern void sift_part_wide_extents(Relation rel, struct SiftF2Store *store, struct SiftF2PartPin *pin, struct SiftExtVec *v);
+
+/* The extents of the wide values the dropped parts own, appended to the vector (release grown as needed); the count after the append */
 extern int	sift_drop_wide_extents(Relation rel, struct SiftF2Store *store, uint32 part_id, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens, SiftExtent **release, int nrelease);
 
 /* The visibility map bits of the vblocks the dropped parts had rows in, cleared before the commit that drops them (nothing for a sift_col index) */

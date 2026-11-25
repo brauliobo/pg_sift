@@ -634,9 +634,8 @@ sweep_in_own_context(Relation rel)
 	return freed;
 }
 
-/* A sift_table keeps its wide values in extents that only a granule names: a table with a column of variable length is not swept */
-static bool
-names_all_extents(Relation rel)
+bool
+sift_fsm_names_all_extents(Relation rel)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
 
@@ -664,7 +663,7 @@ sift_fsm_sweep_orphans(Relation rel)
 	bool		had_lock = CheckRelationLockedByMe(rel, AccessExclusiveLock, false);
 	uint64		freed = 0;
 
-	if (!sweep_allowed(rel) || !names_all_extents(rel) || (!had_lock && !ConditionalLockRelation(rel, AccessExclusiveLock)))
+	if (!sweep_allowed(rel) || !sift_fsm_names_all_extents(rel) || (!had_lock && !ConditionalLockRelation(rel, AccessExclusiveLock)))
 		return 0;
 	if (ConditionalLockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock))
 	{

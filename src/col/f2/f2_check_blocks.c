@@ -16,6 +16,7 @@
 
 #include "col/f2/col_meta.h"
 #include "col/f2/f2.h"
+#include "col/f2/f2_drop_parts.h"
 #include "col/f2/f2_journal.h"
 #include "col/f2/l0_slab.h"
 #include "col/f2/part_format.h"
@@ -26,9 +27,10 @@
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "table/f2/f2_col_delta_dir.h"
+#include "table/f2/f2_tbl.h"
 
 #define OWNER_LIST(X) \
-	X(OWN_NONE, "nothing") X(OWN_META, "metapage") X(OWN_DIR, "directory page") X(OWN_LIST, "list page") X(OWN_PART, "part") X(OWN_PACKED, "packed part page") \
+	X(OWN_NONE, "nothing") X(OWN_META, "metapage") X(OWN_DIR, "directory page") X(OWN_LIST, "list page") X(OWN_PART, "part") X(OWN_WIDE, "wide value") X(OWN_PACKED, "packed part page") \
 	X(OWN_DV, "deletion vector") X(OWN_SLAB, "micro-slab page") X(OWN_PEND, "pending delete page") X(OWN_DELTA, "column delta page") X(OWN_SCOPE, "scope") \
 	X(OWN_PROJ, "projection") X(OWN_JRNL, "key journal page") X(OWN_FREE, "free block")
 
@@ -179,6 +181,22 @@ claim_opened(BlockMap *m, Owner kind, const SiftPart *part)
 	}
 }
 
+/* The wide values of a part of a sift_table: the extents its granules refer to */
+static void
+claim_wide(BlockMap *m, const SiftPartDesc *d, uint32 part_id)
+{
+	SiftF2Store *store = sift_f2_store_open(m->rel);
+	SiftExtVec	wide = {0};
+	SiftF2PartPin *pin;
+
+	if (m->rel->rd_rel->relkind == RELKIND_INDEX || !sift_tbl_extra(store)->has_wide)
+		return;
+	pin = sift_f2_pin_open(m->rel, store, d, part_id);
+	sift_part_wide_extents(m->rel, store, pin, &wide);
+	sift_f2_pin_release(pin);
+	claim_extents(m, OWN_WIDE, wide.ext, wide.n);
+}
+
 static void
 claim_part(BlockMap *m, const SiftPartDesc *d, uint32 part_id)
 {
@@ -192,6 +210,7 @@ claim_part(BlockMap *m, const SiftPartDesc *d, uint32 part_id)
 		claim(m, OWN_DV, d->dv_blk, d->dv_nblocks);
 	old = MemoryContextSwitchTo(m->open_cx);
 	claim_opened(m, OWN_PART, sift_part_open_desc(m->rel, d, part_id));
+	claim_wide(m, d, part_id);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(m->open_cx);
 }
@@ -380,20 +399,6 @@ report_leaks(const BlockMap *m)
 		SIFT_CORRUPT(m->rel, "%llu blocks below the high-water mark are named by no part, list, chain or free list, the first is block %llu.", (unsigned long long) n, (unsigned long long) first);
 }
 
-/* A sift_table keeps its wide values in extents that only a granule names */
-static bool
-names_all_extents(Relation rel)
-{
-	TupleDesc	desc = RelationGetDescr(rel);
-
-	if (rel->rd_rel->relkind == RELKIND_INDEX)
-		return true;
-	for (int i = 0; i < desc->natts; i++)
-		if (TupleDescAttr(desc, i)->attlen < 0)
-			return false;
-	return true;
-}
-
 static void
 walk(BlockMap *m)
 {
@@ -409,7 +414,7 @@ walk(BlockMap *m)
 static void
 check_windows(Relation rel)
 {
-	BlockMap	m = {.rel = rel,.meta = sift_col_meta_read(rel),.complete = names_all_extents(rel)};
+	BlockMap	m = {.rel = rel,.meta = sift_col_meta_read(rel),.complete = sift_fsm_names_all_extents(rel)};
 	Size		budget = Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2), 1024 * 1024);
 
 	m.span = Min((uint64) m.meta.high_water, budget);
