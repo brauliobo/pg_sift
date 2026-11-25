@@ -9,6 +9,7 @@
 
 #include "col/f2/f2test.h"
 #include "col/f2/f2_store.h"
+#include "core/catname.h"
 #include "core/horizon.h"
 
 PG_FUNCTION_INFO_V1(sift_test_f2_alloc);
@@ -142,7 +143,7 @@ sift_test_f2_reclaim(PG_FUNCTION_ARGS)
 Datum
 sift_test_f2_sweep(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), RowExclusiveLock);
 	uint64		n = sift_fsm_sweep_orphans(rel);
 
 	relation_close(rel, NoLock);
