@@ -114,7 +114,7 @@ def origin(arg, body, k, params, entry_oid):
 
 def main():
     names = subprocess.run(['git', '-C', root, 'ls-files', 'src'], capture_output=True, text=True, check=True).stdout.split()
-    names = [f for f in names if f.endswith(('.c', '.h')) and not f.endswith('_test.c')]
+    names = [f for f in names if f.endswith(('.c', '.h')) and not f.endswith('_test.c') and '/test/' not in f]
     funcs = {}
     for f in names:
         text = open(os.path.join(root, f), errors='replace').read()
