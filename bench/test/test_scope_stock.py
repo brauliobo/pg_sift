@@ -170,12 +170,12 @@ class Merge(unittest.TestCase):
             out = os.path.join(d, 'merged.tsv')
             arms.cmd_merge(argparse.Namespace(base=collected(os.path.join(d, 'base'), legacy), new=collected(os.path.join(d, 'new'), current), out=out))
             meta, rows = resultfile.read(out)
-        self.assertEqual({r['arm'] for r in rows} - {'fixture'}, {'stock_default', 'sift_scope', 'ivm', 'sift_entity', 'sift_scope_cluster'})
-        self.assertEqual(meta['arms'], 'stock_default,ivm,sift_entity,sift_scope,sift_scope_cluster')
+        self.assertEqual({r['arm'] for r in rows} - {'fixture'}, {'stock_default', 'sift_scope', 'ivm', 'sift_entity'})
+        self.assertEqual(meta['arms'], 'stock_default,ivm,sift_entity,sift_scope')
         self.assertEqual([r['value'] for r in rows if r['arm'] == 'sift_entity' and r['case'] == 't1:sum_by_month' and r['metric'] == 'warm_ms'], ['3.5'])
 
     def test_the_5_1_0_arm_names_of_a_list_are_the_current_ones(self):
-        self.assertEqual(arms.arm_list('stock_default,sift_reuse,sift_scope_rollup,ivm'), 'stock_default,sift_entity,sift_scope_cluster,ivm')
+        self.assertEqual(arms.arm_list('stock_default,sift_reuse,sift_scope_rollup,ivm'), 'stock_default,sift_entity,ivm')
 
     def test_the_load_of_a_row_is_the_one_of_the_run_not_of_the_collect(self):
         clock = itertools.count()

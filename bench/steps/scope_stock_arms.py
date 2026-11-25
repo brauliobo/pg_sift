@@ -23,7 +23,6 @@ dropped after its reads and writes; the fixture and the arms are on one cluster 
   ivm            pg_ivm incremental views of events joined to the maintained pair table (latest-N: not answerable); skipped, with a notice, when pg_ivm is not installed under a --root
   sift_entity    the sift_col entity index, the pairs read through the member key
   sift_scope     the same index with the scope of two paths
-  sift_scope_cluster  the same with `cluster`: the entity parts are clustered by primary parent and the route from entity to scope key is built automatically
 The stock arms run on a server without pg_sift loaded; the sift arms on the same data directory restarted with it. Every cell: warm (median of 3 of `instructions:u` of the backend, EXPLAIN
 ANALYZE time and shared blocks hit/read) and cold (shared buffers emptied: one run), the md5 of the rows against the oracle. Writes: 10,000 inserted events (statement), a pair edit
 (grant a member to a tenant, revoke it) for 10 member keys of ~400 events and for the largest member; the sift arm adds the promotion of the write buffer. Size: bytes of what the arm adds.
@@ -147,13 +146,13 @@ ARMS = {
     'sift_scope': (True, sql_text('sift_scope.sql'), semi_classes,
                    "SELECT pg_relation_size('events_col') + pg_relation_size('grants_by_member') + pg_relation_size('grants_by_group') + pg_relation_size('memberships_by_member')"),
 }
-ARMS['sift_scope_cluster'] = (True, sql_text('sift_scope_cluster.sql'), semi_classes, ARMS['sift_scope'][3])
 ORDER = list(ARMS)
-LEGACY_ARMS = {'sift_reuse': 'sift_entity', 'sift_scope_rollup': 'sift_scope_cluster'}   # the 5.1.0 names: lists of arms and results files that still use them are read under the new ones
+LEGACY_ARMS = {'sift_reuse': 'sift_entity'}   # the 5.1.0 name: lists of arms and results files that still use it are read under the new one
+RETIRED_ARMS = ('sift_scope_rollup',)         # the 5.1.0 arm of the `cluster` clause, which the scope does not have any more (it clusters by itself): lists and results files drop it
 
 
 def arm_list(text):
-    return ','.join(LEGACY_ARMS.get(n, n) for n in text.split(','))
+    return ','.join(LEGACY_ARMS.get(n, n) for n in text.split(',') if n not in RETIRED_ARMS)
 
 
 class Sess:
@@ -531,8 +530,8 @@ def cmd_collect(a):
 
 
 def current_arm_names(meta, rows):
-    """(meta, rows) of a results file with the 5.1.0 arm names (LEGACY_ARMS) under the current ones"""
-    return dict(meta, arms=arm_list(meta['arms'])), [dict(r, arm=LEGACY_ARMS.get(r['arm'], r['arm'])) for r in rows]
+    """(meta, rows) of a results file with the 5.1.0 arm names (LEGACY_ARMS) under the current ones and without its retired arms"""
+    return dict(meta, arms=arm_list(meta['arms'])), [dict(r, arm=LEGACY_ARMS.get(r['arm'], r['arm'])) for r in rows if r['arm'] not in RETIRED_ARMS]
 
 
 def cmd_merge(a):
