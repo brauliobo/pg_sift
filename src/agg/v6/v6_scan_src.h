@@ -9,6 +9,7 @@
 
 #include "access/relscan.h"
 #include "access/skey.h"
+#include "utils/snapshot.h"
 #include "nodes/execnodes.h"
 #include "utils/rel.h"
 
@@ -27,5 +28,11 @@ typedef struct SiftV6ScanSrc
 	IndexFetchTableData *fetch;	/* a row Top-N: the winners of the source are fetched from its heap */
 	TupleTableSlot *fetch_slot;
 } SiftV6ScanSrc;
+
+/*
+ * Where an executor starts to read a source, opened by sift_v6_source_open: a plan made before the index went out of service is refused with SQLSTATE 40001 and planned again without it
+ * (core/quarantine.h)
+ */
+extern void sift_v6_source_enter(Relation source, bool is_table, Snapshot snap);
 
 #endif							/* SIFT_AGG_V6_SCAN_SRC_H */

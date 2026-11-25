@@ -689,6 +689,7 @@ stream_start(StreamState *st, EState *estate)
 	const bool	is_table = list_nth_int(linitial(st->priv), 2);
 	Relation	source = sift_v6_source_open((Oid) linitial_int(linitial(st->priv)), is_table, AccessShareLock, &in);
 
+	sift_v6_source_enter(source, is_table, estate->es_snapshot);
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 run");
 	sift_v6_input_bind(&in, estate);
 	sift_v6_source_close(source, is_table, NoLock);

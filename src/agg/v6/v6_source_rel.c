@@ -12,6 +12,8 @@
 #include "agg/plan/safety.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_source_rel.h"
+#include "core/meta_peek.h"
+#include "core/quarantine.h"
 #include "core/store_ops.h"
 
 static bool
@@ -135,4 +137,11 @@ sift_v6_plan_bind(V6Plan *p, const SiftV6RelSource *s, Relation rel)
 		return false;
 	sift_v6_plan_index(p, rel);
 	return p->ops != NULL;
+}
+
+void
+sift_v6_source_enter(Relation source, bool is_table, Snapshot snap)
+{
+	if (!is_table)
+		sift_quarantine_net(source, sift_meta_peek_format(source).flags);
 }

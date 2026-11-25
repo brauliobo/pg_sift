@@ -410,6 +410,7 @@ sip_run(SipState *st, EState *estate)
 	int			slot;
 	bool		compiled;
 
+	sift_v6_source_enter(source, is_table, estate->es_snapshot);
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 sip");
 	sift_v6_input_bind(&in, estate);
 	key = makeVar((Index) list_nth_int(ints, 1), fact_key, TupleDescAttr(RelationGetDescr(st->css.ss.ss_currentRelation), fact_key - 1)->atttypid, -1, InvalidOid, 0);

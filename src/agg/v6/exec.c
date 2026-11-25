@@ -158,6 +158,9 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	if (st->spec->ext != NULL && st->spec->ext->ndims > 0)
 		begin_star(st, node, estate, eflags);
 	begin_arm(st, node, estate, eflags);
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		for (int k = 0; k < st->nsources; k++)
+			sift_v6_source_enter(st->sources[k].index != NULL ? st->sources[k].index : st->sources[k].heap, st->sources[k].index == NULL, estate->es_snapshot);
 	if (st->spec->par_strategy != 0)
 		begin_par(st, node, estate);
 }

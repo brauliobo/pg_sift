@@ -798,6 +798,7 @@ window_start(WindowState *st, EState *estate)
 	const bool	is_table = list_nth_int(linitial(st->priv), 6);
 	Relation	source = sift_v6_source_open((Oid) list_nth_int(linitial(st->priv), 0), is_table, AccessShareLock, &in);
 
+	sift_v6_source_enter(source, is_table, estate->es_snapshot);
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 run");
 	st->started = true;
 	sift_v6_input_bind(&in, estate);

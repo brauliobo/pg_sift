@@ -33,6 +33,7 @@
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_join_push.h"
 #include "col/am.h"
+#include "agg/v6/v6_source_rel.h"
 #include "col/col.h"
 #include "core/store_ops.h"
 #include "core/compat.h"
@@ -402,6 +403,8 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 	st->index = st->spec->is_table ? NULL : index_open(st->spec->relid, AccessShareLock);
 	st->heap = table_open(st->spec->is_table ? st->spec->relid : st->index->rd_index->indrelid, AccessShareLock);
 	foreach_ptr(Plan, child, cs->custom_plans)
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		sift_v6_source_enter(st->spec->is_table ? st->heap : st->index, st->spec->is_table, estate->es_snapshot);
 		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags));
 }
 

@@ -12,6 +12,7 @@
 #include "utils/rel.h"
 
 #include "agg/v6/plan_int.h"
+#include "agg/v6/v6_scan_src.h"
 #include "agg/v6/v6_vexpr.h"
 
 typedef struct SiftV6RelSource

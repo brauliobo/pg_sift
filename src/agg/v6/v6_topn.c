@@ -594,6 +594,7 @@ topn_run(TopNState *st, EState *estate)
 	bool		(*topn_open) (EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst);
 	Relation	source = sift_v6_source_open(st->spec->indexoid, st->spec->is_table, AccessShareLock, &in);
 
+	sift_v6_source_enter(source, st->spec->is_table, estate->es_snapshot);
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 topn");
 	sift_v6_input_bind(&in, estate);
 	compiled = sift_v6_vexpr_quals(st->cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals);
