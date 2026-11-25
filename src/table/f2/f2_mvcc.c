@@ -253,7 +253,7 @@ uint16
 sift_tbl_f2_vis_granule(SiftTblVis *v, SiftF2GranuleBuf *gb, const SiftPendDelIndex *pdel, uint64 *sel)
 {
 	const SiftDvGran *dvg = gb->pin != NULL && gb->pin->dv != NULL ? sift_dv_granule(gb->pin->dv, gb->granule_id) : NULL;
-	bool		fast = v->snap->snapshot_type == SNAPSHOT_MVCC;
+	bool		fast = v->snap->snapshot_type == SNAPSHOT_MVCC && !v->serializable;
 
 	select_all(sel, gb->nrows);
 	if (!inserts_all_visible(v, gb))
@@ -407,6 +407,7 @@ sift_tbl_f2_filter_page(Relation rel, Snapshot snap, BlockNumber vblock, uint64 
 
 	sift_stage_flush(rel);
 	sift_tbl_f2_vis_begin(&f.vis, rel, snap);
+	sift_tbl_f2_predicate_point(rel, (uint64) vblock << 16, snap);
 	sift_f2_visit_granules(rel, sift_f2_store_open(rel), (uint64) vblock << 16, ((uint64) vblock << 16) | 0xFFFF, filter_granule, &f);
 	for (int w = 0; w < SIFT_TBL_OFFMASK_WORDS; w++)
 		offmask[w] &= visible[w];
@@ -428,5 +429,7 @@ sift_tbl_f2_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapsho
 	sift_tbl_f2_vis_begin(&v, rel, snapshot);
 	ok = sift_tbl_f2_vis_point(&v, loc.gb, loc.row, sift_tbl_f2_pending_dead(&v, &loc.entry, tid));
 	sift_f2_gbuf_unref(loc.gb);
+	if (ok)
+		sift_tbl_f2_predicate_point(rel, tid, snapshot);
 	return ok;
 }

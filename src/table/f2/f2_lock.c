@@ -881,6 +881,7 @@ sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTa
 		if (res == TM_Ok)
 		{
 			fetch_locked(rel, &cur, slot);
+			sift_tbl_f2_predicate_point(rel, sift_tbl_tid_pack(&cur), snapshot);
 			if (at_latest)
 				sift_row_delta_ack(rel, sift_tbl_tid_pack(&cur), cid);
 			slot->tts_tid = cur;
