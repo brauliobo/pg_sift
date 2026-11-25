@@ -16,11 +16,20 @@
 #define SIFT_XID_CACHE_SIZE		64
 #define SIFT_XID_CACHE_PROBES	4
 
-/* The id as a full one, the epoch that of next, the next transaction id read once by the caller; an id that is not normal is the frozen one (epoch 0) */
+/*
+ * The id as a full one, the epoch that of next, the next transaction id read once by the caller; an id that is not normal is the frozen one (epoch 0). A transaction that began after next
+ * was read has an id past it: it is of the epoch of next, or of the one after when the ids wrapped in between.
+ */
 static inline FullTransactionId
 sift_xid_fxid_at(FullTransactionId next, TransactionId xid)
 {
-	return TransactionIdIsNormal(xid) ? FullTransactionIdFromAllowableAt(next, xid) : FullTransactionIdFromEpochAndXid(0, FrozenTransactionId);
+	TransactionId next_xid = XidFromFullTransactionId(next);
+
+	if (!TransactionIdIsNormal(xid))
+		return FullTransactionIdFromEpochAndXid(0, FrozenTransactionId);
+	if (TransactionIdPrecedesOrEquals(xid, next_xid))
+		return FullTransactionIdFromAllowableAt(next, xid);
+	return FullTransactionIdFromEpochAndXid(EpochFromFullTransactionId(next) + (xid < next_xid), xid);
 }
 
 /* The greater of two full ids, an invalid one being the least */
@@ -79,7 +88,7 @@ typedef struct SiftXidHorizonCache
 extern void sift_xid_horizon_init(SiftXidHorizonCache *c, FullTransactionId horizon);
 extern SiftHorizonStatus sift_xid_horizon_status(SiftXidHorizonCache *c, TransactionId xid);
 
-/* The id is before the horizon (a normal id: the frozen one always is) */
+/* The id is before the horizon (the frozen one always is, an id past next never is) */
 static inline bool
 sift_xid_horizon_older(const SiftXidHorizonCache *c, TransactionId xid)
 {

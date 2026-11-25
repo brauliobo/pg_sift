@@ -74,7 +74,11 @@ sift_xid_horizon_status(SiftXidHorizonCache *c, TransactionId xid)
 {
 	SiftXidSlot *s;
 
-	Assert(TransactionIdIsNormal(xid));
+	if (!TransactionIdIsNormal(xid))
+	{
+		Assert(TransactionIdIsValid(xid));
+		return SIFT_H_COMMITTED_OLD;
+	}
 	s = slot_of(c->slots, xid);
 	if (s->xid != xid)
 	{
