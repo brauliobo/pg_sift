@@ -26,6 +26,8 @@
 #include "agg/hybrid/hybrid.h"
 #include "bm25/eval/eval.h"
 
+#define SIFT_HYB_ACL_PUSH_MAX		4096	/* the keys the scan takes as an IN list; a larger set filters the rows the scan hands over */
+
 typedef enum SiftHybridPriv
 {
 	SIFT_HYBP_DIR,				/* SiftHybridDir */

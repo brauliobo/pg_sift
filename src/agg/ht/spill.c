@@ -46,7 +46,6 @@ struct SiftGroupSpill
 	SiftRecBuf	rec;
 	uint64		bytes;
 	uint32		puts;
-	uint32		depth;			/* the deepest level a scan has split to, one more when its last partitions were sorted */
 };
 
 #define PART_BITS	4
@@ -386,7 +385,6 @@ iter_load(SiftGroupSpillIter *it, BufFile *f, uint32 depth)
 		spill_table(it, depth, &sub, &bytes);
 	if (!sub && !it->sp->run)
 		return true;
-	it->sp->depth = Max(it->sp->depth, depth + 1);
 	if (it->sp->run)
 		tuplesort_performsort(it->sp->run->sort);
 	else
@@ -474,17 +472,6 @@ sift_gspill_iter_end(SiftGroupSpillIter *it)
 	pfree(it);
 }
 
-void
-sift_gspill_scan(SiftGroupSpill *sp, uint64 budget, SiftGroupSpillVisit visit, void *arg)
-{
-	SiftGroupSpillIter *it = sift_gspill_iter_begin(sp, budget, false);
-	const SiftSaltedHT *ht;
-
-	while ((ht = sift_gspill_iter_next(it)) != NULL)
-		visit(arg, (SiftSaltedHT *) ht);
-	sift_gspill_iter_end(it);
-}
-
 uint64
 sift_gspill_bytes(const SiftGroupSpill *sp)
 {
@@ -495,12 +482,6 @@ uint32
 sift_gspill_puts(const SiftGroupSpill *sp)
 {
 	return sp->puts;
-}
-
-uint32
-sift_gspill_depth(const SiftGroupSpill *sp)
-{
-	return sp->depth;
 }
 
 void

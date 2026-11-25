@@ -90,26 +90,6 @@ static const char *const stat_name[] = {
 };
 
 void
-sift_stats_preagg_miss(Oid rel, const char *slug, bool fixable, int64 units)
-{
-	Miss	   *m = NULL;
-
-	for (int i = 0; i < nmisses && m == NULL; i++)
-		if (misses[i].rel == rel && strcmp(misses[i].slug, slug) == 0)
-			m = &misses[i];
-	if (m == NULL && nmisses < STATS_MISSES)
-	{
-		m = &misses[nmisses++];
-		*m = (Miss) {rel, slug, fixable, 0, 0};
-	}
-	if (m != NULL)
-	{
-		m->scans++;
-		m->units += units;
-	}
-}
-
-void
 sift_stats_share(SiftStat s, int64 n)
 {
 	SharedStats *t = n != 0 ? table() : NULL;

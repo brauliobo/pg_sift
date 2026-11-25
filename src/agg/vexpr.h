@@ -115,25 +115,6 @@ extern bool sift_v6_vexpr_compile(MemoryContext cxt, const Node *e, Index relid,
 /* the conjunction of the clauses (an empty list: no program, true) */
 extern bool sift_v6_vexpr_quals(MemoryContext cxt, const List *clauses, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6Vexpr *out);
 
-/*
- * The tuples of an operator that computes everything when it is first asked (a window, a stream of groups): kept in a tuplestore, which spills past work_mem and is read again by a scan again
- * with the same parameters. start before the engine runs; put for each tuple it emits; the node's slot must be of the minimal tuple kind (css.slotOps = &TTSOpsMinimalTuple).
- */
-typedef struct SiftV6Store
-{
-	MemoryContext cx;			/* everything of one run of the engine */
-	MemoryContext row_cx;		/* what one tuple takes to be built, reset by put */
-	Tuplestorestate *store;
-	bool		ran;
-} SiftV6Store;
-
-extern void sift_v6_store_start(SiftV6Store *s, EState *estate);
-extern void sift_v6_store_put(SiftV6Store *s, TupleDesc desc, const Datum *values, const bool *isnull);
-extern TupleTableSlot *sift_v6_store_get(SiftV6Store *s, TupleTableSlot *slot);
-/* params_changed: the tuples are another run's; else the same ones are read from their start */
-extern void sift_v6_store_rescan(SiftV6Store *s, bool params_changed);
-extern void sift_v6_store_end(SiftV6Store *s);
-
 /* EXPLAIN lines of an operator: the index (or, is_table, the sift_table) it reads and a count it kept */
 extern void sift_v6_explain_index(ExplainState *es, Oid relid, bool is_table);
 extern void sift_v6_explain_count(ExplainState *es, const char *label, int64 value);

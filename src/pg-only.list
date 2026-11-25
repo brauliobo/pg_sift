@@ -29,8 +29,6 @@ agg/hybrid/int.h
 agg/hybrid/plan.c
 agg/hybrid/quals.c
 agg/hybrid/quals.h
-agg/hybrid/semi.c
-agg/hybrid/semi.h
 agg/hybrid/semi_plan.c
 agg/hybrid/state.h
 agg/hybrid/store.c
@@ -227,9 +225,6 @@ col/dictshm/test.c
 col/dsmreg.c
 col/dsmreg.h
 col/f2/alloc_test.c
-col/f2/build/ext_gate.c
-col/f2/build/ext_gate.h
-col/f2/build/ext_gate_pg.c
 col/f2/meta.c
 col/f2/meta.h
 col/f2/compact/compact.c

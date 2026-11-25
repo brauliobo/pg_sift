@@ -36,28 +36,3 @@ sift_agg_v6_live_register(void)
 	RegisterCustomScanMethods(&sift_agg_v6_stream_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_sip_plan_methods);
 }
-
-bool
-sift_agg_v6_live_scan(const Plan *plan, Oid *indexoid)
-{
-	const CustomScan *cs;
-	const List *priv;
-
-	if (!IsA(plan, CustomScan))
-		return false;
-	cs = (const CustomScan *) plan;
-	priv = cs->custom_private;
-	if (cs->methods == &sift_agg_v6_plan_methods || cs->methods == &sift_agg_v6_stream_plan_methods || cs->methods == &sift_agg_v6_window_plan_methods)
-		*indexoid = (Oid) linitial_int(linitial(priv));
-	else if (cs->methods == &sift_agg_v6_topn_plan_methods)
-		*indexoid = (Oid) linitial_int(linitial(linitial(priv)));
-	else
-		return false;
-	return true;
-}
-
-bool
-sift_agg_v6_live_owns_index(Oid indexoid)
-{
-	return sift_store_ops_any() && sift_v6_rel_owned(indexoid, false);
-}

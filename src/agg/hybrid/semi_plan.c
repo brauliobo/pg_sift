@@ -31,7 +31,6 @@
 #include "utils/rel.h"
 
 #include "agg/hybrid/int.h"
-#include "agg/hybrid/semi.h"
 #include "bm25/planner/planner.h"
 #include "bm25/planner/int.h"
 #include "col/am.h"

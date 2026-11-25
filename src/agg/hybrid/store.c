@@ -19,7 +19,6 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "agg/hybrid/semi.h"
 #include "agg/hybrid/state.h"
 #include "core/compat.h"
 #include "core/sift.h"

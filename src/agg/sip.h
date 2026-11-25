@@ -12,7 +12,7 @@
  * dropped and the range stays. The size is bounded by Min(SIFT_SIP_MAX_BYTES, work_mem / 8): nothing here is a setting.
  *
  * A filter is one block of memory, its header then its Bloom blocks at a fixed offset, with no pointer: it is valid at any address of any process, so that
- * the builders of a parallel join share one in a shared segment (sift_sip_init_at), and the probes read it there.
+ * the builders of a parallel join share one in a shared segment, and the probes read it there.
  *
  * One builder inserts into a filter; builders that run at the same time each fill their own filter of the same size and merge it into the shared one
  * with sift_sip_merge_atomic (OR of the words, compare-and-swap of the range), which several of them may do at once; the shared filter is finalized
@@ -40,7 +40,7 @@
 typedef struct SiftSipFilter
 {
 	uint32		state_flags;	/* atomic */
-	SiftVecType key_type;		/* SVEC_I32 or SVEC_I64: the keys are sign-extended; a hash-only filter takes insert_hash */
+	SiftVecType key_type;		/* SVEC_I32 or SVEC_I64: the keys are sign-extended */
 	uint16		n_exact;
 	bool		exact_open;		/* every key so far is in exact_keys */
 	bool		hash_only;		/* a hash was inserted: the keys have no range and no exact set */
@@ -72,21 +72,12 @@ typedef struct SiftSipStats
 /* The most bytes of blocks a filter may take: Min(SIFT_SIP_MAX_BYTES, work_mem / 8) */
 extern uint64 sift_sip_budget_bytes(void);
 
-/* The blocks of a filter for about est_ndv distinct keys within max_bytes: a power of 2, at least SIFT_SIP_MIN_BLOCKS */
-extern uint32 sift_sip_blocks_for(uint64 est_ndv, uint64 max_bytes);
-/* The bytes of a filter of n_blocks blocks, and an empty one laid out in them at raw (SIFT_SBBF_BLOCK_BYTES aligned): in a shared segment, say */
-extern Size sift_sip_size(uint32 n_blocks);
-extern SiftSipFilter *sift_sip_init_at(void *raw, SiftVecType key_type, uint32 n_blocks);
 /* An empty filter for about est_ndv distinct keys, its blocks within max_bytes (a power of 2 of blocks, at least SIFT_SIP_MIN_BLOCKS); all in cxt */
 extern SiftSipFilter *sift_sip_create(MemoryContext cxt, SiftVecType key_type, uint64 est_ndv, uint64 max_bytes);
 extern void sift_sip_free(SiftSipFilter *sip);
 
-/* The build side: keys of the filter's type, the keys of a column (rows of mask, NULL = all; a NULL key is not inserted), or a hash of a key of a type with no range */
+/* The build side: a key of the filter's type (a NULL key is not inserted) */
 extern void sift_sip_insert_i64(SiftSipFilter *sip, int64 key);
-/* The same for a caller that has the hash of the key already (sift_aggk6_hash1): a build that hashes the key for a table makes no second hash */
-extern void sift_sip_insert_i64_hashed(SiftSipFilter *sip, int64 key, uint64 hash);
-extern void sift_sip_insert_hash(SiftSipFilter *sip, uint64 hash);
-extern void sift_sip_insert_vec(SiftSipFilter *sip, const SiftVec *keys, const uint64 *mask);
 
 /* Ends the build: the flags (READY last, with release order) */
 extern void sift_sip_finalize(SiftSipFilter *sip);

@@ -31,14 +31,9 @@ extern SiftGroupSpill *sift_gspill_new(const SiftRadixShape *shape);
 /* Every group of the table (its states and its values) to the files; the table is not changed */
 extern void sift_gspill_put_ht(SiftGroupSpill *sp, const SiftSaltedHT *ht);
 /*
- * Every partition merged into a table of its own, handed to visit with its groups final and freed after it: budget is the bytes a table may take before its
- * partition is split. The spill is sealed (nothing may be put after), and may be scanned again.
- */
-typedef void (*SiftGroupSpillVisit) (void *arg, SiftSaltedHT *ht);
-extern void sift_gspill_scan(SiftGroupSpill *sp, uint64 budget, SiftGroupSpillVisit visit, void *arg);
-/*
- * The same as a pull: the next partition merged into a table (final groups), NULL after the last; the table is the iterator's until the next call, which frees it. A partition that is
- * read is closed and its file gone when consume (the scan is not repeated), whatever the level; one of a level below is always. A scan ended early leaves the files to sift_gspill_free.
+ * Every partition merged into a table of its own, as a pull: budget is the bytes a table may take before its partition is split. The next partition is merged into a table (final groups), NULL
+ * after the last; the table is the iterator's until the next call, which frees it. A partition that is read is closed and its file gone when consume (the scan is not repeated), whatever the
+ * level; one of a level below is always. A scan ended early leaves the files to sift_gspill_free. The spill is sealed (nothing may be put after).
  */
 typedef struct SiftGroupSpillIter SiftGroupSpillIter;
 extern SiftGroupSpillIter *sift_gspill_iter_begin(SiftGroupSpill *sp, uint64 budget, bool consume);
@@ -47,8 +42,6 @@ extern void sift_gspill_iter_end(SiftGroupSpillIter *it);
 /* The bytes written to the files, and the tables put, for EXPLAIN */
 extern uint64 sift_gspill_bytes(const SiftGroupSpill *sp);
 extern uint32 sift_gspill_puts(const SiftGroupSpill *sp);
-/* The deepest level of partitions a scan went to: 0 when every partition fit */
-extern uint32 sift_gspill_depth(const SiftGroupSpill *sp);
 extern void sift_gspill_free(SiftGroupSpill *sp);
 
 #endif							/* SIFT_AGG_GROUP_SPILL_H */

@@ -44,6 +44,7 @@
 #include "core/maint/sched.h"
 #include "agg/agg.h"
 #include "agg/gpu/cfg.h"
+#include "agg/refuse.h"
 #include "col/f2/agg/proj/sort_plan.h"
 #include "bm25/am.h"
 #include "bm25/analyze/analyze.h"
@@ -349,6 +350,7 @@ _PG_init(void)
 	sift_v1_store_ops_init();
 	sift_gpu_v6_init_gucs();
 	sift_explain_init();
+	sift_agg_refuse_init();
 	sift_tbl_init();
 	sift_vm_xlog_init();
 #ifdef SIFT_TESTING

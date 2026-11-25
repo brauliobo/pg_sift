@@ -72,13 +72,6 @@ extern uint32 sift_unnest_count_bits(const uint64 *bits, uint32 lo, uint32 hi);
  */
 extern void sift_unnest_count_codes(const uint32 *code0, const uint64 *valid0, const uint32 *code1, const uint64 *valid1, uint32 ncodes1, const uint64 *sel, uint32 lo, uint32 hi, uint64 *cells);
 
-/* out[i] = src[idx[i]] for the pairs; NONE (or a NULL source row) is NULL. Cells are the int64 or the bits of a float8 */
-extern void sift_unnest_gather64(uint64 *out, uint64 *valid_out, const uint64 *src, const uint8 *src_null, const uint32 *idx, uint32 n);
-extern void sift_unnest_gather_str(SiftStrView *out, uint64 *valid_out, const SiftStrView *src, const uint8 *src_null, const uint32 *idx, uint32 n);
-
-/* the length of the array of each parent: int32, NULL for a parent without a document */
-extern void sift_unnest_lengths(const SiftArrayLayout *lay, const uint64 *doc_valid, int32 *out, uint64 *valid_out);
-
 /*
  * true_out bit p = some element of parent p is in hits (n_elems bits); known_out bit p = the document is not NULL. The parents not in parent_mask have neither bit. A test of the elements of a
  * jsonpath or an array is one pass over the elements and one over the parents.
@@ -90,24 +83,11 @@ extern void sift_unnest_any(const SiftArrayLayout *lay, const uint64 *hits, cons
  * Returns the number of hits: the COUNT(DISTINCT parent key) of a key no two parents share.
  */
 extern uint32 sift_unnest_semi(const SiftUnnestIn *in, uint64 *hit_out, uint64 *fallback);
-/* hits bit e = the dictionary code of element e is in the set of dict_bits (one bit a code); a NULL element (elem_valid) is no hit */
-extern void sift_unnest_hits_from_codes(const uint32 *codes, uint32 n_elems, const uint64 *elem_valid, const uint64 *dict_bits, uint32 ndict, uint64 *hits);
 
 /*
  * The map of a jsonb object: the keys of the elements and the key to find; elem_of[p] = the element of parent p whose key is it (the last one if it is repeated, as the value of a key of an
  * object is), or SIFT_UNNEST_NONE. Only the parents of parent_mask are looked at.
  */
 extern void sift_map_lookup(const SiftArrayLayout *lay, const SiftStrView *keys, const char *key, uint32 keylen, const uint64 *parent_mask, uint32 *elem_of);
-/* the same over keys held as the codes of a dictionary: the code of the key (SIFT_UNNEST_NONE: the dictionary lacks it, so no parent has it) */
-extern void sift_map_lookup_code(const SiftArrayLayout *lay, const uint32 *codes, uint32 code, const uint64 *parent_mask, uint32 *elem_of);
-
-/* jsonb_each over leaves that name every key of the object: the pairs of (parent, leaf) of the leaves that are present, in the order of the leaves for each parent */
-typedef struct SiftUnpivotCursor
-{
-	uint32		parent;
-	int			leaf;
-} SiftUnpivotCursor;
-
-extern uint32 sift_unpivot_expand(const uint64 *const *leaf_present, int nleaves, const uint64 *parent_mask, uint32 n_parents, SiftUnpivotCursor *cur, uint32 *parent_idx, int *leaf_idx, uint32 cap);
 
 #endif							/* SIFT_AGG_V6_UNNEST_H */

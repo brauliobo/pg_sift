@@ -84,45 +84,6 @@ sift_unnest_expand(const SiftUnnestIn *in, SiftUnnestCursor *cur, uint32 *parent
 }
 
 void
-sift_unnest_gather64(uint64 *out, uint64 *valid_out, const uint64 *src, const uint8 *src_null, const uint32 *idx, uint32 n)
-{
-	memset(valid_out, 0, ((n + 63) / 64) * sizeof(uint64));
-	for (uint32 i = 0; i < n; i++)
-	{
-		const bool	ok = idx[i] != SIFT_UNNEST_NONE && (src_null == NULL || !src_null[idx[i]]);
-
-		out[i] = ok ? src[idx[i]] : 0;
-		valid_out[i >> 6] |= (uint64) ok << (i & 63);
-	}
-}
-
-void
-sift_unnest_gather_str(SiftStrView *out, uint64 *valid_out, const SiftStrView *src, const uint8 *src_null, const uint32 *idx, uint32 n)
-{
-	memset(valid_out, 0, ((n + 63) / 64) * sizeof(uint64));
-	for (uint32 i = 0; i < n; i++)
-	{
-		const bool	ok = idx[i] != SIFT_UNNEST_NONE && (src_null == NULL || !src_null[idx[i]]);
-
-		out[i] = ok ? src[idx[i]] : (SiftStrView) {0};
-		valid_out[i >> 6] |= (uint64) ok << (i & 63);
-	}
-}
-
-void
-sift_unnest_lengths(const SiftArrayLayout *lay, const uint64 *doc_valid, int32 *out, uint64 *valid_out)
-{
-	memset(valid_out, 0, ((lay->n_parents + 63) / 64) * sizeof(uint64));
-	for (uint32 p = 0; p < lay->n_parents; p++)
-	{
-		const bool	ok = bit_at(doc_valid, p);
-
-		out[p] = ok ? (int32) lay->lengths[p] : 0;
-		valid_out[p >> 6] |= (uint64) ok << (p & 63);
-	}
-}
-
-void
 sift_unnest_any(const SiftArrayLayout *lay, const uint64 *hits, const uint64 *parent_mask, const uint64 *doc_valid, uint64 *true_out, uint64 *known_out)
 {
 	const uint32 words = (lay->n_parents + 63) / 64;
@@ -256,15 +217,6 @@ sift_unnest_semi(const SiftUnnestIn *in, uint64 *hit_out, uint64 *fallback)
 }
 
 void
-sift_unnest_hits_from_codes(const uint32 *codes, uint32 n_elems, const uint64 *elem_valid, const uint64 *dict_bits, uint32 ndict, uint64 *hits)
-{
-	memset(hits, 0, ((n_elems + 63) / 64) * sizeof(uint64));
-	for (uint32 e = 0; e < n_elems; e++)
-		if (bit_at(elem_valid, e) && codes[e] < ndict && ((dict_bits[codes[e] >> 6] >> (codes[e] & 63)) & 1))
-			hits[e >> 6] |= UINT64CONST(1) << (e & 63);
-}
-
-void
 sift_map_lookup(const SiftArrayLayout *lay, const SiftStrView *keys, const char *key, uint32 keylen, const uint64 *parent_mask, uint32 *elem_of)
 {
 	for (uint32 p = 0; p < lay->n_parents; p++)
@@ -279,44 +231,4 @@ sift_map_lookup(const SiftArrayLayout *lay, const SiftStrView *keys, const char 
 				break;
 			}
 	}
-}
-
-void
-sift_map_lookup_code(const SiftArrayLayout *lay, const uint32 *codes, uint32 code, const uint64 *parent_mask, uint32 *elem_of)
-{
-	for (uint32 p = 0; p < lay->n_parents; p++)
-	{
-		elem_of[p] = SIFT_UNNEST_NONE;
-		if (code == SIFT_UNNEST_NONE || !bit_at(parent_mask, p))
-			continue;
-		for (uint32 e = lay->offsets[p + 1]; e > lay->offsets[p]; e--)
-			if (codes[e - 1] == code)
-			{
-				elem_of[p] = e - 1;
-				break;
-			}
-	}
-}
-
-uint32
-sift_unpivot_expand(const uint64 *const *leaf_present, int nleaves, const uint64 *parent_mask, uint32 n_parents, SiftUnpivotCursor *cur, uint32 *parent_idx, int *leaf_idx, uint32 cap)
-{
-	uint32		out = 0;
-
-	while (cur->parent < n_parents && out < cap)
-	{
-		if (!bit_at(parent_mask, cur->parent) || cur->leaf >= nleaves)
-		{
-			cur->parent++;
-			cur->leaf = 0;
-			continue;
-		}
-		if (bit_at(leaf_present[cur->leaf], cur->parent))
-		{
-			parent_idx[out] = cur->parent;
-			leaf_idx[out++] = cur->leaf;
-		}
-		cur->leaf++;
-	}
-	return out;
 }

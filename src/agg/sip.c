@@ -16,8 +16,8 @@ sift_sip_budget_bytes(void)
 	return Max(Min((uint64) SIFT_SIP_MAX_BYTES, (uint64) work_mem * 1024 / 8), (uint64) SIFT_SIP_MIN_BLOCKS * SIFT_SBBF_BLOCK_BYTES);
 }
 
-uint32
-sift_sip_blocks_for(uint64 est_ndv, uint64 max_bytes)
+static uint32
+sip_blocks_for(uint64 est_ndv, uint64 max_bytes)
 {
 	const uint32 max_blocks = pg_prevpower2_32((uint32) Max(Min(max_bytes / SIFT_SBBF_BLOCK_BYTES, UINT32_C(1) << 31), SIFT_SIP_MIN_BLOCKS));
 	const uint32 want = sift_sbbf_blocks_for(est_ndv, SIFT_SIP_BITS_PER_KEY);
@@ -25,34 +25,26 @@ sift_sip_blocks_for(uint64 est_ndv, uint64 max_bytes)
 	return Min(Max(want > UINT32_C(1) << 31 ? UINT32_C(1) << 31 : pg_nextpower2_32(want), SIFT_SIP_MIN_BLOCKS), max_blocks);
 }
 
-Size
-sift_sip_size(uint32 n_blocks)
+static Size
+sip_size(uint32 n_blocks)
 {
 	return add_size(SIFT_SIP_HDR_BYTES, mul_size(n_blocks, SIFT_SBBF_BLOCK_BYTES));
 }
 
 SiftSipFilter *
-sift_sip_init_at(void *raw, SiftVecType key_type, uint32 n_blocks)
+sift_sip_create(MemoryContext cxt, SiftVecType key_type, uint64 est_ndv, uint64 max_bytes)
 {
-	SiftSipFilter *sip = raw;
+	const uint32 n_blocks = sip_blocks_for(est_ndv, max_bytes);
+	SiftSipFilter *sip = MemoryContextAllocAligned(cxt, sip_size(n_blocks), SIFT_SBBF_BLOCK_BYTES, 0);
 
 	Assert(key_type == SVEC_I32 || key_type == SVEC_I64);
-	Assert(((uintptr_t) raw) % SIFT_SBBF_BLOCK_BYTES == 0);
-	memset(sip, 0, sift_sip_size(n_blocks));
+	memset(sip, 0, sip_size(n_blocks));
 	sip->key_type = key_type;
 	sip->n_blocks = n_blocks;
 	sip->min_key = INT64_MAX;
 	sip->max_key = INT64_MIN;
 	sip->exact_open = true;
 	return sip;
-}
-
-SiftSipFilter *
-sift_sip_create(MemoryContext cxt, SiftVecType key_type, uint64 est_ndv, uint64 max_bytes)
-{
-	const uint32 n_blocks = sift_sip_blocks_for(est_ndv, max_bytes);
-
-	return sift_sip_init_at(MemoryContextAllocAligned(cxt, sift_sip_size(n_blocks), SIFT_SBBF_BLOCK_BYTES, 0), key_type, n_blocks);
 }
 
 void
@@ -89,7 +81,7 @@ exact_add(SiftSipFilter *sip, int64 key)
 }
 
 void
-sift_sip_insert_i64_hashed(SiftSipFilter *sip, int64 key, uint64 hash)
+sift_sip_insert_i64(SiftSipFilter *sip, int64 key)
 {
 	Assert(!sip->hash_only && !(sift_sip_flags(sip) & SIFT_SIP_FLAG_READY));
 	sip->min_key = Min(sip->min_key, key);
@@ -97,37 +89,7 @@ sift_sip_insert_i64_hashed(SiftSipFilter *sip, int64 key, uint64 hash)
 	if (sip->exact_open)
 		exact_add(sip, key);
 	sip->n_inserted++;
-	sift_sbbf_insert(sift_sip_blocks(sip), sip->n_blocks, hash);
-}
-
-void
-sift_sip_insert_i64(SiftSipFilter *sip, int64 key)
-{
-	sift_sip_insert_i64_hashed(sip, key, sift_aggk6_hash1((uint64) key));
-}
-
-void
-sift_sip_insert_hash(SiftSipFilter *sip, uint64 hash)
-{
-	Assert(!(sift_sip_flags(sip) & SIFT_SIP_FLAG_READY));
-	sip->hash_only = true;
-	sip->exact_open = false;
-	sip->n_inserted++;
-	sift_sbbf_insert(sift_sip_blocks(sip), sip->n_blocks, hash);
-}
-
-void
-sift_sip_insert_vec(SiftSipFilter *sip, const SiftVec *keys, const uint64 *mask)
-{
-	Assert(keys->dense && keys->type == sip->key_type);
-	for (uint32 r = 0; r < keys->len; r++)
-	{
-		if (mask && !((mask[r >> 6] >> (r & 63)) & 1))
-			continue;
-		if (!keys->all_valid && !((keys->valid[r >> 6] >> (r & 63)) & 1))
-			continue;
-		sift_sip_insert_i64(sip, keys->type == SVEC_I32 ? (int64) ((const int32 *) keys->data)[r] : ((const int64 *) keys->data)[r]);
-	}
+	sift_sbbf_insert(sift_sip_blocks(sip), sip->n_blocks, sift_aggk6_hash1((uint64) key));
 }
 
 double

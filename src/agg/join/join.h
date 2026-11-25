@@ -2,7 +2,7 @@
  * agg/join/join.h - the joins of SiftAggV6 that are not an aggregate of one table: the partitioned (Grace) hash join of join.c and the ASOF join of join_asof.c. Each is a CustomScan the planner offers
  * for a join of the statement through the join path hook (the one of bm25/planner/planner.c hands every join to sift_agg_v6_join_paths and sift_agg_v6_asof_paths), only when a relation under the join has an
  * index of format major 2; PostgreSQL's own join stays among the paths, and the cheapest is the one planned. The node computes everything when it is first asked, into a tuplestore that spills past
- * work_mem (SiftV6Store of v6_vexpr.h), so that the parent reads the rows of the join as it reads any scan.
+ * work_mem, so that the parent reads the rows of the join as it reads any scan.
  */
 #ifndef SIFT_AGG_V6_JOIN_H
 #define SIFT_AGG_V6_JOIN_H

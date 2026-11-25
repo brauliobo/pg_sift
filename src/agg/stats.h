@@ -63,9 +63,6 @@ sift_stat_add(SiftStat s, int64 n)
 	sift_stats_share(s, n);
 }
 
-/* a scan of the relation (index, else table) could not use its pre-aggregates for the reason (a static string), and `units` of it were scanned for it */
-extern void sift_stats_preagg_miss(Oid rel, const char *slug, bool fixable, int64 units);
-
 /* a query kept the normal plan for the refusal why (AggRefusal, agg/refuse.h), for the limit lim (SIFT_LIM_*) when it is -1 or more */
 extern void sift_stats_refusal(int why, int lim);
 
