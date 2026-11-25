@@ -30,6 +30,9 @@ extern const SiftPendDelRec *sift_pend_del_log_rec(const SiftPendDelLog *l, int 
 /* The column delta chain of the partition of the entry, whole and checked, NULL when it has none */
 extern const SiftColDeltaLog *sift_col_delta_log(Relation rel, const SiftPartitionEntry *entry);
 
+/* Whether the log of the chain fits a quarter of the budget of the caches: a page of the chain costs the log three pages of memory, the page and the index of its records */
+extern bool sift_col_delta_log_fits(const SiftColDeltaAnchor *anchor);
+
 /* The newest record of the row at tid, and the one before it; -1 for none */
 extern int	sift_col_delta_log_newest(const SiftColDeltaLog *l, uint64 tid);
 extern int	sift_col_delta_log_prev(const SiftColDeltaLog *l, int i);

@@ -503,7 +503,7 @@ cd_extend(Relation rel, const SiftPartitionEntry *entry, Slot *s)
 	if (!sift_col_delta_anchor_sane(&a) || (a.flags & SIFT_CDLA_INDEXED_DIR) == 0 || a.npages < held ||
 		sift_cddir_chain_entries(&a, &reader, &ent, &dir_blks, &ndir) != NULL)
 		return false;
-	if ((uint64) a.npages * BLCKSZ > (uint64) sift_backend_cache_kb * 1024 / 4)
+	if (!sift_col_delta_log_fits(&a))
 		return false;
 	now = palloc(BLCKSZ);
 	if (!cd_read_newer(l, &reader, ent, a.npages, now))
@@ -542,6 +542,14 @@ cd_hit(Relation rel, const SiftPartitionEntry *entry, const Slot *s)
 		return false;
 	now = stamp_read(rel, s->stamp.blk);
 	return stamp_same(&now, &s->stamp);
+}
+
+#define LOG_BYTES_PER_PAGE		(3 * BLCKSZ)
+
+bool
+sift_col_delta_log_fits(const SiftColDeltaAnchor *anchor)
+{
+	return anchor->npages <= Max(SIFT_CDDIR_FLAT_PAGES, (uint64) sift_backend_cache_kb * 1024 / (4 * LOG_BYTES_PER_PAGE));
 }
 
 const SiftColDeltaLog *
