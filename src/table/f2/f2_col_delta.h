@@ -42,6 +42,7 @@
 #define SIFT_COL_DELTA_MAX_PAYLOAD		1024	/* the bytes of the column headers and values of one record, before the padding */
 #define SIFT_COL_DELTA_MAX_REC_BYTES	2048	/* what a record of the format may hold: the bound of a reader */
 #define SIFT_COL_DELTA_FOLD_PAGES		4		/* a chain of this many pages asks the maintenance worker for a fold */
+#define SIFT_COL_DELTA_STAGE_BYTES		(128 * 1024)
 #define SIFT_COL_DELTA_MAX_PAGES		60000	/* what the 16 bits of the anchor's page count can name (480 MB): no update is admitted to a chain that would pass it; a fold is asked for long before */
 #define SIFT_COL_DELTA_MAX_ROW_ORDINAL	8192
 

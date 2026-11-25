@@ -700,7 +700,7 @@ sift_col_delta_stage_plan(Relation rel, const SiftColDeltaPlan *plan, CommandId 
 	}
 	sift_col_delta_stage_add(st->host_stage, plan->part_id, plan->key_lo, GetCurrentSubTransactionId(), rec);
 	st->host_pending++;
-	if (((const SiftColDeltaStage *) st->host_stage)->bytes >= (uint64) work_mem * 512)
+	if (((const SiftColDeltaStage *) st->host_stage)->bytes >= SIFT_COL_DELTA_STAGE_BYTES)
 		sift_col_delta_stage_event(rel, st, SIFT_STAGE_FLUSH, 0, 0);
 }
 
