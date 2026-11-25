@@ -101,7 +101,7 @@ rows_fold(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, Relatio
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 rows");
 	RowsOpen	o = {.cx = cx,.snap = snap,.scan = spec->is_table ? (SiftV1Scan) {0} : sift_v1_key_scan(index, keys, nkeys)};
 	RowsFold	emit = {.rows = rows,.totals = totals};
-	SiftSrcFoldArgs a = {.spec = spec,.stats = stats,.emit = rows_emit,.emit_arg = &emit,.host = spec->is_table ? heap : index,
+	SiftSrcFoldArgs a = {.spec = spec,.stats = stats,.emit = rows_emit,.emit_arg = &emit,.host = spec->is_table ? heap : index,.is_table = spec->is_table,
 		.quals = spec->is_table ? quals->clauses : sift_srcfold_scankey_quals(index, keys, nkeys),.estate = spec->is_table ? quals->estate : NULL};
 	SiftSrcFold *f = sift_srcfold_new(&a, sift_mem_allocset_create(cx, "sift v1 rows fold"));
 	const struct SiftTidBridge *bridge;

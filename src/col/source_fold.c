@@ -216,7 +216,7 @@ setup_bq(SiftSrcFold *f)
 
 	if (clauses == NIL)
 		return;
-	if (f->a.spec->is_table)
+	if (f->a.is_table)
 		sift_v6_input_init_table(&in, f->a.host);
 	else
 		sift_v6_input_init_rel(&in, f->a.host);
@@ -249,7 +249,7 @@ setup_quals(SiftSrcFold *f)
 {
 	List	   *source = NIL;
 
-	if (f->a.spec->is_table)
+	if (f->a.is_table)
 		sift_v6_input_init_table(&f->in, f->a.host);
 	else
 		sift_v6_input_init_rel(&f->in, f->a.host);

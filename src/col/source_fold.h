@@ -29,6 +29,7 @@ typedef struct SiftSrcFoldArgs
 	void		(*emit) (void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
 	void	   *emit_arg;
 	Relation	host;				/* the index, or the sift_table, the source reads */
+	bool		is_table;			/* host is a sift_table (the spec of a partitioned table is of no one of its partitions) */
 	List	   *quals;				/* conjuncts over the heap attributes as Vars of varno 1 (clauses of an index scan are mapped by sift_srcfold_scankey_quals) */
 	EState	   *estate;				/* the values of the parameters the quals read, NULL for none */
 } SiftSrcFoldArgs;
