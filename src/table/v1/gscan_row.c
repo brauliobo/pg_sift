@@ -3,19 +3,46 @@
  */
 #include "gscan_int.h"
 
-/* The leaf c of the current unit with every row (in the unit's own order: cheaper to decode than a selection that leaves a few dead rows out), read on first use */
-static const SiftColVec *
-col_vec(SiftTblGroupScan *g, int c)
+/* Makes the window the one of the row at pos: the vectors of the leaves it held are read again on the first ask */
+static void
+win_move(SiftTblGroupScan *g, uint32 pos)
 {
-	if (g->vec[c].n == PG_UINT32_MAX)
-	{
-		MemoryContext old = MemoryContextSwitchTo(g->unitcxt);
+	MemoryContextReset(g->wincxt);
+	for (int c = 0; c < g->s[g->cur].schema->ncols; c++)
+		if (g->vwin[c])
+		{
+			g->vec[c].n = PG_UINT32_MAX;
+			g->vwin[c] = false;
+		}
+	g->win_lo = pos / g->win_rows * g->win_rows;
+	g->win_n = Min(g->win_rows, g->unit.nrows - g->win_lo);
+	g->win_token = g->token;
+}
 
-		if (!sift_col_read_codes(&g->unit, c, &g->vec[c]))
-			sift_col_read(&g->unit, c, NULL, &g->vec[c]);
-		MemoryContextSwitchTo(old);
+/* The leaf c of the current unit with the row at pos, which is at *at in it: a window of rows, or every row of the unit for a leaf that is stored whole, read on first use */
+static const SiftColVec *
+col_vec(SiftTblGroupScan *g, int c, uint32 pos, uint32 *at)
+{
+	SiftColVec *vec = &g->vec[c];
+	bool		windowed = vec->n == PG_UINT32_MAX ? sift_col_leaf_windowed(&g->unit, c) : g->vwin[c];
+
+	if (windowed && (g->win_token != g->token || pos - g->win_lo >= g->win_n))
+		win_move(g, pos);
+	if (vec->n == PG_UINT32_MAX)
+	{
+		if (windowed)
+			sift_col_read_rows(&g->unit, c, g->win_lo, g->win_n, vec, g->wincxt);
+		else
+		{
+			MemoryContext old = MemoryContextSwitchTo(g->unitcxt);
+
+			sift_col_read(&g->unit, c, NULL, vec);
+			MemoryContextSwitchTo(old);
+		}
+		g->vwin[c] = windowed;
 	}
-	return &g->vec[c];
+	*at = windowed ? pos - g->win_lo : pos;
+	return vec;
 }
 
 static bool
@@ -41,21 +68,14 @@ exc_find(const SiftColVec *ev, uint32 i, int attno, const char **p, uint32 *len)
 	return false;
 }
 
-/* The text of a code of a leaf read as codes (sift_col_read_codes): its string is read from the dictionary of the segment in place */
-static Datum
-code_text(SiftTblGroupScan *g, Form_pg_attribute att, int leaf, uint32 code)
+/* The image of attribute attno of the row at pos in the exceptions of the unit */
+static bool
+exc_attr(SiftTblGroupScan *g, const GroupSrc *gs, uint32 pos, int attno, const char **p, uint32 *len)
 {
-	char		buf[SIFT_COL_DICT_MAX_ENTRY];
-	uint32		len;
-	const char *s = sift_col_code_str(&g->unit, leaf, code, &len, buf);
-	text	   *t;
+	uint32		at;
+	const SiftColVec *ev = col_vec(g, gs->exc, pos, &at);
 
-	if (att->atttypid == UUIDOID)
-		return image_datum(att, s, len);
-	t = palloc(VARHDRSZ + len);
-	SET_VARSIZE(t, VARHDRSZ + len);
-	memcpy(VARDATA(t), s, len);
-	return PointerGetDatum(t);
+	return exc_find(ev, at, attno, p, len);
 }
 
 /* Attribute a of the row at position pos of the vectors of the current unit, allocated in the current memory context */
@@ -66,6 +86,7 @@ fill_attr(SiftTblGroupScan *g, uint32 pos, int a, Datum *value, bool *isnull)
 	Form_pg_attribute att = TupleDescAttr(g->desc, a - 1);
 	int			leaf = gs->leaf[a];
 	const SiftColVec *vec;
+	uint32		at;
 
 	*isnull = false;
 	*value = (Datum) 0;
@@ -77,20 +98,18 @@ fill_attr(SiftTblGroupScan *g, uint32 pos, int a, Datum *value, bool *isnull)
 		if (!*isnull)
 			*value = datumCopy(*value, att->attbyval, att->attlen);	/* like every value: the caller owns it */
 	}
-	else if ((vec = col_vec(g, leaf))->nulls != NULL && sift_col_bit_test(vec->nulls, pos))
+	else if ((vec = col_vec(g, leaf, pos, &at))->nulls != NULL && sift_col_bit_test(vec->nulls, at))
 	{
 		const char *p;
 		uint32		len;
 
-		if (vec->ovf != NULL && sift_col_bit_test(vec->ovf, pos) && exc_find(col_vec(g, gs->exc), pos, a, &p, &len))
+		if (vec->ovf != NULL && sift_col_bit_test(vec->ovf, at) && exc_attr(g, gs, pos, a, &p, &len))
 			*value = image_datum(att, p, len);
 		else
 			*isnull = true;
 	}
-	else if (vec->store == SIFT_COLS_STR && vec->dict == NULL)
-		*value = code_text(g, att, leaf, vec->codes[pos]);
 	else
-		*value = value_out(&gs->schema->cols[leaf], att, vec, pos);
+		*value = value_out(&gs->schema->cols[leaf], att, vec, at);
 }
 
 void

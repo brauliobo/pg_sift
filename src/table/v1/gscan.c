@@ -61,9 +61,13 @@ sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDir
 	g->cxt = cxt;
 	g->rowcxt = AllocSetContextCreate(cxt, "sift_table group row", ALLOCSET_SMALL_SIZES);
 	g->unitcxt = AllocSetContextCreate(cxt, "sift_table group unit", ALLOCSET_DEFAULT_SIZES);
+	g->wincxt = sift_mem_allocset_create(cxt, "sift_table group window");
+	g->win_rows = Min(Max(WIN_MIN_ROWS, sift_mem_budget_bytes(SIFT_BUDGET_WORK_MEM, 1, 1) / WIN_SHARE / WIN_ROW_BYTES / desc->natts),
+						 SIFT_COL_UNIT_MAX_ROWS) & ~63u;
 	g->values = palloc(g->desc->natts * sizeof(Datum));
 	g->isnull = palloc(g->desc->natts * sizeof(bool));
 	g->vec = palloc(SIFT_COL_MAX_COLS * sizeof(SiftColVec));
+	g->vwin = palloc0(SIFT_COL_MAX_COLS * sizeof(bool));
 	g->cache_sb = PG_UINT32_MAX;
 	g->rd_unit = -1;
 	g->uidx = -1;

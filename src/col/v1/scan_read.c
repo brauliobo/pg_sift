@@ -50,7 +50,7 @@ read_strs(MemoryContext arena, const SiftCChunk *c, const uint32 *idx, uint32 m,
 static void
 read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, SiftColVec *vec)
 {
-	MemoryContext arena = cu->src->arena;
+	MemoryContext arena = cu->out ? cu->out : cu->src->arena;
 	const SiftColDef *def = &cu->src->schema->cols[col];
 	int64	   *keys = MemoryContextAllocZero(arena, (m + SIFT_COL_PAD / 8) * sizeof(int64));
 	SiftCChunk	c;
@@ -287,28 +287,92 @@ sift_col_read_text(const SiftColUnit *unit, int col, const SiftColSel *sel, Sift
 	vec->vbytes = sb.data;
 }
 
-bool
-sift_col_read_codes(const SiftColUnit *unit, int col, SiftColVec *vec)
+static int
+cmp_u64(const void *a, const void *b)
 {
-	ColUnit    *cu = unit->priv;
-	const SiftColDef *def = &cu->src->schema->cols[col];
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
 
-	if (cu->seg == NULL || def->store != SIFT_COLS_STR || def->parent >= 0 || unit_inline(cu, col) || !sift_cseg_dict_lazy(cu->seg, col, 1))
-		return false;
-	cu->codes_only = true;
-	sift_col_read(unit, col, NULL, vec);
-	cu->codes_only = false;
-	return true;
+	return x < y ? -1 : x > y;
 }
 
-const char *
-sift_col_code_str(const SiftColUnit *unit, int col, uint32 code, uint32 *len, char *buf)
+/* The rows idx[0..m) of a STR leaf whose dictionary is read in place, with a dictionary of their own: their distinct strings, taken block by block in code order */
+static void
+read_strs_inplace(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, SiftColVec *vec)
 {
 	ColUnit    *cu = unit->priv;
+	MemoryContext cx = cu->out;
+	uint64	   *order = palloc(m * sizeof(uint64));
+	uint32	   *codes,
+			   *off;
+	uint32		n = 0,
+				d = 0;
+	StringInfoData sb;
+	SiftColDict *dict;
+	char		buf[SIFT_COL_DICT_MAX_ENTRY];
+	MemoryContext old;
 
-	if (sift_cseg_dict_lazy(cu->seg, col, 1))
-		return sift_cseg_dict_get(cu->seg, col, code, len, buf);
-	return sift_cdict_str(sift_cseg_dict(cu->seg, col), code, len);
+	cu->codes_only = true;
+	sift_col_read_idx(unit, col, idx, m, vec);
+	cu->codes_only = false;
+	codes = (uint32 *) vec->codes;
+	for (uint32 k = 0; k < m; k++)
+		if (!(vec->nulls && sift_col_bit_test(vec->nulls, k)))
+			order[n++] = (uint64) codes[k] << 32 | k;
+	qsort(order, n, sizeof(uint64), cmp_u64);
+	old = MemoryContextSwitchTo(cx);
+	off = palloc((n + 1) * sizeof(uint32));
+	initStringInfo(&sb);
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint32		len;
+
+		if (i == 0 || order[i] >> 32 != order[i - 1] >> 32)
+		{
+			const char *s = sift_cseg_dict_get(cu->seg, col, (uint32) (order[i] >> 32), &len, buf);
+
+			off[d++] = sb.len;
+			appendBinaryStringInfo(&sb, s, len);
+		}
+		codes[(uint32) order[i]] = d - 1;
+	}
+	off[d] = sb.len;
+	dict = palloc0(sizeof(SiftColDict));
+	dict->n = d;
+	dict->off = off;
+	dict->bytes = sb.data;
+	MemoryContextSwitchTo(old);
+	vec->dict = dict;
+	pfree(order);
+}
+
+bool
+sift_col_leaf_windowed(const SiftColUnit *unit, int col)
+{
+	ColUnit    *cu = unit->priv;
+	SiftColStore store = cu->src->schema->cols[col].store;
+
+	if (cu->seg == NULL || cu->src->schema->cols[col].parent >= 0)
+		return false;
+	return store == SIFT_COLS_INT || store == SIFT_COLS_F4 || store == SIFT_COLS_F8 || (store == SIFT_COLS_STR && !unit_inline(cu, col));
+}
+
+void
+sift_col_read_rows(const SiftColUnit *unit, int col, uint32 lo, uint32 m, SiftColVec *vec, MemoryContext cx)
+{
+	ColUnit    *cu = unit->priv;
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	uint32	   *idx = palloc(m * sizeof(uint32));
+
+	for (uint32 k = 0; k < m; k++)
+		idx[k] = lo + k;
+	cu->out = cx;
+	if (cu->src->schema->cols[col].store == SIFT_COLS_STR && sift_cseg_dict_inplace(cu->seg, col))
+		read_strs_inplace(unit, col, idx, m, vec);
+	else
+		sift_col_read_idx(unit, col, idx, m, vec);
+	cu->out = NULL;
+	MemoryContextSwitchTo(old);
 }
 
 uint32

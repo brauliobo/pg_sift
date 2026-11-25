@@ -112,3 +112,17 @@ sift_cseg_look_block(DictLook *l, uint32 b)
 	memcpy(k->raw, l->blkraw, l->blkoff[cnt]);
 	k->b1 = b + 1;
 }
+
+/* Whether the strings of leaf col are read in place from blocks: its dictionary is stored in blocks and no parsed copy is at hand */
+bool
+sift_cseg_dict_inplace(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+	DictLook   *l;
+
+	if (seg->schema->cols[col].store != SIFT_COLS_STR)
+		return false;
+	if (pv->dict[col] == NULL)
+		pv->dict[col] = sift_cseg_dict_peek(seg, col);
+	return pv->dict[col] == NULL && (l = seg_dict_look(seg, col)) != NULL && l->blocked;
+}

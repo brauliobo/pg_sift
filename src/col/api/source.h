@@ -553,13 +553,16 @@ extern void sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *se
  */
 extern void sift_col_read_text(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec);
 /*
- * A top-level STR leaf of a stored unit as the codes of every row and no dictionary (vec->dict NULL), when its segment stores the dictionary in a form read in
- * place and the strings read so far are few against its size: the caller takes the few strings it needs with sift_col_code_str. False (vec untouched): read
- * the leaf with sift_col_read.
+ * Whether sift_col_read_rows can read leaf col of a stored unit a few rows at a time: a number, or a string of the dictionary of its segment. The other leaves (strings stored inline in
+ * the unit, the bytes of exceptions) are read whole, once for the unit, with sift_col_read.
  */
-extern bool sift_col_read_codes(const SiftColUnit *unit, int col, SiftColVec *vec);
-/* The string of a code of a leaf read with sift_col_read_codes, into buf (SIFT_COL_DICT_MAX_ENTRY bytes); once the strings read in place are many, the dictionary is loaded (and cached) instead. Valid until the next call. */
-extern const char *sift_col_code_str(const SiftColUnit *unit, int col, uint32 code, uint32 *len, char *buf);
+extern bool sift_col_leaf_windowed(const SiftColUnit *unit, int col);
+/*
+ * The rows [lo, lo + m) of a leaf that sift_col_read_rows can read, made in cx (vec indexes them from 0): a few rows decode at a cost by the rows, and a string leaf whose
+ * dictionary the segment stores in blocks gets a dictionary of its own with the strings of those rows, read block by block in code order, so that nothing of the unit or of the
+ * dictionary stays in memory beyond cx.
+ */
+extern void sift_col_read_rows(const SiftColUnit *unit, int col, uint32 lo, uint32 m, SiftColVec *vec, MemoryContext cx);
 /* The same for the rows idx[0..m) (ascending ordinals) a caller keeps: it saves the positions of the selection, which every leaf read would compute again */
 extern void sift_col_read_idx(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, SiftColVec *vec);
 

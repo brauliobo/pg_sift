@@ -258,6 +258,7 @@ extern bool sift_cseg_dict_count(SiftColSegment *seg, int col, SiftColOp op, con
  */
 #define DICT_LAZY_RATIO			16
 extern bool sift_cseg_dict_lazy(SiftColSegment *seg, int col, uint32 want);
+extern bool sift_cseg_dict_inplace(SiftColSegment *seg, int col);
 extern PGDLLIMPORT bool sift_col_table_lookup;	/* sift.table_dict_lookup: the order of a dictionary of a sift_table is stored too */
 extern PGDLLIMPORT bool sift_col_table_key_table;	/* sift.table_key_table: the segments of a sift_table keep a key table of each key leaf */
 /*

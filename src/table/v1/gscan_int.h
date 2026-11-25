@@ -12,7 +12,11 @@
 #include "table/v1/table_v1.h"
 #include "table/v1/seg_int.h"
 #include "core/cmp.h"
+#include "core/memtrack.h"
 
+#define WIN_MIN_ROWS	256			/* rows of a window at the least */
+#define WIN_SHARE		2			/* a window takes 1/n of work_mem */
+#define WIN_ROW_BYTES	24			/* bytes a row takes of a decoded column: a value, its code or string, a null bit */
 #define SB_KEYS		(((uint64) SIFT_SB_PAGES) << 16)	/* keys of a superblock: (vblock << 16) | offset */
 
 typedef struct GroupSrc
@@ -57,12 +61,18 @@ struct SiftTblGroupScan
 	TupleDesc	desc;
 	MemoryContext cxt;
 	MemoryContext rowcxt;
-	MemoryContext unitcxt;		/* the TIDs, selection and vectors of the unit being read (reset by the next one) */
+	MemoryContext unitcxt;		/* the TIDs, selection and the whole-unit vectors of the unit being read (reset by the next one) */
+	MemoryContext wincxt;		/* the vectors of the rows [win_lo, win_lo + win_n) of the unit, reset when a row outside them is read */
 	int			nsrc;
 	GroupSrc   *s;
 	Datum	   *values;
 	bool	   *isnull;
-	SiftColVec *vec;
+	SiftColVec *vec;			/* [ncols] of the schema of the current unit: PG_UINT32_MAX in n when not read */
+	bool	   *vwin;			/* [ncols] the vector holds the window's rows, not the unit's */
+	uint32		win_rows;		/* rows a window takes: what a share of work_mem holds of the columns of the table */
+	uint32		win_lo;
+	uint32		win_n;
+	uint32		win_token;		/* the token of the unit the window is of */
 	Snapshot	snapshot;
 	SiftTblVers *vers;			/* of the directory copy the scan reads */
 	SiftColSegment *useg;		/* the segment and unit of the current unit, to read its versions */

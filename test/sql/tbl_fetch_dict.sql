@@ -43,10 +43,14 @@ SELECT loads = 0 AS no_dictionary_loaded_by_the_bitmap_by_tid FROM sift._test_co
 RESET sift.test_bitmap_bulk_rows;
 RESET enable_seqscan;
 RESET enable_indexscan;
--- a read that decodes the chunks (a sampled scan) loads the dictionary once, then it is cached
+-- a sampled scan reads the strings of its rows in place as well: no dictionary is loaded whatever the rows it reads
 SELECT sum(length(s)) AS chars FROM tf TABLESAMPLE SYSTEM (100) WHERE id <= 2000;
-SELECT loads > 0 AS loaded FROM sift._test_col_dict_cache(false);
+SELECT loads = 0 AS no_dictionary_loaded_by_the_sampled_scan FROM sift._test_col_dict_cache(false);
 RESET sift.enable_agg;
+-- a substring test of the leaf loads the dictionary once, then it is cached
+SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
+SELECT count(*) AS matches FROM tf WHERE s LIKE '%abc%';
+SELECT loads > 0 AS loaded FROM sift._test_col_dict_cache(false);
 SELECT count(*) AS differences FROM (SELECT id, s, v FROM tf EXCEPT SELECT id, s, v FROM tf_heap) d;
 SELECT count(*) AS differences FROM (SELECT id, s, v FROM tf_heap EXCEPT SELECT id, s, v FROM tf) d;
 

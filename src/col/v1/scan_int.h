@@ -187,6 +187,7 @@ typedef struct ColUnit
 	SiftColBatch *batch;
 	SiftCUnitView v;
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
+	MemoryContext out;			/* sift_col_read_rows: where the vectors of the read are made (NULL: the arena of the source, which the next unit resets) */
 	bool		codes_only;		/* sift_col_read_text: a STR leaf is read as codes, without its dictionary */
 	bool		dict_lazy;		/* sift_col_unit_lazy_dict: a STR leaf may be read with a dictionary that stays in the segment (SiftColDict.get) */
 	const uint32 *prow;			/* the rows of this unit the point directory lists (segment rows), when the cursor has one: ppred is its predicate */
