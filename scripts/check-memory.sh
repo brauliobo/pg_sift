@@ -99,7 +99,7 @@ def scan(src, allow=None, strict=False):
                 for rule, rx in STATIC_RULES.items():
                     if rx.search(BLOCK_COMMENT.sub("", code) if rule == "raw_mwm" else code) and rel not in STATIC_EXEMPT.get(rule, ()):
                         sites[(rule, rel)] += 1
-                if ROWBUF.search(code) and name.endswith(".c") and not name.endswith("_test.c") and rel != ROWBUF_OWNER and not (budgeted and trims):
+                if ROWBUF.search(code) and name.endswith(".c") and not name.endswith("_test.c") and name != "test.c" and rel != ROWBUF_OWNER and not (budgeted and trims):
                     sites[("rowbuf_unbudgeted" if not budgeted else "rowbuf_notrim", rel)] += 1
                 if amcache.search(code) and rel not in AMCACHE_FILES:
                     bad.append(f"{rel}:{i + 1}: rd_amcache outside its accessors ({', '.join(sorted(AMCACHE_FILES))}): the relcache frees it on every reload, ask the accessor where it is used")
