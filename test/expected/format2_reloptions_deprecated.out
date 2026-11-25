@@ -44,6 +44,9 @@ ALTER INDEX rd2 SET (order_layout = whole, order_array_group = g, rollup_leaves 
 NOTICE:  reloption "order_layout" is deprecated and ignored
 NOTICE:  reloption "order_array_group" is deprecated and ignored
 NOTICE:  reloption "rollup_leaves" is deprecated and ignored
+-- a REINDEX rebuilds the index with the options it stored: it does not write them again
+REINDEX INDEX rd2;
+REINDEX INDEX CONCURRENTLY rd2;
 -- the options of Format 2.0 say nothing
 ALTER INDEX rd2 SET (compression = 'lz4', key_order = 'k', dead_rewrite_pct = 20);
 ALTER INDEX rd2 RESET (compression, key_order, dead_rewrite_pct);

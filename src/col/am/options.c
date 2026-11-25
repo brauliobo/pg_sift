@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "access/reloptions.h"
+#include "catalog/index.h"
 #include "catalog/pg_class.h"
 #include "commands/defrem.h"
 #include "utils/lsyscache.h"
@@ -20,6 +21,7 @@
 #include "col/v1/gorder.h"
 #include "col/v1/setsum.h"
 #include "col/v1/seg.h"
+#include "col/am.h"
 #include "col/am/am_int.h"
 #include "col/v1/conn.h"
 #include "col/scope.h"
@@ -826,6 +828,14 @@ sift_col_warn_f2_deprecated_relopts(Relation index, Datum before)
 			if (is_format1_relopt(def->defname) && relopt_written(def, had))
 				sift_relopt_removed_notice(def->defname);
 	ReleaseSysCache(tuple);
+}
+
+/* A CREATE INDEX wrote the Format 1 options it says; a REINDEX, in place or as the copy of REINDEX CONCURRENTLY, rebuilds the index with the options it already stored */
+void
+sift_col_warn_f2_build_relopts(Relation heap, Relation index)
+{
+	if (!ReindexIsProcessingIndex(RelationGetRelid(index)) && !OidIsValid(sift_col_swap_origin(heap, index, false)))
+		sift_col_warn_f2_deprecated_relopts(index, (Datum) 0);
 }
 
 bytea *

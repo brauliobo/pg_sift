@@ -14,6 +14,9 @@ ALTER INDEX rd2 SET (cube_minmax = off);
 ALTER INDEX rd2 SET (order_array_columns = 'k', rollup_columns = 'g, k', calendar_columns = off);
 ALTER INDEX rd2 SET (array_lengths = off, dict_lookup = off, key_table = off, count_columns = off, point_tid_columns = 'k', return_columns = 't', rollup_on_demand = off);
 ALTER INDEX rd2 SET (order_layout = whole, order_array_group = g, rollup_leaves = off);
+-- a REINDEX rebuilds the index with the options it stored: it does not write them again
+REINDEX INDEX rd2;
+REINDEX INDEX CONCURRENTLY rd2;
 -- the options of Format 2.0 say nothing
 ALTER INDEX rd2 SET (compression = 'lz4', key_order = 'k', dead_rewrite_pct = 20);
 ALTER INDEX rd2 RESET (compression, key_order, dead_rewrite_pct);
