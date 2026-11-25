@@ -37,7 +37,7 @@ SELECT sift.projection_create('re_proj', 're_t', ARRAY['g']);
 SELECT sift.projection_index('re_proj_ix', ARRAY['re_proj']);
  projection_index 
 ------------------
- re_t_a
+ public.re_t_a
 (1 row)
 
 VACUUM (ANALYZE) re_t, re_doc, re_ev, re_pairs;
@@ -153,7 +153,7 @@ SELECT sift.projection_create('re_proj', 're_t', ARRAY['g']);
 SELECT sift.projection_index('re_proj_ix', ARRAY['re_proj']);
  projection_index 
 ------------------
- re_t_a
+ public.re_t_a
 (1 row)
 
 VACUUM (ANALYZE) re_t, re_doc, re_ev, re_pairs;

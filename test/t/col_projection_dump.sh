@@ -38,7 +38,7 @@ dbq "$(node_db r)" "CREATE EXTENSION pg_sift" "CREATE TABLE events (id int PRIMA
 WANT_STATUS=$(dbq "$(node_db r)" "$STATUS")
 WANT_ANSWERS=$(dbq "$(node_db r)" "$ANSWERS")
 check "the source: the wide index serves two projections, a third has an index of its own, every status is ok" \
-	test "$WANT_STATUS" == "by_bucket:events_wide:ok:,by_kind:events_wide:ok:,open_kinds:events_open:ok:,wide:events_wide:ok:" -a "$(plan_index "$(node_db r)")" == events_wide
+	test "$WANT_STATUS" == "by_bucket:public.events_wide:ok:,by_kind:public.events_wide:ok:,open_kinds:public.events_open:ok:,wide:public.events_wide:ok:" -a "$(plan_index "$(node_db r)")" == events_wide
 pg_dump "${S[@]}" -Fc -f "$D/src.custom" "$(node_db r)"
 pg_dump "${S[@]}" -Fp -f "$D/src.sql" "$(node_db r)"
 check "the dump holds the definitions as data and the names in the index statements" \
@@ -64,9 +64,9 @@ check "... and every projection that an index lists is broken as not defined, no
 check "the data of the definitions, restored after the indexes, makes every status ok again" test "$(psql -X -q "${S[@]}" -d r3 -f "$D/data.sql" 2>&1 | errors)" == 0 -a "$(dbq r3 "$STATUS")" == "$WANT_STATUS"
 
 # the guard and the one call, on a restored database
-guard() { dbq r1 "DELETE FROM sift.projections WHERE name = 'wide'" 2>&1 | grep -c 'is held by events_wide'; }
+guard() { dbq r1 "DELETE FROM sift.projections WHERE name = 'wide'" 2>&1 | grep -c 'is held by public.events_wide'; }
 check "the guard of the definitions works on a restored database" test "$(guard)" == 1
-check "sift.projection_index of a held projection is the same index, built again nowhere" test "$(dbq r1 "SELECT sift.projection_index('events_by_kind_again', ARRAY['by_kind'], '{\"key_order\": \"dim_a_id, created_at\"}')")" == events_wide \
+check "sift.projection_index of a held projection is the same index, built again nowhere" test "$(dbq r1 "SELECT sift.projection_index('events_by_kind_again', ARRAY['by_kind'], '{\"key_order\": \"dim_a_id, created_at\"}')")" == public.events_wide \
 	-a "$(dbq r1 "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col'")" == 2
 dbq r1 "INSERT INTO events SELECT 6000 + i, i % 40, i % 5, i % 97, 'open', now() FROM generate_series(1, 500) i" "UPDATE events SET qty = qty + 30 WHERE id % 9 = 0" "DELETE FROM events WHERE id % 13 = 0" >/dev/null
 check "after changes of the table the rows through the index equal the normal plan" \

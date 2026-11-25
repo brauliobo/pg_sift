@@ -106,6 +106,6 @@ ROLLBACK;
 -- a table without a primary key
 \set VERBOSITY terse
 SELECT * FROM sift.table_find_stale_versions('sv_nopk');
-ERROR:  table_find_stale_versions: table sv_nopk has no primary key
+ERROR:  table_find_stale_versions: table public.sv_nopk has no primary key
 DROP TABLE sv_sift, sv_heap, sv_comp, sv_part, sv_nopk;
 DROP EXTENSION pg_sift;

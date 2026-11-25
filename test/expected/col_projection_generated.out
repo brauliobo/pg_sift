@@ -23,9 +23,9 @@ SELECT sift.projection_index('events_bucket', ARRAY['by_bucket'], '{"track_chang
 (1 row)
 
 SELECT sift.projection_index('events_bucket_again', ARRAY['by_bucket'], '{"track_changes": "off"}');
- projection_index 
-------------------
- events_bucket
+   projection_index   
+----------------------
+ public.events_bucket
 (1 row)
 
 VACUUM (FREEZE, ANALYZE) events;

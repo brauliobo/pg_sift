@@ -22,7 +22,7 @@ CREATE VIEW three_columns AS SELECT dim_a_id, tenant_id, 1 AS n FROM visible_dim
 CREATE TABLE other_pairs (dim_a_id int NOT NULL, scope_id int NOT NULL);
 CREATE TABLE text_source (id int, label text, at timestamptz);
 SELECT sift.scope_refresh_pairs('scope_pairs', 'three_columns', 'key');
-ERROR:  scope_refresh_pairs: "three_columns" must have two columns, the member and the scope key
+ERROR:  scope_refresh_pairs: "public.three_columns" must have two columns, the member and the scope key
 CONTEXT:  PL/pgSQL function sift.scope_refresh_pairs(regclass,regclass,text,bigint[],bigint[]) line 9 at RAISE
 SELECT sift.scope_refresh_pairs('other_pairs', 'visible_dim_a', 'key');
 ERROR:  scope_refresh_pairs: table public.other_pairs has no columns dim_a_id, tenant_id

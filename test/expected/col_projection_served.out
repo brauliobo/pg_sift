@@ -121,11 +121,11 @@ SELECT sift.projection_index('events_wide', ARRAY['wide'], '{"key_order": "dim_a
 (1 row)
 
 SELECT p, sift.projection_index('events_' || p, ARRAY[p], '{"key_order": "dim_a_id, created_at"}') AS index FROM unnest(ARRAY['by_kind', 'by_bucket', 'by_kind_qty']) p;
-      p      |    index    
--------------+-------------
- by_kind     | events_wide
- by_bucket   | events_wide
- by_kind_qty | events_wide
+      p      |       index        
+-------------+--------------------
+ by_kind     | public.events_wide
+ by_bucket   | public.events_wide
+ by_kind_qty | public.events_wide
 (3 rows)
 
 VACUUM (FREEZE, ANALYZE) events;
@@ -203,10 +203,10 @@ SELECT sift.projection_index('tickets_live_index', ARRAY['tickets_live'], '{"tra
 (1 row)
 
 SELECT p, sift.projection_index('tickets_' || p || '_index', ARRAY['tickets_' || p]) AS index FROM unnest(ARRAY['open', 'open_qty', 'exact', 'all']) p;
-    p     |        index        
-----------+---------------------
- open     | tickets_live_index
- open_qty | tickets_live_index
+    p     |           index           
+----------+---------------------------
+ open     | public.tickets_live_index
+ open_qty | public.tickets_live_index
  exact    | tickets_exact_index
  all      | tickets_all_index
 (4 rows)

@@ -91,9 +91,9 @@ SELECT sift.projection_index('events_dim', ARRAY['by_dim'], '{"key_order": "dim_
 (1 row)
 
 SELECT sift.projection_index('events_dim', ARRAY['by_dim'], '{"key_order": "dim_a_id", "track_changes": "off"}');
- projection_index 
-------------------
- events_dim
+ projection_index  
+-------------------
+ public.events_dim
 (1 row)
 
 SELECT sift.projection_index('events_open', ARRAY['by_dim_open', 'by_dim_open_a'], '{"track_changes": "off"}');
@@ -177,13 +177,13 @@ SELECT t.label, sift_helpers.statement_outcome(t.stmt) AS outcome FROM (VALUES
 ) t(label, stmt);
       label      |                            outcome                             
 -----------------+----------------------------------------------------------------
- delete          | 2BP01 the projection "by_dim" is held by events_dim
+ delete          | 2BP01 the projection "by_dim" is held by public.events_dim
  drop            | 2BP01 the projection "by_dim" is held by public.events_dim
  drop unknown    | 42704 projection_drop: the projection "nope" is not defined
- truncate        | 2BP01 the projection "by_dim" is held by events_dim
- rename          | 2BP01 the projection "by_dim" is held by events_dim
- columns         | 2BP01 the projection "by_dim" is held by events_dim
- filter          | 2BP01 the projection "by_dim" is held by events_dim
+ truncate        | 2BP01 the projection "by_dim" is held by public.events_dim
+ rename          | 2BP01 the projection "by_dim" is held by public.events_dim
+ columns         | 2BP01 the projection "by_dim" is held by public.events_dim
+ filter          | 2BP01 the projection "by_dim" is held by public.events_dim
  replace columns | 2BP01 the projection "by_dim" is held by public.events_dim
  replace filter  | 2BP01 the projection "by_dim" is held by public.events_dim
  replace unknown | 42704 projection_replace: the projection "nope" is not defined
@@ -199,7 +199,7 @@ SELECT sift_helpers.statement_outcome($$SELECT sift.projection_replace('by_dim_o
 -- new rollups and options reach an index that lists only this projection (it needs REINDEX); an index that lists others too is left as it is, and the status compares it
 \set VERBOSITY default
 SELECT sift.projection_replace('by_status', ARRAY['status', 'created_at'], options => '{"superunit": 4}');
-NOTICE:  index "events_status" holds the projection "by_status": REINDEX INDEX events_status writes it with the new rollups and options
+NOTICE:  index "public.events_status" holds the projection "by_status": REINDEX INDEX public.events_status writes it with the new rollups and options
  projection_replace 
 --------------------
  
@@ -207,7 +207,7 @@ NOTICE:  index "events_status" holds the projection "by_status": REINDEX INDEX e
 
 \set VERBOSITY terse
 SELECT sift.projection_replace('by_dim_open', ARRAY['dim_a_id', 'kind', 'qty', 'status'], rollups => 'dim_a_id, kind: qty', filter => $$status = 'open'$$);
-NOTICE:  index "events_open" holds other projections too: its options stay, sift.projection_status checks "by_dim_open"
+NOTICE:  index "public.events_open" holds other projections too: its options stay, sift.projection_status checks "by_dim_open"
  projection_replace 
 --------------------
  

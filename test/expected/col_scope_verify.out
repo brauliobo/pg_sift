@@ -208,10 +208,10 @@ SHOW sift.agg_force;
 -- what it refuses
 CREATE INDEX events_plain ON events USING sift_col (id, kind);
 SELECT * FROM sift.col_scope_verify('events_plain');
-ERROR:  col_scope_verify: events_plain has no scope
+ERROR:  col_scope_verify: public.events_plain has no scope
 CONTEXT:  PL/pgSQL function sift.col_scope_verify(regclass,integer,text[]) line 45 at RAISE
 SELECT * FROM sift.col_scope_verify('events_pkey');
-ERROR:  col_scope_verify: events_pkey is not a sift_col index
+ERROR:  col_scope_verify: public.events_pkey is not a sift_col index
 CONTEXT:  PL/pgSQL function sift.col_scope_verify(regclass,integer,text[]) line 42 at RAISE
 DROP TABLE facts, grants, group_members, events, memberships, tenant_pairs, tenant_scope, text_pairs, uuid_pairs;
 DROP EXTENSION pg_sift_test;
