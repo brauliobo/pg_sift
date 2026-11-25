@@ -64,6 +64,7 @@ typedef struct ScopePlan
 	SiftV6Spec	v6;				/* a scan of the facts: its spec and the columns of its tuple */
 	List	   *v6_tlist;
 	int			cap_aggs;
+	bool		semi;			/* the pairs are the right side of a semi join: IN or EXISTS over them */
 } ScopePlan;
 
 static const CustomPathMethods scope_path_methods = {"SiftAggV6Scope", sift_agg_v6_scope_plan_path, NULL};
@@ -524,6 +525,21 @@ pairs_subquery(PlannerInfo *root, const RelOptInfo *rel)
 	return q;
 }
 
+/* The statement joins the two relations by one join, or by the semi join of IN or EXISTS: a member of the pairs of one key is there once, so a semi join keeps the rows an inner join does */
+static bool
+pairs_joined(ScopePlan *p)
+{
+	p->semi = p->root->join_info_list != NIL;
+	return !p->semi || sift_v6_semi_joins(p->root, p->pairs->relid);
+}
+
+/* A semi join names no key of the pairs and counts a member once: one key and not an array of them */
+static bool
+semi_ok(const ScopePlan *p)
+{
+	return !p->semi || (p->spec.key_given && !p->spec.key_array && !p->spec.by_key);
+}
+
 static bool
 pairs_ok(ScopePlan *p)
 {
@@ -536,7 +552,7 @@ pairs_ok(ScopePlan *p)
 	p->pairs_query = pairs_subquery(p->root, rel);
 	if (p->pairs_query != NULL && !single_table_query(p->pairs_query))
 	{
-		p->pairs_raw = p->pairs_query;
+		p->pairs_raw = rel->subroot != NULL ? rel->subroot->parse : p->pairs_query;
 		p->pairs_query = NULL;
 	}
 	return p->pairs_query != NULL || p->pairs_raw != NULL;
@@ -554,7 +570,7 @@ shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 	Query	   *parse = root->parse;
 
 	return sift_enable_agg && parse->hasAggs && !parse->hasRowSecurity && !parse->hasDistinctOn && !parse->hasTargetSRFs && !parse->hasWindowFuncs &&
-		parse->groupingSets == NIL && root->join_info_list == NIL && bms_num_members(input_rel->relids) == 2;
+		parse->groupingSets == NIL && list_length(root->join_info_list) <= 1 && bms_num_members(input_rel->relids) == 2;
 }
 
 /* Does scope ord of the index summarize the pairs relation: one path, unique pairs, every row of the relation a pair */
@@ -608,7 +624,7 @@ compile_on(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 	for (int ord = 0; ord < sift_f2_nscopes(p->irel) && !ok; ord++)
 	{
 		reset_spec(p, ord);
-		ok = scope_matches(p, ord) && (compile_target(p, extra, out) || (p->index != NULL && (reset_spec(p, ord), compile_scan(p, extra, out))));
+		ok = scope_matches(p, ord) && (compile_target(p, extra, out) || (p->index != NULL && (reset_spec(p, ord), compile_scan(p, extra, out)))) && semi_ok(p);
 	}
 	relation_close(p->irel, NoLock);
 	return ok;
@@ -668,7 +684,7 @@ topk_shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 		(list_length(q->sortClause) == 1 || list_length(q->sortClause) == 2);
 
 	return sift_enable_agg && q->commandType == CMD_SELECT && plain && limited && !q->hasRowSecurity && root->rowMarks == NIL && root->limit_tuples >= 1 &&
-		root->limit_tuples <= SCOPE_TOPK_MAX && root->join_info_list == NIL && bms_num_members(input_rel->relids) == 2;
+		root->limit_tuples <= SCOPE_TOPK_MAX && list_length(root->join_info_list) <= 1 && bms_num_members(input_rel->relids) == 2;
 }
 
 /* ORDER BY leaf DESC of a leaf of the index that can be a ring, and whether the ring (NULLS LAST) serves the way the statement puts the NULLs */
@@ -744,7 +760,7 @@ compile_topk(ScopePlan *p, const PathTarget *target)
 		p->v6_tlist = NIL;
 		ok = scope_matches(p, ord) && compile_key_filter(p) && p->spec.key_given && !p->spec.key_array && compile_fact_quals(p) && !p->spec.ranged &&
 			compile_order(p, linitial_node(SortGroupClause, p->root->parse->sortClause)) &&
-			(list_length(p->root->parse->sortClause) == 1 || compile_tie(p, lsecond_node(SortGroupClause, p->root->parse->sortClause))) && compile_output(p, target);
+			(list_length(p->root->parse->sortClause) == 1 || compile_tie(p, lsecond_node(SortGroupClause, p->root->parse->sortClause))) && compile_output(p, target) && semi_ok(p);
 	}
 	relation_close(p->irel, NoLock);
 	p->spec.topk = ok;
@@ -787,7 +803,7 @@ sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInf
 	{
 		ScopePlan	p = {.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b]};
 
-		if (p.fact == NULL || p.pairs == NULL || !plain_relation(root, p.fact) || !pairs_ok(&p))
+		if (p.fact == NULL || p.pairs == NULL || !plain_relation(root, p.fact) || !pairs_ok(&p) || !pairs_joined(&p))
 			continue;
 		foreach_ptr(IndexOptInfo, ix, p.fact->indexlist)
 		{
@@ -958,7 +974,7 @@ sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptIn
 	{
 		ScopePlan	p = {.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b]};
 
-		if (p.fact == NULL || p.pairs == NULL || !plain_relation(root, p.fact) || !pairs_ok(&p))
+		if (p.fact == NULL || p.pairs == NULL || !plain_relation(root, p.fact) || !pairs_ok(&p) || !pairs_joined(&p))
 			continue;
 		if (table_usable(root, p.fact) && compile_on(&p, (GroupPathExtraData *) extra, out))
 		{
