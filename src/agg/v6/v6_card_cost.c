@@ -357,8 +357,11 @@ void
 sift_v6_agg_cost(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftV6Spec *spec, double groups, Cost *startup, Cost *total)
 {
 	const SiftV6AggPrice price = sift_v6_agg_price(root, rel, ix, spec, groups);
+	const Cost	keys = cpu_operator_cost * Max(rel->rows, 1.0) * (spec->nbins + spec->nderive);
 
 	sift_agg_choose_workers(&price.in, price.selectivity, false, false, price.open, 0, startup, total);
+	*startup += keys;
+	*total += keys;
 }
 
 void
