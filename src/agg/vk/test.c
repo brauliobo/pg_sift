@@ -1,5 +1,5 @@
 /*
- * agg/vk/test.c - the hooks of the tests (tests/vk_v6_test.c): the switch of the fast kernels, and the decoded column the device holds for a chunk, read back and rebuilt as
+ * agg/vk/test.c - the hooks of the tests (tests/main.c): the switch of the fast kernels, and the decoded column the device holds for a chunk, read back and rebuilt as
  * the values and the validity of its rows, so that a test compares the decoder of the device with the decoder of the codec value by value.
  */
 #include <stdio.h>

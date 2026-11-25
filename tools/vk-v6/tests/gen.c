@@ -1,5 +1,5 @@
 /*
- * tests/vk_v6_gen.c - the chunks of the tests: the real column codec (col/codec.h of the integration tree) encodes the values, the split-bits
+ * tests/gen.c - the chunks of the tests: the real column codec (col/codec.h of the integration tree) encodes the values, the split-bits
  * doubles (ALP_RD) have an encoder of their own here (the layout of granule_enc.c put_alp_rd), and the record gets its validity, and an LZ4
  * wrapper when asked, as a granule stores a chunk. cpu_decode is the decoder of the codec on the same bytes, the oracle of the device's.
  */
@@ -9,7 +9,7 @@
 
 #include "col/codec.h"
 #include "ccshim.h"
-#include "vk_v6_common.h"
+#include "common.h"
 
 #define MAXALIGN8(x) (((x) + 7) & ~(size_t) 7)
 

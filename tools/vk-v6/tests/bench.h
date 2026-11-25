@@ -1,10 +1,10 @@
 /*
- * tests/vk_v6_bench.h - the data and the device jobs of vk_v6_bench, shared with its probes (vk_v6_bench_probe.c).
+ * tests/bench.h - the data and the device jobs of vk_v6_bench, shared with its probes (bench_probe.c).
  */
 #ifndef VK_V6_BENCH_H
 #define VK_V6_BENCH_H
 
-#include "vk_v6_common.h"
+#include "common.h"
 
 enum { B_KS, B_KM, B_KL, B_QTY, B_PRICE, B_AMOUNT, B_NCOLS };
 

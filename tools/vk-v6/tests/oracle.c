@@ -1,12 +1,12 @@
 /*
- * tests/vk_v6_oracle.c - the scalar oracle of the aggregate kernels: the program of a job run row by row in plain C over the logical data
+ * tests/oracle.c - the scalar oracle of the aggregate kernels: the program of a job run row by row in plain C over the logical data
  * (the semantics of agg/vexpr.h: PostgreSQL's errors on the rows that are live, three-valued masks, the order of floats), with the
  * compiler's overflow builtins, 128-bit integers and the C library's calendar (gmtime, timegm) where the shaders compute by hand.
  */
 #include <math.h>
 #include <time.h>
 
-#include "vk_v6_common.h"
+#include "common.h"
 
 static const double P10[19] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18};
 static const int64_t P10I[19] = {1LL, 10LL, 100LL, 1000LL, 10000LL, 100000LL, 1000000LL, 10000000LL, 100000000LL, 1000000000LL, 10000000000LL,

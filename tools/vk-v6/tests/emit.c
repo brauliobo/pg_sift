@@ -1,5 +1,5 @@
 /*
- * tests/vk_v6_test_emit.c - T10: the programs the engine really makes reach the fast kernels. Trees of the engine's expressions (agg/vexpr.h) are compiled by its own compiler (agg/vexpr_compile.c,
+ * tests/emit.c - T10: the programs the engine really makes reach the fast kernels. Trees of the engine's expressions (agg/vexpr.h) are compiled by its own compiler (agg/vexpr_compile.c,
  * not a copy), translated for the device by the translator (agg/gpu_emit.c, the one the server runs), recognized by agg/vk/fast.c and run on the device; the answer is checked against the scalar
  * oracle on the translated program and against a plain evaluation of the predicates over the logical rows. Every conjunction of comparisons of a column with a constant must run on a fast kernel
  * (a program it does not recognize runs the expression machine, correctly and many times slower, and nothing else says so); the queries that are not that shape must not.
@@ -11,7 +11,7 @@
 #include "agg/gpu_emit.h"
 #include "agg/vk/fast.h"
 #include "agg/vexpr.h"
-#include "vk_v6_agg_case.h"
+#include "agg_case.h"
 
 bool		sift_agg_exact_float = false;
 

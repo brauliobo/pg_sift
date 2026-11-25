@@ -1,5 +1,5 @@
 /*
- * tests/vk_v6_common.h - what the test (vk_v6_test.c) and the benchmark (vk_v6_bench.c) share: logical data of granules, the builder of the
+ * tests/common.h - what the test (main.c) and the benchmark (bench.c) share: logical data of granules, the builder of the
  * chunks (the real column codec writes them), a tiny assembler of programs, and the scalar oracle that computes what a job must give.
  */
 #ifndef VK_V6_COMMON_H

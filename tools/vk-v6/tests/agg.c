@@ -1,11 +1,11 @@
 /*
- * tests/vk_v6_test_agg.c - the aggregation kernels on the real device, each job compared with the scalar oracle (vk_v6_oracle.c) over the
+ * tests/agg.c - the aggregation kernels on the real device, each job compared with the scalar oracle (oracle.c) over the
  * logical data: T2 no key, T3 dense keys, T4 hashed keys (1..8 keys, up to a million groups), T5 the expression machine (overflow, division
  * by zero, calendar, three-valued masks), T6 top N. The columns are chunks of the real codec in every encoding the decoder takes.
  */
 #include <math.h>
 
-#include "vk_v6_agg_case.h"
+#include "agg_case.h"
 
 static SiftVk *vk;
 static uint64_t cases_run,

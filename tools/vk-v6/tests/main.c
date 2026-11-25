@@ -1,6 +1,6 @@
 /*
- * tests/vk_v6_test.c - Spec 39 on the real device: the selector (T0), the decoder against the codec's decoder value by value (T1), the
- * cache (T7) and the fallbacks (T8). The aggregation kernels are tests/vk_v6_test_agg.c (T2..T6). Exit status 0 when nothing failed.
+ * tests/main.c - Spec 39 on the real device: the selector (T0), the decoder against the codec's decoder value by value (T1), the
+ * cache (T7) and the fallbacks (T8). The aggregation kernels are tests/agg.c (T2..T6). Exit status 0 when nothing failed.
  *   vk_v6_test [--device SEL] [--only T1,T7] [--seed N] [--nodriver]
  */
 #include "postgres.h"
@@ -8,7 +8,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "vk_v6_agg_case.h"
+#include "agg_case.h"
 
 extern uint64_t cov_root[16],
 			cov_inner[16];

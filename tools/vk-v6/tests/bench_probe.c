@@ -1,10 +1,10 @@
 /*
- * tests/vk_v6_bench_probe.c - the kernel probes of vk_v6_bench, run when asked for: VKB_PROBE (the ungrouped kernel, one more column each),
+ * tests/bench_probe.c - the kernel probes of vk_v6_bench, run when asked for: VKB_PROBE (the ungrouped kernel, one more column each),
  * VKB_SWEEP (the hash kernel at 100, 10 thousand and a million groups) and VKB_DPROBE (the dense kernel, one aggregate set at a time).
  */
 #include "postgres.h"
 
-#include "vk_v6_bench.h"
+#include "bench.h"
 
 /* the least kernel time of four runs, the first (which makes the pipeline) left out */
 static double

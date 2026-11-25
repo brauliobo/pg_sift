@@ -1,5 +1,5 @@
 /*
- * tests/vk_v6_cost.c - the cost model of sift.gpu = auto (agg/gpu_cost.c) against the measurements it was fitted to: every prediction within a factor of two, and the choice between the CPU and the
+ * tests/cost.c - the cost model of sift.gpu = auto (agg/gpu_cost.c) against the measurements it was fitted to: every prediction within a factor of two, and the choice between the CPU and the
  * device the one the measurements make wherever they are not within a third of the margin. No device is used.
  *   the first ten points: BENCHMARK-RESULTS.md, GPU 1 on PCIe 3.0 x16, 4 CPU workers, the mean of two runs of each point (rows of 6 columns of the real codec);
  *   the others: the 1 million rows of the synthetic ClickBench `hits` after the aggregates of Spec 63E, on an RTX 3060 on PCIe 3.0 x16, the CPU scan with sift.gpu = off against the device with its chunks

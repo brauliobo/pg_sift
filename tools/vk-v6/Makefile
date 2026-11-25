@@ -1,6 +1,6 @@
 # The Vulkan compute engine of pg_sift 6.0, standalone: the device layer (src/agg/vk/), its shaders, and the test and benchmark that run it on a real GPU
 # without PostgreSQL. The real column codec of this tree (src/col/codec*) writes the chunks the tests decode. Run from tools/vk-v6.
-#   nice make -j4 test            build and run tests/vk_v6_test on the host's GPU        (make test GPU=1 picks a device, see tests/vk_v6_test.c)
+#   nice make -j4 test            build and run tests/vk_v6_test on the host's GPU        (make test GPU=1 picks a device, see tests/main.c)
 #   nice make -j4 bench           build tests/vk_v6_bench
 #   make SANITIZE=1 test          ASan + UBSan build into build/san
 #   make gpu-shaders              regenerate src/agg/vk_spv.h;  make check   the generated headers are current
@@ -58,9 +58,9 @@ $(OUT)/codec/pgshim.o: $(WTI)/test/common/pgshim.c
 	$(CC) $(CCFLAGS) -c -o $@ $<
 
 # ---- the tests and the benchmark ----
-TESTOBJ   = $(OUT)/tests/vk_v6_gen.o $(OUT)/tests/vk_v6_oracle.o $(OUT)/tests/vk_v6_test_agg.o $(OUT)/tests/vk_v6_test_finish.o
+TESTOBJ   = $(OUT)/tests/gen.o $(OUT)/tests/oracle.o $(OUT)/tests/agg.o $(OUT)/tests/finish.o
 # T10: the engine's own expression compiler and the translator the server runs (src/agg/gpu_emit.c)
-EMITOBJ   = $(OUT)/tests/vk_v6_test_emit.o $(OUT)/agg/gpu_emit.o $(OUT)/codec/agg/vexpr_compile.o
+EMITOBJ   = $(OUT)/tests/emit.o $(OUT)/agg/gpu_emit.o $(OUT)/codec/agg/vexpr_compile.o
 TCFLAGS   = -std=gnu11 -O2 -g $(WARN) -DSIFT_VULKAN -I$(ROOT)/src -I$(HERE)/tests -I$(SRC) -I$(WTI)/tools/colcodec -I$(PGINC) $(SIFT_PGCPP) $(SIFT_BASE_ISA) -ffp-contract=off $(SANFLAGS)
 
 $(OUT)/tests/%.o: $(HERE)/tests/%.c $(wildcard $(HERE)/tests/*.h) $(VKHDR)
@@ -71,12 +71,12 @@ $(OUT)/agg/gpu_emit.o: $(ROOT)/src/agg/gpu_emit.c $(ROOT)/src/agg/gpu_emit.h $(R
 	@mkdir -p $(@D)
 	$(CC) $(TCFLAGS) -Wno-sign-compare -Wno-unused-function -c -o $@ $<
 
-$(OUT)/vk_v6_test: $(OUT)/tests/vk_v6_test.o $(TESTOBJ) $(EMITOBJ) $(VKOBJ) $(CODECOBJ)
+$(OUT)/vk_v6_test: $(OUT)/tests/main.o $(TESTOBJ) $(EMITOBJ) $(VKOBJ) $(CODECOBJ)
 	$(CC) $(SANFLAGS) -o $@ $^ $(CODECLIBS) $(LDLIBS)
 
-$(OUT)/tests/vk_v6_bench.o: TCFLAGS += -O3 -mavx2
+$(OUT)/tests/bench.o: TCFLAGS += -O3 -mavx2
 
-$(OUT)/vk_v6_bench: $(OUT)/tests/vk_v6_bench.o $(OUT)/tests/vk_v6_bench_probe.o $(TESTOBJ) $(EMITOBJ) $(VKOBJ) $(CODECOBJ)
+$(OUT)/vk_v6_bench: $(OUT)/tests/bench.o $(OUT)/tests/bench_probe.o $(TESTOBJ) $(EMITOBJ) $(VKOBJ) $(CODECOBJ)
 	$(CC) $(SANFLAGS) -o $@ $^ $(CODECLIBS) $(LDLIBS) -lm
 
 test: $(OUT)/vk_v6_test
@@ -93,9 +93,9 @@ gpu-shaders:
 check:
 	cd $(ROOT) && python3 scripts/gen-aggvk-min.py --check && scripts/gen-aggvk-spv.sh --check
 
-$(OUT)/vk_v6_cost: $(HERE)/tests/vk_v6_cost.c $(ROOT)/src/agg/gpu_cost.c $(ROOT)/src/agg/gpu_cost.h
+$(OUT)/vk_v6_cost: $(HERE)/tests/cost.c $(ROOT)/src/agg/gpu_cost.c $(ROOT)/src/agg/gpu_cost.h
 	@mkdir -p $(@D)
-	$(CC) -std=gnu11 -O2 $(WARN) -I$(ROOT)/src -o $@ $(HERE)/tests/vk_v6_cost.c $(ROOT)/src/agg/gpu_cost.c -lm
+	$(CC) -std=gnu11 -O2 $(WARN) -I$(ROOT)/src -o $@ $(HERE)/tests/cost.c $(ROOT)/src/agg/gpu_cost.c -lm
 
 test-cost: $(OUT)/vk_v6_cost
 	$(OUT)/vk_v6_cost

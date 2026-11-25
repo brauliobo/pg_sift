@@ -1,5 +1,5 @@
 /*
- * tests/vk_v6_bench.c - the real device against the CPU on the same encoded chunks: ungrouped, dense, high-cardinality hash (two keys, about a
+ * tests/bench.c - the real device against the CPU on the same encoded chunks: ungrouped, dense, high-cardinality hash (two keys, about a
  * million groups), expression, and unsorted top N, at 10M and 50M rows; the device cold (the chunks cross the PCIe link and are decoded) and warm
  * (resident in VRAM). Every device result is compared with the CPU's. Two CPU baselines, all cores (worker processes: the codec's allocator is not
  * thread-safe):
@@ -17,9 +17,9 @@
 
 #include "col/codec.h"
 #include "ccshim.h"
-#include "vk_v6_common.h"
+#include "common.h"
 
-#include "vk_v6_bench.h"
+#include "bench.h"
 
 typedef struct Res
 {
