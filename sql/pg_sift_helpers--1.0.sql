@@ -367,7 +367,7 @@ DECLARE l text;
 BEGIN
 	SET LOCAL sift.agg_force = on;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;
