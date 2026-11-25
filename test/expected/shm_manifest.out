@@ -423,12 +423,14 @@ CREATE TABLE live (id int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO live SELECT i, i % 10 FROM generate_series(1, 20000) i;
 SET client_min_messages = warning;
 CREATE INDEX live_i ON live USING sift_col (id, v);
+-- the blocks of indexes the planner of a query touched (the catalog buffers it reads depend on the server build: an assertions server releases each catalog entry at its last unpin)
 CREATE FUNCTION plan_buffers(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
+DECLARE before bigint;
 BEGIN
 	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
-	EXECUTE 'EXPLAIN (BUFFERS, FORMAT JSON) ' || q INTO j;
-	RETURN coalesce((j->0->'Planning'->>'Shared Hit Blocks')::int, 0) + coalesce((j->0->'Planning'->>'Shared Read Blocks')::int, 0);
+	SELECT sum(pg_stat_get_xact_blocks_fetched(indexrelid)) INTO before FROM pg_index WHERE indexrelid >= 16384;
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q;
+	RETURN (SELECT sum(pg_stat_get_xact_blocks_fetched(indexrelid)) FROM pg_index WHERE indexrelid >= 16384) - before;
 END $$;
 SELECT plan_buffers('SELECT count(*) FROM live WHERE id BETWEEN 100 AND 200') >= 0 AS planner_warm;
  planner_warm 
