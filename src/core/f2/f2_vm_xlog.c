@@ -173,7 +173,7 @@ redo_set(XLogReaderState *r)
 	Buffer		buf;
 
 	/* the bits tell a query that a row is there for it without asking the table: one whose snapshot is not past every transaction they stand for must go first */
-	if (InHotStandby && TransactionIdIsValid(rec->snapshotConflictHorizon))
+	if (InHotStandby && TransactionIdIsNormal(rec->snapshotConflictHorizon))
 		ResolveRecoveryConflictWithSnapshot(rec->snapshotConflictHorizon, false, rec->locator);
 	if (XLogReadBufferForRedoExtended(r, 0, builds_page(r) ? RBM_ZERO_AND_LOCK : RBM_ZERO_ON_ERROR, false, &buf) == BLK_NEEDS_REDO)
 	{

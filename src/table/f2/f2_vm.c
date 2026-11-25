@@ -263,7 +263,7 @@ spans_mark(const Spans *s, uint64 *words, uint64 base, TransactionId *horizon)
 {
 	for (int i = 0; i < s->n; i++)
 	{
-		if (horizon != NULL && s->v[i].hi >= base && s->v[i].lo < base + SIFT_VM_BLOCKS_PER_PAGE && TransactionIdFollows(s->v[i].xid, *horizon))
+		if (horizon != NULL && s->v[i].hi >= base && s->v[i].lo < base + SIFT_VM_BLOCKS_PER_PAGE && TransactionIdIsNormal(s->v[i].xid) && TransactionIdFollows(s->v[i].xid, *horizon))
 			*horizon = s->v[i].xid;
 		words_mark(words, base, s->v[i].lo, s->v[i].hi);
 	}
