@@ -6,7 +6,7 @@
     python3 -I bench/steps/scope_parallel.py table   RAW.tsv [RAW2.tsv ..] [--md FILE]
 
 The fixture is the sift_scope arm of steps/scope_stock_arms.py (`build`). `measure` needs the testing flavour of pg_sift (scripts/pgtest.sh install: SIFT_ROOT/usr is the PREFIX), whose
-sift.test_par_stats makes every participant of a parallel read log one line with its instructions, shared blocks, memory and group table (src/agg/par/stats.c), and the leader the
+sift.test_par_stats makes every participant of a parallel read log one line with its instructions, shared blocks, memory and group table, and the leader the
 sizes of the shared memory of the statement. A round takes each worker count in turn (the order rotates) and for each runs four statements: warm and cold without the counters (the
 executor time of EXPLAIN ANALYZE, which the counters would lengthen by the reads of /proc), and warm and cold with them (the statement's user instructions by perf stat of the backend and
 the postmaster, which counts the workers it forks; the instructions, blocks and memory of each participant from the log; pg_stat_database blocks of the statement). Cold is iolib.cool of

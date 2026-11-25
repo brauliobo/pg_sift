@@ -865,6 +865,6 @@ CREATE FUNCTION sift._test_col_arena_status(OUT slots_in_use int4, OUT slots int
 											OUT seals_forced int8, OUT rows_rebuilt int8, OUT segments int4, OUT bytes_taken int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_arena_status' LANGUAGE C STRICT STABLE;
 
--- src/agg/sorts_test.c: the external sorts of the aggregation (agg/dist/psort.c, agg/rows_psort.c) over n pairs with mem_kb of memory
+-- src/agg/v6/v6_distinct_u64_test.c: the external sorts of the aggregation over n pairs with mem_kb of memory
 CREATE FUNCTION sift._test_sorts(kind text, n int8, mem_kb int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_sorts' LANGUAGE C STRICT;
