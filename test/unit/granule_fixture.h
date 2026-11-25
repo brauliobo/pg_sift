@@ -20,7 +20,7 @@
 
 #define FX_ROWS			2048
 #define FX_SEL_MAX		256		/* rows of the ascending selection of a granule: below SIFT_POINT_ROWS_MAX */
-#define FX_CFGS			5
+#define FX_CFGS			6
 #define FX_MAX_COLS		64
 
 /* How the writer is set for a granule: the tier and wrapper of its chunks, and whether the columns that have a part codec use it */
@@ -30,6 +30,7 @@ typedef struct FxCfg
 	SiftCompressTier tier;
 	int			alg;			/* SIFT_CC_ALG_LZ4 or SIFT_CC_ALG_ZSTD */
 	bool		part_codecs;
+	bool		framed;			/* the cold blocks of strings are framed (SIFT_ENC_FRAMED), as in a part of a sift_table */
 } FxCfg;
 
 typedef enum FxPart

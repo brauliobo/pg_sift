@@ -73,11 +73,12 @@ static const FxColSpec specs[] = {
 #define NCOLS	((int) lengthof(specs))
 
 const FxCfg fx_cfgs[FX_CFGS] = {
-	{"hot-lz4", SIFT_TIER_HOT_L0, SIFT_CC_ALG_LZ4, false},
-	{"warm-lz4", SIFT_TIER_WARM_L1, SIFT_CC_ALG_LZ4, false},
-	{"cold-zstd", SIFT_TIER_COLD_L2, SIFT_CC_ALG_ZSTD, false},
-	{"cold-zstd-part", SIFT_TIER_COLD_L2, SIFT_CC_ALG_ZSTD, true},
-	{"warm-lz4-part", SIFT_TIER_WARM_L1, SIFT_CC_ALG_LZ4, true},
+	{"hot-lz4", SIFT_TIER_HOT_L0, SIFT_CC_ALG_LZ4, false, false},
+	{"warm-lz4", SIFT_TIER_WARM_L1, SIFT_CC_ALG_LZ4, false, false},
+	{"cold-zstd", SIFT_TIER_COLD_L2, SIFT_CC_ALG_ZSTD, false, false},
+	{"cold-zstd-part", SIFT_TIER_COLD_L2, SIFT_CC_ALG_ZSTD, true, false},
+	{"warm-lz4-part", SIFT_TIER_WARM_L1, SIFT_CC_ALG_LZ4, true, false},
+	{"cold-zstd-framed", SIFT_TIER_COLD_L2, SIFT_CC_ALG_ZSTD, false, true},
 };
 
 typedef struct FxData
@@ -684,7 +685,7 @@ write_granule(GranuleFixture *fx, Fx *x, const PartCodecs *pc, const SiftColIn *
 		tid[r] = ((uint64) ((from + r) / 60) << 16) | ((from + r) % 60 + 1);
 	for (int c = 0; c < NCOLS; c++)
 		in_cols[c] = sift_colin_slice(&cols[c], specs[c].group_of > 0 ? lens_eoff[from] : from);
-	in = (SiftGranuleIn) {.nrows = FX_ROWS,.ncols = NCOLS,.tid = tid,.cols = in_cols,.all_frozen = true,.compress_alg = g->cfg->alg,.tier = g->cfg->tier,
+	in = (SiftGranuleIn) {.nrows = FX_ROWS,.ncols = NCOLS,.tid = tid,.cols = in_cols,.all_frozen = true,.compress_alg = g->cfg->alg,.tier = g->cfg->tier,.framed = g->cfg->framed,
 		.dicts = g->cfg->part_codecs ? pc->dict : NULL,.part_fsst = g->cfg->part_codecs ? pc->fsst : NULL,.part_cdict = g->cfg->part_codecs ? pc->cdict : NULL};
 	initStringInfo(&out);
 	g->desc = sift_granule_encode(&out, &in);
