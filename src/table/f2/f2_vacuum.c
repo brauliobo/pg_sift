@@ -44,6 +44,9 @@
 #define SIFT_VAC_ROW_BYTES 64
 #define SIFT_VAC_EXPANSION 8
 
+/* The position of heap_blks_scanned inside a part, in steps of a part */
+#define VAC_PROGRESS_STEPS	1024
+
 typedef struct VacCtx
 {
 	MemoryContext cx;			/* what outlives a partition: the addresses of a batch and the results of the indexes */
@@ -57,6 +60,9 @@ typedef struct VacCtx
 	uint32		cap;
 	uint64		total_dead;
 	int			batches;
+	int			parts_done;		/* the parts the first pass has been through, of parts_total: the position of heap_blks_scanned */
+	int			parts_total;
+	BlockNumber nblocks;		/* the file when the VACUUM began: heap_blks_vacuumed counts against it */
 } VacCtx;
 
 /* ---- the indexes ---- */
@@ -223,6 +229,8 @@ collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const 
 			MemoryContextReset(gcx);
 			if (n > 0)
 				store->host->on_vacuum_dead_tids(vc, tids, n);
+			sift_f2_vacuum_progress_scanned(Min(vc->parts_done * VAC_PROGRESS_STEPS + (int) ((uint64) VAC_PROGRESS_STEPS * (g + 1) / pin->part->hdr.ngranules),
+												vc->parts_total * VAC_PROGRESS_STEPS), vc->parts_total * VAC_PROGRESS_STEPS);
 			sift_vacuum_delay_point();
 		}
 	}
@@ -365,8 +373,11 @@ collect_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand
 		return;
 	parts = sift_manifest_read_parts(rel, &e, &np);
 	for (int i = 0; i < np; i++)
+	{
 		if (parts[i].ndead > 0 || (parts[i].flags & SIFT_PART_FLAG_UNFROZEN) != 0)
 			collect_part(vc, store, &e, &parts[i], cutoffs->OldestXmin);
+		sift_f2_vacuum_progress_scanned(Min(++vc->parts_done, vc->parts_total) * VAC_PROGRESS_STEPS, vc->parts_total * VAC_PROGRESS_STEPS);
+	}
 }
 
 static void
@@ -380,7 +391,6 @@ collect_all(VacCtx *vc, SiftF2Store *store, const SiftManifestRead *mr, const st
 		sift_vacuum_delay_point();
 		collect_partition(vc, store, &mr->entries[i], cutoffs, oldest_fx, aggressive);
 		MemoryContextReset(cx);
-		sift_f2_vacuum_progress_scanned(i + 1, mr->n);
 	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -631,7 +641,8 @@ oldest_held(Relation rel, const SiftPartitionEntry *cand, FullTransactionId lowe
  * the partitions still hold (the settled ones as they are now, the others as they were) is relfrozenxid, if that is newer than it was.
  */
 static void
-settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const struct VacuumCutoffs *cutoffs, FullTransactionId oldest_fx, FullTransactionId target_fx, bool aggressive)
+settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const struct VacuumCutoffs *cutoffs, FullTransactionId oldest_fx, FullTransactionId target_fx, bool aggressive,
+		   BlockNumber nblocks)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum partition");
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -656,6 +667,7 @@ settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const s
 
 		sift_vacuum_delay_point();
 		settle_partition(rel, store, cand, oldest_fx, target_fx, aggressive, &rewrite_left);
+		pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_VACUUMED, (int64) nblocks * (k + 1) / mr->n);
 		after = oldest_held(rel, cand, oldest_fx);
 		settled = FullTransactionIdPrecedes(after, settled) ? after : settled;
 		MemoryContextReset(cx);
@@ -697,9 +709,14 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	sift_stage_flush(rel);
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	sift_f2_vacuum_progress_total(rel);
+	vc.nblocks = RelationGetNumberOfBlocks(rel);
+	for (int i = 0; i < mr.n; i++)
+		vc.parts_total += (int) mr.entries[i].nparts;
 	collect_all(&vc, store, &mr, &cutoffs, oldest_fx, aggressive);
+	sift_f2_vacuum_progress_scanned(1, 1);
 	flush_batch(&vc);
-	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive);
+	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_VACUUM_HEAP);
+	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive, vc.nblocks);
 	sift_f2_tier_maintain(rel, store, oldest_fx);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_INDEX_CLEANUP);
 	sift_f2_vacuum_progress_indexes(vc.nindexes, 0);
