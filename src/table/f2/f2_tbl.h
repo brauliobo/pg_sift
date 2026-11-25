@@ -95,6 +95,7 @@ typedef struct SiftTblF2Extra
 	SiftTblTidPool pool;
 	bool		initialized;
 	bool		has_wide;		/* some attribute may hold a value over SIFT_TBL_WIDE_THRESHOLD */
+	bool		has_unique;		/* a unique index: its check of a conflict must find a staged row of a running insert (publish_staged in f2_dml.c) */
 	bool		has_partial_or_expr_unique;	/* a unique index has a predicate or an expression: its check of a conflict reads the values of the row, so a speculative insert writes the stage at once */
 	Bitmapset  *key_attrs;		/* the attributes of the unique and primary key indexes, for the lock mode of an UPDATE */
 	Bitmapset  *hot_blocking_attrs;	/* the attributes of every index but the summarising ones: an UPDATE that changes one is no column delta */

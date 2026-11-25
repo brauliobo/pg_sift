@@ -94,7 +94,7 @@ extern void sift_tbl_rowlock_mark_updated(Relation rel, uint64 old_tid, uint64 n
 
 /* The row is changed in place by a column delta of the current transaction: the entry keeps its address, the writer and the delta count */
 extern void sift_tbl_rowlock_mark_col_delta(Relation rel, uint64 tid, CommandId cid);
-extern void sift_tbl_rowlock_set_speculative(Relation rel, uint64 tid, uint32 token, bool on);
+extern bool sift_tbl_rowlock_set_staged(Relation rel, uint64 tid, uint32 token);
 extern uint32 sift_tbl_rowlock_speculative_token(Relation rel, uint64 tid);
 
 /* The speculative insert of the row ended (table/f2/f2_spec.h): true when a probe asked for the stage that holds it to be written; the stage was written; what a dirty probe of an address no part holds learns */

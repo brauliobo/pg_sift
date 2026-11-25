@@ -576,23 +576,24 @@ sift_tbl_rowlock_mark_col_delta(Relation rel, uint64 tid, CommandId cid)
 	LWLockRelease(stripe_lock(si));
 }
 
-void
-sift_tbl_rowlock_set_speculative(Relation rel, uint64 tid, uint32 token, bool on)
+bool
+sift_tbl_rowlock_set_staged(Relation rel, uint64 tid, uint32 token)
 {
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
 	int			si = stripe_of(&k);
 	SiftRowLockEntry *e;
 
 	if (!tier1_attached())
-		return;
+		return false;
 	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
-	e = on ? entry_for_write(si, &k) : sift_rowlock_find(rows, si, &k);
-	if (e != NULL && on)
+	e = entry_for_write(si, &k);
+	if (e != NULL)
 	{
-		sift_spec_stage(e, GetTopFullTransactionId(), token);
+		sift_spec_stage(e, GetCurrentFullTransactionId(), token);
 		(void) sift_touched_add(&k, SIFT_ESC_PART_ALL);
 	}
 	LWLockRelease(stripe_lock(si));
+	return e != NULL;
 }
 
 bool

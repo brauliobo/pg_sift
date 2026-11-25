@@ -1,0 +1,85 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_begin s2_begin s1_insert s2_insert s1_commit s2_commit s3_read
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_insert: INSERT INTO iso_pk VALUES (5000, 1);
+step s2_insert: INSERT INTO iso_pk VALUES (5000, 2); <waiting ...>
+step s1_commit: COMMIT;
+step s2_insert: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_pk_pkey"
+step s2_commit: COMMIT;
+step s3_read: SELECT id, v FROM iso_pk ORDER BY id, v;
+  id|v
+----+-
+   1|1
+5000|1
+(2 rows)
+
+
+starting permutation: s1_begin s2_begin s1_insert s2_insert s1_abort s2_commit s3_read
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_insert: INSERT INTO iso_pk VALUES (5000, 1);
+step s2_insert: INSERT INTO iso_pk VALUES (5000, 2); <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_insert: <... completed>
+step s2_commit: COMMIT;
+step s3_read: SELECT id, v FROM iso_pk ORDER BY id, v;
+  id|v
+----+-
+   1|1
+5000|2
+(2 rows)
+
+
+starting permutation: s1_begin s1_savepoint s1_insert s1_back s2_begin s2_insert s2_commit s1_commit s3_read
+step s1_begin: BEGIN;
+step s1_savepoint: SAVEPOINT s;
+step s1_insert: INSERT INTO iso_pk VALUES (5000, 1);
+step s1_back: ROLLBACK TO s;
+step s2_begin: BEGIN;
+step s2_insert: INSERT INTO iso_pk VALUES (5000, 2);
+step s2_commit: COMMIT;
+step s1_commit: COMMIT;
+step s3_read: SELECT id, v FROM iso_pk ORDER BY id, v;
+  id|v
+----+-
+   1|1
+5000|2
+(2 rows)
+
+
+starting permutation: s1_begin s1_savepoint s1_insert s2_begin s2_insert s1_commit s2_commit s3_read
+step s1_begin: BEGIN;
+step s1_savepoint: SAVEPOINT s;
+step s1_insert: INSERT INTO iso_pk VALUES (5000, 1);
+step s2_begin: BEGIN;
+step s2_insert: INSERT INTO iso_pk VALUES (5000, 2); <waiting ...>
+step s1_commit: COMMIT;
+step s2_insert: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_pk_pkey"
+step s2_commit: COMMIT;
+step s3_read: SELECT id, v FROM iso_pk ORDER BY id, v;
+  id|v
+----+-
+   1|1
+5000|1
+(2 rows)
+
+
+starting permutation: s1_begin s2_begin s1_key_update s2_insert s1_commit s2_commit s3_read
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_key_update: UPDATE iso_pk SET id = 5000 WHERE id = 1;
+step s2_insert: INSERT INTO iso_pk VALUES (5000, 2); <waiting ...>
+step s1_commit: COMMIT;
+step s2_insert: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_pk_pkey"
+step s2_commit: COMMIT;
+step s3_read: SELECT id, v FROM iso_pk ORDER BY id, v;
+  id|v
+----+-
+5000|1
+(1 row)
+

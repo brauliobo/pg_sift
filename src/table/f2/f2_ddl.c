@@ -96,25 +96,26 @@ define_time_columns(Relation rel, SiftF2Store *store)
 	store->spec.time_col = store->spec.time_cols[0];
 }
 
-static bool
-has_partial_or_expr_unique(Relation rel)
+static void
+unique_indexes(Relation rel, SiftTblF2Extra *x)
 {
 	List	   *indexes = RelationGetIndexList(rel);
 	ListCell   *lc;
-	bool		found = false;
 
 	foreach(lc, indexes)
 	{
 		HeapTuple	tup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(lfirst_oid(lc)));
+		Form_pg_index ix;
 
 		if (!HeapTupleIsValid(tup))
 			continue;
-		found = found || (((Form_pg_index) GETSTRUCT(tup))->indisunique &&
-						  (!heap_attisnull(tup, Anum_pg_index_indpred, NULL) || !heap_attisnull(tup, Anum_pg_index_indexprs, NULL)));
+		ix = (Form_pg_index) GETSTRUCT(tup);
+		x->has_unique = x->has_unique || ix->indisunique;
+		x->has_partial_or_expr_unique = x->has_partial_or_expr_unique ||
+			(ix->indisunique && (!heap_attisnull(tup, Anum_pg_index_indpred, NULL) || !heap_attisnull(tup, Anum_pg_index_indexprs, NULL)));
 		ReleaseSysCache(tup);
 	}
 	list_free(indexes);
-	return found;
 }
 
 void
@@ -171,7 +172,7 @@ sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 	x->hot_blocking_attrs = bms_copy(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_HOT_BLOCKING));
 	x->summarized_attrs = bms_copy(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED));
 	x->protected_attrs = sift_col_delta_protected_attrs(store);
-	x->has_partial_or_expr_unique = has_partial_or_expr_unique(rel);
+	unique_indexes(rel, x);
 	MemoryContextSwitchTo(old);
 }
 

@@ -142,6 +142,17 @@ stage_row(Relation rel, SiftF2Store *store, TupleTableSlot *slot, CommandId cid,
 	return packed;
 }
 
+/*
+ * The check of a unique index of another transaction reads a row before the commit only where it can find it: in a part, or announced in the row lock table (f2_spec.h) so that it waits for
+ * the inserter. A server without that table (pg_sift not preloaded) or with no room in it has the stage written instead.
+ */
+static void
+publish_staged(Relation rel, SiftF2Store *store, uint64 tid, uint32 token)
+{
+	if ((token != 0 || sift_tbl_extra(store)->has_unique) && !sift_tbl_rowlock_set_staged(rel, tid, token))
+		sift_stage_flush(rel);
+}
+
 static void
 key_of_slot(Relation rel, SiftF2Store *store, TupleTableSlot *slot, uint64 tid, uint8 *key)
 {
@@ -158,8 +169,10 @@ key_of_slot(Relation rel, SiftF2Store *store, TupleTableSlot *slot, uint64 tid, 
 void
 sift_tbl_f2_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options pg_attribute_unused(), struct BulkInsertStateData *bistate pg_attribute_unused())
 {
+	SiftF2Store *store = sift_f2_store_open(rel);
+
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-	stage_row(rel, sift_f2_store_open(rel), slot, cid, false);
+	publish_staged(rel, store, stage_row(rel, store, slot, cid, false), 0);
 	log_change(rel, SIFT_TBL_OP_INSERT, slot, NULL);
 	pgstat_count_heap_insert(rel, 1);
 }
@@ -186,7 +199,7 @@ sift_tbl_f2_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, Comma
 	else
 		for (int i = 0; i < nslots; i++)
 		{
-			stage_row(rel, store, slots[i], cid, false);
+			publish_staged(rel, store, stage_row(rel, store, slots[i], cid, false), 0);
 			if (published)
 				log_published(rel, SIFT_TBL_OP_INSERT, slots[i], NULL);
 			CHECK_FOR_INTERRUPTS();
@@ -210,7 +223,7 @@ sift_tbl_f2_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, Command
 
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 	tid = stage_row(rel, store, slot, cid, false);
-	sift_tbl_rowlock_set_speculative(rel, tid, specToken, true);
+	publish_staged(rel, store, tid, specToken);
 	if (sift_tbl_extra(store)->has_partial_or_expr_unique)
 		sift_stage_flush(rel);
 	pgstat_count_heap_insert(rel, 1);
@@ -435,6 +448,8 @@ update_row(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, 
 		new_packed = stage_row(rel, store, slot, cid, false);
 		sift_stage_delete_update(sift_stage_get(rel, &store->spec), old_key, old_packed, new_packed);
 		sift_tbl_f2_record_update(rel, old_packed, new_packed, cid);
+		if (*lockmode == LockTupleExclusive)
+			publish_staged(rel, store, new_packed, 0);
 		if (sift_tbl_rowlock_is_escalated(rel) && sift_stage_peek(rel)->bulk_rows == 0)
 			sift_tbl_f2_stage_bulk(rel, store);
 		*update_indexes = TU_All;
