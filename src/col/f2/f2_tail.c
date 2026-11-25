@@ -428,10 +428,18 @@ relocate_run(Relation rel, const SiftF2Store *store, FullTransactionId horizon, 
 static void
 rehome_headers(Relation rel, const Tail *t)
 {
+	MemoryContext move = sift_mem_allocset_create(CurrentMemoryContext, "sift tail header move");
+	MemoryContext old = MemoryContextSwitchTo(move);
+
 	for (int i = 0; i < t->n; i++)
+	{
 		if (t->span[i].kind == TAIL_PART && t->part[i].meta_hi == t->high_water &&
 			move_pieces(rel, &t->item[i], HEADER_ONLY) == PIECES_MOVED)
 			(void) sift_fsm_reclaim_exclusive(rel);
+		MemoryContextReset(move);
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(move);
 }
 
 static void
