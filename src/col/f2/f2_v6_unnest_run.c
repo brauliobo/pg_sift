@@ -322,7 +322,7 @@ bind_pg(UnRun *u, const SiftColRel *r, int k)
 		u->pgslot[k][c] = slot_of(u, r, &it.col[c], false);
 		pin[c] = (SiftV6PgIn) {.typid = it.col[c].typid,.scale = it.col[c].scale};
 	}
-	u->pg[k] = sift_v6_pgexpr_open(CurrentMemoryContext, it.expr, it.nin, pin);
+	u->pg[k] = sift_v6_pgexpr_open(CurrentMemoryContext, NULL, it.expr, it.nin, pin);
 	u->pg[k]->restype = it.restype;
 	sift_vx_out_init(&u->pgout[k], CurrentMemoryContext);
 }

@@ -44,7 +44,7 @@ key_expr_new(SiftV6Pipe *p, Expr *e)
 	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
 	List	   *vars;
 
-	SIFT_INVARIANT(sift_v6_pgexpr_vars(e, SIFT_V6_PGX_RELID, &vars), "a key of the join is an expression of at most %d columns", SIFT_V6_MAX_COLS);
+	SIFT_INVARIANT(sift_v6_pgexpr_vars(e, SIFT_V6_PGX_RELID, 0, &vars), "a key of the join is an expression of at most %d columns", SIFT_V6_MAX_COLS);
 	ke->nin = list_length(vars);
 	for (int j = 0; j < ke->nin; j++)
 	{
@@ -53,7 +53,7 @@ key_expr_new(SiftV6Pipe *p, Expr *e)
 		ke->col[j] = (int) (c - x->rcol);
 		pin[j] = (SiftV6PgIn) {.typid = c->typid,.scale = c->scale};
 	}
-	ke->x = sift_v6_pgexpr_open(p->cx, NULL, sift_v6_pgexpr_renumber(e, SIFT_V6_PGX_RELID, vars), ke->nin, pin);
+	ke->x = sift_v6_pgexpr_open(p->cx, NULL, sift_v6_pgexpr_renumber(e, SIFT_V6_PGX_RELID, 0, vars), ke->nin, pin);
 	ke->x->restype = getBaseType(exprType((Node *) e));
 	sift_vx_out_init(&ke->out, p->cx);
 	return ke;
