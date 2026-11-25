@@ -582,7 +582,7 @@ add_unnamed_parts(SiftF2ScopeParts *p, const SiftManifestRead *mr, const SiftSco
 
 			if (sift_f2s_gen_map_find(&named, parts[j].part_gen, &at))
 				continue;
-			part = sift_part_open(p->rel, parts[j].header_blk, parts[j].part_gen, (uint32) mr->entries[k].part_id);
+			part = sift_part_open_desc(p->rel, &parts[j], (uint32) mr->entries[k].part_id);
 			if (part->hdr.ngranules == 0)
 				continue;
 			if (p->n + p->nadd == p->cap)
