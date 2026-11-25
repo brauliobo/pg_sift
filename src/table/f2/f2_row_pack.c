@@ -284,6 +284,32 @@ sift_row_pack_build(const SiftRows *rows, uint64 granules_len, StringInfo out)
 
 /* ---- the reader ---- */
 
+/* The columns the writer makes: integers of 1, 2, 4 or 8 bytes, floats of 8, strings of no fixed width */
+static bool
+column_valid(const SiftRowPackCol *c)
+{
+	switch (c->kind)
+	{
+		case SIFT_CELL_INT:
+			return c->width == 1 || c->width == 2 || c->width == 4 || c->width == 8;
+		case SIFT_CELL_F8:
+			return c->width == 8;
+		case SIFT_CELL_STR:
+			return c->width == 0;
+		default:
+			return false;
+	}
+}
+
+/* The most bytes a block of nrows rows has raw: the offsets, and for each row its address, null bits, fixed length and, for each column, the larger of a float and an inline string */
+static uint64
+raw_len_max(int ncols, uint32 nrows)
+{
+	const uint64 row = sizeof(uint64) + null_bytes(ncols) + sizeof(uint16) + (uint64) ncols * (sizeof(uint16) + SIFT_ROW_PACK_INLINE_MAX);
+
+	return (uint64) (nrows + 1) * sizeof(uint32) + nrows * row;
+}
+
 SiftRowPackBlk *
 sift_row_pack_read_block(Relation rel, const SiftPart *part, uint32 blk)
 {
@@ -304,8 +330,17 @@ sift_row_pack_read_block(Relation rel, const SiftPart *part, uint32 blk)
 	if (hdr.magic != SIFT_ROW_PACK_MAGIC || hdr.version != SIFT_ROW_PACK_VER || hdr.ncols != ncols || hdr.rows_per_blk != SIFT_ROW_PACK_ROWS || blk >= hdr.nblocks ||
 		hdr.dir_off + (uint64) hdr.nblocks * sizeof(e) > se->len || hdr.data_off > se->len)
 		SIFT_DAMAGE_DATA(rel, errmsg("sift: a row pack does not match its part"));
+	for (int c = 0; c < ncols; c++)
+	{
+		SiftRowPackCol col;
+
+		memcpy(&col, head + sizeof(hdr) + (Size) c * sizeof(col), sizeof(col));
+		if (!column_valid(&col))
+			SIFT_DAMAGE_DATA(rel, errmsg("sift: column %d of a row pack is of kind %u and width %u", c, col.kind, col.width));
+	}
 	sift_part_read_section_bytes(rel, part, se, hdr.dir_off + (uint64) blk * sizeof(e), sizeof(e), &e);
 	if (e.nrows == 0 || e.nrows > SIFT_ROW_PACK_ROWS || hdr.data_off + (uint64) e.off_qwords * 8 + e.comp_len > se->len || e.raw_len < (e.nrows + 1) * sizeof(uint32) ||
+		e.raw_len > raw_len_max(ncols, e.nrows) ||
 		(e.codec_flags & SIFT_RPACK_CODEC_MASK) > SIFT_RPACK_CODEC_LZ4 || ((e.codec_flags & SIFT_RPACK_CODEC_MASK) == SIFT_RPACK_CODEC_RAW && e.comp_len != e.raw_len))
 		SIFT_DAMAGE_DATA(rel, errmsg("sift: a row pack block does not match its entry"));
 	b = palloc(sizeof(SiftRowPackBlk) + (Size) ncols * sizeof(SiftRowPackCol) + e.raw_len);
@@ -329,6 +364,32 @@ sift_row_pack_read_block(Relation rel, const SiftPart *part, uint32 blk)
 	blocks_read++;
 #endif
 	return b;
+}
+
+void
+sift_row_pack_check(Relation rel, const SiftPart *part, uint64 nrows)
+{
+	const SiftSecDirEntry *se = sift_part_section(part, SEC_ROW_PACK);
+	SiftRowPackHdr hdr;
+	uint64		seen = 0;
+
+	if (se->len < sizeof(hdr))
+		SIFT_DAMAGE_DATA(rel, errmsg("sift: a row pack is shorter than its header"));
+	sift_part_read_section_bytes(rel, part, se, 0, sizeof(hdr), &hdr);
+	if (hdr.nrows != nrows || hdr.nblocks != (nrows + SIFT_ROW_PACK_ROWS - 1) / SIFT_ROW_PACK_ROWS)
+		SIFT_DAMAGE_DATA(rel, errmsg("sift: a row pack of %u rows in %u blocks is not the %llu rows of its part", hdr.nrows, hdr.nblocks, (unsigned long long) nrows));
+	for (uint32 blk = 0; blk < hdr.nblocks; blk++)
+	{
+		SiftRowPackBlk *b = sift_row_pack_read_block(rel, part, blk);
+
+		CHECK_FOR_INTERRUPTS();
+		for (uint32 r = 0; r < b->nrows; r++)
+			pfree(sift_row_pack_row(b, r));
+		seen += b->nrows;
+		pfree(b);
+	}
+	if (seen != nrows)
+		SIFT_DAMAGE_DATA(rel, errmsg("sift: the blocks of a row pack hold %llu rows, its part %llu", (unsigned long long) seen, (unsigned long long) nrows));
 }
 
 Size

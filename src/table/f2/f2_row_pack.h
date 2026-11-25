@@ -92,6 +92,9 @@ typedef struct SiftRowPackBlk
 
 extern SiftRowPackBlk *sift_row_pack_read_block(Relation rel, const SiftPart *part, uint32 blk);
 
+/* Every block of the pack of the part (nrows rows) decodes, and its rows are the rows of the part: SIFT_DAMAGE_DATA otherwise */
+extern void sift_row_pack_check(Relation rel, const SiftPart *part, uint64 nrows);
+
 /* The size of a decoded block, for the budget of the cache */
 extern Size sift_row_pack_blk_bytes(const SiftRowPackBlk *b);
 
