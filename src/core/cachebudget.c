@@ -99,7 +99,7 @@ evict_begin(EvictRun *run)
 }
 
 static bool
-evict_oldest(EvictRun *run)
+evict_oldest(EvictRun *run, uint64 keep_from)
 {
 	int			victim = -1;
 	uint64		best = UINT64_MAX;
@@ -111,7 +111,7 @@ evict_oldest(EvictRun *run)
 			best = run->oldest[i];
 			victim = i;
 		}
-	if (victim < 0 || !kinds[victim]->evict_one())
+	if (victim < 0 || best >= keep_from || !kinds[victim]->evict_one())
 		return false;
 	run->oldest[victim] = kinds[victim]->oldest();
 	after = sift_cache_total_bytes();
@@ -129,8 +129,9 @@ trim_reclaimed(void)
 	reclaimed = 0;
 }
 
-bool
-sift_cache_room(Size need)
+/* Drops the oldest unpinned entries used before keep_from until need more bytes fit the limit */
+static bool
+make_room(Size need, uint64 keep_from)
 {
 	Size		limit = (Size) sift_backend_cache_kb * 1024;
 	bool		fits = need <= limit;
@@ -140,7 +141,7 @@ sift_cache_room(Size need)
 	if (sift_cache_stress)
 	{
 		evict_begin(&run);
-		while (evict_oldest(&run))
+		while (evict_oldest(&run, keep_from))
 			;
 	}
 #endif
@@ -148,16 +149,22 @@ sift_cache_room(Size need)
 	{
 		evict_begin(&run);
 		while (fits && run.total + need > limit)
-			fits = evict_oldest(&run);
+			fits = evict_oldest(&run, keep_from);
 	}
 	trim_reclaimed();
 	return fits;
 }
 
 bool
+sift_cache_room(Size need)
+{
+	return make_room(need, UINT64_MAX);
+}
+
+bool
 sift_cache_commit(void)
 {
-	return sift_cache_room(0);
+	return make_room(0, clock_now);
 }
 
 /* MEM[MEM-IDLE-15]: xact-end cache commit + idle malloc_trim hook (reclaims >= 128 KB) */
@@ -172,7 +179,7 @@ cache_xact_event(XactEvent event, void *arg)
 	xact_floor = clock_now;
 	if (cache_root == NULL)
 		return;
-	sift_cache_commit();
+	sift_cache_room(0);
 	if (used)
 		sift_mem_trim_if_free(CACHE_IDLE_TRIM_FREE_BYTES);
 }
@@ -195,7 +202,7 @@ backend_cache_assign(int newval, void *extra)
 	else
 	{
 		evict_begin(&run);
-		while (run.total > (Size) newval * 1024 && evict_oldest(&run))
+		while (run.total > (Size) newval * 1024 && evict_oldest(&run, UINT64_MAX))
 			;
 	}
 	trim_reclaimed();

@@ -47,7 +47,7 @@ extern void sift_cache_register(const SiftCacheKind *kind);
 /* drops the oldest unpinned entries of any cache until need more bytes fit the limit; false when need alone passes it or what is left is pinned */
 extern bool sift_cache_room(Size need);
 
-/* after an entry is in: drops the oldest others until the tree is under the limit again (the allocator rounds up to blocks); false when it still is not, and the entry is the statement's alone */
+/* after an entry is in (stamped with sift_cache_tick() last): drops the oldest others, never that entry, until the tree is under the limit again (the allocator rounds up to blocks); false when it still is not, and the entry is the statement's alone */
 extern bool sift_cache_commit(void);
 
 extern Size sift_cache_total_bytes(void);
