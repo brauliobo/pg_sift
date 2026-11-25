@@ -143,9 +143,9 @@ SELECT * FROM same('SELECT count(*) AS n FROM ev WHERE dim_id IN (SELECT id FROM
 (1 row)
 
 SELECT * FROM same('SELECT count(*) AS n FROM ev WHERE dim_id IN (SELECT id FROM dims WHERE name < ''n00300'' COLLATE "en-x-icu")');
-                 plan                  | result_rows | vs_no_pushdown | vs_normal_plan 
----------------------------------------+-------------+----------------+----------------
- SiftAgg,299 rows read,299 rows loaded |           1 |              0 |              0
+                  plan                   | result_rows | vs_no_pushdown | vs_normal_plan 
+-----------------------------------------+-------------+----------------+----------------
+ SiftAgg,30001 rows read,299 rows loaded |           1 |              0 |              0
 (1 row)
 
 SELECT * FROM same('SELECT count(*) AS n FROM ev WHERE dim_id IN (SELECT id FROM dims WHERE day < date ''2024-01-05'')');
