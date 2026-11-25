@@ -16,14 +16,14 @@ BEGIN
 	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
 END $$;
 
--- the buffers the bitmap index scan of a query touched
+-- the blocks of indexes a query touched (the catalog buffers it reads depend on the server build: an assertions server releases each catalog entry at its last unpin)
 CREATE FUNCTION idx_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
+DECLARE before bigint;
 BEGIN
 	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
-	EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' || q INTO j;
-	RETURN (SELECT coalesce(sum(("n"->>'Shared Hit Blocks')::int + ("n"->>'Shared Read Blocks')::int), -1)
-			FROM jsonb_path_query(j, 'strict $.** ? (@."Node Type" == "Bitmap Index Scan")') n);
+	SELECT sum(pg_stat_get_xact_blocks_fetched(indexrelid)) INTO before FROM pg_index WHERE indexrelid >= 16384;
+	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON) ' || q;
+	RETURN (SELECT sum(pg_stat_get_xact_blocks_fetched(indexrelid)) FROM pg_index WHERE indexrelid >= 16384) - before;
 END $$;
 
 -- Three key columns of 400000 rows in the order of the key: a (10 values), b (40 values with NULLs), c (500 values); v and s are not in the key

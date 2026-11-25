@@ -666,13 +666,14 @@ BEGIN
 	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
 END $$;
 
--- The shared buffers the planner of a query touched
+-- The blocks of indexes the planner of a query touched (the catalog buffers it reads depend on the server build: an assertions server releases each catalog entry at its last unpin)
 CREATE FUNCTION plan_buffers(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
+DECLARE before bigint;
 BEGIN
 	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off;
-	EXECUTE 'EXPLAIN (BUFFERS, FORMAT JSON) ' || q INTO j;
-	RETURN coalesce((j->0->'Planning'->>'Shared Hit Blocks')::int, 0) + coalesce((j->0->'Planning'->>'Shared Read Blocks')::int, 0);
+	SELECT sum(pg_stat_get_xact_blocks_fetched(indexrelid)) INTO before FROM pg_index WHERE indexrelid >= 16384;
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q;
+	RETURN (SELECT sum(pg_stat_get_xact_blocks_fetched(indexrelid)) FROM pg_index WHERE indexrelid >= 16384) - before;
 END $$;
 
 -- What the scans since the last call did: {addresses exact, addresses the heap tests again, granules the zones ruled out, granules read, granules read for a sparse column's rows}
