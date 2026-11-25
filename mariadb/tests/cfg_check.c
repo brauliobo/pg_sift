@@ -1,5 +1,5 @@
 /*
- * tests/cfg_check_test.c - the definitions cfg_check.c accepts (the forms sift_attach writes) and the injection payloads it refuses.
+ * tests/cfg_check.c - the definitions cfg_check.c accepts (the forms sift_attach writes) and the injection payloads it refuses.
  * A program of its own: no server, no engine.
  */
 #include <stdio.h>

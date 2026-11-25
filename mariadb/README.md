@@ -244,7 +244,7 @@ own, so the library only takes an index definition (the `cfg` of `sift_create`) 
 `sift_q_<index>` of the database of the table (it must exist when the index is created), the key as `t.<column>` or through
 `sift_k_<index>`, and a text expression made of the columns of the table (`t.col`), literals and string functions (`CONCAT`,
 `CONCAT_WS`, `IFNULL`, `COALESCE`, `LOWER`, `SUBSTRING`, `REPLACE`, `CAST`, `CONVERT`, `JSON_VALUE`, ...); a sub-select, a comment, a
-variable or a function with side effects is refused. `tests/security.sh` and `tests/cfg_check_test.c` check it. An index made by an
+variable or a function with side effects is refused. `tests/security.sh` and `tests/cfg_check.c` check it. An index made by an
 older build with another definition is refused with a message to `sift_rebuild` it. The UDFs themselves, like any UDF, are
 callable by every user of the server: grant access to the schema, not to the functions, and do not give untrusted users the
 accounts that run `sift_drain`, `sift_load` and `sift_drop`.

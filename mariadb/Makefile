@@ -74,7 +74,7 @@ $(OUT)/stress: $(HERE)/tests/stress.c | $(OUT)
 	$(CC) -O2 -Wall -pthread -I$(MDB_CLI) -o $@ $< -lmariadb
 
 # the check of an index definition (cfg_check.c) against injection payloads and the forms sift_attach writes: no server
-$(OUT)/cfg_check_test: $(HERE)/tests/cfg_check_test.c $(HERE)/cfg_check.c $(HERE)/cfg_check.h | $(OUT)
+$(OUT)/cfg_check_test: $(HERE)/tests/cfg_check.c $(HERE)/cfg_check.c $(HERE)/cfg_check.h | $(OUT)
 	$(CC) -O2 -g -Wall -Wextra -Werror -D_GNU_SOURCE -I$(HERE) -o $@ $< $(HERE)/cfg_check.c
 
 cfg-check-test: $(OUT)/cfg_check_test
