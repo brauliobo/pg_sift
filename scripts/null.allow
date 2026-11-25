@@ -18,7 +18,6 @@ src/agg/sip_scan.c	sift_agg_v6_sip_plan_path	list-first	custom_private of a path
 src/agg/stream.c	sift_agg_v6_stream_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
 src/agg/topn/topn.c	sift_agg_v6_topn_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
 src/agg/topn/topn.c	topn_begin	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
-src/agg/win/window.c	sift_agg_v6_window_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
 src/agg/hybrid/exec_fold.c	agg_begin	list-first	custom_private and its entries are laid out by sift_hybrid_agg_plan_path (agg/hybrid/int.h): ints, qinfo, estimate, the packed spec, the group count
 src/agg/hybrid/plan.c	init_plan_rows	list-first	plan_id of a SubPlan of root->init_plans is the 1-based position of its plan in glob->subplans, which the planner appended it to
 src/agg/hybrid/plan.c	sift_hybrid_plan_path	list-first	best->custom_private was made by add_path_of in this file with all of its entries
@@ -36,3 +35,8 @@ src/agg/vexpr.c	sift_v6_plan_scan	list-first	custom_private is the list every ca
 src/agg/unnest/exists.c	exists_subplan	list-first	sp is a SubPlan of the plan: its plan_id is the 1-based position of its root in glob->subroots
 src/agg/unnest/jsonb.c	array_column	list-first	an index column whose indexkeys entry is 0 is an expression: the index has one indexprs entry for each of them, in order
 src/agg/first/node.c	first_begin	list-first	custom_private and custom_plans of a SiftAggV6First plan are the lists its own path function made: the packed columns and the one plan of the rows
+src/agg/safety.c	initplan_ok	list-first	subplan_runs_at_start has just tested plan_id against the length of glob->subroots, and the loop only reaches an init plan of this root
+src/col/f2/agg/proj/sort_plan.c	sort_plan_path	list-first	best is a CustomPath of sort_path_methods, whose custom_private is the list its own path function made, every entry present
+src/col/f2/agg/scope/match.c	match_left	list-first	s is the Query this function has just made, whose fromlist is the list_make1 of its one RangeTblRef
+src/col/f2/agg/scope/run.c	scope_begin	list-first	custom_private and custom_exprs are the lists of the scope plan function: the spec and the scan spec are always there, and the key and the two bounds are in custom_exprs when the spec says key_given, lo_strat and hi_strat
+src/col/f2/agg/scope/scope.c	pairs_table	list-first	a pairs_query is kept only when single_table_query held, or is the query of sift_v6_match_two_paths, whose rtable is the list_make1 of the pairs table

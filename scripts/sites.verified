@@ -9,7 +9,6 @@ src/bm25/funcs.c	match_selectivity	guarded	the index OID is a member of the rela
 src/col/am/conn_route.c	major_of	guarded	the OID is the parent index of a connection of an index being built or altered, found by serving_index in the relation list of its parent table, which this statement holds open with a lock: DROP INDEX waits for that lock; index_open raises for a missing one
 src/col/am/conn_route.c	sift_col_conn_state	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/v1/am.c	sift_col_v1_flush_held	guarded	the OID is one this backend queued for a write (sift_cwbuf_pending) in a transaction that holds its lock; the pending list is cleared for an index dropped in the transaction (sift_cwbuf_discard)
-src/col/am/cache.c	sift_col_index_meta	guarded	heapoid is the heap of an open index (the caller holds the index and a lock on its heap)
 src/col/v1/amscan/amscan.c	col_scan_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/v1/build/choices.c	sift_col_index_choices	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/v1/conn/decl.c	parent_index_for	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
@@ -131,4 +130,14 @@ src/agg/dim_cache.c	sift_dimcache_try	guarded	the index is the one journal_index
 src/bm25/facet/rls.c	sift_facet_rls_begin	guarded	the heap is open, so its namespace exists and get_namespace_name returns its name
 src/bm25/funcs.c	sift_key_equal	guarded	lookup_type_cache never returns NULL (a type that does not exist is its own error) and eq_opr is tested with OidIsValid on the next line
 src/col/am/track.c	ops_serving	guarded	the hash of the oid of an index is a number for any oid, there is no result to test; a missing index is OidIsValid on the line below
-src/table/f2/vm/lease.c	lease_evict	guarded	the result is tested: a table dropped since its lease was taken opens as NULL and only the lease is given back
+src/agg/par/qual.c	int_clause	guarded	the name is tested in the same condition: get_opname gives NULL for an operator that is gone and the clause is refused
+src/agg/text_qual.c	sift_text_qual_of	guarded	the name is tested in the same condition: get_opname gives NULL for an operator that is gone and the clause is refused
+src/agg/plan/cols.c	generated_expr_of	guarded	p->relid is the relation of the scan being planned, which the parser locked: it cannot be dropped before the statement ends; table_open raises for a missing relation
+src/agg/safety.c	one_row_query	guarded	the type is the vartype of a Var of the statement being planned, which the parser resolved; lookup_type_cache raises for an unknown type, it never returns NULL
+src/agg/source_rel.c	sift_v6_source_enter	guarded	the heap is the table of the index of the scan, which the scan holds open with a lock on the heap; table_open raises for a missing relation
+src/agg/star/run.c	take_period	guarded	the type is the key type of a dimension the planner built from a range column of the statement; lookup_type_cache raises for an unknown type, it never returns NULL
+src/agg/unique_key.c	sift_v6_unique_key	guarded	relid is the relid of an RTE_RELATION of the statement being planned (the callers pass rte->relid): the parser locked it; table_open raises for a missing relation
+src/col/f2/track.c	mute_channel	guarded	the index is the one the firing track trigger belongs to (OidIsValid tested): the trigger is dropped with its index and the statement that fired it holds the table; index_open raises for a missing relation
+src/col/f2/uniq/unique.c	key_init	guarded	the type is the type of an attribute of the open index; lookup_type_cache raises for an unknown type, it never returns NULL
+src/core/inspect.c	sift_may_inspect_rel	guarded	get_rel_relkind gives the NUL kind for a relation that is gone: it is neither kind of index, and sift_may_inspect tests the relation (OidIsValid, and the missing flag of pg_class_aclcheck_ext)
+src/table/v1/rel.c	sift_v1_rel_open	guarded	the OID is the one of a relation the scan or its plan holds (the index of the plan, the host of an open source), not a SQL argument; table_open and index_open raise for a missing relation
