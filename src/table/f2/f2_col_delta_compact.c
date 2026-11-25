@@ -3,7 +3,8 @@
  *
  * A record folds when its writer committed before the horizon, so that no snapshot can tell the patch from a frozen value; an aborted writer's record and one of a part that is gone are
  * dropped; every other record stays, remapped to the new part when its part is the one rewritten. A row's records are in the order of their writers' serialization, so that once one of
- * them has to stay every later one of the row stays too (a fold of a later patch under an earlier one that stays would put the earlier value over it). No server call.
+ * them has to stay every later one of the row stays too (a fold of a later patch under an earlier one that stays would put the earlier value over it). The chain is classified a page at
+ * a time, in the order it was written: what is held is the rows that have a record that stays and the records that stay, never the chain. No server call.
  */
 #include "postgres.h"
 
@@ -11,22 +12,15 @@
 
 #include "table/f2/f2_col_delta.h"
 
-typedef enum RecClass
-{
-	REC_DROP,
-	REC_FOLD,
-	REC_CARRY_REMAP,
-	REC_CARRY_KEEP
-} RecClass;
-
+/* A record that stays */
 typedef struct Rec
 {
 	const uint8 *rec;
 	SiftColDeltaEntryHdr h;
 	uint32		seq;
-	RecClass	cls;
+	int			pos;			/* in the records that stay: what the superseded ones are dropped by */
+	SiftColDeltaClass	cls;
 	bool		settled;		/* its writer committed before the horizon */
-	FullTransactionId fxid;
 } Rec;
 
 static bool
@@ -47,57 +41,145 @@ in_sorted(const uint64 *v, int n, uint64 x)
 	return lo < n && v[lo] == x;
 }
 
-static RecClass
+static SiftColDeltaClass
 class_of(bool eligible, SiftHorizonStatus st, bool rewritten)
 {
 	if (st == SIFT_H_ABORTED)
-		return REC_DROP;
+		return SIFT_CDC_DROP;
 	if (!rewritten)
-		return REC_CARRY_KEEP;
-	return st == SIFT_H_COMMITTED_OLD && eligible ? REC_FOLD : REC_CARRY_REMAP;
+		return SIFT_CDC_CARRY_KEEP;
+	return st == SIFT_H_COMMITTED_OLD && eligible ? SIFT_CDC_FOLD : SIFT_CDC_CARRY_REMAP;
 }
 
-static Rec *
-enumerate(const SiftColDeltaChain *chain, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit, int *n)
+/* ---- the class of a record as the records of a chain go by ---- */
+
+/* A row some record of which stays: the open addressing of the rows, empty until the first one */
+typedef struct BlockedRow
 {
-	Rec		   *v = NULL;
-	int			cap = 0;
+	uint64		part_gen;
+	uint32		granule_id;
+	uint16		row_ordinal;
+	bool		used;
+} BlockedRow;
 
-	*n = 0;
-	for (int i = 0; i < chain->npages; i++)
+struct SiftColDeltaPass
+{
+	const uint64 *gens;
+	int			ngens;
+	const uint64 *live;
+	int			nlive;
+	const SiftColDeltaHorizon *hz;
+	uint32		fold_limit;
+	BlockedRow *slot;
+	uint32		mask;
+	uint32		nblocked;
+};
+
+SiftColDeltaPass *
+sift_col_delta_pass_begin(const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit)
+{
+	SiftColDeltaPass *p = palloc0(sizeof(SiftColDeltaPass));
+
+	p->gens = gens;
+	p->ngens = ngens;
+	p->live = live;
+	p->nlive = nlive;
+	p->hz = hz;
+	p->fold_limit = fold_limit;
+	return p;
+}
+
+void
+sift_col_delta_pass_end(SiftColDeltaPass *p)
+{
+	if (p->slot != NULL)
+		pfree(p->slot);
+	pfree(p);
+}
+
+static uint32
+blocked_home(const SiftColDeltaPass *p, const SiftColDeltaEntryHdr *h)
+{
+	uint64		k = h->part_gen * UINT64CONST(0x9E3779B97F4A7C15) ^ (((uint64) h->granule_id << 16) | h->row_ordinal) * UINT64CONST(0xC2B2AE3D27D4EB4F);
+
+	return (uint32) (k ^ (k >> 32)) & p->mask;
+}
+
+static bool
+blocked_same(const BlockedRow *s, const SiftColDeltaEntryHdr *h)
+{
+	return s->part_gen == h->part_gen && s->granule_id == h->granule_id && s->row_ordinal == h->row_ordinal;
+}
+
+static bool
+blocked_has(const SiftColDeltaPass *p, const SiftColDeltaEntryHdr *h)
+{
+	if (p->nblocked == 0)
+		return false;
+	for (uint32 i = blocked_home(p, h); p->slot[i].used; i = (i + 1) & p->mask)
+		if (blocked_same(&p->slot[i], h))
+			return true;
+	return false;
+}
+
+static void
+blocked_add(SiftColDeltaPass *p, const SiftColDeltaEntryHdr *h)
+{
+	if (blocked_has(p, h))
+		return;
+	if ((uint64) (p->nblocked + 1) * 2 > (uint64) p->mask + 1)
 	{
-		const char *page = sift_col_delta_chain_page(chain, i);
-		const uint8 *p = sift_col_delta_page_first(page),
-				   *end = sift_col_delta_page_end(page);
+		BlockedRow *old = p->slot;
+		uint32		n = old == NULL ? 0 : p->mask + 1;
 
-		while (p < end)
-		{
-			Rec		   *r;
-			SiftHorizonStatus st;
+		p->mask = Max(n * 2, 64) - 1;
+		/* check-memory: allow a slot for each row that has a record that stays, twice over: what no later record of the row is folded under */
+		p->slot = palloc0(((Size) p->mask + 1) * sizeof(BlockedRow));
+		for (uint32 i = 0; i < n; i++)
+			if (old[i].used)
+			{
+				SiftColDeltaEntryHdr o = {.part_gen = old[i].part_gen,.granule_id = old[i].granule_id,.row_ordinal = old[i].row_ordinal};
+				uint32		at = blocked_home(p, &o);
 
-			if (*n == cap)
-			{
-				cap = Max(64, cap * 2);
-				v = v != NULL ? repalloc(v, sizeof(Rec) * cap) : palloc(sizeof(Rec) * cap);
+				while (p->slot[at].used)
+					at = (at + 1) & p->mask;
+				p->slot[at] = old[i];
 			}
-			r = &v[*n];
-			memcpy(&r->h, p, sizeof(r->h));
-			r->rec = p;
-			r->seq = (uint32) *n;
-			p += r->h.rec_bytes;
-			if (!in_sorted(live, nlive, r->h.part_gen))
-			{
-				r->cls = REC_DROP;
-				(*n)++;
-				continue;
-			}
-			st = hz->status(hz->ctx, r->h.xmin, &r->fxid);
-			r->settled = st == SIFT_H_COMMITTED_OLD;
-			r->cls = class_of(r->seq < fold_limit, st, in_sorted(gens, ngens, r->h.part_gen));
-			(*n)++;
-		}
+		if (old != NULL)
+			pfree(old);
 	}
-	return v;
+	for (uint32 at = blocked_home(p, h);; at = (at + 1) & p->mask)
+		if (!p->slot[at].used)
+		{
+			p->slot[at] = (BlockedRow) {h->part_gen, h->granule_id, h->row_ordinal, true};
+			p->nblocked++;
+			return;
+		}
+}
+
+/*
+ * What happens to the record: it goes with an aborted writer or a gone part, folds into its part, or stays (remapped when its part is rewritten). A row's records are in the order of their
+ * writers' serialization, so once one of them stays every later one of the row stays too: a fold of a later patch under an earlier one that stays would put the earlier value over it.
+ */
+SiftColDeltaClass
+sift_col_delta_pass_class(SiftColDeltaPass *p, const uint8 *rec, uint32 seq, bool *settled, FullTransactionId *fxid)
+{
+	SiftColDeltaEntryHdr h;
+	SiftHorizonStatus st;
+	SiftColDeltaClass	cls;
+
+	memcpy(&h, rec, sizeof(h));
+	*settled = false;
+	if (!in_sorted(p->live, p->nlive, h.part_gen))
+		return SIFT_CDC_DROP;
+	st = p->hz->status(p->hz->ctx, h.xmin, fxid);
+	*settled = st == SIFT_H_COMMITTED_OLD;
+	cls = class_of(seq < p->fold_limit, st, in_sorted(p->gens, p->ngens, h.part_gen));
+	if (cls == SIFT_CDC_CARRY_REMAP)
+		blocked_add(p, &h);
+	else if (cls == SIFT_CDC_FOLD && blocked_has(p, &h))
+		cls = SIFT_CDC_CARRY_REMAP;
+	return cls;
 }
 
 static int
@@ -121,28 +203,12 @@ same_row(const Rec *a, const Rec *b)
 	return a->h.part_gen == b->h.part_gen && a->h.granule_id == b->h.granule_id && a->h.row_ordinal == b->h.row_ordinal;
 }
 
-/* Once a record of a row stays, the later ones do; sorted: the records by row, v written back by seq */
-static void
-keep_later_records_of_a_blocked_row(Rec *v, const Rec *sorted, int n)
-{
-	bool		blocked = false;
-
-	for (int i = 0; i < n; i++)
-	{
-		blocked = i > 0 && same_row(&sorted[i - 1], &sorted[i]) ? blocked : false;
-		if (sorted[i].cls == REC_CARRY_REMAP)
-			blocked = true;
-		else if (sorted[i].cls == REC_FOLD && blocked)
-			v[sorted[i].seq].cls = REC_CARRY_REMAP;
-	}
-}
-
 #define ATT_BITS (INT16_MAX + 1)
 
 static bool
 stays_settled(const Rec *r)
 {
-	return r->settled && (r->cls == REC_CARRY_KEEP || r->cls == REC_CARRY_REMAP) && r->h.ncols > 0 && (r->h.flags & SIFT_CDENT_FLAG_LEAF_ADDR) == 0;
+	return r->settled && (r->cls == SIFT_CDC_CARRY_KEEP || r->cls == SIFT_CDC_CARRY_REMAP) && r->h.ncols > 0 && (r->h.flags & SIFT_CDENT_FLAG_LEAF_ADDR) == 0;
 }
 
 /* Every attribute of the record is set in seen; with set, the record's attributes are set in it */
@@ -168,7 +234,7 @@ all_seen(uint8 *seen, const Rec *r, bool set)
 
 /*
  * A record whose every attribute a later record of its row writes again is never read: both writers committed before the horizon, so every snapshot sees the later value. The rows are
- * walked from the latest record to the first, and the attributes the later records of the row write are the ones seen.
+ * walked from the latest record to the first, and the attributes the later records of the row write are the ones seen. v: the records that stay, sorted: the same by row.
  */
 static void
 drop_superseded_records(Rec *v, const Rec *sorted, int n)
@@ -177,165 +243,192 @@ drop_superseded_records(Rec *v, const Rec *sorted, int n)
 
 	for (int i = n - 1; i >= 0; i--)
 	{
-		Rec		   *r = &v[sorted[i].seq];
+		Rec		   *r = &v[sorted[i].pos];
 
-		if (i < n - 1 && (!same_row(&v[sorted[i + 1].seq], r) || sift_col_delta_hdr_tid(&v[sorted[i + 1].seq].h) != sift_col_delta_hdr_tid(&r->h)))
+		if (i < n - 1 && (!same_row(&v[sorted[i + 1].pos], r) || sift_col_delta_hdr_tid(&v[sorted[i + 1].pos].h) != sift_col_delta_hdr_tid(&r->h)))
 			memset(seen, 0, ATT_BITS / 8);
 		if (!stays_settled(r))
 			continue;
 		if (all_seen(seen, r, false))
-			r->cls = REC_DROP;
+			r->cls = SIFT_CDC_DROP;
 		else
 			(void) all_seen(seen, r, true);
 	}
 	pfree(seen);
 }
 
-static int
-fold_cmp(const void *a, const void *b)
-{
-	const SiftColDeltaFold *x = a,
-			   *y = b;
+/* ---- the records that stay ---- */
 
-	if (x->part_gen != y->part_gen)
-		return x->part_gen < y->part_gen ? -1 : 1;
-	if (x->granule_id != y->granule_id)
-		return x->granule_id < y->granule_id ? -1 : 1;
-	if (x->patch.row_ordinal != y->patch.row_ordinal)
-		return x->patch.row_ordinal < y->patch.row_ordinal ? -1 : 1;
-	if (x->patch.attnum != y->patch.attnum)
-		return x->patch.attnum < y->patch.attnum ? -1 : 1;
-	return x->seq < y->seq ? -1 : x->seq > y->seq;
+#define KEPT_CHUNK	(64 * 1024)
+
+/* The bytes of the records of a page that is gone before the plan is made: chunks, the first 8 bytes of each pointing to the one before */
+static uint8 *
+kept_copy(SiftColDeltaCompactPlan *plan, uint32 *left, const uint8 *rec, uint32 bytes)
+{
+	uint8	   *to;
+
+	if (*left < bytes)
+	{
+		uint8	   *chunk = palloc(KEPT_CHUNK);
+
+		memcpy(chunk, &plan->kept, sizeof(void *));
+		plan->kept = chunk;
+		*left = KEPT_CHUNK - MAXALIGN(sizeof(void *));
+	}
+	to = (uint8 *) plan->kept + KEPT_CHUNK - *left;
+	memcpy(to, rec, bytes);
+	*left -= bytes;
+	return to;
 }
 
+/*
+ * Classifies every record of the chain as its pages come, oldest first: what is read of a page is dropped when the next is taken, so nothing but the records that stay is held, and
+ * with keep false not even those (nfolded, ndropped and nremap say what a plan would do). gens: the parts being rewritten, live: every part the partition has, both ascending. Only the
+ * first fold_limit records may fold (the ones a pass saw before it wrote its parts: the others came while it wrote).
+ */
 static void
-fold_records(SiftColDeltaCompactPlan *plan, const Rec *v, int n)
+stream_records(const SiftColDeltaPageSource *src, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit, bool keep,
+			   SiftColDeltaCompactPlan *plan)
 {
-	int			cap = 0,
-				kept = 0;
+	SiftColDeltaPass *pass = sift_col_delta_pass_begin(gens, ngens, live, nlive, hz, fold_limit);
+	Rec		   *v = NULL;
+	int			n = 0,
+				cap = 0;
+	uint32		seq = 0,
+				left = 0;
 
-	for (int i = 0; i < n; i++)
+	memset(plan, 0, sizeof(*plan));
+	plan->stripped = InvalidFullTransactionId;
+	plan->kept = NULL;
+	for (int i = 0; i < src->npages; i++)
 	{
-		const uint8 *p,
-				   *end;
+		uint32		count;
+		const char *page = src->page(src->ctx, i, &count);
+		const uint8 *p = sift_col_delta_page_first(page),
+				   *end = sift_col_delta_page_end(page);
 
-		if (v[i].cls != REC_FOLD)
-			continue;
-		plan->stripped = sift_fxid_max(plan->stripped, v[i].fxid);
-		p = v[i].rec + sizeof(SiftColDeltaEntryHdr);
-		end = v[i].rec + v[i].h.rec_bytes;
-		for (int k = 0; k < v[i].h.ncols; k++)
+		for (; p < end && count > 0; count--, seq++)
 		{
-			SiftColDeltaFold *f;
+			Rec			r;
+			FullTransactionId fxid = InvalidFullTransactionId;
 
-			if (plan->nfolds == cap)
+			memcpy(&r.h, p, sizeof(r.h));
+			r.rec = p;
+			r.seq = seq;
+			p += r.h.rec_bytes;
+			r.cls = sift_col_delta_pass_class(pass, r.rec, seq, &r.settled, &fxid);
+			if (r.cls == SIFT_CDC_DROP)
+				plan->ndropped++;
+			else if (r.cls == SIFT_CDC_FOLD)
 			{
-				cap = Max(32, cap * 2);
-				plan->folds = plan->folds != NULL ? repalloc(plan->folds, sizeof(SiftColDeltaFold) * cap) : palloc(sizeof(SiftColDeltaFold) * cap);
+				plan->nfolded++;
+				plan->stripped = sift_fxid_max(plan->stripped, fxid);
 			}
-			f = &plan->folds[plan->nfolds++];
-			p = sift_col_delta_decode_col(p, end, &f->patch);
-			SIFT_INVARIANT(p != NULL, "a column delta page was read before it was checked");
-			f->patch.row_ordinal = v[i].h.row_ordinal;
-			f->part_gen = v[i].h.part_gen;
-			f->granule_id = v[i].h.granule_id;
-			f->tid = sift_col_delta_hdr_tid(&v[i].h);
-			f->seq = v[i].seq;
+			else if (!keep)
+				plan->nremap += r.cls == SIFT_CDC_CARRY_REMAP;
+			else
+			{
+				if (n == cap)
+				{
+					cap = Max(64, cap * 2);
+					v = v != NULL ? repalloc(v, sizeof(Rec) * cap) : palloc(sizeof(Rec) * cap);
+				}
+				r.pos = n;
+				if (!src->stable)
+					r.rec = kept_copy(plan, &left, r.rec, r.h.rec_bytes);
+				v[n++] = r;
+			}
 		}
 	}
-	if (plan->nfolds == 0)
+	plan->nrecords = (int) seq;
+	sift_col_delta_pass_end(pass);
+	if (!keep)
 		return;
-	qsort(plan->folds, plan->nfolds, sizeof(SiftColDeltaFold), fold_cmp);
-	for (int i = 0; i < plan->nfolds; i++)
+	if (n > 1)
 	{
-		bool		same = kept > 0 && plan->folds[kept - 1].part_gen == plan->folds[i].part_gen && plan->folds[kept - 1].granule_id == plan->folds[i].granule_id &&
-			plan->folds[kept - 1].patch.row_ordinal == plan->folds[i].patch.row_ordinal && plan->folds[kept - 1].patch.attnum == plan->folds[i].patch.attnum;
+		/* MEM[MEM-TBL-01]: col_delta compact scratch (the records that stay, sorted in place) */
+		Rec		   *sorted = memcpy(palloc(sizeof(Rec) * n), v, sizeof(Rec) * n);
 
-		plan->folds[same ? kept - 1 : kept++] = plan->folds[i];
+		qsort(sorted, n, sizeof(Rec), by_row);
+		drop_superseded_records(v, sorted, n);
+		pfree(sorted);
 	}
-	plan->nfolds = kept;
-}
-
-static void
-carry_records(SiftColDeltaCompactPlan *plan, const Rec *v, int n)
-{
+	plan->carry = palloc(sizeof(SiftColDeltaCarry) * Max(n, 1));
 	for (int i = 0; i < n; i++)
 	{
-		if (v[i].cls == REC_DROP)
+		if (v[i].cls == SIFT_CDC_DROP)
 			plan->ndropped++;
-		else if (v[i].cls != REC_FOLD)
+		else
 		{
 			plan->carry[plan->ncarry].rec = v[i].rec;
-			plan->carry[plan->ncarry++].remap = v[i].cls == REC_CARRY_REMAP;
+			plan->carry[plan->ncarry++].remap = v[i].cls == SIFT_CDC_CARRY_REMAP;
 		}
 	}
+	if (v != NULL)
+		pfree(v);
+}
+
+/* The records that stay are made plan->carry, a record at a time, those of a page that is not stable copied */
+void
+sift_col_delta_compact_stream(const SiftColDeltaPageSource *src, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit,
+							  SiftColDeltaCompactPlan *plan)
+{
+	stream_records(src, gens, ngens, live, nlive, hz, fold_limit, true, plan);
+}
+
+/* Whether the chain would change at all: a record folds, goes or moves to another row. Nothing of the chain is kept, so what it takes does not grow with it */
+bool
+sift_col_delta_compact_changes(const SiftColDeltaPageSource *src, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit)
+{
+	SiftColDeltaCompactPlan plan;
+
+	stream_records(src, gens, ngens, live, nlive, hz, fold_limit, false, &plan);
+	return plan.nfolded > 0 || plan.ndropped > 0 || plan.nremap > 0;
+}
+
+typedef struct ChainSource
+{
+	const SiftColDeltaChain *chain;
+} ChainSource;
+
+static const char *
+chain_page(void *ctx, int i, uint32 *count)
+{
+	*count = UINT32_MAX;
+	return sift_col_delta_chain_page(((const ChainSource *) ctx)->chain, i);
 }
 
 void
 sift_col_delta_compact_plan(const SiftColDeltaChain *chain, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit,
 							SiftColDeltaCompactPlan *plan)
 {
-	int			n;
-	Rec		   *v = enumerate(chain, gens, ngens, live, nlive, hz, fold_limit, &n);
+	ChainSource cs = {chain};
+	SiftColDeltaPageSource src = {.ctx = &cs,.npages = chain->npages,.stable = true,.page = chain_page};
 
-	memset(plan, 0, sizeof(*plan));
-	plan->stripped = InvalidFullTransactionId;
-	plan->nrecords = n;
-	plan->carry = palloc(sizeof(SiftColDeltaCarry) * Max(n, 1));
-	if (n > 0)
-	{
-		/* MEM[MEM-TBL-01]: col_delta compact scratch (in-place sort; bounded <= MAX_PAGES) */
-		Rec		   *sorted = palloc(sizeof(Rec) * n);
-
-		memcpy(sorted, v, sizeof(Rec) * n);
-		qsort(sorted, n, sizeof(Rec), by_row);
-		keep_later_records_of_a_blocked_row(v, sorted, n);
-		drop_superseded_records(v, sorted, n);
-		pfree(sorted);
-	}
-	fold_records(plan, v, n);
-	carry_records(plan, v, n);
-	if (v != NULL)
-		pfree(v);
+	sift_col_delta_compact_stream(&src, gens, ngens, live, nlive, hz, fold_limit, plan);
 }
 
 void
 sift_col_delta_compact_plan_free(SiftColDeltaCompactPlan *plan)
 {
-	if (plan->folds != NULL)
-		pfree(plan->folds);
+	for (void *chunk = plan->kept; chunk != NULL;)
+	{
+		void	   *before;
+
+		memcpy(&before, chunk, sizeof(void *));
+		pfree(chunk);
+		chunk = before;
+	}
 	pfree(plan->carry);
 	memset(plan, 0, sizeof(*plan));
 }
 
 /* ---- applying the fold ---- */
 
-void
-sift_col_delta_fold_slice(const SiftColDeltaCompactPlan *plan, uint64 part_gen, uint32 granule_id, int *lo, int *hi)
-{
-	int			a = 0,
-				b = plan->nfolds;
-
-	while (a < b)
-	{
-		int			mid = a + (b - a) / 2;
-		const SiftColDeltaFold *f = &plan->folds[mid];
-
-		if (f->part_gen < part_gen || (f->part_gen == part_gen && f->granule_id < granule_id))
-			a = mid + 1;
-		else
-			b = mid;
-	}
-	*lo = *hi = a;
-	while (*hi < plan->nfolds && plan->folds[*hi].part_gen == part_gen && plan->folds[*hi].granule_id == granule_id)
-		(*hi)++;
-}
-
 bool
-sift_col_delta_fold_apply(SiftRowBuf *rb, int leaf, const SiftColDeltaFold *f, const char **old_ref, uint32 *old_ref_len)
+sift_col_delta_fold_apply(SiftRowBuf *rb, int leaf, const SiftColDeltaPatch *p, const char **old_ref, uint32 *old_ref_len)
 {
-	int			r = f->patch.row_ordinal;
-	const SiftColDeltaPatch *p = &f->patch;
+	int			r = p->row_ordinal;
 	bool		replaced_wide = false;
 
 	SIFT_INVARIANT(SIFT_CDCOL_KIND(p->flags) == rb->kinds[leaf], "a column delta of attribute %d is of another kind than its column", p->attnum);

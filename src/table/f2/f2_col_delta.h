@@ -611,45 +611,68 @@ typedef struct SiftColDeltaHorizon
 	SiftHorizonStatus (*status) (void *ctx, TransactionId xid, FullTransactionId *fxid);
 } SiftColDeltaHorizon;
 
-typedef struct SiftColDeltaFold
+/* What becomes of a record of a chain that a compaction reads */
+typedef enum SiftColDeltaClass
 {
-	uint64		part_gen;
-	uint32		granule_id;
-	uint64		tid;
-	uint32		seq;
-	SiftColDeltaPatch patch;	/* the latest value of one column of one row */
-} SiftColDeltaFold;
+	SIFT_CDC_DROP = 0,			/* an aborted writer's, or of a part that is gone */
+	SIFT_CDC_FOLD,				/* written over the row of the part that is rewritten */
+	SIFT_CDC_CARRY_REMAP,		/* stays, for the row it is in the part that replaces the part it was written for */
+	SIFT_CDC_CARRY_KEEP			/* stays as it is: its part is not rewritten */
+} SiftColDeltaClass;
+
+/*
+ * The class of the records of a chain as they go by, oldest first. gens: the parts being rewritten, live: every part the partition has, both ascending. Only the records before fold_limit
+ * in the chain may fold (the ones a pass saw before it wrote its parts: the others came while it wrote). A pass holds the rows with a record that stays, and nothing else of the chain.
+ */
+typedef struct SiftColDeltaPass SiftColDeltaPass;
+
+extern SiftColDeltaPass *sift_col_delta_pass_begin(const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit);
+
+/* The class of the record at rec, the seq-th of the chain; settled: its writer committed before the horizon, fxid: the writer's full id (set unless the record is of a part that is gone) */
+extern SiftColDeltaClass sift_col_delta_pass_class(SiftColDeltaPass *pass, const uint8 *rec, uint32 seq, bool *settled, FullTransactionId *fxid);
+extern void sift_col_delta_pass_end(SiftColDeltaPass *pass);
 
 typedef struct SiftColDeltaCarry
 {
-	const uint8 *rec;			/* in the pages of the chain */
+	const uint8 *rec;			/* the record: in the pages of the chain, or in the plan when its pages were not kept */
 	bool		remap;			/* of a part being rewritten: its address changes */
 } SiftColDeltaCarry;
 
 typedef struct SiftColDeltaCompactPlan
 {
-	SiftColDeltaFold *folds;	/* ascending by (part_gen, granule_id, row, attribute) */
-	int			nfolds;
 	SiftColDeltaCarry *carry;	/* in the order of the chain */
 	int			ncarry;
+	int			nfolded;
 	int			ndropped;
+	int			nremap;			/* the records that move to another row, when the plan keeps none */
 	int			nrecords;
 	FullTransactionId stripped;	/* the greatest writer folded: what the standbys' snapshots must be told (core/wal_conflict.h) */
+	void	   *kept;			/* the bytes of the records of carry when the source's pages are not kept */
 } SiftColDeltaCompactPlan;
 
-/*
- * Classifies every record of the chain. gens: the parts being rewritten, live: every part the partition has, both ascending. Only the first fold_limit records may fold (the ones a
- * pass saw before it wrote its parts: the others came while it wrote).
- */
+/* The pages of a chain, oldest first, as a plan takes them: page i and the first records of it that count (UINT32_MAX: all); a page that is not stable is gone when the next is taken */
+typedef struct SiftColDeltaPageSource
+{
+	void	   *ctx;
+	int			npages;
+	bool		stable;
+	const char *(*page) (void *ctx, int i, uint32 *nrecords);
+} SiftColDeltaPageSource;
+
+/* Classifies the records of the chain the source gives; the records that stay are made plan->carry, a record at a time, those of a page that is not stable copied */
+extern void sift_col_delta_compact_stream(const SiftColDeltaPageSource *src, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit,
+										  SiftColDeltaCompactPlan *plan);
+
+/* Whether a plan would fold, drop or move a record, without keeping any */
+extern bool sift_col_delta_compact_changes(const SiftColDeltaPageSource *src, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit);
+
+/* The same for a chain that is in memory */
 extern void sift_col_delta_compact_plan(const SiftColDeltaChain *chain, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit,
 										SiftColDeltaCompactPlan *plan);
 extern void sift_col_delta_compact_plan_free(SiftColDeltaCompactPlan *plan);
 
-/* The folds of one granule of one part: [*lo, *hi) of plan->folds */
-extern void sift_col_delta_fold_slice(const SiftColDeltaCompactPlan *plan, uint64 part_gen, uint32 granule_id, int *lo, int *hi);
-
 /* One fold written over the row of a granule's buffer (leaf: the column of the attribute there); true when it replaced a wide value, whose reference is left in old_ref */
-extern bool sift_col_delta_fold_apply(SiftRowBuf *rb, int leaf, const SiftColDeltaFold *f, const char **old_ref, uint32 *old_ref_len);
+extern bool sift_col_delta_fold_apply(SiftRowBuf *rb, int leaf, const SiftColDeltaPatch *p, const char **old_ref, uint32 *old_ref_len);
 
 /* Where a row of a part that was rewritten is now */
 typedef struct SiftColDeltaRemap
