@@ -44,7 +44,7 @@ Commands
   workload   `workload ENGINE [CLASS...]` is `run --dataset articles --engines ENGINE --classes CLASS...` with one 30 s round
              per class (default and or phrase mixed count filter join update)
   workers    sift CREATE INDEX time per parallel worker count: `workers [N...]`
-  shred      throughput of the sift_col jsonb shredder (docs/COL-SHRED.md) in documents per second against jsonb_to_recordset, and of its SIMD
+  shred      throughput of the sift_col jsonb shredder (docs/ANALYTICS.md) in documents per second against jsonb_to_recordset, and of its SIMD
              kernels per level, on a throwaway cluster of scripts/pgtest.sh (SHRED_DOCS, SHRED_ROUNDS, SIFT_TMP, SIFT_PORT)
   remote     run the harness on a remote host: `remote sync|setup|sift|quick|run|sh|pull|clean ...` (RHOST)
   machine    print the machine and engine description (CPU, RAM, kernel, PostgreSQL, versions, load)

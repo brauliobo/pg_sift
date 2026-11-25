@@ -169,12 +169,12 @@ def main():
         rows_out += measure(s, env, a.rows, share, 'fresh_vacuumed', table, None, None, a.reps)
         churn = collect.apply_churn(s, table, 'n', dele=float(share))
         s.run('CHECKPOINT')
-        s.run('SET sift.table_auto_defrag = off')
+        s.run('SET sift.async_maintenance = off')
         rows_out += measure(s, off, a.rows, share, 'churned_unvacuumed', table, churn, False, a.reps)
-        s.run('RESET sift.table_auto_defrag')
+        s.run('RESET sift.async_maintenance')
         if a.standby_dir and share == a.deletes.split(',')[-1]:
             sb, d = standby(a, s, 'dirty', table)
-            sb.run('SET sift.table_auto_defrag = off')
+            sb.run('SET sift.async_maintenance = off')
             rows_out += measure(sb, off, a.rows, share, 'churned_unvacuumed_standby', table, churn, False, a.reps, state_name='churned_unvacuumed')
             stop_standby(d)
         # the VACUUM that settles it: each repetition churns the table again (an UPDATE of the share) and VACUUMs it, instructions and WAL of the cluster

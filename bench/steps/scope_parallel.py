@@ -30,7 +30,7 @@ import scope_stock_arms as S  # noqa: E402
 CLASSES = ('by_member', 'top_members', 'distinct_members_by_month', 'filtered_count', 'count_by_score', 'sum_by_month', 'latest_20_rows')
 # a read with a group for each event, named with --classes: what a participant's own group table costs when the groups are millions
 EXTRA = {'many_groups': 'SELECT id, count(*) FROM events WHERE ' + S.SEMI + ' GROUP BY 1'}
-ZERO = 'SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0; SET sift.agg_par_min_rows = 0'
+ZERO = 'SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0'
 PART = ('instr', 'hit', 'read', 'rss_peak_kb', 'rss_kb', 'pss_kb', 'pss_anon_kb', 'pss_anon_start_kb', 'pss_shmem_kb', 'pss_file_kb', 'table_bytes', 'node_bytes')
 DSM = ('segment', 'shared', 'spec', 'params', 'snapshot', 'view', 'queues', 'maps', 'scope', 'other')
 COLS = (['facts', 'prices', 'tenant', 'share_pct', 'class', 'workers', 'round', 'kind', 'cache', 'launched', 'ms', 'hit', 'read', 'psi_cpu', 'psi_io', 'load1', 'total_instr', 'stmt_hit', 'stmt_read']
@@ -200,7 +200,7 @@ def measure(a):
                 quiet()
                 p = pressure()
                 base = dict(facts=a.facts, prices=price, tenant=t, share_pct='%.1f' % share, **{'class': c}, psi_cpu=p[0], psi_io=p[1], load1=p[2])
-                s.run(price_sql or 'RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET min_parallel_index_scan_size; RESET sift.agg_par_min_rows')
+                s.run(price_sql or 'RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET min_parallel_index_scan_size')
                 ref = None
                 for w in ws:
                     s.run(f'SET max_parallel_workers_per_gather = {w}')

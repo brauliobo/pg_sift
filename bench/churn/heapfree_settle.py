@@ -31,8 +31,7 @@ STATEMENTS = (('group_all_tenants', 'SELECT tenant_id, count(*), sum(counter_a) 
 BASE = ['SET max_parallel_workers_per_gather = 0', 'SET sift.enable_agg = on']
 # (variant, the table, the index options)
 VARIANTS = (('default', 'w_default', ''), ('track_off', 'w_off', " WITH (track_changes = 'off')"))
-CONFIG = ('ALTER SYSTEM SET autovacuum = on', "ALTER SYSTEM SET autovacuum_naptime = '1s'", 'ALTER SYSTEM SET sift.col_auto_merge = on', 'ALTER SYSTEM SET sift.col_auto_merge_wal_pct = 5',
-          'ALTER SYSTEM SET sift.table_auto_defrag = on', 'SELECT pg_reload_conf()')
+CONFIG = ('ALTER SYSTEM SET autovacuum = on', "ALTER SYSTEM SET autovacuum_naptime = '1s'", 'ALTER SYSTEM SET sift.async_maintenance = on', 'SELECT pg_reload_conf()')
 COLUMNS = 'variant state rounds updates churn_s churn_wal_bytes log_entries index_bytes table_bytes segments autovacuums settle_s fragmentation_pct'.split()
 
 

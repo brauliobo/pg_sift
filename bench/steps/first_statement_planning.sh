@@ -28,7 +28,7 @@ insert into bulk select g, repeat('x', 900) from generate_series(1, 24 * (select
 create table src as select e as dim_a_id, 1 + (e * 7 + g) % 19 as kind_id, date '2024-01-01' + (random() * 900)::int as event_date, round((random() * 100)::numeric, 2)::float8 as amount,
   'label_' || (random() * 500)::int as label, jsonb_build_object('m1', round((random() * 10)::numeric, 1), 'm2', (random() * 5)::int) as measures, (random() * 1000000)::int as r
   from generate_series(1, $ENT) e, generate_series(1, $PER) g;
-set sift.col_auto_merge = off;
+set sift.async_maintenance = off;
 do \$\$ declare i int; begin
   for i in 0..$SEGS - 1 loop
     insert into events (dim_a_id, kind_id, event_date, amount, label, measures) select dim_a_id, kind_id, event_date, amount, label, measures from src where r % $SEGS = i;
@@ -47,7 +47,7 @@ evict() { $P -c "set sift.enable_agg = off; set enable_seqscan = off; set enable
 segs() { $P -c "select count(*) from sift.col_segments('events_sift') where kind = 'immutable'"; }
 measure() {  # ARM STATE: a new backend runs the statement as its first
   local arm=$1 state=$2 SEGN=$3 set="set sift.enable_agg = on;"
-  [ "$arm" = planner ] && set="set sift.enable_agg = off; set sift.enable_col_scan = off; set sift.enable_scan = off; set sift.enable_topn = off; set sift.enable_count = off;"
+  [ "$arm" = planner ] && set="set sift.enable_agg = off; set sift.enable_col_scan = off; set sift.enable_scan = off;"
   { echo "set max_parallel_workers_per_gather = 0; $set"; echo '\o /dev/stdout'; echo "explain (analyze, buffers, costs off, format json) $Q;"; } | $P | python3 -I -c "
 import json, sys
 j = json.load(sys.stdin)[0]
@@ -60,7 +60,7 @@ for arm in sift planner; do
   $P -c "set sift.enable_agg = on; $Q" >/dev/null; n=$(segs); evict
   measure $arm warm "$n"
   # a small batch is promoted: one segment more, the stamp of the record is not that of the directory
-  $P -c "set sift.col_auto_merge = off; insert into events (dim_a_id, kind_id, event_date, amount, label, measures) select dim_a_id, kind_id, event_date, amount, label, measures from events where id % 400 = 7" -c "select sift.col_promote('events_sift')" >/dev/null
+  $P -c "set sift.async_maintenance = off; insert into events (dim_a_id, kind_id, event_date, amount, label, measures) select dim_a_id, kind_id, event_date, amount, label, measures from events where id % 400 = 7" -c "select sift.col_promote('events_sift')" >/dev/null
   n=$(segs); evict
   measure $arm promoted "$n"
 done

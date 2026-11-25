@@ -39,7 +39,7 @@ ENV = dict(os.environ, LC_ALL='C')
 class Sess:
     def __init__(self, db):
         self.p = subprocess.Popen(['psql', '-X', '-q', '-At', '-U', 'postgres', '-d', db], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=ENV)
-        self.run('SET max_parallel_workers_per_gather = 0; SET client_min_messages = warning; SET jit = off; SET sift.scope_max_multiplicity = 8')
+        self.run('SET max_parallel_workers_per_gather = 0; SET client_min_messages = warning; SET jit = off')
         self.pid = int(next(l for l in self.run('SELECT pg_backend_pid()') if l.isdigit()))
 
     def run(self, sql):
@@ -84,7 +84,6 @@ FIXTURE = """
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift; CREATE EXTENSION IF NOT EXISTS pg_buffercache;
 DROP SCHEMA IF EXISTS sd CASCADE; CREATE SCHEMA sd; SET search_path = sd, public;
-SET sift.scope_max_multiplicity = 8;
 -- 2,000 dim_a_id values; tenant 1 is big (every one), tenant 2 tiny (20 of them), tenants 3..12 hold a tenth each
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT m, 1 FROM generate_series(1, 2000) m;
@@ -107,7 +106,6 @@ FIXTURE_TWO = """
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift; CREATE EXTENSION IF NOT EXISTS pg_buffercache;
 DROP SCHEMA IF EXISTS sd CASCADE; CREATE SCHEMA sd; SET search_path = sd, public;
-SET sift.scope_max_multiplicity = 8;
 CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int) WITH (autovacuum_enabled = false);
 CREATE TABLE memberships (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO grants (tenant_id, dim_a_id) SELECT 1, i FROM generate_series(10, 20000, 10) i;

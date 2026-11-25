@@ -27,7 +27,7 @@ from duckdb import Session  # noqa: E402
 READS = (('agg_group', 'SELECT k, count(*), sum(v) FROM t GROUP BY k', []),
          ('ioss_range', 'SELECT k, v FROM t WHERE k BETWEEN 100 AND 129', ['SET enable_seqscan = off', 'SET enable_bitmapscan = off', 'SET enable_indexscan = off', 'SET sift.enable_agg = off']),
          ('ioss_key', 'SELECT k, v FROM t WHERE k = 7', ['SET enable_seqscan = off', 'SET enable_bitmapscan = off', 'SET enable_indexscan = off', 'SET sift.enable_agg = off']))
-OFF = ['SET sift.col_auto_merge = off', 'SET max_parallel_workers_per_gather = 0']
+OFF = ['SET sift.async_maintenance = off', 'SET max_parallel_workers_per_gather = 0']
 
 
 def build(s, n, row_key, autovac=False):
@@ -105,7 +105,7 @@ def constants(a):
         print(p)
 
 
-ARMS = {'stopped': ['sift.col_auto_merge = off'], 'tip': ['sift.col_auto_merge = on']}
+ARMS = {'stopped': ['sift.async_maintenance = off'], 'tip': ['sift.async_maintenance = on']}
 
 
 def quiet(s, limit=90):

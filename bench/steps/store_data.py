@@ -241,7 +241,7 @@ def servers(engines):
         v[eid + '_settings'] = settings(eid)
         if eid != 'pg':   # the maintenance settings of the lane, read back from the server in its database
             v[eid + '_maintenance'] = psql_value(eid, "SELECT string_agg(replace(name, 'sift.', '') || ' = ' || setting, ', ' ORDER BY name) FROM pg_settings "
-                                                      "WHERE name IN ('sift.async_maintenance', 'sift.col_auto_merge', 'sift.table_auto_defrag')")
+                                                      "WHERE name = 'sift.async_maintenance'")
     if 'citus' in engines:
         v['citus'] = psql_value('citus', 'SHOW server_version')
         v['citus_columnar'] = psql_value('citus', "SELECT extversion FROM pg_extension WHERE extname = 'citus_columnar'")
@@ -249,7 +249,6 @@ def servers(engines):
         v['citus_settings'] = settings('citus')
     if 'sift' in engines:
         v['sift_libs'] = docker('exec', container('sift'), 'sh', '-c', 'ldd $(find /usr/lib/postgresql -name pg_sift.so | head -1) | grep -Eo "lib(lz4|zstd)[^ ]*" | sort -u | paste -sd" "').strip()
-        v['sift_table_compression'] = psql_value('sift', "LOAD 'pg_sift'; SELECT current_setting('sift.table_compression')") or "'' (unset)"
     if any(is_es(e) for e in engines):
         es = json.loads(Http('es').request('GET', '/'))
         v['es'] = es['version']['number']
@@ -317,7 +316,7 @@ def size_variants(args, rows):
     if 'sift_table' in args.engines:
         for pol in ('none', 'auto', 'lz4', 'zstd:3'):
             t = 'orders_' + pol.split(':')[0]
-            psql_file('sift_table', f"DROP TABLE IF EXISTS {t}; CREATE TABLE {t} (LIKE orders) USING sift_table; SET sift.table_compression = '{pol}'; INSERT INTO {t} SELECT * FROM orders; VACUUM {t}")
+            psql_file('sift_table', f"DROP TABLE IF EXISTS {t}; CREATE TABLE {t} (LIKE orders) USING sift_table; SELECT sift.table_set_option('{t}', 'compression', '{pol}'); INSERT INTO {t} SELECT * FROM orders; VACUUM {t}")
             rows.add('sift_table', '-', 'codec ' + pol, 'size_mib', 'MiB', value=mib(psql_value('sift_table', f"SELECT pg_table_size('{t}')")))
             rows.add('sift_table', '-', 'codec ' + pol + ' free', 'size_mib', 'MiB', value=mib(int(psql_value('sift_table', f"SELECT free_blocks FROM sift.table_space('{t}')")) * 8192))
             psql_file('sift_table', f'DROP TABLE {t}')

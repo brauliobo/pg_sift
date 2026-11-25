@@ -192,8 +192,6 @@ def exp_switches(db, n):
     for label, terms in (('rare terms', 'w12 w40'), ('frequent terms', 'w2 w5')):
         x, y = ab_set(db, 'SET sift.enable_scan = off', 'SET sift.enable_scan = on', "SELECT id FROM oe_a WHERE body @@> '%s' ORDER BY id LIMIT 10" % terms)
         row('sift.enable_scan', 'enable_scan off/on', n, 'first 10 ids of a match, %s (no score: it needs the scan)' % label, round(x, 2), round(y, 2), 'ms', pct(x, y))
-        x, y = ab_set(db, 'SET sift.enable_count = off', 'SET sift.enable_count = on', "SELECT count(*) FROM oe_a WHERE body @@> '%s'" % terms)
-        row('sift.enable_count', 'enable_count off/on', n, 'count(*) of a match, %s' % label, round(x, 2), round(y, 2), 'ms', pct(x, y))
     fresh(db, 'oe_src', 'oe_a')
 
 

@@ -8,7 +8,7 @@
 and the band's NAME (the same words every run), and tenants the first 2, 5, 20 and 100 of them (fewer when the band has fewer). Each
 `band LO HI NAME` is one flavour. `run` needs a server with pg_sift and the sets in DB; it prints one row per array, shape and mode.
 
-Modes: bitmap (sift.enable_scan and enable_count off: the plan before the scan took the array), bitmap_serial (the same without parallel workers),
+Modes: bitmap (sift.enable_scan off: the plan before the scan took the array), bitmap_serial (the same without parallel workers),
 scan (the scan forced: bitmap and sequential scans off), scan_par (the same with sift.parallel_scan), default (the planner's own choice).
 Shapes: count, list (all the matches), limit10 and limit1000 (the first rows, no order), top10 and top1000 (ORDER BY sift.score(ctid) DESC; the
 bitmap has no score), and the OR written in the query text (`*_ortext`) for the same arrays. Each query runs RUNS + 1 times in one psql session
@@ -19,8 +19,8 @@ import os, re, statistics, subprocess, sys
 env = dict(os.environ, LC_ALL='C')
 SIZES = (2, 5, 20, 100)
 MODES = {
-    'bitmap': "SET sift.enable_scan=off; SET sift.enable_count=off; SET enable_seqscan=off;",
-    'bitmap_serial': "SET sift.enable_scan=off; SET sift.enable_count=off; SET enable_seqscan=off; SET max_parallel_workers_per_gather=0;",
+    'bitmap': "SET sift.enable_scan=off; SET enable_seqscan=off;",
+    'bitmap_serial': "SET sift.enable_scan=off; SET enable_seqscan=off; SET max_parallel_workers_per_gather=0;",
     'scan': "SET enable_bitmapscan=off; SET enable_seqscan=off;",
     'scan_par': "SET enable_bitmapscan=off; SET enable_seqscan=off; SET sift.parallel_scan=on;",
     'default': "",

@@ -36,7 +36,7 @@ SIFT = ["SET sift.enable_col_scan = on"]
 PLANS = {
     "btree": [("planner", []), ("forced index scan", ["SET enable_seqscan = off", "SET enable_bitmapscan = off"]),
               ("forced bitmap scan", ["SET enable_seqscan = off", "SET enable_indexscan = off", "SET enable_indexonlyscan = off"])],
-    "sift": [("scan off (sift.enable_col_scan=off)", []), ("planner", SIFT), ("sorted runs off", SIFT + ["SET sift.topn_runs = off"]),
+    "sift": [("scan off (sift.enable_col_scan=off)", []), ("planner", SIFT),
              ("forced bitmap scan", SIFT + ["SET sift.enable_agg = off", "SET enable_seqscan = off", "SET enable_indexscan = off", "SET enable_indexonlyscan = off"]),
              ("forced index scan", SIFT + ["SET sift.enable_agg = off", "SET enable_seqscan = off", "SET enable_bitmapscan = off"])],
 }

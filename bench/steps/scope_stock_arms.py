@@ -269,7 +269,7 @@ class Cluster:
                  "extension_control_path = '%s:$system'" % ':'.join(f'{r}/share/postgresql' for r in self.roots),
                  "dynamic_library_path = '%s:$libdir'" % ':'.join(f'{r}/lib/postgresql' for r in self.roots)]
         if preload:
-            lines += ["shared_preload_libraries = 'pg_sift'", "sift.col_auto_merge = off"]
+            lines += ["shared_preload_libraries = 'pg_sift'", "sift.async_maintenance = off"]
         with open(os.path.join(self.data, 'postgresql.auto.conf'), 'w') as f:
             f.write('\n'.join(lines) + '\n')
 

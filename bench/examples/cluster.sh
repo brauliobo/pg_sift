@@ -46,7 +46,7 @@ track_io_timing = on
 log_statement = none
 extension_control_path = '$SHARE:\$system'
 dynamic_library_path = '$LIB:\$libdir'
-sift.col_auto_merge = $maint
+sift.async_maintenance = $maint
 EOF
 	fi
 	pg_ctl -D "$DATA" -l "$TMP/log" -w start >/dev/null
