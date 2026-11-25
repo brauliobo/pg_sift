@@ -1,10 +1,9 @@
 -- A time window of a scoped aggregate that starts or ends inside a month: the whole months the window holds come from the monthly cubes of the summary, and the pieces of the months it cuts are
 -- read from the rows of the key (the granules of the key, the rows the summary lacks, the rows of the members whose pairs changed), exact for count, sum, avg, min and max of every measure whatever
 -- the table did since the summary: new rows, deleted rows (also those that held a minimum or maximum), rows moved in or out of the window, pair edits. Every statement runs over the facts with the
--- index and over a heap twin; each state must give the same rows. Each of the 8 states checks the 16 windows once, and the relation type (3), the shape (5) and the key (4) rotate with the window and
--- the state, so that every window meets every type and shape over the states and every state meets every type, shape and key; every window with two bounds must be answered by the summary
--- (plan_surprises counts the windows whose plan is not the expected one: the shape that groups by month is the join's, for the key whose pairs are edited, while the summary is not refreshed).
--- A window with one bound is the join's.
+-- index and over a heap twin; each state must give the same rows, and every window with two bounds must be answered by the summary, and one with a single bound when the statement groups by month (from_summary
+-- counts the 14 windows with two bounds of 3 time types and 5 shapes, and the 2 with one bound of the shape that groups by month: 216; the shape that groups by month is the join's while the pairs
+-- are edited and the summary not yet refreshed: 168). A window with one bound that no month groups is the join's.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

@@ -91,11 +91,10 @@ scope_begin(CustomScanState *node, EState *estate, int eflags)
 		st->key = ExecInitExpr(linitial(cs->custom_exprs), &node->ss.ps);
 		st->key_type = st->spec->key_array ? get_element_type(exprType(linitial(cs->custom_exprs))) : exprType(linitial(cs->custom_exprs));
 	}
-	if (st->spec->ranged)
-	{
+	if (st->spec->lo_strat != 0)
 		st->lo = ExecInitExpr(list_nth(cs->custom_exprs, st->spec->key_given), &node->ss.ps);
-		st->hi = ExecInitExpr(list_nth(cs->custom_exprs, st->spec->key_given + 1), &node->ss.ps);
-	}
+	if (st->spec->hi_strat != 0)
+		st->hi = ExecInitExpr(list_nth(cs->custom_exprs, st->spec->key_given + (st->lo != NULL)), &node->ss.ps);
 	if (st->spec->scan || st->spec->topk)
 		st->v6 = sift_v6_spec_unpack(lsecond(cs->custom_private));
 	if (st->spec->scan)
@@ -272,7 +271,8 @@ needs_minmax(const ScopeSpec *sp)
 	return false;
 }
 
-/* The window [lo, hi) of the statement and the months it touches: those it holds whole are read from the cubes, the (at most two) it cuts from the rows of the key; not more months than a cube read is worth */
+/* The window [lo, hi) of the statement and the months it touches: those it holds whole are read from the cubes, the (at most two) it cuts from the rows of the key; not more months than a cube read is worth.
+ * A bound the statement does not state is open: only a statement that groups by month has one, and it reads the months the key has */
 typedef struct MonthWindow
 {
 	bool		ranged;
@@ -303,15 +303,17 @@ bound_micros(ScopeState *st, ExprState *e, int strat, bool upper, int64 *out)
 static bool
 month_window(ScopeState *st, MonthWindow *w)
 {
-	*w = (MonthWindow) {0};
+	*w = (MonthWindow) {.lo = PG_INT64_MIN,.hi = PG_INT64_MAX,.first = PG_INT32_MIN,.last = PG_INT32_MAX};
 	if (!st->spec->ranged)
 		return true;
-	if (!bound_micros(st, st->lo, st->spec->lo_strat, false, &w->lo) || !bound_micros(st, st->hi, st->spec->hi_strat, true, &w->hi))
+	if ((st->lo != NULL && !bound_micros(st, st->lo, st->spec->lo_strat, false, &w->lo)) || (st->hi != NULL && !bound_micros(st, st->hi, st->spec->hi_strat, true, &w->hi)))
 		return false;
 	w->ranged = true;
-	w->first = sift_scope_month_of(w->lo);
-	w->last = w->lo < w->hi ? sift_scope_month_of(w->hi - 1) : w->first - 1;
-	return w->last - w->first < MONTH_WINDOW_MAX;
+	if (st->lo != NULL)
+		w->first = sift_scope_month_of(w->lo);
+	if (st->hi != NULL)
+		w->last = w->lo < w->hi ? sift_scope_month_of(w->hi - 1) : w->first - 1;
+	return st->spec->by_month || (int64) w->last - w->first < MONTH_WINDOW_MAX;
 }
 
 static bool

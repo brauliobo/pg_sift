@@ -360,7 +360,7 @@ compile_fact_quals(ScopePlan *p)
 		if (ri->pseudoconstant || !compile_fact_qual(p, ri->clause))
 			return false;
 	p->spec.ranged = p->lo_expr != NULL || p->hi_expr != NULL;
-	return !p->spec.ranged || (p->lo_expr != NULL && p->hi_expr != NULL);
+	return !p->spec.ranged || (p->lo_expr != NULL && p->hi_expr != NULL) || p->spec.by_month;
 }
 
 /* date_trunc('month', time leaf): the leaf a timestamp or a timestamptz, or a date the way PostgreSQL casts it to one of them */
@@ -669,7 +669,9 @@ scope_exprs(const ScopePlan *p)
 	if (p->key_expr != NULL)
 		l = lappend(l, p->key_expr);
 	if (p->lo_expr != NULL)
-		l = lappend(lappend(l, p->lo_expr), p->hi_expr);
+		l = lappend(l, p->lo_expr);
+	if (p->hi_expr != NULL)
+		l = lappend(l, p->hi_expr);
 	return l;
 }
 
