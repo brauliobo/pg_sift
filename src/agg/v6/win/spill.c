@@ -19,6 +19,7 @@
 
 #include "agg/v6/batch.h"
 #include "agg/v6/win/spill.h"
+#include "core/compat.h"
 
 #define INT2_LT			95
 #define INT8_GT			413
@@ -213,6 +214,7 @@ spill_desc(const SiftWinSpill *sp)
 	}
 	TupleDescInitEntry(desc, 2 * n + 1, NULL, INT8OID, -1, 0);
 	TupleDescInitEntry(desc, 2 * n + 2, NULL, BYTEAOID, -1, 0);
+	sift_tupdesc_finalize(desc);
 	return desc;
 }
 

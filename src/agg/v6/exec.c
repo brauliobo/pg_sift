@@ -7,10 +7,12 @@
 #include "access/parallel.h"
 #include "access/table.h"
 #include "common/hashfn.h"
+#include "datatype/timestamp.h"
 #include "commands/explain.h"
 #include "executor/nodeIndexscan.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/timestamp.h"
 
 #include "agg/v6/v6.h"
 #include "agg/v6/ext.h"
