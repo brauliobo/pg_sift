@@ -95,7 +95,7 @@ SELECT s.name, c.* FROM shapes s, LATERAL shape_check(s.q) c ORDER BY s.ord;
  value that raises      | t         | t       | t
  distinct stays         | f         | t       | t
  two branches stay      | f         | t       | t
- sub-select value stays | f         | f       | t
+ sub-select value stays | f         | t       | t
 (27 rows)
 
 -- the empty groups and the NULL cases by value

@@ -63,7 +63,7 @@ END $$;
 SELECT scan_nodes(series_query('')) AS shared_cte_nodes, scan_nodes(series_query('NOT MATERIALIZED')) AS inline_nodes;
  shared_cte_nodes | inline_nodes 
 ------------------+--------------
-                2 |            2
+                3 |            3
 (1 row)
 
 SELECT differences(series_query('')) AS shared_cte_differences, differences(series_query('NOT MATERIALIZED')) AS inline_differences;

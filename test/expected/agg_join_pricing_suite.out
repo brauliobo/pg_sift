@@ -135,7 +135,7 @@ FROM (SELECT sub, format('SELECT count(*), sum(v) FROM facts WHERE k IN (SELECT 
     sub    | scan | same_rows 
 -----------+------+-----------
  n         | t    | t
- n + 1     | f    | t
+ n + 1     | t    | t
  n::bigint | t    | t
 (3 rows)
 

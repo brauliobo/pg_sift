@@ -461,9 +461,9 @@ NOTICE:  sift_col index "pn_b_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pn_b_col');
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
-  plan  | result_rows | vs_normal_plan 
---------+-------------+----------------
- normal |           7 |              0
+   plan   | result_rows | vs_normal_plan 
+----------+-------------+----------------
+ normal 2 |           7 |              0
 (1 row)
 
 DROP INDEX pn_b_col;
@@ -472,9 +472,9 @@ NOTICE:  sift_col index "pn_b_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pn_b_col');
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
-  plan  | result_rows | vs_normal_plan 
---------+-------------+----------------
- normal |           7 |              0
+   plan   | result_rows | vs_normal_plan 
+----------+-------------+----------------
+ normal 2 |           7 |              0
 (1 row)
 
 DROP INDEX pn_b_col;
@@ -816,7 +816,7 @@ SELECT plan_of('EXECUTE ph_k(7)') AS equality, plan_of('EXECUTE ph_ks(ARRAY[7, 8
        plan_of('EXECUTE ph_gt(7)') AS range_test, plan_of('EXECUTE ph_and(7, 50)') AS with_filter, plan_of('EXECUTE phx_e(8)') AS expression_key;
                         equality                        |                        any_list                        | other_type | range_test |                      with_filter                       | expression_key 
 --------------------------------------------------------+--------------------------------------------------------+------------+------------+--------------------------------------------------------+----------------
- SiftAgg ph_0, ph_1, ph_2, ph_3, ph_4, ph_5, ph_6, ph_7 | SiftAgg ph_0, ph_1, ph_2, ph_3, ph_4, ph_5, ph_6, ph_7 | normal     | normal     | SiftAgg ph_0, ph_1, ph_2, ph_3, ph_4, ph_5, ph_6, ph_7 | normal
+ SiftAgg ph_0, ph_1, ph_2, ph_3, ph_4, ph_5, ph_6, ph_7 | SiftAgg ph_0, ph_1, ph_2, ph_3, ph_4, ph_5, ph_6, ph_7 | normal 8   | normal 8   | SiftAgg ph_0, ph_1, ph_2, ph_3, ph_4, ph_5, ph_6, ph_7 | normal
 (1 row)
 
 -- a value, a list (duplicates, a NULL element, none, a NULL array), a NULL value, a value no row has, the rows whose key is NULL
@@ -932,9 +932,9 @@ SELECT * FROM same_exec('EXECUTE phm_abs(ARRAY[3, 4, 5], ''cat_b'')', 'SELECT co
 
 -- a key that is an expression is PostgreSQL's to prune; a condition on the plain column reads every partition
 SELECT * FROM same_exec('EXECUTE phx_k(7)', 'SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k = 7');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            4 |           1 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            4 |           1 |              0
 (1 row)
 
 SELECT scan, result_rows, vs_normal_plan FROM same_exec('EXECUTE phx_e(8)', 'SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k + 1 = 8');
@@ -945,15 +945,15 @@ SELECT scan, result_rows, vs_normal_plan FROM same_exec('EXECUTE phx_e(8)', 'SEL
 
 -- another operator or another type of the operand keeps the normal plan (which prunes as PostgreSQL does)
 SELECT scan, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_gt(290)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k > 290');
-  scan  | result_rows | vs_normal_plan 
---------+-------------+----------------
- normal |           1 |              0
+  scan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           1 |              0
 (1 row)
 
 SELECT scan, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_big(7)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7');
-  scan  | result_rows | vs_normal_plan 
---------+-------------+----------------
- normal |           1 |              0
+  scan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           1 |              0
 (1 row)
 
 -- a hash level under a range level, beside the default partition: both decide

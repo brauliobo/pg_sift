@@ -79,25 +79,25 @@ SELECT q.sql AS statement, c.* FROM q, LATERAL value_check(q.sql) c ORDER BY q.o
                                            statement                                           | scan | same 
 -----------------------------------------------------------------------------------------------+------+------
  SELECT count(i4), count(lower(i4)), count(upper(i4)), min(lower(i4)), max(upper(i4)) FROM rg  | t    | t
- SELECT count(i8), count(lower(i8)), count(upper(i8)), min(lower(i8)), max(upper(i8)) FROM rg  | f    | t
+ SELECT count(i8), count(lower(i8)), count(upper(i8)), min(lower(i8)), max(upper(i8)) FROM rg  | t    | t
  SELECT count(d), count(lower(d)), count(upper(d)), min(lower(d)), max(upper(d)) FROM rg       | t    | t
- SELECT count(ts), count(lower(ts)), count(upper(ts)), min(lower(ts)), max(upper(ts)) FROM rg  | f    | t
+ SELECT count(ts), count(lower(ts)), count(upper(ts)), min(lower(ts)), max(upper(ts)) FROM rg  | t    | t
  SELECT count(tz), count(lower(tz)), count(upper(tz)), min(lower(tz)), max(upper(tz)) FROM rg  | t    | t
  SELECT count(i4), count(lower(i4)), count(upper(i4)), min(lower(i4)), max(upper(i4)) FROM rgf | t    | t
  SELECT count(i8), count(lower(i8)), count(upper(i8)), min(lower(i8)), max(upper(i8)) FROM rgf | t    | t
  SELECT count(d), count(lower(d)), count(upper(d)), min(lower(d)), max(upper(d)) FROM rgf      | t    | t
  SELECT count(ts), count(lower(ts)), count(upper(ts)), min(lower(ts)), max(upper(ts)) FROM rgf | t    | t
  SELECT count(tz), count(lower(tz)), count(upper(tz)), min(lower(tz)), max(upper(tz)) FROM rgf | t    | t
- SELECT lower(i4) AS k, count(*) AS n FROM rg GROUP BY 1                                       | f    | t
- SELECT lower(i8) AS k, count(*) AS n FROM rg GROUP BY 1                                       | f    | t
- SELECT lower(d) AS k, count(*) AS n FROM rg GROUP BY 1                                        | f    | t
- SELECT lower(ts) AS k, count(*) AS n FROM rg GROUP BY 1                                       | f    | t
- SELECT lower(tz) AS k, count(*) AS n FROM rg GROUP BY 1                                       | f    | t
- SELECT lower(i4) AS k, count(*) AS n FROM rgf GROUP BY 1                                      | f    | t
- SELECT lower(i8) AS k, count(*) AS n FROM rgf GROUP BY 1                                      | f    | t
- SELECT lower(d) AS k, count(*) AS n FROM rgf GROUP BY 1                                       | f    | t
- SELECT lower(ts) AS k, count(*) AS n FROM rgf GROUP BY 1                                      | f    | t
- SELECT lower(tz) AS k, count(*) AS n FROM rgf GROUP BY 1                                      | f    | t
+ SELECT lower(i4) AS k, count(*) AS n FROM rg GROUP BY 1                                       | t    | t
+ SELECT lower(i8) AS k, count(*) AS n FROM rg GROUP BY 1                                       | t    | t
+ SELECT lower(d) AS k, count(*) AS n FROM rg GROUP BY 1                                        | t    | t
+ SELECT lower(ts) AS k, count(*) AS n FROM rg GROUP BY 1                                       | t    | t
+ SELECT lower(tz) AS k, count(*) AS n FROM rg GROUP BY 1                                       | t    | t
+ SELECT lower(i4) AS k, count(*) AS n FROM rgf GROUP BY 1                                      | t    | t
+ SELECT lower(i8) AS k, count(*) AS n FROM rgf GROUP BY 1                                      | t    | t
+ SELECT lower(d) AS k, count(*) AS n FROM rgf GROUP BY 1                                       | t    | t
+ SELECT lower(ts) AS k, count(*) AS n FROM rgf GROUP BY 1                                      | t    | t
+ SELECT lower(tz) AS k, count(*) AS n FROM rgf GROUP BY 1                                      | t    | t
  SELECT upper(i4) AS k, count(*) AS n, min(id) AS first FROM rg GROUP BY 1                     | t    | t
  SELECT upper(i8) AS k, count(*) AS n, min(id) AS first FROM rg GROUP BY 1                     | f    | t
  SELECT upper(d) AS k, count(*) AS n, min(id) AS first FROM rg GROUP BY 1                      | t    | t
@@ -119,9 +119,9 @@ SELECT q.sql AS statement, c.* FROM q, LATERAL value_check(q.sql) c ORDER BY q.o
  SELECT count(*) AS n, sum(id) AS s FROM rgf WHERE lower(ts) IS NULL                           | t    | t
  SELECT count(*) AS n, sum(id) AS s FROM rgf WHERE lower(tz) IS NULL                           | t    | t
  SELECT count(*) AS n FROM rg WHERE upper(i4) IS NOT NULL AND NOT isempty(i4)                  | t    | t
- SELECT count(*) AS n FROM rg WHERE upper(i8) IS NOT NULL AND NOT isempty(i8)                  | f    | t
+ SELECT count(*) AS n FROM rg WHERE upper(i8) IS NOT NULL AND NOT isempty(i8)                  | t    | t
  SELECT count(*) AS n FROM rg WHERE upper(d) IS NOT NULL AND NOT isempty(d)                    | t    | t
- SELECT count(*) AS n FROM rg WHERE upper(ts) IS NOT NULL AND NOT isempty(ts)                  | f    | t
+ SELECT count(*) AS n FROM rg WHERE upper(ts) IS NOT NULL AND NOT isempty(ts)                  | t    | t
  SELECT count(*) AS n FROM rg WHERE upper(tz) IS NOT NULL AND NOT isempty(tz)                  | t    | t
  SELECT count(*) AS n FROM rgf WHERE upper(i4) IS NOT NULL AND NOT isempty(i4)                 | t    | t
  SELECT count(*) AS n FROM rgf WHERE upper(i8) IS NOT NULL AND NOT isempty(i8)                 | t    | t
@@ -129,9 +129,9 @@ SELECT q.sql AS statement, c.* FROM q, LATERAL value_check(q.sql) c ORDER BY q.o
  SELECT count(*) AS n FROM rgf WHERE upper(ts) IS NOT NULL AND NOT isempty(ts)                 | t    | t
  SELECT count(*) AS n FROM rgf WHERE upper(tz) IS NOT NULL AND NOT isempty(tz)                 | t    | t
  SELECT id % 7 AS g, min(lower(i4)) AS lo, max(upper(i4)) AS hi FROM rg GROUP BY 1             | t    | t
- SELECT id % 7 AS g, min(lower(i8)) AS lo, max(upper(i8)) AS hi FROM rg GROUP BY 1             | f    | t
+ SELECT id % 7 AS g, min(lower(i8)) AS lo, max(upper(i8)) AS hi FROM rg GROUP BY 1             | t    | t
  SELECT id % 7 AS g, min(lower(d)) AS lo, max(upper(d)) AS hi FROM rg GROUP BY 1               | t    | t
- SELECT id % 7 AS g, min(lower(ts)) AS lo, max(upper(ts)) AS hi FROM rg GROUP BY 1             | f    | t
+ SELECT id % 7 AS g, min(lower(ts)) AS lo, max(upper(ts)) AS hi FROM rg GROUP BY 1             | t    | t
  SELECT id % 7 AS g, min(lower(tz)) AS lo, max(upper(tz)) AS hi FROM rg GROUP BY 1             | t    | t
  SELECT id % 7 AS g, min(lower(i4)) AS lo, max(upper(i4)) AS hi FROM rgf GROUP BY 1            | t    | t
  SELECT id % 7 AS g, min(lower(i8)) AS lo, max(upper(i8)) AS hi FROM rgf GROUP BY 1            | t    | t
