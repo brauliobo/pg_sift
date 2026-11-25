@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A shell that starts or reaches a PostgreSQL client names the cluster it means. A bare `psql`, `createdb`, `dropdb`... reaches whatever libpq defaults to, which on a developer
 # machine is the system PostgreSQL (the socket in /run/postgresql, port 5432): databases made and dropped, and an ALTER SYSTEM, on a server that is not the test's (2026-11-03).
-# A file passes when it names the cluster itself (PGHOST or PGPORT, scripts/pgtest.sh, test/t/lib.bash, which set them) or when the command has -h/--host/-p/--port/-D/host=; a file
+# A file passes when it names the cluster itself (PGHOST or PGPORT, scripts/pgtest.sh, test/t/lib/common.bash, which set them) or when the command has -h/--host/-p/--port/-D/host=; a file
 # that takes the cluster from the environment of its caller (the benchmarks) is in scripts/pg-bare.allow with the reason, FILE TAB REASON.
 #   scripts/check-pg-bare.sh            scripts/, test/, bench/, packaging/
 #   scripts/check-pg-bare.sh --selftest
@@ -13,7 +13,7 @@ import os, re, subprocess, sys
 root, arg = sys.argv[1], sys.argv[2]
 CMD = re.compile(r'(?:^|[;&|`]|\$\()\s*(?:\w+=\S+\s+)*(?:exec\s+)?(psql|createdb|dropdb|createuser|dropuser|pg_ctl|pg_isready|pg_dump|pg_dumpall|pg_restore|pg_basebackup|vacuumdb|reindexdb)\b')
 NAMED = re.compile(r'(^|\s)(-h|--host|-p|--port|-D)\b|host=|PGHOST|PGPORT|pgtest\.sh|\$SOCK')
-FILE_NAMES = re.compile(r'PGHOST|PGPORT|pgtest\.sh|lib\.bash')
+FILE_NAMES = re.compile(r'PGHOST|PGPORT|pgtest\.sh|lib\.bash|common\.bash')
 
 
 def bad(files, allow):

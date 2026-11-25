@@ -12,6 +12,6 @@ scripts/test-regress-batch.sh	a fixture cluster of tables t01-t20 that proves th
 scripts/old-lib-check.sh	starts the server of an older release on a data directory of this tree: the leaks of that release are not this tree's
 scripts/test-ci-build-fail.sh	a stub initdb in a copy of ci.sh: no server runs
 scripts/check-pg-bare.sh	starts no server: the commands are the text of its selftest
-test/t/lib_docker.bash	the nodes are containers of test/t/lib.bash: finish scans their logs (node_leakcheck here), the host process table the wait reads is not theirs
-test/t/lib_upgrade.bash	a layer of test/t/lib.bash: its nodes start through node_start and finish ends them with leak_end
+test/t/lib/docker.bash	the nodes are containers of test/t/lib/common.bash: finish scans their logs (node_leakcheck here), the host process table the wait reads is not theirs
+test/t/lib/upgrade.bash	a layer of test/t/lib/common.bash: its nodes start through node_start and finish ends them with leak_end
 bench/steps/v6_cluster.sh	benchmark cluster of the 6.0 scaling ladder: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code

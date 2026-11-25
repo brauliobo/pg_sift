@@ -35,7 +35,7 @@
 # the whole build and every harness: a change here can break anything
 ^(Makefile|BUILD_ID|\.gitattributes|scripts/(build-id|code-id)\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
-^(scripts/(ci/|(ci|ci-build|pgtest|ccache-env|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.|{perf}
+^(scripts/(ci/|(ci|ci-build|pgtest|ccache-env|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib\.bash|lib_|lib/(common|sql|conc|col|compat|docker|names|twohop|upgrade)\.bash|lib/SiftTest\.pm|SiftTest)|\.github/workflows/ci\.yml)	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
 ^(test/unit/|scripts/unit-scaling\.sh)	-
 ^test/bench_on/	^(fuzz|hardened|tools-build)$|{ci}
@@ -116,7 +116,7 @@
 ^scripts/(pgdg-repo|apt-install|check-codec-probe|formula-sha|lint-cache|check-neutral|check-pipefail-grep|check-release-sync|check-workflow-needs\.py|check-aarch64-baseline|check-testing-regress|check-test-settings|test-settings-shipped\.allow|check-errors|check-classified|check-fuzz-core|check-alignment|check-paging|check-locks|locks\.tsv|check-capacity|capacity\.allow|check-null|check-sites\.py|sites\.verified|null\.allow|check-focus|errctx\.tsv|check-guards|check-approx|check-catalog-writes|check-extlock|check-dir-snapshot|check-damage|check-format-isolation|check-no-ifunc|isa-scan|check-ring-counter|check-memory|check-mem-growth|mem-growth\.allow|check-pg-includes|check-undefined|check-alternates|probe-alternates|alternates\.allow|check-quick-skip|quick-skip\.allow|check-worker-tests|worker-tests\.allow|check-bench-fresh|check-slugs|check-scratch|check-hosted\.py|scratch\.allow|pg-includes\.tsv|check-readme-tables|gen-docs|gen-refusals|check-file-size|check-docs-steps|sql-parts|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|valgrind-sift\.supp|(valgrind-leaks\.(allow|tests)|leaks-asan\.sh)|mem-report|massif-slope|check-mem-growth|multibuild|build-bench|make-compat-fixture|merge-bytes|check-kernels|kernels\.allow|bench-cases\.allow|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|gen-messages|expected-messages-check\.py|genlib|options-released|limits\.allow|refusals\.allow)	-
 ^(scripts/mem-slope(-legacy)?\.py|test/mem-slope(-legacy)?\.tsv)	tap-shell-mem_slope
 ^scripts/rss-peak\.py$	^tap-shell-f2_stream_budget$
-^test/t/(crash_scenarios\.bash|fault_matrix\.tsv)$	^tap-shell-(col_crash_matrix|fault_matrix(-[0-9]+|-smoke)?|fault_matrix_standby(-smoke)?|fault_matrix_workers)$|{ci}
+^test/t/(crash_scenarios\.bash|lib/crash_scenarios\.bash|fault_matrix\.tsv)$	^tap-shell-(col_crash_matrix|fault_matrix(-[0-9]+|-smoke)?|fault_matrix_standby(-smoke)?|fault_matrix_workers)$|{ci}
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^scripts/old-lib-patches/	^tap-shell-old_lib_refusal$
 ^(bench/scaling/|scripts/scaling-gate\.sh$)	^tap-shell-scaling_slope$
@@ -173,7 +173,7 @@
 ^(scripts/mem-slope(-legacy)?\.py|test/mem-slope(-legacy)?\.tsv|test/idle-series\.tsv|scripts/mem-growth\.allow)$	^tap-shell-(mem_slope|mem_slope_legacy|mem_idle_series)$
 ^scripts/check-mem-growth\.sh$	-
 ^scripts/(audit-gucs\.(pl|sh)|guc-disposition\.psv|check-retired\.sh)$	-
-^(scripts/build-v510-fixture\.sh|test/t/SiftCompat\.pm)$	{compat}|gh:f1
+^(scripts/build-v510-fixture\.sh|test/t/SiftCompat\.pm|test/t/lib/SiftCompat\.pm)$	{compat}|gh:f1
 ^test/proj_helpers\.sql$	^installcheck-proj_|{ci}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	fast:{compat}|{cheap}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	{compat}|{any}|gh:f1
