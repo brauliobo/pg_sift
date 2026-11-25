@@ -357,6 +357,9 @@ sift_tbl_f2_ddl_before(Relation rel, AlterTableStmt *stmt)
 				break;
 			case AT_AddColumn:
 			case AT_AlterColumnType:
+			case AT_SetTableSpace:
+			case AT_SetLogged:
+			case AT_SetUnLogged:
 				fence = true;
 				break;
 			default:
