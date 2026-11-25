@@ -9,6 +9,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/part_vis.h"
+#include "core/memtrack.h"
 #include "core/page_io.h"
 
 FullTransactionId
@@ -128,16 +129,12 @@ sift_vis_deleted_cached(SiftXidCache *c, TransactionId xmax, CommandId cmax)
 	return st == SIFT_XSTAT_COMMITTED || (st == SIFT_XSTAT_SELF && cmax < c->snap->curcid);
 }
 
-bool
-sift_part_try_seal(Relation rel, uint32 part_id, SiftPartDesc *d, SiftXidHorizonCache *hc)
+static bool
+all_committed(Relation rel, const SiftPartDesc *d, uint32 part_id, SiftXidHorizonCache *hc)
 {
-	SiftPart   *part;
-	SiftGranuleDesc *dir;
+	SiftPart   *part = sift_part_open_desc(rel, d, part_id);
+	SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
 
-	if (!(d->flags & SIFT_PART_FLAG_UNFROZEN) || (d->flags & SIFT_PART_FLAG_ALL_VISIBLE) || !older(d->max_xid, hc->horizon))
-		return false;
-	part = sift_part_open_desc(rel, d, part_id);
-	dir = sift_part_granule_dir(rel, part);
 	for (uint32 g = 0; g < part->hdr.ngranules; g++)
 	{
 		SiftRowVer *vers = sift_part_read_vers(rel, part, dir, g);
@@ -152,9 +149,29 @@ sift_part_try_seal(Relation rel, uint32 part_id, SiftPartDesc *d, SiftXidHorizon
 			if (st != SIFT_H_COMMITTED_OLD && st != SIFT_H_COMMITTED_NEW)
 				return false;
 		}
+		if (vers != NULL)
+			pfree(vers);
 	}
-	d->flags |= SIFT_PART_FLAG_ALL_VISIBLE;
 	return true;
+}
+
+bool
+sift_part_try_seal(Relation rel, uint32 part_id, SiftPartDesc *d, SiftXidHorizonCache *hc)
+{
+	MemoryContext cx;
+	MemoryContext old;
+	bool		sealed;
+
+	if (!(d->flags & SIFT_PART_FLAG_UNFROZEN) || (d->flags & SIFT_PART_FLAG_ALL_VISIBLE) || !older(d->max_xid, hc->horizon))
+		return false;
+	cx = sift_mem_allocset_create(CurrentMemoryContext, "sift part seal");
+	old = MemoryContextSwitchTo(cx);
+	sealed = all_committed(rel, d, part_id, hc);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	if (sealed)
+		d->flags |= SIFT_PART_FLAG_ALL_VISIBLE;
+	return sealed;
 }
 
 /* The addresses of the pending deletes the snapshot sees; NULL when none */
