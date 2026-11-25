@@ -581,7 +581,7 @@ batch_keep(UnRun *u, const SiftF2ExtBatch *b, const SiftVec *ev)
 	if (u->eev == NULL)
 		return NULL;
 	keep = MemoryContextAllocZero(u->bcx, ((es->n_elems + 63) / 64 + 1) * sizeof(uint64));
-	sift_f2_elem_eval(u->eev, ev, es->layout.offsets[0], es->layout.offsets[b->n], keep);
+	sift_v6_elem_eval(u->eev, ev, es->layout.offsets[0], es->layout.offsets[b->n], keep);
 	return keep;
 }
 

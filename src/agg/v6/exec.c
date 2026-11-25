@@ -250,7 +250,6 @@ v6_scan_ext(V6State *st, Snapshot snap)
 	{
 		MemoryContext pass_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 star pass");
 		MemoryContext old = MemoryContextSwitchTo(pass_cx);
-		SiftV6Text *text = open == SSO_SCAN && OidIsValid(st->spec->text_indexoid) ? sift_v6_text_open(st->spec, pass_cx) : NULL;
 
 		for (int k = 0; open == SSO_SCAN && k < st->nsources; k++)
 			v6_scan_fact(st, &st->sources[k], snap);

@@ -217,7 +217,7 @@ sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, int6
 	uint32		n = 0;
 
 	sift_f2s_cfg(index, sift_f2_store_open(index), ord, &sc);
-	pm = sift_f2s_load_pairs(heap, index, &sc, snap);
+	pm = sift_f2s_load_pairs(heap, index, &sc, snap, sift_f2s_key_map(heap, index, sc.spec, false), false);
 	*out = palloc(Max(pm->nmembers, 1) * sizeof(int64));
 	for (uint32 i = 0; i < pm->nmembers; i++)
 		if (sift_spm_owns_key(pm, pm->member_ids[i], key))

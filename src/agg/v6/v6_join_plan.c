@@ -300,7 +300,7 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 		}
 		if (bms_membership(rels) != BMS_MULTIPLE || within_one_dim(sh, rels))
 			continue;
-		if (computed_dim || probe == NULL || ncolumns > 1 || (!IsA(probe, Var) && (probe_role >= 0 || !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe))))
+		if (probe == NULL || ncolumns > 1 || (!IsA(probe, Var) && (probe_role >= 0 || !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe))))
 		{
 			if (!computed_class_ok(sh, rels))
 				return false;

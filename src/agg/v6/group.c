@@ -643,14 +643,8 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	v6g_dist_init(g);
 	v6g_filter_init(g);
 	g->off = palloc(Max(spec->naggs, 1) * sizeof(uint32));
-	int			npct = 0;
-
 	for (int j = 0; j < spec->naggs; j++)
-	{
 		g->off[j] = j * sizeof(V6Acc);
-		npct += spec->agg[j].kind == SV6_PCT_CONT;
-	}
-	g->pct_kb = Max(work_mem / Max(npct, 1), 64);
 	g->stride = Max(spec->naggs, 1) * sizeof(V6Acc);
 	g->nsets = Max(spec->nsets, 1);
 	g->set = palloc0(g->nsets * sizeof(V6Set));
@@ -672,60 +666,6 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	presize(g);
 	MemoryContextSwitchTo(old);
 	return g;
-}
-
-typedef struct V6Visit
-{
-	SiftV6Group *g;
-	V6Set	   *set;
-} V6Visit;
-
-static void
-store_groups(SiftV6Group *g, V6Set *set, const SiftSaltedHT *ht)
-{
-	const int	n = g->spec->nkeys + g->spec->naggs;
-	Datum	   *values = palloc(Max(n, 1) * sizeof(Datum));
-	bool	   *isnull = palloc(Max(n, 1));
-	MemoryContext row = AllocSetContextCreate(CurrentMemoryContext, "sift agg v6 row", ALLOCSET_SMALL_SIZES);
-	MemoryContext old = MemoryContextSwitchTo(row);
-	const SiftAggSlot64 *s;
-
-	SIFT_HT_FOREACH(ht, s)
-	{
-		const V6Acc *acc = (const V6Acc *) sift_ht_ext(ht, s);
-
-		memset(isnull, true, g->spec->nkeys * sizeof(bool));
-		v6g_key_datums(g, set, ht, s, values, isnull, V6_KEYS_ALL);
-		for (int j = 0; j < g->spec->naggs; j++)
-			values[g->spec->nkeys + j] = v6g_agg_datum(g, &g->spec->agg[j], &acc[j], set->mask, &isnull[g->spec->nkeys + j]);
-		tuplestore_putvalues(g->store, g->desc, values, isnull);
-		MemoryContextReset(row);
-	}
-	MemoryContextSwitchTo(old);
-	MemoryContextDelete(row);
-	pfree(values);
-	pfree(isnull);
-}
-
-static void
-visit_merged(void *arg, SiftSaltedHT *ht)
-{
-	V6Visit    *v = arg;
-
-	store_groups(v->g, v->set, ht);
-}
-
-static void
-store_plain(SiftV6Group *g, V6Set *set)
-{
-	const int	n = g->spec->nkeys + g->spec->naggs;
-	Datum	   *values = palloc0(Max(n, 1) * sizeof(Datum));
-	bool	   *isnull = palloc(Max(n, 1));
-
-	memset(isnull, true, g->spec->nkeys * sizeof(bool));
-	for (int j = 0; j < g->spec->naggs; j++)
-		values[g->spec->nkeys + j] = v6g_agg_datum(g, &g->spec->agg[j], &set->plain[j], set->mask, &isnull[g->spec->nkeys + j]);
-	tuplestore_putvalues(g->store, g->desc, values, isnull);
 }
 
 static void finish_in_cx(SiftV6Group *g);
