@@ -13,7 +13,7 @@ sql tc "CREATE EXTENSION pg_sift" "CREATE TABLE ev (id int8, ts timestamp NOT NU
 truth() { sql tc "SELECT md5(string_agg(id || ':' || ts || ':' || v || ':' || pad, ',' ORDER BY id)) FROM ev"; }
 OBJ=$(sql tc "SELECT substr(location, 8) FROM sift.tier_status")
 check "the part is in the store" test -f "$OBJ"
-SIZE=$(stat -c %s "$OBJ")
+SIZE=$(wc -c <"$OBJ" | tr -d " ")
 AT=$((SIZE / 2))
 WANT=$(truth)
 cache_clear() { find "$(dir tc)/data" -name '*.chk' -delete; }

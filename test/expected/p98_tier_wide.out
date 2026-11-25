@@ -13,10 +13,10 @@ CREATE TABLE narrow (id int8, ts timestamp NOT NULL, body text) USING sift_table
 INSERT INTO wide SELECT i, timestamp '2020-01-01' + i * interval '1 hour', repeat(md5(i::text), 400) FROM generate_series(1, 300) i;
 INSERT INTO narrow SELECT i, timestamp '2020-01-01' + i * interval '1 hour', repeat(md5(i::text), 4) FROM generate_series(1, 3000) i;
 VACUUM (FREEZE) wide, narrow;
-SELECT count(*) AS rows, sum(length(body)) AS bytes FROM wide;
- rows |  bytes  
-------+---------
-  300 | 3840000
+SELECT count(*) AS rows, sum(length(body)) = 300 * 12800 AS bytes_kept FROM wide;
+ rows | bytes_kept 
+------+------------
+  300 | t
 (1 row)
 
 SELECT sift.set_tier_policy('wide', 'file://' || :'tierdir', '30 days') AS wide_policy;
@@ -38,10 +38,10 @@ SELECT relation, count(*) AS tiered FROM sift.tier_status GROUP BY relation ORDE
  narrow   |      1
 (1 row)
 
-SELECT count(*) AS rows, sum(length(body)) AS bytes FROM wide;
- rows |  bytes  
-------+---------
-  300 | 3840000
+SELECT count(*) AS rows, sum(length(body)) = 300 * 12800 AS bytes_kept FROM wide;
+ rows | bytes_kept 
+------+------------
+  300 | t
 (1 row)
 
 SELECT count(*) AS problems FROM sift.check('wide');
