@@ -25,6 +25,7 @@
 #include "core/f2/manifest.h"
 #include "core/f2/proj.h"
 #include "core/maint.h"
+#include "core/memtrack.h"
 #include "core/page_io.h"
 #include "core/part_lock.h"
 #include "table/f2/f2_col_delta_dir.h"
@@ -404,7 +405,8 @@ sort_unique_packed(Sweep *s)
 {
 	int			n = 0;
 
-	qsort(s->packed.v, s->packed.n, sizeof(SiftFsmExtent), sift_fsm_ext_cmp);
+	if (s->packed.n > 1)
+		qsort(s->packed.v, s->packed.n, sizeof(SiftFsmExtent), sift_fsm_ext_cmp);
 	for (int i = 0; i < s->packed.n; i++)
 		if (n == 0 || s->packed.v[n - 1].start != s->packed.v[i].start)
 			s->packed.v[n++] = s->packed.v[i];
@@ -444,7 +446,8 @@ orphan_runs(Sweep *s, ExtVec *out, uint64 *blocks)
 	uint64		cur = 0;
 
 	sort_unique_packed(s);
-	qsort(s->held.v, s->held.n, sizeof(SiftFsmExtent), sift_fsm_ext_cmp);
+	if (s->held.n > 1)
+		qsort(s->held.v, s->held.n, sizeof(SiftFsmExtent), sift_fsm_ext_cmp);
 	for (int i = 0; i < s->held.n; i++)
 	{
 		const SiftFsmExtent *e = &s->held.v[i];
@@ -471,7 +474,8 @@ orphan_pages_dead(Sweep *s, const ExtVec *orphans)
 {
 	BlockNumber written = RelationGetNumberOfBlocks(s->rel);
 
-	qsort(s->gens, s->ngens, sizeof(uint64), gen_cmp);
+	if (s->ngens > 1)
+		qsort(s->gens, s->ngens, sizeof(uint64), gen_cmp);
 	for (int i = 0; i < orphans->n; i++)
 		for (uint64 b = orphans->v[i].start; b < (uint64) orphans->v[i].start + orphans->v[i].nblocks && b < written; b++)
 		{
@@ -480,7 +484,7 @@ orphan_pages_dead(Sweep *s, const ExtVec *orphans)
 			uint64		gen = !PageIsNew(p) && sift_page_layout_ok((const char *) p) ? SiftPageGetOpaque(p)->gen : 0;
 
 			UnlockReleaseBuffer(buf);
-			if (gen != 0 && bsearch(&gen, s->gens, s->ngens, sizeof(uint64), gen_cmp) != NULL)
+			if (gen != 0 && s->ngens > 0 && bsearch(&gen, s->gens, s->ngens, sizeof(uint64), gen_cmp) != NULL)
 				return give_up(s, "an orphan page carries the generation of a live object");
 		}
 	return true;
@@ -598,6 +602,18 @@ sweep_allowed(Relation rel)
 	return !sift_maint_standby_streams();
 }
 
+static uint64
+sweep_in_own_context(Relation rel)
+{
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift orphan sweep");
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	uint64		freed = sweep_locked(rel);
+
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	return freed;
+}
+
 /* A sift_table keeps its wide values in extents that only a granule names: a table with a column of variable length is not swept */
 static bool
 names_all_extents(Relation rel)
@@ -633,7 +649,7 @@ sift_fsm_sweep_orphans(Relation rel)
 	if (ConditionalLockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock))
 	{
 		if (!vacuum_read_by_another(rel))
-			freed = sweep_locked(rel);
+			freed = sweep_in_own_context(rel);
 		UnlockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock);
 	}
 	if (!had_lock)
