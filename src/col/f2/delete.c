@@ -3,6 +3,7 @@
  */
 #include "core/host.h"
 
+#include "commands/vacuum.h"
 #include "storage/lmgr.h"
 
 #include "col/f2/delete.h"
@@ -10,6 +11,8 @@
 #include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_del_slab.h"
 #include "col/f2/f2_part_idx.h"
+#include "col/f2/f2_vacuum_run.h"
+#include "core/compat.h"
 #include "core/hash.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -453,6 +456,7 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 
 		if (!sift_u64_set_has(&remapped, parts[p].part_gen) && !part_may_hold(&order, &parts[p], done))
 			continue;
+		sift_vacuum_delay_point();
 		MemoryContextSwitchTo(part_cx);
 		part = sift_part_open_desc(rel, &parts[p], (uint32) part_id);
 		dir = sift_part_granule_dir(rel, part);
@@ -542,11 +546,31 @@ sift_del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendD
 	return resolved;
 }
 
+/* The deletes of a partition may have left the rows of a part dead enough to rewrite: the maintenance is asked for it (a long chain or a slab of its own are asked for where they grow) */
+static void
+note_dead(Relation rel, uint64 part_id, const uint8 *key_lo)
+{
+	SiftPartitionEntry e;
+
+	if (sift_manifest_find_entry(rel, part_id, key_lo, &e))
+		sift_f2_maint_note_parts(rel, &e, 1, NULL, NULL);
+}
+
+/*
+ * A buffer of pending deletes that has SIFT_PEND_DEL_FOLD_PAGES pages is folded by the maintenance when it is there, not by the statement that filled it; a statement folds it itself when the queue
+ * is not there or the buffer has grown to four times that.
+ */
 void
 sift_del_route(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs, int n, const SiftPartSpec *spec)
 {
 	if (n >= SIFT_BULK_DEL_MIN)
 		(void) sift_del_bulk(rel, part_id, key_lo, recs, n, true, spec);
-	else if (sift_pend_del_append(rel, part_id, key_lo, recs, n) >= SIFT_PEND_DEL_FOLD_PAGES)
-		(void) sift_del_bulk(rel, part_id, key_lo, NULL, 0, true, spec);
+	else
+	{
+		int			pages = sift_pend_del_append(rel, part_id, key_lo, recs, n);
+
+		if (pages >= SIFT_PEND_DEL_FOLD_PAGES && (pages >= 4 * SIFT_PEND_DEL_FOLD_PAGES || !sift_f2_maint_request(rel, SIFT_MK_PEND_DEL_FOLD, part_id)))
+			(void) sift_del_bulk(rel, part_id, key_lo, NULL, 0, true, spec);
+	}
+	note_dead(rel, part_id, key_lo);
 }
