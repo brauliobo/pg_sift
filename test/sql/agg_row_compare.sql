@@ -19,7 +19,7 @@ DECLARE q text := format('SELECT count(*) AS n, sum(c) AS s, sum(id) AS i FROM r
 BEGIN
 	engaged_or_empty := false;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		engaged_or_empty := engaged_or_empty OR l LIKE '%Custom Scan (SiftAgg)%';
+		engaged_or_empty := engaged_or_empty OR l LIKE '%Custom Scan (SiftAgg%';
 	END LOOP;
 	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
 	SET LOCAL sift.enable_agg = off;

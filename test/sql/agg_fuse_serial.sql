@@ -24,7 +24,7 @@ CREATE FUNCTION reason(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'no scan';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'workers'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'workers'; END IF;
 		IF l LIKE '%Serial Because%' THEN RETURN trim(l); END IF;
 	END LOOP;
 	RETURN r;

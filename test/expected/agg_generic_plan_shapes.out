@@ -22,7 +22,7 @@ DECLARE line text;
 BEGIN
 	EXECUTE format('SET plan_cache_mode = %s', mode);
 	FOR line IN EXECUTE format('EXPLAIN (COSTS OFF) EXECUTE %s(%s)', stmt, args) LOOP
-		IF line ~ 'Custom Scan \(SiftAgg\)' THEN RETURN 'sift'; END IF;
+		IF line ~ 'Custom Scan \(SiftAgg' THEN RETURN 'sift'; END IF;
 	END LOOP;
 	RETURN 'native';
 END $$;

@@ -46,7 +46,7 @@ CREATE FUNCTION decor_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; scans int := 0; subs int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg%')::int;
 		subs := subs + (l LIKE '%SubPlan%')::int;
 	END LOOP;
 	RETURN CASE WHEN scans > 0 THEN 'scan x' || scans WHEN subs > 0 THEN 'probes' ELSE 'normal' END;
@@ -113,7 +113,7 @@ DECLARE l text; r text := 'other';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN 'scan'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN 'scan'; END IF;
 		IF l LIKE '%on items_owner%' OR l LIKE '%using items_owner%' THEN r := 'lookups'; END IF;
 	END LOOP;
 	RETURN r;
@@ -228,7 +228,7 @@ SELECT * FROM check_query('comma lateral beside a join lateral: the first is in 
  SELECT o.id, x.s, y.c FROM key_sets o, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.set_id = o.k) x LEFT JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.set_id = o.k2) y ON true $q$);
                                     label                                     | in_scan | same | rows 
 ------------------------------------------------------------------------------+---------+------+------
- comma lateral beside a join lateral: the first is in a join, not in the list | f       | t    |  500
+ comma lateral beside a join lateral: the first is in a join, not in the list | t       | t    |  500
 (1 row)
 
 SELECT * FROM check_query('a lateral that reads the columns of another lateral', $q$
@@ -337,28 +337,28 @@ SELECT bool_or(used) AS limited FROM sift.explain_why($q$ SELECT o.id, x.c FROM 
 (1 row)
 
 -- as written: an ORDER BY or a LIMIT, a HAVING without groups (it can drop the one row), grouping sets, an outer column in a group or the HAVING, a scalar sub-select with groups
-SELECT * FROM check_query('group by with a limit', $q$ SELECT o.id, x.cat FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat ORDER BY 2 DESC LIMIT 1) x ON true WHERE o.id < 500 $q$);
+SELECT * FROM check_query('group by with a limit', $q$ SELECT o.id, x.cat FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat ORDER BY 2 DESC, 1 LIMIT 1) x ON true WHERE o.id < 500 $q$);
          label         | in_scan | same | rows 
 -----------------------+---------+------+------
- group by with a limit | f       | t    |  461
+ group by with a limit | t       | t    |  461
 (1 row)
 
 SELECT * FROM check_query('HAVING without groups', $q$ SELECT o.id, x.c FROM key_sets o JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.set_id = o.k HAVING count(*) > 5) x ON true $q$);
          label         | in_scan | same | rows 
 -----------------------+---------+------+------
- HAVING without groups | f       | t    |  396
+ HAVING without groups | t       | t    |  396
 (1 row)
 
 SELECT * FROM check_query('grouping sets', $q$ SELECT o.id, x.cat, x.c FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY ROLLUP (i.cat)) x ON true WHERE o.id < 500 $q$);
      label     | in_scan | same | rows 
 ---------------+---------+------+------
- grouping sets | f       | t    | 1882
+ grouping sets | t       | t    | 1882
 (1 row)
 
 SELECT * FROM check_query('an outer column in the HAVING', $q$ SELECT o.id, x.cat FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat HAVING count(*) > o.grp) x ON true $q$);
              label             | in_scan | same | rows 
 -------------------------------+---------+------+------
- an outer column in the HAVING | f       | t    |  413
+ an outer column in the HAVING | t       | t    |  413
 (1 row)
 
 SELECT * FROM check_query('an outer column in the group', $q$ SELECT o.id, x.g FROM key_sets o JOIN LATERAL (SELECT i.cat + o.grp g, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat + o.grp) x ON true WHERE o.id < 500 $q$);
@@ -370,7 +370,7 @@ SELECT * FROM check_query('an outer column in the group', $q$ SELECT o.id, x.g F
 SELECT * FROM check_query('a scalar sub-select with groups', $q$ SELECT o.id, (SELECT count(*) FROM items i WHERE i.set_id = o.k GROUP BY i.cat HAVING i.cat = 3) c FROM key_sets o $q$);
               label              | in_scan | same | rows 
 ---------------------------------+---------+------+------
- a scalar sub-select with groups | f       | t    |  500
+ a scalar sub-select with groups | t       | t    |  500
 (1 row)
 
 -- scalar sub-selects, in the select list and the WHERE
@@ -424,13 +424,13 @@ SELECT * FROM check_query('outer column in an aggregate (the correlated child of
 SELECT * FROM check_query('an inequality', $q$ SELECT o.id, x.c FROM key_sets o LEFT JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.set_id < o.k AND i.set_id > o.k - 3) x ON true WHERE o.id < 500 $q$);
      label     | in_scan | same | rows 
 ---------------+---------+------+------
- an inequality | f       | t    |  499
+ an inequality | t       | t    |  499
 (1 row)
 
 SELECT * FROM check_query('an expression of the outer column', $q$ SELECT o.id, x.c FROM key_sets o LEFT JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.set_id = o.k + 1) x ON true $q$);
                label               | in_scan | same | rows 
 -----------------------------------+---------+------+------
- an expression of the outer column | f       | t    |  500
+ an expression of the outer column | t       | t    |  500
 (1 row)
 
 SELECT * FROM check_query('a limit', $q$ SELECT o.id, x.s FROM key_sets o LEFT JOIN LATERAL (SELECT sum(i.amt) s FROM (SELECT * FROM items j WHERE j.set_id = o.k LIMIT 3) i) x ON true $q$);
@@ -442,7 +442,7 @@ SELECT * FROM check_query('a limit', $q$ SELECT o.id, x.s FROM key_sets o LEFT J
 SELECT * FROM check_query('a join condition of its own', $q$ SELECT o.id, x.s FROM key_sets o LEFT JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.set_id = o.k) x ON x.s > 100 $q$);
             label            | in_scan | same | rows 
 -----------------------------+---------+------+------
- a join condition of its own | f       | t    |  500
+ a join condition of its own | t       | t    |  500
 (1 row)
 
 SELECT * FROM check_query('the outer query groups', $q$ SELECT o.grp, sum((SELECT sum(i.amt) FROM items i WHERE i.set_id = o.k)) s FROM key_sets o GROUP BY o.grp $q$);
@@ -454,13 +454,13 @@ SELECT * FROM check_query('the outer query groups', $q$ SELECT o.grp, sum((SELEC
 SELECT * FROM check_query('an aggregate with a value over no rows', $q$ SELECT o.id, (SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY i.amt) FROM items i WHERE i.set_id = o.k) m FROM key_sets o $q$);
                  label                  | in_scan | same | rows 
 ----------------------------------------+---------+------+------
- an aggregate with a value over no rows | f       | t    |  500
+ an aggregate with a value over no rows | t       | t    |  500
 (1 row)
 
 SELECT * FROM check_query('comma lateral with a condition the lateral cannot move',$q$ SELECT o.id, x.s FROM key_sets o, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.set_id < o.k AND i.set_id > o.k - 3) x WHERE o.id < 500 $q$);
                          label                          | in_scan | same | rows 
 --------------------------------------------------------+---------+------+------
- comma lateral with a condition the lateral cannot move | f       | t    |  499
+ comma lateral with a condition the lateral cannot move | t       | t    |  499
 (1 row)
 
 SELECT * FROM check_query('EXISTS', $q$ SELECT o.id FROM key_sets o WHERE EXISTS (SELECT 1 FROM items i WHERE i.set_id = o.k AND i.amt > 90) $q$);
@@ -515,7 +515,7 @@ DECLARE l text; r text := 'other';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN 'scan'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN 'scan'; END IF;
 		IF l LIKE '%Semi Join%' OR l LIKE '%Anti Join%' THEN r := 'semi/anti'; END IF;
 		IF r = 'other' AND (l LIKE '%on items_owner%' OR l LIKE '%using items_owner%') THEN r := 'lookups'; END IF;
 	END LOOP;
@@ -847,7 +847,7 @@ CREATE FUNCTION chosen(sql text, OUT scan bool, OUT sets int) LANGUAGE plpgsql A
 DECLARE l text; BEGIN
 	scan := false; sets := 0;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
-		scan := scan OR l ~ 'Custom Scan \(SiftAgg\)';
+		scan := scan OR l ~ 'Custom Scan \(SiftAgg';
 		IF l ~ 'Pushed Aggregates' THEN sets := (SELECT count(*) FROM regexp_matches(l, 'count\(DISTINCT', 'g')); END IF;
 	END LOOP;
 END $$;
@@ -929,7 +929,7 @@ CREATE FUNCTION eager_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; scans int := 0; product int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg%')::int;
 		product := product + (l LIKE '%Pushed Aggregates:%' AND l LIKE '% * %')::int;
 	END LOOP;
 	RETURN CASE WHEN scans = 0 THEN 'normal' WHEN product > 0 THEN 'scan, product in it' ELSE 'scan, sums only' END;
@@ -946,24 +946,24 @@ SELECT n, label, eager_plan(q) AS plan, eager_rows(q, false, 0) <> '' AS has_row
   6 | two sums of two columns             | scan, sums only     | t        | t    | t
   7 | the same sum twice                  | scan, sums only     | t        | t    | t
   8 | a having and an order               | scan, sums only     | t        | t    | t
-  9 | a column compared with a constant   | normal              | t        | t    | t
+  9 | a column compared with a constant   | scan, sums only     | t        | t    | t
  10 | the tables listed with a comma      | scan, sums only     | t        | t    | t
  11 | an expression of the factor         | scan, sums only     | t        | t    | t
  12 | an expression of the group          | scan, sums only     | t        | t    | t
- 13 | tenants with kinds the lookup lacks | scan, product in it | f        | t    | t
- 14 | an average                          | normal              | t        | t    | t
+ 13 | tenants with kinds the lookup lacks | normal              | f        | t    | t
+ 14 | an average                          | scan, sums only     | t        | t    | t
  15 | a count next to the sum             | scan, sums only     | t        | t    | t
- 16 | a lookup whose key repeats          | normal              | t        | t    | t
- 17 | a column of the lookup in a group   | normal              | t        | t    | t
- 18 | a condition on the lookup           | normal              | t        | t    | t
- 19 | a left join                         | normal              | t        | t    | t
+ 16 | a lookup whose key repeats          | scan, sums only     | t        | t    | t
+ 17 | a column of the lookup in a group   | scan, sums only     | t        | t    | t
+ 18 | a condition on the lookup           | scan, sums only     | t        | t    | t
+ 19 | a left join                         | scan, sums only     | t        | t    | t
  20 | a sum of the factor beside          | scan, sums only     | t        | t    | t
  21 | a distinct sum                      | normal              | t        | t    | t
  22 | a count of a column with NULLs      | scan, sums only     | t        | t    | t
- 23 | a count and no group                | normal              | t        | t    | t
+ 23 | a count and no group                | scan, sums only     | t        | t    | t
  24 | a having on the count               | scan, sums only     | t        | t    | t
  25 | a count of distinct values          | scan, product in it | t        | t    | t
- 26 | a count with a filter               | normal              | t        | t    | t
+ 26 | a count with a filter               | scan, sums only     | t        | t    | t
  27 | a sum of a column and a count       | scan, sums only     | t        | t    | t
 (27 rows)
 

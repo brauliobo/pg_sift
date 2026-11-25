@@ -108,7 +108,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scan := scan OR l LIKE '%Custom Scan (SiftAgg)%';
+		scan := scan OR l LIKE '%Custom Scan (SiftAgg%';
 		srt := srt OR l LIKE '%Sort%';
 	END LOOP;
 	RETURN CASE WHEN NOT scan THEN 'no scan' WHEN srt THEN 'sorted above' ELSE 'ordered' END;
@@ -342,7 +342,7 @@ DECLARE l text; scan bool := false; srt bool := false;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scan := scan OR l LIKE '%Custom Scan (SiftAgg)%';
+		scan := scan OR l LIKE '%Custom Scan (SiftAgg%';
 		srt := srt OR l LIKE '%Sort%';
 	END LOOP;
 	RETURN CASE WHEN NOT scan THEN 'no scan' WHEN srt THEN 'sorted above' ELSE 'ordered' END;
@@ -403,7 +403,7 @@ DECLARE l text; scan bool := false; n int := 0;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scan := scan OR l LIKE '%Custom Scan (SiftAgg)%';
+		scan := scan OR l LIKE '%Custom Scan (SiftAgg%';
 		IF l LIKE '%Sort Key%' THEN n := n + 1; END IF;
 	END LOOP;
 	RETURN CASE WHEN scan THEN n ELSE -1 END;

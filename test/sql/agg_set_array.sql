@@ -26,7 +26,7 @@ CREATE FUNCTION plan_kind(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'SiftAgg'; END IF;
 		IF l LIKE '%Workers Planned: 2%' THEN r := r || ' with workers'; END IF;
 	END LOOP;
 	RETURN r;

@@ -42,7 +42,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		gather := gather OR l LIKE '%Gather%Workers Planned: 2%' OR l LIKE '%Workers Planned: 2%';
-		agg := agg OR l LIKE '%Custom Scan (SiftAgg)%';
+		agg := agg OR l LIKE '%Custom Scan (SiftAgg%';
 	END LOOP;
 	RETURN CASE WHEN agg AND gather THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
 END $$;

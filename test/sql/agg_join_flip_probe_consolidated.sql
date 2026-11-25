@@ -143,7 +143,7 @@ CREATE FUNCTION plan_of(q text, settings text, child_first bool) RETURNS text LA
 DECLARE l text; r text := 'normal plan'; BEGIN
 	PERFORM set_up(settings, true, child_first);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'scan'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'scan'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -361,7 +361,7 @@ CREATE FUNCTION partial_check(q text) RETURNS TABLE (partial bool, rows_same boo
 $$ DECLARE l text; plan text := ''; a text; b text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-  partial := plan LIKE '%Subquery Scan on e%' AND plan LIKE '%Custom Scan (SiftAgg)%';
+  partial := plan LIKE '%Subquery Scan on e%' AND plan LIKE '%Custom Scan (SiftAgg%';
   PERFORM set_config('sift.enable_agg', 'on', true);
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
   PERFORM set_config('sift.enable_agg', 'off', true);
@@ -638,7 +638,7 @@ END $$;
 CREATE FUNCTION plan(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'SiftAgg'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'SiftAgg'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

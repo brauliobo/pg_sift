@@ -45,7 +45,7 @@ CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'heap'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'heap'; END IF;
 		IF l ~ '[1-9]\d* column loads' THEN r := 'leaves'; END IF;
 		IF l ~ 'Lookup Heap Reason: ' THEN r := r || ' (' || regexp_replace(l, '^ *Lookup Heap Reason: ', '') || ')'; END IF;
 	END LOOP;

@@ -262,7 +262,7 @@ CREATE FUNCTION scanned(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF line LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+		IF line LIKE '%Custom Scan (SiftAgg%' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;

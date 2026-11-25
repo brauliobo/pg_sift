@@ -43,7 +43,7 @@ BEGIN
 	agg_nodes := 0; scope_scans := 0;
 	PERFORM set_config('sift.agg_force', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN agg_nodes := agg_nodes + 1; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN agg_nodes := agg_nodes + 1; END IF;
 		IF l ~ ' on dim_b( |$)' THEN scope_scans := scope_scans + 1; END IF;
 	END LOOP;
 	PERFORM set_config('sift.agg_force', 'off', true);

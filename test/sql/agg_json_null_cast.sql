@@ -26,7 +26,7 @@ CREATE FUNCTION runs_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text; found bool := false;
 BEGIN
   PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
   RETURN found;
 END $$;
 -- jnull: the query casts a leaf that holds a JSON null. scan: it runs in the scan, which it does unless that cast raises before 18; raises: it fails, as before 18 it must

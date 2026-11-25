@@ -33,7 +33,7 @@ BEGIN
   pushed := false;
   PERFORM set_config('sift.enable_agg', 'on', true);
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
   END LOOP;
   RETURN NEXT;
 END $$;

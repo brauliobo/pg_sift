@@ -38,7 +38,7 @@ CREATE FUNCTION plan_of(q text, run bool DEFAULT true) RETURNS text LANGUAGE plp
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (' || CASE WHEN run THEN 'ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF, ' ELSE '' END || 'COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'SiftAgg'; END IF;
 		IF trim(l) LIKE 'SubPlan %' THEN r := r || ' with ' || trim(l); END IF;
 		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
 	END LOOP;

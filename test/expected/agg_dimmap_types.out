@@ -38,7 +38,7 @@ DECLARE l text; BEGIN
 	served := 'normal'; heap_fetches := 0;
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN served := 'rows'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN served := 'rows'; END IF;
 		IF l ~ '[1-9]\d* rows classed' AND served = 'rows' THEN served := 'classes'; END IF;
 		IF l ~ '[1-9]\d* maps shared' THEN served := 'shared map'; END IF;
 		IF l ~ '[1-9]\d* maps built' THEN served := 'new map'; END IF;

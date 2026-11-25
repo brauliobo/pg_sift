@@ -26,7 +26,7 @@ CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE line text; res text := 'normal';
 BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF line ~ 'Custom Scan \(SiftAgg\)' THEN res := 'scan'; END IF;
+		IF line ~ 'Custom Scan \(SiftAgg' THEN res := 'scan'; END IF;
 	END LOOP;
 	RETURN res;
 END $$;

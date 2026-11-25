@@ -121,7 +121,7 @@ BEGIN
   SET LOCAL sift.enable_agg = on;
   BEGIN EXECUTE q; on_msg := 'no error'; EXCEPTION WHEN OTHERS THEN on_msg := SQLERRM; END;
   pushed := false;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
   same := on_msg = off_msg;
   message := on_msg;
   RETURN NEXT;

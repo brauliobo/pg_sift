@@ -169,7 +169,7 @@ BEGIN
 	SET LOCAL sift.backend_cache_kb = 0;
 	SET LOCAL sift.shared_cache_kb = 0;
 	pushed := false;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%'; END LOOP;
 	EXECUTE format('CREATE TEMP TABLE r_scan ON COMMIT DROP AS %s', q);
 	RESET sift.backend_cache_kb;
 	RESET sift.shared_cache_kb;

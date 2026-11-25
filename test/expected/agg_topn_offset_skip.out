@@ -34,7 +34,7 @@ BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		IF pl ~ 'Custom Scan \(SiftAgg\)' THEN seen := 'rows=' || substring(pl from 'actual rows=([0-9]+)'); END IF;
+		IF pl ~ 'Custom Scan \(SiftAgg' THEN seen := 'rows=' || substring(pl from 'actual rows=([0-9]+)'); END IF;
 	END LOOP;
 	EXECUTE format(rows, q) INTO ra;
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;

@@ -34,7 +34,7 @@ SELECT * FROM check_query('left join, true', $q$
 $q$);
       label      | scan | same |                                         outcome                                          
 -----------------+------+------+------------------------------------------------------------------------------------------
- left join, true | f    | t    | [{"n": 13333, "key": "m_total"}, {"n": 13333, "key": "other"}, {"n": 4444, "key": null}]
+ left join, true | t    | t    | [{"n": 13333, "key": "m_total"}, {"n": 13333, "key": "other"}, {"n": 4444, "key": null}]
 (1 row)
 
 SELECT * FROM check_query('left join, array', $q$

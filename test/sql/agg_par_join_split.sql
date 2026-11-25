@@ -53,7 +53,7 @@ DECLARE l text; r text := 'normal plan';
 BEGIN
 	PERFORM jp_set(mode);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN r := 'one process'; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'one process'; END IF;
 		IF l ~ 'Workers Planned: [1-9]' THEN r := 'rows split'; END IF;
 		IF l ~ 'Rows Split By: ' THEN r := 'rows split by the key of a join'; END IF;
 	END LOOP;

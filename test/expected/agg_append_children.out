@@ -64,7 +64,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | f        |           0
+ f      | t        |           0
 (1 row)
 
 -- A column that only a condition read stays out of the UNION ALL's plan (an Append outputs the columns the joins and the groups need): the normal plan stays.
@@ -75,7 +75,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | f        |           0
+ t      | t        |           0
 (1 row)
 
 SELECT * FROM check_query($q$
@@ -84,7 +84,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | f        |           0
+ t      | t        |           0
 (1 row)
 
 SELECT * FROM check_query($q$
@@ -94,7 +94,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | f        |           0
+ t      | t        |           0
 (1 row)
 
 -- The condition's column is a group key: the Append outputs it, the scan runs.

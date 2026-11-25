@@ -75,7 +75,7 @@ BEGIN
   pushed := false;
   lookups := 0;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+    pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
     IF l ~ '(\d+) first row tables' THEN lookups := substring(l from '(\d+) first row tables')::int; END IF;
   END LOOP;
   DROP TABLE r_off, r_on;

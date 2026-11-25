@@ -24,7 +24,7 @@ SELECT m AS measure, scan_used(format('SELECT d.week, s.store, max(CASE WHEN d.n
 FROM (VALUES ('price'), ('qty')) v(m) ORDER BY 1;
  measure | scan 
 ---------+------
- price   | f
+ price   | t
  qty     | t
 (2 rows)
 

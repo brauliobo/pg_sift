@@ -15,7 +15,7 @@ CREATE FUNCTION plan_has_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; found bool := false;
 BEGIN
   PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR l LIKE '%Custom Scan (SiftAgg%'; END LOOP;
   RETURN found;
 END $$;
 -- 20,000 distinct values of items.v reach the child through 100 scanned rows

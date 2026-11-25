@@ -49,7 +49,7 @@ BEGIN
 	SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
 		used := used OR pl LIKE '%Global Order%';
-		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN scans := scans + 1; END IF;
+		IF pl LIKE '%Custom Scan (SiftAgg%' THEN scans := scans + 1; END IF;
 	END LOOP;
 	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;

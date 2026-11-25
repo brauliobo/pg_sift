@@ -50,7 +50,7 @@ CREATE FUNCTION factor_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; scans int := 0; product int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg%')::int;
 		product := product + (l LIKE '%Pushed Aggregates:%' AND l LIKE '%value_num *%' OR l LIKE '%Pushed Aggregates:%' AND l LIKE '%* events.value_num%')::int;
 	END LOOP;
 	RETURN CASE WHEN scans = 0 THEN 'normal' WHEN product > 0 THEN 'scan, product in it' ELSE 'scan' END;

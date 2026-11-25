@@ -46,7 +46,7 @@ $$;
 CREATE FUNCTION scan_nodes(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg\)' THEN n := n + 1; END IF; END LOOP;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg' THEN n := n + 1; END IF; END LOOP;
 	RETURN n;
 END $$;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$

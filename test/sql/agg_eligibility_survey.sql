@@ -45,7 +45,7 @@ BEGIN
 		order_differs := off IS DISTINCT FROM on_;
 	END IF;
 	pushed := false;
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%' OR l LIKE '%Top-N:%'; END LOOP;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%' OR l LIKE '%Top-N:%'; END LOOP;
 	IF NOT pushed THEN
 		SELECT string_agg(DISTINCT w.slug, ',' ORDER BY w.slug) INTO why FROM sift.explain_why(q) w WHERE NOT w.used AND w.slug IS NOT NULL AND w.arm NOT LIKE 'L2:%';
 	END IF;

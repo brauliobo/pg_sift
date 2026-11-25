@@ -53,13 +53,13 @@ BEGIN
   EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
   SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
   pushed := false;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
   SET LOCAL enable_seqscan = off;
   SET LOCAL enable_indexscan = off;
   SET LOCAL enable_bitmapscan = off;
   SET LOCAL enable_indexonlyscan = off;
   eligible := false;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP eligible := eligible OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP eligible := eligible OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
   -- before PostgreSQL 18 each disabled scan adds its cost to the child plans of every distinct input, so the plan with the scans off does not tell: the cheapest plan has to be the scan
   eligible := eligible OR (pushed AND current_setting('server_version_num')::int < 180000);
   DROP TABLE r_off, r_on;

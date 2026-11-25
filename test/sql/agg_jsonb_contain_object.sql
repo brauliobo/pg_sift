@@ -54,7 +54,7 @@ CREATE FUNCTION shape_check(q text) RETURNS TABLE (engaged bool, same bool) LANG
 $$ DECLARE l text; plan text := ''; a text; b text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-  engaged := plan LIKE '%Custom Scan (SiftAgg)%';
+  engaged := plan LIKE '%Custom Scan (SiftAgg%';
   PERFORM set_config('sift.enable_agg', 'on', true);
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
   PERFORM set_config('sift.enable_agg', 'off', true);

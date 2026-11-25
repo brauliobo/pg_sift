@@ -72,7 +72,7 @@ CREATE FUNCTION value_check(q text) RETURNS TABLE (scan bool, same bool) LANGUAG
 $$ DECLARE l text; plan text := ''; off text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-  scan := plan LIKE '%Custom Scan (SiftAgg)%';
+  scan := plan LIKE '%Custom Scan (SiftAgg%';
   PERFORM set_config('sift.enable_agg', 'off', true);
   off := rows_md5(q);
   PERFORM set_config('sift.enable_agg', 'on', true);

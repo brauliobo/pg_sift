@@ -34,7 +34,7 @@ CREATE FUNCTION plan_of(name text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) EXECUTE ' || name LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN 'SiftAgg'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN 'SiftAgg'; END IF;
 	END LOOP;
 	RETURN 'normal';
 END $$;

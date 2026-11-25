@@ -46,7 +46,7 @@ DECLARE l text; ctes text[] := '{}'; scans int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l ~ '^ *CTE ' THEN ctes := ctes || trim(substr(trim(l), 5)); END IF;
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN scans := scans + 1; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN scans := scans + 1; END IF;
 	END LOOP;
 	RETURN format('shared: %s; scans: %s', coalesce(nullif(array_to_string(ctes, ' '), ''), 'none'), scans);
 END $f$;
@@ -145,7 +145,7 @@ BEGIN
 	scan_nodes := 0; max_probes := 0;
 	SET sift.agg_force = on;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan_nodes := scan_nodes + 1; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN scan_nodes := scan_nodes + 1; END IF;
 		IF l ~ 'events_parent' THEN max_probes := greatest(max_probes, substring(l from 'loops=(\d+)')::int); END IF;
 	END LOOP;
 	RESET sift.agg_force;

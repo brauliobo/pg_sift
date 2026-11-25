@@ -245,7 +245,7 @@ CREATE FUNCTION chosen(sql text, OUT scan bool, OUT rows_read bigint) LANGUAGE p
 DECLARE l text; BEGIN
 	scan := false; rows_read := 0;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
-		scan := scan OR l ~ 'Custom Scan \(SiftAgg\)';
+		scan := scan OR l ~ 'Custom Scan \(SiftAgg';
 		IF l ~ '(\d+) rows read' THEN rows_read := substring(l from '(\d+) rows read')::bigint; END IF;
 	END LOOP;
 END $$;

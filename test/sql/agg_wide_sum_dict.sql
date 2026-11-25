@@ -42,7 +42,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config('sift.agg_force', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN true; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;
@@ -169,7 +169,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config('sift.agg_force', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'workers'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'workers'; END IF;
 		IF l LIKE '%Serial Because%' THEN RETURN trim(l); END IF;
 	END LOOP;
 	RETURN r;

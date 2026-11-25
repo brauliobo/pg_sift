@@ -48,7 +48,7 @@ CREATE FUNCTION decor_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; scans int := 0; subs int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg%')::int;
 		subs := subs + (l LIKE '%SubPlan%')::int;
 	END LOOP;
 	RETURN CASE WHEN scans > 0 THEN 'scan x' || scans WHEN subs > 0 THEN 'probes' ELSE 'normal' END;
@@ -100,7 +100,7 @@ DECLARE l text; r text := 'other';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN 'scan'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN 'scan'; END IF;
 		IF l LIKE '%on items_owner%' OR l LIKE '%using items_owner%' THEN r := 'lookups'; END IF;
 	END LOOP;
 	RETURN r;
@@ -166,7 +166,7 @@ SELECT * FROM check_query('a condition on a group column above a left join', $q$
 SELECT bool_or(used) AS rewritten FROM sift.explain_why($q$ SELECT o.id, x.c FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat) x ON true $q$);
 SELECT bool_or(used) AS limited FROM sift.explain_why($q$ SELECT o.id, x.c FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat ORDER BY 1 LIMIT 1) x ON true $q$);
 -- as written: an ORDER BY or a LIMIT, a HAVING without groups (it can drop the one row), grouping sets, an outer column in a group or the HAVING, a scalar sub-select with groups
-SELECT * FROM check_query('group by with a limit', $q$ SELECT o.id, x.cat FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat ORDER BY 2 DESC LIMIT 1) x ON true WHERE o.id < 500 $q$);
+SELECT * FROM check_query('group by with a limit', $q$ SELECT o.id, x.cat FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat ORDER BY 2 DESC, 1 LIMIT 1) x ON true WHERE o.id < 500 $q$);
 SELECT * FROM check_query('HAVING without groups', $q$ SELECT o.id, x.c FROM key_sets o JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.set_id = o.k HAVING count(*) > 5) x ON true $q$);
 SELECT * FROM check_query('grouping sets', $q$ SELECT o.id, x.cat, x.c FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY ROLLUP (i.cat)) x ON true WHERE o.id < 500 $q$);
 SELECT * FROM check_query('an outer column in the HAVING', $q$ SELECT o.id, x.cat FROM key_sets o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.set_id = o.k GROUP BY i.cat HAVING count(*) > o.grp) x ON true $q$);
@@ -244,7 +244,7 @@ DECLARE l text; r text := 'other';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN 'scan'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN 'scan'; END IF;
 		IF l LIKE '%Semi Join%' OR l LIKE '%Anti Join%' THEN r := 'semi/anti'; END IF;
 		IF r = 'other' AND (l LIKE '%on items_owner%' OR l LIKE '%using items_owner%') THEN r := 'lookups'; END IF;
 	END LOOP;
@@ -416,7 +416,7 @@ CREATE FUNCTION chosen(sql text, OUT scan bool, OUT sets int) LANGUAGE plpgsql A
 DECLARE l text; BEGIN
 	scan := false; sets := 0;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
-		scan := scan OR l ~ 'Custom Scan \(SiftAgg\)';
+		scan := scan OR l ~ 'Custom Scan \(SiftAgg';
 		IF l ~ 'Pushed Aggregates' THEN sets := (SELECT count(*) FROM regexp_matches(l, 'count\(DISTINCT', 'g')); END IF;
 	END LOOP;
 END $$;
@@ -494,7 +494,7 @@ CREATE FUNCTION eager_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; scans int := 0; product int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		scans := scans + (l LIKE '%Custom Scan (SiftAgg)%')::int;
+		scans := scans + (l LIKE '%Custom Scan (SiftAgg%')::int;
 		product := product + (l LIKE '%Pushed Aggregates:%' AND l LIKE '% * %')::int;
 	END LOOP;
 	RETURN CASE WHEN scans = 0 THEN 'normal' WHEN product > 0 THEN 'scan, product in it' ELSE 'scan, sums only' END;

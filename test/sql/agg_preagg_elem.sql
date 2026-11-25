@@ -114,7 +114,7 @@ BEGIN
 	WHERE NOT two_keys OR EXISTS (SELECT 1 FROM nums n WHERE (n.segment, n.sb) = (k.segment, k.sb));
 	-- Capture counters before pa_rows changes either setting; missing counters must fail.
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		siftagg := siftagg OR l LIKE '%Custom Scan (SiftAgg)%';
+		siftagg := siftagg OR l LIKE '%Custom Scan (SiftAgg%';
 		planned := coalesce(substring(l from '^\s*Units: (\d+)')::int, planned);
 		answered := coalesce(substring(l from '(\d+) from pre-aggregates')::int, answered);
 	END LOOP;

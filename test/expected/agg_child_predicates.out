@@ -196,7 +196,7 @@ DECLARE l text;
   q text = $q$SELECT count(*) FROM events f JOIN generate_series(1, 50000) g(n) ON g.n < f.id WHERE f.id < 1000$q$;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
-    IF l LIKE '%Custom Scan (SiftAgg)%' AND substring(l from 'cost=[0-9.]+\.\.([0-9.]+) ')::numeric < 1000000 THEN
+    IF l LIKE '%Custom Scan (SiftAgg%' AND substring(l from 'cost=[0-9.]+\.\.([0-9.]+) ')::numeric < 1000000 THEN
       RAISE EXCEPTION 'candidate predicate work was not priced';
     END IF;
   END LOOP;

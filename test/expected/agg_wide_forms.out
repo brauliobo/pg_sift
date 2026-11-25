@@ -90,7 +90,7 @@ CREATE FUNCTION form_check(tpl text, tbl text, pred text) RETURNS TABLE (scan bo
 $$ DECLARE l text; plan text := ''; sql text := replace(replace(tpl, '@T', tbl), '@P', '(' || pred || ')'); off text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP plan := plan || l || E'\n'; END LOOP;
-  scan := plan LIKE '%Custom Scan (SiftAgg)%';
+  scan := plan LIKE '%Custom Scan (SiftAgg%';
   src := plan ~ '[1-9][0-9]* wide filters in source';
   PERFORM set_config('sift.enable_agg', 'off', true);
   off := rows_md5(sql);

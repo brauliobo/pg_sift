@@ -22,7 +22,7 @@ CREATE FUNCTION est_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN substring(l FROM 'rows=(\d+)')::bigint; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN substring(l FROM 'rows=(\d+)')::bigint; END IF;
 	END LOOP;
 	RETURN NULL;
 END $$;

@@ -37,7 +37,7 @@ DECLARE l text;
 BEGIN
 	scan_nodes := 0; hoisted_ctes := 0; hoisted_reads := 0;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan_nodes := scan_nodes + 1; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN scan_nodes := scan_nodes + 1; END IF;
 		IF l ~ '^ *CTE sift_hoisted' THEN hoisted_ctes := hoisted_ctes + 1; END IF;
 		IF l ~ 'CTE Scan on sift_hoisted' THEN hoisted_reads := hoisted_reads + 1; END IF;
 	END LOOP;
