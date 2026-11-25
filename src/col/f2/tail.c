@@ -19,6 +19,7 @@
 #include "core/f2/fsm/fsm.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "core/restrict.h"
 
 typedef struct TailItem
 {
@@ -506,9 +507,14 @@ tail_pass(Relation rel, const SiftF2Store *store, FullTransactionId horizon, int
 void
 sift_f2_tail_relocate(Relation rel, const SiftF2Store *store, FullTransactionId horizon, int64 hot_cut)
 {
-	MemoryContext pass = sift_mem_allocset_create(CurrentMemoryContext, "sift tail relocate");
-	MemoryContext old = MemoryContextSwitchTo(pass);
+	MemoryContext pass;
+	MemoryContext old;
 
+	/* The locks of the pass are WAL-logged for a standby, which takes a transaction id */
+	if (sift_xid_unassignable())
+		return;
+	pass = sift_mem_allocset_create(CurrentMemoryContext, "sift tail relocate");
+	old = MemoryContextSwitchTo(pass);
 	(void) sift_fsm_tail_shrink(rel);
 	while (tail_pass(rel, store, horizon, hot_cut, pass))
 		;

@@ -21,6 +21,7 @@
 #include "core/f2/fsm/int.h"
 #include "core/horizon.h"
 #include "core/page_io.h"
+#include "core/restrict.h"
 #include "core/wal_conflict.h"
 
 void
@@ -696,6 +697,9 @@ sift_fsm_tail_shrink(Relation rel)
 				nblocks;
 	FsmCtx		c;
 
+	/* The locks of the sweep and of the cut are WAL-logged for a standby, which takes a transaction id */
+	if (sift_xid_unassignable())
+		return res;
 	if (sift_fsm_sweep_due(rel))
 		(void) sift_fsm_sweep_orphans(rel);
 	(void) sift_fsm_reclaim(rel);
