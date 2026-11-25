@@ -214,9 +214,30 @@ array_elems(UnRun *u, Datum d, SiftVec *ev)
 	return (uint32) nel;
 }
 
-/* the pairs of one row whose elements are in ev: those the bitmap keeps (NULL: all), and for a left join a NULL element when it has none */
 static void
-emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, uint32 nel, uint32 row)
+raise_late(void *err, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+{
+	ReThrowError((ErrorData *) err);
+}
+
+/* the pair of a member whose cast raised: the error is the pair's, raised when it reaches the groups and gone with it when a join drops it; a qual over the members casts it before the join */
+static void
+emit_late_pair(UnRun *u, const SiftVec *fact, const SiftVec *ev, uint32 row, uint32 k, ErrorData *err)
+{
+	if (u->has_pwhere)
+		ReThrowError(err);
+	u->pidx[0] = row;
+	u->eidx[0] = k;
+	u->pipe->sink = raise_late;
+	u->pipe->sink_arg = err;
+	sift_f2_unnest_emit_pairs(u, fact, ev, 1);
+	u->pipe->sink = NULL;
+	u->pipe->sink_arg = NULL;
+}
+
+/* the pairs of one row whose elements are in ev: those the bitmap keeps (NULL: all), and for a left join a NULL element when it has none; late[k]: the error of the cast of member k (NULL: none) */
+static void
+emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, uint32 nel, uint32 row, ErrorData *const *late)
 {
 	uint32		m = 0;
 
@@ -228,7 +249,14 @@ emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, u
 		return;
 	}
 	for (uint32 k = 0; k < nel; k++)
-		if (keep == NULL || ((keep[k >> 6] >> (k & 63)) & 1))
+		if (late != NULL && late[k] != NULL)
+		{
+			if (m > 0)
+				sift_f2_unnest_emit_pairs(u, fact, ev, m);
+			m = 0;
+			emit_late_pair(u, fact, ev, row, k, late[k]);
+		}
+		else if (keep == NULL || ((keep[k >> 6] >> (k & 63)) & 1))
 		{
 			u->pidx[m] = row;
 			u->eidx[m++] = k;
@@ -277,6 +305,7 @@ sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 r
 	MemoryContext old = MemoryContextSwitchTo(u->bcx);
 	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
 	uint64	   *keep = NULL;
+	ErrorData **late = NULL;
 	uint32		nel;
 
 	if (heap_row_kept(u, tid))
@@ -288,8 +317,11 @@ sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 r
 			sift_v6_elem_eval(u->eev, ev, 0, nel, keep);
 		}
 		if (u->rec != NULL)
-			sift_v6_recfn_values(u->rec, keep, u->bcx, ev, nel);
-		emit_row(u, fact, ev, keep, nel, row);
+		{
+			late = palloc0_array(ErrorData *, nel);
+			sift_v6_recfn_values(u->rec, keep, u->bcx, ev, nel, late);
+		}
+		emit_row(u, fact, ev, keep, nel, row, late);
 	}
 	MemoryContextSwitchTo(old);
 }

@@ -889,16 +889,26 @@ member_value(SiftV6RecFn *f, uint32 k, bool *isnull)
 }
 
 void
-sift_v6_recfn_values(SiftV6RecFn *f, const uint64 *keep, MemoryContext cx, SiftVec *ev, uint32 n)
+sift_v6_recfn_values(SiftV6RecFn *f, const uint64 *keep, MemoryContext cx, SiftVec *ev, uint32 n, ErrorData **late)
 {
 	if (f->fn < SV6E_EACH || f->vread == SV6V_NONE)
 		return;
 	for (uint32 k = 0; k < n; k++)
 		if (keep == NULL || ((keep[k >> 6] >> (k & 63)) & 1))
 		{
-			bool		isnull;
-			const Datum d = member_value(f, k, &isnull);
+			PG_TRY();
+			{
+				bool		isnull;
+				const Datum d = member_value(f, k, &isnull);
 
-			put_cell(cx, &ev[1], f->type[1], k, d, isnull);
+				put_cell(cx, &ev[1], f->type[1], k, d, isnull);
+			}
+			PG_CATCH();
+			{
+				MemoryContextSwitchTo(cx);
+				late[k] = CopyErrorData();
+				FlushErrorState();
+			}
+			PG_END_TRY();
 		}
 }

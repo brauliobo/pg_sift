@@ -160,7 +160,7 @@ extern int	sift_v1_unnest_col_index(UnRun *u, const SiftV6Col *c, bool month);
 /* the pairs of (row, element) into the vectors of the pairs, and on to the groups: pidx[i] names the row of fact and eidx[i] the element of elems of pair i (SIFT_GATHER_NONE: a NULL one) */
 extern void sift_v1_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m);
 /* the pairs of one row whose elements are in ev: those the bitmap keeps (NULL: all), and for a left join a NULL element when it has none */
-extern void sift_v1_unnest_emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, uint32 nel, uint32 row);
+extern void sift_v1_unnest_emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, uint32 nel, uint32 row, ErrorData *const *late);
 /* the pairs of m rows that are one pair each, the members of a map already gathered */
 extern void sift_v1_unnest_run_pairs(UnRun *u, uint32 m);
 extern void sift_v1_unnest_heap_open(UnRun *u, Relation heap);
