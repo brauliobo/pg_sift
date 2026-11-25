@@ -2,6 +2,7 @@
 -- row of the outer table, with the parameters of that row; the rows must be the heap's own (sift.enable_agg = off), on a table of Format 1 and of Format 2.0, with the scans of the heap forced off.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
+SET sift.test_unified_agg = on;
 SET max_parallel_workers_per_gather = 0;
 SET TimeZone = 'UTC';
 
@@ -35,7 +36,7 @@ BEGIN
 	SET LOCAL enable_bitmapscan = off;
 	SET LOCAL enable_indexonlyscan = off;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAggV6)%' THEN engine := 'SiftAggV6'; END IF;
+		IF l LIKE '%Custom Scan (SiftAggV6%' THEN engine := substring(l FROM 'Custom Scan \((SiftAggV6\w*)\)'); END IF;
 	END LOOP;
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT x::text AS r FROM (%s) x', q);
 	RESET enable_seqscan;
