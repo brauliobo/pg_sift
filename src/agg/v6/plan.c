@@ -612,6 +612,7 @@ format_serves(const V6Plan *p)
 	if (ops->zone == NULL)
 		return sift_v6_open_scan_ok(s);
 	return (!p->is_table || !OidIsValid(s->text_indexoid) || ops->zone->table_text) &&
+		(!p->is_table || s->ext == NULL || s->ext->ndims == 0 || ops->zone->table_star) &&
 		(!s->rows || (ops->order != NULL && ops->order->scan_rows != NULL)) && (s->ext == NULL || !s->ext->unnest || ops->jsonb != NULL) && (s->par_strategy == 0 || ops->par != NULL);
 }
 
