@@ -674,6 +674,7 @@ TESTING_REGRESS += table_f2_parity
 TESTING_REGRESS += table_f2_pgstat
 TESTING_REGRESS += table_f2_plans
 TESTING_REGRESS += table_f2_row_pack
+TESTING_REGRESS += table_f2_scan_pacer
 TESTING_REGRESS += table_f2_tid_range
 TESTING_REGRESS += table_f2_unified_parity
 TESTING_REGRESS += table_f2_update_indexed
