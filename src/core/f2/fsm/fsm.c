@@ -772,7 +772,7 @@ sift_fsm_tail_shrink(Relation rel)
 		free_blocks += st.class_blocks[k];
 	if ((free_blocks < SIFT_TAIL_SHRINK_MIN_BLOCKS || free_blocks * 100 < (uint64) hw * SIFT_TAIL_SHRINK_FREE_PCT) && RelationGetNumberOfBlocks(rel) <= hw)
 		return res;
-	if (sift_maint_standby_streams() || !try_lock_truncate(rel, !AmAutoVacuumWorkerProcess() && MyBgworkerEntry == NULL))
+	if (!try_lock_truncate(rel, !AmAutoVacuumWorkerProcess() && MyBgworkerEntry == NULL))
 	{
 		res.lock_skipped = true;
 		note_shrink(rel, false);
@@ -780,6 +780,7 @@ sift_fsm_tail_shrink(Relation rel)
 	}
 	c = sift_fsm_ctx_open(rel);
 	c.exclusive = true;
+	c.standby_horizon = sift_maint_standby_streams() ? sift_standby_safe_horizon(rel, false) : InvalidFullTransactionId;
 	(void) sift_fsm_reclaim_locked(&c, &new_hw);
 	sift_fsm_ctx_close(&c);
 	nblocks = RelationGetNumberOfBlocks(rel);

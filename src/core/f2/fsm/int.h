@@ -29,6 +29,7 @@ typedef struct FsmCtx
 	Relation	rel;
 	Buffer		buf0;
 	bool		exclusive;		/* the caller holds AccessExclusiveLock on the relation: no scan, and so no reader of an older manifest, exists, whatever the safexid of a retired extent (core/freelist/freelist.c, space mode) */
+	FullTransactionId standby_horizon;	/* valid with exclusive: a standby streams, whose queries a scan of this primary does not see, and an extent is reclaimed once its safexid precedes this */
 	bool		in_reclaim;		/* reclaim_locked is under way: it needs pages of the slabs itself and must not be asked to reclaim from inside */
 	bool		keep_empty;		/* the slabs with no page in use are not given back (sift_fsm_recycle_empty_slabs): the caller made them to fill them */
 	FullTransactionId horizon;	/* valid: the horizon computed anew, what the extents are matured against instead of the cached GlobalVis one */

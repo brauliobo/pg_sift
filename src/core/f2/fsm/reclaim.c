@@ -27,8 +27,10 @@ quarantine_lag(Relation rel, const ExtVec *queue)
 static bool
 matured(const FsmCtx *c, FullTransactionId safexid, FullTransactionId horizon, FullTransactionId lag, bool vacuum_reading)
 {
-	if (c->exclusive || !FullTransactionIdIsValid(safexid))
+	if (!FullTransactionIdIsValid(safexid))
 		return true;
+	if (c->exclusive)
+		return !FullTransactionIdIsValid(c->standby_horizon) || FullTransactionIdPrecedes(safexid, c->standby_horizon);
 	if (vacuum_reading)
 		return false;
 	if (FullTransactionIdIsValid(lag) && !FullTransactionIdPrecedes(safexid, lag))
