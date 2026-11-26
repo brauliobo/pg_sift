@@ -252,6 +252,8 @@ run_leader(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, voi
 	}
 	SIFT_SHM_CATCH();
 	{
+		/* the error dropped the interrupt holdoff the queue lock took: the release gives back one taken again */
+		SIFT_SHM_HOLD_INTERRUPTS();
 		sift_shm_unlock(&q->lock);
 		resolve(a, ld, key_idx);
 		if (!key_local)
