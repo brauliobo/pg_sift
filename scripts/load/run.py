@@ -4,7 +4,7 @@
 Every case runs in the schema load_case of one cluster: worker sessions (persistent psql processes, application_name load_w*) released together by a barrier, a sampler of their
 waits (collect.py), and then the checks no load may break: the rows the workers committed are the rows the tables hold (lost_rows, dup_rows), the index paths answer what the heap
 answers in one snapshot (oracle_mismatch), sift.check finds nothing, nothing is quarantined, no temporary file and no crash or leak line is left. The contention ceilings are shares
-of samples and ratios of a p99 under load to the p99 of the same statements alone: never a time or a rate. A case with `open` (LC-NN of Spec 106, S107-NN of Spec 107) names the
+of samples and ratios of a p99 under load to the p99 of the same statements alone: never a time or a rate. A case with `open` (LC-NN of Spec 106, Snnn-NN of Spec nnn) names the
 defect it waits for: it must fail a ceiling until the fix (OPEN=ID, a TODO) and the run fails once it meets them all, until `open` is dropped. --suite picks the catalog: core
 (cases.py, one cluster), workloads and repl (suites/: a cluster sized for many sessions and prepared transactions, a primary with a hot standby and wal_level logical), or all.
 
@@ -39,7 +39,8 @@ from cases import Ceilings, LoadCase  # noqa: E402
 
 ERR = re.compile(r'^(ERROR|FATAL|PANIC): +([0-9A-Z]{5}): (.*)')
 LOST = ('57P01', '08006')
-OPEN_ID = re.compile(r'(LC-(0[1-9]|[1-4]\d)|S107-(0[1-9]|[1-3]\d))(,(LC-(0[1-9]|[1-4]\d)|S107-(0[1-9]|[1-3]\d)))*')
+FINDING = r'(LC-(0[1-9]|[1-4]\d)|S\d{3}-(0[1-9]|[1-9]\d))'
+OPEN_ID = re.compile(f'{FINDING}(,{FINDING})*')
 FLOORS = ('scale_ratio',)
 SKIP_FORMAT, SKIP_TESTING = 'format 2.0 only', 'needs testing library'
 GONE = "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'load_w%'"
@@ -312,7 +313,9 @@ SHOWN = (('ops', 'ops', 'd'), ('lost_rows', 'lost', 'd'), ('dup_rows', 'dup', 'd
          ('verify_errors', 'chk', 'd'), ('false_quarantines', 'q', 'd'), ('lock_wait_pct', 'lock', '.1f'), ('lwlock_wait_pct', 'lw', '.1f'),
          ('coarse_escalations', 'esc', 'd'), ('p99_ratio', 'rp99', '.2f'), ('scale_ratio', 'scale', '.2f'), ('ctx_kb_delta', 'ctx', 'd'),
          ('rss_mb_delta', 'rss', '.1f'), ('shm_used_after', 'shm', 'd'), ('tmp_files_left', 'tmp', 'd'), ('deadlocks', 'dl', 'd'),
-         ('peak', 'peak', 'd'), ('l0_per_kop', 'l0k', '.1f'), ('pending_after', 'pend', 'd'), ('quarantine_missed', 'qmiss', 'd'), ('not_restarted', 'norestart', 'd'), ('meta_corrupt', 'meta', 'd'), ('unconverged', 'unconv', 'd'), ('maint_failures', 'mf', 'd'), ('traps_and_leaks', 'trap', 'd'))
+         ('peak', 'peak', 'd'), ('l0_per_kop', 'l0k', '.1f'), ('pending_after', 'pend', 'd'), ('quarantine_missed', 'qmiss', 'd'), ('not_restarted', 'norestart', 'd'), ('meta_corrupt', 'meta', 'd'), ('unconverged', 'unconv', 'd'), ('maint_failures', 'mf', 'd'), ('traps_and_leaks', 'trap', 'd'),
+         ('prepared_left', 'prep', 'd'), ('write_skew', 'skew', 'd'), ('unpriv_waits', 'uwait', 'd'), ('standby_mismatch', 'sbm', 'd'), ('promoted_errors', 'perr', 'd'),
+         ('fault_unseen', 'unseen', 'd'), ('wedged', 'wedged', 'd'), ('fd_delta', 'fd', 'd'), ('par_workers_peak', 'parw', 'd'))
 
 
 def line(case: LoadCase, ctx: Ctx, m: dict | None, verdict: str, over: list, secs: float = 0.0) -> str:
@@ -346,7 +349,7 @@ def catalog_problems(cases, classes: tuple = catalog.CLASSES) -> list:
     out, seen = [], set()
     for c in cases:
         rules = [(c.id not in seen, 'duplicate id'), (c.cls in classes, f'class {c.cls}'), (c.id.startswith(c.cls + '_'), 'id does not start with its class'),
-                 (not c.open or OPEN_ID.fullmatch(c.open), f'open={c.open!r} is not LC-NN or S107-NN'), (set(c.formats) <= {1, 2} and c.formats, 'formats'),
+                 (not c.open or OPEN_ID.fullmatch(c.open), f'open={c.open!r} is not LC-NN or Snnn-NN'), (set(c.formats) <= {1, 2} and c.formats, 'formats'),
                  (all(getattr(c.limits, k) == 0 for k in catalog.HARD), 'a correctness ceiling above 0'), (c.open or not c.intermittent, 'intermittent needs open')]
         out += [f'{c.id}: {msg}' for ok, msg in rules if not ok]
         seen.add(c.id)
@@ -369,7 +372,7 @@ def selftest():
     for name, (cases, classes) in suites.SUITES.items():
         expect(not catalog_problems(cases, classes) and {c.cls for c in cases} == set(classes), f'suite {name}: {catalog_problems(cases, classes)}')
     every = suites.cases('all')
-    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 27, 'the suites share no id: 17 core, 8 workloads, 2 repl')
+    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 33, 'the suites share no id: 17 core, 13 workloads, 3 repl')
     suites.selftest(expect)
     m = {'lost_rows': 0, 'lock_wait_pct': 5.0, 'scale_ratio': 3.0}
     expect(judge(c0, m, []) == ('PASS', []), judge(c0, m, []))
@@ -382,7 +385,8 @@ def selftest():
     expect(judge(c0, None, [SKIP_FORMAT])[0] == 'SKIP' and judge(c0, None, ['boom'])[0] == 'FAIL', 'a skipped case is not a failed one')
     expect(judge(debt, None, ['08006 the server closed the session'])[0] == 'OPEN=LC-04', 'an open case that crashes is still the debt')
     expect(OPEN_ID.fullmatch('LC-19,LC-21,LC-42') and not OPEN_ID.fullmatch('LC-50') and not OPEN_ID.fullmatch('LC-00'), 'LC-01..LC-49')
-    expect(OPEN_ID.fullmatch('S107-01,LC-43,S107-39') and not OPEN_ID.fullmatch('S107-40') and not OPEN_ID.fullmatch('S107-1'), 'S107-01..S107-39')
+    expect(OPEN_ID.fullmatch('S107-01,LC-43,S111-33') and OPEN_ID.fullmatch('S111-99') and not OPEN_ID.fullmatch('S111-00'), 'Snnn-01..Snnn-99')
+    expect(not OPEN_ID.fullmatch('S107-1') and not OPEN_ID.fullmatch('S11-01') and not OPEN_ID.fullmatch('S107-01,'), 'Snnn-NN, comma-separated')
     floor = Ceilings(scale_ratio=2.5)
     expect(violations(floor, {'scale_ratio': 2.0}) == ['scale_ratio 2<2.5'] and not violations(floor, {'scale_ratio': 2.6}), 'scale is a floor')
     expect(not violations(Ceilings(), {'rss_mb_delta': None, 'ctx_kb_delta': None}), 'n/a is not judged')
