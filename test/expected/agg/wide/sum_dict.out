@@ -264,13 +264,16 @@ SELECT n, in_workers(q) AS workers, same_rows(q) AS same_rows FROM wshapes ORDER
  4 | t       | t
 (4 rows)
 
--- a wide leaf that no group key reads goes to the workers (counts, a sum of an expression, variances, the key of a uuid); a key of equal
--- numerics shows one of their spellings (1.0, 1.00), and so do min, max and the list of them; the list of a uuid is the data itself: those scans stay in one process. Rows equal at 0, 2 and 4 workers (not for the ones that show a spelling, which the normal plan's workers also choose in no order)
+-- a wide leaf goes to the workers (counts, a sum of an expression, variances, the key of a uuid, min, max and the lists of them). A key of equal numerics
+-- shows one of their spellings (1.0, 1.00), and so do min and max: in one process the one of the first row the scan reads, which is the first of the heap when the index was built
+-- in one process too (a parallel build keeps the rows of each worker together). Rows equal at 0, 2 and 4 workers (not for the ones that show a spelling, which workers choose in no order)
 CREATE TABLE wu (id int, g int, u uuid, n numeric) WITH (autovacuum_enabled = false);
 INSERT INTO wu SELECT i, i % 7, md5((i % 301)::text)::uuid, CASE WHEN i % 4000 = 0 THEN 'NaN'::numeric WHEN i % 5003 = 0 THEN 'Infinity' WHEN i % 997 = 0 THEN NULL
 	WHEN i % 7001 = 0 THEN 99999999999999999999999999999999999999999 + i WHEN i % 3 = 0 THEN (i % 1001)::numeric / 8 WHEN i % 3 = 1 THEN (i % 1001)::numeric / 8 + 0.000
 	ELSE round((i % 1001)::numeric / 8, 3) END FROM generate_series(1, 90000) i;
+SET max_parallel_maintenance_workers = 0;
 CREATE INDEX wu_col ON wu USING sift_col (g, u, n);
+RESET max_parallel_maintenance_workers;
 VACUUM (FREEZE, ANALYZE) wu;
 -- why the forced scan has no workers (EXPLAIN VERBOSE: Serial Because), 'workers' when nothing keeps them from it
 CREATE FUNCTION scan_workers(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -300,17 +303,17 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT n, scan_workers(q) FROM ushapes ORDER BY n;
- n |                                                      scan_workers                                                      
----+------------------------------------------------------------------------------------------------------------------------
+ n | scan_workers 
+---+--------------
  1 | workers
  2 | workers
  3 | workers
  4 | workers
  5 | workers
- 6 | Serial Because: a group key shows one of the spellings of equal values (1.0, 1.00), which the workers read in no order
- 7 | Serial Because: min(wu.n): its partial state holds ids of values that are the worker's own
- 8 | Serial Because: array_agg(wu.n): it keeps values of a wide column, in the order the workers read them
- 9 | Serial Because: array_agg(wu.u): it keeps values of a wide column, in the order the workers read them
+ 6 | workers
+ 7 | workers
+ 8 | workers
+ 9 | workers
 (9 rows)
 
 SELECT n, answer(q, true) = answer(q, false) AS same_answer FROM ushapes WHERE n < 6 OR n >= 8 ORDER BY n;
