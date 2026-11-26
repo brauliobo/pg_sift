@@ -44,6 +44,7 @@
 #include "col/f2/f2.h"
 #include "col/f2/meta.h"
 #include "agg/join/join.h"
+#include "agg/scan_src.h"
 #include "core/catalog.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
@@ -819,6 +820,7 @@ sort_begin_scan(ProjSortState *st)
 	MemoryContext old;
 
 	st->began = true;
+	sift_v6_source_enter(owner_of(st), st->index == NULL, st->css.ss.ps.state->es_snapshot);
 	st->cx = sift_mem_allocset_create(st->css.ss.ps.state->es_query_cxt, "sift proj sort scan");
 	old = MemoryContextSwitchTo(st->cx);
 	st->vet_slot = table_slot_create(st->css.ss.ss_currentRelation, NULL);

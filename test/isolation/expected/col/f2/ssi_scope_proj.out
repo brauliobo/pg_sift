@@ -1,0 +1,111 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s2b s1scan s2scan s1df s2df s1c s2c
+create_projection
+-----------------
+t                
+(1 row)
+
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1scan: SELECT iso_node($$SELECT kind, sum(amount) FROM iso_sf e JOIN iso_sp s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 AND e.amount >= 0 GROUP BY kind$$) AS node;
+node                             
+---------------------------------
+SiftAggV6Scope, scan of the facts
+(1 row)
+
+step s2scan: SELECT iso_node($$SELECT kind, sum(amount) FROM iso_sf e JOIN iso_sp s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 4 AND e.amount >= 0 GROUP BY kind$$) AS node;
+node                             
+---------------------------------
+SiftAggV6Scope, scan of the facts
+(1 row)
+
+step s1df: DELETE FROM iso_sf WHERE id = 90002;
+step s2df: DELETE FROM iso_sf WHERE id = 90001;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s3sum s1b s2b s1sum s2sum s1df s2df s1c s2c
+create_projection
+-----------------
+t                
+(1 row)
+
+step s3sum: SELECT iso_node($$SELECT sum(e.amount) FROM iso_sf e JOIN iso_sp s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3$$) AS node;
+node                   
+-----------------------
+SiftAggV6Scope, summary
+(1 row)
+
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1sum: SELECT iso_node($$SELECT sum(e.amount) FROM iso_sf e JOIN iso_sp s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3$$) AS node;
+node        
+------------
+SiftAggV6Sip
+(1 row)
+
+step s2sum: SELECT iso_node($$SELECT sum(e.amount) FROM iso_sf e JOIN iso_sp s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 4$$) AS node;
+node        
+------------
+SiftAggV6Sip
+(1 row)
+
+step s1df: DELETE FROM iso_sf WHERE id = 90002;
+step s2df: DELETE FROM iso_sf WHERE id = 90001;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1bp s2bp s1proj s2proj s1dp s2dp s1c s2c
+create_projection
+-----------------
+t                
+(1 row)
+
+step s1bp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s2bp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s1proj: SELECT iso_node($$SELECT id FROM iso_pj WHERE k BETWEEN 1000 AND 1000 ORDER BY k, id LIMIT 5$$) AS node;
+node            
+----------------
+SiftProjSortScan
+(1 row)
+
+step s2proj: SELECT iso_node($$SELECT id FROM iso_pj WHERE k BETWEEN 1001 AND 1001 ORDER BY k, id LIMIT 5$$) AS node;
+node            
+----------------
+SiftProjSortScan
+(1 row)
+
+step s1dp: DELETE FROM iso_pj WHERE id = 90002;
+step s2dp: DELETE FROM iso_pj WHERE id = 90001;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1bp s2bp s1ios s2ios s1df s2df s1c s2c
+create_projection
+-----------------
+t                
+(1 row)
+
+step s1bp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s2bp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s1ios: SELECT iso_node($$SELECT id FROM iso_sf WHERE dim_a_id = 2$$) AS node;
+node                            
+--------------------------------
+Index Only Scan using iso_sf_col
+(1 row)
+
+step s2ios: SELECT iso_node($$SELECT id FROM iso_sf WHERE dim_a_id = 3$$) AS node;
+node                            
+--------------------------------
+Index Only Scan using iso_sf_col
+(1 row)
+
+step s1df: DELETE FROM iso_sf WHERE id = 90002;
+step s2df: DELETE FROM iso_sf WHERE id = 90001;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions

@@ -220,16 +220,18 @@ sift_f2_scope_current(Relation rel, int ord)
 }
 
 /*
- * Can this transaction not count the rows from the summary: it has a change of the relation that is not written (an index must hear of the heap's, track_changes, and has no row of the stage; a
- * table has no row or delete staged), or, of a table, it reads under SSI, whose predicate locks the cubes do not take.
+ * Can this transaction not count the rows from the summary: it reads under SSI, whose predicate locks the cubes do not take, or it has a change of the relation that is not written (an index
+ * must hear of the heap's, track_changes, and has no row of the stage; a table has no row or delete staged).
  */
 bool
 sift_f2s_unreadable(Relation rel, const SiftF2Store *store, Snapshot snap)
 {
 	int			nstaged;
 
+	if (IsolationIsSerializable())
+		return true;
 	if (sift_f2s_is_table(store))
-		return IsolationIsSerializable() || sift_stage_has_pending(rel);
+		return sift_stage_has_pending(rel);
 	if (!sift_col_rel(rel)->track || sift_stage_rows(rel) > 0)
 		return true;
 	(void) sift_stage_dead(rel, snap, &nstaged);

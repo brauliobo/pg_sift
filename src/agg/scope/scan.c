@@ -19,6 +19,7 @@
 
 #include "agg/agg.h"
 #include "agg/qual/qual.h"
+#include "agg/scan_src.h"
 #include "agg/scope/scope.h"
 #include "core/memtrack.h"
 
@@ -83,6 +84,7 @@ scan_run(ScopeScanState *st, EState *estate)
 	ScanKey		keys = palloc((st->nkeys + 1) * sizeof(ScanKeyData));
 
 	st->started = true;
+	sift_v6_source_enter(st->rel, false, estate->es_snapshot);
 	if (st->nrt > 0)
 		ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, st->rtkeys, st->nrt);
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 scope groups");
