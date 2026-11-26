@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.agg_exact_float = on;
 CREATE TABLE ls (id int, g int, a int, b bigint, n numeric(10,2), f float8, t text, d date, doc jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ls SELECT i, i % 7, (i * 31) % 1000, (i * 977) % 100000, ((i * 91) % 20000) / 100.0, (i % 71) / 7.0, 'k' || (i % 13), date '2024-01-01' + i % 90,
 	jsonb_build_object('tags', jsonb_build_array('x' || i % 5, 'y' || i % 3), 'v', i % 17)

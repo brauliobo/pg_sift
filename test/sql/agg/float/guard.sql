@@ -3,6 +3,8 @@
 -- the normal plan (outcome: the rows, or the error), and the answers must be the same; `scan` says the plan is the scan's.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+SET sift.agg_exact_float = on;
+SET sift.agg_force = on;
 SET client_min_messages = warning;
 
 -- g1 holds finite large values that overflow their sum (1e308 twice), g2 an Infinity, g3 a NaN, g4 small values; hid marks the rows a FILTER hides

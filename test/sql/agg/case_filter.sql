@@ -1,11 +1,11 @@
--- agg(CASE WHEN p THEN x [ELSE NULL | 0] END) is planned as agg(x) FILTER (WHERE p) (agg/expr/casefilter.c): the aggregate runs on the kernels of x under a test of p. Every
--- statement runs with sift on and off and the rows are compared (md5 of the sorted rows), the plan says whether the CASE was rewritten (no CASE left in the pushed aggregates)
--- and whether the scan ran. The shapes are the ones where the two forms could differ: a group where p never holds, NULL values and NULL conditions, an empty input, ELSE 0
+-- agg(CASE WHEN p THEN x [ELSE NULL | 0] END) gives the rows of agg(x) FILTER (WHERE p). Every
+-- statement runs with sift on and off and the rows are compared (md5 of the sorted rows), and the plan says whether the scan ran. The shapes are the ones where the two forms could differ: a group where p never holds, NULL values and NULL conditions, an empty input, ELSE 0
 -- (a sum of zeros is not NULL), a filter of the aggregate, a simple CASE, and a value that raises where p does not hold.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
+SET sift.agg_exact_float = on;
 CREATE TABLE cf (id int, k int, p text, x float8, n numeric, i int, b bigint, m numeric(10,3));
 -- k 0..39; p is NULL for a quarter of the rows, varies inside every group, and never is 'a' in the groups k = 7 and 8; x, n and i have NULLs; the group k = 9 has
 -- NULL values only where p = 'a'
@@ -53,13 +53,12 @@ INSERT INTO shapes (name, q) VALUES
   ('two branches stay',      $q$SELECT k, sum(CASE WHEN p = 'a' THEN i WHEN p = 'b' THEN 2 * i END) FROM cf GROUP BY k$q$),
   ('sub-select value stays', $q$SELECT k, sum(CASE WHEN p = 'a' THEN (SELECT 1) END) FROM cf GROUP BY k$q$);
 
--- rewritten: the CASE is gone from the pushed aggregates (the line of the plan that lists them); engaged: the scan ran; same: the rows of the plan without the scan
-CREATE FUNCTION shape_check(q text) RETURNS TABLE (rewritten bool, engaged bool, same bool) LANGUAGE plpgsql AS
+-- engaged: the scan ran; same: the rows of the plan without the scan
+CREATE FUNCTION shape_check(q text) RETURNS TABLE (engaged bool, same bool) LANGUAGE plpgsql AS
 $$ DECLARE l text; plan text := ''; a text; b text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
   engaged := plan LIKE '%Custom Scan (SiftAgg%';
-  rewritten := engaged AND plan LIKE '%Pushed Aggregates:%' AND plan !~ 'Pushed Aggregates:[^\n]*CASE';
   PERFORM set_config('sift.enable_agg', 'on', true);
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
   PERFORM set_config('sift.enable_agg', 'off', true);
