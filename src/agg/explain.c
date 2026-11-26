@@ -141,7 +141,7 @@ static bool
 lookup_reads(PlanState *ps, LookupReads *r)
 {
 	const Plan *plan = ps->plan;
-	Instrumentation *in = ps->instrument;
+	SiftNodeInstr *in = ps->instrument;
 
 	if (in != NULL)
 	{

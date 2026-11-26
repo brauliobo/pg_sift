@@ -167,6 +167,13 @@ sift_plan_disabled(const Plan *plan, double *cost)
 #define sift_fallthrough	__attribute__((fallthrough))
 #endif
 
+/* The per-node runtime counters of a PlanState (19 split them from Instrumentation into NodeInstrumentation) */
+#if PG_VERSION_NUM >= 190000
+#define SiftNodeInstr	NodeInstrumentation
+#else
+#define SiftNodeInstr	Instrumentation
+#endif
+
 /* DefineIndex of an IndexStmt that CREATE INDEX would run, for a relation the caller has open (so no check that it is not in use): the build is made (19 takes the parse state first) */
 #if PG_VERSION_NUM >= 190000
 #define sift_define_index(relid, stmt)	DefineIndex(make_parsestate(NULL), relid, stmt, InvalidOid, InvalidOid, InvalidOid, -1, false, true, false, false, true)

@@ -41,7 +41,7 @@ container_nodes() {
 	nice docker build -q -t "$NET" "$ctx" >/dev/null
 	docker network create "$NET" >/dev/null
 	cd "$REPO/test"
-	SIFT_NODES=docker SIFT_IMAGE=$NET SIFT_DOCKER_NET=$NET SIFT_TMP=$TMP prove ${PROVE_FLAGS} --exec bash t/replication.sh
+	SIFT_REPO=$REPO SIFT_NODES=docker SIFT_IMAGE=$NET SIFT_DOCKER_NET=$NET SIFT_TMP=$TMP prove ${PROVE_FLAGS} --exec bash t/core/replication.sh
 	docker rmi "$NET" >/dev/null
 }
 

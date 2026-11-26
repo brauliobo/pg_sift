@@ -8,11 +8,11 @@ class PgSift < Formula
 
   depends_on "postgresql@17" => [:build, :test]
   depends_on "postgresql@18" => [:build, :test]
+  # the library that S3 and R2 tiering load when they run
+  depends_on "curl"
   # utils/pg_locale.h, which src/core/compat.h includes, includes unicode/ucol.h; icu4c is keg-only, and Homebrew puts
   # the include directory of a declared dependency on the compiler's path
   depends_on "icu4c"
-  # the library that S3 and R2 tiering load when they run
-  depends_on "curl"
   depends_on "lz4"
   depends_on "zstd"
 

@@ -2,7 +2,7 @@
 # Replication (README "Replication"). Physical: a hot standby from pg_basebackup answers the primary's queries (matches, phrases,
 # count(*), BM25 scores, filter pushdown), also after inserts, updates, deletes, VACUUM, CREATE INDEX CONCURRENTLY and REINDEX,
 # and takes writes once promoted. Logical: only table data replicates; the subscriber installs pg_sift and builds its own index
-# (before or after the initial sync) and the apply worker maintains it. Nodes are processes (scripts/pgtest.sh tap replication)
+# (before or after the initial sync) and the apply worker maintains it. Nodes are processes (scripts/pgtest.sh tap core/replication)
 # or containers (scripts/replication.sh --container).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 

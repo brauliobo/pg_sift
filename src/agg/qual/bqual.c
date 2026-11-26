@@ -13,6 +13,7 @@
 #include "agg/pg_exec.h"
 #include "agg/qual/pg.h"
 #include "agg/vexpr/str.h"
+#include "core/popcount.h"
 
 #define BQ_TEXT_MAX		8
 
@@ -168,7 +169,7 @@ filter_text(const BqText *t, const SiftVec *v, SiftBatchSel *bs)
 			keep |= (uint64) (valid && sift_text_qual_holds(&t->q, (const uint8 *) sift_vstr_bytes(&views[r]), views[r].len)) << (r & 63);
 		}
 		bs->mask[w] = keep;
-		left += (uint16) __builtin_popcountll(keep);
+		left += (uint16) sift_pc64(keep);
 	}
 	bs->n_active = left;
 	bs->all_active = left == bs->n_raw;
