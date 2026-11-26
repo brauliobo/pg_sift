@@ -349,7 +349,10 @@ segment_group_end(SiftRun **runs, int first, int nruns, Size budget)
 	return last;
 }
 
-/* Merges the runs of each segment group down to its share of target, so that no run holds what two segments would: the leader writes the same segments */
+/*
+ * Merges the runs of each segment group down to its share of target, so that no run holds what two segments would: the leader writes the same segments. More groups than target
+ * (one run each at least) are merged across groups down to target, which the slots of a participant hold (MAX_PART_RUNS)
+ */
 static int
 shrink_by_group(SiftRun **runs, int nruns, int target, Size budget, RunHome *home)
 {
@@ -367,7 +370,7 @@ shrink_by_group(SiftRun **runs, int nruns, int target, Size budget, RunHome *hom
 		memmove(runs + kept, runs + first, n * sizeof(SiftRun *));
 		kept += n;
 	}
-	return kept;
+	return kept > target ? sift_shrink_runs(runs, kept, target, budget, home) : kept;
 }
 
 /*
