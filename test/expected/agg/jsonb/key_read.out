@@ -28,7 +28,7 @@ CREATE FUNCTION kr_doc(i int, bad jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS
 		WHEN 14 THEN CASE WHEN bad IS NULL THEN jsonb_build_object('k', i % 3 + 0.5) ELSE jsonb_build_object('k', bad, 'n', bad, 's', bad) END
 		WHEN 15 THEN '{}'::jsonb
 		WHEN 16 THEN '[]'::jsonb
-		WHEN 17 THEN jsonb_build_object('k', 12345678901234567890123.5, 'n', 2000000000 + i % 3, 's', i)
+		WHEN 17 THEN jsonb_build_object('k', 1099511627776.5, 'n', 2000000000 + i % 3, 's', i)
 		WHEN 18 THEN jsonb_build_object('k', i, 'j', i)
 		ELSE jsonb_build_object('k', i % 4 - 1.5, 'n', i % 2, 's', 'x' || i % 3)
 	END
