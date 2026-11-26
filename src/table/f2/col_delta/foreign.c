@@ -3,9 +3,10 @@
  *
  * The records that matter to a modify are the ones another transaction wrote and whose writer is not past every snapshot: they say that the row changed under it. A writer older than the
  * oldest transaction a snapshot can see is committed for all of them or never visible, and a modify finds the same without its record. The records of the transaction itself are known to it (its
- * row locks name the rows it changed), and a statement that patches a million rows writes a chain of that many records. The log keeps the headers of the records left, and follows the chain
- * from one statement to the next the way the watch of a chain does (f2_col_delta.h): it reads the pages the chain gained, not the chain. The records it left out for a transaction are read again
- * when another one asks.
+ * row locks name the rows it changed), and a statement that patches a million rows writes a chain of that many records: they wait aside, unsorted, and join the others once their writer
+ * ended, if it is not past every snapshot by then. The log keeps the headers of the records left, and follows the chain
+ * from one statement to the next the way the watch of a chain does (f2_col_delta.h): it reads the pages the chain gained, not the chain, and merges their records into the ones it has. A backend keeps the logs of the FOREIGN_LOGS partitions it modified last, so that a statement that goes from one
+ * partition to another reads neither chain again.
  *
  * check-memory: allow-allocs the log holds the headers of the records of the writers a snapshot may still tell apart, which is the chain written since the oldest running transaction began, and the budget of core/cachebudget.h bounds it
  */
@@ -25,6 +26,9 @@
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/col_delta/dir.h"
 #include "table/f2/col_delta/io.h"
+#include "table/f2/chain_cache.h"
+
+#define FOREIGN_LOGS	8
 
 typedef struct ForeignRec
 {
@@ -57,12 +61,16 @@ typedef struct ForeignLog
 	ForeignRec *recs;			/* ascending by (tid, seq) */
 	int			nskipped;
 	int			capskipped;
-	TransactionId *skipped;		/* the writers whose records the log left out because they were the transaction's */
+	TransactionId *skipped;		/* the writers of own */
+	int			nown;
+	int			capown;
+	ForeignRec *own;			/* the records of the transaction itself, in the order of the chain */
 	uint64		tick;
 } ForeignLog;
 
 static MemoryContext foreign_cx = NULL;
-static ForeignLog flog;
+static ForeignLog logs[FOREIGN_LOGS];
+static ForeignLog *flog;		/* the log being read */
 
 static HeadStamp
 stamp_of(const char *page, BlockNumber blk)
@@ -100,36 +108,53 @@ rec_cmp(const void *a, const void *b)
 /* ---- the log, a cache of the backend ---- */
 
 static void
-log_drop(void)
+log_drop(ForeignLog *l)
 {
-	if (flog.cx != NULL)
-		MemoryContextDelete(flog.cx);
-	memset(&flog, 0, sizeof(flog));
+	if (l->cx != NULL)
+		MemoryContextDelete(l->cx);
+	memset(l, 0, sizeof(*l));
+}
+
+/* The log used the longest ago, of the ones no statement of the transaction used when unpinned */
+static ForeignLog *
+log_lru(bool unpinned)
+{
+	ForeignLog *lru = NULL;
+
+	for (int i = 0; i < FOREIGN_LOGS; i++)
+		if (logs[i].cx != NULL && !(unpinned && sift_cache_used_in_xact(logs[i].tick)) && (lru == NULL || logs[i].tick < lru->tick))
+			lru = &logs[i];
+	return lru;
 }
 
 static uint64
 foreign_oldest(void)
 {
-	return flog.cx != NULL && !sift_cache_used_in_xact(flog.tick) ? flog.tick : UINT64_MAX;
+	ForeignLog *l = log_lru(true);
+
+	return l != NULL ? l->tick : UINT64_MAX;
 }
 
 static bool
 foreign_evict_one(void)
 {
-	if (flog.cx == NULL || sift_cache_used_in_xact(flog.tick))
-		return false;
-	log_drop();
-	return true;
+	ForeignLog *l = log_lru(true);
+
+	if (l != NULL)
+		log_drop(l);
+	return l != NULL;
 }
 
 static void
 foreign_evict_all(void)
 {
-	foreign_evict_one();
+	while (foreign_evict_one())
+		;
 }
 
 static const SiftCacheKind foreign_kind = {"table_f2_col_delta_foreign_log", foreign_oldest, foreign_evict_one, foreign_evict_all};
 
+/* The log of the partition, made in a free place or in the one of the log used the longest ago: no pointer to a log outlives the call that read it */
 static void
 log_open(Relation rel, uint64 part_id)
 {
@@ -138,20 +163,30 @@ log_open(Relation rel, uint64 part_id)
 		foreign_cx = sift_cache_create_context("sift cache f2 column delta foreign log");
 		sift_cache_register(&foreign_kind);
 	}
-	log_drop();
-	flog.cx = sift_mem_allocset_create(foreign_cx, "sift cache f2 column delta foreign log entry");
-	flog.loc = rel->rd_locator;
-	flog.part_id = part_id;
-	sift_col_delta_watch_init(&flog.watch, flog.cx);
+	for (int i = 0; i < FOREIGN_LOGS; i++)
+		if (logs[i].cx != NULL && RelFileLocatorEquals(logs[i].loc, rel->rd_locator) && logs[i].part_id == part_id)
+		{
+			flog = &logs[i];
+			return;
+		}
+	for (flog = &logs[0]; flog < logs + FOREIGN_LOGS && flog->cx != NULL; flog++)
+		;
+	flog = flog < logs + FOREIGN_LOGS ? flog : log_lru(false);
+	log_drop(flog);
+	flog->cx = sift_mem_allocset_create(foreign_cx, "sift cache f2 column delta foreign log entry");
+	flog->loc = rel->rd_locator;
+	flog->part_id = part_id;
+	sift_col_delta_watch_init(&flog->watch, flog->cx);
 }
 
 static void
 log_reset(void)
 {
-	flog.n = 0;
-	flog.seq = 0;
-	flog.nskipped = 0;
-	sift_col_delta_watch_reset(&flog.watch);
+	flog->n = 0;
+	flog->seq = 0;
+	flog->nskipped = 0;
+	flog->nown = 0;
+	sift_col_delta_watch_reset(&flog->watch);
 }
 
 /* ---- what the log keeps of a record ---- */
@@ -159,15 +194,15 @@ log_reset(void)
 static void
 log_skip(TransactionId xmin)
 {
-	for (int i = 0; i < flog.nskipped; i++)
-		if (flog.skipped[i] == xmin)
+	for (int i = 0; i < flog->nskipped; i++)
+		if (flog->skipped[i] == xmin)
 			return;
-	if (flog.nskipped == flog.capskipped)
+	if (flog->nskipped == flog->capskipped)
 	{
-		flog.capskipped = Max(4, flog.capskipped * 2);
-		flog.skipped = flog.skipped == NULL ? MemoryContextAlloc(flog.cx, sizeof(TransactionId) * flog.capskipped) : repalloc(flog.skipped, sizeof(TransactionId) * flog.capskipped);
+		flog->capskipped = Max(4, flog->capskipped * 2);
+		flog->skipped = flog->skipped == NULL ? MemoryContextAlloc(flog->cx, sizeof(TransactionId) * flog->capskipped) : repalloc(flog->skipped, sizeof(TransactionId) * flog->capskipped);
 	}
-	flog.skipped[flog.nskipped++] = xmin;
+	flog->skipped[flog->nskipped++] = xmin;
 }
 
 static bool
@@ -176,15 +211,19 @@ writer_settled(TransactionId xmin)
 	return TransactionIdPrecedes(xmin, RecentXmin);
 }
 
+/* A list of records that grows asks the budget for the room first: the other caches give theirs back before the log passes the limit, which it does alone for the statement that needs it */
 static void
-log_add(const SiftColDeltaEntryHdr *h)
+recs_push(ForeignRec **recs, int *n, int *cap, const ForeignRec *r)
 {
-	if (flog.n == flog.cap)
+	if (*n == *cap)
 	{
-		flog.cap = Max(64, flog.cap * 2);
-		flog.recs = flog.recs == NULL ? MemoryContextAlloc(flog.cx, sizeof(ForeignRec) * flog.cap) : repalloc(flog.recs, sizeof(ForeignRec) * flog.cap);
+		Size		had = sizeof(ForeignRec) * *cap;
+
+		*cap = Max(64, *cap * 2);
+		(void) sift_cache_room(sizeof(ForeignRec) * *cap - had);
+		*recs = *recs == NULL ? MemoryContextAlloc(flog->cx, sizeof(ForeignRec) * *cap) : repalloc(*recs, sizeof(ForeignRec) * *cap);
 	}
-	flog.recs[flog.n++] = (ForeignRec) {.tid = sift_col_delta_hdr_tid(h),.seq = flog.seq,.hdr = *h};
+	(*recs)[(*n)++] = *r;
 }
 
 static bool
@@ -197,12 +236,19 @@ log_visit(void *arg pg_attribute_unused(), const char *page, uint32 from_used)
 	sift_col_delta_recs_init_hdrs(&recs, from_used > 0 ? (const uint8 *) SiftPageGetData(page) + from_used : sift_col_delta_page_first(page), sift_col_delta_page_end(page));
 	while (sift_col_delta_recs_next(&recs, &rec, &h))
 	{
+		ForeignRec	r = {.tid = sift_col_delta_hdr_tid(&h),.seq = flog->seq++,.hdr = h};
+
 		if (TransactionIdIsCurrentTransactionId(h.xmin))
+		{
 			log_skip(h.xmin);
+			recs_push(&flog->own, &flog->nown, &flog->capown, &r);
+		}
 		else if (!writer_settled(h.xmin))
-			log_add(&h);
-		flog.seq++;
+			recs_push(&flog->recs, &flog->n, &flog->cap, &r);
 	}
+#ifdef SIFT_TESTING
+	sift_chain_cache_pages++;
+#endif
 	CHECK_FOR_INTERRUPTS();
 	return true;
 }
@@ -212,10 +258,10 @@ log_forget_settled(void)
 {
 	int			kept = 0;
 
-	for (int i = 0; i < flog.n; i++)
-		if (!writer_settled(flog.recs[i].hdr.xmin))
-			flog.recs[kept++] = flog.recs[i];
-	flog.n = kept;
+	for (int i = 0; i < flog->n; i++)
+		if (!writer_settled(flog->recs[i].hdr.xmin))
+			flog->recs[kept++] = flog->recs[i];
+	flog->n = kept;
 }
 
 /* ---- following the chain ---- */
@@ -223,31 +269,73 @@ log_forget_settled(void)
 static bool
 log_skipped_gone(void)
 {
-	for (int i = 0; i < flog.nskipped; i++)
-		if (!TransactionIdIsCurrentTransactionId(flog.skipped[i]))
+	for (int i = 0; i < flog->nskipped; i++)
+		if (!TransactionIdIsCurrentTransactionId(flog->skipped[i]))
 			return true;
 	return false;
+}
+
+/* The records from sorted on, the ones the pages the log read last added, sorted and merged into the ones before them: the newer record of a row comes after the older one */
+static void
+log_merge(int sorted)
+{
+	int			k = flog->n - sorted;
+	ForeignRec *tail;
+
+	if (k > 1)
+		qsort(flog->recs + sorted, k, sizeof(ForeignRec), rec_cmp);
+	if (k == 0 || sorted == 0 || rec_cmp(&flog->recs[sorted - 1], &flog->recs[sorted]) <= 0)
+		return;
+	tail = MemoryContextAlloc(flog->cx, sizeof(ForeignRec) * k);
+	memcpy(tail, flog->recs + sorted, sizeof(ForeignRec) * k);
+	for (int i = sorted - 1, j = k - 1, o = flog->n - 1; j >= 0; o--)
+		flog->recs[o] = i >= 0 && rec_cmp(&flog->recs[i], &tail[j]) > 0 ? flog->recs[i--] : tail[j--];
+	pfree(tail);
+}
+
+/* The records of the writers of the transaction that ended since join the others, the ones not past every snapshot: the chain is not read again for them */
+static void
+log_adopt_own(void)
+{
+	int			sorted = flog->n,
+				kept = 0;
+
+	if (!log_skipped_gone())
+		return;
+	flog->nskipped = 0;
+	for (int i = 0; i < flog->nown; i++)
+		if (TransactionIdIsCurrentTransactionId(flog->own[i].hdr.xmin))
+		{
+			log_skip(flog->own[i].hdr.xmin);
+			flog->own[kept++] = flog->own[i];
+		}
+		else if (!writer_settled(flog->own[i].hdr.xmin))
+			recs_push(&flog->recs, &flog->n, &flog->cap, &flog->own[i]);
+	flog->nown = kept;
+	log_merge(sorted);
 }
 
 static void
 log_follow(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a)
 {
 	SiftColDeltaWatchRead r;
+	int			sorted;
 
 	log_forget_settled();
-	if (!sift_col_delta_watch_read(rel, entry, a, &flog.watch, NULL, log_visit, NULL, &r))
+	sorted = flog->n;
+	if (!sift_col_delta_watch_read(rel, entry, a, &flog->watch, NULL, log_visit, NULL, &r))
 	{
 		log_reset();
-		if (!sift_col_delta_watch_read(rel, entry, a, &flog.watch, NULL, log_visit, NULL, &r))
+		sorted = 0;
+		if (!sift_col_delta_watch_read(rel, entry, a, &flog->watch, NULL, log_visit, NULL, &r))
 			SIFT_CORRUPT(rel, "the column delta chain of partition %llu cannot be read.", (unsigned long long) entry->part_id);
 	}
-	sift_col_delta_watch_set(&flog.watch, a, &r);
-	flog.head = stamp_of(r.last, r.ent[a->npages - 1].blkno);
-	flog.anchor_blk = a->delta_head_blkno;
-	flog.anchor_pages = a->npages;
+	sift_col_delta_watch_set(&flog->watch, a, &r);
+	flog->head = stamp_of(r.last, r.ent[a->npages - 1].blkno);
+	flog->anchor_blk = a->delta_head_blkno;
+	flog->anchor_pages = a->npages;
 	sift_col_delta_watch_release(&r);
-	if (flog.n > 1)
-		qsort(flog.recs, flog.n, sizeof(ForeignRec), rec_cmp);
+	log_merge(sorted);
 }
 
 static bool
@@ -255,24 +343,23 @@ log_current(Relation rel, const SiftColDeltaAnchor *anchor)
 {
 	HeadStamp	now;
 
-	if (flog.watch.npages != (int) anchor->npages || flog.anchor_blk != anchor->delta_head_blkno)
+	if (flog->watch.npages != (int) anchor->npages || flog->anchor_blk != anchor->delta_head_blkno)
 		return false;
-	now = stamp_read(rel, flog.head.blk);
-	return stamp_same(&flog.head, &now);
+	now = stamp_read(rel, flog->head.blk);
+	return stamp_same(&flog->head, &now);
 }
 
 static const ForeignLog *
 log_of(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor)
 {
-	if (flog.cx == NULL || !RelFileLocatorEquals(flog.loc, rel->rd_locator) || flog.part_id != entry->part_id)
-		log_open(rel, entry->part_id);
-	if (log_skipped_gone())
-		log_reset();
+	log_open(rel, entry->part_id);
+	flog->tick = sift_cache_tick();
+	log_adopt_own();
 	if (!log_current(rel, anchor))
 		log_follow(rel, entry, anchor);
-	flog.tick = sift_cache_tick();
+	flog->tick = sift_cache_tick();
 	sift_cache_commit();
-	return &flog;
+	return flog;
 }
 
 SiftColDeltaWriters
