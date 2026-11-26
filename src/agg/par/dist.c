@@ -142,7 +142,7 @@ sift_v6_par_dist_load(const SiftV6ParDistOut *o)
 	if (set->nk > 0)
 		return o->recs.len;
 	for (int k = 0; k < g->ndist; k++)
-		bytes += set->flat != NULL && set->flat[k] != NULL ? sift_du64_bytes(set->flat[k]) : 0;
+		bytes += set->flat != NULL && set->flat[k] != NULL ? sift_du64_bytes_after(set->flat[k], SIFT_VEC_LEN) : 0;
 	return bytes;
 }
 

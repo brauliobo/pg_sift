@@ -161,17 +161,24 @@ probe(SiftDistinctU64 *d, uint64 v, uint64 h)
 	}
 }
 
-/* the table of 2 times the capacity, 4 times once the table is past the cache (the values move once less often), when the budget holds both while the values move: false when it does not */
+/* the capacity of the next table: 2 times, 4 times once the table is past the cache (the values move once less often) and the budget holds both while the values move */
+static uint64
+next_cap(const SiftDistinctU64 *d)
+{
+	return d->cap * (d->cap >= DU64_WIDE_FROM && d->cap * 5 * sizeof(uint64) <= d->budget ? 4 : 2);
+}
+
+/* the next table, when the budget holds it and the current one while the values move: false when it does not */
 static bool
 grow(SiftDistinctU64 *d)
 {
 	uint64	   *okey = d->key;
 	const uint64 ocap = d->cap;
-	const uint64 factor = ocap >= DU64_WIDE_FROM && ocap * 5 * sizeof(uint64) <= d->budget ? 4 : 2;
+	const uint64 ncap = next_cap(d);
 
-	if (ocap * (factor + 1) * sizeof(uint64) > d->budget)
+	if ((ocap + ncap) * sizeof(uint64) > d->budget)
 		return false;
-	table_alloc(d, ocap * factor);
+	table_alloc(d, ncap);
 	sift_du64_rehash(d->key, d->cap, okey, ocap);
 	pfree(okey);
 	return true;
@@ -222,6 +229,14 @@ uint64
 sift_du64_bytes(const SiftDistinctU64 *d)
 {
 	return d->cap * sizeof(uint64);
+}
+
+uint64
+sift_du64_bytes_after(const SiftDistinctU64 *d, uint32 more)
+{
+	if ((d->count + more) * 10 <= d->cap * 7)
+		return sift_du64_bytes(d);
+	return (d->cap + next_cap(d)) * sizeof(uint64);
 }
 
 void

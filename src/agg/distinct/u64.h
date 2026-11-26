@@ -50,6 +50,8 @@ extern SiftDistinctU64 *sift_du64_create(MemoryContext cx, uint64 budget_bytes);
 extern uint32 sift_du64_add(SiftDistinctU64 *d, const uint64 *vals, uint32 n);
 extern uint64 sift_du64_count(const SiftDistinctU64 *d);
 extern uint64 sift_du64_bytes(const SiftDistinctU64 *d);
+/* The most bytes the set holds while it takes `more` values that are all new: its table, or that and the next one while the values move */
+extern uint64 sift_du64_bytes_after(const SiftDistinctU64 *d, uint32 more);
 extern void sift_du64_each(const SiftDistinctU64 *d, void (*fn) (void *arg, uint64 v), void *arg);
 extern void sift_du64_free(SiftDistinctU64 *d);
 

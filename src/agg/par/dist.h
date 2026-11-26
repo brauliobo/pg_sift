@@ -25,7 +25,7 @@ typedef struct SiftV6ParDistOut SiftV6ParDistOut;
  */
 /* share: the bytes the participant holds before it hands them over (sift_v6_par_share); the flat sets of a query of no keys have room for that and the values of one more morsel */
 extern SiftV6ParDistOut *sift_v6_par_dist_out_new(SiftV6Group *g, uint64 share);
-/* The bytes it holds */
+/* The bytes it holds, and those of the next table a flat set grows into while it takes one more batch: the caller hands the values over before that table passes its share */
 extern uint64 sift_v6_par_dist_load(const SiftV6ParDistOut *o);
 /* Everything it holds as records, which are then gone from it */
 extern void sift_v6_par_dist_export(SiftV6ParDistOut *o, SiftV6RecPut put, void *arg);
