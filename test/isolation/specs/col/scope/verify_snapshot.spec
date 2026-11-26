@@ -1,11 +1,12 @@
 # sift.col_scope_verify runs in the snapshot of its caller: a REPEATABLE READ transaction that took its snapshot before another session committed an edit of the pairs and of the facts
 # verifies the state it sees (the pairs of its snapshot against the facts of its snapshot, stored units patched for its reader) and finds the index consistent; so does a new transaction
-# after the edit, and the check does not leave a setting behind in the session.
+# after the edit, and the check does not leave a setting behind in the session. The index is Format 2.0, whose scope summary a read takes: Format 1 scope units have no reader.
 # requires: col
 
 setup
 {
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
+	DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
 	CREATE TABLE iso_pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_pairs SELECT m, 1 + (m * 5 + j * 2) % 6 FROM generate_series(1, 120) m, generate_series(0, 2) j WHERE j < m % 4;
 	CREATE INDEX iso_pairs_journal ON iso_pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
