@@ -3,6 +3,7 @@
 # full-page record of smgr_bulk_write ahead of its WAL), while a file this transaction creates keeps the bulk run; (2) a quarantined index stays out of service whatever sift.on_corruption says,
 # across a restart, with the flag in its metapage written before the write that skips the index, and a hot standby's session forgets the flag it read when the flag is written; (3) VACUUM
 # VERBOSE and sift.col_maintain open a part in object storage by its descriptor; (4) a logical slot with no publication decodes the changes of a sift_table.
+# Format 2 only: tiering and the flag that a write puts in the metapage before it skips the index are Format 2's.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
@@ -11,6 +12,7 @@ node_init p 3 "wal_level = replica
 max_wal_senders = 5
 autovacuum = off
 synchronous_commit = on
+sift.test_create_format1 = off
 sift.on_corruption = quarantine"
 node_start p || bail "start failed"
 D=$(dir p)
@@ -26,17 +28,18 @@ catchup p s || bail "standby catchup failed"
 # WAL records of the full-page kind that name two blocks or more of the file of REL between two positions: what smgr_bulk_write sends ahead of the WAL flush of its pages (log_newpage_buffer logs one)
 full_pages() { sql p "SELECT count(*) FROM pg_get_wal_records_info('$1', '$2') WHERE resource_manager = 'XLOG' AND record_type = 'FPI' AND block_ref LIKE '%/$(sql p "SELECT pg_relation_filenode('$3')") %' AND block_ref LIKE '%blkref #1:%'"; }
 lsn() { sql p "SELECT pg_current_wal_flush_lsn()"; }
-no_bulk_pages() { local from=$(lsn); sql p "$1" >/dev/null || return 1; [[ $(full_pages "$from" "$(lsn)" "$2") == 0 ]]; }
+# no_bulk_pages REL STATEMENT...: the statements wrote WAL, and none of it is a bulk full-page record of REL
+no_bulk_pages() { local from=$(lsn) to; sql p "${@:2}" >/dev/null || return 1; to=$(lsn); [[ $to != "$from" && $(full_pages "$from" "$to" "$1") == 0 ]]; }
 
 # 1: files that exist before the statement
 from=$(lsn)
 sql p "CREATE INDEX CONCURRENTLY w_cic ON w USING sift_col (id, v)" >/dev/null || bail "CREATE INDEX CONCURRENTLY failed"
 check "CREATE INDEX CONCURRENTLY writes no bulk full-page records into the committed index file" test "$(full_pages "$from" "$(lsn)" w_cic)" == 0
-sql p "CREATE TABLE c (id int, v int)" "INSERT INTO c SELECT i, i % 7 FROM generate_series(1, 1000) i" "CREATE INDEX c_idx ON c USING sift_col (id, v)" \
-	"INSERT INTO c SELECT i, i % 7 FROM generate_series(1001, 300000) i" >/dev/null || bail "setup of c failed"
-check "sift.col_maintain rewrites parts without bulk full-page records" no_bulk_pages "SELECT sift.col_maintain('c_idx')" c_idx
+sql p "CREATE TABLE c (id int, v int)" "INSERT INTO c SELECT i, i % 7 FROM generate_series(1, 1000) i" "CREATE INDEX c_idx ON c USING sift_col (id, v)" >/dev/null || bail "setup of c failed"
+check "writes and sift.col_maintain rewrite parts without bulk full-page records" no_bulk_pages c_idx \
+	"INSERT INTO c SELECT i, i % 7 FROM generate_series(1001, 300000) i" "SELECT sift.col_maintain('c_idx')"
 sql p "CREATE TABLE st (id int, v int) USING sift_table" "COPY (SELECT i, i % 7 FROM generate_series(1, 300000) i) TO '$D/st.csv' CSV" >/dev/null || bail "setup of st failed"
-check "a bulk COPY into a sift_table writes no bulk full-page records into its committed file" no_bulk_pages "COPY st FROM '$D/st.csv' CSV" st
+check "a bulk COPY into a sift_table writes no bulk full-page records into its committed file" no_bulk_pages st "COPY st FROM '$D/st.csv' CSV"
 from=$(lsn)
 sql p "CREATE INDEX w_new ON w USING sift_col (id, v)" >/dev/null || bail "CREATE INDEX failed"
 check "an index file the statement creates keeps the bulk run (control)" test "$(full_pages "$from" "$(lsn)" w_new)" -gt 0
@@ -105,7 +108,8 @@ if [[ ! -f $(pg_config --pkglibdir)/test_decoding.so ]]; then skip 3 "test_decod
 node_init l 5 "wal_level = logical
 shared_preload_libraries = 'pg_sift'
 max_replication_slots = 5
-autovacuum = off"
+autovacuum = off
+sift.test_create_format1 = off"
 node_start l || bail "start of l failed"
 sql l "CREATE EXTENSION pg_sift" "SELECT pg_create_logical_replication_slot('s102', 'test_decoding')" "CREATE TABLE lt (id int PRIMARY KEY, v int) USING sift_table" \
 	"INSERT INTO lt VALUES (1, 1), (2, 2)" "UPDATE lt SET v = 20 WHERE id = 2" "DELETE FROM lt WHERE id = 1" >/dev/null || bail "setup of lt failed"
