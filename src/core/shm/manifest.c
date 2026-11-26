@@ -1,7 +1,7 @@
 /*
  * core/shm/manifest.c - the registry of the manifests of the indexes in shared memory (core/shm/manifest.h).
  *
- * Writers (publish, invalidate, the eviction of a slot, the teardown of the area) take claim_lock, so a slot has one writer at a time: it moves the seqlock of line 0 from even to odd,
+ * Writers (hold, publish and invalidate in manifest_pub.c, the eviction of a slot, the teardown of the area) take claim_lock, so a slot has one writer at a time: it moves the seqlock of line 0 from even to odd,
  * writes the meta, and back to even. A reader takes no lock: it copies the meta between two reads of the seqlock and tries again if they differ or the first is odd. The snapshot of a slot is pinned
  * inside an epoch (SiftEpochSlot): a snapshot nobody holds is retired and freed once no reader is in an epoch up to the one it was retired in, so a reader never pins a snapshot that is
  * freed under it, and takes no lock. A backend beyond the epoch slots pins under the build_lock of the slot (shared; the writer that swaps the snapshot holds it exclusive).
@@ -22,14 +22,11 @@
 
 #include "col/dsmreg.h"
 #include "core/cachebudget.h"
-#include "core/shm/manifest.h"
+#include "core/shm/manifest_int.h"
 #include "core/shm/budget.h"
 
 #define REGISTRY_NAME	"sift_shm_manifest"
 #define TRANCHE_NAME	"sift_shm_manifest"
-
-/* a slot that was used and holds nothing now: the probe of a lookup goes past it (an empty slot ends it) */
-#define SIFT_SHM_SLOT_DEAD	(1U << 3)
 
 /* the header of a list of a partition in the area: the bytes it was charged */
 typedef struct ListHdr
@@ -39,26 +36,6 @@ typedef struct ListHdr
 } ListHdr;
 
 StaticAssertDecl(sizeof(ListHdr) % MAXIMUM_ALIGNOF == 0, "the list of a partition after its header is aligned for the entries a reader casts it to");
-
-typedef struct Table
-{
-	int			tranche;
-	LWLock		claim_lock;
-	LWLock		area_lock;
-	dsa_handle	area_handle;	/* area_lock */
-	uint32		area_users;		/* area_lock */
-	pg_atomic_uint64 clock;
-	pg_atomic_uint32 snaps_live;
-	pg_atomic_uint64 snap_bytes;
-	pg_atomic_uint32 unleased;	/* the runs of vblocks that backends fill with no lease slot */
-	pg_atomic_uint64 global_epoch pg_attribute_aligned(PG_CACHE_LINE_SIZE);	/* bumped when a snapshot is retired */
-	LWLock		retire_lock;
-	dsa_pointer retired_head;	/* the snapshots retired and not freed yet, newest first (retire_lock) */
-	pg_atomic_uint64 epoch_mask[SIFT_SHM_EPOCH_SLOTS / 64];	/* the backends that have pinned in an epoch slot and not exited: all that oldest_epoch reads */
-	SiftEpochSlot epoch[SIFT_SHM_EPOCH_SLOTS];
-	SiftShmIndexSlot slot[SIFT_SHM_MANIFEST_SLOTS];
-	SiftShmTidLease lease[SIFT_SHM_TID_LEASES];
-} Table;
 
 static Table *table;
 static dsa_area *area;
@@ -130,8 +107,8 @@ sift_shm_manifest_enabled(void)
 	return sift_shared_cache_kb > 0 && !RecoveryInProgress();
 }
 
-static Table *
-registry(void)
+Table *
+sift_shm_registry(void)
 {
 	if (table == NULL)
 	{
@@ -170,8 +147,8 @@ epoch_register(Table *t)
 	registered = true;
 }
 
-static SiftShmIndexSlot *
-slot_at(Table *t, const RelFileLocator *loc, int probe)
+SiftShmIndexSlot *
+sift_shm_slot_at(Table *t, const RelFileLocator *loc, int probe)
 {
 	uint32		h = hash_bytes((const unsigned char *) loc, sizeof(RelFileLocator));
 
@@ -186,8 +163,8 @@ static void area_leave(int code, Datum arg);
  * The area, attached by this backend: made where there is none and create is true; NULL where the system has no memory for it, or where there is none and create is false.
  * Takes area_lock, so a caller that holds claim_lock may call it.
  */
-static dsa_area *
-area_attach(Table *t, bool create)
+dsa_area *
+sift_shm_area_attach(Table *t, bool create)
 {
 	MemoryContext old;
 	dsa_area   *a;
@@ -251,11 +228,10 @@ area_attach(Table *t, bool create)
 	return a;
 }
 
-static void snap_free(dsa_area *a, SiftShmManifestSnap *snap);
 
 /* The snapshot of a slot, swapped out under the build_lock of the slot: the dsa_pointer the slot had */
-static dsa_pointer
-slot_swap_snap(SiftShmIndexSlot *s, dsa_pointer dp)
+dsa_pointer
+sift_shm_slot_swap_snap(SiftShmIndexSlot *s, dsa_pointer dp)
 {
 	dsa_pointer old;
 
@@ -322,12 +298,12 @@ reclaim_now(Table *t, dsa_area *a, bool everything)
 		n = reclaim_unlink(t, a, everything, batch);
 		LWLockRelease(&t->retire_lock);
 		for (int i = 0; i < n; i++)
-			snap_free(a, dsa_get_address(a, batch[i]));
+			sift_shm_snap_free(a, dsa_get_address(a, batch[i]));
 	} while (n == RECLAIM_BATCH);
 }
 
-static void
-snap_retire(Table *t, dsa_area *a, dsa_pointer dp)
+void
+sift_shm_snap_retire(Table *t, dsa_area *a, dsa_pointer dp)
 {
 	SiftShmManifestSnap *snap = dsa_get_address(a, dp);
 
@@ -352,8 +328,8 @@ snap_decref(dsa_area *a, dsa_pointer dp)
 		reclaim_now(table, a, false);
 }
 
-static void
-meta_write(SiftShmIndexSlot *s, const SiftShmIndexMeta *meta)
+void
+sift_shm_meta_write(SiftShmIndexSlot *s, const SiftShmIndexMeta *meta)
 {
 	uint64		seq = pg_atomic_read_u64(&s->seq);
 
@@ -384,15 +360,15 @@ area_leave(int code, Datum arg)
 		for (int i = 0; i < SIFT_SHM_MANIFEST_SLOTS; i++)
 		{
 			SiftShmIndexSlot *s = &t->slot[i];
-			dsa_pointer dp = slot_swap_snap(s, InvalidDsaPointer);
+			dsa_pointer dp = sift_shm_slot_swap_snap(s, InvalidDsaPointer);
 
 			if (dp != InvalidDsaPointer)
 			{
 				SiftShmIndexMeta meta = s->meta;
 
 				meta.state_flags &= ~SIFT_SHM_SLOT_HAS_SNAP;
-				meta_write(s, &meta);
-				snap_retire(t, area, dp);
+				sift_shm_meta_write(s, &meta);
+				sift_shm_snap_retire(t, area, dp);
 			}
 		}
 		reclaim_now(t, area, true);
@@ -414,8 +390,8 @@ area_leave(int code, Datum arg)
  * their own
  */
 /* MEM[MEM-CORE-11]: DSA snapshot sub-alloc helper (coalesce into MEM-SHM-04) */
-static dsa_pointer
-snap_build(Table *t, dsa_area *a, const RelFileLocator *locator, const SiftShmSnapSpec *spec)
+dsa_pointer
+sift_shm_snap_build(Table *t, dsa_area *a, const RelFileLocator *locator, const SiftShmSnapSpec *spec)
 {
 	Size		entries = (Size) spec->npartitions * spec->part_entry_size;
 	Size		scopes = (Size) spec->nscopes * spec->scope_entry_size;
@@ -464,8 +440,8 @@ snap_build(Table *t, dsa_area *a, const RelFileLocator *locator, const SiftShmSn
 }
 
 /* One free for the snapshot; the lists that queries installed are each an allocation, given back before it. No lock of the registry is held by the callers that matter (reclaim_now) */
-static void
-snap_free(dsa_area *a, SiftShmManifestSnap *snap)
+void
+sift_shm_snap_free(dsa_area *a, SiftShmManifestSnap *snap)
 {
 	Table	   *t = table;
 	pg_atomic_uint64 *lists = dsa_get_address(a, snap->part_lists_dp);
@@ -494,7 +470,7 @@ slot_lookup(Table *t, const RelFileLocator *loc, SiftShmIndexMeta *meta)
 {
 	for (int i = 0; i < SIFT_SHM_MANIFEST_PROBES; i++)
 	{
-		SiftShmIndexSlot *s = slot_at(t, loc, i);
+		SiftShmIndexSlot *s = sift_shm_slot_at(t, loc, i);
 		uint64		seq;
 
 		for (;;)
@@ -528,7 +504,7 @@ sift_shm_manifest_peek(const RelFileLocator *locator, SiftShmIndexMeta *out)
 {
 	Table	   *t;
 
-	if (!sift_shm_manifest_enabled() || (t = registry()) == NULL)
+	if (!sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
 		return false;
 	return slot_lookup(t, locator, out) != NULL;
 }
@@ -611,12 +587,12 @@ pin_found_for(const RelFileLocator *looked_up, const RelFileLocator *expected)
 	dsa_area   *a;
 	SiftShmManifestSnap *snap;
 
-	if (!sift_shm_manifest_enabled() || (t = registry()) == NULL)
+	if (!sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
 		return NULL;
 	s = slot_lookup(t, looked_up, &meta);
 	if (s == NULL)
 		return NULL;
-	if (!(meta.state_flags & SIFT_SHM_SLOT_HAS_SNAP) || (a = area_attach(t, false)) == NULL)
+	if (!(meta.state_flags & SIFT_SHM_SLOT_HAS_SNAP) || (a = sift_shm_area_attach(t, false)) == NULL)
 		return pin_missed(s);
 	ResourceOwnerEnlarge(CurrentResourceOwner);
 	snap = (uint32) MyProcNumber < SIFT_SHM_EPOCH_SLOTS ? pin_in_epoch(t, s, a) : pin_locked(s, a);
@@ -639,7 +615,7 @@ sift_shm_manifest_pin_stat(const RelFileLocator *locator, uint64 *hits, uint64 *
 	SiftShmIndexMeta meta;
 	SiftShmIndexSlot *s;
 
-	if (!sift_shm_manifest_enabled() || (t = registry()) == NULL || (s = slot_lookup(t, locator, &meta)) == NULL)
+	if (!sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL || (s = slot_lookup(t, locator, &meta)) == NULL)
 		return false;
 	*hits = pg_atomic_read_u64(&s->snap_hits);
 	*misses = pg_atomic_read_u64(&s->snap_misses);
@@ -662,7 +638,7 @@ sift_shm_snap_pin_found_for(const RelFileLocator *looked_up, const RelFileLocato
 void
 sift_shm_manifest_announce_epoch(void)
 {
-	Table	   *t = registry();
+	Table	   *t = sift_shm_registry();
 
 	if (t != NULL && (uint32) MyProcNumber < SIFT_SHM_EPOCH_SLOTS)
 	{
@@ -757,152 +733,10 @@ sift_shm_snap_part_list_install(const SiftShmManifestSnap *snapshot, uint32 p, c
 	return false;
 }
 
-/* ---------- writers ---------- */
-
-/* What a slot costs to give up: a dead one nothing, a live one its cache; a quarantined one is not given up, it keeps the index from being trusted */
-static int
-slot_value(SiftShmIndexSlot *s)
-{
-	return (s->meta.state_flags & SIFT_SHM_SLOT_DEAD) ? 0 : 1;
-}
-
-/* The slot of the locator in the probe window, or NULL (claim_lock held) */
-static SiftShmIndexSlot *
-slot_find(Table *t, const RelFileLocator *loc)
-{
-	for (int i = 0; i < SIFT_SHM_MANIFEST_PROBES; i++)
-	{
-		SiftShmIndexSlot *s = slot_at(t, loc, i);
-
-		if (s->meta.state_flags == SIFT_SHM_SLOT_EMPTY)
-			break;
-		if (RelFileLocatorEquals(s->meta.locator, *loc))
-			return s;
-	}
-	return NULL;
-}
-
-/* The slot of the locator for a writer (claim_lock held): the one it has, an empty one, or the one a full probe window gives up (a dead one first, then the least recently used); NULL when the window holds nothing but quarantined indexes */
-static SiftShmIndexSlot *
-slot_claim(Table *t, const RelFileLocator *loc)
-{
-	SiftShmIndexSlot *victim = NULL;
-
-	for (int i = 0; i < SIFT_SHM_MANIFEST_PROBES; i++)
-	{
-		SiftShmIndexSlot *s = slot_at(t, loc, i);
-
-		if (s->meta.state_flags == SIFT_SHM_SLOT_EMPTY || RelFileLocatorEquals(s->meta.locator, *loc))
-			return s;
-		if (s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED)
-			continue;
-		if (victim == NULL || slot_value(s) < slot_value(victim) ||
-			(slot_value(s) == slot_value(victim) && pg_atomic_read_u64(&s->last_used_tick) < pg_atomic_read_u64(&victim->last_used_tick)))
-			victim = s;
-	}
-	if (victim != NULL && slot_value(victim) > 0)
-		sift_shm_note_eviction(SIFT_SHM_MANIFEST, 1);
-	return victim;
-}
-
-/* The snapshot a slot holds goes: the area is attached first, so that the snapshot can be freed (claim_lock held) */
-static void
-slot_drop_snap(Table *t, SiftShmIndexSlot *s)
-{
-	dsa_area   *a;
-
-	if (pg_atomic_read_u64(&s->current_snap_dp) == InvalidDsaPointer)
-		return;
-#ifdef SIFT_TESTING
-	if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "manifest_drop_snap") != NULL)
-		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift test: the snapshot of the slot cannot be dropped (manifest_drop_snap)")));	/* check-errors: allow */
-#endif
-	a = area_attach(t, false);
-	if (a == NULL)
-		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift: the area of the manifest snapshots cannot be attached"),
-						errhint("Shared memory is short; the snapshots are held until a session that can attach the area drops them.")));
-	snap_retire(t, a, slot_swap_snap(s, InvalidDsaPointer));
-}
-
-bool
-sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *spec)
-{
-	Table	   *t;
-	dsa_area   *a = NULL;
-	dsa_pointer dp = InvalidDsaPointer;
-	SiftShmIndexSlot *s;
-	SiftShmIndexMeta m = *meta;
-
-	if ((meta->state_flags & SIFT_SHM_SLOT_PRIVATE) != 0 || !sift_shm_manifest_enabled() || (t = registry()) == NULL)
-		return false;
-	if (spec != NULL && (a = area_attach(t, true)) != NULL)
-		dp = snap_build(t, a, &meta->locator, spec);
-	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
-	s = slot_claim(t, &meta->locator);
-	if (s == NULL || ((s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED) && RelFileLocatorEquals(s->meta.locator, meta->locator)) ||
-		((s->meta.state_flags & SIFT_SHM_SLOT_VALID) && RelFileLocatorEquals(s->meta.locator, meta->locator) && s->meta.manifest_version > meta->manifest_version))
-	{
-		LWLockRelease(&t->claim_lock);
-		if (dp != InvalidDsaPointer)
-			snap_free(a, dsa_get_address(a, dp));
-		return false;
-	}
-	if (!RelFileLocatorEquals(s->meta.locator, meta->locator))
-	{
-		pg_atomic_write_u64(&s->snap_hits, 0);
-		pg_atomic_write_u64(&s->snap_misses, 0);
-	}
-	PG_TRY();
-	{
-		slot_drop_snap(t, s);
-	}
-	PG_CATCH();
-	{
-		if (dp != InvalidDsaPointer)
-			snap_free(a, dsa_get_address(a, dp));
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-	m.state_flags = SIFT_SHM_SLOT_VALID | (dp != InvalidDsaPointer ? SIFT_SHM_SLOT_HAS_SNAP : 0);
-	meta_write(s, &m);
-	pg_atomic_write_u64(&s->last_used_tick, pg_atomic_fetch_add_u64(&t->clock, 1));
-	if (dp != InvalidDsaPointer)
-		slot_swap_snap(s, dp);
-	LWLockRelease(&t->claim_lock);
-	return spec == NULL || dp != InvalidDsaPointer;
-}
-
-void
-sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine)
-{
-	Table	   *t;
-	SiftShmIndexSlot *s;
-
-	if (!sift_shm_manifest_enabled() || (t = registry()) == NULL)
-		return;
-	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
-	s = quarantine ? slot_claim(t, locator) : slot_find(t, locator);
-	if (s != NULL)
-	{
-		bool		mine = RelFileLocatorEquals(s->meta.locator, *locator);
-		SiftShmIndexMeta m = mine ? s->meta : (SiftShmIndexMeta) {.locator = *locator};
-
-		if (!mine)
-		{
-			pg_atomic_write_u64(&s->snap_hits, 0);
-			pg_atomic_write_u64(&s->snap_misses, 0);
-		}
-		m.state_flags = quarantine ? SIFT_SHM_SLOT_QUARANTINED : SIFT_SHM_SLOT_DEAD;
-		meta_write(s, &m);
-		slot_drop_snap(t, s);
-	}
-	LWLockRelease(&t->claim_lock);
-}
-
 void
 sift_shm_manifest_stats(SiftShmManifestStats *stats)
 {
-	Table	   *t = registry();
+	Table	   *t = sift_shm_registry();
 	SiftShmPoolStat pool;
 
 	memset(stats, 0, sizeof(*stats));
@@ -925,24 +759,40 @@ sift_shm_manifest_stats(SiftShmManifestStats *stats)
 
 /* ---------- the vblock leases ---------- */
 
-int
-sift_shm_tid_lease_acquire(const RelFileLocator *locator)
+/* The slot goes to this backend for the locator (the owner word was `expected`: free, or an idle lease taken away): readers see it CLAIMING until its locator is written */
+static bool
+lease_claim(SiftShmTidLease *l, uint32 expected, const RelFileLocator *locator, uint64 *seq)
 {
-	Table	   *t = registry();
+	if (!pg_atomic_compare_exchange_u32(&l->owner, &expected, SIFT_TID_LEASE_CLAIMING))
+		return false;
+	*seq = pg_atomic_add_fetch_u64(&l->seq, 1);
+	l->locator = *locator;
+	pg_atomic_write_u64(&l->lo, 0);
+	pg_write_barrier();
+	pg_atomic_write_u32(&l->owner, (uint32) MyProcNumber + 1);
+	return true;
+}
+
+static bool
+lease_is_idle(uint32 owner)
+{
+	return owner != SIFT_TID_LEASE_CLAIMING && (owner & SIFT_TID_LEASE_IDLE) != 0;
+}
+
+int
+sift_shm_tid_lease_acquire(const RelFileLocator *locator, uint64 *seq)
+{
+	Table	   *t = sift_shm_registry();
 
 	for (int i = 0; t != NULL && i < SIFT_SHM_TID_LEASES; i++)
+		if (lease_claim(&t->lease[i], 0, locator, seq))
+			return i;
+	for (int i = 0; t != NULL && i < SIFT_SHM_TID_LEASES; i++)
 	{
-		SiftShmTidLease *l = &t->lease[i];
-		uint32		free_slot = 0;
+		uint32		owner = pg_atomic_read_u32(&t->lease[i].owner);
 
-		if (!pg_atomic_compare_exchange_u32(&l->owner, &free_slot, SIFT_TID_LEASE_CLAIMING))
-			continue;
-		(void) pg_atomic_fetch_add_u64(&l->seq, 1);
-		l->locator = *locator;
-		pg_atomic_write_u64(&l->lo, 0);
-		pg_write_barrier();
-		pg_atomic_write_u32(&l->owner, (uint32) MyProcNumber + 1);
-		return i;
+		if (lease_is_idle(owner) && lease_claim(&t->lease[i], owner, locator, seq))
+			return i;
 	}
 	return -1;
 }
@@ -954,15 +804,35 @@ sift_shm_tid_lease_set(int slot, uint64 lo)
 }
 
 void
-sift_shm_tid_lease_release(int slot)
+sift_shm_tid_lease_idle(int slot)
 {
-	pg_atomic_write_u32(&table->lease[slot].owner, 0);
+	pg_atomic_write_u32(&table->lease[slot].owner, ((uint32) MyProcNumber + 1) | SIFT_TID_LEASE_IDLE);
+}
+
+bool
+sift_shm_tid_lease_wake(int slot, uint64 seq)
+{
+	SiftShmTidLease *l = &table->lease[slot];
+	uint32		idle = ((uint32) MyProcNumber + 1) | SIFT_TID_LEASE_IDLE;
+
+	return pg_atomic_read_u64(&l->seq) == seq && pg_atomic_compare_exchange_u32(&l->owner, &idle, (uint32) MyProcNumber + 1);
+}
+
+void
+sift_shm_tid_lease_release(int slot, uint64 seq)
+{
+	SiftShmTidLease *l = &table->lease[slot];
+	uint32		active = (uint32) MyProcNumber + 1,
+				idle = active | SIFT_TID_LEASE_IDLE;
+
+	if (pg_atomic_read_u64(&l->seq) == seq && !pg_atomic_compare_exchange_u32(&l->owner, &active, 0))
+		(void) pg_atomic_compare_exchange_u32(&l->owner, &idle, 0);
 }
 
 bool
 sift_shm_tid_unleased(int delta)
 {
-	Table	   *t = registry();
+	Table	   *t = sift_shm_registry();
 
 	if (t != NULL)
 		pg_atomic_fetch_add_u32(&t->unleased, (uint32) delta);
@@ -972,7 +842,7 @@ sift_shm_tid_unleased(int delta)
 bool
 sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint64 *floor)
 {
-	Table	   *t = registry();
+	Table	   *t = sift_shm_registry();
 
 	if (t == NULL)
 		return false;
@@ -993,6 +863,11 @@ sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint
 		pg_read_barrier();
 		if (owner == SIFT_TID_LEASE_CLAIMING || pg_atomic_read_u64(&l->seq) != seq)
 			*floor = 0;
+		else if (mine && lease_is_idle(owner))
+		{
+			if (!pg_atomic_compare_exchange_u32(&l->owner, &owner, 0))
+				*floor = 0;
+		}
 		else if (mine)
 			*floor = Min(*floor, lo);
 	}

@@ -427,11 +427,9 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo};
 	MemoryContext part_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift del bulk part");
 
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	mr = sift_manifest_read_range(rel, key_lo, NULL);
-	if (mr.n == 0 || mr.entries[0].part_id != part_id)
-		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	entry = mr.entries[0];
+	entry = *sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
+	e.part_id = part_id;
+	e.key_lo = key_lo;
 	if (fold && entry.pend_del_blk != InvalidBlockNumber)
 		pend = sift_pend_del_read_unsettled(rel, part_id, entry.pend_del_blk, &settled, &npend, &pend_pages, &npend_pages);
 	recs = palloc((n_in + npend + 1) * sizeof(SiftPendDelRec));

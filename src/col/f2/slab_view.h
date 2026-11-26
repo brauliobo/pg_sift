@@ -1,7 +1,7 @@
 /*
- * col/f2/slab_view.h - the micro-slabs of a partition as parts in memory, for a standby.
+ * col/f2/slab_view.h - the micro-slabs of a partition as parts in memory, for the views of a scan.
  *
- * A primary writes a micro-slab out as a part before a scan reads it (sift_f2_view). A standby writes nothing, so its view lists the slab of a partition as one more part of the partition,
+ * A scan writes nothing and takes no lock of a partition (sift_f2_view), on a primary as on a standby: its view lists the slab of a partition as one more part of the partition,
  * made in memory from the rows of the slab as they are when a pin opens it; the descriptor says so (SIFT_PART_EXT_SLAB) and names the head of the slab and its rows. A part made twice from the
  * same slab is the same part, which is what lets a worker of a parallel scan open the part the leader listed.
  */

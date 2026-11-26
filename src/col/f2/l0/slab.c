@@ -545,7 +545,7 @@ sift_l0_slab_place(SiftXlog *x, Relation rel, uint64 part_id, BlockNumber head, 
 }
 
 bool
-sift_l0_slab_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftRowBuf *rows, BlockNumber *blk)
+sift_l0_slab_first(SiftXlog *x, Relation rel, SiftMetaNew page, uint64 part_id, const SiftRowBuf *rows, BlockNumber *blk)
 {
 	/* check-memory: allow the rows of one transaction batch, which work_mem bounds */
 	StringInfo *recs = palloc((rows->n + 1) * sizeof(StringInfo));
@@ -555,9 +555,9 @@ sift_l0_slab_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftRowBuf *
 	encode_batches(rows, recs, &nrecs);
 	if (nrecs != 1 || recs[0]->len > SLAB_ROOM)
 		return false;
-	*blk = sift_fsm_alloc_meta_page(rel);
+	*blk = page.blk;
 	pg = sift_xlog_register(x, sift_blk_new(rel, *blk), GENERIC_XLOG_FULL_IMAGE);
-	slab_init(pg, sift_manifest_new_gen(rel, 1), (uint32) part_id, InvalidBlockNumber);
+	slab_init(pg, page.gen, (uint32) part_id, InvalidBlockNumber);
 	slab_seal(pg, sizeof(SiftL0SlabPageData));
 	add_batch(pg, recs[0]->data);
 	return true;
@@ -567,11 +567,12 @@ sift_l0_slab_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftRowBuf *
 static void
 add_page(Relation rel, uint64 part_id, const uint8 *key_lo, SlabChain *c, const char *rec)
 {
-	BlockNumber blk = sift_fsm_alloc_meta_page(rel);
+	SiftMetaNew page = sift_meta_new(rel);
+	BlockNumber blk = page.blk;
 	SiftXlog	x = sift_xlog_start(rel);
 	Page		pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
 
-	slab_init(pg, sift_manifest_new_gen(rel, 1), (uint32) part_id, InvalidBlockNumber);
+	slab_init(pg, page.gen, (uint32) part_id, InvalidBlockNumber);
 	slab_seal(pg, sizeof(SiftL0SlabPageData));
 	add_batch(pg, rec);
 	if (c->tail == InvalidBlockNumber)
@@ -626,17 +627,15 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	int			nrecs;
 	SiftManifestRead mr;
 	SlabChain	c;
+	BlockNumber head;
 	bool		first;
 
 	encode_batches(rows, recs, &nrecs);
 	for (int i = 0; i < nrecs; i++)
 		if (recs[i]->len > SLAB_ROOM)
 			return false;
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	mr = sift_manifest_read_range(rel, key_lo, NULL);
-	if (mr.n == 0 || mr.entries[0].part_id != part_id)
-		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	c = chain_to_append(rel, part_id, key_lo, spec, mr.entries[0].l0_slab_blk, nrecs);
+	head = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr)->l0_slab_blk;
+	c = chain_to_append(rel, part_id, key_lo, spec, head, nrecs);
 	first = c.tail == InvalidBlockNumber;
 	if (c.pages + nrecs > SIFT_L0_SLAB_MAX_PAGES)
 	{
@@ -654,31 +653,37 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 bool
 sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftRowBuf *rows, const SiftPendDelRec *dels, int ndel, const SiftPartSpec *spec)
 {
+	SiftManifestRead mr;
+	SiftPartitionEntry e = *sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
 	BlockNumber lock = SIFT_PART_LOCK_BLKNO(part_id);
-	const SiftPartitionEntry *e;
 	SiftManifestEdit edit = {.part_id = part_id,.key_lo = key_lo};
+	SiftMetaNew slab_page = {InvalidBlockNumber},
+				pend_page = {InvalidBlockNumber};
+	bool		slab_used = false,
+				pend_used = false;
 	SiftXlog	x;
-	BlockNumber head;
 	bool		fused;
 
-	LockPage(rel, lock, ExclusiveLock);
-	e = sift_plan_entry(sift_plan_cache_get(rel, CurrentMemoryContext), part_id);
-	head = e->l0_slab_blk;
-	if (chain_to_append(rel, part_id, key_lo, spec, head, 1).tail == InvalidBlockNumber && head != InvalidBlockNumber)
-		e = sift_plan_entry(sift_plan_cache_get(rel, CurrentMemoryContext), part_id);
+	if (chain_to_append(rel, part_id, key_lo, spec, e.l0_slab_blk, 1).tail == InvalidBlockNumber && e.l0_slab_blk != InvalidBlockNumber)
+		e = sift_manifest_read_range(rel, key_lo, NULL).entries[0];
+	if (e.l0_slab_blk == InvalidBlockNumber)
+		slab_page = sift_meta_new(rel);
+	if (e.pend_del_blk == InvalidBlockNumber)
+		pend_page = sift_meta_new(rel);
 	x = sift_xlog_start(rel);
-	fused = e->pend_del_blk == InvalidBlockNumber || sift_pend_del_place(&x, rel, part_id, e->pend_del_blk, dels, ndel);
-	if (fused && e->l0_slab_blk == InvalidBlockNumber)
+	fused = e.pend_del_blk == InvalidBlockNumber || sift_pend_del_place(&x, rel, part_id, e.pend_del_blk, dels, ndel);
+	if (fused && e.l0_slab_blk == InvalidBlockNumber)
 	{
 		edit.set_l0_slab = true;
-		fused = sift_l0_slab_first(&x, rel, part_id, rows, &edit.new_l0_slab_blk);
+		fused = slab_used = sift_l0_slab_first(&x, rel, slab_page, part_id, rows, &edit.new_l0_slab_blk);
 	}
 	else if (fused)
-		fused = sift_l0_slab_place(&x, rel, part_id, e->l0_slab_blk, rows);
-	if (fused && e->pend_del_blk == InvalidBlockNumber)
+		fused = sift_l0_slab_place(&x, rel, part_id, e.l0_slab_blk, rows);
+	if (fused && e.pend_del_blk == InvalidBlockNumber)
 	{
 		edit.set_pend_del = true;
-		edit.new_pend_del_blk = sift_pend_del_first(&x, rel, part_id, dels, ndel);
+		edit.new_pend_del_blk = sift_pend_del_first(&x, rel, pend_page, part_id, dels, ndel);
+		pend_used = true;
 	}
 	if (fused)
 	{
@@ -692,6 +697,10 @@ sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 		for (int i = 0; i < x.n; i++)
 			UnlockReleaseBuffer(x.buf[i]);
 	}
+	if (slab_page.blk != InvalidBlockNumber && !(fused && slab_used))
+		sift_meta_new_release(rel, slab_page);
+	if (pend_page.blk != InvalidBlockNumber && !(fused && pend_used))
+		sift_meta_new_release(rel, pend_page);
 	UnlockPage(rel, lock, ExclusiveLock);
 	if (fused && edit.set_l0_slab)
 		sift_l0_slab_request_flush(rel, part_id);
@@ -811,11 +820,7 @@ sift_l0_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const Sift
 
 	SIFT_INVARIANT(!RecoveryInProgress(), "sift: a micro-slab is flushed on a primary, a standby reads it in memory (col/f2/f2_slab_view.h)");
 	SIFT_F2_GATE(SIFT_F2_GATE_SLAB_FLUSH);
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	mr = sift_manifest_read_range(rel, key_lo, NULL);
-	if (mr.n == 0 || mr.entries[0].part_id != part_id)
-		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	head = mr.entries[0].l0_slab_blk;
+	head = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr)->l0_slab_blk;
 	if (head == InvalidBlockNumber)
 	{
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);

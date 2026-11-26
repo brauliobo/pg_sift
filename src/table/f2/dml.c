@@ -62,6 +62,8 @@ sift_tbl_f2_tid_next(Relation rel, SiftF2Store *store, ItemPointer tid)
 {
 	SiftTblTidPool *p = &sift_tbl_extra(store)->pool;
 
+	if (sift_tbl_vm_idle_leases > 0)
+		sift_tbl_vm_lease_wake(rel, store);
 	if (p->next_vblock >= p->end_vblock)
 	{
 		/* STOR[STOR-TBL-11]: adaptive vblock TID reserve (1->4->16->64->256->1024 vblocks; tightens SEC_TID_INDEX delta width) */
@@ -82,8 +84,11 @@ void
 sift_tbl_f2_tid_ensure(Relation rel, SiftF2Store *store, uint64 nrows)
 {
 	SiftTblTidPool *p = &sift_tbl_extra(store)->pool;
-	uint64		left = p->end_vblock > p->next_vblock ? (p->end_vblock - p->next_vblock) * SIFT_TBL_ROWS_PER_VBLOCK - (p->next_off - FirstOffsetNumber) : 0;
+	uint64		left;
 
+	if (sift_tbl_vm_idle_leases > 0)
+		sift_tbl_vm_lease_wake(rel, store);
+	left = p->end_vblock > p->next_vblock ? (p->end_vblock - p->next_vblock) * SIFT_TBL_ROWS_PER_VBLOCK - (p->next_off - FirstOffsetNumber) : 0;
 	if (left < nrows)
 	{
 		uint64		needed = sift_batch_vblocks(nrows, 1);

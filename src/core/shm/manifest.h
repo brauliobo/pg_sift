@@ -89,12 +89,14 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmIndexSlot
 /*
  * The virtual blocks a backend may still put rows in (core/f2/vm_xlog.h): a backend that inserts into a sift_table reserves a run of vblocks and keeps one slot for it, [lo, hi) with lo
  * the vblock it fills now. VACUUM marks a vblock all visible only below the least lo of the table, because a row that has not been written yet may still come to it. A slot is
- * taken for the life of the backend (or until its run is used up) and is claimed in two steps: while it is CLAIMING a reader takes it for a lease on every table from vblock 0. A backend that
+ * taken until its run is used up, and is idle (SIFT_TID_LEASE_IDLE) from the end of a transaction of the backend to its next row: an idle slot is taken by any backend that finds none free and by VACUUM of its table, and the backend that comes back finds it gone and
+ * takes a new run, so a pooled backend that sits idle on a connection holds nothing back. A slot is claimed in two steps: while it is CLAIMING a reader takes it for a lease on every table from vblock 0. A backend that
  * inserts with no slot (all are taken) is counted instead, and while there is one VACUUM sets no bit of any table: the vblocks it fills are in no slot to be found.
- * A reader of a slot reads its seq before its owner and again after its locator and lo: a slot that was claimed in between is read as a lease on every table.
+ * A backend that wakes its lease checks the seq it claimed it with and takes it back from idle in one step, so that a lease taken in between is never used. A reader of a slot reads its seq before its owner and again after its locator and lo: a slot that was claimed in between is read as a lease on every table.
  */
 #define SIFT_SHM_TID_LEASES			2048
 #define SIFT_TID_LEASE_CLAIMING		UINT32_MAX
+#define SIFT_TID_LEASE_IDLE			(1U << 30)	/* a flag of the owner: its backend is between transactions and its lease may be taken by another backend, or by VACUUM, which then no longer waits for it */
 
 typedef struct SiftShmTidLease
 {
@@ -169,6 +171,9 @@ extern bool sift_shm_manifest_peek(const RelFileLocator *locator, SiftShmIndexMe
  */
 extern bool sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *snap);
 
+/* An index that is committing version `version` of its manifest, with Block 0 locked and before it changes: the registry serves no snapshot of it and takes no older version of it until the commit publishes, even if the publication fails */
+extern void sift_shm_manifest_hold(const RelFileLocator *locator, uint64 version);
+
 /* The index is no longer what the registry says (DROP, REINDEX, a damaged manifest): readers find nothing, the snapshot is released; quarantine keeps the slot as one that is not to be trusted */
 extern void sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine);
 
@@ -192,13 +197,16 @@ extern bool sift_shm_snap_part_list_install(const SiftShmManifestSnap *snap, uin
 
 extern void sift_shm_manifest_stats(SiftShmManifestStats *stats);
 
-/* The lease slot of this backend for the table, or -1 where the registry cannot be had (the caller decides what that costs); a slot is released with the backend (or at once, sift_shm_tid_lease_release) */
-extern int	sift_shm_tid_lease_acquire(const RelFileLocator *locator);
+/* The lease slot of this backend for the table (a free one, else an idle one of any backend), with the seq it was claimed at, or -1 where the registry has none and cannot be had (the caller decides what that costs) */
+extern int	sift_shm_tid_lease_acquire(const RelFileLocator *locator, uint64 *seq);
 extern void sift_shm_tid_lease_set(int slot, uint64 lo);
-extern void sift_shm_tid_lease_release(int slot);
+/* The transaction of the backend ended: the slot may be taken by others; wake: its next row, false when it was taken meanwhile (the run is no longer protected and is not to be used); release: at once, whatever its state, if it is still this backend's */
+extern void sift_shm_tid_lease_idle(int slot);
+extern bool sift_shm_tid_lease_wake(int slot, uint64 seq);
+extern void sift_shm_tid_lease_release(int slot, uint64 seq);
 /* A backend takes up (delta 1) or lets go of (-1) a run of vblocks with no slot of the registry; the count is taken before the run is, so that VACUUM that sees the run sees the count. False, and nothing counted, where the registry cannot be had: VACUUM sets no bit there */
 extern bool sift_shm_tid_unleased(int delta);
-/* The vblock below which no backend may still put a row (the least lo of the leases of the table, at most next_vblock); false where the registry cannot be had */
+/* The vblock below which no backend may still put a row (the least lo of the leases of the table, at most next_vblock; the idle leases of the table are taken away); false where the registry cannot be had */
 extern bool sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint64 *floor);
 
 #ifdef SIFT_TESTING

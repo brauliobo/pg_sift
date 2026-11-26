@@ -258,6 +258,13 @@ sift_time_meets(int64 tmin, int64 tmax, int64 lo, int64 hi)
 
 extern SiftManifestRead sift_manifest_read_range(Relation rel, const uint8 *lo, const uint8 *hi);
 
+/*
+ * Takes the change lock of the partition (part_id, key_lo) and returns its entry, read under the lock, with *mr the read it is in. A split or a merge that ran since the caller read the manifest may have
+ * moved the partition (a merge drops one of two and may move the lower bound of the other): the lock is then let go and taken for the partition that holds key_lo now, and *part_id and *key_lo name it.
+ * The caller unlocks SIFT_PART_LOCK_BLKNO(*part_id).
+ */
+extern const SiftPartitionEntry *sift_manifest_lock_part(Relation rel, uint64 *part_id, const uint8 **key_lo, SiftManifestRead *mr);
+
 /* Whether two reads hold the same partitions over the same key ranges: only a split or a merge changes that, a flush, a fold or a compaction never does, so rows routed by one are routed by the other */
 extern bool sift_manifest_same_topology(const SiftManifestRead *a, const SiftManifestRead *b);
 

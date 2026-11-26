@@ -117,16 +117,37 @@ sift_l0_href_first(const SiftL0PageIO *io, const SiftL0HeapRef *refs, uint32 n)
 	return blk;
 }
 
+/* The references the tail page takes: read under a share lock that is let go before any page is taken, as the lock of the tail is not held while the allocator is asked for pages */
+static uint32
+tail_room(const SiftL0PageIO *io, BlockNumber tail)
+{
+	uint32		room = sift_l0_href_room(io->read_lock(io->ctx, tail));
+
+	io->read_unlock(io->ctx, tail);
+	return room;
+}
+
+/* The pages the references past the room of the tail make one record take, at most the pages a record may hold behind the tail */
+static int
+record_new_pages(uint32 room, uint32 n)
+{
+	return n <= room ? 0 : (int) Min((n - room + SIFT_L0_HEAPREF_CAP - 1) / SIFT_L0_HEAPREF_CAP, (uint32) SIFT_L0_REC_PAGES - 1);
+}
+
 BlockNumber
 sift_l0_href_chain_append(const SiftL0PageIO *io, BlockNumber tail, const SiftL0HeapRef *refs, uint32 n)
 {
 	while (n > 0)
 	{
 		BlockNumber last_blk = tail;
+		BlockNumber fresh[SIFT_L0_REC_PAGES];
 		char	   *last;
 		uint32		take;
-		int			pages = 1;
+		int			nfresh = record_new_pages(tail_room(io, tail), n),
+					used = 0;
 
+		for (int i = 0; i < nfresh; i++)
+			fresh[i] = io->alloc(io->ctx);
 		io->record_begin(io->ctx);
 		last = io->record_page(io->ctx, tail, false);
 		take = Min(n, sift_l0_href_room(last));
@@ -134,9 +155,9 @@ sift_l0_href_chain_append(const SiftL0PageIO *io, BlockNumber tail, const SiftL0
 			sift_l0_href_add(last, refs, take);
 		refs += take;
 		n -= take;
-		while (n > 0 && pages < SIFT_L0_REC_PAGES)
+		while (n > 0 && used < nfresh)
 		{
-			BlockNumber nb = io->alloc(io->ctx);
+			BlockNumber nb = fresh[used++];
 			char	   *np = io->record_page(io->ctx, nb, true);
 
 			sift_l0_href_seal(last);
@@ -147,7 +168,6 @@ sift_l0_href_chain_append(const SiftL0PageIO *io, BlockNumber tail, const SiftL0
 			n -= take;
 			last = np;
 			last_blk = nb;
-			pages++;
 		}
 		io->record_done(io->ctx);
 		tail = last_blk;
@@ -239,10 +259,31 @@ sift_l0_href_submit(SiftL0GroupCommit *gc, const SiftL0ShardCtx *ctx, const RelF
 
 /* ---- SiftL0PageIO over buffers ---- */
 
+/* The page and the generation it is formatted with are taken together, before the record locks any buffer */
 static BlockNumber
 href_alloc(void *ctx)
 {
-	return sift_fsm_alloc_meta_page(((SiftHrefIo *) ctx)->rel);
+	SiftHrefIo *h = ctx;
+	SiftMetaNew fresh = sift_meta_new(h->rel);
+
+	Assert(h->nfresh < lengthof(h->fresh));
+	h->fresh[h->nfresh++] = fresh;
+	return fresh.blk;
+}
+
+static uint64
+href_gen_of(SiftHrefIo *h, BlockNumber blk)
+{
+	for (int i = 0; i < h->nfresh; i++)
+		if (h->fresh[i].blk == blk)
+		{
+			uint64		gen = h->fresh[i].gen;
+
+			h->fresh[i] = h->fresh[--h->nfresh];
+			return gen;
+		}
+	SIFT_INVARIANT(false, "a page of the references was formatted that its writer did not take");
+	pg_unreachable();
 }
 
 static void
@@ -274,7 +315,7 @@ href_page(void *ctx, BlockNumber blk, bool full)
 	{
 		Page		pg = sift_xlog_register(&h->x, sift_blk_new(h->rel, blk), GENERIC_XLOG_FULL_IMAGE);
 
-		sift_page_init_part(pg, SIFT_PT_L0_SLAB, sift_manifest_new_gen(h->rel, 1), h->part_id);
+		sift_page_init_part(pg, SIFT_PT_L0_SLAB, href_gen_of(h, blk), h->part_id);
 		return pg;
 	}
 	buf = sift_blk_read(h->rel, blk, BUFFER_LOCK_EXCLUSIVE);
@@ -326,15 +367,6 @@ sift_href_io_init(SiftHrefIo *h, Relation rel, uint32 part_id)
 
 /* ---- the writers of one partition, under its lock: no group commit, no shared memory (a backend that is alone writes here) ---- */
 
-static const SiftPartitionEntry *
-entry_of(Relation rel, uint64 part_id, const uint8 *key_lo, SiftManifestRead *mr)
-{
-	*mr = sift_manifest_read_range(rel, key_lo, NULL);
-	if (mr->n == 0 || mr->entries[0].part_id != part_id)
-		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	return &mr->entries[0];
-}
-
 /* The chain at tail takes n more references: it is a chain of references, not sealed, and the rows and pages stay within what a flush is asked at */
 static bool
 chain_takes(Relation rel, uint64 part_id, BlockNumber tail, uint32 n)
@@ -377,9 +409,8 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 				tail;
 	bool		first;
 
+	head = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr)->l0_slab_blk;
 	sift_href_io_init(&h, rel, (uint32) part_id);
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	head = entry_of(rel, part_id, key_lo, &mr)->l0_slab_blk;
 	first = head == InvalidBlockNumber;
 	if (head != InvalidBlockNumber && !chain_takes(rel, part_id, head, n))
 	{
@@ -412,39 +443,44 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 bool
 sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0HeapRef *refs, uint32 n, const SiftPendDelRec *dels, int ndel)
 {
-	BlockNumber lock = SIFT_PART_LOCK_BLKNO(part_id);
 	SiftManifestRead mr;
-	const SiftPartitionEntry *e;
+	SiftPartitionEntry e = *sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
+	BlockNumber lock = SIFT_PART_LOCK_BLKNO(part_id);
 	SiftManifestEdit edit = {.part_id = part_id,.key_lo = key_lo};
+	SiftMetaNew slab_page = {InvalidBlockNumber},
+				pend_page = {InvalidBlockNumber};
+	bool		slab_used = false;
 	SiftXlog	x;
 	bool		fused;
 	Buffer		buf = InvalidBuffer;
 
-	LockPage(rel, lock, ExclusiveLock);
-	e = entry_of(rel, part_id, key_lo, &mr);
+	if (e.l0_slab_blk == InvalidBlockNumber && n <= SIFT_L0_HEAPREF_CAP)
+		slab_page = sift_meta_new(rel);
+	if (e.pend_del_blk == InvalidBlockNumber)
+		pend_page = sift_meta_new(rel);
 	x = sift_xlog_start(rel);
-	fused = e->pend_del_blk == InvalidBlockNumber || sift_pend_del_place(&x, rel, part_id, e->pend_del_blk, dels, ndel);
-	if (fused && e->l0_slab_blk == InvalidBlockNumber)
+	fused = e.pend_del_blk == InvalidBlockNumber || sift_pend_del_place(&x, rel, part_id, e.pend_del_blk, dels, ndel);
+	if (fused && e.l0_slab_blk == InvalidBlockNumber)
 	{
 		edit.set_l0_slab = true;
 		fused = n <= SIFT_L0_HEAPREF_CAP;
 		if (fused)
 		{
-			BlockNumber blk = sift_fsm_alloc_meta_page(rel);
-			Page		pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
+			Page		pg = sift_xlog_register(&x, sift_blk_new(rel, slab_page.blk), GENERIC_XLOG_FULL_IMAGE);
 
-			sift_page_init_part(pg, SIFT_PT_L0_SLAB, sift_manifest_new_gen(rel, 1), (uint32) part_id);
+			sift_page_init_part(pg, SIFT_PT_L0_SLAB, slab_page.gen, (uint32) part_id);
 			sift_l0_href_format(pg, InvalidBlockNumber, 1, 0);
 			sift_l0_href_add(pg, refs, n);
-			edit.new_l0_slab_blk = blk;
+			edit.new_l0_slab_blk = slab_page.blk;
+			slab_used = true;
 		}
 	}
 	else if (fused)
 	{
-		fused = chain_takes(rel, part_id, e->l0_slab_blk, n);
+		fused = chain_takes(rel, part_id, e.l0_slab_blk, n);
 		if (fused)
 		{
-			buf = sift_blk_read(rel, e->l0_slab_blk, BUFFER_LOCK_EXCLUSIVE);
+			buf = sift_blk_read(rel, e.l0_slab_blk, BUFFER_LOCK_EXCLUSIVE);
 			fused = sift_l0_href_room(BufferGetPage(buf)) >= n;
 			if (fused)
 				sift_l0_href_add(sift_xlog_register(&x, buf, 0), refs, n);
@@ -452,10 +488,10 @@ sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 				UnlockReleaseBuffer(buf);
 		}
 	}
-	if (fused && e->pend_del_blk == InvalidBlockNumber)
+	if (fused && e.pend_del_blk == InvalidBlockNumber)
 	{
 		edit.set_pend_del = true;
-		edit.new_pend_del_blk = sift_pend_del_first(&x, rel, part_id, dels, ndel);
+		edit.new_pend_del_blk = sift_pend_del_first(&x, rel, pend_page, part_id, dels, ndel);
 	}
 	if (fused)
 	{
@@ -469,6 +505,10 @@ sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 		for (int i = 0; i < x.n; i++)
 			UnlockReleaseBuffer(x.buf[i]);
 	}
+	if (slab_page.blk != InvalidBlockNumber && !(fused && slab_used))
+		sift_meta_new_release(rel, slab_page);
+	if (pend_page.blk != InvalidBlockNumber && !(fused && edit.set_pend_del))
+		sift_meta_new_release(rel, pend_page);
 	UnlockPage(rel, lock, ExclusiveLock);
 	if (fused && edit.set_l0_slab)
 		sift_l0_slab_request_flush(rel, part_id);

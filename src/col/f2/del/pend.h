@@ -79,8 +79,21 @@ sift_pd_set_chain_pages(uint16 flags, uint16 pages)
 extern int	sift_pend_del_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec *recs, int n);
 
 /* The records as the last of the tail page of the chain at head, registered in x with its buffer locked; false, with nothing registered, when they do not fit it or the chain has the pages that fold it */
-/* A first page of pending deletes holding recs (at most SIFT_PEND_DEL_CAP), registered in x: its block, for the manifest entry of the partition */
-extern BlockNumber sift_pend_del_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n);
+/*
+ * A page of the metadata area and the generation it is formatted with, taken before the buffer of a slab or of pending deletes is locked: taking one locks the allocator and Block 0, which the
+ * lock order puts before those buffers. A page taken and not written goes back with sift_meta_new_release.
+ */
+typedef struct SiftMetaNew
+{
+	BlockNumber blk;
+	uint64		gen;
+} SiftMetaNew;
+
+extern SiftMetaNew sift_meta_new(Relation rel);
+extern void sift_meta_new_release(Relation rel, SiftMetaNew page);
+
+/* A first page of pending deletes holding recs (at most SIFT_PEND_DEL_CAP), written to the page, registered in x: its block, for the manifest entry of the partition */
+extern BlockNumber sift_pend_del_first(SiftXlog *x, Relation rel, SiftMetaNew page, uint64 part_id, const SiftPendDelRec *recs, int n);
 extern bool sift_pend_del_place(SiftXlog *x, Relation rel, uint64 part_id, BlockNumber head, const SiftPendDelRec *recs, int n);
 
 /*

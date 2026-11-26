@@ -479,7 +479,7 @@ tid_index_visit(const TidIndex *ix, uint64 lo, uint64 hi, TidSlotVisit visit, vo
 
 /* ---- the manifest ---- */
 
-/* The slabs of the partitions written out as parts; a standby and a parallel worker write nothing, so their view lists them as parts made in memory */
+/* The slabs of the partitions written out as parts, for the visit of the addresses of a statement that changes rows (a standby and a parallel worker write nothing, so their view lists them as parts made in memory) */
 static const SiftPlanSnapshot *
 slabs_flushed(Relation rel, SiftF2Store *store, const SiftPlanSnapshot *snap, MemoryContext mcxt)
 {
@@ -506,12 +506,23 @@ view_slabs_flushed(Relation rel, SiftF2Store *store, MemoryContext mcxt)
 	return snap;
 }
 
+/* The view of a scan: the slabs of the partitions are read where they are, as parts made in memory (col/f2/slab_view.h), so that a reader writes nothing and takes no lock of a partition */
+static const SiftPlanSnapshot *
+view_with_slabs(Relation rel, SiftF2Store *store, MemoryContext mcxt)
+{
+	MemoryContext caller = MemoryContextSwitchTo(mcxt);
+	const SiftPlanSnapshot *snap = sift_f2_slab_view(rel, store, sift_plan_cache_get(rel, mcxt), mcxt);
+
+	MemoryContextSwitchTo(caller);
+	return snap;
+}
+
 const SiftPlanSnapshot *
 sift_f2_view(Relation rel, SiftF2Store *store, MemoryContext mcxt)
 {
 	if (sift_stage_has_pending(rel))
 		sift_stage_flush(rel);
-	return view_slabs_flushed(rel, store, mcxt);
+	return view_with_slabs(rel, store, mcxt);
 }
 
 typedef struct VisitPart

@@ -2,7 +2,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The vblock leases of a backend (table/f2/vm/lease.c) with the registry full: the lease that a backend gives back to take another is a lease of its own, so it takes no lock of the table it
 # belonged to (a lock held to the end of the transaction, or waited for with a concurrent TRUNCATE holding the table), and a writer that has no lease at all holds back every bit of the visibility
-# map of every table until it ends (VACUUM sets a bit below the least vblock of the leases, and an insert with no lease has none to put there).
+# map of every table until it ends (VACUUM sets a bit below the least vblock of the leases, and an insert with no lease has none to put there); a backend that is between transactions holds none (lease.c).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 out=
@@ -38,11 +38,11 @@ out=$(tail -n 1 "$D/evict.out")
 check "a lease given back does not wait for a lock another session holds on its table" test "$out" == inserted
 
 rm -f "$D/ready" "$D/release"
-{ echo "SELECT p98_fill(5000) > 0;"; echo "INSERT INTO le3 SELECT g FROM generate_series(1, 10) g;"; echo "\\! touch '$D/ready'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql vl >/dev/null &
+{ echo "SELECT p98_fill(5000) > 0;"; echo "BEGIN;"; echo "INSERT INTO le3 SELECT g FROM generate_series(1, 10) g;"; echo "\\! touch '$D/ready'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql vl >/dev/null &
 writer=$!
 wait_for "[[ -e $D/ready ]]" 60 || bail "the writer did not insert"
 out=$(sql vl "SELECT p98_floor('le3', 1000)")
-check "a writer with no lease slot holds back every bit of the map while it runs" test "$out" == 0
+check "a writer with no lease slot holds back every bit of the map while its transaction runs" test "$out" == 0
 touch "$D/release"
 wait "$writer"
 out=$(sql vl "SELECT p98_floor('le3', 1000)")

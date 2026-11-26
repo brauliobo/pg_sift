@@ -73,7 +73,7 @@ extern bool sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_l
 extern bool sift_l0_slab_place(SiftXlog *x, Relation rel, uint64 part_id, BlockNumber head, const SiftRowBuf *rows);
 
 /* A first page of the slab holding the rows of the buffer as one batch, registered in x: its block, for the manifest entry of the partition; false, with nothing registered, when they are not one batch or not one page */
-extern bool sift_l0_slab_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftRowBuf *rows, BlockNumber *blk);
+extern bool sift_l0_slab_first(SiftXlog *x, Relation rel, SiftMetaNew page, uint64 part_id, const SiftRowBuf *rows, BlockNumber *blk);
 
 /*
  * The rows of an UPDATE that stay in a partition and the deletes of the rows they replace, under one partition lock and in one record: the tail of the slab and the tail of the pending deletes take them.

@@ -599,6 +599,8 @@ publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
 	}
 	if (nrel > 0 && !FullTransactionIdIsValid(safexid) && !sift_manifest_unshared(rel))
 		safexid = ReadNextFullTransactionId();
+	if (!sift_manifest_unshared(rel))
+		sift_shm_manifest_hold(&rel->rd_locator, new_version);
 	first_batch = Min(nrel, (int) SIFT_FSM_PAGE_CAP);
 	sift_fsm_reserve_release(rel, buf0, first_batch);
 	x = sift_xlog_start(rel);
@@ -656,13 +658,32 @@ free_created(Relation rel, BlkVec *created)
 	sift_fsm_release(rel, e, created->n, InvalidFullTransactionId);
 }
 
+/* The pages that lock the partitions (one or two), in the order of their blocks and once each: backends that lock two partitions at once (a split, a merge) take them in one order, whatever the ids of the partitions */
+static int
+part_lock_blocks(const uint64 *lock_ids, int nlocks, BlockNumber *blks)
+{
+	for (int i = 0; i < nlocks; i++)
+		blks[i] = SIFT_PART_LOCK_BLKNO(lock_ids[i]);
+	if (nlocks == 2 && blks[0] > blks[1])
+	{
+		BlockNumber lower = blks[1];
+
+		blks[1] = blks[0];
+		blks[0] = lower;
+	}
+	return nlocks == 2 && blks[0] == blks[1] ? 1 : nlocks;
+}
+
 static uint64
 run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg, const uint8 *path_key)
 {
+	BlockNumber blks[2];
 	uint64		version;
 
+	Assert(nlocks <= lengthof(blks));
+	nlocks = part_lock_blocks(lock_ids, nlocks, blks);
 	for (int i = 0; i < nlocks; i++)
-		LockPage(rel, SIFT_PART_LOCK_BLKNO(lock_ids[i]), ExclusiveLock);
+		LockPage(rel, blks[i], ExclusiveLock);
 	for (;;)
 	{
 		SiftColMetaPageData meta = sift_col_meta_read(rel);
@@ -676,8 +697,25 @@ run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void
 		free_created(rel, &created);
 	}
 	for (int i = nlocks - 1; i >= 0; i--)
-		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(lock_ids[i]), ExclusiveLock);
+		UnlockPage(rel, blks[i], ExclusiveLock);
 	return version;
+}
+
+const SiftPartitionEntry *
+sift_manifest_lock_part(Relation rel, uint64 *part_id, const uint8 **key_lo, SiftManifestRead *mr)
+{
+	for (;;)
+	{
+		LockPage(rel, SIFT_PART_LOCK_BLKNO(*part_id), ExclusiveLock);
+		*mr = sift_manifest_read_range(rel, *key_lo, NULL);
+		if (mr->n == 0)
+			ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) *part_id)));
+		if (mr->entries[0].part_id == *part_id && bound_cmp(mr->entries[0].key_lo, *key_lo) == 0)
+			return &mr->entries[0];
+		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(*part_id), ExclusiveLock);
+		*part_id = mr->entries[0].part_id;
+		*key_lo = mr->entries[0].key_lo;
+	}
 }
 
 /* The list of a partition is written for the parts the edit changes; a commit that only moves a buffer of the entry (its slab of rows, its chain of pending deletes) keeps the list, which no commit rewrites in place */

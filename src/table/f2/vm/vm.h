@@ -28,6 +28,14 @@ extern void sift_tbl_vm_lease_set(Relation rel, uint64 lo, uint64 hi);
 extern void sift_tbl_vm_lease_roll(Relation rel, uint64 open_vblock);
 extern void sift_tbl_vm_lease_release(Relation rel);
 
+/*
+ * The leases of a backend are idle between its transactions (the registry may take them away). The first row of a transaction into a table calls wake, which takes the lease back, or, where it was taken
+ * away, drops the run of the pool of the table: the rows of a transaction never go to a run that no lease protects. A call costs a count while no lease of the backend is idle.
+ */
+struct SiftF2Store;
+extern int	sift_tbl_vm_idle_leases;
+extern void sift_tbl_vm_lease_wake(Relation rel, struct SiftF2Store *store);
+
 /* The 32 bits of the transaction of fx that a record of the map names as the newest one its bits hide from no snapshot; InvalidTransactionId where no snapshot can still need it to be waited for */
 extern TransactionId sift_vm_horizon_xid(FullTransactionId fx, FullTransactionId next);
 

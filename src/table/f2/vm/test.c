@@ -67,13 +67,17 @@ sift_test_vm_redo_set(PG_FUNCTION_ARGS)
 }
 
 static int	filled[SIFT_SHM_TID_LEASES];
+static uint64 filled_seq[SIFT_SHM_TID_LEASES];
 static int	nfilled;
 
 static void
 lease_unfill(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
 {
 	while (nfilled > 0)
-		sift_shm_tid_lease_release(filled[--nfilled]);
+	{
+		nfilled--;
+		sift_shm_tid_lease_release(filled[nfilled], filled_seq[nfilled]);
+	}
 }
 
 /* sift._test_vm_lease_fill(n int): takes up to n slots of the registry of the leases for tables that are none, until this backend exits; the slots it got */
@@ -89,7 +93,7 @@ sift_test_vm_lease_fill(PG_FUNCTION_ARGS)
 		before_shmem_exit(lease_unfill, 0);
 		registered = true;
 	}
-	while (nfilled < n && (slot = sift_shm_tid_lease_acquire(&(RelFileLocator) {.spcOid = 1,.dbOid = 2,.relNumber = 4000000 + nfilled})) >= 0)
+	while (nfilled < n && (slot = sift_shm_tid_lease_acquire(&(RelFileLocator) {.spcOid = 1,.dbOid = 2,.relNumber = 4000000 + nfilled}, &filled_seq[nfilled])) >= 0)
 		filled[nfilled++] = slot;
 	PG_RETURN_INT32(nfilled);
 }

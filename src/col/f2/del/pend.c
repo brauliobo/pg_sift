@@ -292,33 +292,49 @@ sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNumber head)
 	return st;
 }
 
-/* A page that is the newest of a chain of chain_pages (SIFT_PEND_DEL_REV, and flags), linked to the one it follows (prev), holding recs */
-static BlockNumber
-pd_new_page(SiftXlog *x, Relation rel, uint32 part_id, BlockNumber prev, int chain_pages, uint16 flags, const SiftPendDelRec *recs, int n)
+SiftMetaNew
+sift_meta_new(Relation rel)
 {
 	BlockNumber blk = sift_fsm_alloc_meta_page(rel);
-	Page		pg = sift_xlog_register(x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
 
-	pd_init(pg, sift_manifest_new_gen(rel, 1), part_id, prev);
+	return (SiftMetaNew) {blk, sift_manifest_new_gen(rel, 1)};
+}
+
+void
+sift_meta_new_release(Relation rel, SiftMetaNew page)
+{
+	SiftExtent	ext = {page.blk, 1};
+
+	sift_fsm_release(rel, &ext, 1, InvalidFullTransactionId);
+}
+
+/* A page that is the newest of a chain of chain_pages (SIFT_PEND_DEL_REV, and flags), linked to the one it follows (prev), holding recs */
+static BlockNumber
+pd_new_page(SiftXlog *x, SiftMetaNew page, uint32 part_id, BlockNumber prev, int chain_pages, uint16 flags, const SiftPendDelRec *recs, int n)
+{
+	Page		pg = sift_xlog_register(x, sift_blk_new(x->index, page.blk), GENERIC_XLOG_FULL_IMAGE);
+
+	pd_init(pg, page.gen, part_id, prev);
 	PD(pg)->flags = SIFT_PEND_DEL_REV | flags | sift_pd_set_chain_pages(0, chain_pages);
 	memcpy(PD(pg)->recs, recs, n * sizeof(SiftPendDelRec));
 	PD(pg)->nrecs = n;
 	pd_widen(pg, recs, n);
 	pd_seal(pg);
-	return blk;
+	return page.blk;
 }
 
 BlockNumber
-sift_pend_del_first(SiftXlog *x, Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n)
+sift_pend_del_first(SiftXlog *x, Relation rel, SiftMetaNew page, uint64 part_id, const SiftPendDelRec *recs, int n)
 {
-	return pd_new_page(x, rel, (uint32) part_id, InvalidBlockNumber, 1, 0, recs, n);
+	return pd_new_page(x, page, (uint32) part_id, InvalidBlockNumber, 1, 0, recs, n);
 }
 
 static BlockNumber
 write_next_page(Relation rel, uint32 part_id, BlockNumber prev, int chain_pages, uint16 flags, const SiftPendDelRec *recs, int n)
 {
+	SiftMetaNew page = sift_meta_new(rel);
 	SiftXlog	x = sift_xlog_start(rel);
-	BlockNumber blk = pd_new_page(&x, rel, part_id, prev, chain_pages, flags, recs, n);
+	BlockNumber blk = pd_new_page(&x, page, part_id, prev, chain_pages, flags, recs, n);
 
 	sift_xlog_done(&x);
 	return blk;
@@ -328,17 +344,17 @@ write_next_page(Relation rel, uint32 part_id, BlockNumber prev, int chain_pages,
 static BlockNumber
 write_forward_page(Relation rel, uint32 part_id, const SiftPendDelRec *recs, int n)
 {
+	SiftMetaNew page = sift_meta_new(rel);
 	SiftXlog	x = sift_xlog_start(rel);
-	BlockNumber blk = sift_fsm_alloc_meta_page(rel);
-	Page		pg = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
+	Page		pg = sift_xlog_register(&x, sift_blk_new(rel, page.blk), GENERIC_XLOG_FULL_IMAGE);
 
-	pd_init(pg, sift_manifest_new_gen(rel, 1), part_id, InvalidBlockNumber);
+	pd_init(pg, page.gen, part_id, InvalidBlockNumber);
 	memcpy(PD(pg)->recs, recs, n * sizeof(SiftPendDelRec));
 	PD(pg)->nrecs = n;
 	pd_widen(pg, recs, n);
 	pd_seal(pg);
 	sift_xlog_done(&x);
-	return blk;
+	return page.blk;
 }
 
 static BlockNumber
@@ -549,11 +565,7 @@ sift_pend_del_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Si
 	BlockNumber head;
 	int			pages = 0;
 
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	mr = sift_manifest_read_range(rel, key_lo, NULL);
-	if (mr.n == 0 || mr.entries[0].part_id != part_id)
-		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	head = mr.entries[0].pend_del_blk;
+	head = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr)->pend_del_blk;
 	while (n > 0)
 	{
 		int			take;

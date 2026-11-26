@@ -837,6 +837,8 @@ core/shm/combiner.c
 core/shm/combiner.h
 core/shm/manifest.c
 core/shm/manifest.h
+core/shm/manifest_int.h
+core/shm/manifest_pub.c
 core/shm/manifest_test.c
 core/shm/port.h
 core/shm/budget.c

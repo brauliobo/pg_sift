@@ -69,6 +69,8 @@ typedef struct SiftHrefIo
 	uint32		part_id;
 	SiftXlog	x;
 	Buffer		rd;
+	SiftMetaNew fresh[SIFT_L0_REC_PAGES];	/* the pages taken and not formatted yet */
+	int			nfresh;
 	SiftL0PageIO io;
 } SiftHrefIo;
 
