@@ -194,7 +194,15 @@ sift_mf_older_active(FullTransactionId a, FullTransactionId xid)
 	return FullTransactionIdIsNormal(xid) && (!FullTransactionIdIsValid(a) || FullTransactionIdPrecedes(xid, a)) ? xid : a;
 }
 
+typedef void (*BuildFn) (Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg);
+
 extern void sift_mf_blk_add(BlkVec *b, BlockNumber blk);
+
+/* Builds the change under the locks of the partitions lock_ids (none: the caller holds them) and publishes it, again from a fresh read of the directory when another commit came first */
+extern uint64 sift_mf_run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg, const uint8 *path_key, bool combine);
+
+/* The edit applied to its entry among the leaves the change read */
+extern void sift_mf_apply_edit(Relation rel, Tree *t, Change *ch, BlkVec *created, const SiftManifestEdit *e);
 extern int	sift_mf_drop_parts(Relation rel, SiftPartDesc *parts, int n, const SiftManifestEdit *e, uint64 **expire, int *nexpire);
 extern void sift_mf_apply_updates(Relation rel, const SiftPartitionEntry *ent, SiftPartDesc *parts, const SiftGenMap *map, const SiftManifestEdit *e);
 extern void sift_mf_collect_range(Relation rel, BlockNumber blk, int level, const uint8 *lo, const uint8 *hi, SiftManifestRead *out, int *cap);

@@ -509,7 +509,6 @@ write_path(Relation rel, Tree *t, const SiftPartDirKey *leaf, int at, uint64 ver
 	sift_mf_blk_add(dead, t->top.blk);
 }
 
-typedef void (*BuildFn) (Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg);
 
 void
 sift_mf_read_leaves(Relation rel, Tree *t, int first, int span, Change *ch, int slack)
@@ -682,8 +681,8 @@ part_lock_blocks(const uint64 *lock_ids, int nlocks, BlockNumber *blks)
 	return nlocks == 2 && blks[0] == blks[1] ? 1 : nlocks;
 }
 
-static uint64
-run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg, const uint8 *path_key, bool combine)
+uint64
+sift_mf_run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg, const uint8 *path_key, bool combine)
 {
 	BlockNumber blks[2];
 	uint64		version;
@@ -792,15 +791,13 @@ write_edited_parts(Relation rel, Change *ch, BlkVec *created, SiftPartitionEntry
 	ent->manifest_blk = write_partlist(rel, ent->part_id, ent->manifest_gen, ep->parts, ep->n, created, &ep->anchor);
 }
 
-static void
-build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
+void
+sift_mf_apply_edit(Relation rel, Tree *t, Change *ch, BlkVec *created, const SiftManifestEdit *e)
 {
-	const SiftManifestEdit *e = arg;
 	SiftPartitionEntry before, *ent;
 	EditedParts ep = {0};
 	bool		relist = edits_parts(e);
 
-	sift_mf_read_leaves(rel, t, sift_mf_find_leaf(t, e->key_lo), 1, ch, 2);
 	ent = &ch->ents[sift_mf_find_entry_idx(ch, e->part_id, e->key_lo)];
 	before = *ent;
 	if (relist)
@@ -818,6 +815,15 @@ build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 		ent->pend_del_blk = e->new_pend_del_blk;
 	sift_mf_refresh_hot_active(ent);
 	sift_mf_account(ch, &before, ent);
+}
+
+static void
+build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
+{
+	const SiftManifestEdit *e = arg;
+
+	sift_mf_read_leaves(rel, t, sift_mf_find_leaf(t, e->key_lo), 1, ch, 2);
+	sift_mf_apply_edit(rel, t, ch, created, e);
 	ch->release = e->release;
 	ch->nrelease = e->nrelease;
 }
@@ -826,7 +832,7 @@ uint64
 sift_manifest_commit(Relation rel, const SiftManifestEdit *edit)
 {
 	SIFT_F2_GATE(SIFT_F2_GATE_MANIFEST);
-	return run_change(rel, &edit->part_id, 1, build_commit, (void *) edit, edit->key_lo, true);
+	return sift_mf_run_change(rel, &edit->part_id, 1, build_commit, (void *) edit, edit->key_lo, true);
 }
 
 typedef struct SplitArg
@@ -879,7 +885,7 @@ sift_manifest_split(Relation rel, uint64 part_id, const uint8 *key_lo, const uin
 	SplitArg	a = {.part_id = part_id,.key_lo = key_lo,.split_key = split_key,.new_id = sift_manifest_new_part_id(rel)};
 	uint64		ids[2] = {part_id, a.new_id};
 
-	run_change(rel, ids, 2, build_split, &a, NULL, false);
+	sift_mf_run_change(rel, ids, 2, build_split, &a, NULL, false);
 	return a.new_id;
 }
 
@@ -959,5 +965,5 @@ sift_manifest_merge(Relation rel, uint64 keep_id, const uint8 *keep_lo, uint64 d
 	MergeArg	a = {keep_id, keep_lo, drop_id, drop_lo};
 	uint64		ids[2] = {Min(keep_id, drop_id), Max(keep_id, drop_id)};
 
-	run_change(rel, ids, 2, build_merge, &a, NULL, false);
+	sift_mf_run_change(rel, ids, 2, build_merge, &a, NULL, false);
 }

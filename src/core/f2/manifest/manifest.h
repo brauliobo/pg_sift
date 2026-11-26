@@ -289,6 +289,9 @@ extern SiftTierPartRef *sift_manifest_read_tier(Relation rel, const struct SiftC
 /* Applies the edit to its partition atomically; returns the version of the manifest it made */
 extern uint64 sift_manifest_commit(Relation rel, const SiftManifestEdit *edit);
 
+/* Applies the edits of several partitions, whose locks the caller holds, atomically in one commit; returns the version of the manifest it made */
+extern uint64 sift_manifest_commit_many(Relation rel, const SiftManifestEdit *edits, int n);
+
 /*
  * The partitions whose pages lie at or above block lo, so that an edit that changes nothing (a commit writes the pages of the part list of its partition and of the path from its leaf to the root
  * anew, in the lowest free pages of the slabs) brings them below it: the partitions whose part list is there, and for each page of the directory there the first partition under it

@@ -11,6 +11,7 @@
 
 #include "col/f2/compact/compact.h"
 #include "col/f2/part/format.h"
+#include "core/cmp.h"
 #include "core/f2/fsm/fsm.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -236,33 +237,89 @@ swap_prepare(Relation rel, const PackCand *c, const int *slots, int n, const Sif
 	return nupd;
 }
 
-/* The slots of a batch that name parts of one partition leave their pages in one commit of the manifest: the parts swapped */
-static int
-swap_to_slots(Relation rel, const PackCand *c, const int *slots, int n, BlockNumber blk, PackJudge *judge)
+/* The slots of a batch that name parts of one partition */
+typedef struct PackGroup
 {
-	const PackCand *first = &c[slots[0]];
-	SiftManifestRead mr;
-	SiftPartDesc *parts,
-				upd[SIFT_PACKED_MAX_SLOTS],
+	uint64		part_id;
+	int			slots[SIFT_PACKED_MAX_SLOTS];
+	int			n;
+	bool		locked;
+} PackGroup;
+
+static int
+by_part_lock(const void *a, const void *b)
+{
+	return SIFT_CMP3(SIFT_PART_LOCK_BLKNO(((const PackGroup *) a)->part_id), SIFT_PART_LOCK_BLKNO(((const PackGroup *) b)->part_id));
+}
+
+/* The slots grouped by partition, in the order of the pages that lock the partitions: a backend that locks several takes them in one order */
+static int
+group_slots(const PackCand *c, int n, PackGroup *groups)
+{
+	bool		grouped[SIFT_PACKED_MAX_SLOTS] = {false};
+	int			ng = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		if (grouped[i])
+			continue;
+		groups[ng] = (PackGroup) {.part_id = c[i].part_id};
+		for (int j = i; j < n; j++)
+			if (!grouped[j] && c[j].part_id == c[i].part_id)
+			{
+				grouped[j] = true;
+				groups[ng].slots[groups[ng].n++] = j;
+			}
+		ng++;
+	}
+	qsort(groups, ng, sizeof(PackGroup), by_part_lock);
+	return ng;
+}
+
+/* The slots of a batch leave their pages in one commit of the manifest for all their partitions (those whose compaction is not running): the parts swapped */
+static int
+swap_to_slots(Relation rel, const PackCand *c, int n, BlockNumber blk, PackJudge *judge)
+{
+	PackGroup	groups[SIFT_PACKED_MAX_SLOTS];
+	SiftManifestEdit edits[SIFT_PACKED_MAX_SLOTS];
+	SiftPartDesc upd[SIFT_PACKED_MAX_SLOTS],
 				expect[SIFT_PACKED_MAX_SLOTS];
 	SiftExtent	rel_ext[SIFT_PACKED_MAX_SLOTS];
-	int			np,
-				nrel = 0,
-				nupd = 0;
+	int			ng = group_slots(c, n, groups),
+				nedits = 0,
+				nupd = 0,
+				nrel = 0;
 
-	if (!ConditionalLockPage(rel, SIFT_COMPACT_LOCK_BLKNO(first->part_id), ExclusiveLock))
-		return 0;
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(first->part_id), ExclusiveLock);
-	mr = sift_manifest_read_range(rel, first->key_lo, NULL);
-	if (mr.n > 0 && mr.entries[0].part_id == first->part_id)
+	for (int g = 0; g < ng; g++)
+		groups[g].locked = ConditionalLockPage(rel, SIFT_COMPACT_LOCK_BLKNO(groups[g].part_id), ExclusiveLock);
+	for (int g = 0; g < ng; g++)
+		if (groups[g].locked)
+			LockPage(rel, SIFT_PART_LOCK_BLKNO(groups[g].part_id), ExclusiveLock);
+	for (int g = 0; g < ng; g++)
 	{
+		SiftManifestRead mr;
+		SiftPartDesc *parts;
+		int			np,
+					k,
+					r0 = nrel;
+
+		if (!groups[g].locked)
+			continue;
+		mr = sift_manifest_read_range(rel, c[groups[g].slots[0]].key_lo, NULL);
+		if (mr.n == 0 || mr.entries[0].part_id != groups[g].part_id)
+			continue;
 		parts = sift_manifest_read_parts(rel, &mr.entries[0], &np);
-		nupd = swap_prepare(rel, c, slots, n, parts, np, blk, judge, upd, expect, rel_ext, &nrel);
+		k = swap_prepare(rel, c, groups[g].slots, groups[g].n, parts, np, blk, judge, upd + nupd, expect + nupd, rel_ext, &nrel);
+		if (k > 0)
+			edits[nedits++] = (SiftManifestEdit) {.part_id = groups[g].part_id,.key_lo = mr.entries[0].key_lo,.update_parts = upd + nupd,.expect_parts = expect + nupd,.nupdate = k,
+			.release = rel_ext + r0,.nrelease = nrel - r0};
+		nupd += k;
 	}
-	if (nupd > 0)
-		sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = first->part_id,.key_lo = mr.entries[0].key_lo,.update_parts = upd,.expect_parts = expect,.nupdate = nupd,
-													   .release = rel_ext,.nrelease = nrel});
-	unlock_swap(rel, first->part_id);
+	if (nedits > 0)
+		sift_manifest_commit_many(rel, edits, nedits);
+	for (int g = ng - 1; g >= 0; g--)
+		if (groups[g].locked)
+			unlock_swap(rel, groups[g].part_id);
 	return nupd;
 }
 
@@ -270,11 +327,10 @@ static int
 pack_batch(Relation rel, const PackCand *c, int n)
 {
 	SiftPackItem items[SIFT_PACKED_MAX_SLOTS] = {0};
-	bool		grouped[SIFT_PACKED_MAX_SLOTS] = {false};
 	PackJudge  *judge = palloc(sizeof(PackJudge));
 	bool		packed_source = false;
 	BlockNumber blk;
-	int			swapped = 0;
+	int			swapped;
 
 	for (int i = 0; i < n; i++)
 	{
@@ -291,19 +347,7 @@ pack_batch(Relation rel, const PackCand *c, int n)
 		LockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
 		sift_live_packed_set_build(rel, &judge->live);
 	}
-	for (int i = 0; i < n; i++)
-	{
-		int			slots[SIFT_PACKED_MAX_SLOTS],
-					ns = 0;
-
-		for (int j = i; j < n; j++)
-			if (!grouped[j] && c[j].part_id == c[i].part_id)
-				slots[ns++] = j;
-		for (int k = 0; k < ns; k++)
-			grouped[slots[k]] = true;
-		if (ns > 0)
-			swapped += swap_to_slots(rel, c, slots, ns, blk, judge);
-	}
+	swapped = swap_to_slots(rel, c, n, blk, judge);
 	if (packed_source)
 	{
 		sift_live_packed_set_free(&judge->live);
