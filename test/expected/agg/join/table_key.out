@@ -161,6 +161,29 @@ SELECT key_filters('d.at::date = f.ts') AS cast_key, key_filters('d.n2::int = f.
         1 |           1 |      0
 (1 row)
 
+-- a boolean key on both sides, with NULLs: an inner, a LEFT, a preserved and a semi join of the table of its two values
+CREATE TABLE bfacts (id int PRIMARY KEY, ok bool, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO bfacts SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 3 = 0 END, i % 11 FROM generate_series(1, 300) i;
+CREATE INDEX bfacts_col ON bfacts USING sift_col (id, ok, amount);
+CREATE TABLE bdims (ok bool, label text) WITH (autovacuum_enabled = false);
+INSERT INTO bdims VALUES (true, 'yes'), (false, 'no'), (NULL, 'unknown');
+VACUUM (FREEZE, ANALYZE) bfacts, bdims;
+SET sift.agg_force = on;
+SELECT j, same(q) FROM (VALUES
+	('inner', 'SELECT d.label, count(*) AS n, sum(f.amount) AS s FROM bfacts f JOIN bdims d ON d.ok = f.ok GROUP BY 1'),
+	('left', 'SELECT d.label, count(*) AS n, sum(f.amount) AS s FROM bfacts f LEFT JOIN bdims d ON d.ok = f.ok GROUP BY 1'),
+	('preserved', 'SELECT d.label, count(f.id) AS n FROM bdims d LEFT JOIN bfacts f ON f.ok = d.ok GROUP BY 1'),
+	('semi', 'SELECT f.amount, count(*) AS n FROM bfacts f WHERE f.ok IN (SELECT ok FROM bdims WHERE label = ''yes'') GROUP BY 1')) v(j, q);
+     j     | same 
+-----------+------
+ inner     | t
+ left      | t
+ preserved | t
+ semi      | t
+(4 rows)
+
+RESET sift.agg_force;
+DROP TABLE bfacts, bdims;
 DROP FUNCTION key_filters(text), each_join(text, text), report(bool, text, text, text), same(text), pushed(text), outcome, runq, runs_in_scan;
 DROP TABLE facts, dims;
 DROP EXTENSION pg_sift;

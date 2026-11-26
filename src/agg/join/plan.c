@@ -511,7 +511,19 @@ join_clauses(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 	return true;
 }
 
-/* the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the keys of a semi join into the scan (v6_join_push.h) the one of a table, not of a sub-select */
+/* a key the push reads as integers */
+static bool
+int_key(Oid typid)
+{
+	const SiftV6Class cls = sift_v6_class(typid);
+
+	return cls == SV6C_I32 || cls == SV6C_I64;
+}
+
+/*
+ * the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the integer keys of a semi join into the scan (v6_join_push.h) the one
+ * of a table, not of a sub-select
+ */
 static bool
 needs_lookup(const SiftV6JoinShape *sh)
 {
@@ -528,7 +540,7 @@ needs_lookup(const SiftV6JoinShape *sh)
 		if (d->mode != SV6J_INNER_EQUI && d->mode != SV6J_LEFT_EQUI && d->mode != SV6J_SEMI_EQUI)
 			return true;
 		for (int k = 0; k < d->nkeys; k++)
-			if (d->kexpr[k] != NULL || !IsA(d->probe[k], Var) || sift_v6_join_role(sh, (const Var *) d->probe[k]) != ROLE_FACT)
+			if (d->kexpr[k] != NULL || !IsA(d->probe[k], Var) || sift_v6_join_role(sh, (const Var *) d->probe[k]) != ROLE_FACT || !int_key(exprType(d->probe[k])))
 				return true;
 	}
 	return false;
@@ -586,14 +598,6 @@ rel_outputs(const RelOptInfo *rel, const Var *v)
 	return false;
 }
 
-static bool
-key_class(Oid typid)
-{
-	const SiftV6Class cls = sift_v6_class(typid);
-
-	return cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_TEXT;
-}
-
 /* the column of the probing side a key is: of the index, of the unnest's element, or a payload column of an earlier dimension */
 static bool
 probe_col(V6Plan *p, const SiftV6JoinShape *sh, const Var *v, int dim, SiftV6Col *out)
@@ -606,7 +610,7 @@ probe_col(V6Plan *p, const SiftV6JoinShape *sh, const Var *v, int dim, SiftV6Col
 		ok = sift_v6_unnest_column(p, (const Expr *) v, out);
 	else
 		ok = sift_v6_star_column(p, (const Expr *) v, out) && out->dim < dim && (sh->dim[out->dim].mode == SV6J_INNER_EQUI || sh->dim[out->dim].mode == SV6J_LEFT_EQUI);
-	return ok && key_class(out->typid);
+	return ok && sift_v6_key_type_ok(out->typid);
 }
 
 typedef struct ResidCtx
@@ -711,7 +715,7 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
 		{
 			SiftV6Col	col;
 
-			if (!(jd->mode == SV6J_RANGE_SMALL ? jd->rel->rows <= SIFT_STAR_RANGE_MAX : key_class(jd->key[k]->vartype)) || (jd->kexpr[k] == NULL && !rel_outputs(jd->rel, jd->key[k])))
+			if (!(jd->mode == SV6J_RANGE_SMALL ? jd->rel->rows <= SIFT_STAR_RANGE_MAX : sift_v6_key_type_ok(jd->key[k]->vartype)) || (jd->kexpr[k] == NULL && !rel_outputs(jd->rel, jd->key[k])))
 				return false;
 			if (!IsA(jd->probe[k], Var))
 			{

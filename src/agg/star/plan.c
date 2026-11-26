@@ -62,9 +62,18 @@ sift_v6_key_types_agree(Oid ftype, Oid dtype, Oid inputcollid)
 {
 	if (text_type(ftype) && text_type(dtype))
 		return sift_text_bytes_equal(inputcollid);
-	if (ftype == DATEOID || ftype == TIMESTAMPOID || ftype == TIMESTAMPTZOID)
+	if (ftype == DATEOID || ftype == TIMESTAMPOID || ftype == TIMESTAMPTZOID || ftype == BOOLOID)
 		return ftype == dtype;
 	return int_type(ftype) && int_type(dtype);
+}
+
+/* a key the tables hold: an integer, a bool or a text */
+bool
+sift_v6_key_type_ok(Oid typid)
+{
+	const SiftV6Class cls = sift_v6_class(typid);
+
+	return cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_BOOL || cls == SV6C_TEXT;
 }
 
 static int
@@ -296,8 +305,8 @@ seed_dims(V6Plan *p, StarDim *dims, int nd)
 		{
 			SiftV6Col	col;
 
-			if (!sift_v6_plan_column(p, (const Expr *) dims[d].fvar[k], false, &col) || !(sift_v6_class(col.typid) == SV6C_I32 || sift_v6_class(col.typid) == SV6C_I64 ||
-				sift_v6_class(col.typid) == SV6C_TEXT) || !sift_v6_in_target(dims[d].rel, dims[d].dvar[k]->varattno))
+			if (!sift_v6_plan_column(p, (const Expr *) dims[d].fvar[k], false, &col) || !sift_v6_key_type_ok(col.typid) ||
+				!sift_v6_in_target(dims[d].rel, dims[d].dvar[k]->varattno))
 				return false;
 			xd->fatt[k] = col.attno;
 			xd->ftype[k] = col.typid;

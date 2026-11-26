@@ -153,6 +153,7 @@ extern bool sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out);
 /* The pieces of the planner of a star join that the planner of the other joins (v6_join_plan.h) reuses */
 extern const Var *sift_v6_plain_var(const Node *n);
 extern bool sift_v6_key_types_agree(Oid ftype, Oid dtype, Oid inputcollid);
+extern bool sift_v6_key_type_ok(Oid typid);
 extern bool sift_v6_in_target(const RelOptInfo *rel, AttrNumber attno);
 extern bool sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget);
 extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
