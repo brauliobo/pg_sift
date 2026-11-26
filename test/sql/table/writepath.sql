@@ -7,6 +7,7 @@
 -- Every statement runs on a heap twin as well: the answers must be the same in every state.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET sift.test_create_format1 = on;
 SET sift.table_max_segments = 8;
 SET max_parallel_workers_per_gather = 0;
 

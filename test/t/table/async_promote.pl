@@ -14,7 +14,7 @@ use IPC::Run qw(start finish);
 my $clients = 4;
 my $txns = knob('SIFT_TXNS', 2000, 1500);
 my $node = sift_node('async_promote');
-$node->append_conf('postgresql.conf', "autovacuum = off\nsift.async_maintenance = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\n"
+$node->append_conf('postgresql.conf', "autovacuum = off\nsift.test_create_format1 = on\nsift.async_maintenance = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\n"
 	. "max_parallel_maintenance_workers = 0");
 $node->start;
 install_sift($node);
