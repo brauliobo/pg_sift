@@ -3,6 +3,8 @@
  */
 #include "core/host.h"
 
+#include "col/f2/scope/scope.h"
+
 #include "access/transam.h"
 #include "commands/vacuum.h"
 #include "storage/lmgr.h"
@@ -838,6 +840,8 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	e.release = rel_ext;
 	e.nrelease = nrel;
 	(void) sift_wal_snapshot_conflict(rel, InvalidBlockNumber, res->stripped);
+	if (sift_f2_scoped(rel))
+		sift_f2_scope_refresh_for(rel, &e);
 	sift_manifest_commit(rel, &e);
 	SIFT_CRASH_POINT_IF(fold != NULL, f2_col_delta_fold_post_p2);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
