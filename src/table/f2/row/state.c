@@ -107,10 +107,17 @@ sift_row_state_read(Relation rel, uint64 tid)
 	return row_state(rel, tid, sift_f2_locate_cached_read);
 }
 
+/* A row of a micro-slab read where it is, from the granules as they are on disk */
+static bool
+locate_in_place(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc)
+{
+	return sift_f2_locate_read(rel, store, tid, sift_f2_gbuf_load, loc);
+}
+
 SiftRowState
 sift_row_state_read_settled(Relation rel, uint64 tid)
 {
-	return row_state(rel, tid, sift_f2_locate_settled);
+	return row_state(rel, tid, locate_in_place);
 }
 
 /* The writer of the latest column delta of a row of a part: the chain of its partition says */
@@ -238,7 +245,8 @@ sift_row_part_count(Relation rel)
 }
 
 /*
- * A row the transaction staged is alive for it: nothing is written to ask the relation about it, which at every index page the btree tries to clean made a part of the stage.
+ * A row the transaction staged, or staged a change of, is alive for it, and the others are read where they are: nothing is written to ask the relation about a row, which at every index
+ * page the btree tries to clean made a part of the stage or of a micro-slab.
  *
  * What the btree reads back (access/tableam.h): an entry its caller marked deletable stays deletable, and the array ends at the last deletable entry, so that no deletable entry at all is
  * an empty array, which only a bottom-up caller may get.
@@ -249,12 +257,14 @@ sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	GlobalVisState *vistest = GlobalVisTestFor(rel);
 	TransactionId horizon = InvalidTransactionId;
 	uint64	   *tids = palloc(Max(delstate->ndeltids, 1) * sizeof(uint64));
-	bool	   *staged = palloc0(Max(delstate->ndeltids, 1) * sizeof(bool));
+	bool	   *staged = palloc(Max(delstate->ndeltids, 1) * sizeof(bool));
 	int			final_ndeltids = 0;
 
 	for (int i = 0; i < delstate->ndeltids; i++)
+	{
 		tids[i] = sift_tbl_tid_pack(&delstate->deltids[i].tid);
-	sift_stage_rows_among(rel, tids, delstate->ndeltids, staged);
+		staged[i] = sift_stage_holds_in(rel, tids[i], tids[i]);
+	}
 	for (int i = 0; i < delstate->ndeltids; i++)
 	{
 		TM_IndexStatus *status = &delstate->status[delstate->deltids[i].id];

@@ -29,7 +29,7 @@ extern SiftRowState sift_row_state_read(Relation rel, uint64 tid);
 /* What the system columns of the row say: its inserter (a row only staged included), the writer of its latest column delta, and its deleter or last locker */
 extern SiftRowState sift_row_sysattr_read(Relation rel, uint64 tid);
 
-/* The same for a row that is not in the stage of the transaction, without writing the stage */
+/* The same for a row that is not in the stage of the transaction, without writing the stage or a micro-slab */
 extern SiftRowState sift_row_state_read_settled(Relation rel, uint64 tid);
 
 /* TM_Ok for a row the statement may lock, else why not (the deleter and the successor in tmfd) */
