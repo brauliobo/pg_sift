@@ -41,6 +41,7 @@ static int
 col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 {
 	const int	leaf = leaf_of(r, c);
+	const SiftF2Rel *f = sift_f2_rel(u->index);
 
 	for (int i = 0; i < u->ncols; i++)
 		if (u->cols[i].leaf == leaf && u->cols[i].month == month)
@@ -48,11 +49,9 @@ col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 	if (u->ncols == SIFT_F2_PULL_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
 						errhint("Aggregate fewer columns of the table that is unnested.")));
-	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = sift_v6_class(c->typid),.month = month,.json = c->jleaf > 0 || sift_v6_vatt_is_json(c->attno),.read = true};
-	if (sift_f2_rel(u->index)->key_leaf[leaf])
+	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = c->typid == BPCHAROID ? SV6C_TEXT : sift_v6_class(c->typid),.month = month,.json = c->jleaf > 0 || sift_v6_vatt_is_json(c->attno),.read = true};
+	if (f->key_leaf[leaf])
 	{
-		const SiftF2Rel *f = sift_f2_rel(u->index);
-
 		u->cols[u->ncols].json = true;
 		u->cols[u->ncols].key = f->key[leaf];
 		u->cols[u->ncols].keylen = f->key_len[leaf];
@@ -786,13 +785,14 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	SiftF2PullSpec ps;
 	SiftV6MapPreagg *map;
 	const SiftF2ExtBatch *b;
+	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
 	unrun_init(u, spec, index, stats, spec->ext->elem.fn == SV6E_KEYS ? 0 : index->rd_index->indkey.values[spec->ext->elem.attno - 1]);
-	setup_cols(u, sift_col_rel(index));
-	setup_clauses(u, sift_col_rel(index));
+	setup_cols(u, r);
+	setup_clauses(u, r);
 	for (int c = 0; c < u->nel; c++)
-		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, sift_col_rel(index), u->x->elem.col_leaf[c]) : -1;
-	setup_pipe(u, sift_col_rel(index), g, star);
+		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, r, u->x->elem.col_leaf[c]) : -1;
+	setup_pipe(u, r, g, star);
 	unrun_buffers(u);
 	sift_v6_vet_begin(&u->vet, heap, snap, stats);
 	ps = pull_spec(u);

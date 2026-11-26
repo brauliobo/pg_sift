@@ -1,0 +1,35 @@
+-- An UPDATE of a column the sift_col index does not hold that the heap cannot do in place (another index holds it) tells the index, at each new row version, that its entries stay: the
+-- trigger that follows takes the note back. The notes are held in memory until the statement ends, so a bulk UPDATE would hold one for each row it changes: the table of the notes is bounded by
+-- work_mem, and a row whose note was not kept is compared with its old version instead (the answer is the same). The table keeps the memory its notes had at the most, which the memory
+-- contexts of the backend show.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET jit = off;
+
+CREATE TABLE tc (id int PRIMARY KEY, v int, tag text, pad text);
+INSERT INTO tc SELECT i, i % 13, 'g' || i % 7, 'p' || i FROM generate_series(1, 30000) i;
+CREATE TABLE tch (LIKE tc INCLUDING INDEXES);
+INSERT INTO tch SELECT * FROM tc;
+CREATE INDEX tc_tag ON tc (tag);
+CREATE INDEX tc_c ON tc USING sift_col (id, v) WITH (key_order = 'id', track_changes = 'id');
+VACUUM (FREEZE, ANALYZE) tc, tch;
+
+BEGIN;
+SET LOCAL work_mem = '64kB';
+UPDATE tc SET tag = 'x' || (id % 5);
+SELECT total_bytes < 512 * 1024 AS notes_bounded FROM pg_backend_memory_contexts WHERE name = 'sift_col indexUnchanged notes';
+COMMIT;
+UPDATE tch SET tag = 'x' || (id % 5);
+
+SELECT (SELECT md5(string_agg(t::text, '|' ORDER BY id)) FROM tc t) = (SELECT md5(string_agg(t::text, '|' ORDER BY id)) FROM tch t) AS same_rows;
+SELECT (SELECT count(*) FROM tc WHERE v = 3 AND id > 1000) = (SELECT count(*) FROM tch WHERE v = 3 AND id > 1000) AS same_index_answer;
+
+DELETE FROM tc WHERE id % 4 = 0;
+DELETE FROM tch WHERE id % 4 = 0;
+SELECT (SELECT count(*) FROM tc WHERE v < 7) = (SELECT count(*) FROM tch WHERE v < 7) AS same_after_delete;
+
+DROP TABLE tc, tch;
+DROP EXTENSION pg_sift;

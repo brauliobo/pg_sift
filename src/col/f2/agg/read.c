@@ -27,7 +27,7 @@ f2v6_begin(MemoryContext cx, Snapshot snap, Oid indexoid)
 	c->index = index_open(indexoid, AccessShareLock);
 	c->heap = table_open(c->index->rd_index->indrelid, AccessShareLock);
 	c->f = sift_f2_rel(c->index);
-	c->rel = sift_col_rel(c->index);
+	c->rel = sift_col_rel_private(c->index, cx);
 	c->schema = c->rel->schema;
 	sift_stage_flush(c->index);
 	{
@@ -280,7 +280,7 @@ f2v6_zones(F2V6Ctx *c, const F2V6Part *p, int leaf)
 		const SiftColDeltaGranMap *gm = sift_col_delta_gran_map(p->cd, g);
 
 		if (gm != NULL && (gm->attnum_bloom & sift_cd_att_bit((int16) (leaf + 1))) != 0)
-			z[g].flags |= SIFT_ZONE_NONE;
+			z[g].flags = SIFT_ZONE_NONE;
 	}
 	return z;
 }

@@ -16,6 +16,7 @@
 #include "catalog/index.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
+#include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/sinval.h"
 #include "utils/hsearch.h"
@@ -30,6 +31,7 @@
 #include "col/f2/journal.h"
 #include "col/track_hear.h"
 #include "col/f2/l0/stage.h"
+#include "core/memtrack.h"
 #include "core/quarantine/quarantine.h"
 #include "core/ring.h"
 
@@ -46,8 +48,7 @@ static struct
 	AttrNumber	journal_att;
 	bool		hooked;
 	SiftTxnStage *stage;
-	const SiftColRel *r;
-	const SiftF2Rel *f;
+	MemoryContext diff_cx;		/* what the diff of one update copies of its tuples: reset after each */
 	SiftCell   *cells;			/* cells_cap, zero at first: the key leaves are written for each row, the others are never read */
 	int			cells_cap;
 	bool		direct;			/* the key is in the key_order columns of the heap tuple: no predicate, no expression */
@@ -80,6 +81,7 @@ ctx_reset(XactEvent event, void *arg)
 	ctx.roots_read = false;
 	ctx.cells = NULL;
 	ctx.cells_cap = 0;
+	ctx.diff_cx = NULL;
 }
 
 /* REINDEX CONCURRENTLY swaps what the trigger depends on from the old index to the new one, and invalidates both: the next row asks the catalog again */
@@ -103,12 +105,15 @@ read_through(Relation index, Relation heap)
 }
 
 static void
-ctx_key_columns(Relation index, Relation heap)
+ctx_key_columns(Relation index, const SiftF2Rel *f, Relation heap)
 {
+	const SiftColRel *r;
+
 	ctx.direct = RelationGetIndexPredicate(index) == NIL;
-	for (int k = 0; k < ctx.f->nkey; k++)
+	r = sift_col_rel(index);
+	for (int k = 0; k < f->nkey; k++)
 	{
-		ctx.index_att[k] = ctx.r->schema->cols[ctx.f->key_cols[k]].attno;
+		ctx.index_att[k] = r->schema->cols[f->key_cols[k]].attno;
 		ctx.heap_att[k] = index->rd_index->indkey.values[ctx.index_att[k] - 1];
 		ctx.direct &= ctx.heap_att[k] != InvalidAttrNumber;
 	}
@@ -141,19 +146,21 @@ ctx_make(TriggerData *td)
 		ctx.live = index->rd_index->indisready && !sift_quarantine_skips(index, SIFT_SKIP_WRITE);
 		if (ctx.live)
 		{
-			ctx.f = sift_f2_rel(index);
-			ctx.r = sift_col_rel(index);
-			ctx.stage = sift_stage_get(index, &ctx.f->spec);
+			const SiftF2Rel *f = sift_f2_rel(index);
+
+			if (ctx.diff_cx == NULL)
+				ctx.diff_cx = sift_mem_allocset_create(TopTransactionContext, "sift_col track diff");
+			ctx.stage = sift_stage_get(index, &f->spec);
 			ctx.journal = sift_f2_journal_on(index);
 			ctx.journal_att = ctx.journal ? sift_f2_journal_key(index) : InvalidAttrNumber;
-			if (ctx.cells_cap < ctx.f->ncols)
+			if (ctx.cells_cap < f->ncols)
 			{
 				if (ctx.cells != NULL)
 					pfree(ctx.cells);
-				ctx.cells = MemoryContextAllocZero(TopTransactionContext, ctx.f->ncols * sizeof(SiftCell));
-				ctx.cells_cap = ctx.f->ncols;
+				ctx.cells = MemoryContextAllocZero(TopTransactionContext, f->ncols * sizeof(SiftCell));
+				ctx.cells_cap = f->ncols;
 			}
-			ctx_key_columns(index, td->tg_relation);
+			ctx_key_columns(index, f, td->tg_relation);
 		}
 		index_close(index, NoLock);
 	}
@@ -197,20 +204,22 @@ chain_root(Relation heap, ItemPointer tid)
 
 /* The key of the old tuple from its key_order columns alone: nothing else of it is read, a document or a text is not detoasted */
 static void
-direct_key(Relation heap, HeapTuple old, const ItemPointerData *tid, uint8 *key)
+direct_key(Relation index, Relation heap, HeapTuple old, const ItemPointerData *tid, uint8 *key)
 {
+	const SiftF2Rel *f = sift_f2_rel(index);
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 
-	for (int k = 0; k < ctx.f->nkey; k++)
+	for (int k = 0; k < f->nkey; k++)
 		values[ctx.index_att[k] - 1] = fastgetattr(old, ctx.heap_att[k], RelationGetDescr(heap), &isnull[ctx.index_att[k] - 1]);
-	sift_f2_key_of(ctx.r, ctx.f, ctx.cells, tid, values, isnull, key);
+	sift_f2_key_of(sift_col_rel(index), f, ctx.cells, tid, values, isnull, key);
 }
 
 /* A partial index holds the rows of its predicate only, and an expression is the index's to compute: the old tuple is read as the index reads a row */
 static bool
-read_key(HeapTuple old, const ItemPointerData *tid, uint8 *key)
+read_key(Relation index, HeapTuple old, const ItemPointerData *tid, uint8 *key)
 {
+	const SiftF2Rel *f = sift_f2_rel(index);
 	ExprContext *econtext = GetPerTupleExprContext(ctx.estate);
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
@@ -221,7 +230,7 @@ read_key(HeapTuple old, const ItemPointerData *tid, uint8 *key)
 	if (held)
 	{
 		FormIndexDatum(ctx.info, ctx.slot, ctx.estate, values, isnull);
-		sift_f2_key_of(ctx.r, ctx.f, ctx.cells, tid, values, isnull, key);
+		sift_f2_key_of(sift_col_rel(index), f, ctx.cells, tid, values, isnull, key);
 	}
 	ResetExprContext(econtext);
 	return held;
@@ -243,6 +252,8 @@ unchanged_key(UnchangedKey *key, Oid index, const ItemPointerData *tid)
 	key->index = index;
 	key->tid = *tid;
 }
+
+#define UNCHANGED_NOTES_PER_KB	4	/* a note of the table costs 64 bytes: no more than a quarter of work_mem */
 
 static HTAB *unchanged = NULL;
 static bool unchanged_ended_registered = false;
@@ -273,7 +284,8 @@ sift_f2_track_note_unchanged(Relation index, ItemPointer new_tid)
 		}
 		unchanged = hash_create("sift_col indexUnchanged notes", 64, &hc, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
-	(void) hash_search(unchanged, &key, HASH_ENTER, NULL);
+	if (hash_get_num_entries(unchanged) < (long) work_mem * UNCHANGED_NOTES_PER_KB)
+		(void) hash_search(unchanged, &key, HASH_ENTER, NULL);
 }
 
 static bool
@@ -287,14 +299,13 @@ unchanged_take(Oid index, const ItemPointerData *new_tid)
 
 /* An UPDATE whose index entry stays and only changes its address and a few leaves is a record of the column delta chain (col/f2/col_delta/idx.h), not a tombstone and a new entry */
 static bool
-staged_as_delta(TriggerData *td, const ItemPointerData *tid)
+staged_as_delta(Relation index, TriggerData *td, const ItemPointerData *tid)
 {
-	Relation	index = index_open(ctx.index, AccessShareLock);
-	SiftF2DiffEnv env = {.heap = td->tg_relation,.index = index,.f = (SiftF2Rel *) ctx.f,.direct = ctx.plain,.info = ctx.info,.estate = ctx.estate,.slot = ctx.slot,.pred = ctx.pred,
-		.cx = CurrentMemoryContext};
+	SiftF2DiffEnv env = {.heap = td->tg_relation,.index = index,.f = sift_f2_rel(index),.direct = ctx.plain,.info = ctx.info,.estate = ctx.estate,.slot = ctx.slot,.pred = ctx.pred,
+		.cx = ctx.diff_cx};
 	bool		staged = sift_cdi_stage_update(&env, ctx.stage, td->tg_trigtuple, td->tg_newtuple, sift_f2_tid(tid), unchanged_take(ctx.index, &td->tg_newtuple->t_self));
 
-	index_close(index, NoLock);
+	MemoryContextReset(ctx.diff_cx);
 	return staged;
 }
 
@@ -317,6 +328,20 @@ mute_channel(TriggerData *td)
 }
 #endif
 
+static void
+stage_tombstone(Relation index, TriggerData *td, const ItemPointerData *tid)
+{
+	uint8		key[SIFT_BOUND_BYTES];
+
+	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && staged_as_delta(index, td, tid))
+		return;
+	if (ctx.direct)
+		direct_key(index, td->tg_relation, td->tg_trigtuple, tid, key);
+	else if (!read_key(index, td->tg_trigtuple, tid, key))
+		return;
+	sift_stage_delete(ctx.stage, key, sift_f2_tid(tid));
+}
+
 /*
  * The row trigger: a tombstone for the address of the version the statement ended, held with the transaction's others. A version made by a HOT update has no entry and its predecessor's
  * entry stays right (the indexed columns are the same), so that update writes nothing; any other update writes the entry of its new version at its aminsert, which this delete ends the old one for.
@@ -327,7 +352,7 @@ sift_f2_track_trigger(PG_FUNCTION_ARGS)
 	TriggerData *td = (TriggerData *) fcinfo->context;
 	HeapTuple	old = td->tg_trigtuple;
 	ItemPointerData tid;
-	uint8		key[SIFT_BOUND_BYTES];
+	Relation	index;
 
 #ifdef SIFT_TESTING
 	if (sift_test_no_track)
@@ -349,13 +374,9 @@ sift_f2_track_trigger(PG_FUNCTION_ARGS)
 #endif
 		)
 		ItemPointerSetOffsetNumber(&tid, chain_root(td->tg_relation, &tid));
-	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && staged_as_delta(td, &tid))
-		return PointerGetDatum(NULL);
-	if (ctx.direct)
-		direct_key(td->tg_relation, old, &tid, key);
-	else if (!read_key(old, &tid, key))
-		return PointerGetDatum(NULL);
-	sift_stage_delete(ctx.stage, key, sift_f2_tid(&tid));
+	index = index_open(ctx.index, AccessShareLock);
+	stage_tombstone(index, td, &tid);
+	index_close(index, AccessShareLock);
 	return PointerGetDatum(NULL);
 }
 

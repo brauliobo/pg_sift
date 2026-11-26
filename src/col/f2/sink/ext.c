@@ -28,7 +28,6 @@ struct SiftF2Pull
 	Relation	index;
 	Snapshot	snap;
 	SiftXidCache xc;
-	const SiftColRel *r;
 	const SiftPlanSnapshot *plan;
 	SiftF2PullSpec spec;
 	MemoryContext cx;			/* the scan */
@@ -120,7 +119,6 @@ sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec)
 	p->ecx = sift_mem_allocset_create(cx, "sift f2 pull partition");
 	p->pcx = sift_mem_allocset_create(cx, "sift f2 pull part");
 	p->gcx = sift_mem_allocset_create(cx, "sift f2 pull granule");
-	p->r = sift_col_rel(index);
 	sift_f2_pull_prune_begin(&p->prune, index, spec);
 	sift_stage_flush(index);
 	{
@@ -283,7 +281,7 @@ put_patch(SiftF2Pull *p, SiftVec *v, uint16 j, const SiftColDeltaPatch *pt)
 	const bool	isnull = (pt->flags & SIFT_CDCOL_IS_NULL) != 0;
 	const int64 i = isnull ? 0 : pt->val.i;
 
-	if ((pt->flags & SIFT_CDCOL_HAS_TAG) != 0 && pt->tag != 0)
+	if ((pt->flags & SIFT_CDCOL_HAS_TAG) != 0 && pt->tag != 0 && pt->tag != SIFT_COLTAG_JNULL)
 		unholdable(p);
 	switch (v->type)
 	{
@@ -649,8 +647,8 @@ granule_answered(const SiftF2Pull *p)
 	const SiftDvGran *dg = p->dv != NULL ? sift_dv_granule(p->dv, p->g) : NULL;
 
 	return p->spec.gran_sink != NULL &&
-		p->spec.gran_sink(p->spec.gran_arg, &(SiftF2GranOffer) {.rel = p->index,.part = p->part,.desc = p->pd,.schema = p->r->schema,.g = p->g,.gd = &p->dir[p->g],.dead = dg,.snap = p->snap,
-							.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g]),.px = p->px,.vis = SIFT_GVIS_HEAP});
+		p->spec.gran_sink(p->spec.gran_arg, &(SiftF2GranOffer) {.rel = p->index,.part = p->part,.desc = p->pd,.schema = sift_col_rel(p->index)->schema,.g = p->g,.gd = &p->dir[p->g],.dead = dg,.snap = p->snap,
+							.patched = p->cd != NULL && sift_col_delta_gran_map(p->cd, p->g) != NULL,.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g]),.px = p->px,.vis = SIFT_GVIS_HEAP});
 }
 
 /* the next granule, slab or part; false at the end of the index */
@@ -755,6 +753,33 @@ fill_granule_mask(SiftF2Pull *p, int m, uint16 off, uint16 cnt)
 	memset(p->mbits[m], st == SIFT_MASK_ALL_ONE ? 0xff : 0, SIFT_VEC_WORDS * sizeof(uint64));
 }
 
+/* the rows of the slice whose key a column delta of the snapshot adds or removes, over what the granule says of it */
+static void
+patch_mask(SiftF2Pull *p, int m, uint16 off, uint16 cnt)
+{
+	uint32		lo = 0,
+				hi = 0;
+
+	if (p->gm == NULL)
+		return;
+	sift_col_delta_patch_slice(p->gm, (int16) (p->spec.mask[m].leaf + 1), &lo, &hi);
+	for (uint32 k = lo; k < hi; k++)
+	{
+		const SiftColDeltaPatch *pt = &p->gm->patches[k];
+		uint16		j;
+		uint64		bit;
+
+		if (pt->row_ordinal < off || pt->row_ordinal >= off + cnt)
+			continue;
+		j = pt->row_ordinal - off;
+		bit = UINT64CONST(1) << (j & 63);
+		if (sift_key_row_present((pt->flags & SIFT_CDCOL_IS_NULL) != 0, (pt->flags & SIFT_CDCOL_HAS_TAG) != 0 ? pt->tag : 0))
+			p->mbits[m][j >> 6] |= bit;
+		else
+			p->mbits[m][j >> 6] &= ~bit;
+	}
+}
+
 static void
 fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 {
@@ -786,7 +811,10 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 		if (p->is_slab)
 			fill_slab_mask(p, m, off, cnt);
 		else
+		{
 			fill_granule_mask(p, m, off, cnt);
+			patch_mask(p, m, off, cnt);
+		}
 		p->masks[m] = (SiftVexprMaskIn) {.bits = p->mbits[m],.valid = NULL};
 	}
 }

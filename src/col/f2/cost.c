@@ -425,11 +425,9 @@ sift_f2_native_order_matches(Relation index)
 
 	if (sift_col_ops(index)->format_major != SIFT_FORMAT2_MAJOR || nk > SIFT_BOUND_COMPS)
 		return false;
-	r = sift_col_rel(index);
-	if (r->stale || r->nscope > 0)
-		return false;
 	f = sift_f2_rel(index);
-	if (f->nkey != nk)
+	r = sift_col_rel(index);
+	if (r->stale || r->nscope > 0 || f->nkey != nk)
 		return false;
 	for (int k = 0; k < nk; k++)
 	{

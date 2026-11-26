@@ -281,11 +281,11 @@ static uint64
 refresh_segment(Relation index, uint64 rgen)
 {
 	SiftDirSnapshot *snap;
-	/* check-memory: allow the merge takes it as arguments, and takes buffer and page locks only; sift.col_refresh runs under debug_discard_caches in cache_discard */
-	SiftColRel *rel = sift_col_rel(index);
+	const SiftColRel *rel;
 	uint64		gen = 0;
 
 	sift_maint_lock(index, true);
+	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].gen == rgen && snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
@@ -516,8 +516,7 @@ cube_left_out(Relation index, const SiftColRel *rel, const char *left, int nleft
 void
 sift_col_caps(Relation index, SiftChoiceFn add, void *ctx)
 {
-	/* check-memory: allow the loop reads segments (buffer locks); sift.col_refresh runs under debug_discard_caches in cache_discard */
-	const SiftColRel *rel = sift_col_rel(index);
+	const SiftColRel *rel = sift_col_rel_private(index, CurrentMemoryContext);
 	const SiftCPaggSpec *spec = &rel->pagg;
 	SiftDirSnapshot *snap;
 	MemoryContext cx;
