@@ -201,6 +201,17 @@ sift_tbl_slot_values(TupleDesc desc, TupleTableSlot *slot)
 	return values;
 }
 
+void
+sift_tbl_slot_values_free(TupleDesc desc, TupleTableSlot *slot, Datum *values)
+{
+	if (values == slot->tts_values)
+		return;
+	for (int i = 0; i < desc->natts; i++)
+		if (values[i] != slot->tts_values[i])
+			pfree(DatumGetPointer(values[i]));
+	pfree(values);
+}
+
 MinimalTuple
 sift_tbl_detoast_slot_tuple(Relation rel, TupleTableSlot *slot, bool *should_free)
 {
@@ -217,7 +228,7 @@ sift_tbl_detoast_slot_tuple(Relation rel, TupleTableSlot *slot, bool *should_fre
 	ExecStoreVirtualTuple(expanded);
 	mtup = ExecFetchSlotMinimalTuple(expanded, should_free);
 	ExecDropSingleTupleTableSlot(expanded);
-	pfree(values);
+	sift_tbl_slot_values_free(desc, slot, values);
 	return mtup;
 }
 

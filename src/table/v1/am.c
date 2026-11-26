@@ -106,8 +106,7 @@ insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions op
 	values = sift_tbl_slot_values(RelationGetDescr(rel), slot);
 	sift_tbl_load_row(rel, st, values, slot->tts_isnull, cid, &slot->tts_tid);
 	slot->tts_tableOid = RelationGetRelid(rel);
-	if (values != slot->tts_values)
-		pfree(values);
+	sift_tbl_slot_values_free(RelationGetDescr(rel), slot, values);
 	pgstat_count_heap_insert(rel, 1);
 	return true;
 }

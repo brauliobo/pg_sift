@@ -41,6 +41,8 @@ extern HeapTuple sift_tbl_old_key(Relation rel, HeapTuple old);
 extern HeapTuple sift_tbl_slot_old_key(Relation rel, TupleTableSlot *old);
 /* The values of slot: its own array, or a copy with every external TOAST value expanded (no TOAST table exists for this AM, and the table the pointer names may be gone when the record is decoded) */
 extern Datum *sift_tbl_slot_values(TupleDesc desc, TupleTableSlot *slot);
+/* Frees what sift_tbl_slot_values made for slot: the copy of the array and the values it expanded */
+extern void sift_tbl_slot_values_free(TupleDesc desc, TupleTableSlot *slot, Datum *values);
 /* The row of slot as a MinimalTuple with no external value in it; *should_free: the caller frees it */
 extern MinimalTuple sift_tbl_detoast_slot_tuple(Relation rel, TupleTableSlot *slot, bool *should_free);
 
