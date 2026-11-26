@@ -161,15 +161,15 @@ vacuum analyze d{n};
 """)
 
 
-def copy_table(n):
-    script(BUILD_SETTINGS + f"""
-drop table if exists m{n}, s{n} cascade;
+def copy_table(n, m):
+    """the scratch tables of a case dropped, and m: {m} made again, a copy of f{n} with its indexes"""
+    script(BUILD_SETTINGS + f"drop table if exists m{n}, s{n} cascade;\n" + (f"""
 create table m{n} as select * from f{n};
 alter table m{n} add primary key (id);
 create index m{n}_col on m{n} using sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts);
 create index m{n}_bm on m{n} using sift (title);
 vacuum analyze m{n};
-""")
+""" if m else ""))
 
 
 def control_table(n):
@@ -221,8 +221,8 @@ def verdict(slope, ceiling, status):
     return "PASS" if slope <= ceiling else "FAIL"
 
 
-def uses_copy(*sql):
-    return any(k in s for s in sql for k in ("{m}", "{s}"))
+def uses(key, *sql):
+    return any(key in s for s in sql)
 
 
 def slope_case(sizes, name, setup, warm, op, first=0, control=False):
@@ -233,8 +233,8 @@ def slope_case(sizes, name, setup, warm, op, first=0, control=False):
         for _ in range(RUNS):
             if control:
                 control_table(n)
-            elif uses_copy(setup, warm, op):
-                copy_table(n)
+            elif uses("{m}", setup, warm, op) or uses("{s}", setup, warm, op):
+                copy_table(n, uses("{m}", setup, warm, op))
             runs.append(measure_mb(setup.removeprefix("@other ").format(**fmt), warm if warm == "=" else warm.format(**fmt), op.format(**fmt)))
         peaks.append(min(r[0] for r in runs))
         highs.append(max(r[0] for r in runs))
