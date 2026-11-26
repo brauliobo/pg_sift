@@ -10,6 +10,8 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "executor/tuptable.h"
+#include "utils/array.h"
+#include "utils/lsyscache.h"
 
 #include "col/f2/scope/int.h"
 #include "col/f2/scope/mem.h"
@@ -278,20 +280,27 @@ sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Sna
 	return pm;
 }
 
-/* The members of the pairs of one scope key as the snapshot sees them, ascending, palloc'd in *out: the pairs of the declaration, its predicates and both of its paths included */
-uint32
-sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, int64 key, int64 **out)
+/* The members of the pairs of one scope key as the snapshot sees them, ascending, as values of the member column (the codes of a string member decoded): the pairs of the declaration, its predicates and both of its paths included */
+ArrayType *
+sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, SiftKeyMap *km, int64 key, Oid member_type, uint32 *n)
 {
 	SiftF2ScopeCfg sc;
 	SiftScopePairMap *pm;
-	uint32		n = 0;
+	SiftKeyMap *mm;
+	Datum	   *vals;
+	int16		len;
+	bool		byval;
+	char		align;
 
 	sift_f2s_cfg(index, sift_f2_store_open(index), ord, &sc);
-	pm = sift_f2s_load_pairs(heap, index, &sc, snap, sift_f2s_key_map(heap, index, sc.spec, false), false);
-	*out = palloc(Max(pm->nmembers, 1) * sizeof(int64));
+	pm = sift_f2s_load_pairs(heap, index, &sc, snap, km, false);
+	mm = sift_f2s_mem_map(sc.mem);
+	vals = palloc(Max(pm->nmembers, 1) * sizeof(Datum));
+	*n = 0;
 	for (uint32 i = 0; i < pm->nmembers; i++)
 		if (sift_spm_owns_key(pm, pm->member_ids[i], key))
-			(*out)[n++] = pm->member_ids[i];
+			vals[(*n)++] = sift_scope_key_datum(member_type, mm, pm->member_ids[i]);
 	sift_spm_free(pm);
-	return n;
+	get_typlenbyvalalign(member_type, &len, &byval, &align);
+	return construct_array(vals, (int) *n, member_type, len, byval, align);
 }

@@ -496,15 +496,12 @@ key_members(ScopeState *st, EState *estate)
 	const Oid	member_type = TupleDescAttr(RelationGetDescr(st->rel), st->spec->member_col - 1)->atttypid;
 	bool		no_key;
 	const int64 key = key_value(st, &no_key);
-	int64	   *members = NULL;
-	const uint32 n = no_key ? 0 : sift_f2s_key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, key, &members);
-	Datum	   *vals = palloc(Max(n, 1) * sizeof(Datum));
+	uint32		n = 0;
+	ArrayType  *members = no_key ? construct_empty_array(member_type) : sift_f2s_key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, st->km, key, member_type, &n);
 
 	sift_budget_check((Size) n * sizeof(Datum), work_mem, "the members of a scope key", "work_mem", NULL);
-	for (uint32 i = 0; i < n; i++)
-		vals[i] = int_datum(member_type, members[i]);
 	st->members = n;
-	return construct_array_builtin(vals, n, member_type);
+	return members;
 }
 
 /* The granules of the key K that the summary names, which hold all its facts; NULL for a NULL key or a summary that cannot route */
