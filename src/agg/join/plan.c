@@ -382,7 +382,8 @@ period_types(Oid elem, Oid range)
 	return (elem == DATEOID && range == DATERANGEOID) || (elem == INT4OID && range == INT4RANGEOID);
 }
 
-/* fact.col <@ dim.range of an inner join: the dimension is the periods, probed by the column (SV6J_RANGE_SMALL); a LEFT or semi join of it, and the rows of an unnest, are the normal plan's */
+/* fact.col <@ dim.range of an inner join: the dimension is the periods, probed by the column (SV6J_RANGE_SMALL), which multiplies a row by the periods that hold it before its elements are taken
+ * apart; a LEFT or semi join of it is the normal plan's */
 static bool
 place_period(SiftV6JoinShape *sh, const RestrictInfo *ri)
 {
@@ -391,7 +392,7 @@ place_period(SiftV6JoinShape *sh, const RestrictInfo *ri)
 			   *range;
 	SiftV6JoinDim    *d;
 
-	if (sh->elem != NULL || !IsA(ri->clause, OpExpr) || op->opno != OID_RANGE_ELEM_CONTAINED_OP || !ri->is_pushed_down)
+	if (!IsA(ri->clause, OpExpr) || op->opno != OID_RANGE_ELEM_CONTAINED_OP || !ri->is_pushed_down)
 		return false;
 	col = sift_v6_plain_var(linitial(op->args));
 	range = sift_v6_plain_var(lsecond(op->args));
