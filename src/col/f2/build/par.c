@@ -8,7 +8,9 @@
 
 #include "access/parallel.h"
 #include "access/tableam.h"
+#include "storage/condition_variable.h"
 #include "storage/spin.h"
+#include "utils/wait_event.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
 
@@ -28,6 +30,8 @@ typedef struct F2BuildShared
 	slock_t		mutex;
 	double		reltuples;
 	uint64		indexed;
+	int			ready;			/* the workers set up to scan */
+	ConditionVariable ready_cv;
 } F2BuildShared;
 
 #define SCAN_OF(sh) ((ParallelTableScanDesc) ((char *) (sh) + BUFFERALIGN(sizeof(F2BuildShared))))
@@ -46,6 +50,37 @@ add_counts(F2BuildShared *sh, double reltuples, uint64 indexed)
 	sh->reltuples += reltuples;
 	sh->indexed += indexed;
 	SpinLockRelease(&sh->mutex);
+}
+
+static void
+worker_ready(F2BuildShared *sh)
+{
+	SpinLockAcquire(&sh->mutex);
+	sh->ready++;
+	SpinLockRelease(&sh->mutex);
+	ConditionVariableBroadcast(&sh->ready_cv);
+}
+
+/*
+ * The leader scans once every worker can: a leader that starts while the workers are still setting up takes the heap alone, and the share it gets past a run of whole granules is a
+ * part of a few rows, as many more pages as the workers are slow to start
+ */
+static void
+await_workers(F2BuildShared *sh, int nworkers)
+{
+	ConditionVariablePrepareToSleep(&sh->ready_cv);
+	for (;;)
+	{
+		int			ready;
+
+		SpinLockAcquire(&sh->mutex);
+		ready = sh->ready;
+		SpinLockRelease(&sh->mutex);
+		if (ready >= nworkers)
+			break;
+		ConditionVariableSleep(&sh->ready_cv, WAIT_EVENT_PARALLEL_CREATE_INDEX_SCAN);
+	}
+	ConditionVariableCancelSleep();
 }
 
 /* A synchronized scan starts in the middle of the heap: the participants take blocks in the order of the heap whatever else is reading it */
@@ -77,6 +112,7 @@ sift_f2_build_par(Relation heap, Relation index, IndexInfo *info, SiftF2Build *l
 	sh = ldr->shared;
 	*sh = (F2BuildShared) {.common = {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent},.nparticipants = nworkers + 1};
 	SpinLockInit(&sh->mutex);
+	ConditionVariableInit(&sh->ready_cv);
 	first_gen = sift_manifest_new_gen(index, SIFT_F2_BUILD_GENS_PER_PARTICIPANT * sh->nparticipants);
 	pg_atomic_init_u64(&sh->gens.next, first_gen);
 	sh->gens.end = first_gen + SIFT_F2_BUILD_GENS_PER_PARTICIPANT * sh->nparticipants;
@@ -84,6 +120,7 @@ sift_f2_build_par(Relation heap, Relation index, IndexInfo *info, SiftF2Build *l
 	if (!sift_par_launch(ldr, "sift_col", index, nworkers))
 		return false;
 	sift_f2_build_share(leader, hand_of(ldr->parts), &sh->gens);
+	await_workers(sh, ldr->pcxt->nworkers_launched);
 	reltuples = sift_f2_build_scan(leader, info, sift_table_beginscan_parallel(heap, SCAN_OF(sh)), true);
 	sift_par_wait(ldr);
 	sift_f2_build_commit_hands(leader, ldr->parts, sh->nparticipants);
@@ -108,6 +145,7 @@ sift_f2_build_worker(dsm_segment *seg, shm_toc *toc)
 	sift_col_building = RelationGetRelid(w.index);
 	bs = sift_f2_build_begin(w.heap, w.index, sh->nparticipants);
 	sift_f2_build_share(bs, hand_of(w.parts), &sh->gens);
+	worker_ready(sh);
 	SIFT_F2_GATE(BUILD_GATE_SCAN);
 	reltuples = sift_f2_build_scan(bs, w.info, sift_table_beginscan_parallel(w.heap, SCAN_OF(sh)), false);
 	add_counts(sh, reltuples, sift_f2_build_rows(bs));
