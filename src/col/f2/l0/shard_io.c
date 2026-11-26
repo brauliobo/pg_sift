@@ -534,7 +534,8 @@ sift_l0_hot_test_hold_fatal(Relation rel, uint64 part_id)
 	SiftL0Table *t = table_try();
 
 	if (t == NULL || claim_held(t, rel, part_id) == NULL)
-		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("sift: no entry of the hot partitions for partition %llu", (unsigned long long) part_id)));
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("sift: no entry of the hot partitions for partition %llu", (unsigned long long) part_id),
+						errhint("Load pg_sift in shared_preload_libraries and call it while the table of hot partitions has a free entry.")));
 	ereport(FATAL, (errcode(ERRCODE_ADMIN_SHUTDOWN), errmsg("sift: the backend exits holding the entry of partition %llu (test)", (unsigned long long) part_id)));
 }
 
