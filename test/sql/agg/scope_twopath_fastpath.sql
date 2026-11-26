@@ -1,7 +1,8 @@
 -- The scope of two paths of the stock benchmark (a direct grant, or a grant on a group through the memberships) on an index of format major 2: a statement over the view of the pairs written as IN,
 -- EXISTS or a join is answered by the node of the scope (SiftAggV6Scope), from the summary of the key, the ring of its newest rows, or the scan of the facts of its members, never by the
 -- join of the facts with the view. Each line is a statement of the classes of bench/sql/scope_stock/queries: whether its rows are those of the join as written (sift.enable_agg = off) and
--- what the plan read. The classes the cubes cannot answer (a group by a leaf that is no flag, a count of distinct members) stay on the aggregate scan.
+-- what the plan read. The classes the cubes cannot answer (a group by a leaf that is no flag, a count of distinct members) scan the facts of the members of the key: the parts are sorted by
+-- the member, so that scan reads the granules of the key alone.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

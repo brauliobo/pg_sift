@@ -655,6 +655,19 @@ fallback_path(const ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupP
 									p->root->processed_groupClause, (List *) extra->havingQual, &costs, groups);
 }
 
+/* The share of the facts the scan of the members of the key reads: the router keeps the granules of the key, which are the share of the facts the join keeps when the parts are sorted by the
+ * member, and nearly all of them when the members are spread */
+static double
+scan_kept(const ScopePlan *p, const RelOptInfo *input_rel)
+{
+	const SiftOrderOps *order = p->ops->order;
+	const Oid	relid = p->index == NULL ? planner_rt_fetch(p->fact->relid, p->root)->relid : p->index->indexoid;
+
+	if (order == NULL || order->lead_att(relid, p->index == NULL) != sift_v6_scope_fact_attno(p, p->layout.member_col))
+		return 1.0;
+	return Min(input_rel->rows / Max(p->fact->rows, 1.0), 1.0);
+}
+
 static void
 add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathExtraData *extra)
 {
@@ -670,11 +683,12 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 	cp->path.total_cost = 2 * random_page_cost + cpu_tuple_cost * groups;
 	if (p->spec.scan)
 	{
+		const double kept = scan_kept(p, input_rel);
 		Cost		open;
 
 		sift_v6_scan_price(p->root, p->fact, p->index, 0, &open, &cp->path.total_cost);
 		cp->path.startup_cost = open;
-		cp->path.total_cost += cpu_tuple_cost * groups + cpu_operator_cost * p->fact->rows;
+		cp->path.total_cost = open + kept * (cp->path.total_cost - open + cpu_operator_cost * p->fact->rows) + cpu_tuple_cost * groups;
 	}
 	cp->methods = &scope_path_methods;
 	if (p->spec.scan)
