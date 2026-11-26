@@ -215,7 +215,8 @@ op_pushable(IndexOptInfo *ix, Relation indexrel, OpExpr *op0, SiftHybQual *qual,
 			return true;
 		}
 		if ((op->opno == OID_ARRAY_OVERLAP_OP || op->opno == OID_ARRAY_CONTAINS_OP) && runtime_value(r) && sift_col_def_arrlen_head(def) && !(def->flags & SIFT_COLD_NOIMAGE) &&
-			(typid == TEXTARRAYOID || typid == INT4ARRAYOID || typid == INT8ARRAYOID) && exprType(r) == typid)
+			(typid == INT4ARRAYOID || typid == INT8ARRAYOID || (typid == TEXTARRAYOID && OidIsValid(collid) && get_collation_isdeterministic(collid))) &&
+			exprType(r) == typid)
 		{
 			*qual = (SiftHybQual) {op->opno == OID_ARRAY_OVERLAP_OP ? SHQ_ARR_OVERLAP : SHQ_ARR_CONTAINS, col, false};
 			*norm = (Expr *) op;
@@ -423,7 +424,7 @@ eval_array(SiftHybExt *e, Datum d, MemoryContext cx)
 		return;
 	}
 	e->vals[0][0] = (SiftColValue) {.v.s = (const char *) e->aq,.len = sizeof(SiftArrQuery)};
-	e->pred[0] = (SiftColPred) {.col = e->leaf,.op = contains ? SIFT_COLOP_ARR_CONTAINS : SIFT_COLOP_ARR_OVERLAP,.nvals = 1,.vals = e->vals[0]};
+	e->pred[0] = (SiftColPred) {.col = e->leaf,.op = contains ? SIFT_COLOP_ARR_CONTAINS : SIFT_COLOP_ARR_OVERLAP,.nvals = 1,.vals = e->vals[0],.collid = e->collid};
 	e->vals[1][0] = (SiftColValue) {.v.i = contains ? e->aq->n : 1};
 	e->pred[1] = (SiftColPred) {.col = e->leaf + 1,.op = SIFT_COLOP_GE,.nvals = 1,.vals = e->vals[1]};
 	e->npreds = 2;

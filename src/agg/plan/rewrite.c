@@ -6,6 +6,7 @@
 
 #include "catalog/namespace.h"
 #include "catalog/pg_namespace_d.h"
+#include "common/int.h"
 #include "mb/pg_wchar.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -499,7 +500,8 @@ static uint32
 limit_plus_offset(const Query *q, int64 max_k)
 {
 	int64		limit,
-				offset = 0;
+				offset = 0,
+				sum;
 
 	if (q->distinctClause != NIL || q->hasTargetSRFs || q->limitOption != LIMIT_OPTION_COUNT || q->limitCount == NULL || !IsA(q->limitCount, Const))
 		return 0;
@@ -512,7 +514,7 @@ limit_plus_offset(const Query *q, int64 max_k)
 			return 0;
 		offset = DatumGetInt64(((const Const *) q->limitOffset)->constvalue);
 	}
-	return limit < 1 || offset < 0 || limit + offset > max_k ? 0 : (uint32) (limit + offset);
+	return limit < 1 || offset < 0 || pg_add_s64_overflow(limit, offset, &sum) || sum > max_k ? 0 : (uint32) sum;
 }
 
 /* the K of the query: ORDER BY and LIMIT + OFFSET of constants */

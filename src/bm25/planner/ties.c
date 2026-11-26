@@ -9,6 +9,7 @@
 #include "postgres.h"
 
 #include "catalog/pg_type_d.h"
+#include "common/int.h"
 #include "nodes/makefuncs.h"
 #include "nodes/plannodes.h"
 
@@ -37,8 +38,8 @@ limit_rows(const Limit *limit, int64 *rows)
 	if (limit->limitOption != LIMIT_OPTION_COUNT || count == NULL || !IsA(count, Const) || count->constisnull ||
 		(offset != NULL && (!IsA(offset, Const) || offset->constisnull)))
 		return false;
-	*rows = DatumGetInt64(count->constvalue) + (offset ? DatumGetInt64(offset->constvalue) : 0);
-	return *rows > 0 && *rows <= LIMIT_HINT_MAX;
+	return !pg_add_s64_overflow(DatumGetInt64(count->constvalue), offset ? DatumGetInt64(offset->constvalue) : 0, rows) &&
+		*rows > 0 && *rows <= LIMIT_HINT_MAX;
 }
 
 static void

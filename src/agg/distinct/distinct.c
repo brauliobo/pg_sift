@@ -1,6 +1,10 @@
 /*
  * agg/distinct/distinct.c - the exact COUNT(DISTINCT) set (v6_distinct.h).
  */
+#include "postgres.h"
+
+#include "miscadmin.h"
+
 #include "agg/dictseen.h"
 #include "agg/distinct/distinct.h"
 #include "agg/spill.h"
@@ -631,6 +635,7 @@ sift_distinct_finish(SiftDistinct *d)
 		uint64		tag;
 		uint32		len;
 
+		CHECK_FOR_INTERRUPTS();
 		if (sift_spill_part_records(d->spill, p) == 0)
 			continue;
 		sift_spill_rewind(d->spill, p);
@@ -647,6 +652,7 @@ sift_distinct_finish(SiftDistinct *d)
 			const uint8 *key = dist_unpack(buf, len, rec, &n);
 			uint32		slot;
 
+			CHECK_FOR_INTERRUPTS();
 			memcpy(&slot, key, sizeof(uint32));
 			dist_add_hashed(c, slot, key + sizeof(uint32), n - (uint32) sizeof(uint32));
 		}

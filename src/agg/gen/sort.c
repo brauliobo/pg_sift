@@ -192,6 +192,7 @@ v6_gen_sort_drain(V6Gen *gen, V6GenAgg *ga, V6Acc **accs, uint32 nsid)
 	{
 		const uint32 sid = (uint32) DatumGetInt32(slot_getattr(s->get, 1, &isnull));
 
+		CHECK_FOR_INTERRUPTS();
 		Assert(sid < nsid && accs[sid] != NULL);
 		for (int k = 0; k < ga->ntrans; k++)
 			if (s->vcol[k] >= 0)

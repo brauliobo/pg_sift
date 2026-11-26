@@ -86,7 +86,7 @@ read_leaves(const SiftV6Spec *s, bool *filtered, bool *computed)
 	for (int d = 0; d < s->nderive; d++)
 		note_col(&leaves, &s->derive[d].src);
 	foreach_ptr(List, item, s->pgexpr)
-		for (int i = 0; i < list_length(lsecond(item)); i += 3)
+		for (int i = 1; i < list_length(lsecond(item)); i += SIFT_V6_PGX_INTS)
 			if (raising_attno(list_nth_int(lsecond(item), i)))
 			{
 				leaves = bms_add_member(leaves, sift_v6_vatt_leaf(list_nth_int(lsecond(item), i)));

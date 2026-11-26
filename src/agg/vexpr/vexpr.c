@@ -119,6 +119,23 @@ vword(const Run *r, const SiftVec *v, int w)
 	return v->all_valid ? ones(r, w) : v->valid[w] & ones(r, w);
 }
 
+/* the rows of a numeric vector that hold a NaN, which valid says are NULL */
+static inline uint64
+nword(const Run *r, const SiftVec *v, int w)
+{
+	return v->nan != NULL ? v->nan[w] & ones(r, w) : 0;
+}
+
+/* A NaN is a value no register holds: a row that computes on one is refused, the comparisons and IS NULL answer for it as PostgreSQL does */
+static void
+refuse_nan(const Run *r, const SiftVec *v, int act)
+{
+	for (int w = 0; w < r->nw; w++)
+		if (nword(r, v, w) & r->c->m[act].v[w])
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a numeric NaN cannot be computed by the vectorized expressions"),
+							errhint("Run the statement with sift.enable_agg = off.")));
+}
+
 static inline size_t
 esize(SiftVecType t)
 {
@@ -146,6 +163,7 @@ own_reg(Run *r, int reg, SiftVecType type, int scale)
 	d->type = type;
 	d->scale = (int16) scale;
 	d->dict = NULL;
+	d->nan = NULL;
 	r->c->own[reg] = true;
 	return d;
 }
@@ -203,6 +221,9 @@ op_arith(Run *r, const SiftVecOp *op)
 	Fail	   *f = &r->fail;
 	SiftVec    *d;
 
+	refuse_nan(r, &a, op->act);
+	if (!bk && !unary)
+		refuse_nan(r, &b, op->act);
 	d = own_reg(r, op->dst, op->type, op->scale);
 	for (int w = 0; w < r->nw; w++)
 	{
@@ -365,9 +386,11 @@ static void
 op_cast(Run *r, const SiftVecOp *op)
 {
 	const SiftVec a = r->c->regs[op->a];
-	SiftVec    *d = own_reg(r, op->dst, op->type_to, op->scale);
+	SiftVec    *d;
 	const void *src;
 
+	refuse_nan(r, &a, op->act);
+	d = own_reg(r, op->dst, op->type_to, op->scale);
 	for (int w = 0; w < r->nw; w++)
 		d->valid[w] = vword(r, &a, w);
 	d->all_valid = a.all_valid;
@@ -398,8 +421,10 @@ static void
 op_rescale(Run *r, const SiftVecOp *op)
 {
 	const SiftVec a = r->c->regs[op->a];
-	SiftVec    *d = own_reg(r, op->dst, op->type, op->scale);
+	SiftVec    *d;
 
+	refuse_nan(r, &a, op->act);
+	d = own_reg(r, op->dst, op->type, op->scale);
 	for (int w = 0; w < r->nw; w++)
 		d->valid[w] = vword(r, &a, w);
 	d->all_valid = a.all_valid;
@@ -441,6 +466,21 @@ cmp_i128(uint64 *m, const i128 *a, const i128 *b, i128 bc, bool bk, uint16 n, Si
 	}
 }
 
+/* NaN equals NaN and is greater than every number: the rows of a comparison where a side is NaN and the other is not NULL */
+static inline uint64
+nan_cmp(SiftCmpOp cmp, uint64 an, uint64 bn)
+{
+	switch (cmp)
+	{
+		case SCMP_EQ: return an & bn;
+		case SCMP_NE: return an ^ bn;
+		case SCMP_LT: return ~an & bn;
+		case SCMP_LE: return bn;
+		case SCMP_GT: return an & ~bn;
+		default: return an;
+	}
+}
+
 static void
 op_cmp(Run *r, const SiftVecOp *op)
 {
@@ -477,10 +517,15 @@ op_cmp(Run *r, const SiftVecOp *op)
 	}
 	for (int w = 0; w < r->nw; w++)
 	{
-		const uint64 known = vword(r, &a, w) & (bk ? ~UINT64CONST(0) : vword(r, &b, w));
+		const uint64 av = vword(r, &a, w),
+					bv = bk ? ~UINT64CONST(0) : vword(r, &b, w),
+					an = nword(r, &a, w),
+					bn = bk ? 0 : nword(r, &b, w),
+					known = av & bv,
+					nan = (an & (bv | bn)) | (bn & (av | an));
 
-		m->k[w] = known;
-		m->v[w] &= known;
+		m->k[w] = known | nan;
+		m->v[w] = (m->v[w] & known) | (nan_cmp(cmp, an, bn) & nan);
 	}
 }
 
@@ -574,7 +619,7 @@ op_load_mask(Run *r, const SiftVecOp *op)
 	else
 		for (int w = 0; w < r->nw; w++)
 		{
-			const uint64 valid = vword(r, &r->c->regs[op->a], w);
+			const uint64 valid = vword(r, &r->c->regs[op->a], w) | nword(r, &r->c->regs[op->a], w);
 
 			d->v[w] = op->aux ? valid : ones(r, w) & ~valid;
 			d->k[w] = ones(r, w);
@@ -617,6 +662,7 @@ op_copy(Run *r, const SiftVecOp *op)
 	const SiftVec a = r->c->regs[op->a];
 	SiftVec    *d;
 
+	refuse_nan(r, &a, op->act);
 	if (op->dst == op->a && r->c->own[op->dst])
 		return;
 	d = own_reg(r, op->dst, op->type, op->scale);
@@ -669,6 +715,7 @@ op_blend(Run *r, const SiftVecOp *op)
 	const SiftVec s = r->c->regs[op->a];
 	const uint64 *m = slot(r, op->c)->v;
 
+	refuse_nan(r, &s, op->c);
 	if (d->all_valid)
 	{
 		d->valid = r->c->valid[op->dst];
@@ -708,7 +755,7 @@ op_act(Run *r, const SiftVecOp *op)
 			case VOP_ACT_ANDN: x = a.v[w] & ~b.v[w]; break;
 			case VOP_ACT_NOTFALSE: x = a.v[w] & (~b.k[w] | b.v[w]); break;
 			case VOP_ACT_UNKNOWN: x = a.v[w] & ~b.k[w]; break;
-			default: x = a.v[w] & ~vword(r, &r->c->regs[op->b], w); break;
+			default: x = a.v[w] & ~(vword(r, &r->c->regs[op->b], w) | nword(r, &r->c->regs[op->b], w)); break;
 		}
 		d->v[w] = x;
 		d->k[w] = ones(r, w);
@@ -852,6 +899,8 @@ sift_vexpr_eval(SiftVexprCtx *c, const SiftVexprProg *prog, const SiftVexprIn *i
 	}
 	if (run.fail.row != INT32_MAX)
 		raise_fail(&run.fail);
+	if (!prog->out_is_bool)
+		refuse_nan(&run, &c->regs[prog->out], 0);
 	out->is_bool = prog->out_is_bool;
 	out->vec = prog->out_is_bool ? NULL : &c->regs[prog->out];
 	out->true_bits = prog->out_is_bool ? c->m[prog->out].v : NULL;

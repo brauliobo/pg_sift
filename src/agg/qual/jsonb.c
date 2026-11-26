@@ -330,7 +330,7 @@ sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, Lis
 	int			att,
 				leaf;
 
-	if (text == NULL || !IsA(text, CoerceViaIO) || ((const CoerceViaIO *) text)->resulttype != FLOAT8OID)
+	if (rel->table != NULL || text == NULL || !IsA(text, CoerceViaIO) || ((const CoerceViaIO *) text)->resulttype != FLOAT8OID)
 		return false;
 	text = strip(((const CoerceViaIO *) text)->arg);
 	if (text == NULL || func_of(text) != F_JSONB_OBJECT_FIELD_TEXT || (doc = sift_v6_doc_chain(text, path)) == NULL || list_length(*path) < 2 || !doc_of(rel, (const Expr *) doc, &att))
@@ -470,7 +470,7 @@ sift_v6_json_type_clash(const SiftV6Spec *s)
 	for (int d = 0; d < s->nderive; d++)
 		note_col(&j, &s->derive[d].src);
 	foreach_ptr(List, item, s->pgexpr)
-		for (int i = 1; i < list_length(lsecond(item)); i += 3)
+		for (int i = 1; i < list_length(lsecond(item)); i += SIFT_V6_PGX_INTS)
 			if (sift_v6_vatt_is_json(list_nth_int(lsecond(item), i)))
 				note_vatt(&j, list_nth_int(lsecond(item), i));
 	foreach_ptr(Node, clause, s->vqual)

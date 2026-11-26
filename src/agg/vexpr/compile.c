@@ -32,12 +32,13 @@ typedef struct Comp
 	bool		fail;
 } Comp;
 
-/* the type of a value: for a numeric its scale and the exclusive bound of its unscaled magnitude */
+/* the type of a value: for a numeric its scale and the exclusive bound of its unscaled magnitude; inf: an EXTRACT whose infinity is the least or greatest int64 */
 typedef struct TI
 {
 	SiftVecType type;
 	int			scale;
 	double		bound;
+	bool		inf;
 } TI;
 
 static int comp_val(Comp *c, const SiftVexprNode *n, int act);
@@ -176,6 +177,15 @@ unify(const TI *a, const TI *b, bool rescale, TI *out)
 	return true;
 }
 
+static bool ti_of(const SiftVexprNode *n, int depth, TI *t);
+
+/* the type of an operand that computes on its value: an infinity of EXTRACT has no number to compute with */
+static bool
+ti_finite(const SiftVexprNode *n, int depth, TI *t)
+{
+	return ti_of(n, depth, t) && !t->inf;
+}
+
 static bool
 ti_of(const SiftVexprNode *n, int depth, TI *t)
 {
@@ -208,7 +218,7 @@ ti_of(const SiftVexprNode *n, int depth, TI *t)
 				return false;
 			return !(n->kind == SVX_CONST && n->type == SVEC_I32 && (n->i64 < INT32_MIN || n->i64 > INT32_MAX));
 		case SVX_CAST:
-			if (!ti_of(n->args[0], depth + 1, &x))
+			if (!ti_finite(n->args[0], depth + 1, &x))
 				return false;
 			t->type = n->type;
 			if (n->type == SVEC_I64)
@@ -234,7 +244,7 @@ ti_of(const SiftVexprNode *n, int depth, TI *t)
 		case SVX_SUB:
 		case SVX_MUL:
 		case SVX_DIV:
-			if (!ti_of(n->args[0], depth + 1, &x) || !ti_of(n->args[1], depth + 1, &y) || !unify(&x, &y, n->kind != SVX_MUL, t))
+			if (!ti_finite(n->args[0], depth + 1, &x) || !ti_finite(n->args[1], depth + 1, &y) || !unify(&x, &y, n->kind != SVX_MUL, t))
 				return false;
 			if (is_numeric(t->type))
 			{
@@ -257,7 +267,7 @@ ti_of(const SiftVexprNode *n, int depth, TI *t)
 			return true;
 		case SVX_NEG:
 		case SVX_ABS:
-			if (!ti_of(n->args[0], depth + 1, t))
+			if (!ti_finite(n->args[0], depth + 1, t))
 				return false;
 			if (is_numeric(t->type))
 				t->type = numeric_type(t->bound);
@@ -273,7 +283,7 @@ ti_of(const SiftVexprNode *n, int depth, TI *t)
 				{
 					const SiftVexprNode *arg = n->args[n->kind == SVX_COALESCE ? i : (i < n->aux ? 2 * i + 1 : 2 * n->aux)];
 
-					if (!ti_of(arg, depth + 1, &x))
+					if (!ti_finite(arg, depth + 1, &x))
 						return false;
 					if (i == 0)
 						*t = x;
@@ -300,6 +310,7 @@ ti_of(const SiftVexprNode *n, int depth, TI *t)
 			t->type = SVEC_NUM64;
 			t->scale = vcal_extract_scale((SiftVxField) n->aux, x.type == SVEC_I32);
 			t->bound = 1e18;
+			t->inf = n->aux == SVF_YEAR || n->aux == SVF_EPOCH;
 			return true;
 		default:
 			return false;
@@ -713,6 +724,13 @@ comp_val(Comp *c, const SiftVexprNode *n, int act)
 	return d;
 }
 
+/* the least and greatest int64 that stand for the infinities of EXTRACT keep their order only unscaled, against a finite numeric of 64 bits (never either of them) */
+static bool
+orders_infinity(const TI *t, const TI *tc)
+{
+	return !t->inf || (t->type == SVEC_NUM64 && tc->type == SVEC_NUM64 && t->scale == tc->scale);
+}
+
 static int
 comp_cmp(Comp *c, const SiftVexprNode *n, int act)
 {
@@ -735,7 +753,8 @@ comp_cmp(Comp *c, const SiftVexprNode *n, int act)
 		y = t;
 		cmp = flip(cmp);
 	}
-	if (!ti_of(x, 0, &tx) || !ti_of(y, 0, &ty) || !unify(&tx, &ty, true, &tc))
+	if (!ti_of(x, 0, &tx) || !ti_of(y, 0, &ty) || !unify(&tx, &ty, true, &tc) ||
+		!orders_infinity(&tx, &tc) || !orders_infinity(&ty, &tc))
 	{
 		c->fail = true;
 		return mask_alloc(c);
@@ -962,12 +981,12 @@ bool
 sift_vexpr_compile(const SiftVexprNode *root, SiftVexprProg *out)
 {
 	Comp		c = {out, 0, 1, 0, false};
-	TI			t = {SVEC_BOOL, 0, 0};
+	TI			t = {SVEC_BOOL, 0, 0, false};
 
 	memset(out, 0, sizeof(*out));
 	out->n_masks = 1;
 	out->out_is_bool = is_bool_node(root);
-	if (!out->out_is_bool && !ti_of(root, 0, &t))
+	if (!out->out_is_bool && !ti_finite(root, 0, &t))
 		return false;
 	out->out = (uint8) (out->out_is_bool ? comp_bool(&c, root, 0) : comp_val(&c, root, 0));
 	out->out_type = t.type;

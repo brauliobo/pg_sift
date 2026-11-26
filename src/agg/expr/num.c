@@ -593,25 +593,43 @@ sift_vn_filter_to_case(const Aggref *a)
 	return c;
 }
 
-/* CASE WHEN count(*) = 0 THEN NULL ELSE inner END: the sum of a group that has rows and no row for the filter is 0, that of no rows is NULL */
+/* CASE WHEN none = 0 THEN when_none ELSE inner END */
 static Node *
-unless_empty(const Aggref *a, Expr *inner)
+unless_none(const Aggref *none_count, Expr *when_none, Expr *inner)
 {
 	Oid			eq = OpernameGetOprid(list_make1(makeString("=")), INT8OID, INT8OID);
-	OpExpr	   *none = (OpExpr *) make_opclause(eq, BOOLOID, false, (Expr *) count_star_of(a), (Expr *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(0), false, true),
+	OpExpr	   *none = (OpExpr *) make_opclause(eq, BOOLOID, false, (Expr *) none_count, (Expr *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(0), false, true),
 												InvalidOid, InvalidOid);
 	CaseWhen   *w = makeNode(CaseWhen);
 	CaseExpr   *c = makeNode(CaseExpr);
 
 	none->opfuncid = get_opcode(eq);
 	w->expr = (Expr *) none;
-	w->result = (Expr *) makeNullConst(a->aggtype, -1, InvalidOid);
-	c->casetype = a->aggtype;
+	w->result = when_none;
+	c->casetype = exprType((Node *) inner);
 	c->args = list_make1(w);
 	c->defresult = inner;
 	return (Node *) c;
 }
 
+/* count(*) FILTER (WHERE cond IS NOT TRUE): the rows that take the ELSE 0 */
+static Aggref *
+count_else(const Aggref *a, const CaseAgg *ca)
+{
+	Aggref	   *c = count_star_of(a);
+	BooleanTest *t = makeNode(BooleanTest);
+
+	t->arg = copyObject(ca->cond);
+	t->booltesttype = IS_NOT_TRUE;
+	t->location = -1;
+	c->aggfilter = (Expr *) t;
+	return c;
+}
+
+/*
+ * The sum of the rows of cond, and 0 when a row took the ELSE: a group whose every row took cond sums the values alone, NULL when they all are NULL,
+ * and a group of no rows is NULL as the sum of none
+ */
 static Node *
 rewritten(const Aggref *a, const CaseAgg *ca)
 {
@@ -625,14 +643,15 @@ rewritten(const Aggref *a, const CaseAgg *ca)
 	if (!ca->else_zero)
 		return constant ? NULL : (Node *) filtered(a, ca, false);
 	if (constant)
-		return a->aggtype == INT8OID && const_is(ca->val, 1) ? unless_empty(a, (Expr *) filtered(a, ca, true)) : NULL;
+		return a->aggtype == INT8OID && const_is(ca->val, 1) ?
+			unless_none(count_star_of(a), (Expr *) makeNullConst(INT8OID, -1, InvalidOid), (Expr *) filtered(a, ca, true)) : NULL;
 	if (a->aggtype != INT8OID && a->aggtype != NUMERICOID)
 		return NULL;
 	zero = makeNode(CoalesceExpr);
 	zero->coalescetype = a->aggtype;
 	zero->args = list_make2(filtered(a, ca, false), a->aggtype == INT8OID ? makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(0), false, true) :
 							makeConst(NUMERICOID, -1, InvalidOid, -1, NumericGetDatum(int64_to_numeric(0)), false, false));
-	return unless_empty(a, (Expr *) zero);
+	return unless_none(count_else(a, ca), (Expr *) filtered(a, ca, false), (Expr *) zero);
 }
 
 static Node *

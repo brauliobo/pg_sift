@@ -309,20 +309,34 @@ vcal_extract(int64 *d, const void *a, bool is_date, uint16 n, SiftVxField field,
 			   *jan1 = scratch + 4 * SIFT_VEC_LEN;
 	const int64 *ts = a;
 	const int32 *dt = a;
-	int64		offs[SIFT_VEC_LEN];
+	int64		offs[SIFT_VEC_LEN],
+				finite[SIFT_VEC_LEN];
+	uint64		sp[SIFT_VEC_WORDS];
 	const int64 *off = no_offset;
 
 	for (int w = 0; w < (n + 63) / 64; w++)
 	{
-		uint64		sp = 0;
-
+		sp[w] = 0;
 		for (int j = 0; j < Min(64, n - w * 64); j++)
 		{
 			const int	i = w * 64 + j;
 
-			sp |= (uint64) (is_date ? (dt[i] == INT32_MIN || dt[i] == INT32_MAX) : is_special_ts(ts[i])) << j;
+			sp[w] |= (uint64) (is_date ? (dt[i] == INT32_MIN || dt[i] == INT32_MAX) : is_special_ts(ts[i])) << j;
 		}
-		special[w] = is_infinity_extract(field) ? 0 : sp;
+		special[w] = is_infinity_extract(field) ? 0 : sp[w];
+	}
+	/* an infinity is computed as 2000-01-01, so that no field overflows on it, and answered at the end */
+	if (first_row(sp, n) >= 0)
+	{
+		int32	   *fdt = (int32 *) finite;
+
+		for (int i = 0; i < n; i++)
+			if (is_date)
+				fdt[i] = (sp[i >> 6] >> (i & 63)) & 1 ? 0 : dt[i];
+			else
+				finite[i] = (sp[i >> 6] >> (i & 63)) & 1 ? 0 : ts[i];
+		dt = fdt;
+		ts = finite;
 	}
 	if (is_date)
 		memcpy(days, dt, (size_t) n * sizeof(int32));
@@ -363,7 +377,7 @@ vcal_extract(int64 *d, const void *a, bool is_date, uint16 n, SiftVxField field,
 			case SVF_MINUTE: d[i] = (int64) ((((ts[i] + off[i]) - (int64) days[i] * USECS_PER_DAY_I) % 3600000000) / 60000000); break;
 			default: d[i] = is_date ? (int64) dt[i] * 86400 + PG_EPOCH_UNIX_S : ts[i] + PG_EPOCH_UNIX_US;
 		}
-		if (is_infinity_extract(field) && (is_date ? (dt[i] == INT32_MIN || dt[i] == INT32_MAX) : is_special_ts(ts[i])))
-			d[i] = (is_date ? dt[i] == INT32_MAX : ts[i] == INT64_MAX) ? INT64_MAX : INT64_MIN;
+		if (is_infinity_extract(field) && ((sp[i >> 6] >> (i & 63)) & 1))
+			d[i] = (is_date ? ((const int32 *) a)[i] == INT32_MAX : ((const int64 *) a)[i] == INT64_MAX) ? INT64_MAX : INT64_MIN;
 	}
 }
