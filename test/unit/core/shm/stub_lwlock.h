@@ -14,6 +14,10 @@ ProcNumber	MyProcNumber = 0;
 static __thread LWLock *stub_held[4];
 static __thread int stub_nheld;
 
+/* A writer that a test runs at the next acquire of lock, before it is taken: what another backend does between two steps of the code under test */
+static LWLock *stub_hook_lock;
+static void (*stub_hook) (void);
+
 void
 LWLockInitialize(LWLock *lock, int tranche_id)
 {
@@ -34,6 +38,13 @@ LWLockConditionalAcquire(LWLock *lock, LWLockMode mode)
 bool
 LWLockAcquire(LWLock *lock, LWLockMode mode)
 {
+	if (stub_hook != NULL && lock == stub_hook_lock)
+	{
+		void		(*hook) (void) = stub_hook;
+
+		stub_hook = NULL;
+		hook();
+	}
 	for (int i = 0; i < stub_nheld; i++)
 		SIFT_CHECKF(stub_held[i] != lock, "a thread waits for a lock it holds");
 	while (!LWLockConditionalAcquire(lock, mode))

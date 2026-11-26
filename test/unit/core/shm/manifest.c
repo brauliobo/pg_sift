@@ -1,7 +1,9 @@
 /*
  * test/unit/core/shm/manifest.c - the registry of the manifests of core/shm/manifest.c and manifest_pub.c over an area of the heap: the readers that load one version of a manifest at once make
  * one snapshot of it, and a second publication of that version neither makes nor replaces one; a retired snapshot costs its retire O(1) however many a reader's epoch holds back, and the ones a
- * reader holds do not keep the newer ones from being freed; a database that is dropped gives back the slots and the snapshots of its indexes.
+ * reader holds do not keep the newer ones from being freed; a database that is dropped gives back the slots and the snapshots of its indexes. A writer that holds only the build_lock of a slot
+ * and commits a newer version between the claim of a slot and its write is not undone; a meta of the version a slot has the snapshot of keeps that snapshot; a builder, a reader beyond the
+ * epoch slots and a backend that installs a list give back what they hold when they fail (ERROR) or exit (FATAL).
  */
 #include "postgres.h"
 
@@ -25,6 +27,53 @@ sigjmp_buf *PG_exception_stack;
 
 static uint64 allocs;
 static uint64 addresses;
+static int64 reserved;
+static bool reserve_fails;
+static pg_on_exit_callback exit_cb[4];
+static int	nexit;
+static bool exit_in_alloc;
+static sigjmp_buf exit_jmp;
+
+/* What errfinish does in the server: the error goes to the innermost PG_TRY */
+void
+pg_re_throw(void)
+{
+	siglongjmp(*PG_exception_stack, 1);
+}
+
+static void
+throw_error(void)
+{
+	pg_re_throw();
+}
+
+/* Whether fn raised an ERROR, caught as the caller of the code under test would catch it */
+static bool
+raises(void (*fn) (void *), void *arg)
+{
+	sigjmp_buf	jb;
+	sigjmp_buf *outer = PG_exception_stack;
+
+	if (sigsetjmp(jb, 0) != 0)
+	{
+		PG_exception_stack = outer;
+		return true;
+	}
+	PG_exception_stack = &jb;
+	fn(arg);
+	PG_exception_stack = outer;
+	return false;
+}
+
+/* What proc_exit does on FATAL: the exit callbacks run, last registered first, and no PG_CATCH does */
+static void
+exit_now(void)
+{
+	exit_in_alloc = false;
+	while (nexit > 0)
+		exit_cb[--nexit] (1, (Datum) 0);
+	siglongjmp(exit_jmp, 1);
+}
 
 void *
 sift_dsm_try(const char *name, Size size, SiftDsmInit init)
@@ -34,6 +83,18 @@ sift_dsm_try(const char *name, Size size, SiftDsmInit init)
 
 void
 before_shmem_exit(pg_on_exit_callback function, Datum arg)
+{
+	SIFT_CHECK(nexit < lengthof(exit_cb));
+	exit_cb[nexit++] = function;
+}
+
+void
+AbortOutOfAnyTransaction(void)
+{
+}
+
+void
+dsa_detach(dsa_area *a)
 {
 }
 
@@ -46,18 +107,25 @@ RecoveryInProgress(void)
 MemoryContext
 sift_cache_create_context(const char *name)
 {
-	return CurrentMemoryContext;
+	return AllocSetContextCreate(CurrentMemoryContext, "test manifest area", ALLOCSET_SMALL_SIZES);
 }
 
 bool
 sift_shm_reserve_shared(SiftShmPoolId pool, Size bytes)
 {
+	if (reserve_fails)
+	{
+		reserve_fails = false;
+		throw_error();
+	}
+	reserved += bytes;
 	return true;
 }
 
 void
 sift_shm_release_shared(SiftShmPoolId pool, Size bytes)
 {
+	reserved -= bytes;
 }
 
 void
@@ -102,6 +170,8 @@ dsa_pin_mapping(dsa_area *a)
 dsa_pointer
 dsa_allocate_extended(dsa_area *a, size_t size, int flags)
 {
+	if (exit_in_alloc)
+		exit_now();
 	allocs++;
 	return (dsa_pointer) (uintptr_t) calloc(1, size);
 }
@@ -257,6 +327,158 @@ test_peek_miss_preserves_out(void)
 	SIFT_CHECKF(out.scope_dir_blk == InvalidBlockNumber && out.manifest_version == 5, "an empty-slot peek miss leaves the caller's meta untouched");
 }
 
+
+/* The writer of version 3, which holds only the build_lock of the slot, commits while the writer of version 2 has chosen the slot under claim_lock and not written it yet */
+static SiftShmIndexMeta newer;
+static dsa_pointer newer_dp;
+
+static void
+newer_commits(void)
+{
+	char	   *fail = sift_test_dsm_fail;
+
+	sift_test_dsm_fail = NULL;
+	SIFT_CHECK(write_steady(table, area, &newer, true, newer_dp) == STEADY_WRITTEN);
+	sift_test_dsm_fail = fail;
+}
+
+/* The claimed writer of version 2 (sift_test_dsm_fail sends every writer past write_steady) runs with version 3 committed between its claim and its write */
+static void
+race_older(RelFileNumber rel, bool hold)
+{
+	SiftShmIndexMeta m = meta_of(14, rel, 1);
+	SiftShmSnapSpec spec = spec_of(1),
+				newer_spec = spec_of(3);
+	SiftShmIndexMeta out;
+	bool		found;
+
+	SIFT_CHECK(sift_shm_manifest_publish(&m, NULL) && sift_shm_manifest_publish(&m, &spec));
+	newer = meta_of(14, rel, 3);
+	newer.state_flags |= SIFT_SHM_SLOT_HAS_SNAP;
+	newer_dp = sift_shm_snap_build(table, area, &newer.locator, &newer_spec);
+	stub_hook_lock = &slot_probe(table, &m.locator)->build_lock;
+	stub_hook = newer_commits;
+	sift_test_dsm_fail = "none";
+	m.manifest_version = 2;
+	if (hold)
+		sift_shm_manifest_hold(&m.locator, 2);
+	else
+		(void) sift_shm_manifest_publish(&m, NULL);
+	sift_test_dsm_fail = NULL;
+	SIFT_CHECKF(stub_hook == NULL, "the newer writer came between");
+	found = sift_shm_manifest_peek(&m.locator, &out);
+	SIFT_CHECKF(found && out.manifest_version == 3, "a %s of version 2 overwrote version 3 committed after its claim (peek %s, version %llu)",
+				hold ? "hold" : "publication", found ? "finds it" : "misses", (unsigned long long) out.manifest_version);
+	SIFT_CHECKF(snap_of(&m.locator) == newer_dp, "the snapshot of version 3 was retired by a writer of version 2");
+}
+
+static void
+test_claimed_writer_rechecks(void)
+{
+	race_older(20100, false);
+	race_older(20101, true);
+}
+
+/* A meta of the version the slot has the snapshot of (the counters of the visibility map, the flags of a TTL) is written, and the snapshot stays */
+static void
+test_meta_keeps_snapshot(void)
+{
+	SiftShmIndexMeta m = meta_of(15, 20200, 5);
+	SiftShmSnapSpec spec = spec_of(5);
+	SiftShmIndexMeta out;
+	dsa_pointer first;
+
+	SIFT_CHECK(sift_shm_manifest_publish(&m, NULL) && sift_shm_manifest_publish(&m, &spec));
+	first = snap_of(&m.locator);
+	m.total_rows = 77;
+	SIFT_CHECK(sift_shm_manifest_publish(&m, NULL));
+	SIFT_CHECKF(sift_shm_manifest_peek(&m.locator, &out) && out.total_rows == 77, "the meta of the version is written");
+	SIFT_CHECKF(snap_of(&m.locator) == first && (out.state_flags & SIFT_SHM_SLOT_HAS_SNAP), "a meta of the version dropped the snapshot of the slot");
+}
+
+static SiftShmIndexMeta build_meta;
+
+static void
+publish_build(void *arg)
+{
+	SiftShmSnapSpec spec = spec_of(build_meta.manifest_version);
+
+	(void) sift_shm_manifest_publish(&build_meta, &spec);
+}
+
+/* A reader that claimed the build of a version and fails gives the claim back: the next reader builds it */
+static void
+test_failed_build_released(void)
+{
+	SiftShmSnapSpec spec = spec_of(4);
+
+	build_meta = meta_of(16, 20300, 4);
+	SIFT_CHECK(sift_shm_manifest_publish(&build_meta, NULL));
+	reserve_fails = true;
+	SIFT_CHECKF(raises(publish_build, NULL), "the build fails");
+	SIFT_CHECKF(sift_shm_manifest_publish(&build_meta, &spec) && snap_of(&build_meta.locator) != InvalidDsaPointer,
+				"a build that failed keeps the next reader of the version from making its snapshot");
+}
+
+static void
+fn_throws(const SiftShmManifestSnap *snap, void *arg)
+{
+	throw_error();
+}
+
+static void
+run_throwing(void *arg)
+{
+	const SiftShmIndexMeta *m = arg;
+
+	(void) sift_shm_snap_with_epoch(&m->locator, m->manifest_version, fn_throws, NULL);
+}
+
+/* The snapshot of a version of an index of its own */
+static SiftShmManifestSnap *
+published_snap(SiftShmIndexMeta *m)
+{
+	SiftShmSnapSpec spec = spec_of(m->manifest_version);
+
+	SIFT_CHECK(sift_shm_manifest_publish(m, NULL) && sift_shm_manifest_publish(m, &spec));
+	return dsa_get_address(area, snap_of(&m->locator));
+}
+
+/* A reader beyond the epoch slots pins the snapshot by its refcount: one whose callback fails gives the count back */
+static void
+test_pinned_reader_error(void)
+{
+	SiftShmIndexMeta m = meta_of(17, 20400, 3);
+	SiftShmManifestSnap *snap = published_snap(&m);
+	uint32		before = pg_atomic_read_u32(&snap->refcount);
+	bool		raised;
+
+	MyProcNumber = SIFT_SHM_EPOCH_SLOTS + 1;
+	raised = raises(run_throwing, &m);
+	MyProcNumber = 0;
+	SIFT_CHECK(raised);
+	SIFT_CHECKF(pg_atomic_read_u32(&snap->refcount) == before, "a reader that failed holds the snapshot for ever (refcount %u, %u before)", pg_atomic_read_u32(&snap->refcount), before);
+}
+
+/* A backend that exits (FATAL) while it copies a list gives back the slot of the list and the bytes it took: the area outlives it (another backend is attached) */
+static void
+test_list_install_exit(void)
+{
+	SiftShmIndexMeta m = meta_of(18, 20500, 3);
+	SiftShmManifestSnap *snap = published_snap(&m);
+	pg_atomic_uint64 *slot = part_list_slot(snap, 1);
+	int64		before = reserved;
+	uint8		list[64] = {0};
+
+	table->area_users++;
+	exit_in_alloc = true;
+	if (sigsetjmp(exit_jmp, 0) == 0)
+		(void) sift_shm_snap_part_list_install(snap, 1, list, sizeof(list));
+	SIFT_CHECKF(!exit_in_alloc && area == NULL, "the backend exited in the copy");
+	SIFT_CHECKF(pg_atomic_read_u64(slot) == InvalidDsaPointer, "the list of a backend that exited is installing for ever");
+	SIFT_CHECKF(reserved == before, "a backend that exited in the copy of a list keeps %lld bytes of the ledger", (long long) (reserved - before));
+}
+
 int
 main(void)
 {
@@ -266,5 +488,13 @@ main(void)
 	test_retire_is_fifo();
 	test_invalidate_db();
 	test_peek_miss_preserves_out();
+	test_claimed_writer_rechecks();
+	test_meta_keeps_snapshot();
+#ifndef __SANITIZE_THREAD__
+	/* one thread; ThreadSanitizer does not find the jmp_buf of a PG_TRY that the ERROR goes to */
+	test_failed_build_released();
+	test_pinned_reader_error();
+	test_list_install_exit();
+#endif
 	return sift_check_summary();
 }

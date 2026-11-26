@@ -163,6 +163,11 @@ sift_shm_slot_at(Table *t, const RelFileLocator *loc, int probe)
 /* ---------- the area ---------- */
 
 static void area_leave(int code, Datum arg);
+static bool list_give_up(pg_atomic_uint64 *slot, Size reserved);
+
+/* The slot of a list this backend copies and the bytes it took: a backend that exits in the copy (FATAL runs no PG_CATCH) gives them back in area_leave */
+static pg_atomic_uint64 *installing;
+static Size installing_bytes;
 
 /*
  * The area, attached by this backend: made where there is none and create is true; NULL where the system has no memory for it, or where there is none and create is false.
@@ -400,6 +405,8 @@ area_leave(int code, Datum arg)
 {
 	Table	   *t = table;
 
+	if (installing != NULL)
+		(void) list_give_up(installing, installing_bytes);
 	AbortOutOfAnyTransaction();
 	if (area == NULL)
 		return;
@@ -410,18 +417,18 @@ area_leave(int code, Datum arg)
 		for (int i = 0; i < SIFT_SHM_MANIFEST_SLOTS; i++)
 		{
 			SiftShmIndexSlot *s = &t->slot[i];
-			dsa_pointer dp = sift_shm_slot_swap_snap(s, InvalidDsaPointer);
+			SiftShmIndexMeta meta;
+			dsa_pointer dp;
 
+			LWLockAcquire(&s->build_lock, LW_EXCLUSIVE);
+			dp = sift_shm_slot_set_snap(s, InvalidDsaPointer);
+			meta = s->meta;
+			meta.state_flags &= ~SIFT_SHM_SLOT_HAS_SNAP;
 			if (dp != InvalidDsaPointer)
-			{
-				SiftShmIndexMeta meta = s->meta;
-
-				meta.state_flags &= ~SIFT_SHM_SLOT_HAS_SNAP;
-				LWLockAcquire(&s->build_lock, LW_EXCLUSIVE);
 				sift_shm_meta_write(s, &meta);
-				LWLockRelease(&s->build_lock);
+			LWLockRelease(&s->build_lock);
+			if (dp != InvalidDsaPointer)
 				sift_shm_snap_retire(t, area, dp);
-			}
 		}
 		reclaim_now(t, area, true);
 		t->area_handle = DSA_HANDLE_INVALID;
@@ -746,10 +753,17 @@ run_on_pinned(SiftShmIndexSlot *s, dsa_area *a, const RelFileLocator *locator, u
 	SiftShmManifestSnap *snap = pin_locked(s, a);
 	bool		ran = snap != NULL && snap->manifest_version == version && RelFileLocatorEquals(snap->locator, *locator);
 
-	if (ran)
-		fn(snap, arg);
-	if (snap != NULL)
-		snap_decref(a, snap->self_dp);
+	PG_TRY();
+	{
+		if (ran)
+			fn(snap, arg);
+	}
+	PG_FINALLY();
+	{
+		if (snap != NULL)
+			snap_decref(a, snap->self_dp);
+	}
+	PG_END_TRY();
 	return ran;
 }
 
@@ -897,16 +911,20 @@ sift_shm_snap_part_list_install(const SiftShmManifestSnap *snapshot, uint32 p, c
 		return true;
 	if (!sift_shm_reserve_shared(SIFT_SHM_MANIFEST, total))
 		return list_give_up(slot, 0);
+	installing = slot;
+	installing_bytes = total;
 	PG_TRY();
 	{
 		mine = list_block(data, bytes, total);
 	}
 	PG_CATCH();
 	{
+		installing = NULL;
 		(void) list_give_up(slot, total);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	installing = NULL;
 	if (mine == InvalidDsaPointer)
 		return list_give_up(slot, total);
 	pg_atomic_fetch_add_u64(&table->list_copies, 1);
