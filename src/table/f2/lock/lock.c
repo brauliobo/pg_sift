@@ -358,9 +358,7 @@ settle_locked(const SiftTouched *t, int si, bool commit, bool keep_speculative, 
 			else
 				i++;
 		if (updater_of(e) == t->xid)
-		{
 			resolve_updater(e, commit);
-		}
 		if (idle(e) && e->nholders < nholders && in_table(si, e))
 		{
 			e->flags = SIFT_ROWLOCK_LAST_LOCKER;
@@ -680,7 +678,8 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 	return r;
 }
 
-/* The entry of a row the current (sub)transaction holds, locked, or NULL: a row held by a partition or the relation has none to change; a holder past the room of the entry is a member of its MultiXactId, read with no lock held */
+/* The entry of a row the current (sub)transaction holds, locked, or NULL: a row held by a partition or the relation has none to change, and a row still in the stage of its inserter keeps the
+ * inserter in updater_fxid (table/f2/spec.h), its stage records the change; a holder past the room of the entry is a member of its MultiXactId, read with no lock held */
 static SiftRowLockEntry *
 held_entry(const SiftRowLockKey *k, int *si)
 {
@@ -696,7 +695,8 @@ held_entry(const SiftRowLockKey *k, int *si)
 
 		sift_rowlock_stripe_acquire(rows, *si, LW_EXCLUSIVE);
 		e = sift_rowlock_find(rows, *si, k);
-		if (e != NULL && (sift_hold_held_mode(e) >= 0 || (sift_mx_has(&seen, e->overflow_mxid) && sift_mx_held_mode(&seen) >= 0)))
+		if (e != NULL && (e->flags & SIFT_ROWLOCK_STAGED_INSERT) == 0 &&
+			(sift_hold_held_mode(e) >= 0 || (sift_mx_has(&seen, e->overflow_mxid) && sift_mx_held_mode(&seen) >= 0)))
 			break;
 		if (e != NULL && MultiXactIdIsValid(e->overflow_mxid) && !sift_mx_has(&seen, e->overflow_mxid))
 			unread = e->overflow_mxid;

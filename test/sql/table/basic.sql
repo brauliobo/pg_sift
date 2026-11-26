@@ -45,6 +45,33 @@ SELECT id, note FROM orders WHERE id >= 2000 ORDER BY id;
 COMMIT;
 SELECT id, note FROM orders WHERE id >= 2000 ORDER BY id;
 
+-- a savepoint that deletes and updates rows its transaction staged (a unique index marks them in the row locks) and rolls back: the rows can be deleted and updated again
+CREATE TABLE staged_pk (id int PRIMARY KEY, v int) USING sift_table;
+BEGIN;
+SET LOCAL statement_timeout = '30s';
+INSERT INTO staged_pk SELECT g, g FROM generate_series(1, 100) g;
+SAVEPOINT s1;
+DELETE FROM staged_pk WHERE id % 7 = 0;
+UPDATE staged_pk SET v = v + 1 WHERE id % 13 = 0;
+ROLLBACK TO s1;
+DELETE FROM staged_pk WHERE id % 11 = 0;
+UPDATE staged_pk SET v = v + 5 WHERE id % 17 = 0;
+SELECT count(*), sum(v) FROM staged_pk;
+COMMIT;
+BEGIN;
+SET LOCAL statement_timeout = '30s';
+INSERT INTO staged_pk VALUES (1000, 1), (1001, 1);
+DELETE FROM staged_pk WHERE id = 1000;
+ROLLBACK;
+BEGIN;
+SET LOCAL statement_timeout = '30s';
+INSERT INTO staged_pk VALUES (1000, 2);
+DELETE FROM staged_pk WHERE id IN (78, 1000);
+UPDATE staged_pk SET v = -v WHERE id = 91;
+COMMIT;
+SELECT count(*), sum(v) FROM staged_pk;
+DROP TABLE staged_pk;
+
 -- own writes by command id: a cursor does not see later changes of its own transaction
 BEGIN;
 DECLARE c CURSOR FOR SELECT id FROM orders WHERE id < 5 ORDER BY id;
