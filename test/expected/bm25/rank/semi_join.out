@@ -139,6 +139,33 @@ SELECT f.form, m.mode, count(*) AS cells, count(*) FILTER (WHERE x.got IS DISTIN
  join   | planner       |    12 |      0 |     0
 (9 rows)
 
+-- the quals of the table a semi-join reads run in the memory of one row: lower() of 200000 names of 400 bytes holds a few kB, not 80 MB
+CREATE TABLE sd (id int PRIMARY KEY, body text, cat int) WITH (autovacuum_enabled = off);
+INSERT INTO sd SELECT g, 'common w' || g % 30, g % 1000 FROM generate_series(1, 20000) g;
+SET client_min_messages = warning;
+CREATE INDEX sd_idx ON sd USING sift (body) INCLUDE (cat);
+RESET client_min_messages;
+CREATE TABLE names (id int PRIMARY KEY, name text) WITH (autovacuum_enabled = off);
+-- 200000 rows: a leak of one row's lower() per row is then 80 MB, five times the bound below
+INSERT INTO names SELECT g, repeat('N', 400) || g FROM generate_series(1, 200000) g;
+VACUUM ANALYZE sd, names;
+CREATE FUNCTION expr_mem() RETURNS bigint LANGUAGE sql VOLATILE AS $$SELECT sum(total_bytes)::bigint FROM pg_backend_memory_contexts WHERE name = 'ExprContext'$$;
+SELECT sift_plan($$SELECT d.id FROM sd d JOIN names n ON n.id = d.cat WHERE d.body @@> 'common' AND lower(n.name) LIKE '%n1%'
+	ORDER BY sift.score(d.ctid) DESC LIMIT 1$$) LIKE '%Include Tests%' AS semi;
+ semi 
+------
+ t
+(1 row)
+
+SELECT expr_mem() < 16 * 1024 * 1024 AS bounded FROM sd d JOIN names n ON n.id = d.cat WHERE d.body @@> 'common' AND lower(n.name) LIKE '%n1%'
+	ORDER BY sift.score(d.ctid) DESC LIMIT 1;
+ bounded 
+---------
+ t
+(1 row)
+
+DROP FUNCTION expr_mem();
+DROP TABLE sd, names;
 DROP FUNCTION tenant_base(int, text), tenant_rows(text, int, text, text), tenant_shape(text, int, text), tenant_query(text, int, text),
 	scan_cost(text, text), est_ratio(text), sift_plan(text);
 DROP TABLE items, items_plain, accounts, catalogs;

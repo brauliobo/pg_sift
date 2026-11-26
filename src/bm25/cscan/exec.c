@@ -133,6 +133,8 @@ read_semi(EState *estate, Relation dim, AttrNumber attno, List *quals, int64 **k
 		bool		isnull;
 		Datum		d;
 
+		CHECK_FOR_INTERRUPTS();
+		ResetExprContext(econtext);
 		econtext->ecxt_scantuple = slot;
 		if (!ExecQual(qual, econtext))
 			continue;
@@ -150,6 +152,7 @@ read_semi(EState *estate, Relation dim, AttrNumber attno, List *quals, int64 **k
 	}
 	table_endscan(scan);
 	ExecDropSingleTupleTableSlot(slot);
+	FreeExprContext(econtext, true);
 	MemoryContextSwitchTo(old);
 	if (nset != SIFT_SEMI_OVER)
 	{
