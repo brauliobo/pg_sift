@@ -58,7 +58,7 @@ BEGIN
 				set_config('enable_hashagg', 'off', false), set_config('enable_sort', 'off', false);
 			sp := false;
 			FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-				sp := sp OR l ~ '[1-9][0-9]* group table spills';
+				sp := sp OR l ~ 'spills=[1-9]';
 			END LOOP;
 			EXECUTE 'CREATE TABLE got AS ' || q;
 			RESET work_mem; RESET hash_mem_multiplier; RESET enable_hashagg; RESET enable_sort;
