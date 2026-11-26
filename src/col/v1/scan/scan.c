@@ -66,8 +66,8 @@ vis_counters(void *arg, int64 *heap_pages)
 	v->heap_pages = 0;
 }
 
-static void
-check_access(Relation heap, uint32 flags)
+void
+sift_col_check_access(Relation heap, uint32 flags)
 {
 	Oid			relid = RelationGetRelid(heap);
 
@@ -141,7 +141,7 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 		keys = NULL;
 #endif
 	if (!(flags & SIFT_COLO_NOCHECKS))
-		check_access(heap, flags);
+		sift_col_check_access(heap, flags);
 	if (IsolationIsSerializable())
 		PredicateLockRelation(heap, snapshot);
 	src->snap = (flags & SIFT_COLO_SNAP_HELD) ? snapshot : RegisterSnapshot(snapshot);

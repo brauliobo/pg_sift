@@ -380,13 +380,22 @@ typedef struct PaggScan
 	SiftColSource *src;
 } PaggScan;
 
-static void
+/* false for a Format 2.0 index, which has no units: the caller returns no rows */
+static bool
 pagg_open(PaggScan *ps, Oid indexoid)
 {
 	ps->index = sift_col_open_index(indexoid, AccessShareLock);
 	ps->heap = table_open(ps->index->rd_index->indrelid, AccessShareLock);
+	if (sift_col_format_major(ps->index) == SIFT_FORMAT2_MAJOR)
+	{
+		sift_col_check_access(ps->heap, 0);
+		table_close(ps->heap, AccessShareLock);
+		index_close(ps->index, AccessShareLock);
+		return false;
+	}
 	ps->src = sift_col_open(ps->heap, ps->index, GetActiveSnapshot(), CurrentMemoryContext, 0, NULL, NULL);
 	sift_col_begin(ps->src, NULL, 0, 0, PG_UINT32_MAX);
+	return true;
 }
 
 static void
@@ -409,7 +418,8 @@ sift_col_unit_aggs_sql(PG_FUNCTION_ARGS)
 	SIFT_ARG_REQUIRED(0, "sift.col_unit_agg", "index");
 	SIFT_ARG_REQUIRED(1, "sift.col_unit_agg", "leaf");
 	InitMaterializedSRF(fcinfo, 0);
-	pagg_open(&ps, PG_GETARG_OID(0));
+	if (!pagg_open(&ps, PG_GETARG_OID(0)))
+		return (Datum) 0;
 	leaf = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(1)), false);
 	while (sift_col_next(ps.src, &unit))
 	{
@@ -476,7 +486,8 @@ sift_col_unit_hists_sql(PG_FUNCTION_ARGS)
 	SIFT_ARG_REQUIRED(0, "sift.col_unit_hist", "index");
 	SIFT_ARG_REQUIRED(1, "sift.col_unit_hist", "dim");
 	InitMaterializedSRF(fcinfo, 0);
-	pagg_open(&ps, PG_GETARG_OID(0));
+	if (!pagg_open(&ps, PG_GETARG_OID(0)))
+		return (Datum) 0;
 	dim = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(1)), true);
 	if (!PG_ARGISNULL(2))
 		meas = find_leaf(ps.index, text_to_cstring(PG_GETARG_TEXT_PP(2)), true);

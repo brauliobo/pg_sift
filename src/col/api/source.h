@@ -205,6 +205,8 @@ extern bool sift_col_key_range_by(Relation index, SiftColLeafKeys leaf_keys, con
  * partition holds; NULL: all (a view is the directory as it was exported, and is not narrowed again).
  */
 extern SiftColSource *sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys);
+/* Errors unless the caller may SELECT from heap (SIFT_COLO_NOACL skips that) and the table has no row-level security: the check of sift_col_open */
+extern void sift_col_check_access(Relation heap, uint32 flags);
 /*
  * The directory the source read, as bytes: what the participants of a parallel scan open their sources on, so that all of them number the units and the
  * batches of the write buffer by the same segments (a promotion between two opens moves rows from one range of superblocks to another).

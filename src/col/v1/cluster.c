@@ -231,8 +231,13 @@ sift_col_clustering(PG_FUNCTION_ARGS)
 
 	if (width < 0 || width > 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("width_pct must be between 0 and 100")));
-	sc = sift_col_rel(index)->schema;
 	InitMaterializedSRF(fcinfo, 0);
+	if (sift_col_format_major(index) == SIFT_FORMAT2_MAJOR)
+	{
+		index_close(index, AccessShareLock);
+		return (Datum) 0;
+	}
+	sc = sift_col_rel(index)->schema;
 	dir = sift_col_dir_read(index, false);
 	seg = palloc(Max(dir->nsegs, 1) * sizeof(SiftColSegment *));
 	for (int i = 0; i < dir->nsegs; i++)
