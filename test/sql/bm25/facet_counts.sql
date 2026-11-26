@@ -4,6 +4,7 @@
 -- snapshot as the oracle; the three results are compared as sets of rows, after the build and after each kind of write.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET sift.async_maintenance = off;
 
 CREATE TABLE fc (id serial PRIMARY KEY, title text, brand text, category int, price numeric(10,2), qty int, added date, ts timestamp,
@@ -22,8 +23,8 @@ SELECT (ARRAY['wireless','wired','portable','compact','classic'])[1 + i % 5] || 
 FROM generate_series(1, 12000) i;
 SET client_min_messages = warning;
 CREATE INDEX fc_bm ON fc USING sift (title);
+CREATE INDEX fc_col ON fc USING sift_col (brand, category, price, qty, added, ts, active);
 RESET client_min_messages;
-CREATE INDEX fc_col ON fc USING sift_col (brand, category, price, qty, added, ts, active) WITH (write_buffer_limit = 256);
 VACUUM (ANALYZE) fc;
 
 -- the plans that are not SiftAgg are disabled for the pushed run; the planner's own choice with sift.enable_agg off is the other

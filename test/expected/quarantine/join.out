@@ -37,10 +37,10 @@ SELECT n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false) AS sa
  3 | t
 (3 rows)
 
-SELECT sift._test_poke('dim_col', 2, 8176, 9, 2);
- _test_poke 
-------------
- 
+SELECT count(*) > 0 AS poked FROM (SELECT sift._test_poke('dim_col', b, 8176, 9, 2) FROM generate_series(2, least(4, pg_relation_size('dim_col') / 8192 - 1)) b) p;
+ poked 
+-------
+ t
 (1 row)
 
 SELECT expect($$ SELECT count(*) FROM dim WHERE a = 3 $$) AS detecting_statement;
@@ -72,10 +72,10 @@ SELECT n, expect(sql) AS statement FROM shapes ORDER BY n;
 (3 rows)
 
 REINDEX INDEX dim_col;
-SELECT sift._test_poke('ev_col', 2, 8176, 9, 2);
- _test_poke 
-------------
- 
+SELECT count(*) > 0 AS poked FROM (SELECT sift._test_poke('ev_col', b, 8176, 9, 2) FROM generate_series(2, least(4, pg_relation_size('ev_col') / 8192 - 1)) b) p;
+ poked 
+-------
+ t
 (1 row)
 
 SELECT expect($$ SELECT count(*) FROM ev WHERE v = 3 $$) AS detecting_fact;

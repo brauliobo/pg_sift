@@ -162,10 +162,10 @@ SELECT sift.maintain('ocf_col');
 (1 row)
 
 SELECT * FROM oc_report('ocf_col');
-     what      |                                         answer                                          
----------------+-----------------------------------------------------------------------------------------
+     what      |                                                answer                                                 
+---------------+-------------------------------------------------------------------------------------------------------
  choices       | auto 0 slug
- choice rows   | address_index,compression_tier,dictionaries,encoding,key_order,l0_slab,layout,zone_maps
+ choice rows   | address_index,compression_tier,dictionaries,encoding,key_order,l0_slab,layout,preaggregates,zone_maps
  sections sum  | true
  breakdown sum | true
 (4 rows)
@@ -243,8 +243,9 @@ SELECT choice FROM sift.index_choices('oct') ORDER BY choice;
  compression_tier
  l0_slab
  layout
+ preaggregates
  zone_maps
-(5 rows)
+(6 rows)
 
 SELECT * FROM oc_report('oct') WHERE what LIKE '% sum';
      what      | answer 

@@ -2,6 +2,8 @@
 -- leaves cut small, an index of 90 segments of the search method and one of 80 segments of the column method are read, queried, deleted from,
 -- vacuumed, merged, shrunk and verified
 CREATE EXTENSION pg_sift;
+-- Format 1 only: the test is the chained directory of Format 1 column segments (sift._test_dir_info, col_segments), a structure Format 2 does not have
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 SET client_min_messages = warning;

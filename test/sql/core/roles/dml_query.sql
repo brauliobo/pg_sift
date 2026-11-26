@@ -4,6 +4,7 @@
 -- docs (sift and sift_col indexes) and facts (sift_table) have no row-level security; rdocs and rfacts are the same with a policy that
 -- restricts rq_rls to the rows of g = 1.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 \set VERBOSITY terse
 \set ECHO none
 \ir test/common/sql/core/roles.sql

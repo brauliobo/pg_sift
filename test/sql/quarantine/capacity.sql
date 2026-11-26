@@ -30,15 +30,15 @@ ANALYZE b;
 ANALYZE c;
 
 -- the oldest entry is the index of the temporary table, which no worker flags; the next is flagged
-SELECT sift._test_poke('a_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('a_idx', 3, 8176, 9, 2);
 SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM a WHERE v = 3 $$, ': ') AS detecting_a;
-SELECT sift._test_poke('b_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('b_idx', 3, 8176, 9, 2);
 SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM b WHERE v = 3 $$, ': ') AS detecting_b;
 SELECT flagged_in('b_idx', 20) AS b_flagged;
 SELECT index, persisted FROM sift.quarantine ORDER BY 1;
 
 -- the registry is full: the third damage takes the entry of the flagged index, not that of the one with no flag
-SELECT sift._test_poke('c_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('c_idx', 3, 8176, 9, 2);
 SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM c WHERE v = 3 $$, ': ') AS detecting_c;
 SELECT flagged_in('c_idx', 20) AS c_flagged;
 SELECT index, persisted, detected_at IS NOT NULL AS in_registry FROM sift.quarantine ORDER BY 1;

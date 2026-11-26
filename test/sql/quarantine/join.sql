@@ -31,14 +31,14 @@ INSERT INTO shapes VALUES
  (3, $q$SELECT ev.id % 4, count(*), sum(ev.v) FROM ev WHERE ev.v > 3 GROUP BY 1 ORDER BY 1$q$);
 SELECT n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false) AS same_before FROM shapes ORDER BY n;
 
-SELECT sift._test_poke('dim_col', 2, 8176, 9, 2);
+SELECT count(*) > 0 AS poked FROM (SELECT sift._test_poke('dim_col', b, 8176, 9, 2) FROM generate_series(2, least(4, pg_relation_size('dim_col') / 8192 - 1)) b) p;
 SELECT expect($$ SELECT count(*) FROM dim WHERE a = 3 $$) AS detecting_statement;
 SELECT index FROM sift.quarantine;
 SELECT n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false) AS same_dimension_out FROM shapes ORDER BY n;
 SELECT n, expect(sql) AS statement FROM shapes ORDER BY n;
 
 REINDEX INDEX dim_col;
-SELECT sift._test_poke('ev_col', 2, 8176, 9, 2);
+SELECT count(*) > 0 AS poked FROM (SELECT sift._test_poke('ev_col', b, 8176, 9, 2) FROM generate_series(2, least(4, pg_relation_size('ev_col') / 8192 - 1)) b) p;
 SELECT expect($$ SELECT count(*) FROM ev WHERE v = 3 $$) AS detecting_fact;
 SELECT index FROM sift.quarantine;
 SELECT n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false) AS same_fact_out FROM shapes ORDER BY n;

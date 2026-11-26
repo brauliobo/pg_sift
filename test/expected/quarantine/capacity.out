@@ -29,7 +29,7 @@ ANALYZE a;
 ANALYZE b;
 ANALYZE c;
 -- the oldest entry is the index of the temporary table, which no worker flags; the next is flagged
-SELECT sift._test_poke('a_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('a_idx', 3, 8176, 9, 2);
  _test_poke 
 ------------
  
@@ -41,7 +41,7 @@ SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM a WHERE v = 3 $$, 
  XX002: sift index "a_idx" is corrupted
 (1 row)
 
-SELECT sift._test_poke('b_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('b_idx', 3, 8176, 9, 2);
  _test_poke 
 ------------
  
@@ -67,7 +67,7 @@ SELECT index, persisted FROM sift.quarantine ORDER BY 1;
 (2 rows)
 
 -- the registry is full: the third damage takes the entry of the flagged index, not that of the one with no flag
-SELECT sift._test_poke('c_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('c_idx', 3, 8176, 9, 2);
  _test_poke 
 ------------
  

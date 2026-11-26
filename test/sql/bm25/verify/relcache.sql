@@ -2,6 +2,7 @@
 -- sends an invalidation that reloads the index's relcache entry and frees that state. sift.test_col_verify_inval does it at every tuple, and
 -- first overwrites the cached state, so a check that kept it reads garbage.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
 CREATE TABLE cv (id int PRIMARY KEY, g int, v float8, t text);
 INSERT INTO cv SELECT i, i % 7, i / 3.0, 'row ' || i FROM generate_series(1, 2000) i;
 CREATE INDEX cv_col ON cv USING sift_col (id, g, v, t);

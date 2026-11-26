@@ -2,6 +2,7 @@
 -- indexed the array of a memo before its start. sift._test_ring_walk takes slots of a ring across 2^31 and 2^32 for each size in use; sift._test_ring_start puts the count of every ring three slots
 -- from the wrap of 32 bits, and the statements that fill each cache past its size follow: the answers are those of the plain statements, and every ring that took slots crossed the wrap.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;

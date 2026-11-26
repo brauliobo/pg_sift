@@ -90,18 +90,16 @@ SELECT count(*), sum(c1) FROM inc WHERE k1 = 7;
 -- the options name INCLUDE columns, and a rename follows
 CREATE INDEX inc_o ON inc USING sift_col (k1) INCLUDE (c1, c2) WITH (compression = 'zstd:3; c2=lz4', return_columns = 'c2');
 ALTER TABLE inc RENAME COLUMN c1 TO c1_renamed;
-ERROR:  sift index "inc_i" uses on-disk format 2.0, newer than this pg_sift supports (up to 1.7)
-HINT:  Upgrade the pg_sift library to the release that wrote this index, on every node that reads it.
 SELECT a.attname FROM pg_attribute a WHERE a.attrelid = 'inc_o'::regclass AND a.attnum > 0 ORDER BY a.attnum;
- attname 
----------
+  attname   
+------------
  k1
- c1
+ c1_renamed
  c2
 (3 rows)
 
 CREATE INDEX inc_bad ON inc USING sift_col (k1) INCLUDE (c1_renamed) WITH (return_columns = 'nosuch');
-ERROR:  column "c1_renamed" does not exist
+ERROR:  invalid return_columns option "nosuch": "nosuch" is not a column of the index
 DROP TABLE inc;
 -- ---------------------------------------------------------------------------------------------------------
 -- UNIQUE: the build

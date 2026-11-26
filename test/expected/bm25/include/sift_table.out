@@ -56,20 +56,18 @@ SELECT (SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM t_rows WHERE body 
 
 -- the columns the index holds are filtered inside the scan of the index
 EXPLAIN (COSTS OFF) SELECT id FROM t_rows WHERE body @@> 'w3 OR w5' AND n = 3 ORDER BY sift.score(ctid) DESC, id LIMIT 20;
-                  QUERY PLAN                   
------------------------------------------------
+                        QUERY PLAN                        
+----------------------------------------------------------
  Limit
    ->  Incremental Sort
          Sort Key: (sift.score(ctid)) DESC, id
          Presorted Key: (sift.score(ctid))
-         ->  Custom Scan (SiftScan) on t_rows
-               Index: t_rows_idx
-               Query: 'w3 OR w5'::text
-               Order: score DESC
-               Limit Hint: 20
-               Includes Ties: true
-               Include Tests: 1
-(11 rows)
+         ->  Result
+               ->  Custom Scan (SiftHybridScan) on t_rows
+                     Filter: (n = 3)
+                     Hybrid Direction: A
+                     Hybrid Store: sift_table
+(9 rows)
 
 -- rows that change: an update of an INCLUDE column is a new row, a delete is none
 UPDATE t_rows SET n = 99 WHERE id % 7 = 3 AND id < 200;

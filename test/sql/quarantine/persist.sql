@@ -18,7 +18,7 @@ INSERT INTO t SELECT i, i % 7, i % 3 FROM generate_series(1, 20000) i;
 CREATE INDEX t_idx ON t USING sift_col (id, v, g);
 ANALYZE t;
 
-SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('t_idx', 3, 8176, 9, 2);
 SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_statement;
 SELECT index, persisted IS NOT NULL AS listed FROM sift.quarantine;
 SELECT persisted_in(20) AS flagged_by_worker;
