@@ -20,6 +20,7 @@
 #include "core/f2/fsm/fsm.h"
 #include "core/f2/meta.h"
 #include "core/ops.h"
+#include "core/shm/lease.h"
 #include "core/sql/api.h"
 #include "core/store/store.h"
 #include "table/v1/table.h"
@@ -218,7 +219,8 @@ space_f2(const SiftApiRel *r, SiftApiSpace *s)
 	if (r->am == SIFT_API_TABLE)
 	{
 		s->has_vblocks = true;
-		s->vblocks_left = (int64) MaxBlockNumber - (int64) meta.next_vblock;
+		/* the blocks the lease slot of the file handed out, not the chunk Block 0 gave the slot */
+		s->vblocks_left = (int64) MaxBlockNumber - (int64) Min(meta.next_vblock, sift_lease_vblock_cursor(&r->rel->rd_locator));
 	}
 	set_busy(s, page_lock_busy(r->rel, SIFT_F2_MAINT_LOCK_BLKNO));
 }
