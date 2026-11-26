@@ -99,10 +99,11 @@ rows_fold(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, Relatio
 		  SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 rows");
-	RowsOpen	o = {.cx = cx,.snap = snap,.scan = spec->is_table ? (SiftV1Scan) {0} : sift_v1_key_scan(index, keys, nkeys)};
+	const bool	is_table = index == NULL;
+	RowsOpen	o = {.cx = cx,.snap = snap,.scan = is_table ? (SiftV1Scan) {0} : sift_v1_key_scan(index, keys, nkeys)};
 	RowsFold	emit = {.rows = rows,.totals = totals};
-	SiftSrcFoldArgs a = {.spec = spec,.stats = stats,.emit = rows_emit,.emit_arg = &emit,.host = spec->is_table ? heap : index,.is_table = spec->is_table,
-		.quals = spec->is_table ? quals->clauses : sift_srcfold_scankey_quals(index, keys, nkeys),.estate = spec->is_table ? quals->estate : NULL};
+	SiftSrcFoldArgs a = {.spec = spec,.stats = stats,.emit = rows_emit,.emit_arg = &emit,.host = is_table ? heap : index,.is_table = is_table,
+		.quals = is_table ? quals->clauses : sift_srcfold_scankey_quals(index, keys, nkeys),.estate = is_table ? quals->estate : NULL};
 	SiftSrcFold *f = sift_srcfold_new(&a, sift_mem_allocset_create(cx, "sift v1 rows fold"));
 	const struct SiftTidBridge *bridge;
 
@@ -351,7 +352,7 @@ gorder_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation in
 
 	get_ordering_op_properties(item->sortop, &opfamily, &opcintype, &cmptype);
 	sh.desc = cmptype == SIFT_CMP_GT;
-	answered = !spec->is_table && gorder_plan(&sh, heap, index, snap, &p) && gorder_quals(cx, spec, heap, index, keys, nkeys, &p) &&
+	answered = index != NULL && gorder_plan(&sh, heap, index, snap, &p) && gorder_quals(cx, spec, heap, index, keys, nkeys, &p) &&
 		gorder_winners(cx, &p, spec->topk, &w, &examined);
 	for (uint32 i = 0; answered && i < w.n; i++)
 		sift_v6_rows_put(rows, w.val + (size_t) i * w.nkeys, w.nul + (size_t) i * w.nkeys, w.tid[i]);
