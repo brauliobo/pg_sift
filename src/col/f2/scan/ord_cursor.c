@@ -207,10 +207,9 @@ cur_load(SiftOrdStream *os, OrdCursor *c, OrdReq q, bool fwd)
 		MemoryContextSwitchTo(old);
 		return;
 	}
-	if ((c->e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 	{
 		int			nexc = c->pcx.pp.nexc;
-		const SiftVariantExcSummary *exc = sift_cdi_scan_exceptions(s, os->rel, os->schema, c->e, c->pin->part, os->snap, c->pcx.pp.exc, &nexc);
+		const SiftVariantExcSummary *exc = sift_cdi_slot_exceptions(s, &c->cd_map, os->rel, os->schema, c->e, c->pin->part, os->snap, c->pcx.pp.exc, &nexc);
 
 		if (exc != c->pcx.pp.exc)
 			pfree((void *) exc);
@@ -237,6 +236,7 @@ ord_cur_init(SiftOrdStream *os, OrdCursor *c, const SiftPartitionEntry *e, const
 	c->d = d;
 	c->px = px;
 	c->datacx = sift_mem_allocset_create(os->pcx, "sift f2 ordered row");
+	c->cd_map.cx = os->pcx;
 	c->ngran = 1;
 }
 

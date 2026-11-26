@@ -122,6 +122,20 @@ typedef struct SiftCdiScan SiftCdiScan;
 extern const SiftVariantExcSummary *sift_cdi_scan_exceptions(struct F2Scan *s, Relation rel, const struct SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPart *part, Snapshot snap,
 															 const SiftVariantExcSummary *exc, int *nexc);
 
+/* The overlay of one part a reader keeps, built in cx: a scan keeps one, and each cursor of an ordered scan one of its own, so that a merge of parts builds the overlay of each part once */
+typedef struct SiftCdiMapSlot
+{
+	uint64		part_id;
+	uint64		part_gen;
+	bool		built;			/* map is the overlay of the part (NULL: the snapshot sees no patch of it) */
+	SiftColDeltaPartMap *map;
+	MemoryContext cx;
+} SiftCdiMapSlot;
+
+/* The same with the overlay kept in slot (NULL: the scan's own) */
+extern const SiftVariantExcSummary *sift_cdi_slot_exceptions(struct F2Scan *s, SiftCdiMapSlot *slot, Relation rel, const struct SiftColSchema *schema, const SiftPartitionEntry *e,
+															 const SiftPart *part, Snapshot snap, const SiftVariantExcSummary *exc, int *nexc);
+
 /* The patches the snapshot sees of granule g laid over its decoded views and addresses; true when an address changed, so that the granule's range of addresses does not tell it holds no pending delete */
 extern bool sift_cdi_scan_patch(struct F2Scan *s, const struct SiftColSchema *schema, uint32 g, ColView *views, uint64 *tids, int n, MemoryContext cx);
 

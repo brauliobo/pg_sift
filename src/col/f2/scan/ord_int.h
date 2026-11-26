@@ -5,6 +5,7 @@
 #ifndef SIFT_F2_ORD_INT_H
 #define SIFT_F2_ORD_INT_H
 
+#include "col/f2/col_delta/idx.h"
 #include "col/f2/scan/par_int.h"
 #include "col/f2/scan/rescan_cache.h"
 
@@ -48,6 +49,7 @@ typedef struct OrdCursor
 	int			pos;			/* the cursor is between rows pos - 1 and pos */
 	int			head;			/* the row the cursor gives next in the direction of the scan, -1: none */
 	MemoryContext datacx;
+	SiftCdiMapSlot cd_map;		/* the column deltas of the part, built once for all the windows of the merge */
 } OrdCursor;
 
 typedef struct OrdPos

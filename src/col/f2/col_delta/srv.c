@@ -68,9 +68,8 @@ struct SiftCdiScan
 {
 	SiftXidCache xc;
 	bool	   *pruned_leaf;
-	uint64		part_id;
-	uint64		part_gen;
-	SiftColDeltaPartMap *map;
+	SiftCdiMapSlot own;			/* the map of a scan that reads one part after another */
+	const SiftColDeltaPartMap *map;	/* the map of the part being read: own's, or the one a cursor of an ordered scan keeps of its part */
 };
 
 static SiftCdiScan *
@@ -88,6 +87,7 @@ scan_state(F2Scan *s, const SiftColSchema *schema, Snapshot snap)
 	if (s->bound != NULL)
 		s->cd->pruned_leaf[s->sink_leaves[s->bound_sink_leaf]] = true;
 	sift_xid_cache_init(&s->cd->xc, snap);
+	s->cd->own.cx = s->cx;
 	MemoryContextSwitchTo(old);
 	return s->cd;
 }
@@ -135,25 +135,41 @@ sift_cdi_part_map(Relation rel, const SiftPartitionEntry *e, const SiftPart *par
 	return map;
 }
 
-/* The overlay of the part for the snapshot, kept for the granules of the part the scan reads next; NULL when the snapshot sees no patch of it */
+static void
+slot_drop(SiftCdiMapSlot *slot)
+{
+	sift_col_delta_part_map_free(slot->map);
+	slot->map = NULL;
+	slot->built = false;
+}
+
+/* The overlay of the part for the snapshot, kept in the slot for the granules of the part the scan reads next; NULL when the snapshot sees no patch of it */
 static const SiftColDeltaPartMap *
-part_map(F2Scan *s, SiftCdiScan *cd, Relation rel, const SiftPartitionEntry *e, const SiftPart *part)
+part_map(SiftCdiScan *cd, SiftCdiMapSlot *slot, Relation rel, const SiftPartitionEntry *e, const SiftPart *part)
 {
 	MemoryContext old;
 
-	if (cd->map != NULL && cd->part_id == e->part_id && cd->part_gen == part->hdr.part_gen)
-		return cd->map;
-	sift_col_delta_part_map_free(cd->map);
-	cd->part_id = e->part_id;
-	cd->part_gen = part->hdr.part_gen;
-	old = MemoryContextSwitchTo(s->cx);
-	cd->map = sift_cdi_part_map(rel, e, part, &cd->xc);
+	if (slot->built && slot->part_id == e->part_id && slot->part_gen == part->hdr.part_gen)
+		return slot->map;
+	slot_drop(slot);
+	slot->part_id = e->part_id;
+	slot->part_gen = part->hdr.part_gen;
+	old = MemoryContextSwitchTo(slot->cx);
+	slot->map = sift_cdi_part_map(rel, e, part, &cd->xc);
+	slot->built = true;
 	MemoryContextSwitchTo(old);
-	return cd->map;
+	return slot->map;
 }
 
 const SiftVariantExcSummary *
 sift_cdi_scan_exceptions(F2Scan *s, Relation rel, const SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPart *part, Snapshot snap, const SiftVariantExcSummary *exc, int *nexc)
+{
+	return sift_cdi_slot_exceptions(s, NULL, rel, schema, e, part, snap, exc, nexc);
+}
+
+const SiftVariantExcSummary *
+sift_cdi_slot_exceptions(F2Scan *s, SiftCdiMapSlot *slot, Relation rel, const SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPart *part, Snapshot snap,
+						 const SiftVariantExcSummary *exc, int *nexc)
 {
 	SiftCdiScan *cd;
 	const SiftColDeltaPartMap *map;
@@ -164,13 +180,13 @@ sift_cdi_scan_exceptions(F2Scan *s, Relation rel, const SiftColSchema *schema, c
 	{
 		if (s->cd != NULL)
 		{
-			sift_col_delta_part_map_free(s->cd->map);
+			slot_drop(&s->cd->own);
 			s->cd->map = NULL;
 		}
 		return exc;
 	}
 	cd = scan_state(s, schema, snap);
-	map = part_map(s, cd, rel, e, part);
+	map = cd->map = part_map(cd, slot != NULL ? slot : &cd->own, rel, e, part);
 	if (map == NULL)
 		return exc;
 	old = MemoryContextSwitchTo(s->cx);
