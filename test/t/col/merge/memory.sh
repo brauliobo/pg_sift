@@ -6,7 +6,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
-node_init mem 11 "autovacuum = off
+node_init mem 11 "sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = off"
 node_start mem || bail "start failed"
 sql mem "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int, g int, ts timestamp, amount int, pad text)" \

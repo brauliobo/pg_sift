@@ -8,7 +8,8 @@
 
 ITERS=$(knob SIFT_COL_CRASH_ITERS 20 3)
 plan $((ITERS + 4))
-node_init crash 1 "checkpoint_timeout = 30s
+node_init crash 1 "sift.test_create_format1 = on
+checkpoint_timeout = 30s
 max_wal_size = 256MB
 autovacuum = off
 sift.test_col_gorder_ends = 64"

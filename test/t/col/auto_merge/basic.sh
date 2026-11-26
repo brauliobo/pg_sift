@@ -6,7 +6,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 12
-node_init am 20 "autovacuum = off
+node_init am 20 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_col_net = off
 sift.log_min_duration = 0
 sift.maintenance_naptime = 200"

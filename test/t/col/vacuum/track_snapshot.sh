@@ -8,7 +8,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
-node_init vt 49 "autovacuum = off
+node_init vt 49 "sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = off
 sift.log_min_duration = 0"
 node_start vt || bail "start failed"

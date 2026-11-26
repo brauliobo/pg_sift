@@ -12,7 +12,8 @@ MB=1024
 MWM=8
 plan 8
 
-node_init cm 91 "sift.col_build_source = auto
+node_init cm 91 "sift.test_create_format1 = on
+sift.col_build_source = auto
 autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.async_maintenance = off"

@@ -10,7 +10,8 @@
 node_init cc 54 "$TWOHOP_CONF
 sift.async_maintenance = off
 max_parallel_maintenance_workers = 0
-shared_buffers = 64MB"
+shared_buffers = 64MB
+sift.test_create_format1 = on"
 node_start cc || bail "start failed"
 D=$(dir cc)
 SIFT_TMP=$D leak_expect 20 'terminated by signal 9'

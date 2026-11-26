@@ -6,7 +6,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
-node_init ws 65 "autovacuum = off
+node_init ws 65 "sift.test_create_format1 = on
+autovacuum = off
 max_worker_processes = 5
 max_parallel_workers = 4
 max_parallel_workers_per_gather = 2
@@ -54,7 +55,8 @@ served() { for t in t1 t2 t3; do change $t; done; promoted t1 && promoted t2 && 
 check "the tables that were declined are promoted" wait_for served 120
 
 # 4. a worker that promoted a table does not keep the database connected (the default naptime: it napped 3 times of 2 seconds between its looks)
-node_init wd 68 "autovacuum = off
+node_init wd 68 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_col_net = off"
 node_start wd || bail "start of wd failed"
 sqld() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir wd)/sock" -p "$(port wd)" -U postgres -d "$db" "${@/#/--command=}"; }
