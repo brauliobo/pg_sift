@@ -74,14 +74,14 @@ for my $kind (qw(bm25 col tbl))
 	};
 }
 # The no-wait mode of sift.table_maintain() is a flag of the backend, set for the length of the call and ended with it, an ERROR included: the VACUUM
-# of the same session after the failed call asks for the lock of the cut again for its bound (lock_timeout)
+# of the same session after the failed call asks for the lock of the cut again for its bound (lock_timeout, shorter than the 250 ms the cut asks for at most)
 subtest 'tbl a failed table_maintain does not leave the VACUUM cut without its wait' => sub {
 	fixture('tbl');
 	my $writer = $node->background_psql('postgres');
 	$writer->query_safe("INSERT INTO s VALUES (100001, 7, 'primed cached writer')");
 	my $session = $node->background_psql('postgres');
 	$session->query_safe('\\set ON_ERROR_STOP 0');
-	$session->query_safe("SET lock_timeout = '1s'");  # timeout-ok: the lock_timeout is the bound the cut asks for its lock until (asserted)
+	$session->query_safe("SET lock_timeout = '150ms'");  # timeout-ok: the lock_timeout is the bound the cut asks for its lock until (asserted)
 	$session->query('SET sift.test_space_error = on; SELECT sift.table_maintain(\'s\')');
 	like($session->{stderr}, qr/error after open buffer relocation publication/, 'table_maintain ended with an ERROR inside its space step');
 	$session->query('SET sift.test_space_error = off');
@@ -89,7 +89,7 @@ subtest 'tbl a failed table_maintain does not leave the VACUUM cut without its w
 	$reader->query_safe('BEGIN; SET sift.enable_agg = off; DECLARE cur CURSOR FOR SELECT * FROM s; FETCH 1 FROM cur');
 	my $t0 = Time::HiRes::time;
 	$session->query('VACUUM s');
-	cmp_ok(Time::HiRes::time - $t0, '>=', 0.9, 'the VACUUM cut asked for its lock again until lock_timeout');
+	cmp_ok(Time::HiRes::time - $t0, '>=', 0.14, 'the VACUUM cut asked for its lock again until lock_timeout');
 	$reader->query_safe('COMMIT');
 	$reader->quit;
 	$session->quit;
