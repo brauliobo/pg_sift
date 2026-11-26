@@ -467,7 +467,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		p->quals = lappend(p->quals, ri->clause);
 	}
 	priv = private_of(p);
-	if (!sift_v6_window_spec(priv, &in, NULL, &spec) || !sift_v6_split_quals(CurrentMemoryContext, p->root, p->quals, p->rel->relid, NULL, &in, &probe) ||
+	if (!sift_v6_window_spec(priv, &in, NULL, &spec) || (spec.win.n_ord == 0 && (spec.win.n_part == 0 || !sift_v6_win_order_free(&spec.win))) || !sift_v6_split_quals(CurrentMemoryContext, p->root, p->quals, p->rel->relid, NULL, &in, &probe) ||
 		(spec.winx != NULL && !sift_v6_winx_filters(CurrentMemoryContext, p->funcs, p->rel->relid, NULL, &in, filters)))
 		return false;
 	for (int i = 0; i < spec.win.n_part; i++)
@@ -562,7 +562,7 @@ window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)
 	{
-		if (!sift_v6_source_usable(&src[i]) || wc->orderClause == NIL)
+		if (!sift_v6_source_usable(&src[i]))
 			continue;
 		for (WinPartMode mode = WIN_EXACT; mode <= WIN_REGROUP; mode++)
 			if (window_try(root, input_rel, output_rel, &src[i], wc, mode))

@@ -160,9 +160,6 @@ sift_window_create(MemoryContext cxt, const SiftWindowSpec *spec, uint64 max_byt
 		if ((fn->kind == SWIN_LAG || fn->kind == SWIN_LEAD) && fn->offset > SIFT_WIN_MAX_OFFSET)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("window offset %u is above the limit %d", fn->offset, SIFT_WIN_MAX_OFFSET),
 							errhint("Use an offset of at most %d.", SIFT_WIN_MAX_OFFSET)));
-		if (is_range_func(fn) && spec->n_ord == 0)
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a RANGE frame over no ORDER BY holds the whole partition"),
-							errhint("Order the window, or use a ROWS frame.")));
 		if (fn->kind == SWIN_LAG && fn->offset > 0)
 		{
 			w->fs[f].hist = alloc_i128(cxt, (Size) fn->offset * sizeof(SiftWinVal));

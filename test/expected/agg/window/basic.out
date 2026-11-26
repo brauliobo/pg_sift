@@ -84,6 +84,7 @@ SELECT * FROM agg_plan('SELECT g, count(*) FROM wn GROUP BY g');
 (4 rows)
 
 -- the window of the rows of an index that is not sorted by its keys: the rows of each partition are put together in memory (SiftAggV6Window), and the rows are the normal plan's
+-- with no ORDER BY every row of a partition is a peer: a RANGE frame, rank and dense_rank do not depend on the order of its rows; row_number and a ROWS frame do, and keep the normal plan
 CREATE TABLE wu (id int, grp int, ts int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO wu SELECT i, (i * 7919) % 13, (i * 31) % 97, CASE WHEN i % 9 = 0 THEN NULL ELSE i % 50 END FROM generate_series(1, 300) i;
 CREATE INDEX wu_col ON wu USING sift_col (id, grp, ts, v);
@@ -91,13 +92,21 @@ VACUUM ANALYZE wu;
 SELECT q AS query, (SELECT bool_or(l LIKE '%SiftAggV6Window%') FROM agg_plan(q) l) AS window_node, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same
 FROM (VALUES ('SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC, id) FROM wu'),
 	('SELECT * FROM (SELECT id, grp, v, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wu) s WHERE rn <= 2'),
-	('SELECT id, grp, sum(v) OVER (PARTITION BY grp ORDER BY ts, id), count(v) OVER (PARTITION BY grp ORDER BY ts, id) FROM wu')) z(q) ORDER BY 1;
-                                                          query                                                           | window_node | same 
---------------------------------------------------------------------------------------------------------------------------+-------------+------
- SELECT * FROM (SELECT id, grp, v, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wu) s WHERE rn <= 2       | t           | t
- SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC, id) FROM wu                                        | t           | t
- SELECT id, grp, sum(v) OVER (PARTITION BY grp ORDER BY ts, id), count(v) OVER (PARTITION BY grp ORDER BY ts, id) FROM wu | t           | t
-(3 rows)
+	('SELECT id, grp, sum(v) OVER (PARTITION BY grp ORDER BY ts, id), count(v) OVER (PARTITION BY grp ORDER BY ts, id) FROM wu'),
+	('SELECT id, grp, sum(v) OVER w, count(*) OVER w, min(v) OVER w, rank() OVER w, dense_rank() OVER w FROM wu WINDOW w AS (PARTITION BY grp)'),
+	('SELECT id, grp, avg(v) OVER (PARTITION BY grp), max(v) OVER (PARTITION BY grp) FROM wu'),
+	('SELECT id, grp, row_number() OVER (PARTITION BY grp) FROM wu'),
+	('SELECT id, grp, sum(v) OVER (PARTITION BY grp ROWS UNBOUNDED PRECEDING) FROM wu')) z(q) ORDER BY 1;
+                                                                  query                                                                   | window_node | same 
+------------------------------------------------------------------------------------------------------------------------------------------+-------------+------
+ SELECT * FROM (SELECT id, grp, v, row_number() OVER (PARTITION BY grp ORDER BY ts, id) rn FROM wu) s WHERE rn <= 2                       | t           | t
+ SELECT id, grp, avg(v) OVER (PARTITION BY grp), max(v) OVER (PARTITION BY grp) FROM wu                                                   | t           | t
+ SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY ts DESC, id) FROM wu                                                        | t           | t
+ SELECT id, grp, row_number() OVER (PARTITION BY grp) FROM wu                                                                             | f           | t
+ SELECT id, grp, sum(v) OVER (PARTITION BY grp ORDER BY ts, id), count(v) OVER (PARTITION BY grp ORDER BY ts, id) FROM wu                 | t           | t
+ SELECT id, grp, sum(v) OVER (PARTITION BY grp ROWS UNBOUNDED PRECEDING) FROM wu                                                          | f           | t
+ SELECT id, grp, sum(v) OVER w, count(*) OVER w, min(v) OVER w, rank() OVER w, dense_rank() OVER w FROM wu WINDOW w AS (PARTITION BY grp) | t           | t
+(7 rows)
 
 DROP TABLE wn, wu, agg_q;
 DROP FUNCTION agg_rows, agg_pushed, agg_plan;

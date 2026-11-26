@@ -109,6 +109,15 @@ arg_type_ok(SiftWinFuncKind kind, Oid typid)
 }
 
 bool
+sift_v6_win_order_free(const SiftWindowSpec *w)
+{
+	for (int f = 0; f < w->n_funcs; f++)
+		if (!(w->funcs[f].kind >= SWIN_COUNT_STAR && w->funcs[f].range_frame) && w->funcs[f].kind != SWIN_RANK && w->funcs[f].kind != SWIN_DENSE_RANK)
+			return false;
+	return true;
+}
+
+bool
 sift_v6_win_func_spec(SiftV6Input *in, const WindowFunc *wf, bool range, SiftV6WindowSpec *s, int f)
 {
 	SiftWinFuncSpec *fs = &s->win.funcs[f];
