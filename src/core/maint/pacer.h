@@ -49,7 +49,8 @@ typedef enum SiftPacerMode
 typedef struct SiftPaceLoad
 {
 	uint32		active_oltp;	/* client backends that run a statement now */
-	uint32		cpu_slots;		/* max(2, max_parallel_workers) */
+	uint32		parallel_slots;	/* max(max_parallel_workers, 2): the share of them the backends take is the moderate regime */
+	uint32		cpu_slots;		/* max(max_parallel_workers, the online CPUs, 2): the share of them is the heavy regime, which holds P2 and P3 back */
 	uint64		lat_ewma_us;	/* fast average of the duration of a scan */
 	uint64		lat_base_us;	/* slow average */
 	uint32		lock_yields;	/* locks a step gave way for since the last look */

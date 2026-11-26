@@ -3,6 +3,8 @@
  */
 #include "postgres.h"
 
+#include <unistd.h>
+
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/bufmgr.h"
@@ -109,13 +111,14 @@ share_pm_of(double share)
 SiftPaceDecision
 sift_pacer_decide(const SiftPaceLoad *l)
 {
-	double		load = (double) l->active_oltp / Max(l->cpu_slots, 2);
+	double		heavy = (double) l->active_oltp / Max(l->cpu_slots, 2);
+	double		busy = (double) l->active_oltp / Max(l->parallel_slots, 2);
 	double		spike = (double) l->lat_ewma_us / Max(l->lat_base_us, LAT_FLOOR_US);
 
-	if (load >= 0.75 || spike >= 2.5 || l->lock_yields > 0)
-		return (SiftPaceDecision) {SIFT_PACE_THROTTLED, share_pm_of(Max((load - 0.75) / 0.75, (spike - 2.5) / 2.5))};
-	if (load >= 0.25 || spike >= 1.5)
-		return (SiftPaceDecision) {SIFT_PACE_MODERATE, share_pm_of(Max((load - 0.25) / 0.5, spike - 1.5))};
+	if (heavy >= 0.75 || spike >= 2.5 || l->lock_yields > 0)
+		return (SiftPaceDecision) {SIFT_PACE_THROTTLED, share_pm_of(Max((heavy - 0.75) / 0.75, (spike - 2.5) / 2.5))};
+	if (busy >= 0.25 || spike >= 1.5)
+		return (SiftPaceDecision) {SIFT_PACE_MODERATE, share_pm_of(Max((busy - 0.25) / 0.5, spike - 1.5))};
 	return (SiftPaceDecision) {SIFT_PACE_FULL, 0};
 }
 
@@ -161,6 +164,17 @@ sift_pacer_running_backends(Oid db)
  * been silent for FG_IDLE_US (FG_QUIET_US when no backend runs) has ended: its fast average goes back to the slow one and a backoff of the heavy regime ends with it. An observer (a client backend that reads the pacer) is not
  * load, and leaves the locks yielded to the worker that will look next.
  */
+/* The backends the host runs at once without a queue for the CPU: max_parallel_workers counts the workers of parallel queries only, a pooled server runs many more backends than that */
+static int
+cpu_slots(void)
+{
+	static long online;
+
+	if (online == 0)
+		online = sysconf(_SC_NPROCESSORS_ONLN);
+	return Max(max_parallel_workers, Max((int) online, 2));
+}
+
 static SiftPaceDecision
 current(SiftPacerTelemetry *t, bool observer)
 {
@@ -178,7 +192,8 @@ current(SiftPacerTelemetry *t, bool observer)
 			pg_atomic_write_u64(&t->fg.fg_lat_ewma_us, pg_atomic_read_u64(&t->fg.fg_lat_base_us));
 		load = (SiftPaceLoad) {
 			.active_oltp = active,
-			.cpu_slots = Max(2, max_parallel_workers),
+			.parallel_slots = Max(2, max_parallel_workers),
+			.cpu_slots = cpu_slots(),
 			.lat_ewma_us = pg_atomic_read_u64(&t->fg.fg_lat_ewma_us),
 			.lat_base_us = pg_atomic_read_u64(&t->fg.fg_lat_base_us),
 			.lock_yields = observer ? pg_atomic_read_u32(&t->w.lock_yields) : pg_atomic_exchange_u32(&t->w.lock_yields, 0)

@@ -25,7 +25,7 @@ static const char *const mode_names[] = {"FULL", "MODERATE", "THROTTLED", "DEFER
 Datum
 sift_test_pacer_decide(PG_FUNCTION_ARGS)
 {
-	SiftPaceLoad load = {.active_oltp = PG_GETARG_INT32(0),.cpu_slots = PG_GETARG_INT32(1),.lat_ewma_us = PG_GETARG_INT64(2),
+	SiftPaceLoad load = {.active_oltp = PG_GETARG_INT32(0),.parallel_slots = PG_GETARG_INT32(1),.cpu_slots = PG_GETARG_INT32(1),.lat_ewma_us = PG_GETARG_INT64(2),
 	.lat_base_us = PG_GETARG_INT64(3),.lock_yields = PG_GETARG_INT32(4)};
 	int			base = PG_GETARG_INT32(5);
 	SiftPaceDecision d = sift_pacer_decide(&load);
