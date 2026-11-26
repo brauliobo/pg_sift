@@ -646,7 +646,10 @@ sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec,
 	if (read && *nout > out_cap)
 	{
 		sift_compact_release_outputs(rel, part_id, written, *nout);
-		elog(ERROR, "sift: a share of a parallel compaction wrote %d parts, its slot holds %d", *nout, out_cap);
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift: a share of a parallel compaction wrote %d parts, its slot holds %d", *nout, out_cap),
+				 errhint("Run VACUUM with PARALLEL 0 to compact this partition without parallel workers.")));
 	}
 	if (read && *nout > 0)
 		memcpy(out, written, *nout * sizeof(SiftPartDesc));

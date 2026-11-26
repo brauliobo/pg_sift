@@ -32,7 +32,7 @@ sess_open p sb
 sess_say sb "BEGIN; SAVEPOINT s; SELECT id FROM tp WHERE id = 2 FOR UPDATE; ROLLBACK TO s; \\echo b1"
 says sb b1
 sql p "BEGIN" "SELECT id FROM tp WHERE id = 1 FOR UPDATE" "PREPARE TRANSACTION 'p1'" >/dev/null
-sess_say sb "SET lock_timeout = '1s'; UPDATE tp SET v = v + 1 WHERE id = 1; \\echo b2"
+sess_say sb "SET lock_timeout = '1s'; UPDATE tp SET v = v + 1 WHERE id = 1; \\echo b2" # timeout-ok: waits on a row lock held by a prepared transaction
 says sb b2
 sess_say sb "ROLLBACK;"
 sess_close sb
@@ -48,7 +48,7 @@ wait "$PGBENCH_PID" || bail "pgbench: $(tail -n 5 "$D/pgbench.log")"
 sess_open p ua
 sess_say ua "SET work_mem = '64kB'; BEGIN; INSERT INTO u SELECT -i, repeat('y', 40) FROM generate_series(1, 3000) i; \\echo a1"
 says ua a1
-out=$(sql p "SET lock_timeout = '1s'" "INSERT INTO u VALUES (-1, 'dup')" 2>&1)
+out=$(sql p "SET lock_timeout = '1s'" "INSERT INTO u VALUES (-1, 'dup')" 2>&1) # timeout-ok: waits on an open transaction holding the unique key
 sess_say ua "ROLLBACK;"
 sess_close ua
 check "UNIQUE: a key another transaction wrote into the slab is waited for, not taken again" grep -qE "lock timeout|duplicate key" <<<"$out"
