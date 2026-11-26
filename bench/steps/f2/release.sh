@@ -8,7 +8,7 @@
 #   scope-stock      the scope index against the tuned stock arms and ClickHouse (ch_join, ch_proj; the standard size)
 #   v6-core          the 6.0 scaling ladder, 10k, 40k, 160k and 1M rows: memory flatness, compression, WAL, soft delete, planning, idle memory (bench/run_round.sh)
 #   scaling-io       warm compute on 1, 2, 4 and 8 workers, cold I/O io_uring / worker / sync, 1, 4 and 16 writers at 2M rows (bench/scaling.sh)
-#   v6-cases         only with --stages: the focused cases of bench/cases.tsv, planned, timed against PostgreSQL and pg_duckdb, every answer compared
+#   v6-cases         the headline cases of bench/cases.tsv at 300,000 rows, planned, timed against PostgreSQL and pg_duckdb, every answer compared
 #   cov-plan         the coverage and plan-gate queries against PostgreSQL and 5.1.0 (bench/bench cov-plan)
 #   gpu              only with --gpu: the Vulkan path against the CPU one on 1M and 10M orders (bench/gpu/pg.sh, a server named by PGHOST and PGPORT)
 # The engines that are not pg_sift (Elasticsearch, ClickHouse, Citus, pg_ivm, the stock arms, the other text engines) are measured once per host, dataset, settings and adapter and then read
@@ -44,7 +44,7 @@ while (( $# )); do
   shift
 done
 ALL_STAGES='store-analytics clickbench search-bm25 scope-stock v6-core scaling-io v6-cases cov-plan gpu'
-DEFAULT_STAGES="store-analytics clickbench search-bm25 scope-stock v6-core scaling-io cov-plan${GPU:+ gpu}"
+DEFAULT_STAGES="store-analytics clickbench search-bm25 scope-stock v6-core scaling-io v6-cases cov-plan${GPU:+ gpu}"
 [[ -n $STAGES ]] || { [[ -n $QUICK ]] && STAGES='v6-core scaling-io' || STAGES=$DEFAULT_STAGES; }
 for s in $STAGES; do [[ " $ALL_STAGES " == *" $s "* ]] || die "unknown stage $s (stages: $ALL_STAGES)"; done
 BUDGET=${BUDGET:-$([[ -n $RELEASE ]] && echo 60 || echo 45)}
@@ -68,7 +68,7 @@ stage_cmds() { # STAGE: its commands, one a line
     scope-stock) echo "$BENCH_CMD scope-stock --size standard $D $R" ;;
     v6-core) echo "$BENCH/run_round.sh --verify-diff --scales $CORE_SCALES $D" ;;
     scaling-io) echo "$BENCH/scaling.sh $D ${QUICK:+--quick}" ;;
-    v6-cases) echo "$BENCH_CMD cases $D" ;;
+    v6-cases) echo "$BENCH_CMD cases --headline --rows 300000 $D" ;;
     cov-plan) echo "$BENCH_CMD cov-plan --rows 100000" ;;
     gpu) echo "$BENCH/gpu/pg.sh 1000000"; echo "$BENCH/gpu/pg.sh 10000000" ;;
   esac

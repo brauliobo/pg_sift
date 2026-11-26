@@ -8,7 +8,7 @@ from importlib import import_module
 from .data import load_live_data
 from .theme import MODES
 
-NAMES = ('hero', 'analytics', 'clickbench', 'search', 'scopes', 'scalability', 'storage')
+NAMES = ('hero', 'analytics', 'pg_queries', 'clickbench', 'search', 'scopes', 'scalability', 'storage')
 
 
 def read(path):

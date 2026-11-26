@@ -10,6 +10,7 @@ Two kinds of blocks, both functions of the results files only (no figure of a bl
   store-scaling.json, store.json, articles.tsv, duckdb-10000000.tsv (`bench/bench store|all|duckdb --docs`): the cross-engine tables. A block whose results are not
   in docs/results/ keeps the committed measurement it holds.
     v6-orders-10m, v6-orders-1m, v6-search-warm, v6-search-cold, v6-search-10m, v6-size-orders, v6-size-bm25
+  v6-pg-queries: the 24 headline cases of bench/cases.tsv against PG 18 (cases.tsv of `bench/bench cases --headline --docs`, the committed v4.0 baseline of readme_charts.py without it).
   v6-scope-baseline is the committed 5.0 scope suite of scope_stock_tables.py (always rendered).
 """
 import argparse
@@ -37,6 +38,10 @@ def ms(v):
     if v is None:
         return DASH
     return f'{v:,.0f} ms' if v >= 1000 else f'{v:.1f} ms' if v >= 10 else f'{v:.2f} ms'
+
+
+def x(v):
+    return f'{v:,.0f}×' if v >= 10 else f'{v:.1f}×'
 
 
 def bold_best(cells, best):
@@ -345,6 +350,20 @@ def render_scaling(root):
     return out
 
 
+def sig(v):
+    return DASH if v is None else f'{v:,.0f}' if v >= 100 else f'{v:.3g}'
+
+
+def case_cell(side):
+    return f'{sig(side["ms"])} ms · {sig(side["minstr"])} M · {sig(side["buffers"])}'
+
+
+def render_pg_queries(root):
+    rows = readme_charts.load_live_data(os.path.join(root, 'docs', 'results'))['pg_cases']['rows']
+    body = [[f'`{r["case"]}`: {r["shape"]}', r['against'], case_cell(r['sift']), case_cell(r['pg']), f'**{x(r["ratio"])}**' if r['ratio'] > 1 else x(r['ratio'])] for r in rows]
+    return resultfile.table(['Case', 'Against', '`pg_sift`: ms · M instr · blocks', 'PG 18: ms · M instr · blocks', 'PG ÷ `pg_sift`'], body, ['---'] * 2 + ['---:'] * 3)
+
+
 def render_scope_baseline(root):
     return scope_stock_tables.baseline_table()
 
@@ -352,10 +371,10 @@ def render_scope_baseline(root):
 BLOCKS = {   # block name: renderer
     'v6-orders-10m': render_orders_10m, 'v6-orders-1m': render_orders_1m, 'v6-search-warm': render_search_warm, 'v6-search-cold': render_search_cold,
     'v6-search-10m': render_search_10m, 'v6-scope-baseline': render_scope_baseline, 'v6-scope-build': render_scope_build, 'v6-gates': render_gates,
-    'v6-scaling': render_scaling, 'v6-size-orders': render_size_orders, 'v6-size-bm25': render_size_bm25, 'v6-wide-json': render_wide_json, 'v6-memory': render_memory,
+    'v6-scaling': render_scaling, 'v6-pg-queries': render_pg_queries, 'v6-size-orders': render_size_orders, 'v6-size-bm25': render_size_bm25, 'v6-wide-json': render_wide_json, 'v6-memory': render_memory,
 }
 PAGES = {   # page of docs/benchmarks/ -> its blocks
-    'analytics': ('v6-orders-10m', 'v6-orders-1m'), 'search': ('v6-search-warm', 'v6-search-cold', 'v6-search-10m'), 'scopes': ('v6-scope-baseline', 'v6-scope-build'),
+    'analytics': ('v6-orders-10m', 'v6-orders-1m'), 'pg-queries': ('v6-pg-queries',), 'search': ('v6-search-warm', 'v6-search-cold', 'v6-search-10m'), 'scopes': ('v6-scope-baseline', 'v6-scope-build'),
     'scalability': ('v6-gates', 'v6-scaling'), 'storage-memory': ('v6-size-orders', 'v6-size-bm25', 'v6-wide-json', 'v6-memory'),
 }
 

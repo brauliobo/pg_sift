@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the generated blocks of README.md `## Benchmarks`: the hero strip and the six <details> sections.
+"""Render the generated blocks of README.md `## Benchmarks`: the hero strip and the seven <details> sections.
 
     python3 -I bench/steps/f2/readme.py [--root DIR]
 
@@ -22,10 +22,11 @@ import readme_charts  # noqa: E402
 import resultfile  # noqa: E402
 import scope_stock_tables  # noqa: E402
 import benchmarks  # noqa: E402
-from benchmarks import DASH, bold_best, ms  # noqa: E402
+from benchmarks import DASH, bold_best, ms, x  # noqa: E402
+from charts.theme import fmt_ms  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(STEPS))
-PAGE = {'analytics': 'analytics', 'clickbench': 'clickbench', 'search': 'search', 'scopes': 'scopes', 'scalability': 'scalability', 'storage': 'storage-memory'}
+PAGE = {'analytics': 'analytics', 'pg-queries': 'pg-queries', 'clickbench': 'clickbench', 'search': 'search', 'scopes': 'scopes', 'scalability': 'scalability', 'storage': 'storage-memory'}
 ENGINE = {'sift': '`sift_col`', 'ch': 'ClickHouse', 'duckdb': 'DuckDB', 'pg': 'PG 18'}
 ANALYTICS_LABEL = {'Count by country': 'Count by country (`GROUP BY`)', 'Revenue / month': 'Revenue per month (`sum`)', 'Top 10 categories': 'Top 10 categories (`LIMIT 10`)',
                    'Avg shipped order': 'Avg shipped order (3 filters)', 'Distinct / month': 'Distinct customers/mo (`DISTINCT`)', 'Big recent orders': 'Big recent orders (range count)'}
@@ -34,11 +35,8 @@ SEARCH_LABEL = {'Exact count(*)': 'Exact `count(*)`', 'Phrase "a b"': 'Phrase `"
 COLD_BASELINE = {'sift': (1.03, 5.50), 'es': (3.11, 4.77), 'paradedb': (13.12, 17.08)}   # p50 ms range over the classes of the committed `slim-cold` run
 COLD_ENGINE = {'sift': 'sift', 'es': 'elasticsearch', 'paradedb': 'pg_search'}
 COLD_NAME = {'sift': '`pg_sift`', 'es': 'Elasticsearch', 'paradedb': 'ParadeDB'}
+PG_FLAGSHIP = ('softdel_live_groupby', 'lateral_first_row', 'cte_series_arms', 'jsonb_each_member', 'grouping_sets_report', 'keyset_page')
 CLICKBENCH_ARMS = (('pg', 'PG 18'), ('sift_table', '`sift_table`'), ('sift_col', '`sift_col`'), ('ch', 'ClickHouse'), ('ch_proj', 'CH + PROJECTION'), ('duckdb', 'DuckDB'))
-
-
-def x(v):
-    return f'{v:,.0f}×' if v >= 10 else f'{v:.1f}×'
 
 
 def span(vals):
@@ -96,6 +94,36 @@ def analytics(data, root):
     summary = f'<b>Analytical aggregations</b> — <code>sift_col</code> wins {len(won)} of {len(rows)} queries at 10M rows, up to {x(max(v["ch"] / v["sift"] for v in won))} over ClickHouse'
     alt = f'Speed against disk size at 10M rows: sift_col wins {len(won)} of {len(rows)} queries; rivals win only where marked amber.'
     return details('analytics', summary, alt, [*paragraphs(take), *table], opened=True)
+
+
+# ---- PostgreSQL-specific queries ----------------------------------------------------------------------------------------------------------
+
+def pg_loss(r):
+    """where PG 18 wins a case: its shape, ratio and what pg_sift still saves"""
+    why = ", where PG's B-tree answers in tens of microseconds and the planner keeps it" if r['against'] == 'b-tree' else ''
+    s, p = r['sift']['buffers'], r['pg']['buffers']
+    saves = f', while `pg_sift` touches {x(p / s)} fewer blocks: `{s:,.0f}` vs `{p:,.0f}`' if s and p and p > s else ''
+    return f'{r["shape"][0].lower()}{r["shape"][1:]} (`{r["case"]}`, {x(r["ratio"])}{why}{saves})'
+
+
+def pg_queries(data, root):
+    rows = data['pg_cases']['rows']
+    won, lost = [r for r in rows if r['ratio'] > 1], [r for r in rows if r['ratio'] <= 1]
+    lo, hi = x(min(r['ratio'] for r in won)), x(max(r['ratio'] for r in won))
+    meta = data['pg_cases']['meta']
+    flag = {r['case']: r for r in rows}
+    body = [[f'{r["shape"]} (`{r["case"]}`)', r['against'], *bold_best([(r['sift']['ms'], fmt_ms(r['sift']['ms'])), (r['pg']['ms'], fmt_ms(r['pg']['ms']))], min),
+             f'**{x(r["ratio"])}**' if r['ratio'] > 1 else x(r['ratio'])] for r in map(flag.get, PG_FLAGSHIP)]
+    table = resultfile.table(['PostgreSQL shape', 'Against', '`pg_sift`', 'PG 18', 'Speedup'], body, ['---', '---', '---:', '---:', '---:'])
+    take = [f'`pg_sift` wins {len(won)} of {len(rows)} PostgreSQL-native query shapes (`LATERAL`, multi-reader `CTE`, `JSONB` arrays and `jsonb_each`, `GROUPING SETS`, '
+            f'window reports, `SEMI`/`ANTI` joins, soft-delete pre-aggregates, `IN`-list lookups) by {lo}–{hi} against stock PG 18 '
+            f'({meta["orders"] / 1000:,.0f}k rows, warm median, exact answer equality; the faster of the heap plan and the B-tree).']
+    if lost:
+        take.append('Where PG 18 wins (amber in the chart): ' + '; '.join(pg_loss(r) for r in lost) + '.')
+    summary = f'<b>PostgreSQL-specific queries</b> — <code>pg_sift</code> wins {len(won)} of {len(rows)} SQL shapes against PG 18 ({lo}–{hi})' + (
+        f'; PG B-tree/COPY leads {len(lost)}' if lost else '')
+    alt = f'Speedup over PG 18 of {len(rows)} PostgreSQL-specific queries by family: pg_sift wins {len(won)} ({lo}–{hi}); PG 18 wins in amber.'
+    return details('pg-queries', summary, alt, [*paragraphs(take), *table])
 
 
 # ---- clickbench ---------------------------------------------------------------------------------------------------------------------------
@@ -233,7 +261,7 @@ def _gate_row(base, now, n, metric, section, name):
             f'**−{(1 - new / old) * 100:.1f}%**' if new is not None else '6.0 run pending', 'Scoped `CIC`, `maintenance_work_mem = 4MB`' if section == 'S_slopes' else f'{n:,} rows']
 
 
-SECTIONS = {'hero': hero, 'analytics': analytics, 'clickbench': clickbench, 'search': search, 'scopes': scopes, 'scalability': scalability, 'storage': storage}
+SECTIONS = {'hero': hero, 'analytics': analytics, 'pg-queries': pg_queries, 'clickbench': clickbench, 'search': search, 'scopes': scopes, 'scalability': scalability, 'storage': storage}
 
 
 def render(root):

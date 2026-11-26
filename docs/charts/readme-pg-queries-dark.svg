@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 440" width="860" height="440" role="img" aria-labelledby="t d" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'>
+<title id="t">pg_sift wins 21 of 24 PostgreSQL-specific queries (5.6×–891×); PG leads 3</title>
+<desc id="d">softdel_live_groupby 891×; key_presence_distinct 405×; key_table_point 257×; point_in_100 195×; point_agg_fk 170×; keycut_customer_agg 150×; lateral_first_row 347×; cte_series_arms 98×; cte_two_readers 28×; jsonb_each_member 35×; list_elements 34×; topn_coalesce 80×; topn_page_totals 48×; semi_exists_self 21×; anti_not_in_self 5.6×; count_distinct_unique 211×; grouping_sets_report 23×; ranked_top_per_group 22×; window_json_report 16×; group_by_id_top 12×; two_level_spend 6.3×; bulk_copy_wal 0.5×; keyset_page 0.4×; point_agg_id 0.3×</desc>
+<text x="24" y="30" font-size="14" font-weight="700" text-anchor="start" fill="#e6edf3">pg_sift wins 21 of 24 PostgreSQL-specific queries (5.6×–891×); PG leads 3</text>
+<text x="24" y="50" font-size="12" text-anchor="start" fill="#8b949e">300k rows · PG 18.6 · warm median · speedup = PG 18 (faster of heap/B-tree) ÷ pg_sift · amber: PG 18 wins</text>
+<text x="24" y="66" font-size="12" text-anchor="start" fill="#8b949e">Query family · cases pg_sift wins</text>
+<text x="836" y="66" font-size="12" text-anchor="end" fill="#8b949e">speedup = PG 18 ms ÷ pg_sift ms (log) →</text>
+<line x1="249.5" y1="74" x2="249.5" y2="262" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="249.5" y="276" font-size="12" text-anchor="middle" fill="#8b949e">0.3×</text>
+<line x1="312" y1="74" x2="312" y2="262" fill="none" stroke="#6e7681" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="312" y="276" font-size="12" text-anchor="middle" fill="#8b949e">1×</text>
+<line x1="431.5" y1="74" x2="431.5" y2="262" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="431.5" y="276" font-size="12" text-anchor="middle" fill="#8b949e">10×</text>
+<line x1="551" y1="74" x2="551" y2="262" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="551" y="276" font-size="12" text-anchor="middle" fill="#8b949e">100×</text>
+<line x1="670.5" y1="74" x2="670.5" y2="262" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="670.5" y="276" font-size="12" text-anchor="middle" fill="#8b949e">1,000×</text>
+<text x="24" y="90" font-size="11" font-weight="700" text-anchor="start" fill="#e6edf3">Soft-delete &amp; lookups</text>
+<text x="24" y="102" font-size="10" text-anchor="start" fill="#3B82F6">6/6 wins</text>
+<line x1="572.1" y1="88" x2="664.5" y2="88" fill="none" stroke="#64748b" stroke-width="2"/>
+<circle cx="664.5" cy="88" r="5" fill="#3B82F6"/>
+<circle cx="623.6" cy="88" r="5" fill="#3B82F6"/>
+<circle cx="600" cy="88" r="5" fill="#3B82F6"/>
+<circle cx="585.7" cy="88" r="5" fill="#3B82F6"/>
+<circle cx="578.6" cy="88" r="5" fill="#3B82F6"/>
+<circle cx="572.1" cy="88" r="5" fill="#3B82F6"/>
+<text x="673.5" y="92" font-size="11" text-anchor="start" fill="#e6edf3">softdel_live_groupby 891×</text>
+<text x="568.1" y="105" font-size="10" text-anchor="start" fill="#8b949e">keycut_customer_agg 150×</text>
+<text x="24" y="121" font-size="11" font-weight="700" text-anchor="start" fill="#e6edf3">LATERAL &amp; CTEs</text>
+<text x="24" y="133" font-size="10" text-anchor="start" fill="#3B82F6">3/3 wins</text>
+<line x1="484.9" y1="119" x2="615.6" y2="119" fill="none" stroke="#64748b" stroke-width="2"/>
+<circle cx="615.6" cy="119" r="5" fill="#3B82F6"/>
+<circle cx="550" cy="119" r="5" fill="#3B82F6"/>
+<circle cx="484.9" cy="119" r="5" fill="#3B82F6"/>
+<text x="624.6" y="123" font-size="11" text-anchor="start" fill="#e6edf3">lateral_first_row 347×</text>
+<text x="480.9" y="136" font-size="10" text-anchor="start" fill="#8b949e">cte_two_readers 28×</text>
+<text x="24" y="152" font-size="11" font-weight="700" text-anchor="start" fill="#e6edf3">JSONB &amp; arrays</text>
+<text x="24" y="164" font-size="10" text-anchor="start" fill="#3B82F6">2/2 wins</text>
+<line x1="495" y1="150" x2="496.5" y2="150" fill="none" stroke="#64748b" stroke-width="2"/>
+<circle cx="496.5" cy="150" r="5" fill="#3B82F6"/>
+<circle cx="495" cy="150" r="5" fill="#3B82F6"/>
+<text x="505.5" y="154" font-size="11" text-anchor="start" fill="#e6edf3">jsonb_each_member 35×</text>
+<text x="491" y="167" font-size="10" text-anchor="start" fill="#8b949e">list_elements 34×</text>
+<text x="24" y="183" font-size="11" font-weight="700" text-anchor="start" fill="#e6edf3">Top-N &amp; joins</text>
+<text x="24" y="195" font-size="10" text-anchor="start" fill="#3B82F6">4/4 wins</text>
+<line x1="401.4" y1="181" x2="539.4" y2="181" fill="none" stroke="#64748b" stroke-width="2"/>
+<circle cx="539.4" cy="181" r="5" fill="#3B82F6"/>
+<circle cx="512.9" cy="181" r="5" fill="#3B82F6"/>
+<circle cx="470" cy="181" r="5" fill="#3B82F6"/>
+<circle cx="401.4" cy="181" r="5" fill="#3B82F6"/>
+<text x="548.4" y="185" font-size="11" text-anchor="start" fill="#e6edf3">topn_coalesce 80×</text>
+<text x="397.4" y="198" font-size="10" text-anchor="start" fill="#8b949e">anti_not_in_self 5.6×</text>
+<text x="24" y="214" font-size="11" font-weight="700" text-anchor="start" fill="#e6edf3">Reports, windows &amp; distinct</text>
+<text x="24" y="226" font-size="10" text-anchor="start" fill="#3B82F6">6/6 wins</text>
+<line x1="407.5" y1="212" x2="589.8" y2="212" fill="none" stroke="#64748b" stroke-width="2"/>
+<circle cx="589.8" cy="212" r="5" fill="#3B82F6"/>
+<circle cx="474.7" cy="212" r="5" fill="#3B82F6"/>
+<circle cx="472.4" cy="212" r="5" fill="#3B82F6"/>
+<circle cx="455.9" cy="212" r="5" fill="#3B82F6"/>
+<circle cx="441" cy="212" r="5" fill="#3B82F6"/>
+<circle cx="407.5" cy="212" r="5" fill="#3B82F6"/>
+<text x="598.8" y="216" font-size="11" text-anchor="start" fill="#e6edf3">count_distinct_unique 211×</text>
+<text x="403.5" y="229" font-size="10" text-anchor="start" fill="#8b949e">two_level_spend 6.3×</text>
+<text x="24" y="245" font-size="11" font-weight="700" text-anchor="start" fill="#e6edf3">B-tree &amp; COPY</text>
+<text x="24" y="257" font-size="10" text-anchor="start" fill="#F59E0B">0/3 · PG wins</text>
+<line x1="249.5" y1="243" x2="276" y2="243" fill="none" stroke="#64748b" stroke-width="2"/>
+<circle cx="276" cy="243" r="5" fill="#F59E0B"/>
+<circle cx="264.4" cy="243" r="5" fill="#F59E0B"/>
+<circle cx="249.5" cy="243" r="5" fill="#F59E0B"/>
+<text x="285" y="247" font-size="11" text-anchor="start" fill="#e6edf3">bulk_copy_wal 0.5×</text>
+<text x="245.5" y="260" font-size="10" text-anchor="start" fill="#8b949e">point_agg_id 0.3×</text>
+<text x="24" y="296" font-size="12" font-weight="700" text-anchor="start" fill="#e6edf3">One flagship case per family · warm ms · shared-buffer blocks · amber: PG 18 is faster</text>
+<text x="24" y="316" font-size="12" text-anchor="start" fill="#8b949e">Case</text>
+<text x="360" y="316" font-size="12" text-anchor="start" fill="#8b949e">Against</text>
+<text x="560" y="316" font-size="12" text-anchor="end" fill="#8b949e">pg_sift</text>
+<text x="720" y="316" font-size="12" text-anchor="end" fill="#8b949e">PG 18</text>
+<text x="836" y="316" font-size="12" text-anchor="end" fill="#8b949e">Speedup</text>
+<text x="24" y="334" font-size="11" text-anchor="start" fill="#e6edf3">softdel_live_groupby</text>
+<text x="360" y="334" font-size="11" text-anchor="start" fill="#8b949e">heap plan</text>
+<text x="560" y="334" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">0.06 ms · 32 blk</text>
+<text x="720" y="334" font-size="11" text-anchor="end" fill="#e6edf3">50.8 ms · 4,107 blk</text>
+<text x="836" y="334" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">891×</text>
+<text x="24" y="349" font-size="11" text-anchor="start" fill="#e6edf3">lateral_first_row</text>
+<text x="360" y="349" font-size="11" text-anchor="start" fill="#8b949e">heap plan</text>
+<text x="560" y="349" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">4.17 ms · 2,973 blk</text>
+<text x="720" y="349" font-size="11" text-anchor="end" fill="#e6edf3">1,449 ms · 455,241 blk</text>
+<text x="836" y="349" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">347×</text>
+<text x="24" y="364" font-size="11" text-anchor="start" fill="#e6edf3">cte_series_arms</text>
+<text x="360" y="364" font-size="11" text-anchor="start" fill="#8b949e">heap plan</text>
+<text x="560" y="364" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">8.76 ms · 768 blk</text>
+<text x="720" y="364" font-size="11" text-anchor="end" fill="#e6edf3">858 ms · 13,731 blk</text>
+<text x="836" y="364" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">98×</text>
+<text x="24" y="379" font-size="11" text-anchor="start" fill="#e6edf3">jsonb_each_member</text>
+<text x="360" y="379" font-size="11" text-anchor="start" fill="#8b949e">heap plan</text>
+<text x="560" y="379" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">3.35 ms · 673 blk</text>
+<text x="720" y="379" font-size="11" text-anchor="end" fill="#e6edf3">117 ms · 13,639 blk</text>
+<text x="836" y="379" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">35×</text>
+<text x="24" y="394" font-size="11" text-anchor="start" fill="#e6edf3">grouping_sets_report</text>
+<text x="360" y="394" font-size="11" text-anchor="start" fill="#8b949e">heap plan</text>
+<text x="560" y="394" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">2.85 ms · 198 blk</text>
+<text x="720" y="394" font-size="11" text-anchor="end" fill="#e6edf3">65.9 ms · 4,107 blk</text>
+<text x="836" y="394" font-size="11" font-weight="700" text-anchor="end" fill="#3B82F6">23×</text>
+<text x="24" y="409" font-size="11" text-anchor="start" fill="#e6edf3">keyset_page</text>
+<text x="360" y="409" font-size="11" text-anchor="start" fill="#8b949e">b-tree</text>
+<text x="560" y="409" font-size="11" text-anchor="end" fill="#e6edf3">0.10 ms · 91 blk</text>
+<text x="720" y="409" font-size="11" font-weight="700" text-anchor="end" fill="#F59E0B">0.04 ms · 56 blk</text>
+<text x="836" y="409" font-size="11" font-weight="700" text-anchor="end" fill="#F59E0B">0.4×</text>
+<text x="24" y="428" font-size="12" text-anchor="start" fill="#8b949e">Data: bench/cases.tsv (24 headline cases, 300k rows) · PG 18.6 · v4.0 baseline 3c5e625d (live cases.tsv overlays on 6.0 run)</text>
+</svg>
