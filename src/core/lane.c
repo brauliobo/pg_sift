@@ -604,36 +604,26 @@ sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer
 	return nb;
 }
 
-/* The header counts the pages of the lane up to the new tail nb, when its lock is free at once; cur, the page before nb, is held */
+/* hp, the header, counts the pages of the lane up to the new tail nb; cur, the page before nb, is held */
 static bool
-count_link(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer cur, Buffer nb, uint32 limit)
+count_link(Relation index, uint64 gen, Page hp, int lane, Buffer cur, Buffer nb, uint32 limit)
 {
-	Buffer		hb = ReadBuffer(index, hdr_blk);
-	SiftXlog	state;
-	SiftWbufHeaderData *hd;
+	SiftWbufHeaderData *hd = SiftLaneHdr(hp);
 	BlockNumber last;
-	bool		crossed;
 
-	if (!ConditionalLockBuffer(hb))
-	{
-		ReleaseBuffer(hb);
-		return false;
-	}
-	state = sift_xlog_start(index);
-	hd = SiftLaneHdr(sift_xlog_register(&state, hb, 0));
 	hd->lanes[lane].npages += links_to(index, gen, hd->lanes[lane].tail, BufferGetBlockNumber(cur), &last) + 1;
 	hd->lanes[lane].tail = BufferGetBlockNumber(nb);
-	crossed = sift_lane_npages(hd) >= limit;
-	sift_xlog_finish(&state);
-	UnlockReleaseBuffer(hb);
-	return crossed;
+	return sift_lane_npages(hd) >= limit;
 }
 
+/* nb linked after cur in one record, with the count of the header when its lock is free at once (a later link counts the pages it skips) */
 Buffer
 sift_lane_link(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer cur, Size hdrsize, uint32 limit,
 			   SiftLaneLinkFill fill, void *arg, bool *crossed)
 {
 	Buffer		nb = sift_alloc_page(index, SIFT_PT_WBUFDATA, gen);
+	Buffer		hb = ReadBuffer(index, hdr_blk);
+	const bool	counted = ConditionalLockBuffer(hb);
 	SiftXlog	state = sift_xlog_start(index);
 	Page		cp = sift_xlog_register(&state, cur, 0);
 	Page		np = sift_xlog_register(&state, nb, 0);
@@ -642,8 +632,12 @@ sift_lane_link(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer
 	sift_lane_init_page(np, hdrsize);
 	if (fill)
 		fill(cp, np, arg);
+	*crossed = counted && count_link(index, gen, sift_xlog_register(&state, hb, 0), lane, cur, nb, limit);
 	sift_xlog_finish(&state);
-	*crossed = count_link(index, gen, hdr_blk, lane, cur, nb, limit);
+	if (counted)
+		UnlockReleaseBuffer(hb);
+	else
+		ReleaseBuffer(hb);
 	UnlockReleaseBuffer(cur);
 	return nb;
 }
