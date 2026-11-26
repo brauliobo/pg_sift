@@ -163,7 +163,8 @@ one_row_table(const Query *q)
 		return NULL;
 	rte = linitial_node(RangeTblEntry, q->rtable);
 	return sift_v6_rte_stored(rte) && rte->tablesample == NULL && !agg_query_rte_has_rls(q, rte) && !has_subclass(rte->relid) &&
-		!contain_volatile_functions((Node *) q->targetList) && !contain_volatile_functions((Node *) q->jointree) ? rte : NULL;
+		!contain_volatile_functions((Node *) q->targetList) && !contain_volatile_functions((Node *) q->jointree) &&
+		!agg_node_may_raise((Node *) q->targetList) && !agg_node_may_raise((Node *) q->jointree) ? rte : NULL;
 }
 
 static bool

@@ -252,6 +252,12 @@ raising_walker(Node *n, void *context)
 	return expression_tree_walker(n, raising_walker, context);
 }
 
+bool
+agg_node_may_raise(Node *n)
+{
+	return raising_walker(n, NULL);
+}
+
 static bool
 subplan_runs_at_start(PlannerInfo *root, SubPlan *sp)
 {
