@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # The scope index with a text, varchar or uuid key or member against the plain join under churn (test/fuzz/col_scope_textkey.py): fact INSERTs, DELETEs, UPDATEs, pair INSERTs, DELETEs, key moves, UPDATEs of the
 # key, keys the value store has never seen, a key that leaves every pair, aborted transactions and savepoints, reads inside a transaction, promotion, merge, VACUUM and REINDEX in a random order, with a long
-# snapshot reader; after every step a battery (IN of one key and of a list, EXISTS, a join for each pair, a group by the key, a table of keys, a time window, a top-N) must be the rows of the plain plan, and
-# every read is either stored or says a documented fallback reason. A seed picks a key (text, varchar, uuid, integer) and a member (integer, text, varchar facts with text pairs, uuid); a second run cuts the
+# snapshot reader; after every step a battery (IN of one key and of a list, EXISTS, a join for each pair, a group by the key, a table of keys, a time window, a top-N) must be the rows of the plain plan
+# through the Format 2.0 scope node and the V6 scan, and right after a build the count of one key is read from the summary (of one path, or of two with an integer key). A seed picks a key (text, varchar, uuid, integer) and a member (integer, text, varchar facts with text pairs, uuid); a second run cuts the
 # journal word of a string member to 3 bits (sift.test_member_hash_bits), so that members collide; a third and a fourth run do both for a scope of two paths (--two-paths: the direct pairs and the members of
-# the groups a key is granted, churned with grants of groups and memberships). Quick tier: seeds 5-8 (string members) of 5 steps on 4,000 rows, the collisions on 9-11, the two paths on 1-4; full: 32 seeds
+# the groups a key is granted, churned with grants of groups and memberships). Quick tier: seeds 5-8 (string members) and 26 (a key no store holds beside one written after the build) of 5 steps on 4,000 rows, the collisions on 9-11, the two paths on 1-4; full: 32 seeds
 # of 10 steps on 12,000, the collisions on 1-16, the two paths on 1-32 and 1-16 with collisions. SIFT_FUZZ_TEXTKEY_SEEDS / SIFT_FUZZ_COLLIDE_SEEDS / SIFT_FUZZ_TWOPATH_SEEDS / SIFT_FUZZ_ROWS / SIFT_FUZZ_STEPS override.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 
-SEEDS=$(knob SIFT_FUZZ_TEXTKEY_SEEDS 1-32 5-8)
+SEEDS=$(knob SIFT_FUZZ_TEXTKEY_SEEDS 1-32 5-8,26)
 COLLIDE=$(knob SIFT_FUZZ_COLLIDE_SEEDS 1-16 9-11)
 TWOPATH=$(knob SIFT_FUZZ_TWOPATH_SEEDS 1-32 1-4)
 ROWS=$(knob SIFT_FUZZ_ROWS 12000 4000)

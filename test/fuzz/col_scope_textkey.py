@@ -9,7 +9,8 @@ sift_col index with a scope on the pairs, and draws steps: batches of fact INSER
 keys that are new (the value store has never seen them: their pairs are all delta until the next build), a key that leaves every pair, aborted transactions and savepoints, reads inside a transaction,
 promotion, merge, VACUUM and REINDEX, with a REPEATABLE READ reader opened before the churn. After every step a battery (IN of one key and of a list with a key nobody has, EXISTS, a join for each
 pair, a group by the key of every key and of a list, a table of keys, a time window, a top-N) must give the rows of sift.enable_agg = off, and sift.col_verify must pass; the reader must read, through the
-scope and through the plain plan, the rows of its first read. A read is either stored from the units or says a documented Scope Fallback reason; right after a build the reads of one key are stored.
+scope and through the plain plan, the rows of its first read. Every read is that of the Format 2.0 scope node (sift.agg_force off) and of the V6 scan; right after a build the count of one key is read
+from the summary (of two paths with an integer key only).
 With --two-paths the pairs are the union of the direct pairs (tenant_scope) and the pairs a key gets through the groups it is granted (grp_scope, memberships: the view pair_set), the index has the scope of two paths, and
 the churn also adds, deletes and moves grants of groups and memberships; the three relations have the key or member of the seed's types, the group is an integer.
 """
@@ -22,19 +23,23 @@ TWO = False
 FUZZ_SETUP = "LOAD 'pg_sift'; " + SETUP + " SET sift.agg_force = on; SET jit = off;"
 
 LIB = r"""
+-- the rows of q where the Format 2.0 scope node takes it (sift.agg_force off), under the V6 scan (sift.agg_force on) and of the plain plan (sift.enable_agg off), and the Scope Read of the node
 CREATE OR REPLACE FUNCTION tk_cmp(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a text; b text; l text; plan text := ''; on_ text := current_setting('sift.enable_agg');
+DECLARE a text; b text; c text; l text; plan text := ''; rows text := 'SELECT coalesce(md5(string_agg(t::text, ''|'' ORDER BY t::text)), '''') FROM (%s) t';
 BEGIN
-	EXECUTE 'SELECT coalesce(md5(string_agg(t::text, ''|'' ORDER BY t::text)), '''') FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_force = off;
+	EXECUTE format(rows, q) INTO a;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-	PERFORM set_config('sift.enable_agg', 'off', false);
-	EXECUTE 'SELECT coalesce(md5(string_agg(t::text, ''|'' ORDER BY t::text)), '''') FROM (' || q || ') t' INTO b;
-	PERFORM set_config('sift.enable_agg', on_, false);
-	RETURN (a = b)::text || '|' || (plan ~ 'Scope Index')::text || '|' || coalesce(substring(plan from 'Scope Fallback: ([^\n]*)'), '') || '|' || b;
+	SET LOCAL sift.agg_force = on;
+	EXECUTE format(rows, q) INTO c;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format(rows, q) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	RETURN (a = b AND c = b)::text || '|' || coalesce(substring(plan from 'Scope Read: ([^\n]*)'), '') || '|' || b;
 END $$;
 """
 
-DOCUMENTED = re.compile(r'^(unfilled|snapshot|too many changed keys|patch dearer than the entity path|dedupe .*|column .* not in the scope units|.*journal.*|.*multiset.*|.*stamp.*|.*changed.*)$')
+SUMMARY = ('summary', 'ring')   # the Scope Reads that answer from the summary without a row of the facts
 
 
 def lit(ktype, n):
@@ -65,6 +70,9 @@ class Seed:
         self.two = TWO
         self.groups = r.choice([8, 25])
         self.pairs = 'pair_set' if self.two else 'tenant_scope'
+
+    def summarized(self):   # the summary answers a read of one key right after a build: of two paths with an integer key only (a string key of two paths is the join)
+        return not self.two or self.ktype == 'int'
 
     def k(self, n):
         return lit(self.ktype, n)
@@ -104,7 +112,7 @@ CREATE INDEX tenant_scope_col ON tenant_scope USING sift_col ({mc}, tenant_id) W
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, kind int, v int, pad text{gen(ft)}) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT {self.fact_rows(1, self.rows)};
 {self.two_setup(rt, gen)}CREATE INDEX events_col ON events USING sift_col (id, {mc}, created_at, kind, v)
-	WITH (scope = '{self.declaration()}');
+	WITH (scope = '{self.declaration()}', track_changes = 'ctid');
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events, tenant_scope, keys_n{', grp_scope, memberships' if self.two else ''};
 """
@@ -241,7 +249,8 @@ CREATE VIEW pair_set AS SELECT {mc}, tenant_id FROM tenant_scope UNION SELECT m.
         P, E = self.pairs, 'events e'
         agg = f"count(*), sum(v), min(id), max(id), count(DISTINCT {mc})"
         return [
-            ('one key', f"SELECT {agg} FROM {E} WHERE e.{mc} IN (SELECT {mc} FROM {P} WHERE tenant_id = {self.k(a)})"),
+            ('one key', f"SELECT count(*), sum(v) FROM {E} WHERE e.{mc} IN (SELECT {mc} FROM {P} WHERE tenant_id = {self.k(a)})"),
+            ('one key members', f"SELECT {agg} FROM {E} WHERE e.{mc} IN (SELECT {mc} FROM {P} WHERE tenant_id = {self.k(a)})"),
             ('list', f"SELECT {agg} FROM {E} WHERE e.{mc} IN (SELECT {mc} FROM {P} WHERE tenant_id IN ({self.klist(ks)}))"),
             ('exists', f"SELECT kind, count(*), sum(v) FROM {E} WHERE EXISTS (SELECT 1 FROM {P} s WHERE s.{mc} = e.{mc} AND s.tenant_id = ANY (ARRAY[{self.klist(ks)}]::{t}[])) GROUP BY kind"),
             ('per pair', f"SELECT kind, count(*), sum(v) FROM {E} JOIN {P} s ON s.{mc} = e.{mc} WHERE s.tenant_id IN ({self.klist(ks)}) GROUP BY kind"),
@@ -263,24 +272,20 @@ def run_battery(a, qs, stats, label, strict=False, first=None):
     got = {}
     empty = strict and a.run("SELECT 'rows', NOT EXISTS (SELECT 1 FROM events);").split('|')[-1].strip() == 't'   # no row, no segment to carry the stamp
     for line in out.strip().splitlines():
-        m = re.match(r'^(\d+)\|(true|false)\|(true|false)\|([^|]*)\|(.*)$', line)
+        m = re.match(r'^(\d+)\|(true|false)\|([^|]*)\|(.*)$', line)
         if not m:
             continue
-        i, same, engaged, why, h = int(m[1]), m[2] == 'true', m[3] == 'true', m[4], m[5]
+        i, same, route, h = int(m[1]), m[2] == 'true', m[3], m[4]
         name, q = qs[i]
         if not same:
             raise Fail(f'{label}: {name}: the scope read differs from the plain plan: {q}')
         if first is not None and first[i] != h:
             raise Fail(f'{label}: {name}: the reader saw other rows than its first read: {q}')
         stats['reads'] += 1
-        stats['engaged'] += engaged
-        stats['fallback'] += bool(why)
-        if why:
-            stats['why ' + why] += 1
-        if why and not DOCUMENTED.match(why):
-            raise Fail(f'{label}: {name}: undocumented fallback reason "{why}"')
-        if strict and not empty and name == 'one key' and (not engaged or why):
-            raise Fail(f'{label}: {name}: not stored right after a build ({why or "no scope read"})')
+        stats['summary'] += route in SUMMARY
+        stats['route ' + (route or 'none')] += 1
+        if strict and not empty and name == 'one key' and route not in SUMMARY:
+            raise Fail(f'{label}: {name}: not read from the summary right after a build ({route or "no scope read"})')
         got[i] = h
     if len(got) != len(qs):
         raise Fail(f'{label}: {len(got)} of {len(qs)} answers: {out.strip()[:500]}')
@@ -304,7 +309,7 @@ def run_seed(seed, rows, steps, out_dir):
         out = a.run(s.setup_sql())
         if ERR.search(out):
             raise Fail(f'setup: {out.strip()[:1500]}')
-        run_battery(a, s.battery(), stats, 'base', strict=True)
+        run_battery(a, s.battery(), stats, 'base', strict=s.summarized())
         out = a.run("SELECT 'verify', sift.col_verify('events_col', true);")
         if ERR.search(out):
             raise Fail(f'base: col_verify: {out.strip()[:500]}')
@@ -336,11 +341,11 @@ def run_seed(seed, rows, steps, out_dir):
         out = a.run('REINDEX INDEX events_col;')
         if ERR.search(out):
             raise Fail(f'final rebuild: {out.strip()[:500]}')
-        run_battery(a, s.battery(), stats, 'rebuilt', strict=True)
-        if not stats['engaged']:
-            raise Fail('no read of the seed took the scope units')
-        why = ', '.join(f'{k[4:]} x{v}' for k, v in stats.most_common() if k.startswith('why '))
-        return 0, path, f"{'two paths, ' if s.two else ''}{s.ktype} key, {s.mode} member, reads={stats['reads']} scope={stats['engaged']} fallback={stats['fallback']} ({why})"
+        run_battery(a, s.battery(), stats, 'rebuilt', strict=s.summarized())
+        if s.summarized() and not stats['summary']:
+            raise Fail('no read of the seed took the scope summary')
+        routes = ', '.join(f'{k[6:]} x{v}' for k, v in stats.most_common() if k.startswith('route '))
+        return 0, path, f"{'two paths, ' if s.two else ''}{s.ktype} key, {s.mode} member, reads={stats['reads']} summary={stats['summary']} ({routes})"
     except Fail as e:
         log.write(f'FAIL {e}\n')
         return 1, path, f'FAIL {str(e)[:600]}'

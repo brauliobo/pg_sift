@@ -2,7 +2,7 @@
 # The postmaster of a node is killed (SIGKILL, by the pid in its postmaster.pid, with its children) at a random moment of a storm that edits the pairs, the memberships and the facts of two scope indexes
 # (one on the direct grants, with soft deleted pairs, and one on the grants of a member and of its groups) while a loop promotes, merges and vacuums, and in every third round while a REINDEX of the scope
 # index of two paths runs. After each restart the two indexes verify against the heap, sift.col_scope_verify finds no differing key of either (a key it cannot vouch for is "unverified", not a difference),
-# the scope reads of every key are the join, and the maintenance and a REINDEX give back an index that reads its units. col_scope_crash kills at the named publications of the directory; this test kills
+# the scope reads of every key are the join, and the maintenance and a REINDEX give back a one path index whose join of a key reads the summary. col_scope_crash kills at the named publications of the directory; this test kills
 # anywhere. SIFT_KILLW_ROUNDS (12, 4 quick) rounds, SIFT_KILLW_MAXSLEEP seconds at most (3) between the start of the storm and the kill.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 . "${SIFT_REPO:?}/test/t/lib/twohop.bash"
@@ -22,7 +22,7 @@ sql kw "CREATE TABLE dpairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, dele
 	"INSERT INTO dpairs SELECT m, 1 + (m * 7 + j * 5) % 16 FROM generate_series(1, 200) m, generate_series(0, 2) j WHERE j < m % 4 ON CONFLICT DO NOTHING" \
 	"CREATE INDEX dpairs_journal ON dpairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')" \
 	"CREATE TABLE one_events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int, pad text) WITH (autovacuum_enabled = false)" "INSERT INTO one_events SELECT * FROM hop_events" \
-	"CREATE INDEX hop_one ON one_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> dpairs(dim_a_id, tenant_id) max_multiplicity(64)')" \
+	"CREATE INDEX hop_one ON one_events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> dpairs(dim_a_id, tenant_id) max_multiplicity(64)', track_changes = 'ctid')" \
 	"REINDEX INDEX hop_one" >/dev/null || bail "one path index failed"
 cat >"$D/hd.sql" <<'EOF'
 \set m random(1, 200)
@@ -37,7 +37,8 @@ plan $((ROUNDS * 4 + 1))
 
 ONE_Q="SELECT string_agg(k || '=' || (SELECT count(*) || ':' || coalesce(sum(v), 0) FROM one_events e WHERE sift.in_scope('hop_one'::regclass, 'tenant_id', e.dim_a_id, k)), ',' ORDER BY k) FROM generate_series(1, 17) k"
 ONE_P="SELECT string_agg(k || '=' || (SELECT count(*) || ':' || coalesce(sum(v), 0) FROM one_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM dpairs WHERE tenant_id = k AND deleted_at IS NULL)), ',' ORDER BY k) FROM generate_series(1, 17) k"
-ONE_STORED="SELECT count(*), sum(v), min(id), count(DISTINCT dim_a_id) FROM one_events e WHERE sift.in_scope('hop_one'::regclass, 'tenant_id', e.dim_a_id, 5)"
+ONE_J="SELECT count(*), sum(e.v) FROM one_events e JOIN dpairs s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 5 AND s.deleted_at IS NULL"
+one_read() { sql kw "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $ONE_J" | sed -n 's/^ *Scope Read: //p' | grep . || echo "no scope read"; }
 differing() { sql kw "SELECT count(*) FROM sift.col_scope_verify('$1', 1000) WHERE problem <> 'unverified'" | tail -n 1; }
 one_same() { [[ $(sql kw "SET sift.agg_force = on" "$ONE_Q" | tail -n 1) == $(sql kw "SET sift.enable_agg = off" "$ONE_P" | tail -n 1) ]]; }
 reads_same() { [[ $(sql kw "SELECT bool_and(hop_same(k)) FROM generate_series(1, 17) k" 2>&1 | tail -n 1) == t && $(twohop_reads kw) == same ]] && one_same; }
@@ -62,8 +63,8 @@ for i in $(seq "$ROUNDS"); do
 	check "round $i: sift.col_scope_verify finds no differing key of either index" test "$(differing hop_col)|$(differing hop_one)" == "0|0"
 	check "round $i: the scope reads of every key are the join (two paths, one path)" reads_same
 	sql kw "REINDEX INDEX hop_col" "REINDEX INDEX hop_one" >/dev/null
-	out="$(twohop_why kw)|$(twohop_why kw "$ONE_STORED")|$(differing hop_col)|$(differing hop_one)"
-	check "round $i: after a REINDEX the units are read and the scope verifies" test "$out" == "stored|stored|0|0"
+	out="$(one_read)|$(differing hop_col)|$(differing hop_one)"
+	check "round $i: after a REINDEX the join of a key reads the summary and the scopes verify" test "$out" == "summary|0|0"
 done
 check "the log has no failed assertion" test "$(grep -c 'TRAP' "$D/postgres.log")" == 0
 finish
