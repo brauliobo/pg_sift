@@ -276,6 +276,12 @@ sift_dir_read(Relation index)
 	return sift_dir_alloc(0);
 }
 
+SiftDirSnapshot *
+sift_dir_read_memo(Relation index)
+{
+	return sift_dir_read(index);
+}
+
 /* VACUUM's dirty flag of a segment: liveness here is the engine's, merges work on private copies of the pages */
 void
 sift_dir_update(Relation index, const SiftDirChange *chg)

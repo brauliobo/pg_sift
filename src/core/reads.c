@@ -28,6 +28,8 @@
 #include "core/store/store.h"
 
 #define SCANS_EXACT		64
+#define FLUSH_PAID_ROWS	8192
+#define FLUSH_SAMPLE	64
 
 typedef struct Pending
 {
@@ -158,6 +160,26 @@ add_pending(SiftMetaPageData *meta, void *arg)
 		changed = true;
 	}
 	return changed;
+}
+
+static uint64
+pending_paid(Oid index)
+{
+	uint64		paid = 0;
+
+	for (int i = 0; i < npending; i++)
+		if (pending[i].index == index)
+			paid += pending[i].paid;
+	return paid;
+}
+
+/* A backend that reads a buffer again and again writes the metapage when its sums are worth a record (FLUSH_PAID_ROWS) or for one call in FLUSH_SAMPLE: the sums it holds count in reads_paid meanwhile */
+void
+sift_reads_flush_sampled(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) (Relation))
+{
+	if (pending_paid(RelationGetRelid(index)) < FLUSH_PAID_ROWS && pg_prng_uint64_range(&pg_global_prng_state, 0, FLUSH_SAMPLE - 1) != 0)
+		return;
+	sift_reads_flush(index, wbuf_met, marks_met);
 }
 
 /*

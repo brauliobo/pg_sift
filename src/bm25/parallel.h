@@ -39,17 +39,29 @@ typedef struct SiftParSlot
 #define SIFT_PAR_FILTER_BUILDING	1
 #define SIFT_PAR_FILTER_READY		2
 
+/* What the participants write at every morsel and every theta is in a cache line of its own, apart from the fields they only read and from the mutex (the SQLite host has no PG_CACHE_LINE_SIZE) */
+#ifdef PG_CACHE_LINE_SIZE
+#define SIFT_PAR_LINE	PG_CACHE_LINE_SIZE
+#else
+#define SIFT_PAR_LINE	128
+#endif
+#define SIFT_PAR_PAD(name, type)	char name[SIFT_PAR_LINE - sizeof(type)]
+
 typedef struct SiftParShared
 {
 	int			nplanned;		/* participants the plan counts on: workers + leader */
 	int			nslots;
 	uint32		nsb;			/* range scans: superblocks [0, nsb) */
 	uint32		morsel;			/* range scans: superblocks per claim */
+	char		pad_plan[SIFT_PAR_LINE - 2 * sizeof(int) - 2 * sizeof(uint32)];
 	pg_atomic_uint64 next;		/* next morsel */
+	SIFT_PAR_PAD(pad_next, pg_atomic_uint64);
 	SiftAtomicBound theta;		/* ranked: the threshold */
+	SIFT_PAR_PAD(pad_theta, SiftAtomicBound);
 	pg_atomic_uint32 filter_state;	/* SIFT_PAR_FILTER_* */
 	ConditionVariable filter_cv;	/* signalled when the filter is ready */
 	dsa_pointer filter_bm;		/* the published filter (SiftParFilterHdr, its superblocks, its rows) */
+	char		pad_filter[SIFT_PAR_LINE];
 	slock_t		mutex;			/* guards what follows */
 	int			nattached;
 	int			nfinished;

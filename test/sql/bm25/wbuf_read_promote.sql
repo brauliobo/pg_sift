@@ -26,9 +26,9 @@ SELECT wr_read(50);
 SELECT walked = 50 * ndocs AS walked_50_full_buffers, ndocs, due FROM sift._test_wbuf_reads('wr_body');
 SELECT wr_read(59);
 SELECT walked = 109 * ndocs AS walked_109_full_buffers, due FROM sift._test_wbuf_reads('wr_body');
--- the 110th query met the rule: the two that follow write nothing more to the metapage (core/reads.c), so the sum stays where the rule was met
+-- the 110th query met the rule: a backend writes the sums it holds when they are 8,192 rows or for one call in 64 (core/reads.c), and none once the rule is met
 SELECT wr_read(2);
-SELECT walked = 110 * ndocs AS stopped_at_110_full_buffers, due FROM sift._test_wbuf_reads('wr_body');
+SELECT walked >= 110 * ndocs AS met_at_110_full_buffers, due FROM sift._test_wbuf_reads('wr_body');
 
 -- the same rows with the buffer walked or promoted
 SELECT count(*) FROM wr WHERE body @@> 'alpha delta';
@@ -36,7 +36,7 @@ SELECT sift.promote('wr_body');
 SELECT * FROM sift._test_wbuf_reads('wr_body');
 SELECT count(*) FROM wr WHERE body @@> 'alpha delta';
 
--- a buffer under 2,000 documents is never due, however much is read
+-- a buffer under 2,000 documents is never due, however much is read, and its reads are not noted at all (no sum, no write of the metapage)
 INSERT INTO wr SELECT i, 'alpha beta ' || i FROM generate_series(4001, 5000) i;
 SELECT wr_read(400);
 SELECT ndocs, walked > 0 AS walked, due FROM sift._test_wbuf_reads('wr_body');

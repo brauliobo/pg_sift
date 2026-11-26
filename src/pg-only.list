@@ -875,6 +875,7 @@ core/sql/maintain.c
 core/sql/parts.c
 core/sql/space.c
 core/sql/status.c
+core/store/dirmemo.c
 core/store/store.c
 core/store/int.h
 core/store/ops.c

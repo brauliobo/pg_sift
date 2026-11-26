@@ -466,7 +466,7 @@ maint_worker(Datum main_arg, bool seal)
 	const char *volatile name = psprintf("%u", indexoid);
 	volatile bool failed = false;
 
-	if (!sift_maint_stay_begin(indexoid))
+	if (!sift_maint_stay_begin(indexoid, seal ? SIFT_WK_COL_READ_PROMOTE : SIFT_WK_COL_MAINT))
 		return;
 
 	PG_TRY();

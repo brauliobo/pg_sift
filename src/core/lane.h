@@ -39,11 +39,11 @@ extern void sift_lane_read_header(Relation index, const SiftSegEntry *e, SiftWbu
 extern void sift_lane_alter_refuse(Relation index, const char *what);
 
 /*
- * The active segment's header block, generation and lane tails, creating the segment when there is none (make_room: called when the
+ * The active segment's header block, generation, directory format and lane tails, creating the segment when there is none (make_room: called when the
  * directory is full; false when nothing can be merged). format and flags are the owner's directory format and entry flags for a fresh buffer. hash is checked against meta->analyzer_hash when the index holds a segment (sift_dir_layout_differs), and an index with none takes it with its first segment; what names it in the error.
  */
 extern void sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, uint16 flags, bool (*make_room) (Relation),
-							  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail);
+							  uint64 *gen, BlockNumber *hdr_blk, uint16 *seg_format, BlockNumber *tail);
 
 /*
  * Seals the active segment, when it has records (has_records) and, unless force, has limit pages; opens a fresh one. Returns the sealed

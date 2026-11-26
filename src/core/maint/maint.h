@@ -117,8 +117,8 @@ typedef enum SiftStepResult
 /* One step of a worker in a transaction of its own; last: the look after the window of the request ended */
 typedef SiftStepResult (*SiftWorkerStep) (Oid indexoid, TimestampTz start, bool last);
 extern void sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step);
-/* The first thing a worker that stays does: false when another worker of the index stays (it looks for what was asked, and this one ends) */
-extern bool sift_maint_stay_begin(Oid indexoid);
+/* The first thing a worker that stays does: false when another worker of its kind stays on the index (it looks for what was asked, and this one ends) */
+extern bool sift_maint_stay_begin(Oid indexoid, SiftWorkerKind kind);
 
 /* Who asks for a merge: any (explicit, or for room in a full directory), the background (worker), VACUUM */
 typedef enum SiftMergeGoal
@@ -261,8 +261,8 @@ extern bool sift_maint_space_worth(int64 blocks, BlockNumber nblocks);
 extern void sift_maint_worker_main(Datum main_arg);
 extern void sift_read_promote_worker_main(Datum main_arg);
 
-/* A search walked docs documents of the open write buffer of generation gen (bm25/maint.c): what the promotion of the buffer is weighed against */
-extern void sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs);
+/* A search walked docs of the ndocs documents of the open write buffer of generation gen (bm25/maint.c): what the promotion of the buffer is weighed against, once the buffer is large enough to be worth a segment */
+extern void sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs, uint64 ndocs);
 extern bool sift_maint_wbuf_read_due(Relation index);
 
 #endif							/* SIFT_MAINT_H */

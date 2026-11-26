@@ -294,7 +294,7 @@ sift_lane_alter_refuse(Relation index, const char *what)
 
 void
 sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, uint16 format, uint16 flags, bool (*make_room) (Relation),
-				  uint64 *gen, BlockNumber *hdr_blk, BlockNumber *tail)
+				  uint64 *gen, BlockNumber *hdr_blk, uint16 *seg_format, BlockNumber *tail)
 {
 	SiftDirSnapshot *snap;
 	const SiftSegEntry *act;
@@ -325,6 +325,7 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, u
 	sift_lane_read_header(index, act, &hdr);
 	*gen = act->gen;
 	*hdr_blk = act->header_blk;
+	*seg_format = act->format;
 	for (int l = 0; l < SIFT_LANES; l++)
 		tail[l] = hdr.lanes[l].tail;
 	pfree(snap);
@@ -338,6 +339,24 @@ open_tail(Page page, uint64 gen)
 		SiftPageGetOpaque(page)->gen == gen && !(SiftLaneHead(page)->flags & SIFT_WBUFPAGE_SEALED);
 }
 
+/* The page that ends the chain from the pinned block buf, which may be a stale hint: the links of the pages before it are followed under share locks, which appenders at the tail do not wait for; pinned, not locked */
+static Buffer
+chain_end(Relation index, uint64 gen, Buffer buf)
+{
+	for (;;)
+	{
+		BlockNumber next = InvalidBlockNumber;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		if (open_tail(BufferGetPage(buf), gen))
+			next = SiftLaneHead(BufferGetPage(buf))->next;
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		if (!BlockNumberIsValid(next))
+			return buf;
+		buf = ReleaseAndReadBuffer(buf, index, next);
+	}
+}
+
 Buffer
 sift_lane_lock_tail(Relation index, uint64 gen, const BlockNumber *tail, int nlanes, int *lane)
 {
@@ -348,20 +367,23 @@ sift_lane_lock_tail(Relation index, uint64 gen, const BlockNumber *tail, int nla
 		int			l = (start + i) % nlanes;
 		Buffer		buf = ReadBuffer(index, tail[l]);
 
-		if (i == nlanes)
-			LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-		else if (!ConditionalLockBuffer(buf))
+		for (;;)
 		{
-			ReleaseBuffer(buf);
+			if (i == nlanes)
+				LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+			else if (!ConditionalLockBuffer(buf))
+			{
+				ReleaseBuffer(buf);
+				buf = InvalidBuffer;
+				break;
+			}
+			if (!open_tail(BufferGetPage(buf), gen) || !BlockNumberIsValid(SiftLaneHead(BufferGetPage(buf))->next))
+				break;
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+			buf = chain_end(index, gen, buf);
+		}
+		if (!BufferIsValid(buf))
 			continue;
-		}
-		while (open_tail(BufferGetPage(buf), gen) && BlockNumberIsValid(SiftLaneHead(BufferGetPage(buf))->next))
-		{
-			BlockNumber next = SiftLaneHead(BufferGetPage(buf))->next;
-
-			UnlockReleaseBuffer(buf);
-			buf = sift_lane_read_locked(index, next, BUFFER_LOCK_EXCLUSIVE);
-		}
 		if (!open_tail(BufferGetPage(buf), gen))
 		{
 			UnlockReleaseBuffer(buf);

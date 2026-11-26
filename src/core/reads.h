@@ -27,6 +27,8 @@ extern uint64 sift_scans_paid(Relation index, const SiftMetaPageData *meta);
 /* Does this backend hold sums not written to the metapage of the index; write them, except those whose rule is met already (the callers' due functions, NULL for a sum the index has none of): the end of a statement (core/reads.c) */
 extern bool sift_reads_pending(Oid index);
 extern void sift_reads_flush(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) (Relation));
+/* The same, for a read that repeats on an open buffer: it writes when the sums it holds for the index are 8192 rows, else for one call in 64 */
+extern void sift_reads_flush_sampled(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) (Relation));
 extern bool sift_col_marks_take(void);
 
 #endif							/* SIFT_READS_H */

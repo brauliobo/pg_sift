@@ -212,7 +212,8 @@ typedef enum SiftSegcacheKind
 	SIFT_SEGCACHE_BLOB,
 	SIFT_SEGCACHE_ATTRDIR,
 	SIFT_SEGCACHE_BOUNDS,
-	SIFT_SEGCACHE_FIELDDEAD
+	SIFT_SEGCACHE_FIELDDEAD,
+	SIFT_SEGCACHE_SEGHDR
 } SiftSegcacheKind;
 
 extern bool sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt,

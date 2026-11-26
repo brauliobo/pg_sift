@@ -62,7 +62,20 @@ vacuum_truncates(Relation index)
 	return sift_index_options(index)->vacuum_truncate;
 }
 
-/* The dead-posting tables of the segments VACUUM cleared docs of and the merges left as they are */
+/* Is the segment still in the directory, immutable, with dead postings to refresh? */
+static bool
+dirty_segment(Relation index, uint64 gen)
+{
+	SiftDirSnapshot *snap = sift_dir_read(index);
+	bool		dirty = false;
+
+	for (int i = 0; i < snap->nsegs; i++)
+		dirty |= snap->segs[i].gen == gen && snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_DIRTY);
+	pfree(snap);
+	return dirty;
+}
+
+/* The dead-posting tables of the segments VACUUM cleared docs of and the merges left as they are; a segment is claimed as a merge claims it, so that no step replaces it while it is refreshed */
 static void
 refresh_dead_tables(Relation index)
 {
@@ -72,20 +85,27 @@ refresh_dead_tables(Relation index)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_DIRTY))
 		{
-			MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift dead refresh segment");
-			SiftSegment *seg = sift_seg_open_once(index, &snap->segs[i], segcx);
+			uint64		gen = snap->segs[i].gen;
 
-			sift_vacuum_delay_point();
-			sift_seg_refresh_dead(seg);
-			sift_seg_close(seg);
-			MemoryContextDelete(segcx);
+			claim(index, gen, true);
+			if (dirty_segment(index, gen))
+			{
+				MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift dead refresh segment");
+				SiftSegment *seg = sift_seg_open_once(index, &snap->segs[i], segcx);
+
+				sift_vacuum_delay_point();
+				sift_seg_refresh_dead(seg);
+				sift_seg_close(seg);
+				MemoryContextDelete(segcx);
+			}
+			unclaim(index, gen);
 		}
 	pfree(snap);
 }
 
 static const SiftMaintOps bm25_ops = {
 	.name = "sift",
-	.worker = SIFT_WK_BM25_MAINT,
+	.worker = SIFT_WK_BM25_READ_PROMOTE,
 	.step_lock = RowExclusiveLock,
 	.vacuum_to_fixed_point = true,
 	.vacuum_budget = true,
@@ -165,9 +185,9 @@ sift_maint_wbuf_read_due(Relation index)
 	return due;
 }
 
-/* A search walked docs documents of the open buffer of generation gen: note them, write the sum to the metapage (core/reads.c), and now and then ask whether the reads have paid for the promotion (at most once per sift.maintenance_naptime for a backend) */
+/* A search walked docs of the ndocs documents of the open buffer of generation gen: a buffer under WBUF_READ_MIN_DOCS is not worth a segment, so its reads cost nothing (no sum, no write of the metapage); else note them, write the sum to the metapage (core/reads.c), and now and then ask whether the reads have paid for the promotion (at most once per sift.maintenance_naptime for a backend) */
 void
-sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs)
+sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs, uint64 ndocs)
 {
 	static struct
 	{
@@ -178,8 +198,10 @@ sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs)
 	TimestampTz now;
 	int			slot;
 
+	if (docs == 0 || ndocs < WBUF_READ_MIN_DOCS)
+		return;
 	sift_cwbuf_decoded_note(index, gen, docs);
-	sift_reads_flush(index, sift_maint_wbuf_read_due, NULL);
+	sift_reads_flush_sampled(index, sift_maint_wbuf_read_due, NULL);
 	if (!sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return;
 	now = GetCurrentTimestamp();
@@ -201,10 +223,11 @@ sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs)
 /*
  * One promotion or merge in a transaction of its own, holding no snapshot: the extents it frees are
  * reusable by the next step, because neither its xid nor its xmin hold the horizon back once it
- * committed. The worker lock makes it the only worker of the index at work; the others leave.
+ * committed. The promotion worker and the merge worker of an index each hold a lock of their own (lockblk): a promotion never waits for
+ * a merge, and each makes it the only worker of its job at work on the index; the others leave. A promotion asks for the merge worker, which the segments it adds may need.
  */
 static SiftStepResult
-worker_step(Oid indexoid, TimestampTz start, bool last)
+worker_step(Oid indexoid, TimestampTz start, BlockNumber lockblk, SiftJob job)
 {
 	Relation	index;
 	SiftStepResult	r = SIFT_STEP_IDLE;
@@ -221,21 +244,20 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 	if (index != NULL)
 	{
 		/* the lock is busy when a VACUUM is at it, which then does the work */
-		if (is_sift(index) && ConditionalLockPage(index, SIFT_WORKER_LOCK_BLKNO, ExclusiveLock) &&
+		if (is_sift(index) && ConditionalLockPage(index, lockblk, ExclusiveLock) &&
 			maint_lock_mode(index, false, RowExclusiveLock))
 		{
 			uint64		busy = 0;
 			TimestampTz began = GetCurrentTimestamp();
-			SiftJob		job = SIFT_JOB_PROMOTE;
 
-			if ((r = promote_next(index, false, &busy)) == SIFT_STEP_IDLE)
-			{
-				job = SIFT_JOB_MERGE;
-				r = merge_next(index, false, SIFT_GOAL_BACKGROUND, false, &busy);
-			}
+			r = job == SIFT_JOB_PROMOTE ? promote_next(index, false, &busy) : merge_next(index, false, SIFT_GOAL_BACKGROUND, false, &busy);
 			maint_unlock_mode(index, RowExclusiveLock);
 			if (r == SIFT_STEP_DONE)
+			{
 				sift_worker_ok(index, job, began);
+				if (job == SIFT_JOB_PROMOTE)
+					sift_maint_request_worker(index, SIFT_WK_BM25_MAINT);
+			}
 			else if (r == SIFT_STEP_IDLE && busy != 0)
 				r = SIFT_STEP_BUSY;
 		}
@@ -252,16 +274,28 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 	return r;
 }
 
+static SiftStepResult
+promote_step(Oid indexoid, TimestampTz start, bool last)
+{
+	return worker_step(indexoid, start, SIFT_WORKER_LOCK_BLKNO, SIFT_JOB_PROMOTE);
+}
+
+static SiftStepResult
+merge_step(Oid indexoid, TimestampTz start, bool last)
+{
+	return worker_step(indexoid, start, SIFT_MERGE_WORKER_LOCK_BLKNO, SIFT_JOB_MERGE);
+}
+
 static void
-worker_main(Datum main_arg, bool seal)
+worker_main(Datum main_arg, bool promote)
 {
 	ErrorContextCallback errctx;
 	TimestampTz start = GetCurrentTimestamp();
 	Oid			indexoid = sift_maint_worker_connect(main_arg, &errctx);
 
-	if (!sift_maint_stay_begin(indexoid))
+	if (!sift_maint_stay_begin(indexoid, promote ? SIFT_WK_BM25_READ_PROMOTE : SIFT_WK_BM25_MAINT))
 		return;
-	if (seal)
+	if (promote)
 	{
 		Relation	index;
 
@@ -276,16 +310,17 @@ worker_main(Datum main_arg, bool seal)
 		}
 		CommitTransactionCommand();
 	}
-	sift_maint_worker_stay(indexoid, start, worker_step);
+	sift_maint_worker_stay(indexoid, start, promote ? promote_step : merge_step);
 }
 
+/* The merge worker of the index */
 void
 sift_maint_worker_main(Datum main_arg)
 {
 	worker_main(main_arg, false);
 }
 
-/* The worker that seals the open write buffer first, as the reads that walked it asked */
+/* The promotion worker: it seals the open write buffer first when the reads that walked it asked */
 void
 sift_read_promote_worker_main(Datum main_arg)
 {

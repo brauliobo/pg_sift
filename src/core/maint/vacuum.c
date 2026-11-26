@@ -141,9 +141,22 @@ vacuum_merge(const SiftMaintOps *ops, Relation index, int message_level)
 	uint64		limit = sift_vacuum_rewrite_budget(false);
 	uint64		written;
 
-	while (ops->merge_next(index, false, SIFT_GOAL_VACUUM, false, &busy) == SIFT_STEP_DONE && ops->vacuum_to_fixed_point)
+	for (;;)
 	{
+		SiftStepResult r;
+
+		busy = 0;
+		r = ops->merge_next(index, false, SIFT_GOAL_VACUUM, false, &busy);
 		CHECK_FOR_INTERRUPTS();
+		if (r == SIFT_STEP_IDLE && busy != 0)
+		{
+			/* what is left to merge is claimed by a step of a worker: its end frees the segments, and the policy picks again */
+			claim(index, busy, true);
+			unclaim(index, busy);
+			continue;
+		}
+		if (r != SIFT_STEP_DONE || !ops->vacuum_to_fixed_point)
+			break;
 		written = maint_written_bytes() - start;
 		if (ops->vacuum_budget && written >= limit)
 		{
@@ -160,6 +173,16 @@ request_merges(Relation index)
 {
 	if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
 		(void) sift_maint_enqueue_here(&(SiftMaintReq) {.db = MyDatabaseId,.rel = RelationGetRelid(index),.kind = SIFT_MK_BM25_MERGE,.tier = SIFT_MAINT_TIER_DEFAULT});
+}
+
+/* The promotions, the merges and the refresh of a VACUUM run beside the steps of the writers and the workers, which claim the segments they replace (ops->step_lock); the recycle, the sweep and the truncation need the index to themselves */
+static void
+relock_exclusive(const SiftMaintOps *ops, Relation index)
+{
+	if (ops->step_lock == ExclusiveLock)
+		return;
+	maint_unlock_mode(index, ops->step_lock);
+	maint_lock_mode(index, true, ExclusiveLock);
 }
 
 typedef struct VacuumCleanup
@@ -189,7 +212,7 @@ vacuumcleanup_index(void *arg)
 
 	sift_mem_init_sub(&mt_index_vacuum, "index_vacuum", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 
-	sift_maint_lock(index, true);
+	maint_lock_mode(index, true, ops->step_lock);
 	sift_errctx_push(&ctx, RelationGetRelid(index));
 	began = sift_progress_begin(index, SIFT_JOB_VACUUM);
 	sift_progress_phase(index, "promote");
@@ -210,6 +233,7 @@ vacuumcleanup_index(void *arg)
 	SIFT_TEST_GATE(sift_test_cleanup_gate, 2);
 	if (ops->vacuum_refresh)
 		ops->vacuum_refresh(index);
+	relock_exclusive(ops, index);
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
 	sift_progress_phase(index, "space");
@@ -222,7 +246,7 @@ vacuumcleanup_index(void *arg)
 	sift_progress_end(began);
 	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);
-	if (limited && ops->worker == SIFT_WK_BM25_MAINT)
+	if (limited && ops->worker == SIFT_WK_BM25_READ_PROMOTE)
 		request_merges(index);
 	if (ops->vacuum_done)
 		ops->vacuum_done(index);

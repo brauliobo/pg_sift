@@ -13,16 +13,17 @@ $$ SELECT 'common ' || (SELECT string_agg('t' || ((i * 7 + k * 13) % 4001), ' ')
 
 CREATE TABLE ww (id int, body text) WITH (autovacuum_enabled = false);
 CREATE INDEX ww_body ON ww USING sift (body);
-INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(1, 1200) i;
+INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(1, 2100) i;
 
 SET sift.test_wbuf_narrow = on;
 CREATE TABLE wn (id int, body text) WITH (autovacuum_enabled = false);
 CREATE INDEX wn_body ON wn USING sift (body);
-INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(1, 1200) i;
+INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(1, 2100) i;
 RESET sift.test_wbuf_narrow;
 
+-- (2,100 documents: the reads of a buffer under 2,000 are not noted, and the walks are counted from them)
 -- the format of the buffer each opened with
-SELECT 'ww' AS tbl, format, ndocs = 1200 AS all_in_the_buffer FROM sift._test_wbuf_reads('ww_body') UNION ALL SELECT 'wn', format, ndocs = 1200 FROM sift._test_wbuf_reads('wn_body') ORDER BY 1;
+SELECT 'ww' AS tbl, format, ndocs = 2100 AS all_in_the_buffer FROM sift._test_wbuf_reads('ww_body') UNION ALL SELECT 'wn', format, ndocs = 2100 FROM sift._test_wbuf_reads('wn_body') ORDER BY 1;
 
 -- a term in no document: the wide bloom reads the pages being appended to and a few false ones, the small one nearly all
 CREATE FUNCTION ww_walk(tbl text, q text) RETURNS bigint LANGUAGE plpgsql AS $$
@@ -48,8 +49,8 @@ INSERT INTO ww_q VALUES (1, 't7'), (2, 'red'), (3, 'red blue'), (4, 'red OR gree
 SELECT n, q, ww_rows('ww', q) AS wide, ww_rows('ww', q) = ww_rows('wn', q) AS same_as_narrow FROM ww_q ORDER BY n;
 
 -- appended to, updated, deleted
-INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(1201, 1500) i;
-INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(1201, 1500) i;
+INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(2101, 2400) i;
+INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(2101, 2400) i;
 UPDATE ww SET body = ww_doc(id + 1) WHERE id % 7 = 0;
 UPDATE wn SET body = ww_doc(id + 1) WHERE id % 7 = 0;
 DELETE FROM ww WHERE id % 11 = 0;
@@ -61,8 +62,8 @@ SELECT n, ww_rows('ww', q) = ww_rows('wn', q) AS same_as_narrow FROM ww_q ORDER 
 
 -- promoted: the narrow buffer's segments and a wide buffer opened after them
 SELECT sift.promote('wn_body'), sift.promote('ww_body');
-INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(2001, 2400) i;
-INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(2001, 2400) i;
+INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(3001, 3400) i;
+INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(3001, 3400) i;
 SELECT format FROM sift._test_wbuf_reads('wn_body');
 SELECT n, ww_rows('ww', q) = ww_rows('wn', q) AS same_as_narrow FROM ww_q ORDER BY n;
 SELECT sift.verify('ww_body'), sift.verify('wn_body');

@@ -137,6 +137,7 @@ struct SiftPlan
 	bool		complement;		/* a branch matches documents that no leaf hits (NOT x alone, a NOT under an OR): the ranker walks the matches, not the bounds */
 	bool		rescore;		/* a phrase the score depends on: the exact score comes from the text */
 	bool		capped;			/* estimate: stop expanding at the limit */
+	bool		no_reads;		/* SIFT_BIND_NO_READS */
 	bool		scoring;
 	const SiftFilter *filter;	/* ranked search: the tuples worth scoring */
 	const SiftTidBridge *bridge;	/* ranked search: the tuples a structured scan kept, as page masks per superblock (a finalized bridge) */

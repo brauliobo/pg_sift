@@ -24,8 +24,8 @@
 static EvalNode nothing = {EN_NOTHING, .phrase = -1};
 static EvalNode all = {EN_ALL, .phrase = -1};
 
-SiftIndexState *
-sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *dir)
+static SiftIndexState *
+state_open(Relation index, MemoryContext mcxt, const SiftDirSnapshot *dir, bool analyzer)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftIndexState *st = palloc0(sizeof(SiftIndexState));
@@ -33,23 +33,34 @@ sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *d
 
 	st->index = index;
 	st->mcxt = mcxt;
-	if (dir)
-		st->dir = sift_dir_copy(dir);
-	else
-		st->dir = sift_dir_read(index);
+	st->dir = dir ? sift_dir_copy(dir) : sift_dir_read_memo(index);
 	sift_analyzer_config_from_index(index, &cfg);
 	if (sift_dir_layout_differs(st->dir, cfg.hash))
 		sift_lane_layout_error(index, "analyzer options");
-	st->analyzer = sift_analyzer_create(&cfg, mcxt);
+	st->nfields = cfg.nfields;
+	if (analyzer)
+		st->analyzer = sift_analyzer_create(&cfg, mcxt);
 	st->priv = palloc0(Max(st->dir->nsegs, 1) * sizeof(SiftSegment *));
 	MemoryContextSwitchTo(old);
 	return st;
 }
 
 SiftIndexState *
+sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *dir)
+{
+	return state_open(index, mcxt, dir, true);
+}
+
+SiftIndexState *
 sift_state_open(Relation index, MemoryContext mcxt)
 {
-	return sift_state_open_dir(index, mcxt, NULL);
+	return state_open(index, mcxt, NULL, true);
+}
+
+SiftIndexState *
+sift_state_open_terms(Relation index, MemoryContext mcxt)
+{
+	return state_open(index, mcxt, NULL, false);
 }
 
 void
@@ -705,7 +716,7 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 	p->queries = queries;
 	p->nqueries = nqueries;
 	p->mcxt = st->mcxt;
-	p->nfields = sift_analyzer_nfields(st->analyzer);
+	p->nfields = st->nfields;
 	p->segno = MemoryContextAlloc(st->mcxt, Max(st->dir->nsegs, 1) * sizeof(int));
 	p->wbufno = MemoryContextAlloc(st->mcxt, Max(st->dir->nsegs, 1) * sizeof(int));
 	for (int i = 0; i < st->dir->nsegs; i++)
@@ -719,6 +730,7 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 	}
 	p->stats.nwbuf = p->nwbuf;
 	p->capped = (flags & SIFT_BIND_CAPPED) != 0;
+	p->no_reads = (flags & SIFT_BIND_NO_READS) != 0;
 	p->scoring = (flags & SIFT_BIND_SCORE) != 0;
 	p->seg = MemoryContextAlloc(st->mcxt, Max(p->nsegs, 1) * sizeof(SiftSegment *));
 	for (int s = 0; s < p->nsegs; s++)

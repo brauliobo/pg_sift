@@ -14,8 +14,30 @@
 #include "bm25/segment/int.h"
 #include "core/cmp.h"
 
-SiftSegment *
-sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
+/* The header of a segment never changes (a merge or a VACUUM that rewrites it names a new generation): a segment read again keeps its bytes in the cache of the backend (bm25/segcache.c), where a segment read once has them in mcxt */
+static SiftSegHeaderData *
+read_header(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, bool once)
+{
+	SiftStreamReader key = {.index = index,.gen = entry->gen};
+	SiftSegHeaderData *h;
+	void	   *obj,
+			   *handle;
+	uint32		used;
+
+	if (once)
+		return sift_seg_read_header(index, entry);
+	if (sift_segcache_get(&key, SIFT_SEGCACHE_SEGHDR, entry->header_blk, SIFT_PAGE_PAYLOAD, mcxt, &obj, &handle))
+		return obj;
+	h = sift_seg_read_header_used(index, entry, &used);
+	memcpy(obj, h, used);
+	memset((char *) obj + used, 0, SIFT_PAGE_PAYLOAD - used);
+	pfree(h);
+	sift_segcache_ready(handle);
+	return obj;
+}
+
+static SiftSegment *
+seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, bool once)
 {
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftSegment *seg = palloc0(sizeof(SiftSegment));
@@ -33,7 +55,7 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 				 errmsg("sift index \"%s\" has a segment of format %u, this build reads up to %u",
 						RelationGetRelationName(index), entry->format, SIFT_FORMAT_MINOR),
 				 errhint("Install on every node that reads the index the pg_sift release that wrote it, or a later one; REINDEX rewrites it with this build.")));
-	seg->hdr = sift_seg_read_header(index, entry);
+	seg->hdr = read_header(index, entry, mcxt, once);
 	h = seg->hdr;
 	if (h->gen != entry->gen || h->ndocs != entry->ndocs || h->sum_dl != entry->sum_dl ||
 		h->ndocs == 0 || h->sb_lo != entry->sb_lo || h->sb_hi != entry->sb_hi || h->sb_lo > h->sb_hi ||
@@ -59,9 +81,15 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 }
 
 SiftSegment *
+sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
+{
+	return seg_open(index, entry, mcxt, false);
+}
+
+SiftSegment *
 sift_seg_open_once(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 {
-	SiftSegment *seg = sift_seg_open(index, entry, mcxt);
+	SiftSegment *seg = seg_open(index, entry, mcxt, true);
 
 	seg->uncached = true;
 	return seg;

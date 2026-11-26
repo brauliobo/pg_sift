@@ -84,8 +84,8 @@ score_ref(Relation index)
 }
 
 /* Counts the failure for the backoff and keeps what sift.workers shows of it */
-static void
-stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+static bool
+stamp_failure(SiftMetaPageData *meta, void *arg)
 {
 	const ErrorData *err = arg;
 	uint32		failures = meta->flags & SIFT_META_FAILURES_MASK;
@@ -97,6 +97,7 @@ stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->maint_errcode = err->sqlerrcode;
 	memset(meta->maint_errmsg, 0, sizeof(meta->maint_errmsg));
 	memcpy(meta->maint_errmsg, err->message, pg_mbcliplen(err->message, strlen(err->message), sizeof(meta->maint_errmsg) - 1));
+	return true;
 }
 
 /* The WARNING of a maintenance step that failed and is retried: kind is "sift" or "sift_col", index the open index for the hint (NULL: it is gone) */
@@ -141,7 +142,7 @@ sift_maint_record_failure(Oid indexoid, ErrorData *err)
 	index = sift_try_open_index(indexoid, RowExclusiveLock);
 	if (index != NULL)
 	{
-		sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
+		sift_meta_update(index, stamp_failure, err);
 		index_close(index, RowExclusiveLock);
 	}
 	CommitTransactionCommand();
@@ -214,7 +215,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 		return SIFT_STEP_FAILED;
 	}
 	sift_maint_warn_failure("sift", RelationGetRelationName(index), index, err);
-	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
+	sift_meta_update(index, stamp_failure, err);
 	FreeErrorData(err);
 	return SIFT_STEP_FAILED;
 }

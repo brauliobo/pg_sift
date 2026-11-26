@@ -569,10 +569,11 @@ sift_mops_rewrite_ex(const SiftMaintOps *ops, Relation index, int *promoted)
 	return n;
 }
 
-static void
-stamp_request(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
+static bool
+stamp_request(SiftMetaPageData *meta, void *arg)
 {
 	meta->maint_requested_at = *(TimestampTz *) arg;
+	return true;
 }
 
 /* By oid: what a commit callback has, where no relation can be opened */
@@ -592,18 +593,21 @@ sift_maint_register_worker(Relation index, SiftWorkerKind kind)
  * A worker that stays (sift_maint_worker_stay) holds this session lock of its index from before its first look until it decided to leave. A request that finds it held is
  * served by that worker's last look (made after the lock is let go, so a request that saw it held is in the index by then); one that finds it free starts a worker.
  */
+/* The merge workers of BM25 stay apart from its promotion workers: a promotion is asked for while a merge runs for a minute */
 static void
-stay_tag(LOCKTAG *tag, Oid indexoid)
+stay_tag(LOCKTAG *tag, Oid indexoid, SiftWorkerKind kind)
 {
-	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId, 0x51F9, indexoid, 3);
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId, 0x51F9, indexoid, kind == SIFT_WK_BM25_MAINT ? 4 : 3);
 }
 
+static LOCKTAG stay_held;
+
 static bool
-stay_alive(Oid indexoid)
+stay_alive(Oid indexoid, SiftWorkerKind kind)
 {
 	LOCKTAG		tag;
 
-	stay_tag(&tag, indexoid);
+	stay_tag(&tag, indexoid, kind);
 	if (LockAcquire(&tag, ExclusiveLock, true, true) == LOCKACQUIRE_NOT_AVAIL)
 		return true;
 	LockRelease(&tag, ExclusiveLock, true);
@@ -611,21 +615,16 @@ stay_alive(Oid indexoid)
 }
 
 bool
-sift_maint_stay_begin(Oid indexoid)
+sift_maint_stay_begin(Oid indexoid, SiftWorkerKind kind)
 {
-	LOCKTAG		tag;
-
-	stay_tag(&tag, indexoid);
-	return LockAcquire(&tag, ExclusiveLock, true, true) != LOCKACQUIRE_NOT_AVAIL;
+	stay_tag(&stay_held, indexoid, kind);
+	return LockAcquire(&stay_held, ExclusiveLock, true, true) != LOCKACQUIRE_NOT_AVAIL;
 }
 
 static void
-stay_end(Oid indexoid)
+stay_end(void)
 {
-	LOCKTAG		tag;
-
-	stay_tag(&tag, indexoid);
-	LockRelease(&tag, ExclusiveLock, true);
+	LockRelease(&stay_held, ExclusiveLock, true);
 }
 
 bool
@@ -636,14 +635,14 @@ sift_maint_request_worker(Relation index, SiftWorkerKind kind)
 	bool		stays = sift_worker_stays(kind);
 	bool		started;
 
-	if (stays && stay_alive(RelationGetRelid(index)))
+	if (stays && stay_alive(RelationGetRelid(index), kind))
 		return false;
 	snap = sift_dir_read(index);
 	started = (stays ? !in_backoff(&snap->meta) : now - snap->meta.maint_requested_at >= backoff_ms(&snap->meta) * INT64CONST(1000)) && !sift_index_out(index, snap->meta.flags);
 	pfree(snap);
 	if (!started)
 		return false;
-	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_request,.arg = &now,.extra = InvalidBuffer});
+	sift_meta_update(index, stamp_request, &now);
 	return sift_maint_register_worker(index, kind);
 }
 
@@ -701,7 +700,7 @@ sift_maint_worker_stay(Oid indexoid, TimestampTz start, SiftWorkerStep step)
 		CommitTransactionCommand();
 	}
 #endif
-	stay_end(indexoid);
+	stay_end();
 	while (r != SIFT_STEP_FAILED && !yield && (r = step(indexoid, start, true)) == SIFT_STEP_DONE)
 	{
 		CHECK_FOR_INTERRUPTS();

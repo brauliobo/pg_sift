@@ -28,7 +28,8 @@ typedef struct SiftIndexState
 {
 	Relation	index;
 	SiftDirSnapshot *dir;
-	SiftAnalyzer *analyzer;
+	SiftAnalyzer *analyzer;		/* NULL for a state of sift_state_open_terms */
+	int			nfields;
 	MemoryContext mcxt;
 	void	   *priv;			/* eval-private: opened segments */
 } SiftIndexState;
@@ -39,6 +40,8 @@ typedef struct SiftIndexState
  * changed since the build.
  */
 extern SiftIndexState *sift_state_open(Relation index, MemoryContext mcxt);
+/* The same for queries that are analyzed already (a term of its own): no analyzer is made, and a query text cannot be analyzed with it */
+extern SiftIndexState *sift_state_open_terms(Relation index, MemoryContext mcxt);
 extern void sift_state_close(SiftIndexState *st);	/* releases buffers only */
 
 /* The same on a directory snapshot read elsewhere: the participants of a parallel scan share one */
@@ -63,6 +66,7 @@ extern SiftQuery *sift_state_query_src(SiftIndexState *st, const SiftQuerySrc *s
 
 #define SIFT_BIND_SCORE		0x01	/* weigh the leaves for the ranker (idf from all segments) */
 #define SIFT_BIND_CAPPED	0x02	/* stop expanding at the limit instead of raising (estimates) */
+#define SIFT_BIND_NO_READS	0x04	/* the walk of the write buffers is no read of a search: it is not noted for their promotion (the lookup of a key of a UNIQUE index) */
 
 typedef struct SiftPlan SiftPlan;
 

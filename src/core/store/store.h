@@ -191,6 +191,8 @@ extern void sift_store_rekey_layout(Relation index, uint32 hash);
  */
 extern Buffer sift_dir_pin(Relation index);
 extern uint32 sift_dir_version_peek(Buffer dirbuf);
+/* sift_dir_read, or the copy this backend kept of the directory when block 1 is still at its version (core/store/dirmemo.c): for a reader that opens the index for each statement; no lock of block 0 or 1 */
+extern SiftDirSnapshot *sift_dir_read_memo(Relation index);
 
 /* The directory's version alone, read under its share lock: bumped by every directory update */
 extern uint32 sift_dir_version(Relation index);

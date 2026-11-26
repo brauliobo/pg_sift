@@ -130,15 +130,8 @@ get_hint(Relation index)
 static void
 refresh_hint(Relation index, WbufHint *h, uint32 analyzer_hash)
 {
-	SiftDirSnapshot *snap;
-
 	sift_lane_refresh(index, analyzer_hash, "analyzer options", hdr_size(new_format()), new_format(), 0, sift_maint_make_room,
-					  &h->gen, &h->hdr, h->tail);
-	snap = sift_dir_read(index);
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].gen == h->gen)
-			h->format = snap->segs[i].format;
-	pfree(snap);
+					  &h->gen, &h->hdr, &h->format, h->tail);
 }
 
 /* Largest n whose piece of terms[0..n) fits room; -1 when not even an empty piece does */
@@ -209,25 +202,25 @@ typedef struct PieceArg
 	bool		spans;			/* the doc goes on in the next page */
 	uint16		format;
 	bool		place;			/* the piece goes on the page being left */
+	uint64		wide[SIFT_WBUF_WIDE_WORDS];	/* its wide bloom, built before the header page is locked */
 } PieceArg;
 
-/* The page is full: the terms of its records go to the wide bloom (the append of a record changes the head of the page, whose log record grows with the bytes it changes) */
+/* The page is full: the terms of its records, and those of the piece that goes in it, go to the wide bloom (the append of a record changes the head of the page, whose log record grows with the bytes it changes); built before the header page is locked */
 static void
-fill_wide(Page page)
+wide_bloom(Page page, const SiftTermFreq *t, int n, uint64 *wide)
 {
-	SiftWbufWideHeaderData *ph = (SiftWbufWideHeaderData *) WBUFPAGE(page);
-
-	memset(ph->wide, 0, sizeof(ph->wide));
+	memset(wide, 0, SIFT_WBUF_WIDE_WORDS * sizeof(uint64));
 	for (Size pos = sizeof(SiftWbufWideHeaderData); pos < SiftPageGetUsed(page);)
 	{
 		const SiftWbufDocData *d = (const SiftWbufDocData *) (SiftPageGetData(page) + pos);
 		const uint32 *hash = REC_HASH(d);
 
 		for (int i = 0; i < d->nterms; i++)
-			bloom_add(ph->wide, SIFT_WBUF_WIDE_WORDS, hash[i]);
+			bloom_add(wide, SIFT_WBUF_WIDE_WORDS, hash[i]);
 		pos += RECSIZE(d->nterms, d->termbytes, REC_NFIELDS(d));
 	}
-	ph->base.flags |= SIFT_WBUFPAGE_WIDE;
+	for (int i = 0; i < n; i++)
+		bloom_add(wide, SIFT_WBUF_WIDE_WORDS, t[i].hash);
 }
 
 static void
@@ -242,7 +235,12 @@ fill_piece(Page cp, Page np, Page hp, void *arg)
 			WBUFPAGE(cp)->flags |= SIFT_WBUFPAGE_SPANS;
 	}
 	if (a->format >= SIFT_WBUF_FORMAT_WIDE)
-		fill_wide(cp);
+	{
+		SiftWbufWideHeaderData *ph = (SiftWbufWideHeaderData *) WBUFPAGE(cp);
+
+		memcpy(ph->wide, a->wide, sizeof(ph->wide));
+		ph->base.flags |= SIFT_WBUFPAGE_WIDE;
+	}
 }
 
 /*
@@ -281,6 +279,8 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 		place = n > 0 && (ROOM(BufferGetPage(cur)) >= WBUF_SPLIT_ROOM ||
 						  !(first && RECSIZE(nterms, whole_bytes, nfields) <= SIFT_PAGE_PAYLOAD - hdr_size(h->format)));
 		pa = (PieceArg) {tid, dl, fdl, nfields, !first, t + i, n, tb, i + n < nterms, h->format, place};
+		if (h->format >= SIFT_WBUF_FORMAT_WIDE)
+			wide_bloom(BufferGetPage(cur), place ? t + i : NULL, place ? n : 0, pa.wide);
 		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, hdr_size(h->format), limit_pages(index),
 							 fill_piece, &pa, &crossed);
 		if (place)
@@ -335,7 +335,8 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 	int			n;
 	uint64		key;
 	bool		keyed = sift_bm25_unique_key(index, values, isnull, &key),
-				unique = true;
+				unique = true,
+				crossed;
 	text	   *t = sift_bm25_assemble_doc(index, values, isnull, CurrentMemoryContext);
 
 	if (t == NULL)
@@ -353,21 +354,20 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 		sift_analyzer_config_from_index(index, &cfg);
 		an = indexInfo->ii_AmCache = sift_analyzer_create(&cfg, indexInfo->ii_Context);
 	}
-	if (keyed && checkUnique != UNIQUE_CHECK_NO)
-	{
-		unique = sift_bm25_unique_check(index, heap, values, isnull, heap_tid, checkUnique, key);
-		if (checkUnique == UNIQUE_CHECK_EXISTING)
-			return unique;
-	}
+	if (keyed && checkUnique == UNIQUE_CHECK_EXISTING)
+		return sift_bm25_unique_check(index, heap, values, isnull, heap_tid, checkUnique, key);
 	n = sift_analyze_doc(an, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), &terms, &dl);
 	if (keyed)
 		n = sift_bm25_unique_terms(an, terms, n, key, &dl, &terms);
 	sift_field_dl(terms, n, sift_analyzer_nfields(an), fdl);
-	if (sift_wbuf_append(index, heap_tid, terms, n, dl, fdl, sift_analyzer_nfields(an)))
-		sift_maint_after_seal(index);
+	if (keyed && checkUnique != UNIQUE_CHECK_NO)
+		unique = sift_bm25_unique_check(index, heap, values, isnull, heap_tid, checkUnique, key);
+	crossed = sift_wbuf_append(index, heap_tid, terms, n, dl, fdl, sift_analyzer_nfields(an));
 	sift_analyzer_reset(an);
 	if (keyed && checkUnique != UNIQUE_CHECK_NO)
 		sift_bm25_unique_release(index, key);
+	if (crossed)
+		sift_maint_after_seal(index);
 	return unique;
 }
 
@@ -432,7 +432,7 @@ void
 sift_wbuf_note_walked(const SiftWbufReader *r)
 {
 	if (r->entry.kind == SIFT_SEG_WBUF_OPEN)
-		sift_maint_wbuf_walked(r->index, r->entry.gen, r->nwalked);
+		sift_maint_wbuf_walked(r->index, r->entry.gen, r->nwalked, r->ndocs);
 }
 
 void

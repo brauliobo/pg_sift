@@ -11,14 +11,15 @@ CREATE FUNCTION ww_doc(i int) RETURNS text LANGUAGE sql IMMUTABLE AS
 $$ SELECT 'common ' || (SELECT string_agg('t' || ((i * 7 + k * 13) % 4001), ' ') FROM generate_series(1, 120) k) || ' ' || (ARRAY['red', 'green', 'blue'])[1 + i % 3] $$;
 CREATE TABLE ww (id int, body text) WITH (autovacuum_enabled = false);
 CREATE INDEX ww_body ON ww USING sift (body);
-INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(1, 1200) i;
+INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(1, 2100) i;
 SET sift.test_wbuf_narrow = on;
 CREATE TABLE wn (id int, body text) WITH (autovacuum_enabled = false);
 CREATE INDEX wn_body ON wn USING sift (body);
-INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(1, 1200) i;
+INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(1, 2100) i;
 RESET sift.test_wbuf_narrow;
+-- (2,100 documents: the reads of a buffer under 2,000 are not noted, and the walks are counted from them)
 -- the format of the buffer each opened with
-SELECT 'ww' AS tbl, format, ndocs = 1200 AS all_in_the_buffer FROM sift._test_wbuf_reads('ww_body') UNION ALL SELECT 'wn', format, ndocs = 1200 FROM sift._test_wbuf_reads('wn_body') ORDER BY 1;
+SELECT 'ww' AS tbl, format, ndocs = 2100 AS all_in_the_buffer FROM sift._test_wbuf_reads('ww_body') UNION ALL SELECT 'wn', format, ndocs = 2100 FROM sift._test_wbuf_reads('wn_body') ORDER BY 1;
  tbl | format | all_in_the_buffer 
 -----+--------+-------------------
  wn  |      0 | t
@@ -51,40 +52,40 @@ END $$;
 CREATE TABLE ww_q (n int, q text);
 INSERT INTO ww_q VALUES (1, 't7'), (2, 'red'), (3, 'red blue'), (4, 'red OR green'), (5, 'common NOT red'), (6, 't7 t20 t33'), (7, 'qqabsent'), (8, 't1500 OR t3999'), (9, '"t7 t20"'), (10, 't1*');
 SELECT n, q, ww_rows('ww', q) AS wide, ww_rows('ww', q) = ww_rows('wn', q) AS same_as_narrow FROM ww_q ORDER BY n;
- n  |       q        |    wide     | same_as_narrow 
-----+----------------+-------------+----------------
-  1 | t7             | 34 25364    | t
-  2 | red            | 400 240600  | t
-  3 | red blue       | 0 0         | t
-  4 | red OR green   | 800 480400  | t
-  5 | common NOT red | 800 480000  | t
-  6 | t7 t20 t33     | 34 25364    | t
-  7 | qqabsent       | 0 0         | t
-  8 | t1500 OR t3999 | 74 46018    | t
-  9 | "t7 t20"       | 34 25364    | t
- 10 | t1*            | 1062 637219 | t
+ n  |       q        |     wide     | same_as_narrow 
+----+----------------+--------------+----------------
+  1 | t7             | 54 58949     | t
+  2 | red            | 700 736050   | t
+  3 | red blue       | 0 0          | t
+  4 | red OR green   | 1400 1470700 | t
+  5 | common NOT red | 1400 1470000 | t
+  6 | t7 t20 t33     | 54 58949     | t
+  7 | qqabsent       | 0 0          | t
+  8 | t1500 OR t3999 | 123 125649   | t
+  9 | "t7 t20"       | 54 58949     | t
+ 10 | t1*            | 1824 1881541 | t
 (10 rows)
 
 -- appended to, updated, deleted
-INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(1201, 1500) i;
-INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(1201, 1500) i;
+INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(2101, 2400) i;
+INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(2101, 2400) i;
 UPDATE ww SET body = ww_doc(id + 1) WHERE id % 7 = 0;
 UPDATE wn SET body = ww_doc(id + 1) WHERE id % 7 = 0;
 DELETE FROM ww WHERE id % 11 = 0;
 DELETE FROM wn WHERE id % 11 = 0;
 SELECT n, ww_rows('ww', q) = ww_rows('wn', q) AS same_as_narrow, ww_rows('ww', q) AS rows FROM ww_q ORDER BY n;
- n  | same_as_narrow |    rows     
-----+----------------+-------------
-  1 | t              | 29 21243
-  2 | t              | 454 340559
+ n  | same_as_narrow |     rows     
+----+----------------+--------------
+  1 | t              | 61 81686
+  2 | t              | 727 872831
   3 | t              | 0 0
-  4 | t              | 908 680683
-  5 | t              | 910 682715
-  6 | t              | 29 21243
+  4 | t              | 1454 1744927
+  5 | t              | 1455 1745788
+  6 | t              | 61 81686
   7 | t              | 0 0
-  8 | t              | 81 58268
-  9 | t              | 29 21243
- 10 | t              | 1179 859850
+  8 | t              | 132 157553
+  9 | t              | 61 81686
+ 10 | t              | 1932 2324634
 (10 rows)
 
 VACUUM ww, wn;
@@ -116,8 +117,8 @@ SELECT sift.promote('wn_body'), sift.promote('ww_body');
        0 |       0
 (1 row)
 
-INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(2001, 2400) i;
-INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(2001, 2400) i;
+INSERT INTO ww SELECT i, ww_doc(i) FROM generate_series(3001, 3400) i;
+INSERT INTO wn SELECT i, ww_doc(i) FROM generate_series(3001, 3400) i;
 SELECT format FROM sift._test_wbuf_reads('wn_body');
  format 
 --------

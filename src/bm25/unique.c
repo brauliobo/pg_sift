@@ -28,8 +28,8 @@
 #include "bm25/query/int.h"
 #include "core/compat.h"
 
-#define UNIQUE_LOCK_BASE	0xFFFFD000U
-#define UNIQUE_LOCK_SLOTS	1024U
+#define UNIQUE_LOCK_BASE	0xFFFFB000U
+#define UNIQUE_LOCK_SLOTS	8192U
 #define DETAIL_BYTES		256
 
 StaticAssertDecl(UNIQUE_LOCK_BASE + UNIQUE_LOCK_SLOTS < InvalidBlockNumber, "the unique locks are valid block numbers");
@@ -135,7 +135,7 @@ probe_row(Prober *p, const ItemPointerData *cand, const Datum *values, const boo
 static List *
 candidates(Relation index, uint64 key, MemoryContext cx)
 {
-	SiftIndexState *st = sift_state_open(index, cx);
+	SiftIndexState *st = sift_state_open_terms(index, cx);
 	SiftQNode  *leaf = sift_query_new_node(SQ_TERM, 1);
 	SiftQuery	q = {.root = leaf,.nleaves = 1,.analyzed = true};
 	SiftQuery  *queries[1] = {&q};
@@ -148,7 +148,7 @@ candidates(Relation index, uint64 key, MemoryContext cx)
 		leaf->text[1 + i] = (char) (key >> (56 - 8 * i));
 	leaf->textlen = 9;
 	leaf->leafno = 0;
-	it = sift_iter_begin(sift_plan_bind(st, queries, 1, 0));
+	it = sift_iter_begin(sift_plan_bind(st, queries, 1, SIFT_BIND_NO_READS));
 	while (sift_iter_next(it, &pm))
 		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 			for (uint64 m = pm.offmask[wd]; m; m &= m - 1)
