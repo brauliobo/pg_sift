@@ -50,6 +50,17 @@ sift_parts_joinable(Relation rel, SiftPart *const *src, int n)
 	return ok;
 }
 
+/* Parts a compaction wrote whole are joined into one it wrote whole: without the flag the planner merges it again by size, and the writer cuts it where it was cut */
+static uint32
+joined_built(const SiftPartDesc *sdesc, int n, uint16 level)
+{
+	bool		all = level > 0;
+
+	for (int i = 0; i < n && all; i++)
+		all = (sdesc[i].flags & SIFT_PART_FLAG_BUILT) != 0;
+	return all ? SIFT_PART_FLAG_BUILT : 0;
+}
+
 /* The bounds of the parts as one: the tier they all share and, for each time column that every one of them has, the union of the ranges */
 static uint32
 joined_time_bounds(const SiftPartDesc *sdesc, int n, int64 *tmin, int64 *tmax)
@@ -368,7 +379,7 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	in.part_gen = part_gen;
 	in.level = level;
 	in.ncols = nc;
-	in.flags = (src[0]->hdr.flags & SIFT_PART_FLAG_UNKEYED) | SIFT_PART_FLAG_ALL_VISIBLE | joined_time_bounds(sdesc, n, tmin, tmax);
+	in.flags = (src[0]->hdr.flags & SIFT_PART_FLAG_UNKEYED) | joined_built(sdesc, n, level) | SIFT_PART_FLAG_ALL_VISIBLE | joined_time_bounds(sdesc, n, tmin, tmax);
 	in.nrows = nrows;
 	in.ngranules = ng;
 	in.granule_rows = SIFT_GRANULE_ROWS;
