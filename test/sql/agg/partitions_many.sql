@@ -152,6 +152,42 @@ SELECT count(*) AS partitions, sum(n) AS opens, max(n) AS most_opens
 FROM (SELECT pg_stat_get_xact_numscans(i.indexrelid) AS n FROM pg_partition_tree('pm') t JOIN pg_index i ON i.indrelid = t.relid WHERE t.isleaf) x;
 COMMIT;
 
+-- planning a scan of 500 partitions of three indexes each compiles the statement against each partition in a context of its own: the planner holds a few MB more than
+-- the normal plan (21 MB more before), and as little when the last partition misses the index of the template and the scan is refused
+CREATE TABLE pi (id int, g int, d int NOT NULL, v int, t text) PARTITION BY RANGE (d);
+DO $$
+BEGIN
+	FOR i IN 0..499 LOOP
+		EXECUTE format('CREATE TABLE pi_%s PARTITION OF pi FOR VALUES FROM (%s) TO (%s) WITH (autovacuum_enabled = false)', i, i, i + 1);
+	END LOOP;
+END $$;
+INSERT INTO pi SELECT i, i % 7, i % 500, i % 100, 't' || i % 13 FROM generate_series(1, 5000) i;
+SET client_min_messages = warning;
+CREATE INDEX pi_a ON pi USING sift_col (id, g, d);
+CREATE INDEX pi_b ON pi USING sift_col (g, v);
+DO $$
+BEGIN
+	FOR i IN 0..498 LOOP
+		EXECUTE format('CREATE INDEX ON pi_%s USING sift_col (d, v, t)', i);
+	END LOOP;
+END $$;
+RESET client_min_messages;
+VACUUM (FREEZE, ANALYZE) pi;
+CREATE FUNCTION plan_kb(stmt text, push bool, OUT scan text, OUT kb bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	scan := 'normal';
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF, MEMORY) ' || stmt LOOP
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN scan := 'SiftAgg'; END IF;
+		IF l ~ 'Memory: used=\d+kB' THEN kb := substring(l from 'Memory: used=(\d+)kB')::bigint; END IF;
+	END LOOP;
+END $$;
+SELECT s.scan, s.kb - n.kb < 8192 AS under_8mb_more
+FROM (VALUES ('SELECT g, count(*), sum(v) FROM pi GROUP BY g'), ('SELECT t, count(*), sum(v) FROM pi GROUP BY t')) q(stmt), plan_kb(q.stmt, true) s, plan_kb(q.stmt, false) n;
+DROP FUNCTION plan_kb(text, bool);
+DROP TABLE pi;
+
 DROP FUNCTION many_scan(text);
 DROP TABLE pm, pm_days, pc;
 DROP EXTENSION pg_sift;

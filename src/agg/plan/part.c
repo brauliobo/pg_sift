@@ -13,6 +13,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "parser/parsetree.h"
+#include "utils/memutils.h"
 
 #include "agg/safety.h"
 #include "agg/plan/int.h"
@@ -192,6 +193,9 @@ typedef struct PartPlan
 	bool		rows;			/* the best rows: the node fetches the columns of the heap rows, whose attributes each partition numbers as it was made */
 	List	   *leaves;
 	bool		pg_derive;		/* the keys and arguments PostgreSQL's evaluator computes are not computed natively by the partitions that could (V6Plan.pg_derive) */
+	MemoryContext attempt;		/* the plan of a template: kept when every leaf compiles like it, reset for the next template */
+	MemoryContext scratch;		/* the plan of one source of one leaf, reset after it is compared */
+	int			miss;			/* the leaf the last template failed on: the next one tries it first */
 } PartPlan;
 
 static bool
@@ -217,19 +221,47 @@ layout_of(const V6Plan *p)
 	return list_make2(sift_v6_spec_pack(&spec), p->scan_tlist);
 }
 
-/* The source of the leaf whose plan is the layout, planned in p; NULL when it has none */
-static const SiftV6RelSource *
-source_alike(const PartPlan *pp, const LeafSources *ls, List *layout, V6Plan *p)
+/* The index has the keys and operator families of the template's: the source that most likely compiles alike */
+static bool
+same_definition(const SiftV6RelSource *a, const SiftV6RelSource *b)
 {
-	for (int i = 0; i < ls->n; i++)
-		if (compile_source(pp, &ls->src[i], p) && equal(layout_of(p), layout))
-			return &ls->src[i];
+	return a->is_table == b->is_table && (a->is_table || (a->ix->ncolumns == b->ix->ncolumns &&
+		memcmp(a->ix->indexkeys, b->ix->indexkeys, sizeof(int) * a->ix->ncolumns) == 0 && memcmp(a->ix->opfamily, b->ix->opfamily, sizeof(Oid) * a->ix->ncolumns) == 0));
+}
+
+static bool
+compiles_alike(const PartPlan *pp, const SiftV6RelSource *s, List *layout)
+{
+	MemoryContext old = MemoryContextSwitchTo(pp->scratch);
+	V6Plan		p;
+	bool		ok = compile_source(pp, s, &p) && equal(layout_of(&p), layout);
+
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(pp->scratch);
+	return ok;
+}
+
+/* The source of the leaf whose plan is the layout, those of the template's definition first; NULL when it has none */
+static const SiftV6RelSource *
+source_alike(const PartPlan *pp, const LeafSources *ls, List *layout, const SiftV6RelSource *template)
+{
+	for (int pass = 0; pass < 2; pass++)
+		for (int i = 0; i < ls->n; i++)
+			if (same_definition(template, &ls->src[i]) == (pass == 0) && compiles_alike(pp, &ls->src[i], layout))
+				return &ls->src[i];
 	return NULL;
+}
+
+/* The k-th leaf to check: the one the last template failed on, then the others in order */
+static int
+leaf_at(const PartPlan *pp, int k)
+{
+	return k == 0 ? pp->miss : k <= pp->miss ? k - 1 : k;
 }
 
 /* The path when every leaf has a source that compiles like the template's, the one the first leaf compiled; the plan of the template, with the source of each partition */
 static bool
-compile_alike(const PartPlan *pp, const LeafSources *leaves, int nleaves, const SiftV6RelSource *template, V6Plan *first)
+compile_alike(PartPlan *pp, const LeafSources *leaves, int nleaves, const SiftV6RelSource *template, V6Plan *first)
 {
 	Oid		   *rels = palloc(nleaves * sizeof(Oid));
 	bool	   *is_table = palloc(nleaves * sizeof(bool));
@@ -238,13 +270,16 @@ compile_alike(const PartPlan *pp, const LeafSources *leaves, int nleaves, const 
 	if (!compile_source(pp, template, first))
 		return false;
 	layout = layout_of(first);
-	for (int k = 0; k < nleaves; k++)
+	for (int at = 0; at < nleaves; at++)
 	{
-		V6Plan		p;
-		const SiftV6RelSource *s = k == 0 ? template : source_alike(pp, &leaves[k], layout, &p);
+		const int	k = leaf_at(pp, at);
+		const SiftV6RelSource *s = k == 0 ? template : source_alike(pp, &leaves[k], layout, template);
 
 		if (s == NULL)
+		{
+			pp->miss = k;
 			return false;
+		}
 		rels[k] = s->reloid;
 		is_table[k] = s->is_table;
 	}
@@ -258,29 +293,54 @@ compile_alike(const PartPlan *pp, const LeafSources *leaves, int nleaves, const 
 	return true;
 }
 
+/* The first template of the first leaf, compiled natively and then with PostgreSQL's evaluator, that compiles alike on every leaf, NULL when none does; each template's plan in a context of its own */
+static const SiftV6RelSource *
+compile_templates(PartPlan *pp, const LeafSources *ls, int n, V6Plan *first)
+{
+	for (int pg = 0; pg <= 1; pg++)
+		for (int i = 0; i < ls[0].n; i++)
+		{
+			MemoryContext old = MemoryContextSwitchTo(pp->attempt);
+			bool		ok;
+
+			pp->pg_derive = pg;
+			ok = compile_alike(pp, ls, n, &ls[0].src[i], first);
+			MemoryContextSwitchTo(old);
+			if (ok)
+				return &ls[0].src[i];
+			MemoryContextReset(pp->attempt);
+		}
+	return NULL;
+}
+
 bool
 sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, SiftV6CompileFn compile, const void *stmt, bool rows, V6Plan *first, SiftV6RelSource *like)
 {
 	PartPlan	pp = {root, parent, out, compile, stmt, rows, live_leaves(root, parent)};
 	LeafSources *ls;
 	int			n = 0;
+	const SiftV6RelSource *template;
 
 	if (pp.leaves == NIL || list_length(pp.leaves) > UINT16_MAX)
 		return false;
 	ls = palloc(list_length(pp.leaves) * sizeof(LeafSources));
 	foreach_ptr(RelOptInfo, leaf, pp.leaves)
-		ls[n++] = leaf_sources(root, leaf, parent->relid);
-	for (int pg = 0; pg <= 1; pg++)
-		for (int i = 0; i < ls[0].n; i++)
-		{
-			pp.pg_derive = pg;
-			if (compile_alike(&pp, ls, n, &ls[0].src[i], first))
-			{
-				*like = ls[0].src[i];
-				return true;
-			}
-		}
-	return false;
+	{
+		ls[n] = leaf_sources(root, leaf, parent->relid);
+		if (ls[n++].n == 0)
+			return false;
+	}
+	pp.attempt = AllocSetContextCreate(CurrentMemoryContext, "sift agg partition plan", ALLOCSET_DEFAULT_SIZES);
+	pp.scratch = AllocSetContextCreate(CurrentMemoryContext, "sift agg partition leaf", ALLOCSET_DEFAULT_SIZES);
+	template = compile_templates(&pp, ls, n, first);
+	MemoryContextDelete(pp.scratch);
+	if (template == NULL)
+	{
+		MemoryContextDelete(pp.attempt);
+		return false;
+	}
+	*like = *template;
+	return true;
 }
 
 void
