@@ -262,6 +262,9 @@ sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s)
 {
 	if (s->constant_groups)
 		return false;
+	for (int j = 0; j < s->naggs; j++)
+		if (s->agg[j].kind == SV6_PCT_CONT)
+			return false;
 	for (int i = 0; i < s->nkeys; i++)
 		if (sift_v6_key_generic(s->key[i].typid))
 			return false;

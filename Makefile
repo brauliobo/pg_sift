@@ -137,6 +137,7 @@ TESTING_REGRESS += agg/par/distinct_dict
 TESTING_REGRESS += agg/par/distinct_dict_robust
 TESTING_REGRESS += agg/par/jsonb_unnest
 TESTING_REGRESS += agg/par/partitions
+TESTING_REGRESS += agg/par/pct_cont
 TESTING_REGRESS += agg/par/topk_ext
 TESTING_REGRESS += agg/par/tseries_unnest
 TESTING_REGRESS += agg/par/universal

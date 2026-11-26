@@ -1,0 +1,41 @@
+-- percentile_cont with workers allowed returns the rows of the normal plan, also when its groups outgrow hash memory (statistics that predate a bulk load)
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE pc (id int, g int, v int, f float8);
+ALTER TABLE pc SET (autovacuum_enabled = false);
+INSERT INTO pc SELECT i, i % 10, i % 100, i * 0.5 FROM generate_series(1, 400) i;
+CREATE INDEX pc_col ON pc USING sift_col (id, g, v, f);
+VACUUM (FREEZE, ANALYZE) pc;
+INSERT INTO pc SELECT i, i, i % 100, i * 0.5 FROM generate_series(401, 20400) i;
+
+CREATE TABLE pc_q (q text);
+INSERT INTO pc_q VALUES
+	('SELECT g::text AS k, count(*) AS n, percentile_cont(0.5) WITHIN GROUP (ORDER BY v)::text AS x FROM pc WHERE v >= 0 GROUP BY g'),
+	('SELECT g::text AS k, count(*) AS n, percentile_cont(0.25) WITHIN GROUP (ORDER BY f)::text AS x FROM pc GROUP BY g'),
+	('SELECT (g % 7)::text AS k, count(*) AS n, percentile_cont(0.5) WITHIN GROUP (ORDER BY f)::text AS x FROM pc GROUP BY g % 7');
+
+CREATE FUNCTION pc_rows(q text, push bool) RETURNS TABLE (k text, n bigint, x text) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.agg_force', push::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	RETURN QUERY EXECUTE q;
+END $$;
+
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET parallel_leader_participation = off;
+SET max_parallel_workers_per_gather = 2;
+
+SELECT row_number() OVER () AS q, (SELECT count(*) FROM pc_rows(q, true)) AS rows,
+	(SELECT count(*) FROM ((SELECT * FROM pc_rows(q, true) EXCEPT ALL SELECT * FROM pc_rows(q, false)) UNION ALL (SELECT * FROM pc_rows(q, false) EXCEPT ALL SELECT * FROM pc_rows(q, true))) d) AS differ
+FROM pc_q;
+
+DROP FUNCTION pc_rows(text, bool);
+DROP TABLE pc_q;
+DROP TABLE pc;
+DROP EXTENSION pg_sift;
