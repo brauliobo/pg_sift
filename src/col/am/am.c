@@ -3,7 +3,9 @@
  * The files of a format (col/v1/) do the work; reloptions, the relcache and the caches are in the files next to this one.
  */
 #include "postgres.h"
+#include "utils/inval.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 #include "access/genam.h"
 #include "access/table.h"
 #include "catalog/pg_type_d.h"
@@ -254,10 +256,29 @@ col_translatecmptype(CompareType cmptype, Oid opfamily)
 }
 #endif
 
+static int8 default_class_present = -1;
+
+static void
+default_class_inval(Datum arg, int cacheid, uint32 hashvalue)
+{
+	default_class_present = -1;
+}
+
+void
+sift_col_am_init(void)
+{
+	CacheRegisterSyscacheCallback(CLAOID, default_class_inval, (Datum) 0);
+	CacheRegisterSyscacheCallback(AMOID, default_class_inval, (Datum) 0);
+}
+
 static bool
 offers_order(void)
 {
-	return !creating_extension && OidIsValid(GetDefaultOpClass(ANYELEMENTOID, get_index_am_oid("sift_col", true)));
+	if (creating_extension)
+		return false;
+	if (default_class_present < 0)
+		default_class_present = OidIsValid(GetDefaultOpClass(ANYELEMENTOID, get_index_am_oid("sift_col", true)));
+	return default_class_present;
 }
 
 Datum

@@ -478,6 +478,7 @@ extern void sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double l
 
 /* col/am/am.c */
 extern void sift_col_init(void);
+extern void sift_col_am_init(void);
 extern IndexBuildResult *sift_col_ambuild(Relation heap, Relation index, struct IndexInfo *indexInfo);
 extern void sift_col_ambuildempty(Relation index);
 extern char *sift_col_ambuildphasename(int64 phase);

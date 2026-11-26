@@ -286,6 +286,7 @@ void
 sift_col_init(void)
 {
 	sift_col_stmt_loaded();
+	sift_col_am_init();
 	sift_col_executor_init();
 	DefineCustomBoolVariable("sift.enable_col_scan",
 							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
