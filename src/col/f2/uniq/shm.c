@@ -23,6 +23,8 @@
 #define TABLE_NAME			"sift_f2_uniq_registry"
 #define TRANCHE_NAME		"SiftUniqReg"
 #define SLOTS_PER_STRIPE	(SIFT_UNIQ_SHM_SLOTS / SIFT_UNIQ_SHM_STRIPES)
+#define BUCKETS_PER_STRIPE	(SIFT_UNIQ_SHM_BUCKETS / SIFT_UNIQ_SHM_STRIPES)
+#define STRIPE_BITS			8
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) Stripe
 {
@@ -35,9 +37,21 @@ typedef struct UniqShm
 {
 	int			tranche;
 	Stripe		stripe[SIFT_UNIQ_SHM_STRIPES] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
-	uint32		bucket[SIFT_UNIQ_SHM_BUCKETS];	/* the first entry of the bucket, plus one */
+	uint32		bucket[SIFT_UNIQ_SHM_BUCKETS] pg_attribute_aligned(PG_CACHE_LINE_SIZE);	/* the first entry of the bucket, plus one: the buckets of a stripe are one run, bucket_of */
 	SiftShmUniqEntry slot[SIFT_UNIQ_SHM_SLOTS] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
 } UniqShm;
+
+StaticAssertDecl(SIFT_UNIQ_SHM_STRIPES == (1 << STRIPE_BITS), "the stripe of a key is the low STRIPE_BITS bits of its hash");
+StaticAssertDecl(BUCKETS_PER_STRIPE * sizeof(uint32) % PG_CACHE_LINE_SIZE == 0, "the buckets of a stripe fill whole cache lines, which no other stripe shares");
+StaticAssertDecl(SLOTS_PER_STRIPE * sizeof(SiftShmUniqEntry) % PG_CACHE_LINE_SIZE == 0, "the entries of a stripe fill whole cache lines, which no other stripe shares");
+StaticAssertDecl(offsetof(UniqShm, bucket) % PG_CACHE_LINE_SIZE == 0 && offsetof(UniqShm, slot) % PG_CACHE_LINE_SIZE == 0, "the buckets and the entries start on a cache line");
+
+/* The bucket of a hash is in the run of the buckets of its stripe, the low bits of the hash choose the stripe and the next ones the place in the run */
+static inline uint32
+bucket_of(uint32 hash)
+{
+	return ((hash & (SIFT_UNIQ_SHM_STRIPES - 1)) * BUCKETS_PER_STRIPE) | ((hash >> STRIPE_BITS) & (BUCKETS_PER_STRIPE - 1));
+}
 
 typedef struct Owned
 {
@@ -156,7 +170,7 @@ static void
 entry_free(UniqShm *u, uint32 i)
 {
 	SiftShmUniqEntry *e = &u->slot[i];
-	uint32	   *link = &u->bucket[e->key_hash & (SIFT_UNIQ_SHM_BUCKETS - 1)];
+	uint32	   *link = &u->bucket[bucket_of(e->key_hash)];
 
 	while (*link != i + 1)
 		link = &u->slot[*link - 1].next_slot;
@@ -188,7 +202,7 @@ typedef struct Candidate
 static bool
 candidates_of(const UniqShm *u, const SiftUniqKey *k, Candidate *cand, int *n)
 {
-	uint32		link = u->bucket[k->hash & (SIFT_UNIQ_SHM_BUCKETS - 1)];
+	uint32		link = u->bucket[bucket_of(k->hash)];
 
 	*n = 0;
 	for (; link != 0; link = u->slot[link - 1].next_slot)
@@ -255,9 +269,19 @@ sift_uniq_shm_probe(const SiftUniqKey *k, SiftUniqHits *hits)
 			hits->hit[hits->n++] = seen[c];
 }
 
+static int
+owned_by_stripe(const void *a, const void *b)
+{
+	uint32		x = ((const Owned *) a)->slot / SLOTS_PER_STRIPE,
+				y = ((const Owned *) b)->slot / SLOTS_PER_STRIPE;
+
+	return (x > y) - (x < y);
+}
+
 /*
  * A (sub)transaction is out of the running xids before the callbacks of its end run, and a probe that finds an entry of such an xid frees it (and a writer may take its slot): the owner lets go
- * of an entry only while the slot still holds the entry of its xid, which no one makes again once that xid has ended
+ * of an entry only while the slot still holds the entry of its xid, which no one makes again once that xid has ended. The entries that are let go are moved after the ones that are kept, and, when
+ * there are more than a few, put in the order of their stripes: each stripe is locked once for all its entries
  */
 static void
 owned_release_where(bool (*pick) (const Owned *, void *), void *arg)
@@ -265,19 +289,24 @@ owned_release_where(bool (*pick) (const Owned *, void *), void *arg)
 	int			kept = 0;
 
 	for (int n = 0; n < nowned; n++)
-	{
-		if (pick(&owned[n], arg))
+		if (!pick(&owned[n], arg))
 		{
-			const SiftShmUniqEntry *e = &shm->slot[owned[n].slot];
-			Stripe	   *s = &shm->stripe[owned[n].slot / SLOTS_PER_STRIPE];
+			Owned		t = owned[kept];
 
-			LWLockAcquire(&s->lock, LW_EXCLUSIVE);
-			if (e->state == SIFT_UNIQ_ACTIVE && e->xid == owned[n].xid)
-				entry_free(shm, owned[n].slot);
-			LWLockRelease(&s->lock);
-		}
-		else
 			owned[kept++] = owned[n];
+			owned[n] = t;
+		}
+	if (nowned - kept > 4)
+		qsort(&owned[kept], nowned - kept, sizeof(Owned), owned_by_stripe);
+	for (int n = kept; n < nowned;)
+	{
+		Stripe	   *s = &shm->stripe[owned[n].slot / SLOTS_PER_STRIPE];
+
+		LWLockAcquire(&s->lock, LW_EXCLUSIVE);
+		for (; n < nowned && &shm->stripe[owned[n].slot / SLOTS_PER_STRIPE] == s; n++)
+			if (shm->slot[owned[n].slot].state == SIFT_UNIQ_ACTIVE && shm->slot[owned[n].slot].xid == owned[n].xid)
+				entry_free(shm, owned[n].slot);
+		LWLockRelease(&s->lock);
 	}
 	nowned = kept;
 }
@@ -457,7 +486,7 @@ sift_uniq_shm_reserve(const SiftUniqKey *k, TransactionId xid, ItemPointer tid)
 {
 	UniqShm    *u = registry();
 	Stripe	   *s = stripe_of(u, k->hash);
-	uint32	   *head = &u->bucket[k->hash & (SIFT_UNIQ_SHM_BUCKETS - 1)];
+	uint32	   *head = &u->bucket[bucket_of(k->hash)];
 	uint32		i;
 
 	owned_ensure();

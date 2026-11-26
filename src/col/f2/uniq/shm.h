@@ -2,7 +2,7 @@
  * col/f2/uniq/shm.h - the registry in shared memory of the keys that the transactions writing to UNIQUE indexes of format major 2 hold in their stage (col/f2/l0/stage.h) and have not
  * flushed: the writer of a key looks its key up here and in the partitions, so no row is flushed to find it (f2_unique.c).
  *
- * 64 stripes of an lwlock each, 65536 buckets (a bucket belongs to the stripe of its low bits), 131072 entries of one cache line, 2048 for each stripe. An entry is made under the key lock of
+ * 256 stripes of an lwlock each, 65536 buckets (the 256 of a stripe are the next ones of the array, a bucket belongs to the stripe of the low bits of its hash), 131072 entries of one cache line, 512 for each stripe. An entry is made under the key lock of
  * its index (core/part_lock.h), before the row is staged, and goes when its row is written to the partition (the flush of the stage, which publishes the manifest first) or when its
  * (sub)transaction ends: a key is in the registry or in the partitions at every instant, never in neither, and a transaction that is prepared holds no entry. A reader judges the heap tuple an
  * entry names, so an entry of a transaction that rolled back, of a speculative insertion that was withdrawn and of a row that was deleted is no conflict.
@@ -16,7 +16,7 @@
 #include "storage/itemptr.h"
 #include "storage/relfilelocator.h"
 
-#define SIFT_UNIQ_SHM_STRIPES	64
+#define SIFT_UNIQ_SHM_STRIPES	256
 #define SIFT_UNIQ_SHM_BUCKETS	65536
 #define SIFT_UNIQ_SHM_SLOTS		131072
 #define SIFT_UNIQ_INLINE_MAX	16			/* the canonical bytes of a key of at most this many are kept in the entry */

@@ -459,21 +459,17 @@ sift_f2_unique_lookup(IndexScanDesc scan, MemoryContext cx, SiftUniqLookup *out)
 	return true;
 }
 
-/* The row of a key nobody holds goes to the stage, its key to the registry first; a stripe with no entry free sends the rows of the stage to the partition, and the entries of the index go */
+/* The manifest of the partitions as the key reads it is fetched and pruned before the lock of the key is taken, so that the writers of other keys of the index do not wait on one another for it: under the lock the same calls see the version and the stamps of what a flush published meanwhile, and fold again only what changed */
 static void
-write_row(Relation index, const SiftUniqKey *rk, Datum *values, bool *isnull, ItemPointer heap_tid)
+warm_published_plan(UniqueKey *k, Relation index, Relation heap, IndexInfo *info, const SiftUniqKey *rk)
 {
-	if (!sift_uniq_shm_reserve(rk, GetCurrentTransactionId(), heap_tid))
-	{
-		spill(index);
-		if (!sift_uniq_shm_reserve(rk, GetCurrentTransactionId(), heap_tid))
-		{
-			sift_f2_stage_row(index, values, isnull, heap_tid);
-			sift_stage_flush(index);
-			return;
-		}
-	}
-	sift_f2_stage_row(index, values, isnull, heap_tid);
+	Row			row = {.index = index,.info = info,.estate = info->ii_Expressions != NIL ? CreateExecutorState() : NULL};
+	MemoryContext cx = probe_context();
+
+	(void) published_plan(k, &row, heap, rk, cx);
+	if (row.estate != NULL)
+		FreeExecutorState(row.estate);
+	MemoryContextReset(cx);
 }
 
 bool
@@ -483,7 +479,8 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 	SiftUniqKey rk;
 	uint32		hash;
 	BlockNumber lock;
-	bool		write = check != UNIQUE_CHECK_EXISTING;
+	bool		write = check != UNIQUE_CHECK_EXISTING,
+				spilled = false;
 
 	key_init(&k, index);
 	if (key_has_null(&k, isnull) && !k.nulls_not_distinct)
@@ -495,6 +492,7 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 	hash = key_hash(&k, values, isnull);
 	registry_key(&k, index, hash, values, isnull, &rk);
 	lock = SIFT_UNIQUE_LOCK_BASE + hash % SIFT_UNIQUE_LOCK_SLOTS;
+	warm_published_plan(&k, index, heap, info, &rk);
 	for (;;)
 	{
 		Conflict	c;
@@ -504,7 +502,20 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 		find_conflict(&k, index, heap, info, &rk, values, isnull, heap_tid, &c);
 		deferred = c.found != FOUND_NONE && check == UNIQUE_CHECK_PARTIAL && !(c.found == FOUND_RUNNING && c.in_stage);
 		if (write && (c.found == FOUND_NONE || deferred))
-			write_row(index, &rk, values, isnull, heap_tid);
+		{
+			bool		reserved = sift_uniq_shm_reserve(&rk, GetCurrentTransactionId(), heap_tid);
+
+			if (!reserved && !spilled)
+			{
+				UnlockPage(index, lock, ExclusiveLock);
+				spill(index);
+				spilled = true;
+				continue;
+			}
+			sift_f2_stage_row(index, values, isnull, heap_tid);
+			if (!reserved)
+				sift_stage_flush(index);
+		}
 		UnlockPage(index, lock, ExclusiveLock);
 		if (c.found == FOUND_NONE)
 			return true;
@@ -516,6 +527,7 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 			SpeculativeInsertionWait(c.xwait, c.token);
 		else
 			XactLockTableWait(c.xwait, heap, &c.at, XLTW_InsertIndex);
+		spilled = false;
 	}
 }
 

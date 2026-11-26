@@ -25,7 +25,7 @@ SELECT pg_temp.active() - :base AS leaked_entries;
 
 -- a stripe that the entries of ended transactions fill takes the entry of a running one, and what it held is let go with the transaction
 BEGIN;
-SELECT pg_temp.fill(7, 2048, 3) AS filled;
+SELECT pg_temp.fill(7, 512, 3) AS filled;
 SELECT pg_temp.reserve_one(7) AS reserved_in_a_full_stripe;
 COMMIT;
 SELECT pg_temp.active() - :base AS left_in_the_registry;
