@@ -1,0 +1,23 @@
+-- A prepared transaction that drops a sift_col index leaves the look at the stores of its table to the maintenance: the next transaction of the session, which has nothing to do with the
+-- table, commits without waiting for the lock the prepared transaction holds on it.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE TABLE ev (id int8, tenant_id int, v int);
+INSERT INTO ev SELECT i, i % 4, i % 100 FROM generate_series(1, 2000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, tenant_id, v);
+
+BEGIN;
+DROP INDEX ev_col;
+PREPARE TRANSACTION 's107_keystore';
+SET lock_timeout = '2s';
+CREATE TEMP TABLE unrelated (a int);
+RESET lock_timeout;
+SELECT count(*) AS prepared FROM pg_prepared_xacts WHERE gid = 's107_keystore';
+ROLLBACK PREPARED 's107_keystore';
+SELECT count(*) AS index_kept FROM pg_class WHERE relname = 'ev_col';
+SELECT count(*) AS rows FROM ev WHERE tenant_id = 1;
+
+DROP TABLE ev;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

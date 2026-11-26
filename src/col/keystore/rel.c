@@ -437,7 +437,7 @@ sift_col_value_store_drop_unused(PG_FUNCTION_ARGS)
 	PG_RETURN_VOID();
 }
 
-/* The tables an index that was dropped in this transaction was on, to look at their stores before the commit (gone_xact) */
+/* The tables an index that was dropped in this transaction was on, to look at their stores before the commit (gone_xact); a prepared transaction leaves its stores to the maintenance */
 static Oid *gone;
 static int	ngone,
 			gone_cap;
@@ -473,7 +473,7 @@ gone_xact(XactEvent event, void *arg)
 {
 	List	   *heaps = NIL;
 
-	if (event == XACT_EVENT_ABORT)
+	if (event == XACT_EVENT_ABORT || event == XACT_EVENT_PREPARE)
 		ngone = 0;
 	if (event != XACT_EVENT_PRE_COMMIT || ngone == 0 || RecoveryInProgress())
 		return;
