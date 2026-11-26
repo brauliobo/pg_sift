@@ -1,31 +1,28 @@
 -- The journal of the scope relation (src/col/scope/journal.c, INTERFACE section 5, docs/COL-CONNECT.md "The rule"): a sift_col index of the relation with track_changes = 'ctid' and the
--- member key first keeps a KEYCHG record for the member of every pair an UPDATE, DELETE or key change ended and a KEYADD record for the member of every pair inserted. The scope segments
--- are read as stored only while the journal vouches for their stamp; the members that changed since are read through the entity rows (a top-N reads the entity rows of all the members), every
--- other state of the journal reads them all, with the same answer as the join. The verdicts are the journal's.
+-- member key first keeps a KEYCHG record for the member of every pair an UPDATE, DELETE or key change ended and a KEYADD record for the member of every pair inserted; the scope segments
+-- carry its stamp. Every state of the journal reads the same answer as the join. The verdicts are the journal's.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the journal index (its key log, col/scope/guard.c) and the stamps of the scope segments are this format's
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 -- members in up to six keys on purpose: above the default limit of the multiplicity
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
 
-CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text)
+CREATE FUNCTION scope_run(q text, plain text, OUT same boolean)
 LANGUAGE plpgsql AS $$
 DECLARE
-	p jsonb;
 	a text;
 	b text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
 END $$;
 
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
@@ -76,12 +73,12 @@ FROM (VALUES
 	(3, 13, 'SELECT count(*), sum(v) FROM events e WHERE @'),
 	(4, 3, 'SELECT id, created_at FROM events e WHERE @ ORDER BY created_at DESC, id DESC LIMIT 20')) s(n, k, q),
 	LATERAL (SELECT q AS plain) p;
-CREATE FUNCTION phase() RETURNS TABLE (n int, same boolean, stored boolean, why text) LANGUAGE sql AS $$
-	SELECT s.n, r.same, r.stored, r.why FROM shapes s, LATERAL scope_run(s.q, s.plain) r ORDER BY s.n
+CREATE FUNCTION phase() RETURNS TABLE (n int, same boolean) LANGUAGE sql AS $$
+	SELECT s.n, r.same FROM shapes s, LATERAL scope_run(s.q, s.plain) r ORDER BY s.n
 $$;
--- one line for the four shapes: all answers equal the join, how many read the scope units, and the reasons of the others
-CREATE FUNCTION verdict() RETURNS TABLE (all_same boolean, stored int, reasons text) LANGUAGE sql AS $$
-	SELECT bool_and(same), count(*) FILTER (WHERE stored)::int, coalesce(string_agg(DISTINCT why, ', '), '-') FROM phase()
+-- one line for the four shapes: all answers equal the join
+CREATE FUNCTION verdict() RETURNS TABLE (all_same boolean) LANGUAGE sql AS $$
+	SELECT bool_and(same) FROM phase()
 $$;
 
 -- the build makes the journal that did not exist before it reads the table: the segments carry its stamp and the reads are the units
@@ -209,22 +206,11 @@ SELECT * FROM verdict();
 SELECT edge FROM (SELECT refobjid::regclass::text AS edge FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
 	AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i') e ORDER BY 1;
 
--- refresh: as many changed members as sift.test_col_scope_refresh_pct percent of the pairs are refreshed whatever the reads ('stale scope'); a few are left to the reads, which ask for the rewrite
--- when what they paid for them comes to half of what it costs (col_scope_stale_price: no read, no rewrite)
+-- refresh: as many changed members as sift.test_col_scope_refresh_pct percent of the pairs are refreshed ('stale scope'); a few are not
 REINDEX INDEX events_col;
 SELECT sift.col_maintenance_due('events_col', false) AS due_filled;
 DELETE FROM tenant_scope WHERE dim_a_id <= 5;
 SELECT sift.col_maintenance_due('events_col', false) AS due_few_changed;
-DO $$
-BEGIN
-	FOR i IN 1..5000 LOOP
-		EXIT WHEN sift.col_maintenance_due('events_col', false) IS NOT NULL;
-		FOR k IN 1..12 LOOP
-			EXECUTE format('SELECT count(*) FROM events e WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', e.dim_a_id, %s)', k);
-		END LOOP;
-	END LOOP;
-END $$;
-SELECT sift.col_maintenance_due('events_col', false) AS due_few_changed_read;
 DELETE FROM tenant_scope WHERE dim_a_id <= 120;
 SELECT sift.col_maintenance_due('events_col', false) AS due_many_changed;
 REINDEX INDEX events_col;

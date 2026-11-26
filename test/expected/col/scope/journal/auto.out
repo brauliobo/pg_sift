@@ -3,6 +3,8 @@
 -- changed, is the user's and stays. A role that does not own the pairs cannot make it.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the journal index of a relation of pairs is a Format 1 sift_col (its key log is this format's, col/scope/guard.c), and only the testing library builds one by hand
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
