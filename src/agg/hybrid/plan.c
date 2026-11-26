@@ -41,6 +41,7 @@
 #include "bm25/planner/int.h"
 #include "col/am.h"
 #include "agg/cost/model.h"
+#include "agg/cost/card.h"
 #include "agg/join/join.h"
 #include "core/catalog.h"
 #include "core/store/ops.h"
@@ -514,7 +515,7 @@ estimate(HybridPlan *h, SiftHybridEst *e)
 	*e = (SiftHybridEst) {
 		.host = h->store.is_table ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL,.rows = rows,.granules = granules,
 		.col_granules = granules * sift_hybrid_granule_hit(sel_col, rows / granules),
-		.heap_fetch = cpu_tuple_cost + random_page_cost * cold,.sel_col = sel_col,
+		.heap_fetch = h->store.is_table ? SIFT_TABLE_VET_OPS * cpu_operator_cost : cpu_tuple_cost + random_page_cost * cold,.row_fetch = sift_v6_fetch_cost(h->store.is_table) + random_page_cost * cold,.sel_col = sel_col,
 		.sel_bm25 = clause_selectivity(h->root, (Node *) h->match_expr, rel->relid, JOIN_INNER, NULL),
 		.limit = h->k,.hit_budget = work_mem * 1024.0,.ranked = h->ranked,.has_col_quals = h->quals != NIL,.covered = store_covers(h),
 		.sel_acl = 1.0,.has_residual = h->residual,.bm25_dict_cost = sift_dict_cost(h->text, list_make1(h->query)),.allvisfrac = rel->allvisfrac

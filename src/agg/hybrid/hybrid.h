@@ -40,7 +40,8 @@ typedef struct SiftHybridEst
 	double		rows;					/* live rows */
 	double		granules;				/* granules of the store */
 	double		col_granules;			/* granules the skip index leaves for the structured quals (granules when unknown) */
-	double		heap_fetch;				/* cost of the random heap fetch of one hit (a cold fraction of random_page_cost) */
+	double		heap_fetch;				/* cost of the random heap fetch of one hit (a cold fraction of random_page_cost): what the visibility of a row costs (of a sift_table SIFT_TABLE_VET_OPS: its store decides it) */
+	double		row_fetch;				/* cost of giving one hit as a row: the heap fetch, or the fetch of the row of a sift_table by its TID */
 	double		sel_col;				/* rows the structured quals keep, from the skip index and the statistics */
 	double		sel_bm25;				/* rows the query matches, from the dictionaries' document frequencies */
 	double		limit;					/* LIMIT of a ranked scan, 0 without */

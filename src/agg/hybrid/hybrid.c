@@ -45,6 +45,20 @@ bm25_doc(const SiftHybridEst *e)
 	return e->agg_mode && !e->reads_score ? HYB_BM25_DOC * HYB_BM25_UNSCORED : HYB_BM25_DOC;
 }
 
+/* The rows of the pages that are not all visible, vetted one by one (the fold of an aggregate over a sift_table vets every row it folds) */
+static double
+vet_cost(const SiftHybridEst *e, double rows)
+{
+	return (1.0 - e->allvisfrac) * rows * e->heap_fetch;
+}
+
+/* A sift_table gives each row of a scan that returns rows from its store by its TID (row_fetch) */
+static bool
+gives_rows(const SiftHybridEst *e)
+{
+	return e->host == SIFT_HYB_HOST_TABLE && !e->agg_mode;
+}
+
 static double
 cost_col_to_bm25(const SiftHybridEst *e)
 {
@@ -54,7 +68,7 @@ cost_col_to_bm25(const SiftHybridEst *e)
 				wanted = e->limit > 0 ? Min(matched, e->limit) : matched,
 				scan = e->col_granules * rpg * HYB_F2_ROW,
 				rank = kept <= SIFT_TIDB_POINT_MAX ? kept * HYB_POINT_TID : matched * bm25_doc(e),
-				verify = e->host == SIFT_HYB_HOST_TABLE || e->agg_mode ? 0.0 : wanted * e->heap_fetch;
+				verify = !e->agg_mode ? wanted * e->row_fetch : e->host == SIFT_HYB_HOST_TABLE ? vet_cost(e, wanted) : 0.0;
 
 	return e->bm25_dict_cost + scan + kept * HYB_BRIDGE_ADD + rank + verify;
 }
@@ -68,8 +82,8 @@ cost_bm25_to_col(const SiftHybridEst *e)
 				hits = e->ranked && e->limit > 0 ? Min(matched, 2.0 * e->limit / Max(e->sel_col, 1e-6)) : matched,
 				surviving = e->granules * sift_hybrid_granule_hit(hits / Max(e->rows, 1.0), rpg),
 				kept = hits * e->sel_col,
-				fetch = !e->covered || e->has_residual ? (e->limit > 0 ? Min(kept, e->limit) : kept) * e->heap_fetch : 0.0,
-				vis = fetch > 0 || e->host == SIFT_HYB_HOST_TABLE ? 0.0 : (1.0 - e->allvisfrac) * kept * e->heap_fetch,
+				fetch = !e->covered || e->has_residual || gives_rows(e) ? (e->limit > 0 ? Min(kept, e->limit) : kept) * e->row_fetch : 0.0,
+				vis = fetch > 0 ? 0.0 : vet_cost(e, kept),
 				passes = e->ranked && e->limit > 0 ? HYB_B_PASSES : 1,
 				sort = e->ranked && !e->agg_mode ? kept * log2(Max(kept, 2.0)) * HYB_SORT_CMP : 0.0;
 
@@ -85,9 +99,9 @@ cost_standard(const SiftHybridEst *e)
 {
 	double		matched = e->rows * e->sel_bm25,
 				fetched = e->ranked && e->limit > 0 ? Min(matched, e->limit / Max(e->sel_col, 1e-6)) : matched,
-				text_first = fetched * (HYB_BM25_DOC + e->heap_fetch);
+				text_first = fetched * (HYB_BM25_DOC + e->row_fetch);
 
-	return e->bm25_dict_cost + (e->probeable ? Min(text_first, (e->probe_rows + 1.0) * (HYB_BM25_DOC + e->heap_fetch)) : text_first);
+	return e->bm25_dict_cost + (e->probeable ? Min(text_first, (e->probe_rows + 1.0) * (HYB_BM25_DOC + e->row_fetch)) : text_first);
 }
 
 bool

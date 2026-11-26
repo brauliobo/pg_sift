@@ -407,7 +407,7 @@ SiftHybridDir
 sift_hybrid_pick_direction(HybridState *st, bool agg)
 {
 	SiftHybridEst e = {
-		.host = st->host,.rows = st->est[0],.granules = st->est[1],.col_granules = Min(st->est[1], surviving_granules(st)),.heap_fetch = st->est[3],.sel_col = Min(1.0, st->est[4] * st->key_scale),
+		.host = st->host,.rows = st->est[0],.granules = st->est[1],.col_granules = Min(st->est[1], surviving_granules(st)),.heap_fetch = st->est[3],.row_fetch = st->est[3],.sel_col = Min(1.0, st->est[4] * st->key_scale),
 		.sel_bm25 = Min(1.0, sift_plan_docs(st->plan) / Max(st->est[0], 1.0)),.limit = st->est[5],.hit_budget = work_mem * 1024.0,
 		.ranked = list_nth_int(linitial(((CustomScan *) st->css.ss.ps.plan)->custom_private), SIFT_HYBP_RANKED) != 0,.has_col_quals = sift_hybrid_has_store_quals(st),
 		.covered = st->covered,.sel_acl = 1.0,.has_residual = st->residual,.agg_mode = agg,.allvisfrac = st->est[6]
