@@ -166,22 +166,19 @@ BEGIN
 	RAISE NOTICE 'cursor % %', cardinality(want), got = want || ARRAY(SELECT x FROM unnest(want) WITH ORDINALITY u(x, o) ORDER BY o DESC);
 END $$;
 
--- the heap is read for the rows of the result only, and not at all when the units hold every column of the output; a column that grows with the table lets the scan skip superblocks
-SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches, ct_stat(q, 'Search Matches') > 100 AS many_matches
+-- the scan takes the matches of the search as TIDs; a column that grows with the table lets the zones prune granules
+SELECT ct_stat(q, 'Bridge TIDs') > 100 AS many_matches
 FROM (SELECT $q$SELECT id, ts, memo FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
-SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches
-FROM (SELECT $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
-SELECT ct_stat(q, 'Superblocks Skipped By Top-N') > 0 AS skipped_desc
+SELECT ct_stat(q, 'Pruned By Zone Map') > 0 AS skipped_desc
 FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq DESC LIMIT 10$q$ AS q) x;
-SELECT ct_stat(q, 'Superblocks Skipped By Top-N') > 0 AS skipped_asc
+SELECT ct_stat(q, 'Pruned By Zone Map') > 0 AS skipped_asc
 FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq LIMIT 10$q$ AS q) x;
-SELECT ct_stat(q, 'Superblocks Skipped By Top-N') = 0 AS none_skipped_when_random
+SELECT ct_stat(q, 'Pruned By Zone Map') = 0 AS none_skipped_when_random
 FROM (SELECT $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
 
--- a sort column that grows with the table is read from its best end: the newest superblock holds the 10 rows, and the units before it are
--- not opened (one unit; a visit in table order opened every unit of its window)
-SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT 10', 'Units') AS units_desc,
-	   ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id LIMIT 10', 'Units') AS units_asc;
+-- a sort column that grows with the table: the granules the scan reads for the 10 rows from either end
+SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT 10', 'Scanned') AS granules_desc,
+	   ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id LIMIT 10', 'Scanned') AS granules_asc;
 
 CREATE FUNCTION ct_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE plan text := ''; line text;
