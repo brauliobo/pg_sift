@@ -78,9 +78,14 @@ SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spa
 VACUUM events;
 SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
 
--- 3. A change of the pairs
+-- 3. A change of the pairs, read first by a new backend: no pair map is cached, and the read of the ring loads the pairs it needs while it scans a granule
 INSERT INTO entity_parents VALUES (1, 6), (2, 6);
 DELETE FROM entity_parents WHERE entity_id = 7;
+\c -
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.test_create_format1 = off;
 SELECT * FROM topk_matrix(ARRAY[1, 6], ARRAY['updated_at', 'spare']);
 VACUUM events;
 SELECT * FROM topk_matrix(ARRAY[1, 6], ARRAY['updated_at', 'spare']);

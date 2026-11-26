@@ -256,7 +256,7 @@ extern SiftScopePairMap *sift_f2s_pairs(SiftF2ScopeParts *p);
 extern SiftScopePairMap *sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged);
 /* The map of the object of generation object_gen that the backend kept, pinned for reader; NULL when it holds none */
 extern SiftScopePairMap *sift_f2s_cached_pairs(Relation index, uint64 object_gen, MemoryContext reader);
-/* The pairs as the snapshot sees them; kept for the object of generation object_gen when settled (no pair of any key changed since the summary: they are the object's) */
+/* The pairs as the snapshot sees them; kept for the object of generation object_gen when settled (no pair of any key changed since the summary: they are the object's), else in reader */
 extern SiftScopePairMap *sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, uint64 object_gen, MemoryContext reader, bool settled);
 extern bool sift_f2s_added_cube(void *arg, int64 scope_key, SiftScopeSpan span, SiftScopeCubeAcc *out);
 extern SiftScopeGone sift_f2s_gone_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out);

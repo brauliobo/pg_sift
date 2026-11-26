@@ -127,6 +127,17 @@ sift_f2s_cached_pairs(Relation index, uint64 object_gen, MemoryContext reader)
 	return same ? cache_pin(reader) : NULL;
 }
 
+/* The pairs read for reader: a read asks for them first wherever it needs them, a context it resets for each granule included */
+static SiftScopePairMap *
+load_for(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, MemoryContext reader)
+{
+	MemoryContext old = MemoryContextSwitchTo(reader);
+	SiftScopePairMap *pm = sift_f2s_load_pairs(heap, index, sc, snap, km, false);
+
+	MemoryContextSwitchTo(old);
+	return pm;
+}
+
 SiftScopePairMap *
 sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, uint64 object_gen, MemoryContext reader, bool settled)
 {
@@ -138,9 +149,9 @@ sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, S
 		registered = true;
 	}
 	if (!settled || cache.pins > 0)
-		return sift_f2s_load_pairs(heap, index, sc, snap, km, false);
+		return load_for(heap, index, sc, snap, km, reader);
 	cache_drop();
-	loaded = sift_f2s_load_pairs(heap, index, sc, snap, km, false);
+	loaded = load_for(heap, index, sc, snap, km, reader);
 	/* MEM[MEM-SCOPE-02]: cached pair map charged to the cache budget (room, then commit) */
 	if (sift_f2s_mem_transient(sc->mem) || !sift_cache_room(map_bytes(loaded)))
 		return loaded;
