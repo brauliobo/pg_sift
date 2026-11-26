@@ -87,10 +87,11 @@ vc_max_bytes(void)
 	return sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1);
 }
 
+/* Half the budget, in one array palloc can make */
 static uint32
 vc_max_tids(void)
 {
-	return (uint32) Max(1024, vc_max_bytes() / 2 / sizeof(uint64));
+	return (uint32) Max(1024, Min(vc_max_bytes() / 2, MaxAllocSize) / sizeof(uint64));
 }
 
 static TidStore *
