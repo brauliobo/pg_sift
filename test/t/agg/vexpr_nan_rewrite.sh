@@ -6,7 +6,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 27
+plan 28
 node_init nr 2 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start nr || bail "start failed"
@@ -33,6 +33,7 @@ same() {
 }
 
 same "a NaN numeric is not NULL in a filter" "SELECT count(*), sum(id) FROM nt WHERE x IS NULL OR id = 0"
+same "and its rows pass IS NOT NULL" "SELECT count(*) FROM nt WHERE x IS NOT NULL"
 same "nor in COALESCE" "SELECT count(*) FROM nt WHERE COALESCE(x, 0) = 0"
 same "nor in an expression of the filter" "SELECT count(*) FROM nt WHERE x + 1 IS NULL"
 same "NaN is greater than every number" "SELECT id, x FROM nt WHERE x > 0 ORDER BY id LIMIT 10"
