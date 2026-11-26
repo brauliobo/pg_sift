@@ -13,6 +13,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/flat_rewrite.h"
+#include "agg/safety.h"
 #include "agg/settings.h"
 #include "core/catalog.h"
 #include "core/compat.h"
@@ -51,14 +52,17 @@ reads_scannable_walker(Node *n, void *cx)
 	return expression_tree_walker(n, reads_scannable_walker, cx);
 }
 
-/* a CTE that PostgreSQL keeps as a shared copy, over a table an aggregate scan reads, that locks no row; PostgreSQL itself refuses to inline the volatile, writing and self-referencing ones */
+/*
+ * a CTE that PostgreSQL keeps as a shared copy, over a table an aggregate scan reads, that locks no row and cannot raise (the copy computes every row and column of the body, the
+ * inline plan only what its readers take); PostgreSQL itself refuses to inline the volatile, writing and self-referencing ones
+ */
 static bool
 shared_cte(const CommonTableExpr *cte)
 {
 	const Query *body = castNode(Query, cte->ctequery);
 
 	return !cte->cterecursive && cte->ctematerialized != CTEMaterializeNever && (cte->cterefcount > 1 || cte->ctematerialized == CTEMaterializeAlways) &&
-		body->commandType == CMD_SELECT && body->rowMarks == NIL && reads_scannable_walker(cte->ctequery, NULL);
+		body->commandType == CMD_SELECT && body->rowMarks == NIL && !agg_node_may_raise(cte->ctequery) && reads_scannable_walker(cte->ctequery, NULL);
 }
 
 /* does a node of the sub-select read a level above it (depth is how far the walk went below the sub-select) */

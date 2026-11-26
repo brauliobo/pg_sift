@@ -10,6 +10,7 @@
  */
 #include "postgres.h"
 
+#include "access/nbtree.h"
 #include "catalog/pg_aggregate_d.h"
 #include "catalog/pg_namespace_d.h"
 #include "catalog/pg_type_d.h"
@@ -24,6 +25,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/flat_rewrite.h"
+#include "agg/safety.h"
 
 #if PG_VERSION_NUM >= 180000
 typedef struct Ungroup
@@ -85,31 +87,107 @@ semi_subselect(const Query *q)
 		q->setOperations == NULL && q->cteList == NIL;
 }
 
+/* the expression without the relabels that keep its collation: another cast of it is a function of the key that the rows of a group may not agree on */
+static Node *
+strip_key(Node *n)
+{
+	while (IsA(n, RelabelType) && ((RelabelType *) n)->resultcollid == exprCollation((Node *) ((RelabelType *) n)->arg))
+		n = (Node *) ((RelabelType *) n)->arg;
+	return n;
+}
+
+/* the grouping clause of the key that is the column v (the key as it is or relabeled) */
+static SortGroupClause *
+key_clause(Query *q, const Var *v)
+{
+	foreach_node(SortGroupClause, sgc, q->groupClause)
+	{
+		Node	   *e = strip_key(ungroup_expr(q, get_sortgroupclause_expr(sgc, q->targetList)));
+
+		if (IsA(e, Var) && ((Var *) e)->varno == v->varno && ((Var *) e)->varattno == v->varattno)
+			return sgc;
+	}
+	return NULL;
+}
+
+/* is op an equality the rows of a group agree by on the key column v: one of the family of the key's, in the key's collation (citext's, not text's) */
+static bool
+group_equality(Query *q, const OpExpr *op, const Var *v)
+{
+	SortGroupClause *sgc = key_clause(q, v);
+
+	return sgc != NULL && equality_ops_are_compatible(op->opno, sgc->eqop) && op->inputcollid == v->varcollid;
+}
+
+/* are the rows of a group of the key column v alike in every function of it: its equality is image equality (an int, a text of a deterministic collation; not a numeric's scale) */
+static bool
+image_key(Query *q, const Var *v)
+{
+	TypeCacheEntry *tc = lookup_type_cache(v->vartype, TYPECACHE_BTREE_OPFAMILY);
+	Oid			proc;
+
+	if (key_clause(q, v) == NULL || !OidIsValid(tc->btree_opf))
+		return false;
+	proc = get_opfamily_proc(tc->btree_opf, tc->btree_opintype, tc->btree_opintype, BTEQUALIMAGE_PROC);
+	return OidIsValid(proc) && DatumGetBool(OidFunctionCall1Coll(proc, v->varcollid, ObjectIdGetDatum(tc->btree_opintype)));
+}
+
+typedef struct KeyReads
+{
+	Query	   *q;
+	int			depth;			/* how far the walk is below the query */
+} KeyReads;
+
+/* does the sub-select read the query other than as a key alike in every row of a group, or as an operand of an equality of a key: a function of a numeric key (its scale) is not */
+static bool
+reads_beyond_keys(Node *n, KeyReads *k)
+{
+	bool		r;
+
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return ((Var *) n)->varlevelsup == k->depth && !image_key(k->q, (Var *) n);
+	if (IsA(n, OpExpr))
+	{
+		foreach_ptr(Node, a, ((OpExpr *) n)->args)
+		{
+			Node	   *key = strip_key(a);
+
+			if (!(IsA(key, Var) && ((Var *) key)->varlevelsup == k->depth && group_equality(k->q, (OpExpr *) n, (Var *) key)) && reads_beyond_keys(a, k))
+				return true;
+		}
+		return false;
+	}
+	if (!IsA(n, Query))
+		return expression_tree_walker(n, reads_beyond_keys, k);
+	k->depth++;
+	r = query_tree_walker((Query *) n, reads_beyond_keys, k, 0);
+	k->depth--;
+	return r;
+}
+
 /*
- * `column IN (sub-select)` with the column as it is (or relabels of it that keep its collation: another cast of it is a function of the key that the rows of a group may not agree
- * on) and a sub-select that does not read the query, or EXISTS of a semi join; no aggregate of this query and nothing volatile. NOT IN, NOT EXISTS and an expression of the key
- * stay on the groups, where the rows form would test every row.
+ * `column IN (sub-select)` by the equality of the column's key, the column as it is, and a sub-select that does not read the query, or EXISTS of a semi join that reads the query
+ * only through equalities of its keys; no aggregate of this query and nothing volatile. NOT IN, NOT EXISTS and an expression of the key stay on the groups, where the rows form
+ * would test every row.
  */
 static bool
 row_condition(Query *q, Node *c)
 {
 	SubLink    *sl = (SubLink *) c;
 	OpExpr	   *op = (OpExpr *) sl->testexpr;
+	KeyReads	k = {q, 0};
 	Node	   *key;
 
 	if (!IsA(c, SubLink) || contain_aggs_of_level(c, 0) || contain_volatile_functions(c))
 		return false;
 	if (sl->subLinkType == EXISTS_SUBLINK)
-		return semi_subselect(castNode(Query, sl->subselect));
+		return semi_subselect(castNode(Query, sl->subselect)) && !reads_beyond_keys(ungroup_expr(q, c), &k);
 	if (sl->subLinkType != ANY_SUBLINK || !IsA(op, OpExpr) || contain_vars_of_level(sl->subselect, 1))
 		return false;
-	key = linitial(op->args);
-	if (!op_mergejoinable(op->opno, exprType(key)))
-		return false;
-	key = ungroup_expr(q, key);
-	while (IsA(key, RelabelType) && ((RelabelType *) key)->resultcollid == exprCollation((Node *) ((RelabelType *) key)->arg))
-		key = (Node *) ((RelabelType *) key)->arg;
-	return IsA(key, Var);
+	key = strip_key(ungroup_expr(q, linitial(op->args)));
+	return IsA(key, Var) && group_equality(q, op, (Var *) key);
 }
 
 /* the conditions of the rows of the HAVING moved to WHERE (apply), or whether there is one */
@@ -208,6 +286,7 @@ one_row_query(Query *sq)
 	return IsA(limit, Const) && !limit->constisnull && limit->consttype == INT8OID && DatumGetInt64(limit->constvalue) == 1;
 }
 
+/* the joins of jt with an unread one-row lateral dropped, when nothing of it can raise or has an effect: the normal plan runs its sub-select and ON condition for each left row */
 static Node *
 drop_in(Query *q, Node *jt, Bitmapset *around)
 {
@@ -231,7 +310,8 @@ drop_in(Query *q, Node *jt, Bitmapset *around)
 	if (j->jointype != JOIN_LEFT || !IsA(j->rarg, RangeTblRef))
 		return jt;
 	rte = rt_fetch(((RangeTblRef *) j->rarg)->rtindex, q->rtable);
-	if (rte->rtekind != RTE_SUBQUERY || !one_row_query(rte->subquery) || is_read(q, j, ((RangeTblRef *) j->rarg)->rtindex, around))
+	if (rte->rtekind != RTE_SUBQUERY || !one_row_query(rte->subquery) || contain_volatile_functions(j->quals) || agg_node_may_raise(j->quals) ||
+		agg_node_may_raise((Node *) rte->subquery) || is_read(q, j, ((RangeTblRef *) j->rarg)->rtindex, around))
 		return jt;
 	/* the planner counts the outer joins of the range table and expects each in the join tree */
 	if (j->rtindex != 0)
@@ -293,11 +373,12 @@ null_on_empty(const Aggref *a)
 	return false;
 }
 
-/* `table.column = outer column` of one type, by the equality that groups the type */
+/* `table.column = outer column` of one type, by the equality that groups the type, which has an ordering (the GROUP BY of the rewrite takes its sort operator) */
 static bool
 key_equality(Node *c, Var **in, Var **out)
 {
 	OpExpr	   *op = (OpExpr *) c;
+	TypeCacheEntry *tc;
 	Var		   *l,
 			   *r;
 
@@ -307,11 +388,16 @@ key_equality(Node *c, Var **in, Var **out)
 	r = lsecond(op->args);
 	*in = l->varlevelsup == 0 ? l : r;
 	*out = l->varlevelsup == 0 ? r : l;
-	return (*in)->varlevelsup == 0 && (*in)->varno == 1 && (*in)->varattno > 0 && (*out)->varlevelsup == 1 && (*out)->varattno > 0 && (*in)->vartype == (*out)->vartype &&
-		lookup_type_cache((*in)->vartype, TYPECACHE_EQ_OPR)->eq_opr == op->opno;
+	if ((*in)->varlevelsup != 0 || (*in)->varno != 1 || (*in)->varattno <= 0 || (*out)->varlevelsup != 1 || (*out)->varattno <= 0 || (*in)->vartype != (*out)->vartype)
+		return false;
+	tc = lookup_type_cache((*in)->vartype, TYPECACHE_EQ_OPR | TYPECACHE_LT_OPR);
+	return tc->eq_opr == op->opno && OidIsValid(tc->lt_opr);
 }
 
-/* a sub-select of one aggregate over one table, no other clause; its WHERE split into the equalities that tie it to the query and the rest, which reads only the table */
+/*
+ * a sub-select of one aggregate over one table, no other clause, that cannot raise (the join groups every row, the sub-select only the rows of the keys asked); its WHERE split
+ * into the equalities that tie it to the query and the rest, which reads only the table
+ */
 static bool
 decor_subselect(const SubLink *sl, List **eqs, List **rest)
 {
@@ -321,7 +407,8 @@ decor_subselect(const SubLink *sl, List **eqs, List **rest)
 	if (sl->subLinkType != EXPR_SUBLINK || s->commandType != CMD_SELECT || list_length(s->rtable) != 1 || rt_fetch(1, s->rtable)->rtekind != RTE_RELATION ||
 		list_length(s->jointree->fromlist) != 1 || !IsA(linitial(s->jointree->fromlist), RangeTblRef) || !s->hasAggs || s->groupClause != NIL || s->groupingSets != NIL ||
 		s->havingQual != NULL || s->hasWindowFuncs || s->hasTargetSRFs || s->hasSubLinks || s->distinctClause != NIL || s->limitCount != NULL || s->limitOffset != NULL ||
-		s->setOperations != NULL || s->cteList != NIL || s->rowMarks != NIL || list_length(s->targetList) != 1 || contain_volatile_functions((Node *) s))
+		s->setOperations != NULL || s->cteList != NIL || s->rowMarks != NIL || list_length(s->targetList) != 1 || contain_volatile_functions((Node *) s) ||
+		agg_node_may_raise((Node *) s))
 		return false;
 	te = linitial_node(TargetEntry, s->targetList);
 	if (!IsA(te->expr, Aggref) || !null_on_empty((Aggref *) te->expr))

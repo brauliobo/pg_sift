@@ -117,6 +117,11 @@ SELECT s.label, r.cte_scans, r.scans > 0 AS scanned FROM scopes s, LATERAL plan_
  two tenants |         0 | t
 (2 rows)
 
+-- A MATERIALIZED CTE whose body can raise stays one copy, which computes every row and column of the body: inline, the division no reader takes would not run.
+SET sift.agg_force = on;
+WITH c AS MATERIALIZED (SELECT tenant_id, 10 / (id % 7) AS r FROM events) SELECT tenant_id, count(*) FROM c GROUP BY 1;
+ERROR:  division by zero
+RESET sift.agg_force;
 DROP FUNCTION same(text);
 DROP FUNCTION plan_reads(text, bool);
 DROP FUNCTION notes_query(text);

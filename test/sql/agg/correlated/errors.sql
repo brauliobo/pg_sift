@@ -67,7 +67,34 @@ SELECT * FROM check_query($q$
  SELECT c.n, count(*) FROM facts f JOIN dims d ON d.id = f.dim_a_id AND d.ok
  CROSS JOIN LATERAL (SELECT f.dim_a_id / 4 AS n WHERE f.dim_a_id <> 7 LIMIT 1) c GROUP BY 1
 $q$);
+-- A correlated aggregate becomes a join to the table grouped by its key only when nothing of it can raise: the groups of every key are computed, where the sub-select reads only
+-- the keys asked (no dims row asks for the facts of entity 0; not under check_query, whose wrapper the rewrite does not read). An xid key has an equality and no ordering: no
+-- key to group by.
+SET sift.agg_force = on;
+SELECT d.id, (SELECT sum(10 / f.dim_a_id) FROM facts f WHERE f.dim_a_id = d.id) AS n FROM dims d;
+CREATE TABLE xid_facts (x xid, n int);
+INSERT INTO xid_facts SELECT (i % 5)::text::xid, i FROM generate_series(1, 200) i;
+CREATE INDEX xid_facts_col ON xid_facts USING sift_col (x, n);
+VACUUM (FREEZE, ANALYZE) xid_facts;
+SELECT * FROM check_query($q$ SELECT o.n, (SELECT max(i.n) FROM xid_facts i WHERE i.x = o.x) AS m FROM xid_facts o WHERE o.n <= 5 $q$);
+RESET sift.agg_force;
+-- A one-row lateral no column of which is read is dropped only when nothing of it can raise or has an effect: the normal plan runs its sub-select and its ON condition for every
+-- row of the left side (entity 0 divides by zero; the sequence counts the rows that met the condition).
+SELECT * FROM check_query($q$ SELECT count(*) FROM facts f LEFT JOIN LATERAL (SELECT t.id FROM tags t WHERE t.id = 1 LIMIT 1) c ON 10 / f.dim_a_id > 0 $q$);
+SELECT * FROM check_query($q$ SELECT count(*) FROM facts f LEFT JOIN LATERAL (SELECT t.id FROM tags t WHERE t.id = 10 / f.dim_a_id LIMIT 1) c ON true $q$);
+CREATE SEQUENCE joined;
+SET sift.enable_agg = on;
+SELECT count(*) FROM facts f LEFT JOIN LATERAL (SELECT t.id FROM tags t WHERE t.id = 1 LIMIT 1) c ON nextval('joined') > 0;
+SELECT last_value FROM joined;
+-- An init plan the scan runs at its start gives one row by a unique key of its table only: the parent's key does not hold across the tables that inherit it.
+CREATE TABLE parents (id int PRIMARY KEY, v int);
+CREATE TABLE children () INHERITS (parents);
+INSERT INTO parents VALUES (1, 2);
+INSERT INTO children VALUES (1, 3);
+ANALYZE parents, children;
+SELECT * FROM check_query($q$ SELECT count(*) FROM facts WHERE dim_a_id < 0 AND dim_a_id = (SELECT p.v FROM parents p WHERE p.id = 1) $q$);
 DROP FUNCTION check_query(text);
 DROP FUNCTION run_query(text, bool);
-DROP TABLE facts, dims, tags;
+DROP SEQUENCE joined;
+DROP TABLE facts, dims, tags, xid_facts, children, parents;
 DROP EXTENSION pg_sift;

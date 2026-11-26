@@ -70,6 +70,10 @@ VACUUM events;
 SELECT label, same(notes_query(cond)) AS same_rows_vacuumed FROM scopes ORDER BY label;
 SELECT s.label, r.cte_scans, r.scans > 0 AS scanned FROM scopes s, LATERAL plan_reads(notes_query(s.cond), true) r WHERE s.label IN ('one tenant', 'two tenants') ORDER BY s.label;
 
+-- A MATERIALIZED CTE whose body can raise stays one copy, which computes every row and column of the body: inline, the division no reader takes would not run.
+SET sift.agg_force = on;
+WITH c AS MATERIALIZED (SELECT tenant_id, 10 / (id % 7) AS r FROM events) SELECT tenant_id, count(*) FROM c GROUP BY 1;
+RESET sift.agg_force;
 DROP FUNCTION same(text);
 DROP FUNCTION plan_reads(text, bool);
 DROP FUNCTION notes_query(text);
