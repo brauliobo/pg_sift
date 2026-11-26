@@ -219,7 +219,7 @@ SELECT sift.maintain('mkj_idx') IS NOT NULL AS maintained;
 SELECT count(*) AS parts, sum(rows) AS rows FROM sift.parts('mkj_idx');
  parts |  rows  
 -------+--------
-     2 | 140000
+     3 | 140000
 (1 row)
 
 SELECT q, sift_helpers.f2_same(q, false) FROM unnest(ARRAY[

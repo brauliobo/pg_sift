@@ -108,6 +108,9 @@ extern SiftTxnStage *sift_stage_get(Relation rel, const SiftPartSpec *spec);
  */
 extern void sift_stage_set_bulk(SiftTxnStage *st, uint32 flush_rows, uint64 budget_bytes);
 
+/* The bytes the buffers of all partitions of a bulk stage may hold: a quarter of the maintenance memory, at least work_mem */
+extern uint64 sift_stage_bulk_budget(void);
+
 /* Stages a row: routed to its partition by key (the 40 bytes of core/range.h); flushes the stage when it is over work_mem (a bulk stage: see above) */
 extern void sift_stage_add(Relation rel, SiftTxnStage *st, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, const SiftCell *cells, const SiftCell *const *elem);
 

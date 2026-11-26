@@ -528,6 +528,20 @@ sift_stage_row_added(SiftTxnStage *st, SiftStagePart *p, uint64 tid)
 		tid_htab_add(st, tid, (uint32) (p - st->parts), (uint32) (p->rb->n - 1));
 }
 
+uint64
+sift_stage_bulk_budget(void)
+{
+	return Max((uint64) work_mem * 1024, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4));
+}
+
+/* A transaction of an index over a heap whose rows alone fill work_mem loads rows, it does not trickle them in: its stage writes them as parts, as the stage of a bulk insert does */
+static void
+bulk_when_loading(Relation rel, SiftTxnStage *st)
+{
+	if (st->bulk_rows == 0 && st->mem_bytes >= (uint64) work_mem * 1024 && sift_f2_store_open(rel)->host->host_kind == SIFT_F2_HOST_INDEX)
+		sift_stage_set_bulk(st, sift_batch_flush_rows(sift_stage_bulk_budget(), st->mem_bytes / st->total_rows), sift_stage_bulk_budget());
+}
+
 static void
 stage_row(Relation rel, SiftTxnStage *st, SiftStagePart *p, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, SubTransactionId sub, const SiftCell *cells, const SiftCell *const *elem)
 {
@@ -536,6 +550,7 @@ stage_row(Relation rel, SiftTxnStage *st, SiftStagePart *p, const uint8 *key, ui
 	sift_rowbuf_add(p->rb, tid, xmin, cmin, sub, key, cells, elem);
 	MemoryContextSwitchTo(old);
 	sift_stage_row_added(st, p, tid);
+	bulk_when_loading(rel, st);
 	if (st->bulk_rows > 0)
 		sift_stage_bulk_check(rel, st, p);
 	else if (sift_stage_mem(st) >= (uint64) work_mem * 1024)
