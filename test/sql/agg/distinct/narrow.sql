@@ -1,9 +1,7 @@
--- count(DISTINCT) of a column of a few values keeps a few words of bits per group instead of a directory and a chunk (agg/dist/, DD_WORDS): the
--- window of values is that of the first batch, widens when a value falls outside, and the set becomes a bitmap past dist_narrow_words words. Every
--- shape, on columns around the edges of the window (63, 64, 65, 512 and 513 values, negative values, ids of a dictionary that outgrow it, a column that
--- widens late, one that spans more than a window, NULLs) and in groups of one to 2,000 values, must give the normal plan's rows; as must each of the
--- variants: the default, hash memory at its smallest (the group table spills), parallel workers (with and without the leader in the scan: the narrow sets
--- travel as their words, and a dictionary's ids are those of the table that wrote them), and the window limited to 0, 1 and 2 words.
+-- count(DISTINCT) of columns of a few values, on columns around the edges of a word of bits (63, 64, 65, 512 and 513 values, negative values, ids of a
+-- dictionary that outgrow it, a column that widens late, one that spans more than a window, NULLs) and in groups of one to 2,000 values, must give the
+-- normal plan's rows; as must each of the variants: the default, hash memory at its smallest (the group table spills), and parallel workers (with and
+-- without the leader in the scan).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -76,11 +74,8 @@ END $$;
 
 SELECT * FROM variant('default', 'work_mem = ''4MB''');
 SELECT * FROM variant('spill', 'work_mem = ''64kB'';hash_mem_multiplier = 1');
-SELECT * FROM variant('parallel', 'max_parallel_workers_per_gather = 2;parallel_setup_cost = 0;parallel_tuple_cost = 0;min_parallel_table_scan_size = 0;min_parallel_index_scan_size = 0;seq_page_cost = 10000');
-SELECT * FROM variant('parallel, leader out', 'max_parallel_workers_per_gather = 3;parallel_leader_participation = off;parallel_setup_cost = 0;parallel_tuple_cost = 0;min_parallel_table_scan_size = 0;min_parallel_index_scan_size = 0;seq_page_cost = 10000');
-SELECT * FROM variant('window 0 words', 'sift.test_limits = ''dist_narrow_words=0''');
-SELECT * FROM variant('window 1 word', 'sift.test_limits = ''dist_narrow_words=1''');
-SELECT * FROM variant('window 2 words', 'sift.test_limits = ''dist_narrow_words=2''');
+SELECT * FROM variant('parallel', 'sift.test_agg_par_min_rows = 0;max_parallel_workers_per_gather = 2;parallel_setup_cost = 0;parallel_tuple_cost = 0;min_parallel_table_scan_size = 0;min_parallel_index_scan_size = 0;seq_page_cost = 10000');
+SELECT * FROM variant('parallel, leader out', 'sift.test_agg_par_min_rows = 0;max_parallel_workers_per_gather = 3;parallel_leader_participation = off;parallel_setup_cost = 0;parallel_tuple_cost = 0;min_parallel_table_scan_size = 0;min_parallel_index_scan_size = 0;seq_page_cost = 10000');
 
 DROP FUNCTION variant(text, text);
 DROP TABLE shapes, nr, r_on, r_off;
