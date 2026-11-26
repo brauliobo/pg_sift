@@ -10,8 +10,10 @@
  * the stripe eight at a time and reads the entries whose tag is the key's, and a reader that finds the count of the stripe zero has nothing to look for and takes no lock. A chunk comes from the
  * area before the stripe is locked (sift_rowlock_chunk_alloc), and is handed to sift_rowlock_add.
  *
- * The end of a transaction (commit, abort, prepare) takes no memory and attaches no area: a read of the chunks finds the ones a backend that mapped the area sees, and a remove never needs the
- * area for an entry of the table. A backend that mapped none holds every entry it has in the table.
+ * A backend maps the area once, before it locks a stripe, and keeps it until it exits: the mapping takes the lock of the segments of the server and a system call, which a stripe lock does not
+ * wait for. The end of a transaction (commit, abort, prepare) takes no memory and attaches no area: a read of the chunks finds the ones a backend that mapped the area sees, and a remove never
+ * needs the area for an entry of the table. A backend that mapped none holds every entry it has in the table. A chunk a remove empties goes back to the area once the stripe lock is let go
+ * (sift_rowlock_free_emptied).
  */
 #ifndef SIFT_TBL_F2_LOCK_OVF_H
 #define SIFT_TBL_F2_LOCK_OVF_H
@@ -50,6 +52,7 @@ typedef struct SiftRowLockTable
 	SiftRowLockStripeHdr hdr[SIFT_ROWLOCK_PARTITIONS];
 	LWLock		area_lock pg_attribute_aligned(PG_CACHE_LINE_SIZE);
 	pg_atomic_uint32 area_handle pg_attribute_aligned(PG_CACHE_LINE_SIZE);	/* a dsa_handle, written under area_lock with a barrier, read with one; the area is made once and lives as long as the server */
+	LWLock		grow_lock[SIFT_ROWLOCK_PARTITIONS];	/* the holders past the room of an entry of the stripe grow its MultiXactId one at a time (f2_lock_mxid.h) */
 } SiftRowLockTable;
 
 /* The byte of a key that the header of its stripe keeps: the stripe comes from the hash of the key, the tag from other bits of it */
@@ -78,8 +81,11 @@ typedef struct SiftRowLockCount
 
 extern void sift_rowlock_table_init(SiftRowLockTable *t, int tranche);
 
-/* This backend lets go of the area it mapped for the transaction, at its end: while it runs the area stays, for the entries the backend has in the chunks; the chunks stay for the others */
-extern void sift_rowlock_area_detach(void);
+/* The area mapped, where it exists and the system has the memory for it, by a backend in a transaction that is about to lock a stripe */
+extern void sift_rowlock_area_map(SiftRowLockTable *t);
+
+/* The chunks the removes under the stripe lock just let go of emptied, given back to the area */
+extern void sift_rowlock_free_emptied(void);
 
 /* The entry of the key in the stripe, or NULL */
 extern SiftRowLockEntry *sift_rowlock_find(SiftRowLockTable *t, int si, const SiftRowLockKey *k);
@@ -97,7 +103,7 @@ extern SiftRowLockEntry *sift_rowlock_add(SiftRowLockTable *t, int si, const Sif
 /* The entry e of the stripe, zeroed, takes the key k: the slot of an entry that no snapshot can wait for any more */
 extern void sift_rowlock_reset(SiftRowLockTable *t, int si, SiftRowLockEntry *e, const SiftRowLockKey *k);
 
-/* Removes entry e of the stripe: the last one takes its place (a loop that removes goes on with the same position); gives back what it frees to the area, and takes none */
+/* Removes entry e of the stripe: the last one takes its place (a loop that removes goes on with the same position); a chunk it empties waits for sift_rowlock_free_emptied, and it takes none */
 extern void sift_rowlock_remove(SiftRowLockTable *t, int si, SiftRowLockEntry *e);
 
 /* Calls drop on every entry of the stripe, and removes the ones it says true for */

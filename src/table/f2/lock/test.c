@@ -33,7 +33,6 @@ sift_test_rowlock_stats(PG_FUNCTION_ARGS)
 		total.in_chunks += c.in_chunks;
 		total.chunks += c.chunks;
 	}
-	sift_rowlock_area_detach();
 	v[0] = Int64GetDatum(total.in_table);
 	v[1] = Int64GetDatum(total.in_chunks);
 	v[2] = Int64GetDatum(total.chunks);

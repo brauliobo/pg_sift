@@ -13,7 +13,6 @@
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
-#include "storage/procarray.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -25,7 +24,7 @@
 
 /* ---- the table in shared memory ---- */
 
-/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (2164992 B packed; 256x64x128 B ABI entries and one cache line of header for each stripe, and 256 B of fast intention slots for each process of the server) */
+/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (2169088 B packed; 256x64x128 B ABI entries, one cache line of header and a grow lock for each stripe, and 1 kB of fast intention slots for each process of the server) */
 static Size
 table_bytes(void)
 {
@@ -49,6 +48,7 @@ shm_init(SIFT_DSM_INIT_ARGS)
 	{
 		LWLockInitialize(&s->esc[i].lock, escs);
 		pg_atomic_init_u32(&s->esc[i].coarse_active, 0);
+		pg_atomic_init_u32(&s->esc[i].fast_active, 0);
 	}
 	pg_atomic_init_u32(&s->prepared_epoch, 0);
 	sift_fast_intent_init(s);
@@ -98,20 +98,6 @@ dir_match(const SiftPartEscEntry *e, const RelFileLocator *loc, uint64 part_id, 
 	return e->part_id == part_id && e->top_xid == top && RelFileLocatorEquals(e->locator, *loc);
 }
 
-static void
-dir_compact_ended(SiftEscStripe *s)
-{
-	uint16	   *n = &shm->esc[s - shm->esc_stripes].n;
-
-	for (int i = 0; i < *n;)
-	{
-		if (!TransactionIdIsInProgress(s->entries[i].top_xid))
-			s->entries[i] = s->entries[--*n];
-		else
-			i++;
-	}
-}
-
 typedef enum DirOp
 {
 	DIR_PUBLISH,
@@ -144,14 +130,14 @@ dir_apply(DirOp op, const DirArg *a)
 		return false;
 	s = &shm->esc_stripes[si];
 	n = &shm->esc[si].n;
+	if (op == DIR_PUBLISH && *n == SIFT_ESC_BUCKETS)
+		sift_esc_dir_reap(shm, si);
 	LWLockAcquire(&shm->esc[si].lock, LW_EXCLUSIVE);
 	for (int i = 0; i < *n && e == NULL; i++)
 		if (dir_match(&s->entries[i], a->loc, a->part_id, a->top))
 			e = &s->entries[i];
 	if (op == DIR_PUBLISH && e == NULL)
 	{
-		if (*n == SIFT_ESC_BUCKETS)
-			dir_compact_ended(s);
 		ok = *n < SIFT_ESC_BUCKETS;
 		e = ok ? &s->entries[(*n)++] : NULL;
 		if (ok)
@@ -180,8 +166,8 @@ sift_esc_live_count(void)
 		return 0;
 	for (int si = 0; si < SIFT_ESC_STRIPES; si++)
 	{
-		LWLockAcquire(&shm->esc[si].lock, LW_EXCLUSIVE);
-		dir_compact_ended(&shm->esc_stripes[si]);
+		sift_esc_dir_reap(shm, si);
+		LWLockAcquire(&shm->esc[si].lock, LW_SHARED);
 		n += shm->esc[si].n;
 		LWLockRelease(&shm->esc[si].lock);
 	}
@@ -189,34 +175,9 @@ sift_esc_live_count(void)
 }
 
 static TransactionId
-holder_in_the_way(const RelFileLocator *loc, uint64 part_id, SiftEscModes want)
-{
-	TransactionId found = InvalidTransactionId;
-	uint32		si = sift_esc_stripe_of(loc, part_id);
-
-	if (shm == NULL)
-		return found;
-	LWLockAcquire(&shm->esc[si].lock, LW_SHARED);
-	for (int i = 0; i < shm->esc[si].n && !TransactionIdIsValid(found); i++)
-	{
-		const SiftPartEscEntry *e = &shm->esc_stripes[si].entries[i];
-
-		if (e->part_id == part_id && RelFileLocatorEquals(e->locator, *loc) && !TransactionIdIsCurrentTransactionId(e->top_xid) &&
-			sift_esc_modes_conflict(want, sift_esc_coarse_modes((LockTupleMode) e->mode)) && TransactionIdIsInProgress(e->top_xid))
-			found = e->top_xid;
-	}
-	LWLockRelease(&shm->esc[si].lock);
-	return found;
-}
-
-static TransactionId
 conflicting_xid(const RelFileLocator *loc, uint64 part_id, SiftEscModes want)
 {
-	TransactionId xid = holder_in_the_way(loc, part_id, want);
-
-	if (!TransactionIdIsValid(xid) && shm != NULL)
-		xid = sift_fast_intent_conflict(shm, loc, part_id, want);
-	return TransactionIdIsValid(xid) || part_id == SIFT_ESC_PART_ALL ? xid : holder_in_the_way(loc, SIFT_ESC_PART_ALL, want);
+	return shm == NULL ? InvalidTransactionId : sift_esc_in_the_way(shm, loc, part_id, want);
 }
 
 TransactionId
@@ -705,6 +666,8 @@ take_coarse(SiftLocalLock *l, LockTupleMode mode, LockWaitPolicy wait_policy, bo
 	PG_TRY();
 	{
 		while (shm != NULL && r == TM_Ok && TransactionIdIsValid(holder = sift_fast_intent_conflict(shm, &l->loc, l->part_id, want)))
+		{
+			CHECK_FOR_INTERRUPTS();
 			if (wait_policy != LockWaitBlock)
 				r = TM_BeingModified;
 			else
@@ -712,6 +675,7 @@ take_coarse(SiftLocalLock *l, LockTupleMode mode, LockWaitPolicy wait_policy, bo
 				XactLockTableWait(holder, NULL, NULL, XLTW_None);
 				*waited = true;
 			}
+		}
 		r = r == TM_Ok ? take_modes(l, want, wait_policy, waited) : r;
 	}
 	PG_CATCH();
@@ -975,7 +939,6 @@ sift_esc_xact_end(XactEvent event)
 
 			dir_apply(DIR_REMOVE, &a);
 		}
-	sift_rowlock_area_detach();
 	if (txn_cx != NULL)
 		MemoryContextDelete(txn_cx);
 	txn_cx = NULL;

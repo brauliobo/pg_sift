@@ -1,8 +1,8 @@
 /*
  * table/f2/lock/ovf.c - see f2_lock_ovf.h.
  *
- * The area is made by the first stripe that fills, pinned, and lives as long as the server: the entries of a prepared transaction outlive its backend. A backend maps it for the transaction that
- * reads or changes a chunk and lets go at its end (sift_rowlock_area_detach), so that an idle backend maps nothing.
+ * The area is made by the first stripe that fills, pinned, and lives as long as the server: the entries of a prepared transaction outlive its backend. A backend maps it the first time it locks
+ * a row once it exists, and keeps the mapping until it exits.
  */
 #include "postgres.h"
 
@@ -16,6 +16,7 @@
 #include "table/f2/lock/ovf.h"
 
 SIFT_BACKEND_LOCAL dsa_area *area = NULL;
+SIFT_BACKEND_LOCAL dsa_pointer emptied = InvalidDsaPointer;	/* the chunks removes emptied under the stripe lock, linked by next */
 
 static dsa_handle
 handle_of(SiftRowLockTable *t)
@@ -30,6 +31,7 @@ sift_rowlock_table_init(SiftRowLockTable *t, int tranche)
 	for (int i = 0; i < SIFT_ROWLOCK_PARTITIONS; i++)
 	{
 		LWLockInitialize(&t->hdr[i].lock, tranche);
+		LWLockInitialize(&t->grow_lock[i], tranche);
 		pg_atomic_init_u32(&t->hdr[i].total_n, 0);
 		t->hdr[i].overflow = InvalidDsaPointer;
 	}
@@ -53,6 +55,8 @@ area_try(SiftRowLockTable *t, bool make)
 #ifdef SIFT_TESTING
 		if (make && sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_rowlock_area") != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not create the area of the row lock chunks (test)")));
+		if (!make && sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_rowlock_attach") != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not attach the area of the row lock chunks (test)")));
 #endif
 		/* MEM[MEM-SHM-16]: DSM-backed dsa_create for the row lock entries of the stripes that are full (8 KB chunks, freed when empty) */
 		a = make ? dsa_create(t->area_lock.tranche) : dsa_attach(handle_of(t));
@@ -83,7 +87,7 @@ area_try(SiftRowLockTable *t, bool make)
 	return a;
 }
 
-/* The one area of the table, in the memory of the transaction: made here when create and nobody has made it. NULL only where create and the server has no memory for it: the caller then keeps the lock in the lock manager of PostgreSQL */
+/* The one area of the table, mapped for the life of the backend: made here when create and nobody has made it. NULL only where create and the server has no memory for it: the caller then keeps the lock in the lock manager of PostgreSQL */
 static dsa_area *
 area_of(SiftRowLockTable *t, bool create)
 {
@@ -91,7 +95,8 @@ area_of(SiftRowLockTable *t, bool create)
 
 	if (area != NULL)
 		return area;
-	old = MemoryContextSwitchTo(sift_rowlock_txn_cx());
+	/* MEM[MEM-SHM-16]: the descriptor of the area of the row lock chunks, one for each backend that locks rows, kept until it exits */
+	old = MemoryContextSwitchTo(TopMemoryContext);
 	if (create && handle_of(t) == DSA_HANDLE_INVALID)
 	{
 		LWLockAcquire(&t->area_lock, LW_EXCLUSIVE);
@@ -124,14 +129,12 @@ chunk_area(SiftRowLockTable *t)
 	return IsTransactionState() ? area_of(t, false) : area;
 }
 
+/* An attach that finds no memory maps nothing: the backend then attaches when it reads a chunk, as one does that was started before the area was made */
 void
-sift_rowlock_area_detach(void)
+sift_rowlock_area_map(SiftRowLockTable *t)
 {
-	if (IsTransactionState())
-		return;
-	if (area != NULL)
-		dsa_detach(area);
-	area = NULL;
+	if (area == NULL && handle_of(t) != DSA_HANDLE_INVALID && IsTransactionState())
+		(void) area_of(t, true);
 }
 
 static SiftRowLockChunk *
@@ -282,7 +285,20 @@ sift_rowlock_remove(SiftRowLockTable *t, int si, SiftRowLockEntry *e)
 	if (c != NULL && c->n == 0)
 	{
 		h->overflow = c->next;
-		dsa_free(area, head);
+		c->next = emptied;
+		emptied = head;
+	}
+}
+
+void
+sift_rowlock_free_emptied(void)
+{
+	while (emptied != InvalidDsaPointer)
+	{
+		dsa_pointer p = emptied;
+
+		emptied = chunk_at(area, p)->next;
+		dsa_free(area, p);
 	}
 }
 

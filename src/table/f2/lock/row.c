@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "utils/snapmgr.h"
 
@@ -87,11 +88,14 @@ lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_polic
 	*waited = false;
 	for (;;)
 	{
-		SiftRowState rs = sift_row_state_read(rel, tid);
-		TM_Result	res = sift_row_state_result(&rs, cid, tmfd, tid);
+		SiftRowState rs;
+		TM_Result	res;
 		bool		reread = false,
 					added = false;
 
+		CHECK_FOR_INTERRUPTS();
+		rs = sift_row_state_read(rel, tid);
+		res = sift_row_state_result(&rs, cid, tmfd, tid);
 		if (res == TM_Ok)
 			res = lock_held(rel, &rs, tid, mode, wait_policy, tmfd, &reread, &added);
 		if (res == TM_Ok && reread)

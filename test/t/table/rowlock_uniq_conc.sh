@@ -6,7 +6,7 @@
 # entry, and a cycle through that wait is a deadlock that the server detects.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 11
+plan 13
 node_init rc 2 "autovacuum = off
 sift.async_maintenance = off
 sift.test_create_format1 = off
@@ -24,7 +24,12 @@ sql rc "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE u (id bigint, c int)" \
 	"CREATE UNIQUE INDEX u_i ON u USING sift_col (id)" \
 	"CREATE TABLE uc (id int, c int)" \
-	"CREATE UNIQUE INDEX uc_i ON uc USING sift_col (id)" >/dev/null || bail "setup failed"
+	"CREATE UNIQUE INDEX uc_i ON uc USING sift_col (id)" \
+	"CREATE TABLE pt (id int, t int NOT NULL, v int NOT NULL) PARTITION BY RANGE (t)" \
+	"DO \$\$ BEGIN FOR i IN 0..15 LOOP
+		EXECUTE format('CREATE TABLE pt_%s PARTITION OF pt FOR VALUES FROM (%s) TO (%s) USING sift_table', i, i, i + 1);
+	END LOOP; END \$\$" \
+	"INSERT INTO pt SELECT g, g % 16, 0 FROM generate_series(1, 1600) g" >/dev/null || bail "setup failed"
 
 intent_locks() { sql rc "SELECT count(*) FROM pg_locks WHERE locktype = 'page' AND relation = 'h'::regclass AND page BETWEEN -12288 AND -4097"; }
 tps() { sed -n 's/^tps = \([0-9.]*\) .*/\1/p' "$1" | head -n 1; }
@@ -57,6 +62,23 @@ check "a transaction that holds a row takes no page lock of the lock manager for
 sess_say ta "COMMIT;"
 sess_close ta
 sql rc "UPDATE h SET v = 0 WHERE id = 1" >/dev/null
+
+# A row of each of 16 partitioned sift_tables in one transaction, by one client and by 16 at once: the intentions of the 16 relations and of their partitions are records, no page lock
+own_intents="SELECT count(*) FROM pg_locks WHERE locktype = 'page' AND pid = pg_backend_pid() AND page BETWEEN -12288 AND -4097"
+cat >"$D/parts.pgb" <<EOF
+BEGIN;
+UPDATE pt SET v = v + 1 WHERE id BETWEEN :client_id * 64 + 1 AND :client_id * 64 + 16;
+$own_intents \\gset
+\\if :count
+SELECT 1 / 0;
+\\endif
+COMMIT;
+EOF
+out=$(sql rc "BEGIN" "UPDATE pt SET v = v + 1 WHERE id <= 16" "$own_intents" "ROLLBACK")
+check "a transaction that holds a row of each of 16 partitions takes no page lock for its intentions" test "$out" -eq 0
+bench 16 "$D/parts.pgb" "$D/parts16.out"; brc=$?
+out=$(cat "$D/parts16.out")
+check "neither do 16 clients that each hold a row of each of the 16 partitions" test "$brc" -eq 0
 
 bench 1 "$D/lock.pgb" "$D/lock1.out"
 bench 16 "$D/lock.pgb" "$D/lock16.out"

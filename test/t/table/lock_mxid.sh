@@ -5,7 +5,7 @@
 # savepoints it releases is one holder of it, and allocates no MultiXactId.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 6
+plan 8
 node_init lm 53 "autovacuum = off
 sift.async_maintenance = off
 ${SIFT_TESTING:+sift.test_create_format1 = off}"
@@ -49,5 +49,34 @@ sql lm "DO \$\$ BEGIN FOR i IN 1..15 LOOP BEGIN PERFORM id FROM parent WHERE id 
 	>/dev/null || bail "the savepoint loop failed"
 after=$(next_mxid)
 check "fifteen released savepoints on one row allocate no MultiXactId" test "$after" -eq "$before"
+
+# 48 clients take one row FOR KEY SHARE at once, five rounds each: the holders past the room of the entry each grow its MultiXactId once, not again for every one that grew it first
+before=$(next_mxid)
+sess_open lm gate
+sess_say gate "SELECT pg_advisory_lock(42); \\echo r0"
+wait_for "grep -q '^r0\$' $D/gate.out" 60 || bail "the gate was not taken"
+clients=()
+for k in $(seq 48); do
+	for r in 1 2 3 4 5; do
+		echo "BEGIN;"; echo "SELECT pg_advisory_xact_lock_shared(42);"
+		echo "SELECT id FROM parent WHERE id = 3 FOR KEY SHARE;"; echo "SELECT pg_sleep(0.15);"; echo "COMMIT;"
+	done | sql lm >"$D/hot.$k.out" 2>&1 &
+	clients+=($!)
+done
+gated() { [[ $(sql lm "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND mode = 'ShareLock' AND NOT granted") -eq 48 ]]; }
+start=$(date +%s.%N)
+for r in 1 2 3 4 5; do
+	wait_for gated 60 || bail "the 48 clients did not reach round $r"
+	sess_say gate "SELECT pg_advisory_unlock(42); SELECT pg_advisory_lock(42);"
+done
+wait "${clients[@]}"
+sess_say gate "SELECT pg_advisory_unlock(42);"
+sess_close gate
+elapsed=$(echo "$(date +%s.%N) - $start" | bc)
+after=$(next_mxid)
+out="$((after - before)) MultiXactIds in $elapsed s"
+diag "$out"
+check "48 concurrent holders of one row allocate at most one MultiXactId each a round" test $((after - before)) -le 240
+check "and end in 5 s without an error" awk -v t="$elapsed" -v e="$(grep -hc ERROR "$D"/hot.*.out | paste -sd+ - | bc)" 'BEGIN { exit !(t < 5 && e == 0) }'
 check "no backend died" test "$(grep -ac 'terminated by signal' "$D/postgres.log")" -eq 0
 finish

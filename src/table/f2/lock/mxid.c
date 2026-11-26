@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "access/transam.h"
 #include "access/xact.h"
 #include "miscadmin.h"
 #include "storage/procarray.h"
@@ -34,7 +35,11 @@ sift_mx_read(SiftMxMembers *s, MultiXactId mx)
 	{
 		s->members = NULL;
 		s->n = 0;
+		return;
 	}
+	s->running = palloc(s->n * sizeof(bool));
+	for (int i = 0; i < s->n; i++)
+		s->running[i] = TransactionIdIsInProgress(s->members[i].xid);
 }
 
 void
@@ -42,7 +47,9 @@ sift_mx_free(SiftMxMembers *s)
 {
 	if (s->members != NULL)
 		pfree(s->members);
-	*s = (SiftMxMembers) {InvalidMultiXactId, NULL, 0};
+	if (s->running != NULL)
+		pfree(s->running);
+	*s = (SiftMxMembers) SIFT_MX_NONE;
 }
 
 bool
@@ -55,7 +62,7 @@ bool
 sift_mx_live(const SiftMxMembers *s, bool ignore_own)
 {
 	for (int i = 0; i < s->n; i++)
-		if (TransactionIdIsCurrentTransactionId(s->members[i].xid) ? !ignore_own : TransactionIdIsInProgress(s->members[i].xid))
+		if (TransactionIdIsCurrentTransactionId(s->members[i].xid) ? !ignore_own : s->running[i])
 			return true;
 	return false;
 }
@@ -64,8 +71,7 @@ TransactionId
 sift_mx_conflict(const SiftMxMembers *s, uint8 conflicting_modes)
 {
 	for (int i = 0; i < s->n; i++)
-		if (!TransactionIdIsCurrentTransactionId(s->members[i].xid) && (conflicting_modes & (1 << mode_of(s->members[i].status))) != 0 &&
-			TransactionIdIsInProgress(s->members[i].xid))
+		if (!TransactionIdIsCurrentTransactionId(s->members[i].xid) && (conflicting_modes & (1 << mode_of(s->members[i].status))) != 0 && s->running[i])
 			return s->members[i].xid;
 	return InvalidTransactionId;
 }
@@ -88,6 +94,87 @@ sift_mx_grow(MultiXactId base, TransactionId first, LockTupleMode first_mode, Tr
 	return MultiXactIdIsValid(base) ? MultiXactIdExpand(base, xid, status_of(mode)) : MultiXactIdCreate(first, status_of(first_mode), xid, status_of(mode));
 }
 
+/* ---- the answers of the server, found with no stripe lock held ---- */
+
+enum
+{
+	XID_RUNNING = 1,
+	XID_COMMITTED,
+	XID_ABORTED
+};
+
+static int
+answer_of(const SiftXidAsk *a, TransactionId xid)
+{
+	for (int i = 0; i < a->n; i++)
+		if (a->xid[i] == xid)
+			return a->state[i];
+	return 0;
+}
+
+bool
+sift_ask_running(SiftXidAsk *a, TransactionId xid)
+{
+	int			state;
+
+	if (TransactionIdIsCurrentTransactionId(xid))
+		return true;
+	if (a == NULL || (state = answer_of(a, xid)) == XID_RUNNING)
+		return true;
+	if (state != 0)
+		return false;
+	for (int i = 0; i < a->nq; i++)
+		if (a->q[i] == xid)
+			return true;
+	if (a->nq < SIFT_ASK_MAX)
+		a->q[a->nq++] = xid;
+	return true;
+}
+
+bool
+sift_ask_committed(const SiftXidAsk *a, TransactionId xid)
+{
+	return a != NULL && answer_of(a, xid) == XID_COMMITTED;
+}
+
+bool
+sift_ask_gone(SiftXidAsk *a, FullTransactionId fxid)
+{
+	if (a == NULL)
+		return false;
+	if (FullTransactionIdEquals(a->gone_fxid, fxid))
+		return a->gone;
+	a->gone_q = fxid;
+	return false;
+}
+
+bool
+sift_ask_must(const SiftXidAsk *a)
+{
+	return a != NULL && (a->nq > 0 || FullTransactionIdIsValid(a->gone_q)) && a->rounds < SIFT_ASK_ROUNDS;
+}
+
+void
+sift_ask_answer(SiftXidAsk *a)
+{
+	CHECK_FOR_INTERRUPTS();
+	if (a->n + a->nq > SIFT_ASK_MAX)
+		a->n = 0;
+	for (int i = 0; i < a->nq; i++)
+	{
+		a->xid[a->n] = a->q[i];
+		a->state[a->n++] = TransactionIdIsInProgress(a->q[i]) ? XID_RUNNING : TransactionIdDidCommit(a->q[i]) ? XID_COMMITTED : XID_ABORTED;
+	}
+	if (FullTransactionIdIsValid(a->gone_q))
+	{
+		a->gone = GlobalVisCheckRemovableFullXid(a->rel, a->gone_q);
+		a->gone_fxid = a->gone_q;
+	}
+	a->nq = 0;
+	a->gone_q = InvalidFullTransactionId;
+	a->rounds++;
+}
+
 /* ---- the holders of an entry ---- */
 
 static const uint8 conflict_with[4] = {
@@ -97,12 +184,6 @@ static const uint8 conflict_with[4] = {
 	[LockTupleExclusive] = 0xF,
 };
 
-bool
-sift_hold_running(TransactionId xid)
-{
-	return TransactionIdIsCurrentTransactionId(xid) || TransactionIdIsInProgress(xid);
-}
-
 /* A MultiXactId whose members are not read is live: only the members, read with no stripe lock held, say that none runs */
 bool
 sift_hold_overflow_live(const SiftRowLockEntry *e, const SiftMxMembers *seen)
@@ -111,18 +192,28 @@ sift_hold_overflow_live(const SiftRowLockEntry *e, const SiftMxMembers *seen)
 }
 
 void
-sift_hold_drop_ended(SiftRowLockEntry *e)
+sift_hold_drop_ended(SiftRowLockEntry *e, SiftXidAsk *a)
 {
 	for (int i = 0; i < e->nholders;)
-		if (sift_hold_running(e->holders[i].xid))
+		if (sift_ask_running(a, e->holders[i].xid))
 			i++;
 		else
 			sift_hold_drop(e, i);
 }
 
+void
+sift_hold_ask(const SiftRowLockEntry *e, LockTupleMode mode, SiftXidAsk *a)
+{
+	bool		all = e->nholders == SIFT_ROWLOCK_INLINE_MAX || (e->flags & SIFT_ROWLOCK_PREPARE_HELD) != 0;
+
+	for (int i = 0; i < e->nholders; i++)
+		if (all || (conflict_with[mode] & (1 << sift_hold_mode(e, i))) != 0)
+			(void) sift_ask_running(a, e->holders[i].xid);
+}
+
 /* The first other running transaction whose lock conflicts with mode, or InvalidTransactionId; a holder that ended is dropped from the entry, and an overflow of holders that all ended is forgotten (the caller holds its stripe exclusively and read the members of the overflow) */
 TransactionId
-sift_hold_conflict(SiftRowLockEntry *e, LockTupleMode mode, const SiftMxMembers *seen)
+sift_hold_conflict(SiftRowLockEntry *e, LockTupleMode mode, const SiftMxMembers *seen, SiftXidAsk *a)
 {
 	TransactionId found;
 
@@ -132,7 +223,7 @@ sift_hold_conflict(SiftRowLockEntry *e, LockTupleMode mode, const SiftMxMembers 
 
 		if (TransactionIdIsCurrentTransactionId(xid) || (conflict_with[mode] & (1 << sift_hold_mode(e, i))) == 0)
 			i++;
-		else if (TransactionIdIsInProgress(xid))
+		else if (sift_ask_running(a, xid))
 			return xid;
 		else
 			sift_hold_drop(e, i);
@@ -159,7 +250,7 @@ sift_hold_add(SiftRowLockEntry *e, LockTupleMode mode, SiftHoldOutside *o)
 			return true;
 		}
 	if (e->nholders == SIFT_ROWLOCK_INLINE_MAX)
-		sift_hold_drop_ended(e);
+		sift_hold_drop_ended(e, &o->ask);
 	if (e->nholders < SIFT_ROWLOCK_INLINE_MAX)
 	{
 		e->holders[e->nholders] = (SiftRowLockHolder) {xid, GetCurrentSubTransactionId()};
@@ -181,21 +272,37 @@ sift_hold_add(SiftRowLockEntry *e, LockTupleMode mode, SiftHoldOutside *o)
 	return true;
 }
 
-/* What the acquire asked, done with no stripe lock held */
+/* What the acquire asked, done with no stripe lock held: the first ask to grow takes the grow lock and tries again, for the MultiXactId another holder may have grown meanwhile */
 void
-sift_hold_do(SiftHoldOutside *o, LockTupleMode mode)
+sift_hold_do(SiftHoldOutside *o, LockTupleMode mode, LWLock *grow)
 {
 	CHECK_FOR_INTERRUPTS();
+	if (o->answer)
+		sift_ask_answer(&o->ask);
 	if (MultiXactIdIsValid(o->read))
 		sift_mx_read(&o->seen, o->read);
-	if (o->grow)
+	if (o->grow && o->grow_lock == NULL)
+	{
+		LWLockAcquire(grow, LW_EXCLUSIVE);
+		o->grow_lock = grow;
+	}
+	else if (o->grow)
 	{
 		o->grown = sift_mx_grow(o->base, o->first, o->first_mode, GetCurrentTransactionId(), mode);
 		o->grown_from = o->base;
 		o->grown_first = o->first;
 	}
 	o->read = InvalidMultiXactId;
-	o->grow = false;
+	o->grow = o->answer = false;
+}
+
+void
+sift_hold_done(SiftHoldOutside *o)
+{
+	if (o->grow_lock != NULL)
+		LWLockRelease(o->grow_lock);
+	o->grow_lock = NULL;
+	sift_mx_free(&o->seen);
 }
 
 /* The strongest mode of the transaction among the inline holders, -1 for none: a holder that was a subtransaction's is the transaction's once it is released */

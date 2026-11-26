@@ -72,6 +72,7 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftEscStripeHdr
 {
 	LWLock		lock;
 	pg_atomic_uint32 coarse_active;
+	pg_atomic_uint32 fast_active;	/* the slots of fast intentions in use whose keys hash to the stripe: a coarse lock that finds none reads no slot */
 	uint16		n;
 } SiftEscStripeHdr;
 
@@ -222,6 +223,13 @@ extern TransactionId sift_esc_find_conflicting_xid(const RelFileLocator *loc, ui
 extern int	sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, int slot, LockTupleMode mode, uint32 epoch);
 extern void sift_fast_intent_restore(SiftRowLockShmLayout *s, int slot, int mode);
 extern TransactionId sift_fast_intent_conflict(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, SiftEscModes want);
+
+/*
+ * The directory of the coarse holders (esc.c) as fast_intent.c reads it with no lock of a stripe held while it asks whether a transaction runs: sift_esc_in_the_way is a transaction of another
+ * process, still running, that holds the key (or the relation of a partition) coarsely or records an intention that conflicts with the modes; sift_esc_dir_reap removes the holders that ended.
+ */
+extern TransactionId sift_esc_in_the_way(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, SiftEscModes want);
+extern void sift_esc_dir_reap(SiftRowLockShmLayout *s, uint32 si);
 extern void sift_fast_intent_release_all(SiftRowLockShmLayout *s);
 extern Size sift_fast_intent_bytes(void);
 extern void sift_fast_intent_init(SiftRowLockShmLayout *s);
