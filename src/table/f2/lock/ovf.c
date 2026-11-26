@@ -100,7 +100,7 @@ area_of(SiftRowLockTable *t, bool create)
 		return area;
 	/* MEM[MEM-SHM-16]: the descriptor of the area of the row lock chunks, one for each backend that locks rows, kept until it exits */
 	if (area_cx == NULL)
-		area_cx = sift_cache_create_context("sift rowlock dsa");
+		area_cx = sift_cache_create_context("sift cache row lock area");
 	old = MemoryContextSwitchTo(area_cx);
 	PG_TRY();
 	{
