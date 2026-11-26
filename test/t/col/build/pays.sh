@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
-node_init mc 22 "autovacuum = off
+# Format 1: the parallel build of col/v1/build_par.c and its choice (build_pays); Format 2 builds in src/col/f2/build
+node_init mc 22 "sift.test_create_format1 = on
+autovacuum = off
 max_worker_processes = 16
 max_parallel_workers = 8"
 node_start mc || bail "start failed"

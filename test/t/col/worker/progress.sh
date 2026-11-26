@@ -5,7 +5,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
-node_init wp 66 "autovacuum = off
+# Format 1: the promote phase of the worker and the segments it replaces in sift.progress; Format 2 has no write buffer to promote
+node_init wp 66 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_col_net = off
 sift.maintenance_naptime = 200"
 node_start wp || bail "start failed"

@@ -6,7 +6,9 @@
 plan 9
 
 ROWS=$(knob SIFT_BCS_ROWS 60000 30000)
-node_init primary 2 "sift.col_build_source = auto
+# Format 1: the build chooser of col/v1/build/choose.c (btree, index or heap rows, sift.col_build_source); Format 2 reads the heap
+node_init primary 2 "sift.test_create_format1 = on
+sift.col_build_source = auto
 wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)

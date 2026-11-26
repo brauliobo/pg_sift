@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
-node_init rd 25 "autovacuum = off
+# Format 1: dirty units of a segment, the point directory and sift.col_maintenance_status; Format 2 has parts and deletion vectors
+node_init rd 25 "sift.test_create_format1 = on
+autovacuum = off
 sift.maintenance_naptime = 200
 sift.log_min_duration = 0"
 node_start rd || bail "start failed"

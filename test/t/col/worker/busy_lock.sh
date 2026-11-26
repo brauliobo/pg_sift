@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
-node_init busy 47 "autovacuum = off
+# Format 1: the worker that merges the segments an inserter promoted under the maintenance lock; Format 2 compacts parts
+node_init busy 47 "sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = on
 sift.maintenance_naptime = 10000"
 node_start busy || bail "start failed"

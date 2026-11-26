@@ -8,7 +8,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
-node_init sl 24 "autovacuum = off
+# Format 1: the rewrite of an index by partitions of sift.vacuum_rewrite_limit, counted in segments; Format 2 compacts parts
+node_init sl 24 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_col_net = off
 sift.maintenance_naptime = 200
 sift.vacuum_rewrite_limit = 1"

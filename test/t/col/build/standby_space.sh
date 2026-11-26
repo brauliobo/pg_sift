@@ -10,7 +10,9 @@ ROWS=$(knob SIFT_BSS_ROWS 1000000 500000)
 plan 19
 # a writer holds about 35 bytes of memory for each byte of segment of these narrow rows: with maintenance_work_mem = 64MB the partitions are 2 MB, a build under writers
 # leaves partitions that each hold every key, and the promotion rewrites them (the file doubles while a standby streams), as it does not for the index of one segment
-node_init primary 2 "wal_level = replica
+# Format 1: the gap a parallel build reserves for the merge of its segments (col/v1/build_par.c); Format 2 writes parts
+node_init primary 2 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
 autovacuum = off

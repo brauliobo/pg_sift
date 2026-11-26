@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 13
-node_init pc 25 "autovacuum = off
+# Format 1: the rewrite of one segment into partitions (sift.test_col_partition_kb) and its PANIC before the directory switch; Format 2 compacts parts
+node_init pc 25 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_col_net = off"
 node_start pc || bail "start failed"
 sql pc "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \

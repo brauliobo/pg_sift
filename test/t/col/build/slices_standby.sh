@@ -5,7 +5,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
-node_init primary 24 "wal_level = replica
+# Format 1: the merge of a parallel build in slices (col/v1/build_par.c) next to a standby
+node_init primary 24 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 autovacuum = off
 max_worker_processes = 16
