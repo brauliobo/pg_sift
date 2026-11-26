@@ -401,6 +401,7 @@ sift_fsm_reclaim_locked(FsmCtx *c, BlockNumber *new_hw)
 	bool		outer = !c->in_reclaim;
 	uint64		freed;
 
+	sift_fsm_ctx_exclusive(c);
 	c->in_reclaim = true;
 	freed = reclaim_pass(c, new_hw);
 	if (outer && new_hw == NULL && !c->keep_empty)

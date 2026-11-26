@@ -1,8 +1,9 @@
 /*
  * core/fsm.c - the allocator of format major 2 (core/fsm.h).
  *
- * Every public function takes the exclusive lock of block 0 first and keeps it to the end (the order of the locks is block 0, block 1, a page of a list), so the lists
- * only ever have one writer; a record of generic WAL here registers at most block 0, block 1 and two pages of a list. A step that moves an extent between lists is one
+ * Every public function takes the lock of block 0 first and keeps it to the end (the order of the locks is block 0, block 1, a page of a list): exclusively, so that the
+ * lists only ever have one writer, except for an allocation from the lists, which holds it shared beside other allocations and does each of its steps in one record under block 1, taking
+ * block 0 exclusively (after letting the shared hold go) only to move the high-water mark, reclaim or claim a slab; a record of generic WAL here registers at most block 0, block 1 and two pages of a list. A step that moves an extent between lists is one
  * record per list: a crash between two of them leaves blocks that belong to no list and no part, which the orphan sweep of the index finds, never a block with two owners.
  */
 #include "core/host.h"
@@ -148,7 +149,10 @@ sift_fsm_init_list_page(Page page, uint16 size_class, uint16 flags, BlockNumber 
 void
 sift_fsm_set_high_water(FsmCtx *c, SiftXlog *x, BlockNumber high_water)
 {
-	Page		p0 = sift_xlog_register(x, c->buf0, 0);
+	Page		p0;
+
+	Assert(!c->shared);
+	p0 = sift_xlog_register(x, c->buf0, 0);
 	SiftColMetaPageData *m = SIFT_COL_META(p0);
 
 	m->high_water = high_water;
@@ -165,8 +169,12 @@ sift_fsm_high_water(FsmCtx *c)
 static BlockNumber
 extend_high_water(FsmCtx *c, uint32 n)
 {
-	SiftXlog	x = sift_xlog_start(c->rel);
-	BlockNumber start = sift_fsm_high_water(c);
+	SiftXlog	x;
+	BlockNumber start;
+
+	sift_fsm_ctx_exclusive(c);
+	x = sift_xlog_start(c->rel);
+	start = sift_fsm_high_water(c);
 
 	if ((uint64) start + n >= SIFT_F2_LOCK_FLOOR)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift index \"%s\" cannot grow past %u blocks", RelationGetRelationName(c->rel), SIFT_F2_LOCK_FLOOR),
@@ -176,9 +184,12 @@ extend_high_water(FsmCtx *c, uint32 n)
 	return start;
 }
 
-/* Takes the last entry of the head page of the list of class c (it is not empty): the page is unlinked and its block freed when it was the last one */
-SiftFsmExtent
-sift_fsm_pop_class(FsmCtx *c, int cls)
+/*
+ * Takes the last entry of the head page of the list of class c into *e: the page is unlinked and its block freed when it was the last one. False when the list is empty, which an allocation that
+ * holds block 0 shared finds when another one took the last extent since it looked
+ */
+bool
+sift_fsm_pop_class(FsmCtx *c, int cls, SiftFsmExtent *e)
 {
 	SiftXlog	x = sift_xlog_start(c->rel);
 	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
@@ -187,13 +198,18 @@ sift_fsm_pop_class(FsmCtx *c, int cls)
 	BlockNumber head = m->class_head[cls];
 	Buffer		hbuf;
 	Page		hp;
-	SiftFsmExtent e;
 
+	if (head == InvalidBlockNumber && m->class_free_extents[cls] == 0)
+	{
+		sift_xlog_abort(&x);
+		UnlockReleaseBuffer(rootbuf);
+		return false;
+	}
 	if (head == InvalidBlockNumber || m->class_free_extents[cls] == 0)
 		SIFT_CORRUPT(c->rel, "The allocator has no free extent of class %d.", cls);
 	hbuf = sift_fsm_lock_list_page(c->rel, head, cls);
 	hp = sift_xlog_register(&x, hbuf, 0);
-	e = FSMP(hp)->ext[--FSMP(hp)->nentries];
+	*e = FSMP(hp)->ext[--FSMP(hp)->nentries];
 	memset(&FSMP(hp)->ext[FSMP(hp)->nentries], 0, sizeof(SiftFsmExtent));
 	if (FSMP(hp)->nentries == 0)
 	{
@@ -204,7 +220,7 @@ sift_fsm_pop_class(FsmCtx *c, int cls)
 	sift_fsm_list_seal(hp);
 	sift_fsm_root_seal(root);
 	sift_xlog_done(&x);
-	return e;
+	return true;
 }
 
 /* Puts n extents of the class on its list: onto the head page while it has room, else onto a new head page from the metadata slabs */
@@ -275,30 +291,28 @@ sift_fsm_push_class(FsmCtx *c, int cls, const SiftFsmExtent *ext, int n)
 	}
 }
 
-/* The block of the lowest free extent of class cls (the head page of its list is popped from its end), false when there is none */
+/* The block of the lowest free extent of class cls (the head page of its list is popped from its end), false when there is none; the caller holds the root */
 static bool
-peek_lowest(FsmCtx *c, int cls, BlockNumber *start)
+peek_lowest(FsmCtx *c, const SiftFsmMetaPageData *m, int cls, BlockNumber *start)
 {
-	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
-	SiftFsmMetaPageData *m = FSMM(BufferGetPage(rootbuf));
-	bool		found = m->class_head[cls] != InvalidBlockNumber && m->class_free_extents[cls] > 0;
+	Buffer		hbuf;
+	Page		hp;
 
-	if (found)
-	{
-		Buffer		hbuf = sift_fsm_lock_list_page(c->rel, m->class_head[cls], cls);
-		Page		hp = BufferGetPage(hbuf);
-
-		*start = FSMP(hp)->ext[FSMP(hp)->nentries - 1].start;
-		UnlockReleaseBuffer(hbuf);
-	}
-	UnlockReleaseBuffer(rootbuf);
-	return found;
+	if (m->class_head[cls] == InvalidBlockNumber || m->class_free_extents[cls] == 0)
+		return false;
+	hbuf = sift_fsm_lock_list_page(c->rel, m->class_head[cls], cls);
+	hp = BufferGetPage(hbuf);
+	*start = FSMP(hp)->ext[FSMP(hp)->nentries - 1].start;
+	UnlockReleaseBuffer(hbuf);
+	return true;
 }
 
-/* The class, from `cls` up, of the free extent that starts lowest; SIFT_FSM_NCLASSES when there is none */
+/* The class, from `cls` up, of the free extent that starts lowest, in one look at the root; SIFT_FSM_NCLASSES when there is none */
 static int
 lowest_class(FsmCtx *c, int cls)
 {
+	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
+	const SiftFsmMetaPageData *m = FSMM(BufferGetPage(rootbuf));
 	int			found = SIFT_FSM_NCLASSES;
 	BlockNumber lowest = InvalidBlockNumber;
 
@@ -306,12 +320,13 @@ lowest_class(FsmCtx *c, int cls)
 	{
 		BlockNumber start;
 
-		if (peek_lowest(c, k, &start) && (found == SIFT_FSM_NCLASSES || start < lowest))
+		if (peek_lowest(c, m, k, &start) && (found == SIFT_FSM_NCLASSES || start < lowest))
 		{
 			found = k;
 			lowest = start;
 		}
 	}
+	UnlockReleaseBuffer(rootbuf);
 	return found;
 }
 
@@ -333,13 +348,17 @@ find_class(FsmCtx *c, int cls)
 	}
 }
 
-/* The first n blocks of a free extent of class k; the rest of it goes back to the lists, cut into the largest classes that fit */
+/* The first n blocks of a free extent of class k; the rest of it goes back to the lists, cut into the largest classes that fit. InvalidBlockNumber when the class has none left */
 static BlockNumber
 carve_free(FsmCtx *c, int k, uint32 n)
 {
-	SiftFsmExtent e = sift_fsm_pop_class(c, k);
-	uint64		at = (uint64) e.start + n,
+	SiftFsmExtent e;
+	uint64		at,
 				left = SIFT_FSM_CLASS_BLOCKS(k) - n;
+
+	if (!sift_fsm_pop_class(c, k, &e))
+		return InvalidBlockNumber;
+	at = (uint64) e.start + n;
 
 	while (left > 0)
 	{
@@ -353,22 +372,27 @@ carve_free(FsmCtx *c, int k, uint32 n)
 	return e.start;
 }
 
-/* n blocks in one extent: off a free extent of class k (SIFT_FSM_NCLASSES: there is none that holds them) or the end of the relation */
-static SiftExtent
-take_extent(FsmCtx *c, int k, uint32 n)
+/* n blocks in one extent: off a free extent of class k (SIFT_FSM_NCLASSES: there is none that holds them) or the end of the relation; false when another allocation took the extents of class k first */
+static bool
+take_extent(FsmCtx *c, int k, uint32 n, SiftExtent *out)
 {
-	SiftExtent	out = {.nblocks = n};
-
-	out.start = k == SIFT_FSM_NCLASSES ? extend_high_water(c, n) : carve_free(c, k, n);
+	out->nblocks = n;
+	out->start = k == SIFT_FSM_NCLASSES ? extend_high_water(c, n) : carve_free(c, k, n);
+	if (out->start == InvalidBlockNumber)
+		return false;
 	if (sift_fsm_below_reserve(c))
 		sift_fsm_grow_meta(c);
-	return out;
+	return true;
 }
 
 static SiftExtent
 alloc_locked(FsmCtx *c, uint32 nblocks)
 {
-	return take_extent(c, find_class(c, class_ceil(nblocks)), nblocks);
+	SiftExtent	e;
+
+	while (!take_extent(c, find_class(c, class_ceil(nblocks)), nblocks, &e))
+		;
+	return e;
 }
 
 FsmCtx
@@ -376,6 +400,27 @@ sift_fsm_ctx_open(Relation rel)
 {
 	SIFT_NOTE_BLOCK0_X(SIFT_B0_FSM);
 	return (FsmCtx) {.rel = rel,.buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE)};
+}
+
+/*
+ * An allocation from the lists holds block 0 shared: it keeps out the steps that plan their changes of the lists in more than one look at the root (reclaim, the sweep, the rehome, a commit that
+ * releases inside its record) and lets other allocations and the readers of the metapage in; each of its steps is one record under the root. It takes block 0 exclusively for the rest of the
+ * call only where it moves the high-water mark, reclaims the queue or claims a slab
+ */
+static FsmCtx
+ctx_open_shared(Relation rel)
+{
+	return (FsmCtx) {.rel = rel,.buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_SHARE),.shared = true};
+}
+
+void
+sift_fsm_ctx_exclusive(FsmCtx *c)
+{
+	if (!c->shared)
+		return;
+	UnlockReleaseBuffer(c->buf0);
+	c->shared = false;
+	c->buf0 = sift_fsm_ctx_open(c->rel).buf0;
 }
 
 void
@@ -387,7 +432,7 @@ sift_fsm_ctx_close(FsmCtx *c)
 SiftExtent
 sift_fsm_alloc(Relation rel, uint32 nblocks)
 {
-	FsmCtx		c = sift_fsm_ctx_open(rel);
+	FsmCtx		c = ctx_open_shared(rel);
 	SiftExtent	e = alloc_locked(&c, nblocks);
 
 	sift_fsm_ctx_close(&c);
@@ -398,19 +443,24 @@ sift_fsm_alloc(Relation rel, uint32 nblocks)
 static bool
 find_below(FsmCtx *c, uint64 npages, BlockNumber max_blk, int *cls, int *from)
 {
-	for (int j = sift_fsm_class_floor((uint32) Min(npages, SIFT_FSM_MAX_EXTENT)); j >= 0; j--)
-		for (int k = j; k < SIFT_FSM_NCLASSES; k++)
+	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
+	const SiftFsmMetaPageData *m = FSMM(BufferGetPage(rootbuf));
+	bool		found = false;
+
+	for (int j = sift_fsm_class_floor((uint32) Min(npages, SIFT_FSM_MAX_EXTENT)); j >= 0 && !found; j--)
+		for (int k = j; k < SIFT_FSM_NCLASSES && !found; k++)
 		{
 			BlockNumber start;
 
-			if (peek_lowest(c, k, &start) && (uint64) start + SIFT_FSM_CLASS_BLOCKS(j) <= max_blk)
+			if (peek_lowest(c, m, k, &start) && (uint64) start + SIFT_FSM_CLASS_BLOCKS(j) <= max_blk)
 			{
 				*cls = j;
 				*from = k;
-				return true;
+				found = true;
 			}
 		}
-	return false;
+	UnlockReleaseBuffer(rootbuf);
+	return found;
 }
 
 int
@@ -464,7 +514,7 @@ reuse_class(FsmCtx *c, uint64 nblocks, int cls, int room, int *from)
 int
 sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max)
 {
-	FsmCtx		c = sift_fsm_ctx_open(rel);
+	FsmCtx		c = ctx_open_shared(rel);
 	int			n = 0;
 
 	while (nblocks > 0)
@@ -479,7 +529,8 @@ sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max)
 							errhint("Write the stream in several parts.")));
 		if (k == SIFT_FSM_NCLASSES && (small = reuse_class(&c, nblocks, cls, max - n, &k)) >= 0)
 			cls = small;
-		out[n] = take_extent(&c, k, k == SIFT_FSM_NCLASSES ? top : SIFT_FSM_CLASS_BLOCKS(cls));
+		if (!take_extent(&c, k, k == SIFT_FSM_NCLASSES ? top : SIFT_FSM_CLASS_BLOCKS(cls), &out[n]))
+			continue;
 		nblocks -= out[n].nblocks;
 		n++;
 	}

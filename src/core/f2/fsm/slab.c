@@ -289,6 +289,7 @@ sift_fsm_claim_slab(FsmCtx *c)
 	bool		have;
 	uint32		nblocks;
 	int			cls;
+	SiftFsmExtent e;
 
 	rootbuf = sift_fsm_lock_root(c->rel);
 	if (SLABS(BufferGetPage(rootbuf))->nslabs >= SIFT_FSM_MAX_SLABS && !c->in_reclaim)
@@ -303,7 +304,7 @@ sift_fsm_claim_slab(FsmCtx *c)
 	cls = pg_ceil_log2_32(nblocks);
 	have = FSMM(BufferGetPage(rootbuf))->class_free_extents[cls] > 0;
 	UnlockReleaseBuffer(rootbuf);
-	start = have ? sift_fsm_pop_class(c, cls).start : InvalidBlockNumber;
+	start = have && sift_fsm_pop_class(c, cls, &e) ? e.start : InvalidBlockNumber;
 	x = sift_xlog_start(c->rel);
 	rootbuf = sift_fsm_lock_root(c->rel);
 	root = sift_xlog_register(&x, rootbuf, 0);
@@ -349,6 +350,7 @@ sift_fsm_below_reserve(FsmCtx *c)
 void
 sift_fsm_grow_meta(FsmCtx *c)
 {
+	sift_fsm_ctx_exclusive(c);
 	reclaim_before_claim(c);
 	if (sift_fsm_below_reserve(c))
 		sift_fsm_claim_slab(c);

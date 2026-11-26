@@ -4,13 +4,14 @@
 # runs only with the index to itself (a session that holds the index, and so may be between an allocation and its commit, makes it give up and a later VACUUM frees), and on indexes
 # that hold a scope, projections, a key journal, deletion vectors, micro-slabs, pending deletes and column delta chains it frees nothing until a block is leaked, and then exactly that block.
 # A leak is an extent the test functions allocate and never name, which is what a crash between the allocation and the commit leaves. A sweep that gave up (the orphans were over half of
-# the index) is tried again by the next VACUUM: only a sweep that named everything stands for the server start.
+# the index) is tried again by the next VACUUM: only a sweep that named everything stands for the server start. The extents the sweep frees serve the next allocations without an
+# exclusive lock of block 0, which a commit of the manifest takes.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_SWEEP_ROWS 120000 60000)
 RICH=(zr_col tenant_scope_journal p_idx dim_col ev_col)
-plan $((4 + 4 + 3 * ${#RICH[@]} + 3 + 2))
+plan $((4 + 4 + 3 * ${#RICH[@]} + 3 + 2 + 1))
 
 p=osw
 F2="SET sift.test_create_format1 = off"
@@ -125,4 +126,12 @@ sql "$p" "VACUUM g" >/dev/null
 check "the VACUUM after a sweep that gave up sweeps again and frees the 32 leaked blocks ($gave_up, $grown -> $(gused) in use)" test "$(gused)" -le $((grown - 32))
 out=$(problems g_col)
 check "sift.check of the small index is clean after it" test -z "$out"
+
+# 5. allocations that the free lists serve hold block 0 shared, beside one another, and never exclusively
+sql "$p" "CREATE FUNCTION lease_x(int4) RETURNS int8 AS 'pg_sift', 'sift_test_lease_block0_x' LANGUAGE C" \
+	"CREATE FUNCTION allocs_x(n int) RETURNS int8 LANGUAGE plpgsql AS \$\$ DECLARE b int8 := lease_x(1); BEGIN PERFORM sift._test_f2_alloc('g_col', 1) FROM generate_series(1, n); RETURN lease_x(1) - b; END \$\$" \
+	"SELECT count(*) FROM sift._test_f2_alloc_stream('g_col', 8)" >/dev/null || bail "the leak failed"
+(($(sql "$p" "SELECT sift._test_f2_sweep('g_col')") >= 8)) || bail "the sweep did not free the 8 leaked blocks"
+out=$(sql "$p" "SELECT allocs_x(8)")
+check "eight allocations of a block from the free lists take no exclusive lock of block 0 ($out)" test "$out" -le 1
 finish

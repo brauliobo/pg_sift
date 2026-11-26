@@ -23,7 +23,7 @@
 #define SIFT_FSM_SMALL_PIECES	4		/* ... and of a class below SIFT_FSM_SMALL_CLASS, so that a part is never a run of single blocks */
 #define SIFT_FSM_LAG_PRESSURE_DIV 10	/* a standby-safe quarantine holding more than 1/this of the index is released at the raw horizon */
 
-/* One call of the allocator: block 0 held exclusively by the caller */
+/* One call of the allocator: block 0 held by the caller, exclusively unless shared says otherwise */
 typedef struct FsmCtx
 {
 	Relation	rel;
@@ -32,6 +32,7 @@ typedef struct FsmCtx
 	FullTransactionId standby_horizon;	/* valid with exclusive: a standby streams, whose queries a scan of this primary does not see, and an extent is reclaimed once its safexid precedes this */
 	bool		in_reclaim;		/* reclaim_locked is under way: it needs pages of the slabs itself and must not be asked to reclaim from inside */
 	bool		keep_empty;		/* the slabs with no page in use are not given back (sift_fsm_recycle_empty_slabs): the caller made them to fill them */
+	bool		shared;			/* block 0 is held shared: an allocation from the lists, which sift_fsm_ctx_exclusive turns into an exclusive hold where it must */
 	FullTransactionId horizon;	/* valid: the horizon computed anew, what the extents are matured against instead of the cached GlobalVis one */
 } FsmCtx;
 
@@ -55,8 +56,9 @@ extern Buffer sift_fsm_lock_root(Relation rel);
 extern Buffer sift_fsm_lock_list_page(Relation rel, BlockNumber blk, uint16 size_class);
 extern FsmCtx sift_fsm_ctx_open(Relation rel);
 extern void sift_fsm_ctx_close(FsmCtx *c);
+extern void sift_fsm_ctx_exclusive(FsmCtx *c);
 extern void sift_fsm_root_seal(Page page);
-extern SiftFsmExtent sift_fsm_pop_class(FsmCtx *c, int cls);
+extern bool sift_fsm_pop_class(FsmCtx *c, int cls, SiftFsmExtent *e);
 extern void sift_fsm_push_class(FsmCtx *c, int cls, const SiftFsmExtent *ext, int n);
 extern BlockNumber sift_fsm_high_water(FsmCtx *c);
 extern void sift_fsm_set_high_water(FsmCtx *c, SiftXlog *x, BlockNumber high_water);

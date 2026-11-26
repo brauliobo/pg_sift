@@ -8,8 +8,8 @@
  * The free extents of a class are a stack of SIFT_PT_FSM_PAGE pages: an allocation pops the last entry of the head page (the head and the root are the only pages it
  * writes), a release is a push on the queue of released extents. An extent released goes to that queue with the transaction that released it (P4): it is reusable only once the
  * horizon has passed it, which sift_fsm_reclaim finds out, merging the matured extents with the free ones, coalescing adjacent runs and cutting them into classes again.
- * All of it runs under the exclusive lock of block 0 (the order of the locks is block 0, block 1, the pages of the lists), so a record of generic WAL here never holds more than
- * the 4 pages the logger allows.
+ * All of it runs under the lock of block 0, exclusive but for an allocation from the lists, which shares it with other allocations (the order of the locks is block 0, block 1, the pages of
+ * the lists), so a record of generic WAL here never holds more than the 4 pages the logger allows.
  */
 #ifndef SIFT_FSM_H
 #define SIFT_FSM_H
