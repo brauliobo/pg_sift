@@ -34,6 +34,7 @@
 #      table in README.md, in the order of NN; its status is the one they share, Partly when they differ; its engine, the first of its first row)
 # check: agg | plain | scan | count | bitmap | noscan | ok | true | error:SQLSTATE | external:NAME (a proof on a second cluster, below), each of
 #   the first six optionally followed by " ~ REGEX" or " !~ REGEX" on the plan (test/col/coverage.sql)
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)

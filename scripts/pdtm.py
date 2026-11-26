@@ -19,6 +19,9 @@ Opt-in only: nothing runs it unless asked, so a normal run of the suites pays no
 """
 import argparse, hashlib, json, os, random, re, statistics, subprocess, sys, tempfile, time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../bench/steps'))
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PHASES = ('boot', 'ddl_load', 'vac_chk', 'query_assert', 'sleep_poll', 'teardown', 'other')
 SQL_RULES = (   # the first that matches a statement (comments removed) names its phase; none is query_assert

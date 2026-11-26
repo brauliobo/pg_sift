@@ -20,6 +20,7 @@
 # target and FZ_GRID_STRIDE runs every Nth combination of its exhaustive BM25 grid, FZ_CODEC_ITERS and
 # FZ_ANALYZE_ITERS the iterations of those two (scripts/ci.sh quick: 2, 0.05, 7, 100 and 5000). Every harness is built once, before the first pass;
 # the standalone ones run FZ_JOBS (default 4) at a time while the server ones (canary query sql) run one after the other. Exit 1 on any finding.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)

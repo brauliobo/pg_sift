@@ -241,7 +241,7 @@ leak_before() {
 # callbacks, the sift leak report among them, and not before: pg_stat_activity forgets it earlier
 leak_wait_backends() {
 	for _ in $(seq 600); do
-		leak_children "$1" | grep -q "^postgres: [^ ]* $2 " || return 0
+		leak_children "$1" | grep "^postgres: [^ ]* $2 " >/dev/null || return 0
 		sleep 0.05
 	done
 	leak_finding "a backend of database $2 still runs after 30 s"

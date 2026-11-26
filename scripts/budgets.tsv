@@ -72,6 +72,7 @@ script:multibuild.sh	900	2000	-
 script:tap.sh	1200	2000	the Perl TAP files: each is bounded by tap:default through prove --exec
 script:build-bench.sh	900	2000	-
 script:wait-profile.sh	600	1000	-
+script:pdtm.py	600	1000	the profiler of wait-profile.sh: a profiled test or job runs under its own row too; --selftest: no cluster, 0.4 s
 script:focus-gen.sh	1800	3000	gcov run of the regression tests to cut scripts/focus/NAME.tsv; -
 script:make-compat-fixture.sh	900	1500	-
 script:wt-tmpfs.sh	60	10	--selftest: a throwaway repository, two checkouts, no cluster: 0.2 s
