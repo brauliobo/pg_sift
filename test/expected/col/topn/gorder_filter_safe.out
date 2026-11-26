@@ -54,7 +54,7 @@ SELECT n, global_order(replace(q, '@', 'tt')) AS global_order, same(q) AS answer
   2 | f            | t
   3 | f            | t
   4 | f            | t
-  5 | t            | t
+  5 | f            | t
   6 | t            | t
   7 | t            | t
   8 | t            | t

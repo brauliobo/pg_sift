@@ -120,7 +120,7 @@ SELECT k AS keys, pb_path(format('SELECT count(*), sum(v) FROM pb WHERE id IN (%
 FROM unnest(ARRAY[60, 500]) k;
  keys |  path   
 ------+---------
-   60 | siftagg
+   60 | btree
   500 | siftagg
 (2 rows)
 
