@@ -1,6 +1,7 @@
 -- VACUUM truncates the heap behind the rows an aborted UPDATE and INSERT left, and the global order of the index still lists their addresses (a vacuum clears the liveness of the
 -- rows of a segment, it does not take them out of its order). The top-N that reads the order skips an address past the end of the heap, as it skips one of a dead row.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
@@ -63,7 +64,7 @@ SELECT (SELECT string_agg(id::text, ',' ORDER BY id) FROM t WHERE ts BETWEEN TIM
 (1 row)
 
 -- the order is what answered them
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 SELECT global_order('SELECT ts FROM t ORDER BY ts DESC LIMIT 20 OFFSET 30') AS from_the_order;
  from_the_order 
 ----------------
@@ -73,4 +74,5 @@ SELECT global_order('SELECT ts FROM t ORDER BY ts DESC LIMIT 20 OFFSET 30') AS f
 DROP FUNCTION global_order(text);
 DROP TABLE p, t;
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

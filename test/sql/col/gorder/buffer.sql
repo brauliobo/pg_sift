@@ -2,6 +2,7 @@
 -- stays on the global order, with the buffer's rows among the entries. Every ordered read answers what the table does (a copy without an index is the oracle): ASC and DESC,
 -- NULLs, ties, LIMIT and OFFSET, bounds, then rows of the buffer deleted, updated, rolled back, and the buffer promoted.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
@@ -24,7 +25,7 @@ CREATE TABLE p AS SELECT * FROM t;
 ANALYZE t;
 ANALYZE p;
 
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.same_keys_in_t_and_p(q) $$;
 CREATE FUNCTION quant(col text, ty text, f float8) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -88,4 +89,5 @@ SELECT sift.col_verify('t_ix');
 DROP FUNCTION on_the_order(), global_order(text), same(text), quant(text, text, float8), sweep(int), shape_sql(shapes);
 DROP TABLE shapes, p, t;
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

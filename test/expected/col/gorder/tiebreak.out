@@ -24,8 +24,9 @@ CREATE FUNCTION tb_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; walk bool := false; ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	PERFORM sift._test_gorder_answered(true);
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || replace(q, '@', 'tb') LOOP
-		walk := walk OR pl ~ 'Global Order: true';
+		walk := walk OR sift._test_gorder_answered(true) > 0;
 	END LOOP;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'tb') || ') t' INTO ra;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'tp') || ') t' INTO rb;
@@ -39,11 +40,11 @@ $$ SELECT w, o, tb_chk(format('SELECT id, g, d FROM @ WHERE %s ORDER BY %s LIMIT
 SELECT cond, count(*) FILTER (WHERE result LIKE 'DIFFERS%') AS differ, count(*) FILTER (WHERE result = 'walk') > 0 AS walks FROM tb_all() GROUP BY 1 ORDER BY 1;
                        cond                        | differ | walks 
 ---------------------------------------------------+--------+-------
- g = 7                                             |      0 | t
- g = 7 AND d >= date '2018-06-01' AND gone IS NULL |      0 | t
- g = 7 AND gone IS NULL                            |      0 | t
- g = 7 AND gone IS NULL AND kind = 3               |      0 | t
- g IN (3, 7, 11) AND gone IS NULL                  |      0 | t
+ g = 7                                             |      0 | f
+ g = 7 AND d >= date '2018-06-01' AND gone IS NULL |      0 | f
+ g = 7 AND gone IS NULL                            |      0 | f
+ g = 7 AND gone IS NULL AND kind = 3               |      0 | f
+ g IN (3, 7, 11) AND gone IS NULL                  |      0 | f
 (5 rows)
 
 DROP TABLE tb, tp;

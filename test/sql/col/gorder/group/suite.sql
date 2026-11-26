@@ -146,7 +146,7 @@ BEGIN
 	PERFORM sift._test_probe_dead(true);
 	a := gd_rows(q, true);
 	listed := sift._test_probe_dead();
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR pl LIKE '%Global Order: true%'; END LOOP;
+	PERFORM sift._test_gorder_answered(true); FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR sift._test_gorder_answered(true) > 0; END LOOP;
 	b := gd_rows(q, false);
 	RETURN QUERY SELECT walk, a = b, listed <= max_dead;
 END $$;

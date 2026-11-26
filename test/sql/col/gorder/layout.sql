@@ -3,6 +3,7 @@
 -- in a bracket, a write buffer, dead rows, updates that change a key, HOT updates, aborted writes, reused addresses, VACUUM, a merge, a rewrite and REINDEX.
 -- The chunks of the first and last 2 * sift.test_col_gorder_ends entries are whole (128 here, 8,192 otherwise).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
@@ -32,7 +33,7 @@ CREATE TABLE p AS SELECT * FROM t;
 ANALYZE t;
 ANALYZE p;
 
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.same_keys_in_t_and_p(q) $$;
 
 -- the quantiles of each column, as literals of its type: the bounds of the shapes
@@ -145,4 +146,5 @@ SELECT sift.col_verify('t_ix');
 DROP FUNCTION global_order(text), same(text), quant(text, text, float8), sweep(int, int), shape_sql(shapes);
 DROP TABLE shapes, p, t;
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

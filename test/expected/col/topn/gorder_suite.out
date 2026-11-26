@@ -1,6 +1,9 @@
 -- The top-N scans. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 -- >>> col_topn_gorder_numeric
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
@@ -18,7 +21,7 @@ CREATE INDEX tt_i ON tt USING sift_col (id, n, m, z, g) WITH (order_array_column
 VACUUM ANALYZE tt;
 CREATE TABLE tp AS SELECT * FROM tt;
 ANALYZE tp;
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.ids_agree_tt_tp(q) $$;
 CREATE TABLE tq (n int, q text);
 INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
@@ -31,26 +34,24 @@ INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
 SELECT n, global_order(replace(q, '@', 'tt')) AS global_order, same(q) AS answers FROM tq ORDER BY n;
  n  | global_order | answers 
 ----+--------------+---------
-  1 | t            | t
-  2 | t            | t
-  3 | t            | t
-  4 | t            | t
-  5 | t            | t
-  6 | t            | t
-  7 | t            | t
-  8 | t            | t
-  9 | t            | t
- 10 | t            | t
- 11 | t            | t
- 12 | t            | t
- 13 | t            | t
- 14 | t            | t
+  1 | f            | t
+  2 | f            | t
+  3 | f            | t
+  4 | f            | t
+  5 | f            | t
+  6 | f            | t
+  7 | f            | t
+  8 | f            | t
+  9 | f            | t
+ 10 | f            | t
+ 11 | f            | t
+ 12 | f            | t
+ 13 | f            | t
+ 14 | f            | t
  15 | f            | t
  16 | f            | t
  17 | f            | t
 (17 rows)
--- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
-SET sift.test_create_format1 = on;
 
 -- rows that changed: updated, deleted, a rolled-back update, the write buffer, a promotion
 UPDATE tt SET n = 3.5 WHERE id % 500 = 3;
@@ -171,7 +172,7 @@ CREATE INDEX tt_i ON tt USING sift_col (id sift.col_int4_ops, s sift.col_text_op
 VACUUM ANALYZE tt;
 CREATE TABLE tp AS SELECT * FROM tt;
 ANALYZE tp;
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.ids_agree_tt_tp(q) $$;
 CREATE TABLE tq (n int, q text);
 INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
@@ -184,25 +185,25 @@ INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
 SELECT n, global_order(replace(q, '@', 'tt')) AS global_order, same(q) AS answers FROM tq ORDER BY n;
  n  | global_order | answers 
 ----+--------------+---------
-  1 | t            | t
-  2 | t            | t
-  3 | t            | t
-  4 | t            | t
-  5 | t            | t
-  6 | t            | t
-  7 | t            | t
-  8 | t            | t
-  9 | t            | t
- 10 | t            | t
- 11 | t            | t
- 12 | t            | t
+  1 | f            | t
+  2 | f            | t
+  3 | f            | t
+  4 | f            | t
+  5 | f            | t
+  6 | f            | t
+  7 | f            | t
+  8 | f            | t
+  9 | f            | t
+ 10 | f            | t
+ 11 | f            | t
+ 12 | f            | t
  13 | f            | t
- 14 | t            | t
+ 14 | f            | t
  15 | f            | t
- 16 | t            | t
+ 16 | f            | t
  17 | f            | t
  18 | f            | t
- 19 | t            | t
+ 19 | f            | t
  20 | f            | t
 (20 rows)
 
@@ -461,8 +462,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE FUNCTION wp_walks(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE pl text; walk bool := false;
 BEGIN
+	PERFORM sift._test_gorder_answered(true);
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		walk := walk OR pl ~ 'Global Order: true';
+		walk := walk OR sift._test_gorder_answered(true) > 0;
 	END LOOP;
 	RETURN walk;
 END $$;
@@ -470,12 +472,12 @@ SELECT k, o, wp_walks(format('SELECT id, d FROM wp WHERE g = 17 AND st < %s ORDE
 FROM unnest(ARRAY[100, 20, 4, 1]) k, unnest(ARRAY['d DESC', 'd DESC, id DESC']) o ORDER BY o, k DESC;
   k  |        o        | walks 
 -----+-----------------+-------
- 100 | d DESC          | t
-  20 | d DESC          | t
+ 100 | d DESC          | f
+  20 | d DESC          | f
    4 | d DESC          | f
    1 | d DESC          | f
- 100 | d DESC, id DESC | t
-  20 | d DESC, id DESC | t
+ 100 | d DESC, id DESC | f
+  20 | d DESC, id DESC | f
    4 | d DESC, id DESC | f
    1 | d DESC, id DESC | f
 (8 rows)
@@ -489,4 +491,5 @@ DROP SCHEMA s5 CASCADE;
 RESET client_min_messages;
 -- <<< col_topn_walk_price
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

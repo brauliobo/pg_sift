@@ -2,6 +2,7 @@
 -- sift.test_col_gorder_ends values (64 here, 4,096 otherwise), neither end splitting a run of equal keys, and the first NULL rows. ORDER BY .. LIMIT starts at an end and stops at its edge,
 -- or reads the units; the rows are the heap's either way. The choice between the ends and the whole order is the zones' (sift_cgord_pay): the testing setting sift.test_col_gorder_choice forces it for the 768 shapes, the last part leaves it to the rule.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
@@ -30,7 +31,7 @@ ANALYZE t;
 ANALYZE p;
 
 -- does the plan of q read the order (EXPLAIN ANALYZE says Global Order), and does q give the rows of the copy?
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(col text, q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
@@ -128,4 +129,5 @@ SELECT sift.col_verify('zone_s_ix');
 DROP TABLE zone_o, zone_r, zone_s, shapes, small, p, t CASCADE;
 DROP FUNCTION same(text, text), global_order(text), middle_from_the_order(text, text);
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift CASCADE;

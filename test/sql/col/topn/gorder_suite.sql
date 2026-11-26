@@ -1,5 +1,6 @@
 -- The top-N scans. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
@@ -23,7 +24,7 @@ VACUUM ANALYZE tt;
 CREATE TABLE tp AS SELECT * FROM tt;
 ANALYZE tp;
 
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.ids_agree_tt_tp(q) $$;
 
 CREATE TABLE tq (n int, q text);
@@ -87,7 +88,7 @@ VACUUM ANALYZE tt;
 CREATE TABLE tp AS SELECT * FROM tt;
 ANALYZE tp;
 
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.ids_agree_tt_tp(q) $$;
 
 CREATE TABLE tq (n int, q text);
@@ -279,8 +280,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE FUNCTION wp_walks(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE pl text; walk bool := false;
 BEGIN
+	PERFORM sift._test_gorder_answered(true);
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		walk := walk OR pl ~ 'Global Order: true';
+		walk := walk OR sift._test_gorder_answered(true) > 0;
 	END LOOP;
 	RETURN walk;
 END $$;
@@ -297,4 +299,5 @@ RESET client_min_messages;
 -- <<< col_topn_walk_price
 
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

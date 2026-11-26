@@ -2,6 +2,7 @@
 -- offset ends in from the array, where the units read every row; a column of 3 values (groups of a third of the table) or a column that is mostly NULL gains nothing and is left out.
 -- The rows are the table's without the index (a copy is the oracle).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
@@ -21,7 +22,7 @@ FROM (SELECT option_value AS o FROM pg_options_to_table((SELECT reloptions FROM 
  t        | f         | f
 (1 row)
 
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
@@ -65,4 +66,5 @@ SELECT sift.col_verify('t_ix');
 DROP TABLE t, p;
 DROP FUNCTION global_order(text), same(text);
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

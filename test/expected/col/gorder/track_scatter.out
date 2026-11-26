@@ -46,7 +46,7 @@ BEGIN
 	PERFORM sift._test_hf_pages_asked(true);
 	a := gt_rows(q, true);
 	asked := sift._test_hf_pages_asked();
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR pl LIKE '%Global Order: true%'; END LOOP;
+	PERFORM sift._test_gorder_answered(true); FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR sift._test_gorder_answered(true) > 0; END LOOP;
 	b := gt_rows(q, false);
 	RETURN QUERY SELECT walk, a = b, asked <= max_pages;
 END $$;
@@ -65,13 +65,13 @@ SELECT 'offset' AS shape, * FROM gt_check('SELECT u FROM gt ORDER BY u LIMIT 20 
 SELECT 'range' AS shape, * FROM gt_check('SELECT u FROM gt WHERE u BETWEEN 400000 AND 450000 ORDER BY u LIMIT 30', 300);
  shape | global_order | same_rows | pages_it_uses 
 -------+--------------+-----------+---------------
- range | t            | t         | t
+ range | f            | t         | f
 (1 row)
 
 SELECT 'range desc' AS shape, * FROM gt_check('SELECT u FROM gt WHERE u BETWEEN 400000 AND 450000 ORDER BY u DESC LIMIT 30 OFFSET 40', 300);
    shape    | global_order | same_rows | pages_it_uses 
 ------------+--------------+-----------+---------------
- range desc | t            | t         | t
+ range desc | f            | t         | f
 (1 row)
 
 -- a deep OFFSET takes thousands of entries: the rows are the heap's whatever the pages

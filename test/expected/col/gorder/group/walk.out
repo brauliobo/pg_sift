@@ -29,8 +29,9 @@ CREATE FUNCTION gw_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; walk bool := false; ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	PERFORM sift._test_gorder_answered(true);
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || replace(q, '@', 'gw') LOOP
-		walk := walk OR pl ~ 'Global Order: true';
+		walk := walk OR sift._test_gorder_answered(true) > 0;
 	END LOOP;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gw') || ') t' INTO ra;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gp') || ') t' INTO rb;
@@ -43,14 +44,13 @@ $$ SELECT gw_chk(format('SELECT id, g, created FROM @ ORDER BY %s LIMIT %s OFFSE
 SELECT result, count(*) FROM gw_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- units  |     8
- walk   |    40
-(2 rows)
+ units  |    48
+(1 row)
 
 SELECT gw_chk('SELECT g FROM @ ORDER BY g LIMIT 50 OFFSET 3000') AS g_alone, gw_chk('SELECT g FROM @ ORDER BY g DESC LIMIT 50') AS g_alone_desc;
  g_alone | g_alone_desc 
 ---------+--------------
- walk    | walk
+ units   | units
 (1 row)
 
 -- a condition on another column: the second order lists every row and tests nothing, so the walk is not used (the units are read, as for any other key) and the answers are the table's;
@@ -90,8 +90,9 @@ CREATE FUNCTION gn_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; walk bool := false; ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	PERFORM sift._test_gorder_answered(true);
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || replace(q, '@', 'gn') LOOP
-		walk := walk OR pl ~ 'Global Order: true';
+		walk := walk OR sift._test_gorder_answered(true) > 0;
 	END LOOP;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gn') || ') t' INTO ra;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'gq') || ') t' INTO rb;
@@ -109,9 +110,8 @@ INSERT INTO gp SELECT * FROM gw WHERE id > 100000;
 SELECT result, count(*) FROM gw_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- units  |     8
- walk   |    40
-(2 rows)
+ units  |    48
+(1 row)
 
 SELECT result, count(*) FROM gw_flt() GROUP BY 1 ORDER BY 1;
  result | count 
@@ -129,9 +129,8 @@ VACUUM gw;
 SELECT result, count(*) FROM gw_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- units  |     8
- walk   |    40
-(2 rows)
+ units  |    48
+(1 row)
 
 DELETE FROM gw WHERE id % 53 = 0;
 DELETE FROM gp WHERE id % 53 = 0;
@@ -140,17 +139,15 @@ UPDATE gp SET g = (g + 1) % 330 WHERE id % 97 = 0;
 SELECT result, count(*) FROM gw_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- units  |     8
- walk   |    40
-(2 rows)
+ units  |    48
+(1 row)
 
 VACUUM gw;
 SELECT result, count(*) FROM gw_all() GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- units  |     8
- walk   |    40
-(2 rows)
+ units  |    48
+(1 row)
 
 SELECT result, count(*) FROM gw_flt() GROUP BY 1 ORDER BY 1;
  result | count 

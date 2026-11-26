@@ -46,11 +46,12 @@ INSERT INTO fq (n, q) SELECT row_number() OVER (), q FROM unnest(ARRAY[
  'SELECT id, k FROM fo WHERE ent_id IN (3, 9) ORDER BY k, id LIMIT 20',
  'SELECT id, ent_id, ts FROM fo ORDER BY ent_id, ts, id LIMIT 40',
  'SELECT id, k FROM fo WHERE ent_id IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12) ORDER BY k, id LIMIT 30']) q;
-UPDATE fq SET base = sift_helpers.plan_reads_global_order(q);
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
+UPDATE fq SET base = global_order(q);
 SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE base) AS walks, string_agg(n::text, ',' ORDER BY n) FILTER (WHERE NOT base) AS units FROM fq;
 SELECT bool_and(fo_same(q)) AS same_rows_base FROM fq;
 CREATE FUNCTION fo_state() RETURNS TABLE (lost_the_walk text, same_rows boolean) LANGUAGE sql AS
-$$ SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q) IS DISTINCT FROM base), bool_and(fo_same(q)) FROM fq $$;
+$$ SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE global_order(q) IS DISTINCT FROM base), bool_and(fo_same(q)) FROM fq $$;
 CREATE FUNCTION fo_arrays() RETURNS TABLE (k_array_free boolean, ts_array_free boolean, dt_array_free boolean, sl_array_free boolean) LANGUAGE sql AS
 $$ SELECT bool_and((SELECT count(*) FROM sift._test_col_gorder('fo_ix', leaf)) = n) FILTER (WHERE leaf = 2), bool_and((SELECT count(*) FROM sift._test_col_gorder('fo_ix', leaf)) = n) FILTER (WHERE leaf = 3),
 		  bool_and((SELECT count(*) FROM sift._test_col_gorder('fo_ix', leaf)) = n) FILTER (WHERE leaf = 4), bool_and((SELECT count(*) FROM sift._test_col_gorder('fo_ix', leaf)) = n) FILTER (WHERE leaf = 5) FROM fo_entries $$;
@@ -65,9 +66,9 @@ SELECT * FROM fo_arrays();
 SELECT * FROM fo_state();
 
 -- the order is made by the first scan of the backend and found by the next ones
-SELECT sift_helpers.plan_reads_global_order(q) FROM fq WHERE n = 1;
+SELECT global_order(q) FROM fq WHERE n = 1;
 CREATE TABLE fo_before AS SELECT * FROM sift._test_col_gkept_stats();
-SELECT sift_helpers.plan_reads_global_order(q) FROM fq, generate_series(1, 3) WHERE n = 1;
+SELECT global_order(q) FROM fq, generate_series(1, 3) WHERE n = 1;
 SELECT (SELECT builds FROM sift._test_col_gkept_stats()) = (SELECT builds FROM fo_before) AS no_order_made, (SELECT hits FROM sift._test_col_gkept_stats()) - (SELECT hits FROM fo_before) >= 3 AS orders_found;
 
 -- dead rows of the overlay and of the large segment, before and after VACUUM (which changes the live rows of the segment: the order is made again)
@@ -95,7 +96,7 @@ SELECT * FROM fo_state();
 
 -- more rows than a scan sorts in memory: the plan reads the units and the rows are the same
 SET sift.test_limits = 'gord_free_rows=1000';
-SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE sift_helpers.plan_reads_global_order(q)) AS walks_over_cap, bool_and(fo_same(q)) AS same_rows_over_cap FROM fq;
+SELECT string_agg(n::text, ',' ORDER BY n) FILTER (WHERE global_order(q)) AS walks_over_cap, bool_and(fo_same(q)) AS same_rows_over_cap FROM fq;
 RESET sift.test_limits;
 SELECT * FROM fo_state();
 
@@ -106,5 +107,5 @@ SELECT * FROM fo_state();
 SELECT sift.col_verify('fo_ix', true);
 
 DROP TABLE fo, fq, fo_before, fo_entries;
-DROP FUNCTION fo_same(text), fo_state(), fo_arrays();
+DROP FUNCTION fo_same(text), fo_state(), fo_arrays(), global_order(text);
 DROP EXTENSION pg_sift_helpers, pg_sift_test, pg_sift CASCADE;

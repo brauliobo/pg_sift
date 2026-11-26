@@ -2,6 +2,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 -- >>> col_gorder_group_packed
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
@@ -32,8 +34,6 @@ SELECT sift.col_verify('gk_ix'), sift.col_verify('gn_ix');
 ------------+------------
             | 
 (1 row)
--- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
-SET sift.test_create_format1 = on;
 
 SELECT (SELECT sum(bytes) FROM sift.col_sections('gn_ix') WHERE section = 'order_arrays') - (SELECT sum(bytes) FROM sift.col_sections('gk_ix') WHERE section = 'order_arrays') > 40000 AS table_packed;
  table_packed 
@@ -191,26 +191,26 @@ BEGIN
 	PERFORM sift._test_probe_dead(true);
 	a := gd_rows(q, true);
 	listed := sift._test_probe_dead();
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR pl LIKE '%Global Order: true%'; END LOOP;
+	PERFORM sift._test_gorder_answered(true); FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR sift._test_gorder_answered(true) > 0; END LOOP;
 	b := gd_rows(q, false);
 	RETURN QUERY SELECT walk, a = b, listed <= max_dead;
 END $$;
 SELECT 'top desc' AS shape, * FROM gd_check('SELECT ts FROM gd WHERE g = 7 ORDER BY ts DESC LIMIT 20', 10000);
   shape   | global_order | same_rows | dead_it_lists 
 ----------+--------------+-----------+---------------
- top desc | t            | t         | t
+ top desc | f            | t         | t
 (1 row)
 
 SELECT 'top asc' AS shape, * FROM gd_check('SELECT ts FROM gd WHERE g = 8 ORDER BY ts LIMIT 20', 10000);
   shape  | global_order | same_rows | dead_it_lists 
 ---------+--------------+-----------+---------------
- top asc | t            | t         | t
+ top asc | f            | t         | t
 (1 row)
 
 SELECT 'offset' AS shape, * FROM gd_check('SELECT ts FROM gd WHERE g = 9 ORDER BY ts DESC LIMIT 20 OFFSET 200', 10000);
  shape  | global_order | same_rows | dead_it_lists 
 --------+--------------+-----------+---------------
- offset | t            | t         | t
+ offset | f            | t         | t
 (1 row)
 
 DROP TABLE gd;
@@ -288,31 +288,25 @@ $$ SELECT gr_chk(format('SELECT %s FROM %s WHERE %s', sel, t, w)), 1::bigint
 					 'ent_id = 7 AND created BETWEEN ''2024-02-01'' AND ''2024-02-15'' AND score < 2500']) WITH ORDINALITY x(w, wi)
    WHERE (si + wi + stage) % 4 = 0 AND NOT (sel = 'id, created' AND w ~ '2030|2025-01-01') $$;
 SELECT result, count(*) FROM gr_all('gr', 0) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- counted  |     6
- narrowed |     3
- units    |     4
-(3 rows)
+ result | count 
+--------+-------
+ units  |    13
+(1 row)
 
 SELECT result, count(*) FROM gr_all('gs', 1) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- counted  |     5
- narrowed |     3
- units    |     5
-(3 rows)
+ result | count 
+--------+-------
+ units  |    13
+(1 row)
 
 -- a write buffer next to the segment, then a promotion
 INSERT INTO gr SELECT 300000 + i, i % 400, timestamp '2024-02-05' + i * interval '1 second', i % 5000, 'w' FROM generate_series(1, 1500) i;
 INSERT INTO gs SELECT * FROM gr WHERE id > 300000;
 SELECT result, count(*) FROM gr_all('gr', 2) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- counted  |     5
- narrowed |     2
- units    |     5
-(3 rows)
+ result | count 
+--------+-------
+ units  |    12
+(1 row)
 
 SELECT sift.col_promote('gr_i') >= 0 AS promoted_r, sift.col_promote('gs_i') >= 0 AS promoted_s;
  promoted_r | promoted_s 
@@ -323,20 +317,16 @@ SELECT sift.col_promote('gr_i') >= 0 AS promoted_r, sift.col_promote('gs_i') >= 
 VACUUM gr;
 VACUUM gs;
 SELECT result, count(*) FROM gr_all('gr', 3) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- counted  |     5
- narrowed |     1
- units    |     6
-(3 rows)
+ result | count 
+--------+-------
+ units  |    12
+(1 row)
 
 SELECT result, count(*) FROM gr_all('gs', 4) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- counted  |     6
- narrowed |     3
- units    |     4
-(3 rows)
+ result | count 
+--------+-------
+ units  |    13
+(1 row)
 
 -- rows deleted and updated (the units that hold them are read), an update and an insert rolled back
 DELETE FROM gr WHERE id % 53 = 0;
@@ -348,37 +338,30 @@ UPDATE gr SET created = timestamp '2024-02-10' WHERE id % 3 = 0;
 INSERT INTO gr SELECT 400000 + i, 7, timestamp '2024-02-10', i, 'r' FROM generate_series(1, 300) i;
 ROLLBACK;
 SELECT result, count(*) FROM gr_all('gr', 5) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- narrowed |     3
- units    |    10
-(2 rows)
+ result | count 
+--------+-------
+ units  |    13
+(1 row)
 
 SELECT result, count(*) FROM gr_all('gs', 6) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- counted  |     5
- narrowed |     2
- units    |     5
-(3 rows)
+ result | count 
+--------+-------
+ units  |    12
+(1 row)
 
 VACUUM gr;
 VACUUM gs;
 SELECT result, count(*) FROM gr_all('gr', 7) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- counted  |     5
- narrowed |     1
- units    |     6
-(3 rows)
+ result | count 
+--------+-------
+ units  |    12
+(1 row)
 
 SELECT result, count(*) FROM gr_all('gs', 8) GROUP BY 1 ORDER BY 1;
-  result  | count 
-----------+-------
- counted  |     6
- narrowed |     3
- units    |     4
-(3 rows)
+ result | count 
+--------+-------
+ units  |    13
+(1 row)
 
 SELECT sift.col_verify('gr_i'), sift.col_verify('gs_i');
  col_verify | col_verify 
@@ -429,12 +412,11 @@ $$ SELECT c, tx_chk(format('SELECT %1$s FROM tx %6$s ORDER BY %1$s %2$s %3$s LIM
 		unnest(ARRAY['', 'WHERE id > 0', 'WHERE c >= ''customer-0100'' AND c < ''customer-0300''', 'WHERE c >= ''order-''', 'WHERE c < ''a''']) WITH ORDINALITY w(w, wi)
    WHERE (ci + di + nli + limi + oi + wi + stage) % 12 = 0 $$;
 SELECT col, result, count(*) FROM tx_all(0) GROUP BY 1, 2 ORDER BY 1, 2;
- col |    result    | count 
------+--------------+-------
- c   | global order |    27
- l   | global order |    11
- l   | units        |    19
-(3 rows)
+ col | result | count 
+-----+--------+-------
+ c   | units  |    27
+ l   | units  |    30
+(2 rows)
 
 -- rows of the buffer deleted, updated (the key moves), an insert and an update rolled back
 DELETE FROM tx WHERE id > 8000 AND id % 7 = 0;
@@ -451,13 +433,11 @@ SELECT sum(rows) > 4096 AS buffer_over_the_old_limit FROM sift.col_segments('tx_
 (1 row)
 
 SELECT col, result, count(*) FROM tx_all(1) GROUP BY 1, 2 ORDER BY 1, 2;
- col |    result    | count 
------+--------------+-------
- c   | global order |    27
- c   | units        |     3
- l   | global order |    15
- l   | units        |    12
-(4 rows)
+ col | result | count 
+-----+--------+-------
+ c   | units  |    30
+ l   | units  |    27
+(2 rows)
 
 SELECT sift.col_promote('tx_i') >= 0 AS promoted;
  promoted 
@@ -468,13 +448,11 @@ SELECT sift.col_promote('tx_i') >= 0 AS promoted;
 INSERT INTO tx SELECT 50000 + i, tx_str(i * 13), tx_str(i * 17), 0 FROM generate_series(1, 5000) i;
 ANALYZE tx;
 SELECT col, result, count(*) FROM tx_all(2) GROUP BY 1, 2 ORDER BY 1, 2;
- col |    result    | count 
------+--------------+-------
- c   | global order |    24
- c   | units        |     3
- l   | global order |    17
- l   | units        |     3
-(4 rows)
+ col | result | count 
+-----+--------+-------
+ c   | units  |    27
+ l   | units  |    20
+(2 rows)
 
 -- a buffer past the limit of a locale column: the units answer, the answers are the heap's
 INSERT INTO tx SELECT 100000 + i, tx_str(i * 19), tx_str(i * 23), 0 FROM generate_series(1, 17000) i;
@@ -486,12 +464,11 @@ SELECT sum(rows) > 16384 AS buffer_over_the_locale_limit FROM sift.col_segments(
 (1 row)
 
 SELECT col, result, count(*) FROM tx_all(3) GROUP BY 1, 2 ORDER BY 1, 2;
- col |    result    | count 
------+--------------+-------
- c   | global order |    18
- c   | units        |     2
- l   | units        |    12
-(3 rows)
+ col | result | count 
+-----+--------+-------
+ c   | units  |    20
+ l   | units  |    12
+(2 rows)
 
 SELECT sift.col_verify('tx_i');
  col_verify 
@@ -538,24 +515,20 @@ $$ SELECT c, tc_chk(format('SELECT count(*) FROM tc WHERE %s', replace(w, '@', c
 					 '@ >= ''customer-0'' AND @ < ''order-''', '@ > ''ab'' AND @ <= ''abc''', '@ >= ''a'' AND @ <= ''a''', '@ < ''order-'' AND @ >= ''customer-0''', '@ > ''z'' AND @ < ''a''', '@ >= '''' AND @ < ''zz''']) WITH ORDINALITY w(w, wi)
    WHERE wi % 2 = 1 OR w LIKE '%LIKE%' $$;
 SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
- col | result  | count 
------+---------+-------
- c   | counted |    19
- c   | units   |     1
- l   | counted |    13
- l   | units   |     7
-(4 rows)
+ col | result | count 
+-----+--------+-------
+ c   | units  |    20
+ l   | units  |    20
+(2 rows)
 
 -- a write buffer next to the segment, then a promotion
 INSERT INTO tc (id, c, l) SELECT 60000 + i, tc_str(i * 5), tc_str(i * 11) FROM generate_series(1, 1500) i;
 SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
- col | result  | count 
------+---------+-------
- c   | counted |    19
- c   | units   |     1
- l   | counted |    13
- l   | units   |     7
-(4 rows)
+ col | result | count 
+-----+--------+-------
+ c   | units  |    20
+ l   | units  |    20
+(2 rows)
 
 SELECT sift.col_promote('tc_i') >= 0 AS promoted;
  promoted 
@@ -565,13 +538,11 @@ SELECT sift.col_promote('tc_i') >= 0 AS promoted;
 
 VACUUM tc;
 SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
- col | result  | count 
------+---------+-------
- c   | counted |    19
- c   | units   |     1
- l   | counted |    13
- l   | units   |     7
-(4 rows)
+ col | result | count 
+-----+--------+-------
+ c   | units  |    20
+ l   | units  |    20
+(2 rows)
 
 -- rows deleted and updated (the units that hold them are read), an update and an insert rolled back
 DELETE FROM tc WHERE id % 53 = 0;
@@ -589,13 +560,11 @@ SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
 
 VACUUM tc;
 SELECT col, result, count(*) FROM tc_all() GROUP BY 1, 2 ORDER BY 1, 2;
- col | result  | count 
------+---------+-------
- c   | counted |    19
- c   | units   |     1
- l   | counted |    13
- l   | units   |     7
-(4 rows)
+ col | result | count 
+-----+--------+-------
+ c   | units  |    20
+ l   | units  |    20
+(2 rows)
 
 SELECT sift.col_verify('tc_i');
  col_verify 

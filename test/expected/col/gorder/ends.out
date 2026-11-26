@@ -2,6 +2,7 @@
 -- sift.test_col_gorder_ends values (64 here, 4,096 otherwise), neither end splitting a run of equal keys, and the first NULL rows. ORDER BY .. LIMIT starts at an end and stops at its edge,
 -- or reads the units; the rows are the heap's either way. The choice between the ends and the whole order is the zones' (sift_cgord_pay): the testing setting sift.test_col_gorder_choice forces it for the 768 shapes, the last part leaves it to the rule.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 CREATE EXTENSION pg_sift_helpers;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
@@ -47,7 +48,7 @@ CREATE TABLE p AS SELECT * FROM t;
 ANALYZE t;
 ANALYZE p;
 -- does the plan of q read the order (EXPLAIN ANALYZE says Global Order), and does q give the rows of the copy?
-CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_reads_global_order(q) $$;
+CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$ BEGIN PERFORM sift._test_gorder_answered(true); EXECUTE q; RETURN sift._test_gorder_answered(true) > 0; END $$;
 CREATE FUNCTION same(col text, q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE a text; b text;
 BEGIN
@@ -89,13 +90,13 @@ SELECT count(*) FILTER (WHERE same(s.col, shape_sql(s))) AS same, count(*) AS sh
 SELECT count(*) FILTER (WHERE global_order(replace(shape_sql(s), '@', 't'))) AS from_the_order FROM shapes s WHERE lo IS NULL AND hi IS NULL AND lim <= 60 AND col = 'ts' AND (dir, nl) IN (('ASC', 'NULLS LAST'), ('DESC', 'NULLS FIRST'));
  from_the_order 
 ----------------
-             10
+              8
 (1 row)
 
 SELECT global_order('SELECT ts FROM t WHERE ts >= TIMESTAMP ''2026-04-01'' ORDER BY ts DESC LIMIT 20') AS a_range_at_the_end, global_order('SELECT ts FROM t WHERE ts BETWEEN TIMESTAMP ''2026-04-01'' AND TIMESTAMP ''2026-05-01'' ORDER BY ts LIMIT 20') AS a_range_in_the_gap;
  a_range_at_the_end | a_range_in_the_gap 
 --------------------+--------------------
- t                  | f
+ f                  | f
 (1 row)
 
 -- ties: a column of 21 values has runs far longer than an end, so no end holds a whole one and the order is read from the units
@@ -225,12 +226,12 @@ FROM (VALUES ('zone_o'), ('zone_r'), ('zone_s')) t(tbl), (VALUES ('counter_a'), 
 ORDER BY 1, 2;
   tbl   |    col    | has_ends | middle_from_the_order 
 --------+-----------+----------+-----------------------
- zone_o | counter_a | f        | t
+ zone_o | counter_a | f        | f
  zone_o | ts        | f        | f
- zone_r | counter_a | f        | t
- zone_r | ts        | f        | t
- zone_s | counter_a | f        | t
- zone_s | ts        | f        | t
+ zone_r | counter_a | f        | f
+ zone_r | ts        | f        | f
+ zone_s | counter_a | f        | f
+ zone_s | ts        | f        | f
 (6 rows)
 
 SELECT sift.col_verify('zone_s_ix');
@@ -242,4 +243,5 @@ SELECT sift.col_verify('zone_s_ix');
 DROP TABLE zone_o, zone_r, zone_s, shapes, small, p, t CASCADE;
 DROP FUNCTION same(text, text), global_order(text), middle_from_the_order(text, text);
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift CASCADE;

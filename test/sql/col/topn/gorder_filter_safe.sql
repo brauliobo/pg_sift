@@ -3,6 +3,7 @@
 -- units; a scalar sub-select that gives one row is a constant of the scan, tested like a number; a string against a constant is tested, col_topn_gorder_filter_text); NULL semantics of IS NULL, = NULL, a boolean that is NULL; the row tested is the version the scan's snapshot sees (own writes, a cursor opened before an update, a
 -- rolled-back subtransaction, HOT chains); a scan that is rewound or restarted with another parameter (the budget starts again); parallel plans keep the units.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
@@ -20,8 +21,9 @@ ANALYZE tp;
 CREATE FUNCTION global_order(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
+	PERFORM sift._test_gorder_answered(true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Global Order: true' THEN RETURN true; END IF;
+		IF sift._test_gorder_answered(true) > 0 THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;
@@ -117,4 +119,5 @@ SELECT n, same(q) AS answers FROM tq ORDER BY n;
 
 DROP TABLE tq, tcur, tt, tp;
 DROP FUNCTION global_order(text), same(text), page(text, text), agrees(text);
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift CASCADE;

@@ -25,8 +25,9 @@ CREATE FUNCTION tb_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; walk bool := false; ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	PERFORM sift._test_gorder_answered(true);
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || replace(q, '@', 'tb') LOOP
-		walk := walk OR pl ~ 'Global Order: true';
+		walk := walk OR sift._test_gorder_answered(true) > 0;
 	END LOOP;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'tb') || ') t' INTO ra;
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'')) FROM (' || replace(q, '@', 'tp') || ') t' INTO rb;

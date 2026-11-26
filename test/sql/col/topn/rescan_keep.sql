@@ -4,6 +4,7 @@
 -- (a build with CATCACHE_FORCE_RELEASE reads the catalog again at every lookup: some 6 buffers a probe more than a release build, for 2 groups as for 250). The answers are those of the heap (a scan without the engine) through the same changes between probes as agg_topn_rescan: deleted and updated rows, rows in the write
 -- buffer, VACUUM, a promotion in the middle of the statement, a cursor read both ways, a generic plan.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
@@ -24,9 +25,10 @@ CREATE FUNCTION probe_buffers(q text, OUT per_probe numeric, OUT probes int, OUT
 DECLARE l text; seen boolean := false; blocks bigint := 0;
 BEGIN
 	global_order := false; probes := 0;
+	PERFORM sift._test_gorder_answered(true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
 		IF l ~ 'Custom Scan \(SiftAgg' THEN seen := true; probes := substring(l FROM 'loops=([0-9]+)')::int; END IF;
-		IF seen AND l ~ 'Global Order: true' THEN global_order := true; END IF;
+		global_order := global_order OR sift._test_gorder_answered(true) > 0;
 		IF seen AND l ~ '^\s+Buffers: shared' THEN
 			blocks := coalesce(substring(l FROM 'hit=([0-9]+)')::bigint, 0) + coalesce(substring(l FROM 'read=([0-9]+)')::bigint, 0);
 			seen := false;
@@ -146,9 +148,10 @@ BEGIN
 	PERFORM set_config('sift.agg_force', 'on', true);
 	PERFORM set_config('enable_seqscan', 'off', true);
 	PERFORM set_config('enable_sort', 'off', true);
+	PERFORM sift._test_gorder_answered(true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || rkp_q(false) || ' WHERE v.g <= 50' LOOP
 		arms := arms + (l ~ 'Custom Scan \(SiftAgg')::int;
-		walked := walked + (l ~ 'Global Order: true')::int;
+		walked := walked + sift._test_gorder_answered(true)::int;
 		skipped := skipped + (l ~ 'Custom Scan \(SiftAgg\w*\) \(never executed\)')::int;
 	END LOOP;
 END $$;
@@ -160,4 +163,5 @@ SELECT rkp_rows(true) = rkp_rows(false) AS same_rows_after_writes;
 
 DROP FUNCTION probe_buffers(text), probe_extra(text), rk_rows(bool), rk_check(text), rk_mut(int), rkp_q(bool), rkp_rows(bool), rkp_plan();
 DROP TABLE rk, rk_o, rk2, rk2_o, rk_step, rkp, rkp_o;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -37,7 +37,7 @@ BEGIN
 	PERFORM sift._test_hf_pages_asked(true);
 	a := gt_rows(q, true);
 	asked := sift._test_hf_pages_asked();
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR pl LIKE '%Global Order: true%'; END LOOP;
+	PERFORM sift._test_gorder_answered(true); FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR sift._test_gorder_answered(true) > 0; END LOOP;
 	b := gt_rows(q, false);
 	RETURN QUERY SELECT walk, a = b, asked <= max_pages;
 END $$;

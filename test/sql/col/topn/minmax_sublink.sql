@@ -5,6 +5,7 @@
 -- walk is refused at planning and no heap row is fetched. The answers are those of a copy of the table without an index (the oracle) over NULLs in the column, entities without rows, NULL
 -- outer keys, both aggregates, a text column under its collation, other conditions of the sub-select, writes, and 100 random statements (fixed seed).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
@@ -30,8 +31,9 @@ CREATE FUNCTION plan_of(q text, OUT global_order boolean, OUT fetches int) LANGU
 DECLARE l text;
 BEGIN
 	global_order := false; fetches := -1;
+	PERFORM sift._test_gorder_answered(true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Global Order: true' THEN global_order := true; END IF;
+		global_order := global_order OR sift._test_gorder_answered(true) > 0;
 		IF l ~ 'Top-N Run:' THEN fetches := substring(l FROM '([0-9]+) heap fetches')::int; END IF;
 	END LOOP;
 END $$;
@@ -161,4 +163,5 @@ RESET sift.agg_force;
 
 DROP FUNCTION fuzz_minmax(int), stored_differs(), twice(text), same(text), plan_of(text);
 DROP TABLE tq, ev, evp, ents;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

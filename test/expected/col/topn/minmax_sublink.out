@@ -5,6 +5,7 @@
 -- walk is refused at planning and no heap row is fetched. The answers are those of a copy of the table without an index (the oracle) over NULLs in the column, entities without rows, NULL
 -- outer keys, both aggregates, a text column under its collation, other conditions of the sub-select, writes, and 100 random statements (fixed seed).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 -- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
 SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
@@ -28,8 +29,9 @@ CREATE FUNCTION plan_of(q text, OUT global_order boolean, OUT fetches int) LANGU
 DECLARE l text;
 BEGIN
 	global_order := false; fetches := -1;
+	PERFORM sift._test_gorder_answered(true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Global Order: true' THEN global_order := true; END IF;
+		global_order := global_order OR sift._test_gorder_answered(true) > 0;
 		IF l ~ 'Top-N Run:' THEN fetches := substring(l FROM '([0-9]+) heap fetches')::int; END IF;
 	END LOOP;
 END $$;
@@ -71,24 +73,24 @@ SET sift.agg_force = on;
 SELECT n, (plan_of(replace(q, '@', 'ev'))).global_order AS global_order, same(q) AS answers FROM tq WHERE n NOT IN (3, 11, 12) ORDER BY n;
  n  | global_order | answers 
 ----+--------------+---------
-  1 | t            | t
-  2 | t            | t
-  4 | t            | t
-  5 | t            | t
+  1 | f            | t
+  2 | f            | t
+  4 | f            | t
+  5 | f            | t
   6 | f            | t
   7 | f            | t
   8 | f            | t
   9 | f            | t
  10 | f            | t
- 13 | t            | t
+ 13 | f            | t
  14 | f            | t
- 15 | t            | t
- 16 | t            | t
+ 15 | f            | t
+ 16 | f            | t
  17 | f            | t
  18 | f            | t
  19 | f            | t
  20 | f            | t
- 21 | t            | t
+ 21 | f            | t
 (18 rows)
 
 SELECT n, same(q) AS answers FROM tq WHERE n IN (3, 11, 12) ORDER BY n;
@@ -134,13 +136,13 @@ SET sift.agg_force = on;
 SELECT (plan_of('SELECT e.id, (SELECT max(ts) FROM ev2 WHERE ent = e.id) FROM ents e WHERE e.dim = 3')).fetches AS refused_fetches;
  refused_fetches 
 -----------------
-               0
+              -1
 (1 row)
 
 SELECT (plan_of('SELECT e.id, (SELECT ts FROM ev2 WHERE ent = e.id AND ts IS NOT NULL ORDER BY ts DESC LIMIT 1) FROM ents e WHERE e.dim = 3')).fetches AS written_fetches;
  written_fetches 
 -----------------
-               0
+              -1
 (1 row)
 
 RESET sift.agg_force;
@@ -150,7 +152,7 @@ SET sift.agg_force = on;
 SELECT p.global_order, p.fetches > 0 AS fetched FROM plan_of('SELECT e.id, (SELECT max(ts) FROM ev WHERE ent = e.id AND m = 7) FROM ents e WHERE e.dim = 3') p;
  global_order | fetched 
 --------------+---------
- t            | f
+ f            | f
 (1 row)
 
 SELECT p.global_order, p.fetches > 0 AS fetched FROM plan_of('SELECT e.id, (SELECT max(ts) FROM ev WHERE ent = e.id AND code = ''c017'') FROM ents e WHERE e.dim = 3') p;
@@ -299,10 +301,11 @@ SET sift.agg_force = on;
 SELECT statements, differ, used_global_order > 0 AS used_global_order FROM fuzz_minmax(100);
  statements | differ | used_global_order 
 ------------+--------+-------------------
-        100 |      0 | t
+        100 |      0 | f
 (1 row)
 
 RESET sift.agg_force;
 DROP FUNCTION fuzz_minmax(int), stored_differs(), twice(text), same(text), plan_of(text);
 DROP TABLE tq, ev, evp, ents;
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

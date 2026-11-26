@@ -41,7 +41,7 @@ BEGIN
 	PERFORM sift._test_gorder_decoded(true);
 	a := gi_rows(q, true);
 	decoded := sift._test_gorder_decoded(true);
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR pl LIKE '%Global Order: true%'; END LOOP;
+	PERFORM sift._test_gorder_answered(true); FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR sift._test_gorder_answered(true) > 0; END LOOP;
 	b := gi_rows(q, false);
 	EXECUTE 'SELECT count(*) FROM (' || q || ') z' INTO n;
 	RETURN QUERY SELECT walk, a IS NOT DISTINCT FROM b, n, max_decoded IS NULL OR decoded <= max_decoded;

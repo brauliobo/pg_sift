@@ -39,7 +39,7 @@ BEGIN
 	PERFORM sift._test_gorder_decoded(true);
 	a := gi_rows(q, true);
 	decoded := sift._test_gorder_decoded(true);
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR pl LIKE '%Global Order: true%'; END LOOP;
+	PERFORM sift._test_gorder_answered(true); FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP walk := walk OR sift._test_gorder_answered(true) > 0; END LOOP;
 	b := gi_rows(q, false);
 	EXECUTE 'SELECT count(*) FROM (' || q || ') z' INTO n;
 	RETURN QUERY SELECT walk, a IS NOT DISTINCT FROM b, n, max_decoded IS NULL OR decoded <= max_decoded;
@@ -70,42 +70,42 @@ $$;
 SELECT * FROM gi_run();
           shape          | global_order | same_rows | nrows 
 -------------------------+--------------+-----------+-------
- 2 values                | t            | t         |     2
- 5 values desc           | t            | t         |     5
- 17 values               | t            | t         |    17
- 40 values               | t            | t         |    40
- 40 values limit         | t            | t         |     7
- 40 values desc offset   | t            | t         |    10
- 40 values and absent    | t            | t         |    45
- absent                  | t            | t         |     5
- repeated                | t            | t         |     5
- a bound beside          | t            | t         |    24
- both bounds beside desc | t            | t         |    20
- another column beside   | t            | t         |    26
- two lists               | t            | t         |     5
- 1000 values             | t            | t         |   100
+ 2 values                | f            | t         |     2
+ 5 values desc           | f            | t         |     5
+ 17 values               | f            | t         |    17
+ 40 values               | f            | t         |    40
+ 40 values limit         | f            | t         |     7
+ 40 values desc offset   | f            | t         |    10
+ 40 values and absent    | f            | t         |    45
+ absent                  | f            | t         |     5
+ repeated                | f            | t         |     5
+ a bound beside          | f            | t         |    24
+ both bounds beside desc | f            | t         |    20
+ another column beside   | f            | t         |    26
+ two lists               | f            | t         |     5
+ 1000 values             | f            | t         |   100
  1025 values             | f            | t         |   100
- ties                    | t            | t         |    50
- ties desc offset        | t            | t         |    50
+ ties                    | f            | t         |    50
+ ties desc offset        | f            | t         |    50
 (17 rows)
 
 -- a walk decodes the chunks of the values it takes (160, 1,700 and 3,800 entries for 5, 40 and 1,000 values), not the entries of the table (100,000)
 SELECT * FROM gi_check((SELECT q FROM gi_q WHERE shape = '40 values'), 3000);
  global_order | same_rows | nrows | decodes_few 
 --------------+-----------+-------+-------------
- t            | t         |    40 | t
+ f            | t         |    40 | f
 (1 row)
 
 SELECT * FROM gi_check((SELECT q FROM gi_q WHERE shape = '5 values desc'), 400);
  global_order | same_rows | nrows | decodes_few 
 --------------+-----------+-------+-------------
- t            | t         |     5 | t
+ f            | t         |     5 | f
 (1 row)
 
 SELECT * FROM gi_check((SELECT q FROM gi_q WHERE shape = '1000 values'), 8000);
  global_order | same_rows | nrows | decodes_few 
 --------------+-----------+-------+-------------
- t            | t         |   100 | t
+ f            | t         |   100 | t
 (1 row)
 
 -- rows in the write buffer, updated rows (new keys, some of them in the lists), deleted rows
@@ -117,23 +117,23 @@ DELETE FROM gi WHERE id % 19 = 0;
 SELECT * FROM gi_run();
           shape          | global_order | same_rows | nrows 
 -------------------------+--------------+-----------+-------
- 2 values                | t            | t         |     0
- 5 values desc           | t            | t         |     0
- 17 values               | t            | t         |   100
- 40 values               | t            | t         |     1
- 40 values limit         | t            | t         |     1
- 40 values desc offset   | t            | t         |     0
- 40 values and absent    | t            | t         |     5
- absent                  | t            | t         |     4
- repeated                | t            | t         |     0
- a bound beside          | t            | t         |     1
- both bounds beside desc | t            | t         |     1
- another column beside   | t            | t         |     1
- two lists               | t            | t         |     0
- 1000 values             | t            | t         |   100
+ 2 values                | f            | t         |     0
+ 5 values desc           | f            | t         |     0
+ 17 values               | f            | t         |   100
+ 40 values               | f            | t         |     1
+ 40 values limit         | f            | t         |     1
+ 40 values desc offset   | f            | t         |     0
+ 40 values and absent    | f            | t         |     5
+ absent                  | f            | t         |     4
+ repeated                | f            | t         |     0
+ a bound beside          | f            | t         |     1
+ both bounds beside desc | f            | t         |     1
+ another column beside   | f            | t         |     1
+ two lists               | f            | t         |     0
+ 1000 values             | f            | t         |   100
  1025 values             | f            | t         |   100
- ties                    | t            | t         |    50
- ties desc offset        | t            | t         |    50
+ ties                    | f            | t         |    50
+ ties desc offset        | f            | t         |    50
 (17 rows)
 
 -- after a promotion and a VACUUM
@@ -146,46 +146,46 @@ SELECT sift.col_promote('gi_i'::regclass) >= 0 AS promoted;
 SELECT * FROM gi_run();
           shape          | global_order | same_rows | nrows 
 -------------------------+--------------+-----------+-------
- 2 values                | t            | t         |     0
- 5 values desc           | t            | t         |     0
- 17 values               | t            | t         |   100
- 40 values               | t            | t         |     1
- 40 values limit         | t            | t         |     1
- 40 values desc offset   | t            | t         |     0
- 40 values and absent    | t            | t         |     5
- absent                  | t            | t         |     4
- repeated                | t            | t         |     0
- a bound beside          | t            | t         |     1
- both bounds beside desc | t            | t         |     1
- another column beside   | t            | t         |     1
- two lists               | t            | t         |     0
- 1000 values             | t            | t         |   100
+ 2 values                | f            | t         |     0
+ 5 values desc           | f            | t         |     0
+ 17 values               | f            | t         |   100
+ 40 values               | f            | t         |     1
+ 40 values limit         | f            | t         |     1
+ 40 values desc offset   | f            | t         |     0
+ 40 values and absent    | f            | t         |     5
+ absent                  | f            | t         |     4
+ repeated                | f            | t         |     0
+ a bound beside          | f            | t         |     1
+ both bounds beside desc | f            | t         |     1
+ another column beside   | f            | t         |     1
+ two lists               | f            | t         |     0
+ 1000 values             | f            | t         |   100
  1025 values             | f            | t         |   100
- ties                    | t            | t         |    50
- ties desc offset        | t            | t         |    50
+ ties                    | f            | t         |    50
+ ties desc offset        | f            | t         |    50
 (17 rows)
 
 VACUUM gi;
 SELECT * FROM gi_run();
           shape          | global_order | same_rows | nrows 
 -------------------------+--------------+-----------+-------
- 2 values                | t            | t         |     0
- 5 values desc           | t            | t         |     0
- 17 values               | t            | t         |   100
- 40 values               | t            | t         |     1
- 40 values limit         | t            | t         |     1
- 40 values desc offset   | t            | t         |     0
- 40 values and absent    | t            | t         |     5
- absent                  | t            | t         |     4
- repeated                | t            | t         |     0
- a bound beside          | t            | t         |     1
- both bounds beside desc | t            | t         |     1
- another column beside   | t            | t         |     1
- two lists               | t            | t         |     0
- 1000 values             | t            | t         |   100
+ 2 values                | f            | t         |     0
+ 5 values desc           | f            | t         |     0
+ 17 values               | f            | t         |   100
+ 40 values               | f            | t         |     1
+ 40 values limit         | f            | t         |     1
+ 40 values desc offset   | f            | t         |     0
+ 40 values and absent    | f            | t         |     5
+ absent                  | f            | t         |     4
+ repeated                | f            | t         |     0
+ a bound beside          | f            | t         |     1
+ both bounds beside desc | f            | t         |     1
+ another column beside   | f            | t         |     1
+ two lists               | f            | t         |     0
+ 1000 values             | f            | t         |   100
  1025 values             | f            | t         |   100
- ties                    | t            | t         |    50
- ties desc offset        | t            | t         |    50
+ ties                    | f            | t         |    50
+ ties desc offset        | f            | t         |    50
 (17 rows)
 
 DROP TABLE gi, gi_l, gi_q;
