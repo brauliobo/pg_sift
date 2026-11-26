@@ -1,8 +1,9 @@
 /*
  * bm25/unique.c - UNIQUE on a sift index. The key of a row is a term of its postings (bm25/doc.h), so the rows that may have the same key are the
  * postings of one term; the heap says which of them are live and whether their key is the same (SnapshotDirty, as a btree waits for the transaction of
- * a row it finds that is not yet committed). Inserts of one key are serialized by a page lock of the index, taken from the check until the row's own
- * posting is written. The rows of a CREATE INDEX are told apart by a table of their keys instead, before anything is written.
+ * a row it finds that is not yet committed). Inserts of one key are serialized by a tuple lock of the index named by 48 bits of the key's hash (no index
+ * tuple has that address, and writers of other keys almost never share it), taken from the check until the row's own posting is written. The rows of a
+ * CREATE INDEX are told apart by a table of their keys instead, before anything is written.
  */
 #include "postgres.h"
 
@@ -28,11 +29,7 @@
 #include "bm25/query/int.h"
 #include "core/compat.h"
 
-#define UNIQUE_LOCK_BASE	0xFFFFB000U
-#define UNIQUE_LOCK_SLOTS	8192U
 #define DETAIL_BYTES		256
-
-StaticAssertDecl(UNIQUE_LOCK_BASE + UNIQUE_LOCK_SLOTS < InvalidBlockNumber, "the unique locks are valid block numbers");
 
 typedef struct Prober
 {
@@ -52,10 +49,13 @@ typedef enum ProbeResult
 	PROBE_WAIT
 } ProbeResult;
 
-static BlockNumber
-bucket(uint64 key)
+static ItemPointerData
+key_lock(uint64 key)
 {
-	return UNIQUE_LOCK_BASE + (BlockNumber) (key % UNIQUE_LOCK_SLOTS);
+	ItemPointerData tid;
+
+	ItemPointerSet(&tid, (BlockNumber) (key >> 16), (OffsetNumber) (key % PG_UINT16_MAX + 1));
+	return tid;
 }
 
 static void
@@ -247,6 +247,7 @@ sift_bm25_unique_check(Relation index, Relation heap, const Datum *values, const
 {
 	Prober		p;
 	bool		duplicated;
+	ItemPointerData lock = key_lock(key);
 
 	prober_open(&p, heap, index);
 	for (;;)
@@ -255,11 +256,11 @@ sift_bm25_unique_check(Relation index, Relation heap, const Datum *values, const
 		ItemPointerData at;
 		uint32		token = 0;
 
-		LockPage(index, bucket(key), ExclusiveLock);
+		LockTuple(index, &lock, ExclusiveLock);
 		duplicated = find_duplicate(&p, key, values, isnull, tid, &xwait, &at, &token);
 		if (!TransactionIdIsValid(xwait))
 			break;
-		UnlockPage(index, bucket(key), ExclusiveLock);
+		UnlockTuple(index, &lock, ExclusiveLock);
 		if (token != 0)
 			SpeculativeInsertionWait(xwait, token);
 		else
@@ -267,7 +268,7 @@ sift_bm25_unique_check(Relation index, Relation heap, const Datum *values, const
 	}
 	prober_close(&p);
 	if (check == UNIQUE_CHECK_EXISTING)
-		UnlockPage(index, bucket(key), ExclusiveLock);
+		UnlockTuple(index, &lock, ExclusiveLock);
 	if (duplicated && check == UNIQUE_CHECK_YES)
 		duplicate(heap, index, values, isnull, false);
 	if (duplicated && check == UNIQUE_CHECK_EXISTING)
@@ -308,7 +309,9 @@ sift_bm25_unique_twins(Relation index, Relation heap, const ScanKeyData *keys, i
 void
 sift_bm25_unique_release(Relation index, uint64 key)
 {
-	UnlockPage(index, bucket(key), ExclusiveLock);
+	ItemPointerData lock = key_lock(key);
+
+	UnlockTuple(index, &lock, ExclusiveLock);
 }
 
 typedef struct KeyEntry

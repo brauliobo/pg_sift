@@ -212,7 +212,6 @@ SIFT_DICT_MAX_VALUES	distinct values (65,536) of a text key up to which the cost
 SIFT_WIN_CARRY_MAX_VARS	columns (8) a window of a SiftAgg scan carries from its batches to its output rows (agg/win/carry.h): past it nothing is carried and the columns of each row are fetched from the table; the rows are the same
 SORT_LOOKUP_MAX_ROWS	rows (10,000) a statement with no ORDER BY and no LIMIT may be estimated to return for a projection sort to seek them (agg/v6_proj_sort_plan.c): above it the projection sort is not planned for the statement; the rows are the same
 STAT_SLOTS	slots (1024) of the backend cache of the column totals of the parts, direct-mapped by part and column (agg/v6_colstat.c): the entry a new one replaces is read from the part again; the rows are the same
-UNIQUE_LOCK_SLOTS	the page locks of the keys of a bm25 unique index (bm25/unique.c): the key is taken modulo it, so two keys may share a lock and wait for each other; no count is refused
 ENC_SLOTS	the size of the table of the encodings of a column (col/f2/choices.c): the enumeration of the encodings plus one; no count is refused
 TIER_SLOTS	the size of the table of the tiers of a part (col/f2/choices.c): the enumeration of the tiers plus one; no count is refused
 SIFT_CDDIR_MAX_ENTRIES	the entries of one page of the directory of a column delta chain (table/f2/col_delta/dir.h): a StaticAssert holds it to the page; a chain with more pages has the next directory page, no count is refused

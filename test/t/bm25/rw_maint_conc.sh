@@ -41,7 +41,7 @@ first=$(wc -l <"$D/postgres.log")
 PGOPTIONS="-c sift.async_maintenance=off" pgbench_bg rw 16 "$SECS" -f "$D/write.sql"
 wait "$PGBENCH_PID"
 diag "$(grep -E "^(number of transactions actually|tps)" "$D/pgbench.log")"
-stalls=$(tail -n +"$((first + 1))" "$D/postgres.log" | sed -n 's/.*still waiting for ExclusiveLock on page \([0-9]*\) of relation.*/\1/p' | awk '$1 >= 4294946816' | wc -l)
+stalls=$(tail -n +"$((first + 1))" "$D/postgres.log" | grep -c "still waiting for ExclusiveLock on tuple .* of relation $(sql rw "SELECT 'u_idx'::regclass::oid")")
 check "no writer waited 5 ms for the key lock of another ($stalls waits)" test "$stalls" == 0
 check "no write failed" grep -q "number of failed transactions: 0 " "$D/pgbench.log"
 
@@ -80,5 +80,5 @@ sql rw "${INSERTS[@]}" >/dev/null || bail "insert failed"
 check "the buffers sealed during a VACUUM are promoted by the writers" test "$(sql rw "$SEALED")" -lt 4
 touch "$D/release2"
 wait "$hp" "$vp"
-check "VACUUM ends clean, every row of both indexes is intact" test "$(sql rw "VACUUM m" "SELECT sift.verify('m_idx', true), sift.verify('u_idx', true)" 2>&1 | grep -c -E "ERROR|corrupt")" == 0
+out=$(sql rw "VACUUM m" "SELECT sift.verify('m_idx', true), sift.verify('u_idx', true)" 2>&1); check "VACUUM ends clean, every row of both indexes is intact" test "$(grep -c -E "ERROR|corrupt" <<<"$out")" == 0
 finish

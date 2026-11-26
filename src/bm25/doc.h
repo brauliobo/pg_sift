@@ -45,7 +45,7 @@ extern bool sift_bm25_row_terms(SiftAnalyzer *an, SiftDocKeys *keys, const Datum
 
 /*
  * The insert of a row with a unique key (bm25/unique.c): looks for a live row with the same key, an error (ERRCODE_UNIQUE_VIOLATION) when there is
- * one, false when one may be (UNIQUE_CHECK_PARTIAL: the check is made again at commit). Returns holding the lock of the key's bucket, which
+ * one, false when one may be (UNIQUE_CHECK_PARTIAL: the check is made again at commit). Returns holding the lock of the key, which
  * serializes the inserts of one key until the row's own posting is written, and sift_bm25_unique_release lets go; UNIQUE_CHECK_EXISTING, the
  * recheck of a row already inserted, writes nothing and does not hold it.
  */
