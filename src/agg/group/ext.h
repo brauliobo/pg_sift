@@ -2,9 +2,8 @@
  * agg/group/ext.h - the states of the aggregates SiftAggV6 added to count, sum, avg, min and max over numbers: stddev and variance of a float column, bool_or and bool_and, min and max of
  * a text column. Each state is the 32 bytes of a V6Acc (agg/group/int.h): n, v0, v1 and pad; the functions here are portable and know nothing of the group around them.
  *
- * The moments are the transition state of PostgreSQL's float8_accum (N, Sx, Sxx) and its float8_combine (the combination of Chan et al.) over the values less the first one of the state: Sxx is
- * updated from the mean the way Welford does, so that the variance of values far from zero keeps its digits whatever order a scan reads the rows in. The final functions are float8_var_pop,
- * float8_var_samp and their square roots.
+ * The moments are the transition state of PostgreSQL's float8_accum (N, Sx, Sxx, the update of Youngs and Cramer) and its float8_combine, computed the way they compute it, so that a
+ * variance over the rows in the order PostgreSQL reads them is the one it gives. The final functions are float8_var_pop, float8_var_samp and their square roots.
  *
  * A text state keeps its winner in the byte arena of the group: the offset in v0 and the length in v1, or the bytes themselves in v0 when there are at most 8 of them (pad bit 0); the rest of pad
  * is the room the winner has, so a later winner that fits takes its place without a new copy. The offsets stay valid while the group lives, in whatever table or spill the state is moved to.
@@ -39,55 +38,47 @@ typedef enum SiftMomFinal
 	SMF_STDDEV_SAMP
 } SiftMomFinal;
 
-/* the values are taken from the first one of the state (a double with its lowest bit of the mantissa left to the overflow flag): a variance of values that sit far from zero is not lost to the size of their sum */
+/* `x * N - Sx` of float8_accum, rounded once (fused: the server's build contracts it, agg/osa/round.h) or twice */
 static inline double
-sift_mom_shift(const SiftMom *a)
+sift_mom_tmp(double x, double n, double sx, bool fused)
 {
-	const uint64 bits = (uint64) a->flags & ~(uint64) SIFT_MOM_OVERFLOW;
-	double		s;
-
-	memcpy(&s, &bits, sizeof(s));
-	return s;
+	return fused ? fma(x, n, -sx) : (x * n) - sx;
 }
 
 static inline void
-sift_mom_set_shift(SiftMom *a, double s)
+sift_mom_add(SiftMom *a, double x, bool fused)
 {
-	uint64		bits;
+	const double n0 = (double) a->n,
+				n = n0 + 1.0,
+				sx = a->sx + x;
 
-	memcpy(&bits, &s, sizeof(bits));
-	a->flags = (int64) ((bits & ~(uint64) SIFT_MOM_OVERFLOW) | ((uint64) a->flags & SIFT_MOM_OVERFLOW));
-}
-
-static inline void
-sift_mom_add(SiftMom *a, double x)
-{
-	double		sx,
-				sxx,
-				y;
-
-	if (a->n == 0)
-		sift_mom_set_shift(a, fabs(x) < 1e150 ? x : 0.0);
-	y = x - sift_mom_shift(a);
-	sx = a->sx + y;
 	if (a->n > 0)
 	{
-		const double n0 = (double) a->n;
+		const double tmp = sift_mom_tmp(x, n, sx, fused);
 
-		sxx = a->sxx + (y - a->sx / n0) * (y - sx / (n0 + 1.0));
-		if ((isinf(sxx) && !isinf(a->sxx) && !isinf(x)) || (isinf(sx) && !isinf(a->sx) && !isinf(x)))
-			a->flags |= SIFT_MOM_OVERFLOW;
+		a->sxx += tmp * tmp / (n * n0);
+		if (isinf(sx) || isinf(a->sxx))
+		{
+			if (!isinf(a->sx) && !isinf(x))
+				a->flags |= SIFT_MOM_OVERFLOW;
+			a->sxx = NAN;
+		}
 	}
-	else
-		sxx = (isinf(x) || isnan(x)) ? NAN : 0.0;
+	else if (isnan(x) || isinf(x))
+		a->sxx = NAN;
 	a->sx = sx;
-	a->sxx = sxx;
 	a->n++;
 }
 
 static inline void
 sift_mom_merge(SiftMom *d, const SiftMom *s)
 {
+	const double n1 = (double) d->n,
+				n2 = (double) s->n;
+	double		tmp,
+				sx,
+				sxx;
+
 	if (s->n == 0)
 		return;
 	if (d->n == 0)
@@ -95,23 +86,15 @@ sift_mom_merge(SiftMom *d, const SiftMom *s)
 		*d = *s;
 		return;
 	}
-	{
-		const double n1 = (double) d->n,
-					n2 = (double) s->n,
-					n = n1 + n2,
-					s1 = sift_mom_shift(d),
-					s2 = sift_mom_shift(s),
-					tmp = (s1 - s2) + (d->sx / n1 - s->sx / n2),
-					sx = d->sx + s->sx + n2 * (s2 - s1),
-					sxx = d->sxx + s->sxx + n1 * n2 * tmp * tmp / n;
-
-		if ((isinf(sxx) && !isinf(d->sxx) && !isinf(s->sxx)) || (isinf(sx) && !isinf(d->sx) && !isinf(s->sx)))
-			d->flags |= SIFT_MOM_OVERFLOW;
-		d->flags |= s->flags & SIFT_MOM_OVERFLOW;
-		d->n += s->n;
-		d->sx = sx;
-		d->sxx = sxx;
-	}
+	sx = d->sx + s->sx;
+	tmp = d->sx / n1 - s->sx / n2;
+	sxx = d->sxx + s->sxx + n1 * n2 * tmp * tmp / (n1 + n2);
+	if ((isinf(sx) && !isinf(d->sx) && !isinf(s->sx)) || (isinf(sxx) && !isinf(d->sxx) && !isinf(s->sxx)))
+		d->flags |= SIFT_MOM_OVERFLOW;
+	d->flags |= s->flags;
+	d->n += s->n;
+	d->sx = sx;
+	d->sxx = sxx;
 }
 
 /* false: the aggregate is NULL (no row, or one row of a sample statistic) */

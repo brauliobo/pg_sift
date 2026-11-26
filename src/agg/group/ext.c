@@ -8,6 +8,7 @@
 
 #include "agg/group/ext.h"
 #include "agg/group/int.h"
+#include "agg/osa/round.h"
 #include "agg/pct.h"
 
 static const struct
@@ -73,7 +74,7 @@ v6g_ext_fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *
 		case SV6_STDDEV_SAMP:
 		case SV6_VAR_POP:
 		case SV6_VAR_SAMP:
-			sift_mom_add((SiftMom *) acc, ((const double *) v->data)[r]);
+			sift_mom_add((SiftMom *) acc, ((const double *) v->data)[r], osa_accum_fused());
 			break;
 		case SV6_BOOL_OR:
 		case SV6_BOOL_AND:

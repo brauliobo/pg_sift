@@ -7,6 +7,8 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
+-- the float sums in the order of the rows, the bits of the normal plan (the default sums them in exact bins, which may differ in the last bit)
+SET sift.agg_exact_float = on;
 SELECT setseed(0.4242);
 CREATE TABLE fe_t (id int PRIMARY KEY, g int NOT NULL, x float8, y float8, v numeric(12, 4));
 INSERT INTO fe_t SELECT n, floor(31 * random() ^ 2)::int,

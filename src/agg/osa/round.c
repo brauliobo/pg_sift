@@ -3,17 +3,22 @@
  * The final functions of PostgreSQL find the proportion `p * (n - 1) - first` and the result `lo + prop * (hi - lo)` in float8. A server built with contraction of
  * floating-point expressions (the default of gcc and clang on aarch64, or any build for a CPU with FMA) rounds each of them once, a build without it twice, and the
  * scalar function and the one for an array of fractions are compiled apart, so each may differ. The scan is built with -ffp-contract=off and cannot see the flags
- * of the server: it runs percentile_cont once on inputs where the two roundings give other bits and does what the server did.
+ * of the server: it runs percentile_cont once on inputs where the two roundings give other bits and does what the server did. The same holds for `x * N - Sx` of the
+ * update of float8_accum (the moments of variance and stddev): the server's own function is run once on such inputs.
  */
 #include "postgres.h"
 
 #include <math.h>
 
+#include "catalog/pg_type_d.h"
 #include "executor/spi.h"
 #include "lib/stringinfo.h"
+#include "utils/array.h"
+#include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 
 #include "core/host.h"
+#include "agg/group/ext.h"
 #include "agg/osa/round.h"
 
 /* 34 values, the first 19 zero and the rest one: the result is the proportion, 0.5659... * 33 - 18 */
@@ -102,4 +107,28 @@ osa_round(bool array)
 		probed = true;
 	}
 	return &known[array];
+}
+
+/* a state of float8_accum and a value where `x * N - Sx` rounded once and rounded twice give other bits */
+#define ACCUM_N			2.0
+#define ACCUM_SX		2000000000.014
+#define ACCUM_X			1000000000.001
+
+bool
+osa_accum_fused(void)
+{
+	static int	known = -1;
+
+	if (known < 0)
+	{
+		Datum		state[3] = {Float8GetDatum(ACCUM_N), Float8GetDatum(ACCUM_SX), Float8GetDatum(0.0)};
+		ArrayType  *out = DatumGetArrayTypeP(DirectFunctionCall2(float8_accum, PointerGetDatum(construct_array_builtin(state, 3, FLOAT8OID)), Float8GetDatum(ACCUM_X)));
+		const double sxx = ((const double *) ARR_DATA_PTR(out))[2],
+					fused = sift_mom_tmp(ACCUM_X, ACCUM_N + 1.0, ACCUM_SX + ACCUM_X, true),
+					plain = sift_mom_tmp(ACCUM_X, ACCUM_N + 1.0, ACCUM_SX + ACCUM_X, false);
+
+		SIFT_INVARIANT(fused != plain, "sift: the probe of float8_accum rounds the same either way");
+		known = fused_as(sxx, fused * fused / ((ACCUM_N + 1.0) * ACCUM_N), plain * plain / ((ACCUM_N + 1.0) * ACCUM_N));
+	}
+	return known;
 }

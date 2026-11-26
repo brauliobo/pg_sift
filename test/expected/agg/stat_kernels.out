@@ -19,6 +19,8 @@ INSERT INTO s SELECT i, i % 7,
 	(i % 300 - 150)::smallint,
 	CASE WHEN i % 17 = 0 THEN NULL ELSE sqrt(i) + (i % 5) END
 FROM generate_series(1, 20000) i;
+-- one build process: the scan reads the rows in the heap's order, the order the normal plan folds them in (these statistics change with it, by more than 11 digits on such data)
+SET max_parallel_maintenance_workers = 0;
 CREATE INDEX s_col ON s USING sift_col (id, g, big, tiny, wide, spec, huge, i4, i2, y);
 VACUUM ANALYZE s;
 -- 11 digits, NaN and infinities by their text, a NULL by NULL
