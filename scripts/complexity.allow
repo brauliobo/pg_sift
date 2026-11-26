@@ -99,8 +99,6 @@ repalloc-additive	src/core/lane.c	1	a bounded array or a sentinel slot; Spec 66 
 repalloc-additive	src/core/v1_col/tomb/write.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/core/verify.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/table/f2/col_delta/fold.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
-spinlock-loop	src/col/dictshm/dictshm.c	5	a fixed number of slots of a shared table
-spinlock-loop	src/col/leafshm.c	4	a fixed number of slots of a shared table
 spinlock-loop	src/col/shmstatus.c	1	a fixed number of slots of a shared table
 spinlock-loop	src/col/v1/rollup.c	8	a fixed number of slots of a shared table
 spinlock-loop	src/col/v1/wbuf/arena.c	5	a fixed number of slots of a shared table

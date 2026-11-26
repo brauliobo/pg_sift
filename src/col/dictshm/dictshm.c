@@ -6,8 +6,9 @@
  * here, under the key of its own cache (the file, generation, rows and header block of the segment, the leaf: a segment never changes, a merge or a rewrite names a
  * new one), and the others read them where they lie, pinned in the ring. What a lookup builds from them (hash slots, sorted order) is written to a new record once a dictionary is asked often.
  *
- * As col/leafshm.c: a ring of bytes in the DSM registry (no shared_preload_libraries), a directory under a spinlock and the copy outside of it; a pin count keeps
- * the ring off a record being read, and a record names its key, which the reader compares. Where the table cannot be had the backend goes without it. The directory
+ * As col/leafshm.c: a ring of bytes in the DSM registry (no shared_preload_libraries), a directory and the copy outside of it; a pin count keeps
+ * the ring off a record being read, and a record names its key, which the reader compares. A reader holds the lock of one bucket shared to pin a record and gives the pin
+ * back without a lock; the writers, which take their place in the ring and enter their record, hold the ring lock and the lock of the bucket they change. Where the table cannot be had the backend goes without it. The directory
  * is buckets of DSHM_WAYS entries found by the hash of the key. A writer that finds more entries thrown out than found in DSHM_WINDOW writes stops for DSHM_HOLD attempts: a ring too small for the dictionaries
  * asked does not churn.
  *
@@ -21,9 +22,10 @@
 
 #include "common/hashfn.h"
 #include "lib/ilist.h"
+#include "miscadmin.h"
 #include "storage/dsm_impl.h"
 #include "storage/ipc.h"
-#include "storage/spin.h"
+#include "storage/lwlock.h"
 #include "utils/memutils.h"
 
 #include "agg/stats.h"
@@ -92,7 +94,23 @@ dshm_init(SIFT_DSM_INIT_ARGS)
 	bool		capped;
 
 	memset(s, 0, sizeof(Dshm));
-	SpinLockInit(&s->mutex);
+	s->tranche = sift_tranche_new(DSHM_TRANCHE);
+	LWLockInitialize(&s->ring_lock.lock, s->tranche);
+	for (int i = 0; i < DSHM_BUCKETS; i++)
+		LWLockInitialize(&s->bucket_lock[i].lock, s->tranche);
+	pg_atomic_init_u64(&s->tick, 0);
+	for (int i = 0; i < lengthof(s->dir); i++)
+	{
+		pg_atomic_init_u64(&s->dir[i].orows, 0);
+		pg_atomic_init_u64(&s->dir[i].tick, 0);
+		pg_atomic_init_u32(&s->dir[i].asks, 0);
+		pg_atomic_init_u32(&s->dir[i].pins, 0);
+	}
+	for (int i = 0; i < DSHM_COUNTS; i++)
+	{
+		pg_atomic_init_u64(&s->count[i].hits, 0);
+		pg_atomic_init_u64(&s->count[i].misses, 0);
+	}
 	s->size = ring_bytes(&capped);
 }
 
@@ -100,9 +118,8 @@ dshm_init(SIFT_DSM_INIT_ARGS)
 static void
 ring_init(SIFT_DSM_INIT_ARGS)
 {
-	SpinLockAcquire(&dshm->mutex);
+	pg_write_barrier();
 	dshm->ring_ready = true;
-	SpinLockRelease(&dshm->mutex);
 }
 
 /* The directory of a server that shares dictionaries (nothing at all with the setting at 0) */
@@ -116,7 +133,10 @@ dshm_get(void)
 		dshm = sift_dsm_attach(DSHM_NAME, sizeof(Dshm), dshm_init, &dshm_failed,
 							   "the parsed dictionaries of the column indexes", "sift.shared_cache_kb", TEST_MODE(2));
 		if (dshm != NULL)
+		{
+			sift_tranche_register(dshm->tranche, DSHM_TRANCHE);
 			ring_cap_report();
+		}
 	}
 	return dshm;
 }
@@ -150,7 +170,10 @@ sift_dictshm_prepare(void)
 void
 sift_dictshm_join(void)
 {
-	if ((dshm = sift_dsm_attach(DSHM_NAME, sizeof(Dshm), dshm_init, &dshm_failed, "the parsed dictionaries of the column indexes", "sift.shared_cache_kb", false)) != NULL && dshm->ring_ready)
+	if ((dshm = sift_dsm_attach(DSHM_NAME, sizeof(Dshm), dshm_init, &dshm_failed, "the parsed dictionaries of the column indexes", "sift.shared_cache_kb", false)) == NULL)
+		return;
+	sift_tranche_register(dshm->tranche, DSHM_TRANCHE);
+	if (dshm->ring_ready)
 		ring_get(dshm);
 }
 
@@ -173,6 +196,55 @@ bucket(Dshm *s, const DictKey *k)
 	return &s->dir[(hash_bytes((const unsigned char *) k, sizeof(*k)) % DSHM_BUCKETS) * DSHM_WAYS];
 }
 
+/* the lock of the bucket that holds the entry at slot of the directory */
+static LWLock *
+bucket_lock_of(Dshm *s, int slot)
+{
+	return &s->bucket_lock[slot / DSHM_WAYS].lock;
+}
+
+static DshmCount *
+my_count(Dshm *s)
+{
+	return &s->count[MyProcNumber & (DSHM_COUNTS - 1)];
+}
+
+/* the reads that found a record, of all backends, since the table was made */
+uint64
+dshm_hits(Dshm *s)
+{
+	uint64		n = 0;
+
+	for (int i = 0; i < DSHM_COUNTS; i++)
+		n += pg_atomic_read_u64(&s->count[i].hits);
+	return n;
+}
+
+/* the entry holds a live record: the other fields are the caller's */
+void
+ent_set(DshmEnt *e, const DictKey *k, Size off, Size len, uint32 hdr_flags, uint32 asks, uint64 orows, uint64 tick)
+{
+	e->key = *k;
+	e->off = off;
+	e->len = len;
+	e->hdr_flags = hdr_flags;
+	pg_atomic_write_u32(&e->asks, asks);
+	pg_atomic_write_u32(&e->pins, 0);
+	pg_atomic_write_u64(&e->orows, orows);
+	pg_atomic_write_u64(&e->tick, tick);
+	e->state = E_LIVE;
+}
+
+/* the entry was read: when its tick is old it is made new, so that the oldest of a full bucket is one that nobody reads */
+static void
+ent_touch(Dshm *s, DshmEnt *e)
+{
+	uint64		now = pg_atomic_read_u64(&s->tick);
+
+	if (now - pg_atomic_read_u64(&e->tick) >= DSHM_TICK_LAG)
+		pg_atomic_write_u64(&e->tick, now);
+}
+
 /* A backend's reads in place: the pin on the record of the dictionary goes with the memory context of the scan, or with the backend */
 typedef struct ShmPin
 {
@@ -186,6 +258,18 @@ typedef struct ShmPin
 static dlist_head pins = DLIST_STATIC_INIT(pins);
 static bool exit_hooked;
 
+/* the last reader of a record that a newer one replaced gives its place back; a writer that marked it stale and saw a pin left it to this */
+static void
+stale_free(Dshm *s, int slot)
+{
+	DshmEnt    *e = &s->dir[slot];
+
+	LWLockAcquire(bucket_lock_of(s, slot), LW_EXCLUSIVE);
+	if (e->state == E_STALE && pg_atomic_read_u32(&e->pins) == 0)
+		e->state = E_FREE;
+	LWLockRelease(bucket_lock_of(s, slot));
+}
+
 static void
 unpin(void *arg)
 {
@@ -196,12 +280,10 @@ unpin(void *arg)
 		return;
 	e = &dshm->dir[p->slot];
 	dlist_delete(&p->node);
-	SpinLockAcquire(&dshm->mutex);
 	if (p->d != NULL && p->d->orows > p->orows)
-		e->orows += p->d->orows - p->orows;
-	if (--e->pins == 0 && e->state == E_STALE)
-		e->state = E_FREE;
-	SpinLockRelease(&dshm->mutex);
+		pg_atomic_fetch_add_u64(&e->orows, p->d->orows - p->orows);
+	if (pg_atomic_sub_fetch_u32(&e->pins, 1) == 0 && e->state == E_STALE)
+		stale_free(dshm, p->slot);
 	p->slot = -1;
 }
 
@@ -234,25 +316,21 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 	if (s == NULL)
 		return NULL;
 	b = bucket(s, k);
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(bucket_lock_of(s, (int) (b - s->dir)), LW_SHARED);
 	for (int i = 0; i < DSHM_WAYS; i++)
 		if (b[i].state == E_LIVE && memcmp(&b[i].key, k, sizeof(*k)) == 0)
 		{
-			b[i].pins++;
-			asks = ++b[i].asks;
-			orows = b[i].orows;
-			b[i].tick = ++s->tick;
-			s->found++;
+			pg_atomic_fetch_add_u32(&b[i].pins, 1);
+			asks = pg_atomic_add_fetch_u32(&b[i].asks, 1);
+			orows = pg_atomic_read_u64(&b[i].orows);
+			ent_touch(s, &b[i]);
 			at = (int) (b - s->dir) + i;
 			off = b[i].off;
 			len = b[i].len;
 			break;
 		}
-	if (at < 0)
-		s->misses++;
-	else
-		s->hits++;
-	SpinLockRelease(&s->mutex);
+	LWLockRelease(bucket_lock_of(s, (int) (b - s->dir)));
+	pg_atomic_fetch_add_u64(at < 0 ? &my_count(s)->misses : &my_count(s)->hits, 1);
 	if (at < 0)
 		return NULL;
 	/* the record cannot change while it is pinned: what is checked here is that it is inside the ring, that it is one, and the one asked for (a stale entry is a miss) */
@@ -339,8 +417,54 @@ ord_add(Dshm *s, int slot)
 	s->ord[i] = (int16) slot;
 }
 
+/* Where the pinned records and the flights that [at, at + len) covers end, the last of them; 0: none */
+static Size
+ring_busy_until(Dshm *s, Size at, Size len)
+{
+	Size		next = 0;
+
+	for (int i = ord_first(s, at); i < s->nord && s->dir[s->ord[i]].off < at + len; i++)
+		if (s->dir[s->ord[i]].state != E_FREE && pg_atomic_read_u32(&s->dir[s->ord[i]].pins) > 0)
+			next = Max(next, s->dir[s->ord[i]].off + s->dir[s->ord[i]].len);
+	for (int i = 0; i < DSHM_FLIGHT; i++)
+		if (s->flight[i].len > 0 && s->flight[i].off < at + len && at < s->flight[i].off + s->flight[i].len)
+			next = Max(next, s->flight[i].off + s->flight[i].len);
+	return next;
+}
+
 /*
- * Takes len bytes of the ring for a record, not over the records that are pinned or being copied (under the spinlock): the next place after the head that
+ * The records that [at, at + len) covers go, each under the lock of its bucket, which no reader that pins holds meanwhile. Where one was pinned after ring_busy_until looked, where
+ * that record ends; 0: all went.
+ */
+static Size
+ring_evict(Dshm *s, Size at, Size len, int *evicted)
+{
+	for (int i = ord_first(s, at); i < s->nord && s->dir[s->ord[i]].off < at + len; i++)
+	{
+		DshmEnt    *e = &s->dir[s->ord[i]];
+		LWLock	   *lock = bucket_lock_of(s, s->ord[i]);
+		Size		pinned_until = 0;
+
+		if (e->state == E_FREE)
+			continue;
+		LWLockAcquire(lock, LW_EXCLUSIVE);
+		if (pg_atomic_read_u32(&e->pins) > 0)
+			pinned_until = e->off + e->len;
+		else
+		{
+			*evicted += e->state == E_LIVE;
+			e->state = E_FREE;
+			s->thrown++;
+		}
+		LWLockRelease(lock);
+		if (pinned_until > 0)
+			return pinned_until;
+	}
+	return 0;
+}
+
+/*
+ * Takes len bytes of the ring for a record, not over the records that are pinned or being copied (the ring lock is held): the next place after the head that
  * is free; the unpinned records it covers go. False when there is none.
  */
 bool
@@ -353,14 +477,10 @@ ring_take(Dshm *s, Size len, Size *off, int *flight, int *evicted)
 
 	for (int tries = 0; tries < DSHM_TRIES; tries++)
 	{
-		Size		next = 0;
+		Size		next = ring_busy_until(s, at, len);
 
-		for (int i = ord_first(s, at); i < s->nord && s->dir[s->ord[i]].off < at + len; i++)
-			if (s->dir[s->ord[i]].state != E_FREE && s->dir[s->ord[i]].pins > 0)
-				next = Max(next, s->dir[s->ord[i]].off + s->dir[s->ord[i]].len);
-		for (int i = 0; i < DSHM_FLIGHT; i++)
-			if (s->flight[i].len > 0 && s->flight[i].off < at + len && at < s->flight[i].off + s->flight[i].len)
-				next = Max(next, s->flight[i].off + s->flight[i].len);
+		if (next == 0)
+			next = ring_evict(s, at, len, evicted);
 		if (next == 0)
 			break;
 		at = TYPEALIGN(DSHM_ALIGN, next);
@@ -376,12 +496,7 @@ ring_take(Dshm *s, Size len, Size *off, int *flight, int *evicted)
 		return false;
 	first = ord_first(s, at);
 	for (end = first; end < s->nord && s->dir[s->ord[end]].off < at + len; end++)
-		if (s->dir[s->ord[end]].state != E_FREE)
-		{
-			*evicted += s->dir[s->ord[end]].state == E_LIVE;
-			s->dir[s->ord[end]].state = E_FREE;
-			s->thrown++;
-		}
+		;
 	memmove(s->ord + first, s->ord + end, (s->nord - end) * sizeof(int16));
 	s->nord -= end - first;
 	s->flight[slot] = (DshmFlight) {.off = at, .len = len};
@@ -391,43 +506,108 @@ ring_take(Dshm *s, Size len, Size *off, int *flight, int *evicted)
 	return true;
 }
 
+/* the entry of the key that holds a live record with the arrays of flags (a record that lacks one is made again), NULL: none */
+static DshmEnt *
+ent_with(Dshm *s, const DictKey *k, uint32 flags)
+{
+	DshmEnt    *b = bucket(s, k);
+
+	for (int i = 0; i < DSHM_WAYS; i++)
+		if (b[i].state == E_LIVE && memcmp(&b[i].key, k, sizeof(*k)) == 0 && (b[i].hdr_flags & flags) == flags)
+			return &b[i];
+	return NULL;
+}
+
+/* the live record of the key is read no more: it goes when nobody reads it. The pin is looked at after the mark: a reader that gave its last pin back before it saw the mark frees nothing */
+static void
+ent_retire(DshmEnt *e)
+{
+	e->state = E_STALE;
+	pg_memory_barrier();
+	if (pg_atomic_read_u32(&e->pins) == 0)
+		e->state = E_FREE;
+}
+
+/* the writes of a window that threw out more records than the reads found in the ring in it stop for DSHM_HOLD attempts */
+static void
+window_note_write(Dshm *s)
+{
+	if (++s->writes < DSHM_WINDOW)
+		return;
+	if (s->thrown > dshm_hits(s) - s->window_hits)
+		s->hold = DSHM_HOLD;
+	s->writes = s->thrown = 0;
+	s->window_hits = dshm_hits(s);
+}
+
+/* the record, whose arrays the caller has copied into [off, off + l.total), is entered into the directory in the place of those of its key; the entry's slot of the bucket, -1: none free */
+static int
+ent_enter(Dshm *s, const DictKey *k, uint32 flags, Size off, Size total, int *evicted)
+{
+	DshmEnt    *b = bucket(s, k);
+	uint32		asks = 0;
+	uint64		orows = 0;
+	int			slot = -1;
+
+	for (int i = 0; i < DSHM_WAYS; i++)
+		if (b[i].state == E_LIVE && memcmp(&b[i].key, k, sizeof(*k)) == 0)
+		{
+			asks = pg_atomic_read_u32(&b[i].asks);
+			orows = pg_atomic_read_u64(&b[i].orows);
+			ent_retire(&b[i]);
+		}
+	for (int i = 0; i < DSHM_WAYS && slot < 0; i++)
+		if (b[i].state == E_FREE)
+			slot = i;
+	if (slot < 0)
+	{
+		for (int i = 0; i < DSHM_WAYS; i++)
+			if (pg_atomic_read_u32(&b[i].pins) == 0 && (slot < 0 || pg_atomic_read_u64(&b[i].tick) < pg_atomic_read_u64(&b[slot].tick)))
+				slot = i;
+		s->thrown++;
+		*evicted += slot >= 0;
+	}
+	if (slot >= 0)
+	{
+		ord_drop(s, (int) (b - s->dir) + slot);
+		ent_set(&b[slot], k, off, total, flags, asks, orows, pg_atomic_read_u64(&s->tick));
+		ord_add(s, (int) (b - s->dir) + slot);
+	}
+	return slot;
+}
+
 bool
 sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 {
 	Dshm	   *s;
-	DshmEnt    *b;
 	uint32		flags = (d->blocked ? F_BLOCKED : 0) | (d->sorted != NULL ? F_ORDER : 0) | (d->stored_order && d->sorted != NULL ? F_SORTED : 0) |
 		(d->slots != NULL && ((Size) d->n + 1) * 2 <= d->nslots ? F_SLOTS : 0);
 	Layout		l = layout(d->n, d->nbytes, flags, d->nslots);
 	Size		off;
 	DshmHdr		h = {.magic = DSHM_MAGIC, .key = *k, .n = d->n, .nbytes = d->nbytes, .flags = flags, .nslots = (flags & F_SLOTS) ? d->nslots : 0};
 	char	   *rec;
-	uint32		asks = 0;
-	uint64		orows = 0;
-	int			slot = -1,
+	int			slot,
 				flight,
 				evicted = 0;
 
 	if (l.total < (TEST_MODE(1) ? 0 : DSHM_MIN_BYTES) || d->n == 0 || (s = dshm_get()) == NULL || l.total > s->size / 2 || !ring_get(s))
 		return false;
 	sift_stat_add(SIFT_STAT_DICT_SHARED_MISSES, 1);
-	SpinLockAcquire(&s->mutex);
-	b = bucket(s, k);
-	for (int i = 0; i < DSHM_WAYS; i++)
-		if (b[i].state == E_LIVE && memcmp(&b[i].key, k, sizeof(*k)) == 0 && (((const DshmHdr *) (ring + b[i].off))->flags & flags) == flags)
-		{
-			SpinLockRelease(&s->mutex);
-			return true;
-		}
+	LWLockAcquire(&s->ring_lock.lock, LW_EXCLUSIVE);
+	if (ent_with(s, k, flags) != NULL)
+	{
+		LWLockRelease(&s->ring_lock.lock);
+		return true;
+	}
 	if (s->hold > 0 || !ring_take(s, l.total, &off, &flight, &evicted))
 	{
 		if (s->hold > 0)
 			s->hold--;
-		SpinLockRelease(&s->mutex);
+		LWLockRelease(&s->ring_lock.lock);
 		sift_stat_add(SIFT_STAT_DICT_SHARED_HELD, 1);
 		return false;
 	}
-	SpinLockRelease(&s->mutex);
+	LWLockRelease(&s->ring_lock.lock);
 
 	rec = ring + off;
 	memcpy(rec, &h, sizeof(h));
@@ -438,43 +618,14 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 	if (flags & F_ORDER)
 		memcpy(rec + l.order_at, d->sorted, (Size) d->n * sizeof(uint32));
 
-	b = bucket(s, k);
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(&s->ring_lock.lock, LW_EXCLUSIVE);
+	LWLockAcquire(bucket_lock_of(s, (int) (bucket(s, k) - s->dir)), LW_EXCLUSIVE);
 	s->flight[flight].len = 0;
-	/* a record of the same key is read no more (it goes when nobody reads it); the oldest unpinned goes if all places are taken */
-	for (int i = 0; i < DSHM_WAYS; i++)
-		if (b[i].state == E_LIVE && memcmp(&b[i].key, k, sizeof(*k)) == 0)
-		{
-			asks = b[i].asks;
-			orows = b[i].orows;
-			b[i].state = b[i].pins > 0 ? E_STALE : E_FREE;
-		}
-	for (int i = 0; i < DSHM_WAYS && slot < 0; i++)
-		if (b[i].state == E_FREE)
-			slot = i;
-	if (slot < 0)
-	{
-		for (int i = 0; i < DSHM_WAYS; i++)
-			if (b[i].pins == 0 && (slot < 0 || b[i].tick < b[slot].tick))
-				slot = i;
-		s->thrown++;
-		evicted += slot >= 0;
-	}
-	if (slot >= 0)
-	{
-		int			at = (int) (b - s->dir) + slot;
-
-		ord_drop(s, at);
-		b[slot] = (DshmEnt) {.state = E_LIVE, .key = *k, .off = off, .len = l.total, .asks = asks, .orows = orows, .tick = ++s->tick};
-		ord_add(s, at);
-	}
-	if (++s->writes >= DSHM_WINDOW)
-	{
-		if (s->thrown > s->found)
-			s->hold = DSHM_HOLD;
-		s->writes = s->thrown = s->found = 0;
-	}
-	SpinLockRelease(&s->mutex);
+	pg_atomic_write_u64(&s->tick, pg_atomic_read_u64(&s->tick) + 1);
+	slot = ent_enter(s, k, flags, off, l.total, &evicted);
+	LWLockRelease(bucket_lock_of(s, (int) (bucket(s, k) - s->dir)));
+	window_note_write(s);
+	LWLockRelease(&s->ring_lock.lock);
 	sift_shm_note_eviction(SIFT_SHM_COL_DICT, evicted);
 	return slot >= 0;
 }
@@ -488,13 +639,19 @@ sift_dictshm_stat(SiftShmStat *st)
 
 	if (s == NULL)
 		return false;
-	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < DSHM_BUCKETS * DSHM_WAYS; i++)
-		if (s->dir[i].state == E_LIVE)
-			st->used += s->dir[i].len;
-	st->hits = s->hits;
-	st->misses = s->misses;
-	SpinLockRelease(&s->mutex);
+	sift_tranche_register(s->tranche, DSHM_TRANCHE);
+	for (int b = 0; b < DSHM_BUCKETS; b++)
+	{
+		LWLockAcquire(&s->bucket_lock[b].lock, LW_SHARED);
+		for (int i = b * DSHM_WAYS; i < (b + 1) * DSHM_WAYS; i++)
+			if (s->dir[i].state == E_LIVE)
+				st->used += s->dir[i].len;
+		LWLockRelease(&s->bucket_lock[b].lock);
+	}
+	st->hits = dshm_hits(s);
+	st->misses = 0;
+	for (int i = 0; i < DSHM_COUNTS; i++)
+		st->misses += pg_atomic_read_u64(&s->count[i].misses);
 	st->has_used = st->has_counts = true;
 	return true;
 }

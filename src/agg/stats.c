@@ -29,16 +29,25 @@ PG_FUNCTION_INFO_V1(sift_col_rollup_misses);
 /* (relation, reason) pairs kept; a pair that finds the table full is not counted */
 #define STATS_MISSES	256
 
-#define STATS_NAME		"sift_stats_1"
+#define STATS_NAME		"sift_stats_2"
+
+/* a backend adds to the shard of its process number: the counters of one shard are on lines no other shard shares, and sift.stats() adds the shards up */
+#define SIFT_STATS_SHARDS	32
 
 int64		sift_stat_v[SIFT_STAT_COUNT];
 
-typedef struct SharedStats
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) StatsShard
 {
 	pg_atomic_uint64 stat[SIFT_STAT_COUNT];
 	pg_atomic_uint64 refused[AGG_REFUSE_COUNT];
 	pg_atomic_uint64 limit[SIFT_LIM_COUNT];
+} StatsShard;
+
+typedef struct SharedStats
+{
+	StatsShard	shard[SIFT_STATS_SHARDS];
 } SharedStats;
+StaticAssertDecl(sizeof(StatsShard) % PG_CACHE_LINE_SIZE == 0, "a shard of the counters shares no line with another");
 
 typedef struct Miss
 {
@@ -63,12 +72,51 @@ stats_init(SIFT_DSM_INIT_ARGS)
 {
 	SharedStats *t = ptr;
 
-	for (int i = 0; i < SIFT_STAT_COUNT; i++)
-		pg_atomic_init_u64(&t->stat[i], 0);
-	for (int i = 0; i < AGG_REFUSE_COUNT; i++)
-		pg_atomic_init_u64(&t->refused[i], 0);
-	for (int i = 0; i < SIFT_LIM_COUNT; i++)
-		pg_atomic_init_u64(&t->limit[i], 0);
+	for (int s = 0; s < SIFT_STATS_SHARDS; s++)
+	{
+		for (int i = 0; i < SIFT_STAT_COUNT; i++)
+			pg_atomic_init_u64(&t->shard[s].stat[i], 0);
+		for (int i = 0; i < AGG_REFUSE_COUNT; i++)
+			pg_atomic_init_u64(&t->shard[s].refused[i], 0);
+		for (int i = 0; i < SIFT_LIM_COUNT; i++)
+			pg_atomic_init_u64(&t->shard[s].limit[i], 0);
+	}
+}
+
+static StatsShard *
+my_shard(SharedStats *t)
+{
+	return &t->shard[MyProcNumber & (SIFT_STATS_SHARDS - 1)];
+}
+
+#define SHARDS_SUM(t, field, i, sum) \
+	do { for (int s_ = 0; s_ < SIFT_STATS_SHARDS; s_++) (sum) += pg_atomic_read_u64(&(t)->shard[s_].field[i]); } while (0)
+
+static int64
+stat_total(SharedStats *t, int i)
+{
+	uint64		sum = 0;
+
+	SHARDS_SUM(t, stat, i, sum);
+	return (int64) sum;
+}
+
+static int64
+refused_total(SharedStats *t, int i)
+{
+	uint64		sum = 0;
+
+	SHARDS_SUM(t, refused, i, sum);
+	return (int64) sum;
+}
+
+static int64
+limit_total(SharedStats *t, int i)
+{
+	uint64		sum = 0;
+
+	SHARDS_SUM(t, limit, i, sum);
+	return (int64) sum;
 }
 
 /* The table, NULL where the system has no room for it (the counts of this backend are then its own alone) */
@@ -95,7 +143,7 @@ sift_stats_share(SiftStat s, int64 n)
 	SharedStats *t = n != 0 ? table() : NULL;
 
 	if (t != NULL)
-		pg_atomic_fetch_add_u64(&t->stat[s], n);
+		pg_atomic_fetch_add_u64(&my_shard(t)->stat[s], n);
 }
 
 void
@@ -108,9 +156,9 @@ sift_stats_refusal(int why, int lim)
 		limit_v[lim]++;
 	if (t == NULL)
 		return;
-	pg_atomic_fetch_add_u64(&t->refused[why], 1);
+	pg_atomic_fetch_add_u64(&my_shard(t)->refused[why], 1);
 	if (lim >= 0)
-		pg_atomic_fetch_add_u64(&t->limit[lim], 1);
+		pg_atomic_fetch_add_u64(&my_shard(t)->limit[lim], 1);
 }
 
 static void
@@ -149,17 +197,17 @@ stats_rows(FunctionCallInfo fcinfo, bool local)
 						errdetail("%s", unavailable_why), errhint("sift.stats(local => true) returns the counters of this session.")));
 	InitMaterializedSRF(fcinfo, 0);
 	for (int i = 0; i < SIFT_STAT_COUNT; i++)
-		put_row(rsi, stat_name[i], local ? sift_stat_v[i] : (int64) pg_atomic_read_u64(&t->stat[i]));
+		put_row(rsi, stat_name[i], local ? sift_stat_v[i] : stat_total(t, i));
 	for (int i = 1; i < AGG_REFUSE_COUNT; i++)
 	{
-		int64		n = local ? refused_v[i] : (int64) pg_atomic_read_u64(&t->refused[i]);
+		int64		n = local ? refused_v[i] : refused_total(t, i);
 
 		if (n > 0)
 			put_row(rsi, psprintf("refused.%s", refusal_slug(i)), n);
 	}
 	for (int i = 0; i < SIFT_LIM_COUNT; i++)
 	{
-		int64		n = local ? limit_v[i] : (int64) pg_atomic_read_u64(&t->limit[i]);
+		int64		n = local ? limit_v[i] : limit_total(t, i);
 
 		if (n > 0)
 			put_row(rsi, psprintf("limit.%s", sift_agg_limit_name(i)), n);

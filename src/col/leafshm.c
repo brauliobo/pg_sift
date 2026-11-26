@@ -9,25 +9,34 @@
  * to plan makes the records again.
  *
  * The table is a ring of bytes (sift.shared_cache_kb, the DSM registry: nothing is allocated at postmaster start) and a directory of LSHM_DIR entries. A
- * writer takes its place in the ring and clears the entries it covers under the spinlock, copies outside of it and enters the directory when done; a record
+ * writer takes its place in the ring and clears the entries it covers under the write lock, copies outside of it and enters the directory when done; a record
  * carries a checksum, so a reader that copied bytes another writer was overwriting (a ring that wrapped) finds out and plans as if there were no record.
+ * Readers take no lock and write nothing shared but their own counters: they copy the bucket of the index between two reads of the sequence number of its stripe,
+ * which a writer makes odd while it changes an entry of the stripe, and read again when it moved (a reader that finds it odd waits for the write lock).
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
+#include "port/atomics.h"
 #include "port/pg_crc32c.h"
-#include "storage/spin.h"
+#include "storage/lwlock.h"
 
 #include "core/cmp.h"
 #include "core/shm/budget.h"
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
 
-/* a place for each index of a partitioned table of a few thousand partitions to keep its record, in buckets of LSHM_WAYS: a lookup scans the bucket of the index under the spinlock */
+/* a place for each index of a partitioned table of a few thousand partitions to keep its record, in buckets of LSHM_WAYS: a lookup scans the bucket of the index */
 #define LSHM_DIR		4096
 #define LSHM_WAYS		8
+#define LSHM_STRIPES	64
+#define LSHM_COUNTS		32
+/* a record read this many writes ago is read again as new: the oldest entry of a bucket goes when it is full, so a hit writes the tick of its entry once in a while */
+#define LSHM_TICK_LAG	64
 #define LSHM_MAGIC		0x4C534831
 /* the name carries the layout, as for the shared verdicts */
 #define LSHM_NAME		"sift_col_leaf_stats_6"
+#define LSHM_TRANCHE	"SiftLeafShm"
 
 
 typedef struct LshmEnt
@@ -36,7 +45,7 @@ typedef struct LshmEnt
 	uint64		stamp;
 	Size		off,
 				len;
-	uint64		tick;			/* oldest goes when the directory is full */
+	pg_atomic_uint64 tick;		/* oldest goes when the directory is full */
 	RelFileNumber rel;
 	Oid			db;
 	LshmKind	kind;
@@ -45,18 +54,30 @@ typedef struct LshmEnt
 }			LshmEnt;
 StaticAssertDecl(sizeof(LshmEnt) == 48, "LshmEnt is 48 bytes");
 
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) LshmStripe
+{
+	pg_atomic_uint32 seq;		/* odd while a writer changes an entry of the buckets of the stripe */
+} LshmStripe;
+
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) LshmCount
+{
+	pg_atomic_uint64 hits,		/* reads of a record that found it, and that did not: since the table was made (sift.shared_memory) */
+				misses;
+} LshmCount;
+
 typedef struct Lshm
 {
-	slock_t		mutex;
-	uint64		tick;
-	uint64		hits,			/* reads of a record that found it, and that did not: since the table was made (sift.shared_memory) */
-				misses;
+	LWLockPadded write_lock;	/* the writers: the ring, the order of its records, the entries of the directory */
+	int			tranche;
 	Size		size;
 	Size		head;
 	Size		used_bytes;		/* of the records of the directory */
+	pg_atomic_uint64 tick;		/* the writes so far */
 	int			nord;
 	int16		ord[LSHM_DIR];	/* the used entries by the place of their record: no two overlap */
-	LshmEnt		dir[LSHM_DIR];
+	LshmStripe	stripe[LSHM_STRIPES] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
+	LshmCount	count[LSHM_COUNTS];	/* by the process number of the reader: no counter is a line of another reader */
+	LshmEnt		dir[LSHM_DIR] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
 	char		data[FLEXIBLE_ARRAY_MEMBER];
 }			Lshm;
 
@@ -85,6 +106,18 @@ lshm_bucket(RelFileNumber rel)
 	return (int) ((rel * UINT32_C(2654435761)) % (LSHM_DIR / LSHM_WAYS)) * LSHM_WAYS;
 }
 
+static pg_atomic_uint32 *
+lshm_seq(Lshm *s, int slot)
+{
+	return &s->stripe[(slot / LSHM_WAYS) % LSHM_STRIPES].seq;
+}
+
+static LshmCount *
+lshm_count(Lshm *s)
+{
+	return &s->count[MyProcNumber & (LSHM_COUNTS - 1)];
+}
+
 static bool lshm_failed;
 
 static void
@@ -93,8 +126,19 @@ lshm_init(SIFT_DSM_INIT_ARGS)
 	Lshm	   *s = ptr;
 
 	memset(s, 0, offsetof(Lshm, data));
-	SpinLockInit(&s->mutex);
+	s->tranche = sift_tranche_new(LSHM_TRANCHE);
+	LWLockInitialize(&s->write_lock.lock, s->tranche);
 	s->size = sift_shm_pool_bytes(SIFT_SHM_COL_LEAF);
+	pg_atomic_init_u64(&s->tick, 0);
+	for (int i = 0; i < LSHM_STRIPES; i++)
+		pg_atomic_init_u32(&s->stripe[i].seq, 0);
+	for (int i = 0; i < LSHM_COUNTS; i++)
+	{
+		pg_atomic_init_u64(&s->count[i].hits, 0);
+		pg_atomic_init_u64(&s->count[i].misses, 0);
+	}
+	for (int i = 0; i < LSHM_DIR; i++)
+		pg_atomic_init_u64(&s->dir[i].tick, 0);
 }
 
 static Lshm *
@@ -103,8 +147,12 @@ lshm_get(void)
 	if (sift_shm_pool_bytes(SIFT_SHM_COL_LEAF) == 0 || lshm_failed)
 		return NULL;
 	if (lshm == NULL)
+	{
 		lshm = sift_dsm_attach(LSHM_NAME, offsetof(Lshm, data) + sift_shm_pool_bytes(SIFT_SHM_COL_LEAF), lshm_init, &lshm_failed,
 							   "the statistics of the column indexes", "sift.shared_cache_kb", false);
+		if (lshm != NULL)
+			sift_tranche_register(lshm->tranche, LSHM_TRANCHE);
+	}
 	return lshm;
 }
 
@@ -127,24 +175,69 @@ record_crc(const char *rec, Size len)
 	return crc;
 }
 
+typedef struct LshmHit
+{
+	int			slot;
+	uint64		stamp;
+	Size		off,
+				len;
+} LshmHit;
+
+/* the entry of the bucket of the index that holds its record of the kind (under the stamp, when there is one), as no writer was changing it; false: none */
+static bool
+lshm_find(Lshm *s, RelFileNumber rel, bool scope, LshmKind kind, const uint64 *stamp, LshmHit *hit)
+{
+	const int	first = lshm_bucket(rel);
+	pg_atomic_uint32 *seq = lshm_seq(s, first);
+
+	for (;;)
+	{
+		uint32		before = pg_atomic_read_u32(seq);
+		bool		found = false;
+
+		if (before & 1)
+		{
+			LWLockAcquire(&s->write_lock.lock, LW_SHARED);
+			LWLockRelease(&s->write_lock.lock);
+			continue;
+		}
+		pg_read_barrier();
+		for (int i = first; i < first + LSHM_WAYS && !found; i++)
+		{
+			const LshmEnt *e = &s->dir[i];
+
+			if (e->used && e->rel == rel && e->db == MyDatabaseId && e->scope == scope && e->kind == kind && (stamp == NULL || e->stamp == *stamp))
+			{
+				*hit = (LshmHit) {.slot = i, .stamp = e->stamp, .off = e->off, .len = e->len};
+				found = true;
+			}
+		}
+		pg_read_barrier();
+		if (pg_atomic_read_u32(seq) == before)
+			return found;
+	}
+}
+
+/* the entry was read: when its tick is old it is made new, so that the oldest of a full bucket is one that nobody reads */
+static void
+lshm_touch(Lshm *s, int slot)
+{
+	uint64		now = pg_atomic_read_u64(&s->tick);
+
+	if (now - pg_atomic_read_u64(&s->dir[slot].tick) >= LSHM_TICK_LAG)
+		pg_atomic_write_u64(&s->dir[slot].tick, now);
+}
+
 bool
 sift_col_leafshm_peek(RelFileNumber rel, bool scope, LshmKind kind, uint64 *stamp)
 {
 	Lshm	   *s = lshm_get();
-	bool		found = false;
+	LshmHit		hit;
 
-	if (s == NULL)
+	if (s == NULL || !lshm_find(s, rel, scope, kind, NULL, &hit))
 		return false;
-	SpinLockAcquire(&s->mutex);
-	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
-		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].scope == scope && s->dir[i].kind == kind)
-		{
-			*stamp = s->dir[i].stamp;
-			found = true;
-			break;
-		}
-	SpinLockRelease(&s->mutex);
-	return found;
+	*stamp = hit.stamp;
+	return true;
 }
 
 /* a copy of the record the ring holds for the index under the stamp, NULL: none */
@@ -152,30 +245,22 @@ static char *
 lshm_copy(RelFileNumber rel, bool scope, LshmKind kind, uint64 stamp, Size *len)
 {
 	Lshm	   *s = lshm_get();
-	Size		off = 0;
+	LshmHit		hit;
 	char	   *rec;
 
 	if (s == NULL)
 		return NULL;
-	*len = 0;
-	SpinLockAcquire(&s->mutex);
-	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
-		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].scope == scope && s->dir[i].kind == kind && s->dir[i].stamp == stamp)
-		{
-			off = s->dir[i].off;
-			*len = s->dir[i].len;
-			s->dir[i].tick = ++s->tick;
-			break;
-		}
-	if (*len < sizeof(LshmHdr))
-		s->misses++;
-	else
-		s->hits++;
-	SpinLockRelease(&s->mutex);
-	if (*len < sizeof(LshmHdr))
+	if (!lshm_find(s, rel, scope, kind, &stamp, &hit) || hit.len < sizeof(LshmHdr))
+	{
+		pg_atomic_fetch_add_u64(&lshm_count(s)->misses, 1);
+		*len = 0;
 		return NULL;
-	rec = palloc(*len);
-	memcpy(rec, s->data + off, *len);
+	}
+	pg_atomic_fetch_add_u64(&lshm_count(s)->hits, 1);
+	lshm_touch(s, hit.slot);
+	*len = hit.len;
+	rec = palloc(hit.len);
+	memcpy(rec, s->data + hit.off, hit.len);
 	return rec;
 }
 
@@ -261,15 +346,35 @@ ord_first(const Lshm *s, Size at)
 	return lo;
 }
 
-/* The entry of the index at position i of the order leaves the directory */
+/* a change of an entry of the directory, between the two moves of the sequence number of its stripe: the readers that copy the bucket meanwhile read it again */
 static void
-lshm_free_at(Lshm *s, int i)
+lshm_change_begin(Lshm *s, int slot)
 {
-	LshmEnt    *e = &s->dir[s->ord[i]];
+	pg_atomic_uint32 *seq = lshm_seq(s, slot);
 
+	pg_atomic_write_u32(seq, pg_atomic_read_u32(seq) + 1);
+	pg_write_barrier();
+}
+
+static void
+lshm_change_end(Lshm *s, int slot)
+{
+	pg_atomic_uint32 *seq = lshm_seq(s, slot);
+
+	pg_write_barrier();
+	pg_atomic_write_u32(seq, pg_atomic_read_u32(seq) + 1);
+}
+
+/* the entry leaves the directory; the order of the ring is the caller's */
+static void
+lshm_drop(Lshm *s, int slot)
+{
+	LshmEnt    *e = &s->dir[slot];
+
+	lshm_change_begin(s, slot);
 	e->used = false;
+	lshm_change_end(s, slot);
 	s->used_bytes -= e->len;
-	memmove(s->ord + i, s->ord + i + 1, (s->nord-- - i - 1) * sizeof(int16));
 }
 
 static void
@@ -278,26 +383,41 @@ lshm_free(Lshm *s, int slot)
 	int			i = ord_first(s, s->dir[slot].off);
 
 	SIFT_INVARIANT(i < s->nord && s->ord[i] == slot, "a record of the shared statistics is not in the order of the ring");
-	lshm_free_at(s, i);
+	lshm_drop(s, slot);
+	memmove(s->ord + i, s->ord + i + 1, (s->nord-- - i - 1) * sizeof(int16));
 }
 
-/* the records that [off, off + len) covers are evicted: the number of them */
+/* the records that [off, off + len) covers are evicted, and leave the order of the ring in one move: the number of them */
 static int
 lshm_evict_range(Lshm *s, Size off, Size len)
 {
-	int			n = 0;
+	int			first = ord_first(s, off),
+				end = first;
 
-	for (int i = ord_first(s, off); i < s->nord && s->dir[s->ord[i]].off < off + len; n++)
-		lshm_free_at(s, i);
-	return n;
+	while (end < s->nord && s->dir[s->ord[end]].off < off + len)
+		lshm_drop(s, s->ord[end++]);
+	memmove(s->ord + first, s->ord + end, (s->nord - end) * sizeof(int16));
+	s->nord -= end - first;
+	return end - first;
 }
 
 static void
 lshm_enter(Lshm *s, int slot, const LshmEnt *e)
 {
+	LshmEnt    *d = &s->dir[slot];
 	int			i;
 
-	s->dir[slot] = *e;
+	lshm_change_begin(s, slot);
+	d->stamp = e->stamp;
+	d->off = e->off;
+	d->len = e->len;
+	d->rel = e->rel;
+	d->db = e->db;
+	d->kind = e->kind;
+	d->scope = e->scope;
+	d->used = true;
+	pg_atomic_write_u64(&d->tick, pg_atomic_read_u64(&s->tick));
+	lshm_change_end(s, slot);
 	i = ord_first(s, e->off);
 	memmove(s->ord + i + 1, s->ord + i, (s->nord++ - i) * sizeof(int16));
 	s->ord[i] = (int16) slot;
@@ -319,9 +439,10 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	h.crc = record_crc(rec, len);
 	memcpy(rec, &h, sizeof(h));
 
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(&s->write_lock.lock, LW_EXCLUSIVE);
 	off = s->head + len > s->size ? 0 : s->head;
 	s->head = off + len;
+	pg_atomic_write_u64(&s->tick, pg_atomic_read_u64(&s->tick) + 1);
 	/* the record of the same index and kind (an older stamp) is replaced: it is in the bucket of the index; those the new one covers are evicted */
 	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
 		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].scope == scope && s->dir[i].kind == h.kind)
@@ -329,18 +450,18 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	evicted = lshm_evict_range(s, off, len);
 	/* a free place in the bucket of the index, the oldest of the bucket if all are taken */
 	for (int i = slot; i < lshm_bucket(rel) + LSHM_WAYS; i++)
-		if (!s->dir[i].used || (s->dir[slot].used && s->dir[i].tick < s->dir[slot].tick))
+		if (!s->dir[i].used || (s->dir[slot].used && pg_atomic_read_u64(&s->dir[i].tick) < pg_atomic_read_u64(&s->dir[slot].tick)))
 			slot = i;
 	evicted += s->dir[slot].used;
-	SpinLockRelease(&s->mutex);
+	LWLockRelease(&s->write_lock.lock);
 	sift_shm_note_eviction(SIFT_SHM_COL_LEAF, evicted);
 	memcpy(s->data + off, rec, len);
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(&s->write_lock.lock, LW_EXCLUSIVE);
 	if (s->dir[slot].used)
 		lshm_free(s, slot);
 	(void) lshm_evict_range(s, off, len);
-	lshm_enter(s, slot, &(LshmEnt) {.used = true, .rel = rel, .db = MyDatabaseId, .scope = scope, .kind = h.kind, .stamp = stamp, .off = off, .len = len, .tick = ++s->tick});
-	SpinLockRelease(&s->mutex);
+	lshm_enter(s, slot, &(LshmEnt) {.rel = rel, .db = MyDatabaseId, .scope = scope, .kind = h.kind, .stamp = stamp, .off = off, .len = len});
+	LWLockRelease(&s->write_lock.lock);
 }
 
 void
@@ -393,11 +514,16 @@ sift_col_leafshm_stat(SiftShmStat *st)
 
 	if (s == NULL)
 		return false;
-	SpinLockAcquire(&s->mutex);
+	sift_tranche_register(s->tranche, LSHM_TRANCHE);
+	LWLockAcquire(&s->write_lock.lock, LW_SHARED);
 	st->used += s->used_bytes;
-	st->hits = s->hits;
-	st->misses = s->misses;
-	SpinLockRelease(&s->mutex);
+	LWLockRelease(&s->write_lock.lock);
+	st->hits = st->misses = 0;
+	for (int i = 0; i < LSHM_COUNTS; i++)
+	{
+		st->hits += pg_atomic_read_u64(&s->count[i].hits);
+		st->misses += pg_atomic_read_u64(&s->count[i].misses);
+	}
 	st->has_used = st->has_counts = true;
 	return true;
 }

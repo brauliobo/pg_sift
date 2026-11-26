@@ -13,7 +13,7 @@
 #include "storage/dsm_registry.h"
 #include "storage/dsm_impl.h"
 #include "storage/ipc.h"
-#include "storage/spin.h"
+#include "storage/lwlock.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/tuplestore.h"
@@ -22,6 +22,9 @@
 #include "col/dictshm/dictshm.h"
 #include "col/dictshm/int.h"
 #include "col/dsmreg.h"
+#include "col/leafshm.h"
+#include "core/sql/sql.h"
+#include "portability/instr_time.h"
 #include "access/xact.h"
 
 /* The records some backend reads in place, and the pins on them (all backends) */
@@ -33,14 +36,17 @@ sift_dictshm_pinned(int64 *records, int64 *pins)
 	*records = *pins = 0;
 	if (s == NULL)
 		return;
-	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < lengthof(s->dir); i++)
-		if (s->dir[i].state != E_FREE && s->dir[i].pins > 0)
-		{
-			(*records)++;
-			*pins += s->dir[i].pins;
-		}
-	SpinLockRelease(&s->mutex);
+	for (int b = 0; b < DSHM_BUCKETS; b++)
+	{
+		LWLockAcquire(&s->bucket_lock[b].lock, LW_SHARED);
+		for (int i = b * DSHM_WAYS; i < (b + 1) * DSHM_WAYS; i++)
+			if (s->dir[i].state != E_FREE && pg_atomic_read_u32(&s->dir[i].pins) > 0)
+			{
+				(*records)++;
+				*pins += pg_atomic_read_u32(&s->dir[i].pins);
+			}
+		LWLockRelease(&s->bucket_lock[b].lock);
+	}
 }
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_shared_hold);
@@ -54,11 +60,12 @@ sift_test_col_dict_shared_hold(PG_FUNCTION_ARGS)
 
 	if (s == NULL)
 		PG_RETURN_NULL();
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(&s->ring_lock.lock, LW_EXCLUSIVE);
 	was = s->hold;
 	s->hold = PG_GETARG_INT32(0);
-	s->writes = s->thrown = s->found = 0;
-	SpinLockRelease(&s->mutex);
+	s->writes = s->thrown = 0;
+	s->window_hits = dshm_hits(s);
+	LWLockRelease(&s->ring_lock.lock);
 	PG_RETURN_INT32(was);
 }
 
@@ -148,15 +155,15 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	kc.gen = 2;
 	for (kb = ka, kb.gen = 3; bucket(s, &kb) != bucket(s, &ka); kb.gen++)
 		;
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(&s->ring_lock.lock, LW_EXCLUSIVE);
 	for (int i = 0; i < lengthof(s->dir); i++)
 		s->dir[i].state = E_FREE;
 	s->head = TYPEALIGN(DSHM_ALIGN, len * 3);
 	s->hold = 0;
-	SpinLockRelease(&s->mutex);
+	LWLockRelease(&s->ring_lock.lock);
 	wrote = sift_dictshm_write(&kb, dc);
 	SIFT_INVARIANT(wrote, "the record of a place past the small ring was not written");
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(&s->ring_lock.lock, LW_EXCLUSIVE);
 	size = s->size;
 	s->size = len * 5 / 2;
 	s->head = 0;
@@ -168,23 +175,25 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	third = ring_take(s, len, &off[2], &flight[2], &evicted);
 	s->flight[flight[0]].len = s->flight[flight[1]].len = 0;
 	s->head = 0;
-	SpinLockRelease(&s->mutex);
+	LWLockRelease(&s->ring_lock.lock);
 	SIFT_INVARIANT(!third && off[0] != off[1], "a place being copied into was given to another writer: %zu, %zu", off[0], off[1]);
 
 	wrote = sift_dictshm_write(&kc, dc);
 	SIFT_INVARIANT(wrote, "the record of the test was not written");
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(&s->ring_lock.lock, LW_EXCLUSIVE);
 	for (int i = 0; i < lengthof(s->dir); i++)
 		if (s->dir[i].state == E_LIVE)
 		{
 			DshmEnt    *b = bucket(s, &ka);
+			Size		forged_off = s->dir[i].off,
+						forged_len = s->dir[i].len;
+			uint32		forged_flags = s->dir[i].hdr_flags;
 
 			ord_drop(s, (int) (b - s->dir));
-			b[0] = s->dir[i];
-			b[0].key = ka;
+			ent_set(&b[0], &ka, forged_off, forged_len, forged_flags, 0, 0, 0);
 			break;
 		}
-	SpinLockRelease(&s->mutex);
+	LWLockRelease(&s->ring_lock.lock);
 	got = sift_dictshm_read(&ka, CurrentMemoryContext);
 	if (got != NULL)
 		res[0] = got->bytes[got->off[0]];
@@ -194,17 +203,163 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 		SIFT_INVARIANT(npins == 0, "the reader of a stale entry kept its pin: %ld", (long) npins);
 	}
 
-	SpinLockAcquire(&s->mutex);
+	LWLockAcquire(&s->ring_lock.lock, LW_EXCLUSIVE);
 	s->size = size;
 	s->head = 0;
 	for (int i = 0; i < lengthof(s->dir); i++)
 		s->dir[i].state = E_FREE;
 	problem = ring_problem(s);
-	SpinLockRelease(&s->mutex);
+	LWLockRelease(&s->ring_lock.lock);
 	SIFT_INVARIANT(problem == NULL, "the test left the ring of the shared dictionaries wrong: %s", problem);
 	if (got == NULL)
 		PG_RETURN_NULL();
 	PG_RETURN_TEXT_P(cstring_to_text(res));
+}
+
+PG_FUNCTION_INFO_V1(sift_test_shm_caches_hammer);
+
+#define HAMMER_BASE		0x70000000
+#define HAMMER_BATCH	256
+
+static uint32
+hammer_pick(uint64 i, int nkeys)
+{
+	return (uint32) (((i + MyProcPid) * UINT64CONST(2654435761)) >> 7) % nkeys;
+}
+
+static void
+hammer_key(DictKey *k, uint32 i, uint64 gen)
+{
+	memset(k, 0, sizeof(*k));
+	k->rel.relNumber = HAMMER_BASE + i;
+	k->gen = gen;
+	k->unit = UINT32_MAX;
+}
+
+static SiftCDict *
+hammer_dict(void)
+{
+	SiftCDict  *d = sift_cdict_create(CurrentMemoryContext);
+
+	for (int i = 0; i < 64; i++)
+	{
+		char		str[33];
+
+		snprintf(str, sizeof(str), "%031d", i);
+		sift_cdict_intern(d, str, 32);
+	}
+	return d;
+}
+
+static bool
+hammer_op(const char *kind, uint64 i, int nkeys, SiftCDict *d, MemoryContext cx)
+{
+	uint32		key = hammer_pick(i, nkeys);
+	RelFileNumber rel = HAMMER_BASE + key;
+	SiftColPreStats pre;
+	uint64		stamp;
+	DictKey		k;
+
+	if (strcmp(kind, "leaf_read") == 0)
+		return sift_col_leafshm_peek(rel, false, LSHM_PRE, &stamp) && sift_col_leafshm_pre_read(rel, false, stamp, &pre);
+	if (strcmp(kind, "leaf_write") == 0)
+	{
+		memset(&pre, 0, sizeof(pre));
+		sift_col_leafshm_pre_write(rel, false, i + 1, &pre);
+		return true;
+	}
+	if (strcmp(kind, "dict_read") == 0)
+	{
+		SiftCDict  *got;
+
+		hammer_key(&k, key, 0);
+		MemoryContextReset(cx);
+		if ((got = sift_dictshm_read(&k, cx)) == NULL)
+			return false;
+		SIFT_INVARIANT(got->n == d->n && got->bytes[got->off[0]] == d->bytes[d->off[0]] &&
+					   memcmp(got->bytes + got->off[d->n - 1], d->bytes + d->off[d->n - 1], 32) == 0,
+					   "a dictionary read in place is not the one that was written");
+		return true;
+	}
+	if (strcmp(kind, "dict_write") == 0)
+	{
+		hammer_key(&k, key, 1 + (i / nkeys) % 4);
+		return sift_dictshm_write(&k, d);
+	}
+	if (strcmp(kind, "stats") == 0)
+	{
+		sift_stats_share(SIFT_STAT_SCANS, 1);
+		return true;
+	}
+	elog(ERROR, "unknown kind %s", kind);
+}
+
+/*
+ * sift._test_shm_caches_hammer(kind, n, nkeys, max_ms): n operations (or until max_ms passed, 0: no limit) of one kind on the shared caches, over nkeys entries:
+ * leaf_read (peek and read of a record), leaf_write, dict_read (read in place and unpin), dict_write (a record of a key that churns the directory), stats (a count of
+ * sift.stats()). prepare fills the entries the readers ask for. Returns the operations done, those that found their entry, the microseconds, and the longest batch of
+ * HAMMER_BATCH operations in microseconds.
+ */
+Datum
+sift_test_shm_caches_hammer(PG_FUNCTION_ARGS)
+{
+	const char *kind = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	uint64		n = PG_GETARG_INT64(1);
+	int			nkeys = PG_GETARG_INT32(2);
+	int64		max_us = (int64) PG_GETARG_INT32(3) * 1000;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "shm hammer", ALLOCSET_SMALL_SIZES);
+	SiftCDict  *d = hammer_dict();
+	uint64		done = 0,
+				found = 0;
+	int64		longest = 0;
+	instr_time	start,
+				batch,
+				now;
+	Datum		v[4];
+	bool		nulls[4] = {false};
+	int			saved = sift_test_col_dict_shared;
+
+	if (strcmp(kind, "prepare") == 0)
+	{
+		SiftColPreStats pre;
+		DictKey		k;
+
+		memset(&pre, 0, sizeof(pre));
+		sift_test_col_dict_shared = 1;
+		for (int i = 0; i < nkeys; i++)
+		{
+			sift_col_leafshm_pre_write(HAMMER_BASE + i, false, 1, &pre);
+			hammer_key(&k, i, 0);
+			sift_dictshm_write(&k, d);
+		}
+		sift_test_col_dict_shared = saved;
+		n = 0;
+	}
+	sift_test_col_dict_shared = 1;
+	INSTR_TIME_SET_CURRENT(start);
+	batch = start;
+	for (done = 0; done < n; done++)
+	{
+		found += hammer_op(kind, done, nkeys, d, cx);
+		if ((done + 1) % HAMMER_BATCH == 0)
+		{
+			INSTR_TIME_SET_CURRENT(now);
+			longest = Max(longest, (int64) INSTR_TIME_GET_MICROSEC(now) - (int64) INSTR_TIME_GET_MICROSEC(batch));
+			batch = now;
+			if (max_us > 0 && (int64) INSTR_TIME_GET_MICROSEC(now) - (int64) INSTR_TIME_GET_MICROSEC(start) >= max_us)
+			{
+				done++;
+				break;
+			}
+		}
+	}
+	INSTR_TIME_SET_CURRENT(now);
+	sift_test_col_dict_shared = saved;
+	v[0] = Int64GetDatum(done);
+	v[1] = Int64GetDatum(found);
+	v[2] = Int64GetDatum((int64) INSTR_TIME_GET_MICROSEC(now) - (int64) INSTR_TIME_GET_MICROSEC(start));
+	v[3] = Int64GetDatum(longest);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 PG_FUNCTION_INFO_V1(sift_test_dsm_deferred);
