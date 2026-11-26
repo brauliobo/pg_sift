@@ -35,14 +35,22 @@ sub state
 		  || (SELECT i::text FROM sift._test_f2_meta_inline('$idx') i)});
 }
 
-# the functions write WAL in transactions that have no transaction id, which commit without flushing: the standby is asked to reach what was inserted, not what was written
-# the functions write WAL in transactions without a transaction id, which commit without flushing: the standby is asked to reach what was inserted, not what was written
+# the functions write WAL in transactions without a transaction id, which commit without flushing: the standby is asked to reach what was inserted, not what was written.
+# The check gives the pages of the metadata pool back on the primary, which has the only pool: the primary is read first, and the standby (or a crash) gets that WAL too
+sub settled
+{
+	my ($read) = @_;
+	my $p = $read->($primary);
+	$primary->wait_for_catchup($standby, 'replay', $primary->lsn('insert'));
+	return $p;
+}
+
 sub same_state
 {
 	my ($what) = @_;
-	$primary->wait_for_catchup($standby, 'replay', $primary->lsn('insert'));
-	is(state($standby), state($primary), "$what: the standby has the structures of the primary");
-	like(state($primary), qr/^parts=\d+ /, "$what: the allocator, the queue and the manifest agree");
+	my $p = settled(\&state);
+	is(state($standby), $p, "$what: the standby has the structures of the primary");
+	like($p, qr/^parts=\d+ /, "$what: the allocator, the queue and the manifest agree");
 }
 
 subtest 'parts, splits and a manifest of two levels' => sub {
@@ -114,8 +122,8 @@ subtest 'block 0 keeps the summary of the partitions, split by time into hot and
 	};
 	my $at = sub {
 		my ($what) = @_;
-		$primary->wait_for_catchup($standby, 'replay', $primary->lsn('insert'));
-		is($state->($standby), $state->($primary), "$what: the standby has the summary and the parts of the primary");
+		my $p = settled($state);
+		is($state->($standby), $p, "$what: the standby has the summary and the parts of the primary");
 	};
 	$primary->safe_psql('postgres', q{
 		CREATE TABLE ev (id bigint, tenant int, created_at timestamptz, updated_at timestamptz, v float8);
@@ -133,7 +141,7 @@ subtest 'block 0 keeps the summary of the partitions, split by time into hot and
 	is($primary->safe_psql('postgres', "SELECT count(*) FILTER (WHERE flags & 32 <> 0) || '/' || count(*) FILTER (WHERE flags & 64 <> 0) FROM sift._test_f2_parts('ev_idx', 1, NULL)"),
 	   '1/1', 'the compaction wrote a hot part and a cold one');
 	$at->('hot and cold parts');
-	my $want = $state->($primary);
+	my $want = settled($state);
 	kill9_wait($primary);
 	$primary->start;
 	is($state->($primary), $want, 'kill -9: recovery gives the summary the directory has');
@@ -222,9 +230,9 @@ subtest 'tiny parts packed into shared pages are replayed whole and survive a cr
 	};
 	my $at = sub {
 		my ($what) = @_;
-		$primary->wait_for_catchup($standby, 'replay', $primary->lsn('insert'));
-		is($state->($standby), $state->($primary), "$what: the standby has the shared pages and the slots of the primary");
-		like($state->($primary), qr/^parts=12 /, "$what: the allocator, the queue and the manifest agree");
+		my $p = settled($state);
+		is($state->($standby), $p, "$what: the standby has the shared pages and the slots of the primary");
+		like($p, qr/^parts=12 /, "$what: the allocator, the queue and the manifest agree");
 	};
 	$primary->safe_psql('postgres', q{
 		CREATE TABLE pk (v int);
@@ -237,7 +245,7 @@ subtest 'tiny parts packed into shared pages are replayed whole and survive a cr
 	$at->('packed');
 	is($primary->safe_psql('postgres', "SELECT count(DISTINCT header_blk) FROM (SELECT i.header_blk FROM sift._test_f2_partitions('pk_idx') p, LATERAL sift._test_f2_pack_info('pk_idx', p.part_id, p.key_lo) i) q"),
 	   2, 'on two pages');
-	my $want = $state->($primary);
+	my $want = settled($state);
 	kill9_wait($primary);
 	$primary->start;
 	is($state->($primary), $want, 'kill -9: recovery gives the shared pages');
@@ -270,7 +278,7 @@ subtest 'crash recovery' => sub {
 		BEGIN;
 		SELECT sift._test_f2_stage('$idx', 800, 30000000000, 8000000);
 		COMMIT });
-	my $before = state($primary);
+	my $before = settled(\&state);
 	kill9_wait($primary);
 	$primary->start;
 	is(state($primary), $before, 'kill -9: recovery gives the structures that were committed');
