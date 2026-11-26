@@ -212,6 +212,7 @@ SELECT * FROM same_rows($$SELECT g1, g2, g3, g4, o1, o2, o3, o4, row_number() OV
 
 -- rows that the plan estimated to fit and do not (the estimate is of the plan, work_mem is of the run): the rows of the partitions are put together with files
 CREATE TABLE rg (dev int, ts bigint, v int) USING sift_table;
+-- 60000 rows of 3000 devices: more than the 64kB of work_mem holds, so they go to files
 INSERT INTO rg SELECT g % 3000, g, g FROM generate_series(1, 60000) g;
 SELECT sift.table_maintain('rg') IS NOT NULL;
  ?column? 

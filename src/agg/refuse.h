@@ -19,13 +19,9 @@
  */
 #define SIFT_AGG_REFUSALS(X) \
 	X(OTHER, "other", "the shape is not one the aggregate pushdown proves, and no more specific reason is recorded", 0, 0, "Try a simpler form of the statement (one table, a plain GROUP BY) to find the part that is refused, and report the statement if it should be accepted.") \
-	X(FROM_SHAPE, "from_shape", "the FROM list is not one table with the inner, left, semi or anti joins and lateral functions the scan reads", 0, 0, "Write the FROM list as one table with inner or left joins and lateral functions, or move the other sources into a sub-select the scan can read.") \
 	X(NO_SOURCE, "no_source", "no sift_col index or sift_table covers the table", 0, 1, "Create a columnar index: CREATE INDEX ON <table> USING sift_col (<filter_and_group_cols>);") \
 	X(WHERE, "where", "a condition of the WHERE or ON clause is not one the scan can test", 0, 0, "Test a column of the index with a comparison, IN, BETWEEN, LIKE or IS NULL, or add the column or expression the condition reads to the sift_col index.") \
-	X(VOLATILE, "volatile", "the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce", 0, 1, "None needed, the normal plan is the answer; compute the volatile function outside the statement or in an outer query to get the scan.") \
-	X(GROUP_MEMORY, "group_memory", "the groups would not fit in the memory of a hash aggregate, and the scan cannot spill them, or the normal plan, which spills them, is estimated cheaper than the scan with its spill", 1, 1, "Raise work_mem so that the groups fit a hash aggregate, or leave the normal plan, which spills them.") \
-	X(COST, "cost", "the normal plan is estimated cheaper than the scan", 0, 1, "None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale.") \
-	X(CTE_COST, "cte_cost", "the shared CTE plan is estimated cheaper than the plan with the CTE inlined", 0, 1, "None needed, the cheaper form was chosen; MATERIALIZED or NOT MATERIALIZED on the CTE picks the other.")
+	X(COST, "cost", "the normal plan is estimated cheaper than the scan", 0, 1, "None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale.")
 
 typedef enum AggRefusal
 {

@@ -11,6 +11,7 @@ SET sift.agg_exact_float = on;
 CREATE TABLE gi (id int, s int2, w int8, q int, t timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO gi
 SELECT i, (i % 100)::int2, i % 100, (i * 31) % 1000, timestamptz '2024-01-01' + (i % 100) * interval '1 day'
+-- 120000 rows are 15 granules of 8192 for the constant arrays to be matched against
 FROM generate_series(1, 120000) i;
 CREATE INDEX gi_col ON gi USING sift_col (id, s, w, q, t);
 VACUUM (FREEZE, ANALYZE) gi;
@@ -19,6 +20,7 @@ INSERT INTO gj SELECT * FROM gi;
 VACUUM (FREEZE, ANALYZE) gj;
 
 CREATE TABLE gx (id int, g int, q int) WITH (autovacuum_enabled = false);
+-- 250000 rows are 31 granules of 8192 for the device and the CPU to fold each on their own
 INSERT INTO gx SELECT i, i % 40, (i * 31) % 1000 FROM generate_series(1, 250000) i;
 CREATE INDEX gx_col ON gx USING sift_col (id, g, q);
 VACUUM (FREEZE, ANALYZE) gx;

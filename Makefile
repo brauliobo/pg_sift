@@ -366,6 +366,7 @@ TESTING_REGRESS += col/f2/projections
 TESTING_REGRESS += col/f2/prune
 TESTING_REGRESS += col/f2/pull_prune
 TESTING_REGRESS += col/f2/quarantine
+TESTING_REGRESS += col/f2/relcache_scan_delta
 TESTING_REGRESS += col/f2/relcache_uaf_closure
 TESTING_REGRESS += col/f2/reloptions_deprecated
 TESTING_REGRESS += col/f2/scope_ddl

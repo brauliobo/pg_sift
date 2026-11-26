@@ -31,7 +31,7 @@ manifest-unbounded	src/col/f2/maint.c	7	maintenance or inspection of a whole rel
 manifest-unbounded	src/col/f2/pack.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/proj/build.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/scope/scope.c	1	maintenance or inspection of a whole relation
-manifest-unbounded	src/col/f2/scope/build.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/scope/build.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/scope/cur.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/tail.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/tier/check.c	1	maintenance or inspection of a whole relation
@@ -49,7 +49,7 @@ manifest-unbounded	src/core/f2/fsm/sweep.c	1	the orphan sweep names everything t
 manifest-unbounded	src/core/progress.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/core/sql/api.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/core/sql/parts.c	1	maintenance or inspection of a whole relation
-manifest-unbounded	src/core/sql/status.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/core/sql/status.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/table/f2/ddl.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/table/f2/vacuum.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/table/f2/vm/vm.c	1	maintenance or inspection of a whole relation

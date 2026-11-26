@@ -87,6 +87,7 @@ RESET sift.vacuum_rewrite_limit;
 SET sift.async_maintenance = on;
 SET maintenance_work_mem = '64MB';
 CREATE TABLE o (id int PRIMARY KEY, customer_id int, region int, status int, amount int, n6 int, n7 int, n8 int, notes text) USING sift_table WITH (autovacuum_enabled = false);
+-- 60000 rows are 8 granules of 8192: the UPDATE and the DELETE leave dead rows in more than one granule, which the VACUUM compacts
 INSERT INTO o SELECT i, i % 100, i % 10, 0, i, i, i, i, 'note ' || i FROM generate_series(1, 60000) i;
 VACUUM FREEZE o;
 UPDATE o SET status = 1 WHERE id % 50 = 0;
@@ -99,6 +100,7 @@ SELECT count(*), sum(amount) FROM o;
 
 -- a short column-delta chain of a table nothing was deleted from is folded into its parts by the VACUUM
 CREATE TABLE od (LIKE o INCLUDING ALL) USING sift_table WITH (autovacuum_enabled = false);
+-- the same 60000 rows: the UPDATE of every 50th row leaves a column-delta chain over 8 granules for the VACUUM to fold
 INSERT INTO od SELECT i, i % 100, i % 10, 0, i, i, i, i, 'note ' || i FROM generate_series(1, 60000) i;
 VACUUM FREEZE od;
 UPDATE od SET status = 1 WHERE id % 50 = 0;

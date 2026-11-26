@@ -48,6 +48,7 @@ INSERT INTO ws_h SELECT i,
 	date '2020-01-01' + i % 3000,
 	'tag' || i % 17,
 	CASE WHEN i % 37 = 0 THEN NULL ELSE (i % 977) / 7.0 END
+-- 60000 rows are 8 granules of 8192, the 2 a thread that 4 threads take (agg/par/par.h)
 FROM generate_series(1, 60000) i;
 -- the parts sorted by grp alone (each partition is sorted), by id (the rows of a partition are put together first), and by grp, ts and id (no sort: the serial node)
 CREATE TABLE ws_p AS TABLE ws_h;
@@ -59,6 +60,7 @@ CREATE INDEX ws_e_col ON ws_e USING sift_col (grp, ts, id, k, v, w, f, d, tag, n
 VACUUM (FREEZE, ANALYZE) ws_h, ws_p, ws_r, ws_e;
 -- 20000 partitions of 3 rows
 CREATE TABLE wt_h (id int, grp int, ts timestamptz, v int) WITH (autovacuum_enabled = false);
+-- 60000 rows in 20000 partitions: the node sorts and numbers 20000 small partitions on 4 threads
 INSERT INTO wt_h SELECT i, i % 20000, timestamptz '2024-01-01' + (i / 20000) * interval '1 minute', CASE WHEN i % 17 = 0 THEN NULL ELSE i % 500 END FROM generate_series(1, 60000) i;
 CREATE TABLE wt_p AS TABLE wt_h;
 CREATE INDEX wt_p_col ON wt_p USING sift_col (grp, ts, id, v) WITH (rollup_columns = 'off', key_order = 'grp');

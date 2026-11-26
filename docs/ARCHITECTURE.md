@@ -69,13 +69,9 @@ Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+
 | Slug | Class | Reason | Action |
 |---|---|---|---|
 | `other` | semantic | the shape is not one the aggregate pushdown proves, and no more specific reason is recorded | Try a simpler form of the statement (one table, a plain GROUP BY) to find the part that is refused, and report the statement if it should be accepted. |
-| `from_shape` | semantic | the FROM list is not one table with the inner, left, semi or anti joins and lateral functions the scan reads | Write the FROM list as one table with inner or left joins and lateral functions, or move the other sources into a sub-select the scan can read. |
 | `no_source` | semantic (by design) | no sift_col index or sift_table covers the table | Create a columnar index: CREATE INDEX ON <table> USING sift_col (<filter_and_group_cols>); |
 | `where` | semantic | a condition of the WHERE or ON clause is not one the scan can test | Test a column of the index with a comparison, IN, BETWEEN, LIKE or IS NULL, or add the column or expression the condition reads to the sift_col index. |
-| `volatile` | semantic (by design) | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce | None needed, the normal plan is the answer; compute the volatile function outside the statement or in an outer query to get the scan. |
-| `group_memory` | limit (by design) | the groups would not fit in the memory of a hash aggregate, and the scan cannot spill them, or the normal plan, which spills them, is estimated cheaper than the scan with its spill | Raise work_mem so that the groups fit a hash aggregate, or leave the normal plan, which spills them. |
 | `cost` | semantic (by design) | the normal plan is estimated cheaper than the scan | None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale. |
-| `cte_cost` | semantic (by design) | the shared CTE plan is estimated cheaper than the plan with the CTE inlined | None needed, the cheaper form was chosen; MATERIALIZED or NOT MATERIALIZED on the CTE picks the other. |
 <!-- refusals:end -->
 
 ### `EXPLAIN` Labels

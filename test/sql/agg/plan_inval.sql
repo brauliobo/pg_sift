@@ -12,6 +12,7 @@ DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THE
 CREATE TABLE ih (id int, g int, v int, tag text, at timestamptz, n numeric(12,2), attributes jsonb, metrics jsonb);
 INSERT INTO ih SELECT i, i % 7, i % 13, 'tag' || i % 5, timestamptz '2030-01-01' + i * interval '1 minute', (i % 997) / 8.0,
 	jsonb_build_object('channel', CASE i % 3 WHEN 0 THEN 'web' WHEN 1 THEN 'pos' ELSE 'app' END),
+-- 60000 rows are 8 granules of 8192: the plan prices a scan of more than one granule while the entry is invalidated
 	CASE i % 10 WHEN 0 THEN NULL WHEN 1 THEN '{}' ELSE jsonb_build_object('m_total', i * 0.5, 'quality', i % 6) END FROM generate_series(1, 60000) i;
 CREATE TABLE ic (LIKE ih);
 INSERT INTO ic SELECT * FROM ih;

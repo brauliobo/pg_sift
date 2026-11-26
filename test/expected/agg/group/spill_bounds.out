@@ -10,11 +10,13 @@ SET sift.test_create_format1 = off;
 SET work_mem = '1MB';
 CREATE TABLE gs (id int PRIMARY KEY, k_int int, k_num numeric, k_uuid uuid, k_iv interval, txt text, fl float8, amt int);
 INSERT INTO gs SELECT g, g, g::numeric + 0.123456789, md5(g::text)::uuid, (g || ' seconds')::interval, repeat(md5(g::text), 4), (g::bigint * 7919 % 1000003)::float8 / 7, g % 100
+-- 100000 rows of numeric, uuid, interval and 128-byte text keys: more than the 2MB of hash memory at work_mem 1MB, so every statement spills
 FROM generate_series(1, 100000) g;
 CREATE INDEX gs_col ON gs USING sift_col (id, k_int, k_num, k_uuid, k_iv, txt, fl, amt);
 VACUUM (FREEZE, ANALYZE) gs;
 -- the stale statistics of a table whose key was one value when it was analyzed
 CREATE TABLE gstale (id int PRIMARY KEY, k_st int, amt int);
+-- 100000 distinct keys after the UPDATE while the statistics still say one value: the groups outgrow the memory the plan estimated
 INSERT INTO gstale SELECT g, 1, g % 100 FROM generate_series(1, 100000) g;
 ANALYZE gstale;
 UPDATE gstale SET k_st = id;
@@ -22,6 +24,7 @@ CREATE INDEX gstale_col ON gstale USING sift_col (id, k_st, amt);
 VACUUM gstale;
 -- a table of JSON arrays: the elements of each row are the values of its group
 CREATE TABLE gj (id int PRIMARY KEY, cat int, items jsonb);
+-- 100000 rows in 20 categories: each percentile_cont reads the elements of 5000 JSON arrays
 INSERT INTO gj SELECT g, g % 20, jsonb_build_array(jsonb_build_object('category', 'c' || (g % 20), 'price', (g::bigint * 7919 % 1000003)::float8 / 7)) FROM generate_series(1, 100000) g;
 CREATE INDEX gj_col ON gj USING sift_col (id, cat, items) WITH (paths = 'items[].category text, items[].price float8');
 VACUUM (FREEZE, ANALYZE) gj;

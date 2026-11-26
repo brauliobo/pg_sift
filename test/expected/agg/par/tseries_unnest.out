@@ -30,6 +30,7 @@ CREATE TABLE hc_t (id int, ts timestamptz, dev int, site int, v int, w smallint)
 INSERT INTO hc_t SELECT i,
 	CASE WHEN i % 997 = 0 THEN NULL WHEN i % 4999 = 0 THEN 'infinity' ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 37 % 6000000) * interval '1 second' END,
 	CASE WHEN i % 1009 = 0 THEN NULL ELSE (i::bigint * 7919 % 20000)::int END, i % 5, CASE WHEN i % 20011 = 0 THEN NULL ELSE i % 1000 END, (i % 100)::smallint
+-- 100000 rows over 20000 devices: more groups than one thread table holds
 FROM generate_series(1, 100000) i;
 CREATE INDEX hc_t_col ON hc_t USING sift_col (id, ts, dev, site, v, w) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) hc_t;
@@ -102,6 +103,7 @@ SELECT * FROM check_par('15 minutes by dev, rows inserted and deleted since the 
 CREATE TABLE hd_t (id int, ts timestamptz, dev int, site int, v int, w smallint) WITH (autovacuum_enabled = false);
 INSERT INTO hd_t SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 37 % 6000000) * interval '1 second' END,
 	CASE WHEN i % 1009 = 0 THEN NULL ELSE (i::bigint * 7919 % 20000)::int END, i % 5, i % 1000, (i % 100)::smallint
+-- the same size without the rows the threads leave to the scan
 FROM generate_series(1, 100000) i;
 CREATE INDEX hd_t_col ON hd_t USING sift_col (id, ts, dev, site, v, w) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) hd_t;
@@ -138,6 +140,7 @@ INSERT INTO un2_t SELECT i, i % 50, CASE WHEN i % 7 = 0 OR i % 50 = 3 THEN NULL 
 	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 19 = 0 THEN '{}'::text[]
 		ELSE ARRAY[CASE WHEN i % 23 = 0 THEN NULL ELSE 'tag' || i % 20 END, 'a-much-longer-tag-value-' || i % 37, 'x' || i % 5] END,
 	CASE WHEN i % 13 = 0 THEN NULL WHEN i % 29 = 0 THEN '{}'::int[] ELSE ARRAY[i % 10, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 100 END, i % 3] END
+-- 120000 rows are 15 granules of 8192: each of the 4 threads expands the arrays of several granules
 FROM generate_series(1, 120000) i;
 CREATE INDEX un2_t_col ON un2_t USING sift_col (id, grp, qty, label, tags, nums) WITH (paths = 'tags[] text, nums[] int4', rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) un2_t;

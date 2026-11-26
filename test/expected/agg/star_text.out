@@ -4,11 +4,13 @@ SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 SET sift.test_create_format1 = off;
 CREATE TABLE st_docs (id int PRIMARY KEY, tenant int NOT NULL, region int NOT NULL, body text NOT NULL);
+-- 120000 documents: half say common (60000 hits) and a twentieth say mid (6000 hits), for hit sets of different sizes
 INSERT INTO st_docs SELECT i, i % 3000, i % 7, concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 20 = 0 THEN 'mid' END, 'base') FROM generate_series(1, 120000) i;
 CREATE INDEX st_text ON st_docs USING sift (body);
 CREATE INDEX st_col ON st_docs USING sift_col (id, tenant, region);
 CREATE TABLE st_acl (tenant_id int NOT NULL, item_id int NOT NULL);
 INSERT INTO st_acl SELECT 1, i FROM generate_series(1, 30) i;
+-- every third of the 120000 documents: tenant 2 reads 40000 items where tenant 1 reads 30
 INSERT INTO st_acl SELECT 2, i FROM generate_series(1, 120000, 3) i;
 CREATE INDEX st_acl_tenant ON st_acl (tenant_id);
 SET default_statistics_target = 500;

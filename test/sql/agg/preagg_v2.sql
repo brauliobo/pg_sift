@@ -51,6 +51,7 @@ SELECT i, 'r' || (i % 5), CASE WHEN i % 11 = 0 THEN NULL ELSE 'ch' || (i % 4) EN
 	(i * 7919) % 100003, 4000000000000000000 + (i::int8 * 104729) % 1000003 * 1000000000, ((i * 31) % 100000) / 100.0,
 	((i % 1000) * 0.25)::float4, (i % 800) * 0.5, i % 40, 'city' || (i % 30),
 	encode(sha256((i::text || 'a')::bytea), 'base64') || encode(sha256((i::text || 'b')::bytea), 'base64') || encode(sha256((i::text || 'c')::bytea), 'base64')
+-- 100000 rows are 13 granules of 8192: some stay clean and are answered from the cubes while the others are scanned
 FROM generate_series(1, 100000) i;
 CREATE INDEX orders_col ON orders USING sift_col (id, region, channel, tier, status, qty4, qty8, price, weight, score, ref, city, pad) WITH (key_order = 'id');
 VACUUM orders;
@@ -90,6 +91,7 @@ INSERT INTO grid
 SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE i % 4 END, 'b' || ((i / 4) % 3), CASE WHEN i % 31 = 0 THEN NULL ELSE (i / 12) % 3 END, 'd' || ((i / 36) % 2), (i * 37) % 10007,
 	encode(sha256((i::text || 'a')::bytea), 'base64') || encode(sha256((i::text || 'b')::bytea), 'base64') || encode(sha256((i::text || 'c')::bytea), 'base64') ||
 	encode(sha256((i::text || 'd')::bytea), 'base64') || encode(sha256((i::text || 'e')::bytea), 'base64')
+-- 60000 rows are 8 granules of 8192, each with cubes of two to four group keys
 FROM generate_series(1, 60000) i;
 CREATE INDEX grid_col ON grid USING sift_col (id, a, b, c, d, v, pad) WITH (key_order = 'id');
 VACUUM grid;
@@ -138,9 +140,11 @@ SELECT same('SELECT kind, min(f8), max(f8) FROM readings WHERE kind IN (0, 4) GR
 -- Parts: later inserts are parts of their own, compaction joins the cubes of parts, and a count(DISTINCT) is over the sets of all of them
 CREATE TABLE events (id int PRIMARY KEY, site int, kind text, amount int8, code int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, i % 6, 'k' || (i % 4), (i * 37) % 10007, i % 30,
+-- 60000 rows are 8 granules of 8192: the first part of the table
 	encode(sha256((i::text || 'a')::bytea), 'base64') || encode(sha256((i::text || 'b')::bytea), 'base64') || encode(sha256((i::text || 'c')::bytea), 'base64') FROM generate_series(1, 60000) i;
 CREATE INDEX events_col ON events USING sift_col (id, site, kind, amount, code, pad) WITH (key_order = 'id');
 INSERT INTO events SELECT i, i % 6, 'k' || (i % 4 + 2 * (i % 2)), (i * 37) % 10007 + 5, 20 + i % 30,
+-- 60000 more rows (ids 60001 to 120000) as a part of their own, whose cubes the compaction joins with those of the first
 	encode(sha256((i::text || 'a')::bytea), 'base64') || encode(sha256((i::text || 'b')::bytea), 'base64') || encode(sha256((i::text || 'c')::bytea), 'base64') FROM generate_series(60001, 120000) i;
 VACUUM events;
 SELECT same('SELECT site, count(*), sum(amount), min(amount), max(amount) FROM events GROUP BY site') AS parts_grouped;
@@ -215,6 +219,7 @@ RESET sift.agg_force;
 
 -- preagg = 'off' stores no cubes and every granule is scanned; 'auto' stores them
 CREATE TABLE cubes_auto (id int PRIMARY KEY, g int, v int, pad text) WITH (autovacuum_enabled = off);
+-- 100000 rows are 13 granules of 8192 whose cubes preagg = auto stores and preagg = off does not
 INSERT INTO cubes_auto SELECT i, i % 5, i, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 100000) i;
 CREATE TABLE cubes_off (LIKE cubes_auto) WITH (autovacuum_enabled = off);
 INSERT INTO cubes_off SELECT * FROM cubes_auto;

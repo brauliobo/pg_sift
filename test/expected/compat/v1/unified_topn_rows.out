@@ -126,6 +126,7 @@ BEGIN
 	END LOOP;
 	RETURN r[1] = r[2] AND r[2] = r[3] AND planned;
 END $$;
+-- up to 60000 rows are 8 granules of 8192, the 2 a worker that the float sum needs to be added by 4 workers
 INSERT INTO t SELECT g, g % 40, g % 7, 'x', g / 7.0, 'x' FROM generate_series(3001, 60000) g;
 ANALYZE t;
 SELECT workers_agree('SELECT b, sum(f), avg(f), count(*) FROM t GROUP BY b ORDER BY b') AS float_sums_agree;

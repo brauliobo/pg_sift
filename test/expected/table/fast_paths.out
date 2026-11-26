@@ -31,6 +31,7 @@ INSERT INTO ft SELECT i, (i::bigint * 7919) % 3000, timestamp '2024-01-01' + i *
 	CASE WHEN i % 5 = 0 THEN '' WHEN i % 17 = 0 THEN NULL ELSE 'phrase ' || (i % 411) END,
 	'http://' || CASE WHEN i % 9 = 0 THEN 'www.google.com' ELSE 'site' || (i % 23) || '.example.org' END || '/p' || (i % 977),
 	(i % 1000) / 8.0
+-- 300000 rows are 37 granules of 8192, spread over the parts that sift.parts counts below, for the fast paths to skip some and read others
 FROM generate_series(1, 300000) i;
 CREATE TABLE fh (LIKE ft);
 INSERT INTO fh SELECT * FROM ft;

@@ -13,6 +13,7 @@ DO $$ BEGIN
 END $$;
 
 CREATE TABLE sp (id int, g int, a int) USING sift_table;
+-- 300000 rows over 100003 values of a: the exact COUNT(DISTINCT) does not fit work_mem 64kB, so it spills
 INSERT INTO sp SELECT i, i % 7, i % 100003 FROM generate_series(1, 300000) i;
 VACUUM (ANALYZE) sp;
 

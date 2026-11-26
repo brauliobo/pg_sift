@@ -33,7 +33,6 @@ cast-after-product	src/col/v1/maint/merge.c	live_units += (uint64) (units * live
 cast-after-product	src/col/v1/maint/merge.c	live_units = (uint64) (live_units * share);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
 cast-after-product	src/col/v1/maint/roll.c	return (uint64) (live * Max(hi - lo, 0.0) / ((double) v->khi[i] + 1 - (double) v->klo[i]));	a double estimate, the cast truncates it; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
 cast-after-product	src/col/v1/preagg/preagg.c	sumsq += (SiftCI128) (uint64) (k * k);	this branch is taken only when the zone lies within 2^31 of zero, so a square fits 62 bits
-cast-after-product	src/col/v1/scan/unit.c	sift_col_marks_note(src->index, src->hflog->gen, (uint64) (rows * COL_MARK_PREAGG_PRICE));	a double price, the cast truncates it
 array-append	src/col/v1/scope/rows.c	m.pages[m.nrel++] = RelationGetNumberOfBlocks(rel);	one entry for each hop of the scope, at most 3
 cast-after-product	src/col/v1/scope/sample.c	sift_scope_refuse(specs->s[s]->key_name, specs->s[s]->max_multiplicity, (uint64) (ratio * scaled_rows), scaled_rows, true, 0, 0);	a double ratio of rows, the cast truncates it
 array-append	src/col/v1/seg/points.c	s->cur[s->n++] = t;	the lists are counted first and the stream is not used when there are more than TCUR_MAX

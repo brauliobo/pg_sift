@@ -32,6 +32,7 @@ CREATE TABLE jr_t (id int, grp int, qty int, label text, items jsonb, doc jsonb)
 INSERT INTO jr_t
 SELECT i, i % 50, CASE WHEN i % 7 = 0 OR i % 50 = 3 THEN NULL ELSE i % 9 END, CASE WHEN i % 11 = 0 THEN NULL ELSE 'label-' || i % 13 END, a.items,
 	CASE WHEN i % 61 = 0 THEN NULL WHEN i % 59 = 0 THEN '{"name": "x"}' ELSE jsonb_build_object('name', 'n' || i % 5, 'rows', coalesce(a.items, '[]')) END
+-- 60000 rows are 8 granules of 8192, the 2 a thread that 4 threads take (agg/par/par.h)
 FROM generate_series(1, 60000) i, LATERAL (SELECT
 	CASE WHEN i % 29 = 0 THEN NULL
 		WHEN i % 23 = 0 THEN '[]'::jsonb

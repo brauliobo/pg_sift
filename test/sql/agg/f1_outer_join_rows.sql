@@ -13,6 +13,7 @@ CREATE TABLE ev_f2_empty (LIKE ev_f2 INCLUDING ALL) WITH (autovacuum_enabled = f
 CREATE TABLE ev_f1_empty (LIKE ev_f2 INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO ev_f2
 SELECT i, CASE WHEN i % 19 = 0 THEN NULL ELSE 'cat_' || chr(97 + i % 4) END, CASE WHEN i % 23 = 0 THEN NULL ELSE 1 + i % 8 END, i % 11
+-- 60000 rows are 8 granules of 8192: the scan reads the fact table in several chunks, and the unmatched dimension rows come once, after the last
 FROM generate_series(1, 60000) i;
 INSERT INTO ev_f1 SELECT * FROM ev_f2;
 SET sift.test_create_format1 = off;

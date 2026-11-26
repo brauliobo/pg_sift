@@ -16,6 +16,7 @@ CREATE TABLE osh (LIKE os);
 INSERT INTO ot
 SELECT g, g % 17, g % 400, 'tag' || g % 5, timestamptz '2030-01-01' + g * interval '1 min',
 	CASE WHEN g % 211 = 0 THEN NULL ELSE (g % 1000) / 8.0 END, 'note ' || g
+-- 60000 rows are 8 granules of 8192: the sift_table reads more than one granule for every operator
 FROM generate_series(1, 60000) g;
 INSERT INTO od SELECT g, 'l' || g % 100 FROM generate_series(0, 399) g;
 INSERT INTO oh SELECT * FROM ot;

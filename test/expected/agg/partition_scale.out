@@ -609,6 +609,7 @@ CREATE TABLE sp_597 PARTITION OF sp FOR VALUES FROM (5970) TO (5980) USING sift_
 CREATE TABLE sp_598 PARTITION OF sp FOR VALUES FROM (5980) TO (5990) USING sift_table
 CREATE TABLE sp_599 PARTITION OF sp FOR VALUES FROM (5990) TO (6000) USING sift_table
 CREATE TABLE sph (LIKE sp);
+-- 120000 rows are 200 for each of the 600 partitions: every partition holds a part that the node reads
 INSERT INTO sp SELECT g, g % 6000, g % 97, 'tag' || g % 3 FROM generate_series(1, 120000) g;
 INSERT INTO sph SELECT * FROM sp;
 ANALYZE sp; ANALYZE sph;

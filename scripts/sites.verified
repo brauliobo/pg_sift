@@ -111,7 +111,7 @@ src/col/f2/tier/policy.c	catalog_user_enter	guarded	the table is sift.tier_polic
 src/col/f2/tier/sql.c	check_ttl_column	fixed	the attribute number is tested against InvalidAttrNumber before it is used; the relation argument goes through sift_rel_must_exist in open_f2_rel (surface_null_args)
 src/col/f2/l0/href_fetch.c	cursor_open	guarded	the table is the heap of the index the caller holds open: DROP TABLE and DROP INDEX wait for the lock of the index, and the index cannot be dropped before its table is locked
 src/col/f2/l0/stage.c	flush_deletes_chunk	guarded	st->relid is the relation of the transaction stage, which holds a lock on it since the first row it staged: DROP TABLE waits for the transaction
-src/col/f2/track.c	staged_as_delta	guarded	ctx.index is the index the trigger being run belongs to (sift_col_track_trigger_index): the trigger fires on a table the statement holds RowExclusiveLock on, and DROP INDEX locks that table first (hence NoLock)
+src/col/f2/track.c	sift_f2_track_trigger	guarded	ctx.index is the index the firing trigger belongs to (ctx_ready tested): the trigger is dropped with its index and the statement that fired it holds the table, and DROP INDEX locks that table first; index_open raises for a missing relation
 src/col/scope/decl.c	table_pairs_btree	guarded	roid comes from sift_conn_relation_oid with missing_ok and is tested with OidIsValid before the open; the lookup took the lock
 src/col/scope/decl.c	btree_unique	guarded	btree is the OID recorded_btree found among the indexes of the relation the caller opened and locked
 src/col/scope/decl.c	sift_scope_pairs_multiset	guarded	relid comes from sift_conn_relation_oid, which raises for a relation that does not exist and locks it

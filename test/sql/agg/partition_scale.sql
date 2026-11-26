@@ -10,6 +10,7 @@ DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THE
 CREATE TABLE sp (id int NOT NULL, k int NOT NULL, v int NOT NULL, tag text NOT NULL) PARTITION BY RANGE (k);
 SELECT format('CREATE TABLE sp_%s PARTITION OF sp FOR VALUES FROM (%s) TO (%s) USING sift_table', i, i * 10, i * 10 + 10) FROM generate_series(0, 599) i \gexec
 CREATE TABLE sph (LIKE sp);
+-- 120000 rows are 200 for each of the 600 partitions: every partition holds a part that the node reads
 INSERT INTO sp SELECT g, g % 6000, g % 97, 'tag' || g % 3 FROM generate_series(1, 120000) g;
 INSERT INTO sph SELECT * FROM sp;
 ANALYZE sp; ANALYZE sph;

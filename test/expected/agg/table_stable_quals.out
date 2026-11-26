@@ -10,6 +10,7 @@ CREATE TABLE sq (id int NOT NULL, ts timestamptz NOT NULL, d date NOT NULL, k te
 CREATE TABLE sqh (LIKE sq) WITH (autovacuum_enabled = false);
 CREATE TABLE sd (e int NOT NULL, grp int NOT NULL, PRIMARY KEY (e, grp));
 INSERT INTO sq SELECT g, now() - (g % 400) * interval '1 day', current_date - g % 400, 'k' || g % 7, (g % 50)::numeric,
+-- 60000 rows are 8 granules of 8192 that every rescan reads again with the new value of the stable key
 	('00000000-0000-0000-0000-' || lpad((g % 20)::text, 12, '0'))::uuid, (g % 90)::float8, g % 100, 1 + g % 300 FROM generate_series(1, 60000) g;
 INSERT INTO sqh SELECT * FROM sq;
 INSERT INTO sd SELECT g, 1 + g % 7 FROM generate_series(1, 300) g;

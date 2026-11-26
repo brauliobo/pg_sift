@@ -32,6 +32,7 @@ INSERT INTO ts_t SELECT i,
 	CASE WHEN i % 997 = 0 THEN NULL WHEN i % 4999 = 0 THEN 'infinity' WHEN i % 5003 = 0 THEN '-infinity' ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 37 % 4000000) * interval '1 second' END,
 	CASE WHEN i % 991 = 0 THEN NULL ELSE timestamp '2023-12-31 22:30:00' + (i * 53 % 4000000) * interval '1 second' END,
 	i % 90, i % 5, CASE WHEN i % 20011 = 0 THEN NULL ELSE i % 1000 END, (i % 100)::smallint
+-- 150000 rows are 19 granules of 8192: each of the 4 threads folds several, and the NULL and infinite instants are left to the scan
 FROM generate_series(1, 150000) i;
 CREATE INDEX ts_t_col ON ts_t USING sift_col (id, ts, tn, dev, site, v, w) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) ts_t;
@@ -55,6 +56,7 @@ CREATE TABLE st_d2 (id int, tag int);
 INSERT INTO st_p SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE 'parent-attribute-' || i % 6 END, i % 4 FROM generate_series(1, 30) i;
 INSERT INTO st_d1 SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 40 END, CASE WHEN i % 23 = 0 THEN NULL WHEN i % 3 = 0 THEN 'a-long-name-of-' || i % 50 ELSE 'n' || i % 50 END, 1 + i % 35 FROM generate_series(1, 500) i;
 INSERT INTO st_d2 SELECT i, i % 5 FROM generate_series(1, 200) i UNION ALL SELECT i, 100 + i % 3 FROM generate_series(1, 20) i;
+-- 150000 fact rows (19 granules of 8192) against dimensions of a few hundred rows
 INSERT INTO st_f SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE 1 + (i * 7) % 600 END, 1 + (i * 11) % 230, i % 100, CASE WHEN i % 30011 = 0 THEN NULL ELSE i % 500 END FROM generate_series(1, 150000) i;
 CREATE INDEX st_f_col ON st_f USING sift_col (id, d1, d2, qty, amt) WITH (rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) st_f, st_d1, st_p, st_d2;
@@ -76,6 +78,7 @@ INSERT INTO un_t SELECT i, i % 50, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'l
 		ELSE ARRAY[CASE WHEN i % 23 = 0 THEN NULL ELSE 'tag' || i % 20 END, 'a-much-longer-tag-value-' || i % 37, 'x' || i % 5] END,
 	CASE WHEN i % 13 = 0 THEN NULL WHEN i % 29 = 0 THEN '{}'::int[] WHEN i % 4001 = 0 THEN ARRAY(SELECT g FROM generate_series(1, 400) g)
 		ELSE ARRAY[i % 10, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 100 END, i % 3] END
+-- 120000 rows are 15 granules of 8192 for the 4 threads to expand
 FROM generate_series(1, 120000) i;
 CREATE INDEX un_t_col ON un_t USING sift_col (id, grp, qty, label, tags, nums) WITH (paths = 'tags[] text, nums[] int4', rollup_columns = 'off');
 VACUUM (FREEZE, ANALYZE) un_t;
@@ -89,6 +92,7 @@ SELECT * FROM check_par('a NULL in a counted column', $q$ SELECT n, count(*), co
 SELECT * FROM check_par('with a predicate', $q$ SELECT t, count(*) FROM un_t f LEFT JOIN LATERAL unnest(f.tags) AS u(t) ON true WHERE f.qty > 2 GROUP BY 1 $q$);
 -- ---- quals the scan keys do not say: a <> on a sift_table and a column against a column on an index run over the batch, so the threads leave them to the serial scan ----
 CREATE TABLE bq_t (id int, g smallint, v int, w int) USING sift_table;
+-- 300000 rows are 37 granules of 8192: many more than the 8 that 4 threads take
 INSERT INTO bq_t SELECT i, i % 7, i % 11, i % 5 FROM generate_series(1, 300000) i;
 CREATE TABLE bq_c (id int, g smallint, v int, w int);
 INSERT INTO bq_c SELECT * FROM bq_t;
@@ -100,6 +104,7 @@ SELECT * FROM check_par('table column against column', $q$ SELECT g, count(*) FR
 SELECT * FROM check_par('index column against column', $q$ SELECT g, count(*) FROM bq_c WHERE v > w GROUP BY 1 $q$);
 -- ---- the text of a sift_table is the datum of its cell: the empty string, short and long strings, a dictionary of the granule or none ----
 CREATE TABLE tx_t (id int, u bigint, s text, d text) USING sift_table;
+-- 300000 rows are 37 granules of 8192: many more than the 8 that 4 threads take
 INSERT INTO tx_t SELECT i, i % 5, CASE WHEN i % 3 = 0 THEN '' WHEN i % 3 = 1 THEN 'abc' || (i % 4) ELSE repeat('x', 20 + i % 50) END, 'd' || (i % 9) FROM generate_series(1, 300000) i;
 VACUUM (FREEZE, ANALYZE) tx_t;
 SELECT * FROM check_par('table text key', $q$ SELECT s, count(*) FROM tx_t GROUP BY 1 $q$);
@@ -107,6 +112,7 @@ SELECT * FROM check_par('table integer and text keys', $q$ SELECT u, s, count(*)
 SELECT * FROM check_par('table distinct count by text', $q$ SELECT d, count(DISTINCT s) FROM tx_t GROUP BY 1 $q$);
 -- ---- a key held as interned values (a numeric, an extract of a timestamp) is folded by the scan, not by the threads ----
 CREATE TABLE gk_c (id int, ts timestamp, n numeric(10, 0), v int);
+-- 300000 rows are 37 granules of 8192: many more than the 8 that 4 threads take
 INSERT INTO gk_c SELECT i, timestamp '2024-01-01' + i * interval '37 seconds', i % 40, i % 7 FROM generate_series(1, 300000) i;
 CREATE INDEX gk_c_col ON gk_c USING sift_col (id, ts, n, v);
 VACUUM (FREEZE, ANALYZE) gk_c;
