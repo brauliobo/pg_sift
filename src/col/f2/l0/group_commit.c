@@ -84,7 +84,7 @@ cmp_stripe(const void *a, const void *b)
 uint32
 sift_l0_gc_lock_shards(SiftL0GroupCommit *gc, const RelFileLocator *loc, uint64 part_id, uint32 nshards, uint32 *held)
 {
-	uint32		all[SIFT_PART_LOCK_STRIPES];
+	uint32		all[SIFT_L0_GC_MAX_SHARDS];
 	uint32		n = 0;
 
 	for (uint32 s = 0; s < nshards; s++)

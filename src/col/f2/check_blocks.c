@@ -18,6 +18,7 @@
 #include "col/f2/f2.h"
 #include "col/f2/drop/parts.h"
 #include "col/f2/journal.h"
+#include "col/f2/l0/shard_dir.h"
 #include "col/f2/l0/slab.h"
 #include "col/f2/part/format.h"
 #include "col/f2/del/pend.h"
@@ -235,6 +236,22 @@ claim_col_delta(BlockMap *m, const SiftPartitionEntry *e)
 }
 
 static void
+claim_dir_page(void *ctx, BlockNumber blk, const char *pg)
+{
+	claim(ctx, SiftPageGetOpaque((Page) pg)->type == SIFT_PT_PEND_DEL ? OWN_PEND : OWN_SLAB, blk, 1);
+}
+
+/* The micro-slab of a partition: a chain, or a shard directory with the chains of its shards */
+static void
+claim_slab(BlockMap *m, const SiftPartitionEntry *e)
+{
+	if (e->l0_slab_blk != InvalidBlockNumber && sift_l0_slab_is_dir(m->rel, e->part_id, e->l0_slab_blk))
+		sift_l0_dir_pages_frozen(m->rel, e->part_id, e->l0_slab_blk, claim_dir_page, m);
+	else
+		claim_chain(m, OWN_SLAB, e->l0_slab_blk, &L0_SLAB);
+}
+
+static void
 claim_partition(BlockMap *m, const SiftPartitionEntry *e)
 {
 	SiftPartDesc *parts;
@@ -259,7 +276,7 @@ claim_partition(BlockMap *m, const SiftPartitionEntry *e)
 		claim_part(m, &parts[i], (uint32) e->part_id);
 	pfree(parts);
 	claim_col_delta(m, e);
-	claim_chain(m, OWN_SLAB, e->l0_slab_blk, &L0_SLAB);
+	claim_slab(m, e);
 	claim_chain(m, OWN_PEND, e->pend_del_blk, &PEND_DEL);
 }
 

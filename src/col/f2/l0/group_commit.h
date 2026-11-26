@@ -17,6 +17,7 @@
 #define SIFT_L0_GC_MAX_BYTES		3584
 #define SIFT_L0_GC_MAX_BATCH		16
 #define SIFT_L0_GC_MAX_DELS			32
+#define SIFT_L0_GC_MAX_SHARDS		8
 
 #define SIFT_L0_GC_SHARD_MASK		UINT16_C(0x00FF)
 #define SIFT_L0_GC_SHARD_HEAPREF	UINT16_C(0x8000)	/* the shard_id of a slot whose slab payload is SiftL0HeapRef[], not a batch record */

@@ -409,6 +409,7 @@ col/f2/l0/href_fetch.c
 col/f2/l0/href_fetch.h
 col/f2/l0/shard_dir.c
 col/f2/l0/shard_dir.h
+col/f2/l0/shard_io.c
 col/f2/l0/slab.c
 col/f2/l0/slab.h
 col/f2/l0/stage.c

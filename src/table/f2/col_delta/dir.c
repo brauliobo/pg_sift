@@ -391,9 +391,9 @@ sift_col_delta_disk_writer(SiftColDeltaDiskChain *d)
 /* ---- the directory pages on disk ---- */
 
 static Buffer
-dir_buffer(Relation rel, BlockNumber blk, uint32 part_id)
+dir_buffer(Relation rel, BlockNumber blk, uint32 part_id, int lockmode)
 {
-	Buffer		buf = sift_blk_read(rel, blk, BUFFER_LOCK_EXCLUSIVE);
+	Buffer		buf = sift_blk_read(rel, blk, lockmode);
 
 	sift_page_expect(rel, BufferGetPage(buf), blk, SIFT_PT_COL_DELTA_DIR, 0, part_id);
 	if (!sift_page_sum_ok(BufferGetPage(buf)))
@@ -404,7 +404,7 @@ dir_buffer(Relation rel, BlockNumber blk, uint32 part_id)
 BlockNumber
 sift_cddir_io_newest_data(Relation rel, uint32 part_id, BlockNumber dir_head)
 {
-	Buffer		buf = dir_buffer(rel, dir_head, part_id);
+	Buffer		buf = dir_buffer(rel, dir_head, part_id, BUFFER_LOCK_SHARE);
 	const SiftColDeltaDirHdr *h = sift_cddir_page_hdr((const char *) BufferGetPage(buf));
 	BlockNumber blk = sift_cddir_page_entries((const char *) BufferGetPage(buf))[h->nentries - 1].blkno;
 
@@ -447,7 +447,7 @@ BlockNumber
 sift_cddir_io_add(Relation rel, uint32 part_id, BlockNumber dir_head, BlockNumber blk, const SiftColDeltaBatch *part)
 {
 	SiftColDeltaDirEntry e = sift_cddir_entry_of_batch(blk, part);
-	Buffer		buf = dir_buffer(rel, dir_head, part_id);
+	Buffer		buf = dir_buffer(rel, dir_head, part_id, BUFFER_LOCK_EXCLUSIVE);
 	Page		page = BufferGetPage(buf);
 	uint32		total = sift_cddir_page_hdr((const char *) page)->total_delta_pages;
 

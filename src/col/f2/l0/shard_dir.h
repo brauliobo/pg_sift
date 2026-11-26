@@ -17,16 +17,16 @@
 #include "access/transam.h"
 #include "storage/bufpage.h"
 
-#define SIFT_L0_SHARD_MAX			4
-#define SIFT_L0_SHARD_UNKEYED		8
-#define SIFT_L0_SHARD_ABS_MAX		8
+#define SIFT_L0_SHARD_ABS_MAX		SIFT_L0_GC_MAX_SHARDS
 #define SIFT_L0_SHARD_DIR_MAGIC		0x4C305344U		/* "L0SD" */
 
 #define SIFT_L0_REC_PAGES			4		/* MAX_GENERIC_XLOG_PAGES: pages one WAL record may carry */
+#define SIFT_L0_FRESH_MAX			(SIFT_L0_SHARD_ABS_MAX + 4)	/* the pages a directory and its shard slabs take together, and the successor pages of a record */
 
 #define SIFT_L0_FLUSH_NONE			0U
 #define SIFT_L0_FLUSH_ASYNC			1U		/* queue SIFT_MK_SLAB_FLUSH */
-#define SIFT_L0_FLUSH_NOW			2U		/* the hard cap: the writer flushes inline */
+#define SIFT_L0_FLUSH_QUEUED		2U		/* a writer has queued it */
+#define SIFT_L0_FLUSH_NOW			3U		/* the hard cap: the writer flushes inline */
 
 #define SIFT_L0_PAGE_DATA_OFFSET	SIFT_PAGE_DATA_OFFSET
 
@@ -52,25 +52,9 @@ StaticAssertDecl(sizeof(SiftL0ShardDirData) == 152, "SiftL0ShardDirData is 152 b
 StaticAssertDecl(sizeof(SiftL0SlabPageData) + sizeof(SiftL0ShardDirData) <= SIFT_PAGE_PAYLOAD,
 				 "SiftL0ShardDirData must fit on one SIFT_PT_L0_SLAB page");
 
-/* One batch record of a slab page: this header, then the rows the writer encoded; bytes is a multiple of 8 */
-typedef struct SiftL0ShardBatch
-{
-	uint32		bytes;
-	uint32		nrows;
-	FullTransactionId xid;
-} SiftL0ShardBatch;
-
-StaticAssertDecl(sizeof(SiftL0ShardBatch) == 16, "SiftL0ShardBatch is 16 bytes");
-
 #define SIFT_L0_SL(pg)		((SiftL0SlabPageData *) ((char *) (pg) + SIFT_L0_PAGE_DATA_OFFSET))
 #define SIFT_L0_PD(pg)		((SiftPendDelPageData *) ((char *) (pg) + SIFT_L0_PAGE_DATA_OFFSET))
 #define SIFT_L0_DIR(pg)		((SiftL0ShardDirData *) ((char *) (pg) + SIFT_L0_PAGE_DATA_OFFSET + sizeof(SiftL0SlabPageData)))
-
-static inline uint32
-sift_l0_shard_count(bool unkeyed)
-{
-	return unkeyed ? SIFT_L0_SHARD_UNKEYED : SIFT_L0_SHARD_MAX;
-}
 
 static inline uint32
 sift_l0_shard_of(int procno, uint32 nshards)
@@ -84,10 +68,10 @@ typedef struct SiftL0PageIO
 	BlockNumber (*alloc) (void *ctx);	/* a block from the local metadata batch (no Block-0 lock); its page is not formatted */
 	void		(*release) (void *ctx, BlockNumber blk);	/* to the FSM quarantine: readers of an older manifest may still hold it */
 	void		(*record_begin) (void *ctx);
-	char	   *(*record_page) (void *ctx, BlockNumber blk, bool full_image);	/* exclusively locked working copy; at most SIFT_L0_REC_PAGES per record */
+	char	   *(*record_page) (void *ctx, BlockNumber blk, SiftPageType type, bool full_image);	/* exclusively locked working copy (a full image is a page of type); at most SIFT_L0_REC_PAGES per record */
 	void		(*record_done) (void *ctx);	/* one WAL record for every page of the record; unlocks them */
 	void		(*record_abort) (void *ctx);
-	const char *(*read_lock) (void *ctx, BlockNumber blk);	/* BUFFER_LOCK_SHARE */
+	const char *(*read_lock) (void *ctx, BlockNumber blk, SiftPageType type);	/* BUFFER_LOCK_SHARE */
 	void		(*read_unlock) (void *ctx, BlockNumber blk);
 } SiftL0PageIO;
 
@@ -102,6 +86,8 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftL0ShardShm
 	pg_atomic_uint32 tail[SIFT_L0_SHARD_ABS_MAX];
 	pg_atomic_uint32 pd_tail[SIFT_L0_SHARD_ABS_MAX];
 	pg_atomic_uint32 flush_wanted;	/* SIFT_L0_FLUSH_* */
+	pg_atomic_uint32 claimed;		/* the key above is set: the entry is never given to another partition */
+	pg_atomic_uint32 heapref;		/* the shard slabs hold SiftL0HeapRef[] (SIFT_L0_DIR_HEAPREF), not batch records */
 } SiftL0ShardShm;
 
 StaticAssertDecl(sizeof(SiftL0ShardShm) == PG_CACHE_LINE_SIZE, "SiftL0ShardShm is one cache line");
@@ -112,29 +98,40 @@ typedef struct SiftL0ShardCtx
 	SiftL0ShardShm *shm;
 } SiftL0ShardCtx;
 
+/* Called with the page share-locked: page for every page the scan reaches (the directories, the slab and pending delete pages), then what the page holds */
 typedef struct SiftL0ScanVisitor
 {
-	void		(*batch) (void *ctx, const SiftL0ShardBatch *rec);
+	void		(*batch) (void *ctx, const SiftL0BatchHeader *rec);
 	void		(*dels) (void *ctx, const SiftL0GcDel *dels, uint32 n);
 	void		(*refs) (void *ctx, const SiftL0HeapRef *refs, uint32 n);	/* the references of a SIFT_L0_SLAB_HEAPREF page, oldest page last */
-	void		(*page) (void *ctx, BlockNumber blk);
+	void		(*page) (void *ctx, BlockNumber blk, const char *pg);
 	void	   *ctx;
 } SiftL0ScanVisitor;
 
 /* Page images */
 extern void sift_l0_slab_format(char *pg, BlockNumber prev, uint16 chain_pages, uint32 chain_rows);
 extern bool sift_l0_slab_fits(const char *pg, uint32 bytes);
-extern void sift_l0_slab_add(char *pg, const SiftL0ShardBatch *rec);
+extern void sift_l0_slab_add(char *pg, const SiftL0BatchHeader *rec);
 extern void sift_l0_pd_format(char *pg, BlockNumber prev, uint16 chain_pages);
 extern bool sift_l0_pd_fits(const char *pg, uint32 ndels);
 extern void sift_l0_pd_add(char *pg, const SiftL0GcDel *dels, uint32 ndels);
 
-/* A directory of nshards fresh shard slabs, or one that adopts a cold single chain as shard 0; returns the directory block */
-extern BlockNumber sift_l0_dir_create(const SiftL0PageIO *io, uint32 nshards, BlockNumber draining, uint64 dir_gen, uint16 dir_flags);
-extern BlockNumber sift_l0_dir_promote(const SiftL0PageIO *io, BlockNumber cold_tail, uint32 nshards);
+/*
+ * A directory of nshards fresh shard slabs, or one that adopts a cold chain of references as shard 0; returns the directory block. Its min_xid is floor, the oldest transaction that
+ * may write to it: the horizon of the table (relfrozenxid) reads it from the entry's anchor, not the pages of the shards.
+ */
+extern BlockNumber sift_l0_dir_create(const SiftL0PageIO *io, uint32 nshards, BlockNumber draining, uint64 dir_gen, uint16 dir_flags, FullTransactionId floor);
+extern BlockNumber sift_l0_dir_promote(const SiftL0PageIO *io, BlockNumber cold_tail, uint32 nshards, FullTransactionId floor);
+
+/* Whether the page is a directory, and a copy of it */
+extern bool sift_l0_page_is_dir(const char *pg);
+extern SiftL0ShardDirData sift_l0_dir_read(const SiftL0PageIO *io, BlockNumber blk);
 
 /* Points the cache at a directory page (a hot partition met for the first time, or promoted) */
 extern void sift_l0_shm_load(const SiftL0PageIO *io, SiftL0ShardShm *shm, BlockNumber dir_blk);
+
+/* The partition is cold: no writer goes to the shards any more (one that is on its way finds its anchor stale) */
+extern void sift_l0_shm_unload(SiftL0ShardShm *shm);
 
 /* The apply function of SiftL0GroupCommit for one shard of one partition */
 extern void sift_l0_shard_apply(void *ctx, SiftL0GcSlot *const *items, uint32 n);
@@ -151,11 +148,65 @@ typedef struct SiftL0Flush
 	SiftL0ShardShm *shm;
 	BlockNumber old_dir;
 	BlockNumber dir_v1;
+	FullTransactionId floor;
 } SiftL0Flush;
 
-/* Phase 1: seals the active slabs and installs a fresh directory that drains the old one; commit_anchor(new directory) runs with every shard stripe held */
+/*
+ * Phase 1: seals the active slabs and installs a fresh directory that drains the old one; commit_anchor(new directory) runs with every shard stripe held. The pages of the
+ * directories (nshards + 2 for both phases) are taken from the allocator before the stripes are: the io hands out pages it holds already (sift_href_io_reserve).
+ */
 extern void sift_l0_flush_seal(SiftL0Flush *f, SiftL0AnchorFn commit_anchor, void *cctx);
-/* Phase 3: a directory v2 with the live slabs of v1 and no draining one; publish(v2) commits the part and the anchor atomically; the pages of the drained slabs are released */
+/*
+ * Phase 3: a directory v2 with the live slabs of v1 and no draining one; publish(v2) commits the part and the anchor atomically (InvalidBlockNumber when v1 holds nothing: the partition is
+ * cold again); the pages of the drained slabs are released
+ */
 extern void sift_l0_flush_publish(SiftL0Flush *f, SiftL0AnchorFn publish, void *pctx);
+
+#ifndef SIFT_HREF_STANDALONE
+
+#include "col/f2/l0/href_fetch.h"
+
+/* The most references one slot of the group commit holds: a statement with more goes to the lock of the partition (a directory is flushed to a part first) */
+#define SIFT_L0_HOT_MAX_REFS		(SIFT_L0_GC_MAX_BYTES / sizeof(SiftL0HeapRef))
+
+/* The result of a hot submit when the partition has no directory writers go to (SIFT_L0_GC_APPLIED and SIFT_L0_GC_STALE are the others) */
+#define SIFT_L0_NOT_HOT				2U
+
+/* Where a writer that holds the lock of the partition goes on: the cold chain, the directory (it leaves the lock and submits), or nowhere (the shared table is full) */
+typedef enum SiftL0Route
+{
+	SIFT_L0_COLD,
+	SIFT_L0_HOT,
+	SIFT_L0_REFUSED
+} SiftL0Route;
+
+/*
+ * Places the references, or the batch records, through the group commit of the partition's directory, with no lock of the partition: *applied of them are placed on return. SIFT_L0_GC_APPLIED when all
+ * are, SIFT_L0_GC_STALE when a flush changed the directory (the caller goes on past *applied), SIFT_L0_NOT_HOT when the partition has none.
+ */
+extern uint32 sift_l0_hot_refs(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0HeapRef *refs, uint32 n, uint32 *applied);
+extern uint32 sift_l0_hot_batches(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0BatchHeader *const *recs, uint32 nrecs, uint32 *applied);
+
+/* Whether the lock of the partition is held by another backend now (a probe that takes it and lets it go when it is free) */
+extern bool sift_l0_lock_busy(Relation rel, uint64 part_id);
+
+/* Under the lock of the partition, e its entry: sends the writer to the directory when the partition is hot (a directory in the entry that the shared table does not know is loaded, a cold chain the writers fight for becomes one) */
+extern SiftL0Route sift_l0_settle(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartitionEntry *e, bool href, bool busy);
+
+/* Under the lock of the partition: the copy-on-write flush of the directory the entry names; the part and the live directory are committed together */
+extern void sift_l0_hot_flush(Relation rel, uint64 part_id, const uint8 *key_lo, BlockNumber anchor);
+
+/* Whether the block is a directory */
+extern bool sift_l0_slab_is_dir(Relation rel, uint64 part_id, BlockNumber blk);
+
+/* What a directory and the one it drains hold: their rows, and the stamp of their pages */
+extern uint64 sift_l0_dir_rows(Relation rel, uint64 part_id, BlockNumber anchor);
+extern SiftChainStamp sift_l0_dir_stamp(Relation rel, uint64 part_id, BlockNumber anchor);
+
+/* Calls visit for every block a directory owns, its own, its slab and pending delete pages, and those of the directory it drains; ctx and the page as the scan has it share-locked */
+extern void sift_l0_dir_pages(Relation rel, uint64 part_id, BlockNumber anchor, void (*visit) (void *ctx, BlockNumber blk, const char *pg), void *ctx);
+extern void sift_l0_dir_pages_frozen(Relation rel, uint64 part_id, BlockNumber anchor, void (*visit) (void *ctx, BlockNumber blk, const char *pg), void *ctx);
+
+#endif							/* !SIFT_HREF_STANDALONE */
 
 #endif							/* SIFT_L0_SHARD_DIR_H */

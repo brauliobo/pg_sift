@@ -28,7 +28,7 @@ sift_l0_slab_format(char *pg, BlockNumber prev, uint16 chain_pages, uint32 chain
 	page_init(pg);
 	((PageHeader) pg)->pd_lower = SIFT_L0_PAGE_DATA_OFFSET + sizeof(SiftL0SlabPageData);
 	sl->magic = SIFT_L0_SLAB_MAGIC;
-	sl->flags = SIFT_L0_SLAB_REV;
+	sl->flags = SIFT_L0_SLAB_REV | SIFT_L0_SLAB_NOCRC_OPEN;
 	sl->prev_blk = prev;
 	sl->chain_pages = chain_pages;
 	sl->chain_rows = chain_rows;
@@ -38,7 +38,9 @@ sift_l0_slab_format(char *pg, BlockNumber prev, uint16 chain_pages, uint32 chain
 static inline uint32
 page_free(const char *pg)
 {
-	return BLCKSZ - ((const PageHeaderData *) pg)->pd_lower;
+	const PageHeaderData *ph = (const PageHeaderData *) pg;
+
+	return ph->pd_upper - ph->pd_lower;
 }
 
 bool
@@ -57,18 +59,25 @@ widen_xids(FullTransactionId *lo, FullTransactionId *hi, FullTransactionId xid)
 }
 
 void
-sift_l0_slab_add(char *pg, const SiftL0ShardBatch *rec)
+sift_l0_slab_add(char *pg, const SiftL0BatchHeader *rec)
 {
 	PageHeader	ph = (PageHeader) pg;
 	SiftL0SlabPageData *sl = SIFT_L0_SL(pg);
 
-	Assert(rec->bytes % 8 == 0 && rec->bytes >= sizeof(SiftL0ShardBatch));
+	Assert(rec->bytes % 8 == 0 && rec->bytes >= SIFT_L0_COMPACT_HDR && (sl->flags & SIFT_L0_SLAB_NOCRC_OPEN) != 0);
 	memcpy(pg + ph->pd_lower, rec, rec->bytes);
 	ph->pd_lower += rec->bytes;
 	sl->nbatches++;
 	sl->page_rows += rec->nrows;
 	sl->chain_rows += rec->nrows;
-	widen_xids(&sl->min_xid, &sl->max_xid, rec->xid);
+	widen_xids(&sl->min_xid, &sl->max_xid, sift_l0_href_fxid(rec->xmin));
+}
+
+static void
+slab_seal(char *pg)
+{
+	SIFT_L0_SL(pg)->flags = (SIFT_L0_SL(pg)->flags | SIFT_L0_SLAB_SEALED) & ~SIFT_L0_SLAB_NOCRC_OPEN;
+	sift_page_seal(pg);
 }
 
 void
@@ -79,7 +88,7 @@ sift_l0_pd_format(char *pg, BlockNumber prev, uint16 chain_pages)
 	page_init(pg);
 	((PageHeader) pg)->pd_lower = SIFT_L0_PAGE_DATA_OFFSET + offsetof(SiftPendDelPageData, recs);
 	pd->magic = SIFT_PEND_DEL_MAGIC;
-	pd->flags = sift_pd_set_chain_pages(0, chain_pages);
+	pd->flags = sift_pd_set_chain_pages(SIFT_PEND_DEL_REV | SIFT_PEND_DEL_SHARD_DIR | SIFT_PEND_DEL_PLAIN, chain_pages);
 	pd->prev_blk = prev;
 	pd->min_xid = pd->max_xid = InvalidFullTransactionId;
 }
@@ -108,11 +117,18 @@ sift_l0_pd_add(char *pg, const SiftL0GcDel *dels, uint32 ndels)
 
 /* ---- the directory ---- */
 
+bool
+sift_l0_page_is_dir(const char *pg)
+{
+	return (SIFT_L0_SL(pg)->flags & SIFT_L0_SLAB_SHARD_DIR) != 0;
+}
+
 static void
-dir_format(char *pg, const SiftL0ShardDirData *d)
+dir_format(char *pg, const SiftL0ShardDirData *d, FullTransactionId floor)
 {
 	sift_l0_slab_format(pg, NO_BLOCK, 1, 0);
 	SIFT_L0_SL(pg)->flags = SIFT_L0_SLAB_SHARD_DIR;
+	SIFT_L0_SL(pg)->min_xid = floor;
 	((PageHeader) pg)->pd_lower += sizeof(SiftL0ShardDirData);
 	*SIFT_L0_DIR(pg) = *d;
 }
@@ -134,16 +150,16 @@ format_slabs(const SiftL0PageIO *io, const BlockNumber *blks, uint32 n, bool hre
 	{
 		io->record_begin(io->ctx);
 		for (uint32 j = i; j < Min(i + SIFT_L0_REC_PAGES, n); j++)
-			format_shard_slab(io->record_page(io->ctx, blks[j], true), href);
+			format_shard_slab(io->record_page(io->ctx, blks[j], SIFT_PT_L0_SLAB, true), href);
 		io->record_done(io->ctx);
 	}
 }
 
 static void
-write_dir(const SiftL0PageIO *io, BlockNumber blk, const SiftL0ShardDirData *d)
+write_dir(const SiftL0PageIO *io, BlockNumber blk, const SiftL0ShardDirData *d, FullTransactionId floor)
 {
 	io->record_begin(io->ctx);
-	dir_format(io->record_page(io->ctx, blk, true), d);
+	dir_format(io->record_page(io->ctx, blk, SIFT_PT_L0_SLAB, true), d, floor);
 	io->record_done(io->ctx);
 }
 
@@ -167,7 +183,7 @@ dir_fresh(uint32 nshards, uint64 gen, BlockNumber draining, uint16 dir_flags)
 }
 
 BlockNumber
-sift_l0_dir_create(const SiftL0PageIO *io, uint32 nshards, BlockNumber draining, uint64 dir_gen, uint16 dir_flags)
+sift_l0_dir_create(const SiftL0PageIO *io, uint32 nshards, BlockNumber draining, uint64 dir_gen, uint16 dir_flags, FullTransactionId floor)
 {
 	SiftL0ShardDirData d = dir_fresh(nshards, dir_gen, draining, dir_flags);
 	BlockNumber dir_blk = io->alloc(io->ctx);
@@ -179,15 +195,15 @@ sift_l0_dir_create(const SiftL0PageIO *io, uint32 nshards, BlockNumber draining,
 		d.slab_pages[s] = 1;
 	}
 	format_slabs(io, d.slab_tail, nshards, (dir_flags & SIFT_L0_DIR_HEAPREF) != 0);
-	write_dir(io, dir_blk, &d);
+	write_dir(io, dir_blk, &d, floor);
 	return dir_blk;
 }
 
 BlockNumber
-sift_l0_dir_promote(const SiftL0PageIO *io, BlockNumber cold_tail, uint32 nshards)
+sift_l0_dir_promote(const SiftL0PageIO *io, BlockNumber cold_tail, uint32 nshards, FullTransactionId floor)
 {
 	BlockNumber dir_blk = io->alloc(io->ctx);
-	const SiftL0SlabPageData *sl = SIFT_L0_SL(io->read_lock(io->ctx, cold_tail));
+	const SiftL0SlabPageData *sl = SIFT_L0_SL(io->read_lock(io->ctx, cold_tail, SIFT_PT_L0_SLAB));
 	bool		href = (sl->flags & SIFT_L0_SLAB_HEAPREF) != 0;
 	SiftL0ShardDirData d = dir_fresh(nshards, 1, NO_BLOCK, href ? SIFT_L0_DIR_HEAPREF : 0);
 
@@ -201,14 +217,14 @@ sift_l0_dir_promote(const SiftL0PageIO *io, BlockNumber cold_tail, uint32 nshard
 		d.slab_pages[s] = 1;
 	}
 	format_slabs(io, d.slab_tail + 1, nshards - 1, href);
-	write_dir(io, dir_blk, &d);
+	write_dir(io, dir_blk, &d, floor);
 	return dir_blk;
 }
 
-static SiftL0ShardDirData
-dir_read(const SiftL0PageIO *io, BlockNumber blk)
+SiftL0ShardDirData
+sift_l0_dir_read(const SiftL0PageIO *io, BlockNumber blk)
 {
-	SiftL0ShardDirData d = *SIFT_L0_DIR(io->read_lock(io->ctx, blk));
+	SiftL0ShardDirData d = *SIFT_L0_DIR(io->read_lock(io->ctx, blk, SIFT_PT_L0_SLAB));
 
 	io->read_unlock(io->ctx, blk);
 	Assert(d.dir_magic == SIFT_L0_SHARD_DIR_MAGIC);
@@ -218,7 +234,7 @@ dir_read(const SiftL0PageIO *io, BlockNumber blk)
 void
 sift_l0_shm_load(const SiftL0PageIO *io, SiftL0ShardShm *shm, BlockNumber dir_blk)
 {
-	SiftL0ShardDirData d = dir_read(io, dir_blk);
+	SiftL0ShardDirData d = sift_l0_dir_read(io, dir_blk);
 
 	for (uint32 s = 0; s < SIFT_L0_SHARD_ABS_MAX; s++)
 	{
@@ -226,8 +242,15 @@ sift_l0_shm_load(const SiftL0PageIO *io, SiftL0ShardShm *shm, BlockNumber dir_bl
 		pg_atomic_write_u32(&shm->pd_tail[s], d.pd_tail[s]);
 	}
 	pg_atomic_write_u32(&shm->nshards, d.nshards);
+	pg_atomic_write_u32(&shm->heapref, (d.dir_flags & SIFT_L0_DIR_HEAPREF) != 0);
 	pg_atomic_write_u64(&shm->dir_gen, d.dir_gen);
 	pg_atomic_write_membarrier_u32(&shm->dir_blk, dir_blk);
+}
+
+void
+sift_l0_shm_unload(SiftL0ShardShm *shm)
+{
+	pg_atomic_write_membarrier_u32(&shm->dir_blk, InvalidBlockNumber);
 }
 
 /* ---- the writers ---- */
@@ -252,7 +275,7 @@ next_with_dels(SiftL0GcSlot *const *items, uint32 n, uint32 from)
 static void
 place_slab(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32 s, Lane *ln, bool *changed)
 {
-	char	   *pg = c->io->record_page(c->io->ctx, pg_atomic_read_u32(&c->shm->tail[s]), false);
+	char	   *pg = c->io->record_page(c->io->ctx, pg_atomic_read_u32(&c->shm->tail[s]), SIFT_PT_L0_SLAB, false);
 
 	for (; ln->slab_done < n; ln->slab_done++)
 	{
@@ -283,7 +306,7 @@ place_pd(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32 s
 		ln->pd_full = true;
 		return;
 	}
-	pg = c->io->record_page(c->io->ctx, blk, false);
+	pg = c->io->record_page(c->io->ctx, blk, SIFT_PT_PEND_DEL, false);
 	while (ln->pd_done < n && sift_l0_pd_fits(pg, items[ln->pd_done]->h.ndels))
 	{
 		sift_l0_pd_add(pg, SIFT_L0_GC_DELS(items[ln->pd_done]), items[ln->pd_done]->h.ndels);
@@ -346,9 +369,9 @@ rotate_slab(const SiftL0ShardCtx *c, uint32 s, bool href)
 	SiftL0ShardDirData *dir;
 
 	io->record_begin(io->ctx);
-	np = io->record_page(io->ctx, nb, true);
-	op = io->record_page(io->ctx, old, false);
-	dp = io->record_page(io->ctx, pg_atomic_read_u32(&c->shm->dir_blk), false);
+	np = io->record_page(io->ctx, nb, SIFT_PT_L0_SLAB, true);
+	op = io->record_page(io->ctx, old, SIFT_PT_L0_SLAB, false);
+	dp = io->record_page(io->ctx, pg_atomic_read_u32(&c->shm->dir_blk), SIFT_PT_L0_SLAB, false);
 	osl = SIFT_L0_SL(op);
 	if (href)
 	{
@@ -357,8 +380,8 @@ rotate_slab(const SiftL0ShardCtx *c, uint32 s, bool href)
 	}
 	else
 	{
+		slab_seal(op);
 		sift_l0_slab_format(np, old, osl->chain_pages + 1, osl->chain_rows);
-		osl->flags |= SIFT_L0_SLAB_SEALED;
 	}
 	dir = SIFT_L0_DIR(dp);
 	dir->slab_tail[s] = nb;
@@ -382,14 +405,14 @@ rotate_pd(const SiftL0ShardCtx *c, uint32 s)
 	SiftL0ShardDirData *dir;
 
 	io->record_begin(io->ctx);
-	np = io->record_page(io->ctx, nb, true);
+	np = io->record_page(io->ctx, nb, SIFT_PT_PEND_DEL, true);
 	if (old != NO_BLOCK)
 	{
-		op = io->record_page(io->ctx, old, false);
+		op = io->record_page(io->ctx, old, SIFT_PT_PEND_DEL, false);
 		pages = sift_pd_chain_pages(SIFT_L0_PD(op)->flags) + 1;
 		SIFT_L0_PD(op)->flags |= SIFT_PEND_DEL_SEALED;
 	}
-	dp = io->record_page(io->ctx, pg_atomic_read_u32(&c->shm->dir_blk), false);
+	dp = io->record_page(io->ctx, pg_atomic_read_u32(&c->shm->dir_blk), SIFT_PT_L0_SLAB, false);
 	sift_l0_pd_format(np, old, pages);
 	dir = SIFT_L0_DIR(dp);
 	dir->pd_tail[s] = nb;
@@ -438,13 +461,13 @@ scan_slab_chain(const SiftL0PageIO *io, BlockNumber tail, const SiftL0ScanVisito
 {
 	for (BlockNumber blk = tail; blk != NO_BLOCK;)
 	{
-		const char *pg = io->read_lock(io->ctx, blk);
+		const char *pg = io->read_lock(io->ctx, blk, SIFT_PT_L0_SLAB);
 		const SiftL0SlabPageData *sl = SIFT_L0_SL(pg);
 		BlockNumber prev = sl->prev_blk;
 		uint32		end = ((const PageHeaderData *) pg)->pd_lower;
 
 		if (v->page)
-			v->page(v->ctx, blk);
+			v->page(v->ctx, blk, pg);
 		if ((sl->flags & SIFT_L0_SLAB_HEAPREF) != 0)
 		{
 			if (v->refs)
@@ -455,7 +478,7 @@ scan_slab_chain(const SiftL0PageIO *io, BlockNumber tail, const SiftL0ScanVisito
 		}
 		for (uint32 off = SIFT_L0_PAGE_DATA_OFFSET + sizeof(SiftL0SlabPageData); off < end;)
 		{
-			const SiftL0ShardBatch *rec = (const SiftL0ShardBatch *) (pg + off);
+			const SiftL0BatchHeader *rec = (const SiftL0BatchHeader *) (pg + off);
 
 			if (v->batch)
 				v->batch(v->ctx, rec);
@@ -471,12 +494,12 @@ scan_pd_chain(const SiftL0PageIO *io, BlockNumber tail, const SiftL0ScanVisitor 
 {
 	for (BlockNumber blk = tail; blk != NO_BLOCK;)
 	{
-		const char *pg = io->read_lock(io->ctx, blk);
+		const char *pg = io->read_lock(io->ctx, blk, SIFT_PT_PEND_DEL);
 		const SiftPendDelPageData *pd = SIFT_L0_PD(pg);
 		BlockNumber prev = pd->prev_blk;
 
 		if (v->page)
-			v->page(v->ctx, blk);
+			v->page(v->ctx, blk, pg);
 		if (v->dels)
 			v->dels(v->ctx, pd->recs, pd->nrecs);
 		io->read_unlock(io->ctx, blk);
@@ -487,20 +510,22 @@ scan_pd_chain(const SiftL0PageIO *io, BlockNumber tail, const SiftL0ScanVisitor 
 void
 sift_l0_scan(const SiftL0PageIO *io, BlockNumber anchor, const SiftL0ScanVisitor *v, bool follow_draining)
 {
-	const char *pg = io->read_lock(io->ctx, anchor);
-	bool		is_dir = (SIFT_L0_SL(pg)->flags & SIFT_L0_SLAB_SHARD_DIR) != 0;
+	const char *pg = io->read_lock(io->ctx, anchor, SIFT_PT_L0_SLAB);
+	bool		is_dir = sift_l0_page_is_dir(pg);
 	SiftL0ShardDirData d;
 
 	if (is_dir)
+	{
 		d = *SIFT_L0_DIR(pg);
+		if (v->page)
+			v->page(v->ctx, anchor, pg);
+	}
 	io->read_unlock(io->ctx, anchor);
 	if (!is_dir)
 	{
 		scan_slab_chain(io, anchor, v);
 		return;
 	}
-	if (v->page)
-		v->page(v->ctx, anchor);
 	for (uint32 s = 0; s < d.nshards; s++)
 	{
 		scan_slab_chain(io, d.slab_tail[s], v);
@@ -540,7 +565,7 @@ seal_page(char *pg, bool pd)
 	else if ((SIFT_L0_SL(pg)->flags & SIFT_L0_SLAB_HEAPREF) != 0)
 		sift_l0_href_seal(pg);
 	else
-		SIFT_L0_SL(pg)->flags |= SIFT_L0_SLAB_SEALED;
+		slab_seal(pg);
 }
 
 static void
@@ -550,7 +575,7 @@ seal_all(const SiftL0PageIO *io, const SealTarget *t, uint32 n)
 	{
 		io->record_begin(io->ctx);
 		for (uint32 j = i; j < Min(i + SIFT_L0_REC_PAGES, n); j++)
-			seal_page(io->record_page(io->ctx, t[j].blk, false), t[j].pd);
+			seal_page(io->record_page(io->ctx, t[j].blk, t[j].pd ? SIFT_PT_PEND_DEL : SIFT_PT_L0_SLAB, false), t[j].pd);
 		io->record_done(io->ctx);
 	}
 }
@@ -566,22 +591,42 @@ sift_l0_flush_seal(SiftL0Flush *f, SiftL0AnchorFn commit_anchor, void *cctx)
 	uint32		n;
 
 	f->old_dir = pg_atomic_read_u32(&f->shm->dir_blk);
-	old = dir_read(f->io, f->old_dir);
+	old = sift_l0_dir_read(f->io, f->old_dir);
 	n = seal_targets(&old, targets);
 	targets[n++] = (SealTarget) {f->old_dir, false};
 	seal_all(f->io, targets, n);
-	f->dir_v1 = sift_l0_dir_create(f->io, old.nshards, f->old_dir, old.dir_gen + 1, old.dir_flags);
+	f->dir_v1 = sift_l0_dir_create(f->io, old.nshards, f->old_dir, old.dir_gen + 1, old.dir_flags, f->floor);
 	commit_anchor(cctx, f->dir_v1);
 	sift_l0_shm_load(f->io, f->shm, f->dir_v1);
+	pg_atomic_write_u32(&f->shm->flush_wanted, SIFT_L0_FLUSH_NONE);
 	sift_l0_gc_unlock_shards(f->gc, held, nheld);
 }
 
 static void
-release_page(void *ctx, BlockNumber blk)
+release_page(void *ctx, BlockNumber blk, const char *pg)
 {
 	const SiftL0PageIO *io = ctx;
 
 	io->release(io->ctx, blk);
+}
+
+static bool
+chain_empty(const SiftL0PageIO *io, BlockNumber tail)
+{
+	const char *pg = io->read_lock(io->ctx, tail, SIFT_PT_L0_SLAB);
+	bool		empty = SIFT_L0_SL(pg)->chain_rows == 0;
+
+	io->read_unlock(io->ctx, tail);
+	return empty;
+}
+
+static bool
+dir_empty(const SiftL0PageIO *io, const SiftL0ShardDirData *d)
+{
+	for (uint32 s = 0; s < d->nshards; s++)
+		if (d->pd_tail[s] != NO_BLOCK || !chain_empty(io, d->slab_tail[s]))
+			return false;
+	return true;
 }
 
 void
@@ -590,17 +635,28 @@ sift_l0_flush_publish(SiftL0Flush *f, SiftL0AnchorFn publish, void *pctx)
 	uint32		held[SIFT_L0_SHARD_ABS_MAX];
 	uint32		nheld = sift_l0_gc_lock_shards(f->gc, &f->shm->locator, f->shm->part_id,
 											   pg_atomic_read_u32(&f->shm->nshards), held);
-	SiftL0ShardDirData live = dir_read(f->io, f->dir_v1);
-	BlockNumber v2 = f->io->alloc(f->io->ctx);
+	SiftL0ShardDirData live = sift_l0_dir_read(f->io, f->dir_v1);
+	bool		cold = dir_empty(f->io, &live);
+	BlockNumber v2 = NO_BLOCK;
 	SiftL0ScanVisitor drained = {.page = release_page,.ctx = (void *) f->io};
 
 	Assert(pg_atomic_read_u32(&f->shm->dir_blk) == f->dir_v1);
-	live.draining_slab_blk = NO_BLOCK;
-	live.dir_gen++;
-	write_dir(f->io, v2, &live);
+	if (!cold)
+	{
+		v2 = f->io->alloc(f->io->ctx);
+		live.draining_slab_blk = NO_BLOCK;
+		live.dir_gen++;
+		write_dir(f->io, v2, &live, f->floor);
+	}
 	publish(pctx, v2);
-	sift_l0_shm_load(f->io, f->shm, v2);
+	if (cold)
+		sift_l0_shm_unload(f->shm);
+	else
+		sift_l0_shm_load(f->io, f->shm, v2);
 	sift_l0_gc_unlock_shards(f->gc, held, nheld);
-	sift_l0_scan(f->io, f->old_dir, &drained, false);
-	f->io->release(f->io->ctx, f->dir_v1);
+	sift_l0_scan(f->io, f->old_dir, &drained, true);
+	if (cold)
+		sift_l0_scan(f->io, f->dir_v1, &drained, false);
+	else
+		f->io->release(f->io->ctx, f->dir_v1);
 }

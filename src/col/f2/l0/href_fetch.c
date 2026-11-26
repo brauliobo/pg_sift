@@ -348,7 +348,9 @@ bool
 sift_l0_slab_is_href(Relation rel, uint64 part_id, BlockNumber blk)
 {
 	Buffer		buf = sift_blk_read(rel, blk, BUFFER_LOCK_SHARE);
-	bool		href = (((const SiftL0SlabPageData *) SiftPageGetData(BufferGetPage(buf)))->flags & SIFT_L0_SLAB_HEAPREF) != 0;
+	const char *pg = (const char *) BufferGetPage(buf);
+	bool		href = sift_l0_page_is_dir(pg) ? (SIFT_L0_DIR(pg)->dir_flags & SIFT_L0_DIR_HEAPREF) != 0 :
+		(SIFT_L0_SL(pg)->flags & SIFT_L0_SLAB_HEAPREF) != 0;
 
 	UnlockReleaseBuffer(buf);
 	return href;
@@ -357,8 +359,13 @@ sift_l0_slab_is_href(Relation rel, uint64 part_id, BlockNumber blk)
 uint32
 sift_l0_href_chain_rows(Relation rel, uint64 part_id, BlockNumber tail)
 {
-	Buffer		buf = sift_blk_read(rel, tail, BUFFER_LOCK_SHARE);
-	uint32		rows = ((const SiftL0SlabPageData *) SiftPageGetData(BufferGetPage(buf)))->chain_rows;
+	Buffer		buf;
+	uint32		rows;
+
+	if (sift_l0_slab_is_dir(rel, part_id, tail))
+		return (uint32) sift_l0_dir_rows(rel, part_id, tail);
+	buf = sift_blk_read(rel, tail, BUFFER_LOCK_SHARE);
+	rows = ((const SiftL0SlabPageData *) SiftPageGetData(BufferGetPage(buf)))->chain_rows;
 
 	sift_page_expect(rel, BufferGetPage(buf), tail, SIFT_PT_L0_SLAB, 0, (uint32) part_id);
 	UnlockReleaseBuffer(buf);

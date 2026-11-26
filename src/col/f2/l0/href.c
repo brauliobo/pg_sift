@@ -110,7 +110,7 @@ BlockNumber
 sift_l0_href_first(const SiftL0PageIO *io, const SiftL0HeapRef *refs, uint32 n)
 {
 	BlockNumber blk = io->alloc(io->ctx);
-	char	   *pg = io->record_page(io->ctx, blk, true);
+	char	   *pg = io->record_page(io->ctx, blk, SIFT_PT_L0_SLAB, true);
 
 	sift_l0_href_format(pg, InvalidBlockNumber, 1, 0);
 	sift_l0_href_add(pg, refs, n);
@@ -121,7 +121,7 @@ sift_l0_href_first(const SiftL0PageIO *io, const SiftL0HeapRef *refs, uint32 n)
 static uint32
 tail_room(const SiftL0PageIO *io, BlockNumber tail)
 {
-	uint32		room = sift_l0_href_room(io->read_lock(io->ctx, tail));
+	uint32		room = sift_l0_href_room(io->read_lock(io->ctx, tail, SIFT_PT_L0_SLAB));
 
 	io->read_unlock(io->ctx, tail);
 	return room;
@@ -149,7 +149,7 @@ sift_l0_href_chain_append(const SiftL0PageIO *io, BlockNumber tail, const SiftL0
 		for (int i = 0; i < nfresh; i++)
 			fresh[i] = io->alloc(io->ctx);
 		io->record_begin(io->ctx);
-		last = io->record_page(io->ctx, tail, false);
+		last = io->record_page(io->ctx, tail, SIFT_PT_L0_SLAB, false);
 		take = Min(n, sift_l0_href_room(last));
 		if (take > 0)
 			sift_l0_href_add(last, refs, take);
@@ -158,7 +158,7 @@ sift_l0_href_chain_append(const SiftL0PageIO *io, BlockNumber tail, const SiftL0
 		while (n > 0 && used < nfresh)
 		{
 			BlockNumber nb = fresh[used++];
-			char	   *np = io->record_page(io->ctx, nb, true);
+			char	   *np = io->record_page(io->ctx, nb, SIFT_PT_L0_SLAB, true);
 
 			sift_l0_href_seal(last);
 			sift_l0_href_format(np, last_blk, SL(last)->chain_pages + 1, SL(last)->chain_rows);
@@ -182,6 +182,68 @@ typedef struct Segment
 	SiftL0HeapRef *refs;
 } Segment;
 
+/* The references and the pages of a directory of shards (and of the directory it is still draining): every shard chain, no order */
+typedef struct DirRead
+{
+	const char *why;
+	BlockNumber bad;
+	SiftL0HeapRef *refs;
+	uint32		n;
+	uint32		cap;
+	BlockNumber *pages;
+	uint32		np;
+	uint32		pcap;
+} DirRead;
+
+static void
+dir_page(void *ctx, BlockNumber blk, const char *pg)
+{
+	DirRead    *r = ctx;
+
+	if (r->np == r->pcap)
+		r->pages = repalloc(r->pages, (r->pcap *= 2) * sizeof(BlockNumber));
+	r->pages[r->np++] = blk;
+	if (r->why == NULL && SiftPageGetOpaque((Page) pg)->type == SIFT_PT_L0_SLAB && !sift_l0_page_is_dir(pg) && (r->why = sift_l0_href_verify(pg)) != NULL)
+		r->bad = blk;
+}
+
+static void
+dir_refs(void *ctx, const SiftL0HeapRef *refs, uint32 n)
+{
+	DirRead    *r = ctx;
+
+	if (r->n + n > r->cap)
+		r->refs = repalloc(r->refs, (r->cap = Max(r->cap * 2, r->n + n)) * sizeof(SiftL0HeapRef));
+	memcpy(r->refs + r->n, refs, n * sizeof(SiftL0HeapRef));
+	r->n += n;
+}
+
+static SiftL0HeapRef *
+dir_chain_read(const SiftL0PageIO *io, BlockNumber anchor, uint32 *n, BlockNumber **pages, uint32 *npages, const char **why, BlockNumber *bad_blk)
+{
+	/* check-memory: allow the references of one slab, that the flush of a slab keeps small */
+	DirRead		r = {.refs = palloc(SIFT_L0_HEAPREF_CAP * sizeof(SiftL0HeapRef)),.cap = SIFT_L0_HEAPREF_CAP,
+		.pages = palloc(2 * SIFT_L0_FRESH_MAX * sizeof(BlockNumber)),.pcap = 2 * SIFT_L0_FRESH_MAX};
+	SiftL0ScanVisitor v = {.page = dir_page,.refs = dir_refs,.ctx = &r};
+
+	sift_l0_scan(io, anchor, &v, true);
+	*why = r.why;
+	*bad_blk = r.bad;
+	*n = r.n;
+	if (npages != NULL)
+		*npages = r.np;
+	if (pages != NULL)
+		*pages = r.pages;
+	else
+		pfree(r.pages);
+	if (r.why != NULL)
+	{
+		pfree(r.refs);
+		return NULL;
+	}
+	return r.refs;
+}
+
 SiftL0HeapRef *
 sift_l0_href_chain_read(const SiftL0PageIO *io, BlockNumber tail, uint32 *n, BlockNumber **pages, uint32 *npages, const char **why, BlockNumber *bad_blk)
 {
@@ -189,11 +251,16 @@ sift_l0_href_chain_read(const SiftL0PageIO *io, BlockNumber tail, uint32 *n, Blo
 	uint32		np = 0,
 				total = 0;
 	SiftL0HeapRef *out;
+	const char *apg = io->read_lock(io->ctx, tail, SIFT_PT_L0_SLAB);
+	bool		is_dir = sift_l0_page_is_dir(apg);
 
+	io->read_unlock(io->ctx, tail);
+	if (is_dir)
+		return dir_chain_read(io, tail, n, pages, npages, why, bad_blk);
 	*why = NULL;
 	for (BlockNumber blk = tail, cur; blk != InvalidBlockNumber && *why == NULL;)
 	{
-		const char *pg = io->read_lock(io->ctx, cur = blk);
+		const char *pg = io->read_lock(io->ctx, cur = blk, SIFT_PT_L0_SLAB);
 		const SiftL0SlabPageData *sl = (const SiftL0SlabPageData *) SiftPageGetData(pg);
 
 		*why = np == lengthof(seg) ? "the chain is longer than a chain can be" : sift_l0_href_verify(pg);
@@ -264,11 +331,26 @@ static BlockNumber
 href_alloc(void *ctx)
 {
 	SiftHrefIo *h = ctx;
-	SiftMetaNew fresh = sift_meta_new(h->rel);
+	SiftMetaNew fresh = h->npool > 0 ? h->pool[--h->npool] : sift_meta_new(h->rel);
 
 	Assert(h->nfresh < lengthof(h->fresh));
 	h->fresh[h->nfresh++] = fresh;
 	return fresh.blk;
+}
+
+void
+sift_href_io_reserve(SiftHrefIo *h, int n)
+{
+	Assert(n <= lengthof(h->pool));
+	while (h->npool < n)
+		h->pool[h->npool++] = sift_meta_new(h->rel);
+}
+
+void
+sift_href_io_unreserve(SiftHrefIo *h)
+{
+	while (h->npool > 0)
+		sift_meta_new_release(h->rel, h->pool[--h->npool]);
 }
 
 static uint64
@@ -303,7 +385,7 @@ href_begin(void *ctx)
 }
 
 static char *
-href_page(void *ctx, BlockNumber blk, bool full)
+href_page(void *ctx, BlockNumber blk, SiftPageType type, bool full)
 {
 	SiftHrefIo *h = ctx;
 	Buffer		buf;
@@ -315,11 +397,11 @@ href_page(void *ctx, BlockNumber blk, bool full)
 	{
 		Page		pg = sift_xlog_register(&h->x, sift_blk_new(h->rel, blk), GENERIC_XLOG_FULL_IMAGE);
 
-		sift_page_init_part(pg, SIFT_PT_L0_SLAB, href_gen_of(h, blk), h->part_id);
+		sift_page_init_part(pg, type, href_gen_of(h, blk), h->part_id);
 		return pg;
 	}
 	buf = sift_blk_read(h->rel, blk, BUFFER_LOCK_EXCLUSIVE);
-	sift_page_expect(h->rel, BufferGetPage(buf), blk, SIFT_PT_L0_SLAB, 0, h->part_id);
+	sift_page_expect(h->rel, BufferGetPage(buf), blk, type, 0, h->part_id);
 	return sift_xlog_register(&h->x, buf, 0);
 }
 
@@ -340,14 +422,14 @@ href_abort(void *ctx)
 }
 
 static const char *
-href_rdlock(void *ctx, BlockNumber blk)
+href_rdlock(void *ctx, BlockNumber blk, SiftPageType type)
 {
 	SiftHrefIo *h = ctx;
 	Page		pg;
 
 	h->rd = sift_blk_read(h->rel, blk, BUFFER_LOCK_SHARE);
 	pg = BufferGetPage(h->rd);
-	sift_page_expect(h->rel, pg, blk, SIFT_PT_L0_SLAB, 0, h->part_id);
+	sift_page_expect(h->rel, pg, blk, type, 0, h->part_id);
 	return pg;
 }
 
@@ -407,9 +489,37 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	SiftHrefIo	h;
 	BlockNumber head,
 				tail;
-	bool		first;
+	bool		first,
+				hot_ok = n <= SIFT_L0_HOT_MAX_REFS;
 
-	head = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr)->l0_slab_blk;
+	for (;;)
+	{
+		uint32		applied;
+		bool		busy;
+		const SiftPartitionEntry *e;
+
+		if (hot_ok && sift_l0_hot_refs(rel, part_id, key_lo, refs, n, &applied) == SIFT_L0_GC_APPLIED)
+			return true;
+		busy = sift_l0_lock_busy(rel, part_id);
+		e = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
+		head = e->l0_slab_blk;
+		if (hot_ok)
+		{
+			SiftL0Route route = sift_l0_settle(rel, part_id, key_lo, e, true, busy);
+
+			if (route == SIFT_L0_HOT)
+			{
+				UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+				continue;
+			}
+			if (route == SIFT_L0_REFUSED)
+			{
+				UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+				return false;
+			}
+		}
+		break;
+	}
 	sift_href_io_init(&h, rel, (uint32) part_id);
 	first = head == InvalidBlockNumber;
 	if (head != InvalidBlockNumber && !chain_takes(rel, part_id, head, n))

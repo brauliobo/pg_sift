@@ -11,6 +11,7 @@
 #include "col/f2/vacuum/run.h"
 #include "col/f2/compact/compact.h"
 #include "col/f2/l0/href_fetch.h"
+#include "col/f2/l0/shard_dir.h"
 #include "col/f2/l0/slab.h"
 #include "core/damage.h"
 #include "core/f2/gate.h"
@@ -427,6 +428,8 @@ sift_l0_slab_rows(Relation rel, uint64 part_id, BlockNumber head)
 	int			pages;
 	uint32		rows;
 
+	if (sift_l0_slab_is_dir(rel, part_id, head))
+		return sift_l0_dir_rows(rel, part_id, head);
 	if (sift_l0_slab_is_href(rel, part_id, head))
 		return sift_l0_href_chain_rows(rel, part_id, head);
 	(void) chain_totals(rel, (uint32) part_id, head, &tail, &pages, &rows);
@@ -438,6 +441,8 @@ sift_l0_slab_stamp(Relation rel, uint64 part_id, BlockNumber head)
 {
 	SiftChainStamp st = {0};
 
+	if (sift_l0_slab_is_dir(rel, part_id, head))
+		return sift_l0_dir_stamp(rel, part_id, head);
 	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
 	{
 		Buffer		buf = lock_slab(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
@@ -479,6 +484,7 @@ typedef struct SlabChain
 	int			pages;
 	uint32		rows;
 	bool		sealed;
+	bool		live;			/* a flush left a directory that took writes meanwhile: the chain is not the first of an empty partition */
 } SlabChain;
 
 static SlabChain
@@ -501,23 +507,25 @@ chain_has_room(const SlabChain *c, int nbatches)
 /*
  * A chain that holds as many rows or pages as it may is written out as an L0 part before the rows go on, so that the micro-slab turns over every SIFT_L0_SLAB_FLUSH_ROWS rows and the
  * commits that follow land in the fresh slab, where a transaction that found the chain full wrote a part and a manifest commit of its own. A chain of references is no chain of batches:
- * batches go behind none, so it is written out whatever it holds. The chain an append of nbatches batches finds behind head, none after a write; the caller holds the lock of the partition.
+ * batches go behind none, so it is written out whatever it holds. The chain an append of nbatches batches finds behind head, none after a write, or none with live set when the write left a
+ * directory that its writers had put rows into; the caller holds the lock of the partition.
  */
 static SlabChain
 chain_to_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber head, int nbatches)
 {
 	SlabChain	c = {.tail = InvalidBlockNumber};
+	SiftPartitionEntry after;
 
 	if (head == InvalidBlockNumber)
 		return c;
-	if (!sift_l0_slab_is_href(rel, part_id, head))
+	if (!sift_l0_slab_is_dir(rel, part_id, head) && !sift_l0_slab_is_href(rel, part_id, head))
 	{
 		c = chain_of(rel, (uint32) part_id, head);
 		if (chain_has_room(&c, nbatches))
 			return c;
 	}
 	(void) sift_l0_slab_flush(rel, part_id, key_lo, spec);
-	return (SlabChain) {.tail = InvalidBlockNumber};
+	return (SlabChain) {.tail = InvalidBlockNumber,.live = sift_manifest_find_entry(rel, part_id, key_lo, &after) && after.l0_slab_blk != InvalidBlockNumber};
 }
 
 bool
@@ -625,17 +633,40 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	/* check-memory: allow the rows of one transaction batch, which work_mem bounds */
 	StringInfo *recs = palloc((rows->n + 1) * sizeof(StringInfo));
 	int			nrecs;
+	bool		hot_ok,
+				first;
 	SiftManifestRead mr;
 	SlabChain	c;
-	BlockNumber head;
-	bool		first;
 
 	encode_batches(rows, recs, &nrecs);
 	for (int i = 0; i < nrecs; i++)
 		if (recs[i]->len > SLAB_ROOM)
 			return false;
-	head = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr)->l0_slab_blk;
-	c = chain_to_append(rel, part_id, key_lo, spec, head, nrecs);
+	hot_ok = nrecs == 1 && recs[0]->len <= SIFT_L0_GC_MAX_BYTES;
+	for (;;)
+	{
+		const SiftL0BatchHeader *rec = (const SiftL0BatchHeader *) recs[0]->data;
+		uint32		applied;
+		bool		busy;
+		const SiftPartitionEntry *e;
+
+		if (hot_ok && sift_l0_hot_batches(rel, part_id, key_lo, &rec, 1, &applied) == SIFT_L0_GC_APPLIED)
+			return true;
+		busy = sift_l0_lock_busy(rel, part_id);
+		e = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
+		if (hot_ok && sift_l0_settle(rel, part_id, key_lo, e, false, busy) == SIFT_L0_HOT)
+		{
+			UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+			continue;
+		}
+		c = chain_to_append(rel, part_id, key_lo, spec, e->l0_slab_blk, nrecs);
+		break;
+	}
+	if (c.live)
+	{
+		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+		return false;
+	}
 	first = c.tail == InvalidBlockNumber;
 	if (c.pages + nrecs > SIFT_L0_SLAB_MAX_PAGES)
 	{
@@ -664,6 +695,11 @@ sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 	SiftXlog	x;
 	bool		fused;
 
+	if (e.l0_slab_blk != InvalidBlockNumber && sift_l0_slab_is_dir(rel, part_id, e.l0_slab_blk))
+	{
+		UnlockPage(rel, lock, ExclusiveLock);
+		return false;
+	}
 	if (chain_to_append(rel, part_id, key_lo, spec, e.l0_slab_blk, 1).tail == InvalidBlockNumber && e.l0_slab_blk != InvalidBlockNumber)
 		e = sift_manifest_read_range(rel, key_lo, NULL).entries[0];
 	if (e.l0_slab_blk == InvalidBlockNumber)
@@ -708,11 +744,80 @@ sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 }
 
 static void
+decode_batch(Relation rel, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftL0BatchHeader *b)
+{
+	SiftGranuleView v;
+	SiftRowVer *vers;
+
+	if ((b->flags & SIFT_L0_BATCH_ROW_COMPACT) != 0)
+	{
+		read_compact(rb, spec, b);
+		return;
+	}
+	v = sift_granule_open(rel, (const char *) b + sizeof(SiftL0BatchHeader), b->bytes - sizeof(SiftL0BatchHeader), NULL);
+	/* check-memory: allow the rows of one granule, at most SIFT_GRANULE_ROWS */
+	vers = palloc(b->nrows * sizeof(SiftRowVer));
+	for (int r = 0; r < b->nrows; r++)
+		vers[r] = (SiftRowVer) {b->xmin, b->cmin};
+	sift_rowbuf_add_granule(rb, &v, vers, spec, NULL);
+}
+
+typedef struct DirDecode
+{
+	Relation	rel;
+	SiftRowBuf *rb;
+	const SiftPartSpec *spec;
+	BlockNumber *pages;
+	int			np;
+	int			cap;
+} DirDecode;
+
+static void
+dir_page(void *ctx, BlockNumber blk, const char *pg)
+{
+	DirDecode  *d = ctx;
+
+	if (d->pages == NULL)
+		return;
+	if (d->np == d->cap)
+		d->pages = repalloc(d->pages, (d->cap *= 2) * sizeof(BlockNumber));
+	d->pages[d->np++] = blk;
+}
+
+static void
+dir_batch(void *ctx, const SiftL0BatchHeader *b)
+{
+	DirDecode  *d = ctx;
+
+	decode_batch(d->rel, d->rb, d->spec, b);
+}
+
+static void
+read_dir_batches(Relation rel, uint64 part_id, BlockNumber anchor, SiftRowBuf *rb, const SiftPartSpec *spec, BlockNumber **pages, int *npages)
+{
+	SiftHrefIo	h;
+	DirDecode	d = {.rel = rel,.rb = rb,.spec = spec,.pages = pages != NULL ? palloc(SIFT_L0_SHARD_ABS_MAX * sizeof(BlockNumber)) : NULL,.cap = SIFT_L0_SHARD_ABS_MAX};
+	SiftL0ScanVisitor v = {.batch = dir_batch,.page = dir_page,.ctx = &d};
+
+	sift_href_io_init(&h, rel, (uint32) part_id);
+	sift_l0_scan(&h.io, anchor, &v, true);
+	if (pages != NULL)
+		*pages = d.pages;
+	if (npages != NULL)
+		*npages = d.np;
+}
+
+static void
 read_batches(Relation rel, uint64 part_id, BlockNumber head, SiftRowBuf *rb, const SiftPartSpec *spec, BlockNumber **pages, int *npages)
 {
 	int			np = 0,
 				cap = SIFT_L0_SLAB_MAX_PAGES;
 
+	if (sift_l0_slab_is_dir(rel, part_id, head))
+	{
+		read_dir_batches(rel, part_id, head, rb, spec, pages, npages);
+		return;
+	}
 	if (pages != NULL)
 		*pages = palloc(cap * sizeof(BlockNumber));
 	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
@@ -725,8 +830,6 @@ read_batches(Relation rel, uint64 part_id, BlockNumber head, SiftRowBuf *rb, con
 		for (int i = 0; i < SL(pg)->nbatches; i++)
 		{
 			const SiftL0BatchHeader *b = (const SiftL0BatchHeader *) (SiftPageGetData(pg) + off);
-			SiftGranuleView v;
-			SiftRowVer *vers;
 			bool		compact;
 
 			if (off + SIFT_L0_COMPACT_HDR > used)
@@ -734,18 +837,7 @@ read_batches(Relation rel, uint64 part_id, BlockNumber head, SiftRowBuf *rb, con
 			compact = (b->flags & SIFT_L0_BATCH_ROW_COMPACT) != 0;
 			if (b->bytes % 8 != 0 || off + b->bytes > used || b->bytes <= (compact ? SIFT_L0_COMPACT_HDR : sizeof(SiftL0BatchHeader)))
 				SIFT_CORRUPT(rel, "Block %u: batch %d of the slab is outside the page.", blk, i);
-			if (compact)
-			{
-				read_compact(rb, spec, b);
-				off += b->bytes;
-				continue;
-			}
-			v = sift_granule_open(rel, (const char *) b + sizeof(SiftL0BatchHeader), b->bytes - sizeof(SiftL0BatchHeader), NULL);
-			/* check-memory: allow the rows of one granule, at most SIFT_GRANULE_ROWS */
-			vers = palloc(b->nrows * sizeof(SiftRowVer));
-			for (int r = 0; r < b->nrows; r++)
-				vers[r] = (SiftRowVer) {b->xmin, b->cmin};
-			sift_rowbuf_add_granule(rb, &v, vers, spec, NULL);
+			decode_batch(rel, rb, spec, b);
 			off += b->bytes;
 		}
 		if (pages != NULL)
@@ -771,31 +863,37 @@ sift_l0_slab_read(Relation rel, uint64 part_id, BlockNumber head, SiftRowBuf *rb
 		read_batches(rel, part_id, head, rb, spec, pages, npages);
 }
 
+bool
+sift_l0_slab_write_part(Relation rel, uint64 part_id, const SiftPartSpec *spec, SiftRowBuf *rb, SiftPartDesc *d)
+{
+	SiftCompressTier tier = rb->n >= SIFT_L0_TO_L1_DIRECT_ROWS ? SIFT_TIER_WARM_L1 : SIFT_TIER_HOT_L0;
+	SiftColIn  *cols;
+	SiftRows	r;
+
+	if (rb->n == 0)
+		return false;
+	cols = palloc(Max(spec->ncols, 1) * sizeof(SiftColIn));
+	sift_rowbuf_sort(rb, spec);
+	sift_rowbuf_cluster(rb, spec, tier);
+	r = sift_rowbuf_rows(rb, cols, spec);
+	*d = sift_part_write_rows(rel, (uint32) part_id, sift_manifest_new_gen(rel, 1), rb->n >= SIFT_L0_TO_L1_DIRECT_ROWS ? 1 : 0, tier, &r);
+	return true;
+}
+
 void
 sift_l0_slab_publish(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, SiftRowBuf *rb, const BlockNumber *pages, int npages)
 {
-	SiftColIn  *cols = palloc(Max(spec->ncols, 1) * sizeof(SiftColIn));
 	SiftExtent *rel_ext = palloc(Max(npages, 1) * sizeof(SiftExtent));
 	SiftPartDesc d;
-	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.set_l0_slab = true,.new_l0_slab_blk = InvalidBlockNumber,.add_parts = &d,.nadd = rb->n > 0};
+	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.set_l0_slab = true,.new_l0_slab_blk = InvalidBlockNumber,.add_parts = &d};
 
-	if (rb->n > 0)
-	{
-		SiftCompressTier tier = rb->n >= SIFT_L0_TO_L1_DIRECT_ROWS ? SIFT_TIER_WARM_L1 : SIFT_TIER_HOT_L0;
-		SiftRows	r;
-
-		sift_rowbuf_sort(rb, spec);
-		sift_rowbuf_cluster(rb, spec, tier);
-		r = sift_rowbuf_rows(rb, cols, spec);
-		d = sift_part_write_rows(rel, (uint32) part_id, sift_manifest_new_gen(rel, 1), rb->n >= SIFT_L0_TO_L1_DIRECT_ROWS ? 1 : 0, tier, &r);
-	}
+	e.nadd = sift_l0_slab_write_part(rel, part_id, spec, rb, &d);
 	for (int i = 0; i < npages; i++)
 		rel_ext[i] = (SiftExtent) {pages[i], 1};
 	e.release = rel_ext;
 	e.nrelease = npages;
 	sift_manifest_commit(rel, &e);
 	pfree(rel_ext);
-	pfree(cols);
 }
 
 /* The chain of batches at head, written out as a part; the caller holds the lock of the partition */
@@ -826,7 +924,9 @@ sift_l0_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const Sift
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 		return false;
 	}
-	if (sift_l0_slab_is_href(rel, part_id, head))
+	if (sift_l0_slab_is_dir(rel, part_id, head))
+		sift_l0_hot_flush(rel, part_id, key_lo, head);
+	else if (sift_l0_slab_is_href(rel, part_id, head))
 		sift_l0_href_flush_chain(rel, part_id, key_lo, spec, head);
 	else
 		flush_batches(rel, part_id, key_lo, spec, head);

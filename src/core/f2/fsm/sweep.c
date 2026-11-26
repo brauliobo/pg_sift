@@ -20,6 +20,7 @@
 #include "col/f2/f2.h"
 #include "col/f2/drop/parts.h"
 #include "col/f2/journal.h"
+#include "col/f2/l0/shard_dir.h"
 #include "col/f2/l0/slab.h"
 #include "col/f2/part/format.h"
 #include "col/f2/del/pend.h"
@@ -174,6 +175,22 @@ hold_chain(Sweep *s, int kind, BlockNumber head, const ChainSpec *c)
 		memcpy(&blk, SiftPageGetData(p) + c->link_off, sizeof(blk));
 		pfree(p);
 	}
+	return true;
+}
+
+static void
+hold_slab_page(void *ctx, BlockNumber blk, const char *pg)
+{
+	hold(ctx, SiftPageGetOpaque((Page) pg)->type == SIFT_PT_PEND_DEL ? NAMED_PEND : NAMED_SLAB, blk, 1);
+}
+
+/* The micro-slab of a partition: a chain, or a shard directory with the chains of its shards */
+static bool
+hold_slab(Sweep *s, const SiftPartitionEntry *e)
+{
+	if (e->l0_slab_blk == InvalidBlockNumber || !sift_l0_slab_is_dir(s->rel, e->part_id, e->l0_slab_blk))
+		return hold_chain(s, NAMED_SLAB, e->l0_slab_blk, &L0_SLAB);
+	sift_l0_dir_pages_frozen(s->rel, e->part_id, e->l0_slab_blk, hold_slab_page, s);
 	return true;
 }
 
@@ -363,7 +380,7 @@ hold_partition(Sweep *s, const SiftPartitionEntry *e)
 		if (!hold_part(s, &parts[i], (uint32) e->part_id))
 			return false;
 	pfree(parts);
-	return hold_col_delta(s, e) && hold_chain(s, NAMED_SLAB, e->l0_slab_blk, &L0_SLAB) && hold_slab_wide(s, e) &&
+	return hold_col_delta(s, e) && hold_slab(s, e) && hold_slab_wide(s, e) &&
 		hold_chain(s, NAMED_PEND, e->pend_del_blk, &PEND_DEL);
 }
 

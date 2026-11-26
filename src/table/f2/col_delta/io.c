@@ -845,37 +845,49 @@ release_run(SiftColDeltaStage *cd, const int *ord, int lo, int hi)
 #define SIFT_COL_DELTA_REGROUPS 8	/* merges of partitions that one flush meets before it gives up: each is a merge another session committed while it ran */
 
 /* The records of ord[lo..hi), all of one partition, into its chain. Returns 0, or the records that a merge of the partitions since they were staged sent to the partition that holds their rows
- * now: nothing is written then, and the stage is grouped again */
+ * now: nothing is written then, and the stage is grouped again. The lookups of the rows and the encoding of the run are made before the lock of the partition, on the parts the manifest has then;
+ * under the lock the manifest generation of the partition must still be that of the parts, or a compaction, a split or a merge rewrote them and the work is made again */
 static int
 flush_part(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *ord, int lo, int hi, FullTransactionId next)
 {
 	uint64		part_id = cd->items[ord[lo]].part_id;
-	SiftPartitionEntry e;
-	SiftPartDesc *parts = NULL;
-	int			nparts = 0;
-	SiftColDeltaBatch b;
+	const uint8 *key_lo = cd->items[ord[lo]].key_lo;
 	uint32		npages = 0;
-	int			moved;
+	int			moved = 0;
 
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	if (sift_manifest_find_entry(rel, part_id, cd->items[ord[lo]].key_lo, &e))
-		parts = sift_manifest_read_parts(rel, &e, &nparts);
-	moved = relocate_stale(rel, store, cd, ord, lo, hi, parts, nparts);
-	if (moved == 0 && parts != NULL)
+	for (;;)
 	{
+		SiftPartitionEntry e,
+					locked;
+		SiftPartDesc *parts = NULL;
+		int			nparts = 0;
+		SiftColDeltaBatch b = {0};
+		bool		stable;
+
+		if (sift_manifest_find_entry(rel, part_id, key_lo, &e))
+			parts = sift_manifest_read_parts(rel, &e, &nparts);
+		moved = relocate_stale(rel, store, cd, ord, lo, hi, parts, nparts);
+		if (moved != 0 || parts == NULL)
+			break;
 		b = run_batch(cd, ord, lo, hi, next);
-		if (b.nentries > 0)
-			npages = append_locked(rel, &e, &b, next);
-		release_run(cd, ord, lo, hi);
-		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
-		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
+		LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+		stable = sift_manifest_find_entry(rel, part_id, key_lo, &locked) && locked.manifest_gen == e.manifest_gen;
+		if (stable)
+		{
+			if (b.nentries > 0)
+				npages = append_locked(rel, &locked, &b, next);
+			release_run(cd, ord, lo, hi);
+			SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
+			SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
+		}
+		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 		sift_col_delta_batch_free(&b);
+		pfree(parts);
+		if (stable)
+			break;
 	}
-	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	if (npages >= SIFT_COL_DELTA_FOLD_PAGES)
 		(void) sift_f2_maint_request(rel, SIFT_MK_COMPACT_PART, part_id);
-	if (parts != NULL)
-		pfree(parts);
 	return moved;
 }
 

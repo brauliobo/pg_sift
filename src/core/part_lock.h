@@ -1,7 +1,7 @@
 /*
  * core/part_lock.h - the locks of the partitions of a format 2 index.
  *
- * Two tiers. The fast tier is SiftPartLockShm: 256 stripes, a cache line each (the lock and the wait list of the group commit of the L0 shards that hash to it), in a table of the dynamic shared memory registry; the partition of a relation takes the stripe its
+ * Two tiers. The fast tier is SiftPartLockShm: 1024 stripes, a cache line each (the lock and the wait list of the group commit of the L0 shards that hash to it), in a table of the dynamic shared memory registry; the partition of a relation takes the stripe its
  * (relation, partition) hash picks, shared by the appends of the writers of a partition and exclusive by the flush, the split and the compaction that rewrite it. The heavy tier is the page lock
  * of the relation at SIFT_PART_LOCK_BLKNO(part_id): for a hold that spans buffer I/O or waits for a transaction, where the deadlock detector has to see the wait.
  * The block numbers of every virtual lock of a format 2 relation are at the top of the block number space, 0xFFFFE000 and up, above any block a relation has (the 32 bit block number of a
@@ -31,7 +31,7 @@
 
 #define SIFT_PART_LOCK_BASE			0xFFFFF000U
 #define SIFT_PART_LOCK_SLOTS		1024U
-#define SIFT_PART_LOCK_STRIPES		256U
+#define SIFT_PART_LOCK_STRIPES		1024U
 
 #define SIFT_F2_MAINT_LOCK_BLKNO	0xFFFFF800U		/* relation-wide maintenance, VACUUM, the orphan sweep */
 #define SIFT_F2_LOAD_LOCK_BLKNO		0xFFFFF801U		/* shared by the loads in progress, exclusive for the orphan sweep */
@@ -64,7 +64,7 @@ typedef struct SiftPartLockShm
 	SiftPartStripe stripe[SIFT_PART_LOCK_STRIPES];
 } SiftPartLockShm;
 
-StaticAssertDecl(sizeof(SiftPartLockShm) == 32 * 1024, "the partition lock stripes are 32 kB");
+StaticAssertDecl(sizeof(SiftPartLockShm) == 128 * 1024, "the partition lock stripes are 128 kB");
 
 /* The stripe of a shard of a partition of a relation: the partition lock is the stripe of its shard 0 */
 extern uint32 sift_part_shard_stripe(const RelFileLocator *locator, uint64 part_id, uint32 shard);

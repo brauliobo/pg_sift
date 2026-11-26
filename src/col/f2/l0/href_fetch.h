@@ -69,12 +69,20 @@ typedef struct SiftHrefIo
 	uint32		part_id;
 	SiftXlog	x;
 	Buffer		rd;
-	SiftMetaNew fresh[SIFT_L0_REC_PAGES];	/* the pages taken and not formatted yet */
+	SiftMetaNew fresh[SIFT_L0_FRESH_MAX];	/* the pages handed out and not formatted yet */
 	int			nfresh;
+	SiftMetaNew pool[SIFT_L0_FRESH_MAX];	/* the pages taken from the allocator ahead of a lock that must not wait for it */
+	int			npool;
 	SiftL0PageIO io;
 } SiftHrefIo;
 
 extern void sift_href_io_init(SiftHrefIo *h, Relation rel, uint32 part_id);
+
+/* Takes n pages from the allocator now (Block 0 may be locked for it): the next n allocations of the io are served from them, with no allocator call */
+extern void sift_href_io_reserve(SiftHrefIo *h, int n);
+
+/* The reserved pages that were not used go back */
+extern void sift_href_io_unreserve(SiftHrefIo *h);
 
 /*
  * The rows of the references: dropped as above, sorted by heap block, fetched through a read stream of the blocks, the columns of each tuple formed as the index's and added to rb

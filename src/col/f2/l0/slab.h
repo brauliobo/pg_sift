@@ -94,6 +94,9 @@ extern void sift_l0_slab_read(Relation rel, uint64 part_id, BlockNumber head, Si
 /* Writes rb (the rows of the slab, in any order) as a sorted L0 part and commits it with the release of the pages of the chain, under the lock of the partition the caller holds; no part when rb is empty */
 extern void sift_l0_slab_publish(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, SiftRowBuf *rb, const BlockNumber *pages, int npages);
 
+/* The rows of rb (in any order) as a sorted L0 part, written and not committed; false, with no part, when rb is empty */
+extern bool sift_l0_slab_write_part(Relation rel, uint64 part_id, const SiftPartSpec *spec, SiftRowBuf *rb, SiftPartDesc *d);
+
 /* Sorts the slab of the partition into an L0 part and commits it, the chain released; false when the partition has no slab */
 extern bool sift_l0_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec);
 

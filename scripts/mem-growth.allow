@@ -84,3 +84,6 @@ double	col/f2/scope/probe.c	keys = repalloc(keys, sizeof(int64) * (cap *= 2));	b
 double	col/f2/scope/twohop.c	keys = keys ? repalloc(keys, sizeof(int64) * (cap *= 2)) : palloc(sizeof(int64) * (cap = 64));	bounded: distinct hop-1 keys for one two-hop scope query, freed with the query context
 loop	agg/star/run.c	while (part_row(r, d, &sh, nparts, part, &row))	bounded: chunk boundary offsets (uint32) recorded only when a dimension hash chunk exceeds work_mem and rolls over
 double	agg/star/run.c	r->cstart[d] = repalloc(r->cstart[d], sizeof(uint32) * (cap *= 2));	bounded: one uint32 start offset per spilled dimension hash chunk in a star-join partition
+double	col/f2/l0/href.c	r->pages = repalloc(r->pages, (r->pcap *= 2) * sizeof(BlockNumber));	bounded: the pages of one directory and the one it drains, a slab flush at 2 * SIFT_L0_SLAB_MAX_PAGES pages (note_flush)
+double	col/f2/l0/href.c	r->refs = repalloc(r->refs, (r->cap = Max(r->cap * 2, r->n + n)) * sizeof(SiftL0HeapRef));	bounded: the references of one directory and the one it drains, a slab flush at 2 * SIFT_L0_SLAB_MAX_PAGES pages (note_flush)
+double	col/f2/l0/slab.c	d->pages = repalloc(d->pages, (d->cap *= 2) * sizeof(BlockNumber));	bounded: the pages of one directory and the one it drains, a slab flush at 2 * SIFT_L0_SLAB_MAX_PAGES pages (note_flush)
