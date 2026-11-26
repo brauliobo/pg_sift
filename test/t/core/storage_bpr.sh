@@ -2,12 +2,12 @@
 # The bytes-per-row gate (scripts/bpr/run.py, cases.py, fixtures.sql): the disk and the WAL a row costs on each storage path of sift, in windows that start after a CHECKPOINT of a
 # cluster with full_page_writes on and wal_compression off, so that a bulk load, a build, a write or a VACUUM that costs 3.5 times what it did fails here even when its ratio to
 # the last run does not. One BPR line a case (a comment, as the job log of a passing test keeps comments) and one check each. A case that names a known defect (open=W-NN)
-# is a TODO while it fails its ceilings and fails when it stops: its row is then made clean. BPR_ONLY=RE runs the cases whose name matches.
+# is a TODO while it fails its ceilings and fails when it stops: its row is then made clean. BPR_ONLY=RE runs the cases whose name matches, BPR_ARGS=--calibrate (--determinism, --check-headroom) the other modes of the runner. The cases of wal_level = minimal run
+# on a second cluster; the cases that restart the server (cold) restart the one they run on.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 
-node_init bpr 1 "shared_preload_libraries = 'pg_sift'
-wal_level = replica
+CONF="shared_preload_libraries = 'pg_sift'
 full_page_writes = on
 wal_compression = off
 autovacuum = off
@@ -20,20 +20,45 @@ max_parallel_maintenance_workers = 0
 max_parallel_workers_per_gather = 0
 maintenance_work_mem = 16MB
 work_mem = 4MB"
-node_start bpr || bail "start failed"
 
-bpr() { PGHOST=$(dir bpr)/sock PGPORT=$(port bpr) PGUSER=postgres PGDATABASE=postgres python3 -I "$REPO/scripts/bpr/run.py" --dir "$(dir bpr)" ${BPR_ONLY:+--only "$BPR_ONLY"} "$@"; }
-out=$(bpr 2>"$(dir bpr)/bpr.err") || diag "$(cat "$(dir bpr)/bpr.err")"
-diag "$out"
+node_init bpr 1 "$CONF
+wal_level = replica"
+node_init bprmin 2 "$CONF
+wal_level = minimal
+max_wal_senders = 0"
+node_start bpr || bail "start failed"
+node_start bprmin || bail "start failed"
+
+restart() {
+	local d=$(dir "$1")
+	echo "pg_ctl -D '$d/data' -m fast -w stop && LD_PRELOAD='${SIFT_PRELOAD:-}' pg_ctl -D '$d/data' -l '$d/postgres.log' -w -t 120 start && '$TAP_SCRIPTS/leakcheck.sh' baseline '$d/data'"
+}
+bpr() {
+	local node=$1
+	shift
+	PGHOST=$(dir "$node")/sock PGPORT=$(port "$node") PGUSER=postgres PGDATABASE=postgres BPR_RESTART=$(restart "$node") \
+		python3 -I "$REPO/scripts/bpr/run.py" --dir "$(dir "$node")" ${BPR_ONLY:+--only "$BPR_ONLY"} ${BPR_ARGS:-} "$@"
+}
+run() {
+	local node=$1 level=$2 out rc=0
+	out=$(bpr "$node" --wal-level "$level" 2>"$(dir "$node")/bpr.err") || rc=$?
+	[[ -s $(dir "$node")/bpr.err ]] && diag "$(cat "$(dir "$node")/bpr.err")"
+	diag "$out"
+	check "the runner of the $level cases exited 0 (it exited $rc)" test "$rc" -eq 0
+	check "the runner ran every $level case" test "$(grep -c '^BPR [a-z]' <<<"$out")" -eq "$(bpr "$node" --wal-level "$level" --list | grep -c .)"
+	while IFS= read -r l; do
+		[[ $l == "BPR "[a-z]* ]] || continue
+		name=${l#BPR } name=${name%% *} verdict=${l##* }
+		case $verdict in
+		PASS) ok "$name" ;;
+		SKIP) ok "$name # SKIP release build" ;;
+		OPEN=*) NTEST=$((NTEST + 1)); echo "not ok $NTEST - $name # TODO ${verdict#OPEN=}" ;;
+		*) not_ok "$name: $l" ;;
+		esac
+	done <<<"$out"
+}
+
 done_testing
-check "the runner ran every case" test "$(grep -c '^BPR [a-z]' <<<"$out")" -eq "$(bpr --list | grep -c .)"
-while IFS= read -r l; do
-	[[ $l == "BPR "[a-z]* ]] || continue
-	name=${l#BPR } name=${name%% *} verdict=${l##* }
-	case $verdict in
-	PASS) ok "$name" ;;
-	OPEN=*) NTEST=$((NTEST + 1)); echo "not ok $NTEST - $name # TODO ${verdict#OPEN=}" ;;
-	*) not_ok "$name: $l" ;;
-	esac
-done <<<"$out"
+run bpr replica
+run bprmin minimal
 finish

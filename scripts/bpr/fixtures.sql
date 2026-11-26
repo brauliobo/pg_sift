@@ -7,7 +7,7 @@
 \else
 \set rows 16384
 \endif
-DROP TABLE IF EXISTS bpr_base_wide, bpr_base_narrow, bpr_base_json, bpr_base_text, bpr_pairs;
+DROP TABLE IF EXISTS bpr_base_wide, bpr_base_narrow, bpr_base_json, bpr_base_text, bpr_base_blob, bpr_pairs;
 
 CREATE TABLE bpr_base_wide AS
 SELECT i::int8 AS id, i % 64 AS grp, timestamptz '2024-01-01' + (i % 86400) * interval '1 second' AS ts, i * 3 AS v1,
@@ -15,6 +15,7 @@ SELECT i::int8 AS id, i % 64 AS grp, timestamptz '2024-01-01' + (i % 86400) * in
 	'cat_' || i % 16 AS cat, 'txt_' || (hashint4(i + 3) & 255) AS txt, jsonb_build_object('k', i % 8, 'flag', i % 3 = 0) AS doc,
 	'w' || i % 50 || ' w' || (hashint4(i + 4) & 127) AS body
 FROM generate_series(1, :rows) i;
+ALTER TABLE bpr_base_wide ADD PRIMARY KEY (id);
 
 CREATE TABLE bpr_base_narrow AS
 SELECT i AS id, i % 64 AS grp, i::int8 AS v1, (i * 3)::int8 AS v2, i % 1000 AS v3, repeat('x', 40) AS pad
@@ -30,6 +31,12 @@ SELECT i AS id, i % 32 AS grp,
 	CASE WHEN i % 5 < 4 THEN 'wire ' ELSE '' END || CASE WHEN i % 8 = 0 THEN 'switch ' ELSE '' END || CASE WHEN i % 97 = 0 THEN 'quantum ' ELSE '' END
 		|| 'tail' || (hashint4(i * 23) & 2047) || ' tail' || (hashint4(i * 29) & 2047) AS body
 FROM generate_series(1, :rows) i;
+
+-- an eighth of the rows, each with a 5 KB text and a JSONB over 3 KB: wide values (over 4 KB) that compress to about half
+CREATE TABLE bpr_base_blob AS
+SELECT i AS id, (SELECT string_agg(md5(i::text || j), '') FROM generate_series(1, 160) j) AS body,
+	jsonb_build_object('k', i % 8, 'blob', (SELECT string_agg(md5(i::text || 'j' || j), '') FROM generate_series(1, 100) j)) AS doc
+FROM generate_series(1, :rows / 8) i;
 
 CREATE TABLE bpr_pairs AS SELECT i AS a, i % 64 AS b FROM generate_series(1, :rows / 8) i;
 ANALYZE;

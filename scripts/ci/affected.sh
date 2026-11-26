@@ -56,7 +56,7 @@ COMPAT_F1_JOBS='^(compat-f1-fast-gate|tap-(compat/v51_full)|tap-(compat/dump_res
 # What a push runs on the compatibility entries (PostgreSQL 17, PostgreSQL 19, AArch64), the one shard each: what depends on the major or the architecture, the regression tests
 # (the SQL surface, the planner and executor hooks, the NEON kernels), the isolation specs, the crash, standby and upgrade tests, the corpus and the plan bands. The differential tests, the fuzzers,
 # the soaks and the slopes run on the PostgreSQL 18 x86 entry
-COMPAT_JOBS='^(installcheck-|isolation-[0-9]+$|isolation-emulated$|tap-(agg/lookup_shared_concurrent|bm25/crash|bm25/parallel_crash|bm25/standby|bm25/wal_minimal|col/f2/minimal_wal|col/f2/wal|compat/v51_full|compat/dump_restore_tablespace|table/basic|table/logical)$|tap-shell-(bm25/index/build_crash|bm25/store/crash|bm25/store/replica|col/crash_matrix|col/dict/shared_shm|col/index_crash|col/index_replica|compat/pg_upgrade/basic|core/leakcheck_gate|core/replication|fault/matrix-smoke|maint/standby|table/load_workers|table/replica_mixed)$|plan-gate(-table)?$|corpus$|difftest-col(-tbl|-selftest)?$|isa-baseline$|tools-build$|simd-level$)'
+COMPAT_JOBS='^(installcheck-|isolation-[0-9]+$|isolation-emulated$|tap-(agg/lookup_shared_concurrent|bm25/crash|bm25/parallel_crash|bm25/standby|bm25/wal_minimal|col/f2/minimal_wal|col/f2/wal|compat/v51_full|compat/dump_restore_tablespace|table/basic|table/logical)$|tap-shell-(bm25/index/build_crash|bm25/store/crash|bm25/store/replica|col/crash_matrix|col/dict/shared_shm|col/index_crash|col/index_replica|compat/pg_upgrade/basic|core/leakcheck_gate|core/replication|core/storage_bpr|fault/matrix-smoke|maint/standby|table/load_workers|table/replica_mixed)$|plan-gate(-table)?$|corpus$|difftest-col(-tbl|-selftest)?$|isa-baseline$|tools-build$|simd-level$)'
 # the entry of PostgreSQL 19 runs all of it; 17 has no pg_upgrade job (it upgrades from the major before 18), and AArch64 no mixed-version replication job, which builds the older release it replicates
 # from: only the PostgreSQL 18 x86 entry reads the history of the release tags
 COMPAT_JOBS_17=${COMPAT_JOBS/compat\/pg_upgrade\/basic|/} COMPAT_JOBS_ARM=${COMPAT_JOBS_17/|table\/replica_mixed)/)}
@@ -103,7 +103,7 @@ if [[ $MODE == affected ]]; then
 	cassert=false
 	for f in ${FILES[@]+"${FILES[@]}"}; do [[ $f == src/*.c && -f $REPO/$f ]] && grep -qE "$ASSERT_MARK" "$REPO/$f" && cassert=true; done
 	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
-	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$|perf-gate-|tap-shell-(agg/viability_gate)$)'
+	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$|perf-gate-|tap-shell-(agg/viability_gate|core/storage_bpr)$)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation-[0-9]+$'
