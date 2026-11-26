@@ -112,10 +112,11 @@ lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_polic
 	}
 }
 
+/* A statement outside the executor (the apply worker of logical replication: ExecSimpleRelationDelete and Update pass its unset es_snapshot) gives no snapshot: the row was found under the latest one */
 TM_Result
 sift_tbl_f2_lock_for_modify(Relation rel, uint64 tid, LockTupleMode mode, bool wait, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool *waited)
 {
-	return lock_row(rel, tid, mode, wait ? LockWaitBlock : LockWaitError, snap, cid, tmfd, true, waited);
+	return lock_row(rel, tid, mode, wait ? LockWaitBlock : LockWaitError, snap != NULL ? snap : GetLatestSnapshot(), cid, tmfd, true, waited);
 }
 
 /* ---- the callbacks ---- */
