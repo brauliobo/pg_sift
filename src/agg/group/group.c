@@ -440,15 +440,35 @@ v6g_grouped_slots(SiftV6Group *g, V6Set *set, uint16 n, SiftVec *const *keyvec)
 	}
 }
 
-static void
-grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+static uint64
+wide_row_bytes(const V6Set *set, SiftVec *const *keyvec, uint16 r)
 {
-	uint16		n;
+	uint64		bytes = 0;
 
-	if (v6g_compact_batch(g, set, bs, keyvec, argvec))
-		return;
-	n = batch_rows(g, set, bs, keyvec);
-	g->frows = g->nfilters > 0 ? sift_fmasks_rows(g->fmasks) : NULL;
+	for (int i = 0; i < set->nk; i++)
+	{
+		const SiftVec *kv = keyvec[set->kidx[i]];
+
+		if (!is_valid(kv, r))
+			continue;
+		if (kv->type == SVEC_STRVIEW)
+			bytes += sizeof(uint32) + ((const SiftStrView *) kv->data)[r].len;
+		else if (kv->type == SVEC_DICT32)
+		{
+			const SiftGranuleDict *d = kv->dict;
+			const uint32 c = ((const uint32 *) kv->data)[r];
+
+			bytes += sizeof(uint32) + (d->off[c + 1] - d->off[c]);
+		}
+		else
+			bytes += sizeof(int64);
+	}
+	return bytes;
+}
+
+static void
+grouped_slice(SiftV6Group *g, V6Set *set, uint16 n, SiftVec *const *keyvec, SiftVec *const *argvec)
+{
 	v6g_grouped_slots(g, set, n, keyvec);
 	if (set->frozen)
 		n = v6g_rows_split(g, set, keyvec, argvec, n);
@@ -475,6 +495,53 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 			if (v6g_row_takes(g, &g->spec->agg[j], g->sel[k]))
 				fold_row(g, &g->spec->agg[j], (V6Acc *) (sift_ht_ext(&set->ht, g->slots[k]) + g->off[j]), argvec[j], argvec[g->spec->naggs + j], g->sel[k]);
 	}
+}
+
+static void
+grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+{
+	uint16		n;
+
+	if (v6g_compact_batch(g, set, bs, keyvec, argvec))
+		return;
+	n = batch_rows(g, set, bs, keyvec);
+	g->frows = g->nfilters > 0 ? sift_fmasks_rows(g->fmasks) : NULL;
+	if (set->wide && g->budget != UINT64_MAX && n > 1)
+	{
+		const uint64 cap = Max((g->budget - g->dist_budget) / 4, 64 * 1024);
+		uint64		total = 0;
+
+		for (uint16 k = 0; k < n && total <= cap; k++)
+			total += wide_row_bytes(set, keyvec, g->sel[k]);
+		if (total > cap)
+		{
+			uint16		saved[SIFT_VEC_LEN];
+
+			memcpy(saved, g->sel, n * sizeof(uint16));
+			for (uint16 off = 0; off < n;)
+			{
+				uint16		chunk = 0;
+				uint64		bytes = 0;
+
+				while (off + chunk < n)
+				{
+					const uint64 rb = wide_row_bytes(set, keyvec, saved[off + chunk]);
+
+					if (chunk > 0 && bytes + rb > cap)
+						break;
+					bytes += rb;
+					chunk++;
+				}
+				memcpy(g->sel, saved + off, chunk * sizeof(uint16));
+				grouped_slice(g, set, chunk, keyvec, argvec);
+				off += chunk;
+				if (off < n)
+					v6g_rows_if_over(g);
+			}
+			return;
+		}
+	}
+	grouped_slice(g, set, n, keyvec, argvec);
 }
 
 bool

@@ -255,11 +255,52 @@ key_rows(SiftCompact *c, SiftV6Group *g, const V6Set *set, SiftVec *const *keyve
 	return true;
 }
 
+/* Whether the strings of a batch fit inside the compact table's budget (accounting for arena doubling) */
+static bool
+compact_str_fits(const SiftCompact *c, const SiftVec *kv, const uint16 *sel, uint16 n, uint64 budget)
+{
+	uint64		held,
+				added = 0;
+
+	if (budget == UINT64_MAX)
+		return true;
+	held = cmp_bytes(c);
+	if (held >= budget)
+		return false;
+	for (uint16 k = 0; k < n; k++)
+	{
+		const uint16 r = sel[k];
+		uint32		len;
+
+		if (!is_valid(kv, r))
+			continue;
+		if (kv->type == SVEC_DICT32)
+		{
+			const SiftGranuleDict *d = kv->dict;
+			const uint32 code = ((const uint32 *) kv->data)[r];
+
+			len = d->off[code + 1] - d->off[code];
+		}
+		else
+			len = ((const SiftStrView *) kv->data)[r].len;
+		added += len;
+		if (c->in.used + added > c->in.arena_cap)
+		{
+			const uint64 ncap = Max(Max((uint64) c->in.arena_cap * 2, (uint64) c->in.used + added), 4096);
+
+			if (held - c->in.arena_cap + ncap > budget)
+				return false;
+		}
+	}
+	return true;
+}
+
 bool
 v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
 {
 	SiftCompact *c = set->cmp;
 	const SiftVec *sum_vec[CMP_MAX_WORDS];
+	uint64		budget;
 	uint16		n;
 
 	if (c == NULL)
@@ -278,7 +319,8 @@ v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *c
 		compact_flush(g, set, false);
 		return false;
 	}
-	if (!cmp_reserve(c, n, g->budget - g->dist_budget))
+	budget = g->budget == UINT64_MAX ? UINT64_MAX : g->budget - g->dist_budget;
+	if (!cmp_reserve(c, n, budget) || (c->strk >= 0 && !compact_str_fits(c, keyvec[set->kidx[c->strk]], g->sel, n, budget)))
 	{
 		compact_flush(g, set, true);
 		return false;

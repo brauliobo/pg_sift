@@ -567,7 +567,8 @@ static void
 file_replay(SiftV6Group *g, V6Rows *rs, BufFile *f)
 {
 	uint32		len;
-	uint64		n = 0;
+	uint64		n = 0,
+				batch_bytes = 0;
 
 	if (BufFileSeek(f, 0, 0, SEEK_SET) != 0)
 		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("could not rewind a spill file of the rows of the groups"),
@@ -580,11 +581,15 @@ file_replay(SiftV6Group *g, V6Rows *rs, BufFile *f)
 		row = (const uint8 *) rs->in.data;
 		memcpy(rs->in.data, &len, sizeof(len));
 		BufFileReadExact(f, rs->in.data + sizeof(len), len - sizeof(len));
-		if (rs->n > 0 && (rs->n == SIFT_VEC_LEN || !row_same(rs, row)))
+		if (rs->n > 0 && (rs->n == SIFT_VEC_LEN || batch_bytes + len > 256 * 1024 || !row_same(rs, row)))
+		{
 			batch_run(g, rs);
+			batch_bytes = 0;
+		}
 		if (rs->n == 0)
 			batch_start(rs, row);
 		batch_add(rs, row);
+		batch_bytes += len;
 		if (++n % 1024 == 0)
 			CHECK_FOR_INTERRUPTS();
 	}

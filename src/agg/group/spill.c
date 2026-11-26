@@ -577,7 +577,9 @@ v6g_spill_if_over(SiftV6Group *g)
 void
 v6g_rows_if_over(SiftV6Group *g)
 {
-	if (!g->frozen && over_budget(g) && v6g_rows_cheaper(g))
+	const uint64 lim = g->budget == UINT64_MAX ? UINT64_MAX : g->budget - g->dist_budget;
+
+	if (!g->frozen && over_budget(g) && v6g_rows_cheaper(g) && !arena_full(g) && group_bytes(g) <= lim + lim / 2)
 		v6g_freeze(g);
 	else
 		v6g_spill_if_over(g);

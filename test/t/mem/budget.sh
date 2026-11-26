@@ -4,7 +4,7 @@
 # The release build has no scope: the test needs the test build.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 20
+plan 21
 node_init mb 61 "autovacuum = off
 sift.test_create_format1 = on
 max_parallel_workers_per_gather = 0
@@ -51,6 +51,12 @@ sql mb "CREATE TABLE ww AS SELECT g AS id, repeat(md5((g / 10)::text), 128) AS k
 	"CREATE INDEX ww_col ON ww USING sift_col (id, k, s)" "VACUUM (FREEZE, ANALYZE) ww" >/dev/null || bail "wide key table failed"
 check "groups of 4 kB keys after a spill hold under 1.5 times hash memory at work_mem 1MB: under 3 MB (5 MB while the local table took 1,536 of them)" \
 	test "$(agg_peak "SELECT sum(length(m)) FROM (SELECT k, max(s) m FROM ww GROUP BY 1) x")" -lt 3145728
+sql mb "CREATE TABLE ww16 AS SELECT g AS id, repeat(md5(g::text), 512) AS k FROM generate_series(1, 2500) g" \
+	"CREATE INDEX ww16_col ON ww16 USING sift_col (id, k)" "VACUUM (FREEZE, ANALYZE) ww16" >/dev/null || bail "16 kB wide key table failed"
+out=$(sql mb "SET work_mem = '4MB'" "SET sift.agg_force = on" "SELECT count(*) FROM (SELECT k, count(*) FROM ww16 GROUP BY 1) x" \
+	"SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'agg_group'" | tail -2 | tr '\n' ' ')
+check "2,500 distinct 16 kB keys at work_mem 4MB answer 2500 and hold under 12 MB (compact table and batch previously grew past 32 MB)" \
+	test "$(awk '{print $1}' <<<"$out")" == "2500" -a "$(awk '{print $2}' <<<"$out")" -lt 12582912
 sql mb "DO \$\$ DECLARE n int; BEGIN FOREACH n IN ARRAY ARRAY[64, 256] LOOP
 	EXECUTE format('CREATE TABLE q%s (id int, g int, d date NOT NULL) PARTITION BY RANGE (d)', n);
 	FOR i IN 0..n - 1 LOOP EXECUTE format('CREATE TABLE q%s_%s PARTITION OF q%s FOR VALUES FROM (%L) TO (%L)', n, i, n, DATE '2000-01-01' + i, DATE '2000-01-02' + i); END LOOP;
