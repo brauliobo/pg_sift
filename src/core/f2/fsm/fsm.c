@@ -879,7 +879,7 @@ sift_fsm_tail_shrink(Relation rel)
 	FsmCtx		c;
 
 	/* The locks of the sweep and of the cut are WAL-logged for a standby, which takes a transaction id */
-	if (sift_xid_unassignable())
+	if (sift_xid_unassignable() || sift_maint_standby_streams())
 		return res;
 	sift_fsm_meta_pool_drain(rel);
 	if (sift_fsm_sweep_due(rel))
