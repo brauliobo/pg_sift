@@ -5,6 +5,9 @@
  * the merge by workers
  */
 #include "postgres.h"
+
+#include <math.h>
+
 #include "utils/timestamp.h"
 #include "bm25/merge/merge.h"
 #include "col/v1/build.h"
@@ -263,6 +266,24 @@ parts_for_rows(int parts, uint64 live_rows)
 	return Max(parts, (int) Min((live_rows + SIFT_CPOINT_BUILD_ROWS - 1) / SIFT_CPOINT_BUILD_ROWS, (uint64) SIFT_DIR_WIDE_MAX));
 }
 
+/* The segments of the rows of a build: as many as the runs of a build from the heap make, whose batches end at sift_colb_budget; a row weighs what the rows of the first unit of the inputs take decoded */
+static int
+build_parts(SiftColSegment **seg, int n, uint64 live_rows, MemoryContext parent)
+{
+	MemoryContext cx = sift_mem_allocset_create(parent, "sift_col merge row probe");
+	SiftColBatch *b = sift_cbatch_create(cx, seg[0]->schema);
+	double		row_bytes;
+	int			i = 0;
+
+	while (i + 1 < n && seg[i]->nsb == 0)
+		i++;
+	if (seg[i]->nsb > 0)
+		sift_cseg_decode_unit(seg[i], 0, b);
+	row_bytes = (double) MemoryContextMemAllocated(cx, true) / Max(b->nrows, 1);
+	MemoryContextDelete(cx);
+	return parts_for_rows((int) Min(Max(ceil(live_rows * row_bytes / sift_colb_budget(1)), 1), SIFT_DIR_WIDE_MAX), live_rows);
+}
+
 /* The segments a merge writes: as many of part_bytes (0: one) as the live bytes make, and as many as the rows one segment may hold ask for */
 int
 maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut)
@@ -383,7 +404,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 		o.budget = (Size) sift_test_col_segment_kb * 1024;
 #endif
 	o.parts = part && part->win && part_bytes == 0 ? window_parts :
-		maint_merge_parts(live_bytes, live_rows, build ? (uint64) (o.budget / MAINT_MEM_RATIO) : part_bytes, key_cut);
+		build && live_rows > 0 ? build_parts(seg, n, live_rows, cx) : maint_merge_parts(live_bytes, live_rows, part_bytes, key_cut);
 	o.live_rows = part && !part->win ? live_rows / part->nslices : live_rows;
 	o.by_budget = true;
 	o.build = build;
