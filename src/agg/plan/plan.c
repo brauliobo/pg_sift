@@ -663,6 +663,18 @@ format_serves(const V6Plan *p)
 		(!s->rows || (ops->order != NULL && ops->order->scan_rows != NULL)) && (s->ext == NULL || !s->ext->unnest || ops->jsonb != NULL) && (s->par_strategy == 0 || ops->par != NULL);
 }
 
+/* the cost of the cheapest path the relation has so far (-1: none) */
+static double
+cheapest_total(const RelOptInfo *rel)
+{
+	double		c = -1;
+
+	foreach_ptr(Path, path, rel->pathlist)
+		if (c < 0 || path->total_cost < c)
+			c = path->total_cost;
+	return c;
+}
+
 void
 sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_paths, Cost extra_startup, Cost extra_total, double input_rows)
 {
@@ -692,6 +704,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->custom_private = list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, having);
 	locked = p->spec.lock_k > 0;
 	p->spec.lock_k = 0;
+	sift_agg_arm_priced("single", cp->path.total_cost, cheapest_total(p->out));
 	sift_v6_force_price(&cp->path);
 	serial_total = cp->path.total_cost;
 	add_path(p->out, &cp->path);
@@ -842,6 +855,7 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 	CustomScan *cs = makeNode(CustomScan);
 	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private));
 
+	sift_agg_arm_used("single");
 	cs->scan.plan.targetlist = rewrite_tlist(tlist);
 	if (spec->rows)
 		cs->scan.plan.targetlist = (List *) sift_v6_rows_window_aggs((Node *) cs->scan.plan.targetlist);

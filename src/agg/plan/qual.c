@@ -20,6 +20,7 @@
 #include "agg/ext.h"
 #include "agg/qual/bqual.h"
 #include "agg/qual/qual.h"
+#include "agg/refuse.h"
 #include "agg/unnest/jsonb.h"
 #include "col/am/preds.h"
 
@@ -270,7 +271,10 @@ sift_v6_compile_quals(V6Plan *p)
 		if (q == NULL && jq == NIL && qual_batch(p, ri))
 			continue;
 		if (q == NULL && jq == NIL)
+		{
+			sift_agg_arm_refused("single", AGG_REFUSE_WHERE);
 			return false;
+		}
 		if (q != NULL)
 			p->spec.indexqual = lappend(p->spec.indexqual, q);
 		else

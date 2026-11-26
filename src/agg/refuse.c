@@ -6,6 +6,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/tupdesc.h"
 #include "access/table.h"
 #include "access/xact.h"
@@ -26,6 +28,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 #include "utils/builtins.h"
+#include "utils/float.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/tuplestore.h"
@@ -47,6 +50,19 @@ static List *explained;
 static MemoryContext explain_cx;			/* the context of the EXPLAIN statement: it holds explained until the plan is printed */
 static Tuplestorestate *why_store;
 static TupleDesc why_desc;
+static MemoryContext why_cx;				/* the context of the sift.explain_why call: it holds the arms of the statement it plans */
+
+/* an arm of the aggregate that priced a path for the statement sift.explain_why plans: the cheapest of its paths, of the normal plan beside it, and whether the plan takes it */
+typedef struct ArmPrice
+{
+	const char *name;
+	double		scan;
+	double		normal;
+	bool		used;
+	AggRefusal	why;
+} ArmPrice;
+
+static List *arms;
 
 #define AGG_REFUSAL_ROW(id, slug, text, limit, by_design, action) {slug, text, limit, by_design, action},
 static const struct
@@ -121,6 +137,72 @@ sift_agg_refuse(const char *arm, AggRefusal why, const char *detail, double scan
 	agg_report(arm, why, detail, false, scan, normal);
 }
 
+static ArmPrice *
+arm_of(const char *name)
+{
+	MemoryContext old;
+	ArmPrice   *a;
+
+	foreach_ptr(ArmPrice, x, arms)
+		if (strcmp(x->name, name) == 0)
+			return x;
+	old = MemoryContextSwitchTo(why_cx);
+	a = palloc(sizeof(ArmPrice));
+	*a = (ArmPrice) {name, get_float8_infinity(), -1, false, AGG_REFUSE_NONE};
+	arms = lappend(arms, a);
+	MemoryContextSwitchTo(old);
+	return a;
+}
+
+void
+sift_agg_arm_priced(const char *arm, double scan, double normal)
+{
+	ArmPrice   *a;
+
+	if (why_store == NULL)
+		return;
+	a = arm_of(arm);
+	a->scan = Min(a->scan, scan);
+	if (normal >= 0)
+		a->normal = a->normal < 0 ? normal : Min(a->normal, normal);
+}
+
+void
+sift_agg_arm_used(const char *arm)
+{
+	if (why_store != NULL)
+		arm_of(arm)->used = true;
+}
+
+void
+sift_agg_arm_refused(const char *arm, AggRefusal why)
+{
+	ArmPrice   *a;
+
+	if (why_store == NULL)
+		return;
+	a = arm_of(arm);
+	if (a->why == AGG_REFUSE_NONE)
+		a->why = why;
+}
+
+static AggRefusal
+arm_why(const ArmPrice *a)
+{
+	if (a->used)
+		return AGG_REFUSE_NONE;
+	return isinf(a->scan) ? a->why : AGG_REFUSE_COST;
+}
+
+/* the rows of the arms that priced a path for the statement just planned; false: none did */
+static bool
+why_arms(void)
+{
+	foreach_ptr(ArmPrice, a, arms)
+		agg_report(a->name, arm_why(a), NULL, a->used, isinf(a->scan) ? 0 : a->scan, a->normal);
+	return arms != NIL;
+}
+
 static void
 set_explain_refusals(void)
 {
@@ -153,6 +235,7 @@ forget_arms(void)
 {
 	explained = NIL;
 	explaining = false;
+	arms = NIL;
 	set_explain_refusals();
 }
 
@@ -378,7 +461,7 @@ why_execute(const ExecuteStmt *es, const char *sql)
 			if (ps->commandType == CMD_SELECT)
 			{
 				ExecCheckPermissions(ps->rtable, ps->permInfos, true);
-				if (tuplestore_tuple_count(why_store) == 0)
+				if (!why_arms() && tuplestore_tuple_count(why_store) == 0)
 					why_index_arm(copyObject(psrc->raw_parse_tree), psrc->query_string, ps, psrc->param_types, psrc->num_params, params);
 			}
 		ReleaseCachedPlan(cplan, CurrentResourceOwner);
@@ -410,6 +493,8 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 	{
 		why_store = rsi->setResult;
 		why_desc = rsi->setDesc;
+		why_cx = CurrentMemoryContext;
+		arms = NIL;
 		sift_explain_refusals = true;
 		if (IsA(raw->stmt, ExecuteStmt))
 			why_execute((const ExecuteStmt *) raw->stmt, sql);
@@ -421,7 +506,7 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 				if (ps->commandType == CMD_SELECT)
 				{
 					ExecCheckPermissions(ps->rtable, ps->permInfos, true);
-					if (tuplestore_tuple_count(why_store) == 0)
+					if (!why_arms() && tuplestore_tuple_count(why_store) == 0)
 						why_index_arm(again_raw, sql, ps, NULL, 0, NULL);
 				}
 		}

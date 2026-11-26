@@ -45,6 +45,14 @@ typedef struct SiftRefusalNote
 /* a planner of the aggregate leaves its path out for the refusal why of the registry: a row of sift.explain_why for the arm, a notice, a count of sift.stats() (scan 0 and normal < 0: no costs) */
 extern void sift_agg_refuse(const char *arm, AggRefusal why, const char *detail, double scan, double normal);
 
+/*
+ * For sift.explain_why, the row of an arm of the aggregate: it added a path of cost scan beside the normal plan of cost normal (< 0: none), and the plan takes it (sift_agg_arm_used)
+ * or not (cost); an arm that added no path says why (sift_agg_arm_refused, the first reason)
+ */
+extern void sift_agg_arm_priced(const char *arm, double scan, double normal);
+extern void sift_agg_arm_used(const char *arm);
+extern void sift_agg_arm_refused(const char *arm, AggRefusal why);
+
 extern void agg_explain_begin(void);
 extern List *agg_explain_take(void);
 extern bool sift_agg_refusal_row(int i, const char **slug, const char **text, const char **action, bool *limit);
