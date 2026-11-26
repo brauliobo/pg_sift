@@ -249,6 +249,7 @@ TESTING_REGRESS += bm25/wbuf_read_promote
 TESTING_REGRESS += bm25/wbuf_wide_bloom
 TESTING_REGRESS += col/advice_connect
 TESTING_REGRESS += col/advice_connect_keycut
+TESTING_REGRESS += col/agg/f1_decode_price
 TESTING_REGRESS += col/alloc_limit
 TESTING_REGRESS += col/alloc_scaled
 TESTING_REGRESS += col/alter_layout
