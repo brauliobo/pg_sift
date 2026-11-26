@@ -60,7 +60,7 @@ leaf_stats(const SiftSrcLeaf *l, const SiftSrcStats *st, double rows, double byt
 	const int	i = l->id;
 	const double vals = l->parent >= 0 ? rows * Max(st->elems_per_row[l->parent], 1.0) : rows;
 	SiftColCardStats cs = {.col = (uint16) i,.total_rows = (uint64) vals,.null_rows = (uint64) (st->null_frac[i] * vals),
-		.avg_comp_bytes_row = bytes_row,.avg_dec_bytes_row = bytes_row};
+		.avg_comp_bytes_row = bytes_row,.avg_dec_bytes_row = Max(8.0, bytes_row)};
 
 	if (l->kind == SCL_SCALAR && st->ndistinct[i] > 0)
 	{

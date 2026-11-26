@@ -1,0 +1,35 @@
+-- A scan of a Format 1 index prices the values it decodes at the width of a decoded value, not at the bytes they are stored in: a date that a fraction of a byte
+-- of a row stores is decoded into a 64-bit lane. Priced at its stored bytes, a scan of every row came out at its opening cost.
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = on;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE fdp_events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, amount float8 NOT NULL, deleted_at timestamptz);
+INSERT INTO fdp_events SELECT i, 1 + (i::bigint * 7919) % 60, date '2024-01-01' + (hashint4(i + 1) & 1023) % 730, 'cat_' || chr(97 + i % 4), 1 + i % 17,
+	CASE WHEN i % 37 = 0 THEN now() END FROM generate_series(1, 30000) i;
+CREATE INDEX fdp_events_col ON fdp_events USING sift_col (id, parent_id, ts, kind, amount, deleted_at);
+VACUUM (FREEZE, ANALYZE) fdp_events;
+
+-- the cost of the scan the planner takes, the other plans off
+CREATE FUNCTION fdp_cost(q text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	ASSERT j::text ~ '"Custom Plan Provider": "SiftAggV6"', 'the aggregate scan plans ' || q;
+	RETURN (j -> 0 -> 'Plan' ->> 'Total Cost')::float8;
+END $$;
+
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+-- the decode of two columns of every row costs more than half of what the scan pays to open the index (all a count of the rows pays)
+SELECT fdp_cost('SELECT kind, sum(amount) FROM fdp_events GROUP BY 1') > 1.5 * fdp_cost('SELECT count(*) FROM fdp_events') AS decode_priced;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+
+DROP FUNCTION fdp_cost(text);
+DROP TABLE fdp_events;
+DROP EXTENSION pg_sift;
