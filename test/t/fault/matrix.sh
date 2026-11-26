@@ -54,7 +54,8 @@ MUTANTS
 
 TIER=$(knob SIFT_FAULT_TIER full quick)
 ORPHAN_SECONDS=$(knob SIFT_FAULT_ORPHAN_SECONDS 30 10)
-node_init cm 1 "wal_consistency_checking = 'generic'
+node_init cm 1 "sift.test_create_format1 = on
+wal_consistency_checking = 'generic'
 autovacuum = off
 sift.async_maintenance = off
 max_parallel_maintenance_workers = 0
@@ -173,6 +174,9 @@ settled() { # no session but ours is left, and no background worker of sift (asy
 	[[ $(sql cm "SELECT count(*) FROM pg_stat_activity WHERE (backend_type = 'client backend' OR backend_type LIKE 'sift %') AND pid <> pg_backend_pid()") == 0 ]]
 }
 
+# the extents a Format 2.0 operation allocated before its terminated backend could name them are the orphan sweep's, which a server does once and a VACUUM runs after it starts (core/f2/fsm/sweep.c)
+sweep_f2() { sql cm "SELECT sift._test_f2_sweep(c.oid) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift_col', 'sift_table') AND c.relkind IN ('i', 'r')" >/dev/null; }
+
 # the invariants after a fault; prints what is wrong
 after_fault() { # NAME
 	local name=$1 ix size n out
@@ -188,9 +192,11 @@ after_fault() { # NAME
 		done
 	done
 	[[ -z $(sql cm "$INVALID") ]] || { echo "an INVALID index is left"; return 1; }
+	[[ $name != f2_* ]] || sweep_f2
 	[[ $DAMAGED == *" $name "* ]] || out=$(healthy 2>&1) || { echo "the state is not healthy: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 	op_stmts "$name"; sql cm "${OPS[@]}" >"$D/rerun.out" 2>&1 || { echo "the operation run again failed: $(head -3 "$D/rerun.out")"; return 1; }
 	[[ $DATA_OPS != *" $name "* ]] || REF=$(answers PLAIN)
+	[[ $name != f2_* ]] || sweep_f2
 	out=$(healthy 2>&1) || { echo "not healthy after the operation run again: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 	size=$(sql cm "$SIZES")
 	sizes_ok "$size" "${SIZE0[$name]}" || { echo "the files grew to $size bytes, a clean run leaves ${SIZE0[$name]}"; return 1; }
