@@ -6,7 +6,10 @@
 # among them).
 #
 #   scripts/wait-profile.sh [CLIENTS=8] [ROWS_PER_CLIENT=20000] [WORDS=150]
+#   scripts/wait-profile.sh --phase-split TARGET... [--json|--tsv]   the seconds of each phase of a test (scripts/pdtm.py)
+#   scripts/wait-profile.sh --ab BASELINE CANDIDATE [--trials N]     two commands timed interleaved, same output required (scripts/pdtm.py)
 set -euo pipefail
+case ${1:-} in --phase-split|--ab) exec python3 -I "$(dirname "$0")/pdtm.py" "${1#--}" "${@:2}" ;; esac
 
 CLIENTS=${1:-8} ROWS=${2:-20000} WORDS=${3:-150}
 DIR=$(mktemp -d /tmp/sift-wait-profile.XXXXXX)

@@ -3,7 +3,9 @@
 # scripts/regress-times.tsv: scripts/ci/jobs.sh packs the batches by them. A test that ran in several logs keeps its longest time.
 #   scripts/regress-times.sh LOGDIR...     the new table on stdout
 #   scripts/regress-times.sh --selftest
+#   scripts/regress-times.sh --drift [--regress-logs DIR...] [--results FILE...] [--from-run RUN...] [--update]   the timing tables against measured runs (scripts/pdtm.py)
 set -uo pipefail
+[[ ${1:-} != --drift ]] || exec python3 -I "$(dirname "$0")/pdtm.py" drift "${@:2}"
 
 times() { cat "$@" 2>/dev/null | sed -En 's/^(not )?ok +[0-9]+ +[-+] +([^ ]+) +([0-9]+) ms.*/\2\t\3/p' |
 	awk -F'\t' '{ if ($2 > ms[$1]) ms[$1] = $2 } END { for (t in ms) printf "%s\t%.2f\n", t, ms[t] / 1000 }' | sort; }

@@ -6,6 +6,7 @@
 #                                     (scripts/areas.tsv; --list prints them, --github the outputs of the workflow's `changes` job)
 #   scripts/ci.sh stop [DIR]          ends the run of the scratch directory DIR (default $SIFT_CI_TMP) by the pid it recorded in DIR/run.pid, never by a name
 #   scripts/ci.sh --times [RESULTS]   the per-job wall and CPU seconds of a kept run (KEEP=1), longest first
+#   scripts/ci.sh --profile JOB [--json|--tsv]   the seconds of each phase of one job (scripts/pdtm.py profile): the statements of installcheck-X, the commands of tap-shell-X
 #   scripts/ci.sh summary [FILE...]   the jobs of the last runs by state and every job that skipped with its reasons, from the one-line-per-job files a run retains in
 #                                     $TMPDIR/sift-ci-summary (default: all of them); fails when a skip gives no reason
 #   scripts/ci.sh --scratch [FILE...] scripts/scratch.tsv (the scratch each job measured, which the scheduler trusts) updated by retained summaries, on stdout
@@ -76,6 +77,7 @@ if [[ $MODE == stop ]]; then
 	stop_run "${2:-${SIFT_CI_TMP:-}}"
 	exit
 fi
+[[ $MODE != --profile ]] || exec python3 -I "$REPO/scripts/pdtm.py" profile "${@:2}"
 if [[ $MODE == --times ]]; then
 	R=${2:-$(ls -td "${TMPDIR:-/tmp}"/sift-ci-*/logs/results 2>/dev/null | head -1)}
 	sort -k4,4nr "$R" | awk 'BEGIN { printf "%-44s %7s %7s  %-6s %s\n", "job", "wall_s", "cpu_s", "lane", "status" }

@@ -169,7 +169,7 @@
 ^src/(agg/(par/|par[_.]|gather\.)|col/f2/(f2_)?par\.|core/par/)	{perf_star}|{perf_clickbench}
 ^(test/plan/|scripts/plangate\.sh$)	{perf_plan}
 # the weights of the tiers and the scratch of the jobs, read by scripts/ci.sh only to cut the shards and to schedule (the jobs run are those of the map above)
-^scripts/(weights-(deep|full|quick)\.tsv|scratch\.tsv|ci-times\.py|regress-times\.(sh|tsv))$	-
+^scripts/(weights-(deep|full|quick)\.tsv|scratch\.tsv|ci-times\.py|pdtm\.py|regress-times\.(sh|tsv))$	-
 ^(scripts/(apply-rename\.(py|sh)|private-overlay\.sh)|test/README\.md)$	-
 ^scripts/(budget\.sh|budgets\.tsv)$	.
 ^scripts/(check-budgets|stability)\.sh$|^scripts/stability\.tsv$	-
