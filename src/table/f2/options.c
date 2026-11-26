@@ -16,6 +16,7 @@
 #include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/varlena.h"
@@ -38,11 +39,12 @@ typedef enum OptKind
 	OPT_TEXT,
 	OPT_BOOL,
 	OPT_PCT,
-	OPT_SIZE
+	OPT_KB,
+	OPT_MB
 } OptKind;
 
 static const OptKind hidden_kinds[] = {
-	OPT_SIZE, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_PCT, OPT_SIZE, OPT_BOOL, OPT_BOOL,
+	OPT_KB, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_BOOL, OPT_PCT, OPT_MB, OPT_BOOL, OPT_BOOL,
 };
 
 static const OptKind documented_kinds[] = {
@@ -74,13 +76,13 @@ find_name(const char *const *names, int n, const char *name)
 	return -1;
 }
 
+/* An integer, with a unit of memory when unit is one (as a setting of the server takes it: "2MB", "2048") */
 static bool
-parse_pct(const char *value, int lo, int hi)
+int_in(const char *value, int unit, int lo, int hi)
 {
-	char	   *end;
-	long		v = strtol(value, &end, 10);
+	int			v;
 
-	return *value != '\0' && *end == '\0' && v >= lo && v <= hi;
+	return parse_int(value, &v, unit, NULL) && v >= lo && v <= hi;
 }
 
 static bool
@@ -95,9 +97,11 @@ value_ok(OptKind kind, const char *value)
 		case OPT_BOOL:
 			return parse_bool(value, &b);
 		case OPT_PCT:
-			return parse_pct(value, 0, 100);
-		case OPT_SIZE:
-			return parse_pct(value, 0, INT_MAX);
+			return int_in(value, 0, 1, 100);
+		case OPT_KB:
+			return int_in(value, GUC_UNIT_KB, 0, INT_MAX);
+		case OPT_MB:
+			return int_in(value, GUC_UNIT_MB, 0, INT_MAX);
 	}
 	return false;
 }
@@ -251,7 +255,7 @@ store_value(SiftF2StoreOpts *o, MemoryContext cx, const char *name, const char *
 			o->paths = MemoryContextStrdup(cx, value);
 			break;
 		case 3:
-			o->dead_rewrite_pct = atoi(value);
+			(void) parse_int(value, &o->dead_rewrite_pct, 0, NULL);
 			break;
 		case 4:
 			if (parse_bool(value, &b))
