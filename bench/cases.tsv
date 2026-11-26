@@ -52,9 +52,18 @@ search_build_parallel	the participants of a parallel `CREATE INDEX` or `REINDEX`
 par_many_groups_split_by_key	a scan with workers of many groups (thousands, a key that is an integer, a date or a timestamp)	orders	default	Groups Split By: grp	native	one_process:max_parallel_workers_per_gather = 0	ms	faster33	no	-
 col_build_default	-	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_4:max_parallel_maintenance_workers = 4	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
 col_vacuum_13cols	the zone of a chunk without a NULL and the exact sums of an integer leaf	orders	-	^[0-9]+$	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
-ordered_window_rank	the ordered index-only scan of a `sift_col` index (the first column of the index read alone, in order) is offered	events	-	WindowAgg	native	btree:search_path = c_ordered_window_rank__btree	ms	faster33	no	-
+ordered_window_rank	the ordered index-only scan of a `sift_col` index (the first column of the index read alone, in order) is offered	events	-	WindowAgg	native	btree:search_path = c_ordered_window_rank__btree;sift.enable_agg = off	ms	faster33	yes	-
 group_join_dim_filter_keys	looked up in the filtered table before the groups are made	events	-	Index (Only )?Scan (using|on) gk_fact_grp	native	-	ms	faster33	no	-
 float_sum_ungrouped	the sum of a float column that is not grouped	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
 jsonb_key_read	-	events	-	Pushed Aggregates: sum\(attrs\.a\)	native	-	ms	faster33	no	-
 count_distinct_big_set	-	events	-	Pushed Aggregates	native	-	ms	faster33	no	-
 semi_lut_bigint	by an `int8` key is answered from a byte table	events	-	[1-9][0-9]* semi tables	native	generic_join:sift.agg_semi_lut = off	ms	faster33	no	-
+star_snowflake_join	-	events	-	Custom Scan \(SiftAgg.*Lookup Joins: sf_product, sf_category, sf_region	native	-	ms	faster33	yes	-
+partitioned_range_agg	-	events	-	Custom Scan \(SiftAgg.*Partitions: [1-9]	native	-	ms	faster33	yes	-
+filter_pivot_agg	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	-	ms	faster33	yes	-
+percentile_stddev_agg	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	-	ms	faster33	yes	-
+distinct_on_latest	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	btree:search_path = c_distinct_on_latest__btree;sift.enable_agg = off	ms	faster33	yes	-
+bm25_hybrid_groupby	-	events	-	Custom Scan \(SiftHybridAgg	native	gin:search_path = c_bm25_hybrid_groupby__gin;sift.enable_agg = off	ms	faster33	yes	-
+text_like_prefix_agg	-	events	-	Custom Scan \(SiftAgg	native	btree:search_path = c_text_like_prefix_agg__btree;sift.enable_agg = off	ms	faster33	yes	-
+pg_array_cardinality_agg	-	events	-	Custom Scan \(SiftAgg	native	gin:search_path = c_pg_array_cardinality_agg__gin;sift.enable_agg = off	ms	faster33	yes	-
+calendar_date_trunc_agg	-	events	-	Custom Scan \(SiftAgg	native	expr_btree:search_path = c_calendar_date_trunc_agg__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
