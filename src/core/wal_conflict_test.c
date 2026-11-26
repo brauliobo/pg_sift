@@ -10,6 +10,7 @@
 #include "fmgr.h"
 #include "utils/xid8.h"
 
+#include "core/catname.h"
 #include "core/wal_conflict.h"
 
 PG_FUNCTION_INFO_V1(sift_test_wal_conflict);
@@ -17,7 +18,7 @@ PG_FUNCTION_INFO_V1(sift_test_wal_conflict);
 Datum
 sift_test_wal_conflict(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	bool		logged = sift_wal_snapshot_conflict(rel, InvalidBlockNumber, PG_GETARG_FULLTRANSACTIONID(1));
 
 	relation_close(rel, AccessShareLock);
