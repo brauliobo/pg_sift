@@ -36,6 +36,7 @@
 #include "agg/hybrid/int.h"
 #include "agg/hybrid/quals.h"
 #include "agg/engine.h"
+#include "agg/refuse.h"
 #include "bm25/planner/planner.h"
 #include "bm25/planner/int.h"
 #include "col/am.h"
@@ -823,6 +824,12 @@ sift_hybrid_agg_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, void 
 		List	   *having = (List *) ((GroupPathExtraData *) extra)->havingQual;
 
 		estimate(&h, &e);
+		if (sift_v6_search_key_first(root, rel, e.rows * e.sel_bm25))
+		{
+			sift_agg_refuse("search", AGG_REFUSE_COST, "a scan of a btree on the other conditions reads fewer rows than the scan walks postings", 0, -1);
+			close_store(&h);
+			return;
+		}
 		e.covered = true;
 		e.reads_score = sift_v6_spec_reads_score(&spec);
 		dir = sift_hybrid_agg_choose(&e, &costs);

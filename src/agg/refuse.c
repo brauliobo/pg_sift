@@ -12,6 +12,7 @@
 #include "executor/executor.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "nodes/extensible.h"
 #include "nodes/parsenodes.h"
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
@@ -114,6 +115,12 @@ agg_report(const char *name, AggRefusal why, const char *detail, bool used, doub
 	emit(name, why, detail, used, scan, normal);
 }
 
+void
+sift_agg_refuse(const char *arm, AggRefusal why, const char *detail, double scan, double normal)
+{
+	agg_report(arm, why, detail, false, scan, normal);
+}
+
 static void
 set_explain_refusals(void)
 {
@@ -163,7 +170,16 @@ forget_arms_subxact(SubXactEvent event, SubTransactionId my_subid, SubTransactio
 		forget_arms();
 }
 
-/* does the plan read a sift_col index (an index, index-only or bitmap scan of the access method) anywhere, in a child, a subquery or an initplan? */
+/* the nodes that fold the groups from a sift_col index: SiftAggV6 and its variants, SiftHybridAgg */
+static bool
+is_agg_scan(const CustomScan *cs)
+{
+	const char *name = cs->methods->CustomName;
+
+	return strncmp(name, "SiftAggV6", strlen("SiftAggV6")) == 0 || strcmp(name, "SiftHybridAgg") == 0;
+}
+
+/* does the plan read a sift_col index (an index, index-only or bitmap scan of the access method, or a node that aggregates from one) anywhere, in a child, a subquery or an initplan? */
 static bool
 plan_reads_sift_index(const Plan *p, const List *subplans, Oid amoid)
 {
@@ -202,6 +218,8 @@ plan_reads_sift_index(const Plan *p, const List *subplans, Oid amoid)
 				return true;
 			break;
 		case T_CustomScan:
+			if (is_agg_scan((const CustomScan *) p))
+				return true;
 			kids = ((const CustomScan *) p)->custom_plans;
 			break;
 		default:

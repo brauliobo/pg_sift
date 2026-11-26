@@ -50,6 +50,7 @@
 #include "agg/pct.h"
 #include "agg/settings.h"
 #include "agg/plan/rewrite.h"
+#include "agg/refuse.h"
 #include "agg/unnest/exists.h"
 #include "agg/unnest/jsonb.h"
 #include "agg/join/plan.h"
@@ -245,7 +246,18 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 	return true;
 }
 
-/* any other aggregate, and the ones whose arguments or collation the kernels do not take: PostgreSQL's own functions over the values the scan decodes (v6_gen.h) */
+static Node *
+placeholder_contents(Node *n, void *context)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, PlaceHolderVar))
+		return placeholder_contents((Node *) ((PlaceHolderVar *) n)->phexpr, context);
+	return expression_tree_mutator(n, placeholder_contents, context);
+}
+
+/* any other aggregate, and the ones whose arguments or collation the kernels do not take: PostgreSQL's own functions over the values the scan decodes (v6_gen.h); the arguments are
+ * evaluated over the columns of the scan, where a placeholder is the expression it holds */
 static bool
 compile_agg_gen(V6Plan *p, Aggref *a)
 {
@@ -253,6 +265,8 @@ compile_agg_gen(V6Plan *p, Aggref *a)
 	Aggref		unfiltered = *a;
 	Aggref	   *ref;
 
+	unfiltered.args = (List *) placeholder_contents((Node *) a->args, NULL);
+	unfiltered.aggdirectargs = (List *) placeholder_contents((Node *) a->aggdirectargs, NULL);
 	unfiltered.aggfilter = NULL;
 	if ((ref = sift_v6_gen_compile(p, &unfiltered, &g)) == NULL || (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause)))
 		return false;
@@ -575,6 +589,39 @@ reads_only_scan_tlist(const V6Plan *p, Node *e)
 	return !reads_outside_scan_tlist(e, (void *) p);
 }
 
+/* an output as the scan computes it (CASE as FILTER, the sums of an offset collapsed); a sorted one stays the expression of its pathkey, which the Sort above finds by equal() */
+static Node *
+rewrite_output(Node *e, Index sortgroupref)
+{
+	return sortgroupref != 0 ? e : sift_vn_rewrite_aggs(e);
+}
+
+static List *
+rewrite_tlist(List *tlist)
+{
+	List	   *out = NIL;
+
+	foreach_node(TargetEntry, te, tlist)
+	{
+		TargetEntry *copy = flatCopyTargetEntry(te);
+
+		copy->expr = (Expr *) rewrite_output((Node *) te->expr, te->ressortgroupref);
+		out = lappend(out, copy);
+	}
+	return out;
+}
+
+static List *
+rewrite_target(const PathTarget *target)
+{
+	List	   *out = NIL;
+	int			i = 0;
+
+	foreach_ptr(Node, e, target->exprs)
+		out = lappend(out, rewrite_output(e, get_pathtarget_sortgroupref(target, i++)));
+	return out;
+}
+
 bool
 sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
@@ -588,7 +635,7 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	p->scan_vars = NULL;
 	p->gen_vars = NIL;
 	p->text = NULL;
-	exprs = sift_vn_rewrite_aggs((Node *) p->out->reltarget->exprs);
+	exprs = (Node *) rewrite_target(p->out->reltarget);
 	having = sift_vn_rewrite_aggs(having);
 	return compile_keys(p, group_exprs) && compile_sets(p) && compile_aggs(p, exprs) && (having == NULL || compile_aggs(p, having)) &&
 		reads_only_scan_tlist(p, exprs) && (having == NULL || reads_only_scan_tlist(p, having));
@@ -626,10 +673,15 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 
 	if (!format_serves(p) || !sift_v6_gen_fits(&p->spec, groups))
 		return;
+	if (p->text != NULL && sift_v6_search_key_first(p->root, p->rel, p->rel->tuples * clause_selectivity(p->root, (Node *) p->text_qual->clause, p->rel->relid, JOIN_INNER, NULL)))
+	{
+		sift_agg_refuse("search", AGG_REFUSE_COST, "a scan of a btree on the other conditions reads fewer rows than the scan walks postings", 0, -1);
+		return;
+	}
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = p->out;
 	cp->path.pathtarget = p->out->reltarget;
-	cp->path.rows = clamp_row_est(groups);
+	cp->path.rows = clamp_row_est(having == NIL ? groups : groups * clauselist_selectivity(p->root, having, 0, JOIN_INNER, NULL));
 	scan_cost(p, groups, &cp->path.startup_cost, &cp->path.total_cost);
 	cp->path.startup_cost += extra_startup;
 	cp->path.total_cost += extra_total;
@@ -790,7 +842,9 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 	CustomScan *cs = makeNode(CustomScan);
 	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private));
 
-	cs->scan.plan.targetlist = (List *) sift_vn_rewrite_aggs((Node *) tlist);
+	cs->scan.plan.targetlist = rewrite_tlist(tlist);
+	if (spec->rows)
+		cs->scan.plan.targetlist = (List *) sift_v6_rows_window_aggs((Node *) cs->scan.plan.targetlist);
 	cs->scan.scanrelid = 0;
 	cs->flags = best->flags;
 	sift_v6_collect_params((Node *) spec->indexqual, &cs->custom_exprs);

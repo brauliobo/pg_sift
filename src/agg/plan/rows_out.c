@@ -127,6 +127,23 @@ row_out(V6Plan *p, const Node *n, SiftV6RowOut *out)
 	return v->varattno > 0 && bms_is_empty(v->varnullingrels);
 }
 
+static Node *
+window_aggs_mutator(Node *n, void *context)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, WindowFunc))
+		return (Node *) window_aggref((const WindowFunc *) n);
+	return expression_tree_mutator(n, window_aggs_mutator, context);
+}
+
+/* the window functions of a row Top-N as the aggregates the scan gives: no WindowAgg sits above the node, and a WindowFunc has no WindowClause to be printed from */
+Node *
+sift_v6_rows_window_aggs(Node *expr)
+{
+	return window_aggs_mutator(expr, NULL);
+}
+
 bool
 sift_v6_rows_outputs(V6Plan *p)
 {
@@ -137,13 +154,14 @@ sift_v6_rows_outputs(V6Plan *p)
 	foreach_ptr(Node, n, vars)
 	{
 		SiftV6RowOut out;
+		Expr	   *entry = (Expr *) sift_v6_rows_window_aggs(n);
 
-		if (tlist_member((Expr *) n, p->scan_tlist) != NULL)
+		if (tlist_member(entry, p->scan_tlist) != NULL)
 			continue;
 		if (!row_out(p, n, &out))
 			return false;
 		p->spec.out[p->spec.nout++] = out;
-		p->scan_tlist = lappend(p->scan_tlist, makeTargetEntry((Expr *) copyObject(n), p->spec.nout, NULL, false));
+		p->scan_tlist = lappend(p->scan_tlist, makeTargetEntry(entry, p->spec.nout, NULL, false));
 	}
 	return p->scan_tlist != NIL;
 }

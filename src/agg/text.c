@@ -10,6 +10,7 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
+#include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "miscadmin.h"
@@ -21,6 +22,7 @@
 #include "agg/cost/model.h"
 #include "agg/hybrid/int.h"
 #include "agg/engine.h"
+#include "agg/settings.h"
 #include "bm25/planner/planner.h"
 #include "bm25/planner/int.h"
 #include "core/memtrack.h"
@@ -136,6 +138,63 @@ sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, Restri
 
 	*touch = sift_hybrid_granule_hit(sel, rows / granules);
 	return sift_dict_cost(text, queries) + rows * sel * cpu_tuple_cost * 0.25;
+}
+
+/* the instructions to walk a posting of the word, and to read the row a key gives and check its text */
+#define SEARCH_POSTING_OPS	320.0
+#define SEARCH_KEY_ROW_OPS	530.0
+
+/* a btree-like index of the relation reads the rows of the condition by its first column: a comparison of the column with a value of no column of the relation, or IS NULL */
+static bool
+key_clause_of_index(PlannerInfo *root, const RelOptInfo *rel, const IndexOptInfo *ix, const Expr *clause)
+{
+	const Node *col = NULL,
+			   *other = NULL;
+
+	if (IsA(clause, NullTest))
+		col = (const Node *) ((const NullTest *) clause)->arg;
+	else if (IsA(clause, OpExpr) && list_length(((const OpExpr *) clause)->args) == 2 && op_in_opfamily(((const OpExpr *) clause)->opno, ix->opfamily[0]))
+	{
+		col = linitial(((const OpExpr *) clause)->args);
+		other = lsecond(((const OpExpr *) clause)->args);
+		if (!(IsA(col, Var) && ((const Var *) col)->varno == rel->relid))
+		{
+			col = lsecond(((const OpExpr *) clause)->args);
+			other = linitial(((const OpExpr *) clause)->args);
+		}
+	}
+	return col != NULL && IsA(col, Var) && ((const Var *) col)->varno == rel->relid && ((const Var *) col)->varattno == ix->indexkeys[0] &&
+		(other == NULL || !bms_is_member(rel->relid, pull_varnos(root, (Node *) other)));
+}
+
+static bool
+reads_by_key(PlannerInfo *root, const RelOptInfo *rel, const List *own)
+{
+	if (!enable_indexscan && !enable_bitmapscan)
+		return false;
+	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
+	{
+		if (ix->hypothetical || ix->indpred != NIL || ix->indexkeys[0] == 0 || ix->relam == sift_catalog()->am || ix->relam == sift_catalog()->col_am)
+			continue;
+		foreach_node(RestrictInfo, ri, own)
+			if (key_clause_of_index(root, rel, ix, ri->clause))
+				return true;
+	}
+	return false;
+}
+
+bool
+sift_v6_search_key_first(PlannerInfo *root, RelOptInfo *rel, double postings)
+{
+	List	   *own = NIL;
+
+	if (sift_agg_force)
+		return false;
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		if (!sift_v6_text_clause(rel, ri))
+			own = lappend(own, ri);
+	return own != NIL && reads_by_key(root, rel, own) &&
+		Max(rel->tuples, 1.0) * clauselist_selectivity(root, own, rel->relid, JOIN_INNER, NULL) * SEARCH_KEY_ROW_OPS < postings * SEARCH_POSTING_OPS;
 }
 
 SiftV6Text *

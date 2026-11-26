@@ -90,6 +90,7 @@ extern void sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *grou
 extern void sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 /* the row Top-N of the one index in hand (a partition's), and its path once the scan is priced; dims are the plans of the dimensions of a join, and what they cost */
 extern bool sift_v6_rows_compile(V6Plan *p, uint32 k);
+extern Node *sift_v6_rows_window_aggs(Node *expr);
 extern void sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total);
 /* a partitioned table the plan can read as one scan, and the row Top-N over the partitions left after pruning */
 extern bool sift_v6_partitioned_rel_ok(PlannerInfo *root, RelOptInfo *rel);

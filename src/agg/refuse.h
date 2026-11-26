@@ -46,6 +46,9 @@ typedef struct SiftRefusalNote
 	const char *reason;
 } SiftRefusalNote;
 
+/* a planner of the aggregate leaves its path out for the refusal why of the registry: a row of sift.explain_why for the arm, a notice, a count of sift.stats() (scan 0 and normal < 0: no costs) */
+extern void sift_agg_refuse(const char *arm, AggRefusal why, const char *detail, double scan, double normal);
+
 extern void agg_explain_begin(void);
 extern List *agg_explain_take(void);
 extern bool sift_agg_refusal_row(int i, const char **slug, const char **text, const char **action, bool *limit);

@@ -498,6 +498,8 @@ extern bool sift_v6_text_clause(RelOptInfo *rel, RestrictInfo *ri);
 extern bool sift_v6_text_usable(IndexOptInfo *text, List *queries);
 /* touch: the fraction of the rows of the store that the scan of the chunks reads (the granules the hits are in) */
 extern double sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, List *queries, double *touch);
+/* A btree or bitmap path on the other conditions of rel reads fewer rows than the scan walks postings (postings: the rows the text query matches), unless sift.agg_force is on: PostgreSQL's plan stands */
+extern bool sift_v6_search_key_first(PlannerInfo *root, RelOptInfo *rel, double postings);
 
 typedef struct SiftV6Text SiftV6Text;
 extern SiftV6Text *sift_v6_text_open(const SiftV6Spec *spec, MemoryContext parent);
