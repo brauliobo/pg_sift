@@ -224,6 +224,7 @@ typedef struct SiftManifestEdit
 	bool		set_l0_slab;
 	BlockNumber new_pend_del_blk;
 	bool		set_pend_del;
+	bool		relist;			/* the list of the partition is written again, whatever the edit changes: a page of it has to come down from the end of the file */
 	bool		set_col_delta;	/* new_col_delta replaces the anchor of the partition's column delta chain; no chain (delta_head_blkno invalid) clears SIFT_PARTENTRY_HAS_COL_DELTA */
 	SiftColDeltaAnchor new_col_delta;
 	const SiftExtent *release;	/* the extents of the dropped parts and replaced deletion vectors, queued for reuse */

@@ -450,7 +450,7 @@ rehome_manifest(Relation rel, BlockNumber lo)
 
 	for (int i = 0; i < mr.n; i++)
 	{
-		(void) sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = mr.entries[i].part_id,.key_lo = mr.entries[i].key_lo});
+		(void) sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = mr.entries[i].part_id,.key_lo = mr.entries[i].key_lo,.relist = true});
 		(void) sift_fsm_reclaim_exclusive(rel);
 	}
 }

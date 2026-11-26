@@ -726,7 +726,7 @@ sift_manifest_lock_part(Relation rel, uint64 *part_id, const uint8 **key_lo, Sif
 static bool
 edits_parts(const SiftManifestEdit *e)
 {
-	return e->ndrop > 0 || e->nadd > 0 || e->nupdate > 0 || e->set_col_delta;
+	return e->relist || e->ndrop > 0 || e->nadd > 0 || e->nupdate > 0 || e->set_col_delta;
 }
 
 typedef struct EditedParts
