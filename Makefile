@@ -922,23 +922,10 @@ endif
 include $(dir $(SIFT_MK))scripts/harden.mk
 
 # make check only runs scripts/ci.sh, which builds and installs on its own; PGXS would
-# claim "check" is unsupported, so it is not included for these goals. pg-assert and pg-valgrind build the PostgreSQL of the `assert`
+# claim "check" is unsupported, so it is not included for these goals (SIFT_DEV_GOALS). pg-assert and pg-valgrind build the PostgreSQL of the `assert`
 # and `valgrind` CI lanes once into a cache outside the repo (scripts/pg-assert.sh; PG_ASSERT_MAJOR=17 for the 17 branch).
-ifneq ($(filter check lint dev-check check-scaling-ops pg-assert pg-valgrind,$(MAKECMDGOALS)),)
-.PHONY: check lint dev-check check-scaling-ops pg-assert pg-valgrind
-check:
-	scripts/ci.sh quick
-lint:
-	scripts/lint.sh
-dev-check:
-	scripts/lint.sh complexity memory locks capacity file-size neutral format-isolation
-check-scaling-ops:
-	scripts/check-scaling-ops.sh
-pg-assert:
-	nice scripts/pg-assert.sh $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
-pg-valgrind:
-	nice scripts/pg-assert.sh --valgrind $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
-else
+SIFT_DEV_GOALS := check lint dev-check check-scaling-ops pg-assert pg-valgrind
+ifeq ($(filter $(SIFT_DEV_GOALS),$(MAKECMDGOALS)),)
 include $(PGXS)
 
 # The general-purpose layers of the column codec (src/col/compress.c): LZ4 and zstd, each linked; a header or library that is not found stops the build. They are probed with the compiler
@@ -1000,24 +987,5 @@ endif
 .PHONY: FORCE
 FORCE:
 
-# Suites beyond installcheck, run against the scripts/pgtest.sh cluster
-# (install and start it first). scripts/ci.sh runs all of them.
-.PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits
-isolationcheck:
-	scripts/isolation.sh
-tapcheck:
-	scripts/tap.sh
-difftest fuzz soak:
-	scripts/$@.sh
-# the x86-64 baseline of the objects and of pg_sift.so, by symbol (scripts/isa_check.sh)
-.PHONY: isa-check
-isa-check: all
-	scripts/isa_check.sh
-# docs/LIMITS.md from the registry in src/core/limits.h (scripts/gen-limits.sh --check proves it)
-limits:
-	scripts/gen-limits.sh
-
-# Rebuilds src/agg/vk/spv.h from the shaders of src/agg/vk/shaders (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
-gpu-shaders:
-	scripts/gen-aggvk-spv.sh
-	scripts/gen-aggvk-min.py
+# the suites beyond installcheck and the other developer targets (scripts/dev-targets.mk)
+include $(dir $(SIFT_MK))scripts/dev-targets.mk
