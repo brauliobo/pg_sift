@@ -33,7 +33,6 @@
 #define SIFT_V6_PAR_DSM_MAGIC		0x53365041U
 #define SIFT_PAR_TWO_STAGE_MAX_GROUPS	65536U		/* SIFT_DIRECT_MAX of agg/cost/model.h */
 #define SIFT_PAR_TWO_STAGE_MERGE_RATIO	0.05		/* est_groups * workers at most this share of the rows: the merge is not the scan's tail */
-#define SIFT_PAR_MIN_ROWS			32768.0			/* under four granules the launch of a worker costs more than the scan */
 #define SIFT_PAR_MIN_GRANULES_PER_W	2U
 #define SIFT_PAR_RADIX_PARTS		64U
 #define SIFT_PAR_DIST_PARTS		16U				/* the distinct values of a count(DISTINCT) of no keys: each participant holds a chunk of every partition, so fewer partitions keep them inside the memory the records may take */
@@ -71,8 +70,7 @@ typedef struct SiftV6ParInput
 	int			nsets;
 	int			naggs;
 	double		est_rows;			/* rows the scan accepts */
-	double		scan_rows;			/* rows of the granules it reads: the zone maps and the primary index leave them, and a text qual that is not a key prunes none */
-	double		g_eff;				/* the granules that are */
+	double		g_eff;				/* the granules the scan reads: those the zone maps leave, all of them for a text qual that is not a key */
 	double		est_groups;			/* output groups of all the sets of keys, >= 1 */
 	double		state_bytes;		/* of one group: its key and accumulators */
 	double		hash_limit;			/* get_hash_memory_limit() */

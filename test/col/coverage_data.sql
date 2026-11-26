@@ -104,7 +104,7 @@ UPDATE cv_dml SET v = v + 1000, tx = 'u' WHERE id % 20 = 0 AND id <= :n2;
 DELETE FROM cv_dml WHERE id % 25 = 1 AND id <= :n2;
 BEGIN; INSERT INTO cv_dml SELECT :rb_base + i, 9, i, i, 'gone' FROM generate_series(1, 100) i; ROLLBACK;
 
--- a table above SIFT_PAR_MIN_ROWS (32,768): the parallel rows (X) need a scan that gets workers, which the 2,000-row tables cannot
+-- a table of many granules: the parallel rows (X) need a scan that gets workers, which the 2,000-row tables cannot
 CREATE TABLE cv_par (id int PRIMARY KEY, tenant_id int, source text, total numeric(10,2), f float8);
 INSERT INTO cv_par SELECT i, i % 100, (ARRAY['web', 'app', 'pos', 'api'])[1 + i % 4], (i % 997) / 2.0, i / 7.0 FROM generate_series(1, 40000) i;
 CREATE INDEX cv_par_col ON cv_par USING sift_col (id, tenant_id, source, total, f);

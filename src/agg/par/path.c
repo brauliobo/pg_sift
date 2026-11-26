@@ -119,28 +119,43 @@ text_qual_ns(const SiftV6Spec *spec, double groups)
 	return ns;
 }
 
-/* the rows of the granules the scan reads: those the quals accept, unless one of them is on a text column that is not a key (a LIKE keeps every granule of the zone maps and decodes it) */
-static double
-scan_rows(const SiftV6Spec *spec, const RelOptInfo *rel)
+/* the index of the spec among those of the relation; NULL for a table, or the partitions of one */
+static const IndexOptInfo *
+spec_index(const RelOptInfo *rel, const SiftV6Spec *spec)
 {
+	if (!spec->is_table && spec->nparts == 0)
+		foreach_ptr(IndexOptInfo, ix, rel->indexlist)
+			if (ix->indexoid == spec->relid)
+				return ix;
+	return NULL;
+}
+
+/* the rows of the granules the scan reads: those the zone maps of an index leave to the quals (agg/cost/card.h), the share the quals leave of a table or of partitions, all of them for a
+ * qual on a text column that is not a key (a LIKE keeps every granule of the zone maps and decodes it) */
+static double
+scan_rows(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups)
+{
+	const IndexOptInfo *ix = spec_index(rel, spec);
+
 	foreach_ptr(Var, v, pull_var_clause((Node *) quals_of(spec), 0))
 		if (sift_v6_class(v->vartype) == SV6C_TEXT && !is_key_column(spec, v->varattno))
 			return rel->tuples;
-	return rel->rows;
+	if (ix == NULL)
+		return Max(rel->rows, rel->tuples * sift_v6_clause_prune(root, rel->baserestrictinfo, 0));
+	return Max(rel->rows, sift_v6_agg_price(root, rel, ix, spec, groups).in.g_eff * GRANULE_ROWS);
 }
 
 /* The distinct values of a key column in the statistics of the table: 0 when it has none (the attribute of an index is the one its key names) */
 static double
 key_distinct(const PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec, const SiftV6Col *c)
 {
+	const IndexOptInfo *ix = spec_index(rel, spec);
 	AttrNumber	attno = spec->is_table ? c->attno : 0;
 	HeapTuple	tup;
 	double		nd;
 
-	if (!spec->is_table && spec->nparts == 0)
-		foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-			if (ix->indexoid == spec->relid && c->attno <= ix->ncolumns)
-				attno = ix->indexkeys[c->attno - 1];
+	if (ix != NULL && c->attno <= ix->ncolumns)
+		attno = ix->indexkeys[c->attno - 1];
 	if (attno <= 0)
 		return 0.0;
 	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(root->simple_rte_array[rel->relid]->relid), Int16GetDatum(attno), BoolGetDatum(false));
@@ -247,7 +262,7 @@ static SiftV6ParInput
 par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
 {
 	SiftV6ParInput in = {.parallel_scan = sift_parallel_scan,.parallel_ok = rel->consider_parallel && root->glob->parallelModeOK,.max_workers = max_parallel_workers_per_gather,
-		.exact_float = sift_agg_exact_float,.force = sift_agg_par_min_rows == 0,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.scan_rows = scan_rows(spec, rel),.g_eff = scan_rows(spec, rel) / GRANULE_ROWS + 1.0,
+		.exact_float = sift_agg_exact_float,.force = sift_agg_par_min_rows == 0,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.g_eff = scan_rows(root, rel, spec, groups) / GRANULE_ROWS + 1.0,
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
 	bool		slot_text = false;

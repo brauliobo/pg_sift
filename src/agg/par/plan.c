@@ -3,7 +3,8 @@
  * only) the Gather path that wraps the parallel-aware custom path.
  *
  * Serial when anything that makes a parallel plan unsafe or not worth its launch is true: sift.parallel_scan off, no workers, a relation that is not parallel safe, row security, a target or qual that is
- * not parallel safe, a float sum under sift.agg_exact_float (the order of the additions is the answer), fewer rows than four granules, fewer than two granules left by the zone maps. Otherwise the cost model
+ * not parallel safe, a float sum under sift.agg_exact_float (the order of the additions is the answer), fewer than two granules left by the zone maps.
+ * What a launch costs is the cost model's, from parallel_setup_cost: a small table stays serial unless the session makes the launch free. Otherwise the cost model
  * of agg/cost/model.h picks the number of workers (the granules left allow one worker for every SIFT_PAR_MIN_GRANULES_PER_W of them) and the groups pick the strategy.
  */
 #include "core/host.h"
@@ -14,7 +15,7 @@ static bool
 serial_gate(const SiftV6ParInput *in)
 {
 	return !in->parallel_scan || in->max_workers <= 0 || !in->parallel_ok || in->has_rls || in->parallel_hazard ||
-		(in->exact_float && in->float_sum_avg) || (!in->force && (in->scan_rows < SIFT_PAR_MIN_ROWS || in->g_eff < (double) SIFT_PAR_MIN_GRANULES_PER_W));
+		(in->exact_float && in->float_sum_avg) || (!in->force && in->g_eff < (double) SIFT_PAR_MIN_GRANULES_PER_W);
 }
 
 SiftV6ParStrategy

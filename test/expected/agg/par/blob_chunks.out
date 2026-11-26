@@ -22,11 +22,11 @@ CREATE FUNCTION rows_of(q text, workers int) RETURNS text LANGUAGE sql AS $$ SEL
 CREATE FUNCTION oracle(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_and_leader(q, false, 0, true) $$;
 SELECT s.name, sift_helpers.plan_mode_workers(s.q, 2) AS mode, rows_of(s.q, 2) = oracle(s.q) AS same_w2, rows_of(s.q, 3) = oracle(s.q) AS same_w3
 FROM shapes s ORDER BY s.n;
-      name      |  mode  | same_w2 | same_w3 
-----------------+--------+---------+---------
- count by group | serial | t       | t
- count and sum  | serial | t       | t
- few groups     | serial | t       | t
+      name      |   mode   | same_w2 | same_w3 
+----------------+----------+---------+---------
+ count by group | parallel | t       | t
+ count and sum  | parallel | t       | t
+ few groups     | parallel | t       | t
 (3 rows)
 
 DROP FUNCTION rows_of(text, int), oracle(text);

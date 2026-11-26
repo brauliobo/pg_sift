@@ -5,6 +5,7 @@
 -- A correlated child plan (workers came later) is added in the order of the rows by a plan without workers, as the normal plan does, and in lanes by a plan with workers;
 -- the two differ by the rounding of reordered additions, within the bound checked below.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -18,9 +19,6 @@ INSERT INTO fl SELECT i, i % 6000, i % 7, CASE WHEN i % 5 = 0 THEN 1e16 * (1 + i
                      CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 53) * 1e-3 + 1e8 END
 FROM generate_series(1, 60000) i;
 CREATE INDEX fl_col ON fl USING sift_col (id, g, h, v, w);
-NOTICE:  sift_col index "fl_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fl_col');
 VACUUM ANALYZE fl;
 CREATE FUNCTION l_rows(q text, push bool, workers int, leader bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -129,9 +127,8 @@ SELECT n, l_launched(q, 3) AS parallel, d.* FROM l_b, LATERAL l_dev(q, 3) d ORDE
  5 | t        | t           | t            | t
 (5 rows)
 
--- the tables of the processes of a scan with workers do not spill, and each keeps the sums of its lanes apart (16 vectors for each float sum): the planner leaves a scan to
--- one process, which spills, when the groups it expects and their lanes pass hash memory (42,000 groups: the planner is told how many), and a scan that was given too few
--- (the planner expects 6,000: g and h are two columns of it) runs again as PostgreSQL plans it when a process holds more than its share of hash memory
+-- 42,000 groups under a small work_mem, with workers: the sums of a group do not depend on the processes that added into it (above), so a scan the planner expects
+-- 6,000 groups of (g and h are two columns of it) and one it is told the 42,000 of both keep their workers and answer what the normal plan answers
 CREATE FUNCTION l_planned(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -146,8 +143,6 @@ SET work_mem = '16MB';
 CREATE TABLE l_w (n int, q text);
 INSERT INTO l_w VALUES (1, 'SELECT g, h, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta FROM fl GROUP BY g, h');
 SELECT n, l_planned(q) AS workers_planned, l_rows(q, true, 3, true) = l_rows(q, false, 0, true) AS same_rows FROM l_w;
-NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
-HINT:  ANALYZE the table so that the planner knows how many groups it has.
  n | workers_planned | same_rows 
 ---+-----------------+-----------
  1 | t               | t
@@ -158,7 +153,7 @@ ANALYZE fl;
 SELECT n, l_planned(q) AS workers_planned, l_rows(q, true, 3, true) = l_rows(q, false, 0, true) AS same_rows FROM l_w;
  n | workers_planned | same_rows 
 ---+-----------------+-----------
- 1 | f               | t
+ 1 | t               | t
 (1 row)
 
 DROP STATISTICS fl_gh;

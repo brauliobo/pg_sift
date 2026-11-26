@@ -90,7 +90,11 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET seq_page_cost = 10000;
-SELECT * FROM run_cases();
+CREATE TEMP TABLE par_cases AS SELECT * FROM run_cases();
+SELECT n, label, scan, reread, dirty, rows_same FROM par_cases ORDER BY n;
+-- the cases without the rare NOT NULL read most units of the index and get workers (the rare one may run alone: the zone maps of a format tell the planner how few it reads)
+SELECT bool_and(gather) AS workers FROM par_cases WHERE label NOT LIKE '%rare NOT NULL%';
+DROP TABLE par_cases;
 
 -- after a merge of the write buffer
 SET max_parallel_workers_per_gather = 0;

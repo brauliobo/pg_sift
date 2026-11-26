@@ -5,6 +5,7 @@
 -- A correlated child plan (workers came later) is added in the order of the rows by a plan without workers, as the normal plan does, and in lanes by a plan with workers;
 -- the two differ by the rounding of reordered additions, within the bound checked below.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 
 SET parallel_setup_cost = 0;
@@ -108,9 +109,8 @@ END $$;
 
 SELECT n, l_launched(q, 3) AS parallel, d.* FROM l_b, LATERAL l_dev(q, 3) d ORDER BY n;
 
--- the tables of the processes of a scan with workers do not spill, and each keeps the sums of its lanes apart (16 vectors for each float sum): the planner leaves a scan to
--- one process, which spills, when the groups it expects and their lanes pass hash memory (42,000 groups: the planner is told how many), and a scan that was given too few
--- (the planner expects 6,000: g and h are two columns of it) runs again as PostgreSQL plans it when a process holds more than its share of hash memory
+-- 42,000 groups under a small work_mem, with workers: the sums of a group do not depend on the processes that added into it (above), so a scan the planner expects
+-- 6,000 groups of (g and h are two columns of it) and one it is told the 42,000 of both keep their workers and answer what the normal plan answers
 CREATE FUNCTION l_planned(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN

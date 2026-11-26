@@ -100,18 +100,27 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET seq_page_cost = 10000;
-SELECT * FROM run_cases();
- n |             label             | scan | gather | reread | dirty | rows_same 
----+-------------------------------+------+--------+--------+-------+-----------
- 1 | key set and rare NOT NULL     | t    | f      |      0 |    32 | same
- 2 | rare NOT NULL                 | t    | f      |      0 |    32 | same
- 3 | key set and stored comparison | t    | f      |      0 |   129 | same
- 4 | key set                       | t    | f      |      0 |   513 | same
- 5 | key set and test of the path  | t    | f      |      0 |   513 | same
- 6 | key set or stored comparison  | t    | f      |      0 |   540 | same
- 7 | no condition                  | t    | f      |      0 |   741 | same
+CREATE TEMP TABLE par_cases AS SELECT * FROM run_cases();
+SELECT n, label, scan, reread, dirty, rows_same FROM par_cases ORDER BY n;
+ n |             label             | scan | reread | dirty | rows_same 
+---+-------------------------------+------+--------+-------+-----------
+ 1 | key set and rare NOT NULL     | t    |      0 |    32 | same
+ 2 | rare NOT NULL                 | t    |      0 |    32 | same
+ 3 | key set and stored comparison | t    |      0 |   129 | same
+ 4 | key set                       | t    |      0 |   513 | same
+ 5 | key set and test of the path  | t    |      0 |   513 | same
+ 6 | key set or stored comparison  | t    |      0 |   540 | same
+ 7 | no condition                  | t    |      0 |   741 | same
 (7 rows)
 
+-- the cases without the rare NOT NULL read most units of the index and get workers (the rare one may run alone: the zone maps of a format tell the planner how few it reads)
+SELECT bool_and(gather) AS workers FROM par_cases WHERE label NOT LIKE '%rare NOT NULL%';
+ workers 
+---------
+ t
+(1 row)
+
+DROP TABLE par_cases;
 -- after a merge of the write buffer
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
