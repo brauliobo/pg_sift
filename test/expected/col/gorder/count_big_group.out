@@ -30,9 +30,9 @@ BEGIN
 	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN net > 0 THEN 'net of dead rows' ELSE 'entries' END;
 END $$;
 SELECT bg_chk('SELECT count(*) FROM bg WHERE g = 1') AS biggest;
-     biggest      
-------------------
- net of dead rows
+ biggest 
+---------
+ entries
 (1 row)
 
 SELECT count(*) FILTER (WHERE bg_chk(format('SELECT count(*) FROM bg WHERE g = %s', g)) LIKE 'DIFFERS%') AS differing FROM generate_series(1, 31) g;

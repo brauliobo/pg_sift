@@ -935,13 +935,13 @@ FROM (VALUES ('i2 = 5'), ('i2 = 996'), ('i2 = 1500'), ('i2 IN (3, 7, 996, 2000)'
 ORDER BY w;
                                          w                                          | same_rows | matches |            plan            
 ------------------------------------------------------------------------------------+-----------+---------+----------------------------
- b = false                                                                          | t         |   16853 | Index Scan using pt_i
- b = true                                                                           | t         |    2809 | Index Scan using pt_i
+ b = false                                                                          | t         |   16853 | Index Only Scan using pt_i
+ b = true                                                                           | t         |    2809 | Index Only Scan using pt_i
  b IS NULL                                                                          | t         |     338 | Index Only Scan using pt_i
  d = date '2024-03-01'                                                              | t         |      33 | Index Scan using pt_i
- d = date '2030-01-01'                                                              | t         |       0 | Index Scan using pt_i
+ d = date '2030-01-01'                                                              | t         |       0 | Index Only Scan using pt_i
  d IN (date '2024-01-01', date '2025-08-22')                                        | t         |      65 | Index Scan using pt_i
- i2 = 1500                                                                          | t         |       0 | Index Scan using pt_i
+ i2 = 1500                                                                          | t         |       0 | Index Only Scan using pt_i
  i2 = 5                                                                             | t         |      21 | Index Scan using pt_i
  i2 = 996                                                                           | t         |      20 | Index Scan using pt_i
  i2 IN (3, 7, 996, 2000)                                                            | t         |      60 | Index Scan using pt_i
@@ -951,7 +951,7 @@ ORDER BY w;
  n = 12.345                                                                         | t         |       0 | Index Scan using pt_i
  n IN (1.5, 24.99, 99)                                                              | t         |      14 | Index Scan using pt_i
  t = 'infinity'::timestamp                                                          | t         |     454 | Index Scan using pt_i
- t = timestamp '1999-01-01'                                                         | t         |       0 | Index Scan using pt_i
+ t = timestamp '1999-01-01'                                                         | t         |       0 | Index Only Scan using pt_i
  t = timestamp '2024-01-01 00:07:00'                                                | t         |       4 | Index Scan using pt_i
  t IN (timestamp '2024-01-01', timestamp '2024-01-02 03:00:00')                     | t         |       4 | Index Scan using pt_i
  tz = timestamptz '2024-01-01 00:11:00+00'                                          | t         |       6 | Index Scan using pt_i

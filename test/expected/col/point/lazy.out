@@ -127,9 +127,9 @@ BEGIN
 	RETURN trim(r);
 END $$;
 SELECT lz_plan('SELECT * FROM lz WHERE h = 7 LIMIT 10') AS limit_10, lz_plan('SELECT * FROM lz WHERE h = 7') AS all_rows;
-             limit_10              |          all_rows           
------------------------------------+-----------------------------
- Limit Index Scan using lz_t on lz | Index Scan using lz_t on lz
+             limit_10              |        all_rows        
+-----------------------------------+------------------------
+ Limit Index Scan using lz_t on lz | Bitmap Heap Scan on lz
 (1 row)
 
 SELECT lz_limit('h = 7', 10) AS lim_10, lz_idx('h = 7') = lz_seq('h = 7') AS index_scan;

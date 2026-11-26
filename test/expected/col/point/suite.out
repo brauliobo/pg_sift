@@ -1,5 +1,7 @@
 -- The point lookups, the tracking and the connections of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 -- >>> col_point_auto_ordered
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
@@ -29,8 +31,6 @@ SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['po_i'
  po_pk_i    | auto: id
  po_small_i | -
 (4 rows)
--- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
-SET sift.test_create_format1 = on;
 
 -- the paths the index offers for the aggregate over a few keys (SiftAgg off: an index or bitmap scan, or the sequential scan their absence leaves)
 CREATE FUNCTION path_of(sql text) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = off AS $$
@@ -118,10 +118,10 @@ BEGIN
 END $$;
 SELECT k AS keys, pb_path(format('SELECT count(*), sum(v) FROM pb WHERE id IN (%s)', (SELECT list FROM pb_keys WHERE n = k))) AS path
 FROM unnest(ARRAY[60, 500]) k;
- keys | path  
-------+-------
-   60 | btree
-  500 | btree
+ keys |  path   
+------+---------
+   60 | siftagg
+  500 | siftagg
 (2 rows)
 
 CREATE FUNCTION pb_run(k int, agg boolean) RETURNS text LANGUAGE plpgsql AS $$
@@ -200,9 +200,9 @@ BEGIN
 END $$;
 -- (1) the covered lookups: one clause of the directory
 SELECT regexp_replace(pf_node('SELECT id, tenant FROM pf WHERE id IN (' || (SELECT string_agg((i * 997 % 60000 + 1)::text, ',') FROM generate_series(1, 60) i) || ')'), ' on pf.*| using.*', '') AS id_in_60;
-  id_in_60  
-------------
- Index Scan
+     id_in_60     
+------------------
+ Bitmap Heap Scan
 (1 row)
 
 SELECT regexp_replace(pf_node('SELECT id, tenant FROM pf WHERE id = 4242'), ' on pf.*| using.*', '') AS id_eq;
@@ -342,6 +342,7 @@ DECLARE
 	got text;
 	want text;
 BEGIN
+	SET LOCAL sift.agg_exact_float = on;
 	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO j;
 	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') THEN 'sift' ELSE 'normal' END;
 	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q || ') t' INTO got;

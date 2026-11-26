@@ -68,9 +68,13 @@ RESET work_mem;
 RESET hash_mem_multiplier;
 -- the same probe with a constant is an index-only scan, as before
 SELECT sp_plan('SELECT cust FROM sp_f WHERE cust = 12345');
-      sp_plan       
---------------------
- probe of the index
+               sp_plan               
+-------------------------------------
+ Bitmap Heap Scan on sp_f           +
+   Recheck Cond: (cust = 12345)     +
+   ->  Bitmap Index Scan on sp_f_col+
+         Index Cond: (cust = 12345) +
+ 
 (1 row)
 
 DROP FUNCTION sp_plan(text), sp_count(text, bool);

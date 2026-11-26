@@ -68,16 +68,16 @@ SELECT * FROM dp_state();
 (7 rows)
 
 SELECT * FROM dp_reads();
- n |  outcome  
----+-----------
- 1 | scan same
- 2 | scan same
- 3 | scan same
- 4 | scan same
- 5 | scan same
- 6 | scan same
- 7 | scan same
- 8 | scan same
+ n |  outcome   
+---+------------
+ 1 | plain same
+ 2 | plain same
+ 3 | plain same
+ 4 | plain same
+ 5 | plain same
+ 6 | plain same
+ 7 | plain same
+ 8 | plain same
 (8 rows)
 
 -- the indexes after an insert (the write buffer), its promotion, a merge and a REINDEX
@@ -96,16 +96,16 @@ SELECT * FROM dp_state();
 (7 rows)
 
 SELECT * FROM dp_reads();
- n |  outcome  
----+-----------
- 1 | scan same
- 2 | scan same
- 3 | scan same
- 4 | scan same
- 5 | scan same
- 6 | scan same
- 7 | scan same
- 8 | scan same
+ n |  outcome   
+---+------------
+ 1 | plain same
+ 2 | plain same
+ 3 | plain same
+ 4 | plain same
+ 5 | plain same
+ 6 | plain same
+ 7 | plain same
+ 8 | plain same
 (8 rows)
 
 SELECT sift.col_promote('dp_on'), sift.col_promote('dp_off'), sift.col_promote('dq_on');
@@ -127,16 +127,16 @@ SELECT * FROM dp_state();
 (7 rows)
 
 SELECT * FROM dp_reads();
- n |  outcome  
----+-----------
- 1 | scan same
- 2 | scan same
- 3 | scan same
- 4 | scan same
- 5 | scan same
- 6 | scan same
- 7 | scan same
- 8 | scan same
+ n |  outcome   
+---+------------
+ 1 | plain same
+ 2 | plain same
+ 3 | plain same
+ 4 | plain same
+ 5 | plain same
+ 6 | plain same
+ 7 | plain same
+ 8 | plain same
 (8 rows)
 
 INSERT INTO dp SELECT 4200 + i, i % 5, dp_doc(i + 3) FROM generate_series(1, 700) i;
@@ -166,16 +166,16 @@ SELECT * FROM dp_state();
 (7 rows)
 
 SELECT * FROM dp_reads();
- n |  outcome  
----+-----------
- 1 | scan same
- 2 | scan same
- 3 | scan same
- 4 | scan same
- 5 | scan same
- 6 | scan same
- 7 | scan same
- 8 | scan same
+ n |  outcome   
+---+------------
+ 1 | plain same
+ 2 | plain same
+ 3 | plain same
+ 4 | plain same
+ 5 | plain same
+ 6 | plain same
+ 7 | plain same
+ 8 | plain same
 (8 rows)
 
 UPDATE dp SET doc = NULL WHERE id % 11 = 0;
@@ -185,16 +185,16 @@ UPDATE dq SET doc = NULL WHERE id % 11 = 0;
 UPDATE dq SET doc = '{"b": "y"}' WHERE id % 13 = 0 AND doc IS NULL;
 DELETE FROM dq WHERE id % 17 = 0;
 SELECT * FROM dp_reads();
- n |  outcome  
----+-----------
- 1 | scan same
- 2 | scan same
- 3 | scan same
- 4 | scan same
- 5 | scan same
- 6 | scan same
- 7 | scan same
- 8 | scan same
+ n |  outcome   
+---+------------
+ 1 | plain same
+ 2 | plain same
+ 3 | plain same
+ 4 | plain same
+ 5 | plain same
+ 6 | plain same
+ 7 | plain same
+ 8 | plain same
 (8 rows)
 
 VACUUM dp, dq;
@@ -211,16 +211,16 @@ SELECT * FROM dp_state();
 (7 rows)
 
 SELECT * FROM dp_reads();
- n |  outcome  
----+-----------
- 1 | scan same
- 2 | scan same
- 3 | scan same
- 4 | scan same
- 5 | scan same
- 6 | scan same
- 7 | scan same
- 8 | scan same
+ n |  outcome   
+---+------------
+ 1 | plain same
+ 2 | plain same
+ 3 | plain same
+ 4 | plain same
+ 5 | plain same
+ 6 | plain same
+ 7 | plain same
+ 8 | plain same
 (8 rows)
 
 REINDEX INDEX dp_on;
@@ -239,16 +239,16 @@ SELECT * FROM dp_state();
 (7 rows)
 
 SELECT * FROM dp_reads();
- n |  outcome  
----+-----------
- 1 | scan same
- 2 | scan same
- 3 | scan same
- 4 | scan same
- 5 | scan same
- 6 | scan same
- 7 | scan same
- 8 | scan same
+ n |  outcome   
+---+------------
+ 1 | plain same
+ 2 | plain same
+ 3 | plain same
+ 4 | plain same
+ 5 | plain same
+ 6 | plain same
+ 7 | plain same
+ 8 | plain same
 (8 rows)
 
 -- an index made before the leaf has none until REINDEX writes it
@@ -266,16 +266,16 @@ SELECT * FROM dp_state();
 (7 rows)
 
 SELECT * FROM dp_reads();
- n |  outcome  
----+-----------
- 1 | scan same
- 2 | scan same
- 3 | scan same
- 4 | scan same
- 5 | scan same
- 6 | scan same
- 7 | scan same
- 8 | scan same
+ n |  outcome   
+---+------------
+ 1 | plain same
+ 2 | plain same
+ 3 | plain same
+ 4 | plain same
+ 5 | plain same
+ 6 | plain same
+ 7 | plain same
+ 8 | plain same
 (8 rows)
 
 -- no paths option: the build reads the paths from a sample of the documents (paths = auto) and keeps the presence of the column as well

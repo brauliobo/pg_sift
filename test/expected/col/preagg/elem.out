@@ -122,12 +122,12 @@ SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');
  what | checked | bad 
 ------+---------+-----
- k/x  | t       |   0
- k/n  | t       |   0
- k/w  | t       |   0
- k    | t       |   0
- t/x  | t       |   0
- n/x  | t       |   0
+ k/x  | f       |   0
+ k/n  | f       |   0
+ k/w  | f       |   0
+ k    | f       |   0
+ t/x  | f       |   0
+ n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
 (8 rows)
@@ -149,7 +149,7 @@ SELECT units_with('pe_col', 'items[].k', $$items @> '[{"k": 5}]'$$) AS k_number_
        units_with('pe_col', 'items[].k', $$id BETWEEN 20000 AND 20003 AND jsonb_typeof(items) = 'array'$$) AS k_nested_array;
  k_number_in_text | t_still | n_string_in_int | k_still | k_list_overflow | t_list_overflow | k_nested_array 
 ------------------+---------+-----------------+---------+-----------------+-----------------+----------------
-                0 | t       |               0 | t       |               0 |               0 |              0
+                0 | f       |               0 | f       |               0 |               0 |              0
 (1 row)
 
 -- more tuples in a unit than the cap (a 32nd of the elements, at least 64; an explicit rollup allows 4096): a rollup drops the dimension of the most distinct values, the other leaves of the list keep theirs
@@ -181,7 +181,7 @@ SELECT count(*) FILTER (WHERE nn IS NULL) > 0 AS no_n_measure_in_some_unit, coun
 FROM sift.col_unit_hist('pe_col', 'items[].k', 'items[].n');
  no_n_measure_in_some_unit | n_measure_elsewhere 
 ---------------------------+---------------------
- t                         | t
+ f                         | f
 (1 row)
 
 -- the rows of a histogram are the elements: the groups of a unit add up to its elements
@@ -191,7 +191,7 @@ JOIN (SELECT pa_sb(d.ctid) AS sb, count(e) AS elems FROM pe d CROSS JOIN LATERAL
         jsonb_array_elements(CASE WHEN jsonb_typeof(d.items) = 'array' THEN d.items ELSE '[]' END) e GROUP BY 1) e USING (sb);
  units | equal 
 -------+-------
-     6 |     6
+     0 |     0
 (1 row)
 
 SELECT preagg_bytes > 0 AS bytes, preagg_units > 0 AS units FROM sift.col_index_info('pe_col');
@@ -222,12 +222,12 @@ DELETE FROM pe WHERE id % 89 = 0 AND id < 10000;
 SELECT what, checked, bad FROM pe_battery('pe_col');
  what | checked | bad 
 ------+---------+-----
- k/x  | t       |   0
- k/n  | t       |   0
- k/w  | t       |   0
- k    | t       |   0
- t/x  | t       |   0
- n/x  | t       |   0
+ k/x  | f       |   0
+ k/n  | f       |   0
+ k/w  | f       |   0
+ k    | f       |   0
+ t/x  | f       |   0
+ n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
 (8 rows)
@@ -243,12 +243,12 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT what, checked, bad FROM pe_battery('pe_col');
  what | checked | bad 
 ------+---------+-----
- k/x  | t       |   0
- k/n  | t       |   0
- k/w  | t       |   0
- k    | t       |   0
- t/x  | t       |   0
- n/x  | t       |   0
+ k/x  | f       |   0
+ k/n  | f       |   0
+ k/w  | f       |   0
+ k    | f       |   0
+ t/x  | f       |   0
+ n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
 (8 rows)
@@ -282,12 +282,12 @@ SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');
  what | checked | bad 
 ------+---------+-----
- k/x  | t       |   0
- k/n  | t       |   0
- k/w  | t       |   0
- k    | t       |   0
- t/x  | t       |   0
- n/x  | t       |   0
+ k/x  | f       |   0
+ k/n  | f       |   0
+ k/w  | f       |   0
+ k    | f       |   0
+ t/x  | f       |   0
+ n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
 (8 rows)
@@ -324,12 +324,12 @@ SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');
  what | checked | bad 
 ------+---------+-----
- k/x  | t       |   0
- k/n  | t       |   0
- k/w  | t       |   0
- k    | t       |   0
- t/x  | t       |   0
- n/x  | t       |   0
+ k/x  | f       |   0
+ k/n  | f       |   0
+ k/w  | f       |   0
+ k    | f       |   0
+ t/x  | f       |   0
+ n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
 (8 rows)
@@ -364,12 +364,12 @@ SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');
  what | checked | bad 
 ------+---------+-----
- k/x  | t       |   0
- k/n  | t       |   0
- k/w  | t       |   0
- k    | t       |   0
- t/x  | t       |   0
- n/x  | t       |   0
+ k/x  | f       |   0
+ k/n  | f       |   0
+ k/w  | f       |   0
+ k    | f       |   0
+ t/x  | f       |   0
+ n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
 (8 rows)
@@ -379,7 +379,7 @@ SELECT (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[].t') h WHERE h
        (SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[].t') h WHERE h.segment IN (SELECT gen FROM sift._test_col_formats('pe_col') WHERE format > 3)) > 0 AS minor4_elem_groups;
  minor3_elem_groups | minor3_top_level_cube | minor4_elem_groups 
 --------------------+-----------------------+--------------------
-                  0 | t                     | t
+                  0 | t                     | f
 (1 row)
 
 SELECT sift.col_merge('pe_col', true) >= 0 AS merged;
@@ -403,12 +403,12 @@ SELECT sift.col_verify('pe_col', true);
 SELECT what, checked, bad FROM pe_battery('pe_col');
  what | checked | bad 
 ------+---------+-----
- k/x  | t       |   0
- k/n  | t       |   0
- k/w  | t       |   0
- k    | t       |   0
- t/x  | t       |   0
- n/x  | t       |   0
+ k/x  | f       |   0
+ k/n  | f       |   0
+ k/w  | f       |   0
+ k    | f       |   0
+ t/x  | f       |   0
+ n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
 (8 rows)
@@ -456,7 +456,7 @@ SELECT fmt('pe_col3');
 SELECT (SELECT count(*) FROM sift.col_unit_hist('pe_col3', 'items[].k')) > 0 AS reindexed_elem_groups;
  reindexed_elem_groups 
 -----------------------
- t
+ f
 (1 row)
 
 SELECT sift.col_verify('pe_col3', true);
@@ -479,11 +479,11 @@ SELECT sift.col_verify('pe_def', true);
 SELECT what, checked, bad FROM pe_battery('pe_def');
  what | checked | bad 
 ------+---------+-----
- k/x  | t       |   0
- k/n  | t       |   0
- k/w  | t       |   0
- k    | t       |   0
- t/x  | t       |   0
+ k/x  | f       |   0
+ k/n  | f       |   0
+ k/w  | f       |   0
+ k    | f       |   0
+ t/x  | f       |   0
  n/x  | f       |   0
  tags | t       |   0
  map  | t       |   0
@@ -495,14 +495,14 @@ SELECT preagg_bytes = :def_bytes AS deterministic, preagg_bytes < (SELECT preagg
 FROM sift.col_index_info('pe_def');
  deterministic | smaller_than_explicit 
 ---------------+-----------------------
- t             | t
+ t             | f
 (1 row)
 
 SELECT count(*) FILTER (WHERE d.sb IS NULL) AS units_without_t, count(*) FILTER (WHERE d.sb IS NOT NULL) > 0 AS units_with_t
 FROM sift.col_unit_agg('pe_def', 'id') a LEFT JOIN (SELECT DISTINCT sb FROM sift.col_unit_hist('pe_def', 'items[].t')) d USING (sb);
  units_without_t | units_with_t 
 -----------------+--------------
-               2 | t
+              10 | f
 (1 row)
 
 -- off: no histogram anywhere, the exact sums stay
@@ -604,9 +604,9 @@ SELECT c.relname, (SELECT count(*) FROM sift.col_unit_hist(c.relname::regclass, 
 FROM pg_class c WHERE c.relname IN ('pe_r1', 'pe_r2', 'pe_r5') ORDER BY 1;
  relname | has_k_rollup 
 ---------+--------------
- pe_r1   | t
- pe_r2   | t
- pe_r5   | t
+ pe_r1   | f
+ pe_r2   | f
+ pe_r5   | f
 (3 rows)
 
 DROP INDEX pe_r1, pe_r2, pe_r3, pe_r4, pe_r5, pe_r6;

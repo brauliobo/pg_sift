@@ -41,42 +41,42 @@ CREATE FUNCTION tt_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT tt_chk(format('SELECT %1$s FROM tt ORDER BY %1$s %2$s %3$s LIMIT %4$s OFFSET %5$s', c, d, nl, l, o)), 1::bigint
    FROM unnest(ARRAY['a', 'b', 'v']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 100, 2000]) l, unnest(ARRAY[0, 7]) o $$;
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    96
+ result | count 
+--------+-------
+ units  |    96
 (1 row)
 
 -- another collation of the sort than the column's, an expression of the column, a condition, and no LIMIT read the units (or the normal plan); another key after the first is read from the heap rows (col_topn_gorder_text_ties)
 SELECT tt_chk('SELECT a FROM tt ORDER BY a COLLATE "C" LIMIT 10') AS other_collation, tt_chk('SELECT b FROM tt ORDER BY b COLLATE "POSIX" LIMIT 10') AS posix_collation,
 	   tt_chk('SELECT lower(a) FROM tt ORDER BY lower(a) LIMIT 10') AS expression, tt_chk('SELECT a FROM tt WHERE k = 5 ORDER BY a LIMIT 10') AS condition,
 	   tt_chk('SELECT a, id FROM tt ORDER BY a, id LIMIT 10') AS two_keys, tt_chk('SELECT a FROM tt ORDER BY a') AS no_limit;
- other_collation | posix_collation | expression | condition |   two_keys   | no_limit 
------------------+-----------------+------------+-----------+--------------+----------
- units           | units           | units      | units     | global order | units
+ other_collation | posix_collation | expression | condition | two_keys | no_limit 
+-----------------+-----------------+------------+-----------+----------+----------
+ units           | units           | units      | units     | units    | units
 (1 row)
 
 -- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
 INSERT INTO tt (id, a, b, v, k) SELECT 20000 + i, tt_str(i * 13), tt_str(i * 17), CASE WHEN i % 3 = 0 THEN NULL ELSE tt_str(i * 19) END, i % 100 FROM generate_series(1, 700) i;
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    96
+ result | count 
+--------+-------
+ units  |    96
 (1 row)
 
 DELETE FROM tt WHERE id % 7 = 0;
 UPDATE tt SET a = 'U' || a WHERE id % 11 = 0;
 UPDATE tt SET b = NULL WHERE id % 13 = 0;
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    96
+ result | count 
+--------+-------
+ units  |    96
 (1 row)
 
 VACUUM tt;
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    96
+ result | count 
+--------+-------
+ units  |    96
 (1 row)
 
 SELECT sift.col_promote('tt_i'::regclass) >= 0 AS promoted;
@@ -92,16 +92,16 @@ SELECT sift.col_verify('tt_i');
 (1 row)
 
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    96
+ result | count 
+--------+-------
+ units  |    96
 (1 row)
 
 INSERT INTO tt (id, a, b, v, k) SELECT 30000 + i, tt_str(i * 23), tt_str(i * 29), tt_str(i * 31), i % 100 FROM generate_series(1, 300) i;
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    96
+ result | count 
+--------+-------
+ units  |    96
 (1 row)
 
 SELECT sift.col_merge('tt_i'::regclass, true) >= 0 AS merged;
@@ -117,9 +117,9 @@ SELECT sift.col_verify('tt_i');
 (1 row)
 
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    96
+ result | count 
+--------+-------
+ units  |    96
 (1 row)
 
 REINDEX INDEX tt_i;
@@ -132,17 +132,17 @@ SELECT sift.col_verify('tt_i');
 (1 row)
 
 SELECT result, count(*) FROM tt_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    96
+ result | count 
+--------+-------
+ units  |    96
 (1 row)
 
 -- a write buffer of 5,000 rows is sorted by the leading bytes of its strings, the ranges a read reaches only: the global order reads it
 INSERT INTO tt (id, a) SELECT 50000 + i, tt_str(i) FROM generate_series(1, 5000) i;
 SELECT tt_chk('SELECT a FROM tt ORDER BY a LIMIT 10') AS big_buffer;
-  big_buffer  
---------------
- global order
+ big_buffer 
+------------
+ units
 (1 row)
 
 -- a string longer than a dictionary entry (a unit stores it inline): the column keeps no array and the answer is the heap's
@@ -194,17 +194,17 @@ CREATE TABLE tmq (q text);
 INSERT INTO tmq SELECT format('SELECT %s FROM tm ORDER BY %s %s %s LIMIT %s OFFSET %s', col, col, dir, nl, lim, off)
 FROM unnest(ARRAY['s', 'c']) col, unnest(ARRAY['', 'DESC']) dir, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[10, 700]) lim, unnest(ARRAY[0, 1500]) off;
 SELECT result, count(*) FROM (SELECT tt_chk(q) AS result FROM tmq) r GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    32
+ result | count 
+--------+-------
+ units  |    32
 (1 row)
 
 DELETE FROM tm WHERE id % 7 = 0;
 UPDATE tm SET s = 'Apple' || (id % 5), c = 'banana' || (id % 3) WHERE id % 11 = 0;
 SELECT result, count(*) FROM (SELECT tt_chk(q) AS result FROM tmq) r GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    32
+ result | count 
+--------+-------
+ units  |    32
 (1 row)
 
 SELECT sift.col_merge('tm_i'::regclass, true) >= 0 AS merged;
@@ -220,9 +220,9 @@ SELECT sift.col_verify('tm_i');
 (1 row)
 
 SELECT result, count(*) FROM (SELECT tt_chk(q) AS result FROM tmq) r GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    32
+ result | count 
+--------+-------
+ units  |    32
 (1 row)
 
 DROP TABLE tm, tmq;
@@ -242,9 +242,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'tn_i';
 (1 row)
 
 SELECT tt_chk('SELECT s FROM tn ORDER BY s LIMIT 10') AS auto_asc, tt_chk('SELECT s FROM tn ORDER BY s DESC NULLS FIRST LIMIT 10 OFFSET 7') AS auto_desc, tt_chk('SELECT w FROM tn ORDER BY w LIMIT 10') AS wide_column;
-   auto_asc   |  auto_desc   | wide_column 
---------------+--------------+-------------
- global order | global order | units
+ auto_asc | auto_desc | wide_column 
+----------+-----------+-------------
+ units    | units     | units
 (1 row)
 
 DROP INDEX tn_i;

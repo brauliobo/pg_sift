@@ -20,19 +20,19 @@ CREATE INDEX pm_col ON pm USING sift_col (id, grp, amt, qty) WITH (write_buffer_
 CREATE INDEX pm_off_col ON pm_off USING sift_col (id, grp, amt, qty) WITH (write_buffer_limit = 4096, dead_rewrite_pct = 100);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pm, pm_off;
 
--- units of the SiftAgg node and those it answered from the pre-aggregates, and whether the three ways (metadata, scan, heap) agree
+-- granules the aggregate scan read and those it answered from the pre-aggregates, and whether the three ways (metadata, scan, heap) agree
 CREATE FUNCTION pm_state(tbl text) RETURNS TABLE (all_units bool, some_exact bool, same bool) LANGUAGE plpgsql AS $$
-DECLARE l text; u int; p int; q text := format('SELECT grp, count(*), sum(amt), sum(qty) FROM %s GROUP BY grp', tbl); a text; b text; c text;
+DECLARE l text; u int := 0; p int := 0; q text := format('SELECT grp, count(*), sum(amt), sum(qty) FROM %s GROUP BY grp', tbl); a text; b text; c text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		u := coalesce(substring(l from '^\s*Units: (\d+)')::int, u);
-		p := coalesce(substring(l from '(\d+) from pre-aggregates')::int, p);
+		u := coalesce(substring(l from 'Granules: scanned=(\d+)')::int, u);
+		p := coalesce(substring(l from 'preagg=(\d+)')::int, p);
 	END LOOP;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
-	RETURN QUERY SELECT p = u, p > 0, a = b AND b = c;
+	RETURN QUERY SELECT u = 0, p > 0, a = b AND b = c;
 END $$;
 
 SELECT 'built' AS step, * FROM pm_state('pm');

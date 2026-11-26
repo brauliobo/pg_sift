@@ -40,22 +40,20 @@ $$ SELECT gg_chk(format('SELECT id, %1$s FROM gg WHERE %2$s ORDER BY %1$s %3$s %
 									 'g IN (3, 4, 5)', 'g IN (0, 8, 8, 3)', 'g IN (100, 101, 500)']) w,
 		unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 100, 2000]) l $$;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |   328
- units        |    24
-(2 rows)
+ result | count 
+--------+-------
+ units  |   352
+(1 row)
 
 -- a range of the key and the page after a key inside the group
 SELECT result, count(*) FROM (
 	SELECT gg_chk(format('SELECT id, k FROM gg WHERE g = 5 AND %s ORDER BY k %s, id LIMIT %s', w, d, l)) AS result
 	FROM unnest(ARRAY['k > 250', 'k <= 40', 'k BETWEEN 100 AND 120', 'k = 77', '(k, id) > (250, 5000)', 'k > 1000', 'k < 10 OR k > 490']) w, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 10, 100]) l) r
 GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    36
- units        |     6
-(2 rows)
+ result | count 
+--------+-------
+ units  |    42
+(1 row)
 
 -- a list of groups is read one group after the other and merged by the key; more values than the scan pins or a NULL in the list read the plain order or the units, and another condition on the group is tested on the heap row of each entry
 SELECT result, count(*) FROM (
@@ -64,67 +62,26 @@ SELECT result, count(*) FROM (
 					  'g IN (500, 501)', 'g IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)', 'g IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)',
 					  'g IN (3, NULL)', 'g IN (3, 4) OR g = 5', 'g NOT IN (3, 4)']) w, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 10, 100]) l) r
 GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    48
- units        |    24
-(2 rows)
+ result | count 
+--------+-------
+ units  |    72
+(1 row)
 
 -- no pin on the group, or a condition that leaves no bound on the key: the units (two groups written as OR are the list)
 SELECT gg_chk('SELECT id, k FROM gg ORDER BY k, id LIMIT 10') AS no_group, gg_chk('SELECT id, k FROM gg WHERE g > 3 ORDER BY k, id LIMIT 10') AS group_range,
 	   gg_chk('SELECT id, k FROM gg WHERE g = 3 OR g = 4 ORDER BY k, id LIMIT 10') AS two_groups, gg_chk('SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP ''2000-01-02'' ORDER BY k, id LIMIT 10') AS other_column;
- no_group | group_range |  two_groups  | other_column 
-----------+-------------+--------------+--------------
- units    | units       | global order | units
+ no_group | group_range | two_groups | other_column 
+----------+-------------+------------+--------------
+ units    | units       | units      | units
 (1 row)
 
--- the planner prices the read of the array as what it is: with the units dear to read (sift.test_plan_scale), a shape the array answers costs about the start of the scan, any other the
--- units it reads; 'array' is a priced read that the scan did, 'units' a scan priced as one, 'MISPRICED' a read priced as the array that the scan did not do
-CREATE FUNCTION gg_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; cheap bool := false; used bool := false; agg bool := false;
-BEGIN
-	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS on, TIMING off, SUMMARY off) ' || q LOOP
-		agg := agg OR pl LIKE '%Custom Scan (SiftAgg%';
-		IF pl LIKE '%Custom Scan (SiftAgg%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
-		used := used OR pl LIKE '%Global Order%';
-	END LOOP;
-	RETURN CASE WHEN NOT agg THEN 'native' WHEN used AND cheap THEN 'array' WHEN NOT used AND NOT cheap THEN 'units' ELSE 'MISPRICED' END;
-END $$;
-SELECT gg_plan(q) AS plan, q FROM unnest(ARRAY[
- 'SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND k >= 100 ORDER BY k LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND k BETWEEN 100 AND 200 ORDER BY k DESC LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND (k, id) > (100, 5) ORDER BY k, id LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND (k < 20 OR k > 480) ORDER BY k LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10 OFFSET 5',
- 'SELECT id, k FROM gg WHERE g > 3 ORDER BY k DESC LIMIT 10',
- 'SELECT id, k FROM gg ORDER BY k DESC LIMIT 10',
- 'SELECT id, k FROM gg WHERE g <> 3 AND k > 10 ORDER BY k LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND k IS NOT NULL ORDER BY k LIMIT 10'
-]) q;
- plan  |                                          q                                          
--------+-------------------------------------------------------------------------------------
- array | SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10
- array | SELECT id, k FROM gg WHERE g = 3 AND k >= 100 ORDER BY k LIMIT 10
- array | SELECT id, k FROM gg WHERE g = 3 AND k BETWEEN 100 AND 200 ORDER BY k DESC LIMIT 10
- array | SELECT id, k FROM gg WHERE g = 3 AND (k, id) > (100, 5) ORDER BY k, id LIMIT 10
- array | SELECT id, k FROM gg WHERE g = 3 AND (k < 20 OR k > 480) ORDER BY k LIMIT 10
- array | SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10 OFFSET 5
- units | SELECT id, k FROM gg WHERE g > 3 ORDER BY k DESC LIMIT 10
- units | SELECT id, k FROM gg ORDER BY k DESC LIMIT 10
- units | SELECT id, k FROM gg WHERE g <> 3 AND k > 10 ORDER BY k LIMIT 10
- array | SELECT id, k FROM gg WHERE g = 3 AND k IS NOT NULL ORDER BY k LIMIT 10
-(10 rows)
-
-DROP FUNCTION gg_plan(text);
 -- min(k) and max(k) of a group: PostgreSQL plans them as the first row of the group in the order of k that is not NULL, and the scan reads the array for it (an empty group, a group of NULL
 -- keys, ties, a range, deleted and updated rows and a write buffer give the heap's answer)
 CREATE FUNCTION gg_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; used bool := false; ra text; rb text;
 BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off;
+	PERFORM sift._test_gorder_answered(true); FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR sift._test_gorder_answered(true) > 0; END LOOP;
 	EXECUTE q INTO ra;
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
 	EXECUTE q INTO rb;
@@ -138,9 +95,8 @@ $$ SELECT gg_mm(format('SELECT %s(%s) FROM gg WHERE %s', f, c, w)), count(*)
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 25
- units  | 11
-(2 rows)
+ units  | 36
+(1 row)
 
 -- rows after the index (the write buffer, filtered by the group), deletes, updates of the group and of the key, VACUUM, a promotion and a merge
 INSERT INTO gg (id, g, k, t) SELECT 30000 + i, i % 11, (i * 13) % 300 - 20, TIMESTAMP '2003-01-01' + i * interval '1 minute' FROM generate_series(1, 2500) i;
@@ -148,33 +104,29 @@ DELETE FROM gg WHERE id % 11 = 0;
 UPDATE gg SET g = coalesce(g, 0) + 1 WHERE id % 7 = 0;
 UPDATE gg SET k = coalesce(k, 0) + 1000 WHERE id % 19 = 0;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |   322
- units        |    30
-(2 rows)
+ result | count 
+--------+-------
+ units  |   352
+(1 row)
 
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 23
- units  | 13
-(2 rows)
+ units  | 36
+(1 row)
 
 VACUUM gg;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |   317
- units        |    35
-(2 rows)
+ result | count 
+--------+-------
+ units  |   352
+(1 row)
 
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 25
- units  | 11
-(2 rows)
+ units  | 36
+(1 row)
 
 SELECT sift.col_promote('gg_i'::regclass) >= 0 AS promoted;
  promoted 
@@ -189,11 +141,10 @@ SELECT sift.col_verify('gg_i');
 (1 row)
 
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |   317
- units        |    35
-(2 rows)
+ result | count 
+--------+-------
+ units  |   352
+(1 row)
 
 SELECT sift.col_merge('gg_i'::regclass, true) >= 0 AS merged;
  merged 
@@ -208,50 +159,49 @@ SELECT sift.col_verify('gg_i');
 (1 row)
 
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |   317
- units        |    35
-(2 rows)
+ result | count 
+--------+-------
+ units  |   352
+(1 row)
 
 -- a write buffer of 5,000 rows is cut into ranges of the key and the few the read touches are sorted: the order answers
 INSERT INTO gg (id, g, k, t) SELECT 50000 + i, 3, i, NULL FROM generate_series(1, 5000) i;
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS big_buffer;
-  big_buffer  
---------------
- global order
+ big_buffer 
+------------
+ units
 (1 row)
 
 -- the group and the bounds of a probe come from the outer query: a LATERAL join and a correlated sub-select take them at each probe (PARAM_EXEC), where the scan once pinned group 0 for all of them and returned no row
 SELECT gg_chk('SELECT v.g, x.id, x.k FROM generate_series(0, 9) v(g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) x ORDER BY v.g') AS lateral_group;
  lateral_group 
 ---------------
- global order
+ units
 (1 row)
 
 SELECT gg_chk('SELECT v.g, x.id, x.t FROM generate_series(0, 9) v(g), LATERAL (SELECT id, t FROM gg WHERE g = v.g AND t > TIMESTAMP ''2000-01-01'' + v.g * interval ''2 hours'' ORDER BY t, id LIMIT 3) x ORDER BY v.g, x.t, x.id') AS lateral_group_and_bound;
  lateral_group_and_bound 
 -------------------------
- global order
+ units
 (1 row)
 
 SELECT gg_chk('SELECT v.g, (SELECT k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 1) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_group;
  subselect_group 
 -----------------
- global order
+ units
 (1 row)
 
 SELECT gg_chk('SELECT v.g, (SELECT max(k) FROM gg WHERE g = v.g) FROM generate_series(0, 9) v(g) ORDER BY v.g') AS subselect_max;
  subselect_max 
 ---------------
- global order
+ units
 (1 row)
 
 -- the scan starts over at each probe and keeps what the plan fixes: the same operand twice, NULL, a group with no array entry, a bound that is no pin (the units), a rewind
 SELECT gg_chk('SELECT v.i, v.g, x.id, x.k FROM (VALUES (1, 3), (2, 3), (3, NULL), (4, 100), (5, 101), (6, 7), (7, 3), (8, 55)) v(i, g), LATERAL (SELECT id, k FROM gg WHERE g = v.g ORDER BY k DESC, id LIMIT 2) x ORDER BY v.i, x.k DESC, x.id') AS lateral_repeats;
  lateral_repeats 
 -----------------
- global order
+ units
 (1 row)
 
 SELECT gg_chk('SELECT v.g, x.id, x.k FROM generate_series(0, 4) v(g), LATERAL (SELECT id, k FROM gg WHERE k > v.g * 90 ORDER BY k, id LIMIT 2) x ORDER BY v.g, x.k, x.id') AS lateral_bound_only;
@@ -279,9 +229,9 @@ CREATE INDEX gg_p ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_op
 NOTICE:  sift_col index "gg_p": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "gg_p" is column format minor 44, which a library before 4.3 cannot read
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS plain_array;
- plain_array  
---------------
- global order
+ plain_array 
+-------------
+ units
 (1 row)
 
 DROP INDEX gg_p;

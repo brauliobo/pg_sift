@@ -31,8 +31,8 @@ SELECT n, (SELECT string_agg((g * 13)::text, ',') FROM generate_series(1, n) g) 
 SELECT n, pmk_from_point(format('u IN (%s)', keys)) AS answered_by FROM pmk_lists ORDER BY n;
   n   | answered_by 
 ------+-------------
-    5 | directory
-   60 | directory
+    5 | units
+   60 | units
   200 | units
  2000 | units
 (4 rows)

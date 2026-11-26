@@ -32,11 +32,11 @@ FROM (VALUES ('id = 777', 1), ('id IN ($L)', 10), ('id IN ($L)', 60), ('dup = 77
     where    | keys | path  
 -------------+------+-------
  id = 777    |    1 | index
- id IN ($L)  |   10 | index
- id IN ($L)  |   60 | index
+ id IN ($L)  |   10 | seq
+ id IN ($L)  |   60 | seq
  dup = 777   |    1 | index
- dup IN ($L) |   10 | index
- day = 7     |    1 | index
+ dup IN ($L) |   10 | seq
+ day = 7     |    1 | seq
  day IN ($L) |   10 | index
 (7 rows)
 

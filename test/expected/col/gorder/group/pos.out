@@ -92,25 +92,25 @@ SELECT w, result, count(*) FROM (
 					  'ent_id = 7 AND ts BETWEEN timestamp ''2024-02-01'' AND timestamp ''2024-02-03''', 'ent_id IN (3, 5)', 'true']) w,
 		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 300]) l) r
 GROUP BY 1, 2 ORDER BY 1, 2;
-                                      w                                      |    result    | count 
------------------------------------------------------------------------------+--------------+-------
- ent_id = 0 AND ts < timestamp '2024-03-01'                                  | global order |    12
- ent_id = 100000                                                             | global order |    12
- ent_id = 100001                                                             | global order |    12
- ent_id = 399                                                                | global order |    12
- ent_id = 7                                                                  | global order |    12
- ent_id = 7 AND ts >= timestamp '2024-06-01'                                 | global order |    12
- ent_id = 7 AND ts BETWEEN timestamp '2024-02-01' AND timestamp '2024-02-03' | global order |    12
- ent_id IN (3, 5)                                                            | global order |    12
- true                                                                        | global order |    12
+                                      w                                      | result | count 
+-----------------------------------------------------------------------------+--------+-------
+ ent_id = 0 AND ts < timestamp '2024-03-01'                                  | units  |    12
+ ent_id = 100000                                                             | units  |    12
+ ent_id = 100001                                                             | units  |    12
+ ent_id = 399                                                                | units  |    12
+ ent_id = 7                                                                  | units  |    12
+ ent_id = 7 AND ts >= timestamp '2024-06-01'                                 | units  |    12
+ ent_id = 7 AND ts BETWEEN timestamp '2024-02-01' AND timestamp '2024-02-03' | units  |    12
+ ent_id IN (3, 5)                                                            | units  |    12
+ true                                                                        | units  |    12
 (9 rows)
 
 -- the pages after a key, through every group
 SELECT gq_chk(format('SELECT id, ts FROM @ WHERE ent_id = %s ORDER BY ts, id LIMIT 5 OFFSET %s', g, o)) AS result, count(*)
 FROM generate_series(0, 399, 13) g, unnest(ARRAY[0, 37, 250, 299]) o GROUP BY 1;
-    result    | count 
---------------+-------
- global order |   124
+ result | count 
+--------+-------
+ units  |   124
 (1 row)
 
 -- the counts, ranges and extremes of a group read its entries whole (the table without an index is the oracle)
@@ -155,7 +155,7 @@ SELECT result, count(*) FROM gz_all() GROUP BY 1 ORDER BY 1;
 SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS buffers_pinned, gq_chk('SELECT id, ts FROM @ ORDER BY ts DESC, id LIMIT 20') AS buffers_plain;
  buffers_pinned | buffers_plain 
 ----------------+---------------
- global order   | global order
+ units          | units
 (1 row)
 
 SELECT sift.col_promote('gq_on'::regclass) >= 0 AS promoted;
@@ -167,7 +167,7 @@ SELECT sift.col_promote('gq_on'::regclass) >= 0 AS promoted;
 SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS promoted_pinned;
  promoted_pinned 
 -----------------
- global order
+ units
 (1 row)
 
 SELECT sift.col_merge('gq_on'::regclass, true) >= 0 AS merged;
@@ -179,7 +179,7 @@ SELECT sift.col_merge('gq_on'::regclass, true) >= 0 AS merged;
 SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts DESC, id LIMIT 20') AS merged_pinned;
  merged_pinned 
 ---------------
- global order
+ units
 (1 row)
 
 SELECT sift.col_verify('gq_on');
@@ -198,7 +198,7 @@ REINDEX INDEX gq_on;
 SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS reindexed_pinned;
  reindexed_pinned 
 ------------------
- global order
+ units
 (1 row)
 
 SELECT result, count(*) FROM gz_all() GROUP BY 1 ORDER BY 1;
@@ -225,9 +225,9 @@ SELECT sift.col_verify('gq_ends');
 (1 row)
 
 SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts DESC, id LIMIT 20') AS ends_pinned;
- ends_pinned  
---------------
- global order
+ ends_pinned 
+-------------
+ units
 (1 row)
 
 DROP TABLE gp, gq, gz;

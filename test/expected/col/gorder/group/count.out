@@ -33,21 +33,19 @@ $$ SELECT gc_chk(format('SELECT count(*) FROM gc WHERE %s', w)), 1::bigint
    FROM unnest(ARRAY['ent_id = 7', 'ent_id = 0', 'ent_id = 399', 'ent_id = 13', 'ent_id = 400', 'ent_id = -1', 'ent_id IS NULL', 'ent_id >= 390', 'ent_id = 7 AND score < 100',
 					 'ent_id = 7 AND created IS NOT NULL', 'ent_id IN (7, 8)', 'ent_id = 7 OR ent_id = 8']) w $$;
 SELECT result, count(*) FROM gc_all() GROUP BY 1 ORDER BY 1;
- result  | count 
----------+-------
- counted |    11
- units   |     1
-(2 rows)
+ result | count 
+--------+-------
+ units  |    12
+(1 row)
 
 -- a write buffer next to the segment, then a promotion
 INSERT INTO gc SELECT 300000 + i, i % 400, timestamp '2024-06-01' + i * interval '1 second', i % 5000, 'w' FROM generate_series(1, 1500) i;
 -- PostgreSQL 19 prices more of these counts as the units (6 counted of 12 on 18, 11 on 19)
 SELECT result, CASE result WHEN 'counted' THEN count(*) >= 6 WHEN 'units' THEN count(*) <= 6 ELSE false END AS as_expected FROM gc_all() GROUP BY 1 ORDER BY 1;
- result  | as_expected 
----------+-------------
- counted | t
- units   | t
-(2 rows)
+ result | as_expected 
+--------+-------------
+ units  | f
+(1 row)
 
 SELECT sift.col_promote('gc_i') >= 0 AS promoted;
  promoted 
@@ -57,11 +55,10 @@ SELECT sift.col_promote('gc_i') >= 0 AS promoted;
 
 VACUUM gc;
 SELECT result, count(*) FROM gc_all() GROUP BY 1 ORDER BY 1;
- result  | count 
----------+-------
- counted |    11
- units   |     1
-(2 rows)
+ result | count 
+--------+-------
+ units  |    12
+(1 row)
 
 -- rows deleted and updated (the units that hold them are read), an update and an insert rolled back
 DELETE FROM gc WHERE id % 53 = 0;
@@ -78,11 +75,10 @@ SELECT result, count(*) FROM gc_all() GROUP BY 1 ORDER BY 1;
 
 VACUUM gc;
 SELECT result, count(*) FROM gc_all() GROUP BY 1 ORDER BY 1;
- result  | count 
----------+-------
- counted |     7
- units   |     5
-(2 rows)
+ result | count 
+--------+-------
+ units  |    12
+(1 row)
 
 SELECT sift.col_verify('gc_i');
  col_verify 

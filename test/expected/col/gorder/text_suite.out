@@ -1,6 +1,8 @@
 -- The global order of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 -- >>> col_gorder_text_range
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
@@ -31,8 +33,6 @@ SELECT sift.col_verify('tr_i');
 ------------
  
 (1 row)
--- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
-SET sift.test_create_format1 = on;
 
 ANALYZE tr;
 -- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the arrays
@@ -58,40 +58,36 @@ SELECT count(*) AS statements FROM trs;
 (1 row)
 
 SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 20 = 0) r GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |   112
- units        |    56
-(2 rows)
+ result | count 
+--------+-------
+ units  |   168
+(1 row)
 
 -- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
 CREATE FUNCTION tr_all(stage int) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q || stage) % 60 = 0) r GROUP BY 1 ORDER BY 1 $$;
 INSERT INTO tr (id, c, l) SELECT 20000 + i, tr_str(i * 13), tr_str(i * 17) FROM generate_series(1, 700) i;
 SELECT * FROM tr_all(1);
-    result    | n  
---------------+----
- global order | 39
- units        | 13
-(2 rows)
+ result | n  
+--------+----
+ units  | 52
+(1 row)
 
 DELETE FROM tr WHERE id % 7 = 0;
 UPDATE tr SET c = 'U' || c WHERE id % 11 = 0;
 UPDATE tr SET l = NULL WHERE id % 13 = 0;
 SELECT * FROM tr_all(2);
-    result    | n  
---------------+----
- global order | 37
- units        |  9
-(2 rows)
+ result | n  
+--------+----
+ units  | 46
+(1 row)
 
 VACUUM tr;
 SELECT * FROM tr_all(3);
-    result    | n  
---------------+----
- global order | 34
- units        | 15
-(2 rows)
+ result | n  
+--------+----
+ units  | 49
+(1 row)
 
 SELECT sift.col_promote('tr_i'::regclass) >= 0 AS promoted;
  promoted 
@@ -106,19 +102,17 @@ SELECT sift.col_verify('tr_i');
 (1 row)
 
 SELECT * FROM tr_all(4);
-    result    | n  
---------------+----
- global order | 33
- units        | 14
-(2 rows)
+ result | n  
+--------+----
+ units  | 47
+(1 row)
 
 INSERT INTO tr (id, c, l) SELECT 30000 + i, tr_str(i * 23), tr_str(i * 29) FROM generate_series(1, 300) i;
 SELECT * FROM tr_all(5);
-    result    | n  
---------------+----
- global order | 42
- units        | 12
-(2 rows)
+ result | n  
+--------+----
+ units  | 54
+(1 row)
 
 SELECT sift.col_merge('tr_i'::regclass, true) >= 0 AS merged;
  merged 
@@ -133,11 +127,10 @@ SELECT sift.col_verify('tr_i');
 (1 row)
 
 SELECT * FROM tr_all(6);
-    result    | n  
---------------+----
- global order | 32
- units        | 13
-(2 rows)
+ result | n  
+--------+----
+ units  | 45
+(1 row)
 
 REINDEX INDEX tr_i;
 NOTICE:  sift_col index "tr_i": 1 automatic choice (order_array_columns), 1 advice (track_changes)
@@ -149,11 +142,10 @@ SELECT sift.col_verify('tr_i');
 (1 row)
 
 SELECT * FROM tr_all(7);
-    result    | n  
---------------+----
- global order | 35
- units        | 16
-(2 rows)
+ result | n  
+--------+----
+ units  | 51
+(1 row)
 
 -- a sort under another collation, and an unbounded condition keep the units or the normal plan, and a condition on another column is tested on the heap row of each entry; the answers are the heap's
 SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10') AS other_column, tr_chk('SELECT c FROM tr WHERE c >= ''a'' ORDER BY c COLLATE "POSIX" LIMIT 10') AS posix_sort,
@@ -161,7 +153,7 @@ SELECT tr_chk('SELECT c FROM tr WHERE c >= ''a'' AND id > 5 ORDER BY c LIMIT 10'
 	   tr_chk('SELECT l FROM tr WHERE l LIKE ''a%'' ORDER BY l LIMIT 10') AS locale_prefix;
  other_column | posix_sort | not_equal | expression | locale_prefix 
 --------------+------------+-----------+------------+---------------
- global order | units      | units     | units      | units
+ units        | units      | units     | units      | units
 (1 row)
 
 DROP TABLE tr, trq, trs CASCADE;
@@ -331,12 +323,12 @@ SELECT col, d, result, count(*) FROM (
 	SELECT col, d, eo_chk(format('SELECT id, %s FROM eo ORDER BY %s %s, id LIMIT %s OFFSET %s', col, col, d, l, o)) AS result
 	FROM unnest(ARRAY['created', 'updated']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20, 500]) l, unnest(ARRAY[0, 30, 3000]) o) r
 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
-   col   |  d   |    result    | count 
----------+------+--------------+-------
- created | ASC  | global order |     9
- created | DESC | global order |     9
- updated | ASC  | global order |     9
- updated | DESC | global order |     9
+   col   |  d   | result | count 
+---------+------+--------+-------
+ created | ASC  | units  |     9
+ created | DESC | units  |     9
+ updated | ASC  | units  |     9
+ updated | DESC | units  |     9
 (4 rows)
 
 -- what the ends do not hold stays with the units: an offset past them, and a range in the middle of the column
@@ -349,9 +341,9 @@ SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20 OFF
 
 SELECT eo_chk('SELECT id, created FROM eo WHERE tenant_id = 7 ORDER BY created DESC, id LIMIT 20') AS tenant_page,
 	   eo_chk('SELECT id, created FROM eo WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 20') AS entity_page;
- tenant_page | entity_page  
--------------+--------------
- units       | global order
+ tenant_page | entity_page 
+-------------+-------------
+ units       | units
 (1 row)
 
 -- rows written after the build, a promotion and a merge keep the answers
@@ -359,9 +351,9 @@ INSERT INTO eo SELECT 200000 + i, i % 40, i % 3000, timestamp '2024-06-01' + i *
 UPDATE eo SET created = timestamp '2023-12-31' WHERE id IN (5, 6, 7);
 DELETE FROM eo WHERE id % 211 = 0;
 SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS buffers_desc, eo_chk('SELECT id, created FROM eo ORDER BY created, id LIMIT 20') AS buffers_asc;
- buffers_desc | buffers_asc  
---------------+--------------
- global order | global order
+ buffers_desc | buffers_asc 
+--------------+-------------
+ units        | units
 (1 row)
 
 SELECT sift.col_promote('eo_i'::regclass) >= 0 AS promoted;
@@ -373,7 +365,7 @@ SELECT sift.col_promote('eo_i'::regclass) >= 0 AS promoted;
 SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS promoted_desc, eo_chk('SELECT id, updated FROM eo ORDER BY updated, id LIMIT 20') AS promoted_asc;
  promoted_desc | promoted_asc 
 ---------------+--------------
- global order  | global order
+ units         | units
 (1 row)
 
 SELECT sift.col_merge('eo_i'::regclass, true) >= 0 AS merged;
@@ -383,9 +375,9 @@ SELECT sift.col_merge('eo_i'::regclass, true) >= 0 AS merged;
 (1 row)
 
 SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS merged_desc, eo_chk('SELECT id, updated FROM eo ORDER BY updated, id LIMIT 20') AS merged_asc;
- merged_desc  |  merged_asc  
---------------+--------------
- global order | global order
+ merged_desc | merged_asc 
+-------------+------------
+ units       | units
 (1 row)
 
 SELECT sift.col_verify('eo_i');

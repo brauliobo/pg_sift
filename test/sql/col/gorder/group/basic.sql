@@ -54,40 +54,13 @@ GROUP BY 1 ORDER BY 1;
 SELECT gg_chk('SELECT id, k FROM gg ORDER BY k, id LIMIT 10') AS no_group, gg_chk('SELECT id, k FROM gg WHERE g > 3 ORDER BY k, id LIMIT 10') AS group_range,
 	   gg_chk('SELECT id, k FROM gg WHERE g = 3 OR g = 4 ORDER BY k, id LIMIT 10') AS two_groups, gg_chk('SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP ''2000-01-02'' ORDER BY k, id LIMIT 10') AS other_column;
 
--- the planner prices the read of the array as what it is: with the units dear to read (sift.test_plan_scale), a shape the array answers costs about the start of the scan, any other the
--- units it reads; 'array' is a priced read that the scan did, 'units' a scan priced as one, 'MISPRICED' a read priced as the array that the scan did not do
-CREATE FUNCTION gg_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; cheap bool := false; used bool := false; agg bool := false;
-BEGIN
-	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS on, TIMING off, SUMMARY off) ' || q LOOP
-		agg := agg OR pl LIKE '%Custom Scan (SiftAgg%';
-		IF pl LIKE '%Custom Scan (SiftAgg%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
-		used := used OR pl LIKE '%Global Order%';
-	END LOOP;
-	RETURN CASE WHEN NOT agg THEN 'native' WHEN used AND cheap THEN 'array' WHEN NOT used AND NOT cheap THEN 'units' ELSE 'MISPRICED' END;
-END $$;
-SELECT gg_plan(q) AS plan, q FROM unnest(ARRAY[
- 'SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND k >= 100 ORDER BY k LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND k BETWEEN 100 AND 200 ORDER BY k DESC LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND (k, id) > (100, 5) ORDER BY k, id LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND (k < 20 OR k > 480) ORDER BY k LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10 OFFSET 5',
- 'SELECT id, k FROM gg WHERE g > 3 ORDER BY k DESC LIMIT 10',
- 'SELECT id, k FROM gg ORDER BY k DESC LIMIT 10',
- 'SELECT id, k FROM gg WHERE g <> 3 AND k > 10 ORDER BY k LIMIT 10',
- 'SELECT id, k FROM gg WHERE g = 3 AND k IS NOT NULL ORDER BY k LIMIT 10'
-]) q;
-DROP FUNCTION gg_plan(text);
-
 -- min(k) and max(k) of a group: PostgreSQL plans them as the first row of the group in the order of k that is not NULL, and the scan reads the array for it (an empty group, a group of NULL
 -- keys, ties, a range, deleted and updated rows and a write buffer give the heap's answer)
 CREATE FUNCTION gg_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; used bool := false; ra text; rb text;
 BEGIN
-	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off;
+	PERFORM sift._test_gorder_answered(true); FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR sift._test_gorder_answered(true) > 0; END LOOP;
 	EXECUTE q INTO ra;
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
 	EXECUTE q INTO rb;

@@ -150,9 +150,9 @@ BEGIN
 END $$;
 SELECT rg_plan('SELECT id FROM rg WHERE b BETWEEN 1000 AND 1200') AS narrow_cover, rg_plan('SELECT * FROM rg WHERE b BETWEEN 1000 AND 1200') AS narrow_rows,
 	   rg_plan('SELECT * FROM rg WHERE b BETWEEN 1000 AND 1200 LIMIT 10') AS narrow_limit;
-        narrow_cover         |         narrow_rows         |           narrow_limit            
------------------------------+-----------------------------+-----------------------------------
- Index Scan using rg_t on rg | Index Scan using rg_t on rg | Limit Index Scan using rg_t on rg
+           narrow_cover           |      narrow_rows       |           narrow_limit            
+----------------------------------+------------------------+-----------------------------------
+ Index Only Scan using rg_t on rg | Bitmap Heap Scan on rg | Limit Index Scan using rg_t on rg
 (1 row)
 
 -- dead rows: the units that hold them are read instead of the addresses of their rows, and the rows of a new key in a reused address are the heap's

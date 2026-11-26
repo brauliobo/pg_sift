@@ -37,18 +37,18 @@ SELECT col, result, count(*) FROM (
 	SELECT col, ak_chk(format('SELECT id, %s FROM ak WHERE ent_id = %s ORDER BY %s %s, id LIMIT %s', col, e, col, d, l)) AS result
 	FROM unnest(ARRAY['d', 'created', 'score']) col, unnest(ARRAY[7, 399, 1000]) e, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20]) l) r
 GROUP BY 1, 2 ORDER BY 1, 2;
-   col   |    result    | count 
----------+--------------+-------
- created | global order |    12
- d       | global order |    12
- score   | global order |    12
+   col   | result | count 
+---------+--------+-------
+ created | units  |    12
+ d       | units  |    12
+ score   | units  |    12
 (3 rows)
 
 -- a timestamp in heap order has the second order and, beside it, the ends of its plain order: the page of the whole table reads the ends
 SELECT ak_chk('SELECT id, created FROM ak ORDER BY created DESC, id LIMIT 20') AS whole_table_desc, ak_chk('SELECT id, created FROM ak ORDER BY created, id LIMIT 20 OFFSET 30') AS whole_table_asc;
  whole_table_desc | whole_table_asc 
 ------------------+-----------------
- global order     | global order
+ units            | units
 (1 row)
 
 -- rows written after the build, a promotion and a merge keep the answers
@@ -57,9 +57,9 @@ UPDATE ak SET d = date '2023-12-31' WHERE id IN (5, 6, 7);
 DELETE FROM ak WHERE id % 211 = 0;
 SELECT ak_chk('SELECT id, d FROM ak WHERE ent_id = 7 ORDER BY d DESC, id LIMIT 20') AS buffers,
 	   ak_chk('SELECT id, score FROM ak WHERE ent_id = 7 ORDER BY score, id LIMIT 20') AS buffers_int;
-   buffers    | buffers_int  
---------------+--------------
- global order | global order
+ buffers | buffers_int 
+---------+-------------
+ units   | units
 (1 row)
 
 SELECT sift.col_promote('ak_i'::regclass) >= 0 AS promoted;
@@ -76,9 +76,9 @@ SELECT sift.col_merge('ak_i'::regclass, true) >= 0 AS merged;
 
 SELECT ak_chk('SELECT id, d FROM ak WHERE ent_id = 7 ORDER BY d DESC, id LIMIT 20') AS promoted,
 	   ak_chk('SELECT id, score FROM ak WHERE ent_id = 7 ORDER BY score, id LIMIT 20') AS promoted_int;
-   promoted   | promoted_int 
---------------+--------------
- global order | global order
+ promoted | promoted_int 
+----------+--------------
+ units    | units
 (1 row)
 
 SELECT sift.col_verify('ak_i');
@@ -125,9 +125,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak3 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS few_rows;
-   few_rows   
---------------
- global order
+ few_rows 
+----------
+ units
 (1 row)
 
 CREATE TABLE ak4 (id int, ent_id int, created timestamp, score int, pad text);
@@ -157,9 +157,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'ak5_i';
 
 SELECT ak_chk('SELECT id, created FROM ak5 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS cut_latest,
 	   ak_chk('SELECT id, created FROM ak5 WHERE ent_id = 7 ORDER BY created, id LIMIT 20') AS cut_page;
-  cut_latest  |   cut_page   
---------------+--------------
- global order | global order
+ cut_latest | cut_page 
+------------+----------
+ units      | units
 (1 row)
 
 -- a filter on the column the units are cut by leaves a few units: the page of a tenant reads them, not the walk of the order array that fetches a heap row for each entry
@@ -177,9 +177,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'ak6_i';
 
 SELECT ak_chk('SELECT id, created FROM ak6 WHERE tenant_id = 5 ORDER BY created DESC, id LIMIT 20') AS tenant_page,
 	   ak_chk('SELECT id, created FROM ak6 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 20') AS entity_page;
- tenant_page | entity_page  
--------------+--------------
- units       | global order
+ tenant_page | entity_page 
+-------------+-------------
+ units       | units
 (1 row)
 
 DROP TABLE ak, ak1, ak2, ak3, ak4, ak5, ak6;

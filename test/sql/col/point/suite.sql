@@ -268,6 +268,7 @@ DECLARE
 	got text;
 	want text;
 BEGIN
+	SET LOCAL sift.agg_exact_float = on;
 	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO j;
 	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') THEN 'sift' ELSE 'normal' END;
 	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q || ') t' INTO got;

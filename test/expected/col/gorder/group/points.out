@@ -53,9 +53,9 @@ INSERT INTO qs VALUES ('SELECT id, g, created FROM @ WHERE g BETWEEN 7 AND 9'), 
 	('SELECT id, g, created FROM @ WHERE g > 300 AND g < 1000'), ('SELECT id, g, created FROM @ WHERE g BETWEEN 1000 AND 2000'), ('SELECT id, g, created FROM @ WHERE g > 9 AND g < 9'),
 	('SELECT id, g, created FROM @ WHERE g BETWEEN 7 AND 9 AND score < 500'), ('SELECT id, g, created FROM @ WHERE g BETWEEN 7 AND 9 AND created IS NULL');
 SELECT plan_of('SELECT id, g, created FROM t WHERE g = 7') AS equality_plan;
- equality_plan 
----------------
- Index Scan
+  equality_plan  
+-----------------
+ Index Only Scan
 (1 row)
 
 -- an index scan of the planner's own choice or forced: the IN list reads the rows of its groups, not the units

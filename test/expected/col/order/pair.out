@@ -163,7 +163,7 @@ SELECT n, q, (pa_check(q)).* FROM pa_q ORDER BY n;
  27 | SELECT g, k FROM pa WHERE g IN (3, 5, 17) ORDER BY g, k                                      |   900 | t     |             1 |     0
  28 | SELECT g, k FROM pa WHERE g <> 17 ORDER BY g DESC, k DESC                                    | 11700 | t     |             1 |     0
  29 | SELECT g, k FROM pa WHERE g = 17 ORDER BY g, k                                               |   300 | t     |             1 |     0
- 30 | SELECT g, k FROM pa WHERE g = 17::int8 ORDER BY k                                            |   300 | t     |             0 |     1
+ 30 | SELECT g, k FROM pa WHERE g = 17::int8 ORDER BY k                                            |   300 | t     |             1 |     1
  31 | SELECT g, k FROM pa WHERE k % 7 = 0 ORDER BY g, k LIMIT 50 OFFSET 20                         |    50 | t     |             1 |     0
  32 | SELECT g, k FROM pa ORDER BY g, k OFFSET 5000                                                |  7000 | t     |             1 |     0
  33 | SELECT g, k FROM pa ORDER BY g DESC, k DESC LIMIT 100                                        |   100 | t     |             1 |     0
@@ -223,7 +223,7 @@ SELECT n, q, (pa_check(q)).* FROM pa_q ORDER BY n;
  27 | SELECT g, k FROM pa WHERE g IN (3, 5, 17) ORDER BY g, k                                      |   608 | t     |             1 |     0
  28 | SELECT g, k FROM pa WHERE g <> 17 ORDER BY g DESC, k DESC                                    | 11501 | t     |             1 |     0
  29 | SELECT g, k FROM pa WHERE g = 17 ORDER BY g, k                                               |   299 | t     |             1 |     0
- 30 | SELECT g, k FROM pa WHERE g = 17::int8 ORDER BY k                                            |   299 | t     |             0 |     1
+ 30 | SELECT g, k FROM pa WHERE g = 17::int8 ORDER BY k                                            |   299 | t     |             1 |     1
  31 | SELECT g, k FROM pa WHERE k % 7 = 0 ORDER BY g, k LIMIT 50 OFFSET 20                         |    50 | t     |             1 |     0
  32 | SELECT g, k FROM pa ORDER BY g, k OFFSET 5000                                                |  6800 | t     |             1 |     0
  33 | SELECT g, k FROM pa ORDER BY g DESC, k DESC LIMIT 100                                        |   100 | t     |             1 |     0
@@ -295,7 +295,7 @@ SELECT n, q, (pa_check(q)).* FROM pa_q ORDER BY n;
  27 | SELECT g, k FROM pa WHERE g IN (3, 5, 17) ORDER BY g, k                                      |   608 | t     |             1 |     0
  28 | SELECT g, k FROM pa WHERE g <> 17 ORDER BY g DESC, k DESC                                    | 11501 | t     |             1 |     0
  29 | SELECT g, k FROM pa WHERE g = 17 ORDER BY g, k                                               |   299 | t     |             1 |     0
- 30 | SELECT g, k FROM pa WHERE g = 17::int8 ORDER BY k                                            |   299 | t     |             0 |     1
+ 30 | SELECT g, k FROM pa WHERE g = 17::int8 ORDER BY k                                            |   299 | t     |             1 |     1
  31 | SELECT g, k FROM pa WHERE k % 7 = 0 ORDER BY g, k LIMIT 50 OFFSET 20                         |    50 | t     |             1 |     0
  32 | SELECT g, k FROM pa ORDER BY g, k OFFSET 5000                                                |  6800 | t     |             1 |     0
  33 | SELECT g, k FROM pa ORDER BY g DESC, k DESC LIMIT 100                                        |   100 | t     |             1 |     0

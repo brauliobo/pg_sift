@@ -76,17 +76,17 @@ CREATE FUNCTION tp_range(t text) RETURNS TABLE (result text, n bigint) LANGUAGE 
 $$ SELECT tp_chk(format('SELECT %1$s FROM %2$s WHERE %1$s >= ''%3$s'' AND %1$s < ''%4$s'' ORDER BY %1$s LIMIT 30 OFFSET %5$s', c, t, lo, hi, o)), 1::bigint
    FROM unnest(ARRAY['a', 'b']) c, unnest(ARRAY['a', 'Cust 3', 'Cust a', 'É']) lo, unnest(ARRAY['Cust 4', 'Cust b', 'z']) hi, unnest(ARRAY[0, 40]) o $$;
 SELECT 'strings' AS block, result, count(*) FROM tp_all('ts') GROUP BY 2 UNION ALL SELECT 'codes', result, count(*) FROM tp_all('tp') GROUP BY 2 ORDER BY 1, 2;
-  block  |    result    | count 
----------+--------------+-------
- codes   | global order |    72
- strings | global order |    72
+  block  | result | count 
+---------+--------+-------
+ codes   | units  |    72
+ strings | units  |    72
 (2 rows)
 
 SELECT 'strings' AS block, result, count(*) FROM tp_range('ts') GROUP BY 2 UNION ALL SELECT 'codes', result, count(*) FROM tp_range('tp') GROUP BY 2 ORDER BY 1, 2;
-  block  |    result    | count 
----------+--------------+-------
- codes   | global order |    48
- strings | global order |    48
+  block  | result | count 
+---------+--------+-------
+ codes   | units  |    48
+ strings | units  |    48
 (2 rows)
 
 -- one table with both: the segments written with the strings, the rows of the write buffer, and the segments written with the codes, merged and rewritten
@@ -110,17 +110,17 @@ SELECT format, count(*) AS segments FROM sift.col_segments('tm_i') WHERE kind = 
 INSERT INTO tm (id, a, b, k) SELECT 30000 + i, tp_str(i * 5), tp_str(i * 17), i % 100 FROM generate_series(1, 300) i;
 ANALYZE tm;
 SELECT result, count(*) FROM tp_all('tm') GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    72
+ result | count 
+--------+-------
+ units  |    72
 (1 row)
 
 DELETE FROM tm WHERE id % 7 = 0;
 UPDATE tm SET a = 'U' || a WHERE id % 11 = 0;
 SELECT result, count(*) FROM tp_all('tm') GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    72
+ result | count 
+--------+-------
+ units  |    72
 (1 row)
 
 SELECT sift.col_merge('tm_i', true) >= 0 AS merged;
@@ -137,9 +137,9 @@ SELECT format, count(*) AS segments FROM sift.col_segments('tm_i') WHERE kind = 
 
 VACUUM tm;
 SELECT result, count(*) FROM tp_all('tm') GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    72
+ result | count 
+--------+-------
+ units  |    72
 (1 row)
 
 SELECT sift.col_verify('tm_i');
@@ -156,9 +156,9 @@ SELECT format, count(*) AS segments FROM sift.col_segments('tm_i') WHERE kind = 
 (1 row)
 
 SELECT result, count(*) FROM tp_all('tm') GROUP BY 1 ORDER BY 1;
-    result    | count 
---------------+-------
- global order |    72
+ result | count 
+--------+-------
+ units  |    72
 (1 row)
 
 SELECT sift.col_verify('tm_i');

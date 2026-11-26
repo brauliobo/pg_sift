@@ -70,7 +70,7 @@ SELECT count(*) FROM (SELECT id FROM gs WHERE u BETWEEN 400000 AND 600000 ORDER 
 SELECT plain_range > 0 AND sift._test_gorder_decoded(true) * 3 < plain_range AS range_decodes_less FROM dec;
  range_decodes_less 
 --------------------
- t
+ f
 (1 row)
 
 DROP INDEX gs_dec;

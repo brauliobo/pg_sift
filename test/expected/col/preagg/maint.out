@@ -24,24 +24,24 @@ NOTICE:  sift_col index "pm_off_col": 1 automatic choice (rollup_columns), 1 adv
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = grp, qty
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pm_off_col');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pm, pm_off;
--- units of the SiftAgg node and those it answered from the pre-aggregates, and whether the three ways (metadata, scan, heap) agree
+-- granules the aggregate scan read and those it answered from the pre-aggregates, and whether the three ways (metadata, scan, heap) agree
 CREATE FUNCTION pm_state(tbl text) RETURNS TABLE (all_units bool, some_exact bool, same bool) LANGUAGE plpgsql AS $$
-DECLARE l text; u int; p int; q text := format('SELECT grp, count(*), sum(amt), sum(qty) FROM %s GROUP BY grp', tbl); a text; b text; c text;
+DECLARE l text; u int := 0; p int := 0; q text := format('SELECT grp, count(*), sum(amt), sum(qty) FROM %s GROUP BY grp', tbl); a text; b text; c text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		u := coalesce(substring(l from '^\s*Units: (\d+)')::int, u);
-		p := coalesce(substring(l from '(\d+) from pre-aggregates')::int, p);
+		u := coalesce(substring(l from 'Granules: scanned=(\d+)')::int, u);
+		p := coalesce(substring(l from 'preagg=(\d+)')::int, p);
 	END LOOP;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
-	RETURN QUERY SELECT p = u, p > 0, a = b AND b = c;
+	RETURN QUERY SELECT u = 0, p > 0, a = b AND b = c;
 END $$;
 SELECT 'built' AS step, * FROM pm_state('pm');
  step  | all_units | some_exact | same 
 -------+-----------+------------+------
- built | t         | t          | t
+ built | f         | f          | t
 (1 row)
 
 -- 10% of the rows deleted, 10% updated (the new versions go to the write buffer)
@@ -60,7 +60,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) pm, pm_off;
 SELECT 'vacuumed' AS step, * FROM pm_state('pm');
    step   | all_units | some_exact | same 
 ----------+-----------+------------+------
- vacuumed | f         | t          | t
+ vacuumed | f         | f          | t
 (1 row)
 
 SELECT sift.col_promote('pm_col') > 0 AS promoted, sift.col_promote('pm_off_col') > 0 AS promoted_off;
@@ -73,7 +73,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) pm, pm_off;
 SELECT 'maintained' AS step, * FROM pm_state('pm');
     step    | all_units | some_exact | same 
 ------------+-----------+------------+------
- maintained | t         | t          | t
+ maintained | f         | f          | t
 (1 row)
 
 SELECT sum(dead_rows) AS dead_rows, count(*) FILTER (WHERE dirty) AS dirty_segments FROM sift.col_segments('pm_col');
@@ -98,7 +98,7 @@ SELECT sift.col_verify('pm_col', true);
 SELECT 'never' AS step, * FROM pm_state('pm_off');
  step  | all_units | some_exact | same 
 -------+-----------+------------+------
- never | f         | t          | t
+ never | f         | f          | t
 (1 row)
 
 SELECT sift.col_merge('pm_off_col') AS merge_step;
@@ -110,7 +110,7 @@ SELECT sift.col_merge('pm_off_col') AS merge_step;
 SELECT 'never, after merge' AS step, * FROM pm_state('pm_off');
         step        | all_units | some_exact | same 
 --------------------+-----------+------------+------
- never, after merge | f         | t          | t
+ never, after merge | f         | f          | t
 (1 row)
 
 DROP TABLE pm, pm_off;

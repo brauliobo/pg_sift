@@ -39,9 +39,9 @@ SELECT sift.col_verify('gm_i');
 (1 row)
 
 SELECT * FROM gm_shapes();
-     top      |   in_list    | measure 
---------------+--------------+---------
- global order | global order | units
+  top  | in_list | measure 
+-------+---------+---------
+ units | units   | units
 (1 row)
 
 -- the hint: order_array_group = 'auto: amount' keeps the column a candidate (the weighted formula still decides), and the second order is beside the plain one
@@ -56,9 +56,9 @@ SELECT opt('gm_i', 'order_array_columns') AS order_arrays, opt('gm_i', 'order_ar
 (1 row)
 
 SELECT * FROM gm_shapes();
-     top      |   in_list    |   measure    
---------------+--------------+--------------
- global order | global order | global order
+  top  | in_list | measure 
+-------+---------+---------
+ units | units   | units
 (1 row)
 
 -- what the build wrote is the hint of the next REINDEX (an index of an older release keeps its second order)
@@ -114,9 +114,9 @@ SELECT opt('ge_auto', 'order_array_columns') AS order_arrays, opt('ge_auto', 'or
 (1 row)
 
 SELECT sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM ge WHERE set_id = 7 ORDER BY ts DESC, id LIMIT 20') AS entity;
-    entity    
---------------
- global order
+ entity 
+--------
+ units
 (1 row)
 
 SELECT regexp_replace(value, '^.*\(second order by ', '(second order by ') AS chosen_by FROM sift.index_choices('ge_auto') WHERE choice = 'order_array_columns';
@@ -225,9 +225,9 @@ SELECT regexp_replace(value, '^.*\(second order by ', '(second order by ') AS ch
 CREATE FUNCTION gm_shapes() RETURNS TABLE (measure text) LANGUAGE sql AS $$
 	SELECT sift_helpers.topn_check_ordered_rows('SELECT id, ts FROM gm WHERE amount = 7 ORDER BY ts DESC, id LIMIT 20') $$;
 SELECT * FROM gm_shapes();
-   measure    
---------------
- global order
+ measure 
+---------
+ units
 (1 row)
 
 DROP INDEX gm_bt;
