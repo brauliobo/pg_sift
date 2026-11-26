@@ -80,7 +80,7 @@ view_datum(Oid typid, const ColView *cv, int r, Datum *out, bool *isnull)
 }
 
 static void
-keep_row(HybridState *st, const SiftHybridBatch *b, int r)
+keep_row(HybridState *st, const SiftHybridBatch *b, int r, bool full)
 {
 	const ColView *views = b->cols;
 	HybridRow  *row;
@@ -94,6 +94,7 @@ keep_row(HybridState *st, const SiftHybridBatch *b, int r)
 	row->key = b->tid[r];
 	row->score = b->score ? b->score[r] : 0;
 	row->need_heap = st->fetch_heap || (b->maybe != NULL && (b->maybe[r / 64] >> (r % 64) & 1));
+	row->need_heap |= full;
 	if (row->need_heap)
 		return;
 	row->vals = MemoryContextAlloc(st->chunk_cxt, st->ncols * sizeof(Datum));
@@ -108,12 +109,21 @@ keep_row(HybridState *st, const SiftHybridBatch *b, int r)
 		}
 }
 
+/* the values of the chunk's rows take the other half of work_mem: past it a row is read from the heap (the size is read every 64 rows) */
 static void
 row_sink(void *arg, const SiftHybridBatch *b)
 {
+	HybridState *st = arg;
+	bool		full = false;
+
 	for (int r = 0; r < b->n; r++)
+	{
+		if ((r & 63) == 0 && !full)
+			/* check-complexity: allow mem-alloc-hot: a stride of 64 rows over a context of no children */
+			full = MemoryContextMemAllocated(st->chunk_cxt, false) > (Size) work_mem * 1024 / 2;
 		if (b->live[r / 64] >> (r % 64) & 1)
-			keep_row(arg, b, r);
+			keep_row(st, b, r, full);
+	}
 }
 
 static int
@@ -398,19 +408,24 @@ next_a(HybridState *st, TupleTableSlot *slot)
 static TupleTableSlot *
 next_b(HybridState *st, TupleTableSlot *slot)
 {
-	const HybridRow *row;
-	ItemPointerData tid;
+	for (;;)
+	{
+		const HybridRow *row;
+		ItemPointerData tid;
 
-	if (st->pos == st->nrows)
-		fill_chunk(st);
-	if (st->pos == st->nrows)
-		return NULL;
-	row = &st->rows[st->pos++];
-	tid = sift_hybrid_tid_of(row->key);
-	if (row->need_heap && !sift_vis_fetch(&st->vis, &tid, st->heapslot))
-		return next_b(st, slot);
-	store_row(st, slot, row->need_heap ? NULL : row, &tid, row->score);
-	return slot;
+		CHECK_FOR_INTERRUPTS();
+		if (st->pos == st->nrows)
+			fill_chunk(st);
+		if (st->pos == st->nrows)
+			return NULL;
+		row = &st->rows[st->pos++];
+		tid = sift_hybrid_tid_of(row->key);
+		if (!row->need_heap || sift_vis_fetch(&st->vis, &tid, st->heapslot))
+		{
+			store_row(st, slot, row->need_heap ? NULL : row, &tid, row->score);
+			return slot;
+		}
+	}
 }
 
 static TupleTableSlot *
@@ -419,11 +434,14 @@ next_or_key(HybridState *st, TupleTableSlot *slot)
 	SiftKey		key;
 
 	while (BufFileReadMaybeEOF(st->or_keys, &key, sizeof(key), true))
+	{
+		CHECK_FOR_INTERRUPTS();
 		if (sift_hybrid_heap_check(st, key, true))
 		{
 			store_row(st, slot, NULL, &st->fetched_tid, 0);
 			return slot;
 		}
+	}
 	st->or_matches = true;
 	return NULL;
 }
@@ -439,6 +457,7 @@ next_or_match(HybridState *st, TupleTableSlot *slot)
 		return next_a(st, slot);
 	while (sift_match_keys_next(&st->matches, &key, &score))
 	{
+		CHECK_FOR_INTERRUPTS();
 		tid = sift_hybrid_tid_of(key);
 		if (sift_hybrid_rest_row(st, &tid))
 		{

@@ -94,6 +94,22 @@ RESET plan_cache_mode;
 SET sift.enable_agg = off;
 SELECT sc_node('SELECT category, round(avg(sift.score(ctid))::numeric, 4) FROM sc_docs WHERE body @@> ''common'' GROUP BY category') AS agg_off;
 RESET sift.enable_agg;
+-- the values a chunk of direction B keeps of its rows take half of work_mem: past it a row is read from the heap (labels of 1.2 kB, 1 MB of work_mem)
+SET client_min_messages = warning;
+CREATE TABLE hw (id int PRIMARY KEY, amount int NOT NULL, label text NOT NULL, body text NOT NULL) WITH (autovacuum_enabled = off);
+INSERT INTO hw SELECT i, i % 100, md5(i::text) || repeat('l', 1200), CASE WHEN i % 4 = 0 THEN 'rare ' ELSE '' END || 'common tok' || i % 11 FROM generate_series(1, 40000) i;
+CREATE INDEX hw_text ON hw USING sift (body);
+CREATE INDEX hw_col ON hw USING sift_col (id, amount, label);
+VACUUM (FREEZE, ANALYZE) hw;
+RESET client_min_messages;
+CREATE FUNCTION chunk_mem() RETURNS bigint LANGUAGE sql VOLATILE AS $$SELECT coalesce(sum(total_bytes), 0)::bigint FROM pg_backend_memory_contexts WHERE name = 'sift hybrid chunk'$$;
+SET work_mem = '1MB';
+SELECT sc_node('SELECT id, label FROM hw WHERE body @@> ''rare'' AND amount < 90') AS chunk_node;
+SELECT count(*), sum(length(label)), max(CASE WHEN id % 200 = 0 THEN chunk_mem() END) <= 1024 * 1024 AS bounded
+	FROM (SELECT id, label FROM hw WHERE body @@> 'rare' AND amount < 90 OFFSET 0) s;
+RESET work_mem;
+DROP FUNCTION chunk_mem();
+DROP TABLE hw;
 DROP FUNCTION sc_cmp(text, text), sc_node(text), sc_prop(text, text), sc_same(text);
 DROP TABLE sc_docs, sc_q;
 DROP EXTENSION pg_sift;
