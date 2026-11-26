@@ -28,7 +28,7 @@ $primary->init(allows_streaming => 1);
 $primary->enable_archiving;
 $primary->append_conf('postgresql.conf', join("\n",
 	"shared_preload_libraries = 'pg_sift'", "sift.test_create_format1 = off", "wal_consistency_checking = 'all'", "autovacuum = off",
-	"shared_buffers = 64MB", "restart_after_crash = off"));
+	"shared_buffers = 64MB", "wal_compression = on", "restart_after_crash = off"));
 $primary->start;
 install_sift_test($primary, 'the format major 2 structures are exercised by testing functions');
 
