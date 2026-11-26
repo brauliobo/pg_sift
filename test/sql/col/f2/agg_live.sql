@@ -138,7 +138,7 @@ SELECT same(q) FROM unnest(ARRAY[
 DROP INDEX mix_v2;
 SELECT same('SELECT g, count(*), sum(n) FROM mix GROUP BY g');
 
--- 10. A join of the facts with the pairs of a scope of the index (src/col/f2/agg/scope/scope.c): the cube of the scope key, read from the summary of the index without a row of the facts, when
+-- 10. A join of the facts with the pairs of a scope of the index (src/agg/scope/plan.c): the cube of the scope key, read from the summary of the index without a row of the facts, when
 -- the summary counts exactly what the heap shows the snapshot (the rows of its deletion vectors taken out); the join as the planner priced it, the child of the node, when it does not (a row
 -- of this transaction or one not yet in the summary, a pair that changed, a window that is not months). The first word says the answers agree, the second that the plan is the node's, the third
 -- where it read.

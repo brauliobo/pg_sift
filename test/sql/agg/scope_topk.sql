@@ -1,4 +1,4 @@
--- ORDER BY a leaf DESC LIMIT n over the facts of a scope key (src/col/f2/agg/scope/scope.c, scope_v6_run.c): the newest rows of the key are the ring of the summary the index of format major 2 keeps
+-- ORDER BY a leaf DESC LIMIT n over the facts of a scope key (src/agg/scope/plan.c, scope_v6_run.c): the newest rows of the key are the ring of the summary the index of format major 2 keeps
 -- (col/f2/cube/topk.c), read without a row of the facts when the summary counts exactly what the heap shows the snapshot, and the join sorted, the child of the node, when it does not. Each
 -- line is a group of statements: whether the node's answer and the heap's agree (the ties of the order leaf may pick other rows: the order leaves are compared and every row must be a row of
 -- the join), what the node read (ring, or join) and the scans of the table the plan ran.

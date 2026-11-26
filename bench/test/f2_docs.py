@@ -57,10 +57,11 @@ class ReadmeRows(unittest.TestCase):
             self.assertIn('srcset="docs/charts/readme-%s-dark.svg"' % slug, text)
             self.assertIn('src="docs/charts/readme-%s-light.svg"' % slug, text)
         self.assertEqual(text.count('<details open>'), 1)
-        self.assertEqual(text.count('<details>'), 5)
-        self.assertEqual(text.count('</details>'), 6)
-        self.assertEqual(text.count('</summary>\n\n'), 6)
-        self.assertEqual(text.count('\n\n</details>'), 6)
+        details = len(readme.SECTIONS) - 1
+        self.assertEqual(text.count('<details>'), details - 1)
+        self.assertEqual(text.count('</details>'), details)
+        self.assertEqual(text.count('</summary>\n\n'), details)
+        self.assertEqual(text.count('\n\n</details>'), details)
 
     def test_without_results_the_rows_are_the_committed_baseline(self):
         text = self.render(lambda d: None)

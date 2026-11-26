@@ -673,12 +673,12 @@ src/col/f2/agg/scan_arms.c	src/col/f2/f2_v6_scan_arms.c
 src/col/f2/agg/scan_fill.c	src/col/f2/f2_v6_scan_fill.c	
 src/col/f2/agg/scan_int.h	src/col/f2/f2_v6_scan_int.h	
 src/col/f2/agg/scan_table.c	src/col/f2/f2_v6_scan_table.c	
-src/col/f2/agg/scope/scope.c	src/col/f2/f2_v6_scope.c	
+src/agg/scope/plan.c	src/col/f2/f2_v6_scope.c	
 src/col/f2/agg/scope/int.h	src/col/f2/f2_v6_scope_int.h	
-src/col/f2/agg/scope/match.c	src/col/f2/f2_v6_scope_match.c	
-src/col/f2/agg/scope/match.h	src/col/f2/f2_v6_scope_match.h	
+src/agg/scope/match.c	src/col/f2/f2_v6_scope_match.c	
+src/agg/scope/scope.h	src/col/f2/f2_v6_scope_match.h	
 src/col/f2/agg/scope/run.c	src/col/f2/f2_v6_scope_run.c	
-src/col/f2/agg/scope/topk.c	src/col/f2/f2_v6_scope_topk.c	
+src/agg/scope/plan.c	src/col/f2/f2_v6_scope_topk.c	
 src/col/f2/agg/scope/topn.c	src/col/f2/f2_v6_scope_topn.c	
 src/col/f2/agg/source.c	src/col/f2/f2_v6_source.c	
 src/col/f2/agg/topn.c	src/col/f2/f2_v6_topn.c	
