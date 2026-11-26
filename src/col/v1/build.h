@@ -96,10 +96,8 @@ extern void sift_colb_peak_note(void);
 
 #ifdef SIFT_TESTING
 /*
- * Parallel workers the last sift_col build of this session launched; the superblock (1 = the first) whose participant fails (0 = none);
- * kB the writer of a segment holds before the segment is cut (0 = by maintenance_work_mem)
+ * The superblock (1 = the first) whose participant fails (0 = none); kB the writer of a segment holds before the segment is cut (0 = by maintenance_work_mem)
  */
-extern PGDLLIMPORT int sift_test_col_workers;
 extern PGDLLIMPORT int sift_test_col_build_peak_kb;	/* kB of memory (contexts of the backend) the builds of the last statement of this session held above what it started with, at their peak */
 extern PGDLLIMPORT int sift_test_col_build_table_buffers;	/* the buffers of the table (any fork) the last build of this session accessed itself, not the ones PostgreSQL accesses after it */
 extern void sift_colb_peak_begin(void);

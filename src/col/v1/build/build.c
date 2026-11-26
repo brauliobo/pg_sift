@@ -22,8 +22,6 @@
 
 #ifdef SIFT_TESTING
 
-int			sift_test_col_workers = 0;
-
 int			sift_test_col_fail_sb = 0;
 
 int			sift_test_col_gap_blocks = -1;
@@ -203,7 +201,6 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);
 	sift_scope_precheck(heap, index);
 #ifdef SIFT_TESTING
-	sift_test_col_workers = 0;
 	sift_test_col_merge_slices = 0;
 	sift_colb_peak_begin();
 #endif

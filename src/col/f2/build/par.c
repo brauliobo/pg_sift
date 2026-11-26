@@ -121,6 +121,9 @@ sift_f2_build_par(Relation heap, Relation index, IndexInfo *info, SiftF2Build *l
 		return false;
 	sift_f2_build_share(leader, hand_of(ldr->parts), &sh->gens);
 	await_workers(sh, ldr->pcxt->nworkers_launched);
+#ifdef SIFT_TESTING
+	sift_test_col_workers = ldr->pcxt->nworkers_launched;
+#endif
 	reltuples = sift_f2_build_scan(leader, info, sift_table_beginscan_parallel(heap, SCAN_OF(sh)), true);
 	sift_par_wait(ldr);
 	sift_f2_build_commit_hands(leader, ldr->parts, sh->nparticipants);

@@ -1,6 +1,6 @@
 # CREATE INDEX of a sift_col index reports the heap blocks and the rows it has done in pg_stat_progress_create_index, serial and with
 # workers: when the scan is over (the build waits to enter the write phase for the advisory lock sift.test_phase_gate + 3, which the other
-# session holds) every block of the table and every row is counted, whichever participant did them.
+# session holds) the build reports the write phase of its format, and every block of the table and every row is counted, whichever participant did them.
 # requires: build gates
 
 setup
@@ -25,7 +25,7 @@ step s1w	{ SELECT current_setting('sift.test_col_workers')::int > 0 AS workers_l
 
 session s2
 step s2h	{ SELECT pg_advisory_lock(1003); }
-step s2p	{ SELECT phase, blocks_total > 0 AS has_blocks, blocks_done = blocks_total AS all_blocks, tuples_done = 60000 AS all_rows
+step s2p	{ SELECT phase IN ('building index: writing segments', 'building index: writing parts') AS writing, blocks_total > 0 AS has_blocks, blocks_done = blocks_total AS all_blocks, tuples_done = 60000 AS all_rows
 			  FROM pg_stat_progress_create_index WHERE relid = 'iso_cbp'::regclass; }
 step s2r	{ SELECT pg_advisory_unlock(1003); }
 

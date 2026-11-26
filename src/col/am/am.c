@@ -76,12 +76,19 @@ ops_for_build(Relation index)
 	return ops;
 }
 
+#ifdef SIFT_TESTING
+int			sift_test_col_workers = 0;
+#endif
+
 static IndexBuildResult *
 route_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *result;
 	bool		format1 = format1_only(index);
 
+#ifdef SIFT_TESTING
+	sift_test_col_workers = 0;
+#endif
 	if (format1)
 		sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
 	PG_TRY();

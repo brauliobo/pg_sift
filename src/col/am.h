@@ -546,6 +546,7 @@ extern void sift_col_maint_init(void);
  * can change what the scan has read and not yet read: after open, after a unit is loaded, between the all-visible mask and the liveness,
  * before the heap checks. Widens the races deterministically in place of host load. */
 #ifdef SIFT_TESTING
+extern PGDLLIMPORT int sift_test_col_workers;	/* sift.test_col_workers: the parallel workers the last sift_col build of this session launched, in either format */
 extern PGDLLIMPORT int sift_test_col_jitter_us;
 extern PGDLLIMPORT bool sift_test_col_verify_inval;	/* sift.test_col_verify_inval: sift.col_verify's heap check invalidates the index's relcache entry at every tuple (and clobbers the cached state it held) */
 extern PGDLLIMPORT int sift_test_col_log_max_read;	/* sift.test_col_log_max_read: the newest column format whose tombstone log is opened (0 = the build's own); a newer log is refused */
