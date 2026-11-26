@@ -5,15 +5,14 @@
 # of the column source as the normal plan computes them, and the space stays bounded (the sweep reclaims
 # what the crash orphaned). The weight leaf holds numbers among strings, booleans, objects, arrays and JSON nulls (overflow values with their
 # JSON types in the chunks) and some documents lack it: jsonb_typeof filters (=, <>, 'null', IS NULL), a group key and FILTERs of the column source
-# return what the heap returns. SIFT_COL_CRASH_ITERS (default 40, 4 quick).
+# return what the heap returns. It runs on both formats: Format 1 compares the tuple ids its segments hold and ends in one immutable segment, Format 2 promotes the slab, compares the visible rows its
+# parts hold with the heap's and ends with no maintenance due. SIFT_COL_CRASH_ITERS (default 40, 4 quick).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 . "${SIFT_REPO:?}/test/t/lib/col.bash"
 
 ITERS=$(knob SIFT_COL_CRASH_ITERS 40 4)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
-plan $((ITERS + 6))
-node_init crash 1 "sift.test_create_format1 = on
-checkpoint_timeout = 30s
+node_init crash 1 "checkpoint_timeout = 30s
 max_wal_size = 256MB
 autovacuum = off"
 node_start crash || bail "start failed"
@@ -26,6 +25,8 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 		WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
 			preagg = 'cube(tenant_id: qty, price; status: qty) rollup(doc.items[].category: doc.items[].qty)')" >/dev/null || bail "setup failed"
 ok "setup"
+FORMAT=$(sql crash "SELECT format_major FROM sift.status('o_col')")
+plan $((ITERS + 5 + (FORMAT == 1 ? 1 : 2)))
 check "the type filter plans as an aggregate scan" test "$(sql crash "SET seq_page_cost = 10000" "EXPLAIN (COSTS OFF) SELECT count(*) FROM orders WHERE jsonb_typeof(doc->'weight') = 'number'" | grep -c SiftAgg)" == 1
 
 D=$(dir crash)
@@ -50,9 +51,28 @@ EOF
 echo "CHECKPOINT;" >"$D/ckpt.sql"
 FILES=(-f "$D/ins.sql@40" -f "$D/upd.sql@10" -f "$D/del.sql@5" -f "$D/vac.sql@1" -f "$D/maint.sql@2" -f "$D/ckpt.sql@1")
 
-VERIFY="SELECT sift.col_verify('o_col', true), (SELECT count(*) FROM sift._test_col_tids('o_col', '')) = (SELECT count(*) FROM orders),
-	(SELECT count(*) FROM sift._test_col_tids('o_col', '0:lt:10;1:eq:paid')) = (SELECT count(*) FROM orders WHERE tenant_id < 10 AND status = 'paid'),
-	pg_relation_size('o_col') / 1048576, typeof_same(), gone_same()"
+if ((FORMAT == 1)); then
+	HELD="(SELECT count(*) FROM sift._test_col_tids('o_col', '')) = (SELECT count(*) FROM orders)"
+	HELD_FILTERED="(SELECT count(*) FROM sift._test_col_tids('o_col', '0:lt:10;1:eq:paid')) = (SELECT count(*) FROM orders WHERE tenant_id < 10 AND status = 'paid')"
+else
+	sql crash "CREATE FUNCTION parts_same() RETURNS bool LANGUAGE plpgsql AS \$\$
+		BEGIN
+			PERFORM sift.col_promote('o_col');
+			RETURN (SELECT visible FROM sift._test_f2_vis_count('o_col', 'orders')) = (SELECT count(*) FROM orders);
+		END \$\$" "CREATE FUNCTION filtered_same() RETURNS bool LANGUAGE plpgsql AS \$\$
+		DECLARE q text := 'SELECT count(*), coalesce(sum(qty), 0) FROM orders WHERE tenant_id < 10 AND status = ''paid'''; a text; b text;
+		BEGIN
+			SET LOCAL seq_page_cost = 10000;
+			SET LOCAL sift.enable_agg = on;
+			EXECUTE q INTO a;
+			SET LOCAL sift.enable_agg = off;
+			EXECUTE q INTO b;
+			RETURN a IS NOT DISTINCT FROM b;
+		END \$\$" >/dev/null || bail "the checks of the parts failed"
+	HELD="parts_same()"
+	HELD_FILTERED="filtered_same()"
+fi
+VERIFY="SELECT sift.col_verify('o_col', true), $HELD, $HELD_FILTERED, pg_relation_size('o_col') / 1048576, typeof_same(), gone_same()"
 
 for i in $(seq "$ITERS"); do
 	crash_cycle crash "iteration $i" 3 8 "${FILES[@]}" || break
@@ -72,5 +92,11 @@ sql crash "VACUUM (index_cleanup on, disable_page_skipping) orders" "SELECT sift
 check "the element cubes of the merged segment answer the groups of the elements" test "$(elem_groups crash on)" == "$(elem_groups crash off)"
 check "the soft-delete filter returns what the heap returns" test "$(sql crash "SELECT gone_same()")" == t
 check "a final merge verifies" test -z "$(sql crash "SELECT sift.col_verify('o_col', true)" 2>&1)"
-check "and leaves one immutable segment" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable'")" == 1
+if ((FORMAT == 1)); then
+	check "and leaves one immutable segment" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable'")" == 1
+else
+	sql crash "SELECT sift.col_maintain('o_col')" >/dev/null
+	check "the maintenance of the index has nothing due" test "$(sql crash "SELECT maint_due IS NULL FROM sift.status('o_col')")" == t
+	check "and the parts of the index hold the rows of the heap" test "$(sql crash "SELECT $HELD")" == t
+fi
 finish
