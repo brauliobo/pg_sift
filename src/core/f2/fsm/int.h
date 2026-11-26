@@ -59,6 +59,7 @@ extern void sift_fsm_ctx_close(FsmCtx *c);
 extern void sift_fsm_ctx_exclusive(FsmCtx *c);
 extern void sift_fsm_root_seal(Page page);
 extern bool sift_fsm_pop_class(FsmCtx *c, int cls, SiftFsmExtent *e);
+extern bool sift_fsm_pop_class_in(FsmCtx *c, SiftXlog *x, Page root, int cls, SiftFsmExtent *e, BlockNumber *emptied);
 extern void sift_fsm_push_class(FsmCtx *c, int cls, const SiftFsmExtent *ext, int n);
 extern BlockNumber sift_fsm_high_water(FsmCtx *c);
 extern void sift_fsm_set_high_water(FsmCtx *c, SiftXlog *x, BlockNumber high_water);

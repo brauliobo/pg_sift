@@ -208,39 +208,50 @@ extend_high_water(FsmCtx *c, uint32 n)
 }
 
 /*
- * Takes the last entry of the head page of the list of class c into *e: the page is unlinked and its block freed when it was the last one. False when the list is empty, which an allocation that
- * holds block 0 shared finds when another one took the last extent since it looked
+ * Takes the last entry of the head page of the list of class cls into *e, in the record x that holds the root: a head page it empties is unlinked, and its block is *emptied (else InvalidBlockNumber) for
+ * the caller to give back. False when the list is empty, which an allocation that holds block 0 shared finds when another one took the last extent since it looked
  */
+bool
+sift_fsm_pop_class_in(FsmCtx *c, SiftXlog *x, Page root, int cls, SiftFsmExtent *e, BlockNumber *emptied)
+{
+	SiftFsmMetaPageData *m = FSMM(root);
+	BlockNumber head = m->class_head[cls];
+	Page		hp;
+
+	*emptied = InvalidBlockNumber;
+	if (head == InvalidBlockNumber && m->class_free_extents[cls] == 0)
+		return false;
+	if (head == InvalidBlockNumber || m->class_free_extents[cls] == 0)
+		SIFT_CORRUPT(c->rel, "The allocator has no free extent of class %d.", cls);
+	hp = sift_xlog_register(x, sift_fsm_lock_list_page(c->rel, head, cls), 0);
+	*e = FSMP(hp)->ext[--FSMP(hp)->nentries];
+	memset(&FSMP(hp)->ext[FSMP(hp)->nentries], 0, sizeof(SiftFsmExtent));
+	if (FSMP(hp)->nentries == 0)
+	{
+		m->class_head[cls] = FSMP(hp)->next_blk;
+		*emptied = head;
+	}
+	m->class_free_extents[cls]--;
+	sift_fsm_list_seal(hp);
+	return true;
+}
+
 bool
 sift_fsm_pop_class(FsmCtx *c, int cls, SiftFsmExtent *e)
 {
 	SiftXlog	x = sift_xlog_start(c->rel);
 	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
 	Page		root = sift_xlog_register(&x, rootbuf, 0);
-	SiftFsmMetaPageData *m = FSMM(root);
-	BlockNumber head = m->class_head[cls];
-	Buffer		hbuf;
-	Page		hp;
+	BlockNumber emptied;
 
-	if (head == InvalidBlockNumber && m->class_free_extents[cls] == 0)
+	if (!sift_fsm_pop_class_in(c, &x, root, cls, e, &emptied))
 	{
 		sift_xlog_abort(&x);
 		UnlockReleaseBuffer(rootbuf);
 		return false;
 	}
-	if (head == InvalidBlockNumber || m->class_free_extents[cls] == 0)
-		SIFT_CORRUPT(c->rel, "The allocator has no free extent of class %d.", cls);
-	hbuf = sift_fsm_lock_list_page(c->rel, head, cls);
-	hp = sift_xlog_register(&x, hbuf, 0);
-	*e = FSMP(hp)->ext[--FSMP(hp)->nentries];
-	memset(&FSMP(hp)->ext[FSMP(hp)->nentries], 0, sizeof(SiftFsmExtent));
-	if (FSMP(hp)->nentries == 0)
-	{
-		m->class_head[cls] = FSMP(hp)->next_blk;
-		sift_fsm_slab_put(c->rel, &x, root, head);
-	}
-	m->class_free_extents[cls]--;
-	sift_fsm_list_seal(hp);
+	if (emptied != InvalidBlockNumber)
+		sift_fsm_slab_put(c->rel, &x, root, emptied);
 	sift_fsm_root_seal(root);
 	sift_xlog_done(&x);
 	return true;

@@ -171,32 +171,38 @@ reclaim_before_claim(FsmCtx *c)
 		(void) sift_fsm_reclaim_locked(c, NULL);
 }
 
-/* A new slab: a free extent of its class when there is one, else the end of the relation; never a split, which would need a page of a list */
+/*
+ * A new slab: a free extent of its class when there is one, else the end of the relation; never a split, which would need a page of a list. The extent leaves its list in the record that makes it the
+ * slab, so no error or crash finds it in neither; the list page it empties goes back in that record where the record has room for its page of the chain, else in the next (sift_fsm_slab_mark)
+ */
 void
 sift_fsm_claim_slab(FsmCtx *c)
 {
-	SiftXlog	x;
-	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
-	uint32		nblocks = SIFT_FSM_SLAB_BLOCKS(SLABS(BufferGetPage(rootbuf))->nslabs);
-	int			cls = pg_ceil_log2_32(nblocks);
-	bool		have = FSMM(BufferGetPage(rootbuf))->class_free_extents[cls] > 0;
-	BlockNumber start;
-	SiftFsmExtent e;
+	SiftXlog	x = sift_xlog_start(c->rel);
+	Page		root = sift_xlog_register(&x, sift_fsm_lock_root(c->rel), 0);
+	uint32		nblocks = SIFT_FSM_SLAB_BLOCKS(SLABS(root)->nslabs);
+	SiftFsmExtent e = {.start = InvalidBlockNumber};
+	BlockNumber emptied = InvalidBlockNumber;
 	SiftFsmSlabDir d;
 
-	UnlockReleaseBuffer(rootbuf);
-	start = have && sift_fsm_pop_class(c, cls, &e) ? e.start : InvalidBlockNumber;
-	x = sift_xlog_start(c->rel);
-	d = sift_fsm_dir_read(c->rel, sift_xlog_register(&x, sift_fsm_lock_root(c->rel), 0), &x);
-	if (start == InvalidBlockNumber)
+	if (!sift_fsm_pop_class_in(c, &x, root, pg_ceil_log2_32(nblocks), &e, &emptied))
 	{
-		start = sift_fsm_high_water(c);
-		sift_fsm_set_high_water(c, &x, start + nblocks);
+		e.start = sift_fsm_high_water(c);
+		sift_fsm_set_high_water(c, &x, e.start + nblocks);
 	}
-	sift_fsm_dir_add(&d, c, start, nblocks);
-	sift_fsm_root_seal(d.page[0]);
+	SIFT_POINT("sift-fsm-claim-slab");
+	d = sift_fsm_dir_read(c->rel, root, &x);
+	sift_fsm_dir_add(&d, c, e.start, nblocks);
+	if (emptied != InvalidBlockNumber && sift_fsm_dir_fits(&d, emptied))
+	{
+		sift_fsm_dir_put(&d, emptied);
+		emptied = InvalidBlockNumber;
+	}
+	sift_fsm_root_seal(root);
 	sift_fsm_dir_free(&d);
 	sift_fsm_xlog_done(c, &x);
+	if (emptied != InvalidBlockNumber)
+		sift_fsm_slab_mark(c->rel, &emptied, 1, true);
 }
 
 /* Extents the caller took out of the lists (each at most SIFT_FSM_META_SLAB blocks) become metadata slabs, one record each */
