@@ -251,11 +251,15 @@ extern bool sift_cgord_perm_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32
 
 #ifdef SIFT_TESTING
 extern int64 sift_col_gorder_decoded;	/* the entries of order array chunks decoded (sift._test_gorder_decoded) */
+extern int64 sift_col_gorder_answered;	/* the ORDER BY .. LIMIT scans the order array answered (sift._test_gorder_answered) */
 extern bool sift_test_col_gorder_seek;	/* sift.test_col_gorder_seek: every chunk of an order array is written seekable, whatever its bytes */
 extern bool sift_test_col_gorder_noskip;	/* sift.test_col_gorder_noskip: an OFFSET walks the entries it throws away (sift_gord_skip takes none) */
 extern int	sift_test_col_gorder_choice;	/* sift.test_col_gorder_choice: 1 keeps the ends of every order the build chose, 2 all of it, 0 decides by sift_cgord_pay */
 extern int	sift_test_col_gorder_ends;		/* sift.test_col_gorder_ends: the entries a block of the ends only keeps at each end, 0 for SIFT_CGORD_ENDS */
 extern int	sift_test_col_gorder_rows;		/* sift.test_col_gorder_rows: 1024 writes the chunks of minor 21, 0 the current ones */
+#define GORD_ANSWERED(answered) (sift_col_gorder_answered += (answered))
+#else
+#define GORD_ANSWERED(answered) ((void) 0)
 #endif
 /*
  * Does a segment's order of a leaf have to hold every row, or the ends only? A scan with a bound in the middle of the values (ts >= x ORDER BY ts LIMIT n, a count of

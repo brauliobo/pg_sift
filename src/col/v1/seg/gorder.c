@@ -202,6 +202,7 @@ sift_cseg_gorder_ends(SiftColSegment *seg, int col, uint32 *entries, uint32 *val
 
 #ifdef SIFT_TESTING
 int64		sift_col_gorder_decoded;
+int64		sift_col_gorder_answered;
 #endif
 
 /* The first w entries (the m of the chunk when fewer) of chunk c of leaf col: keys and heap addresses, each SIFT_CGORD_CAP slots; the count decoded */

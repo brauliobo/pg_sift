@@ -59,6 +59,7 @@ PG_FUNCTION_INFO_V1(sift_test_eq_sel);
 PG_FUNCTION_INFO_V1(sift_test_eq_sel_calls);
 PG_FUNCTION_INFO_V1(sift_test_vet_offsets);
 PG_FUNCTION_INFO_V1(sift_test_gorder_decoded);
+PG_FUNCTION_INFO_V1(sift_test_gorder_answered);
 
 PG_FUNCTION_INFO_V1(sift_test_key_sorts);
 PG_FUNCTION_INFO_V1(sift_test_vis_counts);
@@ -644,6 +645,9 @@ SIFT_TEST_COUNTER_FN(sift_test_vet_offsets, sift_col_vet_offsets)
 
 /* the entries of order array chunks decoded since the last read; the argument true resets the count */
 SIFT_TEST_COUNTER_FN(sift_test_gorder_decoded, sift_col_gorder_decoded)
+
+/* the ORDER BY .. LIMIT scans the order array answered since the last read; the argument true resets the count */
+SIFT_TEST_COUNTER_FN(sift_test_gorder_answered, sift_col_gorder_answered)
 
 /* the sorts of an IN list by the cost estimates since the last read; the argument true resets the count */
 SIFT_TEST_COUNTER_FN(sift_test_key_sorts, sift_col_key_sorts)

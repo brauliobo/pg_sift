@@ -621,6 +621,8 @@ CREATE FUNCTION sift._test_vet_offsets(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_vet_offsets' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_gorder_decoded(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_gorder_decoded' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_gorder_answered(reset bool) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_gorder_answered' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_key_sorts(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_key_sorts' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_vis_counts(rel regclass, nblocks int8 DEFAULT -1) RETURNS int8[]
