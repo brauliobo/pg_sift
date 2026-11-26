@@ -365,15 +365,25 @@ sift_col_hear_plan_empty(const HearPlan *plan)
 	return plan->make == NIL && plan->enable == NIL && plan->drop == NIL;
 }
 
+/* The heap of the index is waited for (a concurrent build holds it in ShareUpdateExclusiveLock and its writers do not stop; the wait queues them behind it, as CREATE TRIGGER does), any other table briefly */
+static bool
+lock_to_arm(Relation heap, Oid relid)
+{
+	if (relid != RelationGetRelid(heap))
+		return sift_col_hear_lock_briefly(relid, ShareRowExclusiveLock);
+	LockRelationOid(relid, ShareRowExclusiveLock);
+	return true;
+}
+
 /* The plan, under the locks it takes (a table above the heap is waited for briefly): false, and nothing done, when one stays busy */
 bool
 sift_col_hear_apply(Relation heap, Relation index, const HearPlan *plan)
 {
 	foreach_ptr(HearWant, w, plan->make)
-		if (!sift_col_hear_lock_briefly(w->relid, ShareRowExclusiveLock))
+		if (!lock_to_arm(heap, w->relid))
 			return false;
 	foreach_ptr(HearTrig, t, plan->enable)
-		if (!sift_col_hear_lock_briefly(t->relid, ShareRowExclusiveLock))
+		if (!lock_to_arm(heap, t->relid))
 			return false;
 	foreach_ptr(HearTrig, t, plan->drop)
 		if (!sift_col_hear_lock_briefly(t->relid, AccessExclusiveLock))

@@ -28,6 +28,8 @@ Q="SELECT string_agg(g || ':' || n || ':' || s, ' ' ORDER BY g) FROM (SELECT g, 
 # ans MODE: free (the heap-free read), checked (the heap checked for the rows that need it), heap (the normal plan)
 ans() { sql n "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = $([[ $1 == heap ]] && echo off || echo on)" "SET sift.test_no_heapfree = $([[ $1 == checked ]] && echo on || echo off)" "$Q" | tail -n 1; }
 differential() { [[ $(ans free) == $(ans heap) && $(ans checked) == $(ans heap) ]]; }
+NT=$(sql n "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'")
+((NT >= 1)) || bail "the index has no triggers"
 ntrig() { sql n "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'"; }
 deadlocks() { grep -c 'deadlock detected' "$D/postgres.log"; }
 # loop CMD...: runs the statements one after the other for SECS seconds, the number of rounds that succeeded in $D/rounds
@@ -46,8 +48,8 @@ wait "$PGBENCH_PID"
 check "REINDEX CONCURRENTLY under 8 writers does at least 5 rounds in ${SECS} s ($(cat "$D/rounds") done)" test "$(cat "$D/rounds")" -ge 5
 check "... no transaction of the writers failed" test "$(failed)" == 0
 check "... no deadlock was detected" test "$(($(deadlocks) - d0))" -eq 0
-check "... the table has the two triggers of the index, which depend on it, and no copy is left" \
-	test "$(ntrig)|$(sql n "SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.refclassid = 'pg_trigger'::regclass AND d.refobjid = t.oid AND d.classid = 'pg_class'::regclass AND d.objid = 'h_x'::regclass WHERE t.tgrelid = 'h'::regclass")|$(sql n "SELECT count(*) FROM pg_class WHERE relname LIKE 'h_x_ccnew%'")" == "2|2|0"
+check "... the table has the triggers of the index (one for each event, or one row trigger), which depend on it, and no copy is left" \
+	test "$(ntrig)|$(sql n "SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.refclassid = 'pg_trigger'::regclass AND d.refobjid = t.oid AND d.classid = 'pg_class'::regclass AND d.objid = 'h_x'::regclass WHERE t.tgrelid = 'h'::regclass")|$(sql n "SELECT count(*) FROM pg_class WHERE relname LIKE 'h_x_ccnew%'")" == "$NT|$NT|0"
 check "... the heap-free read, the checked read and the heap give one answer" differential
 
 # 2. the lock a REINDEX CONCURRENTLY asks of the table, sampled while writers run: ShareUpdateExclusiveLock, never ACCESS EXCLUSIVE
@@ -69,7 +71,7 @@ loop sql n "DROP INDEX IF EXISTS h_y" "CREATE INDEX CONCURRENTLY h_y ON h USING 
 wait "$PGBENCH_PID"
 check "CREATE INDEX CONCURRENTLY under 8 writers: rounds done ($(cat "$D/rounds")), no failed transaction, no deadlock" test "$(cat "$D/rounds")" -ge 5 -a "$(failed)" == 0 -a "$(($(deadlocks) - d0))" -eq 0
 sql n "DROP INDEX IF EXISTS h_y" "CREATE INDEX h_y ON h USING sift_col (id, g, v)" >/dev/null
-check "two tracked indexes have four triggers; dropping one leaves the two of the other" test "$(ntrig)" == 4 -a "$(sql n "DROP INDEX h_y" "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'" | tail -n 1)" == 2
+check "two tracked indexes have the triggers of both; dropping one leaves those of the other" test "$(ntrig)" == "$((NT * 2))" -a "$(sql n "DROP INDEX h_y" "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'" | tail -n 1)" == "$NT"
 
 # 4. cancelled in the middle, under the writers: the invalid copies own no trigger
 pgbench_bg n 8 "$((SECS + 4))" -f "$D/w.sql"
@@ -79,8 +81,8 @@ done
 wait "$PGBENCH_PID"
 invalid=$(sql n "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'h'::regclass AND NOT i.indisvalid")
 diag "$invalid invalid index copies after the cancelled reindexes, $(failed) failed transactions"
-check "cancelled reindexes leave invalid copies that own no trigger, and the two triggers of the index" \
-	test "$(sql n "SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.refclassid = 'pg_trigger'::regclass AND d.refobjid = t.oid AND d.classid = 'pg_class'::regclass JOIN pg_index i ON i.indexrelid = d.objid WHERE NOT i.indisvalid")" == 0 -a "$(ntrig)" == 2
+check "cancelled reindexes leave invalid copies that own no trigger, and the triggers of the index" \
+	test "$(sql n "SELECT count(*) FROM pg_trigger t JOIN pg_depend d ON d.refclassid = 'pg_trigger'::regclass AND d.refobjid = t.oid AND d.classid = 'pg_class'::regclass JOIN pg_index i ON i.indexrelid = d.objid WHERE NOT i.indisvalid")" == 0 -a "$(ntrig)" == "$NT"
 check "... and the reads still answer as the heap" differential
 for ix in $(sql n "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE i.indrelid = 'h'::regclass AND NOT i.indisvalid"); do
 	sql n "DROP INDEX CONCURRENTLY \"$ix\"" >/dev/null 2>&1 || sql n "DROP INDEX \"$ix\"" >/dev/null 2>&1
@@ -94,6 +96,6 @@ pg_dump -h "$D/sock" -p "$(port n)" -U postgres -d postgres >"$D/dump.sql" 2>"$D
 sql n "CREATE DATABASE restored" >/dev/null
 psql -X -q -h "$D/sock" -p "$(port n)" -U postgres -d restored -v ON_ERROR_STOP=1 -f "$D/dump.sql" >/dev/null 2>"$D/restore.err" || diag "$(head -n 5 "$D/restore.err")"
 rans() { psql -X -At -q -h "$D/sock" -p "$(port n)" -U postgres -d restored -c "SET max_parallel_workers_per_gather = 0" -c "SET sift.enable_agg = $1" -c "$Q" | tail -n 1; }
-check "the dump restores: the index is there with its two triggers, and answers as the heap" \
-	test "$(psql -X -At -q -h "$D/sock" -p "$(port n)" -U postgres -d restored -c "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'")" == 2 -a "$(rans on)" == "$(rans off)"
+check "the dump restores: the index is there with its triggers, and answers as the heap" \
+	test "$(psql -X -At -q -h "$D/sock" -p "$(port n)" -U postgres -d restored -c "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'")" == "$NT" -a "$(rans on)" == "$(rans off)"
 finish

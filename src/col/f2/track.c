@@ -386,6 +386,8 @@ sift_f2_track_install(Relation heap, Relation index, bool concurrent)
 	HearPlan	plan;
 
 	sift_col_track_check(heap, index);
+	if (concurrent && OidIsValid(sift_col_swap_origin(heap, index, true)))
+		return;
 	plan = sift_col_hear_plan(heap, index, sift_col_hear_find(index, true));
 	if (!plan.bad && sift_col_hear_plan_empty(&plan))
 		return;
@@ -396,6 +398,9 @@ sift_f2_track_install(Relation heap, Relation index, bool concurrent)
 						 errhint("ALTER INDEX %s SET (track_changes = 'off'), then SET (track_changes = %s)", sift_col_index_ref(index), quote_literal_cstr(sift_col_options_row_key(index)))));
 		return;
 	}
+	if (concurrent)
+		foreach_oid(tbl, sift_col_hear_tables(RelationGetRelid(heap), sift_col_track_ctid(index)))
+			sift_col_drain_writers(tbl, ShareRowExclusiveLock);
 	if (plan.bad)
 	{
 		sift_col_hear_drop_all(index);
