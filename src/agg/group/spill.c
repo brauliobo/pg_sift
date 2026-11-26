@@ -397,12 +397,17 @@ own_begin(const SiftRadixShape *sh)
 	values_reset(SET_OF(sh)->owner);
 }
 
+/* The bytes of the values the groups point to: the strings of MIN and MAX, the keys of generic types, the states of generic aggregates */
+static uint64
+values_held(const SiftV6Group *g)
+{
+	return g->tx.cap + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0) + (g->gen != NULL ? v6_gen_bytes(g->gen) : 0);
+}
+
 static uint64
 own_held(const SiftRadixShape *sh)
 {
-	const SiftV6Group *g = SET_OF(sh)->owner;
-
-	return g->tx.cap + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0) + (g->gen != NULL ? v6_gen_bytes(g->gen) : 0);
+	return values_held(SET_OF(sh)->owner);
 }
 
 /* every group is in a table that spills */
@@ -506,7 +511,32 @@ v6g_spill_all(SiftV6Group *g)
 		values_reset(g);
 }
 
-/* The tables a spill leaves (SIFT_SPILL_LOCAL_CAP slots each) have room for more groups: spilling them now would write a few groups at a time, whatever the budget */
+/* The bytes that grow with the groups and leave with them: the wide keys and the state blocks of the tables, and the values of the groups when they spill too */
+static uint64
+group_payload(const SiftV6Group *g)
+{
+	uint64		bytes = g->own_recs ? values_held(g) : 0;
+
+	for (int s = 0; s < g->nsets; s++)
+		if (g->set[s].nk > 0)
+			bytes += (uint64) g->set[s].ht.ext_cap * g->set[s].ht.ext_stride + g->set[s].ht.arena_cap;
+	return bytes;
+}
+
+/* A key arena allocates up to MaxAllocSize: a table spills before its arena doubles past SIFT_SPILL_ARENA_MAX, whatever the budget */
+static bool
+arena_full(const SiftV6Group *g)
+{
+	for (int s = 0; s < g->nsets; s++)
+		if (g->set[s].nk > 0 && g->set[s].ht.arena_cap >= SIFT_SPILL_ARENA_MAX)
+			return true;
+	return false;
+}
+
+/*
+ * The tables a spill leaves (SIFT_SPILL_LOCAL_CAP slots each) have room for more groups and hold little: spilling them now would write a few groups at a time, whatever the budget.
+ * Groups of wide keys or long strings are not little, however few they are.
+ */
 static bool
 in_local_tables(const SiftV6Group *g)
 {
@@ -517,7 +547,13 @@ in_local_tables(const SiftV6Group *g)
 		if (g->set[s].nk > 0 && (ht->capacity > SIFT_SPILL_LOCAL_CAP || ht->count + SIFT_VEC_LEN > ht->grow_at))
 			return false;
 	}
-	return true;
+	return group_payload(g) <= (g->budget - g->dist_budget) / 2 && !arena_full(g);
+}
+
+static bool
+over_budget(const SiftV6Group *g)
+{
+	return arena_full(g) || group_bytes(g) > g->budget - g->dist_budget;
 }
 
 /* MEM[MEM-AGG-02]: SiftV6Group spill budget check (group_bytes of allocated memory against budget - dist_budget; a spill leaves SIFT_SPILL_LOCAL_CAP slots per set; was count * 65B and the whole table kept) */
@@ -525,7 +561,7 @@ void
 v6g_spill_if_over(SiftV6Group *g)
 {
 	v6g_mem_check(g, false);
-	if (g->frozen || group_bytes(g) <= g->budget - g->dist_budget || (g->spilled && in_local_tables(g)))
+	if (g->frozen || !over_budget(g) || (g->spilled && in_local_tables(g)))
 		return;
 	if (g->gen != NULL && !gen_spills(g))
 	{
@@ -541,7 +577,7 @@ v6g_spill_if_over(SiftV6Group *g)
 void
 v6g_rows_if_over(SiftV6Group *g)
 {
-	if (!g->frozen && group_bytes(g) > g->budget - g->dist_budget && v6g_rows_cheaper(g))
+	if (!g->frozen && over_budget(g) && v6g_rows_cheaper(g))
 		v6g_freeze(g);
 	else
 		v6g_spill_if_over(g);

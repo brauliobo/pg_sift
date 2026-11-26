@@ -4,7 +4,7 @@
 # The release build has no scope: the test needs the test build.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 19
+plan 20
 node_init mb 61 "autovacuum = off
 sift.test_create_format1 = on
 max_parallel_workers_per_gather = 0
@@ -47,6 +47,10 @@ check "an expression over the text of 40 MB of unpromoted rows holds under 16 MB
 	test "$(agg_peak "SELECT count(*) FROM wb WHERE v <> repeat('x', 1000) || id")" -lt 16777216
 check "a scan that can spill holds twice hash memory and a constant at work_mem 1MB: under 20 MB" \
 	test "$(agg_peak "SELECT k2, count(*), sum(amount) FROM c GROUP BY 1")" -lt 20971520
+sql mb "CREATE TABLE ww AS SELECT g AS id, repeat(md5((g / 10)::text), 128) AS k, 's' || g % 10 AS s FROM generate_series(1, 30000) g" \
+	"CREATE INDEX ww_col ON ww USING sift_col (id, k, s)" "VACUUM (FREEZE, ANALYZE) ww" >/dev/null || bail "wide key table failed"
+check "groups of 4 kB keys after a spill hold under 1.5 times hash memory at work_mem 1MB: under 3 MB (5 MB while the local table took 1,536 of them)" \
+	test "$(agg_peak "SELECT sum(length(m)) FROM (SELECT k, max(s) m FROM ww GROUP BY 1) x")" -lt 3145728
 sql mb "DO \$\$ DECLARE n int; BEGIN FOREACH n IN ARRAY ARRAY[64, 256] LOOP
 	EXECUTE format('CREATE TABLE q%s (id int, g int, d date NOT NULL) PARTITION BY RANGE (d)', n);
 	FOR i IN 0..n - 1 LOOP EXECUTE format('CREATE TABLE q%s_%s PARTITION OF q%s FOR VALUES FROM (%L) TO (%L)', n, i, n, DATE '2000-01-01' + i, DATE '2000-01-02' + i); END LOOP;

@@ -22,6 +22,7 @@
 #define SIFT_SPILL_LOCAL_CAP	4096	/* slots of the table that gathers the groups of the rows while the rest are in the files: 256 KB, in the cache */
 #define SIFT_SPILL_STAGE_BYTES	2048	/* what a partition collects before it writes */
 #define SIFT_SPILL_MAX_DEPTH	8
+#define SIFT_SPILL_ARENA_MAX	(MaxAllocSize / 2)	/* the key arena of a table that spills, whatever its budget: one allocation, which doubles up to MaxAllocSize */
 #define SIFT_SPILL_SOFT_PERCENT	80		/* of its memory a table goes to the files */
 
 typedef struct SiftGroupSpill SiftGroupSpill;
