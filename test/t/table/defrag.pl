@@ -16,7 +16,7 @@ my $rows = knob('SIFT_ROWS', 20000, 6000);
 my $worker = qr/table maintenance worker finished/;
 
 my $primary = sift_node('defrag_primary', allows_streaming => 1);
-$primary->append_conf('postgresql.conf', "autovacuum = off\nwal_consistency_checking = 'generic'\nsift.async_maintenance = on\n"
+$primary->append_conf('postgresql.conf', "autovacuum = off\nwal_consistency_checking = 'generic'\nsift.test_create_format1 = on\nsift.async_maintenance = on\n"
 	. "sift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nmax_parallel_maintenance_workers = 0\n"
 	. "max_parallel_workers_per_gather = 0\nshared_buffers = 64MB");
 $primary->start;
