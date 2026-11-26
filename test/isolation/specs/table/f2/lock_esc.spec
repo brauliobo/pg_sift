@@ -1,7 +1,7 @@
 # A statement that updates more than 32,768 rows of a partition holds the partition (here the relation: a sift_table has one) with one lock of the lock manager instead of one entry for
 # each row. What the entries gave stays: a KEY SHARE lock, which a non-key update does not conflict with, is granted; NOWAIT is refused and SKIP LOCKED skips; READ COMMITTED
 # runs EvalPlanQual on the row the writer left; REPEATABLE READ fails with 40001; two transactions that both go from rows to the partition at once are a deadlock that the
-# lock manager reports to one of them. A plain read takes no lock of the table and never waits.
+# deadlock detector reports to one of them. A plain read takes no lock of the table and never waits.
 # requires: tam
 
 setup
@@ -62,5 +62,5 @@ permutation s1big s2kept s1r s2v
 # REPEATABLE READ: a row the writer changed is a serialization failure, a row it did not touch is an update once it has committed
 permutation s2rr s1big s1c s2rrw s2e s2v
 permutation s2rr s1big s1c s2rru s2e s2v
-# two transactions that go from rows to the partition at once: the lock manager reports the deadlock to one of them
+# two transactions that go from rows to the partition at once: the deadlock detector reports the deadlock to one of them (each waits for the transaction of the rows of the other)
 permutation s1a s2a s1b s2b s1c s2e s2v

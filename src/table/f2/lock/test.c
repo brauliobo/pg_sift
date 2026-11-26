@@ -26,9 +26,9 @@ sift_test_rowlock_stats(PG_FUNCTION_ARGS)
 	{
 		SiftRowLockCount c;
 
-		LWLockAcquire(&layout->rows.stripe_locks[si].lock, LW_SHARED);
+		LWLockAcquire(&layout->rows.hdr[si].lock, LW_SHARED);
 		c = sift_rowlock_count(&layout->rows, si);
-		LWLockRelease(&layout->rows.stripe_locks[si].lock);
+		LWLockRelease(&layout->rows.hdr[si].lock);
 		total.in_table += c.in_table;
 		total.in_chunks += c.in_chunks;
 		total.chunks += c.chunks;

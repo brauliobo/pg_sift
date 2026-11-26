@@ -25,8 +25,12 @@
 
 /* ---- the table in shared memory ---- */
 
-/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (1101312 B packed; 128x64x128 B ABI entries, and the heads of the chunks of the stripes that fill) */
-#define TABLE_BYTES		(sizeof(SiftRowLockShmLayout) + PG_CACHE_LINE_SIZE)
+/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (2164992 B packed; 256x64x128 B ABI entries and one cache line of header for each stripe, and 256 B of fast intention slots for each process of the server) */
+static Size
+table_bytes(void)
+{
+	return sizeof(SiftRowLockShmLayout) + sift_fast_intent_bytes() + PG_CACHE_LINE_SIZE;
+}
 
 SIFT_BACKEND_LOCAL SiftRowLockShmLayout *shm = NULL;
 SIFT_BACKEND_LOCAL bool pglm = false;
@@ -39,10 +43,14 @@ shm_init(SIFT_DSM_INIT_ARGS)
 	int			rows = sift_tranche_new(SIFT_ROWLOCK_TRANCHE);
 	int			escs = sift_tranche_new(SIFT_ESC_TRANCHE);
 
-	memset(s, 0, sizeof(*s));
+	memset(s, 0, table_bytes() - PG_CACHE_LINE_SIZE);
 	sift_rowlock_table_init(&s->rows, rows);
 	for (int i = 0; i < SIFT_ESC_STRIPES; i++)
-		LWLockInitialize(&s->esc_locks[i].lock, escs);
+	{
+		LWLockInitialize(&s->esc[i].lock, escs);
+		pg_atomic_init_u32(&s->esc[i].coarse_active, 0);
+	}
+	sift_fast_intent_init(s);
 }
 
 SiftRowLockShmLayout *
@@ -50,7 +58,7 @@ sift_lock_shm_attach(void)
 {
 	if (shm == NULL && !pglm)
 	{
-		void	   *raw = sift_dsm_try(SIFT_ROWLOCK_DSM_NAME, TABLE_BYTES, shm_init);
+		void	   *raw = sift_dsm_try(SIFT_ROWLOCK_DSM_NAME, table_bytes(), shm_init);
 
 		if (raw == NULL)
 		{
@@ -62,7 +70,7 @@ sift_lock_shm_attach(void)
 		{
 			shm = (SiftRowLockShmLayout *) TYPEALIGN(PG_CACHE_LINE_SIZE, raw);
 			sift_tranche_register(shm->rows.area_lock.tranche, SIFT_ROWLOCK_TRANCHE);
-			sift_tranche_register(shm->esc_locks[0].lock.tranche, SIFT_ESC_TRANCHE);
+			sift_tranche_register(shm->esc[0].lock.tranche, SIFT_ESC_TRANCHE);
 		}
 	}
 	return shm;
@@ -76,8 +84,8 @@ sift_lock_pglm_only(void)
 
 /* ---- the directory of the coarse holders ---- */
 
-static uint32
-dir_stripe(const RelFileLocator *loc, uint64 part_id)
+uint32
+sift_esc_stripe_of(const RelFileLocator *loc, uint64 part_id)
 {
 	return hash_combine(hash_bytes((const unsigned char *) loc, sizeof(*loc)), (uint32) (part_id ^ (part_id >> 32))) %
 		SIFT_ESC_STRIPES;
@@ -92,7 +100,7 @@ dir_match(const SiftPartEscEntry *e, const RelFileLocator *loc, uint64 part_id, 
 static void
 dir_compact_ended(SiftEscStripe *s)
 {
-	uint16	   *n = &shm->esc_n[s - shm->esc_stripes];
+	uint16	   *n = &shm->esc[s - shm->esc_stripes].n;
 
 	for (int i = 0; i < *n;)
 	{
@@ -125,7 +133,7 @@ typedef struct DirArg
 static bool
 dir_apply(DirOp op, const DirArg *a)
 {
-	uint32		si = dir_stripe(a->loc, a->part_id);
+	uint32		si = sift_esc_stripe_of(a->loc, a->part_id);
 	SiftEscStripe *s;
 	uint16	   *n;
 	SiftPartEscEntry *e = NULL;
@@ -134,8 +142,8 @@ dir_apply(DirOp op, const DirArg *a)
 	if (shm == NULL)
 		return false;
 	s = &shm->esc_stripes[si];
-	n = &shm->esc_n[si];
-	LWLockAcquire(&shm->esc_locks[si].lock, LW_EXCLUSIVE);
+	n = &shm->esc[si].n;
+	LWLockAcquire(&shm->esc[si].lock, LW_EXCLUSIVE);
 	for (int i = 0; i < *n && e == NULL; i++)
 		if (dir_match(&s->entries[i], a->loc, a->part_id, a->top))
 			e = &s->entries[i];
@@ -158,7 +166,7 @@ dir_apply(DirOp op, const DirArg *a)
 		e->subxid = op == DIR_PUBLISH || op == DIR_RETAG ? a->subxid : e->subxid;
 		e->flags |= op == DIR_PREPARED ? SIFT_ESC_FLAG_PREPARED : 0;
 	}
-	LWLockRelease(&shm->esc_locks[si].lock);
+	LWLockRelease(&shm->esc[si].lock);
 	return ok;
 }
 
@@ -171,10 +179,10 @@ sift_esc_live_count(void)
 		return 0;
 	for (int si = 0; si < SIFT_ESC_STRIPES; si++)
 	{
-		LWLockAcquire(&shm->esc_locks[si].lock, LW_EXCLUSIVE);
+		LWLockAcquire(&shm->esc[si].lock, LW_EXCLUSIVE);
 		dir_compact_ended(&shm->esc_stripes[si]);
-		n += shm->esc_n[si];
-		LWLockRelease(&shm->esc_locks[si].lock);
+		n += shm->esc[si].n;
+		LWLockRelease(&shm->esc[si].lock);
 	}
 	return n;
 }
@@ -183,12 +191,12 @@ static TransactionId
 holder_in_the_way(const RelFileLocator *loc, uint64 part_id, SiftEscModes want)
 {
 	TransactionId found = InvalidTransactionId;
-	uint32		si = dir_stripe(loc, part_id);
+	uint32		si = sift_esc_stripe_of(loc, part_id);
 
 	if (shm == NULL)
 		return found;
-	LWLockAcquire(&shm->esc_locks[si].lock, LW_SHARED);
-	for (int i = 0; i < shm->esc_n[si] && !TransactionIdIsValid(found); i++)
+	LWLockAcquire(&shm->esc[si].lock, LW_SHARED);
+	for (int i = 0; i < shm->esc[si].n && !TransactionIdIsValid(found); i++)
 	{
 		const SiftPartEscEntry *e = &shm->esc_stripes[si].entries[i];
 
@@ -196,7 +204,7 @@ holder_in_the_way(const RelFileLocator *loc, uint64 part_id, SiftEscModes want)
 			sift_esc_modes_conflict(want, sift_esc_coarse_modes((LockTupleMode) e->mode)) && TransactionIdIsInProgress(e->top_xid))
 			found = e->top_xid;
 	}
-	LWLockRelease(&shm->esc_locks[si].lock);
+	LWLockRelease(&shm->esc[si].lock);
 	return found;
 }
 
@@ -205,6 +213,8 @@ conflicting_xid(const RelFileLocator *loc, uint64 part_id, SiftEscModes want)
 {
 	TransactionId xid = holder_in_the_way(loc, part_id, want);
 
+	if (!TransactionIdIsValid(xid) && shm != NULL)
+		xid = sift_fast_intent_conflict(shm, loc, part_id, want);
 	return TransactionIdIsValid(xid) || part_id == SIFT_ESC_PART_ALL ? xid : holder_in_the_way(loc, SIFT_ESC_PART_ALL, want);
 }
 
@@ -222,15 +232,15 @@ sift_esc_drop_rel(const RelFileLocator *loc)
 	for (int si = 0; si < SIFT_ESC_STRIPES; si++)
 	{
 		SiftEscStripe *s = &shm->esc_stripes[si];
-		uint16	   *n = &shm->esc_n[si];
+		uint16	   *n = &shm->esc[si].n;
 
-		LWLockAcquire(&shm->esc_locks[si].lock, LW_EXCLUSIVE);
+		LWLockAcquire(&shm->esc[si].lock, LW_EXCLUSIVE);
 		for (int i = 0; i < *n;)
 			if (RelFileLocatorEquals(s->entries[i].locator, *loc))
 				s->entries[i] = s->entries[--*n];
 			else
 				i++;
-		LWLockRelease(&shm->esc_locks[si].lock);
+		LWLockRelease(&shm->esc[si].lock);
 	}
 }
 
@@ -248,6 +258,9 @@ typedef struct SiftLocalLock
 	int8		intent_mode;	/* -1: none */
 	int8		esc_mode;		/* -1: no coarse lock */
 	int8		held_max;		/* the strongest entry taken, -1 for none */
+	int8		fast_slot;		/* the slot of this process that holds the intention (fast_intent.c), -1: none */
+	int8		fast_mode;		/* its mode, -1: none: the lock manager holds the intention otherwise */
+	bool		coarse_counted;	/* the count of coarse locks of the stripe of the key includes this lock */
 	bool		split_pinned;
 	bool		published;
 	bool		prepared_marked;	/* PREPARE took the page lock that says the relation has row locks in the lock manager */
@@ -341,7 +354,7 @@ lock_of(Relation rel, uint64 part_id)
 		grow_locks();
 	l = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(SiftLocalLock));
 	*l = (SiftLocalLock) {.loc = rel->rd_locator,.part_id = part_id,.dbid = rel->rd_lockInfo.lockRelId.dbId,
-		.relid = rel->rd_lockInfo.lockRelId.relId,.intent_mode = -1,.esc_mode = -1,.held_max = -1};
+		.relid = rel->rd_lockInfo.lockRelId.relId,.intent_mode = -1,.esc_mode = -1,.held_max = -1,.fast_slot = -1,.fast_mode = -1};
 	if (rl != NULL)
 	{
 		l->rel_next = rl->rel_parts;
@@ -486,7 +499,7 @@ note_transition(const SiftLocalLock *l)
 	if (nsub == capsub)
 		grow_sublog();
 	sublog[nsub] = (SiftEscSubRecord) {.locator = l->loc,.part_id = l->part_id,.subxid = sub,.holder_xid = GetCurrentTransactionId(),
-		.prev_intent = l->intent_mode,.prev_esc = l->esc_mode,.prev_held_max = l->held_max,.prev_esc_sub = l->esc_sub,
+		.prev_intent = l->intent_mode,.prev_esc = l->esc_mode,.prev_held_max = l->held_max,.prev_fast = l->fast_mode,.prev_esc_sub = l->esc_sub,
 		.took_split_pin = false};
 	sub_chain_push(nsub++);
 }
@@ -502,6 +515,14 @@ dir_arg(const SiftLocalLock *l)
 {
 	return (DirArg) {.loc = &l->loc,.part_id = l->part_id,.top = GetTopTransactionIdIfAny(),.cur = InvalidTransactionId,
 		.subxid = GetCurrentSubTransactionId(),.mode = (LockTupleMode) Max(l->esc_mode, 0)};
+}
+
+static void
+coarse_leave(SiftLocalLock *l)
+{
+	if (l->coarse_counted)
+		sift_esc_coarse_leave(shm, &l->loc, l->part_id);
+	l->coarse_counted = false;
 }
 
 static void
@@ -522,9 +543,16 @@ undo_record(const SiftEscSubRecord *r)
 		if (r->part_id != SIFT_ESC_PART_ALL && rl != NULL)
 			rl->n_esc_parts--;
 		l->published = false;
+		coarse_leave(l);
 	}
 	else if (r->prev_esc >= 0 && l->esc_mode != r->prev_esc && l->published)
 		dir_apply(DIR_MODE, &a);
+	if (l->fast_mode != r->prev_fast)
+	{
+		sift_fast_intent_restore(shm, l->fast_slot, r->prev_fast);
+		l->fast_mode = r->prev_fast;
+		l->fast_slot = r->prev_fast < 0 ? -1 : l->fast_slot;
+	}
 	l->esc_mode = r->prev_esc;
 	l->esc_sub = r->prev_esc_sub;
 	l->held_max = r->prev_held_max;
@@ -647,14 +675,61 @@ take_modes(const SiftLocalLock *l, SiftEscModes modes, LockWaitPolicy wait_polic
 	return r;
 }
 
+/*
+ * The coarse modes of the mode on the partition or relation: the count of its stripe goes up first, so that no row locker records an intention from now on, then the transactions whose records conflict
+ * are waited for (a wait for a transaction is one the deadlock detector sees), and then the page lock. A refusal gives the count back.
+ */
+static TM_Result
+take_coarse(SiftLocalLock *l, LockTupleMode mode, LockWaitPolicy wait_policy, bool *waited)
+{
+	SiftEscModes want = sift_esc_coarse_modes(mode);
+	bool		counted = l->coarse_counted || shm == NULL;
+	TM_Result	r = TM_Ok;
+	TransactionId holder;
+
+	if (!counted)
+	{
+		sift_esc_coarse_enter(shm, &l->loc, l->part_id);
+		l->coarse_counted = true;
+	}
+	while (shm != NULL && r == TM_Ok && TransactionIdIsValid(holder = sift_fast_intent_conflict(shm, &l->loc, l->part_id, want)))
+		if (wait_policy != LockWaitBlock)
+			r = TM_BeingModified;
+		else
+		{
+			XactLockTableWait(holder, NULL, NULL, XLTW_None);
+			*waited = true;
+		}
+	r = r == TM_Ok ? take_modes(l, want, wait_policy, waited) : r;
+	if (r != TM_Ok && !counted)
+		coarse_leave(l);
+	return r;
+}
+
+/* Whether the intention of the lock may be a record: the lock manager keeps it where a prepared transaction may hold rows or partitions of the relation, which a restart finds only there */
+static bool
+fast_allowed(const SiftLocalLock *l)
+{
+	return shm != NULL && find_lock(&l->loc, SIFT_ESC_PART_ALL)->prepared_probe != 2;
+}
+
 static TM_Result
 take_intent(SiftLocalLock *l, LockTupleMode mode, LockWaitPolicy wait_policy, bool *reread, TM_FailureData *tmfd)
 {
 	SiftEscModes want = sift_esc_intent_modes(mode);
+	int			slot = -1;
 	TM_Result	r;
 
 	if (l->intent_mode >= (int8) mode)
 		return TM_Ok;
+	if (fast_allowed(l) && (slot = sift_fast_intent_set(shm, &l->loc, l->part_id, l->fast_slot, mode)) >= 0)
+	{
+		note_transition(l);
+		l->fast_slot = slot;
+		l->fast_mode = mode;
+		l->intent_mode = Max(l->intent_mode, (int8) mode);
+		return TM_Ok;
+	}
 	r = take_modes(l, want, wait_policy, reread);
 	if (r != TM_Ok)
 	{
@@ -759,7 +834,6 @@ sift_esc_promote(Relation rel, uint64 part_id, uint32 nparts, LockTupleMode mode
 	SiftLocalLock *t = whole ? rl : pl;
 	LockTupleMode esc_mode = (LockTupleMode) Max(Max((int) mode, t->held_max), t->esc_mode);
 	bool		must = stripe_full || pglm || (t->esc_mode >= 0 && (int) mode > t->esc_mode);
-	SiftEscModes want = sift_esc_coarse_modes(esc_mode);
 	TM_Result	r = TM_Ok;
 
 	*escalated = false;
@@ -772,7 +846,7 @@ sift_esc_promote(Relation rel, uint64 part_id, uint32 nparts, LockTupleMode mode
 			return TM_Ok;
 	}
 	if (r == TM_Ok)
-		r = take_modes(t, want, wait_policy, reread);
+		r = take_coarse(t, esc_mode, wait_policy, reread);
 	if (r != TM_Ok && !must)
 	{
 		pl->retry_at = pl->tier1_rows + SIFT_ROWLOCK_RETRY_ROWS;
@@ -781,7 +855,7 @@ sift_esc_promote(Relation rel, uint64 part_id, uint32 nparts, LockTupleMode mode
 	}
 	if (r != TM_Ok)
 	{
-		tmfd->xmax = conflicting_xid(&t->loc, t->part_id, want);
+		tmfd->xmax = conflicting_xid(&t->loc, t->part_id, sift_esc_coarse_modes(esc_mode));
 		return r;
 	}
 	note_transition(t);
@@ -800,6 +874,32 @@ sift_esc_promote(Relation rel, uint64 part_id, uint32 nparts, LockTupleMode mode
 
 /* ---- the transaction ends or prepares ---- */
 
+/*
+ * What the prepared transaction holds is the lock manager's from here on, which a restart gives back: the intention of a record becomes a page lock, and a relation that has a coarse lock of it is
+ * marked as the ones whose rows are held there (sift_lock_2pc_present), so that a locker of the relation takes the page lock, and meets the coarse lock, instead of a record that is gone
+ */
+static void
+hold_prepared(SiftLocalLock *l)
+{
+	bool		waited = false;
+	LOCKTAG		marker;
+
+	if (l->fast_mode >= 0)
+	{
+		TM_Result	r = take_modes(l, sift_esc_intent_modes((LockTupleMode) l->fast_mode), LockWaitSkip, &waited);
+
+		SIFT_INVARIANT(r == TM_Ok, "the intention of a transaction that prepares is held in the lock manager, no coarse lock can stand in its way");
+		sift_fast_intent_restore(shm, l->fast_slot, -1);
+		l->fast_mode = l->fast_slot = -1;
+	}
+	if (l->part_id == SIFT_ESC_PART_ALL && rel_escalated(l) && !l->prepared_marked)
+	{
+		SET_LOCKTAG_PAGE(marker, l->dbid, l->relid, SIFT_F2_ROW_2PC_LOCK_BLKNO);
+		(void) LockAcquire(&marker, RowShareLock, false, false);
+		l->prepared_marked = true;
+	}
+}
+
 void
 sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb)
 {
@@ -816,7 +916,7 @@ sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb)
 		{
 			LockTupleMode mode = (LockTupleMode) l->held_max;
 
-			if (take_modes(l, sift_esc_coarse_modes(mode), LockWaitSkip, &waited) == TM_Ok)
+			if (take_coarse(l, mode, LockWaitSkip, &waited) == TM_Ok)
 			{
 				l->esc_mode = mode;
 				l->esc_sub = GetCurrentSubTransactionId();
@@ -827,17 +927,24 @@ sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb)
 		}
 	}
 	for (uint32 i = 0; i < nlocks; i++)
+	{
 		if (locks[i]->published)
 		{
 			DirArg		a = dir_arg(locks[i]);
 
 			dir_apply(DIR_PREPARED, &a);
 		}
+		hold_prepared(locks[i]);
+	}
 }
 
 void
 sift_esc_xact_end(XactEvent event)
 {
+	for (uint32 i = 0; i < nlocks && shm != NULL; i++)
+		coarse_leave(locks[i]);
+	if (shm != NULL)
+		sift_fast_intent_release_all(shm);
 	for (uint32 i = 0; i < nlocks && event != XACT_EVENT_PREPARE; i++)
 		if (locks[i]->published)
 		{

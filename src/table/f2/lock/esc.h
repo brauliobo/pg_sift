@@ -8,6 +8,10 @@
  * The table below the stripes is the directory of the coarse holders: whom a NOWAIT or SKIP LOCKED request names as the one in its way, and what a prepared transaction left behind.
  *
  * Without the shared table (no room in /dev/shm) every row lock is a coarse lock of the partition or the relation (SIFT_LOCK_BACKEND_PGLM): the lock manager of the server does all of it.
+ *
+ * While nobody holds or asks for a coarse lock of a partition or relation (the count of coarse locks of its stripe of the directory is zero), the intention of a row locker is a record in a slot of
+ * its own in shared memory (fast_intent.c) and not a page lock: a row locker that holds a few rows takes nothing of the lock manager. A request for a coarse lock raises the count, waits for the
+ * transactions of the conflicting records the way a request for a transaction does (XactLockTableWait, so that the deadlock detector sees the wait), and then takes the page lock.
  */
 #ifndef SIFT_TBL_F2_LOCK_ESC_H
 #define SIFT_TBL_F2_LOCK_ESC_H
@@ -63,13 +67,22 @@ typedef struct SiftEscStripe
 	SiftPartEscEntry entries[SIFT_ESC_BUCKETS];
 } SiftEscStripe;
 
-/* The one named segment of the table: both tiers and their locks, 1.05 MiB; the entries in use of a directory stripe are counted beside the stripes (a count inside would pad a stripe by a cache line) */
+/* The lock of a stripe of the directory, the entries in use and the coarse locks held or asked for of the keys that hash to it, in one cache line */
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftEscStripeHdr
+{
+	LWLock		lock;
+	pg_atomic_uint32 coarse_active;
+	uint16		n;
+} SiftEscStripeHdr;
+
+StaticAssertDecl(sizeof(SiftEscStripeHdr) == PG_CACHE_LINE_SIZE, "the header of a stripe of the directory is one cache line");
+
+/* The one named segment of the table: both tiers and their locks, 2.1 MiB, and the slots of the fast intentions of every process after it (fast_intent.c) */
 typedef struct SiftRowLockShmLayout
 {
 	SiftRowLockTable rows;
 	SiftEscStripe esc_stripes[SIFT_ESC_STRIPES];
-	LWLockPadded esc_locks[SIFT_ESC_STRIPES];
-	uint16		esc_n[SIFT_ESC_STRIPES];
+	SiftEscStripeHdr esc[SIFT_ESC_STRIPES];
 } SiftRowLockShmLayout;
 
 /*
@@ -140,6 +153,7 @@ typedef struct SiftEscSubRecord
 	int8		prev_intent;	/* -1: none, else a LockTupleMode */
 	int8		prev_esc;		/* -1: not held coarsely, else a LockTupleMode */
 	int8		prev_held_max;	/* the strongest entry taken before, -1 for none */
+	int8		prev_fast;		/* the mode of the slot of the fast intention before, -1: none */
 	SubTransactionId prev_esc_sub;	/* the (sub)transaction that held the coarse lock before */
 	bool		took_split_pin;	/* this one made the transaction hold SIFT_F2_SPLIT_LOCK_BLKNO */
 	uint32		chain;			/* the next record of its bucket, plus one: the log finds a record by a hash */
@@ -147,6 +161,13 @@ typedef struct SiftEscSubRecord
 
 /* Tier 1 gives back the entries the (sub)transaction owns in the partition (SIFT_ESC_PART_ALL: all partitions of the relation) once a coarse lock holds them */
 typedef void (*SiftTier1ReleaseCb) (const RelFileLocator *loc, uint64 part_id, SubTransactionId subxid);
+
+/* Tier 1 for row.c: the entries of the (sub)transaction in the partition go back to tier 1 once a coarse lock holds them (a SiftTier1ReleaseCb), and the entry a request took of a row it found changed is given back */
+extern void sift_rowlock_release_tier1(const RelFileLocator *loc, uint64 part_id, SubTransactionId subxid);
+extern void sift_rowlock_release_new(Relation rel, uint64 tid, uint64 part_id);
+
+/* The stripe of the directory of the partition (SIFT_ESC_PART_ALL: the relation) of a relation, which also counts its coarse locks */
+extern uint32 sift_esc_stripe_of(const RelFileLocator *loc, uint64 part_id);
 
 /* The memory the locks of the transaction keep, in tier 1 and here: it is reset when the transaction ends, so an idle backend holds none */
 extern MemoryContext sift_rowlock_txn_cx(void);
@@ -191,5 +212,21 @@ extern void sift_esc_drop_rel(const RelFileLocator *loc);
 /* The holders in the directory, after those of ended prepared transactions are reclaimed; the one in the way of a request for the mode of the partition, or InvalidTransactionId */
 extern uint32 sift_esc_live_count(void);
 extern TransactionId sift_esc_find_conflicting_xid(const RelFileLocator *loc, uint64 part_id, LockTupleMode mode);
+
+/*
+ * The fast intentions (fast_intent.c): slot is the one of this process that holds the intention of the key (-1: none yet). sift_fast_intent_set records the mode in it, or in a free one, and returns the
+ * slot; -1 where a coarse lock of the key is held or asked for, or no slot is free (the caller takes the page lock). sift_fast_intent_restore puts a slot back to the mode it had (-1: free).
+ * sift_fast_intent_conflict is a transaction of another process, still running, whose intention conflicts with the coarse modes.
+ */
+extern int	sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, int slot, LockTupleMode mode);
+extern void sift_fast_intent_restore(SiftRowLockShmLayout *s, int slot, int mode);
+extern TransactionId sift_fast_intent_conflict(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, SiftEscModes want);
+extern void sift_fast_intent_release_all(SiftRowLockShmLayout *s);
+extern Size sift_fast_intent_bytes(void);
+extern void sift_fast_intent_init(SiftRowLockShmLayout *s);
+
+/* A coarse lock of the key is held or asked for by this transaction: row lockers of other transactions take the page lock until it ends */
+extern void sift_esc_coarse_enter(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id);
+extern void sift_esc_coarse_leave(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id);
 
 #endif							/* SIFT_TBL_F2_LOCK_ESC_H */

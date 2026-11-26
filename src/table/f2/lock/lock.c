@@ -1,7 +1,7 @@
 /*
  * table/f2/lock/lock.c - tier 1 of the row locks of a sift_table, and EvalPlanQual.
  *
- * Locks live in shared memory, 128 stripes of 64 entries of 128 bytes and the chunks of the stripes that fill (f2_lock_ovf.h), and write no WAL: SELECT FOR KEY SHARE, FOR SHARE, FOR NO KEY UPDATE and FOR UPDATE keep the conflict
+ * Locks live in shared memory, 256 stripes of 64 entries of 128 bytes and the chunks of the stripes that fill (f2_lock_ovf.h), and write no WAL: SELECT FOR KEY SHARE, FOR SHARE, FOR NO KEY UPDATE and FOR UPDATE keep the conflict
  * matrix of the heap. A row changed by a transaction that has not ended is known by its entry (the change itself is staged in that backend until its commit), so a waiter learns whom
  * to wait for. After the commit of an update the entry stays until the updater is older than every snapshot (SIFT_ROWLOCK_COMMITTED_UPD): the waiter that wakes finds the new
  * version's address and EvalPlanQual runs on it. Should the entry be reused, the same address is kept on disk, as the second slot of the pair of the pending delete of the update
@@ -55,7 +55,7 @@ tier1_attached(void)
 static LWLock *
 stripe_lock(int si)
 {
-	return &rows->stripe_locks[si].lock;
+	return &rows->hdr[si].lock;
 }
 
 /* ---- the entries ---- */
@@ -176,40 +176,84 @@ track_oldest_committed(SiftRowLockEntry *e, void *arg)
 	return false;
 }
 
+/* What a request needs of the server and asks for with the stripe lock let go: the horizon of the entries that no snapshot waits for (it takes the lock of the process array), or a chunk for a full stripe (it may make a segment) */
+typedef struct Outside
+{
+	FullTransactionId horizon;
+	dsa_pointer chunk;
+	bool		wants_horizon;
+	bool		wants_chunk;
+	bool		no_memory;
+} Outside;
+
+#define OUTSIDE_INIT {.horizon = InvalidFullTransactionId,.chunk = InvalidDsaPointer}
+
+static bool
+needs_outside(const Outside *o)
+{
+	return o->wants_horizon || o->wants_chunk;
+}
+
+static void
+provide(Outside *o)
+{
+	if (o->wants_horizon)
+		o->horizon = oldest_needed();
+	else
+	{
+		o->chunk = sift_rowlock_chunk_alloc(rows);
+		o->no_memory = o->chunk == InvalidDsaPointer;
+	}
+	o->wants_horizon = o->wants_chunk = false;
+}
+
+static void
+return_chunk(Outside *o)
+{
+	if (o->chunk != InvalidDsaPointer)
+		sift_rowlock_chunk_free(o->chunk);
+}
+
 /*
- * A slot for an entry of the stripe, NULL when the area has no memory for one. A stripe without room frees the shells and the updates that no snapshot can still wait on, then reuses the slot of
- * the oldest committed update (its successor is on disk), and only then asks for a chunk: what is not a lock in flight does not make the stripe grow.
+ * A slot for an entry of the key in the stripe, NULL where the stripe needs something of the server first (o says what: the caller lets go of the lock, gets it, and asks again) or where the area has no
+ * memory for a chunk (o->no_memory). A stripe without room frees the shells and the updates that no snapshot can still wait on, then reuses the slot of the oldest committed update (its successor is on
+ * disk), and only then takes a chunk: what is not a lock in flight does not make the stripe grow.
  */
 static SiftRowLockEntry *
-slot_for_write(int si)
+slot_for_write(int si, const SiftRowLockKey *k, Outside *o)
 {
 	SiftRowLockEntry *oldest = NULL;
-	FullTransactionId horizon;
 
 	if (!sift_rowlock_has_room(rows, si))
 	{
-		horizon = oldest_needed();
-		sift_rowlock_sweep(rows, si, reclaimable, &horizon);
+		if (!FullTransactionIdIsValid(o->horizon))
+		{
+			o->wants_horizon = true;
+			return NULL;
+		}
+		sift_rowlock_sweep(rows, si, reclaimable, &o->horizon);
 	}
 	if (!sift_rowlock_has_room(rows, si))
 		sift_rowlock_sweep(rows, si, track_oldest_committed, &oldest);
-	return sift_rowlock_has_room(rows, si) || oldest == NULL ? sift_rowlock_add(rows, si) : oldest;
+	if (!sift_rowlock_has_room(rows, si) && oldest != NULL)
+	{
+		sift_rowlock_reset(rows, si, oldest, k);
+		return oldest;
+	}
+	if (!sift_rowlock_has_room(rows, si) && o->chunk == InvalidDsaPointer)
+	{
+		o->wants_chunk = !o->no_memory;
+		return NULL;
+	}
+	return sift_rowlock_add(rows, si, k, &o->chunk);
 }
 
 static SiftRowLockEntry *
-entry_for_write(int si, const SiftRowLockKey *k)
+entry_for_write(int si, const SiftRowLockKey *k, Outside *o)
 {
 	SiftRowLockEntry *e = sift_rowlock_find(rows, si, k);
 
-	if (e != NULL)
-		return e;
-	e = slot_for_write(si);
-	if (e != NULL)
-	{
-		memset(e, 0, sizeof(*e));
-		e->key = *k;
-	}
-	return e;
+	return e != NULL ? e : slot_for_write(si, k, o);
 }
 
 /* ---- what this transaction touched, to settle at its end (f2_lock_touched.c) ---- */
@@ -263,18 +307,15 @@ retire_overflow(const SiftRowLockKey *k, MultiXactId mx)
 	sift_mx_free(&members);
 }
 
-/* Gives the row back: our holders go, our update is the commit's (kept for EvalPlanQual) or the abort's (forgotten); false for an entry that stays because a speculative insert is in flight */
+/* Gives the row back, the stripe locked: our holders go, our update is the commit's (kept for EvalPlanQual) or the abort's (forgotten); false for an entry that stays because a speculative insert is in flight. *overflow: the MultiXactId to retire once the lock is let go */
 static bool
-settle(const SiftTouched *t, bool commit, bool keep_speculative)
+settle_locked(const SiftTouched *t, int si, bool commit, bool keep_speculative, MultiXactId *overflow)
 {
-	int			si = stripe_of(&t->key);
 	SiftRowLockEntry *e;
-	MultiXactId overflow = InvalidMultiXactId;
 	bool		settled;
 	int			nholders;
 
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
-	overflowed[si / 64] |= (uint64) (rows->overflow[si] != InvalidDsaPointer) << (si % 64);
+	overflowed[si / 64] |= (uint64) (rows->hdr[si].overflow != InvalidDsaPointer) << (si % 64);
 	e = sift_rowlock_find(rows, si, &t->key);
 	settled = e == NULL || !keep_speculative || (e->flags & SIFT_ROWLOCK_SPECULATIVE) == 0;
 	if (e != NULL && settled)
@@ -301,12 +342,70 @@ settle(const SiftTouched *t, bool commit, bool keep_speculative)
 		else if (idle(e))
 			sift_rowlock_remove(rows, si, e);
 		else if ((e->flags & ~SIFT_ROWLOCK_LAST_LOCKER) == 0 && e->nholders == 0)
-			overflow = e->overflow_mxid;
+			*overflow = e->overflow_mxid;
 	}
+	return settled;
+}
+
+static bool
+settle(const SiftTouched *t, bool commit, bool keep_speculative)
+{
+	int			si = stripe_of(&t->key);
+	MultiXactId overflow = InvalidMultiXactId;
+	bool		settled;
+
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	settled = settle_locked(t, si, commit, keep_speculative, &overflow);
 	LWLockRelease(stripe_lock(si));
 	if (commit && MultiXactIdIsValid(overflow))
 		retire_overflow(&t->key, overflow);
 	return settled;
+}
+
+#define SETTLE_WINDOW	4096
+
+/* The rows touched[base, base + n) given back stripe by stripe, each stripe locked once for all of them: the end of a transaction takes no memory, so the order of the window is on the stack */
+static void
+settle_window(uint32 base, uint32 n, bool commit)
+{
+	uint16		first[SIFT_ROWLOCK_PARTITIONS + 1] = {0},
+				at[SETTLE_WINDOW];
+	MultiXactId overflow[SETTLE_WINDOW];
+
+	if (n == 1)
+	{
+		settle(sift_touched_at(base), commit, false);
+		return;
+	}
+	for (uint32 i = 0; i < n; i++)
+		first[stripe_of(&sift_touched_at(base + i)->key) + 1]++;
+	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
+		first[si + 1] += first[si];
+	for (uint32 i = 0; i < n; i++)
+		at[first[stripe_of(&sift_touched_at(base + i)->key)]++] = i;
+	for (uint32 lo = 0, hi; lo < n; lo = hi)
+	{
+		int			si = stripe_of(&sift_touched_at(base + at[lo])->key);
+
+		for (hi = lo; hi < n && stripe_of(&sift_touched_at(base + at[hi])->key) == si; hi++)
+			overflow[hi] = InvalidMultiXactId;
+		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		for (uint32 j = lo; j < hi; j++)
+			(void) settle_locked(sift_touched_at(base + at[j]), si, commit, false, &overflow[j]);
+		LWLockRelease(stripe_lock(si));
+		for (uint32 j = lo; commit && j < hi; j++)
+			if (MultiXactIdIsValid(overflow[j]))
+				retire_overflow(&sift_touched_at(base + at[j])->key, overflow[j]);
+	}
+}
+
+static void
+settle_all(bool commit)
+{
+	uint32		n = sift_touched_count();
+
+	for (uint32 base = 0; base < n; base += SETTLE_WINDOW)
+		settle_window(base, Min(SETTLE_WINDOW, n - base), commit);
 }
 
 /* The row stays held after the prepare: the entry says so, and the lock manager gets the tuple lock that a restart finds again (f2_lock_2pc.h) */
@@ -371,9 +470,20 @@ retag_holder(const SiftTouched *t, SubTransactionId parent)
 	LWLockRelease(stripe_lock(si));
 }
 
+/* The entry this call took of a row that a transaction that has not ended changed: the row is not held, so that a request that skips it, or waits for that transaction, holds nothing of it */
+void
+sift_rowlock_release_new(Relation rel, uint64 tid, uint64 part_id)
+{
+	SiftTouched t = {.key = key_of(&rel->rd_locator, tid),.part_id = part_id,.xid = GetCurrentTransactionId(),.subxid = GetCurrentSubTransactionId()};
+
+	(void) settle(&t, false, false);
+	sift_touched_forget(&t.key);
+	sift_esc_note_tier1_release(&rel->rd_locator, part_id, 1);
+}
+
 /* The tier 2 lock holds the rows of the (sub)transaction now: its entries go, but those of the speculative inserts in flight */
-static void
-release_tier1(const RelFileLocator *loc, uint64 part_id, SubTransactionId subxid)
+void
+sift_rowlock_release_tier1(const RelFileLocator *loc, uint64 part_id, SubTransactionId subxid)
 {
 	for (int32 i = sift_touched_sub_first(subxid); i >= 0;)
 	{
@@ -399,17 +509,18 @@ sift_tbl_rowlock_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 
 	if (event == XACT_EVENT_PRE_PREPARE)
 	{
-		sift_esc_pre_prepare(release_tier1);
+		sift_esc_pre_prepare(sift_rowlock_release_tier1);
 		for (uint32 i = 0; i < sift_touched_count(); i++)
 			prepare_row(sift_touched_at(i));
 		return;
 	}
 	if (event != XACT_EVENT_PREPARE && !commit && event != XACT_EVENT_ABORT && event != XACT_EVENT_PARALLEL_ABORT)
 		return;
-	for (uint32 i = 0; i < sift_touched_count() && event != XACT_EVENT_PREPARE; i++)
-		settle(sift_touched_at(i), commit, false);
 	if (event != XACT_EVENT_PREPARE)
+	{
+		settle_all(commit);
 		reclaim_overflowed();
+	}
 	sift_touched_reset();
 	sift_esc_xact_end(event);
 }
@@ -476,9 +587,9 @@ judge_entry(SiftRowLockEntry *e, LockTupleMode mode, SiftRowLockResult *r, const
 	}
 }
 
-/* One try of an acquire under the stripe lock: o asks what must be done outside it (the members of the MultiXactId of the entry, a MultiXactId for the holder) before the try is made again */
+/* One try of an acquire under the stripe lock: o asks what must be done outside it (the members of the MultiXactId of the entry, a MultiXactId for the holder) before the try is made again, and so does out */
 static SiftRowLockResult
-try_acquire(Relation rel, const SiftRowLockKey *k, int si, uint64 part_id, LockTupleMode mode, SiftHoldOutside *o)
+try_acquire(Relation rel, const SiftRowLockKey *k, int si, uint64 part_id, LockTupleMode mode, SiftHoldOutside *o, Outside *out)
 {
 	SiftRowLockResult r = {.result = TM_Ok};
 	SiftRowLockEntry *e = sift_rowlock_find(rows, si, k);
@@ -498,7 +609,7 @@ try_acquire(Relation rel, const SiftRowLockKey *k, int si, uint64 part_id, LockT
 	if (e != NULL)
 		judge_entry(e, mode, &r, &o->seen);
 	if (r.result == TM_Ok && e == NULL)
-		e = entry_for_write(si, k);
+		e = entry_for_write(si, k, out);
 	r.stripe_full = r.result == TM_Ok && e == NULL;
 	if (r.result == TM_Ok && e != NULL && sift_hold_add(e, mode, o))
 	{
@@ -514,18 +625,23 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
 	int			si = stripe_of(&k);
 	SiftHoldOutside		o = {.seen = {InvalidMultiXactId, NULL, 0}};
+	Outside		out = OUTSIDE_INIT;
 	SiftRowLockResult r;
 
 	SIFT_INVARIANT(tier1_attached(), "the row lock table of sift_table is mapped in every backend that locks a row");
 	for (;;)
 	{
 		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
-		r = try_acquire(rel, &k, si, part_id, mode, &o);
+		r = try_acquire(rel, &k, si, part_id, mode, &o, &out);
 		LWLockRelease(stripe_lock(si));
-		if (!sift_hold_asks(&o))
+		if (needs_outside(&out))
+			provide(&out);
+		else if (!sift_hold_asks(&o))
 			break;
-		sift_hold_do(&o, mode);
+		else
+			sift_hold_do(&o, mode);
 	}
+	return_chunk(&out);
 	sift_mx_free(&o.seen);
 	return r;
 }
@@ -601,17 +717,25 @@ sift_tbl_rowlock_set_staged(Relation rel, uint64 tid, uint32 token)
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
 	int			si = stripe_of(&k);
 	SiftRowLockEntry *e;
+	Outside		out = OUTSIDE_INIT;
 
 	if (!tier1_attached())
 		return false;
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
-	e = entry_for_write(si, &k);
-	if (e != NULL)
+	for (;;)
 	{
-		sift_spec_stage(e, GetCurrentFullTransactionId(), token);
-		(void) sift_touched_add(&k, SIFT_ESC_PART_ALL);
+		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		e = entry_for_write(si, &k, &out);
+		if (e != NULL)
+		{
+			sift_spec_stage(e, GetCurrentFullTransactionId(), token);
+			(void) sift_touched_add(&k, SIFT_ESC_PART_ALL);
+		}
+		LWLockRelease(stripe_lock(si));
+		if (!needs_outside(&out))
+			break;
+		provide(&out);
 	}
-	LWLockRelease(stripe_lock(si));
+	return_chunk(&out);
 	return e != NULL;
 }
 
@@ -665,13 +789,22 @@ sift_tbl_rowlock_probe_staged(Relation rel, uint64 tid, TransactionId *xmin, uin
 	int			si = stripe_of(&k);
 	SiftRowLockEntry *e;
 	SiftSpecProbe r = SIFT_SPEC_NONE;
+	bool		running;
 
-	if (!tier1_attached())
+	if (!tier1_attached() || sift_rowlock_stripe_empty(rows, si))
 		return r;
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	LWLockAcquire(stripe_lock(si), LW_SHARED);
 	e = sift_rowlock_find(rows, si, &k);
+	running = e != NULL && (e->flags & SIFT_ROWLOCK_STAGED_INSERT) != 0 && TransactionIdIsInProgress(XidFromFullTransactionId(e->updater_fxid));
+	if (running)
+	{
+		LWLockRelease(stripe_lock(si));
+		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		e = sift_rowlock_find(rows, si, &k);
+		running = e != NULL && (e->flags & SIFT_ROWLOCK_STAGED_INSERT) != 0 && TransactionIdIsInProgress(XidFromFullTransactionId(e->updater_fxid));
+	}
 	if (e != NULL)
-		r = sift_spec_probe(e, (e->flags & SIFT_ROWLOCK_STAGED_INSERT) != 0 && TransactionIdIsInProgress(XidFromFullTransactionId(e->updater_fxid)), xmin, token);
+		r = sift_spec_probe(e, running, xmin, token);
 	LWLockRelease(stripe_lock(si));
 	return r;
 }
@@ -684,7 +817,7 @@ sift_tbl_rowlock_speculative_token(Relation rel, uint64 tid)
 	SiftRowLockEntry *e;
 	uint32		token = 0;
 
-	if (!tier1_attached())
+	if (!tier1_attached() || sift_rowlock_stripe_empty(rows, si))
 		return 0;
 	LWLockAcquire(stripe_lock(si), LW_SHARED);
 	e = sift_rowlock_find(rows, si, &k);
@@ -702,7 +835,7 @@ sift_tbl_rowlock_peek(Relation rel, uint64 tid)
 	SiftRowLockEntry *e;
 	SiftRowLockPeek p = {0};
 
-	if (!tier1_attached())
+	if (!tier1_attached() || sift_rowlock_stripe_empty(rows, si))
 		return p;
 	LWLockAcquire(stripe_lock(si), LW_SHARED);
 	e = sift_rowlock_find(rows, si, &k);
@@ -729,6 +862,8 @@ sift_tbl_rowlock_clear_lockers(Relation rel)
 		return;
 	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
 	{
+		if (sift_rowlock_stripe_empty(rows, si))
+			continue;
 		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
 		sift_rowlock_sweep(rows, si, last_locker_in, &rel->rd_locator);
 		LWLockRelease(stripe_lock(si));
@@ -749,6 +884,8 @@ sift_tbl_rowlock_drop_rel(const RelFileLocator *loc)
 		return;
 	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
 	{
+		if (sift_rowlock_stripe_empty(rows, si))
+			continue;
 		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
 		sift_rowlock_sweep(rows, si, in_relation, (void *) loc);
 		LWLockRelease(stripe_lock(si));
@@ -798,6 +935,8 @@ sift_tbl_rowlock_vacuum_mxid(Relation rel, MultiXactId oldest_mxact)
 	{
 		CHECK_FOR_INTERRUPTS();
 		found.n = 0;
+		if (sift_rowlock_stripe_empty(rows, si))
+			continue;
 		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
 		sift_rowlock_sweep(rows, si, collect_overflow, &found);
 		LWLockRelease(stripe_lock(si));
@@ -818,180 +957,3 @@ sift_tbl_rowlock_vacuum_mxid(Relation rel, MultiXactId oldest_mxact)
 	return floor;
 }
 
-/* ---- locking a row ---- */
-
-static TM_Result
-tier1_result(const SiftRowLockResult *lr, TM_FailureData *tmfd)
-{
-	if (lr->result == TM_Updated)
-	{
-		sift_tbl_tid_unpack(&tmfd->ctid, lr->updated_tid);
-		tmfd->xmax = lr->xid;
-	}
-	else if (lr->result == TM_BeingModified || lr->result == TM_SelfModified)
-	{
-		tmfd->xmax = lr->xid;
-		tmfd->cmax = lr->cid;
-	}
-	return lr->result;
-}
-
-/*
- * The row is not held yet: an entry while the partition has few and the stripe has room, else the partition or the relation. *reread: a lock was waited for or taken that no entry stands
- * for, so the row on disk is read again. A NOWAIT or SKIP LOCKED request that was refused the partition goes on with entries; one that finds no slot either is in someone's way.
- */
-static TM_Result
-lock_entry_or_partition(Relation rel, uint64 tid, uint64 part_id, LockTupleMode mode, LockWaitPolicy wait_policy, TM_FailureData *tmfd, bool *reread, bool *added)
-{
-	SiftRowLockResult lr = {.result = TM_Ok};
-	bool		escalated;
-	TM_Result	res;
-
-	if (!sift_esc_should_escalate(&rel->rd_locator, part_id, mode, false))
-	{
-		lr = sift_tbl_rowlock_acquire(rel, tid, part_id, mode);
-		*added = lr.added;
-		if (!lr.stripe_full)
-			return tier1_result(&lr, tmfd);
-	}
-	res = sift_esc_promote(rel, part_id, sift_row_part_count(rel), mode, wait_policy, lr.stripe_full, release_tier1, &escalated, reread, tmfd);
-	if (res != TM_Ok || *reread)
-		return res;
-	lr = sift_tbl_rowlock_acquire(rel, tid, part_id, mode);
-	*added = lr.added;
-	if (!lr.stripe_full)
-		return tier1_result(&lr, tmfd);
-	res = sift_esc_promote(rel, part_id, sift_row_part_count(rel), mode, wait_policy, true, release_tier1, &escalated, reread, tmfd);
-	SIFT_INVARIANT(res != TM_Ok || *reread, "a request for a coarse lock that must be taken is granted, or it is refused");
-	return res;
-}
-
-/* A prepared transaction that crashed with the server holds its rows in the lock manager only (f2_lock_2pc.h): asked first, so that a request it refuses takes no entry and no intention lock */
-static TM_Result
-lock_held(Relation rel, const SiftRowState *rs, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, TM_FailureData *tmfd, bool *reread, bool *added)
-{
-	bool		covered = false;
-	TM_Result	res = TM_Ok;
-
-	if (sift_esc_prepared_locks_possible(rel))
-		res = sift_lock_2pc_probe(rel->rd_lockInfo.lockRelId.dbId, rel->rd_lockInfo.lockRelId.relId, tid & SIFT_PD_TID_MASK, mode, tmfd);
-	if (res == TM_Ok)
-		res = sift_esc_before_row_lock(rel, rs->part_id, mode, wait_policy, &covered, reread, tmfd);
-	if (res != TM_Ok || *reread || covered)
-		return res;
-	return lock_entry_or_partition(rel, tid, rs->part_id, mode, wait_policy, tmfd, reread, added);
-}
-
-/* The entry this call took of a row that a transaction that has not ended changed: the row is not held, so that a request that skips it, or waits for that transaction, holds nothing of it */
-static void
-release_new(Relation rel, uint64 tid, uint64 part_id)
-{
-	SiftTouched t = {.key = key_of(&rel->rd_locator, tid),.part_id = part_id,.xid = GetCurrentTransactionId(),.subxid = GetCurrentSubTransactionId()};
-
-	(void) settle(&t, false, false);
-	sift_touched_forget(&t.key);
-	sift_esc_note_tier1_release(&rel->rd_locator, part_id, 1);
-}
-
-/* The lock is held before the deltas are read: no one else can add one while the row is ours */
-static TM_Result
-lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool judge_delta, bool *waited)
-{
-	ItemPointerData waiting_for;
-
-	sift_tbl_tid_unpack(&waiting_for, tid);
-	memset(tmfd, 0, sizeof(*tmfd));
-	*waited = false;
-	for (;;)
-	{
-		SiftRowState rs = sift_row_state_read(rel, tid);
-		TM_Result	res = sift_row_state_result(&rs, cid, tmfd, tid);
-		bool		reread = false,
-					added = false;
-
-		if (res == TM_Ok)
-			res = lock_held(rel, &rs, tid, mode, wait_policy, tmfd, &reread, &added);
-		if (res == TM_Ok && reread)
-		{
-			*waited = true;
-			continue;
-		}
-		if (res == TM_Ok && judge_delta && mode != LockTupleKeyShare)
-		{
-			res = sift_row_delta_result(rel, tid, cid, snap, tmfd);
-			if (res == TM_BeingModified && added)
-				release_new(rel, tid, rs.part_id);
-		}
-		if (res != TM_BeingModified || wait_policy != LockWaitBlock)
-			return res;
-		*waited = true;
-		XactLockTableWait(tmfd->xmax, rel, &waiting_for, XLTW_Lock);
-	}
-}
-
-TM_Result
-sift_tbl_f2_lock_for_modify(Relation rel, uint64 tid, LockTupleMode mode, bool wait, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool *waited)
-{
-	return lock_row(rel, tid, mode, wait ? LockWaitBlock : LockWaitError, snap, cid, tmfd, true, waited);
-}
-
-/* ---- the callbacks ---- */
-
-void
-sift_tbl_f2_record_update(Relation rel, uint64 old_tid, uint64 new_tid, CommandId cid)
-{
-	sift_tbl_rowlock_mark_updated(rel, old_tid, new_tid, cid, false, false);
-}
-
-void
-sift_tbl_f2_record_delete(Relation rel, uint64 tid, CommandId cid, bool changing_part)
-{
-	sift_tbl_rowlock_mark_updated(rel, tid, 0, cid, true, changing_part);
-}
-
-TM_Result
-sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
-					   uint8 flags, TM_FailureData *tmfd)
-{
-	ItemPointerData cur = *tid;
-	bool		traversed = false,
-				at_latest = false;
-
-	sift_stage_flush(rel);
-	for (;;)
-	{
-		bool		waited;
-		TM_Result	res = lock_row(rel, sift_tbl_tid_pack(&cur), mode, wait_policy, snapshot, cid, tmfd, !at_latest, &waited);
-
-		if (res == TM_BeingModified && wait_policy == LockWaitSkip)
-			return TM_WouldBlock;
-		if (res == TM_BeingModified)
-			ereport(ERROR, (errcode(ERRCODE_LOCK_NOT_AVAILABLE), errmsg("could not obtain lock on row in relation \"%s\"", RelationGetRelationName(rel))));
-		if (res == TM_Updated && ((flags & TUPLE_LOCK_FLAG_FIND_LAST_VERSION) != 0 || (!IsolationUsesXactSnapshot() && ItemPointerEquals(&tmfd->ctid, &cur))))
-		{
-			if (IsolationUsesXactSnapshot())
-				ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), errmsg("could not serialize access due to concurrent update")));
-			if (ItemPointerIndicatesMovedPartitions(&tmfd->ctid))
-				ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-								errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
-			at_latest = ItemPointerEquals(&tmfd->ctid, &cur);
-			cur = tmfd->ctid;
-			traversed = true;
-			continue;
-		}
-		if (res == TM_Ok)
-		{
-			bool		found = sift_tbl_f2_tuple_fetch_row_version(rel, &cur, SnapshotAny, slot);
-
-			SIFT_INVARIANT(found, "a locked row of table \"%s\" is gone", RelationGetRelationName(rel));
-			sift_tbl_f2_predicate_point(rel, sift_tbl_tid_pack(&cur), snapshot);
-			if (at_latest)
-				sift_row_delta_ack(rel, sift_tbl_tid_pack(&cur), cid);
-			slot->tts_tid = cur;
-			tmfd->traversed = traversed;
-			ItemPointerCopy(&cur, &tmfd->ctid);
-			ItemPointerCopy(&cur, tid);
-		}
-		return res;
-	}
-}

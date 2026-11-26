@@ -1,5 +1,5 @@
 /*
- * table/f2/lock/rowlock.h - tier 1 of the row locks of a sift_table: 128 stripes of shared memory, 128 bytes an entry, no WAL.
+ * table/f2/lock/rowlock.h - tier 1 of the row locks of a sift_table: 256 stripes of shared memory, 128 bytes an entry, no WAL.
  *
  * An entry names one row (relation file and address). It holds the shared lockers, the updater with the successor address while EvalPlanQual may still ask for it, the latest column
  * delta of the row, and a speculative insertion token. The entry of a committed update stays until the updater is older than every snapshot (GlobalVis), so that a waiter woken
@@ -18,7 +18,7 @@
 #include "storage/lwlock.h"
 #include "storage/relfilelocator.h"
 
-#define SIFT_ROWLOCK_PARTITIONS		128
+#define SIFT_ROWLOCK_PARTITIONS		256
 #define SIFT_ROWLOCK_INLINE_MAX		8
 #define SIFT_ROWLOCK_BUCKETS		64	/* entries a stripe holds in the table; the ones past them are chunks of the area (f2_lock_ovf.h) */
 

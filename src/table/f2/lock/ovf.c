@@ -28,7 +28,11 @@ sift_rowlock_table_init(SiftRowLockTable *t, int tranche)
 {
 	memset(t, 0, sizeof(*t));
 	for (int i = 0; i < SIFT_ROWLOCK_PARTITIONS; i++)
-		LWLockInitialize(&t->stripe_locks[i].lock, tranche);
+	{
+		LWLockInitialize(&t->hdr[i].lock, tranche);
+		pg_atomic_init_u32(&t->hdr[i].total_n, 0);
+		t->hdr[i].overflow = InvalidDsaPointer;
+	}
 	LWLockInitialize(&t->area_lock, tranche);
 	pg_atomic_init_u32(&t->area_handle, DSA_HANDLE_INVALID);
 }
@@ -136,17 +140,44 @@ chunk_at(dsa_area *a, dsa_pointer p)
 	return dsa_get_address(a, p);
 }
 
+#define TAG_ONES	UINT64CONST(0x0101010101010101)
+#define TAG_HIGHS	UINT64CONST(0x8080808080808080)
+
+/* The entries of the table of the stripe whose tag is the key's, eight tags to a compare: every byte of the word that is zero after the xor shows its high bit, and a byte that only looks like it is told apart by the key */
+static SiftRowLockEntry *
+find_in_table(SiftRowLockTable *t, int si, const SiftRowLockKey *k)
+{
+	const SiftRowLockStripeHdr *h = &t->hdr[si];
+	uint64		want = sift_rowlock_tag(k) * TAG_ONES;
+
+	for (int w = 0; w < h->table_n; w += 8)
+	{
+		uint64		tags,
+					hit;
+
+		memcpy(&tags, &h->tags[w], sizeof(tags));
+		hit = tags ^ want;
+		for (hit = (hit - TAG_ONES) & ~hit & TAG_HIGHS; hit != 0; hit &= hit - 1)
+		{
+			int			i = w + pg_rightmost_one_pos64(hit) / 8;
+
+			if (i < h->table_n && memcmp(&t->stripes[si].entries[i].key, k, sizeof(*k)) == 0)
+				return &t->stripes[si].entries[i];
+		}
+	}
+	return NULL;
+}
+
 SiftRowLockEntry *
 sift_rowlock_find(SiftRowLockTable *t, int si, const SiftRowLockKey *k)
 {
-	SiftRowLockStripe *s = &t->stripes[si];
+	SiftRowLockEntry *e = find_in_table(t, si, k);
 	dsa_area   *a;
 
-	for (int i = 0; i < t->stripe_n[si]; i++)
-		if (memcmp(&s->entries[i].key, k, sizeof(*k)) == 0)
-			return &s->entries[i];
-	a = t->overflow[si] != InvalidDsaPointer ? chunk_area(t) : NULL;
-	for (dsa_pointer p = t->overflow[si]; a != NULL && p != InvalidDsaPointer;)
+	if (e != NULL)
+		return e;
+	a = t->hdr[si].overflow != InvalidDsaPointer ? chunk_area(t) : NULL;
+	for (dsa_pointer p = t->hdr[si].overflow; a != NULL && p != InvalidDsaPointer;)
 	{
 		SiftRowLockChunk *c = chunk_at(a, p);
 
@@ -161,31 +192,28 @@ sift_rowlock_find(SiftRowLockTable *t, int si, const SiftRowLockKey *k)
 bool
 sift_rowlock_has_room(SiftRowLockTable *t, int si)
 {
-	return t->stripe_n[si] < SIFT_ROWLOCK_BUCKETS || (t->overflow[si] != InvalidDsaPointer && chunk_at(area_of(t, false), t->overflow[si])->n < SIFT_ROWLOCK_CHUNK_ENTRIES);
+	return t->hdr[si].table_n < SIFT_ROWLOCK_BUCKETS ||
+		(t->hdr[si].overflow != InvalidDsaPointer && chunk_at(area_of(t, false), t->hdr[si].overflow)->n < SIFT_ROWLOCK_CHUNK_ENTRIES);
 }
 
-SiftRowLockEntry *
-sift_rowlock_add(SiftRowLockTable *t, int si)
+dsa_pointer
+sift_rowlock_chunk_alloc(SiftRowLockTable *t)
 {
-	SiftRowLockChunk *c;
+	dsa_area   *a = area_of(t, true);
 
-	if (t->stripe_n[si] < SIFT_ROWLOCK_BUCKETS)
-		return &t->stripes[si].entries[t->stripe_n[si]++];
-	if (!sift_rowlock_has_room(t, si))
-	{
-		dsa_area   *a = area_of(t, true);
-		dsa_pointer p = a == NULL ? InvalidDsaPointer : dsa_allocate_extended(a, sizeof(SiftRowLockChunk), DSA_ALLOC_NO_OOM);
+	return a == NULL ? InvalidDsaPointer : dsa_allocate_extended(a, sizeof(SiftRowLockChunk), DSA_ALLOC_NO_OOM);
+}
 
-		if (p == InvalidDsaPointer)
-			return NULL;
-		c = chunk_at(area, p);
-		Assert((uintptr_t) c % PG_CACHE_LINE_SIZE == 0);
-		c->next = t->overflow[si];
-		c->n = 0;
-		t->overflow[si] = p;
-	}
-	c = chunk_at(area, t->overflow[si]);
-	return &c->entries[c->n++];
+void
+sift_rowlock_chunk_free(dsa_pointer chunk)
+{
+	dsa_free(area, chunk);
+}
+
+static void
+count_entry(SiftRowLockTable *t, int si, int delta)
+{
+	pg_atomic_write_u32(&t->hdr[si].total_n, pg_atomic_read_u32(&t->hdr[si].total_n) + delta);
 }
 
 static bool
@@ -195,21 +223,65 @@ in_table(const SiftRowLockStripe *s, const SiftRowLockEntry *e)
 }
 
 void
+sift_rowlock_reset(SiftRowLockTable *t, int si, SiftRowLockEntry *e, const SiftRowLockKey *k)
+{
+	memset(e, 0, sizeof(*e));
+	e->key = *k;
+	if (in_table(&t->stripes[si], e))
+		t->hdr[si].tags[e - t->stripes[si].entries] = sift_rowlock_tag(k);
+}
+
+SiftRowLockEntry *
+sift_rowlock_add(SiftRowLockTable *t, int si, const SiftRowLockKey *k, dsa_pointer *spare)
+{
+	SiftRowLockStripeHdr *h = &t->hdr[si];
+	SiftRowLockChunk *c;
+	SiftRowLockEntry *e;
+
+	if (h->table_n < SIFT_ROWLOCK_BUCKETS)
+		e = &t->stripes[si].entries[h->table_n++];
+	else
+	{
+		if (!sift_rowlock_has_room(t, si))
+		{
+			Assert(*spare != InvalidDsaPointer);
+			c = chunk_at(area, *spare);
+			Assert((uintptr_t) c % PG_CACHE_LINE_SIZE == 0);
+			c->next = h->overflow;
+			c->n = 0;
+			h->overflow = *spare;
+			*spare = InvalidDsaPointer;
+		}
+		c = chunk_at(area, h->overflow);
+		e = &c->entries[c->n++];
+	}
+	sift_rowlock_reset(t, si, e, k);
+	count_entry(t, si, 1);
+	return e;
+}
+
+void
 sift_rowlock_remove(SiftRowLockTable *t, int si, SiftRowLockEntry *e)
 {
+	SiftRowLockStripeHdr *h = &t->hdr[si];
 	SiftRowLockStripe *s = &t->stripes[si];
-	dsa_pointer head = in_table(s, e) ? InvalidDsaPointer : t->overflow[si];
+	dsa_pointer head = in_table(s, e) ? InvalidDsaPointer : h->overflow;
 	SiftRowLockChunk *c;
+	SiftRowLockEntry *last;
 
 	Assert(head == InvalidDsaPointer || area != NULL);
 	c = head == InvalidDsaPointer ? NULL : chunk_at(area, head);
-	SiftRowLockEntry *last = c != NULL ? &c->entries[--c->n] : &s->entries[--t->stripe_n[si]];
-
+	last = c != NULL ? &c->entries[--c->n] : &s->entries[--h->table_n];
 	if (e != last)
+	{
 		*e = *last;
+		if (c == NULL)
+			h->tags[e - s->entries] = h->tags[last - s->entries];
+	}
+	count_entry(t, si, -1);
 	if (c != NULL && c->n == 0)
 	{
-		t->overflow[si] = c->next;
+		h->overflow = c->next;
 		dsa_free(area, head);
 	}
 }
@@ -219,27 +291,27 @@ sift_rowlock_sweep(SiftRowLockTable *t, int si, SiftRowLockSweepFn drop, void *a
 {
 	dsa_area   *a;
 
-	for (int i = 0; i < t->stripe_n[si];)
+	for (int i = 0; i < t->hdr[si].table_n;)
 		if (drop(&t->stripes[si].entries[i], arg))
 			sift_rowlock_remove(t, si, &t->stripes[si].entries[i]);
 		else
 			i++;
-	a = t->overflow[si] != InvalidDsaPointer ? chunk_area(t) : NULL;
-	for (dsa_pointer p = t->overflow[si]; a != NULL && p != InvalidDsaPointer;)
+	a = t->hdr[si].overflow != InvalidDsaPointer ? chunk_area(t) : NULL;
+	for (dsa_pointer p = t->hdr[si].overflow; a != NULL && p != InvalidDsaPointer;)
 	{
 		SiftRowLockChunk *c = chunk_at(a, p);
 		dsa_pointer next = c->next;
 
 		for (uint32 i = 0; c != NULL && i < c->n;)
 		{
-			bool		is_head = t->overflow[si] == p;
+			bool		is_head = t->hdr[si].overflow == p;
 
 			if (!drop(&c->entries[i], arg))
 				i++;
 			else
 			{
 				sift_rowlock_remove(t, si, &c->entries[i]);
-				c = is_head && t->overflow[si] != p ? NULL : c;
+				c = is_head && t->hdr[si].overflow != p ? NULL : c;
 			}
 		}
 		p = next;
@@ -249,10 +321,10 @@ sift_rowlock_sweep(SiftRowLockTable *t, int si, SiftRowLockSweepFn drop, void *a
 SiftRowLockCount
 sift_rowlock_count(SiftRowLockTable *t, int si)
 {
-	SiftRowLockCount n = {.in_table = t->stripe_n[si]};
-	dsa_area   *a = t->overflow[si] != InvalidDsaPointer ? chunk_area(t) : NULL;
+	SiftRowLockCount n = {.in_table = t->hdr[si].table_n};
+	dsa_area   *a = t->hdr[si].overflow != InvalidDsaPointer ? chunk_area(t) : NULL;
 
-	for (dsa_pointer p = t->overflow[si]; a != NULL && p != InvalidDsaPointer;)
+	for (dsa_pointer p = t->hdr[si].overflow; a != NULL && p != InvalidDsaPointer;)
 	{
 		SiftRowLockChunk *c = chunk_at(a, p);
 

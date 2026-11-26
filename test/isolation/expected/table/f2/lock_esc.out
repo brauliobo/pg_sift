@@ -158,9 +158,10 @@ f
 step s1a: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 18000;
 step s2a: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 36001 AND 54000;
 step s1b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 18001 AND 34000; <waiting ...>
-step s2b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 54001 AND 72000;
-ERROR:  deadlock detected
+step s2b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 54001 AND 72000; <waiting ...>
 step s1b: <... completed>
+step s2b: <... completed>
+ERROR:  deadlock detected
 step s1c: COMMIT;
 step s2e: ROLLBACK;
 step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
