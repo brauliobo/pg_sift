@@ -26,9 +26,10 @@ def at(size):
 
 
 # The gate's units hold 8 rows, so the leaf statistics block (16 bytes of sample a unit and leaf) is near the 3% of the segment it may take and some sizes keep it, some
-# do not: the gate builds its indexes with the share lifted to a quarter and fails if a segment of 64 units or more is left without the block (it measures the first plan the block gives)
+# do not: the gate builds its indexes with the share lifted to a quarter and fails if a segment of 64 units or more is left without the block (it measures the first plan the block gives).
+# Units, their point directory and that block are Format 1's (the 8-page geometry is theirs): the gate's index is a Format 1 index
 def at_gate(size):
-    return (f"set sift.test_limits = 'lst_share_div=4'; {at(size)} reset sift.test_limits; "
+    return (f"set sift.test_limits = 'lst_share_div=4'; set sift.test_create_format1 = on; {at(size)} reset sift.test_create_format1; reset sift.test_limits; "
             "do $$ begin if not (select bool_and(f.lstats or s.units < 64) from sift._test_col_formats('ix'::regclass) f join sift.col_segments('ix') s on s.gen = f.gen) then raise exception 'a segment of the index has no leaf statistics block'; end if; end $$;")
 
 
