@@ -4,6 +4,8 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET sift.test_create_format1 = off;
+-- the helper compares through string_agg, which the aggregate engine takes over and reads without the directory: the scan of the index is what is asked
+SET sift.enable_agg = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
 

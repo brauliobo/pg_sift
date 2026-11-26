@@ -83,7 +83,6 @@ SIFT_VSTR_MAX_STEPS	array size of the steps of one text program: held by an asse
 AK6_GID_MAX_NOSEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 BIAS_LIMIT	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 DENSE_MAX_GROUPS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
-DIS_MAX_LEVEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 DIST_MAX_CHUNK	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 F2_AUTO_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
 GJ_MAX_CHUNK	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows

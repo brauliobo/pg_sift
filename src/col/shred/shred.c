@@ -245,6 +245,7 @@ reserve_parents(SiftShred *sh, int g, uint32 need)
 		cap *= 2;
 	gr->end = regrow(sh, gr->end, cap * sizeof(uint32));
 	gr->lstate = regrow(sh, gr->lstate, cap);
+	gr->ltag = regrow(sh, gr->ltag, cap);
 	gr->pcap = cap;
 }
 
@@ -275,6 +276,7 @@ open_element(SiftShred *sh, int g, uint32 keyid)
 		reserve_parents(sh, gd->children[k], i + 1);
 		ch->end[i] = ch->n;
 		ch->lstate[i] = SIFT_SHRED_ABSENT;
+		ch->ltag[i] = SIFT_COLTAG_UNKNOWN;
 		ch->pn = i + 1;
 	}
 }
@@ -307,8 +309,10 @@ release_large(SiftShred *sh)
 		{
 			pfree(gr->end);
 			pfree(gr->lstate);
+			pfree(gr->ltag);
 			gr->end = NULL;
 			gr->lstate = NULL;
+			gr->ltag = NULL;
 			gr->pcap = 0;
 		}
 	}
@@ -483,6 +487,7 @@ list_overflow(SiftShred *sh, NodeP n, const void *ev, uint8 tag)
 	uint32		p = sh->doc.grp[n->pgroup].n - 1;
 
 	sh->doc.grp[n->group].lstate[p] = SIFT_SHRED_OVERFLOW;
+	sh->doc.grp[n->group].ltag[p] = tag;
 	pay_keep(sh, ev, -(1 + n->group), p, tag);
 }
 
