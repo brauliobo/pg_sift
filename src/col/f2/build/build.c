@@ -364,7 +364,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (info->ii_Concurrent && sift_f2_scoped(index))
 		sift_scope_resolve(heap, index, true, SIFT_JOURNAL_EMPTY);
 	SIFT_TEST_GATE(sift_test_build_gate, 8);
-	if (sift_col_track_on(index))
+	if (sift_col_track_on(index) && !sift_col_track_awaits_update())
 	{
 		sift_f2_progress_phase(SIFT_F2_PHASE_TRACK);
 		sift_f2_track_install(heap, index, info->ii_Concurrent);

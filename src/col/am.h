@@ -106,6 +106,7 @@ extern AttrNumber sift_col_row_key_attno(Relation index, Relation rel);
 extern AttrNumber sift_col_index_attno_in(Relation index, int att, Relation rel);
 /* The option track_changes (col/v1/track/track.c): why the table is one a statement trigger cannot hear, the triggers and the baseline, their removal, the reconcile after ALTER INDEX, and whether the log may be taken for complete */
 extern const char *sift_col_track_deaf(Relation heap);
+extern bool sift_col_track_awaits_update(void);
 extern void sift_col_track_init(void);
 extern void sift_col_track_dropping(Oid relid);
 extern Oid sift_col_track_lookup(const char *name, bool missing_ok);

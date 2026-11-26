@@ -32,6 +32,7 @@
 #include "catalog/pg_trigger.h"
 #include "commands/trigger.h"
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "storage/bufmgr.h"
 #include "utils/acl.h"
@@ -116,6 +117,13 @@ sift_col_track_deaf(Relation heap)
 		if (subscribed(tbl))
 			return "the table is the target of a logical replication subscription, or its parent is, and the apply worker fires no statement trigger";
 	return NULL;
+}
+
+/* pg_upgrade restores an index as a placeholder, whose files the old cluster's replace, before ALTER EXTENSION UPDATE: an extension of a release without the trigger function has no trigger to make */
+bool
+sift_col_track_awaits_update(void)
+{
+	return IsBinaryUpgrade && !OidIsValid(sift_col_track_function(true));
 }
 
 /* Are both triggers there as the option made them, and the log's own word on its completeness the one the channel gives (complete, with the witnesses of the triggers): of this release or an earlier one */
