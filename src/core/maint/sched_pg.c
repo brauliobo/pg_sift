@@ -59,7 +59,7 @@ sift_maint_table(void)
 	if (table == NULL && !table_tried)
 	{
 		table_tried = true;
-		/* MEM[MEM-SHM-06]: DSM maintenance queue sift_maint_v6 (fixed; 2048x128 B slots) */
+		/* MEM[MEM-SHM-06]: DSM maintenance queue sift_maint_v6 (fixed; 8192x128 B slots) */
 		if ((table = sift_dsm_try(TABLE_NAME, sift_maint_shmem_size(), table_init)) != NULL)
 		{
 			sift_tranche_register(table->tranche, "SiftMaintShmem");

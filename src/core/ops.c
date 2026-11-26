@@ -27,6 +27,7 @@
 #include "col/keystore/keystore.h"
 #include "core/errctx.h"
 #include "core/format_ux.h"
+#include "core/maint/sched.h"
 #include "core/ops.h"
 #include "core/shm/manifest.h"
 #include "core/store/store.h"
@@ -187,6 +188,16 @@ forget_shared_manifest(Oid relid)
 	relation_close(rel, NoLock);
 }
 
+/* The queued maintenance of a dropped relation gives its slots back at once: a step would only find the relation gone */
+static void
+forget_queued_maintenance(Oid relid)
+{
+	SiftMaintShmem *m = sift_maint_table();
+
+	if (m != NULL)
+		sift_maint_rel_purge(m, MyDatabaseId, relid);
+}
+
 /*
  * After ALTER INDEX ... SET / RESET (options) of a sift or sift_col index: the new options must fit the index (a name that is not a leaf of it, a type the
  * option does not take), which fails the ALTER and not the queries, inserts and VACUUM that would read them next. An object access hook and not a
@@ -227,7 +238,7 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 		if (col)
 			sift_col_track_dropping(objectId), sift_keystore_note_drop(objectId);
 		if (stored)
-			forget_shared_manifest(objectId);
+			forget_shared_manifest(objectId), forget_queued_maintenance(objectId);
 		return;
 	}
 	if (table && has_col_index(objectId))

@@ -266,6 +266,35 @@ request_score(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier)
 	return sift_maint_score(tier, urgency);
 }
 
+/* A request the full queue refused waits in refused[] once per key (the oldest one gives way to a newer one when that is full too) */
+static void
+refuse(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier, uint32 score, TimestampTz now)
+{
+	for (uint32 k = 0; k < m->nrefused; k++)
+		if (m->refused[k].db == r->db && m->refused[k].rel == r->rel && m->refused[k].kind == r->kind)
+			return;
+	if (m->nrefused == SIFT_MAINT_REFUSED)
+		memmove(&m->refused[0], &m->refused[1], (SIFT_MAINT_REFUSED - 1) * sizeof(SiftMaintRefused));
+	else
+		m->nrefused++;
+	m->refused[m->nrefused - 1] = (SiftMaintRefused) {.db = r->db,.rel = r->rel,.kind = r->kind,.tier = tier,.score = score,.part_id = r->part_id,.refused_at = now};
+}
+
+static SiftMaintEnq enqueue_locked(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier, uint32 score, TimestampTz now);
+
+/* The refused requests take the slots that are free again, the newest first */
+static void
+requeue_refused(SiftMaintShmem *m)
+{
+	while (m->nrefused > 0 && first_free(m) >= 0)
+	{
+		const SiftMaintRefused *f = &m->refused[--m->nrefused];
+		SiftMaintReq r = {.db = f->db,.rel = f->rel,.kind = f->kind,.tier = f->tier,.part_id = f->part_id};
+
+		(void) enqueue_locked(m, &r, (SiftPacerTier) f->tier, f->score, f->refused_at);
+	}
+}
+
 static SiftMaintEnq
 enqueue_locked(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier, uint32 score, TimestampTz now)
 {
@@ -278,6 +307,7 @@ enqueue_locked(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier, uin
 	{
 		s = &m->slot[i];
 		m->stats.coalesced++;
+		res = score > s->score && tier < (SiftPacerTier) s->tier ? SIFT_ENQ_UPGRADED : SIFT_ENQ_COALESCED;
 		if (score > s->score)
 		{
 			s->score = score;
@@ -287,13 +317,14 @@ enqueue_locked(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier, uin
 		if (s->part_id != r->part_id)
 			s->part_id = 0;
 		s->rerun = s->state == SIFT_SLOT_CLAIMED;
-		return SIFT_ENQ_COALESCED;
+		return res;
 	}
 	if ((i = first_free(m)) < 0)
 	{
 		if ((i = eviction_victim(m, score)) < 0)
 		{
 			m->stats.overflowed++;
+			refuse(m, r, tier, score, now);
 			return SIFT_ENQ_FULL;
 		}
 		slot_free(m, i);
@@ -399,6 +430,24 @@ served(const Oid *dbs, int ndbs, Oid db)
 	return false;
 }
 
+/* A bit for each database (by its oid mod 64) that may be held or backing off now: the scan of the slots asks sift_maint_db_held only of those */
+static uint64
+held_mask(const SiftMaintShmem *m, TimestampTz now)
+{
+	uint64		mask = 0;
+
+	for (int i = 0; i < SIFT_MAINT_DBSTATE; i++)
+		if (m->dbstate[i].until > now)
+			mask |= UINT64CONST(1) << (m->dbstate[i].db % 64);
+	return mask;
+}
+
+static bool
+held(const SiftMaintShmem *m, uint64 mask, Oid db, TimestampTz now)
+{
+	return (mask & (UINT64CONST(1) << (db % 64))) != 0 && sift_maint_db_held(m, db, now);
+}
+
 static int
 pick(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now, PickMode mode)
 {
@@ -407,6 +456,7 @@ pick(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now, PickMode
 	Oid			dbs[SIFT_MAINT_MAX_WORKERS];
 	bool		spawn = mode == PICK_UNSERVED || mode == PICK_STARVED;
 	int			ndbs = spawn ? active_dbs(m, dbs) : 0;
+	uint64		hmask = spawn ? held_mask(m, now) : 0;
 
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
 	{
@@ -415,7 +465,7 @@ pick(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now, PickMode
 
 		if (m->khash[i] == 0 || !runnable(s, mode == PICK_STARVED ? InvalidOid : db, allow_cold, now))
 			continue;
-		if (spawn && (served(dbs, ndbs, s->db) || sift_maint_db_held(m, s->db, now) || (mode == PICK_STARVED && s->db == db)))
+		if (spawn && (served(dbs, ndbs, s->db) || held(m, hmask, s->db, now) || (mode == PICK_STARVED && s->db == db)))
 			continue;
 		if (mode == PICK_STARVED)
 		{
@@ -536,6 +586,7 @@ sift_maint_complete(SiftMaintShmem *m, const SiftMaintHost *host, const SiftMain
 			slot_free(m, claim->slot);
 			break;
 	}
+	requeue_refused(m);
 	sift_maint_end(m);
 	return true;
 }
@@ -765,20 +816,69 @@ sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, int 
 		sift_maint_db_purge(m, db);
 }
 
-void
-sift_maint_db_purge(SiftMaintShmem *m, Oid db)
+/* The queued requests of db (of its relation rel, when valid) and the refused ones are dropped; the slots go to the requests refused for other relations */
+static void
+purge(SiftMaintShmem *m, Oid db, Oid rel)
 {
+	uint32		kept = 0;
+
 	sift_maint_begin(m);
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-		if (m->khash[i] != 0 && m->slot[i].state == SIFT_SLOT_QUEUED && m->slot[i].db == db)
+		if (m->khash[i] != 0 && m->slot[i].state == SIFT_SLOT_QUEUED && m->slot[i].db == db && (!OidIsValid(rel) || m->slot[i].rel == rel))
 		{
 			m->nqueued--;
 			slot_free(m, i);
 		}
+	for (uint32 k = 0; k < m->nrefused; k++)
+		if (m->refused[k].db != db || (OidIsValid(rel) && m->refused[k].rel != rel))
+			m->refused[kept++] = m->refused[k];
+	m->nrefused = kept;
+	requeue_refused(m);
 	sift_maint_end(m);
 }
 
-/* Wakes the worker of the database that has the best request waiting and starts one for a database that has none: the cap on workers is asked of the host only when that is to be done. The workers that are gone are given back first: a server without a launcher has nothing else that looks */
+void
+sift_maint_db_purge(SiftMaintShmem *m, Oid db)
+{
+	purge(m, db, InvalidOid);
+}
+
+void
+sift_maint_rel_purge(SiftMaintShmem *m, Oid db, Oid rel)
+{
+	purge(m, db, rel);
+}
+
+/* The workers of db, starting ones included */
+static int
+workers_of(const SiftMaintShmem *m, Oid db)
+{
+	int			n = 0;
+
+	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
+		n += m->worker[w].state != 0 && m->worker[w].db == db;
+	return n;
+}
+
+/* Does db have more runnable requests than workers, and is it neither held nor backing off: another worker of its own has something to claim */
+static bool
+needs_worker(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now)
+{
+	int			runnable_n = 0,
+				workers = workers_of(m, db);
+
+	if (sift_maint_db_held(m, db, now))
+		return false;
+	for (int i = 0; i < SIFT_MAINT_SLOTS && runnable_n <= workers; i++)
+		runnable_n += m->khash[i] != 0 && runnable(&m->slot[i], db, allow_cold, now);
+	return runnable_n > workers;
+}
+
+/*
+ * Wakes the worker of the database that has the best request waiting and starts one for a database that has none, or, when every database that waits has its worker, another one for the database
+ * of the best request while it has more runnable requests than workers (no slot for that one is no starvation: the database is served). The cap on workers is asked of the host only when that is
+ * to be done. The workers that are gone are given back first: a server without a launcher has nothing else that looks
+ */
 SiftMaintKick
 sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 {
@@ -787,6 +887,7 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 	SiftPacerTier tier = SIFT_TIER_P0;
 	SiftMaintKick res = SIFT_KICK_WOKE;
 	Oid			db = InvalidOid;
+	bool		busy = false;
 	int			i, j, w = -1, procno = -1, cap;
 
 	sift_maint_reap(m, host);
@@ -800,8 +901,8 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 	}
 	if ((j = worker_for(m, m->slot[i].db)) >= 0 && m->worker[j].state == 2)
 		procno = m->worker[j].procno;
-	if ((j = pick(m, InvalidOid, cold_ok, now, PICK_STARVED)) < 0)
-		j = pick(m, InvalidOid, cold_ok, now, PICK_UNSERVED);
+	if ((j = pick(m, InvalidOid, cold_ok, now, PICK_STARVED)) < 0 && (j = pick(m, InvalidOid, cold_ok, now, PICK_UNSERVED)) < 0)
+		j = (busy = needs_worker(m, m->slot[i].db, cold_ok, now)) ? i : -1;
 	if (j >= 0)
 	{
 		db = m->slot[j].db;
@@ -812,13 +913,15 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 	{
 		cap = effective_max_of(m, host);
 		sift_maint_begin(m);
-		res = worker_for(m, db) >= 0 ? SIFT_KICK_WOKE : (w = reserve_locked(m, db, now, cap)) >= 0 ? SIFT_KICK_SPAWNED : SIFT_KICK_NOSLOT;
+		res = !needs_worker(m, db, cold_ok, now) ? SIFT_KICK_WOKE : (w = reserve_locked(m, db, now, cap)) >= 0 ? SIFT_KICK_SPAWNED : SIFT_KICK_NOSLOT;
 		sift_maint_end(m);
 	}
 	if (res == SIFT_KICK_SPAWNED && reserve_over_shared_limit(m, host, w))
 		res = SIFT_KICK_NOSLOT;
 	if (procno >= 0)
 		host->wake(procno);
+	if (res == SIFT_KICK_NOSLOT && busy)
+		return SIFT_KICK_WOKE;
 	if (res == SIFT_KICK_NOSLOT)
 		host->note_starved(tier, now);
 	if (res != SIFT_KICK_SPAWNED)
@@ -834,8 +937,29 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 	sift_maint_worker_free(m, w);
 	m->stats.spawn_failed++;
 	sift_maint_end(m);
+	if (busy)
+		return SIFT_KICK_WOKE;
 	host->note_starved(tier, now);
 	return SIFT_KICK_NOSLOT;
+}
+
+/*
+ * The queued request of the key is runnable and its database has no worker: without a launcher nothing else starts one (an earlier kick found no slot, or the worker left after a busy step).
+ * A worker seen without the lock is enough to answer no: it drains the request, and the coalesced requests that find it take no lock
+ */
+static bool
+stranded(SiftMaintShmem *m, const SiftMaintHost *host, const SiftMaintReq *r)
+{
+	bool		out;
+	int			i;
+
+	if (worker_for(m, r->db) >= 0)
+		return false;
+	sift_shm_lock(&m->lock);
+	i = find(m, key_hash(r->db, r->rel, r->kind), r);
+	out = i >= 0 && runnable(&m->slot[i], r->db, true, host->now()) && worker_for(m, r->db) < 0;
+	sift_shm_unlock(&m->lock);
+	return out;
 }
 
 SiftMaintEnq
@@ -844,7 +968,9 @@ sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode m
 	SiftMaintEnq res = sift_maint_enqueue(m, host, req);
 	uint32		launcher;
 
-	if ((res != SIFT_ENQ_QUEUED && res != SIFT_ENQ_EVICTED) || mode == SIFT_MAINT_MODE_OFF || mode == SIFT_MAINT_MODE_LOCAL)
+	if (mode == SIFT_MAINT_MODE_OFF || mode == SIFT_MAINT_MODE_LOCAL || res == SIFT_ENQ_FULL || res == SIFT_ENQ_UNAVAILABLE)
+		return res;
+	if (res == SIFT_ENQ_COALESCED && (mode != SIFT_MAINT_MODE_DYNAMIC || !stranded(m, host, req)))
 		return res;
 	launcher = mode == SIFT_MAINT_MODE_LAUNCHER ? pg_atomic_read_u32(&m->launcher) : 0;
 	if (launcher != 0)

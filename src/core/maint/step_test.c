@@ -22,6 +22,7 @@ PG_FUNCTION_INFO_V1(sift_test_maint_workers);
 static const char *const enq_names[] = {
 	[SIFT_ENQ_QUEUED] = "queued",
 	[SIFT_ENQ_COALESCED] = "coalesced",
+	[SIFT_ENQ_UPGRADED] = "upgraded",
 	[SIFT_ENQ_EVICTED] = "evicted",
 	[SIFT_ENQ_FULL] = "full",
 	[SIFT_ENQ_UNAVAILABLE] = "unavailable"

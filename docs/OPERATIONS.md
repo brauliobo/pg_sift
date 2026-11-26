@@ -335,7 +335,7 @@ Set `sift.on_corruption = 'error'` if you prefer queries to fail fast rather tha
 
 ## 8. Self-Tuning Background Maintenance
 
-Maintenance needs no `pg_cron`, no manual `sift.maintain()` calls, and no extra settings. A commit, delete, or scan that finds work due enqueues it, and up to `sift.max_maint_workers` workers (4 by default, never more than half of `max_worker_processes`) drain the queue of 2048 requests; with `shared_preload_libraries = 'pg_sift'` a launcher starts at boot, and without it workers start on demand. Workers hold no transaction or snapshot while they wait, so they never pin the cluster's oldest transaction, and a worker that dies mid-step leaves only unreferenced extents that the next `VACUUM` or maintenance pass reclaims.
+Maintenance needs no `pg_cron`, no manual `sift.maintain()` calls, and no extra settings. A commit, delete, or scan that finds work due enqueues it, and up to `sift.max_maint_workers` workers (4 by default, never more than half of `max_worker_processes`) drain the queue of 8192 requests; with `shared_preload_libraries = 'pg_sift'` a launcher starts at boot, and without it workers start on demand. Workers hold no transaction or snapshot while they wait, so they never pin the cluster's oldest transaction, and a worker that dies mid-step leaves only unreferenced extents that the next `VACUUM` or maintenance pass reclaims.
 
 Work is ordered by four priority tiers, so a tiny flush never waits behind a large cold rewrite:
 

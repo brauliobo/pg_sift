@@ -1,7 +1,7 @@
 /*
  * core/maint/sched.h - SiftMaintShmem: the one queue of the background maintenance of sift, and the activation of the workers that drain it.
  *
- * 512 slots of 128 B in shared memory, one lock held for a few hundred ns, tiers P0..P3 that are the tiers of maint_pacer.h. A request is
+ * 8192 slots of 128 B in shared memory, one lock held for a few hundred ns, tiers P0..P3 that are the tiers of maint_pacer.h. A request is
  * keyed by (database, relation, kind): a second request of the same key is coalesced into the first (the higher priority wins), and one that
  * arrives while a worker has the key in flight sets a rerun flag, so no key is ever worked on by two processes and no trigger is lost.
  *
@@ -43,7 +43,7 @@ typedef enum SiftPacerTier
 #include "core/maint/pacer.h"
 #endif
 
-#define SIFT_MAINT_SLOTS			2048
+#define SIFT_MAINT_SLOTS			8192
 #define SIFT_MAINT_HEAT				1024
 #define SIFT_MAINT_COALESCED_SHARDS	8
 #define SIFT_MAINT_MAX_WORKERS		16
@@ -65,6 +65,7 @@ typedef enum SiftPacerTier
 #define SIFT_MAINT_CONNECT_GIVE_UP	3
 #define SIFT_MAINT_HELD				PG_INT64_MAX
 #define SIFT_MAINT_STARVED_NAPS		2
+#define SIFT_MAINT_REFUSED			64
 
 typedef enum SiftMaintKind
 {
@@ -101,6 +102,7 @@ typedef enum SiftMaintEnq
 {
 	SIFT_ENQ_QUEUED,
 	SIFT_ENQ_COALESCED,
+	SIFT_ENQ_UPGRADED,			/* coalesced into a queued request whose tier it raised */
 	SIFT_ENQ_EVICTED,
 	SIFT_ENQ_FULL,
 	SIFT_ENQ_UNAVAILABLE
@@ -199,6 +201,19 @@ typedef struct SiftMaintDbState
 	TimestampTz until;
 } SiftMaintDbState;
 
+/* A request the full queue refused: queued again when a slot frees */
+typedef struct SiftMaintRefused
+{
+	Oid			db;
+	Oid			rel;
+	uint8		kind;
+	uint8		tier;
+	uint16		pad;
+	uint32		score;
+	uint64		part_id;
+	TimestampTz refused_at;		/* its age once it is queued */
+} SiftMaintRefused;
+
 typedef struct SiftMaintStats
 {
 	uint64		enqueued;
@@ -271,7 +286,9 @@ typedef struct SiftMaintShmem
 	int16		hash_idx[SIFT_MAINT_HASH_SIZE];	/* open addressing over khash: the slot of a key, -1 where empty */
 	uint64		free_bits[SIFT_MAINT_FREE_WORDS];	/* 1 for a free slot */
 	SiftMaintDbState dbstate[SIFT_MAINT_DBSTATE];
-	uint8		pad5[104];
+	uint32		nrefused;		/* the requests of refused[] that wait for a free slot */
+	SiftMaintRefused refused[SIFT_MAINT_REFUSED];
+	uint8		pad5[100];
 } SiftMaintShmem;
 
 typedef struct SiftMaintRow
@@ -373,6 +390,8 @@ extern void sift_maint_db_hold(SiftMaintShmem *m, TimestampTz now, Oid db, bool 
 extern int	sift_maint_db_workers(SiftMaintShmem *m, Oid db);
 /* The requests of db that are still queued are dropped: the database is gone */
 extern void sift_maint_db_purge(SiftMaintShmem *m, Oid db);
+/* The same for the requests of a relation that is dropped */
+extern void sift_maint_rel_purge(SiftMaintShmem *m, Oid db, Oid rel);
 extern SiftMaintKick sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host);
 
 /* What sched.c and sched_reap.c share: the writers' bracket on the table, a claim back in the queue, a worker slot freed, the backoff of a failed step */
