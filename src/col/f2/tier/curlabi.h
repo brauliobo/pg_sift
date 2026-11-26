@@ -32,6 +32,7 @@ struct curl_slist;
 #define SC_HTTPHEADER				10023
 #define SC_CUSTOMREQUEST			10036
 #define SC_XFERINFODATA				10057
+#define SC_TIMEOUT					13
 #define SC_LOW_SPEED_LIMIT			19
 #define SC_LOW_SPEED_TIME			20
 #define SC_NOPROGRESS				43

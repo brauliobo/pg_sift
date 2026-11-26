@@ -266,7 +266,10 @@ object_ranges(LocalPart *lp, uint32 *nranges)
 	return ranges;
 }
 
-/* The commit that makes the part remote: its descriptor as it is now (a delete may have reached it since the upload began), the ref, and the blocks it held */
+/*
+ * The commit that makes the part remote: its descriptor as it is now (a delete may have reached it since the upload began), the ref, and the blocks it held. A partition that got a column
+ * delta chain during the upload keeps its parts, which the fold of the chain rewrites: the object no commit names is the sweep's.
+ */
 static void
 commit_tiered(const Step *s, const SiftPartitionEntry *listed, const SiftTierPartRef *ref)
 {
@@ -275,7 +278,7 @@ commit_tiered(const Step *s, const SiftPartitionEntry *listed, const SiftTierPar
 
 	sift_tier_lock_part(s->rel, listed->part_id);
 	e = entry_locked(s->rel, listed, &mr);
-	if (e != NULL)
+	if (e != NULL && (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 	{
 		int			np;
 		SiftPartDesc *parts = sift_manifest_read_parts(s->rel, e, &np);

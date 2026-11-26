@@ -42,6 +42,8 @@ typedef struct Xfer
 #define RETRY_ATTEMPTS		4
 #define BACKOFF_FIRST_MS	100
 #define BACKOFF_MAX_MS		5000
+#define FLOOR_SECS			60	/* every transfer may take this long, and one second more for each FLOOR_BYTES_PER_SEC of its body */
+#define FLOOR_BYTES_PER_SEC	(UINT64_C(256) << 10)
 #define GROW_MAX			(UINT64_C(64) << 20)
 
 /* The host's work that may raise, run where curl cannot be jumped out of: the error is kept to be raised again when curl is out of the way */
@@ -259,6 +261,7 @@ set_options(SiftCurl *c, SiftCurlReq *r, Xfer *x, struct curl_slist *hdrs)
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_CONNECTTIMEOUT, 10L);
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_LOW_SPEED_LIMIT, 1L);
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_LOW_SPEED_TIME, 60L);
+	rc = rc ? rc : c->easy_setopt(c->easy, SC_TIMEOUT, (long) (FLOOR_SECS + (r->upload != NULL ? r->upload->len : r->dst_cap) / FLOOR_BYTES_PER_SEC));
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_USERAGENT, "pg_sift-tier");
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_HTTPHEADER, hdrs);
 	rc = rc ? rc : c->easy_setopt(c->easy, SC_WRITEFUNCTION, write_cb);
