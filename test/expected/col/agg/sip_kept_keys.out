@@ -5,7 +5,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE skk_facts (id int PRIMARY KEY, parent_id int NOT NULL, amount float8 NOT NULL);
 INSERT INTO skk_facts SELECT i, 1 + i % 2000, i % 97 FROM generate_series(1, 30000) i;
 CREATE INDEX skk_facts_col ON skk_facts USING sift_col (id, parent_id, amount);
-NOTICE:  sift_col "skk_facts_col": built 30,000 rows (88.0 KB, 3.0 B/row, 14.8x vs heap, 1 parts, 4 granules, codecs: 2 delta, 2 coded)
+NOTICE:  sift_col "skk_facts_col": built 30,000 rows (80.0 KB, 2.7 B/row, 16.3x vs heap, 1 parts, 4 granules, codecs: 2 delta, 2 coded)
 HINT:  Inspect layout with SELECT * FROM sift.status('public.skk_facts_col');
 CREATE INDEX skk_facts_parent ON skk_facts (parent_id);
 CREATE TABLE skk_links (id int PRIMARY KEY, parent_id int NOT NULL, status int NOT NULL, label text NOT NULL);

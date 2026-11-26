@@ -7,7 +7,7 @@ INSERT INTO pqp_dims SELECT i, i % 3 <> 0 FROM generate_series(1, 60) i;
 CREATE TABLE pqp_events (id int PRIMARY KEY, parent_id int NOT NULL, kind text NOT NULL, deleted_at timestamptz);
 INSERT INTO pqp_events SELECT i, 1 + (i::bigint * 7919) % 60, 'cat_' || chr(97 + i % 4), CASE WHEN i % 37 = 0 THEN now() END FROM generate_series(1, 30000) i;
 CREATE INDEX pqp_events_col ON pqp_events USING sift_col (id, parent_id, kind, deleted_at);
-NOTICE:  sift_col "pqp_events_col": built 30,000 rows (160.0 KB, 5.5 B/row, 8.2x vs heap, 1 parts, 4 granules, codecs: 1 const, 2 delta, 2 coded)
+NOTICE:  sift_col "pqp_events_col": built 30,000 rows (152.0 KB, 5.2 B/row, 8.6x vs heap, 1 parts, 4 granules, codecs: 1 const, 2 delta, 2 coded)
 HINT:  Inspect layout with SELECT * FROM sift.status('public.pqp_events_col');
 VACUUM (FREEZE, ANALYZE) pqp_dims, pqp_events;
 -- the cost of the aggregate scan, the other plans of the table off
