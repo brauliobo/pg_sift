@@ -88,6 +88,8 @@ ctid_in(SiftV6Vet *v, uint64 lo, uint64 hi, uint64 addr)
 	ItemPointerData tid;
 	BlockNumber blk;
 
+	if (v->heap == NULL)
+		return addr >= lo && addr < hi;
 	sift_f2_tid_set(&tid, addr);
 	blk = ItemPointerGetBlockNumberNoCheck(&tid);
 	if (blk < (BlockNumber) (lo >> 16) || blk > (BlockNumber) ((hi - 1) >> 16))
