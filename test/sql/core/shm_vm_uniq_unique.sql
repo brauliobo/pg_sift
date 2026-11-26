@@ -12,6 +12,7 @@ END $$;
 CREATE FUNCTION pg_temp.active() RETURNS int8 AS 'pg_sift', 'sift_test_uniq_shm_active' LANGUAGE C STRICT;
 CREATE FUNCTION pg_temp.fill(stripe int, n int, xid int8) RETURNS int AS 'pg_sift', 'sift_test_uniq_shm_fill' LANGUAGE C STRICT;
 CREATE FUNCTION pg_temp.reserve_one(stripe int) RETURNS bool AS 'pg_sift', 'sift_test_uniq_shm_reserve_one' LANGUAGE C STRICT;
+CREATE FUNCTION pg_temp.sweep(stripe int) RETURNS void AS 'pg_sift', 'sift_test_uniq_shm_sweep' LANGUAGE C STRICT;
 CREATE FUNCTION pg_temp.partial_insert(regclass, int) RETURNS text AS 'pg_sift', 'sift_test_unique_partial_insert' LANGUAGE C STRICT;
 CREATE FUNCTION pg_temp.state_of(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ BEGIN EXECUTE stmt; RETURN 'ok'; EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$;
@@ -27,6 +28,15 @@ SELECT pg_temp.active() - :base AS leaked_entries;
 BEGIN;
 SELECT pg_temp.fill(7, 512, 3) AS filled;
 SELECT pg_temp.reserve_one(7) AS reserved_in_a_full_stripe;
+COMMIT;
+SELECT pg_temp.active() - :base AS left_in_the_registry;
+
+-- a stripe that the entries of a running transaction fill borrows spare entries, and its sweep gives back the borrowed ones of the transactions that ended
+BEGIN;
+SELECT pg_temp.fill(9, 512, txid_current()) AS filled;
+SELECT pg_temp.fill(9, 50, 3) AS borrowed;
+SELECT pg_temp.sweep(9);
+SELECT pg_temp.active() - :base AS kept_by_the_sweep;
 COMMIT;
 SELECT pg_temp.active() - :base AS left_in_the_registry;
 

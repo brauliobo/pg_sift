@@ -463,19 +463,40 @@ xid_cmp(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
-/* The transactions of the entries of a stripe, each once, in order (the stripe is not locked on return) */
+/* The run of the buckets of a stripe: the entries of its keys are in their chains, its own and the spare ones it borrowed */
+static const uint32 *
+buckets_of(const UniqShm *u, const Stripe *s)
+{
+	return &u->bucket[(s - u->stripe) * BUCKETS_PER_STRIPE];
+}
+
+/* The spare entries ever borrowed: no stripe holds more than its own entries and these */
+static uint32
+spares_used(UniqShm *u)
+{
+	uint32		used;
+
+	LWLockAcquire(&u->spare.lock, LW_SHARED);
+	used = u->spare.used;
+	LWLockRelease(&u->spare.lock);
+	return used;
+}
+
+/* The transactions of the entries of a stripe, each once, in order (the stripe is not locked on return; while it is, no entry joins its buckets) */
 static TransactionId *
 stripe_xids(UniqShm *u, Stripe *s, int *n)
 {
-	const SiftShmUniqEntry *first = &u->slot[(s - u->stripe) * SLOTS_PER_STRIPE];
-	TransactionId *xids = palloc(sizeof(TransactionId) * SLOTS_PER_STRIPE);
+	const uint32 *bucket = buckets_of(u, s);
+	TransactionId *xids;
 	int			kept = 0;
 
 	*n = 0;
 	LWLockAcquire(&s->lock, LW_SHARED);
-	for (uint32 j = 0; j < s->used; j++)
-		if (first[j].state == SIFT_UNIQ_ACTIVE)
-			xids[(*n)++] = first[j].xid;
+	xids = palloc(sizeof(TransactionId) * (SLOTS_PER_STRIPE + spares_used(u)));
+	for (uint32 b = 0; b < BUCKETS_PER_STRIPE; b++)
+		for (uint32 link = bucket[b]; link != 0; link = u->slot[link - 1].next_slot)
+			if (u->slot[link - 1].state == SIFT_UNIQ_ACTIVE)
+				xids[(*n)++] = u->slot[link - 1].xid;
 	LWLockRelease(&s->lock);
 	qsort(xids, *n, sizeof(TransactionId), xid_cmp);
 	for (int j = 0; j < *n; j++)
@@ -493,7 +514,7 @@ sweep_ended(UniqShm *u, Stripe *s)
 	int			n,
 				ended = 0;
 	TransactionId *xids = stripe_xids(u, s, &n);
-	SiftShmUniqEntry *first = &u->slot[(s - u->stripe) * SLOTS_PER_STRIPE];
+	const uint32 *bucket = buckets_of(u, s);
 
 	Assert(!LWLockHeldByMe(&s->lock));
 	for (int j = 0; j < n; j++)
@@ -501,9 +522,15 @@ sweep_ended(UniqShm *u, Stripe *s)
 			xids[ended++] = xids[j];
 	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
 	s->swept_at = at;
-	for (uint32 j = 0; ended > 0 && j < s->used; j++)
-		if (first[j].state == SIFT_UNIQ_ACTIVE && bsearch(&first[j].xid, xids, ended, sizeof(TransactionId), xid_cmp) != NULL)
-			entry_free(u, (s - u->stripe) * SLOTS_PER_STRIPE + j);
+	for (uint32 b = 0; ended > 0 && b < BUCKETS_PER_STRIPE; b++)
+		for (uint32 link = bucket[b], next; link != 0; link = next)
+		{
+			const SiftShmUniqEntry *e = &u->slot[link - 1];
+
+			next = e->next_slot;
+			if (e->state == SIFT_UNIQ_ACTIVE && bsearch(&e->xid, xids, ended, sizeof(TransactionId), xid_cmp) != NULL)
+				entry_free(u, link - 1);
+		}
 	LWLockRelease(&s->lock);
 	pfree(xids);
 }
@@ -557,6 +584,7 @@ sift_uniq_shm_reserve(const SiftUniqKey *k, TransactionId xid, ItemPointer tid)
 PG_FUNCTION_INFO_V1(sift_test_uniq_shm_active);
 PG_FUNCTION_INFO_V1(sift_test_uniq_shm_fill);
 PG_FUNCTION_INFO_V1(sift_test_uniq_shm_reserve_one);
+PG_FUNCTION_INFO_V1(sift_test_uniq_shm_sweep);
 
 static bool
 reserve_test_key(int stripe, uint32 n, TransactionId xid)
@@ -564,7 +592,7 @@ reserve_test_key(int stripe, uint32 n, TransactionId xid)
 	SiftUniqKey k;
 	ItemPointerData tid;
 
-	sift_uniq_key_begin(&k, &(RelFileLocator) {.spcOid = 1,.dbOid = 2,.relNumber = 990001}, (uint32) stripe | (n << 6), 1);
+	sift_uniq_key_begin(&k, &(RelFileLocator) {.spcOid = 1,.dbOid = 2,.relNumber = 990001}, (uint32) stripe | (n << STRIPE_BITS), 1);
 	k.fp64 = n;
 	ItemPointerSet(&tid, 0, 1);
 	return sift_uniq_shm_reserve(&k, xid, &tid);
@@ -600,6 +628,16 @@ sift_test_uniq_shm_reserve_one(PG_FUNCTION_ARGS)
 	static uint32 next = 1 << 20;
 
 	PG_RETURN_BOOL(reserve_test_key(PG_GETARG_INT32(0), next++, GetCurrentTransactionId()));
+}
+
+/* sift._test_uniq_shm_sweep(stripe int): the stripe gives back the entries of the transactions that ended */
+Datum
+sift_test_uniq_shm_sweep(PG_FUNCTION_ARGS)
+{
+	UniqShm    *u = registry();
+
+	sweep_ended(u, &u->stripe[PG_GETARG_INT32(0)]);
+	PG_RETURN_VOID();
 }
 
 #endif							/* SIFT_TESTING */
