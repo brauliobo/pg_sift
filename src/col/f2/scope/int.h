@@ -100,7 +100,8 @@ typedef struct SiftF2ScopeParts
 	Relation	heap;
 	SiftKeyMap *km;				/* the map of the codes of the scope key the statement reads by, NULL for an integer key */
 	SiftScopePairMap *pm;
-	SiftScopePairMap *pm_object;	/* with edited pairs: the map of the object that pm patches, NULL: pm (or the map the read loads) is it */
+	SiftScopePairMap *pm_object;	/* with edited pairs: the map of the object that pm patches, NULL: no read settled it (pm is then the pairs now) */
+	const SiftScopeMeta *meta;		/* the summary of a live read: its stamps say which pairs the object was built from */
 	const int64 *fkeys;			/* the keys the read asks for (ascending, distinct; none: every key): a row of the overlay whose member owns none of them is not kept, unless the rows are kept for other statements */
 	uint32		nfkeys;
 	const int64 *changed;		/* the members whose pairs changed since the summary for the keys of the read, ascending (the edits pm holds) */
@@ -253,7 +254,10 @@ extern bool sift_f2s_deltas_clear(Relation rel, const SiftF2Store *store, int or
 extern SiftScopePairMap *sift_f2s_pairs(SiftF2ScopeParts *p);
 /* The pairs of the object with those of the changed members as the snapshot sees them, for the scope keys the read asks for (f2_scope_pairs.c) */
 extern SiftScopePairMap *sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged);
-extern SiftScopePairMap *sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, uint64 object_gen, MemoryContext reader);
+/* The map of the object of generation object_gen that the backend kept, pinned for reader; NULL when it holds none */
+extern SiftScopePairMap *sift_f2s_cached_pairs(Relation index, uint64 object_gen, MemoryContext reader);
+/* The pairs as the snapshot sees them; kept for the object of generation object_gen when settled (no pair of any key changed since the summary: they are the object's) */
+extern SiftScopePairMap *sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, uint64 object_gen, MemoryContext reader, bool settled);
 extern bool sift_f2s_added_cube(void *arg, int64 scope_key, SiftScopeSpan span, SiftScopeCubeAcc *out);
 extern SiftScopeGone sift_f2s_gone_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out);
 extern bool sift_f2s_slot_dirty(const SiftF2ScopeParts *p, const SiftF2ScopeSlot *s);

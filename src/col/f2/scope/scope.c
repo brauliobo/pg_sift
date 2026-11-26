@@ -374,9 +374,10 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 				  sift_f2s_mem_translate(heap, rel, cfg, snap, km, &sc->changed, &sc->nchanged)))
 		return scope_abandon(cx, old, rel, heap);
 	p->pair_gen = live ? sift_f2_scope_cache_ref(plan, ord)->meta_gen : 0;
+	p->meta = &sc->meta;
 	if (live && sc->nchanged > 0)
 	{
-		p->pm_object = sift_f2s_pairs(p);
+		p->pm_object = sift_f2s_cached_pairs(rel, p->pair_gen, cx);
 		p->changed = sc->changed;
 		p->nchanged = sc->nchanged;
 		p->pm = sift_f2s_edited_pairs(heap, rel, cfg, snap, km, p->pm_object, keys, nkeys, sc->changed, sc->nchanged);

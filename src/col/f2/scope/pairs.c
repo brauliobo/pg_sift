@@ -1,7 +1,8 @@
 /*
  * col/f2/scope/pairs.c - the pair map of a scope kept by the backend for the statements that follow. A summary read for rows it does not hold needs the pairs to tell which keys a row
- * counts for; while the journals say the pairs are those the object was built from, the map of one object is the map of every statement that reads it, so it is read from the pair
- * relation once, until the object is replaced or the budget of the backend caches asks for the memory.
+ * counts for; while the journals of every key say the pairs are those the object was built from, the map of one object is the map of every statement that reads it, so it is read from the
+ * pair relation once, until the object is replaced or the budget of the backend caches asks for the memory. A map read after a pair changed is not the object's and is never kept: the
+ * object's pairs of the members that changed are then unknown, and the read tells who the key held from the summary's nodes.
  */
 /* check-memory: allow-allocs the arrays follow the pairs of the scope relation, which the build holds in memory by design */
 #include "postgres.h"
@@ -105,41 +106,51 @@ map_bytes(const SiftScopePairMap *pm)
 	return sizeof(*pm) + sizeof(int64) * (Max(pm->nmembers, 1) + Max(pm->nkeys, 1)) + sizeof(uint32) * (pm->nmembers + 1 + Max(pm->npairs, 1));
 }
 
+static SiftScopePairMap *
+cache_pin(MemoryContext reader)
+{
+	PairsPin   *pin = MemoryContextAlloc(reader, sizeof(PairsPin));
+
+	cache.used = sift_cache_tick();
+	pin->cb = (MemoryContextCallback) {pin_release, NULL, NULL};
+	MemoryContextRegisterResetCallback(reader, &pin->cb);
+	cache.pins++;
+	(void) sift_cache_commit();
+	return cache.pm;
+}
+
 SiftScopePairMap *
-sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, uint64 object_gen, MemoryContext reader)
+sift_f2s_cached_pairs(Relation index, uint64 object_gen, MemoryContext reader)
+{
+	const bool	same = cache.pm != NULL && cache.index == RelationGetRelid(index) && cache.relnumber == index->rd_locator.relNumber && cache.gen == object_gen;
+
+	return same ? cache_pin(reader) : NULL;
+}
+
+SiftScopePairMap *
+sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, uint64 object_gen, MemoryContext reader, bool settled)
 {
 	SiftScopePairMap *loaded;
-	bool		same = cache.pm != NULL && cache.index == RelationGetRelid(index) && cache.relnumber == index->rd_locator.relNumber && cache.gen == object_gen;
-	PairsPin   *pin;
 
 	if (!registered)
 	{
 		sift_cache_register(&cache_kind);
 		registered = true;
 	}
-	if (!same && cache.pins > 0)
+	if (!settled || cache.pins > 0)
 		return sift_f2s_load_pairs(heap, index, sc, snap, km, false);
-	if (!same)
-	{
-		cache_drop();
-		loaded = sift_f2s_load_pairs(heap, index, sc, snap, km, false);
-		/* MEM[MEM-SCOPE-02]: cached pair map charged to the cache budget (room, then commit) */
-		if (sift_f2s_mem_transient(sc->mem) || !sift_cache_room(map_bytes(loaded)))
-			return loaded;
-		cache.cx = sift_cache_create_context("sift cache scope pairs");
-		cache.pm = copy_map(loaded, cache.cx);
-		cache.index = RelationGetRelid(index);
-		cache.relnumber = index->rd_locator.relNumber;
-		cache.gen = object_gen;
-		sift_spm_free(loaded);
-	}
-	cache.used = sift_cache_tick();
-	pin = MemoryContextAlloc(reader, sizeof(PairsPin));
-	pin->cb = (MemoryContextCallback) {pin_release, NULL, NULL};
-	MemoryContextRegisterResetCallback(reader, &pin->cb);
-	cache.pins++;
-	(void) sift_cache_commit();
-	return cache.pm;
+	cache_drop();
+	loaded = sift_f2s_load_pairs(heap, index, sc, snap, km, false);
+	/* MEM[MEM-SCOPE-02]: cached pair map charged to the cache budget (room, then commit) */
+	if (sift_f2s_mem_transient(sc->mem) || !sift_cache_room(map_bytes(loaded)))
+		return loaded;
+	cache.cx = sift_cache_create_context("sift cache scope pairs");
+	cache.pm = copy_map(loaded, cache.cx);
+	cache.index = RelationGetRelid(index);
+	cache.relnumber = index->rd_locator.relNumber;
+	cache.gen = object_gen;
+	sift_spm_free(loaded);
+	return cache_pin(reader);
 }
 
 static int
@@ -281,5 +292,7 @@ edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot 
 SiftScopePairMap *
 sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, SiftKeyMap *km, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
 {
+	if (object == NULL)
+		return sift_f2s_load_pairs(heap, rel, sc, snap, km, false);
 	return sc->spec->joined != NULL ? edited_two_paths(heap, rel, sc, snap, km, object, keys, nkeys, changed, nchanged) : edited_one_path(heap, rel, sc, snap, km, object, keys, nkeys, changed, nchanged);
 }

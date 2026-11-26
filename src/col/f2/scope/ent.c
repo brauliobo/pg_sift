@@ -52,7 +52,10 @@ static SiftScopePairMap *
 parts_pairs(SiftF2ScopeParts *p)
 {
 	if (p->pm == NULL && p->pair_gen != 0)
-		p->pm = sift_f2s_object_pairs(p->heap, p->rel, p->sc, p->snap, p->km, p->pair_gen, GetMemoryChunkContext(p));
+		p->pm = sift_f2s_cached_pairs(p->rel, p->pair_gen, GetMemoryChunkContext(p));
+	if (p->pm == NULL && p->pair_gen != 0)
+		p->pm = sift_f2s_object_pairs(p->heap, p->rel, p->sc, p->snap, p->km, p->pair_gen, GetMemoryChunkContext(p),
+									  sift_f2s_pairs_unchanged(p->rel, p->sc->ord, p->meta, p->snap));
 	if (p->pm == NULL)
 	{
 		MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(p));
