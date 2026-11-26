@@ -2,6 +2,8 @@
 # A VACUUM that vacuums the b-trees of a table with parallel workers runs the cleanup of a sift_col index in the leader, in parallel mode, where no transaction id may be assigned: the cut of
 # the free tail of the index takes AccessExclusiveLock, which is logged for a standby with the id of the transaction. The cut is left to a later VACUUM, and the VACUUM succeeds.
 # sift.check(index, true) under live writers and an older snapshot that still sees deleted rows compares the index with the heap under one snapshot: no false corruption.
+# A VACUUM (PARALLEL 2) of a sift_table cancelled while its participants compact (the gate after a share, sift.test_phase_gate) stops them before it gives their parts back: the next
+# VACUUM and the check of the table are clean.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
@@ -27,6 +29,34 @@ check "no process asked for a transaction id" test "$(grep -c 'cannot assign tra
 check "the indexes verify against the heap" test "$(sql pv "SELECT count(*) FROM sift.check('t_a9_c1', true)" "SELECT count(*) FROM sift.check('t_a9_c2', true)" | paste -sd+ | bc)" = 0
 
 D=$(dir pv)
+G=4200
+waiting() { sql pv "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '$1%' AND wait_event_type = 'Lock' AND wait_event = 'advisory'"; }
+cancel_mid_shares() {
+	sql pv "CREATE TABLE tp (id int, a bigint, pad text) USING sift_table" "INSERT INTO tp SELECT g, g, repeat('z', 40) FROM generate_series(1, 400000) g" \
+		"VACUUM tp" "DELETE FROM tp WHERE id % 5 <> 0" >/dev/null || bail "the sift_table load failed"
+	sess_open pv gate
+	sess_say gate "SELECT pg_advisory_lock($((G + 16))); \\echo @@held"
+	wait_for "grep -q '@@held' '$D/gate.out'" 30 || bail "the gate was not taken"
+	(sql pv "LOAD 'pg_sift'" "SET sift.test_phase_gate = $G" "VACUUM (PARALLEL 2) tp" >"$D/vac.out" 2>&1; echo $? >"$D/vac.rc") &
+	check "the leader and a worker wait at the gate after their shares" wait_for "[[ \$(waiting 'VACUUM (PARALLEL 2)') == 2 ]]" 60
+	sql pv "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query LIKE 'VACUUM (PARALLEL 2)%' AND backend_type = 'client backend'" >/dev/null
+	sess_say gate "SELECT pg_advisory_unlock($((G + 16)));"
+	sess_close gate
+	wait_for "[[ -f '$D/vac.rc' ]]" 120 || bail "the cancelled VACUUM did not end"
+	out=$(cat "$D/vac.out")
+	check "the VACUUM is cancelled" grep -q 'canceling statement due to user request' <<<"$out"
+	out=$(sql pv "LOAD 'pg_sift'" "VACUUM (PARALLEL 2) tp" 2>&1)
+	check "the next VACUUM (PARALLEL 2) succeeds" test -z "$out"
+	out=$(sql pv "SELECT problem FROM sift.check('tp')" 2>&1)
+	check "the table is clean after the cancel" test -z "$out"
+	check "its rows are those of the DELETE" test "$(sql pv "SELECT count(*) FROM tp")" = 80000
+}
+if [[ $(sql pv "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_phase_gate'") == 1 ]]; then
+	cancel_mid_shares
+else
+	skip 5 "the release library has no gate"
+fi
+
 sess_open pv rr
 sess_say rr "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM t_a9; \\echo @@pinned"
 wait_for "grep -q '@@pinned' '$D/rr.out'" 30 || bail "the snapshot was not taken"

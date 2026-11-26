@@ -18,7 +18,11 @@
 #include "col/f2/f2.h"
 #include "col/f2/store/store.h"
 #include "core/parbuild.h"
+#include "core/f2/gate.h"
 #include "core/xid_cache.h"
+
+/* testing: a participant has written a share and takes the next (the gates of core/f2/gate.h are 10 to 15) */
+#define COMPACT_PAR_GATE_SHARE	16
 
 /* A participant is worth this many granules of the inputs: a group of fewer than two granules for each is compacted by one */
 #define SIFT_COMPACT_PAR_MIN_GRANULES	2
@@ -41,6 +45,7 @@ typedef struct CompactParShared
 	uint32		slot_cap;
 	pg_atomic_uint32 next;		/* the first share nobody has taken */
 	pg_atomic_uint32 unsettled;	/* a share found a deletion that is not settled: the shares that follow are left */
+	pg_atomic_uint32 abort;		/* the leader failed: the participants take no more shares */
 	/* the nin descriptors of the inputs and the nin counts of their granules follow */
 } CompactParShared;
 
@@ -140,14 +145,17 @@ run_share(Relation rel, CompactParShared *sh, void *slots, uint32 s)
 	pfree(sub);
 }
 
-/* Takes the shares one after another while there are any and no share has found a deletion that is not settled */
+/* Takes the shares one after another while there are any, no share has found a deletion that is not settled and the leader has not failed */
 static void
 run_shares(Relation rel, CompactParShared *sh, void *slots)
 {
 	uint32		s;
 
-	while (pg_atomic_read_u32(&sh->unsettled) == 0 && (s = pg_atomic_fetch_add_u32(&sh->next, 1)) < sh->nshares)
+	while (pg_atomic_read_u32(&sh->unsettled) == 0 && pg_atomic_read_u32(&sh->abort) == 0 && (s = pg_atomic_fetch_add_u32(&sh->next, 1)) < sh->nshares)
+	{
 		run_share(rel, sh, slots, s);
+		SIFT_F2_GATE(COMPACT_PAR_GATE_SHARE);
+	}
 }
 
 PGDLLEXPORT void sift_compact_par_worker(dsm_segment *seg, shm_toc *toc);
@@ -180,16 +188,45 @@ res_add(SiftCompactResult *to, const SiftCompactResult *r)
 	to->dict_codes_remapped += r->dict_codes_remapped;
 }
 
-/* A participant failed: the parts the shares that were done wrote are given back, no manifest will take them */
-static void
-release_slots(Relation rel, uint64 part_id, void *slots, uint32 cap, uint32 nshares)
+/* The parts the shares that were done wrote, copied out of the shared memory of the participants */
+static SiftPartDesc *
+slot_outputs(void *slots, uint32 cap, uint32 nshares, int *nout)
 {
+	SiftPartDesc *out = palloc(Max(nshares * cap, 1) * sizeof(SiftPartDesc));
+
+	*nout = 0;
 	for (uint32 s = 0; s < nshares; s++)
 	{
 		const CompactSlot *slot = slot_at(slots, cap, s);
 
-		sift_compact_release_outputs(rel, part_id, slot->out, (int) slot->nout);
+		memcpy(out + *nout, slot->out, slot->nout * sizeof(SiftPartDesc));
+		*nout += (int) slot->nout;
 	}
+	return out;
+}
+
+/*
+ * A participant failed: the others take no more shares and are waited for before their slots are read, then the parts of the shares that were done are given back, as no manifest will take
+ * them. Out of disk or memory, giving them back would fail too: the orphan sweep finds them.
+ */
+static void
+abort_shares(Relation rel, uint64 part_id, SiftParLeader *ldr, uint32 cap, uint32 nshares, MemoryContext cx)
+{
+	CompactParShared *sh = ldr->shared;
+	ErrorData  *e;
+	SiftPartDesc *out;
+	int			nout;
+
+	MemoryContextSwitchTo(cx);
+	e = CopyErrorData();
+	FlushErrorState();
+	pg_atomic_write_u32(&sh->abort, 1);
+	WaitForParallelWorkersToFinish(ldr->pcxt);
+	out = slot_outputs(ldr->parts, cap, nshares, &nout);
+	sift_par_end(ldr);
+	if (e->sqlerrcode != ERRCODE_DISK_FULL && e->sqlerrcode != ERRCODE_OUT_OF_MEMORY)
+		sift_compact_release_outputs(rel, part_id, out, nout);
+	ReThrowError(e);
 }
 
 /* The participants the group is worth (none in parallel mode: the leader of a parallel VACUUM of the heap is in it, and a worker is): what VACUUM (PARALLEL n) asks for, no more than the leader and the workers max_parallel_maintenance_workers allows, and two granules for each */
@@ -212,6 +249,7 @@ sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, con
 	bool		index = rel->rd_rel->relkind == RELKIND_INDEX;
 	bool		unsettled;
 	uint32		cap;
+	MemoryContext cx = CurrentMemoryContext;
 
 	for (int i = 0; i < nin; i++)
 		total += granules[i];
@@ -228,6 +266,7 @@ sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, con
 		.cut = *cut,.horizon = U64FromFullTransactionId(horizon),.nin = nin,.nparticipants = n,.nshares = nshares,.slot_cap = cap};
 	pg_atomic_init_u32(&sh->next, 0);
 	pg_atomic_init_u32(&sh->unsettled, 0);
+	pg_atomic_init_u32(&sh->abort, 0);
 	memcpy(inputs_of(sh), in, nin * sizeof(SiftPartDesc));
 	memcpy(granules_of(sh), granules, nin * sizeof(uint32));
 	memset(ldr->parts, 0, mul_size(slot_size(cap), nshares));
@@ -245,21 +284,13 @@ sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, con
 	}
 	PG_CATCH();
 	{
-		release_slots(rel, part_id, ldr->parts, cap, nshares);
-		PG_RE_THROW();
+		abort_shares(rel, part_id, ldr, cap, nshares, cx);
 	}
 	PG_END_TRY();
 	unsettled = pg_atomic_read_u32(&sh->unsettled) != 0;
-	*out = palloc(Max(nshares * cap, 1) * sizeof(SiftPartDesc));
-	*nout = 0;
 	for (uint32 s = 0; s < nshares; s++)
-	{
-		const CompactSlot *slot = slot_at(ldr->parts, cap, s);
-
-		res_add(res, &slot->res);
-		memcpy(*out + *nout, slot->out, slot->nout * sizeof(SiftPartDesc));
-		*nout += (int) slot->nout;
-	}
+		res_add(res, &slot_at(ldr->parts, cap, s)->res);
+	*out = slot_outputs(ldr->parts, cap, nshares, nout);
 	sift_par_end(ldr);
 	return unsettled ? SIFT_COMPACT_PAR_UNSETTLED : SIFT_COMPACT_PAR_DONE;
 }
