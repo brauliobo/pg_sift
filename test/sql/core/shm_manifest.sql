@@ -153,7 +153,11 @@ SELECT sift._test_f2_plan_cache_drop(), sift._test_f2_plan_cache(true) IS NOT NU
 SELECT plan_buffers('SELECT count(*) FROM live WHERE id BETWEEN 100 AND 200') <= 4 AS plan_at_most_4_buffers;
 SELECT sift._test_f2_plan_cache_shm(true) AS "loaded_from_shm,published", (sift._test_f2_plan_cache(true))[5] AS part_lists_read_from_pages;
 DROP FUNCTION plan_buffers(text);
+-- DROP gives the slot of the index back, with its snapshot: the registry holds no slot of a file that is gone
+CREATE TEMP TABLE before_drop AS SELECT sift._test_shm_manifest_stat('slots_valid') AS slots;
 DROP TABLE live;
+SELECT slots - sift._test_shm_manifest_stat('slots_valid') AS slots_given_back FROM before_drop;
+DROP TABLE before_drop;
 DROP FUNCTION gone(int);
 
 DROP EXTENSION pg_sift_test;

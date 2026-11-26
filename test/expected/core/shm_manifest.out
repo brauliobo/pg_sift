@@ -494,7 +494,16 @@ SELECT sift._test_f2_plan_cache_shm(true) AS "loaded_from_shm,published", (sift.
 (1 row)
 
 DROP FUNCTION plan_buffers(text);
+-- DROP gives the slot of the index back, with its snapshot: the registry holds no slot of a file that is gone
+CREATE TEMP TABLE before_drop AS SELECT sift._test_shm_manifest_stat('slots_valid') AS slots;
 DROP TABLE live;
+SELECT slots - sift._test_shm_manifest_stat('slots_valid') AS slots_given_back FROM before_drop;
+ slots_given_back 
+------------------
+                1
+(1 row)
+
+DROP TABLE before_drop;
 DROP FUNCTION gone(int);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

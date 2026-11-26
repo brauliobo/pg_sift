@@ -28,6 +28,7 @@
 #include "core/errctx.h"
 #include "core/format_ux.h"
 #include "core/ops.h"
+#include "core/shm/manifest.h"
 #include "core/store/store.h"
 
 int			sift_log_min_duration = 1000;
@@ -176,6 +177,16 @@ has_col_index(Oid heapoid)
 	return found;
 }
 
+/* The file of a dropped relation is gone: its slot of the registry of the manifests (core/shm/manifest.h) is given back, with the snapshot it holds */
+static void
+forget_shared_manifest(Oid relid)
+{
+	Relation	rel = relation_open(relid, NoLock);
+
+	sift_shm_manifest_invalidate(&rel->rd_locator, false);
+	relation_close(rel, NoLock);
+}
+
 /*
  * After ALTER INDEX ... SET / RESET (options) of a sift or sift_col index: the new options must fit the index (a name that is not a leaf of it, a type the
  * option does not take), which fails the ALTER and not the queries, inserts and VACUUM that would read them next. An object access hook and not a
@@ -192,7 +203,8 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 	ArrayType  *before = NULL;
 	bool		ours,
 				col,
-				table;
+				table,
+				stored;
 
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
@@ -206,6 +218,7 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 	table = cls->relkind == RELKIND_RELATION;
 	col = cls->relkind == RELKIND_INDEX && cls->relam == cat->col_am;
 	ours = col || (cls->relkind == RELKIND_INDEX && cls->relam == cat->am);
+	stored = ours || (table && cls->relam == cat->tbl_am);
 	if (ours && access == OAT_POST_ALTER)
 		before = index_reloptions_copy(tuple);
 	ReleaseSysCache(tuple);
@@ -213,6 +226,8 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 	{
 		if (col)
 			sift_col_track_dropping(objectId), sift_keystore_note_drop(objectId);
+		if (stored)
+			forget_shared_manifest(objectId);
 		return;
 	}
 	if (table && has_col_index(objectId))
