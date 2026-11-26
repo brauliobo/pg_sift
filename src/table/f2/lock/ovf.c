@@ -102,36 +102,32 @@ area_of(SiftRowLockTable *t, bool create)
 	if (area_cx == NULL)
 		area_cx = sift_cache_create_context("sift rowlock dsa");
 	old = MemoryContextSwitchTo(area_cx);
-	if (create && handle_of(t) == DSA_HANDLE_INVALID)
+	PG_TRY();
 	{
-		LWLockAcquire(&t->area_lock, LW_EXCLUSIVE);
-		if (handle_of(t) == DSA_HANDLE_INVALID && (area = area_try(t, true)) != NULL)
-			pg_atomic_write_membarrier_u32(&t->area_handle, dsa_get_handle(area));
-		LWLockRelease(&t->area_lock);
-	}
-	if (area == NULL && handle_of(t) != DSA_HANDLE_INVALID)
-	{
+		if (create && handle_of(t) == DSA_HANDLE_INVALID)
+		{
+			LWLockAcquire(&t->area_lock, LW_EXCLUSIVE);
+			if (handle_of(t) == DSA_HANDLE_INVALID && (area = area_try(t, true)) != NULL)
+				pg_atomic_write_membarrier_u32(&t->area_handle, dsa_get_handle(area));
+			LWLockRelease(&t->area_lock);
+		}
+		if (area == NULL && handle_of(t) != DSA_HANDLE_INVALID)
+		{
 #ifdef SIFT_TESTING
-		if (!create && sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_rowlock_attach") != NULL)
-			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not attach the area of the row lock chunks (test)")));
+			if (!create && sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "sift_rowlock_attach") != NULL)
+				ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not attach the area of the row lock chunks (test)")));
 #endif
-		area = create ? area_try(t, false) : dsa_attach(handle_of(t));
+			area = create ? area_try(t, false) : dsa_attach(handle_of(t));
+		}
+		if (area != NULL)
+			dsa_pin_mapping(area);
 	}
-	if (area != NULL)
-		dsa_pin_mapping(area);
-	MemoryContextSwitchTo(old);
+	PG_FINALLY();
+	{
+		MemoryContextSwitchTo(old);
+	}
+	PG_END_TRY();
 	return area;
-}
-
-/*
- * The area a read of the chunks goes through. The end of a transaction (commit, abort, prepare) attaches nothing: an error there is a PANIC of the server, and the area it needs is one this
- * backend mapped already when an entry of it is in a chunk (an entry moves from a chunk to the table, never the other way). A backend that maps none holds all its entries in the table, and
- * the chunks it does not see belong to others.
- */
-static dsa_area *
-chunk_area(SiftRowLockTable *t)
-{
-	return IsTransactionState() ? area_of(t, false) : area;
 }
 
 /* An attach that finds no memory maps nothing: the backend then attaches when it reads a chunk, as one does that was started before the area was made */
@@ -140,6 +136,22 @@ sift_rowlock_area_map(SiftRowLockTable *t)
 {
 	if (area == NULL && handle_of(t) != DSA_HANDLE_INVALID && IsTransactionState())
 		(void) area_of(t, true);
+}
+
+/*
+ * The stripe locked, with the area of its chunks mapped before: an attach takes the lock of the dynamic shared memory of the server and maps a segment, never under a stripe lock. The end
+ * of a transaction (commit, abort, prepare) attaches nothing: an error there is a PANIC of the server, and the area it needs is one this backend mapped already when an entry of it is in a
+ * chunk (an entry moves from a chunk to the table, never the other way). A backend that maps none holds all its entries in the table, and the chunks it does not see belong to others.
+ */
+void
+sift_rowlock_stripe_acquire(SiftRowLockTable *t, int si, LWLockMode mode)
+{
+	LWLockAcquire(&t->hdr[si].lock, mode);
+	if (area != NULL || t->hdr[si].overflow == InvalidDsaPointer || !IsTransactionState())
+		return;
+	LWLockRelease(&t->hdr[si].lock);
+	(void) area_of(t, false);
+	LWLockAcquire(&t->hdr[si].lock, mode);
 }
 
 static SiftRowLockChunk *
@@ -184,7 +196,7 @@ sift_rowlock_find(SiftRowLockTable *t, int si, const SiftRowLockKey *k)
 
 	if (e != NULL)
 		return e;
-	a = t->hdr[si].overflow != InvalidDsaPointer ? chunk_area(t) : NULL;
+	a = t->hdr[si].overflow != InvalidDsaPointer ? area : NULL;
 	for (dsa_pointer p = t->hdr[si].overflow; a != NULL && p != InvalidDsaPointer;)
 	{
 		SiftRowLockChunk *c = chunk_at(a, p);
@@ -201,7 +213,7 @@ bool
 sift_rowlock_has_room(SiftRowLockTable *t, int si)
 {
 	return t->hdr[si].table_n < SIFT_ROWLOCK_BUCKETS ||
-		(t->hdr[si].overflow != InvalidDsaPointer && chunk_at(area_of(t, false), t->hdr[si].overflow)->n < SIFT_ROWLOCK_CHUNK_ENTRIES);
+		(t->hdr[si].overflow != InvalidDsaPointer && chunk_at(area, t->hdr[si].overflow)->n < SIFT_ROWLOCK_CHUNK_ENTRIES);
 }
 
 dsa_pointer
@@ -317,7 +329,7 @@ sift_rowlock_sweep(SiftRowLockTable *t, int si, SiftRowLockSweepFn drop, void *a
 			sift_rowlock_remove(t, si, &t->stripes[si].entries[i]);
 		else
 			i++;
-	a = t->hdr[si].overflow != InvalidDsaPointer ? chunk_area(t) : NULL;
+	a = t->hdr[si].overflow != InvalidDsaPointer ? area : NULL;
 	for (dsa_pointer p = t->hdr[si].overflow; a != NULL && p != InvalidDsaPointer;)
 	{
 		SiftRowLockChunk *c = chunk_at(a, p);
@@ -343,7 +355,7 @@ SiftRowLockCount
 sift_rowlock_count(SiftRowLockTable *t, int si)
 {
 	SiftRowLockCount n = {.in_table = t->hdr[si].table_n};
-	dsa_area   *a = t->hdr[si].overflow != InvalidDsaPointer ? chunk_area(t) : NULL;
+	dsa_area   *a = t->hdr[si].overflow != InvalidDsaPointer ? area : NULL;
 
 	for (dsa_pointer p = t->hdr[si].overflow; a != NULL && p != InvalidDsaPointer;)
 	{

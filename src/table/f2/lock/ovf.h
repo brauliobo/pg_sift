@@ -84,6 +84,9 @@ extern void sift_rowlock_table_init(SiftRowLockTable *t, int tranche);
 /* The area mapped, where it exists and the system has the memory for it, by a backend in a transaction that is about to lock a stripe */
 extern void sift_rowlock_area_map(SiftRowLockTable *t);
 
+/* The lock of the stripe si taken in mode, the area of its chunks mapped before it where the stripe has chunks (in a transaction): a read of the stripe finds every chunk mapped */
+extern void sift_rowlock_stripe_acquire(SiftRowLockTable *t, int si, LWLockMode mode);
+
 /* The chunks the removes under the stripe lock just let go of emptied, given back to the area */
 extern void sift_rowlock_free_emptied(void);
 

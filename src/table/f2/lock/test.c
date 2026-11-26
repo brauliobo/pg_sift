@@ -26,7 +26,7 @@ sift_test_rowlock_stats(PG_FUNCTION_ARGS)
 	{
 		SiftRowLockCount c;
 
-		LWLockAcquire(&layout->rows.hdr[si].lock, LW_SHARED);
+		sift_rowlock_stripe_acquire(&layout->rows, si, LW_SHARED);
 		c = sift_rowlock_count(&layout->rows, si);
 		LWLockRelease(&layout->rows.hdr[si].lock);
 		total.in_table += c.in_table;

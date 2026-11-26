@@ -299,7 +299,7 @@ reclaim_overflowed(void)
 		if ((overflowed[si / 64] >> (si % 64) & 1) != 0)
 		{
 			o.horizon = FullTransactionIdIsValid(o.horizon) ? o.horizon : oldest_needed();
-			LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+			sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 			sift_rowlock_sweep(rows, si, reclaimable_keeping_lockers, &o);
 			stripe_unlock(si);
 		}
@@ -313,7 +313,7 @@ clear_overflow(const SiftRowLockKey *k, MultiXactId mx)
 	int			si = stripe_of(k);
 	SiftRowLockEntry *e;
 
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 	e = sift_rowlock_find(rows, si, k);
 	if (e != NULL && e->overflow_mxid == mx)
 	{
@@ -380,7 +380,7 @@ settle(const SiftTouched *t, bool commit, bool keep_speculative)
 	MultiXactId overflow = InvalidMultiXactId;
 	bool		settled;
 
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 	settled = settle_locked(t, si, commit, keep_speculative, &overflow);
 	stripe_unlock(si);
 	if (commit && MultiXactIdIsValid(overflow))
@@ -415,7 +415,7 @@ settle_window(uint32 base, uint32 n, bool commit)
 
 		for (hi = lo; hi < n && stripe_of(&sift_touched_at(base + at[hi])->key) == si; hi++)
 			overflow[hi] = InvalidMultiXactId;
-		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 		for (uint32 j = lo; j < hi; j++)
 			(void) settle_locked(sift_touched_at(base + at[j]), si, commit, false, &overflow[j]);
 		stripe_unlock(si);
@@ -447,7 +447,7 @@ prepare_row(const SiftTouched *t)
 				relid;
 	bool		first;
 
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 	e = sift_rowlock_find(rows, si, &t->key);
 	if (e != NULL)
 	{
@@ -473,7 +473,7 @@ retag_holder(const SiftTouched *t, SubTransactionId parent)
 	int			si = stripe_of(&t->key);
 	SiftRowLockEntry *e;
 
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 	e = sift_rowlock_find(rows, si, &t->key);
 	for (int i = 0; e != NULL && i < e->nholders; i++)
 	{
@@ -662,7 +662,7 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 	(void) GetCurrentTransactionId();
 	for (;;)
 	{
-		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 		r = try_acquire(rel, &k, si, part_id, mode, &o, &out);
 		stripe_unlock(si);
 		if (needs_outside(&out))
@@ -691,7 +691,7 @@ held_entry(const SiftRowLockKey *k, int *si)
 	{
 		MultiXactId unread = InvalidMultiXactId;
 
-		LWLockAcquire(stripe_lock(*si), LW_EXCLUSIVE);
+		sift_rowlock_stripe_acquire(rows, *si, LW_EXCLUSIVE);
 		e = sift_rowlock_find(rows, *si, k);
 		if (e != NULL && (sift_hold_held_mode(e) >= 0 || (sift_mx_has(&seen, e->overflow_mxid) && sift_mx_held_mode(&seen) >= 0)))
 			break;
@@ -755,7 +755,7 @@ sift_tbl_rowlock_set_staged(Relation rel, uint64 tid, uint32 token)
 		return false;
 	for (;;)
 	{
-		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 		e = entry_for_write(si, &k, &out);
 		if (e != NULL)
 		{
@@ -781,7 +781,7 @@ sift_tbl_rowlock_spec_done(Relation rel, uint64 tid, bool succeeded)
 
 	if (!tier1_ready())
 		return false;
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL && succeeded)
 		need_flush = sift_spec_succeeded(e);
@@ -807,7 +807,7 @@ sift_tbl_rowlock_staged_flushed(Relation rel, uint64 tid)
 
 	if (!tier1_ready())
 		return;
-	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL)
 		sift_spec_flushed(e);
@@ -829,7 +829,7 @@ sift_tbl_rowlock_probe_staged(Relation rel, uint64 tid, TransactionId *xmin, uin
 		return r;
 	for (;;)
 	{
-		LWLockAcquire(stripe_lock(si), running ? LW_EXCLUSIVE : LW_SHARED);
+		sift_rowlock_stripe_acquire(rows, si, running ? LW_EXCLUSIVE : LW_SHARED);
 		e = sift_rowlock_find(rows, si, &k);
 		now = e != NULL && (e->flags & SIFT_ROWLOCK_STAGED_INSERT) != 0 ? e->updater_fxid : InvalidFullTransactionId;
 		if (FullTransactionIdEquals(now, inserter))
@@ -855,7 +855,7 @@ sift_tbl_rowlock_speculative_token(Relation rel, uint64 tid)
 
 	if (!tier1_ready() || sift_rowlock_stripe_empty(rows, si))
 		return 0;
-	LWLockAcquire(stripe_lock(si), LW_SHARED);
+	sift_rowlock_stripe_acquire(rows, si, LW_SHARED);
 	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL && (e->flags & SIFT_ROWLOCK_SPECULATIVE) != 0)
 		token = e->spec_token;
@@ -873,7 +873,7 @@ sift_tbl_rowlock_peek(Relation rel, uint64 tid)
 
 	if (!tier1_ready() || sift_rowlock_stripe_empty(rows, si))
 		return p;
-	LWLockAcquire(stripe_lock(si), LW_SHARED);
+	sift_rowlock_stripe_acquire(rows, si, LW_SHARED);
 	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL && (e->flags & SIFT_ROWLOCK_COL_DELTA) != 0 && (e->flags & SIFT_ROWLOCK_COMMITTED_UPD) == 0)
 		p = (SiftRowLockPeek) {.delta_xid = XidFromFullTransactionId(e->updater_fxid),.delta_cid = e->updater_cid};
@@ -900,7 +900,7 @@ sift_tbl_rowlock_clear_lockers(Relation rel)
 	{
 		if (sift_rowlock_stripe_empty(rows, si))
 			continue;
-		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 		sift_rowlock_sweep(rows, si, last_locker_in, &rel->rd_locator);
 		stripe_unlock(si);
 	}
@@ -922,7 +922,7 @@ sift_tbl_rowlock_drop_rel(const RelFileLocator *loc)
 	{
 		if (sift_rowlock_stripe_empty(rows, si))
 			continue;
-		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 		sift_rowlock_sweep(rows, si, in_relation, (void *) loc);
 		stripe_unlock(si);
 	}
@@ -973,7 +973,7 @@ sift_tbl_rowlock_vacuum_mxid(Relation rel, MultiXactId oldest_mxact)
 		found.n = 0;
 		if (sift_rowlock_stripe_empty(rows, si))
 			continue;
-		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 		sift_rowlock_sweep(rows, si, collect_overflow, &found);
 		stripe_unlock(si);
 		for (int i = 0; i < found.n; i++)
