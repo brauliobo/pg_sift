@@ -43,7 +43,8 @@ ESET=1024
 LIMITS="eset_rows=$ESET"
 
 plan 20
-node_init mf 90 "autovacuum = off
+node_init mf 90 "sift.test_create_format1 = on
+autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 128MB
 max_wal_size = 2GB

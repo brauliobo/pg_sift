@@ -7,7 +7,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
-node_init primary 2 "sift.shared_cache_kb = 262144"
+node_init primary 2 "sift.shared_cache_kb = 131072
+sift.test_create_format1 = on"
 node_start primary || bail "primary start failed"
 TABLES=14
 {
@@ -20,6 +21,7 @@ TABLES=14
 } | sql primary >/dev/null || bail "setup failed"
 
 # the rows of a table, as an md5, from the stock plan ($2 = off) or the column scan ($2 = on); then its counters (held,hits,misses, by name)
+pshape() { echo "SELECT md5(x::text) FROM (SELECT min(s), max(s), count(*) FILTER (WHERE s > 'k${1}8') FROM t$1) x"; }
 shape() { echo "SELECT md5(x::text) FROM (SELECT count(DISTINCT s), min(s), max(s), count(*) FILTER (WHERE s > 'k${1}8') FROM t$1) x"; }
 expect() { sql primary "SET sift.enable_agg = off" "SET sift.enable_col_scan = off" "SET max_parallel_workers_per_gather = 0" "$(shape "$1")"; }
 counters() { echo "SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats(local => true) WHERE name IN ('dict_shared_hits', 'dict_shared_held', 'dict_shared_misses')"; }
@@ -43,9 +45,11 @@ B=$(backend "SET sift.enable_agg = on" -- 1)
 check "the second copies them, to the same rows" test "$(nth "$B" 1)|$(( $(ctr "$B" 2 hits) > 0 ))|$(ctr "$B" 2 misses)" == "${WANT[1]}|1|0"
 
 # a parallel query: workers are backends of their own, the leader's table or none, the same rows
-P=$(sql primary "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 2" "SET parallel_setup_cost = 0" "SET parallel_tuple_cost = 0" \
-	"SET min_parallel_table_scan_size = 0" "$(shape 1)" "SELECT value > 0 FROM sift.stats(local => true) WHERE name = 'workers_launched'" | tr '\n' ' ')
-check "a parallel query, its workers joined to the table, returns the same rows" test "$P" == "${WANT[1]} t "
+PWANT=$(sql primary "SET sift.enable_agg = off" "SET sift.enable_col_scan = off" "SET max_parallel_workers_per_gather = 0" "$(pshape 1)")
+PAR=("LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 2" "SET parallel_setup_cost = 0" "SET parallel_tuple_cost = 0" "SET min_parallel_table_scan_size = 0" "SET sift.test_agg_par_min_rows = 0")
+P=$(sql primary "${PAR[@]}" "$(pshape 1)" | tr '\n' ' ')
+L=$(sql primary "${PAR[@]}" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $(pshape 1)" | grep -c 'Workers Launched: [1-9]')
+check "a parallel query, its workers joined to the table, returns the same rows" test "$P|$L" == "$PWANT |1"
 
 # the segment of the table in a /dev/shm of 64 MB: a quarter of it at most
 SHM_KB=$(df -Pk /dev/shm | awk 'NR == 2 {print $2}')

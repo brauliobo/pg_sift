@@ -28,7 +28,8 @@ PICK_BUDGET=$((24 * MB))
 LOWER=""
 
 plan 10
-node_init bm 91 "sift.col_build_source = auto
+node_init bm 91 "sift.test_create_format1 = on
+sift.col_build_source = auto
 autovacuum = off
 max_parallel_workers_per_gather = 0
 max_worker_processes = 16

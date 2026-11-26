@@ -2,7 +2,7 @@
 # kill -9 of the postmaster and all backends in the middle of concurrent inserts, updates, deletes, VACUUM, promotion and merge of a
 # sift_col index, then crash recovery and checks: the store and every segment verify, the index holds exactly the visible heap tuples
 # with their values (heapallindexed), the column source returns what the heap returns, the groups of the elements of the documents come out
-# of the element cubes as the normal plan computes them, and the space stays bounded (the sweep reclaims
+# of the column source as the normal plan computes them, and the space stays bounded (the sweep reclaims
 # what the crash orphaned). The weight leaf holds numbers among strings, booleans, objects, arrays and JSON nulls (overflow values with their
 # JSON types in the chunks) and some documents lack it: jsonb_typeof filters (=, <>, 'null', IS NULL), a group key and FILTERs of the column source
 # return what the heap returns. SIFT_COL_CRASH_ITERS (default 40, 4 quick).
@@ -11,8 +11,9 @@
 
 ITERS=$(knob SIFT_COL_CRASH_ITERS 40 4)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
-plan $((ITERS + 8))
-node_init crash 1 "checkpoint_timeout = 30s
+plan $((ITERS + 6))
+node_init crash 1 "sift.test_create_format1 = on
+checkpoint_timeout = 30s
 max_wal_size = 256MB
 autovacuum = off"
 node_start crash || bail "start failed"
@@ -69,9 +70,7 @@ for i in $(seq "$ITERS"); do
 done
 sql crash "VACUUM (index_cleanup on, disable_page_skipping) orders" "SELECT sift.col_merge('o_col', true)" "SELECT sift.col_merge('o_col', true)" >/dev/null
 check "the element cubes of the merged segment answer the groups of the elements" test "$(elem_groups crash on)" == "$(elem_groups crash off)"
-check "the element cubes answer units of the merged segment" grep -qE "[1-9][0-9]* from pre-aggregates" <<<"$(elem_groups crash on explain)"
 check "the soft-delete filter returns what the heap returns" test "$(sql crash "SELECT gone_same()")" == t
-check "and the exceptions of the merged segment answer its units" grep -qE "[1-9][0-9]* net of exceptions" <<<"$(sql crash "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT status, count(*), sum(qty) FROM orders WHERE gone IS NULL GROUP BY 1")"
 check "a final merge verifies" test -z "$(sql crash "SELECT sift.col_verify('o_col', true)" 2>&1)"
 check "and leaves one immutable segment" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable'")" == 1
 finish

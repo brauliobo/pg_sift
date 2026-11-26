@@ -23,7 +23,8 @@ MB=1048576
 LOWER=""
 
 plan 12
-node_init cb 89 "autovacuum = off
+node_init cb 89 "sift.test_create_format1 = on
+autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 sift.async_maintenance = off
