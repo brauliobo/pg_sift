@@ -556,7 +556,9 @@ selftest() {
 main() {
 	parse "$@"
 	if [[ -n $SELFTEST ]]; then selftest; exit; fi
-	WORK=$(mktemp -d "${SIFT_TMP:-${TMPDIR:-/tmp}}/fast-gate-XXXXXX") OUT=$WORK/out
+	local base=${SIFT_TMP:-${TMPDIR:-/tmp}}
+	mkdir -p "$base" && WORK=$(mktemp -d "$base/fast-gate-XXXXXX") || { echo "fast-gate: no scratch directory in $base" >&2; exit 2; }
+	OUT=$WORK/out
 	mkdir -p "$OUT"
 	trap cleanup EXIT
 	trap 'FAILED=1; exit 130' INT TERM
