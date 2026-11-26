@@ -155,7 +155,7 @@ CASES = (
             limits=Ceilings(disk_bpr=32.0, wal_bpr=29.0)),
     BprCase('col_copy_wide_bulk', 'col', N, 't_ix', setup=EMPTY_IDX, settings="SET work_mem = '256kB'", op=COPY_WIDE,
             maint="SELECT sift.maintain('t_ix')",
-            open='W-02', limits=Ceilings(disk_bpr=26.0, sift_wal_bpr=28.0, maint_sift_wal_bpr=5.0)),
+            limits=Ceilings(disk_bpr=23.0, sift_wal_bpr=16.84, maint_sift_wal_bpr=1.12)),
     BprCase('col_batch_ins_1k_10k', 'col', N, 't_ix', setup=EMPTY_IDX, op=batches((1024,) * 6 + (10240,)), maint='VACUUM t',
             limits=Ceilings(disk_bpr=32.0, sift_wal_bpr=26.82, maint_sift_wal_bpr=52.76)),
     BprCase('col_oltp_1row', 'col', 200, 't_ix', setup=HEAP_IDX,

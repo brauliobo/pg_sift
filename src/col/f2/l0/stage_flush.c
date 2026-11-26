@@ -282,17 +282,21 @@ largest_buffer(SiftTxnStage *st)
 /*
  * The buffer of a partition that holds the flush count is written at once; the largest buffer when all of them hold the budget (checked for each row: the memory of the buffers is counted as rows
  * are added). The part is written in a context of its own, which goes with it: what the write holds (the encoded granules, the dictionaries, the zones) is the size of the part, which a
- * statement that loads a whole table would keep to its end otherwise.
+ * statement that loads a whole table would keep to its end otherwise. The flush count was estimated from the first rows, which carry the fixed memory of the buffers: a buffer that reaches it counts
+ * again from its own rows, and holds more of them when the budget does.
  */
 void
 sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
 {
-	SiftStagePart *victim = p->rb->n >= (int) st->bulk_rows ? p : largest_buffer(st);
+	SiftStagePart *victim;
 	MemoryContext scratch;
 	MemoryContext caller;
 	SiftManifestRead now;
 	bool		same;
 
+	if (p->rb->n == (int) st->bulk_rows)
+		st->bulk_rows = Max(st->bulk_rows, sift_batch_flush_rows(st->bulk_budget, p->rb->mem_bytes / p->rb->n));
+	victim = p->rb->n >= (int) st->bulk_rows ? p : largest_buffer(st);
 	if (p->rb->n < (int) st->bulk_rows && st->mem_bytes < st->bulk_budget)
 		return;
 	scratch = sift_mem_allocset_create(TopTransactionContext, "sift stage bulk flush");
