@@ -7,7 +7,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
-node_init pg 63 "autovacuum = off"
+node_init pg 63 "autovacuum = off
+sift.test_create_format1 = off"
 node_start pg || bail "start failed"
 sql pg "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, kind int NOT NULL, amount int NOT NULL, pad text DEFAULT repeat('x', 1500))" \

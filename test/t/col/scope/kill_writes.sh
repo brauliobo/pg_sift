@@ -10,6 +10,7 @@
 ROUNDS=$(knob SIFT_KILLW_ROUNDS 12 4)
 MAXSLEEP=$(knob SIFT_KILLW_MAXSLEEP 3 2)
 node_init kw 52 "$TWOHOP_CONF
+sift.test_create_format1 = off
 sift.async_maintenance = off
 max_parallel_maintenance_workers = 0
 shared_buffers = 64MB"

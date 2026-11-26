@@ -54,8 +54,9 @@ def lit(ktype, n):
 
 
 class Seed:
-    def __init__(self, seed, rows):
+    def __init__(self, seed, rows, f2):
         r = self.rng = random.Random(seed * 7919 + 5)
+        self.f2 = f2
         self.ktype = ['text', 'varchar', 'uuid', 'int'][seed % 4]
         self.mode = ['int', 'text', 'varchar', 'uuid'][seed // 4 % 4]
         self.mc = 'dim_a_id' if self.mode == 'int' else 'account'     # the member column of the pairs and of the index
@@ -71,8 +72,8 @@ class Seed:
         self.groups = r.choice([8, 25])
         self.pairs = 'pair_set' if self.two else 'tenant_scope'
 
-    def summarized(self):   # the summary answers a read of one key right after a build: of two paths with an integer key only (a string key of two paths is the join)
-        return not self.two or self.ktype == 'int'
+    def summarized(self):   # the Format 2.0 summary answers a read of one key right after a build: of two paths with an integer key only (a string key of two paths is the join)
+        return self.f2 and (not self.two or self.ktype == 'int')
 
     def k(self, n):
         return lit(self.ktype, n)
@@ -303,7 +304,7 @@ def run_seed(seed, rows, steps, out_dir):
     a, rd = Sess('writer', log, FUZZ_SETUP), Sess('reader', log, FUZZ_SETUP)
     stats = collections.Counter()
     try:
-        s = Seed(seed, rows)
+        s = Seed(seed, rows, re.search(r'^fmt\|off$', a.run("SELECT 'fmt', current_setting('sift.test_create_format1');"), re.M) is not None)
         log.write(f'-- seed {seed} {vars(s)}\n')
         a.run(LIB)
         out = a.run(s.setup_sql())

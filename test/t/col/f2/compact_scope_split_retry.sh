@@ -7,6 +7,7 @@
 
 plan 9
 node_init cs 3 "autovacuum = off
+sift.test_create_format1 = off
 sift.async_maintenance = off
 shared_buffers = 64MB"
 node_start cs || bail "start failed"
