@@ -471,6 +471,7 @@ finish() {
 		out=$(pool_end "$name" 2>&1) || { not_ok "leak check of node $name"; diag "$out"; }
 	done
 	mapfile -t names < <(printf '%s\n' "${NODES[@]}" | awk 'NF && !seen[$0]++')
+	mkdir -p "$TAPDIR"
 	for name in "${names[@]}"; do node_leakcheck "$name" >"$TAPDIR/$name.leak" 2>&1 & pids+=($!); done
 	for i in "${!names[@]}"; do
 		wait "${pids[i]}" || { not_ok "leak check of node ${names[i]}"; diag "$(<"$TAPDIR/${names[i]}.leak")"; }

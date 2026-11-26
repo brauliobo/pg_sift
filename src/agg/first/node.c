@@ -226,7 +226,9 @@ first_add_path(PlannerInfo *root, RelOptInfo *output_rel, Path *child)
 	cp->path.parent = output_rel;
 	cp->path.pathtarget = child->pathtarget;
 	cp->path.parallel_safe = child->parallel_safe;
+#if PG_VERSION_NUM >= 180000
 	cp->path.disabled_nodes = child->disabled_nodes;
+#endif
 	cp->path.pathkeys = root->sort_pathkeys;
 	cp->path.rows = clamp_row_est(groups);
 	cp->path.startup_cost = total;
