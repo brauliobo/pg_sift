@@ -273,10 +273,8 @@ next_with_dels(SiftL0GcSlot *const *items, uint32 n, uint32 from)
 }
 
 static void
-place_slab(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32 s, Lane *ln, bool *changed)
+place_slab(char *pg, SiftL0GcSlot *const *items, uint32 n, Lane *ln, bool *changed)
 {
-	char	   *pg = c->io->record_page(c->io->ctx, pg_atomic_read_u32(&c->shm->tail[s]), SIFT_PT_L0_SLAB, false);
-
 	for (; ln->slab_done < n; ln->slab_done++)
 	{
 		const SiftL0GcSlot *it = items[ln->slab_done];
@@ -295,19 +293,11 @@ place_slab(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32
 	ln->slab_full = ln->slab_done < n;
 }
 
+/* pg NULL: the shard has no PEND_DEL page yet */
 static void
-place_pd(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32 s, Lane *ln, bool *changed)
+place_pd(char *pg, SiftL0GcSlot *const *items, uint32 n, Lane *ln, bool *changed)
 {
-	BlockNumber blk = pg_atomic_read_u32(&c->shm->pd_tail[s]);
-	char	   *pg;
-
-	if (blk == NO_BLOCK)
-	{
-		ln->pd_full = true;
-		return;
-	}
-	pg = c->io->record_page(c->io->ctx, blk, SIFT_PT_PEND_DEL, false);
-	while (ln->pd_done < n && sift_l0_pd_fits(pg, items[ln->pd_done]->h.ndels))
+	while (pg != NULL && ln->pd_done < n && sift_l0_pd_fits(pg, items[ln->pd_done]->h.ndels))
 	{
 		sift_l0_pd_add(pg, SIFT_L0_GC_DELS(items[ln->pd_done]), items[ln->pd_done]->h.ndels);
 		*changed = true;
@@ -316,23 +306,73 @@ place_pd(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32 s
 	ln->pd_full = ln->pd_done < n;
 }
 
-/* One WAL record for the slab page and the PEND_DEL page together */
-static void
-place_round(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32 s, Lane *ln)
+/* What one round places on the pages: returns whether it placed anything */
+static bool
+place_pages(char *slab, char *pd, SiftL0GcSlot *const *items, uint32 n, Lane *ln)
 {
 	bool		changed = false;
 
 	ln->slab_full = ln->pd_full = false;
 	ln->pd_done = next_with_dels(items, n, ln->pd_done);
-	c->io->record_begin(c->io->ctx);
 	if (ln->slab_done < n)
-		place_slab(c, items, n, s, ln, &changed);
+		place_slab(slab, items, n, ln, &changed);
 	if (ln->pd_done < n)
-		place_pd(c, items, n, s, ln, &changed);
-	if (changed)
+		place_pd(pd, items, n, ln, &changed);
+	return changed;
+}
+
+/* One WAL record for the slab page and the PEND_DEL page together */
+static void
+place_round(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32 s, Lane *ln)
+{
+	BlockNumber pdb = pg_atomic_read_u32(&c->shm->pd_tail[s]);
+	char	   *slab,
+			   *pd;
+
+	c->io->record_begin(c->io->ctx);
+	slab = c->io->record_page(c->io->ctx, pg_atomic_read_u32(&c->shm->tail[s]), SIFT_PT_L0_SLAB, false);
+	pd = pdb == NO_BLOCK ? NULL : c->io->record_page(c->io->ctx, pdb, SIFT_PT_PEND_DEL, false);
+	if (place_pages(slab, pd, items, n, ln))
 		c->io->record_done(c->io->ctx);
 	else
 		c->io->record_abort(c->io->ctx);
+}
+
+static void
+copy_page(const SiftL0PageIO *io, BlockNumber blk, SiftPageType type, char *out)
+{
+	memcpy(out, io->read_lock(io->ctx, blk, type), BLCKSZ);
+	io->read_unlock(io->ctx, blk);
+}
+
+/*
+ * The successor pages the batch takes: the rounds run on copies of the tails first. They are taken from the allocator before any record, so that an error of the allocator leaves no
+ * request placed that the combiner would give a retry to
+ */
+static uint32
+count_successors(const SiftL0ShardCtx *c, SiftL0GcSlot *const *items, uint32 n, uint32 s, Lane ln)
+{
+	PGAlignedBlock slab,
+				pd;
+	BlockNumber pdb = pg_atomic_read_u32(&c->shm->pd_tail[s]);
+	bool		has_pd = pdb != NO_BLOCK;
+	uint32		need = 0;
+
+	copy_page(c->io, pg_atomic_read_u32(&c->shm->tail[s]), SIFT_PT_L0_SLAB, slab.data);
+	if (has_pd)
+		copy_page(c->io, pdb, SIFT_PT_PEND_DEL, pd.data);
+	while (place_pages(slab.data, has_pd ? pd.data : NULL, items, n, &ln), ln.slab_full || ln.pd_full)
+	{
+		if (ln.slab_full)
+			format_shard_slab(slab.data, ln.href);
+		if (ln.pd_full && !has_pd)
+			memcpy(pd.data, slab.data, BLCKSZ);
+		if (ln.pd_full)
+			sift_l0_pd_format(pd.data, NO_BLOCK, 1);
+		has_pd |= ln.pd_full;
+		need += ln.slab_full + ln.pd_full;
+	}
+	return need;
 }
 
 static void
@@ -357,11 +397,10 @@ note_flush(const SiftL0ShardDirData *d, SiftL0ShardShm *shm)
 
 /* The full tail gets a successor and a seal; the directory page is locked for the few bytes that name the new tail, never Block 0 */
 static void
-rotate_slab(const SiftL0ShardCtx *c, uint32 s, bool href)
+rotate_slab(const SiftL0ShardCtx *c, uint32 s, bool href, BlockNumber nb)
 {
 	const SiftL0PageIO *io = c->io;
 	BlockNumber old = pg_atomic_read_u32(&c->shm->tail[s]);
-	BlockNumber nb = io->alloc(io->ctx);
 	char	   *np,
 			   *op,
 			   *dp;
@@ -393,11 +432,10 @@ rotate_slab(const SiftL0ShardCtx *c, uint32 s, bool href)
 }
 
 static void
-rotate_pd(const SiftL0ShardCtx *c, uint32 s)
+rotate_pd(const SiftL0ShardCtx *c, uint32 s, BlockNumber nb)
 {
 	const SiftL0PageIO *io = c->io;
 	BlockNumber old = pg_atomic_read_u32(&c->shm->pd_tail[s]);
-	BlockNumber nb = io->alloc(io->ctx);
 	uint16		pages = 1;
 	char	   *np,
 			   *op,
@@ -434,6 +472,9 @@ sift_l0_shard_apply(void *ctx, SiftL0GcSlot *const *items, uint32 n)
 	const SiftL0ShardCtx *c = ctx;
 	uint32		s = items[0]->h.shard_id & SIFT_L0_GC_SHARD_MASK;
 	Lane		ln = {.href = (items[0]->h.shard_id & SIFT_L0_GC_SHARD_HEAPREF) != 0};
+	BlockNumber succ[SIFT_L0_FRESH_MAX];
+	uint32		nsucc,
+				used = 0;
 
 	Assert(s < pg_atomic_read_u32(&c->shm->nshards));
 	if (items[0]->h.expect_slab_blk != pg_atomic_read_u32(&c->shm->dir_blk))
@@ -441,16 +482,21 @@ sift_l0_shard_apply(void *ctx, SiftL0GcSlot *const *items, uint32 n)
 		set_results(items, n, SIFT_L0_GC_STALE);
 		return;
 	}
+	nsucc = count_successors(c, items, n, s, ln);
+	Assert(nsucc <= lengthof(succ));
+	for (uint32 i = 0; i < nsucc; i++)
+		succ[i] = c->io->alloc(c->io->ctx);
 	for (;;)
 	{
 		place_round(c, items, n, s, &ln);
 		if (!ln.slab_full && !ln.pd_full)
 			break;
 		if (ln.slab_full)
-			rotate_slab(c, s, ln.href);
+			rotate_slab(c, s, ln.href, succ[used++]);
 		if (ln.pd_full)
-			rotate_pd(c, s);
+			rotate_pd(c, s, succ[used++]);
 	}
+	Assert(used == nsucc);
 	set_results(items, n, SIFT_L0_GC_APPLIED);
 }
 
@@ -592,13 +638,13 @@ sift_l0_flush_seal(SiftL0Flush *f, SiftL0AnchorFn commit_anchor, void *cctx)
 
 	f->old_dir = pg_atomic_read_u32(&f->shm->dir_blk);
 	old = sift_l0_dir_read(f->io, f->old_dir);
-	n = seal_targets(&old, targets);
-	targets[n++] = (SealTarget) {f->old_dir, false};
-	seal_all(f->io, targets, n);
 	f->dir_v1 = sift_l0_dir_create(f->io, old.nshards, f->old_dir, old.dir_gen + 1, old.dir_flags, f->floor);
 	commit_anchor(cctx, f->dir_v1);
 	sift_l0_shm_load(f->io, f->shm, f->dir_v1);
 	pg_atomic_write_u32(&f->shm->flush_wanted, SIFT_L0_FLUSH_NONE);
+	n = seal_targets(&old, targets);
+	targets[n++] = (SealTarget) {f->old_dir, false};
+	seal_all(f->io, targets, n);
 	sift_l0_gc_unlock_shards(f->gc, held, nheld);
 }
 

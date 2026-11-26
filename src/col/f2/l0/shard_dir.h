@@ -152,7 +152,8 @@ typedef struct SiftL0Flush
 } SiftL0Flush;
 
 /*
- * Phase 1: seals the active slabs and installs a fresh directory that drains the old one; commit_anchor(new directory) runs with every shard stripe held. The pages of the
+ * Phase 1: installs a fresh directory that drains the old one, then seals the slabs of the old one, that no writer reaches any more; commit_anchor(new directory) runs with every shard
+ * stripe held, before any seal, so that an error of it leaves the anchor on a directory whose tails still take appends. The pages of the
  * directories (nshards + 2 for both phases) are taken from the allocator before the stripes are: the io hands out pages it holds already (sift_href_io_reserve).
  */
 extern void sift_l0_flush_seal(SiftL0Flush *f, SiftL0AnchorFn commit_anchor, void *cctx);
