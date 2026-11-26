@@ -299,6 +299,11 @@ match_selectivity(PlannerInfo *root, RelOptInfo *rel, Node *expr, text *query, c
 		if (!sift_index_serves(indexoid, analyzer))
 			continue;
 		index = index_open(indexoid, AccessShareLock);
+		if (!RELKIND_HAS_STORAGE(index->rd_rel->relkind))
+		{
+			index_close(index, AccessShareLock);
+			continue;
+		}
 		sift_estimate_cached(index, &query, 1, &est);
 		index_close(index, AccessShareLock);
 		return est.docs / Max(rel->tuples > 0 ? rel->tuples : est.ndocs, 1);
