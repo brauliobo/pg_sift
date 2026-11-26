@@ -9,9 +9,7 @@
 
 #include <sys/stat.h>
 
-#include "access/htup_details.h"
 #include "catalog/namespace.h"
-#include "catalog/pg_class.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
@@ -21,75 +19,24 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 
 #include "col/f2/meta.h"
 #include "col/f2/tier/host.h"
 #include "core/cachebudget.h"
+#include "core/owner_sql.h"
 #include "core/page_io.h"
 
 #define POLICY_SELECT \
 	"SELECT policy_id, uri, endpoint, (extract(epoch FROM move_after) * 1000000)::int8, cache_mb, scope_id FROM sift.tier_policies WHERE "
 
-/*
- * The catalog tables are the extension owner's: what a caller may do with a policy is decided by the functions, not by a grant. A VACUUM that reads them may have no snapshot set, which SPI needs.
- */
-typedef struct CatalogUser
-{
-	Oid			uid;
-	int			sec;
-	bool		pushed;
-} CatalogUser;
-
 static uint32 policies_relid_hash;	/* the hash of sift.tier_policies in the cache of pg_class */
 
+/* The SQL of an extension that is not yet updated to 6.0 has no policy tables: no relation of it has a policy, and only the functions of 6.0 write one */
 static void
-catalog_user_enter(CatalogUser *save, Oid relid)
+owner_execute(const SiftOwnerSql *q)
 {
-	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
-
-	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for relation %u", relid);
-	policies_relid_hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid));
-	GetUserIdAndSecContext(&save->uid, &save->sec);
-	SetUserIdAndSecContext(((Form_pg_class) GETSTRUCT(tup))->relowner, save->sec | SECURITY_LOCAL_USERID_CHANGE);
-	ReleaseSysCache(tup);
-	save->pushed = !ActiveSnapshotSet();
-	if (save->pushed)
-		PushActiveSnapshot(GetTransactionSnapshot());
-}
-
-static void
-catalog_user_leave(const CatalogUser *save)
-{
-	if (save->pushed)
-		PopActiveSnapshot();
-	SetUserIdAndSecContext(save->uid, save->sec);
-}
-
-typedef struct OwnerSql
-{
-	const char *sql;
-	int			nargs;
-	const Oid  *types;
-	const Datum *values;
-	const char *nulls;
-	bool		read_only;
-	long		limit;
-	int			expect;			/* the SPI_OK_ code of the statement */
-	void		(*rows) (void *out);	/* reads SPI_tuptable while the connection is open */
-	void	   *out;
-} OwnerSql;
-
-/*
- * One statement on the policy tables as their owner: the user of the caller, the snapshot and the SPI connection are back whatever the statement does. The SQL of an extension that is
- * not yet updated to 6.0 has no policy tables: no relation of it has a policy, and only the functions of 6.0 write one.
- */
-static void
-owner_execute(const OwnerSql *q)
-{
-	CatalogUser save;
 	Oid			relid = get_relname_relid("tier_policies", get_namespace_oid("sift", false));
 
 	if (!OidIsValid(relid))
@@ -97,23 +44,8 @@ owner_execute(const OwnerSql *q)
 		SIFT_INVARIANT(q->read_only, "sift: a policy write without sift.tier_policies");
 		return;
 	}
-	catalog_user_enter(&save, relid);
-	PG_TRY();
-	{
-		int			rc;
-
-		SPI_connect();
-		rc = SPI_execute_with_args(q->sql, q->nargs, (Oid *) q->types, (Datum *) q->values, q->nulls, q->read_only, q->limit);
-		SIFT_INVARIANT(rc == q->expect, "sift: could not run a statement on the policy tables");
-		if (q->rows != NULL)
-			q->rows(q->out);
-	}
-	PG_FINALLY();
-	{
-		SPI_finish();
-		catalog_user_leave(&save);
-	}
-	PG_END_TRY();
+	policies_relid_hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid));
+	sift_owner_sql(relid, q);
 }
 
 static char *
@@ -162,7 +94,7 @@ static bool
 policy_row(const char *where, Oid argtype, Datum arg, SiftTierPolicy *out)
 {
 	PolicyRead	r = {CurrentMemoryContext, out, false};
-	OwnerSql	q = {.sql = psprintf("%s%s", POLICY_SELECT, where),.nargs = 1,.types = &argtype,.values = &arg,.read_only = true,.limit = 1,.expect = SPI_OK_SELECT,
+	SiftOwnerSql q = {.sql = psprintf("%s%s", POLICY_SELECT, where),.nargs = 1,.types = &argtype,.values = &arg,.read_only = true,.limit = 1,.expect = SPI_OK_SELECT,
 	.rows = read_policy,.out = &r};
 
 	owner_execute(&q);
@@ -200,7 +132,7 @@ sift_ttl_policy_of(Relation rel, SiftTtlPolicy *out)
 	Datum		arg = ObjectIdGetDatum(RelationGetRelid(rel));
 	Oid			argtype = OIDOID;
 	TtlRead		r = {CurrentMemoryContext, out, false};
-	OwnerSql	q = {.sql = "SELECT col, (extract(epoch FROM retention) * 1000000)::int8 FROM sift.ttl_policies WHERE relid::oid = $1",.nargs = 1,.types = &argtype,.values = &arg,
+	SiftOwnerSql q = {.sql = "SELECT col, (extract(epoch FROM retention) * 1000000)::int8 FROM sift.ttl_policies WHERE relid::oid = $1",.nargs = 1,.types = &argtype,.values = &arg,
 	.read_only = true,.limit = 1,.expect = SPI_OK_SELECT,.rows = read_ttl,.out = &r};
 
 	owner_execute(&q);
@@ -540,7 +472,7 @@ sift_tier_cutoff(const SiftF2Store *store, int slot, TimestampTz now, int64 span
 static void
 write_as_owner(const char *sql, int nargs, const Oid *types, const Datum *values, const char *nulls, int expect)
 {
-	OwnerSql	q = {.sql = sql,.nargs = nargs,.types = types,.values = values,.nulls = nulls,.expect = expect};
+	SiftOwnerSql q = {.sql = sql,.nargs = nargs,.types = types,.values = values,.nulls = nulls,.expect = expect};
 
 	owner_execute(&q);
 }
@@ -622,7 +554,7 @@ SiftTierPolicyRow *
 sift_tier_policy_all(int *n)
 {
 	AllRead		r = {CurrentMemoryContext, NULL, 0};
-	OwnerSql	q = {.sql = "SELECT relid::oid, uri, scope_id FROM sift.tier_policies ORDER BY policy_id",.read_only = true,.expect = SPI_OK_SELECT,.rows = read_all,.out = &r};
+	SiftOwnerSql q = {.sql = "SELECT relid::oid, uri, scope_id FROM sift.tier_policies ORDER BY policy_id",.read_only = true,.expect = SPI_OK_SELECT,.rows = read_all,.out = &r};
 
 	owner_execute(&q);
 	*n = r.n;

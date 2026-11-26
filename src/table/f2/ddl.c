@@ -21,7 +21,6 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "catalog/namespace.h"
-#include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
 
 #include "col/f2/proj/proj.h"
@@ -32,6 +31,7 @@
 #include "table/f2/tbl.h"
 #include "core/damage.h"
 #include "core/meta_peek.h"
+#include "core/owner_sql.h"
 
 static bool
 is_time_type(Oid t)
@@ -414,31 +414,12 @@ check_ttl_column(Relation rel, const char *column, const char *what)
 }
 
 /* The options of the tables are rows of a catalog of the extension that only its owner writes: the table owner who renames a column is let write the rows that name it */
-static Oid
-option_table_owner(void)
-{
-	Oid			relid = get_relname_relid("table_option_values", get_namespace_oid("sift", false));
-	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
-	Oid			owner;
-
-	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for relation %u", relid);
-	owner = ((Form_pg_class) GETSTRUCT(tup))->relowner;
-	ReleaseSysCache(tup);
-	return owner;
-}
-
 static void
-write_catalog(Relation rel, const char *sql, int nargs, Oid *argtypes, Datum *args, int expect)
+write_catalog(const char *sql, int nargs, const Oid *types, const Datum *values, int expect)
 {
-	Oid			uid;
-	int			sec;
+	Oid			catalog = get_relname_relid("table_option_values", get_namespace_oid("sift", false));
 
-	GetUserIdAndSecContext(&uid, &sec);
-	SetUserIdAndSecContext(option_table_owner(), sec | SECURITY_LOCAL_USERID_CHANGE);
-	SPI_connect();
-	SIFT_INVARIANT(SPI_execute_with_args(sql, nargs, argtypes, args, NULL, false, 0) == expect, "could not write the catalogs of table \"%s\": %s", RelationGetRelationName(rel), sql);
-	SPI_finish();
-	SetUserIdAndSecContext(uid, sec);
+	sift_owner_sql(catalog, &(SiftOwnerSql) {.sql = sql,.nargs = nargs,.types = types,.values = values,.expect = expect});
 }
 
 static const char *const catalog_deletes[] = {
@@ -455,7 +436,7 @@ forget_catalogs(Relation rel)
 	Datum		arg = ObjectIdGetDatum(RelationGetRelid(rel));
 
 	for (int i = 0; i < (int) lengthof(catalog_deletes); i++)
-		write_catalog(rel, catalog_deletes[i], 1, &argtype, &arg, SPI_OK_DELETE);
+		write_catalog(catalog_deletes[i], 1, &argtype, &arg, SPI_OK_DELETE);
 }
 
 void
@@ -527,7 +508,7 @@ sift_tbl_f2_ddl_rename_column(Relation rel, const char *oldname, const char *new
 		args[0] = CStringGetTextDatum(sift_tbl_f2_options_rename_column(TEXT_OPT(o, i), oldname, newname));
 		args[1] = ObjectIdGetDatum(RelationGetRelid(rel));
 		args[2] = CStringGetTextDatum(text_opts[i].name);
-		write_catalog(rel, "UPDATE sift.table_option_values SET value = $1 WHERE rel::pg_catalog.oid = $2 AND name = $3", 3, argtypes, args, SPI_OK_UPDATE);
+		write_catalog("UPDATE sift.table_option_values SET value = $1 WHERE rel::pg_catalog.oid = $2 AND name = $3", 3, argtypes, args, SPI_OK_UPDATE);
 	}
 	CacheInvalidateRelcacheByRelid(RelationGetRelid(rel));
 }

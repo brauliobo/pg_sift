@@ -830,6 +830,8 @@ core/meta_peek.c
 core/meta_peek.h
 core/ops.c
 core/ops.h
+core/owner_sql.c
+core/owner_sql.h
 core/par/morsel.c
 core/par/morsel.h
 core/par/morsel_test.c
