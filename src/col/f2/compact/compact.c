@@ -24,6 +24,7 @@
 #include "core/f2/gate.h"
 #include "core/f2/pace.h"
 #include "core/page_io.h"
+#include "core/visibility/visibility.h"
 #include "core/wal_conflict.h"
 #include "core/xid_cache.h"
 
@@ -892,6 +893,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 		test_delete_meanwhile(rel, part_id, key_lo, &in[0], spec);
 #endif
 	packed = any_packed_slot(in, ngens);
+	SIFT_TEST_GATE(sift_test_release_gate, 6);
 	if (packed)
 		LockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
