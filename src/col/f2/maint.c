@@ -39,6 +39,7 @@
 #include "core/maint/maint.h"
 #include "core/memtrack.h"
 #include "core/meta_peek.h"
+#include "core/store/store.h"
 #include "core/ops.h"
 #include "core/sql/sql.h"
 #include "core/worker.h"
@@ -54,6 +55,7 @@ open_f2(Oid relid)
 	if (index == NULL)
 		sift_rel_missing(relid);
 	sift_check_inspect(index);
+	sift_store_require_ready(index);
 	return index;
 }
 

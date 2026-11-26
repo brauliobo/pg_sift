@@ -60,6 +60,8 @@ sift_api_open(Oid relid, LOCKMODE lock)
 	if (!sift_api_am_of(r.rel, &r.am))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift index or sift_table", RelationGetRelationName(r.rel))));
 	sift_check_inspect(r.rel);
+	if (r.rel->rd_rel->relkind == RELKIND_INDEX)
+		sift_store_require_ready(r.rel);
 	r.peek = sift_meta_peek_format(r.rel);
 	if (r.peek.status == SIFT_FMT_OTHER)
 		ereport(ERROR,
