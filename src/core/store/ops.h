@@ -169,22 +169,26 @@ typedef struct SiftScopeLayout
 } SiftScopeLayout;
 
 /*
- * 4. Scope summaries: the paths that answer a join of the facts with the pairs of a scope of the index from the cubes of its summary, the scope of one key a join of a small side pins the
+ * 4. Scope summaries: the paths that answer a join of the facts with the pairs of a scope of the index from the cubes of its summary or the scan of the facts of the members of a key, the scope of one key a join of a small side pins the
  * scan to, and the router that keeps a scan to the granules of that key (build_router: NULL when the summary cannot route). The paths are those of the planner of agg/scope/, which asks the
- * format what the summary of a relation it owns keeps: whether it is current (summarized), its scopes, the leaves of each, whether the rows where a column is NULL can leave its cubes
- * (excl_ok), whether a column orders a ring of newest rows (ring_col), whether a value of typid reads as a key of a key column of key_type (key_codes); exec runs the plans.
+ * format what the scopes of a relation it owns keep: whether they can be read (readable), their number, the leaves of each, whether the rows where a column is NULL can leave its cubes
+ * (excl_ok), whether a column orders a ring of newest rows (ring_col), whether a value of typid reads as a key of a key column of key_type (key_codes); exec runs the plans that read the
+ * summary. The scan of the facts of the members of a key is the engine's (agg/scope/scan.c), over zone.scan_run with the members key_members gives a key (a value of key_type) under snap as an array of member_type,
+ * and the router of the granules that hold their facts (NULL: the scan reads every granule).
  */
 struct CustomScanMethods;
 
 typedef struct SiftScopeOps
 {
-	bool		(*summarized) (Relation rel);
+	bool		(*readable) (Relation rel);
 	int			(*nscopes) (Relation rel);
 	bool		(*layout) (Relation rel, int ord, SiftScopeLayout *out);
 	bool		(*excl_ok) (Relation rel, int ord, int col);
 	bool		(*ring_col) (Relation rel, int col);
 	bool		(*key_codes) (Oid key_type, Oid typid);
 	const struct CustomScanMethods *exec;
+	ArrayType  *(*key_members) (Relation heap, Relation rel, int ord, Snapshot snap, Oid key_type, Datum key, Oid member_type, MemoryContext cx, uint32 *n,
+								 const struct SiftScopeRouter **router);
 	void		(*upper_paths) (PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 	void		(*topk_paths) (PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 	bool		(*one_key) (PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord, Expr **key);

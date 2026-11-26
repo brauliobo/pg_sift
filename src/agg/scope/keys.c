@@ -67,7 +67,7 @@ key_args(const ScopePlan *p, List *args, Oid opno, Oid inputcollid, bool inner, 
 	l = sift_v6_strip_relabel(linitial(args));
 	r = sift_v6_strip_relabel(lsecond(args));
 	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : sift_v6_scope_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
-		!p->ops->scope->key_codes(p->spec.key_type, array ? get_element_type(exprType(r)) : exprType(r)))
+		!p->scope->key_codes(p->spec.key_type, array ? get_element_type(exprType(r)) : exprType(r)))
 		return false;
 	*rhs = (Expr *) r;
 	return true;

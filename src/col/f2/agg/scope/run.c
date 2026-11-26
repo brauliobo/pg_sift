@@ -1,5 +1,6 @@
 /*
- * col/f2/agg/scope/run.c - the executor of the scope aggregate of SiftAggV6 (planned by scope_v6.c): the cube of each key the statement reads, or of each month of it, as the tuples of the scan.
+ * col/f2/agg/scope/run.c - the executor of the scope aggregate of SiftAggV6 over a summary of Format 2 (planned by agg/scope/plan.c): the cube of each key the statement reads, or of each
+ * month of it, or the newest rows of its ring, as the tuples of the scan.
  * The summary, with the rows of the parts it does not count read as the snapshot sees them, answers only when the index has heard of every change the snapshot sees (sift_f2_scope_open_keys) and the cubes can say what the statement asks
  * (months are those of UTC: a timestamptz is cut into them only where the session writes its times in UTC); when they cannot, the node runs the aggregate over the join as the planner priced it,
  * which the path holds as its child.
@@ -11,13 +12,11 @@
 #include "catalog/pg_type.h"
 #include "utils/rel.h"
 #include "access/relation.h"
-#include "access/skey.h"
 #include "access/stratnum.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "commands/explain.h"
 #include "executor/executor.h"
-#include "executor/nodeIndexscan.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
@@ -29,7 +28,6 @@
 #include "utils/timestamp.h"
 
 #include "agg/agg.h"
-#include "agg/qual/qual.h"
 #include "col/f2/agg/scan.h"
 #include "col/f2/agg/scope/int.h"
 #include "core/zoneoff.h"
@@ -61,17 +59,7 @@ typedef struct ScopeState
 	int			cap_rows;
 	int			at;
 	uint64		keys_read;
-	SiftV6Spec *v6;				/* a scan of the facts (spec->scan): its spec, its keys and groups */
-	Relation	heap;
-	ScanKey		scan_keys;
-	int			nscan_keys;
-	IndexRuntimeKeyInfo *rtkeys;	/* the keys of parameters of the quals: their values are those of each run */
-	int			nrt;
-	MemoryContext gcx;
-	SiftV6Group *group;
-	const SiftScopeRouter *router;	/* scan: the granules of the key that the summary names, NULL when it cannot route */
-	SiftV6ScanStats stats;
-	int64		members;
+	SiftV6Spec *v6;				/* the newest rows of a key (spec->topk): the columns of the rows */
 	bool		inexact;		/* a minimum or maximum cannot be kept after the pair edits: the join answers */
 	SiftScopeServeMode mode;	/* how the summary served the read */
 } ScopeState;
@@ -98,13 +86,8 @@ scope_begin(CustomScanState *node, EState *estate, int eflags)
 		st->lo = ExecInitExpr(list_nth(cs->custom_exprs, st->spec->key_given), &node->ss.ps);
 	if (st->spec->hi_strat != 0)
 		st->hi = ExecInitExpr(list_nth(cs->custom_exprs, st->spec->key_given + (st->lo != NULL)), &node->ss.ps);
-	if (st->spec->scan || st->spec->topk)
+	if (st->spec->topk)
 		st->v6 = sift_v6_spec_unpack(lsecond(cs->custom_private));
-	if (st->spec->scan)
-	{
-		st->heap = table_open(st->rel->rd_index->indrelid, AccessShareLock);
-		sift_v6_qual_scankeys(&node->ss.ps, st->v6->jsonqual, st->rel, st->v6->indexqual, &st->scan_keys, &st->nscan_keys, &st->rtkeys, &st->nrt);
-	}
 }
 
 static int64
@@ -487,67 +470,6 @@ months_exact(const ScopeState *st)
 	return !st->spec->by_month || sift_scope_monthmap_tz_safe(st->spec->month_type == TIMESTAMPTZOID, zone_is_utc(session_timezone));
 }
 
-/* The members of the pairs of the key K, as the snapshot sees them: the array the scan of the facts takes as the list of the member column */
-static ArrayType *
-key_members(ScopeState *st, EState *estate)
-{
-	const Oid	member_type = TupleDescAttr(RelationGetDescr(st->rel), st->spec->member_col - 1)->atttypid;
-	bool		no_key;
-	const int64 key = key_value(st, &no_key);
-	uint32		n = 0;
-	ArrayType  *members = no_key ? construct_empty_array(member_type) : sift_f2s_key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, st->km, key, member_type, &n);
-
-	sift_budget_check((Size) n * sizeof(Datum), work_mem, "the members of a scope key", "work_mem", NULL);
-	st->members = n;
-	return members;
-}
-
-/* The granules of the key K that the summary names, which hold all its facts; NULL for a NULL key or a summary that cannot route */
-static const SiftScopeRouter *
-scan_router(ScopeState *st, EState *estate)
-{
-	bool		no_key;
-	const int64 key = key_value(st, &no_key);
-
-	return no_key ? NULL : sift_f2_scope_build_router(st->rel, st->spec->ord, estate->es_snapshot, &key, 1, st->km, st->gcx);
-}
-
-/* The facts of the key K are the facts whose member is one of its members: the scan of the index with the list among its keys, in the granules of the key */
-static void
-scan_run(ScopeState *st, EState *estate)
-{
-	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
-	ScanKey		keys = palloc((st->nscan_keys + 1) * sizeof(ScanKeyData));
-
-	st->started = true;
-	if (st->nrt > 0)
-		ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, st->rtkeys, st->nrt);
-	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 scope groups");
-	memcpy(keys, st->scan_keys, st->nscan_keys * sizeof(ScanKeyData));
-	keys[st->nscan_keys] = (ScanKeyData) {.sk_flags = SK_SEARCHARRAY,.sk_attno = st->spec->member_col,.sk_strategy = BTEqualStrategyNumber,
-	.sk_argument = PointerGetDatum(key_members(st, estate))};
-	st->router = scan_router(st, estate);
-	st->group = sift_v6_group_new(st->v6, st->gcx, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor);
-	sift_v6_scan_run(st->v6, st->group, st->heap, st->rel, keys, st->nscan_keys + 1, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL);
-	sift_v6_group_finish(st->group);
-	MemoryContextSwitchTo(old);
-}
-
-static TupleTableSlot *
-scan_next(ScanState *ss)
-{
-	ScopeState *st = (ScopeState *) ss;
-	TupleTableSlot *slot = ss->ss_ScanTupleSlot;
-
-	if (!st->started)
-		scan_run(st, ss->ps.state);
-	ExecClearTuple(slot);
-	MemoryContextSwitchTo(ss->ps.ps_ExprContext->ecxt_per_tuple_memory);
-	if (!sift_v6_group_next(st->group, slot->tts_values, slot->tts_isnull))
-		return NULL;
-	return ExecStoreVirtualTuple(slot);
-}
-
 static Datum
 cell_datum(const SiftColDef *d, Oid typid, const SiftF2ScopeCell *c)
 {
@@ -690,12 +612,6 @@ scope_exec(CustomScanState *node)
 	MemoryContext old = CurrentMemoryContext;
 	TupleTableSlot *slot;
 
-	if (st->spec->scan)
-	{
-		slot = ExecScan(&node->ss, scan_next, scope_recheck);
-		MemoryContextSwitchTo(old);
-		return slot;
-	}
 	if (!st->started)
 		scope_run(st, node->ss.ps.state);
 	slot = ExecScan(&node->ss, st->from_summary ? scope_next : join_next, scope_recheck);
@@ -704,22 +620,8 @@ scope_exec(CustomScanState *node)
 }
 
 static void
-scan_reset(ScopeState *st)
-{
-	if (st->group != NULL)
-		sift_v6_group_free(st->group);
-	if (st->gcx != NULL)
-		MemoryContextDelete(st->gcx);
-	st->gcx = NULL;
-	st->group = NULL;
-	st->router = NULL;
-	st->stats = (SiftV6ScanStats) {0};
-}
-
-static void
 scope_reset(ScopeState *st)
 {
-	scan_reset(st);
 	MemoryContextReset(st->rcx);
 	st->vals = NULL;
 	st->nulls = NULL;
@@ -735,10 +637,7 @@ scope_end(CustomScanState *node)
 
 	foreach_ptr(PlanState, child, node->custom_ps)
 		ExecEndNode(child);
-	scan_reset(st);
 	MemoryContextDelete(st->rcx);
-	if (st->heap != NULL)
-		table_close(st->heap, AccessShareLock);
 	relation_close(st->rel, AccessShareLock);
 }
 
@@ -761,21 +660,6 @@ scope_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ScopeState *st = (ScopeState *) node;
 
 	ExplainPropertyText(st->spec->is_table ? "Table" : "Index", RelationGetRelationName(st->rel), es);
-	if (st->spec->scan)
-	{
-		ExplainPropertyText("Scope Read", "scan of the facts (the members of the key)", es);
-		if (st->started)
-		{
-			ExplainPropertyInteger("Scope Members", NULL, st->members, es);
-			if (st->router != NULL)
-			{
-				ExplainPropertyInteger("Scope Granules Kept", NULL, st->router->mask.kept, es);
-				ExplainPropertyInteger("Scope Granules Total", NULL, st->router->mask.n, es);
-			}
-			ExplainPropertyUInteger("Rows Vetted Against The Heap", NULL, st->stats.heap_vet_rows, es);
-		}
-		return;
-	}
 	ExplainPropertyText("Scope Read", !st->started ? "summary or join" : st->from_summary ? (st->spec->topk ? "ring" : "summary") : "join (the summary is not exact for the snapshot)", es);
 	if (st->started && st->from_summary && !st->spec->topk)
 	{

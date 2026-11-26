@@ -7,6 +7,7 @@
 
 #include "postgres.h"
 
+#include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 #include "nodes/pg_list.h"
 
@@ -55,7 +56,8 @@ typedef struct ScopeSpec
 /* The statement of the scope planner: the relations it joins, the scope that answers them and the spec the plan carries */
 typedef struct ScopePlan
 {
-	const SiftStoreOps *ops;	/* the format of the relation that keeps the summary */
+	const SiftScopeOps *scope;	/* the scopes of the format the planner asks for */
+	const SiftStoreOps *ops;	/* the format of the relation that keeps the scope, once a relation of it is found */
 	PlannerInfo *root;
 	RelOptInfo *fact;
 	RelOptInfo *pairs;
@@ -101,11 +103,14 @@ extern AttrNumber sift_v6_scope_fact_attno(const ScopePlan *p, int col);
 extern List *sift_v6_scope_spec_pack(const ScopeSpec *s);
 extern ScopeSpec *sift_v6_scope_spec_unpack(const List *ints);
 
-/* The paths of the scope aggregate over the relations the format ops owns, for SiftScopeOps.upper_paths, .topk_paths and .one_key */
-extern void sift_v6_scope_upper_paths(const SiftStoreOps *ops, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
-extern void sift_v6_scope_topk_paths(const SiftStoreOps *ops, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
+/* The paths of the scope aggregate over the relations of the format whose scopes are scope, for SiftScopeOps.upper_paths, .topk_paths and .one_key */
+extern void sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
+extern void sift_v6_scope_topk_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 /* The scope of the index ix of the facts that summarizes the pairs relation the statement joins by member (fact column fact_att = pairs column pairs_att) and binds to one key: its ordinal and the expression of the key */
-extern bool sift_v6_scope_one_key(const SiftStoreOps *ops, PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord,
+extern bool sift_v6_scope_one_key(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord,
 								  Expr **key);
+
+/* scan.c: the executor of the plans that scan the facts of the members of a key (ScopeSpec.scan), for every format */
+extern PGDLLIMPORT const CustomScanMethods sift_v6_scope_scan_methods;
 
 #endif							/* SIFT_AGG_SCOPE_SCOPE_H */

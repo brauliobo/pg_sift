@@ -524,9 +524,9 @@ sift_v6_scope_matches(ScopePlan *p, int ord)
 	if (p->pairs_raw != NULL)
 		p->pairs_query = nlegs == 2 ? sift_v6_match_two_paths(p->pairs_raw, legs) : NULL;
 	if (nlegs != (p->pairs_raw != NULL ? 2 : 1) || (p->pairs_raw != NULL && p->pairs_query == NULL) || legs[0].rel != pairs_table(p) ||
-		sift_scope_pairs_multiset(p->irel, sift_scope_specs(p->irel)->s[ord]) || !p->ops->scope->layout(p->irel, ord, &p->layout))
+		sift_scope_pairs_multiset(p->irel, sift_scope_specs(p->irel)->s[ord]) || !p->scope->layout(p->irel, ord, &p->layout))
 		return false;
 	p->leg = legs[0];
 	p->spec.key_type = get_atttype(p->leg.rel, p->leg.key);
-	return p->ops->scope->key_codes(p->spec.key_type, p->spec.key_type) && joined_by_member(p, sift_v6_scope_fact_attno(p, p->layout.member_col));
+	return p->scope->key_codes(p->spec.key_type, p->spec.key_type) && joined_by_member(p, sift_v6_scope_fact_attno(p, p->layout.member_col));
 }
