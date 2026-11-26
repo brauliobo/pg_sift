@@ -178,7 +178,7 @@ extern int	sift_rowbuf_drop_sub(SiftRowBuf *rb, SubTransactionId sub, SubTransac
 typedef bool (*SiftRowDrop) (SiftRowBuf *rb, int r, void *arg);
 extern int	sift_rowbuf_drop_if(SiftRowBuf *rb, SiftRowDrop drop, void *arg);
 
-/* Row row goes: where no column holds elements the last row takes its place (the order of the rows is not kept: sift_rowbuf_sort gives it), else the rows after it move up one (sift_rowbuf_drops_move_last) */
+/* Row row goes and the last row takes its place (the order of the rows is not kept: sift_rowbuf_sort gives it); only where no column holds elements (sift_rowbuf_drops_move_last), else sift_rowbuf_drop_if */
 extern void sift_rowbuf_drop_at(SiftRowBuf *rb, int row);
 
 static inline bool

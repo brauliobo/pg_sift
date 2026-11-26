@@ -11,6 +11,8 @@
 
 #include "core/host.h"
 
+#include "nodes/bitmapset.h"
+
 #include "col/f2/l0/slab.h"
 
 typedef struct SiftStagePart
@@ -22,6 +24,8 @@ typedef struct SiftStagePart
 	uint32		rows_seen;		/* and of rb->n */
 	uint64		tid_min;		/* the least and the greatest address added since the buffer was made (not narrowed when a row goes) */
 	uint64		tid_max;
+	Bitmapset  *dropped;		/* the rows that went from a buffer that keeps its order (elements), still in rb until the next read of the buffer as a whole */
+	uint32		ndropped;
 } SiftStagePart;
 
 /* The address of a staged row to the buffer and the place of the row in it (open addressing; part_idx tells an empty slot and a gone one) */
@@ -74,7 +78,8 @@ typedef struct SiftTxnStage
 	uint32	   *part_htab;		/* the part_id of a buffer to its place in parts, plus one (open addressing) */
 	uint32		part_htab_mask;
 	uint64		mem_bytes;		/* the memory of the row buffers of all parts */
-	uint64		total_rows;		/* the rows of all of them */
+	uint64		total_rows;		/* the rows of all of them (not those dropped) */
+	uint32		ndropped;		/* the dropped rows of all of them */
 	uint64		tid_min;		/* the least and the greatest address of those rows (UINT64_MAX and 0 when there are none) */
 	uint64		tid_max;
 	SiftStageTidSlot *tid_htab;	/* every staged row by address, built by the first look for one and kept as rows come and go; not valid after a flush, a rollback to a savepoint or a re-route until built again */

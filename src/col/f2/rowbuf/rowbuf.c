@@ -854,20 +854,10 @@ sift_rowbuf_drop_if(SiftRowBuf *rb, SiftRowDrop drop, void *arg)
 	return dropped;
 }
 
-static bool
-is_row(SiftRowBuf *rb, int r, void *arg)
-{
-	return r == *(const int *) arg;
-}
-
 void
 sift_rowbuf_drop_at(SiftRowBuf *rb, int row)
 {
-	if (rb->estart != NULL)
-	{
-		(void) sift_rowbuf_drop_if(rb, is_row, &row);
-		return;
-	}
+	Assert(sift_rowbuf_drops_move_last(rb));
 	if (row != rb->n - 1)
 		move_row(rb, row, rb->n - 1);
 	rb->n--;

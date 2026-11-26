@@ -140,9 +140,38 @@ sift_stage_find_delete(Relation rel, uint64 tid, TransactionId *xmax, CommandId 
 }
 
 /* The rows of the stage go to the partitions, and the keys of a UNIQUE index that the registry held for them with them: they are in the manifest now, and a stage that flushes at each full buffer must not fill the registry */
+static bool
+is_dropped(SiftRowBuf *rb, int r, void *arg)
+{
+	return bms_is_member(r, (const Bitmapset *) arg);
+}
+
+/* The rows drop_row marked go from their buffers in one pass, before anything reads a buffer as a whole */
+static void
+stage_compact(SiftTxnStage *st)
+{
+	if (st->ndropped == 0)
+		return;
+	for (int i = 0; i < st->nparts; i++)
+	{
+		SiftStagePart *p = &st->parts[i];
+
+		if (p->ndropped == 0)
+			continue;
+		(void) sift_rowbuf_drop_if(p->rb, is_dropped, p->dropped);
+		bms_free(p->dropped);
+		p->dropped = NULL;
+		p->ndropped = 0;
+		sift_stage_part_changed(st, p);
+	}
+	st->ndropped = 0;
+	sift_stage_tid_invalidate(st);
+}
+
 static void
 flush_stage_rows(Relation rel, SiftTxnStage *st, bool at_end)
 {
+	stage_compact(st);
 	sift_stage_flush_rows(rel, st, at_end);
 	sift_uniq_shm_release(&rel->rd_locator);
 }
@@ -253,6 +282,7 @@ stage_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId par
 
 		int			kept = 0;
 
+		stage_compact(st);
 		for (int i = 0; i < st->nparts; i++)
 			if (sift_rowbuf_drop_sub(st->parts[i].rb, mySubid, event == SUBXACT_EVENT_COMMIT_SUB ? parentSubid : 0) > 0)
 			{
@@ -386,21 +416,27 @@ sift_stage_part_get(SiftTxnStage *st, const SiftPartitionEntry *e)
 void
 sift_stage_part_changed(SiftTxnStage *st, SiftStagePart *p)
 {
+	uint32		live = (uint32) p->rb->n - p->ndropped;
+
 	st->mem_bytes += p->rb->mem_bytes - p->mem_seen;
-	st->total_rows += (uint64) p->rb->n - p->rows_seen;
+	st->total_rows += (uint64) live - p->rows_seen;
 	p->mem_seen = p->rb->mem_bytes;
-	p->rows_seen = p->rb->n;
+	p->rows_seen = live;
 }
 
 void
 sift_stage_reset_parts(SiftTxnStage *st)
 {
 	for (int i = 0; i < st->nparts; i++)
+	{
 		sift_rowbuf_free(st->parts[i].rb);
+		bms_free(st->parts[i].dropped);
+	}
 	sift_mem_release_os(st->mem_bytes);
 	st->nparts = 0;
 	st->mem_bytes = 0;
 	st->total_rows = 0;
+	st->ndropped = 0;
 	st->tid_min = UINT64_MAX;
 	st->tid_max = 0;
 	if (st->part_htab != NULL)
@@ -421,6 +457,10 @@ sift_stage_renew_part(SiftTxnStage *st, SiftStagePart *p)
 	MemoryContextSwitchTo(old);
 	p->tid_min = UINT64_MAX;
 	p->tid_max = 0;
+	st->ndropped -= p->ndropped;
+	bms_free(p->dropped);
+	p->dropped = NULL;
+	p->ndropped = 0;
 	sift_stage_part_changed(st, p);
 	sift_stage_tid_invalidate(st);
 }
@@ -466,7 +506,8 @@ tid_htab_build(SiftTxnStage *st)
 	tid_htab_alloc(st, (uint32) st->total_rows);
 	for (int i = 0; i < st->nparts; i++)
 		for (int r = 0; r < st->parts[i].rb->n; r++)
-			tid_htab_put(st, st->parts[i].rb->tid[r], i, r);
+			if (!bms_is_member(r, st->parts[i].dropped))
+				tid_htab_put(st, st->parts[i].rb->tid[r], i, r);
 	st->tid_htab_valid = true;
 }
 
@@ -552,7 +593,10 @@ stage_row(Relation rel, SiftTxnStage *st, SiftStagePart *p, const uint8 *key, ui
 	sift_stage_row_added(st, p, tid);
 	bulk_when_loading(rel, st);
 	if (st->bulk_rows > 0)
+	{
+		stage_compact(st);
 		sift_stage_bulk_check(rel, st, p);
+	}
 	else if (sift_stage_mem(st) >= (uint64) work_mem * 1024)
 		sift_stage_flush(rel);
 }
@@ -627,7 +671,7 @@ sift_stage_delete_spec_abort(SiftTxnStage *st, const uint8 *key, uint64 tid)
 	add_delete(st, key, tid, 0, FrozenTransactionId, false);
 }
 
-/* The row at the place goes (the table is valid): the table follows the rows the buffer moves */
+/* The row at the place goes (the table is valid): the table follows the rows the buffer moves; a buffer that keeps its order marks the row, and loses it at stage_compact */
 static void
 drop_row(SiftTxnStage *st, uint32 part_idx, uint32 row_idx)
 {
@@ -639,12 +683,21 @@ drop_row(SiftTxnStage *st, uint32 part_idx, uint32 row_idx)
 
 	gone->part_idx = SIFT_STG_TID_TOMB;
 	st->tid_htab_live--;
-	sift_rowbuf_drop_at(rb, row_idx);
 	if (!sift_rowbuf_drops_move_last(rb))
-		for (uint32 r = row_idx; r < (uint32) rb->n; r++)
-			tid_htab_find(st, rb->tid[r], part_idx, r + 1)->row_idx = r;
-	else if (row_idx != last)
-		tid_htab_find(st, moved, part_idx, last)->row_idx = row_idx;
+	{
+		MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+
+		p->dropped = bms_add_member(p->dropped, (int) row_idx);
+		MemoryContextSwitchTo(old);
+		p->ndropped++;
+		st->ndropped++;
+	}
+	else
+	{
+		sift_rowbuf_drop_at(rb, row_idx);
+		if (row_idx != last)
+			tid_htab_find(st, moved, part_idx, last)->row_idx = row_idx;
+	}
 	sift_stage_part_changed(st, p);
 }
 
@@ -717,7 +770,7 @@ part_holds_in(const SiftStagePart *p, uint64 lo, uint64 hi)
 	if (p->rb->n == 0 || hi < p->tid_min || lo > p->tid_max)
 		return false;
 	for (int r = 0; r < p->rb->n; r++)
-		if (p->rb->tid[r] >= lo && p->rb->tid[r] <= hi)
+		if (p->rb->tid[r] >= lo && p->rb->tid[r] <= hi && !bms_is_member(r, p->dropped))
 			return true;
 	return false;
 }
