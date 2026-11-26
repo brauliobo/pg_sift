@@ -24,7 +24,7 @@ SELECT * FROM check_query('left join, on', $q$
 $q$);
      label     | scan | same |                   outcome                    
 ---------------+------+------+----------------------------------------------
- left join, on | f    | t    | [{"n": 20000, "ids": 20000, "dim_b": 13333}]
+ left join, on | t    | t    | [{"n": 20000, "ids": 20000, "dim_b": 13333}]
 (1 row)
 
 SELECT * FROM check_query('left join, true', $q$
