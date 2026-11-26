@@ -520,8 +520,8 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 	return ref;
 }
 
-int
-sift_f2_scope_refresh(Relation rel)
+static int
+refresh_stale(Relation rel)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	const int	nscope = sift_f2s_nscopes(store);
@@ -608,8 +608,8 @@ names_dropped(Relation rel, int ord, const SiftManifestEdit *edit)
 	return named;
 }
 
-void
-sift_f2_scope_refresh_for(Relation rel, SiftManifestEdit *e)
+static void
+refresh_for(Relation rel, SiftManifestEdit *e)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	const int	nscope = sift_f2s_nscopes(store);
@@ -654,4 +654,18 @@ sift_f2_scope_refresh_for(Relation rel, SiftManifestEdit *e)
 	e->nrelease += nrel;
 	e->update_scopes = news;
 	e->nupdate_scopes = nscope;
+}
+
+/* A parallel operation (the index cleanup of a parallel VACUUM) cannot take the fresh snapshot a rebuild counts the rows of the parts by: the summaries stay as they are and the maintenance refreshes them */
+int
+sift_f2_scope_refresh(Relation rel)
+{
+	return IsInParallelMode() ? 0 : refresh_stale(rel);
+}
+
+void
+sift_f2_scope_refresh_for(Relation rel, SiftManifestEdit *e)
+{
+	if (!IsInParallelMode())
+		refresh_for(rel, e);
 }
