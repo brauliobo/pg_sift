@@ -170,11 +170,11 @@ compile_distinct_row(V6Plan *p, const RowExpr *row, SiftV6Agg *g)
 	return true;
 }
 
-/* the kind of an aggregate of the statement: percentile_cont only where the groups are those of an unnest, which keeps the values of a group in one arena (v6_pct.h) */
+/* the kind of an aggregate of the statement: percentile_cont of a float8 keeps the values of a group in one arena (v6_pct.h) */
 static bool
 agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
 {
-	if (p->xseed != NULL && sift_v6_pct_cont_of(unfiltered, &g->frac))
+	if (sift_v6_pct_cont_of(unfiltered, &g->frac))
 	{
 		g->kind = SV6_PCT_CONT;
 		return true;
