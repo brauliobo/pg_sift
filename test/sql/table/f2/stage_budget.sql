@@ -24,6 +24,7 @@ SELECT count(*) AS empty FROM sb;
 SELECT pg_temp.mem() AS base \gset
 
 BEGIN;
+-- 192,000 rows x 2 kB = 384 MB across 256 partitions (1.5 MB/part, below work_mem=4MB) proves the cross-partition stage cap
 INSERT INTO sb (id) SELECT g FROM generate_series(1, 192000) g;
 SELECT pg_temp.mem() - :base < 128 * 1024 * 1024 AS insert_select_bounded;
 COMMIT;
