@@ -21,6 +21,7 @@
 #include "core/f2/col_delta_anchor.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "table/f2/col_delta/batch_enc.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/col_delta/dir.h"
 #include "table/f2/col_delta/io.h"
@@ -189,20 +190,18 @@ log_add(const SiftColDeltaEntryHdr *h)
 static bool
 log_visit(void *arg pg_attribute_unused(), const char *page, uint32 from_used)
 {
-	const uint8 *p = from_used > 0 ? (const uint8 *) SiftPageGetData(page) + from_used : sift_col_delta_page_first(page),
-			   *end = sift_col_delta_page_end(page);
+	SiftColDeltaRecs recs;
+	SiftColDeltaEntryHdr h;
+	const uint8 *rec;
 
-	while (p < end)
+	sift_col_delta_recs_init_hdrs(&recs, from_used > 0 ? (const uint8 *) SiftPageGetData(page) + from_used : sift_col_delta_page_first(page), sift_col_delta_page_end(page));
+	while (sift_col_delta_recs_next(&recs, &rec, &h))
 	{
-		SiftColDeltaEntryHdr h;
-
-		memcpy(&h, p, sizeof(h));
 		if (TransactionIdIsCurrentTransactionId(h.xmin))
 			log_skip(h.xmin);
 		else if (!writer_settled(h.xmin))
 			log_add(&h);
 		flog.seq++;
-		p += h.rec_bytes;
 	}
 	CHECK_FOR_INTERRUPTS();
 	return true;

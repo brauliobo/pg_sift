@@ -20,6 +20,7 @@
 #include "core/part_lock.h"
 #include "core/u64set.h"
 #include "core/xid_cache.h"
+#include "table/f2/col_delta/batch_enc.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/col_delta/dir.h"
 #include "table/f2/tbl.h"
@@ -185,8 +186,7 @@ trail_extents(const Trail *t, int *n)
 /* The records of one page, the first nrecords of them, numbered from seq */
 typedef struct RecIter
 {
-	const uint8 *next;
-	const uint8 *end;
+	SiftColDeltaRecs recs;
 	uint32		left;
 	uint32		nextseq;
 	const uint8 *rec;
@@ -197,17 +197,17 @@ typedef struct RecIter
 static RecIter
 rec_iter(const char *page, uint32 nrecords, uint32 first_seq)
 {
-	return (RecIter) {.next = sift_col_delta_page_first(page),.end = sift_col_delta_page_end(page),.left = nrecords,.nextseq = first_seq};
+	RecIter		it = {.left = nrecords,.nextseq = first_seq};
+
+	sift_col_delta_recs_init(&it.recs, sift_col_delta_page_first(page), sift_col_delta_page_end(page));
+	return it;
 }
 
 static bool
 rec_next(RecIter *it)
 {
-	if (it->next >= it->end || it->left == 0)
+	if (it->left == 0 || !sift_col_delta_recs_next(&it->recs, &it->rec, &it->h))
 		return false;
-	it->rec = it->next;
-	memcpy(&it->h, it->rec, sizeof(it->h));
-	it->next += it->h.rec_bytes;
 	it->left--;
 	it->seq = it->nextseq++;
 	return true;

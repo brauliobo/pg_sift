@@ -17,6 +17,7 @@
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "table/f2/chain_cache.h"
+#include "table/f2/col_delta/batch_enc.h"
 #include "table/f2/col_delta/dir.h"
 
 #define CHAIN_SLOTS	8
@@ -42,7 +43,7 @@ struct SiftColDeltaLog
 	SiftColDeltaChain chain;
 	int			room;			/* the pages the arena and the blocks of the chain have room for */
 	int			n;
-	uint32	   *off;			/* of a record: its place in the arena of the chain, with room for ix.room */
+	SiftColDeltaEntryHdr *hdr;	/* of a record: its header, with room for ix.room */
 	RowIndex	ix;
 };
 
@@ -388,7 +389,7 @@ cd_page_records(const char *page, const uint8 *p)
 	for (p = p == NULL ? sift_col_delta_page_first(page) : p; p < end; p += h.rec_bytes)
 	{
 		memcpy(&h, p, sizeof(h));
-		n++;
+		n += (int) sift_col_delta_rec_rows(p);
 	}
 	return n;
 }
@@ -401,7 +402,7 @@ cd_reserve(SiftColDeltaLog *l, int n)
 
 	index_reserve(&l->ix, n);
 	if (l->ix.room != room)
-		l->off = l->off == NULL ? palloc(sizeof(uint32) * l->ix.room) : repalloc(l->off, sizeof(uint32) * l->ix.room);
+		l->hdr = l->hdr == NULL ? palloc(sizeof(SiftColDeltaEntryHdr) * l->ix.room) : repalloc(l->hdr, sizeof(SiftColDeltaEntryHdr) * l->ix.room);
 }
 
 /* The records of page i of the arena from p (NULL: its first), into the log, which has room for them */
@@ -409,15 +410,12 @@ static void
 cd_index_page(SiftColDeltaLog *l, int i, const uint8 *p)
 {
 	const char *page = sift_col_delta_chain_page(&l->chain, i);
-	const uint8 *end = sift_col_delta_page_end(page);
-	SiftColDeltaEntryHdr h;
+	SiftColDeltaRecs recs;
+	const uint8 *rec;
 
-	for (p = p == NULL ? sift_col_delta_page_first(page) : p; p < end; p += h.rec_bytes)
-	{
-		memcpy(&h, p, sizeof(h));
-		l->off[l->n] = (uint32) (p - (const uint8 *) l->chain.arena);
-		index_add(&l->ix, l->n++, sift_col_delta_hdr_tid(&h));
-	}
+	sift_col_delta_recs_init_hdrs(&recs, p == NULL ? sift_col_delta_page_first(page) : p, sift_col_delta_page_end(page));
+	for (; sift_col_delta_recs_next(&recs, &rec, &l->hdr[l->n]); l->n++)
+		index_add(&l->ix, l->n, sift_col_delta_hdr_tid(&l->hdr[l->n]));
 }
 
 static void
@@ -544,7 +542,9 @@ cd_hit(Relation rel, const SiftPartitionEntry *entry, const Slot *s)
 	return stamp_same(&now, &s->stamp);
 }
 
-#define LOG_BYTES_PER_PAGE		(3 * BLCKSZ)
+#define LOG_ROWS_PER_PAGE		(BLCKSZ / 3)	/* a row of a batch takes 3 bytes at the least */
+#define LOG_BYTES_PER_ROW		100				/* its place, its links, its slot of the index and the record it was */
+#define LOG_BYTES_PER_PAGE		(BLCKSZ + LOG_ROWS_PER_PAGE * LOG_BYTES_PER_ROW)
 
 bool
 sift_col_delta_log_fits(const SiftColDeltaAnchor *anchor)
@@ -621,8 +621,8 @@ sift_col_delta_log_prev(const SiftColDeltaLog *l, int i)
 	return l->ix.prev[i];
 }
 
-const uint8 *
-sift_col_delta_log_rec(const SiftColDeltaLog *l, int i)
+const SiftColDeltaEntryHdr *
+sift_col_delta_log_hdr(const SiftColDeltaLog *l, int i)
 {
-	return (const uint8 *) l->chain.arena + l->off[i];
+	return &l->hdr[i];
 }

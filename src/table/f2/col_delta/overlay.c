@@ -11,6 +11,7 @@
 #include "core/cachebudget.h"
 #include "core/host.h"
 #include "core/memtrack.h"
+#include "table/f2/col_delta/batch_enc.h"
 #include "table/f2/col_delta/col_delta.h"
 
 /* ---- the map of a part ---- */
@@ -115,6 +116,29 @@ collector_keep(SiftColDeltaCollector *c, const char *s, Size len)
 	return dst;
 }
 
+static Collected *
+collect_slot(SiftColDeltaCollector *c, const SiftColDeltaEntryHdr *h)
+{
+	Collected  *e;
+
+	if (c->n == c->cap)
+	{
+		c->cap = Max(64, c->cap * 2);
+		c->v = c->v != NULL ? repalloc(c->v, sizeof(Collected) * c->cap) : palloc(sizeof(Collected) * c->cap);
+	}
+	e = &c->v[c->n++];
+	e->granule = h->granule_id;
+	e->seq = c->seq;
+	return e;
+}
+
+static void
+collect_done(SiftColDeltaCollector *c, const SiftColDeltaEntryHdr *h)
+{
+	c->seq++;
+	c->tid_bloom |= sift_cd_tid_bit(sift_col_delta_hdr_tid(h));
+}
+
 static void
 collect_record(SiftColDeltaCollector *c, const uint8 *rec, const SiftColDeltaEntryHdr *h)
 {
@@ -123,39 +147,37 @@ collect_record(SiftColDeltaCollector *c, const uint8 *rec, const SiftColDeltaEnt
 
 	for (int k = 0; k < h->ncols; k++)
 	{
-		Collected  *e;
+		Collected  *e = collect_slot(c, h);
 
-		if (c->n == c->cap)
-		{
-			c->cap = Max(64, c->cap * 2);
-			c->v = c->v != NULL ? repalloc(c->v, sizeof(Collected) * c->cap) : palloc(sizeof(Collected) * c->cap);
-		}
-		e = &c->v[c->n++];
 		p = sift_col_delta_decode_col(p, end, &e->p);
 		SIFT_INVARIANT(p != NULL, "a column delta page was read before it was checked");
 		if (is_string(&e->p))
 			e->p.val.s = collector_keep(c, e->p.val.s, e->p.vlen);
 		e->p.row_ordinal = h->row_ordinal;
-		e->granule = h->granule_id;
-		e->seq = c->seq;
 	}
-	c->seq++;
-	c->tid_bloom |= sift_cd_tid_bit(sift_col_delta_hdr_tid(h));
+	collect_done(c, h);
+}
+
+static void
+collect_batch_row(SiftColDeltaCollector *c, const SiftColDeltaRecs *recs, const SiftColDeltaEntryHdr *h)
+{
+	for (int k = 0; k < h->ncols; k++)
+		sift_col_delta_recs_patch(recs, k, &collect_slot(c, h)->p);
+	collect_done(c, h);
 }
 
 bool
 sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 from_used, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why)
 {
-	const uint8 *p = from_used > 0 ? (const uint8 *) SiftPageGetData(page) + from_used : sift_col_delta_page_first(page),
-			   *end = sift_col_delta_page_end(page);
+	SiftColDeltaRecs recs;
+	SiftColDeltaEntryHdr h;
+	const uint8 *rec;
 
 	if ((sift_col_delta_page_hdr(page)->part_gen_bloom & sift_cd_part_bit(part_gen)) == 0)
 		return true;
-	while (p < end)
+	sift_col_delta_recs_init_hdrs(&recs, from_used > 0 ? (const uint8 *) SiftPageGetData(page) + from_used : sift_col_delta_page_first(page), sift_col_delta_page_end(page));
+	while (sift_col_delta_recs_next(&recs, &rec, &h))
 	{
-		SiftColDeltaEntryHdr h;
-
-		memcpy(&h, p, sizeof(h));
 		if (h.part_gen == part_gen && ops->visible(ops->ctx, h.xmin, h.cid))
 		{
 			if (h.granule_id >= ngranules)
@@ -163,9 +185,11 @@ sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 f
 				*why = "a column delta record names a granule the part does not have";
 				return false;
 			}
-			collect_record(c, p, &h);
+			if (rec != NULL)
+				collect_record(c, rec, &h);
+			else
+				collect_batch_row(c, &recs, &h);
 		}
-		p += h.rec_bytes;
 	}
 	return true;
 }
@@ -588,20 +612,18 @@ sift_col_delta_fetch_row(const SiftColDeltaChain *chain, const SiftColDeltaTarge
 	for (int i = 0; i < chain->npages; i++)
 	{
 		const char *page = sift_col_delta_chain_page(chain, i);
-		const uint8 *p = sift_col_delta_page_first(page),
-				   *end = sift_col_delta_page_end(page);
+		SiftColDeltaRecs recs;
+		SiftColDeltaEntryHdr h;
+		const uint8 *rec;
 
 		if (!page_may_hold_row(page, t))
 			continue;
-		while (p < end)
+		sift_col_delta_recs_init(&recs, sift_col_delta_page_first(page), sift_col_delta_page_end(page));
+		while (sift_col_delta_recs_next(&recs, &rec, &h))
 		{
-			SiftColDeltaEntryHdr h;
-			const uint8 *c = p + sizeof(h),
-					   *rend;
+			const uint8 *c = rec + sizeof(h),
+					   *rend = rec + h.rec_bytes;
 
-			memcpy(&h, p, sizeof(h));
-			rend = p + h.rec_bytes;
-			p = rend;
 			if (!sift_col_delta_rec_is_of_row(&h, t) || !ops->visible(ops->ctx, h.xmin, h.cid))
 				continue;
 			for (int k = 0; k < h.ncols; k++)
@@ -635,17 +657,15 @@ sift_col_delta_latest_for_row(const SiftColDeltaChain *chain, const SiftColDelta
 	for (int i = chain->npages - 1; i >= 0 && !last.found; i--)
 	{
 		const char *page = sift_col_delta_chain_page(chain, i);
-		const uint8 *p = sift_col_delta_page_first(page),
-				   *end = sift_col_delta_page_end(page);
+		SiftColDeltaRecs recs;
+		SiftColDeltaEntryHdr h;
+		const uint8 *rec;
 
 		if (!page_may_hold_row(page, t))
 			continue;
-		while (p < end)
+		sift_col_delta_recs_init_hdrs(&recs, sift_col_delta_page_first(page), sift_col_delta_page_end(page));
+		while (sift_col_delta_recs_next(&recs, &rec, &h))
 		{
-			SiftColDeltaEntryHdr h;
-
-			memcpy(&h, p, sizeof(h));
-			p += h.rec_bytes;
 			if (sift_col_delta_rec_is_of_row(&h, t) && !ops->is_aborted(ops->ctx, h.xmin))
 				last = (SiftColDeltaLast) {.found = true,.xid = h.xmin,.cid = h.cid};
 		}

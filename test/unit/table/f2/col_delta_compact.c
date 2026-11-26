@@ -16,6 +16,7 @@
 bool		sift_test_col_delta = true;
 
 #include "table/f2/col_delta/col_delta.c"
+#include "table/f2/col_delta/batch_enc.c"
 #include "table/f2/col_delta/compact.c"
 
 enum { PART = 7, RUNNING_FROM = 100 };

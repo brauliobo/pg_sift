@@ -36,7 +36,7 @@ extern bool sift_col_delta_log_fits(const SiftColDeltaAnchor *anchor);
 /* The newest record of the row at tid, and the one before it; -1 for none */
 extern int	sift_col_delta_log_newest(const SiftColDeltaLog *l, uint64 tid);
 extern int	sift_col_delta_log_prev(const SiftColDeltaLog *l, int i);
-extern const uint8 *sift_col_delta_log_rec(const SiftColDeltaLog *l, int i);
+extern const SiftColDeltaEntryHdr *sift_col_delta_log_hdr(const SiftColDeltaLog *l, int i);
 
 /* The cache holds nothing of the relation any more (its files changed) */
 extern void sift_chain_cache_forget_rel(Oid relid);

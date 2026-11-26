@@ -10,6 +10,7 @@
 #include "storage/relfilelocator.h"
 #include "utils/memutils.h"
 
+#include "table/f2/col_delta/batch_enc.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/col_delta/dir.h"
 
@@ -175,6 +176,8 @@ sift_col_delta_rec_check(const uint8 *rec, uint32 avail)
 		return "a record has a size the format does not allow";
 	if (h.rec_bytes > avail)
 		return "a record runs past the bytes of its page";
+	if ((h.flags & SIFT_CDENT_FLAG_BATCH) != 0)
+		return sift_col_delta_batch_check(rec, avail);
 	if ((h.flags & ~SIFT_CDENT_KNOWN) != 0 || h.ncols > ((h.flags & SIFT_CDENT_FLAG_LEAF_ADDR) != 0 ? SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR : SIFT_COL_DELTA_MAX_COLS_PER_REC) ||
 		((h.flags & SIFT_CDENT_FLAG_NOOP) != 0) != (h.ncols == 0))
 		return "a record has flags or a column count the format does not allow";
@@ -207,12 +210,10 @@ sift_col_delta_rec_check(const uint8 *rec, uint32 avail)
 
 /* ---- batches and pages ---- */
 
+/* What a record says of its row, whatever its columns are */
 static void
-bloom_of_record(SiftColDeltaBatch *b, const SiftColDeltaEntryHdr *h, const uint8 *rec)
+bloom_of_hdr(SiftColDeltaBatch *b, const SiftColDeltaEntryHdr *h)
 {
-	const uint8 *p = rec + sizeof(*h),
-			   *end = rec + h->rec_bytes;
-
 	if (b->part_gen_bloom == 0)
 	{
 		b->part_gen = h->part_gen;
@@ -226,6 +227,45 @@ bloom_of_record(SiftColDeltaBatch *b, const SiftColDeltaEntryHdr *h, const uint8
 	}
 	b->part_gen_bloom |= sift_cd_part_bit(h->part_gen);
 	b->tid_bloom |= sift_cd_tid_bit(sift_col_delta_hdr_tid(h));
+	if ((h->flags & SIFT_CDENT_FLAG_DIRTY_SCOPE) != 0)
+		b->page_flags |= SIFT_CDPG_DIRTY_SCOPE;
+	if ((h->flags & SIFT_CDENT_FLAG_HAS_TIME0) != 0)
+		b->page_flags |= SIFT_CDPG_DIRTY_TIME0;
+	if ((h->flags & SIFT_CDENT_FLAG_HAS_TIME1) != 0)
+		b->page_flags |= SIFT_CDPG_DIRTY_TIME1;
+}
+
+/* The blooms of a batch: the rows of a batch name the columns of the batch and are all of leaves */
+static void
+bloom_of_batch(SiftColDeltaBatch *b, const uint8 *rec, uint32 rec_bytes)
+{
+	SiftColDeltaRecs rows;
+	SiftColDeltaEntryHdr rh;
+	const uint8 *row;
+
+	b->dir_flags |= SIFT_CDD_FLAG_HAS_BATCH;
+	b->page_flags |= SIFT_CDPG_LEAVES;
+	sift_col_delta_recs_init_hdrs(&rows, rec, rec + rec_bytes);
+	while (sift_col_delta_recs_next(&rows, &row, &rh))
+	{
+		bloom_of_hdr(b, &rh);
+		for (int k = 0; k < rows.ncols; k++)
+			b->attnum_bloom |= sift_cd_att_bit(rows.attnum[k]);
+	}
+}
+
+static void
+bloom_of_record(SiftColDeltaBatch *b, const SiftColDeltaEntryHdr *h, const uint8 *rec)
+{
+	const uint8 *p = rec + sizeof(*h),
+			   *end = rec + h->rec_bytes;
+
+	if ((h->flags & SIFT_CDENT_FLAG_BATCH) != 0)
+	{
+		bloom_of_batch(b, rec, h->rec_bytes);
+		return;
+	}
+	bloom_of_hdr(b, h);
 	for (int k = 0; k < h->ncols; k++)
 	{
 		SiftColDeltaPatch col;
@@ -238,12 +278,6 @@ bloom_of_record(SiftColDeltaBatch *b, const SiftColDeltaEntryHdr *h, const uint8
 		else
 			b->page_flags |= SIFT_CDPG_LEAVES;
 	}
-	if ((h->flags & SIFT_CDENT_FLAG_DIRTY_SCOPE) != 0)
-		b->page_flags |= SIFT_CDPG_DIRTY_SCOPE;
-	if ((h->flags & SIFT_CDENT_FLAG_HAS_TIME0) != 0)
-		b->page_flags |= SIFT_CDPG_DIRTY_TIME0;
-	if ((h->flags & SIFT_CDENT_FLAG_HAS_TIME1) != 0)
-		b->page_flags |= SIFT_CDPG_DIRTY_TIME1;
 }
 
 static void
@@ -267,7 +301,7 @@ sift_col_delta_batch_add(SiftColDeltaBatch *b, FullTransactionId next, const uin
 	}
 	memcpy(b->bytes + b->nbytes, rec, h.rec_bytes);
 	b->nbytes += h.rec_bytes;
-	b->nentries++;
+	b->nentries += (uint16) sift_col_delta_rec_rows(rec);
 	bloom_of_record(b, &h, rec);
 	widen_xids(&b->min_xid, &b->max_xid, sift_xid_fxid_at(next, h.xmin));
 }
@@ -364,7 +398,7 @@ check_records(const char *page, const SiftColDeltaPageData *h)
 			   *end = sift_col_delta_page_end(page);
 	int			n = 0;
 
-	for (; p < end; n++)
+	while (p < end)
 	{
 		const char *why = sift_col_delta_rec_check(p, (uint32) (end - p));
 		SiftColDeltaEntryHdr rh;
@@ -373,6 +407,7 @@ check_records(const char *page, const SiftColDeltaPageData *h)
 			return why;
 		memcpy(&rh, p, sizeof(rh));
 		bloom_of_record(&seen, &rh, p);
+		n += (int) sift_col_delta_rec_rows(p);
 		p += rh.rec_bytes;
 	}
 	if (n != h->nentries)
@@ -397,7 +432,7 @@ sift_col_delta_page_summary(const char *page, SiftColDeltaBatch *seen)
 	{
 		memcpy(&rh, p, sizeof(rh));
 		bloom_of_record(seen, &rh, p);
-		seen->nentries++;
+		seen->nentries += (uint16) sift_col_delta_rec_rows(p);
 	}
 }
 

@@ -34,17 +34,17 @@ UPDATE oh SET status = 1 WHERE id = 5;
 SELECT sift_helpers.assert_eq('a short chain has pages', pages_of('o', 42) BETWEEN 1 AND 4, true);
 SELECT sift_helpers.assert_eq('a short chain has no directory', pages_of('o', 47), 0);
 
--- 2. one statement writes far more pages than the old cap of 32: no row leaves its address and the chain has a directory
-UPDATE o SET status = 2 WHERE id <= 30000;
-UPDATE oh SET status = 2 WHERE id <= 30000;
+-- 2. one statement writes far more pages than the old cap of 32 (a text column keeps its records from batching): no row leaves its address and the chain has a directory
+UPDATE o SET status = 2, notes = 'bulk 2' WHERE id <= 30000;
+UPDATE oh SET status = 2, notes = 'bulk 2' WHERE id <= 30000;
 SELECT sift_helpers.assert_eq('a bulk update writes more than 32 pages', pages_of('o', 42) > 32, true);
 SELECT sift_helpers.assert_eq('a long chain has a directory', pages_of('o', 47) >= 1, true);
 SELECT sift_helpers.assert_eq('no row of the bulk update moved', moved()::int, 0);
 SELECT sift_helpers.assert_eq('rows agree after the bulk update', same_rows(), true);
 
 -- 3. a second one, over other rows: the directory grows, point reads and aggregates see both
-UPDATE o SET status = 3 WHERE id > 20000 AND id <= 50000;
-UPDATE oh SET status = 3 WHERE id > 20000 AND id <= 50000;
+UPDATE o SET status = 3, notes = 'bulk 3' WHERE id > 20000 AND id <= 50000;
+UPDATE oh SET status = 3, notes = 'bulk 3' WHERE id > 20000 AND id <= 50000;
 SELECT sift_helpers.assert_eq('the chain passes the soft fold size', pages_of('o', 42) >= 256, true);
 SELECT sift_helpers.assert_eq('a second directory page', pages_of('o', 47) >= 2, true);
 SELECT sift_helpers.assert_eq('no row moved again', moved()::int, 0);

@@ -11,6 +11,7 @@
 
 #include "utils/memutils.h"
 
+#include "table/f2/col_delta/batch_enc.h"
 #include "table/f2/col_delta/col_delta.h"
 
 static bool
@@ -176,35 +177,34 @@ sift_col_delta_pass_class(SiftColDeltaPass *p, const uint8 *rec, uint32 seq, boo
 
 typedef struct PageRecs
 {
-	const uint8 *p;
-	const uint8 *end;
+	SiftColDeltaRecs it;
 	uint32		left;
 } PageRecs;
 
-/* The first nrecords records of page i: the page is there until the next is taken */
-static PageRecs
-page_recs(const SiftColDeltaPageSource *src, int i)
+/* The first nrecords records of page i (the rows of its batches as records): the page is there until the next is taken, and a record until the next of its page */
+static void
+page_recs(PageRecs *r, const SiftColDeltaPageSource *src, int i)
 {
 	uint32		count;
 	const char *page = src->page(src->ctx, i, &count);
 
-	return (PageRecs) {sift_col_delta_page_first(page), sift_col_delta_page_end(page), count};
+	sift_col_delta_recs_init(&r->it, sift_col_delta_page_first(page), sift_col_delta_page_end(page));
+	r->left = count;
 }
 
 static bool
 recs_more(const PageRecs *r)
 {
-	return r->p < r->end && r->left > 0;
+	return r->left > 0 && sift_col_delta_recs_more(&r->it);
 }
 
 static SiftColDeltaEntryHdr
 recs_take(PageRecs *r, const uint8 **rec)
 {
 	SiftColDeltaEntryHdr h;
+	bool		got = sift_col_delta_recs_next(&r->it, rec, &h);
 
-	memcpy(&h, r->p, sizeof(h));
-	*rec = r->p;
-	r->p += h.rec_bytes;
+	SIFT_INVARIANT(got, "a column delta page has fewer records than its summary says");
 	r->left--;
 	return h;
 }
@@ -392,15 +392,40 @@ walk_back(const SiftColDeltaPageSource *src, SiftColDeltaCompactPlan *plan)
 
 	for (int i = src->npages - 1; i >= 0; i--)
 	{
-		PageRecs	r = page_recs(src, i);
-		const uint8 *at[BLCKSZ / sizeof(SiftColDeltaEntryHdr)];
-		int			n = 0;
+		PageRecs	r;
+		uint32		n = 0,
+					bytes = 0,
+				   *off;
+		uint8	   *recs;
 
+		page_recs(&r, src, i);
 		while (recs_more(&r))
-			(void) recs_take(&r, &at[n++]);
+		{
+			const uint8 *rec;
+
+			bytes += recs_take(&r, &rec).rec_bytes;
+			n++;
+		}
+		/* check-memory: allow the records of a page, which are as many as its bytes allow */
+		recs = palloc(Max(bytes, 1));
+		/* check-memory: allow an offset for each record of a page */
+		off = palloc(sizeof(uint32) * Max(n, 1));
+		page_recs(&r, src, i);
+		bytes = 0;
+		for (uint32 k = 0; k < n; k++)
+		{
+			const uint8 *rec;
+			SiftColDeltaEntryHdr h = recs_take(&r, &rec);
+
+			memcpy(recs + bytes, rec, h.rec_bytes);
+			off[k] = bytes;
+			bytes += h.rec_bytes;
+		}
 		end -= n;
-		for (int k = n - 1; k >= 0; k--)
-			walk_record(seen, plan, &want_cap, at[k], end + k);
+		for (int k = (int) n - 1; k >= 0; k--)
+			walk_record(seen, plan, &want_cap, recs + off[k], end + k);
+		pfree(recs);
+		pfree(off);
 	}
 	pfree(seen);
 	plan->nwant = sort_unique(plan->want, plan->nwant);
@@ -422,8 +447,9 @@ stream_records(const SiftColDeltaPageSource *src, const uint64 *gens, int ngens,
 	plan->stripped = InvalidFullTransactionId;
 	for (int i = 0; i < src->npages; i++)
 	{
-		PageRecs	r = page_recs(src, i);
+		PageRecs	r;
 
+		page_recs(&r, src, i);
 		while (recs_more(&r))
 		{
 			const uint8 *rec;
@@ -613,6 +639,25 @@ moved_map_new(int nmoved)
 	return mm;
 }
 
+/* The records of recs (n bytes) after the ones of page, whose batch goes out when the next does not fit it */
+static void
+carry_put(SiftColDeltaBatch *page, FullTransactionId next, const uint8 *recs, uint32 n, SiftColDeltaEmit emit, void *emit_ctx)
+{
+	for (uint32 off = 0; off < n;)
+	{
+		SiftColDeltaEntryHdr h;
+
+		memcpy(&h, recs + off, sizeof(h));
+		if (page->nentries > 0 && page->nbytes + h.rec_bytes > SIFT_COL_DELTA_PAGE_ROOM)
+		{
+			emit(emit_ctx, page);
+			memset(page, 0, sizeof(*page));
+		}
+		sift_col_delta_batch_add(page, next, recs + off);
+		off += h.rec_bytes;
+	}
+}
+
 /* The record as it is carried: a record that moves goes to the row it is now (false: the row is gone) */
 static bool
 carried(const SiftColDeltaCompactPlan *plan, uint32 seq, MovedMap *mm, const SiftColDeltaRemap *remap, const uint8 *rec, uint8 *buf, SiftColDeltaEntryHdr *h)
@@ -636,12 +681,16 @@ sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, const SiftColD
 {
 	MovedMap	mm = moved_map_new(plan->nmoved);
 	SiftColDeltaBatch page = {0};
+	SiftColDeltaRun run;
+	uint8		out[SIFT_COL_DELTA_RUN_OUT_BYTES];
 	uint32		seq = 0;
 
+	sift_col_delta_run_init(&run);
 	for (int i = 0; i < src->npages; i++)
 	{
-		PageRecs	r = page_recs(src, i);
+		PageRecs	r;
 
+		page_recs(&r, src, i);
 		while (recs_more(&r))
 		{
 			uint8		buf[SIFT_COL_DELTA_MAX_REC_BYTES];
@@ -655,14 +704,10 @@ sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, const SiftColD
 			new_tid = record_new_tid(buf, &h);
 			if (new_tid != 0)
 				moved_add(&mm, &(Moved) {new_tid, h.part_gen, h.granule_id, h.row_ordinal});
-			if (page.nentries > 0 && page.nbytes + h.rec_bytes > SIFT_COL_DELTA_PAGE_ROOM)
-			{
-				emit(emit_ctx, &page);
-				memset(&page, 0, sizeof(page));
-			}
-			sift_col_delta_batch_add(&page, next, buf);
+			carry_put(&page, next, out, sift_col_delta_run_feed(&run, buf, out), emit, emit_ctx);
 		}
 	}
+	carry_put(&page, next, out, sift_col_delta_run_feed(&run, NULL, out), emit, emit_ctx);
 	if (page.nentries > 0)
 		emit(emit_ctx, &page);
 	pfree(mm.mv);

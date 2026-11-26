@@ -32,6 +32,7 @@
 #include "col/f2/store/schema.h"
 #include "core/u64set.h"
 #include "table/f2/chain_cache.h"
+#include "table/f2/col_delta/batch_enc.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/col_delta/dir.h"
 #include "table/f2/col_delta/io.h"
@@ -484,11 +485,10 @@ sift_col_delta_latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid)
 		return (SiftColDeltaLast) {0};
 	for (int i = sift_col_delta_log_newest(log, tid); i >= 0; i = sift_col_delta_log_prev(log, i))
 	{
-		SiftColDeltaEntryHdr h;
+		const SiftColDeltaEntryHdr *h = sift_col_delta_log_hdr(log, i);
 
-		memcpy(&h, sift_col_delta_log_rec(log, i), sizeof(h));
-		if (sift_col_delta_rec_is_of_row(&h, &t) && !ops.is_aborted(ops.ctx, h.xmin))
-			return (SiftColDeltaLast) {.found = true,.xid = h.xmin,.cid = h.cid};
+		if (sift_col_delta_rec_is_of_row(h, &t) && !ops.is_aborted(ops.ctx, h->xmin))
+			return (SiftColDeltaLast) {.found = true,.xid = h->xmin,.cid = h->cid};
 	}
 	return (SiftColDeltaLast) {0};
 }
@@ -798,10 +798,21 @@ static SiftColDeltaBatch
 run_batch(const SiftColDeltaStage *cd, const int *ord, int lo, int hi, FullTransactionId next)
 {
 	SiftColDeltaBatch b = {0};
+	SiftColDeltaRun run;
+	uint8		out[SIFT_COL_DELTA_RUN_OUT_BYTES];
 
-	for (int k = lo; k < hi; k++)
-		if (cd->items[ord[k]].rec != NULL)
-			sift_col_delta_batch_add(&b, next, cd->items[ord[k]].rec);
+	sift_col_delta_run_init(&run);
+	for (int k = lo; k <= hi; k++)
+	{
+		const uint8 *rec = k < hi ? cd->items[ord[k]].rec : NULL;
+		uint32		n;
+
+		if (k < hi && rec == NULL)
+			continue;
+		n = sift_col_delta_run_feed(&run, rec, out);
+		for (uint32 at = 0; at < n; at += ((const SiftColDeltaEntryHdr *) (out + at))->rec_bytes)
+			sift_col_delta_batch_add(&b, next, out + at);
+	}
 	return b;
 }
 
