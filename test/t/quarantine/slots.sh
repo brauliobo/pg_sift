@@ -27,7 +27,8 @@ slept() { [[ $(sql qs "$SLEEPERS") -ge 2 ]]; }
 check "two parallel workers hold their slots" wait_for slept 60
 check "the index is planned before the damage" uses_sift
 
-sql qs "SELECT sift._test_poke('a_idx', 2, 8176, 9, 2)" >/dev/null
+# the first block of the rows of the index: the segment extent of Format 1, the first part of Format 2.0
+sql qs "SELECT sift._test_poke('a_idx', min(first_block), 8176, 9, 2) FROM sift.col_extents('a_idx') WHERE what IN ('segment extent', 'part')" >/dev/null
 out=$(sql qs "SELECT count(*) FROM a WHERE v = 3" 2>&1)
 check "the statement that meets the damage fails once" grep -q 'is corrupted' <<<"$out"
 want=$(sql qs "SET sift.enable_scan = off" "SET sift.enable_agg = off" "SET enable_indexscan = off" "SELECT count(*) FROM a WHERE v = 3")
