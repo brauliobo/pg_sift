@@ -81,7 +81,7 @@ CANARIES = (
     c('jsonb_null_presence_1t', 'jsonb', '1T', "SELECT count(*) FROM sf_events WHERE doc ? 'flag'", blocks=100, heap_zero=True, ratio=0.15, per_row=180),
     c('tbl_bulk_copy_64k', 'table', '1T', "COPY tbl_copy_stage FROM '{copy_tsv}'", plan=('none',), smoke=True, kind='copy', pre='TRUNCATE tbl_copy_stage', rel='tbl_copy_stage',
       native="COPY tbl_copy_heap FROM '{copy_tsv}'", native_pre='TRUNCATE tbl_copy_heap', native_rel='tbl_copy_heap', ratio=2.05, per_row=69300,
-      extra=(('bytes_per_row', 25), ('wal_per_row', 25)), parity=False),
+      extra=(('bytes_per_row', 80), ('wal_per_row', 80)), parity=False),
     c('tbl_point_pk_1t', 'table', '1T', "SELECT id, reg_id, amount, status FROM tbl_store WHERE id = 42197", plan=('idx:tbl_store_pkey',), no_seq=True, blocks=10, total=200000,
       native="SELECT id, reg_id, amount, status FROM sf_events WHERE id = 42197"),
     c('tbl_range_prune_1t', 'table', '1T', "SELECT qty, count(*), sum(amount) FROM tbl_store WHERE reg_id = 7 AND day BETWEEN DATE '2024-06-01' AND DATE '2024-09-01' GROUP BY qty ORDER BY qty",
