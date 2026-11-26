@@ -68,9 +68,8 @@ sift_v1_att_typid(const SiftSrcLayout *lay, int att)
 	return e == NULL ? InvalidOid : exprType(e);
 }
 
-/* the column of the heap row attribute att of the layout is; 0: an expression */
-static AttrNumber
-att_heap_column(const SiftSrcLayout *lay, int att)
+AttrNumber
+sift_v1_att_heap_column(const SiftSrcLayout *lay, int att)
 {
 	const Node *e = att >= 1 && att <= list_length(lay->attexprs) ? list_nth(lay->attexprs, att - 1) : NULL;
 
@@ -81,7 +80,7 @@ att_heap_column(const SiftSrcLayout *lay, int att)
 static bool
 doc_holds(const SiftSrcLayout *lay, int att)
 {
-	return att >= 1 && att <= lay->natts && sift_v1_att_typid(lay, att) == JSONBOID && att_heap_column(lay, att) != 0;
+	return att >= 1 && att <= lay->natts && sift_v1_att_typid(lay, att) == JSONBOID && sift_v1_att_heap_column(lay, att) != 0;
 }
 
 /* the head of the leaves that keep attribute att whole: a scalar of the attribute itself, which for an array is the image its lengths come after */
@@ -335,7 +334,7 @@ static bool
 types_pass(SiftV1Src *s)
 {
 	for (int t = 0; t < s->ntypes; t++)
-		if (!s->rd->filter_types(s->src, &s->unit, s->types[t].leaf, s->types[t].types, s->bits))
+		if (!sift_v1_src_filter_types(s, &s->lay->leaf[s->types[t].leaf], s->types[t].types, s->bits))
 			return false;
 	return true;
 }
@@ -721,7 +720,7 @@ bind_doc(SiftV1Src *s, int i)
 	c->typid = JSONBOID;
 	get_typlenbyval(c->typid, &s->typlen[i], &s->typbyval[i]);
 	s->doc_col[s->ndocs] = i;
-	s->doc_att[s->ndocs++] = att_heap_column(s->lay, c->attno);
+	s->doc_att[s->ndocs++] = sift_v1_att_heap_column(s->lay, c->attno);
 	alloc_column(s, i, sizeof(Datum));
 }
 
@@ -744,7 +743,7 @@ bind_member(SiftV1Src *s, int i)
 	for (int part = 0; part < 3; part++)
 		sift_v1_member_bind(m, part, read_slot(s, &s->lay->leaf[sift_v1_member_leaf(m, part)]));
 	s->col_mem[i] = m;
-	s->mem_att[i] = att_heap_column(s->lay, s->lay->leaf[sift_v1_member_leaf(m, 0)].attno);
+	s->mem_att[i] = sift_v1_att_heap_column(s->lay, s->lay->leaf[sift_v1_member_leaf(m, 0)].attno);
 	alloc_column(s, i, sizeof(double));
 }
 
@@ -785,7 +784,7 @@ bind_column(SiftV1Src *s, int i)
 	if (c->attno >= SIFT_V6_JLEAF_VATT)
 	{
 		s->jkind[i] = SIFT_V1_JSON_VALUE;
-		s->jatt[i] = att_heap_column(s->lay, l->attno);
+		s->jatt[i] = sift_v1_att_heap_column(s->lay, l->attno);
 		s->jexc[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
 	}
 }
@@ -831,14 +830,7 @@ bind_elems(SiftV1Src *s, const SiftV1ElemSpec *spec)
 static void
 bind_types(SiftV1Src *s, const SiftV1Scan *scan)
 {
-	for (int t = 0; t < scan->ntypes; t++)
-	{
-		bool		read = false;
-
-		for (int i = 0; i < s->in.ncols; i++)
-			read |= s->col_leaf[i] != NULL && s->col_leaf[i]->id == scan->types[t].leaf;
-		s->types[t] = (SiftV1TypeTest) {.leaf = scan->types[t].leaf,.types = scan->types[t].types | (read ? SIFT_SRC_JT_READ : 0)};
-	}
+	memcpy(s->types, scan->types, scan->ntypes * sizeof(SiftV1TypeTest));
 	s->ntypes = scan->ntypes;
 }
 

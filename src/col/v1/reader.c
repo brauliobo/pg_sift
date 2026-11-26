@@ -30,7 +30,6 @@ sift_v1_idx_init(SiftV1Idx *r, Relation heap, Relation index, Snapshot snapshot,
 	r->lay = sift_v1_idx_layout(index);
 	r->dict = palloc0(sizeof(SiftSrcDict) * r->lay->nleaves);
 	r->buf = palloc0(sizeof(SiftSrcLeafBuf) * r->lay->nleaves);
-	r->tol = palloc0(sizeof(bool) * r->lay->nleaves);
 	r->raw = palloc0(sizeof(bool) * r->lay->nleaves);
 	r->wide = palloc0(sizeof(SiftSrcWide) * r->lay->nleaves);
 	r->wgen = palloc0(sizeof(uint64) * r->lay->nleaves);
@@ -230,7 +229,7 @@ read_selected(SiftV1Idx *r, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
 	sift_col_unit_lazy_dict(&r->unit, true);
 	sift_srcsel_read(&r->sel, &r->unit, leaf, &v);
 	sift_col_unit_lazy_dict(&r->unit, false);
-	sift_srcsel_fill(&r->sel, &r->lay->leaf[leaf], r->tol[leaf], &v, buf, &r->dict[leaf], vec);
+	sift_srcsel_fill(&r->sel, &r->lay->leaf[leaf], &v, buf, &r->dict[leaf], vec);
 }
 
 /* the leaf decoded by the engine into the caller's storage, in the lane of the leaf's vector type */
@@ -244,7 +243,7 @@ sift_v1_idx_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftS
 	else if (r->sel.compact)
 		read_selected(r, leaf, buf, vec);
 	else
-		sift_srcsel_read_lane(&r->sel, &r->unit, leaf, &r->lay->leaf[leaf], r->tol[leaf], buf, &r->dict[leaf], vec);
+		sift_srcsel_read_lane(&r->sel, &r->unit, leaf, &r->lay->leaf[leaf], buf, &r->dict[leaf], vec);
 }
 
 /* read_into over the reader's own buffers of the leaf: valid until the next read of the leaf or the next unit */
@@ -259,13 +258,12 @@ sift_v1_idx_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 }
 
 static bool
-idx_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
+idx_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits, bool *known)
 {
 	SiftV1Idx  *r = impl;
 	const SiftSrcLeaf *l = &r->lay->leaf[leaf];
 
-	r->tol[leaf] = true;
-	sift_srcsel_filter_types(&r->sel, r->cs, &r->unit, leaf, l->typid, l->astext, types, bits);
+	*known = sift_srcsel_filter_types(&r->sel, r->cs, &r->unit, leaf, l->typid, l->astext, types, bits);
 	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 

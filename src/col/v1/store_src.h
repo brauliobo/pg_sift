@@ -99,6 +99,9 @@ extern bool sift_v1_src_tid_narrow(SiftV1Src *s, SiftV6Batch *b);
 /* The columns of a batch that the leaves cannot hold, read from the heap row of each row the batch keeps (col/v1_engine/store_ops_heap.c): jsonb documents, values of keys, members of maps */
 extern void sift_v1_src_fill_heap(SiftV1Src *s, const SiftV6Batch *b);
 
+/* The rows of bits of the unit whose key of leaf l has one of the JSON types (SIFT_SRC_JT_*); false when none is left */
+extern bool sift_v1_src_filter_types(SiftV1Src *s, const SiftSrcLeaf *l, uint32 types, uint64 *bits);
+
 /* The JSON type of each row of the unit the column i reads, and of the row r in slot n of the batch */
 extern void sift_v1_src_read_types(SiftV1Src *s, int i);
 extern void sift_v1_src_put_type(SiftV1Src *s, int i, uint32 r, int n);

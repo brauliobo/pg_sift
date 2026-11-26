@@ -59,7 +59,6 @@ typedef struct SiftV1Tbl
 	SiftSrcLeafBuf *buf;		/* per leaf */
 	SiftSrcSel	sel;			/* the match set the units are restricted to */
 	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary */
-	bool	   *tol;			/* per leaf: its values the table cannot hold are read as NULL */
 	MemoryContext *wcxt;		/* per wide leaf: the dictionary of its last read */
 	uint64		wseq;			/* the id of the next wide dictionary */
 	/* begins the source of part k of the window [sb_lo, sb_hi) (NULL: with the zone tests of prune) */

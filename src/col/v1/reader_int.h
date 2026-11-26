@@ -20,7 +20,6 @@ typedef struct SiftV1Idx
 	MemoryContext hcx;			/* the arrays of the last histogram, and its dictionary */
 	SiftSrcDict hdict;
 	SiftSrcLeafBuf *buf;		/* per leaf */
-	bool	   *tol;			/* per leaf: its values the index cannot hold are read as NULL */
 	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary */
 	Relation	heap;
 	Relation	index;

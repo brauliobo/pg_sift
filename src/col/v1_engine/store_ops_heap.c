@@ -8,25 +8,129 @@
 #include "access/tableam.h"
 #include "port/pg_bitutils.h"
 #include "utils/builtins.h"
+#include "utils/jsonb.h"
 
 #include "agg/batch_source.h"
 #include "col/v1/store_ops.h"
 #include "col/v1/store_src.h"
 #include "core/compat.h"
 
-/* the JSON type of each row of the unit the column i reads: the rows of one type at a time, which the reader answers for the stored rows and the values the leaf cannot hold */
+#define JT_NONE		5			/* the index of sift_v1_json_types of a path with no value */
+
+/* the index of sift_v1_json_types of the type of the value the path of keys leads to in a document */
+static uint8
+doc_type(Datum doc, const List *path)
+{
+	JsonbContainer *c = &DatumGetJsonbP(doc)->root;
+	JsonbValue	v = {0};
+
+	foreach_node(String, key, path)
+	{
+		if (c == NULL || !JsonContainerIsObject(c) || getKeyJsonValueFromContainer(c, strVal(key), strlen(strVal(key)), &v) == NULL)
+			return JT_NONE;
+		c = v.type == jbvBinary ? v.val.binary.data : NULL;
+	}
+	switch (v.type)
+	{
+		case jbvString:
+			return 0;
+		case jbvNumeric:
+			return 1;
+		case jbvBool:
+			return 2;
+		case jbvBinary:
+			return JsonContainerIsObject(c) ? 3 : 4;
+		default:
+			return 6;
+	}
+}
+
+/* the type of the key of leaf l of the rows of the unit, from the document of each heap row; a row the snapshot does not see is cleared from bits */
+static void
+fetch_types(SiftV1Src *s, const SiftSrcLeaf *l, const uint32 *rows, int n, uint64 *bits, uint8 *tags)
+{
+	const AttrNumber att = sift_v1_att_heap_column(s->lay, l->attno);
+	ItemPointerData tids[SIFT_VEC_LEN];
+
+	s->rd->tids(s->src, &s->unit, rows, n, tids);
+	for (int j = 0; j < n; j++)
+	{
+		const uint64 tag = (uint64) ItemPointerGetBlockNumber(&tids[j]) << 16 | ItemPointerGetOffsetNumber(&tids[j]);
+		Datum		doc;
+		bool		isnull;
+
+		if (sift_v1_src_fetch(&s->base, tag, &att, 1, &doc, &isnull))
+			tags[rows[j]] = isnull ? JT_NONE : doc_type(doc, l->path);
+		else
+			bits[rows[j] >> 6] &= ~(UINT64CONST(1) << (rows[j] & 63));
+	}
+}
+
+/* the types of the rows of bits, for a unit whose segment does not tell them apart */
+static void
+heap_types(SiftV1Src *s, const SiftSrcLeaf *l, uint64 *bits, uint8 *tags)
+{
+	uint32		rows[SIFT_VEC_LEN];
+	int			k = 0;
+
+	for (uint32 r = 0; r < s->unit.nrow; r++)
+	{
+		if (!sift_src_bit(bits, r))
+			continue;
+		if (k == SIFT_VEC_LEN)
+		{
+			fetch_types(s, l, rows, k, bits, tags);
+			k = 0;
+		}
+		rows[k++] = r;
+	}
+	fetch_types(s, l, rows, k, bits, tags);
+}
+
+bool
+sift_v1_src_filter_types(SiftV1Src *s, const SiftSrcLeaf *l, uint32 types, uint64 *bits)
+{
+	const int	nw = SIFT_COL_NWORDS(s->unit.nrow);
+	uint64	   *given = MemoryContextAlloc(s->unit_cx, nw * sizeof(uint64));
+	uint8	   *tags;
+	bool		known,
+				left;
+
+	memcpy(given, bits, nw * sizeof(uint64));
+	left = s->rd->filter_types(s->src, &s->unit, l->id, types, bits, &known);
+	if (known)
+		return left;
+	memcpy(bits, given, nw * sizeof(uint64));
+	tags = MemoryContextAlloc(s->unit_cx, Max(s->unit.nrow, 1));
+	heap_types(s, l, bits, tags);
+	left = false;
+	for (uint32 r = 0; r < s->unit.nrow; r++)
+		if (sift_src_bit(bits, r) && !(sift_v1_json_types[tags[r]].test & types))
+			bits[r >> 6] &= ~(UINT64CONST(1) << (r & 63));
+		else
+			left |= sift_src_bit(bits, r);
+	return left;
+}
+
+/* the JSON type of each row of the unit the column i reads: the rows of one type at a time, which the reader answers for the stored rows and the values the leaf cannot hold, or the heap rows */
 void
 sift_v1_src_read_types(SiftV1Src *s, int i)
 {
 	const int	nw = SIFT_COL_NWORDS(s->unit.nrow);
 	uint64	   *bits = MemoryContextAlloc(s->unit_cx, nw * sizeof(uint64));
+	bool		known;
 
 	s->jtag[i] = MemoryContextAllocZero(s->unit_cx, Max(s->unit.nrow, 1));
 	for (int t = 0; t < SIFT_V1_NJSON_TYPES; t++)
 	{
 		memcpy(bits, s->bits, nw * sizeof(uint64));
-		if (!s->rd->filter_types(s->src, &s->unit, s->jleaf[i]->id, sift_v1_json_types[t].test, bits))
+		if (!s->rd->filter_types(s->src, &s->unit, s->jleaf[i]->id, sift_v1_json_types[t].test, bits, &known) && known)
 			continue;
+		if (!known)
+		{
+			heap_types(s, s->jleaf[i], s->bits, s->jtag[i]);
+			return;
+		}
 		for (int w = 0; w < nw; w++)
 			for (uint64 b = bits[w]; b != 0; b &= b - 1)
 				s->jtag[i][w * 64 + pg_rightmost_one_pos64(b)] = (uint8) t;

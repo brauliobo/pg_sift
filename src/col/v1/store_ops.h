@@ -62,6 +62,8 @@ extern int	sift_v1_card_leaf(const SiftSrcLayout *lay, int col);
 /* The leaf that holds attribute att alone (NULL: it has several, or is a document, a declared path or a list), and the type of the attribute */
 extern const SiftSrcLeaf *sift_v1_att_leaf(const SiftSrcLayout *lay, int att);
 extern Oid	sift_v1_att_typid(const SiftSrcLayout *lay, int att);
+/* the column of the heap row attribute att of the layout is; 0: an expression */
+extern AttrNumber sift_v1_att_heap_column(const SiftSrcLayout *lay, int att);
 
 /* The superblocks [sb_lo, sb_hi) of the directory view the leader of a parallel scan exported (the view_export of the reader); NULL: the whole relation as it is now */
 typedef struct SiftV1Range

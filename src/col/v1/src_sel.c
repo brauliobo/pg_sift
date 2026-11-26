@@ -203,7 +203,7 @@ sift_srcsel_leaf_buf(MemoryContext cxt, SiftSrcLeafBuf *b, size_t n)
 }
 
 void
-sift_srcsel_fill(SiftSrcSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
+sift_srcsel_fill(SiftSrcSel *a, const SiftSrcLeaf *l, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
 {
 	size_t		n = v->n;
 
@@ -233,7 +233,7 @@ sift_srcsel_fill(SiftSrcSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec
 	vec->dict = l->vtype == SCV_CODE ? dict : NULL;
 	vec->n = n;
 	vec->isnull = NULL;
-	if (v->ovf && !tol)
+	if (v->ovf)
 	{
 		memcpy(buf->ovf, v->ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
 		vec->ovf = buf->ovf;
@@ -267,13 +267,12 @@ sift_srcsel_bits(SiftColSource *src, uint32 nrow, const uint64 *bits, SiftColSel
 }
 
 void
-sift_srcsel_read_lane(SiftSrcSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, bool tol, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
+sift_srcsel_read_lane(SiftSrcSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
 {
 	SiftColLaneInfo info;
 
 	sift_col_read_lane(cu, col, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
 	vec->ovf = NULL;
-	info.ovf &= !tol;
 	if (info.ovf && buf->ovf)
 	{
 		SiftColVec	v;
@@ -299,7 +298,7 @@ sift_srcsel_read_lane(SiftSrcSel *a, const SiftColUnit *cu, int col, const SiftS
 }
 
 void
-sift_srcsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *b, SiftSrcDict *dict, SiftSrcVec *vec)
+sift_srcsel_scatter(const SiftSrcLeaf *l, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *b, SiftSrcDict *dict, SiftSrcVec *vec)
 {
 	size_t		m = v->n;
 
@@ -330,7 +329,7 @@ sift_srcsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const u
 	vec->isnull = NULL;
 	vec->ovf = NULL;
 	vec->eoff = NULL;
-	if (v->ovf && !tol)
+	if (v->ovf)
 	{
 		memset(b->ovf, 0, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
 		for (size_t k = 0; k < m; k++)
@@ -369,74 +368,31 @@ stored_tag(Oid typid)
 	return typid == BOOLOID ? SIFT_COLTAG_BOOLEAN : typid == TEXTOID ? SIFT_COLTAG_STRING : SIFT_COLTAG_NUMBER;
 }
 
-void
-sift_srcsel_types_unknown_error(void)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift: a column of the aggregate scan holds values whose JSON type its index did not store"),
-			 errhint("REINDEX the index to store them, or set sift.enable_agg to off for this query.")));
-}
-
 typedef struct TypesTest
 {
-	SiftColSource *cs;
-	Oid			heapoid;
 	int			col;
 	Oid			typid;
 	bool		astext;
 	uint32		mask;			/* bit t: the type of tag t */
-	bool		read;			/* the query reads the leaf elsewhere */
+	bool		known;
 } TypesTest;
 
-/* the rows of the unit whose value has one of the types; a row whose value of those types the leaf cannot hold is an error if a snapshot sees it and the query reads the leaf */
+/* the rows of the unit whose value has one of the types; a value of those types the leaf cannot hold is flagged by the read of the leaf, which takes it from the heap row */
 static void
 types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 {
 	TypesTest  *t = arg;
-	bool		known,
-				left;
-	uint64	   *ovf;
-	SiftColSel	bad;
 
-	left = sift_col_filter_types(cu, t->col, t->mask, stored_tag(t->typid), t->astext, vs, &known);
-	if (!known)
-		sift_srcsel_types_unknown_error();
-	ovf = palloc(SIFT_COL_NWORDS(cu->nrows) * sizeof(uint64));
-	if (!left || !t->read || !sift_col_ovf_bits(cu, t->col, ovf))
-		return;
-	sift_col_sel_alloc(t->cs, cu->nrows, &bad);
-	for (uint32 w = 0; w < bad.nwords; w++)
-		bad.bits[w] = vs->bits[w] & ovf[w];
-	if (sift_col_sel_count(&bad) > 0 && sift_col_vet(cu, &bad))
-		sift_srcsel_overflow_error(t->heapoid);
+	sift_col_filter_types(cu, t->col, t->mask, stored_tag(t->typid), t->astext, vs, &t->known);
 }
 
-void
+bool
 sift_srcsel_filter_types(SiftSrcSel *a, SiftColSource *cs, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 types, uint64 *bits)
 {
-	TypesTest	t = {cs, a->heapoid, col, typid, astext, (types & SIFT_SRC_JT_ALL) << 1, (types & SIFT_SRC_JT_READ) != 0};
+	TypesTest	t = {col, typid, astext, (types & SIFT_SRC_JT_ALL) << 1, true};
 
 	sift_srcsel_stored(a, cs, cu, bits, types_op, &t);
-}
-
-/* a chunk tag as read_types gives it: the index of the name jsonb_typeof gives, or none */
-static uint8
-src_type(uint8 tag)
-{
-	return tag == SIFT_COLTAG_NONE ? SIFT_SRC_TYPE_NONE : tag == SIFT_COLTAG_JNULL ? 5 : tag - 1;
-}
-
-void
-sift_srcsel_read_types(SiftSrcSel *a, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 nrow, uint8 *tags)
-{
-	bool		compact = a->compact;
-	uint8	   *all = compact ? palloc(a->nrow) : tags;
-
-	if (!sift_col_row_types(cu, col, stored_tag(typid), astext, all))
-		sift_srcsel_types_unknown_error();
-	for (uint32 i = 0; i < nrow; i++)
-		tags[i] = src_type(all[compact ? a->idx[i] : i]);
+	return t.known;
 }
 
 bool

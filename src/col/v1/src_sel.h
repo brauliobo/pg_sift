@@ -40,10 +40,10 @@ extern void sift_srcsel_read(SiftSrcSel *a, const SiftColUnit *cu, int col, Sift
 /*
  * Column col of the unit as stored decoded by the engine into the caller's storage (SiftSrcBuf), in the lane of the layout leaf l's vector type; the
  * dictionary of a code leaf is set in *dict. For a unit that is not compacted (a.compact): the rows of a compacted unit are read with sift_srcsel_read.
- * tol: the values the column cannot hold read as NULL, else they are flagged in buf->ovf (an error without it).
+ * The values the column cannot hold are flagged in buf->ovf (an error without it).
  */
 /* The values of a read of the rows idx[0..v->n) of a unit of nrow rows, at their rows in the caller's storage (nrow + SIFT_SRC_PAD values); the other rows are zero */
-extern void sift_srcsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
+extern void sift_srcsel_scatter(const SiftSrcLeaf *l, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
 /* A dictionary of the engine as the source's: the strings in place, or (a read that stayed in the segment) fetched by code and loaded whole on demand */
 extern SiftSrcDict sift_srcsel_src_dict(const SiftColDict *d);
 /* The caller's buffers of one leaf: room for cap values of any vector type, their null flags and overflow bits */
@@ -58,12 +58,12 @@ typedef struct SiftSrcLeafBuf
 /* Room in b (allocated in cxt, replaced when too small) for n values and SIFT_SRC_PAD more */
 extern void sift_srcsel_leaf_buf(MemoryContext cxt, SiftSrcLeafBuf *b, size_t n);
 /* A read of the engine in the vector type of the leaf l, into the caller's storage (buf, with room for v->n + SIFT_SRC_PAD values); without buf->ovf an overflow value is an error */
-extern void sift_srcsel_fill(SiftSrcSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
+extern void sift_srcsel_fill(SiftSrcSel *a, const SiftSrcLeaf *l, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
 /* The ordinals, in the unit as stored, of the rows of the executor's numbering, for sift_col_read_idx (padded with SIFT_COL_IDXPAD zeros) */
 extern uint32 *sift_srcsel_ords(const SiftSrcSel *a, const uint32 *rows, int n);
 /* The selection of the executor's bits (the rows of a unit of nrow) */
 extern void sift_srcsel_bits(SiftColSource *src, uint32 nrow, const uint64 *bits, SiftColSel *sel);
-extern void sift_srcsel_read_lane(SiftSrcSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, bool tol, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
+extern void sift_srcsel_read_lane(SiftSrcSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
 extern void sift_srcsel_live(SiftSrcSel *a, const SiftColUnit *cu, uint64 *bits);
 extern bool sift_srcsel_vet_needed(const SiftColUnit *cu);
 extern void sift_srcsel_vet(SiftSrcSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits);
@@ -80,15 +80,11 @@ extern bool sift_srcsel_rows_left(const uint64 *bits, uint32 nrow);
  * table are invalid from now on, so the statement run again is planned with the leaf flagged (the normal plan, or a source that reads the row again).
  */
 extern void sift_srcsel_overflow_error(Oid heapoid);
-/* A segment written before the JSON types of its leaves were stored (column format minor 3) cannot answer a typeof or JSON null test */
-extern void sift_srcsel_types_unknown_error(void);
-
 /*
- * The JSON types of the values of a leaf that holds those of one type and sets the others aside (the filter and read of types):
- * typid is the leaf's SQL type, col its leaf in the unit cu. filter clears the rows of bits whose type is not in `types`
- * (SIFT_SRC_JT_*); read gives the type of each of the nrow rows the executor sees.
+ * The JSON types of the values of a leaf that holds those of one type and sets the others aside: typid is the leaf's SQL type, col its leaf in the unit cu.
+ * The rows of bits whose type is not in `types` (SIFT_SRC_JT_*) are cleared; false when a segment written before the JSON types of its leaves were complete
+ * cannot tell them apart, and bits are then not to be used.
  */
-extern void sift_srcsel_filter_types(SiftSrcSel *a, SiftColSource *cs, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 types, uint64 *bits);
-extern void sift_srcsel_read_types(SiftSrcSel *a, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 nrow, uint8 *tags);
+extern bool sift_srcsel_filter_types(SiftSrcSel *a, SiftColSource *cs, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 types, uint64 *bits);
 
 #endif							/* SIFT_COL_V1_SRC_SEL_H */

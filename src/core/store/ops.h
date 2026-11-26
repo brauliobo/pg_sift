@@ -305,7 +305,6 @@ typedef struct SiftJsonbOps
 	bool		key_exists;		/* the scan tests jsonb_exists(document, key) on the leaf of the key (SIFT_COLOP_KEY_EXISTS), the documents that are no object included */
 	bool		exact_values;	/* the scan of the store gives what a document gives the heap: the value of a key that its leaf cannot hold, read from the exception of its row, and the array an index expression computes;
 								 * its unnest reads any column of the table beside the elements (without it, the typed leaves only: no whole document, no numeric read as datums) */
-	bool		(*types_exact) (Oid relid, bool is_table, int leaf, uint32 types);	/* the segments of the leaf tell the JSON types of the set (bit 1 << SIFT_COLTAG_*) apart, as the heap does; NULL: they always do */
 	bool		(*path_declared) (Oid relid, bool is_table, int att, const List *path);	/* the paths option of the index declares the path (a list of String keys) of the document attribute att */
 	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 } SiftJsonbOps;

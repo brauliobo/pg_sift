@@ -222,14 +222,6 @@ type_bit(const char *name)
 	return 0;
 }
 
-static bool
-types_exact(const SiftV6Rel *rel, int leaf, uint32 mask)
-{
-	const SiftJsonbOps *jsonb = rel->ops->jsonb;
-
-	return jsonb->types_exact == NULL || jsonb->types_exact(rel->table != NULL ? rel->reloid : rel->index->indexoid, rel->table != NULL, leaf, mask);
-}
-
 /* jsonb_typeof(..) = 'type' or = ANY (ARRAY['type', ..]): the call and the set of types */
 static bool
 typeof_test(const Expr *clause, const Expr **call, uint32 *mask)
@@ -294,7 +286,7 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 	{
 		const int	leaf = field_leaf(rel, linitial(args_of(call)), false, &att, &key);
 
-		if (scalar_leaf(rel, leaf) && types_exact(rel, leaf, mask))
+		if (scalar_leaf(rel, leaf))
 			return qual_of(JQ_TYPE, att, key, mask);
 	}
 	return NIL;

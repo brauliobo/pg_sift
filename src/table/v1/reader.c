@@ -176,7 +176,6 @@ sift_v1_tbl_init(SiftV1Tbl *t, Relation heap, Snapshot snapshot, MemoryContext m
 	t->dict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->buf = palloc0(sizeof(SiftSrcLeafBuf) * t->lay->nleaves);
-	t->tol = palloc0(sizeof(bool) * t->lay->nleaves);
 	t->raw = palloc0(sizeof(bool) * t->lay->nleaves);
 	t->wcxt = palloc0(sizeof(MemoryContext) * t->lay->nleaves);
 	sbs = SIFT_TBL_NEXT_VBLOCK(&t->dir->meta) / SIFT_SB_PAGES + 1;
@@ -422,14 +421,13 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 
 /* only a path leaf has types, and the layout offers the paths only when every segment has them */
 static bool
-tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
+tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits, bool *known)
 {
 	SiftV1Tbl  *t = impl;
 	TblPart    *p = unit->priv;
 	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
 
-	t->tol[leaf] = true;
-	sift_srcsel_filter_types(&t->sel, p->src, &p->unit, p->col[leaf], l->typid, l->astext, types, bits);
+	*known = sift_srcsel_filter_types(&t->sel, p->src, &p->unit, p->col[leaf], l->typid, l->astext, types, bits);
 	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 

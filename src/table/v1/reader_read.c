@@ -114,7 +114,7 @@ read_vec(SiftV1Tbl *t, int leaf, const TblPart *p, const SiftColVec *v, SiftSrcV
 		SiftSrcLeafBuf *b = &t->buf[leaf];
 
 		sift_srcsel_leaf_buf(t->cxt, b, v->n);
-		sift_srcsel_fill(&t->sel, &t->lay->leaf[leaf], t->tol[leaf], v, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+		sift_srcsel_fill(&t->sel, &t->lay->leaf[leaf], v, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
 	}
 }
 
@@ -137,7 +137,7 @@ sift_v1_tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 
 		sift_srcsel_leaf_buf(t->cxt, b, sift_col_lane_n(&p->unit, p->col[leaf]));
 
-		sift_srcsel_read_lane(&t->sel, &p->unit, p->col[leaf], &t->lay->leaf[leaf], t->tol[leaf], &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+		sift_srcsel_read_lane(&t->sel, &p->unit, p->col[leaf], &t->lay->leaf[leaf], &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
 		return;
 	}
 	sift_srcsel_read(&t->sel, &p->unit, p->col[leaf], &v);
@@ -185,7 +185,7 @@ sift_v1_tbl_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64
 	sift_col_sel_idx(&sel, idx);
 	sift_col_read(&p->unit, p->col[leaf], &sel, &v);
 	sift_srcsel_leaf_buf(t->cxt, b, unit->nrow);
-	sift_srcsel_scatter(&t->lay->leaf[leaf], t->tol[leaf], &v, idx, unit->nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+	sift_srcsel_scatter(&t->lay->leaf[leaf], &v, idx, unit->nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
 	pfree(idx);
 }
 
