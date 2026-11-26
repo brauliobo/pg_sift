@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The crash matrix of the operations that publish a new directory of an index: build, write-buffer promotion, merge and VACUUM of a BM25 index and of a
 # sift_col index (with the options cube_minmax, key_columns and hll_columns, column format minors 7, 15 and 20), the sealing of a sift_table and the promotion of its write buffer by the
-# worker. Every publication (store_update) is a named point of the testing build: sift.test_crash_dir = n kills the process with SIGKILL before the
+# worker. The directory is that of Format 1, so the node creates Format 1 indexes and tables: Format 2 publishes through its manifest, which has no such point (its kill -9 is
+# col/index_crash.sh and col/f2/crash_orphans.sh, its phase faults the f2_* rows of fault/matrix.sh). Every publication (store_update) is a named point of the testing build: sift.test_crash_dir = n kills the process with SIGKILL before the
 # nth directory update (n > 0) or after it (n < 0), its log flushed, so that the segment is written and the directory still the old one, or the
 # directory is the new one and nothing after it ran. For each operation the points are the first and the last of its updates (more in the full
 # run). After the restart (wal_consistency_checking = generic: crash recovery compares every page it rebuilds with the page the primary wrote) the
@@ -27,9 +28,11 @@ sql cm "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension fai
 
 . "${SIFT_REPO:?}/test/t/lib/crash_scenarios.bash"
 
+MATRIX=" bm25_build col_build bm25_promote col_promote bm25_merge col_merge scope_build scope_promote scope_merge scope_refill vacuum col_net col_roll tbl_seal "
 total=0
 for row in "${SCENARIOS[@]}"; do
 	IFS='~' read -r name setup op <<<"$row"
+	[[ $MATRIX == *" $name "* ]] || continue
 	[[ -z ${SIFT_CRASHMX_ONLY:-} || $name =~ $SIFT_CRASHMX_ONLY ]] || continue
 	fresh "$setup" || bail "$name: setup"
 	healthy || bail "$name: the starting state is not healthy"
