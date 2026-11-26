@@ -8,7 +8,11 @@
 -- `scripts/plangate.sh --update` records the ones of the lane it ran (a band is a factor of 2 around the measured ratio): read the diff, and keep a plan only when the shape
 -- should have it. The shapes come in families, in this order: a filtered group by one to three keys, top-N, joined lookups,
 -- lateral lookups, two-level aggregates, spine joins, EXISTS over elements, partitions, pre-aggregate answers, count distinct, fused arms, window over
--- aggregates, text search, lookup lists (scope and skew), other filters.
+-- aggregates, text search, lookup lists (scope and skew), other filters, then the bench parity shapes (area bench: a shape of each case of bench/cases.tsv on these
+-- tables, and the fallbacks of spec 113).
+--
+-- Tags of a shape besides its area: `-- node: RE`, the Custom Plan Providers a chosen scan must have; `-- forbid: NODE on RELATION`, a node its plan must not have (the heap
+-- read under the scan); `-- gap: S113-NN`, a known gap: --update writes the band plan gap:S113-NN for a lane that still has it, and the gate fails once it is gone.
 
 -- name: one_key
 -- area: clickbench smoke
@@ -57,11 +61,13 @@ SELECT extract(isodow FROM ts)::int AS weekday, kind, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: float_metric
+-- gap: S113-15
 -- area: jsonb smoke
 SELECT kind, round(avg((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 3) AS mean, round(sum((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 2) AS total FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: float_sum_unrounded
+-- gap: S113-15
 -- area: jsonb
 SELECT kind, sum((doc -> 'metrics' ->> 'm_a')::float8) AS total, avg((doc -> 'metrics' ->> 'm_a')::float8) AS mean FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
@@ -195,12 +201,14 @@ SELECT d.id, (SELECT p.id FROM pings p WHERE p.parent_id = d.id ORDER BY p.ts DE
 SELECT d.id, (SELECT max(p.ts) FROM pings p WHERE p.parent_id = d.id AND p.status = 'st_0007') AS last_ts FROM dims d WHERE d.tier = 'tier_b' ORDER BY d.id;
 
 -- name: lateral_recordset
+-- gap: S113-12
 -- area: jsonb
 SELECT p.kind, p.sub, round(avg(p.score)::numeric, 3) AS mean, count(*) AS n FROM events e
 CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') AS p(kind text, sub text, dir_a text, score float8)
 WHERE e.parent_id IN (SELECT id FROM dims WHERE active) AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: lateral_series
+-- gap: S113-16
 SELECT e.kind, g.n AS copy, count(*) AS n FROM events e CROSS JOIN LATERAL generate_series(1, e.qty % 3 + 1) g(n)
 WHERE e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
@@ -256,20 +264,24 @@ LEFT JOIN events e ON e.parent_id = d.id AND e.deleted_at IS NULL AND e.ts >= da
 GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: exists_element
+-- gap: S113-12
 -- area: jsonb
 SELECT kind, count(*) AS n FROM events e
 WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(e.doc -> 'parts') p(kind text, dir_a text) WHERE p.dir_a = 'neg' AND p.kind = 'cat_a') AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: not_exists_element
+-- gap: S113-12
 -- area: jsonb
 SELECT kind, count(*) AS n FROM events e
 WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(e.doc -> 'parts') p(kind text, dir_a text) WHERE p.dir_a = 'neg') AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: jsonpath_element
+-- gap: S113-11
 -- area: jsonb
 SELECT kind, count(*) AS n FROM events e WHERE e.doc @? '$.parts[*] ? (@.dir_a == "neg" && @.kind == "cat_b")' AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: exists_by_parent_month
+-- gap: S113-12
 -- area: jsonb
 SELECT parent_id, date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events e
 WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(e.doc -> 'parts') p(sub text, score float8) WHERE p.sub = 'catg_a' AND p.score >= 5)
@@ -284,6 +296,7 @@ SELECT e.kind, count(*) AS n FROM events e
 WHERE NOT EXISTS (SELECT 1 FROM facts f WHERE f.parent_id = e.parent_id AND f.val > 11) AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: elements_counted
+-- gap: S113-12
 -- area: jsonb
 SELECT p.kind, count(*) AS n FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') p(kind text, score float8)
 WHERE p.score > 5 AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
@@ -360,6 +373,7 @@ SELECT DISTINCT parent_id, kind FROM events WHERE deleted_at IS NULL AND ts >= d
 SELECT d.tier, count(DISTINCT e.parent_id) AS parents, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id WHERE e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: arms_union
+-- gap: S113-15
 -- area: jsonb
 SELECT 'catg_a' AS arm, round(avg((doc -> 'metrics' ->> 'catg_a')::float8)::numeric, 3) AS mean, count(*) AS n FROM events WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01'
 UNION ALL
@@ -374,6 +388,7 @@ SELECT parent_id, avg(amount) FILTER (WHERE kind = 'cat_a') AS mean_a, avg(amoun
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: arms_per_parent_metrics
+-- gap: S113-15
 -- area: jsonb
 SELECT parent_id, round(avg((doc -> 'metrics' ->> 'catg_a')::float8)::numeric, 3) AS catg_a, round(avg((doc -> 'metrics' ->> 'catg_b')::float8)::numeric, 3) AS catg_b, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
@@ -662,20 +677,24 @@ WHERE day >= date '2024-04-01' AND day < date '2025-04-01' AND qty BETWEEN 2 AND
 SELECT reg_id, count(*) AS n, sum(amount) AS total, min(day) AS first_day, max(day) AS last_day, avg(qty) AS mean_qty FROM sf_events GROUP BY 1 ORDER BY 1;
 
 -- name: jsonb_shred_filter_agg
+-- gap: S113-14
 -- area: jsonb
 SELECT doc ->> 'channel' AS channel, count(*) AS n, sum((doc ->> 'score')::float8) AS total FROM sf_events WHERE doc ->> 'flag' = 'ok' GROUP BY 1 ORDER BY 1;
 
 -- name: jsonb_unnest_agg
+-- gap: S113-13
 -- area: jsonb
 -- parallel: yes
 SELECT elem ->> 'kind' AS kind, count(*) AS n, sum((elem ->> 'score')::float8) AS total FROM sf_events e
 CROSS JOIN LATERAL jsonb_array_elements(e.doc -> 'items') AS elem GROUP BY 1 ORDER BY 1;
 
 -- name: jsonb_presence_leaf
+-- gap: S113-10
 -- area: jsonb
 SELECT count(*) AS n FROM sf_events WHERE doc IS NULL;
 
 -- name: jsonb_contains_negation
+-- gap: S113-03
 -- area: jsonb
 SELECT status, count(*) AS n FROM sf_events WHERE NOT (doc @> '{"flag": "ok"}') GROUP BY 1 ORDER BY 1;
 
@@ -706,3 +725,124 @@ SELECT reg_id, count(*) AS n, sum(amount) AS total FROM tbl_store WHERE reg_id =
 -- name: table_group_agg
 -- area: table
 SELECT status, count(*) AS n, sum(amount) AS total, sum(qty) AS units FROM tbl_store GROUP BY 1 ORDER BY 1;
+
+-- name: bench_cte_two_readers
+-- area: bench
+-- node: ^SiftAggV6
+WITH s AS (SELECT parent_id, kind, count(*) AS n, sum(amount) AS a FROM events WHERE deleted_at IS NULL GROUP BY 1, 2)
+SELECT (SELECT sum(a) FROM s) AS total, (SELECT count(*) FROM s WHERE n > 100) AS big;
+
+-- name: bench_list_elements
+-- gap: S113-12
+-- area: bench
+-- node: ^SiftAggV6
+SELECT p.kind, count(*) AS n FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') p(kind text, score float8)
+WHERE p.score > 5 AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
+
+-- name: bench_null_count_zone
+-- area: bench
+-- node: ^SiftAggV6
+SELECT count(*) AS n FROM events WHERE deleted_at IS NULL;
+
+-- name: bench_star_snowflake_join
+-- area: bench star
+-- node: ^SiftAggV6
+SELECT c.label, r.tier, count(*) AS n, sum(e.qty * p.price) AS total FROM sf_events e JOIN sf_product p USING (prod_id) JOIN sf_category c USING (cat_id) JOIN sf_region r USING (reg_id)
+WHERE r.active AND e.day >= date '2024-06-01' GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- name: bench_partitioned_range_agg
+-- area: bench
+-- node: ^SiftAggV6
+SELECT date_trunc('month', ts)::date AS m, kind, count(*) AS n, sum(amount) AS total FROM events_part
+WHERE ts >= date '2024-04-01' AND ts < date '2025-10-01' AND deleted_at IS NULL GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- name: bench_each_map
+-- area: bench jsonb
+-- gap: S113-04
+-- node: ^SiftAggV6
+-- forbid: Seq Scan on events
+SELECT e.kind, count(*) AS n, count(CAST(r.value AS float)) AS dim_b, avg(CAST(r.value AS float)) AS avg_value FROM events e
+LEFT JOIN LATERAL jsonb_each(e.doc -> 'metrics') r ON r.key = 'm_a' WHERE e.deleted_at IS NULL AND e.ts >= date '2025-01-01' GROUP BY 1 ORDER BY 1;
+
+-- name: bench_contains_object
+-- area: bench jsonb
+-- gap: S113-03
+-- node: ^SiftAggV6
+-- forbid: Seq Scan on sf_events
+SELECT count(*) AS n FROM sf_events WHERE doc @> '{"channel": "ch_1", "flag": "ok"}';
+
+-- name: bench_contains_number
+-- area: bench jsonb
+-- gap: S113-03
+-- node: ^SiftAggV6
+SELECT count(*) AS n FROM sf_events WHERE doc @> '{"score": 4}';
+
+-- name: bench_presence_not_null
+-- area: bench jsonb
+-- gap: S113-10
+-- node: ^SiftAggV6
+SELECT count(*) AS n FROM sf_events WHERE doc IS NOT NULL;
+
+-- name: bench_subscript_group
+-- area: bench jsonb
+-- gap: S113-09
+-- node: ^SiftAggV6
+SELECT doc['flag'] AS flag, count(*) AS n FROM sf_events GROUP BY 1 ORDER BY 1;
+
+-- name: bench_member_jsonb_group
+-- area: bench jsonb
+-- gap: S113-08
+-- node: ^SiftAggV6
+SELECT doc -> 'flag' AS flag, count(*) AS n FROM sf_events GROUP BY 1 ORDER BY 1;
+
+-- name: bench_int_cast_filter
+-- area: bench jsonb
+-- gap: S113-08
+-- node: ^SiftAggV6
+SELECT status, count(*) AS n FROM sf_events WHERE (doc ->> 'score')::int = 4 GROUP BY 1 ORDER BY 1;
+
+-- name: bench_jsonpath_exists
+-- area: bench jsonb
+-- gap: S113-11
+-- node: ^SiftAggV6
+SELECT status, count(*) AS n FROM sf_events WHERE jsonb_path_exists(doc, '$.items[*] ? (@.kind == "k_1" && @.score >= 8)') GROUP BY 1 ORDER BY 1;
+
+-- name: bench_filter_key_exists
+-- area: bench jsonb
+-- gap: S113-07
+-- node: ^SiftAggV6
+SELECT sum((doc ->> 'score')::float8) FILTER (WHERE doc ? 'flag') AS total, count(*) FILTER (WHERE doc ? 'flag') AS n FROM sf_events;
+
+-- name: bench_period_unnest
+-- area: bench jsonb
+-- gap: S113-05
+-- node: ^SiftAggV6
+SELECT p.period, o.kind, round(avg(o.score)::numeric, 6) AS mean FROM events e
+JOIN (VALUES (1, daterange('2024-01-01', '2024-07-01')), (2, daterange('2024-04-01', '2025-01-01'))) p(period, span) ON e.ts <@ p.span
+CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(kind text, score float8) GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- name: bench_window_rank_unordered
+-- area: bench
+-- gap: S113-06
+-- node: ^SiftAggV6Window$
+-- forbid: Seq Scan on events
+SELECT max(r) AS top FROM (SELECT rank() OVER (ORDER BY parent_id) r FROM events) s;
+
+-- name: bench_window_first_rows_sorted
+-- area: bench
+-- gap: S113-01
+-- node: SiftAggV6Window
+SELECT * FROM (SELECT parent_id, id, row_number() OVER (PARTITION BY parent_id ORDER BY ts DESC, id) rn FROM events) s WHERE rn <= 3 ORDER BY parent_id, rn;
+
+-- name: bench_window_rows_verbose
+-- area: bench
+-- gap: S113-01
+-- node: SiftAggV6Window
+SELECT parent_id, count(*) AS n, sum(rn) AS rn_sum FROM (SELECT parent_id, row_number() OVER (PARTITION BY parent_id ORDER BY ts DESC, id) rn FROM events) s GROUP BY 1 ORDER BY 1;
+
+-- name: bench_table_unnest
+-- area: bench table
+-- gap: S113-12
+-- node: ^SiftAggV6
+SELECT i.kind, count(*) AS n, sum(t.qty * i.score) AS total FROM sf_events t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8)
+WHERE t.day >= date '2024-06-01' GROUP BY 1 ORDER BY 1;
