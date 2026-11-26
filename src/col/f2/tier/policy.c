@@ -46,9 +46,8 @@ typedef struct CatalogUser
 static uint32 policies_relid_hash;	/* the hash of sift.tier_policies in the cache of pg_class */
 
 static void
-catalog_user_enter(CatalogUser *save)
+catalog_user_enter(CatalogUser *save, Oid relid)
 {
-	Oid			relid = get_relname_relid("tier_policies", get_namespace_oid("sift", false));
 	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
 
 	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for relation %u", relid);
@@ -83,13 +82,22 @@ typedef struct OwnerSql
 	void	   *out;
 } OwnerSql;
 
-/* One statement on the policy tables as their owner: the user of the caller, the snapshot and the SPI connection are back whatever the statement does */
+/*
+ * One statement on the policy tables as their owner: the user of the caller, the snapshot and the SPI connection are back whatever the statement does. The SQL of an extension that is
+ * not yet updated to 6.0 has no policy tables: no relation of it has a policy, and only the functions of 6.0 write one.
+ */
 static void
 owner_execute(const OwnerSql *q)
 {
 	CatalogUser save;
+	Oid			relid = get_relname_relid("tier_policies", get_namespace_oid("sift", false));
 
-	catalog_user_enter(&save);
+	if (!OidIsValid(relid))
+	{
+		SIFT_INVARIANT(q->read_only, "sift: a policy write without sift.tier_policies");
+		return;
+	}
+	catalog_user_enter(&save, relid);
 	PG_TRY();
 	{
 		int			rc;
