@@ -40,6 +40,12 @@ StaticAssertDecl(sizeof(SiftPendDelRec) == 16, "SiftPendDelRec must be 16 bytes"
 #define SIFT_PD_TID_UPDATED		(UINT64CONST(1) << 63)
 #define SIFT_PD_TID_SUCC		(UINT64CONST(1) << 62)
 
+/*
+ * On a page, the pairs of one deleter and command whose old and new addresses both follow by one are a run: the first pair, its update record marked SIFT_PD_TID_RUN and the xmax of its
+ * successor the count of the pairs. nrecs counts the records a run stands for, the bytes in use of the page the records it holds. The chain is read back as the pairs (sift_pend_del_read).
+ */
+#define SIFT_PD_TID_RUN			(UINT64CONST(1) << 61)
+
 typedef struct SiftPendDelPageData
 {
 	uint32		magic;

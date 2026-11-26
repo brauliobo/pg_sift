@@ -7,6 +7,7 @@ ESTIMATE_MEMO_MAX_KEY	size of the key of a planner memo: an internal cache bound
 MERGE_MAX_BYTES	no caller left: delete it in a cleanup
 ORDER_MAX_ROWS	the most rows of a key-cut unit, the maximum of sift.col_unit_rows (the directory of a unit is read with the head of its record)
 PAGG_MAX_TUPLES	decoder bound for a rollup blob (a corruption check), derived from rollup_tuples
+PD_MAX_RECS	the pending deletes one page stands for (col/f2/del/pend.c): its count is 16 bits, a run of pairs ends there and the next page holds the rest; no statement is refused
 POOL_MAX_BLOCKS	size of the CREATE INDEX buffer pool, kept so that addresses stay below 2^32 (sift.test_pool_blocks lowers it)
 SIFT_ALLOC_MAX_LOCKED	invariant of the block allocator, not reachable by valid input
 SIFT_COL_FORMAT_MAX_READ	the newest column format minor this build reads: a version, not a size
