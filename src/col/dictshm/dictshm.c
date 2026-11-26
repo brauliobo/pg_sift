@@ -271,6 +271,13 @@ stale_free(Dshm *s, int slot)
 }
 
 static void
+slot_unpin(Dshm *s, int slot)
+{
+	if (pg_atomic_sub_fetch_u32(&s->dir[slot].pins, 1) == 0 && s->dir[slot].state == E_STALE)
+		stale_free(s, slot);
+}
+
+static void
 unpin(void *arg)
 {
 	ShmPin	   *p = arg;
@@ -282,8 +289,7 @@ unpin(void *arg)
 	dlist_delete(&p->node);
 	if (p->d != NULL && p->d->orows > p->orows)
 		pg_atomic_fetch_add_u64(&e->orows, p->d->orows - p->orows);
-	if (pg_atomic_sub_fetch_u32(&e->pins, 1) == 0 && e->state == E_STALE)
-		stale_free(dshm, p->slot);
+	slot_unpin(dshm, p->slot);
 	p->slot = -1;
 }
 
@@ -293,6 +299,36 @@ unpin_all(int code, Datum arg)
 {
 	while (!dlist_is_empty(&pins))
 		unpin(dlist_container(ShmPin, node, dlist_head_node(&pins)));
+}
+
+/* The dictionary of the record rec (its header h, its layout l), read in place: its arrays are those of the ring */
+static SiftCDict *
+dict_in_place(MemoryContext parent, const char *rec, const DshmHdr *h, const Layout *l, uint32 asks, uint64 orows)
+{
+	SiftCDict  *d = sift_cdict_create(AllocSetContextCreate(parent, "sift shared dictionary", ALLOCSET_SMALL_SIZES));
+
+	pfree(d->off);
+	pfree(d->bytes);
+	d->n = h->n;
+	d->cap = h->n;
+	d->off = (uint32 *) (rec + sizeof(*h));
+	d->nbytes = h->nbytes;
+	d->bytescap = h->nbytes;
+	d->bytes = (char *) rec + l->bytes_at;
+	d->finds = d->tests = asks;
+	d->orows = orows;
+	d->blocked = (h->flags & F_BLOCKED) != 0;
+	if (h->flags & F_SLOTS)
+	{
+		d->slots = (uint64 *) (rec + l->slots_at);
+		d->nslots = h->nslots;
+	}
+	if (h->flags & F_ORDER)
+	{
+		d->sorted = (uint32 *) (rec + l->order_at);
+		d->stored_order = (h->flags & F_SORTED) != 0;
+	}
+	return d;
 }
 
 SiftCDict *
@@ -309,7 +345,6 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 	DshmHdr		h;
 	Layout		l;
 	const char *rec;
-	MemoryContext cx;
 	SiftCDict  *d;
 	ShmPin	   *p;
 
@@ -344,47 +379,35 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 	}
 	if (bad)
 	{
-		ShmPin		tmp = {.slot = at};
-
-		dlist_push_head(&pins, &tmp.node);
-		unpin(&tmp);
+		slot_unpin(s, at);
 		return NULL;
 	}
-	cx = AllocSetContextCreate(parent, "sift shared dictionary", ALLOCSET_SMALL_SIZES);
-	d = sift_cdict_create(cx);
-	pfree(d->off);
-	pfree(d->bytes);
-	d->n = h.n;
-	d->cap = h.n;
-	d->off = (uint32 *) (rec + sizeof(h));
-	d->nbytes = h.nbytes;
-	d->bytescap = h.nbytes;
-	d->bytes = (char *) rec + l.bytes_at;
-	d->finds = d->tests = asks;
-	d->orows = orows;
-	d->blocked = (h.flags & F_BLOCKED) != 0;
-	if (h.flags & F_SLOTS)
+	PG_TRY();
 	{
-		d->slots = (uint64 *) (rec + l.slots_at);
-		d->nslots = h.nslots;
+#ifdef SIFT_TESTING
+		if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "dictshm_read") != NULL)
+			ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("sift test: the shared dictionary cannot be read in place (dictshm_read)")));	/* check-errors: allow */
+#endif
+		d = dict_in_place(parent, rec, &h, &l, asks, orows);
+		p = MemoryContextAlloc(d->mcxt, sizeof(ShmPin));
+		if (!exit_hooked)
+		{
+			before_shmem_exit(unpin_all, 0);
+			exit_hooked = true;
+		}
 	}
-	if (h.flags & F_ORDER)
+	PG_CATCH();
 	{
-		d->sorted = (uint32 *) (rec + l.order_at);
-		d->stored_order = (h.flags & F_SORTED) != 0;
+		slot_unpin(s, at);
+		PG_RE_THROW();
 	}
-	p = MemoryContextAlloc(cx, sizeof(ShmPin));
+	PG_END_TRY();
 	p->slot = at;
 	p->d = d;
 	p->orows = orows;
 	p->cb = (MemoryContextCallback) {unpin, p, NULL};
-	if (!exit_hooked)
-	{
-		before_shmem_exit(unpin_all, 0);
-		exit_hooked = true;
-	}
 	dlist_push_head(&pins, &p->node);
-	MemoryContextRegisterResetCallback(cx, &p->cb);
+	MemoryContextRegisterResetCallback(d->mcxt, &p->cb);
 	return d;
 }
 
