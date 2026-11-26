@@ -192,12 +192,12 @@ key_of_slot(Relation rel, SiftF2Store *store, TupleTableSlot *slot, uint64 tid, 
 }
 
 void
-sift_tbl_f2_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options pg_attribute_unused(), struct BulkInsertStateData *bistate pg_attribute_unused())
+sift_tbl_f2_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, struct BulkInsertStateData *bistate pg_attribute_unused())
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-	publish_staged(rel, store, stage_row(rel, store, slot, cid, false), 0);
+	publish_staged(rel, store, stage_row(rel, store, slot, cid, (options & TABLE_INSERT_FROZEN) != 0), 0);
 	log_change(rel, SIFT_TBL_OP_INSERT, slot, NULL);
 	pgstat_count_heap_insert(rel, 1);
 }
@@ -211,20 +211,19 @@ has_row_triggers(Relation rel)
 }
 
 void
-sift_tbl_f2_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options pg_attribute_unused(), struct BulkInsertStateData *bistate pg_attribute_unused())
+sift_tbl_f2_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, struct BulkInsertStateData *bistate pg_attribute_unused())
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	bool		published = sift_tbl_check_publication(rel);
+	bool		frozen = (options & TABLE_INSERT_FROZEN) != 0;
 
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 	if (sift_batch_route(nslots, published, has_row_triggers(rel)) == SIFT_BATCH_DIRECT)
-	{
-		sift_tbl_f2_bulk_insert(rel, store, slots, nslots, cid);
-	}
+		sift_tbl_f2_bulk_insert(rel, store, slots, nslots, cid, frozen);
 	else
 		for (int i = 0; i < nslots; i++)
 		{
-			publish_staged(rel, store, stage_row(rel, store, slots[i], cid, false), 0);
+			publish_staged(rel, store, stage_row(rel, store, slots[i], cid, frozen), 0);
 			if (published)
 				log_published(rel, SIFT_TBL_OP_INSERT, slots[i], NULL);
 			CHECK_FOR_INTERRUPTS();

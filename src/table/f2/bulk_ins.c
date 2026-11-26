@@ -69,11 +69,11 @@ sift_tbl_f2_stage_bulk(Relation rel, SiftF2Store *store)
 }
 
 void
-sift_tbl_f2_bulk_insert(Relation rel, SiftF2Store *store, TupleTableSlot **slots, int nslots, CommandId cid)
+sift_tbl_f2_bulk_insert(Relation rel, SiftF2Store *store, TupleTableSlot **slots, int nslots, CommandId cid, bool frozen)
 {
 	SiftTblBulkState *b = bulk_state(store);
 	SiftTxnStage *st = sift_tbl_f2_stage_bulk(rel, store);
-	TransactionId xid = GetCurrentTransactionId();
+	TransactionId xid = frozen ? FrozenTransactionId : GetCurrentTransactionId();
 
 	sift_tbl_f2_tid_ensure(rel, store, nslots);
 	for (int from = 0; from < nslots; from += SIFT_BULK_PACK_ROWS)
@@ -93,7 +93,7 @@ sift_tbl_f2_bulk_insert(Relation rel, SiftF2Store *store, TupleTableSlot **slots
 			slot->tts_tid = tid;
 			slot->tts_tableOid = RelationGetRelid(rel);
 		}
-		sift_stage_add_batch(rel, st, n, b->keys, b->tids, xid, cid, b->cells, (const SiftCell *const *) b->elem);
+		sift_stage_add_batch(rel, st, n, b->keys, b->tids, xid, frozen ? 0 : cid, b->cells, (const SiftCell *const *) b->elem);
 		if (sift_batch_reset_due(&b->since_reset, n))
 			MemoryContextReset(b->batch_cx);
 		CHECK_FOR_INTERRUPTS();

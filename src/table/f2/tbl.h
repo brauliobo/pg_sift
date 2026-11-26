@@ -242,7 +242,7 @@ extern void sift_tbl_f2_tid_ensure(Relation rel, SiftF2Store *store, uint64 nrow
 /* ---- bulk insert (f2_bulk_ins.c) ---- */
 
 /* The rows of a multi_insert call (the direct route of col/f2/batch.h: no publication, no row trigger, SIFT_BATCH_MIN_SLOTS rows or more) staged for the cold tier */
-extern void sift_tbl_f2_bulk_insert(Relation rel, SiftF2Store *store, TupleTableSlot **slots, int nslots, CommandId cid);
+extern void sift_tbl_f2_bulk_insert(Relation rel, SiftF2Store *store, TupleTableSlot **slots, int nslots, CommandId cid, bool frozen);
 
 /* The stage of the relation from here on writes its buffers as bounded parts of the cold tier (a bulk insert, or an UPDATE that holds a partition); the stage */
 extern SiftTxnStage *sift_tbl_f2_stage_bulk(Relation rel, SiftF2Store *store);
