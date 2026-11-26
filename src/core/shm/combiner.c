@@ -3,14 +3,18 @@
  */
 #include "core/shm/combiner.h"
 
+/* What a leader detached and owes a state, from the first detach to its resolve (n is 0 outside of it): a backend that exits in between resolves it on its way out */
 typedef struct CombLead
 {
+	SiftCombArena arena;
+	uint32		own;
 	uint32		n;
 	uint32		idx[SIFT_COMB_MAX_SLOTS];
 	uint32		fin[SIFT_COMB_MAX_SLOTS];
 } CombLead;
 
 SIFT_SHM_BACKEND_LOCAL CombLead lead_state;
+SIFT_SHM_BACKEND_LOCAL bool exit_hooked;
 
 /* MEM[MEM-CORE-15]: SHM flat-combiner queue state (caller-owned SHM region) */
 static void
@@ -168,31 +172,6 @@ leader_rounds(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, 
 	}
 }
 
-/* The queue lock is held; it is released before the followers are woken */
-static void
-run_leader(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, void *ctx, SiftCombHdr *key, uint32 key_idx)
-{
-	CombLead   *ld = &lead_state;
-	bool		key_local = key_idx == SIFT_COMB_NONE;
-
-	Assert(ops->max_batch >= 1 && ops->max_batch <= SIFT_COMB_MAX_SLOTS);
-	ld->n = 0;
-	SIFT_SHM_TRY();
-	{
-		leader_rounds(a, q, ops, ctx, key, key_local);
-	}
-	SIFT_SHM_CATCH();
-	{
-		resolve(a, ld, key_idx);
-		if (!key_local)
-			pool_release(a->pool, key_idx);
-		SIFT_SHM_RETHROW();
-	}
-	SIFT_SHM_END_TRY();
-	sift_shm_unlock(&q->lock);
-	resolve(a, ld, key_idx);
-}
-
 static void
 wait_slot(SiftCombHdr *slot)
 {
@@ -208,6 +187,48 @@ wait_slot(SiftCombHdr *slot)
 	SIFT_SHM_RESUME_INTERRUPTS();
 	if (waited)
 		sift_shm_wait_done();
+}
+
+/* A backend that exits (FATAL) while it leads gives the followers it detached the state it has for them: RETRY where it did not apply them */
+static void
+lead_exit(int code, Datum arg)
+{
+	if (lead_state.n > 0)
+		resolve(&lead_state.arena, &lead_state, lead_state.own);
+}
+
+/*
+ * The queue lock is held; it is released before the followers are woken. A parked leader (key_idx its slot) whose apply() fails keeps its slot until it is resolved: an earlier leader may
+ * have detached it and write its state still
+ */
+static void
+run_leader(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, void *ctx, SiftCombHdr *key, uint32 key_idx)
+{
+	CombLead   *ld = &lead_state;
+	bool		key_local = key_idx == SIFT_COMB_NONE;
+
+	Assert(ops->max_batch >= 1 && ops->max_batch <= SIFT_COMB_MAX_SLOTS);
+	ld->n = 0;
+	ld->arena = *a;
+	ld->own = key_idx;
+	SIFT_SHM_TRY();
+	{
+		leader_rounds(a, q, ops, ctx, key, key_local);
+	}
+	SIFT_SHM_CATCH();
+	{
+		sift_shm_unlock(&q->lock);
+		resolve(a, ld, key_idx);
+		if (!key_local)
+		{
+			wait_slot(key);
+			pool_release(a->pool, key_idx);
+		}
+		SIFT_SHM_RETHROW();
+	}
+	SIFT_SHM_END_TRY();
+	sift_shm_unlock(&q->lock);
+	resolve(a, ld, key_idx);
 }
 
 /* A queue that is hot stays so: its counters are read first and written only when they move, so that the writers that find it contended do not take turns on its line */
@@ -266,6 +287,11 @@ sift_comb_submit(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *op
 	SiftCombHdr *slot;
 	uint32		state;
 
+	if (!exit_hooked)
+	{
+		sift_shm_before_exit(lead_exit);
+		exit_hooked = true;
+	}
 	if (sift_shm_lock_try(&q->lock))
 	{
 		if (pg_atomic_read_u32(&q->contend_streak) != 0)

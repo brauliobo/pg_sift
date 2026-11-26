@@ -1,5 +1,5 @@
 # The tests of the shared-memory write layer (core/shm/, col/leafshm.c) that include the sources they cover: the server symbols they do not run link as stubs that trap (AUTOSTUB).
-SHM_TESTS = core/shm/lease
+SHM_TESTS = core/shm/lease core/shm/combiner
 
 TESTS    += $(SHM_TESTS)
 AUTOSTUB += $(SHM_TESTS)
