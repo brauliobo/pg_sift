@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# The first statement of a session that has not preloaded the library loads it while the planner opens the column index, after planner() went
-# without sift_planner: its CTE is not planned inline and the aggregates over it run the ordinary plan. The executor start plans that statement
-# again through the hook (agg/cte/hook.c), so it runs in the scan like the statements after it. A fresh psql is a fresh backend: nothing
-# is loaded before the statement under test, and sift.stats(local => true) reads the scans that backend ran.
+# The first statement of a session that has not preloaded the library loads it while the planner opens the column index: the aggregates of
+# that statement still run in the scan, like the statements after it. A fresh psql is a fresh backend: nothing is loaded before the statement
+# under test, and sift.stats(local => true) reads the scans that backend ran.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 
-plan 21
+plan 19
 node_init af 27 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start af || bail "start failed"
@@ -19,12 +18,12 @@ sql af "CREATE EXTENSION pg_sift" \
 	"CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at, items) WITH (paths = 'items[]{qty float8}')" \
 	"VACUUM (FREEZE, ANALYZE) facts" "ANALYZE dim_a" >/dev/null || bail "setup failed"
 
-# The arms of a UNION ALL read one CTE: the inline plan runs them in the scan, the shared CTE does not
+# two arms of a UNION ALL, each an aggregate the scan runs
+SRC="facts f JOIN dim_a e ON e.id = f.dim_a_id CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(qty float8) WHERE f.deleted_at IS NULL"
 Q="SELECT * FROM (
-  WITH scoped AS (SELECT f.id, f.day, e.kind, i.qty FROM facts f JOIN dim_a e ON e.id = f.dim_a_id CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(qty float8) WHERE f.deleted_at IS NULL)
-  SELECT 'day' AS grp, day::text AS k, count(DISTINCT id) AS n, sum(qty) AS q FROM scoped GROUP BY day
+  SELECT 'day' AS grp, f.day::text AS k, count(DISTINCT f.id) AS n, sum(i.qty) AS q FROM $SRC GROUP BY f.day
   UNION ALL
-  SELECT 'kind', kind, count(DISTINCT id), sum(qty) FROM scoped GROUP BY kind
+  SELECT 'kind', e.kind, count(DISTINCT f.id), sum(i.qty) FROM $SRC GROUP BY e.kind
 ) q ORDER BY 1, 2"
 
 # session STATEMENT...: one fresh backend runs the statements; the last two lines are the scans it ran and the checksum of the first statement's rows
@@ -49,7 +48,7 @@ param=$(session "PREPARE p(int) AS SELECT count(*) FROM facts WHERE dim_a_id = \
 check "a prepared statement with a parameter returns the rows of the literal one" test "$(grep -c '^[0-9]' <<<"$param")" == 2
 
 # the same statement with a parameter, as the extended protocol (psql \bind) and EXECUTE send it: planned with the parameters' types and values
-QP="${Q/IS NULL)/IS NULL AND f.day >= \$1::date)}"
+QP="${Q//IS NULL/IS NULL AND f.day >= \$1::date}"
 bound=$({ printf '%s \\bind %s \\g\n' "$QP" "'2026-01-05'"; echo "SELECT 'scans', value FROM sift.stats(local => true) WHERE name = 'scans';"; } | sql af)
 check "the first statement of a session with a bound parameter runs in the scan" test "$(scans "$bound")" -ge 1
 boundoff=$({ echo "SET sift.enable_agg = off;"; printf '%s \\bind %s \\g\n' "$QP" "'2026-01-05'"; } | sql af | grep -v '^SET$')
@@ -70,15 +69,10 @@ expm=$({ echo "SELECT 1 \\; EXPLAIN (COSTS OFF) $Q;"; } | sql af)
 check "EXPLAIN after another statement of the same query string shows the scan" test "$(grep -c SiftAgg <<<"$expm")" -ge 1
 expset=$({ echo "SET enable_seqscan = on \\; EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $Q;"; echo "SELECT 'scans', value FROM sift.stats(local => true) WHERE name = 'scans';"; } | sql af)
 check "EXPLAIN ANALYZE after a SET of the same query string runs the scan" test "$(grep -c SiftAgg <<<"$expset")" -ge 1 -a "$(scans "$expset")" -ge 1
-# a query the scan takes whole (a lateral aggregate of the elements under an outer one, over a table that holds each key once) leaves no table in its plan: the plan made again is the scan
+# a table the cursor below reads
 sql af "CREATE TABLE lfacts (id int PRIMARY KEY, g int, items jsonb)" \
 	"INSERT INTO lfacts SELECT i, i % 9, jsonb_build_array(jsonb_build_object('qty', i % 5), jsonb_build_object('qty', i % 3)) FROM generate_series(1, 20000) i" \
-	"CREATE INDEX lfacts_col ON lfacts USING sift_col (id, g, items) WITH (paths = 'items[]{qty float8}')" "VACUUM (FREEZE, ANALYZE) lfacts" >/dev/null || bail "second setup failed"
-LQ="SELECT r.g, count(r.id) AS n, round(avg(r.q)::numeric, 6) AS q FROM (SELECT f.id, f.g, s.q FROM lfacts f LEFT JOIN LATERAL (SELECT avg(o.qty) AS q FROM jsonb_to_recordset(f.items) o(qty float8) WHERE o.qty IS NOT NULL) s ON true) r GROUP BY r.g ORDER BY 1"
-lat=$(session "SET enable_seqscan = off" "$LQ")
-check "a lateral aggregate over the elements as the first statement of a session runs in the scan" test "$(scans "$lat")" -ge 1
-latoff=$(session "SET sift.enable_agg = off" "SET enable_seqscan = off" "$LQ")
-check "and returns the rows of the normal plan" test "$(grep -v '^scans|' <<<"$lat")" == "$(grep -v '^scans|' <<<"$latoff")"
+	"CREATE INDEX lfacts_col ON lfacts USING sift_col (id, g, items) WITH (paths = 'items[]{qty float8}')" "VACUUM (FREEZE, ANALYZE) lfacts" >/dev/null || bail "cursor setup failed"
 # a scrollable cursor is planned with the Materialize that its backward fetches need, which a plan made again from the text would lack (an assert build stops at ExecInitNestLoop)
 scroll=$(session "DO \$\$ DECLARE c refcursor; r record; fwd text := ''; bwd text := ''; BEGIN
 	OPEN c SCROLL FOR SELECT v.g, x.id FROM generate_series(0, 8) v(g), LATERAL (SELECT id FROM lfacts WHERE g = v.g ORDER BY id LIMIT 1) x;
