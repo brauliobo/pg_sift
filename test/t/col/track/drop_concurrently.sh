@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tap: pooled
 # DROP INDEX CONCURRENTLY of a sift_col index that tracks its changes, beside writers (an update, a delete and an insert-on-conflict in each transaction), and when it fails.
-# The index depends on its two triggers and the transaction that deletes it removes them (src/col/v1/track/track.c), so the drop needs no ACCESS EXCLUSIVE lock before its last step and
+# The index depends on its triggers (Format 1: one for UPDATE and one for DELETE, Format 2: one for both) and the transaction that deletes it removes them
+# (src/col/v1/track/track.c), so the drop needs no ACCESS EXCLUSIVE lock before its last step and
 # finds no transaction id. The writers beside it must not fail or deadlock (they skip an index the drop has marked dead, whose lock it holds), the copy of a swap must keep the
 # triggers of the index that stays, a drop that times out waiting for a writer leaves a valid-looking tracked table (the index invalid, its triggers in place) that drops on the next try,
 # and no run leaves a trigger that no index depends on.
@@ -33,6 +34,9 @@ orphans() { sql n "SELECT count(*) FROM pg_trigger g WHERE g.tgname LIKE 'sift_t
 deadlocks() { grep -c 'deadlock detected' "$D/postgres.log"; }
 failed() { sed -n 's/^number of failed transactions: \([0-9]*\).*/\1/p' "$D/pgbench.log" | head -n 1; }
 
+# the triggers of one tracked index, as the build of h_x made them
+TRIG=$(ntrig)
+((TRIG > 0)) || bail "h_x has no trigger"
 # 1. a concurrent copy and DROP INDEX CONCURRENTLY of it, in a loop, under 8 writers
 d0=$(deadlocks)
 pgbench_bg n 8 "$((SECS + 2))" -f "$D/w.sql"
@@ -42,11 +46,11 @@ while ((SECONDS < end)); do
 done
 wait "$PGBENCH_PID"
 # a drop that finds the table in use leaves the removal of the triggers to a worker (it takes the table lock a moment at a time, and nothing queues behind it)
-wait_for '[[ $(orphans) == 0 && $(ntrig) == 2 ]]' 120
+wait_for '[[ $(orphans) == 0 && $(ntrig) == $TRIG ]]' 120
 check "CREATE and DROP INDEX CONCURRENTLY under 8 writers: at least 5 rounds ($rounds done), no failed transaction" test "$rounds" -ge 5 -a "$(failed)" == 0
 check "... no deadlock was detected" test "$(($(deadlocks) - d0))" -eq 0
-check "... the table keeps the two triggers of h_x, no trigger is left without an index, no copy is left" \
-	test "$(ntrig)|$(orphans)|$(sql n "SELECT count(*) FROM pg_class WHERE relname = 'h_y'")" == "2|0|0"
+check "... the table keeps the triggers of h_x, no trigger is left without an index, no copy is left" \
+	test "$(ntrig)|$(orphans)|$(sql n "SELECT count(*) FROM pg_class WHERE relname = 'h_y'")" == "$TRIG|0|0"
 check "... the heap-free read, the checked read and the heap give one answer" differential
 
 # 2. the tracked index itself, under the writers: its drop ends the triggers, the writers go on
@@ -66,8 +70,8 @@ HOLD=$!
 until [[ $(sql n "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(5)%'") == 1 ]]; do sleep 0.1; done
 out=$(sql n "SET lock_timeout = '300ms'" "DROP INDEX CONCURRENTLY h_y" 2>&1)  # timeout-ok: the lock_timeout ends the wait for the writer, the failure checked
 check "a DROP INDEX CONCURRENTLY that waits for a writer past lock_timeout fails" grep -q 'lock timeout' <<<"$out"
-check "... the index is invalid and keeps its two triggers, which no other index owns" \
-	test "$(sql n "SELECT count(*) FROM pg_index WHERE indrelid = 'h'::regclass AND NOT indisvalid")|$(ntrig)|$(orphans)" == "1|2|0"
+check "... the index is invalid and keeps its triggers, which no other index owns" \
+	test "$(sql n "SELECT count(*) FROM pg_index WHERE indrelid = 'h'::regclass AND NOT indisvalid")|$(ntrig)|$(orphans)" == "1|$TRIG|0"
 sql n "UPDATE h SET v = v + 1 WHERE id <= 10" "DELETE FROM h WHERE id = $ROWS" >/dev/null 2>&1
 check "... writes on the table still work" test "$?" -eq 0
 wait "$HOLD"

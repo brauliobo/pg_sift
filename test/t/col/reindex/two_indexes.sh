@@ -32,6 +32,9 @@ ans() { sql n "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = $
 differential() { [[ $(ans free) == $(ans heap) && $(ans checked) == $(ans heap) ]]; }
 complete() { [[ $(sql n "SELECT complete AND triggers FROM sift.col_tracking('h_a')") == t && $(sql n "SELECT complete AND triggers FROM sift.col_tracking('h_b')") == t ]]; }
 ntrig() { sql n "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%'"; }
+# the triggers of the two tracked indexes as their builds made them (Format 1: two each, Format 2: one each)
+TRIG=$(ntrig)
+((TRIG >= 2)) || bail "the indexes have $TRIG triggers"
 deadlocks() { grep -c 'deadlock detected' "$D/postgres.log" || true; }
 
 # 1. a REINDEX that stays open holds ShareLock of the table: the REINDEX of the other index goes through it
@@ -74,8 +77,8 @@ rounds "REINDEX INDEX" "REINDEX INDEX CONCURRENTLY"
 check "$ROUNDS rounds of a REINDEX and a REINDEX CONCURRENTLY under writers: no deadlock of a lock the extension takes" test "$(own_deadlocks)" == 0
 sql n "REINDEX INDEX h_a" "REINDEX INDEX h_b" >/dev/null
 check "the heap-free read, the checked read and the heap give one answer after the rounds" differential
-intact() { [[ $(ntrig) == 4 ]] && complete; }
-check "... both indexes are complete with the two triggers each" intact
+intact() { [[ $(ntrig) == "$TRIG" ]] && complete; }
+check "... both indexes are complete with the triggers their builds made" intact
 
 # 3. triggers that are not what the option made: the REINDEX makes them again
 sql n "ALTER TABLE h DISABLE TRIGGER ALL" "REINDEX INDEX h_a" >/dev/null

@@ -32,7 +32,8 @@ BEGIN
   END LOOP;
   RETURN n;
 END \$\$"
-# the indexes of the partitions: how many track and read without the heap; the track_changes triggers: two on each partition and two of its parent for each
+# the indexes of the partitions: how many track and read without the heap; the track_changes triggers (Format 1: two on each partition and two of its parent for each,
+# Format 2: one on each partition), which a restore makes as the source has them
 TRACKED="SELECT count(*) FILTER (WHERE (SELECT track_changes FROM sift.col_tracking(c.oid))) || ',' || count(*) FILTER (WHERE (SELECT heap_free FROM sift.col_tracking(c.oid))) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relkind = 'i'"
 TRIGGERS="SELECT count(*) FROM pg_trigger WHERE tgfoid = 'sift.col_track_old_rows'::regproc"
 state() { dbq "$1" "$CHECK_FN" "SELECT differing()" "$TRACKED" "$TRIGGERS" | tail -n 3 | tr '\n' ' '; }
@@ -53,23 +54,24 @@ fresh() { dbq "$(node_db r)" "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >
 } >"$D/setup.sql"
 fresh src
 psql -X -q -v ON_ERROR_STOP=1 "${S[@]}" -d src -f "$D/setup.sql" >/dev/null || bail "setup failed"
-WANT="0 $LEAVES,$LEAVES $((LEAVES * 4)) "
-check "the source: $LEAVES tracked partition indexes, none stale, every one reads without the heap, 4 triggers each" test "$(state src)" == "$WANT"
+WANT=$(state src)
+check "the source: $LEAVES tracked partition indexes, none stale, every one reads without the heap, with triggers on every partition" \
+	test "${WANT% * }" == "0 $LEAVES,$LEAVES" -a "$(cut -d" " -f3 <<<"$WANT")" -ge "$LEAVES"
 pg_dump "${S[@]}" -Fc -f "$D/src.custom" src
 pg_dump "${S[@]}" -Fp -f "$D/src.sql" src
 
 fresh r1
-check "pg_restore, serial: no error, tracked with the triggers of the parents, as the heap" test "$(pg_restore "${S[@]}" -d r1 "$D/src.custom" 2>&1 | errors)" == 0 -a "$(state r1)" == "$WANT"
+check "pg_restore, serial: no error, tracked with the triggers of the source, as the heap" test "$(pg_restore "${S[@]}" -d r1 "$D/src.custom" 2>&1 | errors)" == 0 -a "$(state r1)" == "$WANT"
 
 ok_runs=0
 for run in 1 2 3 4 5; do
 	fresh rp
 	[[ $(pg_restore "${S[@]}" -j8 -d rp "$D/src.custom" 2>&1 | errors) == 0 && $(state rp) == "$WANT" ]] && ok_runs=$((ok_runs + 1))
 done
-check "pg_restore -j8, five runs: no error, tracked with the triggers of the parents, as the heap" test "$ok_runs" == 5
+check "pg_restore -j8, five runs: no error, tracked with the triggers of the source, as the heap" test "$ok_runs" == 5
 
 fresh r2
-check "pg_dump | psql: no error, tracked with the triggers of the parents, as the heap" test "$(psql -X -q "${S[@]}" -d r2 -f "$D/src.sql" 2>&1 | errors)" == 0 -a "$(state r2)" == "$WANT"
+check "pg_dump | psql: no error, tracked with the triggers of the source, as the heap" test "$(psql -X -q "${S[@]}" -d r2 -f "$D/src.sql" 2>&1 | errors)" == 0 -a "$(state r2)" == "$WANT"
 
 # the indexes before the keys: the order of pg_upgrade's restore
 for sec in pre-data data post-data; do pg_dump "${S[@]}" -Fp --section=$sec -f "$D/$sec.sql" src; done
