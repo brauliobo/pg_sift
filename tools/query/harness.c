@@ -24,6 +24,14 @@
 #include "test/common/pgshim.h"
 #include "core/testrng.h"
 
+volatile sig_atomic_t InterruptPending = false;
+
+void
+ProcessInterrupts(void)
+{
+	InterruptPending = false;
+}
+
 void
 check_stack_depth(void)
 {
