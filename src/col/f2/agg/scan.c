@@ -626,7 +626,7 @@ part_dict_offer(void *arg, const SiftPartDesc *d, const SiftGranuleDict *dicts)
 	return true;
 }
 
-/* The place among the scan's columns of the first sort column of a row Top-N */
+/* The place among the scan's columns of the first sort column of a row Top-N, -1 when the sort key is computed from a column (a date bin) and no column of the scan holds its values */
 static int
 rows_bound_leaf(const V6Scan *s)
 {
@@ -635,8 +635,7 @@ rows_bound_leaf(const V6Scan *s)
 	for (int i = 0; i < s->ncols; i++)
 		if (&s->cols[i].vec == key)
 			return i;
-	SIFT_INVARIANT(false, "the sort column of a row Top-N is a column of the scan");
-	return 0;
+	return -1;
 }
 
 /* Whether the rows of a part reach the threads as the scan reaches its own consumer: the part is all-visible, so that no row of it needs a look at the heap */
@@ -675,7 +674,12 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	sift_f2_scan_set_part_dict_sink(scan, part_dict_offer);
 	sift_f2_scan_set_zone_sink(scan, zone_offer);
 	if (s->rows != NULL && s->group == NULL && sift_v6_rows_bound(s->rows) != NULL)
-		sift_f2_scan_set_bound(scan, rows_bound_leaf(s), sift_v6_rows_bound(s->rows));
+	{
+		const int	leaf = rows_bound_leaf(s);
+
+		if (leaf >= 0)
+			sift_f2_scan_set_bound(scan, leaf, sift_v6_rows_bound(s->rows));
+	}
 	if (s->preagg != NULL)
 		sift_f2_scan_set_gran_sink(scan, sift_v6_preagg_try_granule, s->preagg);
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
