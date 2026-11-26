@@ -161,7 +161,7 @@ static int
 f2_card_leaf(Oid relid, int col)
 {
 	Relation	irel = index_open(sift_rel_must_exist(relid), AccessShareLock);
-	const int	leaf = sift_col_rel(irel)->first[col + 1];
+	const int	leaf = col >= 0 && col < sift_col_rel(irel)->natts ? sift_col_rel(irel)->first[col + 1] : -1;
 
 	index_close(irel, NoLock);
 	return leaf;
