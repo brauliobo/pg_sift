@@ -178,7 +178,24 @@ table_compare(const SiftHybridStoreRef *store, OpExpr *op)
 	return (Expr *) q;
 }
 
-/* The qual as the store of a sift_table decides it (a comparison with a constant, a NULL test, the column on the left), NULL when it does not */
+/* An IN list of constants on a column of a sift_table: the store takes it as one array key of equalities */
+static Expr *
+table_in_list(const SiftHybridStoreRef *store, ScalarArrayOpExpr *sa)
+{
+	Node	   *l = linitial(sa->args),
+			   *r = lsecond(sa->args);
+	int			col = table_column(store, l);
+
+	if (!sa->useOr || col < 0 || !table_col_exact(store, col + 1) || !IsA(r, Const) || ((Const *) r)->constisnull ||
+		get_element_type(((Const *) r)->consttype) != exprType(l) ||
+		get_op_opfamily_strategy(sa->opno, store->tsch.att_opfamily[col + 1]) != BTEqualStrategyNumber)
+		return NULL;
+	sa = copyObject(sa);
+	linitial(sa->args) = strip_relabel(l);
+	return (Expr *) sa;
+}
+
+/* The qual as the store of a sift_table decides it (a comparison with a constant, an IN list, a NULL test, the column on the left), NULL when it does not */
 static Expr *
 table_qual(const SiftHybridStoreRef *store, Expr *clause)
 {
@@ -188,6 +205,8 @@ table_qual(const SiftHybridStoreRef *store, Expr *clause)
 	{
 		case T_OpExpr:
 			return table_compare(store, (OpExpr *) clause);
+		case T_ScalarArrayOpExpr:
+			return table_in_list(store, (ScalarArrayOpExpr *) clause);
 		case T_NullTest:
 			nt = (NullTest *) clause;
 			if (nt->argisrow || table_column(store, (Node *) nt->arg) < 0 || !table_col_exact(store, ((Var *) strip_relabel((Node *) nt->arg))->varattno))

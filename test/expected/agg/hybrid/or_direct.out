@@ -56,28 +56,28 @@ FROM (VALUES
 	(10, 'SELECT count(*), sum(amt) FROM @T WHERE (body @@> ''rareterm'' OR amt > 110.5)')
 ) w(n, w), (VALUES ('da_col'), ('da_tbl')) t(t);
 SELECT n, tbl, (da_same(body)).* FROM da_q ORDER BY n, tbl;
- n  |  tbl   |            node             | rows | diff 
-----+--------+-----------------------------+------+------
-  1 | da_col | SiftHybridAgg OR            |    3 |    0
-  1 | da_tbl | SiftHybridAgg OR            |    3 |    0
-  2 | da_col | SiftHybridAgg OR            |    1 |    0
-  2 | da_tbl | SiftHybridAgg OR            |    1 |    0
-  3 | da_col | SiftHybridAgg OR            |    2 |    0
-  3 | da_tbl | SiftHybridAgg OR            |    2 |    0
-  4 | da_col | SiftHybridAgg OR            |    3 |    0
-  4 | da_tbl | SiftHybridAgg OR            |    3 |    0
-  5 | da_col | SiftHybridAgg OR            |    1 |    0
-  5 | da_tbl | SiftHybridAgg OR            |    1 |    0
-  6 | da_col | SiftHybridAgg OR            |    3 |    0
-  6 | da_tbl | SiftHybridAgg OR            |    3 |    0
-  7 | da_col | SiftHybridAgg OR            |    1 |    0
-  7 | da_tbl | SiftHybridAgg OR            |    1 |    0
-  8 | da_col | SiftHybridAgg OR            |    3 |    0
-  8 | da_tbl | Aggregate above the scan    |    3 |    0
-  9 | da_col | Aggregate above the scan OR |    3 |    0
-  9 | da_tbl | Aggregate above the scan OR |    3 |    0
- 10 | da_col | SiftHybridAgg OR            |    1 |    0
- 10 | da_tbl | SiftHybridAgg OR            |    1 |    0
+ n  |  tbl   |       node       | rows | diff 
+----+--------+------------------+------+------
+  1 | da_col | SiftHybridAgg OR |    3 |    0
+  1 | da_tbl | SiftHybridAgg OR |    3 |    0
+  2 | da_col | SiftHybridAgg OR |    1 |    0
+  2 | da_tbl | SiftHybridAgg OR |    1 |    0
+  3 | da_col | SiftHybridAgg OR |    2 |    0
+  3 | da_tbl | SiftHybridAgg OR |    2 |    0
+  4 | da_col | SiftHybridAgg OR |    3 |    0
+  4 | da_tbl | SiftHybridAgg OR |    3 |    0
+  5 | da_col | SiftHybridAgg OR |    1 |    0
+  5 | da_tbl | SiftHybridAgg OR |    1 |    0
+  6 | da_col | SiftHybridAgg OR |    3 |    0
+  6 | da_tbl | SiftHybridAgg OR |    3 |    0
+  7 | da_col | SiftHybridAgg OR |    1 |    0
+  7 | da_tbl | SiftHybridAgg OR |    1 |    0
+  8 | da_col | SiftHybridAgg OR |    3 |    0
+  8 | da_tbl | SiftHybridAgg OR |    3 |    0
+  9 | da_col | SiftHybridAgg OR |    3 |    0
+  9 | da_tbl | SiftHybridAgg OR |    3 |    0
+ 10 | da_col | SiftHybridAgg OR |    1 |    0
+ 10 | da_tbl | SiftHybridAgg OR |    1 |    0
 (20 rows)
 
 -- the plan is the one node, and EXPLAIN says it folds the OR
@@ -105,38 +105,38 @@ UPDATE da_col SET tenant = 5, body = 'moved seven' WHERE id % 1000 = 7;
 UPDATE da_tbl SET tenant = 5, body = 'moved seven' WHERE id % 1000 = 7;
 DELETE FROM da_col WHERE id % 900 = 0;
 SELECT n, tbl, (da_same(body)).* FROM da_q ORDER BY n, tbl;
- n  |  tbl   |            node             | rows | diff 
-----+--------+-----------------------------+------+------
-  1 | da_col | SiftHybridAgg OR            |    6 |    0
-  1 | da_tbl | SiftHybridAgg OR            |    6 |    0
-  2 | da_col | SiftHybridAgg OR            |    1 |    0
-  2 | da_tbl | SiftHybridAgg OR            |    1 |    0
-  3 | da_col | SiftHybridAgg OR            |   11 |    0
-  3 | da_tbl | SiftHybridAgg OR            |   11 |    0
-  4 | da_col | SiftHybridAgg OR            |    6 |    0
-  4 | da_tbl | SiftHybridAgg OR            |    6 |    0
-  5 | da_col | SiftHybridAgg OR            |    1 |    0
-  5 | da_tbl | SiftHybridAgg OR            |    1 |    0
-  6 | da_col | SiftHybridAgg OR            |    6 |    0
-  6 | da_tbl | SiftHybridAgg OR            |    6 |    0
-  7 | da_col | SiftHybridAgg OR            |    1 |    0
-  7 | da_tbl | SiftHybridAgg OR            |    1 |    0
-  8 | da_col | SiftHybridAgg OR            |    3 |    0
-  8 | da_tbl | Aggregate above the scan    |    3 |    0
-  9 | da_col | Aggregate above the scan OR |    3 |    0
-  9 | da_tbl | Aggregate above the scan OR |    3 |    0
- 10 | da_col | SiftHybridAgg OR            |    1 |    0
- 10 | da_tbl | SiftHybridAgg OR            |    1 |    0
+ n  |  tbl   |       node       | rows | diff 
+----+--------+------------------+------+------
+  1 | da_col | SiftHybridAgg OR |    6 |    0
+  1 | da_tbl | SiftHybridAgg OR |    6 |    0
+  2 | da_col | SiftHybridAgg OR |    1 |    0
+  2 | da_tbl | SiftHybridAgg OR |    1 |    0
+  3 | da_col | SiftHybridAgg OR |   11 |    0
+  3 | da_tbl | SiftHybridAgg OR |   11 |    0
+  4 | da_col | SiftHybridAgg OR |    6 |    0
+  4 | da_tbl | SiftHybridAgg OR |    6 |    0
+  5 | da_col | SiftHybridAgg OR |    1 |    0
+  5 | da_tbl | SiftHybridAgg OR |    1 |    0
+  6 | da_col | SiftHybridAgg OR |    6 |    0
+  6 | da_tbl | SiftHybridAgg OR |    6 |    0
+  7 | da_col | SiftHybridAgg OR |    1 |    0
+  7 | da_tbl | SiftHybridAgg OR |    1 |    0
+  8 | da_col | SiftHybridAgg OR |    3 |    0
+  8 | da_tbl | SiftHybridAgg OR |    3 |    0
+  9 | da_col | SiftHybridAgg OR |    3 |    0
+  9 | da_tbl | SiftHybridAgg OR |    3 |    0
+ 10 | da_col | SiftHybridAgg OR |    1 |    0
+ 10 | da_tbl | SiftHybridAgg OR |    1 |    0
 (20 rows)
 
 VACUUM da_col;
 SELECT n, tbl, (da_same(body)).* FROM da_q WHERE tbl = 'da_col' AND n IN (1, 2, 9, 10) ORDER BY n;
- n  |  tbl   |            node             | rows | diff 
-----+--------+-----------------------------+------+------
-  1 | da_col | SiftHybridAgg OR            |    6 |    0
-  2 | da_col | SiftHybridAgg OR            |    1 |    0
-  9 | da_col | Aggregate above the scan OR |    3 |    0
- 10 | da_col | SiftHybridAgg OR            |    1 |    0
+ n  |  tbl   |       node       | rows | diff 
+----+--------+------------------+------+------
+  1 | da_col | SiftHybridAgg OR |    6 |    0
+  2 | da_col | SiftHybridAgg OR |    1 |    0
+  9 | da_col | SiftHybridAgg OR |    3 |    0
+ 10 | da_col | SiftHybridAgg OR |    1 |    0
 (4 rows)
 
 BEGIN;
@@ -144,12 +144,12 @@ INSERT INTO da_col VALUES (40001, 5, 2, 'r1', 3.5, 4.5, 'rareterm inside'), (400
 UPDATE da_col SET body = 'rareterm updated' WHERE id = 10;
 DELETE FROM da_col WHERE id = 20;
 SELECT n, tbl, (da_same(body)).* FROM da_q WHERE tbl = 'da_col' AND n IN (1, 2, 5, 9) ORDER BY n;
- n |  tbl   |            node             | rows | diff 
----+--------+-----------------------------+------+------
- 1 | da_col | SiftHybridAgg OR            |    6 |    0
- 2 | da_col | SiftHybridAgg OR            |    1 |    0
- 5 | da_col | SiftHybridAgg OR            |    1 |    0
- 9 | da_col | Aggregate above the scan OR |    3 |    0
+ n |  tbl   |       node       | rows | diff 
+---+--------+------------------+------+------
+ 1 | da_col | SiftHybridAgg OR |    6 |    0
+ 2 | da_col | SiftHybridAgg OR |    1 |    0
+ 5 | da_col | SiftHybridAgg OR |    1 |    0
+ 9 | da_col | SiftHybridAgg OR |    3 |    0
 (4 rows)
 
 ROLLBACK;
