@@ -106,6 +106,8 @@ extern Oid sift_v6_plan_opfamily(const V6Plan *p, int att);
 
 /* plan_qual.c: the quals of the index scan; the index holds every row the statement reads; the quals of the statement compiled into p->spec (false: the scan cannot decide one) */
 extern Expr *sift_v6_index_qual(V6Plan *p, Expr *clause);
+/* the comparison of one column the clause implies when it is no index qual itself (a row comparison, a coalesce, a nullif, IS NOT DISTINCT FROM), NULL for none (agg/plan/prednorm.c) */
+extern Expr *sift_v6_implied_qual(PlannerInfo *root, Expr *clause);
 extern bool sift_v6_index_complete(const V6Plan *p);
 extern bool sift_v6_compile_quals(V6Plan *p);
 

@@ -620,12 +620,14 @@ sift_collation_deterministic(Oid collid)
 #define ROWCMP_LT	COMPARE_LT
 #define ROWCMP_LE	COMPARE_LE
 #define ROWCMP_GT	COMPARE_GT
+#define ROWCMP_GE	COMPARE_GE
 #else
 #define ROWCMP_KIND(rc)	((rc)->rctype)
 #define ROWCMP_EQ	ROWCOMPARE_EQ
 #define ROWCMP_LT	ROWCOMPARE_LT
 #define ROWCMP_LE	ROWCOMPARE_LE
 #define ROWCMP_GT	ROWCOMPARE_GT
+#define ROWCMP_GE	ROWCOMPARE_GE
 #endif
 
 /* The cast of a JSON null to a number or a boolean is NULL from 18 and an error before */

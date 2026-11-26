@@ -246,6 +246,17 @@ unsafe_initplan_walker(Node *n, PlannerInfo *root)
 	return expression_tree_walker(n, unsafe_initplan_walker, root);
 }
 
+/* the index qual a batch qual implies: the scan prunes its units by it too */
+static void
+add_implied_qual(V6Plan *p, Expr *clause)
+{
+	Expr	   *implied = p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_implied_qual(p->root, clause);
+	Expr	   *q = implied == NULL ? NULL : sift_v6_index_qual(p, implied);
+
+	if (q != NULL)
+		p->spec.indexqual = lappend(p->spec.indexqual, q);
+}
+
 bool
 sift_v6_compile_quals(V6Plan *p)
 {
@@ -269,7 +280,10 @@ sift_v6_compile_quals(V6Plan *p)
 		q = ri->pseudoconstant || p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_index_qual(p, ri->clause);
 		jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(&rel, ri->clause);
 		if (q == NULL && jq == NIL && qual_batch(p, ri))
+		{
+			add_implied_qual(p, ri->clause);
 			continue;
+		}
 		if (q == NULL && jq == NIL)
 		{
 			sift_agg_arm_refused("single", AGG_REFUSE_WHERE);

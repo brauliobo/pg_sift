@@ -67,6 +67,19 @@ BEGIN
 END $$;
 SELECT 'near the start' AS key, p.* FROM page_units(100, 10) p UNION ALL SELECT 'far in the table', p.* FROM page_units(9000, 10) p;
 
-DROP FUNCTION page_units(int, int), same(text);
+-- the leading column of a row comparison, the column of a coalesce whose default fails and of a nullif, and IS NOT DISTINCT FROM a constant prune the granules of the scan as the
+-- comparison of the column does (an expression of the column prunes none), and the rows are those of the normal plan
+CREATE FUNCTION scanned(cond text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; g int;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT sum(c) FROM rc WHERE ' || cond LOOP
+		g := coalesce(substring(l from 'Granules: scanned=(\d+)')::int, g);
+	END LOOP;
+	RETURN g;
+END $$;
+SELECT cond, scanned(cond) < scanned('(id + 0, a) > (9000, 0)') AS pruned, s.engaged_or_empty, s.vs_normal_plan
+FROM unnest(ARRAY['(id, a) > (9000, 0)', '(id, b) <= (300, 2)', 'coalesce(id, -1) > 9000', 'nullif(id, 3) < 300', 'id IS NOT DISTINCT FROM 9000']) WITH ORDINALITY u(cond, i),
+	LATERAL same(cond) s ORDER BY i;
+DROP FUNCTION page_units(int, int), same(text), scanned(text);
 DROP TABLE rc_q, rc;
 DROP EXTENSION pg_sift;
