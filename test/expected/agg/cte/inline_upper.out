@@ -7,9 +7,10 @@ SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, metrics jsonb NOT NULL, payload jsonb);
 INSERT INTO events
-SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360), jsonb_build_object('m_total', (g % 9) + 1, 'catg_a', (g % 10) + 1, 'catg_b_x', (g * 3 % 10) + 1),
+SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360),
+       ('{"m_total": ' || ((g % 9) + 1)::text || ', "catg_a": ' || ((g % 10) + 1)::text || ', "catg_b_x": ' || ((g * 3 % 10) + 1)::text || '}')::jsonb,
        CASE WHEN g % 13 = 0 THEN NULL
-            ELSE jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || chr(97 + (g + j) % 4), 'score', (g * j) % 10)) FROM generate_series(1, 1 + g % 3) j)) END
+            ELSE ('{"parts": [' || (SELECT string_agg('{"cat": "cat_' || chr(97 + (g + j) % 4) || '", "score": ' || ((g * j) % 10)::text || '}', ', ') FROM generate_series(1, 1 + g % 3) j) || ']}')::jsonb END
 FROM generate_series(1, 30000) g;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, ts, metrics, payload) WITH (paths = 'metrics.* float8, payload.parts[]{cat text, score float8}');
 CREATE TABLE dims (id int PRIMARY KEY, kind text NOT NULL);

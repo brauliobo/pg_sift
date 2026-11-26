@@ -11,10 +11,10 @@ CREATE TABLE facts (id int PRIMARY KEY, parent_id int, bucket int, doc jsonb) WI
 INSERT INTO facts
 SELECT i, i % 23, i % 3,
        CASE WHEN i % 17 = 0 THEN NULL
-            ELSE jsonb_build_object('parts', coalesce((SELECT jsonb_agg(jsonb_build_object('kind', (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + (i + j) % 4],
-                                                                                          'dir_a', CASE WHEN (i + j) % 5 = 0 THEN NULL ELSE (ARRAY['type_a', 'type_b'])[1 + (i + j) % 2] END,
-                                                                                          'score', CASE WHEN (i + j) % 11 = 0 THEN NULL ELSE (i * j) % 10 END))
-                                                       FROM generate_series(1, i % 6) j), '[]')) END
+            ELSE ('{"parts": [' || coalesce((SELECT string_agg('{"kind": "' || (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + (i + j) % 4] ||
+                                                               '", "dir_a": ' || CASE WHEN (i + j) % 5 = 0 THEN 'null' ELSE '"' || (ARRAY['type_a', 'type_b'])[1 + (i + j) % 2] || '"' END ||
+                                                               ', "score": ' || CASE WHEN (i + j) % 11 = 0 THEN 'null' ELSE ((i * j) % 10)::text END || '}', ', ')
+                                                FROM generate_series(1, i % 6) j), '') || ']}')::jsonb END
 FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, bucket, doc) WITH (paths = 'doc.parts[]{kind text, dir_a text, score float8}');
 VACUUM ANALYZE facts;
