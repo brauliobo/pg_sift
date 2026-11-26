@@ -798,15 +798,17 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 typedef struct DependentCols
 {
 	List	   *keys;
+	List	   *grouped;
 } DependentCols;
 
-/* a column the output reads that is no key and no argument of an aggregate: PostgreSQL allows it only when the keys decide it (a primary key), so it is one more key that splits no group */
+/* a column the output reads that is no key and no argument of an aggregate: PostgreSQL allows it only when the keys decide it (a primary key), so it is one more key that splits no group.
+ * So is a key of the statement PostgreSQL dropped (a constant of its equivalence class): it is the key, not the columns it reads, which may split its groups */
 static bool
 dependent_cols(Node *n, DependentCols *c)
 {
 	if (n == NULL || list_member(c->keys, n) || IsA(n, Aggref) || IsA(n, GroupingFunc) || IsA(n, WindowFunc))
 		return false;
-	if (IsA(n, Var) && ((Var *) n)->varlevelsup == 0)
+	if ((IsA(n, Var) && ((Var *) n)->varlevelsup == 0) || list_member(c->grouped, n))
 	{
 		c->keys = lappend(c->keys, n);
 		return false;
@@ -818,7 +820,7 @@ List *
 sift_v6_group_exprs_of(PlannerInfo *root)
 {
 	const PathTarget *target = root->upper_targets[UPPERREL_GROUP_AGG];
-	DependentCols c = {NIL};
+	DependentCols c = {NIL, get_sortgrouplist_exprs(root->parse->groupClause, root->parse->targetList)};
 
 	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
 		c.keys = lappend(c.keys, get_sortgroupclause_expr(sgc, root->parse->targetList));
