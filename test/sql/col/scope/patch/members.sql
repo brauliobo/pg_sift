@@ -1,15 +1,13 @@
--- The patch of a scope read (the entity rows of the members whose pairs changed since the stamp, copied for each pair of the key) costs the same for an integer, a text and a uuid member: it looks at the
--- member leaf of the entity units and decodes only the rows of the members that changed, with their addresses and the columns the read uses, and the member leaf is not copied unless the read uses it.
--- Each read is md5 equal to the plain join, the patch has the rows of the changed members, and the blocks the read hits stay within the figure of the cell (a decode of every row, or of every leaf, hits more).
+-- A read of a key whose members got their pairs after the scope summary is the same for an integer, a text and a uuid member: the summary takes the members the journal names as the changes since
+-- it (Scope Cube: delta). Each read is md5 equal through the scope node, through sift with sift.agg_scope off and through the normal plan.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
--- 600 members of 100 facts in 12 units, 40 keys of one or two members in three; the pairs of 75 members (one in eight) get the key 17 after the stamp
+-- 600 members of 100 facts, 40 keys of one or two members in three; the pairs of 75 members (one in eight) get the key 17 after the build
 CREATE FUNCTION tables(typ text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
 	sqltype text := CASE typ WHEN 'int' THEN 'int' WHEN 'text' THEN 'text' ELSE 'uuid' END;
@@ -28,45 +26,32 @@ VACUUM (FREEZE, ANALYZE) facts_int, pairs_int, facts_text, pairs_text, facts_uui
 SELECT format('CREATE INDEX facts_%1$s_col ON facts_%1$s USING sift_col (id, m, at, v) WITH (scope = ''k: m -> pairs_%1$s(m, k)'')', t) FROM unnest(ARRAY['int', 'text', 'uuid']) t \gexec
 VACUUM (FREEZE, ANALYZE) facts_int, facts_text, facts_uuid;
 
--- the cells: after the stamp, the pairs of one member in eight get the key 17
+-- the cells: after the build, the pairs of one member in eight get the key 17
 INSERT INTO pairs_int SELECT m, 17 FROM generate_series(1, 600) m WHERE m % 8 = 1 ON CONFLICT DO NOTHING;
 INSERT INTO pairs_text SELECT 'member-' || m, 17 FROM generate_series(1, 600) m WHERE m % 8 = 1 ON CONFLICT DO NOTHING;
 INSERT INTO pairs_uuid SELECT md5(m::text)::uuid, 17 FROM generate_series(1, 600) m WHERE m % 8 = 1 ON CONFLICT DO NOTHING;
 
-CREATE FUNCTION cell(typ text, OUT same_rows boolean, OUT patched_units int, OUT delta_rows int, OUT hit int) LANGUAGE plpgsql AS $$
+CREATE FUNCTION cell(typ text, OUT same_rows boolean, OUT route text, OUT cube text) LANGUAGE plpgsql AS $$
 DECLARE
-	q text := format('SELECT count(*), sum(v) FROM facts_%1$s e WHERE e.m IN (SELECT m FROM pairs_%1$s WHERE k = 17)', typ);
-	l text;
+	q text := format('SELECT count(*), sum(v) FROM facts_%1$s e JOIN pairs_%1$s p ON p.m = e.m WHERE p.k = 17', typ);
+	p jsonb;
 	a text;
 	b text;
+	c text;
 BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
 	EXECUTE q INTO a;
-	EXECUTE q INTO a;
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Scope Patched Units' THEN patched_units := regexp_replace(l, '\D', '', 'g'); END IF;
-		IF l ~ 'Scope Delta Rows' THEN delta_rows := regexp_replace(l, '\D', '', 'g'); END IF;
-		IF l ~ 'Buffers: shared hit' AND hit IS NULL THEN hit := (regexp_match(l, 'hit=(\d+)'))[1]; END IF;
-	END LOOP;
-	EXECUTE q INTO b;
 	PERFORM set_config('sift.agg_scope', 'off', true);
-	EXECUTE q INTO a;
-	PERFORM set_config('sift.agg_scope', 'on', true);
-	same_rows := a = b;
+	EXECUTE q INTO b;
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE q INTO c;
+	PERFORM set_config('sift.agg_scope', 'on', true), set_config('sift.enable_agg', 'on', true);
+	same_rows := a = b AND b = c;
+	route := jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
+	cube := jsonb_path_query_first(p, '$.**."Scope Cube"') #>> '{}';
 END $$;
--- a server built with CATCACHE_FORCE_RELEASE reads the catalog again at every lookup: a hundred lookups of a type hit buffers there and none in another build, and the read hits 150 to 190 blocks for the same plan
-CREATE FUNCTION catalog_reread() RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(format_type(23, NULL)) FROM generate_series(1, 100)' LOOP
-		IF l ~ 'Buffers: shared hit' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
-SELECT catalog_reread() AS catalog_reread \gset
-SELECT t AS member_type, c.same_rows, c.patched_units, c.delta_rows, c.hit <= CASE WHEN :'catalog_reread' THEN 200 ELSE 75 END AS hits_within_the_cell FROM unnest(ARRAY['int', 'text', 'uuid']) t, LATERAL cell(t) c;
+SELECT t AS member_type, c.* FROM unnest(ARRAY['int', 'text', 'uuid']) t, LATERAL cell(t) c;
 
-DROP FUNCTION cell, tables, catalog_reread;
+DROP FUNCTION cell, tables;
 DROP TABLE facts_int, facts_text, facts_uuid, pairs_int, pairs_text, pairs_uuid CASCADE;
-DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
