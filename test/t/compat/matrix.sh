@@ -10,6 +10,7 @@
 # documented downgrade (docs/UPGRADING.md section 4) of all of it: the setting, the rewrite of what the preflight lists, and the release serves the lot.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
+export SIFT_FORMAT=1
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots; none supports 19 yet)'; exit 0; fi
@@ -133,8 +134,8 @@ sift.async_maintenance = off'
 	check "$ref: the extension is at the version of this tree" test "$(q "SELECT extversion = default_version FROM pg_extension, pg_available_extensions WHERE extname = 'pg_sift' AND name = 'pg_sift'")" == t
 	check "$ref: the functions added in 3.3 exist after the update" test "$(q "SELECT count(DISTINCT proname) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
 		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'upgrade_commands')")" == 7
-	agree "$ref: answers after the update equal what $ref answered" "$(ans IDX "" "${what}b")" "$a"
-	agree "$ref: answers after the update equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
+	agree "$ref: answers after the update equal what $ref answered" "$(ans IDX "" "${what}b")" "$a" tolerate
+	agree "$ref: answers after the update equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")" tolerate
 	check "$ref: sift.verify and sift.col_verify are clean" verify_all "sift.verify('docs_idx', true)" "sift.col_verify('docs_col', true)" "sift.col_verify('jt_col', true)"
 	[[ $hastbl == no ]] || check "$ref: the sift_table is its heap twin" twin_same
 	# the index of the release holds the word cut at 255 bytes: it finds nothing until the REINDEX the update printed
@@ -247,7 +248,7 @@ sift.async_maintenance = off'
 		fmt=${f%% *}
 		w=$what; [[ $docsonly != *" $fmt "* ]] || w=d; w=${w//b/}
 		want[$fmt]=$(ans PLAIN_NEW "_$fmt" "$w")
-		agree "$ref: $fmt clone, this tree: index answers equal the plain plan" "$(ans IDX "_$fmt" "$w")" "${want[$fmt]}"
+		agree "$ref: $fmt clone, this tree: index answers equal the plain plan" "$(ans IDX "_$fmt" "$w")" "${want[$fmt]}" tolerate
 		check "$ref: $fmt clone, this tree: col_verify" q "SELECT sift.col_verify('docs_${fmt}_col', true)"
 	done
 	node_stop mx

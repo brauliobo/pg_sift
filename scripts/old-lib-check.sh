@@ -48,6 +48,8 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 # the column format a feature introduced, from the constant of the tree (src/col/api/format.h): no minor is written in this script, so that a feature that raises one cannot leave it behind
 colfmt() { sed -n "s/^#define SIFT_COL_FORMAT_$1[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p" "$REPO/src/col/api/format.h"; }
 PG="$REPO/scripts/pgtest.sh"
+# the tree under test builds Format 1, the only format the older libraries read
+export SIFT_FORMAT=1
 OLD_REF=${SIFT_OLD_REF:-v3.0.1}
 ROWS=${ROWS:-40000}
 FORMAT_ERROR='on-disk format 1\.3|column format 1\.4'
@@ -71,6 +73,7 @@ build() {
 		rev=$(git -C "$REPO" rev-parse --verify -q --short "$OLD_REF^{commit}") || skip "no $OLD_REF in this repository"
 	fi
 	[[ -z ${SIFT_OLD_PATCH:-} ]] || rev=$rev-$("$REPO/scripts/sha256.sh" "$SIFT_OLD_PATCH" | cut -c1-8)
+	[[ $(pg_config --configure) != *--enable-cassert* ]] || rev=$rev-assert
 	dir=${SIFT_OLD_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib/$rev}
 	if [[ ! -f $dir/root/.flavor ]]; then
 		mkdir -p "$dir/src"
@@ -85,7 +88,7 @@ build() {
 			# CPATH and LIBRARY_PATH carry the directories of pg_config's flags to a release whose Makefile does not (lz4 and zstd of Homebrew): else it is built
 			# without them and cannot read the chunks this tree writes
 			( cd "$dir/src" && CPATH=$(pg_config --cppflags | tr ' ' '\n' | sed -n 's/^-I//p' | paste -sd: -) LIBRARY_PATH=$(pg_config --ldflags | tr ' ' '\n' | sed -n 's/^-L//p' | paste -sd: -) \
-				SIFT_TMP=$dir SIFT_ROOT=$dir/root SIFT_PORT=56100 SIFT_TESTING= SANITIZE= scripts/pgtest.sh install >"$dir/build.log" 2>&1 ) ||
+				SIFT_TMP=$dir SIFT_ROOT=$dir/root SIFT_PORT=56100 SIFT_TESTING= SIFT_FORMAT=2 SANITIZE= scripts/pgtest.sh install >"$dir/build.log" 2>&1 ) ||
 				{ tail -20 "$dir/build.log" >&2; echo "FAIL building $OLD_REF" >&2; exit 1; }
 		fi
 		exec 9>&-
@@ -216,11 +219,12 @@ upgrade() {
 	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
 	OUT=$(psql_new -c "SELECT sift._test_tbl_tagged('up_c') > 0 AND sift._test_tbl_tagged('up_a') > 0")
 	[[ $OUT == t ]] && pass "the older library left groups that carry their writer" || fail "the older library left groups that carry their writer (got [$OUT])"
-	[[ $(psql_new -c "SELECT count(*) || ':' || sum(id) FROM up_c") == "$want" ]] && pass "the committed load is read" || fail "the committed load is read"
-	[[ $(psql_new -c "SELECT count(*) FROM up_a") == 0 ]] && pass "the rolled back load is not" || fail "the rolled back load is not"
-	[[ $(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(id) FROM up_c" | tail -1) == "$want" ]] && pass "... by a plain scan too" || fail "... by a plain scan too"
+	same() { [[ $2 == "$3" ]] && pass "$1" || fail "$1 (got [$2], want [$3])"; }
+	same "the committed load is read" "$(psql_new -c "SELECT count(*) || ':' || sum(id) FROM up_c")" "$want"
+	same "the rolled back load is not" "$(psql_new -c "SELECT count(*) FROM up_a")" 0
+	same "... by a plain scan too" "$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(id) FROM up_c" | tail -1)" "$want"
 	psql_new -c "INSERT INTO up_c VALUES (0, 'new')" >/dev/null
-	[[ $(psql_new -c "SELECT count(*) FROM up_c") == "$((rows + 1))" ]] && pass "the table takes new rows" || fail "the table takes new rows"
+	same "the table takes new rows" "$(psql_new -c "SELECT count(*) FROM up_c")" "$((rows + 1))"
 	psql_new -c "VACUUM up_c" -c "VACUUM up_a" >/dev/null
 	[[ $(psql_new -c "SELECT sift._test_tbl_tagged('up_c') + sift._test_tbl_tagged('up_a')") == 0 ]] && pass "VACUUM freezes the committed groups and drops the rolled back ones" ||
 		fail "VACUUM freezes the committed groups and drops the rolled back ones"
@@ -512,12 +516,12 @@ meta() {
 		-c "CREATE INDEX scope_ix ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)')" \
 		-c "CREATE INDEX plain_ix ON events_plain USING sift_col (id, dim_a_id, created_at, v)" -c "VACUUM (FREEZE, ANALYZE) events, events_plain" >/dev/null ||
 		{ fail "this tree writes the indexes"; "$PG" stop >/dev/null; return; }
-	# rows in the write buffer, and reads that pay for decoding them: what makes the metapage of a plain index longer
+	# rows in the write buffer, and reads that pay for decoding them: the maintenance of the index writes what they paid to its metapage, which makes it longer
 	psql_new -c "INSERT INTO events_plain SELECT i, 1 + i % 210, timestamptz '2026-01-01' + i * interval '1 minute', i % 10 FROM generate_series(20001, 23000) i" >/dev/null
 	want=$(psql_new -c "SET sift.enable_agg = off" -c "$q" | tail -1)
 	wantp=$(psql_new -c "SET sift.enable_agg = off" -c "$qp" | tail -1)
 	for n in 1 2 3; do psql_new -c "SET sift.agg_force = on" -c "SELECT count(*) FROM events_plain WHERE v = $n" -c "SELECT count(*) FROM events WHERE v = $n" >/dev/null; done
-	psql_new -c "SELECT pg_sleep(1)" >/dev/null
+	psql_new -c "SELECT sift.col_maintain('plain_ix')" >/dev/null
 	files=("$data/$(psql_new -c "SELECT pg_relation_filepath('plain_ix')")" "$data/$(psql_new -c "SELECT pg_relation_filepath('scope_ix')")")
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	for file in "${files[@]}"; do
@@ -617,8 +621,8 @@ track() {
 			fail "$t: this tree takes the log of the older library for incomplete, checks the heap and answers as the heap"
 	done
 	[[ $(psql_new -c "SELECT cur_flags FROM sift._test_log_chan('ta_c')") == 1 ]] && pass "the log of the older library has the flags 1" || fail "the log of the older library has the flags 1"
-	# 1. the next VACUUM (sift.async_maintenance is off in this cluster)
-	psql_new -c "VACUUM tb" >/dev/null
+	# 1. the next VACUUM (sift.async_maintenance is off in this cluster; a VACUUM with parallel workers for the index leaves the baseline to one without them)
+	psql_new -c "VACUUM (PARALLEL 0) tb" >/dev/null
 	[[ $(hf tb_c) == t ]] && right tb && [[ $(psql_new -c "SELECT cur_flags FROM sift._test_log_chan('tb_c')") == 3 ]] && pass "tb: the next VACUUM re-baselines the log (flags 3), and the heap-free read is the heap's" || fail "tb: the next VACUUM re-baselines the log (flags 3), and the heap-free read is the heap's"
 	# 2. a read of a table nobody writes or vacuums, with the worker on
 	psql_new -c "ALTER SYSTEM SET sift.async_maintenance = on" -c "SELECT pg_reload_conf()" >/dev/null

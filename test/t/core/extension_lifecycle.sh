@@ -4,6 +4,7 @@
 # extension_control_path directory; 1.0 -> 3.0 and 1.2 -> 3.0 are compared with a fresh 3.0 install, 3.1 -> 3.2 with a fresh 3.2 install, 1.0, 3.0, 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7 and 4.0 -> 4.1 with a fresh install of the version of the tree), installation through extension_control_path and dynamic_library_path
 # alone, and a same-major pg_upgrade that carries the index files over. Every step: sift.verify with
 # heapallindexed and index results equal to a sequential scan.
+export SIFT_FORMAT=1
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 REPO=${SIFT_REPO:?}
@@ -127,7 +128,7 @@ if (( PG_MAJOR >= 18 )); then
 		set -- $(sed 's/--/ /g' <<<"$UPPATH"); while (( $# > 1 )); do [[ -f $SHAREDIR/extension/pg_sift--$1--$2.sql ]] || echo "$1--$2"; shift; done)
 	check "the update path from 1.0 to $EXT is made of real scripts and passes every minor" test "$UPPATH/$MISSING" == "$UPPATH/"
 	# the objects of the extension by description, with the definition of the functions
-	MEMBERS="SELECT pg_describe_object(classid, objid, objsubid) || ' ' || coalesce(CASE classid WHEN 'pg_proc'::regclass THEN pg_get_functiondef(objid) END, '')
+	MEMBERS="SELECT pg_describe_object(classid, objid, objsubid) || ' ' || coalesce(CASE WHEN classid = 'pg_proc'::regclass AND (SELECT prokind FROM pg_proc WHERE oid = objid) <> 'a' THEN pg_get_functiondef(objid) END, '')
 		FROM pg_depend WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e'
 		AND refobjid = (SELECT oid FROM pg_extension WHERE extname = 'pg_sift') ORDER BY 1"
 	q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE TO '3.0'" >/dev/null
@@ -183,7 +184,8 @@ if (( PG_MAJOR >= 18 )); then
 	sed_i "s/^default_version.*/default_version = '4.3'/" "$PAT/next/extension/pg_sift.control"
 	PATHPAT="SET extension_control_path = '$PAT:\$system'" PATHNEXT="SET extension_control_path = '$PAT/next:\$system'"
 	check "the release command writes a step and a script back to 4.2 for each of three patch releases" test "$(ls "$PAT/tree/sql" | wc -l | tr -d " ")" == 6
-	q life postgres "CREATE DATABASE pat" "CREATE DATABASE pat1" "CREATE DATABASE pat2" >/dev/null
+	q life postgres "CREATE DATABASE pat" "CREATE DATABASE pat1" "CREATE DATABASE pat2" "CREATE DATABASE fresh42" >/dev/null
+	q life fresh42 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '4.2'" >/dev/null
 	check "a database is created at the extension version of 4.2.3 through the chain" test "$(q life pat "$PATHPAT" "CREATE EXTENSION pg_sift" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'" | tail -n 1)" == 4.2.3
 	check "a database is created at 4.2.1 through the chain" test "$(q life pat1 "$PATHPAT" "CREATE EXTENSION pg_sift VERSION '4.2.1'" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'" | tail -n 1)" == 4.2.1
 	check "the patch release has the objects of a fresh install" test "$(q life pat "$MEMBERS")" == "$(q life fresh42 "$MEMBERS")"

@@ -5,11 +5,11 @@ format, so the metapage of 5.0 (up to 704 bytes: the floor and the paid reads of
 "sift index is corrupted: Bad metapage" where the format error with its hint belongs, for an index with a scope and for every index that has served a read.
 The bytes past the struct are the extension of a newer build (core/page.h): this build keeps them as they are, and pd_lower is never lowered over them.
 
-Apply to a 4.x source tree with `patch -p1 < v4.x-metapage-tail.patch` (src/core/store/store.c is the same in 4.0.5 to 4.3.5). Not committed to a release branch: it is
+Apply to a 4.x source tree with `patch -p1 < v4.x-metapage-tail.patch` (src/core/store.c is the same in 4.0.5 to 4.3.5). Not committed to a release branch: it is
 the patch a 4.3.6 would carry (scripts/old-lib-check.sh meta builds the releases with and without it).
 
---- a/src/core/store/store.c
-+++ b/src/core/store/store.c
+--- a/src/core/store.c
++++ b/src/core/store.c
 @@ -185,7 +185,8 @@
  	SiftMetaPageData *meta = META(page);
  

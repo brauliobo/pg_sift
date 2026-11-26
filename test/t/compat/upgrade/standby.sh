@@ -7,6 +7,7 @@
 # writes that 5.0 cannot read (the deletion records of a tracked index: column format 52; the key-range pages of a key_cut write buffer: 1.7 with minor 55) must be refused by the older
 # standby with the format error, not read as damage, and the tables of those indexes, which every plan opens, are refused with them; the rest of the zoo is read as before.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+' >&2; exit 1; }
+export SIFT_FORMAT=1
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 . "${SIFT_REPO:?}/test/t/lib/compat.bash"
 REPO=${SIFT_REPO:?}
