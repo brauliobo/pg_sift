@@ -1,7 +1,8 @@
 /*
  * test/unit/col/f2/shard_dir.c - the errors of the hot micro-slab directory (col/f2/l0/shard_dir.c) over pages in memory, where a record that is done is written and one that is not
  * leaves nothing: an allocator that fails in the middle of a batch leaves no request placed, so that the retry the combiner gives every request of it places each once; a commit of
- * the anchor that fails leaves the tails of the directory open, as the writers that go on into it append to them.
+ * the anchor that fails leaves the tails of the directory open, as the writers that go on into it append to them. A flush takes, writes and commits no page while it holds the shard stripes, and
+ * the shared table of the hot partitions gives the entry of a partition that is cold, or that no one uses, to another partition.
  */
 #define SIFT_S49_STANDALONE 1
 #define SIFT_HREF_STANDALONE 1
@@ -33,6 +34,8 @@ typedef struct MemIo
 
 static MemIo mem;
 static sigjmp_buf fail_jmp;
+static bool stripes_held;
+static int	io_under_stripes;
 static SiftL0GcSlot items[NITEMS];
 
 void
@@ -55,11 +58,29 @@ ReadNextFullTransactionId(void)
 uint32
 sift_l0_gc_lock_shards(SiftL0GroupCommit *gc, const RelFileLocator *loc, uint64 part_id, uint32 nshards, uint32 *held)
 {
+	stripes_held = true;
 	return 0;
 }
 
 void
 sift_l0_gc_unlock_shards(SiftL0GroupCommit *gc, const uint32 *held, uint32 nheld)
+{
+	stripes_held = false;
+}
+
+void
+LWLockInitialize(LWLock *lock, int tranche_id)
+{
+}
+
+bool
+LWLockAcquire(LWLock *lock, LWLockMode mode)
+{
+	return true;
+}
+
+void
+LWLockRelease(LWLock *lock)
 {
 }
 
@@ -76,6 +97,7 @@ host_init(char *pg)
 static BlockNumber
 m_alloc(void *ctx)
 {
+	io_under_stripes += stripes_held;
 	if (mem.allocs_left == 0)
 		siglongjmp(fail_jmp, 1);
 	if (mem.allocs_left > 0)
@@ -111,6 +133,7 @@ m_page(void *ctx, BlockNumber blk, SiftPageType type, bool full)
 static void
 m_done(void *ctx)
 {
+	io_under_stripes += stripes_held;
 	for (int i = 0; i < mem.nwork; i++)
 		memcpy(mem.page[mem.wblk[i]].data, mem.work[i].data, BLCKSZ);
 	mem.nwork = 0;
@@ -229,10 +252,105 @@ test_failed_anchor_leaves_tails_open(void)
 		SIFT_CHECKF((SIFT_L0_SL(mem.page[d.slab_tail[s]].data)->flags & SIFT_L0_SLAB_NOCRC_OPEN) != 0, "the tail of shard %u takes appends", s);
 }
 
+static void
+note_anchor(void *ctx, BlockNumber anchor)
+{
+	io_under_stripes += stripes_held;
+	*(BlockNumber *) ctx = anchor;
+}
+
+static void
+test_flush_holds_no_stripe_across_io(void)
+{
+	SiftL0ShardShm shm;
+	BlockNumber dir = fresh_dir(&shm);
+	SiftL0ShardCtx c = {.io = &io,.shm = &shm};
+	SiftL0Flush f = {.io = &io,.shm = &shm,.floor = FullTransactionIdFromEpochAndXid(0, 3)};
+	BlockNumber anchor = NO_BLOCK;
+
+	make_items(dir);
+	sift_l0_shard_apply(&c, batch, NITEMS / 2);
+	io_under_stripes = 0;
+	sift_l0_flush_seal(&f, note_anchor, &anchor);
+	SIFT_CHECKF(anchor == f.dir_v1 && pg_atomic_read_u32(&shm.dir_blk) == f.dir_v1, "the seal commits and installs the new directory");
+	make_items(f.dir_v1);
+	sift_l0_shard_apply(&c, batch, NITEMS / 4);
+	io_under_stripes = 0;
+	sift_l0_flush_publish(&f, note_anchor, &anchor);
+	SIFT_CHECKF(io_under_stripes == 0, "the flush takes, writes and commits no page under the stripes (%d did)", io_under_stripes);
+	SIFT_CHECKF(anchor != NO_BLOCK && pg_atomic_read_u32(&shm.dir_blk) == anchor, "the writers go to the published directory");
+	SIFT_CHECKF(rows_of(anchor) == NITEMS / 4, "the published directory holds the rows placed after the seal (%u)", rows_of(anchor));
+}
+
+enum { NPARTS = 300 };
+
+static SiftL0HotTable hot;
+
+static RelFileLocator
+part_loc(uint32 rel)
+{
+	return (RelFileLocator) {.spcOid = 1663,.dbOid = 5,.relNumber = 16384 + rel};
+}
+
+/* Partitions that went cold, or that no one uses any more (a dropped table), give their entries to new ones */
+static void
+test_hot_entries_are_reclaimed(bool unload)
+{
+	int			claimed = 0;
+
+	memset(&hot, 0, sizeof(hot));
+	sift_l0_hot_init(&hot, 0);
+	for (uint32 r = 0; r < NPARTS; r++)
+	{
+		RelFileLocator loc = part_loc(r + (unload ? 0 : NPARTS));
+		SiftL0ShardShm *e = sift_l0_hot_claim(&hot, &loc, 1);
+
+		if (e == NULL)
+			continue;
+		claimed++;
+		SIFT_CHECKF(sift_l0_hot_find(&hot, &loc, 1) == e, "the partition finds its entry");
+		sift_l0_hot_unpin(e);
+		pg_atomic_write_u32(&e->dir_blk, 7);
+		if (unload)
+			sift_l0_shm_unload(e);
+		sift_l0_hot_unpin(e);
+	}
+	SIFT_CHECKF(claimed == NPARTS, "%s: every one of %d partitions has an entry (%d)", unload ? "cold" : "idle", NPARTS, claimed);
+}
+
+/* An entry that a flush or a promotion holds is given to no other partition */
+static void
+test_pinned_entry_stays(void)
+{
+	RelFileLocator a = part_loc(0);
+	SiftL0ShardShm *ea;
+	int			given = 0;
+
+	memset(&hot, 0, sizeof(hot));
+	sift_l0_hot_init(&hot, 0);
+	ea = sift_l0_hot_claim(&hot, &a, 1);
+	for (uint32 r = 1; r < NPARTS; r++)
+	{
+		RelFileLocator loc = part_loc(r);
+		SiftL0ShardShm *e = sift_l0_hot_claim(&hot, &loc, 1);
+
+		given += e == ea;
+		if (e != NULL)
+			sift_l0_hot_unpin(e);
+	}
+	SIFT_CHECKF(given == 0 && sift_l0_hot_find(&hot, &a, 1) == ea, "the held entry stays the partition's");
+	sift_l0_hot_unpin(ea);
+	sift_l0_hot_unpin(ea);
+}
+
 int
 main(void)
 {
 	test_failed_allocation_places_nothing();
 	test_failed_anchor_leaves_tails_open();
+	test_flush_holds_no_stripe_across_io();
+	test_hot_entries_are_reclaimed(true);
+	test_hot_entries_are_reclaimed(false);
+	test_pinned_entry_stays();
 	return sift_check_summary();
 }

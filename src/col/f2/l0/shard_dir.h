@@ -86,11 +86,35 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftL0ShardShm
 	pg_atomic_uint32 tail[SIFT_L0_SHARD_ABS_MAX];
 	pg_atomic_uint32 pd_tail[SIFT_L0_SHARD_ABS_MAX];
 	pg_atomic_uint32 flush_wanted;	/* SIFT_L0_FLUSH_* */
-	pg_atomic_uint32 claimed;		/* the key above is set: the entry is never given to another partition */
+	pg_atomic_uint32 claimed;		/* the generation of the key above: 0 for an entry never used, odd while the key is being set */
 	pg_atomic_uint32 heapref;		/* the shard slabs hold SiftL0HeapRef[] (SIFT_L0_DIR_HEAPREF), not batch records */
+	pg_atomic_uint32 active;		/* the backends that hold the entry (sift_l0_hot_find, sift_l0_hot_claim): it is given to no other partition meanwhile */
 } SiftL0ShardShm;
 
 StaticAssertDecl(sizeof(SiftL0ShardShm) == PG_CACHE_LINE_SIZE, "SiftL0ShardShm is one cache line");
+
+#define SIFT_L0_HOT_SLOTS			2048
+#define SIFT_L0_HOT_PROBES			32
+
+/*
+ * The shared table of the hot partitions: a partition has its entry at the hash of its key or in the next SIFT_L0_HOT_PROBES - 1. An entry no backend holds goes to another partition, one
+ * whose partition is cold first: the partition it leaves finds its directory in its anchor again and loads it into another entry (sift_l0_settle).
+ */
+typedef struct SiftL0HotTable
+{
+	SiftShmLock claim_lock;
+	SiftL0ShardShm shm[SIFT_L0_HOT_SLOTS];
+} SiftL0HotTable;
+
+extern void sift_l0_hot_init(SiftL0HotTable *t, int tranche);
+
+/* The entry of the partition, held, NULL when it has none (no lock is taken) */
+extern SiftL0ShardShm *sift_l0_hot_find(SiftL0HotTable *t, const RelFileLocator *loc, uint64 part_id);
+
+/* The entry of the partition, held, made when it has none; NULL when every entry of the probe is held by others */
+extern SiftL0ShardShm *sift_l0_hot_claim(SiftL0HotTable *t, const RelFileLocator *loc, uint64 part_id);
+
+extern void sift_l0_hot_unpin(SiftL0ShardShm *e);
 
 typedef struct SiftL0ShardCtx
 {
@@ -139,6 +163,9 @@ extern void sift_l0_shard_apply(void *ctx, SiftL0GcSlot *const *items, uint32 n)
 /* Reads the anchor (a directory or a cold single slab) and every chain it reaches; follow_draining adds the sealed directory a flush is still writing out */
 extern void sift_l0_scan(const SiftL0PageIO *io, BlockNumber anchor, const SiftL0ScanVisitor *v, bool follow_draining);
 
+/* Releases every page the scan of the anchor reaches */
+extern void sift_l0_dir_release(const SiftL0PageIO *io, BlockNumber anchor, bool follow_draining);
+
 typedef void (*SiftL0AnchorFn) (void *ctx, BlockNumber new_anchor);
 
 typedef struct SiftL0Flush
@@ -152,14 +179,14 @@ typedef struct SiftL0Flush
 } SiftL0Flush;
 
 /*
- * Phase 1: installs a fresh directory that drains the old one, then seals the slabs of the old one, that no writer reaches any more; commit_anchor(new directory) runs with every shard
- * stripe held, before any seal, so that an error of it leaves the anchor on a directory whose tails still take appends. The pages of the
- * directories (nshards + 2 for both phases) are taken from the allocator before the stripes are: the io hands out pages it holds already (sift_href_io_reserve).
+ * Phase 1: writes a fresh directory that drains the old one and commits it as the anchor (commit_anchor), then installs it for the writers and seals the slabs of the old one, that no
+ * writer reaches any more. Writers that go on into the old directory before the install are read through the new one; an error of the commit leaves the anchor on a directory whose tails
+ * still take appends. The shard stripes are held only for the install: the pages of the directories (nshards + 2 for both phases) come from pages the io holds already (sift_href_io_reserve).
  */
 extern void sift_l0_flush_seal(SiftL0Flush *f, SiftL0AnchorFn commit_anchor, void *cctx);
 /*
- * Phase 3: a directory v2 with the live slabs of v1 and no draining one; publish(v2) commits the part and the anchor atomically (InvalidBlockNumber when v1 holds nothing: the partition is
- * cold again); the pages of the drained slabs are released
+ * Phase 3: the writers leave v1 (they wait for the lock of the partition, which the caller holds), then a directory v2 with the live slabs of v1 and no draining one; publish(v2) commits
+ * the part and the anchor atomically (InvalidBlockNumber when v1 holds nothing: the partition is cold again), v2 is installed and the pages of the drained slabs are released
  */
 extern void sift_l0_flush_publish(SiftL0Flush *f, SiftL0AnchorFn publish, void *pctx);
 

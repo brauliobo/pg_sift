@@ -231,26 +231,166 @@ sift_l0_dir_read(const SiftL0PageIO *io, BlockNumber blk)
 	return d;
 }
 
+static void
+shm_install(SiftL0ShardShm *shm, BlockNumber dir_blk, const SiftL0ShardDirData *d)
+{
+	for (uint32 s = 0; s < SIFT_L0_SHARD_ABS_MAX; s++)
+	{
+		pg_atomic_write_u32(&shm->tail[s], d->slab_tail[s]);
+		pg_atomic_write_u32(&shm->pd_tail[s], d->pd_tail[s]);
+	}
+	pg_atomic_write_u32(&shm->nshards, d->nshards);
+	pg_atomic_write_u32(&shm->heapref, (d->dir_flags & SIFT_L0_DIR_HEAPREF) != 0);
+	pg_atomic_write_u64(&shm->dir_gen, d->dir_gen);
+	pg_atomic_write_membarrier_u32(&shm->dir_blk, dir_blk);
+}
+
 void
 sift_l0_shm_load(const SiftL0PageIO *io, SiftL0ShardShm *shm, BlockNumber dir_blk)
 {
 	SiftL0ShardDirData d = sift_l0_dir_read(io, dir_blk);
 
-	for (uint32 s = 0; s < SIFT_L0_SHARD_ABS_MAX; s++)
-	{
-		pg_atomic_write_u32(&shm->tail[s], d.slab_tail[s]);
-		pg_atomic_write_u32(&shm->pd_tail[s], d.pd_tail[s]);
-	}
-	pg_atomic_write_u32(&shm->nshards, d.nshards);
-	pg_atomic_write_u32(&shm->heapref, (d.dir_flags & SIFT_L0_DIR_HEAPREF) != 0);
-	pg_atomic_write_u64(&shm->dir_gen, d.dir_gen);
-	pg_atomic_write_membarrier_u32(&shm->dir_blk, dir_blk);
+	shm_install(shm, dir_blk, &d);
 }
 
 void
 sift_l0_shm_unload(SiftL0ShardShm *shm)
 {
 	pg_atomic_write_membarrier_u32(&shm->dir_blk, InvalidBlockNumber);
+}
+
+/* ---- the shared table of the hot partitions ---- */
+
+void
+sift_l0_hot_init(SiftL0HotTable *t, int tranche)
+{
+	sift_shm_lock_init(&t->claim_lock, tranche);
+	for (int i = 0; i < SIFT_L0_HOT_SLOTS; i++)
+	{
+		SiftL0ShardShm *e = &t->shm[i];
+
+		pg_atomic_init_u64(&e->dir_gen, 0);
+		pg_atomic_init_u32(&e->dir_blk, NO_BLOCK);
+		pg_atomic_init_u32(&e->nshards, 0);
+		pg_atomic_init_u32(&e->flush_wanted, SIFT_L0_FLUSH_NONE);
+		pg_atomic_init_u32(&e->claimed, 0);
+		for (int s = 0; s < SIFT_L0_SHARD_ABS_MAX; s++)
+		{
+			pg_atomic_init_u32(&e->tail[s], NO_BLOCK);
+			pg_atomic_init_u32(&e->pd_tail[s], NO_BLOCK);
+		}
+	}
+}
+
+static uint32
+key_hash(const RelFileLocator *loc, uint64 part_id)
+{
+	uint64		h = ((uint64) loc->relNumber << 32 | loc->dbOid) ^ (part_id * UINT64CONST(0x9e3779b97f4a7c15));
+
+	h ^= h >> 33;
+	h *= UINT64CONST(0xff51afd7ed558ccd);
+	h ^= h >> 33;
+	return (uint32) h;
+}
+
+static bool
+key_is(const SiftL0ShardShm *e, const RelFileLocator *loc, uint64 part_id)
+{
+	return e->part_id == part_id && RelFileLocatorEquals(e->locator, *loc);
+}
+
+void
+sift_l0_hot_unpin(SiftL0ShardShm *e)
+{
+	pg_atomic_fetch_sub_u32(&e->active, 1);
+}
+
+/* A pin and a reclaim see each other: the pin is counted before the generation is read again, the reclaim sets an odd generation before it reads the pins */
+static bool
+pin_at(SiftL0ShardShm *e, uint32 gen)
+{
+	pg_atomic_fetch_add_u32(&e->active, 1);
+	if (pg_atomic_read_u32(&e->claimed) == gen)
+		return true;
+	sift_l0_hot_unpin(e);
+	return false;
+}
+
+/* The probe ends at the first entry never used: a key is set only in the first entry of its probe that has none of the keys before it */
+SiftL0ShardShm *
+sift_l0_hot_find(SiftL0HotTable *t, const RelFileLocator *loc, uint64 part_id)
+{
+	uint32		h = key_hash(loc, part_id);
+
+	for (uint32 i = 0; i < SIFT_L0_HOT_PROBES; i++)
+	{
+		SiftL0ShardShm *e = &t->shm[(h + i) % SIFT_L0_HOT_SLOTS];
+		uint32		gen = pg_atomic_read_u32(&e->claimed);
+
+		if (gen == 0)
+			return NULL;
+		pg_read_barrier();
+		if ((gen & 1) == 0 && key_is(e, loc, part_id))
+			return pin_at(e, gen) ? e : NULL;
+	}
+	return NULL;
+}
+
+/* The entry goes to the partition unless a backend holds it (the claim lock is held): the writers of the partition it leaves find no entry and go to the lock of their partition */
+static bool
+key_take(SiftL0ShardShm *e, const RelFileLocator *loc, uint64 part_id)
+{
+	uint32		gen = pg_atomic_read_u32(&e->claimed);
+
+	pg_atomic_write_membarrier_u32(&e->claimed, gen | 1);
+	if (pg_atomic_read_u32(&e->active) != 0)
+	{
+		pg_atomic_write_u32(&e->claimed, gen);
+		return false;
+	}
+	pg_atomic_write_u32(&e->dir_blk, NO_BLOCK);
+	pg_atomic_write_u32(&e->flush_wanted, SIFT_L0_FLUSH_NONE);
+	e->locator = *loc;
+	e->part_id = part_id;
+	pg_write_barrier();
+	pg_atomic_write_u32(&e->claimed, Max(gen + 2, 2));
+	return true;
+}
+
+/* An entry never used, else the first one of a cold partition that no backend holds, else the first one no backend holds */
+SiftL0ShardShm *
+sift_l0_hot_claim(SiftL0HotTable *t, const RelFileLocator *loc, uint64 part_id)
+{
+	uint32		h = key_hash(loc, part_id);
+	SiftL0ShardShm *found = NULL,
+			   *cold = NULL,
+			   *idle = NULL;
+
+	sift_shm_lock(&t->claim_lock);
+	for (uint32 i = 0; i < SIFT_L0_HOT_PROBES && found == NULL; i++)
+	{
+		SiftL0ShardShm *e = &t->shm[(h + i) % SIFT_L0_HOT_SLOTS];
+
+		if (pg_atomic_read_u32(&e->claimed) == 0)
+		{
+			cold = cold != NULL ? cold : e;
+			break;
+		}
+		if (key_is(e, loc, part_id))
+			found = e;
+		else if (pg_atomic_read_u32(&e->active) == 0 && pg_atomic_read_u32(&e->dir_blk) == NO_BLOCK)
+			cold = cold != NULL ? cold : e;
+		else if (pg_atomic_read_u32(&e->active) == 0)
+			idle = idle != NULL ? idle : e;
+	}
+	if (found == NULL && cold != NULL && key_take(cold, loc, part_id))
+		found = cold;
+	if (found == NULL && idle != NULL && key_take(idle, loc, part_id))
+		found = idle;
+	if (found != NULL)
+		pg_atomic_fetch_add_u32(&found->active, 1);
+	sift_shm_unlock(&t->claim_lock);
+	return found;
 }
 
 /* ---- the writers ---- */
@@ -626,26 +766,35 @@ seal_all(const SiftL0PageIO *io, const SealTarget *t, uint32 n)
 	}
 }
 
+static uint32
+lock_shards(SiftL0Flush *f, uint32 *held)
+{
+	return sift_l0_gc_lock_shards(f->gc, &f->shm->locator, f->shm->part_id, pg_atomic_read_u32(&f->shm->nshards), held);
+}
+
 void
 sift_l0_flush_seal(SiftL0Flush *f, SiftL0AnchorFn commit_anchor, void *cctx)
 {
-	uint32		held[SIFT_L0_SHARD_ABS_MAX];
-	uint32		nheld = sift_l0_gc_lock_shards(f->gc, &f->shm->locator, f->shm->part_id,
-											   pg_atomic_read_u32(&f->shm->nshards), held);
+	uint32		held[SIFT_L0_SHARD_ABS_MAX],
+				nheld;
 	SealTarget	targets[2 * SIFT_L0_SHARD_ABS_MAX + 1];
-	SiftL0ShardDirData old;
+	SiftL0ShardDirData old,
+				v1;
 	uint32		n;
 
 	f->old_dir = pg_atomic_read_u32(&f->shm->dir_blk);
 	old = sift_l0_dir_read(f->io, f->old_dir);
 	f->dir_v1 = sift_l0_dir_create(f->io, old.nshards, f->old_dir, old.dir_gen + 1, old.dir_flags, f->floor);
+	v1 = sift_l0_dir_read(f->io, f->dir_v1);
 	commit_anchor(cctx, f->dir_v1);
-	sift_l0_shm_load(f->io, f->shm, f->dir_v1);
+	nheld = lock_shards(f, held);
+	shm_install(f->shm, f->dir_v1, &v1);
 	pg_atomic_write_u32(&f->shm->flush_wanted, SIFT_L0_FLUSH_NONE);
+	sift_l0_gc_unlock_shards(f->gc, held, nheld);
+	old = sift_l0_dir_read(f->io, f->old_dir);
 	n = seal_targets(&old, targets);
 	targets[n++] = (SealTarget) {f->old_dir, false};
 	seal_all(f->io, targets, n);
-	sift_l0_gc_unlock_shards(f->gc, held, nheld);
 }
 
 static void
@@ -676,17 +825,27 @@ dir_empty(const SiftL0PageIO *io, const SiftL0ShardDirData *d)
 }
 
 void
+sift_l0_dir_release(const SiftL0PageIO *io, BlockNumber anchor, bool follow_draining)
+{
+	SiftL0ScanVisitor drained = {.page = release_page,.ctx = (void *) io};
+
+	sift_l0_scan(io, anchor, &drained, follow_draining);
+}
+
+void
 sift_l0_flush_publish(SiftL0Flush *f, SiftL0AnchorFn publish, void *pctx)
 {
-	uint32		held[SIFT_L0_SHARD_ABS_MAX];
-	uint32		nheld = sift_l0_gc_lock_shards(f->gc, &f->shm->locator, f->shm->part_id,
-											   pg_atomic_read_u32(&f->shm->nshards), held);
-	SiftL0ShardDirData live = sift_l0_dir_read(f->io, f->dir_v1);
-	bool		cold = dir_empty(f->io, &live);
+	uint32		held[SIFT_L0_SHARD_ABS_MAX],
+				nheld = lock_shards(f, held);
+	SiftL0ShardDirData live;
+	bool		cold;
 	BlockNumber v2 = NO_BLOCK;
-	SiftL0ScanVisitor drained = {.page = release_page,.ctx = (void *) f->io};
 
 	Assert(pg_atomic_read_u32(&f->shm->dir_blk) == f->dir_v1);
+	sift_l0_shm_unload(f->shm);
+	sift_l0_gc_unlock_shards(f->gc, held, nheld);
+	live = sift_l0_dir_read(f->io, f->dir_v1);
+	cold = dir_empty(f->io, &live);
 	if (!cold)
 	{
 		v2 = f->io->alloc(f->io->ctx);
@@ -695,14 +854,11 @@ sift_l0_flush_publish(SiftL0Flush *f, SiftL0AnchorFn publish, void *pctx)
 		write_dir(f->io, v2, &live, f->floor);
 	}
 	publish(pctx, v2);
+	if (!cold)
+		shm_install(f->shm, v2, &live);
+	sift_l0_dir_release(f->io, f->old_dir, true);
 	if (cold)
-		sift_l0_shm_unload(f->shm);
-	else
-		sift_l0_shm_load(f->io, f->shm, v2);
-	sift_l0_gc_unlock_shards(f->gc, held, nheld);
-	sift_l0_scan(f->io, f->old_dir, &drained, true);
-	if (cold)
-		sift_l0_scan(f->io, f->dir_v1, &drained, false);
+		sift_l0_dir_release(f->io, f->dir_v1, false);
 	else
 		f->io->release(f->io->ctx, f->dir_v1);
 }

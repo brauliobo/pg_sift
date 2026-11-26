@@ -19,15 +19,12 @@
 
 #define TABLE_NAME		"sift_l0_gc"
 #define TRANCHE_NAME	"sift_l0_claim"
-#define HOT_SLOTS		256
-#define HOT_PROBES		16
 #define NO_BLOCK		InvalidBlockNumber
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftL0Table
 {
-	SiftShmLock claim_lock;
 	SiftL0GroupCommit gc;
-	SiftL0ShardShm shm[HOT_SLOTS];
+	SiftL0HotTable hot;
 } SiftL0Table;
 
 static SiftL0Table *table;
@@ -44,23 +41,8 @@ table_init(SIFT_DSM_INIT_ARGS)
 	SiftL0Table *t = table_base(ptr);
 
 	memset(t, 0, sizeof(*t));
-	sift_shm_lock_init(&t->claim_lock, sift_tranche_new(TRANCHE_NAME));
 	sift_l0_gc_init(&t->gc);
-	for (int i = 0; i < HOT_SLOTS; i++)
-	{
-		SiftL0ShardShm *e = &t->shm[i];
-
-		pg_atomic_init_u64(&e->dir_gen, 0);
-		pg_atomic_init_u32(&e->dir_blk, NO_BLOCK);
-		pg_atomic_init_u32(&e->nshards, 0);
-		pg_atomic_init_u32(&e->flush_wanted, SIFT_L0_FLUSH_NONE);
-		pg_atomic_init_u32(&e->claimed, 0);
-		for (int s = 0; s < SIFT_L0_SHARD_ABS_MAX; s++)
-		{
-			pg_atomic_init_u32(&e->tail[s], NO_BLOCK);
-			pg_atomic_init_u32(&e->pd_tail[s], NO_BLOCK);
-		}
-	}
+	sift_l0_hot_init(&t->hot, sift_tranche_new(TRANCHE_NAME));
 }
 
 /* NULL where the system has no memory for the table: no partition is hot then, and writers keep to the lock of the partition */
@@ -74,72 +56,9 @@ table_try(void)
 		if (raw == NULL)
 			return NULL;
 		table = table_base(raw);
-		sift_tranche_register(table->claim_lock.tranche, TRANCHE_NAME);
+		sift_tranche_register(table->hot.claim_lock.tranche, TRANCHE_NAME);
 	}
 	return table;
-}
-
-static uint32
-key_hash(const RelFileLocator *loc, uint64 part_id)
-{
-	uint64		h = ((uint64) loc->relNumber << 32 | loc->dbOid) ^ (part_id * UINT64CONST(0x9e3779b97f4a7c15));
-
-	h ^= h >> 33;
-	h *= UINT64CONST(0xff51afd7ed558ccd);
-	h ^= h >> 33;
-	return (uint32) h;
-}
-
-static bool
-key_is(const SiftL0ShardShm *e, const RelFileLocator *loc, uint64 part_id)
-{
-	return e->part_id == part_id && RelFileLocatorEquals(e->locator, *loc);
-}
-
-/* The entry of the partition: entries are never given to another partition, so the probe ends at the first that is free */
-static SiftL0ShardShm *
-shm_find(SiftL0Table *t, const RelFileLocator *loc, uint64 part_id)
-{
-	uint32		h = key_hash(loc, part_id);
-
-	for (uint32 i = 0; i < HOT_PROBES; i++)
-	{
-		SiftL0ShardShm *e = &t->shm[(h + i) % HOT_SLOTS];
-
-		if (pg_atomic_read_u32(&e->claimed) == 0)
-			return NULL;
-		pg_read_barrier();
-		if (key_is(e, loc, part_id))
-			return e;
-	}
-	return NULL;
-}
-
-/* NULL when the probe holds no free entry: the partition stays cold */
-static SiftL0ShardShm *
-shm_claim(SiftL0Table *t, const RelFileLocator *loc, uint64 part_id)
-{
-	uint32		h = key_hash(loc, part_id);
-	SiftL0ShardShm *found = NULL;
-
-	sift_shm_lock(&t->claim_lock);
-	for (uint32 i = 0; i < HOT_PROBES && found == NULL; i++)
-	{
-		SiftL0ShardShm *e = &t->shm[(h + i) % HOT_SLOTS];
-
-		if (pg_atomic_read_u32(&e->claimed) == 0)
-		{
-			e->locator = *loc;
-			e->part_id = part_id;
-			pg_write_barrier();
-			pg_atomic_write_u32(&e->claimed, 1);
-			found = e;
-		}
-		else if (key_is(e, loc, part_id))
-			found = e;
-	}
-	sift_shm_unlock(&t->claim_lock);
-	return found;
 }
 
 /* ---- the writers ---- */
@@ -150,13 +69,18 @@ my_shard(void)
 	return sift_l0_shard_of(sift_shm_my_procno(), SIFT_L0_SHARD_ABS_MAX);
 }
 
+/* The entry of the partition, held, when its writers go to a directory of that kind */
 static SiftL0ShardShm *
 hot_entry(SiftL0Table *t, Relation rel, uint64 part_id, bool href, BlockNumber *dir)
 {
-	SiftL0ShardShm *shm = t != NULL ? shm_find(t, &rel->rd_locator, part_id) : NULL;
+	SiftL0ShardShm *shm = t != NULL ? sift_l0_hot_find(&t->hot, &rel->rd_locator, part_id) : NULL;
 
 	*dir = shm != NULL ? pg_atomic_read_u32(&shm->dir_blk) : NO_BLOCK;
-	return *dir != NO_BLOCK && (pg_atomic_read_u32(&shm->heapref) != 0) == href ? shm : NULL;
+	if (*dir != NO_BLOCK && (pg_atomic_read_u32(&shm->heapref) != 0) == href)
+		return shm;
+	if (shm != NULL)
+		sift_l0_hot_unpin(shm);
+	return NULL;
 }
 
 /* A directory that wants a flush is flushed: queued for the worker, and by the writer itself at the hard cap */
@@ -186,9 +110,17 @@ sift_l0_hot_refs(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0
 		return SIFT_L0_NOT_HOT;
 	sift_href_io_init(&h, rel, (uint32) part_id);
 	c = (SiftL0ShardCtx) {.io = &h.io,.shm = shm};
-	result = sift_l0_href_submit(&t->gc, &c, &rel->rd_locator, part_id, my_shard(), dir, refs, n, applied);
-	if (result == SIFT_L0_GC_APPLIED)
-		flush_if_wanted(rel, part_id, key_lo, shm);
+	PG_TRY();
+	{
+		result = sift_l0_href_submit(&t->gc, &c, &rel->rd_locator, part_id, my_shard(), dir, refs, n, applied);
+		if (result == SIFT_L0_GC_APPLIED)
+			flush_if_wanted(rel, part_id, key_lo, shm);
+	}
+	PG_FINALLY();
+	{
+		sift_l0_hot_unpin(shm);
+	}
+	PG_END_TRY();
 	return result;
 }
 
@@ -200,23 +132,32 @@ sift_l0_hot_batches(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	SiftL0ShardShm *shm = hot_entry(t, rel, part_id, false, &dir);
 	SiftHrefIo	h;
 	SiftL0ShardCtx c;
+	uint32		result = SIFT_L0_GC_APPLIED;
 
 	*applied = 0;
 	if (shm == NULL)
 		return SIFT_L0_NOT_HOT;
 	sift_href_io_init(&h, rel, (uint32) part_id);
 	c = (SiftL0ShardCtx) {.io = &h.io,.shm = shm};
-	for (; *applied < nrecs; (*applied)++)
+	PG_TRY();
 	{
-		SiftL0GcReq req = {.locator = rel->rd_locator,.part_id = part_id,.shard_id = (uint16) my_shard(),.expect_slab_blk = dir,
-			.expect_pd_blk = NO_BLOCK,.rec = recs[*applied],.rec_bytes = recs[*applied]->bytes};
-		uint32		result = sift_l0_gc_submit(&t->gc, &req, sift_l0_shard_apply, &c);
+		for (; *applied < nrecs; (*applied)++)
+		{
+			SiftL0GcReq req = {.locator = rel->rd_locator,.part_id = part_id,.shard_id = (uint16) my_shard(),.expect_slab_blk = dir,
+				.expect_pd_blk = NO_BLOCK,.rec = recs[*applied],.rec_bytes = recs[*applied]->bytes};
 
-		if (result != SIFT_L0_GC_APPLIED)
-			return result;
+			if ((result = sift_l0_gc_submit(&t->gc, &req, sift_l0_shard_apply, &c)) != SIFT_L0_GC_APPLIED)
+				break;
+		}
+		if (result == SIFT_L0_GC_APPLIED)
+			flush_if_wanted(rel, part_id, key_lo, shm);
 	}
-	flush_if_wanted(rel, part_id, key_lo, shm);
-	return SIFT_L0_GC_APPLIED;
+	PG_FINALLY();
+	{
+		sift_l0_hot_unpin(shm);
+	}
+	PG_END_TRY();
+	return result;
 }
 
 /* ---- the lock of the partition, and when it is too busy ---- */
@@ -286,9 +227,16 @@ promote(Relation rel, SiftL0ShardShm *shm, uint64 part_id, const uint8 *key_lo, 
 		anchor = NO_BLOCK;
 	}
 	sift_href_io_reserve(&h, SIFT_L0_SHARD_ABS_MAX + 1);
-	dir = anchor == NO_BLOCK ? sift_l0_dir_create(&h.io, SIFT_L0_SHARD_ABS_MAX, NO_BLOCK, 1, flags, xid_floor()) :
-		sift_l0_dir_promote(&h.io, anchor, SIFT_L0_SHARD_ABS_MAX, xid_floor());
-	sift_href_io_unreserve(&h);
+	PG_TRY();
+	{
+		dir = anchor == NO_BLOCK ? sift_l0_dir_create(&h.io, SIFT_L0_SHARD_ABS_MAX, NO_BLOCK, 1, flags, xid_floor()) :
+			sift_l0_dir_promote(&h.io, anchor, SIFT_L0_SHARD_ABS_MAX, xid_floor());
+	}
+	PG_FINALLY();
+	{
+		sift_href_io_unreserve(&h);
+	}
+	PG_END_TRY();
 	commit_anchor(rel, part_id, key_lo, dir);
 	sift_l0_shm_load(&h.io, shm, dir);
 }
@@ -318,15 +266,20 @@ sift_l0_settle(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPart
 		return SIFT_L0_COLD;
 	if (!is_dir && !partition_is_hot(rel, part_id, busy))
 		return SIFT_L0_COLD;
-	if ((shm = shm_claim(t, &rel->rd_locator, part_id)) == NULL)
+	if ((shm = sift_l0_hot_claim(&t->hot, &rel->rd_locator, part_id)) == NULL)
 		return is_dir ? SIFT_L0_REFUSED : SIFT_L0_COLD;
-	if (is_dir)
+	PG_TRY();
 	{
-		if (pg_atomic_read_u32(&shm->dir_blk) != e->l0_slab_blk)
+		if (!is_dir)
+			promote(rel, shm, part_id, key_lo, e->l0_slab_blk, href);
+		else if (pg_atomic_read_u32(&shm->dir_blk) != e->l0_slab_blk)
 			sift_l0_shm_load(&h.io, shm, e->l0_slab_blk);
 	}
-	else
-		promote(rel, shm, part_id, key_lo, e->l0_slab_blk, href);
+	PG_FINALLY();
+	{
+		sift_l0_hot_unpin(shm);
+	}
+	PG_END_TRY();
 	return SIFT_L0_HOT;
 }
 
@@ -358,37 +311,69 @@ flush_publish(void *ctx, BlockNumber anchor)
 		.new_l0_slab_blk = anchor,.add_parts = &hf->part,.nadd = hf->has_part});
 }
 
+/* No entry of the shared table: no writer goes to the directory, as the caller holds the lock of the partition, and its rows are written out as it is */
+static void
+flush_unshared(HotFlush *hf, const SiftPartSpec *spec, BlockNumber anchor)
+{
+	SiftHrefIo	h;
+	/* check-memory: allow bounded to one micro-slab: the rows the directory holds */
+	SiftRowBuf *rb = sift_rowbuf_new(spec);
+
+	sift_href_io_init(&h, hf->rel, (uint32) hf->part_id);
+	sift_l0_slab_read(hf->rel, hf->part_id, anchor, rb, spec, NULL, NULL, NULL);
+	hf->has_part = sift_l0_slab_write_part(hf->rel, hf->part_id, spec, rb, &hf->part);
+	flush_publish(hf, NO_BLOCK);
+	sift_rowbuf_free(rb);
+	sift_l0_dir_release(&h.io, anchor, true);
+}
+
 /*
- * The three phases of the copy-on-write flush, under the lock of the partition: the active slabs are sealed and writers go on into a new directory (the shard stripes held for a few pages),
- * the sealed ones are written out as a part (no stripe), and the part and the live directory are committed together (the stripes again). The pages the directories take are reserved before
- * any stripe is held.
+ * The three phases of the copy-on-write flush, under the lock of the partition: the active slabs are sealed and writers go on into a new directory, the sealed ones are written out as a
+ * part, and the part and the live directory are committed together; the shard stripes are held only while the writers move from one directory to the next. The pages the directories
+ * take are reserved first.
  */
+static void
+flush_shared(HotFlush *hf, const SiftPartSpec *spec, SiftL0Table *t, SiftL0ShardShm *shm, BlockNumber anchor)
+{
+	SiftHrefIo	h;
+	SiftL0Flush f;
+	SiftRowBuf *rb;
+
+	sift_href_io_init(&h, hf->rel, (uint32) hf->part_id);
+	if (pg_atomic_read_u32(&shm->dir_blk) != anchor)
+		sift_l0_shm_load(&h.io, shm, anchor);
+	f = (SiftL0Flush) {.io = &h.io,.gc = &t->gc,.shm = shm,.floor = xid_floor()};
+	sift_href_io_reserve(&h, SIFT_L0_SHARD_ABS_MAX + 2);
+	PG_TRY();
+	{
+		sift_l0_flush_seal(&f, flush_anchor, hf);
+		/* check-memory: allow bounded to one micro-slab: the rows the directory held when it was sealed */
+		rb = sift_rowbuf_new(spec);
+		sift_l0_slab_read(hf->rel, hf->part_id, f.old_dir, rb, spec, NULL, NULL, NULL);
+		hf->has_part = sift_l0_slab_write_part(hf->rel, hf->part_id, spec, rb, &hf->part);
+		sift_l0_flush_publish(&f, flush_publish, hf);
+		sift_rowbuf_free(rb);
+	}
+	PG_FINALLY();
+	{
+		sift_href_io_unreserve(&h);
+		sift_l0_hot_unpin(shm);
+	}
+	PG_END_TRY();
+}
+
 void
 sift_l0_hot_flush(Relation rel, uint64 part_id, const uint8 *key_lo, BlockNumber anchor)
 {
 	SiftL0Table *t = table_try();
 	const SiftPartSpec *spec = &sift_f2_store_open(rel)->spec;
-	SiftL0ShardShm *shm;
-	SiftHrefIo	h;
-	SiftL0Flush f;
+	SiftL0ShardShm *shm = t != NULL ? sift_l0_hot_claim(&t->hot, &rel->rd_locator, part_id) : NULL;
 	HotFlush	hf = {.rel = rel,.part_id = part_id,.key_lo = key_lo};
-	SiftRowBuf *rb;
 
-	if (t == NULL || (shm = shm_claim(t, &rel->rd_locator, part_id)) == NULL)
-		ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("sift: the shared table of the hot micro-slabs cannot be had")));
-	sift_href_io_init(&h, rel, (uint32) part_id);
-	if (pg_atomic_read_u32(&shm->dir_blk) != anchor)
-		sift_l0_shm_load(&h.io, shm, anchor);
-	f = (SiftL0Flush) {.io = &h.io,.gc = &t->gc,.shm = shm,.floor = xid_floor()};
-	sift_href_io_reserve(&h, SIFT_L0_SHARD_ABS_MAX + 2);
-	sift_l0_flush_seal(&f, flush_anchor, &hf);
-	/* check-memory: allow bounded to one micro-slab: the rows the directory held when it was sealed */
-	rb = sift_rowbuf_new(spec);
-	sift_l0_slab_read(rel, part_id, f.old_dir, rb, spec, NULL, NULL, NULL);
-	hf.has_part = sift_l0_slab_write_part(rel, part_id, spec, rb, &hf.part);
-	sift_l0_flush_publish(&f, flush_publish, &hf);
-	sift_rowbuf_free(rb);
-	sift_href_io_unreserve(&h);
+	if (shm == NULL)
+		flush_unshared(&hf, spec, anchor);
+	else
+		flush_shared(&hf, spec, t, shm, anchor);
 	sift_comb_queue_cool(&sift_part_stripes()[sift_part_shard_stripe(&rel->rd_locator, part_id, 0)]);
 }
 
@@ -419,12 +404,14 @@ void
 sift_l0_dir_pages_frozen(Relation rel, uint64 part_id, BlockNumber anchor, void (*visit) (void *ctx, BlockNumber blk, const char *pg), void *ctx)
 {
 	SiftL0Table *t = table_try();
-	SiftL0ShardShm *shm = t != NULL ? shm_find(t, &rel->rd_locator, part_id) : NULL;
+	SiftL0ShardShm *shm = t != NULL ? sift_l0_hot_find(&t->hot, &rel->rd_locator, part_id) : NULL;
 	uint32		held[SIFT_L0_SHARD_ABS_MAX],
 				nheld = 0;
 
 	if (shm != NULL && pg_atomic_read_u32(&shm->dir_blk) == anchor)
 		nheld = sift_l0_gc_lock_shards(&t->gc, &rel->rd_locator, part_id, pg_atomic_read_u32(&shm->nshards), held);
+	if (shm != NULL)
+		sift_l0_hot_unpin(shm);
 	sift_l0_dir_pages(rel, part_id, anchor, visit, ctx);
 	if (nheld > 0)
 		sift_l0_gc_unlock_shards(&t->gc, held, nheld);
