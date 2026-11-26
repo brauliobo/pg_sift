@@ -24,6 +24,23 @@ hot_remember(SiftRanker *r, SiftKey vis, SiftKey root)
 	((HotEnt *) hash_search(r->hot, &vis, HASH_ENTER, NULL))->root = root;
 }
 
+/* The index entry of hit vis, which no longer needs remembering: it leaves the hits or goes to the sorted ones with its entry */
+static SiftKey
+hot_take(SiftRanker *r, SiftKey vis)
+{
+	HotEnt	   *e = r->hot ? hash_search(r->hot, &vis, HASH_REMOVE, NULL) : NULL;
+
+	return e ? e->root : vis;
+}
+
+static void
+ties_forget(SiftRanker *r, SiftTopK *tk)
+{
+	for (int64 i = 0; i < tk->ntie; i++)
+		hot_take(r, tk->tie[i].key);
+	tk->ntie = tk->nlazy = 0;
+}
+
 void
 hot_forget(SiftRanker *r)
 {
@@ -55,7 +72,7 @@ rank_spill_flush(SiftRanker *r, SiftTopK *tk)
 		return false;
 	}
 	for (int64 i = 0; i < tk->n; i++)
-		sift_hitspill_put(r->spill, tk->hit[i].key, tk->hit[i].score);
+		sift_hitspill_put(r->spill, hot_take(r, tk->hit[i].key), tk->hit[i].score);
 	r->nhit += tk->n;
 	tk->n = 0;
 	return true;
@@ -66,7 +83,7 @@ static void
 rank_spill_finish(SiftRanker *r, SiftTopK *tk)
 {
 	for (int64 i = 0; i < tk->n; i++)
-		sift_hitspill_put(r->spill, tk->hit[i].key, tk->hit[i].score);
+		sift_hitspill_put(r->spill, hot_take(r, tk->hit[i].key), tk->hit[i].score);
 	r->nhit += tk->n;
 	pfree(tk->hit);
 	sift_hitspill_sort(r->spill);
@@ -181,12 +198,13 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 		}
 		sift_kern_topk_push(tk, score, vis);
 		/* the hit the new one pushed out ties with the new worst one, or the worst score rose and the ties are behind it */
-		if (r->ties && full)
+		if (r->ties && full && tk->hit[0].score == out.score)
+			tie_add(r, tk, out.key, out.score);
+		else if (full)
 		{
-			if (tk->hit[0].score == out.score)
-				tie_add(r, tk, out.key, out.score);
-			else
-				tk->ntie = tk->nlazy = 0;
+			hot_take(r, out.key);
+			if (r->ties)
+				ties_forget(r, tk);
 		}
 	}
 	else if (tie_hit(r, tk, score))

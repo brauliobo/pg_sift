@@ -34,6 +34,23 @@ SELECT value AS bytes FROM sift._test_read_stats() WHERE key = 'cursor_buffer_by
 SELECT :cursors >= 6 * 200 AS cursor_per_term_and_segment, :bytes / :cursors < 4096 AS sparse_buffer_under_4kB,
 	round(:bytes / :cursors / 32768.0, 2) < 0.1 AS under_a_tenth_of_a_group_buffer;
 
+-- a search that spills its hits keeps the index entry of a HOT-updated hit with it in the spill, not in memory: 60000 updated matches under
+-- 64 kB of work_mem hold about what the hits of memory take
+CREATE TABLE ht (id int, body text, n int) WITH (autovacuum_enabled = off, fillfactor = 40);
+-- 60000 HOT-updated matches: their entries outgrow the 1 MB bound below several times over unless they go to the spill
+INSERT INTO ht SELECT i, 'common w' || i % 7 || repeat(' common', i % 5), 0 FROM generate_series(1, 60000) i;
+SET client_min_messages = warning;
+CREATE INDEX ht_idx ON ht USING sift (body);
+RESET client_min_messages;
+VACUUM ANALYZE ht;
+UPDATE ht SET n = 1;
+SET work_mem = '64kB';
+SELECT count(*) FROM sift._test_mem_highwater(true);
+SELECT count(*) FROM (SELECT id FROM ht WHERE body @@> 'common' ORDER BY sift.score(ctid) DESC) s;
+SELECT peak < 1024 * 1024 AS bounded FROM sift._test_mem_highwater() WHERE scope = 'bm25_search';
+RESET work_mem;
+DROP TABLE ht;
+
 DROP FUNCTION ra_q(text);
 DROP TABLE ra;
 DROP EXTENSION pg_sift_test;
