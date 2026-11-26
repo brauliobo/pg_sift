@@ -123,7 +123,7 @@ sift_v6_unnest_rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6El
 	const Oid	vartype = exprType((const Node *) v);
 
 	*out = (SiftV6ElemRte) {.array = v,.base = v};
-	if (fe->funcid == F_JSONB_TO_RECORDSET)
+	if (fe->funcid != F_UNNEST_ANYARRAY)
 		out->key = field_key(v, &out->base);
 	if (fe->funcid == F_UNNEST_ANYARRAY)
 	{
@@ -293,21 +293,29 @@ leaf_oid(const SiftColDef *d)
 	return InvalidOid;
 }
 
-/* the group of the map `col.* type` of attribute att (-1: the attribute has none) */
+/* the group of the map of attribute att: `col.* type` of the document itself (key NULL), or `col.key.* type` of its key `key` (-1: the attribute has none) */
 static int
-map_group_of(const SiftColRel *r, int att)
+map_group_of(const SiftColRel *r, int att, const char *key)
 {
+	const size_t len = key != NULL ? strlen(key) : 0;
+
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
-		if (r->schema->cols[i].kind == SIFT_COLK_GROUP && r->schema->cols[i].path != NULL && strstr(r->schema->cols[i].path, ".*") != NULL)
+	{
+		const SiftColDef *d = &r->schema->cols[i];
+		const char *dot = d->kind == SIFT_COLK_GROUP && d->path != NULL ? strchr(d->path, '.') : NULL;
+
+		if (dot != NULL && (key == NULL ? strcmp(dot + 1, "*") == 0 : strncmp(dot + 1, key, len) == 0 && strcmp(dot + 1 + len, ".*") == 0))
 			return i;
+	}
 	return -1;
 }
 
-bool
-sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value)
+/* the leaves of the map of attribute att that is the document itself (key NULL) or its key `key` */
+static bool
+map_leaves_of(const SiftColRel *r, int att, const char *mkey, int *group, int *key, int *value)
 {
 	*key = *value = -1;
-	if (!r->json[att] || (*group = map_group_of(r, att)) < 0)
+	if (!r->json[att] || (*group = map_group_of(r, att, mkey)) < 0)
 		return false;
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
 	{
@@ -325,14 +333,20 @@ sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *valu
 	return *key >= 0 && *value >= 0 && sift_v6_leaf_holds(TEXTOID, -1, &r->schema->cols[*key]) && leaf_oid(&r->schema->cols[*value]) != InvalidOid;
 }
 
-/* the map `col.* type` of attribute att: the leaf of its keys and the one of its values, which are the columns of jsonb_each and jsonb_each_text */
+bool
+sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value)
+{
+	return map_leaves_of(r, att, NULL, group, key, value);
+}
+
+/* the map `col.* type` or `col.mkey.* type` of attribute att: the leaf of its keys and the one of its values, which are the columns of jsonb_each and jsonb_each_text */
 static bool
-seed_each(V6Plan *p, SiftV6XElem *e, int att)
+seed_each(V6Plan *p, SiftV6XElem *e, const char *mkey, int att)
 {
 	int			key,
 				value;
 
-	if (!sift_v6_map_leaves(p->colrel, att, &e->group_leaf, &key, &value))
+	if (!map_leaves_of(p->colrel, att, mkey, &e->group_leaf, &key, &value))
 		return false;
 	e->col_leaf[0] = key;
 	e->col_type[0] = TEXTOID;
@@ -449,7 +463,7 @@ sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, b
 	x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
 	if (!((rte->fn == SV6E_RECORDSET || rte->fn == SV6E_PATH) ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) :
 		  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, &x->elem, rte, i + 1) :
-		  rte->fn == SV6E_ELEMS_TEXT ? sift_v6_elems_seed(p->colrel, &x->elem, key, i + 1, &names) : seed_each(p, &x->elem, i + 1)))
+		  rte->fn == SV6E_ELEMS_TEXT ? sift_v6_elems_seed(p->colrel, &x->elem, key, i + 1, &names) : seed_each(p, &x->elem, key, i + 1)))
 		return false;
 	x->elem_names = names;
 	x->elem_array = IsA(rte->array, Var) ? NIL : list_make1(copyObject(unconstify(Expr *, rte->array)));

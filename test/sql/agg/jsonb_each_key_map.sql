@@ -1,0 +1,58 @@
+-- jsonb_each and jsonb_each_text over a map a key of the document holds (paths `doc.metrics.* float8`): the members are the keys and values of the map's leaves, in SiftAggV6, on both formats.
+-- Each statement is run with the node and without it (sift.enable_agg); scan says the plan is the node's and explain_why that its arm was used.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+
+\ir test/common/sql/agg/base.sql
+
+\ir test/common/sql/agg/same.sql
+
+CREATE FUNCTION used(q text) RETURNS bool LANGUAGE sql AS $$ SELECT coalesce(bool_or(used), false) FROM sift.explain_why(q) $$;
+
+CREATE TABLE ev (id int PRIMARY KEY, kind text NOT NULL, deleted_at timestamptz, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, 'cat_' || chr(97 + i % 4), CASE WHEN i % 37 = 0 THEN now() END,
+	jsonb_build_object('metrics', jsonb_build_object('m_a', ((i * 13) % 100) / 4.0, 'catg_a', 1 + (i * 3) % 10), 'pad', i % 9)
+FROM generate_series(1, 6000) i;
+-- rows with no member: no map, an empty one, no document
+INSERT INTO ev VALUES (7001, 'cat_a', NULL, '{"pad": 1}'), (7002, 'cat_b', NULL, '{"metrics": {}}'), (7006, 'cat_b', NULL, NULL);
+CREATE INDEX ev_col ON ev USING sift_col (id, kind, deleted_at, doc) WITH (paths = 'doc.metrics.* float8');
+VACUUM (FREEZE, ANALYZE) ev;
+-- and members a cast may raise for: a JSON null (before PostgreSQL 18), a member that is no number, a map that is no object
+CREATE TABLE ex (LIKE ev) WITH (autovacuum_enabled = false);
+INSERT INTO ex SELECT * FROM ev WHERE id <= 3000;
+INSERT INTO ex VALUES (7003, 'cat_c', NULL, '{"metrics": {"m_a": null}}'), (7004, 'cat_d', NULL, '{"metrics": {"m_a": "7", "m_b": 2}}'), (7005, 'cat_a', NULL, '{"metrics": [1, 2]}');
+CREATE INDEX ex_col ON ex USING sift_col (id, kind, deleted_at, doc) WITH (paths = 'doc.metrics.* float8');
+VACUUM (FREEZE, ANALYZE) ex;
+
+CREATE TABLE q (n int, sql text);
+INSERT INTO q VALUES
+	(1, $$SELECT e.kind, count(*) AS n, count(CAST(r.value AS float)) AS dim_b, avg(CAST(r.value AS float)) FROM ev e LEFT JOIN LATERAL jsonb_each(e.doc -> 'metrics') r ON r.key = 'm_a'
+	      WHERE e.deleted_at IS NULL GROUP BY 1$$),
+	(2, $$SELECT r.key, count(*) FROM ev e CROSS JOIN LATERAL jsonb_each(e.doc -> 'metrics') r GROUP BY 1$$),
+	(3, $$SELECT r.key, count(*), sum(r.value::float8) FROM ev e CROSS JOIN LATERAL jsonb_each_text(e.doc -> 'metrics') r GROUP BY 1$$),
+	(4, $$SELECT e.kind, count(*), count(r.key) FROM ev e LEFT JOIN LATERAL jsonb_each(e.doc -> 'metrics') r ON r.key = 'm_a' GROUP BY 1$$),
+	(5, $$SELECT e.kind, avg(CAST(r.value AS float)) FROM ev e CROSS JOIN LATERAL jsonb_each(e.doc -> 'metrics') r WHERE r.key = 'catg_a' AND e.deleted_at IS NULL GROUP BY 1$$),
+	(6, $$SELECT r.key, avg(r.value::float8) FROM ev e CROSS JOIN LATERAL jsonb_each_text(e.doc -> 'metrics') r WHERE r.key IN ('m_a', 'catg_a') GROUP BY 1$$),
+	(7, $$SELECT r.key, sum((r.value #>> '{}')::float8) FROM ev e CROSS JOIN LATERAL jsonb_each(e.doc -> 'metrics') r GROUP BY 1$$),
+	(8, $$SELECT e.kind, sum(r.value::float8) FROM ev e CROSS JOIN LATERAL jsonb_each(e.doc -> 'metrics') r GROUP BY 1$$),
+	-- the JSON text of a value (a JSON null is 'null', which the leaf holds as no value) is the normal plan's
+	(9, $$SELECT e.kind, sum(r.value::text::float8) FROM ex e CROSS JOIN LATERAL jsonb_each(e.doc -> 'metrics') r WHERE e.id < 7004 GROUP BY 1$$),
+	-- the errors are the statement's: a string member cast as jsonb, a map that is no object
+	(10, $$SELECT e.kind, sum(r.value::float8) FROM ex e CROSS JOIN LATERAL jsonb_each(e.doc -> 'metrics') r WHERE e.id <> 7003 AND e.id < 7005 GROUP BY 1$$),
+	(11, $$SELECT r.key, count(*) FROM ex e CROSS JOIN LATERAL jsonb_each(e.doc -> 'metrics') r GROUP BY 1$$),
+	(12, $$SELECT r.key, sum((r.value #>> '{}')::float8) FROM ex e CROSS JOIN LATERAL jsonb_each(e.doc -> 'metrics') r WHERE e.id < 7005 GROUP BY 1$$);
+SELECT n, same(sql), pushed(sql) AS scan, used(sql) FROM q ORDER BY n;
+
+-- a map of the document itself keeps its own leaves: the map of the key is not read for it
+CREATE TABLE em (id int, m jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO em SELECT i, jsonb_build_object('k' || i % 5, i, 'metrics', jsonb_build_object('x', i)) FROM generate_series(1, 3000) i;
+CREATE INDEX em_col ON em USING sift_col (id, m) WITH (paths = 'm.metrics.* float8');
+VACUUM (FREEZE, ANALYZE) em;
+SELECT same($$SELECT r.key, count(*) FROM em, jsonb_each(m) r GROUP BY 1$$), pushed($$SELECT r.key, count(*) FROM em, jsonb_each(m) r GROUP BY 1$$) AS scan;
+SELECT same($$SELECT r.key, sum(r.value::float8) FROM em, jsonb_each(m -> 'metrics') r GROUP BY 1$$), pushed($$SELECT r.key, sum(r.value::float8) FROM em, jsonb_each(m -> 'metrics') r GROUP BY 1$$) AS scan;
+
+DROP TABLE q, ev, ex, em;
+DROP FUNCTION used(text), runq(text, bool), same(text), pushed(text), outcome(text, bool), runs_in_scan(text);
+DROP EXTENSION pg_sift;
