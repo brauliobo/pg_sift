@@ -17,3 +17,8 @@ sift_internal.argmin_combine(internal,internal)	*	internal states cannot be buil
 sift_internal.argext_final(internal,anyelement,anycompatible)	*	internal state cannot be built from SQL; every call of the aggregates sift.arg_max and sift.arg_min runs it
 sift_internal.argext_serial(internal)	*	internal state cannot be built from SQL; runs only in a parallel aggregate plan of sift.arg_max or sift.arg_min
 sift_internal.argext_deserial(bytea,internal)	*	internal state cannot be built from SQL; runs only in a parallel aggregate plan of sift.arg_max or sift.arg_min
+sift_internal.projection_defs_skip()	role	trigger function of an extension catalog: EXECUTE is revoked from PUBLIC (sql/6.0/36-security-hardening.sql), so the role cannot create a trigger on it; the super and rollback modes fire it
+sift.table_option_values_trg()	role	trigger function of an extension catalog: EXECUTE is revoked from PUBLIC (sql/6.0/36-security-hardening.sql), so the role cannot create a trigger on it; the super and rollback modes fire it
+sift_internal.table_paths_skip()	role	trigger function of an extension catalog: EXECUTE is revoked from PUBLIC (sql/6.0/36-security-hardening.sql), so the role cannot create a trigger on it; the super and rollback modes fire it
+sift.table_paths_trg()	role	trigger function of an extension catalog: EXECUTE is revoked from PUBLIC (sql/6.0/36-security-hardening.sql), so the role cannot create a trigger on it; the super and rollback modes fire it
+sift_internal.ttl_policies_skip()	role	trigger function of an extension catalog: EXECUTE is revoked from PUBLIC (sql/6.0/36-security-hardening.sql), so the role cannot create a trigger on it; the super and rollback modes fire it
