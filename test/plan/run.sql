@@ -25,8 +25,9 @@ CREATE FUNCTION plangate.path(p text) RETURNS void LANGUAGE sql AS $$
 	SELECT set_config('sift.enable_agg', (p <> 'native')::text, false), set_config(s, (p <> 'scan')::text, false)
 	FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s $$;
 
--- whether the plan has a Custom Scan of the family SiftAgg (SiftAgg of Format 1, SiftAggV6 and its variants of Format 2.0), its total cost and the most workers a node of it plans. Before PostgreSQL 18 a disabled node adds 1e10 to the cost: taken off.
-CREATE FUNCTION plangate.cost(q text, OUT siftagg boolean, OUT cost float8, OUT workers int) LANGUAGE plpgsql AS $$
+-- whether the plan has a Custom Scan of the family SiftAgg (SiftAgg of Format 1, SiftAggV6 and its variants of Format 2.0), its total cost, the most workers a node of it plans
+-- and the plan without its costs (two paths that plan the same nodes run the same plan). Before PostgreSQL 18 a disabled node adds 1e10 to the cost: taken off.
+CREATE FUNCTION plangate.cost(q text, OUT siftagg boolean, OUT cost float8, OUT workers int, OUT plan text) LANGUAGE plpgsql AS $$
 DECLARE j jsonb; c float8;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
@@ -34,6 +35,7 @@ BEGIN
 	siftagg := j::text ~ '"Custom Plan Provider"\s*:\s*"Sift(Hybrid)?Agg';
 	cost := c - 1e10 * floor(c / 1e10);
 	workers := coalesce((SELECT max(m[1]::int) FROM regexp_matches(j::text, '"Workers Planned": (\d+)', 'g') m), 0);
+	plan := regexp_replace(j::text, '"(Startup|Total) Cost": [^,}]*', '', 'g');
 END $$;
 
 CREATE FUNCTION plangate.ms(q text, runs int) RETURNS float8 LANGUAGE plpgsql AS $$
@@ -53,7 +55,7 @@ DECLARE
 	h jsonb := coldiff.header(txt); q text := h ->> 'body'; nm text := h ->> 'name'; plan text := 'new'; band text[] := ARRAY['-', NULL];
 	keycols int[] := CASE WHEN h ->> 'key' = '-' THEN NULL WHEN coalesce(h ->> 'key', '') = '' THEN '{}'::int[] ELSE string_to_array(h ->> 'key', ' ')::int[] END;
 	lane_band plangate.bands; anyband boolean := false; problems text[] := '{}'; chosen text; native record; sc record; ch record; err text; diff text; native_ms float8; scan_ms float8; ratio float8; verdict text;
-	nruns int := CASE WHEN runs > 0 THEN greatest(runs, coalesce((h ->> 'runs')::int, 0)) ELSE 0 END;
+	nruns int := CASE WHEN runs > 0 THEN greatest(runs, coalesce((h ->> 'runs')::int, 0)) ELSE 0 END; ran_chosen boolean := false;
 BEGIN
 	SELECT * INTO lane_band FROM plangate.bands WHERE lane = current_setting('plangate.lane', true) AND name = nm;
 	IF FOUND THEN
@@ -79,14 +81,18 @@ BEGIN
 		err := coldiff.materialize(q, 'pg_chosen');
 		diff := CASE WHEN err IS NULL THEN coldiff.compare('pg_native', 'pg_chosen', keycols, 1e-9, 1e-12) ELSE err END;
 		IF diff IS NOT NULL THEN problems := problems || ('result chosen: ' || diff); END IF;
+		ran_chosen := true;
 	END IF;
 
 	PERFORM plangate.path('scan');
 	sc := plangate.cost(q);
 	IF sc.siftagg AND native.cost > 0 THEN
 		ratio := CASE WHEN ch.siftagg THEN ch.cost ELSE sc.cost END / native.cost;
-		err := coldiff.materialize(q, 'pg_scan');
-		diff := CASE WHEN err IS NULL THEN coldiff.compare('pg_native', 'pg_scan', keycols, 1e-9, 1e-12) ELSE err END;
+		-- the forced scan that plans the nodes of the chosen one returns its rows, its error and its difference: they are those of the chosen run
+		IF NOT (ran_chosen AND sc.plan = ch.plan) THEN
+			err := coldiff.materialize(q, 'pg_scan');
+			diff := CASE WHEN err IS NULL THEN coldiff.compare('pg_native', 'pg_scan', keycols, 1e-9, 1e-12) ELSE err END;
+		END IF;
 		IF diff IS NOT NULL THEN problems := problems || ('result scan: ' || diff); END IF;
 		-- the time of the scan is the time of the plan the planner takes when that is a scan: the one forced with the other scans off can be another plan
 		IF nruns > 0 AND err IS NULL THEN PERFORM plangate.path(CASE WHEN ch.siftagg THEN 'chosen' ELSE 'scan' END); scan_ms := plangate.ms(q, nruns); END IF;
@@ -111,8 +117,11 @@ BEGIN
 	DROP TABLE IF EXISTS pg_temp.pg_native, pg_temp.pg_chosen, pg_temp.pg_scan;
 END $$;
 
--- every shape of a file whose name matches `pattern` and that has one of the `areas` (comma separated, none: every shape) in its `-- area:` line: a shape starts at its `-- name:` line
-CREATE FUNCTION plangate.run_all(shapes text, runs int, pattern text DEFAULT '', areas text DEFAULT '') RETURNS void LANGUAGE sql AS $$
-	SELECT plangate.run(s, runs) FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') s
-	WHERE substring(s FROM '^-- name: (\S+)') ~ pattern
-	  AND (areas = '' OR string_to_array(substring(s FROM '(?n)^-- area: (.*)$'), ' ') && string_to_array(areas, ',')) $$;
+-- every shape of a file whose name matches `pattern` and that has one of the `areas` (comma separated, none: every shape) in its `-- area:` line: a shape starts at its `-- name:` line.
+-- Of those, the session `job` of `jobs` runs every jobs-th one from its own (scripts/plangate.sh --jobs: the sessions together run each shape once)
+CREATE FUNCTION plangate.run_all(shapes text, runs int, pattern text DEFAULT '', areas text DEFAULT '', job int DEFAULT 0, jobs int DEFAULT 1) RETURNS void LANGUAGE sql AS $$
+	SELECT plangate.run(s, runs) FROM (
+		SELECT s, row_number() OVER (ORDER BY o) - 1 AS k FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') WITH ORDINALITY t(s, o)
+		WHERE substring(s FROM '^-- name: (\S+)') ~ pattern
+		  AND (areas = '' OR string_to_array(substring(s FROM '(?n)^-- area: (.*)$'), ' ') && string_to_array(areas, ','))) x
+	WHERE k % jobs = job ORDER BY k $$;

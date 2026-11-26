@@ -3,7 +3,7 @@
 # test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg...) forced) by
 # test/plan/run.sql, which compares the results, the plan chosen against the expectation of the shape and the cost ratio against its band.
 #
-#   scripts/plangate.sh [--format f2|f1|release] [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--slice AREAS] [--lane stock|stock-4t|tuned|gpu] [--table] [--warn-time] [--update] [--keep]
+#   scripts/plangate.sh [--format f2|f1|release] [--rows N] [--seed N] [--runs N] [--jobs N] [--shapes REGEX] [--slice AREAS] [--lane LANES] [--table] [--warn-time] [--update] [--keep]
 #   scripts/plangate.sh --calibrate [--rows N] [--lane stock|tuned] [--shapes REGEX]   the ranking of the estimates against the instructions (below)
 #   scripts/plangate.sh --planning [--rows N] [--shapes REGEX] [--update]   the instructions to plan each shape, scan on and off, against test/plan/planning.tsv (below)
 #
@@ -14,6 +14,9 @@
 #                 0.109, 0.061 and 0.051), so the bands hold at 30000 only (40 of 106 shapes leave them at 50000). Another size has bands of its own, the rows `LANE@N` of test/plan/bands.tsv
 #                 (`--update --rows N` records them, as `stock@250000`, `table@250000` ...); a size with none is checked for the results and the loses only
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings; a shape tagged `-- runs: K` takes at least K)
+#   --jobs N      the shapes in N sessions at once (default: up to 4 with --runs 0, else 1, so that a time is measured alone)
+#   --lane LANES  stock (default), stock-4t, tuned or gpu (below); comma separated lanes (not gpu) run one after the other on the tables built once (stock,stock-4t,tuned;
+#                 --table: stock,tuned), each failing as it fails alone
 #   --shapes RE   only the shapes whose name matches the regular expression (anywhere in the name: `^top_rows` and `unindexed_column$` too). A filtered --update rewrites the rows of the
 #                 shapes that ran and keeps the others, and writes nothing when none ran
 #   --slice AREAS the shapes of the areas (comma separated: star, clickbench, coexist, jsonb, table, bm25, gpu, smoke; all: every shape) that the `-- area:` tag of test/plan/shapes.sql lists, so that a change
@@ -44,16 +47,16 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
-ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN= SELFTEST= AREAS_RUN= FORMAT=f2
+ROWS=30000 SEED=1 RUNS=3 JOBS= ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN= SELFTEST= AREAS_RUN= FORMAT=f2
 AREAS='star clickbench coexist jsonb table bm25 gpu smoke'
 DB=${PLANGATE_DB:-sift_plangate}
 
 while (( $# )); do
 	case $1 in
 		--warn-time) WARN=1 ;; --calibrate) CAL=1 ;; --planning) CAL=1 PLAN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --table) TABLE=1 ;;
-		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --slice) SLICE=$2; shift ;; --lane) LANE=$2; shift ;;
+		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --jobs) JOBS=$2; shift ;; --shapes) ONLY=$2; shift ;; --slice) SLICE=$2; shift ;; --lane) LANE=$2; shift ;;
 		--selftest) SELFTEST=1 ;; --format) FORMAT=$2; shift ;;
-		*) sed -n 2,38p "$0"; exit 1 ;;
+		*) sed -n 2,42p "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -284,28 +287,41 @@ if [[ -n ${SLICE+x} ]]; then
 	[[ ,$AREAS_RUN, != *,gpu,* ]] || GPU=1
 fi
 [[ -z $GPU || -z $TABLE ]] || { log "the area gpu runs the heap tables: not with --table"; exit 1; }
+IFS=, read -ra LANES <<<"$LANE"
+(( ${#LANES[@]} == 1 )) || [[ -z $CAL && -z $GPU && ,$LANE, != *,gpu,* ]] || { log "several lanes run the shapes on one database: not with --calibrate, --planning or the area gpu"; exit 1; }
+# the planner settings of a lane (serial plans, no JIT and the stock planner costs: the bands are ratios of the costs the server ships with, whatever its configuration)
+# and its key in test/plan/bands.tsv: stock, table, tuned, tabletuned or stock4t, with @ROWS at another size
+lane_settings() {
+	settings=(max_parallel_workers_per_gather=0 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4MB)
+	case $1 in
+		stock) ;;
+		tuned) settings=(max_parallel_workers_per_gather=8 jit=off seq_page_cost=100 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4GB hash_mem_multiplier=2) ;;
+		stock-4t) settings=(max_parallel_workers_per_gather=4 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=64MB) ;;
+		*) log "unknown lane $1 (stock, stock-4t, tuned or gpu)"; return 1 ;;
+	esac
+	[[ $1 != stock-4t || ( -z $TABLE && -z $CAL ) ]] || { log "--lane stock-4t has no --table bands, and --calibrate and --planning count the instructions of serial plans"; return 1; }
+	LK=${TABLE:+table}$(case $1 in tuned) echo tuned ;; stock-4t) echo stock4t ;; esac)
+	LK=${LK:-stock}
+	[[ $ROWS == 30000 ]] || LK+=@$ROWS
+	settings+=("plangate.lane=$LK")
+	[[ -z $CAL ]] || settings+=(max_parallel_workers_per_gather=0)
+}
+lane_apply() {
+	lane_settings "$1" || return 1
+	{ echo "ALTER DATABASE $DB RESET ALL;"; for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done; } | sql -q >/dev/null
+}
+for l in "${LANES[@]}"; do lane_settings "$l" || exit 1; done
+# the sessions that run the shapes (--jobs; default: up to 4 without timings, else 1: a time is measured alone)
+if [[ -z $JOBS ]]; then
+	JOBS=1
+	(( RUNS > 0 )) || [[ -n $GPU ]] || JOBS=$(( $(nproc) < 4 ? $(nproc) : 4 ))
+fi
 FMT_OPT=$(format_setting "$FORMAT") BANDS=$(format_bands "$FORMAT")
 DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
 testing=$(FMT_OPT= sql -qAt -c "CREATE EXTENSION pg_sift" -c "SELECT current_setting('sift.test_create_format1', true) IS NOT NULL" | tail -1)
 [[ $FORMAT != release || $testing != t ]] || { log "--format release needs the release library (SIFT_TESTING= scripts/pgtest.sh install), this cluster has the testing one"; exit 1; }
 [[ $FORMAT == release || $testing == t ]] || { log "--format $FORMAT needs the testing library (scripts/pgtest.sh install), this cluster has the release one"; exit 1; }
-# serial plans, no JIT and the stock planner costs: the bands are ratios of the costs the server ships with, whatever its configuration
-settings=(max_parallel_workers_per_gather=0 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4MB)
-case $LANE in
-	stock) ;;
-	tuned) settings=(max_parallel_workers_per_gather=8 jit=off seq_page_cost=100 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4GB hash_mem_multiplier=2) ;;
-	stock-4t) settings=(max_parallel_workers_per_gather=4 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=64MB) ;;
-	*) log "unknown lane $LANE (stock, stock-4t, tuned or gpu)"; exit 1 ;;
-esac
-[[ $LANE != stock-4t || ( -z $TABLE && -z $CAL ) ]] || { log "--lane stock-4t has no --table bands, and --calibrate and --planning count the instructions of serial plans"; exit 1; }
-# the lane of the bands of test/plan/bands.tsv: stock, table, tuned, tabletuned or stock4t, with @ROWS at another size
-LK=${TABLE:+table}$(case $LANE in tuned) echo tuned ;; stock-4t) echo stock4t ;; esac)
-LK=${LK:-stock}
-[[ $ROWS == 30000 ]] || LK+=@$ROWS
-[[ $LANE == stock ]] || PARALLEL=1
-settings+=("plangate.lane=$LK")
-[[ -z $CAL ]] || settings+=(max_parallel_workers_per_gather=0)
-for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done | sql -q >/dev/null
+lane_apply "${LANES[0]}"
 if [[ -n $GPU ]]; then
 	device=$(gpu_probe)
 	if [[ -z $device ]]; then
@@ -321,45 +337,67 @@ fi
 log "tables: $ROWS events, seed $SEED"
 sql -q -v n="$ROWS" -v seed="$SEED" -f "$REPO/test/col/run.sql" -f "$REPO/test/plan/gen.sql" ${TABLE:+-f "$REPO/test/plan/table.sql"} -f "$REPO/test/plan/run.sql" ${CAL:+-f "$REPO/test/plan/calibrate.sql"} >/dev/null
 [[ -z $CAL ]] || { if [[ -n $PLAN ]]; then planning; else calibrate; fi; exit $?; }
-log "shapes"
 sql -q <<-SQL >/dev/null
 	\\copy plangate.bands FROM '$REPO/test/plan/$BANDS'
 SQL
-sql -q -v runs="$RUNS" -v pattern="$ONLY" -v areas="$AREAS_RUN" >/dev/null <<-SQL
-	\\set text \`cat '$REPO/test/plan/shapes.sql'\`
-	SELECT plangate.run_all(:'text', :runs, :'pattern', :'areas');
-SQL
 
-if [[ -n $UPDATE ]]; then
-	# the plan this lane chooses (either stays) and the band of a factor of 2 around its ratio, in 2 significant digits
-	sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan ELSE chosen END,
-		coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int)::text, '-'), coalesce(round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int)::text, '-')
-		FROM plangate.results" >"${SIFT_TMP}/plangate-bands.tsv"
-	merge_bands "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/$BANDS" || { rm -f "${SIFT_TMP}/plangate-bands.tsv"; exit 1; }
-	rm -f "${SIFT_TMP}/plangate-bands.tsv"
-	log "updated the $LK rows of test/plan/$BANDS"
-fi
+# the shapes in JOBS sessions, each its slice of them, into plangate.results
+run_shapes() {
+	local j pids=() rc=0
+	for (( j = 0; j < JOBS; j++ )); do
+		sql -q -v runs="$RUNS" -v pattern="$ONLY" -v areas="$AREAS_RUN" -v job="$j" -v jobs="$JOBS" >/dev/null <<-SQL &
+			\\set text \`cat '$REPO/test/plan/shapes.sql'\`
+			SELECT plangate.run_all(:'text', :runs, :'pattern', :'areas', :job, :jobs);
+		SQL
+		pids+=($!)
+	done
+	for j in "${pids[@]}"; do wait "$j" || rc=1; done
+	return $rc
+}
 
 # the expected plans and cost bands, of every lane, are the costs of PostgreSQL 18: on another major their drift is a warning, a wrong result still fails
 hard=true
 (( $(sql -qAt -c 'SHOW server_version_num') / 10000 == 18 )) || hard="p !~ '^(plan|ratio):'"
-sql -q -P footer=off <<-SQL
-	SELECT name AS shape, chosen, plan AS expected, round(ratio::numeric, 3) AS cost_ratio, concat_ws(' ', lo, hi) AS band,
-		   round(native_ms::numeric, 1) AS native_ms, round(scan_ms::numeric, 1) AS scan_ms, verdict, ${PARALLEL:+native_workers || '/' || workers AS workers,}
-		   CASE WHEN EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard) THEN 'FAIL' END AS check
-	FROM plangate.results ORDER BY name
-SQL
-sql -qAt <<-SQL
-	SELECT CASE WHEN $hard THEN 'FAIL ' ELSE 'WARN ' END || name || ': ' || p FROM plangate.results, unnest(problems) p ORDER BY name LIMIT 40;
-	SELECT format('plangate: %s shapes, %s on the scan, %s wins, %s ties, %s loses, %s missed wins, %s failures',
-		count(*), count(*) FILTER (WHERE chosen = 'scan'), count(*) FILTER (WHERE verdict = 'win'), count(*) FILTER (WHERE verdict = 'tie'),
-		count(*) FILTER (WHERE verdict = 'lose'), count(*) FILTER (WHERE verdict = 'miss'),
-		count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard)))
-	FROM plangate.results;
-SQL
-bad=$(sql -qAt -c "SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard)) + CASE WHEN ${WARN:-0} = 1 THEN 0 ELSE count(*) FILTER (WHERE verdict = 'lose') END FROM plangate.results")
-total=$(sql -qAt -c "SELECT count(*) FROM plangate.results")
-(( total > 0 )) || { log "FAIL: no shape ran"; exit 1; }
-if [[ -n $WARN ]]; then sql -qAt -c "SELECT 'WARN ' || name || ': the scan is slower than native (' || round(scan_ms::numeric, 1) || ' ms against ' || round(native_ms::numeric, 1) || ')' FROM plangate.results WHERE verdict = 'lose' ORDER BY name"; fi
-[[ -z ${device:-} ]] || gpu_arbitration || bad=1
-(( bad == 0 )) || exit 1
+
+# one lane on the tables: its settings (the first lane's are those the tables were built under), the shapes, the update of its bands and its report; BAD=1 when it fails
+run_lane() {
+	local parallel= bad total
+	[[ $1 == stock ]] || parallel=1
+	if [[ $1 == "${LANES[0]}" ]]; then lane_settings "$1"; else lane_apply "$1"; fi
+	sql -q -c "TRUNCATE plangate.results" >/dev/null
+	log "shapes${LANES[1]:+ of the lane $LK}, $JOBS sessions"
+	run_shapes || exit 1
+	if [[ -n $UPDATE ]]; then
+		# the plan this lane chooses (either stays) and the band of a factor of 2 around its ratio, in 2 significant digits
+		sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan ELSE chosen END,
+			coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int)::text, '-'), coalesce(round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int)::text, '-')
+			FROM plangate.results" >"${SIFT_TMP}/plangate-bands.tsv"
+		merge_bands "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/$BANDS" || { rm -f "${SIFT_TMP}/plangate-bands.tsv"; exit 1; }
+		rm -f "${SIFT_TMP}/plangate-bands.tsv"
+		log "updated the $LK rows of test/plan/$BANDS"
+	fi
+	sql -q -P footer=off <<-SQL
+		SELECT name AS shape, chosen, plan AS expected, round(ratio::numeric, 3) AS cost_ratio, concat_ws(' ', lo, hi) AS band,
+			   round(native_ms::numeric, 1) AS native_ms, round(scan_ms::numeric, 1) AS scan_ms, verdict, ${parallel:+native_workers || '/' || workers AS workers,}
+			   CASE WHEN EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard) THEN 'FAIL' END AS check
+		FROM plangate.results ORDER BY name
+	SQL
+	sql -qAt <<-SQL
+		SELECT CASE WHEN $hard THEN 'FAIL ' ELSE 'WARN ' END || name || ': ' || p FROM plangate.results, unnest(problems) p ORDER BY name LIMIT 40;
+		SELECT format('plangate${LANES[1]:+ $LK}: %s shapes, %s on the scan, %s wins, %s ties, %s loses, %s missed wins, %s failures',
+			count(*), count(*) FILTER (WHERE chosen = 'scan'), count(*) FILTER (WHERE verdict = 'win'), count(*) FILTER (WHERE verdict = 'tie'),
+			count(*) FILTER (WHERE verdict = 'lose'), count(*) FILTER (WHERE verdict = 'miss'),
+			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard)))
+		FROM plangate.results;
+	SQL
+	bad=$(sql -qAt -c "SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard)) + CASE WHEN ${WARN:-0} = 1 THEN 0 ELSE count(*) FILTER (WHERE verdict = 'lose') END FROM plangate.results")
+	total=$(sql -qAt -c "SELECT count(*) FROM plangate.results")
+	(( total > 0 )) || { log "FAIL: no shape ran"; exit 1; }
+	if [[ -n $WARN ]]; then sql -qAt -c "SELECT 'WARN ' || name || ': the scan is slower than native (' || round(scan_ms::numeric, 1) || ' ms against ' || round(native_ms::numeric, 1) || ')' FROM plangate.results WHERE verdict = 'lose' ORDER BY name"; fi
+	(( bad == 0 )) || BAD=1
+}
+
+BAD=0
+for l in "${LANES[@]}"; do run_lane "$l"; done
+[[ -z ${device:-} ]] || gpu_arbitration || BAD=1
+(( BAD == 0 )) || exit 1
