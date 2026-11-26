@@ -14,6 +14,7 @@ hash-seq-hot	src/bm25/tail.c	1	a bounded table walked once per call
 hash-seq-hot	src/bm25/wbind.c	1	a bounded table walked once per call
 hash-seq-hot	src/col/f2/gbuf/int.h	1	a bounded table walked once per call
 hash-seq-hot	src/col/keystore/view.c	1	a bounded table walked once per call
+hash-seq-hot	src/core/quarantine/flags.c	1	a bounded cache walked only on eviction
 hash-seq-hot	src/core/v1_col/tomb/tomb.c	1	a bounded table walked once per call
 hash-seq-hot	src/table/v1/store.c	3	a bounded table walked once per call
 manifest-unbounded	src/col/f2/check_blocks.c	1	sift.check proves the ownership of every block of the relation: it reads every partition by definition

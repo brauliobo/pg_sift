@@ -824,6 +824,8 @@ core/progress.c
 core/progress.h
 core/quarantine/quarantine.c
 core/quarantine/quarantine.h
+core/quarantine/flags.c
+core/quarantine/flags.h
 core/quarantine/int.h
 core/quarantine/plan.c
 core/quarantine/set.c
