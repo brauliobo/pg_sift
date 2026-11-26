@@ -562,7 +562,7 @@ window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)
 	{
-		if (!sift_v6_source_usable(&src[i]) || !sift_v6_rel_ordered(src[i].reloid, src[i].is_table) || wc->orderClause == NIL)
+		if (!sift_v6_source_usable(&src[i]) || wc->orderClause == NIL)
 			continue;
 		for (WinPartMode mode = WIN_EXACT; mode <= WIN_REGROUP; mode++)
 			if (window_try(root, input_rel, output_rel, &src[i], wc, mode))
