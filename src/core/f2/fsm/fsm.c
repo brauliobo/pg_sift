@@ -20,6 +20,7 @@
 #include "core/f2/pace.h"
 #include "core/f2/fsm/int.h"
 #include "core/horizon.h"
+#include "core/maint/maint.h"
 #include "core/page_io.h"
 #include "core/restrict.h"
 #include "core/shm/lease.h"
@@ -771,7 +772,7 @@ sift_fsm_tail_shrink(Relation rel)
 		free_blocks += st.class_blocks[k];
 	if ((free_blocks < SIFT_TAIL_SHRINK_MIN_BLOCKS || free_blocks * 100 < (uint64) hw * SIFT_TAIL_SHRINK_FREE_PCT) && RelationGetNumberOfBlocks(rel) <= hw)
 		return res;
-	if (!try_lock_truncate(rel, !AmAutoVacuumWorkerProcess() && MyBgworkerEntry == NULL))
+	if (sift_maint_standby_streams() || !try_lock_truncate(rel, !AmAutoVacuumWorkerProcess() && MyBgworkerEntry == NULL))
 	{
 		res.lock_skipped = true;
 		note_shrink(rel, false);

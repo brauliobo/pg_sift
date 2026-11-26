@@ -760,7 +760,7 @@ sift_fsm_sweep_orphans(Relation rel)
 	bool		had_lock = CheckRelationLockedByMe(rel, AccessExclusiveLock, false);
 	uint64		freed = 0;
 
-	if (!sweep_allowed(rel) || (!had_lock && !ConditionalLockRelation(rel, AccessExclusiveLock)))
+	if (!sweep_allowed(rel) || (!had_lock && (sift_maint_standby_streams() || !ConditionalLockRelation(rel, AccessExclusiveLock))))
 		return 0;
 	if (ConditionalLockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock))
 	{

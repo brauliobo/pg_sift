@@ -17,6 +17,7 @@
 #include "col/f2/tail_plan.h"
 #include "col/f2/part/format.h"
 #include "core/f2/fsm/fsm.h"
+#include "core/maint/maint.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "core/restrict.h"
@@ -481,7 +482,7 @@ rehome_slabs(Relation rel)
 static void
 rehome_run(Relation rel)
 {
-	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
+	if (sift_maint_standby_streams() || !ConditionalLockRelation(rel, AccessExclusiveLock))
 		return;
 	if (rehome_slabs(rel))
 	{
