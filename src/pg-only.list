@@ -15,6 +15,8 @@ agg/gpu/emit.c
 agg/gpu/emit.h
 agg/gpu/local.c
 agg/gpu/shm.h
+agg/gpu/slot.c
+agg/gpu/slot.h
 agg/gpu/scan.c
 agg/gpu/scan.h
 agg/gpu/worker.c

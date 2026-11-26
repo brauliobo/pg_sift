@@ -17,7 +17,7 @@
 #include "agg/vk/vk.h"
 
 #define SIFT_GPU_SHM_NAME			"sift_gpu_shm_v6"
-#define SIFT_GPU_SHM_VERSION		2
+#define SIFT_GPU_SHM_VERSION		3
 #define SIFT_GPU_SLOTS				4
 /* MEM[MEM-VK-02]: SiftGpuShm staging DSM (SIFT_GPU_SLOTS * 4MiB = 16MiB of pinned shared memory, pages of idle slots dropped from the worker; was 4 * 16MiB) */
 #define SIFT_GPU_STAGE_BYTES		((Size) 4 << 20)
@@ -111,8 +111,9 @@ typedef struct SiftGpuWireJob
 
 typedef struct SiftGpuSlot
 {
-	pg_atomic_uint32 state;		/* SiftGpuSlotState */
-	pg_atomic_uint32 cancelled;	/* the backend left: the worker drops the job and frees the slot */
+	pg_atomic_uint64 word;		/* generation << 32 | SiftGpuSlotState (agg/gpu/slot.h) */
+	pg_atomic_uint32 cancelled;	/* the generation whose backend left: the worker drops the job and frees the slot */
+	uint32		owner_gen;		/* the generation owner_pid is of, written after it */
 	int32		owner_pid;
 	ProcNumber	owner_procno;
 	uint32		kind;			/* SiftGpuReqKind */

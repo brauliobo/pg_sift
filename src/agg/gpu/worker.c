@@ -5,7 +5,6 @@
  */
 #include "postgres.h"
 
-#include <errno.h>
 #include <signal.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -21,10 +20,10 @@
 #include "utils/wait_event.h"
 
 #include "agg/gpu/shm.h"
+#include "agg/gpu/slot.h"
 #include "agg/gpu/scan.h"
 #include "agg/vk/layout.h"
 #include "col/dsmreg.h"
-#include "core/memtrack.h"
 #include "core/memtrack.h"
 
 #ifndef SIFT_VULKAN
@@ -98,8 +97,6 @@ sift_gpu_worker_main(Datum main_arg)
 #define LOCAL_BATCH_BYTES		((uint64) 128 << 20)
 #define WAIT_SLICE_MS			5
 #define START_WAIT_MS			2000
-/* A backend that finds every slot busy waits this long, then gives its job to the CPU: a slot is held for a whole job, often longer */
-#define SLOT_WAIT_MS			20
 #define FAILED_RETRY_US			(30 * USECS_PER_SEC)
 #define ALIGN8(x)				TYPEALIGN(8, (x))
 
@@ -269,6 +266,7 @@ typedef struct WorkerState
 	MemoryContext jobcx;		/* NULL between jobs: nothing of the worker is a context of its own while it waits */
 	MemoryContext basecx;
 	const SiftGpuSlot *cur;
+	uint32		gen;			/* of cur */
 } WorkerState;
 
 static WorkerState *worker;
@@ -279,17 +277,11 @@ heartbeat(SiftGpuShm *shm)
 	pg_atomic_write_u64(&shm->heartbeat_us, (uint64) GetCurrentTimestamp());
 }
 
-static void
-wake(const SiftGpuSlot *slot)
-{
-	SetLatch(&GetPGProcByNumber(slot->owner_procno)->procLatch);
-}
-
 static bool
 worker_cancelled(void)
 {
 	heartbeat(worker->shm);
-	return pg_atomic_read_u32((pg_atomic_uint32 *) &worker->cur->cancelled) != 0 || ProcDiePending;
+	return sift_gpu_slot_cancelled(worker->cur, worker->gen) || ProcDiePending;
 }
 
 static void
@@ -307,7 +299,7 @@ shm_init(SIFT_DSM_INIT_ARGS)
 	pg_atomic_init_u64(&shm->host_bytes, 0);
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 	{
-		pg_atomic_init_u32(&shm->slot[i].state, SIFT_GPU_S_FREE);
+		pg_atomic_init_u64(&shm->slot[i].word, sift_gpu_slot_word(0, SIFT_GPU_S_FREE));
 		pg_atomic_init_u32(&shm->slot[i].cancelled, 0);
 	}
 }
@@ -334,19 +326,14 @@ worker_exit(pg_attribute_unused() int code, Datum arg)
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 	{
 		SiftGpuSlot *s = &shm->slot[i];
-		uint32		st = pg_atomic_read_u32(&s->state);
+		uint64		w = sift_gpu_slot_read(s);
+		SiftGpuSlotState st = sift_gpu_slot_state(w);
 
 		if (st != SIFT_GPU_S_SUBMITTED && st != SIFT_GPU_S_RUNNING)
 			continue;
-		if (pg_atomic_read_u32(&s->cancelled) != 0)
-			pg_atomic_write_u32(&s->state, SIFT_GPU_S_FREE);
-		else
-		{
-			s->status = SIFT_VK_LOST;
-			snprintf(s->error, sizeof(s->error), "the GPU worker ended");
-			pg_atomic_write_u32(&s->state, SIFT_GPU_S_DONE);
-			wake(s);
-		}
+		s->status = SIFT_VK_LOST;
+		snprintf(s->error, sizeof(s->error), "the GPU worker ended");
+		sift_gpu_slot_finish(s, sift_gpu_slot_gen(w), st);
 	}
 	if (worker->jobcx != NULL)
 	{
@@ -431,24 +418,16 @@ serve_run(WorkerState *w, SiftGpuSlot *s, char *stage)
 	s->status = st;
 }
 
-/* Of a job whose backend left: whichever of the worker (done after it) and the backend (cancelled before it) comes last frees the slot, for the other may not have seen it */
-static void
-slot_free_done(SiftGpuSlot *s)
-{
-	uint32		st = SIFT_GPU_S_DONE;
-
-	pg_atomic_compare_exchange_u32(&s->state, &st, SIFT_GPU_S_FREE);
-}
-
 /* MEM[MEM-VK-01]: gpu worker jobcx ("sift gpu job" made for each job and deleted when it ends, so none is live while the worker waits or exits idle: the leak gate of leak_test.c finds nothing) */
 static void
-serve(WorkerState *w, SiftGpuSlot *s, char *stage)
+serve(WorkerState *w, SiftGpuSlot *s, uint32 gen, char *stage)
 {
 	MemoryContext old = MemoryContextSwitchTo(w->basecx);
 
 	w->jobcx = sift_mem_allocset_create(w->basecx, "sift gpu job");
 	MemoryContextSwitchTo(w->jobcx);
 	w->cur = s;
+	w->gen = gen;
 	s->error[0] = '\0';
 	PG_TRY();
 	{
@@ -473,7 +452,7 @@ serve(WorkerState *w, SiftGpuSlot *s, char *stage)
 		FlushErrorState();
 		s->status = SIFT_VK_FAIL;
 		strlcpy(s->error, ed->message, sizeof(s->error));
-		if (pg_atomic_read_u32(&s->cancelled) == 0)
+		if (!sift_gpu_slot_cancelled(s, gen))
 			ereport(LOG, (errmsg("sift: GPU worker: %s", ed->message)));
 	}
 	PG_END_TRY();
@@ -482,10 +461,7 @@ serve(WorkerState *w, SiftGpuSlot *s, char *stage)
 	MemoryContextDelete(w->jobcx);
 	w->jobcx = NULL;
 	w->cur = NULL;
-	pg_atomic_write_u32(&s->state, SIFT_GPU_S_DONE);
-	wake(s);
-	if (pg_atomic_read_u32(&s->cancelled) != 0)
-		slot_free_done(s);
+	sift_gpu_slot_finish(s, gen, SIFT_GPU_S_RUNNING);
 }
 
 /* The worker idle: the device is closed with its buffers, cache and compiled kernels (the next job opens it again: what the driver keeps of a device grows with the kernels it ran), the pages of the free staging areas leave this process, and the heap goes back to the system */
@@ -496,7 +472,7 @@ worker_idle_release(WorkerState *w)
 
 	sift_vk_seat_close(&w->seat);
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
-		if (pg_atomic_read_u32(&w->shm->slot[i].state) == SIFT_GPU_S_FREE)
+		if (sift_gpu_slot_state(sift_gpu_slot_read(&w->shm->slot[i])) == SIFT_GPU_S_FREE)
 			(void) madvise((void *) TYPEALIGN(page, sift_gpu_stage(w->shm, i)), SIFT_GPU_STAGE_BYTES - page, MADV_DONTNEED);
 	sift_mem_trim_os();
 }
@@ -525,15 +501,16 @@ worker_loop(WorkerState *w, const WorkerExtra *extra)
 		heartbeat(shm);
 		for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 		{
-			uint32		st = SIFT_GPU_S_SUBMITTED;
+			SiftGpuSlot *s = &shm->slot[i];
+			const uint32 gen = sift_gpu_slot_gen(sift_gpu_slot_read(s));
 
-			if (!pg_atomic_compare_exchange_u32(&shm->slot[i].state, &st, SIFT_GPU_S_RUNNING))
+			if (!sift_gpu_slot_move(s, gen, SIFT_GPU_S_SUBMITTED, SIFT_GPU_S_RUNNING))
 				continue;
 			did = true;
-			if (pg_atomic_read_u32(&shm->slot[i].cancelled) != 0)
-				pg_atomic_write_u32(&shm->slot[i].state, SIFT_GPU_S_FREE);
+			if (sift_gpu_slot_cancelled(s, gen))
+				(void) sift_gpu_slot_move(s, gen, SIFT_GPU_S_RUNNING, SIFT_GPU_S_FREE);
 			else
-				serve(w, &shm->slot[i], sift_gpu_stage(shm, i));
+				serve(w, s, gen, sift_gpu_stage(shm, i));
 		}
 		CHECK_FOR_INTERRUPTS();
 		if (did)
@@ -591,20 +568,6 @@ struct SiftGpuConn
 };
 
 static bool
-worker_alive(const SiftGpuShm *shm)
-{
-	uint32		pid = pg_atomic_read_u32((pg_atomic_uint32 *) &shm->worker_pid);
-
-	return pid != 0 && (kill((pid_t) pid, 0) == 0 || errno != ESRCH);
-}
-
-static bool
-worker_fresh(SiftGpuShm *shm)
-{
-	return (uint64) GetCurrentTimestamp() - pg_atomic_read_u64(&shm->heartbeat_us) < (uint64) SIFT_GPU_STALE_US || worker_alive(shm);
-}
-
-static bool
 register_worker(SiftGpuShm *shm)
 {
 	BackgroundWorker bw = {0};
@@ -637,7 +600,7 @@ ensure_worker(SiftGpuShm *shm, const char **why)
 	{
 		uint32		st = pg_atomic_read_u32(&shm->worker_state);
 
-		if (st == SIFT_GPU_W_READY && worker_fresh(shm))
+		if (st == SIFT_GPU_W_READY && sift_gpu_worker_fresh(shm))
 			return true;
 		if (st == SIFT_GPU_W_FAILED && (uint64) GetCurrentTimestamp() - pg_atomic_read_u64(&shm->failed_at_us) < (uint64) FAILED_RETRY_US)
 		{
@@ -658,7 +621,7 @@ ensure_worker(SiftGpuShm *shm, const char **why)
 		CHECK_FOR_INTERRUPTS();
 		waited += WAIT_SLICE_MS;
 	}
-	if (pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_STARTING && !worker_alive(shm))
+	if (pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_STARTING && !sift_gpu_worker_alive(shm))
 		pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
 	*why = shm->last_error[0] ? shm->last_error : "the GPU worker did not start in time";
 	return false;
@@ -762,86 +725,19 @@ sift_gpu_conn_error(const SiftGpuConn *c)
 	return c->shm != NULL ? c->error : sift_vk_error(c->vk);
 }
 
-static bool
-owner_gone(const SiftGpuSlot *s)
-{
-	return s->owner_pid != 0 && kill((pid_t) s->owner_pid, 0) != 0 && errno == ESRCH;
-}
-
-static int
-slot_claim(SiftGpuShm *shm)
-{
-	for (int waited = 0; waited < SLOT_WAIT_MS; waited += WAIT_SLICE_MS)
-	{
-		for (int i = 0; i < SIFT_GPU_SLOTS; i++)
-		{
-			SiftGpuSlot *s = &shm->slot[i];
-			uint32		st = pg_atomic_read_u32(&s->state);
-
-			if ((st == SIFT_GPU_S_CLAIMED || st == SIFT_GPU_S_DONE) && owner_gone(s))
-				pg_atomic_compare_exchange_u32(&s->state, &st, SIFT_GPU_S_FREE);
-			st = SIFT_GPU_S_FREE;
-			if (pg_atomic_compare_exchange_u32(&s->state, &st, SIFT_GPU_S_CLAIMED))
-			{
-				s->owner_pid = MyProcPid;
-				s->owner_procno = MyProcNumber;
-				pg_atomic_write_u32(&s->cancelled, 0);
-				return i;
-			}
-		}
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, WAIT_SLICE_MS, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
-	}
-	return -1;
-}
-
-/* A backend that leaves its slot (an error, a cancel): the worker drops the job and frees it; one that never submitted, or whose worker is gone, frees it itself */
-static void
-slot_abandon(SiftGpuShm *shm, SiftGpuSlot *s)
-{
-	uint32		st;
-
-	pg_atomic_write_u32(&s->cancelled, 1);
-	st = pg_atomic_read_u32(&s->state);
-	if (st == SIFT_GPU_S_CLAIMED || !worker_alive(shm))
-		pg_atomic_write_u32(&s->state, SIFT_GPU_S_FREE);
-	else
-	{
-		slot_free_done(s);
-		SetLatch(&GetPGProcByNumber(shm->worker_procno)->procLatch);
-	}
-}
-
-/* True when the worker answered; false when it is gone */
-static bool
-slot_wait(SiftGpuShm *shm, SiftGpuSlot *s)
-{
-	for (;;)
-	{
-		if (pg_atomic_read_u32(&s->state) == SIFT_GPU_S_DONE)
-			return true;
-		if (pg_atomic_read_u32(&shm->worker_state) != SIFT_GPU_W_READY || !worker_fresh(shm))
-			return false;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, WAIT_SLICE_MS, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
-	}
-}
-
 /* Submits what the caller put in slot i and waits for the answer; the slot is the caller's again when this returns true */
 static bool
-submit(SiftGpuConn *c, int i)
+submit(SiftGpuConn *c, int i, uint32 gen)
 {
 	SiftGpuShm *shm = c->shm;
 	SiftGpuSlot *s = &shm->slot[i];
 
-	pg_atomic_write_u32(&s->state, SIFT_GPU_S_SUBMITTED);
+	sift_gpu_slot_set(s, gen, SIFT_GPU_S_SUBMITTED);
 	SetLatch(&GetPGProcByNumber(shm->worker_procno)->procLatch);
-	if (slot_wait(shm, s))
+	if (sift_gpu_slot_wait(shm, s, gen))
 		return true;
 	snprintf(c->error, sizeof(c->error), "the GPU worker is gone");
-	slot_abandon(shm, s);
+	sift_gpu_slot_abandon(shm, s, gen);
 	return false;
 }
 
@@ -875,7 +771,8 @@ static SiftVkStatus
 remote_run(SiftGpuConn *c, const SiftVkJob *job, SiftVkResult *res)
 {
 	SiftGpuShm *shm = c->shm;
-	int			i = slot_claim(shm);
+	uint32		gen;
+	int			i = sift_gpu_slot_claim(shm, &gen);
 	SiftGpuSlot *s;
 	char	   *stage;
 	const char *why;
@@ -894,16 +791,16 @@ remote_run(SiftGpuConn *c, const SiftVkJob *job, SiftVkResult *res)
 	if (!wire_pack(stage, &s->job, job, &why))
 	{
 		snprintf(c->error, sizeof(c->error), "%s", why);
-		pg_atomic_write_u32(&s->state, SIFT_GPU_S_FREE);
+		sift_gpu_slot_set(s, gen, SIFT_GPU_S_FREE);
 		return SIFT_VK_FAIL;
 	}
 	PG_TRY();
 	{
-		answered = submit(c, i);
+		answered = submit(c, i, gen);
 	}
 	PG_CATCH();
 	{
-		slot_abandon(shm, s);
+		sift_gpu_slot_abandon(shm, s, gen);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -918,7 +815,7 @@ remote_run(SiftGpuConn *c, const SiftVkJob *job, SiftVkResult *res)
 	}
 	PG_FINALLY();
 	{
-		pg_atomic_write_u32(&s->state, SIFT_GPU_S_FREE);
+		sift_gpu_slot_set(s, gen, SIFT_GPU_S_FREE);
 	}
 	PG_END_TRY();
 	return st;
@@ -942,7 +839,8 @@ static void
 resident_remote(SiftGpuConn *c, uint64 tables, const SiftVkKey *keys, uint32 m, uint8 *out)
 {
 	SiftGpuShm *shm = c->shm;
-	int			i = slot_claim(shm);
+	uint32		gen;
+	int			i = sift_gpu_slot_claim(shm, &gen);
 	SiftGpuSlot *s;
 	char	   *stage;
 
@@ -957,16 +855,16 @@ resident_remote(SiftGpuConn *c, uint64 tables, const SiftVkKey *keys, uint32 m, 
 	memcpy(stage, keys, (Size) m * sizeof(SiftVkKey));
 	PG_TRY();
 	{
-		if (submit(c, i))
+		if (submit(c, i, gen))
 		{
 			if (s->status == SIFT_VK_OK)
 				memcpy(out, stage + ALIGN8((Size) m * sizeof(SiftVkKey)), m);
-			pg_atomic_write_u32(&s->state, SIFT_GPU_S_FREE);
+			sift_gpu_slot_set(s, gen, SIFT_GPU_S_FREE);
 		}
 	}
 	PG_CATCH();
 	{
-		slot_abandon(shm, s);
+		sift_gpu_slot_abandon(shm, s, gen);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
