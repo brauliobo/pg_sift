@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# The background workers of the maintenance, stopped in the middle of a step: a maintenance worker of a sift_col index held when it enters its promote phase (sift.test_progress_gate, a gate of the
+# The background workers of the maintenance, stopped in the middle of a step: a maintenance worker of a Format 1 sift_col index (the format whose worker promotes) held when it enters its promote phase (sift.test_progress_gate, a gate of the
 # worker only, no sleep) and the worker that promotes a sealed buffer of a BM25 index held in its step (sift.test_progress_gate), each ended by a terminate of the worker and by an immediate
 # shutdown of the server. Afterwards nobody holds a lock, no progress slot is left, the index verifies, the answers through it are the table's, and the maintenance resumes: the next request
 # starts a worker that finishes what is due (no write buffer rows left in the sift_col index, no sealed buffer left of the BM25 index).
@@ -18,7 +18,7 @@ sql wk "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension fai
 setup() { # KIND: a fresh table with an index of the kind
 	sql wk "DROP TABLE IF EXISTS facts, docs CASCADE" >/dev/null
 	case $1 in
-		col) sql wk "CREATE TABLE facts (id int, key int, amount numeric(10,2), pad text)" \
+		col) sql wk "SET sift.test_create_format1 = on" "CREATE TABLE facts (id int, key int, amount numeric(10,2), pad text)" \
 			"INSERT INTO facts SELECT g, g % 1000, g % 997, repeat('x', 150) FROM generate_series(1, 20000) g" \
 			"CREATE INDEX facts_idx ON facts USING sift_col (id, key, amount)" "VACUUM facts" >/dev/null ;;
 		bm25) sql wk "CREATE TABLE docs (id int, body text)" "CREATE INDEX docs_idx ON docs USING sift (body) WITH (write_buffer_limit = 64)" >/dev/null ;;
