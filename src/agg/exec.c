@@ -811,6 +811,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ex.grans_preagg_delta = st->stats.grans_preagg_delta;
 	if (st->par != NULL)
 		explain_par(st->par, &ex);
+	if (st->par != NULL && !es->analyze)
+		ExplainPropertyText("Parallel Strategy", ex.par_strategy, es);
 	if (es->analyze)
 		sift_agg_explain_v6(es, &ex, sift_simd_level_name(sift_cpu.active), 0, 0);
 }

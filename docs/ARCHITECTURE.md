@@ -88,7 +88,7 @@ Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+
 - **Projections:** `Projection Parts`, `Projection Parts Sought`, `Projection Parts Subtracted`, `Projection Base Parts`, `Projection Base Rows`, `Projection Granules Read`, `Projection Granules Skipped`
 - **Fused pipelines, star joins and GPU:** `Fused Arms`, `Fused Keys`, `Fused Role`, `Shared Rows Vetted`, `Star Dimensions`, `Star Passes`, `Shared Dimensions`, `Join Type`, `Scope Read`, `GPU Parts`
 - **DISTINCT ON (`SiftAggV6First`):** `Distinct On Columns`, `Order Columns`, `Rows Read`, `Groups`, `Spilled Rows`, `Passes`
-- **Parallelism:** `Workers Planned`, `Workers Launched`, `Workers Priced For`, `Serial Because`, `Groups Split By`, `Rows Split By`
+- **Parallelism:** `Workers Planned`, `Workers Launched`, `Workers Priced For`, `Parallel Strategy`, `Serial Because`, `Groups Split By`, `Rows Split By`
 - **BM25 Search (`SiftScan`):** `Query`, `Search`, `Search Matches`, `Index Searches`, `Ranker Searches`, `Candidates`, `Blocks Scored`, `Blocks Skipped`, `Superblocks`, `Limit Hint`, `Include Tests`, `Score Filter`, `Key Passes`, `Filter Mask`, `Filter Mask From Matches`, `Filter Mask Up To Matches`, `Filter Superblocks`, `Filter Pages Exact`, `Filter Pages Lossy`
 
 ## 5. C Memory Safety and Verification
