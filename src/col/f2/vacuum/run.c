@@ -185,12 +185,20 @@ refresh_projections(Relation rel)
 	(void) sift_proj_refresh(rel, sift_f2_store_open(rel));
 }
 
+/* A base part the relocation rewrote has a generation its projection parts are not linked to: they are linked again here, not by the next maintenance */
+static void
+relocate_tail(Relation rel, FullTransactionId horizon, int64 hot_cut)
+{
+	sift_f2_tail_relocate(rel, sift_f2_store_open(rel), horizon, hot_cut);
+	refresh_projections(rel);
+}
+
 /* The blocks a compaction freed wait in the quarantine for the readers of the manifest it replaced: the first cut frees them, so that the holders at the end of the file have room to move into */
 static SiftTailShrinkResult
 shrink_tail(Relation rel, FullTransactionId horizon, int64 hot_cut)
 {
 	(void) sift_fsm_tail_shrink(rel);
-	sift_f2_tail_relocate(rel, sift_f2_store_open(rel), horizon, hot_cut);
+	relocate_tail(rel, horizon, hot_cut);
 	return sift_fsm_tail_shrink(rel);
 }
 
@@ -417,8 +425,7 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 		if (within)
 		{
 			(void) sift_compact_merge_neighbours(rel);
-			refresh_projections(rel);
-			sift_f2_tail_relocate(rel, sift_f2_store_open(rel), horizon, hot_cut);
+			relocate_tail(rel, horizon, hot_cut);
 		}
 		else
 			sift_vacuum_say_deferred(info->message_level, written);
