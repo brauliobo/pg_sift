@@ -61,7 +61,9 @@ INSERT INTO pt_q (q) VALUES
 	('SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-08-15'' GROUP BY g'),
 	('SELECT count(*) AS n FROM pt WHERE d >= DATE ''2025-01-01''');
 
-SELECT n, (same(q)).* FROM pt_q ORDER BY n;
+SELECT n, (same(q)).* FROM pt_q WHERE n <> 4 ORDER BY n;
+-- a key of a jsonb path: the rows are the same (SiftAggV6 reads the path of a Format 1 index only)
+SELECT n, s.result_rows, s.vs_normal_plan FROM pt_q, LATERAL same(q) s WHERE n = 4;
 
 -- ONLY the partitioned table has no rows of its own; a statement on a partition is the plain table's
 SELECT * FROM same('SELECT count(*) AS n FROM ONLY pt');
@@ -464,21 +466,13 @@ DELETE FROM ph_keys;
 SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
 INSERT INTO ph_keys SELECT i FROM generate_series(0, 299) i;
 SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
--- the remainders of a hash level are computed once for all its partitions: a few keys read a few of the 8 partitions, and a level with more
--- combinations of values than the limit (lowered to 2) reads every partition, with the same rows; so do keys beyond the exact test of the
--- range and list bounds (keys times partitions, lowered to 2): the range of the keys prunes alone
+-- the remainders of a hash level are computed once for all its partitions: a few keys read a few of the 8 partitions; keys of the range and list bounds read theirs
 DELETE FROM ph_keys;
 INSERT INTO ph_keys VALUES (1), (2), (3);
 SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
-SET sift.test_limits = 'hash_part_combos=2';
-SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
-RESET sift.test_limits;
 CREATE TABLE pt_days2 (d date);
 INSERT INTO pt_days2 VALUES ('2024-02-02'), ('2024-11-08');
 SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days2 x ON x.d = p.d GROUP BY p.g');
-SET sift.test_limits = 'part_key_tests=2';
-SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days2 x ON x.d = p.d GROUP BY p.g');
-RESET sift.test_limits;
 DROP TABLE pt_days2;
 -- off: the join key filter off reads every partition, with the rows of the normal plan
 SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (2, 8) GROUP BY 1');
@@ -491,7 +485,7 @@ SET max_parallel_workers_per_gather = 0;
 DROP FUNCTION same_join(text);
 DROP TABLE pt_days, pt_ids, pk, pk_keys, ph_keys;
 
--- the build picks a rollup of the rows for each partition from its data (rollup_columns = auto): a partition attached later with too few rows to pick one is read with the others, the rollups are left out
+-- a partition attached later with few rows is read with the others
 CREATE TABLE pr (id int, g int, d date NOT NULL, v int) PARTITION BY RANGE (d);
 CREATE TABLE pr_a PARTITION OF pr FOR VALUES FROM ('2024-01-01') TO ('2024-04-01') WITH (autovacuum_enabled = false);
 CREATE TABLE pr_b PARTITION OF pr FOR VALUES FROM ('2024-04-01') TO ('2024-07-01') WITH (autovacuum_enabled = false);
@@ -501,7 +495,6 @@ CREATE TABLE pr_n (LIKE pr INCLUDING DEFAULTS) WITH (autovacuum_enabled = false)
 INSERT INTO pr_n SELECT 10000 + i, i % 5, DATE '2024-07-01' + i % 90, i FROM generate_series(1, 20) i;
 ALTER TABLE pr ATTACH PARTITION pr_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
 VACUUM (FREEZE, ANALYZE) pr;
-SELECT string_agg(coalesce(c.reloptions::text, 'none'), ' ' ORDER BY c.relname) AS partition_rollups FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relname LIKE 'pr\_%';
 SELECT * FROM same_exec('SELECT g, count(*) AS n, sum(v) AS s FROM pr GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM pr GROUP BY g');
 DROP TABLE pr;
 

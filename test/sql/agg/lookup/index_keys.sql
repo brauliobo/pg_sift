@@ -35,7 +35,10 @@ CREATE INDEX pair_dup_gk ON pair_dup (grp, k);
 VACUUM (FREEZE, ANALYZE) ev;
 VACUUM (FREEZE, ANALYZE) pair, pair2, pair3, pair_part, pair_inc, pair_kg, pair_c, pair_dup;
 
-CREATE FUNCTION same(setup text, q text) RETURNS TABLE (pushed bool, lookup text, differing bigint, workers bigint) LANGUAGE plpgsql AS $$
+-- the settings of one statement end with it (the SET clauses of the function): a statement is planned as alone
+CREATE FUNCTION same(setup text, q text) RETURNS TABLE (pushed bool, lookup text, differing bigint, workers bigint) LANGUAGE plpgsql
+SET sift.agg_force FROM CURRENT SET sift.backend_cache_kb FROM CURRENT SET sift.shared_cache_kb FROM CURRENT SET sift.enable_agg FROM CURRENT
+SET parallel_setup_cost FROM CURRENT SET parallel_tuple_cost FROM CURRENT SET min_parallel_table_scan_size FROM CURRENT SET max_parallel_workers_per_gather FROM CURRENT AS $$
 DECLARE l text;
 BEGIN
 	EXECUTE 'SET LOCAL sift.agg_force = on';
@@ -84,10 +87,7 @@ INSERT INTO cases (name, setup, q) VALUES
 	('text key',                'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE tk IN (SELECT tk FROM pair WHERE grp = 2) GROUP BY kind$$),
 	-- a table the join keeps: its rows are not only keys
 	('inner, repeated key',     'SELECT 1', $$SELECT kind, count(*) AS n FROM ev JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
-	('inner, repeated key, no key filters', 'SET LOCAL sift.agg_join_filter = off', $$SELECT kind, count(*) AS n FROM ev JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
 	('left',                    'SELECT 1', $$SELECT kind, count(p.k) AS n FROM ev LEFT JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
-	('byte table refused',      'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.test_limits = ''semi_lut_bytes=1024''', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2) GROUP BY kind$$),
-	('byte table refused, anti', 'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.test_limits = ''semi_lut_bytes=1024''', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$),
 	-- the shapes of the index: the rows are the join's
 	('partial index',           'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_part WHERE grp = 2 AND NOT gone) GROUP BY kind$$),
 	('partial index, predicate not asked', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_part WHERE grp = 2) GROUP BY kind$$),

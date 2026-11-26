@@ -43,15 +43,10 @@ SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE day >= '2024-01-01' A
 SELECT plan_kind('EXECUTE off_q(''{1,2,3}'')') AS enable_agg_off;
 RESET sift.enable_agg;
 
--- on a column of one row per value the planner's own guess of 10 elements keeps the index scan (opening the scan costs more than 10 probes); the elements assumed by the param_set_elems limit move the choice
+-- on a column of one row per value the planner's own guess of 10 elements keeps the index scan (opening the scan costs more than 10 probes)
 PREPARE guess_q(int4[]) AS
 SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE ref = ANY ($1) GROUP BY kind ORDER BY kind;
 SELECT plan_kind('EXECUTE guess_q(''{1,2,3}'')') AS default_assumed;
-SET sift.test_limits = 'param_set_elems=0';
-PREPARE guess_q0(int4[]) AS
-SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE ref = ANY ($1) GROUP BY kind ORDER BY kind;
-SELECT plan_kind('EXECUTE guess_q0(''{1,2,3}'')') AS planner_guess;
-RESET sift.test_limits;
 
 -- the plan shows the parameter, and a query SiftAgg cannot run keeps its plan whatever the size of the array
 EXPLAIN (COSTS OFF) EXECUTE on_q('{1,2,3}');
@@ -132,7 +127,7 @@ SELECT kind_count('{a,c}', false) = (SELECT count(*) FROM ev WHERE kind IN ('a',
        kind_count('{a,c}', true) = (SELECT count(*) FROM ev WHERE kind IN ('a', 'c', 'd')) AS expanded;
 DROP FUNCTION kind_count(text[], bool);
 
--- a long list over a range wider than a byte table (4 million values) is a bit table (a hash table below sift.test_limits bits_set_values, 1024 members), for int4 and int8
+-- a long list over a range wider than a byte table (4 million values), for int4 and int8
 -- columns, IN and NOT IN, with a NULL element, an empty list and a value far beyond the others
 CREATE FUNCTION wide_set(far int, step int) RETURNS int4[] LANGUAGE sql AS 'SELECT array_agg(x) FROM (SELECT generate_series(1, 40000, step) UNION ALL SELECT far) s(x)';
 CREATE FUNCTION wide_set8(far int8, step int) RETURNS int8[] LANGUAGE sql AS 'SELECT array_agg(5000000000 + x) FROM (SELECT generate_series(1, 40000, step) UNION ALL SELECT far) s(x)';
@@ -145,19 +140,12 @@ SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM e
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE big_id = ANY ($1) GROUP BY kind', 'wide_set8(5030000000, 13)');
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE big_id <> ALL ($1) GROUP BY kind', 'wide_set8(5030000000, 13)');
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE big_id = ANY ($1) GROUP BY kind', 'array_append(wide_set8(5030000000, 13), NULL)');
--- the release library has no test_limits: the same lists then run against the default limit, with the same answers
-SELECT current_setting('sift.test_limits', true) IS NOT NULL AS limits \gset
-\if :limits
-SET sift.test_limits = 'bits_set_values=4';
-\endif
+-- a short list over a wide range
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id = ANY ($1) GROUP BY kind', '''{3,17,40000,5000000}''::int4[]');
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id <> ALL ($1) GROUP BY kind', '''{3,17,40000,5000000}''::int4[]');
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id = ANY ($1) GROUP BY kind', '''{3,17,NULL,40000,5000000}''::int4[]');
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id = ANY ($1) GROUP BY kind', '''{-2147483648,3,2147483647,17}''::int4[]');
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE big_id = ANY ($1) GROUP BY kind', '''{5000000001,5000000007,5004000000,5000000011}''::int8[]');
-\if :limits
-RESET sift.test_limits;
-\endif
 DROP FUNCTION wide_set(int, int);
 DROP FUNCTION wide_set8(int8, int);
 

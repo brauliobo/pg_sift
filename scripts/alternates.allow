@@ -18,10 +18,9 @@ test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17
 test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
 test/expected/agg/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
 test/expected/agg/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
-test/expected/agg/plan/tables_1.out	55fc321df3bd092db15a996db0656248b7376904	19	plan                       | result_rows | vs_normal_plan
+test/expected/agg/plan/tables_1.out	1003fd94fbe2001151019b9a1ddbe67dddc08361	19	QUERY PLAN
 test/expected/agg/plan/tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
-test/expected/agg/plan/tables_1.out	b5ccafa27970a6d1ac47af6e914cd1539605803d	19	semi_limit
-test/expected/agg/plan/tables_1.out	ca1668186929bafd661088ed0aef3fb20f8725aa	19	QUERY PLAN
+test/expected/agg/plan/tables_1.out	e27dc9de096ede2f9088587ed6eb69289afab2e5	19	plan                  | result_rows | vs_normal_plan
 test/expected/agg/scalar/dirty_1.out	04e2177fc4449c6ac87a22414d15172196161626	17	cast float8     | t      |     60 | same rows
 test/expected/agg/scalar/dirty_1.out	294d9e4bc2415f209f17e89f4d603cc926d16b8e	17	cast float8 raises    | t      | same ERR 22023 cannot cast jsonb string to typ
 test/expected/agg/scalar/dirty_1.out	3a02e2e359dab9074cb9aef22b7cc7b0ac5a7cb1	17	n        | pushed | reread |  outcome

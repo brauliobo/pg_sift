@@ -1,7 +1,7 @@
 -- The plan the planner picks on its own costs when the keys of the scan come from a lookup whose size PostgreSQL cannot count: a list of ids read
 -- from a table by a filter on a jsonb path or an expression has no statistics, and PostgreSQL expects a row or two of it (the normal plan is
 -- a nested loop of index probes priced for that), while the lists the queries pass hold a good share of the table's parents. The normal plan's
--- price is raised for the keys the distinct parents allow (the param_set_elems limit = 0 turns it off); a lookup whose filter PostgreSQL has
+-- price is raised for the keys the distinct parents allow; a lookup whose filter PostgreSQL has
 -- statistics for keeps its estimate. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -76,17 +76,6 @@ SELECT * FROM same(in_scope('d.id IN (3, 4)', 1));
 SELECT * FROM same(join_scope('d.id IN (3, 4)', 1));
 -- a CTE of a literal list is a count the planner knows: the btree plan reads the few parents
 SELECT * FROM same(cte_scope('d.id IN (3, 4)', 1));
--- the switch: the normal plan keeps the estimate
-SET sift.test_limits = 'param_set_elems=0';
-SELECT (plan_of(in_scope('d.settings ->> ''tier'' = ''tier_b''', 1))).plan AS plan_off;
-RESET sift.test_limits;
-
--- the price of the list PostgreSQL knows does not move with the switch
-SET sift.test_limits = 'param_set_elems=0';
-CREATE TEMP TABLE c_est AS SELECT cost AS known FROM plan_of(in_scope('d.id IN (3, 4)', 1));
-RESET sift.test_limits;
-SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)', 1))) = known AS known_unchanged FROM c_est;
-
 DROP FUNCTION in_scope(text, int), cte_scope(text, int), join_scope(text, int), plan_of(text), same(text);
 DROP TABLE sc_facts, sc_dims, sc_kinds;
 DROP EXTENSION pg_sift;

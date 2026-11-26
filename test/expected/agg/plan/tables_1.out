@@ -34,28 +34,28 @@ END $$;
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
 -- VALUES: a repeated key joins once per row of the list, a NULL key joins nothing, LEFT keeps what has no row once
 SELECT * FROM same($$SELECT m.label, count(*) AS n, sum(amount) AS s FROM ev e JOIN (VALUES ('north', 'N'), ('north', 'Nord'), ('east', 'E'), (NULL, 'none')) m(region, label) ON e.region = m.region GROUP BY m.label$$);
-      plan      | result_rows | vs_normal_plan 
-----------------+-------------+----------------
- SiftAgg values |           3 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT m.label, count(*) AS n, count(m.label) AS labelled FROM ev e LEFT JOIN (VALUES ('north', 'N'), ('north', 'Nord'), ('east', 'E'), (NULL, 'none')) m(region, label) ON e.region = m.region GROUP BY m.label$$);
-         plan          | result_rows | vs_normal_plan 
------------------------+-------------+----------------
- SiftAgg values (left) |           4 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT m.band, count(*) AS n, sum(amount * m.f) AS s FROM ev e JOIN (VALUES (1, 'a', 1.5), (2, 'a', 2.0), (2, 'b', 0.5), (NULL, 'z', 9.0)) m(tenant_id, band, f) ON e.tenant_id = m.tenant_id GROUP BY m.band$$);
-      plan      | result_rows | vs_normal_plan 
-----------------+-------------+----------------
- SiftAgg values |           2 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           2 |              0
 (1 row)
 
 -- IN (VALUES ...) is a semi lookup join before PostgreSQL 18 (its key filter says `key pass`) and a = ANY array from 18: the join list is not part of what the line proves
 SELECT regexp_replace(plan, 'values \(semi\), |, key pass', '', 'g') AS plan, result_rows, vs_normal_plan FROM same($$SELECT count(*) AS n FROM ev WHERE tenant_id IN (VALUES (1), (2), (2), (3), (NULL)) AND NOT EXISTS (SELECT 1 FROM (VALUES (2), (4)) v(id) WHERE v.id = ev.tenant_id)$$);
-               plan                | result_rows | vs_normal_plan 
------------------------------------+-------------+----------------
- SiftAgg values (anti), semi table |           1 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           1 |              0
 (1 row)
 
 -- a sub-select with GROUP BY (a NULL group has a row that matches nothing), LIMIT, DISTINCT and a set operation
@@ -90,16 +90,16 @@ SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT DISTINC
 (1 row)
 
 SELECT * FROM same($$SELECT s.id, count(*) AS n FROM ev e JOIN (SELECT id FROM tenants WHERE id < 5 UNION SELECT id FROM tenants WHERE id < 8) s ON e.tenant_id = s.id GROUP BY s.id$$);
-         plan         | result_rows | vs_normal_plan 
-----------------------+-------------+----------------
- SiftAgg s (subquery) |           7 |              0
+           plan           | result_rows | vs_normal_plan 
+--------------------------+-------------+----------------
+ SiftAgg tenants, tenants |           7 |              0
 (1 row)
 
 -- a condition on a column of the sub-select that nobody else reads is pushed into it: the sub-plan outputs a NULL there and enforces the condition, which the scan does not test again
 SELECT * FROM same($$SELECT e.kind, count(*) AS n FROM ev e JOIN (SELECT dim_a_id, count(*) AS n FROM ev GROUP BY dim_a_id) s ON e.dim_a_id = s.dim_a_id WHERE s.n > 19 GROUP BY e.kind$$);
-              plan              | result_rows | vs_normal_plan 
---------------------------------+-------------+----------------
- SiftAgg s (subquery), key pass |           3 |              0
+         plan         | result_rows | vs_normal_plan 
+----------------------+-------------+----------------
+ SiftAgg s (subquery) |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT e.kind, max(s.n) AS busiest, count(*) AS n FROM ev e JOIN (SELECT dim_a_id, count(*) AS n FROM ev GROUP BY dim_a_id) s ON e.dim_a_id = s.dim_a_id WHERE s.n > 19 GROUP BY e.kind$$);
@@ -123,15 +123,15 @@ SELECT * FROM same($$SELECT e.kind, s.n, count(*) AS c FROM ev e LEFT JOIN (SELE
 
 -- a function: generate_series
 SELECT * FROM same($$SELECT g.n % 3 AS b, count(*) AS n FROM ev e JOIN generate_series(1, 30) AS g(n) ON e.tenant_id = g.n GROUP BY 1$$);
-         plan         | result_rows | vs_normal_plan 
-----------------------+-------------+----------------
- SiftAgg g (function) |           3 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev e WHERE e.tenant_id IN (SELECT g FROM generate_series(1, 10) g)$$);
-                 plan                  | result_rows | vs_normal_plan 
----------------------------------------+-------------+----------------
- SiftAgg g (function) (semi), key pass |           1 |              0
+            plan             | result_rows | vs_normal_plan 
+-----------------------------+-------------+----------------
+ SiftAgg g (function) (semi) |           1 |              0
 (1 row)
 
 -- no rows in the child, and key types that differ from the leaves (bigint against int, varchar against text)
@@ -161,9 +161,9 @@ SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT region:
 
 -- an aggregate over a ranked top-k: IN a BM25 scan ordered by score (the SiftScan stays the child), and the scan as a join with its score
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC, id LIMIT 100) GROUP BY kind$$);
-                         plan                         | result_rows | vs_normal_plan 
-------------------------------------------------------+-------------+----------------
- SiftAgg unnamed_subquery (subquery) (semi), key pass |           3 |              0
+                    plan                    | result_rows | vs_normal_plan 
+--------------------------------------------+-------------+----------------
+ SiftAgg unnamed_subquery (subquery) (semi) |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT e.kind, count(*) AS n, max(r.score) AS best FROM ev e JOIN (SELECT id, sift.score(ctid) AS score FROM ev WHERE memo @@> 'cable wire' ORDER BY sift.score(ctid) DESC, id LIMIT 50) r ON e.id = r.id GROUP BY e.kind$$);
@@ -174,9 +174,9 @@ SELECT * FROM same($$SELECT e.kind, count(*) AS n, max(r.score) AS best FROM ev 
 
 -- the plan: the sub-plan is the child of the node, in EXPLAIN as well; the keys of a sub-select with LIMIT are a byte table (semi join)
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N'), ('east', 'E')) m(region, label) ON e.region = m.region GROUP BY m.label$$) AS values_join;
-  values_join   
-----------------
- SiftAgg values
+ values_join 
+-------------
+ SiftAgg
 (1 row)
 
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS limit_join;
@@ -186,35 +186,35 @@ SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM te
 (1 row)
 
 SELECT plan_of($$SELECT count(*) FROM ev WHERE tenant_id IN (SELECT id FROM tenants ORDER BY id LIMIT 5)$$) AS semi_limit;
-                      semi_limit                      
-------------------------------------------------------
- SiftAgg unnamed_subquery (subquery) (semi), key pass
+       semi_limit       
+------------------------
+ SiftAgg tenants (semi)
 (1 row)
 
 SELECT plan_of($$SELECT g.n % 2, count(*) FROM ev e JOIN generate_series(1, 5) AS g(n) ON e.tenant_id = g.n GROUP BY 1$$) AS function_join;
-    function_join     
-----------------------
- SiftAgg g (function)
+ function_join 
+---------------
+ normal
 (1 row)
 
 EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind;
-                      QUERY PLAN                      
-------------------------------------------------------
- Custom Scan (SiftAgg)
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: ev_col
-   Group Keys: tenant_id: s.kind
-   Pushed Aggregates: count(*)
+   Star Dimensions: 1
    Lookup Joins: s (subquery)
-   ->  Limit
-         ->  Index Scan using tenants_pkey on tenants
+   ->  Subquery Scan on s
+         ->  Limit
+               ->  Index Scan using tenants_pkey on tenants
 (7 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC LIMIT 100);
-                     QUERY PLAN                     
-----------------------------------------------------
- Custom Scan (SiftAgg)
+                    QUERY PLAN                     
+---------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: ev_col
-   Pushed Aggregates: count(*)
+   Star Dimensions: 1
    Lookup Joins: unnamed_subquery (subquery) (semi)
    ->  Subquery Scan on unnamed_subquery
          ->  Limit
@@ -225,18 +225,18 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE
                      Limit Hint: 100
 (11 rows)
 
--- what keeps the normal plan: a volatile side or a side above the memory a lookup table may take (sift.test_limits lookup_kb, half of work_mem).
+-- what keeps the normal plan: a volatile side. A side above the memory a lookup table may take (half of work_mem) is read in parts, with the same rows.
 -- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N', random() < 2)) m(region, label, ok) ON e.region = m.region AND m.ok GROUP BY m.label$$) AS volatile_values;
  volatile_values 
 -----------------
- SiftAgg
+ normal
 (1 row)
 
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants WHERE random() < 2 LIMIT 100) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS volatile_subselect;
-  volatile_subselect  
-----------------------
- SiftAgg s (subquery)
+ volatile_subselect 
+--------------------
+ normal
 (1 row)
 
 -- A correlated (LATERAL) sub-select keeps its native plan as a child that the scan runs for each distinct input.
@@ -261,25 +261,19 @@ SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT id, kin
 (1 row)
 
 SELECT plan_of($$SELECT s.id, count(e.id) FROM (SELECT id FROM tenants ORDER BY id LIMIT 5) s LEFT JOIN ev e ON e.tenant_id = s.id GROUP BY s.id$$) AS fact_nullable;
- fact_nullable 
----------------
- SiftAgg
+        fact_nullable        
+-----------------------------
+ SiftAgg tenants (preserved)
 (1 row)
 
-SET sift.test_limits = 'lookup_kb=1';
-SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS above_cap;
-      above_cap       
-----------------------
- SiftAgg s (subquery)
+SET work_mem = '64kB';
+SELECT * FROM same($$SELECT s.kind, s.pad, count(*) AS n FROM ev e JOIN (SELECT id, kind, repeat(kind, 400) AS pad FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id = s.id GROUP BY 1, 2$$);
+         plan         | result_rows | vs_normal_plan 
+----------------------+-------------+----------------
+ SiftAgg s (subquery) |           3 |              0
 (1 row)
 
-SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS under_cap;
-      under_cap       
-----------------------
- SiftAgg s (subquery)
-(1 row)
-
-RESET sift.test_limits;
+RESET work_mem;
 SET sift.enable_agg = off;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS pushdown_off;
  pushdown_off 
@@ -291,18 +285,18 @@ RESET sift.enable_agg;
 -- parallel workers: a child plan is the leader's, who shares its rows with the workers
 SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
 SELECT * FROM same($$SELECT m.label, count(*) AS n, sum(amount) AS s FROM ev e JOIN (VALUES ('north', 'N'), ('east', 'E')) m(region, label) ON e.region = m.region GROUP BY m.label$$);
-            plan             | result_rows | vs_normal_plan 
------------------------------+-------------+----------------
- SiftAgg with workers values |           2 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           2 |              0
 (1 row)
 
 RESET max_parallel_workers_per_gather; RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size;
 -- a rescan: the node is the inner side of a nested loop and runs again for each row of the outer side (the groups are replayed), twice in a CTE
 SET enable_hashjoin = off; SET enable_mergejoin = off; SET enable_material = off;
 SELECT * FROM same($$SELECT g, c.n FROM generate_series(1, 3) g CROSS JOIN (SELECT count(*) AS n FROM ev e JOIN (VALUES (1), (2), (2)) v(id) ON e.tenant_id = v.id) c$$);
-      plan      | result_rows | vs_normal_plan 
-----------------+-------------+----------------
- SiftAgg values |           3 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           3 |              0
 (1 row)
 
 SELECT * FROM same($$WITH c AS NOT MATERIALIZED (SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 9) s ON e.tenant_id = s.id GROUP BY s.kind)

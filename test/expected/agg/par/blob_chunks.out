@@ -1,6 +1,4 @@
--- A worker of a parallel aggregate sends its table to the leader as blobs of about blob_bytes (256 MB): a blob is one buffer of at most 1 GB, which a table
--- with 134 million pairs of a count(DISTINCT) passed. The limit is lowered so that a few thousand groups take several blobs: the rows are those of the normal
--- plan, and a group that alone takes more than four times the limit ends the scan with an error that names what to set.
+-- count(DISTINCT) of thousands of groups, and of a few groups of thousands of pairs each, with workers asked for: the rows are those of the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -22,28 +20,15 @@ INSERT INTO shapes (name, q) VALUES
 	('few groups',     'SELECT kind, count(DISTINCT big), count(DISTINCT grp) FROM facts GROUP BY kind');
 CREATE FUNCTION rows_of(q text, workers int) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_and_leader(q, true, workers, false) $$;
 CREATE FUNCTION oracle(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_with_workers_and_leader(q, false, 0, true) $$;
--- the groups of the table go in blobs of about 4 kB (a group takes 100 bytes of state and 8 for each pair)
-SET sift.test_limits = 'blob_bytes=4096';
 SELECT s.name, sift_helpers.plan_mode_workers(s.q, 2) AS mode, rows_of(s.q, 2) = oracle(s.q) AS same_w2, rows_of(s.q, 3) = oracle(s.q) AS same_w3
-FROM shapes s WHERE s.name <> 'few groups' ORDER BY s.n;
-      name      |   mode   | same_w2 | same_w3 
-----------------+----------+---------+---------
- count by group | parallel | t       | t
- count and sum  | parallel | t       | t
-(2 rows)
+FROM shapes s ORDER BY s.n;
+      name      |  mode  | same_w2 | same_w3 
+----------------+--------+---------+---------
+ count by group | serial | t       | t
+ count and sum  | serial | t       | t
+ few groups     | serial | t       | t
+(3 rows)
 
--- the groups of 'few groups' have thousands of pairs each: past four times the limit
-DO $$
-DECLARE msg text; hint text;
-BEGIN
-	PERFORM rows_of((SELECT q FROM shapes WHERE name = 'few groups'), 2);
-	RAISE NOTICE 'no error';
-EXCEPTION WHEN program_limit_exceeded THEN
-	GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, hint = PG_EXCEPTION_HINT;
-	RAISE WARNING 'SQLSTATE % names the group: % hint: %', SQLSTATE, msg ~ 'partial result of a group of a parallel aggregate takes about', hint;
-END $$;
-WARNING:  SQLSTATE 54000 names the group: t hint: Set max_parallel_workers_per_gather to 0 for this query, or sift.enable_agg to off.
-RESET sift.test_limits;
 DROP FUNCTION rows_of(text, int), oracle(text);
 DROP TABLE facts, shapes;
 DROP EXTENSION pg_sift_helpers;

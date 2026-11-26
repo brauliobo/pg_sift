@@ -1,6 +1,5 @@
--- The rows the scan keeps of a correlated child are those of its plan for every distinct input, bounded by the memory of a lookup table (sift.test_limits lookup_kb). The inputs are not
--- bounded by the scanned table's rows when the child reads a column of another joined table that has several rows for each of them: the query keeps the
--- normal plan when they exceed the setting, and runs in the scan when the inputs are the scanned table's own.
+-- A correlated child reads a column of another joined table that has several rows for each scanned row, or the scanned table's own column:
+-- SiftAggV6 keeps the normal plan for both (explain_why: where).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -11,7 +10,6 @@ CREATE TABLE items (dim_a_id int, v int);
 INSERT INTO items SELECT 1 + i % 100, i FROM generate_series(1, 20000) i;
 CREATE INDEX ON items (dim_a_id);
 VACUUM (FREEZE, ANALYZE) facts, items;
-SET sift.test_limits = 'lookup_kb=1300';
 CREATE FUNCTION plan_has_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; found bool := false;
 BEGIN

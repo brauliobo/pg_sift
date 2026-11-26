@@ -70,9 +70,7 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2021-03-01'' + (current_date - current_date) AND d < DATE ''2021-04-01'' + (current_date - current_date) GROUP BY g');
 SELECT * FROM many_scan('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pm p JOIN pm_days x ON x.d = p.d GROUP BY p.g');
 
--- the limit on the partitions of a scan, lowered to the edge of 100 partitions: at 100 the table is one source, over it (99, 64) it keeps the normal
--- plan and says so with the count (slug partition_count); the rows are the same. A bound that prunes at run time does not change it: the limit is
--- on the partitions PostgreSQL's planning leaves
+-- 100 partitions are one source of the scan, with or without a bound that prunes at run time; the rows are the same
 CREATE TABLE pc (id int, g int, d date NOT NULL, v int) PARTITION BY RANGE (d);
 DO $$
 BEGIN
@@ -86,23 +84,12 @@ CREATE INDEX pc_col ON pc USING sift_col (id, g, d, v);
 RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) pc;
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
-SET sift.test_limits = 'partitions=100';
-SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
-SET sift.test_limits = 'partitions=99';
-SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc WHERE d >= DATE ''2020-02-01'' + (current_date - current_date) AND d < DATE ''2020-02-04'' + (current_date - current_date) GROUP BY g');
-SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
-SET sift.test_limits = 'partitions=64';
-SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
-RESET sift.test_limits;
--- ... and follows hash memory: a scan keeps no more of its partitions' state (8 kB each) than hash memory holds, or the partition_memory the limit gives when it is
--- smaller (16 MB: 2,048 partitions at the default work_mem): with 4 MB of it the hash memory of the default work_mem (8 MB) holds 1,024 partitions: the 1,201 of pm are refused, and read when hash memory is 128 MB
-SET sift.test_limits = 'partition_memory=4194304';
-SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g') WHERE arm = 'single';
-SET work_mem = '64MB';
+-- the partitions read one after the other into one set of groups keep no state of their own: the 1,201 of pm are read at a small hash memory too
+SELECT used, slug FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
+SET work_mem = '1MB';
 SELECT used, slug FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g') WHERE arm = 'single';
 RESET work_mem;
-RESET sift.test_limits;
 
 -- locks: PostgreSQL's planning takes two relation locks for each partition it keeps (its heap and its index), and a plan of the scan takes no
 -- more than the normal plan (max_locks_per_transaction needs about 2 x the partitions of the plan; the scan opens the index of the partitions

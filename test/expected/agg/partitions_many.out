@@ -40,31 +40,31 @@ END $$;
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |                  0 |           7 |              0
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = DATE ''2021-03-03'' + (current_date - current_date) GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |               1200 |           7 |              0
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2021-03-01'' + (current_date - current_date) AND d < DATE ''2021-04-01'' + (current_date - current_date) GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |               1169 |           7 |              0
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2090-01-01'' + (current_date - current_date) GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |               1200 |           0 |              0
+ SiftAgg |                 1 |                  0 |           0 |              0
 (1 row)
 
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d < DATE ''2020-01-01'' + (current_date - current_date) GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |               1200 |           7 |              0
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 -- at the default page costs, partitions of a few rows each: opening 1,200 of them costs the scan more than the normal plan's Append
@@ -81,7 +81,7 @@ SELECT used, slug, reason ~ '\(opening [0-9]+ partitions costs the scan [0-9.]+,
 FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
  used | slug | opening_decides 
 ------+------+-----------------
- f    | cost | t
+ t    |      | 
 (1 row)
 
 RESET cpu_operator_cost;
@@ -90,9 +90,9 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET plan_cache_mode = force_generic_plan;
 PREPARE pm_d (date[]) AS SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = ANY ($1) GROUP BY g;
 SELECT * FROM many_scan('EXECUTE pm_d(ARRAY[DATE ''2020-02-02'', DATE ''2022-06-06'', DATE ''2030-01-01''])');
-  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
----------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |               1198 |           7 |              0
+  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+--------+-------------------+--------------------+-------------+----------------
+ normal |                 0 |                  0 |           7 |              0
 (1 row)
 
 RESET plan_cache_mode;
@@ -102,7 +102,7 @@ INSERT INTO pm_days VALUES ('2020-05-05'), ('2023-01-01');
 SELECT * FROM many_scan('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pm p JOIN pm_days x ON x.d = p.d GROUP BY p.g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |               1199 |           7 |              0
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 -- the workers take the superblocks of the partitions the leader kept
@@ -111,24 +111,22 @@ SET max_parallel_workers_per_gather = 2;
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |                  0 |           7 |              0
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d >= DATE ''2021-03-01'' + (current_date - current_date) AND d < DATE ''2021-04-01'' + (current_date - current_date) GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |               1169 |           7 |              0
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 SELECT * FROM many_scan('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pm p JOIN pm_days x ON x.d = p.d GROUP BY p.g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |              1201 |               1199 |           7 |              0
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
--- the limit on the partitions of a scan, lowered to the edge of 100 partitions: at 100 the table is one source, over it (99, 64) it keeps the normal
--- plan and says so with the count (slug partition_count); the rows are the same. A bound that prunes at run time does not change it: the limit is
--- on the partitions PostgreSQL's planning leaves
+-- 100 partitions are one source of the scan, with or without a bound that prunes at run time; the rows are the same
 CREATE TABLE pc (id int, g int, d date NOT NULL, v int) PARTITION BY RANGE (d);
 DO $$
 BEGIN
@@ -144,20 +142,6 @@ VACUUM (FREEZE, ANALYZE) pc;
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
 ---------+-------------------+--------------------+-------------+----------------
- SiftAgg |               100 |                  0 |           7 |              0
-(1 row)
-
-SET sift.test_limits = 'partitions=100';
-SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
-  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
----------+-------------------+--------------------+-------------+----------------
- SiftAgg |               100 |                  0 |           7 |              0
-(1 row)
-
-SET sift.test_limits = 'partitions=99';
-SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
-  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
----------+-------------------+--------------------+-------------+----------------
  SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
@@ -167,30 +151,14 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc WHERE d >=
  SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
-SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
-      slug       |                                                                        reason                                                                        
------------------+------------------------------------------------------------------------------------------------------------------------------------------------------
- partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (100 partitions are left after the pruning, the limit partitions is 99)
+-- the partitions read one after the other into one set of groups keep no state of their own: the 1,201 of pm are read at a small hash memory too
+SELECT used, slug FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
+ used | slug 
+------+------
+ t    | 
 (1 row)
 
-SET sift.test_limits = 'partitions=64';
-SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
-      slug       |                                                                        reason                                                                        
------------------+------------------------------------------------------------------------------------------------------------------------------------------------------
- partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (100 partitions are left after the pruning, the limit partitions is 64)
-(1 row)
-
-RESET sift.test_limits;
--- ... and follows hash memory: a scan keeps no more of its partitions' state (8 kB each) than hash memory holds, or the partition_memory the limit gives when it is
--- smaller (16 MB: 2,048 partitions at the default work_mem): with 4 MB of it the hash memory of the default work_mem (8 MB) holds 1,024 partitions: the 1,201 of pm are refused, and read when hash memory is 128 MB
-SET sift.test_limits = 'partition_memory=4194304';
-SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g') WHERE arm = 'single';
-      slug       |                                                                         reason                                                                          
------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------
- partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (1201 partitions are left after the pruning, the limit partitions is 1024)
-(1 row)
-
-SET work_mem = '64MB';
+SET work_mem = '1MB';
 SELECT used, slug FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g') WHERE arm = 'single';
  used | slug 
 ------+------
@@ -198,7 +166,6 @@ SELECT used, slug FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FR
 (1 row)
 
 RESET work_mem;
-RESET sift.test_limits;
 -- locks: PostgreSQL's planning takes two relation locks for each partition it keeps (its heap and its index), and a plan of the scan takes no
 -- more than the normal plan (max_locks_per_transaction needs about 2 x the partitions of the plan; the scan opens the index of the partitions
 -- it reads only)
@@ -260,7 +227,7 @@ SELECT count(*) AS partitions, sum(n) AS opens, max(n) AS most_opens
 FROM (SELECT pg_stat_get_xact_numscans(i.indexrelid) AS n FROM pg_partition_tree('pm') t JOIN pg_index i ON i.indrelid = t.relid WHERE t.isleaf) x;
  partitions | opens | most_opens 
 ------------+-------+------------
-       1201 |  1201 |          1
+       1201 |  2402 |          2
 (1 row)
 
 COMMIT;

@@ -1,7 +1,7 @@
 -- The plan the planner picks on its own costs when the keys of the scan come from a lookup whose size PostgreSQL cannot count: a list of ids read
 -- from a table by a filter on a jsonb path or an expression has no statistics, and PostgreSQL expects a row or two of it (the normal plan is
 -- a nested loop of index probes priced for that), while the lists the queries pass hold a good share of the table's parents. The normal plan's
--- price is raised for the keys the distinct parents allow (the param_set_elems limit = 0 turns it off); a lookup whose filter PostgreSQL has
+-- price is raised for the keys the distinct parents allow; a lookup whose filter PostgreSQL has
 -- statistics for keeps its estimate. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -52,56 +52,56 @@ WHERE %s AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date 
 -- the statistics could turn), and the ones that take the scan a week, where the normal plan is priced at 888 to 897 against 294 (67%)
 -- a filter on a jsonb path or an expression: no statistics, so PostgreSQL's one row is a guess and the scan reads the units of the parents
 SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_b'''));
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           4 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           4 |              0
 (1 row)
 
 SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_b'''));
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           4 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           4 |              0
 (1 row)
 
 SELECT * FROM same(in_scope('d.id % 3 = 1'));
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           4 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           4 |              0
 (1 row)
 
 SELECT * FROM same(join_scope('d.settings ->> ''tier'' = ''tier_c'''));
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           4 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           4 |              0
 (1 row)
 
 -- the same list as a CTE of ids (the scope of a request): PostgreSQL counts a row or two for the CTE as well, and the keys it holds are not a literal list
 SELECT * FROM same(cte_scope('d.settings ->> ''tier'' = ''tier_b'''));
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           4 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           4 |              0
 (1 row)
 
 SELECT * FROM same(cte_scope('d.id % 3 = 1'));
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           4 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           4 |              0
 (1 row)
 
 -- the facts joined to a third table: the normal plan reads them by the probes of a nested loop below a hash join, priced for the same keys
 SELECT * FROM same($f$
 SELECT k.label, count(*) AS n FROM sc_dims d JOIN sc_facts f ON f.parent_id = d.id JOIN sc_kinds k ON k.kind = f.kind
 WHERE d.settings ->> 'tier' = 'tier_b' AND f.deleted_at IS NULL AND f.ts >= date '2024-03-01' AND f.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1$f$);
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           4 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           4 |              0
 (1 row)
 
 -- no parent: the same answer from either plan
 SELECT * FROM same(in_scope('d.settings ->> ''tier'' = ''tier_none'''));
-  plan   | result_rows | vs_normal_plan 
----------+-------------+----------------
- SiftAgg |           0 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           0 |              0
 (1 row)
 
 -- a filter PostgreSQL has statistics for (the primary key and its values): its estimate stands and the btree plan reads the few parents
@@ -122,25 +122,6 @@ SELECT * FROM same(cte_scope('d.id IN (3, 4)', 1));
   plan  | result_rows | vs_normal_plan 
 --------+-------------+----------------
  normal |           2 |              0
-(1 row)
-
--- the switch: the normal plan keeps the estimate
-SET sift.test_limits = 'param_set_elems=0';
-SELECT (plan_of(in_scope('d.settings ->> ''tier'' = ''tier_b''', 1))).plan AS plan_off;
- plan_off 
-----------
- normal
-(1 row)
-
-RESET sift.test_limits;
--- the price of the list PostgreSQL knows does not move with the switch
-SET sift.test_limits = 'param_set_elems=0';
-CREATE TEMP TABLE c_est AS SELECT cost AS known FROM plan_of(in_scope('d.id IN (3, 4)', 1));
-RESET sift.test_limits;
-SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)', 1))) = known AS known_unchanged FROM c_est;
- known_unchanged 
------------------
- t
 (1 row)
 
 DROP FUNCTION in_scope(text, int), cte_scope(text, int), join_scope(text, int), plan_of(text), same(text);

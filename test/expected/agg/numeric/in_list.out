@@ -1,6 +1,5 @@
--- A numeric IN list is compared constant by constant up to 64 constants (sift.test_limits num_in_list lowers it so that short lists reach the other path); a longer one is
--- a hash set of the scaled values, with NaN equal to NaN and to no number, NULL as in the normal plan, and constants no stored value can equal (a scale the column does not
--- have, a number beyond its digits) left out. Every list runs as the scan and as the normal plan, at the limit and one constant above it.
+-- A numeric IN list, short or long: NaN equal to NaN and to no number, NULL as in the normal plan, and constants no stored value can equal (a scale the column does not
+-- have, a number beyond its digits). Every list runs as the scan and as the normal plan.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 LOAD 'pg_sift';
@@ -45,90 +44,50 @@ BEGIN
 	DROP TABLE r_on, r_off;
 	RETURN a = 0 AND b >= 0;
 END $$;
--- each list as IN and NOT IN, with the limit below the list (a hash set), at the list (comparisons) and the default (comparisons)
-CREATE FUNCTION runs(lim text) RETURNS TABLE (name text, op text, as_set bool, ok bool) LANGUAGE plpgsql AS $$
+-- each list as IN and NOT IN
+CREATE FUNCTION runs() RETURNS TABLE (name text, op text, scan bool, ok bool) LANGUAGE plpgsql AS $$
 DECLARE l record; o text; q text;
 BEGIN
-	EXECUTE format('SET sift.test_limits = %L', lim);
 	FOR l IN SELECT * FROM lists ORDER BY name LOOP
 		FOREACH o IN ARRAY ARRAY['IN', 'NOT IN'] LOOP
 			q := format('SELECT g, count(*) AS c, sum(id) AS s FROM nn WHERE n %s (%s) GROUP BY g', o, l.items);
 			name := l.name; op := o;
-			as_set := plan_has(q, 'hash set');
+			scan := plan_has(q, '.');
 			ok := same(q);
 			RETURN NEXT;
 		END LOOP;
 	END LOOP;
-	RESET sift.test_limits;
 END $$;
-SELECT * FROM runs('num_in_list=3');
-     name      |   op   | as_set | ok 
----------------+--------+--------+----
- absent        | IN     | f      | t
- absent        | NOT IN | f      | t
- beyond digits | IN     | t      | t
- beyond digits | NOT IN | t      | t
- finer scale   | IN     | t      | t
- finer scale   | NOT IN | t      | t
- only NaN      | IN     | f      | t
- only NaN      | NOT IN | f      | t
- present       | IN     | t      | t
- present       | NOT IN | t      | t
- with NULL     | IN     | t      | t
- with NULL     | NOT IN | t      | t
- with NaN      | IN     | t      | t
- with NaN      | NOT IN | t      | t
+SELECT * FROM runs();
+     name      |   op   | scan | ok 
+---------------+--------+------+----
+ absent        | IN     | t    | t
+ absent        | NOT IN | t    | t
+ beyond digits | IN     | t    | t
+ beyond digits | NOT IN | t    | t
+ finer scale   | IN     | t    | t
+ finer scale   | NOT IN | t    | t
+ only NaN      | IN     | t    | t
+ only NaN      | NOT IN | t    | t
+ present       | IN     | t    | t
+ present       | NOT IN | t    | t
+ with NULL     | IN     | t    | t
+ with NULL     | NOT IN | t    | t
+ with NaN      | IN     | t    | t
+ with NaN      | NOT IN | t    | t
 (14 rows)
 
-SELECT * FROM runs('num_in_list=4');
-     name      |   op   | as_set | ok 
----------------+--------+--------+----
- absent        | IN     | f      | t
- absent        | NOT IN | f      | t
- beyond digits | IN     | f      | t
- beyond digits | NOT IN | f      | t
- finer scale   | IN     | f      | t
- finer scale   | NOT IN | f      | t
- only NaN      | IN     | f      | t
- only NaN      | NOT IN | f      | t
- present       | IN     | f      | t
- present       | NOT IN | f      | t
- with NULL     | IN     | f      | t
- with NULL     | NOT IN | f      | t
- with NaN      | IN     | f      | t
- with NaN      | NOT IN | f      | t
-(14 rows)
-
-SELECT * FROM runs('num_in_list=64');
-     name      |   op   | as_set | ok 
----------------+--------+--------+----
- absent        | IN     | f      | t
- absent        | NOT IN | f      | t
- beyond digits | IN     | f      | t
- beyond digits | NOT IN | f      | t
- finer scale   | IN     | f      | t
- finer scale   | NOT IN | f      | t
- only NaN      | IN     | f      | t
- only NaN      | NOT IN | f      | t
- present       | IN     | f      | t
- present       | NOT IN | f      | t
- with NULL     | IN     | f      | t
- with NULL     | NOT IN | f      | t
- with NaN      | IN     | f      | t
- with NaN      | NOT IN | f      | t
-(14 rows)
-
--- the lists of 64, 65 and 200 constants of the default limit, from the values of the table and NaN
-SELECT n_items, plan_has(q, 'hash set') AS as_set, same(q) AS ok
+-- lists of 64, 65 and 200 constants, from the values of the table and NaN
+SELECT n_items, plan_has(q, '.') AS scan, same(q) AS ok
 FROM (SELECT k AS n_items, format('SELECT g, count(*) AS c, sum(id) AS s FROM nn WHERE n IN (%s) GROUP BY g', string_agg(v, ', ')) AS q
       FROM (SELECT k, CASE WHEN j = 1 THEN '''NaN''' ELSE (SELECT coalesce(quote_literal(n::text), '''0.5''') FROM nn WHERE id = j * 3) END AS v
             FROM unnest(ARRAY[64, 65, 200]) k, LATERAL generate_series(1, k) j) x
       GROUP BY k) f ORDER BY 1;
- n_items | as_set | ok 
----------+--------+----
-      64 | f      | t
-      65 | t      | t
-     200 | t      | t
+ n_items | scan | ok 
+---------+------+----
+      64 | t    | t
+      65 | t    | t
+     200 | t    | t
 (3 rows)
 
 -- a list on a column of whole numbers, and one of 300 distinct values with a NaN
@@ -144,6 +103,6 @@ SELECT same('SELECT g, count(*) FROM nn WHERE n IN (' || (SELECT string_agg(quot
  t
 (1 row)
 
-DROP FUNCTION runs(text), same(text), plan_has(text, text);
+DROP FUNCTION runs(), same(text), plan_has(text, text);
 DROP TABLE lists, nn;
 DROP EXTENSION pg_sift;

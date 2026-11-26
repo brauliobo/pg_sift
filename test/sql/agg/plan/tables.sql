@@ -76,7 +76,7 @@ SELECT plan_of($$SELECT g.n % 2, count(*) FROM ev e JOIN generate_series(1, 5) A
 EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC LIMIT 100);
 
--- what keeps the normal plan: a volatile side or a side above the memory a lookup table may take (sift.test_limits lookup_kb, half of work_mem).
+-- what keeps the normal plan: a volatile side. A side above the memory a lookup table may take (half of work_mem) is read in parts, with the same rows.
 -- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).
 SELECT plan_of($$SELECT m.label, count(*) FROM ev e JOIN (VALUES ('north', 'N', random() < 2)) m(region, label, ok) ON e.region = m.region AND m.ok GROUP BY m.label$$) AS volatile_values;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants WHERE random() < 2 LIMIT 100) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS volatile_subselect;
@@ -87,10 +87,9 @@ SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT kind FROM tenant
 -- A predicate-only child join is exact for every match, as for an equality join.
 SELECT * FROM same($$SELECT s.kind, count(*) AS n FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id < s.id GROUP BY s.kind$$);
 SELECT plan_of($$SELECT s.id, count(e.id) FROM (SELECT id FROM tenants ORDER BY id LIMIT 5) s LEFT JOIN ev e ON e.tenant_id = s.id GROUP BY s.id$$) AS fact_nullable;
-SET sift.test_limits = 'lookup_kb=1';
-SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS above_cap;
-SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS under_cap;
-RESET sift.test_limits;
+SET work_mem = '64kB';
+SELECT * FROM same($$SELECT s.kind, s.pad, count(*) AS n FROM ev e JOIN (SELECT id, kind, repeat(kind, 400) AS pad FROM tenants ORDER BY id LIMIT 30) s ON e.tenant_id = s.id GROUP BY 1, 2$$);
+RESET work_mem;
 SET sift.enable_agg = off;
 SELECT plan_of($$SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind$$) AS pushdown_off;
 RESET sift.enable_agg;

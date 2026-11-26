@@ -1,6 +1,5 @@
--- The caches of the value combinations of an expression or a lookup join are a memo, not a table the answer needs: past the limit of entries
--- (16.7 million) they start again, they do not raise. sift.test_limits lowers the limit so that a few thousand rows reach it. Every query runs
--- as the scan and as the normal plan; the rows must be the same, and the plan shows how often the caches started again.
+-- The caches of the values of an expression or of the rows of a lookup join are a memo, not a table the answer needs: with no cache memory at all
+-- (sift.backend_cache_kb and sift.shared_cache_kb 0) the rows are the same. Every query runs as the scan and as the normal plan; the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
@@ -36,8 +35,8 @@ INSERT INTO cases VALUES
 	(7, 'expression, text and wide leaf', 'SELECT substr(kind, 1, 3) || (big % 7)::text AS k, count(*) AS n FROM ev GROUP BY 1'),
 	(8, 'filter on a text leaf',        'SELECT count(*) AS n, sum(amount) AS total FROM ev WHERE kind <> ''k'' || (id % 50)::text');
 
--- the scan and the normal plan give the same rows; restarted: how many times the caches started again
-CREATE FUNCTION check_case(q text, OUT pushed bool, OUT restarted int, OUT differences bigint, OUT nrows bigint) LANGUAGE plpgsql AS $$
+-- the scan and the normal plan give the same rows
+CREATE FUNCTION check_case(q text, OUT pushed bool, OUT differences bigint, OUT nrows bigint) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'off', true);
@@ -47,48 +46,37 @@ BEGIN
 	SELECT count(*) INTO nrows FROM r_off;
 	SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
 	pushed := false;
-	restarted := 0;
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		pushed := pushed OR l LIKE '%Custom Scan (SiftAgg%';
-		restarted := coalesce(substring(l from '(\d+) combo caches restarted')::int, restarted);
 	END LOOP;
 	DROP TABLE r_off, r_on;
 END $$;
 
--- the limit as it is: nothing starts again
-SELECT n, shape, c.pushed, c.restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+-- the caches as they are
+SELECT n, shape, c.pushed, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
 
--- 64 entries: the caches start again many times, the rows stay the same
-SET sift.test_limits = 'combo_entries=64';
-SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+-- no cache memory: the rows stay the same
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
+SELECT n, shape, c.pushed, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
 
--- 0: they start again before every chunk
-SET sift.test_limits = 'combo_entries=0';
-SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
-
--- 4 kB: the caches of a scan hold bytes, not entries, and the values of a text leaf start again with them
-SET sift.test_limits = 'combo_cache_bytes=4096';
-SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
-
--- the ids of a numeric leaf whose 3,000 distinct values lie far apart (900,000 positions) take bytes with their number, not with the range they lie in: the caches of 512 kB never start again
+-- a numeric leaf whose 3,000 distinct values lie far apart (900,000 positions), joined to a lookup
 CREATE TABLE sparse (id int PRIMARY KEY, k int, amount numeric(12, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO sparse SELECT i, i % 40, (i % 3000) * 3 + (i % 3000) % 7 / 100.0 FROM generate_series(1, 6000) i;
 CREATE INDEX sparse_col ON sparse USING sift_col (id, k, amount);
 CREATE TABLE cats (id int PRIMARY KEY, category_id int) WITH (autovacuum_enabled = false);
 INSERT INTO cats SELECT k, 1 + k % 6 FROM generate_series(0, 39) k;
 VACUUM (FREEZE, ANALYZE) sparse, cats;
-SET sift.test_limits = 'combo_cache_bytes=524288';
-SELECT c.pushed, c.restarted, c.nrows, c.differences
+SELECT c.pushed, c.nrows, c.differences
 FROM check_case('SELECT cats.category_id, sum(sparse.amount * cats.category_id) AS total FROM sparse JOIN cats ON cats.id = sparse.k GROUP BY 1') c;
 DROP TABLE sparse, cats;
 
--- workers start their own caches again
-RESET sift.test_limits;
-SET sift.test_limits = 'combo_entries=64';
+-- workers with no cache memory
 SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
-SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+SELECT n, shape, c.pushed, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
+RESET sift.shared_cache_kb;
 DROP TABLE ev, maps, groups, cases;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

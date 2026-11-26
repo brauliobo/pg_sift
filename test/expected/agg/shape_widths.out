@@ -1,7 +1,6 @@
 -- The widths of the shapes the aggregate scan holds (UNION ALL arms, virtual leaves, lookup-joined tables, key and read columns of a join, value
--- combinations, float8 operations, leaves of a generic aggregate argument, aggregates sharing a distinct set): a shape one past a width keeps the normal
--- plan with the slug shape_width (rows_shape for the aggregates of a rows set) and the limit in the reason; one at the width runs in the scan and gives the rows of the normal plan. Each width is
--- tried at its default (where the shape is cheap to make) and at a value sift.test_limits lowers it to.
+-- combinations, float8 operations, leaves of a generic aggregate argument, aggregates sharing a distinct set), at the width of the legacy engine and one past it:
+-- a shape the scan runs gives the rows of the normal plan, and one it keeps the normal plan for names the slug of sift.explain_why.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 -- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
@@ -26,8 +25,6 @@ CREATE UNIQUE INDEX dd_first ON dd (a, b, v2);
 CREATE TABLE wide (kind text, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, c17 int) WITH (autovacuum_enabled = false);
 INSERT INTO wide SELECT 'k' || i % 5, i % 2, i % 3, i % 5, i % 7, i % 11, i % 13, i % 17, i % 19, i % 23, i % 29, i % 31, i % 37, i % 41, i % 43, i % 47, i % 53, i % 59 FROM generate_series(1, 3000) i;
 CREATE INDEX wide_col ON wide USING sift_col (kind, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17);
-rollup_columns = kind, c3
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wide_col');
 VACUUM (FREEZE, ANALYZE) events, dd, wide;
 SET join_collapse_limit = 64;
 SET from_collapse_limit = 64;
@@ -45,18 +42,9 @@ BEGIN
 	DROP TABLE r_on, r_off;
 	RETURN a = 0 AND n > 0;
 END $$;
-CREATE FUNCTION probe(q text, want_arm text) RETURNS TABLE (used bool, slug text, detail text) LANGUAGE sql AS $$
-	SELECT w.used, w.slug, substring(w.reason from 'the limit [a-z_]+ is [0-9]+') FROM sift.explain_why(q) w WHERE w.arm = want_arm
+CREATE FUNCTION probe(q text) RETURNS TABLE (used bool, slug text) LANGUAGE sql AS $$
+	SELECT w.used, w.slug FROM sift.explain_why(q) w ORDER BY w.used DESC LIMIT 1
 $$;
--- the tables the scan read as first-row lookups (a sub-select with more ORDER BY columns than the width runs once per key instead)
-CREATE FUNCTION first_row_lookups(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int := 0;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '(\d+) first row tables' THEN n := substring(l from '(\d+) first row tables')::int; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
 -- the shapes: n of something
 CREATE FUNCTION shape(kind text, n int) RETURNS text LANGUAGE sql AS $$
 	SELECT CASE kind
@@ -70,7 +58,7 @@ CREATE FUNCTION shape(kind text, n int) RETURNS text LANGUAGE sql AS $$
 	WHEN 'joins' THEN
 		(SELECT format('SELECT %s, count(*) FROM events e %s GROUP BY 1', 'd1.v1 % 3', string_agg(format('JOIN dd d%s ON d%s.id = e.parent_id', j, j), ' ') ) FROM generate_series(1, n) j)
 	WHEN 'combos' THEN
-		(SELECT format('SELECT kind, %s FROM wide GROUP BY kind', string_agg(format('sum((c%s * c%s)::numeric / 3) AS s%s_%s', i, j, i, j), ', ' ORDER BY i, j))
+		(SELECT format('SELECT kind, %s FROM wide GROUP BY kind', string_agg(format('sum(c%s * c%s) AS s%s_%s', i, j, i, j), ', ' ORDER BY i, j))
 		 FROM (SELECT i, j FROM generate_series(1, 17) i, generate_series(1, 17) j WHERE i < j ORDER BY i, j LIMIT n) p)
 	WHEN 'first_order_cols' THEN
 		(SELECT format('SELECT d.v1 %% 3, count(*) FROM events e LEFT JOIN LATERAL (SELECT x.v1 FROM dd x WHERE x.a = e.a AND x.b = e.b ORDER BY %s LIMIT 1) d ON true GROUP BY 1',
@@ -89,82 +77,48 @@ CREATE FUNCTION shape(kind text, n int) RETURNS text LANGUAGE sql AS $$
 				string_agg(format('count(DISTINCT m.id) FILTER (WHERE m.a %% %s = 0) AS c%s', j + 1, j), ', ')) FROM generate_series(1, n) j)
 	END
 $$;
--- width, arm of explain_why, its default, and the value sift.test_limits lowers it to (NULL: the limit is not read through the registry yet)
-CREATE TABLE widths (kind text, limit_id text, arm text, dflt int, lowered int);
+-- width and the default of the legacy engine (combos: the 8 expressions SiftAggV6 computes, SIFT_V6_MAX_DERIVE); SiftAggV6 holds its own widths (src/agg/engine.h),
+-- so a row says what it does at and one past that default
+CREATE TABLE widths (kind text, dflt int);
 INSERT INTO widths VALUES
-	('virtual_leaves', 'virtual_leaves', 'single', 16, 3),
-	('arms', 'arms', 'two_level', 16, 3),
-	('joins', 'joins', 'single', 32, 3),
-	('combos', 'combos', 'single', 128, 3),
-	('join_keys', 'join_keys', 'single', 3, NULL),
-	('join_cols', 'join_cols', 'single', 16, 3),
-	('first_order_cols', 'first_order_cols', 'single', 8, 3),
-	('float_ops', 'float_ops', 'single', 16, NULL),
-	('rows_shared', 'rows_shared', 'rows', 32, 3);
--- first_order_cols is a width too: past it the sub-select runs once per key and the scan reads no first-row lookup (the detail counts them).
--- float_ops and join_keys are widths too, but a shape past them does not keep the normal plan: PostgreSQL evaluates the longer float8 expression for the distinct values of its
--- leaves, and the equality columns of a join beyond the third key by the leaves they read; the rows are those of the normal plan at both sizes
--- every width at N and at N + 1: N runs in the scan (the rows of the normal plan), N + 1 keeps the normal plan and names the width
-CREATE FUNCTION at_width(lower_it bool) RETURNS TABLE (kind text, n int, used bool, slug text, detail text, rows_ok bool) LANGUAGE plpgsql AS $$
+	('virtual_leaves', 16), ('arms', 16), ('joins', 32), ('combos', 8), ('join_keys', 3), ('join_cols', 16), ('first_order_cols', 8), ('float_ops', 16), ('rows_shared', 32);
+-- every width at N and at N + 1: the rows are those of the normal plan, and a shape the scan does not run names its slug
+CREATE FUNCTION at_width() RETURNS TABLE (kind text, n int, used bool, slug text, rows_ok bool) LANGUAGE plpgsql AS $$
 DECLARE w record; q text; p record; i int;
 BEGIN
-	FOR w IN SELECT * FROM widths WHERE NOT lower_it OR widths.lowered IS NOT NULL ORDER BY kind LOOP
-		IF lower_it THEN
-			EXECUTE format('SET sift.test_limits = %L', w.limit_id || '=' || w.lowered);
-		END IF;
-		FOREACH i IN ARRAY ARRAY[CASE WHEN lower_it THEN w.lowered ELSE w.dflt END, CASE WHEN lower_it THEN w.lowered ELSE w.dflt END + 1] LOOP
+	FOR w IN SELECT * FROM widths ORDER BY kind LOOP
+		FOREACH i IN ARRAY ARRAY[w.dflt, w.dflt + 1] LOOP
 			q := shape(w.kind, i);
-			SELECT * INTO p FROM probe(q, w.arm);
-			kind := w.kind; n := i; used := p.used; slug := p.slug; detail := p.detail;
-			IF w.kind = 'first_order_cols' THEN detail := format('first-row lookups: %s', first_row_lookups(q)); END IF;
-			rows_ok := CASE WHEN p.used THEN same(q) END;
+			SELECT * INTO p FROM probe(q);
+			kind := w.kind; n := i; used := p.used; slug := p.slug;
+			rows_ok := same(q);
 			RETURN NEXT;
 		END LOOP;
-		RESET sift.test_limits;
 	END LOOP;
 END $$;
-SELECT * FROM at_width(false);
-       kind       |  n  | used |    slug     |             detail             | rows_ok 
-------------------+-----+------+-------------+--------------------------------+---------
- arms             |  16 | t    |             |                                | t
- arms             |  17 | f    | shape_width | the limit arms is 16           | 
- combos           | 128 | t    |             |                                | t
- combos           | 129 | f    | shape_width | the limit combos is 128        | 
- first_order_cols |   8 | t    |             | first-row lookups: 1           | t
- first_order_cols |   9 | t    |             | first-row lookups: 0           | t
- float_ops        |  16 | t    |             |                                | t
- float_ops        |  17 | t    |             |                                | t
- join_cols        |  16 | t    |             |                                | t
- join_cols        |  17 | f    | shape_width | the limit join_cols is 16      | 
- join_keys        |   3 | t    |             |                                | t
- join_keys        |   4 | t    |             |                                | t
- joins            |  32 | t    |             |                                | t
- joins            |  33 | f    | shape_width | the limit joins is 32          | 
- rows_shared      |  32 | t    |             |                                | t
- rows_shared      |  33 | f    | rows_shape  | the limit rows_shared is 32    | 
- virtual_leaves   |  16 | t    |             |                                | t
- virtual_leaves   |  17 | f    | shape_width | the limit virtual_leaves is 16 | 
+SELECT * FROM at_width();
+       kind       | n  | used | slug  | rows_ok 
+------------------+----+------+-------+---------
+ arms             | 16 | f    | where | t
+ arms             | 17 | f    | where | t
+ combos           |  8 | t    |       | t
+ combos           |  9 | t    |       | t
+ first_order_cols |  8 | t    |       | t
+ first_order_cols |  9 | t    |       | t
+ float_ops        | 16 | t    |       | t
+ float_ops        | 17 | t    |       | t
+ join_cols        | 16 | f    | cost  | t
+ join_cols        | 17 | f    | cost  | t
+ join_keys        |  3 | t    |       | t
+ join_keys        |  4 | t    |       | t
+ joins            | 32 | t    |       | t
+ joins            | 33 | t    |       | t
+ rows_shared      | 32 | f    | where | t
+ rows_shared      | 33 | f    | where | t
+ virtual_leaves   | 16 | f    | where | t
+ virtual_leaves   | 17 | f    | where | t
 (18 rows)
 
-SELECT * FROM at_width(true);
-       kind       | n | used |    slug     |            detail             | rows_ok 
-------------------+---+------+-------------+-------------------------------+---------
- arms             | 3 | t    |             |                               | t
- arms             | 4 | f    | shape_width | the limit arms is 3           | 
- combos           | 3 | t    |             |                               | t
- combos           | 4 | f    | shape_width | the limit combos is 3         | 
- first_order_cols | 3 | t    |             | first-row lookups: 1          | t
- first_order_cols | 4 | t    |             | first-row lookups: 0          | t
- join_cols        | 3 | t    |             |                               | t
- join_cols        | 4 | f    | shape_width | the limit join_cols is 3      | 
- joins            | 3 | t    |             |                               | t
- joins            | 4 | f    | shape_width | the limit joins is 3          | 
- rows_shared      | 3 | t    |             |                               | t
- rows_shared      | 4 | f    | rows_shape  | the limit rows_shared is 3    | 
- virtual_leaves   | 3 | t    |             |                               | t
- virtual_leaves   | 4 | f    | shape_width | the limit virtual_leaves is 3 | 
-(14 rows)
-
-DROP FUNCTION at_width(bool), shape(text, int), first_row_lookups(text), probe(text, text), same(text);
+DROP FUNCTION at_width(), shape(text, int), probe(text), same(text);
 DROP TABLE widths, wide, dd, events;
 DROP EXTENSION pg_sift;

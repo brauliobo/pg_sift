@@ -1,5 +1,5 @@
--- A lookup join keyed by columns of an earlier lookup's table makes one combo entry per distinct value of those columns, not per row of the
--- earlier table that holds them: entities of the same type, with NULLs, share an entry. The rows are the same as the normal plan's.
+-- A lookup join keyed by columns of an earlier lookup's table (entities of the same type, with NULLs): the rows are the same as the normal plan's.
+-- SiftAggV6 keeps the normal plan for a second lookup keyed by the first (explain_why: where).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -36,15 +36,8 @@ SET sift.enable_agg = off;
 CREATE TEMP TABLE r1_off AS :chain_label;
 CREATE TEMP TABLE r2_off AS :chain_expression;
 RESET sift.enable_agg;
--- the caches start again before every chunk (the ids of the values go with the output rows they stand for)
-SET sift.test_limits = 'combo_entries=0';
-CREATE TEMP TABLE r1_trim AS :chain_label;
-CREATE TEMP TABLE r2_trim AS :chain_expression;
-RESET sift.test_limits;
 SELECT (SELECT count(*) FROM r1_on) AS labels, (SELECT count(*) FROM ((TABLE r1_on EXCEPT TABLE r1_off) UNION ALL (TABLE r1_off EXCEPT TABLE r1_on)) d) AS differences;
 SELECT (SELECT count(*) FROM r2_on) AS types, (SELECT count(*) FROM ((TABLE r2_on EXCEPT TABLE r2_off) UNION ALL (TABLE r2_off EXCEPT TABLE r2_on)) d) AS differences;
 SELECT label, n FROM r1_on WHERE label IN ('none', 'L0') ORDER BY label;
-SELECT (SELECT count(*) FROM ((TABLE r1_trim EXCEPT TABLE r1_off) UNION ALL (TABLE r1_off EXCEPT TABLE r1_trim)) d) AS differences_restarted_1,
-       (SELECT count(*) FROM ((TABLE r2_trim EXCEPT TABLE r2_off) UNION ALL (TABLE r2_off EXCEPT TABLE r2_trim)) d) AS differences_restarted_2;
 DROP TABLE facts, ents, maps;
 DROP EXTENSION pg_sift;

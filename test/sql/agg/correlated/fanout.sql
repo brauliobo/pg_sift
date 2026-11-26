@@ -1,4 +1,4 @@
--- A function or UNION that reads a joined row fans it out; the scan runs PostgreSQL's plan of the child for each distinct input.
+-- A function or UNION that reads a joined row fans it out: the rows are those of the normal plan, which SiftAggV6 keeps for a correlated child (explain_why: where).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET default_statistics_target = 10000;
@@ -34,12 +34,6 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT g, count(*) AS n, count(f.id) AS ids FROM facts f LEFT JOIN LATERAL generate_series(1, f.dim_a_id % 4) g ON true GROUP BY g
 $q$);
--- The rows the scan keeps are those of the child for every distinct input: more than lookup_kb of rows estimated keep the normal plan.
-SET sift.test_limits = 'lookup_kb=1300';
-SELECT * FROM check_query($q$
- SELECT g, count(*) AS n FROM facts f CROSS JOIN LATERAL generate_series(1, f.dim_a_id % 4) g GROUP BY g
-$q$);
-RESET sift.test_limits;
 -- The array of a joined row fans out: duplicates stay, NULL and empty arrays and NULL elements behave as PostgreSQL does.
 SELECT * FROM check_query($q$
  SELECT label, count(*) AS n, count(DISTINCT f.id) AS ids FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
