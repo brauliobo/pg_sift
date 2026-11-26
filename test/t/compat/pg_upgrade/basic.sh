@@ -74,7 +74,7 @@ FACTS_OPTS="WITH (cube_minmax = true, key_columns = 'g', hll_columns = 'id')"
 # the wide leaves (an enum, an interval, a uuid) are 3.2's: the index of the older releases covers the numbers
 FACTS_COLS='id, g, n, t, w, u, ts'
 [[ ! ${OLD_REF#v} =~ ^3\.[01]\. ]] || FACTS_COLS='id, g, n'
-# an index of a release before 4.0 has no track_changes option and no triggers; this tree's builds the default (a primary key, two statement triggers)
+# an index of a release before 4.0 has no track_changes option and no triggers; this tree's builds the default (a primary key, the triggers of its format)
 TRKOPT=
 # a connected pair of column indexes (the option connect is 4.3's): the child index depends on the parent index, which keeps a journal of the keys that changed
 CONNSQL=
@@ -208,9 +208,12 @@ VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', tru
 fingerprint() { q "$1" postgres "SELECT bm25q()" "SELECT colq_on() = colq_off()" "SELECT colq_off()" "SELECT tblq_off('tbl')" "SELECT tblq_on('tbl') = tblq_off('tbl')" \
 	"SELECT tblq_off('tbl_ts')" "SELECT tblq_on('tbl_ts') = tblq_off('tbl_ts')"; }
 [[ -n $OLD_REF ]] || { NAMES_BEFORE=$(q old postgres "$NAMES_STATE"); NAMES_ANSWERS_BEFORE=$(q old postgres "$NAMES_ANSWERS"); }
+OLD_FORMAT1=$(q old postgres "SELECT coalesce(current_setting('sift.test_create_format1', true), 'off')")   # the format the old cluster wrote: the settings of the test build are gone from the new one
 VERSIONS=$(q old postgres "SELECT extversion || ' ' || sift.version() FROM pg_extension WHERE extname = 'pg_sift'")
 BEFORE=$(fingerprint old)
 TRK_BEFORE=$(q old postgres "SELECT trkq_off()")
+TRK_TRIGGERS="SELECT count(*) FROM pg_trigger WHERE tgrelid = 'trk'::regclass AND tgname LIKE 'sift_track_%' AND tgisinternal"
+TRK_TRIGGERS_BEFORE=$(q old postgres "$TRK_TRIGGERS")
 check "the old cluster agrees with itself: the scans equal the normal plans" test "$(grep -c '^t$' <<<"$BEFORE")" == 3
 CONNECTION="SELECT child || ' ' || parent || ' ' || declaration || ' ' || (lineage IS NOT NULL) || ' ' || records || ' ' || stamp FROM sift.col_connections WHERE child::text = 'cfact_c' ORDER BY ordinal"
 [[ -n $OLD_REF ]] || { CONN_BEFORE=$(q old postgres "$CONNECTION"); RECS_BEFORE=$(q old postgres "SELECT sum(records) FROM sift.col_connections WHERE child::text = 'cfact_c'"); }
@@ -268,7 +271,7 @@ fi
 
 # an index that tracks its changes: pg_upgrade restores the table before its indexes, so the triggers are made again, and they must hear what the upgraded cluster writes
 if [[ -z $OLD_REF ]]; then
-	check "the tracked index keeps its two internal statement triggers" test "$(q new postgres "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'trk'::regclass AND tgname LIKE 'sift_track_%' AND tgisinternal")" == 2
+	check "the tracked index keeps its internal triggers, those its format makes" test "$(q new postgres "$TRK_TRIGGERS")" == "$TRK_TRIGGERS_BEFORE" -a "$TRK_TRIGGERS_BEFORE" -gt 0
 else skip 1 "an index of a release has no triggers"; fi
 check "the tracked index answers as before and as the normal plan" test "$(q new postgres "SELECT trkq_off()")|$(q new postgres "SELECT trkq_on() = trkq_off()")" == "$TRK_BEFORE|t"
 q new postgres "UPDATE trk SET id = id + 20000 WHERE id % 7 = 3" "DELETE FROM trk WHERE id % 11 = 0" "INSERT INTO trk SELECT g, g % 7, g FROM generate_series(5001, 5200) g" >/dev/null
@@ -291,7 +294,7 @@ else skip 3 "an index of a release has no connection"; fi
 # the projections: the definitions came with the files, the indexes with the option that names them
 if [[ -z $OLD_REF ]]; then
 	check "the projections are as before: both listed by the one index, every status ok" test "$(q new postgres "SELECT string_agg(projection || ':' || index || ':' || state, ',' ORDER BY projection) FROM sift.projection_status WHERE index = 'pev_wide'")" == "pnarrow:pev_wide:ok,pwide:pev_wide:ok"
-	check "the guard and the one call work after pg_upgrade" test "$(q new postgres "DELETE FROM sift.projections WHERE name = 'pwide'" 2>&1 | grep -c 'is held by pev_wide')$(q new postgres "SELECT sift.projection_index('pev_other', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}')")" == 1pev_wide
+	check "the guard and the one call work after pg_upgrade" test "$(q new postgres "DELETE FROM sift.projections WHERE name = 'pwide'" 2>&1 | grep -c 'is held by public.pev_wide')$(q new postgres "SELECT sift.projection_index('pev_other', ARRAY['pnarrow'], '{\"track_changes\": \"off\"}')")" == 1public.pev_wide
 else skip 2 "a release has no projections"; fi
 
 # the renamed tables and columns: the options name what the tables are called, the files of the indexes keep the leaves they were written with, and the first writes and merges need no REINDEX
@@ -326,8 +329,8 @@ if [[ -z $OLD_REF ]]; then
 	check "its reads are the join, whatever the verdict (the read says $(twohop_why new))" test "$(twohop_reads new)" == same
 	HOPQ new "UPDATE grants SET deleted_at = now() WHERE group_id = 3 AND deleted_at IS NULL" "INSERT INTO memberships (group_id, dim_a_id) VALUES (3, 150) ON CONFLICT DO NOTHING" \
 		"UPDATE grants SET deleted_at = now() WHERE dim_a_id % 17 = 0" >/dev/null
-	HOPQ new "SET sift.test_create_format1 = on" "REINDEX INDEX grants_by_member" "REINDEX INDEX grants_by_group" "REINDEX INDEX memberships_by_member" "REINDEX INDEX hop_col" >/dev/null
-	check "after writes to the three tables and a REINDEX of the three journals and of the scope index the reads are the join, the units are read, and the indexes verify" test "$(twohop_reads new)|$(twohop_why new)" == "same|stored" \
+	HOPQ new "SET sift.test_create_format1 = $OLD_FORMAT1" "REINDEX INDEX grants_by_member" "REINDEX INDEX grants_by_group" "REINDEX INDEX memberships_by_member" "REINDEX INDEX hop_col" >/dev/null
+	check "after writes to the three tables and a REINDEX of the three journals and of the scope index the reads are the join and the indexes verify" test "$(twohop_reads new)" == same \
 		-a -z "$(HOPQ new "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
 else skip 3 "an index of a release has no scope of two paths"; fi
 

@@ -45,10 +45,10 @@ sql gate "SELECT sift._test_leak('context')" >/dev/null
 wait_for "grep -q 'sift leak: memory context' '$LOG'" 10
 check "the gate fails on a sift memory context that outlives its backend" gate_fails "$off" 'sift leak: memory context "sift leaked"'
 
-# the caches a backend keeps for its life are named "sift cache ...": a backend that read the tombstone log of a column index leaves nothing else behind
+# the caches a backend keeps for its life are named "sift cache ...": a backend that read the tombstone log of a column index (a Format 1 one: Format 2 keeps its log in another page type) leaves nothing else behind
 off=$(logsize)
 sql gate "CREATE TABLE tl (id int PRIMARY KEY, g int)" "INSERT INTO tl SELECT i, i % 7 FROM generate_series(1, 2000) i" \
-	"CREATE INDEX tl_c ON tl USING sift_col (id, g) WITH (track_changes = 'id')" "UPDATE tl SET g = g + 1 WHERE id % 5 = 0" \
+	"SET sift.test_create_format1 = on" "CREATE INDEX tl_c ON tl USING sift_col (id, g) WITH (track_changes = 'id')" "UPDATE tl SET g = g + 1 WHERE id % 5 = 0" \
 	"SELECT count(*) FROM sift._test_col_log_entries('tl_c')" "DROP TABLE tl" >/dev/null || bail "tombstone log setup failed"
 backends() { sql gate "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()"; }
 wait_for "[[ \$(backends) == 0 ]]" 30

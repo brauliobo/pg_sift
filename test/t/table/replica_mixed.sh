@@ -5,7 +5,7 @@
 #         BM25, sift_col and sift_table objects the release wrote and keeps writing as the primary does (inserts, updates, deletes, VACUUM), as the primary answers
 #         them and as the plain plan does, sift.verify and sift.col_verify are clean on it.
 #   down: the primary runs this tree at the column format minor the release reads (sift.test_col_format_minor = 6, the setting of the rollback in docs/UPGRADING.md
-#         section 4) and writes BM25 segments of format 3 and the narrow write buffer (sift.test_segfmt, sift.test_wbuf_narrow in its sessions: the release
+#         section 4) and makes Format 1 indexes and tables (sift.test_create_format1: the release refuses Format 2.0) and writes BM25 segments of format 3 and the narrow write buffer (sift.test_segfmt, sift.test_wbuf_narrow in its sessions: the release
 #         refuses format 4 and the buffer of format 6, which a rollback rebuilds with REINDEX), the standby the release: the same checks.
 # The release is built from its tag by scripts/old-lib-check.sh (PostgreSQL 18).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -49,7 +49,7 @@ sift.async_maintenance = off${pconf:+
 $pconf}"
 	use_root "$p" "$proot"
 	node_start "$p" || bail "$dir: primary start failed"
-	[[ $dir == down ]] && FMT=("SET sift.test_segfmt = 3" "SET sift.test_wbuf_narrow = on" "SET sift.test_col_format_minor = 6")
+	[[ $dir == down ]] && FMT=("SET sift.test_create_format1 = on" "SET sift.test_segfmt = 3" "SET sift.test_wbuf_narrow = on" "SET sift.test_col_format_minor = 6")
 	sql "$p" "CREATE EXTENSION pg_sift" "${FMT[@]}" \
 		"CREATE TABLE docs (id int PRIMARY KEY, g int, n int, body text)" \
 		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(1, 12000) i" \
