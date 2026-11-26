@@ -40,5 +40,5 @@ out=$four
 check "four workers run the radix strategy" test "$(grep -c 'sift agg v6 radix: [0-9]* of [0-9]* radix partitions spilled' <<<"$four")" == "$RUNS"
 check "no radix partition goes to a file with four workers" test "$(grep -c 'sift agg v6 radix: 0 of [0-9]* radix partitions spilled' <<<"$four")" == "$RUNS"
 check "four workers answer what the heap executor answers" test "$(answer 4 on)" == "$(answer 0 off)"
-check "four workers are at least 1.2 times faster than one" awk -v a="$ms1" -v b="$ms4" 'BEGIN { exit !(b > 0 && a / b >= 1.2) }'
+scales 4 "four workers are at least 1.2 times faster than one" awk -v a="$ms1" -v b="$ms4" 'BEGIN { exit !(b > 0 && a / b >= 1.2) }'
 finish

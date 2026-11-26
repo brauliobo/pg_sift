@@ -22,6 +22,9 @@ command -v timeout >/dev/null || timeout() { local s=$1; shift; perl -e 'alarm s
 
 # knob VAR FULL QUICK: $VAR when set, else FULL, or QUICK under SIFT_QUICK=1 (scripts/ci.sh quick)
 knob() { echo "${!1:-$([[ -n ${SIFT_QUICK:-} ]] && echo "$3" || echo "$2")}"; }
+# the cores of the host: a speedup of N participants is measured only with 2N of them (scales N DESC CMD...: check, or skip when the host has fewer)
+CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+scales() { local n=$1 desc=$2; shift 2; if ((CORES >= 2 * n)); then check "$desc" "$@"; else skip 1 "$desc: needs $((2 * n)) cores, this host has $CORES"; fi; }
 # the largest segment the store churn writes: 2 MB (full), 500 KB quick (8 times less live data and file growth per node; still
 # several times SIFT_ALLOC_MAX_LOCKED blocks, so the segments span extents; the 20 MB writes of the tests stay)
 CHURN_BYTES=$(knob SIFT_CHURN_BYTES 2000000 500000)

@@ -46,7 +46,7 @@ for _ in 1 2; do
 done
 out="VACUUM (PARALLEL 1): $v1 ms, (PARALLEL 4): $v4 ms"
 diag "$out"
-check "A6: VACUUM (PARALLEL 4) takes under 1/2.2 of VACUUM (PARALLEL 1)" test "$(speedup "$v1" "$v4")" -ge 220
+scales 4 "A6: VACUUM (PARALLEL 4) takes under 1/2.2 of VACUUM (PARALLEL 1)" test "$(speedup "$v1" "$v4")" -ge 220
 check "A6: both indexes verify against the heap" test -z "$verify"
 
 # A5: a CREATE INDEX of 500,000 rows with one participant (the leader) and with four (the leader and three workers)
@@ -64,7 +64,7 @@ for round in 1 2; do
 done
 out="CREATE INDEX with 1 participant: $b1 ms, with 4: $b4 ms, WAL $wal bytes"
 diag "$out"
-check "A5: the build of 4 participants takes under 1/2.2 of the build of one" test "$(speedup "$b1" "$b4")" -ge 220
+scales 4 "A5: the build of 4 participants takes under 1/2.2 of the build of one" test "$(speedup "$b1" "$b4")" -ge 220
 check "A5: the build writes at most 42 bytes of WAL for a row" test "$((wal / 500000))" -le 42
 check "A5: the index verifies" test -z "$(sql pbv "SELECT sift.col_verify('b4_idx', true)" 2>&1)"
 sql pbv "DROP TABLE b" >/dev/null
@@ -82,7 +82,7 @@ granule_rows=8192
 busy=$(awk '/Parallel Seq Scan/ { f = 1 } f && /Worker [0-9]+:/ { match($0, /rows=[0-9]+/); if (substr($0, RSTART + 5, RLENGTH - 5) + 0 >= 4 * g) n++ } END { print n + 0 }' g="$granule_rows" <<<"$out")
 diag "parallel scan with 1 worker: $s1 ms, with 8: $s8 ms; workers that scanned 4 granules or more: $busy"
 check "the parallel scan gives each of eight workers at least four granules" test "$busy" -eq 8
-check "the parallel scan of eight workers takes under 1/5 of the scan of one" test "$(speedup "$s1" "$s8")" -ge 500
+scales 8 "the parallel scan of eight workers takes under 1/5 of the scan of one" test "$(speedup "$s1" "$s8")" -ge 500
 check "eight workers and one add up the same rows" test "$(sql pbv "$scan" "SET max_parallel_workers_per_gather = 1" "$probe")" == "$(sql pbv "$scan" "SET max_parallel_workers_per_gather = 8" "$probe")"
 
 finish

@@ -11,7 +11,7 @@ CLIENTS=$(knob S103_CLIENTS 32 16)
 NKEYS=256
 OPS=$(knob S103_OPS 250000 100000)
 QUERIES=$(knob S103_QUERIES 150 60)
-MIN_SCALE=${S103_MIN_SCALE:-4}
+MIN_SCALE=${S103_MIN_SCALE:-$((CORES >= 8 ? 4 : 1))}
 
 plan 9
 node_init primary 2 "sift.shared_cache_kb = ${S103_CACHE_KB:-65536}

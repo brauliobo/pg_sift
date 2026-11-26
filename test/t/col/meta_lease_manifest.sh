@@ -6,6 +6,10 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 WRITERS=16 INSERTS=10 ROWS=300 CLIENTS=32
+# the writers that overlap share their locks of Block 0 (fewer than one for each commit of a part); on fewer cores than writers they run mostly one after the other: under two for each
+LOCK_LIMIT=$((CORES >= WRITERS ? 150 : 2 * WRITERS * INSERTS))
+# the sessions that share the cores take one turn after the other: the time of one session times the turns that the cores need for CLIENTS sessions
+TURNS=$(((CLIENTS + CORES - 1) / CORES))
 plan 7
 node_init ml 4 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
@@ -50,7 +54,7 @@ tap_tx_release gate
 wait
 LOCKS=$(tail -qn1 "$D"/w*.out | awk -F'|' '{for (i = 1; i <= NF; i++) s[i] += $i} END {print s[1]; printf "counters %d allocator %d vblocks %d publish %d\n", s[2], s[3], s[4], s[5] > "/dev/stderr"}' 2>"$D/sites")
 diag "exclusive locks of Block 0 taken by $((WRITERS * INSERTS)) commits of a part: $LOCKS ($(cat "$D/sites"))"
-check "$((WRITERS * INSERTS)) commits of a part take fewer than 150 exclusive locks of Block 0" test "$LOCKS" -lt 150
+check "$((WRITERS * INSERTS)) commits of a part take fewer than $LOCK_LIMIT exclusive locks of Block 0" test "$LOCKS" -lt "$LOCK_LIMIT"
 check "every row is there" test "$(sql ml "SELECT count(*) FROM t")" -eq $((WRITERS * INSERTS * ROWS))
 out=$(sql ml "SELECT * FROM sift.check('t')" 2>&1)
 check "the table checks" test -z "$out"
@@ -66,7 +70,7 @@ one=$(sql ml "SELECT lease_maint(4000001, $ITERS, 0)" | tail -1)
 gate_run "$CLIENTS" "SELECT lease_maint(4000001, $ITERS, 0)"
 many=$(elapsed_max < <(for i in $(seq "$CLIENTS"); do tail -1 "$D/gate.$i.out"; done))
 diag "queue: 1 session $(rate 1 $ITERS "$one") requests/s, $CLIENTS sessions $(rate "$CLIENTS" $ITERS "$many") requests/s"
-check "$CLIENTS sessions that ask the queue for what it holds take under 8 times what one session takes for its own" test "$((many / (one + 1)))" -lt 8
+check "$CLIENTS sessions that ask the queue for what it holds take under 8 times (times the $TURNS turns of the cores) what one session takes for its own" test "$((many / (one + 1)))" -lt $((8 * TURNS))
 gate_run "$CLIENTS" "SELECT lease_maint(4100000, $ITERS, 1)"
 heat=$(elapsed_max < <(for i in $(seq "$CLIENTS"); do tail -1 "$D/gate.$i.out"; done))
 diag "heat: $CLIENTS sessions $(rate "$CLIENTS" $ITERS "$heat") notes/s"
@@ -77,7 +81,7 @@ one=$(sql ml "SELECT lease_mix(900001, $MIX, 0)" | tail -1)
 gate_run "$CLIENTS" "SELECT lease_mix(900002, $MIX, 0)"
 many=$(elapsed_max < <(for i in $(seq "$CLIENTS"); do tail -1 "$D/gate.$i.out"; done))
 diag "manifests: 1 session $(rate 1 $MIX "$one") rounds/s, $CLIENTS sessions $(rate "$CLIENTS" $MIX "$many") rounds/s"
-check "$CLIENTS sessions that read and publish the manifests take under 12 times what one session takes for its own" test "$((many / (one + 1)))" -lt 12
+check "$CLIENTS sessions that read and publish the manifests take under 12 times (times the $TURNS turns of the cores) what one session takes for its own" test "$((many / (one + 1)))" -lt $((12 * TURNS))
 copies0=$(sql ml "SELECT lease_stat('list_copies')")
 tap_tx_hold ml mix "SELECT lease_mix(900003, 1, 0)"
 gate_run "$CLIENTS" "SELECT lease_mix(900003, $MIX, 0)"
