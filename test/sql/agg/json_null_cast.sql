@@ -64,6 +64,13 @@ SELECT sift.table_set_paths('tdocs', 'doc', 'doc.k float8');
 INSERT INTO tdocs SELECT id, doc FROM docs;
 VACUUM tdocs;
 SELECT * FROM check_query('table', $q$SELECT id % 3 AS g, count(*) AS n, sum((doc -> 'k')::float8) AS total FROM tdocs GROUP BY 1$q$, true);
+-- a string is no number: the scan raises as the cast does, from the write buffer and from the chunks
+INSERT INTO tdocs VALUES (0, '{"k": "7"}');
+SELECT runs_in_scan(q) = (current_setting('server_version_num')::int >= 180000) AS scan, outcome(q, true) AS raised, outcome(q, false) = outcome(q, true) AS same
+FROM (VALUES ($q$SELECT id % 3 AS g, sum((doc -> 'k')::float8) AS total FROM tdocs GROUP BY 1$q$)) v(q);
+VACUUM tdocs;
+SELECT runs_in_scan(q) = (current_setting('server_version_num')::int >= 180000) AS scan, outcome(q, true) AS raised, outcome(q, false) = outcome(q, true) AS same
+FROM (VALUES ($q$SELECT sum((doc -> 'k')::float8) AS total FROM tdocs$q$)) v(q);
 DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text);
 DROP TABLE docs, dim_b, late, tdocs;
 DROP EXTENSION pg_sift;

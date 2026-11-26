@@ -180,7 +180,9 @@ sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int 
 		if (!cv->isnull[r] || cv->tag[r] < SIFT_COLTAG_STRING || cv->tag[r] > SIFT_COLTAG_ARRAY || !((s->bs.mask[i >> 6] >> (i & 63)) & 1))
 			continue;
 		SIFT_INVARIANT(cv->xpay[r] != NULL, "a value a leaf of a JSON key could not hold has its payload");
-		if (!sift_v6_json_exception(c->cls, cv->xpay[r], cv->xplen[r], s->batch_cx, &text, &tlen, &f))
+		if (c->jsonb_cast)
+			f = sift_v6_json_cast_exception(cv->xpay[r], cv->xplen[r], s->batch_cx);
+		else if (!sift_v6_json_exception(c->cls, cv->xpay[r], cv->xplen[r], s->batch_cx, &text, &tlen, &f))
 			continue;
 		if (c->cls == SV6C_F64)
 			((double *) v->data)[i] = f;

@@ -307,26 +307,37 @@ sift_v6_values_exact(const SiftV6Rel *rel)
 	return rel->ops != NULL && rel->ops->jsonb != NULL;
 }
 
+/*
+ * (doc -> 'k')::float8 of a table, which is NULL for a JSON null from PostgreSQL 18 on (an error before it, which the leaf does not tell): the scan converts the exceptions of its chunks as the cast
+ * does. An index reads it as a member of SV6E_KEYS (agg/mapkey.c).
+ */
+static bool
+jsonb_float8_cast(const SiftV6Rel *rel, const Expr *e)
+{
+	return PG_VERSION_NUM >= 180000 && rel->table != NULL && e != NULL && func_of(e) == F_FLOAT8_JSONB && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values;
+}
+
 bool
 sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 {
 	const Expr *text = strip(e);
+	const bool	cast = jsonb_float8_cast(rel, text);
 	const char *key;
 	int			att,
 				leaf;
 	Oid			typid = TEXTOID;
 	uint8		store = SIFT_COLS_STR;
 
-	if (text != NULL && IsA(text, CoerceViaIO) && ((const CoerceViaIO *) text)->resulttype == FLOAT8OID)
+	if (cast || (text != NULL && IsA(text, CoerceViaIO) && ((const CoerceViaIO *) text)->resulttype == FLOAT8OID))
 	{
-		text = strip(((const CoerceViaIO *) text)->arg);
+		text = strip(cast ? linitial(args_of(text)) : (void *) ((const CoerceViaIO *) text)->arg);
 		typid = FLOAT8OID;
 		store = SIFT_COLS_F8;
 	}
-	leaf = field_leaf(rel, text, true, &att, &key);
+	leaf = field_leaf(rel, text, !cast, &att, &key);
 	if (!scalar_leaf(rel, leaf) || leaves_of(rel)->cols[leaf].store != store || !sift_v6_values_exact(rel))
 		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1};
+	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1,.jsonb_cast = cast};
 	return true;
 }
 
@@ -377,7 +388,7 @@ read_vatt(const SiftV6Rel *rel, const Node *n, bool values, Oid *typid)
 		*typid = TEXTOID;
 		return SIFT_V6_JTYPE_VATT + leaf;
 	}
-	if (!values || !sift_v6_json_read(rel, (const Expr *) n, &col))
+	if (!values || !sift_v6_json_read(rel, (const Expr *) n, &col) || col.jsonb_cast)
 		return InvalidAttrNumber;
 	*typid = col.typid;
 	return sift_v6_col_input_attno(&col);
@@ -585,4 +596,15 @@ sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryC
 	}
 	MemoryContextSwitchTo(old);
 	return s != NULL;
+}
+
+double
+sift_v6_json_cast_exception(const char *payload, uint32 len, MemoryContext cx)
+{
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	Jsonb	   *jb = memcpy(palloc(len), payload, len);
+	const double f = DatumGetFloat8(DirectFunctionCall1(jsonb_float8, JsonbPGetDatum(jb)));
+
+	MemoryContextSwitchTo(old);
+	return f;
 }

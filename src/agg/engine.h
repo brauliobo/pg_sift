@@ -131,6 +131,7 @@ typedef struct SiftV6Col
 	int			jleaf;			/* 1 + the leaf of a key of the jsonb attribute whose `->>` text (typid text) or float8 cast the column is; 0: the first leaf of attno */
 	int			jmember;		/* 1 + the entry of SiftV6Spec.jmembers whose keys lead from the document to the member whose `->>` float8 cast the column is (jleaf is then the leaf of the values of its map); 0: none */
 	bool		jtype;			/* with jleaf: the column is jsonb_typeof(doc -> 'key') (typid text), the type each row's chunk keeps of the key, not the value of it */
+	bool		jsonb_cast;		/* with jleaf: the column is (doc -> 'key')::float8, which raises for a value that is no number where the `->>` text is converted */
 	SiftV6Src	src;
 	int			dim;			/* SV6SRC_DIM: the dimension */
 	int			slot;			/* SV6SRC_DIM: the payload column of the dimension */
@@ -416,6 +417,8 @@ extern const Var *sift_v6_doc_chain(const Expr *e, List **path);
 extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys);
 /* The value of a row whose leaf could not hold it, from the payload of its exception (a jsonb datum): the `->>` text, or its float8 cast; false: NULL */
 extern bool sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryContext cx, const char **text, uint32 *tlen, double *f);
+/* The (doc -> 'key')::float8 of the payload of an exception: the error PostgreSQL raises for a value that is no number */
+extern double sift_v6_json_cast_exception(const char *payload, uint32 len, MemoryContext cx);
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_plan_methods;
 
