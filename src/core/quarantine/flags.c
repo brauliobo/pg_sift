@@ -28,6 +28,7 @@ typedef struct FlagForget
 } FlagForget;
 
 static HTAB *flag_memo;
+static MemoryContext flag_cx;
 
 /*
  * The flag of a metapage changes with a commit that invalidates the relcache entry of its index (the worker that writes it, a write that skips the index, a REINDEX), so the backend reads it
@@ -82,8 +83,10 @@ flag_evict_one(void)
 static void
 flag_evict_all(void)
 {
-	while (flag_evict_one())
-		;
+	if (flag_memo == NULL)
+		return;
+	hash_destroy(flag_memo);
+	flag_memo = NULL;
 }
 
 static const SiftCacheKind flag_kind = {"core_quarantine_flags", flag_oldest, flag_evict_one, flag_evict_all};
@@ -106,13 +109,17 @@ sift_quar_meta_flagged(Relation index)
 	FlagForget *f;
 	bool		flagged;
 
+	if (flag_cx == NULL)
+	{
+		flag_cx = sift_cache_create_context("sift cache quarantine flags");
+		sift_cache_register(&flag_kind);
+	}
 	if (flag_memo == NULL)
 	{
-		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(FlagMemo),.hcxt = sift_cache_create_context("sift cache quarantine flags")};
+		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(FlagMemo),.hcxt = flag_cx};
 
 		/* MEM[MEM-IDLE-20]: cachebudget quarantine flag_memo HTAB (16 init; registered evictable) */
 		flag_memo = hash_create("sift quarantine flags", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		sift_cache_register(&flag_kind);
 	}
 	if ((m = hash_search(flag_memo, &relid, HASH_FIND, NULL)) != NULL)
 	{

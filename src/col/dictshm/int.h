@@ -57,6 +57,8 @@ typedef struct DshmFlight
 {
 	Size		off,
 				len;			/* a record being copied in: len 0 when the place is free */
+	DictKey		key;			/* whose record it is, with the arrays of flags: a backend that misses the same one meanwhile does not copy it again */
+	uint32		flags;
 }			DshmFlight;
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) DshmCount

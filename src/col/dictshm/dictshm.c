@@ -541,6 +541,16 @@ ent_with(Dshm *s, const DictKey *k, uint32 flags)
 	return NULL;
 }
 
+/* whether a backend is copying in a record of the key with the arrays of flags (the ring lock is held) */
+static bool
+in_flight(const Dshm *s, const DictKey *k, uint32 flags)
+{
+	for (int i = 0; i < DSHM_FLIGHT; i++)
+		if (s->flight[i].len > 0 && memcmp(&s->flight[i].key, k, sizeof(*k)) == 0 && (s->flight[i].flags & flags) == flags)
+			return true;
+	return false;
+}
+
 /* the live record of the key is read no more: it goes when nobody reads it. The pin is looked at after the mark: a reader that gave its last pin back before it saw the mark frees nothing */
 static void
 ent_retire(DshmEnt *e)
@@ -622,6 +632,11 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 		LWLockRelease(&s->ring_lock.lock);
 		return true;
 	}
+	if (in_flight(s, k, flags))
+	{
+		LWLockRelease(&s->ring_lock.lock);
+		return false;
+	}
 	if (s->hold > 0 || !ring_take(s, l.total, &off, &flight, &evicted))
 	{
 		if (s->hold > 0)
@@ -630,6 +645,8 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 		sift_stat_add(SIFT_STAT_DICT_SHARED_HELD, 1);
 		return false;
 	}
+	s->flight[flight].key = *k;
+	s->flight[flight].flags = flags;
 	LWLockRelease(&s->ring_lock.lock);
 
 	rec = ring + off;

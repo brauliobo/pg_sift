@@ -89,7 +89,6 @@ repalloc-additive	sqlite/auxfn_facets.c	1	a bounded array or a sentinel slot; Sp
 repalloc-additive	src/agg/stream_exec.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/f2/scope/build.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/f2/tail.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
-repalloc-additive	src/col/f2/tier/policy.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/f2/cube/refresh.c	2	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/v1/batch/int.h	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/v1/build/from_index.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites

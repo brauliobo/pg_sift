@@ -22,6 +22,74 @@ SELECT cache_total < :held AS cache_smaller FROM sift._test_col_dict_cache();
 SELECT count(*), count(DISTINCT label) FROM orders;
 SELECT count(*), count(DISTINCT kind) FROM events WHERE tenant_id = 2;
 
+-- The tier directory a session keeps of the last tiered table it read goes with DISCARD ALL and with sift.backend_cache_kb = 0: the next read of that table and of another reads their own
+SELECT current_setting('data_directory') || '/cache_discard_all_tier' AS tier \gset
+\set mk 'cat >/dev/null && rm -rf ' :tier ' && mkdir -p ' :tier
+COPY (SELECT 1) TO PROGRAM :'mk';
+SET sift.test_create_format1 = off;
+CREATE TABLE tier_a (id int8, ts timestamp NOT NULL, v int, pad text) USING sift_table;
+CREATE TABLE tier_b (id int8, ts timestamp NOT NULL, v int, pad text) USING sift_table;
+INSERT INTO tier_a SELECT i, timestamp '2020-01-01' + i * interval '1 hour', i % 100, md5(i::text) FROM generate_series(1, 5000) i;
+INSERT INTO tier_b SELECT i, timestamp '2020-01-01' + i * interval '1 hour', i % 7, md5(i::text) FROM generate_series(1, 5000) i;
+VACUUM (FREEZE) tier_a, tier_b;
+SELECT sift.set_tier_policy('tier_a', 'file://' || :'tier', '30 days') IS NOT NULL AS policy_a, sift.set_tier_policy('tier_b', 'file://' || :'tier', '30 days') IS NOT NULL AS policy_b;
+VACUUM tier_a, tier_b;
+SELECT count(*) AS tiered FROM sift.tier_status;
+SELECT count(*), sum(v) FROM tier_a;
+DISCARD ALL;
+SELECT count(*), sum(v) FROM tier_a;
+SELECT count(*), sum(v) FROM tier_b;
+SET sift.backend_cache_kb = 0;
+SELECT count(*), sum(v) FROM tier_a;
+SELECT count(*), sum(v) FROM tier_b;
+RESET sift.backend_cache_kb;
+SELECT count(*), sum(v) FROM tier_b;
+SET client_min_messages = warning;
+DROP TABLE tier_a, tier_b;
+\set rm 'cat >/dev/null && rm -rf ' :tier
+COPY (SELECT 1) TO PROGRAM :'rm';
+
+-- The stores of the tables a backend read stay through an index or a temporary table of another relation; the DDL of a table drops its own store, and its reads see the new shape
+SET client_min_messages = warning;
+SET sift.test_create_format1 = off;
+DO $$ BEGIN FOR i IN 1..20 LOOP EXECUTE format('CREATE TABLE st%s (id int, v int) USING sift_table', i); EXECUTE format('INSERT INTO st%s SELECT g, g * %s FROM generate_series(1, 10) g', i, i); END LOOP; END $$;
+CREATE INDEX st3_v ON st3 (v);
+DO $$ DECLARE n int; BEGIN FOR i IN 1..20 LOOP EXECUTE format('SELECT count(*) FROM st%s', i) INTO n; END LOOP; END $$;
+SELECT count(*) AS stores FROM pg_backend_memory_contexts WHERE name = 'sift cache f2 store' \gset
+CREATE TEMP TABLE tmp (id int PRIMARY KEY);
+DROP TABLE tmp;
+CREATE TABLE plain (id int);
+CREATE INDEX plain_id ON plain (id);
+DROP TABLE plain;
+SELECT count(*) - :stores AS stores_lost_to_other_ddl FROM pg_backend_memory_contexts WHERE name = 'sift cache f2 store';
+ALTER TABLE st1 DROP COLUMN v;
+ALTER TABLE st2 ADD PRIMARY KEY (id);
+CREATE INDEX st3_id ON st3 (id);
+SELECT * FROM st1 ORDER BY id LIMIT 2;
+INSERT INTO st1 VALUES (11);
+SELECT count(*), max(id) FROM st1;
+SELECT v FROM st2 WHERE id = 3;
+UPDATE st3 SET id = id + 100 WHERE id = 1;
+SET enable_seqscan = off;
+SELECT count(*) FROM st3 WHERE id > 100;
+RESET enable_seqscan;
+SELECT count(*) - :stores AS stores_delta_after_own_ddl FROM pg_backend_memory_contexts WHERE name = 'sift cache f2 store';
+DO $$ BEGIN FOR i IN 1..20 LOOP EXECUTE format('DROP TABLE st%s', i); END LOOP; END $$;
+
+-- DISCARD ALL gives back the tables of the quarantine flags and of the parsed dictionaries of Format 1 indexes, whatever number of indexes the backend read
+SET sift.test_create_format1 = on;
+DO $$ BEGIN FOR i IN 1..100 LOOP EXECUTE format('CREATE TABLE ix%s (id int, k text)', i); EXECUTE format('INSERT INTO ix%s SELECT g, ''k'' || g %% 9 FROM generate_series(1, 50) g', i);
+	EXECUTE format('CREATE INDEX ix%s_col ON ix%s USING sift_col (id, k)', i, i); END LOOP; END $$;
+SET enable_seqscan = off;
+DO $$ DECLARE n int; BEGIN FOR i IN 1..100 LOOP EXECUTE format('SELECT count(*) FROM ix%s WHERE k = ''k3''', i) INTO n; END LOOP; END $$;
+SELECT count(*) AS tables_held FROM pg_backend_memory_contexts WHERE name IN ('sift quarantine flags', 'sift column dictionaries', 'sift column dictionaries by index');
+DISCARD ALL;
+SELECT count(*) AS tables_after_discard FROM pg_backend_memory_contexts WHERE name IN ('sift quarantine flags', 'sift column dictionaries', 'sift column dictionaries by index', 'sift column dictionary asks');
+SET enable_seqscan = off;
+SELECT count(*) FROM ix7 WHERE k = 'k3';
+SET client_min_messages = warning;
+DO $$ BEGIN FOR i IN 1..100 LOOP EXECUTE format('DROP TABLE ix%s', i); END LOOP; END $$;
+
 DROP TABLE orders, events;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

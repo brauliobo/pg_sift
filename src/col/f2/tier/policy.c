@@ -216,38 +216,77 @@ typedef struct Opened
 	SiftTierPolicy policy;
 	SiftTierBackend *backend;
 	SiftTierCache *cache;
+	MemoryContext cx;			/* the policy strings, the backend and the cache: dropping the policy gives them back */
+	uint64		used;			/* sift_cache_tick() of the last ask */
 } Opened;
 
 static Opened *opened;
-static int	nopened;
+static int	nopened,
+			capopened;
 static MemoryContext policy_cx;
 static bool policies_stale;
 
-/* What a policy opened is in use by the statement that asked for it, so the budget never drops it: the setting that keeps nothing does, between statements */
+typedef struct CachedRefs
+{
+	RelFileLocator locator;
+	uint64		gen;
+	int			n;
+	SiftTierPartRef *refs;
+} CachedRefs;
+
+static CachedRefs cached;
+
+static void
+opened_close(Opened *o)
+{
+	if (o->cache != NULL)
+		sift_tier_cache_close(o->cache);
+	if (o->backend != NULL)
+		sift_tier_close(o->backend);
+	if (o->cx != NULL)
+		MemoryContextDelete(o->cx);
+}
+
+/* A statement of the transaction may read through what a policy opened: the budget drops only a policy no statement of it asked for, the one asked for longest ago */
+static Opened *
+policies_victim(void)
+{
+	Opened	   *lru = NULL;
+
+	for (int i = 0; i < nopened; i++)
+		if (!sift_cache_used_in_xact(opened[i].used) && (lru == NULL || opened[i].used < lru->used))
+			lru = &opened[i];
+	return lru;
+}
+
 static uint64
 policies_oldest(void)
 {
-	return UINT64_MAX;
+	Opened	   *victim = policies_victim();
+
+	return victim != NULL ? victim->used : UINT64_MAX;
 }
 
 static bool
 policies_evict_one(void)
 {
-	return false;
+	Opened	   *victim = policies_victim();
+
+	if (victim == NULL)
+		return false;
+	opened_close(victim);
+	*victim = opened[--nopened];
+	return true;
 }
 
 static void
 policies_evict_all(void)
 {
 	for (int i = 0; i < nopened; i++)
-	{
-		if (opened[i].cache != NULL)
-			sift_tier_cache_close(opened[i].cache);
-		if (opened[i].backend != NULL)
-			sift_tier_close(opened[i].backend);
-	}
+		opened_close(&opened[i]);
 	opened = NULL;
-	nopened = 0;
+	nopened = capopened = 0;
+	cached = (CachedRefs) {0};
 	if (policy_cx != NULL)
 		MemoryContextReset(policy_cx);
 }
@@ -296,27 +335,38 @@ revalidate(void)
 		bool		same = policy_row("policy_id = $1", INT4OID, Int32GetDatum((int32) opened[i].policy_id), &now) && same_location(&now, &opened[i].policy);
 
 		if (!same)
-			opened[i] = (Opened) {.policy_id = opened[i].policy_id};
+			opened[i] = (Opened) {.policy_id = opened[i].policy_id,.cx = opened[i].cx,.used = opened[i].used};
 	}
 }
 
 static Opened *
 opened_for(uint32 policy_id)
 {
+	Opened	   *o = NULL;
+
 	if (policies_stale)
 		revalidate();
-	for (int i = 0; i < nopened; i++)
+	for (int i = 0; i < nopened && o == NULL; i++)
 		if (opened[i].policy_id == policy_id)
-			return &opened[i];
-	opened = opened == NULL ? MemoryContextAlloc(policy_context(), sizeof(Opened)) : repalloc(opened, (nopened + 1) * sizeof(Opened));
-	opened[nopened] = (Opened) {.policy_id = policy_id};
-	return &opened[nopened++];
+			o = &opened[i];
+	if (o == NULL)
+	{
+		if (nopened == capopened)
+		{
+			capopened = Max(8, capopened * 2);
+			opened = opened == NULL ? MemoryContextAlloc(policy_context(), capopened * sizeof(Opened)) : repalloc(opened, capopened * sizeof(Opened));
+		}
+		o = &opened[nopened++];
+		*o = (Opened) {.policy_id = policy_id,.cx = sift_cache_create_context_in(policy_context(), "sift cache tier policy")};
+	}
+	o->used = sift_cache_tick();
+	return o;
 }
 
 static void
 keep_policy(Opened *o, const SiftTierPolicy *p)
 {
-	MemoryContext cx = policy_context();
+	MemoryContext cx = o->cx;
 
 	o->policy = (SiftTierPolicy) {.policy_id = p->policy_id,.uri = MemoryContextStrdup(cx, p->uri),.endpoint = p->endpoint != NULL ? MemoryContextStrdup(cx, p->endpoint) : NULL,
 	.move_after_us = p->move_after_us,.cache_mb = p->cache_mb,.scope_id = p->scope_id};
@@ -331,7 +381,7 @@ sift_tier_policy_by_id(Relation rel, uint32 policy_id, SiftTierPolicy *out)
 
 	if (!o->loaded)
 	{
-		MemoryContext old = MemoryContextSwitchTo(policy_context());
+		MemoryContext old = MemoryContextSwitchTo(o->cx);
 		bool		found = policy_row("policy_id = $1", INT4OID, Int32GetDatum((int32) policy_id), &o->policy);
 
 		MemoryContextSwitchTo(old);
@@ -352,7 +402,7 @@ sift_tier_backend_try(const SiftTierPolicy *p, SiftTierErr *err)
 		keep_policy(o, p);
 	if (o->backend == NULL)
 	{
-		old = MemoryContextSwitchTo(policy_context());
+		old = MemoryContextSwitchTo(o->cx);
 		o->backend = sift_tier_open(&(SiftTierOpen) {.uri = p->uri,.endpoint = p->endpoint}, err);
 		MemoryContextSwitchTo(old);
 	}
@@ -396,7 +446,7 @@ sift_tier_cache_try(const SiftTierPolicy *p, SiftTierErr *err)
 		snprintf(dir, sizeof(dir), "%s/%s%u-%u", root, TIER_CACHE_PREFIX, MyDatabaseId, p->policy_id);
 		make_dir(root);
 		make_dir(dir);
-		old = MemoryContextSwitchTo(policy_context());
+		old = MemoryContextSwitchTo(o->cx);
 		o->cache = sift_tier_cache_open(dir, (uint64) p->cache_mb << 20, SIFT_TIER_CACHE_CHUNK, err);
 		MemoryContextSwitchTo(old);
 	}
@@ -425,16 +475,6 @@ sift_tier_raise(SiftTierStatus st, const SiftTierErr *err, const char *what)
 
 	ereport(ERROR, (errcode(code), errmsg("sift: %s: %s", what, err->msg)));
 }
-
-typedef struct CachedRefs
-{
-	RelFileLocator locator;
-	uint64		gen;
-	int			n;
-	SiftTierPartRef *refs;
-} CachedRefs;
-
-static CachedRefs cached;
 
 const SiftTierPartRef *
 sift_tier_refs(Relation rel, int *n)

@@ -8,7 +8,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 9
+plan 10
 node_init primary 2 "sift.shared_cache_kb = 131072
 sift.test_create_format1 = on"
 node_start primary || bail "primary start failed"
@@ -74,6 +74,23 @@ for r in $(seq 16); do
 done
 check "a ring too small for the dictionaries asked stops writing" test "$HELD" -gt 0
 check "and every table returned the rows of the stock plan" test "$WRONG" == 0
+
+# sixteen backends that miss the same four dictionaries at once in a new ring that holds five copy each of them once: a copy that another backend is making takes no place of the ring and throws no
+# record out
+sql primary "ALTER SYSTEM SET sift.shared_cache_kb = 73728" >/dev/null
+node_stop primary
+node_start primary || bail "restart failed"
+pids=()
+for b in $(seq 16); do backend "SET sift.enable_agg = on" -- 1 2 3 4 >"$(dir primary)/cold.$b" & pids+=($!); done
+wait "${pids[@]}"
+WRONG=0
+for b in $(seq 16); do
+	R=$(cat "$(dir primary)/cold.$b")
+	for t in 1 2 3 4; do [[ $(nth "$R" "$t") == "${WANT[$t]}" ]] || WRONG=$((WRONG + 1)); done
+done
+EV=$(sql primary "SELECT evictions FROM sift.shared_memory_pools() WHERE pool = 'col_dict'")
+sql primary "ALTER SYSTEM RESET sift.shared_cache_kb" >/dev/null
+check "sixteen backends that miss the same dictionaries at once throw no record out of the ring, and every one returns the rows of the stock plan" test "$EV|$WRONG" == "0|0"
 
 # no room for the table: the registry cannot make the segment, the backend logs it and goes without
 if ((SHM_KB <= 1048576)); then

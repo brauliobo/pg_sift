@@ -67,6 +67,7 @@ typedef struct Unpin
 
 static HTAB *cache;
 static HTAB *by_rel;
+static HTAB *asks;
 static MemoryContext cache_cx;
 static Size cache_bytes;
 static dlist_head lru = DLIST_STATIC_INIT(lru);
@@ -89,12 +90,17 @@ sift_cdict_cache_bytes(void)
 }
 #endif
 
+/* the entries of an index go with its last one */
 static void
 dict_drop(DictEnt *e)
 {
+	RelEnts    *r = hash_search(by_rel, &e->key.rel, HASH_FIND, NULL);
+
 	cache_bytes -= e->size;
 	dlist_delete(&e->node);
 	dlist_delete(&e->rnode);
+	if (dlist_is_empty(&r->ents))
+		hash_search(by_rel, &r->rel, HASH_REMOVE, NULL);
 	MemoryContextDelete(e->cx);
 	hash_search(cache, &e->key, HASH_REMOVE, NULL);
 }
@@ -206,8 +212,6 @@ dict_drop_gone_relations(void)
 			if (e->pins == 0)
 				dict_drop(e);
 		}
-		if (dlist_is_empty(&r->ents))
-			hash_search(by_rel, &r->rel, HASH_REMOVE, NULL);
 	}
 }
 
@@ -301,11 +305,27 @@ dict_evict_one(void)
 	return true;
 }
 
+/* A cache that keeps nothing more gives its tables back, and the counters of the dictionaries asked go with it */
 static void
 dict_evict_all(void)
 {
-	while (dict_evict_one())
-		;
+	dlist_mutable_iter it;
+
+	dlist_foreach_modify(it, &lru)
+	{
+		DictEnt    *e = dlist_container(DictEnt, node, it.cur);
+
+		if (e->pins == 0)
+			dict_drop(e);
+	}
+	if (asks != NULL)
+		hash_destroy(asks);
+	asks = NULL;
+	if (cache == NULL || hash_get_num_entries(cache) > 0)
+		return;
+	hash_destroy(cache);
+	hash_destroy(by_rel);
+	cache = by_rel = NULL;
 }
 
 static const SiftCacheKind dict_kind = {"col_dictcache", dict_oldest, dict_evict_one, dict_evict_all};
@@ -328,14 +348,17 @@ cache_init(void)
 {
 	HASHCTL		ctl = {.keysize = sizeof(DictKey),.entrysize = sizeof(DictEnt)};
 
-	cache_cx = sift_cache_create_context("sift cache dictionaries");
-	sift_cache_register(&dict_kind);
+	if (cache_cx == NULL)
+	{
+		cache_cx = sift_cache_create_context("sift cache dictionaries");
+		sift_cache_register(&dict_kind);
+		CacheRegisterSyscacheCallback(RELOID, relcache_changed, (Datum) 0);
+	}
 	ctl.hcxt = cache_cx;
 	cache = hash_create("sift column dictionaries", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	ctl.keysize = sizeof(RelFileLocator);
 	ctl.entrysize = sizeof(RelEnts);
 	by_rel = hash_create("sift column dictionaries by index", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	CacheRegisterSyscacheCallback(RELOID, relcache_changed, (Datum) 0);
 }
 
 static void
@@ -552,8 +575,6 @@ typedef struct AskEnt
 	uint64		spent;			/* instructions the checks of strings found by the hash of a dictionary in the stream cost (sift_cseg_dict_spend) */
 	bool		nokeep;			/* the parsed dictionary did not fit the cache: parsing it again for every query would cost more than all the searches of the stream */
 } AskEnt;
-
-static HTAB *asks;
 
 static AskEnt *
 ask_ent(SiftColSegment *seg, int col)

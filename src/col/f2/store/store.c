@@ -31,14 +31,19 @@ typedef struct StoreEntry
 	SiftF2Store *store;
 	uint64		tick;
 	dlist_node	lru_node;		/* in store_lru, the entry used longest ago first: the ticks of the list ascend */
-	uint32		relhash;		/* RELOID hash value of the relation and ATTNUM hash value of each attribute (atthash[a - 1]), taken with the store: a callback runs outside a transaction */
-	uint32	   *atthash;
+	uint32		relhash;		/* RELOID hash value of the relation, taken with the store: a callback runs outside a transaction */
+	uint64		att_gen;		/* store_att_gen when att_sig was checked */
+	uint64		idx_gen;		/* store_idx_gen when idx_sig was checked */
+	uint64		att_sig;		/* fingerprint of the relation's TupleDesc */
+	uint64		idx_sig;		/* fingerprint of a table's index list (0 for an index store) */
 } StoreEntry;
 
 static HTAB *store_cache = NULL;
 static dlist_head store_lru = DLIST_STATIC_INIT(store_lru);
 static bool store_cache_registered = false;
 static uint64 store_invalidations = 0;	/* what a build that reads the catalogs finds out has changed under it */
+static uint64 store_att_gen = 0;	/* bumped in O(1) on ATTNUM syscache invalidation */
+static uint64 store_idx_gen = 0;	/* bumped in O(1) on INDEXRELID syscache invalidation */
 
 #define MAX_INVALIDATORS	5
 
@@ -112,41 +117,66 @@ store_invalidate(uint32 hashvalue)
 			drop_entry(e);
 }
 
-/* DROP COLUMN and ALTER COLUMN TYPE change pg_attribute rows and leave the pg_class row alone: the store follows the descriptor, so any attribute row of its relation drops it */
+/*
+ * DROP COLUMN and ALTER COLUMN TYPE change pg_attribute rows, and CREATE/DROP INDEX on a table that already has indexes changes pg_index without touching pg_class:
+ * bump an O(1) generation counter here (avoiding both a CacheRegisterRelcacheCallback slot and O(N) cache scans) and validate only the opened relation's own signature in sift_f2_store_open.
+ */
 static void
-store_attr_invalidate(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue)
+store_att_bump(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue pg_attribute_unused())
 {
-	HASH_SEQ_STATUS seq;
-	StoreEntry *e;
-
+	store_att_gen++;
 	store_invalidations++;
-	if (store_cache == NULL)
-		return;
-	hash_seq_init(&seq, store_cache);
-	while ((e = hash_seq_search(&seq)) != NULL)
-	{
-		bool		hit = hashvalue == 0;
-
-		for (int a = 0; !hit && a < e->store->natts; a++)
-			hit = e->atthash[a] == hashvalue;
-		if (hit)
-			drop_entry(e);
-	}
 }
 
-/* CREATE INDEX and DROP INDEX on a table that has indexes already change no pg_class row and no pg_attribute row of it, but the indexes that block a column-delta update are part of the store */
 static void
-store_index_invalidate(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue pg_attribute_unused())
+store_idx_bump(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue pg_attribute_unused())
 {
-	HASH_SEQ_STATUS seq;
-	StoreEntry *e;
-
+	store_idx_gen++;
 	store_invalidations++;
-	if (store_cache == NULL)
-		return;
-	hash_seq_init(&seq, store_cache);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		drop_entry(e);
+}
+
+static uint64
+fnv_u64(uint64 h, uint64 v)
+{
+	return (h ^ v) * UINT64CONST(1099511628211);
+}
+
+static uint64
+store_att_sig(Relation rel)
+{
+	TupleDesc	desc = RelationGetDescr(rel);
+	uint64		h = fnv_u64(UINT64CONST(14695981039346656037), (uint64) desc->natts);
+
+	for (int a = 0; a < desc->natts; a++)
+	{
+		Form_pg_attribute att = TupleDescAttr(desc, a);
+		const char *name = NameStr(att->attname);
+
+		h = fnv_u64(h, ((uint64) att->atttypid << 32) | (uint32) att->atttypmod);
+		h = fnv_u64(h, ((uint64) att->attcollation << 16) | ((uint64) (uint8) att->attisdropped << 8) | (uint8) att->attgenerated);
+		for (const char *p = name; *p; p++)
+			h = fnv_u64(h, (unsigned char) *p);
+	}
+	return h;
+}
+
+static uint64
+store_idx_sig(Relation rel)
+{
+	List	   *idxs;
+	ListCell   *lc;
+	uint64		h = UINT64CONST(14695981039346656037);
+
+	if (rel->rd_rel->relkind == RELKIND_INDEX)
+		return 0;
+	idxs = RelationGetIndexList(rel);
+	h = fnv_u64(h, (uint64) list_length(idxs));
+	foreach(lc, idxs)
+		h = fnv_u64(h, (uint64) lfirst_oid(lc));
+	list_free(idxs);
+	h = fnv_u64(h, (uint64) rel->rd_pkindex);
+	h = fnv_u64(h, (uint64) rel->rd_replidindex);
+	return h;
 }
 
 /* the entry used longest ago, when no statement of the transaction may hold it: the ticks of the list ascend, so that is the first of it or none */
@@ -204,8 +234,8 @@ store_cache_init(void)
 	if (!store_cache_registered)
 	{
 		sift_f2_invalidator_register(store_invalidate);
-		CacheRegisterSyscacheCallback(ATTNUM, store_attr_invalidate, (Datum) 0);
-		CacheRegisterSyscacheCallback(INDEXRELID, store_index_invalidate, (Datum) 0);
+		CacheRegisterSyscacheCallback(ATTNUM, store_att_bump, (Datum) 0);
+		CacheRegisterSyscacheCallback(INDEXRELID, store_idx_bump, (Datum) 0);
 		sift_cache_register(&store_cache_kind);
 		store_cache_registered = true;
 	}
@@ -221,7 +251,7 @@ host_of(Relation rel)
 static SiftF2Store *
 store_build(Relation rel)
 {
-	/* MEM[MEM-IDLE-03]: cachebudget f2 store per-rel ctx (struct + shared-nothing option copies; evictable LRU; committed by sift_f2_store_open callers) */
+	/* MEM[MEM-IDLE-03]: cachebudget f2 store per-rel ctx (struct + shared-nothing option copies; evictable LRU; committed by sift_f2_store_open) */
 	MemoryContext cx = sift_cache_create_context_in(CurrentMemoryContext, "sift cache f2 store");
 	SiftF2Store *s = MemoryContextAllocZero(cx, sizeof(SiftF2Store));
 
@@ -252,16 +282,6 @@ store_build_current(Relation rel)
 	}
 }
 
-static uint32 *
-store_att_hashes(const SiftF2Store *s)
-{
-	uint32	   *h = MemoryContextAlloc(s->cx, sizeof(uint32) * Max(s->natts, 1));
-
-	for (int a = 0; a < s->natts; a++)
-		h[a] = GetSysCacheHashValue2(ATTNUM, ObjectIdGetDatum(s->relid), Int16GetDatum(a + 1));
-	return h;
-}
-
 SiftF2Store *
 sift_f2_store_open(Relation rel)
 {
@@ -271,20 +291,67 @@ sift_f2_store_open(Relation rel)
 	if (store_cache == NULL)
 		store_cache_init();
 	e = hash_search(store_cache, &relid, HASH_FIND, NULL);
+	if (e != NULL && (e->att_gen != store_att_gen || (e->idx_gen != store_idx_gen && e->store->host->host_kind != SIFT_F2_HOST_INDEX)))
+	{
+		uint64		ag = store_att_gen;
+		uint64		ig = store_idx_gen;
+		bool		stale = (e->att_gen != ag && store_att_sig(rel) != e->att_sig) ||
+							(e->idx_gen != ig && e->store->host->host_kind != SIFT_F2_HOST_INDEX && store_idx_sig(rel) != e->idx_sig);
+
+		/* store_idx_sig may trigger catalog reads/invalidations: re-lookup before mutating */
+		e = hash_search(store_cache, &relid, HASH_FIND, NULL);
+		if (e != NULL)
+		{
+			if (stale)
+			{
+				drop_entry(e);
+				e = NULL;
+			}
+			else
+			{
+				e->att_gen = ag;
+				e->idx_gen = ig;
+			}
+		}
+	}
 	if (e == NULL)
 	{
-		SiftF2Store *s = store_build_current(rel);
+		uint64		ag;
+		uint64		ig;
+		uint64		asig;
+		uint64		isig;
+		SiftF2Store *s;
 
+		for (;;)
+		{
+			uint64		seen = store_invalidations;
+
+			ag = store_att_gen;
+			ig = store_idx_gen;
+			asig = store_att_sig(rel);
+			isig = store_idx_sig(rel);
+			s = store_build_current(rel);
+			if (seen == store_invalidations)
+				break;
+			MemoryContextDelete(s->cx);
+		}
 		e = hash_search(store_cache, &relid, HASH_ENTER, NULL);
 		e->store = s;
 		e->relhash = sift_f2_rel_hash(rel);
-		e->atthash = store_att_hashes(s);
+		e->att_gen = ag;
+		e->idx_gen = ig;
+		e->att_sig = asig;
+		e->idx_sig = isig;
 		sift_cache_adopt(s->cx);
 		dlist_push_tail(&store_lru, &e->lru_node);
+		e->tick = sift_cache_tick();
+		sift_cache_commit();
 	}
 	else
+	{
 		dlist_move_tail(&store_lru, &e->lru_node);
-	e->tick = sift_cache_tick();
+		e->tick = sift_cache_tick();
+	}
 	return e->store;
 }
 
