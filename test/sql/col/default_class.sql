@@ -2,6 +2,7 @@
 -- serves the aggregates and the filters that return rows (docs/COL-SCAN.md): equality, IN, range, LIKE 'abc%', IS NULL, index-only scans, for the types that have
 -- a class; a type that has none (an interval) and a column that names a class keep their behaviour. The rows are the heap's in every case.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 
 CREATE TABLE dc (id int, big int8, small int2, d date, ts timestamp, tz timestamptz, n numeric(12,2), b bool, f4 float4, f8 float8, c char(8), v varchar(40), t text, u uuid,
