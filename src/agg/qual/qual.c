@@ -55,7 +55,7 @@ is_private(const Node *qual, Relation index)
 }
 
 void
-sift_v6_qual_scankeys(PlanState *ps, Relation index, List *quals, ScanKey *keys, int *nkeys, IndexRuntimeKeyInfo **rtkeys, int *nrt)
+sift_v6_qual_scankeys(PlanState *ps, List *jsonqual, Relation index, List *quals, ScanKey *keys, int *nkeys, IndexRuntimeKeyInfo **rtkeys, int *nrt)
 {
 	List	   *standard = NIL,
 			   *own = NIL;
@@ -69,7 +69,7 @@ sift_v6_qual_scankeys(PlanState *ps, Relation index, List *quals, ScanKey *keys,
 		else
 			standard = lappend(standard, qual);
 	ExecIndexBuildScanKeys(ps, index, standard, false, &std_keys, &nstd, rtkeys, nrt, NULL, NULL);
-	*keys = palloc(Max(nstd + list_length(own), 1) * sizeof(ScanKeyData));
+	*keys = palloc(Max(nstd + list_length(own) + list_length(jsonqual), 1) * sizeof(ScanKeyData));
 	memcpy(*keys, std_keys, nstd * sizeof(ScanKeyData));
 	for (int i = 0; i < *nrt; i++)
 		(*rtkeys)[i].scan_key = *keys + ((*rtkeys)[i].scan_key - std_keys);
@@ -90,4 +90,5 @@ sift_v6_qual_scankeys(PlanState *ps, Relation index, List *quals, ScanKey *keys,
 		};
 	}
 	*nkeys = at;
+	sift_v6_json_append_scankeys(jsonqual, index, *keys, nkeys);
 }

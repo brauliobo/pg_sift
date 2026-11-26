@@ -79,8 +79,7 @@ begin_index(V6State *st, CustomScanState *node, SiftV6ScanSrc *src, Oid indexoid
 	src->ops = sift_store_ops_for_oid(indexoid, false);
 	src->index = index_open(indexoid, AccessShareLock);
 	src->heap = table_open(src->index->rd_index->indrelid, AccessShareLock);
-	sift_v6_qual_scankeys(&node->ss.ps, src->index, st->spec->indexqual, &src->keys, &src->nkeys, &src->rtkeys, &src->nrt);
-	sift_v6_json_scankeys(st->spec, src->index, &src->keys, &src->nkeys);
+	sift_v6_qual_scankeys(&node->ss.ps, st->spec->jsonqual, src->index, st->spec->indexqual, &src->keys, &src->nkeys, &src->rtkeys, &src->nrt);
 }
 
 static void
@@ -329,9 +328,8 @@ pass_keys(V6State *st, const SiftV6FuseCohort *c, List *quals, int *nkeys)
 
 	if (c->same_keys)
 		return (*nkeys = src->nkeys, src->keys);
-	sift_v6_qual_scankeys(&st->css.ss.ps, src->index, quals, &keys, nkeys, &rtkeys, &nrt);
+	sift_v6_qual_scankeys(&st->css.ss.ps, st->spec->jsonqual, src->index, quals, &keys, nkeys, &rtkeys, &nrt);
 	SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
-	sift_v6_json_scankeys(st->spec, src->index, &keys, nkeys);
 	return keys;
 }
 

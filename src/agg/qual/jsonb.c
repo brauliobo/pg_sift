@@ -18,6 +18,7 @@
 #include "agg/agg.h"
 #include "agg/ht/ht.h"
 #include "agg/engine.h"
+#include "agg/qual/qual.h"
 #include "agg/unnest/jsonb.h"
 #include "col/am.h"
 #include "core/errctx.h"
@@ -518,28 +519,37 @@ sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op)
 }
 
 void
-sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys)
+sift_v6_json_append_scankeys(List *jsonqual, Relation index, ScanKey keys, int *nkeys)
 {
 	const SiftJsonbOps *ops;
-	ScanKey		all;
 
-	if (spec->jsonqual == NIL)
+	if (jsonqual == NIL)
 		return;
 	ops = sift_store_ops_for_oid(RelationGetRelid(index), false)->jsonb;
-	all = palloc((*nkeys + list_length(spec->jsonqual)) * sizeof(ScanKeyData));
-	if (*nkeys > 0)
-		memcpy(all, *keys, *nkeys * sizeof(ScanKeyData));
-	foreach_ptr(List, q, spec->jsonqual)
+	foreach_ptr(List, q, jsonqual)
 	{
 		const char *key = strVal(lthird(q));
 		const int	att = intVal(lsecond(q));
 		const int	leaf = ops->key_leaf(RelationGetRelid(index), att, key, strlen(key));
 
 		SIFT_INVARIANT(leaf >= 0, "the key of a jsonb qual of the aggregate scan is a leaf of the index");
-		all[(*nkeys)++] = intVal(linitial(q)) == JQ_EXISTS ?
+		keys[(*nkeys)++] = intVal(linitial(q)) == JQ_EXISTS ?
 			(ScanKeyData) {.sk_attno = att,.sk_strategy = COL_STRAT_JSONB_EXISTS,.sk_argument = CStringGetTextDatum(key)} :
 			(ScanKeyData) {.sk_attno = att,.sk_strategy = COL_STRAT_JSONB_TYPE,.sk_argument = Int64GetDatum(COL_JSON_TYPE_ARG(leaf, (uint32) intVal(lfourth(q))))};
 	}
+}
+
+void
+sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys)
+{
+	ScanKey		all;
+
+	if (spec->jsonqual == NIL)
+		return;
+	all = palloc((*nkeys + list_length(spec->jsonqual)) * sizeof(ScanKeyData));
+	if (*nkeys > 0)
+		memcpy(all, *keys, *nkeys * sizeof(ScanKeyData));
+	sift_v6_json_append_scankeys(spec->jsonqual, index, all, nkeys);
 	*keys = all;
 }
 
