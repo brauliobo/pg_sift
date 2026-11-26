@@ -22,6 +22,7 @@
 #include "agg/cost/card.h"
 #include "agg/join/join.h"
 #include "agg/sip_scan.h"
+#include "agg/unnest/jsonb.h"
 #include "agg/vexpr.h"
 
 static const SiftCardStatsView *
@@ -211,7 +212,7 @@ leaves_bytes(const SiftCardStatsView *view, const Bitmapset *leaves, bool stored
 static int
 index_leaf(const void *ix, int col)
 {
-	return col > 0 ? sift_v6_card_leaf((const IndexOptInfo *) ix, col - 1) : -1;
+	return col > 0 && col < SIFT_V6_ELEM_VATT ? sift_v6_card_leaf((const IndexOptInfo *) ix, col - 1) : -1;
 }
 
 static int
