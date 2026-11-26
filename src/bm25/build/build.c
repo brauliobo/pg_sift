@@ -329,15 +329,60 @@ add_counts(SiftBuildShared *shared, double reltuples, double indexed)
 	SpinLockRelease(&shared->mutex);
 }
 
-/* Spills what is left, merges the runs down to what a part holds and makes them readable by the leader */
+/* End of the runs from first on that one segment holds together, as end_segment groups them: what their largest terms and dictionaries add up to fits its limits */
+static int
+segment_group_end(SiftRun **runs, int first, int nruns, Size budget)
+{
+	uint64		df = runs[first]->maxdf,
+				blob = runs[first]->maxblob,
+				dict = runs[first]->dict;
+	int			last = first + 1;
+
+	for (; last < nruns; last++)
+	{
+		df += runs[last]->maxdf;
+		blob += runs[last]->maxblob;
+		dict += runs[last]->dict;
+		if (df > sift_seg_postings(budget) || blob > SIFT_BLOB_MAX || dict > SIFT_DICT_MAX)
+			break;
+	}
+	return last;
+}
+
+/* Merges the runs of each segment group down to its share of target, so that no run holds what two segments would: the leader writes the same segments */
+static int
+shrink_by_group(SiftRun **runs, int nruns, int target, Size budget, RunHome *home)
+{
+	int			ngroups = 0,
+				kept = 0;
+
+	for (int first = 0; first < nruns; first = segment_group_end(runs, first, nruns, budget))
+		ngroups++;
+	for (int first = 0, last; first < nruns; first = last)
+	{
+		int			n;
+
+		last = segment_group_end(runs, first, nruns, budget);
+		n = sift_shrink_runs(runs + first, last - first, Max(1, target / ngroups), budget, home);
+		memmove(runs + kept, runs + first, n * sizeof(SiftRun *));
+		kept += n;
+	}
+	return kept;
+}
+
+/*
+ * Spills what is left, merges the runs down to a share of what the leader merges at once (the participants together have its budget) and
+ * makes them readable by the leader: the participants shrink their runs side by side, the leader would one after the other
+ */
 static void
-hand_over_runs(BuildState *bs, SiftBuildPart *part)
+hand_over_runs(BuildState *bs, SiftBuildPart *part, int nparticipants)
 {
 	MemoryContext old = MemoryContextSwitchTo(bs->cxt);
+	int			target = Min(MAX_PART_RUNS, Max(1, sift_merge_fanin(bs->budget * nparticipants) / nparticipants));
 
 	if (!sift_inv_empty(bs->inv))
 		spill(bs);
-	bs->nruns = sift_shrink_runs(bs->runs, bs->nruns, MAX_PART_RUNS, bs->budget, &bs->home);
+	bs->nruns = shrink_by_group(bs->runs, bs->nruns, target, bs->budget, &bs->home);
 	MemoryContextSwitchTo(old);
 	part->nruns = bs->nruns;
 	for (int i = 0; i < bs->nruns; i++)
@@ -378,7 +423,7 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	sift_mem_init_sub(&mt_bm25_build_worker, "bm25_build_worker", bs->cxt, false, Max(shared->budget, BUILD_WORKER_FLOOR));
 	reltuples = build_scan(bs, w.heap, w.info, sift_table_beginscan_parallel(w.heap, SCAN_OF(shared)), false);
 	sift_mem_assert_within(&mt_bm25_build_worker);
-	hand_over_runs(bs, part);
+	hand_over_runs(bs, part, shared->nparticipants);
 	add_counts(shared, reltuples, bs->indexed);
 #ifdef SIFT_TESTING
 	MEM_SAMPLE();

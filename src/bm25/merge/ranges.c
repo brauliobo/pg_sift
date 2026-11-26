@@ -96,11 +96,15 @@ merge_alone(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, 
 	return nlive > 0;
 }
 
-/* Participants pay once a range outgrows the maintenance memory of one process: a merge below that is written by one, with no file of ranges */
+#define RANGE_BYTES_MAX		((uint64) 4 << 20)
+
+/* Participants pay once a merge holds two ranges of an eighth of the maintenance memory of one process (4 MB at most): a merge below that is written by one, with no file of ranges */
 static uint64
 range_bytes(void)
 {
-	return TEST_KNOB(sift_test_range_bytes, Max(RANGE_BYTES, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1)));
+	uint64		eighth = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 8;
+
+	return TEST_KNOB(sift_test_range_bytes, Max(RANGE_BYTES, Min(eighth, RANGE_BYTES_MAX)));
 }
 
 int

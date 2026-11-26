@@ -27,6 +27,7 @@
 #define RUN_MAX				1024
 #define RUN_BIG				8192
 #define EXTENT_TARGET		256
+#define SW_BATCH_PAGES		16
 
 #ifdef SIFT_TESTING
 #define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
@@ -40,7 +41,9 @@ struct SiftStreamWriter
 	uint64		gen;
 	uint64		pos;
 	Page		page;			/* page being filled, NULL between pages */
-	PGIOAlignedBlock *local;	/* SHARED: page buffer */
+	PGIOAlignedBlock *local;	/* SHARED: SW_BATCH_PAGES page buffers, logged in one record */
+	BlockNumber local_blk[SW_BATCH_PAGES];
+	int			nlocal;			/* SHARED: pages complete in local, not yet logged */
 	Size		used;			/* bytes on page */
 	BlockNumber blk;
 	BlockNumber run_next;		/* unused part of the current run */
@@ -281,26 +284,36 @@ sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
 		sift_pacer_pause(wt->tier);
 }
 
+/* Writes n complete pages, at most SW_BATCH_PAGES, in one WAL record */
+static void
+wt_log(SiftWriteTarget *wt, const BlockNumber *blknos, Page *pages, int n)
+{
+	Buffer		bufs[SW_BATCH_PAGES];
+
+	sift_wt_charge(wt, n);
+#ifdef SIFT_TESTING
+	for (int i = 0; i < n; i++)
+		if (sift_test_fail_pages > 0 && ++wt->npages > sift_test_fail_pages)
+			elog(ERROR, "sift test: injected failure after %d pages", sift_test_fail_pages);	/* check-errors: allow */
+#endif
+	for (int i = 0; i < n; i++)
+		bufs[i] = new_locked(wt->index, blknos[i]);
+	log_pages(wt->index, bufs, pages, n);
+	for (int i = 0; i < n; i++)
+		UnlockReleaseBuffer(bufs[i]);
+}
+
 /* Writes a complete page; BULK takes ownership of a smgr_bulk_get_buf page */
 static void
 wt_put(SiftWriteTarget *wt, BlockNumber blkno, Page page)
 {
-	Buffer		buf;
-
-	sift_wt_charge(wt, 1);
-
 	if (wt->bulk)
 	{
+		sift_wt_charge(wt, 1);
 		smgr_bulk_write(wt->bulk, blkno, (BulkWriteBuffer) page, true);
 		return;
 	}
-#ifdef SIFT_TESTING
-	if (sift_test_fail_pages > 0 && ++wt->npages > sift_test_fail_pages)
-		elog(ERROR, "sift test: injected failure after %d pages", sift_test_fail_pages);	/* check-errors: allow */
-#endif
-	buf = new_locked(wt->index, blkno);
-	log_pages(wt->index, &buf, &page, 1);
-	UnlockReleaseBuffer(buf);
+	wt_log(wt, &blkno, &page, 1);
 }
 
 static Page
@@ -499,7 +512,7 @@ sift_sw_begin(SiftWriteTarget *wt, uint64 gen)
 	sift_extlist_init(&sw->ext);
 	sw->ext.max = TEST_KNOB(sift_test_max_extents, (int) SIFT_MAX_EXTENTS);
 	if (wt->bulk == NULL)
-		sw->local = palloc_aligned(sizeof(PGIOAlignedBlock), PG_IO_ALIGN_SIZE, 0);
+		sw->local = palloc_aligned(SW_BATCH_PAGES * sizeof(PGIOAlignedBlock), PG_IO_ALIGN_SIZE, 0);
 	return sw;
 }
 
@@ -519,12 +532,32 @@ sift_sw_tell(const SiftStreamWriter *sw)
 }
 
 static void
+sw_log_local(SiftStreamWriter *sw)
+{
+	Page		pages[SW_BATCH_PAGES];
+
+	for (int i = 0; i < sw->nlocal; i++)
+		pages[i] = sw->local[i].data;
+	wt_log(sw->wt, sw->local_blk, pages, sw->nlocal);
+	sw->nlocal = 0;
+}
+
+static void
 sw_flush(SiftStreamWriter *sw)
 {
 	if (sw->page == NULL)
 		return;
 	SiftPageSetUsed(sw->page, sw->used);
-	wt_put(sw->wt, sw->blk, sw->page);
+	if (sw->wt->bulk)
+		wt_put(sw->wt, sw->blk, sw->page);
+	else
+	{
+		if (sw->nlocal >= SW_BATCH_PAGES)
+			sw_log_local(sw);
+		sw->local_blk[sw->nlocal++] = sw->blk;
+		if (sw->nlocal == SW_BATCH_PAGES)
+			sw_log_local(sw);
+	}
 	sw->page = NULL;
 	CHECK_FOR_INTERRUPTS();
 }
@@ -591,7 +624,7 @@ sw_start_page(SiftStreamWriter *sw)
 	}
 	sw->blk = sw->run_next++;
 	sift_extlist_add(&sw->ext, sw->blk);
-	sw->page = wt_page(sw->wt, sw->local);
+	sw->page = wt_page(sw->wt, sw->local ? sw->local + sw->nlocal : NULL);
 	sift_page_init(sw->page, SIFT_PT_DATA, sw->gen);
 	sw->used = 0;
 }
@@ -629,6 +662,8 @@ SiftExtent *
 sift_sw_finish(SiftStreamWriter *sw, int *nextents)
 {
 	sw_flush(sw);
+	if (sw->nlocal > 0)
+		sw_log_local(sw);
 	wt_spare(sw->wt, sw->run_next, sw->run_end - sw->run_next);
 	sw->run_next = sw->run_end;
 	*nextents = sw->ext.n;

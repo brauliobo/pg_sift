@@ -260,18 +260,34 @@ sift_ranges_publish(SiftBuildShared *shared, int ncuts)
 #endif
 }
 
-/* The ranges of the plan are appended to sw in order as they are done, between those the leader writes */
+static bool
+range_taken(SiftBuildShared *shared, int i)
+{
+	bool		ok;
+
+	SpinLockAcquire(&shared->mutex);
+	ok = shared->ranges.next > i;
+	SpinLockRelease(&shared->mutex);
+	return ok;
+}
+
+/*
+ * The ranges of the plan are appended to sw in order as they are done. The leader writes a range of its own only when nobody has taken the
+ * one it appends next: while another participant has it, appending what is done overlaps with the encoding of the rest.
+ */
 void
 sift_ranges_stitch(SiftBuildShared *shared, Relation index, SiftSegmentWriter *sw)
 {
 	SiftBuildRanges *rg = &shared->ranges;
 	int			g = rg->gen;
 
-	for (int i = 0, next = 0; next < rg->nranges;)
+	for (int next = 0; next < rg->nranges;)
 	{
+		int			i;
+
 		if (range_fin(shared, next))
 			stitch(shared, sw, g, next++);
-		else if ((i = take_range(shared, g)) >= 0)
+		else if (!range_taken(shared, next) && (i = take_range(shared, g)) >= 0)
 			write_one(shared, index, g, i);
 		else
 			wait_for(shared, range_fin, next);
