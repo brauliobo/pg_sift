@@ -1,0 +1,53 @@
+-- A scope whose pairs and keys do not fit maintenance_work_mem (1MB, 100,000 pairs): the index is built through a sort of the pairs, with the entries of the join of the pairs,
+-- for the unique btree led by the member (the keys are read from the pairs) and for the one led by the key (the pairs are read in the order of the key).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET jit = off;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.async_maintenance = off;
+SET maintenance_work_mem = '1MB';
+CREATE TABLE sp_pairs_led (m int NOT NULL, t int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO sp_pairs_led SELECT m, m * 10 + j FROM generate_series(1, 10000) m, generate_series(0, 9) j;
+CREATE UNIQUE INDEX sp_pairs_led_u ON sp_pairs_led (m, t);
+CREATE INDEX sp_pairs_led_c ON sp_pairs_led USING sift_col (m, t) WITH (track_changes = 'ctid');
+CREATE TABLE sp_pairs_key (m int NOT NULL, t int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO sp_pairs_key SELECT m, m * 10 + j FROM generate_series(1, 10000) m, generate_series(0, 9) j;
+CREATE UNIQUE INDEX sp_pairs_key_u ON sp_pairs_key (t, m);
+CREATE INDEX sp_pairs_key_c ON sp_pairs_key USING sift_col (m, t) WITH (track_changes = 'ctid');
+CREATE TABLE sp_t (id int PRIMARY KEY, m int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO sp_t SELECT i, 1 + (i * 7919) % 10000, i % 10 FROM generate_series(1, 20000) i;
+VACUUM (FREEZE, ANALYZE) sp_pairs_led, sp_pairs_key, sp_t;
+CREATE FUNCTION scope_try(label text, pairs text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE st text := 'ok'; same boolean; ntmp bigint;
+BEGIN
+	BEGIN
+		EXECUTE format('CREATE INDEX sp_ix ON sp_t USING sift_col (id, m, v) WITH (scope = %L)', 't: m -> ' || pairs || '(m, t)');
+		EXECUTE format('SELECT bool_and(r.a = r.b) AND bool_or(r.b <> ''0:'') FROM (SELECT
+			(SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM sp_t f WHERE sift.in_scope(''sp_ix''::regclass, ''t'', f.m, ARRAY[k]::int8[])) a,
+			(SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM sp_t f WHERE f.m IN (SELECT m FROM %s WHERE t = k)) b
+			FROM (SELECT 10 + 1997 * g AS k FROM generate_series(1, 50) g) ks) r', pairs) INTO same;
+		DROP INDEX sp_ix;
+	EXCEPTION WHEN OTHERS THEN
+		st := 'ERROR ' || SQLSTATE || ' ' || left(SQLERRM, 70);
+	END;
+	SELECT count(*) INTO ntmp FROM pg_ls_tmpdir();
+	RETURN format('%s | %s | in_scope=pairs-join:%s | tmp=%s', label, st, same, ntmp);
+END $$;
+SELECT scope_try('the keys of 100k pairs at 1MB', 'sp_pairs_led');
+                             scope_try                              
+--------------------------------------------------------------------
+ the keys of 100k pairs at 1MB | ok | in_scope=pairs-join:t | tmp=0
+(1 row)
+
+SELECT scope_try('100k pairs at 1MB, btree led by the key', 'sp_pairs_key');
+                                  scope_try                                   
+------------------------------------------------------------------------------
+ 100k pairs at 1MB, btree led by the key | ok | in_scope=pairs-join:t | tmp=0
+(1 row)
+
+DROP FUNCTION scope_try(text, text);
+DROP TABLE sp_t, sp_pairs_led, sp_pairs_key;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

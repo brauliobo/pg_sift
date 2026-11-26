@@ -75,12 +75,18 @@ ORDER BY w, m;
        4 |    2 | t            |     0 | t       |      1
 (4 rows)
 
--- the groups of a partition are merged in memory, within that budget: more groups than it holds are an error with a message, not a wrong answer
-\set VERBOSITY terse
-SELECT * FROM sift._test_radix_par(13, 2, 12, 20000, 0, 128, 0);
-ERROR:  the groups of a partition take more than 65536 bytes
-SELECT * FROM sift._test_radix_par(13, 2, 12, 20000, 2, 128, 0);
-ERROR:  the groups of a partition take more than 65536 bytes
-\set VERBOSITY default
+-- the groups of a partition that outgrow its budget go to files and are read back partition by partition: no wrong group, no error
+SELECT r.bad AS wrong, r.spilled > 0 AS spilled, r.out_groups FROM sift._test_radix_par(13, 2, 12, 20000, 0, 128, 0) r;
+ wrong | spilled | out_groups 
+-------+---------+------------
+     0 | t       |      19857
+(1 row)
+
+SELECT r.bad AS wrong, r.spilled > 0 AS spilled, r.out_groups FROM sift._test_radix_par(13, 2, 12, 20000, 2, 128, 0) r;
+ wrong | spilled | out_groups 
+-------+---------+------------
+     0 | t       |      19857
+(1 row)
+
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

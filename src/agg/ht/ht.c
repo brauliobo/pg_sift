@@ -7,6 +7,7 @@
 
 #include "agg/ht/dist.h"
 #include "agg/ht/ht.h"
+#include "core/memtrack.h"
 
 uint32
 sift_ht_match16_scalar(const uint8 *ctrl, uint8 b)
@@ -109,6 +110,8 @@ ht_free_sets(SiftSaltedHT *ht)
 void
 sift_ht_destroy(SiftSaltedHT *ht)
 {
+	const uint64 bytes = sift_ht_bytes(ht);
+
 	ht_free_sets(ht);
 	pfree(ht->ctrl);
 	pfree(ht->slots);
@@ -117,6 +120,7 @@ sift_ht_destroy(SiftSaltedHT *ht)
 	if (ht->arena)
 		pfree(ht->arena);
 	memset(ht, 0, sizeof(*ht));
+	sift_mem_release_os(bytes);
 }
 
 static inline void

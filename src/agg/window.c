@@ -227,16 +227,59 @@ slot_of(SiftWindowExec *w, uint64 idx)
 	return &w->ring[idx & (w->cap - 1)];
 }
 
-/* the rows of the open peer group leave the ring for the file: the ring is empty and the rows before pend_first are the file's */
+static void
+set_res(SiftWinRow *r, int f, SiftWinVal v, bool null)
+{
+	r->res[f] = v;
+	r->res_nulls = (uint16) ((r->res_nulls & ~(1u << f)) | ((null ? 1u : 0u) << f));
+}
+
+static void
+default_of(const SiftWinFuncSpec *fn, SiftWinRow *r, int f)
+{
+	SiftWinVal	z;
+
+	memset(&z, 0, sizeof(z));
+	set_res(r, f, fn->has_default ? fn->default_val : z, !fn->has_default);
+}
+
+/* the LEAD values of the row at idx, from the rows ahead that have arrived (idx + offset < n_recv), or their default */
+static void
+resolve_lead(SiftWindowExec *w, SiftWinRow *r, uint64 idx)
+{
+	for (int f = 0; f < w->spec.n_funcs; f++)
+	{
+		const SiftWinFuncSpec *fn = &w->spec.funcs[f];
+		const uint64 target = idx + fn->offset;
+
+		if (fn->kind != SWIN_LEAD)
+			continue;
+		if (fn->offset == 0)
+			set_res(r, f, r->arg[f], (r->arg_nulls >> f) & 1);
+		else if (target < w->n_recv)
+			set_res(r, f, slot_of(w, target)->arg[f], (slot_of(w, target)->arg_nulls >> f) & 1);
+		else
+			default_of(fn, r, f);
+	}
+}
+
+/* the rows of the open peer group that no LEAD waits for leave the ring for the file, with their LEAD values: the last max_lead rows stay, and the rows before pend_first are the file's */
 static void
 spill_ring(SiftWindowExec *w)
 {
+	const uint64 upto = w->n_recv - w->max_lead;
+
 	if (!w->spill)
 		w->spill = BufFileCreateTemp(false);
-	for (uint64 i = w->pend_first; i < w->n_recv; i++)
-		BufFileWrite(w->spill, slot_of(w, i), sizeof(SiftWinRow));
-	w->n_spilled += w->n_recv - w->pend_first;
-	w->pend_first = w->n_recv;
+	for (uint64 i = w->pend_first; i < upto; i++)
+	{
+		SiftWinRow *r = slot_of(w, i);
+
+		resolve_lead(w, r, i);
+		BufFileWrite(w->spill, r, sizeof(SiftWinRow));
+	}
+	w->n_spilled += upto - w->pend_first;
+	w->pend_first = upto;
 }
 
 static void
@@ -247,10 +290,6 @@ grow_ring(SiftWindowExec *w)
 
 	if (w->fixed_bytes + (uint64) ncap * sizeof(SiftWinRow) > w->max_bytes)
 	{
-		if (w->max_lead > 0)
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							errmsg("a window frame holds more than %lu rows", (unsigned long) (w->n_recv - w->pend_first)),
-							errhint("Raise work_mem, or this window needs a sort.")));
 		spill_ring(w);
 		return;
 	}
@@ -396,22 +435,6 @@ accumulate(SiftWindowExec *w, int f, SiftWinVal arg, bool null)
 	s->count++;
 }
 
-static void
-set_res(SiftWinRow *r, int f, SiftWinVal v, bool null)
-{
-	r->res[f] = v;
-	r->res_nulls = (uint16) ((r->res_nulls & ~(1u << f)) | ((null ? 1u : 0u) << f));
-}
-
-static void
-default_of(const SiftWinFuncSpec *fn, SiftWinRow *r, int f)
-{
-	SiftWinVal	z;
-
-	memset(&z, 0, sizeof(z));
-	set_res(r, f, fn->has_default ? fn->default_val : z, !fn->has_default);
-}
-
 /* the rows of the group that left the ring come back first, in order, with the value of the group */
 static void
 replay_spill(SiftWindowExec *w, const SiftWinVal *v, const bool *ok)
@@ -467,20 +490,7 @@ drain(SiftWindowExec *w, bool closing)
 	{
 		SiftWinRow *r = slot_of(w, w->pend_first);
 
-		for (int f = 0; f < w->spec.n_funcs; f++)
-		{
-			const SiftWinFuncSpec *fn = &w->spec.funcs[f];
-			const uint64 target = w->pend_first + fn->offset;
-
-			if (fn->kind != SWIN_LEAD)
-				continue;
-			if (fn->offset == 0)
-				set_res(r, f, r->arg[f], (r->arg_nulls >> f) & 1);
-			else if (target < w->n_recv)
-				set_res(r, f, slot_of(w, target)->arg[f], (slot_of(w, target)->arg_nulls >> f) & 1);
-			else
-				default_of(fn, r, f);
-		}
+		resolve_lead(w, r, w->pend_first);
 		emit_row(w, r);
 	}
 }

@@ -129,7 +129,7 @@ extern SiftParCoord *sift_par_coord_init(void *raw, dsm_segment *seg, uint32 max
 										 uint32 local_cap);
 /*
  * The coordinator of a node that emits its finished groups itself, through the Gather above it, and has no queue: n_parts_radix partitions (a power of 2 in [SIFT_MIN_RADIX_PARTS, SIFT_MAX_RADIX_PARTS])
- * and max_chunks chunks. The records are the caller's: len in the first 4 bytes, the hash that picks the partition at offset 8, len a multiple of 8 and at most SIFT_RADIX_STAGE.
+ * and max_chunks chunks. The records are the caller's: len in the first 4 bytes, the hash that picks the partition at offset 8, len a multiple of 8 (a record over a chunk goes to the files of the participant).
  */
 extern Size sift_par_coord_size_custom(uint32 max_chunks);
 extern SiftParCoord *sift_par_coord_init_custom(void *raw, dsm_segment *seg, uint32 n_parts_radix, uint32 max_chunks, int n_workers, uint32 local_cap);
@@ -180,8 +180,6 @@ extern bool sift_par_next_part(SiftParCoord *c, uint32 *part);
 /* Calls fn for each block of whole records of the partition (the chunks, then the files of the participants, each deleted once read, so a partition is scanned once): the records of a block are at its offsets of their lengths */
 typedef void (*SiftRadixBlockFn) (void *arg, const uint8 *block, uint32 len);
 extern void sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *arg);
-/* Merges every record of the partition into ht (initialized here, to be destroyed by the caller) */
-extern void sift_radix_merge_part(SiftParCoord *c, uint32 part, const SiftRadixShape *shape, SiftSaltedHT *ht);
 
 /* The output of a participant: a record at a time, to the consumer (the leader) or to its queue (a worker) */
 typedef void (*SiftRadixConsume) (void *arg, const void *rec, uint32 len);

@@ -19,6 +19,7 @@
 #include "col/f2/part/idx.h"
 #include "col/f2/scope/int.h"
 #include "col/f2/scope/mem.h"
+#include "col/f2/scope/spool.h"
 #include "col/scope/scope.h"
 #include "col/f2/cube/probe.h"
 #include "core/cmp.h"
@@ -166,6 +167,7 @@ source_close(void *arg)
 typedef struct Survey
 {
 	SiftU64Set	keys;
+	SiftScopeSpool *spill;		/* the keys past the budget of the set, as (key, 0) */
 	SiftMemTracker *mem;
 	uint32		check_at;
 	int64		member;
@@ -175,6 +177,36 @@ typedef struct Survey
 	SiftScopePairProbe *probe;
 	PairSource *s;
 } Survey;
+
+/* The keys of the set go to a spool, which takes the keys that follow */
+static void
+survey_spill(Survey *sv)
+{
+	sv->spill = sift_scope_spool_new(sv->mem);
+	for (uint32 i = 0; i <= sv->keys.mask; i++)
+		if (sv->keys.keys[i] != 0)
+			sift_scope_spool_put(sv->spill, (int64) sv->keys.keys[i], 0);
+	if (sv->keys.has_zero)
+		sift_scope_spool_put(sv->spill, 0, 0);
+	sift_u64_set_free(&sv->keys);
+}
+
+static void
+survey_key(Survey *sv, int64 key)
+{
+	if (sv->spill != NULL)
+	{
+		sift_scope_spool_put(sv->spill, key, 0);
+		return;
+	}
+	sift_u64_set_add(&sv->keys, (uint64) key);
+	if (sv->keys.count >= sv->check_at)
+	{
+		sv->check_at *= 2;
+		if (sift_mem_would_exceed(sv->mem, (Size) sv->keys.count * 4 * sizeof(uint64)))
+			survey_spill(sv);
+	}
+}
 
 static void
 survey_run(Survey *sv)
@@ -190,13 +222,7 @@ survey_run(Survey *sv)
 		sv->probe->first_multi = sv->member;
 	}
 	for (uint32 i = 0; i < n; i++)
-		sift_u64_set_add(&sv->keys, (uint64) sv->s->keys[i]);
-	if (sv->keys.count >= sv->check_at)
-	{
-		sv->check_at *= 2;
-		if (sift_mem_would_exceed(sv->mem, (Size) sv->keys.count * 4 * sizeof(uint64)))
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the keys of the scope do not fit in maintenance_work_mem"), errhint("Raise maintenance_work_mem.")));
-	}
+		survey_key(sv, sv->s->keys[i]);
 	sv->nrun = 0;
 }
 
@@ -256,16 +282,36 @@ source_open(Relation rel, Oid btree, AttrNumber member, AttrNumber key, SiftKeyM
 	return s;
 }
 
+/* The distinct keys ascending, in the current context */
 static int64 *
-set_keys(const SiftU64Set *set, uint32 *n)
+set_keys(Survey *sv, uint32 *n)
 {
-	int64	   *keys = palloc(sizeof(int64) * Max(set->count, 1));
+	int64	   *keys;
 
 	*n = 0;
-	for (uint32 i = 0; i <= set->mask; i++)
-		if (set->keys[i] != 0)
-			keys[(*n)++] = (int64) set->keys[i];
-	if (set->has_zero)
+	if (sv->spill != NULL)
+	{
+		uint32		cap = 1024;
+		int64		a,
+					b;
+
+		keys = palloc(sizeof(int64) * cap);
+		sift_scope_spool_sort(sv->spill);
+		while (sift_scope_spool_next(sv->spill, &a, &b))
+			if (*n == 0 || keys[*n - 1] != a)
+			{
+				if (*n == cap)
+					keys = repalloc(keys, sizeof(int64) * (cap *= 2));
+				keys[(*n)++] = a;
+			}
+		sift_scope_spool_free(sv->spill);
+		return keys;
+	}
+	keys = palloc(sizeof(int64) * Max(sv->keys.count, 1));
+	for (uint32 i = 0; i <= sv->keys.mask; i++)
+		if (sv->keys.keys[i] != 0)
+			keys[(*n)++] = (int64) sv->keys.keys[i];
+	if (sv->keys.has_zero)
 		keys[(*n)++] = 0;
 	qsort(keys, *n, sizeof(int64), sift_cmp_i64);
 	return keys;
@@ -323,7 +369,7 @@ sift_f2s_build_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Sn
 	old = MemoryContextSwitchTo(mem.root_cx);
 	survey_pass(s, btree, member, snap, &sv);
 	MemoryContextSwitchTo(old);
-	keys = set_keys(&sv.keys, &nkeys);
+	keys = set_keys(&sv, &nkeys);
 	sift_mem_end(&mem);
 	probe->arg = s;
 	probe->member_keys = source_member_keys;

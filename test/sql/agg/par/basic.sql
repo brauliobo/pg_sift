@@ -33,11 +33,9 @@ FROM (VALUES (2, 0), (4, 1), (4, 2), (2, 3)) AS v(w, m),
      LATERAL sift._test_radix_par(13, w, 12, 1000, m, 128, 0) AS r
 ORDER BY w, m;
 
--- the groups of a partition are merged in memory, within that budget: more groups than it holds are an error with a message, not a wrong answer
-\set VERBOSITY terse
-SELECT * FROM sift._test_radix_par(13, 2, 12, 20000, 0, 128, 0);
-SELECT * FROM sift._test_radix_par(13, 2, 12, 20000, 2, 128, 0);
-\set VERBOSITY default
+-- the groups of a partition that outgrow its budget go to files and are read back partition by partition: no wrong group, no error
+SELECT r.bad AS wrong, r.spilled > 0 AS spilled, r.out_groups FROM sift._test_radix_par(13, 2, 12, 20000, 0, 128, 0) r;
+SELECT r.bad AS wrong, r.spilled > 0 AS spilled, r.out_groups FROM sift._test_radix_par(13, 2, 12, 20000, 2, 128, 0) r;
 
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

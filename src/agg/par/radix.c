@@ -392,7 +392,7 @@ spill_block(SiftRadixLocal *l, uint32 p, const void *block, uint32 len)
 		pg_atomic_write_u32(&part->spilled, 1);
 }
 
-/* Appends a block of records to the chunks of the partition, or to the file of the participant when no chunk is left */
+/* Appends a block of records to the chunks of the partition, or to the file of the participant when no chunk is left or the block is more than a chunk holds */
 static void
 append_block(SiftRadixLocal *l, uint32 p, const void *block, uint32 len, uint32 n_items)
 {
@@ -402,12 +402,8 @@ append_block(SiftRadixLocal *l, uint32 p, const void *block, uint32 len, uint32 
 	uint32		idx,
 				at;
 
-	if (len > SIFT_RADIX_PAYLOAD)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a group key of an aggregate is too long"),
-						errdetail("A group with its key and state must fit in a chunk of %d bytes of the shared partitions.", (int) SIFT_RADIX_PAYLOAD),
-						errhint("Group by a shorter key.")));
 	l->part_items[p] += n_items;
-	if (!reserve(l, part, len, &idx, &at))
+	if (len > SIFT_RADIX_PAYLOAD || !reserve(l, part, len, &idx, &at))
 	{
 		spill_block(l, p, block, len);
 		return;
@@ -562,29 +558,12 @@ sift_radix_local_finish(SiftRadixLocal *l)
 
 /* ---- Phase 2: the merge of a partition ---- */
 
-static void
-check_merge_bytes(const SiftRecMerge *m)
-{
-	const uint64 bytes = sift_ht_bytes(m->ht) + m->dist_bytes;
-
-	if (bytes > get_hash_memory_limit())
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the groups of a partition take more than %lu bytes", (unsigned long) get_hash_memory_limit()),
-						errhint("Raise work_mem or hash_mem_multiplier.")));
-}
-
-static void
-merge_block(SiftRecMerge *m, const uint8 *block, uint32 len)
-{
-	for (uint32 off = 0; off < len; off += sift_rec_len(block + off))
-		sift_rec_merge(m, block + off);
-	check_merge_bytes(m);
-}
-
 void
 sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *arg)
 {
 	SiftRadixPart *pt = &c->parts[part];
-	uint8	   *buf = NULL;
+	uint8	   *buf;
+	uint32		cap = SIFT_RADIX_PAYLOAD;
 
 	for (uint32 i = pt->first_chunk; i != SIFT_RADIX_NO_CHUNK;)
 	{
@@ -595,7 +574,7 @@ sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *ar
 	}
 	if (pg_atomic_read_u32(&pt->spilled) == 0)
 		return;
-	buf = palloc(SIFT_RADIX_PAYLOAD);
+	buf = palloc(cap);
 	for (uint32 w = 0; w < c->n_participants; w++)
 	{
 		char		name[48];
@@ -608,6 +587,8 @@ sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *ar
 		while (BufFileReadMaybeEOF(f, &len, sizeof(len), true) != 0)
 		{
 			CHECK_FOR_INTERRUPTS();
+			if (len > cap)
+				buf = repalloc(buf, cap = len);
 			BufFileReadExact(f, buf, len);
 			fn(arg, buf, len);
 		}
@@ -615,24 +596,6 @@ sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *ar
 		BufFileDeleteFileSet(&c->spill_files.fs, name, true);
 	}
 	pfree(buf);
-}
-
-static void
-merge_block_fn(void *arg, const uint8 *block, uint32 len)
-{
-	merge_block(arg, block, len);
-}
-
-void
-sift_radix_merge_part(SiftParCoord *c, uint32 part, const SiftRadixShape *shape, SiftSaltedHT *ht)
-{
-	SiftRadixPart *pt = &c->parts[part];
-	SiftRecMerge m = {.shape = shape, .ht = ht};
-	const uint64 fit = get_hash_memory_limit() / 4 / (sizeof(SiftAggSlot64) + 1 + shape->ext_stride);
-
-	sift_ht_init_ex(ht, (uint32) Max(Min(Min(pg_atomic_read_u64(&pt->est_rows), 65536), fit), SIFT_HT_MIN_SLOTS), shape->wide_key,
-				shape->ext_stride, shape->ext_dist_off);
-	sift_radix_scan_part(c, part, merge_block_fn, &m);
 }
 
 /* ---- the output of a participant ---- */

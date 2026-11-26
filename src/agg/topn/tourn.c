@@ -9,6 +9,8 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
+#include "storage/buffile.h"
 #include "utils/memutils.h"
 
 #include "agg/topn/tourn.h"
@@ -38,6 +40,8 @@ struct SiftTournament
 	SiftTopNWinRow *tie;
 	uint32		tie_len;
 	uint32		tie_cap;
+	BufFile    *tie_spill;		/* the rows that tie theta past max_tie_rows, in the order they came */
+	uint64		tie_spilled;
 	SiftTopNWinRow *res;
 
 	SiftTournStats st;
@@ -75,6 +79,8 @@ sift_tourn_free(SiftTournament *t)
 		pfree(t->tie);
 	if (t->res)
 		pfree(t->res);
+	if (t->tie_spill)
+		BufFileClose(t->tie_spill);
 	pfree(t);
 }
 
@@ -349,14 +355,47 @@ static void
 tie_add(SiftTournament *t, const SiftTopNWinRow *row)
 {
 	if (t->tie_len >= t->max_tie_rows)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the rows that tie the last of the Top-N are more than %lu", (unsigned long) t->tie_len),
-						errhint("Raise work_mem, or take the rows without WITH TIES.")));
+	{
+		if (t->tie_spill == NULL)
+			t->tie_spill = BufFileCreateTemp(false);
+		BufFileWrite(t->tie_spill, row, sizeof(*row));
+		t->tie_spilled++;
+		return;
+	}
 	if (t->tie_len == t->tie_cap)
 	{
 		t->tie_cap = t->tie_cap ? t->tie_cap * 2 : 64;
 		t->tie = t->tie ? repalloc(t->tie, (Size) t->tie_cap * sizeof(*t->tie)) : MemoryContextAlloc(t->cxt, (Size) t->tie_cap * sizeof(*t->tie));
 	}
 	t->tie[t->tie_len++] = *row;
+}
+
+/* theta moved: the rows that tied the one it left are not ties any more */
+static void
+tie_reset(SiftTournament *t)
+{
+	t->tie_len = 0;
+	t->tie_spilled = 0;
+	if (t->tie_spill)
+		BufFileClose(t->tie_spill);
+	t->tie_spill = NULL;
+}
+
+/* the rows of the file, in the order they were written, to fn: the tournament is done taking rows */
+static void
+tie_spilled_each(const SiftTournament *t, void (*fn) (void *, const SiftTopNWinRow *), void *arg)
+{
+	SiftTopNWinRow row;
+
+	if (t->tie_spill == NULL)
+		return;
+	BufFileSeek(t->tie_spill, 0, 0, SEEK_SET);
+	for (uint64 i = 0; i < t->tie_spilled; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		BufFileReadExact(t->tie_spill, &row, sizeof(row));
+		fn(arg, &row);
+	}
 }
 
 static void
@@ -399,7 +438,7 @@ sift_tourn_offer(SiftTournament *t, const SiftTopNWinRow *row)
 		if (keys_cmp(t, &t->win[0], &evicted) == 0)
 			tie_add(t, &evicted);
 		else
-			t->tie_len = 0;
+			tie_reset(t);
 	}
 	publish_theta(t);
 	return true;
@@ -415,6 +454,12 @@ sift_tourn_theta(const SiftTournament *t, int64 *key0, bool *null0)
 	return true;
 }
 
+static void
+offer_cb(void *dst, const SiftTopNWinRow *row)
+{
+	sift_tourn_offer(dst, row);
+}
+
 void
 sift_tourn_merge(SiftTournament *dst, const SiftTournament *src)
 {
@@ -422,24 +467,43 @@ sift_tourn_merge(SiftTournament *dst, const SiftTournament *src)
 		sift_tourn_offer(dst, &src->win[i]);
 	for (uint32 i = 0; i < src->tie_len; i++)
 		sift_tourn_offer(dst, &src->tie[i]);
+	tie_spilled_each(src, offer_cb, dst);
+}
+
+typedef struct ResultFill
+{
+	SiftTopNWinRow *at;
+} ResultFill;
+
+static void
+fill_cb(void *arg, const SiftTopNWinRow *row)
+{
+	ResultFill *f = arg;
+
+	*f->at++ = *row;
 }
 
 const SiftTopNWinRow *
 sift_tourn_result(SiftTournament *t, uint32 *n)
 {
-	const uint32 all = t->win_len + t->tie_len;
+	const uint64 all = (uint64) t->win_len + t->tie_len + t->tie_spilled;
+	ResultFill	fill;
 	uint32		end,
 				start;
 
 	if (t->res)
 		pfree(t->res);
 	t->res = MemoryContextAlloc(t->cxt, Max(1, all) * sizeof(*t->res));
+	fill.at = t->res;
 	if (t->win_len)
-		memcpy(t->res, t->win, t->win_len * sizeof(*t->res));
+		memcpy(fill.at, t->win, t->win_len * sizeof(*t->res));
+	fill.at += t->win_len;
 	if (t->tie_len)
-		memcpy(t->res + t->win_len, t->tie, t->tie_len * sizeof(*t->res));
+		memcpy(fill.at, t->tie, t->tie_len * sizeof(*t->res));
+	fill.at += t->tie_len;
+	tie_spilled_each(t, fill_cb, &fill);
 	qsort_arg(t->res, all, sizeof(*t->res), row_cmp_arg, t);
-	end = t->spec.with_ties ? all : (uint32) Min(all, t->k);
+	end = t->spec.with_ties ? (uint32) all : (uint32) Min(all, t->k);
 	start = (uint32) Min(t->spec.offset, end);
 	*n = end - start;
 	return t->res + start;

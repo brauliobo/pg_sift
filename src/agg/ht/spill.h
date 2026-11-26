@@ -18,9 +18,9 @@
 
 #include "agg/ht/rec.h"
 
-#define SIFT_SPILL_PARTS		16
+#define SIFT_SPILL_PARTS		32
 #define SIFT_SPILL_LOCAL_CAP	4096	/* slots of the table that gathers the groups of the rows while the rest are in the files: 256 KB, in the cache */
-#define SIFT_SPILL_STAGE_BYTES	4096	/* what a partition collects before it writes */
+#define SIFT_SPILL_STAGE_BYTES	2048	/* what a partition collects before it writes */
 #define SIFT_SPILL_MAX_DEPTH	8
 #define SIFT_SPILL_SOFT_PERCENT	80		/* of its memory a table goes to the files */
 

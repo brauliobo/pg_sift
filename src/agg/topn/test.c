@@ -14,6 +14,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_type_d.h"
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "utils/array.h"
 #include "utils/tuplestore.h"
 
@@ -236,7 +237,7 @@ sift_test_topn(PG_FUNCTION_ARGS)
 	sift_morsel_init(q, 1, &one, (uint32) workers);
 	for (int w = 0; w < workers; w++)
 	{
-		t[w] = sift_tourn_create(CurrentMemoryContext, &d->spec, UINT64CONST(1) << 30, workers > 1 ? q : NULL);
+		t[w] = sift_tourn_create(CurrentMemoryContext, &d->spec, (uint64) work_mem * 1024 / 4, workers > 1 ? q : NULL);
 		alive[w] = true;
 	}
 	nparts = (d->unit_rows + d->granule_rows * d->granules_per_part * d->parts_per_partition - 1) / (d->granule_rows * d->granules_per_part * d->parts_per_partition);

@@ -224,6 +224,23 @@ emit_group(SiftRadixSink *sink, const SiftSaltedHT *ht, const SiftAggSlot64 *s, 
 	sift_radix_sink_put(sink, &o, sizeof(o));
 }
 
+static void
+merge_block(void *arg, const uint8 *block, uint32 len)
+{
+	for (uint32 off = 0; off < len; off += sift_rec_len(block + off))
+		sift_rec_merge(arg, block + off);
+}
+
+/* The records of a partition merged into ht (initialized here) */
+static void
+merge_part(SiftParCoord *c, uint32 part, const SiftRadixShape *sh, SiftSaltedHT *ht)
+{
+	SiftRecMerge m = {.shape = sh,.ht = ht};
+
+	sift_ht_init_ex(ht, SIFT_HT_MIN_SLOTS, sh->wide_key, sh->ext_stride, sh->ext_dist_off);
+	sift_radix_scan_part(c, part, merge_block, &m);
+}
+
 /* Phase 2 of a participant: the partitions it claims, merged and emitted */
 static void
 merge_parts(SiftParCoord *c, const SiftRadixShape *sh, const Params *p, SiftRadixSink *sink)
@@ -235,7 +252,7 @@ merge_parts(SiftParCoord *c, const SiftRadixShape *sh, const Params *p, SiftRadi
 		SiftSaltedHT ht;
 		SiftAggSlot64 *s;
 
-		sift_radix_merge_part(c, part, sh, &ht);
+		merge_part(c, part, sh, &ht);
 		if (p->mode == MODE_UNGROUPED)
 		{
 			OutRec		o;

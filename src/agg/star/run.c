@@ -33,6 +33,10 @@ struct SiftV6StarRun
 	uint32		nshared;		/* the tables another node had read */
 	uint32		nparts[SIFT_STAR_MAX_DIMS];
 	uint32		part[SIFT_STAR_MAX_DIMS];
+	uint32		nchunks[SIFT_STAR_MAX_DIMS];	/* the passes the part in hand is read in: its rows are more than a budget, whatever the parts, and are read a budget at a time */
+	uint32		chunk[SIFT_STAR_MAX_DIMS];
+	uint32	   *cstart[SIFT_STAR_MAX_DIMS];	/* the first row of each chunk among the rows of the part */
+	bool		dirty[SIFT_STAR_MAX_DIMS];	/* the part or chunk of the pass is not the one the table holds */
 	uint32		passes;
 	uint32		scans_left;		/* the scans of the fact table the pass still has to read */
 	uint64		budget;
@@ -56,7 +60,7 @@ sift_v6_star_begin(const SiftV6Ext *x, PlanState *const *children, MemoryContext
 	for (int d = 0; d < x->ndims; d++)
 	{
 		r->ps[d] = children[d];
-		r->nparts[d] = 1;
+		r->nparts[d] = r->nchunks[d] = 1;
 	}
 	return r;
 }
@@ -213,16 +217,9 @@ next_row(SiftV6StarRun *r, int d)
 	return slot;
 }
 
-/* Reads the plan of the dimension into its table: the rows of the part of its keys; false when they do not fit */
-static bool
-read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
+static void
+rewind_dim(SiftV6StarRun *r, int d)
 {
-	SiftStarShape sh;
-	SiftStarDim *dim = &r->dim[d];
-	TupleTableSlot *slot;
-	bool		fits = true;
-
-	shape_of(r->x, d, r->budget, &sh);
 	if (r->read[d])
 	{
 		MemoryContext old = MemoryContextSwitchTo(r->qcx);
@@ -231,24 +228,99 @@ read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 		MemoryContextSwitchTo(old);
 	}
 	r->read[d] = true;
-	sift_star_dim_init(dim, &sh);
-	while (fits && (slot = next_row(r, d)) != NULL && !TupIsNull(slot))
+}
+
+/* The next row of the plan of dimension d that is of the part (its cells in the memory of the row, until the next call): false at the end */
+static bool
+part_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, uint32 nparts, uint32 part, SiftStarRow *row)
+{
+	TupleTableSlot *slot;
+
+	while ((slot = next_row(r, d)) != NULL && !TupIsNull(slot))
 	{
-		SiftStarRow row = {0};
 		MemoryContext old;
 		bool		keep;
 
 		CHECK_FOR_INTERRUPTS();
 		MemoryContextReset(r->rowcx);
 		old = MemoryContextSwitchTo(r->rowcx);
-		keep = take_row(r, d, &sh, slot, nparts, part, &row);
+		*row = (SiftStarRow) {0};
+		keep = take_row(r, d, sh, slot, nparts, part, row);
 		MemoryContextSwitchTo(old);
 		if (keep)
-			fits = sift_star_dim_add(dim, &row);
+			return true;
 	}
+	return false;
+}
+
+/* Reads the plan of the dimension into its table: the rows [from, to) of the part of its keys; false when they do not fit the budget */
+static bool
+read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part, uint32 from, uint32 to, uint64 budget)
+{
+	SiftStarShape sh;
+	SiftStarDim *dim = &r->dim[d];
+	SiftStarRow row;
+	bool		fits = true;
+	uint32		at = 0;
+
+	shape_of(r->x, d, budget, &sh);
+	rewind_dim(r, d);
+	sift_star_dim_init(dim, &sh);
+	while (fits && at < to && part_row(r, d, &sh, nparts, part, &row))
+		if (at++ >= from)
+			fits = sift_star_dim_add(dim, &row);
 	if (fits)
 		sift_star_dim_finish(dim);
 	return fits;
+}
+
+/* The rows of a part that no number of parts makes smaller (many rows of one key) in the chunks that each fit: the first row of each */
+static void
+plan_chunks(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
+{
+	SiftStarShape sh;
+	SiftStarDim dim;
+	SiftStarRow row;
+	uint32		cap = 8,
+				at = 0;
+
+	shape_of(r->x, d, r->budget, &sh);
+	rewind_dim(r, d);
+	if (r->cstart[d] != NULL)
+		pfree(r->cstart[d]);
+	r->cstart[d] = palloc(sizeof(uint32) * cap);
+	r->cstart[d][0] = 0;
+	r->nchunks[d] = 1;
+	sift_star_dim_init(&dim, &sh);
+	while (part_row(r, d, &sh, nparts, part, &row))
+	{
+		if (!sift_star_dim_add(&dim, &row))
+		{
+			if (r->nchunks[d] == cap)
+				r->cstart[d] = repalloc(r->cstart[d], sizeof(uint32) * (cap *= 2));
+			r->cstart[d][r->nchunks[d]++] = at;
+			sift_star_dim_free(&dim);
+			sift_star_dim_init(&dim, &sh);
+			if (!sift_star_dim_add(&dim, &row))
+				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a row of a dimension of the star join does not fit work_mem"),
+								errhint("Increase work_mem.")));
+		}
+		at++;
+	}
+	sift_star_dim_free(&dim);
+}
+
+/* The rows of the chunk in hand among those of the part */
+static uint32
+chunk_from(const SiftV6StarRun *r, int d)
+{
+	return r->nchunks[d] > 1 ? r->cstart[d][r->chunk[d]] : 0;
+}
+
+static uint32
+chunk_to(const SiftV6StarRun *r, int d)
+{
+	return r->nchunks[d] > r->chunk[d] + 1 ? r->cstart[d][r->chunk[d] + 1] : UINT32_MAX;
 }
 
 static void
@@ -286,6 +358,7 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 	if (pass == 0 && r->nparts[d] == 1 && find_kept(r, d))
 	{
 		r->bytes = Max(r->bytes, r->dim[d].bytes);
+		r->dirty[d] = false;
 		MemoryContextSwitchTo(old);
 		return;
 	}
@@ -314,9 +387,21 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 			MemoryContextSwitchTo(sift_dimcache_read_cx(r->dc[d]));
 		else if (share != NULL)
 			MemoryContextSwitchTo(sift_v6_shared_dim_cx(share));
-		fits = read_dim(r, d, r->nparts[d], r->part[d]);
+		fits = read_dim(r, d, r->nparts[d], r->part[d], chunk_from(r, d), chunk_to(r, d), r->budget);
 		MemoryContextSwitchTo(r->cx);
 		last = pass > 0 || r->nparts[d] >= STAR_MAX_PARTS;
+		if (!fits && last)
+		{
+			sift_star_dim_free(&r->dim[d]);
+			if (r->x->dim[d].mode == SV6J_INNER_EQUI)
+			{
+				plan_chunks(r, d, r->nparts[d], r->part[d]);
+				r->chunk[d] = 0;
+				fits = read_dim(r, d, r->nparts[d], r->part[d], chunk_from(r, d), chunk_to(r, d), r->budget);
+			}
+			else
+				fits = read_dim(r, d, r->nparts[d], r->part[d], 0, UINT32_MAX, UINT64_MAX);
+		}
 		settled = fits && (last || r->nparts[d] == 1 || r->dim[d].bytes <= r->budget / 2);
 		if (keep && fits)
 		{
@@ -333,35 +418,62 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 		sift_star_dim_free(&r->dim[d]);
 		if (share != NULL)
 			sift_v6_shared_dim_abort(share);
-		if (!fits && last)
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a dimension of the star join does not fit work_mem in any part of its keys"),
-							errhint("Increase work_mem.")));
 		r->nparts[d] *= 2;
 		r->part[d] = 0;
 	} while (!settled);
 	r->have[d] = true;
+	r->dirty[d] = false;
 	r->bytes = Max(r->bytes, r->dim[d].bytes);
 	MemoryContextSwitchTo(old);
+}
+
+/* The odometer of the passes: the chunks of the part of a dimension, then its parts, then the next dimension's. The chunks of a part are known when it is read */
+static bool
+next_pass(SiftV6StarRun *r)
+{
+	for (int d = 0; d < r->x->ndims; d++)
+	{
+		if (r->chunk[d] + 1 < r->nchunks[d])
+		{
+			r->chunk[d]++;
+			r->dirty[d] = true;
+			return true;
+		}
+		if (r->part[d] + 1 < r->nparts[d])
+		{
+			r->part[d]++;
+			r->chunk[d] = 0;
+			r->nchunks[d] = 1;
+			r->dirty[d] = true;
+			return true;
+		}
+		if (r->part[d] != 0 || r->chunk[d] != 0)
+			r->dirty[d] = true;
+		r->part[d] = r->chunk[d] = 0;
+		r->nchunks[d] = 1;
+	}
+	return false;
 }
 
 SiftStarOpen
 sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 {
-	uint32		stride = 1;
 	bool		preserves = false;
 
-	if (pass >= r->passes)
+	if (pass == 0)
+		for (int d = 0; d < r->x->ndims; d++)
+		{
+			r->part[d] = r->chunk[d] = 0;
+			r->nchunks[d] = 1;
+			r->dirty[d] = true;
+		}
+	else if (!next_pass(r))
 		return SSO_DONE;
+	r->passes = pass + 1;
 	r->scans_left = scans;
 	for (int d = 0; d < r->x->ndims; d++)
-	{
-		r->part[d] = (pass / stride) % r->nparts[d];
-		if (pass == 0 || r->nparts[d] > 1)
+		if (r->dirty[d])
 			build_dim(r, d, pass);
-		stride *= r->nparts[d];
-	}
-	if (pass == 0)
-		r->passes = stride;
 	for (int d = 0; d < r->x->ndims; d++)
 		preserves |= sift_star_preserves_dim(r->x->dim[d].mode);
 	for (int d = 0; d < r->x->ndims; d++)
@@ -421,6 +533,8 @@ sift_v6_star_close(SiftV6StarRun *r)
 	{
 		free_dim(r, d);
 		r->dc[d] = NULL;
+		r->cstart[d] = NULL;
+		r->nchunks[d] = 1;
 	}
 	MemoryContextReset(r->cx);
 	sift_mem_release_os(r->bytes);

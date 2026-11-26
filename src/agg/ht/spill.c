@@ -48,11 +48,11 @@ struct SiftGroupSpill
 	uint32		puts;
 };
 
-#define PART_BITS	4
+#define PART_BITS	5
 StaticAssertDecl((1 << PART_BITS) == SIFT_SPILL_PARTS, "the partition bits are those of the partitions");
 
 /* the bits of the hash the first levels partition by: the top ones (those of SIFT_HASH_RADIX), then ones neither the slot probe (0..31), the salt (48..54) nor the radix (56..63) of the table use; the levels below mix the hash again */
-static const uint8 LEVEL_SHIFT[] = {64 - PART_BITS, 40, 32, 36, 44};
+static const uint8 LEVEL_SHIFT[] = {64 - PART_BITS, 37, 32, 42};
 
 static inline uint32
 part_of(uint64 hash, uint32 depth)
@@ -62,7 +62,7 @@ part_of(uint64 hash, uint32 depth)
 	return (uint32) bits & (SIFT_SPILL_PARTS - 1);
 }
 
-/* MEM[MEM-AGG-11]: SiftGroupSpill per-level stage and BufFiles (SIFT_SPILL_PARTS times 12KB is 192KB a level and 768KB at most; a sub-level partition file is closed when its merge is done, the top level stays for the next scan of the node; was held to the end of the scan) */
+/* MEM[MEM-AGG-11]: SiftGroupSpill per-level stage and BufFiles (SIFT_SPILL_PARTS times 10KB is 320KB a level and 1.3MB at most; a sub-level partition file is closed when its merge is done, the top level stays for the next scan of the node; was held to the end of the scan) */
 static void
 set_init(SpillSet *ss, uint32 depth)
 {

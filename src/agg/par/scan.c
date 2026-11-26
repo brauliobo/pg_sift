@@ -135,7 +135,7 @@ put_record(void *arg, const uint8 *rec, uint32 len)
 	SiftV6ParRun *r = arg;
 	const SiftV6RecHdr *h = (const SiftV6RecHdr *) rec;
 
-	Assert(len == h->len && len % 8 == 0 && len <= SIFT_RADIX_PAYLOAD);
+	Assert(len == h->len && len % 8 == 0);
 	if (r->hdr->strategy == SV6P_RADIX_UNGROUPED_DIST && (h->flags & V6REC_PLAIN))
 	{
 		r->eng->local_merge(r->plocal, rec);

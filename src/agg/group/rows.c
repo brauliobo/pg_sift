@@ -291,7 +291,7 @@ v6g_can_freeze(const SiftV6Group *g)
 
 	for (int s = 0; s < g->nsets; s++)
 		keyed |= g->set[s].nk > 0;
-	return keyed && g->gen != NULL && g->gkeys == NULL && g->ndist == 0 && g->spec->topk == 0;
+	return keyed && g->gen != NULL && g->gkeys == NULL;
 }
 
 void

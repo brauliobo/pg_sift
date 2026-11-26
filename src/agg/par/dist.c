@@ -40,9 +40,9 @@ sift_v6_par_dist_lean(const SiftV6Spec *spec)
 void
 sift_v6_par_check_record_size(uint32 rlen)
 {
-	if (rlen > SIFT_RADIX_PAYLOAD)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a group key or a COUNT(DISTINCT) value is too large for the parallel aggregate"),
-						errhint("Set max_parallel_workers_per_gather to 0 for this query.")));
+	if (rlen > MaxAllocSize)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a group key or a COUNT(DISTINCT) value is over 1 GB"),
+						errhint("Group by or count a shorter value.")));
 }
 
 /* ---- a participant that scans ---- */
@@ -71,15 +71,28 @@ prefix_hash(const V6Set *set, const uint8 *prefix, uint32 plen)
 	return v6g_group_hash(set, key, plen - (uint32) sizeof(nulls), nulls);
 }
 
+/* the plen of the head of a group of 65535 bytes or more: the length is the uint32 after the head */
+#define PLEN_BIG	UINT16_MAX
+
+/* the bytes of a record of a value before the bytes of its group */
+static inline uint32
+value_head(uint32 plen)
+{
+	return (uint32) sizeof(SiftV6DistRec) + (plen >= PLEN_BIG ? (uint32) sizeof(uint32) : 0);
+}
+
 /* the record of a value: its head, the bytes of its group, the padding */
 static void
 fill_value(uint8 *rec, uint32 rlen, uint32 slot, uint64 hash, uint64 value, const uint8 *prefix, uint32 plen)
 {
-	const SiftV6DistRec h = {.len = rlen,.plen = (uint16) plen,.flags = (uint16) (V6REC_DIST_INT | (slot << 8)),.hash64 = hash,.value = (int64) value};
+	const SiftV6DistRec h = {.len = rlen,.plen = (uint16) Min(plen, PLEN_BIG),.flags = (uint16) (V6REC_DIST_INT | (slot << 8)),.hash64 = hash,.value = (int64) value};
+	const uint32 at = value_head(plen);
 
 	memcpy(rec, &h, sizeof(h));
-	memcpy(rec + sizeof(h), prefix, plen);
-	memset(rec + sizeof(h) + plen, 0, rlen - sizeof(h) - plen);
+	if (plen >= PLEN_BIG)
+		memcpy(rec + sizeof(h), &plen, sizeof(plen));
+	memcpy(rec + at, prefix, plen);
+	memset(rec + at + plen, 0, rlen - at - plen);
 }
 
 /* A row of a GROUP BY COUNT(DISTINCT): the bytes group_dist.c builds (the length of the group's bytes, the bytes, the value as a distinct key) become a record */
@@ -94,7 +107,7 @@ row_sink(void *arg, uint32 set_idx, uint32 slot, const void *bytes, uint32 len)
 
 	memcpy(&plen, b, sizeof(plen));
 	memcpy(&value, b + len - sizeof(value), sizeof(value));
-	rlen = (uint32) MAXALIGN(sizeof(SiftV6DistRec) + plen);
+	rlen = (uint32) MAXALIGN(value_head(plen) + plen);
 	sift_v6_par_check_record_size(rlen);
 	fill_value(sift_bytes_room(&o->recs, rlen), rlen, slot, prefix_hash(&o->g->set[set_idx], b + sizeof(plen), plen), (uint64) value, b + sizeof(plen), plen);
 	o->recs.len += rlen;
@@ -363,15 +376,18 @@ sift_v6_par_dist_add(SiftV6ParDist *d, const uint8 *rec)
 	const SiftV6DistRec *h = (const SiftV6DistRec *) rec;
 	const uint32 slot = V6REC_DIST_SLOT(h->flags);
 	DistIn	   *in = &d->in[slot];
-	const uint32 plen = h->plen;
+	uint32		plen = h->plen;
+	const uint8 *prefix = rec + value_head(plen);
 
+	if (plen >= PLEN_BIG)
+		memcpy(&plen, rec + sizeof(*h), sizeof(plen));
 	if (in->n == DIST_BATCH)
 		flush_slot(d, slot);
 	in->off[in->n] = in->prefix.len;
 	in->plen[in->n] = plen;
 	in->hash[in->n] = h->hash64;
 	in->val[in->n++] = (uint64) h->value;
-	sift_bytes_put(&in->prefix, rec + sizeof(*h), plen);
+	sift_bytes_put(&in->prefix, prefix, plen);
 }
 
 void
