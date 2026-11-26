@@ -246,6 +246,10 @@ typedef struct SiftTblF2Scan
 	BlockNumber sample_blk;
 	OffsetNumber sample_max;
 
+	uint64		an_next;		/* ANALYZE: the next granule of the block of the sample, and the end of them */
+	uint64		an_end;
+	uint16		hidden;			/* the rows of the granule made current that no row of the snapshot sees */
+
 	bool		fg_sampled;		/* the pacer of the maintenance workers times this scan: it ends with the scan */
 	TimestampTz fg_t0;
 } SiftTblF2Scan;
@@ -490,6 +494,7 @@ load_granule(SiftTblF2Scan *s, int64 G)
 	uint16		n;
 
 	drop_granule(s);
+	s->hidden = 0;
 	pin = part_pin(s, u);
 	if (s->has_range && (pin->tidx[g].tid_max < s->mintid || pin->tidx[g].tid_min > s->maxtid))
 		return false;
@@ -497,6 +502,7 @@ load_granule(SiftTblF2Scan *s, int64 G)
 	sift_col_delta_scan_attach(s->delta, &u->entry, s->gb);
 	select_pending(s, &u->entry);
 	n = sift_tbl_f2_vis_granule(&s->vis, s->gb, s->pdel, s->sel);
+	s->hidden = s->gb->nrows - n;
 	if (n > 0 && s->has_range)
 		clip_to_tid_range(s);
 	if (n == 0)
@@ -631,7 +637,9 @@ sift_tbl_f2_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointe
 	s->maxtid = sift_tbl_tid_bound_pack(maxtid);
 	if (s->par == NULL)
 	{
+		drop_granule(s);
 		scan_units_restart(s);
+		s->started = false;
 		s->span_hi = 0;
 	}
 }
@@ -644,48 +652,40 @@ sift_tbl_f2_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection directio
 
 /* ---- the cursor for ANALYZE ---- */
 
-uint64
-sift_tbl_f2_scan_ngranules(TableScanDesc scan)
+/* The granules of the table are shared out over its blocks in order, each block the granules whose place falls in its share (none when the blocks outnumber the granules) */
+bool
+sift_tbl_f2_scan_analyze_granules(TableScanDesc scan, BlockNumber blk, BlockNumber nblocks)
 {
 	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
 
 	scan_complete_units(s);
-	return (uint64) s->total;
+	s->an_next = ((uint64) s->total * blk + nblocks - 1) / nblocks;
+	s->an_end = ((uint64) s->total * ((uint64) blk + 1) + nblocks - 1) / nblocks;
+	return s->an_next < s->an_end;
 }
 
 bool
-sift_tbl_f2_scan_goto_granule(TableScanDesc scan, uint64 ordinal)
-{
-	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
-
-	scan_complete_units(s);
-	s->G = (int64) ordinal;
-	if (!load_granule(s, s->G))
-		return false;
-	s->r = -1;
-	return true;
-}
-
-bool
-sift_tbl_f2_scan_next_in_granule(TableScanDesc scan, TupleTableSlot *slot)
+sift_tbl_f2_scan_analyze_next(TableScanDesc scan, TupleTableSlot *slot, double *deadrows)
 {
 	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
 	int			r;
 
-	MemoryContextReset(s->rowcx);
-	if (!s->loaded || (r = next_selected(s, 1)) < 0)
-		return false;
-	s->r = r;
-	sift_f2_slot_store(slot, s->base.rs_rd, s->gb, (uint16) r, NULL, NULL, s->rowcx);
-	return true;
-}
-
-uint32
-sift_tbl_f2_scan_granule_rows(TableScanDesc scan)
-{
-	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
-
-	return s->gb != NULL ? s->gb->nrows : 0;
+	for (;;)
+	{
+		MemoryContextReset(s->rowcx);
+		if (s->loaded && (r = next_selected(s, 1)) >= 0)
+		{
+			s->r = r;
+			sift_f2_slot_store(slot, s->base.rs_rd, s->gb, (uint16) r, NULL, NULL, s->rowcx);
+			return true;
+		}
+		if (s->an_next >= s->an_end)
+			return false;
+		s->G = (int64) s->an_next++;
+		(void) load_granule(s, s->G);
+		*deadrows += s->hidden;
+		s->r = -1;
+	}
 }
 
 /* ---- the rows of one virtual block: bitmap scans and TABLESAMPLE ---- */

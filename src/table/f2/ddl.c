@@ -413,6 +413,51 @@ check_ttl_column(Relation rel, const char *column, const char *what)
 						errhint("Clear the TTL first with SELECT sift.set_ttl('%s'::regclass, '%s', NULL).", RelationGetRelationName(rel), column)));
 }
 
+/* The options of the tables are rows of a catalog of the extension that only its owner writes: the table owner who renames a column is let write the rows that name it */
+static Oid
+option_table_owner(void)
+{
+	Oid			relid = get_relname_relid("table_option_values", get_namespace_oid("sift", false));
+	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	Oid			owner;
+
+	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for relation %u", relid);
+	owner = ((Form_pg_class) GETSTRUCT(tup))->relowner;
+	ReleaseSysCache(tup);
+	return owner;
+}
+
+static void
+write_catalog(Relation rel, const char *sql, int nargs, Oid *argtypes, Datum *args, int expect)
+{
+	Oid			uid;
+	int			sec;
+
+	GetUserIdAndSecContext(&uid, &sec);
+	SetUserIdAndSecContext(option_table_owner(), sec | SECURITY_LOCAL_USERID_CHANGE);
+	SPI_connect();
+	SIFT_INVARIANT(SPI_execute_with_args(sql, nargs, argtypes, args, NULL, false, 0) == expect, "could not write the catalogs of table \"%s\": %s", RelationGetRelationName(rel), sql);
+	SPI_finish();
+	SetUserIdAndSecContext(uid, sec);
+}
+
+static const char *const catalog_deletes[] = {
+	"DELETE FROM sift.table_option_values WHERE rel::pg_catalog.oid = $1", "DELETE FROM sift.table_paths WHERE relid::pg_catalog.oid = $1",
+	"DELETE FROM sift.projection_defs WHERE rel::pg_catalog.oid = $1", "DELETE FROM sift.tier_policies WHERE relid::pg_catalog.oid = $1",
+	"DELETE FROM sift.ttl_policies WHERE relid::pg_catalog.oid = $1",
+};
+
+/* A table that leaves sift_table keeps no row of the catalogs of the extension, as a table that is dropped does not */
+static void
+forget_catalogs(Relation rel)
+{
+	Oid			argtype = OIDOID;
+	Datum		arg = ObjectIdGetDatum(RelationGetRelid(rel));
+
+	for (int i = 0; i < (int) lengthof(catalog_deletes); i++)
+		write_catalog(rel, catalog_deletes[i], 1, &argtype, &arg, SPI_OK_DELETE);
+}
+
 void
 sift_tbl_f2_ddl_before(Relation rel, AlterTableStmt *stmt)
 {
@@ -434,6 +479,10 @@ sift_tbl_f2_ddl_before(Relation rel, AlterTableStmt *stmt)
 				check_ttl_column(rel, cmd->name, "drop");
 				sift_proj_defs_check_drop_column(rel, cmd->name);
 				fence = true;
+				break;
+			case AT_SetAccessMethod:
+				if (strcmp(cmd->name != NULL ? cmd->name : default_table_access_method, "sift_table") != 0)
+					forget_catalogs(rel);
 				break;
 			case AT_AddColumn:
 			case AT_AlterColumnType:
@@ -463,45 +512,22 @@ sift_tbl_f2_ddl_after(Relation rel, Node *parsetree)
 		sift_tbl_f2_guard_publication(rel);
 }
 
-/* The options of the tables are rows of a catalog of the extension that only its owner writes: the table owner who renames a column is let write the rows that name it */
-static Oid
-option_table_owner(void)
-{
-	Oid			relid = get_relname_relid("table_option_values", get_namespace_oid("sift", false));
-	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
-	Oid			owner;
-
-	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for relation %u", relid);
-	owner = ((Form_pg_class) GETSTRUCT(tup))->relowner;
-	ReleaseSysCache(tup);
-	return owner;
-}
-
 void
 sift_tbl_f2_ddl_rename_column(Relation rel, const char *oldname, const char *newname)
 {
 	const SiftF2StoreOpts *o = &sift_f2_store_open(rel)->opts;
 	Oid			argtypes[3] = {TEXTOID, OIDOID, TEXTOID};
-	Oid			uid;
-	int			sec;
 
-	GetUserIdAndSecContext(&uid, &sec);
-	SetUserIdAndSecContext(option_table_owner(), sec | SECURITY_LOCAL_USERID_CHANGE);
-	SPI_connect();
 	for (int i = 0; i < TEXT_OPTS; i++)
 	{
 		Datum		args[3];
-		int			updated;
 
 		if (!sift_tbl_f2_option_names_column(TEXT_OPT(o, i), oldname))
 			continue;
 		args[0] = CStringGetTextDatum(sift_tbl_f2_options_rename_column(TEXT_OPT(o, i), oldname, newname));
 		args[1] = ObjectIdGetDatum(RelationGetRelid(rel));
 		args[2] = CStringGetTextDatum(text_opts[i].name);
-		updated = SPI_execute_with_args("UPDATE sift.table_option_values SET value = $1 WHERE rel::pg_catalog.oid = $2 AND name = $3", 3, argtypes, args, NULL, false, 0);
-		SIFT_INVARIANT(updated == SPI_OK_UPDATE, "could not rename the column in the options of table \"%s\"", RelationGetRelationName(rel));
+		write_catalog(rel, "UPDATE sift.table_option_values SET value = $1 WHERE rel::pg_catalog.oid = $2 AND name = $3", 3, argtypes, args, SPI_OK_UPDATE);
 	}
-	SPI_finish();
-	SetUserIdAndSecContext(uid, sec);
 	CacheInvalidateRelcacheByRelid(RelationGetRelid(rel));
 }

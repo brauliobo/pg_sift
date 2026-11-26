@@ -27,7 +27,11 @@
 #include "core/compat.h"
 #include "core/f2/progress.h"
 #include "col/f2/del/delvec_delta.h"
+#include "col/f2/del/pend.h"
+#include "col/f2/l0/slab.h"
 #include "core/cmp.h"
+#include "core/horizon.h"
+#include "core/page_io.h"
 #include "core/maint/vacuum.h"
 #include "core/memtrack.h"
 #include "core/wal_conflict.h"
@@ -547,28 +551,61 @@ settle_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *can
 		(void) sift_col_delta_gc(rel, e.part_id, e.key_lo, oldest_fx);
 }
 
-/* The oldest transaction id the pages of a partition still hold, or lowest when none is older */
+/* A frozen or invalid id holds nothing back: only a normal transaction id older than lowest lowers it */
+static FullTransactionId
+older_normal(FullTransactionId lowest, FullTransactionId xid)
+{
+	return FullTransactionIdIsNormal(xid) && FullTransactionIdPrecedes(xid, lowest) ? xid : lowest;
+}
+
+/* The oldest transaction id the pages of a chain (micro-slab, pending deletes) hold in their headers, or lowest when none is older */
+static FullTransactionId
+chain_oldest(Relation rel, uint64 part_id, BlockNumber head, SiftPageType type, FullTransactionId lowest)
+{
+	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
+	{
+		Buffer		buf = sift_blk_read(rel, blk, BUFFER_LOCK_SHARE);
+		const char *data = SiftPageGetData(BufferGetPage(buf));
+		const SiftL0SlabPageData *sl = (const SiftL0SlabPageData *) data;
+		const SiftPendDelPageData *pd = (const SiftPendDelPageData *) data;
+		bool		slab = type == SIFT_PT_L0_SLAB;
+
+		sift_page_expect(rel, BufferGetPage(buf), blk, type, 0, (uint32) part_id);
+		lowest = older_normal(lowest, slab ? sl->min_xid : pd->min_xid);
+		blk = slab ? sl->next_blk : pd->next_blk;
+		UnlockReleaseBuffer(buf);
+	}
+	return lowest;
+}
+
+/* The oldest deleter of a deletion vector that is not settled */
+static FullTransactionId
+dv_oldest(Relation rel, const SiftPartDesc *d, FullTransactionId lowest)
+{
+	Buffer		buf = sift_blk_read(rel, d->dv_blk, BUFFER_LOCK_SHARE);
+
+	lowest = older_normal(lowest, ((const SiftDvHeaderData *) SiftPageGetData(BufferGetPage(buf)))->xid_min);
+	UnlockReleaseBuffer(buf);
+	return lowest;
+}
+
+/* The oldest transaction id the pages of a partition still hold, or lowest when none is older: what the summary of its parts says is not enough, it leaves out the micro-slab and the pending deletes */
 static FullTransactionId
 partition_oldest(Relation rel, const SiftPartitionEntry *e, FullTransactionId lowest)
 {
 	int			np;
 	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
 
-	if (e->l0_slab_blk != InvalidBlockNumber || e->pend_del_blk != InvalidBlockNumber)
-		lowest = FullTransactionIdPrecedes(e->min_xid, lowest) ? e->min_xid : lowest;
+	lowest = chain_oldest(rel, e->part_id, e->l0_slab_blk, SIFT_PT_L0_SLAB, lowest);
+	lowest = chain_oldest(rel, e->part_id, e->pend_del_blk, SIFT_PT_PEND_DEL, lowest);
 	if ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
-	{
-		FullTransactionId chain_min = sift_col_delta_min_xid(rel, e);
-
-		if (FullTransactionIdIsValid(chain_min) && FullTransactionIdPrecedes(chain_min, lowest))
-			lowest = chain_min;
-	}
+		lowest = older_normal(lowest, sift_col_delta_min_xid(rel, e));
 	for (int j = 0; j < np; j++)
 	{
-		bool		holds = (parts[j].flags & SIFT_PART_FLAG_UNFROZEN) != 0 || (parts[j].dv_blk != InvalidBlockNumber && (parts[j].flags & SIFT_PART_FLAG_DV_SETTLED) == 0);
-
-		if (holds && FullTransactionIdPrecedes(parts[j].min_xid, lowest))
-			lowest = parts[j].min_xid;
+		if ((parts[j].flags & SIFT_PART_FLAG_UNFROZEN) != 0)
+			lowest = older_normal(lowest, parts[j].min_xid);
+		if (parts[j].dv_blk != InvalidBlockNumber && (parts[j].flags & SIFT_PART_FLAG_DV_SETTLED) == 0)
+			lowest = dv_oldest(rel, &parts[j], lowest);
 	}
 	pfree(parts);
 	return lowest;
@@ -608,15 +645,14 @@ update_relstats(Relation rel, FullTransactionId oldest, const struct VacuumCutof
 	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
 	double		live = (double) (meta.total_rows - meta.total_dead),
 				allvisfrac;
-	MultiXactId minmxid = sift_tbl_rowlock_vacuum_mxid(rel, cutoffs->OldestMxact);
 	BlockNumber relallvisible,
 				relallfrozen;
 
 	sift_tbl_vm_fractions(rel, nblocks, &relallvisible, &relallfrozen, &allvisfrac);
 #if PG_VERSION_NUM >= 180000
-	vac_update_relstats(rel, nblocks, live, relallvisible, relallfrozen, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), minmxid, &fz, &mz, false);
+	vac_update_relstats(rel, nblocks, live, relallvisible, relallfrozen, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
 #else
-	vac_update_relstats(rel, nblocks, live, relallvisible, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), minmxid, &fz, &mz, false);
+	vac_update_relstats(rel, nblocks, live, relallvisible, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
 #endif
 	sift_pgstat_report_vacuum(rel, (PgStat_Counter) live, (PgStat_Counter) meta.total_dead, GetCurrentTimestamp());
 }
@@ -743,6 +779,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 		sift_f2_table_trace_begin(&trace, rel);
 	vac_open_indexes(rel, RowExclusiveLock, &vc.nindexes, &vc.indexes);
 	vc.stats = palloc0(sizeof(IndexBulkDeleteResult *) * Max(vc.nindexes, 1));
+	sift_horizon_vacuum_read_begin(rel);
 	sift_stage_flush(rel);
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	sift_f2_vacuum_progress_total(rel);
@@ -757,6 +794,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_VACUUM_HEAP);
 	if (aggressive)
 		sift_tbl_rowlock_clear_lockers(rel);
+	cutoffs.OldestMxact = sift_tbl_rowlock_vacuum_mxid(rel, cutoffs.OldestMxact);
 	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive, vc.nblocks, elevel);
 	sift_f2_tier_maintain(rel, store, oldest_fx);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_INDEX_CLEANUP);
@@ -778,6 +816,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	store_oldest_active(rel, new_oldest);
 	sift_tbl_vm_vacuum(rel, oldest_fx, freeze_fx);
 	update_relstats(rel, new_oldest, &cutoffs);
+	sift_horizon_vacuum_read_end(rel);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_TRUNCATE);
 	sift_fsm_reclaim(rel);
 	if (truncate)
@@ -796,40 +835,24 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 bool
 sift_tbl_f2_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
 {
-	static TableScanDesc last_scan = NULL;
-	static uint64 last_ordinal = UINT64_MAX;
-	uint64		ngranules = sift_tbl_f2_scan_ngranules(scan);
-
-	if (last_scan != scan)
-	{
-		last_scan = scan;
-		last_ordinal = UINT64_MAX;
-	}
 	for (;;)
 	{
 		Buffer		buf = read_stream_next_buffer(stream, NULL);
-		BlockNumber blk,
-					nblocks;
-		uint64		ordinal;
+		BlockNumber blk;
 
 		if (!BufferIsValid(buf))
 			return false;
 		blk = BufferGetBlockNumber(buf);
 		ReleaseBuffer(buf);
-		nblocks = Max(RelationGetNumberOfBlocks(scan->rs_rd), 1);
-		ordinal = ngranules * (uint64) blk / nblocks;
-		if (ngranules == 0 || ordinal == last_ordinal)
-			continue;
-		last_ordinal = ordinal;
-		if (sift_tbl_f2_scan_goto_granule(scan, ordinal))
+		if (sift_tbl_f2_scan_analyze_granules(scan, blk, Max(RelationGetNumberOfBlocks(scan->rs_rd), 1)))
 			return true;
 	}
 }
 
 bool
-sift_tbl_f2_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows, double *deadrows pg_attribute_unused(), TupleTableSlot *slot)
+sift_tbl_f2_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows, double *deadrows, TupleTableSlot *slot)
 {
-	if (!sift_tbl_f2_scan_next_in_granule(scan, slot))
+	if (!sift_tbl_f2_scan_analyze_next(scan, slot, deadrows))
 		return false;
 	(*liverows)++;
 	return true;

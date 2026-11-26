@@ -3,11 +3,12 @@
  * and named by nothing go back to the allocator.
  *
  * The sweep names everything the relation holds from the metapage down (the directory of the partitions with its lists, the parts with their extent lists and deletion vectors, the micro-slab and
- * the pending deletes of each partition, the column delta chains, the scope directory and its summaries, the projections, the key journal, the lists and the queue of the allocator), takes what is
+ * the pending deletes of each partition, the wide values of a sift_table that its granules and its micro-slabs refer to, the column delta chains, the scope directory and its summaries, the projections, the key journal, the lists and the queue of the allocator), takes what is
  * free or queued and the free blocks of the slabs, and what is left below the high-water mark is an orphan. It runs only when it has the relation to itself (AccessExclusiveLock without waiting,
  * the load lock, no VACUUM reading the manifest): no writer is between the allocation of an extent and the commit that names it. It frees nothing, and says why at DEBUG1, when the relation
- * holds something it does not name (a part in an object store, a shard directory, a wide value of a sift_table that only a granule references), when a page is not what its reference says, when
- * two names or a name and a free list overlap, when an orphan page carries the generation of a live part, or when the orphans are over half of the index.
+ * holds something it does not name (a part in an object store, a shard directory), when a page is not what its reference says, when
+ * two names or a name and a free list overlap, when an orphan page carries the generation of a live part, or when the orphans are over half of the index. While a physical standby streams, the
+ * orphans enter the quarantine of the allocator as the extents of a compaction do, and the horizon of the standby holds them back.
  */
 #include "core/host.h"
 
@@ -16,6 +17,8 @@
 #include "utils/timestamp.h"
 
 #include "col/f2/meta.h"
+#include "col/f2/f2.h"
+#include "col/f2/drop/parts.h"
 #include "col/f2/journal.h"
 #include "col/f2/l0/slab.h"
 #include "col/f2/part/format.h"
@@ -28,7 +31,9 @@
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "core/part_lock.h"
+#include "table/f2/blob.h"
 #include "table/f2/col_delta/dir.h"
+#include "table/f2/tbl.h"
 
 #define SIFT_FSM_SWEEP_MAX_PCT	50		/* the share of the index the orphans may be: more is a reference the sweep missed, not a leak */
 
@@ -44,11 +49,12 @@ enum
 	NAMED_SCOPE,
 	NAMED_PROJ,
 	NAMED_JRNL,
+	NAMED_WIDE,
 	NAMED_FREE,
 	NNAMED
 };
 
-static const char *const NAMED_LABEL[NNAMED] = {"directory", "list", "part", "delvec", "slab", "pend_del", "delta", "scope", "projection", "journal", "free slab"};
+static const char *const NAMED_LABEL[NNAMED] = {"directory", "list", "part", "delvec", "slab", "pend_del", "delta", "scope", "projection", "journal", "wide value", "free slab"};
 
 typedef struct Sweep
 {
@@ -234,9 +240,42 @@ hold_opened(Sweep *s, int kind, const SiftPart *part, uint64 gen)
 	MemoryContextReset(s->open_cx);
 }
 
+/* The extents of the wide values a sift_table keeps beside its parts (a text, jsonb or array value over the wide threshold): named by the granules that refer to them */
+static SiftF2Store *
+wide_store(const Sweep *s)
+{
+	SiftF2Store *store = sift_f2_store_open(s->rel);
+
+	return s->rel->rd_rel->relkind != RELKIND_INDEX && sift_tbl_extra(store)->has_wide ? store : NULL;
+}
+
+/* The extents collected in the part's context, held in the sweep's */
+static void
+hold_wide(Sweep *s, const SiftExtVec *wide)
+{
+	MemoryContextSwitchTo(s->cx);
+	hold_extents(s, NAMED_WIDE, wide->ext, wide->n);
+	MemoryContextReset(s->open_cx);
+}
+
+static void
+hold_part_wide(Sweep *s, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
+{
+	SiftExtVec	wide = {0};
+	SiftF2PartPin *pin;
+
+	open_part_begin(s);
+	pin = sift_f2_pin_open(s->rel, store, d, part_id);
+	sift_part_wide_extents(s->rel, store, pin, &wide);
+	sift_f2_pin_release(pin);
+	hold_wide(s, &wide);
+}
+
 static bool
 hold_part(Sweep *s, const SiftPartDesc *d, uint32 part_id)
 {
+	SiftF2Store *wide = wide_store(s);
+
 	if (d->col_delta_blk != InvalidBlockNumber || (d->ext_flags & SIFT_PART_EXT_REMOTE))
 		return give_up(s, "a part names a column delta chain of its own or lives in an object store");
 	if (d->dv_blk != InvalidBlockNumber)
@@ -244,6 +283,8 @@ hold_part(Sweep *s, const SiftPartDesc *d, uint32 part_id)
 		hold(s, NAMED_DV, d->dv_blk, d->dv_nblocks);
 		hold_gen(s, d->dv_gen);
 	}
+	if (wide != NULL)
+		hold_part_wide(s, wide, d, part_id);
 	open_part_begin(s);
 	hold_opened(s, NAMED_PART, sift_part_open_desc(s->rel, d, part_id), d->part_gen);
 	return true;
@@ -267,6 +308,31 @@ hold_col_delta(Sweep *s, const SiftPartitionEntry *e)
 	ext = sift_col_delta_chain_extents(&chain, &n);
 	hold_extents(s, NAMED_DELTA, ext, n);
 	sift_col_delta_chain_free(&chain);
+	return true;
+}
+
+/* The wide values the rows of the micro-slab refer to: they are written before the rows are, and a part takes the references over when the slab is flushed */
+static bool
+hold_slab_wide(Sweep *s, const SiftPartitionEntry *e)
+{
+	SiftF2Store *store = wide_store(s);
+	SiftExtVec	wide = {0};
+	SiftRowBuf *rb;
+	BlockNumber *pages;
+	int			npages;
+
+	if (store == NULL || e->l0_slab_blk == InvalidBlockNumber)
+		return true;
+	open_part_begin(s);
+	/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
+	rb = sift_rowbuf_new(&store->spec);
+	sift_l0_slab_read(s->rel, e->part_id, e->l0_slab_blk, rb, &store->spec, InvalidSnapshot, &pages, &npages);
+	for (int c = 0; c < rb->ncols; c++)
+		for (int r = 0; rb->tag[c] != NULL && r < rb->n; r++)
+			if (rb->tag[c][r] == SIFT_COLTAG_WIDE_BLOB)
+				sift_tbl_blob_release_ref(s->rel, rb->xpay[c][r], rb->xplen[c][r], &wide);
+	sift_rowbuf_free(rb);
+	hold_wide(s, &wide);
 	return true;
 }
 
@@ -297,7 +363,8 @@ hold_partition(Sweep *s, const SiftPartitionEntry *e)
 		if (!hold_part(s, &parts[i], (uint32) e->part_id))
 			return false;
 	pfree(parts);
-	return hold_col_delta(s, e) && hold_chain(s, NAMED_SLAB, e->l0_slab_blk, &L0_SLAB) && hold_chain(s, NAMED_PEND, e->pend_del_blk, &PEND_DEL);
+	return hold_col_delta(s, e) && hold_chain(s, NAMED_SLAB, e->l0_slab_blk, &L0_SLAB) && hold_slab_wide(s, e) &&
+		hold_chain(s, NAMED_PEND, e->pend_del_blk, &PEND_DEL);
 }
 
 static bool
@@ -568,7 +635,7 @@ release_orphans(Sweep *s, const ExtVec *orphans)
 		ext[i] = (SiftExtent) {.start = orphans->v[i].start,.nblocks = orphans->v[i].nblocks};
 		blocks += ext[i].nblocks;
 	}
-	sift_fsm_release(s->rel, ext, orphans->n, InvalidFullTransactionId);
+	sift_fsm_release(s->rel, ext, orphans->n, sift_maint_standby_streams() ? ReadNextFullTransactionId() : InvalidFullTransactionId);
 	(void) sift_fsm_reclaim(s->rel);
 	pfree(ext);
 	return blocks;
@@ -611,15 +678,13 @@ sweep_locked(Relation rel)
 	return blocks;
 }
 
-/* The relation is its own: no backend, standby or maintenance worker can hold it, so no writer is between an allocation and its commit */
+/* The relation is its own: no backend or maintenance worker can hold it, so no writer is between an allocation and its commit */
 static bool
 sweep_allowed(Relation rel)
 {
 	if (RecoveryInProgress() || rel->rd_createSubid != InvalidSubTransactionId || rel->rd_firstRelfilelocatorSubid != InvalidSubTransactionId)
 		return false;
-	if (rel->rd_rel->relkind == RELKIND_INDEX)
-		return rel->rd_index->indisready && !sift_maint_standby_streams();
-	return !sift_maint_standby_streams();
+	return rel->rd_rel->relkind != RELKIND_INDEX || rel->rd_index->indisready;
 }
 
 static uint64
@@ -663,7 +728,7 @@ sift_fsm_sweep_orphans(Relation rel)
 	bool		had_lock = CheckRelationLockedByMe(rel, AccessExclusiveLock, false);
 	uint64		freed = 0;
 
-	if (!sweep_allowed(rel) || !sift_fsm_names_all_extents(rel) || (!had_lock && !ConditionalLockRelation(rel, AccessExclusiveLock)))
+	if (!sweep_allowed(rel) || (!had_lock && !ConditionalLockRelation(rel, AccessExclusiveLock)))
 		return 0;
 	if (ConditionalLockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock))
 	{

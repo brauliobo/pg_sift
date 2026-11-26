@@ -282,11 +282,9 @@ extern bool sift_tbl_f2_locate_or_wait(Relation rel, SiftF2Store *store, uint64 
 
 /* The slot of a row a running insert staged and has not written: every attribute null, the address set (the check of a unique index looks at whether the row is there) */
 extern void sift_tbl_f2_staged_stub(TupleTableSlot *slot, uint64 tid);
-/* The cursor of a scan, for ANALYZE: the number of granules of the table, the granule at an ordinal made current (false when no row of it is visible) and the next visible row of it */
-extern uint64 sift_tbl_f2_scan_ngranules(TableScanDesc scan);
-extern bool sift_tbl_f2_scan_goto_granule(TableScanDesc scan, uint64 ordinal);
-extern bool sift_tbl_f2_scan_next_in_granule(TableScanDesc scan, TupleTableSlot *slot);
-extern uint32 sift_tbl_f2_scan_granule_rows(TableScanDesc scan);
+/* The cursor of a scan, for ANALYZE: the granules a block of the sample stands for (false when it has none), then the next visible row of them, with the rows they hold that are dead added to *deadrows */
+extern bool sift_tbl_f2_scan_analyze_granules(TableScanDesc scan, BlockNumber blk, BlockNumber nblocks);
+extern bool sift_tbl_f2_scan_analyze_next(TableScanDesc scan, TupleTableSlot *slot, double *deadrows);
 
 /* ---- visibility (f2_mvcc.c) ---- */
 
