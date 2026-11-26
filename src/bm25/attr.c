@@ -28,7 +28,6 @@ typedef struct HeapAttrs
 	AttrNumber	attno[SIFT_ATTR_MAXCOLS];
 	Oid			type[SIFT_ATTR_MAXCOLS];
 	SiftAttrSrc src;
-	MemoryContextCallback cb;
 } HeapAttrs;
 
 static bool
@@ -162,10 +161,12 @@ sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
 	h->heap = table_open(ix->indrelid, AccessShareLock);
 	h->desc = RelationGetDescr(h->heap);
 	if (h->heap->rd_rel->relam != HEAP_TABLE_AM_OID)
+	{
+		MemoryContext old = MemoryContextSwitchTo(mcxt);
+
 		h->slot = table_slot_create(h->heap, NULL);
-	h->cb.func = heap_attrs_close;
-	h->cb.arg = h;
-	MemoryContextRegisterResetCallback(mcxt, &h->cb);
+		MemoryContextSwitchTo(old);
+	}
 	h->ncols = Min(IndexRelationGetNumberOfAttributes(index) - nkey, SIFT_ATTR_MAXCOLS);
 	for (int c = 0; c < h->ncols; c++)
 	{
@@ -176,5 +177,6 @@ sift_attr_src(SiftWriteTarget *wt, MemoryContext mcxt)
 	h->src.ncols = h->ncols;
 	h->src.fetch = h->slot ? table_fetch_attrs : heap_fetch_attrs;
 	h->src.arg = h;
+	h->src.close = heap_attrs_close;
 	return &h->src;
 }

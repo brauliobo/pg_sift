@@ -48,6 +48,7 @@ typedef struct SiftAttrSrc
 	bool		intlike[SIFT_ATTR_MAXCOLS];
 	void		(*fetch) (void *arg, BlockNumber blk, const OffsetNumber *offs, int n, int64 *vals, uint8 *state);
 	void	   *arg;
+	void		(*close) (void *arg);	/* run by sift_segw_finish: a context callback would drop the slot after the contexts of the slot */
 } SiftAttrSrc;
 
 /* The attribute source of the index a target writes (NULL: it has no INCLUDE column, or the host keeps none); bm25/attr.c */

@@ -695,4 +695,6 @@ sift_segw_finish(SiftSegmentWriter *w, SiftSegEntry *entry)
 	entry->ndocs = w->ndocs;
 	entry->sum_dl = w->sum_dl;
 	entry->bytes = blocks * BLCKSZ;
+	if (w->attr.close)
+		w->attr.close(w->attr.arg);
 }
