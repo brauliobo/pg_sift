@@ -6,6 +6,7 @@
 
 #include "access/relation.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "commands/vacuum.h"
 #include "utils/snapmgr.h"
 
@@ -13,6 +14,7 @@
 #include "col/f2/part/vis.h"
 #include "col/scope/scope.h"
 #include "core/compat.h"
+#include "core/f2/fsm/fsm.h"
 #include "core/f2/gate.h"
 #include "core/f2/pace.h"
 #include "core/cmp.h"
@@ -21,6 +23,46 @@
 
 #include "col/f2/scope/int.h"
 #include "col/f2/scope/mem.h"
+
+/* The relation this backend wrote summaries of that no commit names yet: an abort leaves them to the orphan sweep, which it asks for */
+static Relation unnamed;
+
+static void
+unnamed_abort(void)
+{
+	if (unnamed != NULL)
+		sift_fsm_note_orphans(unnamed);
+	unnamed = NULL;
+}
+
+static void
+unnamed_xact_end(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT)
+		unnamed_abort();
+	unnamed = NULL;
+}
+
+static void
+unnamed_subxact_end(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
+{
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		unnamed_abort();
+}
+
+static void
+unnamed_written(Relation rel)
+{
+	static bool registered;
+
+	if (!registered)
+	{
+		RegisterXactCallback(unnamed_xact_end, NULL);
+		RegisterSubXactCallback(unnamed_subxact_end, NULL);
+		registered = true;
+	}
+	unnamed = rel;
+}
 
 /* The part a summary is kept in: one section, the object */
 static SiftManifestScopeRef
@@ -35,6 +77,7 @@ write_object(Relation rel, int ord, const StringInfoData *obj, uint64 gen, uint3
 	sift_f2_scope_pack(obj, &packed);
 	sec.data = packed.data;
 	sec.len = packed.len;
+	unnamed_written(rel);
 	d = sift_part_write(rel, &in);
 	pfree(packed.data);
 	return (SiftManifestScopeRef) {.scope_ord = ord,.flags = SIFT_SCOPEREF_ACTIVE,.header_blk = d.header_blk,.meta_gen = gen};
@@ -257,6 +300,7 @@ commit_scopes(Relation rel, const SiftManifestRead *mr, SiftManifestScopeRef *re
 	SIFT_F2_GATE(SIFT_F2_GATE_SCOPE);
 	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = mr->entries[0].part_id,.key_lo = mr->entries[0].key_lo,.update_scopes = refs,.nupdate_scopes = nscope,
 	.release = release,.nrelease = nrel});
+	unnamed = NULL;
 }
 
 void
@@ -656,6 +700,7 @@ sift_f2_scope_refresh_for(Relation rel, SiftManifestEdit *e)
 	UnregisterSnapshot(snap);
 	if (heap != rel)
 		table_close(heap, NoLock);
+	unnamed = NULL;
 	if (nreplaced == 0)
 		return;
 	release = replaced_extents(rel, nscope, replaced, &nrel);
