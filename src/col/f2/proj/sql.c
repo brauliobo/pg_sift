@@ -22,6 +22,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/ruleutils.h"
 
 #include "col/f2/meta.h"
 #include "col/f2/proj/proj.h"
@@ -38,7 +39,7 @@ PG_FUNCTION_INFO_V1(sift_create_projection);
 PG_FUNCTION_INFO_V1(sift_drop_projection);
 PG_FUNCTION_INFO_V1(sift_projection_list);
 
-#define DEFS_NATTS	3
+#define DEFS_NATTS	4
 
 static Oid
 defs_relid(void)
@@ -134,8 +135,9 @@ static void
 def_insert(Oid relid, const char *name, const char *canonical)
 {
 	Relation	cfg = table_open(defs_relid(), RowExclusiveLock);
-	Datum		v[DEFS_NATTS] = {ObjectIdGetDatum(relid), CStringGetTextDatum(name), CStringGetTextDatum(canonical)};
-	bool		n[DEFS_NATTS] = {false, false, false};
+	char	   *rel_name = quote_qualified_identifier(get_namespace_name(get_rel_namespace(relid)), get_rel_name(relid));
+	Datum		v[DEFS_NATTS] = {ObjectIdGetDatum(relid), CStringGetTextDatum(name), CStringGetTextDatum(canonical), CStringGetTextDatum(rel_name)};
+	bool		n[DEFS_NATTS] = {false, false, false, false};
 
 	sift_cat_insert(cfg, heap_form_tuple(RelationGetDescr(cfg), v, n));
 	table_close(cfg, RowExclusiveLock);

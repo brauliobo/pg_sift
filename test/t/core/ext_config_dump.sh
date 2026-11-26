@@ -20,7 +20,7 @@ sql ed "CREATE EXTENSION pg_sift" \
 dump() { pg_dump -h "$(dir ed)/sock" -p "$(port ed)" -U postgres -d postgres -f "$1"; }
 upgrade_orphans() { sql ed "SELECT count(*) FROM sift.upgrade_check() WHERE kind = 'option' AND object IN ('sift.table_paths', 'sift.ttl_policies', 'sift.projection_defs')"; }
 
-out=$(printf 'public.gone_a\tby_b\tORDER BY b\npublic.gone_b\tby_b\tORDER BY b\n' | sql ed "COPY sift.projection_defs FROM STDIN" 2>&1)
+out=$(printf 'public.gone_a\tby_b\tORDER BY b\npublic.gone_b\tby_b\tORDER BY b\n' | sql ed "COPY sift.projection_defs (rel, name, spec) FROM STDIN" 2>&1)
 check "a restore without two tables that each had a projection of one name has no error" test -z "$out"
 out=$(sql ed "SELECT count(*) FROM sift.projection_defs")
 check "and keeps no row of them" test "$out" == 1
