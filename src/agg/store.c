@@ -74,15 +74,6 @@ sift_v6_rel_card_leaf(Oid indexoid, int col)
 	return ops != NULL && ops->stats(indexoid, false, &st) && st.card_leaf != NULL ? st.card_leaf(indexoid, col) : -1;
 }
 
-double
-sift_v6_rel_point_cover(Oid indexoid, int col)
-{
-	const SiftStoreOps *ops = sift_store_ops_for_oid(indexoid, false);
-	SiftStoreStats st;
-
-	return ops != NULL && ops->stats(indexoid, false, &st) && st.point_cover != NULL ? st.point_cover(indexoid, col) : 0.0;
-}
-
 SiftV6Source *
 sift_v6_rel_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted)
 {

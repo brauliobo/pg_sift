@@ -39,7 +39,6 @@ extern bool sift_v6_rel_sorted_by(Oid relid, bool is_table, const int *atts, int
 /* the statistics the index folded when its parts were written (agg/cost/card_est.h), NULL when it has none, and the leaf of them that holds column col (0-based), -1 when it has none */
 extern const SiftCardStatsView *sift_v6_rel_card_view(Oid indexoid);
 extern int	sift_v6_rel_card_leaf(Oid indexoid, int col);
-extern double sift_v6_rel_point_cover(Oid indexoid, int col);
 /* the batches of the input over the snapshot of the estate: only the rows that pass quals (NULL: all), in the order of the index columns (ascending, NULLs last) when sorted is set */
 extern SiftV6Source *sift_v6_rel_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted);
 

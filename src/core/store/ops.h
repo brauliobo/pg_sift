@@ -93,8 +93,6 @@ typedef struct SiftStoreStats
 	double		allvis_frac;	/* [0.0, 1.0] fraction needing no heap vet */
 	const struct SiftCardStatsView *card_view;	/* optional, NULL if unavailable */
 	int			(*card_leaf) (Oid relid, int col);
-	/* optional: the share [0, 1] of the units that keep a point directory of index column col, which an equality or a short list on it reads instead of the whole unit (NULL, 0: none does) */
-	double		(*point_cover) (Oid relid, int col);
 } SiftStoreStats;
 
 /* ---- 10 Independent Optional Capability Sub-Vtables (NULL = unsupported) ---- */
