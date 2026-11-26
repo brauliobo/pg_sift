@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # The table of the leaf statistics that backends share (col/leafshm.c, sift.shared_cache_kb): the first backend that plans over a sift_col index folds the zones of
 # its units into the statistics of the planner, the next backends take them from it and plan the same statement to the same plan; a rewrite of the index (a new
-# stamp) makes the next backend fold them again; the setting at 0 is the off switch; the table does not outlive a crash restart.
+# stamp) makes the next backend fold them again; the setting at 0 is the off switch; the table does not outlive a crash restart. Format 1 statistics: Format 2 keeps none.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 10
-node_init primary 2
+node_init primary 2 "sift.test_create_format1 = on"
 node_start primary || bail "primary start failed"
 sql primary <<'SQL' >/dev/null || bail "setup failed"
 CREATE EXTENSION pg_sift;
