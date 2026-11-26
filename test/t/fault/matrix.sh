@@ -80,11 +80,11 @@ ORPHANS="SELECT count(*) FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid WH
 	SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam WHERE i.indrelid = t.tgrelid AND a.amname = 'sift_col')"
 DUE="SELECT coalesce(string_agg(c.oid::regclass || ' ' || m.rewrite_due, ', ' ORDER BY c.oid::regclass::text), '') FROM pg_class c JOIN pg_am a ON a.oid = c.relam,
 	LATERAL sift.col_maintenance_status(c.oid) m WHERE a.amname = 'sift_col' AND coalesce(m.rewrite_due, '') <> ''"
-maintain_all() {
-	local ix
-	for ix in $(sql cm "SELECT c.oid::regclass FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col'"); do
-		sql cm "SELECT sift.col_maintain('$ix')" >/dev/null 2>&1
-	done
+maintain_all() { # every sift_col index in one session, each statement on its own (an error of one does not stop the others)
+	sql cm >/dev/null 2>&1 <<-'SQL'
+		\set ON_ERROR_STOP off
+		SELECT format('SELECT sift.col_maintain(%L)', c.oid::regclass) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' \gexec
+	SQL
 }
 
 sizes_ok() { # AFTER BASELINE: growth under a half of a clean run, and 256 kB
@@ -106,10 +106,11 @@ hold_gate() {
 	echo "SELECT $GATE_LOCK;" >&9
 }
 
-# the number of directory updates of an operation in a clean state, and the size it leaves
+# the number of directory updates of an operation in a clean state, and the size it leaves; the state its setup makes is healthy (every row starts from that same state)
 measure() { # NAME
 	local k
 	fresh "${SETUP[$1]}" || bail "$1: setup"
+	[[ $DAMAGED == *" $1 "* ]] || name=$1 healthy_fresh || bail "$1: the starting state is not healthy"
 	k=$(op_stmts "$1"; sql cm "${OPS[@]}" "SELECT sift._test_dir_updates()" | tail -1) || bail "$1: the operation failed in a clean state"
 	KCOUNT[$1]=$k
 	SIZE0[$1]=$(sql cm "$SIZES")
@@ -179,32 +180,35 @@ sweep_f2() { sql cm "SELECT sift._test_f2_sweep(c.oid) FROM pg_class c JOIN pg_a
 
 # the invariants after a fault; prints what is wrong
 after_fault() { # NAME
-	local name=$1 ix size n out
+	local name=$1 ix size n out invalid locks slots
 	wait_for settled 30 || { echo "a session is left"; return 1; }
 	# first: a session that loads the library in a transaction removes the orphans of the log, as the sessions of the checks below do
 	wait_for "test \"\$(sql cm \"$ORPHANS\")\" == 0" "${ORPHAN_WAIT:-$ORPHAN_SECONDS}" || { echo "orphan triggers of the log of changes are left"; return 1; }
-	[[ $(sql cm "$LOCKS") == 0 ]] || { echo "locks left: $(sql cm "SELECT l.pid, a.backend_type, l.locktype, l.mode, l.classid, l.objid, l.objsubid, l.relation::regclass, l.granted FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid) WHERE l.pid IS DISTINCT FROM pg_backend_pid() AND l.locktype <> 'virtualxid'" | tr '\n' ';')"; return 1; }
-	[[ $(sql cm "$SLOTS") == 0 ]] || { echo "a progress or quarantine slot is left"; return 1; }
+	{ read -r locks; read -r slots; invalid=$(cat); } < <(sql cm "$LOCKS" "$SLOTS" "$INVALID")
+	[[ $locks == 0 ]] || { echo "locks left: $(sql cm "SELECT l.pid, a.backend_type, l.locktype, l.mode, l.classid, l.objid, l.objsubid, l.relation::regclass, l.granted FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid) WHERE l.pid IS DISTINCT FROM pg_backend_pid() AND l.locktype <> 'virtualxid'" | tr '\n' ';')"; return 1; }
+	[[ $slots == 0 ]] || { echo "a progress or quarantine slot is left"; return 1; }
 	for _ in 1 2 3; do # an index another one depends on goes after it
-		for ix in $(sql cm "$INVALID"); do
+		[[ -n $invalid ]] || break
+		for ix in $invalid; do
 			out=$(sql cm "DROP INDEX CONCURRENTLY IF EXISTS $ix" 2>&1) || [[ $out == *"other objects depend"* ]] ||
 				{ echo "DROP INDEX CONCURRENTLY of the INVALID $ix failed: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 		done
+		invalid=$(sql cm "$INVALID")
 	done
-	[[ -z $(sql cm "$INVALID") ]] || { echo "an INVALID index is left"; return 1; }
+	[[ -z $invalid ]] || { echo "an INVALID index is left"; return 1; }
 	[[ $name != f2_* ]] || sweep_f2
 	[[ $DAMAGED == *" $name "* ]] || out=$(healthy 2>&1) || { echo "the state is not healthy: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 	op_stmts "$name"; sql cm "${OPS[@]}" >"$D/rerun.out" 2>&1 || { echo "the operation run again failed: $(head -3 "$D/rerun.out")"; return 1; }
-	[[ $DATA_OPS != *" $name "* ]] || REF=$(answers PLAIN)
 	[[ $name != f2_* ]] || sweep_f2
-	out=$(healthy 2>&1) || { echo "not healthy after the operation run again: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
+	if [[ $DATA_OPS == *" $name "* ]]; then REF=$(answers PLAIN); out=$(healthy_fresh 2>&1); else out=$(healthy 2>&1); fi ||
+		{ echo "not healthy after the operation run again: $(head -c 300 <<<"$out" | tr '\n' ' ')"; return 1; }
 	size=$(sql cm "$SIZES")
 	sizes_ok "$size" "${SIZE0[$name]}" || { echo "the files grew to $size bytes, a clean run leaves ${SIZE0[$name]}"; return 1; }
 	[[ -z ${TAMPER_LATE:-} ]] || sql cm "UPDATE docs SET g = g + 1 WHERE id % 2 = 0" "VACUUM docs" >/dev/null
 	[[ -n ${SKIP_MAINTAIN:-} ]] || maintain_all
-	n=$(sql cm "$DUE")
+	{ read -r n; read -r locks; } < <(sql cm "$DUE" "$LOCKS")
 	[[ $n == "${DUE0[$name]}" ]] || { echo "maintenance still finds work due ($n), a clean run leaves (${DUE0[$name]})"; return 1; }
-	[[ $(sql cm "$LOCKS") == 0 ]] || { echo "locks left after the rerun"; return 1; }
+	[[ $locks == 0 ]] || { echo "locks left after the rerun"; return 1; }
 }
 
 # the negative rows (tier mutant: id, operation, phase, fault, mutant, tamper, regex of what the invariants must say): the case runs, the tamper puts a defect in the state the fault left, and the case
@@ -262,7 +266,6 @@ for row in "${ROWS[@]}"; do
 	fi
 	(( ++total ))
 	fresh "${SETUP[$name]}" || bail "$id: setup $(sql cm "SELECT 1" 2>&1 | head -2)"
-	[[ $DAMAGED == *" $name "* ]] || healthy || bail "$id: the starting state is not healthy"
 	HELD_INTERRUPTS= TAMPER_LATE= SKIP_MAINTAIN= ORPHAN_WAIT=
 	if ! run_fault "$name" "$phase" "$fault"; then
 		if [[ -n $HELD_INTERRUPTS ]]; then

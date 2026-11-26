@@ -59,37 +59,37 @@ VERIFY_F2="DO \$\$ DECLARE r record; BEGIN
 		IF EXISTS (SELECT 1 FROM sift.check(r.ix)) THEN RAISE EXCEPTION 'sift.check finds a problem in %', r.ix; END IF;
 	END LOOP;
 END \$\$"
-# the answers of everything the scenario created, in a mode
+# the answers of everything the scenario created, in a mode (TWINS: fresh made the sift_table tbl and its heap twin)
+TWINS=f
+answer_qs() { QS=("$QA" "$QB" "$QT docs" "$QO"); [[ $TWINS != t ]] || QS+=("$QT tbl" "$QT tbl_h"); }
 answers() {
 	local -n mode=$1
-	local has qs=("$QA" "$QB")
-	has=$(sql cm "SELECT string_agg(relname, ',') FROM pg_class WHERE relname IN ('docs', 'tbl')")
-	[[ $has != *docs* ]] || qs+=("$QT docs" "$QO")
-	[[ $has != *tbl* ]] || qs+=("$QT tbl" "$QT tbl_h")
-	sql cm "${mode[@]}" "${qs[@]}" 2>&1
+	answer_qs
+	sql cm "${mode[@]}" "${QS[@]}" 2>&1
 }
-healthy() { # the indexes verify and the answers through them are the plain plan's and REF
-	local plain
-	sql cm "$([[ ${name:-} == f2_* ]] && echo "$VERIFY_F2" || echo "$VERIFY")" >&2 || return 1
-	plain=$(answers PLAIN)
+# answers_hold [PLAIN]: the plain answers (PLAIN, the ones fresh just took as REF, or taken now) are REF, the answers through the indexes are the plain ones, and the sift_table is its heap twin
+answers_hold() {
+	local plain=${1-} out
+	answer_qs
+	[[ -v 1 ]] || plain=$(answers PLAIN)
 	[[ $plain == "$REF" ]] || { diag "the plain answers changed: $plain"; return 1; }
-	[[ $(answers IDX) == "$plain" ]] || { diag "the answers through the indexes differ from the plain plan"; return 1; }
-	twins=$(sql cm "SELECT count(*) FROM pg_class WHERE relname = 'tbl'")
-	[[ $twins == 0 ]] || [[ $(sql cm "$QT tbl") == "$(sql cm "$QT tbl_h")" ]] || { diag "the sift_table differs from its heap twin"; return 1; }
+	out=$(sql cm "${IDX[@]}" "${QS[@]}" 2>&1)
+	[[ $out == "$plain" ]] || { diag "the answers through the indexes differ from the plain plan"; return 1; }
+	[[ $TWINS != t ]] || [[ $(sql cm "$QT tbl" "$QT tbl_h" | uniq | wc -l) -eq 1 ]] || { diag "the sift_table differs from its heap twin"; return 1; }
 }
+indexes_verify() { sql cm "$([[ ${name:-} == f2_* ]] && echo "$VERIFY_F2" || echo "$VERIFY")" >&2; }
+healthy() { indexes_verify && answers_hold; } # the indexes verify and the answers through them are the plain plan's and REF
+healthy_fresh() { indexes_verify && answers_hold "$REF"; } # healthy, right after REF was taken (by fresh)
 fresh() { # SETUP: statements split at @@ run in one session; a last one !crash stops the server immediately and starts it again
 	local setup=$1 crash=
 	[[ $setup != *'@@!crash' ]] || { setup=${setup%@@!crash}; crash=1; }
 	sql cm "DROP TABLE IF EXISTS docs, tbl, tbl_h, gp CASCADE" "$BASE" >/dev/null || return 1
-	[[ -z $setup ]] || { IFS=$'\x1f' read -ra stmts <<<"${setup//@@/$'\x1f'}"; sql cm "${stmts[@]}" >/dev/null; } || return 1
+	TWINS=f
+	[[ -z $setup ]] || { IFS=$'\x1f' read -ra stmts <<<"${setup//@@/$'\x1f'}"; TWINS=$(sql cm "${stmts[@]}" "SELECT to_regclass('tbl') IS NOT NULL" | tail -1); } || return 1
 	[[ -z $crash ]] || { pg_ctl -D "$D/data" -m immediate -w stop >/dev/null 2>&1; node_start cm || return 1; }
 	REF=$(answers PLAIN)
 }
-await_exit() { # PID
-	for _ in $(seq 600); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done
-	return 1
-}
-
+await_exit() { wait_for "! kill -0 $1 2>/dev/null" 60; } # PID
 
 # the gates: GATE_SET (statements of the session that runs the operation), GATE_LOCK (what the holder session takes) and GATE_COND (the row of pg_locks of that advisory lock)
 adv2() { GATE_LOCK="pg_advisory_lock(20983, $1)"; GATE_COND="classid = 20983 AND objid = $1 AND objsubid = 2"; }
