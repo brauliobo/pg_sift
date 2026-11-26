@@ -287,7 +287,7 @@ sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, bool pool_lost)
 	int			got = 0;
 	SiftFsmSlabDir d;
 
-	if (spare <= reserve || (pool_lost && FSMM(root)->pool_mask != 0 && sift_fsm_names_all_extents(rel)))
+	if (spare <= reserve + 1 || (pool_lost && FSMM(root)->pool_mask != 0 && sift_fsm_names_all_extents(rel)))
 	{
 		sift_xlog_abort(&x);
 		UnlockReleaseBuffer(rootbuf);
@@ -295,7 +295,7 @@ sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, bool pool_lost)
 		return 0;
 	}
 	d = sift_fsm_dir_read(rel, root, &x);
-	(void) sift_fsm_dir_take_window(&d, (int) Min((uint32) SIFT_FSM_POOL_SPAN, spare - reserve), &lo, &mask);
+	(void) sift_fsm_dir_take_window(&d, (int) Min((uint32) SIFT_FSM_POOL_SPAN, spare - reserve - 1), &lo, &mask);
 	sift_fsm_dir_free(&d);
 	FSMM(root)->pool_lo = lo;
 	FSMM(root)->pool_mask = mask;
