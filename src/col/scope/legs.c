@@ -12,6 +12,7 @@
 #include "core/ring.h"
 #include "col/am.h"
 #include "col/scope/scope.h"
+#include "col/scope/memo.h"
 #include "core/cachebudget.h"
 
 /*
@@ -22,14 +23,35 @@
 #define LEGS_MEMO_N 4
 static struct LegsMemo
 {
+	SiftScopeMemoSlot memo;
 	Oid			index;
 	int			scope;
 	uint64		gen;
 	int			n;
 	SiftScopeLeg legs[2];
-	MemoryContext cx;
 } legs_memo[LEGS_MEMO_N];
 static SiftRing legs_memo_ring;
+
+static uint64
+legs_oldest(void)
+{
+	return sift_scope_memo_oldest(legs_memo, sizeof(legs_memo[0]), LEGS_MEMO_N);
+}
+
+static bool
+legs_evict_one(void)
+{
+	return sift_scope_memo_evict_oldest(legs_memo, sizeof(legs_memo[0]), LEGS_MEMO_N);
+}
+
+static void
+legs_evict_all(void)
+{
+	while (legs_evict_one())
+		;
+}
+
+static const SiftCacheKind legs_kind = {"col_scope_legs", legs_oldest, legs_evict_one, legs_evict_all};
 
 static void
 legs_copy(SiftScopeLeg to[2], const SiftScopeLeg from[2], int n)
@@ -45,6 +67,7 @@ legs_copy(SiftScopeLeg to[2], const SiftScopeLeg from[2], int n)
 int
 sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2])
 {
+	static bool registered;
 	bool		keep = !TransactionIdIsValid(GetTopTransactionIdIfAny());
 	uint64		gen = SharedInvalidMessageCounter;
 	struct LegsMemo *m;
@@ -55,6 +78,7 @@ sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2])
 		if (legs_memo[i].index == RelationGetRelid(index) && legs_memo[i].scope == scope && legs_memo[i].gen == gen)
 		{
 			sift_catalog_memo_hits++;
+			legs_memo[i].memo.used = sift_cache_tick();
 			legs_copy(legs, legs_memo[i].legs, legs_memo[i].n);
 			return legs_memo[i].n;
 		}
@@ -62,11 +86,9 @@ sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2])
 	n = sift_scope_legs_find(index, scope, legs);
 	if (!keep)
 		return n;
+	sift_scope_memo_register(&registered, &legs_kind);
 	m = &legs_memo[SIFT_RING_SLOT(legs_memo_ring, LEGS_MEMO_N)];
-	if (m->cx == NULL)
-		m->cx = sift_cache_create_context("sift cache scope legs");
-	MemoryContextReset(m->cx);
-	old = MemoryContextSwitchTo(m->cx);
+	old = MemoryContextSwitchTo(sift_scope_memo_begin(&m->memo, "sift cache scope legs"));
 	legs_copy(m->legs, legs, n);
 	MemoryContextSwitchTo(old);
 	m->index = RelationGetRelid(index);

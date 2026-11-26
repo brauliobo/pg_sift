@@ -58,7 +58,7 @@ typedef enum SiftPacerTier
 #define SIFT_MAINT_TIER_DEFAULT		(-1)
 #define SIFT_MAINT_HASH_SIZE		(2 * SIFT_MAINT_SLOTS)
 #define SIFT_MAINT_FREE_WORDS		(SIFT_MAINT_SLOTS / 64)
-#define SIFT_MAINT_DBSTATE			8
+#define SIFT_MAINT_DBSTATE			128
 #define SIFT_MAINT_CONNECT_BACKOFF_US	(2 * USECS_PER_SEC)
 #define SIFT_MAINT_CONNECT_BACKOFF_MAX_US	(60 * USECS_PER_SEC)
 #define SIFT_MAINT_CONNECT_GIVE_UP	3
@@ -259,10 +259,11 @@ typedef struct SiftMaintShmem
 	pg_atomic_uint64 bgw_sample_ts_us;	/* when the host last counted the bgworkers that are not ours, 0 until then (the host reads it, a count is good for a second) */
 	pg_atomic_uint32 bgw_other_cached;
 	uint32		bgw_pad;
+	pg_atomic_uint64 heat_decayed_us;	/* when the heat counters last lost half, by the first request that finds a naptime gone (0 until then) */
 	int16		hash_idx[SIFT_MAINT_HASH_SIZE];	/* open addressing over khash: the slot of a key, -1 where empty */
 	uint64		free_bits[SIFT_MAINT_FREE_WORDS];	/* 1 for a free slot */
 	SiftMaintDbState dbstate[SIFT_MAINT_DBSTATE];
-	uint8		pad5[112];
+	uint8		pad5[104];
 } SiftMaintShmem;
 
 typedef struct SiftMaintRow
@@ -333,8 +334,10 @@ extern void sift_maint_progress(SiftMaintShmem *m, const SiftMaintClaim *claim, 
 extern int	sift_maint_run(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, int max_steps, SiftMaintStepFn step, void *arg, bool *yielded);
 extern bool sift_maint_has_work(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, bool allow_cold);
 
-/* The claims of a pid that is gone, the workers that never started or died; returns the claims given back */
+/* The claims of a pid that is gone, the workers that never started or died; returns the claims given back. A table with no request and no worker is left alone */
 extern int	sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host);
+/* Nothing is queued or claimed and no worker is there or starting: the launcher has nothing to look at until a request wakes it */
+extern bool sift_maint_idle(SiftMaintShmem *m);
 /* The claims of a pid that exits: requeued, as a failed step when failed (it backs off), as one that never ran when not */
 extern int	sift_maint_release_pid(SiftMaintShmem *m, const SiftMaintHost *host, int pid, bool failed);
 
@@ -364,12 +367,20 @@ extern int	sift_maint_db_workers(SiftMaintShmem *m, Oid db);
 /* The requests of db that are still queued are dropped: the database is gone */
 extern void sift_maint_db_purge(SiftMaintShmem *m, Oid db);
 extern SiftMaintKick sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host);
+
+/* What sched.c and sched_reap.c share: the writers' bracket on the table, a claim back in the queue, a worker slot freed, the backoff of a failed step */
+extern void sift_maint_begin(SiftMaintShmem *m);
+extern void sift_maint_end(SiftMaintShmem *m);
+extern void sift_maint_requeue(SiftMaintShmem *m, SiftMaintSlot *s, TimestampTz not_before);
+extern void sift_maint_worker_free(SiftMaintShmem *m, int w);
+extern TimestampTz sift_maint_backoff_us(const SiftMaintShmem *m, uint32 failures);
 /* Enqueue, then start or wake what drains it as the mode says */
 extern SiftMaintEnq sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode mode, const SiftMaintReq *req);
 
 extern void sift_maint_heat_note(SiftMaintShmem *m, Oid rel);
 extern uint32 sift_maint_heat(SiftMaintShmem *m, Oid rel);
-extern void sift_maint_heat_decay(SiftMaintShmem *m);
+/* The heat of every relation halves for each naptime gone since it last did, by the request that finds it due: nothing wakes to decay it */
+extern void sift_maint_heat_decay_due(SiftMaintShmem *m, TimestampTz now);
 extern void sift_maint_fg_note(SiftMaintShmem *m, bool write);
 
 /* A coherent copy of the table without the lock of the writers (a seqlock, the lock after SIFT_MAINT_SNAP_TRIES misses): the rows sorted by priority, the running ones first */

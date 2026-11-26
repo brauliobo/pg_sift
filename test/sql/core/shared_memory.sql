@@ -18,7 +18,7 @@ SELECT bool_and(shared) AS all_shared, bool_and(mapped_bytes > 0) AS all_mapped,
        bool_and(hits >= 0 AND misses >= 0) AS counters_counted
 FROM sift.shared_memory();
 SELECT name FROM sift.shared_memory() WHERE name IN ('sift_col_dict', 'sift_col_leaf_stats') ORDER BY name;
-SELECT configured_bytes BETWEEN pg_size_bytes(current_setting('sift.shared_cache_kb')) / 10 - 1024 AND pg_size_bytes(current_setting('sift.shared_cache_kb')) / 10 AS leaf_tenth_of_setting, mapped_bytes >= configured_bytes AS leaf_mapped, used_bytes > 0 AS leaf_used, hits + misses > 0 AS leaf_asked
+SELECT configured_bytes BETWEEN pg_size_bytes(current_setting('sift.shared_cache_kb')) * 16 / 100 - 1024 AND pg_size_bytes(current_setting('sift.shared_cache_kb')) * 16 / 100 AS leaf_share_of_setting, mapped_bytes >= configured_bytes AS leaf_mapped, used_bytes > 0 AS leaf_used, hits + misses > 0 AS leaf_asked
 FROM sift.shared_memory() WHERE name = 'sift_col_leaf_stats';
 
 DROP TABLE sm;

@@ -1,7 +1,7 @@
 /*
  * core/shm/budget.h - the one budget of the dynamic shared memory the extension keeps for all the backends of a server.
  *
- * sift.shared_cache_kb is the most that the five pools (the manifests, the lookup tables, the dimension maps, the parsed dictionaries and the leaf statistics) may hold together.
+ * sift.shared_cache_kb is the most that the three pools (the manifests, the parsed dictionaries and the leaf statistics) may hold together, and their shares add up to all of it.
  * The fixed pools take a share of it when they are made, a growing pool asks for its bytes as they are used: a ledger in shared memory adds them up in one atomic counter of
  * its own cache line for each pool, so that a pool that is full is refused and does without (a table loaded by the backend), and what the server holds in /dev/shm is the setting at the most.
  * A backend takes small requests (under SIFT_SHM_BATCH_BYTES) from a credit it draws from the ledger a batch at a time: they touch no shared counter, and the credit goes back when the backend exits.
@@ -14,8 +14,6 @@
 typedef enum SiftShmPoolId
 {
 	SIFT_SHM_MANIFEST = 0,
-	SIFT_SHM_AGG_LOOKUP,
-	SIFT_SHM_AGG_DIMMAP,
 	SIFT_SHM_COL_DICT,
 	SIFT_SHM_COL_LEAF,
 	SIFT_SHM_NPOOL

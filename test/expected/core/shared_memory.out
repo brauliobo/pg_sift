@@ -49,9 +49,9 @@ SELECT name FROM sift.shared_memory() WHERE name IN ('sift_col_dict', 'sift_col_
  sift_col_leaf_stats
 (2 rows)
 
-SELECT configured_bytes BETWEEN pg_size_bytes(current_setting('sift.shared_cache_kb')) / 10 - 1024 AND pg_size_bytes(current_setting('sift.shared_cache_kb')) / 10 AS leaf_tenth_of_setting, mapped_bytes >= configured_bytes AS leaf_mapped, used_bytes > 0 AS leaf_used, hits + misses > 0 AS leaf_asked
+SELECT configured_bytes BETWEEN pg_size_bytes(current_setting('sift.shared_cache_kb')) * 16 / 100 - 1024 AND pg_size_bytes(current_setting('sift.shared_cache_kb')) * 16 / 100 AS leaf_share_of_setting, mapped_bytes >= configured_bytes AS leaf_mapped, used_bytes > 0 AS leaf_used, hits + misses > 0 AS leaf_asked
 FROM sift.shared_memory() WHERE name = 'sift_col_leaf_stats';
- leaf_tenth_of_setting | leaf_mapped | leaf_used | leaf_asked 
+ leaf_share_of_setting | leaf_mapped | leaf_used | leaf_asked 
 -----------------------+-------------+-----------+------------
  t                     | t           | t         | t
 (1 row)

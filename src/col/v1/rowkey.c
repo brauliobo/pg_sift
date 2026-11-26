@@ -23,6 +23,7 @@
 
 #include "col/am.h"
 #include "col/v1/conn/conn.h"
+#include "core/cachebudget.h"
 #include "core/compat.h"
 #include "core/quarantine/quarantine.h"
 #include "core/v1_col/tomb/tomb.h"
@@ -442,7 +443,7 @@ dead_keys_write(void *arg)
 			registered = true;
 		}
 		dead_share_reset(XACT_EVENT_COMMIT, NULL);
-		dead_share.cxt = AllocSetContextCreate(TopMemoryContext, "sift dead share", ALLOCSET_DEFAULT_SIZES);
+		dead_share.cxt = sift_cache_create_context("sift dead share");
 	}
 	uidx = index_open(uoid, AccessShareLock);
 	intype = uidx->rd_opcintype[0];

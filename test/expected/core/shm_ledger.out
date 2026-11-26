@@ -1,71 +1,71 @@
--- The ledger of the shared memory pools (core/shm/budget.c): five pools that share sift.shared_cache_kb, counted with atomics. A request under 64 kB is taken from a credit
+-- The ledger of the shared memory pools (core/shm/budget.c): three pools that share sift.shared_cache_kb, counted with atomics. A request under 64 kB is taken from a credit
 -- the backend draws a batch at a time, so it touches no shared counter; a larger one, and the credit itself, is held by the pool up to its share of the setting and by the
 -- pools together up to the setting.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 SET sift.shared_cache_kb = 4096;
-CREATE TEMP TABLE base AS SELECT sift._test_shm_pool_used(2) AS dimmap, sift._test_shm_pool_used(3) AS dict, sift._test_shm_pool_used(4) AS leaf, sift._test_shm_total() AS total;
+CREATE TEMP TABLE base AS SELECT sift._test_shm_pool_used(1) AS dict, sift._test_shm_pool_used(2) AS leaf, sift._test_shm_total() AS total;
 CREATE FUNCTION held(pool int) RETURNS int8 LANGUAGE sql AS
-  $$ SELECT sift._test_shm_pool_used(pool) - (SELECT CASE pool WHEN 2 THEN dimmap WHEN 3 THEN dict ELSE leaf END FROM base) $$;
+  $$ SELECT sift._test_shm_pool_used(pool) - (SELECT CASE pool WHEN 1 THEN dict ELSE leaf END FROM base) $$;
 -- a small request draws a batch of 64 kB, the next ones are served from it
-SELECT sift._test_shm_reserve(4, 4096) AS reserved, held(4) AS batch;
+SELECT sift._test_shm_reserve(2, 4096) AS reserved, held(2) AS batch;
  reserved | batch 
 ----------+-------
  t        | 65536
 (1 row)
 
-SELECT sift._test_shm_reserve(4, 4096) AS reserved, held(4) AS same_batch;
+SELECT sift._test_shm_reserve(2, 4096) AS reserved, held(2) AS same_batch;
  reserved | same_batch 
 ----------+------------
  t        |      65536
 (1 row)
 
-SELECT sift._test_shm_release(4, 4096), sift._test_shm_release(4, 4096), held(4) AS batch_kept;
+SELECT sift._test_shm_release(2, 4096), sift._test_shm_release(2, 4096), held(2) AS batch_kept;
  _test_shm_release | _test_shm_release | batch_kept 
 -------------------+-------------------+------------
                    |                   |      65536
 (1 row)
 
 -- a request over what the credit holds draws another batch, and the credit above two batches goes back
-SELECT sift._test_shm_reserve(4, 60000) AS reserved, held(4) AS one_batch;
+SELECT sift._test_shm_reserve(2, 60000) AS reserved, held(2) AS one_batch;
  reserved | one_batch 
 ----------+-----------
  t        |     65536
 (1 row)
 
-SELECT sift._test_shm_reserve(4, 60000) AS reserved, held(4) AS two_batches;
+SELECT sift._test_shm_reserve(2, 60000) AS reserved, held(2) AS two_batches;
  reserved | two_batches 
 ----------+-------------
  t        |      131072
 (1 row)
 
-SELECT sift._test_shm_release(4, 60000), sift._test_shm_release(4, 60000), held(4) AS one_batch_back;
+SELECT sift._test_shm_release(2, 60000), sift._test_shm_release(2, 60000), held(2) AS one_batch_back;
  _test_shm_release | _test_shm_release | one_batch_back 
 -------------------+-------------------+----------------
                    |                   |          65536
 (1 row)
 
--- a request of a batch or more is the pool's own, up to its share of the setting (a tenth for the leaf statistics)
-SELECT sift._test_shm_reserve(4, 200000) AS reserved, held(4) AS with_request;
+-- a request of a batch or more is the pool's own, up to its share of the setting (sixteen hundredths for the leaf statistics)
+SELECT sift._test_shm_reserve(2, 350000) AS reserved, held(2) AS with_request;
  reserved | with_request 
 ----------+--------------
- t        |       265536
+ t        |       415536
 (1 row)
 
-SELECT sift._test_shm_reserve(4, 200000) AS reserved_past_share, held(4) AS refused;
+SELECT sift._test_shm_reserve(2, 350000) AS reserved_past_share, held(2) AS refused;
  reserved_past_share | refused 
 ---------------------+---------
- f                   |  265536
+ f                   |  415536
 (1 row)
 
-SELECT sift._test_shm_release(4, 200000), held(4) AS released;
+SELECT sift._test_shm_release(2, 350000), held(2) AS released;
  _test_shm_release | released 
 -------------------+----------
                    |    65536
 (1 row)
 
 -- the pools together may not pass the setting, whatever the share of one
-SELECT sift._test_shm_reserve(3, 1000000) AS reserved, sift._test_shm_total() - (SELECT total FROM base) AS total;
+SELECT sift._test_shm_reserve(1, 1000000) AS reserved, sift._test_shm_total() - (SELECT total FROM base) AS total;
  reserved |  total  
 ----------+---------
  t        | 1065536
@@ -80,10 +80,10 @@ SELECT set_config('sift.shared_cache_kb', (sift._test_shm_total() / 1024 + 64)::
 SELECT sift._test_shm_reserve(2, 100000) AS reserved_past_total, held(2) AS refused;
  reserved_past_total | refused 
 ---------------------+---------
- f                   |       0
+ f                   |   65536
 (1 row)
 
-SELECT sift._test_shm_release(3, 1000000), held(3) AS released;
+SELECT sift._test_shm_release(1, 1000000), held(1) AS released;
  _test_shm_release | released 
 -------------------+----------
                    |        0
@@ -92,12 +92,12 @@ SELECT sift._test_shm_release(3, 1000000), held(3) AS released;
 SELECT sift._test_shm_reserve(2, 100000) AS reserved_within_total, sift._test_shm_release(2, 100000), held(2) AS released;
  reserved_within_total | _test_shm_release | released 
 -----------------------+-------------------+----------
- t                     |                   |        0
+ t                     |                   |    65536
 (1 row)
 
 -- an unknown pool
-SELECT sift._test_shm_reserve(5, 1);
-ERROR:  sift test: the pool must be 0 to 4
+SELECT sift._test_shm_reserve(3, 1);
+ERROR:  sift test: the pool must be 0 to 2
 DROP FUNCTION held(int);
 DROP TABLE base;
 DROP EXTENSION pg_sift_test;

@@ -5,12 +5,11 @@
  * folded is still the reference at that place of the chain: the new references are folded, and a chain whose reference there changed (the slab was flushed and began again) is folded from the
  * first. The stamp of the chain, read before its references, says whether anything was appended since: a stamp that is older than the references only makes the next look fold again.
  *
- * check-memory: allow-allocs the tables follow the references of the slabs of the index being written, at most SLAB_FILTERS of them, each at most SLAB_SLOTS wide
+ * check-memory: allow-allocs the tables follow the references of the slabs of the index being written, at most SLAB_FILTERS of them, each at most SLAB_SLOTS wide and in the budget of core/cachebudget.h
  */
 #include "postgres.h"
 
 #include "access/tableam.h"
-#include "storage/ipc.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
@@ -25,11 +24,14 @@
 
 #define SLAB_FILTERS	32
 #define SLAB_SLOTS		16384		/* half of it holds the hashes of a slab: its references are at most two statements of SIFT_L0_HEAPREF_BATCH_MAX */
+#define SLAB_SLOTS_MIN	256
 
 typedef struct SlabFilter
 {
+	MemoryContext cx;
 	RelFileLocator locator;
 	uint64		part_id;
+	uint64		used;			/* sift_cache_tick() of its last use */
 	SiftChainStamp stamp;
 	bool		stamped;
 	BlockNumber tail;
@@ -37,31 +39,64 @@ typedef struct SlabFilter
 	SiftL0HeapRef last;			/* the last of them */
 	uint32		count;			/* distinct hashes in tab, at most SLAB_SLOTS / 2: past that the slab is not filtered (full) */
 	bool		full;
+	uint32		nslots;			/* a power of two, SLAB_SLOTS_MIN while the slab is small, at most SLAB_SLOTS */
 	uint64	   *tab;			/* open addressing on the hash, 0 for a free place */
 } SlabFilter;
 
-static MemoryContext filter_cx;
 static SlabFilter *filters[SLAB_FILTERS];
 static int	nfilters;
 
 static void
+tab_insert(uint64 *tab, uint32 nslots, uint64 fp)
+{
+	uint32		i = (uint32) fp & (nslots - 1);
+
+	while (tab[i] != 0 && tab[i] != fp)
+		i = (i + 1) & (nslots - 1);
+	tab[i] = fp;
+}
+
+static void
+tab_grow(SlabFilter *f)
+{
+	uint32		nslots = f->nslots * 2;
+	uint64	   *tab;
+
+	if (!sift_cache_room(nslots * sizeof(uint64)))
+	{
+		f->full = true;
+		return;
+	}
+	tab = MemoryContextAllocZero(f->cx, nslots * sizeof(uint64));
+	for (uint32 i = 0; i < f->nslots; i++)
+		if (f->tab[i] != 0)
+			tab_insert(tab, nslots, f->tab[i]);
+	pfree(f->tab);
+	f->tab = tab;
+	f->nslots = nslots;
+}
+
+static void
 tab_put(SlabFilter *f, uint64 fp)
 {
-	uint32		i = (uint32) fp & (SLAB_SLOTS - 1);
+	uint32		i = (uint32) fp & (f->nslots - 1);
 
 	while (f->tab[i] != 0 && f->tab[i] != fp)
-		i = (i + 1) & (SLAB_SLOTS - 1);
-	if (f->tab[i] == 0)
-	{
-		f->tab[i] = fp;
-		f->full = ++f->count >= SLAB_SLOTS / 2;
-	}
+		i = (i + 1) & (f->nslots - 1);
+	if (f->tab[i] != 0)
+		return;
+	f->tab[i] = fp;
+	f->count++;
+	if (f->count >= SLAB_SLOTS / 2)
+		f->full = true;
+	else if (f->count * 2 >= f->nslots)
+		tab_grow(f);
 }
 
 static bool
 tab_has(const SlabFilter *f, uint64 fp)
 {
-	for (uint32 i = (uint32) fp & (SLAB_SLOTS - 1); f->tab[i] != 0; i = (i + 1) & (SLAB_SLOTS - 1))
+	for (uint32 i = (uint32) fp & (f->nslots - 1); f->tab[i] != 0; i = (i + 1) & (f->nslots - 1))
 		if (f->tab[i] == fp)
 			return true;
 	return false;
@@ -70,46 +105,103 @@ tab_has(const SlabFilter *f, uint64 fp)
 static void
 filter_reset(SlabFilter *f)
 {
-	memset(f->tab, 0, SLAB_SLOTS * sizeof(uint64));
+	memset(f->tab, 0, f->nslots * sizeof(uint64));
 	f->count = 0;
 	f->nrefs = 0;
 	f->full = false;
 }
 
 static void
-filters_free(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
+filter_drop(int i)
 {
-	MemoryContextDelete(filter_cx);
-	filter_cx = NULL;
-	nfilters = 0;
+	MemoryContextDelete(filters[i]->cx);
+	filters[i] = filters[--nfilters];
+}
+
+static int
+filter_oldest(void)
+{
+	int			victim = -1;
+
+	for (int i = 0; i < nfilters; i++)
+		if (!sift_cache_used_in_xact(filters[i]->used) && (victim < 0 || filters[i]->used < filters[victim]->used))
+			victim = i;
+	return victim;
+}
+
+static uint64
+filters_oldest(void)
+{
+	int			i = filter_oldest();
+
+	return i < 0 ? UINT64_MAX : filters[i]->used;
+}
+
+static bool
+filters_evict_one(void)
+{
+	int			i = filter_oldest();
+
+	if (i < 0)
+		return false;
+	filter_drop(i);
+	return true;
+}
+
+static void
+filters_evict_all(void)
+{
+	while (filters_evict_one())
+		;
+}
+
+static const SiftCacheKind filters_kind = {"col_f2_uniq_slab", filters_oldest, filters_evict_one, filters_evict_all};
+
+static SlabFilter *
+filter_make(Relation index, uint64 part_id)
+{
+	MemoryContext cx = sift_cache_create_context("sift cache unique slab hashes");
+	SlabFilter *f = MemoryContextAllocZero(cx, sizeof(SlabFilter));
+
+	f->cx = cx;
+	f->nslots = SLAB_SLOTS_MIN;
+	f->tab = MemoryContextAllocZero(cx, SLAB_SLOTS_MIN * sizeof(uint64));
+	f->locator = index->rd_locator;
+	f->part_id = part_id;
+	return f;
+}
+
+static int
+filter_victim(void)
+{
+	int			lru = 0;
+
+	for (int i = 1; i < nfilters; i++)
+		lru = filters[i]->used < filters[lru]->used ? i : lru;
+	return lru;
 }
 
 static SlabFilter *
 filter_get(Relation index, uint64 part_id)
 {
+	static bool registered;
 	SlabFilter *f;
 
 	for (int i = 0; i < nfilters; i++)
 		if (filters[i]->part_id == part_id && RelFileLocatorEquals(filters[i]->locator, index->rd_locator))
-			return filters[i];
-	if (nfilters == SLAB_FILTERS)
-	{
-		f = filters[--nfilters];
-	}
-	else
-	{
-		if (filter_cx == NULL)
 		{
-			filter_cx = sift_cache_create_context("sift cache unique slab hashes");
-			before_shmem_exit(filters_free, 0);
+			filters[i]->used = sift_cache_tick();
+			return filters[i];
 		}
-		f = MemoryContextAllocZero(filter_cx, sizeof(SlabFilter));
-		f->tab = MemoryContextAllocZero(filter_cx, SLAB_SLOTS * sizeof(uint64));
+	if (!registered)
+	{
+		sift_cache_register(&filters_kind);
+		registered = true;
 	}
-	f->locator = index->rd_locator;
-	f->part_id = part_id;
-	f->stamped = false;
-	filter_reset(f);
+	if (nfilters == SLAB_FILTERS)
+		filter_drop(filter_victim());
+	f = filter_make(index, part_id);
+	f->used = sift_cache_tick();
 	filters[nfilters++] = f;
 	return f;
 }

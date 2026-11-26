@@ -26,6 +26,7 @@
 #include "storage/dsm.h"
 #include "storage/dsm_registry.h"
 #include "storage/lwlock.h"
+#include "storage/shmem.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/varlena.h"
@@ -149,29 +150,45 @@ create_segment(const char *name, Size size)
 	return seg;
 }
 
+/* Set once the registry holds the directory, in the shared memory of the server: the registry is not asked, a restart of the server (which makes both again) clears it */
+static pg_atomic_uint32 *
+dir_made(void)
+{
+	static pg_atomic_uint32 *made;
+	bool		found;
+
+	if (made == NULL)
+		made = ShmemInitStruct("pg_sift_dsm_dir_made", sizeof(pg_atomic_uint32), &found);
+	return made;
+}
+
 /*
  * The directory is made by the registry of PostgreSQL, which raises a shortage as an ordinary error with its locks held, and keeps an entry for the name that the failed creation never filled (every
- * later ask of the name is an error too, until the server restarts). So the room is made sure of first, with a segment of the directory's size that is given back at once and a shortage caught as
- * that of any table (create_segment): NULL, and why says it. A backend pays one segment, once, for the directory it maps for the life of its process; the registry then finds it made, or makes it
- * with the room just seen (another backend taking that room in between is the one case left for PostgreSQL's error).
+ * later ask of the name is an error too, until the server restarts). So until the directory is made the room is made sure of first, with a segment of the directory's size that is given back at once
+ * and a shortage caught as that of any table (create_segment): NULL, and why says it. Once it is made the registry only maps it, and no backend pays a segment for it.
  */
 static Dir *
 dir_segment(void)
 {
 	static Dir *dir;
+	pg_atomic_uint32 *made = dir_made();
 	dsm_segment *probe;
 	bool		found;
 
 	if (dir != NULL)
 		return dir;
-	if ((probe = create_segment(DIR_NAME, sizeof(Dir))) == NULL)
-		return NULL;
-	dsm_detach(probe);
+	if (pg_atomic_read_u32(made) == 0)
+	{
+		if ((probe = create_segment(DIR_NAME, sizeof(Dir))) == NULL)
+			return NULL;
+		dsm_detach(probe);
+	}
 #if PG_VERSION_NUM >= 190000
 	dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found, NULL);
 #else
 	dir = GetNamedDSMSegment(DIR_NAME, sizeof(Dir), dir_init, &found);
 #endif
+	pg_atomic_write_u32(made, 1);
 	return dir;
 }
 

@@ -86,13 +86,13 @@ COMMENT ON FUNCTION sift.check(regclass, bool, int) IS 'The problems of the sift
 COMMENT ON FUNCTION sift.index_format(regclass) IS 'The metapage format of a sift index, a sift_col index or a sift_table, Format 1 and Format 2.0: major and minor; long_words, for a sift index, tells whether it was built by 5.0 or later; reads says what the loaded library does with it. Never fails on a format it can read.';
 COMMENT ON EVENT TRIGGER sift_table_ddl_check IS 'After ALTER TABLE: refuses a column that a Format 1 sift_table cannot hold (more than 127), and notes a table that becomes the partition or child of another';
 
--- The five pools of the shared memory budget (sift.shared_cache_kb), one row each in the order of the ledger: the share of the limit, what is held, the most that was held, the refusals and the pool
+-- The three pools of the shared memory budget (sift.shared_cache_kb), one row each in the order of the ledger: the share of the limit, what is held, the most that was held, the refusals and the pool
 -- entries that were evicted to make room. sift.shared_memory() keeps its 5.1 columns; this one is the ledger that sift.health and sift.activity read.
 CREATE OR REPLACE FUNCTION sift.shared_memory_pools(OUT pool text, OUT limit_bytes int8, OUT used_bytes int8, OUT peak_bytes int8, OUT util_pct numeric(5,2), OUT evictions int8, OUT refusals int8,
 													OUT shared bool, OUT reason text)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_shared_memory_pools' LANGUAGE C STABLE;
-COMMENT ON FUNCTION sift.shared_memory_pools() IS 'The five pools of the shared memory budget (manifest, agg_lookup, agg_dimmap, col_dict, col_leaf), one row each: limit and bytes held, the peak, how full the pool is (NULL for a pool with no limit), the evictions and the refusals since the server started, and whether the pool is shared by the backends (reason says why not).';
+COMMENT ON FUNCTION sift.shared_memory_pools() IS 'The three pools of the shared memory budget (manifest, col_dict, col_leaf), one row each: limit and bytes held, the peak, how full the pool is (NULL for a pool with no limit), the evictions and the refusals since the server started, and whether the pool is shared by the backends (reason says why not).';
 
 -- sift.approx_percentile and sift.approx_quantiles: the quantile of a numeric or date/time column of a sift_col index or its table, from the SEC_KLL sketches of the index when the option
 -- sketches = 'kll(col)' made them and at most 1% of the rows are dead, pending or in a part without one; exact (percentile_disc) otherwise. Goes in sql/6.0/15-unified-api.sql.

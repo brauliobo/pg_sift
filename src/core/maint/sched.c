@@ -118,6 +118,7 @@ sift_maint_shmem_init(SiftMaintShmem *m, int tranche_id, uint32 max_workers, uin
 		pg_atomic_init_u32(&m->heat[i], 0);
 	pg_atomic_init_u64(&m->bgw_sample_ts_us, 0);
 	pg_atomic_init_u32(&m->bgw_other_cached, 0);
+	pg_atomic_init_u64(&m->heat_decayed_us, 0);
 	memset(m->hash_idx, 0xFF, sizeof(m->hash_idx));
 	memset(m->free_bits, 0xFF, sizeof(m->free_bits));
 	m->naptime_ms = naptime_ms;
@@ -133,16 +134,16 @@ sift_maint_set_limits(SiftMaintShmem *m, uint32 max_workers, uint32 naptime_ms)
 }
 
 /* The writers hold the lock; the odd value of seq tells a snapshot that what it copies is torn */
-static void
-begin(SiftMaintShmem *m)
+void
+sift_maint_begin(SiftMaintShmem *m)
 {
 	sift_shm_lock(&m->lock);
 	pg_atomic_fetch_add_u32(&m->seq, 1);
 	pg_write_barrier();
 }
 
-static void
-end(SiftMaintShmem *m)
+void
+sift_maint_end(SiftMaintShmem *m)
 {
 	pg_write_barrier();
 	pg_atomic_fetch_add_u32(&m->seq, 1);
@@ -235,8 +236,8 @@ slot_free(SiftMaintShmem *m, int i)
 	m->free_bits[i / 64] |= UINT64CONST(1) << (i % 64);
 }
 
-static void
-requeue(SiftMaintShmem *m, SiftMaintSlot *s, TimestampTz not_before)
+void
+sift_maint_requeue(SiftMaintShmem *m, SiftMaintSlot *s, TimestampTz not_before)
 {
 	s->state = SIFT_SLOT_QUEUED;
 	s->pid = 0;
@@ -307,7 +308,7 @@ enqueue_locked(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier, uin
 	s->score = score;
 	s->part_id = r->part_id;
 	s->enqueued_at = now;
-	requeue(m, s, 0);
+	sift_maint_requeue(m, s, 0);
 	m->stats.enqueued++;
 	return res;
 }
@@ -316,13 +317,15 @@ SiftMaintEnq
 sift_maint_enqueue(SiftMaintShmem *m, const SiftMaintHost *host, const SiftMaintReq *req)
 {
 	SiftPacerTier tier = request_tier(req);
+	TimestampTz now = host->now();
 	SiftMaintEnq res;
 
 	if (m == NULL)
 		return SIFT_ENQ_UNAVAILABLE;
-	begin(m);
-	res = enqueue_locked(m, req, tier, request_score(m, req, tier), host->now());
-	end(m);
+	sift_maint_heat_decay_due(m, now);
+	sift_maint_begin(m);
+	res = enqueue_locked(m, req, tier, request_score(m, req, tier), now);
+	sift_maint_end(m);
 	return res;
 }
 
@@ -346,7 +349,7 @@ typedef enum PickMode
 {
 	PICK_BEST,					/* the highest aged score, the older first */
 	PICK_FAIR,					/* the oldest request that has aged a quantum, of any tier */
-	PICK_UNSERVED,				/* as PICK_BEST, among the databases that have no worker and are not held or backing off */
+	PICK_UNSERVED,				/* as PICK_BEST, among the databases that have no worker and are not held or backing off: a worker with nothing to do leaves for them */
 	PICK_STARVED				/* the oldest request, among those databases, that waited SIFT_MAINT_STARVED_NAPS naps; db is the one that does not count (the one being served) */
 } PickMode;
 
@@ -445,12 +448,12 @@ sift_maint_claim(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, bool allo
 	m->stats.claimed++;
 	*out = (SiftMaintClaim) {i, s->gen, s->db, s->rel, (SiftMaintKind) s->kind, (SiftPacerTier) s->tier, s->part_id, s->score,
 		s->failures, s->enqueued_at};
-	end(m);
+	sift_maint_end(m);
 	return true;
 }
 
-static TimestampTz
-failure_backoff_us(const SiftMaintShmem *m, uint32 failures)
+TimestampTz
+sift_maint_backoff_us(const SiftMaintShmem *m, uint32 failures)
 {
 	uint64		ms = Min(((uint64) Max(m->naptime_ms, 1)) << Min(failures, 24), SIFT_MAINT_BACKOFF_MAX_MS);
 
@@ -469,10 +472,10 @@ sift_maint_complete(SiftMaintShmem *m, const SiftMaintHost *host, const SiftMain
 	TimestampTz now = host->now();
 	SiftMaintSlot *s = &m->slot[claim->slot];
 
-	begin(m);
+	sift_maint_begin(m);
 	if (!owns(s, claim, host->self_pid()))
 	{
-		end(m);
+		sift_maint_end(m);
 		return false;
 	}
 	m->nclaimed--;
@@ -487,27 +490,27 @@ sift_maint_complete(SiftMaintShmem *m, const SiftMaintHost *host, const SiftMain
 				break;
 			}
 			s->enqueued_at = now;
-			requeue(m, s, 0);
+			sift_maint_requeue(m, s, 0);
 			break;
 		case SIFT_MSTEP_MORE:
 			s->failures = s->crashes = 0;
-			requeue(m, s, 0);
+			sift_maint_requeue(m, s, 0);
 			break;
 		case SIFT_MSTEP_BUSY:
-			requeue(m, s, now + SIFT_MAINT_BUSY_US);
+			sift_maint_requeue(m, s, now + SIFT_MAINT_BUSY_US);
 			break;
 		case SIFT_MSTEP_DEFERRED:
-			requeue(m, s, now + SIFT_MAINT_DEFER_US);
+			sift_maint_requeue(m, s, now + SIFT_MAINT_DEFER_US);
 			break;
 		case SIFT_MSTEP_FAILED:
 			s->failures++;
-			requeue(m, s, now + failure_backoff_us(m, s->failures));
+			sift_maint_requeue(m, s, now + sift_maint_backoff_us(m, s->failures));
 			break;
 		case SIFT_MSTEP_GONE:
 			slot_free(m, claim->slot);
 			break;
 	}
-	end(m);
+	sift_maint_end(m);
 	return true;
 }
 
@@ -516,7 +519,7 @@ sift_maint_progress(SiftMaintShmem *m, const SiftMaintClaim *claim, SiftMaintPha
 {
 	SiftMaintSlot *s = &m->slot[claim->slot];
 
-	begin(m);
+	sift_maint_begin(m);
 	if (s->state == SIFT_SLOT_CLAIMED && s->gen == claim->gen)
 	{
 		s->phase = phase;
@@ -524,20 +527,42 @@ sift_maint_progress(SiftMaintShmem *m, const SiftMaintClaim *claim, SiftMaintPha
 		s->total = total;
 		s->bytes_written = bytes;
 	}
-	end(m);
+	sift_maint_end(m);
 }
 
-/* A request of another database has waited SIFT_MAINT_STARVED_NAPS naps without a worker: the worker that serves db leaves and the next one goes to that database */
 static bool
-starved_elsewhere(SiftMaintShmem *m, const SiftMaintHost *host, Oid db)
+has_cold(const SiftMaintShmem *m, Oid db, TimestampTz now)
 {
-	TimestampTz now = host->now();
-	bool		starved;
+	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
+		if (m->khash[i] != 0 && m->slot[i].tier > SIFT_TIER_P1 && runnable(&m->slot[i], db, true, now))
+			return true;
+	return false;
+}
+
+/* The pacer is asked whether P2 and P3 wait only when one of them is there to wait: a table with none is no load for it to measure */
+static bool
+cold_allowed(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, TimestampTz now)
+{
+	bool		cold;
 
 	sift_shm_lock(&m->lock);
-	starved = pick(m, db, !host->defer_cold(), now, PICK_STARVED) >= 0;
+	cold = has_cold(m, db, now);
 	sift_shm_unlock(&m->lock);
-	return starved;
+	return !cold || !host->defer_cold();
+}
+
+/* A request of another database has waited SIFT_MAINT_STARVED_NAPS naps without a worker (waited: no wait at all, for a worker that has nothing to do): the worker that serves db leaves and the next one goes to that database */
+static bool
+other_db_waits(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, PickMode mode)
+{
+	TimestampTz now = host->now();
+	bool		cold_ok = cold_allowed(m, host, InvalidOid, now);
+	bool		waits;
+
+	sift_shm_lock(&m->lock);
+	waits = pick(m, db, cold_ok, now, mode) >= 0;
+	sift_shm_unlock(&m->lock);
+	return waits;
 }
 
 int
@@ -547,14 +572,16 @@ sift_maint_run(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, int max_ste
 	int			n = 0;
 
 	*yielded = false;
-	while (n < max_steps && !*yielded && sift_maint_claim(m, host, db, !host->defer_cold(), &c))
+	while (n < max_steps && !*yielded && sift_maint_claim(m, host, db, cold_allowed(m, host, db, host->now()), &c))
 	{
 		sift_maint_complete(m, host, &c, step(&c, arg));
 		if (host->pace != NULL)
 			host->pace(c.tier);
-		*yielded = host->should_yield(c.tier, host->now()) || starved_elsewhere(m, host, db);
+		*yielded = host->should_yield(c.tier, host->now()) || other_db_waits(m, host, db, PICK_STARVED);
 		n++;
 	}
+	if (n == 0)
+		*yielded = other_db_waits(m, host, InvalidOid, PICK_UNSERVED);
 	return n;
 }
 
@@ -570,162 +597,11 @@ sift_maint_has_work(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, bool a
 	return found;
 }
 
-/* The claim of a pid that will not complete it goes back to the queue; a failed step backs off, as an error of the step does */
-static int
-release_pid_locked(SiftMaintShmem *m, const SiftMaintHost *host, int pid, bool failed)
-{
-	TimestampTz now = host->now();
-	int			n = 0;
-
-	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-	{
-		SiftMaintSlot *s = &m->slot[i];
-
-		if (s->state != SIFT_SLOT_CLAIMED || s->pid != pid)
-			continue;
-		m->nclaimed--;
-		if (failed)
-		{
-			s->failures++;
-			s->crashes++;
-		}
-		requeue(m, s, failed ? now + failure_backoff_us(m, s->failures) : 0);
-		m->stats.reclaimed++;
-		n++;
-	}
-	return n;
-}
-
-int
-sift_maint_release_pid(SiftMaintShmem *m, const SiftMaintHost *host, int pid, bool failed)
-{
-	int			n;
-
-	begin(m);
-	n = release_pid_locked(m, host, pid, failed);
-	end(m);
-	return n;
-}
-
-static void
-worker_free(SiftMaintShmem *m, int w)
+void
+sift_maint_worker_free(SiftMaintShmem *m, int w)
 {
 	memset(&m->worker[w], 0, sizeof(SiftMaintWorkerSlot));
 	pg_atomic_fetch_sub_u32(&m->active_workers, 1);
-}
-
-typedef struct Pids
-{
-	int			n;
-	int		   *pid;
-} Pids;
-
-static Pids
-pids_new(void)
-{
-	return (Pids) {.pid = palloc((SIFT_MAINT_SLOTS + SIFT_MAINT_MAX_WORKERS) * sizeof(int))};
-}
-
-static int
-pid_order(const void *a, const void *b)
-{
-	return (*(const int *) a > *(const int *) b) - (*(const int *) a < *(const int *) b);
-}
-
-static bool
-pids_has(const Pids *p, int pid)
-{
-	if (p->n <= 4)
-	{
-		for (int k = 0; k < p->n; k++)
-			if (p->pid[k] == pid)
-				return true;
-		return false;
-	}
-	return bsearch(&pid, p->pid, p->n, sizeof(int), pid_order) != NULL;
-}
-
-/* The distinct pids that run a worker or own a claim, sorted; lapsed says a worker that never started has overstayed its lease */
-static void
-owner_pids(SiftMaintShmem *m, TimestampTz now, Pids *p, bool *lapsed, uint32 *gen_seen)
-{
-	int			n = 0;
-
-	*lapsed = false;
-	sift_shm_lock(&m->lock);
-	*gen_seen = m->next_gen;
-	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
-	{
-		*lapsed |= m->worker[w].state == 1 && m->worker[w].lease_until < now;
-		if (m->worker[w].state == 2)
-			p->pid[n++] = m->worker[w].pid;
-	}
-	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-		if (m->slot[i].state == SIFT_SLOT_CLAIMED)
-			p->pid[n++] = m->slot[i].pid;
-	sift_shm_unlock(&m->lock);
-	qsort(p->pid, n, sizeof(int), pid_order);
-	p->n = 0;
-	for (int k = 0; k < n; k++)
-		if (p->n == 0 || p->pid[p->n - 1] != p->pid[k])
-			p->pid[p->n++] = p->pid[k];
-}
-
-static int
-reap_dead(SiftMaintShmem *m, TimestampTz now, const Pids *dead, uint32 gen_seen)
-{
-	int			n = 0;
-
-	begin(m);
-	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
-	{
-		SiftMaintWorkerSlot *ws = &m->worker[w];
-
-		if (ws->state == 1 && ws->lease_until < now)
-		{
-			worker_free(m, w);
-			m->stats.lease_lapsed++;
-		}
-		else if (ws->state == 2 && pids_has(dead, ws->pid))
-			worker_free(m, w);
-	}
-	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-		if (m->slot[i].state == SIFT_SLOT_CLAIMED && m->slot[i].gen <= gen_seen && pids_has(dead, m->slot[i].pid))
-		{
-			m->nclaimed--;
-			m->slot[i].failures++;
-			m->slot[i].crashes++;
-			requeue(m, &m->slot[i], now + failure_backoff_us(m, m->slot[i].failures));
-			m->stats.reclaimed++;
-			n++;
-		}
-	end(m);
-	return n;
-}
-
-/*
- * Liveness is asked once for each distinct pid and outside the lock (the host may take locks of its own); what is given back is then taken in one pass over the table. A claim made after
- * the owners were read (a generation past gen_seen) is never taken for the claim of a pid that is gone: the number may be a new process's.
- */
-int
-sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
-{
-	TimestampTz now = host->now();
-	Pids		owners = pids_new();
-	Pids		dead = pids_new();
-	bool		lapsed;
-	uint32		gen_seen;
-	int			n = 0;
-
-	owner_pids(m, now, &owners, &lapsed, &gen_seen);
-	for (int k = 0; k < owners.n; k++)
-		if (!host->pid_alive(owners.pid[k]))
-			dead.pid[dead.n++] = owners.pid[k];
-	if (dead.n > 0 || lapsed)
-		n = reap_dead(m, now, &dead, gen_seen);
-	pfree(owners.pid);
-	pfree(dead.pid);
-	return n;
 }
 
 int
@@ -783,9 +659,9 @@ reserve_over_shared_limit(SiftMaintShmem *m, const SiftMaintHost *host, int w)
 
 	if (over)
 	{
-		begin(m);
-		worker_free(m, w);
-		end(m);
+		sift_maint_begin(m);
+		sift_maint_worker_free(m, w);
+		sift_maint_end(m);
 	}
 	return over;
 }
@@ -804,9 +680,9 @@ sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db)
 	int			cap = effective_max_of(m, host);
 	int			w;
 
-	begin(m);
+	sift_maint_begin(m);
 	w = reserve_locked(m, db, now, cap);
-	end(m);
+	sift_maint_end(m);
 	return w >= 0 && reserve_over_shared_limit(m, host, w) ? -1 : w;
 }
 
@@ -816,7 +692,7 @@ sift_maint_worker_started(SiftMaintShmem *m, int worker, int pid, int procno)
 	SiftMaintWorkerSlot *ws = &m->worker[worker];
 	bool		ok;
 
-	begin(m);
+	sift_maint_begin(m);
 	ok = ws->state == 1 || ws->state == 0;
 	if (ok)
 	{
@@ -826,7 +702,7 @@ sift_maint_worker_started(SiftMaintShmem *m, int worker, int pid, int procno)
 		ws->pid = pid;
 		ws->procno = procno;
 	}
-	end(m);
+	sift_maint_end(m);
 	return ok;
 }
 
@@ -835,19 +711,19 @@ sift_maint_worker_exit(SiftMaintShmem *m, int worker, int pid)
 {
 	SiftMaintWorkerSlot *ws = &m->worker[worker];
 
-	begin(m);
+	sift_maint_begin(m);
 	if (ws->state == 2 && ws->pid == pid)
 	{
 		for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
 			if (m->slot[i].state == SIFT_SLOT_CLAIMED && m->slot[i].pid == pid)
 			{
 				m->nclaimed--;
-				requeue(m, &m->slot[i], 0);
+				sift_maint_requeue(m, &m->slot[i], 0);
 				m->stats.reclaimed++;
 			}
-		worker_free(m, worker);
+		sift_maint_worker_free(m, worker);
 	}
-	end(m);
+	sift_maint_end(m);
 }
 
 void
@@ -855,10 +731,10 @@ sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, int 
 {
 	TimestampTz now = host->now();
 
-	begin(m);
+	sift_maint_begin(m);
 	if (m->worker[worker].state == 1 && m->worker[worker].db == db)
-		worker_free(m, worker);
-	end(m);
+		sift_maint_worker_free(m, worker);
+	sift_maint_end(m);
 	if (sift_maint_db_connect_failed(m, now, db) >= SIFT_MAINT_CONNECT_GIVE_UP)
 		sift_maint_db_purge(m, db);
 }
@@ -866,32 +742,34 @@ sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, int 
 void
 sift_maint_db_purge(SiftMaintShmem *m, Oid db)
 {
-	begin(m);
+	sift_maint_begin(m);
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
 		if (m->khash[i] != 0 && m->slot[i].state == SIFT_SLOT_QUEUED && m->slot[i].db == db)
 		{
 			m->nqueued--;
 			slot_free(m, i);
 		}
-	end(m);
+	sift_maint_end(m);
 }
 
-/* Wakes the worker of the database that has the best request waiting and starts one for a database that has none: the cap on workers is asked of the host only when that is to be done */
+/* Wakes the worker of the database that has the best request waiting and starts one for a database that has none: the cap on workers is asked of the host only when that is to be done. The workers that are gone are given back first: a server without a launcher has nothing else that looks */
 SiftMaintKick
 sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 {
 	TimestampTz now = host->now();
-	bool		cold_ok = !host->defer_cold();
+	bool		cold_ok;
 	SiftPacerTier tier = SIFT_TIER_P0;
 	SiftMaintKick res = SIFT_KICK_WOKE;
 	Oid			db = InvalidOid;
 	int			i, j, w = -1, procno = -1, cap;
 
-	begin(m);
+	sift_maint_reap(m, host);
+	cold_ok = cold_allowed(m, host, InvalidOid, now);
+	sift_maint_begin(m);
 	if ((i = pick(m, InvalidOid, cold_ok, now, PICK_BEST)) < 0)
 	{
 		res = !cold_ok && pick(m, InvalidOid, true, now, PICK_BEST) >= 0 ? SIFT_KICK_DEFERRED : SIFT_KICK_NONE;
-		end(m);
+		sift_maint_end(m);
 		return res;
 	}
 	if ((j = worker_for(m, m->slot[i].db)) >= 0 && m->worker[j].state == 2)
@@ -903,13 +781,13 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 		db = m->slot[j].db;
 		tier = (SiftPacerTier) m->slot[j].tier;
 	}
-	end(m);
+	sift_maint_end(m);
 	if (j >= 0)
 	{
 		cap = effective_max_of(m, host);
-		begin(m);
+		sift_maint_begin(m);
 		res = worker_for(m, db) >= 0 ? SIFT_KICK_WOKE : (w = reserve_locked(m, db, now, cap)) >= 0 ? SIFT_KICK_SPAWNED : SIFT_KICK_NOSLOT;
-		end(m);
+		sift_maint_end(m);
 	}
 	if (res == SIFT_KICK_SPAWNED && reserve_over_shared_limit(m, host, w))
 		res = SIFT_KICK_NOSLOT;
@@ -921,15 +799,15 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 		return res;
 	if (host->spawn(db, w))
 	{
-		begin(m);
+		sift_maint_begin(m);
 		m->stats.spawned++;
-		end(m);
+		sift_maint_end(m);
 		return res;
 	}
-	begin(m);
-	worker_free(m, w);
+	sift_maint_begin(m);
+	sift_maint_worker_free(m, w);
 	m->stats.spawn_failed++;
-	end(m);
+	sift_maint_end(m);
 	host->note_starved(tier, now);
 	return SIFT_KICK_NOSLOT;
 }
@@ -948,35 +826,4 @@ sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode m
 	else
 		sift_maint_kick(m, host);
 	return res;
-}
-
-void
-sift_maint_heat_note(SiftMaintShmem *m, Oid rel)
-{
-	SIFT_SHM_BACKEND_LOCAL uint32 reads;
-
-	if ((++reads & 127) == 0)
-		pg_atomic_fetch_add_u32(&m->heat[rel % SIFT_MAINT_HEAT], 1);
-}
-
-uint32
-sift_maint_heat(SiftMaintShmem *m, Oid rel)
-{
-	return pg_atomic_read_u32(&m->heat[rel % SIFT_MAINT_HEAT]);
-}
-
-void
-sift_maint_heat_decay(SiftMaintShmem *m)
-{
-	for (int i = 0; i < SIFT_MAINT_HEAT; i++)
-		pg_atomic_write_u32(&m->heat[i], pg_atomic_read_u32(&m->heat[i]) >> 1);
-}
-
-void
-sift_maint_fg_note(SiftMaintShmem *m, bool write)
-{
-	SIFT_SHM_BACKEND_LOCAL uint32 ops;
-
-	if ((++ops & 63) == 0)
-		pg_atomic_fetch_add_u64(write ? &m->fg_write_ops : &m->fg_read_ops, 1);
 }

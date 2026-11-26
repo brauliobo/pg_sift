@@ -12,6 +12,7 @@
 #include "col/am.h"
 #include "col/f2/store/store.h"
 #include "col/scope/scope.h"
+#include "col/scope/memo.h"
 #include "core/cachebudget.h"
 
 /* [using name], when the text has it; p is after the closing parenthesis of the relation */
@@ -220,17 +221,39 @@ sift_scope_parse(const char *text, const char **err)
 #define SPECS_MEMO_N 8
 static struct
 {
+	SiftScopeMemoSlot memo;
 	Oid			index;
 	char	   *text;
 	SiftScopeSpecs *specs;
-	MemoryContext cx;
 } specs_memo[SPECS_MEMO_N];
 static SiftRing specs_memo_ring;
+
+static uint64
+specs_oldest(void)
+{
+	return sift_scope_memo_oldest(specs_memo, sizeof(specs_memo[0]), SPECS_MEMO_N);
+}
+
+static bool
+specs_evict_one(void)
+{
+	return sift_scope_memo_evict_oldest(specs_memo, sizeof(specs_memo[0]), SPECS_MEMO_N);
+}
+
+static void
+specs_evict_all(void)
+{
+	while (specs_evict_one())
+		;
+}
+
+static const SiftCacheKind specs_kind = {"col_scope_specs", specs_oldest, specs_evict_one, specs_evict_all};
 
 SiftScopeSpecs *
 sift_scope_specs(Relation index)
 {
 	const char *text = index->rd_index != NULL ? sift_col_options_scope(index) : sift_f2_store_open(index)->opts.scope;
+	static bool registered;
 	const char *err = NULL;
 	SiftScopeSpecs *s;
 	MemoryContext old;
@@ -240,13 +263,16 @@ sift_scope_specs(Relation index)
 		return NULL;
 	for (int i = 0; i < SPECS_MEMO_N; i++)
 		if (specs_memo[i].index == RelationGetRelid(index) && strcmp(specs_memo[i].text, text) == 0)
+		{
+			specs_memo[i].memo.used = sift_cache_tick();
 			return specs_memo[i].specs;
+		}
+	sift_scope_memo_register(&registered, &specs_kind);
 	slot = SIFT_RING_SLOT(specs_memo_ring, SPECS_MEMO_N);
-	if (specs_memo[slot].cx != NULL)
-		MemoryContextDelete(specs_memo[slot].cx);
+	if (specs_memo[slot].memo.cx != NULL)
+		MemoryContextDelete(specs_memo[slot].memo.cx);
 	specs_memo[slot] = (typeof(specs_memo[0])) {0};
-	specs_memo[slot].cx = sift_cache_create_context("sift cache scope specs");
-	old = MemoryContextSwitchTo(specs_memo[slot].cx);
+	old = MemoryContextSwitchTo(sift_scope_memo_begin(&specs_memo[slot].memo, "sift cache scope specs"));
 	s = sift_scope_parse(text, &err);
 	if (s == NULL)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid scope option \"%s\": %s", text, err)));

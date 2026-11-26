@@ -5,9 +5,9 @@
 
 #include "datatype/timestamp.h"
 
-/* The entry of db: its own, else a free one or one whose backoff is over; NULL when all eight are held. The caller holds the lock of the table */
+/* The entry of db: its own, else a free one, else the backoff that ends first (a hold is never taken from a statement that waits on it); NULL when every entry is a hold. The caller holds the lock of the table */
 static SiftMaintDbState *
-entry_of(SiftMaintShmem *m, Oid db, TimestampTz now)
+entry_of(SiftMaintShmem *m, Oid db)
 {
 	SiftMaintDbState *spare = NULL;
 
@@ -17,7 +17,7 @@ entry_of(SiftMaintShmem *m, Oid db, TimestampTz now)
 
 		if (e->db == db)
 			return e;
-		if (spare == NULL && (e->db == InvalidOid || e->until <= now))
+		if (e->until != SIFT_MAINT_HELD && (spare == NULL || e->until < spare->until))
 			spare = e;
 	}
 	if (spare != NULL)
@@ -41,7 +41,7 @@ sift_maint_db_connect_failed(SiftMaintShmem *m, TimestampTz now, Oid db)
 	uint32		failures = 0;
 
 	sift_shm_lock(&m->lock);
-	if ((e = entry_of(m, db, now)) != NULL)
+	if ((e = entry_of(m, db)) != NULL)
 	{
 		failures = ++e->failures;
 		e->until = now + Min((TimestampTz) SIFT_MAINT_CONNECT_BACKOFF_US << Min(failures - 1, 5), SIFT_MAINT_CONNECT_BACKOFF_MAX_US);
@@ -73,7 +73,7 @@ sift_maint_db_hold(SiftMaintShmem *m, TimestampTz now, Oid db, bool hold)
 
 	sift_shm_lock(&m->lock);
 	forget(m, db);
-	if (hold && (e = entry_of(m, db, now)) != NULL)
+	if (hold && (e = entry_of(m, db)) != NULL)
 		e->until = SIFT_MAINT_HELD;
 	sift_shm_unlock(&m->lock);
 }

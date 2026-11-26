@@ -17,19 +17,15 @@
 int			sift_shared_cache_kb = 128 * 1024;
 
 /* the share of the limit of each pool, in percent */
-/* MEM[MEM-SHM-21]: shm_ledger 5-pool split (25/25/10/20/20% of sift.shared_cache_kb) */
+/* MEM[MEM-SHM-21]: shm_ledger 3-pool split (42/42/16% of sift.shared_cache_kb) */
 static const int pool_pct[SIFT_SHM_NPOOL] = {
-	[SIFT_SHM_MANIFEST] = 25,
-	[SIFT_SHM_AGG_LOOKUP] = 20,
-	[SIFT_SHM_AGG_DIMMAP] = 20,
-	[SIFT_SHM_COL_DICT] = 25,
-	[SIFT_SHM_COL_LEAF] = 10
+	[SIFT_SHM_MANIFEST] = 42,
+	[SIFT_SHM_COL_DICT] = 42,
+	[SIFT_SHM_COL_LEAF] = 16
 };
 
 static const char *const pool_name[SIFT_SHM_NPOOL] = {
 	[SIFT_SHM_MANIFEST] = "manifest",
-	[SIFT_SHM_AGG_LOOKUP] = "agg_lookup",
-	[SIFT_SHM_AGG_DIMMAP] = "agg_dimmap",
 	[SIFT_SHM_COL_DICT] = "col_dict",
 	[SIFT_SHM_COL_LEAF] = "col_leaf"
 };
@@ -61,8 +57,8 @@ void
 sift_shm_budget_define_gucs(void)
 {
 	DefineCustomIntVariable("sift.shared_cache_kb",
-							"Dynamic shared memory, for all backends together, that the shared caches of the extension keep (write-buffer references, joined-table rows, dimension maps, parsed dictionaries and index statistics) (0: none is shared).",
-							"The pools share it: 25% the manifests and write-buffer references, 20% the rows of joined tables, 20% the dimension maps, 25% the parsed dictionaries, 10% the statistics of the indexes. A pool that is full does without: a row is written with its values, a backend loads its own tables.",
+							"Dynamic shared memory, for all backends together, that the shared caches of the extension keep (write-buffer references, parsed dictionaries and index statistics) (0: none is shared).",
+							"The pools share it: 42% the manifests and write-buffer references, 42% the parsed dictionaries, 16% the statistics of the indexes. A pool that is full does without: a row is written with its values, a backend loads its own tables.",
 							&sift_shared_cache_kb, 128 * 1024, 0, MAX_KILOBYTES,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 }

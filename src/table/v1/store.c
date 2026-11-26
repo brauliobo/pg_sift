@@ -13,6 +13,7 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
+#include "core/cachebudget.h"
 #include "core/maint/maint.h"
 #include "core/extlock.h"
 #include "utils/hsearch.h"
@@ -34,6 +35,7 @@ typedef struct CacheEnt
 {
 	Oid			relid;
 	SiftTblRel *st;
+	uint64		used;			/* sift_cache_tick() of the last ask for it */
 } CacheEnt;
 
 static HTAB *cache_tab;
@@ -61,6 +63,49 @@ cache_xact(XactEvent event, void *arg)
 			hash_search(cache_tab, &e->relid, HASH_REMOVE, NULL);
 		}
 }
+
+static CacheEnt *
+cache_oldest_ent(void)
+{
+	HASH_SEQ_STATUS seq;
+	CacheEnt   *e;
+	CacheEnt   *victim = NULL;
+
+	hash_seq_init(&seq, cache_tab);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if (!sift_cache_used_in_xact(e->used) && (victim == NULL || e->used < victim->used))
+			victim = e;
+	return victim;
+}
+
+static uint64
+cache_oldest(void)
+{
+	CacheEnt   *e = cache_oldest_ent();
+
+	return e == NULL ? UINT64_MAX : e->used;
+}
+
+static bool
+cache_evict_one(void)
+{
+	CacheEnt   *e = cache_oldest_ent();
+
+	if (e == NULL)
+		return false;
+	MemoryContextDelete(e->st->cxt);
+	hash_search(cache_tab, &e->relid, HASH_REMOVE, NULL);
+	return true;
+}
+
+static void
+cache_evict_all(void)
+{
+	while (cache_evict_one())
+		;
+}
+
+static const SiftCacheKind cache_kind = {"table_v1_store", cache_oldest, cache_evict_one, cache_evict_all};
 
 /*
  * The backend's caches go before its exit (the scans that the group reads keep between statements are not leaks to the leak check). Before the shared memory exit, not at
@@ -97,8 +142,10 @@ sift_tbl_rel(Relation rel)
 		cache_tab = hash_create("sift_table relations", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		RegisterXactCallback(cache_xact, NULL);
 		before_shmem_exit(cache_exit, 0);
+		sift_cache_register(&cache_kind);
 	}
 	e = hash_search(cache_tab, &relid, HASH_ENTER, &found);
+	e->used = sift_cache_tick();
 	/*
 	 * The relcache frees rd_amcache with the entry of the relation when it invalidates it: a table that has a cache entry and no mark was invalidated since.
 	 * No relcache callback for it: a backend has ten of those slots for all its libraries.
@@ -120,8 +167,8 @@ sift_tbl_rel(Relation rel)
 	}
 	if (!found)
 	{
-		/* MEM[MEM-TBL-18]: legacy v1 table relcache ctx (CacheMemoryContext; migrate to cachebudget) */
-		MemoryContext cxt = AllocSetContextCreate(CacheMemoryContext, "sift cache table", ALLOCSET_DEFAULT_SIZES);
+		/* MEM[MEM-TBL-18]: v1 table relcache ctx (cachebudget child; the oldest one no statement of the transaction used is dropped for room) */
+		MemoryContext cxt = sift_cache_create_context("sift cache table");
 
 		e->st = MemoryContextAllocZero(cxt, sizeof(SiftTblRel));
 		e->st->relid = relid;

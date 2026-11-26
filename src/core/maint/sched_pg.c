@@ -59,7 +59,7 @@ sift_maint_table(void)
 	if (table == NULL && !table_tried)
 	{
 		table_tried = true;
-		/* MEM[MEM-SHM-06]: DSM maintenance queue sift_maint_v6 (72576 B fixed; 512x128 B slots) */
+		/* MEM[MEM-SHM-06]: DSM maintenance queue sift_maint_v6 (fixed; 2048x128 B slots) */
 		if ((table = sift_dsm_try(TABLE_NAME, sift_maint_shmem_size(), table_init)) != NULL)
 		{
 			sift_tranche_register(table->tranche, "SiftMaintShmem");
@@ -180,14 +180,21 @@ host_other_workers(void)
 	return sift_worker_legacy_active();
 }
 
+/* The bgworkers that are running, but the launcher of the queue: it is ours, and the cap on workers counts the ones that are not */
 static int
 host_bgworkers_in_use(void)
 {
+	uint32		launcher = pg_atomic_read_u32(&table->launcher);
+	int			launcher_pid = launcher != 0 ? GetPGProcByNumber(launcher - 1)->pid : 0;
 	int			n = 0;
 
 	pgstat_clear_backend_activity_snapshot();
 	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
-		n += pgstat_get_local_beentry_by_index(i)->backendStatus.st_backendType == B_BG_WORKER;
+	{
+		const PgBackendStatus *s = &pgstat_get_local_beentry_by_index(i)->backendStatus;
+
+		n += s->st_backendType == B_BG_WORKER && s->st_procpid != launcher_pid;
+	}
 	return n;
 }
 
@@ -312,6 +319,15 @@ nap(long ms)
 	CHECK_FOR_INTERRUPTS();
 }
 
+/* Until a request, a reload or a signal sets the latch: the launcher of a table with nothing in it has no timer to keep */
+static void
+sleep_until_woken(void)
+{
+	(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, -1, sift_wait_event(SIFT_WAIT_NAP));
+	ResetLatch(MyLatch);
+	CHECK_FOR_INTERRUPTS();
+}
+
 /* A reload of the configuration (pg_reload_conf) reaches the settings of the scheduler and of the pacer in the processes that run it, between two of their rounds */
 static void
 reload_config(void)
@@ -402,7 +418,7 @@ sift_maint_launcher_register(void)
 	RegisterBackgroundWorker(&bw);
 }
 
-/* Sleeps on its latch (no CPU when idle); a request wakes it and it starts the worker of the database that has the best one waiting */
+/* Sleeps on its latch with no timer while the queue is off or empty and no worker runs: it looks at nothing, so it counts nothing; a request or a reload wakes it, and it starts the worker of the database that has the best request waiting */
 void
 sift_maint_sched_launcher_main(Datum main_arg pg_attribute_unused())
 {
@@ -418,10 +434,13 @@ sift_maint_sched_launcher_main(Datum main_arg pg_attribute_unused())
 	for (;;)
 	{
 		reload_config();
+		if (!cfg.async || sift_maint_idle(m))
+		{
+			sleep_until_woken();
+			continue;
+		}
 		while (sift_maint_kick(m, &sift_maint_server_host) == SIFT_KICK_SPAWNED)
 			;
-		sift_maint_reap(m, &sift_maint_server_host);
-		sift_maint_heat_decay(m);
 		nap(m->naptime_ms);
 	}
 }

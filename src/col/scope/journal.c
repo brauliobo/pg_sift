@@ -24,6 +24,7 @@
 #include "core/ring.h"
 #include "col/am.h"
 #include "col/scope/scope.h"
+#include "col/scope/memo.h"
 #include "core/cachebudget.h"
 
 /* The relations of the journals of a scope, and the btree of the via relation that lists the members of a group, open and locked */
@@ -360,6 +361,7 @@ typedef struct GroupTags
 #define GROUPS_MEMO_GROUPS 4096
 static struct GroupsMemo
 {
+	SiftScopeMemoSlot memo;
 	Oid			index;
 	int			scope;
 	uint64		gen;
@@ -369,9 +371,29 @@ static struct GroupsMemo
 	int64		keys[GROUPS_MEMO_KEYS];
 	uint32		n;
 	int64	   *groups;
-	MemoryContext cx;
 } groups_memo[GROUPS_MEMO_N];
 static SiftRing groups_memo_ring;
+
+static uint64
+groups_oldest(void)
+{
+	return sift_scope_memo_oldest(groups_memo, sizeof(groups_memo[0]), GROUPS_MEMO_N);
+}
+
+static bool
+groups_evict_one(void)
+{
+	return sift_scope_memo_evict_oldest(groups_memo, sizeof(groups_memo[0]), GROUPS_MEMO_N);
+}
+
+static void
+groups_evict_all(void)
+{
+	while (groups_evict_one())
+		;
+}
+
+static const SiftCacheKind groups_kind = {"col_scope_groups", groups_oldest, groups_evict_one, groups_evict_all};
 
 static const struct GroupsMemo *
 groups_memo_find(const GroupTags *g)
@@ -380,11 +402,14 @@ groups_memo_find(const GroupTags *g)
 		return NULL;
 	for (int i = 0; i < GROUPS_MEMO_N; i++)
 	{
-		const struct GroupsMemo *m = &groups_memo[i];
+		struct GroupsMemo *m = &groups_memo[i];
 
 		if (m->groups != NULL && m->index == RelationGetRelid(g->J->index) && m->scope == g->J->scope && m->gen == SharedInvalidMessageCounter && m->lineage == g->stamp->lineage &&
 			m->xmin == g->stamp->xmin && m->nkeys == g->nkeys && memcmp(m->keys, g->keys, g->nkeys * sizeof(int64)) == 0)
+		{
+			m->memo.used = sift_cache_tick();
 			return m;
+		}
 	}
 	return NULL;
 }
@@ -393,6 +418,7 @@ groups_memo_find(const GroupTags *g)
 static void
 groups_memo_keep(const GroupTags *g, const int64 *now, uint32 n)
 {
+	static bool registered;
 	struct GroupsMemo *m;
 	MemoryContext old;
 	int64	   *all;
@@ -400,19 +426,24 @@ groups_memo_keep(const GroupTags *g, const int64 *now, uint32 n)
 
 	if (TransactionIdIsValid(GetTopTransactionIdIfAny()) || g->nkeys > GROUPS_MEMO_KEYS || n + g->changed->n > GROUPS_MEMO_GROUPS)
 		return;
+	sift_scope_memo_register(&registered, &groups_kind);
 	m = &groups_memo[SIFT_RING_SLOT(groups_memo_ring, GROUPS_MEMO_N)];
-	if (m->cx == NULL)
-		m->cx = sift_cache_create_context("sift cache scope groups");
-	MemoryContextReset(m->cx);
 	m->groups = NULL;
-	old = MemoryContextSwitchTo(m->cx);
+	old = MemoryContextSwitchTo(sift_scope_memo_begin(&m->memo, "sift cache scope groups"));
 	all = palloc(Max(n + g->changed->n, 1) * sizeof(int64));
 	MemoryContextSwitchTo(old);
 	memcpy(all, now, n * sizeof(int64));
 	if (g->changed->n > 0)
 		memcpy(all + n, g->changed->keys, g->changed->n * sizeof(int64));
 	na = sift_conn_keys_sort_unique(all, n + g->changed->n);
-	*m = (struct GroupsMemo) {RelationGetRelid(g->J->index), g->J->scope, SharedInvalidMessageCounter, g->stamp->lineage, g->stamp->xmin, g->nkeys, {0}, na, all, m->cx};
+	m->index = RelationGetRelid(g->J->index);
+	m->scope = g->J->scope;
+	m->gen = SharedInvalidMessageCounter;
+	m->lineage = g->stamp->lineage;
+	m->xmin = g->stamp->xmin;
+	m->nkeys = g->nkeys;
+	m->n = na;
+	m->groups = all;
 	memcpy(m->keys, g->keys, g->nkeys * sizeof(int64));
 }
 

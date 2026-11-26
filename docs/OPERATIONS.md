@@ -153,8 +153,8 @@ Zero rows means sound. Passing `heapallindexed => true` compares index contents 
 - **`sift.workers`**: one row per relation with maintenance state, failures, and retry backoff (`relation, kind, running, failures, failures_total, last_ok, last_job, last_ms, due, next_retry, last_error`).
 - **`sift.progress`**: active `promote`, `merge`, `rewrite`, and `vacuum` jobs (`pid, relation, job, phase, parts_done, parts_total, bytes_written, started`).
 - **`sift.locks`**: extension locks held by sessions and workers, including the Format Major 2 partition, maintenance, load, worker, and split locks.
-- **`sift.shared_memory()`**: the 5.1 view of the shared pools, with its 8 columns unchanged (`name`, `configured_bytes`, `mapped_bytes`, `used_bytes`, `hits`, `misses`, `shared`, `reason`) and one row for each of the five pools, so monitoring written for 5.1 keeps working.
-- **`sift.shared_memory_pools()`**: the ledger of the same five pools (`manifest`, `agg_lookup`, `agg_dimmap`, `col_dict`, `col_leaf`), always five rows, with `limit_bytes`, `used_bytes`, `peak_bytes`, `util_pct`, `evictions`, `refusals`, `shared`, and `reason`. `sift.health()` and `sift.activity()` read it.
+- **`sift.shared_memory()`**: the 5.1 view of the shared pools, with its 8 columns unchanged (`name`, `configured_bytes`, `mapped_bytes`, `used_bytes`, `hits`, `misses`, `shared`, `reason`) and one row for each of the three pools, so monitoring written for 5.1 keeps working.
+- **`sift.shared_memory_pools()`**: the ledger of the same three pools (`manifest`, `col_dict`, `col_leaf`), always three rows, with `limit_bytes`, `used_bytes`, `peak_bytes`, `util_pct`, `evictions`, `refusals`, `shared`, and `reason`. `sift.health()` and `sift.activity()` read it.
 - **`sift.quarantine`**: relations taken out of service after on-disk damage.
 
 ### 3.8 Prometheus and Grafana (`postgres_exporter`)

@@ -20,7 +20,7 @@ defaultsizes	col/v1/maint/promote.c	1
 defaultsizes	col/v1/maint/scope.c	7
 defaultsizes	col/v1/order/streams.c	1
 defaultsizes	col/v1/rollup.c	2
-defaultsizes	col/v1/rowkey.c	2
+defaultsizes	col/v1/rowkey.c	1
 defaultsizes	col/v1/scan/gfree.c	2
 defaultsizes	col/v1/scan/gmem.c	2
 defaultsizes	col/v1/scan/gorder.c	2
@@ -55,7 +55,6 @@ defaultsizes	table/v1/load/load.c	2
 defaultsizes	table/v1/load/write.c	1
 defaultsizes	table/v1/promote.c	1
 defaultsizes	table/v1/scan.c	1
-defaultsizes	table/v1/store.c	1
 defaultsizes	table/v1/reader.c	1
 defaultsizes	table/v1/reader_read.c	1
 huge	bm25/liveness.c	1
@@ -94,7 +93,6 @@ toplevel	col/names.c	1
 toplevel	col/types.c	1
 toplevel	col/v1/build/build.c	3
 toplevel	col/v1/maint/merge_pick.c	1
-toplevel	col/v1/rowkey.c	1
 toplevel	col/v1/scope/paid.c	1
 toplevel	col/v1/track/drop.c	1
 toplevel	col/v1/wbuf/pending.c	1
@@ -104,4 +102,4 @@ toplevel	core/memcensus.c	5
 toplevel	core/memtrack_test.c	2
 toplevel	core/reads.c	1
 toplevel	table/v1/load/load.c	2
-toplevel	table/v1/store.c	4
+toplevel	table/v1/store.c	3

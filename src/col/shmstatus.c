@@ -118,16 +118,9 @@ leaf_kb(void)
 	return (int) (sift_shm_pool_bytes(SIFT_SHM_COL_LEAF) / 1024);
 }
 
-static int
-dimmap_kb(void)
-{
-	return (int) (sift_shm_pool_bytes(SIFT_SHM_AGG_DIMMAP) / 1024);
-}
-
 static const ShmKnown known[] = {
 	{"sift_col_dict_ring", dict_kb, sift_dictshm_stat},
 	{"sift_col_leaf_stats", leaf_kb, sift_col_leafshm_stat},
-	{"sift_agg_dimmap", dimmap_kb, NULL},
 };
 
 static const ShmKnown *
@@ -159,7 +152,6 @@ notes_copy(ShmNote *copy)
 /* The table of the directory that a pool sizes, for the note a backend left when it went without it; NULL: the pool has none */
 static const char *const pool_table[SIFT_SHM_NPOOL] = {
 	[SIFT_SHM_MANIFEST] = "sift_shm_manifest",
-	[SIFT_SHM_AGG_DIMMAP] = "sift_agg_dimmap",
 	[SIFT_SHM_COL_DICT] = "sift_col_dict_ring",
 	[SIFT_SHM_COL_LEAF] = "sift_col_leaf_stats"
 };
@@ -286,7 +278,7 @@ percent_numeric(uint64 used, uint64 limit)
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(psprintf(UINT64_FORMAT ".%02d", hundredths / 100, (int) (hundredths % 100))), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }
 
-/* sift.shared_memory_pools(): the five pools of the ledger in the order of SiftShmPoolId (core/shm/budget.h) */
+/* sift.shared_memory_pools(): the pools of the ledger in the order of SiftShmPoolId (core/shm/budget.h) */
 Datum
 sift_shared_memory_pools(PG_FUNCTION_ARGS)
 {

@@ -59,6 +59,17 @@ static struct
 
 static bool following;
 
+static void
+before_clear(void)
+{
+	if (before.schema != NULL)
+		pfree(before.schema);
+	if (before.name != NULL)
+		pfree(before.name);
+	before.schema = before.name = NULL;
+	before.relid = InvalidOid;
+}
+
 PG_FUNCTION_INFO_V1(sift_col_names_before);
 
 /* The event trigger before ALTER TABLE: notes the schema and the name of the table that a RENAME or a SET SCHEMA is about to change */
@@ -73,6 +84,7 @@ sift_col_names_before(PG_FUNCTION_ARGS)
 	stmt = ((EventTriggerData *) fcinfo->context)->parsetree;
 	if (IsA(stmt, AlterObjectSchemaStmt) && (((AlterObjectSchemaStmt *) stmt)->objectType == OBJECT_TABLE || ((AlterObjectSchemaStmt *) stmt)->objectType == OBJECT_MATVIEW))
 		rv = ((AlterObjectSchemaStmt *) stmt)->relation;
+	before_clear();
 	before.relid = rv != NULL ? RangeVarGetRelid(rv, NoLock, true) : InvalidOid;
 	if (OidIsValid(before.relid))
 	{
@@ -394,6 +406,7 @@ sift_col_names_follow(PG_FUNCTION_ARGS)
 	PG_FINALLY();
 	{
 		following = false;
+		before_clear();
 	}
 	PG_END_TRY();
 	SPI_finish();
