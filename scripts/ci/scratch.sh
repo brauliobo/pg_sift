@@ -27,14 +27,15 @@ dir_mb() { local kb; kb=$(du -sk "$1" 2>/dev/null | cut -f1); echo $(( ${kb:-0} 
 # job_peaks: the size of the scratch of each running job (its lane directory, with the lane's cluster, when it uses it; else its own directory) into logs/peak/ID: step() records it and
 # compares it with the estimate the scheduler trusts
 job_peaks() {
-	local f id dir mb
+	local f key id dir mb
 	for f in "$BASE"/running/*; do
-		id=${f##*/}
-		[[ -f $BASE/claims/$id/lane ]] || continue
-		dir=$BASE/$(<"$BASE/claims/$id/lane")
-		[[ ${J_CLUSTER[$id]:-0} == 1 ]] || dir=$dir/$id
+		key=${f##*/}
+		[[ -f $BASE/claims/$key/lane ]] || continue
+		id=$(cat "$BASE/claims/$key/id" 2>/dev/null || printf '%s' "$key")
+		dir=$BASE/$(<"$BASE/claims/$key/lane")
+		[[ ${J_CLUSTER[$id]:-0} == 1 ]] || dir=$dir/$key
 		mb=$(dir_mb "$dir")
-		(( mb > $(cat "$LOG/peak/$id" 2>/dev/null || echo 0) )) && echo "$mb" >"$LOG/peak/$id"
+		(( mb > $(cat "$LOG/peak/$key" 2>/dev/null || echo 0) )) && echo "$mb" >"$LOG/peak/$key"
 	done
 }
 watchdog() { # stops every postmaster under $BASE once the scratch directory passes the cap
@@ -55,14 +56,15 @@ WATCHDOG=$!
 # a job that runs long (difftest-col takes two to three hours in the full tier) is silent in the live log until it ends: every 5 minutes the jobs past
 # 10 minutes are listed with the last line of their own log, so that a long run is told from a hang by whether that line moves
 heartbeat() {
-	local f id s
+	local f key id s
 	while sleep 300 && kill -0 "$MAIN" 2>/dev/null; do
 		for f in "$BASE"/running/*; do
 			[[ -e $f ]] || continue
-			id=${f##*/}
-			[[ -f $BASE/claims/$id/start ]] || continue
-			s=$(<"$BASE/claims/$id/start")
-			(( SECONDS - ${s:-$SECONDS} >= 600 )) && printf 'ci: running %s %s s (%s): %s\n' "$id" "$((SECONDS - ${s:-$SECONDS}))" "$(<"$BASE/claims/$id/lane")" "$(tail -n 1 "$LOG/$id.log" 2>/dev/null | cut -c1-160)"
+			key=${f##*/}
+			[[ -f $BASE/claims/$key/start ]] || continue
+			id=$(cat "$BASE/claims/$key/id" 2>/dev/null || printf '%s' "$key")
+			s=$(<"$BASE/claims/$key/start")
+			(( SECONDS - ${s:-$SECONDS} >= 600 )) && printf 'ci: running %s %s s (%s): %s\n' "$id" "$((SECONDS - ${s:-$SECONDS}))" "$(<"$BASE/claims/$key/lane")" "$(tail -n 1 "$LOG/$key.log" 2>/dev/null | cut -c1-160)"
 		done
 	done
 }
@@ -94,22 +96,22 @@ lane_cpu() {
 # step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end cpu_seconds peak_mb"
 # to the results and the line of the job to the retained summary (jobs.tsv), and returns its status. A skip that gives no reason fails the job
 step() {
-	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1 rc=0 peak
+	local id=$1 key=${1//\//__} suite=$2 t=$SECONDS status=PASS skips c0 c1 rc=0 peak
 	shift 2
 	[[ -e $LOG/cap_exceeded ]] && return
 	c0=$(lane_cpu "$id")
-	${JOB_TIMEOUT[@]+"${JOB_TIMEOUT[@]}"} "$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || { rc=$?; status=FAIL; }
+	${JOB_TIMEOUT[@]+"${JOB_TIMEOUT[@]}"} "$S/cpu_time.py" "$LOG/$key.cpu" "$@" >"$LOG/$key.log" 2>&1 || { rc=$?; status=FAIL; }
 	if (( rc == 124 || rc == 137 )); then
-		{ echo "ci: $id stopped after $((SECONDS - t)) s (CI_JOB_TIMEOUT), the end of its log:"; tail -n 40 "$LOG/$id.log"; } | tee -a "$LOG/$id.log"
+		{ echo "ci: $id stopped after $((SECONDS - t)) s (CI_JOB_TIMEOUT), the end of its log:"; tail -n 40 "$LOG/$key.log"; } | tee -a "$LOG/$key.log"
 	fi
 	c1=$(lane_cpu "$id")
-	skips=$(job_skips "$LOG/$id.log" | grep -c .)
-	[[ $status == FAIL ]] || ! job_skips "$LOG/$id.log" | grep -xF "$NO_REASON" >/dev/null || { status=FAIL; echo "ci: $id skips without a reason: say why (SKIP: reason)" | tee -a "$LOG/$id.log"; }
-	peak=$(cat "$LOG/peak/$id" 2>/dev/null || echo 0)
+	skips=$(job_skips "$LOG/$key.log" | grep -c .)
+	[[ $status == FAIL ]] || ! job_skips "$LOG/$key.log" | grep -xF "$NO_REASON" >/dev/null || { status=FAIL; echo "ci: $id skips without a reason: say why (SKIP: reason)" | tee -a "$LOG/$key.log"; }
+	peak=$(cat "$LOG/peak/$key" 2>/dev/null || echo 0)
 	echo "ci: $status $id $((SECONDS - t)) s ($LANE)"
 	printf '%s %s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \
-		"$(awk -v a="$(cat "$LOG/$id.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" "$peak" >>"$LOG/results"
-	job_row "$id" "$status" $((SECONDS - t)) "$peak" "$LOG/$id.log" >>"$LOG/jobs.tsv"
+		"$(awk -v a="$(cat "$LOG/$key.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" "$peak" >>"$LOG/results"
+	job_row "$id" "$status" $((SECONDS - t)) "$peak" "$LOG/$key.log" >>"$LOG/jobs.tsv"
 	# a job that outgrew the estimate the scheduler trusts is named in the summary: the budget holds only while EST_MB is true
 	(( peak > ${EST_MB[$id]:-$JOB_MB} * 5 / 4 + 100 )) && echo "$id $peak ${EST_MB[$id]:-$JOB_MB}" >>"$LOG/estimates"
 	# the log of a run that is cut (a timeout, a hang) names the jobs that had finished: the results are in the logs artifact of a failed run only

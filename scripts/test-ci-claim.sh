@@ -91,6 +91,9 @@ out=$(claim_once 'echo 70 >"$BASE/running/x"')
 # the lock of a lane that died: its pid is gone, the claim removes the lock and goes on
 out=$(claim_once 'mkdir "$BASE/claim.lock"; ( exit 0 ) & wait $!; echo $! >"$BASE/claim.lock/pid"')
 [[ $out == *'removes the claim lock'*'0 a lock=free' ]] || fail "the lock of a dead lane is not removed: $out"
+# a job id with slashes (e.g. installcheck-bm25/parallel/pushdown) maps to a flat claim/running key so mkdir never fails and re-queues forever
+out=$(claim_once 'J_ID=(installcheck-bm25/parallel/pushdown)')
+[[ $out == '0 installcheck-bm25/parallel/pushdown lock=free' ]] || fail "a slashed job id cannot be claimed: $out"
 # the lock of a live lane is respected: the claim waits (here until the time limit)
 out=$(claim_once 'mkdir "$BASE/claim.lock"; echo $$ >"$BASE/claim.lock/pid"; sleep 3 & echo $! >"$BASE/claim.lock/pid"' 2)
 [[ -z $out ]] || fail "the lock of a live lane was taken: $out"

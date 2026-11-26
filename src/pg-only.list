@@ -524,6 +524,8 @@ col/scope/journal.c
 col/scope/keys.c
 col/scope/legs.c
 col/scope/make.c
+col/scope/memo.c
+col/scope/memo.h
 col/scope/parse.c
 col/f2/cube/assemble.c
 col/f2/cube/build.c
@@ -790,6 +792,7 @@ core/maint/drain.h
 core/maint/sched.c
 core/maint/sched.h
 core/maint/sched_pg.c
+core/maint/sched_reap.c
 core/maint/snapshot.c
 core/maint/sql.c
 core/maint/step.c

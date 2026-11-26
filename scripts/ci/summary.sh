@@ -29,16 +29,17 @@ for s in "${ORDER[@]}" leakcheck; do
 	line=$(printf '%s %-20s %5ss  %s skip lines  (%s)' "$status" "$s" "$secs" "$skips" "${where/_/ }")
 	if [[ $status == PASS ]]; then echo "$green$line$off"; else failed=1; echo "$red$line$off"; fi
 	# the log of a split suite: the logs of its jobs, in order
-	[[ -f $LOG/$s.log ]] || for id in "${J_ID[@]}"; do [[ ${J_SUITE[$id]} == "$s" && $id != "$s" && -f $LOG/$id.log ]] && { echo "== $id"; cat "$LOG/$id.log"; }; done >"$LOG/$s.log"
+	[[ -f $LOG/$s.log ]] || for id in "${J_ID[@]}"; do key=${id//\//__}; [[ ${J_SUITE[$id]} == "$s" && $id != "$s" && -f $LOG/$key.log ]] && { echo "== $id"; cat "$LOG/$key.log"; }; done >"$LOG/$s.log"
 	[[ -z ${bad:-} ]] || echo "$red  failed:$bad$off"
 	[[ $status == PASS ]] || { skipped=$(not_run "$s"); [[ -z $skipped ]] || echo "$red  not run:$skipped$off"; }
 	# on a hosted runner the failed ids are an annotation of the job (readable through the API while the run goes) and a line of the step summary
 	[[ -z ${bad:-} || -z ${GITHUB_ACTIONS:-} ]] || { echo "::error title=FAILED JOB::$s:$bad"; echo "- **$s** failed:$bad" >>"${GITHUB_STEP_SUMMARY:-/dev/null}"; }
 	# a regression test and a TAP test name what failed, with the lines of the diff of a regression test (a runner that keeps no files, macOS, has this log only; the files are artifacts)
 	for id in ${bad:-}; do
+		key=${id//\//__}
 		pat='^not ok'; [[ $id != installcheck-* ]] || pat='^(not ok|@@|[-+][^-+])'
-		if [[ $id == installcheck-* || $id == tap-* ]]; then grep -hE "$pat" "$LOG/$id.log" | head -30 | cut -c1-400
-		else tail -n 15 "$LOG/$id.log" 2>/dev/null | cut -c1-400; fi | sed "s/^/$red    /; s/\$/$off/"   # any other job (isolation, a differential test): the end of its log, the hosted log is all there is of it
+		if [[ $id == installcheck-* || $id == tap-* ]]; then grep -hE "$pat" "$LOG/$key.log" | head -30 | cut -c1-400
+		else tail -n 15 "$LOG/$key.log" 2>/dev/null | cut -c1-400; fi | sed "s/^/$red    /; s/\$/$off/"   # any other job (isolation, a differential test): the end of its log, the hosted log is all there is of it
 	done
 done
 # a server that crashed: the log of its job says only that psql lost the connection; the signal and the statement the backend ran are in the server log
@@ -63,7 +64,7 @@ if [[ -n ${STATS:-} ]]; then
 	cat "$LOG/stats.txt"
 fi
 # the slope of every case of the memory gates, passed or not: the hosted logs of each major and architecture are where their spread is read (a case at its ceiling is a flake in waiting)
-slopes=$(for id in "${J_ID[@]}"; do [[ $id == tap-shell-mem/slope* ]] && grep -h '^# SLOPE ' "$LOG/$id.log" 2>/dev/null | sed "s/^/  $id /"; done)
+slopes=$(for id in "${J_ID[@]}"; do key=${id//\//__}; [[ $id == tap-shell-mem/slope* ]] && grep -h '^# SLOPE ' "$LOG/$key.log" 2>/dev/null | sed "s/^/  $id /"; done)
 [[ -z $slopes ]] || { echo "memory slopes by case (job, B/row, peaks, ceiling):"; echo "$slopes"; }
 # the skips, with their reasons (the logs of the jobs that passed are gone with the scratch directory; the retained summary has them), and the jobs that outgrew their estimate
 echo "jobs by state, and the skips with their reasons:"

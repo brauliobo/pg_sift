@@ -4,17 +4,19 @@
 # tidy ID: the data of a job that passed goes at once, so that the scratch directory holds only what runs: its databases in the
 # lane's cluster, or its directory after the leak gate scanned it (a finding keeps the directory for the scan of the whole run)
 tidy() {
+	local key=${1//\//__}
 	if [[ ${J_CLUSTER[$1]} == 1 ]]; then "$S/pgtest.sh" clean >/dev/null 2>&1
-	else "$S/leakcheck.sh" scan "$SIFT_TMP/$1" >/dev/null 2>&1 && rm -rf "${SIFT_TMP:?}/$1"; fi
+	else "$S/leakcheck.sh" scan "$SIFT_TMP/$key" >/dev/null 2>&1 && rm -rf "${SIFT_TMP:?}/$key"; fi
 }
 
 # shed ID: the data of a job that failed goes as well, and what the report and the artifact read stays (logs, diffs, outputs, the files of the leak gate): a run with many failures would
 # otherwise fill the scratch directory, and the watchdog (scripts/ci/scratch.sh) stops every server of the run at its cap, which fails the jobs that are left for that and not for their own reason
 shed() {
+	local key=${1//\//__}
 	if [[ ${J_CLUSTER[$1]} == 1 ]]; then "$S/pgtest.sh" clean >/dev/null 2>&1; return; fi
 	[[ -z ${KEEP:-} && -z ${SIFT_TAP_KEEP:-} ]] || return 0
-	find "${SIFT_TMP:?}/$1" -type f ! \( -name '*.log' -o -name '*.diffs' -o -name '*.out' -o -name '*.report' -o -name 'asan.*' -o -name 'ubsan.*' -o -name 'leakcheck.*' \) -delete 2>/dev/null
-	find "${SIFT_TMP:?}/$1" -mindepth 1 -type d -empty -delete 2>/dev/null
+	find "${SIFT_TMP:?}/$key" -type f ! \( -name '*.log' -o -name '*.diffs' -o -name '*.out' -o -name '*.report' -o -name 'asan.*' -o -name 'ubsan.*' -o -name 'leakcheck.*' \) -delete 2>/dev/null
+	find "${SIFT_TMP:?}/$key" -mindepth 1 -type d -empty -delete 2>/dev/null
 	return 0
 }
 
@@ -43,21 +45,23 @@ claim() {
 	return $rc
 }
 claim_locked() {
-	local id est used=0 left=0 f v
+	local id key est used=0 left=0 f v
 	# a lane removes its file from running/ without the lock, at any moment: a file that is gone (or empty) counts for nothing, and no error may leave this function with the lock held
 	for f in "$BASE"/running/*; do
 		v=0; { read -r v; } 2>/dev/null <"$f" || v=0
 		used=$((used + ${v:-0}))
 	done
 	for id in "${J_ID[@]}"; do
-		[[ ! -d $BASE/claims/$id && ! -v J_AFTER[$id] ]] || continue
+		key=${id//\//__}
+		[[ ! -d $BASE/claims/$key && ! -v J_AFTER[$id] ]] || continue
 		left=1
 		est=${EST_MB[$id]:-$JOB_MB}
 		(( used == 0 || used + est <= BUDGET_MB )) || continue
-		mkdir "$BASE/claims/$id"
-		echo "$est" >"$BASE/running/$id"
-		echo "$LANE" >"$BASE/claims/$id/lane"
-		echo "$SECONDS" >"$BASE/claims/$id/start"
+		mkdir "$BASE/claims/$key"
+		echo "$est" >"$BASE/running/$key"
+		echo "$LANE" >"$BASE/claims/$key/lane"
+		echo "$SECONDS" >"$BASE/claims/$key/start"
+		echo "$id" >"$BASE/claims/$key/id"
 		CLAIMED=$id
 		return 0
 	done

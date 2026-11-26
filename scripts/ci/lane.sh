@@ -3,7 +3,7 @@
 # Sourced by scripts/ci.sh; not a script of its own.
 # run_job ID: the job with its output in logs/ID.log (a job without the lane's cluster gets a directory of its own)
 run_job() {
-	step "$1" "${J_SUITE[$1]}" bash -c '[[ $1 == 1 ]] || { SIFT_TMP=$SIFT_TMP/$2; mkdir -p "$SIFT_TMP"; export SIFT_TMP; }; eval "$3"' \
+	step "$1" "${J_SUITE[$1]}" bash -c '[[ $1 == 1 ]] || { SIFT_TMP=$SIFT_TMP/${2//\//__}; mkdir -p "$SIFT_TMP"; export SIFT_TMP; }; eval "$3"' \
 		_ "${J_CLUSTER[$1]}" "$1" "${J_CMD[$1]}"
 }
 
@@ -20,7 +20,7 @@ lane() {
 		if [[ ${J_CLUSTER[$id]} == 1 && -z $started ]]; then started=1; "$S/pgtest.sh" start >"$LOG/$LANE.start.log" 2>&1; fi
 		# a job that crashed the cluster leaves it in recovery, and the next job would fail on that, not on its own: wait, and drop what the failed one left
 		if run_job "$id"; then tidy "$id"; else shed "$id"; fi
-		rm -f "$BASE/running/$id"
+		rm -f "$BASE/running/${id//\//__}"
 	done
 	[[ -z $started ]] || "$S/pgtest.sh" stop
 }
