@@ -750,7 +750,12 @@ scope_rescan(CustomScanState *node)
 {
 	scope_reset((ScopeState *) node);
 	foreach_ptr(PlanState, child, node->custom_ps)
-		ExecReScan(child);
+	{
+		if (node->ss.ps.chgParam != NULL)
+			UpdateChangedParamSet(child, node->ss.ps.chgParam);
+		if (child->chgParam == NULL)
+			ExecReScan(child);
+	}
 }
 
 static void
