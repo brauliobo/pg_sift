@@ -43,17 +43,18 @@ typedef struct VmLease
 	uint64		seq;			/* the claim of the slot the lease holds */
 	bool		idle;			/* the transaction that used it has ended (the slot may be taken away) */
 	bool		counted;		/* the registry counts this run of vblocks as one with no slot */
-	bool		stale;			/* its relation changed since: its file may be gone */
+	bool		stale;			/* in `stale`: its relation changed since, its file may be gone */
 	uint64		hi;
-	uint64		used;
+	dlist_node	lru;			/* in `lru`, the least recently used first */
 	dlist_node	active;			/* in `active` while it is not idle */
+	dlist_node	stale_node;
 } VmLease;
 
 static MemoryContext leases_cx;
 static HTAB *leases;
+static dlist_head lru = DLIST_STATIC_INIT(lru);
 static dlist_head active = DLIST_STATIC_INIT(active);
-static int	nstale;
-static uint64 clock_used;
+static dlist_head stale = DLIST_STATIC_INIT(stale);
 static uint64 xact_epoch = 1;
 static uint64 woken_epoch;
 static RelFileLocator woken;
@@ -111,21 +112,19 @@ lease_drop(VmLease *l)
 		sift_tbl_vm_idle_leases--;
 	else
 		dlist_delete(&l->active);
-	nstale -= l->stale;
+	if (l->stale)
+		dlist_delete(&l->stale_node);
+	dlist_delete(&l->lru);
 	(void) hash_search(leases, &l->locator, HASH_REMOVE, NULL);
 }
 
 static void
 leases_release_all(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
 {
-	HASH_SEQ_STATUS it;
-	VmLease    *l;
+	dlist_mutable_iter it;
 
-	if (leases == NULL)
-		return;
-	hash_seq_init(&it, leases);
-	while ((l = hash_seq_search(&it)) != NULL)
-		lease_drop(l);
+	dlist_foreach_modify(it, &lru)
+		lease_drop(dlist_container(VmLease, lru, it.cur));
 }
 
 /* The run of the lease is given up with it: the table takes a new one at its next row */
@@ -196,39 +195,31 @@ sift_tbl_vm_lease_wake(Relation rel, SiftF2Store *store)
 static void
 leases_invalidate(uint32 hashvalue)
 {
-	HASH_SEQ_STATUS it;
-	VmLease    *l;
+	dlist_iter	it;
 
-	if (leases == NULL)
-		return;
-	hash_seq_init(&it, leases);
-	while ((l = hash_seq_search(&it)) != NULL)
+	dlist_foreach(it, &lru)
+	{
+		VmLease    *l = dlist_container(VmLease, lru, it.cur);
+
 		if (!l->stale && sift_f2_inval_hits(l->relhash, hashvalue))
 		{
 			l->stale = true;
-			nstale++;
+			dlist_push_tail(&stale, &l->stale_node);
 		}
+	}
 }
 
 /* A lease whose file is gone (TRUNCATE, a rewrite, DROP) holds its slot for nothing: the marked leases of this backend that name no file are let go when it takes a new one */
 static void
 leases_prune(void)
 {
-	HASH_SEQ_STATUS it;
-	VmLease    *l;
-
-	if (nstale == 0)
-		return;
-	hash_seq_init(&it, leases);
-	while ((l = hash_seq_search(&it)) != NULL)
+	while (!dlist_is_empty(&stale))
 	{
+		VmLease    *l = dlist_container(VmLease, stale_node, dlist_pop_head_node(&stale));
 		HeapTuple	tup;
 		bool		gone;
 
-		if (!l->stale)
-			continue;
 		l->stale = false;
-		nstale--;
 		tup = SearchSysCache1(RELOID, ObjectIdGetDatum(l->relid));
 		gone = !HeapTupleIsValid(tup);
 		if (!gone)
@@ -245,36 +236,35 @@ leases_prune(void)
 static bool
 lease_evict(bool resident)
 {
-	HASH_SEQ_STATUS it;
-	VmLease    *l,
-			   *victim = NULL;
+	dlist_iter	it;
 
-	if (leases == NULL)
-		return false;
-	hash_seq_init(&it, leases);
-	while ((l = hash_seq_search(&it)) != NULL)
-		if ((!resident || l->slot >= 0) && (victim == NULL || l->used < victim->used))
-			victim = l;
-	if (victim == NULL)
-		return false;
-	lease_drop_run(victim);
-	return true;
+	dlist_foreach(it, &lru)
+	{
+		VmLease    *l = dlist_container(VmLease, lru, it.cur);
+
+		if (!resident || l->slot >= 0)
+		{
+			lease_drop_run(l);
+			return true;
+		}
+	}
+	return false;
 }
 
 /* The leases no transaction uses are given back, and with none left so is their memory */
 static void
 leases_evict_all(void)
 {
-	HASH_SEQ_STATUS it;
-	VmLease    *l;
+	dlist_mutable_iter it;
 
-	if (leases == NULL)
-		return;
-	hash_seq_init(&it, leases);
-	while ((l = hash_seq_search(&it)) != NULL)
+	dlist_foreach_modify(it, &lru)
+	{
+		VmLease    *l = dlist_container(VmLease, lru, it.cur);
+
 		if (l->idle)
 			lease_drop_run(l);
-	if (nleases() > 0)
+	}
+	if (leases == NULL || nleases() > 0)
 		return;
 	MemoryContextDelete(leases_cx);
 	leases_cx = NULL;
@@ -325,6 +315,7 @@ lease_add(Relation rel)
 	l = hash_search(leases, &rel->rd_locator, HASH_ENTER, NULL);
 	*l = (VmLease) {.locator = rel->rd_locator,.relid = RelationGetRelid(rel),.relhash = sift_f2_rel_hash(rel),.slot = -1};
 	dlist_push_tail(&active, &l->active);
+	dlist_push_tail(&lru, &l->lru);
 	return l;
 }
 
@@ -343,8 +334,9 @@ sift_tbl_vm_lease_open(Relation rel)
 	if ((l = lease_find(&rel->rd_locator)) == NULL)
 		l = lease_add(rel);
 	lease_slot(l, slot, seq);
-	l->used = ++clock_used;
+	dlist_move_tail(&lru, &l->lru);
 }
+
 void
 sift_tbl_vm_lease_set(Relation rel, uint64 lo, uint64 hi)
 {
@@ -353,7 +345,7 @@ sift_tbl_vm_lease_set(Relation rel, uint64 lo, uint64 hi)
 	if (l == NULL)
 		return;
 	l->hi = hi;
-	l->used = ++clock_used;
+	dlist_move_tail(&lru, &l->lru);
 	if (l->slot >= 0)
 		sift_shm_tid_lease_set(l->slot, lo);
 }
