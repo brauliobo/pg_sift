@@ -63,6 +63,12 @@ extern SiftV6AggPrice sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, cons
  */
 extern void sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, AttrNumber key, Cost *open, Cost *total);
 
+/* What a scan pays to give one row it fetches by its tag: of a sift_table its locate and decode (SIFT_TABLE_FETCH_OPS), of an index the tuple of the heap */
+extern Cost sift_v6_fetch_cost(bool is_table);
+
+/* What a sequential read of the relation with its own conditions costs, less the page reads of the share of its pages the cache holds, as sift_v6_dim_cost prices a dimension */
+extern Cost sift_v6_rel_read_cost(const RelOptInfo *rel);
+
 /* What the node pays to read a dimension whole: the price of its plan, less the page reads of the share of its pages the cache holds when a sequential scan takes the table */
 extern Cost sift_v6_dim_cost(const Path *child);
 

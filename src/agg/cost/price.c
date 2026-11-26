@@ -317,6 +317,21 @@ scan_parts(const ScanBytes *b)
 }
 
 Cost
+sift_v6_fetch_cost(bool is_table)
+{
+	return is_table ? SIFT_TABLE_FETCH_OPS * cpu_operator_cost : cpu_tuple_cost;
+}
+
+Cost
+sift_v6_rel_read_cost(const RelOptInfo *rel)
+{
+	Cost		spc_seq;
+
+	get_tablespace_page_costs(rel->reltablespace, NULL, &spc_seq);
+	return sift_agg_cold_share(rel->pages) * rel->pages * spc_seq + rel->baserestrictcost.startup + rel->tuples * (cpu_tuple_cost + rel->baserestrictcost.per_tuple);
+}
+
+Cost
 sift_v6_dim_cost(const Path *child)
 {
 	const RelOptInfo *rel = child->parent;

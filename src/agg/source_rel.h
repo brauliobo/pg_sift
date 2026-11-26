@@ -45,7 +45,7 @@ extern bool sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel);
 /* An operator may scan the source: a table holds every row of itself, an index when it has no predicate the query does not imply */
 extern bool sift_v6_source_usable(const SiftV6RelSource *s);
 
-/* The price of reading the columns a scan of the source needs (sift_v6_scan_price); a sift_table is read whole in vectors: nothing to open, a twentieth of a tuple of work for each row */
+/* The price of reading the columns a scan of the source needs: of an index sift_v6_scan_price, of a sift_table the decode of those columns over the granules its quals leave (sift_v6_scan_cost) */
 extern void sift_v6_source_scan_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *s, AttrNumber key, Cost *open, Cost *total);
 
 /* The sources of the relation, the table first, then its indexes; out has room for max_out (SIFT_V6_REL_SOURCE_CAP); the number of them */

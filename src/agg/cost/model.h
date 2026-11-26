@@ -20,6 +20,10 @@
 /* the operators the scan spends before its first row: the source opened and its first unit decoded (0.1 ms measured warm), and for each partition it reads, the open of its own index (40 us) */
 #define SIFT_OPEN_OPS			40000.0
 #define SIFT_OPEN_PART_OPS		7000.0
+/* the operators of the fetch of one row of a sift_table by its tag: its locate in the row index, the pin of its part and the decode of its cells (1.3 us warm, six rows of its sequential scan) */
+#define SIFT_TABLE_FETCH_OPS	32.0
+/* ... and of its visibility alone, the vet of a row that decodes no cell (0.25 us warm) */
+#define SIFT_TABLE_VET_OPS		8.0
 
 typedef struct SiftCostInputs
 {

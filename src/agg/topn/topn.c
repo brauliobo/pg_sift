@@ -240,6 +240,7 @@ typedef struct TopNPlan
 	PlannerInfo *root;
 	RelOptInfo *rel;
 	RelOptInfo *out;
+	const SiftV6RelSource *src;
 	const IndexOptInfo *index;	/* NULL for a sift_table */
 	SiftV6TopNSpec spec;
 	SiftV6Input in;
@@ -357,11 +358,16 @@ index_total(const TopNPlan *p, double k)
 	return open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
 }
 
-/* A scan with no tournament (a sift_table, a numeric key): its rows are read whole in vectors, and each row that passes the quals is fetched once into a sort bounded by the limit */
+/* A scan with no tournament (a sift_table, a numeric key): its columns are read whole in vectors, and each row that passes the quals is fetched once into a sort bounded by the limit */
 static double
 rows_total(const TopNPlan *p, double k)
 {
-	return cpu_tuple_cost * (0.05 * p->rel->tuples + p->rel->rows + k) + cpu_operator_cost * (p->rel->tuples * list_length(p->quals) + p->rel->rows * p->spec.nkeys);
+	Cost		open,
+				scan;
+
+	sift_v6_source_scan_price(p->root, p->rel, p->src, 0, &open, &scan);
+	return scan + cpu_tuple_cost * k + sift_v6_fetch_cost(p->spec.is_table) * p->rel->rows +
+		cpu_operator_cost * (p->rel->tuples * list_length(p->quals) + p->rel->rows * p->spec.nkeys);
 }
 
 static void
@@ -387,7 +393,7 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)
 	{
-		TopNPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = src[i].ix,.spec = shape,.in = src[i].input};
+		TopNPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.src = &src[i],.index = src[i].ix,.spec = shape,.in = src[i].input};
 
 		if (!sift_v6_source_usable(&src[i]) || (!src[i].is_table && !sift_v6_rel_ordered(src[i].reloid, false)))
 			continue;

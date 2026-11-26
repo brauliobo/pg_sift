@@ -224,13 +224,41 @@ reads_system_column(RelOptInfo *rel)
 	return first >= 0 && first < -FirstLowInvalidHeapAttributeNumber;
 }
 
+static Node *
+to_fact_key(Node *node, const SipJoin *j)
+{
+	if (equal(node, j->dim_key))
+		return copyObject((Node *) j->fact_key);
+	return expression_tree_mutator(node, to_fact_key, (void *) j);
+}
+
+/* the share of the rows of the fact table the keys of the dimension keep: a condition of the dimension on its key alone is one on the key of the fact table, which the statistics of that column
+ * price as they are spread (a few keys may hold most rows); another keeps the share of the dimension it keeps */
+static double
+kept_share(PlannerInfo *root, RelOptInfo *rel, const SipJoin *j)
+{
+	const bool	same_type = j->fact_key->vartype == j->dim_key->vartype && j->fact_key->varcollid == j->dim_key->varcollid;
+	double		kept = 1.0;
+
+	foreach_node(RestrictInfo, ri, j->dim->baserestrictinfo)
+	{
+		Bitmapset  *attrs = NULL;
+
+		pull_varattnos((Node *) ri->clause, j->dim->relid, &attrs);
+		if (same_type && bms_membership(attrs) == BMS_SINGLETON && bms_is_member(j->dim_key->varattno - FirstLowInvalidHeapAttributeNumber, attrs))
+			kept *= clause_selectivity(root, to_fact_key((Node *) ri->clause, j), rel->relid, JOIN_INNER, NULL);
+		else
+			kept *= clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL);
+	}
+	return kept;
+}
+
 static bool
 sip_path(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *src, const SipJoin *j)
 {
 	SiftV6Input in = src->input;
 	const int	slot = sift_v6_input_add_var(&in, j->fact_key);
-	const double kept = Max(j->dim->rows, 1.0) / Max(j->dim->tuples, 1.0);
-	const double rows = clamp_row_est(rel->rows * kept);
+	const double rows = clamp_row_est(rel->rows * kept_share(root, rel, j));
 	Cost		open,
 				scan;
 	List	   *ints;
@@ -241,7 +269,7 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *src, const S
 	ints = lappend_int(lappend_int(ints, j->dim_key->varattno), (int) Min(j->dim->rows, (double) INT_MAX));
 	ints = lappend_int(ints, src->is_table);
 	sift_v6_source_scan_price(root, rel, src, j->fact_key->varattno, &open, &scan);
-	sift_v6_add_path(rel, &sip_path_methods, open, scan + cpu_tuple_cost * rows + cpu_operator_cost * (j->dim->tuples + rel->rows), rows, NIL,
+	sift_v6_add_path(rel, &sip_path_methods, open, scan + sift_v6_fetch_cost(src->is_table) * rows + sift_v6_rel_read_cost(j->dim) + cpu_operator_cost * rel->rows, rows, NIL,
 					 list_make3(ints, pushable(rel, &src->input), clauses_of(j->dim->baserestrictinfo)), NIL);
 	return true;
 }

@@ -5,6 +5,7 @@
 
 #include "access/genam.h"
 #include "access/table.h"
+#include "access/sysattr.h"
 #include "access/xact.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -14,6 +15,7 @@
 
 #include "agg/safety.h"
 #include "agg/cost/card.h"
+#include "agg/cost/cost.h"
 #include "agg/source_rel.h"
 #include "core/meta_peek.h"
 #include "core/quarantine/quarantine.h"
@@ -59,16 +61,29 @@ sift_v6_source_usable(const SiftV6RelSource *s)
 	return s->is_table || agg_index_complete(s->ix);
 }
 
+/* a sift_table decodes the columns of its quals, of the key and of the output over the granules the quals leave, as its aggregate scan does */
+static void
+table_scan_price(PlannerInfo *root, RelOptInfo *rel, AttrNumber key, Cost *open, Cost *total)
+{
+	Bitmapset  *cols = key > 0 ? bms_make_singleton(key - FirstLowInvalidHeapAttributeNumber) : NULL;
+	SiftV6CostIn in = {.tuples = rel->tuples,.rows = rel->rows,.pages = rel->pages,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, 0),.groups = 1};
+	Cost		startup;
+
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		pull_varattnos((Node *) ri->clause, rel->relid, &cols);
+	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &cols);
+	in.ncols_read = bms_num_members(cols);
+	*open = SIFT_OPEN_OPS * cpu_operator_cost;
+	sift_v6_scan_cost(&in, &startup, total);
+}
+
 void
 sift_v6_source_scan_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *s, AttrNumber key, Cost *open, Cost *total)
 {
-	if (!s->is_table)
-		sift_v6_scan_price(root, rel, s->ix, key, open, total);
+	if (s->is_table)
+		table_scan_price(root, rel, key, open, total);
 	else
-	{
-		*open = 0;
-		*total = cpu_tuple_cost * 0.05 * rel->tuples;
-	}
+		sift_v6_scan_price(root, rel, s->ix, key, open, total);
 }
 
 int
