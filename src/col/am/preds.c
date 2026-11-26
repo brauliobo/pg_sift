@@ -121,10 +121,10 @@ int_bound(int64 floor, bool exact, int *strat, int64 *v)
 }
 
 /*
- * The constant of a key whose type is a date against a timestamp or timestamptz column, or a timestamp or timestamptz against a date column, as a bound of the column itself.
- * PostgreSQL compares a date as its midnight (in the session's zone against a timestamptz), so a date column against a timestamp t is the days whose midnight is at most t; a date past
- * the range of timestamps is above (below) every finite timestamp and below (above) the infinity. 0: the key is not of that kind (key_value reads it), 1: *strat and *v are the bound,
- * 2: not exact here (a timestamptz whose date is at the edge of the range of dates), 3: no row can satisfy it.
+ * The constant of a key whose type is another of date, timestamp and timestamptz than the column's, as a bound of the column itself. PostgreSQL compares a date as its midnight
+ * (in the session's zone against a timestamptz), so a date column against a timestamp t is the days whose midnight is at most t; a date past the range of timestamps is above (below)
+ * every finite timestamp and below (above) the infinity. A timestamptz column against a timestamp t is t in the session's zone; a timestamp column against a timestamptz has no exact
+ * bound (the zone's shifts). 0: the key is not of that kind (key_value reads it), 1: *strat and *v are the bound, 2: not exact here, 3: no row can satisfy it.
  */
 int
 xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v)
@@ -148,6 +148,26 @@ xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v)
 			day -= date_midnight(TIMESTAMPTZOID, day) > t;
 		}
 		return int_bound(day, date_midnight(argtype, day) == t, strat, v);
+	}
+	else if (argtype != DATEOID)
+	{
+		if (coltype == TIMESTAMPOID)
+			return 2;
+#if PG_VERSION_NUM >= 190000
+		{
+			ErrorSaveContext esc = {T_ErrorSaveContext};
+
+			*v = timestamp2timestamptz_safe(DatumGetTimestamp(d), (Node *) &esc);
+			return esc.error_occurred ? 2 : 1;
+		}
+#else
+		{
+			int			overflow = 0;
+
+			*v = timestamp2timestamptz_opt_overflow(DatumGetTimestamp(d), &overflow);
+			return overflow == 0 ? 1 : 2;
+		}
+#endif
 	}
 	else
 	{
