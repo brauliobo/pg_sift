@@ -49,6 +49,8 @@ static struct
 	AttrNumber	journal_att;
 	bool		hooked;
 	SiftTxnStage *stage;
+	Oid			copy;			/* the copy a REINDEX CONCURRENTLY builds of the index, ready and not valid yet: it hears every version the index hears until the swap gives it the trigger */
+	SiftTxnStage *copy_stage;
 	MemoryContext diff_cx;		/* what the diff of one update copies of its tuples: reset after each */
 	SiftCell   *cells;			/* cells_cap, zero at first: the key leaves are written for each row, the others are never read */
 	int			cells_cap;
@@ -123,6 +125,26 @@ ctx_key_columns(Relation index, const SiftF2Rel *f, Relation heap)
 		read_through(index, heap);
 }
 
+/* The copy of the index that a REINDEX CONCURRENTLY has made ready (it takes the rows the writers insert) and not swapped in yet: InvalidOid when there is none */
+static Oid
+concurrent_copy(Relation heap, Oid index)
+{
+	Oid			copy = InvalidOid;
+
+	foreach_oid(cand, RelationGetIndexList(heap))
+	{
+		const char *name = get_rel_name(cand);
+		Relation	c;
+
+		if (cand == index || name == NULL || strstr(name, "_ccnew") == NULL || (c = try_relation_open(cand, RowExclusiveLock)) == NULL)
+			continue;
+		if (c->rd_index->indisready && sift_col_is_index(c) && sift_col_ops(c)->tracks_addresses && sift_col_swap_origin(heap, c, false) == index)
+			copy = cand;
+		relation_close(c, NoLock);
+	}
+	return copy;
+}
+
 /* What the command needs of the index: one lock on it for the transaction, its stage, and where the keys of the rows are; false when it is not in service */
 static bool
 ctx_make(TriggerData *td)
@@ -162,6 +184,15 @@ ctx_make(TriggerData *td)
 				ctx.cells_cap = f->ncols;
 			}
 			ctx_key_columns(index, f, td->tg_relation);
+			ctx.copy = concurrent_copy(td->tg_relation, ctx.index);
+			ctx.copy_stage = NULL;
+			if (OidIsValid(ctx.copy))
+			{
+				Relation	copy = index_open(ctx.copy, RowExclusiveLock);
+
+				ctx.copy_stage = sift_stage_get(copy, &sift_f2_rel(copy)->spec);
+				index_close(copy, NoLock);
+			}
 		}
 		index_close(index, NoLock);
 	}
@@ -300,11 +331,11 @@ unchanged_take(Oid index, const ItemPointerData *new_tid)
 
 /* An UPDATE whose index entry stays and only changes its address and a few leaves is a record of the column delta chain (col/f2/col_delta/idx.h), not a tombstone and a new entry */
 static bool
-staged_as_delta(Relation index, TriggerData *td, const ItemPointerData *tid)
+staged_as_delta(Relation index, SiftTxnStage *stage, TriggerData *td, const ItemPointerData *tid)
 {
 	SiftF2DiffEnv env = {.heap = td->tg_relation,.index = index,.f = sift_f2_rel(index),.direct = ctx.plain,.info = ctx.info,.estate = ctx.estate,.slot = ctx.slot,.pred = ctx.pred,
 		.cx = ctx.diff_cx};
-	bool		staged = sift_cdi_stage_update(&env, ctx.stage, td->tg_trigtuple, td->tg_newtuple, sift_f2_tid(tid), unchanged_take(ctx.index, &td->tg_newtuple->t_self));
+	bool		staged = sift_cdi_stage_update(&env, stage, td->tg_trigtuple, td->tg_newtuple, sift_f2_tid(tid), unchanged_take(RelationGetRelid(index), &td->tg_newtuple->t_self));
 
 	MemoryContextReset(ctx.diff_cx);
 	return staged;
@@ -330,17 +361,17 @@ mute_channel(TriggerData *td)
 #endif
 
 static void
-stage_tombstone(Relation index, TriggerData *td, const ItemPointerData *tid)
+stage_tombstone(Relation index, SiftTxnStage *stage, TriggerData *td, const ItemPointerData *tid)
 {
 	uint8		key[SIFT_BOUND_BYTES];
 
-	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && staged_as_delta(index, td, tid))
+	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && staged_as_delta(index, stage, td, tid))
 		return;
 	if (ctx.direct)
 		direct_key(index, td->tg_relation, td->tg_trigtuple, tid, key);
 	else if (!read_key(index, td->tg_trigtuple, tid, key))
 		return;
-	sift_stage_delete(ctx.stage, key, sift_f2_tid(tid));
+	sift_stage_delete(stage, key, sift_f2_tid(tid));
 }
 
 /*
@@ -376,8 +407,14 @@ sift_f2_track_trigger(PG_FUNCTION_ARGS)
 		)
 		ItemPointerSetOffsetNumber(&tid, chain_root(td->tg_relation, &tid));
 	index = index_open(ctx.index, AccessShareLock);
-	stage_tombstone(index, td, &tid);
+	stage_tombstone(index, ctx.stage, td, &tid);
 	index_close(index, AccessShareLock);
+	if (ctx.copy_stage != NULL)
+	{
+		index = index_open(ctx.copy, AccessShareLock);
+		stage_tombstone(index, ctx.copy_stage, td, &tid);
+		index_close(index, AccessShareLock);
+	}
 	return PointerGetDatum(NULL);
 }
 
