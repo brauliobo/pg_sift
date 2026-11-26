@@ -7,6 +7,7 @@ SET client_min_messages = warning;
 DROP SCHEMA IF EXISTS sift;
 RESET client_min_messages;
 CREATE EXTENSION pg_sift VERSION '3.2';
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 \set VERBOSITY terse
 \set ECHO none
 \ir test/common/sql/core/roles.sql

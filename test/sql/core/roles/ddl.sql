@@ -2,6 +2,7 @@
 -- roles that only read or write. The event triggers of the extension fire for every one of them on each DROP and ALTER TABLE: 3.2.0 and 3.2.1
 -- refused every DROP of a role that was neither a superuser nor the extension's owner ("permission denied for schema sift").
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 \set VERBOSITY terse
 \set ECHO none
 \ir test/common/sql/core/roles.sql

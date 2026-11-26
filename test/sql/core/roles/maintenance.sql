@@ -3,6 +3,7 @@
 -- work for it; VACUUM, ANALYZE, CLUSTER and REINDEX follow the usual rules for the three kinds of sift objects.
 -- Every role has USAGE on the schema sift (PUBLIC has it) except in the one section that takes it back.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 \set VERBOSITY terse
 \set ECHO none
 \ir test/common/sql/core/roles.sql
