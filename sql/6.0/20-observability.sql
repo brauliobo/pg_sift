@@ -5,6 +5,11 @@
 -- The declared paths of the sift_tables (5.0) are dumped like the other per-table definitions: a row of a table that is gone (a stale OID prints as a number) is never written
 SELECT pg_catalog.pg_extension_config_dump('sift.table_paths', 'WHERE relid::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class)');
 
+-- Whether a part of a sift_table of Format 2.0 was written before the key_order or the paths the table has now: the options apply to new writes at once and to the parts as they are rewritten
+CREATE OR REPLACE FUNCTION sift_internal.table_options_unapplied(rel regclass) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_table_options_unapplied' LANGUAGE C STABLE STRICT SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
+COMMENT ON FUNCTION sift_internal.table_options_unapplied(regclass) IS 'Internal: true when a part of the sift_table was written before the key_order or the paths it has now (a table that is locked or not of Format 2.0 is false)';
+
 -- sift.health: one row per thing to do, error first, then warn, then info; no row when everything is as it should be. action_sql is a statement to run (or a setting to change).
 -- Format 1 is never an error: a sift_col index or sift_table of Format 1 is listed once as info, with the optional upgrade.
 -- The checks of sift.health over the rows of sift.status given as jsonb (one object per relation, relation and table_name as oids), so that a caller that has the rows already (sift.indexes) reads
@@ -14,7 +19,7 @@ RETURNS TABLE (relation regclass, severity text, check_name text, detail text, a
 	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp AS $fn$
 	WITH cfg AS (
 		SELECT coalesce((SELECT setting FROM pg_settings WHERE name = 'sift.async_maintenance'), 'on') = 'off' AS async_off,
-			   coalesce((SELECT setting::int8 FROM pg_settings WHERE name = 'sift.shared_cache_kb'), 65536) AS shared_kb
+			   coalesce((SELECT setting::int8 FROM pg_settings WHERE name = 'sift.shared_cache_kb'), 131072) AS shared_kb
 	), st AS MATERIALIZED (
 		SELECT s.relation::regclass AS relation, s.table_name::regclass AS table_name, s.am, s.format_major, s.size_bytes, s.quarantined, s.quarantine_reason, s.vblocks_left,
 			   s.maint_failures, s.free_bytes, s.shrink_blocked_by, s.dead_pct, s.dead_rows, s.live_rows, s.last_maint_at, s.l0_parts, s.l0_slabs, s.scopes,
@@ -58,6 +63,10 @@ RETURNS TABLE (relation regclass, severity text, check_name text, detail text, a
 					  coalesce(s.next_retry::text, 'not scheduled')),
 			   format('SELECT * FROM sift.maintain(%L);', s.relation::text)
 		FROM st s WHERE s.maint_failures > 0
+		UNION ALL
+		SELECT s.relation, 'warn', 'table_options_unapplied', 'Parts written before the sort key or the declared paths the table has now (a restore loads the rows before the options and the key)',
+			   format('VACUUM FULL %s;', s.relation)
+		FROM st s WHERE s.am = 'sift_table' AND s.format_major >= 2 AND NOT s.quarantined AND sift_internal.table_options_unapplied(s.relation)
 		UNION ALL
 		SELECT s.relation, 'warn', 'tail_shrink_blocked',
 			   format('%s (%s%%) free space blocked by %s', pg_size_pretty(s.free_bytes), round(100.0 * s.free_bytes / s.size_bytes, 1), s.shrink_blocked_by),
@@ -187,24 +196,37 @@ CREATE OR REPLACE VIEW sift.indexes AS
 COMMENT ON VIEW sift.indexes IS 'One row per sift object the caller can read, whatever its access method and format: relation, table, access method, format, state (invalid, locked, quarantined, failing, maintaining or ready), worst health severity, rows, dead rows, size, bytes per row, compression ratio, space utilization, parts by level, scopes and format_note. kind, table and bytes are the 5.1 columns.';
 GRANT SELECT ON sift.indexes TO PUBLIC;
 
--- sift.locks: the page locks of a sift index or sift_table named. A Format 2.0 relation locks virtual blocks at the top of the block range (a partition stripe, the relation, a bulk load, a worker, a split);
--- pg_locks.page is a signed int4, so a block above 2^31 is read back unsigned. The decoding of Format 1 and of the advisory locks is as in 5.1.
+-- sift.locks: the page locks of a sift index or sift_table named. A Format 2.0 relation locks virtual blocks at the top of the block range (the key of a unique index, the rows of a transaction, a partition
+-- stripe, the relation, a bulk load, a worker, a split, a compaction); pg_locks.page is a signed int4, so a block above 2^31 is read back unsigned. The decoding of Format 1 and of the advisory locks is as in 5.1.
+-- The ranges are those of core/part_lock.h, table/f2/lock/esc.h and table/f2/lock/2pc.h.
+CREATE OR REPLACE FUNCTION sift_internal.lock_block(blk int8) RETURNS TABLE (kind text, detail text)
+	LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path = pg_catalog, pg_temp AS $fn$
+	SELECT CASE WHEN blk BETWEEN 4294934528 AND 4294950911 THEN 'unique key'
+				WHEN blk BETWEEN 4294955008 AND 4294959103 THEN 'row key'
+				WHEN blk BETWEEN 4294959104 AND 4294963199 THEN 'row lock'
+				WHEN blk BETWEEN 4294963200 AND 4294964223 THEN 'partition'
+				WHEN blk = 4294965248 THEN 'maintenance' WHEN blk = 4294965249 THEN 'load' WHEN blk = 4294965250 THEN 'worker' WHEN blk = 4294965251 THEN 'split'
+				WHEN blk = 4294965252 THEN 'vacuum read' WHEN blk = 4294965264 THEN 'prepared row lock'
+				WHEN blk BETWEEN 4294966272 AND 4294967294 THEN 'compaction'
+				ELSE CASE blk WHEN 0 THEN 'maintenance' WHEN 2 THEN 'active segment' WHEN 3 THEN 'worker' WHEN 4 THEN 'tombstones' WHEN 5 THEN 'load' ELSE 'page' END END,
+		   CASE WHEN blk BETWEEN 4294934528 AND 4294950911 THEN 'stripe ' || (blk - 4294934528)
+				WHEN blk = 4294955008 THEN 'relation' WHEN blk BETWEEN 4294955009 AND 4294959103 THEN 'partition stripe ' || (blk - 4294955009)
+				WHEN blk = 4294959104 THEN 'relation' WHEN blk BETWEEN 4294959105 AND 4294963199 THEN 'partition stripe ' || (blk - 4294959105)
+				WHEN blk BETWEEN 4294963200 AND 4294964223 THEN 'stripe ' || (blk - 4294963200)
+				WHEN blk = 4294965248 THEN 'format2 relation' WHEN blk = 4294965249 THEN 'bulk load' WHEN blk = 4294965250 THEN 'maint worker' WHEN blk = 4294965251 THEN 'partition split / scopedir'
+				WHEN blk = 4294965252 THEN 'manifest readers of VACUUM' WHEN blk = 4294965264 THEN 'PREPARE TRANSACTION'
+				WHEN blk BETWEEN 4294966272 AND 4294967294 THEN 'stripe ' || (blk - 4294966272)
+				ELSE 'block ' || blk END
+$fn$;
+COMMENT ON FUNCTION sift_internal.lock_block(int8) IS 'Internal: the kind and the detail that sift.locks gives to the block (unsigned) of a page lock of a sift relation';
+
 CREATE OR REPLACE VIEW sift.locks AS
 	SELECT l.relation::regclass AS relation, k.kind, k.detail, l.mode, l.granted, l.waitstart AS waiting_since, l.pid
 	FROM pg_locks l
 	JOIN pg_class c ON c.oid = l.relation
 	JOIN pg_am a ON a.oid = c.relam AND a.amname IN ('sift', 'sift_col', 'sift_table')
 	LEFT JOIN pg_index i ON i.indexrelid = c.oid
-	CROSS JOIN LATERAL (SELECT l.page::int8 + CASE WHEN l.page < 0 THEN 4294967296 ELSE 0 END AS blk) u
-	CROSS JOIN LATERAL (SELECT CASE WHEN u.blk BETWEEN 4294963200 AND 4294964223 THEN 'partition'
-									WHEN u.blk = 4294965248 THEN 'maintenance' WHEN u.blk = 4294965249 THEN 'load'
-									WHEN u.blk = 4294965250 THEN 'worker' WHEN u.blk = 4294965251 THEN 'split'
-									ELSE CASE u.blk WHEN 0 THEN 'maintenance' WHEN 2 THEN 'active segment' WHEN 3 THEN 'worker' WHEN 4 THEN 'tombstones'
-													WHEN 5 THEN 'load' ELSE 'page' END END AS kind,
-							   CASE WHEN u.blk BETWEEN 4294963200 AND 4294964223 THEN 'stripe ' || (u.blk - 4294963200)
-									WHEN u.blk = 4294965248 THEN 'format2 relation' WHEN u.blk = 4294965249 THEN 'bulk load'
-									WHEN u.blk = 4294965250 THEN 'maint worker' WHEN u.blk = 4294965251 THEN 'partition split / scopedir'
-									ELSE 'block ' || u.blk END AS detail) k
+	CROSS JOIN LATERAL sift_internal.lock_block(l.page::int8 + CASE WHEN l.page < 0 THEN 4294967296 ELSE 0 END) k
 	WHERE l.locktype = 'page' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) AND sift._may_inspect(COALESCE(i.indrelid, c.oid))
 	UNION ALL
 	SELECT CASE WHEN l.classid = 20984 AND l.objsubid = 3 THEN l.objid::regclass END, k.kind, k.detail, l.mode, l.granted, l.waitstart, l.pid
@@ -215,4 +237,4 @@ CREATE OR REPLACE VIEW sift.locks AS
 							   CASE WHEN l.classid = 20983 THEN 'slot ' || (l.objid::text::int8 - 1397948416) END AS detail) k
 	WHERE l.locktype = 'advisory' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) AND k.kind IS NOT NULL
 	  AND (l.classid <> 20984 OR l.objsubid <> 3 OR sift._may_inspect(l.objid::regclass));
-COMMENT ON VIEW sift.locks IS 'The locks of pg_sift held or waited for now, named: the page locks of an index or sift_table (maintenance, active segment, worker, tombstones, load; for Format 2.0 also a partition stripe and a split) and its advisory locks (a rewrite slot, the vacuum of a table, the sweep of orphan triggers), with the mode, whether it is granted, since when a session waits and which one holds it.';
+COMMENT ON VIEW sift.locks IS 'The locks of pg_sift held or waited for now, named: the page locks of an index or sift_table (maintenance, active segment, worker, tombstones, load; for Format 2.0 also a unique key, a row lock, a partition stripe, a split, a compaction and the row lock of a prepared transaction) and its advisory locks (a rewrite slot, the vacuum of a table, the sweep of orphan triggers), with the mode, whether it is granted, since when a session waits and which one holds it.';

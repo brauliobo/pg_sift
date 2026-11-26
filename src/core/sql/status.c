@@ -6,7 +6,7 @@
  * read in a subtransaction of its own, so a damaged one costs its row and not the scrape; a cancel is not swallowed. state is, in this order, invalid, locked, quarantined, failing (a background step
  * failed since the last one that ended well), maintaining (a promotion, a merge or a VACUUM holds it) or ready; Format 1 is ready: upgrading it is optional.
  *
- * maint_due is the first, in the order of the spec, of the reasons that need no threshold of a worker: a slab or a pending deletion waits, a compaction plan is not empty, a part has the dead
+ * maint_due is the first, in the order of the spec, of the reasons that need no threshold of a worker: a slab or a pending deletion waits, a column delta chain is as long as a fold is asked for, a compaction plan is not empty, a part has the dead
  * rows the rewrite wants, a scope summary is stale, a partition is splitting, or the free end of the file is what a tail shrink takes. Where the part headers are read (granules, slack, skip_bytes)
  * the cost is one header page for each part. dirty_rows of Format 2.0 is the rows of the slab of each partition (the headers of its pages) and the deletes its pending chain holds, so a partition
  * with neither costs nothing; granules of a Format 1 sift_col is the units its directory lists, the number the planner prices.
@@ -35,6 +35,7 @@
 #include "col/f2/scope/scope.h"
 #include "col/f2/l0/slab.h"
 #include "col/f2/part/format.h"
+#include "col/f2/store/store.h"
 #include "core/f2/fsm/fsm.h"
 #include "core/f2/manifest/manifest.h"
 #include "core/inspect.h"
@@ -44,9 +45,13 @@
 #include "core/sql/api.h"
 #include "core/store/store.h"
 #include "col/v1/seg/seg.h"
+#include "table/dispatch.h"
+#include "table/f2/col_delta/col_delta.h"
+#include "table/f2/tbl.h"
 #include "table/v1/table.h"
 
 PG_FUNCTION_INFO_V1(sift_status);
+PG_FUNCTION_INFO_V1(sift_table_options_unapplied);
 
 /* columns of sift.status, in the order of sql/6.0/15-unified-api.sql */
 enum StatusCol
@@ -206,6 +211,7 @@ typedef enum Due
 	DUE_NONE,
 	DUE_SLAB_FLUSH,
 	DUE_PEND_DEL,
+	DUE_COL_DELTA_FOLD,
 	DUE_L0_COMPACT,
 	DUE_DEAD_REWRITE,
 	DUE_SCOPE_REFRESH,
@@ -218,6 +224,7 @@ static const char *const due_names[] = {
 	[DUE_NONE] = NULL,
 	[DUE_SLAB_FLUSH] = "slab_flush",
 	[DUE_PEND_DEL] = "pend_del",
+	[DUE_COL_DELTA_FOLD] = "col_delta_fold",
 	[DUE_L0_COMPACT] = "l0_compact",
 	[DUE_DEAD_REWRITE] = "dead_rewrite",
 	[DUE_SCOPE_REFRESH] = "scope_refresh",
@@ -283,7 +290,7 @@ part_sizes(const SiftPart *part, F2Tally *t)
 
 /* Each reason is noted only when it outranks the one noted already (due_note keeps the first of the Due order): the plans that cost a scan of the parts of the partition are made only for a reason that could still win */
 static void
-partition_due(F2Tally *t, const SiftPartitionEntry *e, const SiftPartDesc *pd, int np)
+partition_due(F2Tally *t, Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *pd, int np)
 {
 	int			ngroups = 0,
 				ncand = 0;
@@ -293,6 +300,8 @@ partition_due(F2Tally *t, const SiftPartitionEntry *e, const SiftPartDesc *pd, i
 		due_note(t, DUE_SLAB_FLUSH);
 	if (e->pend_del_blk != InvalidBlockNumber)
 		due_note(t, DUE_PEND_DEL);
+	if ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) && sift_manifest_read_col_delta(rel, e).npages >= SIFT_COL_DELTA_FOLD_PAGES)
+		due_note(t, DUE_COL_DELTA_FOLD);
 	if (e->flags & SIFT_PARTENTRY_SPLITTING)
 		due_note(t, DUE_SPLIT);
 	if (np == 0)
@@ -360,7 +369,7 @@ tally_partitions(Relation rel, F2Tally *t)
 			if (!(pd[p].ext_flags & SIFT_PART_EXT_REMOTE))
 				part_sizes(sift_part_open_desc(rel, &pd[p], (uint32) e->part_id), t);
 		}
-		partition_due(t, e, pd, np);
+		partition_due(t, rel, e, pd, np);
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(scratch);
 	}
@@ -382,6 +391,53 @@ tally_scopes(const SiftApiRel *r, const SiftColMetaPageData *meta, F2Tally *t)
 		if (r->am == SIFT_API_COL && !sift_f2_scope_current(r->rel, refs[i].scope_ord))
 			due_note(t, DUE_SCOPE_REFRESH);
 	}
+}
+
+/* A part written with no key (SIFT_PART_FLAG_UNKEYED) in a table that has a key_order: the parts the table has now are written in that order, the ones before it are rewritten by maintenance */
+static bool
+has_unkeyed_part(Relation rel)
+{
+	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift options partition");
+	bool		found = false;
+
+	for (int i = 0; !found && i < mr.n; i++)
+	{
+		MemoryContext old = MemoryContextSwitchTo(scratch);
+		int			np;
+		SiftPartDesc *pd = sift_manifest_read_parts(rel, &mr.entries[i], &np);
+
+		for (int p = 0; p < np; p++)
+			found |= (pd[p].flags & SIFT_PART_FLAG_UNKEYED) != 0;
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(scratch);
+	}
+	MemoryContextDelete(scratch);
+	return found;
+}
+
+/* A sift_table whose key_order or declared paths came after parts that are not in them: a restore loads the rows before the options; VACUUM FULL writes the parts again under them */
+Datum
+sift_table_options_unapplied(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Relation	rel;
+	bool		unapplied = false;
+
+	if (!sift_may_inspect(relid) || !ConditionalLockRelationOid(relid, AccessShareLock))
+		PG_RETURN_BOOL(false);
+	rel = try_relation_open(relid, NoLock);
+	if (rel != NULL)
+	{
+		if (sift_tbl_is_table(rel) && sift_meta_peek_format(rel).status == SIFT_FMT_V2)
+		{
+			SiftF2Store *store = sift_f2_store_open(rel);
+
+			unapplied = (store->nkey > 0 && has_unkeyed_part(rel)) || (store->paths != NULL && !sift_tbl_f2_paths_ready(rel, store));
+		}
+		relation_close(rel, AccessShareLock);
+	}
+	PG_RETURN_BOOL(unapplied);
 }
 
 /* What the registry of the manifests in shared memory holds of the relation: whether it has the manifest, and the share of the pins of its snapshot that found one (NULL before the first) */

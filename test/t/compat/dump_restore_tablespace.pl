@@ -109,7 +109,7 @@ sub restored_ok
 	is(sql($node, 'SELECT count(*) FROM sift.check(NULL, true)'), '0', "$label: sift.check(heapallindexed) finds no problem after VACUUM");
 }
 
-sub options_unapplied { my ($node) = @_; return sql($node, "SELECT count(*) FROM sift.health() WHERE check_name = 'table_options_unapplied'") }
+sub options_unapplied { my ($node) = @_; return sql($node, "SELECT count(*) FROM sift.health('st') WHERE check_name = 'table_options_unapplied'") }
 
 # ------------------------------------------------------------------ EXT-09: pg_dump | psql in one transaction
 my $plain = $src->basedir . '/dump.sql';
@@ -119,7 +119,7 @@ unlike(slurp_file($plain), qr/CREATE TRIGGER sift_track_/, 'EXT-09: the dump hol
 	my $dst = restore_node('dump_psql');
 	$dst->command_ok([ 'psql', '-X', '-q', '-1', '-v', 'ON_ERROR_STOP=1', '-p', $dst->port, '-h', $dst->host, '-d', 'postgres', '-f', $plain ],
 		'EXT-09: the restore in one transaction has no error');
-	note('table_options_unapplied after pg_dump | psql: ' . options_unapplied($dst));
+	cmp_ok(options_unapplied($dst), '>', 0, 'EXT-09: the options that the one-transaction restore loaded after the rows are reported as unapplied before VACUUM FULL');
 	sql($dst, 'VACUUM FULL st');
 	is(options_unapplied($dst), '0', 'EXT-09: VACUUM FULL applies the restored options');
 	restored_ok($dst, 'EXT-09 pg_dump | psql');

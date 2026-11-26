@@ -197,12 +197,12 @@ BEGIN
 									   WHEN d.setdatabase <> 0 THEN 'DATABASE ' || quote_ident(db.datname) ELSE 'ROLE ALL' END || ' RESET ' || split_part(c, '=', 1) || ';'
 				   FROM pg_db_role_setting d LEFT JOIN pg_roles ro ON ro.oid = d.setrole LEFT JOIN pg_database db ON db.oid = d.setdatabase, unnest(d.setconfig) c
 				   WHERE c LIKE 'sift.%') x
-			 WHERE removed ? x.name OR x.name = ANY (test_only) OR x.name LIKE 'sift.test\_%' OR (x.name = 'sift.backend_cache_kb' AND x.value = '-1')
+			 WHERE removed ? x.name OR x.name = ANY (test_only) OR x.name LIKE 'sift.test\_%' OR (x.name = 'sift.backend_cache_kb' AND x.value ~ '^\s*-')
 			 ORDER BY x.name, x.scope
 	LOOP
 		ord := 2; phase := 'pre_guc'; object := r.name; detected := format('%s = %s, set by %s', r.name, r.value, r.scope); status := 'blocker'; size_bytes := NULL;
 		kind := CASE WHEN r.name = ANY (test_only) OR r.name LIKE 'sift.test\_%' THEN 'test' ELSE 'setting' END;
-		advice := CASE WHEN r.name = 'sift.backend_cache_kb' THEN 'pg_sift 6.0 removes -1 (unlimited) for sift.backend_cache_kb: set a cap in kB (16384 is the default) or RESET it'
+		advice := CASE WHEN r.name = 'sift.backend_cache_kb' THEN 'pg_sift 6.0 removes -1 (unlimited) for sift.backend_cache_kb: set a cap in kB (32768 is the default) or RESET it'
 					   WHEN kind = 'test' THEN 'a setting of the test build only: remove it'
 					   ELSE format('pg_sift 6.0 removes this setting (%s); PostgreSQL refuses a SET of it and ignores it in the configuration with a warning', removed->>r.name) END;
 		action_sql := r.cmd;

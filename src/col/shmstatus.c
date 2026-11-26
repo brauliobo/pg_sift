@@ -158,6 +158,7 @@ notes_copy(ShmNote *copy)
 
 /* The table of the directory that a pool sizes, for the note a backend left when it went without it; NULL: the pool has none */
 static const char *const pool_table[SIFT_SHM_NPOOL] = {
+	[SIFT_SHM_MANIFEST] = "sift_shm_manifest",
 	[SIFT_SHM_AGG_DIMMAP] = "sift_agg_dimmap",
 	[SIFT_SHM_COL_DICT] = "sift_col_dict_ring",
 	[SIFT_SHM_COL_LEAF] = "sift_col_leaf_stats"
