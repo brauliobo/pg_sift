@@ -363,11 +363,18 @@ key_take_entry(SiftPartDirKey *k, const SiftPartitionEntry *e)
 		key_widen(k, e->time_min[0], e->time_max[0]);
 }
 
-/* The entries cut into ceil(n / cap) leaves of about the same size, written; the references to them */
+/* The leaves that n entries take */
+static int
+leaves_for(int n)
+{
+	return (n + SIFT_PARTDIR_LEAF_CAP - 1) / SIFT_PARTDIR_LEAF_CAP;
+}
+
+/* The entries cut into leaves_for(n) leaves of about the same size, written; the references to them (out holds leaves_for(n)) */
 static int
 write_leaves(Relation rel, const SiftPartitionEntry *ents, int n, uint64 version, BlkVec *created, SiftPartDirKey *out)
 {
-	int			nl = (n + SIFT_PARTDIR_LEAF_CAP - 1) / SIFT_PARTDIR_LEAF_CAP;
+	int			nl = leaves_for(n);
 	int			per = nl > 0 ? (n + nl - 1) / nl : 0;
 	PGAlignedBlock img;
 	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
@@ -541,7 +548,7 @@ sift_mf_account(Change *ch, const SiftPartitionEntry *before, const SiftPartitio
 bool
 sift_mf_publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
 {
-	SiftPartDirKey out[4];
+	SiftPartDirKey *out = palloc(Max(leaves_for(ch->nents), 1) * sizeof(SiftPartDirKey));
 	SiftPartDirKey *r;
 	int			nr = 0,
 				nout;
@@ -568,7 +575,7 @@ sift_mf_publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *vers
 	}
 	else
 	{
-		r = palloc((t->nleaves + 4) * sizeof(SiftPartDirKey));
+		r = palloc((t->nleaves - ch->span + nout) * sizeof(SiftPartDirKey));
 		memcpy(r, t->leaves, ch->first * sizeof(SiftPartDirKey));
 		nr = ch->first;
 		memcpy(r + nr, out, nout * sizeof(SiftPartDirKey));
