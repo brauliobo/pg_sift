@@ -426,43 +426,20 @@ sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char
 	return leaf_type(&r->schema->cols[leaf]);
 }
 
-/* A sift_table keeps the array of a row whole in its cell, and the scan takes it apart from the heap row: the elements of unnest(array) need no leaf */
-static bool
-seed_table_array(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte)
-{
-	if (rte->fn != SV6E_UNNEST || !IsA(rte->array, Var) || ((const Var *) rte->array)->varattno <= 0 || ((const Var *) rte->array)->varattno > p->sch.natts)
-		return false;
-	e->attno = ((const Var *) rte->array)->varattno;
-	e->group_leaf = e->col_leaf[0] = -1;
-	e->col_type[0] = rte->elem;
-	e->ncols = 1;
-	return true;
-}
-
 bool
 sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left)
 {
 	SiftV6Ext  *x = sift_v6_ext_new();
 	List	   *names = NIL;
-	const char *key;
-	int			i;
+	const char *key = NULL;
+	const int	i = p->is_table ? 0 : rte_column(p, rte, &key);
 
-	if (p->is_table)
-	{
-		x->unnest = true;
-		x->elem = (SiftV6XElem) {.fn = rte->fn,.type = rte->elem,.left = left};
-		if (!seed_table_array(p, &x->elem, rte))
-			return false;
-		p->xseed = x;
-		p->elem_rel = elem_rel;
-		return true;
-	}
-	i = rte_column(p, rte, &key);
 	if (i < 0)
 		return false;
 	x->unnest = true;
 	x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
-	if (!((rte->fn == SV6E_RECORDSET || rte->fn == SV6E_PATH) ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) :
+	if (p->is_table ? !sift_v6_table_elems_seed(p, &x->elem, rte, &names) :
+		!((rte->fn == SV6E_RECORDSET || rte->fn == SV6E_PATH) ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) :
 		  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, &x->elem, rte, i + 1) :
 		  rte->fn == SV6E_ELEMS_TEXT ? sift_v6_elems_seed(p->colrel, &x->elem, key, i + 1, &names) :
 		  rte->fn == SV6E_MEMBERS ? sift_v6_members_seed(p->colrel, &x->elem, key, i + 1) : seed_each(p, &x->elem, key, i + 1)))

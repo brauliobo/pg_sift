@@ -88,9 +88,9 @@ sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	}
 	if (at == el->ncols)
 	{
-		const int	leaf = sift_v6_unnest_member_leaf(p->colrel, el->attno, el->group_leaf, name);
+		const int	leaf = p->is_table ? -1 : sift_v6_unnest_member_leaf(p->colrel, el->attno, el->group_leaf, name);
 
-		if (el->ncols == SIFT_V6_XELEM_COLS || leaf < 0 || !sift_v6_leaf_holds(type, -1, &p->colrel->schema->cols[leaf]))
+		if (el->ncols == SIFT_V6_XELEM_COLS || (p->is_table ? !sift_v6_table_elem_type(type) : leaf < 0 || !sift_v6_leaf_holds(type, -1, &p->colrel->schema->cols[leaf])))
 			return false;
 		el->col_leaf[at] = leaf;
 		el->col_type[at] = type;

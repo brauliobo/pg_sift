@@ -1,0 +1,71 @@
+-- The jsonb element functions over a sift_table (sift.table_set_paths ... doc->items[]->kind text, doc->items[]->score float8): the table keeps the array of a row whole and the scan takes it apart
+-- with the function itself, so jsonb_to_recordset, jsonb_array_elements read by members and jsonb_array_elements_text run in SiftAggV6 like unnest(array), on both formats.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+\ir test/common/sql/agg/base.sql
+\set ECHO none
+\ir test/common/sql/agg/same.sql
+\set ECHO none
+CREATE FUNCTION used(q text) RETURNS bool LANGUAGE sql AS $$ SELECT coalesce(bool_or(used), false) FROM sift.explain_why(q) $$;
+CREATE TABLE tj (id int, qty int, doc jsonb, tags text[]) USING sift_table;
+SELECT sift.table_set_paths('tj', 'doc', 'doc->channel text, doc->k int4, doc->items[]->kind text, doc->items[]->score float8');
+ table_set_paths 
+-----------------
+ 
+(1 row)
+
+INSERT INTO tj SELECT g, g % 5, jsonb_build_object('channel', 'ch_' || g % 4, 'k', g % 11,
+	'items', (SELECT jsonb_agg(jsonb_build_object('kind', 'k' || (g + j) % 3, 'score', (g * j) % 10)) FROM generate_series(1, 1 + g % 3) j), 'tags', jsonb_build_array('t' || g % 5, 't' || g % 3)), ARRAY['t' || g % 4]
+FROM generate_series(1, 6000) g;
+INSERT INTO tj VALUES (7001, 1, '{"items": [{"kind": "k1", "score": "7"}, {}]}', NULL), (7002, 2, '{"channel": "ch_0"}', ARRAY['t1', NULL]), (7003, 3, NULL, NULL), (7004, 4, '{"items": [], "tags": [null]}', '{}');
+ANALYZE tj;
+CREATE TABLE tx (id int, qty int, doc jsonb) USING sift_table;
+INSERT INTO tx SELECT id, qty, doc FROM tj WHERE id <= 3000;
+INSERT INTO tx VALUES (7005, 1, '{"items": [5, {"kind": "k1", "score": "abc"}]}');
+ANALYZE tx;
+CREATE TABLE kinds (kind text);
+INSERT INTO kinds VALUES ('k1'), ('t2');
+ANALYZE kinds;
+CREATE TABLE q (n int, sql text);
+INSERT INTO q VALUES
+	(1, $$SELECT i.kind, count(*), sum(i.score) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) GROUP BY 1$$),
+	(2, $$SELECT i.kind, count(*), avg(i.score) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE i.kind = 'k1' GROUP BY 1$$),
+	(3, $$SELECT t.qty, count(i.kind), count(*) FROM tj t LEFT JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) ON true GROUP BY 1$$),
+	(4, $$SELECT e ->> 'kind', count(*), sum((e ->> 'score')::float8) FROM tj t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'items') e GROUP BY 1$$),
+	(5, $$SELECT t.qty, count(*) FROM tj t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'items') e WHERE e ->> 'kind' = 'k2' GROUP BY 1$$),
+	(6, $$SELECT v, count(*) FROM tj t CROSS JOIN LATERAL jsonb_array_elements_text(t.doc -> 'tags') v GROUP BY 1$$),
+	(7, $$SELECT t.qty, i.kind, max(i.score) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE t.qty > 1 GROUP BY 1, 2$$),
+	-- the errors are the function's and the statement's: an element that is no object, a score that is no number
+	(8, $$SELECT i.kind, count(*) FROM tx t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) GROUP BY 1$$),
+	(9, $$SELECT e ->> 'kind', sum((e ->> 'score')::float8) FROM tx t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'items') e GROUP BY 1$$),
+	(10, $$SELECT e ->> 'kind', count(*) FROM tx t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'items') e GROUP BY 1$$),
+	-- an expression of a column of the table and one of the element, and a key of the document, are the normal plan's
+	(11, $$SELECT t.qty, sum(t.qty * i.score) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) GROUP BY 1$$),
+	(12, $$SELECT i.kind, sum(i.score) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE t.doc ->> 'channel' = 'ch_1' GROUP BY 1$$),
+	-- a dimension joined to the elements of a table is the normal plan's: the pairs of its rows probe no dimension
+	(13, $$SELECT i.kind, count(*) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = i.kind) GROUP BY 1$$),
+	(14, $$SELECT v, count(*) FROM tj t CROSS JOIN LATERAL unnest(t.tags) v WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = v) GROUP BY 1$$);
+SELECT n, same(sql), pushed(sql) AS scan, used(sql) FROM q ORDER BY n;
+ n  | same | scan | used 
+----+------+------+------
+  1 | same | t    | t
+  2 | same | t    | t
+  3 | same | t    | t
+  4 | same | t    | t
+  5 | same | t    | t
+  6 | same | t    | t
+  7 | same | t    | t
+  8 | same | t    | t
+  9 | same | t    | t
+ 10 | same | t    | t
+ 11 | same | f    | f
+ 12 | same | f    | f
+ 13 | same | f    | f
+ 14 | same | f    | f
+(14 rows)
+
+DROP TABLE q, tj, tx, kinds;
+DROP FUNCTION used(text), runq(text, bool), same(text), pushed(text), outcome(text, bool), runs_in_scan(text);
+DROP EXTENSION pg_sift;

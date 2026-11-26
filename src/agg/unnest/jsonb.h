@@ -76,6 +76,9 @@ extern bool sift_v6_members_seed(const SiftColRel *r, SiftV6XElem *e, const char
 extern bool sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out);
 extern bool sift_v6_elem_late(const SiftV6XElem *e, int slot);
 extern Datum sift_v6_member_text(Datum elem, text *name, bool *isnull);
+/* agg/unnest/table_elems.c: the elements of rte over a column of the sift_table of p, which the scan takes apart from each row (no leaf); elem_type: a column of them may have the type t */
+extern bool sift_v6_table_elems_seed(const V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, List **names);
+extern bool sift_v6_table_elem_type(Oid t);
 /* the leaf of the key `name` of the objects of the group of attribute att (-1: none) */
 extern int	sift_v6_unnest_member_leaf(const SiftColRel *r, int att, int group, const char *name);
 

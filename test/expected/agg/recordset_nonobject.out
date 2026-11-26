@@ -247,11 +247,11 @@ VACUUM rt_t_15
 SELECT * FROM lane_report('t');
   form  | variants | on_node | differ | differing 
 --------+----------+---------+--------+-----------
- column |       15 |       0 |      0 | 
+ column |       15 |      15 |      0 | 
  exists |       15 |       0 |      0 | 
- key    |       15 |       0 |      0 | 
- left   |       15 |       0 |      0 | 
- total  |       15 |       0 |      0 | 
+ key    |       15 |      15 |      0 | 
+ left   |       15 |      15 |      0 | 
+ total  |       15 |      15 |      0 | 
 (5 rows)
 
 -- Format 1 on the unified scan
