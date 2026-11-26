@@ -643,8 +643,7 @@ sift_mf_publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *vers
 		m->common.compat_flags |= SIFT_COMPAT_COL_DELTA_DIR;
 	if (ch->set_tier)
 		sift_mf_apply_tier(m, ch);
-	if (FullTransactionIdIsValid(ch->new_min_xid) && (!FullTransactionIdIsValid(m->oldest_active_xid) || FullTransactionIdPrecedes(ch->new_min_xid, m->oldest_active_xid)))
-		m->oldest_active_xid = ch->new_min_xid;
+	m->oldest_active_xid = sift_mf_older_active(m->oldest_active_xid, ch->new_min_xid);
 	sift_meta_seal(p0, m->common.struct_size);
 	committed = *m;
 	sift_fsm_release_in(rel, &x, rel_ext, first_batch, safexid);
@@ -763,8 +762,7 @@ edit_parts(Relation rel, Tree *t, Change *ch, const SiftPartitionEntry *ent, con
 																	  (unsigned long long) e->part_id, (unsigned long long) e->add_parts[i].part_gen)));
 		ep->parts[ep->n] = e->add_parts[i];
 		sift_gen_map_add(&map, ep->n++);
-		if (FullTransactionIdIsValid(e->add_parts[i].min_xid) && (!FullTransactionIdIsValid(ch->new_min_xid) || FullTransactionIdPrecedes(e->add_parts[i].min_xid, ch->new_min_xid)))
-			ch->new_min_xid = e->add_parts[i].min_xid;
+		ch->new_min_xid = sift_mf_older_active(ch->new_min_xid, e->add_parts[i].min_xid);
 	}
 	sift_gen_map_free(&map);
 }
@@ -778,8 +776,7 @@ write_edited_parts(Relation rel, Change *ch, BlkVec *created, SiftPartitionEntry
 		if (!sift_col_delta_anchor_sane(&ep->anchor))
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift index \"%s\": the column delta anchor of partition %llu is not valid", RelationGetRelationName(rel),
 																			(unsigned long long) e->part_id)));
-		if (FullTransactionIdIsValid(ep->anchor.min_xid) && (!FullTransactionIdIsValid(ch->new_min_xid) || FullTransactionIdPrecedes(ep->anchor.min_xid, ch->new_min_xid)))
-			ch->new_min_xid = ep->anchor.min_xid;
+		ch->new_min_xid = sift_mf_older_active(ch->new_min_xid, ep->anchor.min_xid);
 		ch->set_cd_dir = (ep->anchor.flags & SIFT_CDLA_INDEXED_DIR) != 0;
 	}
 	if (sift_col_delta_anchor_has_chain(&ep->anchor) && ep->n == 0)

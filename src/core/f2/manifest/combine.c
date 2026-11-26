@@ -114,8 +114,7 @@ publish_batch(void *ctx, const SiftManifestEntryDelta *const *deltas, uint32 n)
 			before = *at;
 			*at = after;
 			sift_mf_account(&ch, &before, at);
-			if (FullTransactionIdIsValid(min_xid) && (!FullTransactionIdIsValid(ch.new_min_xid) || FullTransactionIdPrecedes(min_xid, ch.new_min_xid)))
-				ch.new_min_xid = min_xid;
+			ch.new_min_xid = sift_mf_older_active(ch.new_min_xid, min_xid);
 			for (uint32 j = 0; j < deltas[i]->nrelease; j++)
 				freed[nfreed++] = (SiftExtent) {deltas[i]->release[j].start, deltas[i]->release[j].nblocks};
 		}

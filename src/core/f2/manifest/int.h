@@ -187,6 +187,13 @@ sift_gen_map_free(SiftGenMap *m)
 		pfree(m->slot);
 }
 
+/* The oldest of a and xid, where only a normal id counts: a frozen part (min_xid FrozenTransactionId) holds nothing back */
+static inline FullTransactionId
+sift_mf_older_active(FullTransactionId a, FullTransactionId xid)
+{
+	return FullTransactionIdIsNormal(xid) && (!FullTransactionIdIsValid(a) || FullTransactionIdPrecedes(xid, a)) ? xid : a;
+}
+
 extern void sift_mf_blk_add(BlkVec *b, BlockNumber blk);
 extern int	sift_mf_drop_parts(Relation rel, SiftPartDesc *parts, int n, const SiftManifestEdit *e, uint64 **expire, int *nexpire);
 extern void sift_mf_apply_updates(Relation rel, const SiftPartitionEntry *ent, SiftPartDesc *parts, const SiftGenMap *map, const SiftManifestEdit *e);
