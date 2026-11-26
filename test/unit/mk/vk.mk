@@ -10,3 +10,7 @@ LIB_agg/vk/seat  = agg/vk/seat.c
 LIB_agg/vk/wait  = $(VK_LAYER)
 LIB_agg/vk/sums  = agg/vk/fin.c
 LIB_col/gpu_part = col/gpu.c
+
+TESTS    += agg/gpu/worker
+AUTOSTUB += agg/gpu/worker
+XFLAGS_agg/gpu/worker = -D_GNU_SOURCE -Wno-unused-function

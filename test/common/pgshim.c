@@ -266,6 +266,7 @@ appendStringInfo(StringInfo s, const char *fmt,...)
 
 static jmp_buf try_jmp;
 static bool armed;
+void		(*pgshim_error_hook) (void);
 int			pgshim_sqlstate;
 char		pgshim_errmsg[512];
 char		pgshim_errloc[128];
@@ -340,6 +341,8 @@ errhint(const char *fmt,...)
 void
 errfinish(const char *filename, int lineno, const char *funcname)
 {
+	if (pgshim_error_hook != NULL)
+		pgshim_error_hook();
 	if (!armed)
 	{
 		fprintf(stderr, "ereport(ERROR) outside pgshim_try at %s:%d: %s\n", filename, lineno, pgshim_errmsg);

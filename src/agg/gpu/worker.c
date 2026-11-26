@@ -98,7 +98,8 @@ sift_gpu_worker_main(Datum main_arg)
 #define LOCAL_BATCH_BYTES		((uint64) 128 << 20)
 #define WAIT_SLICE_MS			5
 #define START_WAIT_MS			2000
-#define SLOT_WAIT_MS			30000
+/* A backend that finds every slot busy waits this long, then gives its job to the CPU: a slot is held for a whole job, often longer */
+#define SLOT_WAIT_MS			20
 #define FAILED_RETRY_US			(30 * USECS_PER_SEC)
 #define ALIGN8(x)				TYPEALIGN(8, (x))
 
@@ -911,8 +912,15 @@ remote_run(SiftGpuConn *c, const SiftVkJob *job, SiftVkResult *res)
 	st = (SiftVkStatus) s->status;
 	if (st != SIFT_VK_OK)
 		snprintf(c->error, sizeof(c->error), "%s", s->error);
-	take_result(c, s, stage, res);
-	pg_atomic_write_u32(&s->state, SIFT_GPU_S_FREE);
+	PG_TRY();
+	{
+		take_result(c, s, stage, res);
+	}
+	PG_FINALLY();
+	{
+		pg_atomic_write_u32(&s->state, SIFT_GPU_S_FREE);
+	}
+	PG_END_TRY();
 	return st;
 }
 

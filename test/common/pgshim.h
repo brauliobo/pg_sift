@@ -20,6 +20,8 @@ extern int	pgshim_encoding;
 
 /* Runs fn(arg) the way a backend runs a statement: an ereport(ERROR) unwinds to here and the call returns false. Outside it, an error aborts */
 extern bool pgshim_try(void (*fn) (void *), void *arg);
+/* Set by a test whose code under test catches errors (PG_TRY): an ereport(ERROR) calls it (it does not return) to unwind there, as a backend does, in place of the jump to pgshim_try */
+extern void (*pgshim_error_hook) (void);
 /* Everything palloc'd so far (the set-up of a target) stays; pgshim_reset frees what comes after */
 extern void pgshim_keep(void);
 extern void pgshim_reset(void);
