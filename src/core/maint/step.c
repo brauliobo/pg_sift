@@ -7,12 +7,15 @@
 
 #include "access/relation.h"
 #include "access/xact.h"
+#include "catalog/index.h"
+#include "storage/lmgr.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
 #include "col/f2/f2.h"
 #include "col/f2/vacuum/run.h"
 #include "core/maint/maint.h"
+#include "core/maint/pacer.h"
 #include "core/maint/sched.h"
 #include "core/meta_peek.h"
 #include "core/quarantine/quarantine.h"
@@ -64,6 +67,15 @@ step_of(Relation rel, const SiftMaintClaim *claim)
 	return sift_f2_maint_step(rel, claim);
 }
 
+/* The lock of the table of the claim, without waiting: a step that waited for a VACUUM or an ALTER TABLE would hold the slot of its database the while */
+static bool
+lock_table(const SiftMaintClaim *claim)
+{
+	Oid			heapoid = IndexGetRelation(claim->rel, true);
+
+	return ConditionalLockRelationOid(OidIsValid(heapoid) ? heapoid : claim->rel, step_lock(claim->kind));
+}
+
 SiftMaintStep
 sift_maint_step(const SiftMaintClaim *claim, void *arg pg_attribute_unused())
 {
@@ -71,6 +83,12 @@ sift_maint_step(const SiftMaintClaim *claim, void *arg pg_attribute_unused())
 	SiftMaintStep step = SIFT_MSTEP_GONE;
 
 	StartTransactionCommand();
+	if (!lock_table(claim))
+	{
+		sift_pacer_note_lock_yield();
+		CommitTransactionCommand();
+		return SIFT_MSTEP_BUSY;
+	}
 	PushActiveSnapshot(GetTransactionSnapshot());
 	rel = sift_maint_open(claim->rel, step_lock(claim->kind));
 	if (rel != NULL)

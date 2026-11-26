@@ -4,9 +4,11 @@
 # cannot take less than the number of pages the merge reads and writes allows. The throttle is counted where it acts: a testing build logs each
 # nap of a throttled writer (src/core/writer.c), and the naps follow from the pages written, not from the clock or from a sample of the worker's waits, which
 # a loaded runner moves. Both leave the same, intact index, and a VACUUM (not the worker) is not throttled.
+# A worker whose table another session holds (SHARE UPDATE EXCLUSIVE, as a VACUUM or an ALTER TABLE does) does not wait for it with a snapshot: it gives the step back and
+# takes it again once the table is free.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 8
+plan 11
 node_init delay 13 "autovacuum = off
 sift.async_maintenance = on"
 node_start delay || bail "start failed"
@@ -63,5 +65,19 @@ BEFORE=$(naps)
 sql delay "VACUUM vac" >/dev/null
 check "VACUUM is not throttled" test "$(($(naps) - BEFORE))" -eq 0
 check "VACUUM merged the backlog" test "$(sql delay "SELECT count(*) <= 12 FROM sift.segments('vac_idx')")" == t
+sql delay "CREATE TABLE lk (id int, v int)" "CREATE INDEX lk_col ON lk USING sift_col (id, v)" >/dev/null || bail "setup lk failed"
+for k in 1 2 3 4; do sql delay "SET sift.async_maintenance = off" "INSERT INTO lk SELECT g, g FROM generate_series($((k * 20000)), $((k * 20000 + 19999))) g" >/dev/null || bail "insert failed"; done
+sess_open delay holder
+sess_say holder "BEGIN; LOCK TABLE lk IN SHARE UPDATE EXCLUSIVE MODE; \\echo @@held"
+wait_for "grep -q '@@held' '$(dir delay)/holder.out'" 30 || bail "the lock was not taken"
+dead() { sql delay "SELECT coalesce(sum(dead_rows), 0) FROM sift.parts('lk_col')"; }
+held_waits() { sql delay "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'sift %' AND wait_event_type = 'Lock'"; }
+no_lock_wait() { ! wait_for "[[ \$(held_waits) -gt 0 ]]" 5; }
+sql delay "DELETE FROM lk WHERE id % 2 = 0" >/dev/null || bail "delete failed"
+check "the deleted rows wait for a compaction" test "$(dead)" -gt 0
+check "no worker waits for the table with a snapshot" no_lock_wait
+sess_say holder "COMMIT;"
+sess_close holder
+check "the worker compacts once the table is free" wait_for "[[ \$(dead) == 0 ]]" 120
 check "out of range is an error" test "$(sql delay "SELECT sift.version() IS NOT NULL" "SET sift.maintenance_cost_delay = 101" 2>&1 | grep -c 'outside the valid range')" == 1
 finish
