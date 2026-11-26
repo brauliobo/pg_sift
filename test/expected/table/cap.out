@@ -2,6 +2,8 @@
 -- promotes it into a column segment: the writers merge those as they go, so the load does not stop at the limit (it was 126 segments, VACUUM
 -- the only merge). The limit is lowered here (a testing setting) to reach it with a few dozen segments.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segment directory of a table, its write buffers and backpressure are those of Format 1 tables
+SET sift.test_create_format1 = on;
 SET sift.table_max_segments = 24;
 CREATE TABLE cap (id int, v text) USING sift_table;
 SELECT sift.table_set_option('cap', 'write_buffer_limit', '2048');

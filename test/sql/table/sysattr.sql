@@ -144,6 +144,7 @@ BEGIN
 END $$;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
+SET sift.agg_force = on;
 SELECT pushed('SELECT v, count(*) FROM s GROUP BY v') AS control_pushed,
 	pushed('SELECT v, count(xmin::text) FROM s GROUP BY v') AS xmin_aggregate_pushed,
 	pushed('SELECT v, count(*) FROM s WHERE xmax::text = ''0'' GROUP BY v') AS xmax_filter_pushed;
@@ -152,6 +153,7 @@ SET sift.enable_agg = off;
 SELECT v, count(*), count(DISTINCT xmin::text) AS xmins, count(*) FILTER (WHERE xmax::text <> '0') AS with_xmax FROM s GROUP BY v ORDER BY v;
 RESET sift.enable_agg;
 RESET cpu_tuple_cost;
+RESET sift.agg_force;
 RESET max_parallel_workers_per_gather;
 
 -- VACUUM FREEZE: a heap keeps the inserter's xid in a frozen row (the frozen flag is a hint bit), a sift_table row reads FrozenTransactionId (2)
