@@ -8,6 +8,7 @@
 #include "access/amapi.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/plancat.h"
 #include "utils/rel.h"
 
