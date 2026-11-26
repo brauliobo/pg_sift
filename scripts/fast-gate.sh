@@ -9,8 +9,8 @@
 #   lane 2   surface_sweep             test/fuzz/surface_sweep.py --tier quick: every SQL function with hostile arguments, the roles
 #            coldiff (col, table)      scripts/coldiff.sh --fast [--table]: DML, abort and VACUUM scenarios against the plain plan
 #   lane 3   shapes_matrix             test/fuzz/shapes_matrix.py --tier quick
-#   lane 4   txn_fuzz                  test/fuzz/txn/cli.py --shapes: two sessions, savepoints, cursors, prepared statements
-#            tbl_twin_fuzz             test/fuzz/tbl_twin.py: a sift_table against its heap twin
+#            txn_fuzz                  test/fuzz/txn/cli.py --shapes: two sessions, savepoints, cursors, prepared statements
+#   lane 4   tbl_twin_fuzz             test/fuzz/tbl_twin.py: a sift_table against its heap twin, the longest step (its --seconds and the checks after them): alone on its lane
 #            bm25_fuzz, diff_fuzz      only for an area or a harness that names them
 #   lane 5   regress                   scripts/pgtest.sh regress TEST...: the test/sql files of the change, on Format 1 (--include-sql, or a test/sql file edited)
 #   every lane ends with the leak gate of its cluster (scripts/leakcheck.sh, run by pgtest.sh stop)
@@ -275,8 +275,8 @@ build_plan() {
 		[[ $facts == ALL || ${#kept[@]} -gt 0 ]] || S_SKIP[-1]="shapes_matrix.py has no fact $facts yet"
 	fi
 	if [[ -n ${DEM[txn_fuzz]-} ]]; then
-		add_step txn_fuzz 4 test/fuzz/txn/cli.py - --shapes --seeds "$seeds" --stop-after 1
-		! supports --table test/fuzz/txn/cli.py || add_step txn_fuzz-table 4 test/fuzz/txn/cli.py - --shapes --seeds "$seeds" --stop-after 1 --table
+		add_step txn_fuzz 3 test/fuzz/txn/cli.py - --shapes --seeds "$seeds" --stop-after 1
+		! supports --table test/fuzz/txn/cli.py || add_step txn_fuzz-table 3 test/fuzz/txn/cli.py - --shapes --seeds "$seeds" --stop-after 1 --table
 	fi
 	[[ -z ${DEM[tbl_twin_fuzz]-} ]] || add_step tbl_twin_fuzz 4 test/fuzz/tbl_twin.py - --seeds "$seeds" --seconds "$secs" $(supports --ddl test/fuzz/tbl_twin.py && echo --ddl)
 	[[ -z ${DEM[bm25_fuzz]-} ]] || add_step bm25_fuzz 4 test/fuzz/bm25.py - --seeds "$seeds" --queries 20 --stop-after 1
