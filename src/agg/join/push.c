@@ -57,6 +57,7 @@ typedef struct PushJoin
 	AttrNumber	fact_attno;
 	Oid			opno;
 	bool		semi;
+	Relids		semi_rhs;		/* the relations under the EXISTS or IN of a semi join */
 } PushJoin;
 
 static bool
@@ -124,7 +125,8 @@ find_join(PlannerInfo *root, PushJoin *j)
 	const EquivalenceClass *joining = NULL;
 	int			clauses = list_length(j->dim->joininfo);
 
-	j->semi = root->join_info_list != NIL;
+	j->semi_rhs = root->join_info_list != NIL ? ((const SpecialJoinInfo *) linitial(root->join_info_list))->syn_righthand : NULL;
+	j->semi = j->semi_rhs != NULL;
 	foreach_node(EquivalenceClass, ec, root->eq_classes)
 		if (class_joins(ec, j))
 		{
@@ -199,6 +201,13 @@ dim_unique(const PushJoin *j)
 			return true;
 	}
 	return false;
+}
+
+/* The small side of a semi join is the relation under the EXISTS or IN: the aggregates read the rows of the other one */
+static bool
+semi_inner(const PushJoin *j)
+{
+	return bms_is_member(j->dim->relid, j->semi_rhs);
 }
 
 /* The position (0-based) in the index of the column attno, -1 when it is not a key column */
@@ -322,7 +331,7 @@ sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 		PushJoin	j = {.fact = root->simple_rel_array[swap ? b : a],.dim = root->simple_rel_array[swap ? a : b]};
 
 		if (j.fact == NULL || j.dim == NULL || !plain_table(root, j.fact) || !plain_table(root, j.dim) || j.dim->cheapest_total_path == NULL ||
-			j.dim->rows > PUSH_ROWS_MAX || !find_join(root, &j) || !(j.semi || dim_unique(&j)))
+			j.dim->rows > PUSH_ROWS_MAX || !find_join(root, &j) || !(j.semi ? semi_inner(&j) : dim_unique(&j)))
 			continue;
 		j.dim_path = sift_v6_dim_path(root, j.fact, j.dim, j.semi ? SV6J_SEMI_EQUI : SV6J_INNER_EQUI, 1, &j.fact_attno, (const Var *const *) &j.dim_var);
 		add_push_path(root, &j, out, extra, NULL);
