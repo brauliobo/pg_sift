@@ -410,18 +410,15 @@ probe_staged(Relation index, const SiftUniqKey *rk, SiftUniqHits *hits)
 
 /* A row of the same key as the new one, if there is one: in the registry first, in the partitions after */
 static void
-find_conflict(UniqueKey *k, Relation index, Relation heap, IndexInfo *info, const SiftUniqKey *rk, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
+find_conflict(UniqueKey *k, const Row *row, Relation heap, const SiftUniqKey *rk, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
 {
-	Row			row = {.index = index,.info = info,.estate = info->ii_Expressions != NIL ? CreateExecutorState() : NULL};
 	SiftUniqHits hits;
 
 	*c = (Conflict) {.found = FOUND_NONE};
-	probe_staged(index, rk, &hits);
-	find_staged(k, &row, heap, &hits, values, isnull, self, c);
+	probe_staged(row->index, rk, &hits);
+	find_staged(k, row, heap, &hits, values, isnull, self, c);
 	if (c->found == FOUND_NONE)
-		find_published(k, &row, heap, rk, values, isnull, self, c);
-	if (row.estate != NULL)
-		FreeExecutorState(row.estate);
+		find_published(k, row, heap, rk, values, isnull, self, c);
 }
 
 bool
@@ -461,45 +458,65 @@ sift_f2_unique_lookup(IndexScanDesc scan, MemoryContext cx, SiftUniqLookup *out)
 
 /* The manifest of the partitions as the key reads it is fetched and pruned before the lock of the key is taken, so that the writers of other keys of the index do not wait on one another for it: under the lock the same calls see the version and the stamps of what a flush published meanwhile, and fold again only what changed */
 static void
-warm_published_plan(UniqueKey *k, Relation index, Relation heap, IndexInfo *info, const SiftUniqKey *rk)
+warm_published_plan(UniqueKey *k, const Row *row, Relation heap, const SiftUniqKey *rk)
 {
-	Row			row = {.index = index,.info = info,.estate = info->ii_Expressions != NIL ? CreateExecutorState() : NULL};
 	MemoryContext cx = probe_context();
 
-	(void) published_plan(k, &row, heap, rk, cx);
-	if (row.estate != NULL)
-		FreeExecutorState(row.estate);
+	(void) published_plan(k, row, heap, rk, cx);
 	MemoryContextReset(cx);
+}
+
+/* What every insert of the statement into the index uses: kept in the IndexInfo, for the life of the statement */
+typedef struct UniqueInsert
+{
+	UniqueKey	k;
+	Row			row;
+} UniqueInsert;
+
+static UniqueInsert *
+unique_insert_state(Relation index, IndexInfo *info)
+{
+	MemoryContext old;
+	UniqueInsert *u = info->ii_AmCache;
+
+	if (u != NULL)
+		return u;
+	old = MemoryContextSwitchTo(info->ii_Context);
+	u = palloc(sizeof(UniqueInsert));
+	key_init(&u->k, index);
+	u->row = (Row) {.index = index,.info = info,.estate = info->ii_Expressions != NIL ? CreateExecutorState() : NULL};
+	MemoryContextSwitchTo(old);
+	return info->ii_AmCache = u;
 }
 
 bool
 sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull, ItemPointer heap_tid, IndexUniqueCheck check, IndexInfo *info)
 {
-	UniqueKey	k;
+	UniqueInsert *u = unique_insert_state(index, info);
+	UniqueKey  *k = &u->k;
 	SiftUniqKey rk;
 	uint32		hash;
 	BlockNumber lock;
 	bool		write = check != UNIQUE_CHECK_EXISTING,
 				spilled = false;
 
-	key_init(&k, index);
-	if (key_has_null(&k, isnull) && !k.nulls_not_distinct)
+	if (key_has_null(k, isnull) && !k->nulls_not_distinct)
 	{
 		if (write)
 			sift_f2_stage_row(index, values, isnull, heap_tid);
 		return true;
 	}
-	hash = key_hash(&k, values, isnull);
-	registry_key(&k, index, hash, values, isnull, &rk);
+	hash = key_hash(k, values, isnull);
+	registry_key(k, index, hash, values, isnull, &rk);
 	lock = SIFT_UNIQUE_LOCK_BASE + hash % SIFT_UNIQUE_LOCK_SLOTS;
-	warm_published_plan(&k, index, heap, info, &rk);
+	warm_published_plan(k, &u->row, heap, &rk);
 	for (;;)
 	{
 		Conflict	c;
 		bool		deferred;
 
 		LockPage(index, lock, ExclusiveLock);
-		find_conflict(&k, index, heap, info, &rk, values, isnull, heap_tid, &c);
+		find_conflict(k, &u->row, heap, &rk, values, isnull, heap_tid, &c);
 		deferred = c.found != FOUND_NONE && check == UNIQUE_CHECK_PARTIAL && !(c.found == FOUND_RUNNING && c.in_stage);
 		if (write && (c.found == FOUND_NONE || deferred))
 		{

@@ -294,26 +294,28 @@ refresh_batches(SlabFilter *f, Relation index, Relation heap, BlockNumber head, 
 
 /*
  * What the chain at tail holds now: for a slab of references the page of its tail says (an open page has no checksum, which the stamp of col/f2/l0/slab.h would refuse); the tail
- * is the page that every append changes. A slab of batches has the stamp of its pages.
+ * is the page that every append changes. A slab of batches, and a directory (of references or not: its shard tails are what the appends change), have the stamp of their pages.
  */
 static SiftChainStamp
 chain_stamp(Relation index, uint64 part_id, BlockNumber tail, bool *href)
 {
-	Buffer		buf = sift_blk_read(index, tail, BUFFER_LOCK_SHARE);
-	Page		page = BufferGetPage(buf);
-	const SiftL0SlabPageData *sl = (const SiftL0SlabPageData *) SiftPageGetData(page);
+	Buffer		buf;
+	Page		page;
+	const SiftL0SlabPageData *sl;
 	SiftChainStamp st = {0};
 
+	*href = sift_l0_slab_is_href(index, part_id, tail);
+	if (!*href || sift_l0_slab_is_dir(index, part_id, tail))
+		return sift_l0_slab_stamp(index, part_id, tail);
+	buf = sift_blk_read(index, tail, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	sl = (const SiftL0SlabPageData *) SiftPageGetData(page);
 	sift_page_expect(index, page, tail, SIFT_PT_L0_SLAB, 0, (uint32) part_id);
-	*href = sift_l0_href_is(page);
-	if (*href)
-	{
-		st.lsn = PageGetLSN(page);
-		st.count = sl->chain_rows;
-		st.pages = sl->chain_pages;
-	}
+	st.lsn = PageGetLSN(page);
+	st.count = sl->chain_rows;
+	st.pages = sl->chain_pages;
 	UnlockReleaseBuffer(buf);
-	return *href ? st : sift_l0_slab_stamp(index, part_id, tail);
+	return st;
 }
 
 /* Brings the filter of the slab at tail up to what the chain holds now */
