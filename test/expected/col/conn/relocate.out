@@ -3,6 +3,8 @@
 -- found-flag plan answers with the rows of the normal plan after each.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;
@@ -82,7 +84,6 @@ SELECT file_x100() > 170 AS file_twice_the_segment;
  t
 (1 row)
 
-SET sift.vacuum_rewrite_limit = 1;
 VACUUM ev;
 SELECT file_x100() < 115 AS file_near_the_segment;
  file_near_the_segment 
@@ -109,7 +110,6 @@ SELECT * FROM check_all();
  t      | t    | t
 (1 row)
 
-RESET sift.vacuum_rewrite_limit;
 -- a few dead rows: VACUUM writes the net sidecar of the units that hold them and leaves the segment as it is
 DELETE FROM ev WHERE id % 500 = 7;
 VACUUM ev;

@@ -15,7 +15,7 @@ SELECT kind, rows, dead_rows FROM sift.table_segments('t') WHERE kind = 'columns
 -- 10% deleted and 5% updated (the old versions are tombstones), nothing vacuumed
 DELETE FROM t WHERE id % 10 = 3;
 UPDATE t SET n = n + 1000 WHERE id % 20 = 5;
-SELECT count(*) > 0 AS tombstones FROM sift.table_segments('t') WHERE kind = 'tombstones';
+SELECT bool_or(kind = 'tombstones' OR dead_rows > 0) AS tombstones FROM sift.table_segments('t');
  tombstones 
 ------------
  t

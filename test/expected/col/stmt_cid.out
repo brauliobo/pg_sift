@@ -115,19 +115,19 @@ SELECT * FROM chk('merge');
 
 -- a cursor and UPDATE ... WHERE CURRENT OF
 BEGIN;
-DECLARE cur CURSOR FOR SELECT code FROM tk WHERE code IN (SELECT 'c' || i FROM generate_series(13, 20000, 13) i) FOR UPDATE;
+DECLARE cur CURSOR FOR SELECT code FROM tk WHERE code IN (SELECT 'c' || i FROM generate_series(13, 20000, 13) i) ORDER BY code FOR UPDATE;
 MOVE FORWARD 39 IN cur;
 FETCH FROM cur;
   code  
 --------
- c19890
+ c10452
 (1 row)
 
 UPDATE tk SET amount = amount + 8 + f_perform() WHERE CURRENT OF cur;
 FETCH FROM cur;
- code  
--------
- c4355
+  code  
+--------
+ c10465
 (1 row)
 
 UPDATE tk SET amount = amount + 9 + f_perform() WHERE CURRENT OF cur;

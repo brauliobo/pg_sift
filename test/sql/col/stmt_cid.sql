@@ -68,7 +68,7 @@ SELECT * FROM chk('merge');
 
 -- a cursor and UPDATE ... WHERE CURRENT OF
 BEGIN;
-DECLARE cur CURSOR FOR SELECT code FROM tk WHERE code IN (SELECT 'c' || i FROM generate_series(13, 20000, 13) i) FOR UPDATE;
+DECLARE cur CURSOR FOR SELECT code FROM tk WHERE code IN (SELECT 'c' || i FROM generate_series(13, 20000, 13) i) ORDER BY code FOR UPDATE;
 MOVE FORWARD 39 IN cur;
 FETCH FROM cur;
 UPDATE tk SET amount = amount + 8 + f_perform() WHERE CURRENT OF cur;

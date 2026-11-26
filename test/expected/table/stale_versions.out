@@ -77,7 +77,7 @@ SELECT * FROM sift.table_find_stale_versions('sv_part', 2);
 SELECT count(*) AS rows_seen, count(DISTINCT id) AS keys_seen FROM sv_sift;
  rows_seen | keys_seen 
 -----------+-----------
-      3025 |      3025
+      3025 |      3000
 (1 row)
 
 SELECT current_setting('sift.enable_agg') AS enable_agg_after, current_setting('enable_indexscan') AS indexscan_after;

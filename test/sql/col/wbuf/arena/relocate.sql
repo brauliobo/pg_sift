@@ -5,6 +5,8 @@
 -- found-flag plan answers with the rows of the normal plan after each.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.test_col_wbuf_ref = on;
@@ -64,14 +66,12 @@ CREATE FUNCTION file_x100() RETURNS int LANGUAGE sql AS $$
 	SELECT (100 * relation_blocks * 8192 / (SELECT sum(bytes) FROM sift.col_sections('ev_col') WHERE section <> 'free'))::int FROM sift.col_index_info('ev_col') $$;
 -- the space step shifts the runs of the segment down into the free blocks under it (the file is twice the segment after the merge)
 SELECT file_x100() > 170 AS file_twice_the_segment;
-SET sift.vacuum_rewrite_limit = 1;
 VACUUM ev;
 SELECT file_x100() < 115 AS file_near_the_segment;
 SELECT (SELECT count(*) FROM sift._test_col_conn_stamps('ev_col') n JOIN before b USING (gen, ordinal, lineage, horizon)) AS same_stamps,
        (SELECT count(*) FROM before) AS stamps;
 SELECT fill FROM sift.col_connections WHERE child = 'ev_col'::regclass;
 SELECT * FROM check_all();
-RESET sift.vacuum_rewrite_limit;
 
 -- a few dead rows: VACUUM writes the net sidecar of the units that hold them and leaves the segment as it is
 DELETE FROM ev WHERE id % 500 = 7;
