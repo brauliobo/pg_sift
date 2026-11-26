@@ -192,7 +192,49 @@ record_winner(const SiftV6Group *g, const uint8 *states, const char *base, int i
 	return base;
 }
 
-/* The record of every group of ht: the values of its keys and of its text winners with its states, hashed by those values */
+/* The record in out, padded, with its length, kind, hash and nulls, to put */
+static void
+own_put(StringInfo out, uint64 hash, uint64 nulls, SiftRecPut put, void *arg)
+{
+	uint32		len;
+
+	while (out->len % 8 != 0)
+		appendStringInfoChar(out, '\0');
+	len = (uint32) out->len;
+	memcpy(out->data, &len, sizeof(len));
+	len = OWN_REC;
+	memcpy(out->data + sizeof(uint32), &len, sizeof(len));
+	memcpy(out->data + 8, &hash, sizeof(hash));
+	memcpy(out->data + 16, &nulls, sizeof(nulls));
+	put(arg, hash, (const uint8 *) out->data, (uint32) out->len);
+}
+
+/* the next values of percentile_cont j of a record into out, their number into its state */
+static int64
+own_pct(const SiftV6Group *g, SiftPctPut *pp, int j, StringInfo out)
+{
+	const int64 n = sift_v6_pct_put(&pp[j], out);
+
+	memcpy(out->data + OWN_HDR + g->off[j] + offsetof(V6Acc, n), &n, sizeof(n));
+	return n;
+}
+
+/* the same for each percentile_cont; false when none had values left */
+static bool
+own_pcts(const SiftV6Group *g, SiftPctPut *pp, StringInfo out)
+{
+	bool		any = false;
+
+	for (int j = 0; j < g->spec->naggs; j++)
+		if (g->spec->agg[j].kind == SV6_PCT_CONT)
+			any |= own_pct(g, pp, j, out) > 0;
+	return any;
+}
+
+/*
+ * The records of every group of ht: the values of its keys and of its text winners with its states, hashed by those values. The values of a percentile_cont of more than a record holds
+ * follow in records of the same keys whose other states are empty.
+ */
 static void
 own_flush(const SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, SiftRecPut put, void *arg)
 {
@@ -203,6 +245,7 @@ own_flush(const SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, Sif
 	const SiftAggSlot64 *s;
 	int64		key[SIFT_V6_MAX_KEYS];
 	SiftV6StrIn str[SIFT_V6_MAX_KEYS];
+	SiftPctPut *pp = palloc0(Max(spec->naggs, 1) * sizeof(SiftPctPut));
 
 	initStringInfo(&out);
 	SIFT_HT_FOREACH(ht, s)
@@ -210,7 +253,7 @@ own_flush(const SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, Sif
 		const uint8 *ext = sift_ht_ext(ht, s);
 		uint64		nulls,
 					hash;
-		uint32		len;
+		int			keys_end;
 
 		slot_keys(g, set, ht, s, key, str, &nulls);
 		resetStringInfo(&out);
@@ -244,6 +287,7 @@ own_flush(const SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, Sif
 			}
 			hash = sift_aggk6_hash1(hash ^ kh);
 		}
+		keys_end = out.len;
 		for (int j = 0; j < spec->naggs; j++)
 		{
 			const V6Acc *acc = (const V6Acc *) (ext + g->off[j]);
@@ -257,19 +301,23 @@ own_flush(const SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, Sif
 		}
 		for (int j = 0; j < spec->naggs; j++)
 			if (spec->agg[j].kind == SV6_PCT_CONT)
-				sift_v6_pct_put(&g->tx, (const V6Acc *) (ext + g->off[j]), &out);
+				sift_v6_pct_put_begin(&pp[j], &g->tx, (const V6Acc *) (ext + g->off[j]));
+		for (int j = 0; j < spec->naggs; j++)
+			if (spec->agg[j].kind == SV6_PCT_CONT)
+				own_pct(g, pp, j, &out);
 			else if (g->gen != NULL && g->gen->agg[j] != NULL)
 				v6_gen_state_put(g->gen, j, (const V6Acc *) (ext + g->off[j]), &out);
-		while (out.len % 8 != 0)
-			appendStringInfoChar(&out, '\0');
-		len = (uint32) out.len;
-		memcpy(out.data, &len, sizeof(len));
-		len = OWN_REC;
-		memcpy(out.data + sizeof(uint32), &len, sizeof(len));
-		memcpy(out.data + 8, &hash, sizeof(hash));
-		memcpy(out.data + 16, &nulls, sizeof(nulls));
-		put(arg, hash, (const uint8 *) out.data, (uint32) out.len);
+		own_put(&out, hash, nulls, put, arg);
+		for (;;)
+		{
+			out.len = keys_end;
+			memset(out.data + OWN_HDR, 0, g->stride);
+			if (!own_pcts(g, pp, &out))
+				break;
+			own_put(&out, hash, nulls, put, arg);
+		}
 	}
+	pfree(pp);
 	pfree(out.data);
 }
 
@@ -335,14 +383,15 @@ own_merge(const SiftRadixShape *sh, SiftRecMerge *m, const uint8 *rec)
 	dst = sift_ht_ext(m->ht, v6g_slot_of(g, set, m->ht, key, str, nulls));
 	for (int j = 0; j < spec->naggs; j++)
 		if (spec->agg[j].kind == SV6_PCT_CONT)
-			at = sift_v6_pct_take(&g->tx, (V6Acc *) (dst + g->off[j]), &src[j], at);
+			at = sift_v6_pct_take(&g->tx, (V6Acc *) (dst + g->off[j]), &src[j], at, true);
 		else if (g->gen != NULL && g->gen->agg[j] != NULL)
 			at = v6_gen_state_take(g->gen, j, (V6Acc *) (dst + g->off[j]), &src[j], at);
 		else
 			v6g_merge_acc(g, &spec->agg[j], (V6Acc *) (dst + g->off[j]), &src[j]);
+	v6g_mem_check(g, false);
 }
 
-/* The winners of the text MIN and MAX of the sets of no keys outlive the arena they are in: they are copied out and set again in the one that is empty */
+/* The winners of the text MIN and MAX of the sets of no keys outlive the arena they are in: they are copied out and set again in the one that is empty; their percentile_cont go to their sorts */
 static void
 tx_reset(SiftV6Group *g)
 {
@@ -353,9 +402,11 @@ tx_reset(SiftV6Group *g)
 	for (int s = 0; s < g->nsets; s++)
 		for (int j = 0; j < spec->naggs && g->set[s].nk == 0; j++)
 		{
-			const V6Acc *acc = &g->set[s].plain[j];
+			V6Acc	   *acc = &g->set[s].plain[j];
 
-			if (tx_winner(&spec->agg[j], acc))
+			if (spec->agg[j].kind == SV6_PCT_CONT)
+				sift_v6_pct_sort(&g->tx, acc, g->pct_kb);
+			else if (tx_winner(&spec->agg[j], acc))
 				keep[s * spec->naggs + j] = memcpy(MemoryContextAlloc(tmp, (uint32) acc->v1), g->tx.buf + acc->v0, (uint32) acc->v1);
 		}
 	if (g->tx.buf != NULL)
@@ -419,15 +470,6 @@ all_keyed(const SiftV6Group *g)
 	return true;
 }
 
-static bool
-pct_of(const SiftV6Group *g)
-{
-	for (int j = 0; j < g->spec->naggs; j++)
-		if (g->spec->agg[j].kind == SV6_PCT_CONT)
-			return true;
-	return false;
-}
-
 /* The states of the generic aggregates leave with the groups when every group is in a table that spills, and every aggregate combines */
 static bool
 gen_spills(const SiftV6Group *g)
@@ -463,7 +505,7 @@ v6g_spill_own(SiftV6Group *g)
 
 	for (int j = 0; j < spec->naggs; j++)
 		values |= v6g_is_text_mm(&spec->agg[j]) || spec->agg[j].kind == SV6_PCT_CONT;
-	if (!values || g->ndist > 0 || (g->gen != NULL && !gen_spills(g)) || (pct_of(g) && !all_keyed(g)))
+	if (!values || (g->ndist > 0 && g->gkeys != NULL) || (g->gen != NULL && !gen_spills(g)))
 		return;
 	g->own_recs = true;
 	for (int s = 0; s < g->nsets; s++)

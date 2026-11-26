@@ -80,6 +80,20 @@ FETCH 3 FROM c;
 MOVE FORWARD ALL IN c;
 COMMIT;
 
+-- percentile_cont of a group of more values than hash memory (300,000 among 30,000 small groups): the values of the group merged from the partitions go to a sort, so that the
+-- groups hold no more than their memory at any step (0.15 of the allowance of the test build), with or without keys of grouping sets and a COUNT(DISTINCT) beside it
+CREATE TABLE hot (id int, g int, k int, v float8);
+-- 300,000 values in group 0: 2.4 MB of values, more than the allowance, which the spill reads back into one group
+INSERT INTO hot SELECT i, CASE WHEN i % 11 = 0 THEN i ELSE 0 END, i % 7, (i::bigint * 7919 % 100003)::float8 FROM generate_series(1, 330000) i;
+CREATE INDEX hot_col ON hot USING sift_col (id, g, k, v);
+VACUUM (FREEZE, ANALYZE) hot;
+SET sift.test_mem_budget_scale = 0.15;
+SELECT * FROM stale_case('SELECT g, percentile_cont(0.5) WITHIN GROUP (ORDER BY v) AS p FROM hot GROUP BY g');
+SELECT * FROM stale_case('SELECT g, count(*) AS n, percentile_cont(0.25) WITHIN GROUP (ORDER BY v) AS p FROM hot GROUP BY ROLLUP (g)');
+SELECT * FROM stale_case('SELECT g, count(DISTINCT k) AS d, percentile_cont(0.5) WITHIN GROUP (ORDER BY v) AS p FROM hot GROUP BY g');
+RESET sift.test_mem_budget_scale;
+DROP TABLE hot;
+
 DROP FUNCTION stale_case(text);
 DROP TABLE stale;
 DROP EXTENSION pg_sift;

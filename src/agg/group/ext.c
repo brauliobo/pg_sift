@@ -152,7 +152,7 @@ v6g_ext_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, bool *
 		case SV6_BOOL_AND:
 			return BoolGetDatum(((const SiftBoolAcc *) acc)->v != 0);
 		case SV6_PCT_CONT:
-			return Float8GetDatum(sift_v6_pct_final(&g->tx, acc, a->frac));
+			return Float8GetDatum(sift_v6_pct_final(&g->tx, (V6Acc *) acc, a->frac));
 		default:
 			{
 				uint32		len = 0;

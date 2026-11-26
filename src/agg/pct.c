@@ -20,6 +20,7 @@
 #define PCT_CHUNK_FIRST	64
 #define PCT_CHUNK_LAST	8192
 #define PCT_SORT_AFTER	16384			/* values a state keeps in the arena before they go to its sort */
+#define PCT_GROUP_KB	64				/* the work_mem of the sort of a group merged from a spill: each group past PCT_SORT_AFTER values has one */
 #define PCT_SORTED		(-1)			/* v1 of a state whose values are in a tuplesort that v0 points to */
 #define PCT_DONE		(-2)			/* v1 of a state that has its answer: v0 holds the double */
 
@@ -122,16 +123,23 @@ sort_put_chunks(const SiftTextArena *ar, Tuplesortstate *ts, const V6Acc *acc)
 }
 
 void
+sift_v6_pct_sort(const SiftTextArena *ar, V6Acc *acc, int sort_kb)
+{
+	Tuplesortstate *ts;
+
+	if (acc->v1 == PCT_SORTED || acc->v1 == PCT_DONE || acc->n == 0)
+		return;
+	ts = tuplesort_begin_datum(FLOAT8OID, Float8LessOperator, InvalidOid, false, sort_kb, NULL, TUPLESORT_NONE);
+	sort_put_chunks(ar, ts, acc);
+	acc->v0 = (uint64) (uintptr_t) ts;
+	acc->v1 = PCT_SORTED;
+}
+
+void
 sift_v6_pct_add_sorted(SiftTextArena *ar, V6Acc *acc, double x, int sort_kb)
 {
-	if (acc->v1 != PCT_SORTED && acc->n >= PCT_SORT_AFTER)
-	{
-		Tuplesortstate *ts = tuplesort_begin_datum(FLOAT8OID, Float8LessOperator, InvalidOid, false, sort_kb, NULL, TUPLESORT_NONE);
-
-		sort_put_chunks(ar, ts, acc);
-		acc->v0 = (uint64) (uintptr_t) ts;
-		acc->v1 = PCT_SORTED;
-	}
+	if (acc->n >= PCT_SORT_AFTER)
+		sift_v6_pct_sort(ar, acc, sort_kb);
 	if (acc->v1 == PCT_SORTED)
 	{
 		tuplesort_putdatum(sort_of(acc), Float8GetDatum(x), false);
@@ -163,25 +171,63 @@ sift_v6_pct_merge(SiftTextArena *ar, V6Acc *d, const V6Acc *s)
 }
 
 void
-sift_v6_pct_put(const SiftTextArena *ar, const V6Acc *acc, StringInfo buf)
+sift_v6_pct_put_begin(SiftPctPut *p, const SiftTextArena *ar, const V6Acc *acc)
 {
-	for (uint64 off = acc->n > 0 ? acc->v0 : 0; off != 0; off = chunk_at(ar, off - 1)->next)
-	{
-		const PctChunk *c = chunk_at(ar, off - 1);
+	*p = (SiftPctPut) {.ar = ar,.left = acc->n,.off = acc->n > 0 ? acc->v0 : 0};
+	if (acc->v1 != PCT_SORTED)
+		return;
+	p->ts = sort_of(acc);
+	tuplesort_performsort(p->ts);
+}
 
-		appendBinaryStringInfo(buf, (const char *) (c + 1), (int) (c->n * sizeof(double)));
+int64
+sift_v6_pct_put(SiftPctPut *p, StringInfo buf)
+{
+	const int64 n = Min(p->left, SIFT_PCT_REC_VALUES);
+	Datum		d;
+	bool		isnull;
+
+	for (int64 k = 0; p->ts != NULL && k < n && tuplesort_getdatum(p->ts, true, false, &d, &isnull, NULL); k++)
+	{
+		const double x = DatumGetFloat8(d);
+
+		appendBinaryStringInfo(buf, (const char *) &x, sizeof(x));
 	}
+	for (int64 k = 0; p->ts == NULL && k < n;)
+	{
+		const PctChunk *c = chunk_at(p->ar, p->off - 1);
+		const uint32 m = (uint32) Min(c->n - p->at, n - k);
+
+		appendBinaryStringInfo(buf, (const char *) (chunk_vals((PctChunk *) c) + p->at), (int) (m * sizeof(double)));
+		k += m;
+		p->at += m;
+		if (p->at == c->n)
+		{
+			p->off = c->next;
+			p->at = 0;
+		}
+	}
+	p->left -= n;
+	if (p->ts != NULL && p->left == 0)
+	{
+		tuplesort_end(p->ts);
+		p->ts = NULL;
+	}
+	return n;
 }
 
 const char *
-sift_v6_pct_take(SiftTextArena *ar, V6Acc *dst, const V6Acc *src, const char *tail)
+sift_v6_pct_take(SiftTextArena *ar, V6Acc *dst, const V6Acc *src, const char *tail, bool sorts)
 {
 	for (int64 i = 0; i < src->n; i++, tail += sizeof(double))
 	{
 		double		x;
 
 		memcpy(&x, tail, sizeof(x));
-		sift_v6_pct_add(ar, dst, x);
+		if (sorts)
+			sift_v6_pct_add_sorted(ar, dst, x, PCT_GROUP_KB);
+		else
+			sift_v6_pct_add(ar, dst, x);
 	}
 	return tail;
 }
@@ -258,7 +304,7 @@ sift_v6_pct_release(V6Acc *acc)
 }
 
 double
-sift_v6_pct_final(const SiftTextArena *ar, const V6Acc *acc, double frac)
+sift_v6_pct_final(const SiftTextArena *ar, V6Acc *acc, double frac)
 {
 	const int64 n = acc->n;
 	const OsaRound *rd = osa_round(false);
@@ -270,6 +316,7 @@ sift_v6_pct_final(const SiftTextArena *ar, const V6Acc *acc, double frac)
 				second,
 				r;
 
+	sift_v6_pct_finish(acc, frac);
 	if (acc->v1 == PCT_DONE)
 	{
 		memcpy(&r, &acc->v0, sizeof(r));
