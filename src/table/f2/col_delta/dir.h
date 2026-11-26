@@ -121,6 +121,6 @@ extern SiftColDeltaWriter sift_col_delta_disk_writer(SiftColDeltaDiskChain *d);
 /* The directory pages on disk (generic WAL, the partition lock held) */
 extern BlockNumber sift_cddir_io_newest_data(Relation rel, uint32 part_id, BlockNumber dir_head);
 extern BlockNumber sift_cddir_io_promote(Relation rel, uint32 part_id, BlockNumber data_head, int npages);
-extern BlockNumber sift_cddir_io_add(Relation rel, uint32 part_id, BlockNumber dir_head, BlockNumber blk, const SiftColDeltaBatch *part);
+extern BlockNumber sift_cddir_io_add(Relation rel, uint32 part_id, BlockNumber dir_head, const BlockNumber *blks, const SiftColDeltaBatch *parts, int n);
 
 #endif							/* SIFT_TBL_F2_COL_DELTA_DIR_H */

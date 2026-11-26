@@ -344,11 +344,11 @@ disk_dir_promote(void *ctx, BlockNumber data_head, int npages)
 }
 
 static BlockNumber
-disk_dir_add(void *ctx, BlockNumber dir_head, BlockNumber blk, const SiftColDeltaBatch *part)
+disk_dir_add(void *ctx, BlockNumber dir_head, const BlockNumber *blks, const SiftColDeltaBatch *parts, int n)
 {
 	SiftColDeltaDiskChain  *d = ctx;
 
-	return sift_cddir_io_add(d->rel, (uint32) d->entry->part_id, dir_head, blk, part);
+	return sift_cddir_io_add(d->rel, (uint32) d->entry->part_id, dir_head, blks, parts, n);
 }
 
 static uint64
@@ -443,22 +443,56 @@ sift_cddir_io_promote(Relation rel, uint32 part_id, BlockNumber data_head, int n
 	return new_dir_page(rel, part_id, InvalidBlockNumber, 0, ent, npages, lo, hi);
 }
 
-BlockNumber
-sift_cddir_io_add(Relation rel, uint32 part_id, BlockNumber dir_head, BlockNumber blk, const SiftColDeltaBatch *part)
+/* The writers of the pages of the parts as one range */
+static void
+parts_xid_range(const SiftColDeltaBatch *parts, int n, FullTransactionId *lo, FullTransactionId *hi)
 {
-	SiftColDeltaDirEntry e = sift_cddir_entry_of_batch(blk, part);
+	*lo = *hi = InvalidFullTransactionId;
+	for (int i = 0; i < n; i++)
+	{
+		if (!FullTransactionIdIsValid(parts[i].min_xid))
+			continue;
+		if (!FullTransactionIdIsValid(*lo) || FullTransactionIdPrecedes(parts[i].min_xid, *lo))
+			*lo = parts[i].min_xid;
+		*hi = sift_fxid_max(*hi, parts[i].max_xid);
+	}
+}
+
+/* The entries that fit the newest directory page go to it in one record; the rest make directory pages of their own, each a full page of entries but the last */
+BlockNumber
+sift_cddir_io_add(Relation rel, uint32 part_id, BlockNumber dir_head, const BlockNumber *blks, const SiftColDeltaBatch *parts, int n)
+{
 	Buffer		buf = dir_buffer(rel, dir_head, part_id, BUFFER_LOCK_EXCLUSIVE);
 	Page		page = BufferGetPage(buf);
 	uint32		total = sift_cddir_page_hdr((const char *) page)->total_delta_pages;
+	int			fit = Min(n, SIFT_CDDIR_MAX_ENTRIES - (int) sift_cddir_page_hdr((const char *) page)->nentries);
+	SiftColDeltaDirEntry *ents = palloc(Max(n, 1) * sizeof(SiftColDeltaDirEntry));
+	BlockNumber head = dir_head;
 
-	if (sift_cddir_page_hdr((const char *) page)->nentries < SIFT_CDDIR_MAX_ENTRIES)
+	for (int i = 0; i < n; i++)
+		ents[i] = sift_cddir_entry_of_batch(blks[i], &parts[i]);
+	if (fit > 0)
 	{
 		SiftXlog	x = sift_xlog_start(rel);
 
-		SIFT_INVARIANT(sift_cddir_page_add(sift_xlog_register(&x, buf, 0), &e, part->min_xid, part->max_xid), "an entry that fit the directory page did not");
+		page = sift_xlog_register(&x, buf, 0);
+		for (int i = 0; i < fit; i++)
+			SIFT_INVARIANT(sift_cddir_page_add(page, &ents[i], parts[i].min_xid, parts[i].max_xid), "an entry that fit the directory page did not");
 		sift_xlog_done(&x);
-		return dir_head;
+		total += (uint32) fit;
 	}
-	UnlockReleaseBuffer(buf);
-	return new_dir_page(rel, part_id, dir_head, total, &e, 1, part->min_xid, part->max_xid);
+	else
+		UnlockReleaseBuffer(buf);
+	for (int at = fit; at < n; at += SIFT_CDDIR_MAX_ENTRIES)
+	{
+		int			take = Min(n - at, SIFT_CDDIR_MAX_ENTRIES);
+		FullTransactionId lo,
+					hi;
+
+		parts_xid_range(parts + at, take, &lo, &hi);
+		head = new_dir_page(rel, part_id, head, total, ents + at, take, lo, hi);
+		total += (uint32) take;
+	}
+	pfree(ents);
+	return head;
 }

@@ -5,6 +5,7 @@
 
 #include "col/f2/col_delta/idx.h"
 #include "core/hash.h"
+#include "table/f2/col_delta/batch_enc.h"
 
 /* ---- the records ---- */
 
@@ -156,17 +157,17 @@ sift_cd_remap_build(const SiftColDeltaChain *chain, const SiftColDeltaOps *ops)
 	for (int i = 0; i < chain->npages; i++)
 	{
 		const char *page = sift_col_delta_chain_page(chain, i);
-		const uint8 *p = sift_col_delta_page_first(page),
-				   *end = sift_col_delta_page_end(page);
+		SiftColDeltaRecs recs;
+		SiftColDeltaEntryHdr h;
+		const uint8 *rec;
 
-		while (p < end)
+		sift_col_delta_recs_init(&recs, sift_col_delta_page_first(page), sift_col_delta_page_end(page));
+		while (sift_col_delta_recs_next(&recs, &rec, &h))
 		{
-			SiftColDeltaEntryHdr h;
 			SiftColDeltaPatch col;
 
-			memcpy(&h, p, sizeof(h));
 			if ((h.flags & SIFT_CDENT_FLAG_LEAF_ADDR) != 0 && h.ncols > 0 && ops->visible(ops->ctx, h.xmin, h.cid) &&
-				sift_col_delta_decode_col(p + sizeof(h), p + h.rec_bytes, &col) != NULL && col.attnum == SIFT_CD_ATT_TID_REMAP)
+				sift_col_delta_decode_col(rec + sizeof(h), rec + h.rec_bytes, &col) != NULL && col.attnum == SIFT_CD_ATT_TID_REMAP)
 			{
 				if (n == cap)
 				{
@@ -176,7 +177,6 @@ sift_cd_remap_build(const SiftColDeltaChain *chain, const SiftColDeltaOps *ops)
 				v[n++] = (SiftCdRemap) {h.part_gen, h.granule_id, h.row_ordinal, (uint64) col.val.i, seq};
 			}
 			seq++;
-			p += h.rec_bytes;
 		}
 	}
 	if (n == 0)

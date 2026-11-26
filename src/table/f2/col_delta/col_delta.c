@@ -235,7 +235,7 @@ bloom_of_hdr(SiftColDeltaBatch *b, const SiftColDeltaEntryHdr *h)
 		b->page_flags |= SIFT_CDPG_DIRTY_TIME1;
 }
 
-/* The blooms of a batch: the rows of a batch name the columns of the batch and are all of leaves */
+/* The blooms of a batch: the rows of a batch name the columns of the batch, and the address each row moves to when the batch has that column */
 static void
 bloom_of_batch(SiftColDeltaBatch *b, const uint8 *rec, uint32 rec_bytes)
 {
@@ -244,13 +244,18 @@ bloom_of_batch(SiftColDeltaBatch *b, const uint8 *rec, uint32 rec_bytes)
 	const uint8 *row;
 
 	b->dir_flags |= SIFT_CDD_FLAG_HAS_BATCH;
-	b->page_flags |= SIFT_CDPG_LEAVES;
 	sift_col_delta_recs_init_hdrs(&rows, rec, rec + rec_bytes);
 	while (sift_col_delta_recs_next(&rows, &row, &rh))
 	{
 		bloom_of_hdr(b, &rh);
 		for (int k = 0; k < rows.ncols; k++)
+		{
 			b->attnum_bloom |= sift_cd_att_bit(rows.attnum[k]);
+			if (rows.attnum[k] == SIFT_CD_ATT_TID_REMAP)
+				b->tid_bloom |= sift_cd_tid_bit((uint64) rows.cols[k].cell.i);
+			else
+				b->page_flags |= SIFT_CDPG_LEAVES;
+		}
 	}
 }
 
@@ -506,6 +511,9 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 	BlockNumber data_head = fresh || !indexed ? a->delta_head_blkno : w->dir_data_head(w->ctx, a->delta_head_blkno);
 	uint32		npages;
 	uint64		gen = 0;
+	BlockNumber *blks = NULL;
+	SiftColDeltaBatch *added = NULL;
+	int			nadded = 0;
 
 	if (fresh || leaves)
 		flags = leaves ? (uint16) (flags & ~SIFT_CDLA_TID_ONLY) : (uint16) (flags | SIFT_CDLA_TID_ONLY);
@@ -520,7 +528,11 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 	/* STOR[STOR-TBL-06]: batched col_delta page gen + single commit_anchor (1 vs N manifest/Block-0 WAL recs) */
 	npages = sift_col_delta_batch_pages(b);
 	if (npages > 0)
+	{
 		gen = w->reserve_gens(w->ctx, npages);
+		blks = palloc(npages * sizeof(BlockNumber));
+		added = palloc(npages * sizeof(SiftColDeltaBatch));
+	}
 	for (uint32 off = 0; off < b->nbytes;)
 	{
 		SiftColDeltaBatch part;
@@ -533,14 +545,27 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 			indexed = true;
 		}
 		data_head = w->new_page(w->ctx, &part, data_head, (uint16) (a->npages + 1), gen++);
-		a->delta_head_blkno = indexed ? w->dir_add(w->ctx, a->delta_head_blkno, data_head, &part) : data_head;
+		if (indexed)
+		{
+			blks[nadded] = data_head;
+			added[nadded] = part;
+			added[nadded++].bytes = NULL;
+		}
+		else
+			a->delta_head_blkno = data_head;
 		a->npages++;
 		a->min_xid = xid_min(a->min_xid, bmin);
 		a->max_xid = sift_fxid_max(a->max_xid, bmax);
 		sift_col_delta_batch_free(&part);
 	}
+	if (nadded > 0)
+		a->delta_head_blkno = w->dir_add(w->ctx, a->delta_head_blkno, blks, added, nadded);
 	if (npages > 0)
+	{
 		w->commit_anchor(w->ctx, a);
+		pfree(blks);
+		pfree(added);
+	}
 	sift_col_delta_batch_free(b);
 }
 

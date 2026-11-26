@@ -27,26 +27,48 @@ typedef struct Feed
 	int			n;
 } Feed;
 
+typedef enum Shape
+{
+	SHAPE_INTS,					/* integers, the last a double when asked */
+	SHAPE_LEAF_ADDR,			/* the new address of the row, then integers: a record of a sift_col index */
+	SHAPE_STRS,					/* an integer and a string that is the same for most rows */
+	SHAPE_NULLS					/* an integer and a column that is null in every row */
+} Shape;
+
+static const char *const words[] = {"shipped", "", "pending", "a longer string than the others of the column"};
+
 static uint32
-make(uint8 *buf, uint32 ord, uint64 tid, int ncols, int64 base, bool with_double, TransactionId xmin)
+make(uint8 *buf, uint32 ord, uint64 tid, int ncols, int64 base, bool with_double, TransactionId xmin, Shape shape)
 {
 	SiftColDeltaCol cols[SIFT_COL_DELTA_MAX_COLS_PER_REC] = {0};
 	SiftColDeltaTarget t = {.part_gen = 4,.granule_id = 9,.row_ordinal = (uint16) ord,.tid = tid};
+	uint8		flags = shape == SHAPE_LEAF_ADDR ? SIFT_CDENT_FLAG_LEAF_ADDR : 0;
+	int			first = shape == SHAPE_LEAF_ADDR ? 1 : 0;
+	const char *word = words[(uint64) base % 17 == 0 ? 1 + (uint64) base / 17 % 3 : 0];
 
-	for (int k = 0; k < ncols; k++)
+	if (shape == SHAPE_LEAF_ADDR)
+		cols[0] = (SiftColDeltaCol) {.attnum = SIFT_CD_ATT_TID_REMAP,.kind = SIFT_CELL_INT,.cell = {.i = (int64) (tid + 3 + (uint64) ord % 5)}};
+	for (int k = first; k < ncols; k++)
 	{
-		cols[k].attnum = (int16) (k + 2);
+		cols[k].attnum = (int16) (k + 2 - first);
 		cols[k].kind = with_double && k == ncols - 1 ? SIFT_CELL_F8 : SIFT_CELL_INT;
 		if (cols[k].kind == SIFT_CELL_F8)
 			cols[k].cell.f = (double) base / 3.0;
 		else
 			cols[k].cell.i = base * (k + 1);
 	}
-	return sift_col_delta_encode(buf, SIFT_COL_DELTA_MAX_REC_BYTES, &t, xmin, 0, 0, cols, ncols);
+	if (shape == SHAPE_STRS || shape == SHAPE_NULLS)
+	{
+		cols[ncols - 1].kind = shape == SHAPE_STRS ? SIFT_CELL_STR : SIFT_CELL_INT;
+		cols[ncols - 1].cell.isnull = shape == SHAPE_NULLS;
+		cols[ncols - 1].cell.s = word;
+		cols[ncols - 1].cell.slen = (uint32) strlen(word);
+	}
+	return sift_col_delta_encode(buf, SIFT_COL_DELTA_MAX_REC_BYTES, &t, xmin, 0, flags, cols, ncols);
 }
 
 static void
-fill(Feed *f, int n, int ncols, bool with_double, int jump)
+fill(Feed *f, int n, int ncols, bool with_double, int jump, Shape shape)
 {
 	uint32		ord = 3;
 	uint64		tid = ((uint64) 17 << 16) | 4;
@@ -54,7 +76,7 @@ fill(Feed *f, int n, int ncols, bool with_double, int jump)
 	f->n = n;
 	for (int i = 0; i < n; i++)
 	{
-		f->bytes[i] = make(f->rec[i], ord, tid, ncols, (int64) rnd() % 100000 - 50000, with_double, 10 + (i / 200));
+		f->bytes[i] = make(f->rec[i], ord, tid, ncols, (int64) rnd() % 100000 - 50000, with_double, 10 + (i / 200), shape);
 		ord += 1 + (uint32) (rnd() % jump);
 		tid += 1 + (uint64) (rnd() % jump);
 	}
@@ -112,22 +134,30 @@ test_round_trip(void)
 					ncols,
 					jump;
 		bool		dbl;
+		Shape		shape;
 		const char *what;
 	}			cases[] = {
-		{1, 1, 1, false, "one row"},
-		{2, 1, 1, false, "two rows"},
-		{50, 1, 1, false, "one int column, next rows"},
-		{300, 2, 40, true, "an int and a double, jumps"},
-		{MAX_RECS, 3, 5, false, "three int columns, many rows"},
-		{200, 1, 1, true, "a double alone"},
-		{MAX_RECS, 8, 3, true, "eight columns, a double"},
+		{1, 1, 1, false, SHAPE_INTS, "one row"},
+		{2, 1, 1, false, SHAPE_INTS, "two rows"},
+		{50, 1, 1, false, SHAPE_INTS, "one int column, next rows"},
+		{300, 2, 40, true, SHAPE_INTS, "an int and a double, jumps"},
+		{MAX_RECS, 3, 5, false, SHAPE_INTS, "three int columns, many rows"},
+		{200, 1, 1, true, SHAPE_INTS, "a double alone"},
+		{MAX_RECS, 8, 3, true, SHAPE_INTS, "eight columns, a double"},
+		{2, 2, 1, false, SHAPE_LEAF_ADDR, "an address change and a leaf, two rows"},
+		{MAX_RECS, 2, 7, false, SHAPE_LEAF_ADDR, "an address change and a leaf, jumps"},
+		{MAX_RECS, 9, 3, false, SHAPE_LEAF_ADDR, "an address change and eight leaves"},
+		{MAX_RECS, 1, 1, false, SHAPE_LEAF_ADDR, "an address change alone"},
+		{MAX_RECS, 2, 2, false, SHAPE_STRS, "strings, mostly the same"},
+		{MAX_RECS, 3, 4, false, SHAPE_STRS, "an integer and strings"},
+		{MAX_RECS, 2, 2, false, SHAPE_NULLS, "a column that is null in every row"},
 	};
 
 	for (int i = 0; i < (int) lengthof(cases); i++)
 	{
 		Feed	   *f = malloc(sizeof(*f));
 
-		fill(f, cases[i].n, cases[i].ncols, cases[i].dbl, cases[i].jump);
+		fill(f, cases[i].n, cases[i].ncols, cases[i].dbl, cases[i].jump, cases[i].shape);
 		check_round_trip(f, cases[i].what);
 		free(f);
 	}

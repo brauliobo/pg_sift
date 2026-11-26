@@ -266,8 +266,8 @@ typedef struct SiftColDeltaWriter
 	BlockNumber (*dir_data_head) (void *ctx, BlockNumber dir_head);
 	/* The directory of a flat chain of npages pages, the newest at data_head: its newest directory page */
 	BlockNumber (*dir_promote) (void *ctx, BlockNumber data_head, int npages);
-	/* The entry of the data page blk, made for the records of part, in the directory whose newest page is dir_head (InvalidBlockNumber: none yet): the newest directory page after it */
-	BlockNumber (*dir_add) (void *ctx, BlockNumber dir_head, BlockNumber blk, const SiftColDeltaBatch *part);
+	/* The entries of the data pages blks[0..n), each made for the records of parts[i], in the directory whose newest page is dir_head, in one change of it while they fit: the newest directory page after them */
+	BlockNumber (*dir_add) (void *ctx, BlockNumber dir_head, const BlockNumber *blks, const SiftColDeltaBatch *parts, int n);
 	/* n generations reserved for the pages of a flush in one change of the metapage; the first */
 	uint64		(*reserve_gens) (void *ctx, uint32 n);
 	/* A page of its own, of generation gen, for the records of b (at most one page of them) after the page prev, whose depth is depth - 1; its block */
