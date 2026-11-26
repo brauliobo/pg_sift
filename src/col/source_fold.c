@@ -26,6 +26,7 @@
 #include "agg/pipe.h"
 #include "agg/star/run.h"
 #include "agg/vexpr.h"
+#include "col/am/preds.h"
 #include "col/source_fold.h"
 #include "core/memtrack.h"
 #include "nodes/pathnodes.h"
@@ -564,6 +565,16 @@ heap_var(Relation index, int att)
 	return makeVar(1, heap_att, typid, typmod, coll, 0);
 }
 
+/* The operator of a key: the class's, or the negator of its = or LIKE for the strategies the aggregate scan makes of <> and NOT LIKE (col/am/preds.h) */
+static Oid
+key_operator(Relation index, int a, Oid left, Oid right, int strat)
+{
+	const int	base = strat == COL_STRAT_NE ? BTEqualStrategyNumber : strat == COL_STRAT_NOT_LIKE ? COL_STRAT_LIKE : strat;
+	const Oid	opno = get_opfamily_member(index->rd_opfamily[a], left, right, base);
+
+	return base == strat || !OidIsValid(opno) ? opno : get_negator(opno);
+}
+
 static Node *
 key_clause(Relation index, const ScanKeyData *k)
 {
@@ -582,7 +593,7 @@ key_clause(Relation index, const ScanKeyData *k)
 		nt->nulltesttype = (k->sk_flags & SK_SEARCHNULL) ? IS_NULL : IS_NOT_NULL;
 		return (Node *) nt;
 	}
-	opno = get_opfamily_member(index->rd_opfamily[a], var->vartype, right, k->sk_strategy);
+	opno = key_operator(index, a, var->vartype, right, k->sk_strategy);
 	if (!OidIsValid(opno))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scan key of index \"%s\" is not one the stored columns decide", RelationGetRelationName(index)),
 						errhint("Run the statement with sift.enable_agg = off.")));
