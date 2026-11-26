@@ -14,7 +14,6 @@ REPO=${SIFT_REPO:?}
 NODE_CONF="autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
-max_wal_size = 1GB
 restart_after_crash = on
 sift.async_maintenance = off"
 node_init pv 0 "$NODE_CONF"
