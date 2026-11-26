@@ -279,7 +279,10 @@ doc_hits(SiftPlan *p, const WbufTab *tab, const SiftWbufDoc *d, DocHits *h)
 static int
 int32_cmp(const void *a, const void *b)
 {
-	return pg_cmp_s32(*(const int32 *) a, *(const int32 *) b);
+	const int32 x = *(const int32 *) a,
+				y = *(const int32 *) b;
+
+	return (x > y) - (x < y);
 }
 
 /* The lengths of the doc and the best tfs of its scoring leaves, the leaves ascending */

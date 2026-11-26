@@ -423,6 +423,7 @@ col/f2/l0/slab.h
 col/f2/l0/stage.c
 col/f2/l0/stage.h
 col/f2/l0/stage_flush.c
+col/f2/l0/stage_part.c
 col/f2/l0/stage_int.h
 col/f2/l0/stage_test.c
 col/f2/part/format.c
@@ -745,6 +746,7 @@ core/f2/fsm/int.h
 core/f2/fsm/reclaim.c
 core/f2/fsm/release_guard.c
 core/f2/fsm/slab.c
+core/f2/fsm/chain.c
 core/f2/fsm/sweep.c
 core/f2/fsm/cache.c
 core/f2/io_stream.c
@@ -909,6 +911,8 @@ core/waits.c
 core/waits.h
 core/wal_conflict.c
 core/wal_conflict.h
+core/wal_conflict_test.c
+core/log_pages.c
 core/worker.c
 core/worker.h
 core/writer.c
