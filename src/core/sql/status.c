@@ -476,7 +476,8 @@ fill_f2(StatusRow *row, const SiftApiRel *r, const SiftApiSpace *sp)
 
 	tally_partitions(r->rel, &t);
 	tally_scopes(r, &meta, &t);
-	if (sp->reusable_blocks >= SIFT_TAIL_SHRINK_MIN_BLOCKS && sp->reusable_blocks * 100 >= (int64) SIFT_TAIL_SHRINK_FREE_PCT * sp->high_water)
+	if (sp->reusable_blocks >= SIFT_TAIL_SHRINK_MIN_BLOCKS && sp->reusable_blocks * 100 >= (int64) SIFT_TAIL_SHRINK_FREE_PCT * sp->high_water &&
+		(sp->tail_blocks > 0 || sp->relation_blocks > sp->high_water))
 		due_note(&t, DUE_TAIL_SHRINK);
 	put_i64(row, ST_DATA_BYTES, t.data_bytes);
 	put_i64(row, ST_META_BYTES, Max(0, size - t.data_bytes - t.scope_bytes - t.skip_bytes - free_bytes - t.slack_bytes));

@@ -86,9 +86,11 @@ sift_fsm_check(Relation rel)
 	Page		root = BufferGetPage(rootbuf);
 	SiftFsmMetaPageData *m = FSMM(root);
 	ExtVec		all = {0}, pages = {0}, queue = {0};
-	uint64		freebits = 0;
+	uint64		freebits = 0,
+				tail_end;
 
 	sift_fsm_check_root(rel, rootbuf);
+	tail_end = meta->high_water;
 	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
 	{
 		ExtVec		ready = {0};
@@ -125,6 +127,11 @@ sift_fsm_check(Relation rel)
 		if ((uint64) all.v[i].start + all.v[i].nblocks > meta->high_water ||
 			(i > 0 && (uint64) all.v[i - 1].start + all.v[i - 1].nblocks > all.v[i].start))
 			SIFT_CORRUPT(rel, "Free or queued extents overlap or pass the high-water mark at block %u.", all.v[i].start);
+	for (int i = all.n - 1; i >= 0 && (uint64) all.v[i].start + all.v[i].nblocks == tail_end; i--)
+	{
+		st.tail_blocks += all.v[i].nblocks;
+		tail_end = all.v[i].start;
+	}
 	st.meta_free = freebits;
 	for (uint32 i = 0; i < SLABS(root)->nslabs; i++)
 		st.meta_total += SLABS(root)->slab[i].nblocks;

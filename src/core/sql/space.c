@@ -205,6 +205,7 @@ space_f2(const SiftApiRel *r, SiftApiSpace *s)
 	s->has_largest = true;
 	s->free_extents += st.quarantine_extents;
 	s->pending_blocks = st.quarantine_blocks;
+	s->tail_blocks = st.tail_blocks;
 	s->free_blocks = s->reusable_blocks + s->pending_blocks;
 	s->high_water = meta.high_water;
 	s->used_blocks = s->high_water - s->free_blocks;

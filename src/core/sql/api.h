@@ -64,6 +64,7 @@ typedef struct SiftApiSpace
 	int64		used_blocks;
 	int64		free_blocks;
 	int64		reusable_blocks;
+	int64		tail_blocks;
 	int64		pending_blocks;
 	int64		free_extents;
 	int64		largest_free_extent;

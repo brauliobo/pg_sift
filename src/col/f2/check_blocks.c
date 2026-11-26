@@ -27,6 +27,7 @@
 #include "core/f2/proj.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "core/restrict.h"
 #include "table/f2/col_delta/dir.h"
 #include "table/f2/tbl.h"
 
@@ -453,7 +454,7 @@ walk(BlockMap *m)
 static void
 check_windows(Relation rel)
 {
-	BlockMap	m = {.rel = rel,.meta = sift_col_meta_read(rel),.complete = sift_fsm_names_all_extents(rel)};
+	BlockMap	m = {.rel = rel,.meta = sift_col_meta_read(rel),.complete = sift_fsm_names_all_extents(rel) && !sift_fsm_sweep_due(rel)};
 	Size		budget = Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2), 1024 * 1024);
 
 	m.span = Min((uint64) m.meta.high_water, budget);
@@ -481,6 +482,8 @@ sift_f2_check_blocks(Relation rel)
 		return;
 	}
 	sift_fsm_meta_pool_drain(rel);
+	if (!sift_xid_unassignable() && sift_fsm_sweep_due(rel))
+		(void) sift_fsm_sweep_orphans(rel);
 	check_windows(rel);
 	if (!held)
 		UnlockRelation(rel, ShareLock);

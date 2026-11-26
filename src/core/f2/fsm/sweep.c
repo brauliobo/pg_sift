@@ -7,7 +7,7 @@
  * free or queued and the free blocks of the slabs, and what is left below the high-water mark is an orphan. It runs only when it has the relation to itself (AccessExclusiveLock without waiting,
  * the load lock, no VACUUM reading the manifest): no writer is between the allocation of an extent and the commit that names it. It frees nothing, and says why at DEBUG1, when the relation
  * holds something it does not name (a part in an object store, a shard directory), when a page is not what its reference says, when
- * two names or a name and a free list overlap, when an orphan page carries the generation of a live part, or when the orphans are over half of the index. While a physical standby streams, the
+ * two names or a name and a free list overlap, or when the orphans are over half of the index. A page of the extents a part keeps under its generation when its pieces are moved below a cut (col/f2/tail.c) is an orphan like any other when the crash came before the commit that names it: the generation of a page says nothing of whether the live part names it. While a physical standby streams, the
  * orphans enter the quarantine of the allocator as the extents of a compaction do, and the horizon of the standby holds them back.
  */
 #include "core/host.h"
@@ -64,9 +64,6 @@ typedef struct Sweep
 	PGAlignedBlock root;		/* the allocator root: the slabs */
 	ExtVec		held;			/* the extents something names, the free lists and the queue included */
 	ExtVec		packed;			/* the packed pages the parts name: one page holds the header of up to 16 of them */
-	uint64	   *gens;			/* the generations of the live parts, deletion vectors and manifest pages */
-	int			ngens;
-	int			gens_max;
 	uint32		named[NNAMED];	/* how many of each kind of block the sweep named, for DEBUG1 */
 	const char *why;			/* why the sweep gave up */
 	MemoryContext cx;			/* what the sweep keeps */
@@ -114,26 +111,6 @@ hold_blocks(Sweep *s, int kind, const BlockNumber *blk, int n)
 {
 	for (int i = 0; i < n; i++)
 		hold(s, kind, blk[i], 1);
-}
-
-static void
-hold_gen(Sweep *s, uint64 gen)
-{
-	if (s->ngens == s->gens_max)
-	{
-		s->gens_max = Max(64, s->gens_max * 2);
-		s->gens = s->gens ? repalloc(s->gens, s->gens_max * sizeof(uint64)) : palloc(s->gens_max * sizeof(uint64));
-	}
-	s->gens[s->ngens++] = gen;
-}
-
-static int
-gen_cmp(const void *a, const void *b)
-{
-	uint64		x = *(const uint64 *) a,
-				y = *(const uint64 *) b;
-
-	return x < y ? -1 : x > y;
 }
 
 /* A copy of the page when it is a page of the type with the magic (and, for sum, a good checksum), else NULL: a reference to a page that is not what it says ends the sweep */
@@ -240,13 +217,12 @@ open_part_begin(Sweep *s)
 
 /* The blocks of the part opened after open_part_begin: its header, extent lists and stream, or the packed page that holds its header */
 static void
-hold_opened(Sweep *s, int kind, const SiftPart *part, uint64 gen)
+hold_opened(Sweep *s, int kind, const SiftPart *part)
 {
 	SiftExtent *ext;
 	int			n;
 
 	MemoryContextSwitchTo(s->cx);
-	hold_gen(s, gen);
 	if (part->is_packed)
 		sift_fsm_extvec_add(&s->packed, part->header_blk, 1, InvalidFullTransactionId);
 	else
@@ -299,12 +275,11 @@ hold_part(Sweep *s, const SiftPartDesc *d, uint32 part_id)
 	if (d->dv_blk != InvalidBlockNumber)
 	{
 		hold(s, NAMED_DV, d->dv_blk, d->dv_nblocks);
-		hold_gen(s, d->dv_gen);
 	}
 	if (wide != NULL)
 		hold_part_wide(s, wide, d, part_id);
 	open_part_begin(s);
-	hold_opened(s, NAMED_PART, sift_part_open_desc(s->rel, d, part_id), d->part_gen);
+	hold_opened(s, NAMED_PART, sift_part_open_desc(s->rel, d, part_id));
 	return true;
 }
 
@@ -370,7 +345,6 @@ hold_partition(Sweep *s, const SiftPartitionEntry *e)
 		if (l == NULL || l->part_id != e->part_id || l->nparts == 0 || (listed += l->nparts) > e->nparts)
 			return give_up(s, "a part list page is not the partition's");
 		hold(s, NAMED_LIST, blk, 1);
-		hold_gen(s, l->manifest_gen);
 		blk = l->next_blk;
 		pfree(p);
 	}
@@ -393,7 +367,6 @@ hold_scopes(Sweep *s)
 
 	if (s->meta.scope_dir_blk != InvalidBlockNumber)
 	{
-		hold_gen(s, s->meta.scope_dir_gen);
 		if (!hold_chain(s, NAMED_SCOPE, s->meta.scope_dir_blk, &SCOPE_DIR))
 			return false;
 	}
@@ -401,7 +374,7 @@ hold_scopes(Sweep *s)
 		if ((refs[i].flags & SIFT_SCOPEREF_ACTIVE) && refs[i].header_blk != InvalidBlockNumber)
 		{
 			open_part_begin(s);
-			hold_opened(s, NAMED_SCOPE, sift_part_open(s->rel, refs[i].header_blk, refs[i].meta_gen, 0), refs[i].meta_gen);
+			hold_opened(s, NAMED_SCOPE, sift_part_open(s->rel, refs[i].header_blk, refs[i].meta_gen, 0));
 		}
 	return true;
 }
@@ -428,7 +401,7 @@ hold_projections(Sweep *s)
 		for (int k = 0; k < parts.nparts; k++)
 		{
 			open_part_begin(s);
-			hold_opened(s, NAMED_PROJ, sift_part_open(s->rel, parts.parts[k].header_blk, parts.parts[k].part_gen, SIFT_PROJ_PART_ID), parts.parts[k].part_gen);
+			hold_opened(s, NAMED_PROJ, sift_part_open(s->rel, parts.parts[k].header_blk, parts.parts[k].part_gen, SIFT_PROJ_PART_ID));
 		}
 	}
 	return true;
@@ -571,40 +544,6 @@ orphan_runs(Sweep *s, ExtVec *out, uint64 *blocks)
 	return true;
 }
 
-static bool
-in_slab(const Sweep *s, BlockNumber blk)
-{
-	const SiftFsmSlabTable *t = SLABS(s->root.data);
-
-	for (uint32 i = 0; i < t->nslabs; i++)
-		if (blk >= t->slab[i].start && blk < t->slab[i].start + t->slab[i].nblocks)
-			return true;
-	return false;
-}
-
-/* None of the orphans of the data zone is a page of a live part, deletion vector or manifest list: its generation would be one of theirs. A page of a metadata slab is rewritten in place and kept when it is freed, so its generation says nothing */
-static bool
-orphan_pages_dead(Sweep *s, const ExtVec *orphans)
-{
-	BlockNumber written = RelationGetNumberOfBlocks(s->rel);
-
-	if (s->ngens > 1)
-		qsort(s->gens, s->ngens, sizeof(uint64), gen_cmp);
-	for (int i = 0; i < orphans->n; i++)
-		for (uint64 b = orphans->v[i].start; !in_slab(s, orphans->v[i].start) && b < (uint64) orphans->v[i].start + orphans->v[i].nblocks && b < written; b++)
-		{
-			Buffer		buf = sift_blk_read(s->rel, (BlockNumber) b, BUFFER_LOCK_SHARE);
-			Page		p = BufferGetPage(buf);
-			uint64		gen = !PageIsNew(p) && sift_page_layout_ok((const char *) p) ? SiftPageGetOpaque(p)->gen : 0;
-
-			UnlockReleaseBuffer(buf);
-			/* check-complexity: allow bsearch-in-seq-loop: one probe for each orphan page, which is read from disk by the same step */
-			if (gen != 0 && s->ngens > 0 && bsearch(&gen, s->gens, s->ngens, sizeof(uint64), gen_cmp) != NULL)
-				return give_up(s, "an orphan page carries the generation of a live object");
-		}
-	return true;
-}
-
 /* The start of this server in milliseconds, kept to 32 bits and never 0 (the root of a relation never swept) */
 static uint32
 server_start(void)
@@ -676,11 +615,11 @@ collect(Sweep *s)
 }
 
 static bool
-orphans_safe(Sweep *s, const ExtVec *orphans, uint64 blocks)
+orphans_safe(Sweep *s, uint64 blocks)
 {
 	if (blocks * 100 > (uint64) s->meta.high_water * SIFT_FSM_SWEEP_MAX_PCT)
 		return give_up(s, "the orphans are over half of the index");
-	return orphan_pages_dead(s, orphans);
+	return true;
 }
 
 static uint64
@@ -721,7 +660,7 @@ sweep_locked(Relation rel)
 	uint64		blocks = 0;
 	bool		complete = false;
 
-	if (!collect(&s) || !orphan_runs(&s, &orphans, &blocks) || !orphans_safe(&s, &orphans, blocks))
+	if (!collect(&s) || !orphan_runs(&s, &orphans, &blocks) || !orphans_safe(&s, blocks))
 	{
 		ereport(DEBUG1, (errmsg("sift index \"%s\": the orphan sweep gave up: %s", RelationGetRelationName(rel), s.why)));
 		blocks = 0;

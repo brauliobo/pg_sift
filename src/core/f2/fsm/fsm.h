@@ -151,6 +151,9 @@ extern uint64 sift_fsm_reclaim_exclusive(Relation rel);
  */
 extern uint64 sift_fsm_sweep_orphans(Relation rel);
 
+/* Whether this server has not swept the orphans of the relation yet: until it has, what a crash left allocated is not a leak */
+extern bool sift_fsm_sweep_due(Relation rel);
+
 /* Whether every extent of the relation has a name that a pass over its parts finds: a sift_table keeps its wide values in extents that only a granule or a micro-slab names, so a table with a column of variable length has not */
 extern bool sift_fsm_names_all_extents(Relation rel);
 
@@ -162,6 +165,7 @@ typedef struct SiftFsmStats
 	uint64		meta_total;
 	uint64		meta_idle;		/* the blocks of the slabs with no page in use that can be given back */
 	uint64		quarantine_blocks;
+	uint64		tail_blocks;	/* the free and queued blocks that end at the high-water mark: what a cut of the file can give back */
 	uint32		quarantine_extents;
 	uint32		pages;			/* blocks held by the lists themselves */
 } SiftFsmStats;
