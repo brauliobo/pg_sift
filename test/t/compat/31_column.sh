@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Real released libraries write the input, including unpromoted records. No fixture produced by the new writer can prove this upgrade.
+export SIFT_FORMAT=1
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 if ((PG_MAJOR != 18)); then echo '1..0 # SKIP the released libraries build on PostgreSQL 18 only (two library roots; none supports 19 yet)'; exit 0; fi
@@ -15,6 +16,8 @@ QUERY="SELECT count(*) FILTER (WHERE jsonb_path_exists(items, '\$[*] ? (@.s != \
  count(*) FILTER (WHERE items @> '[{\"s\":null}]') FROM oldcol"
 TYPES="SELECT string_agg(coalesce(t, 'missing') || ':' || n, ',' ORDER BY t NULLS FIRST)
  FROM (SELECT jsonb_typeof(attr->'a') t, count(*) n FROM oldcol GROUP BY 1) s"
+# types_ok GOT WANT: the answer is the heap's, or the REINDEX refusal of an index that stored no JSON types (a release before the kinds were complete: an error and no row, by design)
+types_ok() { [[ $1 == "$2" || $1 == *"REINDEX the index to store them"* ]]; }
 for ref in v3.0.1 v3.1.0; do
 	build_old "$ref"; oldroot=$OLDROOT
 	node_init legacy 2 'autovacuum = off
@@ -53,10 +56,10 @@ sift.async_maintenance = off'
 		check 'rewritten 3.1 groups answer null predicates exactly' test "$(sql legacy "SET seq_page_cost = 10000" "${QUERY//oldcol/oldtbl}")" == "$want"
 	fi
 	check "$ref write-buffer null predicates equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
-	check "$ref write-buffer mixed astext kinds equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
+	check "$ref write-buffer mixed astext kinds equal the heap" types_ok "$(sql legacy "SET seq_page_cost = 10000" "$TYPES" 2>&1)" "$types"
 	sql legacy "SELECT sift.col_promote('oldcol_idx')" >/dev/null || bail 'promotion'
 	check "$ref promotion preserves uncertain null kinds" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
-	check "$ref promotion preserves uncertain astext kinds" test "$(sql legacy "SET seq_page_cost = 10000" "$TYPES")" == "$types"
+	check "$ref promotion preserves uncertain astext kinds" types_ok "$(sql legacy "SET seq_page_cost = 10000" "$TYPES" 2>&1)" "$types"
 	check "$ref promotion does not claim minor 6" test "$(sql legacy "SELECT max(format) < 6 FROM sift.col_segments('oldcol_idx') WHERE kind = 'immutable'")" == t
 	# the layout of an index made before 4.2 (no presence leaf), so that 3.1 reads the segments by their minor (the leaf is a layout it refuses before it reads one)
 	sql legacy "SET sift.test_col_no_present = on" "REINDEX INDEX oldcol_idx" >/dev/null || bail 'reindex'
