@@ -6,8 +6,8 @@
 #   lane 1   corpus (col, table)       scripts/corpus.sh [--table] [--only GLOB|GLOB]
 #            plangate (col, table, 4t) scripts/plangate.sh --runs 0 --slice smoke|AREA|all [--table | --lane stock-4t]
 #            lifecycle                 DML, VACUUM, ADD COLUMN, ADD PRIMARY KEY, DROP COLUMN, VACUUM FULL, REINDEX and sift.check on a sift_col index and a sift_table
-#            coldiff (col, table)      scripts/coldiff.sh --fast [--table]: DML, abort and VACUUM scenarios against the plain plan
 #   lane 2   surface_sweep             test/fuzz/surface_sweep.py --tier quick: every SQL function with hostile arguments, the roles
+#            coldiff (col, table)      scripts/coldiff.sh --fast [--table]: DML, abort and VACUUM scenarios against the plain plan
 #   lane 3   shapes_matrix             test/fuzz/shapes_matrix.py --tier quick
 #   lane 4   txn_fuzz                  test/fuzz/txn/cli.py --shapes: two sessions, savepoints, cursors, prepared statements
 #            tbl_twin_fuzz             test/fuzz/tbl_twin.py: a sift_table against its heap twin
@@ -261,7 +261,7 @@ build_plan() {
 		[[ $f == coldiff ]] || a+=(--table)
 		if supports --fast scripts/coldiff.sh; then a+=(--fast); else a+=(--fail-fast --suite fixtures --fixture-rows 1500 --scenario-slices 3); fi
 		if [[ ${DEM[$f:corpus]} != ALL ]]; then a+=(--corpus "${DEM[$f:corpus]}"); elif ! supports --fast scripts/coldiff.sh; then a+=(--slice 1/48); fi
-		add_step "$f" 1 scripts/coldiff.sh "$([[ $f == coldiff ]] || echo --table)" "${a[@]}"
+		add_step "$f" 2 scripts/coldiff.sh "$([[ $f == coldiff ]] || echo --table)" "${a[@]}"
 	done
 	[[ -z ${DEM[surface_sweep]-} ]] || add_step surface_sweep 2 test/fuzz/surface_sweep.py - --tier "$matrix" --use-cluster $([[ ${DEM[surface_sweep:only]} == ALL ]] || echo --only "${DEM[surface_sweep:only]}")
 	if [[ -n ${DEM[shapes_matrix]-} ]]; then
