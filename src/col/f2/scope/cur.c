@@ -201,11 +201,17 @@ scope_matches(Relation rel, const SiftF2Store *store, int ord, Snapshot snap, bo
 	return ok;
 }
 
+Snapshot
+sift_f2s_fresh_snapshot(void)
+{
+	return RegisterSnapshot(IsInParallelMode() ? GetActiveSnapshot() : GetLatestSnapshot());
+}
+
 /* Is the summary of scope ord what the entity parts and the pairs are now: every part it names is in the manifest, no part of a later generation is there, the journals have not moved */
 bool
 sift_f2_scope_current(Relation rel, int ord)
 {
-	Snapshot	snap = RegisterSnapshot(GetLatestSnapshot());
+	Snapshot	snap = sift_f2s_fresh_snapshot();
 	SiftF2Store *store = sift_f2_store_open(rel);
 	bool		ok = sift_f2s_supported(rel, store, ord) && scope_matches(rel, store, ord, snap, false);
 

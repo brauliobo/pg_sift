@@ -242,6 +242,8 @@ extern bool sift_f2s_object(Relation rel, int ord, SiftScopeMeta *m, uint32 open
 /* gm: the part generations the summary names -> their index in its part map */
 extern void sift_f2s_meta_map(const SiftScopeMeta *m, SiftGenMap *gm);
 extern bool sift_f2s_pairs_unchanged(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap);
+/* The registered snapshot a refresh, or the check that one is due, counts the rows of the parts by: a parallel operation (the index cleanup of a parallel VACUUM) takes no new one, it shares the statement's of its leader */
+extern Snapshot sift_f2s_fresh_snapshot(void);
 
 /* A summary of a table is of the leaves the table had when it was built: with another schema (a column added, dropped, renamed or changed in type since) it is another set of cubes and is not read */
 extern bool sift_f2s_schema_matches(const SiftF2Store *store, const SiftScopeMeta *m);
