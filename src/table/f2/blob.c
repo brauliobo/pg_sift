@@ -70,30 +70,60 @@ write_pages(Relation rel, const SiftTblBlobRef *ref, const char *stored)
 	sift_bulk_end(&w);
 }
 
-static SiftTblBlobRef *
-write_blob(Relation rel, const char *raw, uint32 raw_len, uint64 gen)
+static bool
+is_inline(const SiftTblBlobRef *ref)
 {
-	uint16		flags = 0;
-	uint32		stored_len;
-	const char *stored = compressed(raw, raw_len, &stored_len, &flags);
-	uint64		npages = SIFT_PAYLOAD_PAGES(stored_len);
-	int			max = (int) (npages / 1024) + 32;
-	SiftExtent *ext = palloc(sizeof(SiftExtent) * max);
-	int			next = sift_fsm_alloc_stream(rel, npages, ext, max);
-	SiftTblBlobRef *ref = palloc0(SIFT_TBL_BLOB_REF_SIZE(next));
+	return (ref->flags & SIFT_BLOB_FLAG_INLINE) != 0;
+}
+
+static uint32
+ref_size(const SiftTblBlobRef *ref)
+{
+	return (uint32) SIFT_TBL_BLOB_REF_SIZE(ref->nextents) + (is_inline(ref) ? ref->stored_len : 0);
+}
+
+static SiftTblBlobRef *
+new_ref(uint32 raw_len, const char *stored, uint32 stored_len, uint16 flags, uint16 next, uint64 gen)
+{
+	SiftTblBlobRef *ref = palloc0(SIFT_TBL_BLOB_REF_SIZE(next) + ((flags & SIFT_BLOB_FLAG_INLINE) ? stored_len : 0));
 
 	ref->magic = SIFT_TBL_BLOB_MAGIC;
 	ref->raw_len = raw_len;
 	ref->stored_len = stored_len;
 	ref->crc32c = sift_crc32c(stored, stored_len);
 	ref->flags = flags;
-	ref->nextents = (uint16) next;
+	ref->nextents = next;
 	ref->gen = gen;
-	memcpy(ref->ext, ext, sizeof(SiftExtent) * next);
-	write_pages(rel, ref, stored);
+	return ref;
+}
+
+static SiftTblBlobRef *
+write_blob(Relation rel, const char *raw, uint32 raw_len, uint64 gen)
+{
+	uint16		flags = 0;
+	uint32		stored_len;
+	const char *stored = compressed(raw, raw_len, &stored_len, &flags);
+	SiftTblBlobRef *ref;
+
+	if (stored_len <= SIFT_TBL_WIDE_THRESHOLD)
+	{
+		ref = new_ref(raw_len, stored, stored_len, flags | SIFT_BLOB_FLAG_INLINE, 0, gen);
+		memcpy(ref->ext, stored, stored_len);
+	}
+	else
+	{
+		uint64		npages = SIFT_PAYLOAD_PAGES(stored_len);
+		int			max = (int) (npages / 1024) + 32;
+		SiftExtent *ext = palloc(sizeof(SiftExtent) * max);
+		int			next = sift_fsm_alloc_stream(rel, npages, ext, max);
+
+		ref = new_ref(raw_len, stored, stored_len, flags, (uint16) next, gen);
+		memcpy(ref->ext, ext, sizeof(SiftExtent) * next);
+		write_pages(rel, ref, stored);
+		pfree(ext);
+	}
 	if (stored != raw)
 		pfree((char *) stored);
-	pfree(ext);
 	return ref;
 }
 
@@ -127,7 +157,7 @@ sift_tbl_blob_spill_rows(Relation rel, SiftRowBuf *rb)
 				continue;
 			ref = write_blob(rel, rb->xpay[c][r], rb->xplen[c][r], gen++);
 			rb->xpay[c][r] = (const char *) ref;
-			rb->xplen[c][r] = (uint32) SIFT_TBL_BLOB_REF_SIZE(ref->nextents);
+			rb->xplen[c][r] = ref_size(ref);
 			rb->tag[c][r] = SIFT_COLTAG_WIDE_BLOB;
 		}
 	}
@@ -143,16 +173,16 @@ checked_ref(Relation rel, const char *bytes, uint32 len)
 		SIFT_DAMAGE_OTHER_DATA(errmsg("table \"%s\" holds a damaged reference to a wide value", RelationGetRelationName(rel)));
 	ref = palloc(len);
 	memcpy(ref, bytes, len);
-	if (ref->magic != SIFT_TBL_BLOB_MAGIC || len != SIFT_TBL_BLOB_REF_SIZE(ref->nextents) || ref->raw_len == 0 || ref->raw_len > SIFT_TBL_BLOB_MAX || ref->stored_len == 0 ||
-		ref->stored_len > SIFT_TBL_BLOB_MAX || (ref->flags & ~SIFT_BLOB_FLAG_LZ4) != 0 || ((ref->flags & SIFT_BLOB_FLAG_LZ4) == 0 && ref->raw_len != ref->stored_len))
+	if (ref->magic != SIFT_TBL_BLOB_MAGIC || ref->raw_len == 0 || ref->raw_len > SIFT_TBL_BLOB_MAX || ref->stored_len == 0 || ref->stored_len > SIFT_TBL_BLOB_MAX ||
+		(ref->flags & ~(SIFT_BLOB_FLAG_LZ4 | SIFT_BLOB_FLAG_INLINE)) != 0 || ((ref->flags & SIFT_BLOB_FLAG_LZ4) == 0 && ref->raw_len != ref->stored_len) ||
+		len != ref_size(ref) || (is_inline(ref) && (ref->nextents != 0 || ref->stored_len > SIFT_TBL_WIDE_THRESHOLD)))
 		SIFT_DAMAGE_OTHER_DATA(errmsg("table \"%s\" holds a damaged reference to a wide value", RelationGetRelationName(rel)));
 	return ref;
 }
 
-static char *
-read_pages(Relation rel, const SiftTblBlobRef *ref)
+static uint64
+read_extents(Relation rel, const SiftTblBlobRef *ref, char *stored)
 {
-	char	   *stored = palloc(ref->stored_len);
 	uint64		done = 0;
 
 	for (int e = 0; e < ref->nextents; e++)
@@ -172,6 +202,19 @@ read_pages(Relation rel, const SiftTblBlobRef *ref)
 			UnlockReleaseBuffer(buf);
 			done += n;
 		}
+	return done;
+}
+
+static char *
+read_stored(Relation rel, const SiftTblBlobRef *ref)
+{
+	char	   *stored = palloc(ref->stored_len);
+	uint64		done = ref->stored_len;
+
+	if (is_inline(ref))
+		memcpy(stored, ref->ext, ref->stored_len);
+	else
+		done = read_extents(rel, ref, stored);
 	if (done != ref->stored_len || sift_crc32c(stored, ref->stored_len) != ref->crc32c)
 		SIFT_DAMAGE_OTHER_DATA(errmsg("a wide value of table \"%s\" fails its checksum", RelationGetRelationName(rel)));
 	return stored;
@@ -181,7 +224,7 @@ Datum
 sift_tbl_blob_read(Relation rel, const char *ref_bytes, uint32 ref_len, Oid typid pg_attribute_unused(), int16 typlen pg_attribute_unused(), MemoryContext dst_cx)
 {
 	SiftTblBlobRef *ref = checked_ref(rel, ref_bytes, ref_len);
-	char	   *stored = read_pages(rel, ref);
+	char	   *stored = read_stored(rel, ref);
 	char	   *raw = MemoryContextAlloc(dst_cx, ref->raw_len);
 
 	if ((ref->flags & SIFT_BLOB_FLAG_LZ4) == 0)

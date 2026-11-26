@@ -1,5 +1,6 @@
 /*
- * table/f2/blob.h - the values of a sift_table too wide for a granule (SIFT_TBL_WIDE_THRESHOLD bytes up to 1 GB) kept in extents of their own.
+ * table/f2/blob.h - the values of a sift_table too wide for a granule (SIFT_TBL_WIDE_THRESHOLD bytes up to 1 GB) kept in extents of their own, or in their reference when they
+ * compress to no more than SIFT_TBL_WIDE_THRESHOLD bytes (SIFT_BLOB_FLAG_INLINE: no page, no extent, the stored bytes follow the header).
  *
  * A wide value stays in memory with its row in the stage (tag SIFT_COLTAG_WIDE_RAW, the raw value as the payload of the cell) and reaches the extents only when the stage is
  * written, so a transaction that aborts before that leaves no page behind. The row then holds the reference (SiftTblBlobRef plus its extents) under SIFT_COLTAG_WIDE_BLOB.
@@ -25,6 +26,7 @@
 #define SIFT_COLTAG_WIDE_RAW		SIFT_F2_TAG_WIDE_RAW
 
 #define SIFT_BLOB_FLAG_LZ4			(UINT16_C(1) << 0)
+#define SIFT_BLOB_FLAG_INLINE		(UINT16_C(1) << 1)
 
 typedef struct SiftTblBlobRef
 {
