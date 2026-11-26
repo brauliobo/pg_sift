@@ -39,7 +39,7 @@ MASSIF=
 if [[ ${1:-} == --leaks-selftest ]]; then
 	out=$(PGOPTIONS="-c planted.context=on" "$0" --leaks core/leak_planted 2>&1) && { echo "valgrind: the planted leak did not fail the leak gate"; exit 1; }
 	grep -q 'FAIL: .*sift_test_leak' <<<"$out" || { echo "valgrind: the leak gate failed, but not on the planted leak:"; tail -n 20 <<<"$out"; exit 1; }
-	grep -q 'leak in regress-core-leak_planted: .*sift leak: memory context' <<<"$out" || { echo "valgrind: the per-test hooks did not fail the planted context:"; tail -n 20 <<<"$out"; exit 1; }
+	grep -q 'leak in regress-core__leak_planted: .*sift leak: memory context' <<<"$out" || { echo "valgrind: the per-test hooks did not fail the planted context:"; tail -n 20 <<<"$out"; exit 1; }
 	echo "valgrind: the planted leak fails the leak gate, and the planted context the per-test hooks"
 	exit 0
 fi
