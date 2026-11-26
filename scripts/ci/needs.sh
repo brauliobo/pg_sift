@@ -2,7 +2,8 @@
 # What a job needs from the runner besides the staged roots: the compiler (needs_toolchain) and the history of the release tags (needs_git_history). The workflow installs
 # each only for the shard that holds a job that needs it (`scripts/ci.sh --toolchain`, `--history`). Sourced by scripts/ci.sh; not a script of its own.
 # TOOLCHAIN_USE: what a test says when it builds, or reads the tags of the repository (a shallow clone would skip it, silently)
-TOOLCHAIN_USE='build_old|old-lib-check|scaling-gate|pg_upgrade|\bmake\b|\bgcc\b|git -C|git (archive|show|tag|describe)'
+TOOLCHAIN_USE='build_old|old-lib-check|pg_upgrade|\bmake\b|\bgcc\b|git -C|git (archive|show|tag|describe)'
+[[ -n ${SIFT_SB_DIR:-} ]] || TOOLCHAIN_USE+='|scaling-gate'   # the 8-page flavour of scripts/scaling-gate.sh compiles unless the build stage staged it (SIFT_SB_DIR)
 # HISTORY_USE: what a test says when it reads a release tag or builds a release from it. pg_upgrade.sh builds the old side from a copy of the working tree unless SIFT_PG_OLD_REF names a
 # release (pg_upgrade_31, 32 and 33 do), so the test of the plain upgrade reads no tag
 HISTORY_USE='old-lib-check|git -C|git (archive|show|tag|describe)|build_old (v[0-9]|"\$ref)'
