@@ -272,8 +272,10 @@ edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot 
 		for (uint32 k = 0; k < (by_member ? 1 : nkeys); k++)
 		{
 			ScanKeyData sk[2];
+			ScanKey		member_sk = &sk[pa > pb],
+						key_sk = &sk[pa < pb];
 
-			sift_scope_key_eq_init(&sk[0], pa, ta, TupleDescAttr(prel->rd_att, a - 1)->attcollation, sift_scope_key_datum(ta, mm, changed[i]));
+			sift_scope_key_eq_init(member_sk, pa, ta, TupleDescAttr(prel->rd_att, a - 1)->attcollation, sift_scope_key_datum(ta, mm, changed[i]));
 			if (by_member)
 			{
 				index_rescan(scan, sk, 1, NULL, 0);
@@ -288,7 +290,7 @@ edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot 
 				}
 				continue;
 			}
-			sift_scope_key_eq_init(&sk[1], pb, tb, TupleDescAttr(prel->rd_att, b - 1)->attcollation, sift_scope_key_datum(tb, km, keys[k]));
+			sift_scope_key_eq_init(key_sk, pb, tb, TupleDescAttr(prel->rd_att, b - 1)->attcollation, sift_scope_key_datum(tb, km, keys[k]));
 			index_rescan(scan, sk, 2, NULL, 0);
 			if (index_getnext_slot(scan, ForwardScanDirection, slot))
 				now_add(&now, &n, &cap, changed[i], keys[k]);
