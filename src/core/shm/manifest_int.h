@@ -32,7 +32,8 @@ typedef struct Table
 	pg_atomic_uint32 unleased;	/* the runs of vblocks that backends fill with no lease slot */
 	pg_atomic_uint64 global_epoch TABLE_LINE;	/* bumped when a snapshot is retired */
 	LWLock		retire_lock TABLE_LINE;
-	dsa_pointer retired_head;	/* the snapshots retired and not freed yet, newest first (retire_lock) */
+	dsa_pointer retired_head;	/* the snapshots retired and not freed yet, oldest first: their retire epochs grow along the list (retire_lock) */
+	dsa_pointer retired_tail;
 	pg_atomic_uint64 epoch_mask[SIFT_SHM_EPOCH_SLOTS / 64] TABLE_LINE;	/* the backends that have pinned in an epoch slot and not exited: all that oldest_epoch reads */
 	SiftEpochSlot epoch[SIFT_SHM_EPOCH_SLOTS];
 	SiftShmIndexSlot slot[SIFT_SHM_MANIFEST_SLOTS];
@@ -44,6 +45,8 @@ extern SiftShmIndexSlot *sift_shm_slot_at(Table *t, const RelFileLocator *loc, i
 extern dsa_area *sift_shm_area_attach(Table *t, bool create);
 /* The snapshot of the slot goes to dp under the build_lock of the slot: the one it had */
 extern dsa_pointer sift_shm_slot_swap_snap(SiftShmIndexSlot *s, dsa_pointer dp);
+/* The same with the build_lock held: a slot that loses its snapshot may have one made again by the next reader */
+extern dsa_pointer sift_shm_slot_set_snap(SiftShmIndexSlot *s, dsa_pointer dp);
 /* The meta of a slot, written by the holder of its build_lock (exclusive): the writers of a slot are serialized by that lock */
 extern void sift_shm_meta_write(SiftShmIndexSlot *s, const SiftShmIndexMeta *meta);
 /* The tick a slot was last used at: the clock, which a publication moves only now and then, so that the slots are not written at every use */

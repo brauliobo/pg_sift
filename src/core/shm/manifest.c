@@ -73,7 +73,7 @@ table_init(SIFT_DSM_INIT_ARGS)
 	LWLockInitialize(&t->area_lock, t->tranche);
 	LWLockInitialize(&t->retire_lock, t->tranche);
 	pg_atomic_init_u64(&t->global_epoch, 1);
-	t->retired_head = InvalidDsaPointer;
+	t->retired_head = t->retired_tail = InvalidDsaPointer;
 	for (int i = 0; i < SIFT_SHM_EPOCH_SLOTS; i++)
 		pg_atomic_init_u64(&t->epoch[i].epoch, 0);
 	for (int i = 0; i < SIFT_SHM_EPOCH_SLOTS / 64; i++)
@@ -99,6 +99,7 @@ table_init(SIFT_DSM_INIT_ARGS)
 		pg_atomic_init_u64(&s->last_used_tick, 0);
 		pg_atomic_init_u64(&s->snap_hits, 0);
 		pg_atomic_init_u64(&s->snap_misses, 0);
+		pg_atomic_init_u64(&s->building, 0);
 		LWLockInitialize(&s->build_lock, t->tranche);
 	}
 }
@@ -114,7 +115,7 @@ sift_shm_registry(void)
 {
 	if (table == NULL)
 	{
-		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (1024 epochs + 2048 slots + 2048 vblock leases, fixed) */
+		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (1024 epochs + 8192 slots + 2048 vblock leases, fixed) */
 		void	   *raw = sift_dsm_try(REGISTRY_NAME, sizeof(Table) + PG_CACHE_LINE_SIZE, table_init);
 
 		if (raw == NULL)
@@ -232,6 +233,14 @@ sift_shm_area_attach(Table *t, bool create)
 }
 
 
+dsa_pointer
+sift_shm_slot_set_snap(SiftShmIndexSlot *s, dsa_pointer dp)
+{
+	if (dp == InvalidDsaPointer)
+		pg_atomic_write_u64(&s->building, 0);
+	return pg_atomic_exchange_u64(&s->current_snap_dp, dp);
+}
+
 /* The snapshot of a slot, swapped out under the build_lock of the slot: the dsa_pointer the slot had */
 dsa_pointer
 sift_shm_slot_swap_snap(SiftShmIndexSlot *s, dsa_pointer dp)
@@ -239,7 +248,7 @@ sift_shm_slot_swap_snap(SiftShmIndexSlot *s, dsa_pointer dp)
 	dsa_pointer old;
 
 	LWLockAcquire(&s->build_lock, LW_EXCLUSIVE);
-	old = pg_atomic_exchange_u64(&s->current_snap_dp, dp);
+	old = sift_shm_slot_set_snap(s, dp);
 	LWLockRelease(&s->build_lock);
 	return old;
 }
@@ -278,26 +287,34 @@ oldest_epoch(Table *t)
 
 /*
  * Takes off the retired list up to RECLAIM_BATCH snapshots that no reader can be reading (none is in an epoch up to the one they were retired in) or holds, all of them where nobody is
- * attached any more (retire_lock held). Their memory is given back by reclaim_now after the lock is let go: nothing else reaches a snapshot that is off the list
+ * attached any more (retire_lock held). Their memory is given back by reclaim_now after the lock is let go: nothing else reaches a snapshot that is off the list. The list is oldest
+ * first, so the walk ends at the first snapshot a reader's epoch may still see: the ones after it were retired later. It passes only the ones a reader holds a count of.
  */
 static int
 reclaim_unlink(Table *t, dsa_area *a, bool everything, dsa_pointer *batch)
 {
 	uint64		oldest = everything ? UINT64_MAX : oldest_epoch(t);
-	dsa_pointer *link = &t->retired_head;
+	dsa_pointer *link = &t->retired_head,
+				prev = InvalidDsaPointer;
 	int			n = 0;
 
 	while (*link != InvalidDsaPointer && n < RECLAIM_BATCH)
 	{
 		SiftShmManifestSnap *snap = dsa_get_address(a, *link);
 
-		if (everything || (snap->retire_epoch < oldest && pg_atomic_read_u32(&snap->refcount) == 0))
+		if (!everything && snap->retire_epoch >= oldest)
+			break;
+		if (everything || pg_atomic_read_u32(&snap->refcount) == 0)
 		{
 			batch[n++] = *link;
-			*link = snap->retire_next;
+			if ((*link = snap->retire_next) == InvalidDsaPointer)
+				t->retired_tail = prev;
 		}
 		else
+		{
+			prev = *link;
 			link = &snap->retire_next;
+		}
 	}
 	return n;
 }
@@ -336,8 +353,12 @@ sift_shm_snap_retire(Table *t, dsa_area *a, dsa_pointer dp)
 	pg_memory_barrier();
 	LWLockAcquire(&t->retire_lock, LW_EXCLUSIVE);
 	snap->retire_epoch = pg_atomic_fetch_add_u64(&t->global_epoch, 1);
-	snap->retire_next = t->retired_head;
-	t->retired_head = dp;
+	snap->retire_next = InvalidDsaPointer;
+	if (t->retired_tail == InvalidDsaPointer)
+		t->retired_head = dp;
+	else
+		((SiftShmManifestSnap *) dsa_get_address(a, t->retired_tail))->retire_next = dp;
+	t->retired_tail = dp;
 	pg_atomic_sub_fetch_u32(&snap->refcount, 1);
 	n = reclaim_unlink(t, a, false, batch);
 	LWLockRelease(&t->retire_lock);

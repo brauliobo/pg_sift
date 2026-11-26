@@ -1,7 +1,7 @@
 /*
  * core/shm/manifest.h - the one registry of the manifests of the indexes in shared memory.
  *
- * A table of 2048 slots of two cache lines, in a table of the dynamic shared memory registry (col/dsmreg.h: no shared_preload_libraries is needed). Line 0 of a slot is the
+ * A table of 8192 slots of two cache lines, in a table of the dynamic shared memory registry (col/dsmreg.h: no shared_preload_libraries is needed). Line 0 of a slot is the
  * meta of the index in a seqlock: a reader copies it without a lock and without reading Block 0 (sift_shm_manifest_peek). Line 1 anchors an immutable snapshot
  * (the partition entries, the lazily loaded partition lists, the scope entries) in a shared dsa_area. The snapshot is counted by its readers and the registry, and freed by the last one
  * that lets go; its bytes are charged to the manifest pool of the ledger (core/shm/budget.h), so a snapshot that does not fit is not made and the caller reads the manifest itself.
@@ -19,7 +19,7 @@
 #include "storage/relfilelocator.h"
 #include "utils/dsa.h"
 
-#define SIFT_SHM_MANIFEST_SLOTS		2048
+#define SIFT_SHM_MANIFEST_SLOTS		8192
 #define SIFT_SHM_MANIFEST_PROBES	32
 
 #define SIFT_SHM_SLOT_EMPTY			0U
@@ -82,8 +82,9 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmIndexSlot
 	pg_atomic_uint64 last_used_tick;
 	pg_atomic_uint64 snap_hits;	/* the pins of the snapshot that found it, and those that did not, since the slot was taken by its index (sift.status shm_hit_pct) */
 	pg_atomic_uint64 snap_misses;
+	pg_atomic_uint64 building;	/* the newest manifest version a reader makes the snapshot of, 0 for none since the slot last lost its snapshot: the other readers of it make none */
 	LWLock		build_lock;
-	char		pad_line1[PG_CACHE_LINE_SIZE - 4 * sizeof(pg_atomic_uint64) - sizeof(LWLock)];
+	char		pad_line1[PG_CACHE_LINE_SIZE - 5 * sizeof(pg_atomic_uint64) - sizeof(LWLock)];
 } SiftShmIndexSlot;
 
 /*
@@ -172,6 +173,7 @@ extern bool sift_shm_manifest_peek(const RelFileLocator *locator, SiftShmIndexMe
 /*
  * Publishes the meta of an index (the commit of a manifest) and, where snap is not NULL, the snapshot that goes with it: the snapshot replaces the one the slot had, which is freed
  * when its last reader lets go. False where snap was given and the ledger refused its bytes: the meta is published without a snapshot and readers load the manifest themselves.
+ * One reader makes the snapshot of a version: the others that come while it does, or after, make none and are told false, and the slot never takes a second snapshot of the version it holds one of.
  */
 extern bool sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *snap);
 
@@ -180,6 +182,9 @@ extern void sift_shm_manifest_hold(const RelFileLocator *locator, uint64 version
 
 /* The index is no longer what the registry says (DROP, REINDEX, a damaged manifest): readers find nothing, the snapshot is released, the lease slot of the file (core/shm/lease.h) is given up; quarantine keeps the slot as one that is not to be trusted */
 extern void sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine);
+
+/* The database is gone (DROP DATABASE, DROP EXTENSION): the slots of its indexes and their lease slots are given up, and their snapshots released */
+extern void sift_shm_manifest_invalidate_db(Oid db);
 
 /* The pins of the snapshot of the index that found it and that did not, since the registry took the index; false: the registry has no slot for it */
 extern bool sift_shm_manifest_pin_stat(const RelFileLocator *locator, uint64 *hits, uint64 *misses);

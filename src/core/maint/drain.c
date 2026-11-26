@@ -3,7 +3,8 @@
  * copied, so the statement would fail with "being accessed by other users" for as long as a worker naps. The hook holds the database (the launcher starts no worker for it), ends the workers of sift
  * that are attached to it with SIGTERM and waits for them to leave, then runs the statement. DROP EXTENSION pg_sift drains the database the same way: a worker that napped on through it would
  * read the catalogs of an extension that is gone. ALTER DATABASE ... RENAME TO and ... SET TABLESPACE count the other sessions of the database too, so they drain it as well. The jobs queued for the
- * database are forgotten once a statement that ends it ran (a database that is copied, renamed or moved keeps them).
+ * database are forgotten once a statement that ends it ran (a database that is copied, renamed or moved keeps them), and so are the slots of its relations in the registry of the manifests
+ * and the lease table (core/shm/manifest.h, core/shm/lease.h): a dropped database runs no hook for each of its relations.
  */
 #include "core/maint/sched.h"
 #include "core/maint/drain.h"
@@ -24,6 +25,7 @@
 #include "utils/backend_status.h"
 #include "utils/timestamp.h"
 
+#include "core/shm/manifest.h"
 #include "core/waits.h"
 
 #define SIFT_EXTENSION	"pg_sift"
@@ -157,7 +159,10 @@ drain_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, Pr
 	}
 	PG_END_TRY();
 	if (ends_database_jobs(pstmt->utilityStmt))
+	{
 		sift_maint_db_purge(m, db);
+		sift_shm_manifest_invalidate_db(db);
+	}
 }
 
 void

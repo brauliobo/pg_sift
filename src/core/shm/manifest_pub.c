@@ -85,7 +85,14 @@ retire_if_any(Table *t, dsa_area *a, dsa_pointer dp)
 		sift_shm_snap_retire(t, a != NULL ? a : sift_shm_area_attach(t, false), dp);
 }
 
-/* Whether the slot of the writer is no slot to write the meta to (claim_lock held): there is none, the index is quarantined in it, or it holds, valid or held, a newer version of the index */
+/* A snapshot of the version the slot already holds one of: the readers that load a version at once would replace each other's, and drop the lists the first one installed */
+static bool
+same_snapshot(const SiftShmIndexSlot *s, const SiftShmIndexMeta *meta)
+{
+	return (s->meta.state_flags & meta->state_flags & SIFT_SHM_SLOT_HAS_SNAP) && s->meta.manifest_version == meta->manifest_version;
+}
+
+/* Whether the slot of the writer is no slot to write the meta to (claim_lock held): there is none, the index is quarantined in it, or it holds, valid or held, a newer version of the index or a snapshot of this one */
 static bool
 slot_refuses(const SiftShmIndexSlot *s, const SiftShmIndexMeta *meta)
 {
@@ -94,7 +101,7 @@ slot_refuses(const SiftShmIndexSlot *s, const SiftShmIndexMeta *meta)
 	if (!RelFileLocatorEquals(s->meta.locator, meta->locator))
 		return false;
 	return (s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED) ||
-		((s->meta.state_flags & (SIFT_SHM_SLOT_VALID | SIFT_SHM_SLOT_HELD)) && s->meta.manifest_version > meta->manifest_version);
+		((s->meta.state_flags & (SIFT_SHM_SLOT_VALID | SIFT_SHM_SLOT_HELD)) && (s->meta.manifest_version > meta->manifest_version || same_snapshot(s, meta)));
 }
 
 /* The slot goes to the index of the locator: the pins it counted were another index's */
@@ -105,6 +112,7 @@ slot_adopt(SiftShmIndexSlot *s, const RelFileLocator *locator)
 		return;
 	pg_atomic_write_u64(&s->snap_hits, 0);
 	pg_atomic_write_u64(&s->snap_misses, 0);
+	pg_atomic_write_u64(&s->building, 0);
 }
 
 /* The meta of a slot, and the snapshot where swap is true, change together under its build_lock: the snapshot the slot had */
@@ -115,7 +123,7 @@ slot_write(Table *t, SiftShmIndexSlot *s, const SiftShmIndexMeta *m, bool swap, 
 
 	LWLockAcquire(&s->build_lock, LW_EXCLUSIVE);
 	if (swap)
-		old = pg_atomic_exchange_u64(&s->current_snap_dp, dp);
+		old = sift_shm_slot_set_snap(s, dp);
 	sift_shm_meta_write(s, m);
 	pg_atomic_write_u64(&s->last_used_tick, sift_shm_tick(t));
 	LWLockRelease(&s->build_lock);
@@ -170,7 +178,7 @@ write_steady(Table *t, dsa_area *a, const SiftShmIndexMeta *m, bool swap, dsa_po
 		LWLockRelease(&s->build_lock);
 		return STEADY_REFUSED;
 	}
-	old = swap ? pg_atomic_exchange_u64(&s->current_snap_dp, dp) : InvalidDsaPointer;
+	old = swap ? sift_shm_slot_set_snap(s, dp) : InvalidDsaPointer;
 	sift_shm_meta_write(s, m);
 	pg_atomic_write_u64(&s->last_used_tick, sift_shm_tick(t));
 	LWLockRelease(&s->build_lock);
@@ -230,6 +238,22 @@ publish_claimed(Table *t, dsa_area *a, const SiftShmIndexMeta *m, dsa_pointer dp
 	return STEADY_WRITTEN;
 }
 
+/* The reader that is to make the snapshot of the version: the first one to claim it since the slot lost its snapshot. An index with no slot yet has none to claim: claim_lock gives it one */
+static bool
+build_claimed(Table *t, const SiftShmIndexMeta *meta)
+{
+	SiftShmIndexSlot *s = slot_probe(t, &meta->locator);
+	uint64		b;
+
+	if (s == NULL)
+		return true;
+	b = pg_atomic_read_u64(&s->building);
+	while (b < meta->manifest_version)
+		if (pg_atomic_compare_exchange_u64(&s->building, &b, meta->manifest_version))
+			return true;
+	return false;
+}
+
 bool
 sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *spec)
 {
@@ -240,6 +264,8 @@ sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *s
 	SiftShmIndexMeta m = *meta;
 
 	if ((meta->state_flags & SIFT_SHM_SLOT_PRIVATE) != 0 || !sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
+		return false;
+	if (spec != NULL && !build_claimed(t, meta))
 		return false;
 	a = sift_shm_area_attach(t, spec != NULL);
 	if (spec != NULL && a != NULL)
@@ -280,4 +306,52 @@ sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine)
 	}
 	LWLockRelease(&t->claim_lock);
 	retire_if_any(t, a, old);
+}
+
+#define DROP_BATCH	64
+
+/* The slots of the indexes of the database from slot `from` on are dead, up to DROP_BATCH of their snapshots taken out into old (claim_lock held); the slot to go on from */
+static int
+drop_db_slots(Table *t, Oid db, int from, dsa_area **a, dsa_pointer *old, int *nold)
+{
+	int			i;
+
+	for (i = from; i < SIFT_SHM_MANIFEST_SLOTS && *nold < DROP_BATCH; i++)
+	{
+		SiftShmIndexSlot *s = &t->slot[i];
+		SiftShmIndexMeta m = s->meta;
+
+		if (m.state_flags == SIFT_SHM_SLOT_EMPTY || (m.state_flags & SIFT_SHM_SLOT_DEAD) || m.locator.dbOid != db)
+			continue;
+		m.state_flags = SIFT_SHM_SLOT_DEAD;
+		(void) slot_write(t, s, &m, false, InvalidDsaPointer);
+		if (*a == NULL)
+			*a = area_for_drop(t, s);
+		if (*a != NULL)
+			old[(*nold)++] = sift_shm_slot_swap_snap(s, InvalidDsaPointer);
+	}
+	return i;
+}
+
+void
+sift_shm_manifest_invalidate_db(Oid db)
+{
+	Table	   *t;
+	dsa_area   *a = NULL;
+	dsa_pointer old[DROP_BATCH];
+	int			at = 0;
+
+	sift_lease_invalidate_db(db);
+	if (!sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
+		return;
+	while (at < SIFT_SHM_MANIFEST_SLOTS)
+	{
+		int			nold = 0;
+
+		LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
+		at = drop_db_slots(t, db, at, &a, old, &nold);
+		LWLockRelease(&t->claim_lock);
+		for (int i = 0; i < nold; i++)
+			retire_if_any(t, a, old[i]);
+	}
 }
