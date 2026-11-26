@@ -153,7 +153,7 @@ CASES = [
                               "select cat, count(*) from read_bm_{s} where title @@> 'wireless' group by 1"), "title", "zero"),
     Case("cleanup_tmp_error_limit_cancel", "E", 2, "zero", 8, (), kind="cleanup"),
 ]
-WEIGHTS = {"write_f2_insert_select": 8, "maint_f2_maintain_api": 7, "maint_f2_col_vacuum_dead": 4, "maint_f2_tbl_vacuum_dead": 4, "maint_f2_tbl_vacuum_freeze": 4,
+WEIGHTS = {"write_f2_update_all": 20, "write_f2_delete_bulk": 14, "write_f2_col_delta_churn": 12, "write_f2_insert_select": 8, "maint_f2_maintain_api": 7, "maint_f2_col_vacuum_dead": 4, "maint_f2_tbl_vacuum_dead": 4, "maint_f2_tbl_vacuum_freeze": 4,
            "maint_disk_amp_3cycles": 6, "cleanup_tmp_error_limit_cancel": 6, "maint_autovacuum_isolation": 10, "create_bm25_idx": 2, "read_bm25_search": 1}
 CASES = [c._replace(settings=c.settings + ("set temp_file_limit='1MB';" if c.cls == "D" and c.temp == "zero" else ""), weight=WEIGHTS.get(c.name, c.weight if c.cls != "D" else 2))
          for c in CASES]
@@ -634,16 +634,18 @@ def run(args):
     lanes = [x for x in lanes_of(cases, max(1, min(LANES, len(cases)))) if x]
     dbs = [f"pvg{i}" for i in range(len(lanes))]
     for db in dbs:
-        script(env, f"drop database if exists {db} with (force); create database {db};")
+        script(env, f"drop database if exists {db} with (force);")
     envs = [dict(env, PGDATABASE=db) for db in dbs]
-    for e in envs:
-        script(e, "create extension pg_sift; create extension pg_sift_test;")
-    with concurrent.futures.ThreadPoolExecutor(3 * len(lanes)) as ex:
-        list(ex.map(lambda x: script(x[0], BUILD + fill(FIXTURES, x[1][0], x[1][1])), [(e, (s, n)) for e in envs for (s, _), n in zip(SCALES, ns)]))
-    for e in envs:
-        for (s, _), n in zip(SCALES, ns):
-            if any(c.name == "create_f2_tbl_copy" for c in cases):
-                script(e, f"copy (select {ROWS} from base_{s}) to '{dump_dir}/copy_{s}.bin' (format binary);")
+    # the fixtures are built once, in the database of the first lane, and the other lanes are copies of it
+    script(env, f"create database {dbs[0]};")
+    script(envs[0], "create extension pg_sift; create extension pg_sift_test;")
+    with concurrent.futures.ThreadPoolExecutor(len(SCALES)) as ex:
+        list(ex.map(lambda x: script(envs[0], BUILD + fill(FIXTURES, x[0][0], x[1])), zip(SCALES, ns)))
+    if any(c.name == "create_f2_tbl_copy" for c in cases):
+        for (s, _) in SCALES:
+            script(envs[0], f"copy (select {ROWS} from base_{s}) to '{dump_dir}/copy_{s}.bin' (format binary);")
+    for db in dbs[1:]:
+        script(env, f"create database {db} template {dbs[0]};")
     results = {}
 
     def run_lane(lane, e):
