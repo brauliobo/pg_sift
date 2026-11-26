@@ -85,8 +85,8 @@ run() {
 }
 
 tap() {
-	local name
-	name=$(basename "$1"); name=${name%.*}
+	local name=${1##*test/t/}
+	name=${name%.*}
 	limits "tap:$name" >/dev/null 2>&1 || name=default
 	BUDGET_SCRATCH=${SIFT_TMP:?}/tap "$0" run "tap:$name" bash "$@"
 }
