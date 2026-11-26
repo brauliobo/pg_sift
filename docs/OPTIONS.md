@@ -12,7 +12,7 @@
 | `paths` (`sift_col` / `sift_table`) | `''` | Declare typed JSONB paths (`'auto'` or explicit) to shred JSONB into columnar leaves |
 | `scope` (`sift_col` / `sift_table`) | `''` | Declare M:N tenant/hierarchy scopes (`name: fk -> rel(member, key) [cluster]`) |
 | `sift.backend_cache_kb` | `32768` (32 MB) | Lower to `4096`–`8192` for 500+ pooled connections; raise for heavy analytical sessions |
-| `sift.shared_cache_kb` | `131072` (128 MB) | Raise to `256MB`–`512MB` when many backends share lookup tables and string dictionaries |
+| `sift.shared_cache_kb` | `131072` (128 MB) | Raise to `256MB`–`512MB` when many backends share string dictionaries and leaf statistics |
 | `sift.enable_agg` | `on` | Set `off` per session to verify native PG equivalence or bypass `SiftAgg` in an incident |
 | `sift.explain_refusals` | `off` | Set `on` (or use `EXPLAIN (SIFT)` on PG 18+) to diagnose why a query stayed on the heap |
 | `sift.maintenance_wal_rate` | `0` (unlimited) | Throttle background merge/defrag WAL generation (kB/s) on write-heavy replicas |
@@ -47,7 +47,7 @@
 | `sift.on_corruption` | `quarantine` | `quarantine`, `error` | superuser | Quarantine damaged indexes and fall back to heap, or raise errors immediately ([OPERATIONS.md](OPERATIONS.md#6-quarantine-and-corruption-recovery)) |
 | `sift.parallel_scan` | `on` | `on`, `off` | session | Allow parallel scan, aggregation, build, and compaction plans (bounded by max_parallel_workers_per_gather) ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.rls_scores` | `off` | `on`, `off` | superuser | Permit BM25 ranked scans under row-level security ([SEARCH.md](SEARCH.md#8-row-level-security-siftrls_scores)) |
-| `sift.shared_cache_kb` | `131072` (128 MB) | `0..max` kB | superuser | Unified server-wide DSM cap across lookup tables, dim maps, dicts, and leaf stats ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
+| `sift.shared_cache_kb` | `131072` (128 MB) | `0..max` kB | superuser | Unified server-wide DSM cap across manifests, parsed dictionaries, and leaf stats ([OPERATIONS.md](OPERATIONS.md#1-the-3-budget-o1-memory-model)) |
 | `sift.simd` | `auto` | `auto`, `scalar`, `avx2`, `avx512`, `neon` | session | Override runtime SIMD kernel selection for testing or diagnostics ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)) |
 | `sift.standby_conflicts` | `on` | `on`, `off` | superuser | Delay extent reuse on primary to reduce retryable 40001 conflicts on standbys ([OPERATIONS.md](OPERATIONS.md#7-crash-safety-locks-and-replication)) |
 | `sift.vacuum_rewrite_limit` | `0` | `0..max` MB | superuser | Max MB an autovacuum pass rewrites (0 = unlimited); VACUUM FREEZE and a manual VACUUM are never capped ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |

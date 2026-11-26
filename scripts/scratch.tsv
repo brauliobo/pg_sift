@@ -93,7 +93,6 @@ tap-shell-col/auto_merge/slices	190
 tap-shell-fault/matrix_standby	190
 difftest-col-tbl	180
 tap-col/space_cache	180
-tap-agg/dimmap	180
 tap-shell-col/first_statement_reads	180
 tap-shell-col/reindex/concurrent	180
 tap-shell-col/vacuum/space_idle	180
