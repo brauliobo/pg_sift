@@ -234,6 +234,7 @@ col/f2/compact/compact.h
 col/f2/compact/dict.c
 col/f2/compact/join.c
 col/f2/compact/neighbours.c
+col/f2/compact/outputs.c
 col/f2/compact/par.c
 col/f2/compact/par.h
 col/f2/compact/plan.c

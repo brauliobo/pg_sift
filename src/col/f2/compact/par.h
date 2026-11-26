@@ -22,8 +22,8 @@ typedef enum SiftCompactParResult
 extern SiftCompactParResult sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, const uint32 *granules, int nin, int64 hot_cut, bool bounds_hold,
 												   FullTransactionId horizon, SiftCompactResult *res, SiftPartDesc **out, int *nout);
 
-/* compact.c: what one participant writes of its share of the inputs, the granules [lo[i], hi[i]) of in[i], into out (room for a part for each granule and three more); false: a deletion is not settled */
+/* compact.c: what one participant writes of its share of the inputs, the granules [lo[i], hi[i]) of in[i], into out (room for out_cap parts: more is an error, the parts given back); false: a deletion is not settled */
 extern bool sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec, const SiftPartDesc *in, int nin, const uint32 *lo, const uint32 *hi, int64 hot_cut, bool bounds_hold,
-									 FullTransactionId horizon, int nparticipants, SiftCompactResult *res, SiftPartDesc *out, int *nout);
+									 FullTransactionId horizon, int nparticipants, SiftCompactResult *res, SiftPartDesc *out, int out_cap, int *nout);
 
 #endif							/* SIFT_COMPACT_PAR_H */

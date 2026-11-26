@@ -100,6 +100,10 @@ typedef struct SiftCompactGroup
 /* The blocks of a part, added to those a commit releases: its deletion vector is not among them, the commit releases the one the manifest holds when it is made */
 extern void sift_compact_release_part(const SiftPart *part, SiftExtent **rel_ext, int *nrel);
 
+/* The output parts given back at once, as no manifest ever held them; the deletion vector an output carried over, which is replaced */
+extern void sift_compact_release_outputs(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout);
+extern void sift_compact_release_outputs_dv(Relation rel, const SiftPartDesc *out);
+
 /*
  * The parts at[0 .. n) as one part of the level above, their granules copied as they are, the blocks of the parts added to *rel_ext: possible when no row is dead, the parts follow one
  * another, share a schema and their dictionaries and have all rows frozen (so that the horizon has nothing to drop or freeze). false: nothing is written and the rows have to be read.

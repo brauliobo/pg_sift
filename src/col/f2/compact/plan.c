@@ -4,18 +4,16 @@
 #include "core/host.h"
 
 #include "col/f2/compact/compact.h"
+#include "core/cmp.h"
 #include "core/f2/col_delta_anchor.h"
 
 int			sift_dead_rewrite_pct = 10;
 
-/* A part the long column-delta chain of its partition has records for: the host's own list (SiftCompactChain), as the chain is the partition's and no part holds its address */
+/* A part the long column-delta chain of its partition has records for: the host's own list (SiftCompactChain, sorted by sift_compact_plan_chained), as the chain is the partition's and no part holds its address */
 static bool
 part_has_long_delta_chain(const SiftPartDesc *p, const SiftCompactChain *chain)
 {
-	for (int i = 0; chain != NULL && i < chain->nfold; i++)
-		if (chain->fold_gens[i] == p->part_gen)
-			return true;
-	return false;
+	return chain != NULL && chain->nfold > 0 && bsearch(&p->part_gen, chain->fold_gens, chain->nfold, sizeof(uint64), sift_cmp_u64) != NULL;
 }
 
 static bool
@@ -257,7 +255,14 @@ sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 ho
 SiftCompactGroup *
 sift_compact_plan_chained(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, const SiftCompactChain *chain, int *ngroups)
 {
-	return plan_groups(parts, nparts, budget, hot_cut, chain, false, ngroups);
+	uint64	   *gens = memcpy(palloc(Max(chain->nfold, 1) * sizeof(uint64)), chain->fold_gens, chain->nfold * sizeof(uint64));
+	SiftCompactChain sorted = {.fold_gens = gens,.nfold = chain->nfold,.dirty_time = chain->dirty_time};
+	SiftCompactGroup *out;
+
+	qsort(gens, sorted.nfold, sizeof(uint64), sift_cmp_u64);
+	out = plan_groups(parts, nparts, budget, hot_cut, &sorted, false, ngroups);
+	pfree(gens);
+	return out;
 }
 
 SiftCompactGroup *

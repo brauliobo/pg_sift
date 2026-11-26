@@ -13,6 +13,7 @@
 #include "port/atomics.h"
 #include "utils/rel.h"
 
+#include "col/f2/compact/compact.h"
 #include "col/f2/compact/par.h"
 #include "col/f2/f2.h"
 #include "col/f2/store/store.h"
@@ -130,7 +131,7 @@ run_share(Relation rel, CompactParShared *sh, void *slots, uint32 s)
 
 	for (int j = 0; j < k; j++)
 		sub[j] = inputs_of(sh)[idx[j]];
-	if (k > 0 && !sift_compact_write_slice(rel, sh->part_id, spec_of(rel), sub, k, lo, hi, sh->hot_cut, sh->bounds_hold, FullTransactionIdFromU64(sh->horizon), (int) sh->nparticipants, &slot->res, slot->out, &nout))
+	if (k > 0 && !sift_compact_write_slice(rel, sh->part_id, spec_of(rel), sub, k, lo, hi, sh->hot_cut, sh->bounds_hold, FullTransactionIdFromU64(sh->horizon), (int) sh->nparticipants, &slot->res, slot->out, (int) sh->slot_cap, &nout))
 		pg_atomic_write_u32(&sh->unsettled, 1);
 	slot->nout = nout;
 	pfree(idx);
@@ -179,11 +180,23 @@ res_add(SiftCompactResult *to, const SiftCompactResult *r)
 	to->dict_codes_remapped += r->dict_codes_remapped;
 }
 
-/* The participants the group is worth: what VACUUM (PARALLEL n) asks for, no more than the leader and the workers max_parallel_maintenance_workers allows, and two granules for each */
+/* A participant failed: the parts the shares that were done wrote are given back, no manifest will take them */
+static void
+release_slots(Relation rel, uint64 part_id, void *slots, uint32 cap, uint32 nshares)
+{
+	for (uint32 s = 0; s < nshares; s++)
+	{
+		const CompactSlot *slot = slot_at(slots, cap, s);
+
+		sift_compact_release_outputs(rel, part_id, slot->out, (int) slot->nout);
+	}
+}
+
+/* The participants the group is worth (none in parallel mode: the leader of a parallel VACUUM of the heap is in it, and a worker is): what VACUUM (PARALLEL n) asks for, no more than the leader and the workers max_parallel_maintenance_workers allows, and two granules for each */
 static uint32
 participants_of(Relation rel, uint64 granules)
 {
-	if (sift_vacuum_parallel_workers < 2 || IsParallelWorker() || RelationUsesLocalBuffers(rel) || max_parallel_workers < 1)
+	if (sift_vacuum_parallel_workers < 2 || IsInParallelMode() || RelationUsesLocalBuffers(rel) || max_parallel_workers < 1)
 		return 0;
 	return (uint32) Min(Min((uint64) sift_vacuum_parallel_workers, (uint64) max_parallel_maintenance_workers + 1), granules / SIFT_COMPACT_PAR_MIN_GRANULES);
 }
@@ -224,9 +237,18 @@ sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, con
 		sift_par_end(ldr);
 		return SIFT_COMPACT_PAR_OFF;
 	}
-	WaitForParallelWorkersToAttach(ldr->pcxt);
-	run_shares(rel, sh, ldr->parts);
-	sift_par_wait(ldr);
+	PG_TRY();
+	{
+		WaitForParallelWorkersToAttach(ldr->pcxt);
+		run_shares(rel, sh, ldr->parts);
+		sift_par_wait(ldr);
+	}
+	PG_CATCH();
+	{
+		release_slots(rel, part_id, ldr->parts, cap, nshares);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	unsettled = pg_atomic_read_u32(&sh->unsettled) != 0;
 	*out = palloc(Max(nshares * cap, 1) * sizeof(SiftPartDesc));
 	*nout = 0;

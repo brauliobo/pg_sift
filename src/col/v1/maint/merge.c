@@ -669,7 +669,7 @@ merge_by_workers(Relation index, const SiftSegEntry *sel, int n, bool cut, bool 
 	int			workers = maint_after_build ? maint_merge_workers : max_parallel_maintenance_workers;
 	int			nslices;
 
-	if (workers == 0 || n < 2 || (!cut && maint_after_build) || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
+	if (workers == 0 || IsInParallelMode() || n < 2 || (!cut && maint_after_build) || !sift_col_is_index(index) || !sift_col_key_cut(sift_col_rel(index)))
 		return false;
 	if (!sift_colk_recorded(index, sel, n))
 		return false;

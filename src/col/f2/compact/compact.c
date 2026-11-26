@@ -495,28 +495,6 @@ folds_any(void *fold, const SiftPartDesc **at, int n)
 	return false;
 }
 
-/* The vector an output carried over is replaced: the extents it had were never in a manifest */
-static void
-release_outputs_dv(Relation rel, const SiftPartDesc *out)
-{
-	if (out->dv_blk != InvalidBlockNumber)
-		sift_fsm_release(rel, &(SiftExtent) {out->dv_blk, out->dv_nblocks}, 1, InvalidFullTransactionId);
-}
-
-/* The output parts given back at once: no manifest ever held them */
-static void
-release_outputs(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout)
-{
-	for (int k = 0; k < nout; k++)
-	{
-		int			nb;
-		SiftExtent *blocks = sift_part_blocks(sift_part_open(rel, out[k].header_blk, out[k].part_gen, (uint32) part_id), &nb);
-
-		sift_fsm_release(rel, blocks, nb, InvalidFullTransactionId);
-		release_outputs_dv(rel, &out[k]);
-	}
-}
-
 /* The rows read and the outputs written by the participants of a VACUUM (PARALLEL n), each a share of the granules of the inputs (compact/par.c); the blocks of the inputs are given back as those of a serial compaction are */
 static SiftCompactParResult
 par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, int64 hot_cut, bool bounds_hold, FullTransactionId horizon, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel,
@@ -534,7 +512,7 @@ par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, int64 
 	par = sift_compact_par_write(rel, part_id, descs, granules, ngens, hot_cut, bounds_hold, horizon, res, out, nout);
 	if (par == SIFT_COMPACT_PAR_UNSETTLED)
 	{
-		release_outputs(rel, part_id, *out, *nout);
+		sift_compact_release_outputs(rel, part_id, *out, *nout);
 		*out = NULL;
 		*nout = 0;
 	}
@@ -630,7 +608,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	if (adopt_cx != NULL)
 		MemoryContextDelete(adopt_cx);
 	if (!read)
-		release_outputs(rel, part_id, sink.out, sink.nout);
+		sift_compact_release_outputs(rel, part_id, sink.out, sink.nout);
 	*out = read ? sink.out : NULL;
 	*nout = read ? sink.nout : 0;
 	return read;
@@ -639,7 +617,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 /* What one participant of a compaction of several writes: the rows of the granules [lo[i], hi[i]) of the part in[i] as parts of its own, which the leader of the compaction commits with the rest; false: a deletion in them is not settled */
 bool
 sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec, const SiftPartDesc *in, int nin, const uint32 *lo, const uint32 *hi, int64 hot_cut, bool bounds_hold,
-						 FullTransactionId horizon, int nparticipants, SiftCompactResult *res, SiftPartDesc *out, int *nout)
+						 FullTransactionId horizon, int nparticipants, SiftCompactResult *res, SiftPartDesc *out, int out_cap, int *nout)
 {
 	SiftMemTracker mem;
 	MemoryContext old;
@@ -665,6 +643,11 @@ sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec,
 		ci[i].g_hi = hi[i];
 	}
 	read = write_outputs(rel, part_id, ci, nin, spec, hot_cut, bounds_hold, false, true, &hc, NULL, res, &rel_ext, &nrel, &mem, &written, nout);
+	if (read && *nout > out_cap)
+	{
+		sift_compact_release_outputs(rel, part_id, written, *nout);
+		elog(ERROR, "sift: a share of a parallel compaction wrote %d parts, its slot holds %d", *nout, out_cap);
+	}
 	if (read && *nout > 0)
 		memcpy(out, written, *nout * sizeof(SiftPartDesc));
 	MemoryContextSwitchTo(old);
@@ -737,7 +720,7 @@ place_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, S
 		nm = sift_del_locate(rel, part, dir, recs, n, done, marks, base, NULL);
 		if (write && nm > 0)
 		{
-			release_outputs_dv(rel, &out[k]);
+			sift_compact_release_outputs_dv(rel, &out[k]);
 			(void) sift_dv_write(rel, sift_dv_merge(base, marks, nm, out[k].part_gen, sift_manifest_new_gen(rel, 1), part->hdr.ngranules, grows), (uint32) part_id, &out[k]);
 		}
 		MemoryContextSwitchTo(old);
@@ -781,7 +764,7 @@ adopt_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, S
 static bool
 abandon(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, bool packed)
 {
-	release_outputs(rel, part_id, out, nout);
+	sift_compact_release_outputs(rel, part_id, out, nout);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	if (packed)
 		UnlockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
