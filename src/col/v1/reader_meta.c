@@ -202,8 +202,6 @@ sift_src_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *l
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
 			continue;
 		}
-		if (ls[i].point_units > 0 && ls[i].nunits > 0)
-			st->point_cover[i] = Min(ls[i].point_units / ls[i].nunits, 1.0);
 		if (ls[i].set_units > 0)
 		{
 			st->set_cover[i] = ls[i].set_units / ls[i].set_sampled;

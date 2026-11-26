@@ -119,7 +119,6 @@ typedef struct SiftSrcStats
 	double		null_frac[SIFT_COLSRC_MAX_LEAVES];	/* the share of the values of a leaf that are NULL (of its elements, for a child) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];
-	double		point_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units whose segment keeps a point directory of the leaf, which lists the rows of a short list of keys (0: none does) */
 	double		set_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units that hold a small-set summary of the leaf (0: none do) */
 	double		set_keys[SIFT_COLSRC_MAX_LEAVES];	/* ... and the distinct keys such a unit holds on average */
 	double		head_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units whose sorted run of the leaf holds a head, the best 32 keys at each end with their heap addresses (order_columns): ORDER BY .. LIMIT 32 or less reads the head of a few units (0: none does) */
