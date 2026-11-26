@@ -101,6 +101,7 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 			f->col[i].nan_ok &= takes_nan;
 			return &f->col[i];
 		}
+	SIFT_INVARIANT(f->nfold < SIFT_V6_MAX_COLS, "the aggregate scan of %s reads more columns than a batch holds", sift_rel_label(f->a.spec->relid));
 	f->col[f->nfold] = (FoldCol) {.attno = attno,.jmember = c.jmember,.cls = cls,.nan_ok = takes_nan,.slot = f->in.ncols};
 	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = attno,.typid = c.typid,.scale = c.scale,.path = c.jmember > 0 ? list_nth(f->a.spec->jmembers, c.jmember - 1) : NIL,
 		.type = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : cls == SV6C_DATUM ? SVEC_DATUM : SVEC_I64};
