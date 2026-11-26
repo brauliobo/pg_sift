@@ -4,6 +4,7 @@
 # did not commit), the pending stamp that crash recovery and WAL replay give back as it was, and a hot standby whose snapshot is older than the commit that settled the stamp. Every
 # answer is compared with the same aggregate with the heap checking every page and with no sift plan at all. The primary runs with wal_consistency_checking = 'generic': crash recovery and the
 # standby compare every page they rebuild (the directory with the pending stamp, and the one that settles it) with the page the primary wrote.
+# Format 1 (col/v1/maint/promote.c, xstamp.h): a Format 2.0 index has no directory of segments to promote and no stamps.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 18
@@ -11,7 +12,8 @@ ROWS=$(knob SIFT_HF_ROWS 20000 12000)
 CONF="max_prepared_transactions = 5
 autovacuum = off
 synchronous_commit = on
-wal_consistency_checking = 'generic'"
+wal_consistency_checking = 'generic'
+sift.test_create_format1 = on"
 node_init p 34 "$CONF"
 node_start p || bail "start failed"
 D=$(dir p)
@@ -32,7 +34,15 @@ MODE_free="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = on; SE
 MODE_checked="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = on; SET sift.test_no_heapfree = on"
 MODE_oracle="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = off; SET sift.test_no_heapfree = off"
 ans() { local m=MODE_$2; sql "$1" "${!m}" "$A"; }
-pages() { local m=MODE_$2; sql "$1" "${!m}" "EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) $Q" | grep '"Heap Pages"' | tr -dc 0-9; }
+# the heap blocks the execution fetched: those of the whole statement less those of planning it, which a plan with sift costing samples the heap for (two EXPLAIN give the planning once)
+pages() {
+	local m=MODE_$2 n="SELECT 'P' || pg_stat_get_xact_blocks_fetched('events'::regclass)" e1 e2 q
+	read -r e1 e2 q < <(sql "$1" "${!m}" "BEGIN" "EXPLAIN $Q" "$n" "EXPLAIN $Q" "$n" "$Q" "$n" "COMMIT" | sed -n 's/^P//p' | tr '\n' ' ')
+	echo $((q - e2 - (e2 - e1)))
+}
+# the heap blocks every read of a vacuumed table fetches, whatever the log and the stamps say (the checked read of the fresh table takes the same): what "no heap page" means below
+FLOOR=$(pages p free)
+((FLOOR <= 1)) || bail "a read of the fresh table fetched $FLOOR heap blocks"
 agree() { local f=$(ans "$1" free) c=$(ans "$1" checked) o=$(ans "$1" oracle); [[ $f == "$c" && $f == "$o" ]] || { diag "$1: free $f checked $c oracle $o"; return 1; }; }
 stamped() { sql "${1:-p}" "SELECT count(stamp) FROM sift.col_stamps('events_c')"; }
 segs() { sql "${1:-p}" "SELECT count(*) FROM sift.col_stamps('events_c')"; }
@@ -101,6 +111,6 @@ check "the standby has the settled stamps" test "$(stamps s)" == "$(stamps p)"
 check "a new snapshot on the standby: free, checked and oracle agree, with the committed rows" agree s
 check "... and it reads fewer heap pages than the checked read, as the primary's stamps say" test "$(pages s free)" -lt "$(pages s checked)"
 check "the primary: the three reads agree and no heap page is read" agree p
-check "... no heap page is read once the stamps are settled" test "$(pages p free)" == 0
+check "... no heap page is read once the stamps are settled" test "$(pages p free)" -le "$FLOOR"
 
 finish

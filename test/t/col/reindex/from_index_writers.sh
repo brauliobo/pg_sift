@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # tap: pooled
+# Format 1 (col/v1/build/from_index.c): a Format 2.0 REINDEX always builds from the heap, and reindex/concurrent.sh runs it under writers.
 # (each client works on ids of its own and no insert is speculative: the records of the write buffer name their inserters, which a build from the old index needs for the stamps of the log)
 # REINDEX of a sift_col index that tracks its changes takes the rows from the index it replaces (col/v1/build/from_index.c) while writers commit and roll back around it: the writers
 # wait for its ShareLock between statements, so every round finds the index with the rows of the writers before it in segments and the write buffer, and the table's dead versions
@@ -13,7 +14,8 @@ SECS=$(knob SIFT_RIW_SECS 8 4)
 ROWS=$(knob SIFT_RIW_ROWS 20000 8000)
 node_init n 40 "sift.col_build_source = auto
 autovacuum = off
-sift.async_maintenance = off"
+sift.async_maintenance = off
+sift.test_create_format1 = on"
 node_start n || bail "start failed"
 D=$(dir n)
 sql n "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \

@@ -2,6 +2,7 @@
 # tap: pooled
 # A VACUUM whose cut of the free end of a sift_col file waited for its lock in vain says so once, with the blocks the online cut moved and gave back instead: VACUUM VERBOSE reports it (INFO), and an
 # autovacuum that logs reports it in the server log (LOG). The reason is the lock another session holds on the table for the whole wait, and what the online cut did in its place.
+# Format 1 (core/space): the free end of a Format 2.0 file is cut by sift_fsm_tail_shrink, which has no online cut.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_CS_ROWS 200000 100000)
@@ -9,7 +10,8 @@ plan 5
 node_init skip 5 "autovacuum = on
 autovacuum_naptime = 1s
 autovacuum_vacuum_insert_threshold = 500
-log_autovacuum_min_duration = 0"
+log_autovacuum_min_duration = 0
+sift.test_create_format1 = on"
 node_start skip || bail "start failed"
 sql skip "CREATE EXTENSION pg_sift" >/dev/null || bail "setup failed"
 # t: table with a loose file (a merge writes its output above its inputs), autovacuum off for it until the test flips it

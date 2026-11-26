@@ -4,6 +4,7 @@
 # was used (a, b), not used (c), and not used for what is not committed before the snapshot: an older snapshot, a transaction in progress (prepared), a rolled back transaction
 # and a subtransaction. Also on a hot standby that replays the log, after VACUUM gave the addresses to new rows, with the triggers of b disabled, enabled again and
 # recreated, and on the subscriber of a real logical replication, which is no place for track_changes: the apply worker fires no statement trigger.
+# Format 1 (col/v1/tomblog.c): the log of tombstones is its. A Format 2.0 index is told of the deletes by its row trigger and the reads vouch for it per snapshot (track/heard.sh).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 35
@@ -15,7 +16,8 @@ max_replication_slots = 5
 autovacuum = off
 synchronous_commit = on
 max_logical_replication_workers = 4
-max_worker_processes = 16"
+max_worker_processes = 16
+sift.test_create_format1 = on"
 node_init p 26 "$CONF"
 node_start p || bail "start failed"
 D=$(dir p)
@@ -160,7 +162,8 @@ max_replication_slots = 5
 max_wal_senders = 5"
 node_start pub || bail "pub start failed"
 node_init sub 29 "max_logical_replication_workers = 4
-max_worker_processes = 16"
+max_worker_processes = 16
+sift.test_create_format1 = on"
 node_start sub || bail "sub start failed"
 sql pub "CREATE TABLE r (id int PRIMARY KEY, g int NOT NULL, v int, w int)" "CREATE TABLE r2 (id int PRIMARY KEY, g int NOT NULL, v int, w int)" \
 	"INSERT INTO r SELECT i, i % 10, i, 0 FROM generate_series(1, $ROWS) i" "INSERT INTO r2 SELECT i, i % 10, i, 0 FROM generate_series(1, $ROWS) i" \
