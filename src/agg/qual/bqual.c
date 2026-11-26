@@ -79,6 +79,15 @@ sift_v6_bq_plan_ok(PlannerInfo *root, const SiftV6Input *in, const Expr *clause)
 	return text_slot(&scratch, clause, &q) >= 0 || machine_runs(in, clause) || sift_v6_pgqual_plan_ok(root, in, clause);
 }
 
+bool
+sift_v6_bq_runs_pg(const SiftV6Input *in, const Expr *clause)
+{
+	SiftV6Input scratch = *in;
+	SiftTextQual q;
+
+	return text_slot(&scratch, clause, &q) < 0 && (sift_v6_pgexpr_exec((const Node *) clause) || !machine_runs(in, clause));
+}
+
 SiftV6Bq *
 sift_v6_bq_open(MemoryContext cx, const List *quals, const SiftV6Input *in, SiftV6BqCol col, void *arg, const struct SiftV6Exec *exec)
 {

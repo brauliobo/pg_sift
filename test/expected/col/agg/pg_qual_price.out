@@ -1,0 +1,47 @@
+-- A qual of the aggregate scan that PostgreSQL's executor evaluates row by row (an = ANY of the array a sub-select makes) costs the scan what PostgreSQL prices it at
+-- for every row it decodes: priced as the decode of its column alone, the scan came out cheaper than the one that tests a constant array on its batches, and ran four times longer.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE pqp_dims (id int PRIMARY KEY, active bool NOT NULL);
+INSERT INTO pqp_dims SELECT i, i % 3 <> 0 FROM generate_series(1, 60) i;
+CREATE TABLE pqp_events (id int PRIMARY KEY, parent_id int NOT NULL, kind text NOT NULL, deleted_at timestamptz);
+INSERT INTO pqp_events SELECT i, 1 + (i::bigint * 7919) % 60, 'cat_' || chr(97 + i % 4), CASE WHEN i % 37 = 0 THEN now() END FROM generate_series(1, 30000) i;
+CREATE INDEX pqp_events_col ON pqp_events USING sift_col (id, parent_id, kind, deleted_at);
+NOTICE:  sift_col "pqp_events_col": built 30,000 rows (160.0 KB, 5.5 B/row, 8.2x vs heap, 1 parts, 4 granules, codecs: 1 const, 2 delta, 2 coded)
+HINT:  Inspect layout with SELECT * FROM sift.status('public.pqp_events_col');
+VACUUM (FREEZE, ANALYZE) pqp_dims, pqp_events;
+-- the cost of the aggregate scan, the other plans of the table off
+CREATE FUNCTION pqp_cost(q text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	ASSERT j::text ~ '"Custom Plan Provider": "SiftAggV6"', 'the aggregate scan plans ' || q;
+	RETURN (j -> 0 -> 'Plan' ->> 'Total Cost')::float8;
+END $$;
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT pqp_cost('SELECT kind, count(*) FROM pqp_events WHERE parent_id = ANY (ARRAY (SELECT id FROM pqp_dims WHERE active AND id % 5 = 0)) AND deleted_at IS NULL GROUP BY 1') >
+	pqp_cost('SELECT kind, count(*) FROM pqp_events WHERE parent_id = ANY (''{5,10,20,25,35,40,50,55}''::int[]) AND deleted_at IS NULL GROUP BY 1') AS executor_qual_priced;
+ executor_qual_priced 
+----------------------
+ t
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+SELECT kind, count(*) FROM pqp_events WHERE parent_id = ANY (ARRAY (SELECT id FROM pqp_dims WHERE active AND id % 5 = 0)) AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
+ kind  | count 
+-------+-------
+ cat_a |   973
+ cat_b |   974
+ cat_c |   973
+ cat_d |   972
+(4 rows)
+
+DROP FUNCTION pqp_cost(text);
+DROP TABLE pqp_events, pqp_dims;
+DROP EXTENSION pg_sift;

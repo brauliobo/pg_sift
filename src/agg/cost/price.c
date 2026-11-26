@@ -346,6 +346,25 @@ sift_v6_dim_cost(const Path *child)
 	return child->total_cost - (1.0 - sift_agg_cold_share(rel->pages)) * rel->pages * spc_seq;
 }
 
+/* per row decoded, what the quals of the scan that PostgreSQL's executor evaluates cost it */
+static Cost
+pg_qual_cost(PlannerInfo *root, const IndexOptInfo *ix, const List *vqual)
+{
+	SiftV6Input in = {.indexoid = ix->indexoid};
+	Cost		per_row = 0;
+
+	sift_v6_input_init_info(&in, ix);
+	foreach_ptr(Expr, clause, (List *) vqual)
+		if (sift_v6_bq_runs_pg(&in, clause))
+		{
+			QualCost	qc;
+
+			cost_qual_eval_node(&qc, (Node *) clause, root);
+			per_row += qc.per_tuple;
+		}
+	return per_row;
+}
+
 SiftV6AggPrice
 sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftV6Spec *spec, double groups)
 {
@@ -364,6 +383,7 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	b.measure_io_row = cols_bytes(b.view, measure, index_leaf, ix, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
 	price.in = scan_inputs(&b);
 	price.in.n_groups = Max(groups, 1.0);
+	price.in.pg_qual = pg_qual_cost(root, ix, spec->vqual);
 	price.selectivity = Min(b.surv / (price.in.g_eff * SIFT_GRANULE_ROWS), 1.0);
 	price.open = open_cost(scan_parts(&b));
 	return price;

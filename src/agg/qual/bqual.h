@@ -19,6 +19,9 @@ struct SiftV6Exec;
 /* The clause is one the machine runs over the columns of the input (a relation as the planner or the executor opened it): true */
 extern bool sift_v6_bq_plan_ok(PlannerInfo *root, const SiftV6Input *in, const Expr *clause);
 
+/* The clause is one PostgreSQL's executor evaluates row by row (agg/qual/pg.h): neither a text qual of the bytes nor one the machine runs */
+extern bool sift_v6_bq_runs_pg(const SiftV6Input *in, const Expr *clause);
+
 /* The vector of a column of the input for the batches of the scan, or NULL when the scan does not decode it */
 typedef const SiftVec *(*SiftV6BqCol) (void *arg, const SiftV6InCol *col);
 

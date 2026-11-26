@@ -35,6 +35,7 @@ typedef struct SiftCostInputs
 	double		r_bw_cpu;		/* cpu_operator_costs per 64 bytes decoded (12: about 2.7 GB/s, what a warm scan of a column of numbers measures) */
 	double		f_cold;			/* share of those bytes that is not in shared buffers or the cache of the operating system, and costs a page read */
 	double		n_ship;			/* records the workers hand to the merge when they ship more than the groups (a count(DISTINCT) ships its values), else 0 */
+	Cost		pg_qual;		/* what PostgreSQL's executor costs to evaluate the quals it runs for the scan (agg/qual/pg.h) on a row decoded */
 } SiftCostInputs;
 
 #define SIFT_COST_R_BW_CPU		12.0
