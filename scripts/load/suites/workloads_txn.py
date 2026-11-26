@@ -206,7 +206,7 @@ CASES = (
     LoadCase('delta_hot_update_olap', 'delta', delta_hot_update_olap, Limits(p99_ratio=3.0, lwlock_wait_pct=30, pending_after=0), formats=(2,),
              open='S107-01,S107-28', intermittent=True),
     LoadCase('txn_ssi_2pc_savepoint', 'txn', txn_ssi_2pc_savepoint, Limits()),
-    LoadCase('ddl_part_online_mix', 'ddl', ddl_part_online_mix, Limits(), open='S107-24'),
+    LoadCase('ddl_part_online_mix', 'ddl', ddl_part_online_mix, Limits()),
     LoadCase('pool_high_conn_term_shm', 'pool', pool_high_conn_term_shm, Limits(lwlock_wait_pct=40), formats=(2,), open='S107-20',
              intermittent=True),
 )

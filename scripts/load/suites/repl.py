@@ -139,5 +139,5 @@ def repl_logical_cdc_churn(ctx):
 
 CASES = (
     LoadCase('repl_standby_failover', 'repl', repl_standby_failover, Limits()),
-    LoadCase('repl_logical_cdc_churn', 'repl', repl_logical_cdc_churn, Limits(rss_mb_delta=8), formats=(2,), open='S107-25'),
+    LoadCase('repl_logical_cdc_churn', 'repl', repl_logical_cdc_churn, Limits(rss_mb_delta=8), formats=(2,)),
 )
