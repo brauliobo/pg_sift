@@ -555,7 +555,7 @@ sift_v6_index_owned(const IndexOptInfo *ix)
 bool
 sift_v6_index_usable(const IndexOptInfo *ix)
 {
-	return ix->indpred == NIL && sift_v6_index_owned(ix);
+	return agg_index_complete(ix) && sift_v6_index_owned(ix);
 }
 
 /* does e read what the scan does not give: a column, an aggregate or a GROUPING() that is not an entry of the scan tlist, taking a part of e that is an entry (a key that is an expression) whole */

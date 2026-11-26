@@ -57,13 +57,41 @@ leaf_attno_of(PlannerInfo *root, const RelOptInfo *leaf, Index top, AttrNumber a
 	return castNode(Var, list_nth(app->translated_vars, attno - 1))->varattno;
 }
 
-/* The index of a leaf as an index of the top table, its keys the attributes of the table; NULL when a key is a column that is not one of the table's */
+typedef struct ToTop
+{
+	PlannerInfo *root;
+	const RelOptInfo *leaf;
+	Index		top;
+	bool		ok;
+} ToTop;
+
+/* a Var of the leaf as the Var of the top table's attribute; ok turns false for a column the table does not have */
+static Node *
+var_to_top(Node *n, ToTop *t)
+{
+	if (n != NULL && IsA(n, Var) && ((Var *) n)->varno == (int) t->leaf->relid && ((Var *) n)->varlevelsup == 0)
+	{
+		Var		   *v = (Var *) copyObject(n);
+
+		v->varno = v->varnosyn = t->top;
+		v->varattno = v->varattnosyn = top_attno_of(t->root, t->leaf, t->top, v->varattno);
+		t->ok &= v->varattno != InvalidAttrNumber;
+		return (Node *) v;
+	}
+	return expression_tree_mutator(n, var_to_top, t);
+}
+
+/* The index of a leaf as an index of the top table, its keys and predicate the attributes of the table; NULL when either reads a column that is not one of the table's */
 static IndexOptInfo *
 index_as_parent(PlannerInfo *root, const RelOptInfo *leaf, Index top, const IndexOptInfo *ix)
 {
 	IndexOptInfo *as_parent = palloc(sizeof(IndexOptInfo));
+	ToTop		t = {root, leaf, top, true};
 
 	*as_parent = *ix;
+	as_parent->indpred = (List *) var_to_top((Node *) ix->indpred, &t);
+	if (!t.ok)
+		return NULL;
 	as_parent->indexkeys = palloc(sizeof(int) * ix->ncolumns);
 	for (int i = 0; i < ix->ncolumns; i++)
 	{
@@ -205,7 +233,7 @@ compile_source(const PartPlan *pp, const SiftV6RelSource *s, V6Plan *p)
 	Relation	rel = sift_v6_source_open(s->reloid, s->is_table, AccessShareLock, NULL);
 	bool		ok;
 
-	*p = (V6Plan) {.root = pp->root,.rel = pp->parent,.out = pp->out,.pg_derive = pp->pg_derive};
+	*p = (V6Plan) {.root = pp->root,.rel = pp->parent,.out = pp->out,.pg_derive = pp->pg_derive,.batch_ok = true};
 	ok = sift_v6_plan_bind(p, s, rel) && pp->compile(p, pp->stmt);
 	sift_v6_source_close(rel, s->is_table, NoLock);
 	return ok;

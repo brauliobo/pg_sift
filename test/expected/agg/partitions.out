@@ -778,9 +778,9 @@ SELECT * FROM same_exec('SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7 +
 (1 row)
 
 SELECT * FROM same_exec('SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k IN (7 + (current_date - current_date), 8, 9)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k IN (7, 8, 9)');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |           1 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |           1 |              0
 (1 row)
 
 -- two key columns: both are needed for a remainder
