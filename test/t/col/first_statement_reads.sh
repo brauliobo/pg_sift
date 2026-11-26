@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # The first statement after the index's pages left shared buffers (a native scan of a table larger than the pool evicted them) reads its blocks in as few requests as it can: the
 # segment reader reads the rest of a run of pages in one request (sr_read_range), a unit that waited for the device has the chunks every unit before it read, and the head of the next
-# unit, read as one plan (sift_cseg_unit_plan), and the probes of a correlated child ask for the heap blocks of the entries they found, not for the lookup table. Counts only, never time: blocks read (pg_stat_io), read
+# unit, read as one plan (sift_cseg_unit_plan). Counts only, never time: blocks read (pg_stat_io), read
 # requests (pg_stat_io reads), the share of the segment's blocks that a get waited for against those the plan or the read-ahead brought in first (sift._test_segment_reads), the blocks
-# of the same statement run again, and the blocks the probes asked for. A scratch cluster on tmpfs has no device latency.
+# of the same statement run again. A scratch cluster on tmpfs has no device latency. Format 1: the segment reader, its units of sift.test_col_unit_rows and its counters are Format 1's.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 # pg_stat_io counts bytes from PostgreSQL 18 (read_bytes); before it, reads of op_bytes (8 kB)
 RB=read_bytes; ((PG_MAJOR >= 18)) || RB='reads * op_bytes'
 
-plan 13
-node_init fs 29 "autovacuum = off
+plan 9
+node_init fs 29 "sift.test_create_format1 = on
+autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 16MB
 track_io_timing = off"
 node_start fs || bail "start failed"
-sql fs "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null 2>&1 || { skip 12 "pg_sift_test is not built"; finish; exit 0; }
+sql fs "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null 2>&1 || { skip 9 "pg_sift_test is not built"; finish; exit 0; }
 # events inserted in random order, a wide row (the measure columns are not read by the statement), units of 400 rows cut by the key column
 sql fs "CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int NOT NULL, kind_id int NOT NULL, day date NOT NULL, amount numeric(10,2) NOT NULL,
 		m1 float8, m2 float8, m3 float8, m4 float8, m5 float8, m6 float8, m7 float8, m8 float8)" \
