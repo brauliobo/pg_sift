@@ -45,6 +45,15 @@ SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM 
     90 |  90
 (1 row)
 
+-- sift.agg_scope off: no scope read is planned
+SET sift.agg_scope = off;
+SELECT * FROM plan_of('SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3)');
+ scanned | scope 
+---------+-------
+         | 
+(1 row)
+
+RESET sift.agg_scope;
 SET sift.enable_agg = off;
 SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3);
  count | sum 

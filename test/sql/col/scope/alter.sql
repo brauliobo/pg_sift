@@ -32,6 +32,10 @@ INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * 
 VACUUM facts;
 SELECT * FROM plan_of('SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3)');
 SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3);
+-- sift.agg_scope off: no scope read is planned
+SET sift.agg_scope = off;
+SELECT * FROM plan_of('SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3)');
+RESET sift.agg_scope;
 SET sift.enable_agg = off;
 SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3);
 RESET sift.enable_agg;

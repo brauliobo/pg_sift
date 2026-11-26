@@ -715,7 +715,7 @@ sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInf
 	int			a,
 				b;
 
-	if (!topk_shape_ok(root, input_rel) || target == NULL)
+	if (!sift_agg_scope || !topk_shape_ok(root, input_rel) || target == NULL)
 		return;
 	a = bms_next_member(input_rel->relids, -1);
 	b = bms_next_member(input_rel->relids, a);
@@ -862,7 +862,7 @@ sift_v6_scope_one_key(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, In
 	ScopePlan	p = {.root = root,.fact = fact,.pairs = pairs,.index = ix};
 	bool		ok = false;
 
-	if (!plain_relation(root, fact) || !pairs_ok(&p) || !index_usable(ix))
+	if (!sift_agg_scope || !plain_relation(root, fact) || !pairs_ok(&p) || !index_usable(ix))
 		return false;
 	p.irel = scope_rel_open(&p);
 	for (int o = 0; o < sift_f2_nscopes(p.irel) && !ok; o++)
@@ -886,7 +886,7 @@ sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptIn
 	int			a = -1,
 				b;
 
-	if (!shape_ok(root, input_rel) || out->reltarget == NULL || input_rel->cheapest_total_path == NULL)
+	if (!sift_agg_scope || !shape_ok(root, input_rel) || out->reltarget == NULL || input_rel->cheapest_total_path == NULL)
 		return;
 	a = bms_next_member(input_rel->relids, -1);
 	b = bms_next_member(input_rel->relids, a);
