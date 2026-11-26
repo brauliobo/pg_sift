@@ -10,7 +10,7 @@ id	area	query/feature	status	condition	engine	example	notes	proof	check	query	si
 #feature	expr-numeric	feat/v3-plan2-expr	test/col/fixtures/nulls/numeric_pg_filters.sql
 #feature	arms-outer	feat/v3-plan2-arms	test/col/fixtures/per_order/hidden_sets.sql
 #feature	arms-cells	feat/v3-plan2-arms	test/col/fixtures/per_order/global_distinct.sql
-#feature	preagg	feat/v3-preagg2	test/sql/agg/preagg/basic.sql
+#feature	preagg	feat/v3-preagg2	test/sql/col/preagg/basic.sql
 A01	Aggregate functions	count(*)	Yes		sift_col, sift_table	SELECT status, count(*) FROM orders GROUP BY status	Global (no GROUP BY) too.	fixture:flat/count_sum_minmax,fixture:flat/group_source	agg	SELECT status, count(*) FROM orders GROUP BY status			01:`count(*)`, `count(DISTINCT x)`
 A02	Aggregate functions	count(col)	Yes		sift_col, sift_table	SELECT country_code, count(country_code) FROM orders GROUP BY 1	NULLs are skipped as PostgreSQL does.	fixture:nulls/columns	agg	SELECT country_code, count(country_code), count(customer_id) FROM orders GROUP BY 1			01:`count(*)`, `count(DISTINCT x)`
 A03	Aggregate functions	count(DISTINCT col)	Yes		sift_col, sift_table	SELECT status, count(DISTINCT tenant_id) FROM orders GROUP BY 1	Dictionary, integer, date and numeric(p<=18) columns, or an expression of them.	fixture:flat/distinct_dict,fixture:nulls/numeric_distinct	agg	SELECT status, count(DISTINCT tenant_id), count(DISTINCT total), count(DISTINCT lower(source)) FROM orders GROUP BY 1			01:`count(*)`, `count(DISTINCT x)`
