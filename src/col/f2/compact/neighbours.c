@@ -25,8 +25,9 @@ refresh_entry(Relation rel, SiftPartitionEntry *e)
 
 /*
  * A transaction that holds a partition for its rows (table/f2/lock/esc.h) holds the split lock shared: the merge yields to it and comes again with the next pass. The manifest is read
- * once, under the lock that no split or merge passes: the neighbours are walked in one pass, the pair at the cursor judged by its entries as they are now, and a merged partition is judged
- * again against the one after it (the one before it was judged against its smaller self and did not join, so it does not join the larger).
+ * once, under the lock that no split or merge passes: the neighbours are walked in one pass, the pair at the cursor judged by its entries as they are under the locks of both partitions
+ * (a writer that puts rows in either commits under one of them), and a merged partition is judged again against the one after it (the one before it was judged against its smaller self and
+ * did not join, so it does not join the larger).
  */
 int
 sift_compact_merge_neighbours(Relation rel)
@@ -46,13 +47,18 @@ sift_compact_merge_neighbours(Relation rel)
 		{
 			SiftPartitionEntry *a = &mr.entries[i],
 					   *b = &mr.entries[next[i]];
+			bool		join;
 
 			sift_vacuum_delay_point();
+			sift_manifest_lock_pair(rel, a->part_id, b->part_id, true);
 			refresh_entry(rel, a);
 			refresh_entry(rel, b);
-			if (partition_idle(a) && partition_idle(b) && a->total_bytes + b->total_bytes < SIFT_PARTITION_MERGE_BYTES)
-			{
+			join = partition_idle(a) && partition_idle(b) && a->total_bytes + b->total_bytes < SIFT_PARTITION_MERGE_BYTES;
+			if (join)
 				sift_manifest_merge(rel, a->part_id, a->key_lo, b->part_id, b->key_lo);
+			sift_manifest_lock_pair(rel, a->part_id, b->part_id, false);
+			if (join)
+			{
 				merged++;
 				a->total_bytes += b->total_bytes;
 				memcpy(a->key_hi, b->key_hi, SIFT_BOUND_BYTES);

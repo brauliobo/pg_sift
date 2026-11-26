@@ -681,6 +681,20 @@ part_lock_blocks(const uint64 *lock_ids, int nlocks, BlockNumber *blks)
 	return nlocks == 2 && blks[0] == blks[1] ? 1 : nlocks;
 }
 
+void
+sift_manifest_lock_pair(Relation rel, uint64 a, uint64 b, bool acquire)
+{
+	uint64		ids[2] = {a, b};
+	BlockNumber blks[2];
+	int			n = part_lock_blocks(ids, 2, blks);
+
+	for (int i = 0; i < n; i++)
+		if (acquire)
+			LockPage(rel, blks[i], ExclusiveLock);
+		else
+			UnlockPage(rel, blks[n - 1 - i], ExclusiveLock);
+}
+
 uint64
 sift_mf_run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg, const uint8 *path_key, bool combine)
 {

@@ -303,6 +303,8 @@ extern uint64 sift_manifest_split(Relation rel, uint64 part_id, const uint8 *key
 
 /* Merges an empty partition into its neighbour that comes just before or after it: the neighbour's range grows over it */
 extern void sift_manifest_merge(Relation rel, uint64 keep_id, const uint8 *keep_lo, uint64 drop_id, const uint8 *drop_lo);
+/* Takes (acquire) or lets go the locks of two partitions in the order a split or a merge takes them: a merge judged under them sees every commit of a writer to either */
+extern void sift_manifest_lock_pair(Relation rel, uint64 a, uint64 b, bool acquire);
 
 /* Reserves n generations of parts, deletion vectors and manifest pages (P6): the first of them; and one partition id */
 extern uint64 sift_manifest_new_gen(Relation rel, uint32 n);
