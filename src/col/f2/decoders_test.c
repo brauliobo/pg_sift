@@ -400,13 +400,20 @@ sift_test_dec_tid_hash(PG_FUNCTION_ARGS)
 static void
 preagg_case(Case *c)
 {
-	uint32		sec_bytes[16] = {0};
+	const uint32 ngranules = c->mode == 1 ? UINT32_MAX : 1;
+	struct PreaggSec
+	{
+		SiftPreaggSecHdr hdr;
+		SiftPreaggCubeDesc cube;
+		uint32		gran_dir[2];
+	}			bytes = {.hdr = {SIFT_PREAGG_MAGIC, SIFT_PREAGG_VERSION, 1, ngranules, 0, offsetof(struct PreaggSec, cube), 0},
+						 .cube = {.gran_dir_off = offsetof(struct PreaggSec, gran_dir),.cells_off = sizeof(bytes)}};
 	SiftSecInput secs[2];
 	SiftPart   *part;
 
 	secs[0] = sec(SEC_SCHEMA, "SSSSSSSSSSSSSSSS", 16);
-	secs[1] = sec(SEC_PREAGG, sec_bytes, sizeof(sec_bytes));
-	part = write_part(c->rel, 1, c->mode == 1 ? UINT32_MAX : 1, 1, secs, 2);
+	secs[1] = sec(SEC_PREAGG, &bytes, sizeof(bytes));
+	part = write_part(c->rel, 1, ngranules, 1, secs, 2);
 	(void) sift_preagg_part_open(c->rel, part);
 }
 

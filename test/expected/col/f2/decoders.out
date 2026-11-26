@@ -38,11 +38,11 @@ SELECT m, dec_blob('dec_idx', m) FROM generate_series(0, 3) m ORDER BY m;
 
 -- the chunks of a granule: a chunk of 100 MiB (a row that wide) opens; strings whose offsets leave their chunk, and a chunk shorter than the validity of its rows, are damage
 SELECT m, dec_chunk(m) FROM generate_series(0, 2) m ORDER BY m;
- m |                        dec_chunk                        
----+---------------------------------------------------------
+ m |                             dec_chunk                              
+---+--------------------------------------------------------------------
  0 | ok
  1 | XX001 sift: an inline string of a chunk is past its end
- 2 | XX001 sift: the validity bits of a chunk do not fit it
+ 2 | XX001 sift: the validity of a chunk is shorter than its 60000 rows
 (3 rows)
 
 -- the address hash: the granule and the row of an entry are the part's
@@ -56,10 +56,10 @@ SELECT m, dec_tid_hash('dec_idx', m) FROM generate_series(0, 2) m ORDER BY m;
 
 -- the pre-aggregates: a part of 2^32 - 1 granules has no table of them that fits a 32-bit count
 SELECT m, dec_preagg('dec_idx', m) FROM generate_series(0, 1) m ORDER BY m;
- m |                     dec_preagg                     
----+----------------------------------------------------
+ m |                      dec_preagg                      
+---+------------------------------------------------------
  0 | ok
- 1 | XX002 sift index "dec_idx" segment 12 is corrupted
+ 1 | XX002 sift index "dec_idx" segment 1029 is corrupted
 (2 rows)
 
 -- the sort columns that the schema of a part records fit the spec of the index

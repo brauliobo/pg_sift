@@ -32,7 +32,7 @@ check_cubes(Relation rel, const SiftPart *part, const SiftPreaggSecHdr *hdr, con
 		const SiftPreaggCubeDesc *cd = &cube[k];
 
 		if (cd->ndims > SIFT_PREAGG_MAX_DIMS || cd->nmeasures > SIFT_PREAGG_MAX_MEAS || cd->ndistinct > SIFT_PREAGG_MAX_DIST ||
-			(uint64) cd->gran_dir_off + (uint64) (hdr->ngranules + 1) * sizeof(uint32) > len || cd->cells_off > len)
+			(uint64) cd->gran_dir_off + ((uint64) hdr->ngranules + 1) * sizeof(uint32) > len || cd->cells_off > len)
 			CORRUPT(rel, part, "a cube");
 	}
 }
