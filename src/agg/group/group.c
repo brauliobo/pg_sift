@@ -506,9 +506,9 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 		return;
 	n = batch_rows(g, set, bs, keyvec);
 	g->frows = g->nfilters > 0 ? sift_fmasks_rows(g->fmasks) : NULL;
-	if (set->wide && g->budget != UINT64_MAX && n > 1)
+	if (set->wide && n > 1)
 	{
-		const uint64 cap = Max((g->budget - g->dist_budget) / 4, 64 * 1024);
+		const uint64 cap = Max(Min((g->budget - g->dist_budget) / 4, MaxAllocSize / 4), 64 * 1024);
 		uint64		total = 0;
 
 		for (uint16 k = 0; k < n && total <= cap; k++)

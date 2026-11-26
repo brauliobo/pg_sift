@@ -4,7 +4,7 @@
 # The release build has no scope: the test needs the test build.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 21
+plan 23
 node_init mb 61 "autovacuum = off
 sift.test_create_format1 = on
 max_parallel_workers_per_gather = 0
@@ -57,6 +57,19 @@ out=$(sql mb "SET work_mem = '4MB'" "SET sift.agg_force = on" "SELECT count(*) F
 	"SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'agg_group'" | tail -2 | tr '\n' ' ')
 check "2,500 distinct 16 kB keys at work_mem 4MB answer 2500 and hold under 12 MB (compact table and batch previously grew past 32 MB)" \
 	test "$(awk '{print $1}' <<<"$out")" == "2500" -a "$(awk '{print $2}' <<<"$out")" -lt 12582912
+sql mb "CREATE TABLE wk AS SELECT g AS id, repeat(md5(g::text), 32) AS k, g % 3 AS s, g AS v FROM generate_series(1, 24000) g" \
+	"CREATE INDEX wk_col ON wk USING sift_col (id, k, s, v)" "VACUUM (FREEZE, ANALYZE) wk" >/dev/null || bail "1 kB key table failed"
+wide_peak() { sql mb "SET work_mem = '$1'" "SET sift.agg_force = on" "SELECT count(x) FROM ($2) x" \
+	"SELECT peak FROM sift._test_mem_highwater() WHERE scope = 'agg_group'" | tail -1; }
+wk_peaks() { for q in "SELECT k, count(*) FROM wk GROUP BY 1" "SELECT k, sum(v) FROM wk GROUP BY 1" "SELECT k, s, count(*) FROM wk GROUP BY 1, 2"; do wide_peak 8MB "$q"; done; }
+check "groups of 1 kB keys that leave the compact table hold under 2.5 times work_mem at 8MB (29 MB while its flush counted groups, not bytes)" \
+	test "$(wk_peaks | sort -n | tail -1)" -lt 20971520
+sql mb "SET sift.test_create_format1 = off" "CREATE TABLE wh AS SELECT g AS id, repeat(md5(g::text), 19200) AS k, g % 3 AS s FROM generate_series(1, 2048) g" \
+	"CREATE INDEX wh_col ON wh USING sift_col (id, k, s)" "VACUUM (FREEZE, ANALYZE) wh" >/dev/null || bail "600 kB key table failed"
+wh_counts() { for q in "SELECT k, count(*) FROM wh GROUP BY 1" "SELECT k, count(DISTINCT s) FROM wh GROUP BY 1" "SELECT k, s, count(*) FROM wh GROUP BY 1, 2"; do
+	sql mb "SET work_mem = '4GB'" "SET sift.agg_force = on" "SELECT count(x) FROM ($q) x" 2>&1 | tail -1; done | sort -u; }
+check "2,048 distinct 600 kB keys of a Format 2 index at work_mem 4GB group without an allocation past 1 GB (the compact strings and the key batch doubled into one)" \
+	test "$(wh_counts)" == "2048"
 sql mb "DO \$\$ DECLARE n int; BEGIN FOREACH n IN ARRAY ARRAY[64, 256] LOOP
 	EXECUTE format('CREATE TABLE q%s (id int, g int, d date NOT NULL) PARTITION BY RANGE (d)', n);
 	FOR i IN 0..n - 1 LOOP EXECUTE format('CREATE TABLE q%s_%s PARTITION OF q%s FOR VALUES FROM (%L) TO (%L)', n, i, n, DATE '2000-01-01' + i, DATE '2000-01-02' + i); END LOOP;

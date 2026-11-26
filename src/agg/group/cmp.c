@@ -64,12 +64,52 @@ regrow(const SiftCompact *c, void *old, Size oldn, Size newn)
 	return p;
 }
 
+/* The slots of the string table for n strings, the strings that number them and the bytes of the arena that hold need bytes: 0 past MaxAllocSize, where a table of the backend stops */
+static uint32
+ht_cap_for(const Intern *in, uint64 n)
+{
+	uint64		cap = in->cap;
+
+	while (n * 2 > cap)
+		cap = cap == 0 ? 1024 : cap * 2;
+	return cap * sizeof(uint32) > MaxAllocSize ? 0 : (uint32) cap;
+}
+
+static uint32
+str_cap_for(const Intern *in, uint64 n)
+{
+	const uint64 cap = n <= in->str_cap ? in->str_cap : Max(Max(1024, (uint64) in->str_cap * 2), n);
+
+	return cap * sizeof(IStr) > MaxAllocSize ? 0 : (uint32) cap;
+}
+
+static Size
+arena_cap_for(const Intern *in, Size need)
+{
+	if (in->arena != NULL && need <= in->arena_cap)
+		return in->arena_cap;
+	return need > MaxAllocSize ? 0 : Min(Max(Max(in->arena_cap * 2, need), 4096), MaxAllocSize);
+}
+
+Size
+cmp_grow_peak(const SiftCompact *c, Size bytes, uint32 n)
+{
+	const Intern *in = &c->in;
+	const uint32 hcap = n == 0 ? in->cap : ht_cap_for(in, (uint64) in->n + n);
+	const uint32 scap = n == 0 ? in->str_cap : str_cap_for(in, (uint64) in->n + n);
+	const Size	acap = arena_cap_for(in, in->used + bytes);
+
+	if ((n > 0 && (hcap == 0 || scap == 0)) || acap == 0)
+		return SIZE_MAX;
+	return cmp_bytes(c) + (hcap != in->cap ? (Size) hcap * sizeof(uint32) : 0) + (scap != in->str_cap ? (Size) scap * sizeof(IStr) : 0) + (acap != in->arena_cap ? acap : 0);
+}
+
 static bool
 intern_grow(SiftCompact *c)
 {
 	Intern	   *in = &c->in;
-	const uint32 ncap = in->cap == 0 ? 1024 : in->cap * 2;
-	uint32	   *ht = cmp_alloc(c, (Size) ncap * sizeof(uint32), CMP_ARRAY_ALIGN, true);
+	const uint32 ncap = ht_cap_for(in, (uint64) in->cap / 2 + 1);
+	uint32	   *ht = ncap == 0 ? NULL : cmp_alloc(c, (Size) ncap * sizeof(uint32), CMP_ARRAY_ALIGN, true);
 
 	if (ht == NULL)
 		return false;
@@ -98,8 +138,8 @@ cmp_intern_reserve(SiftCompact *c, uint32 n, Size bytes)
 			return false;
 	if (in->n + n > in->str_cap)
 	{
-		const uint32 cap = Max(Max(1024, in->str_cap * 2), in->n + n);
-		IStr	   *str = regrow(c, in->str, (Size) in->n * sizeof(IStr), (Size) cap * sizeof(IStr));
+		const uint32 cap = str_cap_for(in, (uint64) in->n + n);
+		IStr	   *str = cap == 0 ? NULL : regrow(c, in->str, (Size) in->n * sizeof(IStr), (Size) cap * sizeof(IStr));
 
 		if (str == NULL)
 			return false;
@@ -140,8 +180,8 @@ sstr_put(SiftCompact *c, const char *p, uint32 len)
 
 	if (in->arena == NULL || in->used + len > in->arena_cap)
 	{
-		const Size	cap = Max(Max(in->arena_cap * 2, in->used + len), 4096);
-		char	   *bytes = regrow(c, in->arena, in->used, cap);
+		const Size	cap = arena_cap_for(in, in->used + len);
+		char	   *bytes = cap == 0 ? NULL : regrow(c, in->arena, in->used, cap);
 
 		if (bytes == NULL)
 			return false;

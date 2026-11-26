@@ -65,7 +65,6 @@ double	agg/ht/rec.c	b->p = b->p ? repalloc(b->p, b->cap) : palloc(b->cap);	bound
 double	col/f2/agg/scope/scope.c	p->spec.agg = p->spec.agg ? repalloc(p->spec.agg, (Size) p->cap_aggs * sizeof(SiftV6Agg)) : palloc((Size) p->cap_aggs * sizeof(SiftV6Agg));	bounded: the aggregates of one statement, one entry for each aggregate it names
 double	col/f2/agg/scope/run.c	st->vals = st->vals ? repalloc(st->vals, (Size) st->cap_rows * sizeof(Datum *)) : palloc((Size) st->cap_rows * sizeof(Datum *));	open: the result rows of one scope statement, one for each group the statement returns
 double	col/f2/agg/scope/run.c	st->nulls = st->nulls ? repalloc(st->nulls, (Size) st->cap_rows * sizeof(bool *)) : palloc((Size) st->cap_rows * sizeof(bool *));	open: the result rows of one scope statement, one for each group the statement returns
-double	agg/group/fast.c	wb->buf = repalloc(wb->buf, wb->cap);	bounded: the bytes of the wide keys of one vector of SIFT_VEC_LEN rows, each key at most the size of a stored value
 double	col/f2/del/delvec_delta.c	bs->b = repalloc(bs->b, bs->cap * sizeof(DeltaBucket));	bounded: one bucket for each group of granules the delta tail of one part changes; a fold of the tail ends it
 double	col/f2/del/delvec_delta.c	b->rows = repalloc(b->rows, b->cap * sizeof(DeltaRow));	bounded: the rows of the chunks of one delta tail, which a fold of the tail bounds
 double	col/f2/del/delvec_write.c	b->pay = repalloc(b->pay, cap);	bounded: the payload of the deletion vector of one part, at most one bitmap for each of its granules

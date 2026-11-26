@@ -135,6 +135,11 @@ extern bool cmp_layout(SiftCompact *c, bool key1_u32);
 extern bool cmp_init(SiftCompact *c, uint64 cap);
 /* The memory the table holds: slots, strings and their numbers */
 extern uint64 cmp_bytes(const SiftCompact *c);
+/*
+ * What the table would hold at the peak of taking bytes more bytes of strings and n more strings, the arrays that grow held old and new at once while they are copied; SIZE_MAX when an array
+ * would pass MaxAllocSize (the offsets of the strings are 32 bits)
+ */
+extern Size cmp_grow_peak(const SiftCompact *c, Size bytes, uint32 n);
 /* Room for n more groups at the load limit of 5 in 8, so that the next n rows grow nothing; false when the groups would need more than budget bytes (the tables of both sizes are held while the groups move) or the arena has no room */
 extern bool cmp_reserve(SiftCompact *c, uint64 n, uint64 budget);
 extern void cmp_free_all(SiftCompact *c);

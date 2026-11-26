@@ -255,22 +255,17 @@ key_rows(SiftCompact *c, SiftV6Group *g, const V6Set *set, SiftVec *const *keyve
 	return true;
 }
 
-/* Whether the strings of a batch fit inside the compact table's budget (accounting for arena doubling) */
+/* Whether the strings of a batch fit the budget of the table, at the peak of the arrays that grow to take them; the budget is never more than the key arena a group table spills at, which takes them in a flush */
 static bool
 compact_str_fits(const SiftCompact *c, const SiftVec *kv, const uint16 *sel, uint16 n, uint64 budget)
 {
-	uint64		held,
-				added = 0;
+	Size		added = 0,
+				peak;
+	uint32		nstr = 0;
 
-	if (budget == UINT64_MAX)
-		return true;
-	held = cmp_bytes(c);
-	if (held >= budget)
-		return false;
 	for (uint16 k = 0; k < n; k++)
 	{
 		const uint16 r = sel[k];
-		uint32		len;
 
 		if (!is_valid(kv, r))
 			continue;
@@ -279,20 +274,14 @@ compact_str_fits(const SiftCompact *c, const SiftVec *kv, const uint16 *sel, uin
 			const SiftGranuleDict *d = kv->dict;
 			const uint32 code = ((const uint32 *) kv->data)[r];
 
-			len = d->off[code + 1] - d->off[code];
+			added += d->off[code + 1] - d->off[code];
 		}
 		else
-			len = ((const SiftStrView *) kv->data)[r].len;
-		added += len;
-		if (c->in.used + added > c->in.arena_cap)
-		{
-			const uint64 ncap = Max(Max((uint64) c->in.arena_cap * 2, (uint64) c->in.used + added), 4096);
-
-			if (held - c->in.arena_cap + ncap > budget)
-				return false;
-		}
+			added += ((const SiftStrView *) kv->data)[r].len;
+		nstr++;
 	}
-	return true;
+	peak = cmp_grow_peak(c, added, c->strm ? 0 : nstr);
+	return peak != SIZE_MAX && peak <= budget;
 }
 
 bool
@@ -320,7 +309,7 @@ v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *c
 		return false;
 	}
 	budget = g->budget == UINT64_MAX ? UINT64_MAX : g->budget - g->dist_budget;
-	if (!cmp_reserve(c, n, budget) || (c->strk >= 0 && !compact_str_fits(c, keyvec[set->kidx[c->strk]], g->sel, n, budget)))
+	if (!cmp_reserve(c, n, budget) || (c->strk >= 0 && !compact_str_fits(c, keyvec[set->kidx[c->strk]], g->sel, n, Min(budget, SIFT_SPILL_ARENA_MAX))))
 	{
 		compact_flush(g, set, true);
 		return false;
@@ -586,9 +575,8 @@ flush_upsert(SiftV6Group *g, V6Set *set, const uint64 *slot)
 typedef struct Flush
 {
 	V6Set	   *set;
-	bool		spill;			/* the groups leave for the spill a run at a time, as the table is flushed because the memory is out */
-	uint32		run;
-	uint32		run_max;		/* the groups a quarter of the budget holds */
+	bool		spill;			/* the groups leave for the spill as the table is flushed because the memory is out, each time the groups hold spill_at bytes */
+	uint64		spill_at;
 } Flush;
 
 static void
@@ -598,24 +586,21 @@ flush_group(void *arg, const uint64 *slot)
 	V6Set	   *set = f->set;
 
 	v6g_compact_acc(set->owner, set, slot, (V6Acc *) sift_ht_ext(&set->ht, flush_upsert(set->owner, set, slot)));
-	if (f->spill && ++f->run == f->run_max)
-	{
-		f->run = 0;
+	if (f->spill && v6g_group_bytes(set->owner) >= f->spill_at)
 		v6g_spill_sets(set->owner);
-	}
 }
 
+/* The groups of the table into the group table: with spill, a quarter of the budget of them at a time (and never a key arena past the one a table spills at), their keys counted, while the compact table holds its own */
 static void
 compact_flush(SiftV6Group *g, V6Set *set, bool spill)
 {
-	Flush		f = {set, spill && !set->cmp->has_gid, 0, 0};
+	Flush		f = {set, spill && !set->cmp->has_gid, Min((g->budget - g->dist_budget) / 4, SIFT_SPILL_ARENA_MAX)};
 	MemoryContext old;
 
 	if (set->cmp == NULL)
 		return;
-	f.run_max = (uint32) Max(g->budget / 4 / (g->stride + sizeof(SiftAggSlot64) + 1), 1024);
 	old = MemoryContextSwitchTo(g->cx);
-	sift_ht_presize(&set->ht, (uint32) Min(set->cmp->count, f.spill ? f.run_max : UINT32_MAX));
+	sift_ht_presize(&set->ht, (uint32) Min(set->cmp->count, f.spill ? Max(f.spill_at / (g->stride + sizeof(SiftAggSlot64) + 1), 1024) : UINT32_MAX));
 	if (set->cmp->has_gid)
 	{
 		by_gid_make(set->cmp, set);
@@ -624,6 +609,7 @@ compact_flush(SiftV6Group *g, V6Set *set, bool spill)
 	}
 	else
 		v6g_compact_each(set, flush_group, &f);
+	v6g_mem_check(g, true);
 	v6g_compact_free(set);
 	set->cmp_off = true;
 	MemoryContextSwitchTo(old);

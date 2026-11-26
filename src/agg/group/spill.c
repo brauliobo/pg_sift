@@ -28,11 +28,10 @@
 
 #define SET_OF(sh)	((V6Set *) ((char *) (sh) - offsetof(V6Set, shape)))
 
-/* The bytes the groups hold now, as the allocator has them: the tables whole, the text arena, the code slots, the values of the keys, and the table a batch would grow: old and new at once */
-static uint64
-group_bytes(const SiftV6Group *g)
+uint64
+v6g_group_bytes(const SiftV6Group *g)
 {
-	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch)) + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0);
+	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch)) + (g->gkeys != NULL ? sift_v6_genkeys_bytes(g->gkeys) : 0) + g->wb.cap;
 
 	if (g->gen != NULL)
 		bytes += v6_gen_bytes(g->gen);
@@ -553,7 +552,7 @@ in_local_tables(const SiftV6Group *g)
 static bool
 over_budget(const SiftV6Group *g)
 {
-	return arena_full(g) || group_bytes(g) > g->budget - g->dist_budget;
+	return arena_full(g) || v6g_group_bytes(g) > g->budget - g->dist_budget;
 }
 
 /* MEM[MEM-AGG-02]: SiftV6Group spill budget check (group_bytes of allocated memory against budget - dist_budget; a spill leaves SIFT_SPILL_LOCAL_CAP slots per set; was count * 65B and the whole table kept) */
@@ -579,7 +578,7 @@ v6g_rows_if_over(SiftV6Group *g)
 {
 	const uint64 lim = g->budget == UINT64_MAX ? UINT64_MAX : g->budget - g->dist_budget;
 
-	if (!g->frozen && over_budget(g) && v6g_rows_cheaper(g) && !arena_full(g) && group_bytes(g) <= lim + lim / 2)
+	if (!g->frozen && over_budget(g) && v6g_rows_cheaper(g) && !arena_full(g) && v6g_group_bytes(g) <= lim + lim / 2)
 		v6g_freeze(g);
 	else
 		v6g_spill_if_over(g);

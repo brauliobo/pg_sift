@@ -285,6 +285,8 @@ extern void v6g_rows_if_over(SiftV6Group *g);
 extern void v6g_spill_all(SiftV6Group *g);
 /* The same with those values kept, for the batch in hand that still holds their codes */
 extern void v6g_spill_sets(SiftV6Group *g);
+/* The bytes the groups hold now, as the allocator has them: the tables whole, the text arena, the code slots, the values of the keys, the key bytes of the batch, and the table a batch would grow: old and new at once */
+extern uint64 v6g_group_bytes(const SiftV6Group *g);
 
 /* v6_group_spill.c: a state whose groups point to codes or to the text arena spills records of their values; the groups of a spill are read back a partition at a time */
 extern void v6g_spill_own(SiftV6Group *g);
