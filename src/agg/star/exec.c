@@ -4,6 +4,8 @@
 /* check-memory: allow-allocs every array here follows the rows of one small relation, which sift_star_dim_add stops at the budget of its shape */
 #include "core/host.h"
 
+#include <math.h>
+
 #include "agg/star/star.h"
 #include "agg/vexpr/str.h"
 
@@ -90,6 +92,15 @@ static uint64
 table_bytes(const SiftStarShape *sh, uint32 cap, uint32 nrows, uint64 arena_cap)
 {
 	return (uint64) cap * slot_bytes(sh) + arena_cap + (uint64) nrows * INDEX_ROW_BYTES;
+}
+
+double
+sift_star_table_est(const SiftStarShape *sh, double nrows, double str_bytes)
+{
+	const double cap = exp2(ceil(log2(Max(nrows, 64.0))));
+	const double arena = str_bytes > 0 ? exp2(ceil(log2(Max(nrows * str_bytes, 1024.0)))) : 0;
+
+	return cap * slot_bytes(sh) + arena + nrows * INDEX_ROW_BYTES;
 }
 
 static void

@@ -32,6 +32,8 @@ extern void sift_v6_star_scan_end(SiftV6StarRun *r, SiftV6Pipe *p);
 extern void sift_v6_star_attach(const SiftV6StarRun *r, SiftV6Pipe *p);
 /* After pass 0: every dimension fits in one pass (no class of keys or chunk is left for another) */
 extern bool sift_v6_star_one_pass(const SiftV6StarRun *r);
+/* What the planner expects of dimension d of rows rows of width bytes: the times the node reads its plan, and in passes the passes of the fact table its parts or chunks make */
+extern double sift_v6_star_reads(const SiftV6Ext *x, int d, double rows, double width, double *passes);
 /* The passes the dimensions need (known after pass 0) and the bytes the largest table took */
 extern uint32 sift_v6_star_passes(const SiftV6StarRun *r);
 extern uint64 sift_v6_star_bytes(const SiftV6StarRun *r);

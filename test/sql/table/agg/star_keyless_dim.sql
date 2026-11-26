@@ -1,5 +1,6 @@
 -- A star join whose dimension has no key (a cross join that a range condition filters) and does not fit work_mem: parts cannot split
 -- such a dimension (every row is in part 0), so it is read in chunks, a few passes, and not in up to 65536 parts that each read it again.
+-- The planner prices those passes: with both tables sift_tables it reads the events as the fact; a heap of the events can only be the dimension.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '30s';
@@ -8,35 +9,41 @@ CREATE TABLE skd_buckets (bucket date PRIMARY KEY, span text NOT NULL) USING sif
 INSERT INTO skd_buckets SELECT d::date, CASE WHEN d < date '2025-01-01' THEN 'b' ELSE 'a' END FROM generate_series(date '2024-01-01', date '2025-12-01', interval '1 month') d;
 CREATE TABLE skd_events (id int PRIMARY KEY, ts date NOT NULL, kind text NOT NULL, amount float8 NOT NULL, deleted_at timestamptz) USING sift_table;
 INSERT INTO skd_events SELECT i, date '2024-01-01' + (i % 700), 'kind_' || (i % 4), (i % 97) * 1.5, CASE WHEN i % 40 = 0 THEN now() END FROM generate_series(1, 30000) i;
-VACUUM (FREEZE, ANALYZE) skd_buckets, skd_events;
+CREATE TABLE skd_heap AS SELECT * FROM skd_events;
+VACUUM (FREEZE, ANALYZE) skd_buckets, skd_events, skd_heap;
 
-CREATE FUNCTION skd_rows(on_ bool) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION skd_rows(events text, on_ bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', on_::text, true);
-	SELECT string_agg(format('%s %s %s %s', span, kind, n, total), E'\n' ORDER BY span, kind) INTO r FROM (
-		SELECT b.span, e.kind, count(*) AS n, sum(e.amount) AS total FROM skd_buckets b JOIN skd_events e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month'
-		WHERE e.deleted_at IS NULL GROUP BY 1, 2) x;
+	EXECUTE format($q$SELECT string_agg(format('%%s %%s %%s %%s', span, kind, n, total), E'\n' ORDER BY span, kind) FROM (
+		SELECT b.span, e.kind, count(*) AS n, sum(e.amount) AS total FROM skd_buckets b JOIN %I e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month'
+		WHERE e.deleted_at IS NULL GROUP BY 1, 2) x$q$, events) INTO r;
 	RETURN r;
 END $$;
 
--- the table the scan reads and the passes of the star join: the ordered query reads the buckets and joins the events as its dimension
-CREATE FUNCTION skd_plan(OUT fact text, OUT passes int) LANGUAGE plpgsql AS $$
+-- the table the scan reads and the passes of the star join
+CREATE FUNCTION skd_plan(events text, OUT fact text, OUT passes int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
 	passes := 1;
-	FOR l IN EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
-		SELECT b.span, e.kind, count(*), sum(e.amount) FROM skd_buckets b JOIN skd_events e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month'
-		WHERE e.deleted_at IS NULL GROUP BY 1, 2 ORDER BY 1, 2 LOOP
+	FOR l IN EXECUTE format($q$EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
+		SELECT b.span, e.kind, count(*), sum(e.amount) FROM skd_buckets b JOIN %I e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month'
+		WHERE e.deleted_at IS NULL GROUP BY 1, 2 ORDER BY 1, 2$q$, events) LOOP
 		IF l ~ '^\s*Table: ' THEN fact := substring(l FROM 'Table: (\S+)'); END IF;
 		IF l ~ 'Star Passes: ' THEN passes := substring(l FROM 'Star Passes: (\d+)')::int; END IF;
 	END LOOP;
 END $$;
 
 SET work_mem = '4MB';
-SELECT fact, passes BETWEEN 1 AND 8 AS few_passes FROM skd_plan();
-SELECT skd_rows(true) = skd_rows(false) AS same;
+-- PostgreSQL's joins off: the star scan joins the heap of the events, a dimension read in chunks at this work_mem
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_nestloop = off;
+SELECT events, fact, passes, skd_rows(events, true) = skd_rows(events, false) AS same
+FROM unnest(ARRAY['skd_events', 'skd_heap']) events, skd_plan(events);
 
-DROP FUNCTION skd_plan(), skd_rows(bool);
-DROP TABLE skd_buckets, skd_events;
+DROP FUNCTION skd_plan(text), skd_rows(text, bool);
+DROP TABLE skd_buckets, skd_events, skd_heap;
 DROP EXTENSION pg_sift;

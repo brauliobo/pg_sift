@@ -123,6 +123,8 @@ typedef struct SiftStarDim
 } SiftStarDim;
 
 extern void sift_star_dim_init(SiftStarDim *d, const SiftStarShape *shape);
+/* The bytes the table takes for nrows rows of str_bytes bytes of strings each, as sift_star_dim_add counts them: what the planner expects of a dimension */
+extern double sift_star_table_est(const SiftStarShape *sh, double nrows, double str_bytes);
 /* false when the row would take the table past its budget, or is the SIFT_STAR_RANGE_MAX + 1st period of a range join (nothing is added) */
 extern bool sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row);
 /* the index over the rows added */

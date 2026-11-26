@@ -4,6 +4,8 @@
 /* check-memory: allow-allocs every array here follows the dimensions of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "miscadmin.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -46,6 +48,12 @@ struct SiftV6StarRun
 	MemoryContext rowcx;		/* one row of a plan */
 };
 
+static uint64
+star_budget(const SiftV6Ext *x)
+{
+	return Max((uint64) work_mem * 1024 / 2 / Max(x->ndims, 1), 4096);
+}
+
 SiftV6StarRun *
 sift_v6_star_begin(const SiftV6Ext *x, PlanState *const *children, MemoryContext cx)
 {
@@ -55,7 +63,7 @@ sift_v6_star_begin(const SiftV6Ext *x, PlanState *const *children, MemoryContext
 	r->qcx = cx;
 	r->cx = sift_mem_allocset_create(cx, "sift agg v6 star dimensions");
 	r->rowcx = sift_mem_allocset_create(cx, "sift agg v6 star row");
-	r->budget = Max((uint64) work_mem * 1024 / 2 / Max(x->ndims, 1), 4096);
+	r->budget = star_budget(x);
 	r->passes = 1;
 	for (int d = 0; d < x->ndims; d++)
 	{
@@ -465,6 +473,45 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 	r->dirty[d] = false;
 	r->bytes = Max(r->bytes, r->dim[d].bytes);
 	MemoryContextSwitchTo(old);
+}
+
+/* the bytes of strings a row of width bytes puts in the arena of the table: each string is aligned */
+static double
+str_bytes(const SiftStarShape *sh, double width)
+{
+	int			nstr = 0;
+
+	for (int k = 0; k < sh->nkeys; k++)
+		nstr += sh->kcls[k] == SSC_STR;
+	for (int c = 0; c < sh->npay; c++)
+		nstr += sh->pcls[c] == SSC_STR;
+	return nstr > 0 ? width + MAXIMUM_ALIGNOF * nstr : 0;
+}
+
+double
+sift_v6_star_reads(const SiftV6Ext *x, int d, double rows, double width, double *passes)
+{
+	const uint64 budget = star_budget(x);
+	SiftStarShape sh;
+	double		parts = 2,
+				strs,
+				bytes;
+
+	shape_of(x, d, budget, &sh);
+	strs = str_bytes(&sh, width);
+	bytes = sift_star_table_est(&sh, rows, strs);
+	*passes = 1;
+	if (bytes <= budget)
+		return 1;
+	if (!sift_star_parts_split(&sh))
+	{
+		*passes = x->dim[d].mode == SV6J_INNER_EQUI ? ceil(bytes / budget) : 1;
+		return 2 + (x->dim[d].mode == SV6J_INNER_EQUI ? *passes : 0);
+	}
+	while (parts < STAR_MAX_PARTS && sift_star_table_est(&sh, rows / parts, strs) > budget / 2)
+		parts *= 2;
+	*passes = parts;
+	return log2(parts) + parts;
 }
 
 /* The odometer of the passes: the chunks of the part of a dimension, then its parts, then the next dimension's. The chunks of a part are known when it is read */

@@ -45,6 +45,7 @@
 #include "agg/argext/sql.h"
 #include "agg/cost/card.h"
 #include "agg/cost/cost.h"
+#include "agg/star/run.h"
 #include "agg/filter/pg.h"
 #include "agg/gen/gen.h"
 #include "agg/pct.h"
@@ -675,11 +676,31 @@ cheapest_total(const RelOptInfo *rel)
 	return c;
 }
 
+/* What the node pays again when a dimension is over its share of work_mem: the reads of the dimensions for each part or chunk, and a scan of the fact table for each pass (agg/star/run.h) */
+static Cost
+passes_cost(const V6Plan *p, List *child_paths, Cost scan)
+{
+	double		passes = 1;
+	Cost		cost = 0;
+
+	for (int d = list_length(child_paths) - 1; d >= 0; d--)
+	{
+		const Path *child = list_nth(child_paths, d);
+		double		parts;
+		const double reads = sift_v6_star_reads(p->spec.ext, d, child->rows, child->pathtarget->width, &parts);
+
+		cost += (reads * passes - 1) * sift_v6_dim_cost(child);
+		passes *= parts;
+	}
+	return cost + (passes - 1) * scan;
+}
+
 void
 sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_paths, Cost extra_startup, Cost extra_total, double input_rows)
 {
 	CustomPath *cp = makeNode(CustomPath);
-	Cost		serial_total;
+	Cost		serial_total,
+				passes;
 	bool		locked;
 	const double groups = (p->spec.nkeys == 0 ? 1.0 : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) * Max(p->spec.nsets, 1);
 
@@ -695,8 +716,9 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->path.pathtarget = p->out->reltarget;
 	cp->path.rows = clamp_row_est(having == NIL ? groups : groups * clauselist_selectivity(p->root, having, 0, JOIN_INNER, NULL));
 	scan_cost(p, groups, &cp->path.startup_cost, &cp->path.total_cost);
-	cp->path.startup_cost += extra_startup;
-	cp->path.total_cost += extra_total;
+	passes = child_paths == NIL ? 0 : passes_cost(p, child_paths, cp->path.total_cost);
+	cp->path.startup_cost += extra_startup + passes;
+	cp->path.total_cost += extra_total + passes;
 	cp->methods = &v6_path_methods;
 	cp->custom_paths = child_paths;
 	p->spec.groups_est = (uint32) Min(groups, (double) INT_MAX);
