@@ -13,6 +13,7 @@ use Test::More;
 my $clients = 8;
 my $txns = knob('SIFT_TXNS', 150, 40);
 my $node = sift_node('main');
+$node->append_conf('postgresql.conf', 'sift.test_create_format1 = on');
 $node->start;
 install_sift($node);
 $node->safe_psql('postgres', 'CREATE TABLE w (id bigint, v text) USING sift_table');
