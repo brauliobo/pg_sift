@@ -102,6 +102,8 @@ sift_rowbuf_is_group(const SiftRowBuf *rb, int c)
 }
 
 extern SiftRowBuf *sift_rowbuf_new(const SiftPartSpec *spec);
+/* A buffer whose memory context has that name: "sift cache ..." for one a backend cache keeps beyond the statement (core/leak_test.c) */
+extern SiftRowBuf *sift_rowbuf_new_named(const SiftPartSpec *spec, const char *name);
 
 /* Adds a row: its cells and, for each column of elements, the cells of its elements (elem[c] has as many as the length in the cell of the column of its lengths; NULL when the spec has no such column) */
 extern void sift_rowbuf_add(SiftRowBuf *rb, uint64 tid, uint32 xmin, uint32 cmin, SubTransactionId subxid, const uint8 *key, const SiftCell *cells, const SiftCell *const *elem);

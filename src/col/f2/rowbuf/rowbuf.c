@@ -53,7 +53,13 @@ build_groups(SiftRowBuf *rb)
 SiftRowBuf *
 sift_rowbuf_new(const SiftPartSpec *spec)
 {
-	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift row buffer");
+	return sift_rowbuf_new_named(spec, "sift row buffer");
+}
+
+SiftRowBuf *
+sift_rowbuf_new_named(const SiftPartSpec *spec, const char *name)
+{
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, name);
 	SiftRowBuf *rb = MemoryContextAllocZero(cx, sizeof(SiftRowBuf));
 	int			ncols = spec->ncols;
 

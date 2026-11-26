@@ -618,7 +618,7 @@ static bool
 added_slab_of(struct SiftF2ScopeRowSet **a, SiftF2ScopeParts *p, const SiftPartitionEntry *e, const SiftPendDelIndex *px, MemoryContext cx, uint64 *rows, uint64 max_rows)
 {
 /* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
-	SiftRowBuf *rb = sift_rowbuf_new(&p->store->spec);
+	SiftRowBuf *rb = sift_rowbuf_new_named(&p->store->spec, p->settled != NULL ? "sift cache scope settled slab" : "sift row buffer");
 	BlockNumber *pages;
 	int			npages;
 	uint32		before;
