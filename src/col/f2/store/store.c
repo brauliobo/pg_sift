@@ -45,7 +45,7 @@ static uint64 store_invalidations = 0;	/* what a build that reads the catalogs f
 static uint64 store_att_gen = 0;	/* bumped in O(1) on ATTNUM syscache invalidation */
 static uint64 store_idx_gen = 0;	/* bumped in O(1) on INDEXRELID syscache invalidation */
 
-#define MAX_INVALIDATORS	5
+#define MAX_INVALIDATORS	16
 
 static SiftF2Invalidator invalidators[MAX_INVALIDATORS];
 static int	ninvalidators = 0;
