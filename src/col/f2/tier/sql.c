@@ -7,12 +7,14 @@
 #include "postgres.h"
 
 #include "access/relation.h"
+#include "catalog/index.h"
 #include "catalog/pg_class.h"
 #include "funcapi.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "storage/lmgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -54,14 +56,19 @@ acl_relid(Relation rel)
 	return is_col_index(rel) ? rel->rd_index->indrelid : RelationGetRelid(rel);
 }
 
-/* A Format 2.0 sift_table or sift_col index: both keep their parts, tier directory and metapage the same way, so the policies and the maintenance step are the same for both */
+/*
+ * A Format 2.0 sift_table or sift_col index: both keep their parts, tier directory and metapage the same way, so the policies and the maintenance step are the same for both. The table of an
+ * index is locked first, as VACUUM and the maintenance lock it, so that no maintenance runs on the directory while the policy changes.
+ */
 static Relation
 open_f2_rel(Oid relid, AclMode any_of)
 {
 	Relation	rel;
 
 	sift_require_acl(relid, any_of);
-	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
+	if (get_rel_relkind(sift_rel_must_exist(relid)) == RELKIND_INDEX)
+		LockRelationOid(IndexGetRelation(relid, false), ShareUpdateExclusiveLock);
+	rel = relation_open(relid, ShareUpdateExclusiveLock);
 	sift_require_acl(relid, any_of);
 	sift_rel_reject_partitioned(rel);
 	if (!is_col_index(rel) && !sift_tbl_is_table(rel))

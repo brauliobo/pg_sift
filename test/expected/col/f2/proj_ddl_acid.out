@@ -216,7 +216,7 @@ SELECT count(*) AS no_projection_left FROM sift.projection_list() WHERE relation
                   0
 (1 row)
 
--- a transaction that dropped a projection cannot be prepared: nobody could roll the drop back
+-- a transaction that dropped a projection is prepared like any other: the drop is the row of its definition, and ROLLBACK PREPARED leaves the projection whole
 SELECT sift.create_projection('t', 'by_c', 'ORDER BY c');
  create_projection 
 -------------------
@@ -231,11 +231,10 @@ SELECT sift.drop_projection('t', 'by_c');
 (1 row)
 
 PREPARE TRANSACTION 'p98_proj';
-ERROR:  cannot PREPARE a transaction that has dropped a projection
-HINT:  Commit the drop of the projection on its own, then prepare the transaction.
 ROLLBACK;
 WARNING:  there is no transaction in progress
 SELECT format('ROLLBACK PREPARED %L', gid) FROM pg_prepared_xacts WHERE gid = 'p98_proj' \gexec
+ROLLBACK PREPARED 'p98_proj'
 SELECT * FROM projections();
  name | state 
 ------+-------

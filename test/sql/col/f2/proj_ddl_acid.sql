@@ -92,7 +92,7 @@ COMMIT;
 SELECT * FROM projections();
 SELECT count(*) AS no_projection_left FROM sift.projection_list() WHERE relation = 't'::regclass;
 
--- a transaction that dropped a projection cannot be prepared: nobody could roll the drop back
+-- a transaction that dropped a projection is prepared like any other: the drop is the row of its definition, and ROLLBACK PREPARED leaves the projection whole
 SELECT sift.create_projection('t', 'by_c', 'ORDER BY c');
 BEGIN;
 SELECT sift.drop_projection('t', 'by_c');

@@ -1,0 +1,80 @@
+Parsed test spec with 4 sessions
+
+starting permutation: cb ccreate vac cend cstate
+step cb: BEGIN;
+step ccreate: SELECT sift.create_projection('iso_pl_idx', 'p1', 'ORDER BY tenant, amount, id');
+create_projection
+-----------------
+t                
+(1 row)
+
+step vac: VACUUM iso_pl; <waiting ...>
+step cend: COMMIT;
+step vac: <... completed>
+step cstate: SELECT name, state FROM sift.projection_list() WHERE relation = 'iso_pl_idx'::regclass ORDER BY name;
+name|state
+----+-----
+p1  |ready
+(1 row)
+
+
+starting permutation: ccreate db sb dw sw ddrop send dend cstate
+step ccreate: SELECT sift.create_projection('iso_pl_idx', 'p1', 'ORDER BY tenant, amount, id');
+create_projection
+-----------------
+t                
+(1 row)
+
+step db: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT v FROM iso_pl_k WHERE k = 1;
+v
+-
+0
+(1 row)
+
+step sb: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT v FROM iso_pl_k WHERE k = 2;
+v
+-
+0
+(1 row)
+
+step dw: UPDATE iso_pl_k SET v = v + 1 WHERE k = 2;
+step sw: UPDATE iso_pl_k SET v = v + 1 WHERE k = 1;
+step ddrop: SELECT sift.drop_projection('iso_pl_idx', 'p1');
+drop_projection
+---------------
+t              
+(1 row)
+
+step send: COMMIT;
+step dend: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step cstate: SELECT name, state FROM sift.projection_list() WHERE relation = 'iso_pl_idx'::regclass ORDER BY name;
+name|state
+----+-----
+p1  |ready
+(1 row)
+
+
+starting permutation: ccreate cb cdrop crecreate cend cstate
+step ccreate: SELECT sift.create_projection('iso_pl_idx', 'p1', 'ORDER BY tenant, amount, id');
+create_projection
+-----------------
+t                
+(1 row)
+
+step cb: BEGIN;
+step cdrop: SELECT sift.drop_projection('iso_pl_idx', 'p1');
+drop_projection
+---------------
+t              
+(1 row)
+
+step crecreate: SELECT sift.create_projection('iso_pl_idx', 'p1', 'ORDER BY tenant, amount, id');
+ERROR:  relation "iso_pl_idx" dropped the projection "p1" in this transaction
+step cend: COMMIT;
+step cstate: SELECT name, state FROM sift.projection_list() WHERE relation = 'iso_pl_idx'::regclass ORDER BY name;
+name|state
+----+-----
+p1  |ready
+(1 row)
+

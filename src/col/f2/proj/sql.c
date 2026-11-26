@@ -19,6 +19,7 @@
 #include "catalog/pg_class.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "storage/lmgr.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -176,8 +177,9 @@ is_f2_target(Relation rel)
 }
 
 /*
- * The definition is a row of the catalog and follows the transaction; the directory of the relation does not. A projection a rolled-back create leaves in the directory has no definition and
- * the next refresh drops it (f2_proj_build.c); a drop leaves the definition's removal to the transaction and takes the projection out of the directory when the transaction commits.
+ * The definition is a row of the catalog and follows the transaction; the directory of the relation does not. A projection the directory holds without a definition is what a rolled-back
+ * create or a committed drop leaves: it is never read nor listed, and the next refresh drops it (f2_proj_build.c). The drops of the transaction are kept until it ends, so that a create
+ * of the same name, which would take the projection out of the directory before the drop commits, is refused.
  */
 typedef struct PendingDrop
 {
@@ -189,38 +191,19 @@ typedef struct PendingDrop
 static List *pending_drops;
 static bool drops_hooked;
 
-static void
-pending_forget(Oid relid, const char *name)
+static bool
+pending_has(Oid relid, const char *name)
 {
-	ListCell   *lc;
-
-	foreach(lc, pending_drops)
-	{
-		const PendingDrop *p = lfirst(lc);
-
+	foreach_ptr(PendingDrop, p, pending_drops)
 		if (p->relid == relid && strcmp(p->name, name) == 0)
-			pending_drops = foreach_delete_current(pending_drops, lc);
-	}
+			return true;
+	return false;
 }
 
 static void
 drops_xact(XactEvent event, void *arg)
 {
-	if (event == XACT_EVENT_PRE_PREPARE && pending_drops != NIL)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("cannot PREPARE a transaction that has dropped a projection"),
-						errhint("Commit the drop of the projection on its own, then prepare the transaction.")));
-	if (event == XACT_EVENT_PRE_COMMIT)
-		foreach_ptr(PendingDrop, p, pending_drops)
-		{
-			Relation	rel = try_relation_open(p->relid, ShareUpdateExclusiveLock);
-
-			if (rel != NULL)
-			{
-				(void) sift_proj_drop(rel, p->name);
-				relation_close(rel, NoLock);
-			}
-		}
-	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT)
+	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT)
 		pending_drops = NIL;
 }
 
@@ -254,7 +237,6 @@ pending_add(Oid relid, const char *name)
 		RegisterSubXactCallback(drops_subxact, NULL);
 		drops_hooked = true;
 	}
-	pending_forget(relid, name);
 	p->relid = relid;
 	strlcpy(p->name, name, sizeof(p->name));
 	p->subid = GetCurrentSubTransactionId();
@@ -271,7 +253,10 @@ require_f2_target(Relation rel)
 						errhint("Projections belong to a relation of format major 2.")));
 }
 
-/* The relation of a change of its projections: the caller needs a maintain right, asked before the lock and again after it, and no standby takes the lock */
+/*
+ * The relation of a change of its projections: the caller needs a maintain right, asked before the lock and again after it, and no standby takes the lock. The table of an index is locked
+ * first, as VACUUM and the maintenance lock it: every writer of the projection directory then waits for the change to commit, and none drops a projection whose definition is not yet visible.
+ */
 static Relation
 open_for_change(Oid relid)
 {
@@ -280,7 +265,9 @@ open_for_change(Oid relid)
 	if (RecoveryInProgress())
 		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("cannot change projections during recovery")));
 	sift_require_acl(relid, ACL_MAINTAIN);
-	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
+	if (get_rel_relkind(sift_rel_must_exist(relid)) == RELKIND_INDEX)
+		LockRelationOid(IndexGetRelation(relid, false), ShareUpdateExclusiveLock);
+	rel = relation_open(relid, ShareUpdateExclusiveLock);
 	sift_require_acl(relid, ACL_MAINTAIN);
 	require_f2_target(rel);
 	return rel;
@@ -396,9 +383,11 @@ sift_create_projection(PG_FUNCTION_ARGS)
 	refs = sift_manifest_read_projs(rel, &meta, &nrefs);
 	if (def_exists(RelationGetRelid(rel), name))
 		ereport(ERROR, (errcode(ERRCODE_DUPLICATE_OBJECT), errmsg("relation \"%s\" already has a projection \"%s\"", RelationGetRelationName(rel), name)));
+	if (pending_has(RelationGetRelid(rel), name))
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_IN_USE), errmsg("relation \"%s\" dropped the projection \"%s\" in this transaction", RelationGetRelationName(rel), name),
+						errhint("Commit the drop of the projection, then create it again.")));
 	if (sift_proj_find(refs, nrefs, name) != NULL)
 		(void) sift_proj_drop(rel, name);
-	pending_forget(RelationGetRelid(rel), name);
 	def_insert(RelationGetRelid(rel), name, canonical);
 	sift_proj_create(rel, store, name, &spec, &cols, canonical);
 	relation_close(rel, NoLock);
@@ -409,21 +398,14 @@ Datum
 sift_drop_projection(PG_FUNCTION_ARGS)
 {
 	Relation	rel = open_for_change(PG_GETARG_OID(0));
+	Oid			relid = RelationGetRelid(rel);
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	SiftColMetaPageData meta;
-	SiftManifestProjRef *refs;
-	int			nrefs;
-	bool		listed,
-				dropped;
+	bool		dropped = def_delete(relid, name);
 
-	meta = sift_col_meta_read(rel);
-	refs = sift_manifest_read_projs(rel, &meta, &nrefs);
-	listed = sift_proj_find(refs, nrefs, name) != NULL;
-	dropped = def_delete(RelationGetRelid(rel), name);
-	if (listed)
-		pending_add(RelationGetRelid(rel), name);
 	relation_close(rel, NoLock);
-	PG_RETURN_BOOL(dropped || listed);
+	if (dropped)
+		pending_add(relid, name);
+	PG_RETURN_BOOL(dropped || pending_has(relid, name));
 }
 
 static const char *
@@ -463,11 +445,17 @@ list_relation(ReturnSetInfo *rsi, Relation rel)
 	for (int i = 0; i < nrefs; i++)
 	{
 		const SiftProjDef *def = NULL;
+		bool		named = false;
 		char		canonical[SIFT_PROJ_SPEC_MAX] = "";
 
 		for (int k = 0; k < ndefs; k++)
+		{
+			named |= strcmp(defs[k].name, refs[i].name) == 0;
 			if (strcmp(defs[k].name, refs[i].name) == 0 && defs[k].spec_ok && defs[k].hash == refs[i].spec_hash)
 				def = &defs[k];
+		}
+		if (!named)
+			continue;
 		if (def != NULL)
 			sift_proj_spec_canonical(&def->spec, &cols, canonical);
 		put_row(rsi, RelationGetRelid(rel), refs[i].name, refs[i].kind, def != NULL ? refs[i].state : SIFT_PROJ_STALE, canonical, &refs[i]);
