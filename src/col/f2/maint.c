@@ -53,14 +53,21 @@ open_f2(Oid relid)
 	return index;
 }
 
-/* The relation of a worker inspector: a sift_col index or a sift_table of format major 2 */
+/* The relation of a worker inspector, a sift_col index or a sift_table of format major 2, locked for reading: NULL while another session holds it in a lock the probe would wait for, or when it is gone */
 static Relation
-open_f2_relation(Oid relid)
+open_f2_worker(Oid relid)
 {
 	Relation	rel;
 
 	sift_inspect_expect(relid, NULL, NULL);
-	rel = relation_open(relid, AccessShareLock);
+	if (!ConditionalLockRelationOid(relid, AccessShareLock))
+		return NULL;
+	rel = try_relation_open(relid, NoLock);
+	if (rel == NULL)
+	{
+		UnlockRelationOid(relid, AccessShareLock);
+		return NULL;
+	}
 	sift_check_inspect(rel);
 	return rel;
 }
@@ -591,14 +598,18 @@ f2_tracking(FunctionCallInfo fcinfo)
 static Datum
 f2_worker_state(FunctionCallInfo fcinfo)
 {
-	Relation	index = open_f2_relation(PG_GETARG_OID(0));
-	SiftColMetaPageData meta = sift_col_meta_read(index);
-	SiftManifestRead mr = sift_manifest_read_range(index, NULL, NULL);
+	Relation	index = open_f2_worker(PG_GETARG_OID(0));
+	SiftColMetaPageData meta;
+	SiftManifestRead mr;
 	Datum		v[8] = {0};
 	bool		nulls[8] = {false};
 	int			parts = 0,
 				slabs = 0;
 
+	if (index == NULL)
+		PG_RETURN_NULL();
+	meta = sift_col_meta_read(index);
+	mr = sift_manifest_read_range(index, NULL, NULL);
 	for (int i = 0; i < mr.n; i++)
 	{
 		int			np;
@@ -633,11 +644,16 @@ f2_refresh(FunctionCallInfo fcinfo)
 Datum
 sift_f2_worker_history(FunctionCallInfo fcinfo)
 {
-	Relation	index = open_f2_relation(PG_GETARG_OID(0));
-	SiftColMetaPageData meta = sift_col_meta_read(index);
+	Relation	index = open_f2_worker(PG_GETARG_OID(0));
+	SiftColMetaPageData meta;
 	Datum		v[4] = {0};
 	bool		nulls[4] = {false};
-	const char *job = sift_job_name(meta.maint_ok_job);
+	const char *job;
+
+	if (index == NULL)
+		PG_RETURN_NULL();
+	meta = sift_col_meta_read(index);
+	job = sift_job_name(meta.maint_ok_job);
 
 	nulls[0] = nulls[1] = nulls[2] = meta.maint_ok_at == 0;
 	if (!nulls[0])

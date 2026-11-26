@@ -30,7 +30,7 @@ RETURNS TABLE (relation regclass, severity text, check_name text, detail text, a
 										 l0_parts int4, l0_slabs int4, scopes int2)
 		LEFT JOIN pg_index i ON i.indexrelid = s.relation
 		LEFT JOIN pg_class h ON h.oid = s.table_name
-		LEFT JOIN sift.workers w ON w.relation = s.relation::regclass
+		LEFT JOIN LATERAL sift.worker_state(CASE WHEN s.maint_failures > 0 THEN s.relation END) w ON true
 	), found AS (
 		SELECT s.relation, 'info' AS severity, 'format_upgrade_available' AS check_name,
 			   'Format 1.x (fully supported; optional REINDEX INDEX CONCURRENTLY upgrades to Format 2.0)' AS detail,
