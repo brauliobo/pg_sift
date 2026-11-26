@@ -26,11 +26,13 @@
 
 /* ---- fetches by TID ---- */
 
-/* What tells two snapshots apart for the transactions they see: the finished ones (the count of the completions of the server), the running ones at the time (xmin, xmax), the commands and subtransactions of this one */
+/*
+ * What tells two snapshots apart for the transactions they see: the running ones at the time (xmin, xmax and the xids in progress, which a copy of a snapshot keeps while it zeroes its
+ * count of completions), the commands and subtransactions of this one. The xids live in the context of the fetch
+ */
 typedef struct SnapKey
 {
 	SnapshotType type;
-	uint64		completions;
 	TransactionId xmin;
 	TransactionId xmax;
 	CommandId	curcid;
@@ -40,7 +42,15 @@ typedef struct SnapKey
 	bool		own_xid;
 	bool		serializable;
 	SubTransactionId subid;
+	TransactionId *xids;		/* xip, then subxip */
+	int			cap;
 } SnapKey;
+
+static int
+snap_nsubxids(Snapshot snap)
+{
+	return Max(snap->subxcnt, 0);
+}
 
 typedef struct SiftTblF2Fetch
 {
@@ -58,33 +68,46 @@ typedef struct SiftTblF2Fetch
 
 StaticAssertDecl(offsetof(SiftTblF2Fetch, ops) == offsetof(SiftTblFetchHeader, ops), "a fetch starts with SiftTblFetchHeader");
 
-static SnapKey
-snap_key(Snapshot snap)
+static bool
+xids_same(const TransactionId *a, const TransactionId *b, int n)
 {
-	SnapKey		k;
-
-	memset(&k, 0, sizeof(k));
-	k.type = snap->snapshot_type;
-	if (k.type == SNAPSHOT_ANY)
-		return k;
-	k.completions = snap->snapXactCompletionCount;
-	k.xmin = snap->xmin;
-	k.xmax = snap->xmax;
-	k.curcid = snap->curcid;
-	k.xcnt = snap->xcnt;
-	k.subxcnt = snap->subxcnt;
-	k.suboverflowed = snap->suboverflowed;
-	k.own_xid = FullTransactionIdIsValid(GetTopFullTransactionIdIfAny());
-	k.serializable = IsolationIsSerializable();
-	k.subid = GetCurrentSubTransactionId();
-	return k;
+	return n == 0 || memcmp(a, b, n * sizeof(TransactionId)) == 0;
 }
 
-/* Whether what the fetch learned of the transactions holds for the snapshot: SnapshotAny asks nothing of them, an MVCC snapshot of the same finished transactions, running ones and commands sees them alike. The address of a snapshot says nothing: the allocator gives a freed one's out again */
+/* Whether what the fetch learned of the transactions holds for the snapshot: SnapshotAny asks nothing of them, an MVCC snapshot of the same running transactions and commands sees them alike */
 static bool
-snap_same(const SnapKey *seen, const SnapKey *now)
+snap_same(const SnapKey *k, Snapshot snap)
 {
-	return memcmp(seen, now, sizeof(*seen)) == 0 && (now->type == SNAPSHOT_ANY || (now->type == SNAPSHOT_MVCC && now->completions != 0));
+	if (snap->snapshot_type != k->type || k->type == SNAPSHOT_ANY)
+		return snap->snapshot_type == k->type;
+	return k->type == SNAPSHOT_MVCC && k->xmin == snap->xmin && k->xmax == snap->xmax && k->curcid == snap->curcid && k->xcnt == snap->xcnt && k->subxcnt == snap->subxcnt &&
+		k->suboverflowed == snap->suboverflowed && k->own_xid == FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()) && k->serializable == IsolationIsSerializable() &&
+		k->subid == GetCurrentSubTransactionId() && xids_same(k->xids, snap->xip, snap->xcnt) && xids_same(k->xids + snap->xcnt, snap->subxip, snap_nsubxids(snap));
+}
+
+static void
+snap_key_set(SnapKey *k, Snapshot snap, MemoryContext cx)
+{
+	bool		mvcc = snap->snapshot_type == SNAPSHOT_MVCC;
+	int			n = mvcc ? (int) snap->xcnt + snap_nsubxids(snap) : 0;
+
+	if (n > k->cap)
+	{
+		if (k->xids != NULL)
+			pfree(k->xids);
+		k->cap = Max(n, 2 * k->cap);
+		k->xids = MemoryContextAlloc(cx, k->cap * sizeof(TransactionId));
+	}
+	*k = (SnapKey) {.type = snap->snapshot_type,.xids = k->xids,.cap = k->cap};
+	if (!mvcc)
+		return;
+	*k = (SnapKey) {.type = SNAPSHOT_MVCC,.xmin = snap->xmin,.xmax = snap->xmax,.curcid = snap->curcid,.xcnt = snap->xcnt,.subxcnt = snap->subxcnt,
+		.suboverflowed = snap->suboverflowed,.own_xid = FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()),.serializable = IsolationIsSerializable(),
+	.subid = GetCurrentSubTransactionId(),.xids = k->xids,.cap = k->cap};
+	if (snap->xcnt > 0)
+		memcpy(k->xids, snap->xip, snap->xcnt * sizeof(TransactionId));
+	if (snap_nsubxids(snap) > 0)
+		memcpy(k->xids + snap->xcnt, snap->subxip, snap_nsubxids(snap) * sizeof(TransactionId));
 }
 
 static SiftTblF2Fetch *
@@ -228,14 +251,13 @@ fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot
 {
 	Relation	rel = f->base.rel;
 	const SiftColDeltaGranMap *gm;
-	SnapKey		key = snap_key(snapshot);
 	int			row;
 
-	if (!snap_same(&f->vis_key, &key))
+	if (!snap_same(&f->vis_key, snapshot))
 	{
 		fetch_drop_granule(f);
 		sift_tbl_f2_vis_begin(&f->vis, rel, snapshot);
-		f->vis_key = key;
+		snap_key_set(&f->vis_key, snapshot, f->cx);
 		sift_col_delta_scan_reset(f->delta);
 	}
 	f->vis.snap = f->vis.xc.snap = snapshot;
