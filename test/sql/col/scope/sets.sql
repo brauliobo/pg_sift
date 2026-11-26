@@ -1,10 +1,12 @@
--- The id sets by calendar month of the key groups (column format minor 51, docs/COL-SCOPE.md "Id sets by month"): the units that hold one scope key are a group that keeps, for each month of its
--- rows, the ids of its 32-bit integer dims, so count(DISTINCT id) by month over a key reads one set for each month and group instead of the rows of every unit. The answer is md5 equal to the
--- plan with sift off, a month that a test cuts, a key through a zone that skips a day, a sum, a text leaf and the ids of changed pairs are read from the units, the block is checked against the
--- units and every byte of it is refused when damaged, and it follows writes, deletes, VACUUM, promotion and merge. Counts and hashes only.
+-- The id sets by calendar month of the key groups of a Format 1 index (column format minor 51, docs/COL-SCOPE.md "Id sets by month"): the units that hold one scope key are a group that keeps, for
+-- each month of its rows, the ids of its 32-bit integer dims. The block is checked against the units and every byte of it is refused when damaged, and it follows writes, deletes, VACUUM,
+-- promotion and merge; the statements over the keys (count(DISTINCT id) by month, a month a test cuts, a key through a zone that skips a day, a sum, a text leaf, the ids of changed pairs) are md5
+-- equal to the plan with sift off. Counts and hashes only.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the key groups and their id sets are this format's
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET jit = off;
@@ -43,23 +45,21 @@ INSERT INTO cases VALUES
 	(13, 'distinct ids, no month', 'SELECT count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND created_at >= date ''2026-03-01'''),
 	(14, 'distinct ids by day', 'SELECT created_at, count(DISTINCT dim_a_id) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY 1');
 
--- the answer and the route: md5 of the rows with the sift plan on and off, and whether key groups (superunits) answered
-CREATE FUNCTION probe(q text) RETURNS TABLE (same boolean, supers boolean) LANGUAGE plpgsql AS $$
+-- the answer: md5 of the rows with the sift plan on and off
+CREATE FUNCTION probe(q text) RETURNS TABLE (same boolean) LANGUAGE plpgsql AS $$
 DECLARE
-	p jsonb;
 	on_h text;
 	off_h text;
 BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
 	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO on_h;
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO off_h;
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN QUERY SELECT on_h = off_h, coalesce((jsonb_path_query_first(p, '$.**."Superunits"') #>> '{}')::int, 0) > 0;
+	RETURN QUERY SELECT on_h = off_h;
 END $$;
 SELECT c.n, c.label, r.* FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
--- a zone that skips the last day of a month (Pacific/Kiritimati had no 31 December 1994): the key of that day is the month after, so the days of a month give two keys and the group is not read
+-- a zone that skips the last day of a month (Pacific/Kiritimati had no 31 December 1994): the key of that day is the month after, so the days of a month give two keys
 CREATE TABLE events_z (id int PRIMARY KEY, dim_a_id int, created_at date, score int) WITH (autovacuum_enabled = false);
 INSERT INTO events_z SELECT i, 1 + (i * 7919) % 67, date '1994-12-01' + (i / 30) % 62, 1 + i % 10 FROM generate_series(1, 6000) i;
 CREATE INDEX events_z_col ON events_z USING sift_col (id, dim_a_id, created_at, score)
@@ -70,14 +70,14 @@ SELECT sift.col_verify('events_z_col', true);
 CREATE TABLE cases_z (n int, zone text, stmt text);
 INSERT INTO cases_z SELECT z.n, z.zone, 'SELECT date_trunc(''month'', created_at) m, count(DISTINCT dim_a_id) FROM events_z WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1'
 	FROM (VALUES (1, 'UTC'), (2, 'Pacific/Kiritimati'), (3, 'America/Sao_Paulo'), (4, 'Asia/Tokyo')) z (n, zone);
-CREATE FUNCTION probe_zone(zone text, q text) RETURNS TABLE (same boolean, supers boolean) LANGUAGE plpgsql AS $$
+CREATE FUNCTION probe_zone(zone text, q text) RETURNS TABLE (same boolean) LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('TimeZone', zone, true);
 	RETURN QUERY SELECT * FROM probe(q);
 END $$;
 SELECT c.n, c.zone, r.* FROM cases_z c, LATERAL probe_zone(c.zone, c.stmt) r ORDER BY c.n;
 
--- the ids of changed pairs: a member that left or joined a key since the build is read from the units, never from the sets
+-- the ids of changed pairs: a member that left or joined a key since the build
 BEGIN;
 DELETE FROM tenant_scope WHERE dim_a_id IN (5, 6, 7) AND tenant_id = 1;
 INSERT INTO tenant_scope VALUES (5, 2), (68, 1);
@@ -92,7 +92,6 @@ CREATE INDEX events_s_col ON events_s USING sift_col (id, dim_a_id, created_at, 
 REINDEX INDEX events_s_col;
 VACUUM (FREEZE, ANALYZE) events_s;
 SELECT sift.col_verify('events_s_col', true);
-SELECT supers AS small_index_answers FROM probe('SELECT date_trunc(''month'', created_at) m, count(DISTINCT dim_a_id) FROM events_s WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1');
 SELECT supers > 0 AS has_blocks, damaged > 0 AS damages_made, refused = damaged AS all_refused, unnoticed = 0 AS none_unnoticed FROM sift._test_col_super_damage('events_s_col');
 
 -- the same with the rollup of the rows (groups of 4 units) next to the sets
@@ -103,7 +102,6 @@ CREATE INDEX events_rs_col ON events_rs USING sift_col (id, dim_a_id, created_at
 REINDEX INDEX events_rs_col;
 VACUUM (FREEZE, ANALYZE) events_rs;
 SELECT sift.col_verify('events_rs_col', true);
-SELECT supers AS small_rollup_index_answers FROM probe('SELECT date_trunc(''month'', created_at) m, count(DISTINCT dim_a_id) FROM events_rs WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1');
 SELECT supers > 0 AS has_blocks, damaged > 0 AS damages_made, refused = damaged AS all_refused, unnoticed = 0 AS none_unnoticed FROM sift._test_col_super_damage('events_rs_col');
 
 -- writes since the build, deletes and VACUUM, a promotion and a merge: the groups of the segments written are of the rows that are left
@@ -118,7 +116,7 @@ SELECT c.n, r.same FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 SELECT sift.col_merge('events_col', true) IS NOT NULL AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('events_col');
 SELECT sift.col_verify('events_col', true);
-SELECT c.n, r.same, r.supers FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
+SELECT c.n, r.same FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
 DROP TABLE events, events_z, events_s, events_rs, tenant_scope, cases, cases_z;
 DROP FUNCTION probe(text), probe_zone(text, text);

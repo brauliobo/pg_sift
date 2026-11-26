@@ -1,17 +1,14 @@
--- A scope read of a key with many units: the superunit summaries of the scope segments answer an aggregate over the whole key from one read of a group of units, an aggregate
--- reads of its measures only those it uses (a count reads the counts of the groups, a sum the sums, a minimum the minima), and a top-N of rows by the time the units are cut by
--- reads each unit from its end, on several sort keys too (the rows tied on the first key with the last row taken are read as well; units of a few thousand rows, the ones
--- whose key chunk follows the row order). Every statement is md5 equal to the join with the sift plan off, and the plan says the read happened: the superunits of the read,
--- the units read from their ends. Counts and hashes only.
+-- A scope read of a key with many rows: the scope summary answers an aggregate over the whole key (a count, a sum, a minimum, a count in a range of days) and its ring the newest or oldest rows
+-- of a key, on several sort keys too (the rows tied on the first key with the last row taken are read as well). Every statement is md5 equal to the join with the sift plan off, and says how the
+-- scope node read it (Scope Read). Counts and hashes only.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
-SET sift.test_col_unit_rows = 100;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
--- key 1 holds members 1 to 60 (about 40 units of 100 rows), key 2 members 61 to 66, key 3 member 67 only; a few members in two keys
+-- key 1 holds members 1 to 60, key 2 members 61 to 66, key 3 member 67 only; a few members in two keys
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO tenant_scope SELECT d, CASE WHEN d <= 60 THEN 1 WHEN d <= 66 THEN 2 ELSE 3 END FROM generate_series(1, 67) d;
 INSERT INTO tenant_scope SELECT d, 2 FROM generate_series(1, 60, 20) d;
@@ -28,15 +25,14 @@ VACUUM (ANALYZE) tenant_scope;
 
 CREATE TABLE cases (n int, label text, stmt text);
 INSERT INTO cases VALUES
-	(1, 'count by score, big key', 'SELECT score, count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1'),
-	(2, 'count and sum by kind, big key', 'SELECT kind, count(*), sum(amount) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1'),
-	(3, 'min and max by score, big key', 'SELECT score, min(amount), max(amount), count(amount) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) GROUP BY 1'),
+	(1, 'count by score, big key', 'SELECT score, count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 1 GROUP BY 1'),
+	(2, 'count and sum by kind, big key', 'SELECT kind, count(*), sum(amount) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 1 GROUP BY 1'),
+	(3, 'min and max by score, big key', 'SELECT score, min(amount), max(amount), count(amount) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 1 GROUP BY 1'),
 	(4, 'sum, no group, two keys', 'SELECT sum(amount), count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (1, 2))'),
-	(5, 'count in a date range, big key', 'SELECT count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND created_at >= date ''2026-03-01'' AND created_at < date ''2026-06-01'''),
-	(6, 'count by kind, small key', 'SELECT kind, count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY 1');
+	(5, 'count in a date range, big key', 'SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 1 AND created_at >= date ''2026-03-01'' AND created_at < date ''2026-06-01'''),
+	(6, 'count by kind, small key', 'SELECT kind, count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY 1');
 
--- a table of units of a few thousand rows, a day holds about 55 rows of a key: the rows tied on the day with the last row taken run into hundreds
-SET sift.test_col_unit_rows = 4000;
+-- a day holds about 55 rows of a key: the rows tied on the day with the last row taken run into hundreds
 CREATE TABLE events_t (id int PRIMARY KEY, dim_a_id int, created_at date, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO events_t SELECT i, 1 + (i * 7919) % 67, date '2020-01-01' + (i / 60), i % 500 FROM generate_series(1, 60000) i;
 CREATE INDEX events_t_col ON events_t USING sift_col (id, dim_a_id, created_at, amount)
@@ -44,16 +40,15 @@ CREATE INDEX events_t_col ON events_t USING sift_col (id, dim_a_id, created_at, 
 REINDEX INDEX events_t_col;
 VACUUM (FREEZE, ANALYZE) events_t;
 INSERT INTO cases VALUES
-	(7, 'latest 20, big key', 'SELECT id, created_at FROM events_t WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) ORDER BY created_at DESC, id DESC LIMIT 20'),
-	(8, 'latest 20 with a column, mid key', 'SELECT id, created_at, amount FROM events_t WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 2) ORDER BY created_at DESC, id DESC LIMIT 20'),
-	(9, 'latest 20, small key', 'SELECT id, created_at FROM events_t WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) ORDER BY created_at DESC, id DESC LIMIT 20'),
-	(10, 'earliest 20, big key', 'SELECT id, created_at FROM events_t WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) ORDER BY created_at ASC, id ASC LIMIT 20'),
-	(11, 'latest by day, lowest id, big key', 'SELECT id, created_at FROM events_t WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) ORDER BY created_at DESC, id ASC LIMIT 50'),
-	(12, 'latest 300, ties across days', 'SELECT id, created_at FROM events_t WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) ORDER BY created_at DESC, id DESC LIMIT 300');
+	(7, 'latest 20, big key', 'SELECT id, created_at FROM events_t e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 1 ORDER BY created_at DESC, id DESC LIMIT 20'),
+	(8, 'latest 20 with a column, mid key', 'SELECT id, created_at, amount FROM events_t e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 2 ORDER BY created_at DESC, id DESC LIMIT 20'),
+	(9, 'latest 20, small key', 'SELECT id, created_at FROM events_t e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 ORDER BY created_at DESC, id DESC LIMIT 20'),
+	(10, 'earliest 20, big key', 'SELECT id, created_at FROM events_t e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 1 ORDER BY created_at ASC, id ASC LIMIT 20'),
+	(11, 'latest by day, lowest id, big key', 'SELECT id, created_at FROM events_t e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 1 ORDER BY created_at DESC, id ASC LIMIT 50'),
+	(12, 'latest 300, ties across days', 'SELECT id, created_at FROM events_t e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 1 ORDER BY created_at DESC, id DESC LIMIT 300');
 
--- the answer, the route and what the read used: the plan with the sift plan on (md5 of the rows, sorted for the aggregates), the same rows with the sift plan off, the
--- superunits the read took and the units a top-N read from their ends
-CREATE FUNCTION probe(q text) RETURNS TABLE (same boolean, scope_units boolean, supers boolean, from_ends boolean) LANGUAGE plpgsql AS $$
+-- the answer and the route: md5 of the rows with the sift plan on and off, and the Scope Read of the node
+CREATE FUNCTION probe(q text) RETURNS TABLE (same boolean, route text) LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 	on_h text;
@@ -64,24 +59,21 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO off_h;
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN QUERY SELECT on_h = off_h, jsonb_path_exists(p, '$.**."Scope Units Read"'),
-		coalesce((jsonb_path_query_first(p, '$.**."Superunits"') #>> '{}')::int, 0) > 0,
-		coalesce((jsonb_path_query_first(p, '$.**."Units Read From Their Ends"') #>> '{}')::int, 0) > 0;
+	RETURN QUERY SELECT on_h = off_h, jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
 END $$;
 
 SELECT c.n, c.label, r.* FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
--- a pair granted since the build, an event written since, and a promotion: the summaries of the stored units still give the join's answer
+-- a pair granted since the build, an event written since, and a promotion: the scope summary still gives the join's answer
 INSERT INTO tenant_scope VALUES (67, 1);
 INSERT INTO events SELECT 20000 + i, 1 + (i * 31) % 67, date '2026-05-20' + i % 5, 1 + i % 10, 'k' || (i % 4), i % 500 FROM generate_series(1, 400) i;
 INSERT INTO events_t SELECT 100000 + i, 1 + (i * 31) % 67, date '2022-01-01' + i % 5, i % 500 FROM generate_series(1, 400) i;
-SELECT c.n, r.same, r.scope_units FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
+SELECT c.n, r.same, r.route FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 SELECT sift.col_promote('events_col') IS NOT NULL AND sift.col_promote('events_t_col') IS NOT NULL AS promoted;
-SELECT c.n, r.same, r.scope_units FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
+SELECT c.n, r.same, r.route FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 SELECT sift.col_verify('events_col', true), sift.col_verify('events_t_col', true);
 
 DROP FUNCTION probe(text);
 DROP TABLE cases, events, events_t;
 DROP TABLE tenant_scope;
-DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
