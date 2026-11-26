@@ -116,7 +116,7 @@ sift_del_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	SiftPendDelIndex *px;
 	SiftRowBuf *rb;
 
-	if (!sift_l0_slab_is_href(rel, part_id, tail))
+	if (sift_l0_slab_is_dir(rel, part_id, tail) || !sift_l0_slab_is_href(rel, part_id, tail))
 		return slab_holds_deleted(rel, part_id, tail, spec, recs, n) && sift_l0_slab_flush(rel, part_id, key_lo, spec) ? 0 : -1;
 	sift_href_io_init(&h, rel, (uint32) part_id);
 	refs = sift_l0_href_chain_read(&h.io, tail, &nrefs, &pages, &npages, &why, &bad);

@@ -25,7 +25,7 @@ extern bool sift_l0_grace_due(uint32 rows, uint32 pages, bool inserters_settled)
 
 #ifndef SIFT_S49_STANDALONE
 /*
- * The slab of the partition at tail, under the partition's lock the caller holds. A slab that is not of references is flushed as it was. For one that is: -1 when none of the n deletes names
+ * The slab of the partition at tail, under the partition's lock the caller holds. A directory, or a slab that is not of references, is flushed as it was. For one that is: -1 when none of the n deletes names
  * a reference (nothing is done), else the slab is flushed, done[i] is set for every delete of a settled deleter whose version it held (nothing of it was written), and their number returned.
  */
 extern int	sift_del_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber tail, const SiftPendDelRec *recs, int n, bool *done);
