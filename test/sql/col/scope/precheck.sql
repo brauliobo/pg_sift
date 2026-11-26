@@ -2,6 +2,8 @@
 -- (src/col/v1/scope/sample.c) and refuses at once a scope whose estimate less 3.5 standard errors is over the limit. The sample is taken from 2,048 blocks of a table; sift.test_scope_sample_blocks lowers it.
 -- Every scope not clearly over the limit is built and the exact figure after the build decides, so a borderline scope is never refused by a sample.
 CREATE EXTENSION pg_sift;
+-- Format 1: the multiplicity of the scope units (entries a row) is this format's; Format 2.0 keeps no entry a row and ignores max_multiplicity
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 -- events of a member are stored together (100 members of 200 events): a run of blocks sees a few members, so the sample is a noisy ratio
 CREATE TABLE events (id int, dim_a_id int, created_at timestamptz, kind int, value_num numeric);

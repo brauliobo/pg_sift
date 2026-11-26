@@ -4,6 +4,8 @@
 -- that does not end; the merges, segments and bytes below are exact: the indexes take the encodings only, as the bytes of LZ4 and zstd depend on the version of the library.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the scope segments, their units and entries (col/v1/scope) are this format's; Format 2.0 keeps a scope summary (col/f2/scope_*)
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
 SET sift.test_col_scope_merge_limit = 20;

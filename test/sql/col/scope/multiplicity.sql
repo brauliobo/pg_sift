@@ -1,6 +1,8 @@
 -- The scope units replicate a row for each scope key of its member; past about 3 entries a row their growth costs more than their reads gain (docs/COL-SCOPE.md "Break-even"), so CREATE INDEX and
 -- REINDEX refuse a scope above max_multiplicity (default 3) with its figure, and max_multiplicity(N) in the scope is the override. The limit is on the average of the rows of the table.
 CREATE EXTENSION pg_sift;
+-- Format 1: the multiplicity of the scope units (entries a row) is this format's; Format 2.0 keeps no entry a row and ignores max_multiplicity
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 CREATE TABLE events (id int, dim_a_id int, created_at timestamptz, kind int, value_num numeric);
 INSERT INTO events SELECT i, i % 2000 + 1, timestamptz '2026-01-01' + (i || ' min')::interval, i % 5, i FROM generate_series(1, 20000) i;

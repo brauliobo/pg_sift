@@ -3,6 +3,8 @@
 -- VACUUM scans every version of every row for a document that is a string, and the jsonb values it detoasts are freed with the row: the scan holds the same memory for 300 rows as for 1,500.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the scope segments, their units and entries (col/v1/scope) are this format's; Format 2.0 keeps a scope summary (col/f2/scope_*)
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;

@@ -4,6 +4,8 @@
 -- The scope relation carries its journal index (a scope index needs it); the stamps are not looked at here.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the scope segments, their units and entries (col/v1/scope) are this format's; Format 2.0 keeps a scope summary (col/f2/scope_*)
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;

@@ -1,6 +1,8 @@
 -- The NOTICE that says which column format minor an index is written in names the minor of the scope option (45, read from 5.0), whatever the other choices of the build need, and its hint does not
 -- offer the setting that cannot lower it; an index without the option is unchanged.
 CREATE EXTENSION pg_sift;
+-- Format 1: column format minor 45 of the scope option is this format's
+SET sift.test_create_format1 = on;
 CREATE TABLE pairs (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO pairs SELECT i, i % 7 FROM generate_series(1, 3000) i;
 CREATE INDEX pairs_journal ON pairs USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
