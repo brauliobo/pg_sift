@@ -132,6 +132,16 @@ index_key_type_ok(const SiftV6InCol *c)
 	return c->typid == NUMERICOID ? c->type == SVEC_NUM64 : int_order_type(c->typid);
 }
 
+/* The tournament orders the keys as int64 and a NULL: a numeric NaN, which sorts above every number, has neither, so a numeric key is sorted by the query's own comparator */
+static bool
+tournament_keys_ok(const SiftV6TopNSpec *spec)
+{
+	for (int k = 0; k < spec->nkeys; k++)
+		if (spec->key[k].typid == NUMERICOID)
+			return false;
+	return !spec->is_table;
+}
+
 /* The external parameter a count is: bare, or under the implicit cast to int8 of an int2 or int4 one (PREPARE q(int) .. LIMIT $1) */
 static const Param *
 count_param(const Node *n)
@@ -347,9 +357,9 @@ index_total(const TopNPlan *p, double k)
 	return open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
 }
 
-/* A sift_table has no tournament: its rows are read whole in vectors, and each row that passes the quals is fetched once into a sort bounded by the limit */
+/* A scan with no tournament (a sift_table, a numeric key): its rows are read whole in vectors, and each row that passes the quals is fetched once into a sort bounded by the limit */
 static double
-table_total(const TopNPlan *p, double k)
+rows_total(const TopNPlan *p, double k)
 {
 	return cpu_tuple_cost * (0.05 * p->rel->tuples + p->rel->rows + k) + cpu_operator_cost * (p->rel->tuples * list_length(p->quals) + p->rel->rows * p->spec.nkeys);
 }
@@ -358,7 +368,7 @@ static void
 topn_add_path(TopNPlan *p)
 {
 	const double k = plan_rows(p->spec.limit, p->spec.offset);
-	const double total = p->spec.is_table ? table_total(p, k) : index_total(p, k);
+	const double total = tournament_keys_ok(&p->spec) ? index_total(p, k) : rows_total(p, k);
 
 	sift_v6_add_path(p->out, &topn_path_methods, total - cpu_tuple_cost * k, total, Min(k, p->rel->rows), p->root->sort_pathkeys,
 					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals), NIL);
@@ -604,7 +614,7 @@ topn_run(TopNState *st, EState *estate)
 	SIFT_INVARIANT(compiled, "the quals of the Top-N scan of relation %u are not compiled", st->spec->indexoid);
 	st->pos = 0;
 	st->ran = true;
-	topn_open = st->spec->is_table ? NULL : sift_store_ops_for_oid(st->spec->indexoid, false)->order->topn_open;
+	topn_open = tournament_keys_ok(st->spec) ? sift_store_ops_for_oid(st->spec->indexoid, false)->order->topn_open : NULL;
 	opened = topn_open != NULL && tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows) &&
 		topn_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
 	if (!opened)
