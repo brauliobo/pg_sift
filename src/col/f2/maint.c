@@ -36,19 +36,23 @@
 #include "core/f2/fsm/fsm.h"
 #include "core/f2/meta.h"
 #include "core/inspect.h"
+#include "core/maint/maint.h"
 #include "core/memtrack.h"
 #include "core/meta_peek.h"
 #include "core/ops.h"
 #include "core/sql/sql.h"
 #include "core/worker.h"
 
+/* The table before the index, as the statements do: a DROP TABLE takes them in that order */
 static Relation
 open_f2(Oid relid)
 {
 	Relation	index;
 
 	sift_inspect_expect(relid, "sift_col", NULL);
-	index = index_open(relid, AccessShareLock);
+	index = sift_try_open_index(relid, AccessShareLock);
+	if (index == NULL)
+		sift_rel_missing(relid);
 	sift_check_inspect(index);
 	return index;
 }
@@ -585,6 +589,7 @@ f2_tracking(FunctionCallInfo fcinfo)
 	Datum		v[4];
 	bool		nulls[4] = {false};
 
+	SIFT_COL_OPEN_GATE();
 	sift_f2_track_state(index, &triggers, &heard);
 	v[0] = BoolGetDatum(sift_col_track_on(index));
 	v[1] = BoolGetDatum(triggers);
