@@ -116,8 +116,12 @@ sift_v6_rels_have_index(PlannerInfo *root, Relids relids)
 		return false;
 	pr = plan_rels_of(root);
 	while ((i = bms_next_member(relids, i)) >= 0)
-		if (decidable(root->simple_rel_array[i]) && !bms_is_member(i, pr->decided))
-			decide_rel(pr, i, root->simple_rel_array[i]);
+	{
+		RelOptInfo *r = root->simple_rel_array[i];
+
+		if (r != NULL && decidable(r) && !bms_is_member(i, pr->decided))
+			decide_rel(pr, i, r);
+	}
 	return bms_overlap(relids, pr->owned);
 }
 
@@ -130,8 +134,12 @@ sift_query_touches_sift(PlannerInfo *root)
 		return false;
 	pr = plan_rels_of(root);
 	for (int i = 1; i < root->simple_rel_array_size; i++)
-		if (decidable(root->simple_rel_array[i]) && !bms_is_member(i, pr->decided))
-			decide_rel(pr, i, root->simple_rel_array[i]);
+	{
+		RelOptInfo *r = root->simple_rel_array[i];
+
+		if (r != NULL && decidable(r) && !bms_is_member(i, pr->decided))
+			decide_rel(pr, i, r);
+	}
 	return !bms_is_empty(pr->touched);
 }
 
