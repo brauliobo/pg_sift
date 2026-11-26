@@ -62,6 +62,25 @@ SELECT shape, answer(q) = answer(oracle) AS same_answer FROM shapes ORDER BY sha
 -- scoring the rows tied with the n-th by the leading key is a few hundred rows of the 8000 matches; ranking them all is not
 SELECT shape, scored_rows(q) <= 500 AS scores_few_rows FROM shapes ORDER BY shape;
 
+-- the rows a keyed round keeps hold copies of their keys: 400 rows with keys of 1.8 kB take more than 512 kB of work_mem, which the round
+-- refuses, and fit 4 MB
+CREATE TABLE wide_keys (id int, body text, k text) WITH (autovacuum_enabled = off);
+ALTER TABLE wide_keys ALTER k SET STORAGE plain;
+INSERT INTO wide_keys SELECT i, 'honey w' || i % 7, md5(i::text) || repeat('x', 1800) FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
+CREATE INDEX wide_keys_sift ON wide_keys USING sift (body);
+RESET client_min_messages;
+ANALYZE wide_keys;
+SET work_mem = '512kB';
+EXPLAIN (COSTS OFF) SELECT id FROM wide_keys WHERE body @@> 'honey' ORDER BY k, sift.score(ctid) DESC LIMIT 400;
+\set VERBOSITY sqlstate
+SELECT count(*) FROM (SELECT id FROM wide_keys WHERE body @@> 'honey' ORDER BY k, sift.score(ctid) DESC LIMIT 400) s;
+\set VERBOSITY default
+SET work_mem = '4MB';
+SELECT count(*) FROM (SELECT id FROM wide_keys WHERE body @@> 'honey' ORDER BY k, sift.score(ctid) DESC LIMIT 400) s;
+RESET work_mem;
+DROP TABLE wide_keys;
+
 DROP FUNCTION scored_rows(text), answer(text);
 DROP TABLE shapes, group_items, items;
 DROP EXTENSION pg_sift;

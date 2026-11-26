@@ -30,6 +30,7 @@ typedef struct KeyTop
 	int64		ntie,
 				captie,
 				seen;
+	Size		keybytes;		/* the copies of the keys of the heap that are not by value */
 } KeyTop;
 
 static int
@@ -54,9 +55,30 @@ keyrow_worse(Datum a, Datum b, void *arg)
 	return key_compare(arg, x->key, x->isnull, y->key, y->isnull);
 }
 
-static KeyRow *
-new_keyrow(SiftScanState *ss, const ItemPointerData *entry, const Datum *key, const bool *isnull)
+/* The rows of a round (the heap, the ties) must fit work_mem: a tie of the last key can be every match */
+static void
+keytop_budget(const KeyTop *t, int64 heap, int64 ties)
 {
+	sift_budget_check(heap * SIFT_KEYED_ROW_BYTES(t->ss->nkeys) + t->keybytes + ties * SIFT_KEYED_TIE_BYTES, work_mem,
+					  "a search ordered by keys and score", "work_mem", "add a LIMIT, or order by fewer matches");
+}
+
+static Size
+key_bytes(SiftScanState *ss, const KeyRow *r)
+{
+	Size		n = 0;
+
+	for (int i = 0; i < ss->nkeys; i++)
+		if (!ss->keybyval[i] && !r->isnull[i])
+			n += GetMemoryChunkSpace(DatumGetPointer(r->key[i]));
+	return n;
+}
+
+static KeyRow *
+new_keyrow(KeyTop *t, const ItemPointerData *entry, const Datum *key, const bool *isnull)
+{
+	SiftScanState *ss = t->ss;
+	MemoryContext old = MemoryContextSwitchTo(ss->kcx);
 	KeyRow	   *r = palloc(sizeof(KeyRow) + ss->nkeys * (sizeof(Datum) + sizeof(bool)));
 
 	r->tid = *entry;
@@ -67,24 +89,20 @@ new_keyrow(SiftScanState *ss, const ItemPointerData *entry, const Datum *key, co
 		r->isnull[i] = isnull[i];
 		r->key[i] = isnull[i] ? 0 : datumCopy(key[i], ss->keybyval[i], ss->keylen[i]);
 	}
+	MemoryContextSwitchTo(old);
+	t->keybytes += key_bytes(ss, r);
+	keytop_budget(t, binaryheap_size(t->heap) + 1, t->captie);
 	return r;
 }
 
 static void
-free_keyrow(SiftScanState *ss, KeyRow *r)
+free_keyrow(KeyTop *t, KeyRow *r)
 {
-	for (int i = 0; i < ss->nkeys; i++)
-		if (!ss->keybyval[i] && !r->isnull[i])
+	t->keybytes -= key_bytes(t->ss, r);
+	for (int i = 0; i < t->ss->nkeys; i++)
+		if (!t->ss->keybyval[i] && !r->isnull[i])
 			pfree(DatumGetPointer(r->key[i]));
 	pfree(r);
-}
-
-/* The rows of a round (the heap, the ties) must fit work_mem: a tie of the last key can be every match */
-static void
-keytop_budget(const KeyTop *t, int64 heap, int64 ties)
-{
-	sift_budget_check(heap * SIFT_KEYED_ROW_BYTES(t->ss->nkeys) + ties * SIFT_KEYED_TIE_BYTES, work_mem,
-					  "a search ordered by keys and score", "work_mem", "add a LIMIT, or order by fewer matches");
 }
 
 static void
@@ -94,12 +112,12 @@ add_tie(KeyTop *t, const ItemPointerData *entry)
 	{
 		t->captie = Max(64, 2 * t->captie);
 		keytop_budget(t, binaryheap_size(t->heap), t->captie);
-		SIFT_REGROW_IN(CurrentMemoryContext, t->tie, t->captie * sizeof(ItemPointerData));
+		SIFT_REGROW_IN(t->ss->kcx, t->tie, t->captie * sizeof(ItemPointerData));
 	}
 	t->tie[t->ntie++] = *entry;
 }
 
-/* The match of index entry entry with keys key: kept when its keys are among the kheld best so far, or tied with the worst of them */
+/* The match of index entry entry with keys key: kept when its keys are among the kheld best so far, or tied with the worst of them (the comparisons run in the memory of the row) */
 static void
 keytop_add(KeyTop *t, const ItemPointerData *entry, const Datum *key, const bool *isnull)
 {
@@ -111,7 +129,7 @@ keytop_add(KeyTop *t, const ItemPointerData *entry, const Datum *key, const bool
 	t->seen++;
 	if (binaryheap_size(t->heap) < ss->kheld)
 	{
-		binaryheap_add(t->heap, PointerGetDatum(new_keyrow(ss, entry, key, isnull)));
+		binaryheap_add(t->heap, PointerGetDatum(new_keyrow(t, entry, key, isnull)));
 		return;
 	}
 	worst = (KeyRow *) DatumGetPointer(binaryheap_first(t->heap));
@@ -122,14 +140,14 @@ keytop_add(KeyTop *t, const ItemPointerData *entry, const Datum *key, const bool
 		add_tie(t, entry);
 		return;
 	}
-	binaryheap_replace_first(t->heap, PointerGetDatum(new_keyrow(ss, entry, key, isnull)));
+	binaryheap_replace_first(t->heap, PointerGetDatum(new_keyrow(t, entry, key, isnull)));
 	best = (KeyRow *) DatumGetPointer(binaryheap_first(t->heap));
 	/* the ties were of the keys that left the top: they stay with the keys that took its place only when those are the same */
 	if (key_compare(ss, worst->key, worst->isnull, best->key, best->isnull) == 0)
 		add_tie(t, &worst->tid);
 	else
 		t->ntie = 0;
-	free_keyrow(ss, worst);
+	free_keyrow(t, worst);
 }
 
 /* Passes over the matches in heap order that pass the quals */
@@ -140,6 +158,7 @@ keyed_collect(SiftScanState *ss, KeyTop *t)
 	Datum	   *key = palloc(ss->nkeys * sizeof(Datum));
 	bool	   *isnull = palloc(ss->nkeys * sizeof(bool));
 	ItemPointerData entry;
+	MemoryContext old;
 
 	ss->it = sift_iter_begin(ss->plan);
 	for (;;)
@@ -148,9 +167,11 @@ keyed_collect(SiftScanState *ss, KeyTop *t)
 		ResetExprContext(econtext);
 		if (next_row(ss, &entry) == NULL)
 			break;
+		old = MemoryContextSwitchTo(econtext->ecxt_per_tuple_memory);
 		for (int i = 0; i < ss->nkeys; i++)
-			key[i] = ExecEvalExprSwitchContext(ss->keyexpr[i], econtext, &isnull[i]);
+			key[i] = ExecEvalExpr(ss->keyexpr[i], econtext, &isnull[i]);
 		keytop_add(t, &entry, key, isnull);
+		MemoryContextSwitchTo(old);
 	}
 	reset_iter(ss);
 }
