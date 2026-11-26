@@ -165,30 +165,36 @@ LEAK_IDLE_LOCKS="SELECT format('session %s %s holds %s on %s', a.pid, a.state, l
 # The shared tables of the test library (col/dsmreg.c) count the backends that map them: with no client session left every count is 0. A backend gives
 # its count back when it detaches its segments, after it left pg_stat_activity, so the read repeats while any is above 0. Needs the test library
 # (pg_sift_test): a cluster without the extension (a released library, whose build still ships the helper extension; a stock node that never loads pg_sift) has no counts to read.
-# A standby cannot create the probe database: it reads the counts in the database that replicated the extension, and has none to read without it
+# A primary reads them through a temporary function of the session over the C function of the library (no database or extension to create and drop); a standby cannot
+# create one: it reads them in postgres when the extension replicated there, and has none to read without it.
 # The maintenance launcher of a preloaded server (a child of the postmaster in DATA) maps the tables of its scheduler for as long as it lives: that is its mapping, not a session's
 LEAK_LAUNCHER_TABLES='{sift_maint_v6,sift_workers_2,sift_pacer_1}'
-leak_launchers() { pgrep -P "$(head -1 "$1/postmaster.pid")" -f 'sift maintenance launcher' | wc -l; }
+LEAK_DSM_FN="CREATE FUNCTION pg_temp.leak_dsm_entries(OUT name text, OUT build text, OUT size int8, OUT handle int8, OUT users int4) RETURNS SETOF record
+	AS 'pg_sift', 'sift_test_dsm_entries' LANGUAGE C"
+# leak_children DATA: the process titles of the children of the postmaster of DATA, one a line (read from /proc: pgrep scans every process of the host)
+leak_children() {
+	local pm kids=() c t
+	read -r pm <"$1/postmaster.pid"
+	[[ -r /proc/$pm/task/$pm/children ]] || { ps -o args= -p "$(pgrep -P "$pm" | paste -sd, -)" 2>/dev/null; return 0; }
+	read -r -a kids <"/proc/$pm/task/$pm/children"
+	for c in "${kids[@]}"; do IFS= read -r -d '' t <"/proc/$c/cmdline" 2>/dev/null; echo "$t"; done
+}
+leak_launchers() { leak_children "$1" | grep -c 'sift maintenance launcher'; }
 leak_shared_tables() {
-	local out db=leakcheck_probe
+	local out mode fn=sift._test_dsm_entries make=()
 	[[ -n ${SIFT_TESTING-1} ]] || return 0
-	[[ -z $(leak_psql -c "SELECT 1 FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()") ]] || return 0
-	if [[ $(leak_psql -c "SELECT pg_is_in_recovery()") == t ]]; then
-		[[ -n $(leak_psql -c "SELECT 1 FROM pg_extension WHERE extname = 'pg_sift_test'") ]] || return 0
-		db=postgres
-	else
-		[[ -n $(leak_psql -c "SELECT 1 FROM pg_available_extensions WHERE name = 'pg_sift_test'") ]] || return 0
-		leak_psql -c "CREATE DATABASE $db" >/dev/null
-		PGOPTIONS="-c client_min_messages=warning" leak_psql -d "$db" -c "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null
-	fi
+	mode=$(leak_psql -c "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid())
+			OR NOT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_sift_test') THEN 'none'
+		WHEN NOT pg_is_in_recovery() THEN 'primary' WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_sift_test') THEN 'standby' ELSE 'none' END")
+	[[ $mode != none ]] || return 0
+	[[ $mode != primary ]] || make=(-c "$LEAK_DSM_FN") fn=pg_temp.leak_dsm_entries
 	for _ in $(seq 100); do
-		out=$(leak_psql -d "$db" -c "SELECT format('shared table %s is mapped by %s backend(s) with no session left', name, users)
-			FROM sift._test_dsm_entries() WHERE users > CASE WHEN name = ANY ('$LEAK_LAUNCHER_TABLES') THEN $(leak_launchers "$1") ELSE 0 END")
+		out=$(leak_psql "${make[@]}" -c "SELECT format('shared table %s is mapped by %s backend(s) with no session left', name, users)
+			FROM $fn() WHERE users > CASE WHEN name = ANY ('$LEAK_LAUNCHER_TABLES') THEN $(leak_launchers "$1") ELSE 0 END")
 		[[ -n $out ]] || break
 		sleep 0.05
 	done
 	[[ -z $out ]] || echo "$out"
-	[[ $db == postgres ]] || leak_psql -c "DROP DATABASE $db WITH (FORCE)" >/dev/null
 }
 
 # leak_cluster DATA: run against the cluster in DATA before it stops (PGHOST/PGPORT/PGUSER select it)
@@ -234,13 +240,8 @@ leak_before() {
 # leak_wait_backends DATA DB: until no client backend of DB is left in the cluster. A backend leaves the process table after its exit
 # callbacks, the sift leak report among them, and not before: pg_stat_activity forgets it earlier
 leak_wait_backends() {
-	local pm pids args
-	pm=$(head -1 "$1/postmaster.pid")
 	for _ in $(seq 600); do
-		pids=$(pgrep -P "$pm" | paste -sd, -)
-		[[ -z $pids ]] && return 0
-		args=$(ps -o args= -p "$pids" || true)
-		grep -q "^postgres: [^ ]* $2 " <<<"$args" || return 0
+		leak_children "$1" | grep -q "^postgres: [^ ]* $2 " || return 0
 		sleep 0.05
 	done
 	leak_finding "a backend of database $2 still runs after 30 s"
