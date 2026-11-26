@@ -71,8 +71,9 @@ END $$;
 -- 1. clean units: the cubes answer, and the rows are the heap's
 SELECT * FROM queries('ev');
 
--- 2. a statement the cubes do not hold is read: a distinct count, a text minimum, two keys, a test the zones cannot decide on a row, preaggregation off
+-- the distinct values of a dimension are the keys of its cells
 SELECT * FROM cube('SELECT count(DISTINCT grp) FROM ev');
+-- 2. a statement the cubes do not hold is read: a text minimum, two keys, a test the zones cannot decide on a row, preaggregation off
 SELECT * FROM cube('SELECT kind, min(kind) FROM ev GROUP BY 1');
 SELECT * FROM cube('SELECT grp, kind, count(*) FROM ev GROUP BY 1, 2');
 SELECT * FROM cube('SELECT count(*) FROM ev WHERE amount % 2 = 0');

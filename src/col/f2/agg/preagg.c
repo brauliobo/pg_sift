@@ -26,7 +26,8 @@ typedef enum AggSrc
 	ASRC_ROWS,					/* count(*) */
 	ASRC_MEAS,					/* a measure of the cube */
 	ASRC_DIM,					/* count(dimension): the rows whose dimension is not NULL */
-	ASRC_DIST					/* count(DISTINCT col): the set of the cube */
+	ASRC_DIST,					/* count(DISTINCT col): the set of the cube */
+	ASRC_DIM_DIST				/* count(DISTINCT dimension): the key of each cell */
 } AggSrc;
 
 typedef struct AggBind
@@ -34,6 +35,8 @@ typedef struct AggBind
 	AggSrc		src;
 	int			idx;
 	int			leaf;			/* the column of the part the aggregate reads, -1 for count(*) */
+	bool		linear;			/* the sum or average of a line of the measure */
+	SiftV6Linear lin;
 } AggBind;
 
 typedef struct KeyBatch
@@ -229,11 +232,12 @@ bind_agg(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCubeD
 		return false;
 	else if (a->kind == SV6_COUNT_DISTINCT)
 	{
-		const int	k = find_dist(cd, leaf);
+		const int	k = find_dist(cd, leaf),
+					d = find_dim(cd, leaf, cls == SV6C_TEXT ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64);
 
-		if (k < 0 || (cls == SV6C_TEXT) != (schema->cols[today].store == SIFT_COLS_STR))
+		if ((cls == SV6C_TEXT) != (schema->cols[today].store == SIFT_COLS_STR) || (k < 0 && d < 0))
 			return false;
-		*out = (AggBind) {ASRC_DIST, k, leaf};
+		*out = k >= 0 ? (AggBind) {ASRC_DIST, k, leaf} : (AggBind) {ASRC_DIM_DIST, d, leaf};
 	}
 	else if (sift_agg_exact_float && is_float && (a->kind == SV6_SUM || a->kind == SV6_AVG))
 		return false;
@@ -242,6 +246,7 @@ bind_agg(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCubeD
 		if (numeric && cd->meas_kind[m] == SIFT_PMEAS_NUM64 && schema->cols[today].scale != a->arg.scale)
 			return false;
 		*out = (AggBind) {ASRC_MEAS, m, leaf};
+		out->linear = sift_v6_agg_linear(pa->spec, a, &out->lin);
 	}
 	else if (a->kind == SV6_COUNT && (m = find_dim(cd, leaf, cls == SV6C_TEXT ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64)) >= 0)
 		*out = (AggBind) {ASRC_DIM, m, leaf};
@@ -552,7 +557,24 @@ sift_v6_preagg_meas_acc(const SiftV6Agg *a, const SiftPreaggMeasure *pm, V6Acc *
 		v6acc_set_f64(out, (pm->flags & SIFT_PM_HAS_NONNAN) ? pm->u.f.min_f : get_float8_nan());
 }
 
-static void
+/* The state of the sum of a line of a measure: false when the line may leave its type on a row of the cell */
+static bool
+line_acc(const AggBind *b, const SiftPreaggMeasure *pm, V6Acc *out)
+{
+	SiftI128	sum;
+
+	out->n = pm->count_nonnull;
+	if (pm->count_nonnull == 0)
+		return true;
+	if (!sift_v6_linear_fits(&b->lin, pm->u.i.min_i, pm->u.i.max_i) ||
+		!sift_v6_linear_sum(&b->lin, (SiftI128) {(uint64) pm->u.i.sum_lo, pm->u.i.sum_hi}, (int64) pm->count_nonnull, &sum))
+		return false;
+	v6acc_set_i128(out, sum);
+	return true;
+}
+
+/* The states of the aggregates of a cell; false when one of them is not the cell's (a line that may leave its type) */
+static bool
 cell_acc(const PartBind *pb, const SiftV6Spec *spec, const SiftPreaggCubeDesc *cd, const SiftPreaggGroupHdr *grp, V6Acc *out)
 {
 	for (int j = 0; j < spec->naggs; j++)
@@ -569,12 +591,17 @@ cell_acc(const PartBind *pb, const SiftV6Spec *spec, const SiftPreaggCubeDesc *c
 				out[j].n = ((grp->dim_null_mask >> b->idx) & 1) ? 0 : grp->row_count;
 				break;
 			case ASRC_MEAS:
-				sift_v6_preagg_meas_acc(&spec->agg[j], sift_pag_measure(cd, grp, b->idx), &out[j]);
+				if (b->linear && !line_acc(b, sift_pag_measure(cd, grp, b->idx), &out[j]))
+					return false;
+				if (!b->linear)
+					sift_v6_preagg_meas_acc(&spec->agg[j], sift_pag_measure(cd, grp, b->idx), &out[j]);
 				break;
 			case ASRC_DIST:
+			case ASRC_DIM_DIST:
 				break;
 		}
 	}
+	return true;
 }
 
 /* ---- batches of keys ---- */
@@ -651,7 +678,7 @@ strview_of(const char *p, uint32 len)
 typedef struct DistSet
 {
 	uint32		n;
-	int64	   *v;
+	const int64 *v;
 } DistSet;
 
 /* The distinct values of the set of each passing cell for aggregate j; false when a set is one the cube left out */
@@ -663,9 +690,17 @@ read_dist(SiftV6Preagg *pa, const PartBind *pb, const SiftF2GranOffer *o, const 
 
 	for (int i = 0; i < ncells; i++)
 	{
-		const SiftPreaggDistRef *ref = sift_pag_dist(cd, sift_pag_group(cd, gran->cells, cells[i]), pb->agg[j].idx);
+		const SiftPreaggGroupHdr *grp = sift_pag_group(cd, gran->cells, cells[i]);
+		const SiftPreaggDistRef *ref;
 		uint8	   *bytes;
 
+		if (pb->agg[j].src == ASRC_DIM_DIST)
+		{
+			out[i].n = (grp->dim_null_mask >> pb->agg[j].idx) & 1 ? 0 : 1;
+			out[i].v = &grp->keys[pb->agg[j].idx];
+			continue;
+		}
+		ref = sift_pag_dist(cd, grp, pb->agg[j].idx);
 		if (ref->mode == SIFT_PDIST_OVERFLOW || (ref->mode != SIFT_PDIST_EMPTY && (ref->mode == SIFT_PDIST_I64_LIST) == text))
 			return false;
 		bytes = sift_preagg_dist_read(o->rel, pb->pp, ref);
@@ -723,7 +758,7 @@ cells_flush(SiftV6Preagg *pa, const PartBind *pb, const V6Acc *acc)
 	kb_reset(pa, pb);
 }
 
-/* The cells that pass the tests of the granule folded into the groups; false, with nothing folded, when a set of distinct values it needs is one the cube left out */
+/* The cells that pass the tests of the granule folded into the groups; false, with nothing folded, when a set of distinct values it needs is one the cube left out or a line may leave its type */
 static bool
 fold_cells(SiftV6Preagg *pa, const PartBind *pb, const SiftF2GranOffer *o, const SiftPreaggGran *gran)
 {
@@ -740,11 +775,12 @@ fold_cells(SiftV6Preagg *pa, const PartBind *pb, const SiftF2GranOffer *o, const
 
 		if (grp->row_count == 0 || !cell_passes(pb, cd, o, grp))
 			continue;
-		cell_acc(pb, pa->spec, cd, grp, &acc[ncells * naggs]);
+		if (!cell_acc(pb, pa->spec, cd, grp, &acc[ncells * naggs]))
+			return false;
 		cells[ncells++] = (int) c;
 	}
 	for (int j = 0; j < naggs; j++)
-		if (pb->agg[j].src == ASRC_DIST)
+		if (pb->agg[j].src == ASRC_DIST || pb->agg[j].src == ASRC_DIM_DIST)
 		{
 			sets[j] = palloc(Max(ncells, 1) * sizeof(DistSet));
 			if (!read_dist(pa, pb, o, gran, cells, ncells, j, sets[j]))

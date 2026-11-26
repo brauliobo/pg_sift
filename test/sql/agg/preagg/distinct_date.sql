@@ -28,7 +28,22 @@ FROM (VALUES ('days of the column', 'SELECT count(DISTINCT dt) FROM dc'),
              ('a key', 'SELECT c1, count(DISTINCT dt) FROM dc GROUP BY c1')) q(shape, q), LATERAL pa_units(q.q) u
 ORDER BY q.shape;
 
-DROP TABLE dc;
+-- The sum of a line of a column (x + k, k - x, k * x) is mul * sum(x) + add * count(x) of the cube, and count(DISTINCT dim) the keys of its cells, on both formats; a line
+-- that may leave int8 in a granule or unit makes it a scan, which raises as PostgreSQL does
+CREATE TABLE pl (id int, kind int, n8 bigint) WITH (autovacuum_enabled = off);
+INSERT INTO pl SELECT i, i % 4, CASE WHEN i % 9 <> 0 THEN i * 3 END FROM generate_series(1, 400) i;
+VACUUM (FREEZE, ANALYZE) pl;
+CREATE INDEX pl_col ON pl USING sift_col (id, kind, n8) WITH (preagg = 'cube(kind: n8)');
+SET enable_seqscan = off; SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
+SELECT q.shape, u.pre > 0 AS from_cubes,
+       pa_rows(q.q, true, true) IS NOT DISTINCT FROM pa_rows(q.q, false, false) AS same, pa_rows(q.q, true, true) ~ 'out of range' AS raises
+FROM (VALUES ('lines by key', 'SELECT kind, sum(n8 * 3), avg(5 - n8), count(DISTINCT kind) FROM pl GROUP BY kind'),
+             ('lines, no key', 'SELECT count(DISTINCT kind), sum(n8 * -2), sum(n8 + 7) FROM pl'),
+             ('a line that overflows', 'SELECT sum(n8 * 10000000000000000) FROM pl')) q(shape, q), LATERAL pa_units(q.q) u
+ORDER BY q.shape;
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_indexonlyscan; RESET enable_bitmapscan;
+
+DROP TABLE dc, pl;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text);
 DROP PROCEDURE pa_settle();
 DROP EXTENSION pg_sift;

@@ -4,6 +4,7 @@
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
 SET jit = off;
 SET timezone = 'UTC';
 DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;

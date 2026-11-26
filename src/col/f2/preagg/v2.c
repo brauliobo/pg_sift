@@ -18,7 +18,7 @@
 #define PAG_AUTO_DIST_MAX_CARD	4096	/* ... and of at most this many is one whose distinct values a cube counts */
 #define PAG_AUTO_GROUPS			512		/* the most cells a cube of a granule has: a dimension and its NULL group, or the product of the dimensions of the joint cube */
 #define PAG_AUTO_CELL_BYTES		65536	/* ... and the most bytes of them: the budget of SIFT_PAG_BUDGET_PERCENT would leave the cube out of most granules otherwise */
-#define PAG_SPARSE_PERCENT		2		/* a column too wide to be a dimension that has a value in at most this share of its rows (a soft-delete stamp) is a dimension of whether it has one */
+#define PAG_SPARSE_PERCENT		2		/* a column that has a value in at most this share of its rows (a soft-delete stamp) is a dimension of whether it has one, whatever the distinct values a part samples */
 #define PAG_EXPLICIT_GROUPS		4096
 #define PAG_MAP_GROUPS			256		/* the most keys of a map a granule has in the cube of its members */
 #define PAG_SAMPLE_ROWS			16384
@@ -116,7 +116,7 @@ col_info(const SiftRows *rows, const SiftDictEnc *const *dicts, int c, ColInfo *
 		ci->card = nd;
 		ci->dkind = SIFT_PDIM_INT64;
 		ci->dim = !num && nd > 0 && nd <= PAG_AUTO_DIM_MAX_CARD;
-		if (!num && !ci->dim && sparse)
+		if (!num && sparse)
 		{
 			ci->dkind = SIFT_PDIM_NULLFLAG;
 			ci->card = 2;

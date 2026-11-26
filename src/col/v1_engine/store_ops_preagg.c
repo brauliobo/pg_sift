@@ -2,7 +2,8 @@
  * col/v1_engine/store_ops_preagg.c - SiftAggV6 answering the stored units of a Format 1 index or sift_table from their pre-aggregates (col/v1/store_ops.h SiftV1UnitSink).
  *
  * The source offers each unit it is about to read. A unit is answered when the statement is one the cubes hold (no key, or one key that is a dimension of the unit's histogram, and aggregates that are
- * counts, sums, least and greatest of the leaves the histogram has measures of, or of the zone of the unit when there is no key), the unit stands for exactly the rows the snapshot sees (stored, no
+ * counts, sums (of a leaf or of a line of one), least and greatest of the leaves the histogram has measures of, or of the zone of the unit when there is no key, and the distinct values of
+ * a histogram dimension), the unit stands for exactly the rows the snapshot sees (stored, no
  * dead row, every heap page all-visible: SiftV1ReaderOps.unit_exact) and its zones decide every test of the statement for all its rows (or for none: it adds nothing). Any other unit is read as it
  * was, rows and visibility checks included, so an answer is the scan's.
  */
@@ -17,10 +18,10 @@
 #include "utils/rel.h"
 
 #include "agg/agg.h"
-#include "agg/group/int.h"
-#include "agg/cube.h"
+#include "agg/vexpr/str.h"
 #include "col/source_fold.h"
 #include "col/v1/store_ops.h"
+#include "col/v1_engine/store_ops_preagg_ext.h"
 #include "core/memtrack.h"
 
 typedef enum Verdict
@@ -64,6 +65,8 @@ typedef struct CubeAgg
 	int			leaf;			/* -1: count(*) */
 	bool		is_float;
 	int			slot;			/* the measure of the histogram that holds the leaf */
+	bool		linear;			/* the sum or average of a line of the leaf */
+	SiftV6Linear lin;
 } CubeAgg;
 
 typedef struct SiftV1Cube
@@ -75,6 +78,8 @@ typedef struct SiftV1Cube
 	int			nkeys;
 	int			key_leaf;
 	bool		key_text;
+	int			dist_leaf;		/* no key: the leaf COUNT(DISTINCT) reads (its histogram gives the values), -1: none */
+	bool		dist_text;
 	CubeAgg    *agg;
 	int			npred;
 	Pred	   *pred;
@@ -360,9 +365,13 @@ global_acc(const SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const Sift
 		out->n = unit->nrow;
 		return true;
 	}
+	if (g->a->kind == SV6_COUNT_DISTINCT)
+		return true;
 	if (!rd->unit_agg(src, unit, g->leaf, &z) || z.nvals != unit->nrow || z.loose)
 		return false;
 	n = z.nvals - z.nnull;
+	if (g->linear)
+		return (n == 0 || (z.has_sums && z.has_minmax)) && sift_v1_line_acc(&g->lin, n, z.sum, z.min, z.max, out);
 	switch (g->a->kind)
 	{
 		case SV6_COUNT:
@@ -392,10 +401,17 @@ merge(SiftV1Cube *c, int n)
 static bool
 fold_global(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 {
+	SiftSrcHist h;
+
+	if (c->dist_leaf >= 0 && (!rd->unit_hist(src, unit, c->dist_leaf, &(SiftSrcRollupNeed) {0}, &h) || (c->dist_text && h.dict == NULL)))
+		return false;
 	for (int j = 0; j < c->spec->naggs; j++)
 		if (!global_acc(c, rd, src, unit, &c->agg[j], &c->acc[j]))
 			return false;
 	merge(c, 1);
+	for (int j = 0; j < c->spec->naggs; j++)
+		if (c->agg[j].a->kind == SV6_COUNT_DISTINCT)
+			sift_v1_hist_merge_dist(c->group, j, &h, c->dist_text, c->kdata);
 	return true;
 }
 
@@ -420,6 +436,8 @@ bind_hist(SiftV1Cube *c, const SiftSrcHist *h)
 		if (m == h->nmeas)
 			return false;
 		g->slot = m;
+		if (g->linear && (h->sum[m] == NULL || h->min[m] == NULL || h->max[m] == NULL))
+			return false;
 		if (g->a->kind == SV6_SUM || g->a->kind == SV6_AVG)
 		{
 			if (g->is_float ? h->sumf[m] == NULL : h->sum[m] == NULL)
@@ -431,7 +449,8 @@ bind_hist(SiftV1Cube *c, const SiftSrcHist *h)
 	return true;
 }
 
-static void
+/* The states of the aggregates of group r; false when one is not the group's (a line that may leave its type) */
+static bool
 group_acc(const SiftV1Cube *c, const SiftSrcHist *h, uint32 r, V6Acc *out)
 {
 	const bool	null_group = h->has_null && r == h->ngroups - 1;
@@ -444,6 +463,12 @@ group_acc(const SiftV1Cube *c, const SiftSrcHist *h, uint32 r, V6Acc *out)
 		out[j] = (V6Acc) {0};
 		if (g->a->kind == SV6_COUNT_STAR)
 			out[j].n = h->count[r];
+		else if (g->a->kind == SV6_COUNT_DISTINCT)
+			continue;
+		else if (g->linear && !sift_v1_line_acc(&g->lin, h->nn[m][r], h->sum[m][r], h->min[m][r], h->max[m][r], &out[j]))
+			return false;
+		else if (g->linear)
+			continue;
 		else if (m < 0)
 			out[j].n = null_group ? 0 : h->count[r];
 		else if (g->a->kind == SV6_COUNT)
@@ -453,21 +478,7 @@ group_acc(const SiftV1Cube *c, const SiftSrcHist *h, uint32 r, V6Acc *out)
 		else
 			acc_sum(g, h->nn[m][r], g->is_float ? 0 : h->sum[m][r], g->is_float ? h->sumf[m][r] : 0, &out[j]);
 	}
-}
-
-static SiftStrView
-strview_of(const char *p, uint32 len)
-{
-	SiftStrView v = {.len = len};
-
-	if (len == 0)
-		return v;
-	memcpy(v.prefix, p, Min(len, 4));
-	if (len <= 12)
-		memcpy(v.u.tail, p + 4, len > 4 ? len - 4 : 0);
-	else
-		v.u.ptr = p;
-	return v;
+	return true;
 }
 
 static void
@@ -481,7 +492,7 @@ put_key(SiftV1Cube *c, const SiftSrcHist *h, uint32 r, int row)
 	{
 		const SiftSrcDict *d = h->dict;
 
-		((SiftStrView *) c->kdata)[row] = null ? (SiftStrView) {0} : strview_of(d->bytes + d->off[h->key[r]], d->off[h->key[r] + 1] - d->off[h->key[r]]);
+		((SiftStrView *) c->kdata)[row] = null ? (SiftStrView) {0} : sift_vstr_make(d->bytes + d->off[h->key[r]], d->off[h->key[r] + 1] - d->off[h->key[r]]);
 	}
 	else
 		((int64 *) c->kdata)[row] = null ? 0 : h->key[r];
@@ -502,6 +513,9 @@ fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit
 
 	if (!rd->unit_hist(src, unit, c->key_leaf, &c->need, &h) || !bind_hist(c, &h))
 		return false;
+	for (uint32 r = 0; r < h.ngroups; r++)
+		if (h.count[r] > 0 && !group_acc(c, &h, r, c->acc))
+			return false;
 	batch_start(c, h.has_null);
 	for (uint32 r = 0; r < h.ngroups; r++)
 	{
@@ -518,6 +532,9 @@ fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit
 	}
 	if (n > 0)
 		merge(c, n);
+	for (int j = 0; j < c->spec->naggs; j++)
+		if (c->agg[j].a->kind == SV6_COUNT_DISTINCT)
+			sift_v1_hist_merge_dist(c->group, j, &h, c->key_text, c->kdata);
 	return true;
 }
 
@@ -541,24 +558,48 @@ offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 
 /* ---- the statement ---- */
 
+/* COUNT(DISTINCT leaf) is the dimension of a histogram: of the key, or of one leaf under no key */
+static bool
+bind_dist(SiftV1Cube *c, const SiftSrcLeaf *l)
+{
+	if (l->vtype != SCV_CODE && l->vtype != SCV_I32 && l->vtype != SCV_I64)
+		return false;
+	if (c->nkeys > 0)
+		return l->id == c->key_leaf;
+	if (c->dist_leaf >= 0 && c->dist_leaf != l->id)
+		return false;
+	c->dist_leaf = l->id;
+	c->dist_text = l->vtype == SCV_CODE;
+	return true;
+}
+
 static bool
 bind_aggs(SiftV1Cube *c, const SiftSrcLayout *lay)
 {
+	c->dist_leaf = -1;
 	for (int j = 0; j < c->spec->naggs; j++)
 	{
 		const SiftV6Agg *a = &c->spec->agg[j];
 		const SiftSrcLeaf *l = a->kind == SV6_COUNT_STAR ? NULL : sift_v1_att_leaf(lay, a->arg.attno);
 		const SiftV6Class cls = sift_v6_class(a->arg.typid);
+		CubeAgg    *g = &c->agg[j];
 
-		if (a->kind == SV6_COUNT_DISTINCT || (a->kind != SV6_COUNT_STAR && (!leaf_plain(l) || (cls == SV6C_F64) != (l->vtype == SCV_F64) || (cls == SV6C_TEXT && l->vtype != SCV_CODE))))
+		*g = (CubeAgg) {.a = a,.leaf = l == NULL ? -1 : l->id,.is_float = cls == SV6C_F64,.slot = -1};
+		g->linear = sift_v6_agg_linear(c->spec, a, &g->lin);
+		if (a->kind != SV6_COUNT_STAR && (!leaf_plain(l) || (cls == SV6C_F64) != (l->vtype == SCV_F64) || (cls == SV6C_TEXT && l->vtype != SCV_CODE)))
 			return false;
-		if ((a->kind == SV6_SUM || a->kind == SV6_AVG) && cls == SV6C_F64)
+		if (a->kind == SV6_COUNT_DISTINCT)
+		{
+			if (!bind_dist(c, l))
+				return false;
+			continue;
+		}
+		if ((g->linear && !leaf_int(l)) || ((a->kind == SV6_SUM || a->kind == SV6_AVG) && cls == SV6C_F64))
 			return false;
 		if (c->nkeys > 0 && l != NULL && l->id == c->key_leaf && a->kind != SV6_COUNT)
 			return false;
 		if ((a->kind == SV6_MIN || a->kind == SV6_MAX || a->kind == SV6_SUM || a->kind == SV6_AVG) && cls == SV6C_TEXT)
 			return false;
-		c->agg[j] = (CubeAgg) {.a = a,.leaf = l == NULL ? -1 : l->id,.is_float = cls == SV6C_F64,.slot = -1};
 		if (c->nkeys > 0 && l != NULL && l->id != c->key_leaf)
 		{
 			int			m = 0;
@@ -569,7 +610,7 @@ bind_aggs(SiftV1Cube *c, const SiftSrcLayout *lay)
 				return false;
 			c->need.meas[m].leaf = l->id;
 			c->need.meas[m].sums |= a->kind == SV6_SUM || a->kind == SV6_AVG;
-			c->need.meas[m].minmax |= a->kind == SV6_MIN || a->kind == SV6_MAX;
+			c->need.meas[m].minmax |= a->kind == SV6_MIN || a->kind == SV6_MAX || g->linear;
 			c->need.nmeas = Max(c->need.nmeas, m + 1);
 		}
 	}

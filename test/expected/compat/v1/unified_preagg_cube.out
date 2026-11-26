@@ -83,13 +83,14 @@ SELECT * FROM queries('ev');
  int_range     |     0 | t
 (14 rows)
 
--- 2. a statement the cubes do not hold is read: a distinct count, a text minimum, two keys, a test the zones cannot decide on a row, preaggregation off
+-- the distinct values of a dimension are the keys of its cells
 SELECT * FROM cube('SELECT count(DISTINCT grp) FROM ev');
  units | same 
 -------+------
-     0 | t
+     6 | t
 (1 row)
 
+-- 2. a statement the cubes do not hold is read: a text minimum, two keys, a test the zones cannot decide on a row, preaggregation off
 SELECT * FROM cube('SELECT kind, min(kind) FROM ev GROUP BY 1');
  units | same 
 -------+------
