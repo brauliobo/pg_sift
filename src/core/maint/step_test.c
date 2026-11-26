@@ -67,7 +67,7 @@ sift_test_worker_slots(PG_FUNCTION_ARGS)
 Datum
 sift_test_maint_workers_hold(PG_FUNCTION_ARGS)
 {
-	static int	held[SIFT_MAINT_MAX_WORKERS];
+	static SiftMaintTicket held[SIFT_MAINT_MAX_WORKERS];
 	static int	nheld;
 	SiftMaintShmem *m = sift_maint_table();
 	int			n = PG_GETARG_INT32(0);
@@ -75,9 +75,9 @@ sift_test_maint_workers_hold(PG_FUNCTION_ARGS)
 	if (m == NULL)
 		elog(ERROR, "the table of the queue is not there");
 	while (nheld > 0)
-		sift_maint_worker_exit(m, held[--nheld], MyProcPid);
-	while (nheld < n && nheld < SIFT_MAINT_MAX_WORKERS && (held[nheld] = sift_maint_worker_reserve(m, &sift_maint_server_host, MyDatabaseId)) >= 0)
-		(void) sift_maint_worker_started(m, held[nheld++], MyProcPid, MyProcNumber);
+		sift_maint_worker_exit(m, held[--nheld].worker, MyProcPid);
+	while (nheld < n && nheld < SIFT_MAINT_MAX_WORKERS && (held[nheld] = sift_maint_worker_reserve(m, &sift_maint_server_host, MyDatabaseId)).worker >= 0)
+		(void) sift_maint_worker_started(m, held[nheld++], MyDatabaseId, MyProcPid, MyProcNumber);
 	PG_RETURN_INT32(nheld);
 }
 

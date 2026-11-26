@@ -1,7 +1,7 @@
 /*
  * test/unit/core/maint/sched.c - the queue of core/maint/sched.c on a fake host: one busy database gets as many workers as it has runnable requests (up to the cap), a request that
  * coalesces into a stranded one (no worker is there for it) still starts one, a request put back for a busy lock keeps the worker of its database, and the queue holds a request for every
- * partition of a large server.
+ * partition of a large server. A worker that starts after its lease lapsed runs for its database on a slot no one took again, and never takes or gives back the slot reserved for another.
  */
 #define SIFT_SHM_STANDALONE 1
 
@@ -47,7 +47,7 @@ sift_shm_before_exit(void (*fn) (int, Datum))
 static TimestampTz host_now(void) { return clock_now; }
 static int	host_pid(void) { return 4242; }
 static bool host_alive(int pid) { return true; }
-static bool host_spawn(Oid db, int worker) { spawns++; return spawn_ok; }
+static bool host_spawn(Oid db, SiftMaintTicket t) { spawns++; return spawn_ok; }
 static void host_wake(int procno) { }
 static bool host_defer_cold(void) { return false; }
 static void host_starved(SiftPacerTier tier, TimestampTz now) { starved++; }
@@ -221,6 +221,51 @@ test_capacity_and_drop(void)
 	SIFT_CHECKF(sift_maint_enqueue(m, &host, &late) == SIFT_ENQ_COALESCED, "the refused request is queued again");
 }
 
+/* The lease of a slow worker lapses and the slot is reaped before the worker starts */
+static SiftMaintTicket
+lapsed(Oid db)
+{
+	SiftMaintTicket t = sift_maint_worker_reserve(m, &host, db);
+
+	SIFT_CHECK(t.worker >= 0);
+	clock_now += SIFT_MAINT_LEASE_US + 1;
+	sift_maint_reap(m, &host);
+	SIFT_CHECK(m->worker[t.worker].state == 0);
+	return t;
+}
+
+/* A late worker on a slot no one took again runs for its database: the drain of a DROP DATABASE sees it */
+static void
+test_late_worker_keeps_db(void)
+{
+	SiftMaintTicket t;
+
+	fresh(4);
+	t = lapsed(5);
+	SIFT_CHECK(sift_maint_worker_started(m, t, 5, 101, 1));
+	SIFT_CHECKF(m->worker[t.worker].db == 5 && sift_maint_db_workers(m, 5) == 1, "a late worker runs for its database: db %u", m->worker[t.worker].db);
+}
+
+/* A late worker never takes the slot reserved since for another worker, nor gives it back */
+static void
+test_late_worker_no_hijack(void)
+{
+	SiftMaintTicket t, t2;
+
+	fresh(4);
+	t = lapsed(5);
+	t2 = sift_maint_worker_reserve(m, &host, 6);
+	SIFT_CHECK(t2.worker == t.worker);
+	SIFT_CHECKF(!sift_maint_worker_started(m, t, 5, 101, 1), "a late worker does not start on the slot of another");
+	SIFT_CHECKF(m->worker[t.worker].state == 1 && m->worker[t.worker].db == 6, "the slot stays reserved for db 6: state %u db %u", m->worker[t.worker].state, m->worker[t.worker].db);
+	fresh(4);
+	t = lapsed(5);
+	t2 = sift_maint_worker_reserve(m, &host, 5);
+	SIFT_CHECK(t2.worker == t.worker);
+	sift_maint_worker_unconnected(m, &host, t, 5);
+	SIFT_CHECKF(m->worker[t2.worker].state == 1, "a late worker that cannot connect frees no reservation of another");
+}
+
 int
 main(void)
 {
@@ -231,6 +276,8 @@ main(void)
 	test_busy_keeps_worker();
 	test_upgrade();
 	test_capacity_and_drop();
+	test_late_worker_keeps_db();
+	test_late_worker_no_hijack();
 	free(m);
 	return sift_check_summary();
 }

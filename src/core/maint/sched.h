@@ -186,11 +186,19 @@ typedef struct SiftMaintSlot
 typedef struct SiftMaintWorkerSlot
 {
 	uint8		state;			/* 0 free, 1 starting (the lease holds the slot), 2 running */
+	uint16		gen;			/* of the last reservation: kept when the slot is freed, the next one takes the one after (in the pad: a slot is 24 B) */
 	int32		pid;
 	int32		procno;
 	Oid			db;
 	TimestampTz lease_until;
 } SiftMaintWorkerSlot;
+
+/* The reservation a worker was started for (its bgw_extra): a slot reaped and reserved again since is another worker's (worker -1: no slot) */
+typedef struct SiftMaintTicket
+{
+	int32		worker;
+	uint16		gen;
+} SiftMaintTicket;
 
 /* A database that gets no new worker while `holds` statements of the server wait for its workers to leave, or until `until`: it refused the connection of the last `failures` (a backoff of 2 s doubling to 60 s) */
 typedef struct SiftMaintDbState
@@ -324,7 +332,7 @@ typedef struct SiftMaintHost
 	TimestampTz (*now) (void);
 	int			(*self_pid) (void);
 	bool		(*pid_alive) (int pid);
-	bool		(*spawn) (Oid db, int worker);		/* false: the server has no slot */
+	bool		(*spawn) (Oid db, SiftMaintTicket t);	/* false: the server has no slot */
 	void		(*wake) (int procno);
 	bool		(*defer_cold) (void);				/* the pacer: P2 and P3 wait for a quieter moment */
 	void		(*note_starved) (SiftPacerTier tier, TimestampTz now);
@@ -376,12 +384,12 @@ sift_maint_workers_cap(int configured, int max_worker_processes)
 /* The cap on workers of sift: Min(sift_maint_workers_cap, max_worker_processes - Max(2, max_worker_processes / 4) - the bgworkers that are not ours); the reserve is left to parallel queries */
 extern int	sift_maint_effective_max(int configured, int max_worker_processes, int bgworkers_other);
 extern SiftMaintMode sift_maint_mode(bool async_maintenance, bool preloaded, bool table_ok, int effective_max);
-extern int	sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db);
-/* False when the slot was given up (its lease lapsed) and taken by another: the worker must exit */
-extern bool sift_maint_worker_started(SiftMaintShmem *m, int worker, int pid, int procno);
+extern SiftMaintTicket sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db);
+/* False when the slot was given up (its lease lapsed) and reserved again since: the worker must exit; a slot no one took again runs the worker for db */
+extern bool sift_maint_worker_started(SiftMaintShmem *m, SiftMaintTicket t, Oid db, int pid, int procno);
 extern void sift_maint_worker_exit(SiftMaintShmem *m, int worker, int pid);
 /* A worker that could not connect to db (dropped, closed to connections): its slot goes back at once, db is not tried again for a while, and its queued requests go after SIFT_MAINT_CONNECT_GIVE_UP failures in a row */
-extern void sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, int worker, Oid db);
+extern void sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintTicket t, Oid db);
 /* The state of a database for the launcher (core/maint/db.c): the lock of the table is not held by the caller, except for sift_maint_db_held and sift_maint_db_state_blocks */
 extern bool sift_maint_db_state_blocks(const SiftMaintDbState *e, TimestampTz now);
 extern bool sift_maint_db_held(const SiftMaintShmem *m, Oid db, TimestampTz now);

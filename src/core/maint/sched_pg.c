@@ -42,7 +42,7 @@ static bool table_tried;
 static SiftMaintStepFn stepper;
 static bool launcher_registered;
 
-StaticAssertDecl(sizeof(int) <= BGW_EXTRALEN, "bgw_extra holds the slot of a worker");
+StaticAssertDecl(sizeof(SiftMaintTicket) <= BGW_EXTRALEN, "bgw_extra holds the reservation of a worker");
 
 static void
 table_init(SIFT_DSM_INIT_ARGS)
@@ -128,7 +128,7 @@ host_wake(int procno)
 }
 
 static bool
-host_spawn(Oid db, int worker)
+host_spawn(Oid db, SiftMaintTicket t)
 {
 	BackgroundWorker bw = {0};
 	BackgroundWorkerHandle *handle;
@@ -144,7 +144,7 @@ host_spawn(Oid db, int worker)
 	snprintf(bw.bgw_name, BGW_MAXLEN, "sift maintenance of database %u", db);
 	snprintf(bw.bgw_type, BGW_MAXLEN, "sift maintenance");
 	bw.bgw_main_arg = ObjectIdGetDatum(db);
-	memcpy(bw.bgw_extra, &worker, sizeof(worker));
+	memcpy(bw.bgw_extra, &t, sizeof(t));
 	return RegisterDynamicBackgroundWorker(&bw, &handle);
 }
 
@@ -278,6 +278,7 @@ sift_maint_open(Oid relid, LOCKMODE lock)
 }
 
 static Oid	worker_db;
+static SiftMaintTicket worker_ticket;
 static bool worker_connected;
 static volatile sig_atomic_t worker_terminated;
 
@@ -294,17 +295,15 @@ worker_term(SIGNAL_ARGS)
 }
 
 static void
-worker_exit_cb(int code, Datum arg)
+worker_exit_cb(int code, Datum arg pg_attribute_unused())
 {
-	int			worker = DatumGetInt32(arg);
-
 	if (!worker_connected)
 	{
-		sift_maint_worker_unconnected(table, &sift_maint_server_host, worker, worker_db);
+		sift_maint_worker_unconnected(table, &sift_maint_server_host, worker_ticket, worker_db);
 		return;
 	}
 	sift_maint_release_pid(table, &sift_maint_server_host, MyProcPid, code != 0 && !worker_terminated);
-	sift_maint_worker_exit(table, worker, MyProcPid);
+	sift_maint_worker_exit(table, worker_ticket.worker, MyProcPid);
 	if (code == 0)
 		sift_maint_kick(table, &sift_maint_server_host);
 }
@@ -379,21 +378,20 @@ sift_maint_sched_worker_main(Datum main_arg)
 	Oid			db = DatumGetObjectId(main_arg);
 	SiftMaintShmem *m;
 	bool		yielded = false;
-	int			worker;
 
-	memcpy(&worker, MyBgworkerEntry->bgw_extra, sizeof(worker));
+	memcpy(&worker_ticket, MyBgworkerEntry->bgw_extra, sizeof(worker_ticket));
 	worker_db = db;
 	pqsignal(SIGTERM, worker_term);
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	BackgroundWorkerUnblockSignals();
 	if ((m = sift_maint_table()) == NULL)
 		proc_exit(0);
-	before_shmem_exit(worker_exit_cb, Int32GetDatum(worker));
+	before_shmem_exit(worker_exit_cb, (Datum) 0);
 	BackgroundWorkerInitializeConnectionByOid(db, InvalidOid, 0);
 	worker_connected = true;
 	sift_worker_queue_enter();
 	sift_maint_db_connected(m, db);
-	if (!sift_maint_worker_started(m, worker, MyProcPid, MyProcNumber))
+	if (!sift_maint_worker_started(m, worker_ticket, db, MyProcPid, MyProcNumber))
 		proc_exit(0);
 	Assert(stepper != NULL);
 	for (int idle = 0; idle < SIFT_MAINT_IDLE_NAPS && !yielded;)

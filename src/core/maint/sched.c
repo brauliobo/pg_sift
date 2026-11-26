@@ -691,7 +691,7 @@ sift_maint_due_soon(SiftMaintShmem *m, const SiftMaintHost *host, Oid db)
 void
 sift_maint_worker_free(SiftMaintShmem *m, int w)
 {
-	memset(&m->worker[w], 0, sizeof(SiftMaintWorkerSlot));
+	m->worker[w] = (SiftMaintWorkerSlot) {.gen = m->worker[w].gen};
 	pg_atomic_fetch_sub_u32(&m->active_workers, 1);
 }
 
@@ -723,20 +723,20 @@ workers_taken(const SiftMaintShmem *m)
 	return n;
 }
 
-static int
+static SiftMaintTicket
 reserve_locked(SiftMaintShmem *m, Oid db, TimestampTz now, int effective_max)
 {
 	if (workers_taken(m) >= Min(effective_max, (int) pg_atomic_read_u32(&m->max_workers)))
-		return -1;
+		return (SiftMaintTicket) {-1};
 	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
 	{
 		if (m->worker[w].state != 0)
 			continue;
-		m->worker[w] = (SiftMaintWorkerSlot) {.state = 1, .db = db, .lease_until = now + SIFT_MAINT_LEASE_US};
+		m->worker[w] = (SiftMaintWorkerSlot) {.state = 1, .gen = m->worker[w].gen + 1, .db = db, .lease_until = now + SIFT_MAINT_LEASE_US};
 		pg_atomic_fetch_add_u32(&m->active_workers, 1);
-		return w;
+		return (SiftMaintTicket) {w, m->worker[w].gen};
 	}
-	return -1;
+	return (SiftMaintTicket) {-1};
 }
 
 /*
@@ -764,35 +764,31 @@ effective_max_of(SiftMaintShmem *m, const SiftMaintHost *host)
 	return host->effective_max != NULL ? host->effective_max(m) : (int) pg_atomic_read_u32(&m->max_workers);
 }
 
-int
+SiftMaintTicket
 sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db)
 {
 	TimestampTz now = host->now();
 	int			cap = effective_max_of(m, host);
-	int			w;
+	SiftMaintTicket t;
 
 	sift_maint_begin(m);
-	w = reserve_locked(m, db, now, cap);
+	t = reserve_locked(m, db, now, cap);
 	sift_maint_end(m);
-	return w >= 0 && reserve_over_shared_limit(m, host, w) ? -1 : w;
+	return t.worker >= 0 && reserve_over_shared_limit(m, host, t.worker) ? (SiftMaintTicket) {-1} : t;
 }
 
 bool
-sift_maint_worker_started(SiftMaintShmem *m, int worker, int pid, int procno)
+sift_maint_worker_started(SiftMaintShmem *m, SiftMaintTicket t, Oid db, int pid, int procno)
 {
-	SiftMaintWorkerSlot *ws = &m->worker[worker];
+	SiftMaintWorkerSlot *ws = &m->worker[t.worker];
 	bool		ok;
 
 	sift_maint_begin(m);
-	ok = ws->state == 1 || ws->state == 0;
+	ok = ws->gen == t.gen && ws->state != 2;
+	if (ok && ws->state == 0)
+		pg_atomic_fetch_add_u32(&m->active_workers, 1);
 	if (ok)
-	{
-		if (ws->state == 0)
-			pg_atomic_fetch_add_u32(&m->active_workers, 1);
-		ws->state = 2;
-		ws->pid = pid;
-		ws->procno = procno;
-	}
+		*ws = (SiftMaintWorkerSlot) {.state = 2, .gen = t.gen, .pid = pid, .procno = procno, .db = db};
 	sift_maint_end(m);
 	return ok;
 }
@@ -818,13 +814,13 @@ sift_maint_worker_exit(SiftMaintShmem *m, int worker, int pid)
 }
 
 void
-sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, int worker, Oid db)
+sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintTicket t, Oid db)
 {
 	TimestampTz now = host->now();
 
 	sift_maint_begin(m);
-	if (m->worker[worker].state == 1 && m->worker[worker].db == db)
-		sift_maint_worker_free(m, worker);
+	if (m->worker[t.worker].state == 1 && m->worker[t.worker].gen == t.gen)
+		sift_maint_worker_free(m, t.worker);
 	sift_maint_end(m);
 	if (sift_maint_db_connect_failed(m, now, db) >= SIFT_MAINT_CONNECT_GIVE_UP)
 		sift_maint_db_purge(m, db);
@@ -902,7 +898,8 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 	SiftMaintKick res = SIFT_KICK_WOKE;
 	Oid			db = InvalidOid;
 	bool		busy = false;
-	int			i, j, w = -1, procno = -1, cap;
+	SiftMaintTicket t = {-1};
+	int			i, j, procno = -1, cap;
 
 	sift_maint_reap(m, host);
 	cold_ok = cold_allowed(m, host, InvalidOid, now);
@@ -927,10 +924,10 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 	{
 		cap = effective_max_of(m, host);
 		sift_maint_begin(m);
-		res = !needs_worker(m, db, cold_ok, now) ? SIFT_KICK_WOKE : (w = reserve_locked(m, db, now, cap)) >= 0 ? SIFT_KICK_SPAWNED : SIFT_KICK_NOSLOT;
+		res = !needs_worker(m, db, cold_ok, now) ? SIFT_KICK_WOKE : (t = reserve_locked(m, db, now, cap)).worker >= 0 ? SIFT_KICK_SPAWNED : SIFT_KICK_NOSLOT;
 		sift_maint_end(m);
 	}
-	if (res == SIFT_KICK_SPAWNED && reserve_over_shared_limit(m, host, w))
+	if (res == SIFT_KICK_SPAWNED && reserve_over_shared_limit(m, host, t.worker))
 		res = SIFT_KICK_NOSLOT;
 	if (procno >= 0)
 		host->wake(procno);
@@ -940,7 +937,7 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 		host->note_starved(tier, now);
 	if (res != SIFT_KICK_SPAWNED)
 		return res;
-	if (host->spawn(db, w))
+	if (host->spawn(db, t))
 	{
 		sift_maint_begin(m);
 		m->stats.spawned++;
@@ -948,7 +945,7 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 		return res;
 	}
 	sift_maint_begin(m);
-	sift_maint_worker_free(m, w);
+	sift_maint_worker_free(m, t.worker);
 	m->stats.spawn_failed++;
 	sift_maint_end(m);
 	if (busy)
