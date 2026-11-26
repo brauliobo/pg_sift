@@ -78,8 +78,9 @@ step rsb	{ BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_wp; }
 step rsscan	{ SELECT id / 100000 AS g, count(*) FROM iso_wp GROUP BY 1 ORDER BY 1; }
 step rse	{ COMMIT; }
 
+# the cut of VACUUM gives up on the lock a reader or a writer holds after lock_timeout; it runs no other step (VACUUM cannot run in a transaction, so SET LOCAL cannot scope it)
 session v
-setup		{ SET sift.test_create_format1 = on; SET sift.table_max_segments = 16; }
+setup		{ SET sift.test_create_format1 = on; SET sift.table_max_segments = 16; SET lock_timeout = '50ms'; }
 step v		{ VACUUM iso_wp; }
 
 # a unique inserter, on the key of a row of A (the first chunk is promoted by the time the others are written)

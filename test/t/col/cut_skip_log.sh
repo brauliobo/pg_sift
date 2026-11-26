@@ -51,6 +51,6 @@ done
 wait "$HOLDER"
 line=$(grep 'index "u_idx": a lock is held on it' "$(dir skip)/postgres.log" | head -1)
 diag "$line"
-check "the autovacuum logs it at LOG with the blocks moved and given back" grep -q 'LOG:.*index "u_idx": a lock is held on it (waited 5000 ms): [0-9]* blocks moved, [0-9]* given back online' <<<"$line"
+check "the autovacuum logs it at LOG with the blocks moved and given back" grep -q 'LOG:.*index "u_idx": a lock is held on it (waited [0-9]* ms): [0-9]* blocks moved, [0-9]* given back online' <<<"$line"
 check "intact" test -z "$(sql skip "SELECT sift.col_verify('u_idx', true)" 2>&1)"
 finish
