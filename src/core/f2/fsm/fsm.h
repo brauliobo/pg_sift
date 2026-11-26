@@ -118,8 +118,14 @@ extern int	sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk
  */
 extern int	sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max);
 
-/* One page of metadata, from the bitmaps of the slabs (a new slab is taken from the data zone when all are full) */
+/*
+ * One page of metadata, from the bitmaps of the slabs (a new slab is taken from the data zone when all are full): from the pool of pages that writers of the file took in advance (core/shm/lease.h) when
+ * it has one, which takes no exclusive lock of block 0 and one record of the root for a batch of them
+ */
 extern BlockNumber sift_fsm_alloc_meta_page(Relation rel);
+
+/* The pages of the pool of the file go back to the slabs: before whoever looks for the pages that nothing names (the sweep of the orphans, the check of the blocks) */
+extern void sift_fsm_meta_pool_drain(Relation rel);
 
 /* Queues the extents for reuse once safexid is past the horizon (an invalid safexid: at once); a one-block extent of a slab goes back to its bitmap at that time */
 extern void sift_fsm_release(Relation rel, const SiftExtent *ext, int n, FullTransactionId safexid);

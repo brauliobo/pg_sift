@@ -54,8 +54,8 @@ for b in $(seq $POOLED); do
 	tap_tx_hold ms "p$b" "DO \$\$ BEGIN FOR i IN 1..$TABLES LOOP EXECUTE format('INSERT INTO lt_%s VALUES (%s, 1)', i, $b); COMMIT; END LOOP; END \$\$"
 done
 sql ms "CREATE FUNCTION lease_floor(regclass, int8) RETURNS int8 AS 'pg_sift', 'sift_test_vm_lease_floor' LANGUAGE C STRICT" >/dev/null
-out=$(sql ms "SELECT lease_floor('lt_1', 1000000) || ' ' || lease_floor('lt_$TABLES', 1000000)" "VACUUM lt_1, lt_$TABLES" 2>&1)
-check "$POOLED sessions that stay connected hold no lease on the tables they wrote and left: VACUUM may close every vblock" test "$out" == "1000000 1000000"
+out=$(sql ms "SELECT lease_floor('lt_1', $POOLED) || ' ' || lease_floor('lt_$TABLES', $POOLED)" "VACUUM lt_1, lt_$TABLES" 2>&1)
+check "$POOLED sessions that stay connected hold no lease on the tables they wrote and left: VACUUM may close every vblock" test "$out" == "$POOLED $POOLED"
 
 sql ms "CREATE TABLE c3 (k int, v int) USING sift_table" "INSERT INTO c3 SELECT g, g FROM generate_series(1, 10) g" >/dev/null
 before=$(sql ms "SELECT l0_slabs FROM sift.status('c3')")

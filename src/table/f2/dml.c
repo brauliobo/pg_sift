@@ -24,20 +24,24 @@
 #include "table/f2/tbl.h"
 #include "table/f2/vm/vm.h"
 #include "core/memtrack.h"
+#include "core/shm/lease.h"
 
 /* ---- addresses ---- */
 
 StaticAssertDecl(SIFT_BATCH_VBLOCK_ROWS == SIFT_TBL_ROWS_PER_VBLOCK, "the batch policy counts the rows of a virtual block as the table does");
 
-static void
-tid_refill(Relation rel, SiftTblTidPool *p, uint64 vblocks)
+static uint64
+vblock_chunk(void *arg, uint64 want, uint64 *got)
 {
+	Relation	rel = arg;
 	Buffer		buf = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
 	uint64		left = (uint64) InvalidBlockNumber - Min(SIFT_COL_META(BufferGetPage(buf))->next_vblock, InvalidBlockNumber);
 	SiftXlog	x;
 	Page		p0;
 	SiftColMetaPageData *m;
+	uint64		first;
 
+	SIFT_NOTE_BLOCK0_X(SIFT_B0_VBLOCK);
 	if (left == 0)
 	{
 		UnlockReleaseBuffer(buf);
@@ -48,12 +52,22 @@ tid_refill(Relation rel, SiftTblTidPool *p, uint64 vblocks)
 	x = sift_xlog_start(rel);
 	p0 = sift_xlog_register(&x, buf, 0);
 	m = SIFT_COL_META(p0);
-	p->next_vblock = m->next_vblock;
-	m->next_vblock += Min(vblocks, left);
-	p->end_vblock = m->next_vblock;
-	p->next_off = FirstOffsetNumber;
+	first = m->next_vblock;
+	*got = Min(want, left);
+	m->next_vblock += *got;
 	sift_meta_seal(p0, m->common.struct_size);
 	sift_xlog_done(&x);
+	return first;
+}
+
+static void
+tid_refill(Relation rel, SiftTblTidPool *p, uint64 vblocks, uint64 min)
+{
+	uint64		got;
+
+	p->next_vblock = sift_lease_take(SIFT_LEASE_VBLOCK, &rel->rd_locator, vblocks, min, vblock_chunk, rel, &got);
+	p->end_vblock = p->next_vblock + got;
+	p->next_off = FirstOffsetNumber;
 	sift_tbl_vm_lease_set(rel, p->next_vblock, p->end_vblock);
 }
 
@@ -69,7 +83,7 @@ sift_tbl_f2_tid_next(Relation rel, SiftF2Store *store, ItemPointer tid)
 		/* STOR[STOR-TBL-11]: adaptive vblock TID reserve (1->4->16->64->256->1024 vblocks; tightens SEC_TID_INDEX delta width) */
 		p->refill_vblocks = Min(Max(p->refill_vblocks * 4, SIFT_TBL_VBLOCK_FIRST_RESERVE), SIFT_TBL_VBLOCK_RESERVE);
 		sift_tbl_vm_lease_open(rel);
-		tid_refill(rel, p, p->refill_vblocks);
+		tid_refill(rel, p, p->refill_vblocks, 1);
 	}
 	ItemPointerSet(tid, (BlockNumber) p->next_vblock, p->next_off);
 	if (++p->next_off > SIFT_TBL_ROWS_PER_VBLOCK)
@@ -94,7 +108,7 @@ sift_tbl_f2_tid_ensure(Relation rel, SiftF2Store *store, uint64 nrows)
 		uint64		needed = sift_batch_vblocks(nrows, 1);
 
 		sift_tbl_vm_lease_open(rel);
-		tid_refill(rel, p, Max(needed, Min(SIFT_TBL_VBLOCK_BULK_RESERVE, needed * 2)));
+		tid_refill(rel, p, Max(needed, Min(SIFT_TBL_VBLOCK_BULK_RESERVE, needed * 2)), needed);
 	}
 }
 

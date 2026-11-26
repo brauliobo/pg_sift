@@ -20,7 +20,7 @@ sift_mc_init(SiftManifestCommitCombiner *mc, int tranche_id)
 {
 	Assert((uintptr_t) mc % PG_CACHE_LINE_SIZE == 0);
 	memset(mc, 0, sizeof(*mc));
-	sift_comb_pool_init(&mc->pool);
+	sift_comb_pool_init_sharded(&mc->pool);
 	for (int i = 0; i < SIFT_MC_QUEUES; i++)
 		sift_comb_queue_init(&mc->queues[i], tranche_id);
 }
@@ -48,7 +48,7 @@ publish_batch(void *ctx, SiftCombHdr *const *batch, uint32 n)
 	}
 }
 
-static const SiftCombOps mc_ops = {.same_group = same_relation,.apply = publish_batch,.max_batch = SIFT_MC_MAX_BATCH};
+static const SiftCombOps mc_ops = {.same_group = same_relation,.apply = publish_batch,.max_batch = SIFT_MC_MAX_BATCH,.gather_spins = SIFT_MC_GATHER_SPINS};
 
 uint64
 sift_mc_commit(SiftManifestCommitCombiner *mc, const RelFileLocator *rel, const SiftManifestEntryDelta *delta,

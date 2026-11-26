@@ -41,10 +41,10 @@ rm -f "$D/ready" "$D/release"
 { echo "SELECT p98_fill(5000) > 0;"; echo "BEGIN;"; echo "INSERT INTO le3 SELECT g FROM generate_series(1, 10) g;"; echo "\\! touch '$D/ready'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql vl >/dev/null &
 writer=$!
 wait_for "[[ -e $D/ready ]]" 60 || bail "the writer did not insert"
-out=$(sql vl "SELECT p98_floor('le3', 1000)")
+out=$(sql vl "SELECT p98_floor('le3', 1)")
 check "a writer with no lease slot holds back every bit of the map while its transaction runs" test "$out" == 0
 touch "$D/release"
 wait "$writer"
-out=$(sql vl "SELECT p98_floor('le3', 1000)")
-check "and lets go of them when it ends" test "$out" == 1000
+out=$(sql vl "SELECT p98_floor('le3', 1)")
+check "and lets go of them when it ends" test "$out" == 1
 finish

@@ -742,6 +742,7 @@ core/f2/io_stream.h
 core/f2/manifest/manifest.c
 core/f2/manifest/manifest.h
 core/f2/manifest/check.c
+core/f2/manifest/combine.c
 core/f2/manifest/counters.c
 core/f2/manifest/int.h
 core/f2/manifest/pages.c
@@ -845,6 +846,7 @@ core/retired.c
 core/ring_test.c
 core/shm/combiner.c
 core/shm/combiner.h
+core/shm/lease.c
 core/shm/lease.h
 core/shm/lease_test.c
 core/shm/manifest.c

@@ -6,18 +6,32 @@
 typedef struct CombLead
 {
 	uint32		n;
-	uint32		idx[SIFT_COMB_POOL_SLOTS];
-	uint32		fin[SIFT_COMB_POOL_SLOTS];
+	uint32		idx[SIFT_COMB_MAX_SLOTS];
+	uint32		fin[SIFT_COMB_MAX_SLOTS];
 } CombLead;
 
 SIFT_SHM_BACKEND_LOCAL CombLead lead_state;
 
 /* MEM[MEM-CORE-15]: SHM flat-combiner queue state (caller-owned SHM region) */
+static void
+pool_init(SiftCombPool *pool, uint32 nshards)
+{
+	Assert((uintptr_t) pool % PG_CACHE_LINE_SIZE == 0);
+	pool->nshards = nshards;
+	for (uint32 s = 0; s < SIFT_COMB_SHARDS; s++)
+		pg_atomic_init_u64(&pool->free_mask[s], s < nshards ? UINT64_MAX : 0);
+}
+
 void
 sift_comb_pool_init(SiftCombPool *pool)
 {
-	Assert((uintptr_t) pool % PG_CACHE_LINE_SIZE == 0);
-	pg_atomic_init_u64(&pool->free_mask, UINT64_MAX);
+	pool_init(pool, 1);
+}
+
+void
+sift_comb_pool_init_sharded(SiftCombPool *pool)
+{
+	pool_init(pool, SIFT_COMB_SHARDS);
 }
 
 void
@@ -38,14 +52,20 @@ slot_at(const SiftCombArena *a, uint32 idx)
 static int32
 pool_claim(SiftCombPool *pool)
 {
-	uint64		mask = pg_atomic_read_u64(&pool->free_mask);
+	uint32		home = (uint32) sift_shm_my_procno() % pool->nshards;
 
-	while (mask != 0)
+	for (uint32 i = 0; i < pool->nshards; i++)
 	{
-		int			pos = pg_rightmost_one_pos64(mask);
+		uint32		shard = (home + i) % pool->nshards;
+		uint64		mask = pg_atomic_read_u64(&pool->free_mask[shard]);
 
-		if (pg_atomic_compare_exchange_u64(&pool->free_mask, &mask, mask & ~(UINT64CONST(1) << pos)))
-			return pos;
+		while (mask != 0)
+		{
+			int			pos = pg_rightmost_one_pos64(mask);
+
+			if (pg_atomic_compare_exchange_u64(&pool->free_mask[shard], &mask, mask & ~(UINT64CONST(1) << pos)))
+				return shard * SIFT_COMB_POOL_SLOTS + pos;
+		}
 	}
 	return -1;
 }
@@ -53,7 +73,7 @@ pool_claim(SiftCombPool *pool)
 static void
 pool_release(SiftCombPool *pool, uint32 idx)
 {
-	pg_atomic_fetch_or_u64(&pool->free_mask, UINT64CONST(1) << idx);
+	pg_atomic_fetch_or_u64(&pool->free_mask[idx / SIFT_COMB_POOL_SLOTS], UINT64CONST(1) << (idx % SIFT_COMB_POOL_SLOTS));
 }
 
 static uint32
@@ -71,7 +91,7 @@ push(SiftCombQueue *q, SiftCombHdr *slot, uint32 idx)
 static void
 detach(const SiftCombArena *a, SiftCombQueue *q, CombLead *ld)
 {
-	uint32		lifo[SIFT_COMB_POOL_SLOTS];
+	uint32		lifo[SIFT_COMB_MAX_SLOTS];
 	uint32		n = 0;
 
 	for (uint32 i = pg_atomic_exchange_u32(&q->wait_head, SIFT_COMB_NONE); i != SIFT_COMB_NONE; i = slot_at(a, i)->next)
@@ -99,6 +119,18 @@ resolve(const SiftCombArena *a, CombLead *ld, uint32 own_idx)
 	ld->n = 0;
 }
 
+/* A hot queue gives the writers that are about to commit the time of a few pauses to join the batch; a window nobody joined cools the queue, so that a writer alone pays nothing for it */
+static void
+gather(SiftCombQueue *q, const SiftCombOps *ops)
+{
+	if (ops->gather_spins == 0 || !sift_comb_queue_hot(q))
+		return;
+	for (uint32 i = 0; i < ops->gather_spins; i++)
+		pg_spin_delay();
+	if (pg_atomic_read_u32(&q->wait_head) == SIFT_COMB_NONE)
+		sift_comb_queue_cool(q);
+}
+
 static void
 leader_rounds(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, void *ctx, SiftCombHdr *key,
 			bool key_local)
@@ -107,13 +139,15 @@ leader_rounds(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, 
 
 	for (uint32 round = 0; round < SIFT_COMB_ROUNDS; round++)
 	{
-		SiftCombHdr *batch[SIFT_COMB_POOL_SLOTS + 1];
-		uint32		sel[SIFT_COMB_POOL_SLOTS + 1];
+		SiftCombHdr *batch[SIFT_COMB_MAX_SLOTS + 1];
+		uint32		sel[SIFT_COMB_MAX_SLOTS + 1];
 		uint32		first = ld->n;
 		uint32		nb = 0;
 
 		if (round == 0 && key_local)
 			batch[nb++] = key;
+		if (round == 0)
+			gather(q, ops);
 		detach(a, q, ld);
 		for (uint32 i = first; i < ld->n; i++)
 		{
@@ -141,7 +175,7 @@ run_leader(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, voi
 	CombLead   *ld = &lead_state;
 	bool		key_local = key_idx == SIFT_COMB_NONE;
 
-	Assert(ops->max_batch >= 1 && ops->max_batch <= SIFT_COMB_POOL_SLOTS);
+	Assert(ops->max_batch >= 1 && ops->max_batch <= SIFT_COMB_MAX_SLOTS);
 	ld->n = 0;
 	SIFT_SHM_TRY();
 	{
@@ -176,10 +210,13 @@ wait_slot(SiftCombHdr *slot)
 		sift_shm_wait_done();
 }
 
+/* A queue that is hot stays so: its counters are read first and written only when they move, so that the writers that find it contended do not take turns on its line */
 static void
 note_contention(SiftCombQueue *q)
 {
-	if (pg_atomic_add_fetch_u32(&q->contend_streak, 1) >= SIFT_COMB_HOT_STREAK)
+	if (pg_atomic_read_u32(&q->contend_streak) < SIFT_COMB_HOT_STREAK)
+		(void) pg_atomic_add_fetch_u32(&q->contend_streak, 1);
+	if (pg_atomic_read_u32(&q->contend_streak) >= SIFT_COMB_HOT_STREAK && pg_atomic_read_u32(&q->hot_epoch) != SIFT_COMB_HOT_EPOCHS)
 		pg_atomic_write_u32(&q->hot_epoch, SIFT_COMB_HOT_EPOCHS);
 }
 
@@ -231,7 +268,8 @@ sift_comb_submit(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *op
 
 	if (sift_shm_lock_try(&q->lock))
 	{
-		pg_atomic_write_u32(&q->contend_streak, 0);
+		if (pg_atomic_read_u32(&q->contend_streak) != 0)
+			pg_atomic_write_u32(&q->contend_streak, 0);
 		leader_locked(a, q, ops, ctx, req);
 		return;
 	}

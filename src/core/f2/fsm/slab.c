@@ -344,6 +344,60 @@ sift_fsm_alloc_meta_locked(FsmCtx *c)
 	}
 }
 
+/*
+ * Pages of the slabs for a pool (core/shm/lease.h) in one record of the root: block 0 is held shared, which keeps out every step that plans its changes of the lists and the slabs in
+ * more than one look at the root (reclaim, the sweep, the rehome), and the root is held exclusively, so that batches of several backends follow each other. The slabs are left with their reserve
+ * and one page to spare: a batch never makes the step that holds block 0 exclusively claim a slab, and 0 is returned where it cannot take any page without that.
+ */
+int
+sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, int n)
+{
+	Buffer		buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_SHARE);
+	SiftXlog	x = sift_xlog_start(rel);
+	Buffer		rootbuf = sift_fsm_lock_root(rel);
+	Page		root = sift_xlog_register(&x, rootbuf, 0);
+	uint32		spare = FSMM(root)->meta_free_count;
+	uint32		reserve = sift_fsm_meta_reserve(SLABS(root)->nslabs);
+	int			got = 0;
+
+	n = spare > reserve ? (int) Min((uint32) n, spare - reserve) : 0;
+	if (n == 0)
+	{
+		sift_xlog_abort(&x);
+		UnlockReleaseBuffer(rootbuf);
+		UnlockReleaseBuffer(buf0);
+		return 0;
+	}
+	while (got < n)
+		out[got++] = sift_fsm_slab_take(root);
+	sift_fsm_root_seal(root);
+	sift_xlog_done(&x);
+	UnlockReleaseBuffer(buf0);
+	return got;
+}
+
+/* The pages of a pool back to the bitmaps of the slabs, in one record of the root (block 0 shared, as in sift_fsm_alloc_meta_batch) */
+void
+sift_fsm_free_meta_batch(Relation rel, const BlockNumber *blks, int n)
+{
+	Buffer		buf0;
+	SiftXlog	x;
+	Buffer		rootbuf;
+	Page		root;
+
+	if (n == 0)
+		return;
+	buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_SHARE);
+	x = sift_xlog_start(rel);
+	rootbuf = sift_fsm_lock_root(rel);
+	root = sift_xlog_register(&x, rootbuf, 0);
+	for (int i = 0; i < n; i++)
+		sift_fsm_slab_put(rel, root, blks[i]);
+	sift_fsm_root_seal(root);
+	sift_xlog_done(&x);
+	UnlockReleaseBuffer(buf0);
+}
+
 /* The last slab past the keep that is empty, or -1 */
 static int
 empty_slab(const Page root)

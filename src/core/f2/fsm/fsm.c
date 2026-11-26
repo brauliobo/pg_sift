@@ -22,6 +22,7 @@
 #include "core/horizon.h"
 #include "core/page_io.h"
 #include "core/restrict.h"
+#include "core/shm/lease.h"
 #include "core/wal_conflict.h"
 
 void
@@ -372,6 +373,7 @@ alloc_locked(FsmCtx *c, uint32 nblocks)
 FsmCtx
 sift_fsm_ctx_open(Relation rel)
 {
+	SIFT_NOTE_BLOCK0_X(SIFT_B0_FSM);
 	return (FsmCtx) {.rel = rel,.buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE)};
 }
 
@@ -484,15 +486,73 @@ sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max)
 	return n;
 }
 
+#define META_POOL_RETRY_EVERY	8
+
+static bool meta_batch_dry;
+static int	meta_batch_dry_misses;
+
+/*
+ * The pool of the file takes the pages of one batch; what it has no room for goes back to the slabs. A batch that the slabs cannot give (they hold no more than their reserve) is not asked for
+ * again by this backend until it has grown a slab itself, or has gone META_POOL_RETRY_EVERY pages without
+ */
+static bool
+meta_pool_refill(Relation rel)
+{
+	BlockNumber pages[SIFT_LEASE_PAGES];
+	int			room,
+				n = 0,
+				kept;
+
+	if (meta_batch_dry && ++meta_batch_dry_misses % META_POOL_RETRY_EVERY != 0)
+		return false;
+	room = sift_lease_page_room(&rel->rd_locator);
+	if (room == 0)
+		return false;
+	PG_TRY();
+	{
+		n = sift_fsm_alloc_meta_batch(rel, pages, room);
+	}
+	PG_CATCH();
+	{
+		(void) sift_lease_page_fill(NULL, 0);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	kept = sift_lease_page_fill(pages, n);
+	sift_fsm_free_meta_batch(rel, pages + kept, n - kept);
+	meta_batch_dry = kept == 0;
+	return kept > 0;
+}
+
+void
+sift_fsm_meta_pool_drain(Relation rel)
+{
+	BlockNumber pages[SIFT_LEASE_PAGES];
+	int			n = sift_lease_page_drain(&rel->rd_locator, pages);
+
+	sift_fsm_free_meta_batch(rel, pages, n);
+}
+
 BlockNumber
 sift_fsm_alloc_meta_page(Relation rel)
 {
-	FsmCtx		c = sift_fsm_ctx_open(rel);
-	BlockNumber blk = sift_fsm_alloc_meta_locked(&c);
+	BlockNumber blk;
+	FsmCtx		c;
+	bool		grew;
 
-	if (sift_fsm_below_reserve(&c))
+	if (sift_lease_page_pop(&rel->rd_locator, &blk) || (meta_pool_refill(rel) && sift_lease_page_pop(&rel->rd_locator, &blk)))
+		return blk;
+	c = sift_fsm_ctx_open(rel);
+	blk = sift_fsm_alloc_meta_locked(&c);
+	grew = sift_fsm_below_reserve(&c);
+	if (grew)
 		sift_fsm_grow_meta(&c);
 	sift_fsm_ctx_close(&c);
+	if (grew)
+	{
+		meta_batch_dry = false;
+		(void) meta_pool_refill(rel);
+	}
 	return blk;
 }
 
@@ -700,6 +760,7 @@ sift_fsm_tail_shrink(Relation rel)
 	/* The locks of the sweep and of the cut are WAL-logged for a standby, which takes a transaction id */
 	if (sift_xid_unassignable())
 		return res;
+	sift_fsm_meta_pool_drain(rel);
 	if (sift_fsm_sweep_due(rel))
 		(void) sift_fsm_sweep_orphans(rel);
 	(void) sift_fsm_reclaim(rel);

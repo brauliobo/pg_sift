@@ -1,5 +1,6 @@
 /*
- * core/shm/manifest_pub.c - the writers of the slots of the registry of the manifests (core/shm/manifest.h): hold, publish and invalidate. A writer takes claim_lock, so a slot has one writer at a time.
+ * core/shm/manifest_pub.c - the writers of the slots of the registry of the manifests (core/shm/manifest.h): hold, publish and invalidate. A slot has one writer at a time, by its build_lock; the writer of an index
+ * the registry already holds takes that lock alone, and the one that gives an index a slot (or takes one from another index) takes claim_lock to choose it.
  *
  * A commit that frees blocks holds the slot of its index before Block 0 changes (sift_shm_manifest_hold): from then on the registry serves no snapshot of the index, and a meta of an older version is
  * not published over the slot, so a reader that comes after the commit reads Block 0 and never the blocks the commit freed, whether the publication that follows is late or fails.
@@ -57,14 +58,14 @@ slot_claim(Table *t, const RelFileLocator *loc)
 	return victim;
 }
 
-/* The snapshot a slot holds goes: the area is attached first, so that the snapshot can be freed (claim_lock held) */
-static void
-slot_drop_snap(Table *t, SiftShmIndexSlot *s)
+/* The area a writer retires the snapshot of the slot in, attached before anything changes so that the snapshot can go (claim_lock held); NULL where the slot has no snapshot */
+static dsa_area *
+area_for_drop(Table *t, SiftShmIndexSlot *s)
 {
 	dsa_area   *a;
 
 	if (pg_atomic_read_u64(&s->current_snap_dp) == InvalidDsaPointer)
-		return;
+		return NULL;
 #ifdef SIFT_TESTING
 	if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "manifest_drop_snap") != NULL)
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift test: the snapshot of the slot cannot be dropped (manifest_drop_snap)")));	/* check-errors: allow */
@@ -73,7 +74,14 @@ slot_drop_snap(Table *t, SiftShmIndexSlot *s)
 	if (a == NULL)
 		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift: the area of the manifest snapshots cannot be attached"),
 						errhint("Shared memory is short; the snapshots are held until a session that can attach the area drops them.")));
-	sift_shm_snap_retire(t, a, sift_shm_slot_swap_snap(s, InvalidDsaPointer));
+	return a;
+}
+
+static void
+retire_if_any(Table *t, dsa_area *a, dsa_pointer dp)
+{
+	if (dp != InvalidDsaPointer)
+		sift_shm_snap_retire(t, a != NULL ? a : sift_shm_area_attach(t, false), dp);
 }
 
 /* Whether the slot of the writer is no slot to write the meta to (claim_lock held): there is none, the index is quarantined in it, or it holds, valid or held, a newer version of the index */
@@ -98,6 +106,77 @@ slot_adopt(SiftShmIndexSlot *s, const RelFileLocator *locator)
 	pg_atomic_write_u64(&s->snap_misses, 0);
 }
 
+/* The meta of a slot, and the snapshot where swap is true, change together under its build_lock: the snapshot the slot had */
+static dsa_pointer
+slot_write(Table *t, SiftShmIndexSlot *s, const SiftShmIndexMeta *m, bool swap, dsa_pointer dp)
+{
+	dsa_pointer old = InvalidDsaPointer;
+
+	LWLockAcquire(&s->build_lock, LW_EXCLUSIVE);
+	if (swap)
+		old = pg_atomic_exchange_u64(&s->current_snap_dp, dp);
+	sift_shm_meta_write(s, m);
+	pg_atomic_write_u64(&s->last_used_tick, sift_shm_tick(t));
+	LWLockRelease(&s->build_lock);
+	return old;
+}
+
+/* The slot of the locator, found without a lock: what a caller reads of it is read again under its build_lock */
+static SiftShmIndexSlot *
+slot_probe(Table *t, const RelFileLocator *loc)
+{
+	for (int i = 0; i < SIFT_SHM_MANIFEST_PROBES; i++)
+	{
+		SiftShmIndexSlot *s = sift_shm_slot_at(t, loc, i);
+
+		if (s->meta.state_flags == SIFT_SHM_SLOT_EMPTY)
+			break;
+		if (RelFileLocatorEquals(s->meta.locator, *loc))
+			return s;
+	}
+	return NULL;
+}
+
+typedef enum Steady
+{
+	STEADY_NO,					/* the index has no slot that is live (or none that is not being changed by a writer that chooses slots): claim_lock decides */
+	STEADY_REFUSED,
+	STEADY_WRITTEN
+} Steady;
+
+/* A writer of an index that the registry holds (valid or held, not quarantined or dead) takes the build_lock of its slot and nothing else; the snapshot it replaces is retired once the lock is let go */
+static Steady
+write_steady(Table *t, dsa_area *a, const SiftShmIndexMeta *m, bool swap, dsa_pointer dp)
+{
+	SiftShmIndexSlot *s = slot_probe(t, &m->locator);
+	dsa_pointer old;
+
+#ifdef SIFT_TESTING
+	if (sift_test_dsm_fail != NULL)
+		return STEADY_NO;
+#endif
+	if (s == NULL)
+		return STEADY_NO;
+	LWLockAcquire(&s->build_lock, LW_EXCLUSIVE);
+	if (!RelFileLocatorEquals(s->meta.locator, m->locator) || !(s->meta.state_flags & (SIFT_SHM_SLOT_VALID | SIFT_SHM_SLOT_HELD)) ||
+		(s->meta.state_flags & SIFT_SHM_SLOT_QUARANTINED) || (swap && a == NULL && pg_atomic_read_u64(&s->current_snap_dp) != InvalidDsaPointer))
+	{
+		LWLockRelease(&s->build_lock);
+		return STEADY_NO;
+	}
+	if (slot_refuses(s, m))
+	{
+		LWLockRelease(&s->build_lock);
+		return STEADY_REFUSED;
+	}
+	old = swap ? pg_atomic_exchange_u64(&s->current_snap_dp, dp) : InvalidDsaPointer;
+	sift_shm_meta_write(s, m);
+	pg_atomic_write_u64(&s->last_used_tick, sift_shm_tick(t));
+	LWLockRelease(&s->build_lock);
+	retire_if_any(t, a, old);
+	return STEADY_WRITTEN;
+}
+
 void
 sift_shm_manifest_hold(const RelFileLocator *locator, uint64 version)
 {
@@ -105,45 +184,36 @@ sift_shm_manifest_hold(const RelFileLocator *locator, uint64 version)
 	SiftShmIndexSlot *s;
 	SiftShmIndexMeta m = {.locator = *locator,.manifest_version = version,.state_flags = SIFT_SHM_SLOT_HELD};
 
-	if (!sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
+	if (!sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL || write_steady(t, NULL, &m, false, InvalidDsaPointer) != STEADY_NO)
 		return;
 	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
 	s = slot_claim(t, locator);
 	if (!slot_refuses(s, &m))
 	{
 		slot_adopt(s, locator);
-		sift_shm_meta_write(s, &m);
-		pg_atomic_write_u64(&s->last_used_tick, pg_atomic_fetch_add_u64(&t->clock, 1));
+		(void) slot_write(t, s, &m, false, InvalidDsaPointer);
 	}
 	LWLockRelease(&t->claim_lock);
 }
 
-bool
-sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *spec)
+/* The slot of the index is chosen under claim_lock; the snapshot it had is retired after the lock is let go */
+static Steady
+publish_claimed(Table *t, dsa_area *a, const SiftShmIndexMeta *m, dsa_pointer dp)
 {
-	Table	   *t;
-	dsa_area   *a = NULL;
-	dsa_pointer dp = InvalidDsaPointer;
 	SiftShmIndexSlot *s;
-	SiftShmIndexMeta m = *meta;
+	dsa_pointer old;
+	dsa_area   *drop_area = NULL;
 
-	if ((meta->state_flags & SIFT_SHM_SLOT_PRIVATE) != 0 || !sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
-		return false;
-	if (spec != NULL && (a = sift_shm_area_attach(t, true)) != NULL)
-		dp = sift_shm_snap_build(t, a, &meta->locator, spec);
 	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
-	s = slot_claim(t, &meta->locator);
-	if (slot_refuses(s, meta))
+	s = slot_claim(t, &m->locator);
+	if (slot_refuses(s, m))
 	{
 		LWLockRelease(&t->claim_lock);
-		if (dp != InvalidDsaPointer)
-			sift_shm_snap_free(a, dsa_get_address(a, dp));
-		return false;
+		return STEADY_REFUSED;
 	}
-	slot_adopt(s, &meta->locator);
 	PG_TRY();
 	{
-		slot_drop_snap(t, s);
+		drop_area = area_for_drop(t, s);
 	}
 	PG_CATCH();
 	{
@@ -152,13 +222,34 @@ sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *s
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	m.state_flags = SIFT_SHM_SLOT_VALID | (dp != InvalidDsaPointer ? SIFT_SHM_SLOT_HAS_SNAP : 0);
-	sift_shm_meta_write(s, &m);
-	pg_atomic_write_u64(&s->last_used_tick, pg_atomic_fetch_add_u64(&t->clock, 1));
-	if (dp != InvalidDsaPointer)
-		sift_shm_slot_swap_snap(s, dp);
+	slot_adopt(s, &m->locator);
+	old = slot_write(t, s, m, true, dp);
 	LWLockRelease(&t->claim_lock);
-	return spec == NULL || dp != InvalidDsaPointer;
+	retire_if_any(t, drop_area != NULL ? drop_area : a, old);
+	return STEADY_WRITTEN;
+}
+
+bool
+sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *spec)
+{
+	Table	   *t;
+	dsa_area   *a;
+	dsa_pointer dp = InvalidDsaPointer;
+	Steady		steady;
+	SiftShmIndexMeta m = *meta;
+
+	if ((meta->state_flags & SIFT_SHM_SLOT_PRIVATE) != 0 || !sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
+		return false;
+	a = sift_shm_area_attach(t, spec != NULL);
+	if (spec != NULL && a != NULL)
+		dp = sift_shm_snap_build(t, a, &meta->locator, spec);
+	m.state_flags = SIFT_SHM_SLOT_VALID | (dp != InvalidDsaPointer ? SIFT_SHM_SLOT_HAS_SNAP : 0);
+	steady = write_steady(t, a, &m, true, dp);
+	if (steady == STEADY_NO)
+		steady = publish_claimed(t, a, &m, dp);
+	if (steady == STEADY_REFUSED && dp != InvalidDsaPointer)
+		sift_shm_snap_free(a, dsa_get_address(a, dp));
+	return steady == STEADY_WRITTEN && (spec == NULL || dp != InvalidDsaPointer);
 }
 
 void
@@ -166,6 +257,8 @@ sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine)
 {
 	Table	   *t;
 	SiftShmIndexSlot *s;
+	dsa_area   *a = NULL;
+	dsa_pointer old = InvalidDsaPointer;
 
 	if (!sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
 		return;
@@ -178,8 +271,11 @@ sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine)
 
 		slot_adopt(s, locator);
 		m.state_flags = quarantine ? SIFT_SHM_SLOT_QUARANTINED : SIFT_SHM_SLOT_DEAD;
-		sift_shm_meta_write(s, &m);
-		slot_drop_snap(t, s);
+		(void) slot_write(t, s, &m, false, InvalidDsaPointer);
+		a = area_for_drop(t, s);
+		if (a != NULL)
+			old = sift_shm_slot_swap_snap(s, InvalidDsaPointer);
 	}
 	LWLockRelease(&t->claim_lock);
+	retire_if_any(t, a, old);
 }

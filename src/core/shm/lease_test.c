@@ -20,17 +20,23 @@ PG_FUNCTION_INFO_V1(sift_test_lease_maint);
 PG_FUNCTION_INFO_V1(sift_test_lease_mix);
 PG_FUNCTION_INFO_V1(sift_test_lease_stat);
 
-uint64		sift_lease_block0_x_locks;
+uint64		sift_lease_block0_x_locks[SIFT_B0_SITES];
 
 #define MIX_ENTRY_BYTES		32
 #define MIX_PARTS			32
 #define MIX_LIST_BYTES		256
 
-/* sift._test_lease_block0_x(): the exclusive locks of Block 0 this backend has taken at the sites of a writer (a commit of a part, the counters, the allocator, the vblocks) */
+/* sift._test_lease_block0_x(site int4): the exclusive locks of Block 0 this backend has taken at a site of a writer (SiftBlock0Site: the counters, the allocator, the vblocks, a commit of a part), at all of them for -1 */
 Datum
 sift_test_lease_block0_x(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT64((int64) sift_lease_block0_x_locks);
+	int32		site = PG_GETARG_INT32(0);
+	uint64		n = 0;
+
+	for (int i = 0; i < SIFT_B0_SITES; i++)
+		if (site < 0 || site == i)
+			n += sift_lease_block0_x_locks[i];
+	PG_RETURN_INT64((int64) n);
 }
 
 /*
@@ -81,9 +87,25 @@ mix_publish(Oid rel, uint64 v)
 	(void) sift_shm_manifest_publish(&meta, &spec);
 }
 
+typedef struct MixRead
+{
+	uint32		part;
+	char		list[MIX_LIST_BYTES];
+} MixRead;
+
+static void
+mix_read(const SiftShmManifestSnap *snap, void *arg)
+{
+	MixRead    *r = arg;
+	uint32		p = r->part % snap->npartitions;
+
+	if (sift_shm_snap_part_list(snap, p) == NULL)
+		(void) sift_shm_snap_part_list_install(snap, p, r->list, sizeof(r->list));
+}
+
 /*
- * sift._test_lease_mix(rel oid, iters int8, write_every int4): the microseconds this backend takes for iters rounds of a reader of the registry (peek, pin the snapshot, read the list of one partition and
- * install it when there is none, let go), every write_every-th round a publication of a new version with a snapshot instead. The first round of the first session publishes version 1.
+ * sift._test_lease_mix(rel oid, iters int8, write_every int4): the microseconds this backend takes for iters rounds of a reader of the registry (peek, read the list of one partition of the snapshot of that
+ * version inside an epoch and install it when there is none), every write_every-th round a publication of a new version with a snapshot instead. The first round of the first session publishes version 1.
  */
 Datum
 sift_test_lease_mix(PG_FUNCTION_ARGS)
@@ -92,7 +114,6 @@ sift_test_lease_mix(PG_FUNCTION_ARGS)
 	int64		iters = PG_GETARG_INT64(1);
 	int32		write_every = PG_GETARG_INT32(2);
 	RelFileLocator loc = mix_meta(rel, 0).locator;
-	char		list[MIX_LIST_BYTES] = {0};
 	SiftShmIndexMeta peeked;
 	TimestampTz start;
 
@@ -103,18 +124,11 @@ sift_test_lease_mix(PG_FUNCTION_ARGS)
 	{
 		if (write_every > 0 && n % write_every == write_every - 1 && sift_shm_manifest_peek(&loc, &peeked))
 			mix_publish(rel, peeked.manifest_version + 1);
-		else
+		else if (sift_shm_manifest_peek(&loc, &peeked))
 		{
-			const SiftShmManifestSnap *snap = sift_shm_snap_pin(&loc);
+			MixRead		r = {.part = (uint32) n};
 
-			if (snap != NULL)
-			{
-				uint32		p = (uint32) n % snap->npartitions;
-
-				if (sift_shm_snap_part_list(snap, p) == NULL)
-					(void) sift_shm_snap_part_list_install(snap, p, list, sizeof(list));
-				sift_shm_snap_unpin(snap);
-			}
+			(void) sift_shm_snap_with_epoch(&loc, peeked.manifest_version, mix_read, &r);
 		}
 		if ((n & 255) == 0)
 			CHECK_FOR_INTERRUPTS();
@@ -122,7 +136,7 @@ sift_test_lease_mix(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(GetCurrentTimestamp() - start);
 }
 
-/* sift._test_lease_stat(what text): a counter of the registries (list_install_lost: the lists a backend made and found another had published first) */
+/* sift._test_lease_stat(what text): a counter of the registries (list_copies: the lists the backends copied into the area) */
 Datum
 sift_test_lease_stat(PG_FUNCTION_ARGS)
 {
@@ -130,8 +144,8 @@ sift_test_lease_stat(PG_FUNCTION_ARGS)
 	SiftShmManifestStats st;
 
 	sift_shm_manifest_stats(&st);
-	if (strcmp(what, "list_install_lost") == 0)
-		PG_RETURN_INT64((int64) st.list_install_lost);
+	if (strcmp(what, "list_copies") == 0)
+		PG_RETURN_INT64((int64) st.list_copies);
 	elog(ERROR, "sift test: unknown statistic \"%s\"", what);
 	PG_RETURN_NULL();
 }

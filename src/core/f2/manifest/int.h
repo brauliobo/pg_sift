@@ -200,6 +200,16 @@ extern Tree *sift_mf_read_tree(Relation rel, const SiftColMetaPageData *meta);
 extern Tree *sift_mf_read_tree_path(Relation rel, const SiftColMetaPageData *meta, const uint8 *key_lo);
 extern int	sift_mf_find_leaf(const Tree *t, const uint8 *key_lo);
 extern bool sift_mf_find_entry_at(Relation rel, const SiftColMetaPageData *meta, uint64 part_id, const uint8 *key_lo, SiftPartitionEntry *out, int *pages);
+/* The change of a commit: its leaves read into ch, the entry of a partition in it, its effect on the totals, the record that makes it the manifest (false: another commit moved the version, read again) and the pages of a record that was not made */
+extern void sift_mf_read_leaves(Relation rel, Tree *t, int first, int span, Change *ch, int slack);
+extern int	sift_mf_find_entry_idx(const Change *ch, uint64 part_id, const uint8 *key_lo);
+extern void sift_mf_account(Change *ch, const SiftPartitionEntry *before, const SiftPartitionEntry *after);
+extern bool sift_mf_publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version);
+extern void sift_mf_free_created(Relation rel, BlkVec *created);
+
+/* combine.c: the commit of an edit of one partition that touches nothing else of the manifest joins the commits of the partitions of the relation that wait for Block 0 (false: it does not, the caller publishes it alone) */
+extern bool sift_mf_commit_combined(Relation rel, Change *ch, uint64 part_id, const uint8 *key_lo, uint64 *version);
+
 extern BlockNumber sift_mf_new_page_blk(Relation rel, BlkVec *created);
 extern void sift_mf_write_image(Relation rel, BlockNumber blk, const char *image);
 extern void sift_mf_log_image(SiftNewPageLog *log, BlockNumber blk, const char *image);

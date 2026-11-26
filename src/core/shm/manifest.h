@@ -98,7 +98,7 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmIndexSlot
 #define SIFT_TID_LEASE_CLAIMING		UINT32_MAX
 #define SIFT_TID_LEASE_IDLE			(1U << 30)	/* a flag of the owner: its backend is between transactions and its lease may be taken by another backend, or by VACUUM, which then no longer waits for it */
 
-typedef struct SiftShmTidLease
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmTidLease
 {
 	pg_atomic_uint32 owner;		/* 0: free; else the proc number + 1 of the backend, or SIFT_TID_LEASE_CLAIMING */
 	RelFileLocator locator;
@@ -106,17 +106,19 @@ typedef struct SiftShmTidLease
 	pg_atomic_uint64 seq;		/* one more for each claim of the slot, before its locator is written */
 } SiftShmTidLease;
 
-StaticAssertDecl(sizeof(SiftShmTidLease) == 32, "a vblock lease is 32 bytes");
+StaticAssertDecl(sizeof(SiftShmTidLease) == PG_CACHE_LINE_SIZE, "a vblock lease is a cache line of its own");
 StaticAssertDecl(offsetof(SiftShmTidLease, lo) == 16, "lo of a vblock lease sits at byte 16");
 
 StaticAssertDecl(offsetof(SiftShmIndexSlot, current_snap_dp) == PG_CACHE_LINE_SIZE, "line 0 of a slot of the manifest registry is one cache line");
 StaticAssertDecl(sizeof(SiftShmIndexSlot) == 2 * PG_CACHE_LINE_SIZE, "a slot of the manifest registry is two cache lines");
 
-/* The immutable snapshot of a manifest in the dsa_area */
+/* The snapshot of a manifest in the dsa_area: line 0 is what readers and the registry change (the counts, the bytes the lists add), the lines after it never change once it is published */
 typedef struct SiftShmManifestSnap
 {
 	pg_atomic_uint32 refcount;	/* the registry and every reader that pinned it */
 	pg_atomic_uint32 retired;	/* 1 once the registry let go of it: a reader that counts itself in it gives the count back */
+	pg_atomic_uint64 snap_bytes;	/* the bytes charged to the manifest pool for this snapshot, its lists included */
+	char		pad_mutable[PG_CACHE_LINE_SIZE - 2 * sizeof(pg_atomic_uint32) - sizeof(pg_atomic_uint64)];
 	RelFileLocator locator;		/* the index it is the snapshot of: a slot that was given to another index while a reader looked it up hands that reader this one's */
 	uint32		flags;
 	uint64		retire_epoch;	/* the epoch it was retired in (retire_lock) */
@@ -132,8 +134,9 @@ typedef struct SiftShmManifestSnap
 	uint32		scope_entry_size;
 	dsa_pointer self_dp;
 	uint64		base_bytes;		/* the bytes charged when the snapshot was made (the lists are charged one by one) */
-	pg_atomic_uint64 snap_bytes;	/* the bytes charged to the manifest pool for this snapshot, its lists included */
 } SiftShmManifestSnap;
+
+StaticAssertDecl(offsetof(SiftShmManifestSnap, locator) == PG_CACHE_LINE_SIZE, "what a snapshot changes is one cache line, apart from what it never changes");
 
 /* What a commit publishes besides the meta: the entries are copied into the snapshot */
 typedef struct SiftShmSnapSpec
@@ -157,6 +160,7 @@ typedef struct SiftShmManifestStats
 	uint32		epochs_active;	/* backends inside a pin */
 	uint64		area_bytes;		/* what the dsa_area holds from the system, as this backend sees it (0: not attached) */
 	uint64		evictions;
+	uint64		list_copies;	/* the lists the backends copied into the area: one for each list of each snapshot, however many readers asked at once */
 } SiftShmManifestStats;
 
 /* Whether the registry is used: sift.shared_cache_kb is above 0 and the server is not in recovery */
@@ -190,9 +194,15 @@ extern const void *sift_shm_snap_scopes(const SiftShmManifestSnap *snap);
 
 /*
  * The list of partition p of a pinned snapshot: NULL until sift_shm_snap_part_list_install publishes one. A published list is never written again, so a reader needs no lock and no check
- * of its own. Install copies bytes of data into a list of the pool (charged to the pool and counted in the snapshot) and publishes it whole; false when another backend published one first or the pool has no room.
+ * of its own. Install copies bytes of data into a list of the pool (charged to the pool and counted in the snapshot) and publishes it whole; the first backend to ask makes the list, the ones that ask while it does return true and make none; false when the pool has no room.
  */
 extern const void *sift_shm_snap_part_list(const SiftShmManifestSnap *snap, uint32 p);
+/*
+ * The snapshot of the index when it is of manifest version `version`, read inside an epoch: fn runs on it with no count taken in its refcount (no write to a line that readers share), and the snapshot is
+ * not freed until fn returns. fn must be short, take no lock of the registry and not call back into it. False where the registry has no snapshot of that version.
+ */
+typedef void (*SiftShmSnapFn) (const SiftShmManifestSnap *snap, void *arg);
+extern bool sift_shm_snap_with_epoch(const RelFileLocator *locator, uint64 version, SiftShmSnapFn fn, void *arg);
 extern bool sift_shm_snap_part_list_install(const SiftShmManifestSnap *snap, uint32 p, const void *data, Size bytes);
 
 extern void sift_shm_manifest_stats(SiftShmManifestStats *stats);

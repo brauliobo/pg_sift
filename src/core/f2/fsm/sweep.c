@@ -570,7 +570,18 @@ orphan_runs(Sweep *s, ExtVec *out, uint64 *blocks)
 	return true;
 }
 
-/* None of the orphans is a page of a live part, deletion vector or manifest list: its generation would be one of theirs */
+static bool
+in_slab(const Sweep *s, BlockNumber blk)
+{
+	const SiftFsmSlabTable *t = SLABS(s->root.data);
+
+	for (uint32 i = 0; i < t->nslabs; i++)
+		if (blk >= t->slab[i].start && blk < t->slab[i].start + t->slab[i].nblocks)
+			return true;
+	return false;
+}
+
+/* None of the orphans of the data zone is a page of a live part, deletion vector or manifest list: its generation would be one of theirs. A page of a metadata slab is rewritten in place and kept when it is freed, so its generation says nothing */
 static bool
 orphan_pages_dead(Sweep *s, const ExtVec *orphans)
 {
@@ -579,7 +590,7 @@ orphan_pages_dead(Sweep *s, const ExtVec *orphans)
 	if (s->ngens > 1)
 		qsort(s->gens, s->ngens, sizeof(uint64), gen_cmp);
 	for (int i = 0; i < orphans->n; i++)
-		for (uint64 b = orphans->v[i].start; b < (uint64) orphans->v[i].start + orphans->v[i].nblocks && b < written; b++)
+		for (uint64 b = orphans->v[i].start; !in_slab(s, orphans->v[i].start) && b < (uint64) orphans->v[i].start + orphans->v[i].nblocks && b < written; b++)
 		{
 			Buffer		buf = sift_blk_read(s->rel, (BlockNumber) b, BUFFER_LOCK_SHARE);
 			Page		p = BufferGetPage(buf);
@@ -750,7 +761,10 @@ sift_fsm_sweep_orphans(Relation rel)
 	if (ConditionalLockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock))
 	{
 		if (!vacuum_read_by_another(rel))
+		{
+			sift_fsm_meta_pool_drain(rel);
 			freed = sweep_in_own_context(rel);
+		}
 		UnlockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock);
 	}
 	if (!had_lock)

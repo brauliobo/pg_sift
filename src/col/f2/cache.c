@@ -198,29 +198,62 @@ typedef struct ShmPartList
 	SiftPartDesc parts[FLEXIBLE_ARRAY_MEMBER];
 } ShmPartList;
 
-static bool
-shm_list_get(const SiftShmManifestSnap *shm, int i, const SiftPartitionEntry *e, SiftPlanPartList *out)
+typedef struct ShmListGet
 {
-	const ShmPartList *l = sift_shm_snap_part_list(shm, i);
+	int			i;
+	const SiftPartitionEntry *entry;
+	SiftPlanPartList *out;
+	bool		found;
+} ShmListGet;
 
-	if (l == NULL || e->nparts == 0 || l->manifest_gen != e->manifest_gen)
-		return false;
-	out->nparts = l->nparts;
-	out->parts = palloc(l->nparts * sizeof(SiftPartDesc));
-	memcpy(out->parts, l->parts, l->nparts * sizeof(SiftPartDesc));
-	return true;
+static void
+shm_list_get_in(const SiftShmManifestSnap *shm, void *arg)
+{
+	ShmListGet *g = arg;
+	const ShmPartList *l = sift_shm_snap_part_list(shm, g->i);
+
+	if (l == NULL || g->entry->nparts == 0 || l->manifest_gen != g->entry->manifest_gen)
+		return;
+	g->out->nparts = l->nparts;
+	g->out->parts = palloc(l->nparts * sizeof(SiftPartDesc));
+	memcpy(g->out->parts, l->parts, l->nparts * sizeof(SiftPartDesc));
+	g->found = true;
+}
+
+static bool
+shm_list_get(const RelFileLocator *loc, uint64 version, int i, const SiftPartitionEntry *e, SiftPlanPartList *out)
+{
+	ShmListGet	g = {.i = i,.entry = e,.out = out};
+
+	return sift_shm_snap_with_epoch(loc, version, shm_list_get_in, &g) && g.found;
+}
+
+typedef struct ShmListPut
+{
+	int			i;
+	const void *bytes;
+	Size		size;
+} ShmListPut;
+
+static void
+shm_list_put_in(const SiftShmManifestSnap *shm, void *arg)
+{
+	ShmListPut *p = arg;
+
+	(void) sift_shm_snap_part_list_install(shm, p->i, p->bytes, p->size);
 }
 
 static void
-shm_list_put(const SiftShmManifestSnap *shm, int i, const SiftPlanPartList *list)
+shm_list_put(const RelFileLocator *loc, uint64 version, int i, const SiftPlanPartList *list)
 {
 	Size		bytes = offsetof(ShmPartList, parts) + list->nparts * sizeof(SiftPartDesc);
 	ShmPartList *l = palloc0(bytes);
+	ShmListPut	p = {.i = i,.bytes = l,.size = bytes};
 
 	l->manifest_gen = list->manifest_gen;
 	l->nparts = list->nparts;
 	memcpy(l->parts, list->parts, list->nparts * sizeof(SiftPartDesc));
-	(void) sift_shm_snap_part_list_install(shm, i, l, bytes);
+	(void) sift_shm_snap_with_epoch(loc, version, shm_list_put_in, &p);
 	pfree(l);
 }
 
@@ -238,32 +271,45 @@ read_parts_exact(MemoryContext dst, MemoryContext src, Relation rel, const SiftP
 	return kept;
 }
 
-/* The entries of the partitions and the scope refs of the version the registry holds a snapshot of, else those the pages hold (and the registry gets them for the next backend) */
-static SiftManifestRead
-read_directory(Relation rel, const SiftShmIndexMeta *meta, const SiftShmManifestSnap **shm, SiftManifestScopeRef **scopes, int *nscopes)
+typedef struct ShmDirectory
 {
 	SiftManifestRead mr;
+	SiftManifestScopeRef *scopes;
+	int			nscopes;
+} ShmDirectory;
 
-	*shm = sift_shm_snap_pin(&rel->rd_locator);
-	if (*shm != NULL && (*shm)->manifest_version != meta->manifest_version)
+static void
+shm_directory_copy(const SiftShmManifestSnap *shm, void *arg)
+{
+	ShmDirectory *d = arg;
+
+	d->mr = (SiftManifestRead) {.n = shm->npartitions,.version = shm->manifest_version};
+	d->mr.entries = palloc(Max(d->mr.n, 1) * sizeof(SiftPartitionEntry));
+	memcpy(d->mr.entries, sift_shm_snap_part_entries(shm), d->mr.n * sizeof(SiftPartitionEntry));
+	d->nscopes = shm->nscopes;
+	d->scopes = palloc(Max(d->nscopes, 1) * sizeof(SiftManifestScopeRef));
+	if (d->nscopes > 0)
+		memcpy(d->scopes, sift_shm_snap_scopes(shm), d->nscopes * sizeof(SiftManifestScopeRef));
+}
+
+/* The entries of the partitions and the scope refs of the version the registry holds a snapshot of, else those the pages hold (and the registry gets them for the next backend); *shared: the registry's snapshot of that version serves the part lists */
+static SiftManifestRead
+read_directory(Relation rel, const SiftShmIndexMeta *meta, bool *shared, SiftManifestScopeRef **scopes, int *nscopes)
+{
+	ShmDirectory d;
+	SiftManifestRead mr;
+
+	if (sift_shm_snap_with_epoch(&rel->rd_locator, meta->manifest_version, shm_directory_copy, &d))
 	{
-		sift_shm_snap_unpin(*shm);
-		*shm = NULL;
-	}
-	if (*shm != NULL)
-	{
-		mr = (SiftManifestRead) {.n = (*shm)->npartitions,.version = (*shm)->manifest_version};
-		mr.entries = palloc(Max(mr.n, 1) * sizeof(SiftPartitionEntry));
-		memcpy(mr.entries, sift_shm_snap_part_entries(*shm), mr.n * sizeof(SiftPartitionEntry));
-		*nscopes = (*shm)->nscopes;
-		*scopes = palloc(Max(*nscopes, 1) * sizeof(SiftManifestScopeRef));
-		if (*nscopes > 0)
-			memcpy(*scopes, sift_shm_snap_scopes(*shm), *nscopes * sizeof(SiftManifestScopeRef));
+		*shared = true;
+		*scopes = d.scopes;
+		*nscopes = d.nscopes;
 		PLAN_STAT(shm_loads, 1);
-		return mr;
+		return d.mr;
 	}
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	*scopes = sift_manifest_read_scope_dir(rel, meta->scope_dir_blk, meta->nscopes, meta->scope_dir_gen, nscopes);
+	*shared = false;
 	if ((meta->state_flags & SIFT_SHM_SLOT_VALID) && !(meta->state_flags & SIFT_SHM_SLOT_HAS_SNAP) && mr.version == meta->manifest_version)
 	{
 		SiftShmSnapSpec spec = {.manifest_version = meta->manifest_version,.scope_dir_gen = meta->scope_dir_gen,.npartitions = mr.n,.nscopes = *nscopes,.part_entries = mr.entries,
@@ -271,7 +317,7 @@ read_directory(Relation rel, const SiftShmIndexMeta *meta, const SiftShmManifest
 
 		if (sift_shm_manifest_publish(meta, &spec))
 		{
-			*shm = sift_shm_snap_pin(&rel->rd_locator);
+			*shared = true;
 			PLAN_STAT(shm_publishes, 1);
 		}
 	}
@@ -280,16 +326,16 @@ read_directory(Relation rel, const SiftShmIndexMeta *meta, const SiftShmManifest
 
 /* The directory of the version *meta names. A commit writes the pages of its version before the registry names it, so a read of the pages may find a later version than the registry's: meta then becomes the one the pages hold */
 static SiftManifestRead
-read_directory_of(Relation rel, SiftShmIndexMeta *meta, const SiftShmManifestSnap **shm, SiftManifestScopeRef **scopes, int *nscopes)
+read_directory_of(Relation rel, SiftShmIndexMeta *meta, bool *shared, SiftManifestScopeRef **scopes, int *nscopes)
 {
-	SiftManifestRead mr = read_directory(rel, meta, shm, scopes, nscopes);
+	SiftManifestRead mr = read_directory(rel, meta, shared, scopes, nscopes);
 
 	while (mr.version != meta->manifest_version)
 	{
 		SiftColMetaPageData page = sift_col_meta_read(rel);
 
 		*meta = sift_col_meta_shm(rel, &page);
-		mr = read_directory(rel, meta, shm, scopes, nscopes);
+		mr = read_directory(rel, meta, shared, scopes, nscopes);
 	}
 	return mr;
 }
@@ -300,12 +346,12 @@ load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *registry)
 {
 	SiftShmIndexMeta at = *registry;
 	const SiftShmIndexMeta *meta = &at;
-	const SiftShmManifestSnap *shm;
+	bool		shared;
 	SiftManifestScopeRef *scopes;
 	int			nscopes;
 	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift plan snapshot read");
 	MemoryContext caller = MemoryContextSwitchTo(scratch);
-	SiftManifestRead mr = read_directory_of(rel, &at, &shm, &scopes, &nscopes);
+	SiftManifestRead mr = read_directory_of(rel, &at, &shared, &scopes, &nscopes);
 	/* MEM[MEM-IDLE-07]: cachebudget plan snapshot ctx (1 KB init + partitions + part lists + card view; evictable LRU) */
 	MemoryContext prev = MemoryContextSwitchTo(s->cx);
 	SiftPlanPartList *lists = palloc0(Max(mr.n, 1) * sizeof(SiftPlanPartList));
@@ -320,12 +366,12 @@ load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *registry)
 			continue;
 		lists[i].part_id = mr.entries[i].part_id;
 		lists[i].manifest_gen = mr.entries[i].manifest_gen;
-		if (shm != NULL && shm_list_get(shm, i, &mr.entries[i], &lists[i]))
+		if (shared && shm_list_get(&rel->rd_locator, mr.version, i, &mr.entries[i], &lists[i]))
 			continue;
 		lists[i].parts = read_parts_exact(s->cx, prev, rel, &mr.entries[i], &lists[i].nparts);
 		PLAN_STAT(partlists_read, 1);
-		if (shm != NULL && lists[i].nparts > 0)
-			shm_list_put(shm, i, &lists[i]);
+		if (shared && lists[i].nparts > 0)
+			shm_list_put(&rel->rd_locator, mr.version, i, &lists[i]);
 	}
 	for (int k = 0; k < s->npartitions; k++)
 		if (!reused[k])
@@ -360,8 +406,6 @@ load(SiftPlanSnapshot *s, Relation rel, const SiftShmIndexMeta *registry)
 	MemoryContextSwitchTo(caller);
 	MemoryContextDelete(scratch);
 	s->size = MemoryContextMemAllocated(s->cx, true);
-	if (shm != NULL)
-		sift_shm_snap_unpin(shm);
 }
 
 static const SiftPlanSnapshot *

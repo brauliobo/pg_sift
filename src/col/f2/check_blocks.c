@@ -458,6 +458,7 @@ sift_f2_check_blocks(Relation rel)
 		ereport(DEBUG1, (errmsg("sift index \"%s\": the block ownership is not checked, the relation is being written or is on a standby", RelationGetRelationName(rel))));
 		return;
 	}
+	sift_fsm_meta_pool_drain(rel);
 	check_windows(rel);
 	if (!held)
 		UnlockRelation(rel, ShareLock);

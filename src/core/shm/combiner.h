@@ -13,7 +13,9 @@
 #include "core/shm/port.h"
 
 #define SIFT_COMB_NONE			UINT32_MAX
-#define SIFT_COMB_POOL_SLOTS	64
+#define SIFT_COMB_POOL_SLOTS	64		/* the slots of one shard of the pool */
+#define SIFT_COMB_SHARDS		4
+#define SIFT_COMB_MAX_SLOTS		(SIFT_COMB_POOL_SLOTS * SIFT_COMB_SHARDS)
 #define SIFT_COMB_ROUNDS		4
 #define SIFT_COMB_HOT_EPOCHS	4
 #define SIFT_COMB_HOT_STREAK	2
@@ -45,9 +47,11 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftCombQueue
 
 StaticAssertDecl(sizeof(SiftCombQueue) == PG_CACHE_LINE_SIZE, "SiftCombQueue must occupy exactly one cache line");
 
+/* The free slots of the pool, a word of SIFT_COMB_POOL_SLOTS for each shard: a backend takes from the shard of its own number first, so that the writers of a queue do not all retry on one word */
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftCombPool
 {
-	pg_atomic_uint64 free_mask;
+	pg_atomic_uint64 free_mask[SIFT_COMB_SHARDS];
+	uint32		nshards;
 } SiftCombPool;
 
 StaticAssertDecl(sizeof(SiftCombPool) == PG_CACHE_LINE_SIZE, "SiftCombPool must occupy exactly one cache line");
@@ -64,9 +68,12 @@ typedef struct SiftCombOps
 	bool		(*same_group) (const SiftCombHdr *lead, const SiftCombHdr *other);
 	void		(*apply) (void *ctx, SiftCombHdr *const *batch, uint32 n);
 	uint32		max_batch;
+	uint32		gather_spins;	/* where the queue is hot, the leader waits for this many pauses for the writers that find the lock busy to join its batch (0: it does not) */
 } SiftCombOps;
 
+/* A pool of SIFT_COMB_POOL_SLOTS slots, and one of SIFT_COMB_MAX_SLOTS (the arena then holds that many) */
 extern void sift_comb_pool_init(SiftCombPool *pool);
+extern void sift_comb_pool_init_sharded(SiftCombPool *pool);
 extern void sift_comb_queue_init(SiftCombQueue *q, int tranche_id);
 
 /* Runs req (a caller-local slot of arena->stride bytes whose first `used` bytes are the request) to completion: req->result and req->out are set */

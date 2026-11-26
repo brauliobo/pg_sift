@@ -18,6 +18,7 @@
 #include "core/f2/manifest/manifest.h"
 #include "core/f2/manifest/int.h"
 #include "core/page_io.h"
+#include "core/shm/lease.h"
 
 void
 sift_mf_blk_add(BlkVec *b, BlockNumber blk)
@@ -503,8 +504,8 @@ write_path(Relation rel, Tree *t, const SiftPartDirKey *leaf, int at, uint64 ver
 
 typedef void (*BuildFn) (Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg);
 
-static void
-read_leaves(Relation rel, Tree *t, int first, int span, Change *ch, int slack)
+void
+sift_mf_read_leaves(Relation rel, Tree *t, int first, int span, Change *ch, int slack)
 {
 	ch->first = first;
 	ch->span = span;
@@ -518,8 +519,8 @@ read_leaves(Relation rel, Tree *t, int first, int span, Change *ch, int slack)
 	}
 }
 
-static int
-find_entry(const Change *ch, uint64 part_id, const uint8 *key_lo)
+int
+sift_mf_find_entry_idx(const Change *ch, uint64 part_id, const uint8 *key_lo)
 {
 	for (int i = 0; i < ch->nents; i++)
 		if (ch->ents[i].part_id == part_id && bound_cmp(ch->ents[i].key_lo, key_lo) == 0)
@@ -528,8 +529,8 @@ find_entry(const Change *ch, uint64 part_id, const uint8 *key_lo)
 	pg_unreachable();
 }
 
-static void
-account(Change *ch, const SiftPartitionEntry *before, const SiftPartitionEntry *after)
+void
+sift_mf_account(Change *ch, const SiftPartitionEntry *before, const SiftPartitionEntry *after)
 {
 	ch->d_rows += (int64) after->total_rows - (int64) before->total_rows;
 	ch->d_dead += (int64) after->total_dead - (int64) before->total_dead;
@@ -537,8 +538,8 @@ account(Change *ch, const SiftPartitionEntry *before, const SiftPartitionEntry *
 }
 
 /* P2: the one record that makes the change the manifest; false when another commit moved the version since the tree was read */
-static bool
-publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
+bool
+sift_mf_publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
 {
 	SiftPartDirKey out[4];
 	SiftPartDirKey *r;
@@ -591,6 +592,7 @@ publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
 
 	safexid = sift_manifest_waits_own_xid(rel, nrel) ? GetTopFullTransactionId() : InvalidFullTransactionId;
 	buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
+	SIFT_NOTE_BLOCK0_X(SIFT_B0_PUBLISH);
 	m = SIFT_COL_META(BufferGetPage(buf0));
 	if (m->manifest_version != t->meta.manifest_version)
 	{
@@ -648,8 +650,8 @@ publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
 	return true;
 }
 
-static void
-free_created(Relation rel, BlkVec *created)
+void
+sift_mf_free_created(Relation rel, BlkVec *created)
 {
 	SiftExtent *e = palloc(Max(created->n, 1) * sizeof(SiftExtent));
 
@@ -675,7 +677,7 @@ part_lock_blocks(const uint64 *lock_ids, int nlocks, BlockNumber *blks)
 }
 
 static uint64
-run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg, const uint8 *path_key)
+run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg, const uint8 *path_key, bool combine)
 {
 	BlockNumber blks[2];
 	uint64		version;
@@ -692,9 +694,11 @@ run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void
 		BlkVec		created = {0};
 
 		build(rel, t, &ch, &created, arg);
-		if (publish(rel, t, &ch, &created, &version))
+		if (combine && sift_mf_commit_combined(rel, &ch, lock_ids[0], path_key, &version))
 			break;
-		free_created(rel, &created);
+		if (sift_mf_publish(rel, t, &ch, &created, &version))
+			break;
+		sift_mf_free_created(rel, &created);
 	}
 	for (int i = nlocks - 1; i >= 0; i--)
 		UnlockPage(rel, blks[i], ExclusiveLock);
@@ -792,8 +796,8 @@ build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 	EditedParts ep = {0};
 	bool		relist = edits_parts(e);
 
-	read_leaves(rel, t, sift_mf_find_leaf(t, e->key_lo), 1, ch, 2);
-	ent = &ch->ents[find_entry(ch, e->part_id, e->key_lo)];
+	sift_mf_read_leaves(rel, t, sift_mf_find_leaf(t, e->key_lo), 1, ch, 2);
+	ent = &ch->ents[sift_mf_find_entry_idx(ch, e->part_id, e->key_lo)];
 	before = *ent;
 	if (relist)
 		edit_parts(rel, t, ch, ent, e, &ep);
@@ -809,7 +813,7 @@ build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 	if (e->set_pend_del)
 		ent->pend_del_blk = e->new_pend_del_blk;
 	sift_mf_refresh_hot_active(ent);
-	account(ch, &before, ent);
+	sift_mf_account(ch, &before, ent);
 	ch->release = e->release;
 	ch->nrelease = e->nrelease;
 }
@@ -818,7 +822,7 @@ uint64
 sift_manifest_commit(Relation rel, const SiftManifestEdit *edit)
 {
 	SIFT_F2_GATE(SIFT_F2_GATE_MANIFEST);
-	return run_change(rel, &edit->part_id, 1, build_commit, (void *) edit, edit->key_lo);
+	return run_change(rel, &edit->part_id, 1, build_commit, (void *) edit, edit->key_lo, true);
 }
 
 typedef struct SplitArg
@@ -837,8 +841,8 @@ build_split(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 	SiftPartDesc *parts;
 	int			n;
 
-	read_leaves(rel, t, sift_mf_find_leaf(t, a->key_lo), 1, ch, 2);
-	ent = &ch->ents[find_entry(ch, a->part_id, a->key_lo)];
+	sift_mf_read_leaves(rel, t, sift_mf_find_leaf(t, a->key_lo), 1, ch, 2);
+	ent = &ch->ents[sift_mf_find_entry_idx(ch, a->part_id, a->key_lo)];
 	if (bound_cmp(a->split_key, ent->key_lo) <= 0 || (!bound_inf(ent->key_hi) && bound_cmp(a->split_key, ent->key_hi) >= 0))
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift index \"%s\": the split key is not inside partition %llu", RelationGetRelationName(rel),
 																		 (unsigned long long) a->part_id)));
@@ -871,7 +875,7 @@ sift_manifest_split(Relation rel, uint64 part_id, const uint8 *key_lo, const uin
 	SplitArg	a = {.part_id = part_id,.key_lo = key_lo,.split_key = split_key,.new_id = sift_manifest_new_part_id(rel)};
 	uint64		ids[2] = {part_id, a.new_id};
 
-	run_change(rel, ids, 2, build_split, &a, NULL);
+	run_change(rel, ids, 2, build_split, &a, NULL, false);
 	return a.new_id;
 }
 
@@ -897,11 +901,11 @@ merge_parts(Relation rel, Tree *t, Change *ch, BlkVec *created, SiftPartitionEnt
 	SiftPartitionEntry before = *keep;
 
 	memcpy(parts + nf, ps, ns * sizeof(SiftPartDesc));
-	account(ch, drop, &zero);
+	sift_mf_account(ch, drop, &zero);
 	sift_mf_fold_entry(keep, parts, nf + ns);
 	keep->manifest_gen = sift_manifest_new_gen(rel, 1);
 	keep->manifest_blk = nf + ns > 0 ? write_partlist(rel, keep->part_id, keep->manifest_gen, parts, nf + ns, created, &(SiftColDeltaAnchor) {.delta_head_blkno = InvalidBlockNumber}) : InvalidBlockNumber;
-	account(ch, &before, keep);
+	sift_mf_account(ch, &before, keep);
 }
 
 static void
@@ -915,9 +919,9 @@ build_merge(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 	if (abs(lk - ld) > 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift index \"%s\": partitions %llu and %llu are not neighbours", RelationGetRelationName(rel),
 																		 (unsigned long long) a->keep_id, (unsigned long long) a->drop_id)));
-	read_leaves(rel, t, Min(lk, ld), lk == ld ? 1 : 2, ch, 0);
-	keep = &ch->ents[find_entry(ch, a->keep_id, a->keep_lo)];
-	drop = &ch->ents[find_entry(ch, a->drop_id, a->drop_lo)];
+	sift_mf_read_leaves(rel, t, Min(lk, ld), lk == ld ? 1 : 2, ch, 0);
+	keep = &ch->ents[sift_mf_find_entry_idx(ch, a->keep_id, a->keep_lo)];
+	drop = &ch->ents[sift_mf_find_entry_idx(ch, a->drop_id, a->drop_lo)];
 	if (keep->l0_slab_blk != InvalidBlockNumber || keep->pend_del_blk != InvalidBlockNumber ||
 		drop->l0_slab_blk != InvalidBlockNumber || drop->pend_del_blk != InvalidBlockNumber || ((keep->flags | drop->flags) & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("sift index \"%s\": partitions %llu and %llu still hold a slab, pending deletes or a column delta chain", RelationGetRelationName(rel),
@@ -951,5 +955,5 @@ sift_manifest_merge(Relation rel, uint64 keep_id, const uint8 *keep_lo, uint64 d
 	MergeArg	a = {keep_id, keep_lo, drop_id, drop_lo};
 	uint64		ids[2] = {Min(keep_id, drop_id), Max(keep_id, drop_id)};
 
-	run_change(rel, ids, 2, build_merge, &a, NULL);
+	run_change(rel, ids, 2, build_merge, &a, NULL, false);
 }
