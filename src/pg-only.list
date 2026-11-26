@@ -98,6 +98,10 @@ agg/pipe.h
 agg/safety.c
 agg/safety.h
 agg/scan_src.h
+agg/scope/keys.c
+agg/scope/match.c
+agg/scope/plan.c
+agg/scope/scope.h
 agg/settings.c
 agg/settings.h
 agg/sip_scan.c
@@ -985,11 +989,7 @@ col/f2/agg/proj/sort_plan.h
 col/f2/agg/scan.c
 col/f2/agg/scan_int.h
 col/f2/agg/scope/int.h
-col/f2/agg/scope/match.c
-col/f2/agg/scope/match.h
 col/f2/agg/scope/run.c
-col/f2/agg/scope/scope.c
-col/f2/agg/scope/topk.c
 col/f2/agg/scope/topn.c
 col/f2/agg/unnest/run.c
 col/f2/agg/unnest/run.h

@@ -156,12 +156,35 @@ typedef struct SiftProjOps
 	bool		(*sort_offered) (const RelOptInfo *rel);
 } SiftProjOps;
 
+/* The leaves of the facts the summary of a scope keeps, as columns of the relation that keeps it (the attribute of a table, the position in an index) */
+#define SIFT_SCOPE_LAYOUT_MEAS	16
+
+typedef struct SiftScopeLayout
+{
+	int			member_col;
+	int			time_col;		/* 0: none */
+	int			nmeas;
+	int			meas_col[SIFT_SCOPE_LAYOUT_MEAS];
+	uint8		meas_scale[SIFT_SCOPE_LAYOUT_MEAS];	/* a numeric measure: the digits after the point of its scaled integer */
+} SiftScopeLayout;
+
 /*
  * 4. Scope summaries: the paths that answer a join of the facts with the pairs of a scope of the index from the cubes of its summary, the scope of one key a join of a small side pins the
- * scan to, and the router that keeps a scan to the granules of that key (build_router: NULL when the summary cannot route).
+ * scan to, and the router that keeps a scan to the granules of that key (build_router: NULL when the summary cannot route). The paths are those of the planner of agg/scope/, which asks the
+ * format what the summary of a relation it owns keeps: whether it is current (summarized), its scopes, the leaves of each, whether the rows where a column is NULL can leave its cubes
+ * (excl_ok), whether a column orders a ring of newest rows (ring_col), whether a value of typid reads as a key of a key column of key_type (key_codes); exec runs the plans.
  */
+struct CustomScanMethods;
+
 typedef struct SiftScopeOps
 {
+	bool		(*summarized) (Relation rel);
+	int			(*nscopes) (Relation rel);
+	bool		(*layout) (Relation rel, int ord, SiftScopeLayout *out);
+	bool		(*excl_ok) (Relation rel, int ord, int col);
+	bool		(*ring_col) (Relation rel, int col);
+	bool		(*key_codes) (Oid key_type, Oid typid);
+	const struct CustomScanMethods *exec;
 	void		(*upper_paths) (PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 	void		(*topk_paths) (PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 	bool		(*one_key) (PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord, Expr **key);

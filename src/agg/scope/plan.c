@@ -1,10 +1,11 @@
 /*
- * col/f2/agg/scope/scope.c - the planning of the scope aggregate of SiftAggV6: `facts f JOIN pairs s ON s.member = f.fk WHERE s.key = K` with count, sum, avg, min and max of the integer, float8 and
- * numeric leaves of the summary the facts keep for the scope (col/f2/scope/scope.h), a sift_col index of format major 2 on the facts or the facts themselves when they are a sift_table of it, is the cube of the key K, read without a row of the facts: one tuple for the key, or for
- * every key of the summary when the statement groups by the key without naming one, or for every month of it when it groups by date_trunc('month') of the time leaf. The facts may be limited
- * to a window of whole months of the time leaf and to the rows whose soft-delete leaf is NULL (the rows it holds a value in leave the cubes with the rows of the deletion vectors); the pairs may
- * be the relation itself or a single-table sub-select or materialized CTE over it. The executor (scope_v6_run.c) reads the summary when it counts what the heap shows the snapshot, and runs the
- * join as the planner priced it, the child of the node, when it does not.
+ * agg/scope/plan.c - the planning of the scope aggregate of SiftAggV6: `facts f JOIN pairs s ON s.member = f.fk WHERE s.key = K` with count, sum, avg, min and max of the integer, float8 and
+ * numeric leaves of the summary the relation that keeps the facts holds for the scope (an index of the facts, or the facts themselves when they are a table of a format that keeps one) is the cube
+ * of the key K, read without a row of the facts: one tuple for the key, or for every key of the summary when the statement groups by the key without naming one, or for every month of it when it
+ * groups by date_trunc('month') of the time leaf. The facts may be limited to a window of whole months of the time leaf and to the rows whose soft-delete leaf is NULL; the pairs may be the relation
+ * itself or a single-table sub-select or materialized CTE over it (agg/scope/match.c, agg/scope/keys.c). What no cube tells is a scan of the facts of the members of the key, and the newest rows
+ * of a key are the ring of the summary. The format that owns the relation answers what its summary keeps (SiftScopeOps) and runs the plan (SiftScopeOps.exec): it reads the summary when it
+ * counts what the snapshot sees, and runs the join as the planner priced it, the child of the node, when it does not.
  */
 /* check-memory: allow-allocs every array here follows the aggregates of one statement and the keys of one summary */
 #include "postgres.h"
@@ -13,8 +14,8 @@
 #include "access/relation.h"
 #include "access/table.h"
 #include "access/stratnum.h"
+#include "catalog/pg_class_d.h"
 #include "catalog/pg_namespace_d.h"
-#include "catalog/pg_opfamily_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
@@ -24,48 +25,20 @@
 #include "optimizer/prep.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
-#include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
-#include "utils/selfuncs.h"
+#include "utils/rel.h"
 
 #include "agg/agg.h"
-#include "agg/safety.h"
 #include "agg/cost/card.h"
-#include "col/f2/agg/scope/int.h"
+#include "agg/safety.h"
+#include "agg/scope/scope.h"
 #include "agg/settings.h"
-#include "col/f2/agg/scope/match.h"
-#include "col/am.h"
-#include "col/am/format_ops.h"
-#include "col/col.h"
-#include "col/f2/scope/scope.h"
-#include "col/f2/store/store.h"
-#include "col/scope/scope.h"
-#include "table/dispatch.h"
 #include "core/catname.h"
 
-static const CustomPathMethods scope_path_methods = {"SiftAggV6Scope", sift_agg_v6_scope_plan_path, NULL};
+static Plan *scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 
-/* The attribute of the pairs relation a Var of the pairs side is: its own, or the one the sub-select or CTE takes it from */
-static AttrNumber
-pairs_attno(const ScopePlan *p, const Var *v)
-{
-	if (v->varno != p->pairs->relid || v->varlevelsup != 0)
-		return InvalidAttrNumber;
-	if (p->pairs_query != NULL)
-	{
-		const TargetEntry *te = v->varattno >= 1 && v->varattno <= list_length(p->pairs_query->targetList) ? list_nth(p->pairs_query->targetList, v->varattno - 1) : NULL;
-
-		return te != NULL && IsA(te->expr, Var) ? ((Var *) te->expr)->varattno : InvalidAttrNumber;
-	}
-	return v->varattno;
-}
-
-static bool
-is_key_var(const ScopePlan *p, const Node *n)
-{
-	return IsA(n, Var) && pairs_attno(p, (const Var *) n) == p->leg.key;
-}
+static const CustomPathMethods scope_path_methods = {"SiftAggV6Scope", scope_plan_path, NULL};
 
 /* The column of the relation that keeps the summary a Var of the facts is: the attribute of a table, the position in the index of an index */
 int
@@ -81,16 +54,16 @@ sift_v6_scope_index_col(const ScopePlan *p, const Var *v)
 	return -1;
 }
 
-static AttrNumber
-fact_attno(const ScopePlan *p, int col)
+AttrNumber
+sift_v6_scope_fact_attno(const ScopePlan *p, int col)
 {
 	return p->index == NULL ? (AttrNumber) col : p->index->indexkeys[col - 1];
 }
 
-static Oid
-opfamily_of(const ScopePlan *p, int col)
+Oid
+sift_v6_scope_opfamily(const ScopePlan *p, int col)
 {
-	return p->index == NULL ? sift_f2_store_open(p->irel)->opfamily[col] : p->index->opfamily[col - 1];
+	return p->index == NULL ? p->table_opfamily[col] : p->index->opfamily[col - 1];
 }
 
 static int
@@ -157,7 +130,7 @@ compile_walk(Node *n, ScopePlan *p)
 		return false;
 	if (IsA(n, Aggref))
 		return !compile_agg(p, (Aggref *) n);
-	if (is_key_var(p, n) && (p->spec.by_key || p->spec.key_given))
+	if (sift_v6_scope_key_var(p, n) && (p->spec.by_key || p->spec.key_given))
 	{
 		add_col(p, (Expr *) n, SCOPE_COL_KEY);
 		return false;
@@ -176,93 +149,6 @@ static bool
 compile_exprs(ScopePlan *p, Node *e)
 {
 	return !compile_walk(e, p);
-}
-
-/* key = constant or parameter, on the pairs relation or in the sub-select that is the pairs */
-static bool
-key_operand(const ScopePlan *p, OpExpr *op, bool inner, Expr **rhs)
-{
-	Node	   *l,
-			   *r;
-
-	if (list_length(op->args) != 2 || !sift_v6_key_equality(p->spec.key_type, op->opno, op->inputcollid))
-		return false;
-	l = sift_v6_strip_relabel(linitial(op->args));
-	r = sift_v6_strip_relabel(lsecond(op->args));
-	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
-		!sift_v6_key_arg_ok(p->spec.key_type, exprType(r)))
-		return false;
-	*rhs = (Expr *) r;
-	return true;
-}
-
-/* key = ANY(array of integers), an array constant or a parameter: IN (K1, K2, ...) */
-static bool
-key_array_operand(const ScopePlan *p, ScalarArrayOpExpr *sa, bool inner, Expr **rhs)
-{
-	Node	   *l,
-			   *r;
-
-	if (!sa->useOr || list_length(sa->args) != 2 || !sift_v6_key_equality(p->spec.key_type, sa->opno, sa->inputcollid))
-		return false;
-	l = sift_v6_strip_relabel(linitial(sa->args));
-	r = sift_v6_strip_relabel(lsecond(sa->args));
-	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : is_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
-		!sift_v6_key_arg_ok(p->spec.key_type, get_element_type(exprType(r))))
-		return false;
-	*rhs = (Expr *) r;
-	return true;
-}
-
-static bool
-key_clause(const ScopePlan *p, Node *clause, bool inner, Expr **rhs)
-{
-	if (IsA(clause, OpExpr))
-		return key_operand(p, (OpExpr *) clause, inner, rhs);
-	return IsA(clause, ScalarArrayOpExpr) && key_array_operand(p, (ScalarArrayOpExpr *) clause, inner, rhs);
-}
-
-/* The conditions of the statement on the pairs besides the key are the predicate of the unique btree that makes the pairs, no more and no less: it reads exactly the rows that are pairs */
-static bool
-pairs_predicate_ok(const ScopePlan *p, List *rest, bool inner)
-{
-	List	   *pred = copyObject(p->leg.pred);
-
-	if (pred == NIL || rest == NIL)
-		return pred == rest;
-	ChangeVarNodes((Node *) pred, 1, inner ? 1 : p->pairs->relid, 0);
-	return predicate_implied_by(pred, rest, false) && predicate_implied_by(rest, pred, false);
-}
-
-/* The conditions on the pairs are the key = K or key IN (K1, K2, ...), from the statement or from the sub-select, and the predicate of the pairs; no key: every key (only a statement that groups by the key) */
-static bool
-compile_key_filter(ScopePlan *p)
-{
-	List	   *outer = p->pairs->baserestrictinfo;
-	List	   *inner = p->pairs_query != NULL && p->pairs_query->jointree->quals != NULL ? make_ands_implicit((Expr *) p->pairs_query->jointree->quals) : NIL;
-	List	   *rest_outer = NIL,
-			   *rest_inner = NIL;
-	Expr	   *rhs = NULL;
-	int			nkeys = 0;
-
-	foreach_node(RestrictInfo, ri, outer)
-		if (key_clause(p, (Node *) ri->clause, false, &rhs))
-			nkeys++;
-		else
-			rest_outer = lappend(rest_outer, ri->clause);
-	foreach_ptr(Node, q, inner)
-		if (key_clause(p, q, true, &rhs))
-			nkeys++;
-		else
-			rest_inner = lappend(rest_inner, q);
-	if (nkeys > 1 || (p->pairs_query != NULL ? rest_outer != NIL || !pairs_predicate_ok(p, rest_inner, true) : !pairs_predicate_ok(p, rest_outer, false)))
-		return false;
-	if (rhs == NULL)
-		return p->spec.by_key;
-	p->key_expr = rhs;
-	p->spec.key_given = true;
-	p->spec.key_array = type_is_array(exprType((Node *) rhs));
-	return true;
 }
 
 static bool
@@ -293,7 +179,7 @@ compile_window_qual(ScopePlan *p, OpExpr *op)
 	if (!OidIsValid(opno) || !IsA(l, Var) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) || !time_type_ok(((Var *) l)->vartype) ||
 		exprType(r) != ((Var *) l)->vartype || p->layout.time_col == 0 || sift_v6_scope_index_col(p, (Var *) l) != p->layout.time_col)
 		return false;
-	strat = get_op_opfamily_strategy(opno, opfamily_of(p, p->layout.time_col));
+	strat = get_op_opfamily_strategy(opno, sift_v6_scope_opfamily(p, p->layout.time_col));
 	p->spec.time_type = ((Var *) l)->vartype;
 	if ((strat == BTGreaterEqualStrategyNumber || strat == BTGreaterStrategyNumber) && p->lo_expr == NULL)
 	{
@@ -316,7 +202,7 @@ compile_soft_delete(ScopePlan *p, NullTest *nt)
 {
 	const int	col = IsA(nt->arg, Var) && !nt->argisrow ? sift_v6_scope_index_col(p, (Var *) nt->arg) : -1;
 
-	if (nt->nulltesttype != IS_NULL || col < 1 || p->spec.excl_col != 0 || !sift_f2_scope_excl_ok(p->irel, p->spec.ord, col))
+	if (nt->nulltesttype != IS_NULL || col < 1 || p->spec.excl_col != 0 || !p->ops->scope->excl_ok(p->irel, p->spec.ord, col))
 		return false;
 	p->spec.excl_col = col;
 	return true;
@@ -378,7 +264,7 @@ compile_groups(ScopePlan *p)
 	{
 		Node	   *g = get_sortgroupclause_expr(sgc, tlist);
 
-		if (is_key_var(p, g) && !p->spec.by_key)
+		if (sift_v6_scope_key_var(p, g) && !p->spec.by_key)
 		{
 			p->spec.by_key = true;
 			add_col(p, (Expr *) g, SCOPE_COL_KEY);
@@ -428,119 +314,12 @@ order_like_target(ScopePlan *p, const PathTarget *target)
 static bool
 compile_target(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
-	if (!(compile_groups(p) && compile_key_filter(p) && compile_fact_quals(p) && (p->spec.by_key || p->spec.key_given) && (!p->spec.grouped_const || p->spec.key_given) &&
+	if (!(compile_groups(p) && sift_v6_scope_key_filter(p) && compile_fact_quals(p) && (p->spec.by_key || p->spec.key_given) && (!p->spec.grouped_const || p->spec.key_given) &&
 		  (!p->spec.key_array || p->spec.by_key || !p->spec.by_month) &&
 		  compile_exprs(p, (Node *) out->reltarget->exprs) && (extra->havingQual == NULL || compile_exprs(p, extra->havingQual))))
 		return false;
 	order_like_target(p, out->reltarget);
 	return true;
-}
-
-/* s.member = f.fk and nothing else joins the two: the equivalence class of the two columns has no other member */
-static bool
-joined_by_member(const ScopePlan *p, AttrNumber fk)
-{
-	foreach_node(EquivalenceClass, ec, p->root->eq_classes)
-	{
-		bool		has_fact = false,
-					has_pairs = false;
-
-		if (ec->ec_has_const || ec->ec_has_volatile || list_length(ec->ec_members) != 2)
-			continue;
-		foreach_node(EquivalenceMember, em, ec->ec_members)
-		{
-			const Var  *v = (const Var *) sift_v6_strip_relabel((Node *) em->em_expr);
-
-			if (!IsA(v, Var))
-				break;
-			has_fact |= v->varno == p->fact->relid && v->varattno == fk;
-			has_pairs |= pairs_attno(p, v) == p->leg.member;
-		}
-		if (has_fact && has_pairs)
-			return true;
-	}
-	return false;
-}
-
-bool
-sift_v6_plain_table(const RangeTblEntry *rte)
-{
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && rte->securityQuals == NIL;
-}
-
-static bool
-plain_relation(PlannerInfo *root, RelOptInfo *rel)
-{
-	return rel != NULL && rel->reloptkind == RELOPT_BASEREL && sift_v6_plain_table(planner_rt_fetch(rel->relid, root)) && rel->lateral_relids == NULL && rel->joininfo == NIL;
-}
-
-/* One table, its rows by one condition, its columns as they are: no row it says is another's (a security qual, a limit, a grouping, a second relation) */
-static bool
-single_table_query(const Query *q)
-{
-	if (q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->hasSubLinks || q->hasTargetSRFs || q->hasRowSecurity || q->groupClause != NIL || q->distinctClause != NIL ||
-		q->sortClause != NIL || q->limitCount != NULL || q->limitOffset != NULL || q->setOperations != NULL || q->cteList != NIL || q->rowMarks != NIL || q->havingQual != NULL ||
-		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 || !sift_v6_plain_table(linitial(q->rtable)) || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
-		return false;
-	foreach_node(TargetEntry, te, q->targetList)
-		if (te->resjunk || !IsA(te->expr, Var) || ((Var *) te->expr)->varno != 1)
-			return false;
-	return true;
-}
-
-/* The pairs side that is a sub-select or a materialized CTE over one table: the query it computes */
-static Query *
-pairs_subquery(PlannerInfo *root, const RelOptInfo *rel)
-{
-	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
-	Query	   *q = NULL;
-
-	if (rte->rtekind == RTE_SUBQUERY)
-		q = rte->subquery;
-	else if (rte->rtekind == RTE_CTE && !rte->self_reference && rte->ctelevelsup == 0)
-		foreach_node(CommonTableExpr, cte, root->parse->cteList)
-			if (strcmp(cte->ctename, rte->ctename) == 0)
-				q = castNode(Query, cte->ctequery);
-	return q;
-}
-
-/* The statement joins the two relations by one join, or by the semi join of IN or EXISTS: a member of the pairs of one key is there once, so a semi join keeps the rows an inner join does */
-static bool
-pairs_joined(ScopePlan *p)
-{
-	p->semi = p->root->join_info_list != NIL;
-	return !p->semi || sift_v6_semi_joins(p->root, p->pairs->relid);
-}
-
-/* A semi join names no key of the pairs and counts a member once: one key and not an array of them */
-static bool
-semi_ok(const ScopePlan *p)
-{
-	return !p->semi || (p->spec.key_given && !p->spec.key_array && !p->spec.by_key);
-}
-
-static bool
-pairs_ok(ScopePlan *p)
-{
-	RelOptInfo *rel = p->pairs;
-
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL || !agg_rel_security_ok(p->root, rel))
-		return false;
-	if (sift_v6_plain_table(planner_rt_fetch(rel->relid, p->root)))
-		return true;
-	p->pairs_query = pairs_subquery(p->root, rel);
-	if (p->pairs_query != NULL && !single_table_query(p->pairs_query))
-	{
-		p->pairs_raw = rel->subroot != NULL ? rel->subroot->parse : p->pairs_query;
-		p->pairs_query = NULL;
-	}
-	return p->pairs_query != NULL || p->pairs_raw != NULL;
-}
-
-static Oid
-pairs_table(const ScopePlan *p)
-{
-	return p->pairs_query != NULL ? ((RangeTblEntry *) linitial(p->pairs_query->rtable))->relid : planner_rt_fetch(p->pairs->relid, p->root)->relid;
 }
 
 static bool
@@ -552,27 +331,15 @@ shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 		parse->groupingSets == NIL && list_length(root->join_info_list) <= 1 && bms_num_members(input_rel->relids) == 2;
 }
 
-/* Does scope ord of the index summarize the pairs relation: one path, unique pairs, every row of the relation a pair */
-static bool
-scope_matches(ScopePlan *p, int ord)
-{
-	SiftScopeLeg legs[2];
-	const int	nlegs = sift_scope_legs(p->irel, ord, legs);
-
-	if (p->pairs_raw != NULL)
-		p->pairs_query = nlegs == 2 ? sift_v6_match_two_paths(p->pairs_raw, legs) : NULL;
-	if (nlegs != (p->pairs_raw != NULL ? 2 : 1) || (p->pairs_raw != NULL && p->pairs_query == NULL) || legs[0].rel != pairs_table(p) ||
-		sift_scope_pairs_multiset(p->irel, sift_scope_specs(p->irel)->s[ord]) || !sift_f2_scope_layout(p->irel, ord, &p->layout))
-		return false;
-	p->leg = legs[0];
-	p->spec.key_type = get_atttype(p->leg.rel, p->leg.key);
-	return (sift_scope_word_type(p->spec.key_type) || sift_keymap_type(p->spec.key_type)) && joined_by_member(p, fact_attno(p, p->layout.member_col));
-}
-
 static Relation
-scope_rel_open(const ScopePlan *p)
+scope_rel_open(ScopePlan *p)
 {
-	return relation_open(p->index == NULL ? planner_rt_fetch(p->fact->relid, p->root)->relid : p->index->indexoid, AccessShareLock);
+	const Oid	relid = p->index == NULL ? planner_rt_fetch(p->fact->relid, p->root)->relid : p->index->indexoid;
+	SiftStoreSchema sch;
+
+	if (p->index == NULL && p->table_opfamily == NULL && p->ops->schema(relid, true, &sch))
+		p->table_opfamily = sch.att_opfamily;
+	return relation_open(relid, AccessShareLock);
 }
 
 static void
@@ -588,7 +355,7 @@ reset_spec(ScopePlan *p, int ord)
 static bool
 compile_scan(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
-	if (!compile_key_filter(p) || !p->spec.key_given || p->spec.key_array)
+	if (!sift_v6_scope_key_filter(p) || !p->spec.key_given || p->spec.key_array)
 		return false;
 	p->spec = (ScopeSpec) {.relid = p->spec.relid,.is_table = p->spec.is_table,.ord = p->spec.ord,.key_type = p->spec.key_type,.key_given = true,.scan = true,.member_col = p->layout.member_col};
 	return sift_v6_compile_fact(p->root, p->fact, out, p->index, extra, &p->v6, &p->v6_tlist);
@@ -600,41 +367,42 @@ compile_on(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 	bool		ok = false;
 
 	p->irel = scope_rel_open(p);
-	for (int ord = 0; ord < sift_f2_nscopes(p->irel) && !ok; ord++)
+	for (int ord = 0; ord < p->ops->scope->nscopes(p->irel) && !ok; ord++)
 	{
 		reset_spec(p, ord);
-		ok = scope_matches(p, ord) && (compile_target(p, extra, out) || (p->index != NULL && (reset_spec(p, ord), compile_scan(p, extra, out)))) && semi_ok(p);
+		ok = sift_v6_scope_matches(p, ord) && (compile_target(p, extra, out) || (p->index != NULL && (reset_spec(p, ord), compile_scan(p, extra, out)))) && sift_v6_scope_semi_ok(p);
 	}
 	relation_close(p->irel, NoLock);
 	return ok;
 }
 
-/* A sift_table of format major 2 that declares scopes: its own versions decide the rows, so nothing is asked of track_changes or of a stale flag */
+/* A table of the format whose summary is current: its own versions decide the rows, so nothing is asked of track_changes or of a stale flag */
 static bool
-table_usable(PlannerInfo *root, const RelOptInfo *fact)
+table_usable(const ScopePlan *p)
 {
-	Oid			relid = planner_rt_fetch(fact->relid, root)->relid;
+	const Oid	relid = planner_rt_fetch(p->fact->relid, p->root)->relid;
 	Relation	rel;
-	bool		ok = sift_tbl_is_f2_oid(relid);
+	bool		ok;
 
-	if (!ok)
+	if (sift_store_ops_for_oid(relid, true) != p->ops)
 		return false;
 	rel = table_open(relid, AccessShareLock);
-	ok = sift_f2_scoped(rel);
+	ok = p->ops->scope->summarized(rel);
 	table_close(rel, NoLock);
 	return ok;
 }
 
+/* An index of the format over every row of the facts whose summary is current */
 static bool
-index_usable(const IndexOptInfo *ix)
+index_usable(const ScopePlan *p, const IndexOptInfo *ix)
 {
-	bool		ok = ix->indpred == NIL && !ix->hypothetical && sift_col_index_oid_engine(ix->indexoid) == sift_col_v2_ops.format_major;
 	Relation	irel;
+	bool		ok;
 
-	if (!ok)
+	if (ix->indpred != NIL || ix->hypothetical || !sift_store_ops_may_own(ix->relam, false) || !p->ops->owns_rel(ix->indexoid, false))
 		return false;
 	irel = index_open(ix->indexoid, AccessShareLock);
-	ok = sift_f2_scoped(irel) && sift_col_rel(irel)->track && !sift_col_rel(irel)->stale;
+	ok = p->ops->scope->summarized(irel);
 	index_close(irel, NoLock);
 	return ok;
 }
@@ -668,19 +436,82 @@ topk_shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 		root->limit_tuples <= SCOPE_TOPK_MAX && list_length(root->join_info_list) <= 1 && bms_num_members(input_rel->relids) == 2;
 }
 
+/* ORDER BY leaf DESC of a leaf of the index that can be a ring, and whether the ring (NULLS LAST) serves the way the statement puts the NULLs */
+static bool
+topk_order(ScopePlan *p, SortGroupClause *sgc)
+{
+	const Var  *v = (const Var *) get_sortgroupclause_expr(sgc, p->root->parse->targetList);
+	int			col = IsA(v, Var) ? sift_v6_scope_index_col(p, v) : -1;
+
+	if (col < 1 || !p->ops->scope->ring_col(p->irel, col) || get_op_opfamily_strategy(sgc->sortop, sift_v6_scope_opfamily(p, col)) != BTGreaterStrategyNumber)
+		return false;
+	p->spec.ring_col = col;
+	p->spec.nulls_first = sgc->nulls_first;
+	p->spec.leaf_not_null = bms_is_member(v->varattno, p->fact->notnullattnums);
+	return true;
+}
+
+/* The second ORDER BY leaf: an integer or a time that is never NULL, in either direction: the rows the ring leaf does not tell apart are ordered by it */
+static bool
+topk_tie(ScopePlan *p, SortGroupClause *sgc)
+{
+	const Var  *v = (const Var *) get_sortgroupclause_expr(sgc, p->root->parse->targetList);
+	const int	col = IsA(v, Var) ? sift_v6_scope_index_col(p, v) : -1;
+	const int	strat = col > 0 ? get_op_opfamily_strategy(sgc->sortop, sift_v6_scope_opfamily(p, col)) : 0;
+
+	if (col < 1 || !bms_is_member(v->varattno, p->fact->notnullattnums) || (strat != BTLessStrategyNumber && strat != BTGreaterStrategyNumber))
+		return false;
+	switch (v->vartype)
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			break;
+		default:
+			return false;
+	}
+	p->spec.tie_col = col;
+	p->spec.tie_desc = strat == BTGreaterStrategyNumber;
+	return true;
+}
+
+/* The columns of the rows are columns of the index the scan decodes as they are stored (SiftV6Spec.key of the spec that follows the scope spec in the plan) */
+static bool
+topk_output(ScopePlan *p, const PathTarget *target)
+{
+	const Oid	relid = RelationGetRelid(p->irel);
+
+	p->v6 = (SiftV6Spec) {.relid = relid,.is_table = p->index == NULL};
+	p->v6.key = palloc(Max(list_length(target->exprs), 1) * sizeof(SiftV6Col));
+	foreach_ptr(Expr, e, target->exprs)
+	{
+		const Var  *v = (const Var *) e;
+		const int	col = IsA(e, Var) ? sift_v6_scope_index_col(p, v) : -1;
+
+		if (col < 1 || p->v6.nkeys == SIFT_V6_MAX_KEYS || !p->ops->leaf_holds(relid, p->index == NULL, col, sift_v6_class(v->vartype)))
+			return false;
+		p->v6.key[p->v6.nkeys++] = (SiftV6Col) {.attno = col,.typid = v->vartype};
+		p->v6_tlist = lappend(p->v6_tlist, makeTargetEntry(copyObject(e), list_length(p->v6_tlist) + 1, NULL, false));
+	}
+	return true;
+}
+
 static bool
 compile_topk(ScopePlan *p, const PathTarget *target)
 {
 	bool		ok = false;
 
 	p->irel = scope_rel_open(p);
-	for (int ord = 0; ord < sift_f2_nscopes(p->irel) && !ok; ord++)
+	for (int ord = 0; ord < p->ops->scope->nscopes(p->irel) && !ok; ord++)
 	{
 		reset_spec(p, ord);
 		p->v6_tlist = NIL;
-		ok = scope_matches(p, ord) && compile_key_filter(p) && p->spec.key_given && !p->spec.key_array && compile_fact_quals(p) && !p->spec.ranged &&
-			sift_v6_scope_topk_order(p, linitial_node(SortGroupClause, p->root->parse->sortClause)) &&
-			(list_length(p->root->parse->sortClause) == 1 || sift_v6_scope_topk_tie(p, lsecond_node(SortGroupClause, p->root->parse->sortClause))) && sift_v6_scope_topk_output(p, target) && semi_ok(p);
+		ok = sift_v6_scope_matches(p, ord) && sift_v6_scope_key_filter(p) && p->spec.key_given && !p->spec.key_array && compile_fact_quals(p) && !p->spec.ranged &&
+			topk_order(p, linitial_node(SortGroupClause, p->root->parse->sortClause)) &&
+			(list_length(p->root->parse->sortClause) == 1 || topk_tie(p, lsecond_node(SortGroupClause, p->root->parse->sortClause))) && topk_output(p, target) && sift_v6_scope_semi_ok(p);
 	}
 	relation_close(p->irel, NoLock);
 	p->spec.topk = ok;
@@ -709,7 +540,7 @@ take_sorted_join(RelOptInfo *out)
  * relation lists paths that add_path freed there.
  */
 void
-sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out)
+sift_v6_scope_topk_paths(const SiftStoreOps *ops, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out)
 {
 	PathTarget *target = root->upper_targets[UPPERREL_ORDERED];
 	int			a,
@@ -721,9 +552,9 @@ sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInf
 	b = bms_next_member(input_rel->relids, a);
 	for (int swap = 0; swap < 2; swap++)
 	{
-		ScopePlan	p = {.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b]};
+		ScopePlan	p = {.ops = ops,.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b]};
 
-		if (p.fact == NULL || p.pairs == NULL || !plain_relation(root, p.fact) || !pairs_ok(&p) || !pairs_joined(&p))
+		if (p.fact == NULL || p.pairs == NULL || !sift_v6_scope_plain_relation(root, p.fact) || !sift_v6_scope_pairs_ok(&p) || !sift_v6_scope_pairs_joined(&p))
 			continue;
 		foreach_ptr(IndexOptInfo, ix, p.fact->indexlist)
 		{
@@ -731,7 +562,7 @@ sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInf
 			Path	   *join;
 
 			p.index = ix;
-			if (!index_usable(ix) || !compile_topk(&p, target) || (join = take_sorted_join(out)) == NULL)
+			if (!index_usable(&p, ix) || !compile_topk(&p, target) || (join = take_sorted_join(out)) == NULL)
 				continue;
 			cp = makeNode(CustomPath);
 			cp->path.pathtype = T_CustomScan;
@@ -857,18 +688,18 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 }
 
 bool
-sift_v6_scope_one_key(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord, Expr **key)
+sift_v6_scope_one_key(const SiftStoreOps *ops, PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord, Expr **key)
 {
-	ScopePlan	p = {.root = root,.fact = fact,.pairs = pairs,.index = ix};
+	ScopePlan	p = {.ops = ops,.root = root,.fact = fact,.pairs = pairs,.index = ix};
 	bool		ok = false;
 
-	if (!sift_agg_scope || !plain_relation(root, fact) || !pairs_ok(&p) || !index_usable(ix))
+	if (!sift_agg_scope || !sift_v6_scope_plain_relation(root, fact) || !sift_v6_scope_pairs_ok(&p) || !index_usable(&p, ix))
 		return false;
 	p.irel = scope_rel_open(&p);
-	for (int o = 0; o < sift_f2_nscopes(p.irel) && !ok; o++)
+	for (int o = 0; o < p.ops->scope->nscopes(p.irel) && !ok; o++)
 	{
 		reset_spec(&p, o);
-		ok = scope_matches(&p, o) && is_int(p.spec.key_type) && fact_attno(&p, p.layout.member_col) == fact_att && p.leg.member == pairs_att && compile_key_filter(&p) &&
+		ok = sift_v6_scope_matches(&p, o) && is_int(p.spec.key_type) && sift_v6_scope_fact_attno(&p, p.layout.member_col) == fact_att && p.leg.member == pairs_att && sift_v6_scope_key_filter(&p) &&
 			p.spec.key_given && !p.spec.key_array;
 		if (ok)
 		{
@@ -881,7 +712,7 @@ sift_v6_scope_one_key(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, In
 }
 
 void
-sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out, void *extra)
+sift_v6_scope_upper_paths(const SiftStoreOps *ops, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out, void *extra)
 {
 	int			a = -1,
 				b;
@@ -892,11 +723,11 @@ sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptIn
 	b = bms_next_member(input_rel->relids, a);
 	for (int swap = 0; swap < 2; swap++)
 	{
-		ScopePlan	p = {.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b]};
+		ScopePlan	p = {.ops = ops,.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b]};
 
-		if (p.fact == NULL || p.pairs == NULL || !plain_relation(root, p.fact) || !pairs_ok(&p) || !pairs_joined(&p))
+		if (p.fact == NULL || p.pairs == NULL || !sift_v6_scope_plain_relation(root, p.fact) || !sift_v6_scope_pairs_ok(&p) || !sift_v6_scope_pairs_joined(&p))
 			continue;
-		if (table_usable(root, p.fact) && compile_on(&p, (GroupPathExtraData *) extra, out))
+		if (table_usable(&p) && compile_on(&p, (GroupPathExtraData *) extra, out))
 		{
 			add_scope_path(&p, input_rel, out, (GroupPathExtraData *) extra);
 			return;
@@ -904,7 +735,7 @@ sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptIn
 		foreach_ptr(IndexOptInfo, ix, p.fact->indexlist)
 		{
 			p.index = ix;
-			if (index_usable(ix) && compile_on(&p, (GroupPathExtraData *) extra, out))
+			if (index_usable(&p, ix) && compile_on(&p, (GroupPathExtraData *) extra, out))
 			{
 				add_scope_path(&p, input_rel, out, (GroupPathExtraData *) extra);
 				return;
@@ -913,8 +744,21 @@ sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptIn
 	}
 }
 
-Plan *
-sift_agg_v6_scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
+/* The relation of the spec of a path: its first and sixteenth numbers (sift_v6_scope_spec_pack) */
+static Oid
+spec_relid(const CustomPath *best)
+{
+	return (Oid) list_nth_int(linitial(best->custom_private), 0);
+}
+
+static bool
+spec_is_table(const CustomPath *best)
+{
+	return list_nth_int(linitial(best->custom_private), 15);
+}
+
+static Plan *
+scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
 	CustomScan *cs = makeNode(CustomScan);
 
@@ -926,7 +770,7 @@ sift_agg_v6_scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best
 	cs->custom_scan_tlist = lsecond(best->custom_private);
 	cs->scan.plan.qual = (List *) lthird(best->custom_private);
 	cs->custom_exprs = lfourth(best->custom_private);
-	cs->methods = &sift_agg_v6_scope_plan_methods;
-	root->glob->relationOids = lappend_oid(root->glob->relationOids, (Oid) list_nth_int(linitial(best->custom_private), 0));
+	cs->methods = sift_store_ops_for_oid(spec_relid(best), spec_is_table(best))->scope->exec;
+	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec_relid(best));
 	return &cs->scan.plan;
 }

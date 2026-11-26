@@ -1,5 +1,6 @@
 /*
- * col/f2/agg/scope/match.c - what the pairs side of a statement has to be for the summary of a scope of two paths to answer it: the pairs of the scope are the distinct (member, key) of the rows of
+ * agg/scope/match.c - the pairs side of a statement (the relation, a view, a single-table sub-select or CTE over it, the semi join of IN or EXISTS) and the scope of the relation that summarizes
+ * it. A scope of two paths is matched as well: the pairs of the scope are the distinct (member, key) of the rows of
  * its first path (the pairs relation, by its predicate) and of its second (the groups the key has in a relation, by its predicate, and the members of each group in a via relation, by its predicate).
  * The statement asks for the pairs of one key K as
  *
@@ -25,8 +26,8 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
-#include "col/f2/agg/scope/int.h"
-#include "col/f2/agg/scope/match.h"
+#include "agg/safety.h"
+#include "agg/scope/scope.h"
 #include "core/compat.h"
 
 /* The conditions of a query as its clauses: the parser keeps them as one expression, the planner as a list (the query of a sub-select it has planned) */
@@ -44,32 +45,6 @@ select_only(const Query *q)
 			return false;
 	return q->commandType == CMD_SELECT && !q->hasAggs && !q->hasWindowFuncs && !q->hasSubLinks && !q->hasTargetSRFs && q->groupClause == NIL && q->sortClause == NIL && q->limitCount == NULL &&
 		q->limitOffset == NULL && q->cteList == NIL && q->rowMarks == NIL && q->havingQual == NULL;
-}
-
-Node *
-sift_v6_strip_relabel(Node *n)
-{
-	while (n != NULL && IsA(n, RelabelType))
-		n = (Node *) ((RelabelType *) n)->arg;
-	return n;
-}
-
-/* An integer to an integer, a date, timestamp or timestamptz to its own type, a string to a string, a uuid to a uuid */
-bool
-sift_v6_key_arg_ok(Oid key_type, Oid typid)
-{
-	return sift_keymap_same_kind(key_type, typid) || (sift_scope_word_type(key_type) && typid == key_type);
-}
-
-/* Is opno the equality of the scope key column: an integer, a date, a timestamp or a timestamptz, or a text or varchar column under a deterministic collation of the operator, or a uuid */
-bool
-sift_v6_key_equality(Oid key_type, Oid opno, Oid inputcollid)
-{
-	const Oid	opclass = GetDefaultOpClass(key_type, BTREE_AM_OID);
-
-	if (sift_keymap_type(key_type) && key_type != UUIDOID && OidIsValid(inputcollid) && !get_collation_isdeterministic(inputcollid))
-		return false;
-	return OidIsValid(opclass) && get_op_opfamily_strategy(opno, get_opclass_family(opclass)) == BTEqualStrategyNumber;
 }
 
 static bool
@@ -424,10 +399,134 @@ sift_v6_match_two_paths(const Query *q, const SiftScopeLeg legs[2])
 	return q->setOperations != NULL ? match_union(q, legs) : match_left(q, legs);
 }
 
-bool
-sift_v6_semi_joins(const PlannerInfo *root, Index pairs_relid)
+static bool
+semi_joins(const PlannerInfo *root, Index pairs_relid)
 {
 	const SpecialJoinInfo *sj = list_length(root->join_info_list) == 1 ? linitial(root->join_info_list) : NULL;
 
 	return sj != NULL && sj->jointype == JOIN_SEMI && bms_equal(sj->min_righthand, bms_make_singleton(pairs_relid));
+}
+
+/* s.member = f.fk and nothing else joins the two: the equivalence class of the two columns has no other member */
+static bool
+joined_by_member(const ScopePlan *p, AttrNumber fk)
+{
+	foreach_node(EquivalenceClass, ec, p->root->eq_classes)
+	{
+		bool		has_fact = false,
+					has_pairs = false;
+
+		if (ec->ec_has_const || ec->ec_has_volatile || list_length(ec->ec_members) != 2)
+			continue;
+		foreach_node(EquivalenceMember, em, ec->ec_members)
+		{
+			const Var  *v = (const Var *) sift_v6_strip_relabel((Node *) em->em_expr);
+
+			if (!IsA(v, Var))
+				break;
+			has_fact |= v->varno == p->fact->relid && v->varattno == fk;
+			has_pairs |= sift_v6_scope_pairs_attno(p, v) == p->leg.member;
+		}
+		if (has_fact && has_pairs)
+			return true;
+	}
+	return false;
+}
+
+bool
+sift_v6_plain_table(const RangeTblEntry *rte)
+{
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && rte->securityQuals == NIL;
+}
+
+bool
+sift_v6_scope_plain_relation(PlannerInfo *root, RelOptInfo *rel)
+{
+	return rel != NULL && rel->reloptkind == RELOPT_BASEREL && sift_v6_plain_table(planner_rt_fetch(rel->relid, root)) && rel->lateral_relids == NULL && rel->joininfo == NIL;
+}
+
+/* One table, its rows by one condition, its columns as they are: no row it says is another's (a security qual, a limit, a grouping, a second relation) */
+static bool
+single_table_query(const Query *q)
+{
+	if (q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->hasSubLinks || q->hasTargetSRFs || q->hasRowSecurity || q->groupClause != NIL || q->distinctClause != NIL ||
+		q->sortClause != NIL || q->limitCount != NULL || q->limitOffset != NULL || q->setOperations != NULL || q->cteList != NIL || q->rowMarks != NIL || q->havingQual != NULL ||
+		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 || !sift_v6_plain_table(linitial(q->rtable)) || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
+		return false;
+	foreach_node(TargetEntry, te, q->targetList)
+		if (te->resjunk || !IsA(te->expr, Var) || ((Var *) te->expr)->varno != 1)
+			return false;
+	return true;
+}
+
+/* The pairs side that is a sub-select or a materialized CTE over one table: the query it computes */
+static Query *
+pairs_subquery(PlannerInfo *root, const RelOptInfo *rel)
+{
+	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+	Query	   *q = NULL;
+
+	if (rte->rtekind == RTE_SUBQUERY)
+		q = rte->subquery;
+	else if (rte->rtekind == RTE_CTE && !rte->self_reference && rte->ctelevelsup == 0)
+		foreach_node(CommonTableExpr, cte, root->parse->cteList)
+			if (strcmp(cte->ctename, rte->ctename) == 0)
+				q = castNode(Query, cte->ctequery);
+	return q;
+}
+
+/* The statement joins the two relations by one join, or by the semi join of IN or EXISTS: a member of the pairs of one key is there once, so a semi join keeps the rows an inner join does */
+bool
+sift_v6_scope_pairs_joined(ScopePlan *p)
+{
+	p->semi = p->root->join_info_list != NIL;
+	return !p->semi || semi_joins(p->root, p->pairs->relid);
+}
+
+/* A semi join names no key of the pairs and counts a member once: one key and not an array of them */
+bool
+sift_v6_scope_semi_ok(const ScopePlan *p)
+{
+	return !p->semi || (p->spec.key_given && !p->spec.key_array && !p->spec.by_key);
+}
+
+bool
+sift_v6_scope_pairs_ok(ScopePlan *p)
+{
+	RelOptInfo *rel = p->pairs;
+
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL || !agg_rel_security_ok(p->root, rel))
+		return false;
+	if (sift_v6_plain_table(planner_rt_fetch(rel->relid, p->root)))
+		return true;
+	p->pairs_query = pairs_subquery(p->root, rel);
+	if (p->pairs_query != NULL && !single_table_query(p->pairs_query))
+	{
+		p->pairs_raw = rel->subroot != NULL ? rel->subroot->parse : p->pairs_query;
+		p->pairs_query = NULL;
+	}
+	return p->pairs_query != NULL || p->pairs_raw != NULL;
+}
+
+static Oid
+pairs_table(const ScopePlan *p)
+{
+	return p->pairs_query != NULL ? ((RangeTblEntry *) linitial(p->pairs_query->rtable))->relid : planner_rt_fetch(p->pairs->relid, p->root)->relid;
+}
+
+/* Does scope ord of the relation summarize the pairs relation: its paths, unique pairs, every row of the relation a pair, a key the summary codes, the facts joined by its member */
+bool
+sift_v6_scope_matches(ScopePlan *p, int ord)
+{
+	SiftScopeLeg legs[2];
+	const int	nlegs = sift_scope_legs(p->irel, ord, legs);
+
+	if (p->pairs_raw != NULL)
+		p->pairs_query = nlegs == 2 ? sift_v6_match_two_paths(p->pairs_raw, legs) : NULL;
+	if (nlegs != (p->pairs_raw != NULL ? 2 : 1) || (p->pairs_raw != NULL && p->pairs_query == NULL) || legs[0].rel != pairs_table(p) ||
+		sift_scope_pairs_multiset(p->irel, sift_scope_specs(p->irel)->s[ord]) || !p->ops->scope->layout(p->irel, ord, &p->layout))
+		return false;
+	p->leg = legs[0];
+	p->spec.key_type = get_atttype(p->leg.rel, p->leg.key);
+	return p->ops->scope->key_codes(p->spec.key_type, p->spec.key_type) && joined_by_member(p, sift_v6_scope_fact_attno(p, p->layout.member_col));
 }
