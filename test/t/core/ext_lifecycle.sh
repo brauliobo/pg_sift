@@ -12,6 +12,7 @@ out=
 plan $((9 + ${#PARTS[@]}))
 node_init lc 84 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
+sift.test_create_format1 = off
 sift.async_maintenance = on
 sift.max_maint_workers = 2
 sift.maintenance_naptime = 10000
