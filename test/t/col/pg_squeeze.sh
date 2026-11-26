@@ -2,7 +2,9 @@
 # pg_squeeze of a heap table with a sift_col index that tracks its changes, with a writer and a reader running. The copy (tmp_<oid>, in the schema of the table) is built without the constraints,
 # with a sift_col index of its own, and takes the place of the table by swapping files. The writer's changes reach it through logical decoding, by statements that no trigger hears, so the log
 # of the index it ends with is complete for nobody: its witnesses name the triggers that went with the copy, the triggers that stay are the table's own. The reads check the heap (right, slower)
-# until the next VACUUM re-baselines the log (the maintenance worker and a read that has to check the heap do it as well, col_track_revouch.sh).
+# until the next VACUUM without parallel workers re-baselines the log (the maintenance worker and a read that has to check the heap do it as well, col_track_revouch.sh).
+# The log, its two triggers and its re-baseline are those of a Format 1 index: the node creates Format 1. A parallel VACUUM cleans the indexes up in parallel mode, where the baseline cannot
+# take a transaction id.
 # Skipped where pg_squeeze is not installed: SIFT_SQUEEZE_ROOT is the DESTDIR of a `make install` of pg_squeeze (never the system's directories), or it is in the server's own.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
@@ -10,6 +12,7 @@ plan 11
 SQ=${SIFT_SQUEEZE_ROOT:-}
 [[ -e $SQ$(pg_config --pkglibdir)/pg_squeeze$DLSUFFIX ]] || { skip 11 "pg_squeeze is not installed (SIFT_SQUEEZE_ROOT is the DESTDIR of its make install)"; finish; }
 node_init sq 29 "autovacuum = off
+sift.test_create_format1 = on
 wal_level = logical
 max_replication_slots = 4
 max_wal_senders = 4
@@ -78,7 +81,7 @@ check "... no copy of the table or an index is left, and the table has the two t
 check "... the heap-free read, the checked read and the heap give one answer" differential
 # the writer's changes reached the copy by logical decoding: no trigger heard them, and the triggers that stay are not the ones the log names
 check "the log is not taken for complete (triggers false, heap_free false): the reads check the heap, and answer as it does" state_is t,f,t,f
-sql sq "VACUUM facts" >/dev/null
+sql sq "VACUUM (PARALLEL 0) facts" >/dev/null
 check "the next VACUUM re-baselines it: tracking again, heap-free, and the answers are the heap's" state_is t,t,t,t
 : >"$D/writer.err"
 writer 900000
@@ -86,6 +89,6 @@ quiet_then() { [[ ! -s $D/writer.err ]] && state_is "$1"; }
 check "writes after it are heard by the triggers of the table: heap-free, and the answers are the heap's" quiet_then t,t,t,t
 # a squeeze that sorts by an index, without a writer
 check "pg_squeeze ordered by the primary key finishes, leaves no copy, and the answers are the heap's" squeezed_clean "'facts_pkey'"
-sql sq "VACUUM facts" >/dev/null
+sql sq "VACUUM (PARALLEL 0) facts" >/dev/null
 check "... and the next VACUUM gives the log its baseline again" state_is t,t,t,t
 finish
