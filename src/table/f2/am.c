@@ -95,6 +95,7 @@ sift_tbl_f2_relation_set_new_filelocator(Relation rel, const RelFileLocator *new
 		Relation	fake = CreateFakeRelcacheEntry(*newrlocator);
 
 		fake->rd_rel->relpersistence = persistence;
+		fake->rd_createSubid = GetCurrentSubTransactionId();
 		init_pages(fake);
 		FreeFakeRelcacheEntry(fake);
 	}
