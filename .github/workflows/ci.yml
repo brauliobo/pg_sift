@@ -800,7 +800,7 @@ jobs:
       # the formula above leaves its pg_sift in the server's directories, as a user's install does: the upgrade tests must use their own
       - name: make check (regression tests, the tests that tripped on macOS) under brew bash 5
         env:
-          SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
+          SIFT_CI_TMP: /tmp/sc18
           SIFT_CI_JOBS: '^(installcheck-(agg/star_jsonb_unnest|bm25/facets|bm25/filter/pushdown|col/f2/am|table/f2/parity)|tap-shell-(col/auto_merge/concurrent|col/refresh_crash|col/wbuf/batch|compat/pg_upgrade/basic|compat/pg_upgrade/v32|core/leakcheck_gate|core/scaling_slope|table/replica_mixed))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
@@ -812,7 +812,7 @@ jobs:
       # scaling_slope need PostgreSQL 18 and skip themselves, and the older releases are not built on 17 either (scripts/old-lib-check.sh)
       - name: make check (the same tests) on PostgreSQL 17
         env:
-          SIFT_CI_TMP: ${{ runner.temp }}/sift-ci17
+          SIFT_CI_TMP: /tmp/sc17
           SIFT_CI_JOBS: '^(installcheck-(agg/star_jsonb_unnest|bm25/facets|bm25/filter/pushdown|col/f2/am|table/f2/parity)|tap-shell-(col/auto_merge/concurrent|col/refresh_crash|col/wbuf/batch|compat/pg_upgrade/basic|compat/pg_upgrade/v32|core/leakcheck_gate|core/scaling_slope|table/replica_mixed))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
@@ -829,9 +829,9 @@ jobs:
         with:
           name: pg_sift-test-logs-macos
           path: |
-            ${{ runner.temp }}/sift-ci*/logs
-            ${{ runner.temp }}/sift-ci*/lane*/**/postgres.log
-            ${{ runner.temp }}/sift-ci*/lane*/regress/*/regression.diffs
+            /tmp/sc1*/logs
+            /tmp/sc1*/lane*/**/postgres.log
+            /tmp/sc1*/lane*/regress/*/regression.diffs
           if-no-files-found: ignore
 
   # the one name for a branch ruleset to require: the shard names of the jobs above change with the diff and the event, this one does not.
