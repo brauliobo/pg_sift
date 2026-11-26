@@ -251,6 +251,7 @@ op_arith(Run *r, const SiftVecOp *op)
 					case VOP_SUB: vx_sub_i32(o, x, y, c, bk, chk, r->n, f); break;
 					case VOP_MUL: vx_mul_i32(o, x, y, c, bk, chk, r->n, f); break;
 					case VOP_DIV: vx_div_i32(o, x, y, c, bk, chk, r->n, f); break;
+					case VOP_MOD: vx_mod_i32(o, x, y, c, bk, chk, r->n, f); break;
 					case VOP_NEG: vx_neg_i32(o, x, chk, r->n, f); break;
 					default: vx_abs_i32(o, x, chk, r->n, f); break;
 				}
@@ -269,6 +270,7 @@ op_arith(Run *r, const SiftVecOp *op)
 					case VOP_SUB: vx_sub_i64(o, x, y, op->imm_i64, bk, chk, r->n, f); break;
 					case VOP_MUL: vx_mul_i64(o, x, y, op->imm_i64, bk, chk, r->n, f); break;
 					case VOP_DIV: vx_div_i64(o, x, y, op->imm_i64, bk, chk, r->n, f); break;
+					case VOP_MOD: vx_mod_i64(o, x, y, op->imm_i64, bk, chk, r->n, f); break;
 					case VOP_NEG: vx_neg_i64(o, x, chk, r->n, f); break;
 					default: vx_abs_i64(o, x, chk, r->n, f); break;
 				}
@@ -857,6 +859,7 @@ sift_vexpr_eval(SiftVexprCtx *c, const SiftVexprProg *prog, const SiftVexprIn *i
 			case VOP_SUB:
 			case VOP_MUL:
 			case VOP_DIV:
+			case VOP_MOD:
 			case VOP_NEG:
 			case VOP_ABS:
 				op_arith(&run, op);

@@ -99,6 +99,7 @@ arity_ok(const SiftVexprNode *n)
 		case SVX_SUB:
 		case SVX_MUL:
 		case SVX_DIV:
+		case SVX_MOD:
 		case SVX_CMP:
 		case SVX_AND:
 		case SVX_OR:
@@ -244,6 +245,7 @@ ti_of(const SiftVexprNode *n, int depth, TI *t)
 		case SVX_SUB:
 		case SVX_MUL:
 		case SVX_DIV:
+		case SVX_MOD:
 			if (!ti_finite(n->args[0], depth + 1, &x) || !ti_finite(n->args[1], depth + 1, &y) || !unify(&x, &y, n->kind != SVX_MUL, t))
 				return false;
 			if (is_numeric(t->type))
@@ -251,7 +253,7 @@ ti_of(const SiftVexprNode *n, int depth, TI *t)
 				const int	sx = is_numeric(x.type) ? x.scale : 0,
 							sy = is_numeric(y.type) ? y.scale : 0;
 
-				if (n->kind == SVX_DIV)
+				if (n->kind == SVX_DIV || n->kind == SVX_MOD)
 					return false;
 				if (n->kind == SVX_MUL)
 				{
@@ -460,7 +462,7 @@ static int
 comp_arith(Comp *c, const SiftVexprNode *n, int act)
 {
 	const SiftVecOpCode code = n->kind == SVX_ADD ? VOP_ADD : n->kind == SVX_SUB ? VOP_SUB : n->kind == SVX_MUL ? VOP_MUL :
-		n->kind == SVX_DIV ? VOP_DIV : n->kind == SVX_NEG ? VOP_NEG : VOP_ABS;
+		n->kind == SVX_DIV ? VOP_DIV : n->kind == SVX_MOD ? VOP_MOD : n->kind == SVX_NEG ? VOP_NEG : VOP_ABS;
 	const bool	unary = n->nargs == 1;
 	const SiftVexprNode *x = n->args[0],
 			   *y = unary ? NULL : n->args[1];
@@ -473,7 +475,7 @@ comp_arith(Comp *c, const SiftVexprNode *n, int act)
 	SiftVecOp	o;
 	int			d;
 
-	if (!unary && n->kind != SVX_SUB && n->kind != SVX_DIV && is_const(x) && !is_const(y))
+	if (!unary && (n->kind == SVX_ADD || n->kind == SVX_MUL) && is_const(x) && !is_const(y))
 	{
 		const SiftVexprNode *t = x;
 
@@ -692,6 +694,7 @@ comp_val_node(Comp *c, const SiftVexprNode *n, int act)
 		case SVX_SUB:
 		case SVX_MUL:
 		case SVX_DIV:
+		case SVX_MOD:
 		case SVX_NEG:
 		case SVX_ABS:
 			return comp_arith(c, n, act);

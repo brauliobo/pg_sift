@@ -448,7 +448,7 @@ binary_node(Comp *c, const char *name, const Node *l, const Node *r)
 
 	if (dl == DOM_NONE || dl != domain_of(exprType(r)))
 		return NULL;
-	if (!sift_v6_cmp_op_of(name, &cmp) && !(arithmetic_ok(l) && arithmetic_ok(r) && strlen(name) == 1 && strchr("+-*/", name[0]) != NULL))
+	if (!sift_v6_cmp_op_of(name, &cmp) && !(arithmetic_ok(l) && arithmetic_ok(r) && strlen(name) == 1 && strchr(dl == DOM_INT ? "+-*/%" : "+-*/", name[0])))
 		return NULL;
 	if ((a = conv(c, l)) == NULL || (b = conv(c, r)) == NULL)
 		return NULL;
@@ -458,7 +458,7 @@ binary_node(Comp *c, const char *name, const Node *l, const Node *r)
 		n->aux = cmp;
 		return n;
 	}
-	return node_args2(c, name[0] == '+' ? SVX_ADD : name[0] == '-' ? SVX_SUB : name[0] == '*' ? SVX_MUL : SVX_DIV, a->type, a, b);
+	return node_args2(c, name[0] == '+' ? SVX_ADD : name[0] == '-' ? SVX_SUB : name[0] == '*' ? SVX_MUL : name[0] == '/' ? SVX_DIV : SVX_MOD, a->type, a, b);
 }
 
 static SiftVexprNode *

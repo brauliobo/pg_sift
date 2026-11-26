@@ -138,7 +138,7 @@ parse_list(Parser *p)
 		SiftVexprKind kind;
 		int			aux;
 	}			ops[] = {
-		{"add", SVX_ADD, 0}, {"sub", SVX_SUB, 0}, {"mul", SVX_MUL, 0}, {"div", SVX_DIV, 0}, {"neg", SVX_NEG, 0}, {"abs", SVX_ABS, 0},
+		{"add", SVX_ADD, 0}, {"sub", SVX_SUB, 0}, {"mul", SVX_MUL, 0}, {"div", SVX_DIV, 0}, {"mod", SVX_MOD, 0}, {"neg", SVX_NEG, 0}, {"abs", SVX_ABS, 0},
 		{"eq", SVX_CMP, SCMP_EQ}, {"ne", SVX_CMP, SCMP_NE}, {"lt", SVX_CMP, SCMP_LT}, {"le", SVX_CMP, SCMP_LE}, {"gt", SVX_CMP, SCMP_GT},
 		{"ge", SVX_CMP, SCMP_GE}, {"and", SVX_AND, 0}, {"or", SVX_OR, 0}, {"not", SVX_NOT, 0}, {"isnull", SVX_IS_NULL, 0},
 		{"isnotnull", SVX_IS_NOT_NULL, 0}, {"coalesce", SVX_COALESCE, 0}, {"case", SVX_CASE, 0}, {"cast_i8", SVX_CAST, 0}, {"cast_f8", SVX_CAST, 1},

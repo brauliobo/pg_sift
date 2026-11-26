@@ -134,6 +134,7 @@ ORDER BY refused, cond, p;
  a >= 90                                                           |      | f       | t
  a BETWEEN 10 AND 20                                               |      | f       | t
  abs(b - 2500) < 50                                                |      | f       | t
+ b % 7 = 0                                                         |      | f       | t
  b - a * 2 < 100                                                   |      | f       | t
  b / 7 = 100                                                       |      | f       | t
  b <= $1 + 10                                                      |  100 | f       | t
@@ -166,7 +167,6 @@ ORDER BY refused, cond, p;
  v IS NULL                                                         |      | f       | t
  a IS NOT DISTINCT FROM 5                                          |      | t       | t
  a::text = '5'                                                     |      | t       | t
- b % 7 = 0                                                         |      | t       | t
  id > 2900                                                         |      | t       | t
  n / 3 > 1                                                         |      | t       | t
 (51 rows)
@@ -197,7 +197,7 @@ INSERT INTO v6_checks VALUES
     ('topn: a column that is not in the index', 'SELECT id, a FROM v6t ORDER BY a, b LIMIT 5', 'SiftAggV6TopN', 'topn', true),
     ('topn: a boolean and a date in the clauses', 'SELECT d, a FROM v6t WHERE f AND d > ''2026-03-01''::date ORDER BY d DESC, a LIMIT 9', 'SiftAggV6TopN', 'topn', true),
     ('topn: an expression key stays with PostgreSQL', 'SELECT a FROM v6t ORDER BY a + 1 LIMIT 5', '', 'topn', true),
-    ('topn: a clause the machine does not run', 'SELECT a FROM v6t WHERE b % 7 = 0 ORDER BY a LIMIT 5', '', 'topn', true),
+    ('topn: a clause the machine does not run', 'SELECT a FROM v6t WHERE a::text = ''5'' ORDER BY a LIMIT 5', '', 'topn', true),
     ('window: row_number over unique keys', 'SELECT g, a, b, row_number() OVER (PARTITION BY g ORDER BY a, b) AS rn FROM v6t ORDER BY g, a, b', 'SiftAggV6Window', 'window', true),
     ('window: ranks of ties', 'SELECT g, a, rank() OVER w AS r, dense_rank() OVER w AS dr FROM v6t WINDOW w AS (PARTITION BY g ORDER BY a) ORDER BY g, a', 'SiftAggV6Window', 'window', true),
     ('window: lag and lead', 'SELECT g, a, b, lag(b) OVER w AS prev, lead(b, 2, -1) OVER w AS next FROM v6t WINDOW w AS (PARTITION BY g ORDER BY a, b) ORDER BY g, a, b', 'SiftAggV6Window', 'window', true),

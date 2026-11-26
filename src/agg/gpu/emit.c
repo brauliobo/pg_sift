@@ -98,7 +98,7 @@ type_of(SiftGpuEmit *b, SiftVecType t)
 /* What each of the four operand fields of an operation of SiftVecOpCode is: R register, S mask slot, A mask slot of the live rows (0: those of the scan), C column, - none */
 static const char *const OPERANDS[] = {
 	"RC--", "R---", "R---", "RR--", "RRR-", "RRR-", "RRR-", "RRR-", "RR--", "RR--", "SRR-", "SR--", "SSS-", "SSS-", "SS--", "SC--", "S---",
-	"R---", "RR--", "RR-S", "SA--", "SAS-", "SAS-", "SAS-", "SAR-", "A---", "RR--", "RR--", "RR--", "SS-S", "S---", "SS--", "SAS-"
+	"R---", "RR--", "RR-S", "SA--", "SAS-", "SAS-", "SAS-", "SAR-", "A---", "RR--", "RR--", "RR--", "SS-S", "S---", "SS--", "SAS-", "RRR-"
 };
 
 typedef struct Rename
@@ -135,6 +135,8 @@ emit_op(SiftGpuEmit *b, const SiftGpuQuery *q, const SiftVecOp *o, const Rename 
 	bool		real = o->type == SVEC_F64 && (o->op == VOP_LOAD_CONST || fl);
 	int64		imm = o->imm_i64;
 
+	if (o->op == VOP_MOD)
+		fail(b, "the device kernels have no integer remainder");
 	for (int i = 0; i < 4; i++)
 		f[i] = rename_field(kinds[i], f[i], m);
 	if (o->op == VOP_LOAD_COL || o->op == VOP_MASK_IN)

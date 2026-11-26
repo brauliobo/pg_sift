@@ -198,7 +198,7 @@ SELECT * FROM rs_all();
  10 | nulls_first             | sift
  11 | text_key                | sift
  12 | text_bound              | native
- 13 | other_filter            | native
+ 13 | other_filter            | sift  
  14 | feeds_next              | sift
  15 | two_sources             | sift
  16 | nested_loop_outer_table | sift

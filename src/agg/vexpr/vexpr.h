@@ -50,6 +50,7 @@ typedef enum SiftVexprKind
 	SVX_SUB,
 	SVX_MUL,
 	SVX_DIV,
+	SVX_MOD,					/* of integers */
 	SVX_NEG,
 	SVX_ABS,
 	SVX_CMP,					/* aux = SiftCmpOp, of two arguments of one type */
@@ -141,7 +142,8 @@ typedef enum SiftVecOpCode
 	VOP_MASK_BLEND,				/* the rows of slot c take the true and known bits of slot a: a boolean CASE and COALESCE */
 	VOP_MASK_UNKNOWN,			/* slot dst has no known row (the start of a boolean CASE) */
 	VOP_MASK_ISNULL,			/* slot dst: the rows where boolean slot a is unknown are true, aux = 1 for IS NOT NULL */
-	VOP_ACT_UNKNOWN				/* dst = a and the rows where boolean slot b is unknown */
+	VOP_ACT_UNKNOWN,			/* dst = a and the rows where boolean slot b is unknown */
+	VOP_MOD						/* an integer remainder: not in the device kernels (agg/gpu/emit.c) */
 } SiftVecOpCode;
 
 #define VOP_FLAG_CONST_B	1	/* the second operand is imm_i64 / imm_f64 */

@@ -85,7 +85,8 @@ DEF_INT(vx_add_i64, int64, __builtin_add_overflow, E_INT8, ADD_RES(int64, uint64
 DEF_INT(vx_sub_i64, int64, __builtin_sub_overflow, E_INT8, SUB_RES(int64, uint64), SUB_OVF)
 DEF_INT_EXACT(, vx_mul_i64, int64, __builtin_mul_overflow, E_INT8)
 
-#define DEF_DIV(NAME, T, MINV, ERR) \
+/* PostgreSQL's int4div and int8div raise on MIN / -1; int4mod and int8mod answer 0 for any value % -1 */
+#define DEF_DIV(NAME, T, MINV, ERR, MOD) \
 void \
 NAME(T *d, const T *a, const T *b, T bc, bool bk, const uint64 *chk, uint16 n, Fail *f) \
 { \
@@ -99,18 +100,21 @@ NAME(T *d, const T *a, const T *b, T bc, bool bk, const uint64 *chk, uint16 n, F
 				note(f, i, E_DIV0); \
 				d[i] = 0; \
 			} \
-			else if (y == -1 && a[i] == MINV) \
+			else if (y == -1 && ((MOD) || a[i] == MINV)) \
 			{ \
-				note(f, i, ERR); \
+				if (!(MOD)) \
+					note(f, i, ERR); \
 				d[i] = 0; \
 			} \
 			else \
-				d[i] = a[i] / y; \
+				d[i] = (MOD) ? a[i] % y : a[i] / y; \
 		} \
 }
 
-DEF_DIV(vx_div_i32, int32, INT32_MIN, E_INT4)
-DEF_DIV(vx_div_i64, int64, INT64_MIN, E_INT8)
+DEF_DIV(vx_div_i32, int32, INT32_MIN, E_INT4, false)
+DEF_DIV(vx_div_i64, int64, INT64_MIN, E_INT8, false)
+DEF_DIV(vx_mod_i32, int32, INT32_MIN, E_INT4, true)
+DEF_DIV(vx_mod_i64, int64, INT64_MIN, E_INT8, true)
 
 #define DEF_UN_EXACT(NAME, T, MINV, ERR, EXPR) \
 static void \
