@@ -114,6 +114,9 @@ extern SiftChainStamp sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNum
 /* The records of the chain at head, in order, and the blocks of its pages */
 extern SiftPendDelRec *sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, BlockNumber **pages, int *npages);
 
+/* The unsettled records above the settled pages: what a SELECT scan needs (settled update pairs are already in the deletion vectors) */
+extern SiftPendDelRec *sift_pend_del_read_live(Relation rel, uint64 part_id, BlockNumber head, int *n);
+
 /*
  * The records a fold resolves and the pages that hold them: those above the settled pages (settled is the newest of them, InvalidBlockNumber when there are none or when the oldest of
  * them holds a pair that can be dropped: the whole chain is read then).

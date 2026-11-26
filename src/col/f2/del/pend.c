@@ -349,6 +349,14 @@ sift_pend_del_read(Relation rel, uint64 part_id, BlockNumber head, int *n, Block
 	return read_chain(rel, part_id, head, NULL, n, pages, npages);
 }
 
+SiftPendDelRec *
+sift_pend_del_read_live(Relation rel, uint64 part_id, BlockNumber head, int *n)
+{
+	BlockNumber settled = InvalidBlockNumber;
+
+	return read_chain(rel, part_id, head, &settled, n, NULL, NULL);
+}
+
 /* The oldest page of the settled pages from settled back holds a pair whose deleter is past every horizon */
 static bool
 settled_droppable(Relation rel, uint64 part_id, BlockNumber settled)

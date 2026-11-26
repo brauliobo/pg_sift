@@ -31,7 +31,7 @@ unsorted_pending_dead(Relation rel, const SiftPartitionEntry *e, Snapshot snap, 
 	*n = 0;
 	if (e->pend_del_blk == InvalidBlockNumber)
 		return NULL;
-	recs = sift_pend_del_read(rel, e->part_id, e->pend_del_blk, &nrecs, NULL, NULL);
+	recs = sift_pend_del_read_live(rel, e->part_id, e->pend_del_blk, &nrecs);
 	dead = palloc(Max(nrecs, 1) * sizeof(uint64));
 	sift_xid_cache_init(&xc, snap);
 	for (int i = 0; i < nrecs; i++)
