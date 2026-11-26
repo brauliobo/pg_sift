@@ -9,10 +9,12 @@
 #include "postgres.h"
 
 #include "access/transam.h"
+#include "commands/vacuum.h"
 #include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
 
 #include "col/f2/compact/compact.h"
+#include "core/compat.h"
 #include "core/crash_point.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -314,7 +316,7 @@ survey(Fold *f)
 	{
 		RecIter		it = trail_iter(&f->trail, i);
 
-		CHECK_FOR_INTERRUPTS();
+		sift_vacuum_delay_point();
 		while (rec_next(&it))
 		{
 			bool		settled;

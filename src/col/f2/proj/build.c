@@ -10,6 +10,7 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_type_d.h"
+#include "commands/vacuum.h"
 #include "utils/lsyscache.h"
 #include "storage/lmgr.h"
 
@@ -21,7 +22,9 @@
 #include "col/f2/store/store.h"
 #include "col/f2/part/format.h"
 #include "core/crash_point.h"
+#include "core/compat.h"
 #include "core/f2/fsm/fsm.h"
+#include "core/f2/pace.h"
 #include "core/memtrack.h"
 #include "core/part_lock.h"
 
@@ -256,8 +259,12 @@ refresh_projection(Relation rel, const SiftF2Store *store, const SiftProjColumns
 	{
 		MemoryContext old = MemoryContextSwitchTo(part_cx);
 		const SiftPartDesc *base_part = sift_part_gen_idx_find(&by_gen, plan.build_gens[i]);
-		bool		made = has_schema_of_store(rel, store, base_part, (uint32) base_part_id) &&
-		write_part(rel, store, ref, spec, cols, pps, base_part, (uint32) base_part_id, budget, &out->parts[out->n], &out->links[out->n]);
+		bool		made;
+
+		sift_vacuum_delay_point();
+		sift_f2_pace_pay();
+		made = has_schema_of_store(rel, store, base_part, (uint32) base_part_id) &&
+			write_part(rel, store, ref, spec, cols, pps, base_part, (uint32) base_part_id, budget, &out->parts[out->n], &out->links[out->n]);
 
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(part_cx);

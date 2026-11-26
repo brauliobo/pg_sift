@@ -22,6 +22,7 @@
 #include "core/crash_point.h"
 #include "core/f2/col_delta_anchor.h"
 #include "core/f2/gate.h"
+#include "core/f2/pace.h"
 #include "core/page_io.h"
 #include "core/wal_conflict.h"
 #include "core/xid_cache.h"
@@ -346,6 +347,7 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 		GranuleRows gr = {.dead = dead,.granule = g,.hc = hc,.res = res};
 
 		sift_vacuum_delay_point();
+		sift_f2_pace_pay();
 		char	   *rec = sift_part_read_granule(rel, part, g, &gd);
 		SiftGranuleView v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
 		SiftRowVer *vers = sift_part_read_vers(rel, part, dir, g);

@@ -9,6 +9,8 @@
  */
 #include "core/host.h"
 
+#include "commands/vacuum.h"
+
 #include "col/f2/compact/compact.h"
 #include "col/f2/f2.h"
 #include "col/f2/proj/proj.h"
@@ -16,7 +18,9 @@
 #include "col/f2/store/store.h"
 #include "col/f2/tail_plan.h"
 #include "col/f2/part/format.h"
+#include "core/compat.h"
 #include "core/f2/fsm/fsm.h"
+#include "core/f2/pace.h"
 #include "core/maint/maint.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -422,6 +426,8 @@ relocate_run(Relation rel, const SiftF2Store *store, FullTransactionId horizon, 
 	{
 		(void) sift_fsm_tail_shrink(rel);
 		MemoryContextReset(pass);
+		sift_vacuum_delay_point();
+		sift_f2_pace_pay();
 	}
 	(void) sift_fsm_tail_shrink(rel);
 	return sift_col_meta_read(rel).high_water < high_water;

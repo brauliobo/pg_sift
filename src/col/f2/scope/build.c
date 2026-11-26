@@ -6,12 +6,15 @@
 
 #include "access/relation.h"
 #include "access/table.h"
+#include "commands/vacuum.h"
 #include "utils/snapmgr.h"
 
 #include "col/f2/scope/scope.h"
 #include "col/f2/part/vis.h"
 #include "col/scope/scope.h"
+#include "core/compat.h"
 #include "core/f2/gate.h"
+#include "core/f2/pace.h"
 #include "core/cmp.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -555,6 +558,8 @@ refresh_stale(Relation rel)
 
 		if (!replaced[s])
 			continue;
+		sift_vacuum_delay_point();
+		sift_f2_pace_pay();
 		sift_f2s_cfg(rel, store, s, &sc);
 		ref = build_scratch(refresh_one, heap, rel, store, &sc, &mr, NULL, snap);
 		replaced[s] = ref.flags != 0;
