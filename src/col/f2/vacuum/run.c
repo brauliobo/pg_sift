@@ -15,6 +15,7 @@
 #include "miscadmin.h"
 #include "postmaster/autovacuum.h"
 #include "storage/lmgr.h"
+#include "utils/hsearch.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
@@ -207,7 +208,15 @@ shrink_tail(Relation rel, FullTransactionId horizon, int64 hot_cut)
  * come back later. What the transaction that aborts asked is not asked.
  */
 static List *asked;
+static HTAB *asked_set;
 static MemoryContext asked_cx;
+
+typedef struct AskedKey
+{
+	Oid			rel;
+	int32		kind;
+	uint64		part_id;
+} AskedKey;
 
 static void
 ask_queue(XactEvent event, void *arg pg_attribute_unused())
@@ -217,8 +226,9 @@ ask_queue(XactEvent event, void *arg pg_attribute_unused())
 	if (event == XACT_EVENT_COMMIT)
 		foreach_ptr(SiftMaintReq, req, asked)
 			(void) sift_maint_enqueue_here(req);
-	list_free_deep(asked);
+	MemoryContextReset(asked_cx);
 	asked = NIL;
+	asked_set = NULL;
 }
 
 bool
@@ -227,6 +237,7 @@ sift_f2_maint_request(Relation rel, SiftMaintKind kind, uint64 part_id)
 	static bool registered;
 	SiftMaintReq req = {.db = MyDatabaseId,.rel = RelationGetRelid(rel),.kind = kind,.tier = SIFT_MAINT_TIER_DEFAULT,.part_id = part_id};
 	MemoryContext old;
+	bool		found;
 
 	if (rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP || RecoveryInProgress() || IsParallelWorker() || !sift_maint_here_available())
 		return false;
@@ -235,11 +246,14 @@ sift_f2_maint_request(Relation rel, SiftMaintKind kind, uint64 part_id)
 		RegisterXactCallback(ask_queue, NULL);
 		registered = true;
 	}
-	foreach_ptr(SiftMaintReq, again, asked)
-		if (again->rel == req.rel && again->kind == kind && again->part_id == part_id)
-			return true;
 	if (asked_cx == NULL)
 		asked_cx = sift_cache_create_context("sift cache maintenance requests");
+	if (asked_set == NULL)
+		asked_set = hash_create("sift maintenance requests asked", 16, &(HASHCTL) {.keysize = sizeof(AskedKey),.entrysize = sizeof(AskedKey),.hcxt = asked_cx},
+								HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	(void) hash_search(asked_set, &(AskedKey) {req.rel, kind, part_id}, HASH_ENTER, &found);
+	if (found)
+		return true;
 	old = MemoryContextSwitchTo(asked_cx);
 	asked = lappend(asked, memcpy(palloc(sizeof(req)), &req, sizeof(req)));
 	MemoryContextSwitchTo(old);

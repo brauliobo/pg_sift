@@ -458,6 +458,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 					hi = InvalidTransactionId;
 		bool		frozen = true;
 
+		CHECK_FOR_INTERRUPTS();
 		for (int c = 0; c < nc; c++)
 			{
 				gcols[c] = granule_slice(rows, c, from, dicts != NULL ? dicts[c] : NULL);

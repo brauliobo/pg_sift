@@ -115,6 +115,7 @@ sift_doctext_open(Relation index)
 	d->fetch = sift_table_index_fetch_begin(d->heap);
 	d->an = sift_analyzer_create(&cfg, CurrentMemoryContext);
 	sift_analyzer_set_positions(d->an, true);
+	sift_bm25_doc_keys(index, &d->keys, CurrentMemoryContext);
 	d->nblocks = sift_vis_nblocks(d->heap);
 	if (index->rd_index->indnkeyatts == 1 && sift_tbl_is_table(d->heap) && ((SiftTblFetchHeader *) d->fetch)->ops->fetch_order != NULL)
 	{
@@ -176,6 +177,8 @@ doctext_read(DocText *d, const ItemPointerData *tid)
 {
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
+	text	   *t;
+	MemoryContext old;
 
 	doctext_snapshot(d);
 	if (!doctext_fetch(d, tid))
@@ -183,7 +186,10 @@ doctext_read(DocText *d, const ItemPointerData *tid)
 	ResetPerTupleExprContext(d->estate);
 	GetPerTupleExprContext(d->estate)->ecxt_scantuple = d->slot;
 	FormIndexDatum(d->info, d->slot, d->estate, values, isnull);
-	return isnull[0] ? NULL : DatumGetTextPP(values[0]);
+	old = MemoryContextSwitchTo(GetPerTupleMemoryContext(d->estate));
+	t = isnull[0] ? NULL : DatumGetTextPP(values[0]);
+	MemoryContextSwitchTo(old);
+	return t;
 }
 
 typedef struct DocLoc
@@ -258,6 +264,8 @@ sift_doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms,
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 	text	   *t;
+	MemoryContext old;
+	bool		found;
 
 	if (d->wcx != NULL)
 	{
@@ -274,5 +282,8 @@ sift_doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms,
 	ResetPerTupleExprContext(d->estate);
 	GetPerTupleExprContext(d->estate)->ecxt_scantuple = d->slot;
 	FormIndexDatum(d->info, d->slot, d->estate, values, isnull);
-	return sift_bm25_row_terms(d->an, d->index, values, isnull, terms, nterms, dl, len);
+	old = MemoryContextSwitchTo(GetPerTupleMemoryContext(d->estate));
+	found = sift_bm25_row_terms(d->an, &d->keys, values, isnull, terms, nterms, dl, len);
+	MemoryContextSwitchTo(old);
+	return found;
 }

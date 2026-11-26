@@ -11,6 +11,7 @@
 #include "utils/tuplesort.h"
 
 #include "bm25/analyze/analyze.h"
+#include "bm25/doc.h"
 #include "bm25/wbuf.h"
 
 #define PACK_TERM	(2 + sizeof(uint32))
@@ -37,6 +38,7 @@ typedef struct DocText
 	TupleTableSlot *slot;
 	IndexFetchTableData *fetch;
 	SiftAnalyzer *an;
+	SiftDocKeys keys;
 	BlockNumber nblocks;
 	/* a table whose rows lie in an order of their own: the texts of the next docs read in that order (sift_doctext_prime), and handed out in the order of the docs */
 	MemoryContext wcx;

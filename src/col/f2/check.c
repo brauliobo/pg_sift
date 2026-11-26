@@ -12,6 +12,7 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
+#include "miscadmin.h"
 #include "utils/snapmgr.h"
 
 #include "col/f2/del/delvec.h"
@@ -209,6 +210,7 @@ check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *
 		int64		zmin = PG_INT64_MAX,
 					zmax = PG_INT64_MIN;
 
+		CHECK_FOR_INTERRUPTS();
 		for (int k = 0; k < nint; k++)
 			want[spec->sort_cols[k]] = true;
 		rec = sift_part_read_granule_cols(rel, part, g, want, &gd);

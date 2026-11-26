@@ -21,21 +21,59 @@ key_type(Relation index, int k)
 	return TupleDescAttr(RelationGetDescr(index), k)->atttypid;
 }
 
+/* The output functions of the key columns that are no text or varchar (taken as they are) */
+static void
+keys_out(Relation index, SiftDocKeys *keys, MemoryContext cx)
+{
+	keys->index = index;
+	for (int k = 0; k < IndexRelationGetNumberOfKeyAttributes(index); k++)
+	{
+		Oid			type = key_type(index, k),
+					outfunc;
+		bool		isvarlena;
+
+		keys->out[k].fn_oid = InvalidOid;
+		if (type == TEXTOID || type == VARCHAROID)
+			continue;
+		getTypeOutputInfo(type, &outfunc, &isvarlena);
+		fmgr_info_cxt(outfunc, &keys->out[k], cx);
+	}
+}
+
+/* The extended hash functions of the key columns of a UNIQUE index (none for a type without one) */
+static void
+keys_hash(Relation index, SiftDocKeys *keys, MemoryContext cx)
+{
+	keys->index = index;
+	for (int k = 0; k < IndexRelationGetNumberOfKeyAttributes(index); k++)
+	{
+		TypeCacheEntry *tc = lookup_type_cache(key_type(index, k), TYPECACHE_HASH_EXTENDED_PROC_FINFO);
+
+		keys->hash[k].fn_oid = InvalidOid;
+		if (OidIsValid(tc->hash_extended_proc))
+			fmgr_info_copy(&keys->hash[k], &tc->hash_extended_proc_finfo, cx);
+	}
+}
+
+void
+sift_bm25_doc_keys(Relation index, SiftDocKeys *keys, MemoryContext cx)
+{
+	keys_out(index, keys, cx);
+	if (index->rd_index->indisunique)
+		keys_hash(index, keys, cx);
+}
+
 /* The key column k as a text: text and varchar as they are, any other type as its output function writes it */
 static text *
-column_text(Relation index, int k, Datum d, MemoryContext cx)
+column_text(SiftDocKeys *keys, int k, Datum d, MemoryContext cx)
 {
-	Oid			type = key_type(index, k),
-				outfunc;
-	bool		isvarlena;
 	char	   *s;
 	text	   *t;
 	MemoryContext old;
 
-	if (type == TEXTOID || type == VARCHAROID)
+	if (!OidIsValid(keys->out[k].fn_oid))
 		return DatumGetTextPP(d);
-	getTypeOutputInfo(type, &outfunc, &isvarlena);
-	s = OidOutputFunctionCall(outfunc, d);
+	s = OutputFunctionCall(&keys->out[k], d);
 	old = MemoryContextSwitchTo(cx);
 	t = cstring_to_text(s);
 	MemoryContextSwitchTo(old);
@@ -50,9 +88,9 @@ keeps_null_key(Relation index)
 }
 
 text *
-sift_bm25_assemble_doc(Relation index, const Datum *values, const bool *isnull, MemoryContext cx)
+sift_bm25_keys_doc(SiftDocKeys *keys, const Datum *values, const bool *isnull, MemoryContext cx)
 {
-	int			nkey = IndexRelationGetNumberOfKeyAttributes(index);
+	int			nkey = IndexRelationGetNumberOfKeyAttributes(keys->index);
 	StringInfoData buf;
 	MemoryContext old;
 	bool		any = false;
@@ -60,9 +98,9 @@ sift_bm25_assemble_doc(Relation index, const Datum *values, const bool *isnull, 
 	for (int k = 0; k < nkey; k++)
 		any |= !isnull[k];
 	if (!any)
-		return keeps_null_key(index) ? cstring_to_text_with_len("", 0) : NULL;
+		return keeps_null_key(keys->index) ? cstring_to_text_with_len("", 0) : NULL;
 	if (nkey == 1)
-		return column_text(index, 0, values[0], cx);
+		return column_text(keys, 0, values[0], cx);
 	old = MemoryContextSwitchTo(cx);
 	initStringInfo(&buf);
 	for (int k = 0; k < nkey; k++)
@@ -71,7 +109,7 @@ sift_bm25_assemble_doc(Relation index, const Datum *values, const bool *isnull, 
 			appendStringInfoChar(&buf, SIFT_FIELD_SEP);
 		if (!isnull[k])
 		{
-			text	   *t = column_text(index, k, values[k], cx);
+			text	   *t = column_text(keys, k, values[k], cx);
 
 			appendBinaryStringInfo(&buf, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
 		}
@@ -80,18 +118,25 @@ sift_bm25_assemble_doc(Relation index, const Datum *values, const bool *isnull, 
 	return cstring_to_text_with_len(buf.data, buf.len);
 }
 
-bool
-sift_bm25_unique_key(Relation index, const Datum *values, const bool *isnull, uint64 *key)
+text *
+sift_bm25_assemble_doc(Relation index, const Datum *values, const bool *isnull, MemoryContext cx)
 {
-	int			nkey = IndexRelationGetNumberOfKeyAttributes(index);
+	SiftDocKeys keys;
+
+	keys_out(index, &keys, CurrentMemoryContext);
+	return sift_bm25_keys_doc(&keys, values, isnull, cx);
+}
+
+bool
+sift_bm25_keys_unique(SiftDocKeys *keys, const Datum *values, const bool *isnull, uint64 *key)
+{
+	Relation	index = keys->index;
 	uint64		h = 0;
 
 	if (!index->rd_index->indisunique)
 		return false;
-	for (int k = 0; k < nkey; k++)
+	for (int k = 0; k < IndexRelationGetNumberOfKeyAttributes(index); k++)
 	{
-		TypeCacheEntry *tc;
-
 		if (isnull[k])
 		{
 			if (!index->rd_index->indnullsnotdistinct)
@@ -99,16 +144,26 @@ sift_bm25_unique_key(Relation index, const Datum *values, const bool *isnull, ui
 			h = h * UINT64CONST(0x9E3779B97F4A7C15) + 1;
 			continue;
 		}
-		tc = lookup_type_cache(key_type(index, k), TYPECACHE_HASH_EXTENDED_PROC_FINFO);
-		if (!OidIsValid(tc->hash_extended_proc))
+		if (!OidIsValid(keys->hash[k].fn_oid))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_FUNCTION),
 					 errmsg("could not identify a hash function for type %s", format_type_be(key_type(index, k))),
 					 errhint("A UNIQUE sift index needs key columns of types that have a hash operator class.")));
-		h = DatumGetUInt64(FunctionCall2Coll(&tc->hash_extended_proc_finfo, index->rd_indcollation[k], values[k], UInt64GetDatum(h)));
+		h = DatumGetUInt64(FunctionCall2Coll(&keys->hash[k], index->rd_indcollation[k], values[k], UInt64GetDatum(h)));
 	}
 	*key = h;
 	return true;
+}
+
+bool
+sift_bm25_unique_key(Relation index, const Datum *values, const bool *isnull, uint64 *key)
+{
+	SiftDocKeys keys;
+
+	if (!index->rd_index->indisunique)
+		return false;
+	keys_hash(index, &keys, CurrentMemoryContext);
+	return sift_bm25_keys_unique(&keys, values, isnull, key);
 }
 
 /* The bytes of the term of the key, one per backend: the terms of a doc and this one are the analyzer's spare terms */
@@ -136,17 +191,17 @@ sift_bm25_unique_terms(SiftAnalyzer *an, const SiftTermFreq *terms, int nterms, 
 }
 
 bool
-sift_bm25_row_terms(SiftAnalyzer *an, Relation index, const Datum *values, const bool *isnull,
+sift_bm25_row_terms(SiftAnalyzer *an, SiftDocKeys *keys, const Datum *values, const bool *isnull,
 					SiftTermFreq **terms, int *nterms, uint32 *dl, int *len)
 {
-	text	   *t = sift_bm25_assemble_doc(index, values, isnull, CurrentMemoryContext);
+	text	   *t = sift_bm25_keys_doc(keys, values, isnull, CurrentMemoryContext);
 	uint64		key;
 
 	if (t == NULL)
 		return false;
 	*len = VARSIZE_ANY_EXHDR(t);
 	*nterms = sift_analyze_doc(an, VARDATA_ANY(t), *len, terms, dl);
-	if (sift_bm25_unique_key(index, values, isnull, &key))
+	if (sift_bm25_keys_unique(keys, values, isnull, &key))
 		*nterms = sift_bm25_unique_terms(an, *terms, *nterms, key, dl, terms);
 	return true;
 }

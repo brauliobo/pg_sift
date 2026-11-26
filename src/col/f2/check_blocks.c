@@ -134,6 +134,7 @@ claim_chain(BlockMap *m, Owner kind, BlockNumber head, const ChainSpec *c)
 	{
 		Page		p = read_page(m, blk, c->type, c->magic, c->sum, OWNER_LABELS[kind]);
 
+		CHECK_FOR_INTERRUPTS();
 		if (limit-- == 0)
 			SIFT_CORRUPT(m->rel, "The chain of %s pages from block %u loops.", OWNER_LABELS[kind], head);
 		if (c->flags_off >= 0 && (*(uint16 *) (SiftPageGetData(p) + c->flags_off) & c->unsupported) != 0)
@@ -275,7 +276,10 @@ claim_partition(BlockMap *m, const SiftPartitionEntry *e)
 		SIFT_CORRUPT(m->rel, "Partition %llu lists %u parts and its entry counts %u.", (unsigned long long) e->part_id, listed, (unsigned) e->nparts);
 	parts = sift_manifest_read_parts(m->rel, e, &np);
 	for (int i = 0; i < np; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
 		claim_part(m, &parts[i], (uint32) e->part_id);
+	}
 	pfree(parts);
 	claim_col_delta(m, e);
 	claim_slab(m, e);

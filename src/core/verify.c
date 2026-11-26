@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "access/transam.h"
+#include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "storage/lmgr.h"
 
@@ -35,6 +36,7 @@ high_water(Relation index)
 static void
 mark(BlockMap *m, BlockNumber start, uint64 n, const char *what, uint64 gen)
 {
+	CHECK_FOR_INTERRUPTS();
 	if (n == 0 || start + n > m->hwm)
 		corrupt(m->index, "The %s of generation %llu (blocks %u+%llu) lies past the high-water mark %u.",
 				what, ULL(gen), start, ULL(n), m->hwm);
@@ -162,6 +164,7 @@ referenced_blocks(Relation index, const SiftDirSnapshot *snap, SiftExtentVisit v
 
 	for (int i = 0; i < snap->nsegs; i++)
 	{
+		CHECK_FOR_INTERRUPTS();
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			mark_immutable(&m, &snap->segs[i]);
 		else

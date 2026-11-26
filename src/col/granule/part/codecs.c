@@ -300,6 +300,7 @@ sift_part_codecs_train(const SiftRows *rows, SiftCompressTier tier, SiftDictEnc 
 		SiftFsst   *t;
 		uint64		fsst_est = UINT64_MAX;
 
+		CHECK_FOR_INTERRUPTS();
 		if (col->kind != SIFT_CELL_STR || col->s == NULL || (dicts != NULL && dicts[c] != NULL) || (promos != NULL && promos[c].kind != SIFT_PROMO_NONE) ||
 			(col->hint & ~SIFT_CHINT_ASTEXT) != SIFT_CHINT_AUTO)
 			continue;

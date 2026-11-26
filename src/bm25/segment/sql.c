@@ -368,6 +368,8 @@ typedef struct HeapCheck
 	bloom_filter *bf;
 	SiftAnalyzer *an;
 	Relation	index;
+	SiftDocKeys keys;
+	MemoryContext rowcx;		/* the text and the terms of one row */
 } HeapCheck;
 
 /* One (term, doc, tf) triple; term hash 0 stands for the doc itself */
@@ -457,13 +459,17 @@ heap_check_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool
 	uint32		dl;
 	int			n,
 				len;
+	MemoryContext old = MemoryContextSwitchTo(hc->rowcx);
 
-	if (!sift_bm25_row_terms(hc->an, index, values, isnull, &terms, &n, &dl, &len))
-		return;
-	check_missing(hc, tid, 0, 0, NULL, 0);
-	for (int i = 0; i < n; i++)
-		check_missing(hc, tid, sift_term_hash64(terms[i].term, terms[i].len), terms[i].tf, terms[i].term, terms[i].len);
-	sift_analyzer_reset(hc->an);
+	if (sift_bm25_row_terms(hc->an, &hc->keys, values, isnull, &terms, &n, &dl, &len))
+	{
+		check_missing(hc, tid, 0, 0, NULL, 0);
+		for (int i = 0; i < n; i++)
+			check_missing(hc, tid, sift_term_hash64(terms[i].term, terms[i].len), terms[i].tf, terms[i].term, terms[i].len);
+		sift_analyzer_reset(hc->an);
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(hc->rowcx);
 }
 
 /*
@@ -503,10 +509,13 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 	}
 	sift_analyzer_config_from_index(index, &cfg);
 	hc.an = sift_analyzer_create(&cfg, cxt);
+	sift_bm25_doc_keys(index, &hc.keys, cxt);
+	hc.rowcx = sift_mem_allocset_create(cxt, "sift verify heap row");
 	info->ii_Concurrent = true;
 	table_index_build_scan(heap, index, info, true, false, heap_check_cb, &hc,
 						   table_beginscan_strat(heap, snapshot, 0, NULL, true, false));
 	bloom_free(hc.bf);
+	MemoryContextDelete(hc.rowcx);
 	table_close(heap, AccessShareLock);
 }
 

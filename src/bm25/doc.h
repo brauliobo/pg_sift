@@ -17,6 +17,18 @@
  */
 extern text *sift_bm25_assemble_doc(Relation index, const Datum *values, const bool *isnull, MemoryContext cx);
 
+/* The functions the docs of the index read their key columns with, looked up once in cx for the docs of a pass (sift_bm25_assemble_doc looks them up for each doc) */
+typedef struct SiftDocKeys
+{
+	Relation	index;
+	FmgrInfo	out[INDEX_MAX_KEYS];	/* the output function of a column that is no text or varchar; fn_oid InvalidOid for those */
+	FmgrInfo	hash[INDEX_MAX_KEYS];	/* UNIQUE: the extended hash of the column's type, fn_oid InvalidOid when it has none */
+} SiftDocKeys;
+
+extern void sift_bm25_doc_keys(Relation index, SiftDocKeys *keys, MemoryContext cx);
+extern text *sift_bm25_keys_doc(SiftDocKeys *keys, const Datum *values, const bool *isnull, MemoryContext cx);
+extern bool sift_bm25_keys_unique(SiftDocKeys *keys, const Datum *values, const bool *isnull, uint64 *key);
+
 /* The key of a UNIQUE index for the row: false when the row has none (no UNIQUE index, or a NULL key column of NULLS DISTINCT) */
 extern bool sift_bm25_unique_key(Relation index, const Datum *values, const bool *isnull, uint64 *key);
 
@@ -27,8 +39,8 @@ extern bool sift_bm25_unique_key(Relation index, const Datum *values, const bool
  */
 extern int	sift_bm25_unique_terms(SiftAnalyzer *an, const SiftTermFreq *terms, int nterms, uint64 key, uint32 *dl, SiftTermFreq **out);
 
-/* The terms of the document of one row (with its unique key's term); false for a row that has no document. *len is the bytes of the text */
-extern bool sift_bm25_row_terms(SiftAnalyzer *an, Relation index, const Datum *values, const bool *isnull,
+/* The terms of the document of one row (with its unique key's term); false for a row that has no document. *len is the bytes of the text, which is in CurrentMemoryContext */
+extern bool sift_bm25_row_terms(SiftAnalyzer *an, SiftDocKeys *keys, const Datum *values, const bool *isnull,
 								SiftTermFreq **terms, int *nterms, uint32 *dl, int *len);
 
 /*

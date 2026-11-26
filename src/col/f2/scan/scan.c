@@ -456,6 +456,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 		uint16		arows[SIFT_POINT_ROWS_MAX];
 		const uint16 *rows;
 
+		CHECK_FOR_INTERRUPTS();
 		if (wi == 0)
 			prune_window(rel, s, schema, part, pp, dir, dir, zones, g0, g, Min(SIFT_PF_WINDOW_GRANULES, g1 - g), (g - g0) / SIFT_PF_WINDOW_GRANULES, exc, nexc, tix, &win);
 		if (win.skipped[wi] || (bound_zones != NULL && bound_excludes(s->bound, &bound_zones[g], sift_f2_exc_has(exc, nexc, g, s->sink_leaves[s->bound_sink_leaf]))))
@@ -844,7 +845,6 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 			   *hi = s->keys.hull.has_hi ? s->keys.hull.hi : NULL;
 	const SiftPendDelIndex *staged_px = want_px ? sift_f2_staged_index(staged, nstaged) : NULL;
 
-	sift_f2_maint_note_parts(rel, plan->partitions, plan->npartitions, NULL, NULL);
 	for (int i = sift_f2_first_reaching(plan, lo); i < plan->npartitions; i++)
 	{
 		const SiftPartitionEntry *e = &plan->partitions[i];
@@ -853,8 +853,10 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 		SiftF2TimeWin win = sift_f2_time_window_clean(rel, e, &s->time);
 		bool		in_window = sift_f2_entry_meets_time(e, &win);
 
+		CHECK_FOR_INTERRUPTS();
 		if (!sift_manifest_overlaps(e->key_lo, e->key_hi, NULL, hi))
 			break;
+		sift_f2_maint_note_parts(rel, e, 1, NULL, NULL);
 		if (!in_window && e->l0_slab_blk == InvalidBlockNumber)
 		{
 			F2_STAT(partitions_time_skipped);
