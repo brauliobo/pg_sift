@@ -18,8 +18,10 @@ empty :=
 space := $(empty) $(empty)
 # the compiler of the PostgreSQL build, unless CC is given on the command line
 SIFT_HCC := $(if $(filter command line,$(origin CC)),$(CC),$(shell $(PG_CONFIG) --cc 2>/dev/null || echo cc))
-# sift_cc_opts FLAGS [EXTRA]: the words of FLAGS that $(SIFT_HCC) accepts (compile and link of an empty program, with EXTRA)
-sift_cc_opts = $(foreach f,$(1),$(if $(shell echo 'int main(void) { return 0; }' | $(SIFT_HCC) $(f) $(2) -Werror -x c - -o /dev/null 2>/dev/null && echo ok),$(f)))
+# sift_cc_opts FLAGS [EXTRA]: the words of FLAGS that $(SIFT_HCC) accepts (compile and link of an empty program, with EXTRA), in their order. The probes run side by side in one
+# shell: one after the other, the 29 of SIFT_HARDEN=1 took 13.5 s of every make on a hosted runner
+sift_cc_opts = $(shell i=0; { for f in $(1); do i=$$((i + 1)); { echo 'int main(void) { return 0; }' | $(SIFT_HCC) $$f $(2) -Werror -x c - -o /dev/null 2>/dev/null && \
+	echo "$$i $$f"; } & done; wait; } | sort -n | cut -d' ' -f2-)
 
 SIFT_HARDEN_CFLAGS := -fstack-protector-strong -fstack-clash-protection -fstrict-flex-arrays=3 -Wvla -Walloca -Warray-bounds=2 -Wstringop-overflow=4 \
 	-Wformat=2 -Werror=format-security -Wundef -Wimplicit-fallthrough -Wextra -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers

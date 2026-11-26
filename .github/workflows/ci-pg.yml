@@ -1,0 +1,319 @@
+name: ci-pg
+
+# One (PostgreSQL major, architecture) entry of ci.yml, called once for each of them (`pg` there): its build stage and the test shards that install what it staged. The shards of an entry wait
+# for the build of that entry only, not for the slowest build of the run, and each flavor of the build stage (`builds`: the test library; the release library with the 8-page flavour of
+# scripts/scaling-gate.sh on 18 and later) has a runner of its own, so the flavors compile side by side.
+on:
+  workflow_call:
+    inputs:
+      pg:
+        type: number
+        required: true
+      arm:
+        type: boolean
+        required: true
+      bin:
+        type: string
+        required: true
+      builds:
+        description: 'The legs of the build stage, a JSON array of {name, flavors} (scripts/ci-build.sh FLAVOR...)'
+        type: string
+        required: true
+      tests:
+        description: 'The test shards, a JSON array of the matrix entries of `changes` (ci.yml)'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  # The build stage: the library flavors the test shards of this entry use, compiled once (scripts/ci-build.sh) into one archive for each leg. The shards
+  # install the staged roots and compile nothing, so a push builds each flavor once, not once for every shard of the entry. The entries with assertions build a server of their own
+  # and stay in the test job.
+  build:
+    name: Build ${{ inputs.bin }} ${{ matrix.name }}
+    runs-on: ${{ inputs.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.builds) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/apt-limits
+
+      - id: week
+        run: |
+          echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+          echo "APT_ARCHIVES=$HOME/apt-debs" >> "$GITHUB_ENV"
+
+      - name: Cache the apt packages
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-debs
+          key: apt-pg${{ inputs.pg }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.week.outputs.week }}
+          restore-keys: |
+            apt-pg${{ inputs.pg }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: PGDG repository
+        timeout-minutes: 5
+        run: scripts/pgdg-repo.sh
+
+      - name: Install PostgreSQL ${{ inputs.pg }}
+        timeout-minutes: 10
+        run: |
+          scripts/apt-install.sh postgresql-${{ inputs.pg }} postgresql-server-dev-${{ inputs.pg }} liblz4-dev libzstd-dev libicu-dev ccache zstd lld
+          echo /usr/lib/postgresql/${{ inputs.pg }}/bin >> "$GITHUB_PATH"
+
+      # a build whose lz4 or zstd header is missing stops with the error that names the switch (SIFT_NO_LZ4=1, SIFT_NO_ZSTD=1) and does not drop the codec
+      - name: Codec probe
+        if: ${{ inputs.pg == 18 && matrix.name == 'testing' }}
+        run: scripts/check-codec-probe.sh
+
+      # the compiler cache of the flavors of the leg. The key is the leg, the compiler and the sources the objects come from, so a commit that changes none of them (tests, docs, workflows) finds its cache
+      # and saves nothing new, and any other restores the newest cache of the leg on the branch or on main and saves its own. Only this job saves it: the test shards never write a cache
+      - name: Key of the compiler cache
+        id: ccache
+        run: |
+          prefix="ccache-pg${{ inputs.pg }}-$RUNNER_OS-$RUNNER_ARCH-gcc$(gcc -dumpfullversion)-${{ matrix.name }}-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=${prefix}${{ hashFiles('src/**', 'Makefile', 'scripts/harden.mk') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the compiler
+        id: ccache-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ccache
+          key: ${{ steps.ccache.outputs.key }}
+          restore-keys: |
+            ${{ steps.ccache.outputs.prefix }}
+            ccache-pg${{ inputs.pg }}-${{ runner.os }}-${{ runner.arch }}-
+
+      # the flavors of the leg one after the other, each on every core, in one copy of the tree at a path that is the same in every run (the objects are keyed by content: scripts/ci-build.sh)
+      - name: Build the flavors (${{ matrix.flavors }})
+        env:
+          SIFT_SRC_DIR: ${{ runner.temp }}/sift-src
+        run: scripts/ci-build.sh "$RUNNER_TEMP/bin" ${{ matrix.flavors }}
+
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() }}
+        run: ccache -s
+
+      - name: Keep the compiler cache
+        if: ${{ !cancelled() && steps.ccache-cache.outcome == 'success' && steps.ccache-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/ccache
+          key: ${{ steps.ccache.outputs.key }}
+
+      # compression-level 0: the archive is zstd already
+      - name: Keep the staged flavors
+        uses: actions/upload-artifact@v6
+        with:
+          name: sift-bin-${{ inputs.bin }}-${{ matrix.name }}
+          path: ${{ runner.temp }}/bin/sift-bin.tar.zst
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Keep the build logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-build-logs-${{ inputs.bin }}-${{ matrix.name }}
+          path: ${{ runner.temp }}/bin/build-*.log
+          if-no-files-found: ignore
+
+
+  # The test shards. One that installs the staged roots has a shallow checkout and the packages of the server (the server's development
+  # package ships pg_config, pg_regress and pg_isolation_regress, not only headers) and compiles nothing; the compiler, the headers of the codecs, the history of the tags and the
+  # caches of the compiler and of the older releases are there only when a job of the shard needs them (`scripts/ci.sh --toolchain`: the fuzz harnesses, the analyzers, pg_upgrade's
+  # target, the 8-page flavour; `scripts/ci.sh --history`: the tests that build an older release from its tag). The shards of Format 1.0 (`format: 1`) install the archive of the Format 2.0 shards
+  # of the same major, and have no job that builds an older release. The entries with assertions are the `cassert` job, and the hardened flavor is the `hardened` job (ci.yml).
+  postgresql:
+    name: PostgreSQL ${{ matrix.pg }}${{ matrix.arm && ' arm64' || '' }}${{ matrix.format == 1 && ' Format 1' || '' }}${{ matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' && inputs.tests != '[]' }}
+    runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ matrix.long && 90 || 40 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.tests) }}
+    env:
+      SIFT_CI_AFFECTED: ${{ matrix.jobs }}
+      SIFT_CI_JOBS: ${{ matrix.only }}
+      SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
+      SIFT_CI_PG_MAJOR: ${{ matrix.pg }}
+      SIFT_FORMAT: ${{ matrix.format }}
+      SIFT_CI_SKIP: '^hardened$'
+      # the scratch the running jobs may need together and the cap of the run (scripts/ci/config.sh): a hosted runner has 16 GB of RAM and 7.8 GB of /dev/shm, the jobs of a lane peak at 2.4 GB
+      CI_BUDGET_MB: 3600
+      CI_MAX_MB: 5120
+    steps:
+      # a shallow checkout; the history of the tags comes below, for the shards that build an older release
+      - uses: actions/checkout@v6
+
+      # what the shard installs instead of compiling (scripts/ci-build.sh): the pointers every later step reads
+      - name: Staged roots
+        run: |
+          {
+            echo "SIFT_PREBUILT_ROOT=$RUNNER_TEMP/bin/root-testing"
+            echo "SIFT_PREBUILT_RELEASE=$RUNNER_TEMP/bin/root-release"
+            echo "SIFT_SB_DIR=$RUNNER_TEMP/bin/root-sb8"
+          } >> "$GITHUB_ENV"
+
+      # The scratch directory of the run (SIFT_CI_TMP): in RAM, which the 4 cores of a hosted runner use for the initdb, WAL and pg_regress files (a run is capped at CI_MAX_MB),
+      # when /dev/shm has the room for it; a runner with less room uses the disk
+      - name: Scratch directory
+        run: |
+          dir=$RUNNER_TEMP/sift-ci
+          if [ "$(df -Pm /dev/shm 2>/dev/null | awk 'NR == 2 { print $4 }')" -ge 6000 ] 2>/dev/null; then dir=/dev/shm/sift-ci; fi
+          echo "SIFT_CI_TMP=$dir" >> "$GITHUB_ENV"
+          echo "scratch: $dir"
+
+      # whether a job of this shard compiles, and whether one reads the tags of the releases
+      - name: What does the shard need?
+        id: needs
+        run: |
+          echo "toolchain=$(scripts/ci.sh --toolchain)" >> "$GITHUB_OUTPUT"
+          echo "history=$(scripts/ci.sh --history)" >> "$GITHUB_OUTPUT"
+
+      # The compatibility tests build released libraries from their tags
+      - name: History and tags
+        if: ${{ steps.needs.outputs.history == 'yes' }}
+        run: git fetch --quiet --tags --unshallow
+
+      - uses: ./.github/actions/apt-limits
+
+      # one cache for each major and flavour of the entry, renewed every week (a package that left the mirror is no longer asked for); the first job of the entry to finish saves it
+      # the packages apt downloads (scripts/apt-install.sh) are kept there: a mirror that stalls holds an install for minutes, and the server with its development files is 90 MB of it
+      - id: week
+        run: |
+          echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+          echo "APT_ARCHIVES=$HOME/apt-debs" >> "$GITHUB_ENV"
+
+      - name: Cache the apt packages
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-debs
+          key: apt-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.week.outputs.week }}
+          restore-keys: |
+            apt-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+
+      # PGDG also serves the previous major of the pg_upgrade test (below)
+      - name: PGDG repository
+        timeout-minutes: 5
+        run: |
+          scripts/pgdg-repo.sh
+
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        timeout-minutes: 10
+        run: |
+          scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl zstd ${{ steps.needs.outputs.toolchain == 'yes' && 'liblz4-dev libzstd-dev libicu-dev ccache lld' || '' }} ${{ matrix.pg == 18 && 'postgresql-18-squeeze postgresql-18-repack' || '' }}
+          echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
+          ${{ steps.needs.outputs.toolchain == 'yes' && 'echo /usr/lib/ccache >> "$GITHUB_PATH"' || '' }}
+
+      # the compiler cache for the jobs that compile (restored, never saved here: the build job keeps it)
+      - name: Key of the compiler cache
+        id: ccache
+        if: ${{ steps.needs.outputs.toolchain == 'yes' }}
+        run: |
+          prefix="ccache-pg${{ matrix.pg }}-$RUNNER_OS-$RUNNER_ARCH-gcc$(gcc -dumpfullversion)-testing-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=${prefix}${{ hashFiles('src/**', 'Makefile', 'scripts/harden.mk') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the compiler
+        if: ${{ steps.needs.outputs.toolchain == 'yes' }}
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ccache
+          key: ${{ steps.ccache.outputs.key }}
+          restore-keys: |
+            ${{ steps.ccache.outputs.prefix }}
+            ccache-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+
+      # the staged flavors of the legs of the build job, one archive each: nothing below compiles them
+      - name: Download the staged flavors
+        uses: actions/download-artifact@v7
+        with:
+          pattern: sift-bin-${{ inputs.bin }}-*
+          path: ${{ runner.temp }}/bin-archive
+
+      - name: Unpack the staged flavors
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          for a in "$RUNNER_TEMP"/bin-archive/*/sift-bin.tar.zst; do zstd -dc "$a" | tar -C "$RUNNER_TEMP/bin" -xf -; done
+          ls "$RUNNER_TEMP/bin"
+
+      # test/t/compat/pg_upgrade/basic.sh upgrades from the major before the server's when its binaries are in /usr/lib/postgresql/N-1 (17 to 18, 18 to 19) and builds
+      # pg_sift for it, so it needs the server and its headers. Only the entries whose share of the queue has the job install them; a major PGDG lacks
+      # is a warning, and the test then upgrades within one major
+      - name: Install the previous PostgreSQL major (pg_upgrade)
+        if: ${{ matrix.pg > 17 }}
+        timeout-minutes: 10
+        run: |
+          plan=$(scripts/ci.sh --plan)
+          grep -q '^tap-shell-compat/pg_upgrade/basic ' <<<"$plan" || { echo "no pg_upgrade job in this entry"; exit 0; }
+          prev=$(( ${{ matrix.pg }} - 1 ))
+          scripts/apt-install.sh postgresql-$prev postgresql-server-dev-$prev ||
+            echo "::warning::PostgreSQL $prev is not available from PGDG: pg_upgrade runs within one major"
+
+      # PostgreSQL 17 has no extension_control_path: the tests install sift into the server's own directories
+      - name: Install into the server (PostgreSQL 17)
+        if: ${{ matrix.pg == 17 }}
+        run: echo "SIFT_SUDO=sudo env PATH=$PATH" >> "$GITHUB_ENV"
+
+      # the older releases the compatibility tests build (tags do not move; about 70 CPU seconds each, seven of them); only the shard that holds those tests restores them. PostgreSQL 17 cannot
+      # hold two builds, and no release builds on 19 (scripts/old-lib-check.sh). A root is by commit (scripts/old-lib-check.sh), so what an earlier cache holds stays valid: the key follows
+      # the compiler and the tags (a release adds a library), the tests that build them change it too, and the shard of the same key prefix restores the
+      # last cache and builds only what it lacks. The cache is saved after a failed run as well: the builds are the cost, not the tests
+      - name: Key of the older releases
+        id: oldlib
+        if: ${{ steps.needs.outputs.history == 'yes' }}
+        run: |
+          prefix="old-lib-$RUNNER_OS-$RUNNER_ARCH-pg${{ matrix.pg }}-gcc$(gcc -dumpfullversion)-shard${{ matrix.shard }}-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat/**/*.sh', 'test/t/lib/compat.bash') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the older releases
+        id: oldlib-cache
+        if: ${{ steps.needs.outputs.history == 'yes' }}
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/sift/old-lib/*/root
+          key: ${{ steps.oldlib.outputs.key }}
+          restore-keys: ${{ steps.oldlib.outputs.prefix }}
+
+      # the last stage of make check is the leak gate (scripts/leakcheck.sh): leak warnings, crashes and sanitizer
+      # reports in the server logs of every suite, and the cluster checks recorded at each shutdown
+      # includes the regression tests against the release library (SIFT_TESTING off, stage release-library-regress, Format 2.0 only), with its own leak gate
+      # the jobs: the ones scripts/areas.tsv picks for the diff (all of them in a dispatch), and this runner's share of them (shard k of n)
+      # the checks of the harness (lint's scripts, the selftests) run in `lint`, once for every run, not in a shard
+      - name: Quick test tier (make check, with the leak gate)
+        run: make check
+        env:
+          SIFT_CI_NO_HARNESS: 1
+          SIFT_CI_STATS: 1
+          # a job that hangs is stopped with the end of its log after 15 minutes (scripts/ci/config.sh): the limit of the workflow ends the whole shard, and its logs are lost; the exhaustive fault matrix (`only`) takes longer
+          CI_JOB_TIMEOUT: ${{ matrix.long && '3600' || '' }}
+
+      - name: Keep the logs of a failed run
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-test-logs-pg${{ matrix.pg }}${{ matrix.arm && '-arm64' || '' }}-f${{ matrix.format }}-${{ matrix.tier }}-${{ matrix.shard }}
+          path: |
+            ${{ env.SIFT_CI_TMP }}/logs
+            ${{ env.SIFT_CI_TMP }}/lane*/**/tap/**/*.log
+            ${{ env.SIFT_CI_TMP }}/lane*/**/postgres.log
+            ${{ env.SIFT_CI_TMP }}/lane*/**/sanitizer
+            ${{ env.SIFT_CI_TMP }}/lane*/**/leakcheck.*
+            ${{ env.SIFT_CI_TMP }}/lane*/regress/*/regression.diffs
+            ${{ env.SIFT_CI_TMP }}/lane*/regress/*.report
+            test/regression.diffs
+          if-no-files-found: ignore
+

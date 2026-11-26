@@ -3,14 +3,15 @@
 # (the layout scripts/pgtest.sh install makes with DESTDIR), the checks that need the build tree, and one archive the shards unpack and point
 # SIFT_PREBUILT_ROOT, SIFT_PREBUILT_RELEASE and SIFT_PREBUILT_HARDENED at (scripts/pgtest.sh install, release-library-check.sh and hardened.sh then compile nothing).
 #
-#   scripts/ci-build.sh OUT FLAVOR...        FLAVOR: testing (the test library), release, hardened, asan (the test library with ASan+UBSan)
+#   scripts/ci-build.sh OUT FLAVOR...        FLAVOR: testing (the test library), release, hardened, asan (the test library with ASan+UBSan), sb8 (the 8-page flavour of scripts/scaling-gate.sh)
 #   scripts/ci-build.sh --check NAME         the result of a check the testing build ran (isa-baseline, tools-build), from the staged root SIFT_ROOT: the plan's jobs of that name
 #   scripts/ci-build.sh --selftest           every flavor has its environment, an unknown one is refused, a build that fails ends with status 1 and the compiler's error
 #
 # The flavors are built one after the other, each on every core (SIFT_MAKE_JOBS, default the cores), in one copy of the tree at OUT/src (SIFT_SRC_DIR: a path that does not change from one run
-# to the next). The compiler runs through ccache when it is installed (the cache is content-addressed: CCACHE_NOHASHDIR and CCACHE_BASEDIR make an object depend on the file, not on the
-# directory it was built in) and the library is linked with ld.lld when it is installed and SIFT_LTO is unset. OUT/root-FLAVOR holds the staged library, OUT/sift-bin.tar.zst the roots
-# as one archive. The testing flavor also runs scripts/isa_check.sh on its objects and scripts/check-tools-build.sh, which the shards no longer compile for.
+# to the next); the workflow gives each flavor a runner of its own, so they build side by side. The Makefile compiles through ccache when it is installed (the cache is content-addressed:
+# CCACHE_NOHASHDIR and CCACHE_BASEDIR make an object depend on the file, not on the directory it was built in) and the library is linked with ld.lld when it is installed and SIFT_LTO is unset.
+# OUT/root-FLAVOR holds the staged library, OUT/sift-bin.tar.zst the roots as one archive. The testing flavor also runs scripts/isa_check.sh on its objects and scripts/check-tools-build.sh
+# side by side, which the shards no longer compile for. sb8 is SIFT_SB_DIR=OUT/root-sb8 of scripts/scaling-gate.sh: the shards that point SIFT_SB_DIR at it build nothing.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -21,16 +22,15 @@ flavor_env() { # FLAVOR: the environment of its build
 	case $1 in
 		testing) echo "SIFT_TESTING=1 SANITIZE=" ;;
 		release) echo "SIFT_TESTING= SANITIZE= SIFT_TEST_HELPERS=1" ;;
-		hardened) echo "SIFT_TESTING=1 SANITIZE= SIFT_HARDEN=1" ;;
+		hardened) echo "SIFT_TESTING=1 SANITIZE= SIFT_HARDEN=1 SIFT_FAST_DEBUG=1" ;;
 		asan) echo "SIFT_TESTING=1 SANITIZE=1" ;;
-		*) echo "ci-build: unknown flavor $1 (testing, release, hardened, asan)" >&2; return 1 ;;
+		sb8) echo "SIFT_TESTING=1 SIFT_SB_SHIFT=3" ;;
+		*) echo "ci-build: unknown flavor $1 (testing, release, hardened, asan, sb8)" >&2; return 1 ;;
 	esac
 }
 
-fast_build_env() { # SRC: exports what makes a build quicker: ccache through the directory of its compiler links, and ld.lld for the library
-	local d
+fast_build_env() { # SRC: exports what makes a build quicker: a compiler cache keyed by content (the Makefile runs the compiler through it), and ld.lld for the library
 	if command -v ccache >/dev/null; then
-		for d in /usr/lib/ccache /usr/lib/ccache/bin /usr/lib64/ccache; do [[ -x $d/gcc ]] && { export PATH=$d:$PATH; break; }; done
 		export CCACHE_NOHASHDIR=1 CCACHE_BASEDIR=$1 CCACHE_COMPRESS=1 CCACHE_COMPRESSLEVEL=1 CCACHE_SLOPPINESS=time_macros,include_file_mtime CCACHE_MAXSIZE=${CCACHE_MAXSIZE:-2G}
 	fi
 	[[ -n ${SIFT_LTO:-} ]] || ! command -v ld.lld >/dev/null || export PG_LDFLAGS="${PG_LDFLAGS:-} -fuse-ld=lld"
@@ -44,18 +44,22 @@ build_failure() { # FLAVOR LOG: the lines that name the failure (compiler and li
 }
 
 stage_flavor() { # OUT FLAVOR: runs as its own process (--stage), where set -e holds; in a `||` list it would be off and a failed build would go on to be staged
-	local out=$1 f=$2 src=${SIFT_SRC_DIR:-$1/src}
+	local out=$1 f=$2 src=${SIFT_SRC_DIR:-$1/src} isa
+	fast_build_env "$src"
+	[[ $f != sb8 ]] || { SIFT_SB_DIR="$out/root-sb8" SIFT_MAKE_JOBS="${SIFT_MAKE_JOBS:-$(nproc)}" "$REPO/scripts/scaling-gate.sh" build; return; }
 	[[ -e $src/.sources ]] || { mkdir -p "$src"; copy_git_sources "$REPO" "$src"; touch "$src/.sources"; }
 	cd "$src"
-	fast_build_env "$src"
 	# the staged tree has no .git: the build id is the checkout's
 	# shellcheck disable=SC2046  # the words of flavor_env are assignments
 	env $(flavor_env "$f") SIFT_BUILD_ID="$(scripts/build-id.sh "$REPO")" SIFT_STAGE=1 SIFT_TMP="$out/tmp-$f" SIFT_ROOT="$out/root-$f" SIFT_PORT="${SIFT_PORT:-56100}" \
 		SIFT_MAKE_JOBS="${SIFT_MAKE_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}" scripts/pgtest.sh install
 	if [[ $f == testing ]]; then
 		mkdir -p "$out/root-$f/.checks"
-		scripts/isa_check.sh | tee "$out/root-$f/.checks/isa-baseline"
+		scripts/isa_check.sh >"$out/root-$f/.checks/isa-baseline" &
+		isa=$!
 		scripts/check-tools-build.sh | tee "$out/root-$f/.checks/tools-build"
+		wait "$isa"
+		cat "$out/root-$f/.checks/isa-baseline"
 	fi
 	rm -rf "$out/tmp-$f"
 }
@@ -76,7 +80,7 @@ if [[ ${1:-} == --check ]]; then
 fi
 if [[ ${1:-} == --selftest ]]; then
 	d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT
-	for f in testing release hardened asan; do flavor_env "$f" >/dev/null || { echo "selftest: $f has no environment"; exit 1; }; done
+	for f in testing release hardened asan sb8; do flavor_env "$f" >/dev/null || { echo "selftest: $f has no environment"; exit 1; }; done
 	flavor_env nonsense 2>/dev/null && { echo "selftest: an unknown flavor was accepted"; exit 1; }
 	{ echo "cc -c a.c"; echo "test/fuzz/fz.c:102:5: error: call to undeclared function 'sift_count'"; seq 1 200 | sed 's/^/noise /'; } >"$d/log"
 	[[ $(build_failure selftest "$d/log" | grep -c "call to undeclared function") == 1 ]] || { echo "selftest: the failure report lacks the compiler error that precedes 200 lines of noise"; exit 1; }

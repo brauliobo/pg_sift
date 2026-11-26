@@ -8,7 +8,8 @@
 #
 # The default tests are the decoders and the readers of stored bytes: codec, column unit, kernels at every SIMD level, shredder, term
 # blobs, corruption tests, positions, the table AM. scripts/ci.sh runs this as the job `hardened`. SIFT_PREBUILT_HARDENED (scripts/ci-build.sh): the staged root of
-# the hardened flavor, so that nothing is copied or compiled here.
+# the hardened flavor, so that nothing is copied or compiled here. Without it the private copy is compiled with the debug info of scripts/ci-build.sh (line tables, SIFT_FAST_DEBUG) through a
+# compiler cache keyed by content (CCACHE_BASEDIR): the copy is at a path of this run, and a cache keyed by it missed every object.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -33,7 +34,7 @@ else
 	# a private copy: the build writes into the tree and the flavor must not disturb the checkout's own build
 	copy_git_sources "$REPO" "$WORK/tree"
 	cd "$WORK/tree"
-	export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root
+	export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root SIFT_FAST_DEBUG=1 CCACHE_BASEDIR=$WORK/tree CCACHE_NOHASHDIR=1
 	scripts/pgtest.sh install
 	drop_build "$WORK/tree"
 fi

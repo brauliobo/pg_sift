@@ -10,7 +10,10 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 APT_UNIT=${APT_UNIT:-60} # seconds; every bound below is a multiple of it
 # a connection that sends nothing for 20 s is cut and tried again (five times, on the next mirror of the list when there is one) inside the attempt, before the attempt itself is cut: the mirror that served a package at 55 kB/s, or none, held a call for its whole bound
-APT_OPTS=(-o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+# dpkg does not sync every file it unpacks (--force-unsafe-io): the runner is thrown away after the job, and the syncs were most of the unpack of the server and its development files
+APT_OPTS=(-o DPkg::Lock::Timeout=60 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-unsafe-io -o Acquire::Retries=5 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+# APT_MANDB: the flag file whose presence makes the man-db trigger rebuild the index of the manual pages after every install, seconds of each job for pages nobody reads there
+APT_MANDB=${APT_MANDB:-/var/lib/man-db/auto-update}
 # APT_ARCHIVES: where the downloaded packages are kept, a directory the workflow caches between runs (the install of PostgreSQL and its development files is 90 MB from one mirror)
 [[ -z ${APT_ARCHIVES:-} ]] || APT_OPTS+=(-o "Dir::Cache::archives=$APT_ARCHIVES")
 
@@ -71,6 +74,7 @@ apt_get() {
 # the packages a cache saves are readable by the user that saves it, and the lock file of apt is not one of them
 apt_archives_ready() {
 	[[ -z ${APT_ARCHIVES:-} ]] || sudo install -d -m 755 "$APT_ARCHIVES" "$APT_ARCHIVES/partial"
+	[[ ! -e $APT_MANDB ]] || sudo rm -f "$APT_MANDB"
 }
 apt_archives_done() {
 	[[ -z ${APT_ARCHIVES:-} ]] || { sudo rm -f "$APT_ARCHIVES/lock"; sudo chmod -R a+rX "$APT_ARCHIVES"; }
@@ -106,6 +110,8 @@ exit "${FAIL:-0}"
 FAKE
 	chmod +x "$d"/bin/*
 	printf 'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttp://security.ubuntu.com/ubuntu/\tpriority:3\n' >"$d/mirrors"
+	touch "$d/mandb"
+	export APT_MANDB=$d/mandb
 	local run="env PATH=$d/bin:$PATH APT_UNIT=3 LOG=$d/log FAIL= APT_MIRRORS=$d/mirrors bash $self pkg"
 	# a hang in the download: cut, diagnosed (the stuck call is in the process list), retried, then the install
 	out=$($run 2>&1) || { echo "FAIL: apt-install does not recover from a hung download: $(tail -n 5 <<<"$out")"; bad=1; }
@@ -113,6 +119,7 @@ FAKE
 	[[ $(grep -c 'download-only' "$d/log") == 2 && $(grep -c ' install -y --no-install-recommends pkg$' "$d/log") == 1 && $(grep -c '^dpkg --configure -a$' "$d/log") == 1 ]] ||
 		{ echo "FAIL: apt-install retry path differs from one cut download, one reconfigure, one install: $(cat "$d/log")"; bad=1; }
 	[[ $out == *'next try reads from http://archive.ubuntu.com/'* && $(grep -c azure "$d/mirrors") == 0 ]] || { echo "FAIL: apt-install does not move to the other mirror after a cut try: $(cat "$d/mirrors")"; bad=1; }
+	[[ ! -e $d/mandb && $(grep -c 'force-unsafe-io' "$d/log") == $(grep -c '^apt-get' "$d/log") ]] || { echo "FAIL: apt-install leaves the man-db trigger on or syncs every unpacked file: $(cat "$d/log")"; bad=1; }
 	# an install that keeps failing is retried three times and fails the step
 	: >"$d/log"
 	out=$(env FAIL=1 PATH="$d/bin:$PATH" APT_UNIT=1 LOG="$d/log" bash "$self" pkg 2>&1) && { echo "FAIL: apt-install exits 0 when the install fails: $(tail -n 5 <<<"$out")"; bad=1; }
@@ -122,7 +129,7 @@ FAKE
 	env APT_ARCHIVES="$d/debs" PATH="$d/bin:$PATH" APT_UNIT=1 LOG="$d/log" FAIL= bash "$self" pkg >/dev/null 2>&1 || { echo "FAIL: apt-install with APT_ARCHIVES fails"; bad=1; }
 	[[ $(grep -c "Dir::Cache::archives=$d/debs" "$d/log") == 2 && -d $d/debs/partial ]] || { echo "FAIL: apt-install does not keep its packages in APT_ARCHIVES: $(cat "$d/log")"; bad=1; }
 	rm -rf "$d"
-	(( bad )) || echo "apt-install selftest: a hung call is cut, diagnosed and retried; a failing install is tried three times; the packages go to APT_ARCHIVES"
+	(( bad )) || echo "apt-install selftest: a hung call is cut, diagnosed and retried; a failing install is tried three times; the packages go to APT_ARCHIVES; no man-db index, no sync per file"
 	return "$bad"
 }
 

@@ -19,12 +19,14 @@ else HARNESS=(); fi
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
 step build build env ${PREBUILT:+SIFT_PREBUILT_ROOT="$PREBUILT"} "$S/pgtest.sh" install || { cat "$LOG/build.log"; failed=1; exit 1; }
 step simd-level simd-level "$S/simd_level.sh" || cat "$LOG/simd-level.log"
-# the 8-page flavour (scripts/scaling-gate.sh) is a second full build of the library, 1.1 trillion instructions: built once here, not inside the first test that asks for it and its time budget
+# the 8-page flavour (scripts/scaling-gate.sh) is a second full build of the library, 1.1 trillion instructions: built once here, beside the lanes (the build stage of the workflow stages it,
+# SIFT_SB_DIR), not inside the first test that asks for it; a test that starts before it is done waits for it on the lock of scaling-gate.sh
 if (( PG_MAJOR >= 18 )); then
 	for f in $(grep -rl --include='*.sh' 'scaling-gate\.sh' "$REPO/test/t"); do
 		f=${f#"$REPO/test/t/"}
 		[[ " ${J_ID[*]} " == *" tap-shell-${f%.sh} "* ]] || continue
-		step sb-flavour sb-flavour "$S/scaling-gate.sh" build || { cat "$LOG/sb-flavour.log"; failed=1; exit 1; }
+		step sb-flavour sb-flavour "$S/scaling-gate.sh" build &
+		sbflavour=$!
 		break
 	done
 fi
@@ -35,6 +37,7 @@ for (( n = 1; n <= LANES; n++ )); do
 	pids+=($!)
 done
 wait "${pids[@]}" ${lint:-} ${spantest:-}
+[[ -z ${sbflavour:-} ]] || wait "$sbflavour" || { cat "$LOG/sb-flavour.log"; failed=1; }
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
 for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || continue; if run_job "$id"; then tidy "$id"; else shed "$id"; fi; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"

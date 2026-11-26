@@ -9,5 +9,6 @@ apt_bounded $((APT_UNIT * 5 / 2)) curl -fsSL --max-time 30 --retry 3 -o /usr/sha
 echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" |
 	sudo tee /etc/apt/sources.list.d/pgdg.list
 apt_get 3 $((APT_UNIT * 2)) update
-apt_install postgresql-common
+# the x86 image ships postgresql-common (its PostgreSQL 16): the setting is written into its file, which the upgrade the server packages pull keeps (--force-confold), and no install of its own is needed
+[[ -e /etc/postgresql-common/createcluster.conf ]] || apt_install postgresql-common
 sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf

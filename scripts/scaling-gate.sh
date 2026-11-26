@@ -11,12 +11,14 @@ SHIFT=3
 PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 (( PG_MAJOR >= 18 )) || { echo "SKIP the 8-page flavour needs PostgreSQL 18 (extension_control_path)" >&2; exit 77; }
 
-# a compiler cache, when the host has one in the usual place: the flavour is the whole library again (58 s cold, 3 s when the sources were compiled before with these flags)
-for d in /usr/lib/ccache /usr/lib64/ccache /opt/homebrew/opt/ccache/libexec; do [[ -d $d ]] && { PATH=$d:$PATH; break; }; done
+# the Makefile compiles through ccache when it is installed: the flavour is the whole library again (58 s cold, 3 s when the sources were compiled before with these flags). The copy of the
+# tree is at a path of its key, so the cache is keyed by content (CCACHE_BASEDIR, CCACHE_NOHASHDIR) and the debug info is the line tables (SIFT_FAST_DEBUG: the same code, a faster link).
+# SIFT_MAKE_JOBS: the compiler processes (default 4)
 
 paths=(Makefile 'pg_sift*.control' sql src tools scripts/harden.mk scripts/dev-targets.mk scripts/sql-parts.sh scripts/upgrade_check_head.sql scripts/upgrade_check_tail.sql)
 key=$({ git -C "$REPO" ls-files -s -- "${paths[@]}"; git -C "$REPO" diff HEAD -- "${paths[@]}"; echo "shift=$SHIFT $(pg_config --version)"; } | "$REPO/scripts/sha256.sh" | cut -c1-16)
 DIR=${SIFT_SB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/sb-flavour/$key}
+export CCACHE_BASEDIR=$DIR/src CCACHE_NOHASHDIR=1
 
 # Two jobs of a CI run build it at the same time (scaling_slope, sb_mask_small): the one that starts second removes the directory of the first, and both fail. One builds under a
 # lock directory (mkdir: macOS has no flock) and the others wait for its .flavor; a lock whose owner is gone is taken over.
@@ -34,8 +36,8 @@ build() {
 	[[ -f $DIR/root/.flavor ]] && { rm -rf "$DIR.lock"; echo "$DIR/root"; return; }
 	rm -rf "$DIR"; mkdir -p "$DIR/src" || { rm -rf "$DIR.lock"; return 1; }
 	git -C "$REPO" ls-files -z -c -o --exclude-standard -- "${paths[@]}" | tar -C "$REPO" --null -T - -cf - | tar -C "$DIR/src" -xf -
-	local flavor=(USE_PGXS=1 SIFT_TESTING=1 SIFT_SB_SHIFT=$SHIFT)
-	{ nice make -C "$DIR/src" -j4 "${flavor[@]}" && make -C "$DIR/src" "${flavor[@]}" DESTDIR="$DIR/root" install; } >"$DIR/build.log" 2>&1 \
+	local flavor=(USE_PGXS=1 SIFT_TESTING=1 SIFT_SB_SHIFT=$SHIFT SIFT_FAST_DEBUG=1)
+	{ nice make -C "$DIR/src" -j"${SIFT_MAKE_JOBS:-4}" "${flavor[@]}" && make -C "$DIR/src" "${flavor[@]}" DESTDIR="$DIR/root" install; } >"$DIR/build.log" 2>&1 \
 		|| { tail -20 "$DIR/build.log" >&2; rm -rf "$DIR" "$DIR.lock"; return 1; }
 	echo "testing sb-shift-$SHIFT" >"$DIR/root/.flavor"
 	rm -rf "$DIR/src" "$DIR.lock"

@@ -15,7 +15,7 @@
 # ICU is built in (the locale tests, the "en-x-icu" collation and the nondeterministic ones need it; the prefix name has it so that a build in use keeps its own).
 # The pinned minors are the ones of the distribution server this was written against (18.6; 17.11 for the 17 branch, 19.0 for the 19 one), the tarball is
 # checked against the sha256 below. Prefix: $SIFT_PG_CACHE (default ${XDG_CACHE_HOME:-~/.cache}/sift/pg)/<version>-assert[-valgrind]; the
-# tarballs are kept in $SIFT_PG_CACHE/src. A build takes about five minutes (nice, 4 jobs); it is not repeated while the recipe (version,
+# tarballs are kept in $SIFT_PG_CACHE/src. A build takes about five minutes (nice, 4 jobs, the install and the contrib modules too); it is not repeated while the recipe (version,
 # flags) is the same, and concurrent callers wait for each other. The prefix has the pgxs tree, pg_regress, the TAP perl modules, the
 # contrib modules the tests use and share/valgrind.supp (src/tools/valgrind.supp of the same tree). Needs: curl, bzip2, gcc, make, flex, bison, perl.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -74,9 +74,9 @@ trap 'rm -rf "$WORK"' EXIT
 	CPPFLAGS="$CPP" CFLAGS="$CFLAGS_" ./configure --prefix="$PREFIX" --enable-cassert --enable-debug --enable-tap-tests ${INJECT:+--enable-injection-points} \
 		--with-icu --without-readline --without-zlib >configure.log 2>&1 || { tail -n 20 configure.log; exit 1; }
 	nice make -j4 -s >make.log 2>&1 || { tail -n 30 make.log; exit 1; }
-	nice make -s install >/dev/null
-	for c in $CONTRIB; do nice make -s -C contrib/$c install >/dev/null; done
-	[[ -z $INJECT ]] || nice make -s -C src/test/modules/injection_points install >/dev/null
+	nice make -j4 -s install >/dev/null
+	for c in $CONTRIB; do nice make -j4 -s -C contrib/$c install >/dev/null; done
+	[[ -z $INJECT ]] || nice make -j4 -s -C src/test/modules/injection_points install >/dev/null
 	install -D -m 644 src/tools/valgrind.supp "$PREFIX/share/valgrind.supp"
 } >&2
 echo "$RECIPE" >"$PREFIX/.recipe"

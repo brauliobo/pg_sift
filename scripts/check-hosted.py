@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A local dry run of the hosted workflow (.github/workflows/ci.yml), for the box that has no runner: python3 -I scripts/check-hosted.py [BASE]
 
-It runs the step that builds the job matrix, with the environment each event would give it and the scope scripts/ci.sh affected --github says for BASE (default: all),
+It runs the step that builds the job matrix (the build stage and the test shards of each entry are .github/workflows/ci-pg.yml), with the environment each event would give it and the scope scripts/ci.sh affected --github says for BASE (default: all),
 and fails when a job the line promises is missing: PostgreSQL 17, 18 and 19, AArch64, assertions, and both formats on PostgreSQL 18; and when the runners or the compiler cache are
 not as the line pins them. actionlint runs too when it is on PATH or in $ACTIONLINT. Needs PyYAML; without it nothing is checked and the exit status is 2.
 """
@@ -15,6 +15,7 @@ except ImportError:
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WF = os.path.join(ROOT, '.github/workflows/ci.yml')
 doc = yaml.safe_load(open(WF))
+entry = yaml.safe_load(open(os.path.join(ROOT, '.github/workflows/ci-pg.yml')))
 bad = []
 
 
@@ -23,8 +24,8 @@ def need(ok, what):
         bad.append(what)
 
 
-def step(job, key, val):
-    return next((s for s in doc['jobs'][job]['steps'] if s.get(key) == val), None)
+def step(job, key, val, wf=doc):
+    return next((s for s in wf['jobs'][job]['steps'] if s.get(key) == val), None)
 
 
 def scope(base):
@@ -35,8 +36,9 @@ def scope(base):
 def matrix(event, sc, cipr=False, versions=''):
     env = dict(os.environ, EVENT=event, CIPR=str(cipr).lower(), VERSIONS=versions, FORMATS='2 1', ONLY='', LABEL_ASSERTIONS='false', F1=sc['f1'], COMPAT17=sc['compat17'], COMPATARM=sc['compatarm'],
                NSHARDS=sc['nshards'], PG=sc['pg'], JOBS=sc['jobs'], FAST=sc['fast'], FASTJOBS=sc['fastjobs'], FASTPG=sc['fastpg'], CASSERT=sc['cassert'], CASSERTJOBS=sc['cassertjobs'], COMPAT=sc.get('compat', ''))
-    # the step appends its outputs to $GITHUB_OUTPUT and echoes them (tee): the standard output is both
-    out = subprocess.run(['bash', '-c', step('changes', 'id', 'matrix')['run']], cwd=ROOT, env=dict(env, GITHUB_OUTPUT='/dev/stdout'), check=True, capture_output=True, text=True).stdout
+    # the step appends its outputs to $GITHUB_OUTPUT and echoes them (tee): the standard error is the outputs, a pipe of its own (tee writing a line of more than 4 kB to the
+    # pipe of the standard output twice interleaves the two copies)
+    out = subprocess.run(['bash', '-c', step('changes', 'id', 'matrix')['run']], cwd=ROOT, env=dict(env, GITHUB_OUTPUT='/dev/stderr'), check=True, capture_output=True, text=True).stderr
     pick = lambda key: json.loads(next(l for l in out.splitlines() if l.startswith(key + '='))[len(key) + 1:])
     return pick('matrix') + [dict(j, cassert=True) for j in pick('cassert')]
 
@@ -57,27 +59,27 @@ for name, (m, want) in runs.items():
     need(want <= have, '%s lacks %s' % (name, sorted(want - have, key=str)))
 
 # the runners: pinned images, no floating label
-for name, job in doc['jobs'].items():
+for name, job in list(doc['jobs'].items()) + list(entry['jobs'].items()):
     ro = str(job.get('runs-on', ''))
     need('latest' not in ro, 'job %s runs on %s: a floating runner image' % (name, ro))
 need(doc['jobs']['macos']['runs-on'] == 'macos-15', 'the macOS job is not on macos-15 (arm64)')
 need('postgresql@17 postgresql@18' in step('macos', 'name', 'Install bash 5 and PostgreSQL 17 and 18')['run'], 'the macOS job does not install PostgreSQL 17 and 18')
 
 # the compiler cache: installed, on PATH, kept by pg, OS, architecture, compiler and sources (the key is made by a step), restored from the newest cache of the branch or of main, and saved by the first job to finish
-pg = doc['jobs']['build']['steps']
+pg = entry['jobs']['build']['steps']
 inst = next(s for s in pg if str(s.get('name', '')).startswith('Install PostgreSQL'))
-keyer = step('build', 'name', 'Key of the compiler cache')
-cache = step('build', 'name', 'Cache the compiler')
-keep = step('build', 'name', 'Keep the compiler cache')
+keyer = step('build', 'name', 'Key of the compiler cache', entry)
+cache = step('build', 'name', 'Cache the compiler', entry)
+keep = step('build', 'name', 'Keep the compiler cache', entry)
 need(' ccache ' in inst['run'], 'the compiler cache is not installed with PostgreSQL')
 need(' lld' in inst['run'], 'the linker lld is not installed with PostgreSQL')
-need(keyer and all(part in keyer['run'] for part in ('matrix.pg', 'RUNNER_OS', 'RUNNER_ARCH', 'gcc', "hashFiles('src/**'")), 'the key of the compiler cache is not made of the PostgreSQL major, the OS, the architecture, the compiler and the sources')
+need(keyer and all(part in keyer['run'] for part in ('inputs.pg', 'matrix.name', 'RUNNER_OS', 'RUNNER_ARCH', 'gcc', "hashFiles('src/**'")), 'the key of the compiler cache is not made of the PostgreSQL major, the leg, the OS, the architecture, the compiler and the sources')
 need(keyer and '"key=${prefix}' in keyer['run'], 'the key of the compiler cache does not name the prefix as ${prefix} (a hash after $prefix is read as part of the variable name)')
 need(cache and cache['with']['path'].endswith('/ccache'), 'the compiler cache does not keep the directory of ccache')
 if cache:
     need(cache['uses'].startswith('actions/cache/restore@'), 'the compiler cache is not restored by actions/cache/restore (the save is a step of its own)')
     need('steps.ccache.outputs.key' in cache['with']['key'], 'the compiler cache is not restored by the key of its step')
-    need('steps.ccache.outputs.prefix' in cache['with']['restore-keys'] and 'matrix.pg' in cache['with']['restore-keys'], 'restore-keys lacks the prefix of the compiler and the major')
+    need('steps.ccache.outputs.prefix' in cache['with']['restore-keys'] and 'inputs.pg' in cache['with']['restore-keys'], 'restore-keys lacks the prefix of the compiler and the major')
 need(keep and keep['uses'].startswith('actions/cache/save@') and keep['with']['key'] == cache['with']['key'] and '!cancelled()' in keep['if'], 'the compiler cache is not saved, under the key it was looked up by, when the run is not cancelled')
 need(pg.index(cache) > pg.index(inst), 'the compiler cache is restored before the compiler wrappers are installed')
 

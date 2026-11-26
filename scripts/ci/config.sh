@@ -20,7 +20,8 @@ PG_MAJOR=${SIFT_CI_PG_MAJOR:-$PG_MAJOR}
 LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
 # BUDGET_MB, the scratch the running jobs may need together (estimates below): 1800, CI_BUDGET_MB. The cap, CI_MAX_MB, stops the run (and fails the shard) when the
 # directory really exceeds it: 3072, the budget of a shard (scripts/budgets.tsv); the estimates (EST_MB) and the 400 MB that the install, the templates and the clusters of the lanes
-# hold keep it under
+# hold keep it under. A hosted shard (.github/workflows/ci-pg.yml, ci.yml cassert) says 3600 and 5120: at 1800 its regression batches (650 MB each) ran two at a time on 4 cores, and its
+# scratch is in a /dev/shm of 7.8 GB
 export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1800}; MAX_MB=${CI_MAX_MB:-3072}
 # CI_JOB_TIMEOUT: seconds a job may run before it is killed (900; the slowest job takes 283 s in hosted run 42084189989), so that a
 # stuck test fails with the end of its log instead of holding the runner until the limit of the workflow. Not enforced where there is no timeout(1) (macOS)
