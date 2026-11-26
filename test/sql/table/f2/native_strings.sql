@@ -48,7 +48,6 @@ CREATE FUNCTION plan(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP
-		CONTINUE WHEN line ~ '^\s*(Exec|I/O & Mem):';
 		RETURN NEXT regexp_replace(line, '^\s+', '');
 	END LOOP;
 END $$;

@@ -66,60 +66,50 @@ BEGIN
 END $$;
 -- Q-C01. The plans: a star join reads its dimensions whole, an unnest reads the elements of the array column
 EXPLAIN (COSTS OFF) SELECT d1.name, count(*), sum(sf.v) FROM sf JOIN d1 ON sf.k = d1.k GROUP BY d1.name;
-                      QUERY PLAN                      
-------------------------------------------------------
+       QUERY PLAN        
+-------------------------
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 1
    Lookup Joins: d1
-   Exec: SIMD=scalar group=salted-ht
-   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d1
-(7 rows)
+(5 rows)
 
 EXPLAIN (COSTS OFF) SELECT d1.name, d3.cat, count(*) FROM sf JOIN d1 ON sf.k = d1.k LEFT JOIN d3 ON sf.g = d3.g GROUP BY 1, 2;
-                      QUERY PLAN                      
-------------------------------------------------------
+          QUERY PLAN           
+-------------------------------
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 2
    Lookup Joins: d1, d3 (left)
-   Exec: SIMD=scalar group=salted-ht
-   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d1
    ->  Seq Scan on d3
-(8 rows)
+(6 rows)
 
 EXPLAIN (COSTS OFF) SELECT u.e, count(*) FROM sf CROSS JOIN LATERAL unnest(sf.tags) AS u(e) GROUP BY u.e;
-                      QUERY PLAN                      
-------------------------------------------------------
+         QUERY PLAN         
+----------------------------
  Custom Scan (SiftAggV6)
    Index: sf_col
    Unnest: lateral columnar
-   Exec: SIMD=scalar group=salted-ht
-   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
-(5 rows)
+(3 rows)
 
 EXPLAIN (COSTS OFF) SELECT sf.doc->>'t', sum((sf.doc->>'a')::float8) FROM sf GROUP BY 1;
-                      QUERY PLAN                      
-------------------------------------------------------
+       QUERY PLAN        
+-------------------------
  Custom Scan (SiftAggV6)
    Index: sf_col
-   Exec: SIMD=scalar group=salted-ht
-   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
-(4 rows)
+(2 rows)
 
 EXPLAIN (COSTS OFF) SELECT d3.cat, sf.doc->>'t', sum((sf.doc->>'a')::float8) FROM sf LEFT JOIN d3 ON sf.g = d3.g GROUP BY 1, 2;
-                      QUERY PLAN                      
-------------------------------------------------------
+        QUERY PLAN         
+---------------------------
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 1
    Lookup Joins: d3 (left)
-   Exec: SIMD=scalar group=salted-ht
-   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d3
-(7 rows)
+(5 rows)
 
 -- Q-C02. Inner and left star joins: NULL keys, keys with no dimension row, dimension rows with a NULL payload, an ON clause that only the dimension reads
 SELECT same(q) FROM unnest(ARRAY[

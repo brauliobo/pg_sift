@@ -61,14 +61,12 @@ BEGIN
 END $$;
 -- Q-01. The plans: the members the statement names, with their types
 EXPLAIN (COSTS OFF) SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::float8) FROM mk GROUP BY 1;
-                      QUERY PLAN                      
-------------------------------------------------------
+                   QUERY PLAN                    
+-------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: mk_col
    Map Keys: metrics['m_total'] double precision
-   Exec: SIMD=avx2 group=salted-ht
-   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
-(5 rows)
+(3 rows)
 
 EXPLAIN (COSTS OFF) SELECT (metrics -> 'm_total')::int, count(*) FROM mk WHERE (metrics -> 'quality')::int >= 4 GROUP BY 1;
                              QUERY PLAN                             
@@ -76,19 +74,15 @@ EXPLAIN (COSTS OFF) SELECT (metrics -> 'm_total')::int, count(*) FROM mk WHERE (
  Custom Scan (SiftAggV6)
    Index: mk_col
    Map Keys: metrics['m_total'] integer, metrics['quality'] integer
-   Exec: SIMD=avx2 group=salted-ht
-   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
-(5 rows)
+(3 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk WHERE (metrics -> 'quality')::bigint >= 4 AND g < 3;
-                      QUERY PLAN                      
-------------------------------------------------------
+              QUERY PLAN               
+---------------------------------------
  Custom Scan (SiftAggV6)
    Index: mk_col
    Map Keys: metrics['quality'] bigint
-   Exec: SIMD=avx2 group=salted-ht
-   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
-(5 rows)
+(3 rows)
 
 -- Q-02. The values: the subscript of a key that is a leaf as its text, the member as a float8, and as an integer
 SELECT attributes['channel'] #>> '{}' AS channel, count(*) AS n, round(avg((metrics['m_total'])::float8)::numeric, 3) AS m_total FROM mk GROUP BY 1 ORDER BY 1 NULLS FIRST;

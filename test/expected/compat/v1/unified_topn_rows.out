@@ -88,27 +88,23 @@ SELECT q, served(q, true) AS served FROM unnest(ARRAY[
 
 -- the plan lists the text index and the keys
 EXPLAIN (COSTS off) SELECT id, b FROM t WHERE memo @@> 'damaged' ORDER BY b DESC, id LIMIT 10;
-                         QUERY PLAN                         
-------------------------------------------------------------
+                QUERY PLAN                 
+-------------------------------------------
  Limit
    ->  Custom Scan (SiftAggV6)
          Index: t_col
          Search: t_fts @@> 'damaged'::text
          Top-N: b DESC, id (limit 10)
-         Exec: SIMD=avx2 group=salted-ht
-         I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
-(7 rows)
+(5 rows)
 
 EXPLAIN (COSTS off) SELECT id, a FROM t ORDER BY coalesce(a, 500) DESC, id LIMIT 7;
-                         QUERY PLAN                         
-------------------------------------------------------------
+                     QUERY PLAN                     
+----------------------------------------------------
  Limit
    ->  Custom Scan (SiftAggV6)
          Index: t_col
          Top-N: COALESCE(a, 500) DESC, id (limit 7)
-         Exec: SIMD=avx2 group=salted-ht
-         I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
-(6 rows)
+(4 rows)
 
 -- a float sum has one value at any number of workers
 SET parallel_setup_cost = 0;
