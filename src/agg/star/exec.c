@@ -1,7 +1,7 @@
 /*
  * agg/star/exec.c - the tables of the small relations of a star join and their probes by the batches of the fact table (agg/star/star.h).
  */
-/* check-memory: allow-allocs every array here follows the rows of one small relation, which sift_star_dim_add stops at the budget of its shape, or of a dimension no part splits, read whole */
+/* check-memory: allow-allocs every array here follows the rows of one small relation, which sift_star_dim_add stops at the budget of its shape */
 #include "core/host.h"
 
 #include <math.h>
@@ -103,13 +103,6 @@ sift_star_table_est(const SiftStarShape *sh, double nrows, double str_bytes)
 	return cap * slot_bytes(sh) + arena + nrows * INDEX_ROW_BYTES;
 }
 
-/* an array of the table, which follows its rows: a dimension that no number of parts splits is read whole, past work_mem and MaxAllocSize (v6_star_run.c) */
-static void *
-resize(void *p, Size bytes)
-{
-	return p == NULL ? palloc_extended(bytes, MCXT_ALLOC_HUGE) : repalloc_huge(p, bytes);
-}
-
 static void
 grow(SiftStarDim *d)
 {
@@ -118,16 +111,16 @@ grow(SiftStarDim *d)
 
 	for (int c = 0; c < ncols_of(sh); c++)
 	{
-		d->col[c] = resize(d->col[c], cap * sizeof(uint64));
-		d->null[c] = resize(d->null[c], cap);
+		d->col[c] = d->col[c] == NULL ? palloc(cap * sizeof(uint64)) : repalloc(d->col[c], cap * sizeof(uint64));
+		d->null[c] = d->null[c] == NULL ? palloc(cap) : repalloc(d->null[c], cap);
 		if (cls_of(sh, c) == SSC_STR)
-			d->len[c] = resize(d->len[c], cap * sizeof(uint32));
+			d->len[c] = d->len[c] == NULL ? palloc(cap * sizeof(uint32)) : repalloc(d->len[c], cap * sizeof(uint32));
 	}
 	if (is_range(sh))
 	{
-		d->lo = resize(d->lo, cap * sizeof(int64));
-		d->hi = resize(d->hi, cap * sizeof(int64));
-		d->period_ok = resize(d->period_ok, cap);
+		d->lo = d->lo == NULL ? palloc(cap * sizeof(int64)) : repalloc(d->lo, cap * sizeof(int64));
+		d->hi = d->hi == NULL ? palloc(cap * sizeof(int64)) : repalloc(d->hi, cap * sizeof(int64));
+		d->period_ok = d->period_ok == NULL ? palloc(cap) : repalloc(d->period_ok, cap);
 	}
 	d->cap = cap;
 }
@@ -140,7 +133,7 @@ arena_put(SiftStarDim *d, const char *p, uint32 len)
 	if (off + len > d->arena_cap)
 	{
 		d->arena_cap = Max(d->arena_cap * 2, Max(off + len, 1024));
-		d->arena = resize(d->arena, d->arena_cap);
+		d->arena = d->arena == NULL ? palloc(d->arena_cap) : repalloc(d->arena, d->arena_cap);
 	}
 	memcpy(d->arena + off, p, len);
 	d->arena_used = off + len;
@@ -320,9 +313,9 @@ sift_star_dim_finish(SiftStarDim *d)
 	d->ht_cap = 16;
 	while (d->ht_cap < 2 * d->nrows)
 		d->ht_cap *= 2;
-	d->head = palloc_extended(d->ht_cap * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
-	d->tail = palloc_extended(d->ht_cap * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
-	d->next = palloc_extended(Max(d->nrows, 1) * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	d->head = palloc0(d->ht_cap * sizeof(uint32));
+	d->tail = palloc0(d->ht_cap * sizeof(uint32));
+	d->next = palloc0(Max(d->nrows, 1) * sizeof(uint32));
 	for (uint32 i = 0; i < d->nrows; i++)
 	{
 		uint32		slot;
@@ -346,7 +339,7 @@ sift_star_dim_finish(SiftStarDim *d)
 	}
 	d->unique_keys = d->ndistinct == inserted;
 	if (sift_star_preserves_dim(d->shape.mode))
-		d->matched = palloc_extended(((size_t) d->nrows + 63) / 64 * sizeof(uint64), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+		d->matched = palloc0(((size_t) d->nrows + 63) / 64 * sizeof(uint64));
 	if (d->shape.nkeys > 0 && d->shape.kcls[0] == SSC_INT && d->nrows <= SIFT_STAR_EXACT_MAX)
 	{
 		d->exact = palloc(Max(d->nrows, 1) * sizeof(int64));
