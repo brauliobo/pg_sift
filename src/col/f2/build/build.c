@@ -294,12 +294,17 @@ sift_f2_build_end(SiftF2Build *bs)
 	sift_mem_release_os(bs->budget);
 }
 
-/* The options a bare 'auto' stands for, chosen from the rows (written for the rebuilds that follow); AUTO_PENDING when the table had too few rows for the choice or no jsonb document to read paths from */
+/*
+ * The options a bare 'auto' stands for, chosen from the rows (written for the rebuilds that follow); AUTO_PENDING when the table had too few rows for the choice or no jsonb document to
+ * read paths from. An automatic track_changes is off for a table no statement trigger hears (sift_col_track_deaf), as Format 1 decides it: only a column the user named is an error.
+ */
 static uint32
 resolve_auto(Relation heap, Relation index)
 {
 	bool		deferred;
 
+	if (strcmp(sift_col_options_row_key(index), "auto") == 0 && sift_col_track_deaf(heap) != NULL)
+		sift_col_set_option(index, "track_changes", "off");
 	if (sift_col_paths_redecide(index))
 		sift_col_auto_paths(heap, index);
 	deferred = sift_f2_auto_key_order(heap, index);
