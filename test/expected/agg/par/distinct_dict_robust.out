@@ -89,7 +89,7 @@ BEGIN
 		NULL;
 	END;
 	PERFORM set_config('statement_timeout', '0', true);
-	EXECUTE format('SELECT (SELECT count(*) FROM (SELECT * FROM %1$s EXCEPT ALL SELECT * FROM (%2$s) x) a) + (SELECT count(*) FROM (SELECT * FROM (%2$s) y EXCEPT ALL SELECT * FROM %1$s) b)', ref, q) INTO n;
+	EXECUTE format('SELECT count(*) FROM (SELECT r FROM (SELECT x::text AS r, 1 AS w FROM %1$s x UNION ALL SELECT y::text, -1 FROM (%2$s) y) u GROUP BY r HAVING sum(w) <> 0) d', ref, q) INTO n;
 	RETURN n = 0;
 END $f$;
 SELECT bool_and(cancelled_then_sound('SELECT count(DISTINCT tc) AS dc, count(DISTINCT tm) AS dm FROM pr', 'ref_dist', ms)) AS distinct_sound FROM unnest(ARRAY[1, 3, 10, 30, 100, 300]) AS ms;
