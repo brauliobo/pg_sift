@@ -1,5 +1,5 @@
 /*
- * core/f2/fsm/int.h - what the files of the allocator of format major 2 share (core/f2/fsm/fsm.c, fsm/slab.c, fsm/rehome.c, fsm/release_guard.c, fsm/check.c): the page layouts, the context of a call and the walk of a list.
+ * core/f2/fsm/int.h - what the files of the allocator of format major 2 share (core/f2/fsm/fsm.c, fsm/slab.c, fsm/chain.c, fsm/reclaim.c, fsm/rehome.c, fsm/release_guard.c, fsm/check.c, fsm/sweep.c): the page layouts, the context of a call, the walk of a list and the slab directory.
  */
 #ifndef SIFT_CORE_F2_FSM_INT_H
 #define SIFT_CORE_F2_FSM_INT_H
@@ -62,22 +62,40 @@ extern bool sift_fsm_pop_class(FsmCtx *c, int cls, SiftFsmExtent *e);
 extern void sift_fsm_push_class(FsmCtx *c, int cls, const SiftFsmExtent *ext, int n);
 extern BlockNumber sift_fsm_high_water(FsmCtx *c);
 extern void sift_fsm_set_high_water(FsmCtx *c, SiftXlog *x, BlockNumber high_water);
+extern void sift_fsm_set_chain_flag(FsmCtx *c, SiftXlog *x, bool on);
+extern void sift_fsm_xlog_done(FsmCtx *c, SiftXlog *x);
 extern uint64 sift_fsm_reclaim_locked(FsmCtx *c, BlockNumber *new_hw);
 
-/* fsm/slab.c: the bitmaps of the metadata slabs and the slabs themselves */
-extern SiftFsmSlab *sift_fsm_slab_of(SiftFsmSlabTable *t, BlockNumber blk);
+/* fsm/slab.c: the slabs of the root and the claim of a slab */
 extern void sift_fsm_slab_init(SiftFsmSlab *s, BlockNumber start, uint32 nblocks);
+extern void sift_fsm_slab_insert(SiftFsmSlabTable *t, BlockNumber start, uint32 nblocks);
 extern void sift_fsm_slab_add(Page root, BlockNumber start, uint32 nblocks);
 extern const SiftFsmSlab *sift_fsm_slab_ending_at(const SiftFsmSlabTable *t, BlockNumber end);
 extern uint32 sift_fsm_slab_used(const SiftFsmSlab *s);
-extern BlockNumber sift_fsm_slab_take(Page root);
-extern void sift_fsm_slab_put(Relation rel, Page root, BlockNumber blk);
 extern void sift_fsm_claim_slab(FsmCtx *c);
 extern void sift_fsm_adopt_slabs(FsmCtx *c, const SiftExtent *ext, int n);
 extern BlockNumber sift_fsm_alloc_meta_locked(FsmCtx *c);
 extern int	sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, bool pool_lost);
-extern int	sift_fsm_slab_take_window(Page root, int n, BlockNumber *lo, uint32 *mask);
 extern void sift_fsm_free_meta_batch(Relation rel, const BlockNumber *blks, int n);
+
+/*
+ * fsm/chain.c: the bitmaps of every slab, the root's and the chain's, through a SiftFsmSlabDir. The root is registered in the record by the caller; a change of a page of the chain registers it,
+ * so a record that already holds three pages besides the root changes no slab of the chain (sift_fsm_dir_fits)
+ */
+extern int	sift_fsm_dir_find(const SiftFsmSlabDir *d, BlockNumber blk);
+extern bool sift_fsm_dir_fits(const SiftFsmSlabDir *d, BlockNumber blk);
+extern BlockNumber sift_fsm_dir_take(SiftFsmSlabDir *d);
+extern int	sift_fsm_dir_take_window(SiftFsmSlabDir *d, int n, BlockNumber *lo, uint32 *mask);
+extern void sift_fsm_dir_claim(SiftFsmSlabDir *d, BlockNumber blk);
+extern void sift_fsm_dir_put(SiftFsmSlabDir *d, BlockNumber blk);
+extern void sift_fsm_dir_add(SiftFsmSlabDir *d, FsmCtx *c, BlockNumber start, uint32 nblocks);
+
+/* The lowest free block of the slabs taken in the record that holds the root, or InvalidBlockNumber when all are full; a block given back in it */
+extern BlockNumber sift_fsm_slab_take(Relation rel, SiftXlog *x, Page root);
+extern void sift_fsm_slab_put(Relation rel, SiftXlog *x, Page root, BlockNumber blk);
+
+/* The blocks taken (free false) or given back in records of their own, as many to each as the pages of the chain fit; the caller holds block 0 */
+extern void sift_fsm_slab_mark(Relation rel, const BlockNumber *blk, int n, bool free);
 
 static inline uint32
 sift_fsm_meta_reserve(uint32 nslabs)
@@ -89,7 +107,7 @@ sift_fsm_meta_reserve(uint32 nslabs)
 extern void sift_fsm_grow_meta(FsmCtx *c);
 extern bool sift_fsm_below_reserve(FsmCtx *c);
 
-/* The slabs past the second whose every block is free go back to the data zone (one record each); the number of blocks returned */
+/* The slabs past the second whose every block is free go back to the data zone (one record each), a page of the chain with its last slab; the number of blocks returned */
 extern uint32 sift_fsm_recycle_empty_slabs(FsmCtx *c);
 
 /* The slabs with no page in use, as many as leave the reserve free in the others, for the shrink of the file that cuts the tail; dropped from the root with sift_fsm_slabs_drop */

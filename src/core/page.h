@@ -54,7 +54,8 @@ typedef enum SiftPageType
 	SIFT_PT_PROJDIR,			/* chained copy on write directory of the secondary projections of a relation ("PRJD", core/f2/proj.h) */
 	SIFT_PT_TIERDIR,			/* chained copy on write directory of the remote parts of a relation and their time to live ("TRDR", core/f2/tier.h) */
 	SIFT_PT_KEYJRNL,			/* the key journal of a parent index: its header and the pages of its records ("KJRN", col/f2/journal.h) */
-	SIFT_PT_COL_DELTA_DIR		/* radix-indexed directory of SIFT_PT_COL_DELTA data pages ("CDDR", table/f2/col_delta/dir.h) */
+	SIFT_PT_COL_DELTA_DIR,		/* radix-indexed directory of SIFT_PT_COL_DELTA data pages ("CDDR", table/f2/col_delta/dir.h) */
+	SIFT_PT_FSM_SLABS			/* a page of the chain of the metadata slabs that the allocator root has no room for ("FSLB", core/f2/fsm/fsm.h) */
 } SiftPageType;
 
 StaticAssertDecl(SIFT_PT_SCOPEDIR == 41, "SIFT_PT_SCOPEDIR is page type 41");
@@ -63,6 +64,7 @@ StaticAssertDecl(SIFT_PT_PROJDIR == 44, "SIFT_PT_PROJDIR is page type 44");
 StaticAssertDecl(SIFT_PT_TIERDIR == 45, "SIFT_PT_TIERDIR is page type 45");
 StaticAssertDecl(SIFT_PT_KEYJRNL == 46, "SIFT_PT_KEYJRNL is page type 46");
 StaticAssertDecl(SIFT_PT_COL_DELTA_DIR == 47, "SIFT_PT_COL_DELTA_DIR is page type 47");
+StaticAssertDecl(SIFT_PT_FSM_SLABS == 48, "SIFT_PT_FSM_SLABS is page type 48");
 
 typedef struct SiftPageOpaqueData
 {

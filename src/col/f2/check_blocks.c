@@ -386,26 +386,30 @@ claim_list(BlockMap *m, BlockNumber head)
 	}
 }
 
-/* The free lists with their pages, the queue of released extents, and the free blocks of every slab of metadata pages */
+/* The free lists with their pages, the queue of released extents, the pages of the chain of the slabs, and the free blocks of every slab of metadata pages */
 static void
 claim_allocator(BlockMap *m)
 {
 	Buffer		buf = sift_blk_read(m->rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
 	PGAlignedBlock root;
 	const SiftFsmMetaPageData *fm = (const SiftFsmMetaPageData *) SiftPageGetData((Page) root.data);
-	const SiftFsmSlabTable *t = (const SiftFsmSlabTable *) (SiftPageGetData((Page) root.data) + SIFT_FSM_SLABS_OFF);
+	SiftFsmSlabDir d;
 
 	memcpy(root.data, BufferGetPage(buf), BLCKSZ);
+	d = sift_fsm_dir_read(m->rel, (Page) root.data, NULL);
 	UnlockReleaseBuffer(buf);
 	m->pool_lo = fm->pool_lo;
 	m->pool_mask = fm->pool_mask;
 	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
 		claim_list(m, fm->class_head[k]);
 	claim_list(m, fm->quarantine_head);
-	for (uint32 i = 0; i < t->nslabs; i++)
-		for (uint32 b = 0; b < t->slab[i].nblocks; b++)
-			if (t->slab[i].free[b / 64] & (UINT64CONST(1) << (b % 64)))
-				claim(m, OWN_FREE, t->slab[i].start + b, 1);
+	for (int p = 1; p < d.npages; p++)
+		claim(m, OWN_LIST, d.blk[p], 1);
+	for (uint32 k = 0; k < d.n; k++)
+		for (uint32 b = 0; b < d.slab[k]->nblocks; b++)
+			if (d.slab[k]->free[b / 64] & (UINT64CONST(1) << (b % 64)))
+				claim(m, OWN_FREE, d.slab[k]->start + b, 1);
+	sift_fsm_dir_free(&d);
 }
 
 /* The pages of the last window of a pool that nothing else names: what a restart or a crash took from the pool, which the orphan sweep frees */

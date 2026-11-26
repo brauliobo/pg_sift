@@ -71,7 +71,7 @@ SIFT_F2_MAX_RANGES	key ranges of one predicate that the zones of a part prune: a
 SIFT_FSM_CLASS_QUEUE	the tag of the queue of released extents among the lists of the allocator (a list is told by it), not a bound
 SIFT_FSM_MAX_EXTENT	the largest size class of the allocator of format major 2: derived from the number of classes
 SIFT_TAIL_MAX_PIECES	the extents the free space below a cut may be cut into for the pieces of a part that move below it (col/f2/tail_plan.h): a free space in more pieces would give the part more extents than the file gains
-SIFT_FSM_MAX_SLABS	the metadata slabs the root page of the allocator holds (core/fsm.h): a bound of the page layout, each slab holds 256 metadata pages
+SIFT_FSM_ROOT_SLABS	the metadata slabs the root page of the allocator holds (core/f2/fsm/fsm.h): a bound of the page layout, the slabs past it are on the chain of SIFT_PT_FSM_SLABS pages
 SIFT_L0_SLAB_MAX_PAGES	the pages of the L0 slab of a partition (col/l0_slab.h): a micro-part is made from the slab before it grows past it, so no table reaches it
 SIFT_NULL_SPARSE_MAX_DIV	the share of nulls from which a list of them is not written: an encoding choice with no visible effect
 SIFT_PARTDIR_MAX_LEVEL	the levels of the partition directory above its leaves (core/manifest.h): a bound of the page layout, millions of partitions away

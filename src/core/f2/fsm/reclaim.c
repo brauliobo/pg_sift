@@ -132,7 +132,7 @@ plan_slab_move(Page root, BlockNumber end, ExtVec *data, const ExtVec *queue_pag
 	const SiftFsmSlab *old = sift_fsm_slab_ending_at(t, end);
 	uint32		held;
 
-	if (old == NULL || t->nslabs >= SIFT_FSM_MAX_SLABS)
+	if (old == NULL || t->nslabs >= SIFT_FSM_ROOT_SLABS)
 		return NULL;
 	held = pages_within(old, queue_pages);
 	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
@@ -150,10 +150,36 @@ plan_slab_move(Page root, BlockNumber end, ExtVec *data, const ExtVec *queue_pag
 	return NULL;
 }
 
+/* The blocks of the slabs a pass takes or gives back, apart by where their slab is: the root's change in the record that switches the lists, the chain's in records of their own */
+typedef struct SlabBlocks
+{
+	BlockNumber *root;
+	BlockNumber *chain;
+	int			nroot;
+	int			nchain;
+} SlabBlocks;
+
+static SlabBlocks
+slab_blocks(int max)
+{
+	return (SlabBlocks) {.root = palloc(Max(max, 1) * sizeof(BlockNumber)),.chain = palloc(Max(max, 1) * sizeof(BlockNumber))};
+}
+
+static void
+slab_blocks_add(SlabBlocks *b, const SiftFsmSlabDir *d, BlockNumber blk)
+{
+	int			k = sift_fsm_dir_find(d, blk);
+
+	if (k >= 0 && d->on[k] > 0)
+		b->chain[b->nchain++] = blk;
+	else
+		b->root[b->nroot++] = blk;
+}
+
 /*
  * Rebuilds the lists: the matured extents of the queue join the free ones, adjacent runs are coalesced and cut into classes again, the rest of the queue is kept. The new pages
  * come from blocks the bitmaps hold free now and are written before the one record that switches the lists over (the old pages go back to the bitmaps in it), so a crash at any
- * point leaves the old lists. When the free metadata blocks do not hold the pages of all the lists, only the queue is rewritten first: its matured metadata pages go back to the bitmaps, which
+ * point leaves the old lists; the blocks of the slabs of the chain are taken in records before it and given back in records after it, which a crash between leaves to the orphan sweep. When the free metadata blocks do not hold the pages of all the lists, only the queue is rewritten first: its matured metadata pages go back to the bitmaps, which
  * gives the full pass that follows the room, and no slab is claimed for lists that the pages just given back would hold.
  */
 static uint64
@@ -179,6 +205,7 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 		bool		keep[SIFT_FSM_NCLASSES] = {false};
 		Buffer		rootbuf = sift_fsm_lock_root(rel);
 		Page		root = BufferGetPage(rootbuf);
+		SiftFsmSlabDir dir = sift_fsm_dir_read(rel, root, NULL);
 		SiftFsmMetaPageData *m = FSMM(root);
 		int			newpages = 0;
 		uint32		meta_free = m->meta_free_count;
@@ -196,7 +223,7 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 		for (int i = 0; i < queue.n; i++)
 		{
 			const SiftFsmExtent *q = &queue.v[i];
-			bool		meta = sift_fsm_slab_of(SLABS(root), q->start) != NULL;
+			bool		meta = sift_fsm_dir_find(&dir, q->start) >= 0;
 
 			if (!matured(c, q->safexid, horizon, lag, vacuum_reading))
 				sift_fsm_extvec_add(&pending, q->start, q->nblocks, q->safexid);
@@ -217,6 +244,7 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 		}
 		if (new_hw == NULL && (meta_only ? metafree.n == 0 : queue.n == pending.n))
 		{
+			sift_fsm_dir_free(&dir);
 			UnlockReleaseBuffer(rootbuf);
 			return freed_before;
 		}
@@ -262,6 +290,7 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 		newpages += pages_for(pending.n);
 		if (newpages > (int) meta_free)
 		{
+			sift_fsm_dir_free(&dir);
 			UnlockReleaseBuffer(rootbuf);
 			if (!meta_only && new_hw == NULL && metafree.n > 0)
 				meta_only = true;
@@ -282,17 +311,36 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 			BlockNumber heads[SIFT_FSM_NCLASSES];
 			BlockNumber qhead = InvalidBlockNumber, qtail = InvalidBlockNumber;
 			BlockNumber *taken = palloc(Max(newpages, 1) * sizeof(BlockNumber));
-			int			ntaken = 0;
+			int			ntaken = 0,
+						nput = pages.n;
 			PGAlignedBlock scratch;
+			SlabBlocks	take,
+						put;
 
 			(void) sift_wal_snapshot_conflict(rel, InvalidBlockNumber, max_matured);
 			memcpy(scratch.data, root, BLCKSZ);
 			sift_fsm_slabs_drop(scratch.data, &idle);
 			if (home.nblocks > 0)
 				sift_fsm_slab_add(scratch.data, home.start, home.nblocks);
+			sift_fsm_dir_free(&dir);
+			dir = sift_fsm_dir_read(rel, scratch.data, NULL);
+			for (int i = 0; i < metafree.n; i++)
+				nput += metafree.v[i].nblocks;
+			take = slab_blocks(newpages);
+			put = slab_blocks(nput);
 			for (int i = 0; i < newpages; i++)
-				taken[i] = sift_fsm_slab_take(scratch.data);
+			{
+				taken[i] = sift_fsm_dir_take(&dir);
+				slab_blocks_add(&take, &dir, taken[i]);
+			}
+			for (int i = 0; i < pages.n; i++)
+				slab_blocks_add(&put, &dir, pages.v[i].start);
+			for (int i = 0; i < metafree.n; i++)
+				for (uint32 b = 0; b < metafree.v[i].nblocks; b++)
+					slab_blocks_add(&put, &dir, metafree.v[i].start + b);
+			sift_fsm_dir_free(&dir);
 			UnlockReleaseBuffer(rootbuf);
+			sift_fsm_slab_mark(rel, take.chain, take.nchain, false);
 
 			for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
 			{
@@ -344,14 +392,12 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 			sift_fsm_slabs_drop(wroot, &idle);
 			if (home.nblocks > 0)
 				sift_fsm_slab_add(wroot, home.start, home.nblocks);
-			for (int i = 0; i < newpages; i++)
-				if (sift_fsm_slab_take(wroot) != taken[i])
-					SIFT_CORRUPT(rel, "The allocator changed under its own lock.");
-			for (int i = 0; i < pages.n; i++)
-				sift_fsm_slab_put(rel, wroot, pages.v[i].start);
-			for (int i = 0; i < metafree.n; i++)
-				for (uint32 b = 0; b < metafree.v[i].nblocks; b++)
-					sift_fsm_slab_put(rel, wroot, metafree.v[i].start + b);
+			dir = sift_fsm_dir_read(rel, wroot, &x);
+			for (int i = 0; i < take.nroot; i++)
+				sift_fsm_dir_claim(&dir, take.root[i]);
+			for (int i = 0; i < put.nroot; i++)
+				sift_fsm_dir_put(&dir, put.root[i]);
+			sift_fsm_dir_free(&dir);
 			m = FSMM(wroot);
 			for (int k = 0; k < SIFT_FSM_NCLASSES && !meta_only; k++)
 				if (!keep[k])
@@ -367,13 +413,9 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 				m->quarantine_blocks += pending.v[i].nblocks;
 			sift_fsm_root_seal(wroot);
 			if (new_hw != NULL && cut != InvalidBlockNumber)
-			{
 				sift_fsm_set_high_water(c, &x, cut);
-				sift_xlog_finish(&x);
-				UnlockReleaseBuffer(wbuf);
-			}
-			else
-				sift_xlog_done(&x);
+			sift_fsm_xlog_done(c, &x);
+			sift_fsm_slab_mark(rel, put.chain, put.nchain, true);
 		}
 		for (int i = 0; i < metafree.n; i++)
 			freed += metafree.v[i].nblocks;

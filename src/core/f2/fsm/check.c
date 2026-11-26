@@ -11,10 +11,13 @@ bool
 sift_fsm_is_meta_block(Relation rel, BlockNumber blk)
 {
 	Buffer		buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
+	SiftFsmSlabDir d;
 	bool		is;
 
 	sift_fsm_check_root(rel, buf);
-	is = sift_fsm_slab_of(SLABS(BufferGetPage(buf)), blk) != NULL;
+	d = sift_fsm_dir_read(rel, BufferGetPage(buf), NULL);
+	is = sift_fsm_dir_find(&d, blk) >= 0;
+	sift_fsm_dir_free(&d);
 	UnlockReleaseBuffer(buf);
 	return is;
 }
@@ -31,32 +34,38 @@ static SlabSplit
 split_slabs(Relation rel, BlockNumber from)
 {
 	Buffer		buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
-	const SiftFsmSlabTable *t = SLABS(BufferGetPage(buf));
+	SiftFsmSlabDir d;
 	SlabSplit	s = {0};
 
 	sift_fsm_check_root(rel, buf);
-	for (uint32 i = 0; i < t->nslabs; i++)
-		if (t->slab[i].start >= from)
-			s.used += sift_fsm_slab_used(&t->slab[i]);
+	d = sift_fsm_dir_read(rel, BufferGetPage(buf), NULL);
+	for (uint32 k = 0; k < d.n; k++)
+		if (d.slab[k]->start >= from)
+			s.used += sift_fsm_slab_used(d.slab[k]);
 		else
 		{
-			s.room += t->slab[i].nblocks - sift_fsm_slab_used(&t->slab[i]);
+			s.room += d.slab[k]->nblocks - sift_fsm_slab_used(d.slab[k]);
 			s.below++;
 		}
+	sift_fsm_dir_free(&d);
 	UnlockReleaseBuffer(buf);
 	return s;
 }
 
+/* The first slab, which holds the root of the partition directory, is never the one */
 BlockNumber
 sift_fsm_slab_start_ending_at(Relation rel, BlockNumber end)
 {
 	Buffer		buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
-	const SiftFsmSlab *s;
-	BlockNumber start;
+	SiftFsmSlabDir d;
+	BlockNumber start = InvalidBlockNumber;
 
 	sift_fsm_check_root(rel, buf);
-	s = sift_fsm_slab_ending_at(SLABS(BufferGetPage(buf)), end);
-	start = s != NULL ? s->start : InvalidBlockNumber;
+	d = sift_fsm_dir_read(rel, BufferGetPage(buf), NULL);
+	for (uint32 k = 1; k < d.n; k++)
+		if (d.slab[k]->start + d.slab[k]->nblocks == end)
+			start = d.slab[k]->start;
+	sift_fsm_dir_free(&d);
 	UnlockReleaseBuffer(buf);
 	return start;
 }
@@ -86,6 +95,7 @@ sift_fsm_check(Relation rel)
 	Page		root = BufferGetPage(rootbuf);
 	SiftFsmMetaPageData *m = FSMM(root);
 	ExtVec		all = {0}, pages = {0}, queue = {0};
+	SiftFsmSlabDir dir;
 	uint64		freebits = 0,
 				tail_end;
 
@@ -117,9 +127,15 @@ sift_fsm_check(Relation rel)
 	}
 	if (st.quarantine_blocks != m->quarantine_blocks)
 		SIFT_CORRUPT(rel, "The queue holds %llu blocks, the root counts %llu.", (unsigned long long) st.quarantine_blocks, (unsigned long long) m->quarantine_blocks);
-	for (uint32 i = 0; i < SLABS(root)->nslabs; i++)
+	dir = sift_fsm_dir_read(rel, root, NULL);
+	if (((meta->common.ro_compat_flags & SIFT_ROCOMPAT_FSM_CHAIN) != 0) != (dir.npages > 1))
+		SIFT_CORRUPT(rel, "The root names %d pages of metadata slabs, the metapage says %s.", dir.npages - 1, (meta->common.ro_compat_flags & SIFT_ROCOMPAT_FSM_CHAIN) ? "some" : "none");
+	for (uint32 k = 0; k < dir.n; k++)
+	{
 		for (int w = 0; w < SIFT_FSM_META_SLAB / 64; w++)
-			freebits += pg_popcount64(SLABS(root)->slab[i].free[w]);
+			freebits += pg_popcount64(dir.slab[k]->free[w]);
+		st.meta_total += dir.slab[k]->nblocks;
+	}
 	if (freebits != m->meta_free_count)
 		SIFT_CORRUPT(rel, "The slabs have %llu free blocks, the root counts %u.", (unsigned long long) freebits, m->meta_free_count);
 	qsort(all.v, all.n, sizeof(SiftFsmExtent), sift_fsm_ext_cmp);
@@ -133,8 +149,6 @@ sift_fsm_check(Relation rel)
 		tail_end = all.v[i].start;
 	}
 	st.meta_free = freebits;
-	for (uint32 i = 0; i < SLABS(root)->nslabs; i++)
-		st.meta_total += SLABS(root)->slab[i].nblocks;
 	{
 		ExtVec		idle = {0};
 
@@ -143,7 +157,8 @@ sift_fsm_check(Relation rel)
 			st.meta_idle += idle.v[i].nblocks;
 	}
 	st.quarantine_extents = queue.n;
-	st.pages = pages.n;
+	st.pages = pages.n + dir.npages - 1;
+	sift_fsm_dir_free(&dir);
 	UnlockReleaseBuffer(rootbuf);
 	UnlockReleaseBuffer(buf0);
 	return st;

@@ -111,7 +111,7 @@ sift_fsm_check_root(Relation rel, Buffer buf)
 	Page		page = BufferGetPage(buf);
 
 	sift_page_expect(rel, page, BufferGetBlockNumber(buf), SIFT_PT_FSM_META, 0, 0);
-	if (FSMM(page)->magic != SIFT_FSM_MAGIC || !sift_page_sum_ok(page) || SLABS(page)->nslabs > SIFT_FSM_MAX_SLABS)
+	if (FSMM(page)->magic != SIFT_FSM_MAGIC || !sift_page_sum_ok(page) || SLABS(page)->nslabs > SIFT_FSM_ROOT_SLABS)
 		SIFT_CORRUPT(rel, "The allocator root (block %u) is damaged.", BufferGetBlockNumber(buf));
 }
 
@@ -157,6 +157,29 @@ sift_fsm_set_high_water(FsmCtx *c, SiftXlog *x, BlockNumber high_water)
 
 	m->high_water = high_water;
 	sift_meta_seal(p0, m->common.struct_size);
+}
+
+void
+sift_fsm_set_chain_flag(FsmCtx *c, SiftXlog *x, bool on)
+{
+	Page		p0;
+	SiftColMetaPageData *m;
+
+	Assert(!c->shared);
+	p0 = sift_xlog_register(x, c->buf0, 0);
+	m = SIFT_COL_META(p0);
+	m->common.ro_compat_flags = on ? m->common.ro_compat_flags | SIFT_ROCOMPAT_FSM_CHAIN : m->common.ro_compat_flags & ~SIFT_ROCOMPAT_FSM_CHAIN;
+	sift_meta_seal(p0, m->common.struct_size);
+}
+
+/* Logs the record and lets go of every page it holds but block 0, which the call keeps */
+void
+sift_fsm_xlog_done(FsmCtx *c, SiftXlog *x)
+{
+	sift_xlog_finish(x);
+	for (int i = 0; i < x->n; i++)
+		if (x->buf[i] != c->buf0)
+			UnlockReleaseBuffer(x->buf[i]);
 }
 
 BlockNumber
@@ -214,7 +237,7 @@ sift_fsm_pop_class(FsmCtx *c, int cls, SiftFsmExtent *e)
 	if (FSMP(hp)->nentries == 0)
 	{
 		m->class_head[cls] = FSMP(hp)->next_blk;
-		sift_fsm_slab_put(c->rel, root, head);
+		sift_fsm_slab_put(c->rel, &x, root, head);
 	}
 	m->class_free_extents[cls]--;
 	sift_fsm_list_seal(hp);
@@ -251,7 +274,7 @@ sift_fsm_push_class(FsmCtx *c, int cls, const SiftFsmExtent *ext, int n)
 			page = NULL;
 		if (page == NULL)
 		{
-			BlockNumber blk = sift_fsm_slab_take(root);
+			BlockNumber blk = sift_fsm_slab_take(c->rel, &x, root);
 			Buffer		nbuf;
 
 			if (blk == InvalidBlockNumber)
@@ -633,7 +656,7 @@ queue_new_tail(FsmCtx *c)
 		Buffer		rootbuf = sift_fsm_lock_root(c->rel);
 		Page		root = sift_xlog_register(&x, rootbuf, 0);
 		SiftFsmMetaPageData *m = FSMM(root);
-		BlockNumber blk = sift_fsm_slab_take(root);
+		BlockNumber blk = sift_fsm_slab_take(c->rel, &x, root);
 		Page		page;
 
 		if (blk == InvalidBlockNumber)

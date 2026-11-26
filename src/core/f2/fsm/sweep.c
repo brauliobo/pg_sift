@@ -65,7 +65,8 @@ typedef struct Sweep
 {
 	Relation	rel;
 	SiftColMetaPageData meta;
-	PGAlignedBlock root;		/* the allocator root: the slabs */
+	PGAlignedBlock root;		/* the allocator root */
+	SiftFsmSlabDir slabs;		/* its slabs and the pages of its chain */
 	ExtVec		held;			/* the extents something names, the free lists and the queue included */
 	ExtVec		packed;			/* the packed pages the parts name: one page holds the header of up to 16 of them */
 	uint32		named[NNAMED];	/* how many of each kind of block the sweep named, for DEBUG1 */
@@ -449,38 +450,43 @@ hold_partitions(Sweep *s)
 	return true;
 }
 
-/* The lists of the allocator with their pages, the queue, and the free blocks of every slab; the root is copied for the slabs */
+/* The lists of the allocator with their pages, the queue, the pages of the chain of the slabs and the free blocks of every slab; the root and the slabs are copied */
 static void
 hold_allocator(Sweep *s)
 {
 	Buffer		buf = sift_blk_read(s->rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
 	const SiftFsmMetaPageData *m;
-	const SiftFsmSlabTable *t;
 	ExtVec		pages = {0};
 
 	sift_fsm_check_root(s->rel, buf);
 	memcpy(s->root.data, BufferGetPage(buf), BLCKSZ);
+	s->slabs = sift_fsm_dir_read(s->rel, s->root.data, NULL);
 	UnlockReleaseBuffer(buf);
 	m = FSMM(s->root.data);
-	t = SLABS(s->root.data);
 	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
 		sift_fsm_walk_list(s->rel, m->class_head[k], k, &s->held, &pages);
 	sift_fsm_walk_list(s->rel, m->quarantine_head, SIFT_FSM_CLASS_QUEUE, &s->held, &pages);
 	for (int i = 0; i < pages.n; i++)
 		hold(s, NAMED_LIST, pages.v[i].start, 1);
-	for (uint32 i = 0; i < t->nslabs; i++)
-		for (uint32 b = 0, run = 0; b <= t->slab[i].nblocks; b++)
+	for (int p = 1; p < s->slabs.npages; p++)
+		hold(s, NAMED_LIST, s->slabs.blk[p], 1);
+	for (uint32 k = 0; k < s->slabs.n; k++)
+	{
+		const SiftFsmSlab *sl = s->slabs.slab[k];
+
+		for (uint32 b = 0, run = 0; b <= sl->nblocks; b++)
 		{
-			bool		free = b < t->slab[i].nblocks && (t->slab[i].free[b / 64] & (UINT64CONST(1) << (b % 64))) != 0;
+			bool		free = b < sl->nblocks && (sl->free[b / 64] & (UINT64CONST(1) << (b % 64))) != 0;
 
 			if (free)
 				run++;
 			else if (run > 0)
 			{
-				hold(s, NAMED_FREE, t->slab[i].start + b - run, run);
+				hold(s, NAMED_FREE, sl->start + b - run, run);
 				run = 0;
 			}
 		}
+	}
 }
 
 static void
@@ -501,16 +507,14 @@ sort_unique_packed(Sweep *s)
 static void
 add_orphans(Sweep *s, ExtVec *out, uint64 start, uint64 end)
 {
-	const SiftFsmSlabTable *t = SLABS(s->root.data);
-
 	while (start < end)
 	{
 		uint64		stop = end;
 
-		for (uint32 i = 0; i < t->nslabs; i++)
+		for (uint32 k = 0; k < s->slabs.n; k++)
 		{
-			uint64		lo = t->slab[i].start,
-						hi = lo + t->slab[i].nblocks;
+			uint64		lo = s->slabs.slab[k]->start,
+						hi = lo + s->slabs.slab[k]->nblocks;
 
 			if (start >= lo && start < hi)
 				stop = Min(stop, hi);

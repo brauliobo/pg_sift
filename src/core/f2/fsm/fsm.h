@@ -3,7 +3,8 @@
  *
  * Block 0 is the metapage, block 1 the root of this allocator (SIFT_PT_FSM_META) and [2, meta_slab_end) the first metadata slab, whose first block is the root of
  * the partition directory at the start: the one-block pages of the manifest, the part headers and the lists of the allocator itself come from the bitmaps of the slabs, so that the copy on write of
- * a manifest never pins the end of the file. Everything after it is the data zone, handed out in extents of 1, 4, 16, 64, 256 or 1024 blocks.
+ * a manifest never pins the end of the file. Everything after it is the data zone, handed out in extents of 1, 4, 16, 64, 256 or 1024 blocks. The root holds the descriptors of
+ * SIFT_FSM_ROOT_SLABS slabs; the slabs after those, which a horizon held back by a long snapshot makes, are on a chain of SIFT_PT_FSM_SLABS pages (core/f2/fsm/chain.c).
  *
  * The free extents of a class are a stack of SIFT_PT_FSM_PAGE pages: an allocation pops the last entry of the head page (the head and the root are the only pages it
  * writes), a release is a push on the queue of released extents. An extent released goes to that queue with the transaction that released it (P4): it is reusable only once the
@@ -60,15 +61,57 @@ typedef struct SiftFsmSlab
 
 StaticAssertDecl(sizeof(SiftFsmSlab) == 40, "SiftFsmSlab must be 40 bytes");
 
+/* The slab descriptors of the root and of each page of its chain, kept in address order after the first one */
 typedef struct SiftFsmSlabTable
 {
 	uint32		nslabs;
-	uint32		pad;
+	BlockNumber chain;			/* the next SIFT_PT_FSM_SLABS page of the chain (the first one in the root), 0: none (block 0 is the metapage) */
 	SiftFsmSlab slab[FLEXIBLE_ARRAY_MEMBER];
 } SiftFsmSlabTable;
 
 #define SIFT_FSM_SLABS_OFF		sizeof(SiftFsmMetaPageData)
-#define SIFT_FSM_MAX_SLABS		((SIFT_PAGE_PAYLOAD - SIFT_FSM_SLABS_OFF - offsetof(SiftFsmSlabTable, slab)) / sizeof(SiftFsmSlab))
+#define SIFT_FSM_ROOT_SLABS		((SIFT_PAGE_PAYLOAD - SIFT_FSM_SLABS_OFF - offsetof(SiftFsmSlabTable, slab)) / sizeof(SiftFsmSlab))
+
+/*
+ * A page of the chain of the slabs that the root has no room for (core/f2/fsm/chain.c): it is the first block of its first slab, claimed with it in one record, and leaves the chain with that
+ * slab once the page holds nothing else. While the root names a chain, the metapage carries SIFT_ROCOMPAT_FSM_CHAIN.
+ */
+#define SIFT_FSM_CHAIN_MAGIC	0x46534C42U		/* "FSLB" */
+
+typedef struct SiftFsmChainPageData
+{
+	uint32		magic;
+	uint16		flags;
+	uint16		pad;
+	uint32		crc32c;
+	uint32		pad2;
+	SiftFsmSlabTable slabs;
+} SiftFsmChainPageData;
+
+StaticAssertDecl(offsetof(SiftFsmChainPageData, slabs) == 16, "SiftFsmChainPageData header is 16 bytes");
+
+#define SIFT_FSM_CHAIN_SLABS	((SIFT_PAGE_PAYLOAD - offsetof(SiftFsmChainPageData, slabs.slab)) / sizeof(SiftFsmSlab))
+
+/*
+ * The slabs of the root and of its chain as one list, read under the lock of the root that the caller holds (the pages of the chain only change under its exclusive lock): slab[k] is
+ * on page on[k] (0 the root, which the caller holds, the others copies). A writer gives the record its changes go to (core/f2/fsm/int.h), which registers a page of the chain the first time it changes it.
+ */
+typedef struct SiftFsmSlabDir
+{
+	Relation	rel;
+	SiftXlog   *x;
+	uint32		n;
+	SiftFsmSlab **slab;
+	int		   *on;
+	int			npages;
+	int			maxpages;
+	BlockNumber *blk;			/* blk[0] is the root */
+	Page	   *page;
+	bool	   *own;			/* a copy of the page, not the root of the caller or a page of the record */
+} SiftFsmSlabDir;
+
+extern SiftFsmSlabDir sift_fsm_dir_read(Relation rel, Page root, SiftXlog *x);
+extern void sift_fsm_dir_free(SiftFsmSlabDir *d);
 
 #define SIFT_FSM_PAGE_DEFERRED	(UINT16_C(1) << 0)
 #define SIFT_FSM_CLASS_QUEUE	SIFT_FSM_NCLASSES		/* size_class of a page of the queue of released extents */

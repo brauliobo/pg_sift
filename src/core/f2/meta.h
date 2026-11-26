@@ -47,7 +47,8 @@ typedef enum SiftAmKind
 #define SIFT_ROCOMPAT_PROJECTIONS	(UINT64CONST(1) << 3)	/* writers and compaction must maintain the secondary projections (set only while the relation has one) */
 #define SIFT_ROCOMPAT_TTL			(UINT64CONST(1) << 4)	/* writers and compaction must enforce the time to live (set only while the relation has one) */
 #define SIFT_ROCOMPAT_TABLE_VM		(UINT64CONST(1) << 5)	/* writers must clear VISIBILITYMAP_FORKNUM bits on sift_table DML */
-#define SIFT_KNOWN_ROCOMPAT_MASK	(SIFT_ROCOMPAT_PREAGG_V2 | SIFT_ROCOMPAT_META_INLINE | SIFT_ROCOMPAT_PROJECTIONS | SIFT_ROCOMPAT_TTL | SIFT_ROCOMPAT_TABLE_VM)
+#define SIFT_ROCOMPAT_FSM_CHAIN		(UINT64CONST(1) << 6)	/* the allocator keeps metadata slabs on a chain of SIFT_PT_FSM_SLABS pages (set only while the root names one, core/f2/fsm/fsm.h) */
+#define SIFT_KNOWN_ROCOMPAT_MASK	(SIFT_ROCOMPAT_PREAGG_V2 | SIFT_ROCOMPAT_META_INLINE | SIFT_ROCOMPAT_PROJECTIONS | SIFT_ROCOMPAT_TTL | SIFT_ROCOMPAT_TABLE_VM | SIFT_ROCOMPAT_FSM_CHAIN)
 
 /* SiftColMetaPageData.state_flags: states, not format */
 #define SIFT_META_FLAG_QUARANTINED	(UINT32_C(1) << 0)

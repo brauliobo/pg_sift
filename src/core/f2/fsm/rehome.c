@@ -49,22 +49,28 @@ next_of(Relation rel, int cls, BlockNumber blk)
 	return next;
 }
 
-/* The page at blk, which follows prev in the list of cls, copied to the lowest free page of the slabs and the link to it changed in the same record, when that page is lower than blk: where the page is after the call */
+/*
+ * The page at blk, which follows prev in the list of cls, copied to the lowest free page of the slabs and the link to it changed in the same record, when that page is lower than blk: where the page is
+ * after the call. The old block goes back to its slab in that record when the page of its slab fits, else in a record after it.
+ */
 static BlockNumber
 rehome_page(FsmCtx *c, int cls, BlockNumber prev, BlockNumber blk)
 {
 	SiftXlog	x = sift_xlog_start(c->rel);
-	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
-	Page		root = sift_xlog_register(&x, rootbuf, 0);
+	Page		root = sift_xlog_register(&x, sift_fsm_lock_root(c->rel), 0);
 	SiftFsmMetaPageData *m = FSMM(root);
-	BlockNumber to = sift_fsm_slab_take(root);
+	SiftFsmSlabDir d = sift_fsm_dir_read(c->rel, root, &x);
+	BlockNumber to = sift_fsm_dir_take(&d);
 	Buffer		old;
 	Page		page;
+	bool		freed;
 
 	if (to == InvalidBlockNumber || to >= blk)
 	{
+		sift_fsm_dir_free(&d);
 		sift_xlog_abort(&x);
-		UnlockReleaseBuffer(rootbuf);
+		for (int i = 0; i < x.n; i++)
+			UnlockReleaseBuffer(x.buf[i]);
 		return blk;
 	}
 	old = sift_fsm_lock_list_page(c->rel, blk, cls);
@@ -85,9 +91,14 @@ rehome_page(FsmCtx *c, int cls, BlockNumber prev, BlockNumber blk)
 		m->class_head[cls] = to;
 	if (cls == SIFT_FSM_CLASS_QUEUE && m->quarantine_tail == blk)
 		m->quarantine_tail = to;
-	sift_fsm_slab_put(c->rel, root, blk);
+	freed = sift_fsm_dir_fits(&d, blk);
+	if (freed)
+		sift_fsm_dir_put(&d, blk);
+	sift_fsm_dir_free(&d);
 	sift_fsm_root_seal(root);
 	sift_xlog_done(&x);
+	if (!freed)
+		sift_fsm_slab_mark(c->rel, &blk, 1, true);
 	return to;
 }
 
