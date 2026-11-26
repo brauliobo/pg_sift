@@ -3,6 +3,9 @@ removed	test/expected/agg_exists_elements_1.out	17 18 18-arm64 19
 removed	test/expected/agg_group_order_1.out	17 18 18-arm64 19	
 removed	test/expected/agg_semi_lut_1.out	17 18 18-arm64 19	
 removed	test/expected/col_gorder_group_range_1.out	17 18 18-arm64 19	
+removed	test/expected/col/scope/text/key_1.out	17 18 18-arm64 19	
+removed	test/expected/col/scope/text/member_1.out	17 18 18-arm64 19	
+removed	test/expected/col/scope/text/member_collide_1.out	17 18 18-arm64 19	
 removed	test/expected/col_topn_join_1.out	17 18 18-arm64 19	
 removed	test/expected/json_build_object_1.out	17 18 18-arm64 19	
 removed	test/expected/lang_config_1.out	17 18 18-arm64 19	
@@ -71,16 +74,6 @@ test/expected/col/f2/limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	1
 test/expected/col/f2/limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
 test/expected/col/f2/limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
 test/expected/col/f2/limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
-test/expected/col/scope/text/key_1.out	6c58555face2d1d44e30fbaaa3c03d9b63dad22d	17 18 18-arm64 19	IN, no key the store has                    | scope read, once
-test/expected/col/scope/text/key_1.out	893491e2c5c91f8b40a672f9a7fdafc060055223	17 18 18-arm64 19	uuid key, a literal                         | scope read, once
-test/expected/col/scope/text/key_1.out	8c9d83a5155d72634f29e02cee2fcee1f4b770e4	17 18 18-arm64 19	EXISTS                                      | scope read, once
-test/expected/col/scope/text/key_1.out	bd65f16ac3efad89f8893beba14b9a444029e5c2	17 18 18-arm64 19	varchar key, a text parameter type          | scope read, once
-test/expected/col/scope/text/key_1.out	d33e6d8e6c15e3198bc910ff0c5438640ab47e6f	17 18 18-arm64 19	IN, a key only the pairs added later have   | scope read, once
-test/expected/col/scope/text/key_1.out	ea71ffea2b7e815d6507d1eca1ac95748ae5988a	17 18 18-arm64 19	IN, a long key                              | scope read, once
-test/expected/col/scope/text/member_1.out	14d8b4b0a58ec1b27af2e594b717378b97c86497	17 18 18-arm64 19	IN, one key                             | scope read, once
-test/expected/col/scope/text/member_1.out	99b2db9a04677b91aa0d5ac84efe85da31a87935	17 18 18-arm64 19	EXISTS                                  | scope read, once
-test/expected/col/scope/text/member_collide_1.out	14d8b4b0a58ec1b27af2e594b717378b97c86497	17 18 18-arm64 19	IN, one key                             | scope read, once
-test/expected/col/scope/text/member_collide_1.out	99b2db9a04677b91aa0d5ac84efe85da31a87935	17 18 18-arm64 19	EXISTS                                  | scope read, once
 test/expected/col/skip_map_1.out	1a946b21e6da3e67c2d462a3b68d45c34498ae8c	17 18 18-arm64 19	sm_z | avg(f)  | 3 | k = 500               | SiftAgg read 0 pruned 100 |
 test/expected/col/skip_map_1.out	25b96df3cbf4b831eec9465460ae43b4304b1b10	17 18 18-arm64 19	sm_o | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |
 test/expected/col/skip_map_1.out	29c8c731d006b5f73225798c82513c7965235355	17 18 18-arm64 19	sm_z | sum(id) | 6 | k < 0                 | SiftAgg read 0 pruned 100 |

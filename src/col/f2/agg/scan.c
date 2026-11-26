@@ -140,13 +140,30 @@ sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_n
 	return c->src == SV6SRC_DIM ? sift_v6_pipe_dim_slot(s->pipe, c->dim, c->slot) : (int) (col_for(s, first, *c, false, takes_nan) - s->cols);
 }
 
-/* Whether the column is read by nothing but a COUNT(DISTINCT) of it (and so can be counted by the codes of the dictionaries of the parts): not a key, another aggregate's argument, a FILTER or a row of several columns */
+/* whether a star join reads the column of the fact side: a key of a dimension or a column of a condition of the join */
+static bool
+join_reads(const SiftV6Ext *x, int attno)
+{
+	for (int d = 0; x != NULL && d < x->ndims; d++)
+		for (int k = 0; k < x->dim[d].nkeys; k++)
+			if (sift_v6_xdim_key_is_col(&x->dim[d], k) && x->dim[d].fsrc[k] == SV6SRC_ATTR && sift_v6_xdim_key_col(&x->dim[d], k).attno == attno)
+				return true;
+	for (int i = 0; x != NULL && i < x->nrcol; i++)
+		if (x->rcol[i].src == SV6SRC_ATTR && x->rcol[i].attno == attno)
+			return true;
+	return false;
+}
+
+/*
+ * Whether the column is read by nothing but a COUNT(DISTINCT) of it (and so can be counted by the codes of the dictionaries of the parts): not a key, a key of a join, another aggregate's argument,
+ * a FILTER or a row of several columns
+ */
 static bool
 read_by_code_only(const SiftV6Spec *spec, int attno)
 {
 	bool		distinct = false;
 
-	if (sift_v6_spec_pg_reads(spec))
+	if (sift_v6_spec_pg_reads(spec) || join_reads(spec->ext, attno))
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 		if (spec->key[i].attno == attno)

@@ -130,8 +130,8 @@ SELECT label, distinct_same(events, pairs, 11) FROM (VALUES
  text member                       | t
  varchar facts, text pairs         | t
  uuid member                       | t
- text member of 249 bytes          | f
- text member, 50 days of 249 bytes | f
+ text member of 249 bytes          | t
+ text member, 50 days of 249 bytes | t
 (6 rows)
 
 DROP FUNCTION distinct_same(text, text, int);
