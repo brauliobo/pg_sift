@@ -8,6 +8,7 @@
 
 plan 9
 node_init bmo 3 "autovacuum = off
+sift.test_create_format1 = off
 sift.async_maintenance = on
 max_parallel_workers_per_gather = 0
 max_parallel_maintenance_workers = 0"

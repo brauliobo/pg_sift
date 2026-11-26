@@ -11,6 +11,7 @@ REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 node_init ms 33 "autovacuum = off
+sift.test_create_format1 = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 max_wal_size = 1GB
