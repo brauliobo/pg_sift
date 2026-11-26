@@ -218,7 +218,7 @@ slab_evict(SiftVk *vk, int64_t si)
 	vk->evict_gen++;
 }
 
-/* the slab no batch in flight uses that was used least recently, or -1 */
+/* the slab holding entries or bytes that no batch in flight uses and was used least recently, or -1: an eviction always frees something */
 static int64_t
 slab_lru(const SiftVk *vk)
 {
@@ -228,7 +228,7 @@ slab_lru(const SiftVk *vk)
 	{
 		const Slab *s = &vk->slab[i];
 
-		if (s->pin <= vk->done_batch && (best < 0 || s->stamp < vk->slab[best].stamp))
+		if ((s->ent_head != VK_ENT_NONE || s->used > 0) && s->pin <= vk->done_batch && (best < 0 || s->stamp < vk->slab[best].stamp))
 			best = (int64_t) i;
 	}
 	return best;
