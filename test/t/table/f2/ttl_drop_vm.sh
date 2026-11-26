@@ -5,7 +5,7 @@
 
 DAYS=10
 ROWS=5000
-plan 6
+plan 7
 node_init primary 0 "shared_preload_libraries = 'pg_sift'
 wal_level = replica
 sift.test_create_format1 = off
@@ -28,10 +28,11 @@ done
 sql primary "VACUUM t" >/dev/null || bail "vacuum failed"
 
 check "VACUUM set the map: the index-only scan fetches few rows of the table" test "$(fetches "$SEL")" -lt "$ROWS"
-sql primary "SELECT parts_dropped FROM sift.drop_parts_before('t', timestamptz '2030-01-06')" >/dev/null || bail "drop failed"
-check "the table lost the five days" test "$(sql primary "$COUNT")" == "$((5 * ROWS))"
+GONE=$(sql primary "SELECT rows_dropped FROM sift.drop_parts_before('t', timestamptz '2030-01-06')") || bail "drop failed"
+check "the drop took whole parts of the days before the cutoff" test "$GONE" -gt 0 -a "$GONE" -le "$((5 * ROWS))"
+check "the table lost the rows of the dropped parts" test "$(sql primary "$COUNT")" == "$((DAYS * ROWS - GONE))"
 check "the index-only scan agrees with the table after the drop" agree "$COUNT"
-check "the bits of the dropped parts are gone: the scan visits the table for their index entries" test "$(fetches "$SEL")" -ge "$((5 * ROWS))"
+check "the bits of the dropped parts are gone: the scan visits the table for their index entries" test "$(fetches "$SEL")" -ge "$GONE"
 check "a ROLLBACK cannot undo the drop: the function refuses a transaction block" test "$(sql primary "BEGIN" "SELECT parts_dropped FROM sift.drop_parts_before('t', timestamptz '2030-01-08')" "ROLLBACK" 2>&1 | grep -c 'cannot run inside a transaction block')" == 1
-check "and nothing more was dropped" test "$(sql primary "$COUNT")" == "$((5 * ROWS))"
+check "and nothing more was dropped" test "$(sql primary "$COUNT")" == "$((DAYS * ROWS - GONE))"
 finish
