@@ -1,6 +1,7 @@
 -- What an upgrade reads from the installed SQL: sift.index_format of the three access methods, the format columns of sift.col_index_status, the preflight
 -- sift.upgrade_check() as an installed function, and sift.upgrade_commands() for a text index built by this release (nothing to REINDEX).
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
@@ -10,7 +11,6 @@ INSERT INTO up SELECT i, 'alpha' || i % 7 || ' beta' || i % 11, i % 9, i % 100 F
 CREATE INDEX up_text ON up USING sift (body);
 CREATE INDEX up_keyword ON up USING sift (body) WITH (analyzer = keyword);
 CREATE INDEX up_col ON up USING sift_col (id, g, n);
-NOTICE:  sift_col index "up_col": 1 automatic choice (track_changes)
 CREATE TABLE up_tbl (id int, g int) USING sift_table;
 INSERT INTO up_tbl SELECT i, i % 9 FROM generate_series(1, 3000) i;
 VACUUM up_tbl;
@@ -20,14 +20,14 @@ FROM pg_class c, LATERAL sift.index_format(c.oid) f
 WHERE c.relname IN ('up_text', 'up_keyword', 'up_col', 'up_tbl') ORDER BY c.relname;
   relname   | major | minor | long_words | reads 
 ------------+-------+-------+------------+-------
- up_col     |     1 | t     |            | t
+ up_col     |     2 | f     |            | t
  up_keyword |     1 | t     | t          | 
- up_tbl     |     1 | t     |            | t
+ up_tbl     |     2 | f     |            | t
  up_text    |     1 | t     | t          | 
 (4 rows)
 
 -- the format of the index, of its segments and the range this library reads
-SELECT format ~ '^1\.[0-9]+$' AS format, min_segment_format <= max_segment_format AS ordered, library_reads ~ '^3 to [0-9]+$' AS reads
+SELECT format ~ '^2\.[0-9]+$' AS format, min_segment_format <= max_segment_format AS ordered, library_reads ~ '^3 to [0-9]+$' AS reads
 FROM sift.col_index_status WHERE index = 'up_col'::regclass;
  format | ordered | reads 
 --------+---------+-------
@@ -118,12 +118,9 @@ SELECT '4.4' AS extversion, object, kind, status, advice ~ 'every node \(standby
 ROLLBACK;
 -- an index built by this release has no word cut at 255 bytes: nothing is left to REINDEX
 SELECT kind, object, required FROM sift.upgrade_commands() WHERE object::text ~ '^up_';
-  kind   | object | required 
----------+--------+----------
- reset   | up_col | f
- reindex | up_col | f
- rewrite | up_tbl | f
-(3 rows)
+ kind | object | required 
+------+--------+----------
+(0 rows)
 
 -- the owner of the database is told how to preload the library, once; nothing is said when it is
 SELECT kind, object, required, command ~ '^ALTER DATABASE .* SET session_preload_libraries = ' AS command FROM sift.upgrade_commands() WHERE kind = 'preload';

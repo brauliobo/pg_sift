@@ -1,6 +1,7 @@
 -- What an upgrade reads from the installed SQL: sift.index_format of the three access methods, the format columns of sift.col_index_status, the preflight
 -- sift.upgrade_check() as an installed function, and sift.upgrade_commands() for a text index built by this release (nothing to REINDEX).
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
@@ -21,7 +22,7 @@ FROM pg_class c, LATERAL sift.index_format(c.oid) f
 WHERE c.relname IN ('up_text', 'up_keyword', 'up_col', 'up_tbl') ORDER BY c.relname;
 
 -- the format of the index, of its segments and the range this library reads
-SELECT format ~ '^1\.[0-9]+$' AS format, min_segment_format <= max_segment_format AS ordered, library_reads ~ '^3 to [0-9]+$' AS reads
+SELECT format ~ '^2\.[0-9]+$' AS format, min_segment_format <= max_segment_format AS ordered, library_reads ~ '^3 to [0-9]+$' AS reads
 FROM sift.col_index_status WHERE index = 'up_col'::regclass;
 
 -- the preflight is part of the extension and finds nothing wrong with a database of this release
