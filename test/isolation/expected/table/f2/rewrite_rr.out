@@ -1,0 +1,117 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_rr s2_write s2_full s1_read s1_end s2_read s2_vac s2_more s2_read
+step s1_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_rw_other;
+count
+-----
+    0
+(1 row)
+
+step s2_write: DELETE FROM iso_rw WHERE id % 3 = 0; INSERT INTO iso_rw SELECT g, g, 0 FROM generate_series(601, 700) g; UPDATE iso_rw SET v = v + 1 WHERE id % 5 = 0;
+step s2_full: VACUUM FULL iso_rw;
+step s1_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  600|180300|  0|600
+(1 row)
+
+step s1_end: COMMIT;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  500|185050|100|700
+(1 row)
+
+step s2_vac: VACUUM iso_rw;
+step s2_more: UPDATE iso_rw SET v = v + 10 WHERE id % 7 = 0; DELETE FROM iso_rw WHERE id % 11 = 0;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  455|168517|741|700
+(1 row)
+
+
+starting permutation: s1_ser s2_write s2_cluster s1_read s2_more s1_read s1_end s2_vac s2_read
+step s1_ser: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_rw_other;
+count
+-----
+    0
+(1 row)
+
+step s2_write: DELETE FROM iso_rw WHERE id % 3 = 0; INSERT INTO iso_rw SELECT g, g, 0 FROM generate_series(601, 700) g; UPDATE iso_rw SET v = v + 1 WHERE id % 5 = 0;
+step s2_cluster: CLUSTER iso_rw USING iso_rw_k;
+step s1_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  600|180300|  0|600
+(1 row)
+
+step s2_more: UPDATE iso_rw SET v = v + 10 WHERE id % 7 = 0; DELETE FROM iso_rw WHERE id % 11 = 0;
+step s1_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  600|180300|  0|600
+(1 row)
+
+step s1_end: COMMIT;
+step s2_vac: VACUUM iso_rw;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  455|168517|741|700
+(1 row)
+
+
+starting permutation: s2_write s2_full s2_read s1_rr s1_read s1_end
+step s2_write: DELETE FROM iso_rw WHERE id % 3 = 0; INSERT INTO iso_rw SELECT g, g, 0 FROM generate_series(601, 700) g; UPDATE iso_rw SET v = v + 1 WHERE id % 5 = 0;
+step s2_full: VACUUM FULL iso_rw;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  500|185050|100|700
+(1 row)
+
+step s1_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_rw_other;
+count
+-----
+    0
+(1 row)
+
+step s1_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  500|185050|100|700
+(1 row)
+
+step s1_end: COMMIT;
+
+starting permutation: s1_rr s2_begin s2_own s2_cluster s2_read s2_commit s1_read s1_end s2_read
+step s1_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_rw_other;
+count
+-----
+    0
+(1 row)
+
+step s2_begin: BEGIN;
+step s2_own: DELETE FROM iso_rw WHERE id % 3 = 0; UPDATE iso_rw SET v = v + 1 WHERE id % 5 = 0;
+step s2_cluster: CLUSTER iso_rw USING iso_rw_k;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  400|120000| 80|599
+(1 row)
+
+step s2_commit: COMMIT;
+step s1_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  600|180300|  0|600
+(1 row)
+
+step s1_end: COMMIT;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_rw;
+count|   sum|sum|max
+-----+------+---+---
+  400|120000| 80|599
+(1 row)
+

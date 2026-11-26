@@ -144,11 +144,10 @@ log_change(Relation rel, SiftTblOp op, TupleTableSlot *newslot, TupleTableSlot *
 /* ---- staging a row ---- */
 
 static uint64
-stage_row(Relation rel, SiftF2Store *store, TupleTableSlot *slot, CommandId cid, bool frozen)
+stage_version(Relation rel, SiftF2Store *store, TupleTableSlot *slot, TransactionId xmin, CommandId cmin, uint8 *key)
 {
 	SiftCell   *cells = palloc(sizeof(SiftCell) * Max(store->ncols, 1));
 	SiftCell  **elem = store->has_groups ? palloc(sizeof(SiftCell *) * store->ncols) : NULL;
-	uint8		key[SIFT_BOUND_BYTES];
 	ItemPointerData tid;
 	uint64		packed;
 
@@ -156,8 +155,7 @@ stage_row(Relation rel, SiftF2Store *store, TupleTableSlot *slot, CommandId cid,
 	sift_tbl_f2_tid_next(rel, store, &tid);
 	packed = sift_tbl_tid_pack(&tid);
 	sift_f2_store_pack_row(rel, store, store->row_cx, &tid, slot->tts_values, slot->tts_isnull, true, cells, elem, key);
-	sift_stage_add(rel, sift_stage_get(rel, &store->spec), key, packed, frozen ? FrozenTransactionId : GetCurrentTransactionId(), frozen ? 0 : cid, cells,
-				   (const SiftCell *const *) elem);
+	sift_stage_add(rel, sift_stage_get(rel, &store->spec), key, packed, xmin, cmin, cells, (const SiftCell *const *) elem);
 	MemoryContextReset(store->row_cx);
 	pfree(cells);
 	if (elem != NULL)
@@ -165,6 +163,14 @@ stage_row(Relation rel, SiftF2Store *store, TupleTableSlot *slot, CommandId cid,
 	slot->tts_tid = tid;
 	slot->tts_tableOid = RelationGetRelid(rel);
 	return packed;
+}
+
+static uint64
+stage_row(Relation rel, SiftF2Store *store, TupleTableSlot *slot, CommandId cid, bool frozen)
+{
+	uint8		key[SIFT_BOUND_BYTES];
+
+	return stage_version(rel, store, slot, frozen ? FrozenTransactionId : GetCurrentTransactionId(), frozen ? 0 : cid, key);
 }
 
 /*
@@ -504,20 +510,18 @@ sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, C
 /* ---- a rewrite ---- */
 
 void
-sift_tbl_f2_bulk_begin(SiftTblF2Bulk *b, Relation rel, CommandId cid, bool frozen)
+sift_tbl_f2_bulk_begin(SiftTblF2Bulk *b, Relation rel)
 {
 	b->rel = rel;
 	b->store = sift_f2_store_open(rel);
 	b->stage = sift_tbl_f2_stage_bulk(rel, b->store);
-	b->frozen = frozen;
-	b->cid = cid;
 	b->nrows = 0;
 }
 
 void
-sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, ItemPointer tid)
+sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, TransactionId xmin, ItemPointer tid, uint8 *key)
 {
-	stage_row(b->rel, b->store, slot, b->cid, b->frozen);
+	stage_version(b->rel, b->store, slot, xmin, 0, key);
 	*tid = slot->tts_tid;
 	b->nrows++;
 	CHECK_FOR_INTERRUPTS();

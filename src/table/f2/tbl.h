@@ -244,20 +244,17 @@ extern void sift_tbl_f2_bulk_insert(Relation rel, SiftF2Store *store, TupleTable
 /* The stage of the relation from here on writes its buffers as bounded parts of the cold tier (a bulk insert, or an UPDATE that holds a partition); the stage */
 extern SiftTxnStage *sift_tbl_f2_stage_bulk(Relation rel, SiftF2Store *store);
 
-/* The rows of a statement as one staged batch; frozen: written as frozen rows (a rewrite), else with the xid and the command of the statement */
+/* The rows of a rewrite as one staged batch, each with the inserter it keeps (FrozenTransactionId: a row every snapshot sees); add returns the address and the routing key of the row */
 typedef struct SiftTblF2Bulk
 {
 	Relation	rel;
 	SiftF2Store *store;
 	SiftTxnStage *stage;
-	MemoryContext cx;
-	bool		frozen;
-	CommandId	cid;
 	uint64		nrows;
 } SiftTblF2Bulk;
 
-extern void sift_tbl_f2_bulk_begin(SiftTblF2Bulk *b, Relation rel, CommandId cid, bool frozen);
-extern void sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, ItemPointer tid);
+extern void sift_tbl_f2_bulk_begin(SiftTblF2Bulk *b, Relation rel);
+extern void sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, TransactionId xmin, ItemPointer tid, uint8 *key);
 extern void sift_tbl_f2_bulk_end(SiftTblF2Bulk *b);
 
 /* ---- extents ---- */

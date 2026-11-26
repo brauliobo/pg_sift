@@ -9,6 +9,7 @@
 #include "access/genam.h"
 #include "access/multixact.h"
 #include "access/tableam.h"
+#include "access/transam.h"
 #include "access/xlogutils.h"
 #include "catalog/index.h"
 #include "catalog/pg_operator.h"
@@ -22,6 +23,7 @@
 #include "storage/bufmgr.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -31,8 +33,11 @@
 #include "core/memtrack.h"
 #include "core/shm/manifest.h"
 #include "core/compat.h"
+#include "core/part_lock.h"
 #include "col/f2/cache.h"
+#include "col/f2/l0/shard_dir.h"
 #include "table/f2/gcache.h"
+#include "table/f2/row/state.h"
 #include "table/f2/slot.h"
 #include "table/f2/tbl.h"
 #include "table/f2/vm/vm.h"
@@ -202,13 +207,14 @@ sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable)
 	TupleTableSlot *slot = table_slot_create(OldTable, NULL);
 	SiftTblF2Bulk bulk;
 	ItemPointerData tid;
+	uint8		key[SIFT_BOUND_BYTES];
 	double		rows = 0;
 
 	sift_tbl_f2_adopt_layout(NewTable, sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
-	sift_tbl_f2_bulk_begin(&bulk, NewTable, GetCurrentCommandId(true), true);
+	sift_tbl_f2_bulk_begin(&bulk, NewTable);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		sift_tbl_f2_bulk_add(&bulk, slot, &tid);
+		sift_tbl_f2_bulk_add(&bulk, slot, FrozenTransactionId, &tid, key);
 		rows++;
 	}
 	sift_tbl_f2_bulk_end(&bulk);
@@ -218,14 +224,254 @@ sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable)
 	return rows;
 }
 
+/*
+ * VACUUM FULL and CLUSTER keep every version of a row that a snapshot still open may read, as the heap does. The table is locked against every writer, so each writer of the old table has
+ * committed or aborted: a version is gone when its deleter is older than the horizon (every snapshot sees the delete), and its inserter is kept unless it is older than the horizon (then it is
+ * frozen); CLUSTER in a transaction block keeps the versions the transaction deleted or replaced, with it as their deleter. A column delta newer than the horizon is a version of its own: the
+ * one before it ends where the delta begins, read with a snapshot that does not see the delta.
+ */
+typedef struct SiftTblDeadVersion
+{
+	uint8		key[SIFT_BOUND_BYTES];	/* routes the delete to the partition of the row */
+	SiftPendDelRec rec;
+} SiftTblDeadVersion;
+
+typedef struct SiftTblRewrite
+{
+	Relation	old;
+	TransactionId oldest;
+	SiftTblF2Bulk bulk;
+	TupleTableSlot *before;		/* a version that a delta replaced */
+	TupleTableSlot *horizon;	/* the version every snapshot sees */
+	TransactionId *hide;		/* the writers the snapshot of the version before does not see */
+	int			nhide;
+	int			caphide;
+	SiftTblDeadVersion *dead;	/* the versions of the new table and who ended them, written to it when maxdead are held */
+	int			ndead;
+	int			capdead;
+	int			maxdead;
+	double		live;
+	double		vacuumed;
+	double		recently_dead;
+} SiftTblRewrite;
+
+/* Every snapshot sees what committed before the horizon */
+static bool
+seen_by_all(const SiftTblRewrite *r, TransactionId xid)
+{
+	return !TransactionIdIsNormal(xid) || TransactionIdPrecedes(xid, r->oldest);
+}
+
+static void
+hide_writer(SiftTblRewrite *r, TransactionId xid)
+{
+	if (r->nhide == r->caphide)
+	{
+		r->caphide = Min(Max(r->caphide * 2, 8), (int) (MaxAllocSize / sizeof(TransactionId)));
+		r->hide = r->hide != NULL ? repalloc(r->hide, sizeof(TransactionId) * r->caphide) : palloc(sizeof(TransactionId) * r->caphide);
+	}
+	r->hide[r->nhide++] = xid;
+}
+
+/* The snapshot that sees every transaction that committed but the writers hidden, and nothing of this transaction (command 0): the version of the row before the oldest of them */
+static Snapshot
+snapshot_before(const SiftTblRewrite *r)
+{
+	Snapshot	snap = palloc0(sizeof(SnapshotData) + sizeof(TransactionId) * r->nhide);
+
+	snap->snapshot_type = SNAPSHOT_MVCC;
+	snap->xmin = r->oldest;
+	snap->xmax = ReadNextTransactionId();
+	snap->xip = (TransactionId *) (snap + 1);
+	memcpy(snap->xip, r->hide, sizeof(TransactionId) * r->nhide);
+	snap->xcnt = (uint32) r->nhide;
+	snap->curcid = FirstCommandId;
+	snap->copied = true;
+	return snap;
+}
+
+static int
+dead_cmp(const void *a, const void *b)
+{
+	return memcmp(((const SiftTblDeadVersion *) a)->key, ((const SiftTblDeadVersion *) b)->key, SIFT_BOUND_BYTES);
+}
+
+/* The smallest key above key: the upper bound of a read that ends with it */
+static void
+key_after(const uint8 *key, uint8 *after)
+{
+	int			i = SIFT_BOUND_BYTES - 1;
+
+	memcpy(after, key, SIFT_BOUND_BYTES);
+	while (i >= 0 && ++after[i] == 0)
+		i--;
+	SIFT_INVARIANT(i >= 0, "no key follows the largest one");
+}
+
+/*
+ * The deletes of the versions held, written to the partitions of the new table that hold them, under the lock of each: the rows are written first, so that the deletes find them. The
+ * manifest is read for the keys of the deletes only, sorted, one run of them for each partition.
+ */
+static void
+write_deletes(SiftTblRewrite *r)
+{
+	Relation	rel = r->bulk.rel;
+	SiftPendDelRec *recs = palloc(sizeof(SiftPendDelRec) * r->ndead);
+	uint8		hi[SIFT_BOUND_BYTES];
+	SiftManifestRead mr;
+
+	sift_stage_flush(rel);
+	qsort(r->dead, r->ndead, sizeof(SiftTblDeadVersion), dead_cmp);
+	key_after(r->dead[r->ndead - 1].key, hi);
+	mr = sift_manifest_read_range(rel, r->dead[0].key, hi);
+	for (int i = 0, j, m = 0; i < r->ndead; i = j)
+	{
+		SiftPartitionEntry e;
+		bool		locked;
+
+		while (m + 1 < mr.n && memcmp(mr.entries[m + 1].key_lo, r->dead[i].key, SIFT_BOUND_BYTES) <= 0)
+			m++;
+		for (j = i; j < r->ndead && (m + 1 >= mr.n || memcmp(r->dead[j].key, mr.entries[m + 1].key_lo, SIFT_BOUND_BYTES) < 0); j++)
+			recs[j - i] = r->dead[j].rec;
+		locked = sift_l0_lock_range(rel, mr.entries[m].part_id, mr.entries[m].key_lo, m + 1 < mr.n ? mr.entries[m + 1].key_lo : NULL, &e);
+		SIFT_INVARIANT(locked, "partition " UINT64_FORMAT " of the new table \"%s\" changed during its rewrite", mr.entries[m].part_id, RelationGetRelationName(rel));
+		sift_del_route(rel, e.part_id, e.key_lo, recs, j - i, &r->bulk.store->spec);
+		sift_part_page_unlock(rel, e.part_id, ExclusiveLock);
+	}
+	r->recently_dead += r->ndead;
+	r->ndead = 0;
+	pfree(recs);
+	pfree(mr.entries);
+}
+
+static void
+put_version(SiftTblRewrite *r, TupleTableSlot *slot, TransactionId xmin, TransactionId xmax)
+{
+	ItemPointerData tid;
+	uint8		key[SIFT_BOUND_BYTES];
+
+	sift_tbl_f2_bulk_add(&r->bulk, slot, seen_by_all(r, xmin) ? FrozenTransactionId : xmin, &tid, key);
+	if (!TransactionIdIsValid(xmax))
+	{
+		r->live++;
+		return;
+	}
+	if (r->ndead == r->maxdead)
+		write_deletes(r);
+	if (r->ndead == r->capdead)
+	{
+		r->capdead = Min(Max(r->capdead * 2, 64), r->maxdead);
+		r->dead = r->dead != NULL ? repalloc(r->dead, sizeof(SiftTblDeadVersion) * r->capdead) : palloc(sizeof(SiftTblDeadVersion) * r->capdead);
+	}
+	memcpy(r->dead[r->ndead].key, key, SIFT_BOUND_BYTES);
+	r->dead[r->ndead++].rec = (SiftPendDelRec) {.tid = sift_tbl_tid_pack(&tid),.xmax = xmax,.cmax = 0};
+}
+
+static bool
+same_values(TupleTableSlot *a, TupleTableSlot *b)
+{
+	TupleDesc	desc = a->tts_tupleDescriptor;
+
+	slot_getallattrs(a);
+	slot_getallattrs(b);
+	for (int i = 0; i < desc->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(desc, i);
+
+		if (a->tts_isnull[i] != b->tts_isnull[i] ||
+			(!a->tts_isnull[i] && !datum_image_eq(a->tts_values[i], b->tts_values[i], att->attbyval, att->attlen)))
+			return false;
+	}
+	return true;
+}
+
+/*
+ * The inserter of the version before a delta of this transaction, which hides none of its own writes from a reader of the row: the version every snapshot sees, as no other delta newer than
+ * the horizon changed it. A row that such a delta changed too keeps versions this transaction cannot tell apart, and the rewrite is refused.
+ */
+static TransactionId
+before_own_delta(SiftTblRewrite *r, ItemPointer at, const SiftRowState *rs)
+{
+	SiftTblRewrite all = {.oldest = r->oldest};
+	Snapshot	snap = snapshot_before(&all);
+	bool		found;
+
+	snap->xmax = r->oldest;
+	found = table_tuple_fetch_row_version(r->old, at, snap, r->horizon);
+	pfree(snap);
+	if (!found || !same_values(r->before, r->horizon))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("cannot rewrite \"%s\" in this transaction: it updated a row that another transaction changed after a snapshot that is still open", RelationGetRelationName(r->old)),
+						errhint("Run CLUSTER outside the transaction that changed the rows, or once the older snapshots have ended.")));
+	return rs->xmin;
+}
+
+/* The row the scan read, as the newest delta that committed made it, and the versions before it that a snapshot may still read */
+static void
+rewrite_row(SiftTblRewrite *r, TupleTableSlot *slot)
+{
+	ItemPointerData at = slot->tts_tid;
+	uint64		tid = sift_tbl_tid_pack(&at);
+	SiftRowState rs = sift_row_state_read(r->old, tid);
+	TransactionId xmax = TransactionIdIsValid(rs.xmax) && (TransactionIdIsCurrentTransactionId(rs.xmax) || TransactionIdDidCommit(rs.xmax)) ? rs.xmax : InvalidTransactionId;
+	TransactionId xmin;
+
+	if (!rs.found || (TransactionIdIsValid(xmax) && seen_by_all(r, xmax)))
+	{
+		r->vacuumed++;
+		return;
+	}
+	xmin = sift_row_sysattr_read(r->old, tid, SnapshotAny).xmin;
+	put_version(r, slot, xmin, xmax);
+	r->nhide = 0;
+	if (TransactionIdIsValid(xmax))
+		hide_writer(r, xmax);
+	while (xmin != rs.xmin && !seen_by_all(r, xmin))
+	{
+		TransactionId replaced = xmin;
+		Snapshot	snap;
+		bool		found;
+
+		hide_writer(r, replaced);
+		snap = snapshot_before(r);
+		found = table_tuple_fetch_row_version(r->old, &at, snap, r->before);
+		SIFT_INVARIANT(found, "the version of (%u,%u) of \"%s\" before its delta of xid %u is gone",
+					   ItemPointerGetBlockNumber(&at), ItemPointerGetOffsetNumber(&at), RelationGetRelationName(r->old), replaced);
+		xmin = TransactionIdIsCurrentTransactionId(replaced) ? before_own_delta(r, &at, &rs) : sift_row_sysattr_read(r->old, tid, snap).xmin;
+		put_version(r, r->before, xmin, replaced);
+		pfree(snap);
+	}
+}
+
 void
 sift_tbl_f2_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex pg_attribute_unused(), bool use_sort pg_attribute_unused(), TransactionId OldestXmin,
 									  SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff, MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed, double *tups_recently_dead)
 {
+	TableScanDesc scan = sift_table_beginscan(OldTable, SnapshotAny, 0, NULL);
+	TupleTableSlot *slot = table_slot_create(OldTable, NULL);
+	SiftTblRewrite r = {.old = OldTable,.oldest = OldestXmin,.before = table_slot_create(OldTable, NULL),.horizon = table_slot_create(OldTable, NULL),
+	.maxdead = (int) Min(Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4) / sizeof(SiftTblDeadVersion), 64), (Size) INT_MAX)};
+
+	sift_tbl_f2_adopt_layout(NewTable, sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
+	sift_tbl_f2_bulk_begin(&r.bulk, NewTable);
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		rewrite_row(&r, slot);
+	if (r.ndead > 0)
+		write_deletes(&r);
+	sift_tbl_f2_bulk_end(&r.bulk);
+	ExecDropSingleTupleTableSlot(r.before);
+	ExecDropSingleTupleTableSlot(r.horizon);
+	if (r.dead != NULL)
+		pfree(r.dead);
+	if (r.hide != NULL)
+		pfree(r.hide);
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
 	*xid_cutoff = OldestXmin;
 	*multi_cutoff = GetOldestMultiXactId();
-	*tups_vacuumed = *tups_recently_dead = 0;
-	*num_tuples = sift_tbl_f2_rewrite_rows(OldTable, NewTable);
+	*num_tuples = r.live + r.recently_dead;
+	*tups_vacuumed = r.vacuumed;
+	*tups_recently_dead = r.recently_dead;
 }
 
 /* ---- index builds ---- */
