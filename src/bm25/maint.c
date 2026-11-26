@@ -155,12 +155,9 @@ sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 #define WBUF_PROMOTE_HALF		0.5
 #define WBUF_READ_MIN_DOCS		2000
 
-/*
- * Have the queries that walked the open write buffer paid for its promotion? A buffer nobody reads has no walks noted, so a table that is only written never promotes before
- * its limit, and the sum is per generation of the buffer, so one promotion ends the debt.
- */
-bool
-sift_maint_wbuf_read_due(Relation index)
+/* Does an open write buffer hold enough documents for a segment to be worth it, and (reads_paid) have the queries that walked it paid for its promotion? */
+static bool
+open_buffer_due(Relation index, bool reads_paid)
 {
 	SiftDirSnapshot *snap;
 	bool		due = false;
@@ -176,16 +173,26 @@ sift_maint_wbuf_read_due(Relation index)
 		if (snap->segs[i].kind != SIFT_SEG_WBUF_OPEN)
 			continue;
 		paid = (double) sift_cwbuf_decoded(index, &snap->meta, snap->segs[i].gen) * WBUF_WALK_PRICE;
-		if (paid < WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * WBUF_READ_MIN_DOCS)
+		if (reads_paid && paid < WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * WBUF_READ_MIN_DOCS)
 			continue;
 		sift_wbuf_summary(index, &snap->segs[i], &ndocs, &sum_dl, &npages);
-		due = ndocs >= WBUF_READ_MIN_DOCS && paid >= WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * (double) ndocs;
+		due = ndocs >= WBUF_READ_MIN_DOCS && (!reads_paid || paid >= WBUF_PROMOTE_HALF * WBUF_PROMOTE_PRICE * (double) ndocs);
 	}
 	pfree(snap);
 	return due;
 }
 
-/* A search walked docs of the ndocs documents of the open buffer of generation gen: a buffer under WBUF_READ_MIN_DOCS is not worth a segment, so its reads cost nothing (no sum, no write of the metapage); else note them, write the sum to the metapage (core/reads.c), and now and then ask whether the reads have paid for the promotion (at most once per sift.maintenance_naptime for a backend) */
+/*
+ * Have the queries that walked the open write buffer paid for its promotion? A buffer nobody reads has no walks noted, so a table that is only written never promotes before
+ * its limit, and the sum is per generation of the buffer, so one promotion ends the debt. The sum is the one this backend holds: a read writes nothing, so what other backends paid is not in it.
+ */
+bool
+sift_maint_wbuf_read_due(Relation index)
+{
+	return open_buffer_due(index, true);
+}
+
+/* A search walked docs of the ndocs documents of the open buffer of generation gen: a buffer under WBUF_READ_MIN_DOCS is not worth a segment, so its reads cost nothing (no sum); else note them in the list of the backend (core/reads.c: it never reaches the metapage, a read logs nothing), and now and then ask whether the reads have paid for the promotion (at most once per sift.maintenance_naptime for a backend) */
 void
 sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs, uint64 ndocs)
 {
@@ -201,7 +208,6 @@ sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs, uint64 ndocs)
 	if (docs == 0 || ndocs < WBUF_READ_MIN_DOCS)
 		return;
 	sift_cwbuf_decoded_note(index, gen, docs);
-	sift_reads_flush_sampled(index, sift_maint_wbuf_read_due, NULL);
 	if (!sift_async_maintenance || !IsUnderPostmaster || IsParallelWorker() || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return;
 	now = GetCurrentTimestamp();
@@ -216,8 +222,8 @@ sift_maint_wbuf_walked(Relation index, uint64 gen, uint64 docs, uint64 ndocs)
 	}
 	looked[slot].index = RelationGetRelid(index);
 	looked[slot].at = now;
-	if (sift_maint_wbuf_read_due(index))
-		sift_maint_request_worker(index, SIFT_WK_BM25_READ_PROMOTE);
+	if (sift_maint_wbuf_read_due(index) && !sift_index_known_out(index))
+		sift_maint_register_worker(index, SIFT_WK_BM25_READ_PROMOTE);
 }
 
 /*
@@ -303,8 +309,8 @@ worker_main(Datum main_arg, bool promote)
 		index = sift_try_open_index(indexoid, RowExclusiveLock);
 		if (index != NULL)
 		{
-			/* judged again: the buffer may have been promoted since the reads asked */
-			if (is_sift(index) && sift_maint_wbuf_read_due(index))
+			/* the reads that asked are in the memory of their backend: judged again is whether the buffer is still worth a segment */
+			if (is_sift(index) && open_buffer_due(index, false))
 				sift_wbuf_seal(index, true);
 			index_close(index, RowExclusiveLock);
 		}
@@ -331,4 +337,5 @@ void
 sift_bm25_maint_init(void)
 {
 	sift_mops_register(&bm25_ops);
+	sift_wbuf_stage_init();
 }

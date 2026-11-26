@@ -211,6 +211,8 @@ bm25/semi_cache.h
 bm25/step.c
 bm25/unique.c
 bm25/wbuf.c
+bm25/wbuf_int.h
+bm25/wread.c
 bm25/doctext.c
 bm25/doctext.h
 col/am.h

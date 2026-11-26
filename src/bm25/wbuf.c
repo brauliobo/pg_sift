@@ -1,7 +1,6 @@
 /*
- * bm25/wbuf.c - write buffers: aminsert appends doc
- * records to one of SIFT_LANES lane chains of the active segment, each append
- * one generic WAL record. A full active segment is sealed in one directory
+ * bm25/wbuf.c - write buffers: aminsert stages the doc records of a statement and appends them to one of SIFT_LANES lane chains of the active
+ * segment, a page of docs in one generic WAL record. A full active segment is sealed in one directory
  * record and promoted to an immutable one by maintenance.
  *
  * Lock order: lane tail page, newly allocated page, header page. Sealing
@@ -11,10 +10,17 @@
  */
 #include "postgres.h"
 
+#include "access/htup_details.h"
+#include "access/relation.h"
+#include "access/xact.h"
+#include "catalog/pg_am_d.h"
+#include "executor/executor.h"
 #include "nodes/execnodes.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "tcop/utility.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 #include "bm25/am.h"
 #include "bm25/doc.h"
@@ -22,52 +28,15 @@
 #include "core/quarantine/quarantine.h"
 #include "core/maint/maint.h"
 #include "bm25/wbuf.h"
+#include "bm25/wbuf_int.h"
 
 bool		sift_test_wbuf_narrow = false;
 
 #define corrupt SIFT_CORRUPT
 
-#define WBUFPAGE(page)	((SiftWbufPageHeaderData *) SiftPageGetData(page))
-#define RECS(page, hs)	(SiftPageGetData(page) + (hs))
-#define ROOM(page)		(SIFT_PAGE_PAYLOAD - SiftPageGetUsed(page))
 #define WBUF_SPLIT_ROOM	1024	/* a doc is split over pages rather than moved whole when the page has this much room left */
 #define WBUF_VACUUM_SEAL_PAGES 8	/* pages from which VACUUM seals an open buffer */
-/* The lengths of the fields of a doc (SIFT_WBUF_FIELDDL) follow its header, nfields of them, so that the hashes stay aligned; nfields is in the record */
-#define FDL_BYTES(nfields) TYPEALIGN(4, (Size) (nfields) * sizeof(uint16))
-#define RECSIZE(nterms, termbytes, nfields) \
-	TYPEALIGN(4, sizeof(SiftWbufDocData) + FDL_BYTES(nfields) + (Size) (nterms) * 6 + (termbytes))
-#define REC_NFIELDS(d)	(((d)->flags & SIFT_WBUF_FIELDDL) ? (d)->reserved : 0)
-#define REC_HASH(d)		((const uint32 *) ((const char *) ((d) + 1) + FDL_BYTES(REC_NFIELDS(d))))
-
 /* STOR[STOR-BM25-06]: wbuf 1024B wide bloom (13.1%/pg) + 4B/term hash (33%/rec); ABI-locked, shrink via early seal */
-/* The header of a page of a buffer of this format: the buffers of format 0 have the 256-bit bloom in it, those of SIFT_WBUF_FORMAT_WIDE a bloom of 8,192 bits after it */
-static inline Size
-hdr_size(uint16 format)
-{
-	return format >= SIFT_WBUF_FORMAT_WIDE ? sizeof(SiftWbufWideHeaderData) : sizeof(SiftWbufPageHeaderData);
-}
-
-/* Two probes in a bloom of nwords words (a power of two): the low bits of the hash, then the ones above them */
-static inline void
-bloom_probes(int nwords, uint32 h, uint32 *a, uint32 *b)
-{
-	uint32		bits = (uint32) nwords * 64;
-
-	*a = h & (bits - 1);
-	*b = (h >> pg_leftmost_one_pos32(bits)) & (bits - 1);
-}
-
-static inline void
-bloom_add(uint64 *bloom, int nwords, uint32 h)
-{
-	uint32		a,
-				b;
-
-	bloom_probes(nwords, h, &a, &b);
-	bloom[a >> 6] |= UINT64CONST(1) << (a & 63);
-	bloom[b >> 6] |= UINT64CONST(1) << (b & 63);
-}
-
 bool
 sift_wbuf_bloom_has(const uint64 *bloom, int nwords, uint32 h)
 {
@@ -91,12 +60,10 @@ limit_pages(Relation index)
 	return Max(2 * SIFT_LANES, (uint64) sift_index_options(index)->write_buffer_limit * 1024 / BLCKSZ);
 }
 
-static bool has_docs(Relation index, const SiftSegEntry *entry);
-
 uint64
 sift_wbuf_seal(Relation index, bool force)
 {
-	return sift_lane_seal(index, force, hdr_size(new_format()), new_format(), 0, limit_pages(index), has_docs);
+	return sift_lane_seal(index, force, hdr_size(new_format()), new_format(), 0, limit_pages(index), sift_wbuf_has_docs);
 }
 
 /*
@@ -107,7 +74,7 @@ sift_wbuf_seal(Relation index, bool force)
 uint64
 sift_wbuf_seal_vacuum(Relation index)
 {
-	return sift_lane_seal(index, false, hdr_size(new_format()), new_format(), 0, WBUF_VACUUM_SEAL_PAGES, has_docs);
+	return sift_lane_seal(index, false, hdr_size(new_format()), new_format(), 0, WBUF_VACUUM_SEAL_PAGES, sift_wbuf_has_docs);
 }
 
 /* Cached per relation: the active segment and the lane tails last seen */
@@ -294,16 +261,12 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 	return crossed;
 }
 
-bool
-sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl, const uint16 *fdl, int nfields)
+/* The tail of a lane of the active buffer, locked; h is a copy of the hint: a lock taken here (the maintenance opens the heap) reloads the entry and frees the cached one */
+static Buffer
+lock_open_tail(Relation index, WbufHint *h, int *lane)
 {
-	WbufHint	hint = *get_hint(index),
-			   *h = &hint;	/* a copy: a lock taken below (the maintenance opens the heap) reloads the entry and frees the cached one */
 	SiftAnalyzerConfig cfg;
 	Buffer		buf;
-	int			lane;
-	BlockNumber tail;
-	bool		crossed;
 
 	for (;;)
 	{
@@ -312,14 +275,349 @@ sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int
 			sift_analyzer_config_from_index(index, &cfg);
 			refresh_hint(index, h, cfg.hash);
 		}
-		if (BufferIsValid(buf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, &lane)))
-			break;
+		if (BufferIsValid(buf = sift_lane_lock_tail(index, h->gen, h->tail, SIFT_LANES, lane)))
+			return buf;
 		h->gen = 0;
 	}
-	crossed = write_doc(index, h, lane, buf, tid, terms, nterms, dl, fdl, nfields, &tail);
-	h->tail[lane] = tail;
+}
+
+bool
+sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl, const uint16 *fdl, int nfields)
+{
+	WbufHint	hint = *get_hint(index);
+	int			lane;
+	BlockNumber tail;
+	Buffer		buf = lock_open_tail(index, &hint, &lane);
+	bool		crossed = write_doc(index, &hint, lane, buf, tid, terms, nterms, dl, fdl, nfields, &tail);
+
+	hint.tail[lane] = tail;
 	*get_hint(index) = hint;
 	return crossed;
+}
+
+/*
+ * The docs a statement inserts into an index are staged as the records of one page and written together, one log record for a page of docs and not one for each. The
+ * stage is written when it is full, before and after every statement (a statement that reads the index, a trigger or a function among them, finds the docs in it, and so
+ * does a parallel worker), and before the commit. A subtransaction that aborts drops the docs it staged: their rows are dead, and VACUUM may reuse their addresses, which it
+ * would not for a doc that is in the index.
+ */
+#define STAGE_BYTES		(SIFT_PAGE_PAYLOAD - sizeof(SiftWbufWideHeaderData))	/* fit an empty page of either format */
+#define STAGE_SLOTS		8
+#define STAGE_PAGE(s)	((Page) (s)->page.data)
+#define STAGE_HDR		sizeof(SiftWbufPageHeaderData)
+
+typedef struct WbufStage
+{
+	Oid			relid;			/* InvalidOid: the slot is free */
+	RelFileLocator locator;
+	SubTransactionId subid;
+	PGAlignedBlock page;		/* a page of the narrow format with the staged records */
+} WbufStage;
+
+typedef struct StageCopy
+{
+	const char *recs;
+	Size		bytes;
+	uint32		ndocs;
+	uint32		sum_dl;
+	const uint64 *bloom;
+} StageCopy;
+
+typedef struct StageFill
+{
+	StageCopy	copy;
+	uint16		format;
+	uint64		wide[SIFT_WBUF_WIDE_WORDS];
+} StageFill;
+
+static WbufStage stages[STAGE_SLOTS];
+static ExecutorRun_hook_type prev_run;
+static ProcessUtility_hook_type prev_utility;
+
+static Size
+stage_bytes(const WbufStage *s)
+{
+	return SiftPageGetUsed(STAGE_PAGE(s)) - STAGE_HDR;
+}
+
+static const char *
+stage_recs(const WbufStage *s)
+{
+	return SiftPageGetData(STAGE_PAGE(s)) + STAGE_HDR;
+}
+
+static void
+stage_clear(WbufStage *s)
+{
+	sift_lane_init_page(STAGE_PAGE(s), STAGE_HDR);
+}
+
+/* The bytes of whole records that fit room, and their docs and dl */
+static Size
+stage_take(const WbufStage *s, Size room, StageCopy *c)
+{
+	Size		pos = 0;
+
+	while (pos < stage_bytes(s))
+	{
+		const SiftWbufDocData *d = (const SiftWbufDocData *) (stage_recs(s) + pos);
+		Size		size = RECSIZE(d->nterms, d->termbytes, REC_NFIELDS(d));
+
+		if (size > room - pos)
+			break;
+		pos += size;
+		c->ndocs++;
+		c->sum_dl += d->dl;
+	}
+	return pos;
+}
+
+static void
+append_recs(Page page, const StageCopy *c)
+{
+	SiftWbufPageHeaderData *ph = WBUFPAGE(page);
+	Size		used = SiftPageGetUsed(page);
+
+	memcpy(SiftPageGetData(page) + used, c->recs, c->bytes);
+	ph->ndocs += c->ndocs;
+	ph->sum_dl += c->sum_dl;
+	for (int i = 0; i < 4; i++)
+		ph->bloom[i] |= c->bloom[i];
+	SiftPageSetUsed(page, used + c->bytes);
+}
+
+static void
+fill_stage(Page cp, Page np, Page hp, void *arg)
+{
+	StageFill  *f = arg;
+
+	if (f->format >= SIFT_WBUF_FORMAT_WIDE)
+	{
+		memcpy(((SiftWbufWideHeaderData *) WBUFPAGE(cp))->wide, f->wide, sizeof(f->wide));
+		WBUFPAGE(cp)->flags |= SIFT_WBUFPAGE_WIDE;
+	}
+	append_recs(np, &f->copy);
+}
+
+/* The staged docs go to the tail of a lane in one record, and those that do not fit it to a new page in another */
+static void
+flush_stage(Relation index, WbufStage *s)
+{
+	WbufHint	hint = *get_hint(index);
+	const SiftWbufPageHeaderData *sh = WBUFPAGE(STAGE_PAGE(s));
+	StageCopy	c = {.recs = stage_recs(s),.bloom = sh->bloom};
+	Size		total = stage_bytes(s);
+	StageFill	f;
+	SiftPageEdit ed;
+	Buffer		buf;
+	bool		crossed = false;
+	int			lane;
+
+	if (total == 0)
+		return;
+	if (sift_index_known_out(index))
+	{
+		sift_quarantine_stopped(index, SIFT_SKIP_WRITE);
+		stage_clear(s);
+		return;
+	}
+	buf = lock_open_tail(index, &hint, &lane);
+	c.bytes = stage_take(s, ROOM(BufferGetPage(buf)), &c);
+	if (c.bytes > 0)
+	{
+		sift_page_edit_begin(&ed, buf, SIFT_PAGE_DATA_OFFSET + sizeof(SiftWbufPageHeaderData));
+		append_recs(ed.page, &c);
+		sift_page_edit_end(index, &ed, 1);
+	}
+	if (c.bytes < total)
+	{
+		f = (StageFill) {{c.recs + c.bytes, total - c.bytes, sh->ndocs - c.ndocs, sh->sum_dl - c.sum_dl, sh->bloom}, hint.format};
+		if (hint.format >= SIFT_WBUF_FORMAT_WIDE)
+			wide_bloom(BufferGetPage(buf), NULL, 0, f.wide);
+		buf = sift_lane_grow(index, hint.gen, hint.hdr, lane, buf, hdr_size(hint.format), limit_pages(index), fill_stage, &f, &crossed);
+	}
+	hint.tail[lane] = BufferGetBlockNumber(buf);
+	UnlockReleaseBuffer(buf);
+	*get_hint(index) = hint;
+	stage_clear(s);
+	if (crossed)
+		sift_maint_after_seal(index);
+}
+
+/* The stage of an index that is still in use is written, and its slot is free: of an index that is gone or has another file (a REINDEX or a TRUNCATE rebuilt it from the rows) it is dropped */
+static void
+flush_slot(WbufStage *s)
+{
+	Relation	index = try_relation_open(s->relid, RowExclusiveLock);
+
+	if (index != NULL)
+	{
+		if (RelFileLocatorEquals(s->locator, index->rd_locator))
+			flush_stage(index, s);
+		relation_close(index, NoLock);
+	}
+	s->relid = InvalidOid;
+}
+
+static WbufStage *
+free_slot(void)
+{
+	for (int i = 0; i < STAGE_SLOTS; i++)
+		if (!OidIsValid(stages[i].relid))
+			return &stages[i];
+	flush_slot(&stages[0]);
+	return &stages[0];
+}
+
+static WbufStage *
+stage_for(Relation index)
+{
+	WbufStage  *s = NULL;
+
+	for (int i = 0; i < STAGE_SLOTS && s == NULL; i++)
+		if (stages[i].relid == RelationGetRelid(index))
+			s = &stages[i];
+	if (s == NULL)
+	{
+		s = free_slot();
+		s->relid = RelationGetRelid(index);
+		s->locator = index->rd_locator;
+		stage_clear(s);
+	}
+	else if (!RelFileLocatorEquals(s->locator, index->rd_locator))
+	{
+		s->locator = index->rd_locator;
+		stage_clear(s);
+	}
+	else if (s->subid != GetCurrentSubTransactionId())
+		flush_stage(index, s);
+	s->subid = GetCurrentSubTransactionId();
+	return s;
+}
+
+static bool
+stage_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl, const uint16 *fdl, int nfields)
+{
+	WbufStage  *s = stage_for(index);
+	int			tb;
+
+	for (int attempt = 0; attempt < 2; attempt++)
+	{
+		if (fit(STAGE_BYTES - stage_bytes(s), terms, nterms, nfields, &tb) == nterms)
+		{
+			put_piece(STAGE_PAGE(s), tid, dl, fdl, nfields, false, terms, nterms, tb);
+			return false;
+		}
+		flush_stage(index, s);
+	}
+	return sift_wbuf_append(index, tid, terms, nterms, dl, fdl, nfields);
+}
+
+static void
+flush_all(void)
+{
+	for (int i = 0; i < STAGE_SLOTS; i++)
+		if (OidIsValid(stages[i].relid))
+			flush_slot(&stages[i]);
+}
+
+static bool
+staged_any(void)
+{
+	for (int i = 0; i < STAGE_SLOTS; i++)
+		if (OidIsValid(stages[i].relid))
+			return true;
+	return false;
+}
+
+#if PG_VERSION_NUM >= 180000
+#define RUN_PARAMS	QueryDesc *qd, ScanDirection dir, uint64 count
+#define RUN_ARGS	qd, dir, count
+#else
+#define RUN_PARAMS	QueryDesc *qd, ScanDirection dir, uint64 count, bool once
+#define RUN_ARGS	qd, dir, count, once
+#endif
+
+static void
+stage_run(RUN_PARAMS)
+{
+	flush_all();
+	if (prev_run != NULL)
+		prev_run(RUN_ARGS);
+	else
+		standard_ExecutorRun(RUN_ARGS);
+	flush_all();
+}
+
+static void
+stage_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtilityContext context, ParamListInfo params, QueryEnvironment *env, DestReceiver *dest,
+			  QueryCompletion *qc)
+{
+	flush_all();
+	if (prev_utility != NULL)
+		prev_utility(pstmt, query, readonly, context, params, env, dest, qc);
+	else
+		standard_ProcessUtility(pstmt, query, readonly, context, params, env, dest, qc);
+	flush_all();
+}
+
+static void
+stage_xact(XactEvent event, void *arg)
+{
+	if ((event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE) && staged_any())
+	{
+		PushActiveSnapshot(GetTransactionSnapshot());
+		flush_all();
+		PopActiveSnapshot();
+	}
+	else if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
+		for (int i = 0; i < STAGE_SLOTS; i++)
+			stages[i].relid = InvalidOid;
+}
+
+static void
+stage_subxact(SubXactEvent event, SubTransactionId mine, SubTransactionId parent, void *arg)
+{
+	for (int i = 0; i < STAGE_SLOTS; i++)
+		if (OidIsValid(stages[i].relid) && stages[i].subid == mine)
+		{
+			if (event == SUBXACT_EVENT_ABORT_SUB)
+				stages[i].relid = InvalidOid;
+			else if (event == SUBXACT_EVENT_COMMIT_SUB)
+				stages[i].subid = parent;
+		}
+}
+
+void
+sift_wbuf_stage_init(void)
+{
+	prev_run = ExecutorRun_hook;
+	ExecutorRun_hook = stage_run;
+	prev_utility = ProcessUtility_hook;
+	ProcessUtility_hook = stage_utility;
+	RegisterXactCallback(stage_xact, NULL);
+	RegisterSubXactCallback(stage_subxact, NULL);
+}
+
+/*
+ * A doc of a speculative insertion (ON CONFLICT) that loses is dead at once and VACUUM may reuse its address before the statement ends, so its doc is written and not staged;
+ * of a table that is not a heap there is no telling.
+ */
+static bool
+stageable(Relation heap, ItemPointer tid)
+{
+	Buffer		buf;
+	Page		page;
+	bool		ok;
+
+	if (heap->rd_rel->relam != HEAP_TABLE_AM_OID)
+		return false;
+	buf = ReadBuffer(heap, ItemPointerGetBlockNumber(tid));
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	ok = !HeapTupleHeaderIsSpeculative((HeapTupleHeader) PageGetItem(page, PageGetItemId(page, ItemPointerGetOffsetNumber(tid))));
+	UnlockReleaseBuffer(buf);
+	return ok;
 }
 
 static char out_of_service;		/* the cache of an index that is out of service for the rest of the statement: its address only */
@@ -362,373 +660,11 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 	sift_field_dl(terms, n, sift_analyzer_nfields(an), fdl);
 	if (keyed && checkUnique != UNIQUE_CHECK_NO)
 		unique = sift_bm25_unique_check(index, heap, values, isnull, heap_tid, checkUnique, key);
-	crossed = sift_wbuf_append(index, heap_tid, terms, n, dl, fdl, sift_analyzer_nfields(an));
+	crossed = (keyed || !stageable(heap, heap_tid) ? sift_wbuf_append : stage_append)(index, heap_tid, terms, n, dl, fdl, sift_analyzer_nfields(an));
 	sift_analyzer_reset(an);
 	if (keyed && checkUnique != UNIQUE_CHECK_NO)
 		sift_bm25_unique_release(index, key);
 	if (crossed)
 		sift_maint_after_seal(index);
 	return unique;
-}
-
-struct SiftWbufReader
-{
-	Relation	index;
-	SiftSegEntry entry;
-	Size		hs;				/* the header of its pages */
-	bool		force;			/* the page being loaded is read whatever the filter says */
-	MemoryContext mcxt;
-	SiftWbufPageFilter filter;
-	void	   *filter_arg;
-	SiftLaneIter it;
-	Page		page;			/* copy of the current page */
-	Size		pos;			/* record offset in the page */
-	Size		used;
-	uint16		pflags;
-	uint64		ndocs;
-	uint64		sum_dl;
-	uint64		nwalked;		/* the docs of the pages that were loaded, not skipped for their bloom */
-	/* terms of a doc assembled from pieces */
-	int			nasm;
-	int			asmcap;
-	int			asmbytes;
-	int			asmbytescap;
-	uint32	   *ahash;
-	uint8	   *atf;
-	uint8	   *alen;
-	char	   *aterms;
-	uint16		afdl[SIFT_MAX_FIELDS];
-};
-
-static bool page_ruled_out(void *arg, Page page);
-
-SiftWbufReader *
-sift_wbuf_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, SiftWbufPageFilter filter,
-			  void *filter_arg)
-{
-	SiftWbufReader *r = MemoryContextAllocZero(mcxt, sizeof(SiftWbufReader));
-
-	r->index = index;
-	r->entry = *entry;
-	r->hs = hdr_size(entry->format);
-	r->mcxt = mcxt;
-	r->filter = filter;
-	r->filter_arg = filter_arg;
-	r->page = MemoryContextAlloc(mcxt, BLCKSZ);
-	sift_lane_iter_init(&r->it, index, &r->entry);
-	r->it.skip = page_ruled_out;
-	r->it.skip_arg = r;
-	return r;
-}
-
-void
-sift_wbuf_close(SiftWbufReader *r)
-{
-	pfree(r->page);
-	pfree(r);
-}
-
-void
-sift_wbuf_note_walked(const SiftWbufReader *r)
-{
-	if (r->entry.kind == SIFT_SEG_WBUF_OPEN)
-		sift_maint_wbuf_walked(r->index, r->entry.gen, r->nwalked, r->ndocs);
-}
-
-void
-sift_wbuf_totals(const SiftWbufReader *r, uint64 *ndocs, uint64 *sum_dl)
-{
-	*ndocs = r->ndocs;
-	*sum_dl = r->sum_dl;
-}
-
-/* On the page in the buffer: does the bloom of the page rule its docs out? (a page that may span is never ruled out, and none when the page is forced) */
-static bool
-page_ruled_out(void *arg, Page page)
-{
-	SiftWbufReader *r = arg;
-	const SiftWbufPageHeaderData *ph = WBUFPAGE(page);
-
-	if (r->force || !r->filter || (ph->flags & SIFT_WBUFPAGE_SPANS))
-		return false;
-	return !((ph->flags & SIFT_WBUFPAGE_WIDE) ? r->filter(r->filter_arg, ((const SiftWbufWideHeaderData *) ph)->wide, SIFT_WBUF_WIDE_WORDS) :
-			 r->filter(r->filter_arg, ph->bloom, 4));
-}
-
-/* Loads the next page of the segment; a page that may span is never filtered out unless force is false and the filter says so, and a page the filter rules out is not copied */
-static bool
-advance_page(SiftWbufReader *r, bool force)
-{
-	r->force = force;
-	for (;;)
-	{
-		SiftWbufPageHeaderData *ph;
-
-		if (!sift_lane_iter_next(&r->it, r->page, r->hs))
-			return false;
-		ph = WBUFPAGE(r->page);
-		r->pos = 0;
-		r->used = SiftPageGetUsed(r->page) - r->hs;
-		r->pflags = ph->flags;
-		r->ndocs += ph->ndocs;
-		r->sum_dl += ph->sum_dl;
-		if (!r->it.skipped)
-		{
-			r->nwalked += ph->ndocs;
-			return true;
-		}
-		CHECK_FOR_INTERRUPTS();
-	}
-}
-
-/* The record at r->pos, checked; *size its length */
-static const SiftWbufDocData *
-rec_at(SiftWbufReader *r, Size *size)
-{
-	const SiftWbufDocData *d = (const SiftWbufDocData *) (RECS(r->page, r->hs) + r->pos);
-	const uint8 *len;
-	uint32		sum;
-
-	if (r->pos + sizeof(SiftWbufDocData) > r->used)
-		corrupt(r->index, "A record header at byte %zu overruns the %zu used bytes of a write buffer page.", r->pos, r->used);
-	if (REC_NFIELDS(d) > SIFT_MAX_FIELDS)
-		corrupt(r->index, "A write buffer record has the lengths of %u fields.", REC_NFIELDS(d));
-	*size = RECSIZE(d->nterms, d->termbytes, REC_NFIELDS(d));
-	if (r->pos + *size > r->used)
-		corrupt(r->index, "A record of %zu bytes at byte %zu overruns the %zu used bytes of a write buffer page.",
-				*size, r->pos, r->used);
-	len = (const uint8 *) REC_HASH(d) + d->nterms * 5;
-	sum = sift_sum_u8(len, d->nterms);
-	if (sum != d->termbytes)
-		corrupt(r->index, "A write buffer record lists %u term bytes but its terms add up to %u.", d->termbytes, sum);
-	return d;
-}
-
-static void
-asm_piece(SiftWbufReader *r, const SiftWbufDocData *d)
-{
-	const uint32 *hash = REC_HASH(d);
-	const uint8 *tf = (const uint8 *) (hash + d->nterms),
-			   *len = tf + d->nterms;
-
-	if (r->nasm + d->nterms > r->asmcap)
-	{
-		MemoryContext old = MemoryContextSwitchTo(r->mcxt);
-
-		r->asmcap = Max(2 * r->asmcap, r->nasm + d->nterms);
-		SIFT_REGROW(r->ahash, r->asmcap * sizeof(uint32));
-		SIFT_REGROW(r->atf, r->asmcap);
-		SIFT_REGROW(r->alen, r->asmcap);
-		MemoryContextSwitchTo(old);
-	}
-	if (r->asmbytes + d->termbytes > r->asmbytescap)
-	{
-		r->asmbytescap = Max(2 * r->asmbytescap, r->asmbytes + d->termbytes);
-		SIFT_REGROW_IN(r->mcxt, r->aterms, r->asmbytescap);
-	}
-	memcpy(r->ahash + r->nasm, hash, d->nterms * sizeof(uint32));
-	memcpy(r->atf + r->nasm, tf, d->nterms);
-	memcpy(r->alen + r->nasm, len, d->nterms);
-	memcpy(r->aterms + r->asmbytes, len + d->nterms, d->termbytes);
-	r->nasm += d->nterms;
-	r->asmbytes += d->termbytes;
-}
-
-bool
-sift_wbuf_next(SiftWbufReader *r, SiftWbufDoc *doc)
-{
-	for (;;)
-	{
-		const SiftWbufDocData *d;
-		Size		size;
-
-		if (r->pos >= r->used)
-		{
-			if (!advance_page(r, false))
-				return false;
-			continue;
-		}
-		d = rec_at(r, &size);
-		if (d->flags & SIFT_WBUF_CONT)
-			corrupt(r->index, "A continuation record of segment %llu has no first piece.", (unsigned long long) r->entry.gen);
-		doc->tid = d->tid;
-		doc->dl = d->dl;
-		doc->deleted = (d->flags & SIFT_WBUF_DELETED) != 0;
-		r->pos += size;
-		doc->field_dl = (d->flags & SIFT_WBUF_FIELDDL) ? (const uint16 *) (d + 1) : NULL;
-		doc->nfields = REC_NFIELDS(d);
-		if (r->pos < r->used || !(r->pflags & SIFT_WBUFPAGE_SPANS) || !BlockNumberIsValid(r->it.nextblk))
-		{
-			const uint32 *hash = REC_HASH(d);
-
-			doc->nterms = d->nterms;
-			doc->hash = hash;
-			doc->tf = (const uint8 *) (hash + d->nterms);
-			doc->len = doc->tf + d->nterms;
-			doc->terms = (const char *) (doc->len + d->nterms);
-			return true;
-		}
-		/* the doc goes on in the next page; the copy of this one is about to be replaced */
-		r->nasm = r->asmbytes = 0;
-		if (doc->field_dl)
-		{
-			memcpy(r->afdl, doc->field_dl, REC_NFIELDS(d) * sizeof(uint16));
-			doc->field_dl = r->afdl;
-		}
-		for (;;)
-		{
-			asm_piece(r, d);
-			if (r->pos < r->used || !(r->pflags & SIFT_WBUFPAGE_SPANS) || !advance_page(r, true) || r->pos >= r->used)
-				break;
-			d = rec_at(r, &size);
-			if (!(d->flags & SIFT_WBUF_CONT))
-				break;
-			r->pos += size;
-		}
-		doc->nterms = r->nasm;
-		doc->hash = r->ahash;
-		doc->tf = r->atf;
-		doc->len = r->alen;
-		doc->terms = r->aterms;
-		return true;
-	}
-}
-
-static bool
-has_docs(Relation index, const SiftSegEntry *entry)
-{
-	SiftWbufReader *r = sift_wbuf_open(index, entry, CurrentMemoryContext, NULL, NULL);
-	SiftWbufDoc	doc;
-	bool		any = sift_wbuf_next(r, &doc);
-
-	sift_wbuf_close(r);
-	return any;
-}
-
-static int
-collect_docs(void *arg, Page page, Size *offs, ItemPointerData *tids)
-{
-	SiftWbufReader *r = arg;
-	int			n = 0;
-
-	r->pos = 0;
-	r->used = SiftPageGetUsed(page) - r->hs;
-	while (r->pos < r->used)
-	{
-		Size		size;
-		const SiftWbufDocData *d = rec_at(r, &size);
-
-		if (!(d->flags & (SIFT_WBUF_CONT | SIFT_WBUF_DELETED)))
-		{
-			offs[n] = r->hs + r->pos;
-			tids[n++] = d->tid;
-		}
-		r->pos += size;
-	}
-	return n;
-}
-
-static void
-flag_doc(Page page, Size off)
-{
-	((SiftWbufDocData *) (SiftPageGetData(page) + off))->flags |= SIFT_WBUF_DELETED;
-}
-
-int64
-sift_wbuf_bulkdelete(Relation index, const SiftSegEntry *entry, IndexBulkDeleteCallback cb, void *cbstate,
-					IndexBulkDeleteResult *stats)
-{
-	SiftWbufReader *r = sift_wbuf_open(index, entry, CurrentMemoryContext, NULL, NULL);
-	int64		removed = sift_lane_bulkdelete(index, entry, r->hs, sizeof(SiftWbufDocData), r->page,
-											   collect_docs, flag_doc, r, cb, cbstate, stats);
-
-	sift_wbuf_close(r);
-	return removed;
-}
-
-typedef struct VerifyState
-{
-	SiftWbufReader *r;
-	uint64		gen;
-	uint64		live;
-} VerifyState;
-
-static void
-verify_page(void *arg, Page page, BlockNumber blk)
-{
-	VerifyState *v = arg;
-	SiftWbufReader *r = v->r;
-	SiftWbufPageHeaderData *ph = WBUFPAGE(page);
-	uint64		ndocs = 0,
-				sum_dl = 0,
-				bloom[4] = {0},
-				wide[SIFT_WBUF_WIDE_WORDS] = {0};
-
-	memcpy(r->page, page, BLCKSZ);
-	r->pos = 0;
-	r->used = SiftPageGetUsed(page) - r->hs;
-	while (r->pos < r->used)
-	{
-		Size		size;
-		const SiftWbufDocData *d = rec_at(r, &size);
-		const uint32 *hash = REC_HASH(d);
-
-		if (!ItemPointerIsValid(&d->tid) || (d->flags & ~(SIFT_WBUF_DELETED | SIFT_WBUF_CONT | SIFT_WBUF_FIELDDL)))
-			corrupt(r->index, "A record of write buffer %llu has tid (%u,%u) and flags %x.",
-					(unsigned long long) v->gen, ItemPointerGetBlockNumberNoCheck(&d->tid),
-					ItemPointerGetOffsetNumberNoCheck(&d->tid), d->flags);
-		for (int i = 0; i < d->nterms; i++)
-		{
-			bloom_add(bloom, 4, hash[i]);
-			bloom_add(wide, SIFT_WBUF_WIDE_WORDS, hash[i]);
-		}
-		if (!(d->flags & SIFT_WBUF_CONT))
-		{
-			ndocs++;
-			sum_dl += d->dl;
-			v->live += !(d->flags & SIFT_WBUF_DELETED);
-		}
-		r->pos += size;
-	}
-	if (ndocs != ph->ndocs || sum_dl != ph->sum_dl)
-		corrupt(r->index, "Write buffer block %u holds %llu docs and %llu tokens, its header %u and %u.", blk,
-				(unsigned long long) ndocs, (unsigned long long) sum_dl, ph->ndocs, ph->sum_dl);
-	for (int i = 0; i < 4; i++)
-		if (bloom[i] & ~ph->bloom[i])
-			corrupt(r->index, "The bloom filter of write buffer block %u misses a term of its records.", blk);
-	if (ph->flags & SIFT_WBUFPAGE_WIDE)
-		for (int i = 0; i < SIFT_WBUF_WIDE_WORDS; i++)
-			if (wide[i] & ~((SiftWbufWideHeaderData *) ph)->wide[i])
-				corrupt(r->index, "The wide bloom filter of write buffer block %u misses a term of its records.", blk);
-}
-
-uint64
-sift_wbuf_verify(Relation index, const SiftSegEntry *entry)
-{
-	VerifyState v = {sift_wbuf_open(index, entry, CurrentMemoryContext, NULL, NULL), entry->gen, 0};
-
-	sift_lane_verify(index, entry, v.r->hs, verify_page, &v);
-	sift_wbuf_close(v.r);
-	return v.live;
-}
-
-static bool
-no_page(void *arg, const uint64 *bloom, int nwords)
-{
-	return false;
-}
-
-void
-sift_wbuf_summary(Relation index, const SiftSegEntry *entry, uint64 *ndocs, uint64 *sum_dl, uint64 *npages)
-{
-	SiftWbufHeaderData hdr;
-	SiftWbufReader *r = sift_wbuf_open(index, entry, CurrentMemoryContext, no_page, NULL);
-	SiftWbufDoc	d;
-
-	while (sift_wbuf_next(r, &d))
-		;
-	sift_wbuf_totals(r, ndocs, sum_dl);
-	sift_wbuf_close(r);
-	sift_lane_read_header(index, entry, &hdr);
-	*npages = 1 + sift_lane_npages(&hdr);
 }

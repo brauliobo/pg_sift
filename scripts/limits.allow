@@ -49,6 +49,7 @@ F_SLOTS	a flag bit of a shared dictionary (the slots form), not a size
 KEYS_DENSE_SLOTS	slots a key needs in a bitmap before a sorted array is used instead: a speed threshold, the keys are the same
 PEND_SLOTS	indexes whose rows a backend buffers for one commit (col/v1/wbuf/pending.c): the rows of another index are written to its lane at once
 SET_MEMO_SLOTS	entries of the memo of the ranges of one probe, replaced in turn (col/v1/amscan/ranges.c)
+STAGE_SLOTS	indexes whose docs a backend stages for one statement (bm25/wbuf.c): when none is free the first is written and its slot reused
 TOMB_SLOTS	indexes whose tombstones a statement holds back for the page-wise append (col/v1/supersede.c): when none is free every held buffer goes to the log and the first is reused
 SIFT_TOMB_PRESSURE_ENTRIES	the length of the tombstone log of a sift_table at which the maintenance worker is asked for: a scheduling threshold, with no effect on what a statement may do
 SIFT_TOMB_SYNC_ENTRIES	the length of the tombstone log of a sift_table past which a ticking backend leaves the count of its tombstones to the worker: a scheduling threshold, with no effect on what a statement may do

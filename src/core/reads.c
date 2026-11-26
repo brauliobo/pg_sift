@@ -11,6 +11,7 @@
  * A read adds to a small list of its backend, and the end of its statement writes the list in one record of the metapage alone (sift_meta_update: the directory is not touched, so no scan that holds a copy of it is told of a change).
  * A sum that already meets the rule (the caller's `met`, computed without the list) is not written again: more would be written for nothing, and a rule that cannot run (no worker) would otherwise make every read write.
  * A standby cannot write: its reads count nowhere. What the reads of a scope paid for its changed pairs is kept the same way (col/v1/scope/paid.c).
+ * A read of the buffer of a BM25 index is never written: a SELECT logs nothing, so what the backend paid stays in its list, and its sum asks the worker (bm25/maint.c).
  *
  * The scans of a key-cut index are counted the same way (SIFT_READ_SCANS), for the weighing of the merge of its overlays (maint/rewrite.c): a count of every scan would write the metapage, which every scan reads,
  * once for each of them, so a scan is counted as many as the count says (SCANS_EXACT scans each, then a scan is sampled with the probability 1/k and counts k, k being 1 and one more for every SCANS_EXACT counted):
@@ -28,8 +29,6 @@
 #include "core/store/store.h"
 
 #define SCANS_EXACT		64
-#define FLUSH_PAID_ROWS	8192
-#define FLUSH_SAMPLE	64
 
 typedef struct Pending
 {
@@ -74,9 +73,13 @@ sift_scans_note(Relation index, const SiftMetaPageData *meta)
 		reads_add(index, SIFT_READ_SCANS, 1, k);
 }
 
+/* The buffers of an index have growing generations, and only the open one is weighed: what was noted for an older one is no longer owed to anything */
 void
 sift_cwbuf_decoded_note(Relation index, uint64 gen, uint64 rows)
 {
+	for (int i = 0; i < npending; i++)
+		if (pending[i].index == RelationGetRelid(index) && pending[i].kind == SIFT_READ_WBUF && pending[i].gen < gen)
+			pending[i--] = pending[--npending];
 	reads_add(index, SIFT_READ_WBUF, gen, rows);
 }
 
@@ -160,26 +163,6 @@ add_pending(SiftMetaPageData *meta, void *arg)
 		changed = true;
 	}
 	return changed;
-}
-
-static uint64
-pending_paid(Oid index)
-{
-	uint64		paid = 0;
-
-	for (int i = 0; i < npending; i++)
-		if (pending[i].index == index)
-			paid += pending[i].paid;
-	return paid;
-}
-
-/* A backend that reads a buffer again and again writes the metapage when its sums are worth a record (FLUSH_PAID_ROWS) or for one call in FLUSH_SAMPLE: the sums it holds count in reads_paid meanwhile */
-void
-sift_reads_flush_sampled(Relation index, bool (*wbuf_met) (Relation), bool (*marks_met) (Relation))
-{
-	if (pending_paid(RelationGetRelid(index)) < FLUSH_PAID_ROWS && pg_prng_uint64_range(&pg_global_prng_state, 0, FLUSH_SAMPLE - 1) != 0)
-		return;
-	sift_reads_flush(index, wbuf_met, marks_met);
 }
 
 /*

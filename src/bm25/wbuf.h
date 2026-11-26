@@ -42,6 +42,9 @@ sift_sum_u8(const uint8 *p, uint32 n)
 extern bool sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms,
 							int nterms, uint32 dl, const uint16 *fdl, int nfields);
 
+/* Hooks the statement, commit and subtransaction events that write the docs a statement staged (wbuf.c) */
+extern void sift_wbuf_stage_init(void);
+
 /*
  * Seals the active segment (only above write_buffer_limit unless force) and opens
  * a fresh one; returns the sealed gen or 0.
