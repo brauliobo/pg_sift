@@ -94,7 +94,7 @@ f2t_arg_bound(FunctionCallInfo fcinfo, int n, uint8 *buf)
 Relation
 f2t_open_index(FunctionCallInfo fcinfo, int lockmode)
 {
-	return index_open(sift_rel_must_exist(PG_GETARG_OID(0)), lockmode);
+	return relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), lockmode);
 }
 
 uint64

@@ -713,12 +713,24 @@ sift_col_delta_fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo)
 	return e;
 }
 
-/* A row whose part a compaction replaced since the record was staged is where its address says now; one whose part a TTL drop took is gone, and its record with it. The stage is the one being
- * flushed and still holds the row: the lookup leaves it alone (a lookup that flushes a stage holding its address would flush this one again) */
+/* The record goes to the partition that holds its row now: the books of the stage follow it */
 static void
+rehome(SiftColDeltaStage *cd, SiftStageColDelta *it, const SiftPartitionEntry *to, uint32 bytes)
+{
+	sift_col_delta_stage_book(cd, it, -(int64) bytes, -1);
+	it->part_id = to->part_id;
+	memcpy(it->key_lo, to->key_lo, SIFT_BOUND_BYTES);
+	sift_col_delta_stage_book(cd, it, bytes, 1);
+}
+
+/* A row whose part a compaction replaced since the record was staged is where its address says now, and in the partition it lies in now when a merge took its partition away; one whose part a TTL drop
+ * took is gone, and its record with it. The stage is the one being flushed and still holds the row: the lookup leaves it alone (a lookup that flushes a stage holding its address would flush this one
+ * again). Returns the records that left for another partition: the run is not the run of the partition any more */
+static int
 relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *ord, int lo, int hi, const SiftPartDesc *parts, int nparts)
 {
 	SiftU64Set	gens;
+	int			moved = 0;
 
 	sift_u64set_init(&gens, nparts);
 	for (int p = 0; p < nparts; p++)
@@ -738,14 +750,19 @@ relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const in
 			sift_col_delta_stage_release(cd, ord[k]);
 			continue;
 		}
-		SIFT_INVARIANT(loc.entry.part_id == it->part_id, "the row of a staged column delta is not in its partition");
 		h.part_gen = loc.gb->pin->part_gen;
 		h.granule_id = loc.gb->granule_id;
 		h.row_ordinal = loc.row;
 		memcpy(it->rec, &h, sizeof(h));
+		if (loc.entry.part_id != it->part_id)
+		{
+			rehome(cd, it, &loc.entry, h.rec_bytes);
+			moved++;
+		}
 		sift_f2_gbuf_unref(loc.gb);
 	}
 	sift_u64set_free(&gens);
+	return moved;
 }
 
 typedef struct ChainOut
@@ -825,6 +842,43 @@ release_run(SiftColDeltaStage *cd, const int *ord, int lo, int hi)
 			sift_col_delta_stage_release(cd, ord[k]);
 }
 
+#define SIFT_COL_DELTA_REGROUPS 8	/* merges of partitions that one flush meets before it gives up: each is a merge another session committed while it ran */
+
+/* The records of ord[lo..hi), all of one partition, into its chain. Returns 0, or the records that a merge of the partitions since they were staged sent to the partition that holds their rows
+ * now: nothing is written then, and the stage is grouped again */
+static int
+flush_part(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *ord, int lo, int hi, FullTransactionId next)
+{
+	uint64		part_id = cd->items[ord[lo]].part_id;
+	SiftPartitionEntry e;
+	SiftPartDesc *parts = NULL;
+	int			nparts = 0;
+	SiftColDeltaBatch b;
+	uint32		npages = 0;
+	int			moved;
+
+	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	if (sift_manifest_find_entry(rel, part_id, cd->items[ord[lo]].key_lo, &e))
+		parts = sift_manifest_read_parts(rel, &e, &nparts);
+	moved = relocate_stale(rel, store, cd, ord, lo, hi, parts, nparts);
+	if (moved == 0 && parts != NULL)
+	{
+		b = run_batch(cd, ord, lo, hi, next);
+		if (b.nentries > 0)
+			npages = append_locked(rel, &e, &b, next);
+		release_run(cd, ord, lo, hi);
+		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
+		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
+		sift_col_delta_batch_free(&b);
+	}
+	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	if (npages >= SIFT_COL_DELTA_FOLD_PAGES)
+		(void) sift_f2_maint_request(rel, SIFT_MK_COMPACT_PART, part_id);
+	if (parts != NULL)
+		pfree(parts);
+	return moved;
+}
+
 static void
 flush_stage(Relation rel, SiftColDeltaStage *cd)
 {
@@ -832,34 +886,23 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 	FullTransactionId next = ReadNextFullTransactionId();
 	int			nlive;
 	int		   *ord = sift_col_delta_stage_by_part(cd, &nlive);
+	int			regroups = 0;
 
 	for (int lo = 0, hi; lo < nlive; lo = hi)
 	{
 		uint64		part_id = cd->items[ord[lo]].part_id;
-		SiftPartitionEntry e;
-		SiftPartDesc *parts;
-		int			nparts;
-		SiftColDeltaBatch b;
-		uint32		npages = 0;
 
 		CHECK_FOR_INTERRUPTS();
 		for (hi = lo; hi < nlive && cd->items[ord[hi]].part_id == part_id; hi++)
 			;
-		LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		e = sift_col_delta_fresh_entry(rel, part_id, cd->items[ord[lo]].key_lo);
-		parts = sift_manifest_read_parts(rel, &e, &nparts);
-		relocate_stale(rel, store, cd, ord, lo, hi, parts, nparts);
-		b = run_batch(cd, ord, lo, hi, next);
-		if (b.nentries > 0)
-			npages = append_locked(rel, &e, &b, next);
-		release_run(cd, ord, lo, hi);
-		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
-		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
-		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		if (npages >= SIFT_COL_DELTA_FOLD_PAGES)
-			(void) sift_f2_maint_request(rel, SIFT_MK_COMPACT_PART, part_id);
-		sift_col_delta_batch_free(&b);
-		pfree(parts);
+		if (flush_part(rel, store, cd, ord, lo, hi, next) == 0)
+			continue;
+		if (++regroups > SIFT_COL_DELTA_REGROUPS)
+			ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), errmsg("sift: the partitions of \"%s\" were merged %d times while a transaction flushed its column deltas",
+																			  RelationGetRelationName(rel), regroups)));
+		pfree(ord);
+		ord = sift_col_delta_stage_by_part(cd, &nlive);
+		hi = 0;
 	}
 	pfree(ord);
 	sift_col_delta_stage_clear(cd);

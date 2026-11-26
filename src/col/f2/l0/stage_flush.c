@@ -394,7 +394,8 @@ reroute(SiftTxnStage *st, const SiftManifestRead *now)
 		}
 		sift_rowbuf_free(old[i].rb);
 	}
-	pfree(old);
+	if (old != NULL)
+		pfree(old);
 }
 
 /*
