@@ -153,7 +153,11 @@ extern uint32 sift_proj_spec_flags(const SiftProjSpec *s);
 /* A dead row of a part can be subtracted from the cells of an AGG projection: it holds no minimum and no maximum */
 extern bool sift_proj_spec_invertible(const SiftProjSpec *s);
 
-/* date_trunc of a timestamp (microseconds since 2000-01-01) to the unit; the units a coarser unit can be made of by truncating again */
+/* Days since 1970-01-01 to the year, month and day of the civil calendar, and back */
+extern void sift_proj_civil_from_days(int64 z, int64 *y, int *m, int *d);
+extern int64 sift_proj_days_from_civil(int64 y, int m, int d);
+
+/* date_trunc of a timestamp (microseconds since 2000-01-01) to the unit, an infinity itself; the units a coarser unit can be made of by truncating again */
 extern int64 sift_proj_trunc(int64 ts, SiftProjUnit unit);
 
 /* The same of a date (days since 2000-01-01) to day or coarser; sift_proj_trunc_cell takes the cell of the time kind */

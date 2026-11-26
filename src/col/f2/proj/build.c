@@ -88,7 +88,7 @@ typedef struct BuildRows
 	int			ncols;
 	uint64		budget;
 	uint32		added;
-	bool		where_exc;		/* a row holds a value its WHERE could not judge on the cells: the part is read from its base part */
+	bool		where_exc;		/* a row holds a value its WHERE could not judge, or a key, measure or FILTER of it an exception tag: the part is read from its base part */
 	bool		over;			/* what the part holds in memory passed the budget of the refresh */
 } BuildRows;
 
@@ -107,6 +107,24 @@ cube_over(const BuildRows *b)
 	return MemoryContextMemAllocated(b->cube_cx, true) > b->budget;
 }
 
+/* A key, a measure or a column of a FILTER of the row holds a value the cells cannot (a numeric NaN): the projection cannot sort, group or sum it */
+static bool
+reads_tag(const SiftProjSpec *s, const SiftCell *row)
+{
+	for (int i = 0; i < s->nkeys; i++)
+		if (row[s->key[i].leaf].tag != 0)
+			return true;
+	for (int m = 0; m < s->nmeas; m++)
+	{
+		if (s->meas[m].leaf >= 0 && row[s->meas[m].leaf].tag != 0)
+			return true;
+		for (int f = 0; f < s->meas[m].nfilter; f++)
+			if (row[s->meas[m].filter[f].leaf].tag != 0)
+				return true;
+	}
+	return false;
+}
+
 static void
 build_row(BuildRows *b, const SiftRowBuf *rows, int r)
 {
@@ -118,6 +136,7 @@ build_row(BuildRows *b, const SiftRowBuf *rows, int r)
 		if (!sift_proj_spec_preds_pass(b->spec->where, b->spec->nwhere, b->cells))
 			return;
 	}
+	b->where_exc |= reads_tag(b->spec, b->cells);
 	if (b->cube != NULL)
 	{
 		MemoryContext old = MemoryContextSwitchTo(b->cube_cx);

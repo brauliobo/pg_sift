@@ -148,8 +148,6 @@ parse_colref(Parser *ps)
 #define USECS_PER_DAY	INT64CONST(86400000000)
 #define DAYS_1970_TO_2000	10957
 
-static int64 days_from_civil(int64 y, int m, int d);
-
 /* ---- the constants of a predicate ---- */
 
 static bool
@@ -173,7 +171,7 @@ time_literal(const char *p, SiftProjTime kind, int64 *out)
 
 	if (!read_digits(&p, 4, &y) || *p++ != '-' || !read_digits(&p, 2, &mo) || *p++ != '-' || !read_digits(&p, 2, &d) || mo < 1 || mo > 12 || d < 1 || d > 31)
 		return false;
-	*out = days_from_civil(y, (int) mo, (int) d) - DAYS_1970_TO_2000;
+	*out = sift_proj_days_from_civil(y, (int) mo, (int) d) - DAYS_1970_TO_2000;
 	if (kind == SPT_DATE)
 		return *p == '\0';
 	if (*p == ' ' || *p == 'T')
@@ -223,7 +221,8 @@ number_literal(const char *t, const SiftProjColumn *col, int64 *out)
 	dot = frac >= 0;
 	if (col->numeric)
 		for (frac = Max(frac, 0); frac < col->scale; frac++)
-			v *= 10;
+			if (pg_mul_s64_overflow(v, 10, &v))
+				return false;
 	*out = neg ? -v : v;
 	return digits > 0 && *t == '\0' && (col->numeric || !dot);
 }
@@ -676,8 +675,6 @@ put_key(Buf *b, const SiftProjSpec *s, const SiftProjColumns *cols, const SiftPr
 
 static const char *const measure_name[] = {"count", "count", "sum", "avg", "min", "max", "count"};
 
-static void civil_from_days(int64 z, int64 *y, int *m, int *d);
-
 static void
 put_literal(Buf *b, const SiftProjColumn *col, const SiftProjSpecPred *p, int i)
 {
@@ -692,7 +689,7 @@ put_literal(Buf *b, const SiftProjColumn *col, const SiftProjSpecPred *p, int i)
 		int64		days = col->time == SPT_DATE ? v : v / USECS_PER_DAY - (v % USECS_PER_DAY < 0),
 					rem = col->time == SPT_DATE ? 0 : v - days * USECS_PER_DAY;
 
-		civil_from_days(days + DAYS_1970_TO_2000, &y, &m, &d);
+		sift_proj_civil_from_days(days + DAYS_1970_TO_2000, &y, &m, &d);
 		bput(b, "'%04lld-%02d-%02d", (long long) y, m, d);
 		if (col->time == SPT_TIMESTAMP)
 			bput(b, " %02lld:%02lld:%02lld", (long long) (rem / 3600000000), (long long) (rem / 60000000 % 60), (long long) (rem / 1000000 % 60));
@@ -895,102 +892,4 @@ sift_proj_layout(const SiftProjSpec *s, const SiftProjColumns *cols, SiftProjLay
 		}
 	}
 	return n;
-}
-
-/* ---- date_trunc ---- */
-
-#define USECS_PER_MIN	INT64CONST(60000000)
-#define USECS_PER_HOUR	INT64CONST(3600000000)
-
-static int64
-floor_div(int64 a, int64 b)
-{
-	int64		q = a / b;
-
-	return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
-}
-
-/* Howard Hinnant's civil calendar: days since 1970-01-01 <-> year, month, day */
-static void
-civil_from_days(int64 z, int64 *y, int *m, int *d)
-{
-	int64		era, yoe, doy, mp;
-
-	z += 719468;
-	era = floor_div(z, 146097);
-	{
-		int64		doe = z - era * 146097;
-
-		yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-		doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-	}
-	mp = (5 * doy + 2) / 153;
-	*d = (int) (doy - (153 * mp + 2) / 5 + 1);
-	*m = (int) (mp < 10 ? mp + 3 : mp - 9);
-	*y = yoe + era * 400 + (*m <= 2);
-}
-
-static int64
-days_from_civil(int64 y, int m, int d)
-{
-	int64		era, yoe, doy, doe;
-
-	y -= m <= 2;
-	era = floor_div(y, 400);
-	yoe = y - era * 400;
-	doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
-	doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-	return era * 146097 + doe - 719468;
-}
-
-int64
-sift_proj_trunc_date(int64 days, SiftProjUnit unit)
-{
-	int64		y;
-	int			m, d;
-
-	switch (unit)
-	{
-		case SPU_DAY:
-			return days;
-		case SPU_WEEK:
-			return days - ((days % 7 + 7 + 5) % 7);
-		default:
-			break;
-	}
-	civil_from_days(days + DAYS_1970_TO_2000, &y, &m, &d);
-	if (unit == SPU_QUARTER)
-		m = (m - 1) / 3 * 3 + 1;
-	else if (unit == SPU_YEAR)
-		m = 1;
-	return days_from_civil(y, m, 1) - DAYS_1970_TO_2000;
-}
-
-int64
-sift_proj_trunc(int64 ts, SiftProjUnit unit)
-{
-	if (unit == SPU_MINUTE)
-		return floor_div(ts, USECS_PER_MIN) * USECS_PER_MIN;
-	if (unit == SPU_HOUR)
-		return floor_div(ts, USECS_PER_HOUR) * USECS_PER_HOUR;
-	return sift_proj_trunc_date(floor_div(ts, USECS_PER_DAY), unit) * USECS_PER_DAY;
-}
-
-int64
-sift_proj_trunc_cell(SiftProjTime time, int64 v, SiftProjUnit unit)
-{
-	return time == SPT_DATE ? sift_proj_trunc_date(v, unit) : sift_proj_trunc(v, unit);
-}
-
-/* A value truncated to fine is truncated to coarse by truncating it again: every boundary of coarse is a boundary of fine (a week is not made of months, nor a month of weeks) */
-bool
-sift_proj_unit_refines(SiftProjUnit fine, SiftProjUnit coarse)
-{
-	static const uint8 rank[] = {0, 1, 2, 3, 0, 4, 5, 6};
-
-	if (fine == coarse)
-		return true;
-	if (fine == SPU_WEEK || coarse == SPU_WEEK)
-		return fine != SPU_WEEK && coarse == SPU_WEEK ? fine <= SPU_DAY : false;
-	return rank[fine] != 0 && rank[coarse] != 0 && rank[fine] < rank[coarse];
 }

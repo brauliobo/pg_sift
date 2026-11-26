@@ -312,6 +312,7 @@ col/f2/proj/overlay.h
 col/f2/proj/scan.c
 col/f2/proj/span.h
 col/f2/proj/spec.c
+col/f2/proj/spec_util.c
 col/f2/proj/sql.c
 col/f2/prune.c
 col/f2/pull_prune.c

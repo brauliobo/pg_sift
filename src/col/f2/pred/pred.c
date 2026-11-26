@@ -264,12 +264,12 @@ sift_f2_str_verdict(const SiftColPred *p, const char *s, uint32 len)
 	}
 }
 
-/* The operators of the hybrid scan the stored bytes decide: an array operator on the head of an array that keeps its image, a case folded prefix or equality under the C collation (whose lower() folds the ASCII capitals and no other character) */
+/* The operators of the hybrid scan the stored bytes decide: an array operator on the head of an array that keeps its image, compared by its bytes or a deterministic collation, a case folded prefix or equality under the C collation (whose lower() folds the ASCII capitals and no other character) */
 static bool
 ext_decided(const SiftColDef *d, const SiftColPred *p)
 {
 	if (p->op == SIFT_COLOP_ARR_OVERLAP || p->op == SIFT_COLOP_ARR_CONTAINS)
-		return sift_col_def_arrlen_head(d) && !(d->flags & SIFT_COLD_NOIMAGE);
+		return sift_col_def_arrlen_head(d) && !(d->flags & SIFT_COLD_NOIMAGE) && (p->collid == InvalidOid || sift_collation_deterministic(p->collid));
 	return d->store == SIFT_COLS_STR && !sift_col_def_is_wide(d) && d->lane == 0 && p->collid != InvalidOid && sift_collate_is_c(p->collid);
 }
 

@@ -94,16 +94,22 @@ element_key(Oid sub, Datum d)
 	}
 }
 
-/* the positions of a range's first and last element; false when a bound does not fit */
+/* the positions of a range's first and last element; false when a bound does not fit. A column of ranges asks for each of its values: the entry of the last range type is kept (an entry of the type cache is never freed) */
 static bool
 range_span(Datum d, int64 *first, int64 *last)
 {
+	static Oid	tc_type = InvalidOid;
+	static TypeCacheEntry *tc;
 	RangeType  *r = DatumGetRangeTypeP(d);
-	TypeCacheEntry *tc = lookup_type_cache(RangeTypeGetOid(r), TYPECACHE_RANGE_INFO);
 	RangeBound	lo,
 				hi;
 	bool		empty;
 
+	if (tc_type != RangeTypeGetOid(r))
+	{
+		tc = lookup_type_cache(RangeTypeGetOid(r), TYPECACHE_RANGE_INFO);
+		tc_type = RangeTypeGetOid(r);
+	}
 	range_deserialize(tc, r, &lo, &hi, &empty);
 	*first = SPAN_NONE;
 	*last = SPAN_NEVER;

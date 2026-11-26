@@ -11,6 +11,7 @@
 #include "catalog/pg_type_d.h"
 #include "utils/builtins.h"
 #include "utils/numeric.h"
+#include "utils/uuid.h"
 
 #include "col/f2/agg/colstat.h"
 #include "col/f2/agg/proj/ctx.h"
@@ -43,6 +44,31 @@ measure_of(const SiftV6ProjHost *h, const SiftV6Spec *spec, const SiftV6Agg *a, 
 	return false;
 }
 
+/* The leaf of a group key holds its value in a cell that key_datum turns back into a datum of the key's type */
+static bool
+key_servable(const SiftF2Store *store, const SiftV6Col *k)
+{
+	const int	leaf = store->att_first[k->attno];
+
+	switch (k->typid)
+	{
+		case NUMERICOID:
+			return store->hints[leaf] == SIFT_CHINT_NUM64;
+		case FLOAT4OID:
+		case FLOAT8OID:
+			return store->kinds[leaf] == SIFT_CELL_F8;
+		case UUIDOID:
+			return store->kinds[leaf] == SIFT_CELL_STR && store->hints[leaf] == SIFT_CHINT_UUID;
+		case TEXTOID:
+		case VARCHAROID:
+		case BPCHAROID:
+		case BYTEAOID:
+			return store->kinds[leaf] == SIFT_CELL_STR && store->hints[leaf] == SIFT_CHINT_AUTO;
+		default:
+			return store->kinds[leaf] == SIFT_CELL_INT && (sift_v6_class(k->typid) == SV6C_I32 || sift_v6_class(k->typid) == SV6C_I64 || k->typid == BOOLOID);
+	}
+}
+
 /* The query as the selector sees it; false for what a projection cannot answer (sets, a count(DISTINCT) of several columns, no group, more columns or predicates than a projection has) */
 static bool
 query_of(const SiftV6ProjHost *h, const SiftV6Spec *spec, SiftV6ProjQuery *q)
@@ -53,7 +79,11 @@ query_of(const SiftV6ProjHost *h, const SiftV6Spec *spec, SiftV6ProjQuery *q)
 	if (spec->nderive > 0 || spec->vqual != NIL || spec->affine || spec->nsets > 0 || spec->nfuncs > 0 || spec->nkeys > SV6P_MAX || spec->naggs > SV6P_MAX || h->npreds > SV6P_MAX)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)
+	{
+		if (!key_servable(h->store, &spec->key[i]))
+			return false;
 		q->group[q->ngroup++] = (SiftProjKey) {.leaf = h->store->att_first[spec->key[i].attno],.fn = SPF_COLUMN};
+	}
 	for (int j = 0; j < spec->naggs; j++)
 		if (!measure_of(h, spec, &spec->agg[j], &q->agg[q->nagg++]))
 			return false;
@@ -112,14 +142,30 @@ int_datum(Oid typid, int64 x)
 }
 
 static Datum
-key_datum(const SiftV6Col *k, const SiftCell *c, bool *isnull)
+key_datum(const SiftF2Store *store, const SiftV6Col *k, const SiftCell *c, bool *isnull)
 {
 	*isnull = c->isnull;
 	if (c->isnull)
 		return (Datum) 0;
-	if (sift_v6_class(k->typid) == SV6C_TEXT)
-		return PointerGetDatum(cstring_to_text_with_len(c->s, c->slen));
-	return int_datum(k->typid, c->i);
+	switch (k->typid)
+	{
+		case NUMERICOID:
+			return sift_v6_scaled_numeric((SiftI128) {.lo = (uint64) c->i,.hi = c->i < 0 ? -1 : 0}, store->scales[store->att_first[k->attno]]);
+		case FLOAT4OID:
+			return Float4GetDatum((float4) c->f);
+		case FLOAT8OID:
+			return Float8GetDatum(c->f);
+		case UUIDOID:
+			return UUIDPGetDatum((pg_uuid_t *) memcpy(palloc(UUID_LEN), c->s, UUID_LEN));
+		case BYTEAOID:
+			return PointerGetDatum(memcpy(palloc(c->slen), c->s, c->slen));
+		case TEXTOID:
+		case VARCHAROID:
+		case BPCHAROID:
+			return PointerGetDatum(cstring_to_text_with_len(c->s, c->slen));
+		default:
+			return int_datum(k->typid, c->i);
+	}
 }
 
 static Datum
@@ -164,7 +210,7 @@ agg_datum(const SiftV6Agg *a, const SiftProjGroup *g, const SiftProjMState *st, 
 }
 
 static void
-fill_result(const SiftV6Spec *spec, SiftProjCube *cube, MemoryContext cx, SiftProjResult *out)
+fill_result(const SiftF2Store *store, const SiftV6Spec *spec, SiftProjCube *cube, MemoryContext cx, SiftProjResult *out)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	const int	ngroups = sift_proj_cube_ngroups(cube);
@@ -182,7 +228,7 @@ fill_result(const SiftV6Spec *spec, SiftProjCube *cube, MemoryContext cx, SiftPr
 		bool	   *nl = out->isnull + (size_t) i * out->natts;
 
 		for (int k = 0; k < spec->nkeys; k++)
-			v[k] = key_datum(&spec->key[k], &g->key[k], &nl[k]);
+			v[k] = key_datum(store, &spec->key[k], &g->key[k], &nl[k]);
 		for (int j = 0; j < spec->naggs; j++)
 			v[spec->nkeys + j] = agg_datum(&spec->agg[j], g, &g->st[j], &nl[spec->nkeys + j]);
 	}
@@ -278,7 +324,7 @@ sift_v6_proj_serve_agg(const SiftV6ProjHost *h, const SiftV6Spec *spec, MemoryCo
 	ok = fold_sources(&c, &c.src[ch.cand], &ch.rollup, &q, &qspec, &fold, out);
 	if (ok)
 	{
-		fill_result(spec, fold->cube, cx, out);
+		fill_result(h->store, spec, fold->cube, cx, out);
 		out->used = true;
 		strlcpy(out->name, c.src[ch.cand].ref->name, sizeof(out->name));
 	}

@@ -7,6 +7,7 @@
 #include "postgres.h"
 #include <math.h>
 #include "common/hashfn.h"
+#include "nodes/miscnodes.h"
 #include "port/pg_bitutils.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
@@ -90,15 +91,40 @@ key_value(Oid argtype, int32 typmod, Datum d, SiftColValue *v)
 bool
 xtime_pair(Oid coltype, Oid argtype)
 {
-	return coltype != argtype && (coltype == DATEOID || coltype == TIMESTAMPOID || coltype == TIMESTAMPTZOID) &&
+	return (coltype == DATEOID) != (argtype == DATEOID) && (coltype == DATEOID || coltype == TIMESTAMPOID || coltype == TIMESTAMPTZOID) &&
 		(argtype == DATEOID || argtype == TIMESTAMPOID || argtype == TIMESTAMPTZOID);
 }
 
+/* The midnight of a date as a timestamp (timestamptz: in the session's zone); past the range of timestamps, the infinity on that side, as PostgreSQL compares them */
+static int64
+date_midnight(Oid totype, DateADT x)
+{
+#if PG_VERSION_NUM >= 190000
+	ErrorSaveContext esc = {T_ErrorSaveContext};
+
+	return totype == TIMESTAMPOID ? date2timestamp_safe(x, (Node *) &esc) : date2timestamptz_safe(x, (Node *) &esc);
+#else
+	int			overflow;
+
+	return totype == TIMESTAMPOID ? date2timestamp_opt_overflow(x, &overflow) : date2timestamptz_opt_overflow(x, &overflow);
+#endif
+}
+
+/* The bound of a constant between floor and floor + 1 (exact: at floor) as a bound of the integers: c < k is c < floor + 1, c <= k is c <= floor, c > k is c > floor, c >= k is c >= floor + 1 */
+static int
+int_bound(int64 floor, bool exact, int *strat, int64 *v)
+{
+	if (!exact && *strat == BTEqualStrategyNumber)
+		return 3;
+	*v = floor + (!exact && (*strat == BTLessStrategyNumber || *strat == BTGreaterEqualStrategyNumber));
+	return 1;
+}
+
 /*
- * The constant of a key whose type is another of date, timestamp and timestamptz than the column's, as a bound of the column itself. PostgreSQL compares a date
- * as its midnight (in the session's zone against a timestamptz), so a date column against a timestamp t is the days below t: d < t is d < ceil(t), d <= t is
- * d <= floor(t), d > t is d > floor(t), d >= t is d >= ceil(t), and d = t holds for a t that is a midnight only. A timestamp column against a date is the date's
- * midnight. 0: the key is not of that kind (key_value reads it), 1: *strat and *v are the bound, 2: not exact here (an out-of-range date), 3: no row can satisfy it.
+ * The constant of a key whose type is a date against a timestamp or timestamptz column, or a timestamp or timestamptz against a date column, as a bound of the column itself.
+ * PostgreSQL compares a date as its midnight (in the session's zone against a timestamptz), so a date column against a timestamp t is the days whose midnight is at most t; a date past
+ * the range of timestamps is above (below) every finite timestamp and below (above) the infinity. 0: the key is not of that kind (key_value reads it), 1: *strat and *v are the bound,
+ * 2: not exact here (a timestamptz whose date is at the edge of the range of dates), 3: no row can satisfy it.
  */
 int
 xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v)
@@ -109,40 +135,28 @@ xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v)
 	{
 		int64		t = DatumGetInt64(d);
 		int64		day;
-		bool		exact = true;
 
 		if (TIMESTAMP_NOT_FINITE(t))
-			day = t == PG_INT64_MIN ? DATEVAL_NOBEGIN : DATEVAL_NOEND;
-		else if (argtype == TIMESTAMPOID)
-		{
+			return int_bound(t == PG_INT64_MIN ? DATEVAL_NOBEGIN : DATEVAL_NOEND, true, strat, v);
+		if (argtype == TIMESTAMPOID)
 			day = t / USECS_PER_DAY - (t % USECS_PER_DAY < 0);
-			exact = t == day * USECS_PER_DAY;
-		}
 		else
 		{
 			day = DatumGetDateADT(DirectFunctionCall1(timestamptz_date, d));
 			if (!IS_VALID_DATE(day - 1) || !IS_VALID_DATE(day + 1))
 				return 2;
-			exact = DatumGetTimestampTz(DirectFunctionCall1(date_timestamptz, DateADTGetDatum(day))) == t;
+			day -= date_midnight(TIMESTAMPTZOID, day) > t;
 		}
-		if (*strat == BTEqualStrategyNumber && !exact)
-			return 3;
-		*v = day + (!exact && (*strat == BTLessStrategyNumber || *strat == BTGreaterEqualStrategyNumber));
-		return 1;
+		return int_bound(day, date_midnight(argtype, day) == t, strat, v);
 	}
 	else
 	{
 		DateADT		x = DatumGetDateADT(d);
+		int64		t = date_midnight(coltype, x);
 
-		if (DATE_NOT_FINITE(x))
-			*v = x == DATEVAL_NOBEGIN ? PG_INT64_MIN : PG_INT64_MAX;
-		else if (!IS_VALID_DATE(x - 1) || !IS_VALID_DATE(x + 1))
-			return 2;
-		else if (coltype == TIMESTAMPOID)
-			*v = (int64) x * USECS_PER_DAY;
-		else
-			*v = DatumGetTimestampTz(DirectFunctionCall1(date_timestamptz, d));
-		return 1;
+		if (DATE_NOT_FINITE(x) || !TIMESTAMP_NOT_FINITE(t))
+			return int_bound(t, true, strat, v);
+		return int_bound(t == PG_INT64_MAX ? PG_INT64_MAX - 1 : PG_INT64_MIN, false, strat, v);
 	}
 }
 
