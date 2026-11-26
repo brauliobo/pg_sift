@@ -136,7 +136,11 @@ INSERT INTO v6_checks VALUES
     ('sip: a dimension that keeps few keys', 'SELECT count(*), sum(f.b) FROM v6t f JOIN v6dim d ON f.a = d.k WHERE d.tag = ''hot''', 'SiftAggV6Sip', 'sip', false),
     ('sip: a condition on the fact table', 'SELECT f.g, count(*) FROM v6t f JOIN v6dim d ON f.a = d.k WHERE d.tag = ''hot'' AND f.b < 3000 GROUP BY f.g ORDER BY f.g', 'SiftAggV6Sip', 'sip', true),
     ('sip: a dimension that keeps no key', 'SELECT count(*) FROM v6t f JOIN v6dim d ON f.a = d.k WHERE d.tag = ''none''', 'SiftAggV6Sip', 'sip', false),
-    ('sip: an outer join stays with PostgreSQL', 'SELECT count(*) FROM v6t f LEFT JOIN v6dim d ON f.a = d.k AND d.tag = ''hot''', '', 'sip', false);
+    ('sip: an outer join stays with PostgreSQL', 'SELECT count(*) FROM v6t f LEFT JOIN v6dim d ON f.a = d.k AND d.tag = ''hot''', '', 'sip', false),
+    ('sip: a semi join of the dimension', 'SELECT count(*), sum(f.b) FROM v6t f WHERE f.a IN (SELECT k FROM v6dim WHERE tag = ''hot'')', 'SiftAggV6Sip', 'sip', false),
+    ('sip: an outer join of another table', 'SELECT count(*), sum(o.k) FROM v6t f JOIN v6dim d ON f.a = d.k LEFT JOIN v6dim o ON o.k = f.g WHERE d.tag = ''hot''', 'SiftAggV6Sip', 'sip', false),
+    ('sip: an anti join stays with PostgreSQL', 'SELECT count(*) FROM v6t f WHERE NOT EXISTS (SELECT 1 FROM v6dim d WHERE d.k = f.a AND d.tag = ''hot'')', '', 'sip', false),
+    ('sip: an outer join condition keeps its rows', 'SELECT count(*), count(o.k) FROM v6t f CROSS JOIN v6dim d LEFT JOIN v6dim o ON o.k = d.k AND f.a = d.k WHERE d.tag = ''hot''', '', 'sip', false);
 
 SELECT name, sift._test_v6_check(query, node, ARRAY[bridge], ordered) AS result FROM v6_checks ORDER BY name;
 

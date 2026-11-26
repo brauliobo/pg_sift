@@ -150,26 +150,36 @@ same_domain(Oid a, Oid b)
 	return ints || (a == b && (a == DATEOID || a == TIMESTAMPOID || a == TIMESTAMPTZOID));
 }
 
-/* a join of two tables of the query that no outer, semi or anti join touches */
+/* a join of the fact table a with the dimension b that drops every row of a without a match: neither is on the side of a join that may null it or a full join's, but b in a semi join of a.
+ * A clause the planner did not push down is a semi join's own (b is in its right side) or one an outer join tests without dropping a row, which no filter may use */
 static bool
-plain_inner(PlannerInfo *root, Index a, Index b)
+filtering_join(PlannerInfo *root, Index a, Index b, bool pushed)
 {
+	bool		semi = false;
+
 	foreach_node(SpecialJoinInfo, sj, root->join_info_list)
-		if (bms_is_member(a, sj->syn_lefthand) || bms_is_member(a, sj->syn_righthand) || bms_is_member(b, sj->syn_lefthand) || bms_is_member(b, sj->syn_righthand))
+	{
+		const bool	a_in = bms_is_member(a, sj->syn_righthand),
+					b_in = bms_is_member(b, sj->syn_righthand);
+
+		if (sj->jointype == JOIN_SEMI && b_in && bms_is_member(a, sj->syn_lefthand))
+			semi = true;
+		else if (a_in || b_in || (sj->jointype == JOIN_FULL && (bms_is_member(a, sj->syn_lefthand) || bms_is_member(b, sj->syn_lefthand))))
 			return false;
-	return true;
+	}
+	return pushed || semi;
 }
 
 static bool
-join_of(PlannerInfo *root, RelOptInfo *rel, const Node *l, const Node *r, SipJoin *j)
+join_of(PlannerInfo *root, RelOptInfo *rel, const Node *l, const Node *r, bool pushed, SipJoin *j)
 {
 	const RangeTblEntry *rte;
 
 	if (!IsA(l, Var) || !IsA(r, Var) || ((Var *) l)->varno != rel->relid || ((Var *) r)->varno == rel->relid || ((Var *) l)->varlevelsup != 0 ||
-		((Var *) r)->varlevelsup != 0 || !same_domain(((Var *) l)->vartype, ((Var *) r)->vartype))
+		((Var *) r)->varlevelsup != 0 || ((Var *) l)->varnullingrels != NULL || ((Var *) r)->varnullingrels != NULL || !same_domain(((Var *) l)->vartype, ((Var *) r)->vartype))
 		return false;
 	j->dim = root->simple_rel_array[((Var *) r)->varno];
-	if (j->dim == NULL || j->dim->reloptkind != RELOPT_BASEREL || !plain_inner(root, rel->relid, j->dim->relid))
+	if (j->dim == NULL || j->dim->reloptkind != RELOPT_BASEREL || !filtering_join(root, rel->relid, j->dim->relid, pushed))
 		return false;
 	rte = planner_rt_fetch(j->dim->relid, root);
 	if (!sift_v6_rte_stored(rte) || rte->inh || rte->tablesample != NULL || agg_rte_has_rls(root, rte) || j->dim->rows > SIFT_V6_SIP_DIM_ROWS)
@@ -283,13 +293,13 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *src, const S
 }
 
 static bool
-sip_join(PlannerInfo *root, RelOptInfo *rel, const Node *fact_key, const Node *dim_key)
+sip_join(PlannerInfo *root, RelOptInfo *rel, const Node *fact_key, const Node *dim_key, bool pushed)
 {
 	SipJoin		j;
 	SiftV6RelSource *src;
 	int			nsrc;
 
-	if (!join_of(root, rel, fact_key, dim_key, &j))
+	if (!join_of(root, rel, fact_key, dim_key, pushed, &j))
 		return false;
 	j.kept = kept_share(root, rel, &j);
 	if (j.kept > SIFT_V6_SIP_DIM_KEEP)
@@ -311,7 +321,7 @@ sip_joins(PlannerInfo *root, RelOptInfo *rel)
 		const bool	fact_left = bms_is_member(rel->relid, ri->left_relids);
 
 		if (ri->mergeopfamilies != NIL && IsA(ri->clause, OpExpr) && list_length(op->args) == 2 && bms_membership(ri->left_relids) == BMS_SINGLETON &&
-			bms_membership(ri->right_relids) == BMS_SINGLETON && sip_join(root, rel, fact_left ? linitial(op->args) : lsecond(op->args), fact_left ? lsecond(op->args) : linitial(op->args)))
+			bms_membership(ri->right_relids) == BMS_SINGLETON && sip_join(root, rel, fact_left ? linitial(op->args) : lsecond(op->args), fact_left ? lsecond(op->args) : linitial(op->args), ri->is_pushed_down))
 			return true;
 	}
 	foreach_node(EquivalenceClass, ec, root->eq_classes)
@@ -323,7 +333,7 @@ sip_joins(PlannerInfo *root, RelOptInfo *rel)
 			if (fact->em_is_child)
 				continue;
 			foreach_node(EquivalenceMember, dim, ec->ec_members)
-				if (!dim->em_is_child && sip_join(root, rel, (Node *) fact->em_expr, (Node *) dim->em_expr))
+				if (!dim->em_is_child && sip_join(root, rel, (Node *) fact->em_expr, (Node *) dim->em_expr, true))
 					return true;
 		}
 	}

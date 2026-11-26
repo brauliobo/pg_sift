@@ -3,7 +3,8 @@
  * that pass its own conditions give their keys to a filter (an exact set up to SIFT_SIP_EXACT_MAX keys, a Bloom filter above), and the scan of the fact table gives only the rows whose key the filter
  * may hold, the batches whose zone it rules out never read. The node is a scan of the fact table as the planner sees it: PostgreSQL's join above it still matches the rows exactly, so a false
  * positive of the filter costs a row and no result; a filter never drops a row of a key it was given. The dimension is read through the table access method, so it may be a heap table or a sift_table.
- * Chosen only for a plain inner join of two tables on one equality of integer, date or timestamp columns (no outer, semi or anti join of either), a dimension of at most SIFT_V6_SIP_DIM_ROWS rows
+ * Chosen only for a join that drops the fact rows without a match (an inner join, or a semi join of the dimension, under no outer join that may null either) of two tables on one equality of
+ * integer, date or timestamp columns, a dimension of at most SIFT_V6_SIP_DIM_ROWS rows
  * whose conditions keep at most half of its distinct keys, and never under row security of the query, whose dimension rows must not reach a filter another role could read.
  */
 #ifndef SIFT_AGG_V6_SIP_H
