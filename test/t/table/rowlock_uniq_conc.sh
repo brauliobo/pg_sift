@@ -3,10 +3,11 @@
 # Writers of disjoint rows of a sift_table and of a UNIQUE sift_col index do not meet in shared memory or in the lock manager. A transaction that holds a few rows takes no page lock of the lock
 # manager for the intention of its row locks (they are shared-memory records until a partition or the relation is held); 16 clients that update disjoint rows add up exactly and scale; 16 clients that
 # insert into a UNIQUE index leave one row of each key, and the same keys inserted again are refused or skipped. A request for a coarse lock waits for the transaction that holds a row without a lock manager
-# entry, and a cycle through that wait is a deadlock that the server detects.
+# entry, and a cycle through that wait is a deadlock that the server detects. 32 transactions that each hold 5000 keys of a UNIQUE index unflushed (more than the stripes of the registry) stage
+# them without writing a part, and 10 that stage a row of one key under a deferred check all go on.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 13
+plan 17
 node_init rc 2 "autovacuum = off
 sift.async_maintenance = off
 sift.test_create_format1 = off
@@ -29,7 +30,14 @@ sql rc "CREATE EXTENSION pg_sift_test CASCADE" \
 	"DO \$\$ BEGIN FOR i IN 0..15 LOOP
 		EXECUTE format('CREATE TABLE pt_%s PARTITION OF pt FOR VALUES FROM (%s) TO (%s) USING sift_table', i, i, i + 1);
 	END LOOP; END \$\$" \
-	"INSERT INTO pt SELECT g, g % 16, 0 FROM generate_series(1, 1600) g" >/dev/null || bail "setup failed"
+	"INSERT INTO pt SELECT g, g % 16, 0 FROM generate_series(1, 1600) g" \
+	"CREATE TABLE bu (id int)" \
+	"CREATE UNIQUE INDEX bu_i ON bu USING sift_col (id)" \
+	"CREATE TABLE dk (id int, pad text)" \
+	"ALTER TABLE dk ALTER pad SET STORAGE PLAIN" \
+	"INSERT INTO dk SELECT -g, repeat('x', 3000) FROM generate_series(1, 2400) g" \
+	"CREATE UNIQUE INDEX dk_i ON dk USING sift_col (id)" \
+	"CREATE FUNCTION partial_insert(regclass, int) RETURNS text AS 'pg_sift', 'sift_test_unique_partial_insert' LANGUAGE C STRICT" >/dev/null || bail "setup failed"
 
 intent_locks() { sql rc "SELECT count(*) FROM pg_locks WHERE locktype = 'page' AND relation = 'h'::regclass AND page BETWEEN -12288 AND -4097"; }
 tps() { sed -n 's/^tps = \([0-9.]*\) .*/\1/p' "$1" | head -n 1; }
@@ -122,4 +130,30 @@ out=$(sql rc "SELECT count(*) || ' ' || sum(v) FROM big")
 check "and neither of them changed a row" test "$out" == "40000 0"
 out=$(intent_locks)
 check "no lock of the intention is left" test "$out" -eq 0
+# 32 x 5000 keys held at once fill the 512 entries of every stripe of the registry: none of them sends its stage to the partitions to make room
+for k in $(seq 0 31); do
+	sess_open rc "b$k"
+	sess_say "b$k" "BEGIN;
+SELECT sift._test_stage_flushes() AS f0 \\gset
+INSERT INTO bu SELECT g FROM generate_series($((k * 5000 + 1)), $(((k + 1) * 5000))) g;
+SELECT 'flushes=' || (sift._test_stage_flushes() - :f0);"
+done
+wait_for "[[ \$(cat $D/b*.out | grep -c '^flushes=') == 32 ]]" 120 || diag "$(cat "$D"/b*.out | grep -v '^flushes=' | head -n 5)"
+out=$(cat "$D"/b*.out | grep -v '^flushes=0$' | head -n 5)
+check "32 transactions that hold 5000 unique keys each write none of them before they commit" test -z "$out"
+for k in $(seq 0 31); do sess_say "b$k" "COMMIT;"; sess_close "b$k"; done
+out=$(sql rc "SELECT count(*) || ' ' || count(DISTINCT id) FROM bu")
+check "and every key is there once" test "$out" == "160000 160000"
+
+# 10 transactions that stage a row of one key under a deferred check (at the heap tuple 1000/1 of another key): the registry reports them all, the check judges each
+for k in $(seq 0 9); do
+	sess_open rc "dq$k"
+	sess_say "dq$k" "BEGIN; SELECT 'staged ' || partial_insert('dk_i', 1);"
+	wait_for "grep -q '^staged\|ERROR' $D/dq$k.out" 60
+done
+out=$(cat "$D"/dq*.out | grep -v '^staged ' | head -n 5)
+check "10 transactions stage a row of one key under a deferred check" test -z "$out"
+for k in $(seq 0 9); do sess_say "dq$k" "ROLLBACK;"; sess_close "dq$k"; done
+out=$(sql rc "SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'")
+check "and they all end" test "$out" -eq 0
 finish

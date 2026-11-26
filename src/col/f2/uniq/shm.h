@@ -2,7 +2,8 @@
  * col/f2/uniq/shm.h - the registry in shared memory of the keys that the transactions writing to UNIQUE indexes of format major 2 hold in their stage (col/f2/l0/stage.h) and have not
  * flushed: the writer of a key looks its key up here and in the partitions, so no row is flushed to find it (f2_unique.c).
  *
- * 256 stripes of an lwlock each, 65536 buckets (the 256 of a stripe are the next ones of the array, a bucket belongs to the stripe of the low bits of its hash), 131072 entries of one cache line, 512 for each stripe. An entry is made under the key lock of
+ * 256 stripes of an lwlock each, 65536 buckets (the 256 of a stripe are the next ones of the array, a bucket belongs to the stripe of the low bits of its hash), 131072 entries of one cache line, 512 for each stripe,
+ * and 131072 spare entries that a stripe whose own are taken borrows (they go back to the spares when they are let go). An entry is made under the key lock of
  * its index (core/part_lock.h), before the row is staged, and goes when its row is written to the partition (the flush of the stage, which publishes the manifest first) or when its
  * (sub)transaction ends: a key is in the registry or in the partitions at every instant, never in neither, and a transaction that is prepared holds no entry. A reader judges the heap tuple an
  * entry names, so an entry of a transaction that rolled back, of a speculative insertion that was withdrawn and of a row that was deleted is no conflict.
@@ -19,9 +20,10 @@
 #define SIFT_UNIQ_SHM_STRIPES	256
 #define SIFT_UNIQ_SHM_BUCKETS	65536
 #define SIFT_UNIQ_SHM_SLOTS		131072
+#define SIFT_UNIQ_SHM_SPARE		131072
 #define SIFT_UNIQ_INLINE_MAX	16			/* the canonical bytes of a key of at most this many are kept in the entry */
 #define SIFT_UNIQ_LEN_EXTERNAL	UINT16_C(0xFFFF)	/* a key that has more, or a NULL, or a numeric: the heap tuple of the entry says whether it is the key */
-#define SIFT_UNIQ_HITS			8			/* the entries of one key a probe reports: more of one key are the rows one transaction rewrote, and it flushes them (sift_uniq_shm_release) */
+#define SIFT_UNIQ_HITS			8			/* more entries of one key of this transaction are rows it rewrote, and it flushes them (sift_uniq_shm_release) */
 
 typedef enum SiftUniqSlotState
 {
@@ -70,18 +72,17 @@ typedef struct SiftUniqHit
 typedef struct SiftUniqHits
 {
 	int			n;
-	bool		overflow;		/* more than SIFT_UNIQ_HITS entries of the key */
-	SiftUniqHit hit[SIFT_UNIQ_HITS];
+	SiftUniqHit *hit;			/* palloc'd in the current context */
 } SiftUniqHits;
 
 /* A key of ncols columns of the unique index with that locator and key hash; then each column in order, by its type's length and by value, with its 64-bit hash */
 extern void sift_uniq_key_begin(SiftUniqKey *k, const RelFileLocator *locator, uint32 hash, int ncols);
 extern void sift_uniq_key_add(SiftUniqKey *k, Datum value, bool isnull, int16 typlen, bool typbyval, uint64 hash64);
 
-/* The entries of a key that name a transaction in progress, without those of a transaction that ended (they are let go); an ERROR where the registry cannot be mapped */
+/* Every entry of a key that names a transaction in progress, without those of a transaction that ended (they are let go); an ERROR where the registry cannot be mapped */
 extern void sift_uniq_shm_probe(const SiftUniqKey *k, SiftUniqHits *hits);
 
-/* An entry for the key and the row; false where its stripe has no free entry: the caller flushes the stage and releases its entries of the index (sift_uniq_shm_release) */
+/* An entry for the key and the row; false where its stripe and the spares have no free entry: the caller flushes the stage and releases its entries of the index (sift_uniq_shm_release) */
 extern bool sift_uniq_shm_reserve(const SiftUniqKey *k, TransactionId xid, ItemPointer tid);
 
 /* The entries of this backend for the index let go: its rows are in the partitions (the stage was flushed and the manifest published) */

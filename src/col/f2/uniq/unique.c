@@ -394,17 +394,20 @@ spill(Relation index)
 	sift_uniq_shm_release(&index->rd_locator);
 }
 
-/* The entries of the registry of the key; a stripe that holds more than a probe reports is emptied first (the rows of this transaction go to the partition) */
+/* The entries of the registry of the key; when more than SIFT_UNIQ_HITS of them are rows this transaction rewrote, they go to the partition first */
 static void
 probe_staged(Relation index, const SiftUniqKey *rk, SiftUniqHits *hits)
 {
+	int			own = 0;
+
 	sift_uniq_shm_probe(rk, hits);
-	if (hits->overflow)
+	for (int i = 0; i < hits->n; i++)
+		own += TransactionIdIsCurrentTransactionId(hits->hit[i].xid);
+	if (own > SIFT_UNIQ_HITS)
 	{
+		pfree(hits->hit);
 		spill(index);
 		sift_uniq_shm_probe(rk, hits);
-		if (hits->overflow)
-			ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("too many transactions hold a row of one key of the unique index \"%s\"", RelationGetRelationName(index))));
 	}
 }
 
@@ -417,6 +420,7 @@ find_conflict(UniqueKey *k, const Row *row, Relation heap, const SiftUniqKey *rk
 	*c = (Conflict) {.found = FOUND_NONE};
 	probe_staged(row->index, rk, &hits);
 	find_staged(k, row, heap, &hits, values, isnull, self, c);
+	pfree(hits.hit);
 	if (c->found == FOUND_NONE)
 		find_published(k, row, heap, rk, values, isnull, self, c);
 }

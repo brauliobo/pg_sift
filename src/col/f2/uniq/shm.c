@@ -7,6 +7,7 @@
  */
 #include "postgres.h"
 
+#include "access/transam.h"
 #include "access/xact.h"
 #include "varatt.h"
 #include "storage/ipc.h"
@@ -31,14 +32,17 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) Stripe
 	LWLock		lock;
 	uint32		free_head;		/* the first entry that was let go, plus one; 0: none */
 	uint32		used;			/* entries of the stripe that were ever used: the others are as the segment was made */
+	uint64		swept_at;		/* the transactions that had ended (xactCompletionCount) when the stripe was last swept */
 } Stripe;
 
+/* The spare entries follow the entries of the stripes; their own lock is taken under the lock of a stripe */
 typedef struct UniqShm
 {
 	int			tranche;
 	Stripe		stripe[SIFT_UNIQ_SHM_STRIPES] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
+	Stripe		spare;
 	uint32		bucket[SIFT_UNIQ_SHM_BUCKETS] pg_attribute_aligned(PG_CACHE_LINE_SIZE);	/* the first entry of the bucket, plus one: the buckets of a stripe are one run, bucket_of */
-	SiftShmUniqEntry slot[SIFT_UNIQ_SHM_SLOTS] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
+	SiftShmUniqEntry slot[SIFT_UNIQ_SHM_SLOTS + SIFT_UNIQ_SHM_SPARE] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
 } UniqShm;
 
 StaticAssertDecl(SIFT_UNIQ_SHM_STRIPES == (1 << STRIPE_BITS), "the stripe of a key is the low STRIPE_BITS bits of its hash");
@@ -56,6 +60,7 @@ bucket_of(uint32 hash)
 typedef struct Owned
 {
 	uint32		slot;
+	uint32		stripe;			/* of the key: a spare entry is in the buckets of the stripe that borrowed it */
 	TransactionId xid;
 	SubTransactionId subid;
 	RelFileLocator locator;
@@ -81,6 +86,7 @@ uniq_init(SIFT_DSM_INIT_ARGS)
 	u->tranche = sift_tranche_new(TRANCHE_NAME);
 	for (int i = 0; i < SIFT_UNIQ_SHM_STRIPES; i++)
 		LWLockInitialize(&u->stripe[i].lock, u->tranche);
+	LWLockInitialize(&u->spare.lock, u->tranche);
 }
 
 static UniqShm *
@@ -165,19 +171,24 @@ stripe_of(UniqShm *u, uint32 hash)
 	return &u->stripe[hash & (SIFT_UNIQ_SHM_STRIPES - 1)];
 }
 
-/* Takes entry i out of its bucket and gives it back to its stripe; the stripe is locked */
+/* Takes entry i out of its bucket and gives it back to its stripe, or to the spares; the stripe is locked */
 static void
 entry_free(UniqShm *u, uint32 i)
 {
 	SiftShmUniqEntry *e = &u->slot[i];
 	uint32	   *link = &u->bucket[bucket_of(e->key_hash)];
+	Stripe	   *home = i < SIFT_UNIQ_SHM_SLOTS ? stripe_of(u, e->key_hash) : &u->spare;
 
 	while (*link != i + 1)
 		link = &u->slot[*link - 1].next_slot;
 	*link = e->next_slot;
 	e->state = SIFT_UNIQ_FREE;
-	e->next_slot = stripe_of(u, e->key_hash)->free_head;
-	stripe_of(u, e->key_hash)->free_head = i + 1;
+	if (home == &u->spare)
+		LWLockAcquire(&home->lock, LW_EXCLUSIVE);
+	e->next_slot = home->free_head;
+	home->free_head = i + 1;
+	if (home == &u->spare)
+		LWLockRelease(&home->lock);
 }
 
 /*
@@ -198,21 +209,27 @@ typedef struct Candidate
 	TransactionId xid;
 } Candidate;
 
-/* The entries of the key, up to PROBE_CANDIDATES of them; true when the bucket holds more (the stripe is locked) */
-static bool
-candidates_of(const UniqShm *u, const SiftUniqKey *k, Candidate *cand, int *n)
+/* The entries of the key, the first cap of them copied; returns how many there are (the stripe is locked) */
+static int
+candidates_of(const UniqShm *u, const SiftUniqKey *k, Candidate *cand, SiftUniqHit *seen, int cap)
 {
-	uint32		link = u->bucket[bucket_of(k->hash)];
+	int			n = 0;
 
-	*n = 0;
-	for (; link != 0; link = u->slot[link - 1].next_slot)
-		if (entry_is(&u->slot[link - 1], k))
+	for (uint32 link = u->bucket[bucket_of(k->hash)]; link != 0; link = u->slot[link - 1].next_slot)
+	{
+		const SiftShmUniqEntry *e = &u->slot[link - 1];
+
+		if (!entry_is(e, k))
+			continue;
+		if (n < cap)
 		{
-			if (*n == PROBE_CANDIDATES)
-				return true;
-			cand[(*n)++] = (Candidate) {link - 1, u->slot[link - 1].xid};
+			cand[n] = (Candidate) {link - 1, e->xid};
+			seen[n] = (SiftUniqHit) {.xid = e->xid,.external = e->inline_len == SIFT_UNIQ_LEN_EXTERNAL};
+			unpack_tid(e->heap_tid, &seen[n].tid);
 		}
-	return false;
+		n++;
+	}
+	return n;
 }
 
 /* Gives back the entries of the key that name a transaction that ended, as long as the slot still holds the entry that was judged (the stripe is locked) */
@@ -229,51 +246,46 @@ sift_uniq_shm_probe(const SiftUniqKey *k, SiftUniqHits *hits)
 {
 	UniqShm    *u = registry();
 	Stripe	   *s = stripe_of(u, k->hash);
-	Candidate	cand[PROBE_CANDIDATES];
-	bool		ended[PROBE_CANDIDATES];
-	SiftUniqHit seen[PROBE_CANDIDATES];
-	int			n;
-	bool		more,
-				any_ended;
+	int			cap = PROBE_CANDIDATES,
+				n;
+	Candidate  *cand = palloc(sizeof(Candidate) * cap);
+	SiftUniqHit *seen = palloc(sizeof(SiftUniqHit) * cap);
+	bool	   *ended;
+	bool		any_ended = false;
 
-	do
+	for (;;)
 	{
 		LWLockAcquire(&s->lock, LW_SHARED);
-		more = candidates_of(u, k, cand, &n);
-		for (int c = 0; c < n; c++)
-		{
-			const SiftShmUniqEntry *e = &u->slot[cand[c].slot];
-
-			seen[c] = (SiftUniqHit) {.xid = e->xid,.external = e->inline_len == SIFT_UNIQ_LEN_EXTERNAL};
-			unpack_tid(e->heap_tid, &seen[c].tid);
-		}
+		n = candidates_of(u, k, cand, seen, cap);
 		LWLockRelease(&s->lock);
-		any_ended = false;
-		for (int c = 0; c < n; c++)
-			any_ended |= ended[c] = !xid_runs(cand[c].xid);
-		if (any_ended)
-		{
-			LWLockAcquire(&s->lock, LW_EXCLUSIVE);
-			free_ended(u, k, cand, ended, n);
-			LWLockRelease(&s->lock);
-		}
-	} while (more && any_ended);
-	hits->n = 0;
-	hits->overflow = more;
-	for (int c = 0; c < n && !hits->overflow; c++)
-		if (ended[c])
-			continue;
-		else if (hits->n == SIFT_UNIQ_HITS)
-			hits->overflow = true;
+		if (n <= cap)
+			break;
+		cap = 2 * n;
+		cand = repalloc(cand, sizeof(Candidate) * cap);
+		seen = repalloc(seen, sizeof(SiftUniqHit) * cap);
+	}
+	ended = palloc(sizeof(bool) * Max(n, 1));
+	*hits = (SiftUniqHits) {.hit = seen};
+	for (int c = 0; c < n; c++)
+		if ((ended[c] = !xid_runs(cand[c].xid)))
+			any_ended = true;
 		else
-			hits->hit[hits->n++] = seen[c];
+			seen[hits->n++] = seen[c];
+	if (any_ended)
+	{
+		LWLockAcquire(&s->lock, LW_EXCLUSIVE);
+		free_ended(u, k, cand, ended, n);
+		LWLockRelease(&s->lock);
+	}
+	pfree(cand);
+	pfree(ended);
 }
 
 static int
 owned_by_stripe(const void *a, const void *b)
 {
-	uint32		x = ((const Owned *) a)->slot / SLOTS_PER_STRIPE,
-				y = ((const Owned *) b)->slot / SLOTS_PER_STRIPE;
+	uint32		x = ((const Owned *) a)->stripe,
+				y = ((const Owned *) b)->stripe;
 
 	return (x > y) - (x < y);
 }
@@ -300,10 +312,10 @@ owned_release_where(bool (*pick) (const Owned *, void *), void *arg)
 		qsort(&owned[kept], nowned - kept, sizeof(Owned), owned_by_stripe);
 	for (int n = kept; n < nowned;)
 	{
-		Stripe	   *s = &shm->stripe[owned[n].slot / SLOTS_PER_STRIPE];
+		Stripe	   *s = &shm->stripe[owned[n].stripe];
 
 		LWLockAcquire(&s->lock, LW_EXCLUSIVE);
-		for (; n < nowned && &shm->stripe[owned[n].slot / SLOTS_PER_STRIPE] == s; n++)
+		for (; n < nowned && &shm->stripe[owned[n].stripe] == s; n++)
 			if (shm->slot[owned[n].slot].state == SIFT_UNIQ_ACTIVE && shm->slot[owned[n].slot].xid == owned[n].xid)
 				entry_free(shm, owned[n].slot);
 		LWLockRelease(&s->lock);
@@ -394,7 +406,7 @@ static void
 owned_add(const SiftUniqKey *k, uint32 slot, TransactionId xid)
 {
 	Assert(nowned < capowned);
-	owned[nowned++] = (Owned) {.slot = slot,.xid = xid,.subid = GetCurrentSubTransactionId(),.locator = k->locator};
+	owned[nowned++] = (Owned) {.slot = slot,.stripe = k->hash & (SIFT_UNIQ_SHM_STRIPES - 1),.xid = xid,.subid = GetCurrentSubTransactionId(),.locator = k->locator};
 }
 
 /* The next free entry of the stripe, plus one; 0 where it has none (the stripe is locked) */
@@ -410,6 +422,36 @@ take_free(UniqShm *u, Stripe *s, uint32 hash)
 		return i;
 	}
 	return s->used < SLOTS_PER_STRIPE ? (hash & (SIFT_UNIQ_SHM_STRIPES - 1)) * SLOTS_PER_STRIPE + s->used++ + 1 : 0;
+}
+
+/* A spare entry, plus one; 0 where none is left (the stripe that borrows it is locked) */
+static uint32
+take_spare(UniqShm *u)
+{
+	Stripe	   *s = &u->spare;
+	uint32		i = 0;
+
+	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
+	if (s->free_head != 0)
+	{
+		i = s->free_head;
+		s->free_head = u->slot[i - 1].next_slot;
+	}
+	else if (s->used < SIFT_UNIQ_SHM_SPARE)
+		i = SIFT_UNIQ_SHM_SLOTS + s->used++ + 1;
+	LWLockRelease(&s->lock);
+	return i;
+}
+
+/* The top-level transactions that have ended since the server started: while it stays, no entry of a stripe names a transaction that ended since its last sweep */
+static uint64
+completions(void)
+{
+#if PG_VERSION_NUM >= 170000
+	return TransamVariables->xactCompletionCount;
+#else
+	return ShmemVariableCache->xactCompletionCount;
+#endif
 }
 
 static int
@@ -447,6 +489,7 @@ stripe_xids(UniqShm *u, Stripe *s, int *n)
 static void
 sweep_ended(UniqShm *u, Stripe *s)
 {
+	uint64		at = completions();
 	int			n,
 				ended = 0;
 	TransactionId *xids = stripe_xids(u, s, &n);
@@ -457,6 +500,7 @@ sweep_ended(UniqShm *u, Stripe *s)
 		if (!xid_runs(xids[j]))
 			xids[ended++] = xids[j];
 	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
+	s->swept_at = at;
 	for (uint32 j = 0; ended > 0 && j < s->used; j++)
 		if (first[j].state == SIFT_UNIQ_ACTIVE && bsearch(&first[j].xid, xids, ended, sizeof(TransactionId), xid_cmp) != NULL)
 			entry_free(u, (s - u->stripe) * SLOTS_PER_STRIPE + j);
@@ -464,21 +508,22 @@ sweep_ended(UniqShm *u, Stripe *s)
 	pfree(xids);
 }
 
-/* Takes a free entry of the stripe; one with none gives back the entries of the transactions that ended first, with no lock held. The stripe is locked on return; 0 where it has no free entry even then */
+/*
+ * Takes a free entry of the stripe, else a spare one. A stripe with none gives back the entries of the transactions that ended first, with no lock held, when one has ended since its last
+ * sweep or no spare is left. The stripe is locked on return; 0 where no entry is free even then
+ */
 static uint32
 reserve_slot(UniqShm *u, Stripe *s, uint32 hash)
 {
 	uint32		i;
 
 	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
-	if ((i = take_free(u, s, hash)) == 0)
-	{
-		LWLockRelease(&s->lock);
-		sweep_ended(u, s);
-		LWLockAcquire(&s->lock, LW_EXCLUSIVE);
-		i = take_free(u, s, hash);
-	}
-	return i;
+	if ((i = take_free(u, s, hash)) != 0 || (s->swept_at == completions() && (i = take_spare(u)) != 0))
+		return i;
+	LWLockRelease(&s->lock);
+	sweep_ended(u, s);
+	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
+	return (i = take_free(u, s, hash)) != 0 ? i : take_spare(u);
 }
 
 bool
@@ -532,7 +577,7 @@ sift_test_uniq_shm_active(PG_FUNCTION_ARGS)
 	UniqShm    *u = registry();
 	int64		n = 0;
 
-	for (int i = 0; i < SIFT_UNIQ_SHM_SLOTS; i++)
+	for (int i = 0; i < SIFT_UNIQ_SHM_SLOTS + SIFT_UNIQ_SHM_SPARE; i++)
 		n += u->slot[i].state == SIFT_UNIQ_ACTIVE;
 	PG_RETURN_INT64(n);
 }
