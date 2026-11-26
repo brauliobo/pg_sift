@@ -1,0 +1,40 @@
+-- A ranked scan over write buffer docs keeps the best tf of each scoring leaf a matching doc has, not a copy of the doc: 200 docs of 4000
+-- distinct terms each (about 8 MB of terms) bind in a few hundred kB, and score as before
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE w (id int, body text) WITH (autovacuum_enabled = off);
+CREATE INDEX w_idx ON w USING sift (body) WITH (write_buffer_limit = 65536);
+INSERT INTO w SELECT i, 'common ' || CASE WHEN i % 3 = 0 THEN 'common ' ELSE '' END || string_agg('t' || (i * 4000 + j), ' ')
+	FROM generate_series(1, 200) i, generate_series(1, 4000) j GROUP BY i;
+SELECT kind, sum(ndocs) AS docs FROM sift.segments('w_idx') GROUP BY 1;
+  kind  | docs 
+--------+------
+ buffer |  200
+(1 row)
+
+SET work_mem = '64kB';
+SELECT count(*) FROM sift._test_mem_highwater(true);
+ count 
+-------
+     1
+(1 row)
+
+SELECT id, round(sift.score(ctid)::numeric, 6) AS score FROM w WHERE body @@> 'common OR t4001 OR t8002' ORDER BY 2 DESC, 1 LIMIT 4;
+ id |  score   
+----+----------
+  1 | 4.900500
+  2 | 4.900500
+  3 | 0.003425
+  6 | 0.003425
+(4 rows)
+
+SELECT scope, peak < 1024 * 1024 AS bounded FROM sift._test_mem_highwater() WHERE scope = 'bm25_search';
+    scope    | bounded 
+-------------+---------
+ bm25_search | t
+(1 row)
+
+RESET work_mem;
+DROP TABLE w;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

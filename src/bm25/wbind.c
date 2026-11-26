@@ -207,34 +207,56 @@ leaf_wbuf_count(SiftPlan *p, EvalLeaf *l, const char *t, int len)
 	leaf_wbuf_term(p, l, key)->df++;
 }
 
+/* The leaves a doc has a term of, and for a scoring plan the best tf of each scoring leaf (touched: those with one, in the order found) */
+typedef struct DocHits
+{
+	bool	   *hit;
+	WbufTermEnt **ent;
+	uint8	   *best;
+	int32	   *touched;
+	int			ntouched;
+} DocHits;
+
+static void
+note_tf(DocHits *h, int leaf, uint8 tf)
+{
+	if (h->best[leaf] == 0)
+		h->touched[h->ntouched++] = leaf;
+	h->best[leaf] = Max(h->best[leaf], tf);
+}
+
 /*
- * Which leaves the doc has a term of (hit[]), and one more document for every term of a scoring leaf that it has (deleted docs
- * count like in the statistics): one pass over the terms of the doc, a plain leaf found by its hash in the table of the leaves, and
- * its entry of the table of document frequencies kept in ent[].
+ * Which leaves the doc has a term of (hit[]), the best tf of every scoring leaf, and one more document for every term of a scoring
+ * leaf that it has (deleted docs count like in the statistics): one pass over the terms of the doc, a plain leaf found by its hash in
+ * the table of the leaves, and its entry of the table of document frequencies kept in ent[].
  */
 static void
-doc_hits(SiftPlan *p, const WbufTab *tab, const SiftWbufDoc *d, bool *hit, WbufTermEnt **ent)
+doc_hits(SiftPlan *p, const WbufTab *tab, const SiftWbufDoc *d, DocHits *h)
 {
 	const char *t = d->terms;
 
-	memset(hit, 0, Max(p->nleaves, 1));
+	memset(h->hit, 0, Max(p->nleaves, 1));
+	for (int i = 0; i < h->ntouched; i++)
+		h->best[h->touched[i]] = 0;
+	h->ntouched = 0;
 	for (int j = 0; j < d->nterms; t += d->len[j++])
 	{
 		int			li = tab->nexact > 0 ? wbuf_tab_find(p, tab, d->hash[j], t, d->len[j]) : -1;
 
 		for (int k = li; k >= 0; k = tab->next[k])
 		{
-			hit[k] = true;
+			h->hit[k] = true;
 			if (p->leaves[k].scoring && p->scoring)
 			{
-				if (ent[k] == NULL)
+				if (h->ent[k] == NULL)
 				{
 					char		key[SIFT_MAX_TERM_BYTES + 1] = {0};
 
 					memcpy(key, t, d->len[j]);
-					ent[k] = leaf_wbuf_term(p, &p->leaves[k], key);
+					h->ent[k] = leaf_wbuf_term(p, &p->leaves[k], key);
 				}
-				ent[k]->df++;
+				h->ent[k]->df++;
+				note_tf(h, k, d->tf[j]);
 			}
 		}
 		for (int w = 0; w < tab->nwild; w++)
@@ -242,43 +264,42 @@ doc_hits(SiftPlan *p, const WbufTab *tab, const SiftWbufDoc *d, bool *hit, WbufT
 			EvalLeaf   *l = &p->leaves[tab->wild[w]];
 			bool		counts = l->scoring && p->scoring;
 
-			if ((!counts && hit[tab->wild[w]]) || !sift_matcher_match(l->m, t, d->len[j]))
+			if ((!counts && h->hit[tab->wild[w]]) || !sift_matcher_match(l->m, t, d->len[j]))
 				continue;
-			hit[tab->wild[w]] = true;
+			h->hit[tab->wild[w]] = true;
 			if (counts)
+			{
 				leaf_wbuf_count(p, l, t, d->len[j]);
+				note_tf(h, tab->wild[w], d->tf[j]);
+			}
 		}
 	}
 }
 
-static SiftWbufDoc *
-wbufdoc_copy(MemoryContext cx, const SiftWbufDoc *d)
+static int
+int32_cmp(const void *a, const void *b)
 {
-	size_t		tl = 0;
-	SiftWbufDoc *c;
-	uint32	   *hash;
-	uint8	   *tf,
-			   *len;
-	uint16	   *fdl;
-
-	for (int i = 0; i < d->nterms; i++)
-		tl += d->len[i];
-	c = MemoryContextAlloc(cx, sizeof(SiftWbufDoc) + SIFT_MAX_FIELDS * sizeof(uint16) + d->nterms * (sizeof(uint32) + 2) + tl);
-	fdl = (uint16 *) (c + 1);
-	hash = (uint32 *) (fdl + SIFT_MAX_FIELDS);
-	tf = (uint8 *) (hash + d->nterms);
-	len = tf + d->nterms;
-	*c = *d;
-	if (d->field_dl)
-		c->field_dl = memcpy(fdl, d->field_dl, d->nfields * sizeof(uint16));
-	c->hash = memcpy(hash, d->hash, d->nterms * sizeof(uint32));
-	c->tf = memcpy(tf, d->tf, d->nterms);
-	c->len = memcpy(len, d->len, d->nterms);
-	c->terms = memcpy(len + d->nterms, d->terms, tl);
-	return c;
+	return pg_cmp_s32(*(const int32 *) a, *(const int32 *) b);
 }
 
-/* MEM[MEM-BM25-04]: wbind wbufdoc_copy + mhit + plan_export (unbudgeted deep-copy + huge mhit + unbounded StringInfo) */
+/* The lengths of the doc and the best tfs of its scoring leaves, the leaves ascending */
+static WbufTfs *
+wbuf_tfs(MemoryContext cx, const SiftWbufDoc *d, DocHits *h)
+{
+	int			nf = d->field_dl ? d->nfields : 0;
+	WbufTfs    *r = MemoryContextAlloc(cx, sizeof(WbufTfs) + nf * sizeof(uint16) + h->ntouched * (sizeof(int32) + 1));
+	int32	   *leaf = (int32 *) (r + 1);
+	uint16	   *fdl = (uint16 *) (leaf + h->ntouched);
+	uint8	   *tf = (uint8 *) (fdl + nf);
+
+	qsort(h->touched, h->ntouched, sizeof(int32), int32_cmp);
+	for (int i = 0; i < h->ntouched; i++)
+		tf[i] = h->best[h->touched[i]];
+	*r = (WbufTfs) {.dl = d->dl,.nfields = nf,.n = h->ntouched,.field_dl = d->field_dl ? memcpy(fdl, d->field_dl, nf * sizeof(uint16)) : NULL,
+		.leaf = memcpy(leaf, h->touched, h->ntouched * sizeof(int32)),.tf = tf};
+	return r;
+}
+
 void
 bind_wbuf(SiftPlan *p)
 {
@@ -287,8 +308,9 @@ bind_wbuf(SiftPlan *p)
 				dead_docs = 0,
 				dead_dl = 0;
 	int64		cap = 0;
-	bool	   *hit = palloc(Max(p->nleaves, 1) * sizeof(bool));
-	WbufTermEnt **ent = palloc0(Max(p->nleaves, 1) * sizeof(WbufTermEnt *));
+	int			nl = Max(p->nleaves, 1);
+	DocHits		h = {.hit = palloc(nl * sizeof(bool)),.ent = palloc0(nl * sizeof(WbufTermEnt *)),.best = palloc0(nl),
+					 .touched = palloc(nl * sizeof(int32))};
 	WbufTab		tab;
 
 	wbuf_tab_build(p, &tab);
@@ -319,15 +341,15 @@ bind_wbuf(SiftPlan *p)
 				for (int f = 0; f < doc.nfields; f++)
 					p->wbuf_fsum[f] += doc.field_dl[f];
 			}
-			doc_hits(p, &tab, &doc, hit, ent);
-			if (!doc_matches(p, p->root, hit))
+			doc_hits(p, &tab, &doc, &h);
+			if (!doc_matches(p, p->root, h.hit))
 				continue;
 			if (p->nmhit == cap)
 			{
 				cap = Max(64, 2 * cap);
 				SIFT_REGROW_IN(p->mcxt, p->mhit, cap * sizeof(WbufHit));
 			}
-			p->mhit[p->nmhit++] = (WbufHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? wbufdoc_copy(p->mcxt, &doc) : NULL};
+			p->mhit[p->nmhit++] = (WbufHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? wbuf_tfs(p->mcxt, &doc, &h) : NULL};
 		}
 		if (!p->no_reads)
 			sift_wbuf_note_walked(r);
@@ -344,12 +366,14 @@ bind_wbuf(SiftPlan *p)
 		for (int64 j = 1; j < p->nmhit; j++)
 			if (p->mhit[j].key != p->mhit[k - 1].key)
 				p->mhit[k++] = p->mhit[j];
-			else if (p->mhit[j].doc)
-				pfree(p->mhit[j].doc);
+			else if (p->mhit[j].tfs)
+				pfree(p->mhit[j].tfs);
 		p->nmhit = k;
 	}
-	pfree(hit);
-	pfree(ent);
+	pfree(h.hit);
+	pfree(h.ent);
+	pfree(h.best);
+	pfree(h.touched);
 	wbuf_tab_free(&tab);
 	p->wbuf_ndocs = ndocs - dead_docs;
 	p->wbuf_sum_dl = sum_dl - dead_dl;
@@ -588,47 +612,27 @@ leaf_weighed(const EvalLeaf *l, const char *term, int len)
 }
 
 /*
- * Write buffer matches score at bind from their records: the leaves in canonical order, a phrase as the AND of its terms (the text
- * decides at verify, like for the immutable candidates). All the terms of a leaf weigh the same, and the score of a term grows with
- * its tf, so a leaf scores its best tf (the best of the tfs of its words, for a wide leaf) at its weight: one pass over the terms
- * of the doc finds the best tf of every leaf.
+ * Write buffer matches score at bind from the best tfs bind_wbuf kept: the leaves in canonical order, a phrase as the AND of its terms
+ * (the text decides at verify, like for the immutable candidates). All the terms of a leaf weigh the same, and the score of a term grows
+ * with its tf, so a leaf scores its best tf (the best of the tfs of its words, for a wide leaf) at its weight.
  */
 void
 score_wbuf(SiftPlan *p)
 {
-	WbufTab		tab;
-	uint8	   *best = palloc(Max(p->nleaves, 1));
-	float4	   *w = palloc(Max(p->nleaves, 1) * sizeof(float4));
-
-	wbuf_tab_build(p, &tab);
-	for (int j = 0; j < p->nleaves; j++)
-		w[j] = p->leaves[j].nuniq > 0 ? p->leaves[j].uniq[0]->w : 0;
 	for (int64 i = 0; i < p->nmhit; i++)
 	{
 		WbufHit	   *h = &p->mhit[i];
-		const SiftWbufDoc *d = h->doc;
-		const char *t = d->terms;
-		float4		knorm = sift_kern_knorm1(&p->bm, d->dl),
+		const WbufTfs *r = h->tfs;
+		float4		knorm = sift_kern_knorm1(&p->bm, r->dl),
 					score = 0;
 
-		memset(best, 0, Max(p->nleaves, 1));
-		for (int j = 0; j < d->nterms; t += d->len[j++])
+		for (int x = 0; x < r->n; x++)
 		{
-			int			li = tab.nexact > 0 ? wbuf_tab_find(p, &tab, d->hash[j], t, d->len[j]) : -1;
+			const EvalLeaf *l = &p->leaves[r->leaf[x]];
 
-			for (int k = li; k >= 0; k = tab.next[k])
-				best[k] = Max(best[k], d->tf[j]);
-			for (int x = 0; x < tab.nwild; x++)
-				if (p->leaves[tab.wild[x]].scoring && sift_matcher_match(p->leaves[tab.wild[x]].m, t, d->len[j]))
-					best[tab.wild[x]] = Max(best[tab.wild[x]], d->tf[j]);
+			score += sift_kern_bm25(l->nuniq > 0 ? l->uniq[0]->w : 0, r->tf[x],
+									l->field && r->field_dl ? sift_kern_knorm1(&p->bmf[l->field - 1], r->field_dl[l->field - 1]) : knorm);
 		}
-		for (int j = 0; j < p->nleaves; j++)
-			if (p->leaves[j].scoring && best[j] > 0)
-				score += sift_kern_bm25(w[j], best[j], p->leaves[j].field && d->field_dl ?
-										sift_kern_knorm1(&p->bmf[p->leaves[j].field - 1], d->field_dl[p->leaves[j].field - 1]) : knorm);
 		h->score = score;
 	}
-	wbuf_tab_free(&tab);
-	pfree(best);
-	pfree(w);
 }

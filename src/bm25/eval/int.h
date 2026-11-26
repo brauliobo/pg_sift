@@ -59,12 +59,23 @@ typedef struct WbufTermEnt
 	uint32		df;
 } WbufTermEnt;
 
-/* A live matching doc of a write buffer; scoring plans keep the doc to score it once the weights are known */
+/* What a scoring plan keeps of a write buffer doc to score it once the weights are known: its lengths and the best tf of each scoring leaf it has */
+typedef struct WbufTfs
+{
+	uint16		dl;
+	uint8		nfields;		/* of field_dl, NULL for a doc written without */
+	int32		n;				/* of leaf (ascending) and tf */
+	const uint16 *field_dl;
+	const int32 *leaf;
+	const uint8 *tf;
+} WbufTfs;
+
+/* A live matching doc of a write buffer */
 typedef struct WbufHit
 {
 	SiftKey		key;
 	float4		score;
-	SiftWbufDoc *doc;
+	WbufTfs    *tfs;
 } WbufHit;
 
 typedef enum EvalKind
