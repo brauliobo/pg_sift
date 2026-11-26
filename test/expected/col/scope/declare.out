@@ -3,6 +3,8 @@
 -- column format minor 45. The text is the record (pg_dump writes it). The build writes the scope segments too (test col_scope_build): the entity segments answer as for an index without the scope.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the derived leaf of the scope, column format minor 45 and the scope segments this test reads are this format's; Format 2.0 keeps a scope summary (col/f2/scope_*)
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);

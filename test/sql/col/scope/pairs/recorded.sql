@@ -3,6 +3,8 @@
 -- ALTER INDEX leaves it. Two plain unique btrees on the same columns have the same pairs, so what shows is the dependency.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -35,7 +37,10 @@ INSERT INTO pairs SELECT e, 1 + e % 20 FROM generate_series(1, 400) e;
 CREATE UNIQUE INDEX pairs_a ON pairs (dim_a_id, group_id);
 -- a second unique btree on the same columns, made later: a higher oid
 CREATE UNIQUE INDEX pairs_b ON pairs (group_id, dim_a_id);
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX pairs_journal ON pairs USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * interval '1 day', i % 10 FROM generate_series(1, 20000) i;
 

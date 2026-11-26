@@ -3,6 +3,8 @@
 -- needs the journal indexes of its three relations (without them it is refused, as a scope of one path is). What is wrong with a declaration, the recording rules (sticky ALTER, DROP refused, REINDEX CONCURRENTLY keeps the edge), a scope of one path unchanged, the legs.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -133,8 +135,13 @@ SELECT count(*) AS journals_left FROM pg_class c JOIN pg_index i ON i.indexrelid
 (1 row)
 
 -- one of them that is not a journal (a partial one) is left alone: a journal is made beside it
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_group_partial ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid') WHERE id > 0;
+SET sift.test_create_format1 = off;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT edges('facts_col') AS journals_beside_a_partial;
                                                             journals_beside_a_partial                                                             
@@ -144,8 +151,12 @@ SELECT edges('facts_col') AS journals_beside_a_partial;
 
 DROP INDEX facts_col;
 DROP INDEX grants_by_group_partial;
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
+SET sift.test_create_format1 = on;
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 -- the declaration: three edges, one NOTICE per path, nullable columns (a row with a NULL in a column of its path is not a pair of that path)
 SET client_min_messages = notice;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad)
@@ -153,12 +164,9 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_group" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
-NOTICE:  scope "tenant_id": 1,120 entries for 2,000 rows (0.56 per row)
-NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
-NOTICE:  sift_col index "facts_col" has a scope: column format minor 49, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "facts_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.8x vs heap, 1 parts, 1 granules, codecs: 1 const, 2 delta, 2 packed, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.facts_col');
 SET client_min_messages = warning;
 SELECT edges('facts_col') AS edges;
                                                 edges                                                 
@@ -267,12 +275,9 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_other" that satisfy (id > 0)
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
-NOTICE:  scope "tenant_id": 1,120 entries for 2,000 rows (0.56 per row)
-NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
-NOTICE:  sift_col index "facts_col" has a scope: column format minor 49, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "facts_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.8x vs heap, 1 parts, 1 granules, codecs: 1 const, 2 delta, 2 packed, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.facts_col');
 SET client_min_messages = warning;
 SELECT edges('facts_col') AS after_using_other;
                                           after_using_other                                           
@@ -305,7 +310,7 @@ SELECT count(*) AS edges_after_drop FROM pg_depend WHERE classid = 'pg_class'::r
 (1 row)
 
 SELECT :'ddl' AS restore \gexec
-CREATE INDEX facts_col ON public.facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope='tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(3)', track_changes=id, point_tid_columns='auto: id', key_columns=auto)
+CREATE INDEX facts_col ON public.facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope='tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(3)')
 SELECT edges('facts_col') AS after_restore;
                                             after_restore                                             
 ------------------------------------------------------------------------------------------------------
@@ -320,7 +325,9 @@ SELECT edges('facts_col') AS after_reindex;
 (1 row)
 
 -- a scope of one path is as it was: the btree and its journal index, and a scope of two paths beside it in the same index
+SET sift.test_create_format1 = on;
 CREATE INDEX pairs_one_journal ON pairs_one USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE INDEX facts_one ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> pairs_one(dim_a_id, tenant_id)');
 SELECT edges('facts_one') AS one_path_edges;
           one_path_edges          

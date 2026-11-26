@@ -3,6 +3,8 @@
 -- needs the journal indexes of its three relations (without them it is refused, as a scope of one path is). What is wrong with a declaration, the recording rules (sticky ALTER, DROP refused, REINDEX CONCURRENTLY keeps the edge), a scope of one path unchanged, the legs.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -85,14 +87,23 @@ SELECT edges('facts_col') AS journals_made;
 DROP INDEX facts_col;
 SELECT count(*) AS journals_left FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relam = (SELECT oid FROM pg_am WHERE amname = 'sift_col');
 -- one of them that is not a journal (a partial one) is left alone: a journal is made beside it
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_group_partial ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid') WHERE id > 0;
+SET sift.test_create_format1 = off;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT edges('facts_col') AS journals_beside_a_partial;
 DROP INDEX facts_col;
 DROP INDEX grants_by_group_partial;
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
+SET sift.test_create_format1 = on;
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 
 -- the declaration: three edges, one NOTICE per path, nullable columns (a row with a NULL in a column of its path is not a pair of that path)
 SET client_min_messages = notice;
@@ -147,7 +158,9 @@ REINDEX INDEX facts_col;
 SELECT edges('facts_col') AS after_reindex;
 
 -- a scope of one path is as it was: the btree and its journal index, and a scope of two paths beside it in the same index
+SET sift.test_create_format1 = on;
 CREATE INDEX pairs_one_journal ON pairs_one USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE INDEX facts_one ON facts USING sift_col (id, dim_a_id, created_at, amount, pad) WITH (scope = 'tenant_id: dim_a_id -> pairs_one(dim_a_id, tenant_id)');
 SELECT edges('facts_one') AS one_path_edges;
 SELECT leg, rel, member, key, btree, via_rel FROM sift._test_scope_legs('facts_one', 0);

@@ -1,9 +1,11 @@
 -- The pairs of a scope may be the rows of a PARTIAL unique btree of the pair relation: WHERE deleted_at IS NULL makes the rows that are not soft deleted the pairs, and the all-rows unique
--- btree (the primary key) may stay beside it. Each state of the relation is read from the scope segments less the members that changed, with the answer of the join on the active rows:
+-- btree (the primary key) may stay beside it. Each state of the relation is read by the join on the active rows, through sift and through the normal plan:
 -- soft delete, restore, insert, move, delete, an update of a column no index holds, the rebuild of the btree. The choice of the btree, the journal that must hear of every pair, and the
 -- dependency that keeps it.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -13,22 +15,24 @@ CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
 
--- the groups 1..21 read from the scope and by the join on the active rows: how many differ, and how many were read from the entity rows instead of the units
-CREATE FUNCTION compare(OUT differ int, OUT fell_back int) LANGUAGE plpgsql AS $$
+-- the groups 1..21 read by the join on the active rows, through sift and through the normal plan: how many differ, and how many the scope node read
+CREATE FUNCTION compare(OUT differ int, OUT scope_reads int) LANGUAGE plpgsql AS $$
 DECLARE
 	k int;
+	q text;
 	a record;
 	b record;
 	p jsonb;
 BEGIN
 	differ := 0;
-	fell_back := 0;
+	scope_reads := 0;
 	FOR k IN 1..21 LOOP
-		EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k) INTO p;
-		IF jsonb_path_exists(p, '$.**."Scope Fallback"') THEN fell_back := fell_back + 1; END IF;
-		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k) INTO a;
+		q := format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f JOIN memberships m ON m.dim_a_id = f.dim_a_id WHERE m.group_id = %s AND m.deleted_at IS NULL', k);
+		EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+		IF jsonb_path_exists(p, '$.**."Scope Read"') THEN scope_reads := scope_reads + 1; END IF;
+		EXECUTE q INTO a;
 		SET LOCAL sift.enable_agg = off;
-		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM memberships WHERE group_id = %s AND deleted_at IS NULL)', k) INTO b;
+		EXECUTE q INTO b;
 		SET LOCAL sift.enable_agg = on;
 		IF a <> b THEN differ := differ + 1; END IF;
 	END LOOP;
@@ -40,7 +44,10 @@ $$ BEGIN SELECT count(*) FILTER (WHERE kind = 4), count(*) FILTER (WHERE kind = 
 CREATE TABLE memberships (group_id int NOT NULL, dim_a_id int NOT NULL, deleted_at timestamptz, note int, PRIMARY KEY (group_id, dim_a_id)) WITH (autovacuum_enabled = false);
 INSERT INTO memberships SELECT 1 + e % 20, e, CASE WHEN e % 9 = 0 THEN now() END FROM generate_series(1, 400) e;
 CREATE UNIQUE INDEX memberships_active ON memberships (dim_a_id, group_id) WHERE deleted_at IS NULL;
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX memberships_journal ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE deleted_at IS NULL;
+SET sift.test_create_format1 = off;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * interval '1 day', i % 10 FROM generate_series(1, 20000) i;
 
@@ -75,7 +82,7 @@ INSERT INTO states VALUES
 	(15, 'a pair after the rebuild', 'INSERT INTO memberships VALUES (7, 432, NULL)');
 -- each state is committed, and then read: the answers differing from the join's (differ), the groups that fell back to the entity rows, the journal's records
 SELECT stmt FROM (SELECT n, 0 AS k, stmt FROM states
-	UNION ALL SELECT n, 1, format('SELECT %s AS n, %L AS state, c.differ, c.fell_back, j.ended, j.inserted FROM compare() c, journal() j', n, label) FROM states) t ORDER BY n, k \gexec
+	UNION ALL SELECT n, 1, format('SELECT %s AS n, %L AS state, c.differ, c.scope_reads, j.ended, j.inserted FROM compare() c, journal() j', n, label) FROM states) t ORDER BY n, k \gexec
 SELECT * FROM compare();
 -- a rebuild writes the segments again from the active pairs, and the reads are the units
 REINDEX INDEX facts_col;
@@ -105,14 +112,18 @@ SELECT * FROM compare();
 DROP INDEX memberships_other;
 
 -- a journal index must hear of every pair: partial on the predicate of the pairs is fine, partial on another is not (the build makes a journal of its own beside a partial one that does not qualify)
+SET sift.test_create_format1 = on;
 CREATE INDEX memberships_journal_b ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE group_id < 10;
+SET sift.test_create_format1 = off;
 DROP INDEX facts_col;
 DROP INDEX memberships_journal;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_other_predicate FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'facts_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
 DROP INDEX facts_col;
 DROP INDEX memberships_journal_b;
+SET sift.test_create_format1 = on;
 CREATE INDEX memberships_journal_c ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid') WHERE deleted_at IS NULL AND group_id > 0;
+SET sift.test_create_format1 = off;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> memberships(dim_a_id, group_id)');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_weaker_predicate FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'facts_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
 DROP INDEX facts_col;

@@ -1,11 +1,13 @@
--- ALTER INDEX .. SET (scope = ..) on a sift_col index that has segments would leave them written with another leaf list than the index has, and every scan of it would stop until a REINDEX
--- (the plans of the table go without it). It is refused, and the index goes on serving: the replacement is made beside it (CREATE INDEX CONCURRENTLY, then DROP INDEX). So is RESET (scope).
--- On an index with no segment the ALTER is let through (it has nothing to write again).
+-- ALTER INDEX .. SET (scope = ..) on a sift_col index would leave it with another leaf list than the one its metapage was written with, and every scan of it would stop until a REINDEX (the plans
+-- of the table go without it). It is refused, and the index goes on serving: the replacement is made beside it (CREATE INDEX CONCURRENTLY, then DROP INDEX). So is RESET (scope). A Format 2.0
+-- index writes its leaf list when it is built, on an empty table too, so the ALTER of an empty one is refused as well.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
@@ -23,7 +25,7 @@ CREATE TABLE pairs (dim_a_id int NOT NULL, group_id int NOT NULL, PRIMARY KEY (d
 INSERT INTO pairs SELECT e, 1 + e % 20 FROM generate_series(1, 400) e;
 CREATE INDEX pairs_journal ON pairs USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
--- an index on an empty table has no segment
+-- an index on an empty table
 CREATE INDEX facts_empty ON facts USING sift_col (id, dim_a_id, created_at, amount);
 SELECT try('ALTER INDEX facts_empty SET (scope = ''group_id: dim_a_id -> pairs(dim_a_id, group_id)'')') AS empty_table;
 SELECT try('ALTER INDEX facts_empty RESET (scope)') AS empty_reset;
@@ -36,8 +38,7 @@ SELECT * FROM plan_of('SELECT kind_amount, count(*) FROM (SELECT amount AS kind_
 
 -- the index has segments: the scope is refused, and nothing changed
 SELECT try('ALTER INDEX facts_col SET (scope = ''group_id: dim_a_id -> pairs(dim_a_id, group_id)'')') AS with_segments;
-SELECT reloptions IS NOT DISTINCT FROM (SELECT reloptions FROM pg_class WHERE relname = 'facts_col') AS unchanged, bool_and(o NOT LIKE 'scope=%') AS no_scope
-FROM pg_class c, unnest(coalesce(c.reloptions, '{}')) o WHERE relname = 'facts_col' GROUP BY reloptions;
+SELECT NOT EXISTS (SELECT 1 FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'facts_col' AND o LIKE 'scope=%') AS no_scope;
 SELECT * FROM plan_of('SELECT kind_amount, count(*) FROM (SELECT amount AS kind_amount FROM facts) t GROUP BY 1');
 -- an option that does not change the leaf list is let through
 SELECT try('ALTER INDEX facts_col SET (superunit = 8)') AS other_option;

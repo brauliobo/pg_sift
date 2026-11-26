@@ -2,16 +2,21 @@
 -- row-level security, a scope of two paths without its journals (refused), a partition, an ALTER INDEX that declares or gives up a scope the segments do not hold (refused), a journal
 -- that is not one, and an ALTER INDEX that would take the journal away.
 CREATE EXTENSION pg_sift;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, kind int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + i % 50, i % 4, i % 10 FROM generate_series(1, 2000) i;
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT i, 1 + i % 5 FROM generate_series(1, 50) i;
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 NOTICE:  sift_col index "tenant_scope_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tenant_scope_journal');
+SET sift.test_create_format1 = off;
 CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; detail text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT, detail = PG_EXCEPTION_DETAIL;
@@ -37,12 +42,9 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "pairs_unjournaled_m_s_sift_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_m_s_sift_journal');
-NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
-NOTICE:  sift_col index "unjournaled_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('unjournaled_col');
-NOTICE:  sift_col index "unjournaled_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "unjournaled_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.unjournaled_col');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_track_off FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
                  journal_beside_track_off                  
 -----------------------------------------------------------
@@ -51,10 +53,12 @@ SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::tex
 
 DROP INDEX unjournaled_col;
 DROP INDEX pairs_unjournaled_auto;
+SET sift.test_create_format1 = on;
 CREATE INDEX pairs_unjournaled_rev ON pairs_unjournaled USING sift_col (s, m) WITH (track_changes = 'ctid');
 NOTICE:  sift_col index "pairs_unjournaled_rev": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_rev');
+SET sift.test_create_format1 = off;
 CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_unjournaled(m, s)');
 NOTICE:  scope "tenant_id": the pairs of "pairs_unjournaled" are the rows of its unique btree "pairs_unjournaled_pkey"
 NOTICE:  scope "tenant_id": making the journal index "pairs_unjournaled_m_s_sift_journal" of "pairs_unjournaled" (m, s)
@@ -65,12 +69,9 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "pairs_unjournaled_m_s_sift_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_m_s_sift_journal');
-NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
-NOTICE:  sift_col index "unjournaled_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('unjournaled_col');
-NOTICE:  sift_col index "unjournaled_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "unjournaled_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.unjournaled_col');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_member_second FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
                journal_beside_member_second                
 -----------------------------------------------------------
@@ -81,20 +82,19 @@ DROP INDEX unjournaled_col;
 -- row-level security of the relation: the statements of a role the policies apply to read the join as written
 CREATE TABLE pairs_rls (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
 ALTER TABLE pairs_rls ENABLE ROW LEVEL SECURITY;
+SET sift.test_create_format1 = on;
 CREATE INDEX pairs_rls_journal ON pairs_rls USING sift_col (m, s) WITH (track_changes = 'ctid');
 NOTICE:  sift_col index "pairs_rls_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_rls_journal');
+SET sift.test_create_format1 = off;
 CREATE INDEX rls_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_rls(m, s)');
 NOTICE:  scope "tenant_id": "pairs_rls" has row-level security enabled
 DETAIL:  A statement of a role the policies apply to reads its join to the relation as written.
 NOTICE:  scope "tenant_id": the pairs of "pairs_rls" are the rows of its unique btree "pairs_rls_pkey"
-NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
-NOTICE:  sift_col index "rls_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rls_col');
-NOTICE:  sift_col index "rls_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "rls_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.rls_col');
 DROP INDEX rls_col;
 -- a scope of two paths needs the journals of its three relations, as a scope of one path needs its: the build makes them
 CREATE TABLE grants (dim_a_id int, group_id int, tenant_id int NOT NULL);
@@ -125,12 +125,9 @@ HINT:  To build it without blocking the writers, name it, place it or keep it, m
 NOTICE:  sift_col index "memberships_dim_a_id_group_id_sift_journal": 2 automatic choices
 DETAIL:  key_columns = dim_a_id, group_id; track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('memberships_dim_a_id_group_id_sift_journal');
-NOTICE:  scope "tenant_id": 0 entries for 2,000 rows (0.00 per row)
-NOTICE:  sift_col index "two_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('two_col');
-NOTICE:  sift_col index "two_col" has a scope: column format minor 49, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "two_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.two_col');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS two_paths_journals FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'two_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
                                                                           two_paths_journals                                                                          
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -145,22 +142,16 @@ CREATE INDEX part_col ON part_events USING sift_col (id, dim_a_id, amount) WITH 
 NOTICE:  scope: "part_events_1" is a partition: a statement over the partitioned table reads no scope
 DETAIL:  A statement on this partition reads the scope units of its index; the scope index of each partition is declared on that partition.
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 0 entries for 0 rows (0.00 per row)
-NOTICE:  sift_col index "part_events_1_id_dim_a_id_amount_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; key_columns = dim_a_id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('part_events_1_id_dim_a_id_amount_idx');
-NOTICE:  sift_col index "part_events_1_id_dim_a_id_amount_idx" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "part_events_1_id_dim_a_id_amount_idx": built 0 rows (88.0 KB, 0 parts, 0 granules)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.part_events_1_id_dim_a_id_amount_idx');
 DROP TABLE part_events;
 -- ALTER INDEX .. RESET (scope) would leave segments that hold a scope the index no longer declares: it is refused, and the statements over the table run on the scope
 CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 2,000 entries for 2,000 rows (1.00 per row)
-NOTICE:  sift_col index "altered_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
-NOTICE:  sift_col index "altered_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "altered_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.altered_col');
 ALTER INDEX altered_col RESET (scope);
 ERROR:  cannot change the column definitions of index "altered_col" while it holds data
 DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
@@ -191,12 +182,9 @@ NOTICE:  sift_col index "tenant_scope_journal": track_changes = ctid queues abou
 HINT:  Before a huge UPDATE or DELETE: ALTER INDEX tenant_scope_journal SET (track_changes = 'off'), then 'ctid' again.
 CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  scope "tenant_id": 2,000 entries for 2,000 rows (1.00 per row)
-NOTICE:  sift_col index "altered_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('altered_col');
-NOTICE:  sift_col index "altered_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "altered_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.altered_col');
 SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''off'')') AS journal_off_of_a_scope;
                                                                                                            journal_off_of_a_scope                                                                                                           
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

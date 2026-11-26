@@ -2,13 +2,18 @@
 -- row-level security, a scope of two paths without its journals (refused), a partition, an ALTER INDEX that declares or gives up a scope the segments do not hold (refused), a journal
 -- that is not one, and an ALTER INDEX that would take the journal away.
 CREATE EXTENSION pg_sift;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, kind int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + i % 50, i % 4, i % 10 FROM generate_series(1, 2000) i;
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT i, 1 + i % 5 FROM generate_series(1, 50) i;
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; detail text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT, detail = PG_EXCEPTION_DETAIL;
@@ -25,7 +30,9 @@ CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WIT
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_track_off FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
 DROP INDEX unjournaled_col;
 DROP INDEX pairs_unjournaled_auto;
+SET sift.test_create_format1 = on;
 CREATE INDEX pairs_unjournaled_rev ON pairs_unjournaled USING sift_col (s, m) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE INDEX unjournaled_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_unjournaled(m, s)');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_member_second FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
 DROP INDEX unjournaled_col;
@@ -33,7 +40,9 @@ DROP INDEX unjournaled_col;
 -- row-level security of the relation: the statements of a role the policies apply to read the join as written
 CREATE TABLE pairs_rls (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s));
 ALTER TABLE pairs_rls ENABLE ROW LEVEL SECURITY;
+SET sift.test_create_format1 = on;
 CREATE INDEX pairs_rls_journal ON pairs_rls USING sift_col (m, s) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE INDEX rls_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> pairs_rls(m, s)');
 DROP INDEX rls_col;
 
