@@ -90,6 +90,7 @@ sift_tbl_f2_relation_set_new_filelocator(Relation rel, const RelFileLocator *new
 	sift_stage_flush(rel);
 	sift_stage_discard(RelationGetRelid(rel));
 	sift_fsm_cache_discard_rel(rel);
+	sift_shm_manifest_invalidate(&rel->rd_locator, false);
 	if (persistence != RELPERSISTENCE_TEMP)
 	{
 		Relation	fake = CreateFakeRelcacheEntry(*newrlocator);
