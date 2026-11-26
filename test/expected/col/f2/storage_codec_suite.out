@@ -980,7 +980,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ev_idx';
 SELECT sift._test_f2_state_flags('ev_idx') AS state_flags, sift._test_f2_check('ev_idx') ~ '^parts=[0-9]+ ' AS consistent;
  state_flags | consistent 
 -------------+------------
-           0 | t
+           8 | t
 (1 row)
 
 SELECT f2_same('SELECT id FROM ev WHERE data->>''a'' = ''3'' AND entity_id = 4');
@@ -1007,7 +1007,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ev0_idx';
 SELECT sift._test_f2_state_flags('ev0_idx') AS state_flags;
  state_flags 
 -------------
-           6
+          14
 (1 row)
 
 SELECT count(*) AS rows_on_empty FROM ev0 WHERE data->>'a' = '3';
@@ -1040,7 +1040,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ev0_idx';
 SELECT sift._test_f2_state_flags('ev0_idx') AS state_flags;
  state_flags 
 -------------
-           0
+           8
 (1 row)
 
 SELECT f2_same('SELECT id FROM ev0 WHERE data->>''a'' = ''3'' AND entity_id = 4');
@@ -1069,7 +1069,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ev1_idx';
 SELECT sift._test_f2_state_flags('ev1_idx') AS state_flags;
  state_flags 
 -------------
-           2
+          10
 (1 row)
 
 SELECT f2_same('SELECT id FROM ev1 WHERE data->>''a'' = ''3''');
@@ -1101,7 +1101,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ev3_idx';
 SELECT sift._test_f2_state_flags('ev3_idx') AS state_flags;
  state_flags 
 -------------
-           2
+          10
 (1 row)
 
 DROP TABLE pk_a, pk_b, pk_x, sc, lg, cl, cu, ev, ev0, ev1, ev2, ev3;
