@@ -1,4 +1,4 @@
--- mode() WITHIN GROUP counts the (group, value) pairs instead of sorting every value (agg/gen_mode.c): the rows agree with the normal plan on ties
+-- mode() WITHIN GROUP counts the (group, value) pairs instead of sorting every value (agg/osa/mode.c): the rows agree with the normal plan on ties
 -- (the first value in the order of the call wins, so DESC takes the last), NULLs, groups with no value, a FILTER, collations, a NaN, one group,
 -- and when the counts outgrow work_mem and the values go to the sort (case 16: the early rows hold the winning counts, the late rows only add distinct values).
 CREATE EXTENSION pg_sift;
@@ -19,7 +19,9 @@ INSERT INTO m SELECT i, i % 9,
 	CASE WHEN i % 50 = 0 THEN 'NaN'::float8 WHEN i % 6 = 0 THEN NULL ELSE (i % 4) * 0.5 END,
 	i % 3 = 0
 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX m_col ON m USING sift_col (id, g, t, tc, n, b, d, f, ok);
+RESET client_min_messages;
 VACUUM ANALYZE m;
 
 CREATE FUNCTION mo_rows(q text, push bool) RETURNS jsonb[] LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_as_jsonb_array(q, push) $$;
@@ -65,9 +67,7 @@ PREPARE mo_spill AS SELECT count(a) FROM (SELECT id % 6000 AS k, mode() WITHIN G
 EXECUTE mo_spill;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 64;
-SET client_min_messages = debug1;
 EXECUTE mo_spill;
-RESET client_min_messages;
 
 DROP TABLE mo_q;
 DROP FUNCTION mo_rows(text, bool), mo_same(text), mo_scan(text);

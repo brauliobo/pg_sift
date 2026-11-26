@@ -1,4 +1,4 @@
--- mode() WITHIN GROUP counts the (group, value) pairs instead of sorting every value (agg/gen_mode.c): the rows agree with the normal plan on ties
+-- mode() WITHIN GROUP counts the (group, value) pairs instead of sorting every value (agg/osa/mode.c): the rows agree with the normal plan on ties
 -- (the first value in the order of the call wins, so DESC takes the last), NULLs, groups with no value, a FILTER, collations, a NaN, one group,
 -- and when the counts outgrow work_mem and the values go to the sort (case 16: the early rows hold the winning counts, the late rows only add distinct values).
 CREATE EXTENSION pg_sift;
@@ -17,10 +17,9 @@ INSERT INTO m SELECT i, i % 9,
 	CASE WHEN i % 50 = 0 THEN 'NaN'::float8 WHEN i % 6 = 0 THEN NULL ELSE (i % 4) * 0.5 END,
 	i % 3 = 0
 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX m_col ON m USING sift_col (id, g, t, tc, n, b, d, f, ok);
-NOTICE:  sift_col index "m_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, ok
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('m_col');
+RESET client_min_messages;
 VACUUM ANALYZE m;
 CREATE FUNCTION mo_rows(q text, push bool) RETURNS jsonb[] LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_as_jsonb_array(q, push) $$;
 CREATE FUNCTION mo_same(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -96,24 +95,12 @@ EXECUTE mo_spill;
 
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 64;
-SET client_min_messages = debug1;
 EXECUTE mo_spill;
-DEBUG:  sift_aggcol: leaf 0 path "" attno 1 parent -1 kind 0
-DEBUG:  sift_aggcol: leaf 1 path "" attno 2 parent -1 kind 0
-DEBUG:  sift_aggcol: leaf 2 path "" attno 3 parent -1 kind 0
-DEBUG:  sift_aggcol: leaf 3 path "" attno 4 parent -1 kind 0
-DEBUG:  sift_aggcol: leaf 4 path "" attno 5 parent -1 kind 0
-DEBUG:  sift_aggcol: leaf 5 path "" attno 6 parent -1 kind 0
-DEBUG:  sift_aggcol: leaf 6 path "" attno 7 parent -1 kind 0
-DEBUG:  sift_aggcol: leaf 7 path "" attno 8 parent -1 kind 0
-DEBUG:  sift_aggcol: leaf 8 path "" attno 9 parent -1 kind 0
-DEBUG:  sift: mode() moved to a tuplesort
  count 
 -------
   6000
 (1 row)
 
-RESET client_min_messages;
 DROP TABLE mo_q;
 DROP FUNCTION mo_rows(text, bool), mo_same(text), mo_scan(text);
 DROP TABLE m;

@@ -32,6 +32,7 @@
 #include "agg/plan/int.h"
 #include "agg/gen/gen.h"
 #include "agg/gen/sort.h"
+#include "agg/osa/mode.h"
 #include "agg/osa/osa.h"
 
 /* ---- the argument values ---- */
@@ -351,7 +352,8 @@ v6_gen_fold(V6Gen *gen, int j, V6Acc *acc, SiftVec *const *argvec, uint16 r)
 		if (acc->v1 == 0)
 			acc->v1 = ++ga->nsid;
 		acc->aux++;
-		v6_gen_sort_put(ga->sort, (uint32) acc->v1 - 1, args, nulls);
+		if (ga->mode == NULL || !v6_mode_take(ga, (uint32) acc->v1 - 1, args[0]))
+			v6_gen_sort_put(ga->sort, (uint32) acc->v1 - 1, args, nulls);
 	}
 	MemoryContextSwitchTo(old);
 	ResetExprContext(gen->tmp);
@@ -399,6 +401,26 @@ index_acc(void *arg, int j, V6Acc *acc)
 		v6_gen_final(ix->gen, ix->ga, acc);
 }
 
+/* the inputs of a sorted aggregate are gone: its sort and its count */
+static void
+end_inputs(V6GenAgg *ga)
+{
+	if (ga->sort != NULL)
+		v6_gen_sort_end(ga->sort);
+	if (ga->mode != NULL)
+		v6_mode_free(ga->mode);
+	ga->sort = NULL;
+	ga->mode = NULL;
+}
+
+/* the inputs of a sorted aggregate go to a sort of an equal part of work_mem, or to the count of a mode() first */
+static void
+begin_inputs(V6GenAgg *ga, MemoryContext cx, int sort_kb)
+{
+	ga->sort = v6_gen_sort_begin(ga, cx, sort_kb);
+	ga->mode = v6_mode_new(ga, cx, sort_kb);
+}
+
 void
 v6_gen_finish(V6Gen *gen, SiftV6Group *g)
 {
@@ -412,9 +434,11 @@ v6_gen_finish(V6Gen *gen, SiftV6Group *g)
 		/* check-memory: allow one pointer for each group the scan met, which the group table holds as well */
 		ix.accs = palloc0(Max(ga->nsid, 1) * sizeof(V6Acc *));
 		each_acc(g, j, index_acc, &ix);
-		v6_gen_sort_drain(gen, ga, ix.accs, ga->nsid);
-		v6_gen_sort_end(ga->sort);
-		ga->sort = NULL;
+		if (ga->mode != NULL)
+			v6_mode_finish(gen, ga, ix.accs, ga->nsid);
+		else
+			v6_gen_sort_drain(gen, ga, ix.accs, ga->nsid);
+		end_inputs(ga);
 		pfree(ix.accs);
 	}
 }
@@ -626,7 +650,7 @@ agg_new(V6Gen *gen, int j, Aggref *ref, int sort_kb)
 	ga->pertrans.aggshared = false;
 	ga->peragg.aggref = ref;
 	if (ga->sorted)
-		ga->sort = v6_gen_sort_begin(ga, gen->cx, sort_kb);
+		begin_inputs(ga, gen->cx, sort_kb);
 	return ga;
 }
 
@@ -695,8 +719,7 @@ v6_gen_free(V6Gen *gen)
 	for (int j = 0; j < gen->spec->naggs; j++)
 		if (gen->agg[j] != NULL)
 		{
-			if (gen->agg[j]->sort != NULL)
-				v6_gen_sort_end(gen->agg[j]->sort);
+			end_inputs(gen->agg[j]);
 			FreeExprContext(gen->agg[j]->cx, true);
 		}
 	if (gen->slot != NULL)
@@ -716,7 +739,7 @@ v6_gen_restart(V6Gen *gen)
 		if (gen->agg[j] != NULL && gen->agg[j]->sorted)
 		{
 			gen->agg[j]->nsid = 0;
-			gen->agg[j]->sort = v6_gen_sort_begin(gen->agg[j], gen->cx, sort_share_kb(gen->spec));
+			begin_inputs(gen->agg[j], gen->cx, sort_share_kb(gen->spec));
 		}
 	MemoryContextSwitchTo(old);
 }

@@ -54,6 +54,7 @@ typedef struct V6GenArg
 } V6GenArg;
 
 struct V6GenSort;
+struct V6Mode;
 
 typedef struct V6GenAgg
 {
@@ -97,6 +98,7 @@ typedef struct V6GenAgg
 	Datum	   *dir;			/* the direct arguments, evaluated once */
 	bool	   *dirnull;
 	struct V6GenSort *sort;
+	struct V6Mode *mode;		/* mode() that counts its values instead of sorting them (agg/osa/mode.h); NULL once they went to the sort */
 	uint32		nsid;			/* the groups numbered in the sort, as their first input arrives */
 } V6GenAgg;
 
