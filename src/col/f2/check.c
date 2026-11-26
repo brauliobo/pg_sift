@@ -337,13 +337,14 @@ heap_tid_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool a
 static void
 heap_window_check(Relation heap, Relation index, Snapshot snap, HeapWindow *w, BlockNumber span)
 {
+	IndexInfo  *info = BuildIndexInfo(index);
 	ItemPointerData lo,
 				hi;
 
+	info->ii_Concurrent = true;
 	ItemPointerSet(&lo, w->from, FirstOffsetNumber);
 	ItemPointerSet(&hi, span == InvalidBlockNumber ? MaxBlockNumber : w->from + span - 1, MaxOffsetNumber);
-	table_index_build_range_scan(heap, index, BuildIndexInfo(index), true, false, false, 0, InvalidBlockNumber, heap_tid_cb, w,
-								 table_beginscan_tidrange(heap, snap, &lo, &hi));
+	table_index_build_range_scan(heap, index, info, true, false, false, 0, InvalidBlockNumber, heap_tid_cb, w, table_beginscan_tidrange(heap, snap, &lo, &hi));
 }
 
 static void
