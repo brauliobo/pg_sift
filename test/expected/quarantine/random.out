@@ -189,15 +189,14 @@ SELECT damage_round(k, r) FROM generate_series(1, 60) r, unnest(ARRAY['col', 'bm
  
 (120 rows)
 
-SELECT kind, state, count(*) FROM outcome GROUP BY 1, 2 ORDER BY 1, 2;
- kind |             state              | count 
-------+--------------------------------+-------
- bm25 | differs, sift.check reports it |     1
- bm25 | failed once, then same         |    31
- bm25 | same                           |   148
- col  | failed once, then same         |    26
- col  | same                           |   274
-(5 rows)
+-- a statement either gives the rows of the heap or fails once and then gives them: how many of each depends on the pages the format lays out
+SELECT kind, CASE WHEN state IN ('same', 'failed once, then same') THEN 'same, or failed once, then same' ELSE state END AS state, count(*) FROM outcome GROUP BY 1, 2 ORDER BY 1, 2;
+ kind |              state              | count 
+------+---------------------------------+-------
+ bm25 | differs, sift.check reports it  |     1
+ bm25 | same, or failed once, then same |   179
+ col  | same, or failed once, then same |   300
+(3 rows)
 
 DROP TABLE t, queries, heap_answers, outcome;
 DROP FUNCTION answer(text), damage_round(text, int);

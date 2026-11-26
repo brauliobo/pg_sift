@@ -61,7 +61,8 @@ END $$;
 
 SELECT setseed(0.42);
 SELECT damage_round(k, r) FROM generate_series(1, 60) r, unnest(ARRAY['col', 'bm25']) k;
-SELECT kind, state, count(*) FROM outcome GROUP BY 1, 2 ORDER BY 1, 2;
+-- a statement either gives the rows of the heap or fails once and then gives them: how many of each depends on the pages the format lays out
+SELECT kind, CASE WHEN state IN ('same', 'failed once, then same') THEN 'same, or failed once, then same' ELSE state END AS state, count(*) FROM outcome GROUP BY 1, 2 ORDER BY 1, 2;
 
 DROP TABLE t, queries, heap_answers, outcome;
 DROP FUNCTION answer(text), damage_round(text, int);

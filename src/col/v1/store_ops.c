@@ -28,6 +28,7 @@
 #include "col/v1/store_ops.h"
 #include "col/v1/store_src.h"
 #include "core/compat.h"
+#include "core/errctx.h"
 #include "core/memtrack.h"
 #include "core/store/ops.h"
 #include "core/tidbridge.h"
@@ -623,9 +624,8 @@ fill_elems(SiftV1Src *s, const SiftV6Batch *b)
 }
 
 static bool
-v1_next(SiftV6Source *base, SiftV6Batch *out)
+next_batch(SiftV1Src *s, SiftV6Batch *out)
 {
-	SiftV1Src	   *s = (SiftV1Src *) base;
 	int			n;
 
 	while ((n = batch_fill(s)) > 0)
@@ -648,6 +648,20 @@ v1_next(SiftV6Source *base, SiftV6Batch *out)
 		return true;
 	}
 	return false;
+}
+
+/* the decoders of the units report damage against the relation of the scope (core/damage.h): the one the source reads */
+static bool
+v1_next(SiftV6Source *base, SiftV6Batch *out)
+{
+	SiftV1Src	   *s = (SiftV1Src *) base;
+	SiftErrCtx	ctx;
+	bool		got;
+
+	sift_errctx_push(&ctx, s->in.indexoid);
+	got = next_batch(s, out);
+	sift_errctx_pop(&ctx);
+	return got;
 }
 
 const SiftV1ElemBatch *
