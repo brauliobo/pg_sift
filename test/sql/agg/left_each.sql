@@ -33,7 +33,7 @@ SELECT * FROM check_query('child', $q$
  JOIN LATERAL (SELECT 'all' AS category UNION (SELECT CASE WHEN CAST(ra.value AS integer) > 6 THEN 'high' ELSE 'low' END)) c ON true
  GROUP BY 1
 $q$);
--- a child that reads the member another way, and a read of the key: the normal plan
+-- a child that reads the member another way: the normal plan; a read of the key: the scan
 SELECT * FROM check_query('child text', $q$
  SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'
  JOIN LATERAL (SELECT r.value::text AS v UNION ALL SELECT 'x') c ON true GROUP BY 1
@@ -61,7 +61,7 @@ SELECT label, same FROM check_query('json null', $q$SELECT count(*) AS n, sum(CA
 -- the unit that holds the JSON null keeps the scan from the queries of the member before PostgreSQL 18 (its cast raises there where the scan reads NULL)
 SELECT runs_in_scan($q$SELECT count(*) AS n, sum(CAST(r.value AS float)) AS total FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'$q$)
        = (current_setting('server_version_num')::int >= 180000) AS json_null_scanned_from_18;
--- a document that is not an object raises PostgreSQL's error for the rows that reach the join, and so does a member that is no number: the scan is not used
+-- a document that is not an object raises PostgreSQL's error for the rows that reach the join, and so does a member that is no number: the scan raises them as the normal plan does
 INSERT INTO facts VALUES (20003, 3, '[1, 2]'), (20005, 5, '{"m_total": "abc"}');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('array document', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total' WHERE f.id = 20003$q$);

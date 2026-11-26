@@ -685,7 +685,7 @@ sift_v6_unnest_elem_quals(V6Plan *p)
 			return false;
 		quals = lappend(quals, q);
 	}
-	if (quals != NIL && (p->xseed->elem.left || !sift_v6_unnest_elem_clause(CurrentMemoryContext, quals, clause, col, &nvec)))
+	if (quals != NIL && !sift_v6_unnest_elem_clause(CurrentMemoryContext, quals, clause, col, &nvec))
 		return false;
 	p->xseed->elem_where = quals;
 	return true;

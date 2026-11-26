@@ -49,7 +49,7 @@ $q$);
  child | t    | t    | [{"n": 14572, "ids": 14572, "category": "low"}, {"n": 20000, "ids": 20000, "category": "all"}, {"n":
 (1 row)
 
--- a child that reads the member another way, and a read of the key: the normal plan
+-- a child that reads the member another way: the normal plan; a read of the key: the scan
 SELECT * FROM check_query('child text', $q$
  SELECT c.v, count(*) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'
  JOIN LATERAL (SELECT r.value::text AS v UNION ALL SELECT 'x') c ON true GROUP BY 1
@@ -64,7 +64,7 @@ SELECT * FROM check_query('key', $q$
 $q$);
  label | scan | same |                              outcome                               
 -------+------+------+--------------------------------------------------------------------
- key   | f    | t    | [{"key": "m_total", "count": 11428}, {"key": null, "count": 8572}]
+ key   | t    | t    | [{"key": "m_total", "count": 11428}, {"key": null, "count": 8572}]
 (1 row)
 
 SELECT * FROM check_query('child union all, bare read', $q$
@@ -112,19 +112,19 @@ SELECT runs_in_scan($q$SELECT count(*) AS n, sum(CAST(r.value AS float)) AS tota
  t
 (1 row)
 
--- a document that is not an object raises PostgreSQL's error for the rows that reach the join, and so does a member that is no number: the scan is not used
+-- a document that is not an object raises PostgreSQL's error for the rows that reach the join, and so does a member that is no number: the scan raises them as the normal plan does
 INSERT INTO facts VALUES (20003, 3, '[1, 2]'), (20005, 5, '{"m_total": "abc"}');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('array document', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total' WHERE f.id = 20003$q$);
      label      | scan | same |                   outcome                    
 ----------------+------+------+----------------------------------------------
- array document | f    | t    | 22023 cannot call jsonb_each on a non-object
+ array document | t    | t    | 22023 cannot call jsonb_each on a non-object
 (1 row)
 
 SELECT * FROM check_query('string member', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total' WHERE f.id = 20005$q$);
      label     | scan | same |                         outcome                         
 ---------------+------+------+---------------------------------------------------------
- string member | f    | t    | 22023 cannot cast jsonb string to type double precision
+ string member | t    | t    | 22023 cannot cast jsonb string to type double precision
 (1 row)
 
 DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;

@@ -202,7 +202,7 @@ sift_v1_unnest_emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const 
 {
 	uint32		m = 0;
 
-	if (nel == 0 && u->x->elem.left)
+	if (u->x->elem.left && sift_unnest_count_bits(keep, 0, nel) == 0)
 	{
 		u->pidx[0] = row;
 		u->eidx[0] = SIFT_GATHER_NONE;
