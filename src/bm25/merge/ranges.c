@@ -126,8 +126,8 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 	uint64		gen;
 
 	SIFT_INVARIANT(n <= MAX_MERGE_FANIN, "sift: a merge of %d segments, at most %d are merged at once", n, MAX_MERGE_FANIN);
-	/* the context of the workers needs a transaction id from before its parallel mode, which a parallel VACUUM's leader cannot take: one process merges */
-	if (nworkers < 1 || sift_xid_unassignable())
+	/* the context of the workers needs a transaction id from before its parallel mode, which a VACUUM must not take: one process merges, streaming the segments with no file of ranges */
+	if (nworkers < 1 || sift_in_vacuum() || sift_xid_unassignable())
 		return merge_alone(index, wt, in, n, ref, neu);
 	cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment merge");
 #ifdef SIFT_TESTING
