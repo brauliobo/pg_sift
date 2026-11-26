@@ -3,7 +3,8 @@
  * one snapshot of it, and a second publication of that version neither makes nor replaces one; a retired snapshot costs its retire O(1) however many a reader's epoch holds back, and the ones a
  * reader holds do not keep the newer ones from being freed; a database that is dropped gives back the slots and the snapshots of its indexes. A writer that holds only the build_lock of a slot
  * and commits a newer version between the claim of a slot and its write is not undone; a meta of the version a slot has the snapshot of keeps that snapshot; a builder, a reader beyond the
- * epoch slots and a backend that installs a list give back what they hold when they fail (ERROR) or exit (FATAL).
+ * epoch slots and a backend that installs a list give back what they hold when they fail (ERROR) or exit (FATAL); a builder whose area has no room for the snapshot, or that exits while it
+ * builds it, gives back the claim of the build, so that the next reader of the version makes it.
  */
 #include "postgres.h"
 
@@ -32,6 +33,7 @@ static bool reserve_fails;
 static pg_on_exit_callback exit_cb[4];
 static int	nexit;
 static bool exit_in_alloc;
+static bool alloc_fails;
 static sigjmp_buf exit_jmp;
 
 /* What errfinish does in the server: the error goes to the innermost PG_TRY */
@@ -172,6 +174,11 @@ dsa_allocate_extended(dsa_area *a, size_t size, int flags)
 {
 	if (exit_in_alloc)
 		exit_now();
+	if (alloc_fails)
+	{
+		alloc_fails = false;
+		return InvalidDsaPointer;
+	}
 	allocs++;
 	return (dsa_pointer) (uintptr_t) calloc(1, size);
 }
@@ -479,6 +486,40 @@ test_list_install_exit(void)
 	SIFT_CHECKF(reserved == before, "a backend that exited in the copy of a list keeps %lld bytes of the ledger", (long long) (reserved - before));
 }
 
+/* The area has no room for the snapshot (DSA_ALLOC_NO_OOM): the build is given back, not held for the version */
+static void
+test_oom_build_released(void)
+{
+	SiftShmIndexMeta m = meta_of(19, 20600, 5);
+	SiftShmSnapSpec spec = spec_of(5);
+
+	SIFT_CHECK(sift_shm_manifest_publish(&m, NULL));
+	alloc_fails = true;
+	SIFT_CHECK(!sift_shm_manifest_publish(&m, &spec));
+	SIFT_CHECKF(sift_shm_manifest_publish(&m, &spec) && snap_of(&m.locator) != InvalidDsaPointer,
+				"a build the area had no room for keeps the next reader of the version from making its snapshot");
+}
+
+/* A builder that exits (FATAL) in the middle of the build gives the claim back */
+static void
+test_build_exit_released(void)
+{
+	SiftShmSnapSpec spec;
+
+	build_meta = meta_of(20, 20700, 6);
+	spec = spec_of(6);
+	claim.exit_set = false;		/* the exit of test_list_install_exit ran the callback of this process */
+	SIFT_CHECK(sift_shm_manifest_publish(&build_meta, NULL));
+	table->area_users++;
+	exit_in_alloc = true;
+	if (sigsetjmp(exit_jmp, 0) == 0)
+		publish_build(NULL);
+	SIFT_CHECK(!exit_in_alloc);
+	SIFT_CHECK(sift_shm_area_attach(table, true) != NULL);
+	SIFT_CHECKF(sift_shm_manifest_publish(&build_meta, &spec) && snap_of(&build_meta.locator) != InvalidDsaPointer,
+				"a builder that exited keeps the next reader of the version from making its snapshot");
+}
+
 int
 main(void)
 {
@@ -490,11 +531,13 @@ main(void)
 	test_peek_miss_preserves_out();
 	test_claimed_writer_rechecks();
 	test_meta_keeps_snapshot();
+	test_oom_build_released();
 #ifndef __SANITIZE_THREAD__
 	/* one thread; ThreadSanitizer does not find the jmp_buf of a PG_TRY that the ERROR goes to */
 	test_failed_build_released();
 	test_pinned_reader_error();
 	test_list_install_exit();
+	test_build_exit_released();
 #endif
 	return sift_check_summary();
 }

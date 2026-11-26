@@ -7,6 +7,8 @@
  */
 #include "postgres.h"
 
+#include "storage/ipc.h"
+
 #include "col/dsmreg.h"
 #include "core/cachebudget.h"
 #include "core/shm/budget.h"
@@ -282,15 +284,36 @@ build_claimed(Table *t, const SiftShmIndexMeta *meta)
 	return false;
 }
 
-/* A reader that claimed the build of the version and failed gives the claim back: the next reader makes the snapshot */
-static void
-build_release(Table *t, const SiftShmIndexMeta *meta)
+/* The build this backend claimed and has not installed: given back when the snapshot is not installed, or at an exit that no PG_FINALLY sees (FATAL) */
+static struct
 {
-	SiftShmIndexSlot *s = slot_probe(t, &meta->locator);
-	uint64		b = meta->manifest_version;
+	Table	   *t;				/* NULL: none */
+	RelFileLocator locator;
+	uint64		version;
+	bool		exit_set;
+}			claim;
+
+/* A reader that claimed the build of the version and did not install it gives the claim back: the next reader makes the snapshot */
+static void
+build_release(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
+{
+	SiftShmIndexSlot *s = claim.t != NULL ? slot_probe(claim.t, &claim.locator) : NULL;
+	uint64		b = claim.version;
 
 	if (s != NULL)
 		(void) pg_atomic_compare_exchange_u64(&s->building, &b, 0);
+	claim.t = NULL;
+}
+
+static void
+claim_note(Table *t, const SiftShmIndexMeta *meta)
+{
+	if (!claim.exit_set)
+		before_shmem_exit(build_release, (Datum) 0);
+	claim.exit_set = true;
+	claim.locator = meta->locator;
+	claim.version = meta->manifest_version;
+	claim.t = t;
 }
 
 static Steady
@@ -316,24 +339,26 @@ sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftShmSnapSpec *s
 {
 	Table	   *t;
 	dsa_pointer dp = InvalidDsaPointer;
-	Steady		steady;
+	volatile bool installed = false;
 
 	if ((meta->state_flags & SIFT_SHM_SLOT_PRIVATE) != 0 || !sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
 		return false;
 	if (spec != NULL && !build_claimed(t, meta))
 		return false;
+	if (spec != NULL)
+		claim_note(t, meta);
 	PG_TRY();
 	{
-		steady = publish_built(t, meta, spec, &dp);
+		installed = publish_built(t, meta, spec, &dp) == STEADY_WRITTEN && (spec == NULL || dp != InvalidDsaPointer);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
-		if (spec != NULL)
-			build_release(t, meta);
-		PG_RE_THROW();
+		if (!installed)
+			build_release(0, (Datum) 0);
+		claim.t = NULL;
 	}
 	PG_END_TRY();
-	return steady == STEADY_WRITTEN && (spec == NULL || dp != InvalidDsaPointer);
+	return installed;
 }
 
 void
