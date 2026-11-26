@@ -214,6 +214,9 @@ typedef void (*SiftF2Invalidator) (uint32 hashvalue);
 
 extern void sift_f2_invalidator_register(SiftF2Invalidator fn);
 extern uint32 sift_f2_rel_hash(Relation rel);
+
+/* The invalidators of every backend run when it next takes a lock of any relation, not when this transaction ends: for a change of what the caches hold that a statement of another backend may start on before the commit, a part that moved and kept its generation */
+extern void sift_f2_invalidate_now(Relation rel);
 extern bool sift_f2_inval_hits(uint32 relhash, uint32 hashvalue);
 
 extern PGDLLIMPORT const SiftF2HostOps sift_col_host_ops;

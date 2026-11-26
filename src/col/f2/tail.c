@@ -289,6 +289,7 @@ publish_move(Relation rel, const TailItem *it, const SiftPartDesc *planned, cons
 	e = (SiftManifestEdit) {.part_id = part_id,.key_lo = mr.entries[0].key_lo,.update_parts = &upd,.expect_parts = &parts[at],.nupdate = 1,.release = mv->freed,.nrelease = mv->nfreed};
 	sift_manifest_commit(rel, &e);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	sift_f2_invalidate_now(rel);
 	return true;
 }
 

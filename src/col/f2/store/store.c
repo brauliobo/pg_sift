@@ -15,6 +15,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "storage/sinval.h"
 #include "utils/syscache.h"
 
 #include "col/am.h"
@@ -67,6 +68,15 @@ uint32
 sift_f2_rel_hash(Relation rel)
 {
 	return GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(RelationGetRelid(rel)));
+}
+
+void
+sift_f2_invalidate_now(Relation rel)
+{
+	SharedInvalidationMessage msg = {.cc = {.id = RELOID,.dbId = MyDatabaseId,.hashValue = sift_f2_rel_hash(rel)}};
+
+	relation_invalidated((Datum) 0, RELOID, msg.cc.hashValue);
+	SendSharedInvalidMessages(&msg, 1);
 }
 
 bool
