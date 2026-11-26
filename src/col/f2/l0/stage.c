@@ -9,6 +9,7 @@
 #include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
 #include "utils/hsearch.h"
+#include "utils/relfilenumbermap.h"
 #include "utils/snapmgr.h"
 
 #include "col/f2/compact/compact.h"
@@ -30,12 +31,12 @@
 /* A range of addresses this short is looked for by each address in the table, a longer one by a walk of the rows */
 #define SIFT_STG_POINT_PROBES	16
 
-/* A transaction with more stages than this finds them by relation in a hash table */
+/* A transaction with more stages than this finds them by file in a hash table */
 #define SIFT_STG_HTAB_MIN		16
 
 typedef struct StageSlot
 {
-	Oid			relid;
+	RelFileLocator locator;
 	SiftTxnStage *st;
 } StageSlot;
 
@@ -225,20 +226,15 @@ free_stage(SiftTxnStage *st)
 	st->ndels = 0;
 }
 
-void
-sift_stage_discard(Oid relid)
+static void
+drop_stage(SiftTxnStage *st)
 {
-	foreach_ptr(SiftTxnStage, st, stages)
-		if (st->relid == relid)
-		{
-			free_stage(st);
-			stages = list_delete_ptr(stages, st);
-			if (stage_htab != NULL)
-				hash_search(stage_htab, &relid, HASH_REMOVE, NULL);
-			MemoryContextDelete(st->cx);
-			stage_epoch++;
-			return;
-		}
+	free_stage(st);
+	stages = list_delete_ptr(stages, st);
+	if (stage_htab != NULL)
+		hash_search(stage_htab, &st->locator, HASH_REMOVE, NULL);
+	MemoryContextDelete(st->cx);
+	stage_epoch++;
 }
 
 uint64
@@ -247,16 +243,16 @@ sift_stage_epoch(void)
 	return stage_epoch;
 }
 
-/* The stage of the relation as it is now: one made for a file the relation no longer has (TRUNCATE gave it another) holds rows that are not in it, and goes */
+/* The rows of a stage are the rows of a file: a relation that has another file now (TRUNCATE) has none of them, and one a swap of storage gave the file to (pg_repack) has them all */
 static SiftTxnStage *
-stage_find(Oid relid)
+stage_find(const RelFileLocator *locator)
 {
 	StageSlot  *slot;
 
 	if (stage_htab != NULL)
-		return (slot = hash_search(stage_htab, &relid, HASH_FIND, NULL)) != NULL ? slot->st : NULL;
+		return (slot = hash_search(stage_htab, locator, HASH_FIND, NULL)) != NULL ? slot->st : NULL;
 	foreach_ptr(SiftTxnStage, st, stages)
-		if (st->relid == relid)
+		if (RelFileLocatorEquals(st->locator, *locator))
 			return st;
 	return NULL;
 }
@@ -264,28 +260,59 @@ stage_find(Oid relid)
 static SiftTxnStage *
 stage_of(Relation rel)
 {
-	SiftTxnStage *st = stage_find(RelationGetRelid(rel));
+	SiftTxnStage *st = stage_find(&rel->rd_locator);
 
-	if (st == NULL || RelFileLocatorEquals(st->locator, rel->rd_locator))
-		return st;
-	sift_stage_discard(st->relid);
+	if (st != NULL)
+		st->relid = RelationGetRelid(rel);
+	return st;
+}
+
+static Relation
+rel_with_file(Oid relid, const RelFileLocator *locator)
+{
+	Relation	rel = try_relation_open(relid, RowExclusiveLock);
+
+	if (rel == NULL || RelFileLocatorEquals(*locator, rel->rd_locator))
+		return rel;
+	relation_close(rel, RowExclusiveLock);
 	return NULL;
+}
+
+/* The relation that holds the file of the stage, locked: the one that staged last, else the one the catalog gives the file to now; NULL when none holds it (a TRUNCATE or a drop) */
+static Relation
+stage_rel_open(SiftTxnStage *st)
+{
+	Relation	rel = rel_with_file(st->relid, &st->locator);
+
+	if (rel != NULL)
+		return rel;
+	st->relid = RelidByRelfilenumber(st->locator.spcOid, st->locator.relNumber);
+	return rel_with_file(st->relid, &st->locator);
+}
+
+void
+sift_stage_discard(Relation rel)
+{
+	SiftTxnStage *st = stage_find(&rel->rd_locator);
+
+	if (st != NULL)
+		drop_stage(st);
 }
 
 /* The stage joins the hash table, which is made with every stage when the transaction has more than SIFT_STG_HTAB_MIN */
 static void
 stage_index(SiftTxnStage *st)
 {
-	HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(StageSlot),.hcxt = TopTransactionContext};
+	HASHCTL		ctl = {.keysize = sizeof(RelFileLocator),.entrysize = sizeof(StageSlot),.hcxt = TopTransactionContext};
 
 	if (stage_htab == NULL && list_length(stages) > SIFT_STG_HTAB_MIN)
 	{
 		stage_htab = hash_create("sift stages", 4 * SIFT_STG_HTAB_MIN, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		foreach_ptr(SiftTxnStage, each, stages)
-			((StageSlot *) hash_search(stage_htab, &each->relid, HASH_ENTER, NULL))->st = each;
+			((StageSlot *) hash_search(stage_htab, &each->locator, HASH_ENTER, NULL))->st = each;
 	}
 	else if (stage_htab != NULL)
-		((StageSlot *) hash_search(stage_htab, &st->relid, HASH_ENTER, NULL))->st = st;
+		((StageSlot *) hash_search(stage_htab, &st->locator, HASH_ENTER, NULL))->st = st;
 }
 
 /* The stage holds rows, deletes or records of its host to write */
@@ -306,11 +333,11 @@ stage_xact(XactEvent event, void *arg)
 		foreach(lc, stages)
 		{
 			SiftTxnStage *st = lfirst(lc);
-			Relation	rel = stage_holds(st) ? try_relation_open(st->relid, RowExclusiveLock) : NULL;
+			Relation	rel = stage_holds(st) ? stage_rel_open(st) : NULL;
 
 			if (rel == NULL)
 				continue;
-			if (RelFileLocatorEquals(st->locator, rel->rd_locator) && !sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
+			if (!sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
 			{
 				flush_stage_rows(rel, st, true);
 				sift_stage_flush_deletes(rel, st, true);
@@ -396,7 +423,7 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 	if (st != NULL)
 	{
 		flush_rows_and_deletes(rel, st);
-		sift_stage_discard(RelationGetRelid(rel));
+		drop_stage(st);
 	}
 	if (!callbacks_registered)
 	{
@@ -608,11 +635,11 @@ flush_largest(void)
 			big = st;
 	if (big == NULL)
 		return;
-	rel = try_relation_open(big->relid, RowExclusiveLock);
-	if (rel != NULL && RelFileLocatorEquals(big->locator, rel->rd_locator) && !sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
+	rel = stage_rel_open(big);
+	if (rel != NULL && !sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
 		flush_stage_rows(rel, big, false);
 	else
-		sift_stage_discard(big->relid);
+		drop_stage(big);
 	if (rel != NULL)
 		relation_close(rel, NoLock);
 }
@@ -894,8 +921,12 @@ sift_stage_rebind(Relation rel, const RelFileLocator *locator)
 {
 	SiftTxnStage *st = stage_of(rel);
 
-	if (st != NULL)
-		st->locator = *locator;
+	if (st == NULL)
+		return;
+	if (stage_htab != NULL)
+		hash_search(stage_htab, &st->locator, HASH_REMOVE, NULL);
+	st->locator = *locator;
+	stage_index(st);
 }
 
 uint64 *
@@ -938,10 +969,11 @@ sift_stage_flush_all(void)
 {
 	foreach_ptr(SiftTxnStage, st, stages)
 	{
-		Relation	rel = relation_open(st->relid, RowExclusiveLock);
+		Relation	rel = stage_rel_open(st);
 
-		if (RelFileLocatorEquals(st->locator, rel->rd_locator))
-			flush_stage_rows(rel, st, false);
+		if (rel == NULL)
+			continue;
+		flush_stage_rows(rel, st, false);
 		relation_close(rel, NoLock);
 	}
 }

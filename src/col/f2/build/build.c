@@ -333,7 +333,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (info->ii_Unique)
 		info->ii_ParallelWorkers = 0;	/* the rows of one key may be in the shares of two participants */
 	sift_col_warn_f2_build_relopts(heap, index);
-	sift_stage_discard(RelationGetRelid(index));
+	sift_stage_discard(index);
 	sift_f2_connect_resolve(heap, index);
 	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);
 	choices = sift_f2_choices(index);

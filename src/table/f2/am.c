@@ -88,7 +88,7 @@ sift_tbl_f2_relation_set_new_filelocator(Relation rel, const RelFileLocator *new
 	}
 	smgrclose(srel);
 	sift_stage_flush(rel);
-	sift_stage_discard(RelationGetRelid(rel));
+	sift_stage_discard(rel);
 	sift_fsm_cache_discard_rel(rel);
 	sift_shm_manifest_invalidate(&rel->rd_locator, false);
 	if (persistence != RELPERSISTENCE_TEMP)
@@ -115,7 +115,7 @@ void
 sift_tbl_f2_relation_nontransactional_truncate(Relation rel)
 {
 	forget_caches(rel);
-	sift_stage_discard(RelationGetRelid(rel));
+	sift_stage_discard(rel);
 	sift_fsm_cache_discard_rel(rel);
 	sift_tbl_rowlock_drop_rel(&rel->rd_locator);
 	sift_shm_manifest_invalidate(&rel->rd_locator, false);

@@ -236,7 +236,7 @@ static void
 write_and_drop_stage(Relation rel)
 {
 	sift_stage_flush_with_deletes(rel);
-	sift_stage_discard(RelationGetRelid(rel));
+	sift_stage_discard(rel);
 }
 
 void

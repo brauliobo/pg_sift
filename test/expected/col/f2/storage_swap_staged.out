@@ -1,0 +1,126 @@
+-- The rows a transaction stages for a Format 2.0 sift_col index belong to the storage of the index, not to its name: a tool that swaps the storage of two tables and their
+-- indexes in the transaction (pg_repack puts the rebuilt copy under the name of the original that way) finds them in the index that holds that storage at the commit,
+-- and in the reads and writes of the transaction after the swap. A swap that a savepoint rolls back leaves them where they were staged.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE orig (id int, k int, v numeric(10,2)) WITH (autovacuum_enabled = false);
+CREATE TABLE copy (LIKE orig) WITH (autovacuum_enabled = false);
+INSERT INTO orig SELECT g, g % 7, g % 97 FROM generate_series(1, 50) g;
+CREATE INDEX orig_col ON orig USING sift_col (id, k, v);
+CREATE INDEX copy_col ON copy USING sift_col (id, k, v);
+-- the update of pg_class is the swap of pg_repack; the relcache entries follow at the next command
+CREATE FUNCTION swap_storage(a regclass, b regclass) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE fa oid; fb oid;
+BEGIN
+	SELECT relfilenode INTO fa FROM pg_class WHERE oid = a;
+	SELECT relfilenode INTO fb FROM pg_class WHERE oid = b;
+	UPDATE pg_class SET relfilenode = fb WHERE oid = a;
+	UPDATE pg_class SET relfilenode = fa WHERE oid = b;
+END $$;
+CREATE FUNCTION swap_both() RETURNS void LANGUAGE sql AS $$ SELECT swap_storage('copy', 'orig'); SELECT swap_storage('copy_col', 'orig_col') $$;
+-- the rows of each table, read through its index and from the heap alone
+CREATE FUNCTION rows_of(t regclass, OUT by_index text, OUT by_heap text) LANGUAGE plpgsql AS $$
+BEGIN
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE format('SELECT count(*) || '' / '' || coalesce(sum(v), 0) FROM %s WHERE id > 0', t) INTO by_index;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT count(*) || '' / '' || coalesce(sum(v), 0) FROM %s WHERE id > 0', t) INTO by_heap;
+END $$;
+SET allow_system_table_mods = on;
+-- the copy is loaded in the transaction, then takes the place of the original
+BEGIN;
+INSERT INTO copy SELECT g, g % 7, g % 97 FROM generate_series(1, 300) g;
+INSERT INTO copy SELECT 1000 + g, g % 7, g % 97 FROM generate_series(1, 200) g;
+SELECT swap_both();
+ swap_both 
+-----------
+ 
+(1 row)
+
+COMMIT;
+SELECT 'orig' AS t, * FROM rows_of('orig') UNION ALL SELECT 'copy', * FROM rows_of('copy');
+  t   |    by_index    |    by_heap     
+------+----------------+----------------
+ orig | 500 / 23346.00 | 500 / 23346.00
+ copy | 50 / 1275.00   | 50 / 1275.00
+(2 rows)
+
+SELECT sift.col_verify('orig_col', true) AS orig_verify, sift.col_verify('copy_col', true) AS copy_verify;
+ orig_verify | copy_verify 
+-------------+-------------
+             | 
+(1 row)
+
+-- both tables take rows before and after the swap, and the transaction reads them through the index that holds their storage
+BEGIN;
+INSERT INTO orig SELECT 2000 + g, g % 7, 1 FROM generate_series(1, 40) g;
+INSERT INTO copy SELECT 3000 + g, g % 7, 2 FROM generate_series(1, 30) g;
+SELECT swap_both();
+ swap_both 
+-----------
+ 
+(1 row)
+
+INSERT INTO orig SELECT 4000 + g, g % 7, 3 FROM generate_series(1, 20) g;
+INSERT INTO copy SELECT 5000 + g, g % 7, 4 FROM generate_series(1, 10) g;
+SELECT 'orig' AS t, * FROM rows_of('orig') UNION ALL SELECT 'copy', * FROM rows_of('copy');
+  t   |    by_index    |    by_heap     
+------+----------------+----------------
+ orig | 100 / 1395.00  | 100 / 1395.00
+ copy | 550 / 23426.00 | 550 / 23426.00
+(2 rows)
+
+COMMIT;
+SELECT 'orig' AS t, * FROM rows_of('orig') UNION ALL SELECT 'copy', * FROM rows_of('copy');
+  t   |    by_index    |    by_heap     
+------+----------------+----------------
+ orig | 100 / 1395.00  | 100 / 1395.00
+ copy | 550 / 23426.00 | 550 / 23426.00
+(2 rows)
+
+SELECT sift.col_verify('orig_col', true) AS orig_verify, sift.col_verify('copy_col', true) AS copy_verify;
+ orig_verify | copy_verify 
+-------------+-------------
+             | 
+(1 row)
+
+-- a swap rolled back to its savepoint leaves the staged rows with the index that staged them
+BEGIN;
+INSERT INTO orig SELECT 6000 + g, g % 7, 5 FROM generate_series(1, 25) g;
+SAVEPOINT s;
+SELECT swap_both();
+ swap_both 
+-----------
+ 
+(1 row)
+
+INSERT INTO orig SELECT 7000 + g, g % 7, 6 FROM generate_series(1, 15) g;
+ROLLBACK TO s;
+INSERT INTO copy SELECT 8000 + g, g % 7, 7 FROM generate_series(1, 5) g;
+COMMIT;
+SELECT 'orig' AS t, * FROM rows_of('orig') UNION ALL SELECT 'copy', * FROM rows_of('copy');
+  t   |    by_index    |    by_heap     
+------+----------------+----------------
+ orig | 125 / 1520.00  | 125 / 1520.00
+ copy | 555 / 23461.00 | 555 / 23461.00
+(2 rows)
+
+SELECT sift.col_verify('orig_col', true) AS orig_verify, sift.col_verify('copy_col', true) AS copy_verify;
+ orig_verify | copy_verify 
+-------------+-------------
+             | 
+(1 row)
+
+RESET allow_system_table_mods;
+DROP TABLE orig, copy;
+DROP FUNCTION swap_both(), swap_storage(regclass, regclass), rows_of(regclass);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

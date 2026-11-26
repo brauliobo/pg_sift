@@ -384,6 +384,7 @@ TESTING_REGRESS += col/f2/stage_subxact
 TESTING_REGRESS += col/f2/status_heapref_slab
 TESTING_REGRESS += col/f2/stor_mem
 TESTING_REGRESS += col/f2/storage_codec_suite
+TESTING_REGRESS += col/f2/storage_swap_staged
 TESTING_REGRESS += col/f2/tier_drop_remote
 TESTING_REGRESS += col/f2/tier_orphans
 TESTING_REGRESS += col/f2/tier_policy_cache

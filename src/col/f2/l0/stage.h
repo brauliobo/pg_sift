@@ -182,8 +182,8 @@ extern void sift_stage_flush_with_deletes(Relation rel);
 /* Writes everything the transaction staged, for every relation: before a worker, which has no stage of its own, reads the indexes */
 extern void sift_stage_flush_all(void);
 
-/* The stage of the relation goes with what it holds (the index was built again: what was staged is in the heap the build read); nothing when there is none */
-extern void sift_stage_discard(Oid relid);
+/* The stage of the file of the relation goes with what it holds (the index was built again: what was staged is in the heap the build read); nothing when there is none */
+extern void sift_stage_discard(Relation rel);
 
 /* A number that changes when a stage is made or goes: what keeps a pointer to a stage knows it is still the one of the transaction */
 extern uint64 sift_stage_epoch(void);
