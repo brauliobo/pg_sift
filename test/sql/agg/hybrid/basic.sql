@@ -227,6 +227,18 @@ RESET client_min_messages;
 SELECT hy_node('SELECT tenant, count(*) FROM mm_part WHERE live AND tenant < 300 AND body @@> ''common'' GROUP BY tenant') AS implied,
 	hy_node('SELECT tenant, count(*) FROM mm_part WHERE tenant < 300 AND body @@> ''common'' GROUP BY tenant') AS not_implied;
 SELECT (hy_cmp('SELECT tenant, count(*) FROM mm_part WHERE live AND tenant < 300 AND body @@> ''common'' GROUP BY tenant', 'SELECT tenant, count(*) FROM mm_part WHERE random() < 2 AND live AND tenant < 300 AND body @@> ''common'' GROUP BY tenant')).*;
+\echo -- the tenant EXISTS of a query that reads two tables is planned once: no hybrid scan takes a join, so no second plan with the EXISTS as a key set is made (twice the planner memory before)
+CREATE FUNCTION hy_plan_kb(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE l text; kb bigint;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF, MEMORY) ' || q LOOP
+		IF l ~ 'Memory: used=\d+kB' THEN kb := substring(l from 'Memory: used=(\d+)kB')::bigint; END IF;
+	END LOOP;
+	RETURN kb;
+END $$;
+SELECT hy_plan_kb('SELECT count(*) FROM mm_docs c JOIN mm_args a ON a.n = c.region WHERE c.body @@> ''common'' AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 1 AND tl.item_id = c.id)')
+	< 1.5 * hy_plan_kb('SELECT count(*) FROM mm_docs c JOIN mm_args a ON a.n = c.region WHERE c.body @@> ''common'' AND NOT EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 1 AND tl.item_id = c.id)') AS planned_once;
+DROP FUNCTION hy_plan_kb(text);
 DROP FUNCTION hy_cmp(text, text), hy_node(text), hy_prop(text, text), hy_same(text), hy_shape(text);
 DROP TABLE mm_docs, mm_part, mm_acl, mm_args, hy_acl, hy_q, hy_sink;
 DROP EXTENSION pg_sift;

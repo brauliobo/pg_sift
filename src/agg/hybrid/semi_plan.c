@@ -204,6 +204,18 @@ has_exists_sublink(List *quals)
 	return false;
 }
 
+/* The query reads one plain table, the only shape of a hybrid scan (sift_hybrid_pathlist): a partitioned table, an inheritance parent or a join gets no plan with its EXISTS as key sets */
+static bool
+one_plain_rel(Query *parse)
+{
+	RangeTblEntry *rte;
+
+	if (list_length(parse->jointree->fromlist) != 1 || !IsA(linitial(parse->jointree->fromlist), RangeTblRef))
+		return false;
+	rte = rt_fetch(linitial_node(RangeTblRef, parse->jointree->fromlist)->rtindex, parse->rtable);
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !(rte->inh && has_subclass(rte->relid));
+}
+
 /* The query with a key set hint next to each EXISTS, or NULL when there is none to say (the query itself is never changed: PostgreSQL plans it as it is first) */
 static Query *
 exists_as_arrays(Query *parse)
@@ -213,7 +225,7 @@ exists_as_arrays(Query *parse)
 	Query	   *alt;
 	bool		changed = false;
 
-	if (parse->commandType != CMD_SELECT || parse->rowMarks != NIL || !has_exists_sublink(quals) || !has_match((Node *) quals, NULL))
+	if (parse->commandType != CMD_SELECT || parse->rowMarks != NIL || !has_exists_sublink(quals) || !one_plain_rel(parse) || !has_match((Node *) quals, NULL))
 		return NULL;
 	alt = copyObject(parse);
 	foreach_ptr(Node, q, and_list(alt->jointree->quals))
