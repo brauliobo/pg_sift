@@ -211,7 +211,7 @@ sift_tbl_blob_reclaim(Relation rel, const SiftF2Store *store, const SiftGranuleV
 
 	for (int c = 0; c < store->ncols; c++)
 	{
-		if (store->kinds[c] != SIFT_CELL_STR)
+		if (store->kinds[c] != SIFT_CELL_STR || sift_f2_leaf_is_path(store, c))
 			continue;
 		sift_granule_tags(v, c, tag);
 		for (uint16 r = 0; r < nrows; r++)
