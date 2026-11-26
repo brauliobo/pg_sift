@@ -8,6 +8,7 @@ plan 4
 node_init dd 5 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
 sift.async_maintenance = off
+sift.test_create_format1 = off
 sift.shared_cache_kb = 16384"
 node_start dd || bail "start failed"
 sql dd "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"

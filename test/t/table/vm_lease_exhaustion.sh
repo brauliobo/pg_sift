@@ -10,7 +10,8 @@ out=
 plan 11
 node_init vl 80 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
-sift.async_maintenance = off"
+sift.async_maintenance = off
+sift.test_create_format1 = off"
 node_start vl || bail "start failed"
 sql vl "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
 out=$(sql vl "DO \$\$ BEGIN FOR i IN 1..$TABLES LOOP EXECUTE format('CREATE TABLE lt_%s (k int, v int) USING sift_table', i); COMMIT; END LOOP; END \$\$" 2>&1)
