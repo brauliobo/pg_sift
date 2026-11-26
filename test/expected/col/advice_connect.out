@@ -2,6 +2,9 @@
 -- columns of the parent and the maintenance of its index never do (the stamps of the child hold the insert horizon of the parent, which merges leave alone), and the reads give the rows of the normal plan either way.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps of the child segments and the insert horizon of the parent (sift.test_conn_no_horizon) are Format 1; a Format 2.0 child keeps no
+-- connection state, the key journal of the parent vouches for the dimension at read time (col/f2/connect.h).
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET work_mem = '16MB';
