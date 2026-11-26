@@ -8,6 +8,7 @@ out=
 plan 9
 node_init bg 82 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
+sift.test_create_format1 = off
 sift.async_maintenance = on
 sift.max_maint_workers = 2
 sift.maintenance_naptime = 10000
@@ -20,7 +21,7 @@ dbsql() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X
 setup() {
 	sql bg "CREATE DATABASE $1" >/dev/null || bail "create $1 failed"
 	dbsql "$1" "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE w (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false)" \
-		"CREATE INDEX w_col ON w USING sift_col (id, k, v)" "INSERT INTO w SELECT g, g % 10, g FROM generate_series(1, 1000) g" >/dev/null || bail "setup of $1 failed"
+		"INSERT INTO w SELECT g, g % 10, g FROM generate_series(1, 1000) g" "CREATE INDEX w_col ON w USING sift_col (id, k, v)" >/dev/null || bail "setup of $1 failed"
 }
 ENQ="SELECT sift._test_maint_enqueue('w_col', 3)"
 worker_in() { [[ $(sql bg "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND datname = '$1'") -ge 1 ]]; }
@@ -39,7 +40,7 @@ wait_for "[[ -e $D/ready ]]" 30 || bail "the session of d3 did not start"
 sql bg "ALTER DATABASE d3 ALLOW_CONNECTIONS false" >/dev/null
 touch "$D/go"
 wait "$session"
-check "a worker that cannot connect gives its slot back" wait_for "none_active" 8
+check "a worker that cannot connect gives its slot back" wait_for "[[ \$(connect_fatals) -gt $F0 ]] && none_active" 8
 sql bg "ALTER DATABASE d3 ALLOW_CONNECTIONS true" >/dev/null
 dbsql d3 "$ENQ" >/dev/null
 ran() { [[ $(completed) -gt $C0 ]]; }

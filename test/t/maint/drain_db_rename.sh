@@ -6,6 +6,7 @@
 plan 6
 node_init dr 3 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
+sift.test_create_format1 = off
 sift.async_maintenance = on
 sift.maintenance_naptime = 60000"
 node_start dr || bail "start failed"

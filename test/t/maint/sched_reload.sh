@@ -6,6 +6,7 @@
 plan 4
 node_init sr 2 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
+sift.test_create_format1 = off
 sift.async_maintenance = on
 sift.max_maint_workers = 0"
 node_start sr || bail "start failed"
