@@ -21,6 +21,13 @@ SET client_min_messages = warning;
 CREATE INDEX m_col ON m USING sift_col (id, g, t, tc, n, b, d, f, ok);
 RESET client_min_messages;
 VACUUM ANALYZE m;
+-- NaN and -NaN are one value of float8: 3 of each beat 4 ones
+CREATE TABLE mn (id int, g int, f float8) WITH (autovacuum_enabled = false);
+INSERT INTO mn SELECT i, i % 3, CASE WHEN i % 10 < 3 THEN -('NaN'::float8) WHEN i % 10 < 6 THEN 'NaN'::float8 ELSE 1.0 END FROM generate_series(1, 3000) i;
+SET client_min_messages = warning;
+CREATE INDEX mn_col ON mn USING sift_col (id, g, f);
+RESET client_min_messages;
+VACUUM ANALYZE mn;
 CREATE FUNCTION mo_rows(q text, push bool) RETURNS jsonb[] LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_as_jsonb_array(q, push) $$;
 CREATE FUNCTION mo_same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a jsonb[]; b jsonb[];
@@ -47,7 +54,8 @@ INSERT INTO mo_q VALUES
 	(13, 'SELECT g AS k, mode() WITHIN GROUP (ORDER BY n) AS a, count(*) AS c, sum(n) AS s FROM m WHERE n IS NULL OR id < 40 GROUP BY g'),
 	(14, 'SELECT g AS k, mode() WITHIN GROUP (ORDER BY lower(t)) AS a FROM m GROUP BY g'),
 	(15, 'SELECT id % 3000 AS k, mode() WITHIN GROUP (ORDER BY least(id / 3000, 1)) AS a, mode() WITHIN GROUP (ORDER BY least(id / 3000, 1) DESC) AS b FROM m GROUP BY id % 3000'),
-	(16, 'SELECT id % 20 AS k, mode() WITHIN GROUP (ORDER BY CASE WHEN id <= 14000 THEN ''zzz'' || id % 20 ELSE repeat(''y'', 400) || id END) AS a FROM m GROUP BY id % 20');
+	(16, 'SELECT id % 20 AS k, mode() WITHIN GROUP (ORDER BY CASE WHEN id <= 14000 THEN ''zzz'' || id % 20 ELSE repeat(''y'', 400) || id END) AS a FROM m GROUP BY id % 20'),
+	(17, 'SELECT g AS k, mode() WITHIN GROUP (ORDER BY f) AS a, mode() WITHIN GROUP (ORDER BY f DESC) AS b FROM mn GROUP BY g');
 SELECT n, mo_scan(q) AS scan, mo_same(q) AS same FROM mo_q ORDER BY n;
  n  | scan |   same    
 ----+------+-----------
@@ -67,7 +75,8 @@ SELECT n, mo_scan(q) AS scan, mo_same(q) AS same FROM mo_q ORDER BY n;
  14 | t    | same 9
  15 | t    | same 3000
  16 | t    | same 20
-(16 rows)
+ 17 | t    | same 3
+(17 rows)
 
 -- the counts outgrow work_mem: the values move to the sort and the rows are the same
 SET work_mem = '64kB';
@@ -103,6 +112,6 @@ EXECUTE mo_spill;
 
 DROP TABLE mo_q;
 DROP FUNCTION mo_rows(text, bool), mo_same(text), mo_scan(text);
-DROP TABLE m;
+DROP TABLE m, mn;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

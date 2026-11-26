@@ -6,7 +6,9 @@
 
 #include "catalog/pg_type_d.h"
 #include "common/hashfn.h"
+#include "miscadmin.h"
 #include "utils/datum.h"
+#include "utils/float.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -106,11 +108,15 @@ v6_mode_free(V6Mode *m)
 	pfree(m);
 }
 
-/* a float8 zero of either sign is the one value its equality makes it */
+/* a float8 zero of either sign, and a NaN of either sign, is the one value its equality makes it */
 static Datum
 canonical(const V6Mode *m, Datum v)
 {
-	return m->typid == FLOAT8OID && DatumGetFloat8(v) == 0.0 ? Float8GetDatum(0.0) : v;
+	if (m->typid != FLOAT8OID)
+		return v;
+	if (isnan(DatumGetFloat8(v)))
+		return Float8GetDatum(get_float8_nan());
+	return DatumGetFloat8(v) == 0.0 ? Float8GetDatum(0.0) : v;
 }
 
 static bool
@@ -166,7 +172,7 @@ count_pair(V6Mode *m, uint32 sid, Datum v)
 	}
 	if (m->nentry == m->cap)
 	{
-		if (MemoryContextMemAllocated(m->cx, true) * 2 > m->limit)
+		if (MemoryContextMemAllocated(m->cx, true) * 2 > m->limit || (uint64) (m->mask + 1) * sizeof(ModeEntry) > MaxAllocSize)
 			return false;
 		grow(m);
 		return count_pair(m, sid, v);
@@ -190,7 +196,10 @@ move_to_sort(V6GenAgg *ga)
 	elog(DEBUG1, "sift: mode() moved to a tuplesort");
 	for (uint32 e = 0; e < m->nentry; e++)
 		for (int64 i = 0; i < m->entry[e].count; i++)
+		{
+			CHECK_FOR_INTERRUPTS();
 			v6_gen_sort_put(ga->sort, m->entry[e].sid, &m->entry[e].value, &isnull);
+		}
 	v6_mode_free(m);
 	ga->mode = NULL;
 }
@@ -217,6 +226,7 @@ v6_mode_finish(V6Gen *gen, V6GenAgg *ga, V6Acc **accs, uint32 nsid)
 		const ModeEntry *e = &m->entry[i];
 		const ModeEntry *b = best[e->sid] != 0 ? &m->entry[best[e->sid] - 1] : NULL;
 
+		CHECK_FOR_INTERRUPTS();
 		if (b == NULL || e->count > b->count || (e->count == b->count && ApplySortComparator(e->value, false, b->value, false, &m->order) < 0))
 			best[e->sid] = i + 1;
 	}
