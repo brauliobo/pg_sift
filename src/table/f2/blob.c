@@ -6,6 +6,7 @@
 #include "col/codec/codec.h"
 #include "col/compress.h"
 #include "core/damage.h"
+#include "core/extlock.h"
 #include "core/f2/bulk_io.h"
 #include "core/f2/meta.h"
 #include "core/page_io.h"
@@ -48,26 +49,27 @@ compressed(const char *raw, uint32 raw_len, uint32 *stored_len, uint16 *flags)
 	return buf;
 }
 
+/* The pages of one value: those past the end of the file at the start of the spill go through the run, the reused ones through the buffers */
 static void
-write_pages(Relation rel, const SiftTblBlobRef *ref, const char *stored)
+write_pages(SiftBulkRun *run, SiftPartBulkWriter *w, const SiftTblBlobRef *ref, const char *stored)
 {
-	SiftPartBulkWriter w;
 	uint64		done = 0;
 
-	sift_bulk_extend(rel, ref->ext, ref->nextents);
-	sift_bulk_begin(&w, rel);
 	for (int e = 0; e < ref->nextents; e++)
 		for (uint32 b = 0; b < ref->ext[e].nblocks && done < ref->stored_len; b++)
 		{
-			Page		pg = sift_bulk_page(&w, ref->ext[e].start + b);
+			BlockNumber blk = ref->ext[e].start + b;
+			bool		fresh = run != NULL && sift_bulk_run_fresh(run, blk);
+			Page		pg = fresh ? sift_bulk_run_page(run) : sift_bulk_page(w, blk);
 			uint32		n = (uint32) Min(ref->stored_len - done, (uint64) SIFT_PAGE_PAYLOAD);
 
 			sift_page_init_part(pg, SIFT_PT_DATA, ref->gen, 0);
 			memcpy(SiftPageGetData(pg), stored + done, n);
 			SiftPageSetUsed(pg, n);
+			if (fresh)
+				sift_bulk_run_write(run, blk, pg);
 			done += n;
 		}
-	sift_bulk_end(&w);
 }
 
 static bool
@@ -97,34 +99,88 @@ new_ref(uint32 raw_len, const char *stored, uint32 stored_len, uint16 flags, uin
 	return ref;
 }
 
-static SiftTblBlobRef *
-write_blob(Relation rel, const char *raw, uint32 raw_len, uint64 gen)
+/* A wide value of the stage on its way to its reference: compressed, then given its pages when it does not fit in the reference */
+typedef struct WideValue
 {
-	uint16		flags = 0;
+	int			col;
+	int			row;
+	uint64		gen;
+	const char *stored;
 	uint32		stored_len;
-	const char *stored = compressed(raw, raw_len, &stored_len, &flags);
+	uint16		flags;
 	SiftTblBlobRef *ref;
+} WideValue;
 
-	if (stored_len <= SIFT_TBL_WIDE_THRESHOLD)
-	{
-		ref = new_ref(raw_len, stored, stored_len, flags | SIFT_BLOB_FLAG_INLINE, 0, gen);
-		memcpy(ref->ext, stored, stored_len);
-	}
-	else
-	{
-		uint64		npages = SIFT_PAYLOAD_PAGES(stored_len);
-		int			max = (int) (npages / 1024) + 32;
-		SiftExtent *ext = palloc(sizeof(SiftExtent) * max);
-		int			next = sift_fsm_alloc_stream(rel, npages, ext, max);
+static bool
+out_of_line(const WideValue *v)
+{
+	return v->stored_len > SIFT_TBL_WIDE_THRESHOLD;
+}
 
-		ref = new_ref(raw_len, stored, stored_len, flags, (uint16) next, gen);
-		memcpy(ref->ext, ext, sizeof(SiftExtent) * next);
-		write_pages(rel, ref, stored);
-		pfree(ext);
+/* The next npages blocks of the stream, from where the last value ended (*e, *off), as the extents of one value in out: how many */
+static int
+take_pages(const SiftExtent *ext, int *e, uint32 *off, uint64 npages, SiftExtent *out)
+{
+	int			n = 0;
+
+	while (npages > 0)
+	{
+		uint32		k = (uint32) Min(npages, (uint64) (ext[*e].nblocks - *off));
+
+		out[n++] = (SiftExtent) {.start = ext[*e].start + *off,.nblocks = k};
+		npages -= k;
+		*off += k;
+		if (*off == ext[*e].nblocks)
+		{
+			(*e)++;
+			*off = 0;
+		}
 	}
-	if (stored != raw)
-		pfree((char *) stored);
-	return ref;
+	return n;
+}
+
+/* The values that do not fit in their reference, in one stream of extents taken at once and cut in their order: one allocation and full batches of pages for the whole stage */
+static void
+write_values(Relation rel, const SiftRowBuf *rb, WideValue *vals, int nvals, uint64 npages)
+{
+	const int	max = (int) (npages / 1024) + 32;
+	SiftExtent *ext = palloc(sizeof(SiftExtent) * max),
+			   *cut = palloc(sizeof(SiftExtent) * max);
+	const int	next = sift_fsm_alloc_stream(rel, npages, ext, max);
+	SiftBulkRun *run = sift_bulk_run_begin(rel, ext, next);
+	int			e = 0;
+	uint32		off = 0;
+	SiftPartBulkWriter w;
+
+	PG_TRY();
+	{
+		if (run == NULL)
+			sift_bulk_extend(rel, ext, next);
+		sift_bulk_begin(&w, rel);
+		for (WideValue *v = vals; v < vals + nvals; v++)
+		{
+			int			k;
+
+			if (!out_of_line(v))
+				continue;
+			k = take_pages(ext, &e, &off, SIFT_PAYLOAD_PAGES(v->stored_len), cut);
+			v->ref = new_ref(rb->xplen[v->col][v->row], v->stored, v->stored_len, v->flags, (uint16) k, v->gen);
+			memcpy(v->ref->ext, cut, sizeof(SiftExtent) * k);
+			write_pages(run, &w, v->ref, v->stored);
+		}
+		sift_bulk_end(&w);
+		if (run != NULL)
+			sift_bulk_run_end(run);
+	}
+	PG_CATCH();
+	{
+		if (run != NULL)
+			sift_bulk_run_abort(run);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	pfree(ext);
+	pfree(cut);
 }
 
 static uint32
@@ -143,24 +199,41 @@ void
 sift_tbl_blob_spill_rows(Relation rel, SiftRowBuf *rb)
 {
 	uint32		nwide = count_wide(rb);
-	uint64		gen = nwide > 0 ? sift_manifest_new_gen(rel, nwide) : 0;
+	WideValue  *vals;
+	uint64		gen,
+				npages = 0;
+	int			n = 0;
 
+	if (nwide == 0)
+		return;
+	vals = palloc(sizeof(WideValue) * nwide);
+	gen = sift_manifest_new_gen(rel, nwide);
 	for (int c = 0; c < rb->ncols; c++)
-	{
-		if (rb->tag[c] == NULL)
-			continue;
-		for (int r = 0; r < rb->n; r++)
-		{
-			SiftTblBlobRef *ref;
+		for (int r = 0; rb->tag[c] != NULL && r < rb->n; r++)
+			if (rb->tag[c][r] == SIFT_COLTAG_WIDE_RAW)
+			{
+				WideValue  *v = &vals[n++];
 
-			if (rb->tag[c][r] != SIFT_COLTAG_WIDE_RAW)
-				continue;
-			ref = write_blob(rel, rb->xpay[c][r], rb->xplen[c][r], gen++);
-			rb->xpay[c][r] = (const char *) ref;
-			rb->xplen[c][r] = ref_size(ref);
-			rb->tag[c][r] = SIFT_COLTAG_WIDE_BLOB;
+				*v = (WideValue) {.col = c,.row = r,.gen = gen++};
+				v->stored = compressed(rb->xpay[c][r], rb->xplen[c][r], &v->stored_len, &v->flags);
+				npages += out_of_line(v) ? SIFT_PAYLOAD_PAGES(v->stored_len) : 0;
+			}
+	if (npages > 0)
+		write_values(rel, rb, vals, n, npages);
+	for (WideValue *v = vals; v < vals + n; v++)
+	{
+		if (!out_of_line(v))
+		{
+			v->ref = new_ref(rb->xplen[v->col][v->row], v->stored, v->stored_len, v->flags | SIFT_BLOB_FLAG_INLINE, 0, v->gen);
+			memcpy(v->ref->ext, v->stored, v->stored_len);
 		}
+		if (v->stored != rb->xpay[v->col][v->row])
+			pfree((char *) v->stored);
+		rb->xpay[v->col][v->row] = (const char *) v->ref;
+		rb->xplen[v->col][v->row] = ref_size(v->ref);
+		rb->tag[v->col][v->row] = SIFT_COLTAG_WIDE_BLOB;
 	}
+	pfree(vals);
 }
 
 /* A copy of the reference in memory of its own alignment, whose lengths are those a writer makes: a value no longer than a palloc, stored as it is exactly when it is not compressed */
