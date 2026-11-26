@@ -112,11 +112,15 @@ slot_decodes(Relation rel)
 }
 
 bool
+sift_tbl_decoded(Relation rel)
+{
+	return sift_tbl_published(rel) || (rmgr_registered && slot_decodes(rel));
+}
+
+bool
 sift_tbl_check_publication(Relation rel)
 {
-	bool		published = sift_tbl_published(rel);
-
-	if (!published && !(rmgr_registered && slot_decodes(rel)))
+	if (!sift_tbl_decoded(rel))
 		return false;
 	if (!rmgr_registered)
 		ereport(ERROR,
