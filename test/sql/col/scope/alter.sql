@@ -1,6 +1,6 @@
 -- ALTER INDEX .. SET (scope = ..) on a sift_col index would leave it with another leaf list than the one its metapage was written with, and every scan of it would stop until a REINDEX (the plans
 -- of the table go without it). It is refused, and the index goes on serving: the replacement is made beside it (CREATE INDEX CONCURRENTLY, then DROP INDEX). So is RESET (scope). A Format 2.0
--- index writes its leaf list when it is built, on an empty table too, so the ALTER of an empty one is refused as well.
+-- index that holds no row has nothing written under the old list: it takes the scope, and its rows are read through it once they come.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -18,7 +18,7 @@ DECLARE p jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO p;
 	scanned := jsonb_path_query_first(p, '$.**.Index') #>> '{}';
-	scope := jsonb_path_query_first(p, '$.**."Scope Index"') #>> '{}';
+	scope := jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
 END $$;
 
 CREATE TABLE pairs (dim_a_id int NOT NULL, group_id int NOT NULL, PRIMARY KEY (dim_a_id, group_id)) WITH (autovacuum_enabled = false);
@@ -28,6 +28,15 @@ CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, am
 -- an index on an empty table
 CREATE INDEX facts_empty ON facts USING sift_col (id, dim_a_id, created_at, amount);
 SELECT try('ALTER INDEX facts_empty SET (scope = ''group_id: dim_a_id -> pairs(dim_a_id, group_id)'')') AS empty_table;
+INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * interval '1 day', i % 10 FROM generate_series(1, 2000) i;
+VACUUM facts;
+SELECT * FROM plan_of('SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3)');
+SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3);
+SET sift.enable_agg = off;
+SELECT count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = 3);
+RESET sift.enable_agg;
+SELECT try('ALTER INDEX facts_empty SET (scope = ''g: dim_a_id -> pairs(dim_a_id, group_id)'')') AS with_rows;
+TRUNCATE facts;
 SELECT try('ALTER INDEX facts_empty RESET (scope)') AS empty_reset;
 DROP INDEX facts_empty;
 INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * interval '1 day', i % 10 FROM generate_series(1, 20000) i;

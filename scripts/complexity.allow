@@ -32,6 +32,7 @@ manifest-unbounded	src/col/f2/kll/sql.c	1	maintenance or inspection of a whole r
 manifest-unbounded	src/col/f2/maint.c	7	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/pack.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/proj/build.c	2	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/rel.c	1	ALTER INDEX asks whether the index holds any row (parts, slabs or pending deletes of any partition): an inspection of the whole relation, once a statement
 manifest-unbounded	src/col/f2/scope/scope.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/scope/build.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/scope/cur.c	1	maintenance or inspection of a whole relation

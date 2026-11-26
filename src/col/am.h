@@ -253,6 +253,8 @@ extern void sift_col_set_option(Relation index, const char *name, const char *va
 extern void sift_col_set_options(Relation index, List *defs);
 extern bool sift_cschema_same_leaves(const SiftColSchema *old, const SiftColSchema *cur, TupleDesc desc);
 extern bool sift_col_rekey(Relation index, int attno, const char *from, const char *to);
+/* A Format 2.0 index whose leaves an ALTER INDEX changed and that holds no row: its metapage takes the hash of the leaves the options give now (true), as its first write takes them */
+extern bool sift_col_take_leaves(Relation index);
 extern char *sift_col_suggest_spec(Relation heap, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups);
 extern const char *sift_col_options_paths_raw(Relation index);
 extern bool sift_col_paths_auto(const char *opt);

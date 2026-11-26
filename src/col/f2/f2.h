@@ -56,6 +56,9 @@ extern SiftCellKind sift_f2_def_kind(const SiftColDef *d);
 extern uint8 sift_f2_def_hint(const SiftColDef *d);
 extern bool sift_f2_def_top_key(const SiftColDef *d, const char **key, int *len);
 
+/* Whether the index holds a row: a part, a slab or pending deletes in a partition, or a row its transaction staged */
+extern bool sift_f2_holds_rows(Relation rel);
+
 /* The cell of a value the shredder made for a leaf of the kind */
 extern SiftCell sift_f2_value_cell(SiftCellKind kind, const SiftColValue *v);
 

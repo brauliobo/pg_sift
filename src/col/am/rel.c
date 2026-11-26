@@ -544,6 +544,16 @@ sift_col_rekey(Relation index, int attno, const char *from, const char *to)
 	return rekeyed;
 }
 
+bool
+sift_col_take_leaves(Relation index)
+{
+	if (sift_meta_resolve_major(index) != SIFT_FORMAT2_MAJOR || sift_f2_holds_rows(index))
+		return false;
+	sift_col_meta_set_schema_hash(index, sift_col_rel(index)->schema->hash);
+	CacheInvalidateRelcache(index);
+	return true;
+}
+
 /* Are the units of the sift_col index cut by the order key? (the planner keeps a ctid range, which selects units by heap superblock, on the normal plan for such an index) */
 bool
 sift_col_index_keyed(Oid indexoid)

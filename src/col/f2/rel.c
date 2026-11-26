@@ -8,6 +8,7 @@
 #include "utils/jsonb.h"
 
 #include "col/f2/f2.h"
+#include "col/f2/l0/stage.h"
 #include "col/f2/preagg/v2.h"
 #include "col/pg.h"
 #include "col/scope/scope.h"
@@ -353,4 +354,15 @@ sift_f2_row(Relation index, SiftF2Rel *f, MemoryContext rowcxt, const ItemPointe
 			elem[c][j] = sift_f2_value_cell(f->kinds[c], &row.elem[c][j]);
 	}
 	sift_row_key(&f->spec, cells, sift_f2_tid(tid), key);
+}
+
+bool
+sift_f2_holds_rows(Relation rel)
+{
+	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+	bool		holds = sift_stage_holds_in(rel, 0, PG_UINT64_MAX);
+
+	for (int i = 0; i < mr.n && !holds; i++)
+		holds = mr.entries[i].nparts > 0 || mr.entries[i].l0_slab_blk != InvalidBlockNumber || mr.entries[i].pend_del_blk != InvalidBlockNumber;
+	return holds;
 }

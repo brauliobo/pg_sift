@@ -106,7 +106,7 @@ sift_col_alter_check(Relation index, Datum before)
 	sift_col_track_reconcile(index);
 	sift_conn_route_alter(index);
 	sift_scope_alter(index);
-	if (sift_col_rel(index)->stale)
+	if (sift_col_rel(index)->stale && !sift_col_take_leaves(index))
 		sift_lane_alter_refuse(index, "column definitions");
 }
 
