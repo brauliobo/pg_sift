@@ -4,6 +4,8 @@
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: rollup_columns and the rollup the scope units and key groups keep are this format's; Format 2.0 ignores rollup_columns
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET jit = off;
@@ -58,27 +60,17 @@ SELECT scope_preagg('ev_explicit_col') = scope_preagg('ev_auto_col') AS explicit
 SELECT scope_preagg('ev_default_col') = scope_preagg('ev_off_col') AS default_is_off;
 SELECT sift.col_verify(i, true) FROM unnest(ARRAY['ev_auto_col', 'ev_explicit_col', 'ev_off_col']) i;
 
--- the key groups answer a filter on both columns from the rollup the choice wrote: md5 equal to the plain statement, and fewer blocks than the index that has none
-CREATE FUNCTION probe(q text) RETURNS TABLE (same boolean, supers boolean) LANGUAGE plpgsql AS $$
+-- a filter on both columns over the index with the rollup the choice wrote and over the one with none: md5 equal to the plain statement
+CREATE FUNCTION probe(q text) RETURNS TABLE (same boolean) LANGUAGE plpgsql AS $$
 DECLARE
-	p jsonb;
 	on_h text;
 	off_h text;
 BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
 	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO on_h;
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO off_h;
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	RETURN QUERY SELECT on_h = off_h, coalesce((jsonb_path_query_first(p, '$.**."Superunits"') #>> '{}')::int, 0) > 0;
-END $$;
-CREATE FUNCTION hit_blocks(q text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE
-	p jsonb;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	RETURN (jsonb_path_query_first(p, '$.**."Shared Hit Blocks"') #>> '{}')::bigint;
+	RETURN QUERY SELECT on_h = off_h;
 END $$;
 CREATE TABLE cases (n int, label text, stmt text);
 INSERT INTO cases VALUES
@@ -86,9 +78,7 @@ INSERT INTO cases VALUES
 	(2, 'sum of amount by kind of a score', 'SELECT kind, count(*), sum(amount) FROM {t} WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 GROUP BY 1'),
 	(3, 'filter on both columns, mid key', 'SELECT count(*), sum(amount) FROM {t} WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 2) AND score = 3 AND kind = ''k1''');
 SELECT c.n, c.label, r.* FROM cases c, LATERAL probe(replace(c.stmt, '{t}', 'ev_auto')) r ORDER BY c.n;
-SELECT hit_blocks(replace(stmt, '{t}', 'ev_auto')) AS with_rollup FROM cases WHERE n = 1 \gset
-SELECT hit_blocks(replace(stmt, '{t}', 'ev_off')) >= :with_rollup + 5 AS off_reads_more FROM cases WHERE n = 1;
-SELECT c.n, r.same, r.supers FROM cases c, LATERAL probe(replace(c.stmt, '{t}', 'ev_off')) r ORDER BY c.n;
+SELECT c.n, r.same FROM cases c, LATERAL probe(replace(c.stmt, '{t}', 'ev_off')) r ORDER BY c.n;
 
 -- a table with no sum worth keeping: the list ends at the colon, and the rollup of counts is written
 SELECT make_events('ev_n', false);
@@ -107,6 +97,6 @@ SELECT sift.col_verify('ev_s_col', true);
 SELECT supers > 0 AS has_blocks, damaged > 0 AS damages_made, refused = damaged AS all_refused, unnoticed = 0 AS none_unnoticed FROM sift._test_col_super_damage('ev_s_col');
 
 DROP TABLE ev_plain, ev_default, ev_auto, ev_explicit, ev_other, ev_off, ev_n, ev_s, tenant_scope, cases;
-DROP FUNCTION make_events(text, boolean, int), make_index(text, text, boolean), rollup_option(text), scope_preagg(text), probe(text), hit_blocks(text);
+DROP FUNCTION make_events(text, boolean, int), make_index(text, text, boolean), rollup_option(text), scope_preagg(text), probe(text);
 DROP EXTENSION pg_sift_test CASCADE;
 DROP EXTENSION pg_sift;

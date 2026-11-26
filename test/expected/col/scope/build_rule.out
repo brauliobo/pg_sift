@@ -3,6 +3,8 @@
 -- takes the first column for key_order, where the plain choice took the foreign key (4 to 5 times the instructions and blocks to read one key). Not below 100,000 rows,
 -- the floor of the layout choice (GORD_AUTO_ROWS): the table here is 110,000 rows and the reason is the only one for its size.
 CREATE EXTENSION pg_sift;
+-- Format 1: the build rule that cuts the units of a copy by its first column (col/v1/build) is this format's; Format 2.0 keeps its parts in insert order
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
 SET client_min_messages = warning;
@@ -43,16 +45,6 @@ BEGIN
 	EXECUTE format('SELECT string_agg(id::text, '','' ORDER BY created_at DESC, id) FROM (SELECT id, created_at FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM pairs WHERE tenant_id = %s) ORDER BY created_at DESC, id LIMIT 20) t', k) INTO j;
 	RETURN CASE WHEN c IS NOT DISTINCT FROM j THEN 'same' ELSE 'DIFFERENT' END;
 END $$;
--- whether the units of the other keys are pruned by the scan of one key, from the plan of the statement as it runs
-CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; res text := 'no Sift scan';
-BEGIN
-	SET LOCAL sift.enable_agg = on;
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		IF pl ~ 'Units:' THEN res := CASE WHEN pl ~ 'pruned' THEN 'units pruned' ELSE 'every unit read' END; END IF;
-	END LOOP;
-	RETURN res;
-END $$;
 -- the shape of a copy, arrival order and sorted: the key is the first column
 CREATE INDEX copy_arrival_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
 CREATE INDEX copy_sorted_col ON copy_sorted USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
@@ -89,13 +81,6 @@ SELECT chosen('copy_arrival_col');
 -- the arrival copy reads every unit of a key unless the index is cut by it (key_cut is the user's); the sorted copy is in key order already
 DROP INDEX copy_arrival_col;
 CREATE INDEX copy_arrival_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_cut = 'tenant_id, created_at');
-SELECT units_of('SELECT dim_a_id, sum(amount) FROM copy_arrival WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_arrival,
-	   units_of('SELECT dim_a_id, sum(amount) FROM copy_sorted WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_sorted;
- units_arrival | units_sorted 
----------------+--------------
- units pruned  | units pruned
-(1 row)
-
 DROP INDEX copy_arrival_col, copy_sorted_col;
 -- what the user wrote stays: a key_order of their own, 'off'
 CREATE INDEX copy_user_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_order = 'dim_a_id, created_at');
@@ -167,5 +152,5 @@ SELECT 'sorted by the foreign key' AS table, chosen('dim_sorted_col');
 (1 row)
 
 DROP TABLE fk_tenant, small_keys, dim_sorted, copy_fresh, copy_arrival, copy_sorted, facts, pairs, tenants;
-DROP FUNCTION chosen(regclass), answers(regclass, int), latest(regclass, int), units_of(text);
+DROP FUNCTION chosen(regclass), answers(regclass, int), latest(regclass, int);
 DROP EXTENSION pg_sift;

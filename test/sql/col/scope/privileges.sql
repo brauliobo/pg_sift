@@ -4,6 +4,8 @@
 -- the range table of the statement, so a role without SELECT on it (also one whose SELECT was revoked after the build, or that has it on some columns only) gets permission denied
 -- from the scope read and from the join alike, and a role the policies of the relation apply to reads the join as written.
 CREATE EXTENSION pg_sift;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
@@ -17,15 +19,22 @@ GRANT SELECT ON sp_events TO sp_reader;
 GRANT CREATE ON SCHEMA public TO sp_owner;
 CREATE TABLE sp_pairs (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s)) WITH (autovacuum_enabled = false);
 INSERT INTO sp_pairs SELECT i, 1 + i % 5 FROM generate_series(1, 40) i;
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX sp_pairs_journal ON sp_pairs USING sift_col (m, s) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 -- pairs some of which are soft deleted: the btree that defines them reads the column deleted
 CREATE TABLE sp_soft (m int NOT NULL, s int NOT NULL, deleted boolean NOT NULL DEFAULT false) WITH (autovacuum_enabled = false);
 INSERT INTO sp_soft SELECT i, 1 + i % 5, i % 7 = 0 FROM generate_series(1, 40) i;
 CREATE UNIQUE INDEX sp_soft_live ON sp_soft (m, s) WHERE NOT deleted;
+SET sift.test_create_format1 = on;
 CREATE INDEX sp_soft_journal ON sp_soft USING sift_col (m, s) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE TABLE sp_rls (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s)) WITH (autovacuum_enabled = false);
 INSERT INTO sp_rls SELECT i, 1 + i % 5 FROM generate_series(1, 40) i;
+SET sift.test_create_format1 = on;
 CREATE INDEX sp_rls_journal ON sp_rls USING sift_col (m, s) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 ALTER TABLE sp_rls ENABLE ROW LEVEL SECURITY;
 CREATE POLICY sp_rls_low ON sp_rls FOR SELECT TO sp_owner, sp_reader USING (m <= 20);
 VACUUM ANALYZE sp_events, sp_pairs, sp_soft, sp_rls;
@@ -45,9 +54,9 @@ BEGIN
 	SET LOCAL sift.agg_scope = on;
 	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
 	EXECUTE 'SELECT row(t)::text FROM (' || q || ') t' INTO a;
-	SET LOCAL sift.agg_scope = off;
+	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT row(t)::text FROM (' || q || ') t' INTO b;
-	RETURN CASE WHEN a <> b THEN 'DIFFERENT' ELSE 'same' END || CASE WHEN plan::text LIKE '%"Scope Index"%' THEN ', from the units' ELSE ', as the join' END;
+	RETURN CASE WHEN a <> b THEN 'DIFFERENT' ELSE 'same' END || CASE WHEN plan::text LIKE '%SiftAggV6Scope%' THEN ', from the scope node' ELSE ', as the join' END;
 EXCEPTION WHEN OTHERS THEN
 	RETURN sqlerrm;
 END $$;
@@ -77,7 +86,7 @@ SELECT try('REINDEX INDEX sp_col') AS reindex_with_select;
 RESET ROLE;
 REVOKE SELECT ON sp_pairs FROM sp_owner;
 
--- a reader: SELECT on the facts only. The scope read and the join as written are both refused by PostgreSQL, the statement does not answer from the units
+-- a reader: SELECT on the facts only. The scope read and the join as written are both refused by PostgreSQL, the statement does not answer from the scope node
 GRANT SELECT ON sp_pairs TO sp_reader;
 SET ROLE sp_reader;
 SELECT read_as_join('sp_pairs', 's') AS reader_with_select;

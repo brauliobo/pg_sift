@@ -4,6 +4,8 @@
 -- the range table of the statement, so a role without SELECT on it (also one whose SELECT was revoked after the build, or that has it on some columns only) gets permission denied
 -- from the scope read and from the join alike, and a role the policies of the relation apply to reads the join as written.
 CREATE EXTENSION pg_sift;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
@@ -19,24 +21,31 @@ GRANT SELECT ON sp_events TO sp_reader;
 GRANT CREATE ON SCHEMA public TO sp_owner;
 CREATE TABLE sp_pairs (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s)) WITH (autovacuum_enabled = false);
 INSERT INTO sp_pairs SELECT i, 1 + i % 5 FROM generate_series(1, 40) i;
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX sp_pairs_journal ON sp_pairs USING sift_col (m, s) WITH (track_changes = 'ctid');
 NOTICE:  sift_col index "sp_pairs_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_pairs_journal');
+SET sift.test_create_format1 = off;
 -- pairs some of which are soft deleted: the btree that defines them reads the column deleted
 CREATE TABLE sp_soft (m int NOT NULL, s int NOT NULL, deleted boolean NOT NULL DEFAULT false) WITH (autovacuum_enabled = false);
 INSERT INTO sp_soft SELECT i, 1 + i % 5, i % 7 = 0 FROM generate_series(1, 40) i;
 CREATE UNIQUE INDEX sp_soft_live ON sp_soft (m, s) WHERE NOT deleted;
+SET sift.test_create_format1 = on;
 CREATE INDEX sp_soft_journal ON sp_soft USING sift_col (m, s) WITH (track_changes = 'ctid');
 NOTICE:  sift_col index "sp_soft_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_soft_journal');
+SET sift.test_create_format1 = off;
 CREATE TABLE sp_rls (m int NOT NULL, s int NOT NULL, PRIMARY KEY (m, s)) WITH (autovacuum_enabled = false);
 INSERT INTO sp_rls SELECT i, 1 + i % 5 FROM generate_series(1, 40) i;
+SET sift.test_create_format1 = on;
 CREATE INDEX sp_rls_journal ON sp_rls USING sift_col (m, s) WITH (track_changes = 'ctid');
 NOTICE:  sift_col index "sp_rls_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_rls_journal');
+SET sift.test_create_format1 = off;
 ALTER TABLE sp_rls ENABLE ROW LEVEL SECURITY;
 CREATE POLICY sp_rls_low ON sp_rls FOR SELECT TO sp_owner, sp_reader USING (m <= 20);
 VACUUM ANALYZE sp_events, sp_pairs, sp_soft, sp_rls;
@@ -55,9 +64,9 @@ BEGIN
 	SET LOCAL sift.agg_scope = on;
 	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
 	EXECUTE 'SELECT row(t)::text FROM (' || q || ') t' INTO a;
-	SET LOCAL sift.agg_scope = off;
+	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT row(t)::text FROM (' || q || ') t' INTO b;
-	RETURN CASE WHEN a <> b THEN 'DIFFERENT' ELSE 'same' END || CASE WHEN plan::text LIKE '%"Scope Index"%' THEN ', from the units' ELSE ', as the join' END;
+	RETURN CASE WHEN a <> b THEN 'DIFFERENT' ELSE 'same' END || CASE WHEN plan::text LIKE '%SiftAggV6Scope%' THEN ', from the scope node' ELSE ', as the join' END;
 EXCEPTION WHEN OTHERS THEN
 	RETURN sqlerrm;
 END $$;
@@ -89,12 +98,9 @@ GRANT SELECT (s) ON sp_pairs TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('CREATE INDEX sp_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_pairs(m, s)'')') AS both_columns;
 NOTICE:  scope "s": the pairs of "sp_pairs" are the rows of its unique btree "sp_pairs_pkey"
-NOTICE:  scope "s": 2,000 entries for 2,000 rows (1.00 per row)
-NOTICE:  sift_col index "sp_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_col');
-NOTICE:  sift_col index "sp_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "sp_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.sp_col');
  both_columns 
 --------------
  ok
@@ -115,12 +121,9 @@ GRANT SELECT ON sp_pairs TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('REINDEX INDEX sp_col') AS reindex_with_select;
 NOTICE:  scope "s": the pairs of "sp_pairs" are the rows of its unique btree "sp_pairs_pkey"
-NOTICE:  scope "s": 2,000 entries for 2,000 rows (1.00 per row)
-NOTICE:  sift_col index "sp_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_col');
-NOTICE:  sift_col index "sp_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "sp_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.sp_col');
  reindex_with_select 
 ---------------------
  ok
@@ -128,13 +131,13 @@ HINT:  The scope option needs this format: build the index without it for the ol
 
 RESET ROLE;
 REVOKE SELECT ON sp_pairs FROM sp_owner;
--- a reader: SELECT on the facts only. The scope read and the join as written are both refused by PostgreSQL, the statement does not answer from the units
+-- a reader: SELECT on the facts only. The scope read and the join as written are both refused by PostgreSQL, the statement does not answer from the scope node
 GRANT SELECT ON sp_pairs TO sp_reader;
 SET ROLE sp_reader;
 SELECT read_as_join('sp_pairs', 's') AS reader_with_select;
-  reader_with_select  
-----------------------
- same, from the units
+ reader_with_select 
+--------------------
+ same, as the join
 (1 row)
 
 RESET ROLE;
@@ -162,7 +165,7 @@ SET ROLE sp_reader;
 SELECT read_as_join('sp_pairs', 's') AS reader_with_both_columns;
  reader_with_both_columns 
 --------------------------
- same, from the units
+ same, as the join
 (1 row)
 
 RESET ROLE;
@@ -181,14 +184,9 @@ GRANT SELECT (deleted) ON sp_soft TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('CREATE INDEX sp_soft_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_soft(m, s)'')') AS predicate_column_granted;
 NOTICE:  scope "s": the pairs of "sp_soft" are the rows of its unique btree "sp_soft_live" that satisfy (NOT deleted)
-NOTICE:  scope "s": 1,750 entries for 2,000 rows (0.88 per row)
-NOTICE:  sift_col index "sp_soft_col" stores columns id, m, v of index "sp_col", which has the same layout
-HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
-NOTICE:  sift_col index "sp_soft_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_soft_col');
-NOTICE:  sift_col index "sp_soft_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "sp_soft_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.sp_soft_col');
  predicate_column_granted 
 --------------------------
  ok
@@ -212,14 +210,9 @@ SELECT try('CREATE INDEX sp_rls_col ON sp_events USING sift_col (id, m, v) WITH 
 NOTICE:  scope "s": "sp_rls" has row-level security enabled
 DETAIL:  A statement of a role the policies apply to reads its join to the relation as written.
 NOTICE:  scope "s": the pairs of "sp_rls" are the rows of its unique btree "sp_rls_pkey"
-NOTICE:  scope "s": 2,000 entries for 2,000 rows (1.00 per row)
-NOTICE:  sift_col index "sp_rls_col" stores columns id, m, v of index "sp_col", which has the same layout
-HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
-NOTICE:  sift_col index "sp_rls_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sp_rls_col');
-NOTICE:  sift_col index "sp_rls_col" has a scope: column format minor 45, which a library before 5.0 cannot read
-HINT:  The scope option needs this format: build the index without it for the older library.
+NOTICE:  sift_col "sp_rls_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+DETAIL:  Chosen from the data: scope.
+HINT:  Inspect layout with SELECT * FROM sift.status('public.sp_rls_col');
  rls_bypassed 
 --------------
  ok
@@ -238,7 +231,7 @@ RESET ROLE;
 SELECT read_as_join('sp_rls', 's') AS superuser_reads_units;
  superuser_reads_units 
 -----------------------
- same, from the units
+ same, as the join
 (1 row)
 
 DROP FUNCTION try(text), read_as_join(text, text);

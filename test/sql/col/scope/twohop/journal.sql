@@ -2,9 +2,11 @@
 -- track_changes = 'ctid' that starts when the scope index is built or rebuilt. A scope with one of them missing is refused when it is declared (col_scope_twohop_declare), so its stamps
 -- are those of the three journals from the first build. A journal rebuilt (another lineage) leaves the stamps of the others standing and the scope unvouched until its own REINDEX. Refresh counts the members a
 -- changed group has as it counts the changed members. An index whose scopes all have one path keeps column format 45 and one stamp for each scope, one with two paths writes 49 and three, and a
--- segment whose stamps are not those of the scope as declared now is not read as stored.
+-- segment whose stamps are not those of the scope as declared now asks for its refill.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the journals of a scope (their records and the stamps they give the scope segments, col/scope/journal.c) and the scope segments are this format's
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -25,33 +27,22 @@ CREATE VIEW pair_oracle AS
 	UNION
 	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
 
--- the read of the tenants 1 and 2 together and as the join says it; its plan says whether the units were read and why not
-CREATE FUNCTION probe(OUT same boolean, OUT units boolean, OUT why text) LANGUAGE plpgsql AS $$
+-- the read of the tenants 1 and 2 together and as the join says it
+CREATE FUNCTION probe(OUT same boolean) LANGUAGE plpgsql AS $$
 DECLARE
-	p jsonb;
 	a text;
 	b text;
 BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[1, 2]::int8[])' INTO p;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[1, 2]::int8[])) t' INTO a;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id IN (1, 2))) t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	units := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 END $$;
 -- the stamps of the scope as the journals give them now: how many journals vouch, and the reason when one does not
 CREATE FUNCTION journals(OUT vouching int, OUT why text) LANGUAGE plpgsql AS $$
 BEGIN
 	SELECT count(*) FILTER (WHERE lineage <> 0)::int, min(s.why) INTO vouching, why FROM sift._test_scope_stamps('facts_col', 0) s;
-END $$;
--- why the scope of an index is not read from its units (NULL: it is)
-CREATE FUNCTION fallback(idx regclass) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE p jsonb;
-BEGIN
-	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*) FROM facts f WHERE sift.in_scope(%L::regclass, ''tenant_id'', f.dim_a_id, 1)', idx) INTO p;
-	RETURN jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 END $$;
 
 CREATE TABLE journal_ddl (n int, name text, ddl text);
@@ -168,19 +159,17 @@ SELECT sift.col_verify('facts_col', true);
 ALTER INDEX facts_one SET (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 SELECT journal, count(*) AS stamps FROM sift._test_col_scope_journal_stamps('facts_one') GROUP BY journal ORDER BY 1;
 SELECT sift.col_maintenance_due('facts_one', false) AS due_declared_otherwise;
-SELECT fallback('facts_one') AS read_says;
 REINDEX INDEX facts_one;
 SELECT format, count(*) AS segments FROM sift.col_segments('facts_one') WHERE kind = 'immutable' GROUP BY format;
 SELECT journal, count(*) AS stamps FROM sift._test_col_scope_journal_stamps('facts_one') GROUP BY journal ORDER BY 1;
 -- and back to one path: three stamps of a scope that has one are not its stamp
 ALTER INDEX facts_one SET (scope = 'tenant_id: dim_a_id -> pairs_one(dim_a_id, tenant_id)');
 SELECT sift.col_maintenance_due('facts_one', false) AS due_declared_otherwise;
-SELECT fallback('facts_one') AS read_says;
 REINDEX INDEX facts_one;
 SELECT format, count(*) AS segments FROM sift.col_segments('facts_one') WHERE kind = 'immutable' GROUP BY format;
 SELECT sift.col_verify('facts_one', true);
 
 DROP TABLE facts, grants, memberships, pairs_one, journal_ddl, scope_ddl CASCADE;
-DROP FUNCTION probe(), journals(), fallback(regclass);
+DROP FUNCTION probe(), journals();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -1,12 +1,13 @@
--- The read of a scope of two paths (the pairs of a member in a table of grants, and those of its groups through a table of memberships) runs the units or the join as written, whichever costs less
--- for the pairs that changed since the units were filled: the price of the join counts the plan that makes the pairs (a view that unions the grants of a member with the join of the grants of a
--- group to its members), and the rows a changed member has come from the statistics of its column. Table-driven: each state of the pairs (they accumulate) read for a key with many members and for
--- one with few; the arm each read runs and whether its rows are the join's. Counts only, no timings (200,000 facts).
+-- The read of a scope of two paths (the pairs of a member in a table of grants, and those of its groups through a table of memberships) through the scope summary, with the pairs that changed since
+-- it as its changes, or through the join when the summary is not exact: the pairs are a view that unions the grants of a member with the join of the grants of a group to its members. Table-driven:
+-- each state of the pairs (they accumulate) read for a key with many members and for one with few; the Scope Read of each read and whether its rows are the join's. Counts only, no timings
+-- (200,000 facts).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.test_scope_patch = off;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int) WITH (autovacuum_enabled = false);
 CREATE TABLE memberships (id serial PRIMARY KEY, group_id int NOT NULL, dim_a_id int NOT NULL) WITH (autovacuum_enabled = false);
@@ -23,9 +24,16 @@ INSERT INTO memberships (group_id, dim_a_id) SELECT 100 + t * 2 + j, 1 + (t * 10
 CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);
 CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id);
 CREATE UNIQUE INDEX memberships_by_group ON memberships (group_id, dim_a_id);
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_dim_a ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
+SET sift.test_create_format1 = on;
 CREATE INDEX memberships_by_dim_a ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, 1 + (i::bigint * 7919) % 20000, date '2025-01-01' + i % 365, 'k' || i % 7, i % 100 FROM generate_series(1, 200000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, amount)
@@ -36,10 +44,10 @@ CREATE VIEW tenant_pairs AS
 	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id;
 VACUUM (FREEZE, ANALYZE) facts, grants, memberships;
 
--- the arm the read of a key runs (scope or join) and whether its rows are those of the join as written
+-- the Scope Read of the read of a key and whether its rows are those of the join as written
 CREATE FUNCTION read_key(k int, OUT arm text, OUT same boolean) LANGUAGE plpgsql AS $$
 DECLARE
-	q text := format('SELECT e.kind, sum(e.amount), count(*) FROM facts e WHERE e.dim_a_id IN (SELECT member FROM tenant_pairs WHERE tenant_id = %s) GROUP BY 1', k);
+	q text := format('SELECT sum(e.amount), count(*) FROM facts e JOIN tenant_pairs t ON t.member = e.dim_a_id WHERE t.tenant_id = %s', k);
 	p jsonb;
 	a text;
 	b text;
@@ -50,7 +58,7 @@ BEGIN
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (%s) t', q) INTO b;
 	SET LOCAL sift.enable_agg = on;
-	arm := CASE WHEN jsonb_path_exists(p, '$.**."Scope Units Read"') THEN 'scope' ELSE 'join' END;
+	arm := coalesce(jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}', 'not a scope read');
 	same := a = b;
 END $$;
 

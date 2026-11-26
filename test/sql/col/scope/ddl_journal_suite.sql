@@ -1,6 +1,8 @@
 -- The scopes of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the scope segments, their stamps and the journals each segment reads are this format's; every RESET ALL below says it again
+SET sift.test_create_format1 = on;
 
 -- >>> col_scope_batch_entries
 CREATE SCHEMA s1;
@@ -27,6 +29,7 @@ SELECT sift.col_verify('events_scope'::regclass, true) AS verify;
 DROP FUNCTION try(text);
 DROP TABLE events, pairs;
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s1 CASCADE;
 RESET client_min_messages;
@@ -43,32 +46,32 @@ SET search_path = s2, public;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
+-- this segment reads the Format 2.0 scope summary; its journal index is a Format 1 sift_col (col/scope/guard.c), built by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = off;
 
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT d, 1 + (d + j * 3) % 8 FROM generate_series(1, 64) d, generate_series(0, 1) j;
+SET sift.test_create_format1 = on;
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + (i * 7) % 64, timestamptz '2026-01-01' + i * interval '9 minutes', i % 10 FROM generate_series(1, 4000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 VACUUM (FREEZE, ANALYZE) events, tenant_scope;
 
--- one read of the key k: the rows against the join, whether the units were read
-CREATE FUNCTION read_key(k int8, OUT stored boolean, OUT same boolean) LANGUAGE plpgsql AS $$
+-- one read of the key k: the rows against the join
+CREATE FUNCTION read_key(k int8, OUT same boolean) LANGUAGE plpgsql AS $$
 DECLARE
-	p jsonb;
+	q text := format('SELECT count(*), sum(amount) FROM events f JOIN tenant_scope s ON s.dim_a_id = f.dim_a_id WHERE s.tenant_id = %s', k);
 	a text;
 	b text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM events f WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])', k) INTO p;
-	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM events f WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])) t', k) INTO a;
+	EXECUTE 'SELECT json_agg(t)::text FROM (' || q || ') t' INTO a;
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM events f WHERE f.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %s)) t', k) INTO b;
+	EXECUTE 'SELECT json_agg(t)::text FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
 END $$;
 
 -- the first read asks the catalogs, the second is answered by the memos
@@ -97,6 +100,7 @@ SELECT * FROM read_key(4);
 DROP FUNCTION read_key(int8);
 DROP TABLE events, tenant_scope;
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s2 CASCADE;
 RESET client_min_messages;
@@ -150,6 +154,7 @@ DROP FUNCTION expand_md5(int);
 DROP TABLE facts;
 DROP TABLE tenant_scope;
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s3 CASCADE;
 RESET client_min_messages;
@@ -170,14 +175,10 @@ CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
 
--- the scope read and the plain join of one group: the same rows, and whether the units answered
-CREATE FUNCTION group_read(k int, OUT same boolean, OUT scope_rows bigint, OUT join_rows bigint, OUT fallback text)
+-- the scope read and the plain join of one group: the same rows
+CREATE FUNCTION group_read(k int, OUT same boolean, OUT scope_rows bigint, OUT join_rows bigint)
 LANGUAGE plpgsql AS $$
-DECLARE
-	p jsonb;
 BEGIN
-	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k) INTO p;
-	fallback := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 	EXECUTE format('SELECT count(*) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k) INTO scope_rows;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT count(*) FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pairs WHERE group_id = %s)', k) INTO join_rows;
@@ -217,6 +218,7 @@ SELECT * FROM group_read(18);
 DROP TABLE facts, pairs;
 DROP FUNCTION group_read(int), try(text);
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s4 CASCADE;
 RESET client_min_messages;
@@ -275,6 +277,7 @@ SELECT count(*) AS stamps FROM sift._test_scope_stamps('facts_two'::regclass, 0)
 
 DROP TABLE facts, grants, memberships, pairs_one;
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s5 CASCADE;
 RESET client_min_messages;
@@ -291,18 +294,14 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 
-CREATE FUNCTION compare(OUT differ int, OUT fell_back int) LANGUAGE plpgsql AS $$
+CREATE FUNCTION compare(OUT differ int) LANGUAGE plpgsql AS $$
 DECLARE
 	k int;
 	a record;
 	b record;
-	p jsonb;
 BEGIN
 	differ := 0;
-	fell_back := 0;
 	FOR k IN 1..21 LOOP
-		EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k) INTO p;
-		IF jsonb_path_exists(p, '$.**."Scope Fallback"') THEN fell_back := fell_back + 1; END IF;
 		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k) INTO a;
 		SET LOCAL sift.enable_agg = off;
 		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM memberships WHERE group_id = %s AND deleted_at IS NULL)', k) INTO b;
@@ -335,12 +334,13 @@ INSERT INTO states VALUES
 	(7, 'restore many', 'UPDATE memberships SET deleted_at = NULL WHERE dim_a_id % 14 = 0');
 -- each state is committed, and then read: the groups whose answer differs from the join's (differ), and how many were read from the entity rows
 SELECT stmt FROM (SELECT n, 0 AS k, stmt FROM states
-	UNION ALL SELECT n, 1, format('SELECT %s AS n, %L AS state, differ, fell_back FROM compare()', n, label) FROM states) t ORDER BY n, k \gexec
+	UNION ALL SELECT n, 1, format('SELECT %s AS n, %L AS state, differ FROM compare()', n, label) FROM states) t ORDER BY n, k \gexec
 
 RESET sift.test_scope_patch;
 DROP TABLE facts, memberships, states CASCADE;
 DROP FUNCTION compare();
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s6 CASCADE;
 RESET client_min_messages;

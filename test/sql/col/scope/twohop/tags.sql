@@ -1,15 +1,15 @@
 -- The journal of the via relation of a scope of two paths tags each record with the group of its row, so that a read of some keys is not charged for the memberships that changed in the groups
--- of others: the stored entries of a member whose group has no pair with the key read are still right for it, and a read of that key lists no changed member for them. The groups of a key are those
--- the joined relation lists for it now and those its journal says changed since the stamp (a group granted to the key and then left changes the dim_a_id values of the key as the grant does). A journal
--- made before the scope (an older one, of no tags) is tagged by the scope index that finds it. Table-driven: each state (they accumulate) read for each key: the rows are the join's, the changed
--- dim_a_id values and the patched ones are those of the pairs that changed in the key. Counts only, no timings.
+-- of others: the scope summary reads with the changes since it (Scope Cube: delta) only the keys whose groups changed. The groups of a key are those the joined relation lists for it now and those
+-- its journal says changed since the summary (a group granted to the key and then left changes the dim_a_id values of the key as the grant does). A journal made before the scope (an older one, of
+-- no tags) is tagged by the scope index that finds it. Table-driven: each state (they accumulate) read for each key: the rows are the join's, and the keys read with the delta cube are those whose
+-- pairs changed. Counts only, no timings.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 CREATE TABLE grants (id serial PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int) WITH (autovacuum_enabled = false);
 CREATE UNIQUE INDEX grants_direct ON grants (dim_a_id, tenant_id);
@@ -27,38 +27,45 @@ CREATE VIEW pair_oracle AS
 	SELECT dim_a_id AS member, tenant_id FROM grants WHERE dim_a_id IS NOT NULL
 	UNION
 	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id;
+-- a journal index is a Format 1 sift_col (col/scope/guard.c): the testing library builds one by hand as the CREATE INDEX of a scope does
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
+SET sift.test_create_format1 = on;
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 -- the journal of the memberships exists before the scope does, with records of no tag
+SET sift.test_create_format1 = on;
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
+SET sift.test_create_format1 = off;
 SELECT sift._test_conn_enable('memberships_by_member') <> 0 AS journal_without_tags;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
 VACUUM (FREEZE, ANALYZE) facts;
 
--- one read of the key: the rows against the join, whether the units were read, and the dim_a_id values the read listed as changed and patched
-CREATE FUNCTION read_key(k int8, OUT same boolean, OUT stored boolean, OUT changed int, OUT patched int) LANGUAGE plpgsql AS $$
+-- one read of the key: the rows against the heap, the Scope Read and the Scope Cube of the node
+CREATE FUNCTION read_key(k int8, OUT same boolean, OUT route text, OUT cube text) LANGUAGE plpgsql AS $$
 DECLARE
+	q text := format('SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.member = f.dim_a_id WHERE o.tenant_id = %s', k);
 	p jsonb;
 	a text;
 	b text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])', k) INTO p;
-	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[%s]::int8[])) t', k) INTO a;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT json_agg(t)::text FROM (' || q || ') t' INTO a;
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('SELECT json_agg(t)::text FROM (SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id = %s)) t', k) INTO b;
+	EXECUTE 'SELECT json_agg(t)::text FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	changed := coalesce((jsonb_path_query_first(p, '$.**."Scope Changed Keys"') #>> '{}')::int, 0);
-	patched := coalesce((jsonb_path_query_first(p, '$.**."Scope Patched Keys"') #>> '{}')::int, 0);
+	route := jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
+	cube := jsonb_path_query_first(p, '$.**."Scope Cube"') #>> '{}';
 END $$;
 
--- the line of a state: the rows are the join's and the units are read for every key 1..6; the dim_a_id values changed and patched for each key
-CREATE FUNCTION state_line(OUT same boolean, OUT stored boolean, OUT changed int[], OUT patched int[]) LANGUAGE plpgsql AS $$
+-- the line of a state: the rows are the join's and every read of the keys 1..6 is a scope read; the Scope Cube of each key (d: delta, c: clean)
+CREATE FUNCTION state_line(OUT same boolean, OUT scope boolean, OUT cubes text) LANGUAGE plpgsql AS $$
 BEGIN
-	SELECT bool_and(r.same), bool_and(r.stored), array_agg(r.changed ORDER BY k.k), array_agg(r.patched ORDER BY k.k) INTO same, stored, changed, patched
+	SELECT bool_and(r.same), bool_and(r.route IS NOT NULL), string_agg(CASE r.cube WHEN 'delta' THEN 'd' WHEN 'clean' THEN 'c' ELSE '-' END, '' ORDER BY k.k) INTO same, scope, cubes
 	FROM generate_series(1, 6) k(k), LATERAL read_key(k.k) r;
 END $$;
 
@@ -76,7 +83,7 @@ SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state',
 
 SELECT sift.col_verify('facts_col', true);
 
--- a refresh makes the stamps current: no key lists a changed dim_a_id
+-- the maintenance step, and the reads again
 SELECT sift.col_maintain('facts_col') AS rewritten;
 SELECT * FROM state_line();
 DROP TABLE states;

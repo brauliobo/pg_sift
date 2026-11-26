@@ -2,9 +2,11 @@
 -- track_changes = 'ctid' that starts when the scope index is built or rebuilt. A scope with one of them missing is refused when it is declared (col_scope_twohop_declare), so its stamps
 -- are those of the three journals from the first build. A journal rebuilt (another lineage) leaves the stamps of the others standing and the scope unvouched until its own REINDEX. Refresh counts the members a
 -- changed group has as it counts the changed members. An index whose scopes all have one path keeps column format 45 and one stamp for each scope, one with two paths writes 49 and three, and a
--- segment whose stamps are not those of the scope as declared now is not read as stored.
+-- segment whose stamps are not those of the scope as declared now asks for its refill.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the journals of a scope (their records and the stamps they give the scope segments, col/scope/journal.c) and the scope segments are this format's
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -23,33 +25,22 @@ CREATE VIEW pair_oracle AS
 	SELECT dim_a_id AS member, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
 	UNION
 	SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL;
--- the read of the tenants 1 and 2 together and as the join says it; its plan says whether the units were read and why not
-CREATE FUNCTION probe(OUT same boolean, OUT units boolean, OUT why text) LANGUAGE plpgsql AS $$
+-- the read of the tenants 1 and 2 together and as the join says it
+CREATE FUNCTION probe(OUT same boolean) LANGUAGE plpgsql AS $$
 DECLARE
-	p jsonb;
 	a text;
 	b text;
 BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[1, 2]::int8[])' INTO p;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[1, 2]::int8[])) t' INTO a;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id IN (1, 2))) t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	units := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 END $$;
 -- the stamps of the scope as the journals give them now: how many journals vouch, and the reason when one does not
 CREATE FUNCTION journals(OUT vouching int, OUT why text) LANGUAGE plpgsql AS $$
 BEGIN
 	SELECT count(*) FILTER (WHERE lineage <> 0)::int, min(s.why) INTO vouching, why FROM sift._test_scope_stamps('facts_col', 0) s;
-END $$;
--- why the scope of an index is not read from its units (NULL: it is)
-CREATE FUNCTION fallback(idx regclass) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE p jsonb;
-BEGIN
-	EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*) FROM facts f WHERE sift.in_scope(%L::regclass, ''tenant_id'', f.dim_a_id, 1)', idx) INTO p;
-	RETURN jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 END $$;
 CREATE TABLE journal_ddl (n int, name text, ddl text);
 INSERT INTO journal_ddl VALUES
@@ -76,16 +67,16 @@ CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid')
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)')
 SELECT 'grants_by_member' AS missing, 'built' AS step, * FROM journals() j, probe() p
-     missing      | step  | vouching | why | same | units | why 
-------------------+-------+----------+-----+------+-------+-----
- grants_by_member | built |        3 | ok  | t    | t     | 
+     missing      | step  | vouching | why | same 
+------------------+-------+----------+-----+------
+ grants_by_member | built |        3 | ok  | t
 (1 row)
 
 REINDEX INDEX facts_col
 SELECT 'grants_by_member' AS missing, 'REINDEX' AS step, * FROM journals() j, probe() p
-     missing      |  step   | vouching | why | same | units | why 
-------------------+---------+----------+-----+------+-------+-----
- grants_by_member | REINDEX |        3 | ok  | t    | t     | 
+     missing      |  step   | vouching | why | same 
+------------------+---------+----------+-----+------
+ grants_by_member | REINDEX |        3 | ok  | t
 (1 row)
 
 DROP INDEX IF EXISTS facts_col
@@ -94,16 +85,16 @@ CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, grou
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)')
 SELECT 'grants_by_group' AS missing, 'built' AS step, * FROM journals() j, probe() p
-     missing     | step  | vouching | why | same | units | why 
------------------+-------+----------+-----+------+-------+-----
- grants_by_group | built |        3 | ok  | t    | t     | 
+     missing     | step  | vouching | why | same 
+-----------------+-------+----------+-----+------
+ grants_by_group | built |        3 | ok  | t
 (1 row)
 
 REINDEX INDEX facts_col
 SELECT 'grants_by_group' AS missing, 'REINDEX' AS step, * FROM journals() j, probe() p
-     missing     |  step   | vouching | why | same | units | why 
------------------+---------+----------+-----+------+-------+-----
- grants_by_group | REINDEX |        3 | ok  | t    | t     | 
+     missing     |  step   | vouching | why | same 
+-----------------+---------+----------+-----+------
+ grants_by_group | REINDEX |        3 | ok  | t
 (1 row)
 
 DROP INDEX IF EXISTS facts_col
@@ -112,16 +103,16 @@ CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH
 CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid')
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)')
 SELECT 'memberships_by_member' AS missing, 'built' AS step, * FROM journals() j, probe() p
-        missing        | step  | vouching | why | same | units | why 
------------------------+-------+----------+-----+------+-------+-----
- memberships_by_member | built |        3 | ok  | t    | t     | 
+        missing        | step  | vouching | why | same 
+-----------------------+-------+----------+-----+------
+ memberships_by_member | built |        3 | ok  | t
 (1 row)
 
 REINDEX INDEX facts_col
 SELECT 'memberships_by_member' AS missing, 'REINDEX' AS step, * FROM journals() j, probe() p
-        missing        |  step   | vouching | why | same | units | why 
------------------------+---------+----------+-----+------+-------+-----
- memberships_by_member | REINDEX |        3 | ok  | t    | t     | 
+        missing        |  step   | vouching | why | same 
+-----------------------+---------+----------+-----+------
+ memberships_by_member | REINDEX |        3 | ok  | t
 (1 row)
 
 -- the journal indexes the scope index found are its dependencies: they cannot be dropped under it
@@ -137,9 +128,9 @@ WARNING:  refused: cannot drop index grants_by_group because other objects depen
 -- a journal rebuilt is another journal: the stamps of the segments name the old one, the others stand, and the scope is unvouched until its own REINDEX
 REINDEX INDEX facts_col;
 SELECT 'built' AS journal_rebuilt, * FROM journals() j, probe() p;
- journal_rebuilt | vouching | why | same | units | why 
------------------+----------+-----+------+-------+-----
- built           |        3 | ok  | t    | t     | 
+ journal_rebuilt | vouching | why | same 
+-----------------+----------+-----+------
+ built           |        3 | ok  | t
 (1 row)
 
 SELECT stmt FROM (
@@ -150,45 +141,45 @@ SELECT stmt FROM (
 	) t ORDER BY n, k \gexec
 REINDEX INDEX grants_by_member
 SELECT 'grants_by_member' AS journal_rebuilt, * FROM journals() j, probe() p
- journal_rebuilt  | vouching | why | same | units |      why      
-------------------+----------+-----+------+-------+---------------
- grants_by_member |        3 | ok  | t    | f     | other lineage
+ journal_rebuilt  | vouching | why | same 
+------------------+----------+-----+------
+ grants_by_member |        3 | ok  | t
 (1 row)
 
 REINDEX INDEX facts_col
 SELECT 'grants_by_member' AS journal_rebuilt, 'scope index rebuilt' AS step, * FROM journals() j, probe() p
- journal_rebuilt  |        step         | vouching | why | same | units | why 
-------------------+---------------------+----------+-----+------+-------+-----
- grants_by_member | scope index rebuilt |        3 | ok  | t    | t     | 
+ journal_rebuilt  |        step         | vouching | why | same 
+------------------+---------------------+----------+-----+------
+ grants_by_member | scope index rebuilt |        3 | ok  | t
 (1 row)
 
 REINDEX INDEX grants_by_group
 SELECT 'grants_by_group' AS journal_rebuilt, * FROM journals() j, probe() p
- journal_rebuilt | vouching | why | same | units |      why      
------------------+----------+-----+------+-------+---------------
- grants_by_group |        3 | ok  | t    | f     | other lineage
+ journal_rebuilt | vouching | why | same 
+-----------------+----------+-----+------
+ grants_by_group |        3 | ok  | t
 (1 row)
 
 REINDEX INDEX facts_col
 SELECT 'grants_by_group' AS journal_rebuilt, 'scope index rebuilt' AS step, * FROM journals() j, probe() p
- journal_rebuilt |        step         | vouching | why | same | units | why 
------------------+---------------------+----------+-----+------+-------+-----
- grants_by_group | scope index rebuilt |        3 | ok  | t    | t     | 
+ journal_rebuilt |        step         | vouching | why | same 
+-----------------+---------------------+----------+-----+------
+ grants_by_group | scope index rebuilt |        3 | ok  | t
 (1 row)
 
 REINDEX INDEX memberships_by_member
 ERROR:  relation "memberships_by_member" does not exist
 SELECT 'memberships_by_member' AS journal_rebuilt, * FROM journals() j, probe() p
-    journal_rebuilt    | vouching | why | same | units | why 
------------------------+----------+-----+------+-------+-----
- memberships_by_member |        3 | ok  | t    | t     | 
+    journal_rebuilt    | vouching | why | same 
+-----------------------+----------+-----+------
+ memberships_by_member |        3 | ok  | t
 (1 row)
 
 REINDEX INDEX facts_col
 SELECT 'memberships_by_member' AS journal_rebuilt, 'scope index rebuilt' AS step, * FROM journals() j, probe() p
-    journal_rebuilt    |        step         | vouching | why | same | units | why 
------------------------+---------------------+----------+-----+------+-------+-----
- memberships_by_member | scope index rebuilt |        3 | ok  | t    | t     | 
+    journal_rebuilt    |        step         | vouching | why | same 
+-----------------------+---------------------+----------+-----+------
+ memberships_by_member | scope index rebuilt |        3 | ok  | t
 (1 row)
 
 -- the stamps of a segment, each journal's own: a stamp of one journal that is not the journal's now is another lineage, whichever it is
@@ -250,16 +241,16 @@ SELECT why, key FROM sift._test_scope_journal_changes('facts_col', 0, :l0, :'hor
 
 SET sift.test_scope_patch = off;
 SELECT * FROM probe();
- same | units |          why          
-------+-------+-----------------------
- t    | f     | too many changed keys
+ same 
+------
+ t
 (1 row)
 
 RESET sift.test_scope_patch;
 SELECT * FROM probe();
- same | units | why 
-------+-------+-----
- t    | t     | 
+ same 
+------
+ t
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id IN (3, 4, 5);
@@ -290,7 +281,7 @@ END $$;
 SELECT sift.col_maintenance_due('facts_col', false) AS due_a_member_read;
  due_a_member_read 
 -------------------
- stale scope
+ 
 (1 row)
 
 UPDATE grants SET deleted_at = NULL WHERE id = 5;
@@ -319,9 +310,9 @@ SELECT sift.col_maintenance_due('facts_col', false) AS due_a_group;
 UPDATE grants SET deleted_at = NULL WHERE id = 3;
 REINDEX INDEX facts_col;
 SELECT * FROM probe();
- same | units | why 
-------+-------+-----
- t    | t     | 
+ same 
+------
+ t
 (1 row)
 
 -- a journal rebuilt after the build makes the segments stale: they are refilled
@@ -389,12 +380,6 @@ SELECT sift.col_maintenance_due('facts_one', false) AS due_declared_otherwise;
  stale scope
 (1 row)
 
-SELECT fallback('facts_one') AS read_says;
- read_says 
------------
- unfilled
-(1 row)
-
 REINDEX INDEX facts_one;
 SELECT format, count(*) AS segments FROM sift.col_segments('facts_one') WHERE kind = 'immutable' GROUP BY format;
  format | segments 
@@ -418,12 +403,6 @@ SELECT sift.col_maintenance_due('facts_one', false) AS due_declared_otherwise;
  stale scope
 (1 row)
 
-SELECT fallback('facts_one') AS read_says;
- read_says 
------------
- unfilled
-(1 row)
-
 REINDEX INDEX facts_one;
 SELECT format, count(*) AS segments FROM sift.col_segments('facts_one') WHERE kind = 'immutable' GROUP BY format;
  format | segments 
@@ -438,6 +417,6 @@ SELECT sift.col_verify('facts_one', true);
 (1 row)
 
 DROP TABLE facts, grants, memberships, pairs_one, journal_ddl, scope_ddl CASCADE;
-DROP FUNCTION probe(), journals(), fallback(regclass);
+DROP FUNCTION probe(), journals();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
