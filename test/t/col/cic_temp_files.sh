@@ -3,9 +3,10 @@
 # The second pass of CREATE INDEX CONCURRENTLY of a scope index sorts the rows it replicates through temporary files, so the index keeps only the segments it ends with (the blocks of intermediate runs, and of the
 # scope segments of the first pass that the second replaces, stayed in the file until a VACUUM), and no temporary file outlives the statement, whether it ends, fails, is cancelled or its backend is terminated.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
-plan 7
+plan 8
 
 node_init ct 57 "autovacuum = off
+sift.test_create_format1 = on
 sift.async_maintenance = off
 temp_file_limit = -1"
 node_start ct || bail "start failed"
@@ -54,6 +55,7 @@ wait_for settled 120
 check "a terminated build leaves no temporary file" test "$(tmpfiles)" == 0
 sql ct "DROP INDEX IF EXISTS ev_cc" >/dev/null
 cic >/dev/null
-check "the next concurrent build is sound" test "$(sql ct "SELECT count(*) FROM sift.col_scope_verify('ev_cc', 100)" | tail -n 1)" == 0
+check "the next concurrent build is sound" test "$(sql ct "SELECT count(*) FROM sift.col_scope_verify('ev_cc', 100) WHERE problem <> 'unverified'" | tail -n 1)" == 0
+check "... and holds every row of the table" sql ct "SELECT sift.col_verify('ev_cc', true)"
 
 finish
