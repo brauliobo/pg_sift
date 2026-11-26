@@ -88,7 +88,7 @@ area_try(SiftRowLockTable *t, bool make)
 	return a;
 }
 
-static SIFT_BACKEND_LOCAL MemoryContext area_cx;
+SIFT_BACKEND_LOCAL MemoryContext area_cx;
 
 /* The one area of the table, mapped for the life of the backend: made here when create and nobody has made it. NULL only where create and the server has no memory for it: the caller then keeps the lock in the lock manager of PostgreSQL */
 static dsa_area *
