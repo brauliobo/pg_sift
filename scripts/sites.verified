@@ -143,3 +143,4 @@ src/table/v1/rel.c	sift_v1_rel_open	guarded	the OID is the one of a relation the
 src/col/f2/proj/sql.c	open_listed	guarded	get_rel_relkind gives the NUL kind for a relation that is gone: the function returns before any other call, and the open that follows is try_relation_open, which gives NULL, tested
 src/core/inspect.c	sift_require_acl	guarded	get_rel_relkind gives the NUL kind for a relation that is gone: the function raises the error of a missing relation (sift_rel_missing) before it reads the kind any further
 src/col/v1/track/track.c	sift_col_swap_origin	guarded	the NULL of try_relation_open is tested in the condition that returns InvalidOid
+src/agg/plan/flat_rewrite.c	key_equality	guarded	the type is the vartype of a Var of the statement being planned, which the parser resolved; lookup_type_cache raises for an unknown type, it never returns NULL, and an InvalidOid eq_opr never equals the opno of the operator
