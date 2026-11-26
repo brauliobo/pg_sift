@@ -47,7 +47,8 @@ struct SiftF2PartPin;
 struct SiftExtVec;
 extern void sift_part_wide_extents(Relation rel, struct SiftF2Store *store, struct SiftF2PartPin *pin, struct SiftExtVec *v);
 
-/* The extents of the wide values the dropped parts own, appended to the vector (release grown as needed); the count after the append */
+/* The extents of the wide values the dropped parts own, appended to the vector (release grown as needed); the count after the append. A remote part owns none (the tiering moves no part
+ * with wide values in blocks of the relation): its object is not read */
 extern int	sift_drop_wide_extents(Relation rel, struct SiftF2Store *store, uint32 part_id, const SiftPartDesc *parts, int np, const uint64 *gens, int ngens, SiftExtent **release, int nrelease);
 
 /* The visibility map bits of the vblocks the dropped parts had rows in, cleared before the commit that drops them (nothing for a sift_col index) */

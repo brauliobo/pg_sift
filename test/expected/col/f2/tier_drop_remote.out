@@ -1,0 +1,53 @@
+-- sift.drop_parts_before of a part that is in the object store reads nothing of the store: a remote part holds no wide values in blocks of the relation, so the drop under AccessExclusiveLock
+-- makes no request, and it succeeds when the object is gone (an expired bucket lifecycle, a store that is down).
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SELECT current_setting('data_directory') || '/s107_drop_remote' AS store \gset
+\set mk 'cat >/dev/null && rm -rf ' :store ' && mkdir -p ' :store
+COPY (SELECT 1) TO PROGRAM :'mk';
+CREATE TABLE ev (id int8, ts timestamp NOT NULL, v int, pad text) USING sift_table;
+INSERT INTO ev SELECT i, timestamp '2020-01-01' + i * interval '1 hour', i % 100, md5(i::text) FROM generate_series(1, 2000) i;
+VACUUM (FREEZE) ev;
+SELECT sift.set_tier_policy('ev', 'file://' || :'store', '30 days') AS tiered_policy;
+ tiered_policy 
+---------------
+ t
+(1 row)
+
+VACUUM ev;
+SELECT count(*) AS tiered FROM sift.tier_status;
+ tiered 
+--------
+      1
+(1 row)
+
+-- the objects and the local cache are gone
+SELECT current_setting('data_directory') || '/base/pgsql_tmp/pgsql_tmp_sift_tier.' AS cache \gset
+\set gone 'cat >/dev/null && rm -rf ' :store '/* ' :cache '*'
+COPY (SELECT 1) TO PROGRAM :'gone';
+SELECT parts_dropped, rows_dropped FROM sift.drop_parts_before('ev', timestamptz '2021-01-01');
+ parts_dropped | rows_dropped 
+---------------+--------------
+             1 |         2000
+(1 row)
+
+SELECT count(*) AS rows_left, count(*) FILTER (WHERE ts < timestamp '2021-01-01') AS old_rows FROM ev;
+ rows_left | old_rows 
+-----------+----------
+         0 |        0
+(1 row)
+
+SELECT count(*) AS problems FROM sift.check('ev');
+ problems 
+----------
+        0
+(1 row)
+
+DROP TABLE ev;
+\set rm 'cat >/dev/null && rm -rf ' :store
+COPY (SELECT 1) TO PROGRAM :'rm';
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

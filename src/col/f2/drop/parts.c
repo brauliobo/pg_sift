@@ -120,8 +120,12 @@ sift_drop_wide_extents(Relation rel, SiftF2Store *store, uint32 part_id, const S
 	sift_part_gen_idx_init(&by_gen, parts, np);
 	for (int i = 0; i < ngens && store->host->reclaim_dead_blobs != NULL; i++)
 	{
-		SiftF2PartPin *pin = sift_f2_pin_open(rel, store, sift_part_gen_idx_find(&by_gen, gens[i]), part_id);
+		const SiftPartDesc *d = sift_part_gen_idx_find(&by_gen, gens[i]);
+		SiftF2PartPin *pin;
 
+		if (d->ext_flags & SIFT_PART_EXT_REMOTE)
+			continue;
+		pin = sift_f2_pin_open(rel, store, d, part_id);
 		sift_part_wide_extents(rel, store, pin, &v);
 		sift_f2_pin_release(pin);
 	}
