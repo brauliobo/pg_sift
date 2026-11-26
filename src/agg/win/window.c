@@ -479,7 +479,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		!sift_v6_rel_sorted_by(p->src->reloid, p->src->is_table, atts, n))
 		return false;
 	sift_v6_source_scan_price(p->root, p->rel, p->src, 0, &open, &total);
-	total += cpu_tuple_cost * p->rel->rows + cpu_operator_cost * p->rel->rows * (spec.win.n_funcs + list_length(p->quals));
+	total += cpu_tuple_cost * rows + cpu_operator_cost * p->rel->rows * (spec.win.n_funcs + list_length(p->quals));
 	if (p->part_mode != WIN_EXACT)
 		total += cpu_operator_cost * p->rel->rows * 2.0 * (1 + spec.win.n_ord);
 	if (p->part_mode == WIN_REGROUP)
