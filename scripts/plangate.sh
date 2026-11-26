@@ -19,8 +19,9 @@
 #                 --table: stock,tuned), each failing as it fails alone
 #   --shapes RE   only the shapes whose name matches the regular expression (anywhere in the name: `^top_rows` and `unindexed_column$` too). A filtered --update rewrites the rows of the
 #                 shapes that ran and keeps the others, and writes nothing when none ran
-#   --slice AREAS the shapes of the areas (comma separated: star, clickbench, coexist, jsonb, table, bm25, gpu, smoke; all: every shape) that the `-- area:` tag of test/plan/shapes.sql lists, so that a change
-#                 runs the shapes it can move (seconds): smoke is one shape of each area, coexist the shapes whose plan is, or may be, PostgreSQL's own. With --shapes, the shapes that match both
+#   --slice AREAS the shapes of the areas (comma separated: star, clickbench, coexist, jsonb, table, bm25, gpu, bench, smoke; all: every shape) that the `-- area:` tag of test/plan/shapes.sql lists, so that a change
+#                 runs the shapes it can move (seconds): smoke is one shape of each area, coexist the shapes whose plan is, or may be, PostgreSQL's own, bench a shape of
+#                 each bench case on the events (bench/cases.tsv). With --shapes, the shapes that match both
 #   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
 #                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --lane stock-4t   the stock planner costs of the stock lane with up to 4 parallel workers per gather (the stock parallel costs and thresholds untouched, no suppression of Gather):
@@ -32,7 +33,9 @@
 #   --table       the tables as sift_table (test/plan/table.sql): the results must agree as ever; the plan and the cost band are those of the lane in
 #                 test/plan/bands.tsv (table, tabletuned with --lane tuned), so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --warn-time   a shape that the scan makes slower than native by more than 1 ms and 20% (verdict lose) is a warning, not a failure: hosted runners are noisy
-#   --update      rewrites the rows of this lane in test/plan/bands.tsv from this run (the plan the lane chooses and the band around its ratio): read the diff
+#   --update      rewrites the rows of this lane in test/plan/bands.tsv from this run (the plan the lane chooses and the band around its ratio): read the diff. A shape tagged
+#                 `-- gap: S113-NN` that still has its gap in the lane is written `gap:S113-NN`; a row of plan scan is never rewritten normal unless the shape is of the area coexist
+#                 or names its gap (the update fails and says which)
 #   --keep        keeps the database sift_plangate
 # --calibrate  instead of the shapes: the shapes of test/plan/calibrate.tsv (every shape of shapes.sql, in a class: point, range, order and limit, count, group, join, aggregate, other; known: a wrong choice that is open work, reported and not failing)
 #               are planned each way the planner can go (the scan, a sequential scan, a b-tree index, a bitmap scan, PostgreSQL without sift, the planner's own choice: EXPLAIN
@@ -40,15 +43,15 @@
 #               plan the planner chooses is slower than the best by more than 20% and 1,000,000 instructions. Seconds, needs perf (skipped, exit 0, without it). docs/AGG.md
 # --planning  the user instructions of EXPLAIN of each shape of calibrate.tsv with the scan on and with it off (the library loaded), warm, under `perf stat`; a shape the scan does not take fails at 5% and 20,000 over off, one it takes at 40% (test/plan/planning.tsv lifts a shape's ratio, or bounds the instructions the scan adds), and a shape fails at 30% and 20,000
 #               instructions over its ceiling in test/plan/planning.tsv, the sum of the shapes at 10%; --update writes the ceilings from this run. Skipped, exit 0, without perf
-# Fails (exit 1) on a result that differs between the paths, a plan other than the expected one, a cost ratio outside its band and (without
-# --warn-time) a lose. Needs the scripts/pgtest.sh cluster installed and started (SIFT_TMP, SIFT_PORT).
+# Fails (exit 1) on a result that differs between the paths, a plan other than the expected one, a node, a hidden heap scan or an EXPLAIN (VERBOSE) error of a Sift path, a known
+# gap that is closed, a cost ratio outside its band and (without --warn-time) a lose; a known gap (band plan gap:S113-NN) is listed as KNOWN and does not fail. Needs the scripts/pgtest.sh cluster installed and started (SIFT_TMP, SIFT_PORT).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 ROWS=30000 SEED=1 RUNS=3 JOBS= ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN= SELFTEST= AREAS_RUN= FORMAT=f2
-AREAS='star clickbench coexist jsonb table bm25 gpu smoke'
+AREAS='star clickbench coexist jsonb table bm25 gpu bench smoke'
 DB=${PLANGATE_DB:-sift_plangate}
 
 while (( $# )); do
@@ -368,8 +371,12 @@ run_lane() {
 	log "shapes${LANES[1]:+ of the lane $LK}, $JOBS sessions"
 	run_shapes || exit 1
 	if [[ -n $UPDATE ]]; then
-		# the plan this lane chooses (either stays) and the band of a factor of 2 around its ratio, in 2 significant digits
-		sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan ELSE chosen END,
+		# a scan the lane loses is a regression or a gap: never recorded as the plan
+		lost=$(sql -qAt -c "SELECT string_agg(r.name, ', ' ORDER BY r.name) FROM plangate.results r JOIN plangate.bands b ON b.lane = '$LK' AND b.name = r.name
+			WHERE b.plan = 'scan' AND r.chosen = 'normal' AND NOT r.coexist AND (r.gap IS NULL OR r.gap_problems = '{}')")
+		[[ -z $lost ]] || { log "update refused: the scan of $lost is lost in $LK: fix it, or tag the shape -- gap: S113-NN (or the area coexist)"; exit 1; }
+		# the plan this lane chooses (either and a gap that still holds stay) and the band of a factor of 2 around its ratio, in 2 significant digits
+		sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan WHEN gap IS NOT NULL AND gap_problems <> '{}' THEN 'gap:' || gap ELSE chosen END,
 			coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int)::text, '-'), coalesce(round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int)::text, '-')
 			FROM plangate.results" >"${SIFT_TMP}/plangate-bands.tsv"
 		merge_bands "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/$BANDS" || { rm -f "${SIFT_TMP}/plangate-bands.tsv"; exit 1; }
@@ -379,14 +386,15 @@ run_lane() {
 	sql -q -P footer=off <<-SQL
 		SELECT name AS shape, chosen, plan AS expected, round(ratio::numeric, 3) AS cost_ratio, concat_ws(' ', lo, hi) AS band,
 			   round(native_ms::numeric, 1) AS native_ms, round(scan_ms::numeric, 1) AS scan_ms, verdict, ${parallel:+native_workers || '/' || workers AS workers,}
-			   CASE WHEN EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard) THEN 'FAIL' END AS check
+			   CASE WHEN EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard) THEN 'FAIL' WHEN known <> '{}' THEN 'GAP' END AS check
 		FROM plangate.results ORDER BY name
 	SQL
 	sql -qAt <<-SQL
+		SELECT 'KNOWN ' || name || ': ' || plan || ': ' || array_to_string(known, '; ') FROM plangate.results WHERE known <> '{}' ORDER BY name;
 		SELECT CASE WHEN $hard THEN 'FAIL ' ELSE 'WARN ' END || name || ': ' || p FROM plangate.results, unnest(problems) p ORDER BY name LIMIT 40;
-		SELECT format('plangate${LANES[1]:+ $LK}: %s shapes, %s on the scan, %s wins, %s ties, %s loses, %s missed wins, %s failures',
+		SELECT format('plangate${LANES[1]:+ $LK}: %s shapes, %s on the scan, %s wins, %s ties, %s loses, %s missed wins, %s known gaps, %s failures',
 			count(*), count(*) FILTER (WHERE chosen = 'scan'), count(*) FILTER (WHERE verdict = 'win'), count(*) FILTER (WHERE verdict = 'tie'),
-			count(*) FILTER (WHERE verdict = 'lose'), count(*) FILTER (WHERE verdict = 'miss'),
+			count(*) FILTER (WHERE verdict = 'lose'), count(*) FILTER (WHERE verdict = 'miss'), count(*) FILTER (WHERE known <> '{}'),
 			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard)))
 		FROM plangate.results;
 	SQL

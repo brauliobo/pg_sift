@@ -114,7 +114,7 @@ stock	search_join	scan	0.099	0.40
 stock	search_latest_rows	scan	0.13	0.52
 stock	search_one_parent	either	0.44	1.8
 stock	search_or_by_month	scan	0.027	0.11
-stock	search_topk_ranked	normal	-	-
+stock	search_topk_ranked	scan	0.50	2.0
 stock	select_distinct	scan	0.13	0.53
 stock	share_of_total	scan	0.13	0.54
 stock	skew_heaviest_parents	scan	0.13	0.54
@@ -272,7 +272,7 @@ stock4t	search_join	scan	0.099	0.40
 stock4t	search_latest_rows	scan	0.13	0.52
 stock4t	search_one_parent	either	0.44	1.8
 stock4t	search_or_by_month	scan	0.027	0.11
-stock4t	search_topk_ranked	normal	-	-
+stock4t	search_topk_ranked	scan	0.50	2.0
 stock4t	select_distinct	scan	0.13	0.53
 stock4t	share_of_total	scan	0.13	0.54
 stock4t	skew_heaviest_parents	scan	0.13	0.54
@@ -430,7 +430,7 @@ stock4t@250000	search_join	either	0.10	0.42
 stock4t@250000	search_latest_rows	either	0.17	0.70
 stock4t@250000	search_one_parent	either	-	-
 stock4t@250000	search_or_by_month	either	-	-
-stock4t@250000	search_topk_ranked	either	-	-
+stock4t@250000	search_topk_ranked	either	0.50	2.0
 stock4t@250000	select_distinct	either	-	-
 stock4t@250000	share_of_total	either	-	-
 stock4t@250000	skew_heaviest_parents	either	0.40	1.6
@@ -588,7 +588,7 @@ stock@250000	search_join	either	0.070	0.28
 stock@250000	search_latest_rows	either	0.12	0.47
 stock@250000	search_one_parent	either	-	-
 stock@250000	search_or_by_month	either	-	-
-stock@250000	search_topk_ranked	either	-	-
+stock@250000	search_topk_ranked	either	0.50	2.0
 stock@250000	select_distinct	either	-	-
 stock@250000	share_of_total	either	-	-
 stock@250000	skew_heaviest_parents	either	0.40	1.6
@@ -742,11 +742,11 @@ table	scope_path_filter_join	either	2.1	8.2
 table	search_count	normal	-	-
 table	search_group	scan	0.26	1.1
 table	search_hybrid_facet	normal	-	-
-table	search_join	normal	0.53	2.1
-table	search_latest_rows	normal	-	-
+table	search_join	scan	0.50	2.0
+table	search_latest_rows	scan	0.50	2.0
 table	search_one_parent	either	0.35	1.4
 table	search_or_by_month	scan	0.39	1.5
-table	search_topk_ranked	normal	-	-
+table	search_topk_ranked	scan	0.50	2.0
 table	select_distinct	scan	0.45	1.8
 table	share_of_total	scan	0.43	1.7
 table	skew_heaviest_parents	scan	0.48	1.9
@@ -904,7 +904,7 @@ table@250000	search_join	either	1.0	4.1
 table@250000	search_latest_rows	either	-	-
 table@250000	search_one_parent	either	-	-
 table@250000	search_or_by_month	either	-	-
-table@250000	search_topk_ranked	either	-	-
+table@250000	search_topk_ranked	either	0.50	2.0
 table@250000	select_distinct	either	-	-
 table@250000	share_of_total	either	-	-
 table@250000	skew_heaviest_parents	either	1.4	5.4
@@ -1062,7 +1062,7 @@ tabletuned	search_join	scan	0.019	0.078
 tabletuned	search_latest_rows	scan	0.036	0.14
 tabletuned	search_one_parent	either	0.35	1.4
 tabletuned	search_or_by_month	scan	0.024	0.098
-tabletuned	search_topk_ranked	normal	-	-
+tabletuned	search_topk_ranked	scan	0.50	2.0
 tabletuned	select_distinct	scan	0.043	0.17
 tabletuned	share_of_total	scan	0.035	0.14
 tabletuned	skew_heaviest_parents	scan	0.068	0.27
@@ -1220,7 +1220,7 @@ tabletuned@250000	search_join	either	-	-
 tabletuned@250000	search_latest_rows	either	-	-
 tabletuned@250000	search_one_parent	either	-	-
 tabletuned@250000	search_or_by_month	either	-	-
-tabletuned@250000	search_topk_ranked	either	-	-
+tabletuned@250000	search_topk_ranked	either	0.50	2.0
 tabletuned@250000	select_distinct	either	-	-
 tabletuned@250000	share_of_total	either	-	-
 tabletuned@250000	skew_heaviest_parents	either	-	-
@@ -1378,7 +1378,7 @@ tuned	search_join	scan	0.0032	0.013
 tuned	search_latest_rows	scan	0.0039	0.016
 tuned	search_one_parent	either	0.44	1.8
 tuned	search_or_by_month	scan	0.00088	0.0035
-tuned	search_topk_ranked	normal	-	-
+tuned	search_topk_ranked	scan	0.50	2.0
 tuned	select_distinct	scan	0.041	0.17
 tuned	share_of_total	scan	0.037	0.15
 tuned	skew_heaviest_parents	scan	0.077	0.31
@@ -1536,7 +1536,7 @@ tuned@250000	search_join	either	0.053	0.21
 tuned@250000	search_latest_rows	either	0.11	0.45
 tuned@250000	search_one_parent	either	-	-
 tuned@250000	search_or_by_month	either	-	-
-tuned@250000	search_topk_ranked	either	-	-
+tuned@250000	search_topk_ranked	either	0.50	2.0
 tuned@250000	select_distinct	either	-	-
 tuned@250000	share_of_total	either	-	-
 tuned@250000	skew_heaviest_parents	either	7.3	29
