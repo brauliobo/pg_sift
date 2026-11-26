@@ -758,29 +758,11 @@ sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptIn
 	}
 }
 
-/* The relation of the spec of a path and whether it scans the facts: its 1st, 16th and 17th numbers (sift_v6_scope_spec_pack) */
-static Oid
-spec_relid(const CustomPath *best)
-{
-	return (Oid) list_nth_int(linitial(best->custom_private), 0);
-}
-
-static bool
-spec_is_table(const CustomPath *best)
-{
-	return list_nth_int(linitial(best->custom_private), 15);
-}
-
-static bool
-spec_scan(const CustomPath *best)
-{
-	return list_nth_int(linitial(best->custom_private), 16);
-}
-
 static Plan *
 scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
 	CustomScan *cs = makeNode(CustomScan);
+	const ScopeSpec *spec = sift_v6_scope_spec_unpack(linitial(best->custom_private));
 
 	cs->scan.plan.targetlist = tlist;
 	cs->scan.scanrelid = 0;
@@ -790,7 +772,7 @@ scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlis
 	cs->custom_scan_tlist = lsecond(best->custom_private);
 	cs->scan.plan.qual = (List *) lthird(best->custom_private);
 	cs->custom_exprs = lfourth(best->custom_private);
-	cs->methods = spec_scan(best) ? &sift_v6_scope_scan_methods : sift_store_ops_for_oid(spec_relid(best), spec_is_table(best))->scope->exec;
-	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec_relid(best));
+	cs->methods = spec->scan ? &sift_v6_scope_scan_methods : sift_store_ops_for_oid(spec->relid, spec->is_table)->scope->exec;
+	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->relid);
 	return &cs->scan.plan;
 }
