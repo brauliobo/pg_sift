@@ -21,6 +21,7 @@
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/selfuncs.h"
 
 #include "agg/agg.h"
 #include "agg/safety.h"
@@ -138,6 +139,7 @@ typedef struct SipJoin
 	Var		   *fact_key;
 	Var		   *dim_key;
 	RelOptInfo *dim;
+	double		kept;			/* the share of the rows of the fact table whose key a row of the dimension that passes its conditions has */
 } SipJoin;
 
 static bool
@@ -170,8 +172,7 @@ join_of(PlannerInfo *root, RelOptInfo *rel, const Node *l, const Node *r, SipJoi
 	if (j->dim == NULL || j->dim->reloptkind != RELOPT_BASEREL || !plain_inner(root, rel->relid, j->dim->relid))
 		return false;
 	rte = planner_rt_fetch(j->dim->relid, root);
-	if (!sift_v6_rte_stored(rte) || rte->inh || rte->tablesample != NULL || agg_rte_has_rls(root, rte) ||
-		j->dim->rows > SIFT_V6_SIP_DIM_ROWS || j->dim->rows > SIFT_V6_SIP_DIM_KEEP * j->dim->tuples)
+	if (!sift_v6_rte_stored(rte) || rte->inh || rte->tablesample != NULL || agg_rte_has_rls(root, rte) || j->dim->rows > SIFT_V6_SIP_DIM_ROWS)
 		return false;
 	foreach_node(RestrictInfo, ri, j->dim->baserestrictinfo)
 		if (ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || contain_subplans((Node *) ri->clause))
@@ -233,24 +234,31 @@ to_fact_key(Node *node, const SipJoin *j)
 }
 
 /* the share of the rows of the fact table the keys of the dimension keep: a condition of the dimension on its key alone is one on the key of the fact table, which the statistics of that column
- * price as they are spread (a few keys may hold most rows); another keeps the share of the dimension it keeps */
+ * price as they are spread (a few keys may hold most rows); the others keep a key unless they drop each of its rows */
 static double
 kept_share(PlannerInfo *root, RelOptInfo *rel, const SipJoin *j)
 {
 	const bool	same_type = j->fact_key->vartype == j->dim_key->vartype && j->fact_key->varcollid == j->dim_key->varcollid;
-	double		kept = 1.0;
+	VariableStatData vd;
+	bool		isdefault;
+	List	   *others = NIL;
+	double		per_key,
+				kept = 1.0;
 
+	examine_variable(root, (Node *) j->dim_key, 0, &vd);
+	per_key = Max(j->dim->tuples / Max(get_variable_numdistinct(&vd, &isdefault), 1.0), 1.0);
+	ReleaseVariableStats(vd);
 	foreach_node(RestrictInfo, ri, j->dim->baserestrictinfo)
 	{
 		Bitmapset  *attrs = NULL;
 
 		pull_varattnos((Node *) ri->clause, j->dim->relid, &attrs);
-		if (same_type && bms_membership(attrs) == BMS_SINGLETON && bms_is_member(j->dim_key->varattno - FirstLowInvalidHeapAttributeNumber, attrs))
-			kept *= clause_selectivity(root, to_fact_key((Node *) ri->clause, j), rel->relid, JOIN_INNER, NULL);
+		if (bms_membership(attrs) == BMS_SINGLETON && bms_is_member(j->dim_key->varattno - FirstLowInvalidHeapAttributeNumber, attrs))
+			kept *= same_type ? clause_selectivity(root, to_fact_key((Node *) ri->clause, j), rel->relid, JOIN_INNER, NULL) : clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL);
 		else
-			kept *= clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL);
+			others = lappend(others, ri);
 	}
-	return kept;
+	return kept * -expm1(per_key * log1p(-clauselist_selectivity(root, others, j->dim->relid, JOIN_INNER, NULL)));
 }
 
 static bool
@@ -258,7 +266,7 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *src, const S
 {
 	SiftV6Input in = src->input;
 	const int	slot = sift_v6_input_add_var(&in, j->fact_key);
-	const double rows = clamp_row_est(rel->rows * kept_share(root, rel, j));
+	const double rows = clamp_row_est(rel->rows * j->kept);
 	Cost		open,
 				scan;
 	List	   *ints;
@@ -282,6 +290,9 @@ sip_join(PlannerInfo *root, RelOptInfo *rel, const Node *fact_key, const Node *d
 	int			nsrc;
 
 	if (!join_of(root, rel, fact_key, dim_key, &j))
+		return false;
+	j.kept = kept_share(root, rel, &j);
+	if (j.kept > SIFT_V6_SIP_DIM_KEEP)
 		return false;
 	src = sift_v6_rel_sources_alloc(root, rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)

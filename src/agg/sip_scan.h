@@ -4,7 +4,7 @@
  * may hold, the batches whose zone it rules out never read. The node is a scan of the fact table as the planner sees it: PostgreSQL's join above it still matches the rows exactly, so a false
  * positive of the filter costs a row and no result; a filter never drops a row of a key it was given. The dimension is read through the table access method, so it may be a heap table or a sift_table.
  * Chosen only for a plain inner join of two tables on one equality of integer, date or timestamp columns (no outer, semi or anti join of either), a dimension of at most SIFT_V6_SIP_DIM_ROWS rows
- * of which its conditions keep at most half, and never under row security of the query, whose dimension rows must not reach a filter another role could read.
+ * whose conditions keep at most half of its distinct keys, and never under row security of the query, whose dimension rows must not reach a filter another role could read.
  */
 #ifndef SIFT_AGG_V6_SIP_H
 #define SIFT_AGG_V6_SIP_H
