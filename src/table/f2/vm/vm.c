@@ -594,13 +594,17 @@ sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *inde
 	BlockNumber *vblocks = NULL;
 	SiftTblVmSwept *res = NULL;
 
-	if (!sift_tbl_vm_active(rel))
+	/* a running insert holds rows of a vblock below the floor in its memory, with their index entries made: the sweep waits for no writer (ShareLock) as the pass that sets the bits does */
+	if (!sift_tbl_vm_active(rel) || !ConditionalLockRelation(rel, ShareLock))
 		return NULL;
 	meta = sift_col_meta_read(rel);
 	plan.limit = Min(meta.next_vblock, InvalidBlockNumber);
 	plan.next = ReadNextFullTransactionId();
 	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) != 0 || !sift_shm_tid_lease_floor(&rel->rd_locator, plan.limit, &plan.floor) || plan.floor == 0)
+	{
+		UnlockRelation(rel, ShareLock);
 		return NULL;
+	}
 	store = sift_f2_store_open(rel);
 	cx = sift_mem_allocset_create(outer, "sift vm orphan sweep");
 	MemoryContextSwitchTo(cx);
@@ -679,6 +683,7 @@ sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *inde
 	}
 	MemoryContextSwitchTo(outer);
 	MemoryContextDelete(cx);
+	UnlockRelation(rel, ShareLock);
 	return res;
 }
 

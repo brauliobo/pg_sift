@@ -1,0 +1,45 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_few s1_begin s1_more s2_vac s1_commit s2_read
+step s1_few: INSERT INTO vm_l SELECT g, g FROM generate_series(2001, 2280) g;
+step s1_begin: BEGIN;
+step s1_more: INSERT INTO vm_l SELECT g, g FROM generate_series(3001, 3020) g;
+step s2_vac: VACUUM vm_l;
+step s1_commit: COMMIT;
+step s2_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+1300|1300
+(1 row)
+
+
+starting permutation: s1_few s2_move s2_vac s1_begin s1_more s1_abort s2_read
+step s1_few: INSERT INTO vm_l SELECT g, g FROM generate_series(2001, 2280) g;
+step s2_move: ALTER TABLE vm_l SET TABLESPACE vm_ts;
+step s2_vac: VACUUM vm_l;
+step s1_begin: BEGIN;
+step s1_more: INSERT INTO vm_l SELECT g, g FROM generate_series(3001, 3020) g;
+step s1_abort: ROLLBACK;
+step s2_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+1280|1280
+(1 row)
+
+
+starting permutation: s1_begin s1_few s1_move s1_more s1_commit s2_vac s1_begin s1_more s1_abort s2_read
+step s1_begin: BEGIN;
+step s1_few: INSERT INTO vm_l SELECT g, g FROM generate_series(2001, 2280) g;
+step s1_move: ALTER TABLE vm_l SET TABLESPACE vm_ts;
+step s1_more: INSERT INTO vm_l SELECT g, g FROM generate_series(3001, 3020) g;
+step s1_commit: COMMIT;
+step s2_vac: VACUUM vm_l;
+step s1_begin: BEGIN;
+step s1_more: INSERT INTO vm_l SELECT g, g FROM generate_series(3001, 3020) g;
+step s1_abort: ROLLBACK;
+step s2_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+1300|1300
+(1 row)
+

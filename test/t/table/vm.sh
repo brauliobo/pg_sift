@@ -58,13 +58,16 @@ check "a prepared delete is not seen before it commits" agree "$COUNT"
 sql primary "COMMIT PREPARED 'vm1'" >/dev/null || bail "commit prepared failed"
 check "and is seen after" agree "$COUNT"
 
-# the sessions of test/t/table/vm_iso/specs/basic.spec interleave INSERT, UPDATE, DELETE, a prepared DELETE, TRUNCATE and VACUUM with reads through the index and through the table
+# the sessions of test/t/table/vm_iso/specs/basic.spec interleave INSERT, UPDATE, DELETE, a prepared DELETE, TRUNCATE and VACUUM with reads through the index and through the table;
+# lease.spec runs VACUUM while an insert fills its vblocks and after the table moved to another file
+mkdir -p "$(dir primary)/vm_ts"
+sql primary "CREATE TABLESPACE vm_ts LOCATION '$(dir primary)/vm_ts'" >/dev/null || bail "tablespace failed"
 ISO=$(dirname "$(pg_config --pgxs)")/../test/isolation/pg_isolation_regress
 isolation() {
-	PGUSER=postgres "$ISO" --use-existing --dbname=postgres --host="$(dir primary)/sock" --port="$(port primary)" --inputdir="${SIFT_REPO:?}/test/t/table/vm_iso" --outputdir="$(dir primary)/iso" --bindir= basic \
+	PGUSER=postgres "$ISO" --use-existing --dbname=postgres --host="$(dir primary)/sock" --port="$(port primary)" --inputdir="${SIFT_REPO:?}/test/t/table/vm_iso" --outputdir="$(dir primary)/iso" --bindir= basic lease \
 		>"$(dir primary)/iso.log" 2>&1 || { out=$(cat "$(dir primary)/iso/regression.diffs" 2>/dev/null); return 1; }
 }
-check "isolation: index-only reads agree with the table across concurrent INSERT, UPDATE, DELETE, 2PC, TRUNCATE and VACUUM" isolation
+check "isolation: index-only reads agree with the table across concurrent INSERT, UPDATE, DELETE, 2PC, TRUNCATE, SET TABLESPACE and VACUUM" isolation
 
 # crash after the clear: the bits the delete cleared stay cleared, the ones VACUUM set before it stay set
 sql primary "VACUUM t" >/dev/null || bail "vacuum before the crash failed"
