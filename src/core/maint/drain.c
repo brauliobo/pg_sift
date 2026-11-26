@@ -20,6 +20,7 @@
 #include "nodes/parsenodes.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
+#include "storage/ipc.h"
 #include "storage/latch.h"
 #include "tcop/utility.h"
 #include "utils/backend_status.h"
@@ -33,6 +34,8 @@
 #define DRAIN_POLL_MS	10
 
 static ProcessUtility_hook_type prev_utility;
+static Oid	held_db = InvalidOid;	/* the database this backend holds: let go at the end of the statement, or at exit by a FATAL error that ran no PG_FINALLY */
+static bool exit_hook_set = false;
 
 static bool
 drops_sift(DropStmt *stmt)
@@ -135,6 +138,25 @@ drain(SiftMaintShmem *m, Oid db)
 }
 
 static void
+release_held(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
+{
+	if (OidIsValid(held_db))
+		sift_maint_db_release(sift_maint_table(), held_db);
+	held_db = InvalidOid;
+}
+
+static void
+hold(SiftMaintShmem *m, Oid db)
+{
+	Assert(!OidIsValid(held_db));
+	if (!exit_hook_set)
+		before_shmem_exit(release_held, (Datum) 0);
+	exit_hook_set = true;
+	if (sift_maint_db_hold(m, db))
+		held_db = db;
+}
+
+static void
 drain_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, ProcessUtilityContext context, ParamListInfo params, QueryEnvironment *queryEnv, DestReceiver *dest,
 			  QueryCompletion *qc)
 {
@@ -147,7 +169,7 @@ drain_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, Pr
 		(prev_utility ? prev_utility : standard_ProcessUtility) (pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
 		return;
 	}
-	sift_maint_db_hold(m, GetCurrentTimestamp(), db, true);
+	hold(m, db);
 	PG_TRY();
 	{
 		drain(m, db);
@@ -155,7 +177,7 @@ drain_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, Pr
 	}
 	PG_FINALLY();
 	{
-		sift_maint_db_hold(m, GetCurrentTimestamp(), db, false);
+		release_held(0, (Datum) 0);
 	}
 	PG_END_TRY();
 	if (ends_database_jobs(pstmt->utilityStmt))

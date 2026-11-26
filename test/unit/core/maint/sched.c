@@ -117,10 +117,31 @@ test_held_db(void)
 	fresh(4);
 	for (Oid rel = 1; rel <= 3; rel++)
 		(void) enq(6, rel, SIFT_MK_SLAB_FLUSH);
-	sift_maint_db_hold(m, clock_now, 6, true);
+	sift_maint_db_hold(m, 6);
 	SIFT_CHECKF(kick_all() == 0 && spawns == 0, "a held database gets no worker: %d", spawns);
-	sift_maint_db_hold(m, clock_now, 6, false);
+	sift_maint_db_release(m, 6);
 	SIFT_CHECKF(kick_all() == 3, "its workers start once it is let go: %d", spawns);
+}
+
+/* A hold is counted: two statements that copy one template hold it until both end, and a connection or a refused one of the database never lets it go */
+static void
+test_hold_count(void)
+{
+	fresh(4);
+	sift_maint_db_hold(m, 6);
+	sift_maint_db_hold(m, 6);
+	sift_maint_db_release(m, 6);
+	SIFT_CHECKF(sift_maint_db_held(m, 6, clock_now), "the second hold stands when the first ends");
+	sift_maint_db_connected(m, 6);
+	SIFT_CHECKF(sift_maint_db_held(m, 6, clock_now), "a connection of the database keeps the hold");
+	(void) sift_maint_db_connect_failed(m, clock_now, 6);
+	clock_now += SIFT_MAINT_CONNECT_BACKOFF_MAX_US + 1;
+	SIFT_CHECKF(sift_maint_db_held(m, 6, clock_now), "a refused connection keeps the hold past its backoff");
+	for (Oid db = 100; db < 100 + SIFT_MAINT_DBSTATE; db++)
+		(void) sift_maint_db_connect_failed(m, clock_now, db);
+	SIFT_CHECKF(sift_maint_db_held(m, 6, clock_now), "the backoffs of other databases never take the entry of a hold");
+	sift_maint_db_release(m, 6);
+	SIFT_CHECKF(!sift_maint_db_held(m, 6, clock_now), "the last hold that ends lets the database go");
 }
 
 /* Dynamic mode: the first request found no worker slot; the same request again starts one, though it coalesces */
@@ -179,6 +200,7 @@ main(void)
 {
 	test_busy_db();
 	test_held_db();
+	test_hold_count();
 	test_coalesced_kick();
 	test_upgrade();
 	test_capacity_and_drop();

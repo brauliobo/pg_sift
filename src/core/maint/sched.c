@@ -437,7 +437,7 @@ held_mask(const SiftMaintShmem *m, TimestampTz now)
 	uint64		mask = 0;
 
 	for (int i = 0; i < SIFT_MAINT_DBSTATE; i++)
-		if (m->dbstate[i].until > now)
+		if (sift_maint_db_state_blocks(&m->dbstate[i], now))
 			mask |= UINT64CONST(1) << (m->dbstate[i].db % 64);
 	return mask;
 }

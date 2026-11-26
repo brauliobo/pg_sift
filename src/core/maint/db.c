@@ -5,7 +5,7 @@
 
 #include "datatype/timestamp.h"
 
-/* The entry of db: its own, else a free one, else the backoff that ends first (a hold is never taken from a statement that waits on it); NULL when every entry is a hold. The caller holds the lock of the table */
+/* The entry of db: its own, else a free one, else the backoff that ends first (a hold is never taken from a statement that waits on it); NULL when every entry is held. The caller holds the lock of the table */
 static SiftMaintDbState *
 entry_of(SiftMaintShmem *m, Oid db)
 {
@@ -17,7 +17,7 @@ entry_of(SiftMaintShmem *m, Oid db)
 
 		if (e->db == db)
 			return e;
-		if (e->until != SIFT_MAINT_HELD && (spare == NULL || e->until < spare->until))
+		if (e->holds == 0 && (spare == NULL || e->until < spare->until))
 			spare = e;
 	}
 	if (spare != NULL)
@@ -26,10 +26,16 @@ entry_of(SiftMaintShmem *m, Oid db)
 }
 
 bool
+sift_maint_db_state_blocks(const SiftMaintDbState *e, TimestampTz now)
+{
+	return e->holds > 0 || e->until > now;
+}
+
+bool
 sift_maint_db_held(const SiftMaintShmem *m, Oid db, TimestampTz now)
 {
 	for (int i = 0; i < SIFT_MAINT_DBSTATE; i++)
-		if (m->dbstate[i].db == db && m->dbstate[i].until > now)
+		if (m->dbstate[i].db == db && sift_maint_db_state_blocks(&m->dbstate[i], now))
 			return true;
 	return false;
 }
@@ -50,31 +56,58 @@ sift_maint_db_connect_failed(SiftMaintShmem *m, TimestampTz now, Oid db)
 	return failures;
 }
 
-static void
-forget(SiftMaintShmem *m, Oid db)
+static SiftMaintDbState *
+existing(SiftMaintShmem *m, Oid db)
 {
 	for (int i = 0; i < SIFT_MAINT_DBSTATE; i++)
 		if (m->dbstate[i].db == db)
-			memset(&m->dbstate[i], 0, sizeof(SiftMaintDbState));
+			return &m->dbstate[i];
+	return NULL;
+}
+
+/* The backoff of db ends; its holds stay, and an entry with none is free again */
+static void
+forget_backoff(SiftMaintDbState *e)
+{
+	e->failures = 0;
+	e->until = 0;
+	if (e->holds == 0)
+		e->db = InvalidOid;
 }
 
 void
 sift_maint_db_connected(SiftMaintShmem *m, Oid db)
 {
+	SiftMaintDbState *e;
+
 	sift_shm_lock(&m->lock);
-	forget(m, db);
+	if ((e = existing(m, db)) != NULL)
+		forget_backoff(e);
 	sift_shm_unlock(&m->lock);
 }
 
-void
-sift_maint_db_hold(SiftMaintShmem *m, TimestampTz now, Oid db, bool hold)
+bool
+sift_maint_db_hold(SiftMaintShmem *m, Oid db)
 {
 	SiftMaintDbState *e;
 
 	sift_shm_lock(&m->lock);
-	forget(m, db);
-	if (hold && (e = entry_of(m, db)) != NULL)
-		e->until = SIFT_MAINT_HELD;
+	if ((e = entry_of(m, db)) != NULL)
+		e->holds++;
+	sift_shm_unlock(&m->lock);
+	return e != NULL;
+}
+
+void
+sift_maint_db_release(SiftMaintShmem *m, Oid db)
+{
+	SiftMaintDbState *e;
+
+	sift_shm_lock(&m->lock);
+	e = existing(m, db);
+	Assert(e != NULL && e->holds > 0);
+	if (--e->holds == 0)
+		forget_backoff(e);
 	sift_shm_unlock(&m->lock);
 }
 

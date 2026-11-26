@@ -63,7 +63,6 @@ typedef enum SiftPacerTier
 #define SIFT_MAINT_CONNECT_BACKOFF_US	(2 * USECS_PER_SEC)
 #define SIFT_MAINT_CONNECT_BACKOFF_MAX_US	(60 * USECS_PER_SEC)
 #define SIFT_MAINT_CONNECT_GIVE_UP	3
-#define SIFT_MAINT_HELD				PG_INT64_MAX
 #define SIFT_MAINT_STARVED_NAPS		2
 #define SIFT_MAINT_REFUSED			64
 
@@ -193,12 +192,13 @@ typedef struct SiftMaintWorkerSlot
 	TimestampTz lease_until;
 } SiftMaintWorkerSlot;
 
-/* A database that gets no new worker until `until`: it refused the connection of the last `failures` (a backoff of 2 s doubling to 60 s), or SIFT_MAINT_HELD while a statement of the server waits for its workers to leave */
+/* A database that gets no new worker while `holds` statements of the server wait for its workers to leave, or until `until`: it refused the connection of the last `failures` (a backoff of 2 s doubling to 60 s) */
 typedef struct SiftMaintDbState
 {
 	Oid			db;
 	uint32		failures;
 	TimestampTz until;
+	uint32		holds;
 } SiftMaintDbState;
 
 /* A request the full queue refused: queued again when a slot frees */
@@ -381,12 +381,14 @@ extern bool sift_maint_worker_started(SiftMaintShmem *m, int worker, int pid, in
 extern void sift_maint_worker_exit(SiftMaintShmem *m, int worker, int pid);
 /* A worker that could not connect to db (dropped, closed to connections): its slot goes back at once, db is not tried again for a while, and its queued requests go after SIFT_MAINT_CONNECT_GIVE_UP failures in a row */
 extern void sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, int worker, Oid db);
-/* The state of a database for the launcher (core/maint/db.c): the lock of the table is not held by the caller, except for sift_maint_db_held */
+/* The state of a database for the launcher (core/maint/db.c): the lock of the table is not held by the caller, except for sift_maint_db_held and sift_maint_db_state_blocks */
+extern bool sift_maint_db_state_blocks(const SiftMaintDbState *e, TimestampTz now);
 extern bool sift_maint_db_held(const SiftMaintShmem *m, Oid db, TimestampTz now);
 extern uint32 sift_maint_db_connect_failed(SiftMaintShmem *m, TimestampTz now, Oid db);
 extern void sift_maint_db_connected(SiftMaintShmem *m, Oid db);
-/* Keeps new workers from db (hold) until it is let go; a statement that drops or copies the database holds it while its workers leave */
-extern void sift_maint_db_hold(SiftMaintShmem *m, TimestampTz now, Oid db, bool hold);
+/* Keeps new workers from db until each hold is let go (false: every entry of the table is held, the hold is not taken); a statement that drops or copies the database holds it while its workers leave */
+extern bool sift_maint_db_hold(SiftMaintShmem *m, Oid db);
+extern void sift_maint_db_release(SiftMaintShmem *m, Oid db);
 extern int	sift_maint_db_workers(SiftMaintShmem *m, Oid db);
 /* The requests of db that are still queued are dropped: the database is gone */
 extern void sift_maint_db_purge(SiftMaintShmem *m, Oid db);
