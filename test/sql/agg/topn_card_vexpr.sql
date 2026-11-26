@@ -245,11 +245,6 @@ BEGIN
 	RETURN 'no error';
 EXCEPTION WHEN others THEN RETURN SQLERRM;
 END $$;
--- EXTRACT of year and epoch of an infinity is the numeric Infinity in PostgreSQL: the machine raises for it, which the scan avoids (agg/vexpr/vexpr.h)
-CREATE FUNCTION inf_error() RETURNS text LANGUAGE plpgsql AS $$
-BEGIN
-	RAISE EXCEPTION 'EXTRACT of an infinite value is not run by the vectorized expressions';
-END $$;
 
 CREATE TABLE vprog (prog text PRIMARY KEY, pgx text NOT NULL);
 INSERT INTO vprog VALUES
@@ -278,16 +273,15 @@ INSERT INTO vprog VALUES
   ('(trunctz day t)', 'date_trunc(''day'', t AT TIME ZONE ''UTC'')'), ('(trunctz month t)', 'date_trunc(''month'', t AT TIME ZONE ''UTC'')'),
   ('(trunctz week t)', 'date_trunc(''week'', t AT TIME ZONE ''UTC'')'), ('(trunctz year t)', 'date_trunc(''year'', t AT TIME ZONE ''UTC'')'),
   ('(eq (trunc day t) (trunc month t))', 'date_trunc(''day'', t) = date_trunc(''month'', t)'),
-  -- EXTRACT of a timestamp and of a date: numerics of scale 0, the epoch of a timestamp of scale 6; NULL for an infinity but of year and epoch
+  -- EXTRACT of a timestamp and of a date: numerics of scale 0, the epoch of a timestamp of scale 6; NULL for an infinity but of year and epoch, whose numeric Infinity only a
+  -- comparison at their own scale reads (their values run in PostgreSQL)
   ('(extract month t)', 'extract(month from t)'), ('(extract day t)', 'extract(day from t)'), ('(extract quarter t)', 'extract(quarter from t)'),
   ('(extract dow t)', 'extract(dow from t)'), ('(extract isodow t)', 'extract(isodow from t)'), ('(extract doy t)', 'extract(doy from t)'),
   ('(extract hour t)', 'extract(hour from t)'), ('(extract minute t)', 'extract(minute from t)'), ('(extracttz hour t)', 'extract(hour from t AT TIME ZONE ''UTC'')'),
-  ('(extract year t)', 'CASE WHEN t IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(year from t)::text END'),
-  ('(extract epoch t)', 'CASE WHEN t IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(epoch from t)::text END'),
+  ('(gt (extract year t) 2026n0)', 'extract(year from t) > 2026'), ('(le (extract epoch t) 0n6)', 'extract(epoch from t) <= 0'),
+  ('(lt (extract year dt) 2026n0)', 'extract(year from dt) < 2026'), ('(ge (extract epoch dt) 0n0)', 'extract(epoch from dt) >= 0'),
   ('(extract month dt)', 'extract(month from dt)'), ('(extract day dt)', 'extract(day from dt)'), ('(extract quarter dt)', 'extract(quarter from dt)'),
   ('(extract dow dt)', 'extract(dow from dt)'), ('(extract isodow dt)', 'extract(isodow from dt)'), ('(extract doy dt)', 'extract(doy from dt)'),
-  ('(extract year dt)', 'CASE WHEN dt IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(year from dt)::text END'),
-  ('(extract epoch dt)', 'CASE WHEN dt IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(epoch from dt)::text END'),
   ('(add (extract month t) (extract day t))', 'extract(month from t) + extract(day from t)'), ('(gt (extract dow dt) 3n0)', 'extract(dow from dt) > 3'),
   ('(mul (extract month dt) 10i4)', 'extract(month from dt) * 10'), ('(case (when (eq (extract month t) 2n0) 1i4) (else 0i4))', 'CASE WHEN extract(month from t) = 2 THEN 1 ELSE 0 END'),
   -- boolean CASE and COALESCE, and IS NULL of a boolean
@@ -311,15 +305,16 @@ SELECT count(*) AS programs, count(*) FILTER (WHERE bad > 0) AS differ FROM (SEL
 SELECT count(*) AS programs, count(*) FILTER (WHERE vexpr_error(prog) IS DISTINCT FROM pg_error(pgx)) AS differ
 FROM (VALUES ('(mul x x)', 'x * x'), ('(add (div i j) (mul k k))', 'i / j + k * k'), ('(add (mul k k) (div i j))', 'k * k + i / j'),
              ('(mul (add k k) 2i4)', '(k + k) * 2'), ('(div (cast_f8 i) x)', 'i::float8 / x'), ('(add (mul x 1e308f8) (div i j))', 'x * 1e308 + i / j'),
-             ('(trunc year t)', 'date_trunc(''year'', t)'), ('(extract year dt)', 'CASE WHEN dt IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(year from dt)::text END'),
+             ('(trunc year t)', 'date_trunc(''year'', t)'), ('(gt (extract year dt) 2026n0)', 'extract(year from dt) > 2026'),
              ('(case (when m (div i j)) (else (mul k k)))', 'CASE WHEN m THEN i / j ELSE k * k END')) AS v(prog, pgx);
 SELECT prog, vexpr_error(prog) AS error
-FROM unnest(ARRAY['(mul x x)', '(add (div i j) (mul k k))', '(add (mul k k) (div i j))', '(trunc year t)', '(extract epoch dt)']) AS prog ORDER BY prog;
+FROM unnest(ARRAY['(mul x x)', '(add (div i j) (mul k k))', '(add (mul k k) (div i j))', '(trunc year t)']) AS prog ORDER BY prog;
 
 -- the programs the machine does not run (a numeric divided, a product or a sum that may pass 38 digits, a numeric of two scales in one CASE, a numeric above 15
--- digits as float8) and the ones it does
+-- digits as float8, the value of an EXTRACT of year or epoch or its comparison at another scale) and the ones it does
 SELECT prog, sift._test_vexpr_compiles(prog) AS runs
 FROM unnest(ARRAY['(div n n)', '(mul w w)', '(mul w n)', '(mul w 3i4)', '(coalesce k n)', '(cast_f8 w)', '(coalesce n k)', '(coalesce n 0n2)', '(case (when m n) (else w))', '(add n w)', '(trunc day dt)', '(extract hour dt)',
+                  '(extract year t)', '(extract epoch dt)', '(add (extract year dt) 1n0)', '(gt (extract year t) 1n2)',
                   '(add n m)', '(cast_n2 x)', '(trunctz day t)', '(coalesce m i)', '(case (when i m))', '(isnull (coalesce m m))']) AS prog
 ORDER BY prog;
 
@@ -339,6 +334,6 @@ FROM (SELECT array_agg(i ORDER BY id) AS i, array_agg(j ORDER BY id) AS j, array
 
 DROP TABLE ff, tn, tt, tm, ev, ev_cols, cc, cc_cols, sc, sc_cols, sk, sk_cols, vd, vda, vprog, vbig;
 DROP FUNCTION topn_diff(text, int, bool, bool, bool, bool, bool, bool, int, int, bool, int, int, int, int, int), tm_top(text, bool, int, int8, int8), pg_rows(text),
-              vexpr_run(text, int[]), vdiff(text, text), vexpr_error(text), pg_error(text), inf_error();
+              vexpr_run(text, int[]), vdiff(text, text), vexpr_error(text), pg_error(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
