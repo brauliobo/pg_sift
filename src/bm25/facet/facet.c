@@ -253,13 +253,13 @@ grp_has(const sift_grp *g, SiftKey key)
 	return r[off / 64] >> (off % 64) & 1;
 }
 
-/* The query's group i restricted to the docs of seg that are live; NULL when it has none there */
+/* The query's group i restricted to the docs of seg that are live, its rows charged to the views; NULL when it has none there */
 static const sift_grp *
 live_group(Facets *f, SiftSegment *seg, int i)
 {
 	const QSb  *q = &f->qsb[i];
 	SiftDocChunk dc;
-	Row		   *rows;
+	Row			kept[SIFT_SB_PAGES];
 	sift_grp   *g;
 	uint64		pages[SIFT_PAGEMASK_WORDS] = {0};
 	int			n = 0,
@@ -270,10 +270,6 @@ live_group(Facets *f, SiftSegment *seg, int i)
 	if (!dc.dirty)
 		return &f->grp[i];
 	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
-		n += sift_pc64(q->pages[wd]);
-	rows = MemoryContextAlloc(f->mcxt, n * ROW_BYTES);
-	n = 0;
-	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
 		for (uint64 m = q->pages[wd]; m; m &= m - 1, idx++)
 		{
 			int			page = wd * 64 + pg_rightmost_one_pos64(m);
@@ -282,7 +278,7 @@ live_group(Facets *f, SiftSegment *seg, int i)
 
 			sift_seg_page_live(seg, &dc, page, live);
 			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
-				any |= rows[n][k] = f->rows[q->row + idx][k] & live[k];
+				any |= kept[n][k] = f->rows[q->row + idx][k] & live[k];
 			if (any)
 			{
 				pages[wd] |= UINT64CONST(1) << (page % 64);
@@ -292,8 +288,10 @@ live_group(Facets *f, SiftSegment *seg, int i)
 	sift_sr_release(&seg->sr);
 	if (n == 0)
 		return NULL;
-	g = MemoryContextAlloc(f->mcxt, sizeof(sift_grp));
-	*g = (sift_grp) {.gid = q->sb,.w = ROW_BYTES,.off = (const uint8 *) rows};
+	f->viewbytes += sizeof(sift_grp) + n * ROW_BYTES;
+	facet_budget(f, 0);
+	g = MemoryContextAlloc(f->mcxt, sizeof(sift_grp) + n * ROW_BYTES);
+	*g = (sift_grp) {.gid = q->sb,.w = ROW_BYTES,.off = memcpy(g + 1, kept, n * ROW_BYTES)};
 	memcpy(g->pages, pages, sizeof(pages));
 	return g;
 }
@@ -369,6 +367,7 @@ count_wbuf(Facets *f, const SiftSegEntry *entry, HTAB *tab)
 		char		term[SIFT_MAX_TERM_BYTES + 1] = {0};
 		bool		found;
 
+		CHECK_FOR_INTERRUPTS();
 		if (doc.deleted || doc.nterms == 0)
 			continue;
 		i = q_lower(f, 0, sift_block_sb(sift_key_block(key)));

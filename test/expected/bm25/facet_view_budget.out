@@ -1,0 +1,374 @@
+-- The live views of dirty segments are part of the work_mem budget of sift.facets(): each view keeps only the query's pages
+-- where its segment has live docs, so disjoint segments fit in the least work_mem, and segments that all hold every page
+-- (one view of the whole query per segment) stop at the budget instead of growing past it
+CREATE EXTENSION pg_sift;
+CREATE TABLE d (id int PRIMARY KEY, body text, cat text, pad text) WITH (autovacuum_enabled = off, fillfactor = 50);
+CREATE INDEX d_body ON d USING sift (body);
+CREATE INDEX d_cat ON d USING sift (cat) WITH (analyzer = keyword, vacuum_segments = 128, dead_rewrite_pct = 100);
+-- 40 promoted segments of a few pages each, every one dirty
+SELECT format('INSERT INTO d SELECT i, %L, %L || i %% 3, %L FROM generate_series(%s, %s) i', 'common', 'c', '', b * 500 + 1, b * 500 + 500),
+	'SELECT sift.promote(''d_cat'') >= 0 AS promoted' FROM generate_series(0, 39) b \gexec
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(1, 500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(501, 1000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(1001, 1500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(1501, 2000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(2001, 2500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(2501, 3000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(3001, 3500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(3501, 4000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(4001, 4500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(4501, 5000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(5001, 5500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(5501, 6000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(6001, 6500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(6501, 7000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(7001, 7500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(7501, 8000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(8001, 8500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(8501, 9000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(9001, 9500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(9501, 10000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(10001, 10500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(10501, 11000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(11001, 11500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(11501, 12000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(12001, 12500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(12501, 13000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(13001, 13500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(13501, 14000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(14001, 14500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(14501, 15000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(15001, 15500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(15501, 16000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(16001, 16500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(16501, 17000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(17001, 17500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(17501, 18000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(18001, 18500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(18501, 19000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(19001, 19500) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, '' FROM generate_series(19501, 20000) i
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+DELETE FROM d WHERE id % 50 = 0;
+VACUUM d;
+SELECT count(*) AS segments, bool_and(dirty) AS dirty FROM sift.segments('d_cat') WHERE kind = 'immutable';
+ segments | dirty 
+----------+-------
+       40 | t
+(1 row)
+
+SET work_mem = '64kB';
+SELECT * FROM sift.facets('d_body', 'd_cat', 'common', 3);
+ value | count 
+-------+-------
+ c1    |  6534
+ c0    |  6533
+ c2    |  6533
+(3 rows)
+
+RESET work_mem;
+-- every segment holds a live doc on each of the 1000 pages: a view per segment is the whole query
+TRUNCATE d;
+INSERT INTO d SELECT i, 'common', 'c' || i % 3, repeat('p', 900) FROM generate_series(1, 4000) i;
+SELECT format('UPDATE d SET cat = %L || id %% 3 WHERE id %% 4 = %s', 'v' || r, r),
+	'SELECT sift.promote(''d_cat'') >= 0 AS promoted' FROM generate_series(0, 3) r \gexec
+UPDATE d SET cat = 'v0' || id % 3 WHERE id % 4 = 0
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+UPDATE d SET cat = 'v1' || id % 3 WHERE id % 4 = 1
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+UPDATE d SET cat = 'v2' || id % 3 WHERE id % 4 = 2
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+UPDATE d SET cat = 'v3' || id % 3 WHERE id % 4 = 3
+SELECT sift.promote('d_cat') >= 0 AS promoted
+ promoted 
+----------
+ t
+(1 row)
+
+DELETE FROM d WHERE id % 8 < 4;
+VACUUM d;
+SELECT count(*) AS segments, bool_and(dirty) AS dirty FROM sift.segments('d_cat') WHERE kind = 'immutable';
+ segments | dirty 
+----------+-------
+        4 | t
+(1 row)
+
+SELECT * FROM sift.facets('d_body', 'd_cat', 'common', 3);
+ value | count 
+-------+-------
+ v00   |   167
+ v01   |   167
+ v11   |   167
+(3 rows)
+
+SET work_mem = '128kB';
+\set VERBOSITY sqlstate
+SELECT * FROM sift.facets('d_body', 'd_cat', 'common', 3);
+ERROR:  54000
+\set VERBOSITY default
+SET work_mem = '1MB';
+SELECT * FROM sift.facets('d_body', 'd_cat', 'common', 3);
+ value | count 
+-------+-------
+ v00   |   167
+ v01   |   167
+ v11   |   167
+(3 rows)
+
+RESET work_mem;
+DROP TABLE d;
+DROP EXTENSION pg_sift;
