@@ -12,6 +12,7 @@ import iolib
 from duckdb import busy, wait_quiet
 
 from . import runcfg, recs
+from .recs import PG_TWINS
 from .runcfg import BUILT, DATASETS, HERE, IO_HOW, REPO, TIMES, die, log
 from .registry import Case, lane_cpus, read_registry, workers_asked
 from .server import Fresh, build, dataset, drop_added, lane_sessions, load_duck, psql, server_load
@@ -53,7 +54,7 @@ def gap_verdict(case, lane, error, judged):
 def wants_minstr(metrics, asked, lane, fresh):
     """whether a lane of a query case gets the instruction count: when the case lists the metric or the run asks for it (--minstr), on the main lanes and, for a variant, only where the case lists the
     metric; never on pg_duckdb or a fresh lane (a new backend for each run has no backend to count)"""
-    return ('minstr' in metrics or asked) and (lane in ('sift', 'native', 'base', 'btree') or 'minstr' in metrics) and lane != 'pg_duckdb' and not fresh
+    return ('minstr' in metrics or asked) and (lane in ('sift', 'native', 'base') + PG_TWINS or 'minstr' in metrics) and lane != 'pg_duckdb' and not fresh
 
 
 def settle(case, tag, lanes, errors, judged, failed, known, counts):

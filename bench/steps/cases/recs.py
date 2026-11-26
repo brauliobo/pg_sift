@@ -1,7 +1,7 @@
 # The records of a cases run (steps/records): each query case measured again on the arms the case can answer with, by the shared collector, for `bench cases --records FILE`.
 #
-# The arms of a case are forced on its own table: heap (a sequential scan), sift (the access method alone), a b-tree twin when the case has a `btree` variant (its schema in the
-# search path), every other variant as a sift arm with its name as the option, and, for a case with a native lane, the arm `native`: the normal plan (sift.enable_agg off), whatever
+# The arms of a case are forced on its own table: heap (a sequential scan), sift (the access method alone), a b-tree, expression b-tree or GIN twin when the case has a `btree`, `expr_btree` or `gin`
+# variant (its schema in the search path), every other variant as a sift arm with its name as the option, and, for a case with a native lane, the arm `native`: the normal plan (sift.enable_agg off), whatever
 # structure it names, never the picked one. The plan the planner chooses with nothing forced is the default row. A case whose backend is
 # fresh for every run (-- fresh: yes) runs each repetition in a new backend (collect's `fresh`). A load case has no plan to pick: its lanes (the sift table with its index, the heap
 # with the b-tree or GIN twin, each variant) are forced arms, each repetition prepares the table again and the statements are timed and added. A case that gives no records is
@@ -20,6 +20,7 @@ from .server import Fresh, server_session
 import records.collect as collect  # noqa: E402
 import records.schema as schema  # noqa: E402
 
+PG_TWINS = ('btree', 'expr_btree', 'gin')   # the variants that read a twin schema holding a stock PostgreSQL index: arms of their structure, not sift arms
 ARM_BUDGET = None   # seconds one arm may take (--arm-budget): past it the arm is unavailable, with the reason
 ROWS = []
 RUN = {}
@@ -50,8 +51,8 @@ def arms(case):
     out = [collect.Arm('heap'), collect.Arm('sift')]
     for name, sets in case.variants:
         sets = ['SET %s' % s for s in sets.split(';')]
-        if name == 'btree':
-            out.append(collect.Arm('btree', base=sets))
+        if name in PG_TWINS:
+            out.append(collect.Arm('gin' if name == 'gin' else 'btree', base=sets))
         elif name != runcfg.FORCED[0]:
             out.append(collect.Arm('sift', option='default_variant' if name == 'default' else name, base=sets, keep=name.startswith('warm')))   # `default` is the table with the default options beside the case's own index
     return out
