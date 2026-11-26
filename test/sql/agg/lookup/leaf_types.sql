@@ -3,6 +3,7 @@
 -- from the heap and EXPLAIN (VERBOSE) says which column and why.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;

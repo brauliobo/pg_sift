@@ -4,6 +4,7 @@
 -- raises PostgreSQL's own error) or keep the normal plan: it never reads such a value as NULL. Every query runs with and without the pushdown; the rows, or
 -- the error with its SQLSTATE and message, must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

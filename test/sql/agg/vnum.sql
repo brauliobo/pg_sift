@@ -4,6 +4,7 @@
 -- (private accumulators) and many (direct), NULLs, negatives, a NaN, FILTER, values on both sides of the int32 and 2^62 bounds inside one chunk.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

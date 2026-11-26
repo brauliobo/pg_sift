@@ -1,6 +1,7 @@
 -- Conditions of the nullable input of an outer join (a calendar LEFT JOIN a derived table) that are tests of the rows' arrays: an EXISTS
 -- over the elements, written with a sub-select that PostgreSQL pulls up, a jsonpath test, and the aggregate filters that read them.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dates (day date PRIMARY KEY);
 INSERT INTO dates SELECT d::date FROM generate_series('2026-01-01'::date, '2026-01-20', '1 day') d;

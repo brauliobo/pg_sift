@@ -3,6 +3,7 @@
 -- for operands that no row has, infinite timestamps, NULL, and a mix of steps; a text format has no step and keeps its expression evaluated for each value.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

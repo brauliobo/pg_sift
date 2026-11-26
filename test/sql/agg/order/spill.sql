@@ -5,6 +5,7 @@
 -- which this library is not)
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '64kB';

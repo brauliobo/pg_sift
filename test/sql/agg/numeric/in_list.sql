@@ -2,6 +2,7 @@
 -- a hash set of the scaled values, with NaN equal to NaN and to no number, NULL as in the normal plan, and constants no stored value can equal (a scale the column does not
 -- have, a number beyond its digits) left out. Every list runs as the scan and as the normal plan, at the limit and one constant above it.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

@@ -3,6 +3,7 @@
 -- and nowhere else, so a flagged leaf does not keep the scan from answering the queries whose rows hold none: the scan raises the same error for a
 -- row that reaches the cast with such a value. Every query runs with and without the pushdown; the rows, or the error, must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

@@ -2,6 +2,7 @@
 -- agree on the columns the query reads; the child runs for a key whose rows differ, whichever of them its plan meets first. A condition the child tests
 -- of its parameters alone is tested for the input. The table is read once the child has run for many keys (or a cache holds it).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET enable_nestloop = off;
 CREATE TABLE fd_facts (id int, k int, g int, skip bool);

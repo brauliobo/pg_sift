@@ -3,6 +3,7 @@
 -- plan, and every shape is served by a map but shape 7, whose five columns take more tuples of values than a class table holds (4,096): the rows are loaded.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -17,16 +18,10 @@ INSERT INTO pf SELECT i,
 	(ARRAY['0.000', '-1.500', '99999999.999', NULL, '0.001', '-0.001'])[i % 6 + 1]::numeric
 FROM generate_series(0, 4999) i;
 CREATE INDEX pf_col ON pf USING sift_col (k, f4, f8, tm, tx, vc, nm);
-NOTICE:  sift_col index "pf_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = tx, nm; track_changes = k
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pf_col');
 -- events of keys with no row and events with no key
 CREATE TABLE pe (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE i * 7919 % 5200 END, i % 13 FROM generate_series(1, 30000) i;
 CREATE INDEX pe_col ON pe USING sift_col (id, k, v);
-NOTICE:  sift_col index "pe_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pe_col');
 VACUUM (FREEZE, ANALYZE) pf, pe;
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES

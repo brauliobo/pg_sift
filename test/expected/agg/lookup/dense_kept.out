@@ -2,6 +2,7 @@
 -- cache, whatever the settings of the caches, and a query that cannot read the classes (the key as a column) neither takes nor replaces the classed table.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
@@ -9,16 +10,10 @@ SET sift.shared_cache_kb = 0;
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 3300, i % 11 FROM generate_series(1, 40000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
-NOTICE:  sift_col index "ev_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 -- 3200 keys in 12 classes; the events of keys 3200 to 3299 have no row
 CREATE TABLE dd (k int PRIMARY KEY, lvl int2, grade int) WITH (autovacuum_enabled = false);
 INSERT INTO dd SELECT i, (i % 3)::int2, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 4 END FROM generate_series(0, 3199) i;
 CREATE INDEX dd_col ON dd USING sift_col (k, lvl, grade);
-NOTICE:  sift_col index "dd_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = lvl, grade; track_changes = k
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dd_col');
 VACUUM (FREEZE, ANALYZE) ev, dd;
 CREATE TABLE shapes (n int, sql text);
 INSERT INTO shapes VALUES

@@ -2,6 +2,7 @@
 -- of a sift or sift_col index what the index holds (segments, rows in write buffers, dead rows). Nothing is printed without the option. PostgreSQL 17 has no
 -- extension options for EXPLAIN: explain_sift_1.out is the same test where each call says so (sift.explain_refusals is the way there).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 -- the option exists once the library is loaded
 SELECT sift.version() IS NOT NULL AS loaded;
  loaded 
@@ -16,9 +17,6 @@ CREATE INDEX d_body ON d USING sift (body);
 CREATE TABLE o (id int PRIMARY KEY, c int NOT NULL, v float8 NOT NULL);
 INSERT INTO o SELECT i, i % 50, i FROM generate_series(1, 2000) i;
 CREATE INDEX o_col ON o USING sift_col (id, c, v);
-NOTICE:  sift_col index "o_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('o_col');
 CREATE TABLE plain (id int PRIMARY KEY, c int NOT NULL, v float8 NOT NULL);
 INSERT INTO plain SELECT * FROM o;
 VACUUM (ANALYZE) d, o, plain;

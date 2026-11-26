@@ -3,6 +3,7 @@
 -- SQLSTATE), are those of the normal plan: a dirty document that the query never reaches raises nothing, one it reaches raises what SQL does.
 -- A range never holds two rows that raise different errors: which one comes first is the plan's order, not the query's.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

@@ -1,6 +1,7 @@
 -- A WITH inside a derived table (a ranked top-N over an aggregate, a UNION ALL of aggregates over one CTE) is planned like the statement's own: its CTEs are lookup
 -- plans of the scan when the derived table reads nothing of the queries around it, and a CTE of it that several aggregates read is planned inline.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, kind text);
 INSERT INTO dim_a SELECT i, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4] FROM generate_series(1, 60) i;

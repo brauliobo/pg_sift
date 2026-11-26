@@ -2,6 +2,7 @@
 -- for its batches all the same, and a copy of zero bytes from a NULL pointer is undefined (UBSan halts the backend and the server restarts: the sanitizer build of the full
 -- tier fails on it, and so does every job that runs in the cluster while it recovers).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.enable_agg = on;
 SET enable_seqscan = off;

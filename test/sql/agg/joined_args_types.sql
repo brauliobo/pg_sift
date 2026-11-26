@@ -2,6 +2,7 @@
 -- gave every row of a group the value of one row (found as the rows of a scope index on a logical subscriber, whose scope read is declined, that sift.col_scope_verify reported as differing). A call whose joined arguments
 -- are of two types keeps PostgreSQL's plan; one type (the value is its own key), or a joined key of a value of the scan's own table, runs in the scan. Every answer is the normal plan's, on Format 1 and Format 2.0.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

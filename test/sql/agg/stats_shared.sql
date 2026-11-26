@@ -1,6 +1,7 @@
 -- sift.stats() returns the counters of the server (summed over its backends, in the shared memory) and sift.stats(local => true) those of the session: the same rows,
 -- the totals include what the session counted and do not go down when it resets its own. Another session's share of the totals is tested in test/t/agg/stats_shared.sh.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 

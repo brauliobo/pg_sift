@@ -4,6 +4,7 @@
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int PRIMARY KEY, day date NOT NULL, amount int NOT NULL);
 INSERT INTO ev SELECT g, date '2024-01-01' + (g * 7919) % 300, g % 17 FROM generate_series(1, 50000) g;

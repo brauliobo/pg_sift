@@ -2,6 +2,7 @@
 -- normal plan over rows the source does not hold as a unit: a write buffer, deleted and updated rows, a NULL, and then an infinite timestamp in the write buffer.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 CREATE TABLE pd AS SELECT g AS id, timestamp '2024-01-01' + g * interval '13 minutes' AS ts FROM generate_series(1, 150000) g;

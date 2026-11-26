@@ -2,6 +2,7 @@
 -- table, from the leaves of its index, and the table is kept as classes of its keys by the outcomes (a few) however many tuples of values its columns take (7,000 here).
 -- The answers are those of the normal plan; a test that may raise an error, a table a preserving join leaves unmatched rows of, and the ON clause of the table stay as they were.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

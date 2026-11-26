@@ -2,6 +2,7 @@
 -- of its members, an array is contained by the array leaf), as the heap's containment has them. A clean table runs as the scan; a table with every wrong type, a root that is no
 -- object, a JSON null and a scalar where a container is expected gives the rows of the normal plan whichever plan takes it.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

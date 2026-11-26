@@ -2,6 +2,7 @@
 -- conditions imply the predicate: every row of the index passes it, so the scan does not test the conditions the predicate implies. A query that does not imply
 -- the predicate, or that reads the predicate's column, keeps the normal plan. Results with the scan off and on are the same after every change of the heap.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, dim_a_id int, kind int, status text, flag bool, qty float8);
 INSERT INTO events

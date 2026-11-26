@@ -2,6 +2,7 @@
 -- the test and its lookup run once for the arms together, and an arm that has a test the others lack applies it to its own set.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

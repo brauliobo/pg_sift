@@ -2,6 +2,7 @@
 -- a table (a key that may repeat, a condition on the parameters alone): the arms read different columns of it and the planner numbers their Params apart, which
 -- is not a difference of the join. Arms whose conditions on the parameters differ are two joins and run apart. The rows are the normal plan's either way.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET enable_nestloop = off;
 CREATE TABLE ff_facts (id int, k int, g int, h int, skip bool);

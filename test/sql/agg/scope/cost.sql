@@ -4,6 +4,7 @@
 -- price is raised for the keys the distinct parents allow (the param_set_elems limit = 0 turns it off); a lookup whose filter PostgreSQL has
 -- statistics for keeps its estimate. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE sc_facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, amount float8, deleted_at timestamptz) WITH (autovacuum_enabled = false);

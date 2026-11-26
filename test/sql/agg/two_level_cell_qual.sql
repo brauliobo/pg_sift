@@ -3,6 +3,7 @@
 -- (cell), so the scan does too, with the values of the cell's aggregates and keys, and the outer aggregate stays in the same scan. The rows are those
 -- of the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

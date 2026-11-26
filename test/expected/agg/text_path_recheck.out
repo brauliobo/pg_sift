@@ -4,6 +4,7 @@
 -- scan answers as it does for a clean column. Every query runs with and without the pushdown; the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -25,9 +26,6 @@ CREATE FUNCTION t_q(where_ text) RETURNS text[] LANGUAGE sql AS $f$
 CREATE TABLE t (id int PRIMARY KEY, grp int, n int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT i, i % 5, i, jsonb_build_object('k', (ARRAY['a', 'b', 'c1', 'd'])[i % 4 + 1], 'o', i % 3) FROM generate_series(1, 3000) i;
 CREATE INDEX t_col ON t USING sift_col (id, grp, n, doc) WITH (paths = 'doc.k astext, doc.o astext');
-NOTICE:  sift_col index "t_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('t_col');
 VACUUM ANALYZE t;
 -- clean documents: the scan has the paths
 SELECT i, pushed(q) AS pushed, same(q) AS clean FROM unnest(t_q('true')) WITH ORDINALITY u(q, i) ORDER BY i;

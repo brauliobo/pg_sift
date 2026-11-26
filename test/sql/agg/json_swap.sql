@@ -3,6 +3,7 @@
 -- argument, jsonb_build_object, and a role that may not execute sift's function keep the core one.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 CREATE TABLE jt (id int PRIMARY KEY, g int, label text, price numeric, day date);
 INSERT INTO jt SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'l"' || i % 5 || E'\n' END, i / 4.0, '2026-01-01'::date + i % 30 FROM generate_series(1, 3000) i;

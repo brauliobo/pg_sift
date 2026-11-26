@@ -6,6 +6,7 @@
 -- A test of the table's columns (shape 8: a FILTER, a CASE) is a boolean column of the lookup table that the load computes (agg_lookup_tests): its map has a class for each outcome.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

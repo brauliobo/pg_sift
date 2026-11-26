@@ -1,6 +1,7 @@
 -- Group keys computed inside the nullable input of an outer join (placeholders) under grouping sets: one set leaves a key out, so the
 -- grouping step marks the keys nulled; the keys are still the expressions of the input, NULL for the rows no input row matched.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE gs_facts (id int PRIMARY KEY, dim_a_id int, day date, kind text, metrics_a jsonb);

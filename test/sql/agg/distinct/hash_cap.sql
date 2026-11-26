@@ -2,6 +2,7 @@
 -- faster), whose array is stripped of repeats when it first reaches a million pairs (a column of repeats) or left to grow (a column of unique values).
 -- The counts are the plain plan's for both.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- the superblocks a parallel build gives each segment depend on which participant reads which blocks, so the share of order chunks that come out compact (the advice) varies from run to run
 SET max_parallel_maintenance_workers = 0;

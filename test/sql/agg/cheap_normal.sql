@@ -2,6 +2,7 @@
 -- is priced. The plan and the rows must be those of the arms, a statement the normal plan does not make cheap must keep the scan, and sift.explain_why
 -- still plans every arm.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE cn (id int PRIMARY KEY, a int, b int, ts timestamp);
 INSERT INTO cn SELECT i, i % 50, i % 7, timestamp '2024-01-01' + i * interval '1 minute' FROM generate_series(1, 20000) i;

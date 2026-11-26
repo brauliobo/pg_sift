@@ -2,6 +2,7 @@
 -- key the index holds as the type of the member k (a JSON null member exists, a missing one does not). Elsewhere a document may be an array
 -- holding the string or the string itself, which the index does not tell: those queries stay with PostgreSQL.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE oe_docs (id int PRIMARY KEY, set_id int, doc jsonb);

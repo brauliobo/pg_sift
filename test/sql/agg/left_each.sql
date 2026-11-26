@@ -1,6 +1,7 @@
 -- `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` is the member k of each row: a row without it stays, with NULL columns. Its value is read at the
 -- row level (or by a correlated child through casts), with PostgreSQL's results and errors; before PostgreSQL 18 the cast of a JSON null raises, so a unit that may hold one keeps the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, metrics jsonb);
 INSERT INTO facts

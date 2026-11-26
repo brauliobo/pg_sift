@@ -2,6 +2,7 @@
 -- normal plan, also with workers.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 CREATE TABLE k_t (id int, m jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO k_t SELECT i, jsonb_build_object('k1', 'v' || i % 10, 'k2', 'w' || i % 5) FROM generate_series(1, 6000) i;

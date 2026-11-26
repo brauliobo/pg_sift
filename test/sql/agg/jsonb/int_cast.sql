@@ -2,6 +2,7 @@
 -- the scan, in a filter, a group key and an aggregate: the cast is PostgreSQL's own over the jsonb the stored float stands for, so it rounds half away from
 -- zero, a missing key and a JSON null are NULL and an out of range member raises PostgreSQL's error for the rows that reach it.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, day date, metrics jsonb);
 INSERT INTO facts

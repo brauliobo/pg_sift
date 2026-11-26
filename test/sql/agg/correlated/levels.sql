@@ -1,6 +1,7 @@
 -- A lateral child, or a sub-select the scan asks once, that reads a column of a query above the aggregate's own stays on the normal plan: the scan would
 -- never see the parameter.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, kind text, payload text);
 INSERT INTO facts SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END, repeat('payload', 50) FROM generate_series(1, 20000) i;

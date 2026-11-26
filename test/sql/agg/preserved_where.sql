@@ -2,6 +2,7 @@
 -- grouped sub-select. The calendar days nothing matched have NULL columns and must pass it, and a day whose matches it drops is no row (not
 -- a day of NULL columns), so the scan tests it on the matched tuples. A condition the NULL row fails keeps the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dates (day date PRIMARY KEY);
 INSERT INTO dates SELECT d::date FROM generate_series('2026-01-01'::date, '2026-01-20', '1 day') d;

@@ -2,6 +2,7 @@
 -- document holds a value the index cannot store (a number written as a string, a list that is no array) are read again from the heap, as
 -- they are for a column read alone, instead of the query keeping PostgreSQL's plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE rc_docs (id int PRIMARY KEY, set_id int, doc jsonb);

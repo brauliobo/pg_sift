@@ -2,6 +2,7 @@
 -- each row loaded, as a column is; without it every row of the table was tested for every distinct input of the scan. An expression that can raise or is not
 -- immutable stays a condition of the rows. Every query runs as the scan and as the normal plan, and the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -10,9 +11,6 @@ INSERT INTO facts
 SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE i % 7 END, CASE WHEN i % 13 = 0 THEN NULL ELSE date '2025-01-01' + (i / 3) % 8 END, i % 5 + 0.5, i % 11
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, k, ts, amount, val);
-NOTICE:  sift_col index "facts_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = k, ts; track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 -- days of the dimension are timestamps: several in one day, a NULL, one no fact has, 'infinity'; the small and wide integers repeat and have a NULL
 CREATE TABLE dims (at timestamp, n2 smallint, n4 int, n8 bigint, label text) WITH (autovacuum_enabled = false);

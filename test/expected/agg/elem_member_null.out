@@ -3,6 +3,7 @@
 -- the leaf too. Every query is run with the scan off and on and the answers compared; a member that holds a value the leaf cannot store keeps the
 -- answer of the normal plan (the plan or the scan's error, whichever it is, is that of the cast read of the same member).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 \ir test/common/sql/agg/base.sql
 \set ECHO none
@@ -21,9 +22,6 @@ SELECT i, i % 7,
                    END) FROM generate_series(1, 1 + i % 6) j)) END
 FROM generate_series(1, 4000) i;
 CREATE INDEX ed_col ON ed USING sift_col (id, g, doc) WITH (paths = 'doc.items[]{tag text, score float8, n int4}');
-NOTICE:  sift_col index "ed_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ed_col');
 VACUUM (FREEZE, ANALYZE) ed;
 CREATE FUNCTION check_query(label text, q text) RETURNS TABLE (what text, in_scan bool, same bool, answer text) LANGUAGE sql AS $$
 	SELECT label, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 60)
@@ -118,9 +116,6 @@ CREATE TABLE ed2 (id int PRIMARY KEY, doc jsonb);
 INSERT INTO ed2 SELECT i, jsonb_build_object('items', jsonb_build_array(jsonb_build_object('score', i), jsonb_build_object('score', CASE WHEN i % 50 = 0 THEN 'n/a' ELSE NULL END)))
 FROM generate_series(1, 400) i;
 CREATE INDEX ed2_col ON ed2 USING sift_col (id, doc) WITH (paths = 'doc.items[]{score float8}');
-NOTICE:  sift_col index "ed2_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ed2_col');
 VACUUM (FREEZE, ANALYZE) ed2;
 SELECT * FROM check_query('dirty, not null', $q$ SELECT count(*) FROM ed2, jsonb_array_elements(doc -> 'items') p WHERE p ->> 'score' IS NOT NULL $q$);
       what       | in_scan | same |      answer      

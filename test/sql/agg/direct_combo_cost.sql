@@ -4,6 +4,7 @@
 -- compared with each other, not with a time. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE spans (id int PRIMARY KEY, tenant int NOT NULL, few_s int NOT NULL, few_e int NOT NULL, many_s int NOT NULL, many_e int NOT NULL);
 INSERT INTO spans SELECT g, g % 50, g % 10, g % 10 + 5, g, g + 3 FROM generate_series(1, 60000) g;

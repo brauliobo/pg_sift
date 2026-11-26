@@ -3,6 +3,7 @@
 -- either leaves a share of the units, and two windows that meet in other rows leave about none). Every statement is also run with
 -- sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE zc_facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, deleted_at timestamptz, payload jsonb) WITH (autovacuum_enabled = false);

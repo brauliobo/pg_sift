@@ -3,6 +3,7 @@
 -- 1.4 s where the plan was priced 66 ms). The normal plan is priced for them where a scan competes with it: a near-unique key over the whole table takes the scan,
 -- as an integer key of the same groups does, while a selective filter that leaves the few groups of the rows it passes keeps the normal plan (agg_key_entries_cost).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '64MB';
 CREATE TABLE items (id int PRIMARY KEY, tag text NOT NULL, cat text NOT NULL, amount float8 NOT NULL);

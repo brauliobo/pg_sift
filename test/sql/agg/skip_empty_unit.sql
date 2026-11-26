@@ -3,6 +3,7 @@
 -- (rows with no element), a distinct count and an aggregate with no group, when some units, none or every unit is emptied.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 CREATE TABLE ev (id int PRIMARY KEY, prop_id int, day date, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO ev SELECT i, 1 + i % 40, '2026-01-01'::date + i % 90,

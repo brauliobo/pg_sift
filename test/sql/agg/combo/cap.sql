@@ -3,6 +3,7 @@
 -- as the scan and as the normal plan; the rows must be the same, and the plan shows how often the caches started again.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 

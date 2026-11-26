@@ -5,6 +5,7 @@
 -- and of every row (within a factor of 64 of the real groups, not of the guess), so the plan above keeps the copy (Materialize) and runs its
 -- aggregate once. The estimate is not part of the price: the choice of the scan does not move. A list PostgreSQL has statistics for keeps its count.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100;
@@ -14,9 +15,6 @@ SET hash_mem_multiplier = 1;
 CREATE TABLE gr_facts (id int, parent_id int, kind text, ts date, amount float8) WITH (autovacuum_enabled = false);
 INSERT INTO gr_facts SELECT i, i, 'cat_' || chr(97 + i % 4), date '2024-01-01' + i % 365, i % 13 + 0.5 FROM generate_series(1, 12000) i;
 CREATE INDEX gr_facts_col ON gr_facts USING sift_col (id, parent_id, kind, ts, amount);
-NOTICE:  sift_col index "gr_facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gr_facts_col');
 CREATE TABLE gr_dims (id int PRIMARY KEY, settings jsonb NOT NULL, grp int NOT NULL);
 INSERT INTO gr_dims SELECT p, jsonb_build_object('kind', 'cat_' || chr(97 + p % 3), 'slot', p % 6), p % 3 FROM generate_series(1, 12000) p;
 VACUUM (FREEZE, ANALYZE) gr_facts, gr_dims;

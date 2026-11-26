@@ -2,6 +2,7 @@
 -- bounded by the scanned table's rows when the child reads a column of another joined table that has several rows for each of them: the query keeps the
 -- normal plan when they exceed the setting, and runs in the scan when the inputs are the scanned table's own.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, amount float8);
 INSERT INTO facts SELECT i, i, i FROM generate_series(1, 100) i;

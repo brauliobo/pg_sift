@@ -3,6 +3,7 @@
 -- the leaf too. Every query is run with the scan off and on and the answers compared; a member that holds a value the leaf cannot store keeps the
 -- answer of the normal plan (the plan or the scan's error, whichever it is, is that of the cast read of the same member).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 \ir test/common/sql/agg/base.sql
 

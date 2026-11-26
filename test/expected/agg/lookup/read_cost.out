@@ -1,15 +1,13 @@
 -- A lookup table read whole costs the pages PostgreSQL's own sequential scan of it costs besides its rows: the scan that loads a table of many pages
 -- costs more as a page costs more, so a large table read for a small outer side does not win by pricing its rows alone.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- the scan is priced in the units of the normal plan when that plan reads the table for more than AGG_JOIN_SCALAR_FLOOR units: held above it for every page cost below
 SET cpu_tuple_cost = 0.1;
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 20000, i % 7 FROM generate_series(1, 40000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
-NOTICE:  sift_col index "ev_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 -- twenty rows to a page: a table of a thousand pages
 CREATE TABLE dims (k int, label text, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO dims SELECT i, 'label' || i, repeat('x', 350) FROM generate_series(0, 19999) i;

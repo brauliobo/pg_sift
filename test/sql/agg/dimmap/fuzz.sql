@@ -2,6 +2,7 @@
 -- reader) against the shapes that read it through the dimension map: after every batch each shape gives the rows of the normal plan, for a dimension whose index keeps a journal of its
 -- changed keys (a child index is connected to it) and for one that has none, and both kinds of map are made and shared along the way.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

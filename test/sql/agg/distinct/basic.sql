@@ -2,6 +2,7 @@
 -- the pushdown; the results must be the same. A window function runs above the grouping and keeps its plan; the DISTINCT of a grouped query stays above the grouping, which is the scan's. DISTINCT ON
 -- picks the first row of each group in the order of the ORDER BY (agg_distinct_on): here the ORDER BY is the select list, so the row it picks has no other column to differ in.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;

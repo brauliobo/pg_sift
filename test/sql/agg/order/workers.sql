@@ -3,6 +3,7 @@
 -- Priced at the pairs, a scan with workers costs more than the scan alone when the values are all different, and stays cheap when a column has few.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

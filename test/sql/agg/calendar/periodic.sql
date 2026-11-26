@@ -4,6 +4,7 @@
 -- that no row has (13 months, the 25th hour, a fraction), formats the text of which is not in order, infinite timestamps and NULL.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

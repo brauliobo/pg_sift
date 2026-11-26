@@ -3,6 +3,7 @@
 -- Between PREPARE and EXECUTE: ALTER INDEX, REINDEX, a new write buffer, DROP and CREATE of the index with other columns, a table rewrite
 -- and DDL on the joined table. Every step compares the plan shape and the rows with sift.enable_agg = off.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the btree and bitmap plans from looking cheap as well
 SET seq_page_cost = 10000; SET random_page_cost = 10000;

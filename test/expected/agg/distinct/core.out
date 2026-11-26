@@ -3,6 +3,7 @@
 -- columns with the normal plan and checks that the row is a row of the table). Every other statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the sort and the btree plans from looking cheap as well
@@ -13,9 +14,6 @@ SELECT i, 1 + (i * 7919) % 60, (ARRAY['a', 'b', 'c', NULL])[1 + i % 4], date '20
        CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 1000) / 10.0 END, left(md5(i::text), 5)
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, tenant_id, kind, day, ts, amount, note);
-NOTICE:  sift_col index "ev_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = tenant_id, kind; track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE tenants (id int PRIMARY KEY, kind text);
 INSERT INTO tenants SELECT i, (ARRAY['outlet', 'popup', 'flagship'])[1 + i % 3] FROM generate_series(1, 60) i;
@@ -273,9 +271,6 @@ SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, id, 0 * random() 
 CREATE TABLE tn (id int NOT NULL, g int, v int, w int, u int) WITH (autovacuum_enabled = false);
 INSERT INTO tn SELECT i, i % 20, (i * 31) % 97, i % 13, CASE WHEN i % 7 = 1 THEN NULL ELSE i % 400 END FROM generate_series(1, 4000) i;
 CREATE INDEX tn_col ON tn USING sift_col (id, g, v, w, u);
-NOTICE:  sift_col index "tn_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = g, w
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tn_col');
 VACUUM (FREEZE, ANALYZE) tn;
 -- a total order by the id, and a sort that ties (v repeats in every group), a NULL sort value that repeats, a condition on the sort column
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, v FROM tn ORDER BY g, v DESC, id$$);
@@ -369,12 +364,6 @@ CREATE TABLE tp1 PARTITION OF tp FOR VALUES FROM ('2024-01-01') TO ('2024-02-01'
 CREATE TABLE tp2 PARTITION OF tp FOR VALUES FROM ('2024-02-01') TO ('2024-03-01');
 INSERT INTO tp SELECT i, date '2024-01-01' + i % 58, i % 9, (i * 7) % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX tp_col ON tp USING sift_col (id, d, g, v);
-NOTICE:  sift_col index "tp1_id_d_g_v_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tp1_id_d_g_v_idx');
-NOTICE:  sift_col index "tp2_id_d_g_v_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tp2_id_d_g_v_idx');
 VACUUM (FREEZE, ANALYZE) tp;
 SELECT * FROM same($$SELECT DISTINCT ON (g) g, id, d, v FROM tp ORDER BY g, v DESC, d, id$$);
   plan   | result_rows | vs_normal_plan 
@@ -448,9 +437,6 @@ ROLLBACK;
 CREATE TABLE evn (id int PRIMARY KEY, g int, k int, up int, ts timestamp) WITH (autovacuum_enabled = false);
 INSERT INTO evn SELECT i, 1 + (i * 7919) % 40, CASE WHEN i % 13 = 0 THEN NULL ELSE i / 40 % 150 END, i, timestamp '2024-01-01' + i * interval '1 minute' FROM generate_series(1, 20000) i;
 CREATE INDEX evn_col ON evn USING sift_col (id, g, k, up, ts);
-NOTICE:  sift_col index "evn_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('evn_col');
 VACUUM (FREEZE, ANALYZE) evn;
 SELECT * FROM same_tied($$SELECT DISTINCT ON (g) g, id, k, ts FROM evn ORDER BY g, k$$, 'g, k', 'evn');
   plan   | result_rows | pairs_vs_normal_plan | rows_not_in_table 

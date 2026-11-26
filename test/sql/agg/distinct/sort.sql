@@ -1,6 +1,7 @@
 -- count(DISTINCT x) of a nullable bigint column whose sets outgrow the hash memory: the pairs of group and value go through a sort of int8 datums, and the
 -- counts are the plain plan's over NULL values, groups of NULLs only and values that repeat inside a group.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 CREATE TABLE ev (id int PRIMARY KEY, grp int NOT NULL, uid bigint, pad text);

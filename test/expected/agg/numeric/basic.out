@@ -3,6 +3,7 @@
 -- float8 comparisons, functions) are evaluated by PostgreSQL over the decoded values, also past the 38 digits of the integer programs; what PostgreSQL types as an integer sum runs as a generic aggregate.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -15,9 +16,6 @@ FROM generate_series(1, 4000) g;
 INSERT INTO items VALUES (4001, 9, 9999999999.99, 1, 999999999999.999999, 9999999999), (4002, 9, -9999999999.99, 1, -999999999999.999999, -9999999999),
 	   (4003, 9, 0.05, 1, 0.000001, 0), (4004, 9, 0.00, 1, 0, 0);
 CREATE INDEX items_col ON items USING sift_col (id, store, price, qty, rate, weight);
-NOTICE:  sift_col index "items_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = store, qty; track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('items_col');
 ANALYZE items;
 -- the plans: a numeric predicate, a numeric key, an expression, count(DISTINCT)
 EXPLAIN (COSTS OFF) SELECT store, count(*) FROM items WHERE price > 10.005 AND weight IN (1, 2.5, 3) GROUP BY store;
@@ -219,9 +217,6 @@ RESET work_mem;
 CREATE TABLE nans (id int PRIMARY KEY, g int, n numeric(12,2));
 INSERT INTO nans VALUES (1, 1, 1.5), (2, 1, 'NaN'), (3, 1, NULL), (4, 2, 'NaN'), (5, 2, -7.25), (6, 3, 2);
 CREATE INDEX nans_col ON nans USING sift_col (id, g, n);
-NOTICE:  sift_col index "nans_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nans_col');
 SELECT same($$SELECT g, n % 3 AS k, sum(n / 3) AS s, count(*) FILTER (WHERE n > 1.5::float8) AS c FROM nans GROUP BY 1, 2$$) AS nan_rows;
  nan_rows 
 ----------

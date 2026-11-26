@@ -1,6 +1,7 @@
 -- A lookup table read whole costs the pages PostgreSQL's own sequential scan of it costs besides its rows: the scan that loads a table of many pages
 -- costs more as a page costs more, so a large table read for a small outer side does not win by pricing its rows alone.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- the scan is priced in the units of the normal plan when that plan reads the table for more than AGG_JOIN_SCALAR_FLOOR units: held above it for every page cost below
 SET cpu_tuple_cost = 0.1;

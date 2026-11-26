@@ -2,6 +2,7 @@
 -- of a sift or sift_col index what the index holds (segments, rows in write buffers, dead rows). Nothing is printed without the option. PostgreSQL 17 has no
 -- extension options for EXPLAIN: explain_sift_1.out is the same test where each call says so (sift.explain_refusals is the way there).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 -- the option exists once the library is loaded
 SELECT sift.version() IS NOT NULL AS loaded;
 SET max_parallel_workers_per_gather = 0;

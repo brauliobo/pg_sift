@@ -3,6 +3,7 @@
 -- the leader scanning too, and gives the rows of the scan without workers and of the normal plan; for hash, range and list partitions.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

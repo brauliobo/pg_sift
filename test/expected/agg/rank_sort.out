@@ -2,6 +2,7 @@
 -- (its sort operator, collation and nulls order), and the rows by the ranks. The rows come out in the order of the Sort they replace, for text, numeric, float, date
 -- and expression keys, DESC, NULLS FIRST and LAST, ties, a scroll cursor read backwards, a merge join, a rescan, with workers, and the Sort under a Limit stays.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET extra_float_digits = 0;
 SET parallel_setup_cost = 0;
@@ -16,9 +17,6 @@ SELECT i, i % 97, CASE WHEN i % 31 = 0 THEN NULL ELSE 'k' || (i * 7 % 83) END, (
        (ARRAY['a', 'A', 'b', 'B', 'é', 'e', '', 'z', 'Z', '10', '9', '_', 'ab', 'aB', 'Ab'])[1 + i % 15] || (i % 7)
 FROM generate_series(1, 40000) i;
 CREATE INDEX r_col ON r USING sift_col (id, a, b, c, d, f, t);
-NOTICE:  sift_col index "r_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = c, d
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('r_col');
 VACUUM ANALYZE r;
 -- the rows of the statement as a checksum, in the order it gives them, with the pushdown and the workers as given
 CREATE FUNCTION r_sum(q text, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
@@ -119,9 +117,6 @@ CREATE COLLATION r_ci (provider = icu, locale = 'und-u-ks-level2', deterministic
 CREATE TABLE rc (id int, a int, t text COLLATE r_ci) WITH (autovacuum_enabled = false);
 INSERT INTO rc SELECT i, i % 101, (ARRAY['a', 'A', 'b', 'B', 'é', 'e', 'E', 'z'])[1 + i % 8] || (i % 11) FROM generate_series(1, 40000) i;
 CREATE INDEX rc_col ON rc USING sift_col (id, a, t);
-NOTICE:  sift_col index "rc_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('rc_col');
 VACUUM ANALYZE rc;
 SELECT r_plan(q, 0) plan, r_sum(q, true, 0) = r_sum(q, false, 0) same
 FROM (VALUES ('SELECT lower(t), a, n FROM (SELECT t, a, count(*) n FROM rc GROUP BY t, a ORDER BY count(*) % 3, t, a DESC) q')) v(q);

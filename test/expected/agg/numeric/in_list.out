@@ -2,6 +2,7 @@
 -- a hash set of the scaled values, with NaN equal to NaN and to no number, NULL as in the normal plan, and constants no stored value can equal (a scale the column does not
 -- have, a number beyond its digits) left out. Every list runs as the scan and as the normal plan, at the limit and one constant above it.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -11,9 +12,6 @@ INSERT INTO nn
 SELECT i, i % 7, CASE WHEN i % 97 = 0 THEN 'NaN' WHEN i % 11 = 0 THEN NULL ELSE round(((i * 37) % 4001 - 2000) / 7.0, 2) END, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 31) % 500 - 250 END
 FROM generate_series(1, 6000) i;
 CREATE INDEX nn_col ON nn USING sift_col (id, g, n, w);
-NOTICE:  sift_col index "nn_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nn_col');
 VACUUM (FREEZE, ANALYZE) nn;
 -- the lists: the values of the table, ones it does not have, NaN, NULL, a scale the column lacks, a number beyond its digits
 CREATE TABLE lists (name text, items text);

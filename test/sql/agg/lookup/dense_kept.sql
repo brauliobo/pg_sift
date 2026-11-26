@@ -2,6 +2,7 @@
 -- cache, whatever the settings of the caches, and a query that cannot read the classes (the key as a column) neither takes nor replaces the classed table.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

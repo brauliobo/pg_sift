@@ -2,6 +2,7 @@
 -- programs (at most 38 digits, which never reach it), and a sum that came to exactly that integer was returned as NaN. Each shape is a sum
 -- (and average) that ends at, or passes, 2^127 - 1, compared as text with the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE TABLE big (id int, g int, n0 numeric(38,0), n10 numeric(38,10), w numeric, a numeric(19,0), b numeric(19,0), c numeric(24,0), d numeric(24,0));
 -- numeric(38,0): two values that add up to 2^127 - 1, the same negated, three values that pass it, a control
 INSERT INTO big (id, g, n0) VALUES
@@ -30,9 +31,6 @@ WITH t AS (SELECT power(2::numeric, 127) - 1 AS top, 999999999999999999999999::n
 INSERT INTO big (id, g, c, d) SELECT 41, 41, floor(top / p), p FROM t UNION ALL SELECT 42, 41, top - floor(top / p) * p, 1 FROM t
 	UNION ALL SELECT 43, 42, 3, 2;
 CREATE INDEX big_col ON big USING sift_col (id, g, n0, n10, w, a, b, c, d);
-NOTICE:  sift_col index "big_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('big_col');
 VACUUM (FREEZE, ANALYZE) big;
 CREATE FUNCTION same_rows(q text, workers int) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
 DECLARE

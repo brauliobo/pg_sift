@@ -4,6 +4,7 @@
 -- decoded values. A constant, a non-strict expression (coalesce, CASE) or a volatile one keeps the placeholder: it is not NULL where the join
 -- finds no row (or not known to be), and the results must stay those of the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int NOT NULL, day date NOT NULL, metrics_a jsonb);

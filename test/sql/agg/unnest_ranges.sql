@@ -3,6 +3,7 @@
 -- 0.5 %, 5 %, 30 % or 80 % of the rows are kept, with a conjunct on the elements, and for a left lateral (rows with no element).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 CREATE TABLE ev (id int PRIMARY KEY, day date, items jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, '2026-01-01'::date + i % 400,

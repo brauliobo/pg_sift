@@ -1,6 +1,7 @@
 -- A correlated child that reads the value of a jsonb_each member (a cast that can raise) runs only for the members a row reaches, with the
 -- error of the value it was given; `x IS TRUE` over an existence test selects the rows the test does.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, metrics jsonb, tags_a jsonb);
 INSERT INTO facts

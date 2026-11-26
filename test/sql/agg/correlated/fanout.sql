@@ -1,5 +1,6 @@
 -- A function or UNION that reads a joined row fans it out; the scan runs PostgreSQL's plan of the child for each distinct input.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '256MB';

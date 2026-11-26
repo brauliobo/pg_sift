@@ -5,6 +5,7 @@
 -- in the workers here (agg_preagg_elem_parallel covers the units that answer from the element cubes).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 CREATE TABLE p_t (id int, grp int, attrs jsonb, metrics_a jsonb, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO p_t

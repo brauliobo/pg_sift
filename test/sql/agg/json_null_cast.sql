@@ -2,6 +2,7 @@
 -- leaf that may hold a JSON null keeps the normal plan (which raises), while a leaf without one, and `->>` and its cast (NULL in every version), keep the scan.
 -- Every result below is the same with the scan off and on; the columns say what differs by version: `scan` (pushed as the version allows) and `raises`.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE docs (id int, doc jsonb);
 INSERT INTO docs

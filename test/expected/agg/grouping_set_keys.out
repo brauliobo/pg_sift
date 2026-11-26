@@ -1,15 +1,13 @@
 -- Group keys computed inside the nullable input of an outer join (placeholders) under grouping sets: one set leaves a key out, so the
 -- grouping step marks the keys nulled; the keys are still the expressions of the input, NULL for the rows no input row matched.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE gs_facts (id int PRIMARY KEY, dim_a_id int, day date, kind text, metrics_a jsonb);
 INSERT INTO gs_facts SELECT i, i % 7, date '2024-01-01' + i % 5, (ARRAY['a', 'b', NULL])[1 + i % 3],
 	jsonb_build_object('catg_i_catg_a', i % 10, 'catg_i', 3, 'catg_m', i % 4) FROM generate_series(1, 3000) i;
 CREATE INDEX gs_facts_col ON gs_facts USING sift_col (id, dim_a_id, day, kind, metrics_a) WITH (paths = 'metrics_a.* float8');
-NOTICE:  sift_col index "gs_facts_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('gs_facts_col');
 VACUUM (FREEZE, ANALYZE) gs_facts;
 \ir test/common/sql/agg/check_pushed.sql
 \set ECHO none

@@ -1,6 +1,7 @@
 -- A table with several sift_col indexes is scanned through the one the cost model prices lowest, whichever was created last: an index cut by the key (key_cut)
 -- reads the few units of a key and all of them for a date range, an index cut by block range the other way round. Each table has both, in the two creation orders.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET sift.enable_col_scan = on;

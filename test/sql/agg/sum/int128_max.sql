@@ -2,6 +2,7 @@
 -- programs (at most 38 digits, which never reach it), and a sum that came to exactly that integer was returned as NaN. Each shape is a sum
 -- (and average) that ends at, or passes, 2^127 - 1, compared as text with the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 CREATE TABLE big (id int, g int, n0 numeric(38,0), n10 numeric(38,10), w numeric, a numeric(19,0), b numeric(19,0), c numeric(24,0), d numeric(24,0));
 -- numeric(38,0): two values that add up to 2^127 - 1, the same negated, three values that pass it, a control

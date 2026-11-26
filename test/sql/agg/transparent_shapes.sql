@@ -1,5 +1,6 @@
 -- Ordinary SQL shapes compose indexed JSON, lateral children, and outer aggregation.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, dim_a_id int, document jsonb, metrics jsonb, payload text);
 INSERT INTO events

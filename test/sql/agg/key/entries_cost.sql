@@ -6,6 +6,7 @@
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE items (id int PRIMARY KEY, tag text NOT NULL, cat text NOT NULL, part int NOT NULL, amount float8 NOT NULL, grp text NOT NULL, gi int NOT NULL);
 SELECT setseed(0.42);

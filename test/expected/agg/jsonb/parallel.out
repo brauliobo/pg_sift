@@ -5,6 +5,7 @@
 -- in the workers here (agg_preagg_elem_parallel covers the units that answer from the element cubes).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 CREATE TABLE p_t (id int, grp int, attrs jsonb, metrics_a jsonb, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO p_t
 SELECT i, i % 7,
@@ -23,9 +24,6 @@ SELECT i, i % 7,
 FROM generate_series(1, 12000) i;
 CREATE INDEX p_col ON p_t USING sift_col (id, grp, attrs, metrics_a, items)
 	WITH (paths = 'attrs.tags[] text(1024), attrs->label astext, metrics_a.* astext, items[]{kind text, n int4, score astext}');
-NOTICE:  sift_col index "p_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('p_col');
 VACUUM ANALYZE p_t;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

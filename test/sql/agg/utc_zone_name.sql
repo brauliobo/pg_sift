@@ -2,6 +2,7 @@
 -- has one of the name (the POSIX zone UTC+3 is -03 with the abbreviation UTC): the value is not the UTC clock's there. The scan must give the rows of the normal plan in
 -- every session, with the calendar cells of the units and without them, and from a plan that was made in another zone. The names with a slash (Etc/UTC) name the database zone.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 

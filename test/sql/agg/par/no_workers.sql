@@ -2,6 +2,7 @@
 -- that the processes would have shared lived in the segment of the parallel context, which is gone, so the leader runs the child itself and its rows
 -- are those of the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

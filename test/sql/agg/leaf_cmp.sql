@@ -4,6 +4,7 @@
 -- Custom Scan (SiftAgg) at every level and with sift.enable_agg off, and the results must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

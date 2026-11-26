@@ -4,6 +4,7 @@
 -- a column of the key itself that a left join reads) is loaded row by row as before; a text column is classes too. An inner join reads the key as the scanned column it equals (shape 10); shape 11 is
 -- a left join, and shape 12 reads the key of one.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

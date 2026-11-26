@@ -4,6 +4,7 @@
 -- calendar, the infinities, NULL), after SET TIME ZONE, from a plan that was made in another zone, and with parallel workers. A call or a unit that is not a step of the clock
 -- (epoch, seconds with fractions, julian, a zone named in the call) keeps the normal plan and gives the same rows too.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

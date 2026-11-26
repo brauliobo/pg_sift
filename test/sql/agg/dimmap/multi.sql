@@ -2,6 +2,7 @@
 -- statements that join it read its leaves again and leaves the maps of the others shared. The answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

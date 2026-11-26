@@ -2,6 +2,7 @@
 -- document wrote a scale (12.50): the child reads the member only through casts that float8 serves exactly (integers and floats), as PostgreSQL
 -- gives them. A numeric cast, a boolean cast and the jsonb itself keep PostgreSQL's plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, metrics jsonb);
 INSERT INTO facts

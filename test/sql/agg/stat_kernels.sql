@@ -3,6 +3,7 @@
 -- NaN and infinities, groups of one row, groups of a few rows, a FILTER, and the error a sum that overflows raises.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '256MB';

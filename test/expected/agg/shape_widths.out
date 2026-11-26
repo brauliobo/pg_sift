@@ -3,6 +3,7 @@
 -- plan with the slug shape_width (rows_shape for the aggregates of a rows set) and the limit in the reason; one at the width runs in the scan and gives the rows of the normal plan. Each width is
 -- tried at its default (where the shape is cheap to make) and at a value sift.test_limits lowers it to.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 -- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
 SET sift.agg_force = on;
 LOAD 'pg_sift';
@@ -16,9 +17,6 @@ SELECT i, i % 50, 'k' || i % 5, date '2025-01-01' + i % 6, i % 7, i % 5, i % 3, 
                           'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 3000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, a, b, c, d, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
 -- a dimension with four key columns and seventeen value columns
 CREATE TABLE dd (id int NOT NULL, a int NOT NULL, b int NOT NULL, c int NOT NULL, d int NOT NULL, v1 int NOT NULL, v2 int NOT NULL, v3 int NOT NULL, v4 int NOT NULL, v5 int NOT NULL, v6 int NOT NULL, v7 int NOT NULL, v8 int NOT NULL, v9 int NOT NULL, v10 int NOT NULL, v11 int NOT NULL, v12 int NOT NULL, v13 int NOT NULL, v14 int NOT NULL, v15 int NOT NULL, v16 int NOT NULL, v17 int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO dd SELECT i, i % 7, i % 5, i % 3, i % 2, i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15, i + 16 FROM generate_series(0, 49) i;
@@ -28,8 +26,6 @@ CREATE UNIQUE INDEX dd_first ON dd (a, b, v2);
 CREATE TABLE wide (kind text, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, c17 int) WITH (autovacuum_enabled = false);
 INSERT INTO wide SELECT 'k' || i % 5, i % 2, i % 3, i % 5, i % 7, i % 11, i % 13, i % 17, i % 19, i % 23, i % 29, i % 31, i % 37, i % 41, i % 43, i % 47, i % 53, i % 59 FROM generate_series(1, 3000) i;
 CREATE INDEX wide_col ON wide USING sift_col (kind, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17);
-NOTICE:  sift_col index "wide_col": 1 automatic choice, 1 advice, 1 limit
-DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = "c16", "c17";
 rollup_columns = kind, c3
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('wide_col');
 VACUUM (FREEZE, ANALYZE) events, dd, wide;

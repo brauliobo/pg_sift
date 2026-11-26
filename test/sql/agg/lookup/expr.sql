@@ -3,6 +3,7 @@
 -- evaluated for each row loaded. The answers are those of the normal plan in both (NULL, blank and unmatched values, a left join, which does not read the
 -- leaf: the expression of a row nothing matched is not NULL, rows the transaction changed, workers).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

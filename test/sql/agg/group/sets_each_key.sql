@@ -2,6 +2,7 @@
 -- planner as a placeholder: PostgreSQL 18 marks the grouping step with a group RTE, before 18 the grouping sets expression is wrapped in a placeholder that
 -- carries no nulling of its own. The scan reads the expression in both (the arm single is used) and the rows equal those of the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE gs_events (id int PRIMARY KEY, dim_a_id int NOT NULL, d date NOT NULL, metrics_a jsonb NOT NULL);
 INSERT INTO gs_events

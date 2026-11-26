@@ -2,15 +2,13 @@
 -- document wrote a scale (12.50): the child reads the member only through casts that float8 serves exactly (integers and floats), as PostgreSQL
 -- gives them. A numeric cast, a boolean cast and the jsonb itself keep PostgreSQL's plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, metrics jsonb);
 INSERT INTO facts
 SELECT i, i % 40, CASE i % 3 WHEN 0 THEN '{"k": 12.50, "j": 1.0}'::jsonb WHEN 1 THEN '{"k": 3, "j": 2}'::jsonb ELSE jsonb_build_object('k', i + 0.25, 'j', i) END
 FROM generate_series(1, 3000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, metrics) WITH (paths = 'metrics.* float8');
-NOTICE:  sift_col index "facts_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
 VACUUM (FREEZE, ANALYZE) facts;
 \ir test/common/sql/agg/base.sql
 \set ECHO none

@@ -2,6 +2,7 @@
 -- exactly the rows that pass it; a query that does not imply it keeps the normal plan. Results with the scan off and on are the same after every
 -- change of the heap that moves rows in and out of the predicate.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, grp int, day date, deleted_at timestamp, score float8, doc jsonb);
 INSERT INTO facts

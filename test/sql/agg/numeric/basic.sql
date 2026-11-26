@@ -3,6 +3,7 @@
 -- float8 comparisons, functions) are evaluated by PostgreSQL over the decoded values, also past the 38 digits of the integer programs; what PostgreSQL types as an integer sum runs as a generic aggregate.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

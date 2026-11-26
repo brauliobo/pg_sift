@@ -4,6 +4,7 @@
 -- (percentiles that are not a multiple of 1/4 are left out of percentile_cont: the server's own interpolation may be built with fused multiply-adds, which this library is not)
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '64MB';

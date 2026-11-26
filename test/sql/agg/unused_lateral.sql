@@ -3,6 +3,7 @@
 -- DELETE or UPDATE, and the body of a security_barrier view. The fixture has NULL join keys, keys with no row in the map, keys with two rows (duplicates) and an ORDER BY
 -- inside the LIMIT 1; every statement answers as the one planned without the extension's rewrite (sift.enable_agg off).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 CREATE TABLE ul_fact (id int PRIMARY KEY, dim_a_id int NOT NULL, kind int, v int NOT NULL);
 INSERT INTO ul_fact SELECT g, 1 + g % 20, CASE WHEN g % 50 = 0 THEN NULL ELSE 1 + g % 40 END, g % 100 FROM generate_series(1, 20000) g;

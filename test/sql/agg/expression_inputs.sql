@@ -1,5 +1,6 @@
 -- Expression caches must retain every input, including NULLs and inputs after the third.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, a int, b int, c int, d int, e int, f int, g int, h int, payload text);
 INSERT INTO events

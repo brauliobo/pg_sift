@@ -2,6 +2,7 @@
 -- whatever the type of the key. The aggregates over nothing are still the normal plan's: the one row of a global aggregate, the grand total of a
 -- grouping set. Joins that keep the rows without a match (LEFT, anti, the preserved side of a spine) still read every unit.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

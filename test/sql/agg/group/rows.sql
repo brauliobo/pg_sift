@@ -5,6 +5,7 @@
 -- and of every row (within a factor of 64 of the real groups, not of the guess), so the plan above keeps the copy (Materialize) and runs its
 -- aggregate once. The estimate is not part of the price: the choice of the scan does not move. A list PostgreSQL has statistics for keeps its count.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100;

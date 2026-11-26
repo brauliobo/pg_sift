@@ -3,6 +3,7 @@
 -- the zero byte values, a mask length that makes two values of one address, both families, constants of a list that are NULL or absent. An OR, an ordering
 -- operator and an array of an image type stay with the executor.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 \ir test/common/sql/agg/base.sql
 

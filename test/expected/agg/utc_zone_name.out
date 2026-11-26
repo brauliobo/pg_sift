@@ -2,15 +2,13 @@
 -- has one of the name (the POSIX zone UTC+3 is -03 with the abbreviation UTC): the value is not the UTC clock's there. The scan must give the rows of the normal plan in
 -- every session, with the calendar cells of the units and without them, and from a plan that was made in another zone. The names with a slash (Etc/UTC) name the database zone.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 CREATE TABLE uz (id int, ts timestamptz, v int) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO uz SELECT i, timestamptz '2024-01-01 00:00+00' + i * interval '97 minutes 13 seconds', i % 13 FROM generate_series(1, 6000) i;
 INSERT INTO uz VALUES (7001, 'infinity', 1), (7002, '-infinity', 2), (7003, NULL, 3), (7004, '2024-05-01 02:30+00', 4), (7005, '2024-05-01 21:30+00', 5);
 CREATE INDEX uz_col ON uz USING sift_col (id, ts, v);
-NOTICE:  sift_col index "uz_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('uz_col');
 VACUUM ANALYZE uz;
 CREATE TABLE zones (z text);
 INSERT INTO zones VALUES ('UTC'), ('America/New_York'), ('Asia/Kolkata'), ('UTC+3'), ('UTC-5'), ('GMT+3'), ('GMT-11'), ('utc+1');

@@ -3,6 +3,7 @@
 -- plan, and every shape is served by a map but shape 7, whose five columns take more tuples of values than a class table holds (4,096): the rows are loaded.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;

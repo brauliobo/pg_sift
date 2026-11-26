@@ -3,6 +3,7 @@
 -- columns with the normal plan and checks that the row is a row of the table). Every other statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the sort and the btree plans from looking cheap as well

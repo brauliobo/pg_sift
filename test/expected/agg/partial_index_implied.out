@@ -2,6 +2,7 @@
 -- conditions imply the predicate: every row of the index passes it, so the scan does not test the conditions the predicate implies. A query that does not imply
 -- the predicate, or that reads the predicate's column, keeps the normal plan. Results with the scan off and on are the same after every change of the heap.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, dim_a_id int, kind int, status text, flag bool, qty float8);
 INSERT INTO events
@@ -10,17 +11,8 @@ FROM generate_series(1, 20000) i;
 CREATE TABLE kinds (id int, label text);
 INSERT INTO kinds SELECT i, CASE WHEN i % 2 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 4) i;
 CREATE INDEX events_open ON events USING sift_col (dim_a_id, kind, qty) WHERE status = 'open';
-NOTICE:  sift_col index "events_open": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_open');
 CREATE INDEX events_null ON events USING sift_col (dim_a_id, kind, qty) WHERE status IS NULL;
-NOTICE:  sift_col index "events_null": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_null');
 CREATE INDEX events_held_flag ON events USING sift_col (dim_a_id, kind, qty) WHERE status = 'held' AND flag;
-NOTICE:  sift_col index "events_held_flag": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_held_flag');
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE kinds;
 SET app.status = 'open';
@@ -166,9 +158,6 @@ SELECT * FROM check_all();
 (20 rows)
 
 REINDEX INDEX events_open;
-NOTICE:  sift_col index "events_open": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_open');
 SELECT * FROM check_all();
            label            | scan | same |                           outcome                            
 ----------------------------+------+------+--------------------------------------------------------------
@@ -225,9 +214,6 @@ SELECT * FROM check_prepared('force_generic_plan');
 
 -- a full index beside the partial ones: either answers a query they cover
 CREATE INDEX events_all ON events USING sift_col (dim_a_id, kind, qty, status);
-NOTICE:  sift_col index "events_all": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = kind, status
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_all');
 VACUUM (FREEZE, ANALYZE) events;
 SELECT * FROM check_all();
            label            | scan | same |                           outcome                            
@@ -261,12 +247,6 @@ CREATE TABLE pev_a PARTITION OF pev FOR VALUES FROM (0) TO (20);
 CREATE TABLE pev_b PARTITION OF pev FOR VALUES FROM (20) TO (40);
 INSERT INTO pev SELECT i, i % 40, i % 5, (ARRAY['new', 'open', 'held', 'closed'])[1 + i % 4], i % 13 FROM generate_series(1, 20000) i;
 CREATE INDEX pev_open ON pev USING sift_col (dim_a_id, kind, qty) WHERE status = 'open';
-NOTICE:  sift_col index "pev_a_dim_a_id_kind_qty_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pev_a_dim_a_id_kind_qty_idx');
-NOTICE:  sift_col index "pev_b_dim_a_id_kind_qty_idx": 1 automatic choice, 1 advice
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pev_b_dim_a_id_kind_qty_idx');
 VACUUM (FREEZE, ANALYZE) pev;
 SELECT * FROM check_query('partitions, implied', 'SELECT kind, count(*), sum(qty) FROM pev WHERE status = ''open'' AND dim_a_id < 30 GROUP BY kind');
         label        | scan | same |                           outcome                            
@@ -291,13 +271,7 @@ SELECT * FROM check_query('partitions, after changes', 'SELECT kind, count(*), s
 -- the partitions do not share a predicate: the plan of the table is the normal one
 DROP INDEX pev_open;
 CREATE INDEX pev_a_open ON pev_a USING sift_col (dim_a_id, kind, qty) WHERE status = 'open';
-NOTICE:  sift_col index "pev_a_open": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pev_a_open');
 CREATE INDEX pev_b_held ON pev_b USING sift_col (dim_a_id, kind, qty) WHERE status = 'held';
-NOTICE:  sift_col index "pev_b_held": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = dim_a_id, kind
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pev_b_held');
 VACUUM (FREEZE, ANALYZE) pev;
 SELECT * FROM check_query('partitions, other predicates', 'SELECT kind, count(*) FROM pev WHERE status = ''open'' GROUP BY kind');
             label             | scan | same |                           outcome                            

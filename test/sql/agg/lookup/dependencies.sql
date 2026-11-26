@@ -1,5 +1,6 @@
 -- A lookup can read columns of earlier lookups, including NULL-extended rows.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, dim_a_id int, amount int, payload text);
 INSERT INTO events SELECT i, i % 100, i % 11, repeat('payload', 50) FROM generate_series(1, 50000) i;

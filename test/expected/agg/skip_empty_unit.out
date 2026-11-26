@@ -3,14 +3,12 @@
 -- (rows with no element), a distinct count and an aggregate with no group, when some units, none or every unit is emptied.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 CREATE TABLE ev (id int PRIMARY KEY, prop_id int, day date, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO ev SELECT i, 1 + i % 40, '2026-01-01'::date + i % 90,
        CASE WHEN i % 5 = 0 THEN '[]'::jsonb ELSE (SELECT jsonb_agg(jsonb_build_object('kind', 'c' || ((i + k) % 7), 'n', (i * k) % 9)) FROM generate_series(1, 1 + i % 4) k) END
 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, prop_id, day, items) WITH (paths = 'items[]{kind text, n int4}');
-NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
 VACUUM ANALYZE ev;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;

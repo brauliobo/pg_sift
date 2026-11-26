@@ -1,6 +1,7 @@
 -- A scan over a partitioned table narrows a unit to the rows its filters keep, as the scan of one table does (the rows of a window of a few days, of an
 -- equality, of an empty range), also after deletes, updates and inserts. Every query gives the rows of the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET sift.agg_force = on;

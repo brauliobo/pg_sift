@@ -1,5 +1,6 @@
 -- A group key computed inside the nullable input of an outer join is NULL for the preserved rows, also when it tests a sub-select (IN is hashed).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dates (day date PRIMARY KEY);
 INSERT INTO dates SELECT d::date FROM generate_series('2026-01-01'::date, '2026-01-20', '1 day') d;
