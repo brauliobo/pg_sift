@@ -290,7 +290,7 @@ class Churn:
         if kind == 'fold':
             if FMT.v1_hooks:
                 return kind, "SELECT sift._test_col_fold_marks('ct_i'), sift._test_col_fold_marks('ct_g')"
-            return kind, "SELECT count(*) FROM sift.maintain('ct_i'), sift.maintain('ct_g')"
+            return kind, "SELECT count(*) FROM sift.maintain('ct_i') i, sift.maintain('ct_g') g"
         if kind == 'merge':
             return kind, "SELECT sift.merge('ct_i', true), sift.merge('ct_g', true)"
         if kind == 'reindex':
