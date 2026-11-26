@@ -1,0 +1,76 @@
+-- A fetch by address after the deletes of a transaction were folded into the deletion vector of a part, in the backend that wrote them: the granules it cached
+-- before the commit were decoded under an older pin of the part and must not answer for its new deletion vector. A row deleted, inserted again and deleted
+-- again by three MERGEs of one transaction is gone for the index, the bitmap and the scan of the table, as on the heap twin.
+CREATE EXTENSION pg_sift;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SET client_min_messages = warning;
+CREATE TABLE t (k text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL) PARTITION BY HASH (k);
+CREATE TABLE t_p0 PARTITION OF t FOR VALUES WITH (MODULUS 3, REMAINDER 0) USING sift_table;
+CREATE TABLE t_p1 PARTITION OF t FOR VALUES WITH (MODULUS 3, REMAINDER 1) USING sift_table;
+CREATE TABLE t_p2 PARTITION OF t FOR VALUES WITH (MODULUS 3, REMAINDER 2) USING sift_table;
+CREATE TABLE h (k text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL);
+INSERT INTO t SELECT 'c' || i, i % 10, i FROM generate_series(1, 12000) i;
+INSERT INTO h SELECT * FROM t;
+ANALYZE t, h;
+CREATE FUNCTION merge3(rel regclass) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	FOR n IN 1..3 LOOP
+		EXECUTE format('MERGE INTO %s t USING generate_series(2511, 5511) i ON t.k = ''c'' || i
+			WHEN MATCHED AND i %% 3 = 0 THEN DELETE WHEN MATCHED THEN UPDATE SET amount = t.amount + 833
+			WHEN NOT MATCHED THEN INSERT VALUES (''c'' || i, i %% 10, i)', rel);
+	END LOOP;
+END $$;
+CREATE FUNCTION points(rel regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT string_agg(k || '':'' || amount, '','' ORDER BY k) FROM %s WHERE k IN (''c11'', ''c3021'', ''c3022'', ''c5511'', ''c6116'')', rel) INTO r;
+	RETURN r;
+END $$;
+\c -
+SET client_min_messages = warning;
+BEGIN;
+SELECT merge3('t'), merge3('h');
+ merge3 | merge3 
+--------+--------
+        | 
+(1 row)
+
+COMMIT;
+SET max_parallel_workers_per_gather = 0;
+SELECT points('h') AS heap;
+             heap             
+------------------------------
+ c11:11,c3022:5521,c6116:6116
+(1 row)
+
+SELECT points('t') = points('h') AS bitmap_agrees;
+ bitmap_agrees 
+---------------
+ t
+(1 row)
+
+SET enable_bitmapscan = off;
+SELECT points('t') = points('h') AS index_agrees;
+ index_agrees 
+--------------
+ t
+(1 row)
+
+SET enable_indexscan = off;
+SELECT points('t') = points('h') AS scan_agrees;
+ scan_agrees 
+-------------
+ t
+(1 row)
+
+RESET enable_bitmapscan;
+RESET enable_indexscan;
+SELECT count(*) AS deleted_row_left FROM t_p0 WHERE k = 'c3021';
+ deleted_row_left 
+------------------
+                0
+(1 row)
+
+DROP TABLE t, h;
+DROP FUNCTION merge3(regclass), points(regclass);
+DROP EXTENSION pg_sift;

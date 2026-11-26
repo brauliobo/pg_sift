@@ -725,6 +725,7 @@ TESTING_REGRESS += table/f2/drop_in_txn
 TESTING_REGRESS += table/f2/drop_parts_before
 TESTING_REGRESS += table/f2/fast_fetch
 TESTING_REGRESS += table/f2/fetch
+TESTING_REGRESS += table/f2/fetch_dv
 TESTING_REGRESS += table/f2/join_parts
 TESTING_REGRESS += table/f2/key_order_check
 TESTING_REGRESS += table/f2/lock_escalation

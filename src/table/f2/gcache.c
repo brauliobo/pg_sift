@@ -147,12 +147,15 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 	key.granule_id = g;
 	key.schema_hash = store->schema_hash;
 	e = pin->uncached ? NULL : hash_search(gcache, &key, HASH_FIND, NULL);
-	if (e != NULL)
+	if (e != NULL && e->gb->pin == pin)
 	{
 		e->tick = sift_cache_tick();
 		dlist_move_tail(&gcache_lru, &e->lru);
 		return sift_f2_gbuf_ref(e->gb);
 	}
+	/* a granule decoded under an older pin of the part reads that pin's deletion vector, not the one the part has now */
+	if (e != NULL)
+		drop_entry(e);
 	gb = sift_f2_gbuf_load_lazy(rel, store, pin, g, CurrentMemoryContext);
 	while (sift_backend_cache_kb != 0 && hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES && gcache_evict_one())
 		;
