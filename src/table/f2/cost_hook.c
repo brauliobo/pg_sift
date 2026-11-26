@@ -16,16 +16,25 @@
 #include "table/dispatch.h"
 #include "table/f2/cost_hook.h"
 
+/* Before 19 the routine of an access method is a copy the caller owns; from 19 it is the one the server keeps */
+static void
+release_am_routine(const IndexAmRoutine *am)
+{
+#if PG_VERSION_NUM < 190000
+	pfree((void *) am);
+#endif
+}
+
 static void
 f2_index_costestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *startup, Cost *total, Selectivity *selectivity, double *correlation, double *pages)
 {
 	IndexOptInfo *index = path->indexinfo;
-	IndexAmRoutine *am = GetIndexAmRoutineByAmId(index->relam, false);
+	const IndexAmRoutine *am = GetIndexAmRoutineByAmId(index->relam, false);
 
 	am->amcostestimate(root, path, loop_count, startup, total, selectivity, correlation, pages);
 	if (path->path.pathtype != T_IndexOnlyScan)
 		*total += clamp_row_est(*selectivity * index->rel->tuples) * SIFT_TBL_F2_FETCH_ROW_US / SIFT_TBL_COST_UNIT_US;
-	pfree(am);
+	release_am_routine(am);
 }
 
 static void
