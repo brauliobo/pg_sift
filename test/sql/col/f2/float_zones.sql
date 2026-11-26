@@ -90,7 +90,7 @@ SELECT n, zcensus('fz_i', 'price', op, c) AS price, zcensus('fz_i', 'p4', op, c)
 CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE via_index text; via_heap text;
 BEGIN
-	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
 	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
 	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
 	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
