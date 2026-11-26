@@ -22,6 +22,29 @@ END $$;
 SELECT * FROM lookup_peak($q$SELECT f.status, count(*) AS n FROM facts f WHERE EXISTS (SELECT 1 FROM links l WHERE l.parent_id = f.parent_id AND l.status = 0 AND l.weight = 1) GROUP BY 1$q$);
 SELECT * FROM lookup_peak($q$SELECT f.status, count(*) AS n FROM facts f WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.parent_id = f.parent_id AND l.status = 0 AND l.weight = 1) GROUP BY 1$q$);
 
+-- A preserved dimension (RIGHT, FULL join) over work_mem whose rows have NULL keys: more parts never split them (every NULL key is in part 0), so the dimension is read
+-- whole once its part stops splitting, in a few passes over the facts, not in 65536 (the planner is told the function returns 10 rows).
+CREATE FUNCTION null_dims() RETURNS TABLE (k int, w int) ROWS 10 STABLE LANGUAGE plpgsql AS $$
+BEGIN RETURN QUERY SELECT CASE WHEN i % 100 = 0 THEN i % 4 END, i % 7 FROM generate_series(1, 6000) i; END $$;
+CREATE FUNCTION star_passes(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; passes int := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Star Passes: ' THEN passes := substring(l FROM 'Star Passes: (\d+)')::int; END IF;
+	END LOOP;
+	RETURN passes;
+END $$;
+SET work_mem = '64kB';
+SET sift.agg_force = on;
+SET statement_timeout = '30s';
+SELECT j, star_passes(q) BETWEEN 1 AND 4 AS few_passes, runq(q, true) = runq(q, false) AS same
+FROM (VALUES ('right'), ('full')) v(j), LATERAL (SELECT format('SELECT d.w, count(f.id) AS n, sum(f.id) AS s FROM facts f %s JOIN null_dims() d ON d.k = f.parent_id GROUP BY 1', j) AS q) x;
+RESET statement_timeout;
+RESET sift.agg_force;
+RESET work_mem;
+
+DROP FUNCTION null_dims(), star_passes(text);
 DROP FUNCTION lookup_peak(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, links;
 DROP EXTENSION pg_sift_test;

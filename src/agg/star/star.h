@@ -150,6 +150,8 @@ sift_star_parts_split(const SiftStarShape *sh)
 	return sh->mode != SV6J_RANGE_SMALL && sh->nkeys > 0;
 }
 extern uint32 sift_star_row_part(const SiftStarShape *sh, const SiftStarRow *row, uint32 nparts);
+/* whether the rows of the table fall in more than one of nparts parts: when not (one key, or NULL keys), more parts never make the part of the table smaller */
+extern bool sift_star_dim_splits(const SiftStarDim *d, uint32 nparts);
 extern uint32 sift_star_probe_part(const SiftStarShape *sh, const SiftStarProbe *p, uint32 r, uint32 nparts);
 
 /* match[r] = the 1-based first dimension row of the key of fact row r (0: none) for the rows of active; returns the rows that matched. An equi join only */

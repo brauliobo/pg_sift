@@ -412,6 +412,7 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 		const SiftStarDim *hit = NULL;
 		SiftV6SharedDim *share = NULL;
 		bool		fits,
+					small,
 					last,
 					whole = true;
 
@@ -433,7 +434,9 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 			MemoryContextSwitchTo(sift_v6_shared_dim_cx(share));
 		fits = read_dim(r, d, r->nparts[d], r->part[d], chunk_from(r, d), chunk_to(r, d), r->budget);
 		MemoryContextSwitchTo(r->cx);
-		last = pass > 0 || r->nparts[d] >= STAR_MAX_PARTS || !sift_star_parts_split(&r->dim[d].shape);
+		small = fits && (r->nparts[d] == 1 || r->dim[d].bytes <= r->budget / 2);
+		last = small || pass > 0 || r->nparts[d] >= STAR_MAX_PARTS || !sift_star_parts_split(&r->dim[d].shape) ||
+			!sift_star_dim_splits(&r->dim[d], r->nparts[d] * 2);
 		if (!fits && last)
 		{
 			whole = false;
@@ -450,7 +453,7 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 			else
 				fits = read_dim(r, d, r->nparts[d], r->part[d], 0, UINT32_MAX, UINT64_MAX);
 		}
-		settled = fits && (last || r->nparts[d] == 1 || r->dim[d].bytes <= r->budget / 2);
+		settled = fits && last;
 		if (keep && fits && whole)
 		{
 			r->built++;
