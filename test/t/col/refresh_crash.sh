@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sift.col_refresh (docs/COL-PREAGG.md section 7) and a crash: the rewrite of a segment is one atomic replacement of the directory, so a PANIC after the
+# sift.col_refresh (docs/COL-PREAGG.md section 7: the pre-aggregate sidecars of Format 1; Format 2 keeps none, its refresh has nothing to rewrite) and a crash: the rewrite of a segment is one atomic replacement of the directory, so a PANIC after the
 # new segment is written and before it replaces the old one, a cancel between two segments, and a kill -9 of the whole cluster at random points of a refresh (three times, the options
 # switched each time), leave the index as it was or with the segments done: it verifies, its rows and answers are the heap's, and the refresh made
 # again completes and has nothing left to do. The options are switched back and forth so that each refresh has every segment to rewrite.
@@ -7,6 +7,7 @@
 
 plan 25
 node_init primary 2 "autovacuum = off
+sift.test_create_format1 = on
 sift.async_maintenance = off"
 node_start primary || bail "primary start failed"
 ROWS=$(knob SIFT_ROWS 60000 30000)
