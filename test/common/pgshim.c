@@ -379,6 +379,7 @@ pgshim_unreached(const char *what)
 	abort();
 }
 
+#if PG_VERSION_NUM < 190000
 /* the circular order of transam.c: the assertion of FullTransactionIdFromAllowableAt (transam.h) of a server built with assertions reads it */
 bool
 TransactionIdPrecedesOrEquals(TransactionId id1, TransactionId id2)
@@ -387,6 +388,7 @@ TransactionIdPrecedesOrEquals(TransactionId id1, TransactionId id2)
 		return id1 <= id2;
 	return (int32) (id1 - id2) <= 0;
 }
+#endif
 
 int
 GetDatabaseEncoding(void)
