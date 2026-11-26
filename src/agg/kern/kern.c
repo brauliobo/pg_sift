@@ -268,6 +268,7 @@ ak6_minmax_f64_scalar(double *mn, double *mx, const double *v, const uint64 *mas
 	{
 		*mn = ak6_f8_of_key(lo);
 		*mx = ak6_f8_of_key(hi);
+		ak6_f8_zero_sign(mn, mx, v, mask, n);
 	}
 	return any;
 }

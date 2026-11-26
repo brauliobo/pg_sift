@@ -299,14 +299,29 @@ ak6_add_f64(double a, double b)
 	return __builtin_expect(s != s, 0) ? __builtin_nan("") : s;
 }
 
-/* A double as the minimum or maximum has it: -0.0 as +0.0 and every NaN the canonical quiet NaN (what the key of ak6_f8_key gives back) */
+/* The keys of a batch put -0.0 and +0.0 at one place: a zero extreme is the first zero of the batch, as the compares keep it */
+static inline void
+ak6_f8_zero_sign(double *mn, double *mx, const double *v, const uint64 *mask, uint16 n)
+{
+	if (*mn != 0 && *mx != 0)
+		return;
+	for (uint16 i = 0; i < n; i++)
+		if (v[i] == 0 && (mask == NULL || ((mask[i >> 6] >> (i & 63)) & 1)))
+		{
+			*mn = *mn == 0 ? v[i] : *mn;
+			*mx = *mx == 0 ? v[i] : *mx;
+			return;
+		}
+}
+
+/* A double as the minimum or maximum has it: every NaN the canonical quiet NaN, a zero with its sign (what float8smaller and float8larger keep) */
 static inline double
 ak6_f8_norm(double x)
 {
-	return x != x ? __builtin_nan("") : x + 0.0;
+	return x != x ? __builtin_nan("") : x;
 }
 
-/* mn[g] and mx[g] with v in the float8 order (NaN above everything, -0.0 = +0.0), by compares, not by keys: the same bits as the keys give */
+/* mn[g] and mx[g] with v in the float8 order (NaN above everything, -0.0 = +0.0, the first of two equal values kept), by compares, not by keys */
 static inline void
 ak6_upd_minmax_f64(double *mn, double *mx, uint32 g, double v)
 {

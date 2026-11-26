@@ -98,6 +98,7 @@ ak6_minmax_f64_avx512(double *mn, double *mx, const double *v, const uint64 *mas
 		return false;
 	*mn = ak6_f8_of_key(a);
 	*mx = ak6_f8_of_key(b);
+	ak6_f8_zero_sign(mn, mx, v, mask, n);
 	return true;
 }
 
