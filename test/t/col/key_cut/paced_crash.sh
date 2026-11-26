@@ -5,7 +5,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
-node_init cr 22 "autovacuum = off
+# Format 1: the passes of a key_cut merge of Format 1 segments and their crash points
+node_init cr 22 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_col_net = off
 sift.async_maintenance = off
 sift.vacuum_rewrite_limit = 1

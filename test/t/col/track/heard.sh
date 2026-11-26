@@ -7,7 +7,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 33
-node_init th 5 "autovacuum = off
+# Format 2: the deletes its row trigger hears (SiftColFormatOps.deletes_heard), which a Format 1 index does not vouch for
+node_init th 5 "sift.test_create_format1 = off
+autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.async_maintenance = off"
 node_start th || bail "start failed"

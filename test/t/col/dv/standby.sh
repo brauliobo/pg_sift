@@ -4,7 +4,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
-node_init primary 2 "wal_level = replica
+# Format 1: the marks of the deletion vector and the records of the log of Format 1 segments on a standby (sift._test_col_fold_marks, sift._test_col_log_records)
+node_init primary 2 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
 autovacuum = off"

@@ -20,7 +20,8 @@ STATEMENTS=(
 )
 
 plan 21
-node_init ch 74
+# Format 1: the summary of the choices of a Format 1 build (order arrays, key lists, column format minor); a Format 2 build prints the one line of what it built
+node_init ch 74 "sift.test_create_format1 = on"
 node_start ch || bail "start failed"
 s "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE facts (id bigint PRIMARY KEY, tenant_id int, foreign_id int, foreign_id_b int, event_date date, value_num numeric(12,2), tags_a int[], updated_at timestamptz)" \

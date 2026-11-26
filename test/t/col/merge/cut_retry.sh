@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
-node_init mc 12 "autovacuum = off
+# Format 1: the merge of Format 1 segments and the cut of the free end of the file it leaves
+node_init mc 12 "sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = off"
 node_start mc || bail "start failed"
 sql mc "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off)" \

@@ -6,7 +6,9 @@
 # standby is promoted at the end and the same checks pass on it. SIFT_FAULT_ONLY (a regex of the operation names) picks the families.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-node_init cm 1 "wal_consistency_checking = 'generic'
+# Format 1: the families of Format 1 segments, tombstones and tables; the f2_* families ask for Format 2 themselves (test/t/lib/crash_scenarios.bash)
+node_init cm 1 "sift.test_create_format1 = on
+wal_consistency_checking = 'generic'
 autovacuum = off
 sift.async_maintenance = off
 max_parallel_maintenance_workers = 0

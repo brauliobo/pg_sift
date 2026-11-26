@@ -8,7 +8,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 13
-node_init vs 14 "autovacuum = off"
+# Format 1: the units of Format 1 segments a VACUUM scans (sift._test_col_counters, sift._test_col_tids)
+node_init vs 14 "sift.test_create_format1 = on
+autovacuum = off"
 node_start vs || bail "start failed"
 D=$(dir vs)
 sql vs "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"

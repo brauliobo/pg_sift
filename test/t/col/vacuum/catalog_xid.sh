@@ -10,7 +10,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
-node_init vc 48 "autovacuum = off
+# Format 1: the choices of a Format 1 index (key_cut, key_columns, point_tid_columns, order columns) that its VACUUM merge makes and the explicit rewrite writes
+node_init vc 48 "sift.test_create_format1 = on
+autovacuum = off
 sift.maintenance_naptime = 200
 sift.log_min_duration = 0"
 node_start vc || bail "start failed"

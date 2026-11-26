@@ -7,7 +7,9 @@
 
 plan 5
 SECS=$(knob SIFT_DVCONC_SECS 40 12)
-node_init dc 14 "autovacuum = off
+# Format 1: the fold of the marks of the deletion vector of Format 1 segments beside scans and merges (sift._test_col_fold_marks, col/v1)
+node_init dc 14 "sift.test_create_format1 = on
+autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start dc || bail "start failed"
 D=$(dir dc)

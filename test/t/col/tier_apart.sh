@@ -8,7 +8,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
-node_init ta 25 "autovacuum = off
+# Format 1: the tiers of Format 1 segments, which a VACUUM merges apart
+node_init ta 25 "sift.test_create_format1 = on
+autovacuum = off
 sift.maintenance_naptime = 200
 sift.vacuum_rewrite_limit = 1"
 node_start ta || bail "start failed"

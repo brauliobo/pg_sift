@@ -10,7 +10,9 @@ newroot=$ROOT
 plan 5
 
 build_old "$ref"; oldroot=$OLDROOT
-node_init dg 43 'autovacuum = off'
+# Format 1: the directory of Format 1 segments that a release before 5.0 reads and refuses
+node_init dg 43 'sift.test_create_format1 = on
+autovacuum = off'
 use_root dg "$newroot"
 node_start dg || bail "cannot start this tree"
 sql dg "CREATE EXTENSION pg_sift" "CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text)" \

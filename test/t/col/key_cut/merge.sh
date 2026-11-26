@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
-node_init km 33 "autovacuum = off"
+# Format 1: the runs of a key_cut build of Format 1 segments, which its participants merge
+node_init km 33 "sift.test_create_format1 = on
+autovacuum = off"
 node_start km || bail "start failed"
 sql km "CREATE EXTENSION pg_sift CASCADE" >/dev/null || bail "pg_sift"
 sql km "CREATE TABLE km (id int, cust int, d date, amount int, pad text) WITH (autovacuum_enabled = false, parallel_workers = 2)" \

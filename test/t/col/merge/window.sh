@@ -7,7 +7,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
-node_init mw 61 "autovacuum = off
+# Format 1: the merge of Format 1 segments and the memory of its window of inputs
+node_init mw 61 "sift.test_create_format1 = on
+autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.async_maintenance = off"
 node_start mw || bail "start failed"

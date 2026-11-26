@@ -8,7 +8,9 @@
 SIZES=(100000 200000 400000)
 plan $((${#SIZES[@]} * 2))
 
-node_init rs 92 "sift.col_build_source = auto
+# Format 1: a REINDEX that takes its rows from the Format 1 index it replaces (col/v1/build/from_index.c) and the segments it writes
+node_init rs 92 "sift.test_create_format1 = on
+sift.col_build_source = auto
 autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.async_maintenance = off"

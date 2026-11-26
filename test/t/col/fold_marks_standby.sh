@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 7
-node_init primary 2 "wal_level = replica
+# Format 1: the fold of the marks of Format 1 segments held back by the snapshots of a standby (sift._test_col_fold_marks)
+node_init primary 2 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
 autovacuum = off"

@@ -5,7 +5,9 @@
 # index. An assert build stops at the guard (Assert), so the test needs a release build of the library.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-node_init cw 50 "autovacuum = off
+# Format 1: a build that writes the options it chose (key_cut, key_columns, point_tid_columns) in the catalog row of the index; the guards do not depend on the format
+node_init cw 50 "sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = off"
 node_start cw || bail "start failed"
 D=$(dir cw)

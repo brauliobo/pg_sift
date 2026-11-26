@@ -13,7 +13,9 @@ ext=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
 plan 12
 
 build_old "$ref"; oldroot=$OLDROOT
-node_init us 42 'autovacuum = off'
+# Format 1: the triggers of the Format 1 indexes a release before 4.2.1 wrote, and a REINDEX that keeps them in that format (two triggers each)
+node_init us 42 'sift.test_create_format1 = on
+autovacuum = off'
 use_root us "$oldroot"
 node_start us || bail "cannot start $ref"
 sql us "CREATE EXTENSION pg_sift" "CREATE TABLE h (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL)" \

@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
-node_init r 37 "autovacuum = off"
+# Format 1: the connections of Format 1 indexes and their journal (sift._test_conn_*, col/v1/conn)
+node_init r 37 "sift.test_create_format1 = on
+autovacuum = off"
 node_start r || bail "start failed"
 D=$(dir r)
 S=("-h" "$(node_sock r)" "-p" "$(port r)" "-U" "postgres")

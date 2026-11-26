@@ -8,7 +8,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 16
-node_init mc 22 "autovacuum = off
+# Format 1: the rewrite of Format 1 segments in slices by a backend and its workers
+node_init mc 22 "sift.test_create_format1 = on
+autovacuum = off
 maintenance_work_mem = 1GB
 sift.test_col_build_runs_overlap = on
 max_worker_processes = 16

@@ -7,7 +7,9 @@
 
 POINTS=(before chain after)
 BASE=("SET sift.test_col_segment_kb = 1024" "SET sift.test_col_partition_kb = 512" "SET max_parallel_maintenance_workers = 0" "SET sift.async_maintenance = off")
-node_init ad 1 "$WAL_CONF
+# Format 1: the partitions a Format 1 index adopts (sift._test_col_adopt) and a crash in the middle
+node_init ad 1 "sift.test_create_format1 = on
+$WAL_CONF
 wal_consistency_checking = 'generic'
 autovacuum = off"
 node_start ad || bail "start failed"

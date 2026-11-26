@@ -13,7 +13,9 @@ fi
 newroot=$ROOT
 build_old "$ref"; oldroot=$OLDROOT
 
-node_init legacy 2 'autovacuum = off
+# Format 1: the order arrays of Format 1 segments and the column formats a 3.7 release reads
+node_init legacy 2 'sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = off'
 use_root legacy "$oldroot"
 node_start legacy || bail "cannot start $ref"

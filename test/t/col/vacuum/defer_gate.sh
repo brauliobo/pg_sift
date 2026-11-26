@@ -6,7 +6,9 @@
 
 ROWS=$(knob SIFT_DG_ROWS 200000 100000)
 plan 4
-node_init defer 3 "autovacuum = off
+# Format 1: the rewrite of Format 1 segments that a VACUUM defers until it is worth its rows
+node_init defer 3 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_col_net = off"
 node_start defer || bail "start failed"
 sql defer "CREATE EXTENSION pg_sift" \

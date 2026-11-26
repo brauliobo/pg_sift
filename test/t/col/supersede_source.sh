@@ -8,7 +8,9 @@
 
 plan 9
 ROWS=$(knob SIFT_SS_ROWS 20000 12000)
-node_init p 33 "autovacuum = off"
+# Format 1: the tombstones of the entries an UPDATE replaces, found by the address of the old version (col/v1/supersede.c, sift.test_no_supersede)
+node_init p 33 "sift.test_create_format1 = on
+autovacuum = off"
 node_start p || bail "start failed"
 D=$(dir p)
 

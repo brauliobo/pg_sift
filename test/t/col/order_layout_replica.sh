@@ -8,7 +8,9 @@
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 11
-node_init primary 2 "wal_level = replica
+# Format 1: the order arrays of Format 1 segments, compact or whole, on a replica
+node_init primary 2 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
 autovacuum = off

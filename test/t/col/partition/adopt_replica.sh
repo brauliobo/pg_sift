@@ -6,7 +6,9 @@
 
 BASE=("SET sift.test_col_segment_kb = 1024" "SET sift.test_col_partition_kb = 512" "SET max_parallel_maintenance_workers = 0" "SET sift.async_maintenance = off")
 plan 5
-node_init primary 2 "$WAL_CONF
+# Format 1: the partitions a Format 1 index adopts (sift._test_col_adopt) and their bounds on a replica
+node_init primary 2 "sift.test_create_format1 = on
+$WAL_CONF
 wal_level = replica
 max_wal_senders = 4
 wal_consistency_checking = 'generic'

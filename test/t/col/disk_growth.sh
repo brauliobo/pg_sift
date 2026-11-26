@@ -5,7 +5,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
-node_init wg 67 "autovacuum = off
+# Format 1: the length of the file of Format 1 segments, which a merge cuts (sift.col_shrink_history)
+node_init wg 67 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_col_net = off
 sift.maintenance_naptime = 200
 sift.log_min_duration = 0"

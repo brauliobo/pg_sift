@@ -4,7 +4,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 7
 
-node_init ov 82 "autovacuum = off
+# Format 1: the overlays of Format 1 segments and the scans that make their merge due
+node_init ov 82 "sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = off
 sift.test_col_partition_kb = 400"
 node_start ov || bail "start failed"

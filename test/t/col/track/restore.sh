@@ -8,7 +8,9 @@
 plan 10
 N=$(knob SIFT_RESTORE_TABLES 24 12)
 ROWS=$(knob SIFT_RESTORE_ROWS 1500 600)
-node_init r 36 "autovacuum = off"
+# Format 1: the key a build chose, which it writes in the options of the index (track_changes=id) for the dump, and the log it keeps from the key on
+node_init r 36 "sift.test_create_format1 = on
+autovacuum = off"
 node_start r || bail "start failed"
 D=$(dir r)
 S=("-h" "$(node_sock r)" "-p" "$(port r)" "-U" "postgres")

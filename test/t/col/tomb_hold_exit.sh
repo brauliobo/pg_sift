@@ -6,7 +6,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
-node_init p 37 "autovacuum = off"
+# Format 1: the tombstones an UPDATE holds and the entries of the log of track_changes (col/v1/supersede.c, sift._test_col_log_entries)
+node_init p 37 "sift.test_create_format1 = on
+autovacuum = off"
 node_start p || bail "start failed"
 D=$(dir p)
 LOG=$D/postgres.log
