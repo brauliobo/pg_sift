@@ -100,3 +100,5 @@ array-append	src/agg/par/group_key.c	w[i++] = r->count;	w holds pgk_word_rec_siz
 array-append	src/agg/par/group_key.c	w[i++] = r->sum[m];	w holds pgk_word_rec_size / 8 words: nk + nsum, plus the count of a partial record; sift_par_group_spec_holds refuses a spec whose slot layout (pgk_layout, at most CMP_MAX_WORDS) does not take them
 array-append	src/agg/pipe.c	idx[m++] = r;	idx is SIFT_VEC_LEN long and r runs over the n_raw rows of one batch of the source, at most SIFT_VEC_LEN
 array-append	src/agg/unnest/exists.c	b->map[c++] = at;	map has SIFT_V6_XELEM_COLS slots and c counts the names of the element, which jsonb_to_recordset (funccolcount) and sift_v6_unnest_rte_col both hold to SIFT_V6_XELEM_COLS
+array-append	src/agg/exec.c	alone[nalone++] = c->arms[i]->owner;	alone is SIFT_V6_FUSE_MAX_ARMS long and the loop visits the c->narms arms, capped at that count by sift_v6_fuse_lead
+blocknumber-sum	src/core/f2/fsm/chain.c	BlockNumber blk = s->start + w * 64 + pg_rightmost_one_pos64(s->free[w]);	a set bit of the slab is a block below s->start + s->nblocks, a block number the file already holds
