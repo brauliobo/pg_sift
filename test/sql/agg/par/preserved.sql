@@ -1,6 +1,6 @@
 -- A preserved side of an outer join (the calendar of `dates LEFT JOIN facts`) with 0, 2 and 4 workers: each participant keeps which rows of the calendar its
 -- tuples matched, a worker sends them to the leader with its tables, and the leader adds the rows nobody matched once every worker has told. The rows are
--- those of the normal plan, with float sums (merged in lane order), a FILTER, a condition that matches no row, the leader out of the scan, rows in the
+-- those of the normal plan, with float sums (to 4 decimals: the scan adds in another order), a FILTER, a condition that matches no row, the leader out of the scan, rows in the
 -- write buffer and updated tuples. mode: parallel (workers planned in the SiftAgg node), serial (SiftAgg alone), none (the normal plan).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -36,9 +36,9 @@ SET seq_page_cost = 10000;
 CREATE TABLE shapes (n serial, name text, q text);
 INSERT INTO shapes (name, q) VALUES
 	('count by day',      'SELECT d.day, count(f.id) AS n FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
-	('float sum by day',  'SELECT d.day, count(f.id), sum(f.amount), avg(f.amount) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
+	('float sum by day',  'SELECT d.day, count(f.id), round(sum(f.amount)::numeric, 4), round(avg(f.amount)::numeric, 4) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
 	('by label and grp',  'SELECT d.label, f.grp, count(*), sum(f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.label, f.grp'),
-	('filter',            'SELECT d.day, count(f.id) FILTER (WHERE f.qty > 100), sum(f.amount) FILTER (WHERE f.grp = 3) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
+	('filter',            'SELECT d.day, count(f.id) FILTER (WHERE f.qty > 100), round((sum(f.amount) FILTER (WHERE f.grp = 3))::numeric, 4) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
 	('condition in ON',   'SELECT d.day, count(f.id), max(f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day AND f.qty < 50 GROUP BY d.day'),
 	('matches nothing',   'SELECT d.day, count(f.id), sum(f.amount) FROM dates d LEFT JOIN facts f ON f.day = d.day AND f.id < 0 GROUP BY d.day'),
 	('global',            'SELECT count(*), count(f.id), sum(f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day'),
