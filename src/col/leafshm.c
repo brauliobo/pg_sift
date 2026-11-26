@@ -9,8 +9,9 @@
  * to plan makes the records again.
  *
  * The table is a ring of bytes (sift.shared_cache_kb, the DSM registry: nothing is allocated at postmaster start) and a directory of LSHM_DIR entries. A
- * writer takes its place in the ring and clears the entries it covers under the write lock, copies outside of it and enters the directory when done; a record
- * carries a checksum, so a reader that copied bytes another writer was overwriting (a ring that wrapped) finds out and plans as if there were no record.
+ * writer takes its place in the ring and clears the entries it covers under the write lock, copies outside of it and enters the directory when done; a place another
+ * writer still copies into is not taken (that record is not kept), so no two copies overlap. A record carries a checksum, so a reader that copied bytes a writer was
+ * overwriting (a ring that wrapped) finds out and plans as if there were no record.
  * Readers take no lock and write nothing shared but their own counters: they copy the bucket of the index between two reads of the sequence number of its stripe,
  * which a writer makes odd while it changes an entry of the stripe, and read again when it moved (a reader that finds it odd waits for the write lock).
  */
@@ -31,11 +32,12 @@
 #define LSHM_WAYS		8
 #define LSHM_STRIPES	64
 #define LSHM_COUNTS		32
+#define LSHM_FLIGHTS	16
 /* a record read this many writes ago is read again as new: the oldest entry of a bucket goes when it is full, so a hit writes the tick of its entry once in a while */
 #define LSHM_TICK_LAG	64
 #define LSHM_MAGIC		0x4C534831
 /* the name carries the layout, as for the shared verdicts */
-#define LSHM_NAME		"sift_col_leaf_stats_6"
+#define LSHM_NAME		"sift_col_leaf_stats_7"
 #define LSHM_TRANCHE	"SiftLeafShm"
 
 
@@ -53,6 +55,13 @@ typedef struct LshmEnt
 	bool		scope;
 }			LshmEnt;
 StaticAssertDecl(sizeof(LshmEnt) == 48, "LshmEnt is 48 bytes");
+
+/* a place of the ring a writer copies its record into outside of the write lock (len 0: none) */
+typedef struct LshmFlight
+{
+	Size		off,
+				len;
+}			LshmFlight;
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) LshmStripe
 {
@@ -75,6 +84,7 @@ typedef struct Lshm
 	pg_atomic_uint64 tick;		/* the writes so far */
 	int			nord;
 	int16		ord[LSHM_DIR];	/* the used entries by the place of their record: no two overlap */
+	LshmFlight	flight[LSHM_FLIGHTS];	/* the places the writers copy into now: no two overlap */
 	LshmStripe	stripe[LSHM_STRIPES] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
 	LshmCount	count[LSHM_COUNTS];	/* by the process number of the reader: no counter is a line of another reader */
 	LshmEnt		dir[LSHM_DIR] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
@@ -453,6 +463,26 @@ lshm_place(Lshm *s, RelFileNumber rel)
 	return slot;
 }
 
+/* a place of the ring that no other writer copies into, held for the copy: -1 where one does or every flight is taken (the record is not kept) */
+static int
+lshm_fly(Lshm *s, Size off, Size len)
+{
+	int			free = -1;
+
+	for (int i = 0; i < LSHM_FLIGHTS; i++)
+	{
+		const LshmFlight *f = &s->flight[i];
+
+		if (f->len == 0)
+			free = free < 0 ? i : free;
+		else if (f->off < off + len && off < f->off + f->len)
+			return -1;
+	}
+	if (free >= 0)
+		s->flight[free] = (LshmFlight) {.off = off,.len = len};
+	return free;
+}
+
 /*
  * enters rec (its header not yet filled in) into the ring as the record of the index under the stamp; it replaces the older record of the same kind and those it overlaps.
  * A writer that entered the directory while this one copied its record took the place this one chose or holds a record of the index as well: the directory is looked at again before the entry
@@ -464,6 +494,7 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	Lshm	   *s = lshm_get();
 	Size		off;
 	int			slot,
+				flight,
 				evicted;
 
 	if (s == NULL || len > s->size)
@@ -474,6 +505,11 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 
 	LWLockAcquire(&s->write_lock.lock, LW_EXCLUSIVE);
 	off = s->head + len > s->size ? 0 : s->head;
+	if ((flight = lshm_fly(s, off, len)) < 0)
+	{
+		LWLockRelease(&s->write_lock.lock);
+		return;
+	}
 	s->head = off + len;
 	pg_atomic_write_u64(&s->tick, pg_atomic_read_u64(&s->tick) + 1);
 	/* the record of the same index and kind (an older stamp) is replaced: it is in the bucket of the index; those the new one covers are evicted */
@@ -484,6 +520,7 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	sift_shm_note_eviction(SIFT_SHM_COL_LEAF, evicted);
 	memcpy(s->data + off, rec, len);
 	LWLockAcquire(&s->write_lock.lock, LW_EXCLUSIVE);
+	s->flight[flight].len = 0;
 	(void) lshm_evict_range(s, off, len);
 	if (!lshm_clear_older(s, rel, scope, h.kind, stamp))
 	{
