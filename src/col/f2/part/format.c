@@ -978,8 +978,9 @@ sift_part_move_tail(Relation rel, const SiftPart *part, BlockNumber cut, const S
 	mv.made[nnew++] = (SiftExtent) {mv.header_blk, 1};
 	for (int i = 0; i < nlist; i++)
 		mv.made[nnew++] = (SiftExtent) {list_pages[i], 1};
-	memcpy(mv.made + nnew, to, nto * sizeof(SiftExtent));
-	mv.nmade = nnew + nto;
+	for (int i = 0; i < nto; i++)
+		mv.made[nnew++] = to[i];
+	mv.nmade = nnew;
 	mv.freed = freed;
 	mv.nfreed = nfreed;
 	pfree(ext);
