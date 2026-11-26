@@ -67,10 +67,15 @@ idx_view_export(void *impl, void *buf)
 	sift_col_view_export(((SiftV1Idx *) impl)->cs, buf);
 }
 
+/* As the end of an index scan: the reads of the scan are written to the metapage and the backend looks at the maintenance of the index (col/v1/maint/tick.c) */
 static void
 sift_v1_idx_close(void *impl)
 {
-	sift_col_close(((SiftV1Idx *) impl)->cs);
+	SiftV1Idx  *r = impl;
+	int64		dirty_rows = sift_col_counters(r->cs)->dirty_rows;
+
+	sift_col_close(r->cs);
+	sift_col_maint_tick(RelationGetRelid(r->index), dirty_rows);
 }
 
 static const SiftSrcLayout *
