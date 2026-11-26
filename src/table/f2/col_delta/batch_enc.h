@@ -5,7 +5,8 @@
  * bytes of the batch) and then: the number of rows (uint16, 2 or more) and a pad uint16; the SiftColDeltaColHdr of each of the ncols columns (kinds SIFT_CELL_INT, SIFT_CELL_F8 and SIFT_CELL_STR, no
  * tag; SIFT_CDCOL_IS_NULL says the column is null in every row of the batch, and a LEAF_ADDR batch starts with the column SIFT_CD_ATT_TID_REMAP, the new address of each row); and for each row the
  * zigzag varint of the change of its row ordinal and of its address from the row before (the header's for the first), and for each column that is not null the zigzag varint of the change of an
- * integer from the row before (0 before the first), the 8 bytes of a double, or a string: the varint 1 when it is the string of the row before, else the varint of twice its length and its bytes.
+ * integer from the row before (0 before the first), the 8 bytes of a double, or a string: the varint 1 when it is the string of the row before (the last row it is not null in), the varint 3
+ * when it is null in the row, else the varint of twice its length and its bytes (the writer never makes a string column SIFT_CDCOL_IS_NULL: its rows are alike null or not).
  * The record is padded to 8 bytes and is at most SIFT_COL_DELTA_MAX_REC_BYTES, as any record is.
  *
  * A page counts its rows, not its records, in nentries: what a reader meets is the rows of the page as the records they were (sift_col_delta_recs_next), in the order they were written, and

@@ -8,6 +8,7 @@
 
 #define BATCH_FIXED_BYTES	((uint32) (sizeof(SiftColDeltaEntryHdr) + 2 * sizeof(uint16)))
 #define STR_AGAIN			1	/* the string of a row is that of the row before; any other string is twice its length, then its bytes */
+#define STR_NULL			3	/* the column is null in this row */
 
 static inline uint64
 tid_of(const SiftColDeltaEntryHdr *h)
@@ -129,6 +130,9 @@ recs_row(SiftColDeltaRecs *it, const uint8 **rec, SiftColDeltaEntryHdr *h)
 		{
 			p = sift_get_varint_n(p, it->rows_end, &x);
 			SIFT_INVARIANT(p != NULL, "a column delta batch was read before it was checked");
+			it->cols[k].cell.isnull = x == STR_NULL;
+			if (x == STR_NULL)
+				continue;
 			if (x != STR_AGAIN)
 			{
 				it->prev_slen[k] = (uint16) (x >> 1);
@@ -191,7 +195,7 @@ sift_col_delta_recs_patch(const SiftColDeltaRecs *it, int k, SiftColDeltaPatch *
 	memset(out, 0, sizeof(*out));
 	out->row_ordinal = (uint16) it->prev_ord;
 	out->attnum = it->cols[k].attnum;
-	out->flags = it->cflags[k];
+	out->flags = SIFT_CDCOL_PACK_FLAGS(it->cols[k].cell.isnull, it->cols[k].kind);
 	if (it->cols[k].cell.isnull)
 		return;
 	if (it->cols[k].kind == SIFT_CELL_F8)
@@ -276,8 +280,10 @@ sift_col_delta_batch_check(const uint8 *rec, uint32 avail)
 			else if (SIFT_CDCOL_KIND(ch.flags) == SIFT_CELL_STR)
 			{
 				p = sift_get_varint_n(p, end, &x);
-				if (p == NULL || (x == STR_AGAIN ? !seen_str[k] : ((x & 1) != 0 || (x >> 1) > SIFT_COL_DELTA_MAX_PAYLOAD || (uint64) (end - p) < (x >> 1))))
+				if (p == NULL || (x == STR_AGAIN ? !seen_str[k] : x != STR_NULL && ((x & 1) != 0 || (x >> 1) > SIFT_COL_DELTA_MAX_PAYLOAD || (uint64) (end - p) < (x >> 1))))
 					return "the row of a batch is not one of the format";
+				if (x == STR_NULL)
+					continue;
 				if (x != STR_AGAIN)
 					p += x >> 1;
 				seen_str[k] = true;
@@ -318,6 +324,13 @@ static inline bool
 col_is_null(uint8 cflags)
 {
 	return (cflags & SIFT_CDCOL_IS_NULL) != 0;
+}
+
+/* The flags of the column of a batch: a string column is null row by row (STR_NULL), so its rows are alike whether they are null or not */
+static inline uint8
+batch_cflags(uint8 cflags)
+{
+	return SIFT_CDCOL_KIND(cflags) == SIFT_CELL_STR ? (uint8) (cflags & ~SIFT_CDCOL_IS_NULL) : cflags;
 }
 
 static bool
@@ -364,7 +377,7 @@ run_alike(const SiftColDeltaRun *r, const Row *row)
 	if (f->part_gen != row->h.part_gen || f->granule_id != row->h.granule_id || f->xmin != row->h.xmin || f->cid != row->h.cid || f->flags != row->h.flags || f->ncols != row->h.ncols)
 		return false;
 	for (int k = 0; k < f->ncols; k++)
-		if (r->attnum[k] != row->attnum[k] || r->cflags[k] != row->cflags[k])
+		if (r->attnum[k] != row->attnum[k] || r->cflags[k] != batch_cflags(row->cflags[k]))
 			return false;
 	return true;
 }
@@ -390,12 +403,12 @@ row_bytes(const SiftColDeltaRun *r, const Row *row)
 
 	for (int k = 0; k < row->h.ncols; k++)
 	{
-		if (col_is_null(row->cflags[k]))
+		if (SIFT_CDCOL_KIND(row->cflags[k]) == SIFT_CELL_STR)
+			n += col_is_null(row->cflags[k]) || str_again(r, row, k) ? 1 : varint_len((uint64) row->slen[k] << 1) + row->slen[k];
+		else if (col_is_null(row->cflags[k]))
 			continue;
-		if (SIFT_CDCOL_KIND(row->cflags[k]) == SIFT_CELL_F8)
+		else if (SIFT_CDCOL_KIND(row->cflags[k]) == SIFT_CELL_F8)
 			n += (uint32) sizeof(double);
-		else if (SIFT_CDCOL_KIND(row->cflags[k]) == SIFT_CELL_STR)
-			n += str_again(r, row, k) ? 1 : varint_len((uint64) row->slen[k] << 1) + row->slen[k];
 		else
 			n += varint_len(sift_zigzag(delta_of(row->v[k], r->prev_i[k])));
 	}
@@ -405,6 +418,8 @@ row_bytes(const SiftColDeltaRun *r, const Row *row)
 static uint8 *
 put_str(SiftColDeltaRun *r, uint8 *p, const Row *row, int k)
 {
+	if (col_is_null(row->cflags[k]))
+		return sift_put_varint(p, STR_NULL);
 	if (str_again(r, row, k))
 		return sift_put_varint(p, STR_AGAIN);
 	p = sift_put_varint(p, (uint64) row->slen[k] << 1);
@@ -425,7 +440,8 @@ run_put(SiftColDeltaRun *r, const uint8 *rec, const Row *row)
 		r->first = row->h;
 		memcpy(r->single, rec, row->h.rec_bytes);
 		memcpy(r->attnum, row->attnum, sizeof(r->attnum));
-		memcpy(r->cflags, row->cflags, sizeof(r->cflags));
+		for (int k = 0; k < row->h.ncols; k++)
+			r->cflags[k] = batch_cflags(row->cflags[k]);
 		memset(r->prev_i, 0, sizeof(r->prev_i));
 		memset(r->prev_soff, 0xFF, sizeof(r->prev_soff));
 		memset(r->prev_slen, 0, sizeof(r->prev_slen));
@@ -437,15 +453,15 @@ run_put(SiftColDeltaRun *r, const uint8 *rec, const Row *row)
 	p = sift_put_varint(p, sift_zigzag(delta_of((int64) tid_of(&row->h), (int64) r->prev_tid)));
 	for (int k = 0; k < row->h.ncols; k++)
 	{
-		if (col_is_null(row->cflags[k]))
+		if (SIFT_CDCOL_KIND(row->cflags[k]) == SIFT_CELL_STR)
+			p = put_str(r, p, row, k);
+		else if (col_is_null(row->cflags[k]))
 			continue;
-		if (SIFT_CDCOL_KIND(row->cflags[k]) == SIFT_CELL_F8)
+		else if (SIFT_CDCOL_KIND(row->cflags[k]) == SIFT_CELL_F8)
 		{
 			memcpy(p, &row->v[k], sizeof(double));
 			p += sizeof(double);
 		}
-		else if (SIFT_CDCOL_KIND(row->cflags[k]) == SIFT_CELL_STR)
-			p = put_str(r, p, row, k);
 		else
 		{
 			p = sift_put_varint(p, sift_zigzag(delta_of(row->v[k], r->prev_i[k])));
