@@ -15,6 +15,8 @@
 
 #include "access/detoast.h"
 #include "access/htup_details.h"
+#include "access/transam.h"
+#include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xloginsert.h"
@@ -70,12 +72,10 @@ sift_tbl_published(Relation rel)
 
 /* A logical slot of this database whose plugin decodes every table, publication or not (test_decoding, wal2json): pgoutput sends what its publications name, which sift_tbl_published answers */
 static bool
-slot_decodes(Relation rel)
+any_slot_decodes(void)
 {
 	bool		found = false;
 
-	if (!XLogLogicalInfoActive() || !RelationIsPermanent(rel))
-		return false;
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 	for (int i = 0; i < max_replication_slots && !found; i++)
 	{
@@ -87,6 +87,28 @@ slot_decodes(Relation rel)
 	}
 	LWLockRelease(ReplicationSlotControlLock);
 	return found;
+}
+
+/*
+ * The slots are walked once for a transaction that has its xid, not for every row it changes: a slot made after the walk builds its snapshot from a record of the running transactions that
+ * names this one, and decodes no transaction that ran then (snapbuild.c), so the answer stands until the transaction ends.
+ */
+static FullTransactionId decodes_for;
+static bool decodes;
+
+static bool
+slot_decodes(Relation rel)
+{
+	FullTransactionId top = GetTopFullTransactionIdIfAny();
+
+	if (!XLogLogicalInfoActive() || !RelationIsPermanent(rel))
+		return false;
+	if (!FullTransactionIdIsValid(top) || !FullTransactionIdEquals(top, decodes_for))
+	{
+		decodes = any_slot_decodes();
+		decodes_for = top;
+	}
+	return decodes;
 }
 
 bool
