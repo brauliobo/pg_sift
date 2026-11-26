@@ -24,7 +24,7 @@ BEGIN
   SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
   arms_in_one_pass := 0;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    IF l LIKE '%Arms In One Pass: %' THEN arms_in_one_pass := regexp_replace(l, '.*: ', '')::int; END IF;
+    IF l LIKE '%Fused Arms: %' THEN arms_in_one_pass := regexp_replace(l, '.*: ', '')::int; END IF;
   END LOOP;
   DROP TABLE r_off, r_on;
   RETURN NEXT;

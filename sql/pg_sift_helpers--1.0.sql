@@ -291,12 +291,12 @@ CREATE FUNCTION sift_helpers.plan_units_and_rows_lines(q text) RETURNS SETOF tex
 CREATE FUNCTION sift_helpers.plan_heap_rereads_forced_on(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM sift_helpers.set_arm(true);
-	RETURN coalesce(sift_helpers.plan_last(sift_helpers.plan_text(q, true), '(\d+) re-read from the heap')::bigint, 0);
+	RETURN coalesce(sift_helpers.plan_last(sift_helpers.plan_text(q, true), 'Rows Read Again From The Heap: (\d+)')::bigint, 0);
 END $$;
 CREATE FUNCTION sift_helpers.agg_heap_rereads(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 BEGIN RETURN sift_helpers.plan_heap_rereads_forced_on(q); EXCEPTION WHEN others THEN RETURN -1; END $$;
 CREATE FUNCTION sift_helpers.agg_arms_in_one_pass(q text) RETURNS int LANGUAGE sql AS $$
-	SELECT coalesce(max(m[1]::int), 0) FROM regexp_matches(sift_helpers.plan_text(q, true), 'Arms In One Pass: (\d+)', 'g') m $$;
+	SELECT coalesce(max(m[1]::int), 0) FROM regexp_matches(sift_helpers.plan_text(q, true), 'Fused Arms: (\d+)', 'g') m $$;
 CREATE FUNCTION sift_helpers.agg_units_read(q text) RETURNS text LANGUAGE sql AS $$
 	SELECT CASE WHEN NOT sift_helpers.plan_pushed(p) THEN 'normal'
 		ELSE format('SiftAgg read %s pruned %s', sift_helpers.plan_last(p, 'Units: (\d+)'), coalesce(sift_helpers.plan_last(p, '(\d+) pruned'), '0')) END

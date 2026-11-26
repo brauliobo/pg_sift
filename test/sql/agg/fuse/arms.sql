@@ -30,7 +30,7 @@ CREATE FUNCTION reread(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '(\d+) re-read from the heap' THEN RETURN substring(l from '(\d+) re-read from the heap')::bigint; END IF;
+		IF l ~ 'Rows Read Again From The Heap: (\d+)' THEN RETURN substring(l from 'Rows Read Again From The Heap: (\d+)')::bigint; END IF;
 	END LOOP;
 	RETURN -1;
 END $$;
