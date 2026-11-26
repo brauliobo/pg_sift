@@ -6,7 +6,8 @@
 plan 10
 
 ROWS=$(knob SIFT_BOS_ROWS 300000 150000)
-node_init primary 4 "sift.col_build_source = auto
+node_init primary 4 "sift.test_create_format1 = on
+sift.col_build_source = auto
 wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)

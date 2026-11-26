@@ -5,7 +5,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 6
-node_init rr 33 "autovacuum = off
+node_init rr 33 "sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = off
 max_parallel_workers_per_gather = 0"
 node_start rr || bail "start failed"
