@@ -3,6 +3,7 @@
 # in the merge of all of them, with overlays cut by TID range and by superblock among the inputs, leaves the index as it was (verifies, answers the heap's) and the merges,
 # asked again, complete. Replica: a hot standby replays the promotions and merges, answers as the primary does, a ctid range included (a unit cut by TID range is no
 # block range). Upgrade: the index the last release wrote is read, promoted into and merged by this one, which cuts the overlays by TID range from then on.
+# Format 1 (col/v1/maint): the units, superblocks and overlays of a segment are Format 1 structures; a Format 2.0 part is cut by granule.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 
@@ -13,7 +14,8 @@ autovacuum = off
 max_parallel_maintenance_workers = 0
 sift.async_maintenance = off
 sift.test_col_net = off
-sift.test_col_floor_sbs = 4"
+sift.test_col_floor_sbs = 4
+sift.test_create_format1 = on"
 node_start fl || bail "start failed"
 sql fl "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE fl (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO fl SELECT g, g % 7, g % 1000, repeat('x', 1000) FROM generate_series(1, 40000) g" \

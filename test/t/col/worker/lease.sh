@@ -2,6 +2,7 @@
 # A worker that the postmaster never starts does not keep its slot for good: with sift.max_maint_workers = 1 and the postmaster stopped, the request of one table takes the slot and its worker
 # is registered but never up, a request of another table is refused and says one is running, and after the lease of a slot (sift.test_worker_lease_ms in a testing build) the next request
 # takes the slot again; once the postmaster goes on, the workers start and the tables are promoted.
+# Format 1 (col/v1/maint): the per-index worker slots and their lease are the workers of a Format 1 index; a Format 2.0 index is served by the one queue worker of the database (core/maint/sched.h).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
@@ -11,7 +12,8 @@ log_min_messages = debug1
 sift.test_col_net = off
 sift.max_maint_workers = 1
 sift.test_worker_lease_ms = $LEASE_MS
-sift.maintenance_naptime = 200"
+sift.maintenance_naptime = 200
+sift.test_create_format1 = on"
 node_start wl || bail "start failed"
 D=$(dir wl)
 TABLE="(id int, key int, kind text, amount numeric(10,2), pad text)"

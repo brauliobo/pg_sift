@@ -3,12 +3,14 @@
 # The maintenance worker of a sift_col index reuses the space of the segments it merged, step after step: every step runs in a transaction of its own, so that what
 # one step freed is reusable by the next (the worker used to keep one transaction and one snapshot for all its steps: the xid that released the blocks and the
 # snapshot of the worker held the horizon back, and each step took new blocks at the end of the file).
+# Format 1 (col/v1/maint): the segments that promotions leave and the step of the worker that merges them are Format 1; a Format 2.0 promotion compacts into its parts as it goes.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROUNDS=$(knob SIFT_WS_ROUNDS 48 32)
 plan 4
 node_init reuse 6 "autovacuum = off
-sift.async_maintenance = on"
+sift.async_maintenance = on
+sift.test_create_format1 = on"
 node_start reuse || bail "start failed"
 sql reuse "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE t (id int, grp int, amount numeric(10,2), pad text)" \

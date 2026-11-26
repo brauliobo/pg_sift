@@ -4,11 +4,13 @@
 # index twice. The check stops at its test gate between the segments (an advisory lock a session holds, so no timing is involved), the VACUUM and the INSERT run, and the check goes on:
 # it finds nothing wrong. With the mutant that makes the VACUUM of the index clear nothing the same two statements leave a row in the index twice, and the check finds it, whether the
 # directory moved while it waited or not.
+# Format 1 (col/v1/verify.c): the check walks a directory of segments under the maintenance lock; a Format 2.0 index has no such directory.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 12
 node_init cr 63 "autovacuum = off
-sift.async_maintenance = off"
+sift.async_maintenance = off
+sift.test_create_format1 = on"
 node_start cr || bail "start failed"
 D=$(dir cr)
 sql cr "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "setup failed"

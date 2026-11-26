@@ -10,6 +10,8 @@
 # binaries at the same absolute path under the test directory (a server finds its library and share directories relative to its binaries), with the
 # files of the system linked in and pg_sift of the staged install, or of the build for the other major, next to them. The clusters have data
 # checksums, which PostgreSQL 18 enables by default and pg_upgrade needs on both sides.
+# Format 1 (col/v1/track): the log, its flags and the worker that re-baselines it are the tombstone log of a Format 1 index, which the library of an earlier release wrote and the tables made here have; a
+# Format 2.0 index has no log: its word that every delete reaches it ends with the trigger it names and a rebuild makes it again (test/t/col/reindex/trigger_lock.sh).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 REPO=${SIFT_REPO:?}
@@ -60,7 +62,8 @@ initdb_node old 30 "$OLDB"
 initdb_node new 31 "$NEWB"
 NODES+=(new)
 node_conf new "$("$REPO/scripts/pgtest.sh" conf)
-sift.maintenance_naptime = 200"
+sift.maintenance_naptime = 200
+sift.test_create_format1 = on"
 LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || { start_failed old; bail "the old cluster does not start"; }
 
 

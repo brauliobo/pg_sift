@@ -2,13 +2,15 @@
 # Physical streaming replica (pg_basebackup): sift.col_repair on the primary restores the liveness pages of a sift_col index that a VACUUM of 4.2.1 to 4.3.5 damaged in a
 # segment of more than 65,152 superblocks (the special space of the first page overwritten, a dirty bit lost), and the restored pages replay to bytes equal to the primary's.
 # The damage is made on the primary and written to disk by a checkpoint, so the base backup carries it to the standby.
+# Format 1 (col/v1/seg/live.c): the liveness run is a Format 1 structure; a Format 2.0 index keeps its liveness in delete vectors that no release damaged.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
-autovacuum = off"
+autovacuum = off
+sift.test_create_format1 = on"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" "CREATE EXTENSION pageinspect" \
 	"CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS \$\$
