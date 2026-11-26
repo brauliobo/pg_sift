@@ -7,6 +7,7 @@
 #include "access/heapam.h"
 #include "access/table.h"
 #include "catalog/pg_class.h"
+#include "commands/defrem.h"
 #include "commands/trigger.h"
 #include "fmgr.h"
 #include "storage/lmgr.h"
@@ -51,6 +52,20 @@ sift_tbl_ops(Relation rel)
 
 PG_FUNCTION_INFO_V1(sift_table_paths_trg);
 
+/* Whether the relation is a sift_table, from its row in pg_class: the lock it needs is taken at once, and never raised from one that a statement of the session holds already */
+static bool
+is_sift_table(Oid relid)
+{
+	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+	bool		ours;
+
+	if (!HeapTupleIsValid(tup))
+		return false;
+	ours = ((Form_pg_class) GETSTRUCT(tup))->relam == get_table_am_oid("sift_table", true);
+	ReleaseSysCache(tup);
+	return ours;
+}
+
 /* The table a row of sift.table_paths is about to change the declaration of: its format writes out what it holds under the old one, once for the statement's first row of it */
 static void
 paths_row_changed(HeapTuple row, TupleDesc desc)
@@ -59,14 +74,11 @@ paths_row_changed(HeapTuple row, TupleDesc desc)
 	Oid			relid = DatumGetObjectId(heap_getattr(row, 1, desc, &isnull));
 	Relation	rel;
 
-	if (isnull || !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
+	if (isnull || !is_sift_table(relid))
 		return;
-	rel = relation_open(relid, AccessShareLock);
-	if (sift_tbl_is_table(rel) && sift_tbl_ops(rel)->paths_changed != NULL)
-	{
-		LockRelationOid(relid, AccessExclusiveLock);
+	rel = relation_open(relid, AccessExclusiveLock);
+	if (sift_tbl_ops(rel)->paths_changed != NULL)
 		sift_tbl_ops(rel)->paths_changed(rel);
-	}
 	relation_close(rel, NoLock);
 }
 

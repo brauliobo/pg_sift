@@ -15,15 +15,37 @@ CREATE TABLE IF NOT EXISTS sift.tier_policies (
 COMMENT ON TABLE sift.tier_policies IS 'The object store each sift_table or sift_col index moves its old parts to (set by sift.set_tier_policy), by relation OID. Not dumped: the objects belong to the physical relation.';
 SELECT pg_catalog.pg_extension_config_dump('sift.tier_policies', 'WHERE false');
 
--- The retention of a sift_table: parts whose newest row is older than it are dropped. regclass is dumped by name and resolved again by name when the dump is restored.
+-- The retention of a sift_table: parts whose newest row is older than it are dropped. The key is written as the qualified name of the table (sift.tblref), as that of the per-table options is:
+-- a restore without the table reads its name as 0 and skips the row, and the rows of the others load.
 CREATE TABLE IF NOT EXISTS sift.ttl_policies (
-	relid		regclass PRIMARY KEY,
+	relid		sift.tblref NOT NULL,
 	col			text NOT NULL,
 	retention	interval NOT NULL CHECK (retention > interval '0')
 );
+-- the server code writes the policy under the OID of the table it has opened
+DO $$ BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_cast WHERE castsource = 'pg_catalog.oid'::regtype AND casttarget = 'sift.tblref'::regtype) THEN
+		CREATE CAST (oid AS sift.tblref) WITHOUT FUNCTION AS ASSIGNMENT;
+	END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS ttl_policies_key ON sift.ttl_policies (relid oid_ops);
+ALTER TABLE sift.ttl_policies REPLICA IDENTITY USING INDEX ttl_policies_key;
 COMMENT ON TABLE sift.ttl_policies IS 'The TTL of each sift_table (set by sift.set_ttl), by relation OID.';
 -- dumped with the database; a row of a table that is gone (a stale OID prints as a number) is never written
 SELECT pg_catalog.pg_extension_config_dump('sift.ttl_policies', 'WHERE relid::pg_catalog.oid IN (SELECT oid FROM pg_catalog.pg_class)');
+
+CREATE OR REPLACE FUNCTION sift_internal.ttl_policies_skip() RETURNS trigger
+	LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $fn$
+BEGIN
+	IF NEW.relid::pg_catalog.oid = 0 THEN
+		RETURN NULL;
+	END IF;
+	RETURN NEW;
+END
+$fn$;
+COMMENT ON FUNCTION sift_internal.ttl_policies_skip() IS 'Internal: BEFORE ROW trigger of sift.ttl_policies, skips the row of a table that is not there (a restore without it)';
+CREATE OR REPLACE TRIGGER ttl_policies_skip BEFORE INSERT OR UPDATE ON sift.ttl_policies
+	FOR EACH ROW EXECUTE FUNCTION sift_internal.ttl_policies_skip();
 
 -- A dropped relation takes its policies with it, so that an OID that PostgreSQL gives out again never meets a policy of the relation that had it. The objects of a dropped relation stay in the store
 -- (a DROP can be rolled back, an object cannot): the notice names where, for the operator who deletes them.
