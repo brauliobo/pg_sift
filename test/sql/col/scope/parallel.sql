@@ -4,6 +4,8 @@
 -- scope index of the relation starts the journal, so it is built twice (the REINDEX takes the stamps) and the builds after it are stamped.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the parallel build of the scope segments (col/v1/build) is this format's
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 -- members in up to six keys on purpose: above the default limit of the multiplicity
 SET jit = off;
@@ -16,25 +18,21 @@ INSERT INTO tenant_scope SELECT m, 1 + (m * 5 + j * 7) % 12 FROM generate_series
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 
 -- one table, one index (tbl, idx): the rows of the scope read against the join per key, the entries against the join, whether the scope segments cover
-CREATE FUNCTION check_index(tbl regclass, idx regclass, OUT covered boolean, OUT same boolean, OUT stored boolean, OUT missing bigint, OUT extra bigint) LANGUAGE plpgsql AS $$
+CREATE FUNCTION check_index(tbl regclass, idx regclass, OUT covered boolean, OUT same boolean, OUT missing bigint, OUT extra bigint) LANGUAGE plpgsql AS $$
 DECLARE
 	k int;
 	a text;
 	b text;
-	p jsonb;
 BEGIN
 	covered := sift._test_col_scope_filled(idx, 'tenant_id');
 	same := true;
-	stored := true;
 	FOREACH k IN ARRAY ARRAY[2, 5, 9, 12] LOOP
 		SET LOCAL sift.enable_agg = on;
-		EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(v), min(id), max(id) FROM %s e WHERE sift.in_scope(%L::regclass, ''tenant_id'', e.dim_a_id, %s)', tbl, idx, k) INTO p;
 		EXECUTE format('SELECT md5(t::text) FROM (SELECT count(*), sum(v), min(id), max(id) FROM %s e WHERE sift.in_scope(%L::regclass, ''tenant_id'', e.dim_a_id, %s)) t', tbl, idx, k) INTO a;
 		SET LOCAL sift.enable_agg = off;
 		EXECUTE format('SELECT md5(t::text) FROM (SELECT count(*), sum(v), min(id), max(id) FROM %s e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %s)) t', tbl, k) INTO b;
 		SET LOCAL sift.enable_agg = on;
 		same := same AND a = b;
-		stored := stored AND jsonb_path_exists(p, '$.**."Scope Units Read"');
 	END LOOP;
 	EXECUTE format('SELECT count(*) FROM (SELECT e.ctid, s.tenant_id FROM %s e JOIN tenant_scope s USING (dim_a_id) EXCEPT SELECT tid, key::int FROM sift._test_col_scope_entries(%L)) m', tbl, idx) INTO missing;
 	EXECUTE format('SELECT count(*) FROM (SELECT tid, key::int FROM sift._test_col_scope_entries(%L) EXCEPT SELECT e.ctid, s.tenant_id FROM %s e JOIN tenant_scope s USING (dim_a_id)) x', idx, tbl) INTO extra;

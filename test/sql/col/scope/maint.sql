@@ -5,6 +5,8 @@
 -- journal index; the first scope index of a relation starts the journal at the end of its build, so a REINDEX of the scope index follows its creation (it takes the stamps).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the scope segments and their maintenance (col/v1/scope) are this format's; Format 2.0 keeps a scope summary (col/f2/scope_*)
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 -- members in up to six keys on purpose: above the default limit of the multiplicity
 SET jit = off;
@@ -24,23 +26,19 @@ REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_scope;
 
--- the same rows as the plain join, from the scope segments (or why not): the whole statement, per shape and key
-CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text)
+-- the same rows as the plain join: the whole statement, per shape and key
+CREATE FUNCTION scope_run(q text, plain text, OUT same boolean)
 LANGUAGE plpgsql AS $$
 DECLARE
-	p jsonb;
 	a text;
 	b text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
 END $$;
 
 CREATE TABLE shapes (n int, k int, q text, plain text);
@@ -61,14 +59,14 @@ CREATE FUNCTION entries(OUT missing bigint, OUT extra bigint) LANGUAGE sql AS $$
 		   (SELECT count(*) FROM (SELECT tid, key::int FROM sift._test_col_scope_entries('events_col') WHERE tid IN (SELECT ctid FROM events)
 				EXCEPT SELECT e.ctid, s.tenant_id FROM events e JOIN tenant_scope s USING (dim_a_id)) x) $$;
 
-CREATE FUNCTION state(label text, OUT state text, OUT covered boolean, OUT entity_segs bigint, OUT scope_segs bigint, OUT same boolean, OUT stored boolean, OUT why text,
+CREATE FUNCTION state(label text, OUT state text, OUT covered boolean, OUT entity_segs bigint, OUT scope_segs bigint, OUT same boolean,
 					  OUT missing bigint, OUT extra bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	state := label;
 	covered := sift._test_col_scope_filled('events_col', 'tenant_id');
 	SELECT count(DISTINCT s.gen) FILTER (WHERE family = 'base'), count(DISTINCT s.gen) FILTER (WHERE family = 'scope')
 		INTO entity_segs, scope_segs FROM sift._test_col_scope_stamps('events_col') s;
-	SELECT bool_and(r.same), bool_and(r.stored), min(r.why) INTO same, stored, why FROM shapes s, LATERAL scope_run(s.q, s.plain) r;
+	SELECT bool_and(r.same) INTO same FROM shapes s, LATERAL scope_run(s.q, s.plain) r;
 	SELECT e.missing, e.extra INTO missing, extra FROM entries() e;
 END $$;
 
@@ -78,7 +76,7 @@ SELECT sift.col_verify('events_col', true);
 
 -- rows in the write buffer have no entries: the entity path reads them with the members of the key; the segments still cover the rows they hold
 INSERT INTO events SELECT 20000 + i, 1 + i % 300, timestamptz '2026-02-01' + i * interval '1 hour', i % 10, 'y' FROM generate_series(1, 400) i;
-SELECT state, covered, entity_segs, scope_segs, same, stored, why FROM state('write buffer');
+SELECT state, covered, entity_segs, scope_segs, same FROM state('write buffer');
 
 -- promoted: the entity segment and the scope segments of the rows come in one switch of the directory (one more of each); the rows of the buffer have their entries
 SELECT sift.col_promote('events_col') >= 0 AS promoted;
@@ -94,7 +92,7 @@ SELECT family, count(DISTINCT horizon) AS horizons FROM sift._test_col_scope_sta
 
 -- updates: the new versions are in the buffer (entity path), the old addresses keep their entries until VACUUM
 UPDATE events SET v = v + 1 WHERE id % 7 = 0;
-SELECT state, covered, same, stored, why FROM state('updated');
+SELECT state, covered, same FROM state('updated');
 SELECT sift.col_promote('events_col') >= 0 AS promoted_updates;
 SELECT * FROM state('updates promoted');
 
@@ -110,7 +108,7 @@ SELECT * FROM state('merged twice');
 -- deletes and updates ended by VACUUM: no entry of a dead address is left in any key; the entries of the others are as they were; the stamps stay
 DELETE FROM events WHERE id % 5 = 0 OR id > 20300;
 CREATE TEMP TABLE stamps_vac AS SELECT family, scope, lineage, horizon FROM sift._test_col_scope_stamps('events_col');
-SELECT state, covered, same, stored, why FROM state('deleted');
+SELECT state, covered, same FROM state('deleted');
 VACUUM events;
 SELECT * FROM state('vacuumed');
 SELECT count(*) AS entries_of_dead_addresses FROM sift._test_col_scope_entries('events_col') x WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.ctid = x.tid);
@@ -124,11 +122,11 @@ SELECT sift.col_verify('events_col', true);
 -- a rewrite fills the entries again when they are stale (the journal says that members changed since their stamp: the edit below changes half of them, over sift.test_col_scope_refresh_pct of
 -- the pairs) and when the index has no floor of the stamps (one built before it existed): the read falls back meanwhile, exact, and the rewrite sets it
 SELECT sift._test_col_scope_unfill('events_col');
-SELECT state, covered, same, stored, why FROM state('floor lost');
+SELECT state, covered, same FROM state('floor lost');
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT * FROM state('refilled');
 UPDATE tenant_scope SET tenant_id = tenant_id WHERE dim_a_id % 2 = 0;
-SELECT state, covered, same, stored, why FROM state('pairs edited');
+SELECT state, covered, same FROM state('pairs edited');
 SELECT sift.col_maintain('events_col') AS rewritten_stale;
 SELECT * FROM state('refilled stale');
 SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) >

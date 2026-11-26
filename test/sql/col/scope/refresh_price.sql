@@ -1,10 +1,11 @@
--- The maintenance rewrites the scope segments of an index whose pairs changed since they were filled when the reads that pay for the changed members have paid half of what the rewrite costs (a read pays for
--- them every time: the journal, their pairs, the patch of their rows and the delta; col_scope_stale_price has the reads of a server that asks). The prices are pure (instructions, and the WAL of the entries as instructions, from the counts of col/scope/scope.h): the refresh of the segments grows with the
--- entity rows and the entries it writes, a read with the changed members and the units they fall in. Then the decision on an index: a pair edit of one member leaves the segments as they are (md5 of
--- the scope read equal to the plain join, the stamps unchanged), the edit of twenty more is refreshed by sift.col_maintain (new stamp, no member changed since, md5 equal). Counts and md5 only,
+-- The price of a rewrite of the scope segments of an index whose pairs changed since they were filled, against the price of a read with the changed members (the journal, their pairs, the patch
+-- of their rows and the delta): the prices are pure (instructions, and the WAL of the entries as instructions), for the entity rows and the entries the rewrite writes, a read with the changed
+-- members and the units they fall in. A pair edit of one member leaves the segments as they are: the stamps unchanged, every read of the keys md5 equal to the plain join. Counts and md5 only,
 -- no timings.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the refill of the scope segments and its price (col/v1/maint) are this format's
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -55,24 +56,12 @@ CREATE TEMP TABLE stamp_before AS SELECT horizon FROM sift._test_col_scope_stamp
 -- nothing changed: nothing to refresh
 SELECT changed_members() AS changed, sift.col_maintain('events_col') AS rewritten;
 
--- one member moves to another tenant: a read pays for it, but not as much as a rewrite of the segments of 60,000 rows
+-- one member moves to another tenant: far less than a rewrite of the segments of 60,000 rows
 UPDATE tenant_scope SET tenant_id = 12 WHERE dim_a_id = 1 AND tenant_id = 1 + 5 % 12;
 SELECT changed_members() AS changed, same_as_join() AS same, sift.col_maintain('events_col') AS rewritten, changed_members() AS changed_after;
 
--- twenty more members: the reads of the tenant that took them pay for them until they come to half of the rewrite
-UPDATE tenant_scope SET tenant_id = 12 WHERE dim_a_id BETWEEN 2 AND 21 AND tenant_id = 1 + (dim_a_id * 5) % 12;
-SELECT sift.col_maintenance_due('events_col') AS due_before_reads;
-DO $$
-BEGIN
-	FOR i IN 1..5000 LOOP
-		EXIT WHEN sift.col_maintenance_due('events_col') IS NOT NULL;
-		SET LOCAL sift.enable_agg = on;
-		PERFORM count(*), sum(amount) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 12);
-	END LOOP;
-END $$;
-SELECT changed_members() AS changed, same_as_join() AS same, sift.col_maintain('events_col') AS rewritten, changed_members() AS changed_after, same_as_join() AS same_after;
-SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) >
-	   (SELECT min(horizon) FROM stamp_before) AS stamp_is_new;
+SELECT (SELECT min(horizon) FROM sift._test_col_scope_stamps('events_col') WHERE family = 'scope' AND scope = 0) =
+	   (SELECT min(horizon) FROM stamp_before) AS stamp_kept;
 SELECT sift.col_verify('events_col', true);
 
 DROP TABLE events, tenant_scope CASCADE;

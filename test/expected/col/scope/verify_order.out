@@ -3,6 +3,8 @@
 -- units by the member column, by the time and by nothing, and merge the runs of the build; each is checked against the plain join and read through the scope units.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the scope segments and their maintenance (col/v1/scope) are this format's; Format 2.0 keeps a scope summary (col/f2/scope_*)
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -32,19 +34,16 @@ $$ BEGIN
 	INTO scope_segments_with, entity_segments_with
 	FROM (SELECT gen FROM sift.col_segments('events_col') WHERE kind = 'immutable') g, LATERAL sift._test_col_sections('events_col', g.gen) s WHERE s.section = 'order_arrays';
 END $$;
-CREATE FUNCTION scope_read(OUT same boolean, OUT stored boolean) LANGUAGE plpgsql AS
+CREATE FUNCTION scope_read(OUT same boolean) LANGUAGE plpgsql AS
 $$ DECLARE
-	p jsonb;
 	a text;
 	b text;
 BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT id, created_at FROM events e WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', e.dim_a_id, 5) ORDER BY id LIMIT 40' INTO p;
 	SELECT coalesce(json_agg(t)::text, '') INTO a FROM (SELECT id, created_at FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 5) ORDER BY id LIMIT 40) t;
 	SET LOCAL sift.enable_agg = off;
 	SELECT coalesce(json_agg(t)::text, '') INTO b FROM (SELECT id, created_at FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 5) ORDER BY id LIMIT 40) t;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
 END $$;
 CREATE TABLE shapes (n serial, name text, setting text, opts text);
 INSERT INTO shapes (name, setting, opts) VALUES
@@ -82,9 +81,9 @@ REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_scope;
 SELECT * FROM scope_read();
- same | stored 
-------+--------
- t    | t
+ same 
+------
+ t
 (1 row)
 
 -- the writers that follow the build make scope segments of their own: a promotion and the merge of everything

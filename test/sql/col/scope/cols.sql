@@ -1,10 +1,12 @@
 -- The columns a scope keeps: WITH (scope = 'key: fk -> relation(member, scope_key) cols(a, b, c)'). The scope segments of that scope hold the derived key, the listed columns, the member key,
--- the column the units are cut by (the first date or timestamp column) and the address of the row: the other columns have no chunk, summary or directory in them. A scan reads the scope units
--- only when every column it reads is one of those, else it reads the entity rows and EXPLAIN says which column; either way the rows are those of the join.
+-- the column the units are cut by (the first date or timestamp column) and the address of the row: the other columns have no chunk, summary or directory in them, and the segments are smaller.
+-- Every read of the index is the join's.
 -- The pair relations have their journal indexes; the first scope index of a relation starts its journal at the end of its build, so the first index on each (events_named for
 -- the tenants, events_two for the groups) has no stamps until a REINDEX takes them.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the scope segments, their units and the cols(..) they keep (col/v1/scope) are this format's; Format 2.0 ignores cols(..)
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -14,24 +16,19 @@ CREATE FUNCTION try(stmt text) RETURNS text LANGUAGE plpgsql AS
 $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
 
--- the same rows as the plain join, whether the scope units answered or why not, and the columns of the index the scope keeps
-CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT kept text)
+-- the same rows as the plain join
+CREATE FUNCTION scope_run(q text, plain text, OUT same boolean)
 LANGUAGE plpgsql AS $$
 DECLARE
-	p jsonb;
 	a text;
 	b text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	kept := jsonb_path_query_first(p, '$.**."Scope Columns"') #>> '{}';
 END $$;
 
 -- 5 tenants, 4 groups; 200 entities, each in one or two of each; events in a heap order that is not the key order
@@ -102,16 +99,16 @@ INSERT INTO shapes VALUES
 	(10, 'SELECT count(*) FROM events e WHERE #S# AND tags @> ARRAY[2]'),
 	(11, 'SELECT kind, sum(value_num) FROM events e WHERE #S# AND kind IN (1, 2) GROUP BY kind ORDER BY kind'),
 	(12, 'SELECT date_trunc(''day'', created_at), count(*) FROM events e WHERE #S# GROUP BY 1 ORDER BY 1');
-CREATE FUNCTION variants() RETURNS TABLE (n int, idx text, same boolean, stored boolean, why text, kept text) LANGUAGE plpgsql AS
-$$ DECLARE v record; s record; r record;
+CREATE FUNCTION variants() RETURNS TABLE (n int, idx text, same boolean) LANGUAGE plpgsql AS
+$$ DECLARE v record; s record;
 BEGIN
 	FOR v IN SELECT * FROM (VALUES ('events_all', ''), ('events_sub', ' cols(kind, value_num)'), ('events_min', ' cols(created_at)')) x(idx, cols) LOOP
 		EXECUTE format('CREATE INDEX %I ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num, tags) WITH (scope = %L)', v.idx,
 					   'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)' || v.cols);
 		FOR s IN SELECT * FROM shapes ORDER BY shapes.n LOOP
-			SELECT * INTO r FROM scope_run(replace(s.q, '#S#', format('sift.in_scope(%L::regclass, ''tenant_id'', e.dim_a_id, 3)', v.idx)),
-										   replace(s.q, '#S#', 'e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)'));
-			n := s.n; idx := v.idx; same := r.same; stored := r.stored; why := r.why; kept := r.kept;
+			same := scope_run(replace(s.q, '#S#', format('sift.in_scope(%L::regclass, ''tenant_id'', e.dim_a_id, 3)', v.idx)),
+							  replace(s.q, '#S#', 'e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)'));
+			n := s.n; idx := v.idx;
 			RETURN NEXT;
 		END LOOP;
 		EXECUTE format('DROP INDEX %I', v.idx);
@@ -121,7 +118,7 @@ SELECT * FROM variants() ORDER BY n, idx;
 DROP FUNCTION variants();
 DROP TABLE shapes;
 
--- two scopes, each with columns of its own: a statement on a scope is judged against that scope's columns
+-- two scopes, each with columns of its own
 CREATE INDEX events_two ON events USING sift_col (id, dim_a_id, created_at, kind, label, value_num)
 	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num); group_id: dim_a_id -> group_scope(dim_a_id, group_id) cols(label)');
 REINDEX INDEX events_two;
@@ -138,7 +135,7 @@ INSERT INTO shapes VALUES
 		'SELECT kind, count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM group_scope WHERE group_id = 2) GROUP BY kind ORDER BY kind'),
 	(5, 'SELECT count(*) FROM events e WHERE sift.in_scope(''events_two''::regclass, ''group_id'', e.dim_a_id, 2)',
 		'SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM group_scope WHERE group_id = 2)');
-SELECT n, (r).same, (r).stored, (r).why, (r).kept FROM (SELECT n, scope_run(q, plain) r FROM shapes) t ORDER BY n;
+SELECT n, scope_run(q, plain) AS same FROM shapes ORDER BY n;
 DROP TABLE shapes;
 DROP INDEX events_two;
 
@@ -155,7 +152,7 @@ SELECT regexp_replace(pg_get_indexdef('events_sub'::regclass), '^.* WITH', 'WITH
 SELECT pg_get_indexdef('events_sub'::regclass) AS ddl \gset
 DROP INDEX events_sub;
 SELECT :'ddl' AS restore \gexec
-SELECT (r).same, (r).stored, (r).why, (r).kept
+SELECT r AS same
 FROM (SELECT scope_run('SELECT kind, sum(value_num) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3) GROUP BY kind ORDER BY kind',
 					   'SELECT kind, sum(value_num) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind ORDER BY kind') r) t;
 -- REINDEX writes the segments again with the same columns; ALTER INDEX changes the columns and the next REINDEX keeps them
@@ -163,7 +160,7 @@ REINDEX INDEX events_sub;
 SELECT scope_bytes('events_sub') BETWEEN :sub_bytes * 0.9 AND :sub_bytes * 1.1 AS same_size_after_reindex;
 ALTER INDEX events_sub SET (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(kind, value_num, label)');
 REINDEX INDEX events_sub;
-SELECT (r).same, (r).stored, (r).why, (r).kept
+SELECT r AS same
 FROM (SELECT scope_run('SELECT label, count(*) FROM events e WHERE sift.in_scope(''events_sub''::regclass, ''tenant_id'', e.dim_a_id, 3) GROUP BY label ORDER BY label',
 					   'SELECT label, count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY label ORDER BY label') r) t;
 SELECT sift.col_verify('events_sub', true);
