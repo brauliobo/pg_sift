@@ -3,7 +3,7 @@
 -- final, so once the directory is half full the write buffers are promoted with the version (xmin and cmin) of every row, whoever wrote
 -- it and with whichever command, and any mix of them merges, freezes when the writers are done and is dropped when they aborted.
 -- The directory limit is lowered here (a testing setting) so that a few write buffers of 2 MB are enough to reach the pressure.
--- Size: the pressure needs more than half of 8 directory entries in write buffers of 2 MB (the smallest buffer), 10000 rows of a kilobyte; every scenario writes that, hence 15 s.
+-- Size: the pressure needs more than half of 8 directory entries in write buffers of 2 MB (the smallest buffer), 10000 rows of a kilobyte; every scenario writes that.
 -- Every statement runs on a heap twin as well: the answers must be the same in every state.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -66,6 +66,17 @@ DECLARE q text := format('INSERT INTO %1$s VALUES ($1, repeat(''x'', 1000) || $1
 						 CASE WHEN doupdate THEN format('UPDATE SET v = %s.v || ''c''', t) ELSE 'NOTHING' END);
 BEGIN
 	FOR i IN lo..hi LOOP EXECUTE q USING i; END LOOP;
+END $$;
+-- the rows the loops above leave, in one statement: the heap twins need the rows, not a command per row
+CREATE FUNCTION ins_all(t regclass, lo int, hi int, fail_every int DEFAULT 0) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('INSERT INTO %s SELECT g, repeat(''x'', 1000) || g FROM generate_series($1, $2) g WHERE $3 = 0 OR g %% $3 <> 0', t)
+		USING lo, hi, fail_every;
+END $$;
+CREATE FUNCTION upsert_all(t regclass, lo int, hi int, doupdate bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('INSERT INTO %1$s SELECT g, repeat(''x'', 1000) || g FROM generate_series($1, $2) g ON CONFLICT (id) DO %2$s', t,
+				   CASE WHEN doupdate THEN format('UPDATE SET v = %s.v || ''c''', t) ELSE 'NOTHING' END) USING lo, hi;
 END $$;
 -- the ids of the next n rows of a cursor
 CREATE FUNCTION take(cur refcursor, n int) RETURNS text LANGUAGE plpgsql AS $$
@@ -167,7 +178,7 @@ CREATE INDEX lp_t_id ON lp_t (id);
 CREATE INDEX lp_h_id ON lp_h (id);
 BEGIN;
 SELECT ins1('lp_t', 1, 10000);
-SELECT ins1('lp_h', 1, 10000);
+SELECT ins_all('lp_h', 1, 10000);
 SELECT count(*), sum(id), count(*) FILTER (WHERE v <> repeat('x', 1000) || id) AS wrong FROM lp_t;
 SELECT total <= 6 AS within_the_limit, columns > 0 AS promoted_while_running, sift._test_tbl_tagged('lp_t') > 0 AS carries_its_writers FROM nsegs('lp_t');
 SELECT same('lp_t', 'lp_h') AS the_twin_agrees_while_running;
@@ -187,7 +198,7 @@ SELECT plans('lp_t') AS plans_used_after_vacuum;
 -- a second loop on top of the frozen groups
 BEGIN;
 SELECT ins1('lp_t', 10001, 20000);
-SELECT ins1('lp_h', 10001, 20000);
+SELECT ins_all('lp_h', 10001, 20000);
 SELECT same('lp_t', 'lp_h') AS the_twin_agrees_with_a_second_loop;
 COMMIT;
 VACUUM lp_t;
@@ -255,7 +266,7 @@ CREATE INDEX ow_t_id ON ow_t (id);
 CREATE INDEX ow_h_id ON ow_h (id);
 BEGIN;
 SELECT ins1('ow_t', 1, 5000);
-SELECT ins1('ow_h', 1, 5000);
+SELECT ins_all('ow_h', 1, 5000);
 SELECT count(*), sum(id) FROM ow_t;
 SELECT agree('ow_t', 'ow_h') AS plans_agree_in_the_middle_of_the_loop;
 -- three cursors opened in the middle of the loop: they see the 5000 rows and nothing that comes after, whatever it does to them
@@ -274,13 +285,13 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 SELECT take('c_idx', 3) AS first_rows, take('c_idx_h', 3) AS first_rows_of_the_twin;
 SELECT ins1('ow_t', 5001, 10000);
-SELECT ins1('ow_h', 5001, 10000);
+SELECT ins_all('ow_h', 5001, 10000);
 UPDATE ow_t SET v = 'changed' WHERE id % 2 = 0;
 UPDATE ow_h SET v = 'changed' WHERE id % 2 = 0;
 DELETE FROM ow_t WHERE id % 7 = 0;
 DELETE FROM ow_h WHERE id % 7 = 0;
 SELECT ins1('ow_t', 10001, 11250);
-SELECT ins1('ow_h', 10001, 11250);
+SELECT ins_all('ow_h', 10001, 11250);
 SELECT c AS seq_cursor, c = drain('c_seq_h') AS seq_cursor_agrees FROM (SELECT drain('c_seq') AS c) x;
 SELECT take('c_idx', 2) AS next_rows, take('c_idx_h', 2) AS next_rows_of_the_twin;
 SELECT c AS index_cursor, c = drain('c_idx_h') AS index_cursor_agrees FROM (SELECT drain('c_idx') AS c) x;
@@ -394,8 +405,8 @@ SELECT ins1('sp_t', 203751, 205000);
 RELEASE a;
 SELECT count(*), count(*) FILTER (WHERE id > 300000) AS in_the_rolled_back FROM sp_t;
 COMMIT;
-SELECT ins1('sp_h', 1, 10000);
-SELECT ins1('sp_h', 200001, 205000);
+SELECT ins_all('sp_h', 1, 10000);
+SELECT ins_all('sp_h', 200001, 205000);
 SELECT same('sp_t', 'sp_h') AS the_twin_agrees;
 SELECT agree('sp_t', 'sp_h') AS plans_agree;
 VACUUM sp_t;
@@ -425,7 +436,7 @@ CREATE TABLE sx_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX sx_t_id ON sx_t (id);
 BEGIN;
 SELECT ins1x('sx_t', 1, 10000, 2);
-SELECT ins1x('sx_h', 1, 10000, 2);
+SELECT ins_all('sx_h', 1, 10000, 2);
 SELECT count(*), sum(id) FROM sx_t;
 SELECT total <= 6 AS within_the_limit, sift._test_tbl_tagged('sx_t') > 0 AS carries_its_writers FROM nsegs('sx_t');
 SELECT same('sx_t', 'sx_h') AS the_twin_agrees_while_running;
@@ -435,7 +446,7 @@ SELECT agree('sx_t', 'sx_h') AS plans_agree;
 -- none rolled back: the rows of 10000 subtransactions
 BEGIN;
 SELECT ins1x('sx_t', 100001, 110000, 1000000);
-SELECT ins1x('sx_h', 100001, 110000, 1000000);
+SELECT ins_all('sx_h', 100001, 110000, 1000000);
 SELECT same('sx_t', 'sx_h') AS the_twin_agrees_with_every_subtransaction_kept;
 COMMIT;
 SELECT same('sx_t', 'sx_h') AS the_twin_agrees_after_the_commit;
@@ -463,7 +474,7 @@ CREATE INDEX fu_t_id ON fu_t (id);
 CREATE INDEX fu_h_id ON fu_h (id);
 BEGIN;
 SELECT ins1('fu_t', 1, 10000);
-SELECT ins1('fu_h', 1, 10000);
+SELECT ins_all('fu_h', 1, 10000);
 SELECT count(*) AS locked FROM (SELECT id FROM fu_t WHERE id % 250 = 0 FOR UPDATE) x;
 SELECT count(*) AS locked_share FROM (SELECT id FROM fu_t WHERE id % 250 = 125 FOR SHARE) x;
 SELECT count(*) AS locked_no_key FROM (SELECT id FROM fu_t WHERE id <= 100 FOR NO KEY UPDATE) x;
@@ -495,19 +506,19 @@ CREATE INDEX il_t_id ON il_t (id);
 CREATE INDEX il_h_id ON il_h (id);
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 SELECT ins1('il_t', 1, 6250);
-SELECT ins1('il_h', 1, 6250);
+SELECT ins_all('il_h', 1, 6250);
 SELECT count(*), sum(id) FROM il_t;
 SELECT agree('il_t', 'il_h') AS plans_agree_repeatable_read;
 COMMIT;
 BEGIN ISOLATION LEVEL SERIALIZABLE;
 SELECT ins1('il_t', 6251, 12500);
-SELECT ins1('il_h', 6251, 12500);
+SELECT ins_all('il_h', 6251, 12500);
 SELECT count(*), sum(id) FROM il_t;
 SELECT agree('il_t', 'il_h') AS plans_agree_serializable;
 COMMIT;
 BEGIN ISOLATION LEVEL READ COMMITTED;
 SELECT ins1('il_t', 12501, 18750);
-SELECT ins1('il_h', 12501, 18750);
+SELECT ins_all('il_h', 12501, 18750);
 SELECT count(*), sum(id) FROM il_t;
 SELECT agree('il_t', 'il_h') AS plans_agree_read_committed;
 COMMIT;
@@ -524,14 +535,14 @@ SELECT sift.table_set_option('oc_t', 'write_buffer_limit', '2048');
 CREATE TABLE oc_h (id int PRIMARY KEY, v text) WITH (autovacuum_enabled = false);
 BEGIN;
 SELECT upsert('oc_t', 1, 7500, false);
-SELECT upsert('oc_h', 1, 7500, false);
+SELECT upsert_all('oc_h', 1, 7500, false);
 -- the first half conflicts, the second does not
 SELECT upsert('oc_t', 3751, 11250, false);
-SELECT upsert('oc_h', 3751, 11250, false);
+SELECT upsert_all('oc_h', 3751, 11250, false);
 SELECT count(*), sum(id) FROM oc_t;
 -- DO UPDATE of rows written earlier by the transaction
 SELECT upsert('oc_t', 1, 5000, true);
-SELECT upsert('oc_h', 1, 5000, true);
+SELECT upsert_all('oc_h', 1, 5000, true);
 SELECT count(*), count(*) FILTER (WHERE v LIKE '%c') AS updated FROM oc_t;
 SELECT total <= 6 AS within_the_limit, sift._test_tbl_tagged('oc_t') > 0 AS carries_its_writer FROM nsegs('oc_t');
 SELECT same('oc_t', 'oc_h') AS the_twin_agrees_while_running;
@@ -540,13 +551,13 @@ SELECT same('oc_t', 'oc_h') AS the_twin_agrees;
 -- DO UPDATE of rows of a committed transaction that are not frozen yet, and of frozen ones
 BEGIN;
 SELECT upsert('oc_t', 4751, 6500, true);
-SELECT upsert('oc_h', 4751, 6500, true);
+SELECT upsert_all('oc_h', 4751, 6500, true);
 COMMIT;
 SELECT same('oc_t', 'oc_h') AS the_twin_agrees_after_the_second_transaction;
 VACUUM oc_t;
 BEGIN;
 SELECT upsert('oc_t', 1, 750, true);
-SELECT upsert('oc_h', 1, 750, true);
+SELECT upsert_all('oc_h', 1, 750, true);
 COMMIT;
 SELECT same('oc_t', 'oc_h') AS the_twin_agrees_after_vacuum;
 SELECT agree('oc_t', 'oc_h') AS plans_agree;
@@ -581,7 +592,7 @@ CREATE INDEX par_t_id ON par_t (id);
 CREATE INDEX par_h_id ON par_h (id);
 BEGIN;
 SELECT ins1('par_t', 1, 10000);
-SELECT ins1('par_h', 1, 10000);
+SELECT ins_all('par_h', 1, 10000);
 COMMIT;
 ANALYZE par_t;
 ANALYZE par_h;
@@ -594,7 +605,8 @@ SELECT agree('par_t', 'par_h') AS plans_agree_after_vacuum;
 RESET max_parallel_workers_per_gather;
 DROP TABLE par_t, par_h;
 DROP FUNCTION digest(regclass), same(regclass, regclass), differ(regclass, regclass), nsegs(regclass), ins1(regclass, int, int),
-	ins1x(regclass, int, int, int), mixed(regclass, int, int), upsert(regclass, int, int, bool), drain(refcursor), take(refcursor, int), tr_fn(),
+	ins1x(regclass, int, int, int), mixed(regclass, int, int), upsert(regclass, int, int, bool), ins_all(regclass, int, int, int),
+	upsert_all(regclass, int, int, bool), drain(refcursor), take(refcursor, int), tr_fn(),
 	plan_sql(text, regclass), plan_ref(text), plan_settings(text), plan_node(text), plan_run(regclass, text, bool), agree(regclass, regclass), plans(regclass);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

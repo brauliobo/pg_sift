@@ -3,7 +3,7 @@
 -- final, so once the directory is half full the write buffers are promoted with the version (xmin and cmin) of every row, whoever wrote
 -- it and with whichever command, and any mix of them merges, freezes when the writers are done and is dropped when they aborted.
 -- The directory limit is lowered here (a testing setting) so that a few write buffers of 2 MB are enough to reach the pressure.
--- Size: the pressure needs more than half of 8 directory entries in write buffers of 2 MB (the smallest buffer), 10000 rows of a kilobyte; every scenario writes that, hence 15 s.
+-- Size: the pressure needs more than half of 8 directory entries in write buffers of 2 MB (the smallest buffer), 10000 rows of a kilobyte; every scenario writes that.
 -- Every statement runs on a heap twin as well: the answers must be the same in every state.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -65,6 +65,17 @@ DECLARE q text := format('INSERT INTO %1$s VALUES ($1, repeat(''x'', 1000) || $1
 						 CASE WHEN doupdate THEN format('UPDATE SET v = %s.v || ''c''', t) ELSE 'NOTHING' END);
 BEGIN
 	FOR i IN lo..hi LOOP EXECUTE q USING i; END LOOP;
+END $$;
+-- the rows the loops above leave, in one statement: the heap twins need the rows, not a command per row
+CREATE FUNCTION ins_all(t regclass, lo int, hi int, fail_every int DEFAULT 0) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('INSERT INTO %s SELECT g, repeat(''x'', 1000) || g FROM generate_series($1, $2) g WHERE $3 = 0 OR g %% $3 <> 0', t)
+		USING lo, hi, fail_every;
+END $$;
+CREATE FUNCTION upsert_all(t regclass, lo int, hi int, doupdate bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('INSERT INTO %1$s SELECT g, repeat(''x'', 1000) || g FROM generate_series($1, $2) g ON CONFLICT (id) DO %2$s', t,
+				   CASE WHEN doupdate THEN format('UPDATE SET v = %s.v || ''c''', t) ELSE 'NOTHING' END) USING lo, hi;
 END $$;
 -- the ids of the next n rows of a cursor
 CREATE FUNCTION take(cur refcursor, n int) RETURNS text LANGUAGE plpgsql AS $$
@@ -174,9 +185,9 @@ SELECT ins1('lp_t', 1, 10000);
  
 (1 row)
 
-SELECT ins1('lp_h', 1, 10000);
- ins1 
-------
+SELECT ins_all('lp_h', 1, 10000);
+ ins_all 
+---------
  
 (1 row)
 
@@ -269,9 +280,9 @@ SELECT ins1('lp_t', 10001, 20000);
  
 (1 row)
 
-SELECT ins1('lp_h', 10001, 20000);
- ins1 
-------
+SELECT ins_all('lp_h', 10001, 20000);
+ ins_all 
+---------
  
 (1 row)
 
@@ -463,9 +474,9 @@ SELECT ins1('ow_t', 1, 5000);
  
 (1 row)
 
-SELECT ins1('ow_h', 1, 5000);
- ins1 
-------
+SELECT ins_all('ow_h', 1, 5000);
+ ins_all 
+---------
  
 (1 row)
 
@@ -507,9 +518,9 @@ SELECT ins1('ow_t', 5001, 10000);
  
 (1 row)
 
-SELECT ins1('ow_h', 5001, 10000);
- ins1 
-------
+SELECT ins_all('ow_h', 5001, 10000);
+ ins_all 
+---------
  
 (1 row)
 
@@ -523,9 +534,9 @@ SELECT ins1('ow_t', 10001, 11250);
  
 (1 row)
 
-SELECT ins1('ow_h', 10001, 11250);
- ins1 
-------
+SELECT ins_all('ow_h', 10001, 11250);
+ ins_all 
+---------
  
 (1 row)
 
@@ -848,15 +859,15 @@ SELECT count(*), count(*) FILTER (WHERE id > 300000) AS in_the_rolled_back FROM 
 (1 row)
 
 COMMIT;
-SELECT ins1('sp_h', 1, 10000);
- ins1 
-------
+SELECT ins_all('sp_h', 1, 10000);
+ ins_all 
+---------
  
 (1 row)
 
-SELECT ins1('sp_h', 200001, 205000);
- ins1 
-------
+SELECT ins_all('sp_h', 200001, 205000);
+ ins_all 
+---------
  
 (1 row)
 
@@ -952,9 +963,9 @@ SELECT ins1x('sx_t', 1, 10000, 2);
  
 (1 row)
 
-SELECT ins1x('sx_h', 1, 10000, 2);
- ins1x 
--------
+SELECT ins_all('sx_h', 1, 10000, 2);
+ ins_all 
+---------
  
 (1 row)
 
@@ -997,9 +1008,9 @@ SELECT ins1x('sx_t', 100001, 110000, 1000000);
  
 (1 row)
 
-SELECT ins1x('sx_h', 100001, 110000, 1000000);
- ins1x 
--------
+SELECT ins_all('sx_h', 100001, 110000, 1000000);
+ ins_all 
+---------
  
 (1 row)
 
@@ -1083,9 +1094,9 @@ SELECT ins1('fu_t', 1, 10000);
  
 (1 row)
 
-SELECT ins1('fu_h', 1, 10000);
- ins1 
-------
+SELECT ins_all('fu_h', 1, 10000);
+ ins_all 
+---------
  
 (1 row)
 
@@ -1168,9 +1179,9 @@ SELECT ins1('il_t', 1, 6250);
  
 (1 row)
 
-SELECT ins1('il_h', 1, 6250);
- ins1 
-------
+SELECT ins_all('il_h', 1, 6250);
+ ins_all 
+---------
  
 (1 row)
 
@@ -1194,9 +1205,9 @@ SELECT ins1('il_t', 6251, 12500);
  
 (1 row)
 
-SELECT ins1('il_h', 6251, 12500);
- ins1 
-------
+SELECT ins_all('il_h', 6251, 12500);
+ ins_all 
+---------
  
 (1 row)
 
@@ -1220,9 +1231,9 @@ SELECT ins1('il_t', 12501, 18750);
  
 (1 row)
 
-SELECT ins1('il_h', 12501, 18750);
- ins1 
-------
+SELECT ins_all('il_h', 12501, 18750);
+ ins_all 
+---------
  
 (1 row)
 
@@ -1275,9 +1286,9 @@ SELECT upsert('oc_t', 1, 7500, false);
  
 (1 row)
 
-SELECT upsert('oc_h', 1, 7500, false);
- upsert 
---------
+SELECT upsert_all('oc_h', 1, 7500, false);
+ upsert_all 
+------------
  
 (1 row)
 
@@ -1288,9 +1299,9 @@ SELECT upsert('oc_t', 3751, 11250, false);
  
 (1 row)
 
-SELECT upsert('oc_h', 3751, 11250, false);
- upsert 
---------
+SELECT upsert_all('oc_h', 3751, 11250, false);
+ upsert_all 
+------------
  
 (1 row)
 
@@ -1307,9 +1318,9 @@ SELECT upsert('oc_t', 1, 5000, true);
  
 (1 row)
 
-SELECT upsert('oc_h', 1, 5000, true);
- upsert 
---------
+SELECT upsert_all('oc_h', 1, 5000, true);
+ upsert_all 
+------------
  
 (1 row)
 
@@ -1346,9 +1357,9 @@ SELECT upsert('oc_t', 4751, 6500, true);
  
 (1 row)
 
-SELECT upsert('oc_h', 4751, 6500, true);
- upsert 
---------
+SELECT upsert_all('oc_h', 4751, 6500, true);
+ upsert_all 
+------------
  
 (1 row)
 
@@ -1367,9 +1378,9 @@ SELECT upsert('oc_t', 1, 750, true);
  
 (1 row)
 
-SELECT upsert('oc_h', 1, 750, true);
- upsert 
---------
+SELECT upsert_all('oc_h', 1, 750, true);
+ upsert_all 
+------------
  
 (1 row)
 
@@ -1459,9 +1470,9 @@ SELECT ins1('par_t', 1, 10000);
  
 (1 row)
 
-SELECT ins1('par_h', 1, 10000);
- ins1 
-------
+SELECT ins_all('par_h', 1, 10000);
+ ins_all 
+---------
  
 (1 row)
 
@@ -1496,7 +1507,8 @@ SELECT agree('par_t', 'par_h') AS plans_agree_after_vacuum;
 RESET max_parallel_workers_per_gather;
 DROP TABLE par_t, par_h;
 DROP FUNCTION digest(regclass), same(regclass, regclass), differ(regclass, regclass), nsegs(regclass), ins1(regclass, int, int),
-	ins1x(regclass, int, int, int), mixed(regclass, int, int), upsert(regclass, int, int, bool), drain(refcursor), take(refcursor, int), tr_fn(),
+	ins1x(regclass, int, int, int), mixed(regclass, int, int), upsert(regclass, int, int, bool), ins_all(regclass, int, int, int),
+	upsert_all(regclass, int, int, bool), drain(refcursor), take(refcursor, int), tr_fn(),
 	plan_sql(text, regclass), plan_ref(text), plan_settings(text), plan_node(text), plan_run(regclass, text, bool), agree(regclass, regclass), plans(regclass);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

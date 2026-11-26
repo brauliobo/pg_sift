@@ -40,8 +40,9 @@ INSERT INTO pa_q VALUES
 	(16, 'default measure',  'SELECT count(*), sum(w), min(w), max(w) FROM %s');
 CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 13) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.units IS NULL THEN '-' WHEN u.pre IS NULL THEN 'scan' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
-	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
-	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
+	       r.pre_agg IS NOT DISTINCT FROM r.scan AND r.scan IS NOT DISTINCT FROM r.plain
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u,
+	     LATERAL (SELECT pa_rows(z.q, true, true) AS pre_agg, pa_rows(z.q, false, true) AS scan, pa_rows(z.q, false, false) AS plain OFFSET 0) r ORDER BY z.n
 $$;
 -- the same, summed up
 CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 13) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$

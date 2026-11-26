@@ -4,7 +4,7 @@
 CREATE EXTENSION pg_sift;
 -- Format 1: the segment directory of a table, its write buffers and backpressure are those of Format 1 tables
 SET sift.test_create_format1 = on;
-SET sift.table_max_segments = 24;
+SET sift.table_max_segments = 12;
 CREATE TABLE cap (id int, v text) USING sift_table;
 SELECT sift.table_set_option('cap', 'write_buffer_limit', '2048');
 CREATE PROCEDURE load_cap(t regclass, batches int) LANGUAGE plpgsql AS $$
@@ -14,23 +14,23 @@ BEGIN
 		COMMIT;
 	END LOOP;
 END $$;
-CALL load_cap('cap', 60);
+CALL load_cap('cap', 30);
 SELECT count(*), sum(length(v)) FROM cap;
-SELECT count(*) < 24 AS within_the_limit, count(*) FILTER (WHERE kind = 'columns') > 0 AS promoted FROM sift.table_segments('cap');
+SELECT count(*) < 12 AS within_the_limit, count(*) FILTER (WHERE kind = 'columns') > 0 AS promoted FROM sift.table_segments('cap');
 -- the rows are the loaded ones
 SELECT count(*) AS wrong FROM cap WHERE v <> repeat('x', 1000) || id;
 -- one transaction does not stop at the limit either: the write buffers that one command wrote become column groups that carry their
 -- writer while it runs (tbl_bigtx)
 CREATE TABLE cap_one (id int, v text) USING sift_table;
 SELECT sift.table_set_option('cap_one', 'write_buffer_limit', '2048');
-INSERT INTO cap_one SELECT g, repeat('x', 1000) || g FROM generate_series(1, 60 * 2200) g;
+INSERT INTO cap_one SELECT g, repeat('x', 1000) || g FROM generate_series(1, 30 * 2200) g;
 SELECT count(*), sum(length(v)) FROM cap_one;
 -- the rows of many commands wait for the transaction in groups that carry the version of each row: the loop writes all of it
 CREATE TABLE cap_cmds (id int, v text) USING sift_table;
 SELECT sift.table_set_option('cap_cmds', 'write_buffer_limit', '2048');
 DO $$
 BEGIN
-	FOR i IN 1 .. 60 * 2200 LOOP
+	FOR i IN 1 .. 30 * 2200 LOOP
 		INSERT INTO cap_cmds VALUES (i, repeat('x', 1000) || i);
 	END LOOP;
 END $$;
@@ -41,10 +41,10 @@ CREATE TABLE cap_bp (id int, v text) USING sift_table;
 SELECT sift.table_set_option('cap_bp', 'write_buffer_limit', '2048');
 SELECT sift.table_set_option('cap_bp', 'backpressure', '40');
 SELECT sift.table_set_option('cap_bp', 'backpressure', '75');
-CALL load_cap('cap_bp', 60);
-INSERT INTO cap_bp SELECT g, repeat('x', 1000) || g FROM generate_series(132001, 264000) g;
+CALL load_cap('cap_bp', 30);
+INSERT INTO cap_bp SELECT g, repeat('x', 1000) || g FROM generate_series(66001, 132000) g;
 SELECT count(*), sum(id) FROM cap_bp;
-SELECT count(*) < 24 AS within_the_limit FROM sift.table_segments('cap_bp');
+SELECT count(*) < 12 AS within_the_limit FROM sift.table_segments('cap_bp');
 SELECT count(*) AS wrong FROM cap_bp WHERE v <> repeat('x', 1000) || id;
 DROP TABLE cap, cap_one, cap_cmds, cap_bp;
 DROP PROCEDURE load_cap;

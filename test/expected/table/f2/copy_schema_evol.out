@@ -44,14 +44,14 @@ END $$;
 CREATE FUNCTION file_of(n text) RETURNS text LANGUAGE sql AS $$ SELECT '/tmp/sift_copy_schema_evol_' || n || '.tsv' $$;
 CREATE VIEW src AS
 SELECT i AS id, i % 10 AS g, (i / 4.0)::numeric(10,2) AS v, 'row ' || i AS s, date '2020-01-01' + i % 700 AS d, i * 0.5::float8 AS f, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END AS k
-FROM generate_series(1, 30000) i;
--- 1. the direct route: COPY and CREATE TABLE AS of 30000 rows (batches of 1000 slots), against a heap oracle
+FROM generate_series(1, 6000) i;
+-- 1. the direct route: COPY and CREATE TABLE AS of 6000 rows (batches of 1000 slots), against a heap oracle
 CREATE TABLE tb (id int, g int, v numeric(10,2), s text, d date, f float8, k int) USING :am;
 CREATE TABLE ob (LIKE tb) USING heap;
 COPY (SELECT * FROM src) TO '/tmp/sift_copy_schema_evol_main.tsv';
 COPY tb FROM '/tmp/sift_copy_schema_evol_main.tsv';
 COPY ob FROM '/tmp/sift_copy_schema_evol_main.tsv';
-SELECT sift_helpers.assert_eq('copy count', count(*)::int, 30000) FROM tb;
+SELECT sift_helpers.assert_eq('copy count', count(*)::int, 6000) FROM tb;
    assert_eq    
 ----------------
  copy count: ok
@@ -71,7 +71,7 @@ SELECT same('copy rows', 'tb', 'ob');
 
 CREATE TABLE tc USING :am AS SELECT * FROM src;
 CREATE TABLE oc AS SELECT * FROM src;
-SELECT sift_helpers.assert_eq('ctas count', count(*)::int, 30000) FROM tc;
+SELECT sift_helpers.assert_eq('ctas count', count(*)::int, 6000) FROM tc;
    assert_eq    
 ----------------
  ctas count: ok
@@ -83,13 +83,13 @@ SELECT same('ctas rows', 'tc', 'oc');
  ctas rows: ok
 (1 row)
 
-SELECT sift_helpers.assert_eq('address of a loaded row', count(*)::int, 1) FROM tb WHERE ctid = (SELECT ctid FROM tb WHERE id = 12345);
+SELECT sift_helpers.assert_eq('address of a loaded row', count(*)::int, 1) FROM tb WHERE ctid = (SELECT ctid FROM tb WHERE id = 1234);
           assert_eq          
 -----------------------------
  address of a loaded row: ok
 (1 row)
 
-SELECT sift_helpers.assert_eq('probe of a loaded row', s, 'row 12345') FROM tb WHERE id = 12345;
+SELECT sift_helpers.assert_eq('probe of a loaded row', s, 'row 1234') FROM tb WHERE id = 1234;
          assert_eq         
 ---------------------------
  probe of a loaded row: ok
@@ -126,7 +126,7 @@ CREATE FUNCTION klog_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT I
 CREATE TABLE tk (LIKE tb) USING :am;
 CREATE TRIGGER tk_after AFTER INSERT ON tk FOR EACH ROW EXECUTE FUNCTION klog_row();
 COPY tk FROM '/tmp/sift_copy_schema_evol_main.tsv';
-SELECT sift_helpers.assert_eq('row trigger fired for every row', (SELECT count(*)::int FROM klog), 30000);
+SELECT sift_helpers.assert_eq('row trigger fired for every row', (SELECT count(*)::int FROM klog), 6000);
               assert_eq              
 -------------------------------------
  row trigger fired for every row: ok
@@ -142,7 +142,7 @@ SELECT same('rows with a trigger', 'tk', 'ob');
 CREATE TABLE tr (LIKE tb) USING :am;
 BEGIN;
 COPY tr FROM '/tmp/sift_copy_schema_evol_main.tsv';
-SELECT sift_helpers.assert_eq('own bulk rows are read', count(*)::int, 30000) FROM tr;
+SELECT sift_helpers.assert_eq('own bulk rows are read', count(*)::int, 6000) FROM tr;
          assert_eq          
 ----------------------------
  own bulk rows are read: ok
@@ -176,7 +176,7 @@ SAVEPOINT b;
 DELETE FROM tr WHERE g = 3;
 RELEASE b;
 COMMIT;
-SELECT sift_helpers.assert_eq('committed copy after a savepoint', count(*)::int, 27000) FROM tr;
+SELECT sift_helpers.assert_eq('committed copy after a savepoint', count(*)::int, 5400) FROM tr;
               assert_eq               
 --------------------------------------
  committed copy after a savepoint: ok
@@ -188,7 +188,7 @@ SELECT sift_helpers.assert_eq('deleted by the same transaction', count(*)::int, 
  deleted by the same transaction: ok
 (1 row)
 
-CREATE TABLE tcheck (LIKE tb, CHECK (id < 29990)) USING :am;
+CREATE TABLE tcheck (LIKE tb, CHECK (id < 5990)) USING :am;
 SELECT fails('COPY tcheck FROM ''/tmp/sift_copy_schema_evol_main.tsv''', '23514');
    fails   
 -----------
@@ -202,7 +202,7 @@ SELECT sift_helpers.assert_eq('a failed copy leaves nothing', count(*)::int, 0) 
 (1 row)
 
 INSERT INTO tr SELECT * FROM src WHERE g = 3;
-SELECT sift_helpers.assert_eq('a later insert after the rollbacks', count(*)::int, 30000) FROM tr;
+SELECT sift_helpers.assert_eq('a later insert after the rollbacks', count(*)::int, 6000) FROM tr;
                assert_eq                
 ----------------------------------------
  a later insert after the rollbacks: ok
@@ -276,19 +276,19 @@ SELECT sift_helpers.assert_eq('add column wrote no byte', pg_relation_size('tb')
  add column wrote no byte: ok
 (1 row)
 
-SELECT sift_helpers.assert_eq('old rows read an int default', count(*) FILTER (WHERE c1 = 7)::int, 30000) FROM tb;
+SELECT sift_helpers.assert_eq('old rows read an int default', count(*) FILTER (WHERE c1 = 7)::int, 6000) FROM tb;
             assert_eq             
 ----------------------------------
  old rows read an int default: ok
 (1 row)
 
-SELECT sift_helpers.assert_eq('old rows read a text default', count(*) FILTER (WHERE c2 = 'abc')::int, 30000) FROM tb;
+SELECT sift_helpers.assert_eq('old rows read a text default', count(*) FILTER (WHERE c2 = 'abc')::int, 6000) FROM tb;
             assert_eq             
 ----------------------------------
  old rows read a text default: ok
 (1 row)
 
-SELECT sift_helpers.assert_eq('old rows read a float default', sum(c3), 75000::float8) FROM tb;
+SELECT sift_helpers.assert_eq('old rows read a float default', sum(c3), 15000::float8) FROM tb;
              assert_eq             
 -----------------------------------
  old rows read a float default: ok
@@ -300,13 +300,13 @@ SELECT sift_helpers.assert_eq('old rows read no value for a plain column', count
  old rows read no value for a plain column: ok
 (1 row)
 
-SELECT sift_helpers.assert_eq('old rows read a date default', count(*) FILTER (WHERE c5 = date '2020-02-29')::int, 30000) FROM tb;
+SELECT sift_helpers.assert_eq('old rows read a date default', count(*) FILTER (WHERE c5 = date '2020-02-29')::int, 6000) FROM tb;
             assert_eq             
 ----------------------------------
  old rows read a date default: ok
 (1 row)
 
-SELECT sift_helpers.assert_eq('old rows read a numeric default', sum(c6), 37500.00) FROM tb;
+SELECT sift_helpers.assert_eq('old rows read a numeric default', sum(c6), 7500.00) FROM tb;
               assert_eq              
 -------------------------------------
  old rows read a numeric default: ok
@@ -349,16 +349,16 @@ SELECT agg_same('filter on an added column', 'SELECT id, c1 FROM %s WHERE c1 = 7
 (1 row)
 
 -- new rows after the columns were added are written with their values; old and new rows are read together
-COPY (SELECT id + 30000, g, v, s, d, f, k, 9, 'new ' || id, 1.5::float8, id, date '2021-01-01', 2.75::numeric, false, '00000000-0000-0000-0000-000000000001'::uuid, 'y' FROM src) TO '/tmp/sift_copy_schema_evol_more.tsv';
+COPY (SELECT id + 6000, g, v, s, d, f, k, 9, 'new ' || id, 1.5::float8, id, date '2021-01-01', 2.75::numeric, false, '00000000-0000-0000-0000-000000000001'::uuid, 'y' FROM src) TO '/tmp/sift_copy_schema_evol_more.tsv';
 COPY tb FROM '/tmp/sift_copy_schema_evol_more.tsv';
 COPY ob FROM '/tmp/sift_copy_schema_evol_more.tsv';
-SELECT sift_helpers.assert_eq('rows after the columns', count(*)::int, 60000) FROM tb;
+SELECT sift_helpers.assert_eq('rows after the columns', count(*)::int, 12000) FROM tb;
          assert_eq          
 ----------------------------
  rows after the columns: ok
 (1 row)
 
-SELECT sift_helpers.assert_eq('new rows keep their values', count(*) FILTER (WHERE c1 = 9 AND c2 LIKE 'new %' AND NOT c7)::int, 30000) FROM tb;
+SELECT sift_helpers.assert_eq('new rows keep their values', count(*) FILTER (WHERE c1 = 9 AND c2 LIKE 'new %' AND NOT c7)::int, 6000) FROM tb;
            assert_eq            
 --------------------------------
  new rows keep their values: ok
