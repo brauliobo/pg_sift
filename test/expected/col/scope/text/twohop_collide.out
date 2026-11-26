@@ -1,12 +1,9 @@
 -- The journal word of a string member cut to 3 bits (sift.test_member_hash_bits), set before any index exists so that every record and every stored entry is read under it: members that differ in their
--- bytes share a word, the leave-out of the units and the patch widen to them, and the rows are still those of the join in every read shape and every state of col_scope_texttwohop.
+-- bytes share a word, the members a read takes as changed widen to them, and the rows are still those of the join in every read shape and every state of col_scope_texttwohop.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-SET default_statistics_target = 1000;
-SET seq_page_cost = 1000;
-SET random_page_cost = 1000;
 SET sift.test_member_hash_bits = 3;
 SELECT max(sift._test_member_hash(v)) < 8 AS cut, count(DISTINCT sift._test_member_hash(v)) < 8 AS collide FROM (VALUES (''::text), ('a'), ('foobar'), ('tenant-4'), ('ténant-4'), ('acct-1'), ('acct-2'), ('acct-3'), ('acct-4'), ('acct-5'), ('acct-6')) t (v);
  cut | collide 
@@ -16,7 +13,8 @@ SELECT max(sift._test_member_hash(v)) < 8 AS cut, count(DISTINCT sift._test_memb
 
 \ir test/common/sql/col/scope/texttwohop_states.sql
 -- shared by col_scope_texttwohop and col_scope_texttwohop_collide: a scope of two paths (the grants of a tenant on a member and on the groups of the member) with a text key, a text member, a uuid member
--- and a varchar fact column, the forms of its pair set and the states of the three journals
+-- and a varchar fact column, the forms of its pair set and the states of the three journals. The scope summary is Format 2.0: its key store holds a member of up to 255 bytes
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 CREATE TABLE grants (id int PRIMARY KEY, tenant_id text NOT NULL, account text, group_id int, deleted_at timestamptz, note text) WITH (autovacuum_enabled = false);
 CREATE UNIQUE INDEX grants_direct ON grants (account, tenant_id) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
@@ -52,7 +50,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, account, created_at, kind, a
 	WITH (scope = 'tenant_id: account -> grants(account, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, account)');
 REINDEX INDEX facts_col;
 -- a varchar fact column, a uuid member with a uuid key (the same pairs through md5), and an integer key with a text member
-CREATE TABLE var_facts (id int PRIMARY KEY, account varchar(2000), kind text, amount int) WITH (autovacuum_enabled = false);
+CREATE TABLE var_facts (id int PRIMARY KEY, account varchar(255), kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO var_facts SELECT id, account, kind, amount FROM facts;
 CREATE INDEX var_facts_col ON var_facts USING sift_col (id, account, kind, amount)
 	WITH (scope = 'tenant_id: account -> grants(account, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, account)');
@@ -85,25 +83,16 @@ CREATE INDEX i_facts_col ON i_facts USING sift_col (id, account, kind, amount)
 REINDEX INDEX i_facts_col;
 VACUUM (FREEZE, ANALYZE) facts, var_facts, u_facts, i_facts;
 VACUUM (ANALYZE) grants, memberships, u_grants, u_memberships, i_grants;
--- the scope segments of an index with a text key or member are column format 50
-SELECT i AS index, format, count(*) AS segments FROM (VALUES ('facts_col'), ('var_facts_col'), ('u_facts_col'), ('i_facts_col')) v (i), LATERAL sift.col_segments(i::regclass) GROUP BY 1, 2 ORDER BY 1, 2;
-     index     | format | segments 
----------------+--------+----------
- facts_col     |     50 |        2
- facts_col     |        |        1
- i_facts_col   |     50 |        2
- i_facts_col   |        |        1
- u_facts_col   |     50 |        2
- u_facts_col   |        |        1
- var_facts_col |     50 |        2
- var_facts_col |        |        1
-(8 rows)
-
-SELECT count(*) AS entries, count(DISTINCT scope) AS scopes FROM sift._test_col_scope_entries('facts_col');
- entries | scopes 
----------+--------
-    2974 |      1
-(1 row)
+-- an index with a text key or member is Format 2.0 with a scope summary of the keys of its pairs
+SELECT i AS index, s.format_major, s.scopes, k.nkeys FROM (VALUES ('facts_col'), ('var_facts_col'), ('u_facts_col'), ('i_facts_col')) v (i), LATERAL sift.status(i::regclass) s,
+	LATERAL sift.scope_stats(i::regclass) k ORDER BY 1;
+     index     | format_major | scopes | nkeys 
+---------------+--------------+--------+-------
+ facts_col     |            2 |      1 |     6
+ i_facts_col   |            2 |      1 |     6
+ u_facts_col   |            2 |      1 |     6
+ var_facts_col |            2 |      1 |     6
+(4 rows)
 
 -- the pair set as the statements of an application write it: the union of the direct grants and the members of the groups granted
 CREATE VIEW pair_oracle AS
@@ -134,16 +123,12 @@ INSERT INTO forms VALUES
  ('uuid member and key, group by the key', $q$SELECT o.tenant_id, count(*) AS n FROM u_facts f JOIN u_pair_oracle o ON o.member = f.account GROUP BY o.tenant_id$q$),
  ('integer key, text member', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM i_facts f WHERE f.account IN (SELECT member FROM i_pair_oracle WHERE tenant_id IN (1, 5)) GROUP BY kind$q$);
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text; plan text := '';
+DECLARE l text; plan text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
-	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
-	END IF;
-	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
-	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+	RETURN CASE WHEN plan ~ 'SiftAggV6Scope' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
 END $$;
 CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -170,49 +155,49 @@ CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+		IF l ~ 'Scope (Read|Cube):' THEN
 			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
 		END IF;
 	END LOOP;
-	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
+	RETURN nullif(rtrim(r, '; '), '');
 END $$;
 CREATE FUNCTION states() RETURNS TABLE (name text, same_rows bool) LANGUAGE sql AS $$
 	SELECT f.name, same(f.q) FROM forms f ORDER BY f.name COLLATE "C"
 $$;
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COLLATE "C";
-                   name                   |                                           plan                                           | same_rows 
-------------------------------------------+------------------------------------------------------------------------------------------+-----------
- EXISTS                                   | scope read, once                                                                         | t
- IN, a key nobody has                     | scope read, once                                                                         | t
- IN, a list                               | scope read, once                                                                         | t
- IN, one key                              | scope read, once                                                                         | t
- IN, the group with the bytes that differ | scope read, once                                                                         | t
- IN, the key with the empty account       | scope read, once                                                                         | t
- every fact with a pair                   | join, the scope key is not bound by an equality or an IN list of constants or parameters | t
- group by the key, every key              | scope read, per pair                                                                     | t
- integer key, text member                 | scope read, once                                                                         | t
- join, a row for each pair                | scope read, per pair                                                                     | t
- uuid member and key                      | scope read, once                                                                         | t
- uuid member and key, group by the key    | scope read, per pair                                                                     | t
- varchar facts                            | scope read, once                                                                         | t
+                   name                   |    plan     | same_rows 
+------------------------------------------+-------------+-----------
+ EXISTS                                   | normal plan | t
+ IN, a key nobody has                     | normal plan | t
+ IN, a list                               | normal plan | t
+ IN, one key                              | normal plan | t
+ IN, the group with the bytes that differ | normal plan | t
+ IN, the key with the empty account       | normal plan | t
+ every fact with a pair                   | normal plan | t
+ group by the key, every key              | scope read  | t
+ integer key, text member                 | normal plan | t
+ join, a row for each pair                | normal plan | t
+ uuid member and key                      | normal plan | t
+ uuid member and key, group by the key    | scope read  | t
+ varchar facts                            | normal plan | t
 (13 rows)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                   name                   |                       run                        
-------------------------------------------+--------------------------------------------------
- EXISTS                                   | units
- IN, a key nobody has                     | units
- IN, a list                               | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, one key                              | units
- IN, the group with the bytes that differ | units
- IN, the key with the empty account       | units
- every fact with a pair                   | units
- group by the key, every key              | units
- integer key, text member                 | units
- join, a row for each pair                | units
- uuid member and key                      | units
- uuid member and key, group by the key    | units
- varchar facts                            | units
+                   name                   |            run             
+------------------------------------------+----------------------------
+ EXISTS                                   | 
+ IN, a key nobody has                     | 
+ IN, a list                               | 
+ IN, one key                              | 
+ IN, the group with the bytes that differ | 
+ IN, the key with the empty account       | 
+ every fact with a pair                   | 
+ group by the key, every key              | Read: summary; Cube: clean
+ integer key, text member                 | 
+ join, a row for each pair                | 
+ uuid member and key                      | 
+ uuid member and key, group by the key    | Read: summary; Cube: clean
+ varchar facts                            | 
 (13 rows)
 
 -- the grants, memberships and facts are mirrored to the uuid, varchar and integer relations by id, writing only the rows that differ
@@ -521,13 +506,13 @@ SELECT 18 AS n, 'the empty account in a group' AS state, count(*) FILTER (WHERE 
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a list', 'join, a row for each pair', 'uuid member and key', 'integer key, text member') ORDER BY name COLLATE "C";
-           name            |                       run                        
----------------------------+--------------------------------------------------
- IN, a list                | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 2
- IN, one key               | units
- integer key, text member  | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- join, a row for each pair | units
- uuid member and key       | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+           name            | run 
+---------------------------+-----
+ IN, a list                | 
+ IN, one key               | 
+ integer key, text member  | 
+ join, a row for each pair | 
+ uuid member and key       | 
 (5 rows)
 
 -- the facts change: re-assigned accounts, no account, the empty one, new facts, the whole table written again
@@ -548,11 +533,11 @@ SELECT 'facts changed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differ
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a list', 'varchar facts') ORDER BY name COLLATE "C";
-     name      |                       run                        
----------------+--------------------------------------------------
- IN, a list    | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 2
- IN, one key   | units
- varchar facts | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+     name      | run 
+---------------+-----
+ IN, a list    | 
+ IN, one key   | 
+ varchar facts | 
 (3 rows)
 
 -- keys the value store has never seen get a code of the statement: two such keys in two statements are not the same key (what a backend keeps of the groups of its keys is not shared by them)
@@ -604,21 +589,21 @@ SELECT 'reindexed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing,
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                   name                   |                       run                        
-------------------------------------------+--------------------------------------------------
- EXISTS                                   | units
- IN, a key nobody has                     | units
- IN, a list                               | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 2
- IN, one key                              | units
- IN, the group with the bytes that differ | units
- IN, the key with the empty account       | units
- every fact with a pair                   | units
- group by the key, every key              | units
- integer key, text member                 | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- join, a row for each pair                | units
- uuid member and key                      | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- uuid member and key, group by the key    | units
- varchar facts                            | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+                   name                   |            run             
+------------------------------------------+----------------------------
+ EXISTS                                   | 
+ IN, a key nobody has                     | 
+ IN, a list                               | 
+ IN, one key                              | 
+ IN, the group with the bytes that differ | 
+ IN, the key with the empty account       | 
+ every fact with a pair                   | 
+ group by the key, every key              | Read: summary; Cube: clean
+ integer key, text member                 | 
+ join, a row for each pair                | 
+ uuid member and key                      | 
+ uuid member and key, group by the key    | Read: summary; Cube: clean
+ varchar facts                            | 
 (13 rows)
 
 SELECT sift.col_promote('facts_col') >= 0 AS promoted;

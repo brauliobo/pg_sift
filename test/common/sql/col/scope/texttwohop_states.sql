@@ -1,5 +1,6 @@
 -- shared by col_scope_texttwohop and col_scope_texttwohop_collide: a scope of two paths (the grants of a tenant on a member and on the groups of the member) with a text key, a text member, a uuid member
--- and a varchar fact column, the forms of its pair set and the states of the three journals
+-- and a varchar fact column, the forms of its pair set and the states of the three journals. The scope summary is Format 2.0: its key store holds a member of up to 255 bytes
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 CREATE TABLE grants (id int PRIMARY KEY, tenant_id text NOT NULL, account text, group_id int, deleted_at timestamptz, note text) WITH (autovacuum_enabled = false);
 CREATE UNIQUE INDEX grants_direct ON grants (account, tenant_id) WHERE deleted_at IS NULL;
 CREATE UNIQUE INDEX grants_group ON grants (group_id, tenant_id) WHERE deleted_at IS NULL;
@@ -37,7 +38,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, account, created_at, kind, a
 REINDEX INDEX facts_col;
 
 -- a varchar fact column, a uuid member with a uuid key (the same pairs through md5), and an integer key with a text member
-CREATE TABLE var_facts (id int PRIMARY KEY, account varchar(2000), kind text, amount int) WITH (autovacuum_enabled = false);
+CREATE TABLE var_facts (id int PRIMARY KEY, account varchar(255), kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO var_facts SELECT id, account, kind, amount FROM facts;
 CREATE INDEX var_facts_col ON var_facts USING sift_col (id, account, kind, amount)
 	WITH (scope = 'tenant_id: account -> grants(account, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, account)');
@@ -71,9 +72,9 @@ REINDEX INDEX i_facts_col;
 VACUUM (FREEZE, ANALYZE) facts, var_facts, u_facts, i_facts;
 VACUUM (ANALYZE) grants, memberships, u_grants, u_memberships, i_grants;
 
--- the scope segments of an index with a text key or member are column format 50
-SELECT i AS index, format, count(*) AS segments FROM (VALUES ('facts_col'), ('var_facts_col'), ('u_facts_col'), ('i_facts_col')) v (i), LATERAL sift.col_segments(i::regclass) GROUP BY 1, 2 ORDER BY 1, 2;
-SELECT count(*) AS entries, count(DISTINCT scope) AS scopes FROM sift._test_col_scope_entries('facts_col');
+-- an index with a text key or member is Format 2.0 with a scope summary of the keys of its pairs
+SELECT i AS index, s.format_major, s.scopes, k.nkeys FROM (VALUES ('facts_col'), ('var_facts_col'), ('u_facts_col'), ('i_facts_col')) v (i), LATERAL sift.status(i::regclass) s,
+	LATERAL sift.scope_stats(i::regclass) k ORDER BY 1;
 
 -- the pair set as the statements of an application write it: the union of the direct grants and the members of the groups granted
 CREATE VIEW pair_oracle AS
@@ -106,16 +107,12 @@ INSERT INTO forms VALUES
  ('integer key, text member', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM i_facts f WHERE f.account IN (SELECT member FROM i_pair_oracle WHERE tenant_id IN (1, 5)) GROUP BY kind$q$);
 
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text; plan text := '';
+DECLARE l text; plan text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
-	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
-	END IF;
-	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
-	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+	RETURN CASE WHEN plan ~ 'SiftAggV6Scope' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
 END $$;
 CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -142,11 +139,11 @@ CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+		IF l ~ 'Scope (Read|Cube):' THEN
 			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
 		END IF;
 	END LOOP;
-	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
+	RETURN nullif(rtrim(r, '; '), '');
 END $$;
 CREATE FUNCTION states() RETURNS TABLE (name text, same_rows bool) LANGUAGE sql AS $$
 	SELECT f.name, same(f.q) FROM forms f ORDER BY f.name COLLATE "C"

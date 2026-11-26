@@ -98,6 +98,36 @@ join_via(SiftScopeSpool *groups, SiftScopeSpool *hop, SiftScopeSpool *out)
 		pfree(keys);
 }
 
+/*
+ * The pairs the joined path of a scope of two paths gives (the members of the via relation, coded by the member map mm, with the keys of their groups, coded by km), into pairs; NULL: the rows are
+ * only met, so that a writer's maps hold every key and member
+ */
+static void
+scan_hops(Relation heap, Relation index, const SiftScopeSpec *spec, SiftKeyMap *mm, SiftKeyMap *km, Snapshot snap, SiftMemTracker *mem, SiftScopeSpool *pairs)
+{
+	SiftScopeSpool *groups = pairs != NULL ? sift_scope_spool_new(mem) : NULL,
+			   *hop = pairs != NULL ? sift_scope_spool_new(mem) : NULL;
+	Relation	joined,
+				via;
+	AttrNumber	g1,
+				k1,
+				g2,
+				m2;
+	const Oid	b1 = sift_scope_hop_index(heap, index, spec, 1, &joined, &g1, &k1),
+				b2 = sift_scope_hop_index(heap, index, spec, 2, &via, &g2, &m2);
+
+	scan_pairs(b1, joined, g1, NULL, k1, km, snap, groups);
+	scan_pairs(b2, via, g2, NULL, m2, mm, snap, hop);
+	if (pairs != NULL)
+	{
+		join_via(groups, hop, pairs);
+		sift_scope_spool_free(groups);
+		sift_scope_spool_free(hop);
+	}
+	table_close(via, NoLock);
+	table_close(joined, NoLock);
+}
+
 static void
 grow(void **p, uint32 *cap, uint32 need, Size width)
 {
@@ -225,32 +255,15 @@ sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Sna
 		collect(km, true);
 		collect(mm, true);
 		scan_pairs(b0, rel, m0, mm, k0, km, snap, NULL);
+		if (sc->spec->joined != NULL)
+			scan_hops(heap, index, sc->spec, mm, km, snap, &mem, NULL);
 		collect(km, false);
 		collect(mm, false);
 	}
 	scan_pairs(b0, rel, m0, mm, k0, km, snap, pairs);
 	table_close(rel, NoLock);
 	if (sc->spec->joined != NULL)
-	{
-		SiftScopeSpool *groups = sift_scope_spool_new(&mem),
-				   *hop = sift_scope_spool_new(&mem);
-		Relation	joined,
-					via;
-		AttrNumber	g1,
-					k1,
-					g2,
-					m2;
-		const Oid	b1 = sift_scope_hop_index(heap, index, sc->spec, 1, &joined, &g1, &k1),
-					b2 = sift_scope_hop_index(heap, index, sc->spec, 2, &via, &g2, &m2);
-
-		scan_pairs(b1, joined, g1, NULL, k1, km, snap, groups);
-		scan_pairs(b2, via, g2, NULL, m2, NULL, snap, hop);
-		join_via(groups, hop, pairs);
-		sift_scope_spool_free(groups);
-		sift_scope_spool_free(hop);
-		table_close(via, NoLock);
-		table_close(joined, NoLock);
-	}
+		scan_hops(heap, index, sc->spec, mm, km, snap, &mem, pairs);
 	if (sift_scope_spool_spilled(pairs))
 		pm = sorted_map(pairs, &mem, multiset);
 	else
