@@ -12,7 +12,8 @@ node_init n 2 "sift.col_build_source = auto
 autovacuum = off
 max_worker_processes = 16
 max_parallel_workers = 8
-shared_buffers = 64MB"
+shared_buffers = 64MB
+sift.test_create_format1 = on"
 node_start n || bail "start failed"
 sql n "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE orders (id int, tenant_id int, created_at int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off)" \

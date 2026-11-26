@@ -7,7 +7,8 @@
 
 plan 8
 G=7400
-node_init dl 12 "autovacuum = off"
+node_init dl 12 "autovacuum = off
+sift.test_create_format1 = on"
 node_start dl || bail "start failed"
 D=$(dir dl)
 sql dl "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
