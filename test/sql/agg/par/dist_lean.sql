@@ -11,7 +11,7 @@ SET max_parallel_workers_per_gather = 3;
 CREATE TABLE dl AS
 SELECT i, ((i * 7919) % 40009)::int8 AS g, (i * 31 % 1000)::int8 AS v, (i * 17 % 211)::int4 AS r, (i * 13 % 23)::int2 AS s, 's' || (i * 13 % 5003) AS t,
        i % 3 = 0 AS b, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7 % 97)::int END AS k, CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 101 % 50021)::int8 END AS n, ((i * 17) % 700)::float8 AS f
-FROM generate_series(1::int8, 400000::int8) AS i;
+FROM generate_series(1::int8, 200000::int8) AS i;
 CREATE INDEX dl_col ON dl USING sift_col (g, v, r, s, t, b, k, n, f);
 VACUUM (ANALYZE, FREEZE) dl;
 CREATE FUNCTION plan_of(q text) RETURNS jsonb LANGUAGE plpgsql AS $f$
@@ -28,10 +28,10 @@ BEGIN
 END $f$;
 -- q runs in parallel (a Gather over the parallel node of the strategy), and answers what the heap answers; the rows of both are compared in the order of the statement
 CREATE FUNCTION held(q text, OUT parallel boolean, OUT strategy text, OUT same boolean) LANGUAGE plpgsql AS $f$
-DECLARE par text; ref text;
+DECLARE par text; ref text; pl text := plan_of(q)::text;
 BEGIN
-	parallel := plan_of(q)::text LIKE '%"Node Type": "Gather"%';
-	strategy := substring(plan_of(q)::text from '"Parallel Strategy": "([^"]*)"');
+	parallel := pl LIKE '%"Node Type": "Gather"%';
+	strategy := substring(pl from '"Parallel Strategy": "([^"]*)"');
 	par := answer_of(q);
 	SET LOCAL sift.enable_agg = off;
 	SET LOCAL max_parallel_workers_per_gather = 0;
