@@ -340,6 +340,7 @@ drain(Regroup *g)
 
 	while (g->in->next(g->in, &b))
 	{
+		CHECK_FOR_INTERRUPTS();
 		SIFT_INVARIANT(b.tag != NULL, "the rows of a window have no tag");
 		for (uint32 r = 0; r < b.n; r++)
 			if (b.mask == NULL || ((b.mask[r >> 6] >> (r & 63)) & 1))

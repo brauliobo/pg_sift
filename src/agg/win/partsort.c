@@ -11,6 +11,7 @@
 #include "agg/win/spill.h"
 
 #define PS_CHUNK	65536
+#define PS_MIN_CAP	256
 
 typedef struct PsCol
 {
@@ -176,15 +177,10 @@ row_cmp(const void *a, const void *b, void *arg)
 	return i < j ? -1 : i > j;
 }
 
+/* the arrays of the rows at cap rows */
 static void
-grow(PartSort *ps, uint32 need)
+resize(PartSort *ps, uint32 cap)
 {
-	uint32		cap = Max(ps->cap, 256);
-
-	if (need <= ps->cap)
-		return;
-	while (cap < need)
-		cap *= 2;
 	for (int c = 0; c < ps->spec.ncols; c++)
 	{
 		PsCol	   *pc = &ps->col[c];
@@ -197,6 +193,31 @@ grow(PartSort *ps, uint32 need)
 	for (int k = 0; k < ps->spec.n_ord; k++)
 		ps->peer[k] = ps->cap == 0 ? MemoryContextAlloc(ps->cx, sizeof(int64) * cap) : repalloc(ps->peer[k], sizeof(int64) * cap);
 	ps->cap = cap;
+}
+
+static void
+grow(PartSort *ps, uint32 need)
+{
+	uint32		cap = Max(ps->cap, PS_MIN_CAP);
+
+	if (need <= ps->cap)
+		return;
+	while (cap < need)
+		cap *= 2;
+	resize(ps, cap);
+}
+
+/* the arrays are full and twice their rows would make one of them more than MaxAllocSize */
+static bool
+arrays_full(const PartSort *ps)
+{
+	uint64		esz = sizeof(int64);
+
+	if (ps->n < ps->cap)
+		return false;
+	for (int c = 0; c < ps->spec.ncols; c++)
+		esz = Max(esz, ps->col[c].esz);
+	return (uint64) ps->cap * 2 * esz > MaxAllocSize;
 }
 
 static char *
@@ -339,7 +360,7 @@ retain(PartSort *ps, const uint8 *take)
 	ps->n = o;
 }
 
-/* the partition is more than max_bytes: its rows go to the sort, of which the first row stays for same_partition() */
+/* the partition is more than max_bytes: its rows go to the sort, of which the first row stays for same_partition() in arrays of the least rows */
 static void
 start_spill(PartSort *ps)
 {
@@ -347,10 +368,15 @@ start_spill(PartSort *ps)
 
 	ps->sp = sift_win_spill_begin(ps->cx, &ps->spec, ps->spec.max_bytes);
 	for (uint32 i = 0; i < ps->n; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
 		put_held_row(ps, i);
+	}
 	take[0] = 1;
 	retain(ps, take);
 	pfree(take);
+	if (ps->cap > PS_MIN_CAP)
+		resize(ps, PS_MIN_CAP);
 }
 
 static void
@@ -388,7 +414,7 @@ add_row(PartSort *ps, uint32 r)
 	ps->tag[i] = ps->ib.tag != NULL ? ps->ib.tag[r] : 0;
 	ps->bytes += sizeof(uint64) + sizeof(uint32) + sizeof(int64) * ps->spec.n_ord;
 	ps->n++;
-	if (ps->bytes > ps->spec.max_bytes && (ps->spec.keep == 0 || ps->n < 2 * ps->spec.keep + 2))
+	if ((ps->bytes > ps->spec.max_bytes || arrays_full(ps)) && (ps->spec.keep == 0 || ps->n < 2 * ps->spec.keep + 2))
 		start_spill(ps);
 }
 
@@ -423,6 +449,7 @@ fill_partition(PartSort *ps)
 	release_chunks(ps);
 	for (;;)
 	{
+		CHECK_FOR_INTERRUPTS();
 		if (!ps->ib_live || ps->ipos >= ps->ib.n)
 		{
 			ps->ib_live = !ps->eof && ps->in->next(ps->in, &ps->ib);
@@ -462,6 +489,7 @@ peers_of(PartSort *ps)
 
 		for (uint32 i = 0; i < ps->n; i++)
 		{
+			CHECK_FOR_INTERRUPTS();
 			if (i > 0)
 			{
 				const SiftWinPsKey *key = &ps->spec.ord[k];
