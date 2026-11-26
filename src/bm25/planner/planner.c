@@ -231,12 +231,14 @@ sift_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 {
 	if (prev_join_hook)
 		prev_join_hook(root, joinrel, outerrel, innerrel, jointype, extra);
+	if (!sift_db_has_extension())
+		return;
 	if (sift_v6_rels_have_index(root, joinrel->relids))
 	{
 		sift_agg_v6_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
 		sift_agg_v6_asof_paths(root, joinrel, outerrel, innerrel, jointype, extra);
 	}
-	if (!holds_all_rels(root, joinrel) && sift_query_touches_sift(root))
+	if (!holds_all_rels(root, joinrel))
 		carry_join_scores(root, joinrel);
 }
 
@@ -388,7 +390,7 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	if (!scannable(root, rel, rte))
 		return;
 	/* a relation the planner proved empty is left out of root->total_table_pages, which the page costs of a scan divide by */
-	if (IS_DUMMY_REL(rel) || !sift_query_touches_sift(root))
+	if (IS_DUMMY_REL(rel))
 		return;
 	scores = score_exprs(root, rel);
 	if (is_partition(rel))
@@ -396,6 +398,9 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	ps.cuts = score_cutoffs(rel);
 	ps.ranked = sorted_by_score(root, rel, &ps.pk);
 	ps.only_best = ps.ranked || scores != NIL || ps.cuts != NIL;
+	/* a score is computed by a sift scan of the rel, whether an index of it serves the query or none does (sift_fallback_publish) */
+	if (!ps.only_best && !sift_query_touches_sift(root))
+		return;
 	/*
 	 * the rows a query with a limit takes from a scan that sorts by its leading keys and then by the score; not on a rel with
 	 * security quals, as such a scan rechecks a match on the row's text before it runs the quals (next_row)
@@ -509,11 +514,14 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 {
 	if (prev_upper_hook)
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
-	if (!sift_query_touches_sift(root))
+	if (!sift_db_has_extension())
 		return;
-	count_upper_paths(root, stage, input_rel, output_rel);
-	sift_agg_v6_upper_paths(root, stage, input_rel, output_rel, extra);
-	sift_agg_v6_live_upper_paths(root, stage, input_rel, output_rel, extra);
+	if (sift_query_touches_sift(root))
+	{
+		count_upper_paths(root, stage, input_rel, output_rel);
+		sift_agg_v6_upper_paths(root, stage, input_rel, output_rel, extra);
+		sift_agg_v6_live_upper_paths(root, stage, input_rel, output_rel, extra);
+	}
 	/* the aggregates read the scores out of the scan/join target, which holds only the Vars they use */
 	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_JOINREL)
 		carry_join_scores(root, input_rel);
