@@ -11,12 +11,14 @@
 #include "utils/timestamp.h"
 
 #include "core/cachebudget.h"
+#include "core/check.h"
 #include "core/damage.h"
 #include "core/errctx.h"
 #include "core/extlock.h"
 #include "core/live/live.h"
 #include "core/lane.h"
 #include "core/inspect.h"
+#include "core/meta_peek.h"
 
 #ifdef SIFT_TESTING
 
@@ -71,7 +73,7 @@ sift_test_recycle(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(n);
 }
 
-/* Verifies the store invariants; returns the number of orphan blocks */
+/* Verifies the store invariants; returns the number of orphan blocks (Format 2.0: sift.check() raises on a leaked block, so 0) */
 Datum
 sift_test_check(PG_FUNCTION_ARGS)
 {
@@ -80,6 +82,12 @@ sift_test_check(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_store(PG_GETARG_OID(0), mode);
 	int64		n;
 
+	if (sift_meta_peek_format(index).status == SIFT_FMT_V2)
+	{
+		relation_close(index, mode);
+		sift_check_relation(NULL, PG_GETARG_OID(0), false);
+		PG_RETURN_INT64(0);
+	}
 	if (!standby)
 		MAINT_LOCK(index, ExclusiveLock);
 	sift_store_verify(index);

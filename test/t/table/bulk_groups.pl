@@ -1,7 +1,7 @@
 # The bulk_groups option of a sift_table (on by default): COPY writes column groups directly. The rows are a heap twin's on the primary and on a standby that replays the
 # groups under generic WAL consistency checking, the store verifies clean, a backend killed with SIGKILL in the middle of a COPY (groups
 # published, rows still waiting in the backend) leaves no row of it visible after crash recovery and nothing the next VACUUM cannot
-# reclaim, and a published table keeps the write buffers.
+# reclaim, and a COPY into a published table is logged row by row.
 use strict;
 use warnings FATAL => 'all';
 use FindBin;
@@ -100,17 +100,20 @@ subtest 'a commit survives an immediate stop' => sub {
 	cmp_ok($primary->safe_psql('postgres', "SELECT sift._test_check('s')"), '>=', 0, 'the store verifies');
 };
 
-subtest 'a published table keeps the write buffers' => sub {
+subtest 'a published table is logged row by row' => sub {
 	my $logical = sift_node('logical', allows_streaming => 'logical');
 	$logical->append_conf('postgresql.conf', "$conf\nshared_preload_libraries = 'pg_sift'");
 	$logical->start;
 	install_sift($logical);
 	$logical->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
 	$logical->safe_psql('postgres', create_sql('p', 'sift_table') . '; ' . create_sql('q', 'sift_table') . '; CREATE PUBLICATION pub FOR TABLE p');
+	$logical->safe_psql('postgres', "SELECT pg_create_logical_replication_slot('cdc', 'pgoutput')");
 	like($logical->safe_psql('postgres', "SELECT sift._test_tbl_bulk_refusal('p')"), qr/published/, 'the table says why');
 	is($logical->safe_psql('postgres', "SELECT sift._test_tbl_bulk_refusal('q') IS NULL"), 't', 'an unpublished one qualifies');
 	$logical->safe_psql('postgres', copy_sql('p', 1, 2000));
-	is(kinds($logical, 'p'), '0:1', 'the published table went through a write buffer');
+	is($logical->safe_psql('postgres', "SELECT count(*) FILTER (WHERE get_byte(data, 0) = ascii('I')) FROM pg_logical_slot_get_binary_changes('cdc', NULL, NULL,"
+		. " 'proto_version', '1', 'publication_names', 'pub')"), '2000', 'every row of the COPY into the published table is logged as it is inserted');
+	$logical->safe_psql('postgres', "SELECT pg_drop_replication_slot('cdc')");
 	$logical->safe_psql('postgres', copy_sql('q', 1, 2000));
 	like(kinds($logical, 'q'), qr/^1:0$/, 'the other went into a group');
 	$logical->stop;
