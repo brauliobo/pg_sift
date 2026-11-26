@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "lib/ilist.h"
 #include "utils/snapmgr.h"
 
 #include "col/f2/slab_view.h"
@@ -12,41 +13,100 @@
 #include "col/f2/rowbuf/rowbuf.h"
 #include "core/memtrack.h"
 
+/*
+ * The rows a view read of each slab, kept while the view is: a part this backend makes again from the descriptor is made from them. A directory of hot shards is read shard by shard and
+ * newest page first, so a second read of a slab its writers append to between the two reads lists its rows in another order, and its first nrows rows are not the rows the view saw
+ */
+typedef struct SlabRows
+{
+	dlist_node	node;
+	RelFileLocator locator;
+	uint64		part_id;
+	BlockNumber head;
+	SiftRowBuf *rb;
+} SlabRows;
+
+static dlist_head views_rows = DLIST_STATIC_INIT(views_rows);
+
+static void
+forget_rows(void *arg)
+{
+	dlist_delete(&((SlabRows *) arg)->node);
+}
+
+static void
+keep_rows(Relation rel, uint64 part_id, BlockNumber head, SiftRowBuf *rb, MemoryContext mcxt)
+{
+	SlabRows   *k = MemoryContextAlloc(mcxt, sizeof(SlabRows));
+	MemoryContextCallback *cb = MemoryContextAlloc(mcxt, sizeof(MemoryContextCallback));
+
+	*k = (SlabRows) {.locator = rel->rd_locator,.part_id = part_id,.head = head,.rb = rb};
+	*cb = (MemoryContextCallback) {forget_rows, k, NULL};
+	MemoryContextRegisterResetCallback(mcxt, cb);
+	dlist_push_head(&views_rows, &k->node);
+}
+
+/* The rows a view of this backend kept of the slab of the descriptor: the newest view first */
+static const SiftRowBuf *
+kept_rows(Relation rel, const SiftPartDesc *d, uint64 part_id)
+{
+	dlist_iter	it;
+
+	dlist_foreach(it, &views_rows)
+	{
+		SlabRows   *k = dlist_container(SlabRows, node, it.cur);
+
+		if (RelFileLocatorEquals(k->locator, rel->rd_locator) && k->part_id == part_id && k->head == d->header_blk && (uint64) k->rb->n == d->nrows)
+			return k->rb;
+	}
+	return NULL;
+}
+
 static Snapshot
 statement_snapshot(void)
 {
 	return ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
 }
 
-/* The first limit rows of rb, in the order they were added: what a slab held when the leader of a scan listed it */
+/* The first n rows of rb, in the order they were added */
 static SiftRowBuf *
-first_rows(SiftRowBuf *rb, const SiftPartSpec *spec, int limit)
+copy_rows(const SiftRowBuf *rb, const SiftPartSpec *spec, int n)
 {
-/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
-	SiftRowBuf *kept = sift_rowbuf_new(spec);
+	/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
+	SiftRowBuf *copy = sift_rowbuf_new(spec);
 
-	for (int r = 0; r < limit; r++)
-		sift_rowbuf_copy_row(kept, rb, r, rb->xmin[r], rb->cmin[r], rb->subxid[r]);
-	sift_rowbuf_free(rb);
-	return kept;
+	for (int r = 0; r < n; r++)
+		sift_rowbuf_copy_row(copy, rb, r, rb->xmin[r], rb->cmin[r], rb->subxid[r]);
+	return copy;
 }
 
-/* The part of the rows of the slab at head, or NULL when it has none the statement sees; limit < 0: all of them */
-static SiftPart *
-slab_part(Relation rel, const SiftPartSpec *spec, uint64 part_id, BlockNumber head, int limit, SiftPartDesc *d)
+/* The rows of the slab at head; limit >= 0: the first limit of them, in the order they were added, as a process that kept none reads what the slab held when the leader of a scan listed it */
+static SiftRowBuf *
+slab_rows(Relation rel, const SiftPartSpec *spec, uint64 part_id, BlockNumber head, int limit)
 {
-/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
+	/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
 	SiftRowBuf *rb = sift_rowbuf_new(spec);
-	SiftColIn  *cols;
-	SiftRows	r;
+	SiftRowBuf *kept;
 
 	sift_l0_slab_read(rel, part_id, head, rb, spec, statement_snapshot(), NULL, NULL);
 	if (limit >= 0 && rb->n < limit)
 		ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), errmsg("the micro-slab of partition %llu of \"%s\" changed while the statement read it", (unsigned long long) part_id,
 																		   RelationGetRelationName(rel)),
 						errhint("Run the statement again.")));
-	if (limit >= 0 && rb->n > limit)
-		rb = first_rows(rb, spec, limit);
+	if (limit < 0 || rb->n == limit)
+		return rb;
+	kept = copy_rows(rb, spec, limit);
+	sift_rowbuf_free(rb);
+	return kept;
+}
+
+/* The part of the rows, which it sorts, or NULL when there is none */
+static SiftPart *
+rows_part(Relation rel, const SiftPartSpec *spec, uint64 part_id, SiftRowBuf *rb, SiftPartDesc *d)
+{
+	SiftColIn  *cols;
+	SiftRows	r;
+
 	if (rb->n == 0)
 		return NULL;
 	cols = palloc(Max(spec->ncols, 1) * sizeof(SiftColIn));
@@ -59,8 +119,10 @@ slab_part(Relation rel, const SiftPartSpec *spec, uint64 part_id, BlockNumber he
 SiftPart *
 sift_f2_slab_part(Relation rel, const SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
+	const SiftRowBuf *kept = kept_rows(rel, d, part_id);
+	SiftRowBuf *rb = kept != NULL ? copy_rows(kept, &store->spec, kept->n) : slab_rows(rel, &store->spec, part_id, d->header_blk, (int) d->nrows);
 	SiftPartDesc made;
-	SiftPart   *part = slab_part(rel, &store->spec, part_id, d->header_blk, (int) d->nrows, &made);
+	SiftPart   *part = rows_part(rel, &store->spec, part_id, rb, &made);
 
 	if (part == NULL)
 		ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), errmsg("the micro-slab of partition %u of \"%s\" is gone", part_id, RelationGetRelationName(rel)),
@@ -68,22 +130,28 @@ sift_f2_slab_part(Relation rel, const SiftF2Store *store, const SiftPartDesc *d,
 	return part;
 }
 
-/* The descriptor the part of the slab of e has, or false when the statement sees no row in it */
+/* The descriptor the part of the slab of e has, or false when the statement sees no row in it; the rows are kept in mcxt for the parts made again from it */
 static bool
-slab_desc(Relation rel, const SiftF2Store *store, const SiftPartitionEntry *e, SiftPartDesc *d)
+slab_desc(Relation rel, const SiftF2Store *store, const SiftPartitionEntry *e, SiftPartDesc *d, MemoryContext mcxt)
 {
-	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 slab view");
-	MemoryContext caller = MemoryContextSwitchTo(scratch);
-	bool		found = slab_part(rel, &store->spec, e->part_id, e->l0_slab_blk, -1, d) != NULL;
+	MemoryContext caller = MemoryContextSwitchTo(mcxt);
+	SiftRowBuf *rb = slab_rows(rel, &store->spec, e->part_id, e->l0_slab_blk, -1);
+	MemoryContext scratch = sift_mem_allocset_create(caller, "sift f2 slab view");
+	bool		found;
 
+	MemoryContextSwitchTo(scratch);
+	found = rows_part(rel, &store->spec, e->part_id, copy_rows(rb, &store->spec, rb->n), d) != NULL;
 	MemoryContextSwitchTo(caller);
 	MemoryContextDelete(scratch);
-	if (found)
+	if (!found)
 	{
-		d->header_blk = e->l0_slab_blk;
-		d->ext_flags |= SIFT_PART_EXT_SLAB;
+		sift_rowbuf_free(rb);
+		return false;
 	}
-	return found;
+	keep_rows(rel, e->part_id, e->l0_slab_blk, rb, mcxt);
+	d->header_blk = e->l0_slab_blk;
+	d->ext_flags |= SIFT_PART_EXT_SLAB;
+	return true;
 }
 
 const SiftPlanSnapshot *
@@ -97,7 +165,7 @@ sift_f2_slab_view(Relation rel, SiftF2Store *store, const SiftPlanSnapshot *snap
 		SiftPlanPartList *list;
 		SiftPartDesc *parts;
 
-		if (snap->partitions[i].l0_slab_blk == InvalidBlockNumber || !slab_desc(rel, store, &snap->partitions[i], &d))
+		if (snap->partitions[i].l0_slab_blk == InvalidBlockNumber || !slab_desc(rel, store, &snap->partitions[i], &d, mcxt))
 			continue;
 		if (view == NULL)
 		{
