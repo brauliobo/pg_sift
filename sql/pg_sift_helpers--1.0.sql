@@ -302,12 +302,13 @@ CREATE FUNCTION sift_helpers.agg_units_read(q text) RETURNS text LANGUAGE sql AS
 		ELSE format('SiftAgg read %s pruned %s', sift_helpers.plan_last(p, 'Units: (\d+)'), coalesce(sift_helpers.plan_last(p, '(\d+) pruned'), '0')) END
 	FROM (SELECT sift_helpers.plan_text(q, true) p) x $$;
 CREATE FUNCTION sift_helpers.agg_units_kept_share(q text) RETURNS numeric LANGUAGE plpgsql AS $$
-DECLARE p text; kept numeric; pruned numeric;
+DECLARE p text; line text; kept numeric; pruned numeric;
 BEGIN
 	PERFORM set_config('sift.agg_force', 'on', true);
 	p := sift_helpers.plan_text(q, true);
-	kept := coalesce(sift_helpers.plan_last(p, '^ *Granules: scanned=(\d+)')::numeric, 0);
-	pruned := coalesce(sift_helpers.plan_last(p, '(\d+) pruned')::numeric, 0);
+	line := sift_helpers.plan_last(p, '^ *(Granules: scanned=.*)$');
+	kept := coalesce(substring(line from 'scanned=(\d+)')::numeric, 0);
+	pruned := coalesce((SELECT sum(m[1]::numeric) FROM regexp_matches(line, ' pruned_\w+=(\d+)', 'g') m), 0);
 	RETURN round(kept / nullif(kept + pruned, 0), 1);
 END $$;
 CREATE FUNCTION sift_helpers.units_read_scans_off(q text) RETURNS int LANGUAGE plpgsql AS $$
