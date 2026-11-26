@@ -255,6 +255,8 @@ sift_tbl_blob_reclaim(Relation rel, const SiftF2Store *store pg_attribute_unused
 
 	for (int c = 0; c < v->hdr->nchunks - 1; c++)
 	{
+		if (v->hdr->chunks[c + 1].flags & SIFT_CHUNK_ELEMS)
+			continue;
 		sift_granule_tags(v, c, tag);
 		for (uint16 r = 0; r < nrows; r++)
 		{
