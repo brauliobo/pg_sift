@@ -43,7 +43,7 @@ CREATE FUNCTION wide_in_source(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '(\d+) wide filters in source' THEN n := substring(l from '(\d+) wide filters in source')::int; END IF;
+		IF l ~ '^\s*Filters: ' THEN n := array_length(regexp_split_to_array(l, '\) AND \('), 1); END IF;
 	END LOOP;
 	RETURN n;
 END $$;
@@ -230,9 +230,9 @@ WHERE id % 11 = 2 AND id % 71 <> 0 AND id % 73 <> 0 AND id % 79 <> 0 AND id % 83
 SELECT same($$SELECT count(*), sum(qty) FROM wa WHERE n38 > 1234.5$$) AS updated_numeric,
        same($$SELECT count(*), sum(qty) FROM wa WHERE m > '123.45'$$) AS updated_money,
        same($$SELECT count(*), sum(qty) FROM wa WHERE iv > interval '1 month'$$) AS updated_interval;
-SELECT sift.col_promote('wa_col');
+SELECT sift.col_promote('wa_col') >= 0 AS promoted;
 VACUUM wa;
-SELECT sift.col_merge('wa_col', true);
+SELECT sift.col_merge('wa_col', true) >= 0 AS merged;
 SELECT same($$SELECT count(*), sum(qty) FROM wa WHERE n38 > 1234.5$$) AS merged_numeric,
        same($$SELECT count(*), sum(qty) FROM wa WHERE img >= 1.5$$) AS merged_image,
        same($$SELECT count(*), sum(qty) FROM wa WHERE m > '123.45'$$) AS merged_money,
