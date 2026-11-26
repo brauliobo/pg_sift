@@ -220,11 +220,11 @@ scan_with_text(V6State *st, const SiftV6ScanSrc *src, Snapshot snap, SiftV6StarR
 }
 
 static void
-scan_table_with_text(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
+scan_table_with_text(V6State *st, const SiftV6ScanSrc *src, Snapshot snap, SiftV6StarRun *star)
 {
 	SiftV6Text *text = text_begin(st);
 
-	src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats, NULL,
+	src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats, star,
 							   text ? sift_v6_text_chunk : NULL, text);
 	text_end(text);
 }
@@ -246,7 +246,7 @@ v6_scan_fact(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 	if (st->spec->ext->unnest)
 		v6_scan_unnest(st, src, snap);
 	else if (src->index == NULL)
-		src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star, NULL, NULL);
+		scan_table_with_text(st, src, snap, st->star);
 	else
 		scan_with_text(st, src, snap, st->star);
 }
@@ -302,7 +302,7 @@ v6_scan(V6State *st, Snapshot snap)
 		else if (src->index != NULL)
 			scan_with_text(st, src, snap, NULL);
 		else
-			scan_table_with_text(st, src, snap);
+			scan_table_with_text(st, src, snap, NULL);
 	}
 	sift_v6_group_finish(st->group);
 }
