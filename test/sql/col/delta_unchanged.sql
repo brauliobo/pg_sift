@@ -1,5 +1,6 @@
 -- An UPDATE that is not HOT and changes no column of a sift_col index (aminsert is told indexUnchanged) gives the index the new address of the row as a one-attribute record of its column delta
--- chain, without the comparison of the old and the new row. An index with a projection keeps the tombstone (its projections are read only from parts without a chain), and keeps serving them.
+-- chain, without the comparison of the old and the new row. An index with a projection takes the record too: its projections are read from the parts of a partition without a chain, and the
+-- partition with one is read from its base until VACUUM folds it.
 -- requires: build col
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pageinspect;
@@ -39,7 +40,7 @@ SELECT delta_pages('c_idx') AS pages_one \gset
 SELECT p_check('the new addresses are records of the chain', :pages_one > 0);
 SELECT p_check('rows equal the heap', same('SELECT id, tenant, status, amount, other FROM c WHERE id % 10 = 0 OR tenant = 3'));
 SELECT p_check('aggregate equals the heap', same('SELECT tenant, status, count(*), sum(amount) FROM c GROUP BY tenant, status'));
-SELECT p_check('the projected index writes no record', delta_pages('p_idx') = 0);
+SELECT p_check('the projected index writes records of the chain', delta_pages('p_idx') > 0);
 SELECT p_check('the projection answers as the heap', same('SELECT tenant, status, count(*), sum(amount) FROM p GROUP BY tenant, status'));
 
 -- a column of the index changes: no hint, the rows are compared
@@ -47,6 +48,14 @@ UPDATE c SET amount = amount + 1 WHERE id % 10 = 3;
 UPDATE ch SET amount = amount + 1 WHERE id % 10 = 3;
 SELECT p_check('aggregate follows the value', same('SELECT tenant, status, count(*), sum(amount) FROM c GROUP BY tenant, status'));
 SELECT p_check('every row equals the heap', same('SELECT id, tenant, status, amount, other FROM c'));
+
+-- PostgreSQL hints indexUnchanged from the key columns only: a change of an INCLUDE column is still compared and patched
+CREATE TABLE i (id bigint, amount bigint) WITH (autovacuum_enabled = false);
+CREATE INDEX i_idx ON i USING sift_col (id) INCLUDE (amount);
+INSERT INTO i SELECT g, g FROM generate_series(1, 5000) g;
+VACUUM (FREEZE) i;
+UPDATE i SET amount = amount + 1 WHERE id % 10 = 0;
+SELECT p_check('an INCLUDE column the hint does not cover follows the value', p_same('SELECT count(*), sum(amount) FROM i WHERE id <= 4000') = 'same');
 
 VACUUM (FREEZE) c, p;
 SELECT p_check('the projection is served after vacuum', p_uses('SELECT tenant, status, count(*), sum(amount) FROM p GROUP BY tenant, status', 'p_agg'));

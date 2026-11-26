@@ -15,6 +15,7 @@
 #include "col/f2/cache.h"
 #include "col/f2/col_delta/idx.h"
 #include "col/f2/gbuf/gbuf.h"
+#include "col/f2/meta.h"
 #include "col/f2/proj/proj.h"
 #include "col/f2/scope/scope.h"
 #include "col/f2/store/store.h"
@@ -22,6 +23,7 @@
 #include "col/f2/part/vis.h"
 #include "col/f2/scan/int.h"
 #include "core/hash.h"
+#include "core/memtrack.h"
 #include "core/xid_cache.h"
 #include "table/f2/col_delta/dir.h"
 
@@ -405,6 +407,86 @@ new_row_staged(Relation index, uint64 tid)
 	return staged;
 }
 
+/* A leaf of the key of a UNIQUE index changed: the new key must be looked up as a new entry, not patched into the old one */
+static bool
+unique_key_changed(Relation index, const SiftF2LeafDiff *d)
+{
+	const SiftColSchema *schema = sift_col_rel(index)->schema;	/* check-memory: allow nothing below reads the catalog */
+
+	for (int i = 0; i < d->nchanged && index->rd_index->indisunique; i++)
+		if (schema->cols[d->leaf[i]].attno <= IndexRelationGetNumberOfKeyAttributes(index))
+			return true;
+	return false;
+}
+
+/*
+ * The leaves the projections of an index read, as a bloom of their numbers (a false hit refuses a patch, never admits one): the definitions are a scan of the catalog, so they are read once
+ * for each generation of the projection directory that Block 0 names.
+ */
+typedef struct ProjLeaves
+{
+	RelFileLocator locator;
+	uint64		gen;
+	uint64		bloom;
+} ProjLeaves;
+
+static ProjLeaves proj_leaves;
+
+static uint64
+leaf_bit(int leaf)
+{
+	return UINT64CONST(1) << (leaf % 64);
+}
+
+static uint64
+load_proj_leaves(Relation index)
+{
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift projected leaves"),
+				old = MemoryContextSwitchTo(cx);
+	SiftProjColumns cols = sift_proj_columns_of_store(index, sift_f2_store_open(index));
+	bool	   *used = palloc(Max(cols.n, 1) * sizeof(bool));
+	int			ndefs;
+	SiftProjDef *defs = sift_proj_defs_load(index, &cols, &ndefs);
+	uint64		bloom = 0;
+
+	for (int i = 0; i < ndefs; i++)
+	{
+		if (!defs[i].spec_ok)
+		{
+			bloom = ~UINT64CONST(0);
+			continue;
+		}
+		sift_proj_spec_uses(&defs[i].spec, &cols, used);
+		for (int c = 0; c < cols.n; c++)
+			bloom |= used[c] ? leaf_bit(c) : 0;
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+	return bloom;
+}
+
+static bool
+projected_leaf_changed(Relation index, const SiftF2LeafDiff *d)
+{
+	SiftColMetaPageData meta = sift_col_meta_read(index);
+
+	if (meta.nprojs == 0)
+		return false;
+	if (!RelFileLocatorEquals(proj_leaves.locator, index->rd_locator) || proj_leaves.gen != meta.proj_dir_gen)
+		proj_leaves = (ProjLeaves) {.locator = index->rd_locator,.gen = meta.proj_dir_gen,.bloom = load_proj_leaves(index)};
+	for (int i = 0; i < d->nchanged; i++)
+		if (proj_leaves.bloom & leaf_bit(d->leaf[i]))
+			return true;
+	return false;
+}
+
+/* PostgreSQL hints indexUnchanged from the key columns only: an entry with INCLUDE columns may still have changed leaves */
+static bool
+entry_unchanged(Relation index, bool index_unchanged)
+{
+	return index_unchanged && IndexRelationGetNumberOfKeyAttributes(index) == IndexRelationGetNumberOfAttributes(index);
+}
+
 bool
 sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt, HeapTuple newt, uint64 old_tid, bool index_unchanged)
 {
@@ -420,13 +502,13 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 	uint32		len;
 	const uint64 new_tid = sift_f2_tid(&newt->t_self);
 
-	if (sift_proj_relation_has(env->index) || env->index->rd_index->indisunique || !new_row_staged(env->index, new_tid))
+	if (!new_row_staged(env->index, new_tid))
 		return false;
-	if (index_unchanged)
+	if (entry_unchanged(env->index, index_unchanged))
 		res = (SiftF2DiffResult) {.pred = SIFT_PRED_BOTH};
 	else
 		sift_f2_diff_update(env, oldt, newt, &res);
-	if (res.pred != SIFT_PRED_BOTH || res.key_changed || res.leaves.rejected ||
+	if (res.pred != SIFT_PRED_BOTH || res.key_changed || res.leaves.rejected || unique_key_changed(env->index, &res.leaves) || projected_leaf_changed(env->index, &res.leaves) ||
 		sift_f2_scope_reads_any(env->index, res.leaves.leaf, res.leaves.nchanged) || !locate_row(env->index, store, st, old_tid, &loc, &ent))
 		return false;
 	target = (SiftColDeltaTarget) {.part_gen = loc.gb->pin->part_gen,.granule_id = loc.gb->granule_id,.row_ordinal = loc.row,.tid = old_tid};
