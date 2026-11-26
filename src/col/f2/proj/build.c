@@ -197,6 +197,7 @@ write_part(Relation rel, const SiftF2Store *store, const SiftManifestProjRef *re
 	tier = base->level >= SIFT_MAX_PART_LEVEL ? SIFT_TIER_COLD_L2 : SIFT_TIER_WARM_L1;
 	(void) sift_rowbuf_cluster(b.out, &pps->spec, tier);
 	rowset = sift_rowbuf_rows(b.out, in, &pps->spec);
+	rowset.bulk_tail = true;
 	*out = sift_part_write_rows(rel, SIFT_PROJ_PART_ID, gen, Max(base->level, 1), tier, &rowset);
 	*link = sift_proj_link_make(ref, spec, base, gen, b.where_exc);
 	return true;

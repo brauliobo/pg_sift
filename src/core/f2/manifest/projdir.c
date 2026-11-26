@@ -730,6 +730,8 @@ sift_mf_build_commit_projs(Relation rel, Tree *t, Change *ch, const SiftManifest
 			append_gens(&d->drop_src_gens, &d->ndrop_links, derived.drop_src_gens, derived.ndrop_links);
 		}
 	}
+	if (n == 0 && all.ndrop == 0)
+		return;
 	all.deltas = deltas;
 	all.ndeltas = n;
 	sift_mf_build_projs(rel, t, ch, &all, created);
