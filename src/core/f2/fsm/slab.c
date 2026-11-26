@@ -72,16 +72,23 @@ has_free(const SiftFsmSlab *s)
 	return false;
 }
 
-/* The lowest free block of the slabs, or InvalidBlockNumber when all are full: the metadata stays at the front of the file, so that the slabs behind it can empty */
-BlockNumber
-sift_fsm_slab_take(Page root)
+static SiftFsmSlab *
+lowest_slab_with_free(SiftFsmSlabTable *t)
 {
-	SiftFsmSlabTable *t = SLABS(root);
 	SiftFsmSlab *low = NULL;
 
 	for (uint32 i = 0; i < t->nslabs; i++)
 		if (has_free(&t->slab[i]) && (low == NULL || t->slab[i].start < low->start))
 			low = &t->slab[i];
+	return low;
+}
+
+/* The lowest free block of the slabs, or InvalidBlockNumber when all are full: the metadata stays at the front of the file, so that the slabs behind it can empty */
+BlockNumber
+sift_fsm_slab_take(Page root)
+{
+	SiftFsmSlab *low = lowest_slab_with_free(SLABS(root));
+
 	if (low == NULL)
 		return InvalidBlockNumber;
 	for (int w = 0;; w++)
@@ -93,6 +100,32 @@ sift_fsm_slab_take(Page root)
 			FSMM(root)->meta_free_count--;
 			return low->start + w * 64 + bit;
 		}
+}
+
+/* At most n free blocks of the lowest slab that has one, none past SIFT_FSM_POOL_SPAN blocks from its lowest free block: *lo is that block and each bit of *mask a block taken from the window; how many */
+int
+sift_fsm_slab_take_window(Page root, int n, BlockNumber *lo, uint32 *mask)
+{
+	SiftFsmSlab *low = lowest_slab_with_free(SLABS(root));
+	int			got = 0;
+
+	*mask = 0;
+	for (uint32 b = 0; low != NULL && b < low->nblocks && got < n; b++)
+	{
+		uint64		bit = UINT64CONST(1) << (b % 64);
+
+		if ((low->free[b / 64] & bit) == 0)
+			continue;
+		if (got == 0)
+			*lo = low->start + b;
+		if (low->start + b - *lo >= SIFT_FSM_POOL_SPAN)
+			break;
+		low->free[b / 64] &= ~bit;
+		*mask |= UINT32_C(1) << (low->start + b - *lo);
+		got++;
+	}
+	FSMM(root)->meta_free_count -= got;
+	return got;
 }
 
 void
@@ -345,12 +378,15 @@ sift_fsm_alloc_meta_locked(FsmCtx *c)
 }
 
 /*
- * Pages of the slabs for a pool (core/shm/lease.h) in one record of the root: block 0 is held shared, which keeps out every step that plans its changes of the lists and the slabs in
- * more than one look at the root (reclaim, the sweep, the rehome), and the root is held exclusively, so that batches of several backends follow each other. The slabs are left with their reserve
- * and one page to spare: a batch never makes the step that holds block 0 exclusively claim a slab, and 0 is returned where it cannot take any page without that.
+ * The pages of the slabs for a pool (core/shm/lease.h) in one record of the root: block 0 is held shared, which keeps out every step that plans its changes of the lists and the slabs in
+ * more than one look at the root (reclaim, the sweep, the rehome), and the root is held exclusively, so that batches of several backends follow each other. The pages are those of a window of
+ * SIFT_FSM_POOL_SPAN blocks of the lowest slab that has a free one, and the root names the window (pool_lo, pool_mask): what a restart or a crash takes from the shared memory of the pool is named
+ * there, and the sweep frees it. A pool is filled when it is empty, so the window of the last batch is the only one that can hold pages that nothing uses; a pool that lost its pages (pool_lost)
+ * waits for the sweep to free them before it takes the next window (a relation that the sweep cannot name, and the check of the blocks does not judge, takes it at once). The slabs are left with their reserve and one page to spare: a batch never makes the step that holds block 0 exclusively claim a
+ * slab, and 0 is returned where it cannot take any page without that.
  */
 int
-sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, int n)
+sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, bool pool_lost)
 {
 	Buffer		buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_SHARE);
 	SiftXlog	x = sift_xlog_start(rel);
@@ -358,18 +394,23 @@ sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, int n)
 	Page		root = sift_xlog_register(&x, rootbuf, 0);
 	uint32		spare = FSMM(root)->meta_free_count;
 	uint32		reserve = sift_fsm_meta_reserve(SLABS(root)->nslabs);
+	BlockNumber lo = 0;
+	uint32		mask;
 	int			got = 0;
 
-	n = spare > reserve ? (int) Min((uint32) n, spare - reserve) : 0;
-	if (n == 0)
+	if (spare <= reserve || (pool_lost && FSMM(root)->pool_mask != 0 && sift_fsm_names_all_extents(rel)))
 	{
 		sift_xlog_abort(&x);
 		UnlockReleaseBuffer(rootbuf);
 		UnlockReleaseBuffer(buf0);
 		return 0;
 	}
-	while (got < n)
-		out[got++] = sift_fsm_slab_take(root);
+	(void) sift_fsm_slab_take_window(root, (int) Min((uint32) SIFT_FSM_POOL_SPAN, spare - reserve), &lo, &mask);
+	FSMM(root)->pool_lo = lo;
+	FSMM(root)->pool_mask = mask;
+	for (int i = 0; i < SIFT_FSM_POOL_SPAN; i++)
+		if (mask & (UINT32_C(1) << i))
+			out[got++] = lo + i;
 	sift_fsm_root_seal(root);
 	sift_xlog_done(&x);
 	UnlockReleaseBuffer(buf0);

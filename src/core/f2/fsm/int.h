@@ -72,7 +72,8 @@ extern void sift_fsm_slab_put(Relation rel, Page root, BlockNumber blk);
 extern void sift_fsm_claim_slab(FsmCtx *c);
 extern void sift_fsm_adopt_slabs(FsmCtx *c, const SiftExtent *ext, int n);
 extern BlockNumber sift_fsm_alloc_meta_locked(FsmCtx *c);
-extern int	sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, int n);
+extern int	sift_fsm_alloc_meta_batch(Relation rel, BlockNumber *out, bool pool_lost);
+extern int	sift_fsm_slab_take_window(Page root, int n, BlockNumber *lo, uint32 *mask);
 extern void sift_fsm_free_meta_batch(Relation rel, const BlockNumber *blks, int n);
 
 static inline uint32

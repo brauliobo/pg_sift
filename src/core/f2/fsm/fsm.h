@@ -22,6 +22,7 @@
 #define SIFT_FSM_MAGIC			0x46534D32U		/* "FSM2" */
 #define SIFT_FSM_VERSION		1
 #define SIFT_FSM_NCLASSES		11
+#define SIFT_FSM_POOL_SPAN		32				/* the blocks of the window of a batch of metadata pages: a bit of pool_mask for each */
 #define SIFT_FSM_CLASS_BLOCKS(c) (1U << (c))
 #define SIFT_FSM_MAX_EXTENT		SIFT_FSM_CLASS_BLOCKS(SIFT_FSM_NCLASSES - 1)
 #define SIFT_FSM_META_SLAB		256				/* the most blocks of a metadata slab, the first one included */
@@ -35,7 +36,7 @@ typedef struct SiftFsmMetaPageData
 	uint16		version;
 	uint16		flags;
 	uint32		crc32c;
-	uint32		pad;
+	BlockNumber pool_lo;		/* the first block of the window of the last batch of metadata pages leased to a pool (core/shm/lease.h); 0: none */
 	BlockNumber class_head[SIFT_FSM_NCLASSES];			/* the head SIFT_PT_FSM_PAGE of the free extents of each class, or InvalidBlockNumber */
 	uint32		class_free_extents[SIFT_FSM_NCLASSES];
 	uint32		swept_start;	/* the start time of the server that swept the orphans last (core/f2/fsm/sweep.c); 0: never */
@@ -43,7 +44,7 @@ typedef struct SiftFsmMetaPageData
 	BlockNumber quarantine_head;	/* oldest page of the queue of released extents */
 	BlockNumber quarantine_tail;	/* the page that takes the next one */
 	uint32		quarantine_extents;
-	uint32		pad2;
+	uint32		pool_mask;		/* a bit for each block of that window that the batch took: a page of it that nothing names belongs to a pool that a restart or a crash lost, and the orphan sweep frees it */
 	uint64		quarantine_blocks;
 } SiftFsmMetaPageData;
 

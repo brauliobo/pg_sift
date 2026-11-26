@@ -7,7 +7,8 @@
  * another relation, or a server that restarts, loses what is left of its chunks: a number is never used twice and never promised twice.
  *
  * The slot also holds up to SIFT_LEASE_PAGES pages of the metadata slabs that a writer took in one record of the allocator root (Block 1, no Block 0) and has not used yet. They are allocated
- * and named by nothing: whoever looks for the pages that nothing names (the orphan sweep, the check of the blocks) first gives them back (sift_lease_page_drain).
+ * and named by nothing: whoever looks for the pages that nothing names (the orphan sweep, the check of the blocks) first gives them back (sift_lease_page_drain). The record names the window they
+ * were taken from (core/f2/fsm/fsm.h, pool_lo and pool_mask), so that the pages a restart or a crash takes from the pool are not taken for a leak by the check of the blocks and are freed by the sweep.
  *
  * Where the table cannot be had (no room in the shared memory) every call asks the owner of the numbers, one request at a time.
  */
@@ -24,7 +25,6 @@
 #define SIFT_LEASE_GEN_CHUNK		1024
 #define SIFT_LEASE_VBLOCK_CHUNK		4096
 #define SIFT_LEASE_PAGES			32
-#define SIFT_LEASE_PAGE_REFILL_MIN	8
 
 typedef enum SiftLeaseKind
 {
@@ -46,9 +46,12 @@ extern uint64 sift_lease_vblock_cursor(const RelFileLocator *loc);
 
 /* A page of the pool of the file, false when it has none */
 extern bool sift_lease_page_pop(const RelFileLocator *loc, BlockNumber *blk);
-/* The positions of the pool that are free for this backend to fill (0: the pool has few, someone else is filling it, or there is no slot); a call that returns more than 0 is followed by sift_lease_page_fill */
-extern int	sift_lease_page_room(const RelFileLocator *loc);
-/* Puts the pages taken for the room in the pool and ends the filling (n may be 0: it is given up); the pages that did not fit are not kept, the number that were is returned */
+/*
+ * True when the pool is empty and this backend is to fill it (false: it holds pages, someone else is filling it, or there is no slot); a call that returns true is followed by sift_lease_page_fill. *lost is
+ * true when the pool was never filled since its slot was claimed: what an earlier pool of the file held (a restart, a crash or another file's use of the slot took it from the shared memory) is not known to it.
+ */
+extern bool sift_lease_page_room(const RelFileLocator *loc, bool *lost);
+/* Puts the pages taken for the pool in it and ends the filling (n may be 0: it is given up); the pages that did not fit are not kept, the number that were is returned */
 extern int	sift_lease_page_fill(const BlockNumber *blks, int n);
 /* Takes every page of the pool of the file out (blks holds SIFT_LEASE_PAGES); how many */
 extern int	sift_lease_page_drain(const RelFileLocator *loc, BlockNumber *blks);

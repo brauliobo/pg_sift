@@ -33,7 +33,7 @@
 #define OWNER_LIST(X) \
 	X(OWN_NONE, "nothing") X(OWN_META, "metapage") X(OWN_DIR, "directory page") X(OWN_LIST, "list page") X(OWN_PART, "part") X(OWN_WIDE, "wide value") X(OWN_PACKED, "packed part page") \
 	X(OWN_DV, "deletion vector") X(OWN_SLAB, "micro-slab page") X(OWN_PEND, "pending delete page") X(OWN_DELTA, "column delta page") X(OWN_SCOPE, "scope") \
-	X(OWN_PROJ, "projection") X(OWN_JRNL, "key journal page") X(OWN_FREE, "free block")
+	X(OWN_PROJ, "projection") X(OWN_JRNL, "key journal page") X(OWN_FREE, "free block") X(OWN_POOL, "metadata page of a lost pool")
 
 #define OWNER_ENUM(id, label) id,
 #define OWNER_LABEL(id, label) label,
@@ -53,6 +53,8 @@ typedef struct BlockMap
 	uint8	   *owner;			/* the owner of each block of the window */
 	uint64		from;			/* the window [from, from + span) */
 	uint64		span;
+	BlockNumber pool_lo;		/* the window of the last batch of metadata pages of a pool (core/f2/fsm/fsm.h) */
+	uint32		pool_mask;
 	bool		complete;		/* every extent the relation holds has a name */
 	MemoryContext open_cx;		/* the part being named: reset when its blocks are claimed */
 } BlockMap;
@@ -390,6 +392,8 @@ claim_allocator(BlockMap *m)
 
 	memcpy(root.data, BufferGetPage(buf), BLCKSZ);
 	UnlockReleaseBuffer(buf);
+	m->pool_lo = fm->pool_lo;
+	m->pool_mask = fm->pool_mask;
 	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
 		claim_list(m, fm->class_head[k]);
 	claim_list(m, fm->quarantine_head);
@@ -397,6 +401,19 @@ claim_allocator(BlockMap *m)
 		for (uint32 b = 0; b < t->slab[i].nblocks; b++)
 			if (t->slab[i].free[b / 64] & (UINT64CONST(1) << (b % 64)))
 				claim(m, OWN_FREE, t->slab[i].start + b, 1);
+}
+
+/* The pages of the last window of a pool that nothing else names: what a restart or a crash took from the pool, which the orphan sweep frees */
+static void
+claim_lost_pool(BlockMap *m)
+{
+	for (int i = 0; i < SIFT_FSM_POOL_SPAN; i++)
+	{
+		uint64		b = (uint64) m->pool_lo + i;
+
+		if ((m->pool_mask & (UINT32_C(1) << i)) && b >= m->from && b < m->from + m->span && b < m->meta.high_water && m->owner[b - m->from] == OWN_NONE)
+			m->owner[b - m->from] = OWN_POOL;
+	}
 }
 
 static void
@@ -426,6 +443,7 @@ walk(BlockMap *m)
 	claim_scopes(m);
 	claim_projections(m);
 	claim_journal(m);
+	claim_lost_pool(m);
 }
 
 static void

@@ -14,7 +14,7 @@ UPDATE cd SET a = a + 1 WHERE id <= 4000;
 SELECT 'the bulk update is visible', count(*) = 4000 AND min(a) = 2 AND max(a) = 4001 AS ok FROM cd WHERE id <= 4000;
 
 -- a transaction that flushes its records in the middle (a read of its own rows) and then rolls back leaves dead records in a chain that holds live ones too:
--- the rounds of rollback, update and VACUUM do not grow the file
+-- the rounds of rollback, update and VACUUM do not grow the file (once the first two have laid the metadata out)
 CREATE FUNCTION round_trip(lo int, hi int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	UPDATE cd SET b = -1 WHERE id BETWEEN lo AND hi;
@@ -25,10 +25,10 @@ END $$;
 SELECT round_trip(4001, 7000);
 UPDATE cd SET c = c + 1 WHERE id BETWEEN 9001 AND 9100;
 VACUUM cd;
-SELECT pg_relation_size('cd') AS first_size \gset
 SELECT round_trip(4001, 7000);
 UPDATE cd SET c = c + 1 WHERE id BETWEEN 9101 AND 9200;
 VACUUM cd;
+SELECT pg_relation_size('cd') AS first_size \gset
 SELECT round_trip(4001, 7000);
 UPDATE cd SET c = c + 1 WHERE id BETWEEN 9201 AND 9300;
 VACUUM cd;

@@ -621,15 +621,17 @@ sift_fsm_sweep_due(Relation rel)
 	return due;
 }
 
-/* Records that this server has swept the relation */
+/* Records that this server has swept the relation; when the sweep named every page and freed what nothing names, the window of the last batch of a pool has none that it leaves unnamed any more */
 static void
-mark_swept(Relation rel)
+mark_swept(Relation rel, bool complete)
 {
 	Buffer		buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
 	SiftXlog	x = sift_xlog_start(rel);
 	Page		root = sift_xlog_register(&x, sift_fsm_lock_root(rel), 0);
 
 	FSMM(root)->swept_start = server_start();
+	if (complete)
+		FSMM(root)->pool_lo = FSMM(root)->pool_mask = 0;
 	sift_fsm_root_seal(root);
 	sift_xlog_done(&x);
 	UnlockReleaseBuffer(buf0);
@@ -688,6 +690,7 @@ sweep_locked(Relation rel)
 		.open_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift orphan sweep part")};
 	ExtVec		orphans = {0};
 	uint64		blocks = 0;
+	bool		complete = false;
 
 	if (!collect(&s) || !orphan_runs(&s, &orphans, &blocks) || !orphans_safe(&s, &orphans, blocks))
 	{
@@ -699,10 +702,11 @@ sweep_locked(Relation rel)
 		say_named(&s, blocks);
 		if (blocks > 0)
 			blocks = release_orphans(&s, &orphans);
+		complete = true;
 	}
 	if (blocks > 0)
 		ereport(LOG, (errmsg("sift index \"%s\": the orphan sweep freed %llu blocks", RelationGetRelationName(rel), (unsigned long long) blocks)));
-	mark_swept(rel);
+	mark_swept(rel, complete);
 	return blocks;
 }
 

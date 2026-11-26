@@ -24,7 +24,7 @@
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftMetaPagePool
 {
-	pg_atomic_uint64 word;		/* the claim of the slot (16 bits), a count that moves at every filling (16 bits), the pages that are in the pool (32 bits, one for each of page[]) */
+	pg_atomic_uint64 word;		/* the claim of the slot (16 bits), the fillings since the slab was claimed, up to 65535 (16 bits), the pages that are in the pool (32 bits, one for each of page[]) */
 	pg_atomic_uint32 filling;	/* the claim of the slot (16 bits) and 1 in the lowest bit while a backend takes pages for the pool, else 0 */
 	pg_atomic_uint32 page[SIFT_LEASE_PAGES];
 } SiftMetaPagePool;
@@ -51,6 +51,7 @@ typedef struct SiftMetaLeaseTable
 
 #define POOL_MASK(w)	((uint32) (w))
 #define POOL_CLAIM(w)	((uint32) ((w) >> 48))
+#define POOL_FILLS(w)	((uint16) ((w) >> 32))
 #define POOL_WORD(claim, count, mask)	(((uint64) (uint16) (claim) << 48) | ((uint64) (uint16) (count) << 32) | (mask))
 #define SEQ_CLAIM(seq)	((uint16) ((seq) >> 1))
 
@@ -341,23 +342,24 @@ sift_lease_page_pop(const RelFileLocator *loc, BlockNumber *blk)
 	}
 }
 
-int
-sift_lease_page_room(const RelFileLocator *loc)
+bool
+sift_lease_page_room(const RelFileLocator *loc, bool *lost)
 {
 	SiftMetaLeaseTable *t = lease_registry();
 	SiftMetaLeaseSlot *s;
-	uint64		seq;
+	uint64		seq,
+				w;
 	uint32		expected = 0;
-	int			room;
 
 	if (t == NULL || (s = slot_get(t, loc, &seq)) == NULL)
-		return 0;
-	room = SIFT_LEASE_PAGES - pg_popcount32(POOL_MASK(pg_atomic_read_u64(&s->pool.word)));
-	if (room < SIFT_LEASE_PAGE_REFILL_MIN || !pg_atomic_compare_exchange_u32(&s->pool.filling, &expected, ((uint32) SEQ_CLAIM(seq) << 1) | 1))
-		return 0;
+		return false;
+	w = pg_atomic_read_u64(&s->pool.word);
+	if (POOL_MASK(w) != 0 || !pg_atomic_compare_exchange_u32(&s->pool.filling, &expected, ((uint32) SEQ_CLAIM(seq) << 1) | 1))
+		return false;
+	*lost = POOL_FILLS(w) == 0;
 	filling_slot = s;
 	filling_seq = seq;
-	return room;
+	return true;
 }
 
 int
@@ -382,7 +384,7 @@ sift_lease_page_fill(const BlockNumber *blks, int n)
 			pg_atomic_write_u32(&s->pool.page[i], blks[kept++]);
 			fresh |= UINT32_C(1) << i;
 		}
-		while (fresh != 0 && !pg_atomic_compare_exchange_u64(&s->pool.word, &w, POOL_WORD(POOL_CLAIM(w), (uint16) (w >> 32) + 1, POOL_MASK(w) | fresh)))
+		while (fresh != 0 && !pg_atomic_compare_exchange_u64(&s->pool.word, &w, POOL_WORD(POOL_CLAIM(w), Min(POOL_FILLS(w) + 1, PG_UINT16_MAX), POOL_MASK(w) | fresh)))
 			;
 		pg_atomic_write_u64(&s->tick, (uint64) GetCurrentTimestamp());
 	}

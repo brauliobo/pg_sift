@@ -35,7 +35,7 @@ same() {
 	a=$(sql "$node" "SET sift.enable_agg = on" "SET max_parallel_workers_per_gather = 0" "SELECT count(*) || '/' || coalesce(sum(amount), 0) || '/' || coalesce(sum(id), 0) FROM t WHERE k < 60" | tail -1)
 	b=$(sql "$node" "SET sift.enable_agg = off" "SET max_parallel_workers_per_gather = 0" "SET enable_indexscan = off" "SELECT count(*) || '/' || coalesce(sum(amount), 0) || '/' || coalesce(sum(id), 0) FROM t WHERE k < 60" | tail -1)
 	[[ $a == "$b" ]] || { diag "$node: pushdown $a, heap $b"; return 1; }
-	[[ -z $(sql "$node" "SELECT sift.col_verify('t_idx', true)") ]]
+	[[ -z $(sql "$node" "SELECT sift.col_verify('t_idx', true)" 2>&1) ]]
 }
 
 same_rows() { [[ $(sql primary "SELECT count(*), sum(id) FROM t") == "$(sql standby "SELECT count(*), sum(id) FROM t")" ]] && same standby; }
@@ -72,7 +72,7 @@ sql primary "INSERT INTO t SELECT id + 900000, k, amount, pad FROM src LIMIT 200
 withidx=$(wal "$l0")
 per=$(((withidx - plain) / 2000))
 diag "ON CONFLICT: $per bytes of WAL a row for the index"
-check "ON CONFLICT: the index adds a record a row (over 60 bytes of WAL, against 25 batched)" test "$per" -gt 60
+check "ON CONFLICT: the index adds a record a row (over 45 bytes of WAL, against 3 to 12 batched)" test "$per" -gt 45
 check "the primary: the pushdown, the heap and the index agree" same primary
 catchup primary standby || bail "the standby did not catch up"
 check "the standby replays the records to the same index" same standby

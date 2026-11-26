@@ -492,25 +492,25 @@ static bool meta_batch_dry;
 static int	meta_batch_dry_misses;
 
 /*
- * The pool of the file takes the pages of one batch; what it has no room for goes back to the slabs. A batch that the slabs cannot give (they hold no more than their reserve) is not asked for
+ * The empty pool of the file takes the pages of one batch; what it keeps no room for goes back to the slabs. A batch that the slabs cannot give (they hold no more than their reserve) is not asked for
  * again by this backend until it has grown a slab itself, or has gone META_POOL_RETRY_EVERY pages without
  */
 static bool
 meta_pool_refill(Relation rel)
 {
 	BlockNumber pages[SIFT_LEASE_PAGES];
-	int			room,
-				n = 0,
+	bool		pool_lost;
+	int			n = 0,
 				kept;
 
+	StaticAssertStmt(SIFT_LEASE_PAGES == SIFT_FSM_POOL_SPAN, "a pool is one window of the root");
 	if (meta_batch_dry && ++meta_batch_dry_misses % META_POOL_RETRY_EVERY != 0)
 		return false;
-	room = sift_lease_page_room(&rel->rd_locator);
-	if (room == 0)
+	if (!sift_lease_page_room(&rel->rd_locator, &pool_lost))
 		return false;
 	PG_TRY();
 	{
-		n = sift_fsm_alloc_meta_batch(rel, pages, room);
+		n = sift_fsm_alloc_meta_batch(rel, pages, pool_lost);
 	}
 	PG_CATCH();
 	{
