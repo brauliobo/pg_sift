@@ -131,7 +131,7 @@ batch_room(SiftWideBatch *wb, size_t need)
 	{
 		while (need > wb->cap)
 			wb->cap *= 2;
-		wb->buf = repalloc_huge(wb->buf, wb->cap);
+		wb->buf = repalloc(wb->buf, wb->cap);
 	}
 }
 
