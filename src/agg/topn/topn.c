@@ -62,7 +62,7 @@ sort_key_text(PlannerInfo *root, Index rti, List *dcx, Node *e)
 	const Var  *v = (const Var *) e;
 
 	if (IsA(e, Var) && v->varno != rti)
-		return get_attname(planner_rt_fetch(v->varno, root)->relid, v->varattno, false);
+		return get_rte_attribute_name(planner_rt_fetch(v->varno, root), v->varattno);
 	e = copyObject(e);
 	ChangeVarNodes(e, rti, 1, 0);
 	return deparse_expression(e, dcx, false, false);
