@@ -86,7 +86,7 @@ SELECT * FROM check_par('bin 1 day, Kolkata', $q$ SELECT date_bin('1 day', ts, t
 (1 row)
 
 RESET timezone;
--- ---- a star and a snowflake (a chain of dimensions stays on the plan PostgreSQL chooses) ----
+-- ---- a star and a snowflake (a chain of dimensions, inner and left, is the node's too) ----
 CREATE TABLE st_f (id int, d1 int, d2 int, qty int, amt int) WITH (autovacuum_enabled = false);
 CREATE TABLE st_d1 (id int PRIMARY KEY, g int, name text, p int);
 CREATE TABLE st_p (id int PRIMARY KEY, attr text, gp int);
@@ -155,7 +155,7 @@ SELECT * FROM check_par('snowflake', $q$ SELECT p.attr, count(*), sum(f.qty) FRO
 SELECT * FROM check_par('snowflake, left', $q$ SELECT p.gp, count(*) FROM st_f f LEFT JOIN st_d1 d ON d.id = f.d1 LEFT JOIN st_p p ON p.id = d.p GROUP BY 1 $q$);
       label      | same | node | nonempty 
 -----------------+------+------+----------
- snowflake, left | t    | f    | t
+ snowflake, left | t    | t    | t
 (1 row)
 
 -- ---- arrays ----

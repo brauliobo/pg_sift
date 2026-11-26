@@ -48,7 +48,7 @@ SET timezone = 'Asia/Kolkata';
 SELECT * FROM check_par('bin 1 day, Kolkata', $q$ SELECT date_bin('1 day', ts, timestamptz '2020-01-01') b, count(*), sum(w) FROM ts_t GROUP BY 1 $q$);
 RESET timezone;
 
--- ---- a star and a snowflake (a chain of dimensions stays on the plan PostgreSQL chooses) ----
+-- ---- a star and a snowflake (a chain of dimensions, inner and left, is the node's too) ----
 CREATE TABLE st_f (id int, d1 int, d2 int, qty int, amt int) WITH (autovacuum_enabled = false);
 CREATE TABLE st_d1 (id int PRIMARY KEY, g int, name text, p int);
 CREATE TABLE st_p (id int PRIMARY KEY, attr text, gp int);
