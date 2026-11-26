@@ -3,7 +3,7 @@
  */
 #include "core/shm/combiner.h"
 
-/* What a leader detached and owes a state, from the first detach to its resolve (n is 0 outside of it): a backend that exits in between resolves it on its way out */
+/* What a leader detached and owes a state, from the first detach to its resolve (n is 0 outside of it), and the pool slot of a parked leader (own): a backend that exits in between resolves them on its way out */
 typedef struct CombLead
 {
 	SiftCombArena arena;
@@ -14,7 +14,7 @@ typedef struct CombLead
 	uint32		fin[SIFT_COMB_MAX_SLOTS];
 } CombLead;
 
-SIFT_SHM_BACKEND_LOCAL CombLead lead_state;
+SIFT_SHM_BACKEND_LOCAL CombLead lead_state = {.own = SIFT_COMB_NONE,.handoff = -1};
 SIFT_SHM_BACKEND_LOCAL bool exit_hooked;
 
 /* MEM[MEM-CORE-15]: SHM flat-combiner queue state (caller-owned SHM region) */
@@ -223,12 +223,23 @@ wait_slot(SiftCombHdr *slot)
 		sift_shm_wait_done();
 }
 
-/* A backend that exits (FATAL) while it leads gives the followers it detached the state it has for them: RETRY where it did not apply them */
+/*
+ * A backend that exits (FATAL) while it leads gives the followers it detached the state it has for them (RETRY where it did not apply them), wakes the one it told to lead the requests it put
+ * back, and gives its own slot back once the leader that detached it wrote its state
+ */
 static void
 lead_exit(int code, Datum arg)
 {
-	if (lead_state.n > 0)
-		resolve(&lead_state.arena, &lead_state, lead_state.own);
+	CombLead   *ld = &lead_state;
+
+	if (ld->n > 0 || ld->handoff >= 0)
+		resolve(&ld->arena, ld, ld->own);
+	if (ld->own != SIFT_COMB_NONE)
+	{
+		wait_slot(slot_at(&ld->arena, ld->own));
+		pool_release(ld->arena.pool, ld->own);
+		ld->own = SIFT_COMB_NONE;
+	}
 }
 
 /*
@@ -261,11 +272,13 @@ run_leader(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, voi
 			wait_slot(key);
 			pool_release(a->pool, key_idx);
 		}
+		ld->own = SIFT_COMB_NONE;
 		SIFT_SHM_RETHROW();
 	}
 	SIFT_SHM_END_TRY();
 	sift_shm_unlock(&q->lock);
 	resolve(a, ld, key_idx);
+	ld->own = SIFT_COMB_NONE;
 }
 
 /* A queue that is hot stays so: its counters are read first and written only when they move, so that the writers that find it contended do not take turns on its line */

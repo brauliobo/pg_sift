@@ -2,7 +2,8 @@
  * test/unit/core/shm/combiner.c - the combiner of core/shm/combiner.c when an apply() fails or its backend exits: a parked leader whose apply() fails keeps its slot until the leader that detached
  * it gave it its state (the slot is not handed to another writer while that leader still writes it), and the followers of a leader that exits in apply() are given RETRY and finish. A leader applies
  * every request of its group it detached, however many batches they take, and puts the requests of other groups back on the stack with one of them woken to lead them; writers of two groups
- * that share a queue have every request applied once, in batches of one group.
+ * that share a queue have every request applied once, in batches of one group. A parked leader that exits in apply() gives its slot back, and a leader that exits after it handed the requests
+ * of other groups back to the stack wakes the one it told to lead them.
  */
 #define SIFT_SHM_STANDALONE 1
 
@@ -389,6 +390,82 @@ test_pool_lines(void)
 		SIFT_CHECKF((char *) &pool.shard[s].free_mask - (char *) &pool.shard[s - 1].free_mask >= PG_CACHE_LINE_SIZE, "shards %d and %d of the pool share a cache line", s - 1, s);
 }
 
+
+enum { P = 3, HANDOFF = 5 };
+
+/* Scenario 5: P parks while the lock is held and leads once it is let go; its backend exits in apply() */
+static void
+apply_parked_exit(void *ctx, SiftCombHdr *const *batch, uint32 n)
+{
+	if (exit_fn != NULL)
+		exit_fn(1, (Datum) 0);
+	sift_shm_unlock(&queue.lock);
+	pthread_exit(NULL);
+}
+
+static const SiftCombOps ops_parked_exit = {.same_group = same_group,.apply = apply_parked_exit,.max_batch = 8};
+
+static void *
+p_main(void *arg)
+{
+	TestSlot	req = {.who = P};
+
+	sift_shm_procno = P;
+	sift_comb_submit(&arena, &queue, &ops_parked_exit, NULL, &req.hdr, sizeof(req));
+	return NULL;
+}
+
+static void
+test_parked_leader_exits(void)
+{
+	pthread_t	p;
+
+	reset(5);
+	SIFT_CHECK(sift_shm_lock_try(&queue.lock));
+	SIFT_CHECK(pthread_create(&p, NULL, p_main, NULL) == 0);
+	while (pg_atomic_read_u32(&queue.wait_head) == SIFT_COMB_NONE)
+		sched_yield();
+	sift_shm_unlock(&queue.lock);
+	SIFT_CHECK(pthread_join(p, NULL) == 0);
+	for (int i = 0; i < SIFT_COMB_MAX_SLOTS; i++)
+		SIFT_CHECKF(slot_free(i), "slot %d of the pool is held for ever by a parked leader that exited", i);
+}
+
+/* A leader that put every request it detached back on the stack and exits before it resolved wakes the writer it told to lead them */
+static void
+test_exit_wakes_handoff(void)
+{
+	reset(6);
+	lead_state = (CombLead) {.arena = arena,.own = SIFT_COMB_NONE,.handoff = HANDOFF,.n = 0};
+	lead_exit(1, (Datum) 0);
+	SIFT_CHECKF(pg_atomic_read_u32(&wakes[HANDOFF]) == 1, "the writer told to lead the requests put back is never woken");
+}
+
+/* A backend that never led (its exit callback is registered by its first submit) exits: nothing to resolve, no slot to give back, nobody to wake */
+static void *
+fresh_exit_main(void *arg)
+{
+	sift_shm_procno = P;
+	lead_exit(1, (Datum) 0);
+	return NULL;
+}
+
+static void
+test_fresh_backend_exits(void)
+{
+	pthread_t	th;
+	uint32		woken = 0;
+
+	reset(7);
+	SIFT_CHECK(pthread_create(&th, NULL, fresh_exit_main, NULL) == 0);
+	SIFT_CHECK(pthread_join(th, NULL) == 0);
+	for (int i = 0; i < SIFT_SHM_MAX_PROCS; i++)
+		woken += pg_atomic_read_u32(&wakes[i]);
+	SIFT_CHECKF(woken == 0, "the exit of a backend that never led wakes %u writers", woken);
+	for (int i = 0; i < SIFT_COMB_MAX_SLOTS; i++)
+		SIFT_CHECKF(slot_free(i), "slot %d of the pool changed at the exit of a backend that never led", i);
+}
+
 int
 main(void)
 {
@@ -397,5 +474,8 @@ main(void)
 	test_leftover_groups();
 	test_two_groups_stress();
 	test_pool_lines();
+	test_parked_leader_exits();
+	test_exit_wakes_handoff();
+	test_fresh_backend_exits();
 	return sift_check_summary();
 }
