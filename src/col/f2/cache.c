@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "lib/ilist.h"
+#include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -324,7 +325,7 @@ read_directory(Relation rel, const SiftShmIndexMeta *meta, bool *shared, SiftMan
 	return mr;
 }
 
-/* The directory of the version *meta names. A commit writes the pages of its version before the registry names it, so a read of the pages may find a later version than the registry's: meta then becomes the one the pages hold */
+/* The directory of the version *meta names. A commit writes the pages of its version before the registry names it, so a read of the pages may find a later version than the registry's: meta then becomes the one the pages hold, as often as writers keep moving it (a cancel ends the chase) */
 static SiftManifestRead
 read_directory_of(Relation rel, SiftShmIndexMeta *meta, bool *shared, SiftManifestScopeRef **scopes, int *nscopes)
 {
@@ -332,7 +333,10 @@ read_directory_of(Relation rel, SiftShmIndexMeta *meta, bool *shared, SiftManife
 
 	while (mr.version != meta->manifest_version)
 	{
-		SiftColMetaPageData page = sift_col_meta_read(rel);
+		SiftColMetaPageData page;
+
+		CHECK_FOR_INTERRUPTS();
+		page = sift_col_meta_read(rel);
 
 		*meta = sift_col_meta_shm(rel, &page);
 		mr = read_directory(rel, meta, shared, scopes, nscopes);
