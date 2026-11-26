@@ -4,7 +4,8 @@
  * that are attached to it with SIGTERM and waits for them to leave, then runs the statement. DROP EXTENSION pg_sift drains the database the same way: a worker that napped on through it would
  * read the catalogs of an extension that is gone. ALTER DATABASE ... RENAME TO and ... SET TABLESPACE count the other sessions of the database too, so they drain it as well. The jobs queued for the
  * database are forgotten once a statement that ends it ran (a database that is copied, renamed or moved keeps them), and so are the slots of its relations in the registry of the manifests
- * and the lease table (core/shm/manifest.h, core/shm/lease.h): a dropped database runs no hook for each of its relations.
+ * and the lease table (core/shm/manifest.h, core/shm/lease.h): a dropped database runs no hook for each of its relations. They are forgotten while the database is still held, so that the
+ * launcher starts no worker for them in between. A statement that runs inside another (an event trigger, a DO block) takes and lets go a hold of its own.
  */
 #include "core/maint/sched.h"
 #include "core/maint/drain.h"
@@ -32,9 +33,11 @@
 #define SIFT_EXTENSION	"pg_sift"
 #define DRAIN_WAIT_US	(5 * USECS_PER_SEC)
 #define DRAIN_POLL_MS	10
+#define HELD_MAX		8
 
 static ProcessUtility_hook_type prev_utility;
-static Oid	held_db = InvalidOid;	/* the database this backend holds: let go at the end of the statement, or at exit by a FATAL error that ran no PG_FINALLY */
+static Oid	held[HELD_MAX];		/* the database each statement that runs holds (InvalidOid: the table was full), the innermost last: let go at its end, or all at exit by a FATAL error that ran no PG_FINALLY */
+static int	nheld;
 static bool exit_hook_set = false;
 
 static bool
@@ -138,22 +141,31 @@ drain(SiftMaintShmem *m, Oid db)
 }
 
 static void
-release_held(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
+release_innermost(void)
 {
-	if (OidIsValid(held_db))
-		sift_maint_db_release(sift_maint_table(), held_db);
-	held_db = InvalidOid;
+	Oid			db = held[--nheld];
+
+	if (OidIsValid(db))
+		sift_maint_db_release(sift_maint_table(), db);
+}
+
+static void
+release_all(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
+{
+	while (nheld > 0)
+		release_innermost();
 }
 
 static void
 hold(SiftMaintShmem *m, Oid db)
 {
-	Assert(!OidIsValid(held_db));
+	if (nheld == HELD_MAX)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("more than %d nested statements drop, copy or move a database", HELD_MAX),
+						errhint("Run the statement outside the event trigger or function that runs it.")));
 	if (!exit_hook_set)
-		before_shmem_exit(release_held, (Datum) 0);
+		before_shmem_exit(release_all, (Datum) 0);
 	exit_hook_set = true;
-	if (sift_maint_db_hold(m, db))
-		held_db = db;
+	held[nheld++] = sift_maint_db_hold(m, db) ? db : InvalidOid;
 }
 
 static void
@@ -174,17 +186,17 @@ drain_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, Pr
 	{
 		drain(m, db);
 		(prev_utility ? prev_utility : standard_ProcessUtility) (pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
+		if (ends_database_jobs(pstmt->utilityStmt))
+		{
+			sift_maint_db_purge(m, db);
+			sift_shm_manifest_invalidate_db(db);
+		}
 	}
 	PG_FINALLY();
 	{
-		release_held(0, (Datum) 0);
+		release_innermost();
 	}
 	PG_END_TRY();
-	if (ends_database_jobs(pstmt->utilityStmt))
-	{
-		sift_maint_db_purge(m, db);
-		sift_shm_manifest_invalidate_db(db);
-	}
 }
 
 void
