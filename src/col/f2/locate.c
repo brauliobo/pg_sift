@@ -670,13 +670,6 @@ visit_granules(Relation rel, SiftF2Store *store, uint64 lo, uint64 hi, SiftF2Gra
 	return visit_view(rel, store, lo, hi, load, cb, arg, flush);
 }
 
-/* The parts of the partitions as they are published, the stage of the transaction left alone: its rows are the caller's to read */
-static void
-visit_settled(Relation rel, SiftF2Store *store, uint64 lo, uint64 hi, SiftF2GranuleVisit cb, void *arg)
-{
-	(void) visit_view(rel, store, lo, hi, sift_f2_gbuf_load, cb, arg, true);
-}
-
 void
 sift_f2_visit_granules_via(Relation rel, SiftF2Store *store, uint64 lo, uint64 hi, SiftF2GranuleLoader load, SiftF2GranuleVisit cb, void *arg)
 {
@@ -734,15 +727,6 @@ locate_cb(SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, void *arg)
 	a->loc->row = (uint16) row;
 	a->found = true;
 	return true;
-}
-
-bool
-sift_f2_locate_settled(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc)
-{
-	LocateArg	a = {.tid = tid,.loc = loc,.live_only = rel->rd_rel->relkind == RELKIND_INDEX};
-
-	visit_settled(rel, store, tid, tid, locate_cb, &a);
-	return a.found;
 }
 
 bool

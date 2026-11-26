@@ -165,10 +165,7 @@ typedef struct SiftF2Loc
 	uint16		row;
 } SiftF2Loc;
 
-/* The row as the relation has it: the rows the transaction staged are not looked for and its stage is not written */
-extern bool sift_f2_locate_settled(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc);
-
-/* The same in the parts the manifest lists, without writing the stage or the slabs: a row they hold is not found */
+/* The row as the parts the manifest lists have it, without writing the stage or the slabs: a row they hold is not found */
 extern bool sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc);
 
 /* A row of an index that has the address and is not dead, for the caller to take or leave: of the rows of one address the heap gave to rows in turn, the first that accept takes */
