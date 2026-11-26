@@ -327,7 +327,9 @@ compile_aggs(V6Plan *p, Node *e)
 			continue;
 		if (scan_tlist_has(p, (Expr *) n))
 			continue;
-		if (!(IsA(n, Aggref) ? compile_agg(p, (Aggref *) n) : compile_grouping(p, (GroupingFunc *) n)))
+		if (IsA(n, Aggref) && !compile_agg(p, (Aggref *) n))
+			p->agg_refused = true;
+		if (p->agg_refused || (IsA(n, GroupingFunc) && !compile_grouping(p, (GroupingFunc *) n)))
 			return false;
 		add_scan_var(p, (Expr *) n);
 	}

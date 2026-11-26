@@ -71,6 +71,7 @@ Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+
 | `other` | semantic | the shape is not one the aggregate pushdown proves, and no more specific reason is recorded | Try a simpler form of the statement (one table, a plain GROUP BY) to find the part that is refused, and report the statement if it should be accepted. |
 | `no_source` | semantic (by design) | no sift_col index or sift_table covers the table | Create a columnar index: CREATE INDEX ON <table> USING sift_col (<filter_and_group_cols>); |
 | `where` | semantic | a condition of the WHERE or ON clause is not one the scan can test | Test a column of the index with a comparison, IN, BETWEEN, LIKE or IS NULL, or add the column or expression the condition reads to the sift_col index. |
+| `aggregate` | semantic | an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes | Use aggregates supported by SiftAgg (see docs/AGG.md) without the unsupported clause, or compute the remaining aggregates in an outer query. |
 | `cost` | semantic (by design) | the normal plan is estimated cheaper than the scan | None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale. |
 <!-- refusals:end -->
 

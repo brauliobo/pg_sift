@@ -129,7 +129,7 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
  output              | single    | f    | output_expr
  error parity        | single    | f    | error_parity
  aggregate           | single    | f    | aggregate
- volatile filter     | single    | f    | volatile
+ volatile filter     | single    | f    | aggregate 
  dirty cast          | single    | f    | dirty_units
  distinct            | distinct  | t    | 
  distinct on         | distinct  | f    | distinct_on

@@ -10,6 +10,7 @@
 #include "parser/parsetree.h"
 
 #include "agg/plan/int.h"
+#include "agg/refuse.h"
 #include "agg/source_rel.h"
 #include "agg/unnest/jsonb.h"
 #include "bm25/planner/planner.h"
@@ -68,6 +69,8 @@ sift_v6_source_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *
 		ok = sift_v6_compile_on(&p, extra, group_exprs);
 		if (members && p.spec.jmembers != NIL && (!ok || sift_v6_members_dropped(&p)))
 			continue;
+		if (p.agg_refused)
+			sift_agg_arm_refused("single", AGG_REFUSE_AGGREGATE);
 		if (ok)
 			sift_v6_add_group_path(&p, output_rel, group_exprs, extra != NULL ? (List *) extra->havingQual : NIL);
 		break;
