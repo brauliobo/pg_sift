@@ -1,6 +1,6 @@
 /*
  * col/f2/tier/maint.c - the step of maintenance that keeps the object storage tier and the TTL of a sift_table (sift.set_tier_policy, sift.set_ttl): the parts older than the retention leave the
- * manifest, the objects of the parts that left are deleted once every standby has replayed that, the eligible parts move to object storage, and the objects no commit names are swept.
+ * manifest, the objects of the parts that left are deleted once every standby and replication slot has replayed that, the eligible parts move to object storage, and the objects no commit names are swept.
  *
  * Every change of the parts of a partition holds the compaction lock of the partition (a compaction of it is skipped, never raced) and, from the read of the parts to the end of its commit, the
  * partition lock, so that a delete or a flush cannot land between the read and the write of the descriptors. A store that cannot be reached is a WARNING and the step ends: the tier is an
@@ -298,13 +298,14 @@ move_part(const Step *s, const TierRun *t, const SiftPartitionEntry *e, const Si
 	ranges = object_ranges(&lp, &nranges);
 	src = (SiftTierPartSrc) {.part_gen = d->part_gen,.part_id = (uint32) e->part_id,.image = image,.image_len = image_len,.stream_len = part->hdr.stream_bytes,
 	.read_stream = read_local,.arg = &lp,.ranges = ranges,.nranges = nranges};
-	sift_tier_object_key(key, sizeof(key), t->pol.scope_id, (uint32) e->part_id, d->part_gen);
+	sift_tier_object_key(key, sizeof(key), t->pol.scope_id, s->rel->rd_locator.relNumber, (uint32) e->part_id, d->part_gen);
 	st = sift_tier_upload(t->be, key, &src, t->pol.policy_id, GetCurrentTimestamp(), &ref, &err);
 	if (st != SIFT_TIER_OK)
 	{
 		warn_store("cannot move a part to object storage", &err);
 		return TIER_STORE_FAILED;
 	}
+	ref.rel_number = s->rel->rd_locator.relNumber;
 	SIFT_CRASH_POINT(f2_tier_upload_post_remote_pre_commit);
 	SIFT_F2_GATE(SIFT_F2_GATE_TIER);
 	commit_tiered(s, e, &ref);
@@ -330,7 +331,7 @@ tier_partition(const Step *s, const TierRun *t, const SiftPartitionEntry *listed
 {
 	SiftManifestRead mr;
 	SiftPartitionEntry *e;
-	bool		ok = true;
+	bool		failed = false;
 
 	if (!sift_tier_lock_compaction(s->rel, listed->part_id))
 		return true;
@@ -340,45 +341,30 @@ tier_partition(const Step *s, const TierRun *t, const SiftPartitionEntry *listed
 		int			np;
 		SiftPartDesc *parts = sift_manifest_read_parts(s->rel, e, &np);
 
-		for (int i = 0; i < np && ok && *budget > 0; i++)
+		for (int i = 0; i < np && !failed && *budget > 0; i++)
 			if (sift_tier_part_eligible(&parts[i], t->slot, t->cutoff))
 			{
-				ok = tier_one(s, t, e, &parts[i]);
-				*budget -= ok;
+				TierMove	move = tier_one(s, t, e, &parts[i]);
+
+				*budget -= move == TIER_MOVED;
+				failed = move == TIER_STORE_FAILED;
 			}
 	}
 	sift_tier_unlock_compaction(s->rel, listed->part_id);
-	return ok;
+	return !failed;
 }
 
 /* ---- the objects of the parts that left, and the ones no commit names ---- */
 
+/* The refs whose grace is over leave the directory in one commit; their objects are the sweep's, which deletes them once its grace is over and every replication slot is past the position it marked them at */
 static void
-object_key_of(const TierRun *t, const SiftTierPartRef *ref, char *key, size_t cap)
-{
-	sift_tier_object_key(key, cap, t->pol.scope_id, ref->part_id, ref->part_gen);
-}
-
-/* The objects whose grace is over are deleted, then one commit removes their refs: a crash in between repeats the deletes, which succeed for an object that is gone */
-static bool
-delete_due(const Step *s, const TierRun *t)
+delete_due(const Step *s)
 {
 	int			n;
 	const SiftTierPartRef *refs = sift_tier_refs(s->rel, &n);
 	uint64	   *due = palloc(Max(n, 1) * sizeof(uint64));
 	int			nd = n > 0 ? sift_ttl_due_deletes(refs, n, s->now, due) : 0;
-	SiftTierErr err = {0};
-	char		key[160];
 
-	for (int i = 0; i < nd; i++)
-	{
-		object_key_of(t, sift_tier_refs_find(refs, n, due[i]), key, sizeof(key));
-		if (t->be->ops->del(t->be, key, &err) != SIFT_TIER_OK)
-		{
-			warn_store("cannot delete an object of a part that left", &err);
-			return false;
-		}
-	}
 	if (nd > 0)
 	{
 		SiftManifestRead all = partitions(s->rel);
@@ -389,7 +375,6 @@ delete_due(const Step *s, const TierRun *t)
 		sift_tier_unlock_part(s->rel, edit.part_id);
 	}
 	pfree(due);
-	return true;
 }
 
 static SiftTierSweepGate
@@ -455,8 +440,7 @@ tier_step(const Step *s, const SiftTierPolicy *pol, int slot)
 		return;
 	}
 	t.cutoff = sift_tier_cutoff(store, slot, s->now, pol->move_after_us);
-	if (!delete_due(s, &t))
-		return;
+	delete_due(s);
 	all = partitions(s->rel);
 	for (int i = 0; i < all.n && budget > 0; i++)
 	{

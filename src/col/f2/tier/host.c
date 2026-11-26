@@ -28,7 +28,7 @@ sift_tier_host_open(Relation rel, const SiftPartDesc *d, char **image, uint32 *i
 		SIFT_DAMAGE_DATA(rel, errmsg("sift index \"%s\": part %llu is in object storage and the tier directory has no ref for it", RelationGetRelationName(rel),
 									 (unsigned long long) d->part_gen));
 	sift_tier_policy_by_id(rel, ref->policy_id, &policy);
-	sift_tier_object_key(key, sizeof(key), policy.scope_id, ref->part_id, ref->part_gen);
+	sift_tier_ref_key(key, sizeof(key), policy.scope_id, ref);
 	st = sift_tier_remote_open(sift_tier_backend(&policy), sift_tier_cache(&policy), key, ref, remote, &err);
 	if (st != SIFT_TIER_OK)
 		sift_tier_raise(st, &err, "cannot open a part in object storage");

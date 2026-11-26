@@ -28,7 +28,7 @@ check_part(Relation rel, const SiftPartDesc *d, const SiftTierPartRef *ref)
 	if (ref == NULL)
 		SIFT_CORRUPT(rel, "Part %llu is in object storage and the tier directory has no ref for it.", (unsigned long long) d->part_gen);
 	sift_tier_policy_by_id(rel, ref->policy_id, &policy);
-	sift_tier_object_key(key, sizeof(key), policy.scope_id, ref->part_id, ref->part_gen);
+	sift_tier_ref_key(key, sizeof(key), policy.scope_id, ref);
 	st = sift_tier_check_object(sift_tier_backend(&policy), key, ref, &err);
 	if (is_damage(st))
 		SIFT_CORRUPT(rel, "Part %llu: its object in the store is not sound: %s.", (unsigned long long) d->part_gen, err.msg);

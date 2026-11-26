@@ -12,6 +12,7 @@
 #include "col/f2/scope/scope.h"
 #include "col/f2/l0/stage.h"
 #include "col/f2/part/vis.h"
+#include "col/f2/vacuum/run.h"
 #include "col/scope/scope.h"
 #include "table/f2/col_delta/col_delta.h"
 
@@ -130,23 +131,39 @@ journal_tags_keys(Relation rel)
 	return rel->rd_index == NULL || !sift_scope_stamp_key(rel);
 }
 
+/* More edits of the pairs than a read overlays (or any for a read of every key) leave a summary that only a refresh makes useful again: the maintenance queue is asked for it */
+static void
+refresh_for_edits(Relation rel)
+{
+	(void) sift_f2_maint_request(rel, SIFT_MK_SCOPE_REFRESH, 0);
+}
+
 bool
 sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap, const int64 *keys, uint32 nkeys, SiftKeyMap *km, int64 **out, uint32 *nout)
 {
 	SiftConnStamp stamp[SIFT_SCOPE_JOURNALS] = {0};
 	SiftConnKeys changed;
+	SiftConnWhy why;
 	uint32		n = 0;
 
 	for (int j = 0; j < sift_scope_njournals(sift_scope_specs(rel)->s[ord]); j++)
 		memcpy(&stamp[j], m->hdr.stamps[j].raw, sizeof(SiftConnStamp));
 	*out = NULL;
 	*nout = 0;
-	if (sift_scope_vouch(rel, ord, stamp, snap) != SIFT_CONN_OK ||
-		sift_scope_changed(rel, ord, stamp, snap, nkeys > 0 ? SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS : 1, nkeys > 0 && journal_tags_keys(rel) ? keys : NULL, nkeys, km, &changed) != SIFT_CONN_OK)
+	if (sift_scope_vouch(rel, ord, stamp, snap) != SIFT_CONN_OK)
 		return false;
+	why = sift_scope_changed(rel, ord, stamp, snap, nkeys > 0 ? SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS : 1, nkeys > 0 && journal_tags_keys(rel) ? keys : NULL, nkeys, km, &changed);
+	if (why != SIFT_CONN_OK)
+	{
+		if (why == SIFT_CONN_OVERFLOW)
+			refresh_for_edits(rel);
+		return false;
+	}
 	for (uint32 i = 0; i < changed.n; i++)
 		if (nkeys == 0 || changed.kept == NULL || !changed.kept[i])
 			changed.keys[n++] = changed.keys[i];
+	if (n > SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS / 2 || (n > 0 && nkeys == 0))
+		refresh_for_edits(rel);
 	if (n > 0 && (nkeys == 0 || sift_scope_pairs_multiset(rel, sift_scope_specs(rel)->s[ord])))
 		return false;
 	*out = n > 0 ? changed.keys : NULL;

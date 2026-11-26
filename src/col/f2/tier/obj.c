@@ -11,11 +11,17 @@
 #define MAX_RANGES		(UINT32_C(1) << 24)
 
 int
-sift_tier_object_key(char *out, size_t cap, uint64 scope_id, uint32 part_id, uint64 part_gen)
+sift_tier_object_key(char *out, size_t cap, uint64 scope_id, uint32 rel_number, uint32 part_id, uint64 part_gen)
 {
-	int			n = snprintf(out, cap, "r%016llx/p%u-g%llu.siftpart", (unsigned long long) scope_id, part_id, (unsigned long long) part_gen);
+	int			n = snprintf(out, cap, "r%016llx/n%u-p%u-g%llu.siftpart", (unsigned long long) scope_id, rel_number, part_id, (unsigned long long) part_gen);
 
 	return n > 0 && (size_t) n < cap ? n : -1;
+}
+
+int
+sift_tier_ref_key(char *out, size_t cap, uint64 scope_id, const SiftTierPartRef *ref)
+{
+	return sift_tier_object_key(out, cap, scope_id, ref->rel_number, ref->part_id, ref->part_gen);
 }
 
 static uint32

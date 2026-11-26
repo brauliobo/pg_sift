@@ -448,6 +448,13 @@ refresh_object(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftSco
 	}
 }
 
+/* The parts added since the summary are left to the overlay of the reads while they are a tenth of the rows it names at most and fewer than half of the rows an overlay may hold */
+static bool
+overlay_serves(const PartDiff *d)
+{
+	return d->added_rows * 100 <= d->kept_rows * SIFT_SCOPE_GROWTH_PCT && d->added_rows < SIFT_SCOPE_OVERLAY_MAX_ROWS / 2;
+}
+
 static SiftManifestScopeRef
 refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *base, const SiftManifestRead *mr, const SiftManifestEdit *edit, Snapshot snap)
 {
@@ -483,7 +490,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 		memcpy(&stamp[j], old.hdr.stamps[j].raw, sizeof(SiftConnStamp));
 	known = sift_scope_vouch(rel, base->ord, stamp, snap) == SIFT_CONN_OK &&
 		sift_scope_changed(rel, base->ord, stamp, snap, REFRESH_MEMBERS_MAX, NULL, 0, NULL, &changed) == SIFT_CONN_OK && (changed.n == 0 || !sift_scope_member_text(rel, base->ord));
-	if (known && changed.n == 0 && diff.nretired == 0 && diff.nadded > 0 && diff.added_rows * 100 <= diff.kept_rows * SIFT_SCOPE_GROWTH_PCT)
+	if (known && changed.n == 0 && diff.nretired == 0 && diff.nadded > 0 && overlay_serves(&diff))
 	{
 		sift_scope_meta_close(&old);
 		return (SiftManifestScopeRef) {0};

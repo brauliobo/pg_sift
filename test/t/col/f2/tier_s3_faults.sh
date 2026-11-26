@@ -54,7 +54,7 @@ check "the credentials rotated under a session: it reads the files again and mov
 ctl page/1 >/dev/null
 ctl token/1500 >/dev/null
 SCOPE=$(sql s3 "SELECT lpad(to_hex(scope_id), 16, '0') FROM sift.tier_policies")
-ctl "put/bucket/pre/r$SCOPE/p77-g77.siftpart" >/dev/null
+ctl "put/bucket/pre/r$SCOPE/n1-p77-g77.siftpart" >/dev/null
 sql s3 "VACUUM ev" >/dev/null 2>&1
 check "a listing of pages with a long continuation token reaches the orphan at its end: it is marked for deletion" test "$(ctl keys | grep -c "p77-g77")" -ge 2
 check "and the orphan is still there: a standby may read it until its grace is over" test "$(ctl keys | grep -c 'p77-g77.siftpart$')" == 1

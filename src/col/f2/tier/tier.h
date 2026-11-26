@@ -181,8 +181,9 @@ typedef struct SiftTierObj
 extern SiftTierStatus sift_tier_obj_build(SiftTierObj *obj, const SiftTierPartSrc *part, SiftTierErr *err);
 extern void sift_tier_obj_free(SiftTierObj *obj);
 
-/* The object name relative to the policy location: one directory per relation (scope_id), one object per part generation */
-extern int	sift_tier_object_key(char *out, size_t cap, uint64 scope_id, uint32 part_id, uint64 part_gen);
+/* The object name relative to the policy location: one directory per relation (scope_id), one object per part generation of one relfilenumber, which TRUNCATE, REINDEX and VACUUM FULL change */
+extern int	sift_tier_object_key(char *out, size_t cap, uint64 scope_id, uint32 rel_number, uint32 part_id, uint64 part_gen);
+extern int	sift_tier_ref_key(char *out, size_t cap, uint64 scope_id, const SiftTierPartRef *ref);
 
 /* CRC32C and SHA-256 of the whole source, read in chunks */
 extern void sift_tier_src_digest(const SiftTierSrc *src, uint32 *crc, uint8 sha[SIFT_SHA256_LEN]);

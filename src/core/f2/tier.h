@@ -32,7 +32,7 @@ typedef struct SiftTierPartRef
 	uint32		stream_crc32c;	/* CRC32C of the whole object */
 	uint64		obj_hash[2];	/* the first 128 bits of the SHA-256 of the whole object */
 	uint32		policy_id;		/* sift.tier_policies */
-	uint32		reserved;
+	uint32		rel_number;		/* the relfilenumber the relation had when the object was put: the key of the object names it, so a rewrite that restarts the generations never overwrites it */
 	TimestampTz tiered_at;
 	TimestampTz expires_at;		/* 0: the part has no TTL deadline; with SIFT_TIER_DELETE_PENDING: when the object may be deleted */
 	uint8		etag[24];		/* the ETag the store returned, cut to 24 bytes, NUL padded */

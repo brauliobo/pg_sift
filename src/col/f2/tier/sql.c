@@ -312,7 +312,7 @@ status_rows(const SiftTierPolicyRow *p, Relation rel, ReturnSetInfo *rsi)
 		Datum		values[7];
 		bool		nulls[7] = {false};
 
-		sift_tier_object_key(key, sizeof(key), p->scope_id, refs[i].part_id, refs[i].part_gen);
+		sift_tier_ref_key(key, sizeof(key), p->scope_id, &refs[i]);
 		values[0] = ObjectIdGetDatum(RelationGetRelid(rel));
 		values[1] = Int64GetDatum((int64) refs[i].part_id);
 		values[2] = Int64GetDatum((int64) refs[i].part_gen);

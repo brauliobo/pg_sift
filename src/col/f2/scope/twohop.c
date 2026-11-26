@@ -178,7 +178,10 @@ sift_f2s_key_map(Relation heap, Relation index, const SiftScopeSpec *spec, bool 
 				key;
 	SiftKeyMap *km;
 
-	sift_scope_relation(heap, index, spec, &rel, &member, &key);
+	if (heap == index)
+		(void) sift_scope_relation_index(heap, index, spec, &rel, &member, &key);
+	else
+		sift_scope_relation(heap, index, spec, &rel, &member, &key);
 	km = sift_keymap_open(rel, key, write);
 	table_close(rel, NoLock);
 	return km;

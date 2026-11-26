@@ -2,7 +2,8 @@
  * col/f2/tier/cache.c - the bounded local cache of the ranges of objects (col/f2/tier/tier.h): a directory of chunk files, each the bytes of one fixed-size piece of an object and a trailer with
  * their CRC32C, named by the content hash of the object and the piece number, so a chunk is valid for every part and every relation that has those bytes. The index is in memory, least recently used
  * last; it is rebuilt from the directory (by modification time) when the cache opens. A chunk that is missing or fails its checksum is fetched again: the cache holds nothing that the object
- * does not. The directory never holds more than the budget (past one process; each backend keeps to the budget it sees, and an eviction of a chunk another backend uses is a refetch).
+ * does not. The directory is shared by the backends: a chunk another backend wrote is found by its file and served, and after each fetch the index is made again from the directory, so that the
+ * eviction keeps the bytes of the directory, not the ones of this backend, to the budget (an eviction of a chunk another backend uses is a refetch).
  */
 #include "core/host.h"
 
@@ -166,6 +167,18 @@ add(SiftTierCache *c, uint64 hi, uint64 lo, uint32 idx, uint32 bytes)
 	return e;
 }
 
+/* A chunk of the directory that this backend has not seen: a peer wrote it, and its file is there with the size that chunk of the object has */
+static Chunk *
+adopt_peer(SiftTierCache *c, uint64 hi, uint64 lo, uint32 idx, uint32 bytes)
+{
+	Chunk		probe = {hi, lo, idx, bytes, NULL, NULL, NULL};
+	char		path[600];
+	struct stat st;
+
+	chunk_path(c, &probe, path, sizeof(path));
+	return stat(path, &st) == 0 && st.st_size == (off_t) (bytes + sizeof(ChunkTrailer)) ? add(c, hi, lo, idx, bytes) : NULL;
+}
+
 static void
 evict_down_to(SiftTierCache *c, uint64 bytes)
 {
@@ -259,6 +272,29 @@ adopt_directory(SiftTierCache *c)
 	evict_to_budget(c);
 }
 
+static void
+forget_index(SiftTierCache *c)
+{
+	while (c->mru != NULL)
+	{
+		Chunk	   *e = c->mru;
+
+		lru_unlink(c, e);
+		pfree(e);
+	}
+	memset(c->buckets, 0, c->nbuckets * sizeof(Chunk *));
+	c->st.resident_bytes = 0;
+	c->st.resident_chunks = 0;
+}
+
+/* The index as the directory is now, within the budget */
+static void
+sync_directory(SiftTierCache *c)
+{
+	forget_index(c);
+	adopt_directory(c);
+}
+
 SiftTierCache *
 sift_tier_cache_open(const char *dir, uint64 budget_bytes, uint32 chunk_bytes, SiftTierErr *err)
 {
@@ -298,13 +334,7 @@ sift_tier_cache_open(const char *dir, uint64 budget_bytes, uint32 chunk_bytes, S
 void
 sift_tier_cache_close(SiftTierCache *c)
 {
-	while (c->mru != NULL)
-	{
-		Chunk	   *e = c->mru;
-
-		lru_unlink(c, e);
-		pfree(e);
-	}
+	forget_index(c);
 	pfree(c->buckets);
 	pfree(c);
 }
@@ -398,6 +428,14 @@ chunk_bytes_of(const SiftTierCache *c, const SiftTierPartRef *ref, uint32 idx)
 	return (uint32) Min((uint64) c->chunk_bytes, ref->byte_len - (uint64) idx * c->chunk_bytes);
 }
 
+static Chunk *
+lookup(SiftTierCache *c, const SiftTierPartRef *ref, uint32 idx)
+{
+	Chunk	   *e = find(c, ref->obj_hash[0], ref->obj_hash[1], idx);
+
+	return e != NULL ? e : adopt_peer(c, ref->obj_hash[0], ref->obj_hash[1], idx, chunk_bytes_of(c, ref, idx));
+}
+
 /* Copies the part of [off, off + len) that chunk idx holds into dst (which starts at off); chunk holds the bytes of chunk idx */
 static void
 copy_slice(const SiftTierCache *c, uint64 off, uint64 len, uint32 idx, char *dst, const char *chunk)
@@ -449,7 +487,7 @@ sift_tier_cache_read(SiftTierCache *c, SiftTierBackend *be, const char *key, con
 					run_bytes;
 
 		CHECK_FOR_INTERRUPTS();
-		e = find(c, hi, lo, i);
+		e = lookup(c, ref, i);
 		if (e != NULL)
 		{
 			uint64		start = (uint64) i * c->chunk_bytes,
@@ -464,7 +502,7 @@ sift_tier_cache_read(SiftTierCache *c, SiftTierBackend *be, const char *key, con
 			drop(c, e);
 		}
 		end = i;
-		while (end < last && find(c, hi, lo, end + 1) == NULL && (uint64) (end + 1 - i + 1) * c->chunk_bytes <= MAX_RUN_BYTES)
+		while (end < last && lookup(c, ref, end + 1) == NULL && (uint64) (end + 1 - i + 1) * c->chunk_bytes <= MAX_RUN_BYTES)
 			end++;
 		run_from = (uint64) i * c->chunk_bytes;
 		run_bytes = (uint64) (end - i) * c->chunk_bytes + chunk_bytes_of(c, ref, end);
@@ -482,7 +520,7 @@ sift_tier_cache_read(SiftTierCache *c, SiftTierBackend *be, const char *key, con
 			copy_slice(c, off, len, j, out, piece);
 			store_chunk(c, hi, lo, j, piece, chunk_bytes_of(c, ref, j));
 		}
-		evict_to_budget(c);
+		sync_directory(c);
 		i = end + 1;
 	}
 	pfree(scratch);

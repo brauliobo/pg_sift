@@ -5,7 +5,9 @@
 
 #include "lib/ilist.h"
 #include "utils/hsearch.h"
+#include "utils/inval.h"
 #include "utils/memutils.h"
+#include "utils/syscache.h"
 
 #include "col/f2/f2.h"
 #include "col/f2/scope/scope.h"
@@ -40,6 +42,8 @@ typedef struct ScopeEntry
 	uint64		packed_len;
 	struct SiftF2ScopeSnap *overlay;	/* the settled change of the summary the statements read last (f2_scope_snap.h), in cx */
 	int			pins;			/* a statement that reads it: only an entry nobody pins is dropped */
+	uint32		relhash;		/* the RELOID hash of the relation, which the invalidations of pg_class name */
+	bool		stale;			/* the relation changed under the entry (TRUNCATE rewinds the generations of its summaries): no statement reads it again */
 	bool		private;		/* the cache had no room: it is the statement's own, and goes with it */
 	uint64		used;
 	dlist_node	node;
@@ -122,6 +126,20 @@ scope_evict_all(void)
 
 static const SiftCacheKind scope_kind = {"col_f2_scope_cache", scope_oldest, scope_evict_one, scope_evict_all};
 
+/* A relation of pg_class changed: the entries of its summaries are not read again, and the ones nobody pins are dropped by the next read */
+static void
+scope_inval(Datum arg, int cacheid, uint32 hashvalue)
+{
+	dlist_iter	it;
+
+	dlist_foreach(it, &lru)
+	{
+		ScopeEntry *e = dlist_container(ScopeEntry, node, it.cur);
+
+		e->stale |= hashvalue == 0 || e->relhash == hashvalue;
+	}
+}
+
 static void
 cache_init(void)
 {
@@ -131,6 +149,7 @@ cache_init(void)
 	ctl.hcxt = cache_cx;
 	cache = hash_create("sift cache scope summaries", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	sift_cache_register(&scope_kind);
+	CacheRegisterSyscacheCallback(RELOID, scope_inval, (Datum) 0);
 }
 
 static void
@@ -178,9 +197,9 @@ drop_older(const ScopeKey *key)
 }
 
 static ScopeEntry *
-load(Relation index, const SiftManifestScopeRef *ref, const ScopeKey *key, MemoryContext mcxt)
+load(Relation index, const SiftManifestScopeRef *ref, const ScopeKey *key, MemoryContext mcxt, bool shared)
 {
-	ScopeEntry	fresh = {.key = *key};
+	ScopeEntry	fresh = {.key = *key,.relhash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)))};
 	ScopeEntry *e;
 	MemoryContext old,
 				scratch;
@@ -204,7 +223,7 @@ load(Relation index, const SiftManifestScopeRef *ref, const ScopeKey *key, Memor
 	MemoryContextDelete(scratch);
 	if (!ok)
 		SIFT_CORRUPT(index, "The summary of scope %d is damaged.", key->ord);
-	if (!sift_cache_room(MemoryContextMemAllocated(fresh.cx, true)))
+	if (!shared || !sift_cache_room(MemoryContextMemAllocated(fresh.cx, true)))
 	{
 		e = MemoryContextAlloc(fresh.cx, sizeof(fresh));
 		*e = fresh;
@@ -234,10 +253,15 @@ sift_f2_scope_cache_get(Relation index, const SiftPlanSnapshot *plan, int ord, M
 	if (cache == NULL)
 		cache_init();
 	e = hash_search(cache, &key, HASH_FIND, NULL);
-	if (e != NULL)
+	if (e != NULL && e->stale && e->pins == 0)
+	{
+		drop(e);
+		e = NULL;
+	}
+	if (e != NULL && !e->stale)
 		SCOPE_STAT(hits);
 	else
-		e = load(index, ref, &key, mcxt);
+		e = load(index, ref, &key, mcxt, e == NULL);
 	if (!e->private)
 	{
 		pin(e, mcxt);
@@ -257,7 +281,7 @@ sift_f2_scope_cache_peek(Relation index, const SiftPlanSnapshot *plan, int ord)
 		return NULL;
 	key.meta_gen = ref->meta_gen;
 	e = hash_search(cache, &key, HASH_FIND, NULL);
-	return e != NULL ? &e->meta : NULL;
+	return e != NULL && !e->stale ? &e->meta : NULL;
 }
 
 bool
