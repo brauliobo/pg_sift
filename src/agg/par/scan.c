@@ -146,11 +146,27 @@ put_record(void *arg, const uint8 *rec, uint32 len)
 	r->ring_bytes += len;
 }
 
+static uint8 *
+room_record(void *arg, uint64 hash, uint32 len)
+{
+	SiftV6ParRun *r = arg;
+	uint8	   *rec = sift_radix_stage_slot(r->rl, hash, len);
+
+	if (rec != NULL)
+	{
+		r->ring_recs++;
+		r->ring_bytes += len;
+	}
+	return rec;
+}
+
 /* Hands every group of the participant's table to the partitions (the table is empty afterwards) */
 void
 sift_v6_par_export(SiftV6ParRun *r)
 {
-	r->eng->local_export(r->local, put_record, r);
+	const SiftV6RecSink sink = {put_record, room_record, r};
+
+	r->eng->local_export(r->local, &sink);
 	if (r->hdr->strategy == SV6P_TWO_STAGE && sift_par_coord_spilled(r->coord))
 		pg_atomic_write_u32(&r->hdr->escalated, 1);
 }
@@ -169,7 +185,9 @@ put_slot(void *arg, const uint8 *rec, uint32 len)
 void
 sift_v6_par_export_plain(SiftV6ParRun *r)
 {
-	r->eng->local_export(r->plocal, put_slot, r);
+	const SiftV6RecSink sink = {put_slot, NULL, r};
+
+	r->eng->local_export(r->plocal, &sink);
 }
 
 typedef struct MergeArg
@@ -183,13 +201,7 @@ merge_block(void *arg, const uint8 *block, uint32 len)
 {
 	const MergeArg *m = arg;
 
-	for (uint32 off = 0; off < len;)
-	{
-		const uint32 rlen = ((const SiftV6RecHdr *) (block + off))->len;
-
-		m->eng->local_merge(m->into, block + off);
-		off += rlen;
-	}
+	m->eng->local_merge_block(m->into, block, len);
 	CHECK_FOR_INTERRUPTS();
 }
 

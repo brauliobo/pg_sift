@@ -21,10 +21,14 @@
 #define SEEN_NO_BUDGET		(UINT64CONST(1) << 40)
 #define SEEN_ENTRY_BYTES	64		/* what an entry of the set of a participant takes, to tell when it is full */
 
+/* What a group of a table of a participant takes while the table is as full as it may be: two slots of the table (its load is at most 7/8 of a power of 2) and the state block */
+#define SCAN_GROUP_BYTES(spec)	(2 * (sizeof(SiftAggSlot64) + 1) + (Size) Max((spec)->naggs, 1) * sizeof(V6Acc))
+
 typedef struct ParEnv
 {
 	const SiftV6Spec *spec;
-	SiftV6Spec	part_spec;		/* spec for the states of a participant that are not the whole answer: presized for the groups of one partition, not of the query */
+	SiftV6Spec	part_spec;		/* spec for the states of a partition: presized for its share of the groups of the query */
+	SiftV6Spec	scan_spec;		/* spec for the states a participant folds its rows into: presized for the groups that fit its share of the memory */
 	MemoryContext cx;
 	TupleDesc	desc;
 	MemoryContext tuple_cx;		/* what a finished group is made in: the per-tuple memory of the node */
@@ -40,6 +44,7 @@ typedef struct ParEnv
 	void		(*relief) (void *arg);	/* what the scan runs after a batch: the participant hands over what it holds over its share */
 	void	   *relief_arg;
 	bool		lean;			/* the COUNT(DISTINCT) aggregates are those of v6_par_dist.h */
+	bool		has_tail;		/* a record of a group may have bytes after its accumulators (tail_build) */
 } ParEnv;
 
 static inline bool
@@ -222,16 +227,15 @@ open_scan(ParEnv *e, uint32 child)
 	return e->scan[child];
 }
 
-static void *
-par_local_new(void *env, bool whole)
+static ParLocal *
+local_make(ParEnv *e, const SiftV6Spec *spec, bool whole)
 {
-	ParEnv	   *e = env;
 	ParLocal   *l = MemoryContextAllocZero(e->cx, sizeof(ParLocal));
 	MemoryContext old = CurrentMemoryContext;
 
 	l->env = e;
 	l->cx = sift_mem_allocset_create(e->cx, "sift agg v6 parallel state");
-	l->g = sift_v6_group_new(whole ? e->spec : &e->part_spec, l->cx, e->desc);
+	l->g = sift_v6_group_new(spec, l->cx, e->desc);
 	MemoryContextSwitchTo(l->cx);
 	initStringInfo(&l->tail);
 	MemoryContextSwitchTo(old);
@@ -239,6 +243,22 @@ par_local_new(void *env, bool whole)
 		for (int s = 0; s < l->g->nsets; s++)
 			l->g->set[s].plain_row = false;
 	return l;
+}
+
+static void *
+par_local_new(void *env, bool whole)
+{
+	ParEnv	   *e = env;
+
+	return local_make(e, whole ? e->spec : &e->part_spec, whole);
+}
+
+static void *
+par_scan_new(void *env)
+{
+	ParEnv	   *e = env;
+
+	return local_make(e, &e->scan_spec, false);
 }
 
 static void
@@ -336,7 +356,8 @@ export_plain(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 	uint8	   *rec;
 	SiftV6RecHdr h = {.set_idx = (uint16) s,.flags = V6REC_PLAIN};
 
-	tail_build(l, set->plain, &l->tail);
+	if (l->env->has_tail)
+		tail_build(l, set->plain, &l->tail);
 	len = MAXALIGN(sizeof(SiftV6RecHdr) + accs + l->tail.len);
 	h.len = (uint32) len;
 	rec = record_room(l, len);
@@ -349,24 +370,48 @@ export_plain(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 	memset(set->plain, 0, accs);
 }
 
+StaticAssertDecl(sizeof(SiftV6RecHdr) % 8 == 0 && sizeof(V6Acc) % 8 == 0, "a record of an inline key and no tail is a whole number of 8 bytes");
+
+/* A group of an inline key with no tail is a record of one length, built in the room the transport gives; false when it has none that size */
+static bool
+export_fixed(ParLocal *l, const SiftV6RecSink *sink, const V6Set *set, int s, const SiftAggSlot64 *slot)
+{
+	const Size	accs = (Size) l->env->spec->naggs * sizeof(V6Acc),
+				len = sizeof(SiftV6RecHdr) + accs;
+	const SiftV6RecHdr h = {.len = (uint32) len,.set_idx = (uint16) s,.hash64 = slot->hash64,.key = slot->key};
+	uint8	   *rec = sink->room(sink->arg, slot->hash64, (uint32) len);
+
+	if (rec == NULL)
+		return false;
+	memcpy(rec, &h, sizeof(h));
+	memcpy(rec + sizeof(h), sift_ht_ext(&set->ht, slot), accs);
+	return true;
+}
+
 static void
-export_groups(ParLocal *l, int s, SiftV6RecPut put, void *arg)
+export_groups(ParLocal *l, int s, const SiftV6RecSink *sink)
 {
 	V6Set	   *set = &l->g->set[s];
 	const Size	accs = (Size) l->env->spec->naggs * sizeof(V6Acc),
 				base = sizeof(SiftV6RecHdr) + accs;
+	const bool	fixed = !set->wide && !l->env->has_tail && sink->room != NULL;
 	const SiftAggSlot64 *slot;
 
 	SIFT_HT_FOREACH(&set->ht, slot)
 	{
 		uint32		klen = 0;
-		const uint8 *kbytes = set->wide ? sift_ht_wide_key(&set->ht, slot, &klen) : NULL;
-		const V6Acc *acc = (const V6Acc *) sift_ht_ext(&set->ht, slot);
+		const uint8 *kbytes;
+		const V6Acc *acc;
 		uint32		rlen;
 		uint8	   *rec;
 		SiftV6RecHdr h = {.set_idx = (uint16) s,.flags = set->wide ? V6REC_WIDE : 0,.hash64 = slot->hash64,.key = slot->key};
 
-		tail_build(l, acc, &l->tail);
+		if (fixed && export_fixed(l, sink, set, s, slot))
+			continue;
+		kbytes = set->wide ? sift_ht_wide_key(&set->ht, slot, &klen) : NULL;
+		acc = (const V6Acc *) sift_ht_ext(&set->ht, slot);
+		if (l->env->has_tail)
+			tail_build(l, acc, &l->tail);
 		rlen = (uint32) MAXALIGN(base + klen + l->tail.len);
 		h.len = rlen;
 		sift_v6_par_check_record_size(rlen);
@@ -381,21 +426,21 @@ export_groups(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 		memcpy(rec + base + klen, l->tail.data, l->tail.len);
 		memcpy(rec, &h, sizeof(h));
 		memcpy(rec + sizeof(h), acc, accs);
-		put(arg, rec, rlen);
+		sink->put(sink->arg, rec, rlen);
 	}
 	sift_ht_clear(&set->ht);
 }
 
 static void
-par_local_export(void *local, SiftV6RecPut put, void *arg)
+par_local_export(void *local, const SiftV6RecSink *sink)
 {
 	ParLocal   *l = local;
 
 	if (l->scanning && l->env->lean)
-		sift_v6_par_dist_export(l->dist_out, put, arg);
+		sift_v6_par_dist_export(l->dist_out, sink->put, sink->arg);
 	else if (l->scanning)
 	{
-		ExportArg	x = {l, put, arg};
+		ExportArg	x = {l, sink->put, sink->arg};
 
 		v6g_dist_dict_drain(l->g, park_dist, l);
 		sift_distinct_foreach_hashed(l->seen, export_seen, &x);
@@ -403,24 +448,23 @@ par_local_export(void *local, SiftV6RecPut put, void *arg)
 	}
 	for (int s = 0; s < l->g->nsets; s++)
 		if (l->g->set[s].nk == 0)
-			export_plain(l, s, put, arg);
+			export_plain(l, s, sink->put, sink->arg);
 		else
-			export_groups(l, s, put, arg);
+			export_groups(l, s, sink);
 	if (l->g->gen != NULL)
 		v6_gen_release(l->g->gen);
 	release_exported(l->g);
 }
 
-static void
-par_local_merge(void *local, const uint8 *rec)
+/* Merges one record into the state, in the memory context of its group; true when it was a group record (the memory of the groups is then to be checked) */
+static bool
+merge_record(ParLocal *l, const uint8 *rec)
 {
-	ParLocal   *l = local;
 	SiftV6Group *g = l->g;
 	const SiftV6RecHdr *h = (const SiftV6RecHdr *) rec;
 	V6Set	   *set;
 	const V6Acc *accs = (const V6Acc *) (rec + sizeof(*h));
 	const uint8 *key_bytes = rec + sizeof(*h) + (Size) l->env->spec->naggs * sizeof(V6Acc);
-	MemoryContext old = MemoryContextSwitchTo(g->cx);
 	SiftAggSlot64 *slot;
 	bool		found;
 
@@ -429,8 +473,7 @@ par_local_merge(void *local, const uint8 *rec)
 		if (l->dist == NULL)
 			l->dist = sift_v6_par_dist_new(g);
 		sift_v6_par_dist_add(l->dist, rec);
-		MemoryContextSwitchTo(old);
-		return;
+		return false;
 	}
 	set = &g->set[h->set_idx];
 	if (h->flags & V6REC_DIST)
@@ -439,21 +482,116 @@ par_local_merge(void *local, const uint8 *rec)
 		const uint32 len = (uint32) h->key.i64[1];
 
 		v6g_dist_add(g, set, (uint32) h->key.i64[0], key, len);
+		return false;
 	}
-	else if (h->flags & V6REC_PLAIN)
+	if (h->flags & V6REC_PLAIN)
 	{
 		combine_accs(l, set->plain, accs, (const char *) key_bytes);
 		set->plain_row = true;
+		return false;
 	}
+	if (h->flags & V6REC_WIDE)
+		slot = sift_ht_upsert_wide(&set->ht, h->hash64, key_bytes, (uint32) h->key.i64[1], (uint64) h->key.i64[0], &found);
 	else
+		slot = sift_ht_upsert(&set->ht, h->hash64, &h->key, &found);
+	combine_accs(l, (V6Acc *) sift_ht_ext(&set->ht, slot), accs, (const char *) key_bytes + ((h->flags & V6REC_WIDE) ? (uint32) h->key.i64[1] : 0));
+	return true;
+}
+
+static void
+par_local_merge(void *local, const uint8 *rec)
+{
+	ParLocal   *l = local;
+	MemoryContext old = MemoryContextSwitchTo(l->g->cx);
+
+	if (merge_record(l, rec))
+		v6g_spill_if_over(l->g);
+	MemoryContextSwitchTo(old);
+}
+
+#define MERGE_BATCH		32
+
+/* The records of one set with an inline key, whose groups one upsert finds together */
+typedef struct MergeBatch
+{
+	uint32		n;
+	uint32		set_idx;
+	const uint8 *rec[MERGE_BATCH];
+	uint64		hash[MERGE_BATCH];
+	SiftInlineKey16 key[MERGE_BATCH];
+	SiftAggSlot64 *slot[MERGE_BATCH];
+} MergeBatch;
+
+static void
+batch_flush(ParLocal *l, MergeBatch *b)
+{
+	V6Set	   *set = &l->g->set[b->set_idx];
+	const Size	accs = (Size) l->env->spec->naggs * sizeof(V6Acc);
+
+	if (b->n == 0)
+		return;
+	sift_ht_upsert_batch(&set->ht, b->hash, b->key, b->n, b->slot);
+	for (uint32 i = 0; i < b->n; i++)
+		combine_accs(l, (V6Acc *) sift_ht_ext(&set->ht, b->slot[i]), (const V6Acc *) (b->rec[i] + sizeof(SiftV6RecHdr)), (const char *) (b->rec[i] + sizeof(SiftV6RecHdr) + accs));
+	b->n = 0;
+}
+
+static inline bool
+batchable(const ParLocal *l, const SiftV6RecHdr *h)
+{
+	return !(h->flags & (V6REC_WIDE | V6REC_DIST | V6REC_PLAIN | V6REC_DIST_INT)) && l->g->set[h->set_idx].ht.lock_at == 0;
+}
+
+static void
+par_local_merge_block(void *local, const uint8 *block, uint32 len)
+{
+	ParLocal   *l = local;
+	MemoryContext old = MemoryContextSwitchTo(l->g->cx);
+	MergeBatch	b = {0};
+	bool		groups = false;
+
+	for (uint32 off = 0; off < len;)
 	{
-		if (h->flags & V6REC_WIDE)
-			slot = sift_ht_upsert_wide(&set->ht, h->hash64, key_bytes, (uint32) h->key.i64[1], (uint64) h->key.i64[0], &found);
+		const SiftV6RecHdr *h = (const SiftV6RecHdr *) (block + off);
+
+		if (!batchable(l, h))
+		{
+			batch_flush(l, &b);
+			groups |= merge_record(l, block + off);
+		}
 		else
-			slot = sift_ht_upsert(&set->ht, h->hash64, &h->key, &found);
-		combine_accs(l, (V6Acc *) sift_ht_ext(&set->ht, slot), accs, (const char *) key_bytes + ((h->flags & V6REC_WIDE) ? (uint32) h->key.i64[1] : 0));
-		v6g_spill_if_over(g);
+		{
+			if (b.n > 0 && b.set_idx != h->set_idx)
+				batch_flush(l, &b);
+			b.set_idx = h->set_idx;
+			b.rec[b.n] = block + off;
+			b.hash[b.n] = h->hash64;
+			b.key[b.n++] = h->key;
+			groups = true;
+			if (b.n == MERGE_BATCH)
+				batch_flush(l, &b);
+		}
+		off += h->len;
 	}
+	batch_flush(l, &b);
+	if (groups)
+		v6g_spill_if_over(l->g);
+	MemoryContextSwitchTo(old);
+}
+
+/* A partition of at most n groups: the tables of its sets take them (a quarter of the memory of the groups at most) without growing */
+static void
+par_local_presize(void *local, uint64 n)
+{
+	ParLocal   *l = local;
+	SiftV6Group *g = l->g;
+	MemoryContext old = MemoryContextSwitchTo(g->cx);
+	const uint64 room = (g->budget - g->dist_budget) / 4 / (sizeof(SiftAggSlot64) + 1 + g->stride);
+
+	if (g->ndist == 0 && !l->env->lean)
+		for (int s = 0; s < g->nsets; s++)
+			if (g->set[s].nk > 0)
+				sift_ht_presize(&g->set[s].ht, (uint32) Min(n, room));
 	MemoryContextSwitchTo(old);
 }
 
@@ -498,15 +636,18 @@ par_local_dist_count(const void *local, uint32 slot)
 	return n;
 }
 
-static void
+static bool
 par_local_reset(void *local)
 {
 	ParLocal   *l = local;
 
+	if (l->g->spilled || l->g->frozen)
+		return false;
 	if (l->dist != NULL)
 		sift_v6_par_dist_reset(l->dist);
 	sift_v6_group_recycle(l->g);
 	l->g->tx.used = 0;
+	return true;
 }
 
 static void
@@ -525,6 +666,8 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	e->spec = spec;
 	e->part_spec = *spec;
 	e->part_spec.groups_est = spec->groups_est / Max(hdr->radix_nparts, 1U);
+	e->scan_spec = *spec;
+	e->scan_spec.groups_est = Min(spec->groups_est, sift_v6_par_share(hdr) / SCAN_GROUP_BYTES(spec));
 	e->cx = cx;
 	e->desc = desc;
 	e->tuple_cx = tuple_cx;
@@ -536,10 +679,14 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	e->lean = sift_v6_par_dist_lean(spec);
 	e->op = MemoryContextAlloc(cx, Max(spec->naggs, 1) * sizeof(V6AccOp));
 	for (int j = 0; j < spec->naggs; j++)
+	{
 		e->op[j] = v6g_acc_op(&spec->agg[j]);
-	*eng = (SiftV6ParEngine) {.env = e,.local_new = par_local_new,.local_free = par_local_free,.scan_hook = par_scan_hook,.scan_morsel = par_scan_morsel,.local_load = par_local_load,
-		.local_export = par_local_export,.local_merge = par_local_merge,.local_finish = par_local_finish,.local_next = par_local_next,.local_offer = par_local_offer,
-		.local_dist_count = par_local_dist_count,.local_set_dist = par_local_set_dist,.local_reset = par_local_reset};
+		e->has_tail |= v6g_is_gen(&spec->agg[j]) || is_text_ext(&spec->agg[j]);
+	}
+	*eng = (SiftV6ParEngine) {.env = e,.local_new = par_local_new,.scan_new = par_scan_new,.local_free = par_local_free,.scan_hook = par_scan_hook,.scan_morsel = par_scan_morsel,
+		.local_load = par_local_load,.local_export = par_local_export,.local_merge = par_local_merge,.local_merge_block = par_local_merge_block,.local_presize = par_local_presize,
+		.local_finish = par_local_finish,.local_next = par_local_next,.local_offer = par_local_offer,.local_dist_count = par_local_dist_count,.local_set_dist = par_local_set_dist,
+		.local_reset = par_local_reset};
 }
 
 void

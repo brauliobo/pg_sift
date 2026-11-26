@@ -423,6 +423,20 @@ stage_flush(SiftRadixLocal *l, uint32 p)
 	l->stage_items[p] = 0;
 }
 
+/* The room for a record of at most SIFT_RADIX_STAGE bytes at the end of the stage of the partition, which is flushed when it is full */
+static uint8 *
+stage_room(SiftRadixLocal *l, uint32 p, uint32 len)
+{
+	uint8	   *room;
+
+	if (l->stage_used[p] + len > SIFT_RADIX_STAGE)
+		stage_flush(l, p);
+	room = l->stage + (size_t) p * SIFT_RADIX_STAGE + l->stage_used[p];
+	l->stage_used[p] += len;
+	l->stage_items[p]++;
+	return room;
+}
+
 static void
 put_record(SiftRadixLocal *l, uint32 p, const void *rec, uint32 len)
 {
@@ -432,17 +446,19 @@ put_record(SiftRadixLocal *l, uint32 p, const void *rec, uint32 len)
 		append_block(l, p, rec, len, 1);
 		return;
 	}
-	if (l->stage_used[p] + len > SIFT_RADIX_STAGE)
-		stage_flush(l, p);
-	memcpy(l->stage + (size_t) p * SIFT_RADIX_STAGE + l->stage_used[p], rec, len);
-	l->stage_used[p] += len;
-	l->stage_items[p]++;
+	memcpy(stage_room(l, p, len), rec, len);
 }
 
 void
 sift_radix_put(SiftRadixLocal *l, uint64 hash, const void *rec, uint32 len)
 {
 	put_record(l, SIFT_HASH_RADIX(hash, l->coord->radix_bits), rec, len);
+}
+
+uint8 *
+sift_radix_stage_slot(SiftRadixLocal *l, uint64 hash, uint32 len)
+{
+	return len > SIFT_RADIX_STAGE ? NULL : stage_room(l, SIFT_HASH_RADIX(hash, l->coord->radix_bits), len);
 }
 
 static void

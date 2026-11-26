@@ -22,7 +22,17 @@ relief(void *arg)
 		sift_v6_par_export(r);
 }
 
-/* Phase 1 for a participant that takes part in no other: its partitions, one at a time as the Gather asks */
+/* The state for the next partition: this one emptied, or a new one when it spilled (its tables and files are gone) */
+static void *
+recycled(SiftV6ParRun *r, void *local)
+{
+	if (r->eng->local_reset(local))
+		return local;
+	r->eng->local_free(local);
+	return r->eng->local_new(r->eng->env, false);
+}
+
+/* Phase 1 for a participant that takes part in no other: its partitions, one at a time as the Gather asks, all in one state that is emptied between them */
 bool
 sift_v6_par_emit_parts(SiftV6ParRun *r, Datum *values, bool *isnull)
 {
@@ -30,7 +40,7 @@ sift_v6_par_emit_parts(SiftV6ParRun *r, Datum *values, bool *isnull)
 	{
 		uint32		part;
 
-		if (r->plocal != NULL)
+		if (r->emitting)
 		{
 			if (sift_v6_par_local_next(r, r->plocal, values, isnull))
 			{
@@ -39,24 +49,30 @@ sift_v6_par_emit_parts(SiftV6ParRun *r, Datum *values, bool *isnull)
 					CHECK_FOR_INTERRUPTS();
 				return true;
 			}
-			r->eng->local_free(r->plocal);
-			r->plocal = NULL;
+			r->emitting = false;
+			r->plocal = recycled(r, r->plocal);
 		}
 		if (!sift_v6_par_claim_part(r, &part))
 		{
+			if (r->plocal != NULL)
+				r->eng->local_free(r->plocal);
+			r->plocal = NULL;
 			r->stage = SV6S_DONE;
 			return false;
 		}
-		r->plocal = r->eng->local_new(r->eng->env, false);
+		if (r->plocal == NULL)
+			r->plocal = r->eng->local_new(r->eng->env, false);
+		r->eng->local_presize(r->plocal, pg_atomic_read_u64(&r->coord->parts[part].est_rows));
 		sift_v6_par_merge_part(r, r->plocal, part);
 		r->eng->local_finish(r->plocal);
+		r->emitting = true;
 	}
 }
 
 static void
 grouped_body(SiftV6ParRun *r)
 {
-	r->local = r->eng->local_new(r->eng->env, false);
+	r->local = r->eng->scan_new(r->eng->env);
 	r->rl = sift_radix_local_new_raw(r->coord);
 	sift_v6_par_scan(r, relief);
 	sift_v6_par_export(r);
@@ -95,7 +111,7 @@ count_parts(SiftV6ParRun *r)
 		sift_v6_par_merge_part(r, l, part);
 		for (uint32 s = 0; s < r->hdr->n_dist; s++)
 			pg_atomic_fetch_add_u64(&r->hdr->dist_total[s], (int64) r->eng->local_dist_count(l, s));
-		r->eng->local_reset(l);
+		l = recycled(r, l);
 	}
 	r->eng->local_free(l);
 }
@@ -120,7 +136,7 @@ final_state(SiftV6ParRun *r)
 static void
 dist_body(SiftV6ParRun *r)
 {
-	r->local = r->eng->local_new(r->eng->env, false);
+	r->local = r->eng->scan_new(r->eng->env);
 	r->plocal = r->eng->local_new(r->eng->env, false);
 	r->rl = sift_radix_local_new_raw(r->coord);
 	sift_v6_par_scan(r, relief);

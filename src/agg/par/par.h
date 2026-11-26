@@ -41,7 +41,7 @@
 #define SIFT_PAR_WIDE_WORKERS		16
 #define SIFT_PAR_RING_MAX_BYTES		((Size) 16 << 20)	/* the chunks of the two-stage strategy */
 #define SIFT_PAR_LOCAL_GROUPS		65536U			/* the slots the coordinator of the partitions is told for a local table (agg/par/radix.h): a participant of this node makes its own */
-#define SIFT_PAR_LOCAL_BYTES		((uint64) 8 << 20)	/* the table of a participant stays in its cache: it is handed over at this many bytes, or at its share of the hash memory when that is less */
+#define SIFT_PAR_LOCAL_BYTES		((uint64) 32 << 20)	/* the table of a participant: it is handed over at this many bytes, or at its share of the hash memory when that is less; the groups of a query that fit it are exported once, at the end of the scan */
 #define SIFT_PAR_MIN_SHARE_BYTES	((uint64) 256 << 10)	/* the least a participant folds before it hands over, whatever the hash memory */
 #define SIFT_PAR_MAX_DIST			32
 #define SIFT_PAR_DIST_FLAT_SHARE	0.3			/* the share of the rows whose values a participant of a query of no keys hands over: it dedups them first */
@@ -120,6 +120,15 @@ typedef struct SiftV6DistRec
 StaticAssertDecl(offsetof(SiftV6DistRec, hash64) == offsetof(SiftV6RecHdr, hash64) && offsetof(SiftV6DistRec, flags) == offsetof(SiftV6RecHdr, flags), "a record of a value has the head of every record");
 
 typedef void (*SiftV6RecPut) (void *arg, const uint8 *rec, uint32 len);
+/* The room for a record of len bytes of the hash that the transport gives, for the engine to build the record in it at once, or NULL when it has none that size (the engine then puts the record) */
+typedef uint8 *(*SiftV6RecRoom) (void *arg, uint64 hash, uint32 len);
+
+typedef struct SiftV6RecSink
+{
+	SiftV6RecPut put;
+	SiftV6RecRoom room;				/* NULL: every record is put */
+	void	   *arg;
+} SiftV6RecSink;
 
 /* ---- the engine: what a participant folds rows into and what finishes a group; group.c for the node ---- */
 
@@ -157,6 +166,8 @@ typedef struct SiftV6ParEngine
 	 * state are counted when it is finished; a participant's state is exported before that and the values travel as V6REC_DIST records.
 	 */
 	void	   *(*local_new) (void *env, bool whole);
+	/* The state a participant folds its rows into: presized for the groups it holds before it hands them over, where the state of a partition is for the groups of one partition */
+	void	   *(*scan_new) (void *env);
 	void		(*local_free) (void *local);
 	/* fn(arg) is called after every batch the scan folds into a state, so that a participant that holds too much hands it over between two batches of a morsel, not after the whole of it */
 	void		(*scan_hook) (void *env, void (*fn) (void *arg), void *arg);
@@ -165,8 +176,12 @@ typedef struct SiftV6ParEngine
 	/* The bytes of the groups and distinct values it holds: the participant empties it into the partitions when this passes its export_cap */
 	uint64		(*local_load) (const void *local);
 	/* Every group as records (the state of each, and the pending distinct values); the state is empty afterwards. A set of no keys gives its record even when it holds no row */
-	void		(*local_export) (void *local, SiftV6RecPut put, void *arg);
+	void		(*local_export) (void *local, const SiftV6RecSink *sink);
 	void		(*local_merge) (void *local, const uint8 *rec);
+	/* The records of a block of a partition (whole records, one after the other), merged with one switch of memory context and one check of the memory for all of them */
+	void		(*local_merge_block) (void *local, const uint8 *block, uint32 len);
+	/* The state of a partition that is about to be merged room for n records (an upper bound of its groups) */
+	void		(*local_presize) (void *local, uint64 n);
 	/* The state is final: local_next gives the groups, once each */
 	void		(*local_finish) (void *local);
 	bool		(*local_next) (void *local, Datum *values, bool *isnull);
@@ -175,8 +190,9 @@ typedef struct SiftV6ParEngine
 	/* The distinct strategy: the number of distinct values of aggregate slot the partitions merged into local, and the total that the final state is given */
 	uint64		(*local_dist_count) (const void *local, uint32 slot);
 	void		(*local_set_dist) (void *local, uint32 slot, uint64 total);
-	/* The state of a partition emptied for the records of the next one (its tables and buffers are kept): a participant counts one partition after another in one state */
-	void		(*local_reset) (void *local);
+	/* The state of a partition emptied for the records of the next one (its tables and buffers are kept): a participant counts one partition after another in one state. False when the state
+	 * spilled: its tables and files are gone, and the caller makes another */
+	bool		(*local_reset) (void *local);
 } SiftV6ParEngine;
 
 /* ---- the shared block ---- */
@@ -303,7 +319,8 @@ typedef struct SiftV6ParRun
 	bool		attached;
 	SiftV6ParStage stage;
 	void	   *local;				/* the state the scan folds into; the kept table, or the one of the final row */
-	void	   *plocal;				/* the partition being emitted */
+	void	   *plocal;				/* the state of the partitions: holds the one being emitted while emitting, else it is empty */
+	bool		emitting;
 	SiftRadixLocal *rl;
 	uint32		parts_seen;
 	SiftV6ParWorkerStats stats;

@@ -6,8 +6,7 @@
  * table of SIFT_PAR_LOCAL_CAP slots that stays in its cache, and when it is full scatters its groups, by the radix bits of the hash
  * kept in each slot, into the SIFT_RADIX_PARTS partitions: a record per group (its state) and a record per distinct value of a
  * count(DISTINCT), the pair partitioned with its group, so that one partition holds everything of the groups it owns. A partition
- * is a list of 64 KB chunks of the shared segment; a participant stages 2 KB per partition (128 partitions of it are 64 pages of 4 KB, which the
- * data TLB of a core holds) and appends a block to the chunk list,
+ * is a list of 64 KB chunks of the shared segment; a participant stages 8 KB per partition (64 partitions of it are 512 KB) and appends a block to the chunk list,
  * once per block, with no lock: one atomic add on the tail word of the partition reserves the bytes of the block in the last chunk,
  * the participant copies the block into them and adds its length (and its records, in the high half of the same word) to the commit counter of the chunk. The reservation that crosses
  * the end of a chunk takes the next chunk of the pool and publishes it as the new tail; the reservations after it wait for that,
@@ -46,7 +45,7 @@
 #define SIFT_RADIX_NO_CHUNK		UINT32_MAX
 #define SIFT_RADIX_SPILL_CHUNK	(UINT32_MAX - 1)
 /* a participant stages this much per partition before it appends a block to the partition */
-#define SIFT_RADIX_STAGE		2048
+#define SIFT_RADIX_STAGE		8192
 #define SIFT_RADIX_MQ_SIZE		(64 * 1024)
 /* the queue of a worker when there are this many workers: the leader reads them in turn, and a full queue stalls its worker */
 #define SIFT_RADIX_MQ_WIDE_WORKERS	8
@@ -164,6 +163,8 @@ extern SiftRadixLocal *sift_radix_local_new(SiftParCoord *c, const SiftRadixShap
 /* The stages of a participant with no table of its own: the caller keeps its groups and puts their records */
 extern SiftRadixLocal *sift_radix_local_new_raw(SiftParCoord *c);
 extern void sift_radix_put(SiftRadixLocal *l, uint64 hash, const void *rec, uint32 len);
+/* The room for a record of len bytes in the stage of the partition of hash, counted as a record put: the caller fills it at once, before its next call here. NULL when a stage is smaller than len (sift_radix_put takes the record) */
+extern uint8 *sift_radix_stage_slot(SiftRadixLocal *l, uint64 hash, uint32 len);
 /* The slot of an inline key (found = false: a new group, in its init state): valid until the next call, which may empty the table into the partitions */
 extern SiftAggSlot64 *sift_radix_local_upsert(SiftRadixLocal *l, uint64 hash, const SiftInlineKey16 *key, bool *found);
 extern SiftAggSlot64 *sift_radix_local_upsert_wide(SiftRadixLocal *l, uint64 hash, const void *key, uint32 len, uint64 nulls,

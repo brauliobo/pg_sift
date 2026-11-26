@@ -70,16 +70,16 @@ part_of(const SiftMorselQueue *q, uint32 g)
 	return lo;
 }
 
-/* A run from the lane: guided by the granules the lane has left */
+/* A run from the lane: guided by the granules the lane has left, shared by the participants that read it */
 static bool
-lane_claim(SiftMorselQueue *q, SiftMorselLane *lane, SiftMorsel *m)
+lane_claim(SiftMorselQueue *q, SiftMorselLane *lane, uint32 sharers, SiftMorsel *m)
 {
 	uint32		cur = pg_atomic_read_u32(&lane->cursor);
 
 	while (cur < lane->end)
 	{
 		const uint32 part = part_of(q, cur);
-		const uint32 run = Min(sift_morsel_run(lane->end - cur, q->n_participants), q->part_start[part + 1] - cur);
+		const uint32 run = Min(sift_morsel_run(lane->end - cur, sharers), q->part_start[part + 1] - cur);
 
 		if (pg_atomic_compare_exchange_u32(&lane->cursor, &cur, cur + run))
 		{
@@ -117,12 +117,14 @@ bool
 sift_morsel_claim(SiftMorselQueue *q, uint32 participant, SiftMorsel *m)
 {
 	SiftMorselLane *lane = &q->lanes[participant % q->n_lanes];
+	uint32		sharers = Max(1U, (q->n_participants + q->n_lanes - 1) / q->n_lanes);
 
 	while (lane)
 	{
-		if (lane_claim(q, lane, m))
+		if (lane_claim(q, lane, sharers, m))
 			return true;
 		lane = fullest_lane(q);
+		sharers = q->n_participants;
 	}
 	return false;
 }

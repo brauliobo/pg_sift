@@ -4,7 +4,8 @@
  * are as skewed as a Zipf law (the first part holds half of the granules, the next a quarter, and so on, some parts hold none) and
  * count the visits of each granule in the shared segment. Every granule must be visited once, every claim must lie within one part
  * and have the guided length, and the last claim of the list is one granule. The participants start together: each waits at a gate
- * until the leader has seen every launched worker arrive.
+ * until the leader has seen every launched worker arrive. Every call also checks that the lane of a participant is guided by the participants
+ * that read it (check_lane_runs).
  */
 #include "postgres.h"
 
@@ -119,11 +120,61 @@ flat_start(const Shared *s, uint32 part)
 	return at;
 }
 
-/* Is the claim within its part, and no longer than the guided run of the granules the list has left from it (a lane has no more than that left) */
+static uint32
+lanes_of(uint32 participants)
+{
+	return Min(participants, SIFT_MORSEL_LANES);
+}
+
+static uint32
+sharers_of(uint32 participants)
+{
+	return Max(1U, (participants + lanes_of(participants) - 1) / lanes_of(participants));
+}
+
+/* The granules from flat to the end of the lane that holds it */
+static uint32
+lane_left(uint32 total, uint32 participants, uint32 flat)
+{
+	const uint32 lanes = lanes_of(participants);
+	uint32		l = 0;
+
+	while (l + 1 < lanes && (uint64) total * (l + 1) / lanes <= flat)
+		l++;
+	return (uint32) ((uint64) total * (l + 1) / lanes) - flat;
+}
+
+/* Is the claim within its part, and no longer than the guided run of the granules its lane has left, shared by the participants of the lane */
 static bool
 claim_ok(const Shared *s, const SiftMorsel *m, uint32 flat)
 {
-	return m->part < s->parts && m->n >= 1 && m->first + m->n <= s->sizes[m->part] && m->n <= sift_morsel_run(s->total - flat, s->participants);
+	return m->part < s->parts && m->n >= 1 && m->first + m->n <= s->sizes[m->part] &&
+		m->n <= sift_morsel_run(lane_left(s->total, s->participants, flat), sharers_of(s->participants));
+}
+
+#define LANE_CHECK_GRANULES		244
+#define LANE_CHECK_PARTICIPANTS	8
+
+/* A lane is shared by the participants that read it, not by all of them: 8 participants on 8 lanes of 30 granules start with runs of 4, and the list ends in a granule */
+static void
+check_lane_runs(void)
+{
+	const uint32 granules = LANE_CHECK_GRANULES;
+	SiftMorselQueue *q = MemoryContextAllocAligned(CurrentMemoryContext, sift_morsel_size(1), SIFT_PAR_SHM_ALIGN, 0);
+	SiftMorsel	m;
+	uint32		first_run = 0,
+				last_run = 0;
+
+	sift_morsel_init(q, 1, &granules, LANE_CHECK_PARTICIPANTS);
+	for (uint32 claims = 0; sift_morsel_claim(q, 0, &m); claims++)
+	{
+		first_run = claims == 0 ? m.n : first_run;
+		last_run = m.n;
+	}
+	if (first_run < 4 || last_run != 1)
+		elog(ERROR, "a lane of %u granules read by one of %u participants starts with a run of %u (4 or more wanted) and ends with %u (1 wanted)",
+			 granules / LANE_CHECK_PARTICIPANTS, (uint32) LANE_CHECK_PARTICIPANTS, first_run, last_run);
+	pfree(q);
 }
 
 static void
@@ -182,6 +233,7 @@ sift_test_morsel_par(PG_FUNCTION_ARGS)
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
+	check_lane_runs();
 	if (workers == 0)
 		s = shared_init(palloc(size), parts, granules, PG_GETARG_INT64(0), 1);
 	else

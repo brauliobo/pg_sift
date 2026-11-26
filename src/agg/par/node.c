@@ -7,6 +7,7 @@
  */
 #include "postgres.h"
 
+#include "access/parallel.h"
 #include "storage/dsm.h"
 #include "utils/guc.h"
 
@@ -20,7 +21,7 @@
 #define SIFT_PAR_MIN_POOL_BYTES	(4 << 20)
 #define SIFT_PAR_POOL_BIG_GROUPS	400000	/* from this many expected groups a run fills its pool, and the estimate is the low one (it leaves out part of the key bytes) */
 #define SIFT_PAR_POOL_BIG		1.5		/* of the bytes of the estimate: a short pool sends partitions to temporary files, which costs more than the pages of the segment */
-#define SIFT_PAR_POOL_SMALL		0.5		/* a smaller run is estimated high (the groups of the planner are) and the pages of the segment are all made when it is created */
+#define SIFT_PAR_POOL_SAFETY		1.25	/* of the bytes of the estimate, for every other run: the pages of the segment are all made when it is created, but a short pool costs more */
 
 const char *
 sift_v6_par_strategy_name(int strategy)
@@ -75,14 +76,15 @@ count_distinct(const SiftV6Spec *spec)
 /*
  * What the partitions of the run take at most before their records go to files: the records the participants hand over, each group once for every participant that saw it. A COUNT(DISTINCT) sends
  * its values too: those of a query of no keys that its participants dedup first (v6_par_dist.h; a third of the rows is what the benchmark table needs), every row of a GROUP BY. The block is made of
- * that and not of work_mem: the operating system fills every byte of a segment when it is created.
+ * that and not of work_mem: the operating system fills every byte of a segment when it is created. Every partition ends in a chunk that is only partly full: radix_nparts chunks more.
  */
 static double
-chunk_budget(const SiftV6ParNode *pn, int nparticipants)
+chunk_budget(const SiftV6ParNode *pn, int nparticipants, uint32 radix_nparts)
 {
 	const SiftV6Spec *spec = pn->spec;
 	double		rows = 0;
 	const double groups = Max((double) spec->groups_est, 1.0);
+	const double rec_size = sizeof(SiftV6RecHdr) + (Size) spec->naggs * sizeof(V6Acc) + 32;
 	double		group_recs;
 	double		bytes;
 
@@ -90,14 +92,15 @@ chunk_budget(const SiftV6ParNode *pn, int nparticipants)
 		rows += (double) pn->plan.refs[i].ngranules * SIFT_GRANULE_ROWS;
 	group_recs = nparticipants * groups * (1.0 - exp(-rows / nparticipants / groups));
 	if (count_distinct(spec) == 0)
-		bytes = group_recs * (sizeof(SiftV6RecHdr) + (Size) spec->naggs * sizeof(V6Acc) + 32);
+		bytes = group_recs * rec_size;
 	else if (!sift_v6_par_dist_lean(spec))
 		bytes = rows * (sizeof(SiftV6RecHdr) + 32);
 	else if (spec->nkeys == 0)
 		bytes = rows * SIFT_PAR_DIST_FLAT_SHARE * (sizeof(SiftV6DistRec) + 8);
 	else
-		bytes = rows * (sizeof(SiftV6DistRec) + 8 * (spec->nkeys + 2)) + group_recs * (sizeof(SiftV6RecHdr) + (Size) spec->naggs * sizeof(V6Acc) + 32);
-	return Min((double) get_hash_memory_limit(), Max(bytes * (groups >= SIFT_PAR_POOL_BIG_GROUPS ? SIFT_PAR_POOL_BIG : SIFT_PAR_POOL_SMALL), (double) SIFT_PAR_MIN_POOL_BYTES));
+		bytes = rows * (sizeof(SiftV6DistRec) + 8 * (spec->nkeys + 2)) + group_recs * rec_size;
+	bytes = bytes * (groups >= SIFT_PAR_POOL_BIG_GROUPS ? SIFT_PAR_POOL_BIG : SIFT_PAR_POOL_SAFETY) + (double) radix_nparts * SIFT_RADIX_CHUNK_SIZE;
+	return Min(Min((double) get_hash_memory_limit(), (double) SIFT_PAR_DSM_MAX), Max(bytes, (double) SIFT_PAR_MIN_POOL_BYTES));
 }
 
 /* The units of every source, one after the other, each tagged with its source, and the deletes of the transaction of every source with where each starts */
@@ -146,11 +149,12 @@ sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
 {
 	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
 	const SiftV6Spec *spec = pn->spec;
+	const uint32 radix_nparts = sift_v6_par_radix_parts((SiftV6ParStrategy) spec->par_strategy, pcxt->nworkers);
 
 	list_units(pn);
 	pn->shape = (SiftV6ParShape) {.strategy = (SiftV6ParStrategy) spec->par_strategy,.nworkers = pcxt->nworkers,.n_parts = pn->plan.nrefs,.part_ref_bytes = sizeof(SiftParPartRef),
 		.n_children = pn->nsources,.n_staged_dead = pn->plan.nstaged,.n_aggs = (uint32) spec->naggs,.n_dist = count_distinct(spec),
-		.max_chunks = sift_v6_par_chunks((SiftV6ParStrategy) spec->par_strategy, chunk_budget(pn, pcxt->nworkers + 1)),.radix_nparts = sift_v6_par_radix_parts((SiftV6ParStrategy) spec->par_strategy, pcxt->nworkers),
+		.max_chunks = sift_v6_par_chunks((SiftV6ParStrategy) spec->par_strategy, chunk_budget(pn, pcxt->nworkers + 1, radix_nparts)),.radix_nparts = radix_nparts,
 		.plain_slot_bytes = (uint32) (sizeof(SiftV6RecHdr) + (Size) Max(spec->naggs, 1) * sizeof(V6Acc))};
 	MemoryContextSwitchTo(old);
 	return sift_v6_par_dsm_size(&pn->shape);
@@ -258,6 +262,8 @@ sift_v6_par_node_shutdown(SiftV6ParNode *pn)
 	pn->ring_recs = pg_atomic_read_u64(&h->ring.total_recs);
 	pn->ring_bytes = pg_atomic_read_u64(&h->ring.total_bytes);
 	pn->radix_parts = h->radix_nparts;
+	if (!IsParallelWorker())
+		elog(DEBUG1, "sift agg v6 %s: %u of %u radix partitions spilled", sift_v6_par_strategy_name(h->strategy), sift_par_coord_parts_spilled(sift_v6_par_coord(h)), h->radix_nparts);
 	pn->escalated = pg_atomic_read_u32(&h->escalated) != 0;
 	pn->have_total = true;
 	pn->hdr = NULL;
