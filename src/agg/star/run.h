@@ -30,6 +30,8 @@ extern SiftStarOpen sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scan
 extern void sift_v6_star_scan_end(SiftV6StarRun *r, SiftV6Pipe *p);
 /* The dimensions of the pass for a pipe */
 extern void sift_v6_star_attach(const SiftV6StarRun *r, SiftV6Pipe *p);
+/* After pass 0: every dimension fits in one pass (no class of keys or chunk is left for another) */
+extern bool sift_v6_star_one_pass(const SiftV6StarRun *r);
 /* The passes the dimensions need (known after pass 0) and the bytes the largest table took */
 extern uint32 sift_v6_star_passes(const SiftV6StarRun *r);
 extern uint64 sift_v6_star_bytes(const SiftV6StarRun *r);

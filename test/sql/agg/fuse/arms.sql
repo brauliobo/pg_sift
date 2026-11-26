@@ -2,6 +2,7 @@
 -- of their own, with leaves only some of them read, and arms whose rows the index cannot store (read again from the heap once, not per arm).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
@@ -75,11 +76,11 @@ SELECT arms_shared(:'total_arms') AS total_arms_shared, same(:'total_arms') AS t
 SELECT arms_shared(:'empty_total_arms') AS empty_total_shared, same(:'empty_total_arms') AS empty_total_same;
 SELECT arms_shared(:'join_total_arms') AS join_total_shared, same(:'join_total_arms') AS join_total_same;
 
--- not in one pass: another WHERE, other aggregates
+-- another WHERE is not in one pass; other aggregates are, each arm folding its own
 SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev WHERE qty > 2 GROUP BY kind UNION ALL SELECT zone_id::text, count(*) FROM ev GROUP BY zone_id$$) AS other_filter_shared;
 SELECT arms_shared($$SELECT kind AS k, count(*) AS n FROM ev GROUP BY kind UNION ALL SELECT zone_id::text, sum(qty) FROM ev GROUP BY zone_id$$) AS other_aggregate_shared;
 
--- the rest of an ON clause that only one arm has: an inner join drops the rows it refuses in the arm's set only; a left join keeps them (another set of rows)
+-- the rest of an ON clause that only one arm has: an inner join drops the rows it refuses in the arm's set only; a left join keeps them in its own (each arm joins its own dimensions in the pass)
 \set inner_plain 'SELECT z.name AS k, count(*) AS n, sum(e.price) AS s FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY z.name'
 \set inner_rest 'SELECT e.kind::text, count(*), sum(e.price) FROM ev e JOIN zones z ON z.id = e.zone_id AND z.tier > 0 GROUP BY e.kind'
 \set left_plain 'SELECT z.name AS k, count(*) AS n, sum(e.price) AS s FROM ev e LEFT JOIN zones z ON z.id = e.zone_id GROUP BY z.name'
@@ -116,7 +117,7 @@ RESET enable_indexonlyscan;
 RESET enable_memoize;
 
 -- arms that join a common table expression of periods (a VALUES list, read by every arm): the arms are the same pass when they join the same CTE with the
--- same conditions, whatever columns of it each reads; another list or another condition keeps its own pass. The list is loaded once for the pass.
+-- same conditions, whatever columns of it each reads, and a condition on it in one arm is that arm's own; another list keeps its own pass. The list is loaded once for the pass.
 \set periods 'WITH periods AS (SELECT * FROM (VALUES (''cur'', daterange(''2026-03-05'', ''2026-03-20'', ''[]'')), (''prev'', daterange(''2026-03-25'', ''2026-04-05'', ''[]''))) AS v(label, span))'
 \set per_both 'SELECT p.label, e.kind, count(*) AS n, sum(e.price) AS s FROM ev e JOIN periods p ON e.day <@ p.span GROUP BY p.label, e.kind'
 \set per_label 'SELECT p.label, NULL, count(*), sum(e.price) FROM ev e JOIN periods p ON e.day <@ p.span GROUP BY p.label'

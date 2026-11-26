@@ -538,13 +538,19 @@ struct SiftV6FuseCohort;
 
 struct SiftClause;
 
-/* An arm of a pass: its spec (with the columns of its gate when the arms have different keys), its groups, and the gate: the rows of the pass it takes (NULL: all) */
+struct SiftV6StarRun;
+
+/*
+ * An arm of a pass: its spec (with the columns of its gate when the arms have different keys), its groups, the gate: the rows of the pass it takes (NULL: all), and the dimensions of its star join
+ * (NULL: none), read in one pass, that its rows go through before its groups
+ */
 typedef struct SiftV6ScanArm
 {
 	const SiftV6Spec *spec;
 	SiftV6Group *group;
 	SiftV6ScanStats *stats;
 	const struct SiftClause *gate;
+	struct SiftV6StarRun *star;
 } SiftV6ScanArm;
 
 

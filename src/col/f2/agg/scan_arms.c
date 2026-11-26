@@ -9,6 +9,7 @@
 #include "utils/memutils.h"
 
 #include "agg/fuse/fuse.h"
+#include "agg/star/run.h"
 #include "agg/vet.h"
 #include "col/f2/sink/sink.h"
 #include "col/f2/agg/scan_int.h"
@@ -75,8 +76,11 @@ arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
 	sift_f2_v6_refuse_nans(s);
 	sift_f2_v6_derive_columns(s);
 	sift_f2_v6_bin_keys(s);
-	sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
 	s->stats->rows += s->bs.n_active;
+	if (s->pipe != NULL)
+		sift_v6_pipe_run(s->pipe, s->fact, &s->bs);
+	else
+		sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
 }
 
 static void
@@ -112,7 +116,7 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	for (int i = 0; i < cohort->narms; i++)
 	{
 		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate,.host = index};
-		sift_f2_v6_scan_setup(&a.s[i], sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
+		sift_f2_v6_scan_setup(&a.s[i], sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, arms[i].star);
 		nleaves += a.s[i].ncols;
 	}
 	leaves = palloc(Max(nleaves, 1) * sizeof(int));
@@ -126,6 +130,9 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	sift_f2_scan_sink(scan, arms_sink, &a, leaves, nleaves);
 	index_endscan(scan);
 	sift_v6_vet_end(&a.s[0].vet);
+	for (int i = 0; i < cohort->narms; i++)
+		if (a.s[i].pipe != NULL)
+			sift_v6_star_scan_end(arms[i].star, a.s[i].pipe);
 	for (int i = 0; i < cohort->narms; i++)
 		if (a.s[i].batch_cx != NULL)
 			MemoryContextDelete(a.s[i].batch_cx);

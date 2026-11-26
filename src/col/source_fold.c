@@ -516,8 +516,10 @@ sift_srcfold_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, const Sif
 		a.group = arms[i].group;
 		a.stats = arms[i].stats;
 		a.gate = arms[i].gate;
+		a.star = arms[i].star;
 		f = sift_srcfold_new(&a, sift_mem_allocset_create(CurrentMemoryContext, "sift source fold arm"));
 		sift_srcfold_run(f, open, open_arg);
+		sift_srcfold_finish(f);
 		sift_srcfold_free(f);
 	}
 }

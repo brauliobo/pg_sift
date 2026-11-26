@@ -535,6 +535,15 @@ sift_v6_star_attach(const SiftV6StarRun *r, SiftV6Pipe *p)
 	}
 }
 
+bool
+sift_v6_star_one_pass(const SiftV6StarRun *r)
+{
+	for (int d = 0; d < r->x->ndims; d++)
+		if (r->nparts[d] > 1 || r->nchunks[d] > 1)
+			return false;
+	return true;
+}
+
 uint32
 sift_v6_star_passes(const SiftV6StarRun *r)
 {

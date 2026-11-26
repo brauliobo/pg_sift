@@ -120,8 +120,8 @@ require_formats(const V6State *st)
 static bool
 v6_fusable(const V6State *st)
 {
-	return st->sources[0].ops->zone != NULL && st->spec->nparts == 0 && !st->spec->is_table && st->spec->vqual == NIL && st->spec->ext == NULL && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid)
-		&& !st->spec->rows && st->spec->topk == 0;
+	return st->sources[0].ops->zone != NULL && st->spec->nparts == 0 && !st->spec->is_table && st->spec->vqual == NIL && (st->spec->ext == NULL || (st->star != NULL && !st->spec->ext->unnest)) &&
+		st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid) && !st->spec->rows && st->spec->topk == 0;
 }
 
 static void
@@ -333,17 +333,55 @@ pass_keys(V6State *st, const SiftV6FuseCohort *c, List *quals, int *nkeys)
 	return keys;
 }
 
+/* The dimensions of a star join of an arm, read for the pass: false when they need more than one pass, join no fact row, or the arms take their rows by gates (the arm then scans alone) */
+static bool
+star_fits_pass(V6State *owner, const SiftV6FuseCohort *c)
+{
+	if (owner->star == NULL)
+		return true;
+	if (!c->same_keys)
+		return false;
+	if (sift_v6_star_open(owner->star, 0, 1) == SSO_SCAN && sift_v6_star_one_pass(owner->star))
+		return true;
+	sift_v6_star_close(owner->star);
+	return false;
+}
+
+/* An arm of the cohort whose star join cannot share the pass: it leaves the cohort and scans alone, its groups ready when its node is asked */
+static void
+run_alone(V6State *owner, EState *estate)
+{
+	sift_v6_fuse_detach(&owner->arm);
+	if (owner->gcx == NULL)
+		owner->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 groups");
+	owner->ran = true;
+	v6_scan(owner, estate->es_snapshot);
+}
+
 /* One pass for the arms of the cohort that this node leads: the groups of each are done when its node is asked */
 static void
 v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
 {
 	const SiftV6ScanSrc *src = &st->sources[0];
-	SiftV6ScanArm *arms = palloc(c->narms * sizeof(SiftV6ScanArm));
+	V6State    *alone[SIFT_V6_FUSE_MAX_ARMS];
+	SiftV6ScanArm *arms;
 	List	   *common = NIL;
-	List	   *quals = c->same_keys ? NIL : sift_v6_fuse_union_quals(c, src->index, &common);
-	int			nkeys;
-	ScanKey		keys = pass_keys(st, c, quals, &nkeys);
+	List	   *quals;
+	const int	narms = c->narms;
+	int			nkeys,
+				nalone = 0;
+	ScanKey		keys;
 
+	for (int i = 0; i < narms; i++)
+		if (!star_fits_pass(c->arms[i]->owner, c))
+			alone[nalone++] = c->arms[i]->owner;
+	for (int i = 0; i < nalone; i++)
+		run_alone(alone[i], estate);
+	if (nalone == narms)
+		return;
+	quals = c->same_keys ? NIL : sift_v6_fuse_union_quals(c, src->index, &common);
+	keys = pass_keys(st, c, quals, &nkeys);
+	arms = palloc(c->narms * sizeof(SiftV6ScanArm));
 	for (int i = 0; i < c->narms; i++)
 	{
 		V6State    *owner = c->arms[i]->owner;
@@ -351,6 +389,7 @@ v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
 		struct SiftClause *gate;
 
 		arms[i] = arm_groups(owner, estate);
+		arms[i].star = owner->star;
 		if (!c->same_keys && sift_v6_fuse_gate(estate->es_query_cxt, c->arms[i], common, owner->spec, &pass_spec, &gate))
 		{
 			arms[i].spec = pass_spec;
@@ -359,7 +398,17 @@ v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
 	}
 	src->ops->zone->scan_arms(c, arms, src->heap, src->index, keys, nkeys, estate->es_snapshot);
 	for (int i = 0; i < c->narms; i++)
+	{
+		V6State    *owner = c->arms[i]->owner;
+
+		if (owner->star != NULL)
+		{
+			owner->star_passes = sift_v6_star_passes(owner->star);
+			owner->star_shared = sift_v6_star_shared(owner->star);
+			sift_v6_star_close(owner->star);
+		}
 		sift_v6_group_finish(arms[i].group);
+	}
 }
 
 static bool
