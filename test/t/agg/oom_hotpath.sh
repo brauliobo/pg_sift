@@ -8,7 +8,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 5
+plan 6
 node_init ah 86 "autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.async_maintenance = off"
@@ -64,6 +64,9 @@ flat() {
 flat "numeric window functions" wn 4096 SiftAggV6Window "SELECT id, sum(x) OVER w, avg(x) OVER w, var_pop(x) OVER w, stddev_samp(x) OVER w FROM {T} WINDOW w AS (PARTITION BY g ORDER BY id)"
 flat "date_trunc('month', date) of an unnest over 10,000 distinct days" um 64 "Unnest: lateral" \
 	"SELECT date_trunc('month', d)::date, r.kind, sum(r.qty) FROM {T}, jsonb_to_recordset(items) r(kind text, qty int) GROUP BY 1, 2"
+UM="SELECT date_trunc('month', d)::date, r.kind, sum(r.qty) FROM um_l, jsonb_to_recordset(items) r(kind text, qty int) GROUP BY 1, 2"
+answer() { sql ah "$1" "SELECT md5(string_agg(r::text, ',' ORDER BY r::text)) FROM ($UM) r"; }
+check "date_trunc('month', date) of the unnest answers what the heap answers" test "$(answer "$(settings 64)")" == "$(answer "SET sift.enable_agg = off")"
 flat "jsonb_each_text of documents read again from the heap" ue 64 "Unnest: lateral" "SELECT e.key, sum(e.value::float8) FROM {T}, jsonb_each_text(m) e GROUP BY 1"
 flat "a hybrid OR over text and numeric columns read from the heap" ho 64 "Hybrid Direction: OR" \
 	"SELECT region, count(*), sum(amt) FROM {T} WHERE (body @@> 'common' OR tenant = 5) GROUP BY region"

@@ -205,7 +205,6 @@ CARRY_FIRST_SLOTS	slots (4096) the carry table of a window of a SiftAgg scan sta
 CMP_MAX_KW	keys (4) of a group set the compact group table of a SiftAggV6 scan takes (agg/group/compact.c): a set with more uses the normal group table; the rows are the same
 CMP_MAX_WORDS	words (8) of a slot of the compact group table of a SiftAggV6 scan, for the key, the count, the sums and the group id (agg/group/cmp.h, v6_group_compact.c): a set that needs more uses the normal group table; the rows are the same
 MONTH_MAX_DAYS	the days added to the first day of a month to land in the next one, whatever its length (31, the longest month), to bound the span of the month of a timestamp (agg/tseries_fast.c): a calendar fact
-MONTH_SLOTS	slots of the memo of the month of each distinct date in an unnest group (agg/v6_unnest_run.c): a date that finds all of them taken has its month worked out by date_trunc again; the rows are the same
 OUT_SLOTS	size of the arrays of output vectors of an unnest group scan (agg/v6_unnest_run.c): the sum of the columns the pull reads, the element columns and the derived expressions, each bounded on its own
 RG_FIRST_SLOTS	partitions (1024) a regrouped window of a SiftAgg scan starts with (agg/win/par.c): the table doubles up to the room work_mem leaves, at most RG_MAX_GROUPS
 SEMI_ENTRIES	key sets (16) of the small tables a ranked scan tests an INCLUDE column against that a backend keeps for the next statement (bm25/semi_cache.c): past it the least recently used set is dropped and read again; the rows are the same

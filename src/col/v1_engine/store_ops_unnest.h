@@ -40,7 +40,7 @@
 StaticAssertDecl(SIFT_V1_MAX_ELEM_COLS == SIFT_V6_XELEM_COLS, "the element columns of a source are those of the unnest");
 
 #define OUT_SLOTS	(SIFT_V6_MAX_COLS + SIFT_V6_XELEM_COLS + SIFT_V6_MAX_DERIVE + 1 + SIFT_V6_XTESTS)
-#define MONTH_SLOTS	4096
+#define MONTH_BITS	12
 
 typedef struct UnCol
 {
@@ -48,7 +48,7 @@ typedef struct UnCol
 	Oid			typid;
 	int			scale;
 	SiftV6Class cls;
-	bool		month;			/* the month of the date, which PostgreSQL finds through timestamptz and the zone of the session: each distinct date is asked of it once */
+	bool		month;			/* the month of the date, which PostgreSQL finds through timestamptz and the zone of the session: a date is asked of it once while it holds its slot */
 } UnCol;
 
 /* an arithmetic of the statement (SVD_ARITH): the vector of the pairs each of its columns is, and whether the column is a float8 */
@@ -130,6 +130,7 @@ typedef struct UnRun
 	uint64	   *mvalid[SIFT_V6_MAX_COLS];
 	int32	   *month_key;
 	int32	   *month_val;
+	Datum		month_unit;
 	uint32	   *pidx;
 	uint32	   *eidx;
 	MemoryContext bcx;			/* the array of the row being taken apart */
