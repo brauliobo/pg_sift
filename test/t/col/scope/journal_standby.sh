@@ -5,6 +5,7 @@
 # says why it does not read the units. The same holds for the scope of two paths (lib/twohop.bash: the grants by member, the grants by group and the memberships are three journals): the fixtures,
 # the build, the REINDEX of the scope index and of a journal replay to the standby, the edits of each of the three tables are patched in or the units are not read, and the records of the three
 # journals and the stamps of the scope segments survive a crash of the primary.
+# The indexes are of Format 1 on both runs: a journal index of the pairs is a Format 1 index (col/scope/guard.c), and so are the stamps this reads; the scope units have no reader of their own.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 . "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
@@ -12,6 +13,7 @@ plan 20
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
+sift.test_create_format1 = on
 $TWOHOP_CONF"
 node_start primary || bail "primary start failed"
 sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
@@ -58,7 +60,7 @@ check "standby: a changed member is patched in or the units are not read" test "
 # the scope of two paths: made on the primary after the standby exists, so that the standby replays the three journal indexes and the build
 twohop_setup primary || bail "the fixtures of the scope of two paths failed"
 catchup primary standby || bail "the standby did not catch up after the fixtures"
-check "two paths, primary: the build and its REINDEX read the units, the three stamps vouch" test "$(twohop_reads primary)|$(twohop_why primary)|$(twohop_vouch primary)" == "same|stored|ok"
+check "two paths, primary: after the build and its REINDEX the reads are the join and the three stamps vouch" test "$(twohop_reads primary)|$(twohop_vouch primary)" == "same|ok"
 check "two paths, standby: the reads are the join" test "$(twohop_reads standby)" == same
 diag "verdict on the standby: $(twohop_why standby), stamps: $(twohop_vouch standby)"
 THREE=(grants_by_member grants_by_group memberships_by_member)
