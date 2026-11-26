@@ -1,20 +1,14 @@
 -- The relation of pairs of a scope may hold a pair in several rows (a multiset: the application keeps one row for each source of the pair, not one for each pair), declared with a btree on (dim_a_id, tenant_id) that
 -- is not unique: a pair exists while at least one visible row, satisfying the predicate of the btree, holds it. The journal names every dim_a_id one of whose rows was inserted or ended, a list that holds those whose
--- distinct pairs changed, so a duplicate that is inserted or deleted costs a patch and never a wrong answer; every place that lists the pairs lists them once. Table-driven: each state of the pairs (the states
--- accumulate) by each read shape; every cell is md5 equal to the plain statement with sift.enable_agg off, reads the scope units where a top-N does not forbid it, and reads no more rows than the changed dim_a_id
--- have and the buffers hold. The statements an application writes are planned: a semi join (IN, EXISTS) is the scope read, a join and a read grouped by the key count a fact once for each row and keep the join,
--- with their reason. Counts only, no timings.
+-- distinct pairs changed, so a duplicate that is inserted or deleted is a change since the scope summary and never a wrong answer. Table-driven: each state of the pairs (the states accumulate) by each read
+-- shape; every cell is md5 equal through the scope node, through sift with sift.agg_scope off and through the normal plan, and says how the node read it. A semi join (IN, EXISTS) counts a fact once, a join
+-- and a read grouped by the key a fact for each row of its pairs. Counts only, no timings.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
--- the narrowed read is taken whatever it costs: the price is the subject of col_scope_patch_price
-SET sift.test_scope_patch = on;
--- page costs that keep a SiftAgg plan the cheaper one whenever it is generated: the plan then depends on the shape of the statement
-SET seq_page_cost = 1000;
-SET random_page_cost = 1000;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 -- 10 keys; dim_a_id d is in the key 1 + d % 10 and, when d % 7 = 0, in a second one; one pair in seven of the dim_a_id with d % 7 = 3 is a second row (row_src 2): 1.13 rows for a pair.
 -- 301..320 have events and no pair, 20 events in 100 have none
@@ -35,7 +29,7 @@ VACUUM (ANALYZE) tenant_pairs;
 
 \ir test/common/sql/col/scope/multiset.sql
 
--- each state: the statements that make it (they accumulate), and then the reads; a pair that changed is a changed pair of the next reads until the index is rebuilt
+-- each state: the statements that make it (they accumulate), and then the reads; a pair that changed is a change since the summary until the index is rebuilt
 CREATE TABLE states (n int, label text, stmt text);
 INSERT INTO states VALUES
 	(1, 'built', 'SELECT 1'),
@@ -50,22 +44,21 @@ INSERT INTO states VALUES
 	(7, 'a column that no btree holds updated on a duplicate row: nothing changes', 'UPDATE tenant_pairs SET row_src = 9 WHERE dim_a_id IN (38, 45)'),
 	(8, 'buffered events of dim_a_id with duplicate rows, of ones whose pairs changed and of ones that did not',
 		'INSERT INTO events SELECT 6000 + i, CASE i % 4 WHEN 0 THEN 3 WHEN 1 THEN 17 WHEN 2 THEN 30 ELSE 100 + i % 50 END, timestamptz ''2026-02-05'', 4, ''u'' FROM generate_series(1, 120) i'),
-	(9, 'promoted (the buffers are in the segments; the changed pairs still leave their dim_a_id out of the units)', 'SELECT sift.col_promote(''events_col'')'),
+	(9, 'promoted (the buffers are in the parts; the changed pairs are still changes since the summary)', 'SELECT sift.col_promote(''events_col'')'),
 	(10, 'merged', 'SELECT sift.col_merge(''events_col'', true)'),
 	(11, 'the btree of the pairs rebuilt (the index keeps the one it recorded)', 'REINDEX INDEX tenant_pairs_pair'),
-	(12, 'rebuilt (nothing changed since the stamp)', 'REINDEX INDEX events_col'),
+	(12, 'rebuilt (nothing changed since the summary)', 'REINDEX INDEX events_col'),
 	(13, 'a duplicate after the rebuild, and a buffered event of it', 'INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) VALUES (5, 5, 6), (5, 5, 6), (5, 301, 6); INSERT INTO events VALUES (7000, 5, timestamptz ''2026-02-06'', 1, ''v''), (7001, 301, timestamptz ''2026-02-06'', 1, ''v'')');
-SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM probe(''events'', ''events_col'', ''tenant_pairs'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
+SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM probe(''events'', ''tenant_pairs'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
 SELECT sift.col_verify('events_col', true);
 
--- the reads of the last state again with the reader listing the pairs of the changed dim_a_id from the relation (1) and by probing the btree (2), then the index rebuilt with the fill reading the relation
--- once (1) and probing the btree (2): the same rows, the units, and the entries of the verifier
-SELECT c FROM generate_series(1, 2) m, LATERAL unnest(ARRAY[format('SET sift.test_conn_fill = %s', m), 'SELECT * FROM probe(''events'', ''events_col'', ''tenant_pairs'')', 'REINDEX INDEX events_col',
-	'SELECT * FROM probe(''events'', ''events_col'', ''tenant_pairs'')', 'SELECT sift.col_verify(''events_col'', true)']) WITH ORDINALITY u(c, o) ORDER BY m, o \gexec
-RESET sift.test_conn_fill;
+-- the index rebuilt over the last state: the same rows
+REINDEX INDEX events_col;
+SELECT * FROM probe('events', 'tenant_pairs');
+SELECT sift.col_verify('events_col', true);
 
--- the statements an application writes. A semi join counts a fact once whatever the rows of the pair: the scope read takes it or the price keeps the join, the rows are the join's. A join counts a fact once
--- for each row, and a read grouped by the key a row for each: the scope read counts a pair once, so they keep the join and say why (sift.explain_why, arm scope)
+-- the statements an application writes. A semi join counts a fact once whatever the rows of the pair, a join a fact for each row and a read grouped by the key a row for each: every plan gives the rows
+-- of the normal plan
 CREATE TABLE forms (n int, label text, q text);
 INSERT INTO forms VALUES
 	(1, 'IN', 'SELECT sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_pairs WHERE tenant_id = 3)'),
@@ -78,16 +71,12 @@ INSERT INTO forms VALUES
 	(8, 'join grouped by a column of the facts', 'SELECT amount, count(*) AS n FROM events e JOIN tenant_pairs s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY amount');
 
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text; plan text := '';
+DECLARE l text; plan text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
-	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read';
-	END IF;
-	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
-	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r ELSE 'join' END;
+	RETURN CASE WHEN plan ~ 'SiftAggV6Scope' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
 END $$;
 CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -112,12 +101,7 @@ SELECT (SELECT count(*) FROM events e JOIN tenant_pairs s ON s.dim_a_id = e.dim_
 	(SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_pairs WHERE tenant_id = 3)) AS join_counts_more_than_in;
 SELECT n, label, plan_of(q) AS plan, same_rows(q) AS same_rows FROM forms ORDER BY n;
 
--- the testing markers by the same rule: a read for each pair is the join's meaning and is refused for the pairs of a multiset, a semi join is read
-EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope_pairs('events_col'::regclass, 'tenant_id', f.dim_a_id, 3);
-EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope_pairs('events_col'::regclass, 'tenant_id', f.dim_a_id, '{3,5}'::int8[]);
-EXPLAIN (COSTS OFF) SELECT count(*) FROM events f WHERE sift.in_scope('events_col'::regclass, 'tenant_id', f.dim_a_id, 3);
-
--- the same planned statements after the pairs changed again and a rebuild: IN is the scope read and the join is the join
+-- the same planned statements after the pairs changed again, and after a rebuild
 INSERT INTO tenant_pairs (row_src, dim_a_id, tenant_id) SELECT 6, dim_a_id, tenant_id FROM tenant_pairs WHERE tenant_id = 3 AND row_src = 1;
 SELECT n, label, plan_of(q) AS plan, same_rows(q) AS same_rows FROM forms ORDER BY n;
 REINDEX INDEX events_col;
@@ -164,11 +148,10 @@ CREATE INDEX decl_bad_include ON decl_bad (dim_a_id, tenant_id) INCLUDE (other);
 CREATE INDEX decl_bad_journal ON decl_bad USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX decl_bad_facts ON decl_facts USING sift_col (id, dim_a_id, created_at) WITH (scope = 'tenant_id: dim_a_id -> decl_bad(dim_a_id, tenant_id)');
 
-DROP FUNCTION probe(text, text, text);
+DROP FUNCTION probe(text, text);
 DROP TABLE shapes, states, forms;
-DROP FUNCTION plan_of(text), rows_md5(text), same_rows(text), ms_run(text, text, text, text), changed_rows(text, text);
+DROP FUNCTION plan_of(text), rows_md5(text), same_rows(text), ms_run(text);
 DROP TABLE decl_facts, decl_pairs, decl_unique, decl_soft, decl_bad CASCADE;
 DROP TABLE events;
 DROP TABLE tenant_pairs;
-DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

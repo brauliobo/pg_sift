@@ -126,6 +126,19 @@ bool		sift_test_quiet_build_notice;
 #define TOOK_LONG(us)	((us) >= SIFT_UX_QUICK_US)
 #endif
 
+/* " in <how long it took>" after a summary; nothing when the summaries ignore how long an operation took (sift.test_quiet_build_notice) */
+static void
+put_took(Out *o, int64_t elapsed_us)
+{
+	char		t[SIFT_UX_QUANTITY];
+
+#ifdef SIFT_TESTING
+	if (sift_test_quiet_build_notice)
+		return;
+#endif
+	put(o, " in %s", sift_fmt_duration(t, sizeof(t), elapsed_us));
+}
+
 bool
 sift_ux_should_emit_build(int64_t elapsed_us, uint64_t rows, bool chose_by_itself, bool changed_format)
 {
@@ -148,15 +161,19 @@ const char *
 sift_ux_build_line(char *buf, size_t len, const SiftUxOp *op)
 {
 	Out			o = start(buf, len);
-	char		n[SIFT_UX_QUANTITY], t[SIFT_UX_QUANTITY], s[SIFT_UX_QUANTITY], z[SIFT_UX_QUANTITY];
+	char		n[SIFT_UX_QUANTITY], s[SIFT_UX_QUANTITY], z[SIFT_UX_QUANTITY];
 
 	put(&o, "%s \"%s\": ", op->am, op->name);
 	if (op->format_before)
-		put(&o, "upgraded Format %s -> %s (%s %s, %s -> %s) in %s", op->format_before, op->format_after, count(op->rows, n), noun_of(op),
-			sift_fmt_bytes(s, sizeof(s), op->bytes_before), sift_fmt_bytes(z, sizeof(z), op->bytes), sift_fmt_duration(t, sizeof(t), op->elapsed_us));
-	else
-		put(&o, "built %s %s in %s (%s%s%s)", count(op->rows, n), noun_of(op), sift_fmt_duration(t, sizeof(t), op->elapsed_us),
-			sift_fmt_size_summary(s, sizeof(s), op->bytes, op->rows, op->heap_bytes), op->extra ? ", " : "", op->extra ? op->extra : "");
+	{
+		put(&o, "upgraded Format %s -> %s (%s %s, %s -> %s)", op->format_before, op->format_after, count(op->rows, n), noun_of(op),
+			sift_fmt_bytes(s, sizeof(s), op->bytes_before), sift_fmt_bytes(z, sizeof(z), op->bytes));
+		put_took(&o, op->elapsed_us);
+		return buf;
+	}
+	put(&o, "built %s %s", count(op->rows, n), noun_of(op));
+	put_took(&o, op->elapsed_us);
+	put(&o, " (%s%s%s)", sift_fmt_size_summary(s, sizeof(s), op->bytes, op->rows, op->heap_bytes), op->extra ? ", " : "", op->extra ? op->extra : "");
 	return buf;
 }
 
@@ -175,7 +192,7 @@ const char *
 sift_ux_vacuum_line(char *buf, size_t len, const SiftUxOp *op)
 {
 	Out			o = start(buf, len);
-	char		n[SIFT_UX_QUANTITY], s[SIFT_UX_QUANTITY], t[SIFT_UX_QUANTITY];
+	char		n[SIFT_UX_QUANTITY], s[SIFT_UX_QUANTITY];
 
 	put(&o, "%s \"%s\": removed %s dead %s", op->am, op->name, count(op->dead_rows, n), noun_of(op));
 	put_parts(&o, op, ", ");
@@ -185,7 +202,7 @@ sift_ux_vacuum_line(char *buf, size_t len, const SiftUxOp *op)
 	else if (op->bytes_before > op->bytes)
 		put(&o, " (reclaimed %s, %llu->%llu pages)", sift_fmt_bytes(s, sizeof(s), op->bytes_before - op->bytes),
 			(unsigned long long) op->pages_before, (unsigned long long) op->pages_after);
-	put(&o, " in %s", sift_fmt_duration(t, sizeof(t), op->elapsed_us));
+	put_took(&o, op->elapsed_us);
 	return buf;
 }
 
@@ -193,7 +210,7 @@ const char *
 sift_ux_maintain_line(char *buf, size_t len, const SiftUxOp *op)
 {
 	Out			o = start(buf, len);
-	char		a[SIFT_UX_QUANTITY], b[SIFT_UX_QUANTITY], c[SIFT_UX_QUANTITY], t[SIFT_UX_QUANTITY];
+	char		a[SIFT_UX_QUANTITY], b[SIFT_UX_QUANTITY], c[SIFT_UX_QUANTITY];
 
 	put(&o, "sift.maintain(\"%s\"): ", op->name);
 	if (op->parts_before == op->parts_after && op->bytes_before <= op->bytes)
@@ -201,8 +218,9 @@ sift_ux_maintain_line(char *buf, size_t len, const SiftUxOp *op)
 	else
 	{
 		put_parts(&o, op, "");
-		put(&o, ", reclaimed %s (%s -> %s) in %s", sift_fmt_bytes(a, sizeof(a), op->bytes_before > op->bytes ? op->bytes_before - op->bytes : 0),
-			sift_fmt_bytes(b, sizeof(b), op->bytes_before), sift_fmt_bytes(c, sizeof(c), op->bytes), sift_fmt_duration(t, sizeof(t), op->elapsed_us));
+		put(&o, ", reclaimed %s (%s -> %s)", sift_fmt_bytes(a, sizeof(a), op->bytes_before > op->bytes ? op->bytes_before - op->bytes : 0),
+			sift_fmt_bytes(b, sizeof(b), op->bytes_before), sift_fmt_bytes(c, sizeof(c), op->bytes));
+		put_took(&o, op->elapsed_us);
 	}
 	return buf;
 }
@@ -211,7 +229,7 @@ const char *
 sift_ux_upgrade_line(char *buf, size_t len, const SiftUxOp *op)
 {
 	Out			o = start(buf, len);
-	char		n[SIFT_UX_QUANTITY], a[SIFT_UX_QUANTITY], b[SIFT_UX_QUANTITY], t[SIFT_UX_QUANTITY];
+	char		n[SIFT_UX_QUANTITY], a[SIFT_UX_QUANTITY], b[SIFT_UX_QUANTITY];
 
 	put(&o, "%s \"%s\": upgraded Format %s -> %s (%s %s", op->am, op->name, op->format_before, op->format_after, count(op->rows, n), noun_of(op));
 	if (op->parts_after > 0)
@@ -219,7 +237,8 @@ sift_ux_upgrade_line(char *buf, size_t len, const SiftUxOp *op)
 	put(&o, ", %s -> %s", sift_fmt_bytes(a, sizeof(a), op->bytes_before), sift_fmt_bytes(b, sizeof(b), op->bytes));
 	if (op->bytes > 0 && op->bytes_before > op->bytes)
 		put(&o, ", %.1fx smaller", (double) op->bytes_before / (double) op->bytes);
-	put(&o, ") in %s", sift_fmt_duration(t, sizeof(t), op->elapsed_us));
+	put(&o, ")");
+	put_took(&o, op->elapsed_us);
 	return buf;
 }
 
@@ -227,13 +246,15 @@ const char *
 sift_ux_check_line(char *buf, size_t len, const SiftUxOp *op)
 {
 	Out			o = start(buf, len);
-	char		n[SIFT_UX_QUANTITY], t[SIFT_UX_QUANTITY];
+	char		n[SIFT_UX_QUANTITY];
 
 	put(&o, "sift.check(\"%s\"): ok (Format %s", op->name, op->format_after);
 	if (op->parts_after > 0)
 		put(&o, ", %llu parts", (unsigned long long) op->parts_after);
 	if (op->granules > 0)
 		put(&o, ", %s granules", count(op->granules, n));
-	put(&o, ", %s %s verified in %s)", count(op->rows, n), noun_of(op), sift_fmt_duration(t, sizeof(t), op->elapsed_us));
+	put(&o, ", %s %s verified", count(op->rows, n), noun_of(op));
+	put_took(&o, op->elapsed_us);
+	put(&o, ")");
 	return buf;
 }

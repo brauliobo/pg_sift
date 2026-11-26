@@ -1,13 +1,13 @@
 -- The pairs of a scope are the rows of a PARTIAL btree that is not unique: a bridge table that soft deletes keeps a row for each source of a pair, and a pair exists while at least one row that is not
 -- soft deleted holds it. Soft deleting one of two rows keeps the pair, soft deleting both ends it, restoring one brings it back; the journal index is plain and lists the soft deleted rows too, so the
--- pairs of a changed dim_a_id are those of the btree. Table-driven: each state by each read shape, every cell md5 equal to the plain statement over the active rows, the units read, the rows read bounded.
+-- pairs of a changed dim_a_id are those of the btree. Table-driven: each state by each read shape, every cell md5 equal through the scope node, sift with sift.agg_scope off and the normal plan
+-- over the active rows.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 -- dim_a_id d is in the key 1 + d % 10; every fifth has a second row (row_src 2) of the pair, every eleventh has its first row soft deleted, every thirteenth both
 CREATE TABLE soft_pairs (id serial PRIMARY KEY, row_src int NOT NULL, dim_a_id int NOT NULL, tenant_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
@@ -44,13 +44,12 @@ INSERT INTO states VALUES
 	(10, 'promoted', 'SELECT sift.col_promote(''events_col'')'),
 	(11, 'merged', 'SELECT sift.col_merge(''events_col'', true)'),
 	(12, 'rebuilt', 'REINDEX INDEX events_col');
-SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM probe(''events'', ''events_col'', ''(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
+SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM probe(''events'', ''(SELECT * FROM soft_pairs WHERE deleted_at IS NULL)'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
 SELECT sift.col_verify('events_col', true);
 
-DROP FUNCTION probe(text, text, text);
+DROP FUNCTION probe(text, text);
 DROP TABLE shapes, states;
-DROP FUNCTION ms_run(text, text, text, text), changed_rows(text, text);
+DROP FUNCTION ms_run(text);
 DROP TABLE events;
 DROP TABLE soft_pairs;
-DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

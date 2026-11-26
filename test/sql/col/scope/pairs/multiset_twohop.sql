@@ -1,14 +1,13 @@
 -- A scope of two paths (the grants a tenant has on a dim_a_id, and on the groups of the dim_a_id) whose three relations hold their pairs in several rows: a grant for each source of it, a row of
 -- the group for each source. The pairs are the DISTINCT union of the direct pairs and of the joined ones, whatever the btrees hold twice: a pair reached by both paths and by several rows of
--- each is one pair, in the units and in every read. Table-driven: each state of the three relations (they accumulate) by each read shape; every cell md5 equal to the oracle (the UNION),
--- the units read, a read for each pair of one key counts a fact once for each distinct pair.
+-- each is one pair in every read. Table-driven: each state of the three relations (they accumulate) by each read shape; every cell md5 equal to the oracle (the UNION) through the scope
+-- node, sift with sift.agg_scope off and the normal plan, a read for each pair of one key counting a fact once for each distinct pair.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
 CREATE INDEX grants_direct ON grants (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
@@ -57,42 +56,35 @@ REINDEX INDEX facts_col;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (ANALYZE) grants, memberships;
 
-CREATE TABLE shapes (n int, label text, q text, plain text);
+CREATE TABLE shapes (n int, label text, q text);
 INSERT INTO shapes VALUES
-	(1, 'IN, tenant 1', 'SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, 1)',
-		'SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pair_oracle WHERE tenant_id = 1)'),
-	(2, 'IN, tenants 2 and 5', 'SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[2, 5]::int8[])',
-		'SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pair_oracle WHERE tenant_id IN (2, 5))'),
-	(3, 'a row for each pair, tenant 1', 'SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope_pairs(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, 1)',
-		'SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.dim_a_id = f.dim_a_id WHERE o.tenant_id = 1'),
-	(4, 'a row for each pair, tenant 3', 'SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope_pairs(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, 3)',
-		'SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.dim_a_id = f.dim_a_id WHERE o.tenant_id = 3'),
-	(5, 'a row for each pair, tenant 5', 'SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope_pairs(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, 5)',
-		'SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.dim_a_id = f.dim_a_id WHERE o.tenant_id = 5'),
-	(6, 'top 5, tenant 5', 'SELECT id FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, 5) ORDER BY created_at DESC, id DESC LIMIT 5',
-		'SELECT id FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pair_oracle WHERE tenant_id = 5) ORDER BY created_at DESC, id DESC LIMIT 5');
-CREATE FUNCTION tp_run(qq text, plain text, OUT same boolean, OUT route text) LANGUAGE plpgsql AS $$
+	(1, 'IN, tenant 1', 'SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pair_oracle WHERE tenant_id = 1)'),
+	(2, 'IN, tenants 2 and 5', 'SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pair_oracle WHERE tenant_id IN (2, 5))'),
+	(3, 'a row for each pair, tenant 1', 'SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.dim_a_id = f.dim_a_id WHERE o.tenant_id = 1'),
+	(4, 'a row for each pair, tenant 3', 'SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.dim_a_id = f.dim_a_id WHERE o.tenant_id = 3'),
+	(5, 'a row for each pair, tenant 5', 'SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.dim_a_id = f.dim_a_id WHERE o.tenant_id = 5'),
+	(6, 'top 5, tenant 5', 'SELECT id FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM pair_oracle WHERE tenant_id = 5) ORDER BY created_at DESC, id DESC LIMIT 5');
+CREATE FUNCTION tp_run(q text, OUT same boolean, OUT route text) LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 	a text;
 	b text;
+	c text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	BEGIN
-		EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || qq INTO p;
-		EXECUTE 'SELECT md5(coalesce(json_agg(t)::text, '''')) FROM (' || qq || ') t' INTO a;
-	EXCEPTION WHEN feature_not_supported THEN
-		route := 'error: ' || substring(SQLERRM FROM '"(.*)"');
-		RETURN;
-	END;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE 'SELECT md5(coalesce(json_agg(t)::text, '''')) FROM (' || plain || ') t' INTO b;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO c;
 	SET LOCAL sift.enable_agg = on;
-	same := a = b;
-	route := coalesce(jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}', CASE WHEN jsonb_path_exists(p, '$.**."Scope Units Read"') THEN 'units' ELSE 'no scope read' END);
+	SET LOCAL sift.agg_scope = on;
+	same := a = b AND b = c;
+	route := coalesce(jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}', 'none');
 END $$;
 CREATE FUNCTION probe() RETURNS TABLE (n int, label text, verdict text, route text) LANGUAGE sql AS $$
-	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, r.route FROM shapes s, LATERAL tp_run(s.q, s.plain) r ORDER BY s.n
+	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, r.route FROM shapes s, LATERAL tp_run(s.q) r ORDER BY s.n
 $$;
 
 CREATE TABLE states (n int, label text, stmt text);
@@ -114,15 +106,14 @@ INSERT INTO states VALUES
 SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM probe()']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
 SELECT sift.col_verify('facts_col', true);
 
--- the pairs known by reading the three relations once (1) and by probing their btrees (2), when the index is built and when a changed dim_a_id is read
-SELECT c FROM generate_series(1, 2) m, LATERAL unnest(ARRAY[format('SET sift.test_conn_fill = %s', m), 'SELECT * FROM probe()', 'REINDEX INDEX facts_col', 'SELECT * FROM probe()',
-	'SELECT sift.col_verify(''facts_col'', true)']) WITH ORDINALITY u(c, o) ORDER BY m, o \gexec
-RESET sift.test_conn_fill;
+-- the index rebuilt over the last state: the same rows
+REINDEX INDEX facts_col;
+SELECT * FROM probe();
+SELECT sift.col_verify('facts_col', true);
 
-DROP FUNCTION probe(), tp_run(text, text);
+DROP FUNCTION probe(), tp_run(text);
 DROP TABLE shapes, states;
 DROP VIEW pair_oracle;
 DROP TABLE facts;
 DROP TABLE grants, memberships;
-DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

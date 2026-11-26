@@ -1,14 +1,14 @@
 -- The one place that turns the rows of a relation of pairs into pairs (sift_scope_pairs_distinct) under every way the pairs are known: the fill of the scope units reads the relation once or probes its btree
 -- for the dim_a_id of each batch, the reader lists the pairs of the keys by probing the btree by key, from the leaves of the journal index, or from the relation. A pair that is thousands of rows (runs
 -- of one value that span many leaf pages of the btree, with deduplication off so that each row is an entry), a btree in either order, a partial one: the entries are the join over the DISTINCT pairs,
--- each pair once. sift.test_conn_fill picks the way the fill and the reader know the pairs: 1 the relation read once, 2 the btree probed.
+-- each pair once, and every read is md5 equal through sift and through the normal plan. sift.test_conn_fill picks the way the fill knows the pairs: 1 the relation read once, 2 the btree probed.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the fill of the scope units (col/v1/scope/fill.c) is this format's
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
 
 -- dim_a_id d (1..2000) is in the key 1 + d % 40, in a second row when d % 3 = 0 and in three when d % 9 = 0; 7 has runs of 12,000 rows of two pairs, 8 one of 9,000 rows
 CREATE TABLE pairs_ab (id serial PRIMARY KEY, dim_a_id int NOT NULL, tenant_id int NOT NULL, deleted_at timestamptz) WITH (autovacuum_enabled = false);
@@ -75,9 +75,8 @@ SELECT expand_md5('pairs_ab', 'pairs_ab_pair', 'dim_a_id', 'tenant_id', 0) = joi
 RESET maintenance_work_mem;
 SET sift.test_conn_fill = 0;
 
--- the reader over the same relations: the scope units of dim_a_id of 1..2200 and the changed pairs, for the relation read by key (btree on (tenant_id, dim_a_id): probed by key), from the leaves of
--- its journal index, and from the relation (a partial btree: the plain journal lists the soft deleted rows too)
--- one table of events for each relation, each with the index that declares its scope: the marker names the scanned index
+-- the reads over the same relations: the dim_a_id of 1..2200 and the changed pairs, for a btree on (dim_a_id, tenant_id), one on (tenant_id, dim_a_id) and a partial one (the plain journal lists
+-- the soft deleted rows too); one table of events for each relation, each with the index that declares its scope
 CREATE TABLE events_ab (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, amount int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO events_ab SELECT i, CASE WHEN i % 100 < 15 THEN NULL ELSE 1 + (i * 7919) % 2200 END, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 100) FROM generate_series(1, 8000) i;
 INSERT INTO events_ab SELECT 8000 + i, 7 + i % 2, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, 'p' FROM generate_series(1, 300) i;
@@ -94,10 +93,10 @@ REINDEX INDEX events_soft_col;
 VACUUM (FREEZE, ANALYZE) events_ab, events_ba, events_soft;
 \ir test/common/sql/col/scope/multiset.sql
 
-CREATE FUNCTION probes() RETURNS TABLE (btree text, n int, label text, verdict text, route text, delta text, bounded boolean) LANGUAGE sql AS $$
-	SELECT 'ab', p.* FROM probe('events_ab', 'events_ab_col', 'pairs_ab') p
-	UNION ALL SELECT 'ba', p.* FROM probe('events_ba', 'events_ba_col', 'pairs_ba') p
-	UNION ALL SELECT 'soft', p.* FROM probe('events_soft', 'events_soft_col', '(SELECT * FROM pairs_soft WHERE deleted_at IS NULL)') p
+CREATE FUNCTION probes() RETURNS TABLE (btree text, n int, label text, verdict text, route text) LANGUAGE sql AS $$
+	SELECT 'ab', p.* FROM probe('events_ab', 'pairs_ab') p
+	UNION ALL SELECT 'ba', p.* FROM probe('events_ba', 'pairs_ba') p
+	UNION ALL SELECT 'soft', p.* FROM probe('events_soft', '(SELECT * FROM pairs_soft WHERE deleted_at IS NULL)') p
 	ORDER BY 1, 2
 $$;
 -- the statement of a state is run on the three relations (PAIRS stands for each)
@@ -109,7 +108,7 @@ BEGIN
 		EXECUTE replace(stmt, 'PAIRS', t);
 	END LOOP;
 END $$;
--- each state (they accumulate) by each read shape on each relation: the cells, how many are md5 equal to the plain statement, read the units (a top-N of a changed pair does not) and are bounded
+-- each state (they accumulate) by each read shape on each relation: the cells, and how many are md5 equal through every plan
 CREATE TABLE states (n int, label text, stmt text);
 INSERT INTO states VALUES
 	(1, 'built', 'SELECT 1'),
@@ -118,18 +117,18 @@ INSERT INTO states VALUES
 	(4, 'the last 9,000 rows of a pair deleted: the pair is gone', 'DELETE FROM PAIRS WHERE dim_a_id = 8'),
 	(5, 'a run of 12,000 rows moved to another key, one row of it left', 'UPDATE PAIRS SET tenant_id = 5 WHERE dim_a_id = 7 AND tenant_id = 4 AND id <> (SELECT min(id) FROM PAIRS WHERE dim_a_id = 7 AND tenant_id = 4)');
 SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), format('SELECT edit_all(%L)', stmt),
-	'SELECT btree, count(*) AS cells, count(*) FILTER (WHERE verdict = ''same'') AS same, count(*) FILTER (WHERE route = ''units'') AS units, count(*) FILTER (WHERE bounded) AS bounded FROM probes() GROUP BY btree ORDER BY btree'])
+	'SELECT btree, count(*) AS cells, count(*) FILTER (WHERE verdict = ''same'') AS same FROM probes() GROUP BY btree ORDER BY btree'])
 	WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
--- and buffered events of the heavy dim_a_id: the delta copies each once for each distinct pair
+-- and buffered events of the heavy dim_a_id
 INSERT INTO events_ab SELECT 9000 + i, 7 + i % 3, timestamptz '2026-02-05', 4, 'b' FROM generate_series(1, 60) i;
 INSERT INTO events_ba SELECT * FROM events_ab WHERE id >= 9000;
 INSERT INTO events_soft SELECT * FROM events_ab WHERE id >= 9000;
-SELECT btree, count(*) AS cells, count(*) FILTER (WHERE verdict = 'same') AS same, count(*) FILTER (WHERE route = 'units') AS units, count(*) FILTER (WHERE bounded) AS bounded FROM probes() GROUP BY btree ORDER BY btree;
+SELECT btree, count(*) AS cells, count(*) FILTER (WHERE verdict = 'same') AS same FROM probes() GROUP BY btree ORDER BY btree;
 SELECT sift.col_verify('events_ab_col', true), sift.col_verify('events_ba_col', true), sift.col_verify('events_soft_col', true);
 
-DROP FUNCTION edit_all(text), probes(), probe(text, text, text), expand_md5(regclass, regclass, text, text, int), joined_md5(text), entries_of(regclass, regclass, int);
+DROP FUNCTION edit_all(text), probes(), probe(text, text), expand_md5(regclass, regclass, text, text, int), joined_md5(text), entries_of(regclass, regclass, int);
 DROP TABLE shapes, states, facts;
-DROP FUNCTION ms_run(text, text, text, text), changed_rows(text, text);
+DROP FUNCTION ms_run(text);
 DROP TABLE events_ab, events_ba, events_soft;
 DROP TABLE pairs_ab, pairs_ba, pairs_soft;
 DROP EXTENSION pg_sift_test;
