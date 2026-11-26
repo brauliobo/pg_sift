@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # tap: pooled
-# A REINDEX of the journal index of the pairs is another lineage: the stamps of the scope segments are of the old one, so the reads say `other lineage` (the join answers, exactly) and the
-# maintenance sees the segments as stale. No read or worker rewrites for it: the reads go on answering from the join, and the rewrite the user runs (sift.col_maintain) fills them again with
-# no REINDEX of the scope index; the answers are the join's before, during and after.
+# A REINDEX of the journal index of the pairs is another lineage: the records of the pairs changed before it were in the old one. The summary read of a Format 2.0 scope does not lose them: it
+# patches the members that changed since its stamps in from the pairs (Scope Cube: delta), so it stays the read, with the answers of the join, before and after the REINDEX, after the maintenance
+# and with pairs written later. The index is of Format 2.0 on both runs: a Format 1 index has no scope read of its own.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
-plan 8
+plan 7
 
 node_init jr 53 "autovacuum = off
 sift.async_maintenance = on
-sift.maintenance_naptime = 200"
+sift.maintenance_naptime = 200
+sift.test_create_format1 = off"
 node_start jr || bail "start failed"
 sql jr "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 	"CREATE TABLE cp (m int NOT NULL, t int NOT NULL) WITH (autovacuum_enabled = false)" "CREATE UNIQUE INDEX cp_u ON cp (m, t)" \
@@ -22,21 +23,19 @@ sql jr "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 sql jr "VACUUM (FREEZE, ANALYZE) ce, cp" >/dev/null || bail "vacuum failed"
 sql jr "CREATE INDEX ce_col ON ce USING sift_col (id, m, d, v) WITH (scope = 't: m -> cp(m, t) max_multiplicity(8)')" >/dev/null || bail "build failed"
 
-READ="SELECT count(*), sum(v) FROM ce e WHERE sift.in_scope('ce_col'::regclass, 't', e.m, 6)"
-JOIN="SELECT count(*), sum(v) FROM ce e WHERE e.m IN (SELECT m FROM cp WHERE t = 6)"
-why() { sql jr "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $READ" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p' | head -n 1; }
-same() { [[ $(sql jr "SET sift.agg_force = on" "$READ" | tail -n 1) == $(sql jr "SET sift.enable_agg = off" "$JOIN" | tail -n 1) ]]; }
+JOIN="SELECT count(*), sum(v) FROM ce e JOIN cp p ON p.m = e.m WHERE p.t = 6"
+why() { sql jr "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $JOIN" | sed -n 's/^ *Scope Read: //p' | grep . || echo "no scope read"; }
+same() { [[ $(sql jr "$JOIN" | tail -n 1) == $(sql jr "SET sift.enable_agg = off" "$JOIN" | tail -n 1) ]]; }
 
-check "the first build is filled: the read is from the scope units" test "$(why)" == stored
+check "the first build is filled: the read is from the summary ($(why))" test "$(why)" == summary
+sql jr "INSERT INTO cp SELECT m, 6 FROM generate_series(1, 60) m ON CONFLICT DO NOTHING" "DELETE FROM cp WHERE t = 6 AND m > 150" >/dev/null
 sql jr "REINDEX INDEX cp_j" >/dev/null
-check "after a REINDEX of the journal the first read says other lineage" test "$(why)" == "other lineage"
+check "after pairs changed and a REINDEX of the journal the read is still from the summary ($(why))" test "$(why)" == summary
 check "... and its answer is the join's" same
-for _ in $(seq 30); do why >/dev/null; done
-check "the reads start no rewrite: after 30 reads the first still says other lineage" test "$(why)" == "other lineage"
-sql jr "SELECT sift.col_maintain('ce_col')" >/dev/null
-check "the explicit rewrite fills the scope units again, with no REINDEX of the scope index" test "$(why)" == stored
+sql jr "VACUUM ce" "SELECT sift.maintain('ce_col')" >/dev/null
+check "after the maintenance the read is from the summary ($(why))" test "$(why)" == summary
 check "... with the same answer as the join" same
 sql jr "INSERT INTO cp SELECT 201 + i, 6 FROM generate_series(1, 5) i" >/dev/null
 check "a pair written after it is patched into the read, which is the join's" same
-check "... and no key differs from the join" test "$(sql jr "SELECT count(*) FROM sift.col_scope_verify('ce_col', 1000) WHERE problem <> 'unverified'" | tail -n 1)" == 0
+check "... and the index verifies" test -z "$(sql jr "SELECT sift.col_verify('ce_col', true)" 2>&1 | grep -v '^$')"
 finish
