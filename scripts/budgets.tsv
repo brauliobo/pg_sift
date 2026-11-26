@@ -3,6 +3,7 @@
 # name	wall_s	tmpfs_mb	what
 tap:default	1200	2000	any test/t file without its own row; the slowest measured 1-seed/-round passes are 400 s (tbl_twin_fuzz) and 900 s only under 4 parallel loops (col_auto_merge_dirty_reads: 152 s alone)
 tap:agg/viability_gate	180	600	the production viability gate: 27 cases of the four lifecycle classes at 32,768/65,536/131,072 rows in two lanes, the autovacuum_work_mem isolation, the temp_bytes of every case and 3 churns of disk amplification: 45-80 s, 300 MB of tmpfs
+tap:core/load_gate	180	300	the load and contention gate: 17 cases of six classes on one cluster; 51-54 s release (F2), 28 s F1 (the Format 2.0 cases skip), 79 s Assert-PG, about 150 s with --determinism; 115-272 MB of tmpfs measured
 tap:mem/slope	600	1800	the memory slope gate: 255 s whole (41 cases at 50,000/100,000/200,000 rows, the maintenance cases doing their work in the measured backend), 1.3 GB of tmpfs
 tap:mem/slope_exact	300	1500	the exact basis of the gate: the merge of the gate's table at its recorded exact slope, an allowance under it and under the clean ceiling, and an update that holds nothing, 30,000 rows, 40 s and 1.1 GB of tmpfs
 tap:mem/slope_order	300	1500	the gate does not depend on order: 7 cases forward, again and in reverse (four of them maintenance steps, two inserting rows first), 75 s and 1.1 GB of tmpfs (30 s of them the two merges, measured locally)

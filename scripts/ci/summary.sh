@@ -69,6 +69,9 @@ slopes=$(for id in "${J_ID[@]}"; do [[ $id == tap-shell-mem/slope* ]] && slope_l
 # the disk and WAL bytes of every row of the storage gate, passed or open: the hosted logs of each major and architecture are where a case drifts toward its ceiling
 bprs=$(for id in "${J_ID[@]}"; do [[ $id == tap-shell-core/storage_bpr* ]] && bpr_lines "$id" "$LOG/${id//\//__}.log"; done)
 [[ -z $bprs ]] || { echo "storage disk and WAL bytes per row by case (job, disk, wal, ratios, open debt):"; echo "$bprs"; }
+# the counts of every case of the load gate, passed or open: the hosted logs of each major and architecture are where a share of waits or a p99 ratio drifts toward its ceiling
+loads=$(for id in "${J_ID[@]}"; do [[ $id == tap-shell-core/load_gate* ]] && load_lines "$id" "$LOG/${id//\//__}.log"; done)
+[[ -z $loads ]] || { echo "load and contention counts by case (job, ledger, oracle, waits, ratios, open debt):"; echo "$loads"; }
 # the skips, with their reasons (the logs of the jobs that passed are gone with the scratch directory; the retained summary has them), and the jobs that outgrew their estimate
 echo "jobs by state, and the skips with their reasons:"
 summary_report "$LOG/jobs.tsv" || failed=1
