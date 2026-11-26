@@ -33,9 +33,8 @@ writer=$!
 completed() { sql bf "SELECT completed FROM sift._test_maint_stats()"; }
 busy() { [[ $(completed) -ge 3 ]]; }
 check "the worker serves the hot database" wait_for busy 30
-C0=$(completed)
-dbsql cold "$ENQ" >/dev/null
-served() { [[ $(sql bf "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift maintenance' AND datname = 'cold'") -ge 1 ]]; }
+[[ $(dbsql cold "$ENQ") == queued ]] || bail "the request of the quiet database was not queued"
+served() { [[ $(dbsql cold "SELECT count(*) FROM sift_internal.maint_queue() WHERE relation = 'w_col'::regclass") -eq 0 ]]; }
 check "the request of the quiet database gets a worker while the hot one keeps asking" wait_for served 20
 check "the hot database was still asking" kill -0 "$writer"
 touch "$D/stop"
