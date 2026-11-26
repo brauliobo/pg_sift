@@ -73,6 +73,7 @@ extern FullTransactionId sift_standby_safe_horizon(Relation index, bool urgent_f
  */
 extern void sift_f2_pace_pages(uint64 npages);
 extern void sift_f2_pace_pay(void);
+extern void sift_f2_pace_reset(void);
 #endif
 
 #endif							/* SIFT_CORE_F2_PACE_H */

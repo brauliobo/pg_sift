@@ -365,6 +365,7 @@ run_guarded(SiftMaintShmem *m, Oid db, bool *yielded)
 		EmitErrorReport();
 		FlushErrorState();
 		AbortCurrentTransaction();
+		sift_f2_pace_reset();
 		sift_maint_release_pid(m, &sift_maint_server_host, MyProcPid, true);
 	}
 	PG_END_TRY();

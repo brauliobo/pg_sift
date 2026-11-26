@@ -196,6 +196,13 @@ static uint64 charged;
 static uint32 owed;
 
 void
+sift_f2_pace_reset(void)
+{
+	charged = 0;
+	owed = 0;
+}
+
+void
 sift_f2_pace_pay(void)
 {
 	if (!sift_worker_paced())
