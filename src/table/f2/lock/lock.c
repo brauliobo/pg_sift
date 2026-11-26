@@ -170,11 +170,10 @@ oldest_needed(void)
 	return FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), GetOldestNonRemovableTransactionId(NULL));
 }
 
-/* What a request needs of the server and asks for with the stripe lock let go: the horizon of the entries that no snapshot waits for (it takes the lock of the process array), or a chunk for a full stripe (it may make a segment) */
+/* What a request needs of the server and asks for with the stripe lock let go: the horizon of the entries that no snapshot waits for (it takes the lock of the process array), or the spare chunk of the backend for a full stripe (it may make a segment) */
 typedef struct Outside
 {
 	FullTransactionId horizon;
-	dsa_pointer chunk;
 	SiftXidAsk *ask;			/* whether the holders of the entries of prepared transactions run: NULL asks nothing, and they do */
 	bool		wants_horizon;
 	bool		wants_chunk;
@@ -182,7 +181,7 @@ typedef struct Outside
 	bool		no_memory;
 } Outside;
 
-#define OUTSIDE_INIT(a) {.horizon = InvalidFullTransactionId,.chunk = InvalidDsaPointer,.ask = (a)}
+#define OUTSIDE_INIT(a) {.horizon = InvalidFullTransactionId,.ask = (a)}
 
 static bool
 needs_outside(const Outside *o)
@@ -198,10 +197,7 @@ provide(Outside *o)
 	else if (o->wants_horizon)
 		o->horizon = oldest_needed();
 	else
-	{
-		o->chunk = sift_rowlock_chunk_alloc(rows);
-		o->no_memory = o->chunk == InvalidDsaPointer;
-	}
+		o->no_memory = !sift_rowlock_spare_take(rows);
 	o->wants_horizon = o->wants_chunk = o->wants_answers = false;
 }
 
@@ -230,13 +226,6 @@ track_oldest_committed(SiftRowLockEntry *e, void *arg)
 		(*oldest == NULL || FullTransactionIdPrecedes(e->updater_fxid, (*oldest)->updater_fxid)))
 		*oldest = e;
 	return false;
-}
-
-static void
-return_chunk(Outside *o)
-{
-	if (o->chunk != InvalidDsaPointer)
-		sift_rowlock_chunk_free(o->chunk);
 }
 
 /*
@@ -270,12 +259,12 @@ slot_for_write(int si, const SiftRowLockKey *k, Outside *o)
 		sift_rowlock_reset(rows, si, oldest, k);
 		return oldest;
 	}
-	if (!sift_rowlock_has_room(rows, si) && o->chunk == InvalidDsaPointer)
+	if (!sift_rowlock_has_room(rows, si) && !sift_rowlock_has_spare())
 	{
 		o->wants_chunk = !o->no_memory;
 		return NULL;
 	}
-	return sift_rowlock_add(rows, si, k, &o->chunk);
+	return sift_rowlock_add(rows, si, k);
 }
 
 static SiftRowLockEntry *
@@ -288,23 +277,23 @@ entry_for_write(int si, const SiftRowLockKey *k, Outside *o)
 
 /* ---- what this transaction touched, to settle at its end (f2_lock_touched.c) ---- */
 
-SIFT_BACKEND_LOCAL uint64 overflowed[SIFT_ROWLOCK_PARTITIONS / 64] = {0};
-
-/* The stripes that had a chunk while the transaction gave its rows back: what no snapshot can wait on any more goes now, and the chunks it empties go with it */
+/* The stripes with chunks whose oldest committed update no snapshot can wait on any more, whichever transaction ended: what is past the horizon goes, and the chunks it empties go with it */
 static void
-reclaim_overflowed(void)
+reclaim_kept(void)
 {
 	Outside		o = OUTSIDE_INIT(NULL);
 
 	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
-		if ((overflowed[si / 64] >> (si % 64) & 1) != 0)
-		{
-			o.horizon = FullTransactionIdIsValid(o.horizon) ? o.horizon : oldest_needed();
-			sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
-			sift_rowlock_sweep(rows, si, reclaimable_keeping_lockers, &o);
-			stripe_unlock(si);
-		}
-	memset(overflowed, 0, sizeof(overflowed));
+	{
+		FullTransactionId kept = sift_rowlock_kept(rows, si);
+
+		o.horizon = FullTransactionIdIsValid(o.horizon) || !FullTransactionIdIsValid(kept) ? o.horizon : oldest_needed();
+		if (!FullTransactionIdIsValid(kept) || !FullTransactionIdPrecedes(kept, o.horizon))
+			continue;
+		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
+		sift_rowlock_sweep(rows, si, reclaimable_keeping_lockers, &o);
+		stripe_unlock(si);
+	}
 }
 
 /* The MultiXactId of the entry of the row names no running holder: it goes, and the entry with it when nothing else keeps it (the entry may have changed since the caller read the members) */
@@ -345,7 +334,6 @@ settle_locked(const SiftTouched *t, int si, bool commit, bool keep_speculative, 
 	bool		settled;
 	int			nholders;
 
-	overflowed[si / 64] |= (uint64) (rows->hdr[si].overflow != InvalidDsaPointer) << (si % 64);
 	e = sift_rowlock_find(rows, si, &t->key);
 	settled = e == NULL || !keep_speculative || (e->flags & SIFT_ROWLOCK_SPECULATIVE) == 0;
 	if (e != NULL && settled)
@@ -359,6 +347,8 @@ settle_locked(const SiftTouched *t, int si, bool commit, bool keep_speculative, 
 				i++;
 		if (updater_of(e) == t->xid)
 			resolve_updater(e, commit);
+		if ((e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && sift_rowlock_unheld(e))
+			sift_rowlock_keep(rows, si, e->updater_fxid);
 		if (idle(e) && e->nholders < nholders && in_table(si, e))
 		{
 			e->flags = SIFT_ROWLOCK_LAST_LOCKER;
@@ -532,6 +522,8 @@ sift_tbl_rowlock_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 {
 	bool		commit = event == XACT_EVENT_COMMIT || event == XACT_EVENT_PARALLEL_COMMIT;
 
+	if (event == XACT_EVENT_PRE_COMMIT && rows != NULL)
+		sift_rowlock_area_map(rows);
 	if (event == XACT_EVENT_PRE_PREPARE)
 	{
 		sift_esc_pre_prepare(sift_rowlock_release_tier1);
@@ -544,10 +536,10 @@ sift_tbl_rowlock_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	if (event != XACT_EVENT_PREPARE && !commit && event != XACT_EVENT_ABORT && event != XACT_EVENT_PARALLEL_ABORT)
 		return;
 	if (event != XACT_EVENT_PREPARE)
-	{
 		settle_all(commit);
-		reclaim_overflowed();
-	}
+	sift_rowlock_chunks_release();
+	if (rows != NULL && (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT))
+		reclaim_kept();
 	sift_touched_reset();
 	sift_esc_xact_end(event);
 }
@@ -673,7 +665,7 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 		else
 			sift_hold_do(&o, mode, &rows->grow_lock[si]);
 	}
-	return_chunk(&out);
+	sift_rowlock_chunks_release();
 	sift_hold_done(&o);
 	return r;
 }
@@ -770,7 +762,7 @@ sift_tbl_rowlock_set_staged(Relation rel, uint64 tid, uint32 token)
 			break;
 		provide(&out);
 	}
-	return_chunk(&out);
+	sift_rowlock_chunks_release();
 	return e != NULL;
 }
 

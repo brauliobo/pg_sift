@@ -13,11 +13,14 @@
 
 #include "col/dsmreg.h"
 #include "core/cachebudget.h"
+#include "core/compat.h"
 #include "table/f2/lock/esc.h"
 #include "table/f2/lock/ovf.h"
 
 SIFT_BACKEND_LOCAL dsa_area *area = NULL;
 SIFT_BACKEND_LOCAL dsa_pointer emptied = InvalidDsaPointer;	/* the chunks removes emptied under the stripe lock, linked by next */
+SIFT_BACKEND_LOCAL dsa_pointer spare = InvalidDsaPointer;	/* the chunk a request took for a full stripe before it locked it */
+SIFT_BACKEND_LOCAL SiftRowLockTable *owner = NULL;	/* the table of the area */
 
 static dsa_handle
 handle_of(SiftRowLockTable *t)
@@ -34,10 +37,12 @@ sift_rowlock_table_init(SiftRowLockTable *t, int tranche)
 		LWLockInitialize(&t->hdr[i].lock, tranche);
 		LWLockInitialize(&t->grow_lock[i], tranche);
 		pg_atomic_init_u32(&t->hdr[i].total_n, 0);
+		pg_atomic_init_u64(&t->kept[i], 0);
 		t->hdr[i].overflow = InvalidDsaPointer;
 	}
 	LWLockInitialize(&t->area_lock, tranche);
 	pg_atomic_init_u32(&t->area_handle, DSA_HANDLE_INVALID);
+	pg_atomic_init_u32(&t->chunks_out, 0);
 }
 
 /* The area made or attached, with the attempt in a resource owner of its own (the descriptor that a failed one leaves is released here); NULL where the system has no dynamic shared memory for it */
@@ -96,6 +101,7 @@ area_of(SiftRowLockTable *t, bool create)
 {
 	MemoryContext old;
 
+	owner = t;
 	if (area != NULL)
 		return area;
 	/* MEM[MEM-SHM-16]: the descriptor of the area of the row lock chunks, one for each backend that locks rows, kept until it exits */
@@ -216,18 +222,34 @@ sift_rowlock_has_room(SiftRowLockTable *t, int si)
 		(t->hdr[si].overflow != InvalidDsaPointer && chunk_at(area, t->hdr[si].overflow)->n < SIFT_ROWLOCK_CHUNK_ENTRIES);
 }
 
-dsa_pointer
-sift_rowlock_chunk_alloc(SiftRowLockTable *t)
+bool
+sift_rowlock_spare_take(SiftRowLockTable *t)
 {
-	dsa_area   *a = area_of(t, true);
+	dsa_area   *a = spare == InvalidDsaPointer ? area_of(t, true) : NULL;
 
-	return a == NULL ? InvalidDsaPointer : dsa_allocate_extended(a, sizeof(SiftRowLockChunk), DSA_ALLOC_NO_OOM);
+	if (a != NULL && (spare = dsa_allocate_extended(a, sizeof(SiftRowLockChunk), DSA_ALLOC_NO_OOM)) != InvalidDsaPointer)
+		pg_atomic_fetch_add_u32(&t->chunks_out, 1);
+	SIFT_POINT("sift-rowlock-spare-taken");
+	return spare != InvalidDsaPointer;
 }
 
-void
-sift_rowlock_chunk_free(dsa_pointer chunk)
+bool
+sift_rowlock_has_spare(void)
 {
-	dsa_free(area, chunk);
+	return spare != InvalidDsaPointer;
+}
+
+static void
+give_back(dsa_pointer p)
+{
+	dsa_free(area, p);
+	pg_atomic_fetch_sub_u32(&owner->chunks_out, 1);
+}
+
+uint32
+sift_rowlock_chunks_out(SiftRowLockTable *t)
+{
+	return pg_atomic_read_u32(&t->chunks_out);
 }
 
 static void
@@ -252,7 +274,7 @@ sift_rowlock_reset(SiftRowLockTable *t, int si, SiftRowLockEntry *e, const SiftR
 }
 
 SiftRowLockEntry *
-sift_rowlock_add(SiftRowLockTable *t, int si, const SiftRowLockKey *k, dsa_pointer *spare)
+sift_rowlock_add(SiftRowLockTable *t, int si, const SiftRowLockKey *k)
 {
 	SiftRowLockStripeHdr *h = &t->hdr[si];
 	SiftRowLockChunk *c;
@@ -264,13 +286,13 @@ sift_rowlock_add(SiftRowLockTable *t, int si, const SiftRowLockKey *k, dsa_point
 	{
 		if (!sift_rowlock_has_room(t, si))
 		{
-			Assert(*spare != InvalidDsaPointer);
-			c = chunk_at(area, *spare);
+			Assert(spare != InvalidDsaPointer);
+			c = chunk_at(area, spare);
 			Assert((uintptr_t) c % PG_CACHE_LINE_SIZE == 0);
 			c->next = h->overflow;
 			c->n = 0;
-			h->overflow = *spare;
-			*spare = InvalidDsaPointer;
+			h->overflow = spare;
+			spare = InvalidDsaPointer;
 		}
 		c = chunk_at(area, h->overflow);
 		e = &c->entries[c->n++];
@@ -285,19 +307,17 @@ sift_rowlock_remove(SiftRowLockTable *t, int si, SiftRowLockEntry *e)
 {
 	SiftRowLockStripeHdr *h = &t->hdr[si];
 	SiftRowLockStripe *s = &t->stripes[si];
-	dsa_pointer head = in_table(s, e) ? InvalidDsaPointer : h->overflow;
+	dsa_pointer head = area != NULL ? h->overflow : InvalidDsaPointer;
 	SiftRowLockChunk *c;
 	SiftRowLockEntry *last;
 
-	Assert(head == InvalidDsaPointer || area != NULL);
+	Assert(in_table(s, e) || head != InvalidDsaPointer);
 	c = head == InvalidDsaPointer ? NULL : chunk_at(area, head);
 	last = c != NULL ? &c->entries[--c->n] : &s->entries[--h->table_n];
 	if (e != last)
-	{
 		*e = *last;
-		if (c == NULL)
-			h->tags[e - s->entries] = h->tags[last - s->entries];
-	}
+	if (e != last && in_table(s, e))
+		h->tags[e - s->entries] = sift_rowlock_tag(&e->key);
 	count_entry(t, si, -1);
 	if (c != NULL && c->n == 0)
 	{
@@ -315,20 +335,54 @@ sift_rowlock_free_emptied(void)
 		dsa_pointer p = emptied;
 
 		emptied = chunk_at(area, p)->next;
-		dsa_free(area, p);
+		give_back(p);
 	}
+}
+
+void
+sift_rowlock_chunks_release(void)
+{
+	sift_rowlock_free_emptied();
+	if (spare != InvalidDsaPointer)
+		give_back(spare);
+	spare = InvalidDsaPointer;
+}
+
+void
+sift_rowlock_keep(SiftRowLockTable *t, int si, FullTransactionId updater)
+{
+	FullTransactionId kept = sift_rowlock_kept(t, si);
+
+	if (t->hdr[si].overflow != InvalidDsaPointer && (!FullTransactionIdIsValid(kept) || FullTransactionIdPrecedes(updater, kept)))
+		pg_atomic_write_u64(&t->kept[si], U64FromFullTransactionId(updater));
+}
+
+FullTransactionId
+sift_rowlock_kept(SiftRowLockTable *t, int si)
+{
+	return FullTransactionIdFromU64(pg_atomic_read_u64(&t->kept[si]));
+}
+
+/* The committed update no snapshot may need yet that the entry keeps, if older than *oldest */
+static void
+note_kept(const SiftRowLockEntry *e, FullTransactionId *oldest)
+{
+	if ((e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && sift_rowlock_unheld(e) &&
+		(!FullTransactionIdIsValid(*oldest) || FullTransactionIdPrecedes(e->updater_fxid, *oldest)))
+		*oldest = e->updater_fxid;
 }
 
 void
 sift_rowlock_sweep(SiftRowLockTable *t, int si, SiftRowLockSweepFn drop, void *arg)
 {
+	FullTransactionId oldest = InvalidFullTransactionId;
 	dsa_area   *a;
 
 	for (int i = 0; i < t->hdr[si].table_n;)
 		if (drop(&t->stripes[si].entries[i], arg))
 			sift_rowlock_remove(t, si, &t->stripes[si].entries[i]);
 		else
-			i++;
+			note_kept(&t->stripes[si].entries[i++], &oldest);
 	a = t->hdr[si].overflow != InvalidDsaPointer ? area : NULL;
 	for (dsa_pointer p = t->hdr[si].overflow; a != NULL && p != InvalidDsaPointer;)
 	{
@@ -340,7 +394,7 @@ sift_rowlock_sweep(SiftRowLockTable *t, int si, SiftRowLockSweepFn drop, void *a
 			bool		is_head = t->hdr[si].overflow == p;
 
 			if (!drop(&c->entries[i], arg))
-				i++;
+				note_kept(&c->entries[i++], &oldest);
 			else
 			{
 				sift_rowlock_remove(t, si, &c->entries[i]);
@@ -349,6 +403,8 @@ sift_rowlock_sweep(SiftRowLockTable *t, int si, SiftRowLockSweepFn drop, void *a
 		}
 		p = next;
 	}
+	if (a != NULL || t->hdr[si].overflow == InvalidDsaPointer)
+		pg_atomic_write_u64(&t->kept[si], t->hdr[si].overflow == InvalidDsaPointer ? 0 : U64FromFullTransactionId(oldest));
 }
 
 SiftRowLockCount
