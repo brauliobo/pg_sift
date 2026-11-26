@@ -6,7 +6,8 @@
 
 plan 24
 command -v pg_repack >/dev/null || { skip 24 "pg_repack is not installed"; finish; }
-node_init rp 28 "autovacuum = off"
+node_init rp 28 "autovacuum = off
+sift.test_create_format1 = on"
 node_start rp || bail "start failed"
 sql rp "CREATE EXTENSION pg_sift CASCADE" >/dev/null || bail "pg_sift"
 sql rp "CREATE EXTENSION pg_repack" >/dev/null 2>&1 || { skip 24 "the pg_repack extension is not available"; finish; }
@@ -70,9 +71,10 @@ check "pg_repack --only-indexes finished beside the writer, and the writer's tra
 wait "$wp"
 check "... no deadlock was detected, no copy is left, and the table has the two triggers of each index" \
 	test "$(($(grep -c 'deadlock detected' "$D/postgres.log") - d0))|$(sql rp "SELECT count(*) FROM pg_class WHERE relname LIKE 'index\_%'")|$(sql rp "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'facts'::regclass AND tgname LIKE 'sift_track_%'")" == "0|0|2"
-# the copy was built beside the writers, so its log is not complete (flags 0): the reads check the heap and answer as it does until the next VACUUM re-baselines it
+# the copy was built beside the writers, so its log is not complete (flags 0): the reads check the heap and answer as it does until the next VACUUM without parallel workers re-baselines it
+# (one with them cleans the indexes up in parallel mode, where the baseline cannot take a transaction id)
 check "... the index answers as the heap does" test "$(answers on)" == "$(answers off)" -a "$(sql rp "SELECT track_changes FROM sift.col_tracking('facts_col')")" == t
-sql rp "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) facts" >/dev/null
+sql rp "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE, PARALLEL 0) facts" >/dev/null
 check "... and tracks its changes again after the VACUUM (track_changes, triggers, complete, heap_free)" test "$(sql rp "SELECT concat_ws(',', track_changes, triggers, complete, heap_free) FROM sift.col_tracking('facts_col')")" == "t,t,t,t"
 check "pg_repack refuses the sift_table and leaves it readable" test "$(repack -t st 2>&1 | grep -c 'cannot rewrite the sift_table')|$(sql rp "SELECT count(*), sum(v) FROM st")" == "1|1000|500500"
 check "pg_repack --only-indexes of the sift_table is fine" test "$(repack -t st --only-indexes >/dev/null 2>&1; echo $?)|$(sql rp "SELECT count(*) FROM st")" == "0|1000"
@@ -101,5 +103,5 @@ check "writes to the table go on beside the leftover (the triggers of facts_col 
 check "DROP EXTENSION pg_repack CASCADE removes the leftover at once (the copy's index and triggers, pg_repack's trigger), and facts_col keeps its triggers and its answers" \
 	test "$(sql rp "SET statement_timeout = 20000" "DROP EXTENSION pg_repack CASCADE" >/dev/null 2>&1; echo $?)|$(sql rp "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'repack'")|$(sql rp "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'repack%'")|$(trig_on facts 'sift_track_%')" == "0|0|0|2" -a "$(answers on)" == "$(answers off)"
 sql rp "CREATE EXTENSION pg_repack" >/dev/null
-check "pg_repack runs again after it, and the index tracks its changes after the next VACUUM" test "$(repack -t facts >/dev/null 2>&1; echo $?)" == 0 -a "$(sql rp "VACUUM facts" >/dev/null; state_of facts_col)" == "t,t,t,t" -a "$(answers on)" == "$(answers off)"
+check "pg_repack runs again after it, and the index tracks its changes after the next VACUUM" test "$(repack -t facts >/dev/null 2>&1; echo $?)" == 0 -a "$(sql rp "VACUUM (PARALLEL 0) facts" >/dev/null; state_of facts_col)" == "t,t,t,t" -a "$(answers on)" == "$(answers off)"
 finish
