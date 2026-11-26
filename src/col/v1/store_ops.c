@@ -640,6 +640,8 @@ v1_next(SiftV6Source *base, SiftV6Batch *out)
 				continue;
 			out->mask = s->mask;
 		}
+		if (s->tid_range && !sift_v1_src_tid_narrow(s, out))
+			continue;
 		sift_v1_src_fill_heap(s, out);
 		if (s->elems != NULL)
 			fill_elems(s, out);
@@ -658,13 +660,8 @@ bool
 sift_v1_src_fetch(SiftV6Source *base, uint64 tag, const AttrNumber *attnos, int n, Datum *values, bool *isnull)
 {
 	SiftV1Src	   *s = (SiftV1Src *) base;
-	ItemPointerData tid;
-	bool		again = false,
-				dead = false;
 
-	ItemPointerSet(&tid, (BlockNumber) (tag >> 16), (OffsetNumber) (tag & 0xFFFF));
-	if (s->index_fetch != NULL ? !table_index_fetch_tuple(s->index_fetch, &tid, s->snap, s->fslot, &again, &dead) :
-		!table_tuple_fetch_row_version(s->rels.heap, &tid, s->snap, s->fslot))
+	if (!sift_v1_src_fetch_row(s, tag))
 		return false;
 	for (int i = 0; i < n; i++)
 		values[i] = slot_getattr(s->fslot, attnos[i], &isnull[i]);
@@ -883,6 +880,9 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	s->snap = snap;
 	s->bridge = scan->bridge;
 	s->cube = scan->cube;
+	s->tid_range = scan->tid_range;
+	s->tid_lo = scan->tid_lo;
+	s->tid_hi = scan->tid_hi;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
 	s->rd = sift_v1_reader_of(in->is_table);
 	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, range ? range->view : NULL);

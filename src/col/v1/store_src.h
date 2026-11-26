@@ -57,6 +57,9 @@ typedef struct SiftV1Src
 	SiftV6Vexpr *quals;
 	const SiftTidBridge *bridge;
 	const SiftV1UnitSink *cube;
+	bool		tid_range;		/* SiftV1Scan.tid_range */
+	uint64		tid_lo;
+	uint64		tid_hi;
 	int			ntypes;
 	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
 	int			score_col;		/* the column of the input that holds the scores of the bridge, -1 for none */
@@ -86,6 +89,12 @@ typedef struct SiftV1Src
 
 /* The heap row of a tag the source gave: false when the snapshot does not see it */
 extern bool sift_v1_src_fetch(SiftV6Source *base, uint64 tag, const AttrNumber *attnos, int n, Datum *values, bool *isnull);
+
+/* The heap row of tag into fslot: the version the snapshot sees of the chain an index entry names, or the row of a sift_table; false when it sees none */
+extern bool sift_v1_src_fetch_row(SiftV1Src *s, uint64 tag);
+
+/* Narrows the mask of b to the rows whose heap row's ctid is in the range of the scan; false when none is left */
+extern bool sift_v1_src_tid_narrow(SiftV1Src *s, SiftV6Batch *b);
 
 /* The columns of a batch that the leaves cannot hold, read from the heap row of each row the batch keeps (col/v1_engine/store_ops_heap.c): jsonb documents, values of keys, members of maps */
 extern void sift_v1_src_fill_heap(SiftV1Src *s, const SiftV6Batch *b);

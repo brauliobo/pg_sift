@@ -114,7 +114,10 @@ typedef struct SiftV1ElemBatch
 	const uint64 *child_valid[SIFT_V1_MAX_ELEM_COLS];
 } SiftV1ElemBatch;
 
-/* What narrows a source besides the quals: the superblocks it reads, the units that hold a row of keep, the rows a text bridge holds (the score column of the input, SIFT_V6_SCORE_ATTNO, is theirs), the JSON types of leaves */
+/*
+ * What narrows a source besides the quals: the superblocks it reads, the units that hold a row of keep, the rows a text bridge holds (the score column of the input, SIFT_V6_SCORE_ATTNO, is theirs),
+ * the JSON types of leaves, the ctid range of the statement (SiftV6Spec.tid_range)
+ */
 typedef struct SiftV1Scan
 {
 	const SiftV1Range *range;
@@ -124,7 +127,14 @@ typedef struct SiftV1Scan
 	int			ntypes;
 	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
 	const SiftV1UnitSink *cube;	/* answers the units whose pre-aggregates stand for their rows (NULL: every unit is read) */
+	bool		tid_range;
+	uint64		tid_lo;
+	uint64		tid_hi;
 } SiftV1Scan;
+
+/* scan (NULL: none) bounded by the ctid range of spec */
+struct SiftV6Spec;
+extern SiftV1Scan sift_v1_spec_scan(const SiftV1Scan *scan, const struct SiftV6Spec *spec);
 
 /* The cube reader of an aggregate scan (col/v1_engine/store_ops_preagg.c): NULL when the statement is not one the stored cubes answer or the scan reads fewer rows than a unit's; it lives in cx */
 struct SiftSrcFoldArgs;

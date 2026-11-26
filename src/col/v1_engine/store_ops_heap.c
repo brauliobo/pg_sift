@@ -1,10 +1,11 @@
 /*
  * col/v1_engine/store_ops_heap.c - what the unified scan of Format 1 reads from the heap row of the rows a batch keeps because the leaves cannot hold it: a jsonb document, the value of a key
- * of a document, the float8 of a member of a map, and the JSON type of each row of a key (col/v1/store_ops.c gives the batches).
+ * of a document, the float8 of a member of a map, the JSON type of each row of a key, and the ctid of a row the range of the statement bounds (col/v1/store_ops.c gives the batches).
  */
 /* check-memory: allow-allocs every array here follows the columns of one scan or the rows of one batch, not the rows of the relation */
 #include "postgres.h"
 
+#include "access/tableam.h"
 #include "port/pg_bitutils.h"
 #include "utils/builtins.h"
 
@@ -143,4 +144,62 @@ sift_v1_src_fill_heap(SiftV1Src *s, const SiftV6Batch *b)
 	fill_docs(s, b);
 	fill_exceptions(s, b);
 	fill_members(s, b);
+}
+
+/* The heap row of tag into fslot: the version the snapshot sees of the chain an index entry names, or the row of a sift_table; false when it sees none */
+bool
+sift_v1_src_fetch_row(SiftV1Src *s, uint64 tag)
+{
+	ItemPointerData tid;
+	bool		again = false,
+				dead = false;
+
+	ItemPointerSet(&tid, (BlockNumber) (tag >> 16), (OffsetNumber) (tag & 0xFFFF));
+	return s->index_fetch != NULL ? table_index_fetch_tuple(s->index_fetch, &tid, s->snap, s->fslot, &again, &dead) :
+		table_tuple_fetch_row_version(s->rels.heap, &tid, s->snap, s->fslot);
+}
+
+/*
+ * Whether the heap row of tag has its ctid in [tid_lo, tid_hi). An index entry names the root of a HOT chain and the visible version is on the same page: the rows of the blocks between those
+ * of tid_lo and tid_hi are in it, those of the two blocks are fetched
+ */
+static bool
+tid_keeps(SiftV1Src *s, uint64 tag)
+{
+	const uint64 blk = tag >> 16;
+	uint64		key;
+
+	if (blk < s->tid_lo >> 16 || blk > s->tid_hi >> 16)
+		return false;
+	if ((blk > s->tid_lo >> 16 && blk < s->tid_hi >> 16) || s->index_fetch == NULL)
+		return tag >= s->tid_lo && tag < s->tid_hi;
+	if (!sift_v1_src_fetch_row(s, tag))
+		return false;
+	key = (uint64) ItemPointerGetBlockNumber(&s->fslot->tts_tid) << 16 | ItemPointerGetOffsetNumber(&s->fslot->tts_tid);
+	return key >= s->tid_lo && key < s->tid_hi;
+}
+
+/* only the rows of the batch whose heap row's ctid is in the range of the scan */
+bool
+sift_v1_src_tid_narrow(SiftV1Src *s, SiftV6Batch *b)
+{
+	const int	words = (b->n + 63) / 64;
+	uint64		left = 0;
+
+	if (b->mask != s->mask)
+	{
+		memset(s->mask, 0xFF, words * sizeof(uint64));
+		if (b->n & 63)
+			s->mask[words - 1] = (UINT64CONST(1) << (b->n & 63)) - 1;
+		if (b->mask != NULL)
+			for (int w = 0; w < words; w++)
+				s->mask[w] &= b->mask[w];
+	}
+	for (int r = 0; r < b->n; r++)
+		if ((s->mask[r / 64] >> (r % 64) & 1) && !tid_keeps(s, b->tag[r]))
+			s->mask[r / 64] &= ~(UINT64CONST(1) << (r % 64));
+	for (int w = 0; w < words; w++)
+		left |= s->mask[w];
+	b->mask = s->mask;
+	return left != 0;
 }

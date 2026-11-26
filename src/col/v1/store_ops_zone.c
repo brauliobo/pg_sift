@@ -59,12 +59,24 @@ zone_quals_keys(const struct SiftStoreQuals *q, ScanKey *keys, int *nkeys)
 	return false;
 }
 
+SiftV1Scan
+sift_v1_spec_scan(const SiftV1Scan *scan, const struct SiftV6Spec *spec)
+{
+	SiftV1Scan	out = scan != NULL ? *scan : (SiftV1Scan) {0};
+
+	out.tid_range = spec->tid_range;
+	out.tid_lo = spec->tid_lo;
+	out.tid_hi = spec->tid_hi;
+	return out;
+}
+
 /* One fold for the whole scan: its pipe keeps which rows of the dimensions matched across the chunks, and gives the rows no chunk matched once, at the end */
 static void
-fold_run(const SiftSrcFoldArgs *a, Snapshot snap, SiftV1Scan *scan, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg)
+fold_run(const SiftSrcFoldArgs *a, Snapshot snap, const SiftV1Scan *keys, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 zone scan");
-	V1Open		o = {.cx = cx,.snap = snap,.scan = scan,.cube = next_chunk == NULL ? sift_v1_cube_begin(a, scan, cx) : NULL};
+	SiftV1Scan	scan = sift_v1_spec_scan(keys, a->spec);
+	V1Open		o = {.cx = cx,.snap = snap,.scan = &scan,.cube = next_chunk == NULL ? sift_v1_cube_begin(a, &scan, cx) : NULL};
 	SiftSrcFold *f = sift_srcfold_new(a, sift_mem_allocset_create(cx, "sift v1 zone fold"));
 	const struct SiftTidBridge *bridge = NULL;
 
@@ -73,7 +85,7 @@ fold_run(const SiftSrcFoldArgs *a, Snapshot snap, SiftV1Scan *scan, bool (*next_
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
 	{
 		sift_srcfold_count_chunk(a->stats, bridge);
-		scan->bridge = bridge;
+		scan.bridge = bridge;
 		sift_srcfold_run(f, open_source, &o);
 	}
 	sift_srcfold_finish(f);
