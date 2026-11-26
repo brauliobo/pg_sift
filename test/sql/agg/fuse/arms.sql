@@ -141,6 +141,19 @@ SELECT arms_shared(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label
        reread(:'periods' || :'lines_both') > 0 AS periods_lines_reread,
        reread(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label' || ' UNION ALL ' || :'lines_kind') = reread(:'periods' || :'lines_both') AS periods_lines_once;
 
+-- an arm inside the plan of another (the dimension of a star join reads the same index) is not one of its cohort: the outer pass needs the inner rows first.
+-- On an empty table too, where the outer arm finds no fact and is done at once.
+CREATE TABLE ev0 (id int PRIMARY KEY, kind text) WITH (autovacuum_enabled = false);
+CREATE INDEX ev0_col ON ev0 USING sift_col (id, kind);
+\set nested 'SELECT k.kind, count(e.id) FROM (SELECT DISTINCT kind FROM ev0) k LEFT JOIN ev0 e ON e.kind = k.kind GROUP BY 1'
+SET sift.agg_force = on;
+SELECT clock_timestamp() AS nested_t0 \gset
+SELECT arms_shared(:'nested') AS nested_empty_shared, sift_helpers.agg_check(:'nested') = 0 AS nested_empty_same;
+SELECT clock_timestamp() - :'nested_t0'::timestamptz < interval '200 ms' AS nested_empty_fast;
+INSERT INTO ev0 SELECT i, (ARRAY['a', 'b', NULL])[1 + i % 3] FROM generate_series(1, 300) i;
+SELECT arms_shared(:'nested') AS nested_shared, same(:'nested') AS nested_same;
+RESET sift.agg_force;
+
 -- the shared database of a plain installcheck goes on with the next test
 SET client_min_messages = warning;
 DROP SCHEMA public CASCADE;

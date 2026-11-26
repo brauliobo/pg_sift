@@ -6,6 +6,7 @@
 
 #include "agg/vec.h"
 #include "agg/fuse/fuse.h"
+#include "nodes/nodeFuncs.h"
 
 /* ---- the unions ---- */
 
@@ -195,9 +196,23 @@ excluded(const SiftV6FuseArm *a)
 }
 
 static bool
+holds_node(PlanState *ps, void *node)
+{
+	return ps == node || planstate_tree_walker(ps, holds_node, node);
+}
+
+/* One arm runs inside the plan of the other (a dimension, a sub-plan): the pass of the outer one needs the rows of the inner one first */
+static bool
+nested(const SiftV6FuseArm *a, const SiftV6FuseArm *b)
+{
+	return holds_node(a->owner, b->owner) || holds_node(b->owner, a->owner);
+}
+
+static bool
 may_join(const SiftV6FuseArm *lead, const SiftV6FuseArm *b)
 {
-	return b != lead && !b->started && !b->detached && !excluded(b) && b->indexoid == lead->indexoid && b->snap == lead->snap && b->ordered == lead->ordered;
+	return b != lead && !b->started && !b->detached && !excluded(b) && b->indexoid == lead->indexoid && b->snap == lead->snap && b->ordered == lead->ordered &&
+		!nested(lead, b);
 }
 
 SiftV6FuseCohort *

@@ -29,7 +29,7 @@ struct SiftV6FuseCohort;
 
 typedef struct SiftV6FuseArm
 {
-	void	   *owner;			/* the node of the arm */
+	void	   *owner;			/* the node of the arm, its PlanState first */
 	Oid			indexoid;
 	const void *snap;			/* compared as a pointer: the arms of one statement share the snapshot of its estate */
 	uint64		scan_sig;		/* of the scan keys: equal signatures are equal keys */
