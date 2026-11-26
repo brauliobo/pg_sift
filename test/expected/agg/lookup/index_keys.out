@@ -114,7 +114,7 @@ SELECT c.name, s.* FROM cases c, LATERAL same(c.setup, c.q) s ORDER BY c.id;
  not a key: two equalities on one column | f      |                                                         |         0 |       0
  not a key: two ANY, index of the column | t      |                                                         |         0 |       0
  not a key: key not in the index         | t      |                                                         |         0 |       0
- text key                                | f      |                                                         |         0 |       0
+ text key                                | t      | Lookup: 1503 rows read, 1503 rows loaded, 1 index scans |         0 |       0
  inner, repeated key                     | t      | Lookup: 1503 rows read, 1503 rows loaded, 1 index scans |         0 |       0
  left                                    | t      | Lookup: 1503 rows read, 1503 rows loaded, 1 index scans |         0 |       0
  partial index                           | t      |                                                         |         0 |       0
