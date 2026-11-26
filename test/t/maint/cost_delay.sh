@@ -65,7 +65,7 @@ BEFORE=$(naps)
 sql delay "VACUUM vac" >/dev/null
 check "VACUUM is not throttled" test "$(($(naps) - BEFORE))" -eq 0
 check "VACUUM merged the backlog" test "$(sql delay "SELECT count(*) <= 12 FROM sift.segments('vac_idx')")" == t
-sql delay "CREATE TABLE lk (id int, v int)" "CREATE INDEX lk_col ON lk USING sift_col (id, v)" >/dev/null || bail "setup lk failed"
+sql delay "SET sift.test_create_format1 = off" "CREATE TABLE lk (id int, v int)" "CREATE INDEX lk_col ON lk USING sift_col (id, v)" >/dev/null || bail "setup lk failed"
 for k in 1 2 3 4; do sql delay "SET sift.async_maintenance = off" "INSERT INTO lk SELECT g, g FROM generate_series($((k * 20000)), $((k * 20000 + 19999))) g" >/dev/null || bail "insert failed"; done
 sess_open delay holder
 sess_say holder "BEGIN; LOCK TABLE lk IN SHARE UPDATE EXCLUSIVE MODE; \\echo @@held"

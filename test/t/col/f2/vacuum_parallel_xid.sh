@@ -32,7 +32,7 @@ D=$(dir pv)
 G=4200
 waiting() { sql pv "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '$1%' AND wait_event_type = 'Lock' AND wait_event = 'advisory'"; }
 cancel_mid_shares() {
-	sql pv "CREATE TABLE tp (id int, a bigint, pad text) USING sift_table" "INSERT INTO tp SELECT g, g, repeat('z', 40) FROM generate_series(1, 400000) g" \
+	sql pv "SET sift.test_create_format1 = off" "CREATE TABLE tp (id int, a bigint, pad text) USING sift_table" "INSERT INTO tp SELECT g, g, repeat('z', 40) FROM generate_series(1, 400000) g" \
 		"VACUUM tp" "DELETE FROM tp WHERE id % 5 <> 0" >/dev/null || bail "the sift_table load failed"
 	sess_open pv gate
 	sess_say gate "SELECT pg_advisory_lock($((G + 16))); \\echo @@held"
