@@ -42,6 +42,13 @@ sift_index_ready(Relation index)
 	return index->rd_index->indisready;
 }
 
+/* The cut of forks of a relation from their old sizes: 17 names it smgrtruncate2 */
+#if PG_VERSION_NUM >= 180000
+#define sift_smgrtruncate(reln, forks, n, old, nblocks)	smgrtruncate(reln, forks, n, old, nblocks)
+#else
+#define sift_smgrtruncate(reln, forks, n, old, nblocks)	smgrtruncate2(reln, forks, n, old, nblocks)
+#endif
+
 /* A named point of the code where a test of an injection-points build stops a backend (test/t/maint/lock_order.sh); nothing in a server built without them */
 #if PG_VERSION_NUM >= 180000
 #define SIFT_POINT(name)	INJECTION_POINT(name, NULL)

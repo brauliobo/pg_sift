@@ -9,10 +9,13 @@
 #include "core/host.h"
 
 #include "catalog/storage.h"
+#include "catalog/storage_xlog.h"
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
+#include "storage/proc.h"
+#include "storage/smgr.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
@@ -832,6 +835,38 @@ try_lock_truncate(Relation rel, bool foreground)
 	return true;
 }
 
+/*
+ * The main fork cut to nblocks as RelationTruncate cuts it, and no other fork: the visibility map of a table is indexed by the virtual block of a row, which the size of the file does not bound, so
+ * the cut of RelationTruncate would clear the bits of the vblocks past it (and log a full image of its last page)
+ */
+static void
+truncate_main(Relation rel, BlockNumber nblocks)
+{
+	SMgrRelation reln = RelationGetSmgr(rel);
+	ForkNumber	fork = MAIN_FORKNUM;
+	BlockNumber old;
+
+	reln->smgr_targblock = InvalidBlockNumber;
+	for (int i = 0; i <= MAX_FORKNUM; i++)
+		reln->smgr_cached_nblocks[i] = InvalidBlockNumber;
+	old = smgrnblocks(reln, MAIN_FORKNUM);
+	RelationPreTruncate(rel);
+	Assert((MyProc->delayChkptFlags & (DELAY_CHKPT_START | DELAY_CHKPT_COMPLETE)) == 0);
+	MyProc->delayChkptFlags |= DELAY_CHKPT_START | DELAY_CHKPT_COMPLETE;
+	START_CRIT_SECTION();
+	if (RelationNeedsWAL(rel))
+	{
+		xl_smgr_truncate xlrec = {.blkno = nblocks,.rlocator = rel->rd_locator,.flags = SMGR_TRUNCATE_HEAP};
+
+		XLogBeginInsert();
+		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
+		XLogFlush(XLogInsert(RM_SMGR_ID, XLOG_SMGR_TRUNCATE | XLR_SPECIAL_REL_UPDATE));
+	}
+	sift_smgrtruncate(RelationGetSmgr(rel), &fork, 1, &old, &nblocks);
+	END_CRIT_SECTION();
+	MyProc->delayChkptFlags &= ~(DELAY_CHKPT_START | DELAY_CHKPT_COMPLETE);
+}
+
 SiftTailShrinkResult
 sift_fsm_tail_shrink(Relation rel)
 {
@@ -871,7 +906,7 @@ sift_fsm_tail_shrink(Relation rel)
 	nblocks = RelationGetNumberOfBlocks(rel);
 	if (nblocks > new_hw)
 	{
-		RelationTruncate(rel, new_hw);
+		truncate_main(rel, new_hw);
 		res.blocks_truncated = nblocks - new_hw;
 		note_shrink(rel, true);
 	}
