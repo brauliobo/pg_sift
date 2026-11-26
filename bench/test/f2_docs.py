@@ -201,7 +201,7 @@ class PgQueries(unittest.TestCase):
             r['case'] for r in chart_data.measured(rows)})
         svg = self.svgs(data)['light']
         self.assertIn('4 new 6.0 cases · pending bench/bench cases --headline --docs', svg)
-        self.assertIn('bm25_hybrid_groupby pending', svg)
+        self.assertIn('search_hybrid_groupby pending', svg)
         self.assertEqual(svg.count('pending 6.0 run'), 1)
 
     def test_every_case_measured_picks_the_fastest_rival_and_a_gin_win_is_amber(self):
@@ -216,10 +216,10 @@ class PgQueries(unittest.TestCase):
         self.assertIn('<circle cx="%s" cy="88" r="5" fill="%s"/>' % (theme.n(pg_queries.X(0.5)), amber), svg['light'])
 
     def test_a_run_of_some_cases_overlays_them_on_the_baseline(self):
-        data = self.data({'bm25_hybrid_groupby': {'native': 30.0, 'gin': 6.0}, 'softdel_live_groupby': {'native': 100.0}})
+        data = self.data({'search_hybrid_groupby': {'native': 30.0, 'gin': 6.0}, 'softdel_live_groupby': {'native': 100.0}})
         meta, rows = data['pg_cases']['meta'], {r['case']: r for r in data['pg_cases']['rows']}
         self.assertEqual((meta['source'], meta['live']), ('mixed', 2))
-        self.assertEqual((rows['bm25_hybrid_groupby']['ratio'], rows['softdel_live_groupby']['ratio'], rows['lateral_first_row']['ratio']), (6.0, 100.0, 347))
+        self.assertEqual((rows['search_hybrid_groupby']['ratio'], rows['softdel_live_groupby']['ratio'], rows['lateral_first_row']['ratio']), (6.0, 100.0, 347))
         self.assertEqual(len(chart_data.measured(data['pg_cases']['rows'])), 25)
         self.svgs(data)
 

@@ -63,7 +63,7 @@ partitioned_range_agg	-	events	-	Custom Scan \(SiftAgg.*Partitions: [1-9]	native
 filter_pivot_agg	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	-	ms	faster33	yes	-
 percentile_stddev_agg	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	-	ms	faster33	yes	-
 distinct_on_latest	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	btree:search_path = c_distinct_on_latest__btree;sift.enable_agg = off	ms	faster33	yes	-
-bm25_hybrid_groupby	-	events	-	Custom Scan \(SiftHybridAgg	native	gin:search_path = c_bm25_hybrid_groupby__gin;sift.enable_agg = off	ms	faster33	yes	-
+search_hybrid_groupby	-	events	-	Custom Scan \(SiftHybridAgg	native	gin:search_path = c_search_hybrid_groupby__gin;sift.enable_agg = off	ms	faster33	yes	-
 text_like_prefix_agg	-	events	-	Custom Scan \(SiftAgg	native	btree:search_path = c_text_like_prefix_agg__btree;sift.enable_agg = off	ms	faster33	yes	-
 pg_array_cardinality_agg	-	events	-	Custom Scan \(SiftAgg	native	gin:search_path = c_pg_array_cardinality_agg__gin;sift.enable_agg = off	ms	faster33	yes	-
 calendar_date_trunc_agg	-	events	-	Custom Scan \(SiftAgg	native	expr_btree:search_path = c_calendar_date_trunc_agg__expr_btree;sift.enable_agg = off	ms	faster33	yes	-

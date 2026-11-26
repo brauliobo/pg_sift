@@ -172,7 +172,7 @@ Where PG 18 wins (amber in the chart): bulk `COPY` into `sift_table` (`bulk_copy
 | `LEFT JOIN LATERAL jsonb_each` (`jsonb_each_member`) | heap plan | **3.35 ms** | 117 ms | **35×** |
 | `LATERAL ... ORDER BY LIMIT 1` (`lateral_first_row`) | heap plan | **4.17 ms** | 1,449 ms | **347×** |
 | 4-level `GROUPING SETS` report (`grouping_sets_report`) | heap plan | **2.85 ms** | 65.9 ms | **23×** |
-| BM25 match + `GROUP BY` (`bm25_hybrid_groupby`) | heap plan · GIN | *pending 6.0 run* | — | — |
+| BM25 match + `GROUP BY` (`search_hybrid_groupby`) | heap plan · GIN | *pending 6.0 run* | — | — |
 | Soft-delete `GROUP BY` (`softdel_live_groupby`) | heap plan | **0.06 ms** | 50.8 ms | **891×** |
 | Keyset page `(created_at, id)` (`keyset_page`) | b-tree | 0.10 ms | **0.04 ms** | 0.4× |
 

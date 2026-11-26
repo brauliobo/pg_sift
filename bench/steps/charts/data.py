@@ -53,7 +53,7 @@ SCOPES = {'cells': 72, 'read_ms': {'sift_scope': 2.18, 'stock_default': 542.0, '
 SCOPE_BUILD = [('plain scoped CREATE INDEX', '1.79× entity', '≤ 1.15×'), ('scoped CIC pass 2', '107% of pass 1', '≤ 15%'),
                ('scope build temp I/O', '249 B/row', '0 B'), ('scope disk vs entity', '+98.3%', '≤ 5%')]
 PG_FAMILIES = ('Shredded JSONB', 'LATERAL, CTEs & Joins', 'Reports, Windows & Distinct', 'Text, Search & Native Types', 'Soft-delete, Top-N & Lookups', 'B-tree & COPY')
-PG_FLAGSHIP = ('jsonb_each_member', 'lateral_first_row', 'grouping_sets_report', 'bm25_hybrid_groupby', 'softdel_live_groupby', 'keyset_page')   # one case per family
+PG_FLAGSHIP = ('jsonb_each_member', 'lateral_first_row', 'grouping_sets_report', 'search_hybrid_groupby', 'softdel_live_groupby', 'keyset_page')   # one case per family
 PG_CASES_300K = [  # family, case, shape, against, pg_sift (ms, M instr, blocks), PG 18 (ms, M instr, blocks), PG 18 ÷ pg_sift as audited; None: not measured yet
     (0, 'jsonb_each_member', '`LEFT JOIN LATERAL jsonb_each`', 'heap plan', (3.35, 35.9, 673), (117, 916, 13639), 35),
     (0, 'list_elements', '`jsonb` array elements with a filter', 'heap plan', (3.36, 35.9, 623), (113, 781, 13639), 34),
@@ -81,7 +81,7 @@ PG_CASES_300K = [  # family, case, shape, against, pg_sift (ms, M instr, blocks)
     (2, 'filter_pivot_agg', '`FILTER (WHERE ...)` pivot report', 'heap plan', None, None, None),
     (2, 'percentile_stddev_agg', '`percentile_cont` and `stddev` by group', 'heap plan', None, None, None),
     (2, 'distinct_on_latest', '`DISTINCT ON` latest row per customer', 'heap plan · b-tree', None, None, None),
-    (3, 'bm25_hybrid_groupby', 'BM25 match + `GROUP BY`', 'heap plan · GIN', None, None, None),
+    (3, 'search_hybrid_groupby', 'BM25 match + `GROUP BY`', 'heap plan · GIN', None, None, None),
     (3, 'text_like_prefix_agg', 'Prefix `LIKE` + `GROUP BY`', 'heap plan · b-tree', None, None, None),
     (3, 'pg_array_cardinality_agg', '`text[] @>` + `cardinality`', 'heap plan · GIN', None, None, None),
     (3, 'calendar_date_trunc_agg', '`date_trunc` month calendar report', 'heap plan · expr b-tree', None, None, None),

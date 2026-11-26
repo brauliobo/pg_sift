@@ -59,7 +59,7 @@ The committed baseline is release 4.0 (run `3c5e625d`, 300,000 orders, PG 18.6, 
 
 | Case | Against | `pg_sift`: ms · M instr · blocks | PG 18: ms · M instr · blocks | PG ÷ `pg_sift` |
 |---|---|---:|---:|---:|
-| `bm25_hybrid_groupby`: BM25 match + `GROUP BY` | heap plan · GIN | *pending 6.0 run* | — | — |
+| `search_hybrid_groupby`: BM25 match + `GROUP BY` | heap plan · GIN | *pending 6.0 run* | — | — |
 | `text_like_prefix_agg`: Prefix `LIKE` + `GROUP BY` | heap plan · b-tree | *pending 6.0 run* | — | — |
 | `pg_array_cardinality_agg`: `text[] @>` + `cardinality` | heap plan · GIN | *pending 6.0 run* | — | — |
 | `calendar_date_trunc_agg`: `date_trunc` month calendar report | heap plan · expr b-tree | *pending 6.0 run* | — | — |
