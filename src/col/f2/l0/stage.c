@@ -8,6 +8,7 @@
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
+#include "utils/hsearch.h"
 #include "utils/snapmgr.h"
 
 #include "col/f2/compact/compact.h"
@@ -29,7 +30,18 @@
 /* A range of addresses this short is looked for by each address in the table, a longer one by a walk of the rows */
 #define SIFT_STG_POINT_PROBES	16
 
+/* A transaction with more stages than this finds them by relation in a hash table */
+#define SIFT_STG_HTAB_MIN		16
+
+typedef struct StageSlot
+{
+	Oid			relid;
+	SiftTxnStage *st;
+} StageSlot;
+
 static List *stages = NIL;
+static HTAB *stage_htab = NULL;
+static uint64 stages_mem = 0;	/* the rows and the host bytes of every stage */
 static bool callbacks_registered = false;
 static uint64 stage_epoch = 0;
 
@@ -101,7 +113,7 @@ static void
 del_htab_rebuild(SiftTxnStage *st)
 {
 	uint32		cap = pg_nextpower2_32(Max((uint32) st->ndels * 2, DEL_HTAB_MIN));
-	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+	MemoryContext old = MemoryContextSwitchTo(st->cx);
 
 	if (st->del_htab != NULL && st->del_htab_cap != cap)
 	{
@@ -169,10 +181,18 @@ stage_compact(SiftTxnStage *st)
 }
 
 static void
+host_mem_set(SiftTxnStage *st, uint64 bytes)
+{
+	stages_mem += bytes - st->host_mem;
+	st->host_mem = bytes;
+}
+
+static void
 flush_stage_rows(Relation rel, SiftTxnStage *st, bool at_end)
 {
 	stage_compact(st);
 	sift_stage_flush_rows(rel, st, at_end);
+	host_mem_set(st, 0);
 	sift_uniq_shm_release(&rel->rd_locator);
 }
 
@@ -199,6 +219,7 @@ free_stage(SiftTxnStage *st)
 {
 	if (st->host_stage != NULL)
 		st->host_event(NULL, st, SIFT_STAGE_FREE, 0, 0);
+	host_mem_set(st, 0);
 	sift_cdi_cache_free(st);
 	sift_stage_reset_parts(st);
 	st->ndels = 0;
@@ -212,6 +233,9 @@ sift_stage_discard(Oid relid)
 		{
 			free_stage(st);
 			stages = list_delete_ptr(stages, st);
+			if (stage_htab != NULL)
+				hash_search(stage_htab, &relid, HASH_REMOVE, NULL);
+			MemoryContextDelete(st->cx);
 			stage_epoch++;
 			return;
 		}
@@ -225,17 +249,43 @@ sift_stage_epoch(void)
 
 /* The stage of the relation as it is now: one made for a file the relation no longer has (TRUNCATE gave it another) holds rows that are not in it, and goes */
 static SiftTxnStage *
+stage_find(Oid relid)
+{
+	StageSlot  *slot;
+
+	if (stage_htab != NULL)
+		return (slot = hash_search(stage_htab, &relid, HASH_FIND, NULL)) != NULL ? slot->st : NULL;
+	foreach_ptr(SiftTxnStage, st, stages)
+		if (st->relid == relid)
+			return st;
+	return NULL;
+}
+
+static SiftTxnStage *
 stage_of(Relation rel)
 {
-	foreach_ptr(SiftTxnStage, st, stages)
-		if (st->relid == RelationGetRelid(rel))
-		{
-			if (RelFileLocatorEquals(st->locator, rel->rd_locator))
-				return st;
-			sift_stage_discard(st->relid);
-			return NULL;
-		}
+	SiftTxnStage *st = stage_find(RelationGetRelid(rel));
+
+	if (st == NULL || RelFileLocatorEquals(st->locator, rel->rd_locator))
+		return st;
+	sift_stage_discard(st->relid);
 	return NULL;
+}
+
+/* The stage joins the hash table, which is made with every stage when the transaction has more than SIFT_STG_HTAB_MIN */
+static void
+stage_index(SiftTxnStage *st)
+{
+	HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(StageSlot),.hcxt = TopTransactionContext};
+
+	if (stage_htab == NULL && list_length(stages) > SIFT_STG_HTAB_MIN)
+	{
+		stage_htab = hash_create("sift stages", 4 * SIFT_STG_HTAB_MIN, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		foreach_ptr(SiftTxnStage, each, stages)
+			((StageSlot *) hash_search(stage_htab, &each->relid, HASH_ENTER, NULL))->st = each;
+	}
+	else if (stage_htab != NULL)
+		((StageSlot *) hash_search(stage_htab, &st->relid, HASH_ENTER, NULL))->st = st;
 }
 
 static void
@@ -265,6 +315,8 @@ stage_xact(XactEvent event, void *arg)
 	else if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_COMMIT || event == XACT_EVENT_PARALLEL_ABORT)
 	{
 		stages = NIL;
+		stage_htab = NULL;
+		stages_mem = 0;
 		stage_epoch++;
 	}
 }
@@ -315,7 +367,8 @@ same_key_order(const SiftPartSpec *a, const SiftPartSpec *b)
 SiftTxnStage *
 sift_stage_get(Relation rel, const SiftPartSpec *spec)
 {
-	MemoryContext old;
+	MemoryContext old,
+				cx;
 	SiftTxnStage *st = stage_of(rel);
 
 	if (st != NULL && same_key_order(&st->spec, spec))
@@ -331,8 +384,10 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 		RegisterSubXactCallback(stage_subxact, NULL);
 		callbacks_registered = true;
 	}
-	old = MemoryContextSwitchTo(TopTransactionContext);
+	cx = sift_mem_allocset_create(TopTransactionContext, "sift stage");
+	old = MemoryContextSwitchTo(cx);
 	st = palloc0(sizeof(SiftTxnStage));
+	st->cx = cx;
 	st->relid = RelationGetRelid(rel);
 	st->locator = rel->rd_locator;
 	st->spec = *spec;
@@ -346,7 +401,9 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 	st->spec.defaults = spec->defaults ? memcpy(palloc(spec->defaults_len), spec->defaults, spec->defaults_len) : NULL;
 	st->routing = sift_manifest_read_range(rel, NULL, NULL);
 	st->tid_min = UINT64_MAX;
+	MemoryContextSwitchTo(TopTransactionContext);
 	stages = lappend(stages, st);
+	stage_index(st);
 	stage_epoch++;
 	MemoryContextSwitchTo(old);
 	return st;
@@ -361,7 +418,7 @@ part_home(const SiftTxnStage *st, uint64 part_id)
 static void
 part_htab_rebuild(SiftTxnStage *st)
 {
-	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+	MemoryContext old = MemoryContextSwitchTo(st->cx);
 
 	if (st->part_htab != NULL)
 		pfree(st->part_htab);
@@ -388,7 +445,7 @@ sift_stage_part_get(SiftTxnStage *st, const SiftPartitionEntry *e)
 		for (uint32 h = part_home(st, e->part_id); st->part_htab[h] != 0; h = (h + 1) & st->part_htab_mask)
 			if (st->parts[st->part_htab[h] - 1].part_id == e->part_id)
 				return &st->parts[st->part_htab[h] - 1];
-	old = MemoryContextSwitchTo(TopTransactionContext);
+	old = MemoryContextSwitchTo(st->cx);
 	if (st->nparts == st->cap_parts)
 	{
 		st->cap_parts = st->cap_parts > 0 ? st->cap_parts * 2 : 8;
@@ -419,6 +476,7 @@ sift_stage_part_changed(SiftTxnStage *st, SiftStagePart *p)
 	uint32		live = (uint32) p->rb->n - p->ndropped;
 
 	st->mem_bytes += p->rb->mem_bytes - p->mem_seen;
+	stages_mem += p->rb->mem_bytes - p->mem_seen;
 	st->total_rows += (uint64) live - p->rows_seen;
 	p->mem_seen = p->rb->mem_bytes;
 	p->rows_seen = live;
@@ -433,6 +491,7 @@ sift_stage_reset_parts(SiftTxnStage *st)
 		bms_free(st->parts[i].dropped);
 	}
 	sift_mem_release_os(st->mem_bytes);
+	stages_mem -= st->mem_bytes;
 	st->nparts = 0;
 	st->mem_bytes = 0;
 	st->total_rows = 0;
@@ -452,7 +511,7 @@ sift_stage_renew_part(SiftTxnStage *st, SiftStagePart *p)
 
 	sift_rowbuf_free(p->rb);
 	sift_mem_release_os(freed);
-	old = MemoryContextSwitchTo(TopTransactionContext);
+	old = MemoryContextSwitchTo(st->cx);
 	p->rb = sift_rowbuf_new(&st->spec);
 	MemoryContextSwitchTo(old);
 	p->tid_min = UINT64_MAX;
@@ -481,7 +540,7 @@ tid_htab_alloc(SiftTxnStage *st, uint32 live)
 
 	if (st->tid_htab != NULL)
 		pfree(st->tid_htab);
-	st->tid_htab = MemoryContextAlloc(TopTransactionContext, cap * sizeof(SiftStageTidSlot));
+	st->tid_htab = MemoryContextAlloc(st->cx, cap * sizeof(SiftStageTidSlot));
 	memset(st->tid_htab, 0xFF, cap * sizeof(SiftStageTidSlot));
 	st->tid_htab_mask = cap - 1;
 	st->tid_htab_used = 0;
@@ -575,6 +634,46 @@ sift_stage_bulk_budget(void)
 	return Max((uint64) work_mem * 1024, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4));
 }
 
+/* The stage of the transaction that holds the most memory is written (a stage of a file its relation no longer has goes) */
+static void
+flush_largest(void)
+{
+	SiftTxnStage *big = NULL;
+	Relation	rel;
+
+	foreach_ptr(SiftTxnStage, st, stages)
+		if (big == NULL || st->mem_bytes + st->host_mem > big->mem_bytes + big->host_mem)
+			big = st;
+	rel = relation_open(big->relid, RowExclusiveLock);
+	if (RelFileLocatorEquals(big->locator, rel->rd_locator))
+		flush_stage_rows(rel, big, false);
+	else
+		sift_stage_discard(big->relid);
+	relation_close(rel, NoLock);
+}
+
+/* The stages of the transaction (partitions of a table, their indexes) hold twice the budget of a bulk insert at most: the largest are written down to half, while a write frees memory */
+static void
+bound_stages(void)
+{
+	uint64		budget = 2 * sift_stage_bulk_budget();
+
+	if (stages_mem < budget)
+		return;
+	for (uint64 before = UINT64_MAX; stages_mem > budget / 2 && stages_mem < before;)
+	{
+		before = stages_mem;
+		flush_largest();
+	}
+}
+
+void
+sift_stage_host_staged(SiftTxnStage *st, uint64 bytes)
+{
+	host_mem_set(st, bytes);
+	bound_stages();
+}
+
 /* A transaction of an index over a heap whose rows alone fill work_mem loads rows, it does not trickle them in: its stage writes them as parts, as the stage of a bulk insert does */
 static void
 bulk_when_loading(Relation rel, SiftTxnStage *st)
@@ -599,6 +698,7 @@ stage_row(Relation rel, SiftTxnStage *st, SiftStagePart *p, const uint8 *key, ui
 	}
 	else if (sift_stage_mem(st) >= (uint64) work_mem * 1024)
 		sift_stage_flush(rel);
+	bound_stages();
 }
 
 void
@@ -634,7 +734,7 @@ sift_stage_set_bulk(SiftTxnStage *st, uint32 flush_rows, uint64 budget_bytes)
 static void
 add_delete(SiftTxnStage *st, const uint8 *key, uint64 tid, uint64 succ_tid, TransactionId xmax, bool is_update)
 {
-	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+	MemoryContext old = MemoryContextSwitchTo(st->cx);
 
 	if (st->ndels == st->capdels)
 	{
@@ -685,7 +785,7 @@ drop_row(SiftTxnStage *st, uint32 part_idx, uint32 row_idx)
 	st->tid_htab_live--;
 	if (!sift_rowbuf_drops_move_last(rb))
 	{
-		MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+		MemoryContext old = MemoryContextSwitchTo(st->cx);
 
 		p->dropped = bms_add_member(p->dropped, (int) row_idx);
 		MemoryContextSwitchTo(old);

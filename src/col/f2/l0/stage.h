@@ -68,6 +68,7 @@ typedef bool (*SiftStageHostHolds) (const void *host_stage, uint64 lo, uint64 hi
 
 typedef struct SiftTxnStage
 {
+	MemoryContext cx;			/* what the stage holds, a child of the transaction's context that goes with the stage */
 	Oid			relid;
 	RelFileLocator locator;
 	SiftPartSpec spec;
@@ -99,6 +100,7 @@ typedef struct SiftTxnStage
 	uint32		bulk_rows;		/* a bulk insert (sift_stage_set_bulk): the rows at which the buffer of a partition is written; 0: the stage flushes at work_mem */
 	uint64		bulk_budget;	/* the bytes the buffers of all partitions may hold */
 	uint32		host_pending;	/* the records the host staged that the next read of the relation must see written */
+	uint64		host_mem;		/* the bytes the host staged, as it last told them (sift_stage_host_staged) */
 	bool		by_value;		/* the rows are not tuples of the heap (a test stages them), so no flush may hold them as references */
 } SiftTxnStage;
 
@@ -115,6 +117,9 @@ extern void sift_stage_set_bulk(SiftTxnStage *st, uint32 flush_rows, uint64 budg
 
 /* The bytes the buffers of all partitions of a bulk stage may hold: a quarter of the maintenance memory, at least work_mem */
 extern uint64 sift_stage_bulk_budget(void);
+
+/* The host of the stage holds bytes of its own now: they count with the rows of every stage of the transaction, which together keep within twice the budget of a bulk insert */
+extern void sift_stage_host_staged(SiftTxnStage *st, uint64 bytes);
 
 /* Stages a row: routed to its partition by key (the 40 bytes of core/range.h); flushes the stage when it is over work_mem (a bulk stage: see above) */
 extern void sift_stage_add(Relation rel, SiftTxnStage *st, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, const SiftCell *cells, const SiftCell *const *elem);

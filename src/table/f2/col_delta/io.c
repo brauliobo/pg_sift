@@ -696,6 +696,7 @@ sift_col_delta_stage_plan(Relation rel, const SiftColDeltaPlan *plan, CommandId 
 	st->host_pending++;
 	if (((const SiftColDeltaStage *) st->host_stage)->bytes >= SIFT_COL_DELTA_STAGE_BYTES)
 		sift_col_delta_stage_event(rel, st, SIFT_STAGE_FLUSH, 0, 0);
+	sift_stage_host_staged(st, ((const SiftColDeltaStage *) st->host_stage)->bytes);
 }
 
 /* ---- writing the stage ---- */
