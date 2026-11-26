@@ -1,0 +1,52 @@
+-- A lock taken while an f2 index is built, scanned in key order, collected into a bitmap, diffed for a column delta or read back from the heap may reload its relcache entry. What those
+-- paths kept of the entry across the lock was read as freed memory. sift.test_col_rel_inval invalidates the entry at every call that builds or reads its state, after it overwrote the
+-- state, so a path that kept it reads garbage: each answer below is the heap twin's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+
+CREATE TABLE t (id int NOT NULL, g int, v int, doc jsonb);
+CREATE TABLE th (LIKE t);
+INSERT INTO t SELECT i, i % 7, i % 13, jsonb_build_object('k', i % 5, 'p', (i % 3)::text) FROM generate_series(1, 3000) i;
+INSERT INTO th SELECT * FROM t;
+
+SET sift.test_col_rel_inval = on;
+CREATE INDEX t_c ON t USING sift_col (id, g, v, doc sift.col_jsonb_ops) WITH (key_order = 'id', paths = 'doc.k int, doc.p text');
+VACUUM (FREEZE, ANALYZE) t, th;
+UPDATE t SET doc = jsonb_set(doc, '{p}', '"z"') WHERE id % 97 = 0;
+UPDATE th SET doc = jsonb_set(doc, '{p}', '"z"') WHERE id % 97 = 0;
+INSERT INTO t SELECT 5000 + i, i % 7, i % 13, jsonb_build_object('k', i % 5, 'p', 'n') FROM generate_series(1, 100) i;
+INSERT INTO th SELECT * FROM t WHERE id > 5000;
+
+CREATE TEMP TABLE got (what text, ids int[]);
+CREATE TEMP TABLE want (what text, ids int[]);
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+INSERT INTO got SELECT 'ordered', array_agg(id) FROM (SELECT id FROM t WHERE id > 40 ORDER BY id LIMIT 25) s;
+INSERT INTO got SELECT 'ordered desc', array_agg(id) FROM (SELECT id FROM t WHERE g = 3 ORDER BY id DESC LIMIT 25) s;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+INSERT INTO got SELECT 'bitmap', array_agg(id ORDER BY id) FROM t WHERE doc @> '{"k": 2}' AND v < 4;
+INSERT INTO got SELECT 'bitmap key', array_agg(id ORDER BY id) FROM t WHERE doc ? 'p' AND g = 2;
+INSERT INTO got SELECT 'updated', array_agg(id ORDER BY id) FROM t WHERE doc @> '{"p": "z"}';
+INSERT INTO got SELECT 'inserted', array_agg(id ORDER BY id) FROM t WHERE doc @> '{"p": "n"}' AND v < 5;
+RESET sift.test_col_rel_inval;
+
+SET enable_seqscan = on;
+SET enable_bitmapscan = off;
+INSERT INTO want SELECT 'ordered', array_agg(id) FROM (SELECT id FROM th WHERE id > 40 ORDER BY id LIMIT 25) s;
+INSERT INTO want SELECT 'ordered desc', array_agg(id) FROM (SELECT id FROM th WHERE g = 3 ORDER BY id DESC LIMIT 25) s;
+INSERT INTO want SELECT 'bitmap', array_agg(id ORDER BY id) FROM th WHERE doc @> '{"k": 2}' AND v < 4;
+INSERT INTO want SELECT 'bitmap key', array_agg(id ORDER BY id) FROM th WHERE doc ? 'p' AND g = 2;
+INSERT INTO want SELECT 'updated', array_agg(id ORDER BY id) FROM th WHERE doc @> '{"p": "z"}';
+INSERT INTO want SELECT 'inserted', array_agg(id ORDER BY id) FROM th WHERE doc @> '{"p": "n"}' AND v < 5;
+
+SELECT g.what, g.ids = w.ids AS same, cardinality(g.ids) > 0 AS non_empty FROM got g JOIN want w USING (what) ORDER BY what;
+SELECT count(*) FROM sift.check('t_c', true);
+DROP TABLE t, th;
+DROP EXTENSION pg_sift;

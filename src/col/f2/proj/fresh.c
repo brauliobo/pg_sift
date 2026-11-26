@@ -23,7 +23,7 @@ sift_proj_part_projectable(const SiftPartDesc *base)
 {
 	if (base->flags & (SIFT_PART_FLAG_SCOPE | SIFT_PART_FLAG_PACKED_SLOT))
 		return false;
-	return base->level >= 1 && (base->flags & SIFT_PART_FLAG_ALL_VISIBLE) && base->col_delta_blk == InvalidBlockNumber &&
+	return base->level >= 1 && (base->flags & SIFT_PART_FLAG_ALL_VISIBLE) &&
 		(base->dv_blk == InvalidBlockNumber || (base->flags & SIFT_PART_FLAG_DV_SETTLED));
 }
 

@@ -14,11 +14,11 @@
 #include "core/hash.h"
 
 bool
-sift_tier_part_eligible(const SiftPartDesc *d, int slot, int64 cutoff, bool time_dirty)
+sift_tier_part_eligible(const SiftPartDesc *d, int slot, int64 cutoff)
 {
-	return !time_dirty && d->level == 2 && !(d->ext_flags & (SIFT_PART_EXT_REMOTE | SIFT_PART_EXT_EXPIRED)) &&
+	return d->level == 2 && !(d->ext_flags & (SIFT_PART_EXT_REMOTE | SIFT_PART_EXT_EXPIRED)) &&
 		(d->flags & SIFT_PART_FLAG_ALL_VISIBLE) && !(d->flags & (SIFT_PART_FLAG_UNFROZEN | SIFT_PART_FLAG_PACKED_SLOT)) &&
-		d->dv_blk == InvalidBlockNumber && d->col_delta_blk == InvalidBlockNumber && d->header_blk != InvalidBlockNumber &&
+		d->dv_blk == InvalidBlockNumber && d->header_blk != InvalidBlockNumber &&
 		(d->flags & (slot == 0 ? SIFT_PART_FLAG_HAS_TIME0 : SIFT_PART_FLAG_HAS_TIME1)) && d->time_max[slot] < cutoff;
 }
 

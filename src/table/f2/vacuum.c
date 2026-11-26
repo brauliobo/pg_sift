@@ -220,18 +220,11 @@ granule_dead(Relation rel, SiftF2PartPin *pin, uint32 g, TransactionId oldest, u
 	return n;
 }
 
-/* The pin of a part that VACUUM reads once, to find its dead rows or settle its deletion vector, goes with its last release: the cache of pins keeps nothing of a part about to be rewritten */
-static void
-release_unkept(SiftF2PartPin *pin)
-{
-	pin->stale = true;
-	sift_f2_pin_release(pin);
-}
-
+/* The pin of a part that VACUUM reads once, to find its dead rows or settle its deletion vector, is not cached: the cache of pins keeps nothing of a part about to be rewritten */
 static void
 collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const SiftPartDesc *d, TransactionId oldest)
 {
-	SiftF2PartPin *pin = sift_f2_pin_open(vc->rel, store, d, (uint32) e->part_id);
+	SiftF2PartPin *pin = sift_f2_pin_open_uncached(vc->rel, store, d, (uint32) e->part_id);
 	MemoryContext gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum granule");
 	uint64	   *tids = palloc(sizeof(uint64) * SIFT_GRANULE_ROWS);
 	uint16	   *rows = palloc(sizeof(uint16) * SIFT_GRANULE_ROWS);
@@ -254,7 +247,7 @@ collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const 
 	}
 	PG_FINALLY();
 	{
-		release_unkept(pin);
+		sift_f2_pin_release(pin);
 	}
 	PG_END_TRY();
 	MemoryContextDelete(gcx);
@@ -276,7 +269,7 @@ static void
 settle_dv(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *cur, FullTransactionId oldest_fx, SiftPartDesc *nd, SiftExtent *old)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
-	SiftF2PartPin *pin = sift_f2_pin_open(rel, store, cur, (uint32) e->part_id);
+	SiftF2PartPin *pin = sift_f2_pin_open_uncached(rel, store, cur, (uint32) e->part_id);
 	FullTransactionId stripped = InvalidFullTransactionId;
 	SiftDv	   *settled;
 
@@ -291,7 +284,7 @@ settle_dv(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *cur, Fu
 	}
 	PG_FINALLY();
 	{
-		release_unkept(pin);
+		sift_f2_pin_release(pin);
 	}
 	PG_END_TRY();
 }

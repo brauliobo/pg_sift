@@ -573,9 +573,6 @@ extern void sift_col_delta_stage_release(SiftColDeltaStage *st, int i);
 /* The positions of the records of the stage by partition, each partition's in the order staged: *nlive of them, the released ones left out */
 extern int *sift_col_delta_stage_by_part(const SiftColDeltaStage *st, int *nlive);
 
-/* The records at ord[lo..hi) as a batch, in that order, and released from the stage; the batch is freed by the caller's batch_free */
-extern SiftColDeltaBatch sift_col_delta_stage_take_run(SiftColDeltaStage *st, const int *ord, int lo, int hi, FullTransactionId next);
-
 /* The stage has been written: no record is left */
 extern void sift_col_delta_stage_clear(SiftColDeltaStage *st);
 extern void sift_col_delta_stage_free(SiftColDeltaStage *st);

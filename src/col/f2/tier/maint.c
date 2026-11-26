@@ -335,14 +335,13 @@ tier_partition(const Step *s, const TierRun *t, const SiftPartitionEntry *listed
 	if (!sift_tier_lock_compaction(s->rel, listed->part_id))
 		return true;
 	e = entry_locked(s->rel, listed, &mr);
-	if (e != NULL)
+	if (e != NULL && (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 	{
 		int			np;
 		SiftPartDesc *parts = sift_manifest_read_parts(s->rel, e, &np);
-		bool		dirty = time_dirty(s->rel, e, t->slot);
 
 		for (int i = 0; i < np && ok && *budget > 0; i++)
-			if (sift_tier_part_eligible(&parts[i], t->slot, t->cutoff, dirty))
+			if (sift_tier_part_eligible(&parts[i], t->slot, t->cutoff))
 			{
 				ok = tier_one(s, t, e, &parts[i]);
 				*budget -= ok;

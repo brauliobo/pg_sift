@@ -332,7 +332,7 @@ extern SiftProjLink sift_proj_link_make(const SiftManifestProjRef *ref, const Si
 /* The link of a base part among the links of a projection (ascending by src_gen), or NULL */
 extern const SiftProjLink *sift_proj_link_of(const SiftProjParts *p, uint64 src_gen);
 
-/* Whether a base part may be projected now: sealed for its inserters, no column patches, and its deletion vector, when it has one, settled */
+/* Whether a base part may be projected now: sealed for its inserters and its deletion vector, when it has one, settled (the caller leaves a partition with column patches alone) */
 extern bool sift_proj_part_projectable(const SiftPartDesc *base);
 
 /* ---- keeping the projection in line (f2_proj_build.c) ---- */

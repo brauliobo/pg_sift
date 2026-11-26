@@ -275,11 +275,11 @@ extern void sift_tier_cache_forget(SiftTierCache *c, const SiftTierPartRef *ref,
 /* ---- upload and read of a part (f2_tier.c) ---- */
 
 /*
- * A part that may move to object storage: of level 2, sealed and settled (all visible, frozen), with no deletion vector or column delta waiting, not packed, not already remote and not about to
- * expire, whose newest value of the time column (slot) is older than cutoff. A part with a time bound newer than the cutoff is still hot: it is read often and rewritten by compaction.
- * time_dirty: the column delta chain of its partition patched that time column, so the bounds of the part do not hold and none is eligible.
+ * A part that may move to object storage: of level 2, sealed and settled (all visible, frozen), with no deletion vector waiting, not packed, not already remote and not about to expire, whose
+ * newest value of the time column (slot) is older than cutoff. A part with a time bound newer than the cutoff is still hot: it is read often and rewritten by compaction. The caller leaves
+ * the parts of a partition with a column delta chain where they are: the chain patches rows of them that the object would not hold.
  */
-extern bool sift_tier_part_eligible(const SiftPartDesc *d, int slot, int64 cutoff, bool time_dirty);
+extern bool sift_tier_part_eligible(const SiftPartDesc *d, int slot, int64 cutoff);
 
 /* Writes the object, checks what the store has (size, ETag, the header read back, and for a store that is a file the whole object), fills ref; the caller commits it to the directory */
 extern SiftTierStatus sift_tier_upload(SiftTierBackend *be, const char *key, const SiftTierPartSrc *part, uint32 policy_id, TimestampTz now, SiftTierPartRef *ref, SiftTierErr *err);

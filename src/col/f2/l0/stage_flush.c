@@ -41,7 +41,7 @@ static SiftPendDelRec *
 run_recs(const SiftTxnStage *st, const DelRun *r, int *nrecs, bool at_end)
 {
 	SiftPendDelRec *recs = palloc(2 * (r->to - r->from) * sizeof(SiftPendDelRec));
-	TransactionId top = GetTopTransactionId();
+	TransactionId top = at_end ? GetTopTransactionId() : InvalidTransactionId;
 	int			n = 0;
 
 	for (int i = r->from; i < r->to; i++)
