@@ -436,9 +436,9 @@ sift_col_numeric_image(Datum value, uint32 *len, int32 *dscale)
 Datum
 sift_col_image_numeric(const uint8 *img, uint32 len, int32 dscale)
 {
-	char	   *txt = palloc(SIFT_NIMG_TEXT_MAX);
+	char		txt[SIFT_NIMG_TEXT_MAX];
 
-	if (sift_col_numimg_to_text(img, len, dscale, txt, SIFT_NIMG_TEXT_MAX) == 0)
+	if (sift_col_numimg_to_text(img, len, dscale, txt, sizeof(txt)) == 0)
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift_col: a numeric image of %u bytes is damaged", len));
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(txt), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }
